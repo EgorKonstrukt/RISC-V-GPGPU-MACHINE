@@ -220,6 +220,12 @@ than 256 texels: `--core-pitch 128`.
 
 ## The geometry
 
+(Since 11 October 2026 the kernel sets one geometry, once: as many workers as the machine has
+cores for, 63 of 64, each with 1.5 KB of stores a pass. Programs share them ("Shared between
+programs") and none lays them out: `mcw_shape`, `mctest ... shape` and the programs' own
+variables for it are gone. What follows is how the machine takes a geometry, which it
+still does, and what the sizes were found to be worth.)
+
 Which pixel of the tick is which texel of which core is only a function, so how many workers
 there are and how large each is need not be compiled in. The workers' state is a band of the
 state rows beside core 0's block, 8 texels high and 64 tiles of 8 x 8 long; each worker has
@@ -250,6 +256,9 @@ says in `0x870003c0` how many cores there are now, and in the word at `0x870003c
 there could be (64). Until a program asks, the kernel
 lays out three workers of the full size and twelve of size 4 the first time workers are
 asked for. `mctest N LIMIT shape 6,6,5,4,4` sets a geometry and runs the tests on it.
+A geometry a program asked for lasts while anybody has workers: when the last one is given
+back the kernel forgets it, and the next program to ask has the usual one again. (A ray
+tracer's 63 small workers used to stay, and were what a game's one large job then got.)
 
 **The tick's geometry shader draws the strips** (`tick_geom` in `main.shader`). The pass is
 handed one quad; the shader reads the geometry and puts out a quad for core 0's rectangle
@@ -378,6 +387,95 @@ into every core's cache for every texel it writes: 0.06 ms a pass with one core 
 
 In Unity the tick is a camera's pass, which is how a pass with several targets is drawn in
 VRChat ("In Unity", below).
+
+## Up to 256 cores
+
+(11 October 2026. What "The geometry" and "More than sixteen cores" say of four bits a worker,
+of one band of 248 tiles and of the mailboxes' places is how it was before this.)
+
+The machine has 256 cores: the harness and `rvc_cpu` (`kCores`), and the world (`CORES` in
+`MachineBlit.cginc`, `MachineCores` in the builder). It had 64. What made that possible:
+
+- **The workers are all alike**, so the geometry is two words of the texel at `0x870003d0`:
+  how many workers (`.g`) and the size of their write caches (`.b`, 3 to 6); bit 0 of `.r` is
+  still "being laid out". Where a worker's state and its pixels are is arithmetic from its
+  number, with no loop over the workers before it (`mc_tile_of`, `mc_block_of`, `mc_core_at`,
+  `mc_core_in` in `src/types.h`). The kernel writes it once: every core but the first, size 5.
+- **A worker is five tiles** (3 KB of stores a pass; it was three, 1.5 KB). Its block in the
+  tick's targets is eight columns either way, and up to six of them may run before it costs:
+
+  | Columns of the eight that run | 3 | 4 | 5 | 6 | 7 | 8 |
+  |---|---|---|---|---|---|---|
+  | `nxray` 640 x 480, 63 workers | 1.13 s | 1.13 | 1.13 | 1.13 | 1.92 | 1.97 |
+
+  A block the other way up (a tile a row of eight pixels, the worker 8 x 3) was tried: 2.0 s
+  with blocks side by side, with four empty columns between them, and one under another
+  with one or five empty rows between; 1.11 s only with eight empty columns and nothing else
+  in the 16 rows. The card does not run aligned 8 x 4 groups here.
+- **The state strip is bands.** A band of eight state rows beside core 0's block holds 248
+  tiles, 49 workers; the bands are one under another (`MC_STRIP_BANDS`: two for 64 cores, six
+  for 256), in rows of the state area that nothing else had.
+- **The tick's targets are bands too**: 1,040 columns (core 0's eight, eight empty, 128
+  blocks) and 16 rows for every 128 workers. Blocks 16 rows apart do not share: every
+  worker's pixels drawn twice cost nothing, four times 6%, eight times 94% (`TICK_LOAD`).
+- **The mailboxes are eight pages** at `0x86c00000` (`programs/mc/mc.h`): a start texel a core
+  from 0, the kernel's words from `0x1000` (cores asked back, the offer count, a word a
+  program that posts) and `0x1400` (a core's owner), a system call's words from `0x2000` and
+  the mailboxes from `0x4000`. A bit a core is eight words, in the calls and in memory.
+- **What the cores ran** is at `0x876ba000` (`MC_STATS_ALL`, the network's row after its ring):
+  a word a core, then from `+0x400` a texel for every 32 cores: a word of which of them run
+  and a word of which sleep.
+- **The commit's points are a bucket each**, not an entry: 258 for core 0 and 130 a worker.
+
+What it is worth (D3D11, an RTX 5090; the sums are the same at every size):
+
+| | 64 cores | 256 |
+|---|---|---|
+| `nxray` 640 x 480, a picture | 0.97 s | 0.28 |
+| `nxpath` 320 x 240, 8 samples | 6.8 s | 1.77 |
+| core 0 alone, a shell loop, workers parked | 3.74M/s | 3.74M/s |
+| every core at the same integer loop (`mctest N 3000000 bench 4`) | 292M/s | 1,095M/s |
+| every core at its own float work (`nxpath`) | 176M/s | 621M/s |
+
+A worker with a core runs a whole pass in every pass (counted pass by pass, 255 of 255). What
+the last two rows differ by is the pass: 1.9 ms while the cores run the same instructions,
+3.4 ms at 256 (2.9 at 64) when each runs its own. `--stats-after` does not show that: its
+frame rate stays near 500 while the workers' counts say 300 passes a second.
+
+**Parked cores cost nothing.** They did: 13% of core 0 at 256. None of it was the amount of
+work. A pixel is slow (a pass of 8,192 instructions is 2 ms), so one pixel that loops over
+every core takes 0.05 ms by itself, however few such pixels there are. Three did:
+
+- a RAM texel a core stored to asked every core for its store. A point now carries its core
+  (`commit_core`, the vertex's `primitiveID`) and asks that one: two cores may not store to
+  one texel in a pass anyway. A band drawn whole asks none (the stores are points, drawn after).
+  A point whose core stored nothing there draws nothing (`discard`): a worker that sat the
+  pass out has its last pass's tags still, and its point put the texel as it was over what
+  another core had just stored (Quake, whose server and client share memory, crashed);
+- the texel of which cores run looped over all of them, and so did the two of bits: now a
+  texel for every 32 cores, and the number of cores is read from the geometry;
+- the commit's vertices each asked every core which bands it changed, which with the stores
+  as points is the same answer from all of them.
+
+And of a worker's state the commit changes three texels (8, 28 and 41): the rest is returned
+as it is, without the state being decoded. With that the 64-core machine's commit went from
+0.037 to 0.018 ms a pass and its control pass from 0.059 to 0.032.
+
+**A share, not a tile.** `nxray` and `nxpath` handed out a tile at a time: core 0 walked every
+worker to give the next, and a worker waited some passes between tiles (255 of them worked a
+fifth of the time). A worker now has all of its share in one job (`trace_share`, `pt_share`):
+every n-th tile of an order that scatters them over the picture (tile j is number j x stride,
+the stride with no factor in common with the number of tiles), small enough tiles that each
+has two dozen. The path tracer's share is every sample of its tiles, one after another; it
+writes how far it is into 16 bytes of its own, ends early when the kernel wants its core
+(`mcw_recalled`) and is posted again for the rest. Core 0 only shows the picture as it fills.
+
+Two faults of the sharing were found on the way. A program looked at the mailbox of a core
+the kernel had given to another, and took that program's page fault for its own (`nxmon`
+crashed when its workers were borrowed for long): `serve()` looks only at a core that is the
+program's still, and the kernel takes back no core whose answer the program has not taken
+(`MC_TAKEN_AT`). And a worker still on its way when the first job was posted was never served
+its first page: `look()` serves it.
 
 ## More than sixteen cores
 
@@ -577,6 +675,57 @@ What it took is the list of what two cores have in common in a program written f
 And a way to know it is right: the same job run on core 0 in the same order (`QUAKE_SERVER=late`)
 gives the same sums over the server's state as on the worker.
 
+## Shared between programs
+
+The kernel shares the worker cores out (`linux/kernel/shaderemu_gpu.c`); the library every
+program links (`programs/mc/mcw.c`) does its part, and no program had to change.
+
+- **A share, not a claim.** A program says how many workers it wants (`mcw_open(n)`; the
+  `WORKERS` calls on `/dev/gpu`, as often as it likes). The cores are divided evenly among the
+  programs that ask, nobody more than it wants, the small wants filled first: of 63 cores,
+  one program that wants 63 has them all; a second that wants 40 has 31 and leaves the first
+  32; a game that wants one has one whoever else is there. A program that only borrows
+  (`mcw_lend()` before `mcw_open()`: the monitor, which draws its plots with them) has what
+  the others leave, down to none.
+- **A core is taken back between jobs, never during one.** A core over its program's share
+  that has no job (its mailbox's job and answer numbers are the same) is parked and given on
+  at once: the kernel sets its word at `MC_OWNER_AT` to 0, which the library sees before it
+  writes the next job there. One at a job has its bit set at `MC_RECALL_AT`, and the library
+  gives it up (`MC_GIVE`) when the job has ended. A program sets its word at
+  `MC_POSTING_AT` while it writes to a mailbox, and the kernel takes none of its cores then:
+  so a job is never written to a core that has become another program's.
+- **A program's workers keep their numbers.** `mcw_open()` answers with the share. A worker
+  whose core is gone, or not there yet, has none: a job posted to it is run by the core that
+  posts it, there and then, so everything still happens, slower. When cores come free the
+  count at `MC_OFFER_AT` goes up, and the library asks for its share again the next time such
+  a worker is posted to or asked about; the core is started, and is the worker's some passes
+  later. `mcw_bound(k)` says whether worker k has a core, for a program that would rather not
+  have its own core do the job (the monitor shades nothing itself: `mcw_asked()`).
+- **One layout, the kernel's.** A machine of 64 cores has 63 workers, each with 1.5 KB of
+  stores a pass, laid out the first time a program asks for any (`workers_layout`; a worker
+  nobody has costs a pass 0.04 ms of commit). Two layouts cannot be at once, and one
+  program's would be every other's too, so no program has one: all 63 are anybody's.
+- **What the sizes were worth, with passes of 8,192** (the kernel built with three workers of
+  6 KB, twelve of 3 KB and 48 of 1.5 KB, and with 63 all of 1.5 KB; fixed timestep): Quake's server on its worker makes 25
+  frames in five seconds on a 6 KB worker and 23 on a 1.5 KB one; a Red Alert mission, whose
+  scene is on a worker, is 17.5 game frames a second either way, with the same state; the
+  music player decodes fastest on 63 of 1.5 KB; the NES with its picture on twelve workers
+  runs at 126% of its speed where 3 KB workers gave 135%, with as many frames drawn.
+- A program that holds workers and never calls the library (a tracer between two pictures)
+  loses the idle ones all the same: that is what the kernel's own look at the mailbox is for.
+
+`mctest N SECONDS share [lend]` keeps N workers at short jobs and says every second how many
+have cores (`mctest 63 14 share & sleep 4; mctest 40 5 share`: 63, then 32 while the other has
+31, then 63 again; with `lend`, 20 then 0 while another wants 63, then 20; never a wrong
+answer). After a change to the kernel's part or the library's: that, `mctest 3 60000` and
+`mctest 63 20000` (PASS), and two programs at once whose sums are known (`nxplay` with
+`NXPLAY_SUM=1` and `nxpath`: `e10b94ac` for 8 s and `2c64fd53` for two samples on the shader
+machine, the path tracer with 31 workers of the two programs' 63).
+
+What it does not do: move a job that has begun (the machine keeps a worker's registers
+where no program sees them), or give a program more workers than it had when it opened them
+(a program started in a crowd stays the size it began at).
+
 ## Where workers pay, and where they do not
 
 Every program of the image was looked at for work a worker could take (October 2026). What
@@ -641,8 +790,8 @@ other:
 | `0x870003c0` | how many cores the machine has (0 on a machine built for one) |
 | `0x870003c4` | a bit a core: it runs (a worker that was started and has not parked) |
 | `0x870003c8` | a bit a core: it is asleep on its job word |
-| `0x876b8280 + 4 (k - 16)` | core k's instructions so far, k from 16 to 63 (`MC_STATS_MORE`: the network's row, after the guest's window) |
-| `0x876b8340`, `0x876b8344` | the two words of bits for cores 32 to 63: runs, asleep |
+| `0x876ba000 + 4 k` | core k's instructions so far, every core (`MC_STATS_ALL`: the network's row, after its ring) |
+| `0x876ba400 + 16 n`, `+ 4` | cores 32 n to 32 n + 31, a bit a core: runs, asleep |
 
 `nxmon` reads them: the workers' instructions a second, all 63 of them, are stacked on the
 processor's plot, and the line under the busiest programs says how many work, sleep, are
@@ -660,13 +809,11 @@ of this: the window system draws by taking the whole buffer to the GPU and copyi
 something with an answer after each of its own drawing requests and only then posts a
 frame. `NXMON_CHECK=1` shades every frame again on core 0 and must print `0 of 51840
 pixels differ`; `NXMON_WORKERS=0` leaves the workers alone (core 0 then shades the newest
-columns once a second). The monitor's workers are only lent to it (`mcw_lend()` before
-`mcw_open()`; the kernel's `SHADEREMU_GPU_LENT`): when another program asks for workers
-that are not free, or for another geometry, the kernel counts it in the mailbox page
-(`0x86c00f20`) and keeps that program waiting, half a second at most; the monitor sees the
-count (`mcw_asked()`), closes its workers and shades on core 0, and takes workers again
-when some have been nobody's for five seconds. So a path tracer started beside the
-monitor has all 63. The harness adds them up from the rows it reads back anyway: its
+columns once a second). The monitor's workers are only lent to it (`mcw_lend()`: "Shared
+between programs" below): when a program that keeps its workers wants them, the monitor's
+are taken back; it sees that (`mcw_asked()`), closes them and shades on core 0, and takes
+workers again when some have been nobody's for five seconds. So a path tracer started
+beside the monitor has all 63. The harness adds them up from the rows it reads back anyway: its
 `STATS` and closing lines say what the workers ran and the rate of all cores together.
 
 ## In Unity

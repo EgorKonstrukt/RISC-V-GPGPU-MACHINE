@@ -14,7 +14,7 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
     & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" -b --python world\build.py
 
 - `install_packages.py` puts three shader packages into the Unity project (once): LTCGI, VRC
-  Light Volumes 2.1.3 and Mochie's shaders. The builder's code needs them to compile.
+  Light Volumes 2.1.3, Mochie's shaders and Silent's Fake Glass. The builder's code needs them to compile.
 - `fetch.py` downloads Poly Haven's models and textures to `build/polyhaven` (kept out of the
   repository; 15 s the first time) and writes what Unity needs of them:
   `Textures/World/{Parquet,Plaster,Ceiling,Wood,Walnut,Velvet,Linen}.png`, a model's textures
@@ -24,7 +24,7 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
 - `sounds.py` computes the rain's loop, and cuts thunder and the computer's own sounds from
   recordings (`SOURCES`: Freesound, CC0; fetched once into `build/sounds`, which needs ffmpeg)
   (`Sounds/*.wav`, 3 s).
-- `build.py` writes `Models/{Shell,Room,Computer,Furniture,Annex,City,Gamepad}.fbx` and
+- `build.py` writes `Models/{Shell,Room,Computer,Furniture,Annex,City}.fbx` and
   `build/world.blend` (11 s). Name parts after `--` to build only those.
 
 Then copy `unity/ShaderEmu` over the Unity project's `Assets/ShaderEmu` and run
@@ -124,8 +124,6 @@ What it does to the baked seams has not been measured: that needs a bake before 
   `ClockHand.shader`, which turns it about its own z by the time of day: the visitor's own
   clock, which `EmuWeather` tells the shaders as `_UdonClockDay`. A hand is not static and has
   no lightmap. Its second hand steps; the others sweep.
-- The controllers are `world/gamepad.py`; `GamepadModel` hangs each on the object the builder
-  makes for it.
 
 ## Light
 
@@ -159,7 +157,9 @@ What it does to the baked seams has not been measured: that needs a bake before 
 
 ## The storm
 
-- The window's pane is Mochie's Glass with drops running down it; it grabs what is behind it.
+- The window's pane is Silent's Fake Glass with rain (`GlassMaterial` in `ShaderEmuWeather.cs`):
+  drops run down it, and what is behind a drop is bent out of the room's baked reflection probe,
+  so nothing grabs the screen. It was Mochie's Glass, which did.
 - Rain is sheets of scrolling streaks at four distances (`Rain` in `world/city.py`,
   `Rain.shader`), and haze that hides the far towers (a vertex's alpha, 480 m).
 - The sky is `Sky.shader`: the panorama under a layer of cloud that drifts.

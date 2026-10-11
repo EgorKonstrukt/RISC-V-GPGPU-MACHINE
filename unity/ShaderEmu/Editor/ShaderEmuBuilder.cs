@@ -22,7 +22,7 @@ public static partial class ShaderEmuBuilder
     const string ScenePath = Root + "/ShaderEmuWorld.unity";
     const int GpuLayer = 22;
     const int TickLayer = 23, PointsLayer = 24;   // the tick's camera and the commit's points' (MachineCameras)
-    const int MachineCores = 64;                  // CORES in MachineBlit.cginc
+    const int MachineCores = 256;                  // CORES in MachineBlit.cginc
     const int GpuTriangles = 65536;
 
     // ---------------------------------------------------------------- keys
@@ -273,12 +273,12 @@ public static partial class ShaderEmuBuilder
         }
         Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTick");
         Material pointsMat = Mat("MachineCommitPoints", "ShaderEmu/MachineCommitPoints");
-        RenderTexture tickState = StateTexture("TickState", 2048, 16);
+        RenderTexture tickState = StateTexture("TickState", 2048, 48);
         machine.tickState = tickState;
         machine.tickTargets = new RenderTexture[8];
-        for (int i = 0; i < 8; i++) machine.tickTargets[i] = StateTexture("TickOut" + i, 1024, 16);   // TICK_MRT_W x TICK_STATE_ROWS
-        machine.tickDepth = Target("TickDepth", 1024, 16, 16);
-        machine.readbackTexture = Target("Readback", 768, 32, 0);
+        for (int i = 0; i < 8; i++) machine.tickTargets[i] = StateTexture("TickOut" + i, 1040, 32);   // TICK_MRT_W x TICK_STATE_ROWS x TICK_MRT_BANDS
+        machine.tickDepth = Target("TickDepth", 1040, 32, 16);
+        machine.readbackTexture = Target("Readback", 960, 32, 0);
         pointsMat.SetTexture("_TickState", tickState);
         pointsMat.SetTexture("_GpuTarget", AssetDatabase.LoadAssetAtPath<RenderTexture>(Generated + "/GpuTarget.renderTexture"));
         machine.machineMaterial.SetTexture("_TickState", tickState);
@@ -298,7 +298,7 @@ public static partial class ShaderEmuBuilder
             EditorUtility.SetDirty(triangle);
         }
         // and a point for every entry of every core's write cache, its last store and its copy
-        int count = 770 + (MachineCores - 1) * 386;
+        int count = 258 + (MachineCores - 1) * 130;   // a point a bucket: MachineCommitPoints.shader
         Mesh points = LoadOrCreate(Generated + "/CommitPoints.asset", () => new Mesh { name = "CommitPoints" });
         if (points.vertexCount != count)
         {
@@ -330,6 +330,9 @@ public static partial class ShaderEmuBuilder
         camera.allowMSAA = false;
         camera.useOcclusionCulling = false;
         camera.depth = -11;
+        // not a camera of the headset's: in VR one without a target texture is drawn for both eyes,
+        // at the eyes' size, and the tick (whose targets are set while playing) drew nothing
+        camera.stereoTargetEye = StereoTargetEyeMask.None;
         camera.enabled = false;   // EmuMachine renders it
         GameObject meshObject = new GameObject(name + " mesh", typeof(MeshFilter), typeof(MeshRenderer));
         meshObject.transform.SetParent(device, false);
@@ -748,10 +751,10 @@ public static partial class ShaderEmuBuilder
 
         RenderTexture state = StateTexture("StateA", 2048, 4096);
         RenderTexture stateB = StateTexture("StateB", 2048, 4096);
-        RenderTexture tickState = StateTexture("TickState", 2048, 16);   // the state rows after a tick: core 0's 64 x STATE_ROWS and the workers' band of 1984 x 8 beside it
+        RenderTexture tickState = StateTexture("TickState", 2048, 48);   // the state rows after a tick: core 0's 64 x STATE_ROWS and the workers' six bands of 1984 x 8 beside it
         AssetDatabase.DeleteAsset(Generated + "/MachineState.asset");
         RenderTexture gpuTarget = Target("GpuTarget", 1280, 720, 32);   // the picture is 720p at most
-        RenderTexture readback = Target("Readback", 768, 32, 0);   // a row a round: EmuMachine's MaxRounds
+        RenderTexture readback = Target("Readback", 960, 32, 0);   // a row a round: EmuMachine's MaxRounds
         RenderTexture picture = PictureTexture("DisplayPicture", 2048, 1024);
         showMat.mainTexture = picture;
         showMat.SetVector("_TexSize", new Vector4(picture.width, picture.height, 0, 0));
@@ -914,6 +917,7 @@ public static partial class ShaderEmuBuilder
         camera.allowMSAA = false;
         camera.useOcclusionCulling = false;
         camera.depth = -10;
+        camera.stereoTargetEye = StereoTargetEyeMask.None;
         camera.enabled = false;   // EmuMachine renders it, once a round
         GameObject meshObject = new GameObject("GPU mesh", typeof(MeshFilter), typeof(MeshRenderer));
         meshObject.transform.SetParent(device, false);

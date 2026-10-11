@@ -7,7 +7,7 @@ using VRC.Udon.Common;
 // The holodecks (docs/holodeck.md): eight rooms, a seat each. Whoever sits in a seat has the
 // room. This is local, one a client: it draws this visitor's own program's world round the seat
 // they sit in, puts each occupant's display on their room's screen (their own machine's, or
-// what EmuStreams receives of another's), and shows who holds which controller.
+// what EmuStreams receives of another's), and says on each stand who holds which controller.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuHolodeck : UdonSharpBehaviour
 {
@@ -26,11 +26,13 @@ public class EmuHolodeck : UdonSharpBehaviour
     public Transform[] screens;        // a room's screen: a unit quad, scaled
     public Renderer[] screenRenderers;
     public Material[] screenMaterials; // DisplayShow.shader, one a room
-    public Vector3 screenAt, screenSize;   // in a room's frame, at its largest
+    public Vector3 screenAt, screenSize;   // in a room's frame: the small screen, in the console's face
+    public Vector3 screenTurn;             // its tip back and its turn about the upright, degrees
+    public Vector3 largeAt, largeSize;     // the large screen: upright before the seat
+    public Transform[] screenGuards;       // each screen's mark (HoloGuard.shader), which goes where its screen goes
     public TextMeshProUGUI[] doorLabels;   // whose a room is, by its door
     public TextMeshProUGUI[] plateLabels;  // and on its stand: what is held, what a key does
     public TextMeshProUGUI[] scaleLabels;
-    public GameObject[] shooters, strategies;   // the controllers lying on a room's stand
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
 
@@ -41,10 +43,15 @@ public class EmuHolodeck : UdonSharpBehaviour
     private int[] holds;               // and the controller in their hands
     private Texture[] showing;
     private int own = -1;              // the room this visitor sits in
-    private int screenMode;            // this visitor's own screen: 0 on, 1 off
+    private int screenMode;            // this visitor's own screen: 0 the console's small one, 1 the large one before the seat
+    private int[] placed;              // a room's screen as it is put now: 0 small, 1 large
     private float nextAt;
     private bool[] trigger = new bool[2], grip = new bool[2];   // left, right: for the machine's host words
     private int[] told = new int[16];
+    private int roomMinId, roomMaxId;  // the sitter's room for HoloGuard.shader, which marks only there
+    private bool leaving;              // this visitor asked to stand up (a jump): the seat lets them
+    private bool respawned;
+    private int putOut = -1;           // the room whose seat let go of them unasked
 
     void Start()
     {
@@ -52,9 +59,14 @@ public class EmuHolodeck : UdonSharpBehaviour
         occupant = new int[count];
         holds = new int[count];
         showing = new Texture[count];
+        placed = new int[count];
         content.gameObject.SetActive(false);
         scene.gameObject.SetActive(false);
         sceneMaterial.SetFloat("_Plane", plane);
+        roomMinId = VRCShader.PropertyToID("_UdonHoloMin");
+        roomMaxId = VRCShader.PropertyToID("_UdonHoloMax");
+        VRCShader.SetGlobalVector(roomMinId, Vector4.zero);
+        VRCShader.SetGlobalVector(roomMaxId, Vector4.zero);
     }
 
     // ---- the seats (EmuSeat) ----
@@ -77,16 +89,56 @@ public class EmuHolodeck : UdonSharpBehaviour
         Vector3 a = frame.TransformPoint(new Vector3(-roomSize.x / 2, 0, 0)), b = frame.TransformPoint(new Vector3(roomSize.x / 2, roomSize.y, roomSize.z));
         sceneMaterial.SetVector("_RoomMin", Vector3.Min(a, b));
         sceneMaterial.SetVector("_RoomMax", Vector3.Max(a, b));
+        VRCShader.SetGlobalVector(roomMinId, Vector3.Min(a, b));
+        VRCShader.SetGlobalVector(roomMaxId, Vector3.Max(a, b));
         content.gameObject.SetActive(true);
         scene.gameObject.SetActive(true);
         if (pointer != null) pointer.ownHolo = room;
+        // without a headset the visitor's own keyboard is the game's (Insert gives it back)
+        if (!player.IsUserInVR() && gamepad != null && gamepad.keys != null) gamepad.keys.SetCapture(true);
     }
 
     public void Exited(int room, VRCPlayerApi player)
     {
         nextAt = 0f;
         if (!player.isLocal) return;
-        if (gamepad != null) gamepad.PutBack();
+        // A stick stood the sitter up in a headset whatever the station was told: unless they
+        // asked (a jump) or were sent back to the start, they are sat down again.
+        if (!leaving && own == room)
+        {
+            putOut = room;
+            SendCustomEventDelayedFrames(nameof(SitAgain), 2);
+            return;
+        }
+        Leave();
+    }
+
+    public void SitAgain()
+    {
+        int room = putOut;
+        putOut = -1;
+        if (room < 0 || own != room) return;
+        if (respawned) Leave();
+        else stations[room].UseStation(Networking.LocalPlayer);
+    }
+
+    public override void OnPlayerRespawn(VRCPlayerApi player)
+    {
+        if (player == null || !player.isLocal || own < 0) return;
+        if (putOut >= 0) respawned = true;   // (SitAgain is on its way: it lets go instead)
+        else Leave();
+    }
+
+    private void Leave()
+    {
+        leaving = false;
+        respawned = false;
+        if (own < 0) return;
+        if (gamepad != null)
+        {
+            gamepad.PutBack();
+            if (gamepad.keys != null) gamepad.keys.SetCapture(false);
+        }
         own = -1;
         EmuShare mine = hub.Mine();
         if (mine != null)
@@ -96,15 +148,49 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         content.gameObject.SetActive(false);
         scene.gameObject.SetActive(false);
+        VRCShader.SetGlobalVector(roomMinId, Vector4.zero);
+        VRCShader.SetGlobalVector(roomMaxId, Vector4.zero);
         if (pointer != null) pointer.ownHolo = -1;
+    }
+
+    // The seat keeps its sitter whatever the sticks do (they are the game's): jumping stands
+    // them up, once no controller is in their hands and their keyboard is their own again
+    // (a controller's jump and the space bar are the game's too).
+    public override void InputJump(bool value, UdonInputEventArgs args)
+    {
+        if (!value || own < 0 || gamepad == null || gamepad.Holding() != 0) return;
+        if (gamepad.keys != null && gamepad.keys.Capturing()) return;
+        leaving = true;
+        respawned = false;
+        stations[own].ExitStation(Networking.LocalPlayer);
+    }
+
+    // End stands the sitter up whatever they hold and whoever has their keyboard: the one way
+    // out that needs nothing else to work first (a desktop's, mostly: its keys are the game's).
+    public void StandUp()
+    {
+        if (own < 0) return;
+        if (gamepad != null)
+        {
+            gamepad.PutBack();
+            if (gamepad.keys != null) gamepad.keys.SetCapture(false);
+        }
+        leaving = true;
+        respawned = false;
+        stations[own].ExitStation(Networking.LocalPlayer);
     }
 
     public int Own() { return own; }
 
     // ---- a stand's keys: they are the sitter's ----
 
-    public void TakeShooter() { if (own >= 0) gamepad.Take(1, stations[own]); nextAt = 0f; }
-    public void TakeStrategy() { if (own >= 0) gamepad.Take(2, stations[own]); nextAt = 0f; }
+    // A controller is a headset's. On a desktop its sticks are the mouse and the keys the
+    // visitor looks round and types with, so the game turned as they looked, and with the
+    // beams away nothing could put it back: there the keyboard plays, and the mouse is theirs.
+    private bool Hands() { return Networking.LocalPlayer != null && Networking.LocalPlayer.IsUserInVR(); }
+
+    public void TakeShooter() { if (own >= 0 && Hands()) gamepad.Take(1, stations[own]); nextAt = 0f; }
+    public void TakeStrategy() { if (own >= 0 && Hands()) gamepad.Take(2, stations[own]); nextAt = 0f; }
     public void PutBack() { gamepad.PutBack(); nextAt = 0f; }
 
     public void NextScreen()
@@ -129,7 +215,7 @@ public class EmuHolodeck : UdonSharpBehaviour
 
     void Update()
     {
-        Pads();
+        if (own >= 0 && Input.GetKeyDown(KeyCode.End)) StandUp();
         Tell();
         if (Time.time < nextAt) return;
         nextAt = Time.time + 0.25f;
@@ -164,21 +250,35 @@ public class EmuHolodeck : UdonSharpBehaviour
                 material.SetVector("_TexSize", new Vector4(shown.width, shown.height, 0, 0));
             }
             material.SetVector("_Size", new Vector4(w, h, 0, 0));
-            // this visitor may switch their own screen off; anybody else's is on
-            screenRenderers[k].enabled = !me || screenMode == 0;
+            // this visitor's own screen is the console's small one or a large one before the seat,
+            // as its key says; anybody else's is the console's. Its mark goes with it.
+            int large = me && screenMode == 1 ? 1 : 0;
+            if (placed[k] != large)
+            {
+                placed[k] = large;
+                Transform screen = screens[k];
+                screen.localPosition = large == 1 ? largeAt : screenAt;
+                screen.localEulerAngles = large == 1 ? Vector3.zero : screenTurn;
+                screen.localScale = large == 1 ? largeSize : screenSize;
+                if (screenGuards != null && k < screenGuards.Length && screenGuards[k] != null)
+                {
+                    screenGuards[k].SetPositionAndRotation(screen.position, screen.rotation);
+                    screenGuards[k].localScale = screen.lossyScale;
+                }
+            }
 
             string who = occupant[k] == 0 ? "FREE" : me ? Networking.LocalPlayer.displayName : NameOf(occupant[k]);
             if (doorLabels[k] != null && doorLabels[k].text != who) doorLabels[k].text = who;
             if (plateLabels[k] != null)
             {
                 string says = occupant[k] == 0 ? "Sit down to play" : !me ? who + " plays here"
-                            : holds[k] == 1 ? "SHOOTER in hand" : holds[k] == 2 ? "STRATEGY in hand" : "Take a controller";
+                            : holds[k] == 1 ? "SHOOTER in hand: put it back to leave"
+                            : holds[k] == 2 ? "STRATEGY in hand: put it back to leave"
+                            : gamepad != null && gamepad.keys != null && gamepad.keys.Capturing() ? "Your keys play. End: stand up"
+                            : Networking.LocalPlayer.IsUserInVR() ? "Take a controller, or jump to stand up" : "Space or End: stand up. Sit again for the keys";
                 if (plateLabels[k].text != says) plateLabels[k].text = says;
             }
             if (scaleLabels[k] != null && me) scaleLabels[k].text = "World " + Mathf.RoundToInt((1f - plane) * 100f);
-            // a controller lies on the stand unless the sitter has it
-            if (shooters[k] != null) shooters[k].SetActive(holds[k] != 1);
-            if (strategies[k] != null) strategies[k].SetActive(holds[k] != 2);
         }
     }
 
@@ -241,46 +341,5 @@ public class EmuHolodeck : UdonSharpBehaviour
             if (share.ownerId == id) return share.ownerName;
         }
         return "?";
-    }
-
-    // A controller somebody holds is in their right hand, on every client: each player's own
-    // object carries the two models.
-    private void Pads()
-    {
-        hub.Prune();
-        Pad(hub.Mine(), Networking.LocalPlayer);
-        int others = hub.ShareCount();
-        for (int i = 0; i < others; i++)
-        {
-            EmuShare share = hub.ShareAt(i);
-            Pad(share, Networking.GetOwner(share.gameObject));
-        }
-    }
-
-    private void Pad(EmuShare share, VRCPlayerApi player)
-    {
-        if (share == null || share.pads == null) return;
-        bool there = Utilities.IsValid(player) && share.holding > 0;
-        for (int i = 0; i < share.pads.Length; i++)
-            if (share.pads[i] != null && share.pads[i].gameObject.activeSelf != (there && share.holding == i + 1)) share.pads[i].gameObject.SetActive(there && share.holding == i + 1);
-        if (!there || share.holding > share.pads.Length || share.pads[share.holding - 1] == null) return;
-        Transform pad = share.pads[share.holding - 1];
-        if (player.isLocal && !player.IsUserInVR())
-        {
-            // no hands on a desktop: before the chest
-            VRCPlayerApi.TrackingData head = player.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
-            pad.SetPositionAndRotation(head.position + head.rotation * new Vector3(0f, -0.28f, 0.45f), head.rotation * Quaternion.Euler(-60f, 0f, 0f));
-            return;
-        }
-        Vector3 at = player.GetBonePosition(HumanBodyBones.RightHand);
-        Quaternion turn = player.GetBoneRotation(HumanBodyBones.RightHand);
-        if (player.isLocal || at == Vector3.zero)
-        {
-            // this visitor's own, or an avatar with no hand bone: the tracked hand
-            VRCPlayerApi.TrackingData hand = player.GetTrackingData(VRCPlayerApi.TrackingDataType.RightHand);
-            at = hand.position;
-            turn = hand.rotation;
-        }
-        pad.SetPositionAndRotation(at, turn * Quaternion.Euler(0f, 90f, 0f));
     }
 }

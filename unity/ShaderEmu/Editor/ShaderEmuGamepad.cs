@@ -1,4 +1,5 @@
 using TMPro;
+using UdonSharpEditor;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -9,7 +10,7 @@ using UnityEngine;
 public static partial class ShaderEmuBuilder
 {
     // The board's "what you can do", here because the controllers' part of it is the longest.
-    public const int DoSize = 25;
+    public const int DoSize = 21, DoHigh = 690, HowAt = 1370;   // the board's left column under it begins at HowAt
     public const string DoText =
         "Press POWER on the computer's tower, right of the desk (or on the control panel). Linux boots in a few " +
         "seconds and starts the desktop.\n\n" +
@@ -24,13 +25,42 @@ public static partial class ShaderEmuBuilder
         "MEMORY: all of the machine's memory at once; what is being written glows.\n\n" +
         "HOLODECKS, through the doorway in the left wall: eight rooms, a seat each. Sit down and a 3D game's " +
         "world is round you; the console at your right hand has the room's keys and a screen, where others " +
-        "see your display. Its Shooter and Strategy keys put a GAME CONTROLLER in your hand; Put back, or " +
-        "BOTH GRIPS held for a second, takes it away.\n" +
-        "White, SHOOTER (Quake, Doom): left stick walks and steps aside, right stick turns and looks, right " +
+        "see your display. Its Shooter and Strategy keys make your controllers the game's; Put back, or " +
+        "BOTH GRIPS held for a second, gives them back.\n" +
+        "SHOOTER (Quake, Doom): left stick walks and steps aside, right stick turns and looks, right " +
         "trigger fires, left trigger jumps or opens, right grip next weapon, left grip Esc, jump Enter.\n" +
-        "Blue, STRATEGY (Red Alert, Command & Conquer): right stick moves the pointer, the triggers are the " +
+        "STRATEGY (Red Alert, Command & Conquer): right stick moves the pointer, the triggers are the " +
         "mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel, left grip " +
         "Esc, jump Enter.";
+
+    // A controller in hand was a model once, two on every player's object: there is none now
+    // (the stand's line and the notice over the hand say what is held).
+    static void NoControllerModels(Transform world)
+    {
+        foreach (EmuShare share in world.GetComponentsInChildren<EmuShare>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(share);
+            for (int i = share.transform.childCount - 1; i >= 0; i--) Object.DestroyImmediate(share.transform.GetChild(i).gameObject);
+            UdonSharpEditorUtility.CopyProxyToUdon(share);
+            EditorUtility.SetDirty(share);
+        }
+        foreach (EmuHolodeck deck in world.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(deck);
+            UdonSharpEditorUtility.CopyProxyToUdon(deck);
+            EditorUtility.SetDirty(deck);
+        }
+    }
+
+    [MenuItem("ShaderEmu/Take the controllers' models out of the open scene")]
+    public static void RemoveControllerModels()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        NoControllerModels(world);
+        NoDeskControllers(world, world.Find("Computer"));   // (and the board's words, which named their colours)
+        EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        Debug.Log("[ShaderEmu] no controller models (the scene is not saved)");
+    }
 
     // The two controllers that lay on the den's desk, their names and their station: gone.
     static void NoDeskControllers(Transform world, Transform computer)
@@ -48,6 +78,18 @@ public static partial class ShaderEmuBuilder
             TextMeshProUGUI text = does.GetComponent<TextMeshProUGUI>();
             text.text = DoText;
             text.fontSize = DoSize;
+            // (and the room for it, in a scene whose board was laid out for fewer words)
+
+            text.rectTransform.sizeDelta = new Vector2(text.rectTransform.sizeDelta.x, DoHigh);
+            foreach (string name in new[] { "How head", "How" })
+            {
+                Transform below = board.transform.Find(name);
+                if (below == null) continue;
+                RectTransform rect = below.GetComponent<RectTransform>();
+                rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -(name == "How" ? HowAt + 50 : HowAt));
+                if (name == "How") rect.sizeDelta = new Vector2(rect.sizeDelta.x, 270);
+                EditorUtility.SetDirty(rect);
+            }
             EditorUtility.SetDirty(text);
         }
     }

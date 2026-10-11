@@ -10,7 +10,20 @@ eyes. Games and their controllers are here and nowhere else in the world.
 
 - **Sit down** in a free room's seat (a plate by each door says whose the room is, or FREE).
   The seat is a station of the scene, one visitor at a time; whoever sits has the room until
-  they get up. Anybody may walk in and stand there.
+  they get up. Anybody may walk in and stand there. The seat keeps its sitter whatever the
+  sticks do (they are the game's: a stick used to put the sitter out of the chair). Jumping
+  stands them up, once no controller is in their hands, and the console's line says so
+  ("Take a controller, or jump to stand up"; with one in hand, "put it back to leave").
+  The station is told not to let a stick stand its sitter up, and in a headset one did all
+  the same, with a controller in hand too: so whoever is stood up without having jumped is
+  sat down again two frames later (`EmuHolodeck.Exited`, `SitAgain`; a respawn lets go).
+- **Without a headset** the sitter's own keyboard is the game's from the moment they sit
+  (the display keyboard's capture, raw keys): the game's own keys, as at a desk. End stands
+  them up at once, whatever is held and whoever has the keyboard (`EmuHolodeck.StandUp`);
+  Insert gives the keyboard back, and Space then stands them up too. The console's line
+  says so. A controller cannot be taken there (`Hands`): its sticks would be the mouse and
+  keys the visitor looks round with, so the game turned as they looked, and with a
+  controller in hand the beams are away, so nothing could press Put back: they were stuck.
 - **One mode.** The program's camera stands at the seat's eye point and the horizon is the
   room's: of the camera's turn only what is about the world's up is followed, so the sitter
   faces the way the game's camera faces, and the floor stays the floor when the game looks up
@@ -45,8 +58,11 @@ side (400 m both, or 0 and 25 m); nothing is synced.
   that is the view alone. A vertex in camera space goes back through its rows to the world's own
   turn, the camera staying where it is, then about the room's up until the camera's right is
   the seat's.
-- Up is found from the program's camera (the axis its up is nearest to and its right is square
-  to: Doom and Quake are z up, ClassiCube y).
+- Up is what the program says it is: the top four bits of the frame's size word
+  (`0x8700030c`: 1 x, 2 y, 3 z; `seglWorldUp()` in `GLES/segl.h`). Quake and Doom say z,
+  ClassiCube y. Of a program that says nothing it is found from the camera (the axis its up
+  is nearest to and its right is square to), which is wrong once the camera looks more down
+  than ahead: with the aim on a hand, a hand let down made forward the room's up.
 - One mask, one seal and one scene serve all eight rooms: `EmuHolodeck.Entered` moves them to
   the room this client's visitor sat down in, with the room's box (`_RoomMin`, `_RoomMax`).
 - `HolodeckMask.shader` is on a copy of a room's six faces, a hair inside the grid: where they
@@ -72,7 +88,11 @@ and consoles' models, of each screen's glass and of each console's panel ("Holod
 where the thing itself is seen, after the room's mask and before the program's world (queue
 2502; the builder moves the world's and the seal's materials one later), and no pass of the
 world draws on a pixel so marked. "ShaderEmu/Add the holodecks' guards to the open scene"
-makes them without putting the room in again.
+makes them without putting the room in again. One copy has all eight rooms' things, and
+only those inside the box of the room this visitor sits in mark (`_UdonHoloMin`,
+`_UdonHoloMax`, which `EmuHolodeck` sets when they sit down and empties when they get up):
+the next room's seat and console, behind a wall the mask had emptied the depth of, showed
+as their shapes cut out of this room's world.
 
 Tried before this and taken out again (10 October 2026): a large screen before the seat that
 went clear while a program drew in space, with only the program's flat drawing on it (status
@@ -147,7 +167,13 @@ the console: all of it, its keys and its screen must be seen.
 The host's words in play mode: `EmuMachine`'s `row` (the readback) has them at texel 64 + 0x36;
 on a desktop, standing, word 0 is `0x00010102` and word 2's upper half the head's height.
 
-Not known yet: none of it has been in a headset.
+A sitter's hips are put 0.38 m over the floor (`SeatHeight` in `ShaderEmuHolodeck.cs`; 0.50
+sat them too high in a headset) and the program's camera 0.7 m over that.
+
+In play mode: seated, `_UdonHoloMax` is the room's far corner and the console says "Take a
+controller, or jump to stand up"; `RunInputEvent("_inputJump", ...)` on "Holodeck" stands
+the player up at the seat's exit and empties the box. In a headset the lock, the jump, the
+guards, the said up and the seat's height are untried.
 
 # The corridor
 

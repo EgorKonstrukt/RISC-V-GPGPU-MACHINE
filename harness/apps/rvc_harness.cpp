@@ -814,7 +814,7 @@ int main(int argc, char** argv) {
     uint64_t guestInstructions = 0;
     // with worker cores: what they ran, from the counts the control pass publishes
     uint64_t workerInstructions = 0, workerInstr0 = 0;
-    uint32_t workerClock[kCores] = {};
+    uint32_t workerClock[kCoresMost] = {};
     bool haveWorkerClock = false;
 
     auto t0 = std::chrono::steady_clock::now();
@@ -1053,8 +1053,8 @@ int main(int argc, char** argv) {
         if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer
         if (haveClock) guestInstructions += (uint32_t)(clock - lastClock);
         if (opt.cores > 1 && raw.size() >= (64 + kControlTexels + kNetRead) * 16) {
-            for (int c = 1; c < opt.cores; ++c) {   // (MC_STATS, and MC_STATS_MORE from core 16)
-                uint32_t now = c < 16 ? texel(64 + 0x38 + c / 4, c % 4) : texel(64 + kControlTexels + kCoreStatsAt + (c - 16) / 4, c % 4);
+            for (int c = 1; c < opt.cores; ++c) {   // (MC_STATS, and MC_STATS_ALL from core 16)
+                uint32_t now = c < 16 ? texel(64 + 0x38 + c / 4, c % 4) : texel(64 + kControlTexels + kCoreStatsAt + c / 4, c % 4);
                 // (a geometry laid out anew starts the counts again: one that went down is all new)
                 if (haveWorkerClock) workerInstructions += now < workerClock[c] ? now : (uint32_t)(now - workerClock[c]);
                 workerClock[c] = now;
@@ -1643,27 +1643,23 @@ int main(int argc, char** argv) {
         // each core's state: what it is doing as the run ends. Core 0's is at the left; a
         // worker's rows of the strip beside it are where the geometry (control texel 0x3d) puts them.
         std::vector<uint8_t> blocks;
-        std::vector<uint8_t> mailboxes;   // (MC_GEOMETRY_MORE is in their page, 0x86c00f00)
-        if (backend.readState(2048, 64, blocks) && blocks.size() >= (size_t)2048 * 64 * 16 && row.size() >= (64 + 0x40) * 16 &&
-            backend.readRows(64 + 0x6c0000 / 2048, 1, mailboxes) && mailboxes.size() >= 0xf2 * 16) {
+        if (backend.readState(2048, 64, blocks) && blocks.size() >= (size_t)2048 * 64 * 16 && row.size() >= (64 + 0x40) * 16) {
             const uint32_t* all = (const uint32_t*)blocks.data();
             const uint32_t* geo = (const uint32_t*)row.data() + (64 + 0x3d) * 4;
-            const uint32_t* geoMore = (const uint32_t*)mailboxes.data() + 0xf0 * 4;
-            unsigned at = 0;
+            // the geometry: how many workers, and their caches' size (all alike)
+            unsigned workers = geo[1], bits = geo[2] >= 3 && geo[2] <= 6 ? geo[2] : 0;
+            unsigned rows = bits ? (44 + 8 + (2u << bits) * 4 + 63) / 64 : 0, per = rows ? 248 / rows : 1;
             uint64_t workersRan = 0;
             for (int c = 0; c < opt.cores; ++c) {
-                // four bits a worker: the geometry texel's words 1 to 3, then MC_GEOMETRY_MORE's
-                unsigned k = (unsigned)c - 1, bits = c == 0 ? 6 : (((k < 24 ? geo[1 + k / 8] : geoMore[k / 8 - 3]) >> (4 * (k % 8))) & 15);
-                unsigned rows = c == 0 ? 0 : bits ? (44 + 8 + (2u << bits) * 4 + 63) / 64 : 0;
-                if (c != 0 && !rows) continue;
+                if (c != 0 && (!rows || (unsigned)c > workers)) continue;
                 // texel w (below 64) of the core's state: a worker's is in the first 8 x 8 tile of its strip
+                unsigned band = (unsigned)(c - 1) / per, at = (unsigned)(c - 1) % per * rows;
                 auto texel = [&](unsigned w) {
-                    size_t x = c == 0 ? w : 64 + at * 8 + (w & 7), y = c == 0 ? 0 : (w >> 3);
+                    size_t x = c == 0 ? w : 64 + at * 8 + (w & 7), y = c == 0 ? 0 : band * 8 + (w >> 3);
                     return all + (y * 2048 + x) * 4;
                 };
                 uint32_t word = texel(41)[3];
                 const uint32_t pc = texel(36)[3], ran = texel(28)[1], committed = texel(28)[2];
-                at += rows;
                 if (c != 0) workersRan += ran;
                 if (c == opt.cores - 1 && opt.cores > 16)
                     fprintf(stderr, "CORES: the workers ran %llu instructions in all\n", (unsigned long long)workersRan);

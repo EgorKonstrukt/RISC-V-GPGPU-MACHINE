@@ -11,9 +11,10 @@
 #include <stdint.h>
 
 #define MC_PAGE_PHYS 0x86C00000u
-#define MC_PAGE_SIZE 0x3000u   // (one page for the first 16 cores; the rest is cores 16 to 63's)
+#define MC_PAGE_SIZE 0x8000u   // (eight pages: a word, a mailbox and a system call's words for 256 cores)
 #define MC_PAGE_GPU_OFFSET (MC_PAGE_PHYS - 0x86000000u)   // where it is in /dev/gpu
-#define MC_MAX_CORES 64
+#define MC_MAX_CORES 256
+#define MC_MASK_WORDS (MC_MAX_CORES / 32)   // a bit a core
 
 // { MC_START, pc, sp, root } starts core k there in user mode with k in a0, on the page table
 // whose first page is number `root`. A program gets its cores and its root from the kernel:
@@ -22,25 +23,38 @@
 #define MC_STOP 0x5453434du   // there instead: the core parks (the kernel's, when the program is gone)
 #define MC_START_AT(k) (16u * (k))
 #define MC_WORKERS 0xc00c4704u   // _IOWR('G', 4, three words)
-#define MC_SHAPE 0x40084706u     // _IOW('G', 6, two words): the geometry, four bits a worker
-// a machine of more than 16 cores: the geometry in eight words, and { how many, root, a bit a
-// core in two words } for the workers
-#define MC_SHAPE_ALL 0x40204707u     // _IOW('G', 7, eight words)
-#define MC_WORKERS_ALL 0xc0104708u   // _IOWR('G', 8, four words)
-// A program whose workers are only lent to it says so (mcw_lend) and looks at the count at
-// MC_ASKED_AT: it goes up when another program is waiting for them.
+// { how many, root, a bit a core in eight words } for the workers of any machine
+#define MC_WORKERS_ALL 0xc0284708u   // _IOWR('G', 8, ten words)
+// The kernel shares the cores out between the programs that ask (docs/multicore.md, "Shared
+// between programs"). MC_WORKERS_ALL may be called again and again: it answers with the
+// program's share in place of the number asked for. A program whose workers are only lent
+// (MC_LENT, before it asks) has what the others leave. Three things in the mailbox page are
+// the kernel's to write: a word a core at MC_OWNER_AT, its program's tag (0: nobody's, the
+// kernel took it back, which it does to a core with no job); a bit a core at MC_RECALL_AT, a
+// core the kernel wants back when its job has ended (MC_GIVE: eight words, a bit a core); and
+// a count at MC_OFFER_AT that goes up when cores come free.
 #define MC_LENT 0x4709u              // _IO('G', 9)
-#define MC_ASKED_AT 0xf20u
+#define MC_GIVE 0x4020470au          // _IOW('G', 10, eight words)
+#define MC_RECALL_AT 0x1000u
+#define MC_OFFER_AT 0x1020u
+#define MC_OWNER_AT(k) (0x1400u + 4u * (k))
+// MC_WORKERS_ALL's first word comes back as the share and, from bit 12, the program's tag. A
+// program sets its word here (its tag's low four bits say which) while it writes to a core's
+// mailbox or start, and looks at the core's owner word after setting it: the kernel takes no
+// core of a program whose word is set, so what is written is never another program's.
+#define MC_POSTING_AT(tag) (0x1040u + 4u * ((tag) & 15u))
 // core k's 64 bytes: a job (core 0 writes it), its answer (the worker's), a fault (the
 // worker's, written by the machine) and the word that lets it go on (core 0's)
-// (cores 16 and up have theirs after the first 16 cores' system calls)
-#define MC_JOB_AT(k) ((k) < 16 ? 0x400u + 64u * (k) : 0x1000u + 64u * (k))
+#define MC_JOB_AT(k) (0x4000u + 64u * (k))
 #define MC_ANSWER_AT(k) (MC_JOB_AT(k) + 16u)
 #define MC_FAULT_AT(k) (MC_JOB_AT(k) + 32u)
 #define MC_RESUME_AT(k) (MC_JOB_AT(k) + 48u)
+// the resume texel's third word is core 0's too: the job whose answer the program has taken. The
+// kernel takes back no core whose last answer is still in its mailbox.
+#define MC_TAKEN_AT(k) (MC_JOB_AT(k) + 56u)
 // a worker's system call, for core 0 to make: a7 and a0 to a5 (the fault's cause is 8); the
 // answer goes in the resume texel's second word before its first
-#define MC_CALL_AT(k) ((k) < 16 ? 0x800u + 32u * (k) : 0x2000u + 32u * (k))
+#define MC_CALL_AT(k) (0x2000u + 32u * (k))
 
 #define MC_ALIVE 0x600d0000u
 

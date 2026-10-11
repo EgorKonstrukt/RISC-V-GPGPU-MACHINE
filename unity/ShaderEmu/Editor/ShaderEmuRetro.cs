@@ -710,7 +710,8 @@ public static partial class ShaderEmuBuilder
             if (canvas.transform.parent != null && canvas.transform.parent.GetComponentInParent<Canvas>() != null) continue;   // a slider's own
             if (canvas.name.EndsWith(" hot") || canvas.name == "Controller notice") continue;   // keys with nothing to show over a model's own; a notice that moves
             bool shown = canvas.gameObject.activeSelf, plain = canvas.GetComponent<EmuKeyboard>() == null && canvas.name != "About" &&
-                 canvas.name != "Signs" && !canvas.name.EndsWith(" name") && canvas.name != "Memory legend" && canvas.name != "CPU sign";
+                 canvas.name != "Signs" && !canvas.name.EndsWith(" name") && canvas.name != "Memory legend" && canvas.name != "CPU sign" &&
+                 canvas.name != "Speed sign";
             if (onlyNew && (!plain || canvas.transform.Find(canvas.name + " plate") != null)) continue;
             Hidden[canvas] = onlyNew || !shown;
             canvas.gameObject.SetActive(true);   // one that opens later is drawn as it will be
@@ -718,7 +719,7 @@ public static partial class ShaderEmuBuilder
             if (keyboard != null) KeyboardLook(keyboard, bold, monoBold);
             else if (canvas.name == "About") PaperLook(canvas, paper, mono, monoBold);
             else if (canvas.name == "Signs" || canvas.name.EndsWith(" name")) TapeLook(canvas, monoBold, changing);
-            else if (canvas.name == "Memory legend" || canvas.name == "CPU sign")   // drawn over a screen: part of a display
+            else if (canvas.name == "Memory legend" || canvas.name == "CPU sign" || canvas.name == "Speed sign")   // drawn over a screen: part of a display
                 foreach (TextMeshProUGUI label in canvas.GetComponentsInChildren<TextMeshProUGUI>(true)) { label.font = monoBold; label.fontSharedMaterial = monoBold.material; EditorUtility.SetDirty(label); }
             else PanelLook(canvas, raised, sunken, cap, sans, bold, mono, changing, painted);
             canvas.gameObject.SetActive(shown);
@@ -754,6 +755,28 @@ public static partial class ShaderEmuBuilder
         Retro(world.transform, true);
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(world.scene);
+    }
+
+    // The board's lettering again, on the plate it has (a plate made again loses its place in the
+    // lightmap): after a label of the board was moved or reworded.
+    [MenuItem("ShaderEmu/Letter the board again in the open scene")]
+    public static void LetterBoardAgain()
+    {
+        GameObject world = GameObject.Find("ShaderEmu");
+        Canvas about = null;
+        if (world != null)
+            foreach (Canvas canvas in world.GetComponentsInChildren<Canvas>(true))
+                if (canvas.name == "About") about = canvas;
+        if (about == null) { Debug.LogError("[ShaderEmu] no board in the open scene"); return; }
+        TMP_FontAsset mono = RetroFont("IBMPlexMono-Regular"), monoBold = RetroFont("IBMPlexMono-Bold");
+        FontSheet(RetroFont("IBMPlexSansCondensed-Medium"), RetroFont("IBMPlexSansCondensed-Bold"), mono, monoBold);
+        List<Graphic> print = new List<Graphic>();
+        foreach (TextMeshProUGUI label in about.GetComponentsInChildren<TextMeshProUGUI>(true)) print.Add(label);
+        Lettering(about, "About", print, Mat("Plate About", "ShaderEmu/Plate"));
+        foreach (Graphic graphic in print) graphic.enabled = false;
+        AssetDatabase.SaveAssets();
+        EditorSceneManager.MarkSceneDirty(world.scene);
+        Debug.Log("[ShaderEmu] the board is lettered again");
     }
 
     [MenuItem("ShaderEmu/Restyle the panels in the open scene")]

@@ -3,7 +3,9 @@ Shader "ShaderEmu/Plate"
     // A panel's plate, or a keyboard's caps: a lit surface with its lettering printed on it.
     // _Index names the two glyphs nearest a place (0: none), _Glyphs is three texels a glyph (its
     // box here, its box in _Fonts, its colour and weight), _Fonts the fonts' distance fields.
-    // Where a pixel holds several of the fields' texels the lettering is _Far, its own picture.
+    // The lettering is the fields at every distance: where a pixel holds several of their texels
+    // it is asked at up to sixteen places of the pixel and the answers are averaged. (It was a
+    // picture of the lettering with its mipmaps there, _Far, which came out as blocks.)
     Properties
     {
         _MainTex ("Surface", 2D) = "white" {}
@@ -11,7 +13,7 @@ Shader "ShaderEmu/Plate"
         [NoScaleOffset] _Index ("Glyphs of each place", 2D) = "black" {}
         [NoScaleOffset] _Glyphs ("Glyphs", 2D) = "black" {}
         [NoScaleOffset] _Fonts ("Fonts' distance fields", 2D) = "black" {}
-        [NoScaleOffset] _Far ("The lettering from far off (colour times cover, cover)", 2D) = "black" {}
+        [NoScaleOffset] _Far ("(not used any more: the lettering from far off was a picture)", 2D) = "black" {}
         _Usual ("The sheet's texels across the plate, for its usual lettering", Vector) = (0, 0, 0, 0)
         _GradientScale ("The fields' gradient scale", Float) = 9
         _Glossiness ("Smoothness", Range(0, 1)) = 0.3
@@ -31,7 +33,7 @@ Shader "ShaderEmu/Plate"
         #pragma surface surf Standard fullforwardshadows
         #pragma target 4.0
 
-        sampler2D _MainTex, _Fonts, _Far, _Index, _Glyphs;   // the last two are point filtered
+        sampler2D _MainTex, _Fonts, _Index, _Glyphs;   // the last two are point filtered
         float4 _Color, _Glyphs_TexelSize, _Fonts_TexelSize, _Usual;
         float _Glossiness, _InkGlossiness, _InkMetallic, _InkGlow, _Flat, _Bold, _Cutoff, _GradientScale;
 
@@ -57,16 +59,13 @@ Shader "ShaderEmu/Plate"
             return saturate((d - 0.5 + ink.a + _Bold + 0.05 * saturate(size / 4)) * max(_GradientScale / max(size, 1e-4), 1.0) + 0.5);
         }
 
-        void surf(Input i, inout SurfaceOutputStandard o)
+        // The lettering at uv, of a place that spans `grain`: its cover, and its ink times that.
+        float4 lettering(float2 uv, float2 grain)
         {
-            float2 uv = i.uv_MainTex;
-            float4 c = tex2D(_MainTex, uv) * _Color;
-            clip(c.a - _Cutoff);
-            float2 grain = fwidth(uv);
             float4 named = tex2Dlod(_Index, float4(uv, 0, 0)) * 255.0;
             int first = (int)(named.x + 0.5) + (int)(named.y + 0.5) * 256;
             int second = (int)(named.z + 0.5) + (int)(named.w + 0.5) * 256;
-            float cover = 0, size = length(grain * _Usual.xy) * 0.7071;
+            float cover = 0, size;
             float3 ink = 0;
             if (first > 0)
             {
@@ -74,29 +73,36 @@ Shader "ShaderEmu/Plate"
                 if (second > 0)
                 {
                     float3 other;
-                    float otherSize, more = glyph_cover(second, uv, grain, other, otherSize);
+                    float more = glyph_cover(second, uv, grain, other, size);
                     if (more > cover) { cover = more; ink = other; }
                 }
             }
-            // the field's edge holds while a pixel spans less than about a third of its spread
-            // seen aslant a pixel is long one way only: the fields still serve, and their picture would be a blur
+            return float4(ink * cover, cover);
+        }
+
+        void surf(Input i, inout SurfaceOutputStandard o)
+        {
+            float2 uv = i.uv_MainTex;
+            float4 c = tex2D(_MainTex, uv) * _Color;
+            clip(c.a - _Cutoff);
+            float2 across = ddx(uv), down = ddy(uv), grain = abs(across) + abs(down);
+            // the fields' texels a pixel spans, for the plate's usual lettering: a field's edge is
+            // good for one or two of them, so beyond that the pixel is cut into n by n places
             float both = sqrt(max(grain.x * _Usual.x * grain.y * _Usual.y, 1e-12));
-            float far = saturate((both - 3.5) / 2.5);
-            cover *= 1 - far;
+            int n = both < 1.5 ? 1 : both < 3.5 ? 2 : both < 7.0 ? 3 : 4;
+            float4 sum = 0;
+            for (int a = 0; a < 4; a++)
+                for (int b = 0; b < 4; b++)
+                {
+                    if (a >= n || b >= n) continue;
+                    float2 at = (float2(a, b) + 0.5) / n - 0.5;
+                    sum += lettering(uv + across * at.x + down * at.y, grain / n);
+                }
+            sum /= n * n;
+            float cover = sum.a;
+            float3 ink = cover > 1e-4 ? sum.rgb / cover : 0;
             c.rgb = lerp(c.rgb, ink, cover);
-            float3 glow = ink * cover;
-            if (far > 0)
-            {
-                // the picture holds colour times cover as sRGB: read back as light that is a darker, yellower
-                // ink than the fields draw, and the lettering changed colour with distance. The ink itself:
-                float4 kept = tex2D(_Far, uv);
-                float3 inkFar = kept.a > 0.004 ? pow(saturate(pow(kept.rgb, 1 / 2.2) / kept.a), 2.2) : 0;
-                if (first > 0) inkFar = ink;   // the nearest glyph's own ink where there is one: the picture was taken in the room's light, and is warmer
-                float coverFar = saturate(kept.a * 1.3) * far;
-                c.rgb = lerp(c.rgb, inkFar, coverFar);
-                cover += coverFar;
-                glow += inkFar * coverFar;
-            }
+            float3 glow = sum.rgb;
             // a panel is something to read: most of it is shown as it is drawn, and a little of it takes the room's light
             o.Albedo = c.rgb * (1 - _Flat);
             o.Emission = c.rgb * _Flat + glow * _InkGlow;

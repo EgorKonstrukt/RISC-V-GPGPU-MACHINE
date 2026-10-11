@@ -43,17 +43,18 @@ const UINT kFetchSide = 256;   // the answer's texture: one word a texel, 256 KB
 // packet the guest sends, which popRow() returns after the control words; from kNetRing on is
 // the ring of kNetSlots packets for the guest, written as a zone when deliverNet() was called.
 const unsigned kNetRow = 64 + 0x76b800 / 2048, kNetSlot = 40, kNetRing = 64, kNetSlots = 8, kNetMost = 4;
-// What cores 16 and up ran (MC_STATS_MORE in src/gpu.h): 13 texels after the window, which the
-// control pass writes every frame. kNetRead texels of the row are read back: the window and those.
-const unsigned kCoreStatsAt = 40, kNetRead = 64;
-const float kCoreStatsZone[4] = {kCoreStatsAt + 6.5f, 4096 - (64 + 0x76b800 / 2048) - 0.5f, 13, 1};
+// What every core ran (MC_STATS_ALL in src/gpu.h): 72 texels after the ring, which the control
+// pass writes every frame. kNetRead texels of the row are read back: the window, the ring, those.
+const unsigned kCoreStatsAt = 0x200, kNetRead = kCoreStatsAt + 72;
+const float kCoreStatsZone[4] = {kCoreStatsAt + 36.0f, 4096 - (64 + 0x76b800 / 2048) - 0.5f, 72, 1};
 const float kNetZone[4] = {kNetRing + kNetSlot * kNetSlots / 2.0f, 4096 - kNetRow - 0.5f, (float)(kNetSlot * kNetSlots), 1};
 // Quads the Commit pass draws when its vertex shader chooses them: the state rows and 32 bands of RAM.
 const unsigned kCommitQuads = 33;
 // The machine's control words (display, GPU, input, sound: RAM from 0x87000000) as a row of the
 // state texture. popRow() returns them after the 64 texels of row 0.
 const unsigned kControlRow = 64 + 0x700000 / 2048, kControlTexels = 256;
-const int kCores = 64;   // core 0 and 63 workers: the only machine there is (docs/multicore.md)
+const int kCoresMost = 256;   // what the shader, the kernel and the library have room for
+const int kCores = 256;       // core 0 and 255 workers: the only machine there is (docs/multicore.md)
 // The display's RAM framebuffer (RAM 0x87000000, 128 texture rows), for writing the picture back.
 
 class RvcBackend {

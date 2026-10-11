@@ -700,16 +700,9 @@ static void
 workers_open(void)
 {
 	extern char __DATA_BEGIN__[], _end[];
-	const char *shape = getenv("NXPLAY_SHAPE");
-	unsigned char bits[MC_MAX_CORES];
-	int n = 0;
 
 	if (workers || workers_wanted <= 0)
 		return;
-	for (; shape && *shape && n < MC_MAX_CORES - 1; shape += strcspn(shape, ","), shape += *shape == ',')
-		bits[n++] = (unsigned char)atoi(shape);
-	if (n)
-		mcw_shape(bits, n);
 	workers = mcw_open(workers_wanted);
 	/* what starts as zeros is not there for a worker until this core has touched it */
 	if (workers)
@@ -762,7 +755,10 @@ load(const char *path)
 		tune.total = (uint32_t)mp3.count * (uint32_t)mp3.samples;
 		tune.kind = K_MP3;
 		tune.half = half_wanted > 0;
-		mp3.per_piece = piece_frames_asked > 0 ? piece_frames_asked : (tune.rate / 2 + mp3.samples - 1) / mp3.samples;
+		/* a piece is half a second; with many workers (63 make 8 s of sound in 2.5 s) a tenth,
+		 * which is heard a piece sooner for more early frames decoded */
+		workers_open();
+		mp3.per_piece = piece_frames_asked > 0 ? piece_frames_asked : workers >= 24 ? 4 : (tune.rate / 2 + mp3.samples - 1) / mp3.samples;
 		tune.piece = (uint32_t)(mp3.per_piece * mp3.samples);
 	} else {
 		return "not a WAV, MOD, FLAC or MP3 file";

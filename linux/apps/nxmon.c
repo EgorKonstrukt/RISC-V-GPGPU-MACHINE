@@ -30,7 +30,7 @@
 #define LIST_H (LIST_ROWS * UI_ROW + 4)
 #define END_W 110
 #define HEIGHT (LIST_Y + LIST_H + 34)
-#define MAX_CORES 64
+#define MAX_CORES 256
 #define MAX_PROGRAMS 48
 #define BUSIEST 3
 
@@ -81,7 +81,7 @@ static int chosen_pid, asked_pid;	/* the row selected, and the one already asked
 static const char *said = "";
 /* The cores, from the machine's control words (0x87000380): a count of instructions each, then
  * how many there are and a bit a core for running and for asleep; cores 16 and up have
- * theirs in the network's row (0x876b8280, docs/multicore.md). No words: one core. */
+ * theirs in the network's row (0x876ba000, docs/multicore.md). No words: one core. */
 static const volatile unsigned *core_words, *core_more;
 static unsigned core_count = 1, core_before[MAX_CORES], core_rate[MAX_CORES];
 static unsigned cores_working, cores_idle, cores_asleep, core_busiest;
@@ -161,10 +161,10 @@ sample_cores(long ms)
 		core_count = 16;
 	cores_working = cores_idle = cores_asleep = core_busiest = 0;
 	for (c = 1; c < core_count; c++) {
-		unsigned runs = c < 32 ? core_words[0x3c4 / 4] >> c : core_more[0x340 / 4] >> (c - 32);
-		unsigned sleeps = c < 32 ? core_words[0x3c8 / 4] >> c : core_more[0x344 / 4] >> (c - 32);
+		unsigned runs = c < 32 ? core_words[0x3c4 / 4] >> c : core_more[0x400 / 4 + 4 * (c / 32)] >> (c % 32);
+		unsigned sleeps = c < 32 ? core_words[0x3c8 / 4] >> c : core_more[0x404 / 4 + 4 * (c / 32)] >> (c % 32);
 
-		now = c < 16 ? core_words[0x380 / 4 + c] : core_more[0x280 / 4 + c - 16];
+		now = c < 16 ? core_words[0x380 / 4 + c] : core_more[c];
 		/* (a geometry laid out anew starts the counts again: one that went down is all new) */
 		core_rate[c] = (unsigned)((unsigned long long)(now < core_before[c] ? now : now - core_before[c]) * 1000 / ms);
 		core_before[c] = now;
@@ -694,7 +694,7 @@ main(void)
 
 	if (words != MAP_FAILED)
 		core_words = words;
-	words = gpu < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000 + 0x6b8000);
+	words = gpu < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000 + 0x6ba000);
 	if (words != MAP_FAILED)
 		core_more = words;
 	if (GrOpen() < 0)

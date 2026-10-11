@@ -35,6 +35,10 @@ void* seglMemorySpare(unsigned int* bytes);
 // What the host says of where the machine is shown (docs/holodeck.md): eight words the host
 // writes every frame, or 0 before seglInit. All zero: a host that says nothing.
 const volatile unsigned int* seglHostState(void);
+// Which of the world's axes is up (1 x, 2 y, 3 z; 0: not said), for a host that shows the
+// frame as a world round its visitor (docs/holodeck.md): it keeps that axis upright whatever
+// the program's camera looks at. A program whose camera looks up and down says it.
+void seglWorldUp(int axis);
 #define SEGL_HOST_KIND(s)      ((s)[0] & 15)            /* 1 the harness, 2 the world on a desktop, 3 in a headset */
 #define SEGL_HOST_HOLODECK(s)  (((s)[0] >> 4) & 1)      /* its owner sits in a holodeck's seat */
 #define SEGL_HOST_VISITORS(s)  (((s)[0] >> 8) & 255)
@@ -111,6 +115,12 @@ void seglQuad(const GLfixed* xyz, const GLfixed* uv, GLuint name, unsigned grey,
 // (texels, for one 1,024 wide). The colour is 0xTTRRGGBB, T being transparency; it tints an
 // 8-bit or RGBA texture and is what a SEGL_BITS texture draws.
 void seglSprite(const GLfixed* box, const int* texels, GLuint name, unsigned colour, int keyed);
+// Many sprites of one texture at once: the program writes them at seglSpriteSpace() (`room` of
+// them fit), 16 words each: four corners of x, y, 0 and texels (u | v << 16), x and y being
+// seglNumber() of a corner; seglSpritesUsed() then draws so many as seglSprite would have.
+unsigned int* seglSpriteSpace(GLsizei* room);
+unsigned int seglNumber(GLfixed value);
+void seglSpritesUsed(GLsizei quads, GLuint name, unsigned colour, int keyed);
 // The command and the four vertices the last seglQuad or seglSprite wrote, and the address a
 // command holds for memory from seglMemory(): for changing a list that is drawn again.
 unsigned int* seglLastCommand(void);

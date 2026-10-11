@@ -10,6 +10,7 @@
  * to the same 16. The scene is only read.
  */
 #include "tracer.h"
+#include "mcw.h"
 
 struct pt_scene pt;
 
@@ -31,8 +32,9 @@ static inline struct vec unit(struct vec a) { return scale(a, 1.0f / __builtin_s
 #define LAMP_Z0 0.35f
 #define LAMP_Z1 0.65f
 static const struct vec white = {0.75f, 0.75f, 0.75f}, red = {0.70f, 0.12f, 0.10f}, green = {0.14f, 0.55f, 0.16f};
-/* two balls and a block */
-static const struct { struct vec centre; float radius; } balls[2] = {{{0.30f, 0.18f, 0.62f}, 0.18f}, {{0.72f, 0.14f, 0.35f}, 0.14f}};
+/* two balls and a block; beside a model there is one ball, in the near corner */
+static const struct { struct vec centre; float radius; } balls[3] = {{{0.30f, 0.18f, 0.62f}, 0.18f}, {{0.72f, 0.14f, 0.35f}, 0.14f},
+                                                                    {{0.14f, 0.10f, 0.16f}, 0.10f}};
 static const struct vec block_low = {0.55f, 0.0f, 0.60f}, block_high = {0.82f, 0.50f, 0.86f};
 
 static inline uint32_t
@@ -75,11 +77,153 @@ wall(float t, struct vec normal, struct vec colour, struct hit *h)
 	}
 }
 
+static inline struct vec cross(struct vec a, struct vec b) { return v(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+static inline struct vec of(const float *p) { return v(p[0], p[1], p[2]); }
+
+/* Where a ray is inside a box, if it is before `far`: the distance it comes in at (0 from inside). */
+static inline int
+box_met(const struct pt_node *node, struct vec from, struct vec over, float far, float *at)
+{
+	float a = (node->low[0] - from.x) * over.x, b = (node->high[0] - from.x) * over.x, low, high, t;
+
+	low = a < b ? a : b, high = a < b ? b : a;
+	a = (node->low[1] - from.y) * over.y, b = (node->high[1] - from.y) * over.y;
+	t = a < b ? a : b; if (t > low) low = t;
+	t = a < b ? b : a; if (t < high) high = t;
+	a = (node->low[2] - from.z) * over.z, b = (node->high[2] - from.z) * over.z;
+	t = a < b ? a : b; if (t > low) low = t;
+	t = a < b ? b : a; if (t < high) high = t;
+	*at = low;
+	return high >= low && high > 0.0f && low < far;
+}
+
+/* One over a ray's direction, for the boxes; a ray along an axis is given a very steep one. */
+static inline struct vec
+over_way(struct vec way)
+{
+	return v(1.0f / (way.x > -1e-9f && way.x < 1e-9f ? 1e-9f : way.x), 1.0f / (way.y > -1e-9f && way.y < 1e-9f ? 1e-9f : way.y),
+	         1.0f / (way.z > -1e-9f && way.z < 1e-9f ? 1e-9f : way.z));
+}
+
+/* A ray and a triangle (Moeller and Trumbore's test): how far, and where in it. */
+static inline int
+triangle_met(const struct pt_triangle *tri, struct vec from, struct vec way, float *t, float *u, float *w)
+{
+	struct vec e1 = of(tri->edge1), e2 = of(tri->edge2), p = cross(way, e2), s, q;
+	float det = dot(e1, p), inv;
+
+	if (det > -1e-12f && det < 1e-12f)
+		return 0;
+	inv = 1.0f / det;
+	s = sub(from, of(tri->corner));
+	*u = dot(s, p) * inv;
+	if (*u < 0.0f || *u > 1.0f)
+		return 0;
+	q = cross(s, e1);
+	*w = dot(way, q) * inv;
+	if (*w < 0.0f || *u + *w > 1.0f)
+		return 0;
+	*t = dot(e2, q) * inv;
+	return 1;
+}
+
+/* The nearest triangle of a model a ray meets nearer than h has: down the tree of boxes, the
+ * nearer of two first, so that the farther is mostly not looked into. */
+static void
+mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, struct hit *h)
+{
+	uint32_t stack[64], at = 0;
+	int held = 0;
+	struct vec over = over_way(way);
+	const struct pt_triangle *found = 0;
+	float fu = 0.0f, fw = 0.0f, enter;
+
+	if (!box_met(&mesh->nodes[0], from, over, h->t, &enter))
+		return;
+	for (;;) {
+		const struct pt_node *node = &mesh->nodes[at];
+
+		if (node->b) {
+			const struct pt_triangle *tri = mesh->triangles + node->a, *end = tri + node->b;
+
+			for (; tri < end; tri++) {
+				float t, u, w;
+
+				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < h->t)
+					h->t = t, found = tri, fu = u, fw = w;
+			}
+		} else {
+			float t0, t1;
+			int in0 = box_met(&mesh->nodes[node->a], from, over, h->t, &t0), in1 = box_met(&mesh->nodes[node->a + 1], from, over, h->t, &t1);
+
+			if (in0 && in1) {
+				stack[held++] = t0 <= t1 ? node->a + 1 : node->a;
+				at = t0 <= t1 ? node->a : node->a + 1;
+				continue;
+			}
+			if (in0 || in1) {
+				at = in0 ? node->a : node->a + 1;
+				continue;
+			}
+		}
+		/* (a box put by may be behind what was found since: it is looked at again as it is taken) */
+		do {
+			if (!held)
+				goto done;
+			at = stack[--held];
+		} while (!box_met(&mesh->nodes[at], from, over, h->t, &enter));
+	}
+done:
+	if (found) {
+		float k = 1.0f - fu - fw;
+
+		h->normal = unit(add(add(scale(of(found->normal[0]), k), scale(of(found->normal[1]), fu)), scale(of(found->normal[2]), fw)));
+		h->colour = of(mesh->colour);
+		h->material = pt.material[0];
+		h->glow = 0.0f;
+		/* (seen from behind, as the inside of a spout is: matt and mirror have one side) */
+		if (h->material != PT_GLASS && dot(h->normal, way) > 0.0f)
+			h->normal = scale(h->normal, -1.0f);
+	}
+}
+
+/* Whether any triangle of a model is in a ray's way before `far`. */
+static int
+mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float far)
+{
+	uint32_t stack[64], at = 0;
+	int held = 0;
+	struct vec over = over_way(way);
+	float enter;
+
+	stack[held++] = 0;
+	while (held) {
+		const struct pt_node *node = &mesh->nodes[at = stack[--held]];
+
+		if (!box_met(node, from, over, far, &enter))
+			continue;
+		if (node->b) {
+			const struct pt_triangle *tri = mesh->triangles + node->a, *end = tri + node->b;
+
+			for (; tri < end; tri++) {
+				float t, u, w;
+
+				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < far)
+					return 1;
+			}
+		} else {
+			stack[held++] = node->a;
+			stack[held++] = node->a + 1;
+		}
+	}
+	return 0;
+}
+
 /* The nearest thing a ray meets; false for the open side. */
 static int
 nearest(struct vec from, struct vec way, struct hit *h)
 {
-	int i, axis;
+	int i, axis, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2;
 	float low = -1e30f, high = 1e30f;
 	struct vec low_normal = v(0, 0, 0);
 
@@ -100,7 +244,7 @@ nearest(struct vec from, struct vec way, struct hit *h)
 		if (x > LAMP_X0 && x < LAMP_X1 && z > LAMP_Z0 && z < LAMP_Z1)
 			h->glow = pt.light;
 	}
-	for (i = 0; i < 2; i++) {
+	for (i = first; i < last; i++) {
 		struct vec to = sub(balls[i].centre, from);
 		float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
 
@@ -113,10 +257,15 @@ nearest(struct vec from, struct vec way, struct hit *h)
 				h->t = t;
 				h->normal = scale(sub(add(from, scale(way, t)), balls[i].centre), 1.0f / balls[i].radius);
 				h->colour = v(0.92f, 0.92f, 0.92f);
-				h->material = pt.material[i];
+				h->material = pt.material[i == 2 ? 1 : i];
 				h->glow = 0.0f;
 			}
 		}
+	}
+	if (pt.scene) {
+		/* a model in the block's place */
+		mesh_nearest(&pt_meshes[pt.scene - 1], from, way, h);
+		return h->t < 1e29f;
 	}
 	/* the block: where the ray is inside all three pairs of its sides */
 	for (axis = 0; axis < 3; axis++) {
@@ -156,16 +305,18 @@ nearest(struct vec from, struct vec way, struct hit *h)
 static int
 shadowed(struct vec from, struct vec way, float far)
 {
-	int i, axis;
+	int i, axis, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2;
 	float low = 0.0005f, high = far;
 
-	for (i = 0; i < 2; i++) {
+	for (i = first; i < last; i++) {
 		struct vec to = sub(balls[i].centre, from);
 		float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
 
-		if (pt.material[i] != PT_GLASS && along > 0.0f && off2 < r2 && along - __builtin_sqrtf(r2 - off2) < far && along > 0.001f)
+		if (pt.material[i == 2 ? 1 : i] != PT_GLASS && along > 0.0f && off2 < r2 && along - __builtin_sqrtf(r2 - off2) < far && along > 0.001f)
 			return 1;
 	}
+	if (pt.scene)
+		return pt.material[0] != PT_GLASS && mesh_between(&pt_meshes[pt.scene - 1], from, way, far);
 	for (axis = 0; axis < 3; axis++) {
 		float o = axis == 0 ? from.x : axis == 1 ? from.y : from.z, d = axis == 0 ? way.x : axis == 1 ? way.y : way.z;
 		float a = axis == 0 ? block_low.x : axis == 1 ? block_low.y : block_low.z;
@@ -284,8 +435,9 @@ uint32_t
 pt_tile(uint32_t tile, uint32_t how)
 {
 	uint32_t sample = how & 0xffffff, core = how >> 24, rays = 0;
-	int across = (pt.width + PT_TILE - 1) / PT_TILE, x0 = (int)(tile % (uint32_t)across) * PT_TILE, y0 = (int)(tile / (uint32_t)across) * PT_TILE;
-	int x1 = x0 + PT_TILE < pt.width ? x0 + PT_TILE : pt.width, y1 = y0 + PT_TILE < pt.height ? y0 + PT_TILE : pt.height, x, y;
+	int tw = pt.tile_w, th = pt.tile_h;
+	int across = (pt.width + tw - 1) / tw, x0 = (int)(tile % (uint32_t)across) * tw, y0 = (int)(tile / (uint32_t)across) * th;
+	int x1 = x0 + tw < pt.width ? x0 + tw : pt.width, y1 = y0 + th < pt.height ? y0 + th : pt.height, x, y;
 	float half_w = (float)pt.width * 0.5f, half_h = (float)pt.height * 0.5f, zoom = 0.5f / half_h, samples = (float)(sample + 1);
 	const struct vec eye = v(0.5f, 0.5f, -1.35f);
 
@@ -298,6 +450,15 @@ pt_tile(uint32_t tile, uint32_t how)
 			float sx, sy;
 			struct vec c;
 
+			if (pt.depth) {
+				/* (through the pixel's middle, and no light: what the tree of boxes finds) */
+				struct hit h;
+				struct vec way = unit(v(((float)x + 0.5f - half_w) * zoom, (half_h - (float)y - 0.5f) * zoom, 1.35f));
+
+				rays++;
+				*out++ = nearest(eye, way, &h) ? (uint32_t)(h.t * 4000000.0f) & 0xffffff : 0;
+				continue;
+			}
 			next(&state);
 			/* through a point of the pixel, not always its middle: edges come out smooth */
 			sx = ((float)x + chance(&state) - half_w) * zoom;
@@ -319,4 +480,29 @@ pt_tile(uint32_t tile, uint32_t how)
 		}
 	}
 	return rays;
+}
+
+/* A worker's share of the picture (tracer.h): it is never without work while the picture is
+ * traced. Handed a tile at a time, a worker waited some passes for its next. */
+uint32_t
+pt_share(uint32_t which, uint32_t how)
+{
+	uint32_t k = how >> 24, limit = how & 0xffffff, n = which >> 16, w = which & 0xffff, tiles = (uint32_t)pt.tiles, did = 0;
+	struct pt_slot *slot = &pt.slots[k];
+	uint32_t sample;
+
+	for (sample = slot->samples; sample < (uint32_t)pt.samples && !pt.stop; sample++) {
+		uint32_t j, at = w * pt.stride % tiles, rays = 0;
+
+		for (j = w; j < tiles; j += n) {
+			rays += pt_tile(at, sample | k << 24);
+			if ((at += pt.step) >= tiles)
+				at -= tiles;
+		}
+		slot->rays += rays;
+		slot->samples = sample + 1;
+		if (++did == limit || mcw_recalled((int)k))
+			break;
+	}
+	return did;
 }

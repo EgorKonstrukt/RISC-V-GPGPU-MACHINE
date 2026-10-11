@@ -1,8 +1,9 @@
 # Puts the shader packages the room uses into the Unity project:
 #   python world/install_packages.py C:/Development/VRChat/ShaderEmu
 # LTCGI (pimaker: the screens light the room), VRC Light Volumes (RED_SIM: baked light for what
-# moves) and Mochie's shaders (its Standard takes both, its Glass has rain). Downloads are kept
-# in build/packages.
+# moves), Mochie's shaders (its Standard takes both) and Silent's Fake Glass (the window's pane
+# and its rain, from the room's reflection probes and no grab of the screen). Downloads are
+# kept in build/packages.
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "..", "build", "packages")
 LTCGI = ("at.pimaker.ltcgi", "1.7.3", "https://vpm.pimaker.at/downloads/at.pimaker.ltcgi_1.7.3.zip")
 VOLUMES = ("red.sim.lightvolumes", "2.1.3", "https://github.com/REDSIM/VRCLightVolumes/releases/download/v.2.1.3/VRCLightVolumes_v.2.1.3.zip")
+FAKE_GLASS = "https://gitlab.com/s-ilent/fake-glass/-/archive/master/fake-glass-master.zip"
 MOCHIE = "https://github.com/MochiesCode/Mochies-Unity-Shaders/releases/download/v1.77.1/Mochies.Unity.Shaders.v1.77.1.Free.unitypackage"
 
 
@@ -68,6 +70,22 @@ def unity_package(project, url, skip=("Assets/csc.rsp",)):
     print("installed Mochie's shaders:", count, "files")
 
 
+def fake_glass(project):
+    """Its Shader folder, metas and all, as its README says to place it."""
+    target = os.path.join(project, "Assets", "Silent", "FakeGlass", "Shader")
+    count = 0
+    with zipfile.ZipFile(get(FAKE_GLASS, "fake-glass.zip")) as archive:
+        for name in archive.namelist():
+            inside = name.split("/", 1)[1] if "/" in name else ""
+            if not inside.startswith("Shader/") or name.endswith("/"):
+                continue
+            path = os.path.join(target, inside[len("Shader/"):])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "wb").write(archive.read(name))
+            count += 1
+    print("installed Fake Glass:", count, "files")
+
+
 def main():
     project = sys.argv[1]
     vpm(project, LTCGI)
@@ -86,6 +104,7 @@ def main():
         manifest["dependencies"]["com.unity.editorcoroutines"] = "1.0.0"
         json.dump(manifest, open(listing, "w", encoding="utf-8"), indent=2)
     unity_package(project, MOCHIE)
+    fake_glass(project)
 
 
 if __name__ == "__main__":

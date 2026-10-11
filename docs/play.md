@@ -51,6 +51,12 @@ A step of 0 holds the voice (pause, and while more is decoded).
   frames, and any core can decode any piece: it starts 12 frames early, gives the first ten
   for their bits only and decodes two for the filters' memory, after which its samples are
   those of a decoder that began at the file's start. That costs 5% over decoding in order.
+- With 24 workers or more (it asks for all 63, and has its share of them) a piece is 4
+  frames, not 20: 63 workers make
+  8 s of the test file's sound in 2.5 s, so 44.1 kHz stereo plays at its full rate with no
+  gap, heard 3.2 s after the file is opened (the kernel's fifteen workers made 0.6 s of
+  sound a second: decoded ahead, heard after 4.2 s, and run dry once). What sets the time
+  to the first sound is how long one piece takes a worker, not how many there are.
 - The player asks for every worker that is free (`mcw_open(MC_MAX_CORES - 1)`) when an MP3 file is opened
   and gives them back with the tune. A job is one piece (`mp3_job`): its decoder is on the
   worker's stack, its samples go into the piece's own pages, and it says how far it is in 16
@@ -73,7 +79,6 @@ A step of 0 holds the voice (pause, and while more is decoded).
 | `NXPLAY_WORKERS=N` | asks for N workers (all that are free); 0: this core alone |
 | `NXPLAY_SUM=1` | prints a sum of every sample in the order played (FNV-1a, a 16-bit sample at a time) |
 | `NXPLAY_HALF=1`, `0` | an MP3 file at half rate from the start, or never |
-| `NXPLAY_SHAPE=6,6,...` | lays the workers out first (`mcw_shape`) |
 | `NXPLAY_PIECE=N` | MP3 frames a piece (20) |
 | `NXPLAY_MODRATE=N` | the rate a tracker tune is mixed at (22050) |
 | `NXPLAY_MEMORY=N` | megabytes of decoded sound it may keep |

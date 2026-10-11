@@ -6,8 +6,9 @@ using VRC.Udon.Common;
 
 // The game controllers (docs/gamepad.md): one behaviour a client. A visitor takes one only while
 // they sit in a holodeck's seat; then their sticks, triggers and grips are the guest's keys and
-// pointer, and the seat keeps them until the controller is put back. Which one they hold is in
-// their own EmuShare, so everybody sees it in their hand (EmuHolodeck places the model).
+// pointer, and the seat keeps them until the controller is put back. There is no model of it:
+// which one they hold is in their own EmuShare, the stand's line says it to everybody, and a
+// notice over their hand says it to them.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuGamepad : UdonSharpBehaviour
 {
@@ -71,8 +72,7 @@ public class EmuGamepad : UdonSharpBehaviour
         if (held != 0) ReleaseAll();
         held = which;
         seat = inSeat;
-        // the left stick is the game's now: it must not stand the sitter up
-        seat.disableStationExit = true;
+        // (the sticks are the game's now: the seat keeps its sitter, EmuHolodeck sees to that)
         pointer.away = true;
         px = machine.OwnWidth() * 0.5f;
         py = machine.OwnHeight() * 0.5f;
@@ -88,7 +88,6 @@ public class EmuGamepad : UdonSharpBehaviour
         ReleaseAll();
         machine.SetPointerButtons(0);
         pointer.away = false;
-        if (seat != null) seat.disableStationExit = false;
         seat = null;
         bothGrips = -1f;
         if (notice != null) notice.gameObject.SetActive(false);

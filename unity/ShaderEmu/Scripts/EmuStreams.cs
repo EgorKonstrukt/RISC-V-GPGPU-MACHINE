@@ -114,8 +114,14 @@ public class EmuStreams : UdonSharpBehaviour
     public int CursorX(int slot) { return cursorX[slot]; }
     public int CursorY(int slot) { return cursorY[slot]; }
     public int Version(int slot) { return version[slot]; }   // counted up with every packet taken
-    public int MipsAll(int slot) { return mipsAll[slot]; }   // tenths of a million instructions a second
-    public int MipsCore(int slot) { return mipsCore[slot]; }
+    public float MipsAll(int slot) { return Speed(mipsAll[slot]); }   // tenths of a million instructions a second
+    public float MipsCore(int slot) { return Speed(mipsCore[slot]); }
+    // (as EmuShareHub.PackSpeed sent it: four digits, and from bit 14 how many come after the point)
+    private float Speed(int packed)
+    {
+        int after = packed >> 14;
+        return (packed & 0x3fff) * (after == 3 ? 0.01f : after == 2 ? 0.1f : after == 1 ? 1f : 10f);
+    }
     public int Gaps() { return gaps; }
     public int Packets() { return packets; }
 

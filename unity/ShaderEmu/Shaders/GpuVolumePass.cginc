@@ -52,10 +52,12 @@ void geom(point volume_point i[1], inout TriangleStream<volume_out> stream) {
     // sits there faces the way the camera faces and the floor stays the floor.
     float3 rx, ry, rz, move;
     bool placed = volume_view(rx, ry, rz, move);
-    // which of the program's axes is up (0: x, 1: y, 2: z): the one the camera's own up is
-    // nearest to and its right is square to (a camera does not roll)
+    // which of the program's axes is up (0: x, 1: y, 2: z): the one the program names; or,
+    // of one that names none, the one the camera's own up is nearest to and its right is
+    // square to (a camera does not roll), which is wrong once it looks more down than ahead
     float3 upright = ry - 2.0 * abs(rx);
-    int up = upright.z > max(upright.x, upright.y) ? 2 : upright.y >= upright.x ? 1 : 0;
+    uint said = volume_up();
+    int up = said >= 1 && said <= 3 ? (int)said - 1 : upright.z > max(upright.x, upright.y) ? 2 : upright.y >= upright.x ? 1 : 0;
     // the camera's right, level in the room: its turn about the room's up
     float3 right = up == 1 ? float3(rx.x, rx.y, -rx.z) : up == 2 ? float3(rx.x, rx.z, rx.y) : float3(rx.y, rx.x, rx.z);
     float2 level = length(right.xz) > 1e-4 ? normalize(right.xz) : float2(1, 0);

@@ -4,8 +4,10 @@
 // and hands a tile to each core that has none.
 //
 // For tests: NXPATH_AUTO=1 presses Render at the start, NXPATH_EXIT=1 leaves when the picture
-// is done, NXPATH_SAMPLES, NXPATH_BOUNCES, NXPATH_SIZE=WxH and NXPATH_CORES=N (0 to 3: which
-// of the panel's layouts of the cores) set the panel. Every picture's line (pathstat:) has its
+// is done, NXPATH_SAMPLES, NXPATH_BOUNCES, NXPATH_SIZE=WxH, NXPATH_CORES=N (0 to 3: which
+// of the panel's layouts of the cores), NXPATH_SCENE=N (0: the balls; from 1, a model) and
+// NXPATH_FIRST=N (the first thing's material, 0 to 2) set the panel. NXPATH_PRINT=1 prints the
+// picture, and with NXPATH_DEPTH=1 it is of distances (tools/pathtrace_reference.py). Every picture's line (pathstat:) has its
 // time, its rays and a sum of its pixels, which is the same whichever cores traced it.
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,35 +39,30 @@ static void pass()
     __asm__ volatile(".word 0x0100000f");   // pause: the machine's pass ends
 }
 
-// The layouts of the cores the panel offers (the machine's geometry: docs/multicore.md).
-// As many workers of each as this machine has room for: 15, 15 and 7 with 16 cores, 63, 63 and 27 with 64.
+// How many of the machine's worker cores the panel offers to trace with: all, half, a quarter,
+// none. They are this program's share (docs/multicore.md): with another program at work on
+// them too it has fewer, which the line under the picture says.
 static char layout_names[4][40] = {"", "", "", "this core alone"};
-static const char* const layout_notes[] = {"0.75 KB of stores a pass each", "1.5 KB each", "6 KB each, as a program's workers are", "no worker cores"};
-static unsigned char layouts[3][64];
+static int layout_workers[4];
 static void make_layouts()
 {
-    static const int bits[3] = {3, 4, 6};
-    static const char* const what[3] = {"of the smallest", "small", "large"};
+    static const char* const what[3] = {"every worker core", "half of them", "a quarter"};
     for (int i = 0; i < 3; i++) {
-        int n = mcw_fit(bits[i]);
-        for (int k = 0; k < n; k++) layouts[i][k] = (unsigned char)bits[i];
-        snprintf(layout_names[i], sizeof layout_names[i], "%d %s", n, what[i]);
+        layout_workers[i] = mcw_most() >> i;
+        snprintf(layout_names[i], sizeof layout_names[i], "%s (%d)", what[i], layout_workers[i]);
     }
 }
 static int workers = 0, layout_set = -1;
 
-// The workers given back, the cores laid out, and as many taken as there are.
+// The workers given back, and as many taken as the choice says.
 static void take_workers(int layout)
 {
     if (layout == layout_set) return;
     mcw_close();
     workers = 0;
     layout_set = layout;
-    if (layout >= 3) return;
-    int n = 0;
-    while (n < 63 && layouts[layout][n]) n++;
-    mcw_shape(layouts[layout], n);   // (a machine that cannot be laid out keeps the cores it has)
-    workers = mcw_open(n);
+    if (layout >= 3 || layout_workers[layout] <= 0) return;
+    workers = mcw_open(layout_workers[layout]);
     if (workers) mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 }
 
@@ -108,48 +105,75 @@ int main()
     static const int sizes[SIZES][2] = {{160, 120}, {240, 180}, {320, 240}, {400, 300}, {480, 360}, {640, 480}};
     static const char* const size_names[] = {"160 x 120", "240 x 180", "320 x 240", "400 x 300", "480 x 360", "640 x 480"};
     static const char* const materials[] = {"matt", "mirror", "glass"};
-    int size = 0, samples = 16, bounces = 5, layout = 0, ball[2] = {PT_MIRROR, PT_GLASS};
+    int size = 0, samples = 16, bounces = 5, layout = 0, ball[2] = {PT_MIRROR, PT_GLASS}, scene = 0;
+    // what stands in the box: the two balls and the block, or a model of triangles (tracer.h)
+    static const char* scene_names[8] = {"two balls and a block"};
+    for (int i = 0; i < pt_mesh_count && i < 7; i++) scene_names[i + 1] = pt_meshes[i].name;
     float light = 12.0f;
     bool owners = false, leave_when_done = getenv("NXPATH_EXIT") != nullptr, press = getenv("NXPATH_AUTO") != nullptr;
     const char* text;
     if ((text = getenv("NXPATH_SAMPLES")) != nullptr) samples = atoi(text);
     if ((text = getenv("NXPATH_BOUNCES")) != nullptr) bounces = atoi(text);
     if ((text = getenv("NXPATH_CORES")) != nullptr) layout = atoi(text) & 3;
+    if ((text = getenv("NXPATH_SCENE")) != nullptr && atoi(text) >= 0 && atoi(text) <= pt_mesh_count) scene = atoi(text);
+    if ((text = getenv("NXPATH_FIRST")) != nullptr) ball[0] = atoi(text) % 3;
     if ((text = getenv("NXPATH_SIZE")) != nullptr)
         for (int i = 0; i < SIZES; i++)
             if (atoi(text) == sizes[i][0]) size = i;
 
     // the picture being traced
     bool tracing = false, drawn_once = false;
-    int tiles = 0, sample = 0, next = 0, out = 0, busy[64], pictures = 0, shown_w = 160, shown_h = 120, of_samples = 0;
+    int tiles = 0, sample = 0, next = 0, out = 0, pictures = 0, shown_w = 160, shown_h = 120, of_samples = 0, have = 0;
+    static uint8_t busy[MC_MAX_CORES];
     unsigned began = 0, took = 0, rays = 0, drew = 0;
-    for (int k = 0; k < 64; k++) busy[k] = -1;
+    bool stopping = false;
     make_layouts();
+    pt.slots = (struct pt_slot*)mcw_alloc(MC_MAX_CORES * sizeof(struct pt_slot));
 
     for (;;) {
-        // ---- the tiles: every core that has none gets the next ----
+        // ---- the shares: every worker has all of its own at once, and is asked how far it is ----
         bool idle = true;
         if (tracing) {
             if (workers == 0 && next < tiles) {
-                rays += pt_tile((uint32_t)next++, (uint32_t)sample);   // this core alone: a tile, then the panel
+                // this core alone: a tile, then the panel
+                rays += pt_tile((uint32_t)next++ * pt.stride % (uint32_t)tiles, (uint32_t)sample);
+                have++;
                 idle = false;
             }
-            for (int k = 1; k <= workers; k++) {
-                if (busy[k] >= 0 && mcw_done(k)) {
-                    rays += mcw_result(k);
-                    busy[k] = -1;
-                    out--;
+            if (workers) {
+                unsigned all = 0;
+                int least = of_samples, done = 0;
+                for (int k = 1; k <= workers; k++) {
+                    if (busy[k] && mcw_done(k)) {
+                        busy[k] = 0;
+                        out--;
+                    }
+                    int at = (int)pt.slots[k].samples;
+                    if (!busy[k] && at < of_samples && !stopping) {
+                        // (its core was wanted elsewhere, or it has none and this one works for it: the rest, again)
+                        busy[k] = 1;
+                        out++;
+                        mcw_post(k, pt_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k << 24 | (mcw_bound(k) ? 0u : 1u));
+                        idle = false;
+                    }
+                    all += pt.slots[k].rays;
+                    done += at;
+                    if (at < least) least = at;
                 }
-                if (busy[k] < 0 && next < tiles) {
-                    busy[k] = next;
-                    mcw_post(k, pt_tile, (uint32_t)next++, (uint32_t)sample | (uint32_t)k << 24);
-                    out++;
-                    idle = false;
-                }
+                rays = all;
+                sample = least;
+                have = done;
+                if (out == 0 && (least >= of_samples || stopping)) next = tiles;
             }
             if (next >= tiles && out == 0) {
                 // a sample of every pixel is in: the next, or the picture is done
                 took = now_ms() - began;
+                if (workers) {
+                    // (given up: as many samples as every share has; the tiles of some have more)
+                    if (stopping) of_samples = sample > 0 ? sample : 1;
+                    sample = of_samples - 1;
+                }
+                stopping = false;
                 if (++sample >= of_samples) {
                     unsigned sum = 0;
                     for (int i = 0; i < pt.width * pt.height; i++) sum = sum * 31 + pt.pixels[i];
@@ -157,6 +181,14 @@ int main()
                     fprintf(stderr, "pathstat: picture %d, %d x %d, %d samples, %d turns: %u ms with %d workers (%s), %u rays, %u thousand rays a second, sum %08x\n",
                             pictures++, pt.width, pt.height, of_samples, pt.bounces, took, workers, layout_names[layout_set < 0 ? 3 : layout_set], rays,
                             took ? rays / took : 0, sum);
+                    if (getenv("NXPATH_PRINT")) {
+                        // (for a test: the picture on the console, a row a line, six hex digits a pixel)
+                        for (int y = 0; y < pt.height; y++) {
+                            fprintf(stderr, "pathrow %d ", y);
+                            for (int x = 0; x < pt.width; x++) fprintf(stderr, "%06x", (unsigned)(pt.pixels[y * pt.width + x] & 0xffffff));
+                            fprintf(stderr, "\n");
+                        }
+                    }
                     if (leave_when_done) break;
                 } else {
                     next = 0;
@@ -177,31 +209,29 @@ int main()
         ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(270, 500), ImGuiCond_FirstUseEver);
         ImGui::Begin("Path tracer");
-        ImGui::TextWrapped("A Cornell box, traced by every worker core of the machine.");
+        ImGui::TextWrapped("A Cornell box and what stands in it, traced by every worker core of the machine.");
         ImGui::Separator();
         ImGui::BeginDisabled(tracing);
         ImGui::Combo("picture", &size, size_names, SIZES);
         ImGui::SliderInt("samples", &samples, 1, 256, "%d a pixel", ImGuiSliderFlags_Logarithmic);
         ImGui::SliderInt("turns", &bounces, 1, 8, "%d of a path");
         ImGui::SliderFloat("lamp", &light, 2.0f, 30.0f, "%.0f");
-        ImGui::Combo("left ball", &ball[0], materials, 3);
-        ImGui::Combo("right ball", &ball[1], materials, 3);
+        ImGui::Combo("in the box", &scene, scene_names, pt_mesh_count + 1);
+        if (scene) ImGui::Text("%d triangles, %d boxes", pt_meshes[scene - 1].triangle_count, pt_meshes[scene - 1].node_count);
+        ImGui::Combo(scene ? "the model" : "left ball", &ball[0], materials, 3);
+        ImGui::Combo(scene ? "its ball" : "right ball", &ball[1], materials, 3);
         ImGui::Checkbox("show which core traced what", &owners);
         ImGui::Separator();
         ImGui::TextUnformatted("The cores:");
-        for (int i = 0; i < 4; i++) {
-            ImGui::RadioButton(layout_names[i], &layout, i);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", layout_notes[i]);
-        }
-        ImGui::TextDisabled("%s", layout_notes[layout]);
+        for (int i = 0; i < 4; i++) ImGui::RadioButton(layout_names[i], &layout, i);
         ImGui::EndDisabled();
         ImGui::Separator();
         bool render = ImGui::Button(tracing ? "Tracing..." : "Render", ImVec2(120, 28)) && !tracing;
         ImGui::SameLine();
         bool stop = ImGui::Button("Stop", ImVec2(60, 28)) && tracing;
         if (tracing || pictures) {
-            int all = tiles * (of_samples > 0 ? of_samples : 1), have = tracing ? sample * tiles + next - out : all;
-            ImGui::ProgressBar(all ? (float)have / (float)all : 0.0f, ImVec2(-1, 0));
+            int all = (workers ? workers : tiles) * (of_samples > 0 ? of_samples : 1);
+            ImGui::ProgressBar(all && tracing ? (float)have / (float)all : 1.0f, ImVec2(-1, 0));
             unsigned ms = tracing ? now - began : took;
             ImGui::Text("%d of %d samples, %u.%u s", tracing ? sample : of_samples, of_samples, ms / 1000, ms % 1000 / 100);
             ImGui::Text("%u,%03u rays, %u thousand a second", rays / 1000, rays % 1000, ms ? rays / ms : 0);
@@ -230,18 +260,10 @@ int main()
         if (quit) break;
 
         if (stop) {
-            // the tiles still out are waited for (their cores must be free), and that is the picture
-            for (int k = 1; k <= workers; k++)
-                if (busy[k] >= 0) {
-                    mcw_wait(k);
-                    rays += mcw_result(k);
-                    busy[k] = -1;
-                }
-            out = 0;
-            took = now_ms() - began;
-            of_samples = sample > 0 ? sample : 1;
-            tracing = false;
-            pictures++;
+            // the shares end with the samples they are at (their cores must be free), and that is the picture
+            pt.stop = 1;
+            stopping = true;
+            if (workers == 0) next = tiles, of_samples = sample + 1;
         }
         if (render || press) {
             press = false;
@@ -251,21 +273,38 @@ int main()
             pt.bounces = bounces;
             pt.material[0] = ball[0];
             pt.material[1] = ball[1];
+            pt.scene = scene;
+            pt.depth = getenv("NXPATH_DEPTH") != nullptr;
             pt.owners = owners;
             pt.light = light;
             pt.seed = 0x9e3779b9u;
             glBindTexture(GL_TEXTURE_2D, texture);
             seglTexturePointer(pt.pixels, pt.width, pt.height, GL_RGBA);
             memset(pt.pixels, 0, (size_t)(pt.width * pt.height * 4));
-            pt.tile = ((pt.width + 31) / 32) * ((pt.height + 31) / 32) >= 4 * workers ? 32 : 16;
-            tiles = ((pt.width + PT_TILE - 1) / PT_TILE) * ((pt.height + PT_TILE - 1) / PT_TILE);
-            of_samples = samples;
-            sample = next = out = 0;
+            int s = 32;
+            while (s > 1 && ((pt.width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((pt.height + s - 1) / s) < 24 * workers) s >>= 1;   // (this core alone: 32)
+            pt.tile_h = s;
+            pt.tile_w = s < 8 ? 8 : s;
+            pt.tiles = tiles = ((pt.width + pt.tile_w - 1) / pt.tile_w) * ((pt.height + pt.tile_h - 1) / pt.tile_h);
+            // a stride with no factor in common with the number of tiles visits every one of them
+            for (pt.stride = (uint32_t)tiles * 5 / 8 + 1;; pt.stride++) {
+                uint32_t a = pt.stride, b = (uint32_t)tiles;
+                while (b) { uint32_t r = a % b; a = b; b = r; }
+                if (a == 1) break;
+            }
+            pt.step = (uint32_t)(workers ? workers : 1) * pt.stride % (uint32_t)tiles;
+            pt.samples = of_samples = samples;
+            pt.stop = 0;
+            stopping = false;
+            memset(pt.slots, 0, MC_MAX_CORES * sizeof(struct pt_slot));
+            memset(busy, 0, sizeof busy);
+            sample = next = out = have = 0;
             rays = 0;
             began = now_ms();
             tracing = true;
         }
     }
+    pt.stop = 1;   // (the shares end with the samples they are at: the workers are waited for)
     fprintf(stderr, "nxpath: done\n");
     GrClose();
     return 0;

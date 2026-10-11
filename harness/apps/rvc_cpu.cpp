@@ -48,6 +48,7 @@ static inline void dirty(u32 phys) { dirty_bands |= 1u << (((phys - RAM_BASE) >>
 
 struct Options {
     std::string image = "build/images/linux", uartLog, until;
+    std::string pcLog, pcFrom;   // --pc-log: core 0's pc and instructions each pass, once the console has said --pc-from
     std::vector<std::pair<std::string, std::string>> script;   // expect, send
     double seconds = 0;      // of guest time; 0: no limit
     double wall = 0;         // of the host's time
@@ -55,7 +56,7 @@ struct Options {
     u32 ticks = 8192;        // instructions a pass
     double ips = 3700000;    // what the shader machine runs while it runs
     double passMs = 0.25;    // and what a pass costs it besides
-    int cores = 64;          // core 0 and 63 workers, as the shader machine
+    int cores = 256;         // core 0 and 255 workers, as the shader machine
     long long sweep = -1;
     bool desktop = false, tabs = false, quiet = false;
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
@@ -68,6 +69,7 @@ static size_t script_at = 0, expect_from = 0;
 static std::deque<uint8_t> console_in;
 static FILE* uart_log = nullptr;
 static bool until_hit = false;
+static bool pc_sampling = false;
 
 static void console_put(u32 c) {
     char ch = (char)c;
@@ -75,6 +77,9 @@ static void console_put(u32 c) {
     console_text.push_back(ch);
     if (!opt.quiet) fputc(ch, stdout);
     if (uart_log) fputc(ch, uart_log);
+    if (!pc_sampling && !opt.pcFrom.empty() && ch == opt.pcFrom.back() && console_text.size() >= opt.pcFrom.size() &&
+        console_text.compare(console_text.size() - opt.pcFrom.size(), opt.pcFrom.size(), opt.pcFrom) == 0)
+        pc_sampling = true;
     if (ch == '\n' || ch == ' ' || ch == '#') {
         if (!opt.quiet) fflush(stdout);
     }
@@ -700,15 +705,14 @@ static u64 run(Core& c, u64 budget) {
 // for core 0, which answers through the resume texel.
 static const u32 MC_MBOX = 0x86C00000u, MC_START = 0x5553434Du, MC_STOP = 0x5453434Du;
 static inline u32 mc_start_at(int hart) { return MC_MBOX + 16 * hart; }
-// (cores 16 and up have theirs in the two pages after: programs/mc/mc.h)
-static inline u32 mc_job_at(int hart) { return MC_MBOX + (hart < 16 ? 0x400 : 0x1000) + 64 * hart; }
+static inline u32 mc_job_at(int hart) { return MC_MBOX + 0x4000 + 64 * hart; }
 static inline u32 mc_fault_at(int hart) { return mc_job_at(hart) + 32; }
 static inline u32 mc_resume_at(int hart) { return mc_job_at(hart) + 48; }
-static inline u32 mc_call_at(int hart) { return MC_MBOX + (hart < 16 ? 0x800 : 0x2000) + 32 * hart; }
+static inline u32 mc_call_at(int hart) { return MC_MBOX + 0x2000 + 32 * hart; }
 enum { MC_PARKED, MC_RUNNING, MC_ASLEEP, MC_FAULTED, MC_CALLING };
 struct Worker { int state = MC_PARKED; u32 seen = 0, start_seen = 0, job_seen = 0; };
 static std::vector<Worker> workers;
-static u32 geometry[64];   // each worker's cache bits as the machine's geometry has them; 0: no such worker
+static u32 geometry[256];   // each worker's cache bits as the machine's geometry has them; 0: no such worker
 
 bool mc_fault(Core& c, const Trap& t) {
     Worker& w = workers[c.hart];
@@ -812,20 +816,22 @@ static void control_pass() {
     dirty(CTRL);
     // what each core ran, how many workers the geometry has (docs/multicore.md: the cores have
     // no write cache here, so their sizes are only counted) and how many there could be
-    // (cores 16 and up: MC_STATS_MORE and MC_GEOMETRY_MORE of src/gpu.h and src/types.h)
-    const u32 STATS_MORE = 0x876b8280u, GEOMETRY_MORE = MC_MBOX + 0xf00;
+    // (every core again at MC_STATS_ALL of src/gpu.h: counts, then a texel for every 32 cores of bits)
+    const u32 STATS_ALL = 0x876ba000u;
     // (their band is marked only when a word of it changes: the harness uploads what is marked)
     bool more = false;
     for (size_t i = 0; i < cores.size(); i++) {
-        u32& count = word((i < 16 ? CTRL + 0x380 : STATS_MORE - 64) + 4 * (u32)i);
-        more = more || (i >= 16 && count != (u32)cores[i].clock);
+        u32& count = word(STATS_ALL + 4 * (u32)i);
+        more = more || count != (u32)cores[i].clock;
         count = (u32)cores[i].clock;
+        if (i < 16) word(CTRL + 0x380 + 4 * (u32)i) = count;
     }
     if (cores.size() > 1) {
-        u32 running[2] = {1, 0}, asleep[2] = {0, 0}, count = 1, shaping = word(CTRL + 0x3d0) & 1;
+        u32 running[8] = {1}, asleep[8] = {0}, count = 1, shaping = word(CTRL + 0x3d0) & 1;
+        // the geometry: how many workers, and their caches' size (all alike)
+        u32 there = word(CTRL + 0x3d4), bits = word(CTRL + 0x3d8);
         for (size_t i = 1; i < cores.size(); i++) {
-            u32 k = (u32)i - 1, bits = (word(k < 24 ? CTRL + 0x3d4 + 4 * (k / 8) : GEOMETRY_MORE + 4 * (k / 8 - 3)) >> (4 * (k % 8))) & 15;
-            geometry[i] = shaping ? 0 : bits;
+            geometry[i] = shaping || i > there || bits < 3 || bits > 6 ? 0 : bits;
             if (!geometry[i]) { workers[i].state = MC_PARKED; cores[i].started = false; continue; }
             count = (u32)i + 1;
             running[i / 32] |= (workers[i].state != MC_PARKED ? 1u : 0u) << (i % 32);
@@ -835,11 +841,13 @@ static void control_pass() {
         word(CTRL + 0x3c4) = running[0];
         word(CTRL + 0x3c8) = asleep[0];
         word(CTRL + 0x3cc) = (u32)cores.size();
-        more = more || word(STATS_MORE + 0xc0) != running[1] || word(STATS_MORE + 0xc4) != asleep[1];
-        word(STATS_MORE + 0xc0) = running[1];
-        word(STATS_MORE + 0xc4) = asleep[1];
+        for (u32 n = 0; n < 8; n++) {   // (a texel for every 32 cores: which run, which sleep)
+            more = more || word(STATS_ALL + 0x400 + 16 * n) != running[n] || word(STATS_ALL + 0x404 + 16 * n) != asleep[n];
+            word(STATS_ALL + 0x400 + 16 * n) = running[n];
+            word(STATS_ALL + 0x404 + 16 * n) = asleep[n];
+        }
     }
-    if (more) dirty(STATS_MORE);
+    if (more) dirty(STATS_ALL);
     if (external_devices) {
         // the shader's control pass keeps the rest; between two of its runs only the clock moves
         word(CTRL + 0x34) = (u32)(guest_seconds * 1000.0);
@@ -885,7 +893,7 @@ static bool machine_boot(const std::string& image, int count) {
     ramw = (u32*)ram.data();
     memcpy(ram.data(), payload.data(), payload.size() < RAM_SIZE ? payload.size() : RAM_SIZE);
     dirty_bands = 0xffffffffu;
-    count = count < 1 ? 1 : count > 64 ? 64 : count;
+    count = count < 1 ? 1 : count > 256 ? 256 : count;
     cores.clear();
     workers.clear();
     cores.resize((size_t)count);
@@ -941,6 +949,8 @@ int main(int argc, char** argv) {
         else if (a == "--wall") opt.wall = atof(next("--wall").c_str());
         else if (a == "--instructions") opt.maxInstr = strtoull(next("--instructions").c_str(), nullptr, 10);
         else if (a == "--uart-log") opt.uartLog = next("--uart-log");
+        else if (a == "--pc-log") opt.pcLog = next("--pc-log");
+        else if (a == "--pc-from") opt.pcFrom = next("--pc-from");
         else if (a == "--ticks") opt.ticks = (u32)atoi(next("--ticks").c_str());
         else if (a == "--ips") opt.ips = atof(next("--ips").c_str());
         else if (a == "--pass-ms") opt.passMs = atof(next("--pass-ms").c_str());
@@ -964,6 +974,8 @@ int main(int argc, char** argv) {
                    "  --instructions N       or N instructions of core 0\n"
                    "  --uart-log FILE        the console, added to the file\n"
                    "  --ticks N              instructions a pass (8192)\n"
+                   "  --pc-log FILE          core 0's pc at the end of each pass, for tools/pc_profile.py (a small --ticks\n"
+                   "  --pc-from T            for finer samples); from when the console has said T\n"
                    "  --ips N --pass-ms M    the guest's clock: a pass takes M ms and its instructions 1/N s each\n"
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
@@ -995,8 +1007,15 @@ int main(int argc, char** argv) {
     auto t0 = std::chrono::steady_clock::now();
     u64 idle_passes = 0;
     int exit_code = 0;
+    std::vector<u32> pc_samples;
+    pc_sampling = !opt.pcLog.empty() && opt.pcFrom.empty();
     for (;;) {
+        u64 clock_was = c0.clock;
         u64 most = machine_pass(opt.ticks);
+        if (pc_sampling && c0.clock != clock_was) {
+            pc_samples.push_back(c0.pc);
+            pc_samples.push_back((u32)(c0.clock - clock_was));
+        }
         guest_seconds += opt.passMs / 1000.0 + (double)most / opt.ips;
         if (most == 0 && c0.waiting && console_in.empty()) {
             // nothing to run: on to the timer's deadline (an idle machine's passes are all alike)
@@ -1036,6 +1055,10 @@ int main(int argc, char** argv) {
         for (u64 k = 1; k <= 32; k++)
             fprintf(stderr, "  %08x: %08x\n", last_pc[(c0.clock + k) & 31], last_ins[(c0.clock + k) & 31]);
     if (uart_log) fclose(uart_log);
+    if (!opt.pcLog.empty()) {
+        FILE* f = fopen(opt.pcLog.c_str(), "wb");
+        if (f) { fwrite(pc_samples.data(), 4, pc_samples.size(), f); fclose(f); }
+    }
     return exit_code;
 }
 #endif

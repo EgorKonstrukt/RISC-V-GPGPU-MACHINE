@@ -117,7 +117,6 @@ Shader "ShaderEmu/MachineTick"
             static uint mc_size_now = 4096; // and how many texels of state it has
             static uint mc_tile0 = 0;       // and, a worker's, the first of its tiles
             static uint4 mc_geo;            // the geometry's texel, read once a pixel
-            static uint4 mc_geo1, mc_geo2;  // and the two of workers 25 and up (MC_GEOMETRY_MORE)
             // Texel w of a worker's state is in its tile w / 64; what lies past its last texel is
             // another worker's, and reads as zeros.
             uint4 mc_state_read(uint2 pos) {
@@ -125,7 +124,7 @@ Shader "ShaderEmu/MachineTick"
                 uint w = pos.y * 64 + pos.x;
                 if (w >= mc_size_now) return (uint4)0;
                 uint t = mc_tile0 + (w >> 6), i = w & 63;
-                return _SelfTexture2D[uint2(64 + (t << 3) + (i & 7), i >> 3)];
+                return _SelfTexture2D[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
             }
             #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
             #define STATE_TEX(pos) mc_state_read(uint2(pos))
@@ -150,7 +149,7 @@ Shader "ShaderEmu/MachineTick"
             // Unpack takes it from the state as it was.
             void tick_rect(inout TriangleStream<blit_v2f> stream, float x, float y, float w, float h) {
                 for (uint corner = 0; corner < 4; corner++) {
-                    float2 p = float2((x + (corner & 1) * w) / 8, y + (corner >> 1) * h) / float2(TICK_MRT_W, TICK_STATE_ROWS);
+                    float2 p = float2((x + (corner & 1) * w) / 8, y + (corner >> 1) * h) / float2(TICK_MRT_W, TICK_STATE_ROWS * TICK_MRT_BANDS);
                     blit_v2f o;
                     // clip space as the card has it: the texture's top left is (-1, 1)
                     o.vertex = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.5, 1.0);
@@ -163,25 +162,22 @@ Shader "ShaderEmu/MachineTick"
             void tick_geom(triangle blit_v2f corners[3], uint which : SV_PrimitiveID, inout TriangleStream<blit_v2f> stream) {
                 // only the tick's own camera draws it (its targets' size says which that is)
                 // (a primitive is 64 vertices at most: the mesh has one for every sixteen cores)
-                if (which >= (CORES + 15) / 16 || (uint)_ScreenParams.x != TICK_MRT_W || (uint)_ScreenParams.y != TICK_STATE_ROWS) return;
+                if (which >= (CORES + 15) / 16 || (uint)_ScreenParams.x != TICK_MRT_W || (uint)_ScreenParams.y != TICK_STATE_ROWS * TICK_MRT_BANDS) return;
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
                 if (which == 0) tick_rect(stream, 0, 0, 64, STATE_ROWS);
                 if (_Init) return;
                 MC_GEO_READ
-                if ((mc_geo.r & 1) != 0) return;   // being laid out anew: the band is zeros meanwhile (Unpack)
-                uint tile = 0, col = 0;
-                for (uint k = 1; k < CORES; k++) {
-                    uint tiles = mc_rows_of(mc_bits_of(k));
-                    if (tiles == 0) continue;
-                    if (k / 16 == which) {
-                        mc_select(k, tile);
-                        hart = k;
-                        if (!mc_idle()) tick_rect(stream, MC_STRIP_X + 8 * (TICK_GAP + col), 0, 8 * mc_cols_of(tiles), 8);
-                    }
-                    tile += tiles;
-                    col += mc_cols_of(tiles);
+                // (being laid out anew, there are no workers: the bands are zeros meanwhile, Unpack)
+                for (uint n = 0; n < 16; n++) {
+                    uint k = which * 16 + n;
+                    if (k == 0 || k > mc_count) continue;
+                    mc_select(k);
+                    hart = k;
+                    if (mc_idle()) continue;
+                    uint2 at = mc_block_of(k);
+                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols, 8);
                 }
-                mc_select(0, 0);
+                mc_select(0);
                 hart = 0;
             }
 
@@ -202,26 +198,22 @@ Shader "ShaderEmu/MachineTick"
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
                 _Data_MTD_R.GetDimensions(m_dim.x, m_dim.y);
 
-                uint2 pos = (uint2)i.vertex.xy * uint2(8, 1);
+                uint2 pixel = (uint2)i.vertex.xy;
+                uint2 pos = pixel * uint2(8, 1);
                 // this pixel's core, and which texels of its state it keeps
                 uint2 own = pos;
                 MC_GEO_READ
-                mc_select(0, 0);
+                mc_select(0);
                 hart = 0;
-                if (pos.x >= MC_STRIP_X) {
-                    // the workers' columns: nothing while they are laid out anew, and nothing in columns no worker has
-                    if (_Init || pos.y >= 8 || (mc_geo.r & 1) != 0) TICK_ZERO
-                    uint tile = (pos.x - MC_STRIP_X) >> 3;
-                    // the column: whose block it is in, and which of the worker's tiles it is
-                    if (tile < TICK_GAP) TICK_ZERO
-                    tile -= TICK_GAP;
-                    hart = mc_core_find(tile, true);
-                    if (hart == 0) TICK_ZERO
-                    tile = mc_tile0 + (tile - mc_col0);
-                    if (tile - mc_tile0 >= mc_rows_of(mc_bits_now)) TICK_ZERO
-                    own = uint2(MC_STRIP_X + 8 * tile, pos.y);
+                if (pixel.x >= 8 || pixel.y >= STATE_ROWS) {
+                    // a worker's block: nothing in its empty columns, nor in what is nobody's
+                    if (_Init) TICK_ZERO
+                    uint tile;
+                    hart = mc_core_in(pixel, tile);
+                    if (hart == 0 || tile >= mc_rows) TICK_ZERO
+                    own = mc_tile_at(mc_tile0 + tile) + uint2(0, pixel.y & 7);
                     // which texel of the worker's state this pixel begins at, as a place in its rows of 64
-                    uint w = ((tile - mc_tile0) << 6) + ((pos.y & 7) << 3);
+                    uint w = (tile << 6) + ((pixel.y & 7) << 3);
                     pos = uint2(w & 63, w >> 6);
                 }
                 if (pos.y >= 64) TICK_ZERO

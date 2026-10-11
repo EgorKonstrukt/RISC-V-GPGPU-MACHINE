@@ -37,6 +37,7 @@ Shader "ShaderEmu/MachineCommitPoints"
 
             #define PASS_COMMIT
             #define GPU_DEVICE
+            #define COMMIT_AS_POINTS
 
             #include "UnityCG.cginc"
             #include "MachineBlit.cginc"
@@ -54,16 +55,22 @@ Shader "ShaderEmu/MachineCommitPoints"
                 return o;
             }
 
-            // texel w of a core's state as the tick left it (a worker's strip begins at tile tile0)
-            uint4 tick_state(uint core, uint tile0, uint w) {
+            // texel w of a core's state as the tick left it
+            uint4 tick_state(uint core, uint w) {
                 if (core == 0) return _TickState[uint2(w & 63, w >> 6)];
-                return _TickState[uint2(MC_STRIP_X + ((tile0 + (w >> 6)) << 3) + (w & 7), (w & 63) >> 3)];
+                return _TickState[mc_tile_at(mc_tile_of(core) + (w >> 6)) + uint2(w & 7, (w & 63) >> 3)];
             }
 
-            void commit_quad(inout TriangleStream<blit_v2f> stream, uint x, uint y, uint w, uint h) {
+            struct point_v2f {
+                float4 vertex : SV_Position;
+                uint core : TEXCOORD0;   // whose store it is
+            };
+
+            void commit_quad(inout TriangleStream<point_v2f> stream, uint x, uint y, uint w, uint h) {
                 for (uint corner = 0; corner < 4; corner++) {
                     float2 p = float2(x + (corner & 1) * w, y + (corner >> 1) * h) / (float2)s_dim;
-                    blit_v2f o;
+                    point_v2f o;
+                    o.core = commit_core;
                     // clip space as the card has it: the texture's top left is (-1, 1)
                     o.vertex = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.5, 1.0);
                     stream.Append(o);
@@ -72,38 +79,40 @@ Shader "ShaderEmu/MachineCommitPoints"
             }
 
             #define COMMIT_RAM_TEXELS (2048u * (4096u - 64u))
-            // Point n is core 0's entry n (768 of them, then its last store and its copy), and
-            // from 770 on 386 a worker (384 entries, its last store, its copy).
+            // Point n is core 0's bucket n (256 of them, then its last store and its copy), and
+            // from 258 on 130 a worker (128 buckets, its last store, its copy).
             [maxvertexcount(12)]
-            void commit_geom(point point_id IN[1], inout TriangleStream<blit_v2f> stream) {
+            void commit_geom(point point_id IN[1], inout TriangleStream<point_v2f> stream) {
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
                 // only the commit's own camera draws them (its target's size says which that is)
                 if ((uint)_ScreenParams.x != s_dim.x || (uint)_ScreenParams.y != s_dim.y) return;
-                uint id = IN[0].id, core = 0, e = id, tile0 = 0, bits = L1_TABLE_BITS;
-                if (id >= 770) {
-                    core = 1 + (id - 770) / 386;
-                    e = (id - 770) % 386;
+                uint id = IN[0].id, core = 0, e = id, bits = L1_TABLE_BITS;
+                if (id >= 258) {
+                    core = 1 + (id - 258) / 130;
+                    e = (id - 258) % 130;
                     if (core >= CORES) return;
                     MC_GEO_READ
-                    if ((mc_geo.r & 1) != 0) return;
-                    for (uint k = 1; k < core; k++) tile0 += mc_rows_of(mc_bits_of(k));
                     bits = mc_bits_of(core);
                     if (bits == 0) return;
                 }
-                uint last = core == 0 ? 768 : 384;
+                commit_core = core;
+                uint last = core == 0 ? 256 : 128;
                 if (e < last) {
-                    // an entry of the cache: its tag is the texel's number and one
-                    if (e >= (2u << bits) * 3) return;
-                    uint tag = idx_uint4(tick_state(core, tile0, L1_STATE_AT + (e / 3) * 4), e % 3);
-                    if (tag != 0 && tag - 1 < COMMIT_RAM_TEXELS) commit_quad(stream, (tag - 1) % 2048, 64 + (tag - 1) / 2048, 1, 1);
+                    // a bucket of the cache: an entry's tag is the texel's number and one
+                    if (e >= (2u << bits)) return;
+                    uint4 tags = tick_state(core, L1_STATE_AT + e * L1_STRIDE);
+                    for (uint n = 0; n < 3; n++) {
+                        uint tag = idx_uint4(tags, n);
+                        if (tag != 0 && tag - 1 < COMMIT_RAM_TEXELS) commit_quad(stream, (tag - 1) % 2048, 64 + (tag - 1) / 2048, 1, 1);
+                    }
                 } else if (e == last) {
                     // the store a full cache had no room for
-                    uint addr = tick_state(core, tile0, 8).r;
+                    uint addr = tick_state(core, 8).r;
                     if ((addr >> 4) < COMMIT_RAM_TEXELS) commit_quad(stream, (addr >> 4) % 2048, 64 + (addr >> 4) / 2048, 1, 1);
                 } else {
                     // a copy or a fill: the texels from its destination to its end, row by row
-                    uint stalled = tick_state(core, tile0, 28).r;
-                    uint4 op = tick_state(core, tile0, 38);
+                    uint stalled = tick_state(core, 28).r;
+                    uint4 op = tick_state(core, 38);
                     if ((stalled != STALL_MEMOP_COPY && stalled != STALL_MEMOP_FILL) || op.b == 0) return;
                     uint t0 = op.g >> 4, t1 = min((op.g + op.b - 1) >> 4, COMMIT_RAM_TEXELS - 1);
                     if (t0 > t1) return;
@@ -118,9 +127,10 @@ Shader "ShaderEmu/MachineCommitPoints"
                 }
             }
 
-            uint4 frag(blit_v2f i) : SV_Target {
+            uint4 frag(point_v2f i) : SV_Target {
                 uint2 pos = (uint2)i.vertex.xy;
                 if (_Copy) return _SelfTexture2D[pos];
+                commit_core = i.core;
                 return commit_texel(pos);
             }
             ENDCG

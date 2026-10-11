@@ -66,8 +66,9 @@ machine with worker cores (`docs/multicore.md`) a second builder runs on one:
   of its own buffers until the next frame.
 
 The world's making has two steps that are noise by the column, a third of it: the height
-map and the strata. Both are shared out by rows of z between the first core and up to three
-workers (`SE_GenShare` in `Generator.c`; the game asks for the workers on its own thread
+map and the strata. Both are shared out by rows of z between the first core and up to fifteen
+workers (three until the machine had 64 cores: the command to the steady world went from
+35.4 s to 34.6 s, so these two steps were near their end already) (`SE_GenShare` in `Generator.c`; the game asks for the workers on its own thread
 before the generator's begins). The rest of the making draws from one run of random numbers
 and stays in order.
 

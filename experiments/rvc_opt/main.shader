@@ -105,9 +105,8 @@
             static uint mc_size_now = 4096; // and how many texels of state it has
             static uint mc_tile0 = 0;      // and, a worker's, the first of its tiles
             static uint4 mc_geo;           // the geometry's texel, read once a pixel
-            static uint4 mc_geo1, mc_geo2; // and the two after it, of a machine with more than 16 cores
-            // A worker's state is a strip of whole 8 x 8 tiles in the band beside core 0's block,
-            // one worker's after another's (types.h): texel w of it is in its tile w / 64. The
+            // A worker's state is a strip of whole 8 x 8 tiles in the bands beside core 0's block,
+            // 248 tiles to a band (types.h): texel w of it is in its tile w / 64. The
             // tick draws a strip as a quad of its own. What lies past a worker's last texel is
             // another worker's, and reads as the zeros it used to be (a control register a
             // worker never wrote).
@@ -116,7 +115,7 @@
                 uint w = pos.y * 64 + pos.x;
                 if (w >= mc_size_now) return (uint4)0;
                 uint t = mc_tile0 + (w >> 6), i = w & 63;
-                return _SelfTexture2D[uint2(64 + (t << 3) + (i & 7), i >> 3)];
+                return _SelfTexture2D[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
             }
             #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
             #define STATE_TEX(pos) mc_state_read(uint2(pos))
@@ -147,10 +146,9 @@
             // TICK_MRT: a pixel of the tick is eight texels of state, one in each of eight
             // targets: core 0's pixel (x, y) keeps texels 8x to 8x + 7 of row y, and a worker's
             // tile of 8 x 8 is a column of eight pixels, in the worker's own block of columns
-            // (types.h, TICK_BLOCK) to the right of core 0's eight. The same pass compiled with
+            // (types.h, TICK_BLOCK), the blocks in bands. The same pass compiled with
             // TICK_UNPACK draws the state's quads into the state texture and only copies each
             // texel from its target.
-            #define TICK_MRT_W (CORES > 16 ? 1024 : 264)
             // a geometry shader's primitive is 64 vertices at most: one draws 16 cores' quads
             #define TICK_GROUPS ((CORES + 15) / 16)
             #ifdef TICK_MRT
@@ -165,15 +163,12 @@
             #define TICK_LOAD 1
             #endif
             static uint tick_copy = 0;
-            // columns left empty between core 0's pixels and the first worker's block: with four, a
-            // busy core 0 and busy workers took a third longer a pass (measured: docs/multicore.md)
-            #ifndef TICK_GAP
-            #define TICK_GAP 8
-            #endif
+            // (TICK_GAP columns are empty between core 0's pixels and the first worker's block: with
+            // four, a busy core 0 and busy workers took a third longer a pass: docs/multicore.md)
             void tick_rect(inout TriangleStream<v2f_customrendertexture> stream, float x, float y, float w, float h) {
                 for (uint corner = 0; corner < 4; corner++) {
             #if defined(TICK_MRT) && !defined(TICK_UNPACK)
-                    float2 p = float2((x + (corner & 1) * w) / 8, y + (corner >> 1) * h + tick_copy * STATE_ROWS) / float2(TICK_MRT_W, STATE_ROWS * TICK_LOAD);
+                    float2 p = float2((x + (corner & 1) * w) / 8, y + (corner >> 1) * h + tick_copy * STATE_ROWS * TICK_BANDS) / float2(TICK_MRT_W, STATE_ROWS * TICK_BANDS * TICK_LOAD);
             #else
                     float2 p = float2(x + (corner & 1) * w, y + (corner >> 1) * h) / (float2)s_dim;
             #endif
@@ -204,27 +199,29 @@
                 if (_Init) return;
                 MC_GEO_READ
                 if ((mc_geo.r & 1) != 0) {
-                    // being laid out anew: the whole band, whose pixels are all zeros meanwhile
-                    if (group == 0) tick_rect(stream, MC_STRIP_X, 0, 8 * MC_STRIP_ROWS, 8);
+                    // being laid out anew: every worker's pixels, which are all zeros meanwhile
+            #if defined(TICK_MRT) && !defined(TICK_UNPACK)
+                    if (group == 0) tick_rect(stream, 64, 0, 8 * (TICK_MRT_W - 8), STATE_ROWS * TICK_BANDS);
+            #else
+                    if (group == 0) tick_rect(stream, MC_STRIP_X, 0, 8 * MC_STRIP_TILES, 8 * MC_STRIP_BANDS);
+            #endif
                     return;
                 }
-                uint tile = 0, col = 0;
-                for (uint k = 1; k < CORES; k++) {
-                    uint tiles = mc_rows_of(mc_bits_of(k));
-                    if (tiles == 0) continue;
-                    if (k / 16 == group) {
-                        mc_select(k, tile);
-                        hart = k;
+                for (uint n = 0; n < 16; n++) {
+                    uint k = group * 16 + n;
+                    if (k == 0 || k > mc_count) continue;
+                    mc_select(k);
+                    hart = k;
+                    if (mc_idle()) continue;
             #if defined(TICK_MRT) && !defined(TICK_UNPACK)
-                        if (!mc_idle()) tick_rect(stream, MC_STRIP_X + 8 * (TICK_GAP + col), 0, 8 * mc_cols_of(tiles), 8);
+                    uint2 at = mc_block_of(k);
+                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols, 8);
             #else
-                        if (!mc_idle()) tick_rect(stream, MC_STRIP_X + 8 * tile, 0, 8 * tiles, 8);
+                    uint2 at = mc_tile_at(mc_tile0);
+                    tick_rect(stream, at.x, at.y, 8 * mc_rows, 8);
             #endif
-                    }
-                    tile += tiles;
-                    col += mc_cols_of(tiles);
                 }
-                mc_select(0, 0);
+                mc_select(0);
                 hart = 0;
 #endif
             }
@@ -239,9 +236,10 @@
                 if (pos.x >= MC_STRIP_X) {
                     // a worker's texel: in its block's column for this tile
                     MC_GEO_READ
-                    uint tile = (pos.x - MC_STRIP_X) >> 3;
-                    if ((mc_geo.r & 1) != 0 || mc_core_at(tile) == 0) return (uint4)0;
-                    at.x = (MC_STRIP_X >> 3) + TICK_GAP + mc_col0 + (tile - mc_tile0);
+                    uint tile = ((pos.x - MC_STRIP_X) >> 3) + MC_STRIP_TILES * (pos.y >> 3);
+                    if (mc_core_at(tile) == 0) return (uint4)0;
+                    uint2 block = mc_block_of(mc_core);
+                    at = uint3(block.x + (tile - mc_tile0), block.y + (pos.y & 7), 0);
                 }
 #endif
                 if (k == 0) return _TickOut0.Load(at);
@@ -275,8 +273,9 @@
                 _Data_MTD_R.GetDimensions(m_dim.x, m_dim.y);
 
 #ifdef TICK_MRT
-                uint2 pos = uint2(i.vertex.xy) * uint2(8, 1);
-                pos.y %= STATE_ROWS;
+                uint2 pixel = uint2(i.vertex.xy);
+                pixel.y %= STATE_ROWS * TICK_BANDS;
+                uint2 pos = pixel * uint2(8, 1);
 #else
                 uint2 pos = i.globalTexcoord.xy * s_dim;
 #endif
@@ -286,29 +285,30 @@
                 #define TICK_KEEP(k) RAM_TEX(own + uint2(k, 0))
                 #define TICK_AT(k) mc_texel_of(pos + uint2(k, 0))
                 MC_GEO_READ
-                mc_select(0, 0);
+                mc_select(0);
                 hart = 0;
-                if (pos.x >= MC_STRIP_X) {
-                    // the workers' strip: nothing while it is laid out anew, and nothing in rows no worker has
-                    if (_Init || pos.y >= 8 || (mc_geo.r & 1) != 0) TICK_ZERO
-                    uint tile = (pos.x - MC_STRIP_X) >> 3;
 #ifdef TICK_MRT
-                    // the targets' column: whose block it is in, and which of the worker's tiles it is
-                    if (tile < TICK_GAP) TICK_ZERO
-                    tile -= TICK_GAP;
-                    hart = mc_core_find(tile, true);
-                    if (hart == 0) TICK_ZERO
-                    tile = mc_tile0 + (tile - mc_col0);
-                    if (tile - mc_tile0 >= mc_rows_of(mc_bits_now)) TICK_ZERO
-                    own = uint2(MC_STRIP_X + 8 * tile, pos.y);
+                if (pixel.x >= 8 || pixel.y >= STATE_ROWS) {
+                    // a worker's block: nothing in its empty columns, nor in what is nobody's
+                    if (_Init) TICK_ZERO
+                    uint tile;
+                    hart = mc_core_in(pixel, tile);
+                    if (hart == 0 || tile >= mc_rows) TICK_ZERO
+                    own = mc_tile_at(mc_tile0 + tile) + uint2(0, pixel.y & 7);
+                    // which texel of the worker's state this pixel is, as a place in its rows of 64
+                    uint w = (tile << 6) + ((pixel.y & 7) << 3);
+                    pos = uint2(w & 63, w >> 6);
+                }
 #else
+                if (pos.x >= MC_STRIP_X) {
+                    if (_Init) TICK_ZERO
+                    uint tile = ((pos.x - MC_STRIP_X) >> 3) + MC_STRIP_TILES * (pos.y >> 3);
                     hart = mc_core_at(tile);
                     if (hart == 0) TICK_ZERO
-#endif
-                    // which texel of the worker's state this pixel is, as a place in its rows of 64
                     uint w = ((tile - mc_tile0) << 6) + ((pos.y & 7) << 3) + (pos.x & 7);
                     pos = uint2(w & 63, w >> 6);
                 }
+#endif
                 if (pos.y >= 64) TICK_ZERO
                 if (!_Init && mc_idle()) { TICK_EACH(k) o[k] = TICK_KEEP(k); TICK_DONE }      // a worker with nothing to do
 #else
@@ -453,9 +453,8 @@
             static uint mc_size_now = 4096; // and how many texels of state it has
             static uint mc_tile0 = 0;      // and, a worker's, the first of its tiles
             static uint4 mc_geo;           // the geometry's texel, read once a pixel
-            static uint4 mc_geo1, mc_geo2; // and the two after it, of a machine with more than 16 cores
-            // A worker's state is a strip of whole 8 x 8 tiles in the band beside core 0's block,
-            // one worker's after another's (types.h): texel w of it is in its tile w / 64. The
+            // A worker's state is a strip of whole 8 x 8 tiles in the bands beside core 0's block,
+            // 248 tiles to a band (types.h): texel w of it is in its tile w / 64. The
             // tick draws a strip as a quad of its own. What lies past a worker's last texel is
             // another worker's, and reads as the zeros it used to be (a control register a
             // worker never wrote).
@@ -464,7 +463,7 @@
                 uint w = pos.y * 64 + pos.x;
                 if (w >= mc_size_now) return (uint4)0;
                 uint t = mc_tile0 + (w >> 6), i = w & 63;
-                return _SelfTexture2D[uint2(64 + (t << 3) + (i & 7), i >> 3)];
+                return _SelfTexture2D[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
             }
             #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
             #define STATE_TEX(pos) mc_state_read(uint2(pos))
@@ -499,16 +498,19 @@
             uint commit_bands_changed_core();
             // every core's writes
             uint commit_bands_changed() {
-                uint changed = 0, row = 0;
+                uint changed = 0;
                 MC_GEO_READ
-                for (uint h = 0; h < CORES; h++) {
-                    uint rows = h == 0 ? 0 : mc_rows_of(mc_bits_of(h));
-                    if (h != 0 && (rows == 0 || (mc_geo.r & 1) != 0)) continue;
-                    mc_select(h, row);
-                    row += rows;
+#ifdef COMMIT_SCATTER
+                // (what the cores stored is points: the bands are the same whoever is asked)
+                uint most = 1;
+#else
+                uint most = mc_count + 1;
+#endif
+                for (uint h = 0; h < most; h++) {
+                    mc_select(h);
                     changed |= commit_bands_changed_core();
                 }
-                mc_select(0, 0);
+                mc_select(0);
                 return changed;
             }
             uint commit_bands_changed_core() {
@@ -540,18 +542,15 @@
             // each band of RAM that has to be drawn.
             // COMMIT_POINTS (the D3D11 harness with the tick in eight targets, docs/multicore.md):
             // what the cores stored is drawn as points, each made the rectangle it stands for
-            // by commit_geom: a texel for an entry of a write cache and for the store a full
-            // cache had no room for, the rows of its destination for a copy or a fill. Point
-            // n is core 0's entry n (768 of them, then its last store and its copy), and from
-            // 770 on 386 a worker (384 entries). Where the stores are is read from the tick's
+            // by commit_geom: a texel for each entry of a bucket of a write cache and for the store
+            // a full cache had no room for, the rows of its destination for a copy or a fill. Point
+            // n is core 0's bucket n (256 of them, then its last store and its copy), and from
+            // 258 on 130 a worker (128 buckets). Where the stores are is read from the tick's
             // targets, as the tick left them: a worker that did not run has its last pass's
             // there, whose texels are then written again as they are, which is harmless. The
             // bands the commit draws whole are then only those something else wrote.
 #ifdef COMMIT_POINTS
             Texture2D<uint4> _TickOut0, _TickOut1, _TickOut2, _TickOut3, _TickOut4, _TickOut5, _TickOut6, _TickOut7;
-            #ifndef TICK_GAP
-            #define TICK_GAP 8
-            #endif
             uint4 tick_out(uint k, uint2 at) {
                 uint3 p = uint3(at, 0);
                 if (k == 0) return _TickOut0.Load(p);
@@ -563,11 +562,12 @@
                 if (k == 6) return _TickOut6.Load(p);
                 return _TickOut7.Load(p);
             }
-            // texel w of a core's state as the tick left it (a worker's block begins at column col0)
-            uint4 tick_state(uint core, uint col0, uint w) {
+            // texel w of a core's state as the tick left it
+            uint4 tick_state(uint core, uint w) {
                 if (core == 0) return tick_out(w & 7, uint2((w & 63) >> 3, w >> 6));
-                return tick_out(w & 7, uint2((64 >> 3) + TICK_GAP + col0 + (w >> 6), (w & 63) >> 3));
+                return tick_out(w & 7, mc_block_of(core) + uint2(w >> 6, (w & 63) >> 3));
             }
+            static uint commit_core = 0;   // whose store the quads are: the pixel asks that core alone
             void commit_quad(inout TriangleStream<v2f_customrendertexture> stream, uint x, uint y, uint w, uint h) {
                 for (uint corner = 0; corner < 4; corner++) {
                     float2 p = float2(x + (corner & 1) * w, y + (corner >> 1) * h) / (float2)s_dim;
@@ -575,7 +575,7 @@
                     o.vertex = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
                     o.localTexcoord = float3(p, 0);
                     o.globalTexcoord = float3(p, 0);
-                    o.primitiveID = 0;
+                    o.primitiveID = commit_core;
                     o.direction = 0;
                     stream.Append(o);
                 }
@@ -585,35 +585,37 @@
             [maxvertexcount(12)]
             void commit_geom(point v2f_customrendertexture IN[1], inout TriangleStream<v2f_customrendertexture> stream) {
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
-                uint id = IN[0].primitiveID, core = 0, e = id, col0 = 0, bits = L1_TABLE_BITS;
+                uint id = IN[0].primitiveID, core = 0, e = id, bits = L1_TABLE_BITS;
 #if CORES > 1
-                if (id >= 770) {
-                    core = 1 + (id - 770) / 386;
-                    e = (id - 770) % 386;
+                if (id >= 258) {
+                    core = 1 + (id - 258) / 130;
+                    e = (id - 258) % 130;
                     if (core >= CORES) return;
                     MC_GEO_READ
-                    if ((mc_geo.r & 1) != 0) return;
-                    for (uint k = 1; k < core; k++) col0 += mc_cols_of(mc_rows_of(mc_bits_of(k)));
                     bits = mc_bits_of(core);
                     if (bits == 0) return;
                 }
 #else
-                if (id >= 770) return;
+                if (id >= 258) return;
 #endif
-                uint last = core == 0 ? 768 : 384;
+                commit_core = core;
+                uint last = core == 0 ? 256 : 128;
                 if (e < last) {
-                    // an entry of the cache: its tag is the texel's number and one
-                    if (e >= (2u << bits) * 3) return;
-                    uint tag = idx_uint4(tick_state(core, col0, L1_STATE_AT + (e / 3) * 4), e % 3);
-                    if (tag != 0 && tag - 1 < COMMIT_RAM_TEXELS) commit_quad(stream, (tag - 1) % 2048, 64 + (tag - 1) / 2048, 1, 1);
+                    // a bucket of the cache: an entry's tag is the texel's number and one
+                    if (e >= (2u << bits)) return;
+                    uint4 tags = tick_state(core, L1_STATE_AT + e * L1_STRIDE);
+                    for (uint n = 0; n < 3; n++) {
+                        uint tag = idx_uint4(tags, n);
+                        if (tag != 0 && tag - 1 < COMMIT_RAM_TEXELS) commit_quad(stream, (tag - 1) % 2048, 64 + (tag - 1) / 2048, 1, 1);
+                    }
                 } else if (e == last) {
                     // the store a full cache had no room for
-                    uint addr = tick_state(core, col0, 8).r;
+                    uint addr = tick_state(core, 8).r;
                     if ((addr >> 4) < COMMIT_RAM_TEXELS) commit_quad(stream, (addr >> 4) % 2048, 64 + (addr >> 4) / 2048, 1, 1);
                 } else {
                     // a copy or a fill: the texels from its destination to its end, row by row
-                    uint stalled = tick_state(core, col0, 28).r;
-                    uint4 op = tick_state(core, col0, 38);
+                    uint stalled = tick_state(core, 28).r;
+                    uint4 op = tick_state(core, 38);
                     if ((stalled != STALL_MEMOP_COPY && stalled != STALL_MEMOP_FILL) || op.b == 0) return;
                     uint t0 = op.g >> 4, t1 = min((op.g + op.b - 1) >> 4, COMMIT_RAM_TEXELS - 1);
                     if (t0 > t1) return;
@@ -688,16 +690,17 @@
                     // a core's own state, as with one core
                     uint hb = 0;
                     uint4 own = RAM_TEX(pos);
-                    mc_select(0, 0);
+                    mc_select(0);
                     if (pos.x >= MC_STRIP_X) {
-                        if (pos.y >= 8 || (mc_geo.r & 1) != 0) return (uint4)0;
-                        uint tile = (pos.x - MC_STRIP_X) >> 3;
+                        uint tile = ((pos.x - MC_STRIP_X) >> 3) + MC_STRIP_TILES * (pos.y >> 3);
                         hb = mc_core_at(tile);
                         if (hb == 0) return (uint4)0;
                         uint w = ((tile - mc_tile0) << 6) + ((pos.y & 7) << 3) + (pos.x & 7);
                         pos = uint2(w & 63, w >> 6);
                     }
                     pos = mc_texel_of(pos);
+                    // (of a worker's state the commit changes three texels: the rest is as it is)
+                    if (hb != 0 && (pos.y != 0 || (pos.x != 8 && pos.x != 28 && pos.x != 41))) return own;
                     decode_for_commit();
                     result = commit(pos, own);
                     // A worker's one store that found its cache full is in its state until its next
@@ -706,12 +709,19 @@
                 } else {
                     // RAM: every core's writes, the highest core's last
                     result = RAM_TEX(pos);
-                    uint row = 0;
-                    for (uint h = 0; h < CORES; h++) {
-                        uint rows = h == 0 ? 0 : mc_rows_of(mc_bits_of(h));
-                        if (h != 0 && (rows == 0 || (mc_geo.r & 1) != 0)) continue;
-                        mc_select(h, row);
-                        row += rows;
+#if defined(COMMIT_POINTS)
+                    // a point: the store of one core (two may not store to one texel in a pass). A
+                    // pixel that asked every core took as long as hundreds of the tick's instructions.
+                    uint first = min(i.primitiveID, mc_count), most = first + 1;
+#elif defined(COMMIT_SCATTER)
+                    // (a band drawn whole: what a core stored there is a point, drawn after this)
+                    uint first = 0, most = _Init ? 1 : 0;
+#else
+                    uint first = 0, most = mc_count + 1;
+#endif
+                    bool stored_here = false;
+                    for (uint h = first; h < most; h++) {
+                        mc_select(h);
                         if (h != 0) {
                             // A worker that stored nothing, or nothing here: every address it
                             // stored to is in the word it keeps of them all or-ed together, so a
@@ -724,8 +734,15 @@
                         }
                         decode_for_commit();
                         result = commit(pos, result);
+                        stored_here = true;
                     }
-                    mc_select(0, 0);
+                    mc_select(0);
+#if defined(COMMIT_POINTS)
+                    // A worker that sat the pass out has its last pass's tags in the targets still:
+                    // its point is of no store, and must not put the texel as it was over what
+                    // another core's point has just drawn there.
+                    if (!stored_here) discard;
+#endif
                 }
 #else
                 decode_for_commit();

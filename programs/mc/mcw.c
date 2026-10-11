@@ -5,14 +5,22 @@
 #include "mcw.h"
 
 #define STACK_BYTES 0x10000u
+#define STACK_TOUCHED 0x4000u	/* of a stack's top, here before its worker: the rest when it is stepped on */
 #define CHUNK_BYTES 0x40000u
 
 static uint8_t *page;		/* the mailboxes */
 static uint8_t *stacks;
 static int device = -1;		/* kept open: the kernel parks the workers when it closes */
 static int count, stack_count;
-static int core_of[MC_MAX_CORES];	/* worker k of this program (1 to count) is that core */
+/* Worker k of this program (1 to count) is that core; 0: it has none now (the kernel shares
+ * the cores out, mc.h), and what is posted to it is run by the core that posts it. */
+static int core_of[MC_MAX_CORES];
+static int starting[MC_MAX_CORES];	/* the core being started for worker k, not there yet */
 static uint32_t seq[MC_MAX_CORES];
+static uint32_t result_of[MC_MAX_CORES];	/* worker k's last job's answer, */
+static uint8_t settled[MC_MAX_CORES];	/* which is here when this is set: nothing of k's is out */
+static uint32_t root, own_tp, offer_seen, my_tag;
+static int lent, lost, share;
 static uint8_t *chunk;
 static uint32_t chunk_left;
 unsigned mcw_faults;		/* pages touched for a worker so far */
@@ -20,8 +28,19 @@ unsigned mcw_calls;		/* and system calls made for one */
 
 static mc_job *job_of(int k) { return (mc_job *)(page + MC_JOB_AT(core_of[k])); }
 static mc_answer *answer_of(int k) { return (mc_answer *)(page + MC_ANSWER_AT(core_of[k])); }
-static mc_fault *fault_of(int k) { return (mc_fault *)(page + MC_FAULT_AT(core_of[k])); }
-static volatile uint32_t *resume_of(int k) { return (volatile uint32_t *)(page + MC_RESUME_AT(core_of[k])); }
+/* (a core that is being started may stop at a page too: it is served as one that runs) */
+static int core_now(int k) { return core_of[k] ? core_of[k] : starting[k]; }
+static mc_fault *fault_of(int k) { return (mc_fault *)(page + MC_FAULT_AT(core_now(k))); }
+static volatile uint32_t *resume_of(int k) { return (volatile uint32_t *)(page + MC_RESUME_AT(core_now(k))); }
+static int writing(int core);
+static void written(void);
+/* Worker k's answer is taken: its mailbox says so (MC_TAKEN_AT), and only then is the core one
+ * the kernel may take back. */
+static void took(int k)
+{
+	settled[k] = 1;
+	if (core_of[k]) *(volatile uint32_t *)(page + MC_TAKEN_AT(core_of[k])) = seq[k];
+}
 
 static long call6(long number, long a, long b, long c, long d, long e, long f)
 {
@@ -99,10 +118,18 @@ uint32_t mcw_loop(uint32_t core)
 /* A worker that has stopped: the page it wanted is touched, or the program ends. */
 static void serve(int k)
 {
-	mc_fault *fault = fault_of(k);
-	uint32_t at = fault->count, cause, address;
+	mc_fault *fault;
+	uint32_t at, cause, address;
 
-	if (at == *resume_of(k)) return;
+	if (!core_now(k)) return;
+	/* (only a core that is this program's still: another's stops at pages of its own) */
+	if (!writing(core_now(k))) return;
+	fault = fault_of(k);
+	at = fault->count;
+	if (at == *resume_of(k)) {
+		written();
+		return;
+	}
 	cause = fault->cause;
 	address = fault->address;
 	if (cause == 12 || cause == 13) {
@@ -117,7 +144,7 @@ static void serve(int k)
 	} else if (cause == 8) {
 		/* a system call: made here for it, in the program and the files they share. (Not
 		 * the ones that are about which thread calls: a new thread, a new program.) */
-		const volatile uint32_t *c = (const volatile uint32_t *)(page + MC_CALL_AT(core_of[k]));
+		const volatile uint32_t *c = (const volatile uint32_t *)(page + MC_CALL_AT(core_now(k)));
 		long number = (long)c[0], result = -38;	/* ENOSYS */
 
 		if (number != 220 && number != 221 && number != 435)	/* clone, execve, clone3 */
@@ -130,11 +157,12 @@ static void serve(int k)
 		say("mcw:   address ", address);
 		say("mcw:   its count ", at);
 		say("mcw:   core 0 had answered ", *resume_of(k));
-		say("mcw:   worker ", (uint32_t)core_of[k]);
+		say("mcw:   worker ", (uint32_t)core_now(k));
 		call6(94, 70, 0, 0, 0, 0, 0);	/* exit_group */
 	}
 	mcw_faults++;
 	*resume_of(k) = at;
+	written();
 }
 
 int mcw_count(void) { return count; }
@@ -159,106 +187,202 @@ int mcw_most(void)
 	return most;
 }
 
-int mcw_room(void) { return mcw_most() > 15 ? 248 : 64; }
-
-int mcw_rows(int bits) { return bits < 3 || bits > 6 ? 0 : (44 + 8 + (2 << bits) * 4 + 63) / 64; }
-
-int mcw_fit(int bits)
-{
-	int rows = mcw_rows(bits), n = rows ? mcw_room() / rows : 0;
-
-	return n < mcw_most() ? n : mcw_most();
-}
-
-int mcw_shape(const unsigned char *bits, int workers)
-{
-	uint32_t shape[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-	long answer;
-	int fd, k;
-
-	if (page) return -16;	/* this program has workers itself */
-	for (k = 1; k <= workers && k < MC_MAX_CORES; k++)
-		shape[(k - 1) / 8] |= (uint32_t)(bits[k - 1] & 15) << (4 * ((k - 1) % 8));
-	if ((fd = (int)call6(56, -100, (long)"/dev/gpu", 2, 0, 0, 0)) < 0) return fd;
-	/* more than fifteen workers: a machine of more than 16 cores, and the kernel that knows of them */
-	answer = call6(29, fd, workers > 15 ? MC_SHAPE_ALL : MC_SHAPE, (long)shape, 0, 0, 0);
-	call6(57, fd, 0, 0, 0, 0, 0);
-	return (int)answer;
-}
-
-static int lent;
-static uint32_t asked_then;
-
 void mcw_lend(void) { lent = 1; }
 
 int mcw_asked(void)
 {
-	return page && lent && *(volatile uint32_t *)(page + MC_ASKED_AT) != asked_then;
+	int k, asked = lost;
+
+	if (!page) return 0;
+	for (k = 1; k <= count; k++)
+		if (core_of[k] && (((volatile uint32_t *)(page + MC_RECALL_AT))[core_of[k] / 32] >> (core_of[k] % 32) & 1)) asked = 1;
+	return asked;
+}
+
+int mcw_recalled(int k)
+{
+	int core = core_of[k];
+
+	return core && page && (((volatile uint32_t *)(page + MC_RECALL_AT))[core / 32] >> (core % 32) & 1);
+}
+
+int mcw_bound(int k) { return k >= 1 && k <= count && core_of[k] != 0; }
+
+static volatile uint32_t *owner_of_core(int core) { return (volatile uint32_t *)(page + MC_OWNER_AT(core)); }
+
+/* This program is about to write to a core's mailbox: none of its cores is taken meanwhile. */
+static int writing(int core)
+{
+	*(volatile uint32_t *)(page + MC_POSTING_AT(my_tag)) = 1;
+	if (*owner_of_core(core) == my_tag) return 1;
+	*(volatile uint32_t *)(page + MC_POSTING_AT(my_tag)) = 0;
+	return 0;
+}
+static void written(void) { *(volatile uint32_t *)(page + MC_POSTING_AT(my_tag)) = 0; }
+
+/* Worker k's core is given its start: it says it is there some passes later (arrived()). */
+static void start(int k, int core)
+{
+	volatile uint32_t *at = (volatile uint32_t *)(page + MC_START_AT(core));
+	uint32_t *top = (uint32_t *)(stacks + (uint32_t)k * STACK_BYTES - 16);
+
+	top[0] = own_tp;
+	if (!writing(core)) return;	/* (taken back already) */
+	starting[k] = core;
+	at[1] = (uint32_t)mcw_entry;
+	at[2] = (uint32_t)top;
+	at[3] = root;
+	at[0] = MC_START;
+	written();
+}
+
+/* Whether the core started for worker k is there: it is k's from then on. */
+static int arrived(int k)
+{
+	int core = starting[k];
+	mc_answer *answer = (mc_answer *)(page + MC_ANSWER_AT(core));
+
+	if (!core) return 0;
+	if (*owner_of_core(core) != my_tag) {
+		starting[k] = 0;	/* (taken back before it was there) */
+		return 0;
+	}
+	if (answer->alive != (MC_ALIVE | (uint32_t)core)) return 0;
+	if (!writing(core)) {
+		starting[k] = 0;
+		return 0;
+	}
+	*(volatile uint32_t *)(page + MC_START_AT(core)) = 0;
+	written();
+	starting[k] = 0;
+	core_of[k] = core;
+	seq[k] = 0;
+	return 1;
+}
+
+/* The kernel is asked for this program's share again: the cores that are new to it are
+ * started for the workers that have none. How many it has or is starting. */
+static int claim(int want)
+{
+	uint32_t answer[2 + MC_MASK_WORDS] = {(uint32_t)want};
+	int core, k, n = 0;
+
+	offer_seen = *(volatile uint32_t *)(page + MC_OFFER_AT);
+	if (call6(29, device, MC_WORKERS_ALL, (long)answer, 0, 0, 0) != 0) return 0;
+	root = answer[1];
+	share = (int)(answer[0] & 0xfff);
+	my_tag = answer[0] >> 12;
+	for (core = 1; core < MC_MAX_CORES; core++) {
+		if (!(answer[2 + core / 32] >> (core % 32) & 1)) continue;
+		n++;
+		for (k = 1; k < MC_MAX_CORES && core_of[k] != core && starting[k] != core; k++) {}
+		if (k < MC_MAX_CORES) continue;		/* one it has */
+		for (k = 1; k <= want && (core_of[k] || starting[k]); k++) {}
+		if (k > want) {
+			/* (more than it has workers for: back it goes) */
+			uint32_t back[MC_MASK_WORDS] = {0};
+
+			back[core / 32] = 1u << (core % 32);
+			call6(29, device, MC_GIVE, (long)back, 0, 0, 0);
+			n--;
+			continue;
+		}
+		start(k, core);
+	}
+	return n;
+}
+
+/* Worker k has no core any more: its last answer is kept here. */
+static void unbind(int k, int give)
+{
+	int core = core_of[k];
+
+	if (!core) return;
+	if (!settled[k]) {
+		result_of[k] = answer_of(k)->result;
+		took(k);
+	}
+	core_of[k] = 0;
+	lost = 1;
+	if (give) {
+		uint32_t back[MC_MASK_WORDS] = {0};
+
+		back[core / 32] = 1u << (core % 32);
+		call6(29, device, MC_GIVE, (long)back, 0, 0, 0);
+	}
+}
+
+/*
+ * What has become of worker k's core, looked at before anything is done with it. Only between
+ * jobs: the kernel takes no core whose job is out, and neither does this give one up.
+ */
+static void look(int k)
+{
+	int core = core_of[k];
+
+	if (starting[k]) {
+		/* (its first steps may stop at pages: left unserved, it never arrived, and what was
+		 * posted to it ran on the posting core for good) */
+		serve(k);
+		arrived(k);
+	}
+	core = core_of[k];
+	if (core) {
+		if (answer_of(k)->done != seq[k]) return;	/* at a job */
+		if (*owner_of_core(core) != my_tag) unbind(k, 0);	/* the kernel took it back */
+		else if (((volatile uint32_t *)(page + MC_RECALL_AT))[core / 32] >> (core % 32) & 1) unbind(k, 1);
+	} else if (!starting[k] && *(volatile uint32_t *)(page + MC_OFFER_AT) != offer_seen) {
+		claim(count);	/* cores have come free: this program's share again */
+	}
 }
 
 int mcw_open(int limit)
 {
-	uint32_t claim[4], own_tp, i;
-	int fd, k, pass, got = 0;
+	uint32_t i;
+	int fd, k, pass;
 
 	if (page) return count;
 	if (limit > MC_MAX_CORES - 1) limit = MC_MAX_CORES - 1;
 	if (limit <= 0 || (fd = (int)call6(56, -100, (long)"/dev/gpu", 2, 0, 0, 0)) < 0) return 0;
 	device = fd;
-	/* the cores nobody has, as many as are wanted, and this program's page table; from here
-	 * the kernel parks them when the program ends */
-	claim[0] = (uint32_t)limit;
-	claim[1] = claim[2] = claim[3] = 0;
+	for (k = 0; k < MC_MAX_CORES; k++) {
+		core_of[k] = starting[k] = 0;
+		settled[k] = 1;
+		result_of[k] = seq[k] = 0;
+	}
+	lost = share = 0;
 	if (lent) call6(29, fd, MC_LENT, 0, 0, 0, 0);
-	if (call6(29, fd, MC_WORKERS_ALL, (long)claim, 0, 0, 0) != 0) {
-		/* a kernel from before machines of more than 16 cores: { how many, the cores, the root } */
-		uint32_t old[3] = {(uint32_t)limit, 0, 0};
-
-		if (call6(29, fd, MC_WORKERS, (long)old, 0, 0, 0) != 0) goto none;
-		claim[1] = old[2];
-		claim[2] = old[1];
-	}
-	if (!claim[2] && !claim[3]) goto none;
-	for (k = 1; k < MC_MAX_CORES; k++)
-		if (claim[2 + k / 32] >> (k % 32) & 1) core_of[++got] = k;
 	if (!(page = map(MC_PAGE_SIZE, fd, MC_PAGE_GPU_OFFSET))) goto none;
-	asked_then = *(volatile uint32_t *)(page + MC_ASKED_AT);
+	/* (the mailboxes' pages here now: a worker's first look at its own would stop it) */
+	for (i = 0; i < MC_PAGE_SIZE; i += 4096) { volatile uint8_t byte = page[i]; (void)byte; }
 	/* (the stacks of an earlier open serve again when they are enough) */
-	if (stack_count < got) {
-		if (!(stacks = map((long)got * STACK_BYTES, -1, 0))) goto none;
-		stack_count = got;
+	if (stack_count < limit) {
+		if (!(stacks = map((long)(limit + 1) * STACK_BYTES, -1, 0))) goto none;
+		stack_count = limit + 1;
 	}
-	/* the stacks' pages there before a worker steps on one */
-	for (i = 0; i < (uint32_t)got * STACK_BYTES; i += 4096) stacks[i] = 0;
+	/* the top of each stack there before its worker steps on it */
+	for (k = 1; k < stack_count; k++)
+		for (i = 4096; i <= STACK_TOUCHED; i += 4096) stacks[(uint32_t)k * STACK_BYTES - i] = 0;
 	__asm__ volatile("mv %0, tp" : "=r"(own_tp));
-	for (k = 1; k <= got; k++) {
-		volatile uint32_t *start = (volatile uint32_t *)(page + MC_START_AT(core_of[k]));
-		volatile uint32_t *box = (volatile uint32_t *)(page + MC_JOB_AT(core_of[k]));
-		uint32_t *top = (uint32_t *)(stacks + (uint32_t)k * STACK_BYTES - 16);
-		for (i = 0; i < 16; i++) box[i] = 0;	/* its mailbox as new */
-		seq[k] = 0;
-		top[0] = own_tp;
-		start[1] = (uint32_t)mcw_entry;
-		start[2] = (uint32_t)top;
-		start[3] = claim[1];
-		start[0] = MC_START;
-	}
+	/* this program's share of the cores (the kernel waits a while for those other programs
+	 * have over theirs); from here the kernel parks them when the program ends */
+	claim(limit);
+	/* as many workers as its share, whether or not their cores are here yet: one whose core
+	 * is another program's until that one's job ends has it some passes later (look()) */
+	count = share < limit ? share : limit;
+	if (count <= 0) goto none;
 	/* a core that is there says so within a few passes; its first steps may want pages */
-	count = got;
 	for (pass = 0; pass < 48; pass++) {
 		int all = 1;
-		for (k = 1; k <= got; k++) {
+		for (k = 1; k <= count; k++) {
+			if (starting[k] && !arrived(k)) all = 0;
 			serve(k);
-			if (answer_of(k)->alive != (MC_ALIVE | (uint32_t)core_of[k])) all = 0;
 		}
 		if (all) break;
 		mc_next_pass();
 	}
-	count = 0;
-	for (k = 1; k <= got && answer_of(k)->alive == (MC_ALIVE | (uint32_t)core_of[k]); k++) count = k;
-	for (k = 1; k <= got; k++) *(volatile uint32_t *)(page + MC_START_AT(core_of[k])) = 0;
 	mc_next_pass();
-	if (count) return count;
+	return count;
 none:
 	if (stacks) call6(215, (long)stacks, (long)stack_count * STACK_BYTES, 0, 0, 0, 0);
 	stack_count = 0;
@@ -267,17 +391,43 @@ none:
 	device = -1;
 	page = 0;
 	stacks = 0;
+	count = 0;
 	return 0;
 }
 
 void mcw_close(void)
 {
-	int k, passes;
+	int k, passes, step;
 
 	if (!page) return;
-	for (k = 1; k <= count; k++) mcw_post(k, 0, 0, 0);
-	for (k = 1; k <= count; k++)
-		for (passes = 0; !mcw_done(k) && passes < 1000; passes++) mc_next_pass();
+	/* The workers leave their loops, in two steps: the jobs that are out end, then the leaving
+	 * is posted. A worker with a job out is never posted to: it would sleep on the new job's
+	 * word and never wake for it. All are waited for at once, their pages brought meanwhile. */
+	for (step = 0; step < 2; step++) {
+		if (step == 1)
+			for (k = 1; k <= count; k++)
+				if (core_of[k] && answer_of(k)->done == seq[k] && writing(core_of[k])) {
+					mc_job *j = job_of(k);
+
+					j->fn = 0;
+					j->seq = ++seq[k];
+					settled[k] = 0;
+					written();
+				} else {
+					core_of[k] = 0;
+				}
+		for (passes = 0; passes < 1500; passes++) {
+			int out = 0;
+
+			for (k = 1; k <= count; k++) {
+				if (!core_of[k]) continue;
+				serve(k);
+				if (answer_of(k)->done != seq[k]) out++;
+			}
+			if (!out) break;
+			mc_next_pass();
+		}
+	}
 	mc_next_pass();
 	call6(215, (long)page, MC_PAGE_SIZE, 0, 0, 0, 0);
 	call6(57, device, 0, 0, 0, 0, 0);
@@ -314,21 +464,44 @@ void *mcw_alloc(unsigned bytes)
 
 void mcw_post(int k, mcw_fn fn, uint32_t a0, uint32_t a1)
 {
-	mc_job *j = job_of(k);
+	mc_job *j;
 
-	j->fn = (uint32_t)fn;
-	j->a0 = a0;
-	j->a1 = a1;
-	j->seq = ++seq[k];
+	look(k);
+	if (core_of[k]) {
+		if (writing(core_of[k])) {
+			j = job_of(k);
+			j->fn = (uint32_t)fn;
+			j->a0 = a0;
+			j->a1 = a1;
+			j->seq = ++seq[k];
+			settled[k] = 0;
+			written();
+			return;
+		}
+		/* (the kernel took the core between the look and now) */
+		core_of[k] = 0;
+		lost = 1;
+	}
+	/* no core: the job is done here and now */
+	result_of[k] = fn ? fn(a0, a1) : 0;
+	settled[k] = 1;
 }
 
 int mcw_done(int k)
 {
+	if (settled[k]) {
+		look(k);
+		return 1;
+	}
 	serve(k);
-	return answer_of(k)->done == seq[k];
+	if (answer_of(k)->done != seq[k]) return 0;
+	result_of[k] = answer_of(k)->result;
+	took(k);
+	look(k);
+	return 1;
 }
 
-uint32_t mcw_result(int k) { return answer_of(k)->result; }
+uint32_t mcw_result(int k) { return settled[k] || !core_of[k] ? result_of[k] : answer_of(k)->result; }
 
 int mcw_wait(int k)
 {

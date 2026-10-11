@@ -23,13 +23,12 @@ static uint mc_bits_now = 6;    // the write cache's size of the core looked at
 static uint mc_size_now = 4096; // and how many texels of state it has
 static uint mc_tile0 = 0;       // and, a worker's, the first of its tiles
 static uint4 mc_geo;            // the geometry's texel
-static uint4 mc_geo1, mc_geo2;  // and the two of workers 25 and up (MC_GEOMETRY_MORE)
 uint4 mc_state_read(uint2 pos) {
     if (mc_core == 0) return state_after_tick(pos + state_off);
     uint w = pos.y * 64 + pos.x;
     if (w >= mc_size_now) return (uint4)0;
     uint t = mc_tile0 + (w >> 6), i = w & 63;
-    return state_after_tick(uint2(64 + (t << 3) + (i & 7), i >> 3));
+    return state_after_tick(uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3)));
 }
 #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
 #define STATE_TEX(pos) mc_state_read(uint2(pos))
@@ -54,8 +53,9 @@ uint commit_bands_changed() {
     return gpu_copy_bands();
 }
 
-// A texel of the state after this commit: the state rows from the tick's, RAM from every
-// core's stores.
+static uint commit_core = 0;   // (MachineCommitPoints.shader) whose store the point drawn is
+// A texel of the state after this commit: the state rows from the tick's, RAM from the
+// cores' stores.
 uint4 commit_texel(uint2 pos) {
     _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
     _Data_MTD_R.GetDimensions(m_dim.x, m_dim.y);
@@ -77,16 +77,17 @@ uint4 commit_texel(uint2 pos) {
         // a core's own state, as with one core
         uint hb = 0;
         uint4 own = state_after_tick(pos);
-        mc_select(0, 0);
+        mc_select(0);
         if (pos.x >= MC_STRIP_X) {
-            if (pos.y >= 8 || (mc_geo.r & 1) != 0) return (uint4)0;
-            uint tile = (pos.x - MC_STRIP_X) >> 3;
+            uint tile = ((pos.x - MC_STRIP_X) >> 3) + MC_STRIP_TILES * (pos.y >> 3);
             hb = mc_core_at(tile);
             if (hb == 0) return (uint4)0;
             uint w = ((tile - mc_tile0) << 6) + ((pos.y & 7) << 3) + (pos.x & 7);
             pos = uint2(w & 63, w >> 6);
         }
         pos = mc_texel_of(pos);
+        // (of a worker's state the commit changes three texels: the rest is as it is)
+        if (hb != 0 && (pos.y != 0 || (pos.x != 8 && pos.x != 28 && pos.x != 41))) return own;
         decode_for_commit();
         result = commit(pos, own);
         // A worker's one store that found its cache full is in its state until its next
@@ -96,12 +97,17 @@ uint4 commit_texel(uint2 pos) {
     } else {
         // RAM: every core's writes, the highest core's last
         result = RAM_TEX(pos);
-        uint row = 0;
-        for (uint h = 0; h < CORES; h++) {
-            uint rows = h == 0 ? 0 : mc_rows_of(mc_bits_of(h));
-            if (h != 0 && (rows == 0 || (mc_geo.r & 1) != 0)) continue;
-            mc_select(h, row);
-            row += rows;
+#ifdef COMMIT_AS_POINTS
+        // a point: the store of one core (two may not store to one texel in a pass). A pixel
+        // that asked every core took as long as hundreds of the tick's instructions.
+        uint first = min(commit_core, mc_count), most = first + 1;
+#else
+        // (a band drawn whole: what a core stored there is a point, drawn after this)
+        uint first = 0, most = _Init ? 1 : 0;
+#endif
+        bool stored_here = false;
+        for (uint h = first; h < most; h++) {
+            mc_select(h);
             if (h != 0) {
                 // A worker keeps every address it stored to or-ed together in one word:
                 // a texel whose address has a bit that word lacks is not its. (A copy
@@ -113,8 +119,14 @@ uint4 commit_texel(uint2 pos) {
             }
             decode_for_commit();
             result = commit(pos, result);
+            stored_here = true;
         }
-        mc_select(0, 0);
+        mc_select(0);
+#ifdef COMMIT_AS_POINTS
+        // A worker that sat the pass out has its last pass's tags still: its point is of no
+        // store, and must not put the texel as it was over what another core's point has drawn.
+        if (!stored_here) discard;
+#endif
     }
     return result;
 }

@@ -15,7 +15,7 @@ index 5f7f002..ed85cbe 100644
  		if(ev->buttons & GR_BUTTON_L) {
  			state->button_down = 1;
 diff --git a/src/demos/nanox/nxterm.c b/src/demos/nanox/nxterm.c
-index 91ec808..c7fd754 100755
+index 91ec808..0792667 100755
 --- a/src/demos/nanox/nxterm.c
 +++ b/src/demos/nanox/nxterm.c
 @@ -74,13 +74,22 @@
@@ -44,7 +44,7 @@ index 91ec808..c7fd754 100755
  //#define stdbackground GR_COLOR_GAINSBORO
  //#define stdbackground BLUE
  #define	LINEBUF         stdcol
-@@ -160,6 +169,239 @@ void rendition(int escvalue);
+@@ -160,6 +169,258 @@ void rendition(int escvalue);
  
  /* **************************************************************************/
  
@@ -110,6 +110,25 @@ index 91ec808..c7fd754 100755
 +{
 +	GrClearWindow(id, exposeflag);
 +	memset(cells, 0, sizeof cells);
++}
++
++/* For a test: SIGUSR1 writes the screen's text, a line a row after "nxterm|", and where the cursor is. */
++static void sigdump(int sig)
++{
++	char line[CELL_COLS + 48];
++	int r, c, n;
++
++	n = sprintf(line, "nxterm: %d x %d, cursor at %d, %d, wrap %d\n", col, row, curx, cury, wrap);
++	write(2, line, n);
++	for (r = 0; r < row && r < CELL_ROWS; r++) {
++		memcpy(line, "nxterm|", 7);
++		for (n = 7, c = 0; c < col && c < CELL_COLS; c++)
++			line[n++] = cells[r][c] ? cells[r][c] : ' ';
++		while (n > 7 && line[n - 1] == ' ')
++			n--;
++		line[n++] = '\n';
++		write(2, line, n);
++	}
 +}
 +
 +/* One row of the scrolled-back view: history above, the live screen's cells below. */
@@ -284,7 +303,7 @@ index 91ec808..c7fd754 100755
  void sflush(void)
  {
  	if (sbufcnt) {
-@@ -194,17 +436,19 @@ void sadd(char c)
+@@ -194,17 +455,19 @@ void sadd(char c)
  
  void show_cursor(void)
  {
@@ -305,7 +324,7 @@ index 91ec808..c7fd754 100755
  		if(!curvis) {
  			curvis = 1;
  			show_cursor();
-@@ -549,28 +793,28 @@ void rendition(int escvalue) {
+@@ -549,28 +812,28 @@ void rendition(int escvalue) {
  		} else if ((escvalue>29) && (escvalue<38)){
      		switch(escvalue) {
  		    case 30:
@@ -342,7 +361,7 @@ index 91ec808..c7fd754 100755
      			break;
  		    case 39:
      			GrSetGCForeground(gc1, stdforeground); //default color
-@@ -579,28 +823,28 @@ void rendition(int escvalue) {
+@@ -579,28 +842,28 @@ void rendition(int escvalue) {
  		} else if ((escvalue>39) && (escvalue<49)){
      		switch(escvalue) {
  		    case 40:
@@ -379,7 +398,57 @@ index 91ec808..c7fd754 100755
      			break;
  		    case 49:
      			GrSetGCBackground(gc1, stdbackground); //default color
-@@ -1155,9 +1399,71 @@ term(void)
+@@ -972,8 +1235,13 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
+  * un-escaped character print routine
+  */
+ 
++static int wrapnext;	/* the cursor is on the last column's character: the next one wraps */
++
+ void esc0 (unsigned char c)
+ {
++    /* (anything that moves the cursor or begins a sequence ends the wait to wrap) */
++    if (c == 8 || c == 9 || c == 10 || c == 13 || c == 27)
++	wrapnext = 0;
+     switch (c) {
+     case 0:
+ 	   /*
+@@ -1053,17 +1321,25 @@ void esc0 (unsigned char c)
+ 		break;
+ 
+     default: /* any printable char */
+-		sadd(c);
+-		if (++curx >= col) {
+-	    	sflush();
+-	    	if (!wrap) 
+-				curx = col-1;
+-	    	else {
+-				curx = 0;
+-				if (++cury >= scrollbottom) 
+-		    		vscrollup(1);
+-	    	}
++		/* A character in the last column leaves the cursor on it, and it is the next one that
++		 * begins the next line, as on a VT100: a shell's line editor counts on that (it sends
++		 * a new line itself there, which made a blank row when the wrap was at once). */
++		if (wrapnext) {
++			wrapnext = 0;
++			sflush();
++			curx = 0;
++			if (++cury >= scrollbottom) {
++				cury--;
++				vscrollup(1);
++				cury = scrollbottom - 1;
++			}
+ 		}
++		sadd(c);
++		if (curx + 1 >= col) {
++			sflush();
++			wrapnext = wrap;
++		} else
++			curx++;
+ 		break;
+     }
+ }
+@@ -1155,9 +1431,71 @@ term(void)
  			exit(0);
  			break;
  
@@ -451,7 +520,7 @@ index 91ec808..c7fd754 100755
  			if (kp->ch & MWKEY_NONASCII_MASK)
  				if (termtype == ANSI){
  				bufflen = do_special_key_ansi(buf,kp->ch,kp->modifiers);
-@@ -1188,6 +1494,28 @@ term(void)
+@@ -1188,6 +1526,28 @@ term(void)
  			 */
  			if (wevent.update.utype == GR_UPDATE_UNMAPTEMP)
  				hide_cursor();
@@ -480,7 +549,7 @@ index 91ec808..c7fd754 100755
  			break;
  
  		case GR_EVENT_TYPE_EXPOSURE:
-@@ -1199,6 +1527,8 @@ term(void)
+@@ -1199,6 +1559,8 @@ term(void)
  
  		case GR_EVENT_TYPE_FDINPUT:
  			if (!gotexpose) break;	/* wait until mapped before reading */
@@ -489,7 +558,7 @@ index 91ec808..c7fd754 100755
  			hide_cursor();
  			if ((in = read(termfd, buf, sizeof(buf))) > 0) {
  				for (l=0; l<in; l++) {
-@@ -1683,7 +2013,7 @@ int main(int argc, char **argv)
+@@ -1683,7 +2045,7 @@ int main(int argc, char **argv)
      w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, TITLE, GR_ROOT_WINDOW_ID, -1,-1,winw,winh,
  		stdbackground);
  
@@ -498,6 +567,14 @@ index 91ec808..c7fd754 100755
  		   GR_EVENT_MASK_KEY_DOWN | 
  		   GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT |
  		   GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
+@@ -1756,6 +2118,7 @@ int main(int argc, char **argv)
+     mysignal(SIGPIPE, sigpipe);
+     mysignal(SIGCHLD, sigchild);
+     mysignal(SIGINT,  SIG_IGN);
++    mysignal(SIGUSR1, sigdump);
+ #ifdef SIGTTOU
+     signal(SIGTTOU, SIG_IGN);   /* just in case we're started in the background */
+ #endif
 diff --git a/src/engine/devdraw.c b/src/engine/devdraw.c
 index c389e46..b528bb5 100644
 --- a/src/engine/devdraw.c

@@ -11,7 +11,7 @@
 // A worker runs the code of a program on core 0, as a thread of it that the kernel does not
 // know of: in user mode, on the page table the program names when it starts it (the kernel
 // tells a program its own: core 0 may be in another process by then). Its mailbox is 64
-// bytes of RAM at MC_MBOX + 0x400 + 64 * core, and a word more at MC_MBOX + 16 * core
+// bytes of RAM at MC_MBOX + 0x4000 + 64 * core, and a word more at MC_MBOX + 16 * core
 // (programs/mc/mc.h is the same layout for the programs):
 //
 //   start   the texel at MC_MBOX + 16 * core: { MC_START, pc, sp, root } starts the worker there,
@@ -26,7 +26,7 @@
 //           word. A page the program has not touched yet is the usual cause.
 //   resume  its fourth texel, core 0's: when its first word is the fault's count the worker
 //           runs the same instruction again.
-//   call    a system call (ecall) is a stop of its own kind: the eight words at MC_MBOX + 0x800
+//   call    a system call (ecall) is a stop of its own kind: the eight words at MC_MBOX + 0x2000
 //           + 32 * core take a7 and a0 to a5, the fault's cause is 8, and when the resume
 //           word is the count the worker goes on after the ecall with the resume texel's
 //           second word in a0. Core 0 makes the call for it, in the program they share.
@@ -45,12 +45,11 @@
 #define MC_PARKED_STOP 2
 #define MC_PARKED_EBREAK 1
 #define MC_START_TEXEL(core) RAM_ADDR(((MC_MBOX & 0x7fffffff) >> 4) + (core))
-// (cores 16 and up have theirs further on: programs/mc/mc.h)
-#define MC_BOX_OF(core) ((core) < 16 ? 0x400 + 64 * (core) : 0x1000 + 64 * (core))
+#define MC_BOX_OF(core) (0x4000 + 64 * (core))
 #define MC_JOB_TEXEL(core) RAM_ADDR(((MC_MBOX & 0x7fffffff) >> 4) + (MC_BOX_OF(core) >> 4))
 #define MC_RESUME_TEXEL(core) RAM_ADDR(((MC_MBOX & 0x7fffffff) >> 4) + (MC_BOX_OF(core) >> 4) + 3)
 #define MC_FAULT_WORD(core) ((MC_MBOX & 0x7fffffff) + MC_BOX_OF(core) + 32)
-#define MC_CALL_WORD(core) ((MC_MBOX & 0x7fffffff) + ((core) < 16 ? 0x800 + 32 * (core) : 0x2000 + 32 * (core)))
+#define MC_CALL_WORD(core) ((MC_MBOX & 0x7fffffff) + 0x2000 + 32 * (core))
 
 #ifdef PASS_TICK
 // Whether this pixel's core is a worker with nothing to do in this pass.

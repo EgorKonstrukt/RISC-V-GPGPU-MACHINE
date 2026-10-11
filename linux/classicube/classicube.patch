@@ -649,7 +649,7 @@ index ccfee098e..70760c534 100644
      #define DEFAULT_VIEWDIST 192
  #else
 diff --git a/src/Generator.c b/src/Generator.c
-index d0331911e..38170fe02 100644
+index d0331911e..ff15c6ab4 100644
 --- a/src/Generator.c
 +++ b/src/Generator.c
 @@ -1,4 +1,9 @@
@@ -681,7 +681,7 @@ index d0331911e..38170fe02 100644
 +#ifdef CC_BUILD_SHADEREMU
 +	/* the worker cores, for the world's making and then its meshes (MapRenderer.c): asked for
 +	   here, on the game's own thread */
-+	if (!(getenv("CLASSICUBE_MESH") && !strcmp(getenv("CLASSICUBE_MESH"), "inline")) && mcw_open(3) > 0) {
++	if (!(getenv("CLASSICUBE_MESH") && !strcmp(getenv("CLASSICUBE_MESH"), "inline")) && mcw_open(15) > 0) {
 +		static cc_bool once;
 +		extern char __DATA_BEGIN__[], _end[];
 +		if (!once) { once = true; atexit(mcw_close); mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__)); }

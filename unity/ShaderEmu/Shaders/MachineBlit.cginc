@@ -5,15 +5,17 @@ Texture2D<uint4> _TickState;       // what the tick keeps of the CPU's state are
 // the tick keeps 16 (STATE_ROWS of src/types.cginc).
 #define L1_TABLE_BITS 6
 #define TICK_STATE_ROWS 16
-// Core 0 and up to 63 workers (docs/multicore.md). The tick's texture is the state rows'
-// own places: core 0's 64 x 16, and beside it the workers' band, 248 tiles of 8 x 8, of which
-// each worker has a strip as the guest's geometry says (src/types.cginc).
-#define CORES 64
+// Core 0 and up to 255 workers (docs/multicore.md). The tick's texture is the state rows'
+// own places: core 0's 64 x 16, and beside it the workers' bands, 248 tiles of 8 x 8 each, of
+// which each worker has a strip as the guest's geometry says (src/types.cginc).
+#define CORES 256
 #define TICK_STATE_WIDTH 2048
-#define WORKER_BAND_ROWS 8
+#define WORKER_BAND_ROWS 48   // 8 * MC_STRIP_BANDS: six bands, 49 workers of five tiles to a band
 // The tick itself is drawn into eight targets, eight state texels a pixel (MachineTick.shader):
-// core 0's eight columns, TICK_GAP empty ones, then a block of columns for each worker.
-#define TICK_MRT_W 1024
+// core 0's eight columns, TICK_GAP empty ones, then a block of columns for each worker, 128
+// blocks to a band of TICK_STATE_ROWS rows, TICK_MRT_BANDS bands.
+#define TICK_MRT_W 1040
+#define TICK_MRT_BANDS 2
 #define TICK_GAP 8
 
 struct blit_v2f {

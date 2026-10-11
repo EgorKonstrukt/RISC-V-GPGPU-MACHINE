@@ -14,9 +14,13 @@
  * only in their last four bits). Give a job memory of its own to write: rows of a buffer
  * whose width is a multiple of 16, allocations from mcw_alloc(), its own stack.
  *
- * The kernel hands the cores out: mcw_open() gives as many as are wanted of those no other
- * program has, which may be none, and where the machine has none. A program does the work
- * itself then. They are free again when the program closes them or ends.
+ * The kernel shares the cores out: mcw_open() gives the program's share of them, which is
+ * as many as it wants while there are enough for everybody, and may be none, and is none
+ * where the machine has none. A program does the work itself then. The share changes as
+ * other programs come and go: a worker of this program may lose its core between two jobs
+ * (never during one), and have one again later. Nothing changes for the program: the
+ * workers are numbered as before, and a job posted to one that has no core is run by the
+ * core that posts it, there and then. mcw_bound() says which it would be.
  */
 #ifndef MCW_H
 #define MCW_H
@@ -30,29 +34,21 @@ extern "C" {
 
 typedef uint32_t (*mcw_fn)(uint32_t a0, uint32_t a1);
 
-/*
- * The machine's geometry (docs/multicore.md): `workers` cores, worker k's write cache with
- * tables of 2^bits[k - 1] buckets (3 to 6: 0.75, 1.5, 3 or 6 KB of new stores a pass). They
- * share 64 rows of the machine's state and a worker takes 2, 3, 5 or 9 of them, so it is
- * few workers that store much or many that store little: 7 of the largest, 21 of size 4
- * (a machine of 16 cores has 15 at most; mcw_fit says how many of a size fit). Only while no program has a worker: 0 when it was done, the
- * kernel's error otherwise (-16: someone has workers; -22: more than fits; -19: a machine
- * whose cores are as they are). Until someone asks, there are 3 of the largest and 12 of size 4.
- */
-int mcw_shape(const unsigned char *bits, int workers);
-/* What a geometry may be on this machine: how many workers it can have at most (15, or up
- * to 63 on a machine of more than 16 cores), how many rows they share (64, or 248 there),
- * how many rows a worker of a size takes, and so how many workers of one size fit. */
+/* For a job, on its worker: whether the kernel wants worker k's core back when the job ends (a
+ * job that could go on for long ends early then, and is posted again for the rest). */
+int mcw_recalled(int k);
+
+/* How many workers the machine has (63 of 64 cores): all alike, each with a write cache of
+ * 1.5 KB of new stores a pass (docs/multicore.md). */
 int mcw_most(void);
-int mcw_room(void);
-int mcw_rows(int bits);
-int mcw_fit(int bits);
 /* Starts up to `limit` workers; how many there are. */
 int mcw_open(int limit);
+/* Whether worker k has a core now (a job posted to it will not be run by this one). */
+int mcw_bound(int k);
 /*
  * For a program that can do without (a monitor that draws with them): called before
- * mcw_open(), the workers it gets are only lent. mcw_asked() says when another program is
- * waiting for them, half a second at most: mcw_close() then, and that program has them.
+ * mcw_open(), its workers are only lent: it has what the programs that keep theirs leave.
+ * mcw_asked() says that a core of this program has been taken back or asked for.
  */
 void mcw_lend(void);
 int mcw_asked(void);

@@ -16,7 +16,7 @@ started and everything on its desktop run without building anything.
 | `root/bin/busybox` | `linux/userland/busybox.sh` | BusyBox 1.36.1 |
 | `root/usr/bin/nc`, `telnetd` | `linux/userland/build.sh` | two-line scripts that start BusyBox's applets of those names (`docs/lan.md`) |
 | `root/usr/bin/nxfiles`, `nxweb`, `nxedit`, `nxpaint`, `nxview`, `nxmon`, `nxsettings`, `nxkey`, `nxoff`, `root/usr/share/web-*`, `nxapps.90-system`, `open`, `nxopen-archive`, `nxopen-run`, `nxopen.20-apps` (what opens which kind of file, `docs/open.md`), `picture-fox.png`, `picture-fox.jpg` (cut from the desktop's picture by `tools/make_test_pictures.py`) | `linux/apps/build.sh` | this repository |
-| `root/usr/bin/nxray`, `nxpath`, `root/usr/share/nxapps.82-raytrace`, `nxapps.83-pathtrace` | `linux/raytrace/build.sh`, `linux/pathtrace/build.sh` | this repository; `nxpath` with Dear ImGui (below) |
+| `root/usr/bin/nxray`, `nxpath`, `root/usr/share/nxapps.82-raytrace`, `nxapps.83-pathtrace` | `linux/raytrace/build.sh`, `linux/pathtrace/build.sh` | this repo; in `nxpath`, the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory)sitory; `nxpath` with Dear ImGui (below) |
 | `root/usr/bin/nxplay`, `root/usr/share/play-test.wav`, `.mp3`, `.flac`, `.mod` (made by `linux/play/make_test.py`), `nxapps.84-play`, `nxopen.84-play` | `linux/play/build.sh` | this repository, with minimp3 and dr_flac (below) |
 | `root/usr/share/wallpaper-*.ppm` | `tools/make_wallpaper.py` | photographs from Unsplash |
 | `root/usr/bin/doom.bin`, `root/usr/share/nxopen.50-doom` | `linux/nanox/doom.sh` | the Doom in Microwindows' `contrib`, with the files in `linux/nanox` |

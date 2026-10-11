@@ -42,16 +42,42 @@ Shader "ShaderEmu/Scope"
                 return max(max(v & 0xff, (v >> 8) & 0xff), max((v >> 16) & 0xff, v >> 24));
             }
 
-            // The CPU's 64 x 64 state texels (registers, CSRs, the UART, the write cache's list,
-            // the TLBs), a square each, coloured as the memory view colours RAM.
-            float3 cpu_state(float2 p) {
-                float2 at = p * 64.0;
-                int2 cell = int2(min((int)at.x, 63), min((int)at.y, 63));
-                uint4 t = _State.Load(int3(cell, 0));
-                float2 f = frac(at);
-                float edge = (f.x < 0.08 || f.y < 0.08) ? 0.6 : 1.0;
+            // A state texel as a square, coloured as the memory view colours RAM.
+            float3 state_cell(uint4 t, float2 f) {
+                float edge = (f.x < 0.1 || f.y < 0.1) ? 0.6 : 1.0;
                 if (!any(t != 0)) return float3(0.02, 0.025, 0.04) * edge;
                 return (float3(peak(t.r), peak(t.g), peak(t.b | t.a)) / 255.0 * 0.88 + 0.12) * edge;
+            }
+
+            // Every core's state, as the tick's eight targets leave it in the state texture. Above:
+            // core 0's 64 x 32 texels (registers, the UART, the write cache, the TLBs, then its
+            // CSRs). Below: the workers, a block each, as many as the machine's geometry has
+            // (src/types.cginc: how many, and their size, in the control texel 0x3d), a worker's
+            // texels (its registers, its write cache, its float registers) twenty to a row.
+            float3 cpu_state(float2 p) {
+                const float3 back = float3(0.02, 0.025, 0.04);
+                const float top = 0.34;
+                if (p.y < top) {
+                    float2 at = float2(p.x * 64.0, p.y / top * 32.0);
+                    return state_cell(_State.Load(int3(min((int)at.x, 63), min((int)at.y, 31), 0)), frac(at));
+                }
+                uint4 geo = _State.Load(int3(0x3d, 64 + 0x700000 / 2048, 0));
+                uint rows = geo.b >= 3 && geo.b <= 6 ? (52 + (2u << geo.b) * 4 + 63) / 64 : 0;
+                uint count = (geo.r & 1) != 0 ? 0 : min(geo.g, 255u);
+                if (rows == 0 || count == 0) return back * 0.6;
+                uint side = 1;
+                for (int n = 0; n < 16; n++) if (side * side < count) side++;
+                float2 g = float2(p.x, (p.y - top) / (1.0 - top)) * (float)side;
+                uint j = min((uint)g.y, side - 1) * side + min((uint)g.x, side - 1);
+                float2 within = (frac(g) - 0.06) / 0.88;
+                if (j >= count || any(within < 0.0) || any(within >= 1.0)) return back * 0.6;
+                uint texels = rows * 64, down = (texels + 19) / 20;
+                float2 at = within * float2(20.0, (float)down);
+                uint w = (uint)at.y * 20 + (uint)at.x;
+                if (w >= texels) return back * 0.6;
+                // the worker's tile and the texel in it: 49 workers of five tiles to a band of 248
+                uint per = 248 / rows, tile = (j / per) * 248 + (j % per) * rows + (w >> 6), i6 = w & 63;
+                return state_cell(_State.Load(int3(64 + (tile % 248) * 8 + (i6 & 7), (tile / 248) * 8 + (i6 >> 3), 0)), frac(at));
             }
 
             // The ROM in three strips, low addresses at the top left: a texel's first three

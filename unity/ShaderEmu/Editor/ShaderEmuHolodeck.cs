@@ -66,6 +66,8 @@ public static partial class ShaderEmuBuilder
     // A holodeck's own things stay before the program's world (HoloGuard.shader): a copy of the
     // seats', stands' and screens' models, of each screen's glass and of each stand's panel,
     // which draws only a mark where the thing itself is seen.
+    const float SeatHeight = 0.38f;   // where a sitter's hips are put (0.50 sat them too high in a headset)
+
     static void HoloGuards(Transform world)
     {
         Transform holodeck = world.Find("Holodeck"), models = world.Find("Models");
@@ -87,6 +89,7 @@ public static partial class ShaderEmuBuilder
                 quad = screen.GetComponent<MeshFilter>().sharedMesh;
             }
         }
+        Dictionary<Transform, Transform> copies = new Dictionary<Transform, Transform>();
         foreach (MeshFilter thing in things)
         {
             GameObject copy = new GameObject(thing.name + " guard", typeof(MeshFilter), typeof(MeshRenderer));
@@ -94,6 +97,14 @@ public static partial class ShaderEmuBuilder
             copy.transform.SetPositionAndRotation(thing.transform.position, thing.transform.rotation);
             copy.transform.localScale = thing.transform.lossyScale;
             copy.GetComponent<MeshFilter>().sharedMesh = thing.sharedMesh;
+            copies[thing.transform] = copy.transform;
+        }
+        // a screen's mark goes where the sitter puts the screen (EmuHolodeck.NextScreen)
+        foreach (EmuHolodeck deck in holodeck.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            deck.screenGuards = new Transform[deck.screens.Length];
+            for (int i = 0; i < deck.screens.Length; i++) deck.screenGuards[i] = copies[deck.screens[i]];
+            Apply(deck);
         }
         // a stand's panel is a canvas a little over its desk: a rectangle of its size
         foreach (Canvas canvas in holodeck.GetComponentsInChildren<Canvas>(true))
@@ -116,6 +127,34 @@ public static partial class ShaderEmuBuilder
             renderer.lightProbeUsage = LightProbeUsage.Off;
             renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
         }
+    }
+
+    // The large screen a sitter may have in place of the console's small one: upright and
+    // straight before the seat, 1.7 m off, its middle a little over a sitter's eyes (1.08 m),
+    // of the small one's shape. The console, to the right and nearer, covers none of it from there.
+    static void LargeScreen(EmuHolodeck deck, float aspect, float side)
+    {
+        const float wide = 1.6f;
+        deck.largeAt = new Vector3(0f, 1.25f, side - 1.0f);
+        deck.largeSize = new Vector3(wide, wide / aspect, 1f);
+    }
+
+    [MenuItem("ShaderEmu/Add the holodecks' large screens to the open scene")]
+    public static void AddLargeScreens()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        foreach (EmuHolodeck deck in world.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(deck);
+            Transform small = deck.screens[0];
+            deck.screenTurn = small.localEulerAngles;
+            LargeScreen(deck, deck.screenSize.x / deck.screenSize.y, deck.roomSize.x);
+            Apply(deck);
+        }
+        HoloGuards(world);
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ShaderEmu] the holodecks have their large screens (the scene is not saved)");
     }
 
     [MenuItem("ShaderEmu/Add the holodecks' guards to the open scene")]
@@ -279,6 +318,8 @@ public static partial class ShaderEmuBuilder
         deck.roomSize = new Vector3(side, tall, side);
         deck.screenAt = new Vector3(plan.screen[0], plan.screen[1], plan.screen[2]);
         deck.screenSize = new Vector3(plan.screen[3], plan.screen[4], 1f);
+        deck.screenTurn = new Vector3(plan.screenTurn[0], plan.screenTurn[1], 0);
+        LargeScreen(deck, plan.screen[3] / plan.screen[4], side);
         deck.blackTexture = machine.blackTexture;
         deck.stations = new VRC.SDKBase.VRCStation[rooms];
         deck.frames = new Transform[rooms];
@@ -289,8 +330,6 @@ public static partial class ShaderEmuBuilder
         deck.doorLabels = new TextMeshProUGUI[rooms];
         deck.plateLabels = new TextMeshProUGUI[rooms];
         deck.scaleLabels = new TextMeshProUGUI[rooms];
-        deck.shooters = new GameObject[rooms];
-        deck.strategies = new GameObject[rooms];
         Collider[] screenPlates = new Collider[rooms];
         Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f);
         TextMeshProUGUI unused;
@@ -319,7 +358,7 @@ public static partial class ShaderEmuBuilder
             // the seat: a station of the scene, which VRChat syncs by itself, one visitor at a time
             GameObject seat = new GameObject("Seat");
             seat.transform.SetParent(frame, false);
-            seat.transform.localPosition = new Vector3(0, 0.50f, plan.seat);
+            seat.transform.localPosition = new Vector3(0, SeatHeight, plan.seat);
             BoxCollider reach = seat.AddComponent<BoxCollider>();
             reach.size = new Vector3(0.5f, 0.7f, 0.5f);
             reach.center = new Vector3(0, 0.15f, 0);
@@ -330,7 +369,7 @@ public static partial class ShaderEmuBuilder
             VRC.SDK3.Components.VRCStation station = seat.AddComponent<VRC.SDK3.Components.VRCStation>();
             station.PlayerMobility = VRC.SDKBase.VRCStation.Mobility.Immobilize;
             station.seated = true;
-            station.disableStationExit = false;
+            station.disableStationExit = true;   // the sticks are the game's: EmuHolodeck stands the sitter up when they jump
             station.canUseStationFromStation = true;
             station.stationEnterPlayerLocation = seat.transform;
             station.stationExitPlayerLocation = leave;
@@ -341,7 +380,7 @@ public static partial class ShaderEmuBuilder
             seats.Add(sits);
             Transform eye = new GameObject("Seat eye").transform;
             eye.SetParent(frame, false);
-            eye.localPosition = new Vector3(0, 1.2f, plan.seat);
+            eye.localPosition = new Vector3(0, SeatHeight + 0.7f, plan.seat);
             deck.eyes[k] = eye;
 
             // the screen: this room's sitter's display
@@ -430,22 +469,7 @@ public static partial class ShaderEmuBuilder
         }
         foreach (KeyValuePair<Button, string> key in keys) OnClick(key.Key, deck, key.Value);
 
-        // everybody sees a controller in its holder's hand: the two models are each player's own object's
-        foreach (EmuShare share in world.GetComponentsInChildren<EmuShare>(true))
-        {
-            UdonSharpEditorUtility.CopyUdonToProxy(share);
-            for (int i = share.transform.childCount - 1; i >= 0; i--) Object.DestroyImmediate(share.transform.GetChild(i).gameObject);
-            share.pads = new Transform[2];
-            for (int which = 0; which < 2; which++)
-            {
-                GameObject pad = new GameObject(which == 0 ? "Shooter in hand" : "Strategy in hand");
-                pad.transform.SetParent(share.transform, false);
-                GamepadModel(pad.transform, which == 0 ? "Gamepad shooter" : "Gamepad strategy", materials);
-                pad.SetActive(false);
-                share.pads[which] = pad.transform;
-            }
-            Apply(share);
-        }
+        NoControllerModels(world);
 
         machine.volumeMaterial = sceneMat;
         machine.volumeMaskMaterial = maskMat;

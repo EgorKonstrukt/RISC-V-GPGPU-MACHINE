@@ -101,82 +101,101 @@
 // those, four to a column, the last 44 of the cache and the eight of the float registers,
 // for which the pass draws 16 x 4. In a row of their own they were a line a pixel high,
 // which costs the warps of two rows.
-// The geometry (docs/multicore.md): the workers' state is a band of the state rows beside
-// core 0's block, 8 texels high and 64 tiles of 8 x 8 long, and each worker has a strip of
-// whole tiles of it, one worker's after another's (the functions below count them as rows
-// of 64 texels, which is what a tile holds). How many workers there are and how large each one's write cache is, is a texel
-// of the control words that core 0 writes while every worker is parked:
+// The geometry (docs/multicore.md): the workers are all alike. Their state is tiles of 8 x 8
+// texels in the state rows beside core 0's block: MC_STRIP_TILES of them to a band of eight
+// rows, one band under another, a worker's tiles side by side in one band. How many workers
+// there are and how large their write caches are is a texel of the control words that core 0
+// writes while every worker is parked:
 //   .r  bit 0: the strip is being laid out anew (every pixel of it is zero meanwhile)
-//   .g  four bits a worker for workers 1 to 8: its cache's tables are 2^bits buckets (3 to 6); 0: no such worker
-//   .b  the same for workers 9 to 16, and .a for 17 to 24
-// and, on a machine of more than 16 cores (CORES > 16), two texels of the mailbox page
-// (MC_GEOMETRY_MORE, 0x86c00f00): workers 25 to 56 in the first one's four words, 57 to 63 in
-// the first word of the second. There the
-// band is 248 tiles long (the state rows to their right end) in place of 64.
+//   .g  how many workers
+//   .b  their caches' tables are 2^bits buckets (3 to 6)
 // A worker keeps the CPU's 44 texels, its cache and the float registers' 8, in that order.
 #define MC_GEOMETRY 0x70003du
-#define MC_GEOMETRY_MORE 0x6c00f0u
 #define MC_STRIP_X 64
-#if CORES > 16
-#define MC_STRIP_ROWS 248
-#define MC_GEO_READ mc_geo = RAM_TEX(RAM_ADDR(MC_GEOMETRY)); mc_geo1 = RAM_TEX(RAM_ADDR(MC_GEOMETRY_MORE)); mc_geo2 = RAM_TEX(RAM_ADDR(MC_GEOMETRY_MORE + 1));
-#else
-#define MC_STRIP_ROWS 64
-#define MC_GEO_READ mc_geo = RAM_TEX(RAM_ADDR(MC_GEOMETRY));
+#define MC_STRIP_TILES 248
+#ifndef MC_STRIP_BANDS
+#define MC_STRIP_BANDS ((CORES + 47) / 49)   // 49 workers of five tiles to a band
 #endif
-uint mc_bits_of(uint core) {
-    uint k = core - 1;
-    if (core == 0) return (uint)L1_TABLE_BITS;
-#if CORES > 16
-    uint word = k < 8 ? mc_geo.g : k < 16 ? mc_geo.b : k < 24 ? mc_geo.a : k < 32 ? mc_geo1.r : k < 40 ? mc_geo1.g : k < 48 ? mc_geo1.b : k < 56 ? mc_geo1.a : mc_geo2.r;
-    return (word >> (4 * (k & 7))) & 15;
-#else
-    return ((k < 8 ? mc_geo.g >> (4 * k) : mc_geo.b >> (4 * (k - 8))) & 15);
-#endif
-}
-uint mc_rows_of(uint bits) {
-    return bits == 0 ? 0 : (L1_STATE_AT + 8 + ((2u << bits) * L1_STRIDE) + 63) / 64;
-}
-// Makes `core` the one whose state is read: a worker's begins at tile `row` of the strip.
-void mc_select(uint core, uint row) {
-    mc_tile0 = row;
-    mc_core = core;
-    mc_bits_now = mc_bits_of(core);
-    mc_size_now = L1_STATE_AT + (2u << mc_bits_now) * L1_STRIDE + 8;
-    state_off = uint2(0, 0);
-}
 // With the tick in eight targets (TICK_MRT, main.shader) a tile is a column of eight pixels
-// there, and a worker's columns are a block of its own, TICK_BLOCK columns wide or a multiple
-// (4 x 8 pixels is what the card runs as one), with TICK_PAD or more columns of it empty:
-// pixels of two cores that the card runs together cost what both cost, and a block whose
-// quad is full to its last column still shared (measured: docs/multicore.md). mc_col0 is the
-// first column of the worker selected.
+// there, and a worker's columns are a block of its own, TICK_BLOCK columns wide or a multiple,
+// with TICK_PAD or more columns of it empty: pixels of two cores that the card runs together
+// cost what both cost (measured: docs/multicore.md; six columns of eight may be used). The
+// blocks are side by side in bands of STATE_ROWS rows, TICK_BANDS of them, the first with
+// core 0's eight columns and TICK_GAP empty ones before the workers'.
 #ifndef TICK_BLOCK
 #define TICK_BLOCK 4
 #endif
 #ifndef TICK_PAD
 #define TICK_PAD 2
 #endif
-static uint mc_col0 = 0;
+#ifndef TICK_GAP
+#define TICK_GAP 8
+#endif
+#ifndef TICK_MRT_W
+#define TICK_MRT_W 1040   // (core 0, the gap and 128 blocks of eight columns)
+#endif
+#define TICK_BANDS ((CORES + 126) / 128)
+static uint mc_count = 0;   // workers the geometry has, a worker's tiles, and its block's columns
+static uint mc_rows = 0;
+static uint mc_cols = 0;
+uint mc_rows_of(uint bits) {
+    return bits == 0 ? 0 : (L1_STATE_AT + 8 + ((2u << bits) * L1_STRIDE) + 63) / 64;
+}
 uint mc_cols_of(uint rows) {
     return (rows + TICK_PAD + TICK_BLOCK - 1) / TICK_BLOCK * TICK_BLOCK;
 }
-// The worker whose tiles the strip's tile y is one of (or, by_column, whose block the
-// targets' column y is in), selected; 0 when it is nobody's.
-uint mc_core_find(uint y, bool by_column) {
-    uint row = 0, col = 0, found = 0, at = 0, col_at = 0;
-    for (uint k = 1; k < CORES; k++) {
-        uint rows = mc_rows_of(mc_bits_of(k)), cols = mc_cols_of(rows);
-        uint from = by_column ? col : row, n = by_column ? cols : rows;
-        if (rows != 0 && y >= from && y < from + n) { found = k; at = row; col_at = col; }
-        row += rows;
-        col += cols;
-    }
-    if (found != 0) { mc_select(found, at); mc_col0 = col_at; }
-    return found;
+void mc_geo_read() {
+    mc_geo = RAM_TEX(RAM_ADDR(MC_GEOMETRY));
+    mc_rows = mc_geo.b < 3 || mc_geo.b > 6 ? 0 : mc_rows_of(mc_geo.b);
+    mc_cols = mc_cols_of(mc_rows);
+    mc_count = 0;
+    if (mc_rows != 0 && (mc_geo.r & 1) == 0)
+        mc_count = min(min(mc_geo.g, (uint)CORES - 1), min(MC_STRIP_BANDS * (MC_STRIP_TILES / mc_rows), TICK_BANDS * ((TICK_MRT_W - 8 - TICK_GAP) / mc_cols)));
 }
-uint mc_core_at(uint y) {
-    return mc_core_find(y, false);
+#define MC_GEO_READ mc_geo_read();
+uint mc_bits_of(uint core) {
+    return core == 0 ? (uint)L1_TABLE_BITS : core <= mc_count ? mc_geo.b : 0;
+}
+// Where tile `tile` of the strip is in the state texture, and the first tile of a worker.
+uint2 mc_tile_at(uint tile) {
+    return uint2(MC_STRIP_X + 8 * (tile % MC_STRIP_TILES), 8 * (tile / MC_STRIP_TILES));
+}
+uint mc_tile_of(uint core) {
+    uint j = core - 1, per = MC_STRIP_TILES / max(mc_rows, 1);
+    return (j / per) * MC_STRIP_TILES + (j % per) * mc_rows;
+}
+// Where a worker's block is in the tick's targets: its first column and its band's first row.
+uint2 mc_block_of(uint core) {
+    uint j = core - 1, per = (TICK_MRT_W - 8 - TICK_GAP) / max(mc_cols, 1);
+    return uint2(8 + TICK_GAP + (j % per) * mc_cols, (j / per) * STATE_ROWS);
+}
+// Makes `core` the one whose state is read.
+void mc_select(uint core) {
+    mc_tile0 = core == 0 ? 0 : mc_tile_of(core);
+    mc_core = core;
+    mc_bits_now = mc_bits_of(core);
+    mc_size_now = L1_STATE_AT + (2u << mc_bits_now) * L1_STRIDE + 8;
+    state_off = uint2(0, 0);
+}
+// The worker whose tiles the strip's tile `tile` is one of, selected; 0 when it is nobody's.
+uint mc_core_at(uint tile) {
+    uint per = MC_STRIP_TILES / max(mc_rows, 1), i = (tile % MC_STRIP_TILES) / max(mc_rows, 1);
+    uint core = (tile / MC_STRIP_TILES) * per + i + 1;
+    if (i >= per || core > mc_count) return 0;
+    mc_select(core);
+    return core;
+}
+// The worker whose block the targets' pixel is in, selected, and which of its tiles the
+// pixel's column is (past its last: an empty column); 0 when it is nobody's.
+uint mc_core_in(uint2 pixel, out uint tile) {
+    tile = 0;
+    if (pixel.x < 8 + TICK_GAP || (pixel.y % STATE_ROWS) >= 8 || mc_count == 0) return 0;
+    uint per = (TICK_MRT_W - 8 - TICK_GAP) / mc_cols, i = (pixel.x - 8 - TICK_GAP) / mc_cols;
+    uint core = (pixel.y / STATE_ROWS) * per + i + 1;
+    if (i >= per || core > mc_count) return 0;
+    mc_select(core);
+    tile = (pixel.x - 8 - TICK_GAP) % mc_cols;
+    return core;
 }
 #define MC_ENTRIES (mc_core == 0 ? (uint)L1_ENTRIES : (2u << mc_bits_now) * L1_STRIDE)
 // Where texel lin (as core 0 numbers them) of this core's state is, from where its rows begin;

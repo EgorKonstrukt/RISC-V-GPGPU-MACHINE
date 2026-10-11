@@ -72,6 +72,7 @@ enum { FRAGMENT_COLOUR, FRAGMENT_TEXTURE, FRAGMENT_INDEXED, FRAGMENT_KEYED = 0x1
 static uint8_t* gpu;   // GPU memory from GPU_PHYS
 static GR_WINDOW_ID window;
 static GR_WINDOW_INFO window_info;
+static uint32_t world_up;          // seglWorldUp: which axis is up, in the frame's size word
 static int swaps;
 static uint32_t buffers_seen;
 
@@ -237,7 +238,7 @@ void seglSwap(void) {
         // the list and the textures are memory the program goes on to change: wait until drawn
         while (regs[REG_SUBMIT / 4] != 0) next_frame();
         regs[REG_VOLUME / 4 + 1] = commands;
-        regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16;
+        regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
         regs[REG_VOLUME / 4 + 2]++;
         set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
@@ -958,6 +959,29 @@ static __attribute__((noinline)) void sprite_command(const GLfixed* box, const i
     vertex_top += 64;
 }
 
+// Sprites a program writes itself (segl.h): the room for them, and the command for those written.
+unsigned int* seglSpriteSpace(GLsizei* room) {
+    uint32_t fit = gpu ? (set_at + SET_SIZE - vertex_top) / 64 : 0, mesh = (MAX_MESH - mesh_vertices) / 6;
+    *room = (GLsizei)(fit < mesh ? fit : mesh);
+    return gpu ? (unsigned int*)(gpu + vertex_top) : 0;
+}
+unsigned int seglNumber(GLfixed value) { return bits_of(FROM_FIXED(value)); }
+void seglSpritesUsed(GLsizei quads, GLuint name, unsigned colour, int keyed) {
+    static const GLfixed box[4];
+    static const int texels[4];
+    uint32_t first[16], top = vertex_top;
+    if (!gpu || quads <= 0) return;
+    uint32_t* to = (uint32_t*)(gpu + top);
+    for (int i = 0; i < 16; i++) first[i] = to[i];
+    // (the first makes the command, or is one more of the command before; the rest are counted in)
+    sprite_command(box, texels, name, colour, keyed);
+    if (vertex_top == top) return;
+    for (int i = 0; i < 16; i++) to[i] = first[i];
+    last_draw[2] += 6 * ((uint32_t)quads - 1);
+    mesh_vertices += 6 * ((uint32_t)quads - 1);
+    vertex_top += 64 * ((uint32_t)quads - 1);
+}
+
 // Whole vertices in screen pixels (segl.h): the frame's room is what compact vertices use too.
 void* seglScreenSpace(GLsizei* room) {
     uint32_t fit = gpu ? (set_at + SET_SIZE - vertex_top) / 64 : 0, mesh = MAX_MESH - mesh_vertices;
@@ -981,6 +1005,8 @@ void seglScreenUsed(GLsizei count, GLuint name) {
     last_draw = 0;
     vertex_top += (uint32_t)count * 64;
 }
+
+void seglWorldUp(int axis) { world_up = axis >= 1 && axis <= 3 ? (uint32_t)axis : 0; }
 
 unsigned int* seglScreenTable(void) {
     if (!gpu || vertex_top + 1024 > set_at + SET_SIZE) return 0;

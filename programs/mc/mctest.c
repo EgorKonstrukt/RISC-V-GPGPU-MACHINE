@@ -13,6 +13,7 @@
 //
 // Prints one line a test and "mctest: PASS" or "mctest: FAIL".
 //   mctest [WORKERS [LIMIT [bench [LINE]]]]
+//   mctest WORKERS SECONDS share [lend]     (the kernel's sharing: how many of them have cores, second by second)
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -142,21 +143,46 @@ static void check(const char* what, int ok) {
 int main(int argc, char** argv) {
     int want = argc > 1 ? atoi(argv[1]) : MC_MAX_CORES - 1;
     uint32_t limit = argc > 2 ? (uint32_t)atoi(argv[2]) : 60000;
-    // mctest N LIMIT shape 6,6,5,4,4: the machine's geometry first (docs/multicore.md)
-    if (argc > 4 && !strcmp(argv[3], "shape")) {
-        unsigned char bits[64];
-        int n = 0, answer;
-        for (const char* at = argv[4]; *at && n < 63; at++)
-            if (*at >= '0' && *at <= '9') bits[n++] = (unsigned char)(*at - '0');
-        answer = mcw_shape(bits, n);
-        printf("mctest: the geometry: %d workers (%s): %s%c", n, argv[4], answer == 0 ? "set" : "refused", 10);
-        if (answer != 0) return 1;
-        argc = 3;
-    }
-
+    if (argc > 4 && !strcmp(argv[3], "share") && !strcmp(argv[4], "lend")) mcw_lend();
     workers = mcw_open(want);
     printf("mctest: %d worker core%s (%u pages brought for their start)\n", workers, workers == 1 ? "" : "s", mcw_faults);
     if (workers == 0) { printf("mctest: FAIL (run the machine with --cores N; or other programs have the workers)\n"); return 1; }
+
+    // "mctest N SECONDS share": the kernel shares the cores out between programs
+    // (docs/multicore.md). Every worker is kept at short jobs for so many seconds, and a line
+    // a second says how many of them have cores and where the jobs were run. The primes'
+    // number must come out the same wherever they were counted.
+    if (argc > 3 && !strcmp(argv[3], "share")) {
+        uint32_t end = guest_ms() + limit * 1000u, said = guest_ms(), on_cores = 0, here = 0, wrong = 0, jobs = 0;
+        const uint32_t right = primes(100000, 104000);
+        uint8_t was_bound[MC_MAX_CORES] = {0}, out[MC_MAX_CORES] = {0};
+        while (guest_ms() < end) {
+            for (int k = 1; k <= workers; k++) {
+                if (!mcw_done(k)) continue;
+                if (out[k]) {
+                    if (mcw_result(k) != right) wrong++;
+                    if (was_bound[k]) on_cores++; else here++;
+                    jobs++;
+                }
+                was_bound[k] = (uint8_t)mcw_bound(k);
+                // (one that has no core is not given a job here: it would be this core's, and the test is of the others)
+                out[k] = was_bound[k];
+                if (was_bound[k]) mcw_post(k, primes, 100000, 104000);
+            }
+            if (guest_ms() - said >= 1000) {
+                int bound = 0;
+                for (int k = 1; k <= workers; k++) bound += mcw_bound(k);
+                printf("mctest: share: %d workers, %d with cores; %u jobs on cores, %u here, %u wrong\n", workers, bound, on_cores, here, wrong);
+                said += 1000;
+                on_cores = here = 0;
+            }
+            mc_next_pass();
+        }
+        for (int k = 1; k <= workers; k++) mcw_wait(k);
+        printf("mctest: share: done, %u jobs, %u wrong\n", jobs, wrong);
+        mcw_close();
+        return wrong != 0;
+    }
 
     // "mctest N LIMIT bench": what a pass costs with more cores busy. Each line is the same
     // work on every busy core (primes of one range, or of ranges of one length further up),

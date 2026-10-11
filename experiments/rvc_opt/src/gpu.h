@@ -417,6 +417,9 @@ float4 gpu_fragment(gpu_varyings i) {
 // The volume display (docs/volume.md): a host that shows a 3D program's last whole frame from
 // a point of view of its own, instead of the picture the GPU drew of it.
 #define VOLUME_LIST 0x700030u   // that frame's list address, command count, frames so far, picture size
+// Which of the program's axes is up, where the program says (the top four bits of the size
+// word: 1 x, 2 y, 3 z); 0: it does not, and a host works it out from the camera.
+uint volume_up() { return ram(VOLUME_LIST).a >> 28; }
 
 // The frame's command that claims mesh vertices id to id + 2, if it is a draw in perspective
 // with its own modelview: the only kind that has a place in space.
@@ -588,11 +591,12 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 #define HOST_OPEN_MORE 0x700031u
 // What the cores did, for a guest to show (docs/multicore.md): 16 words, core k's count of
 // instructions in word k; then a texel of how many cores, which run and which are asleep (a bit each).
-// With more than 16 cores: cores 16 to 63's counts in twelve texels at MC_STATS_MORE (the
-// network's row, after the guest's window: 0x876b8280), then one of which of cores 32 to 63
-// run and which are asleep.
+// With more than 16 cores: every core's count again in 64 texels at MC_STATS_ALL (the
+// network's row, after its ring: 0x876ba000), then eight texels, one for every 32 cores: a
+// word of which of them run, a bit each, and a word of which are asleep. (A pixel that loops
+// over every core takes as long as hundreds of instructions of the tick: none does.)
 #define MC_STATS    0x700038u
-#define MC_STATS_MORE 0x76b828u
+#define MC_STATS_ALL 0x76ba00u
 // What the host says of where the machine is shown (docs/holodeck.md): two texels.
 #define HOST_STATE  0x700036u
 
@@ -604,32 +608,41 @@ uint mc_rows_of_bits(uint bits) {
 }
 uint2 mc_place(uint core) {
     if (core == 0) return uint2(0, 0);
-    uint4 geo = ram(0x70003du);
-#if CORES > 16
-    uint4 geo1 = ram(0x6c00f0u), geo2 = ram(0x6c00f1u);   // MC_GEOMETRY_MORE
-#endif
-    uint row = 0, at = 0xffff;
-    for (uint k = 1; k < CORES; k++) {
-        uint j = k - 1;
-#if CORES > 16
-        uint word = j < 8 ? geo.g : j < 16 ? geo.b : j < 24 ? geo.a : j < 32 ? geo1.r : j < 40 ? geo1.g : j < 48 ? geo1.b : j < 56 ? geo1.a : geo2.r;
-        uint bits = (word >> (4 * (j & 7))) & 15;
-#else
-        uint bits = ((j < 8 ? geo.g >> (4 * j) : geo.b >> (4 * (j - 8))) & 15);
-#endif
-        if (k == core && bits != 0 && (geo.r & 1) == 0) at = row;
-        row += mc_rows_of_bits(bits);
-    }
-    return uint2(64, at);
+    uint4 geo = ram(0x70003du);   // MC_GEOMETRY: how many workers, and their size
+    uint rows = geo.b < 3 || geo.b > 6 ? 0 : mc_rows_of_bits(geo.b);
+    uint j = core - 1, per = 248 / max(rows, 1);
+    if (rows == 0 || (geo.r & 1) != 0 || core > geo.g || core >= CORES || j / per >= (CORES + 47) / 49) return uint2(64, 0xffff);
+    return uint2(64, (j / per) * 248 + (j % per) * rows);
 }
 // Texel w (below 64) of a core's state: a worker's is in the first of its tiles, eight to a row.
 uint4 mc_state_texel(uint2 at, uint w) {
     if (at.x == 0) return GPU_STATE[uint2(w, 0)];
-    return GPU_STATE[uint2(64 + (at.y << 3) + (w & 7), w >> 3)];
+    return GPU_STATE[uint2(64 + ((at.y % 248) << 3) + (w & 7), ((at.y / 248) << 3) + (w >> 3))];
 }
 uint mc_stat_count(uint core) {
     uint2 at = mc_place(core);
     return core < CORES && at.y != 0xffff ? mc_state_texel(at, 28).g : 0;
+}
+// Which of the 32 cores from `from` run, and which are asleep: a worker's state word
+// (41,0).a has bit 0 while it runs and bit 1 while it sleeps on its job word.
+uint2 mc_stat_bits(uint from) {
+    uint running = 0, asleep = 0;
+    for (uint n = 0; n < 32; n++) {
+        uint core = from + n;
+        uint2 at = mc_place(core);
+        if (core >= CORES || at.y == 0xffff) continue;
+        uint word = core == 0 ? 1 : mc_state_texel(at, 41).a;
+        running |= (word & 1) << n;
+        asleep |= ((word >> 1) & 1) << n;
+    }
+    return uint2(running, asleep);
+}
+// How many cores there are as the geometry has them now.
+uint mc_stat_cores() {
+    uint4 geo = ram(0x70003du);
+    uint rows = geo.b < 3 || geo.b > 6 ? 0 : mc_rows_of_bits(geo.b);
+    if (rows == 0 || (geo.r & 1) != 0) return 1;
+    return 1 + min(min(geo.g, (uint)CORES - 1), (248 / rows) * ((CORES + 47) / 49));
 }
 #endif
 
@@ -730,41 +743,27 @@ uint4 gpu_control(uint2 pos) {
         return uint4(ctrl.r & SUBMIT_COPIES, into.r, (into.g & 0xffff) | (into.b << 16), into.a);
     }
 #if defined(CORES) && CORES > 1
+    [branch]
     if (index >= MC_STATS && index < MC_STATS + 4) {
         uint first = (index - MC_STATS) * 4;
         return uint4(mc_stat_count(first), mc_stat_count(first + 1), mc_stat_count(first + 2), mc_stat_count(first + 3));
     }
+    [branch]
     if (index == MC_STATS + 4) {
-        // a worker's state word (41,0).a: bit 0 while it runs, bit 1 while it sleeps on its job word
-        // how many cores there are as the geometry has them now, and how many there could be
-        uint running = 1, asleep = 0, count = 1;
-        for (uint core = 1; core < CORES; core++) {
-            uint2 at = mc_place(core);
-            if (at.y == 0xffff) continue;
-            uint word = mc_state_texel(at, 41).a;
-            if (core < 32) {   // (a bit each for the first 32)
-                running |= (word & 1) << core;
-                asleep |= ((word >> 1) & 1) << core;
-            }
-            count = core + 1;
-        }
-        return uint4(count, running, asleep, CORES);
+        // how many cores there are, which of the first 32 run and sleep, how many there could be
+        uint2 bits = mc_stat_bits(0);
+        return uint4(mc_stat_cores(), bits.x, bits.y, CORES);
     }
 #if CORES > 16
-    if (index >= MC_STATS_MORE && index < MC_STATS_MORE + 12) {
-        uint first = 16 + (index - MC_STATS_MORE) * 4;
+    [branch]
+    if (index >= MC_STATS_ALL && index < MC_STATS_ALL + 64) {
+        uint first = (index - MC_STATS_ALL) * 4;
         return uint4(mc_stat_count(first), mc_stat_count(first + 1), mc_stat_count(first + 2), mc_stat_count(first + 3));
     }
-    if (index == MC_STATS_MORE + 12) {
-        uint running = 0, asleep = 0;
-        for (uint core = 32; core < CORES; core++) {
-            uint2 at = mc_place(core);
-            if (at.y == 0xffff) continue;
-            uint word = mc_state_texel(at, 41).a;
-            running |= (word & 1) << (core - 32);
-            asleep |= ((word >> 1) & 1) << (core - 32);
-        }
-        return uint4(running, asleep, 0, 0);
+    [branch]
+    if (index >= MC_STATS_ALL + 64 && index < MC_STATS_ALL + 72) {
+        uint2 bits = mc_stat_bits((index - (MC_STATS_ALL + 64)) * 32);
+        return uint4(bits.x, bits.y, 0, 0);
     }
 #endif
 #endif

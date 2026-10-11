@@ -10,7 +10,6 @@ using VRC.Udon.Common;
 public class EmuShare : UdonSharpBehaviour
 {
     public EmuShareHub hub;
-    public Transform[] pads;             // the two controllers' models, for this player's hand (EmuHolodeck)
 
     [UdonSynced] public int flags;       // bit 0: the machine is on; bit 1: watchers may use it
     [UdonSynced] public int watching;    // the player whose machine this one looks at on the wall; 0: their own

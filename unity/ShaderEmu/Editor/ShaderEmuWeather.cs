@@ -8,58 +8,133 @@ using UnityEngine.Rendering;
 using VRCLightVolumes;
 
 // What the room has from its three shader packages (world/install_packages.py) and the storm
-// outside: rain on the window's pane (Mochie's Glass), sheets of rain and a drifting sky that
+// outside: rain on the window's pane (Silent's Fake Glass), sheets of rain and a drifting sky that
 // lightning lights (EmuWeather), the display's own light on the room (LTCGI), and a light
 // volume, so that what moves is lit as the room is.
 public static partial class ShaderEmuBuilder
 {
-    const string MochieTextures = "Assets/Mochie/Unity/Textures";
+    const string FakeGlass = "Assets/Silent/FakeGlass/Shader";
 
     static void WeatherMaterials(Dictionary<string, Material> made)
     {
-        // the pane: clear, with drops running down it. Keywords as Mochie's GlassEditor sets them.
-        Material glass = Mat("Glass", "Mochie/Glass");
-        glass.shaderKeywords = new string[0];
-        glass.SetColor("_GrabpassTint", Color.white);
-        glass.SetColor("_SpecularityTint", Color.white);
-        glass.SetColor("_BaseColorTint", new Color(0, 0, 0, 1));
-        glass.SetFloat("_Roughness", 0f);
-        glass.SetFloat("_Metallic", 0f);
-        glass.SetFloat("_Blur", 0f);
-        glass.SetInt("_BlurQuality", 0);
-        glass.SetFloat("_Refraction", 5f);
-        glass.SetInt("_RainMode", 1);   // droplets
-        glass.SetTexture("_RainSheet", AssetDatabase.LoadAssetAtPath<Texture2D>(MochieTextures + "/Glass_Rain_Texturesheet.png"));
-        glass.SetTexture("_DropletMask", AssetDatabase.LoadAssetAtPath<Texture2D>(MochieTextures + "/Droplet Mask.tif"));
-        glass.SetFloat("_Rows", 8f);
-        glass.SetFloat("_Columns", 8f);
-        glass.SetFloat("_Speed", 60f);
-        glass.SetFloat("_XScale", 1.5f);
-        glass.SetFloat("_YScale", 1.5f);
-        glass.SetFloat("_Strength", 0.3f);
-        glass.SetFloat("_DynamicDroplets", 0.5f);
-        glass.SetInt("_ReflectionsToggle", 1);
-        glass.SetFloat("_ReflectionStrength", 0.6f);
-        glass.SetInt("_SpecularToggle", 1);
-        glass.SetInt("_LitBaseColor", 1);
-        glass.SetInt("_BlendMode", 0);   // grabs what is behind it, to bend it through the drops
-        glass.SetInt("_Culling", (int)CullMode.Off);
-        glass.SetInt("_LTCGI", 0);
-        glass.SetInt("_MaterialResetCheck", 1);
-        foreach (string keyword in new[] { "_RAIN_ON", "_BLURQUALITY_LOW", "_REFLECTIONS_ON", "_SPECULAR_HIGHLIGHTS_ON", "_GRABPASS_ON", "_LIT_BASECOLOR_ON" })
-            glass.EnableKeyword(keyword);
-        glass.SetOverrideTag("RenderType", "Transparent");
-        glass.SetInt("_SrcBlend", (int)BlendMode.One);
-        glass.SetInt("_DstBlend", (int)BlendMode.Zero);
-        glass.SetInt("_ZWrite", 0);
-        glass.renderQueue = (int)RenderQueue.Transparent;
-        glass.SetShaderPassEnabled("GrabPass", true);
-        glass.globalIlluminationFlags = MaterialGlobalIlluminationFlags.EmissiveIsBlack;
-        made["Glass"] = glass;
+        made["Glass"] = GlassMaterial();
 
         Material rain = Mat("Rain", "ShaderEmu/Rain");
         rain.mainTexture = WorldTexture("RainStreaks");
         made["Rain"] = rain;
+    }
+
+    // The pane: clear, with drops running down it. What is behind a drop is bent out of the
+    // room's baked reflection probe, not out of a grab of the screen (Fake Glass, by Silent).
+    static Material GlassMaterial()
+    {
+        Material glass = Mat("Glass", "Silent/FakeGlass Rain");
+        glass.shaderKeywords = new string[0];
+        glass.SetColor("_Color", new Color(1, 1, 1, 0));
+        glass.SetFloat("_Smoothness", 1f);
+        glass.SetFloat("_Metallic", 0f);
+        glass.SetFloat("_IOR", 1f);
+        glass.SetFloat("_Refraction", 0.05f);
+        glass.SetFloat("_InteriorDiffuseStrength", 0f);
+        glass.SetTexture("_RainPattern", AssetDatabase.LoadAssetAtPath<Texture2D>(FakeGlass + "/RainAssets/RainPattern_mask.png"));
+        glass.SetTexture("_RippleNormals", AssetDatabase.LoadAssetAtPath<Texture2D>(FakeGlass + "/RainAssets/RainPattern_top_nrm.png"));
+        glass.SetTexture("_DropletNormals", AssetDatabase.LoadAssetAtPath<Texture2D>(FakeGlass + "/RainAssets/RainPattern_drop_nrm.png"));
+        glass.SetTexture("_DFG", AssetDatabase.LoadAssetAtPath<Texture2D>(FakeGlass + "/dfg-ms.exr"));
+        glass.SetTextureScale("_RainPattern", new Vector2(3f, 1.25f));   // the pane is 3.6 m by 1.5: a tile of drops 1.2 m
+        glass.SetFloat("_RainSpeed", 0.33f);
+        glass.SetFloat("_StreakTiling", 1f);
+        glass.SetFloat("_StreakLength", 1f);
+        glass.SetFloat("_RainFade", 1f);
+        glass.SetInt("_CullMode", (int)CullMode.Off);
+        glass.SetInt("_ZWrite", 0);
+        glass.SetFloat("_LTCGI", 0f);
+        glass.renderQueue = -1;
+        glass.globalIlluminationFlags = MaterialGlobalIlluminationFlags.EmissiveIsBlack;
+        return glass;
+    }
+
+    // The glass's own reflection probe, just outside the pane: a drop shows the city bent, and
+    // the room's probe has only the lit room and a blank window. Its picture is a camera's (six
+    // faces, the sheets of rain put away meanwhile), and every pane takes it by its anchor.
+    // The lit room is in it at an eighth: whole, every drop's steep side was the colour of the walls.
+    const float RoomInGlass = 0.12f;
+
+    static void WindowProbe(Transform world, Material glass)
+    {
+        const string name = "Reflection probe window";
+        Transform parent = world.Find("Decor") != null ? world.Find("Decor") : world;
+        Transform old = parent.Find(name);
+        if (old != null) Object.DestroyImmediate(old.gameObject);
+        ReflectionProbe probe = new GameObject(name).AddComponent<ReflectionProbe>();
+        probe.transform.SetParent(parent, false);
+        probe.transform.position = new Vector3(4.95f, WindowY, WindowZ);
+        probe.size = new Vector3(0.3f, 2.2f, 4.2f);
+        probe.boxProjection = false;
+        probe.importance = 2;
+        probe.resolution = 256;
+        probe.hdr = true;
+        probe.nearClipPlane = 0.05f;
+        probe.farClipPlane = 3000f;
+
+        string path = Generated + "/" + name + " picture.cubemap";
+        Cubemap picture = AssetDatabase.LoadAssetAtPath<Cubemap>(path);
+        if (picture == null)
+        {
+            picture = new Cubemap(256, TextureFormat.RGBAHalf, true);
+            AssetDatabase.CreateAsset(picture, path);
+        }
+        Transform rain = world.Find("Models/City/Rain");
+        bool rainOn = rain != null && rain.gameObject.activeSelf;
+        if (rain != null) rain.gameObject.SetActive(false);
+        Camera camera = new GameObject("probe camera").AddComponent<Camera>();
+        camera.transform.position = probe.transform.position;
+        camera.allowHDR = true;
+        camera.nearClipPlane = 0.05f;
+        camera.farClipPlane = 3000f;
+        camera.RenderToCubemap(picture);
+        // again with nothing but the city and the sky, and the two mixed
+        CubemapFace[] faces = { CubemapFace.PositiveX, CubemapFace.NegativeX, CubemapFace.PositiveY, CubemapFace.NegativeY, CubemapFace.PositiveZ, CubemapFace.NegativeZ };
+        Color[][] whole = new Color[6][];
+        for (int f = 0; f < 6; f++) whole[f] = picture.GetPixels(faces[f]);
+        Transform city = world.Find("Models/City");
+        List<Renderer> hidden = new List<Renderer>();
+        foreach (Renderer renderer in Object.FindObjectsOfType<Renderer>())
+            if (renderer.enabled && (city == null || !renderer.transform.IsChildOf(city))) { renderer.enabled = false; hidden.Add(renderer); }
+        camera.RenderToCubemap(picture);
+        foreach (Renderer renderer in hidden) renderer.enabled = true;
+        for (int f = 0; f < 6; f++)
+        {
+            Color[] outside = picture.GetPixels(faces[f]);
+            for (int i = 0; i < outside.Length; i++) outside[i] = Color.LerpUnclamped(outside[i], whole[f][i], RoomInGlass);
+            picture.SetPixels(outside, faces[f]);
+        }
+        Object.DestroyImmediate(camera.gameObject);
+        if (rain != null) rain.gameObject.SetActive(rainOn);
+        picture.Apply(true);
+        EditorUtility.SetDirty(picture);
+        probe.mode = ReflectionProbeMode.Custom;
+        probe.customBakedTexture = picture;
+
+        foreach (MeshRenderer renderer in world.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            if (System.Array.IndexOf(renderer.sharedMaterials, glass) < 0) continue;
+            renderer.reflectionProbeUsage = ReflectionProbeUsage.Simple;
+            // (no light probes: with the room's, a drop was white paint in the room's light)
+            renderer.lightProbeUsage = LightProbeUsage.Off;
+            renderer.probeAnchor = probe.transform;
+            EditorUtility.SetDirty(renderer);
+        }
+    }
+
+    [MenuItem("ShaderEmu/Give the windows' glass its rain again in the open scene")]
+    public static void GlassAgain()
+    {
+        GameObject world = GameObject.Find("ShaderEmu");
+        if (world == null) { Debug.LogError("[ShaderEmu] open the world's scene first"); return; }
+        WindowProbe(world.transform, GlassMaterial());
+        AssetDatabase.SaveAssets();
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.scene);
+        Debug.Log("[ShaderEmu] the windows' glass is Fake Glass with rain, with a probe of its own outside the pane");
     }
 
     static AudioSource Sound(Transform parent, string name, Vector3 at, AudioClip clip, float volume, float near, float far, bool loop)

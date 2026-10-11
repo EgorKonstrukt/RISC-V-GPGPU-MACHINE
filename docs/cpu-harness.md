@@ -20,6 +20,12 @@ what each core ran, the firmware calls and the traps by cause. `--seconds` is th
 time, `--wall` this computer's. Start it from PowerShell or cmd: Git Bash turns `"/ # "` into
 a path.
 
+`--pc-log FILE` writes the first core's pc at the end of every pass and the instructions the
+pass ran, as the harness's does, for `tools\pc_profile.py`; `--pc-from TEXT` begins when the
+console has said TEXT. For samples fine enough, `--ticks 256 --pass-ms 0.0078`: the pass's
+milliseconds must go down with its instructions, or the guest's clock runs four times as
+fast for each instruction and the kernel's timer is a quarter of the profile.
+
 ## With the window: `rvc_harness --cpu`
 
 The same interpreter inside the harness, for using the machine by hand at that speed:

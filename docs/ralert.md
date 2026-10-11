@@ -140,6 +140,11 @@ a pass (its write cache: `docs/multicore.md`).
 - The workers are the game's while a movie plays and no longer: it asks for them when a
   movie's buffers are made and gives them back when it ends, so that another program (Quake,
   whose server is on one) has them during a mission, where this game has no use for them.
+- More workers do not make a movie faster. On the machine of 64 cores it has the kernel's
+  fifteen: 156 frames in 14.2 s (its own pace is 10.4 s). Laid out for it (47 workers of 3 KB
+  a pass for the rows and a large one to unpack) it was 13.7 s, with the same pictures, and
+  that layout was not kept. What a frame takes is this core's own 190 to 214 thousand
+  instructions (reading the file, the sound, the frame's bookkeeping), not the rows.
 - `RALERT_MOVIE_SOFT=1` is the game's own way, `RALERT_WORKERS=N` uses no more than N workers,
   and `RALERT_MOVIE_CHECK=1` decodes every shared frame on core 0 as well and compares: 0 of
   156 differ. Each movie prints a line (`ralert: movie ...`).
@@ -158,6 +163,17 @@ frame, 384 a pass a core. In the mission itself the workers do nothing yet, and 
 there costs it 4 to 8% (14.1 game frames a second where one core has 14.5).
 
 ## The mission's frame
+
+Where a mission's logic goes (a profile of the Soviet demo mission, frames 550 to 850: 94 to
+161 thousand instructions a frame, 75 to 86 of them logic, 18 to 30 game frames a second):
+nothing stands out. `HouseClass::AI` and `TechnoClass::AI` are 3.4% each,
+`Recalc_Attributes` 2.4%, `BuildingClass::AI` 2.3%, `Greatest_Threat` with its cell
+evaluations 5%, and the rest is some hundreds of functions under 1.5% each: 63 objects at
+about a thousand instructions an object a frame. A job given to a worker and waited for
+costs two passes (16 thousand instructions' time), so an object's turn cannot go to another
+core for a gain, and the turns are in an order the state sums depend on. What could go is a
+whole part that may be a game frame behind (the computer player's planning, about a tenth),
+which changes those sums. A battle with hundreds of units was not profiled.
 
 Found with a profile of the mission alone (a snapshot at `ralert: begun`, resumed with
 `--pc-log` and `--ra-log`; `tools/pc_profile.py`, `tools/pc_callers.py` for who calls a leaf

@@ -116,6 +116,7 @@ I_InitGraphics(void)
 	unsigned char *screen;
 
 	I_InitGraphics_port();
+	seglWorldUp(3);	/* z */
 	if ((soft && *soft == '1') || seglInit(doom_window()) < 0)
 		return;
 	screen = seglMemory(SCREEN_W * SCREEN_H);

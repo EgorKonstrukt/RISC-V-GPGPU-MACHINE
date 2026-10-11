@@ -65,14 +65,6 @@ public static partial class ShaderEmuBuilder
     static void Sharing(Transform world, Transform computer, RectTransform panel, EmuMachine machine, Vector3 at)
     {
         if (computer.Find("Players panel") != null) Object.DestroyImmediate(computer.Find("Players panel").gameObject);
-        // (the controllers' models the player's object carries are kept for the new one: Annex() made them)
-        Transform before = world.Find("Share player");
-        Transform[] pads = new Transform[before != null ? before.childCount : 0];
-        for (int i = pads.Length - 1; i >= 0; i--)
-        {
-            pads[i] = before.GetChild(i);
-            pads[i].SetParent(world, false);
-        }
         foreach (string old in new[] { "Share", "Share player", "Streams" })
             if (world.Find(old) != null) Object.DestroyImmediate(world.Find(old).gameObject);
         for (int i = panel.childCount - 1; i >= 0; i--)
@@ -139,8 +131,6 @@ public static partial class ShaderEmuBuilder
         template.AddComponent<VRC.SDK3.Components.VRCPlayerObject>();
         EmuShare share = Udon<EmuShare>(template);
         share.hub = hub;
-        foreach (Transform pad in pads) pad.SetParent(template.transform, false);
-        if (pads.Length == 2) share.pads = pads;
         Apply(share);
         ShareUsers(hub, streams);
     }

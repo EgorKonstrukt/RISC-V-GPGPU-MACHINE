@@ -1,9 +1,10 @@
 Shader "ShaderEmu/SevenSeg"
 {
-    // The speed's window on a computer's tower (docs/stations.md): two rows of three digits of
-    // seven bars each, with a point before the last. The upper row is every core's millions of
-    // instructions a second, the lower core 0's. A row's number is in tenths; below zero it is dark.
-    // From 100.0 on a row shows whole millions and no point (to 999).
+    // The speed's window on a computer's tower (docs/stations.md): two rows of four digits of
+    // seven bars each. The upper row is every core's millions of instructions a second, the
+    // lower core 0's. A row's number is in tenths (with its fraction); below zero it is dark.
+    // All four digits are the number's: the point is where the number puts it (3.752, 37.52,
+    // 375.2, 3752).
     Properties
     {
         _All ("Upper row, in tenths (below 0: dark)", Float) = -1
@@ -58,32 +59,34 @@ Shader "ShaderEmu/SevenSeg"
                 float soft = max(fwidth(i.uv.x) * 3.0, 0.004);
                 bool upper = i.uv.y > 0.5;
                 float value = upper ? _All : _Core;
-                int tenths = (int)clamp(value + 0.5, 0, 9999);
-                bool whole = tenths > 999;
-                if (whole) tenths = min((tenths + 5) / 10, 999);
-                // a row: three cells across, a margin round them
+                // four digits of it, and the cell the point comes after (3: none)
+                float millions = clamp(value, 0.0, 99990.0) * 0.1;
+                int after = millions < 9.9995 ? 0 : millions < 99.995 ? 1 : millions < 999.95 ? 2 : 3;
+                int tenths = min((int)(millions * (after == 0 ? 1000.0 : after == 1 ? 100.0 : after == 2 ? 10.0 : 1.0) + 0.5), 9999);
+                // a row: four cells across, a margin round them
                 float2 p = float2(i.uv.x, frac(i.uv.y * 2.0));
-                p = (p - float2(0.06, 0.14)) / float2(0.88, 0.72);
-                int cell = (int)floor(p.x * 3.0);
-                float2 q = float2(frac(p.x * 3.0), p.y);   // within the cell: x right, y up
+                p = (p - float2(0.04, 0.14)) / float2(0.92, 0.72);
+                int cell = (int)floor(p.x * 4.0);
+                float2 q = float2(frac(p.x * 4.0), p.y);   // within the cell: x right, y up
                 bool there = p.x >= 0.0 && p.x < 1.0 && p.y >= 0.0 && p.y <= 1.0;
-                int digit = cell == 0 ? tenths / 100 : cell == 1 ? (tenths / 10) % 10 : tenths % 10;
-                int lit = value < 0.0 || (cell == 0 && tenths < 100) ? 0 : bars[digit];
-                // the seven bars, in a cell 0.72 wide
-                float x0 = 0.16, x1 = 0.66, y0 = 0.04, y1 = 0.5, y2 = 0.96, w = 0.055;
+                int place = cell == 0 ? 1000 : cell == 1 ? 100 : cell == 2 ? 10 : 1;
+                int digit = (tenths / place) % 10;
+                int lit = value < 0.0 ? 0 : bars[digit];
+                // the seven bars
+                float x0 = 0.17, x1 = 0.70, y0 = 0.04, y1 = 0.5, y2 = 0.96, w = 0.058, tall = 2.1;
                 float2 ends[14] = { float2(x0, y2), float2(x1, y2), float2(x1, y2), float2(x1, y1), float2(x1, y1), float2(x1, y0), float2(x1, y0), float2(x0, y0),
                                     float2(x0, y0), float2(x0, y1), float2(x0, y1), float2(x0, y2), float2(x0, y1), float2(x1, y1) };
                 float on = 0.0, off = 0.0;
                 for (int k = 0; k < 7; k++) {
                     // (a bar stops short of its ends, so two do not run together)
                     float2 a = lerp(ends[2 * k], ends[2 * k + 1], 0.12), b = lerp(ends[2 * k], ends[2 * k + 1], 0.88);
-                    float c = bar(q * float2(1.0, 1.6), a * float2(1.0, 1.6), b * float2(1.0, 1.6), w, soft * 3.0);
+                    float c = bar(q * float2(1.0, tall), a * float2(1.0, tall), b * float2(1.0, tall), w, soft * 4.0);
                     if ((lit >> k) & 1) on = max(on, c);
                     else off = max(off, c);
                 }
                 // the point, before the last digit
-                float dot_ = 1.0 - smoothstep(0.05, 0.05 + soft * 3.0, length((q - float2(0.9, 0.05)) * float2(1.0, 1.6)));
-                if (cell == 1) { if (value >= 0.0 && !whole) on = max(on, dot_); else off = max(off, dot_); }
+                float dot_ = 1.0 - smoothstep(0.06, 0.06 + soft * 4.0, length((q - float2(0.92, 0.05)) * float2(1.0, tall)));
+                if (cell < 3) { if (value >= 0.0 && cell == after) on = max(on, dot_); else off = max(off, dot_); }
                 float3 c3 = _Back.rgb;
                 if (there) c3 = lerp(lerp(c3, _Dark.rgb, off), _Lit.rgb * _Glow, on);
                 return float4(c3, 1.0);

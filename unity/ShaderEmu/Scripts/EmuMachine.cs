@@ -20,12 +20,12 @@ using VRC.Udon.Common.Interfaces;
 public class EmuMachine : UdonSharpBehaviour
 {
     public RenderTexture stateA, stateB;    // 2048 x 4096, four 32-bit words a texel
-    public RenderTexture tickState;         // 2048 x 16: core 0's state rectangle and the workers' band, after a tick
+    public RenderTexture tickState;         // 2048 x 48: core 0's state rectangle and the workers' bands, after a tick
     public Material tickMaterial;           // MachineTick.shader: CPUTick, on the tick camera's mesh
     // The tick is a camera's pass into eight targets, eight state texels a pixel, and what the
     // cores stored is committed as points by another camera (docs/multicore.md, "In Unity").
     public Camera tickCamera;               // disabled: rendered from here, once a round
-    public RenderTexture[] tickTargets;     // eight of 1024 x 16
+    public RenderTexture[] tickTargets;     // eight of 1040 x 32
     public RenderTexture tickDepth;         // the depth buffer a camera with several targets must be given
     public Camera pointsCamera;             // disabled: rendered from here, twice a round
     public Material pointsMaterial;         // MachineCommitPoints.shader, on the points camera's mesh
@@ -41,7 +41,7 @@ public class EmuMachine : UdonSharpBehaviour
     public Material stateViewMaterial;      // Scope.shader showing the CPU's state texels
     public Material romViewMaterial;        // and the ROM
     public Material readbackMaterial;
-    public RenderTexture readbackTexture;   // 768 x 32: one pixel per word, a row for each round of a frame
+    public RenderTexture readbackTexture;   // 960 x 32: one pixel per word, a row for each round of a frame
 
     public EmuSound sound;                  // the sound card's host side, if the world has one
     public EmuTerminal terminal;
@@ -91,8 +91,9 @@ public class EmuMachine : UdonSharpBehaviour
     [HideInInspector] public bool pointerOwn;           // and it is on this player's own classroom tube: this machine's, whatever the wall shows
     [HideInInspector] public float mipsAll, mipsCore;   // millions of instructions a second: every core, and core 0
 
-    private const int Words = 768;      // state row 0's 64 texels, the first 64 control texels, 64 of the network's row
-    private const int CoresMore = 168;  // what cores 16 and up ran, in texels: thirteen after the network's window
+    private const int Words = 960;      // state row 0's 64 texels, the first 64 control texels, 112 of the network's row
+    private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
+    private const int MostCores = 256;
     // The network (docs/lan.md): the guest's packets out of its window, and packets for it into its ring.
     private const int NetSlot = 640, NetMost = 576, NetQueue = 32;
     private byte[] netOut = new byte[NetQueue * NetMost], netIn = new byte[NetQueue * NetMost];
@@ -167,8 +168,8 @@ public class EmuMachine : UdonSharpBehaviour
     private float instructions;        // since the last stats line
     // the worker cores (docs/multicore.md): how many cores, which run, and what the workers ran
     private int cores = 1;
-    private uint coresRunning, coresRunningMore;   // a bit a core that is at work: the first 32, the rest
-    private uint[] workerClock = new uint[64];
+    private uint[] coresRunning = new uint[MostCores / 32];   // a bit a core that is at work
+    private uint[] workerClock = new uint[MostCores];
     private bool haveWorkerClock;
     private float workerInstructions;  // since the last stats line
     private double totalWorkerInstructions;
@@ -417,12 +418,16 @@ public class EmuMachine : UdonSharpBehaviour
         netRxCount = netBad = 0;
         netSeen = false;
         netId = player != null ? player.playerId & 0xffff : 0;
+        lanOut = lanMine = lanOthers = lanOff = lanFull = lanGiven = lanDetail = lanSaid = 0;
+        Debug.Log("[Lan] this machine is on: 10.0." + (netId >> 8) + "." + (netId & 255) + " (player " + netId + " of "
+                  + VRCPlayerApi.GetPlayerCount() + " here)");
         NetUniforms();
         ShowLabels();
     }
 
     public void PowerOff()
     {
+        if (powered) Debug.Log("[Lan] this machine is off: packets for it are dropped");
         powered = false;
         paused = false;
         soundEnabled = false;
@@ -863,6 +868,7 @@ public class EmuMachine : UdonSharpBehaviour
 
     void Update()
     {
+        LanSay();
         if (!powered || paused) return;
         frames++;
 
@@ -1062,6 +1068,7 @@ public class EmuMachine : UdonSharpBehaviour
                 machineMaterial.SetTexture("_NetData", netData);
                 netRxCount = n;
                 netReceived += n;
+                lanGiven += n;
             }
         }
         NetUniforms();
@@ -1118,6 +1125,8 @@ public class EmuMachine : UdonSharpBehaviour
             netOutLength[netOutTail] = lengths[k];
             netOutTail = next;
             netSent++;
+            lanOut++;
+            if (lanDetail < LanDetailMost) { lanDetail++; Debug.Log("[Lan] the guest sent " + LanPacket(netOut, to, lengths[k])); }
         }
         netAcked = sent;
     }
@@ -1139,17 +1148,69 @@ public class EmuMachine : UdonSharpBehaviour
     // A packet from another machine: this one's if it is addressed to it or to everybody.
     public void NetIn(byte[] from, int at, int length)
     {
-        if (!powered || netId == 0 || length < 20 || length > NetMost) return;
+        if (length < 20 || length > NetMost) return;
+        if (!powered || netId == 0)
+        {
+            lanOff++;
+            if (lanDetail < LanDetailMost) { lanDetail++; Debug.Log("[Lan] heard " + LanPacket(from, at, length) + ": dropped, this machine is off"); }
+            return;
+        }
         int a = from[at + 16], b = from[at + 17], c = from[at + 18], d = from[at + 19];
         bool mine = a == 10 && b == 0 && c == (netId >> 8) && d == (netId & 255);
         bool all = (a == 10 && b == 0 && c == 255 && d == 255) || (a == 255 && b == 255 && c == 255 && d == 255);
-        if (!mine && !all) return;
+        if (!mine && !all)
+        {
+            lanOthers++;
+            if (lanDetail < LanDetailMost) { lanDetail++; Debug.Log("[Lan] heard " + LanPacket(from, at, length) + ": not for this machine"); }
+            return;
+        }
+        lanMine++;
+        if (lanDetail < LanDetailMost) { lanDetail++; Debug.Log("[Lan] heard " + LanPacket(from, at, length) + ": for this machine"); }
         int next = (netInTail + 1) & (NetQueue - 1);
-        if (next == netInHead) netInHead = (netInHead + 1) & (NetQueue - 1);   // full: the oldest goes
+        if (next == netInHead) { netInHead = (netInHead + 1) & (NetQueue - 1); lanFull++; }   // full: the oldest goes
         System.Buffer.BlockCopy(from, at, netIn, netInTail * NetMost, length);
         for (int i = length; i < ((length + 3) & ~3); i++) netIn[netInTail * NetMost + i] = 0;
         netInLength[netInTail] = length;
         netInTail = next;
+    }
+
+    // ---- what the network did, in VRChat's log ([Lan] lines, docs/lan.md) ----
+
+    private const int LanDetailMost = 40;   // packets described one by one after power-on; then only the counts
+    private int lanOut, lanMine, lanOthers, lanOff, lanFull, lanGiven, lanDetail, lanSaid;
+    private float lanAt;
+
+    // A packet in words: its length, what it is, from where to where, and its ports.
+    private string LanPacket(byte[] p, int at, int length)
+    {
+        int kind = p[at + 9], head = (p[at] & 15) * 4;
+        string what = kind == 1 ? "ICMP" : kind == 6 ? "TCP" : kind == 17 ? "UDP" : "protocol " + kind;
+        if (kind == 1 && length >= head + 1) what += p[at + head] == 8 ? " (ping)" : p[at + head] == 0 ? " (ping's answer)" : " (type " + p[at + head] + ")";
+        string ports = "";
+        if ((kind == 6 || kind == 17) && length >= head + 4)
+            ports = ", port " + (p[at + head] << 8 | p[at + head + 1]) + " to port " + (p[at + head + 2] << 8 | p[at + head + 3]);
+        if (kind == 6 && length >= head + 14)
+        {
+            int flags = p[at + head + 13];
+            ports += (flags & 2) != 0 ? ((flags & 16) != 0 ? " (SYN+ACK)" : " (SYN)") : (flags & 4) != 0 ? " (RST)" : (flags & 1) != 0 ? " (FIN)" : "";
+        }
+        return length + " bytes " + what + " " + p[at + 12] + "." + p[at + 13] + "." + p[at + 14] + "." + p[at + 15] + " to "
+               + p[at + 16] + "." + p[at + 17] + "." + p[at + 18] + "." + p[at + 19] + ports;
+    }
+
+    // Every five seconds in which something happened: the counts since power-on.
+    private void LanSay()
+    {
+        if (Time.time < lanAt) return;
+        lanAt = Time.time + 5f;
+        int sum = lanOut + lanMine + lanOthers + lanOff + lanFull + lanGiven + (int)netTaken;
+        if (sum == lanSaid) return;
+        lanSaid = sum;
+        Debug.Log("[Lan] 10.0." + (netId >> 8) + "." + (netId & 255) + (powered ? "" : " (off)") + ": the guest sent " + lanOut
+                  + "; heard for this machine " + lanMine + ", for others " + lanOthers + ", while off " + lanOff
+                  + "; given to the guest " + lanGiven + ", of which it has taken " + netTaken
+                  + "; waiting to go out " + NetWaiting() + ", to go in " + ((netInTail - netInHead) & (NetQueue - 1))
+                  + (lanFull > 0 ? "; dropped for a full queue " + lanFull : ""));
     }
 
     // Readbacks complete in the order they were asked for: a frame's rounds, a row each.
@@ -1201,12 +1262,12 @@ public class EmuMachine : UdonSharpBehaviour
         haveClock = true;
         lastClock = clock;
         // the cores' counts of instructions, which the control pass publishes at 0x87000380
-        cores = Mathf.Clamp((int)Word(64 + 0x3c, 0), 1, 64);
-        coresRunning = Word(64 + 0x3c, 1) & ~Word(64 + 0x3c, 2);   // started, and not asleep on its job word
-        coresRunningMore = Word(CoresMore + 12, 0) & ~Word(CoresMore + 12, 1);
+        cores = Mathf.Clamp((int)Word(64 + 0x3c, 0), 1, MostCores);
+        // started, and not asleep on its job word: a texel for every 32 cores
+        for (int g = 0; g < MostCores / 32; g++) coresRunning[g] = Word(CoresMore + 64 + g, 0) & ~Word(CoresMore + 64 + g, 1);
         for (int c = 1; c < cores; c++)
         {
-            uint now = c < 16 ? Word(64 + 0x38 + c / 4, c % 4) : Word(CoresMore + (c - 16) / 4, c % 4);
+            uint now = c < 16 ? Word(64 + 0x38 + c / 4, c % 4) : Word(CoresMore + c / 4, c % 4);
             if (haveWorkerClock)
             {
                 // (a geometry laid out anew starts the counts again: one that went down is all new)
@@ -1245,7 +1306,7 @@ public class EmuMachine : UdonSharpBehaviour
         speedLine = ips.ToString("N0") + " instructions/s   " + fps.ToString("F0") + " frames/s   "
                     + (fps > 0 ? (ips / fps).ToString("N0") : "0") + " a frame";
         int busy = 0;
-        for (int c = 1; c < cores; c++) if (((c < 32 ? coresRunning >> c : coresRunningMore >> (c - 32)) & 1) != 0) busy++;
+        for (int c = 1; c < cores; c++) if (((coresRunning[c >> 5] >> (c & 31)) & 1) != 0) busy++;
         string workerLine = cores < 2 ? "one core" :
             (cores - 1) + " workers (" + busy + " running): " + workerIps.ToString("N0") + " instructions/s, all cores " + (ips + workerIps).ToString("N0");
         if (statsText == null) return;

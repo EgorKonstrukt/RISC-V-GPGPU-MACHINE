@@ -43,10 +43,6 @@ public static partial class ShaderEmuBuilder
         S("PlasticBeige", "Plastic", 0.84f, 0.80f, 0.68f, 1f),
         S("PlasticGrey", "Plastic", 0.45f, 0.45f, 0.44f, 1f),
         S("PlasticDark", "Plastic", 0.17f, 0.17f, 0.18f, 1f),
-        S("GamepadBody", "Plastic", 0.78f, 0.79f, 0.82f, 1f),
-        S("GamepadBlue", "Plastic", 0.12f, 0.30f, 0.75f, 1f),
-        S("GamepadRed", "Plastic", 0.80f, 0.10f, 0.08f, 1f),
-        S("GamepadYellow", "Plastic", 0.95f, 0.75f, 0.10f, 1f),
         S("MetalSteel", "Metal", 0.55f, 0.56f, 0.58f, 1f, true, false, 0.85f),
         S("MetalBlack", "Metal", 0.15f, 0.15f, 0.16f, 1f, true, false, 0.4f),
         S("Brass", "Metal", 0.80f, 0.62f, 0.30f, 1f, true, false, 1f),
@@ -423,20 +419,6 @@ public static partial class ShaderEmuBuilder
         Annex(world, models.Find("Annex"), materials);   // the holodecks and the corridor (ShaderEmuHolodeck.cs)
         Stations(world);                      // the classroom's computers (ShaderEmuStations.cs)
         PcSounds(world);                      // the computer's own sounds (ShaderEmuPcSound.cs)
-    }
-
-    // A controller's shape (world/gamepad.py), in place of the builder's boxes. It moves: no lightmap.
-    static void GamepadModel(Transform pad, string which, Dictionary<string, Material> materials)
-    {
-        for (int i = pad.childCount - 1; i >= 0; i--)
-            if (pad.GetChild(i).GetComponent<MeshRenderer>() != null) Object.DestroyImmediate(pad.GetChild(i).gameObject);
-        GameObject all = Object.Instantiate(ImportModel("Gamepad", materials, false));
-        Transform model = all.transform.Find(which);
-        model.SetParent(pad, false);
-        model.localPosition = Vector3.zero;
-        model.localRotation = Quaternion.identity;
-        model.name = "Model";
-        Object.DestroyImmediate(all);
     }
 
     // An evening: the ceiling's back row of lamps is what lights the room, with the lamps that

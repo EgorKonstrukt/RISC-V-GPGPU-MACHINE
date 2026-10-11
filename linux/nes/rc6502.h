@@ -7,15 +7,21 @@
  * and takes the same cycles: after each one the cycles left are tested, and code that runs
  * out leaves with the 6502's pc. So a run is the same with and without (NES_CPU=interp).
  *
- * Registers while translated code runs: s0 A, s1 X, s2 Y, s3 S, s4 and s5 the values N and Z
- * were last set from, s6 C (0 or 1), s7 V (zero or not), s8 the cycles left, s9 the RAM,
- * s10 the state below, s11 the routines (rc_rt). The other flags stay the interpreter's.
+ * Registers while translated code runs: s0 A, s1 X, s2 Y, s3 S, s4 N and Z (below), s6 C (0 or
+ * 1), s7 V (zero or not), s8 the cycles left, s9 the RAM, s10 the state below, s11 the
+ * routines (rc_rt). The other flags stay the interpreter's.
+ * N and Z are one value: Z is set when its low byte is zero, N when bit 7 or 8 is set. A result
+ * is that value as it is; only bit, whose N is not its Z's, sets bit 8 (RC_NZ, RC_N, RC_Z).
  */
 #include <sys/mman.h>
 
+#define  RC_NZ(n, z)    ((((n) & 0x80) << 1) | ((z) ? 1 : 0))   /* from the interpreter's two */
+#define  RC_N(nz)       (((nz) & 0x180) ? 0x80 : 0)
+#define  RC_Z(nz)       ((nz) & 0xFF)
+
 typedef struct
 {
-   uint32 a, x, y, s, n, z, c, v;   /* 0 to 28 */
+   uint32 a, x, y, s, n, z, c, v;   /* 0 to 28; n is N and Z, z is not used */
    int32 rem;                       /* 32: cycles left */
    uint32 pc;                       /* 36: where translated code left */
    int32 bias;                      /* 40: taken off rem by a write that must leave */
@@ -29,6 +35,7 @@ typedef struct
 
 static rc_state_t rc;
 static int rc_fixed;                /* the cartridge's pages never change: every jump is direct */
+int rc_plain_runs_off;              /* NES_RC=plain: no unchecked copies of runs, to compare with */
 static uint32 *rc_code, *rc_p, *rc_end;
 static unsigned rc_count, rc_runs, rc_entries;
 static int rc_full;                 /* no room for more code: what is not translated stays so */
@@ -63,6 +70,12 @@ __attribute__((used)) void rc_slow_write(uint32 address, uint32 value, int rem)
 {
    rc_flush(rem);
    mem_writebyte(address, value);
+   /* (the PPU's, the sound's and the pads' registers turn no pages: the code goes on) */
+   if (address >= 0x2000 && address < 0x4018)
+   {
+      rc.rem = remaining_cycles;
+      return;
+   }
    rc.rem = remaining_cycles - RC_BIAS;
    rc.bias = RC_BIAS;
 }
@@ -70,19 +83,66 @@ __attribute__((used)) void rc_slow_write(uint32 address, uint32 value, int rem)
 /* a branch back over a loop that only looks: the cycles of its turns left (idle_loop) */
 __attribute__((used)) int rc_idle(uint32 where, uint32 a, uint32 x, uint32 y)
 {
-   uint8 p = (rc.n & N_FLAG) | (rc.v ? V_FLAG : 0) | (rc.z ? 0 : Z_FLAG) | (rc.c ? C_FLAG : 0);
+   uint8 p = RC_N(rc.n) | (rc.v ? V_FLAG : 0) | (RC_Z(rc.n) ? 0 : Z_FLAG) | (rc.c ? C_FLAG : 0);
 
    rc_flush(rc.rem);
    return idle_loop(where & 0xFFFF, where >> 16, a, x, y, p, remaining_cycles);
+}
+
+static int rc_inside;       /* a slice that rc_slice runs: the frame's loop may be asked for the next */
+static int rc_running;      /* translated code has the 6502's registers: an interrupt waits for it to be left */
+static int rc_slice_from;   /* the cycles so far, as the slice began */
+int rc_leave;               /* the next line has begun and the interpreter is to go on: it has an interrupt to take */
+
+/* (rc_line for a line whose work calls something: apart, so that rc_line saves no registers) */
+static __attribute__((noinline)) int rc_line_called(void)
+{
+   int next = ppu_line_between(cpu.total_cycles - rc_slice_from);
+
+   if (next <= 0)
+      return 0;
+   rc_slice_from = cpu.total_cycles;
+   remaining_cycles = next;
+   /* (the cartridge counted the line and asks for an interrupt, or burns cycles) */
+   if (cpu.burn_cycles || (cpu.int_pending && 0 == (cpu.p_reg & I_FLAG)))
+      rc_leave = 1;
+   return next;
+}
+
+/* A slice has ended in translated code. The next one's cycles, when all the frame's loop has
+** to do between the two is an ordinary line's work (ppu_line_between does it); else 0, and
+** the code leaves as it did. An awake line was 350 instructions round its slice, so. */
+__attribute__((used)) int rc_line(int rem)
+{
+   int next;
+
+   /* (an interrupt that waits is taken at a slice's start only when the 6502 lets it in: i is
+   ** the interpreter's flag, which translated code leaves as it is) */
+   if (!rc_inside || rem < -64 || nes6502_idle.state || cpu.burn_cycles
+       || (cpu.int_pending && 0 == (cpu.p_reg & I_FLAG)))
+      return 0;
+   rc_flush(rem);
+   next = ppu_line_plain(cpu.total_cycles - rc_slice_from);
+   if (next < 0)
+      return rc_line_called();
+   if (0 == next)
+      return 0;
+   rc_slice_from = cpu.total_cycles;
+   remaining_cycles = next;
+   return next;
 }
 
 __asm__(
    ".pushsection .text\n"
    ".align 2\n"
    "rc_rt:\n"
-   /* out: a0 is where the word with the 6502's pc is */
+   /* out: a0 is where the word with the 6502's pc is; what follows that word goes on from it */
    "rc_rt_out:\n"
-   "   lw a0, 0(a0)\n"
+   "   bgtz s8, 1f\n"
+   "   addi sp, sp, -16\n   sw a0, 12(sp)\n      mv a0, s8\n        call rc_line\n"
+   "   mv t0, a0\n          lw a0, 12(sp)\n      addi sp, sp, 16\n  beqz t0, 1f\n"
+   "   mv s8, t0\n          lui t1, %hi(rc_leave)\n   lw t1, %lo(rc_leave)(t1)\n   bnez t1, 1f\n   jr 4(a0)\n"
+   "1: lw a0, 0(a0)\n"
    "rc_rt_out_pc:\n"
    "   sw s0, 0(s10)\n   sw s1, 4(s10)\n   sw s2, 8(s10)\n   sw s3, 12(s10)\n"
    "   sw s4, 16(s10)\n  sw s5, 20(s10)\n  sw s6, 24(s10)\n  sw s7, 28(s10)\n"
@@ -168,6 +228,7 @@ enum { ZERO = 0, RA = 1, T0 = 5, T1 = 6, T2 = 7, A0 = 10, A1 = 11, A2 = 12, A3 =
 #define  e_srli(rd, a, n)        E_I(0x13, 5, rd, a, n)
 #define  e_mv(rd, a)             e_addi(rd, a, 0)
 #define  e_lbu(rd, base, off)    E_I(0x03, 4, rd, base, off)
+#define  e_lw(rd, base, off)     E_I(0x03, 2, rd, base, off)
 #define  e_jalr(rd, base, off)   E_I(0x67, 0, rd, base, off)
 #define  e_sb(src, base, off)    E(((uint32) (off) & 0xFE0) << 20 | (src) << 20 | (base) << 15 | ((uint32) (off) & 0x1F) << 7 | 0x23)
 
@@ -212,15 +273,34 @@ static void e_out(uint32 pc)
    E(pc);
 }
 
+/* A run's unchecked copy (rc_run_copy): its instructions' cycles are counted here, not by the
+** code, until something must have them (rc_owed), and N and Z are set by its last setter only. */
+static int rc_fast, rc_pending, rc_nz_live;
+static int rc_extra;   /* cycles of a run's copy that the jump ending it takes with its own */
+static uint8 *rc_lead; /* by byte of the program: 1 a jump comes here, 2 looked at (rc_leaders) */
+
+static void rc_owed(void)
+{
+   if (rc_fast && rc_pending)
+      e_addi(REM, REM, -rc_pending);
+   rc_pending = 0;
+}
+
 /* an instruction's end: its cycles, and out if none are left */
 static void e_tail(int cycles, uint32 next)
 {
+   if (rc_fast)
+   {
+      rc_pending += cycles;
+      return;
+   }
    e_addi(REM, REM, -cycles);
    e_bgtz(REM, 12);
    e_out(next);
 }
 
-#define  e_nz(reg)               (e_mv(RN, reg), e_mv(RZ, reg))
+#define  rc_nz_wanted()          (!rc_fast || rc_nz_live)
+#define  e_nz(reg)               (rc_nz_wanted() ? (void) e_mv(RN, reg) : (void) 0)   /* (a result is 0 to 255) */
 
 /* ---- the 6502's instructions ---- */
 
@@ -228,11 +308,12 @@ enum { M_IMP, M_ACC, M_IMM, M_ZP, M_ZPX, M_ZPY, M_ABS, M_ABX, M_ABY, M_INX, M_IN
 enum { K_NONE, K_INTERP1, K_LDA, K_LDX, K_LDY, K_STA, K_STX, K_STY, K_ADC, K_SBC, K_AND, K_ORA,
        K_EOR, K_CMP, K_CPX, K_CPY, K_BIT, K_INC, K_DEC, K_ASL, K_LSR, K_ROL, K_ROR, K_INX, K_INY,
        K_DEX, K_DEY, K_TAX, K_TAY, K_TXA, K_TYA, K_TSX, K_TXS, K_PHA, K_PLA, K_CLC, K_SEC, K_CLV,
-       K_NOP, K_BRANCH, K_JMP, K_JSR, K_RTS };
+       K_NOP, K_BRANCH, K_JMP, K_JSR, K_RTS, K_JMPI };
 
 typedef struct { uint8 kind, mode, cycles; } rc_op_t;
 
-/* (not here, so the interpreter's: brk, rti, jmp (), the flags i and d, php, plp, all undocumented) */
+/* (not here, so the interpreter's: brk, rti, the flags i and d, php, plp, all undocumented; and
+** jmp () through a pointer that is not in RAM) */
 static const rc_op_t rc_ops[256] =
 {
 #define  ALU(base, k) \
@@ -270,7 +351,7 @@ static const rc_op_t rc_ops[256] =
    [0x10] = { K_BRANCH, M_REL, 2 }, [0x30] = { K_BRANCH, M_REL, 2 }, [0x50] = { K_BRANCH, M_REL, 2 },
    [0x70] = { K_BRANCH, M_REL, 2 }, [0x90] = { K_BRANCH, M_REL, 2 }, [0xB0] = { K_BRANCH, M_REL, 2 },
    [0xD0] = { K_BRANCH, M_REL, 2 }, [0xF0] = { K_BRANCH, M_REL, 2 },
-   [0x4C] = { K_JMP, M_ABS, 3 }, [0x20] = { K_JSR, M_ABS, 6 }, [0x60] = { K_RTS, M_IMP, 6 },
+   [0x4C] = { K_JMP, M_ABS, 3 }, [0x6C] = { K_JMPI, M_ABS, 5 }, [0x20] = { K_JSR, M_ABS, 6 }, [0x60] = { K_RTS, M_IMP, 6 },
    [0x08] = { K_INTERP1 }, [0x28] = { K_INTERP1 }, [0x58] = { K_INTERP1 }, [0x78] = { K_INTERP1 },
    [0xD8] = { K_INTERP1 }, [0xF8] = { K_INTERP1 },
 #undef   ALU
@@ -398,9 +479,29 @@ static void e_load(int mode, uint32 arg, int penalty, int to)
       base = e_ram_place(mode, arg, &offset);
       e_lbu(to, base, offset);
    }
+   else if ((M_ABS == mode && arg >= 0x8000) || ((M_ABX == mode || M_ABY == mode) && arg >= 0x8000 && (arg & 0xFFF) + 0xFF < 0x1000))
+   {
+      /* the cartridge, and all of it in one page: through the pages as they are now, in place */
+      uint32 in_page = arg & 0xFFF;
+
+      if (penalty && M_ABS != mode)
+         e_cross(M_ABX == mode ? RX : RY, arg);
+      e_lw(T0, 26 /* s10 */, 44);
+      e_lw(T0, T0, 4 * (arg >> 12));
+      if (M_ABS != mode)
+         e_add(T0, T0, M_ABX == mode ? RX : RY);
+      if (in_page >= 0x800)
+      {
+         e_li(T1, in_page);
+         e_add(T0, T0, T1);
+         in_page = 0;
+      }
+      e_lbu(to, T0, in_page);
+   }
    else
    {
       e_address(mode, arg, penalty);
+      rc_owed();
       e_call(rc_rt_read);
       if (to != A0)
          e_mv(to, A0);
@@ -420,6 +521,7 @@ static void e_store(int mode, uint32 arg, int from)
    {
       e_address(mode, arg, 0);
       e_mv(A1, from);
+      rc_owed();
       e_call(rc_rt_write);
    }
 }
@@ -469,8 +571,8 @@ static void e_compare(int reg)
    e_srli(T0, T1, 8);
    e_andi(T0, T0, 1);
    e_xori(RC, T0, 1);
-   e_andi(RN, T1, 0xFF);
-   e_mv(RZ, RN);
+   if (rc_nz_wanted())
+      e_andi(RN, T1, 0xFF);
 }
 
 static void e_push(int reg)
@@ -501,6 +603,8 @@ static int rc_idle_possible(uint32 top, uint32 end)
 
       if (K_BRANCH == info->kind)
          pc += 2;
+      else if (K_JMP == info->kind && pc + 3 == end)
+         pc += 3;   /* (the jump that closes it: a game that waits in jmp to itself) */
       else if (0xEA == op || 0x18 == op || 0x38 == op)
          pc += 1;
       else if ((K_LDA == info->kind || K_LDX == info->kind || K_LDY == info->kind || K_CMP == info->kind
@@ -563,8 +667,9 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
    const rc_op_t *info = &rc_ops[op];
    int mode = info->mode, kind = info->kind;
    uint32 next = pc + rc_length[mode];
-   int reg, base, offset;
+   int reg, base, offset, extra = rc_extra;
 
+   rc_extra = 0;
    switch (kind)
    {
    case K_LDA: case K_LDX: case K_LDY:
@@ -604,6 +709,12 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_nz(RA_);
       break;
    case K_AND: case K_ORA: case K_EOR:
+      if (M_IMM == mode)
+      {
+         E_I(0x13, (K_AND == kind) ? 7 : (K_ORA == kind) ? 6 : 4, RA_, RA_, arg & 0xFF);
+         e_nz(RA_);
+         break;
+      }
       e_load(mode, arg, 1, A0);
       if (K_AND == kind)
          e_and(RA_, RA_, A0);
@@ -619,9 +730,14 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       break;
    case K_BIT:
       e_load(mode, arg, 0, A0);
-      e_mv(RN, A0);
       e_andi(RV, A0, 0x40);
-      e_and(RZ, A0, RA_);
+      if (rc_nz_wanted())
+      {
+         e_andi(T0, A0, 0x80);
+         e_slli(T0, T0, 1);
+         e_and(RN, A0, RA_);
+         e_or(RN, RN, T0);
+      }
       break;
    case K_INC: case K_DEC: case K_ASL: case K_LSR: case K_ROL: case K_ROR:
       if (M_ACC == mode)
@@ -642,6 +758,7 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       {
          e_address(mode, arg, 0);
          e_mv(A2, A0);
+         rc_owed();
          e_call(rc_rt_read);
          e_modify(kind, A0);
          e_mv(A1, A0);
@@ -668,18 +785,19 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
 
    case K_BRANCH:
    {
-      static const uint8 flag_reg[4] = { T0, RV, RC, RZ };
+      static const uint8 flag_reg[4] = { T0, RV, RC, T0 };
       int which = op >> 6, when_set = (op >> 5) & 1;
       int32 back = (int8) arg;
       uint32 target = (next + back) & 0xFFFF, *skip;
       int taken = (((int) back + (int) (next & 0xFF)) & 0x100) ? 4 : 3;
 
       if (0 == which)
-         e_andi(T0, RN, 0x80);
-      /* (the Z register is zero when the flag is set) */
+         e_andi(T0, RN, 0x180);
+      else if (3 == which)
+         e_andi(T0, RN, 0xFF);   /* (zero when the flag is set) */
       skip = rc_p;
       E(0);
-      e_addi(REM, REM, -taken);
+      e_addi(REM, REM, -taken - extra);
       if (back <= -4 && back >= -16 && rc_idle_possible(target, next))
       {
          e_call(rc_rt_idle);
@@ -688,19 +806,37 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_leave_to(pc, target);
       *skip = rc_branch_word((when_set != (3 == which)) ? 0 : 1, flag_reg[which], ZERO,
                              (int32) ((uint32) rc_p - (uint32) skip));
-      e_tail(2, next);
+      e_tail(2 + extra, next);
       return;
    }
    case K_JMP:
-      e_addi(REM, REM, -3);
+      e_addi(REM, REM, -3 - extra);
+      /* a jump a few bytes back, or to itself: a loop a game may wait in, as a branch back is */
+      if (arg <= pc && pc - arg <= 16 && rc_idle_possible(arg, pc + 3))
+      {
+         e_call(rc_rt_idle);
+         E(arg | (pc + 3) << 16);
+      }
       e_leave_to(pc, arg);
+      return;
+   case K_JMPI:
+      /* through a pointer in RAM (rc_translate leaves the others): its high byte from the
+      ** same page, the 6502's own mistake; then wherever that is, as rts goes */
+      base = e_ram_place(M_ABS, arg, &offset);
+      e_lbu(A0, base, offset);
+      base = e_ram_place(M_ABS, (arg & 0xFF00) | ((arg + 1) & 0xFF), &offset);
+      e_lbu(T1, base, offset);
+      e_slli(T1, T1, 8);
+      e_or(A0, A0, T1);
+      e_addi(REM, REM, -5 - extra);
+      e_jalr(ZERO, RT, RT_OFF(rc_rt_dispatch));
       return;
    case K_JSR:
       e_li(T1, (pc + 2) >> 8);
       e_push(T1);
       e_li(T1, (pc + 2) & 0xFF);
       e_push(T1);
-      e_addi(REM, REM, -6);
+      e_addi(REM, REM, -6 - extra);
       e_leave_to(pc, arg);
       return;
    case K_RTS:
@@ -709,11 +845,160 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_slli(T1, T1, 8);
       e_or(A0, A0, T1);
       e_addi(A0, A0, 1);
-      e_addi(REM, REM, -6);
+      e_addi(REM, REM, -6 - extra);
       e_jalr(ZERO, RT, RT_OFF(rc_rt_dispatch));
       return;
    }
    e_tail(info->cycles, next);
+}
+
+/* Whether an instruction may be in a run's unchecked copy: one that neither jumps nor can leave
+** (a write that is not RAM's may), and what it takes at most; *nz: it sets N and Z. */
+static int rc_plain(uint32 pc, int *most, int *nz)
+{
+   uint8 op = bank_readbyte(pc);
+   const rc_op_t *info = &rc_ops[op];
+   uint32 arg = bank_readbyte(pc + 1);
+   int kind = info->kind, mode = info->mode;
+
+   if (3 == rc_length[mode])
+      arg |= bank_readbyte(pc + 2) << 8;
+   if (kind < K_LDA || kind > K_NOP)
+      return 0;
+   if ((K_STA == kind || K_STX == kind || K_STY == kind || (kind >= K_INC && kind <= K_ROR && M_ACC != mode)) && !rc_in_ram(mode, arg))
+      return 0;
+   *nz = !(K_STA == kind || K_STX == kind || K_STY == kind || K_TXS == kind || K_PHA == kind || K_CLC == kind
+           || K_SEC == kind || K_CLV == kind || K_NOP == kind);
+   *most = info->cycles + 1;   /* (and the cycle a read across a page takes) */
+   return rc_length[mode];
+}
+
+#define  RC_RUN_LEAST   4     /* with nothing after it to take its cycles */
+#define  RC_RUN_MOST    24
+
+#define  rc_ends_run(kind)   (K_BRANCH == (kind) || K_JMP == (kind) || K_JSR == (kind) || K_RTS == (kind))
+
+/* Marks where the jumps of the code reached from pc come to: a run begins at each, so that a
+** loop's body is a run from its top. */
+static void rc_leaders(uint32 start)
+{
+   static uint32 stack[RC_WORK];
+   int n = 0;
+
+   stack[n++] = start;
+   while (n)
+   {
+      uint32 pc = stack[--n];
+
+      for (;;)
+      {
+         uint32 where = rc_where(pc), target = 0xFFFFFFFF;
+         const rc_op_t *info;
+         uint8 op;
+
+         if (where >= rc.size || (rc_lead[where] & 2) || rc.table[where])
+            break;
+         rc_lead[where] |= 2;
+         op = bank_readbyte(pc);
+         info = &rc_ops[op];
+         if (K_NONE == info->kind)
+            break;
+         if (K_BRANCH == info->kind)
+            target = (pc + 2 + (int8) bank_readbyte(pc + 1)) & 0xFFFF;
+         else if (K_JMP == info->kind || K_JSR == info->kind)
+            target = bank_readbyte(pc + 1) | bank_readbyte(pc + 2) << 8;
+         if (rc_where(target) < rc.size)
+         {
+            rc_lead[rc_where(target)] |= 1;
+            if (n < RC_WORK)
+               stack[n++] = target;
+         }
+         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind)
+            break;
+         pc += (K_INTERP1 == info->kind) ? 1 : rc_length[info->mode];
+      }
+   }
+}
+
+/* How many instructions from pc are a run: plain ones, none translated yet, all in the program. */
+static int rc_run_length(uint32 pc, int *most, int *last_nz)
+{
+   int n = 0, cycles, nz, length;
+
+   *most = 0;
+   *last_nz = -1;
+   while (n < RC_RUN_MOST)
+   {
+      uint32 where = rc_where(pc);
+
+      if (where >= rc.size || where + 3 > rc.size || rc.table[where] || (n && (rc_lead[where] & 1))
+          || 0 == (length = rc_plain(pc, &cycles, &nz)))
+         break;
+      if (nz)
+         *last_nz = n;
+      *most += cycles;
+      pc += length;
+      n++;
+   }
+   return n;
+}
+
+static void rc_instruction(uint32 pc, uint8 op, uint32 arg);
+
+/* A run's unchecked copy, before its instructions one by one: taken when the cycles left are
+** more than the run can take, so that none of it could have been the slice's last. Returns
+** the jump at its end, to be pointed past the run's own code. */
+static uint32 *rc_run_copy(uint32 pc, int n, int most, int last_nz)
+{
+   uint32 *guard, *jump;
+   int i;
+
+   e_addi(T0, REM, -most);
+   guard = rc_p;
+   E(0);
+   rc_fast = 1;
+   rc_pending = 0;
+   for (i = 0; i < n; i++)
+   {
+      uint8 op = bank_readbyte(pc);
+      const rc_op_t *info = &rc_ops[op];
+      uint32 arg = bank_readbyte(pc + 1);
+
+      if (3 == rc_length[info->mode])
+         arg |= bank_readbyte(pc + 2) << 8;
+      rc_nz_live = (i == last_nz);
+      rc_instruction(pc, op, arg);
+      pc += rc_length[info->mode];
+   }
+   {
+      /* the jump that ends the run, in the copy too: the run's cycles go with its own */
+      uint8 op = bank_readbyte(pc);
+      const rc_op_t *info = &rc_ops[op];
+      uint32 arg = bank_readbyte(pc + 1);
+
+      if (rc_ends_run(info->kind) && rc_where(pc) + 3 <= rc.size)
+      {
+         if (3 == rc_length[info->mode])
+            arg |= bank_readbyte(pc + 2) << 8;
+         rc_fast = 0;
+         rc_extra = rc_pending;
+         rc_pending = 0;
+         rc_instruction(pc, op, arg);
+         if (K_BRANCH == info->kind)
+            e_jump(pc, pc + 2);
+         jump = NULL;
+      }
+      else
+      {
+         rc_owed();
+         rc_fast = 0;
+         jump = rc_p;
+         E(0);
+      }
+   }
+   /* (blez t0: not enough left, the instructions one by one) */
+   *guard = rc_branch_word(5, ZERO, T0, (int32) ((uint32) rc_p - (uint32) guard));
+   return jump;
 }
 
 /* Translates what is reached from the 6502's pc by jumps that are straight ones. */
@@ -724,11 +1009,14 @@ static void rc_translate(uint32 start)
    rc_works = rc_fixes = 0;
    rc_work[rc_works++] = start;
    rc_runs++;
+   if (!rc_plain_runs_off)
+      rc_leaders(start);
 
    while (rc_works)
    {
       uint32 pc = rc_work[--rc_works];
-      int falls = 0;
+      int falls = 0, run_left = 0;
+      uint32 *run_jump = NULL;
 
       for (;;)
       {
@@ -736,8 +1024,8 @@ static void rc_translate(uint32 start)
          const rc_op_t *info;
          uint8 op;
 
-         /* (room: the longest instruction, and what the jumps still to mend may need) */
-         if (where >= rc.size || rc_p + 64 + 2 * rc_fixes > rc_end)
+         /* (room: the longest instruction, a run's copy, and what the jumps still to mend may need) */
+         if (where >= rc.size || rc_p + 64 + 24 * RC_RUN_MOST + 2 * rc_fixes > rc_end)
          {
             if (where < rc.size)
                rc_full = 1;
@@ -753,15 +1041,31 @@ static void rc_translate(uint32 start)
                e_out(pc);
             break;
          }
+         if (0 == run_left && !rc_plain_runs_off)
+         {
+            int most, last_nz, n = rc_run_length(pc, &most, &last_nz);
+            uint32 after = pc;
+            int i;
+
+            for (i = 0; i < n; i++)
+               after += rc_length[rc_ops[bank_readbyte(after)].mode];
+            if (n >= RC_RUN_LEAST || (n >= 2 && rc_where(after) + 3 <= rc.size && rc_ends_run(rc_ops[bank_readbyte(after)].kind)))
+            {
+               /* (the run's first instruction is entered at the copy's test) */
+               run_jump = rc_run_copy(pc, n, most, last_nz);
+               run_left = n;
+            }
+         }
          op = bank_readbyte(pc);
          info = &rc_ops[op];
          rc.at[where] = pc >> 12;
-         if (K_NONE == info->kind || K_INTERP1 == info->kind)
+         if (K_NONE == info->kind || K_INTERP1 == info->kind
+             || (K_JMPI == info->kind && !rc_in_ram(M_ABS, bank_readbyte(pc + 1) | bank_readbyte(pc + 2) << 8)))
          {
             /* the interpreter's: fallen into, the code leaves; never entered */
             rc.table[where] = code | 1;
             e_out(pc);
-            if (K_NONE == info->kind)
+            if (K_INTERP1 != info->kind)
                break;
             pc += 1;
             falls = 0;
@@ -773,7 +1077,9 @@ static void rc_translate(uint32 start)
          rc.table[where] = code;
          rc_instruction(pc, op, arg);
          rc_count++;
-         if (K_JMP == info->kind || K_RTS == info->kind)
+         if (run_left && 0 == --run_left && run_jump)
+            *run_jump = rc_jal_word(ZERO, (int32) ((uint32) rc_p - (uint32) run_jump));
+         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind)
             break;
          pc += rc_length[info->mode];
          falls = 1;
@@ -812,13 +1118,13 @@ static void rc_translate(uint32 start)
          if (0 == (rc.table[rc_at] & 1) && rc.table[rc_at] && rc.at[rc_at] == (PC >> 12)) \
          { \
             rc.a = A; rc.x = X; rc.y = Y; rc.s = S; \
-            rc.n = n_flag; rc.z = z_flag; rc.c = c_flag; rc.v = v_flag; \
+            rc.n = RC_NZ(n_flag, z_flag); rc.c = c_flag; rc.v = v_flag; \
             rc.rem = remaining_cycles; \
             rc.ram = ram; \
             rc_entries++; \
             rc_enter(rc.table[rc_at], &rc, rc_rt); \
             A = rc.a; X = rc.x; Y = rc.y; S = rc.s; \
-            n_flag = rc.n; z_flag = rc.z; c_flag = rc.c; v_flag = rc.v; \
+            n_flag = RC_N(rc.n); z_flag = RC_Z(rc.n); c_flag = rc.c; v_flag = rc.v; \
             PC = rc.pc; \
             rc_flush(rc.rem + rc.bias); \
             rc.bias = 0; \
@@ -826,6 +1132,77 @@ static void rc_translate(uint32 start)
          } \
       } \
    } \
+}
+
+/* A slice that begins in translated code, run without the interpreter's function, which is
+** a large one to come into and out of. True: the slice is done. Else the interpreter goes on
+** from the registers as they are, with remaining_cycles; either way *elapsed is what ran. */
+static int rc_slice(int timeslice_cycles, int *elapsed)
+{
+   int done = 0;
+   uint32 p = cpu.p_reg, pc = cpu.pc_reg;
+
+   rc_slice_from = cpu.total_cycles;
+
+   *elapsed = 0;
+   remaining_cycles = timeslice_cycles;
+   if (NULL == rc.table || timeslice_cycles <= 0 || cpu.burn_cycles || (cpu.int_pending && 0 == (p & I_FLAG)))
+      return 0;
+   rc.a = cpu.a_reg; rc.x = cpu.x_reg; rc.y = cpu.y_reg; rc.s = cpu.s_reg;
+   rc.n = RC_NZ(p, 0 == (p & Z_FLAG)); rc.c = p & C_FLAG; rc.v = p & V_FLAG;
+   rc.ram = ram;
+   for (;;)
+   {
+      uint32 at = rc_where(pc);
+
+      if (at >= rc.size)
+         break;
+      if (0 == rc.table[at] && !rc_full)
+         rc_translate(pc);
+      if ((rc.table[at] & 1) || 0 == rc.table[at] || rc.at[at] != (pc >> 12))
+         break;
+      rc.rem = remaining_cycles;
+      rc_entries++;
+      rc_inside = !rc_plain_runs_off;
+      rc_running = 1;
+      rc_enter(rc.table[at], &rc, rc_rt);
+      rc_inside = rc_running = 0;
+      pc = rc.pc;
+      rc_flush(rc.rem + rc.bias);
+      rc.bias = 0;
+      if (rc_leave)
+      {
+         rc_leave = 0;
+         break;
+      }
+      if (remaining_cycles <= 0)
+      {
+         done = 1;
+         break;
+      }
+   }
+   cpu.pc_reg = pc;
+   cpu.a_reg = rc.a; cpu.x_reg = rc.x; cpu.y_reg = rc.y; cpu.s_reg = rc.s;
+   cpu.p_reg = (p & (B_FLAG | D_FLAG | I_FLAG)) | R_FLAG | RC_N(rc.n) | (rc.v ? V_FLAG : 0)
+               | (RC_Z(rc.n) ? 0 : Z_FLAG) | (rc.c ? C_FLAG : 0);
+   /* (as the interpreter's slice ends: one that found an idle loop and ends inside it sleeps) */
+   if (done && 1 == idle.state)
+   {
+      int at;
+
+      idle.state = 0;
+      for (at = 0; at < idle.count && !idle.waking && 2 != nes6502_plain; at++)
+      {
+         if (idle.pc[at] == pc)
+         {
+            idle.at = idle.was_at = at;
+            idle.state = 2;
+            break;
+         }
+      }
+   }
+   *elapsed = cpu.total_cycles - rc_slice_from;
+   return done;
 }
 
 /* Called once the cartridge is in: its program, and whether its pages ever turn. */
@@ -837,6 +1214,7 @@ void nes6502_recompile(uint8 *prg, int bytes, int fixed)
    rc_p = rc_code;
    rc_end = rc_code + RC_CODE_BYTES / 4;
    rc.at = calloc(bytes, 1);
+   rc_lead = calloc(bytes, 1);
    rc.prg = prg;
    rc.size = bytes;
    rc.pages = cpu.mem_page;

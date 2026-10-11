@@ -371,6 +371,8 @@ public class EmuKeyboard : UdonSharpBehaviour
         SetCapture(!capturing);
     }
 
+    public bool Capturing() { return capturing; }
+
     public void SetCapture(bool on)
     {
         Init();

@@ -12,6 +12,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
@@ -52,28 +53,16 @@ struct shaderemu_gpu_workers {
 #define WORKERS_CORES	0x3c0	/* control word: how many cores the machine has */
 #define WORKERS_MOST_NOW	0x3cc	/* and how many it could have (0: a machine whose cores are as they are) */
 /*
- * The geometry (docs/multicore.md): how many worker cores there are and how large each one's
- * write cache is, four bits a worker (the tables' 2^bits buckets, 3 to 6; 0 ends the list),
- * workers 1 to 8 in the first word and 9 to 15 in the second. The workers share 64 rows of the
- * machine's state, and a worker's rows are what its cache needs, so a program chooses
- * between few cores that store much in a pass and many that store little. It can only be
- * set while no program has a worker: EBUSY otherwise.
+ * The workers' layout is the kernel's (workers_layout): these two calls, with which a program
+ * once laid them out its own way, do nothing now.
  */
 #define SHADEREMU_GPU_SHAPE	_IOW('G', 6, __u32[2])
-/*
- * A machine of more than 16 cores (up to 64): the geometry is eight words, workers 1 to 8 in
- * the first and so on, and its workers share 248 rows. A program that knows of them asks
- * for its workers with { how many, its root (the answer), a bit a core in two words (the
- * answer) }; the three-word call above gives out the first fifteen only, whose mailboxes
- * are where they always were.
- */
 #define SHADEREMU_GPU_SHAPE_ALL	_IOW('G', 7, __u32[8])
-#define SHADEREMU_GPU_WORKERS_ALL	_IOWR('G', 8, __u32[4])
-#define WORKERS_SHAPE	0x3d0	/* control words: bit 0 while it is laid out anew; three words after it */
-#define WORKERS_SHAPE_MORE	0xf00	/* the other five, of a machine of more than 16 cores: in the mailbox page */
-#define WORKERS_ROWS	64
-#define WORKERS_ROWS_MANY	248	/* a machine of more than 16 cores */
-#define WORKERS_WORDS	8
+/* { how many it wants, its root, a bit a core it has in eight words } */
+#define SHADEREMU_GPU_WORKERS_ALL	_IOWR('G', 8, __u32[10])
+#define WORKERS_SHAPE	0x3d0	/* control words: bit 0 while it is laid out anew; how many workers; their size */
+#define WORKERS_SIZE	5	/* a worker's write cache: tables of 2^5 buckets, 3 KB of stores a pass */
+#define WORKERS_WORDS	8	/* a bit a core */
 /*
  * One program at a time draws with the GPU's memory for programs (its textures, vertices and
  * lists are at fixed places there): the program asks for it with this, and has it until it
@@ -83,149 +72,313 @@ struct shaderemu_gpu_workers {
 #define SHADEREMU_GPU_DRAW	_IOR('G', 5, __u32)
 
 /*
- * A program that only borrows its workers (a monitor that draws with them) says so with this,
- * before it asks for any. When another program then asks for workers that are not free, or
- * for another geometry, the count at WORKERS_ASKED in the mailbox page goes up and that
- * program is kept waiting, half a second at most, for the borrower to close its file.
+ * The worker cores are shared out between the programs that ask (docs/multicore.md, "Shared
+ * between programs"). A program says how many it wants with a WORKERS call, as often as it
+ * likes, and has its share: the cores divided evenly among the programs that ask, nobody
+ * more than it wants, the small wants filled first; a program that only borrows (LENT, said
+ * before it asks: a monitor that draws with them) has what the others leave. A core over its
+ * program's share is taken back. One with no job (its mailbox's job and answer numbers are
+ * the same) is taken at once: it is parked and its word at WORKERS_OWNER, which was its
+ * program's tag, is 0, which is how the program's library knows before it posts the next job
+ * there (and a program sets its word at WORKERS_POSTING while it writes to a mailbox, during
+ * which none of its cores is taken: so it never writes to one that has become another's).
+ * One at a job is asked for: its bit is set at WORKERS_RECALL, and the library gives
+ * it up when the job has ended (GIVE: eight words, a bit a core). A job is never cut short.
+ * The count at WORKERS_OFFER goes up whenever cores come free or the shares change: a
+ * program that has fewer than its share asks again then. The WORKERS calls answer with the
+ * share in place of the number asked for.
  */
 #define SHADEREMU_GPU_LENT	_IO('G', 9)
-#define WORKERS_ASKED	0xf20
+#define SHADEREMU_GPU_GIVE	_IOW('G', 10, __u32[8])
+#define WORKERS_RECALL	0x1000
+#define WORKERS_OFFER	0x1020
+#define WORKERS_POSTING	0x1040	/* a word a program (its tag's low four bits): not 0 while it writes to a mailbox */
+#define WORKERS_OWNER	0x1400	/* a word a core: its program's tag, 0 for a core that is nobody's */
+#define WORKERS_BOX(k)	(0x4000 + 64 * (k))	/* a core's mailbox: its job, then its answer */
+#define WORKERS_PAGES	0x8000	/* the mailboxes: programs/mc/mc.h */
+#define WORKERS_CLIENTS	16
 #define WORKERS_PHYS	0x86C00000UL	/* the worker cores' mailboxes */
 #define WORKERS_STOP	0x5453434d	/* in a core's start word: park it */
-#define WORKERS_MOST	64
+#define WORKERS_MOST	256
 
 static void __iomem *gpu_regs;
 static void __iomem *workers;
 static struct file *worker_owner[WORKERS_MOST];
-static struct file *worker_borrower;	/* the file whose workers are only lent to it */
+/* the programs that have asked for workers: how many each wants, and its share of them now */
+static struct worker_client {
+	struct file *file;
+	u32 want, share, tag;
+	bool lent, settled;
+} worker_clients[WORKERS_CLIENTS];
+static u32 worker_tags;		/* tags given so far: no two programs ever have the same */
 static DEFINE_MUTEX(workers_lock);
 static struct file *draw_owner;
 static pid_t draw_pid;
 static DEFINE_MUTEX(gpu_lock);
 
-static u32 workers_rows(u32 bits)
+/*
+ * The workers' layout, set once, the first time a program asks for workers: as many as the
+ * machine has cores for, all alike, so that any program can have any of them (the cores are
+ * shared out between programs, below). Every worker parked, then the machine's strip is
+ * nothing but zeros for some passes, and then it is the workers'.
+ */
+static void workers_layout(void)
 {
-	return bits ? (44 + 8 + (2u << bits) * 4 + 63) / 64 : 0;
-}
+	u32 most = readl(gpu_regs + WORKERS_MOST_NOW), k;
 
-/* Lays the workers out: called with workers_lock held and no worker anyone's. */
-static long workers_shape(const u32 *shape)
-{
-	u32 most = readl(gpu_regs + WORKERS_MOST_NOW), k, rows = 0, ended = 0;
-	u32 room = most > 16 ? WORKERS_ROWS_MANY : WORKERS_ROWS;
-
-	if (most < 2)
-		return -ENODEV;
 	if (most > WORKERS_MOST)
 		most = WORKERS_MOST;
-	for (k = 1; k < WORKERS_MOST; k++) {
-		u32 bits = (shape[(k - 1) / 8] >> (4 * ((k - 1) % 8))) & 15;
-
-		if (!bits) {
-			ended = 1;
-			continue;
-		}
-		if (ended || bits < 3 || bits > 6 || k >= most)
-			return -EINVAL;
-		rows += workers_rows(bits);
-	}
-	if (rows > room)
-		return -EINVAL;
-	/*
-	 * Every worker parked, then the strip is nothing but zeros for some passes (a worker
-	 * with no state is a parked one), and then it is the new workers' rows.
-	 */
+	if (most < 2)
+		return;
 	for (k = 1; k < WORKERS_MOST; k++)
 		writel(WORKERS_STOP, workers + 16 * k);
 	writel(1, gpu_regs + WORKERS_SHAPE);
 	msleep(60);
-	/* (a machine of 16 cores or fewer has the first two words, and the others are none of its) */
-	for (k = 0; k < (most > 16 ? WORKERS_WORDS : 2); k++)
-		writel(shape[k], k < 3 ? gpu_regs + WORKERS_SHAPE + 4 + 4 * k : workers + WORKERS_SHAPE_MORE + 4 * (k - 3));
+	writel(most - 1, gpu_regs + WORKERS_SHAPE + 4);
+	writel(WORKERS_SIZE, gpu_regs + WORKERS_SHAPE + 8);
 	msleep(60);
 	writel(0, gpu_regs + WORKERS_SHAPE);
 	msleep(60);
-	return 0;
 }
 
-/* The shape a machine has until a program asks for another: three workers of the full size,
- * and as many of the smallest kept for work that stores little as there is room for. */
-static void workers_default_shape(void)
+/* Everything below is called with workers_lock held. */
+
+static u32 workers_cores(void)
 {
-	u32 most = readl(gpu_regs + WORKERS_MOST_NOW), shape[WORKERS_WORDS] = {0}, k, rows = 0;
+	u32 cores = readl(gpu_regs + WORKERS_CORES);
 
-	/* fifteen at most: what a program that knows nothing of more can be given */
-	if (most > 16)
-		most = 16;
-	for (k = 1; k < most; k++) {
-		u32 bits = k <= 3 ? 6 : 4;
-
-		if (rows + workers_rows(bits) > WORKERS_ROWS)
-			break;
-		rows += workers_rows(bits);
-		shape[k > 8] |= bits << (4 * (k <= 8 ? k - 1 : k - 9));
-	}
-	if (shape[0])
-		workers_shape(shape);
+	return cores > WORKERS_MOST ? WORKERS_MOST : cores;
 }
 
-/* How many workers the borrower has; with workers_lock held. */
-static u32 workers_lent(void)
+static struct worker_client *workers_client(struct file *file, bool make)
+{
+	int i;
+
+	for (i = 0; i < WORKERS_CLIENTS; i++)
+		if (worker_clients[i].file == file)
+			return &worker_clients[i];
+	for (i = 0; make && i < WORKERS_CLIENTS; i++)
+		if (!worker_clients[i].file) {
+			memset(&worker_clients[i], 0, sizeof(worker_clients[i]));
+			worker_clients[i].file = file;
+			/* (no two programs ever have the same; its low four bits are its place here) */
+			worker_clients[i].tag = (++worker_tags & 0xffff) << 4 | (u32)i;
+			writel(0, workers + WORKERS_POSTING + 4 * i);
+			return &worker_clients[i];
+		}
+	return NULL;
+}
+
+static u32 workers_of(struct file *file)
 {
 	u32 k, n = 0;
 
 	for (k = 1; k < WORKERS_MOST; k++)
-		n += worker_borrower && worker_owner[k] == worker_borrower;
+		n += worker_owner[k] == file;
 	return n;
 }
 
-/*
- * Calls the lent workers in for `file`, which wants `wanted` of them (0: every one): called
- * with workers_lock held, which it lets go of while it waits.
- */
-static void workers_call_in(struct file *file, u32 wanted)
+/* A core that is somebody's and has no job: what its program posted last, it has answered,
+ * and the program has taken the answer (the third word of the mailbox's last texel). */
+static bool workers_idle(u32 k)
 {
-	u32 k, cores = readl(gpu_regs + WORKERS_CORES), nobodys = 0;
+	u32 job = readl(workers + WORKERS_BOX(k));
+
+	return job == readl(workers + WORKERS_BOX(k) + 16) && job == readl(workers + WORKERS_BOX(k) + 56);
+}
+
+static void workers_park(u32 k)
+{
+	writel(WORKERS_STOP, workers + 16 * k);
+	writel(0, workers + WORKERS_OWNER + 4 * k);
+	worker_owner[k] = NULL;
+}
+
+static void workers_offer(void)
+{
+	writel(readl(workers + WORKERS_OFFER) + 1, workers + WORKERS_OFFER);
+}
+
+/*
+ * Every program's share, and the cores that are over one asked back. The programs that keep
+ * their workers divide the cores first, then the borrowers what is left: evenly, except that
+ * who wants less than an even part has what it wants and the others divide the rest.
+ */
+static void workers_balance(void)
+{
+	u32 cores = workers_cores(), left = cores > 1 ? cores - 1 : 0, recall[WORKERS_WORDS] = {0}, k;
+	struct worker_client *c;
+	bool freed = false;
+	int lent, i;
+
+	for (i = 0; i < WORKERS_CLIENTS; i++) {
+		worker_clients[i].share = 0;
+		worker_clients[i].settled = !worker_clients[i].file || !worker_clients[i].want;
+	}
+	for (lent = 0; lent < 2; lent++) {
+		for (;;) {
+			u32 askers = 0, each, done = 0;
+
+			for (i = 0; i < WORKERS_CLIENTS; i++)
+				askers += !worker_clients[i].settled && worker_clients[i].lent == lent;
+			if (!askers)
+				break;
+			each = left / askers;
+			for (i = 0; i < WORKERS_CLIENTS; i++) {
+				c = &worker_clients[i];
+				if (c->settled || c->lent != lent || c->want > each)
+					continue;
+				c->share = c->want;
+				c->settled = true;
+				left -= c->share;
+				done = 1;
+			}
+			if (done)
+				continue;
+			/* they all want more than an even part: that part each, the odd cores to the first */
+			for (i = 0; i < WORKERS_CLIENTS; i++) {
+				c = &worker_clients[i];
+				if (c->settled || c->lent != lent)
+					continue;
+				c->share = each + (left % askers ? 1 : 0);
+				c->settled = true;
+				if (left % askers)
+					left--;
+				left -= each;
+				askers--;
+			}
+			break;
+		}
+	}
+	/* of a program with more than its share, the last cores it has are the ones to come
+	 * back: at once if they have no job, when their job ends if they have */
+	for (i = 0; i < WORKERS_CLIENTS; i++) {
+		u32 over;
+
+		c = &worker_clients[i];
+		if (!c->file)
+			continue;
+		over = workers_of(c->file);
+		over = over > c->share ? over - c->share : 0;
+		for (k = WORKERS_MOST - 1; k >= 1 && over; k--) {
+			if (worker_owner[k] != c->file)
+				continue;
+			if (workers_idle(k) && !readl(workers + WORKERS_POSTING + 4 * i)) {
+				workers_park(k);
+				freed = true;
+			} else {
+				recall[k / 32] |= 1u << (k % 32);
+			}
+			over--;
+		}
+	}
+	if (freed)
+		workers_offer();
+	for (k = 0; k < WORKERS_WORDS; k++)
+		writel(recall[k], workers + WORKERS_RECALL + 4 * k);
+}
+
+/* Whether any core is still on its way back. */
+static bool workers_recalled(void)
+{
+	u32 k, any = 0;
+
+	for (k = 0; k < WORKERS_WORDS; k++)
+		any |= readl(workers + WORKERS_RECALL + 4 * k);
+	return any != 0;
+}
+
+/*
+ * `file` wants `want` workers (of the cores below `below`): its share of them, waited for half
+ * a second at most while cores over the others' shares come back. A bit a core it has, after;
+ * the share is what it returns.
+ */
+static u32 workers_take(struct file *file, u32 want, u32 below, u32 *mask)
+{
+	struct worker_client *c = workers_client(file, true);
+	u32 cores, k;
 	int tries;
 
-	if (!worker_borrower || worker_borrower == file || !workers_lent())
-		return;
-	for (k = 1; k < cores && k < WORKERS_MOST; k++)
-		nobodys += !worker_owner[k];
-	if (wanted && nobodys >= wanted)
-		return;
-	writel(readl(workers + WORKERS_ASKED) + 1, workers + WORKERS_ASKED);
-	for (tries = 0; tries < 50 && workers_lent(); tries++) {
-		mutex_unlock(&workers_lock);
-		msleep(10);
-		mutex_lock(&workers_lock);
+	memset(mask, 0, 4 * WORKERS_WORDS);
+	if (c) {
+		c->want = want;
+		if (readl(gpu_regs + WORKERS_MOST_NOW) > 1 && !readl(gpu_regs + WORKERS_SHAPE + 4))
+			workers_layout();
+		workers_balance();
+		for (tries = 0; tries < 50; tries++) {
+			u32 have = workers_of(file);
+
+			cores = workers_cores();
+			if (cores > below)
+				cores = below;
+			for (k = 1; k < cores && have < c->share; k++)
+				if (!worker_owner[k]) {
+					u32 box = WORKERS_BOX(k), i;
+
+					/* its mailbox as new, and whose it is */
+					for (i = 0; i < 64; i += 4)
+						writel(0, workers + box + i);
+					writel(0, workers + 16 * k);
+					writel(c->tag, workers + WORKERS_OWNER + 4 * k);
+					worker_owner[k] = file;
+					have++;
+				}
+			if (have >= c->share || !workers_recalled())
+				break;
+			mutex_unlock(&workers_lock);
+			msleep(10);
+			mutex_lock(&workers_lock);
+			workers_balance();
+		}
 	}
+	for (k = 1; k < WORKERS_MOST; k++)
+		if (worker_owner[k] == file)
+			mask[k / 32] |= 1u << (k % 32);
+	return c ? c->share | c->tag << 12 : 0;
+}
+
+/* The cores of `mask` that are `file`'s (all of its, for a file that is closed) are nobody's again. */
+static bool workers_give(struct file *file, const u32 *mask)
+{
+	bool had = false;
+	u32 k;
+
+	for (k = 1; k < WORKERS_MOST; k++)
+		if (worker_owner[k] == file && (!mask || (mask[k / 32] >> (k % 32) & 1))) {
+			workers_park(k);
+			had = true;
+		}
+	return had;
 }
 
 static long shaderemu_gpu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	if (cmd == SHADEREMU_GPU_LENT) {
+		struct worker_client *c;
+
 		mutex_lock(&workers_lock);
-		worker_borrower = file;
+		c = workers_client(file, true);
+		if (c)
+			c->lent = true;
+		mutex_unlock(&workers_lock);
+		return c ? 0 : -ENOMEM;
+	}
+	if (cmd == SHADEREMU_GPU_GIVE) {
+		u32 mask[WORKERS_WORDS];
+
+		if (copy_from_user(mask, (void __user *)arg, sizeof(mask)))
+			return -EFAULT;
+		mutex_lock(&workers_lock);
+		if (workers_give(file, mask)) {
+			workers_balance();
+			workers_offer();
+		}
 		mutex_unlock(&workers_lock);
 		return 0;
 	}
-	if (cmd == SHADEREMU_GPU_SHAPE || cmd == SHADEREMU_GPU_SHAPE_ALL) {
-		u32 shape[WORKERS_WORDS] = {0}, k;
-		long answer = 0;
-
-		if (copy_from_user(shape, (void __user *)arg, cmd == SHADEREMU_GPU_SHAPE ? 2 * sizeof(u32) : sizeof(shape)))
-			return -EFAULT;
-		mutex_lock(&workers_lock);
-		workers_call_in(file, 0);
-		for (k = 1; k < WORKERS_MOST; k++)
-			if (worker_owner[k])
-				answer = -EBUSY;
-		if (!answer)
-			answer = workers_shape(shape);
-		mutex_unlock(&workers_lock);
-		return answer;
-	}
+	/* (a program built when the workers could be laid out its own way is told that they are) */
+	if (cmd == SHADEREMU_GPU_SHAPE || cmd == SHADEREMU_GPU_SHAPE_ALL)
+		return 0;
 	if (cmd == SHADEREMU_GPU_DRAW) {
 		u32 other = 0;
 		long answer = 0;
@@ -244,51 +397,27 @@ static long shaderemu_gpu_ioctl(struct file *file, unsigned int cmd, unsigned lo
 		return answer;
 	}
 	if (cmd == SHADEREMU_GPU_WORKERS_ALL) {
-		u32 w[4], cores, k, got = 0;
+		u32 w[2 + WORKERS_WORDS];
 
 		if (copy_from_user(w, (void __user *)arg, sizeof(w)))
 			return -EFAULT;
 		w[1] = csr_read(CSR_SATP) & 0x3fffff;
-		w[2] = w[3] = 0;
 		mutex_lock(&workers_lock);
-		workers_call_in(file, w[0]);
-		if (readl(gpu_regs + WORKERS_MOST_NOW) > 1 && !readl(gpu_regs + WORKERS_SHAPE + 4))
-			workers_default_shape();
-		cores = readl(gpu_regs + WORKERS_CORES);
-		if (cores > WORKERS_MOST)
-			cores = WORKERS_MOST;
-		for (k = 1; k < cores && got < w[0]; k++)
-			if (!worker_owner[k]) {
-				worker_owner[k] = file;
-				w[2 + k / 32] |= 1u << (k % 32);
-				got++;
-			}
+		w[0] = workers_take(file, w[0], WORKERS_MOST, &w[2]);
 		mutex_unlock(&workers_lock);
 		return copy_to_user((void __user *)arg, w, sizeof(w)) ? -EFAULT : 0;
 	}
 	if (cmd == SHADEREMU_GPU_WORKERS) {
 		struct shaderemu_gpu_workers w;
-		u32 cores, k, got = 0;
+		u32 mask[WORKERS_WORDS];
 
 		if (copy_from_user(&w, (void __user *)arg, sizeof(w)))
 			return -EFAULT;
-		w.mask = 0;
 		w.root = csr_read(CSR_SATP) & 0x3fffff;
 		mutex_lock(&workers_lock);
-		workers_call_in(file, w.want);
-		/* a machine that lays its workers out and has not been told how yet */
-		if (readl(gpu_regs + WORKERS_MOST_NOW) > 1 && !readl(gpu_regs + WORKERS_SHAPE + 4))
-			workers_default_shape();
-		cores = readl(gpu_regs + WORKERS_CORES);
-		if (cores > 16)
-			cores = 16;
-		for (k = 1; k < cores && got < w.want; k++)
-			if (!worker_owner[k]) {
-				worker_owner[k] = file;
-				w.mask |= 1u << k;
-				got++;
-			}
+		w.want = workers_take(file, w.want, 16, mask) & 0xfff;
 		mutex_unlock(&workers_lock);
+		w.mask = mask[0] & 0xffff;
 		return copy_to_user((void __user *)arg, &w, sizeof(w)) ? -EFAULT : 0;
 	}
 	if (cmd == SHADEREMU_GPU_SUBMIT) {
@@ -346,18 +475,20 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 	writel(0, gpu_regs + VOLUME_LIST);
 	/* and its worker cores run in memory that is going away: park them */
 	{
-		int k;
-
 		mutex_lock(&workers_lock);
 		if (draw_owner == file)
 			draw_owner = NULL;
-		if (worker_borrower == file)
-			worker_borrower = NULL;
-		for (k = 1; k < WORKERS_MOST; k++)
-			if (worker_owner[k] == file) {
-				writel(WORKERS_STOP, workers + 16 * k);
-				worker_owner[k] = NULL;
+		{
+			struct worker_client *c = workers_client(file, false);
+			bool had = workers_give(file, NULL);
+
+			if (c)
+				c->file = NULL;
+			if (had || c) {
+				workers_balance();
+				workers_offer();
 			}
+		}
 		mutex_unlock(&workers_lock);
 	}
 	return 0;
@@ -385,7 +516,7 @@ static int __init shaderemu_gpu_init(void)
 		return -ENODEV;
 	}
 	gpu_regs = ioremap(GPU_REGS, PAGE_SIZE);
-	workers = ioremap(WORKERS_PHYS, PAGE_SIZE);
+	workers = ioremap(WORKERS_PHYS, WORKERS_PAGES);
 	if (!gpu_regs || !workers)
 		return -ENOMEM;
 	pr_info("shaderemu_gpu: /dev/gpu at 0x%lx, %lu KiB\n", GPU_PHYS, GPU_SIZE >> 10);

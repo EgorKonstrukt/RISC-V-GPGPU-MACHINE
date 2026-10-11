@@ -126,7 +126,8 @@ int workers_count(void)
 
 	if (count >= 0) return count;
 	host_workers_close();	/* the mission's scene had one: a movie has them all */
-	count = mcw_open(limit ? atoi(limit) : MC_MAX_CORES - 1);
+	/* fifteen: more share a frame's rows no faster (14.2 s of the opening movie with 15, 14.9 with 63) */
+	count = mcw_open(limit ? atoi(limit) : 15);
 	if (count > 0 && !at_exit) {
 		at_exit = 1;
 		atexit(mcw_close);

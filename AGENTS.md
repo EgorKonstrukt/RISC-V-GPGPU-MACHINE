@@ -321,13 +321,13 @@ A cold boot to the `/ #` prompt takes about 80 s on an RTX 5090 with upstream on
   staging texture, one Map): the same state hash, typed input no slower, and a gain inside the
   noise (4% of a 2-instruction frame, 1 to 3% at 8,192 with N = 16), for output N frames
   later. It is 1 unless asked for.
-- The Unity machine has the harness's 64 cores and the guest's geometry
-  (`docs/multicore.md`, "In Unity"): `CORES` in `MachineBlit.cginc`, a tick texture 2048 x 16
-  (core 0's 64 x 16 and the workers' band), the state copied into it before each tick, the
+- The Unity machine has the harness's 256 cores and the guest's geometry
+  (`docs/multicore.md`, "In Unity"): `CORES` in `MachineBlit.cginc`, a tick texture 2048 x 48
+  (core 0's 64 x 16 and the workers' six bands), eight targets of 1040 x 32, the
   commit of every core. Where its tick and commit deal with cores they are `main.shader`'s
   lines: a change there is made in both. A change to the band's size moves `TickState`'s (the
-  builder, and the asset in `Generated`) with it. To test: `mctest 3 120000` and `mctest 15
-  60000 shape 6,6,6,5,5,4,4,4` at the console must end in `PASS`, and `nxray` must print one
+  builder, and the asset in `Generated`) with it. To test: `mctest 3 120000` and `mctest 63
+  20000` at the console must end in `PASS`, and `nxray` must print one
   sum with `RAY_WORKERS=0` and without; `mctest 3 400000 bench 2` keeps four busy for a sweep.
 - A field added to an Udon behaviour that VRChat copies for every player (`EmuShare`) is
   empty in objects made from a template older than the field: an array there has no
@@ -336,9 +336,58 @@ A cold boot to the `/ #` prompt takes about 80 s on an RTX 5090 with upstream on
 - `nxmon` shades its plots on the worker cores, into its window's buffer (`docs/multicore.md`):
   after a change to it, `NXMON_PRINT=1 NXMON_CHECK=1 nxmon` must print `0 of 51840 pixels
   differ from this core's` at every frame, and `NXMON_PRINT=1 nxmon` about 16 frames a second.
+- More workers is not more speed where one core's own work is the frame: Red Alert's movie
+  (14.2 to 13.7 s with 48 for 15), ClassiCube's world (35.4 to 34.6 s with 15 for 3). The
+  music player is the other kind (63 workers: full rate where 15 could not). Measure with
+  the program's own variable for how many (`NXPLAY_WORKERS`, `RALERT_WORKERS`) first.
+- The workers have one layout, the kernel's, set once: every core but the first, all with
+  3 KB of stores a pass (`workers_layout` in `shaderemu_gpu.c`, `WORKERS_SIZE` 5). No program
+  lays them out: there is no `mcw_shape`, no `mctest ... shape`, no `RAY_SHAPE`, `NES_SHAPE` or
+  `NXPLAY_SHAPE`, because the cores are every program's to share and a layout would be every
+  program's too. The machine's geometry is two words, how many workers and their one size
+  (`docs/multicore.md`, "Up to 256 cores").
+- The machine has 256 cores everywhere: the harness, `rvc_cpu` and the world (`docs/multicore.md`,
+  "Up to 256 cores"; `kCores` in `rvc_backend.h`, `CORES` in `MachineBlit.cginc` with
+  `MachineCores` in the builder, whose "Add the tick's and the commit's cameras to the open
+  scene" sizes the world's textures and meshes for it, and saves the scene). `nxray` 640x480
+  was 0.97 s with 64 and is 0.28; core 0 alone lost nothing. The workers' test is
+  `mctest 255 20000`, and `nxray`'s sum `fd92a71e`.
+- No pixel of any pass may loop over every core: a pixel runs as slowly as the tick does (2 ms
+  for 8,192 instructions), so 256 trips are 0.05 ms a pass by themselves, however few pixels
+  do it (`docs/multicore.md`, "Parked cores cost nothing"). Measure a change to the commit or
+  the control pass with a shell loop on core 0 after `mctest 3 2000`, at 64 and at 256.
+- A commit point is the store of one core, and draws nothing when that core stored nothing
+  there (a worker that sat a pass out has stale tags). A change to the commit is tested with
+  Quake's server on a worker (`QUAKE_SERVER=wait`, the sums against `inline`): the tracers
+  and `mctest` passed with a commit that lost core 0's stores to texels a worker had touched.
+- The machine's most, D3D11 on the 5090: 1,095M instructions a second with 256 cores at one
+  integer loop (`mctest 255 3000000 bench 4`), 621M with each at its own float work
+  (`nxpath`): a pass is 1.9 ms in the first and 3.4 in the second. `--stats-after`'s frame
+  rate does not show the longer pass: take passes from the workers' instruction counts.
+- A job is never posted to a worker that has one out (`mcw_close` waits for the jobs to end
+  first, then posts the leaving): a worker sleeps on its job word as it finds it when its
+  job ends, so a job posted meanwhile is never seen. `nxray` hung at its window's close for
+  that, minutes with 255 workers. A program that ends while its workers are at long jobs
+  tells them to stop first (`scene.stop`, `pt.stop`). To test: `nxray & sleep 6; nxkey q;
+  sleep 2; pidof nxray` must find none.
+- A program that keeps every worker busy gives each its whole share in one job, not a piece
+  at a time (`trace_share` in `nxray.c`, `pt_share` in `tracer.c`): handed tiles one by one,
+  255 workers worked a fifth of the time. A job that runs for long asks `mcw_recalled(k)`
+  now and then and ends early when the kernel wants its core.
+- A worker's pixels in the tick's targets: up to six columns of its block of eight may run,
+  the seventh costs every worker 80% (it has five). A block 8 wide and 3 or 4 high was
+  tried and is that slow unless nothing is within 16 rows and 8 columns of it.
+- The kernel shares the worker cores between programs (`docs/multicore.md`, "Shared between
+  programs"): a share each, cores taken back between jobs, a worker with no core runs its
+  job on the core that posts it. The library is linked into every program: after a change
+  to `programs/mc/mcw.c` build them all (`linux/apps`, `raytrace`, `pathtrace`, `play`,
+  `quake`, `nes`, `classicube`, `tdawn`, `ralert`, and `programs\mc\build.bat` for `mctest`),
+  and run `mctest 63 14 share & sleep 4; mctest 40 5 share` on the shader machine: a worker
+  that is being started stops at pages too (cores 16 and up at their own mailboxes), which
+  `rvc_cpu` does not show.
 - A program that can do without its workers borrows them (`mcw_lend()`, `mcw_asked()`:
-  `docs/multicore.md`), as `nxmon` does: `NXMON_PRINT=1 nxmon & sleep 5; mctest 15 20000 shape
-  6,6,6,5,5,4,4,4,4,4,4,4,4,4,4` must say "the workers are given", then 15 worker cores and PASS.
+  `docs/multicore.md`), as `nxmon` does: `NXMON_PRINT=1 nxmon & sleep 5; mctest 63 20000`
+  must say "the workers are given", then 63 worker cores and PASS.
 - In ImGui's renderer fewer stores bought nothing (`docs/imgui.md`): a sixth of the vertex
   data, a third of the passes ended by a full cache, the same frames a second. Count
   instructions. Its picture must stay the same pixel for pixel: an idle `nxpath` window from
@@ -350,12 +399,12 @@ A cold boot to the `/ #` prompt takes about 80 s on an RTX 5090 with upstream on
 - A desktop with nothing on it (`nano-X -p` alone) runs 1.3M instructions a second on core 0;
   why is not known. It is not a program's cost: measure a program against that.
   `mcw_open` and `mcw_close` may be called again and again: the stacks are kept.
-- `NXMON_PRINT=1 nxmon` prints its workers line at every sample: with `mctest 63 100000 shape
-  3,3,... bench 20` beside it, "63 working".
+- `NXMON_PRINT=1 nxmon` prints its workers line at every sample: with `mctest 63 100000 bench 20`
+  beside it, "63 working".
 - What each core ran is among the control words (0x87000380, `MC_STATS`): `nxmon`, the
   harness's `STATS workers` line and the Unity panel all read it there. The Unity readback is
-  768 words a row: state row 0, the first 64 control texels and 64 texels of the network's row,
-  where cores 16 and up are counted (`MC_STATS_MORE`, 0x876b8280).
+  960 words a row: state row 0, the first 64 control texels, the network's window (40 texels)
+  and 72 texels of where every core is counted (`MC_STATS_ALL`, 0x876ba000: `Readback.shader`).
 - To time rounds in play mode, take the frame cap off (`Application.targetFrameRate = -1`), set
   `rounds` to 8, 16 and 32 with a busy guest (`while :; do :; done` typed at the console
   keyboard) and read frames and `totalInstructions` from an `EditorApplication.update` callback
@@ -607,6 +656,11 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   (Doom's own demo starts after its title), sit down (`stations[k].UseStation` on "Holodeck")
   and render a camera at `eyes[k]` with `scene` on and off. glxgears is far off until the
   scene material's `_Plane` is near 0.84.
+- The window's glass is Silent's Fake Glass with rain (`GlassMaterial`, `WindowProbe` in
+  `ShaderEmuWeather.cs`; no grab of the screen): a drop shows the reflection probe bent, so the
+  panes have a probe of their own just outside (the city; the lit room mixed in at an eighth)
+  and take no light probes, or every drop is white paint in the room's light.
+  "ShaderEmu/Give the windows' glass its rain again in the open scene" makes both again.
 - Outside the window is real geometry (`City()` in `ShaderEmuDecor.cs`: two meshes, an unlit
   shader, haze in vertex alpha) and a panoramic skybox made by `NightSky()`. The wall is four
   boxes round the opening, with a collider in it.
@@ -684,8 +738,33 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   To check it, read `totalInstructions` twice in play mode, and `roundCap` with the slider at 7.
 - The memory screen has three pictures (`EmuScope`, `Scope.shader`): RAM with a legend of whose
   each part is (the colours are `owner()` in `MemView.shader`, the names a canvas over the
-  screen), the ROM, and the sound ring as two traces. The CPU's 64 x 64 state texels have a
-  small screen of their own to its right, always on.
+  screen), the ROM, and the sound ring as two traces. The cores' state has a small screen of
+  its own to its right, always on: core 0's 64 x 32 texels above, a block for every worker the
+  geometry has below (`cpu_state` in `Scope.shader`, which finds a worker's tiles as
+  `src/types.h` does: a change to the strip's layout is owed there too).
+- The den's wall has the tower's speed window again, large, between the console and the
+  display ("Speed wall", `WallSpeed` in `ShaderEmuStations.cs`): it is of the tower's material
+  ("Speed own"), so it needs nothing set. "ShaderEmu/Add the wall's speed counter to the open
+  scene" puts it into a baked scene; its light is its own.
+- A controller has no model (the two on every player's object are gone, with `world/gamepad.py`): the stand's
+  line says what a sitter holds, and a notice over their hand says it to them. The board's labels cut
+  off what does not fit their boxes (TextMeshPro's Truncate) without a word: after rewording one, compare
+  its `preferredHeight` with its box (`DoHigh`), as the controllers' instructions were not shown at all.
+- On a desktop a holodeck's sitter has no controller (`EmuHolodeck.Hands`): its sticks are the mouse and
+  keys they look round with, and with one in hand the beams are away and nothing could put it
+  back. Their keyboard plays, and End stands them up whatever else is so (`StandUp`). To test
+  in play mode find the behaviours by `programSource.name`: asking one for a variable it lacks
+  logs an error, which pauses the editor.
+- A holodeck's Screen key changes its sitter's screen between the console's small one and a
+  large one before the seat (`EmuHolodeck.NextScreen`, `largeAt`): the one quad is moved, and
+  its mark with it (`screenGuards`), or the program's world is drawn over it. "ShaderEmu/Add
+  the holodecks' large screens to the open scene" for a scene from before.
+- The board's lettering is its plate's (`Plate.shader`): after a label of it is moved or
+  reworded, "ShaderEmu/Letter the board again in the open scene" letters the plate it has,
+  which keeps its place in the lightmap. Its credits wrap: count the lines before placing
+  what is under them. The towers' speed window is four digits, all of them the number's, with the point where
+  the number puts it (`SevenSeg.shader`: 3.752, 37.52, 375.2, 3752; a player's own in
+  `EmuShare` is the four digits and how many come after the point, `PackSpeed`).
   "ShaderEmu/Add the memory screen's views and speed modes to the open scene" installs them
   without a bake. A change to the memory map moves `owner()` and the names in `ShaderEmuScope.cs`.
 - The desktop's programs share a list, a slider and a file chooser (`linux/apps/ui.h`,
@@ -859,8 +938,8 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
 - Kernel time compared with `jiffies` begins five minutes before zero: a static `unsigned
   long` stamp of 0 is "long ago" only after those five minutes (`pointer_at` in
   `shaderemu_input.c` was that for a build: no pointer reports at all after boot).
-- The workers' number and sizes are the guest's to set (`docs/multicore.md`, "The geometry"):
-  `mctest 15 60000 shape 6,6,6,5,5,4,4,4` must pass for any shape that fits. The tick's
+- The workers' number and sizes are the guest's to set, as far as the machine goes
+  (`docs/multicore.md`, "The geometry"), and the kernel sets them once, all alike. The tick's
   geometry shader (`tick_geom`) draws core 0's rectangle and a strip for each worker that
   runs; the host only copies the two zones in before the pass and back after, and knows
   nothing of the layout. Anything that reads a worker's state (the control pass, the
@@ -870,20 +949,17 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   (`docs/multicore.md`, "Eight texels a pixel"; `--no-mrt` for one), with the shader's own
   write cache (384 texels; it had 768) and 8,192 instructions a pass. Snapshots from
   before are of another state layout. Unity does the same; D3D12 has one target still.
-- The machine has 64 cores everywhere and there is no `--cores` (`docs/multicore.md`, "More than
-  sixteen cores"): `RAY_SIZE=640x480 RAY_SHAPE=3,3,... nxray` with 63 threes is its measure
-  (1.35 s a picture, sum `fd92a71e`), and `mctest 63 60000 shape 3,3,...` its test (a large
+- There is no `--cores` (`docs/multicore.md`, "More than sixteen cores"): `RAY_SIZE=640x480 nxray` is its measure
+  (sum `fd92a71e`), and `mctest 63 60000` its test (a large
   limit makes the float check slow: core 0 works every worker's sum out again). A shader for
   another number of cores is another compile. Only what cannot have workers has one core:
   D3D12, `--no-mrt`, `--profile`, upstream's shader. The 64 cost core 0 about 12% while no
   worker runs (a shell loop: 4.1M to 3.6M instructions a second).
 - The control row has no free texel: control words to 0x3ff, the display palette from 0x400,
-  the sound card's voices from 0x800. The geometry of workers 25 and up is in the mailbox
-  page (`MC_GEOMETRY_MORE`, 0x86c00f00) and what cores 16 and up ran in the network's row after
-  the guest's window (`MC_STATS_MORE`, 0x876b8280, 13 texels). They were at 0x3e0 and 0x3f0,
-  which are the network's.
-- A program that takes every worker asks the library how many there can be (`mcw_most`,
-  `mcw_fit`, `mcw_rows`, `mcw_room` in `programs/mc/mcw.h`): no 15 or 16 written into it.
+  the sound card's voices from 0x800. What every core ran is in the network's row after
+  its ring (`MC_STATS_ALL`, 0x876ba000: 64 texels of counts, then a texel for every 32 cores
+  of which run and which sleep); the mailboxes are eight pages at 0x86c00000 (`programs/mc/mc.h`).
+- A program that takes every worker asks the library how many there can be (`mcw_most` in `programs/mc/mcw.h`): no 15 or 16 written into it.
   `nxray`, `nxpath` and `nxview` (a JPEG: one worker for its codes and one a strip of 16 rows
   at most) do; Quake, the two Command & Conquer games and the NES ask for the few they use.
 - The D3D11 harness commits what the cores stored as points (`docs/multicore.md`, "The commit as
@@ -905,6 +981,10 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   reads as one record must not let its last word be that store: a worker's fault record was
   read by core 0 as a new count with zeros ("a worker core stopped, cause 0, at pc 0"),
   now and then, with the smallest caches (`MC_FAULT` in `src/mc.h`).
+- `nxpath` traces models of triangles too (`docs/raytrace.md`, "Meshes": a teapot, a rabbit, a
+  knot; `NXPATH_SCENE=N`), from a tree of boxes `linux/pathtrace/make_meshes.py` builds on the
+  host. After a change to the tree or its walk, `tools\pathtrace_reference.py` must find every
+  model ray's distance the guest's (`NXPATH_DEPTH=1 NXPATH_PRINT=1`), and the sums there hold.
 - `nxray` and `nxpath` (`docs/raytrace.md`) are the programs that use every core: after a change
   to the workers or the geometry, `RAY_FRAMES=1 RAY_STILL=1 nxray` with `RAY_WORKERS=0` and
   without must print the same sum, and so must `NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SAMPLES=2
@@ -1017,15 +1097,34 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   reload drops what is left of the bake. Unity's GPU lightmapper hung on a 4096 page here.
 - A sound of the world is cut from a recording (`world/sounds.py`, `SOURCES`), not computed:
   thunder and the computer's sounds were tried computed three times and were wrong each time.
-- A panel (`Plate.shader`) is shown mostly as drawn (`_Flat`), and its far-off lettering takes
-  the glyph's own ink: the kept picture of the lettering is taken in the room's light, and a
-  line seen aslant changed colour along its length, which read as a sheen.
+- A panel (`Plate.shader`) is shown mostly as drawn (`_Flat`), and its lettering is the glyphs'
+  distance fields at every distance: where a pixel spans more than a field's edge the fields
+  are asked at up to 4 x 4 places of the pixel and averaged. It was a mipmapped picture of the
+  lettering from a few metres on (`_Far`, which the plates still carry and nothing reads), and
+  that came out as blocks more often than not. No mipmap for lettering.
 - The NES (`docs/nes.md`): `wsl -- bash /mnt/c/Development/ShaderX86/linux/nes/build.sh` (2 s) after
   Nano-X's build, then the image. A change to the emulator must leave the sums the doc lists
   (`NES_SUM=1 NES_PPU=inline NES_FRAMES=120 nes thwaite` under `rvc_cpu`, two seconds), with each
   of `NES_CPU=interp` and `NES_PLAIN=1`, `2`, `3` too; its speed is `rvc_harness`'s
   and the `nesstat:` lines. Its changes to Nofrendo are `linux/nes/nofrendo.patch`; the 6502
   recompiled is `linux/nes/rc6502.h`.
+- The NES's GPU lists are made by a worker core (`gd_draw` as a job, `docs/nes.md`): what it
+  writes (`gd`, `gd_made`, the GPU library's own variables) the first core must not write
+  while a list is out: `gd_show(1)` first, as `osd_getinput` does before the library is asked
+  about the window. A test has the worker only with `NES_LIST=worker`.
+- `rvc_cpu --pc-log FILE --pc-from TEXT --ticks 256 --pass-ms 0.0078` is a profile in seconds
+  (`docs/cpu-harness.md`); the NES prints `nesmark` at frame `NES_MARK` for it to begin at.
+- The NES is built `-flto` (`linux/nes/build.sh`): what it calls every scanline is in three
+  source files and is one function only so. A function there that is called at every line
+  and calls something on a rare path saves registers at every line: put the rare path in a
+  function of its own (`rc_line_called`, `capture_line_apart`).
+- A cartridge sets its pages and its name tables again at every write to its register,
+  changed or not: anything that follows them compares first (`ppu_setpage`, `ppu_mirror`,
+  `gd_follow`). Treating each as a change was half the frame of four games of thirty.
+- A NES game that runs slowly: `nesstat:` under `rvc_cpu` first, then how it waits (search its
+  PRG for `jmp` to itself and for loops round `$2002`), then `--pc-log` with `nes.nm`
+  (`docs/nes.md`, "Another cartridge"). `nes6502_awake` in such a profile is the interpreter
+  and the way into translated code, a slice a scanline, not time asleep.
 - The GPU has a texture that is a layer of tiles (`docs/gpu.md`, fragment mode 5; `SEGL_TILES` in
   the OpenGL library): the NES's picture is quads of it (`docs/nes.md`). A change to it is checked
   with a held NES frame against `tools\gpu_reference.py` and against the first core's own
@@ -1124,6 +1223,17 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   `EmuMachine`. Udon has `Camera.SetTargetBuffers` and `RenderTexture.colorBuffer`. A shader on
   such a mesh must be a file with one pass (a renderer draws every pass of its shader), and
   must draw nothing for any camera but its own: it looks at `_ScreenParams`.
+- A 3D program whose camera looks up and down says which axis is up (`seglWorldUp()`, the
+  top bits of `0x8700030c`): the holodeck keeps that axis upright. A snapshot of a held
+  frame shows it (Quake: 3). A holodeck's seat is left by jumping (`EmuHolodeck.InputJump`),
+  not by a stick, and its guards mark only inside the sitter's room (`docs/holodeck.md`).
+- `nxterm` says what is on its screen: `kill -USR1` of it prints every row after `nxterm|`, with
+  its size, cursor and wrap. Type into it with `nxkey` (no capitals) and read that: a line typed
+  past the right edge must go on in the next row with none left blank.
+- A camera that draws one of the machine's passes has `stereoTargetEye` None (`PassCamera`). With
+  the default and no target texture (the tick's targets are set while playing) it is a camera
+  of the headset's in VR: both eyes, the eyes' size, and the tick drew nothing; the machine
+  did not start in a headset and did on a desktop. Not seen in the editor or the harness.
 - A material that commits must have the ROM's textures (`ApplyImage` in `EmuMachine.cs`): a copy
   out of the ROM is a commit's. Without them Linux panics with "Requested init /emuinit failed
   (error -8)", which looks like a bad image.

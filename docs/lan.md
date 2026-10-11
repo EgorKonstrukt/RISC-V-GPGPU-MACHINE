@@ -272,3 +272,23 @@ Measured on 10 October 2026 (`rvc_cpu` for instructions; RTX 5090, D3D11 and fxc
   `ping` to either (its default).
 - `linux/prebuilt` has the kernel, `emuinit`, Nano-X and Quake from before this: save it
   after the next build worth keeping.
+
+## What the world writes to VRChat's log
+
+`[Lan]` lines (`EmuMachine`, `EmuShareHub`), always on, in each client's own
+`output_log_*.txt` (`%USERPROFILE%\AppData\LocalLow\VRChat\VRChat`):
+
+- `this machine is on: 10.0.0.N (player N of M here)` at power-on, and `this machine is off`.
+- The first 40 packets after power-on, one a line: `the guest sent ...` and `heard ...`, with
+  its length, what it is (ICMP ping or answer, UDP, TCP with SYN, SYN+ACK, RST or FIN), its
+  addresses and ports, and for one heard what became of it: `for this machine`, `not for
+  this machine`, or `dropped, this machine is off`.
+- The first 40 batches, each way: `batch K out to the others` and `batch K in from player P`,
+  and `player P: N batches never seen before batch K` when a sender's count skipped (a batch
+  is whatever its sender put last: one that came and went between two looks is lost).
+- Every five seconds in which something happened, the counts since power-on: sent by the
+  guest; heard for this machine, for others, while off; given to the guest and taken by it;
+  waiting to go out and in; dropped for a full queue.
+
+To find why two visitors do not reach each other, read both logs: a packet one guest sent
+must be a batch out there, a batch in here, `for this machine`, given and taken.

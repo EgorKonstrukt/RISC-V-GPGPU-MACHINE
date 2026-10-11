@@ -89,6 +89,15 @@ public class EmuShareHub : UdonSharpBehaviour
     private float refreshedAt = -10f, speedAt;
     private int speedAll, speedCore;
 
+    // A speed in two bytes of the packet: its four digits, and from bit 14 how many of them
+    // come after the point (EmuStreams.Speed is the way back).
+    private int PackSpeed(float millions)
+    {
+        int after = millions < 9.9995f ? 3 : millions < 99.995f ? 2 : millions < 999.95f ? 1 : 0;
+        float scale = after == 3 ? 1000f : after == 2 ? 100f : after == 1 ? 10f : 1f;
+        return Mathf.Clamp(Mathf.RoundToInt(millions * scale), 0, 9999) | after << 14;
+    }
+
     // the wall
     private int wallSlot = -1, wallVersion = -1;
     private Color32[] blankGrid;
@@ -824,8 +833,8 @@ public class EmuShareHub : UdonSharpBehaviour
         if (Time.time - speedAt >= 2f)
         {
             speedAt = Time.time;
-            speedAll = on ? Mathf.Clamp(Mathf.RoundToInt(machine.mipsAll * 10f), 0, 9999) : 0;
-            speedCore = on ? Mathf.Clamp(Mathf.RoundToInt(machine.mipsCore * 10f), 0, 9999) : 0;
+            speedAll = on ? PackSpeed(machine.mipsAll) : 0;
+            speedCore = on ? PackSpeed(machine.mipsCore) : 0;
         }
         b[0] = (byte)(on ? 1 : 0);
         b[1] = (byte)terminal.Top();
@@ -941,16 +950,27 @@ public class EmuShareHub : UdonSharpBehaviour
         mine.net = batch;
         mine.netSeq++;
         netBatches++;
+        if (lanBatches < 40) { lanBatches++; Debug.Log("[Lan] batch " + mine.netSeq + " out to the others: " + at + " bytes"); }
         return true;
     }
+
+    private int lanBatches, lanMissed;   // [Lan] lines written: the first of them, not all for ever
 
     // Another machine's packets: each is the local machine's if its address says so.
     private void TakeNet(EmuShare share)
     {
         byte[] batch = share.net;
         if (share.netSeq == share.seenNet) return;
+        // (a batch is whatever its sender put last: one that came and went between two looks is lost)
+        int missed = share.netSeq - share.seenNet - 1;
+        if (missed > 0 && share.seenNet != 0 && lanMissed < 60)
+        {
+            lanMissed++;
+            Debug.Log("[Lan] player " + share.ownerId + ": " + missed + " batch" + (missed > 1 ? "es" : "") + " never seen before batch " + share.netSeq);
+        }
         share.seenNet = share.netSeq;
         if (batch == null) return;
+        if (batch.Length > 0 && lanBatches < 40) { lanBatches++; Debug.Log("[Lan] batch " + share.netSeq + " in from player " + share.ownerId + ": " + batch.Length + " bytes"); }
         int at = 0;
         while (at + 2 <= batch.Length)
         {

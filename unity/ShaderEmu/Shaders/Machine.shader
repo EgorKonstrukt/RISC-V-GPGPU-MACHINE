@@ -211,13 +211,13 @@ Shader "ShaderEmu/Machine"
             static uint mc_bits_now = 6;
             static uint mc_size_now = 4096;
             static uint mc_tile0 = 0;
-            static uint4 mc_geo, mc_geo1, mc_geo2;
+            static uint4 mc_geo;
             uint4 mc_state_read(uint2 pos) {
                 if (mc_core == 0) return _SelfTexture2D[pos + state_off];
                 uint w = pos.y * 64 + pos.x;
                 if (w >= mc_size_now) return (uint4)0;
                 uint t = mc_tile0 + (w >> 6), i = w & 63;
-                return _SelfTexture2D[uint2(64 + (t << 3) + (i & 7), i >> 3)];
+                return _SelfTexture2D[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
             }
             #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
             #define STATE_TEX(pos) mc_state_read(uint2(pos))
@@ -244,16 +244,16 @@ Shader "ShaderEmu/Machine"
 
             uint4 frag(blit_v2f i) : SV_Target {
                 uint2 pos = (uint2)i.vertex.xy;
-                if (pos.x < 64) return tick_out(pos.x & 7, uint2(pos.x >> 3, pos.y));
+                if (pos.x < 64) return pos.y < TICK_STATE_ROWS ? tick_out(pos.x & 7, uint2(pos.x >> 3, pos.y)) : (uint4)0;
                 if (pos.y >= WORKER_BAND_ROWS) return (uint4)0;
                 if (_Init) return _SelfTexture2D[pos];
                 MC_GEO_READ
                 if ((mc_geo.r & 1) != 0) return (uint4)0;   // being laid out anew
-                uint tile = (pos.x - MC_STRIP_X) >> 3;
+                uint tile = ((pos.x - MC_STRIP_X) >> 3) + MC_STRIP_TILES * (pos.y >> 3);
                 hart = mc_core_at(tile);
                 if (hart == 0 || mc_idle()) return _SelfTexture2D[pos];
                 // a worker's texel: in its block's column for this tile
-                return tick_out(pos.x & 7, uint2((MC_STRIP_X >> 3) + TICK_GAP + mc_col0 + (tile - mc_tile0), pos.y));
+                return tick_out(pos.x & 7, mc_block_of(hart) + uint2(tile - mc_tile0, pos.y & 7));
             }
             ENDCG
         }

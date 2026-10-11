@@ -655,14 +655,15 @@ public static partial class ShaderEmuBuilder
               left, 200, columnWide, 400, 33, TextAnchor.UpperLeft, body);
 
         Label(board, "Do head", "WHAT YOU CAN DO", left, 620, columnWide, 44, 36, TextAnchor.MiddleLeft, head);
-        Label(board, "Do", DoText, left, 670, columnWide, 578, DoSize, TextAnchor.UpperLeft, body);   // (ShaderEmuGamepad.cs)
+        // (its box is as high as its words at DoSize need, 682: a box of 578 cut the controllers' part off)
+        Label(board, "Do", DoText, left, 670, columnWide, DoHigh, DoSize, TextAnchor.UpperLeft, body);   // (ShaderEmuGamepad.cs)
 
-        Label(board, "How head", "WHY IT IS USABLE AT ALL", left, 1250, columnWide, 44, 36, TextAnchor.MiddleLeft, head);
+        Label(board, "How head", "WHY IT IS USABLE AT ALL", left, HowAt, columnWide, 44, 36, TextAnchor.MiddleLeft, head);
         Label(board, "How",
               "The processor is slow and strictly one step at a time. So everything that touches many pixels or " +
               "bytes is handed to hardware of the machine's own, which is more shader passes: drawing, windows, " +
               "text, 3D, pictures, copies of memory. Doom's walls are drawn by the machine's GPU, not its CPU.",
-              left, 1300, columnWide, 340, 33, TextAnchor.UpperLeft, body);
+              left, HowAt + 50, columnWide, 270, 33, TextAnchor.UpperLeft, body);
 
         Label(board, "Credits head", "BUILT ON THE WORK OF", right, 150, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
         Label(board, "Credits",
@@ -679,18 +680,19 @@ public static partial class ShaderEmuBuilder
               "TinyCC by Fabrice Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\n" +
               "Desktop photographs from Unsplash, and somebody's cats\n" +
               "Poly Haven (CC0): this room's furniture, plants and many of its surfaces\n" +
-              "LTCGI by pimaker, VRC Light Volumes by RED_SIM, Mochie's shaders: the room's light and rain\n" +
+              "LTCGI by pimaker, Light Volumes by RED_SIM, Mochie's shaders, Silent's Fake Glass: light, rain\n" +
               "Cascadia Mono by Microsoft: the console's font\n" +
               "ShaderAudio by lox9973: how sound gets out of a shader\n" +
               "minimp3 by lieff and dr_flac by David Reid: the music player's decoders\n" +
               "VRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room",
               right, 200, rightWide, 1100, 33, TextAnchor.UpperLeft, body);
 
-        Label(board, "Project head", "THE PROJECT", right, 1250, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
+        // (the credits above are 34 lines when they are wrapped: to 1,290)
+        Label(board, "Project head", "THE PROJECT", right, 1330, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
         Label(board, "Project",
               "ShaderEmu by Michael Moroz. Sources, the desktop harness and documentation:\n" +
               "github.com/MichaelMoroz/ShaderEmu (MIT licence)",
-              right, 1300, rightWide, 200, 33, TextAnchor.UpperLeft, body);
+              right, 1380, rightWide, 200, 33, TextAnchor.UpperLeft, body);
         Label(board, "Note", "Each of the projects above keeps its own licence.", right, 1560, rightWide, 60, 24, TextAnchor.MiddleLeft, dim);
     }
 

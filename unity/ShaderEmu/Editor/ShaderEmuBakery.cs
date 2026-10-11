@@ -117,6 +117,7 @@ public static partial class ShaderEmuBuilder
             foreach (Light light in RoomLights()) light.enabled = false;   // the lightmap has their light already
             foreach (ReflectionProbe probe in Object.FindObjectsOfType<ReflectionProbe>(true))
             {
+                if (probe.name == "Reflection probe window") continue;   // the panes' own, a picture WindowProbe makes (ShaderEmuWeather.cs)
                 string path = Generated + "/" + probe.name + " baked.exr";
                 probe.mode = ReflectionProbeMode.Custom;
                 probe.customBakedTexture = null;

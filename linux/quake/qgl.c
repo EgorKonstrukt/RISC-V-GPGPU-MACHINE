@@ -650,6 +650,7 @@ const volatile unsigned int* qglControl(int offset) {
 
 int qglOpen(unsigned int nano_x_window, const unsigned char* palette) {
     if (seglInit(nano_x_window) < 0) return -1;
+    seglWorldUp(3);   // z
     unsigned int* words256 = seglPalette();
     for (int i = 0; i < 256; i++, palette += 3)
         words256[i] = (unsigned int)palette[0] << 16 | (unsigned int)palette[1] << 8 | palette[2];

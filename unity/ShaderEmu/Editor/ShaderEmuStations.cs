@@ -74,6 +74,60 @@ public static partial class ShaderEmuBuilder
         return material;
     }
 
+    // The same window, large, on the den's wall between the console and the display: this
+    // visitor's machine's speed, to be read from across the room. It is of the tower's own
+    // material, so whatever sets that sets it. No frame, and its light is its own: no bake.
+    const float WallSpeedWide = 0.62f, WallSpeedHigh = 0.365f;
+    static void WallSpeed(Transform computer)
+    {
+        Gone(computer, "Speed wall");
+        Gone(computer, "Speed sign");
+        Transform display = computer.Find("Display screen");
+        Vector3 at = new Vector3(-1.23f, 2.0f, (display != null ? display.localPosition.z : 5.41f) - 0.002f);
+        GameObject window = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        window.name = "Speed wall";
+        Object.DestroyImmediate(window.GetComponent<Collider>());
+        window.transform.SetParent(computer, false);
+        window.transform.localPosition = at;
+        window.transform.localScale = new Vector3(WallSpeedWide, WallSpeedHigh, 1f);
+        MeshRenderer renderer = window.GetComponent<MeshRenderer>();
+        renderer.sharedMaterial = Mat("Speed own", "ShaderEmu/SevenSeg");
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        renderer.lightProbeUsage = LightProbeUsage.Off;
+        renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+
+        // what its two rows are, on strips above and below it, as the tower's case has them
+        const float strip = 0.042f;
+        RectTransform sign = Panel(computer, "Speed sign", at + new Vector3(0, 0, -0.002f), Vector3.zero, WallSpeedWide * 1000, (WallSpeedHigh + 2 * strip) * 1000,
+                                   new Color(0, 0, 0, 0));
+        Object.DestroyImmediate(sign.GetComponent<VRC.SDK3.Components.VRCUiShape>());
+        Object.DestroyImmediate(sign.GetComponent<BoxCollider>());
+        Object.DestroyImmediate(sign.GetComponent<GraphicRaycaster>());
+        TMP_FontAsset bold = RetroFont("IBMPlexMono-Bold");
+        string[] names = { "MIPS  ALL CORES", "MIPS  CORE 0" };
+        for (int row = 0; row < 2; row++)
+        {
+            RectTransform plate = Child(sign, row == 0 ? "All" : "Core", 0, row == 0 ? 0 : (WallSpeedHigh + strip) * 1000, WallSpeedWide * 1000, strip * 1000);
+            Plate(plate, new Color(0.012f, 0.012f, 0.014f, 1f)).raycastTarget = false;
+            TextMeshProUGUI label = Label(plate, "Text", names[row], 0, 0, WallSpeedWide * 1000, strip * 1000, 26, TextAnchor.MiddleCenter, new Color(1f, 0.62f, 0.2f));
+            label.font = bold;
+            label.fontSharedMaterial = bold.material;
+            label.raycastTarget = false;
+        }
+    }
+
+    [MenuItem("ShaderEmu/Add the wall's speed counter to the open scene")]
+    public static void AddWallSpeed()
+    {
+        GameObject computer = GameObject.Find("Computer");
+        if (computer == null) { Debug.LogError("[ShaderEmu] no Computer in the open scene: run ShaderEmu/Build world"); return; }
+        WallSpeed(computer.transform);
+        AssetDatabase.SaveAssets();
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(computer.scene);
+        Debug.Log("[ShaderEmu] the wall's speed counter is in the scene (not saved)");
+    }
+
     // The lamps that are lit while a machine is on: the monitor's (`monitor`: its place, or none)
     // and the tower's power lamp, a hair before the model's own dull lenses.
     static GameObject PowerLamps(Transform parent, StationsPlan plan, bool monitor, Vector3 tower, float glassZ)
@@ -308,6 +362,7 @@ public static partial class ShaderEmuBuilder
         Gone(computer, "Power lamps");
         Vector3 den = new Vector3(1.55f, 0f, 5.5f - 0.4f + 0.17f - (plan.tower[2] + 0.42f));   // world/computer.py's TOWER, its case's own origin
         stations.ownSpeed = SpeedWindow(computer, "Speed own", den + new Vector3(plan.speed[0], towerHigh - plan.speed[1], plan.tower[2] - 0.0022f), plan.speed[2], plan.speed[3]);
+        WallSpeed(computer);
 
         stations.ownLamps = PowerLamps(computer, plan, false, den + new Vector3(0, 0, plan.tower[2]), 0);
         stations.machine = theMachine;

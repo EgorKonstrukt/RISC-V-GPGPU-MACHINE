@@ -26,7 +26,7 @@ balls over a chequered ground, one light, shadows and three mirrorings, turning;
     s   the next geometry (small, 3 large and the rest small, large, the smallest: as many as fit)
     w   each tile framed in its core's colour  space  stop and go   q, Escape  leave
 
-`RAY_FRAMES=N` leaves after N pictures, `RAY_WORKERS=N` and `RAY_SHAPE=4,4,...` set the start,
+`RAY_FRAMES=N` leaves after N pictures, `RAY_WORKERS=N` sets the start (every worker has its share of a picture in one job: `docs/multicore.md`, "A share, not a tile"),
 `RAY_SIZE=WxH` the picture, `RAY_STILL=1` keeps the scene where it is. Each picture's line
 (`raystat:`) has its time, its rays and a sum of its pixels.
 
@@ -90,6 +90,42 @@ sum.
 | 7 large | 32 s | 31 thousand |
 | 15 small | 21 s | 48 thousand |
 | 15 of the smallest | 13.6 s | 75 thousand, 9.4 times core 0 |
+
+### Meshes
+
+What stands in the box is the panel's choice ("in the box", `NXPATH_SCENE=N`): the two balls
+and the block (0), or a model of triangles with one ball in the near corner: the Utah teapot
+(1; 6,320 triangles), the Stanford rabbit at its third size (2; 3,851) or a torus knot made
+by arithmetic (3; 5,040). The model's material is the first of the panel's two (matt, mirror
+or glass; `NXPATH_FIRST=N`), the ball's the second.
+
+- `linux/pathtrace/make_meshes.py` makes them at the build, on the host: it reads the teapot
+  (an OBJ file of Stanford's CS148 course) and the rabbit (the scanning repository's
+  `bun_zipper_res3.ply`), which `build.sh` fetches once, turns and sizes each to where it
+  stands in the unit box, winds every triangle outward, gives every corner the mean normal
+  of the faces round it, and writes `meshes.c`: a triangle as a corner, its two edges and
+  three normals (18 floats, written as their bits), and a tree of boxes over them.
+- The tree is split where the two halves' surfaces times their triangles are least (twelve
+  places an axis tried), down to four triangles a leaf: 3,835 boxes for the teapot, 15 deep.
+  A box is 32 bytes: its corners, and either where its triangles are and how many, or
+  where its two boxes are.
+- `tracer.c` goes down it (`mesh_nearest`): both of a box's two are tested, the nearer is
+  gone into first and the farther kept on a stack of 64, and a kept box is tested again
+  when it is taken, against what has been found since. A triangle is Moeller and
+  Trumbore's test on the kept edges. A shadow's ray stops at the first triangle
+  (`mesh_between`). A ray is 1.5 to 2 times what it is among the balls: 240 x 180 with 12
+  samples is 1.7 s with the balls and 3.4 to 4.5 s with a model, 255 workers.
+- The models are the program's own data (not `const`): a worker stops at a page nobody has
+  touched, and `mcw_touch` of the data, which `nxpath` does when it takes its workers,
+  brings them.
+- To check the tree: `NXPATH_DEPTH=1 NXPATH_PRINT=1 NXPATH_SAMPLES=1 NXPATH_SCENE=N nxpath`
+  prints how far every pixel's ray goes, and `python tools\pathtrace_reference.py meshes.c
+  teapot LOG` tests every ray against every triangle with no tree: every ray that meets the
+  model must have the guest's distance (1,638 for the teapot, 1,686 the rabbit, 1,698 the
+  knot, at 160 x 120). `NXPATH_PRINT=1` alone prints the picture.
+- The sums (`rvc_cpu`, 160 x 120, 2 samples): `84d4eafd` the balls, `40792470` the teapot,
+  `46a882a3` the rabbit, `d29e8be5` the knot; with `NXPATH_CORES=3` the same. The shader
+  machine's differ (its divisions and square roots are the card's).
 
 ## Checking them
 
