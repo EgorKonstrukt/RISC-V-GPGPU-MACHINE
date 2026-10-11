@@ -634,8 +634,10 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   break in it. Write the editing script with the Write tool and run that file.
 - The wheel is key-ring events 0x3fe (up) and 0x3ff (down): `WM_MOUSEWHEEL` in the harness
   window, `EmuMachine.Wheel` in Unity. A program sees a button-down with a scroll bit set.
-- The image builder adds files to folders the ROM already has and cannot make a folder: new
-  data goes into `/usr/share` under a prefix (`web-*.html`).
+- The image builder makes a folder the ROM lacks (`add_dir` in `tools/make_linux_image.py`),
+  and `NAME.romlink` in the tree (a line with a path in the image) becomes `NAME`, a hard link
+  to that file with no bytes of its own. Older data is in `/usr/share` under a prefix
+  (`web-*.html`), from when it made none.
 - Asking the file system about every name in a large folder takes seconds (each lookup scans
   the ROM's directory and each read ends a frame): `nxfiles` asks only for the tiles in view.
 - A page's bold in `nxweb` is the text drawn twice a pixel apart; headings are that underlined.
@@ -752,6 +754,28 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   `<Part>Charted.fbx`; after a change to one, `world/check_charts.py` must find next to no
   faces over one another. A lead starts where its keyboard or mouse is by the same matrices
   that place them (`lib.place`), not by adding the place's offsets, which leaves the turn out.
+- The classroom's and the console's leads are let fall by Blender's cloth solver (`world/drape.py`;
+  `pc.station`, `cables` in `computer.py`): laid out clear of each other, ruffled by a chance
+  of the place's own, held at their plugs and dropped on boxes for what is there. A place gets
+  its own table as it stands on it (`desk=` from `furniture.py`): on an assumed edge a lead
+  hung through the real one's corner. 10 s a place once, kept in `build/drape` after. A
+  collider's faces must look outwards; the tube's wall (`pull`) sets how a lead bends (20
+  stands as laid out, 8 holds an arc in the air, 5 crumples; it is 6); leads laid through each other stay so. `LEADS ...` in
+  the build's output names any lead in a thing or in a lead, after two shaken tries.
+- The lightmap has no direction and a texel is 4 mm on a keyboard: by itself it lights a cap's
+  sides as its top, which reads as wax. The shade among the caps is in their picture
+  (`keyboard()` in `world/textures.py`: sides darkening down into the well, the well dark), and
+  the well's floor takes that picture too. The cap insets there are `pc.py`'s and `computer.py`'s.
+  Each cap is a chart of the lightmap by itself and the chart is its top alone, its sides
+  drawn in to the top's edge (`cap_chart` in `pc.py`): texels blur into their neighbours, so
+  sides with a place of their own darkened the tops, and in one chart the well did too.
+- A panel's field for an address is VRChat's own (`VRCUrlInputField`), which is no `InputField`:
+  the restyle names both, or the field's text goes on the plate as print and is switched off,
+  and nothing typed there shows. A field's `Text` cannot be set by hand to test it (the field
+  writes its own text back at once): set the field's.
+- A lamp the builder makes has its Bakery component from the start (`BakedLight`): a bake begun
+  from Bakery's own window knows no other lamps, and lit the den alone, twice. Even so, bake
+  with "ShaderEmu/Bake lighting": only it bakes the reflection probes and puts the lamps out.
 - The plastics named `Gamepad...` (`world/materials.py`, `ShaderEmuModels.cs`) are the monitors'
   blue sockets' and the holodeck chairs' too: they stayed when the controllers' models went,
   and taking them out stops `build.py` at the first thing that names one.
@@ -1054,8 +1078,9 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
 - A window's frame is painted when the window is made; its later repaints (the caption's
   colour when it gains the keyboard) still wait for its program to ask for events.
 - The Start menu's lines are `Folder/Label=command` (`nxbar.c`, `docs/nanox.md`); a new program's
-  build names its folder. `NXBAR_SHOW=Games nxbar` opens it there for a test, and the menu's
-  window is the layer 150 wide in a snapshot, 20 pixels a row plus 4.
+  build names its folder (a folder may be in a folder). `NXBAR_SHOW=Games nxbar` opens it
+  there for a test: each level of the menu is a layer of its own in a snapshot, 20 pixels a
+  row plus 4, a folder's beside its parent's.
 - The room's models are made by scripts (`docs/world.md`): `python world\textures.py`, then
   Blender with `-b --python world\build.py` (5 s), copy `unity/ShaderEmu` over, and
   "ShaderEmu/Put the modelled room into the open scene", then bake. Geometry is written in
@@ -1257,3 +1282,70 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
 - A model's skin must be closed where it can be seen into: `blender -b build/world.blend --python
   world/check_watertight.py -- NAME` lists the loops of edges with one face. The classroom's
   shell (`pc_station`) must have none; a sheet of its own (the glass) needs a closed face behind it.
+- The desktop is `nxfiles --desktop` (`docs/nanox.md`, "The desktop"): `nx` starts it and the
+  bar, and no terminal. To test it without a pointer: `echo "#008080" > /tmp/nxwallpaper`
+  before `nx` (a plain colour: a photograph printed as characters says nothing), then
+  `nxkey 38,24 38,24` (two clicks open the first icon), `nxkey drag:114,24:650,330` and
+  `grep NAME /root/Desktop/.places`, `nxkey r:700,450` for the menu and `nxkey n right enter`
+  in it. A window that opened is a new layer in the snapshot; an icon is not.
+- `nxkey` clicks are a press and a release 60 ms apart; `r:X,Y` is the right button and
+  `drag:X,Y:X,Y` the left one held. A key or a click sent before a program's window is
+  there goes nowhere: wait for what the program prints first.
+- A program that draws many labels must not ask the window system for each text's width at
+  every draw (`GrGetGCTextSize` is a question and an answer): the desktop's 27 icons took
+  longer to redraw than two clicks are apart. Keep the widths, and draw again only what changed.
+- An icon is a cell of a sheet in the ROM (`docs/nanox.md`, "Icons"): after a change to
+  `linux/apps/icons.txt` run `python tools\make_icons.py`, then the image. A program without a
+  line there has the "default" cell. The window manager finds a window's by `/proc/PID/comm`.
+- Frames a second are digits the GPU library writes into its window's caption
+  (`programs/linux/fps_caption.h`); a change to the caption's height or boxes in `nanowm.h`
+  moves `FPS_ABOVE` and the place there. After a change to `gles.c` build every program that
+  links it (`doom.sh`, `tdawn`, `ralert`, `quake`, `nes`, `imgui`, `raytrace`, `pathtrace`,
+  `tcc`, `video`; `nanox` for `gl.c`, `classicube` for its own).
+- The image's pictures, music and video are made on the host: `python tools\make_media.py`
+  (`linux/media/media.txt`: each original from Wikimedia Commons with its SHA-1 and licence)
+  and `python tools\make_video.py`, into `build\images\linux\root\root`.
+- `nxvideo` (`docs/video.md`): `linux\video\build.sh` (7 s). A change to it or to `mpeg.c` must
+  leave `nxvideo --decode` the host's sums (`nxvideo-host`, which the build makes: pictures
+  `d124dc14`, sound `96a296a2`), `NXVIDEO_SUM=1 NXVIDEO_ONCE=1 nxvideo` the same sum with
+  `NXVIDEO_WORKERS=0`, `3` and unset (`034e8a1b`; under `rvc_cpu` with `--seconds 9000`, a
+  minute), and the `nxvideostat:` lines on the shader machine with none left out.
+- Memory a program brings in on the first core while its workers run holds the workers up:
+  `nxvideo` made its decoders one a turn of its loop and had no picture after 13 s. Allocate
+  and touch everything before the first job; and do not clear megabytes that are written
+  before they are read (39 MB cleared was most of ten seconds).
+- `rvc_cpu --pc-log` with `--ticks 256` is a machine 32 times slower by the guest's clock: a
+  program's own seconds in such a run are not its seconds.
+- The danger zone (`docs/danger.md`): the host flips bits of RAM in one commit (`src/zap.h`,
+  the uniforms `_Zap...`). A change to the commit or to it is checked with two `--fixed-dt`
+  boots, one with `--zap ... --zap-frame N`: they must differ in exactly the texels asked for
+  and in no state texel. `zap.h` reaches Unity by "Sync shader sources", which touches no file
+  the tick includes.
+- "ShaderEmu/Fix what the SDK panel asks for in the open scene" does what the build panel's
+  Auto Fix buttons do, the room's way: a source in the room keeps its own distances (Auto Fix
+  gave the keys' clicks a gain of 10 and 80 m). To see what the panel will say, ask as it
+  does: `Resources.FindObjectsOfTypeAll`, a graphic's `material` and `materialForRendering`
+  both `UI/Default` (TextMeshPro's own material is not), `VRCSdkControlPanel.GetBoxFilteredTextureImporters`.
+- `tools/linux_spirv` needs its tools built once on a machine (`get_dxbc_spirv.sh`,
+  `build_tools.sh`, `validate.sh`: 70 s); `check_cache.sh DIR` then takes a folder of `.cso`
+  files, and a folder with only the day's from `build\shadercache` is two seconds.
+- Two shortcuts of the desktop must not have one name: the image builder stops at it
+  ("Music" the folder and "Music" the player were one file, and the folder's was gone). A
+  program's label in its `nxapps.*` line is its shortcut's name.
+- The board's credits are 31 lines of their box at size 28 in `About()` (27 once styled): to
+  add one, change the label in the scene too, find the size whose `preferredHeight` is under
+  the box's 1,100, and run "Letter the board again in the open scene".
+- An SVG is drawn to a PNG here with Edge, headless (`msedge --headless
+  --default-background-color=00000000 --window-size=256,256 --screenshot=OUT.png PAGE.html`,
+  a page with the picture as its only `img`): nothing else on this machine renders one.
+- A window mapped before long work has no frame until its program takes events (the window
+  manager works then): `ui_framed()` (`linux/apps/ui.h`) after `GrMapWindow`, as `nxview`,
+  `nxplay` and `nxvideo` do (`docs/nanox.md`, "A window before the work"). To check: the
+  program, `sleep 2`, and its layer in a snapshot has the frame's size, not the window's own.
+- A program's icon is at its file's end (`docs/nanox.md`, "Icons"): the image builder puts it
+  there for the programs of `icons.idx`, `nxicon PROGRAM [PICTURE.ppm | --none]` in the guest.
+  A program copied to `/tmp` keeps it. `nxicon /usr/bin/doom.bin` must say it has one.
+- `nxsettings system` prints the System tab's lines without a desktop (`rvc_cpu`, a second):
+  nothing there is written down, every line is asked of the machine.
+- `rvc_harness --cpu` for a picture of the desktop that is about what is drawn, not how fast:
+  the same run script and snapshot, and the guest's seconds are not the shader machine's.

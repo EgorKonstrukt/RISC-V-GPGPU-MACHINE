@@ -23,6 +23,12 @@ public class EmuScope : UdonSharpBehaviour
         Show(0);
     }
 
+    // Whether the screen shows RAM now (the danger zone's laser burns only what it can see).
+    public bool ShowsRam()
+    {
+        return shown == 0;
+    }
+
     public void ShowRam()
     {
         Show(0);

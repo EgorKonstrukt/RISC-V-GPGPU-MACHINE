@@ -1,7 +1,8 @@
 /* nxkey: presses keys through the keyboard's evdev device, for a test without a keyboard.
  * An argument is a key (enter, tab, up, f4, meta, ... or a character), with ctrl+, alt+ or
- * shift+ before it for keys held meanwhile, a number of milliseconds to wait, or X,Y for a
- * click of the left button there:   nxkey meta down down enter 500 alt+tab 60,200 */
+ * shift+ before it for keys held meanwhile, a number of milliseconds to wait, X,Y for a click
+ * of the left button there, r:X,Y for the right one, or drag:X,Y:X,Y for the left one held
+ * from the first place to the second:   nxkey meta down enter 500 alt+tab 60,200 r:300,200 */
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,18 +52,39 @@ send(int code, int down)
 	usleep(20000);
 }
 
-/* A press of the left button at x, y, through the pointer's device. The kernel puts the
- * pointer back where the host has it at its next poll, which lets the button go as well. */
+/* The pointer at x, y with a button (0x110 left, 0x111 right) down or up, through the pointer's
+ * device. One state a write: the window system takes all that waits as one place and one set
+ * of buttons. The kernel puts the pointer back where the host has it when the host's moves. */
 static void
-click(int x, int y)
+point(int x, int y, int button, int down)
 {
-	struct event events[4] = { { 0, 0, 3, 0, x }, { 0, 0, 3, 1, y }, { 0, 0, 1, 0x110, 1 }, { 0, 0, 0, 0, 0 } };
+	struct event events[4] = { { 0, 0, 3, 0, x }, { 0, 0, 3, 1, y }, { 0, 0, 1, (uint16_t)button, down }, { 0, 0, 0, 0, 0 } };
 	int pointer = open("/dev/input/event1", O_WRONLY);
 
 	if (pointer < 0 || write(pointer, events, sizeof events) != sizeof events)
 		perror("nxkey: /dev/input/event1");
 	if (pointer >= 0)
 		close(pointer);
+	usleep(60000);
+}
+
+static void
+click(int x, int y, int button)
+{
+	point(x, y, button, 1);
+	point(x, y, button, 0);
+}
+
+/* The left button held from one place to another, in eight steps. */
+static void
+drag(int x0, int y0, int x1, int y1)
+{
+	int i;
+
+	point(x0, y0, 0x110, 1);
+	for (i = 1; i <= 8; i++)
+		point(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8, 0x110, 1);
+	point(x1, y1, 0x110, 0);
 }
 
 int
@@ -79,9 +101,21 @@ main(int argc, char **argv)
 		char text[64], *key = text, *plus;
 		int held[4], n = 0, code;
 
+		int x0, y0, x1, y1;
+
+		if (sscanf(argv[i], "drag:%d,%d:%d,%d", &x0, &y0, &x1, &y1) == 4) {
+			drag(x0, y0, x1, y1);
+			usleep(150000);
+			continue;
+		}
+		if (sscanf(argv[i], "r:%d,%d", &x0, &y0) == 2) {
+			click(x0, y0, 0x111);
+			usleep(150000);
+			continue;
+		}
 		if (argv[i][0] >= '0' && argv[i][0] <= '9' && argv[i][1]) {
 			if (strchr(argv[i], ','))
-				click(atoi(argv[i]), atoi(strchr(argv[i], ',') + 1));
+				click(atoi(argv[i]), atoi(strchr(argv[i], ',') + 1), 0x110);
 			usleep(strchr(argv[i], ',') ? 150000 : atoi(argv[i]) * 1000);
 			continue;
 		}

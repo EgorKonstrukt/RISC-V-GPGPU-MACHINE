@@ -115,6 +115,16 @@ main(int argc, char **argv)
 	width = 320;
 	height = 240;
 	if (argc > 1 && is_coded(argv[1])) {
+		/* The window first, and what it is doing in it: decoding is seconds, and a desktop with
+		 * nothing new on it looks stuck. It takes the picture's size when that is known. */
+		snprintf(title, sizeof title, "%s - Viewer", argv[1]);
+		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, title, GR_ROOT_WINDOW_ID, -1, -1, width, height, MWRGB(40, 40, 40));
+		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+		GrMapWindow(window);
+		ui_framed();
+		ui_fill(window, 0, 0, width, height, MWRGB(40, 40, 40));
+		ui_text(window, 10, 10, "decoding it...", -1, WHITE, 0);
+		GrFlush();
 		snprintf(decoded, sizeof decoded, "/tmp/nxview-%d.ppm", (int)getpid());
 		atexit(forget);
 		wrong = decode(argv[1], decoded, &pw, &ph);
@@ -141,10 +151,15 @@ main(int argc, char **argv)
 			height /= 2;
 		}
 	}
-	snprintf(title, sizeof title, "%s - Viewer", argc > 1 ? argv[1] : "no file");
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, title, GR_ROOT_WINDOW_ID, -1, -1, width, height, MWRGB(40, 40, 40));
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
-	GrMapWindow(window);
+	if (window) {
+		GrResizeWindow(window, width, height);
+		draw();
+	} else {
+		snprintf(title, sizeof title, "%s - Viewer", argc > 1 ? argv[1] : "no file");
+		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, title, GR_ROOT_WINDOW_ID, -1, -1, width, height, MWRGB(40, 40, 40));
+		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+		GrMapWindow(window);
+	}
 	for (;;) {
 		GrGetNextEvent(&event);
 		switch (event.type) {

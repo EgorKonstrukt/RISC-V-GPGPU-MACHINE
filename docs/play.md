@@ -64,10 +64,15 @@ A step of 0 holds the voice (pause, and while more is decoded).
   core takes pieces as well. No workers is the common case; the first core then decodes in
   order, with one decoder and no early frames.
 - It measures how much sound a second of decoding makes. Fast enough: it plays with half a
-  second in hand and decodes a few pieces ahead. Too slow, for an MP3 file: it says so and
-  decodes at half the rate from where it is. Still too slow, or another kind: it says so,
+  second in hand and decodes a few pieces ahead. With workers it says nothing about speed
+  from the first pieces: they are being started then, and a verdict from those seconds was
+  wrong ("cannot decode this as fast as it plays", for a file the workers then played at its
+  full rate). It plays when one and a half seconds are ready, and only a ring that has run
+  dry twice sends an MP3 file to half the rate. With no workers and too slow: it says so,
   decodes ahead as far as memory goes (half of what is free), and plays once the rest will
-  be decoded by the time it is needed. A ring that runs dry holds the voice the same way.
+  be decoded by the time it is needed. A ring that runs dry holds the voice ("it ran dry:
+  waiting for more to be decoded").
+- Its window is there before the file is opened ("opening it..."), as `nanox.md` has it.
 
 ## Variables
 
@@ -76,7 +81,7 @@ A step of 0 holds the voice (pause, and while more is decoded).
 | `NXPLAY_EXIT=1` | leaves when the tune ends |
 | `NXPLAY_SECONDS=N` | plays only the first N seconds |
 | `NXPLAY_NOWINDOW=1` | no window: plays and leaves |
-| `NXPLAY_WORKERS=N` | asks for N workers (all that are free); 0: this core alone |
+| `NXPLAY_WORKERS=N` | asks for N workers (48); 0: this core alone |
 | `NXPLAY_SUM=1` | prints a sum of every sample in the order played (FNV-1a, a 16-bit sample at a time) |
 | `NXPLAY_HALF=1`, `0` | an MP3 file at half rate from the start, or never |
 | `NXPLAY_PIECE=N` | MP3 frames a piece (20) |

@@ -55,6 +55,7 @@
 #define FRAGMENT_MASK 3       // 1-bit texture, rows of whole bytes, leftmost bit highest: set bits take the colour
 #define FRAGMENT_RGB24 4      // texture of three bytes a pixel (red, green, blue), rows with no padding, at any byte address, in RAM or ROM; times colour
 #define FRAGMENT_TILES 5      // a layer of tiles: the address is a texel of four words (cells, tiles, palette, sizes; docs/gpu.md)
+#define FRAGMENT_YUV 6        // a picture as three planes of bytes one after another: luma, then the two of chroma at half the size each way (a video's frame)
 #define FRAGMENT_KEYED 0x100  // flag: texels equal to the key colour (or index) are not drawn
 #define FRAGMENT_LAID 0x200   // flag (draws): the texture lies on the picture, not on the surface (a sky)
 #define FRAGMENT_SMOOTH 0x400 // flag (word and indexed textures): the four texels round the point, weighed (bilinear)
@@ -394,6 +395,14 @@ float4 gpu_fragment(gpu_varyings i) {
             texel = (ram_word(at & ~3u) >> (8 * (at & 3))) & 0xff;
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
             texel = ram_word(layer.b + 4 * (texel + 16 * (cell >> 12)));
+        } else if (mode == FRAGMENT_YUV) {
+            // the pixel's luma, and the chroma of the 2 x 2 pixels it is one of (BT.601, 16 to 235)
+            uint half_w = width >> 1, luma_at = i.texture_info.g + n;
+            uint blue_at = i.texture_info.g + width * height + (y >> 1) * half_w + (x >> 1), red_at = blue_at + half_w * (height >> 1);
+            float luma = 1.164 * ((float)((ram_word(luma_at & ~3u) >> (8 * (luma_at & 3))) & 0xff) - 16.0);
+            float blue = (float)((ram_word(blue_at & ~3u) >> (8 * (blue_at & 3))) & 0xff) - 128.0;
+            float red = (float)((ram_word(red_at & ~3u) >> (8 * (red_at & 3))) & 0xff) - 128.0;
+            return saturate(c * float4((luma + 1.596 * red) / 255.0, (luma - 0.392 * blue - 0.813 * red) / 255.0, (luma + 2.017 * blue) / 255.0, 1.0));
         } else if (mode == FRAGMENT_INDEXED) {
             texel = (ram_word(i.texture_info.g + (n & ~3u)) >> (8 * (n & 3))) & 0xff;
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
@@ -404,6 +413,7 @@ float4 gpu_fragment(gpu_varyings i) {
             texel = texture_word(at) >> shift;
             if (shift > 8) texel |= texture_word(at + 4) << (32 - shift);
             texel = (texel & 0xff) << 16 | (texel & 0xff00) | ((texel >> 16) & 0xff);
+            if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
         } else {
             texel = ram_word(i.texture_info.g + 4 * n);
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;

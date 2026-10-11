@@ -111,6 +111,9 @@ public static partial class ShaderEmuBuilder
         // On only while the lighting is baked: without baked data Unity draws such a light in
         // real time, shadows and all, which a headset cannot afford.
         light.enabled = false;
+#if BAKERY_INCLUDED
+        BakeryLamp(light);   // at once: a bake started from Bakery's own window knows no other lamps
+#endif
         return light;
     }
 
@@ -684,10 +687,15 @@ public static partial class ShaderEmuBuilder
               "Cascadia Mono by Microsoft: the console's font\n" +
               "ShaderAudio by lox9973: how sound gets out of a shader\n" +
               "minimp3 by lieff and dr_flac by David Reid: the music player's decoders\n" +
+              "pl_mpeg by Dominic Szablewski: the video player's decoder\n" +
+              "Big Buck Bunny (c) 2008 Blender Foundation, www.bigbuckbunny.org, CC BY 3.0: the sample film\n" +
+              "Chicago95 by grassmunk and contributors: the desktop's icons\n" +
+              "Musopen's public-domain recordings and NASA's photographs: the sample music and pictures\n" +
               "VRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room",
-              right, 200, rightWide, 1100, 33, TextAnchor.UpperLeft, body);
+              right, 200, rightWide, 1100, 28, TextAnchor.UpperLeft, body);
 
-        // (the credits above are 34 lines when they are wrapped: to 1,290)
+        // (the credits above are 31 lines when they are wrapped, 1,088 of their box's 1,100; the
+        // panels' styling makes a letter one smaller than is asked here)
         Label(board, "Project head", "THE PROJECT", right, 1330, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
         Label(board, "Project",
               "ShaderEmu by Michael Moroz. Sources, the desktop harness and documentation:\n" +

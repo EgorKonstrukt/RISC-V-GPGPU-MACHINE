@@ -151,14 +151,22 @@ public static partial class ShaderEmuBuilder
         source.minDistance = near;
         source.maxDistance = far;
         source.dopplerLevel = 0f;
-        VRC.SDK3.Components.VRCSpatialAudioSource spatial = source.gameObject.AddComponent<VRC.SDK3.Components.VRCSpatialAudioSource>();
+        Spatial(source, near, far);
+        return source;
+    }
+
+    // VRChat's own component on a source in the room: without it the SDK's panel asks for one, and adds its defaults.
+    static void Spatial(AudioSource source, float near, float far)
+    {
+        VRC.SDK3.Components.VRCSpatialAudioSource spatial = source.GetComponent<VRC.SDK3.Components.VRCSpatialAudioSource>();
+        if (spatial == null) spatial = source.gameObject.AddComponent<VRC.SDK3.Components.VRCSpatialAudioSource>();
         spatial.Gain = 0f;
         spatial.Near = near;
         spatial.Far = far;
         spatial.VolumetricRadius = near;
         spatial.EnableSpatialization = true;
         spatial.UseAudioSourceVolumeCurve = false;
-        return source;
+        EditorUtility.SetDirty(spatial);
     }
 
     // A plate of two switches on the right wall, towards the front: the storm, and the light volumes.

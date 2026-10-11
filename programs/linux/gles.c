@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <nano-X.h>
+#include "fps_caption.h"
 
 // ---- GPU memory: the part Nano-X leaves to one program ----
 
@@ -241,6 +242,7 @@ void seglSwap(void) {
         regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
         regs[REG_VOLUME / 4 + 2]++;
+        fps_caption(&window_info, regs[0x34 / 4]);   // (the machine's clock, milliseconds)
         set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
     }
     commands = kept;
@@ -563,7 +565,7 @@ void seglTexturePointer(const void* pixels, GLsizei width, GLsizei height, GLenu
     x->address = (uint32_t)((const uint8_t*)pixels - gpu);
     x->width = width;
     x->height = height;
-    x->indexed = internal == GL_COLOR_INDEX8_EXT ? 1 : internal == SEGL_BITS ? 2 : internal == SEGL_TILES ? 3 : 0;
+    x->indexed = internal == GL_COLOR_INDEX8_EXT ? 1 : internal == SEGL_BITS ? 2 : internal == SEGL_TILES ? 3 : internal == SEGL_YUV420 ? 4 : 0;
 }
 void glTexImage2D(GLenum target, GLint level, GLint internal, GLsizei width, GLsizei height, GLint border, GLenum format,
                   GLenum type, const GLvoid* pixels) {
@@ -665,7 +667,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!gpu || !vertex_array.enabled || count < 3) return;
     const texture* x = &textures[texturing ? bound : 0];
     uint32_t pass = (blending ? blend_kind : 0) + (depth_test ? 0 : 4);
-    uint32_t fragment = (texturing && x->address ? (x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth : FRAGMENT_COLOUR) | pass << 16;
+    uint32_t fragment = (texturing && x->address ? (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth : FRAGMENT_COLOUR) | pass << 16;
     if (alpha_test && x->indexed && texturing) fragment |= FRAGMENT_KEYED;
     // a fan goes in as quads, two of its triangles each (the last may have its fourth corner twice)
     int fan = mode == GL_TRIANGLE_FAN, quads = mode == GL_QUADS || fan;
@@ -729,7 +731,7 @@ static uint32_t* compact_begin(GLenum mode, GLsizei count, uint32_t* stored_out,
     if (!gpu || count < 3) return 0;
     const texture* x = &textures[texturing ? bound : 0];
     uint32_t pass = (blending ? blend_kind : 0) + (depth_test ? 0 : 4);
-    uint32_t fragment = (texturing && x->address ? (x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth : FRAGMENT_COLOUR) | pass << 16;
+    uint32_t fragment = (texturing && x->address ? (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth : FRAGMENT_COLOUR) | pass << 16;
     if (alpha_test && x->indexed && texturing) fragment |= FRAGMENT_KEYED;
     int fan = mode == GL_TRIANGLE_FAN, quads = mode == GL_QUADS || fan;
     uint32_t stored = fan ? ((uint32_t)count - 1) / 2 * 4 : quads ? (uint32_t)count & ~3u :
@@ -853,7 +855,7 @@ int seglWindowTexture(GLuint name, GLfixed* across) {
 void seglQuad(const GLfixed* xyz, const GLfixed* uv, GLuint name, unsigned grey, int alpha, int keyed) {
     const texture* x = &textures[name < MAX_TEXTURES ? name : 0];
     uint32_t pass = (alpha < 255 ? 1u : 0u) + (depth_test ? 0 : 4);
-    uint32_t fragment = (x->indexed == 3 ? 5u : (x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) | (keyed ? FRAGMENT_KEYED : 0) | pass << 16;
+    uint32_t fragment = (x->indexed == 3 ? 5u : (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) | (keyed ? FRAGMENT_KEYED : 0) | pass << 16;
     uint32_t vertex = VERTEX_CLIP | VERTEX_MODELVIEW | VERTEX_COMPACT | VERTEX_QUADS | NUM_FORMAT;
     uint32_t tint = (uint32_t)(255 - alpha) << 24 | grey << 16 | grey << 8 | grey;
     if (!gpu || vertex_top + 64 > set_at + SET_SIZE || mesh_vertices + 6 > MAX_MESH) return;
@@ -907,7 +909,7 @@ static void sprite_command(const GLfixed* box, const int* texels, GLuint name, u
 
 void seglSprite(const GLfixed* box, const int* texels, GLuint name, unsigned colour, int keyed) {
     const texture* x = &textures[name < MAX_TEXTURES ? name : 0];
-    uint32_t fragment = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) |
+    uint32_t fragment = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) |
                         (keyed ? FRAGMENT_KEYED : 0) | 5u << 16;
     // a quad more of the command before, which is most of them: nothing is called on this path
     if (last_draw && last_draw == (uint32_t*)(gpu + set_at) + 16 * (commands - 1) && !matrices_dirty && blocks &&
@@ -927,7 +929,7 @@ void seglSprite(const GLfixed* box, const int* texels, GLuint name, unsigned col
 static __attribute__((noinline)) void sprite_command(const GLfixed* box, const int* texels, GLuint name, unsigned colour,
                                                      int keyed) {
     const texture* x = &textures[name < MAX_TEXTURES ? name : 0];
-    uint32_t fragment = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) |
+    uint32_t fragment = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) |
                         (keyed ? FRAGMENT_KEYED : 0) | 5u << 16;
     uint32_t vertex = VERTEX_CLIP | VERTEX_MODELVIEW | VERTEX_COMPACT | VERTEX_QUADS | NUM_FORMAT;
     if (!gpu || vertex_top + 64 > set_at + SET_SIZE || mesh_vertices + 6 > MAX_MESH) return;

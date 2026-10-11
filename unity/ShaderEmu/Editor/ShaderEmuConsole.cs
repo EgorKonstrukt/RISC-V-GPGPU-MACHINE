@@ -51,6 +51,7 @@ public static partial class ShaderEmuBuilder
         Plate(box, new Color(0.14f, 0.16f, 0.22f));
         Text text = Child(box, "Text", 10, 6, fieldWidth - 20, height - 62).gameObject.AddComponent<Text>();
         text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.material = UiMaterial();
         text.fontSize = 22;
         text.color = Color.white;
         text.alignment = TextAnchor.UpperLeft;
@@ -70,6 +71,7 @@ public static partial class ShaderEmuBuilder
         OnClick(MakeButton(panel, "Drop", "Clear", x + 340, 40, 160, height - 50, 24, out unused), paste, "Drop");
         Text status = Child(panel, "Status", width - 260, 6, 250, 28).gameObject.AddComponent<Text>();
         status.font = text.font;
+        status.material = UiMaterial();
         status.fontSize = 20;
         status.color = new Color(1f, 0.8f, 0.3f);
         status.alignment = TextAnchor.MiddleRight;
@@ -101,6 +103,7 @@ public static partial class ShaderEmuBuilder
         Plate(linkBox, new Color(0.14f, 0.16f, 0.22f));
         Text linkText = Child(linkBox, "Text", 10, 6, fieldWidth + key - 10, row - 12).gameObject.AddComponent<Text>();
         linkText.font = font;
+        linkText.material = UiMaterial();
         linkText.fontSize = 22;
         linkText.color = Color.white;
         linkText.alignment = TextAnchor.MiddleLeft;
@@ -117,6 +120,7 @@ public static partial class ShaderEmuBuilder
         Plate(box, new Color(0.14f, 0.16f, 0.22f));
         Text text = Child(box, "Text", 10, 6, fieldWidth - 20, row - 12).gameObject.AddComponent<Text>();
         text.font = font;
+        text.material = UiMaterial();
         text.fontSize = 22;
         text.color = Color.white;
         text.alignment = TextAnchor.UpperLeft;
@@ -135,6 +139,7 @@ public static partial class ShaderEmuBuilder
         OnClick(MakeButton(panel, "Drop", "Clear", x + 2 * (key + 10), 80, key, row, 22, out unused), paste, "Drop");
         Text status = Child(panel, "Status", 12, 110, name, 30).gameObject.AddComponent<Text>();
         status.font = font;
+        status.material = UiMaterial();
         status.fontSize = 14;
         status.color = amber;
         status.alignment = TextAnchor.MiddleLeft;

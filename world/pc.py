@@ -8,9 +8,11 @@ import json
 import pc_faces
 import math
 import os
+import random
 
 from mathutils import Vector
 
+import drape
 import lib
 
 FRONT = -0.150                            # the tower's front face, in its own frame
@@ -504,13 +506,22 @@ def keyboard(b):
     caps that narrow to their tops, in a tray that slopes."""
     layout = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "keyboard.json"), encoding="utf-8"))
     wide, tall, s = layout["width"], layout["height"], KEY_UNIT
-    vertices, faces, uvs, normals = [], [], [], []
+    vertices, faces, uvs, normals, caps = [], [], [], [], []
 
     def ring(x0, y0, x1, y1, z):
         first = len(vertices)
         for px, py in ((x0, y1), (x1, y1), (x1, y0), (x0, y0)):
             vertices.append(((px - wide / 2) * s, (tall / 2 - py) * s, z))
         return first
+
+    def cap_chart(place, normal):
+        """A cap is a chart by itself, and the chart is its top alone: its sides are drawn in to the
+        top's edge, and take the top's light. A lightmap's texels are blurred into each other:
+        sides with a place of their own darkened the top, and the well darkened both."""
+        px, py = place.x / s + wide / 2, tall / 2 - place.y / s
+        which = min(range(len(caps)), key=lambda k: max(caps[k][0] - px, px - caps[k][0] - caps[k][2], caps[k][1] - py, py - caps[k][1] - caps[k][3]))
+        x0, y0, w, h, high = caps[which]
+        return (which, (min(max(px, x0 + 6.0), x0 + w - 6.0) - wide / 2) * s, (tall / 2 - min(max(py, y0 + 4.5), y0 + h - 8.0)) * s)
 
     def face(corners, normal):
         faces.append(tuple(corners))
@@ -531,7 +542,7 @@ def keyboard(b):
         first = len(floor_v)
         floor_v.extend(((px - wide / 2) * s, (tall / 2 - py) * s, z) for px, py, z in points)
         floor_f.append(tuple(range(first, first + len(points))))
-        floor_uv.append([(floor_v[i][0] / 0.3, floor_v[i][1] / 0.3) for i in floor_f[-1]])
+        floor_uv.append([(floor_v[i][0] / (s * wide) + 0.5, floor_v[i][1] / (s * tall) + 0.5) for i in floor_f[-1]])   # the caps' picture: dark between them
         floor_n.append(normal)
     for i in range(len(xs) - 1):
         for j in range(len(ys) - 1):
@@ -540,7 +551,8 @@ def keyboard(b):
                 floor_face([(xs[i], ys[j + 1], floor_z), (xs[i + 1], ys[j + 1], floor_z), (xs[i + 1], ys[j], floor_z), (xs[i], ys[j], floor_z)], (0, 0, -1))
     for x0, y0, x1, y1 in cells:
         outer = [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
-        inner = [(x0 + 1.5, y1 - 1.5), (x1 - 1.5, y1 - 1.5), (x1 - 1.5, y0 + 1.5), (x0 + 1.5, y0 + 1.5)]
+        # (a hair under the cap's own foot, not on it: Bakery blends the light of two faces that meet at an edge)
+        inner = [(x0 + 1.8, y1 - 1.8), (x1 - 1.8, y1 - 1.8), (x1 - 1.8, y0 + 1.8), (x0 + 1.8, y0 + 1.8)]
         for k in range(4):
             a, b2 = k, (k + 1) % 4
             floor_face([(outer[a][0], outer[a][1], floor_z), (outer[b2][0], outer[b2][1], floor_z), (inner[b2][0], inner[b2][1], 0.0), (inner[a][0], inner[a][1], 0.0)], (0, 0, -1))
@@ -552,6 +564,7 @@ def keyboard(b):
         # rows are sculpted: the top and the bottom rows stand a little higher than the home row
         rise = (0.0014, 0.0016, 0.0008, 0.0, 0.0006, 0.0014)[min(5, max(0, int(round((y0 - row0) / 60.0))))]
         top = ring(x0 + 6.0, y0 + 4.5, x0 + w - 6.0, y0 + h - 8.0, -0.0078 - rise)
+        caps.append((x0, y0, w, h, -0.0078 - rise))
         face((top, top + 1, top + 2, top + 3), (0, 0, -1))
         for lower, upper in ((base, shoulder), (shoulder, top)):
             for k, normal in enumerate(((0, -1, 0), (1, 0, 0), (0, 1, 0), (-1, 0, 0))):
@@ -574,10 +587,12 @@ def keyboard(b):
                 return (place.x + dx / d * down, place.y + dy / d * down)
         return (place.x, place.y)
     with b.at(TRAY_AT, TRAY_TURN):
-        with b.chart("keyboard", from_above):
+        with b.chart("caps", cap_chart):
             with b.at((0, 0, -0.012)):
                 b.mesh(vertices, faces, uvs, "Keyboard", normal=normals)
-                b.mesh(floor_v, floor_f, floor_uv, "PlasticCase", normal=floor_n)   # the well, and each key's foot out of it
+        with b.chart("keyboard", from_above):
+            with b.at((0, 0, -0.012)):
+                b.mesh(floor_v, floor_f, floor_uv, "Keyboard", normal=floor_n)   # the well, and each key's foot out of it
             loft(b, [at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.01, cy=back), 0.012), at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.012, cy=back), -0.006),
                      at_z(rrect(kw + 0.022, kh + 0.022 + TRAY_BACK, 0.012, cy=back), -0.0105), at_z(rrect(kw + 0.008, kh + 0.008, 0.006), -0.0104)], "PlasticBeige",
                  first=True, normal='out')
@@ -709,15 +724,38 @@ def dsub_plug(b, x, y, z, wide, sleeve=0.006):
     b.cyl((x, y, z + 0.043), sleeve, 0.014, "PlasticCase", segs=12, bevel=0.001, rot=(90, 0, 0))
 
 
+LEADS = []   # the last station()'s leads: [name, the points of its middle, its radius, its material, its sides]
+
+
+def lead(b, name, corners, radius, mat, segs=8, bend=0.06, rng=None, up=0.04):
+    """A lead as it is laid out before it falls: from corner to corner, each corner rounded within
+    `bend` of it, then ruffled by chance. station() lets them all fall together and makes their tubes."""
+    points = [Vector(c) for c in corners]
+    path = [points[0]]
+    for i in range(1, len(points) - 1):
+        into, out = points[i] - points[i - 1], points[i + 1] - points[i]
+        d = min(bend, into.length / 2, out.length / 2)
+        start, end = points[i] - into.normalized() * d, points[i] + out.normalized() * d
+        for k in range(6):
+            t = k / 5
+            path.append(start * (1 - t) ** 2 + points[i] * (2 * t * (1 - t)) + end * t ** 2)
+    path.append(points[-1])
+    if rng is not None:
+        path = drape.ruffled(path, rng, up=up * rng.uniform(0.3, 1.0))
+    LEADS.append([name, path, radius, mat, segs])
+
+
 TABLE_HIGH = 0.765   # the classroom's table top over the floor (furniture.TABLE_TOP): the mains leads reach the floor
 SET_X, TOWER_X, TOWER_Z = -0.11, 0.38, 0.05   # the monitor and keyboard a little left, the tower at their right
 
 
-def station(b, which="all", lie=None):
+def station(b, which="all", lie=None, desk=None, seed=0):
     """A whole place on the table at the frame's origin: the monitor and keyboard, the tower
     beside them, the mouse before the tower, and their leads. which: "shell" is the monitor and
     the tower alone, "rest" all but them (with the tube's glass, which no mode but "full" gives).
-    lie: how this place's keyboard, mouse and mat lie off their places, each (x, z, turn)."""
+    lie: how this place's keyboard, mouse and mat lie off their places, each (x, z, turn).
+    desk: the boxes its leads fall on besides its own things, the table's top first (centre, size,
+    turn), in this frame; seed: the chance its leads are laid out by, a place its own."""
     lie = lie or {"keyboard": (0, 0, 0), "mouse": (0, 0, 0), "mat": (0, 0, 0)}
     kx, kz, kturn = lie["keyboard"]
     mx, mz, mturn = lie["mouse"]
@@ -745,49 +783,86 @@ def station(b, which="all", lie=None):
     with b.at(mouse_at, (0, mturn, 0)):
         mouse_body(b)
     behind = TOWER_Z + FRONT + TOWER_DEEP   # the tower's back
-    edge = 0.445                            # the table's, behind
+    floor = -TABLE_HIGH
+    desk = desk or [((0, -0.022, 0), (2.4, 0.044, 0.9), 0)]
+    # the table's back edge where this place's things are: nearest and furthest (a place is turned on its table)
+    top = lib.place(desk[0][0], (0, desk[0][2], 0))
+    left, right = top @ Vector((-desk[0][1][0] / 2, 0, desk[0][1][2] / 2)), top @ Vector((desk[0][1][0] / 2, 0, desk[0][1][2] / 2))
+    behind_at = [left.z + (right.z - left.z) * (x - left.x) / (right.x - left.x) for x in (SET_X - 0.35, TOWER_X + 0.15)]
+    near, edge = min(behind_at), max(behind_at)
     at = tower_back()
+    # The leads. Each is laid out behind the units clear of the others, by this place's own chance,
+    # and then they fall together where cables fall (drape.settle, Blender's cloth): held only at
+    # their plugs, lying on the table, on each other and over its back edge. drape.check after.
+    rng = random.Random(1000 + seed)
+    del LEADS[:]
     # the picture's lead: from RGB 1 on the monitor's board to the video card's socket, a plug at each end
     mx, my = SET_X + BOARD_X + 0.085, plug_y - BOARD_DOWN + ROW_TOP
     vx, vy = TOWER_X + at["video"][0], at["video"][1]
-    b.tube([(mx, my, back + PLUG_LONG - 0.01), (mx, my, back + PLUG_LONG + 0.012), (mx + 0.012, my - 0.012, back + PLUG_LONG + 0.03),
-            (mx + 0.05, my - 0.1, back + PLUG_LONG + 0.02), (mx + 0.1, 0.012, edge - 0.012), (TOWER_X - 0.16, 0.008, edge - 0.02),
-            (vx, 0.012, behind + PLUG_LONG + 0.04), (vx, vy - 0.06, behind + PLUG_LONG + 0.035), (vx, vy - 0.006, behind + PLUG_LONG + 0.028),
-            (vx, vy, behind + PLUG_LONG + 0.012), (vx, vy, behind + PLUG_LONG - 0.01)], 0.0045, "PlasticCase", segs=8, smooth=5)
+    r = 0.0045
+    on_table = near - 0.009 >= back + PLUG_LONG + 0.005   # room for it behind the monitor's plug: else it hangs behind the table
+    lane_picture, low = (near - 0.009, r + 0.0005) if on_table else (edge + 0.014, rng.uniform(-0.12, 0.02))
+    lead(b, "picture", [(mx, my, back + PLUG_LONG - 0.01), (mx, my, lane_picture), (mx, low, lane_picture), (vx, low, lane_picture),
+                        (vx, vy, lane_picture), (vx, vy, behind + PLUG_LONG - 0.01)], r, "PlasticCase", rng=rng)
     dsub_plug(b, mx, my, back, 0.032)
     dsub_plug(b, vx, vy, behind, 0.032)
-    # each one's mains lead: out of its inlet, down onto the table, and over the edge behind
-    floor, strip = -TABLE_HIGH, 0.06   # a strip of sockets on the floor behind the table: both leads end in it, its own goes on under the table
-    b.box((strip, floor + 0.02, edge + 0.07), (0.3, 0.04, 0.055), "PlasticBeige", bevel=0.004, segs=2)
-    b.box((strip + 0.125, floor + 0.041, edge + 0.07), (0.022, 0.004, 0.014), "RedPaint", bevel=0.001, segs=1)   # its lit switch
-    b.tube([(strip - 0.15, floor + 0.02, edge + 0.07), (strip - 0.22, floor + 0.006, edge + 0.07), (strip - 0.3, floor + 0.005, edge + 0.03),
-            (strip - 0.32, floor + 0.005, edge - 0.22), (strip - 0.32, floor + 0.03, edge - 0.3), (strip - 0.32, floor + 0.022, edge - 0.3)], 0.004, "Rubber", segs=8, smooth=4)
+    most = min(near - 0.012, lane_picture - 0.016)   # the furthest back a lane on the table may be
+    lane_keys, lane_mouse = (rng.uniform(behind + 0.035, most) for _ in range(2))
+    round_left = right.x < TOWER_X + 0.14   # the table ends by the tower: the mouse's lead goes round its other side
+    if round_left:   # (inside the keyboard's there, and in a nearer lane, or they would be laid through each other)
+        lane_keys = max(lane_keys, behind + 0.052)
+        lane_mouse = rng.uniform(behind + 0.035, lane_keys - 0.014)
+    # a strip of sockets on the floor behind the table: both mains leads end in it, its own goes on under the table
+    strip, out = 0.06 + rng.uniform(-0.04, 0.04), edge + 0.07 + rng.uniform(0, 0.04)
+    b.box((strip, floor + 0.02, out), (0.3, 0.04, 0.055), "PlasticBeige", bevel=0.004, segs=2)
+    b.box((strip + 0.125, floor + 0.041, out), (0.022, 0.004, 0.014), "RedPaint", bevel=0.001, segs=1)   # its lit switch
+    lead(b, "strip", [(strip - 0.15, floor + 0.02, out), (strip - 0.24, floor + 0.005, out), (strip - 0.32, floor + 0.005, out),
+                      (strip - 0.32, floor + 0.005, near - 0.3 + 0.03), (strip - 0.32, floor + 0.03, near - 0.3)], 0.004, "Rubber", bend=0.02, rng=rng, up=0.02)
     # and ends in a socket let into the floor under the table: a steel plate, the plug in it
-    b.box((strip - 0.32, floor + 0.002, edge - 0.3), (0.12, 0.004, 0.12), "MetalSteel", bevel=0.001, segs=1)
-    b.box((strip - 0.32, floor + 0.016, edge - 0.3), (0.036, 0.026, 0.036), "Rubber", bevel=0.006, segs=2)
-    for x, y, z, socket in ((SET_X - 0.14, plug_y - BOARD_DOWN, back, strip - 0.07), (TOWER_X + at["inlet"][0], at["inlet"][1], behind, strip + 0.04)):
-        b.tube([(x, y, z), (x, y - 0.012, z + 0.035), (x, y * 0.45, z + 0.055), (x, 0.012, min(z + 0.075, edge - 0.02)), (x, 0.008, edge - 0.008),
-                (x, -0.03, edge + 0.012), (x, -0.4, edge + 0.014), (x, floor + 0.14, edge + 0.016), (x * 0.7 + socket * 0.3, floor + 0.01, edge + 0.03),
-                (x * 0.2 + socket * 0.8, floor + 0.1, edge + 0.06), (socket, floor + 0.1, edge + 0.07), (socket, floor + 0.06, edge + 0.07)], 0.0035, "Rubber", segs=8, smooth=4)
-        b.box((socket, floor + 0.052, edge + 0.07), (0.036, 0.03, 0.036), "Rubber", bevel=0.006, segs=2)   # its plug, in the strip
+    b.box((strip - 0.32, floor + 0.002, near - 0.3), (0.12, 0.004, 0.12), "MetalSteel", bevel=0.001, segs=1)
+    b.box((strip - 0.32, floor + 0.016, near - 0.3), (0.036, 0.026, 0.036), "Rubber", bevel=0.006, segs=2)
+    # each unit's mains lead: out of its inlet, in an arc over the table's edge, down behind it and along to the strip
+    for name, x, y, z, socket in (("monitor mains", SET_X - 0.14, plug_y - BOARD_DOWN, back, strip - 0.07),
+                                  ("tower mains", TOWER_X + at["inlet"][0], at["inlet"][1], behind, strip + 0.04)):
+        # (with length to spare: it comes down to the floor, lies there, and rises into its plug)
+        over, lying = max(edge + 0.035, z + 0.07) + rng.uniform(0, 0.03), out + rng.uniform(0.09, 0.22)
+        lead(b, name, [(x, y, z + 0.02), (x, y, z + 0.05), (x, y - 0.05, over), (x, -0.12, over + 0.01), (x, floor + 0.05, over + 0.02),
+                       ((x + socket) / 2 + rng.uniform(-0.08, 0.08), floor + 0.012, lying), (socket + rng.uniform(-0.03, 0.03), floor + 0.03, lying - 0.04),
+                       (socket, floor + 0.13, out + 0.02), (socket, floor + 0.062, out)], 0.0035, "Rubber", bend=0.05, rng=rng, up=0.02)
+        b.box((socket, floor + 0.052, out), (0.036, 0.03, 0.036), "Rubber", bevel=0.006, segs=2)   # its plug, in the strip
         b.box((x, y, z + 0.014), (0.03, 0.022, 0.028), "Rubber", bevel=0.004, segs=2)   # its moulded plug (IEC C13)
-    # the keyboard's lead round the monitor's foot to the DIN socket, the mouse's round the tower to COM 1
+    # the keyboard's lead: from the sleeve on the tray's back (wherever this place's keyboard lies and however
+    # it is turned), before the monitor's foot, down the tower's left side and round behind it to the DIN socket
     din_x, din_y = TOWER_X + at["keyboard"][0], at["keyboard"][1]
-    # (from the sleeve on the tray's back, wherever this place's keyboard lies and however it is turned)
     tray = (lib.place((SET_X + kx, 0, KEYBOARD_Z + kz), (0, kturn, 0)) @ lib.place((0, 0, -KEYBOARD_Z)) @ lib.place(TRAY_AT, TRAY_TURN))
     far = KEYS_HIGH / 2 + 0.015 + TRAY_BACK
-    k0, k1 = tray @ Vector((LEAD_X, far + 0.006, 0.003)), tray @ Vector((LEAD_X, far + 0.03, 0.006))
-    b.tube([tuple(k0), tuple(k1), (k1.x + 0.07, 0.006, k1.z + 0.03), (0.25, 0.004, -0.05), (0.262, 0.004, behind - 0.05),
-            (din_x, 0.012, behind + 0.07), (din_x, din_y - 0.06, behind + 0.07), (din_x, din_y - 0.006, behind + 0.062), (din_x, din_y, behind + 0.046), (din_x, din_y, behind + 0.02)],
-           0.0028, "PlasticCase", segs=6, smooth=5)
+    k0, k1 = tray @ Vector((LEAD_X, far + 0.006, 0.003)), tray @ Vector((LEAD_X, far + 0.024, 0.004))
+    # (the foot is 0.208 round, 0.1 behind the set's middle: this is clear of it)
+    r, side, before = 0.0028, TOWER_X - 0.124 + rng.uniform(-0.008, 0.006), -0.125 + rng.uniform(-0.015, 0.01)
+    lead(b, "keyboard", [tuple(k0), tuple(k1), (k1.x + 0.012, r + 0.0005, before), (side, r + 0.0005, before), (side, r + 0.0005, lane_keys),
+                         (din_x, r + 0.0005, lane_keys), (din_x, din_y, lane_keys), (din_x, din_y, behind + 0.02)], r, "PlasticCase", segs=6, rng=rng, up=0.025)
     b.cyl((din_x, din_y, behind + 0.004), 0.0062, 0.008, "MetalSteel", segs=14, rot=(90, 0, 0))                    # the DIN plug: its shell in the socket,
     b.cyl((din_x, din_y, behind + 0.02), 0.0078, 0.026, "PlasticCase", segs=14, bevel=0.002, rot=(90, 0, 0))     # its grip,
     b.cyl((din_x, din_y, behind + 0.038), 0.0045, 0.012, "PlasticCase", segs=10, rot=(90, 0, 0))                 # and its sleeve
+    # the mouse's: from the sleeve under its buttons (however this place's mouse is turned), off the mat past
+    # the tower's front corner, down its right side and round behind it to COM 1
     cx, cy = TOWER_X + at["com1"][0], at["com1"][1]
-    # (from the sleeve under its buttons, however this place's mouse is turned)
     body = lib.place(mouse_at, (0, mturn, 0)) @ lib.place((0, 0, 0), (0, MOUSE_TURN, 0))
-    m0, m1 = body @ Vector(MOUSE_LEAD), body @ Vector((MOUSE_LEAD[0], 0.008, MOUSE_LEAD[2] - 0.03))
-    b.tube([tuple(m0), tuple(m1), (m1.x * 0.6 + (TOWER_X + 0.1) * 0.4, 0.004, m1.z * 0.6 - 0.15 * 0.4 + 0.02), (TOWER_X + 0.1, 0.004, -0.15), (TOWER_X + 0.108, 0.004, behind - 0.05),
-            (cx + 0.05, 0.012, behind + PLUG_LONG + 0.03), (cx, cy - 0.06, behind + PLUG_LONG + 0.035), (cx, cy - 0.006, behind + PLUG_LONG + 0.028),
-            (cx, cy, behind + PLUG_LONG + 0.012), (cx, cy, behind + PLUG_LONG - 0.01)], 0.0022, "PlasticCase", segs=6, smooth=5)
+    m0, m1 = body @ Vector(MOUSE_LEAD), body @ Vector((MOUSE_LEAD[0], 0.0075, MOUSE_LEAD[2] - 0.03))
+    r, side = 0.0022, TOWER_X - 0.101 if round_left else TOWER_X + 0.105 + rng.uniform(0, 0.02)
+    lead(b, "mouse", [tuple(m0), tuple(m1), (side, 0.0065, TOWER_Z + FRONT - 0.03), (side, r + 0.0005, TOWER_Z + FRONT + 0.06), (side, r + 0.0005, lane_mouse),
+                      (cx, r + 0.0005, lane_mouse), (cx, cy, lane_mouse), (cx, cy, behind + PLUG_LONG - 0.01)], r, "PlasticCase", segs=6, rng=rng, up=0.025)
     dsub_plug(b, cx, cy, behind, 0.031, sleeve=0.004)
+    # what the leads fall on: the desk, the floor, the tower, the monitor (case, foot, neck), the keyboard, the mat, the strip
+    boxes = list(desk) + [((0, floor - 0.05, 0), (4, 0.1, 4), 0),
+                          ((TOWER_X, TOWER_HIGH / 2, TOWER_Z + FRONT + TOWER_DEEP / 2), (0.184, TOWER_HIGH, TOWER_DEEP), 0),
+                          ((SET_X, LOW + OUT_H / 2, (GLASS[3] - 0.02 + back) / 2), (OUT_W, OUT_H, back - GLASS[3] + 0.02), 0),
+                          ((SET_X + kx, 0.02, KEYBOARD_Z + kz), (0.58, 0.04, 2 * (KEYS_HIGH / 2 + 0.015 + TRAY_BACK) - 0.006), kturn),
+                          ((mat_at[0], 0.0015, mat_at[2]), (0.21, 0.003, 0.25), pturn),
+                          ((strip, floor + 0.02, out), (0.3, 0.04, 0.055), 0)]
+    cylinders = [((SET_X, 0.017, 0.1), 0.208, 0.034), ((SET_X, 0.05, 0.1), 0.08, 0.04)]
+    fallen = drape.settle([(name, path, radius) for name, path, radius, _, _ in LEADS], boxes, cylinders)
+    for one, path in zip(LEADS, fallen):
+        one[1] = path
+        b.tube([tuple(q) for q in path], one[2], one[3], segs=one[4], smooth=0)
+    drape.check([(name, path, radius) for name, path, radius, _, _ in LEADS], boxes, cylinders)

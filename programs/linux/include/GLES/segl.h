@@ -110,6 +110,9 @@ void seglQuad(const GLfixed* xyz, const GLfixed* uv, GLuint name, unsigned grey,
 // A tile is width x height bytes; the palette is words of 0x00RRGGBB. The texture's width and
 // height are the layer's in pixels; seglQuad draws it, keyed on a tile's byte.
 #define SEGL_TILES 0x1F0B2
+// A video's frame for seglTexturePointer (docs/gpu.md, fragment mode 6): width x height bytes
+// of luma, then the blue and the red chroma planes, each half the size each way; both sizes even.
+#define SEGL_YUV420 0x1F0B3
 // A rectangle of a texture drawn over what the list drew before it, in the list's order: box is
 // x0, y0, x1, y1 as seglQuad's corners are, texels the same corners in 1,024ths of the texture
 // (texels, for one 1,024 wide). The colour is 0xTTRRGGBB, T being transparency; it tints an

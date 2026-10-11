@@ -1,0 +1,58 @@
+# The desktop's icons (tools/make_icons.py): names, then where to look, first found wins.
+# A name is a program as the kernel calls it (the window manager reads /proc/PID/comm for a
+# caption's icon), a file kind (nxfiles, nxdesk), or a place. A source is FOLDER/NAME in
+# Chicago95's icon theme, or the name of a picture in linux/apps/icons (NAME.png, any size).
+
+default,program         mimes/application-x-executable
+nxterm                  apps/utilities-terminal
+nxcalc                  apps/accessories-calculator
+nxclock                 apps/clock
+nxtetris                apps/quadrapassel apps/gnome-tetravex categories/applications-puzzles
+nxmine                  apps/gnome-mines apps/mines
+nxeyes                  apps/xeyes categories/applications-other
+glxgears                categories/applications-3D
+nxedit                  apps/accessories-text-editor
+nxfiles                 apps/system-file-manager
+nxpaint                 apps/kolourpaint apps/gnome-paint categories/applications-painting
+nxweb                   apps/internet-web-browser
+nxmon                   apps/utilities-system-monitor
+nxsettings              apps/preferences-desktop
+nxview                  apps/image-viewer
+nxplay                  apps/multimedia-audio-player
+nxvideo                 apps/multimedia-video-player
+doom,doom.bin           doom
+quake,quake.bin         quake
+classicube,classicube.bin classicube
+tdawn,tdawn.bin         tdawn
+ralert,ralert.bin       ralert
+nes,nes.bin             devices/input-gaming
+imdemo                  categories/applications-development
+nxray                   categories/applications-graphics
+nxpath                  categories/applications-science
+example                 categories/applications-ide categories/applications-development
+restart                 apps/system-restart
+nxoff                   apps/system-shutdown
+
+folder                  places/folder
+folder-open             places/folder-open
+file                    mimes/text-x-generic
+unknown                 mimes/unknown
+picture                 mimes/image-x-generic
+sound                   mimes/audio-x-generic
+video                   mimes/video-x-generic
+page                    mimes/text-html
+archive                 mimes/application-x-tar
+script                  mimes/application-x-shellscript
+shortcut                mimes/application-x-desktop
+
+desktop                 places/user-desktop
+home                    places/user-home
+pictures                places/folder-pictures
+music                   places/folder-music
+videos                  places/folder-videos
+computer                devices/computer
+start                   places/start-here
+games                   categories/applications-games
+utilities               categories/applications-utilities
+system                  categories/applications-system
+other                   categories/applications-other

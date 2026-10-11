@@ -1,10 +1,18 @@
 /*
  * nxsettings: the desktop's settings, a tab each. Desktop: what the desktop shows (a picture
  * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. System:
- * what the machine is. From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR].
+ * what the machine is. From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system.
  */
 #include <dirent.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
+#include <time.h>
 #include "ui.h"
 #include "ui_files.h"
 #include "shaderemu_sound.h"
@@ -26,6 +34,8 @@ static const char *sizes[] = { "640x480", "800x600", "1024x576", "1024x768", "12
 static struct ui_list screens = { 8, TOP + 20, 170, SIZES * UI_ROW + 4, 0, 0, -1 };
 static int fits[SIZES], most_w = 1280, most_h = 720;	/* the sizes this host can show, and its largest */
 static int tab, have_sound = -1;	/* have_sound: not asked yet */
+static int cores = 1, has_float = -1;	/* the machine's cores (its control words say); float instructions: not tried yet */
+static unsigned speed_cycles, speed_ms, speed_now;	/* instructions and time at the last look; instructions a second since */
 static int focus;	/* what the keyboard works: 0 the row of tabs, 1 and 2 the tab's controls in order */
 static GR_WINDOW_ID window;
 
@@ -78,6 +88,9 @@ find_sizes(void)
 	int gpu = open("/dev/gpu", O_RDWR), i;
 	const unsigned *words = gpu < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000);
 
+	/* how many cores the machine has, or could have (docs/multicore.md: the geometry's words) */
+	if (words != MAP_FAILED && (words[0x3cc / 4] || words[0x3c0 / 4]))
+		cores = (int)(words[0x3cc / 4] ? words[0x3cc / 4] : words[0x3c0 / 4]);
 	if (words != MAP_FAILED && (words[0x3c / 4] >> 8 & 255)) {
 		most_w = (words[0x3c / 4] >> 8 & 255) * 16;
 		most_h = (words[0x3c / 4] >> 16 & 255) * 16;
@@ -117,6 +130,124 @@ field(const char *path, const char *name)
 	if (file)
 		fclose(file);
 	return value;
+}
+
+static sigjmp_buf no_float;
+
+static void
+float_trap(int signal_number)
+{
+	(void)signal_number;
+	siglongjmp(no_float, 1);
+}
+
+/* Whether the processor has float instructions: one is run, and it is an illegal one or not.
+ * (Linux's own word on it, /proc/cpuinfo, is its device tree's, which does not name them.) */
+static int
+float_unit(void)
+{
+	void (*before)(int) = signal(SIGILL, float_trap);
+	volatile int there = 0;
+
+	if (!sigsetjmp(no_float, 1)) {
+		__asm__ volatile(".word 0xd0007053");	/* fcvt.s.w ft0, zero */
+		there = 1;
+	}
+	signal(SIGILL, before);
+	return there;
+}
+
+static unsigned
+cycles_now(void)
+{
+	unsigned n;
+
+	__asm__ volatile("rdcycle %0" : "=r"(n));
+	return n;
+}
+
+static unsigned
+ms_now(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
+}
+
+/* The first core's instructions a second since this was last asked (it counts them: rdcycle). */
+static void
+measure_speed(void)
+{
+	unsigned cycles = cycles_now(), ms = ms_now();
+
+	if (speed_ms && ms - speed_ms >= 200)
+		speed_now = (unsigned)((unsigned long long)(cycles - speed_cycles) * 1000 / (ms - speed_ms));
+	if (!speed_ms || ms - speed_ms >= 200) {
+		speed_cycles = cycles;
+		speed_ms = ms;
+	}
+}
+
+/* The network device's address, or NULL while it has none. */
+static const char *
+network_address(void)
+{
+	static char text[32];
+	struct ifreq request;
+	int s = socket(AF_INET, SOCK_DGRAM, 0), got;
+
+	if (s < 0)
+		return NULL;
+	memset(&request, 0, sizeof request);
+	strcpy(request.ifr_name, "lan0");
+	got = ioctl(s, SIOCGIFADDR, &request);
+	close(s);
+	if (got != 0)
+		return NULL;
+	snprintf(text, sizeof text, "%s", inet_ntoa(((struct sockaddr_in *)&request.ifr_addr)->sin_addr));
+	return text;
+}
+
+/* What the machine is, a line each: every one asked of it as it is now. Returns how many. */
+static int
+system_lines(char lines[][160], int screen_w, int screen_h)
+{
+	struct utsname system;
+	int n = 0;
+
+	uname(&system);
+	if (has_float < 0)
+		has_float = float_unit();
+	if (have_sound < 0)
+		have_sound = snd_open() == 0;
+	measure_speed();
+	snprintf(lines[n++], 160, "%s %s", system.sysname, system.release);
+	snprintf(lines[n++], 160, "Processor: %s (RV32IMA%s), %d core%s", system.machine,
+		 has_float ? "F: with float instructions" : ": no float instructions", cores, cores == 1 ? "" : "s");
+	if (cores > 1)
+		snprintf(lines[n++], 160, "Linux runs on the first; the other %d are programs' workers", cores - 1);
+	else
+		snprintf(lines[n++], 160, "Linux and every program run on it");
+	if (speed_now)
+		snprintf(lines[n++], 160, "The first core ran %u.%02u million instructions a second just now", speed_now / 1000000,
+			 speed_now / 10000 % 100);
+	else
+		snprintf(lines[n++], 160, "The first core's speed: measuring...");
+	snprintf(lines[n++], 160, "Memory: %ld MB, %ld MB free", field("/proc/meminfo", "MemTotal:") / 1024,
+		 field("/proc/meminfo", "MemAvailable:") / 1024);
+	snprintf(lines[n++], 160, "Disk: a ROM of %ld MB; what is written is kept in memory", field("/sys/class/mtd/mtd0/size", "") >> 20);
+	if (screen_w)
+		snprintf(lines[n++], 160, "Screen: %d x %d (this host shows %d x %d at most)", screen_w, screen_h, most_w, most_h);
+	else
+		snprintf(lines[n++], 160, "Screen: this host shows %d x %d at most", most_w, most_h);
+	if (have_sound > 0)
+		snprintf(lines[n++], 160, "Sound card: %u samples a second, volume %d%%", (unsigned)SND_RATE, (int)(SND_MASTER * 100 / 256));
+	else
+		snprintf(lines[n++], 160, "Sound card: none");
+	snprintf(lines[n++], 160, "Network: %s", network_address() ? network_address() : "not connected");
+	snprintf(lines[n++], 160, "Running for %ld minutes", field("/proc/uptime", "") / 60);
+	return n;
 }
 
 /* The desktop again, with the size just written: the window system starts over and every
@@ -166,7 +297,6 @@ beep(void)
 static void
 draw(void)
 {
-	struct utsname system;
 	GR_SCREEN_INFO screen;
 	char text[160];
 	int i;
@@ -185,7 +315,7 @@ draw(void)
 			ui_focus(window, pictures.x, pictures.y, pictures.width, pictures.height);
 		else if (focus == 2)
 			ui_focus(window, 8 + 4, TOP + 204 + 4, 180 - 8, 22 - 8);
-		ui_text(window, 8, HEIGHT - 26, "A picture is a PPM file; others can be made into one on the host.", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 26, "A picture file is a PPM, PNG or JPEG (the last two are decoded first).", -1, UI_SHADOW, 0);
 		break;
 	case TAB_SCREEN:
 		snprintf(text, sizeof text, "The screen is %d x %d now.", screen.cols, screen.rows);
@@ -218,21 +348,14 @@ draw(void)
 		ui_text(window, 8, TOP + 90, text, -1, UI_SHADOW, 0);
 		ui_text(window, 8, TOP + 106, "How loud the host plays it is set on the host.", -1, UI_SHADOW, 0);
 		break;
-	case TAB_SYSTEM:
-		uname(&system);
-		snprintf(text, sizeof text, "%s %s", system.sysname, system.release);
-		ui_text(window, 8, TOP, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "Processor: %s, one core, no floating point unit", system.machine);
-		ui_text(window, 8, TOP + 18, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "Memory: %ld MB, %ld MB free", field("/proc/meminfo", "MemTotal:") / 1024,
-			 field("/proc/meminfo", "MemAvailable:") / 1024);
-		ui_text(window, 8, TOP + 36, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "Screen: %d x %d", screen.cols, screen.rows);
-		ui_text(window, 8, TOP + 54, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "Running for %ld minutes", field("/proc/uptime", "") / 60);
-		ui_text(window, 8, TOP + 72, text, -1, BLACK, 0);
-		ui_text(window, 8, TOP + 100, "Settings last until the machine is switched off: its disk", -1, UI_SHADOW, 0);
-		ui_text(window, 8, TOP + 116, "is a ROM, and what is written lives in memory.", -1, UI_SHADOW, 0);
+	case TAB_SYSTEM: {
+		static char lines[12][160];
+		int n = system_lines(lines, screen.cols, screen.rows);
+
+		for (i = 0; i < n; i++)
+			ui_text(window, 8, TOP + i * 18, lines[i], -1, BLACK, 0);
+		}
+		ui_text(window, 8, HEIGHT - 44, "Settings last until the machine is switched off.", -1, UI_SHADOW, 0);
 		ui_text(window, 8, HEIGHT - 26, "ShaderEmu: a RISC-V computer in a pixel shader", -1, UI_SHADOW, 0);
 		break;
 	}
@@ -252,10 +375,27 @@ choose_picture(void)
 	char path[512], label[64];
 	const char *name;
 
-	if (!ui_choose_file("Choose a picture", "/usr/share", ".ppm", path, sizeof path, while_choosing))
+	if (!ui_choose_file("Choose a picture", access("/root/Pictures", R_OK) == 0 ? "/root/Pictures" : "/usr/share",
+			    ".ppm .png .jpg .jpeg", path, sizeof path, while_choosing))
 		return;
 	name = strrchr(path, '/') + 1;
 	snprintf(label, sizeof label, "File: %s", name);
+	if (!strstr(path, ".ppm")) {
+		/* the viewer decodes it (on the worker cores) into a PPM file in memory, which is what the desktop shows */
+		static int made;
+		char decoded[64];
+		pid_t child;
+		int status = 1;
+
+		snprintf(decoded, sizeof decoded, "/tmp/nxwallpaper-%d.ppm", made++);
+		if ((child = fork()) == 0) {
+			execlp("nxview", "nxview", "--decode", path, decoded, (char *)NULL);
+			_exit(127);
+		}
+		if (child < 0 || waitpid(child, &status, 0) < 0 || status != 0)
+			return;
+		snprintf(path, sizeof path, "%s", decoded);
+	}
 	add(label, path);
 	pictures.selected = pictures.count - 1;
 	ui_list_show(&pictures);
@@ -379,6 +519,19 @@ main(int argc, char **argv)
 	GR_EVENT event;
 	char path[512];
 
+	/* nxsettings system: what the System tab says, printed (it needs no desktop) */
+	if (argc > 1 && !strcmp(argv[1], "system")) {
+		static char lines[12][160];
+		int i, n;
+
+		find_sizes();
+		system_lines(lines, 0, 0);
+		usleep(300000);		/* (a speed is two looks at the count, some time apart) */
+		n = system_lines(lines, 0, 0);
+		for (i = 0; i < n; i++)
+			printf("%s\n", lines[i]);
+		return 0;
+	}
 	/* nxsettings volume N: how loud, without the desktop */
 	if (argc > 2 && !strcmp(argv[1], "volume")) {
 		if (snd_open())
@@ -419,7 +572,9 @@ main(int argc, char **argv)
 		GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(window);
 	for (;;) {
-		GrGetNextEvent(&event);
+		GrGetNextEventTimeout(&event, 1000);
+		if (event.type == GR_EVENT_TYPE_TIMEOUT && tab == TAB_SYSTEM)
+			draw();
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw();

@@ -526,7 +526,8 @@ public static partial class ShaderEmuBuilder
             }
         foreach (Selectable field in canvas.GetComponentsInChildren<Selectable>(true))
         {
-            if (!(field is InputField)) continue;   // VRChat's address field is one too
+            // (VRChat's address field is no InputField: left out here, its text went on the plate as print and was switched off)
+            if (!(field is InputField) && !(field is VRC.SDK3.Components.VRCUrlInputField)) continue;
             Image image = field.targetGraphic as Image;
             if (image != null) { Picture(image, sunken, Liquid); still.Add(image); done.Add(image); }   // a liquid crystal strip
             foreach (Text text in field.GetComponentsInChildren<Text>(true)) { text.color = Ink; text.material = Mat("LitUI", "ShaderEmu/LitUI"); live.Add(text); done.Add(text); EditorUtility.SetDirty(text); }
@@ -553,6 +554,7 @@ public static partial class ShaderEmuBuilder
             if (done.Contains(text)) continue;
             bool glows = changing.Contains(text);
             text.enabled = true;
+            if (text.material == null || text.material.shader.name == "UI/Default") text.material = UiMaterial();
             text.color = glows ? Amber : OnPlate(text.color);
             (glows ? live : print).Add(text);
             EditorUtility.SetDirty(text);

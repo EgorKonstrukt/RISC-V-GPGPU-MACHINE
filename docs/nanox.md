@@ -4,9 +4,9 @@ The Linux image has a window system: Nano-X from [Microwindows](https://github.c
 the server with its window manager built in, and a handful of its clients. It draws through
 the machine's GPU and takes the machine's keyboard and pointer.
 
-    / # nx                      # server, the desktop's picture, the bar, a terminal
+    / # nx                      # server, the desktop with its icons, the bar
     / # nxcalc &                # more clients: nxeyes (the right button closes it), nxtetris, nxmine, nxev, demo-*
-    / # NANOX_SIZE=640x480 nx   # another screen size (1280x720 by default, what the world shows)
+    / # NANOX_SIZE=640x480 nx   # another screen size (800x600 by default)
 
 The machine starts `nx` by itself when it boots, unless the host says not to (bit 0 of the host
 flags, `gpu.md`; the image's init reads it). The harness asks for the desktop in its terminal
@@ -85,15 +85,114 @@ scratch textures up to `0x87700000`; the last 4 MiB are left to one OpenGL progr
 
 ## The bar, and what a program adds to it
 
-`nxbar` has the Start menu, a button for every open window (a click brings the window to the
-front) and the clock. The Windows key opens and closes the menu from anywhere (a key the bar
-grabs with `GrGrabKey`). The menu is whatever the files `/usr/share/nxapps.*` list, one
-`Label=command` a line, or `Folder/Label=command` for a program in a folder, so a program gets
-into it by having its build put such a file in the image: `linux/nanox/build.sh` writes
-`nxapps.10-nanox`, `doom.sh` writes `nxapps.50-doom`. The folders are Games, Utilities and
-Other, in the order the files first name them; a click on one shows its programs in the
-menu's place, with a way back as the bottom row. `NXBAR_SHOW=1` (or `=Games`) starts the bar
-with the menu open, for a test without a pointer: the menu is the layer 150 pixels wide.
+`nxbar` has the Start menu, a button for every open window (with its program's icon; a click
+brings the window to the front, the right button offers to minimise or close it) and the
+clock. The Windows key opens and closes the menu from anywhere (a key the bar grabs with
+`GrGrabKey`). The menu is whatever the files `/usr/share/nxapps.*` list, one `Label=command` a
+line, or `Folder/Label=command` for a program in a folder (a folder may be in a folder:
+`A/B/Label=command`), so a program gets into it by having its build put such a file in the
+image: `linux/nanox/build.sh` writes `nxapps.10-nanox`, `doom.sh` writes `nxapps.50-doom`. The
+folders are Games, Utilities, Other and System, in the order the files first name them. A
+folder's programs open in a menu of their own to its side, when the pointer is on it or with
+Right or Enter. `NXBAR_SHOW=1` (or `=Games`) starts the bar with the menu open (and that
+folder's beside it), for a test without a pointer: each level is a layer of its own.
+
+## Menus
+
+`linux/apps/ui_menu.h` is the menu the bar, the desktop and the explorer share: rows with a
+16-pixel icon, a line between groups, greyed rows, and rows that open a menu of their own to
+the side (on the other side when the screen ends). A level is a window that goes when the
+menu closes. `GR_WM_PROPS_POPUP` on such a window has the window system ask every menu to
+close (`GR_EVENT_TYPE_CLOSE_REQ`) when a button is pressed anywhere outside one; Escape closes
+it too. Keys: Up, Down, Home, End, a letter, Right or Enter into a row's own menu, Left or
+Backspace out of it. A program calls `ui_menu_open` and gives `ui_menu_event` every event
+before it looks at it itself.
+
+## The desktop
+
+The desktop is `nxfiles --desktop`, started by `nx`: the screen's picture and, on it, the
+icons of `/root/Desktop` (the root window is the display's own layer under every window, so
+they take no window and no buffer).
+
+- **A shortcut** is a file `NAME.app` of three lines, `name=`, `icon=` (a name of
+  `linux/apps/icons.txt`; without it the program's own) and `run=` (a command). The image
+  starts with one for every program of the Start menu but the System folder's, and for Home,
+  Pictures, Music and Videos (`desktop_shortcuts` in `tools/make_linux_image.py`), a column a
+  folder of the menu. `open` starts one too (`nxfiles --run FILE.app`).
+- **Places.** Each icon stands where it was last put, in whole cells of 76 x 70
+  (`/root/Desktop/.places`: `x y name` a line). The left button held moves the selected
+  icons; onto a folder it moves them into it. A new entry takes the first free cell, or the
+  place it was dropped at.
+- **Two clicks** within 0.7 s open an entry. Ctrl and Shift with a click select several.
+  The right button brings the menu: an entry's (Open, Cut, Copy, Rename, Delete, Properties)
+  or the desktop's (Arrange icons, Refresh, Select all, Paste, New, Open in Files, Settings).
+- **Keys**, once the desktop has been clicked: the arrows go to the nearest icon that way,
+  Enter opens, Space selects, F2 renames (typed in a strip above the bar), Delete, F5,
+  Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, letters for the entry that starts with them, and Shift+F10
+  (or the Menu key) for the menu.
+- It is in the overlay's memory, as everything a program writes is: what was moved or made
+  is as the image has it again after power-off.
+- Settings draws a chosen picture on the root itself; the desktop sees the choice change
+  within a second and draws picture and icons again.
+
+A drag between windows: where the button is let go, the explorer asks the window system
+which window is in front there (`GrQueryTree`, the one in front first). A Files window says
+its folder in its title ("Files - /root/Pictures"), and no window at all is the desktop.
+The entries are moved there with `mv` (copied with Ctrl held: `cp -a`); the other side sees
+its folder's time change within a second and reads it again.
+
+## Icons
+
+Two sheets in the ROM, 32 and 16 pixels a cell and 16 cells a row, and a list of which cell is
+whose (`/usr/share/icons32.ppm`, `icons16.ppm`, `icons.idx`): `python tools\make_icons.py`
+makes them from `linux/apps/icons.txt`, whose names are programs (as the kernel calls them),
+kinds of file and places. The pictures are [Chicago95](https://github.com/grassmunk/Chicago95)'s
+(GPL-3.0+/MIT), fetched once at one commit, and for what that set lacks the pictures in
+`linux/apps/icons`, a file a name, any size: the games' own icons (Chocolate Doom's, Quake's,
+ClassiCube's, Vanilla Conquer's two; its README says whose each is).
+
+- A cell is drawn by the GPU from the ROM where it lies: `GrDrawImageFromFile` with
+  `GR_IMAGE_CELL(size, cell)` as its flags, which the screen driver takes as "this cell, and
+  not its magenta" (fragment mode 4 with the key flag, `gpu.md`). One request and one
+  rectangle an icon, as text is. `ui_icons.h` has `ui_icon_of(name)` and `ui_icon`.
+- The driver keeps the last eight files it found in the ROM: an icon costs no file calls.
+- A program carries its own icon, at its file's end: 32 x 32 and 16 x 16 pixels of RGB (magenta
+  for what is not the picture) and the eight bytes `NXICON1` and a zero, which change nothing
+  for the loader. The image builder puts the sheets' cell there for every program of
+  `icons.idx`, so the sheets are only where the build's icons come from; a program made or
+  copied in the guest gets one with `nxicon PROGRAM PICTURE.ppm` (any size: it is scaled),
+  loses it with `--none`, and `nxicon PROGRAM` says whether it has one. Drawn with
+  `GR_IMAGE_ICON(size)` as the flags: the same rectangle of the GPU's, read from the file's
+  end. A program in memory (`/tmp`) is not in the ROM, and its icon is drawn by the first core.
+- The caption, the bar's buttons, the Start menu, the desktop and the explorer all ask the
+  program's file first (`/proc/PID/exe` for a window's) and the sheet by name after
+  (`ui_icon_of_program`, `ui_icon_of_command` in `ui_icons.h`; `icon_of` in the window manager).
+
+## Captions
+
+A caption is a strip of colours stretched over it (`caption-on.ppm`, navy to light blue, and
+`caption-off.ppm`, greys, both 256 x 1 and made by `tools/make_icons.py`): one more rectangle
+of the GPU's, drawn from the ROM.
+
+## A window before the work
+
+A program that has seconds of work before it can show anything (a picture to decode, a film
+to index, workers to start) maps its window first and says in it what it is doing: `nxview`,
+`nxplay` and `nxvideo` do. The window manager frames a window as its program takes events,
+so such a program calls `ui_framed()` (`ui.h`) after `GrMapWindow`, which takes what is
+waiting; without it the window stands with no frame at the screen's corner until the work is
+done. To check: the program, `sleep 2`, and the layer in a snapshot has the frame's size.
+
+## Frames a second
+
+A window a program's frames are drawn in says how many a second, in its caption left of the
+boxes: `programs/linux/fps_caption.h`, called where a frame is handed to the GPU
+(`seglSwap`, `glXSwapBuffers`, ClassiCube's `Gfx_EndFrame`). The caption is rows of the
+window's own buffer, just above its pixels, so the digits are written there once a second:
+some hundreds of stores and no request (a title set through the window system cost a tenth
+of a second of the core). A caption painted again loses them until the next second. The
+frames may go to a part of the program's window at its top left corner (the video player's
+picture above its controls): the caption is looked for up to two windows above.
 
 ## The keyboard
 
@@ -118,7 +217,11 @@ Everything on the desktop can be worked without a pointer.
 
 `nxkey` presses keys for a test, through the keyboard's evdev device: `nxkey meta down enter
 500 ctrl+tab` (names or characters, `ctrl+`, `alt+`, `shift+` before one, a number to wait
-that many milliseconds, `X,Y` for a click of the left button there).
+that many milliseconds, `X,Y` for a click of the left button there, `r:X,Y` for the right
+one, `drag:X,Y:X,Y` for the left one held from the first place to the second). A press and
+its release are two reports: the pointer's driver hands the window system one state at a
+time once a button changes (it used to hand over only the last of what waited, and a click
+made while the server was drawing was never seen).
 
 A window's frame has, left of its close box, a maximise box (the window fills the screen above
 the bar, and goes back on the second click) and a minimise box (the window goes away; its
@@ -146,11 +249,11 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 | Program | What it does |
 |---|---|
 | `nxedit FILE` | a text editor: arrows, Home, End, Page Up and Down move and with Shift select, a click places the cursor and the pointer held down selects, the wheel and a scroll bar move through the text. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste through the desktop's clipboard, Ctrl+A selects everything, Ctrl+Z undoes (512 changes back; letters typed one after another are one), Ctrl+F asks in the status line what to find and F3 finds the next. Ctrl+S saves; Ctrl+Q quits, and asks once more when the text was not saved |
-| `nxfiles [FOLDER]` | a file manager, a tile with an icon for every entry: a click selects, a second click (or Enter) opens: a folder, a picture in the viewer, a page in the browser, a program, anything else in the editor. Wheel and scroll bar. Up, Open, Edit, New (a file) and Folder, which ask for the new entry's name in the status line, Rename (F2), Copy, Cut and Paste (Ctrl+C, Ctrl+X, Ctrl+V: the entry is remembered in `/tmp/clipboard.files`, so it can be pasted in another Files window, under a free name: `name-2.txt`), Delete (a folder only when it is empty). Keys: arrows, Page Up and Down, Home, End, a letter for the next name that starts with it, Backspace for the folder above, Delete, F5 reads the folder again; Tab goes to the buttons and back |
+| `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry, or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed, what may be done with it, what a shortcut starts); on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Properties. Back, Forward, Up and View are buttons, with the folder's path beside them. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (a folder only when it is empty), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it |
 | `nxweb [ADDRESS]` | a browser for HTML and the plainer part of CSS (`docs/fetch.md`): Back, Home, Reload, an address to type, wheel and scroll bar. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace goes back, F5 reloads, Ctrl+L opens the address |
 | `nxpaint [FILE]` | pen, eraser, line, box, filled box in sixteen colours and three sizes; Save writes a PPM file (`/root/picture.ppm` unless a file was named). Keys: a tool's first letter, 1 to 3 for the size, [ and ] for the colour, Ctrl+S |
 | `nxview FILE` | shows a picture as large as fits its window: PPM through the GPU; PNG and JPEG decoded on the worker cores into a PPM file in memory, which is then shown the same way (below); PGM, BMP, GIF and XPM through the engine's decoders. Escape or q closes it. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (3), `NXVIEW_SUM=1` prints a sum of the result |
-| `nxsettings` | the settings, a tab each: the desktop's picture (the image's, any PPM file through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, and what the machine is. From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
+| `nxsettings` | the settings, a tab each: the desktop's picture (the image's, any PPM file through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, and what the machine is, every line of it asked of the machine as it is: the kernel, the cores (the geometry's words), float instructions (one is run, with a handler for the trap), the first core's speed since the last look (`rdcycle`), memory, the ROM's size, the screen, the sound card, the network's address, the time since power-on. The desktop's picture may be a PNG or a JPEG too (decoded by `nxview --decode`). From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path), `system` (the System tab's lines, printed; no desktop needed). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
 | `nxmon` | three plots of the last two minutes, a sample a second: instructions a second (from `rdcycle`; the plot's top doubles as needed), how busy Linux is (kernel and programs stacked), memory in use (with the files written since the start, which live in memory). On a machine with worker cores (`docs/multicore.md`) what they run is stacked on the first plot, and a line says how many of them work, sleep, are idle and are parked. Under them: time running, load, processes, files kept in memory, task switches and interrupts a second, and the three busiest programs (looked at every third second). The plots are pixels the worker cores write into the window's buffer, some sixteen times a second (`docs/multicore.md`): they slide between samples, and the window system draws nothing of them. Under that a list of the programs, busiest first: a click or the arrows choose one, and End program (or Delete) asks it to go; pressed again for the same program it is made to (`SIGTERM`, then `SIGKILL`). The first program and the monitor itself are not in the list. Escape or q closes it |
 | `nxterm` | Microwindows' terminal, patched: a character in the last column leaves the cursor on it and the next one begins the next line, as a VT100 does (it wrapped at once, and the shell's line editor, which sends a new line itself there, left a blank row in every command typed past the edge); it follows its window's size, and Shift+Page Up and Down or the wheel look back through the last 400 lines, with a mark at the right edge for how far. The pointer held down selects text, from the cell it went down on to the cell it is over, and letting go copies it to the clipboard; the right button, Shift+Insert and Ctrl+Shift+V type the clipboard's text |
 

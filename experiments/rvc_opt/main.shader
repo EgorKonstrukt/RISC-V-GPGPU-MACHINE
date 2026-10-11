@@ -487,6 +487,8 @@
             #include "src/gpu.h"
 #endif
 
+            #include "src/zap.h"
+
 #ifdef COMMIT_BANDS
 #if RAM_TILE_BITS != 0
 #error COMMIT_BANDS needs RAM in row order
@@ -534,6 +536,7 @@
 #ifdef GPU_DEVICE
                 changed |= gpu_copy_bands();
 #endif
+                changed |= zap_bands();   // (the host's hand in RAM, for this commit only)
                 return changed;
             }
 #endif
@@ -737,6 +740,10 @@
                         stored_here = true;
                     }
                     mc_select(0);
+#if !defined(COMMIT_POINTS)
+                    // (in the pass that draws bands whole: a core's store to the same texel is a point drawn after)
+                    result = zap(pos, result);
+#endif
 #if defined(COMMIT_POINTS)
                     // A worker that sat the pass out has its last pass's tags in the targets still:
                     // its point is of no store, and must not put the texel as it was over what
@@ -747,6 +754,7 @@
 #else
                 decode_for_commit();
                 uint4 result = commit(pos, STATE_TEX_HART(pos, 0));
+                if (pos.y >= 64) result = zap(pos, result);
 #endif
 #ifdef COMMIT_BANDS
                 if (pos.x == 41 && pos.y == 0) result.b = commit_bands_changed();   // for the next commit

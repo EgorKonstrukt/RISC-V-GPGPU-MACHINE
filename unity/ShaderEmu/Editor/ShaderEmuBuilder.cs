@@ -690,6 +690,7 @@ public static partial class ShaderEmuBuilder
                 Plate(box, side == 0 ? new Color(0.10f, 0.11f, 0.13f) : new Color(0.14f, 0.16f, 0.22f));
                 Text text = Child(box, "Text", 12, 6, 686, 48).gameObject.AddComponent<Text>();
                 text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                text.material = UiMaterial();
                 text.fontSize = 22;
                 text.color = Color.white;
                 text.alignment = TextAnchor.MiddleLeft;

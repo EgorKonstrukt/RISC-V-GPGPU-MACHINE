@@ -217,6 +217,19 @@ def shade(m, colour, uv, tex, key):
             if tex[0] & 0x100:
                 keep = texel != key
             texel = m.words[(0x07000400 >> 2) + texel]
+        elif mode == 6:
+            # three planes of bytes: luma, then blue and red chroma at half the size each way
+            def byte(at):
+                return ((m.words[at // 4] >> (8 * (at & 3)).astype(np.uint32)) & 0xff).astype(np.float32)
+            half_w = tex[2] // 2
+            bytes_at = base * 4
+            chroma = (n // tex[2] // 2) * half_w + (n % tex[2]) // 2
+            luma = np.float32(1.164) * (byte(bytes_at + n) - 16)
+            blue = byte(bytes_at + tex[2] * tex[3] + chroma) - 128
+            red = byte(bytes_at + tex[2] * tex[3] + half_w * (tex[3] // 2) + chroma) - 128
+            rgb = np.stack([luma + np.float32(1.596) * red, luma - np.float32(0.392) * blue - np.float32(0.813) * red,
+                            luma + np.float32(2.017) * blue, np.full(len(n), 255, np.float32)], axis=1) / 255
+            return np.clip(colour * rgb, 0, 1), keep
         elif mode == 4:
             # three bytes a pixel from any byte address, in RAM or the ROM, running on into the next word
             in_rom = (addr >> 30) == 1
@@ -225,6 +238,8 @@ def shade(m, colour, uv, tex, key):
             at, shift = first // 4, (8 * (first & 3)).astype(np.uint64)
             texel = ((store[at].astype(np.uint64) | store[at + 1].astype(np.uint64) << np.uint64(32)) >> shift).astype(np.uint32)
             texel = (texel & 0xff) << 16 | (texel & 0xff00) | (texel >> 16) & 0xff
+            if tex[0] & 0x100:
+                keep = texel != key
         else:
             texel = m.words[base + n]
             if tex[0] & 0x100:

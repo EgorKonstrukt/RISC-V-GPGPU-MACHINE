@@ -18,7 +18,9 @@ built there, else from the copies checked in under linux/prebuilt, so the image 
 compiler.
 
 Needs Pillow to read upstream's PNG lanes. Files are added to the romfs in place: a new entry
-is appended to the image and linked to the end of its directory's list.
+is appended to the image and linked to the end of its directory's list. A folder the ROM
+lacks is made the same way, and NAME.romlink (a line with a path in the image) becomes NAME,
+a hard link to that file.
 """
 import os, shutil, struct, sys
 from PIL import Image
@@ -91,6 +93,28 @@ def find_dir(data, path):
     return first
 
 
+def append(data, kind, spec, name, content=b''):
+    """A new file header at the image's end, last in its list; returns its offset."""
+    size = be32(data, 8)
+    at = (size + 15) & ~15
+    del data[size:]
+    data.extend(b'\0' * (at - size))
+    padded_name = name.encode() + b'\0' * (16 - len(name) % 16)
+    header = struct.pack('>IIII', kind, spec, len(content), 0) + padded_name
+    data.extend(header + content + b'\0' * (-len(content) % 16))
+    checksum_fix(data, at, len(header), at + 12)
+    data.extend(b'\0' * (-len(data) % 1024))
+    struct.pack_into('>I', data, 8, at + len(header) + len(content))
+    checksum_fix(data, 0, 512, 12)
+    return at
+
+
+def link_after(data, last, at):
+    """Makes the header at `at` the one after `last` in a directory's list."""
+    struct.pack_into('>I', data, last, at | (be32(data, last) & 0xf))
+    checksum_fix(data, last, name_end(data, last + 16) - last, last + 12)
+
+
 def add_file(data, directory, name, content):
     first = find_dir(data, directory)
     listing = list(entries(data, first))
@@ -101,21 +125,98 @@ def add_file(data, directory, name, content):
                 raise SystemExit('%s/%s is in the image and not a regular file' % (directory, name))
             data[old + 16] = ord('.')
             checksum_fix(data, old, name_end(data, old + 16) - old, old + 12)
-    size = be32(data, 8)
-    at = (size + 15) & ~15
-    del data[size:]
-    data.extend(b'\0' * (at - size))
-    padded_name = name.encode() + b'\0' * (16 - len(name) % 16)
-    header = struct.pack('>IIII', 2 | 8, 0, len(content), 0) + padded_name   # regular file, executable, last in list
-    data.extend(header + content + b'\0' * (-len(content) % 16))
-    checksum_fix(data, at, len(header), at + 12)
-    # link it after the directory's last entry
-    last = listing[-1][0]
-    struct.pack_into('>I', data, last, at | (be32(data, last) & 0xf))
-    checksum_fix(data, last, name_end(data, last + 16) - last, last + 12)
-    data.extend(b'\0' * (-len(data) % 1024))
-    struct.pack_into('>I', data, 8, at + len(header) + len(content))
-    checksum_fix(data, 0, 512, 12)
+    link_after(data, listing[-1][0], append(data, 2 | 8, 0, name, content))   # regular file, executable
+
+
+def has_dir(data, path):
+    try:
+        find_dir(data, path)
+        return True
+    except SystemExit:
+        return False
+
+
+def add_dir(data, parent, name):
+    """A new directory in `parent`: its header, then "." and ".." as hard links, as genromfs writes them."""
+    first = find_dir(data, parent)
+    listing = list(entries(data, first))
+    # the parent's own header: its "." is that header (the root) or a hard link to it
+    above = listing[0][0] if listing[0][2] == 1 else listing[0][3]
+    at = append(data, 1 | 8, 0, name)
+    dot = append(data, 0, at, '.')
+    struct.pack_into('>I', data, at + 4, dot)   # the directory's list starts at "."
+    checksum_fix(data, at, name_end(data, at + 16) - at, at + 12)
+    link_after(data, dot, append(data, 0, above, '..'))
+    link_after(data, listing[-1][0], at)
+
+
+def add_link(data, directory, name, target):
+    """A second name for the file at `target` (a hard link: no bytes of its own)."""
+    folder, _, leaf = target.rpartition('/')
+    for at, n, kind, spec in entries(data, find_dir(data, folder or '/')):
+        if n == leaf:
+            listing = list(entries(data, find_dir(data, directory)))
+            link_after(data, listing[-1][0], append(data, 0, spec if kind == 0 else at, name))
+            return
+    raise SystemExit('%s: nothing to link %s/%s to' % (target, directory, name))
+
+
+ICON_MARK = b'NXICON1\0'
+
+
+def with_icon(share, name, content):
+    """A program with its icon at its end: 32 x 32 then 16 x 16 pixels of three bytes (magenta
+    where it is clear), then the mark (linux/nanox/scr_shaderemu.c draws it from there). The
+    pictures are the sheets' cells for the program's name (tools/make_icons.py); a program
+    that has an icon already, or no cell, is left as it is."""
+    index = os.path.join(share, 'icons.idx')
+    if not content.startswith(b'\x7fELF') or content.endswith(ICON_MARK) or not os.path.exists(index):
+        return content
+    cells = dict(line.split() for line in open(index))
+    if name not in cells:
+        return content
+    cell, out = int(cells[name]), b''
+    for size in (32, 16):
+        sheet = Image.open(os.path.join(share, 'icons%d.ppm' % size)).convert('RGB')
+        out += sheet.crop((cell % 16 * size, cell // 16 * size, cell % 16 * size + size, cell // 16 * size + size)).tobytes()
+    return content + out + ICON_MARK
+
+
+DESKTOP = '/root/Desktop'
+PLACES = [('Home', 'home', 'nxfiles /root'), ('Pictures', 'pictures', 'nxfiles /root/Pictures'),
+          ('Music', 'music', 'nxfiles /root/Music'), ('Videos', 'videos', 'nxfiles /root/Videos')]
+
+
+def desktop_shortcuts(extra):
+    """The desktop as the image starts with it (linux/apps/nxfiles.c): a shortcut for every
+    program of the Start menu (the nxapps.* files) but the System folder's, and for the places
+    of PLACES whose folder the image has; and where each stands, a column a folder of the menu."""
+    share = os.path.join(extra, 'usr', 'share')
+    if not os.path.isdir(share):
+        return []
+    columns = {}   # a column of icons: the places, then each folder of the menu
+    for label, icon, run in PLACES:
+        folder = run.split(' ', 1)[1]
+        if folder == '/root' or os.path.isdir(os.path.join(extra, *folder.split('/'))):
+            columns.setdefault('', []).append((label, 'name=%s\nicon=%s\nrun=%s\n' % (label, icon, run)))
+    for registry in sorted(n for n in os.listdir(share) if n.startswith('nxapps.')):
+        for line in open(os.path.join(share, registry)).read().splitlines():
+            path, _, run = line.partition('=')
+            folder, _, label = path.rpartition('/')
+            if run and label and folder != 'System':
+                columns.setdefault(folder or 'Other', []).append((label, 'name=%s\nrun=%s\n' % (label, run)))
+    files, places, column = [], [], 0
+    for folder in columns:
+        for row, (label, text) in enumerate(columns[folder]):
+            # 7 icons down a column: what an 800 x 600 screen has room for above its bar
+            name = label.replace('/', '-') + '.app'
+            if any(name == other for _, _, other in files):
+                raise SystemExit('two shortcuts on the desktop would be called %s' % name)
+            places.append('%d %d %s\n' % ((column + row // 7) * 76, 4 + row % 7 * 70, name))
+            files.append((text.encode(), DESKTOP, name))
+        column += (len(columns[folder]) + 6) // 7
+    files.append((''.join(places).encode(), DESKTOP, '.places'))
+    return files
 
 
 def main():
@@ -130,12 +231,28 @@ def main():
     for folder, _, names in os.walk(extra):
         directory = '/' + os.path.relpath(folder, extra).replace(os.sep, '/')
         files += [(os.path.join(folder, name), directory, name) for name in sorted(names)]
+    files += desktop_shortcuts(extra)
     # a file in the tree replaces the one of the same name listed above
     last = {(directory, name): path for path, directory, name in files}
     files = [(path, directory, name) for (directory, name), path in last.items()]
+    files.sort(key=lambda f: f[2].endswith('.romlink'))   # links last: what they name is in by then
     for path, directory, name in files:
-        add_file(rom, directory, name, open(path, 'rb').read())
-    print('added %d files, %d bytes' % (len(files), sum(os.path.getsize(f[0]) for f in files)))
+        # a folder the ROM lacks is made, each part in turn
+        parts = [p for p in directory.split('/') if p]
+        for depth in range(len(parts)):
+            above = '/' + '/'.join(parts[:depth])
+            if not has_dir(rom, above + '/' + parts[depth]):
+                add_dir(rom, above, parts[depth])
+        if isinstance(path, bytes):     # made here, not a file of the tree
+            add_file(rom, directory, name, path)
+        elif name.endswith('.romlink'):   # a file that only names another: a hard link to it
+            add_link(rom, directory, name[:-8], open(path).read().strip())
+        else:
+            content = open(path, 'rb').read()
+            if directory in ('/usr/bin', '/bin'):
+                content = with_icon(os.path.join(extra, 'usr', 'share'), name, content)
+            add_file(rom, directory, name, content)
+    print('added %d files, %d bytes' % (len(files), sum(len(f[0]) if isinstance(f[0], bytes) else os.path.getsize(f[0]) for f in files)))
     open(os.path.join(OUT, 'rootfs.bin'), 'wb').write(rom)
     print('rootfs.bin: %d -> %d bytes' % (before, len(rom)))
 

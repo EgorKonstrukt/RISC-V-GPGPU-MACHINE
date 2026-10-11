@@ -428,6 +428,7 @@ public static partial class ShaderEmuBuilder
         source.maxDistance = 6f;
         source.rolloffMode = AudioRolloffMode.Linear;
         source.volume = 0.7f;
+        Spatial(source, source.minDistance, source.maxDistance);
         return source;
     }
 }

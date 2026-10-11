@@ -643,16 +643,16 @@ index f074087..48aa6ac 100644
  	 * Get the bitmap for each character individually, and then display
  	 * them possibly using clipping for each one.
 diff --git a/src/engine/devimage.c b/src/engine/devimage.c
-index be20461..53965e2 100644
+index be20461..7a390b2 100644
 --- a/src/engine/devimage.c
 +++ b/src/engine/devimage.c
-@@ -170,12 +170,31 @@ GdDrawImageFromBuffer(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width,
+@@ -170,12 +170,33 @@ GdDrawImageFromBuffer(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width,
   * @param path The file containing the image data.
   * @param flags If nonzero, JPEG images will be loaded as grayscale.  Yuck!
   */
 +/* Set by a screen driver that can draw some picture files itself: nonzero when it has. */
 +int (*gd_drawpicture)(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const char *path,
-+	const MWRECT *within);
++	const MWRECT *within, int flags);
 +
  void
  GdDrawImageFromFile(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height,
@@ -669,12 +669,14 @@ index be20461..53965e2 100644
 +
 +		GdCheckCursor(psd, x, y, x + width - 1, y + height - 1);
 +		for (; drawn && n-- > 0; rc++)
-+			drawn = gd_drawpicture(psd, x, y, width, height, path, rc);
++			drawn = gd_drawpicture(psd, x, y, width, height, path, rc, flags);
 +		GdFixCursor(psd);
 +		if (drawn)
 +			return;
 +	}
 +#endif
++	if (flags & 0xc0000000)	/* a cell of a sheet of icons, or a file's own icon: only the driver draws those */
++		return;
  	pmd = GdLoadImageFromFile(path, flags);
  	if (pmd) {
  		GdDrawImagePartToFit(psd, x, y, width, height, 0, 0, 0, 0, pmd);
@@ -851,10 +853,22 @@ index abd632c..b3b0ee2 100644
  int  	GdOpenKeyboard(void);
  void 	GdCloseKeyboard(void);
 diff --git a/src/include/nano-X.h b/src/include/nano-X.h
-index 409290c..828a708 100644
+index 409290c..5050037 100644
 --- a/src/include/nano-X.h
 +++ b/src/include/nano-X.h
-@@ -251,6 +251,8 @@ typedef struct {
+@@ -198,6 +198,11 @@ typedef struct {
+ #define GR_WM_PROPS_BUFFER_BGRA	 0x00000400L /* Set window buffer pixtype to MWIF_BGRA8888*/
+ #define GR_WM_PROPS_BUFFER_MWPF	 0x00000800L /* Set window buffer pixtype to MWPF_ config value*/
+ #define GR_WM_PROPS_DRAWING_DONE 0x00001000L /* Buffer valid for output (internal flag)*/
++#define GR_WM_PROPS_POPUP	 0x00002000L /* A menu: asked to close by a press anywhere outside it*/
++/* GrDrawImageFromFile's flags for one cell of a sheet of icons 16 cells wide, its key colour left out */
++#define GR_IMAGE_CELL(size, cell) (int)(0x80000000u | (unsigned)(size) << 16 | (unsigned)(cell))
++/* and for the icon a file carries at its own end (a program's: 32 or 16 pixels) */
++#define GR_IMAGE_ICON(size) (int)(0x40000000u | (unsigned)(size) << 16)
+ 
+ /* default decoration style*/
+ #define GR_WM_PROPS_APPWINDOW	0x00000000L /* Leave appearance to WM*/
+@@ -251,6 +256,8 @@ typedef struct {
    GR_CURSOR_ID cursor;		/**< cursor id*/
    int processid;		/**< process id of owner*/
    GR_LENGTH bufsize;		/**< mmaped buffer size if GR_WM_PROPS_BUFFER_MMAP*/
@@ -864,7 +878,7 @@ index 409290c..828a708 100644
  
  /**
 diff --git a/src/include/nanowm.h b/src/include/nanowm.h
-index 5f31f08..3d0164e 100644
+index 5f31f08..cd175f5 100644
 --- a/src/include/nanowm.h
 +++ b/src/include/nanowm.h
 @@ -44,9 +44,9 @@
@@ -890,7 +904,7 @@ index 5f31f08..3d0164e 100644
  /* GrGetSystemColor color scheme definitions*/
  extern const GR_COLOR nxSysColors[MAXSYSCOLORS];
  
-@@ -103,6 +106,11 @@ struct windowlist {
+@@ -103,9 +106,19 @@ struct windowlist {
  	int active;			/* Whether this window is active or not */
  	void *data;			/* Data associated with this window */
  	struct windowlist *next; /* The next window in the list */
@@ -899,10 +913,18 @@ index 5f31f08..3d0164e 100644
 +	int minimize;			/* Minimise button pressed*/
 +	int maximized;			/* fills the screen; the place to go back to follows */
 +	int restore_x, restore_y, restore_w, restore_h;
++	int icon;			/* its program's cell in the sheet of icons, or -1 */
++	char icon_file[96];		/* or the program's own file, when that ends in an icon */
  };
  typedef struct windowlist win;
  
-@@ -139,6 +147,7 @@ void wm_client_window_destroy(win *window);
++extern int nx_caption_icon;	/* nxpaintnc.c */
++extern const char *nx_caption_icon_file;
++
+ /*
+  * Used to record the offset position when performing a move.
+  */
+@@ -139,6 +152,7 @@ void wm_client_window_destroy(win *window);
  void wm_client_window_remap(win *window);
  void wm_client_window_unmap(win *window);
  void wm_redraw_ncarea(win *window);
@@ -911,10 +933,52 @@ index 5f31f08..3d0164e 100644
  int wm_exposure(GR_EVENT_EXPOSURE *event);
  int wm_button_down(GR_EVENT_BUTTON *event);
 diff --git a/src/nanox/nxpaintnc.c b/src/nanox/nxpaintnc.c
-index 9e40afe..56ce572 100644
+index 9e40afe..3a82ab7 100644
 --- a/src/nanox/nxpaintnc.c
 +++ b/src/nanox/nxpaintnc.c
-@@ -72,7 +72,7 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+@@ -18,6 +18,11 @@
+ #include "nanowm.h"
+ #include "nxdraw.h"
+ 
++/* the cell of the icon the next caption painted gets, or -1 (the window manager sets it) */
++int nx_caption_icon = -1;
++/* or the file whose own icon it gets (its program's), which comes first */
++const char *nx_caption_icon_file;
++
+ void
+ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PROPS props)
+ {
+@@ -57,24 +62,36 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+ 	if (!(props & GR_WM_PROPS_CAPTION))
+ 		goto out;
+ 
+-	/* fill caption*/
+-	GrSetGCForeground(gc, GrGetSysColor(active?
+-		GR_COLOR_ACTIVECAPTION: GR_COLOR_INACTIVECAPTION));
++	/* fill caption: a colour, then a strip of colours stretched over it when the driver draws such */
++	GrSetGCForeground(gc, active? GR_RGB(10, 36, 106): GR_RGB(128, 128, 128));
+ 	GrFillRect(id, gc, x, y, w, CYCAPTION);
++	GrDrawImageFromFile(id, gc, x, y, w, CYCAPTION,
++		active? "/usr/share/caption-on.ppm": "/usr/share/caption-off.ppm", 0);
++
++	/* the program's icon, a cell of the sheet of small ones, and the title after it */
++	if (nx_caption_icon_file && nx_caption_icon_file[0])
++		GrDrawImageFromFile(id, gc, x+3, y+(CYCAPTION-16)/2, 16, 16,
++			(char *)nx_caption_icon_file, GR_IMAGE_ICON(16));
++	else if (nx_caption_icon >= 0)
++		GrDrawImageFromFile(id, gc, x+3, y+(CYCAPTION-16)/2, 16, 16,
++			"/usr/share/icons16.ppm", GR_IMAGE_CELL(16, nx_caption_icon));
++	if (nx_caption_icon >= 0)
++		x += 18;
+ 
+ 	/* draw caption text*/
+ 	if (title) {
+-		GrSetGCForeground(gc, GrGetSysColor(active?
+-			GR_COLOR_ACTIVECAPTIONTEXT: GR_COLOR_INACTIVECAPTIONTEXT));
++		GrSetGCForeground(gc, active? GR_RGB(255, 255, 255): GR_RGB(212, 208, 200));
+ 		GrSetGCUseBackground(gc, GR_FALSE);
+ #if NUKLEARUI
+ 		/* X = 2 times padding (4)*/
  		/* Y = 2 times padding (4) + font ascent+descent (11)*/
  		GrText(id, gc, x+2*4, y+2*4+CYTEXTBASE, title, -1, GR_TFASCII|GR_TFBASELINE);
  #else
@@ -922,8 +986,12 @@ index 9e40afe..56ce572 100644
 +		GrText(id, gc, x+4, y+(CYCAPTION-14)/2, title, -1, GR_TFASCII|GR_TFTOP);
  #endif
  	}
++	if (nx_caption_icon >= 0)
++		x -= 18;
  	y += CYCAPTION;
-@@ -111,6 +111,36 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+ 
+ 	/* draw one line under caption*/
+@@ -111,6 +128,36 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  		GrSetGCForeground(gc, GrGetSysColor(GR_COLOR_BTNTEXT));
  		GrLine(id, gc, r.x, r.y, r.x+r.width-1, r.y+r.height-1);
  		GrLine(id, gc, r.x, r.y+r.height-1, r.x+r.width-1, r.y);
@@ -1028,7 +1096,7 @@ index 0679f9f..29d2087 100644
  		for (; sibwp != wp; sibwp = sibwp->siblings) {
  			if (!sibwp->realized || !sibwp->output)
 diff --git a/src/nanox/srvevent.c b/src/nanox/srvevent.c
-index bc31c08..6cb411e 100644
+index bc31c08..53cd79c 100644
 --- a/src/nanox/srvevent.c
 +++ b/src/nanox/srvevent.c
 @@ -7,8 +7,80 @@
@@ -1123,13 +1191,21 @@ index bc31c08..6cb411e 100644
  	/* Deliver events as appropriate*/
  	GsDeliverKeyboardEvent(0, (keystatus == KBD_KEYPRESS?
  		GR_EVENT_TYPE_KEY_DOWN: GR_EVENT_TYPE_KEY_UP),
-@@ -245,6 +321,9 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
+@@ -245,6 +321,17 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
  	if (changebuttons) {
  		GsResetScreenSaver();
  		GsCheckMouseWindow();	/* fixes occasional lost window move when mousewp=root*/
 +		/* a press anywhere in a window, not only on its caption, makes it the active one */
-+		if (changebuttons & (GR_BUTTON_L | GR_BUTTON_M | GR_BUTTON_R))
-+			activate_frame(top_level(mousewp));
++		if (changebuttons & (GR_BUTTON_L | GR_BUTTON_M | GR_BUTTON_R)) {
++			GR_WINDOW *top = top_level(mousewp), *wp;
++
++			/* a press outside every menu asks the menus that are up to close */
++			if (!top || !(top->props & GR_WM_PROPS_POPUP))
++				for (wp = rootwp->children; wp; wp = wp->siblings)
++					if ((wp->props & GR_WM_PROPS_POPUP) && wp->realized)
++						GsDeliverGeneralEvent(wp, GR_EVENT_TYPE_CLOSE_REQ, NULL);
++			activate_frame(top);
++		}
  		GsDeliverButtonEvent(GR_EVENT_TYPE_BUTTON_DOWN, newbuttons,
  			changebuttons, modifiers);
  	}
@@ -1457,10 +1533,21 @@ index fae5bfa..bd46971 100644
  void
  GsNotifyActivate(GR_WINDOW *wp)
 diff --git a/src/nanox/wmaction.c b/src/nanox/wmaction.c
-index 27dcbe8..a9e1776 100644
+index 27dcbe8..2ba6dd3 100644
 --- a/src/nanox/wmaction.c
 +++ b/src/nanox/wmaction.c
-@@ -138,6 +138,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -74,7 +74,10 @@ void wm_redraw_ncarea(win *window)
+  	 	 */
+  		//if(active)
+  			//GrRaiseWindow(window->wid);			// FIXME
++		nx_caption_icon = window->icon;
++		nx_caption_icon_file = window->icon_file;
+ 		nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
++		nx_caption_icon = -1;
+ 	}
+ 
+ 	/* free title returned from GrGetWMProperties*/
+@@ -138,6 +141,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  			window->close = GR_TRUE;
        		return;
  		}
@@ -1479,7 +1566,7 @@ index 27dcbe8..a9e1776 100644
  	}
  
  	/* 
-@@ -255,6 +267,37 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -255,6 +270,37 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	window->active = GR_TRUE;
  }
  
@@ -1517,7 +1604,7 @@ index 27dcbe8..a9e1776 100644
  void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  {
  	GR_RECT		r;
-@@ -299,8 +342,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -299,8 +345,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
          		return;
        		}
  		}
@@ -1543,10 +1630,75 @@ index 27dcbe8..a9e1776 100644
  	if(window->active) {
  #if OUTLINE_MOVE
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
-index 9214904..d067774 100644
+index 9214904..2f4ee06 100644
 --- a/src/nanox/wmclients.c
 +++ b/src/nanox/wmclients.c
-@@ -94,7 +94,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -9,6 +9,55 @@
+ #include "nano-X.h"
+ #include "nxdraw.h"
+ #include "nanowm.h"
++#include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++/*
++ * The cell of a program's icon in the sheets of icons (tools/make_icons.py), by the name the
++ * kernel has for the process; the cell called "default" for a program with none, else -1.
++ */
++static int
++icon_of(int processid, char *own, int size)
++{
++	char path[40], name[32] = "", line[64], known[32], mark[8];
++	int cell, found = -1, fd, n;
++	FILE *f;
++
++	/* the program's own file first: it may end in its icon (the mark is its last eight bytes) */
++	own[0] = 0;
++	sprintf(path, "/proc/%d/exe", processid);
++	if ((n = readlink(path, own, size - 1)) > 0) {
++		own[n] = 0;
++		if ((fd = open(own, O_RDONLY)) < 0 || lseek(fd, -8, SEEK_END) < 0 || read(fd, mark, 8) != 8 ||
++		    memcmp(mark, "NXICON1", 8) != 0)
++			own[0] = 0;
++		if (fd >= 0)
++			close(fd);
++	} else
++		own[0] = 0;
++	sprintf(path, "/proc/%d/comm", processid);
++	if ((f = fopen(path, "r")) != NULL) {
++		if (!fgets(name, sizeof name, f))
++			name[0] = 0;
++		fclose(f);
++		name[strcspn(name, "\n")] = 0;
++	}
++	if ((f = fopen("/usr/share/icons.idx", "r")) == NULL)
++		return -1;
++	while (fgets(line, sizeof line, f))
++		if (sscanf(line, "%31s %d", known, &cell) == 2) {
++			if (!strcmp(known, name)) {
++				found = cell;
++				break;
++			}
++			if (!strcmp(known, "default"))
++				found = cell;
++		}
++	fclose(f);
++	return found;
++}
+ 
+ /*
+  * A new client window has been mapped, so we need to reparent and decorate it.
+@@ -26,6 +75,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+ 	/* get client window information*/
+ 	GrGetWindowInfo(wid, &winfo);
+ 	style = winfo.props;
++	window.icon = -1;
++	window.icon_file[0] = 0;
+ 
+ 	/* if not redecorating or not child of root window, return*/
+ 	if (winfo.parent != GR_ROOT_WINDOW_ID || (style & GR_WM_PROPS_NODECORATE))
+@@ -94,7 +145,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  		}
  	}
  
@@ -1555,7 +1707,7 @@ index 9214904..d067774 100644
  	x = MWABS(winfo.x - xoffset);
  	y = MWABS(winfo.y - yoffset);
  #else
-@@ -109,13 +109,14 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -109,16 +160,20 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  
  		/* We could proably use a more intelligent algorithm here */
  		GrGetScreenInfo(&si);
@@ -1574,7 +1726,13 @@ index 9214904..d067774 100644
  		lasty = y;
  	}
  #endif
-@@ -162,6 +163,9 @@ int wm_new_client_window(GR_WINDOW_ID wid)
++	window.icon = icon_of(winfo.processid, window.icon_file, sizeof window.icon_file);
++	if (window.icon < 0 && window.icon_file[0])
++		window.icon = 0;	/* (there is one to draw, though no sheet has it) */
+ 	/* create container window*/
+ 	pid = GrNewWindow(GR_ROOT_WINDOW_ID, x, y, width, height,
+ 		0, LTGRAY, BLACK);
+@@ -162,6 +217,9 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	GrMapWindow(pid);
  
  	GrSetFocus(wid);	/* force fixed focus*/
@@ -1585,14 +1743,24 @@ index 9214904..d067774 100644
  #if 0000
  	/* add system utility button*/
 diff --git a/src/nanox/wmutil.c b/src/nanox/wmutil.c
-index 5af65d6..5397774 100644
+index 5af65d6..64470e4 100644
 --- a/src/nanox/wmutil.c
 +++ b/src/nanox/wmutil.c
-@@ -49,6 +49,7 @@ int wm_add_window (win * window)
+@@ -5,6 +5,7 @@
+  * Copyright (C) 2000 Alex Holden <alex@linuxhacker.org>
+  */
+ #include <stdlib.h>
++#include <string.h>
+ #include "nano-X.h"
+ #include "nanowm.h"
+ 
+@@ -49,6 +50,9 @@ int wm_add_window (win * window)
  	w->wid = window->wid;
  	w->pid = window->pid;
  	w->type = window->type;
 +	w->maximize = w->maximized = w->minimize = 0;
++	w->icon = window->icon;
++	memcpy(w->icon_file, window->icon_file, sizeof w->icon_file);
  	w->sizing = GR_FALSE;	/* window->sizing*/
  	w->active = window->active;
  	w->clientid = window->clientid;

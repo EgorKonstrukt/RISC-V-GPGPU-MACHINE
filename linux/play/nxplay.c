@@ -578,14 +578,24 @@ decide(int stuck)
 			voice_run(0);
 			state = BUFFERING;
 			underruns++;
-			say("cannot decode this as fast as it plays: waiting for more");
+			/* With workers this is the one sign that they do not keep up: the second time, an
+			 * MP3 file goes on at half the rate. (Their first two seconds say nothing: they are
+			 * being started, and it was taken for slowness: half the rate and 13 s of waiting
+			 * for a tune that was decoded 1.8 times as fast as it plays.) */
+			if (workers && tune.kind == K_MP3 && half_wanted < 0 && !tune.half && underruns >= 2) {
+				tune.half = 1;
+				say("it ran dry twice: decoding it at half the rate");
+				seek_to(position());
+			} else {
+				say("it ran dry: waiting for more to be decoded");
+			}
 		}
 		return;
 	}
 	for (p = play_piece; (ready = slot_of(p)) != NULL; p++)
 		ahead += ready->frames - (p == play_piece ? play_at : 0);
 	s = speed();
-	if (!decided && work_ms >= 2000 && p < count) {
+	if (!decided && !workers && work_ms >= 2000 && p < count) {
 		decided = 1;
 		/* too slow: an MP3 file at half the rate first, and if that is too slow too, or for
 		 * the other kinds, as much decoded before it plays as it takes to play without a gap */
@@ -603,6 +613,8 @@ decide(int stuck)
 	left = tune.total == ~0u ? 0 : (tune.total - position()) >> tune.half;
 	/* at that speed the rest is decoded while this much plays */
 	need = s >= 1100 ? rate / 2 : left - (uint32_t)((uint64_t)left * s / 1100) + rate;
+	if (workers)
+		need = rate * 3 / 2;	/* (a second and a half in hand, whatever their start looked like) */
 	if (p >= count || stuck || (s && ahead >= need)) {
 		state = PLAYING;
 		voice_run(!paused);
@@ -642,7 +654,7 @@ pump(void)
 	}
 	/* as far ahead as memory lets it when decoding is slow, a few pieces when it is not */
 	s = speed();
-	most = s && s < 1100 ? slot_most : workers + 4;
+	most = s && s < 1100 && !workers ? slot_most : workers + 4;
 	for (k = 1; k <= workers && active; k++) {
 		if (job[k]) {
 			working = 1;
@@ -870,6 +882,8 @@ choose(void)
 	const char *why;
 	int held = paused;
 
+	if (access("/root/Music", R_OK) == 0)	/* the image's own tunes (tools/make_media.py) */
+		strcpy(folder, "/root/Music");
 	if (tune.kind && strrchr(tune.path, '/') > tune.path)
 		snprintf(folder, sizeof folder, "%.*s", (int)(strrchr(tune.path, '/') - tune.path), tune.path);
 	paused = 1;
@@ -1004,7 +1018,9 @@ main(int argc, char **argv)
 
 	exit_at_end = number("NXPLAY_EXIT", 0);
 	limit_seconds = (uint32_t)number("NXPLAY_SECONDS", 0);
-	workers_wanted = number("NXPLAY_WORKERS", MC_MAX_CORES - 1);
+	/* 48: a tune is some ten cores' work, and every worker is time to start (with all 255 it
+	 * played 5.4 s after it was opened, with 48 after 2.9 s) */
+	workers_wanted = number("NXPLAY_WORKERS", 48);
 	want_sum = number("NXPLAY_SUM", 0);
 	half_wanted = number("NXPLAY_HALF", -1);
 	memory_mb = (uint32_t)number("NXPLAY_MEMORY", 0);
@@ -1018,19 +1034,27 @@ main(int argc, char **argv)
 	out.on = snd_open() == 0 && (out.voice = snd_claim()) >= 0 && (out.ring = snd_memory(RING * 4, &out.ring_at)) != NULL;
 	if (!out.on)
 		say("no sound card here: decoding only");
+	if (window_on) {
+		/* the window first: opening a file starts the workers, which is seconds, and a desktop
+		 * with nothing new on it looks stuck */
+		ui_init();
+		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Music", GR_ROOT_WINDOW_ID, -1, -1, W, H, UI_FACE);
+		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
+				       GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+		GrMapWindow(window);
+		if (argc > 1) {
+			ui_framed();
+			snprintf(note, sizeof note, "opening it...");
+			draw();
+			GrFlush();
+		}
+	}
 	if (argc > 1 && (why = load(argv[1])) != NULL)
 		say(why);
 	if (!window_on && (argc < 2 || why)) {
 		if (argc < 2)
 			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC or MP3 file (docs/play.md)\n");
 		return 1;
-	}
-	if (window_on) {
-		ui_init();
-		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Music", GR_ROOT_WINDOW_ID, -1, -1, W, H, UI_FACE);
-		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
-				       GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
-		GrMapWindow(window);
 	}
 	while (!quit) {
 		busy = pump();

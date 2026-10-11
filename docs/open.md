@@ -47,10 +47,11 @@ as it adds its line to the Start menu (`nxapps.*`).
 
 | File | Kinds |
 |---|---|
-| `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture, archive, program, text |
+| `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture, archive, program, text, shortcut (a desktop's `NAME.app`: `docs/nanox.md`) |
 | `nxopen.50-doom` (`linux/nanox/doom.sh`) | a whole game's WAD (`doom -iwad`), a patch WAD (`doom -file`) |
 | `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |
 | `nxopen.84-play` (`linux/play/build.sh`) | sound: WAV, MP3, FLAC, MOD (`docs/play.md`) |
+| `nxopen.86-video` (`linux/video/build.sh`) | video: MPEG-1 (`docs/video.md`) |
 
 - **A program** (`\x7fELF`, `#!`): made executable and run in a terminal window of its own
   (`nxopen-run`), which stays until Enter when the program has ended. A program for another

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Starts the Nano-X window system with its bar and a terminal. NANOX_SIZE=WIDTHxHEIGHT picks
+# Starts the Nano-X window system with its desktop and its bar. NANOX_SIZE=WIDTHxHEIGHT picks
 # the screen size (800x600 by default); NANOX_SOFTWARE=1 draws without the GPU.
 # nx restart: the desktop over again (Settings does this for a new screen size). First it is
 # taken down whole: its own programs are asked to go, then the window system, and nothing is
@@ -11,7 +11,7 @@ if [ "$1" = restart ]; then
         exit 0
     fi
     echo $$ > /tmp/nxrestart.pid
-    killall nxbar nxterm nxsettings 2>/dev/null
+    killall nxbar nxfiles nxterm nxsettings 2>/dev/null
     sleep 1
     killall nano-X 2>/dev/null
     n=0
@@ -31,7 +31,6 @@ fi
 [ -d /dev/pts ] || { mkdir /dev/pts && mount -t devpts devpts /dev/pts; }
 nano-X -p &            # -p: it stays when the last program has gone
 sleep 2
-nxsettings apply &    # the desktop's picture
+nxfiles --desktop &   # the desktop: its picture, and the icons of /root/Desktop on it
 nxbar &
-nxterm &
 if [ "$1" = restart ]; then sleep 2; rm -f /tmp/nxrestart.pid; fi

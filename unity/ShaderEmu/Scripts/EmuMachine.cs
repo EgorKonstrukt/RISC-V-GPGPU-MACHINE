@@ -444,6 +444,47 @@ public class EmuMachine : UdonSharpBehaviour
         return powered;
     }
 
+    // ---- the danger zone: the host's hand in RAM, one commit each (src/zap.h, docs/danger.md) ----
+    private int[] zaps = new int[16 * 9];
+    private int zapHead, zapTail;
+
+    // Flips bits of RAM in a commit to come: kind 1 one word of texel (x, y), kind 2 a square
+    // reaching `reach` texels each way. False when sixteen wait already.
+    public bool Zap(int kind, int x, int y, int reach, int word, int maskLo, int maskHi, int seed, int zones)
+    {
+        if (!powered || zapTail - zapHead >= 16) return false;
+        int at = (zapTail & 15) * 9;
+        zaps[at] = kind;
+        zaps[at + 1] = x;
+        zaps[at + 2] = y;
+        zaps[at + 3] = reach;
+        zaps[at + 4] = word;
+        zaps[at + 5] = maskLo;
+        zaps[at + 6] = maskHi;
+        zaps[at + 7] = seed;
+        zaps[at + 8] = zones;
+        zapTail++;
+        return true;
+    }
+
+    // The next one waiting goes to the commit about to be drawn; true if there was one.
+    private bool ZapNext()
+    {
+        if (zapHead == zapTail) return false;
+        int at = (zapHead & 15) * 9;
+        zapHead++;
+        machineMaterial.SetInt("_ZapKind", zaps[at]);
+        machineMaterial.SetInt("_ZapX", zaps[at + 1]);
+        machineMaterial.SetInt("_ZapY", zaps[at + 2]);
+        machineMaterial.SetInt("_ZapR", zaps[at + 3]);
+        machineMaterial.SetInt("_ZapWord", zaps[at + 4]);
+        machineMaterial.SetInt("_ZapMaskLo", zaps[at + 5]);
+        machineMaterial.SetInt("_ZapMaskHi", zaps[at + 6]);
+        machineMaterial.SetInt("_ZapSeed", zaps[at + 7]);
+        machineMaterial.SetInt("_ZapZones", zaps[at + 8]);
+        return true;
+    }
+
     // ---- a watching player's hands (EmuShareHub), and this player's own at their classroom place ----
 
     public void RemoteChar(int c)
@@ -888,7 +929,10 @@ public class EmuMachine : UdonSharpBehaviour
             tickCamera.Render();
             machineMaterial.SetTexture("_SelfTexture2D", current);
             VRCGraphics.Blit(current, tickState, machineMaterial, PassUnpack);
+            // (a zap is one commit's: flipped again by the next, the bits would be as they were)
+            bool zapped = running && ZapNext();
             Pass(PassCommit, running);
+            if (zapped) machineMaterial.SetInt("_ZapKind", 0);
             // What that round left, into its own row: the console's output is only there
             // until the next tick. The rows are read back together when the frame's rounds are done.
             readbackMaterial.SetTexture("_State", current);

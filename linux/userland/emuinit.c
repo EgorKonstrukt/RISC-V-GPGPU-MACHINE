@@ -108,7 +108,7 @@ int main(void) {
     int wants = host_wants();
     const char* shell = wants & 2 && access("/usr/bin/emumux", X_OK) == 0 ? "/usr/bin/emumux" : "/bin/sh";
     if (wants & 1 && access("/usr/bin/nx", X_OK) == 0 && fork() == 0) {
-        /* the window system, the bar and a terminal; the console keeps its shell */
+        /* the window system, its desktop and the bar; the console keeps its shell */
         setsid();
         execl("/bin/sh", "sh", "/usr/bin/nx", (char*)NULL);
         _exit(127);

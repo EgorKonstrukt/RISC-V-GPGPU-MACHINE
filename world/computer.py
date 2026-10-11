@@ -5,8 +5,13 @@ import json
 import math
 import os
 
+import random
+
+import drape
 import furniture
+import lib
 import pc
+from mathutils import Vector
 from pc import mouse_body, office_chair
 from room import HALF_D, HALF_W, frame, on_wall
 
@@ -159,8 +164,23 @@ def tower(b):
     cables(b)
 
 
-def cable(b, points, radius=0.005, mat="Rubber"):
-    b.tube(points, radius, mat, segs=8, smooth=8)
+LAID = []   # leads laid out and not yet fallen: [name, the points of its middle, its radius, its material]
+CHANCE = random.Random(41)
+
+
+def cable(b, points, radius=0.005, mat="Rubber", up=0.03, wander=0.006):
+    """A lead laid out through `points`, ruffled by chance; fall() lets those laid out fall together."""
+    LAID.append(["lead %d" % len(LAID), drape.ruffled(drape.curve(points), CHANCE, up=up * CHANCE.uniform(0.3, 1.0), wander=wander), radius, mat])
+
+
+def fall(b, boxes, stiff=1.0):
+    """The leads laid out fall on `boxes` and on each other (drape.settle), and are made."""
+    leads = [(name, path, radius) for name, path, radius, _ in LAID]
+    fallen = drape.settle(leads, boxes, [], stiff)
+    for (name, _, radius, mat), path in zip(LAID, fallen):
+        b.tube([tuple(q) for q in path], radius, mat, segs=8, smooth=0)
+    drape.check([(name, path, radius) for (name, _, radius), path in zip(leads, fallen)], boxes, [])
+    del LAID[:]
 
 
 def strip(b, x, z):
@@ -176,11 +196,12 @@ def plug(b, x, z):
 
 
 def cables(b):
-    """Leads run together along the skirting, held by clips, and drop in smooth curves."""
+    """Leads let fall where they hang and lie (world/drape.py), held at their plugs and by the clips along the skirting."""
     b.obj("Cables")
     x, _, z = TOWER
     back, wall = z + TOWER_BACK, HALF_D - 0.045
     at = pc.tower_back()   # where its sockets are, from its middle and the floor
+    ground, panels = ((0, -0.05, HALF_D - 2), (12, 0.1, 6), 0), ((0, 1.5, wall + 0.106), (12, 3.0, 0.2), 0)
     # the tower: power to a strip beside it, two leads up through the wall, one along the floor to the rack
     strip(b, x + 0.42, HALF_D - 0.16)
     plug(b, x + 0.28, HALF_D - 0.16)
@@ -195,26 +216,36 @@ def cables(b):
                   (up, 0.50, back + 0.085), (up, 0.72, wall - 0.012), (up, 0.80, wall + 0.004)], 0.005, "PlasticGrey")
         b.lathe((up, 0.80, wall), [(0.011, 0), (0.014, 0.003), (0.014, 0.006), (0.008, 0.008)], "PlasticDark", segs=12, rot=(-90, 0, 0))
     run = HALF_D - 0.06   # the floor run, behind the strip
+    clips = (x + 0.95, x + 1.4, RACK[0] - 0.7)   # over the run: a lead is held under each, and falls as it will between them
     ny = at["first"] - 5 * pc.SLOT_PITCH   # the network card, in the sixth slot
     b.box((x + 0.02, ny, back + 0.008), (0.014, 0.011, 0.016), "PlasticGrey", bevel=0.002, segs=1)
-    cable(b, [(x + 0.02, ny, back + 0.012), (x + 0.03, ny - 0.01, back + 0.04), (x + 0.06, 0.04, back + 0.08), (x + 0.20, 0.006, run),
-              (x + 0.9, 0.006, run), (RACK[0] - 0.5, 0.006, run), (RACK[0] - 0.33, 0.006, run - 0.10), (RACK[0] - 0.30, 0.03, RACK[2] + 0.2)],
-          0.005, "CableBlue")
-    cable(b, [(x + 0.62, 0.03, HALF_D - 0.16), (x + 0.70, 0.008, HALF_D - 0.12), (x + 0.9, 0.007, run - 0.012), (RACK[0] - 0.5, 0.007, run - 0.012),
-              (RACK[0] - 0.36, 0.007, run - 0.06)], 0.006)
-    for cx in (x + 0.95, x + 1.4, RACK[0] - 0.7):   # clips over the run
+    for first, last, radius, depth, mat in (
+            ([(x + 0.02, ny, back + 0.012), (x + 0.03, ny - 0.01, back + 0.04), (x + 0.06, 0.04, back + 0.08), (x + 0.20, 0.006, run), (x + 0.6, 0.006, run)],
+             [(RACK[0] - 0.5, 0.006, run), (RACK[0] - 0.37, 0.006, run - 0.008), (RACK[0] - 0.34, 0.03, run - 0.02)], 0.005, run, "CableBlue"),
+            ([(x + 0.62, 0.03, HALF_D - 0.16), (x + 0.70, 0.008, HALF_D - 0.12), (x + 0.82, 0.007, run - 0.012)],
+             [(RACK[0] - 0.5, 0.007, run - 0.012), (RACK[0] - 0.36, 0.007, run - 0.06)], 0.006, run - 0.012, "Rubber")):
+        held = [(cx, radius + 0.001, depth) for cx in clips]
+        cable(b, first + [held[0]], radius, mat, up=0.012, wander=0.003)
+        for a, c in zip(held, held[1:]):
+            cable(b, [a, c], radius, mat, up=0.012, wander=0.003)
+        cable(b, [held[-1]] + last, radius, mat, up=0.012, wander=0.003)
+    for cx in clips:
         b.box((cx, 0.009, run - 0.006), (0.016, 0.018, 0.034), "PlasticBeige", bevel=0.005, segs=2)
-    # under the desk: a strip, and two leads down from each grommet
-    under = -1.62   # left of the desk's middle panel, which stands at -1.17
-    strip(b, under, HALF_D - 0.2)
-    for cx in (-1.9, -0.5):
+    fall(b, [ground, panels, ((x, pc.TOWER_HIGH / 2, back - pc.TOWER_DEEP / 2), (0.184, pc.TOWER_HIGH, pc.TOWER_DEEP), 0),
+             ((x + 0.42, 0.022, HALF_D - 0.16), (0.40, 0.044, 0.062), 0), ((0.95, 0.375, HALF_D - 0.52), (0.48, 0.75, 0.9), 0)])
+    # under the desk: a strip at each side of its middle panel (which stands at -1.17), and two leads down to it from the grommet there
+    for cx, under in ((-1.9, -1.62), (-0.5, -0.82)):
+        strip(b, under, HALF_D - 0.2)
         toward = 1 if cx < under else -1
         for k, mat in ((0, "Rubber"), (1, "PlasticGrey")):
-            end = under - toward * (0.10 + 0.07 * k)
-            cable(b, [(cx + 0.008 * (2 * k - 1), 0.765, HALF_D - 0.14), (cx + 0.008 * (2 * k - 1), 0.62, HALF_D - 0.125), (cx + toward * 0.03, 0.32, HALF_D - 0.115),
-                      (cx + toward * 0.12, 0.09, HALF_D - 0.125), ((cx + end) / 2, 0.012, HALF_D - 0.12 - 0.03 * k), (end - toward * 0.1, 0.012, HALF_D - 0.14),
-                      (end, 0.07, HALF_D - 0.2)], 0.005, mat)
+            end = under - toward * ((0.10 if toward > 0 else 0.03) + 0.07 * k)   # (clear of the strip's switch, at its right end)
+            cable(b, [(cx + 0.008 * (2 * k - 1), 0.716, HALF_D - 0.14), (cx + 0.008 * (2 * k - 1), 0.62, HALF_D - 0.125 - 0.012 * k), (cx + toward * (0.03 + 0.03 * k), 0.32, HALF_D - 0.115 - 0.03 * k),
+                      (cx + toward * (0.12 + 0.04 * k), 0.09, HALF_D - 0.125 - 0.035 * k), ((cx + end) / 2, 0.012, HALF_D - 0.12 - 0.03 * k), (end - toward * 0.1, 0.012, HALF_D - 0.12),
+                      (end - toward * 0.015, 0.13, HALF_D - 0.18), (end, 0.07, HALF_D - 0.2)], 0.005, mat)
             plug(b, end, HALF_D - 0.2)
+    fall(b, [ground, panels, ((-1.15, 0.743, HALF_D - 0.5), (4.7, 0.044, 1.0), 0), ((-1.15, 0.45, HALF_D - 0.075), (4.5, 0.5, 0.022), 0),
+             ((-1.62, 0.022, HALF_D - 0.2), (0.40, 0.044, 0.062), 0), ((-0.82, 0.022, HALF_D - 0.2), (0.40, 0.044, 0.062), 0),
+             ((-1.17, 0.375, HALF_D - 0.45), (0.03, 0.69, 0.7), 0)])
     # the rack: patch leads hanging between its hubs in loose loops
     rx, _, rz = RACK
     front = rz - 0.372
@@ -223,8 +254,9 @@ def cables(b):
         x0, x1 = rx - 0.21 + k * 0.05, rx - 0.17 + k * 0.07
         out = 0.05 + 0.012 * k
         low = min(y0, y1) - 0.05 - 0.02 * k
-        cable(b, [(x0, y0, front), (x0, y0 - 0.01, front - out * 0.6), ((x0 + x1) / 2, low if abs(y0 - y1) < 0.3 else (y0 + y1) / 2, front - out),
-                  (x1, y1 - 0.01, front - out * 0.6), (x1, y1, front)], 0.0035, mat)
+        cable(b, [(x0, y0, front), (x0, y0 - 0.01, front - out * 0.6), ((x0 + x1) / 2, low if abs(y0 - y1) < 0.3 else min(y0, y1) - 0.03, front - out),
+                  (x1, y1 - 0.01, front - out * 0.6), (x1, y1, front)], 0.0035, mat, up=0.0, wander=0.004)
+    fall(b, [ground, ((rx, 1.0, rz + 0.016), (0.7, 2.0, 0.77), 0)], stiff=2.5)   # short patch leads: stiffer, or they fold at the bottom of a loop
 
 
 
@@ -278,7 +310,17 @@ def clutter(b):
         b.quad((0, 0.0052, 0), (0.23, 0.19), "Details", rot=(90, 0, 0), decal="mousepad")
         with b.at((0.02, 0.0012, 0.0)):
             mouse_body(b)
-        b.tube([(0.02, 0.012, 0.05), (0.022, 0.006, 0.09), (0.0, 0.003, 0.22), (-0.06, 0.003, 0.34), (-0.03, 0.003, 0.48), (0.0, 0.003, 0.56)], 0.0022, "PlasticBeige", segs=6, smooth=8)
+    # its lead: out of the sleeve under its buttons (by the matrices that place the mouse), across the desk and
+    # down a grommet of its own; let fall like the others (it was drawn from where an older mouse's ended, to the bare wall)
+    body = lib.place((-1.17, top, 4.86), (0, -6, 0)) @ lib.place((0.02, 0.0012, 0.0)) @ lib.place((0, 0, 0), (0, pc.MOUSE_TURN, 0))
+    m0, m1 = body @ Vector(pc.MOUSE_LEAD), body @ Vector((pc.MOUSE_LEAD[0], 0.0075, pc.MOUSE_LEAD[2] - 0.03))
+    gx, gz = -1.05, HALF_D - 0.14
+    b.lathe((gx, top + 0.0005, gz), [(0, 0), (0.028, 0), (0.032, 0.002), (0.032, 0.004), (0.02, 0.005)], "PlasticDark", segs=16)
+    cable(b, [tuple(m0), tuple(m1), (-1.15, top + 0.004, 5.06), (-1.09, top + 0.004, 5.22), (gx - 0.005, top + 0.03, gz - 0.035), (gx, top + 0.022, gz), (gx, top + 0.003, gz)],
+          0.0022, "PlasticBeige", up=0.02)
+    fall(b, [((-1.15, 0.743, HALF_D - 0.5), (4.7, 0.044, 1.0), 0), ((-1.17, top + 0.002, 4.86), (0.24, 0.004, 0.2), -6), ((-1.3, top + 0.065, 5.2), (0.1, 0.13, 0.07), 0),
+             ((-1.52, top + 0.12, HALF_D - 0.24), (0.12, 0.24, 0.14), 14), ((-0.82, top + 0.12, HALF_D - 0.24), (0.12, 0.24, 0.14), -14),
+             ((0, 1.5, HALF_D - 0.045 + 0.106), (12, 3.0, 0.2), 0)])
     furniture.mug(b, (-1.5, top, 4.98), turn=-30)
     for i, (lean, turn, mat) in enumerate(((10, 0, "CableYellow"), (-12, 80, "PlasticDark"), (8, 200, "CableBlue"))):
         b.cyl((-1.5 + 0.01 * math.cos(i * 2.1), top + 0.1, 4.98 + 0.01 * math.sin(i * 2.1)), 0.0035, 0.16, mat, segs=8, rot=(lean, turn, lean / 2))

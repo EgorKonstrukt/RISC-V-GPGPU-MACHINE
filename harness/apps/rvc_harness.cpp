@@ -104,6 +104,8 @@ struct Options {
     bool holodeck = false;    // --holodeck: tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
     double holodeckAim = 0;   // --holodeck-aim DEGREES: with it, a tracked right hand that points up by so much
     bool holodeckHands = false;
+    std::string zap;          // --zap KIND,X,Y,REACH,WORD,MASK,SEED,ZONES: the host's hand in RAM (src/zap.h, docs/danger.md)
+    long long zapFrame = -1;  // --zap-frame N: in the commit of that frame, and no other
     int netPort = 0;          // --net PORT: the network device's link to other machines here (docs/lan.md)
     int netId = 1;            // --net-id N: this machine's number, its address 10.0.0.N
     double netLoss = 0, netDelay = 0;   // --net-loss percent, --net-delay milliseconds: of every packet sent
@@ -199,6 +201,9 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                        several are told ten seconds apart (docs/open.md)
   --open-after TEXT    not before the console has shown TEXT
   --holodeck           tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
+  --zap K,X,Y,R,W,M,S,Z  flip bits of RAM in one commit (docs/danger.md): kind 1 (word W of texel X,Y) or 2
+                       (a square reaching R texels each way), mask M and seed S (hex), zones Z (a bit each)
+  --zap-frame N        the frame whose commit does it
   --holodeck-aim D     and has tracked hands, the right one pointing up by D degrees
   --net PORT           the network (docs/lan.md): this machine is 10.0.0.N and hears UDP port PORT + N of
                        this computer, where the other machines started with the same PORT send (D3D11)
@@ -349,6 +354,8 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--no-mrt") o.noMrt = true;
         else if (a == "--readback-batch") o.readbackBatch = atoi(next("--readback-batch").c_str());
         else if (a == "--holodeck") o.holodeck = true;
+        else if (a == "--zap") o.zap = next("--zap");
+        else if (a == "--zap-frame") o.zapFrame = atoll(next("--zap-frame").c_str());
         else if (a == "--holodeck-aim") { o.holodeckAim = atof(next("--holodeck-aim").c_str()); o.holodeckHands = true; }
         else if (a == "--net") o.netPort = atoi(next("--net").c_str());
         else if (a == "--net-id") o.netId = atoi(next("--net-id").c_str());
@@ -1280,6 +1287,21 @@ int main(int argc, char** argv) {
             mat.setVector("_InputPointer", pointer.x, pointer.y, pointer.panelW, pointer.panelH);
             mat.setInt("_InputButtons", pointer.buttons);
             mat.setInt("_HostMs", (int64_t)(uint32_t)(t * 1000.0));   // a clock programs read without a system call
+            {
+                // the host's hand in RAM: in one frame's commit, nothing in every other
+                unsigned z[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                if (!opt.zap.empty() && (long long)frame == opt.zapFrame)
+                    sscanf(opt.zap.c_str(), "%u,%u,%u,%u,%u,%x,%x,%u", &z[0], &z[1], &z[2], &z[3], &z[4], &z[5], &z[6], &z[7]);
+                mat.setInt("_ZapKind", z[0]);
+                mat.setInt("_ZapX", z[1]);
+                mat.setInt("_ZapY", z[2]);
+                mat.setInt("_ZapR", z[3]);
+                mat.setInt("_ZapWord", z[4]);
+                mat.setInt("_ZapMaskLo", z[5] & 0xffff);
+                mat.setInt("_ZapMaskHi", z[5] >> 16);
+                mat.setInt("_ZapSeed", z[6]);
+                mat.setInt("_ZapZones", z[7]);
+            }
             // bit 0: start the desktop at boot; then the largest screen this host shows, in 16s of pixels
             mat.setInt("_HostFlags", (opt.desktop ? 1 : 0) | (opt.tabs ? 2 : 0) | (kGpuTarget / 16) << 8 | (kGpuTarget / 16) << 16);
             // the host's words: the harness, one visitor (number 1); a head that looks straight on from the seat's eye point

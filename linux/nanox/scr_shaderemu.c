@@ -77,7 +77,7 @@ struct surface {
 
 extern int gr_mode;
 extern int (*gd_drawpicture)(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const char *path,
-	const MWRECT *within);
+	const MWRECT *within, int flags);
 extern int (*gd_drawstring)(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char *text, int count,
 	MWPIXELVAL fg, MWPIXELVAL bg, int usebg, MWCOORD *endx);
 extern void (*gd_hwcursor)(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
@@ -608,29 +608,89 @@ rom_address(int fd, const char *begins, int count)
  * A PPM file stretched over a rectangle, scaled by the GPU. A file in the ROM is sampled where
  * it is; another has its rows read into texture memory, as many as fit at a time. 0 leaves
  * the file to the engine's decoder. Only what lies within the given rectangle is drawn.
+ * With PICTURE_CELL in the flags it is one cell of a sheet of icons, its key colour left out;
+ * with PICTURE_OWN the icon a file carries at its own end (any file: a program's, mostly).
  */
+#define PICTURE_CELL	0x80000000u	/* a cell of a sheet 16 cells wide: its size in bits 16-23, its number below */
+#define PICTURE_OWN	0x40000000u	/* the file's own icon, of the size in bits 16-23 (32 or 16) */
+#define PICTURE_KEY	0xff00ff
+/* A file's own icon: 32 x 32 then 16 x 16 pixels of three bytes, then these eight, its last. */
+#define ICON_MARK	"NXICON1"
+#define ICON_BYTES	(32 * 32 * 3 + 16 * 16 * 3 + 8)
+
+static struct { char path[80]; uint32_t at; int pw, ph, own; } pictures[8];	/* files found in the ROM */
+static int pictures_next;
+
 static int
 gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const char *path,
-	const MWRECT *within)
+	const MWRECT *within, int flags)
 {
 	struct surface *s;
-	int pw = 0, ph = 0, most = 0, start = 0, x0, x1, y0, y1, band, rows, j, fd;
+	int pw = 0, ph = 0, most = 0, start = 0, x0, x1, y0, y1, band, rows = 1, j, fd = -1;
+	int sx = 0, sy = 0, sw, sh, keyed = ((uint32_t)flags & (PICTURE_CELL | PICTURE_OWN)) != 0;
+	int own = (uint32_t)flags & PICTURE_OWN ? (flags >> 16) & 0xff : 0;
 	char head[64];
 	volatile uint32_t *c;
-	uint32_t rom;
+	uint32_t rom = 0;
 
-	if (!is_surface(psd) || (fd = open(path, O_RDONLY)) < 0)
+	if (!is_surface(psd))
 		return 0;
-	j = read(fd, head, sizeof head - 1);
-	head[j > 0 ? j : 0] = 0;
-	if (sscanf(head, "P6 %d %d %d%n", &pw, &ph, &most, &start) != 3 || most != 255 || pw < 1 || ph < 1 ||
-	    (rows = (DATA_END - DATA_OFFSET) / (3 * pw)) < 1) {
-		close(fd);
-		return 0;
+	for (j = 0; accelerate && j < 8; j++)
+		if (pictures[j].at && pictures[j].own == own && !strcmp(pictures[j].path, path)) {
+			rom = pictures[j].at;
+			pw = pictures[j].pw;
+			ph = pictures[j].ph;
+		}
+	if (!rom) {
+		if ((fd = open(path, O_RDONLY)) < 0)
+			return 0;
+		j = read(fd, head, sizeof head - 1);
+		head[j > 0 ? j : 0] = 0;
+		if (own) {
+			/* the icon at the file's end: nothing drawn, and no fault, for a file without one */
+			struct stat st;
+			char mark[8];
+
+			if ((own != 32 && own != 16) || fstat(fd, &st) || st.st_size < ICON_BYTES ||
+			    pread(fd, mark, 8, st.st_size - 8) != 8 || memcmp(mark, ICON_MARK, 8) != 0) {
+				close(fd);
+				return 1;
+			}
+			pw = ph = own;
+			rows = own;
+			start = (int)st.st_size - (own == 32 ? ICON_BYTES : 16 * 16 * 3 + 8);
+		} else if (sscanf(head, "P6 %d %d %d%n", &pw, &ph, &most, &start) != 3 || most != 255 || pw < 1 || ph < 1 ||
+		    (rows = (DATA_END - DATA_OFFSET) / (3 * pw)) < 1) {
+			close(fd);
+			return 0;
+		} else
+			start++;	/* one white space ends the header */
+		if (accelerate && (rom = rom_address(fd, head, j)) != 0) {
+			rom += start;
+			if (strlen(path) < sizeof pictures[0].path) {
+				j = pictures_next++ & 7;
+				strcpy(pictures[j].path, path);
+				pictures[j].at = rom;
+				pictures[j].pw = pw;
+				pictures[j].ph = ph;
+				pictures[j].own = own;
+			}
+		}
 	}
-	start++;	/* one white space ends the header */
-	if (width <= 0) width = pw;
-	if (height <= 0) height = ph;
+	sw = pw;
+	sh = ph;
+	if (keyed && !own) {
+		sw = sh = (flags >> 16) & 0xff;
+		sx = (flags & 15) * sw;
+		sy = ((flags & 0xffff) >> 4) * sh;
+		if (sw < 1 || sx + sw > pw || sy + sh > ph) {	/* no such cell: nothing to draw */
+			if (fd >= 0)
+				close(fd);
+			return 1;
+		}
+	}
+	if (width <= 0) width = sw;
+	if (height <= 0) height = sh;
 	s = draw_on(psd);
 	x0 = x > s->x ? x : s->x;
 	x1 = x + width < s->x + s->w ? x + width : s->x + s->w;
@@ -640,44 +700,58 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 	if (y0 < within->top) y0 = within->top;
 	if (x1 > within->right) x1 = within->right;
 	if (y1 > within->bottom) y1 = within->bottom;
-	if (accelerate && x0 < x1 && y0 < y1 && (rom = rom_address(fd, head, j)) != 0) {
+	if (x0 >= x1 || y0 >= y1) {
+		if (fd >= 0)
+			close(fd);
+		return 1;
+	}
+/* where screen column or row `p` of the rectangle lies in the file, as a 16.16 fraction of it */
+#define PICTURE_U(p) (uint32_t)((((long long)sx * width + (long long)((p) - x) * sw) << 16) / ((long long)width * pw))
+#define PICTURE_V(p) (uint32_t)((((long long)sy * height + (long long)((p) - y) * sh) << 16) / ((long long)height * ph))
+	if (rom) {
 		/* a file in the ROM is the texture where it lies: one rectangle, nothing read */
-		close(fd);
-		queue(x0, y0, x1, y1, 0xffffff, FRAG_RGB24, 0, pw, ph, 0, 0);
+		if (fd >= 0)
+			close(fd);
+		queue(x0, y0, x1, y1, 0xffffff, FRAG_RGB24 | (keyed ? 0x100 : 0), 0, pw, ph, 0, 0);
 		c = (volatile uint32_t *)(gpu + LIST_OFFSET) + 16 * (commands - 1);
-		c[9] = rom + start;
-		c[12] = (uint32_t)(((long long)(x0 - x) << 16) / width);
-		c[13] = (uint32_t)(((long long)(y0 - y) << 16) / height);
-		c[14] = (uint32_t)(((long long)(x1 - x) << 16) / width);
-		c[15] = (uint32_t)(((long long)(y1 - y) << 16) / height);
+		c[2] = PICTURE_KEY;
+		c[9] = rom;
+		c[12] = PICTURE_U(x0);
+		c[13] = PICTURE_V(y0);
+		c[14] = PICTURE_U(x1);
+		c[15] = PICTURE_V(y1);
 		return 1;
 	}
 	flush();
-	for (; x0 < x1 && y0 < y1; y0 += band) {
+	for (; y0 < y1; y0 += band) {
 		band = !accelerate ? 1 : y1 - y0 < rows ? y1 - y0 : rows;
 		for (j = 0; j < band; j++)
 			if (pread(fd, gpu + DATA_OFFSET + j * 3 * pw, 3 * pw,
-				  start + (off_t)((2LL * (y0 + j - y) + 1) * ph / (2 * height)) * 3 * pw) != 3 * pw)
+				  start + (off_t)(sy + (2LL * (y0 + j - y) + 1) * sh / (2 * height)) * 3 * pw) != 3 * pw)
 				break;
 		if (!accelerate) {
 			/* without the GPU: the same texels, a row at a time */
 			uint32_t *to = (uint32_t *)(gpu + s->at) + (y0 - s->y) * s->w - s->x;
 			const unsigned char *row = gpu + DATA_OFFSET, *p;
-			uint32_t step = ((uint32_t)pw << 16) / width;	/* texels a pixel, 16.16 */
-			uint32_t at = (uint32_t)(((2LL * (x0 - x) + 1) * pw << 15) / width);
+			uint32_t step = ((uint32_t)sw << 16) / width;	/* texels a pixel, 16.16 */
+			uint32_t at = ((uint32_t)sx << 16) + (uint32_t)(((2LL * (x0 - x) + 1) * sw << 15) / width);
+			uint32_t colour;
 
 			for (j = x0; j < x1; j++, at += step) {
-				p = row + 3 * (at >> 16 < (uint32_t)pw ? at >> 16 : (uint32_t)pw - 1);
-				to[j] = 0xff000000u | (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
+				p = row + 3 * (at >> 16 < (uint32_t)(sx + sw) ? at >> 16 : (uint32_t)(sx + sw) - 1);
+				colour = (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
+				if (!keyed || colour != PICTURE_KEY)
+					to[j] = 0xff000000u | colour;
 			}
 			continue;
 		}
-		queue(x0, y0, x1, y0 + band, 0xffffff, FRAG_RGB24, DATA_OFFSET, pw, band, 0, 0);
+		queue(x0, y0, x1, y0 + band, 0xffffff, FRAG_RGB24 | (keyed ? 0x100 : 0), DATA_OFFSET, pw, band, 0, 0);
 		/* the part of the picture's width this rectangle shows, as 16.16 fractions */
 		c = (volatile uint32_t *)(gpu + LIST_OFFSET) + 16 * (commands - 1);
-		c[12] = (uint32_t)(((long long)(x0 - x) << 16) / width);
+		c[2] = PICTURE_KEY;
+		c[12] = PICTURE_U(x0);
 		c[13] = 0;
-		c[14] = (uint32_t)(((long long)(x1 - x) << 16) / width);
+		c[14] = PICTURE_U(x1);
 		c[15] = 65536;
 		flush();
 	}

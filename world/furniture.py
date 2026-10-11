@@ -5,7 +5,9 @@ import os
 
 from bookdesigns import CELLS, CELL_H, CELL_W, DESIGNS, size as book_size
 from room import HALF_D, HALF_W, frame, on_wall
+import lib
 import pc
+from mathutils import Vector
 from pc import office_chair
 
 
@@ -146,8 +148,13 @@ def classroom(b):
             b.asset("pc_station", at, rot=(0, turn, 0), scale=1.0, parts=("=pc_station",))
             b.obj("Station %d rest" % (row * len(PLACES_X) + column), charted=True)   # one object a place: each has a tube of its own
             pc.MODE = "low"   # (the glass alone, as the baked set has it)
+            # its table as the place has it: the top, and the board behind the knees
+            here = lib.place(at, (0, turn, 0)).inverted()
+            tx = -1.0 if x < 0 else 1.0
+            desk = [(tuple(here @ Vector((tx, TABLE_TOP - 0.022, z))), (2.0, 0.044, 0.9), -turn),
+                    (tuple(here @ Vector((tx, 0.45, z + 0.38))), (1.89, 0.4, 0.022), -turn)]
             with b.at(at, (0, turn, 0)):
-                pc.station(b, "rest", lie)
+                pc.station(b, "rest", lie, desk=desk, seed=row * len(PLACES_X) + column)
             pc.MODE = "full"
             places.append({"x": at[0], "z": at[2], "turn": turn, "keyboard": list(lie["keyboard"])})
     here = os.path.dirname(os.path.abspath(__file__))

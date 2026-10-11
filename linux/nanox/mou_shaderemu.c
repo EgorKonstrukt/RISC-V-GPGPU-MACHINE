@@ -52,32 +52,46 @@ Ptr_GetDefaultAccel(int *pscale, int *pthresh)
 	*pthresh = 0;
 }
 
-/* Takes everything waiting and reports where the pointer ended up. */
+/*
+ * Takes what is waiting and reports where the pointer ended up, but no further than a report
+ * in which a button changed: a press and its release that both wait (the server was busy
+ * drawing) are two answers, or the click is never seen. The server asks until there is none.
+ */
 static int
 Ptr_Read(MWCOORD *dx, MWCOORD *dy, MWCOORD *dz, int *bp)
 {
 	static const int button[3] = { MWBUTTON_L, MWBUTTON_R, MWBUTTON_M };
-	struct event ev[32];
-	int n, i, changed = 0;
+	static struct event ev[32];
+	static int have, at;	/* events read, and how many of them are dealt with */
+	int n, changed = 0, pressed = 0;
 
-	while ((n = read(fd, ev, sizeof(ev))) >= (int)sizeof(ev[0])) {
-		for (i = 0; i < n / (int)sizeof(ev[0]); i++) {
-			if (ev[i].type == EV_ABS && ev[i].code == 0)
-				cur_x = ev[i].value;
-			else if (ev[i].type == EV_ABS && ev[i].code == 1)
-				cur_y = ev[i].value;
-			else if (ev[i].type == EV_KEY && ev[i].code >= BTN_LEFT && ev[i].code < BTN_LEFT + 3) {
-				if (ev[i].value)
-					cur_buttons |= button[ev[i].code - BTN_LEFT];
-				else
-					cur_buttons &= ~button[ev[i].code - BTN_LEFT];
-			} else if (ev[i].type == EV_REL && ev[i].code == REL_WHEEL) {
-				wheel += ev[i].value;
-				continue;
-			} else
-				continue;
-			changed = 1;
+	for (;;) {
+		if (at == have) {
+			n = read(fd, ev, sizeof(ev));
+			at = 0;
+			have = n >= (int)sizeof(ev[0]) ? n / (int)sizeof(ev[0]) : 0;
+			if (!have)
+				break;
 		}
+		if (ev[at].type == EV_ABS && ev[at].code == 0) {
+			cur_x = ev[at].value;
+			changed = 1;
+		} else if (ev[at].type == EV_ABS && ev[at].code == 1) {
+			cur_y = ev[at].value;
+			changed = 1;
+		} else if (ev[at].type == EV_KEY && ev[at].code >= BTN_LEFT && ev[at].code < BTN_LEFT + 3) {
+			if (ev[at].value)
+				cur_buttons |= button[ev[at].code - BTN_LEFT];
+			else
+				cur_buttons &= ~button[ev[at].code - BTN_LEFT];
+			changed = pressed = 1;
+		} else if (ev[at].type == EV_REL && ev[at].code == REL_WHEEL) {
+			wheel += ev[at].value;
+		} else if (ev[at].type == 0 && pressed) {	/* the end of a report with a button in it */
+			at++;
+			break;
+		}
+		at++;
 	}
 	/* a notch of the wheel is a scroll button seen down in one report and up in the next */
 	if (wheel_shown) {

@@ -45,12 +45,13 @@ Texture2D<float4> _GpuTarget;
 #define GPU_STATE _SelfTexture2D
 #define GPU_WRITEBACK
 #include "src/gpu.cginc"
+#include "src/zap.cginc"   // the host's hand in RAM, for one commit (docs/danger.md)
 
 // The bands this commit draws whole: what the GPU's picture copied back wrote. What the
 // cores stored is drawn as points (MachineCommitPoints.shader), not as bands.
 uint commit_bands_changed() {
     if (_Init) return 0xffffffff;
-    return gpu_copy_bands();
+    return gpu_copy_bands() | zap_bands();
 }
 
 static uint commit_core = 0;   // (MachineCommitPoints.shader) whose store the point drawn is
@@ -122,6 +123,10 @@ uint4 commit_texel(uint2 pos) {
             stored_here = true;
         }
         mc_select(0);
+#ifndef COMMIT_AS_POINTS
+        // (in the pass that draws bands whole: a core's store to the same texel is a point drawn after)
+        result = zap(pos, result);
+#endif
 #ifdef COMMIT_AS_POINTS
         // A worker that sat the pass out has its last pass's tags still: its point is of no
         // store, and must not put the texel as it was over what another core's point has drawn.

@@ -1,0 +1,11 @@
+# Icons the Chicago95 set has none for
+
+`tools/make_icons.py` brings each down to 32 and 16 pixels for the desktop's sheets
+(`linux/apps/icons.txt` names them). They are their projects' own:
+
+| File | Whose | From |
+|---|---|---|
+| `doom.png` | Chocolate Doom (GPL-2.0) | `data/doom.png` of https://github.com/chocolate-doom/chocolate-doom at `chocolate-doom-3.1.0` |
+| `quake.png` | id Software's Quake source release (GPL-2.0) | `WinQuake/quake.ico`, its 32-pixel picture, at the commit `linux/quake/build.sh` names |
+| `classicube.png` | ClassiCube (BSD-3-Clause) | `misc/CCicon.png` at the commit `linux/classicube/build.sh` names |
+| `tdawn.png`, `ralert.png` | Vanilla Conquer (GPL-3.0) | `resources/vanillatd_icon.svg` and `vanillara_icon.svg` at the commit `linux/tdawn/build.sh` names, drawn at 256 pixels |

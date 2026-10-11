@@ -42,7 +42,7 @@ riscv32-linux-nm -n "$BUILD/nxplay" > "$WORK/src/nxplay.nm"
 riscv32-linux-strip -o "$OUT/usr/bin/nxplay" "$BUILD/nxplay"
 # its test files (make_test.py made them); /usr/share, since the image builder makes no folders
 cp "$HERE"/test/play-test.* "$OUT/usr/share/"
-echo "Other/Music=nxplay" > "$OUT/usr/share/nxapps.84-play"
+echo "Other/Music player=nxplay" > "$OUT/usr/share/nxapps.84-play"
 # what `open` starts for a sound file (linux/apps/nxopen.conf has the columns)
 printf '%s\n' 'sound wav,mp3,flac,mod ID3,fLaC,\xff\xfb nxplay %s' > "$OUT/usr/share/nxopen.84-play"
 ls -l "$OUT/usr/bin/nxplay"

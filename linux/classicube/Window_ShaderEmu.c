@@ -21,6 +21,7 @@
 #include <errno.h>
 #define MWINCLUDECOLORS
 #include <nano-X.h>
+#include "../../programs/linux/fps_caption.h"
 
 #define CAPTION 22      /* the window manager's caption and frame (nanowm.h) */
 #define FRAME   4
@@ -79,7 +80,9 @@ int SE_Surface(uint32_t* address, int* width, int* height, uint32_t* row) {
 	*width   = window_info.width;
 	*height  = window_info.height;
 	*row     = window_info.surface_row;
-	return window_info.realized && window_info.surface_address;
+	if (!window_info.realized || !window_info.surface_address) return false;
+	fps_caption(&window_info, regs[REG_CLOCK / 4]);	/* asked for once a frame, as it is shown */
+	return true;
 }
 
 void Window_PreInit(void) { }

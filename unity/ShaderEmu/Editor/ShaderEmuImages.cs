@@ -109,8 +109,8 @@ public class ShaderEmuTextureImport : AssetPostprocessor
         TextureImporter importer = (TextureImporter)assetImporter;
         bool data = assetPath.StartsWith(ShaderEmuImages.ImageFolder + "/");
         bool font = assetPath == ShaderEmuImages.Root + "/Textures/TerminalFont.png";
-        // sharper at a distance than the default box filter
-        if (assetPath.StartsWith(ShaderEmuImages.Root + "/Textures/")) importer.mipmapFilter = TextureImporterMipFilter.KaiserFilter;
+        // sharper at a distance than the default box filter, which the SDK's panel also asks to be rid of
+        if (assetPath.StartsWith(ShaderEmuImages.Root + "/") && !data) importer.mipmapFilter = TextureImporterMipFilter.KaiserFilter;
         if (!data && !font) return;
         importer.textureType = TextureImporterType.Default;
         importer.sRGBTexture = false;

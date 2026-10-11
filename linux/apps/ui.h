@@ -112,6 +112,21 @@ ui_inside(int px, int py, int x, int y, int width, int height)
 	return px >= x && px < x + width && py >= y && py < y + height;
 }
 
+/* Call after mapping a window that long work follows: the window manager frames a window as
+ * its program takes events, so without this it stands bare until the work is done. The
+ * events taken are dropped: draw after it. */
+static void
+ui_framed(void)
+{
+	GR_EVENT event;
+	int k, none = 0;
+
+	for (k = 0; k < 24 && none < 3; k++) {
+		GrCheckNextEvent(&event);
+		none = event.type == GR_EVENT_TYPE_NONE ? none + 1 : 0;
+	}
+}
+
 /* A notch of the wheel arrives as a button going down: -1 for up, 1 for down, 0 for a real button. */
 static int
 ui_wheel(const GR_EVENT *event)

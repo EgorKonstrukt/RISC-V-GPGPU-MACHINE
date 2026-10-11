@@ -12,7 +12,7 @@ MW=$WORK/src/microwindows
 OUT=$REPO/build/images/linux/root/usr
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
-for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey open; do
+for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon open; do
     more=""
     # the viewer decodes on the worker cores (ui_image.h): the library every program has for them
     [ $p = nxview ] || [ $p = nxmon ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"

@@ -37,8 +37,15 @@ public class EmuPointer : UdonSharpBehaviour
     [HideInInspector] public int ownStation = -1;
     [HideInInspector] public bool ownDisplay;   // its tube shows the display, not the console
     [HideInInspector] public bool away;   // the game controller is in the player's hands: no beams (EmuGamepad)
+    // The danger zone (EmuDanger): a beam on the memory screen is its laser while that is on.
+    public Collider memoryScreen;      // a trigger over the memory screen's quad
+    public EmuDanger danger;
 
-    private const int Nothing = -1, Display = 0;   // a target; 1 and up: keyboard number + 1
+    private const int Nothing = -1, Display = 0, Memory = -2;   // a target; 1 and up: keyboard number + 1
+
+    private float[] memoryU = new float[2];
+    private float[] memoryV = new float[2];
+    private bool[] burning = new bool[2];   // the trigger is held on the memory screen
 
     private int[] target = new int[2];
     private int[] key = new int[2];
@@ -204,6 +211,17 @@ public class EmuPointer : UdonSharpBehaviour
                 }
             }
         }
+        if (danger != null && memoryScreen != null && danger.LaserOn() && memoryScreen.Raycast(ray, out hit, best))
+        {
+            landed = true;
+            best = hit.distance;
+            at = hit.point;
+            found = Memory;
+            // a unit quad: across from its left edge, up from its bottom
+            Vector3 local = memoryScreen.transform.InverseTransformPoint(hit.point);
+            memoryU[h] = Mathf.Clamp01(local.x + 0.5f);
+            memoryV[h] = Mathf.Clamp01(local.y + 0.5f);
+        }
         for (int k = 0; k < keyboardPlates.Length; k++)
         {
             if (stationKeysFrom >= 0 && k >= stationKeysFrom && k - stationKeysFrom != ownStation) continue;
@@ -293,6 +311,13 @@ public class EmuPointer : UdonSharpBehaviour
             Aim(1, head.position, head.rotation * Vector3.forward, false);
             grip[1] = target[1] == Display && Input.GetMouseButton(1);
         }
+        if (danger != null)
+        {
+            // the laser: the right hand's when both point at the memory screen
+            int hand = target[1] == Memory ? 1 : target[0] == Memory ? 0 : -1;
+            if (hand < 0) danger.Point(false, 0f, 0f, false);
+            else danger.Point(true, memoryU[hand], memoryV[hand], burning[hand]);
+        }
 
         // The machine has one pointer: a hand holding a button on the display keeps it, then
         // the hand that had it, then whichever points there.
@@ -347,6 +372,10 @@ public class EmuPointer : UdonSharpBehaviour
                 trigger[h] = true;
                 owner = h;
             }
+            else if (target[h] == Memory)
+            {
+                burning[h] = true;
+            }
             else if (target[h] >= 1 && pressedOn[h] < 0)
             {
                 pressedOn[h] = target[h] - 1;
@@ -356,6 +385,7 @@ public class EmuPointer : UdonSharpBehaviour
         else
         {
             trigger[h] = false;
+            burning[h] = false;
             if (pressedOn[h] >= 0) keyboards[pressedOn[h]].Release(h);
             pressedOn[h] = -1;
         }

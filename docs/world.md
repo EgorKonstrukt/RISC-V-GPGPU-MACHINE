@@ -32,10 +32,10 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
   in metres; anything else is six charts a fragment, seen along each axis, and a lead is
   unrolled in lengths. `finish()` puts the charts side by side at one scale. Such objects are
   exported to a file of their own (`FurnitureCharted.fbx`), because Unity lays out a whole
-  file's or none of it. The classroom's "Station N rest" are so: the keyboard is one chart
-  seen from above (its keys rise out of the well's floor, which is under no key, and the
-  tray's upright side is folded out round it), the mouse one chart unrolled round its
-  section. `blender -b build/world.blend --python world/check_charts.py -- "Station 0 rest"
+  file's or none of it. The classroom's "Station N rest" are so: the keyboard's tray and well are one
+  chart seen from above (the tray's upright side folded out round it), each cap a chart by
+  itself that is its top alone, the sides drawn in to the top's edge (texels blur into their
+  neighbours: with places of their own the sides and the well darkened the tops), the mouse one chart unrolled round its section. `blender -b build/world.blend --python world/check_charts.py -- "Station 0 rest"
   build/charts.npz`, then `python world/check_charts.py build/charts.npz OUT.png`, counts the
   texels where two faces lie on one place (0.19%: slivers at keys' edges) and draws the layout.
 - `build.py` writes `Models/{Shell,Room,Computer,Furniture,Annex,City}.fbx` and
@@ -181,3 +181,10 @@ What it does to the baked seams has not been measured: that needs a bake before 
   sky, the city and the rain, and thunder follows after the time its distance takes.
 - Sound is two sources by the window: the rain's loop, and thunder. Check them by
   measurement, as the sound card's: `sounds.py` prints each file's level, and none may clip.
+
+## The danger zone
+
+On the den's right wall, between the room's switches and the rack: a panel whose keys harm
+the visitor's own machine's memory (`docs/danger.md`). It is a canvas, styled as the others
+(`RetroNewPanels`); "ShaderEmu/Add the danger zone to the open scene" puts it there without a
+bake. The memory screen has a trigger collider for its laser, which stops no beam and no player.

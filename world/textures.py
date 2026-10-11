@@ -764,17 +764,28 @@ def keyboard():
     left, in millimetres, and its legend). The caps of world/computer.py take this picture from above.
     The legends themselves are the panel's lettering, not part of it."""
     layout = json.load(open(os.path.join(HERE, "keyboard.json"), encoding="utf-8"))
-    wide, high, scale = layout["width"], layout["height"], 3
+    wide, high, scale = layout["width"], layout["height"], 6
     img = Image.new("RGB", (int(wide * scale), int(high * scale)), (38, 36, 33))
-    draw = ImageDraw.Draw(img)
+    shade = Image.new("L", img.size, 120)   # how much light reaches a place among the caps: the lightmap is too coarse to say
+    draw, lit = ImageDraw.Draw(img), ImageDraw.Draw(shade)
+    # a cap seen from above, as pc.py and computer.py build it: its foot, its shoulder, its top (insets left and right, behind, before)
+    foot, shoulder, top = (1.5, 1.5, 1.5), (4.0, 3.0, 6.0), (6.0, 4.5, 8.0)
     for x, y, w, h, legend in layout["keys"]:
         named = (sum(c.isalpha() for c in legend) >= 2 and " " not in legend.strip()) or (len(legend) > 1 and legend[0] == "F" and legend[1].isdigit())
         named = named or legend.startswith("Use my")
         cap = (168, 163, 148) if named else (229, 222, 199)
         draw.rectangle((x * scale, y * scale, (x + w) * scale, (y + h) * scale), fill=cap)
-    img = img.resize((4096, 2048), Image.LANCZOS)
-    a = np.asarray(img).astype(float) / 255
-    save("Keyboard", a * (0.96 + 0.04 * np.random.default_rng(500).random(a.shape[:2]))[..., None], 0.32)
+        lit.rectangle((x * scale, y * scale, (x + w) * scale, (y + h) * scale), fill=140)
+        steps = 10
+        for a, b, dark, light in ((foot, shoulder, 0.60, 0.82), (shoulder, top, 0.82, 0.97)):   # its sides darken down into the well
+            for k in range(steps + 1):
+                t = k / steps
+                side, far, near = (a[i] + (b[i] - a[i]) * t for i in range(3))
+                lit.rectangle(((x + side) * scale, (y + far) * scale, (x + w - side) * scale, (y + h - near) * scale), fill=int(255 * (dark + (light - dark) * t)))
+        lit.rectangle(((x + top[0]) * scale, (y + top[1]) * scale, (x + w - top[0]) * scale, (y + h - top[2]) * scale), fill=255)
+    img, shade = img.resize((4096, 2048), Image.LANCZOS), shade.resize((4096, 2048), Image.LANCZOS)
+    a, s = np.asarray(img).astype(float) / 255, np.asarray(shade).astype(float) / 255
+    save("Keyboard", a * s[..., None] * (0.96 + 0.04 * np.random.default_rng(500).random(a.shape[:2]))[..., None], 0.32)
 
 
 def smudges():

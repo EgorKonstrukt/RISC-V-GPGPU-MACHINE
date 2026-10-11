@@ -24,6 +24,7 @@
 #include <time.h>
 #include <X11/keysym.h>
 #include <nano-X.h>
+#include "fps_caption.h"
 #endif
 
 // ---- GPU memory ----
@@ -839,6 +840,7 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
             regs[REG_VOLUME / 4 + 3] = nano_info.width | nano_info.height << 16;
             regs[REG_VOLUME / 4] = GPU_PHYS + frame_at + frame_flip + uniform_bytes;
             regs[REG_VOLUME / 4 + 2]++;
+            fps_caption(&nano_info, regs[REG_CLOCK / 4]);
             frame_flip ^= FRAME_FLIP;
         } else {
             sched_yield();

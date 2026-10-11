@@ -162,7 +162,10 @@ pimaker; Linux; musl; BusyBox; GCC and LLVM; [Microwindows](https://github.com/g
 by Greg Haerr and contributors, with its port of Doom; TinyCC and jrrk2's riscv32 port of it; DOOM and [Quake](https://github.com/id-Software/Quake) by id Software; [Vanilla Conquer](https://github.com/TheAssemblyArmada/Vanilla-Conquer)
 and Command & Conquer by Westwood Studios (source released by Electronic Arts);
 [ClassiCube](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200 and contributors; [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut and contributors; [Nofrendo](https://github.com/espressif/esp32-nesemu) by Matthew Conte, with [Thwaite](https://github.com/pinobatch/thwaite-nes) by Damian Yerrick and [Nova the Squirrel](https://github.com/NovaSquirrel/NovaTheSquirrel) by NovaSquirrel; [minimp3](https://github.com/lieff/minimp3) by lieff and [dr_flac](https://github.com/mackron/dr_libs) by David Reid in the music player; glxgears from the
-Mesa demos; photographs from Unsplash; furniture, plants and surfaces of the VRChat room from
+Mesa demos; [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski; the
+[Chicago95](https://github.com/grassmunk/Chicago95) icons; Big Buck Bunny's trailer ((c) copyright 2008, Blender
+Foundation, CC BY 3.0); Musopen's public-domain recordings; photographs from Unsplash, NASA's and two old
+paintings from Wikimedia Commons; furniture, plants and surfaces of the VRChat room from
 [Poly Haven](https://polyhaven.com) (CC0); [LTCGI](https://github.com/PiMaker/ltcgi) by pimaker,
 [VRC Light Volumes](https://github.com/REDSIM/VRCLightVolumes) by RED_SIM and
 [Mochie's shaders](https://github.com/MochiesCode/Mochies-Unity-Shaders) for the room's light, and [Fake Glass](https://gitlab.com/s-ilent/fake-glass) by Silent (CC BY-SA 4.0, its rain's textures by deepspacebanana) for the rain on the window; the path tracer's models are the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory); recordings from [Freesound](https://freesound.org) given to the public domain: a computer by squashy555, a keyboard by harrisonlace, thunder by Fission9, bastipictures and Kinoton; VRChat's SDK and UdonSharp;

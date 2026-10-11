@@ -15,7 +15,7 @@ started and everything on its desktop run without building anything.
 | `root/emuinit`, `root/usr/bin/emumux`, `fptest`, `sndtest` | `linux/userland/build.sh` | this repository |
 | `root/bin/busybox` | `linux/userland/busybox.sh` | BusyBox 1.36.1 |
 | `root/usr/bin/nc`, `telnetd` | `linux/userland/build.sh` | two-line scripts that start BusyBox's applets of those names (`docs/lan.md`) |
-| `root/usr/bin/nxfiles`, `nxweb`, `nxedit`, `nxpaint`, `nxview`, `nxmon`, `nxsettings`, `nxkey`, `nxoff`, `root/usr/share/web-*`, `nxapps.90-system`, `open`, `nxopen-archive`, `nxopen-run`, `nxopen.20-apps` (what opens which kind of file, `docs/open.md`), `picture-fox.png`, `picture-fox.jpg` (cut from the desktop's picture by `tools/make_test_pictures.py`) | `linux/apps/build.sh` | this repository |
+| `root/usr/bin/nxfiles`, `nxweb`, `nxedit`, `nxpaint`, `nxview`, `nxmon`, `nxsettings`, `nxkey`, `nxicon` (a program's own icon, `docs/nanox.md`), `nxoff`, `root/usr/share/web-*`, `nxapps.90-system`, `open`, `nxopen-archive`, `nxopen-run`, `nxopen.20-apps` (what opens which kind of file, `docs/open.md`), `picture-fox.png`, `picture-fox.jpg` (cut from the desktop's picture by `tools/make_test_pictures.py`) | `linux/apps/build.sh` | this repository |
 | `root/usr/bin/nxray`, `nxpath`, `root/usr/share/nxapps.82-raytrace`, `nxapps.83-pathtrace` | `linux/raytrace/build.sh`, `linux/pathtrace/build.sh` | this repo; in `nxpath`, the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory)sitory; `nxpath` with Dear ImGui (below) |
 | `root/usr/bin/nxplay`, `root/usr/share/play-test.wav`, `.mp3`, `.flac`, `.mod` (made by `linux/play/make_test.py`), `nxapps.84-play`, `nxopen.84-play` | `linux/play/build.sh` | this repository, with minimp3 and dr_flac (below) |
 | `root/usr/share/wallpaper-*.ppm` | `tools/make_wallpaper.py` | photographs from Unsplash |
@@ -88,3 +88,10 @@ Command & Conquer demos, their sounds decoded into a pack beside them).
 | `ralert-*.MIX`, `ralert-sound.pak` | Electronic Arts (Westwood): the Red Alert demo | https://archive.org/download/CommandConquerRedAlert_1020/ra95demo.zip |
 | `classicube-default.zip` | ClassiCube's default texture pack | the game's own site, fetched by `linux/classicube/build.sh` |
 | `wallpaper-*.ppm` | their photographers, under the Unsplash licence | `tools/make_wallpaper.py` names each |
+| `icons32.ppm`, `icons16.ppm`, `icons.idx` | the Chicago95 icon theme (GPL-3.0+/MIT), the cells `linux/apps/icons.txt` names; and five games' own icons: Chocolate Doom's (GPL-2.0), Quake's (GPL-2.0), ClassiCube's (BSD-3-Clause), Vanilla Conquer's two (GPL-3.0) | https://github.com/grassmunk/Chicago95 at the commit in `tools/make_icons.py`; `linux/apps/icons/README.md` |
+| `caption-on.ppm`, `caption-off.ppm` | ours: a window caption's colours | `tools/make_icons.py` |
+| `root/Pictures/*.jpg` | public domain: NASA (Earthrise, Blue Marble, Deep Field), Hokusai, van Gogh | Wikimedia Commons, each named with its SHA-1 in `linux/media/media.txt` |
+| `root/Music/Grieg - *.mp3` | public domain: Musopen Symphony Orchestra's recordings, 50 s each | Wikimedia Commons (`linux/media/media.txt`) |
+| `root/Music/Beethoven - *.mp3` | public domain: the Moonlight Sonata's first movement, and the Fifth Symphony's by the Fulda Symphonic Orchestra (Simon Schindler), 50 s each | Wikimedia Commons (`linux/media/media.txt`) |
+| `root/Music/Bach - Goldberg Aria.flac` | CC0: Kimiko Ishizaka's recording (Musopen), 20 s | Wikimedia Commons (`linux/media/media.txt`) |
+| `root/Videos/Big Buck Bunny.mpg` | (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org, CC BY 3.0: 20 s of the trailer | Wikimedia Commons, encoded by `tools/make_video.py` |
