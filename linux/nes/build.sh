@@ -27,7 +27,7 @@ mkdir -p "$ROMS"
 N=$SRC/components/nofrendo
 # ours: the first frame owed at the start, and the loop a game waits in counted, not run
 git -C "$SRC" apply "$HERE/nofrendo.patch"
-INC="-I$HERE -I$N -I$N/cpu -I$N/nes -I$N/sndhrdw -I$N/libsnss -I$N/mappers -I$MW/src/include -I$REPO/programs/mc -idirafter $REPO/programs/linux/include"
+INC="-I$HERE -I$N -I$N/cpu -I$N/nes -I$N/sndhrdw -I$N/libsnss -I$N/mappers -I$MW/src/include -I$REPO/programs/mc -I$REPO/linux/userland -idirafter $REPO/programs/linux/include"
 # (asm: the one line of the ESP32's own in these sources, a breakpoint where an assertion fails;
 # 240: the PPU draws every line into a picture the sources make 224 high)
 CFLAGS="-O2 -flto -fno-pie -std=gnu99 -fgnu89-inline -fcommon -w -Dasm(x)=abort() -DNES_VISIBLE_HEIGHT=240 -DHOST_LITTLE_ENDIAN -DNES6502_JUMPTABLE $INC"

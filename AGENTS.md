@@ -1349,3 +1349,8 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   nothing there is written down, every line is asked of the machine.
 - `rvc_harness --cpu` for a picture of the desktop that is about what is drawn, not how fast:
   the same run script and snapshot, and the guest's seconds are not the shader machine's.
+- The NES's sound (`docs/nes.md`, "Sound"; `linux/nes/apu_shaderemu.c`) is five voices of the
+  sound card told how fast and how loud, four times a frame: no sample is made, and nofrendo's
+  `apu_process` is not called. After a change: the NES's sums, `NES_APU_TEST=1 nes thwaite` on
+  the shader machine (`the same as this core's`), and a capture against `sound_reference.py`.
+- `mctest 255 20000` in a `--fixed-dt 0.004` run took 220 s: run it in a run of its own.

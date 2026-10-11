@@ -10,7 +10,7 @@ runs at a NES's speed or near it; on one core at a third.
 
 In the guest: `nano-X -p & nes thwaite` or `nes nova` (the Start menu's Games has both), or
 `nes FILE.nes` for any other cartridge of a mapper Nofrendo has. Arrows are the pad, X is A,
-Z is B, Enter is Start, Tab is Select and Escape ends. There is no sound yet.
+Z is B, Enter is Start, Tab is Select and Escape ends. Its sound is the sound card's (below).
 
 The games are Thwaite by Damian Yerrick (mapper 0) and Nova the Squirrel by NovaSquirrel
 (mapper 1), both GPL-3; the build fetches their release files.
@@ -25,6 +25,7 @@ The games are Thwaite by Damian Yerrick (mapper 0) and Nova the Squirrel by Nova
 - `rc6502.h` is the 6502 recompiled (below); nofrendo's `nes6502.c` includes it.
 - `nofrendo.patch` is ours (edit a clean clone at the commit `build.sh` names and save
   `git diff`); the build puts the tree back each time.
+- `apu_shaderemu.c` is the sound (below).
 
 ## Speed
 
@@ -220,8 +221,59 @@ its three programs wait in three ways, and one of them was not known.
   it took 2% off the times translated code is entered and nothing off the frame.
 
 Not done: a read of the PPU's status from translated code without the handler, when it
-changes nothing; sound, a second pad, saved games; the first core's own drawing (one core) from
+changes nothing; a second pad, saved games; the first core's own drawing (one core) from
 the record, which would let it skip more frames.
+
+## Sound
+
+No sample is computed. The NES's five channels are five voices of the sound card
+(`docs/sound.md`), each playing a wave that lies in sound memory from the start, and
+`linux/nes/apu_shaderemu.c` only tells the card how fast and how loud: the card reads a
+voice's step and volume all the time. Nofrendo's own synthesis (`apu_process`) is never
+called; its register handlers call `se_apu_write` first and are otherwise as they were, so
+what a game reads back at `$4015` is what it read before.
+
+| Channel | The voice plays | Pitch | Loudness |
+|---|---|---|---|
+| two pulses | a turn of 256 samples, one for each of the four duties | step from the 11-bit period; the sweep moves it | the envelope or the fixed level, 0 to 15 |
+| triangle | its 32 steps | the period; a step of 0 when the length or linear counter stops it, so it stands where it was, as the NES's does | fixed |
+| noise | the shift register's 32,767 bits, or the 93 of its short mode | one of 16 rates | envelope or fixed level |
+| DMC | a recording decoded to bytes, in one of six slots | one of 16 rates | fixed |
+
+- **The frame counter** is four calls a frame, at lines 65, 130, 196 and 261 of the picture
+  (`se_apu_quarter`; `nes.c` compares the line with one number): envelopes and the
+  triangle's linear counter at each, length counters and sweeps at every other. Each is a
+  few stores to the voices' words. A game's frame did not move: 60 thousand instructions.
+- **Workers.** With the channels on the card there is nothing to give a worker every frame.
+  Two things are work, and both are a worker's when the program has one (the second of the
+  two it opens; the first makes the GPU's lists): the long noise table at the start, and a
+  DMC recording the first time a game plays it (up to 32,648 samples from one bit each).
+  The first core copies the recording's bytes out of the cartridge, posts the job, and
+  starts the voice at the quarter of a frame after the worker is done; the same recording
+  again is found in its slot (by address, length, start level and first bytes).
+- **A game that runs slower than a NES plays its tune slower**, with no gaps: nothing is
+  queued that could run dry.
+- Loudness is the NES's own mix in its linear form (a pulse 0.00752 a level, the triangle
+  0.00851, noise 0.00494, DMC 0.00335), 1.2 of it to the card's full scale.
+- Without a sound card (`rvc_cpu`, `NES_SOUND=0`) the channels are followed all the same.
+
+Not done: writes to `$4011` as a way to play samples (the level is only where the next
+recording starts), the DMC's interrupt, the frame counter's interrupt and its five-step
+timing (five steps are run at the four-step pace), and the exact `$4015` (it is Nofrendo's:
+a channel counts as sounding from its first note on).
+
+To check it:
+
+- The sums below hold with it, on a machine with a card and without.
+- `NES_APU_PRINT=1` prints every frame's channels (`nesapu: FRAME p1 PERIOD LEVEL DUTY p2 ...
+  tri PERIOD RUNS noise RATE LEVEL SHORT dmc PLAYING`): under `rvc_cpu`, a Thwaite game
+  (`NES_PRESS="20 start 50 start 80 a 100 left 110 a"`) has pulse period 253 (440 Hz).
+- The card itself, as any program's sound: `--fixed-dt 0.004 --sound-capture F.wav
+  --save-state F.snap` with `nes thwaite & sleep 14`, then `tools\sound_reference.py F.wav
+  F.snap --rom build\images\linux\rootfs.bin` must say MATCH.
+- `NES_APU_TEST=1 nes thwaite` on the shader machine plays a recording made of the
+  cartridge's first bytes (neither game of the image has one) and must print `the same as
+  this core's` for what the worker decoded; `mctest 255 20000` passes beside it.
 
 ## Testing
 

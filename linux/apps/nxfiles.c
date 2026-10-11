@@ -1005,10 +1005,13 @@ properties_window(const char *path)
 		LINE("Size", "%ld bytes", (long)info.st_size);
 	else
 		LINE("Size", "%ld KB (%ld bytes)", (long)(info.st_size + 512) / 1024, (long)info.st_size);
-	if ((tm = localtime(&info.st_mtime)) != NULL)
+	/* the ROM keeps no dates (a file of the image says 1970) and marks every file as a program */
+	if (info.st_mtime < 86400)
+		LINE("Changed", "never: as the image has it");
+	else if ((tm = localtime(&info.st_mtime)) != NULL)
 		strftime(lines[n][1], sizeof lines[0][1], "%Y-%m-%d %H:%M", tm), strcpy(lines[n++][0], "Changed");
 	LINE("May", "%s%s%s", info.st_mode & 0444 ? "be read" : "not be read", info.st_mode & 0222 ? ", written" : "",
-	     info.st_mode & 0111 ? (e->kind == K_FOLDER ? ", entered" : ", run") : "");
+	     !(info.st_mode & 0111) ? "" : e->kind == K_FOLDER ? ", entered" : e->kind == K_PROGRAM ? ", run" : "");
 	if (e->kind == K_SHORTCUT)
 		LINE("Starts", "%s", e->run);
 	else if (info.st_nlink > 1 && e->kind != K_FOLDER)

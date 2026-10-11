@@ -112,7 +112,10 @@ osd_installtimer(int frequency, void *func, int funcsize, void *counter, int cou
 	return 0;
 }
 
-/* ---- sound: none yet ---- */
+/* ---- sound: the card's voices, not nofrendo's samples (apu_shaderemu.c) ---- */
+
+extern void se_apu_init(int a_worker);
+static int apu_worker;	/* the worker that decodes recordings, if there is one */
 
 /* (also where nofrendo says the cartridge is in and its loop about to start) */
 void
@@ -125,6 +128,7 @@ osd_setsound(void (*playfunc)(void *buffer, int length))
 	if (!cpu || strcmp(cpu, "interp"))
 		nes6502_recompile(rom->rom, rom->rom_banks * 0x4000, rom->mapper_number == 0);
 	elsewhere_start();
+	se_apu_init(apu_worker);
 }
 
 void
@@ -1030,7 +1034,9 @@ gpu_start(void)
 		const char *list = getenv("NES_LIST");
 
 		if (list ? !strcmp(list, "worker") : !unlimited) {
-			gd_worker = mcw_open(1) > 0;
+			/* one for the lists, one for the sound's recordings (apu_shaderemu.c) */
+			gd_worker = mcw_open(2) > 0;
+			apu_worker = mcw_count() >= 2 ? 2 : 0;
 			if (gd_worker) {
 				atexit(mcw_close);
 				mcw_touch(__DATA_BEGIN__, _end - __DATA_BEGIN__);

@@ -484,16 +484,21 @@ index c2245a1..8d2fd00 100644
  extern void nes6502_reset(void);
  extern int nes6502_execute(int total_cycles);
 diff --git a/components/nofrendo/nes/nes.c b/components/nofrendo/nes/nes.c
-index 4055d08..30b2983 100644
+index 4055d08..6a2da86 100644
 --- a/components/nofrendo/nes/nes.c
 +++ b/components/nofrendo/nes/nes.c
-@@ -293,16 +293,32 @@ void nes_nmi(void)
+@@ -293,16 +293,40 @@ void nes_nmi(void)
     nes6502_nmi();
  }
  
 +void (*nes_frame_elsewhere)(int after);
 +int nes_sum_on;
 +uint32 nes_sum;
++
++/* ours: the sound's quarters of a frame (linux/nes/apu_shaderemu.c) */
++extern int se_apu_due;
++extern void se_apu_quarter(void);
++extern void se_apu_frame(void);
 +
  static void nes_renderframe(bool draw_flag)
  {
@@ -515,13 +520,16 @@ index 4055d08..30b2983 100644
 +      if (nes.scanline < 240 && false == draw_flag && NULL == mapintf->hblank)
 +         nes.scanline += ppu_quiet_lines(nes.scanline, (float) NES_SCANLINE_CYCLES, &nes.scanline_cycles, &nes.fiq_cycles);
 +
++      if (nes.scanline >= se_apu_due)
++         se_apu_quarter();
++
  //      ppu_scanline(nes.vidbuf, nes.scanline, draw_flag);
 -		ppu_scanline(vid_getbuffer(), nes.scanline, draw_flag);
 +		ppu_scanline(draw_flag ? vid_getbuffer() : NULL, nes.scanline, draw_flag);
  
        if (241 == nes.scanline)
        {
-@@ -322,7 +338,11 @@ static void nes_renderframe(bool draw_flag)
+@@ -322,7 +346,11 @@ static void nes_renderframe(bool draw_flag)
           mapintf->hblank(in_vblank);
  
        nes.scanline_cycles += (float) NES_SCANLINE_CYCLES;
@@ -533,10 +541,11 @@ index 4055d08..30b2983 100644
        nes.scanline_cycles -= (float) elapsed_cycles;
        nes_checkfiq(elapsed_cycles);
  
-@@ -331,6 +351,16 @@ static void nes_renderframe(bool draw_flag)
+@@ -331,6 +359,17 @@ static void nes_renderframe(bool draw_flag)
     }
  
     nes.scanline = 0;
++   se_apu_frame();
 +
 +   /* ours: every frame's RAM in one sum, which a change to the emulator must leave */
 +   if (nes_sum_on)
@@ -550,7 +559,7 @@ index 4055d08..30b2983 100644
  }
  
  static void system_video(bool draw)
-@@ -356,6 +386,7 @@ static void system_video(bool draw)
+@@ -356,6 +395,7 @@ static void system_video(bool draw)
     osd_getinput();
  }
  
@@ -558,7 +567,7 @@ index 4055d08..30b2983 100644
  /* main emulation loop */
  void nes_emulate(void)
  {
-@@ -364,12 +395,21 @@ void nes_emulate(void)
+@@ -364,12 +404,21 @@ void nes_emulate(void)
     osd_setsound(nes.apu->process);
  
     last_ticks = nofrendo_ticks;
@@ -582,10 +591,19 @@ index 4055d08..30b2983 100644
        {
           int tick_diff = nofrendo_ticks - last_ticks;
 diff --git a/components/nofrendo/nes/nes_ppu.c b/components/nofrendo/nes/nes_ppu.c
-index 9a6875b..816ad03 100644
+index 9a6875b..f50946b 100644
 --- a/components/nofrendo/nes/nes_ppu.c
 +++ b/components/nofrendo/nes/nes_ppu.c
-@@ -55,14 +55,222 @@
+@@ -38,6 +38,8 @@
+ #include <nes_pal.h>
+ #include <nesinput.h>
+ 
++extern void se_apu_write(uint32 address, uint8 value);   /* ours: linux/nes/apu_shaderemu.c */
++
+ 
+ /* PPU access */
+ #define  PPU_MEM(x)           ppu.page[(x) >> 10][(x)]
+@@ -55,14 +57,222 @@
  /* the NES PPU */
  static ppu_t ppu;
  
@@ -808,7 +826,7 @@ index 9a6875b..816ad03 100644
     int nametab[4];
     ASSERT(src_ppu);
     ppu = *src_ppu;
-@@ -159,6 +367,12 @@ void ppu_destroy(ppu_t **src_ppu)
+@@ -159,6 +369,12 @@ void ppu_destroy(ppu_t **src_ppu)
  
  void ppu_setpage(int size, int page_num, uint8 *location)
  {
@@ -821,7 +839,7 @@ index 9a6875b..816ad03 100644
     /* deliberately fall through */
     switch (size)
     {
-@@ -181,6 +395,7 @@ void ppu_setpage(int size, int page_num, uint8 *location)
+@@ -181,6 +397,7 @@ void ppu_setpage(int size, int page_num, uint8 *location)
  /* make sure $3000-$3F00 mirrors $2000-$2F00 */
  void ppu_mirrorhipages(void)
  {
@@ -829,7 +847,7 @@ index 9a6875b..816ad03 100644
     ppu.page[12] = ppu.page[8] - 0x1000;
     ppu.page[13] = ppu.page[9] - 0x1000;
     ppu.page[14] = ppu.page[10] - 0x1000;
-@@ -189,6 +404,10 @@ void ppu_mirrorhipages(void)
+@@ -189,6 +406,10 @@ void ppu_mirrorhipages(void)
  
  void ppu_mirror(int nt1, int nt2, int nt3, int nt4)
  {
@@ -840,7 +858,7 @@ index 9a6875b..816ad03 100644
     ppu.page[8] = ppu.nametab + (nt1 << 10) - 0x2000;
     ppu.page[9] = ppu.nametab + (nt2 << 10) - 0x2400;
     ppu.page[10] = ppu.nametab + (nt3 << 10) - 0x2800;
-@@ -254,12 +473,16 @@ static void ppu_oamdma(uint8 value)
+@@ -254,12 +475,16 @@ static void ppu_oamdma(uint8 value)
     cpu_address = (uint32) (value << 8);
  
     /* Sprite DMA starts at the current SPRRAM address */
@@ -861,7 +879,15 @@ index 9a6875b..816ad03 100644
  
     /* TODO: enough with houdini */
     cpu_address -= 256;
-@@ -343,6 +566,27 @@ uint8 ppu_readhigh(uint32 address)
+@@ -309,6 +534,7 @@ void ppu_writehigh(uint32 address, uint8 value)
+ 
+    case PPU_JOY1: /* frame IRQ control */
+       nes_setfiq(value);
++      se_apu_write(address, value);   /* ours: the sound's frame counter too */
+       break;
+ 
+    default:
+@@ -343,6 +569,27 @@ uint8 ppu_readhigh(uint32 address)
  }
  
  /* Read from $2000-$2007 */
@@ -889,7 +915,7 @@ index 9a6875b..816ad03 100644
  uint8 ppu_read(uint32 address)
  {
     uint8 value;
-@@ -406,11 +650,13 @@ void ppu_write(uint32 address, uint8 value)
+@@ -406,11 +653,13 @@ void ppu_write(uint32 address, uint8 value)
  {
     /* write goes into ppu latch... */
     ppu.latch = value;
@@ -903,7 +929,7 @@ index 9a6875b..816ad03 100644
  
        ppu.obj_height = (value & PPU_CTRL0F_OBJ16) ? 16 : 8;
        ppu.bg_base = (value & PPU_CTRL0F_BGADDR) ? 0x1000 : 0;
-@@ -425,6 +671,7 @@ void ppu_write(uint32 address, uint8 value)
+@@ -425,6 +674,7 @@ void ppu_write(uint32 address, uint8 value)
  
     case PPU_CTRL1:
        ppu.ctrl1 = value;
@@ -911,7 +937,7 @@ index 9a6875b..816ad03 100644
  
        ppu.obj_on = (value & PPU_CTRL1F_OBJON) ? true : false;
        ppu.bg_on = (value & PPU_CTRL1F_BGON) ? true : false;
-@@ -482,6 +729,27 @@ void ppu_write(uint32 address, uint8 value)
+@@ -482,6 +732,27 @@ void ppu_write(uint32 address, uint8 value)
     case PPU_VDATA:
        if (ppu.vaddr < 0x3F00)
        {
@@ -939,7 +965,7 @@ index 9a6875b..816ad03 100644
           /* VRAM only accessible during scanlines 241-260 */
           if ((ppu.bg_on || ppu.obj_on) && !ppu.vram_accessible)
           {
-@@ -507,10 +775,12 @@ void ppu_write(uint32 address, uint8 value)
+@@ -507,10 +778,12 @@ void ppu_write(uint32 address, uint8 value)
  
              for (i = 0; i < 8; i ++)
                 ppu.palette[i << 2] = (value & 0x3F) | BG_TRANS;
@@ -952,7 +978,7 @@ index 9a6875b..816ad03 100644
           }
        }
  
-@@ -693,9 +963,39 @@ INLINE int draw_oamtile(uint8 *surface, uint8 attrib, uint8 pat1,
+@@ -693,9 +966,39 @@ INLINE int draw_oamtile(uint8 *surface, uint8 attrib, uint8 pat1,
     return strike_pixel;
  }
  
@@ -994,7 +1020,7 @@ index 9a6875b..816ad03 100644
     uint32 refresh_vaddr, bg_offset, attrib_base;
     int tile_count;
     uint8 tile_index, x_tile, y_tile;
-@@ -708,7 +1008,12 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -708,7 +1011,12 @@ static void ppu_renderbg(uint8 *vidbuf)
        return;
     }
  
@@ -1008,7 +1034,7 @@ index 9a6875b..816ad03 100644
     refresh_vaddr = 0x2000 + (ppu.vaddr & 0x0FE0); /* mask out x tile */
     x_tile = ppu.vaddr & 0x1F;
     y_tile = (ppu.vaddr >> 5) & 0x1F; /* to simplify calculations */
-@@ -720,10 +1025,10 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -720,10 +1028,10 @@ static void ppu_renderbg(uint8 *vidbuf)
     attrib_ptr = &PPU_MEM(attrib_base + (x_tile >> 2));
     attrib = *attrib_ptr++;
     attrib_shift = (x_tile & 2) + ((y_tile & 2) << 1);
@@ -1021,7 +1047,7 @@ index 9a6875b..816ad03 100644
     while (tile_count--)
     {
        /* Tile number from nametable */
-@@ -734,8 +1039,11 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -734,8 +1042,11 @@ static void ppu_renderbg(uint8 *vidbuf)
        if (ppu.latchfunc)
           ppu.latchfunc(ppu.bg_base, tile_index);
  
@@ -1035,7 +1061,7 @@ index 9a6875b..816ad03 100644
  
        x_tile++;
  
-@@ -759,10 +1067,13 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -759,10 +1070,13 @@ static void ppu_renderbg(uint8 *vidbuf)
           }
  
           attrib_shift ^= 2;
@@ -1050,7 +1076,7 @@ index 9a6875b..816ad03 100644
     /* Blank left hand column if need be */
     if (ppu.bg_mask)
     {
-@@ -784,7 +1095,7 @@ typedef struct obj_s
+@@ -784,7 +1098,7 @@ typedef struct obj_s
  } obj_t;
  
  /* TODO: fetch valid OAM a scanline before, like the Real Thing */
@@ -1059,7 +1085,7 @@ index 9a6875b..816ad03 100644
  {
     uint8 *buf_ptr;
     uint32 vram_offset, savecol[2];
-@@ -894,6 +1205,67 @@ static void ppu_renderoam(uint8 *vidbuf, int scanline)
+@@ -894,6 +1208,67 @@ static void ppu_renderoam(uint8 *vidbuf, int scanline)
     }
  }
  
@@ -1127,7 +1153,7 @@ index 9a6875b..816ad03 100644
  /* Fake rendering a line */
  /* This is needed for sprite 0 hits when we're skipping drawing a frame */
  static void ppu_fakeoam(int scanline)
-@@ -1027,21 +1399,25 @@ static void ppu_renderscanline(bitmap_t *bmp, int scanline, bool draw_flag)
+@@ -1027,21 +1402,25 @@ static void ppu_renderscanline(bitmap_t *bmp, int scanline, bool draw_flag)
        }
     }
  
@@ -1157,7 +1183,7 @@ index 9a6875b..816ad03 100644
     {
        int ytile;
  
-@@ -1072,6 +1448,325 @@ void ppu_endscanline(int scanline)
+@@ -1072,6 +1451,325 @@ void ppu_endscanline(int scanline)
     }
  }
  
@@ -1483,7 +1509,7 @@ index 9a6875b..816ad03 100644
  void ppu_checknmi(void)
  {
     if (ppu.ctrl0 & PPU_CTRL0F_NMI)
-@@ -1080,7 +1775,23 @@ void ppu_checknmi(void)
+@@ -1080,7 +1778,23 @@ void ppu_checknmi(void)
  
  void ppu_scanline(bitmap_t *bmp, int scanline, bool draw_flag)
  {
@@ -1598,3 +1624,23 @@ index ab020f3..b90c4ca 100644
  extern void ppu_checknmi();
  
  extern ppu_t *ppu_create(void);
+diff --git a/components/nofrendo/sndhrdw/nes_apu.c b/components/nofrendo/sndhrdw/nes_apu.c
+index 0fc0e8e..c4591c8 100644
+--- a/components/nofrendo/sndhrdw/nes_apu.c
++++ b/components/nofrendo/sndhrdw/nes_apu.c
+@@ -608,10 +608,15 @@ static int32 apu_dmc(void)
+ }
+ 
+ 
++extern void se_apu_write(uint32 address, uint8 value);
++
+ void apu_write(uint32 address, uint8 value)
+ {  
+    int chan;
+ 
++   /* ours: the channels are the machine's sound card's voices (linux/nes/apu_shaderemu.c) */
++   se_apu_write(address, value);
++
+    switch (address)
+    {
+    /* rectangles */
