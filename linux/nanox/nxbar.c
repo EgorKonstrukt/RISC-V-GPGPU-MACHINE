@@ -349,6 +349,7 @@ launch(const char *command)
 
 	if (fork() != 0)
 		return;
+	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
 	snprintf(text, sizeof text, "%s", command);
 	for (words[n] = strtok(text, " "); words[n] && n < 6; words[n] = strtok(NULL, " "))
 		n++;
@@ -404,6 +405,7 @@ watch_open(void)
 	memcpy(address + 176, (const void *)&regs[OPEN_MORE], 80);
 	address[length] = 0;
 	if (fork() == 0) {
+		signal(SIGCHLD, SIG_DFL);
 		execlp("open", "open", address, (char *)NULL);
 		_exit(127);
 	}

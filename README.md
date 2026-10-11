@@ -44,8 +44,11 @@ and it is the only way this computer becomes usable.
   GPU, on float instructions the machine gained for it (`docs/fpu.md`): 2 to 8 frames a second.
 - **ClassiCube** (`docs/classicube.md`): the Minecraft Classic client, a world of blocks to dig and
   build in, drawn by the GPU from chunks kept in its memory: 50 to 70 frames a second walking.
-- **A C compiler in the machine** (`docs/cc.md`): TinyCC, with the C library, Nano-X and
-  OpenGL ES, and two 3D examples it builds there.
+- **A C compiler in the machine** (`docs/cc.md`): TinyCC, with the C library, Nano-X,
+  OpenGL ES and the worker cores, and examples it builds there.
+- **An IDE for it** (`docs/ide.md`): coloured text with undo and redo, the compiler's errors
+  marked at their lines as you type, Build and Run, and a debugger that steps a line at a
+  time and shows the variables and the call stack.
 - **Keyboard, pointer and wheel** as Linux input devices (`docs/input.md`), a display the guest
   describes in a few control words (`docs/display.md`).
 - **A VRChat world** (`unity/ShaderEmu`): the same shaders run by UdonSharp scripts, with the

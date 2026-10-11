@@ -542,6 +542,7 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
 	/* nxsettings apply: put up the desktop as last chosen, and go (the nx script does this) */
 	if (argc > 1 && !strcmp(argv[1], "apply")) {
 		ui_wallpaper_restore();

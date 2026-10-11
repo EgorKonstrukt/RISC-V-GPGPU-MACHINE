@@ -39,8 +39,8 @@ make tcc > make.log 2>&1 || { tail -20 make.log; exit 1; }
 mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share"
 riscv32-linux-strip -o "$ROOT/usr/bin/tcc" tcc
 
-# 3. what a program is compiled against. The ROM's builder cannot make folders, so this goes
-# in as one archive, which `cc` unpacks over the root (an overlay in RAM) the first time.
+# 3. what a program is compiled against: headers and libraries, files of the ROM where the
+# compiler looks for them (they were one archive unpacked at the first build: half a minute).
 echo "== headers and libraries"
 STAGE=$WORK/build/tcc-sysroot
 rm -rf "$STAGE" && mkdir -p "$STAGE/usr/include" "$STAGE/usr/lib/tcc/include"
@@ -64,13 +64,20 @@ cp "$GL"/include/GLES/*.h "$STAGE/usr/include/GLES/"
 rv32-cc -O2 -Wall -c -DSEGL_FLOAT -I"$GL/include" -I"$MW/include" "$GL/gles.c" -o "$WORK/build/gles.o"
 rm -f "$STAGE/usr/lib/libgles.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libgles.a" "$WORK/build/gles.o"
+# the worker cores' library (docs/multicore.md), for a program that shares its work out
+rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o "$WORK/build/mcw.o"
+rm -f "$STAGE/usr/lib/libmcw.a"
+riscv32-linux-ar rcs "$STAGE/usr/lib/libmcw.a" "$WORK/build/mcw.o"
+cp "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mc.h" "$STAGE/usr/include/"
 riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || true
-tar -C "$STAGE" -cf "$ROOT/usr/share/cc-sysroot.tar" usr
-ls -l "$ROOT/usr/bin/tcc" "$ROOT/usr/share/cc-sysroot.tar"
+rm -rf "$ROOT/usr/include" "$ROOT/usr/lib" "$ROOT/usr/share/cc-sysroot.tar"
+cp -rL "$STAGE/usr/include" "$STAGE/usr/lib" "$ROOT/usr/"
+ls -l "$ROOT/usr/bin/tcc"; echo "$(find "$ROOT/usr/include" "$ROOT/usr/lib" -type f | wc -l) files, $(du -sh "$STAGE/usr" | cut -f1)"
 
 # 4. `cc FILES...` compiles with all of that; `example NAME` builds and runs /usr/share/example-NAME.c
 tr -d '\r' < "$HERE/cc" > "$ROOT/usr/bin/cc"
 tr -d '\r' < "$HERE/example" > "$ROOT/usr/bin/example"
 chmod +x "$ROOT/usr/bin/cc" "$ROOT/usr/bin/example"
 for f in "$HERE"/examples/*.c; do cp "$f" "$ROOT/usr/share/example-$(basename "$f")"; done
-printf '%s\n' "Other/Cube (C, built here)=example cube" "Other/Home (C, built here)=example home" > "$ROOT/usr/share/nxapps.30-examples"
+printf '%s\n' "Programming/Cube (C, built here)=example cube" "Programming/Home (C, built here)=example home" \
+    "Programming/Shader on 255 cores (C, built here)=example shader" > "$ROOT/usr/share/nxapps.30-examples"

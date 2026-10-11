@@ -2,6 +2,7 @@
  * open [--dry] ADDRESS-OR-FILE: opens a file, or what an address holds, with the program
  * registered for its kind (docs/open.md). --dry prints the kind and the command only.
  */
+#include <signal.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -387,6 +388,8 @@ main(int argc, char **argv)
 	const char *what, *use;
 	struct stat info;
 	int dry = argc > 2 && !strcmp(argv[1], "--dry"), n, fd, i, o = 0;
+
+	signal(SIGCHLD, SIG_DFL);	/* (the bar that starts this ignores it: the opened program must not) */
 
 	if (argc < 2 + dry) {
 		fprintf(stderr, "usage: open [--dry] ADDRESS-OR-FILE\n");

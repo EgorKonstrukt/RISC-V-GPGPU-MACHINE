@@ -664,6 +664,7 @@ run_command(const char *command)
 
 	if (!command[0] || fork() != 0)
 		return;
+	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
 	snprintf(text, sizeof text, "%s", command);
 	for (words[n] = strtok(text, " "); words[n] && n < 7; words[n] = strtok(NULL, " "))
 		n++;
@@ -716,7 +717,10 @@ open_entry(int i, int edit)
 			draw_all();
 		}
 	} else if (edit) {
-		ui_run("nxedit", path);
+		/* C is the IDE's, as it is when it is opened (nxopen.15-ide) */
+		const char *dot = strrchr(path, '.');
+
+		ui_run(dot && (!strcmp(dot, ".c") || !strcmp(dot, ".h")) ? "nxide" : "nxedit", path);
 	} else if (e->kind == K_SHORTCUT) {
 		run_command(e->run);
 	} else if (e->kind == K_PROGRAM) {
@@ -956,9 +960,33 @@ properties(int i)
 	else
 		entry_path(i, path, sizeof path);
 	if (fork() == 0) {
+		signal(SIGCHLD, SIG_DFL);
 		execlp("nxfiles", "nxfiles", "--properties", path, (char *)NULL);
 		_exit(127);
 	}
+}
+
+/* When a file of the ROM was made, from /usr/share/rom-dates ("SECONDS /PATH" a line), or 0. */
+static time_t
+rom_date(const char *folder, const char *leaf)
+{
+	FILE *list = fopen("/usr/share/rom-dates", "r");
+	char line[700], path[600];
+	char *name;
+	long when = 0;
+
+	if (!list)
+		return 0;
+	snprintf(path, sizeof path, "%s/%s", folder[1] ? folder : "", leaf);
+	while (fgets(line, sizeof line, list)) {
+		line[strcspn(line, "\n")] = 0;
+		if ((name = strchr(line, ' ')) != NULL && !strcmp(name + 1, path)) {
+			when = atol(line);
+			break;
+		}
+	}
+	fclose(list);
+	return (time_t)when;
 }
 
 /* nxfiles --properties PATH: a small window that says what a file, a folder or a shortcut is. */
@@ -1005,9 +1033,12 @@ properties_window(const char *path)
 		LINE("Size", "%ld bytes", (long)info.st_size);
 	else
 		LINE("Size", "%ld KB (%ld bytes)", (long)(info.st_size + 512) / 1024, (long)info.st_size);
-	/* the ROM keeps no dates (a file of the image says 1970) and marks every file as a program */
+	/* the ROM keeps no dates (a file of the image says 1970) and marks every file as a program:
+	 * the image's builder wrote its files' dates down beside them */
 	if (info.st_mtime < 86400)
-		LINE("Changed", "never: as the image has it");
+		info.st_mtime = rom_date(where, leaf);
+	if (info.st_mtime < 86400)
+		LINE("Changed", "not known: older than this image's own files");
 	else if ((tm = localtime(&info.st_mtime)) != NULL)
 		strftime(lines[n][1], sizeof lines[0][1], "%Y-%m-%d %H:%M", tm), strcpy(lines[n++][0], "Changed");
 	LINE("May", "%s%s%s", info.st_mode & 0444 ? "be read" : "not be read", info.st_mode & 0222 ? ", written" : "",
@@ -1017,6 +1048,10 @@ properties_window(const char *path)
 	else if (info.st_nlink > 1 && e->kind != K_FOLDER)
 		LINE("Names", "%d: the same file under other names too", (int)info.st_nlink);
 #undef LINE
+	/* NXFILES_PRINT=1: the lines on the console too, for a test without a screen */
+	for (i = 0; i < n && getenv("NXFILES_PRINT"); i++)
+		printf("nxfiles: %s: %s\n", lines[i][0], lines[i][1]);
+	fflush(stdout);
 	snprintf(title, sizeof title, "%.90s - Properties", e->label);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, title, GR_ROOT_WINDOW_ID, -1, -1, wide, high, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
@@ -1393,11 +1428,10 @@ key(const GR_EVENT *event)
 #endif
 	if (ch == MWKEY_F10 && shift) {
 		/* the menu, at the entry the keys are on */
-		GR_WINDOW_INFO info;
+		struct { int x, y; } info = { 0, 0 };
 
-		info.x = info.y = 0;
 		if (!desktop)
-			GrGetWindowInfo(window, &info);
+			ui_window_origin(window, &info.x, &info.y);
 		if (cursor >= 0 && entries[cursor].chosen && tile_at(cursor, &x, &y, &w, &h))
 			context_menu(cursor, info.x + x + w / 2, info.y + y + h / 2, 1);
 		else

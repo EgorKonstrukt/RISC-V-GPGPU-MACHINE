@@ -22,7 +22,7 @@ is appended to the image and linked to the end of its directory's list. A folder
 lacks is made the same way, and NAME.romlink (a line with a path in the image) becomes NAME,
 a hard link to that file.
 """
-import os, shutil, struct, sys
+import os, shutil, struct, sys, time
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -236,6 +236,12 @@ def main():
     last = {(directory, name): path for path, directory, name in files}
     files = [(path, directory, name) for (directory, name), path in last.items()]
     files.sort(key=lambda f: f[2].endswith('.romlink'))   # links last: what they name is in by then
+    # romfs keeps no dates: each file's goes into a list of its own, which Properties reads
+    now, dates = int(time.time()), []
+    for path, directory, name in files:
+        shown = name[:-8] if name.endswith('.romlink') else name
+        dates.append('%d %s/%s\n' % (now if isinstance(path, bytes) else int(os.path.getmtime(path)), directory.rstrip('/'), shown))
+    files.append((''.join(sorted(dates, key=lambda line: line.split(' ', 1)[1])).encode(), '/usr/share', 'rom-dates'))
     for path, directory, name in files:
         # a folder the ROM lacks is made, each part in turn
         parts = [p for p in directory.split('/') if p]

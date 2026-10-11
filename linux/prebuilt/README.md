@@ -20,7 +20,8 @@ started and everything on its desktop run without building anything.
 | `root/usr/bin/nxplay`, `root/usr/share/play-test.wav`, `.mp3`, `.flac`, `.mod` (made by `linux/play/make_test.py`), `nxapps.84-play`, `nxopen.84-play` | `linux/play/build.sh` | this repository, with minimp3 and dr_flac (below) |
 | `root/usr/share/wallpaper-*.ppm` | `tools/make_wallpaper.py` | photographs from Unsplash |
 | `root/usr/bin/doom.bin`, `root/usr/share/nxopen.50-doom` | `linux/nanox/doom.sh` | the Doom in Microwindows' `contrib`, with the files in `linux/nanox` |
-| `root/usr/bin/tcc`, `cc`, `example`, `root/usr/share/cc-sysroot.tar`, `example-*.c` | `linux/tcc/build.sh` | TinyCC, with musl's headers and libraries for it |
+| `root/usr/bin/tcc`, `cc`, `example`, `root/usr/include`, `root/usr/lib` (the C library's, Nano-X's, OpenGL ES's and the worker cores' headers and libraries), `root/usr/share/example-*.c` | `linux/tcc/build.sh` | TinyCC, with musl's headers and libraries for it |
+| `root/usr/bin/nxide`, `root/usr/share/nxapps.28-ide`, `nxopen.15-ide` | `linux/ide/build.sh` | this repository (the IDE, `docs/ide.md`) |
 | `root/usr/bin/classicube.bin`, `root/usr/share/classicube-default.zip` | `linux/classicube/build.sh` | ClassiCube, with `linux/classicube/classicube.patch` |
 | `root/usr/bin/imdemo` | `linux/imgui/build.sh` | Dear ImGui 1.91.5 |
 | `root/usr/bin/nes.bin`, `nes`, `root/usr/share/nxopen.85-nes` | `linux/nes/build.sh` | Nofrendo, with `linux/nes/nofrendo.patch` and `osd_shaderemu.c` |

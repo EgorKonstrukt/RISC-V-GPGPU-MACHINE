@@ -633,6 +633,41 @@ public static partial class ShaderEmuBuilder
 
     // A board on the left wall for visitors: what this is, what to do with it, and whose work it
     // stands on. Text only, so nothing on it takes the laser.
+    // The board's words, which WriteBoardAgain (ShaderEmuGamepad.cs) also puts into a scene that has a board.
+    public const string WhatText =
+        "The screens on the front wall are a real computer: a 32-bit RISC-V machine of 256 processors, its " +
+        "memory and its disk, all kept in textures. A shader on your graphics card runs tens of thousands of " +
+        "the first one's instructions every frame, a few million a second, and the other 255 beside it for " +
+        "programs that share their work out. It boots an ordinary Linux kernel and a desktop.\n\n" +
+        "No server runs it. Every player's own graphics card runs a machine of its own; what the others " +
+        "see of yours is its screens, sent to them as pictures.";
+    public const string CreditsText =
+        "rvc by pimaker: the RISC-V emulator in a shader this grew from, and its Linux port (linux-rvc, " +
+        "kernel 5.17)\n" +
+        "Linux, by Linus Torvalds and its many contributors\n" +
+        "musl libc, by Rich Felker and contributors\n" +
+        "BusyBox: the shell and the command line tools\n" +
+        "GCC, binutils, LLVM's clang and compiler-rt: the compilers and their runtime\n" +
+        "Microwindows / Nano-X by Greg Haerr and contributors: the window system, its terminal, " +
+        "calculator and games, and its port of Doom\n" +
+        "DOOM and Quake by id Software: the source releases, and the shareware episodes' data\n" +
+        "Vanilla Conquer, and Command & Conquer by Westwood Studios (source released by Electronic Arts)\n" +
+        "ClassiCube by UnknownShadow200 and contributors; Dear ImGui by Omar Cornut and contributors\n" +
+        "Nofrendo by Matthew Conte: the NES, with Thwaite by Damian Yerrick and Nova the Squirrel by NovaSquirrel\n" +
+        "glxgears by Brian Paul, from the Mesa demos\n" +
+        "TinyCC by Fabrice Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\n" +
+        "Desktop photographs from Unsplash, and somebody's cats\n" +
+        "Poly Haven (CC0): this room's furniture, plants and many of its surfaces\n" +
+        "LTCGI by pimaker, Light Volumes by RED_SIM, Mochie's shaders, Silent's Fake Glass: light, rain\n" +
+        "Cascadia Mono by Microsoft: the console's font\n" +
+        "ShaderAudio by lox9973: how sound gets out of a shader\n" +
+        "minimp3 by lieff and dr_flac by David Reid: the music player's decoders\n" +
+        "pl_mpeg by Dominic Szablewski: the video player's decoder\n" +
+        "Big Buck Bunny (c) 2008 Blender Foundation, www.bigbuckbunny.org, CC BY 3.0: the sample film\n" +
+        "Chicago95 by grassmunk and contributors: the desktop's icons\n" +
+        "Musopen's public-domain recordings and NASA's photographs: the sample music and pictures\n" +
+        "VRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room";
+
     static void About(Transform decor, float halfW, Material frameMat)
     {
         const float wide = 2.3f, high = 1.7f, centreZ = -0.2f, centreY = 1.86f;   // its foot clear of the panelling (world/room.py)
@@ -648,14 +683,7 @@ public static partial class ShaderEmuBuilder
         Label(board, "Title", "A whole computer in a pixel shader", left, 40, 2180, 80, 60, TextAnchor.MiddleLeft, Color.white);
 
         Label(board, "What head", "WHAT IS RUNNING HERE", left, 150, columnWide, 44, 36, TextAnchor.MiddleLeft, head);
-        Label(board, "What",
-              "The screens on the front wall are a real computer: a 32-bit RISC-V processor, its memory " +
-              "and its disk, all kept in textures. A shader on your graphics card runs tens of thousands of its " +
-              "instructions every frame, a few million a second. It boots an ordinary Linux kernel and a small " +
-              "desktop.\n\n" +
-              "Nothing is streamed or simulated elsewhere. Every player's own graphics card runs a machine of " +
-              "its own, so what you do here only you see.",
-              left, 200, columnWide, 400, 33, TextAnchor.UpperLeft, body);
+        Label(board, "What", WhatText, left, 200, columnWide, 400, 33, TextAnchor.UpperLeft, body);
 
         Label(board, "Do head", "WHAT YOU CAN DO", left, 620, columnWide, 44, 36, TextAnchor.MiddleLeft, head);
         // (its box is as high as its words at DoSize need, 682: a box of 578 cut the controllers' part off)
@@ -669,33 +697,9 @@ public static partial class ShaderEmuBuilder
               left, HowAt + 50, columnWide, 270, 33, TextAnchor.UpperLeft, body);
 
         Label(board, "Credits head", "BUILT ON THE WORK OF", right, 150, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
-        Label(board, "Credits",
-              "rvc by pimaker: the RISC-V emulator in a shader this grew from, and its Linux port (linux-rvc, " +
-              "kernel 5.17)\n" +
-              "Linux, by Linus Torvalds and its many contributors\n" +
-              "musl libc, by Rich Felker and contributors\n" +
-              "BusyBox: the shell and the command line tools\n" +
-              "GCC, binutils, LLVM's clang and compiler-rt: the compilers and their runtime\n" +
-              "Microwindows / Nano-X by Greg Haerr and contributors: the window system, its terminal, " +
-              "calculator and games, and its port of Doom\n" +
-              "DOOM by id Software: the source release, and the shareware episode's data\n" +
-              "glxgears by Brian Paul, from the Mesa demos\n" +
-              "TinyCC by Fabrice Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\n" +
-              "Desktop photographs from Unsplash, and somebody's cats\n" +
-              "Poly Haven (CC0): this room's furniture, plants and many of its surfaces\n" +
-              "LTCGI by pimaker, Light Volumes by RED_SIM, Mochie's shaders, Silent's Fake Glass: light, rain\n" +
-              "Cascadia Mono by Microsoft: the console's font\n" +
-              "ShaderAudio by lox9973: how sound gets out of a shader\n" +
-              "minimp3 by lieff and dr_flac by David Reid: the music player's decoders\n" +
-              "pl_mpeg by Dominic Szablewski: the video player's decoder\n" +
-              "Big Buck Bunny (c) 2008 Blender Foundation, www.bigbuckbunny.org, CC BY 3.0: the sample film\n" +
-              "Chicago95 by grassmunk and contributors: the desktop's icons\n" +
-              "Musopen's public-domain recordings and NASA's photographs: the sample music and pictures\n" +
-              "VRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room",
-              right, 200, rightWide, 1100, 28, TextAnchor.UpperLeft, body);
+        // (the credits fill their box of 1,100: WriteBoardAgain finds the size at which they fit)
+        Label(board, "Credits", CreditsText, right, 200, rightWide, 1100, 26, TextAnchor.UpperLeft, body);
 
-        // (the credits above are 31 lines when they are wrapped, 1,088 of their box's 1,100; the
-        // panels' styling makes a letter one smaller than is asked here)
         Label(board, "Project head", "THE PROJECT", right, 1330, rightWide, 44, 36, TextAnchor.MiddleLeft, head);
         Label(board, "Project",
               "ShaderEmu by Michael Moroz. Sources, the desktop harness and documentation:\n" +

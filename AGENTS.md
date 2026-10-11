@@ -1288,6 +1288,10 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   `nxkey 38,24 38,24` (two clicks open the first icon), `nxkey drag:114,24:650,330` and
   `grep NAME /root/Desktop/.places`, `nxkey r:700,450` for the menu and `nxkey n right enter`
   in it. A window that opened is a new layer in the snapshot; an icon is not.
+- A button `nxkey` holds is let go as soon as the host's pointer moves (the kernel reports the
+  host's buttons with its place), and a game reads the pointer's place from the host's words,
+  not from `nxkey`'s: a drag in a game is tested with `rvc_cpu --pointer-sweep 0
+  --pointer-button 2,52,54` (`docs/tdawn.md`, "The map is dragged").
 - `nxkey` clicks are a press and a release 60 ms apart; `r:X,Y` is the right button and
   `drag:X,Y:X,Y` the left one held. A key or a click sent before a program's window is
   there goes nowhere: wait for what the program prints first.
@@ -1332,9 +1336,8 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
 - Two shortcuts of the desktop must not have one name: the image builder stops at it
   ("Music" the folder and "Music" the player were one file, and the folder's was gone). A
   program's label in its `nxapps.*` line is its shortcut's name.
-- The board's credits are 31 lines of their box at size 28 in `About()` (27 once styled): to
-  add one, change the label in the scene too, find the size whose `preferredHeight` is under
-  the box's 1,100, and run "Letter the board again in the open scene".
+- The board's credits fill their box of 1,100 at size 24 (`CreditsText`): to add one, change
+  the constant and run "Write the board's words again in the open scene", which finds the size.
 - An SVG is drawn to a PNG here with Edge, headless (`msedge --headless
   --default-background-color=00000000 --window-size=256,256 --screenshot=OUT.png PAGE.html`,
   a page with the picture as its only `img`): nothing else on this machine renders one.
@@ -1354,3 +1357,50 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   `apu_process` is not called. After a change: the NES's sums, `NES_APU_TEST=1 nes thwaite` on
   the shader machine (`the same as this core's`), and a capture against `sound_reference.py`.
 - `mctest 255 20000` in a `--fixed-dt 0.004` run took 220 s: run it in a run of its own.
+- romfs has no dates and calls every file a program: a file's date is its line in
+  `/usr/share/rom-dates` (`make_linux_image.py` writes it from the tree's own files' times; a
+  clone's are its checkout's). `NXFILES_PRINT=1 nxfiles --properties PATH` under `rvc_cpu`
+  with `nano-X -p` prints what the window says; there the clock starts at 1970.
+- The IDE (`docs/ide.md`): `wsl -- bash /mnt/c/Development/ShaderX86/linux/ide/build.sh` (6 s)
+  after Nano-X's build, then the image. It is tested with no screen, under `rvc_cpu` with
+  `nano-X -p &`: `NXIDE_PRINT=1 NXIDE_SCRIPT="mark:9 debug over over out into go quit quit"
+  nxide` must stop at line 9 in `square` with `n = 1`, then at 11 with `result = 1`.
+- A debugger is ptrace and TinyCC's stabs (`linux/ide/debug.h`): no single step on this
+  machine, so a step is an `ebreak` wherever the instruction can go next. A line's address
+  that is its function's first, or not a multiple of four (the closing brace's), is no
+  place for one: the first has the caller's frame, the second corrupts an instruction.
+- In the guest, `sinf` is doubles and doubles are calls: `example shader` was under two
+  pictures a second with it and is 20 with a wave of its own floats.
+- A script that splats a one-element array in PowerShell (`@how`) passes its letters: give
+  a native command the array itself (`$how`).
+- The board's long texts are constants and "ShaderEmu/Write the board's words again in the open
+  scene" fits and letters them (`docs/world.md`, "The board's words, and the world's listing"):
+  it replaces counting the credits' lines by hand. The world's picture and description at
+  VRChat are `unity/listing`, sent by a menu command that needs no build; it changes a public
+  listing, so it is run when the developer asks for it.
+- A classroom place shows its owner's console first: `Take0` on "Stations" a second time makes
+  it the display. In play mode the machine is on after the wall panel's Power (`Button` named
+  "Power" at z 5.41) and the desktop is up by 30M of `totalInstructions`.
+- `GrGetWindowInfo` gives a window's place in its parent, which for a program's window is the
+  window manager's frame: a menu opened at that place is up and left by the frame's own place.
+  `ui_window_origin` (`linux/apps/ui.h`) adds the parents up. Only a test that clicked a menu's
+  row found it: keys in a menu work wherever it is.
+- A test of a program that loads files loads more than one in a run: `nxide` crashed at the
+  second (the first one's cursor used for the second's text) after every one-file test passed.
+  Its `storm:N` script command is the editor's test (`docs/ide.md`, "Checking it").
+- The guest compiler's headers and libraries are files of the ROM (`linux/tcc/build.sh` copies
+  them into the image's tree): nothing is unpacked. Unpacking an archive in the guest is
+  thousands of page copies, each a round in the world: half a first build, minutes there.
+- A program that writes its window's buffer itself waits with `GrReadArea` of a pixel after it
+  has asked the window system to draw (`settle` in `nxpaint.c`, `docs/nanox.md` "Paint"):
+  `GrGetWindowInfo` answers before the GPU has copied the buffer back, and what is written
+  then is gone. To test it, read the buffer back in the program (`probe` in its script).
+- A speed of 0.7 MIPS on the world's display with a program at work is rounds ending early
+  on copies, not an idle machine: count what the program has to copy before calling it hung.
+  To measure in the editor: play mode, the wall's Power, a command into the console
+  keyboard's `queue`, and `EmuTerminal`'s `view` (a Color32 a cell, the character in `r`).
+- The desktop's bar and file manager ignore SIGCHLD, and an ignored signal is the started
+  program's too: its own children ended unseen (`waitpid` finds none), and the IDE waited for
+  a finished build for ever when started from the desktop, never from a shell. A launcher
+  sets it back before `exec` (`ui_run`), and a program that waits for children sets it at its
+  start. Test such a program as the desktop starts it: `sh -c 'trap "" CHLD; exec PROGRAM'`.

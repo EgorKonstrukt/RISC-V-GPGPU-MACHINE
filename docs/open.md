@@ -47,6 +47,7 @@ as it adds its line to the Start menu (`nxapps.*`).
 
 | File | Kinds |
 |---|---|
+| `nxopen.15-ide` (`linux/ide/build.sh`) | source: a `.c` or `.h` file is the IDE's (`docs/ide.md`). Files are read in their names' order and the first kind that fits is the file's, so this comes before text's |
 | `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture, archive, program, text, shortcut (a desktop's `NAME.app`: `docs/nanox.md`) |
 | `nxopen.50-doom` (`linux/nanox/doom.sh`) | a whole game's WAD (`doom -iwad`), a patch WAD (`doom -file`) |
 | `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |

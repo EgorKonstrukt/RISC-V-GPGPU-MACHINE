@@ -6,6 +6,7 @@
 #ifndef SHADEREMU_APPS_UI_H
 #define SHADEREMU_APPS_UI_H
 
+#include <signal.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,6 +125,21 @@ ui_framed(void)
 	for (k = 0; k < 24 && none < 3; k++) {
 		GrCheckNextEvent(&event);
 		none = event.type == GR_EVENT_TYPE_NONE ? none + 1 : 0;
+	}
+}
+
+/* Where a window's top left corner is on the screen (a menu is opened by the screen's
+ * coordinates): a window's own place is in its frame, and the frame's on the screen. */
+static void
+ui_window_origin(GR_WINDOW_ID window, int *x, int *y)
+{
+	GR_WINDOW_INFO info;
+
+	*x = *y = 0;
+	while (window && window != GR_ROOT_WINDOW_ID) {
+		GrGetWindowInfo(window, &info);
+		*x += info.x, *y += info.y;
+		window = info.parent;
 	}
 }
 
@@ -379,6 +395,7 @@ static void
 ui_run(const char *program, const char *argument)
 {
 	if (fork() == 0) {
+		signal(SIGCHLD, SIG_DFL);	/* (a program that ignores it must not hand that on: the started one's children would go unseen) */
 		execlp(program, program, argument, (char *)NULL);
 		_exit(127);
 	}

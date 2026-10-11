@@ -1,225 +1,1465 @@
-/*
- * nxpaint: a paint program. Pick a tool, a size and a colour on the left and draw on the
- * canvas; Save writes the picture as a PPM file (nxpaint FILE opens one and saves to it).
- * Keys: a tool's first letter picks it, 1 to 3 the size, [ and ] the colour, Ctrl+S saves.
- */
+/* nxpaint: a paint program (docs/nanox.md, "Paint"). The picture is the program's own memory,
+ * shown by writing the part in view into the window's buffer; every change is kept as the
+ * pixels it replaced, to be taken back. nxpaint FILE opens a PPM (a PNG or JPEG through the
+ * viewer's decoder) and saves to it as a PPM. */
+#define _GNU_SOURCE
 #include "ui.h"
+#include "ui_files.h"
+#include "ui_icons.h"
+#include "ui_menu.h"
+#include <fcntl.h>
+#include <math.h>
+#include <stdint.h>
+#include <sys/mman.h>
 
-#define TOOLS 60		/* width of the panel on the left */
-#define CANVAS_W 440
-#define CANVAS_H 340
-#define SAVE_ROWS 20		/* rows asked for at a time when saving; divides CANVAS_H */
+#define MENU_H 20
+#define TOOLS_W 72
+#define BOTTOM_H 62
+#define STATUS 18
+#define MOST_W 1600
+#define MOST_H 1200
+#define FIELD_W 120
+#define FIELD_H 44
+#define GREY 0xff808080u
 
-enum { PEN, LINE, BOX, FILLED, ERASER, TOOL_COUNT };
-static const char *tool_names[TOOL_COUNT] = { "Pen", "Line", "Box", "Fill", "Erase" };
-static const int sizes[3] = { 1, 3, 7 };
-static const GR_COLOR palette[16] = {
-	MWRGB(0, 0, 0), MWRGB(128, 128, 128), MWRGB(128, 0, 0), MWRGB(128, 128, 0),
-	MWRGB(0, 128, 0), MWRGB(0, 128, 128), MWRGB(0, 0, 128), MWRGB(128, 0, 128),
-	MWRGB(255, 255, 255), MWRGB(192, 192, 192), MWRGB(255, 0, 0), MWRGB(255, 255, 0),
-	MWRGB(0, 255, 0), MWRGB(0, 255, 255), MWRGB(0, 0, 255), MWRGB(255, 0, 255),
+enum { T_SELECT, T_PENCIL, T_BRUSH, T_ERASER, T_FILL, T_PICK, T_LINE, T_RECT, T_OVAL, T_SPRAY, TOOL_COUNT };
+static const char *const tool_names[TOOL_COUNT] = { "Select", "Pencil", "Brush", "Eraser", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
+static const char *const tool_short[TOOL_COUNT] = { "Sel", "Pen", "Brush", "Erase", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
+static const int sizes[5] = { 1, 2, 4, 8, 16 };
+static const char *const mode_names[3] = { "Outline", "Filled", "Both" };
+static const uint32_t palette[28] = {
+	0xff000000, 0xff404040, 0xff808080, 0xff800000, 0xff808000, 0xff008000, 0xff008080, 0xff000080, 0xff800080, 0xff804000,
+	0xff004040, 0xff0040ff, 0xff4000ff, 0xff804020,
+	0xffffffff, 0xffc0c0c0, 0xffe0e0e0, 0xffff0000, 0xffffff00, 0xff00ff00, 0xff00ffff, 0xff0000ff, 0xffff00ff, 0xffff8000,
+	0xff00c080, 0xff80c0ff, 0xffc080ff, 0xffffc0a0,
 };
+enum {
+	C_NONE, C_NEW, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_ALL, C_DESELECT,
+	C_RESIZE, C_SCALE, C_CROP, C_FLIP_H, C_FLIP_V, C_ROTATE_R, C_ROTATE_L, C_INVERT, C_CLEAR, C_ZOOM_IN, C_ZOOM_OUT, C_ZOOM_1
+};
+enum { ASK_NONE, ASK_NEW, ASK_RESIZE, ASK_SCALE, ASK_SAVE };
 
-static GR_WINDOW_ID window, canvas;
-static int tool, size_index = 1, colour;
-static int drawing, from_x, from_y, last_x, last_y;
-static char path[256] = "/root/picture.ppm";
-static const char *notice = "";
+static GR_WINDOW_ID window;
+static int width, height;		/* the window's */
+static int view_w, view_h;		/* the part of it the picture shows in, from (TOOLS_W, MENU_H) */
+static uint32_t *surface;		/* the window's own buffer, mapped: 0xAARRGGBB a pixel */
+static uint32_t surface_at;
+static int surface_row, gpu = -1;
+
+static uint32_t *pix, *back;		/* the picture, and the picture as of the last change that was kept */
+static int pw, ph;
+static int zoom = 1, ox, oy;		/* the picture's pixel at the view's corner */
+static int tool = T_BRUSH, size_index = 2, mode;
+static uint32_t fg = 0xff000000, bg = 0xffffffff;
+static int hue, sat = 255, value = 0;	/* the foreground as the field and the slider have it */
+static char path[300] = "/root/picture.ppm", notice[160];
+static int modified, leaving;
+static int asking;
+static char answer[200];
+
+/* what is being done with the pointer held */
+static int held, held_button, from_x, from_y, last_x, last_y;
+static int d_x0, d_y0, d_x1, d_y1;	/* the picture's pixels this change has touched */
+static int sliding, picking_field;
+
+/* the selection, and a piece of picture that floats in it until it is put down */
+static int sel_on, s_x0, s_y0, s_x1, s_y1;
+static struct { int on, x, y, w, h, hole, hx0, hy0, hx1, hy1, moving, grab_x, grab_y; uint32_t *buf; } fl;
+
+struct change { int whole, x, y, w, h, pw, ph; uint32_t *data; };
+#define HISTORY 48
+static struct change done[HISTORY], undone[HISTORY];
+static int done_count, undone_count;
+
+static char script[2000];
+static int print_on;
+
+/* ---- the window's buffer, and the picture shown in it ---- */
+
+static int asked;	/* the window system has been asked to draw since settle() last waited for it */
+
+/* Waits until the window system has drawn what it was asked: the GPU draws on the buffer and
+ * copies it back, and what is written into it meanwhile is lost. A pixel read is the request
+ * it answers only then (asking where the window is comes back before the GPU is done). */
+static void
+settle(void)
+{
+	GR_WINDOW_INFO info;
+	GR_PIXELVAL pixel;
+	uint32_t offset, bytes;
+	void *memory;
+
+	if (asked) {
+		GrReadArea(window, 0, 0, 1, 1, &pixel);
+		asked = 0;
+	}
+	if (surface)
+		return;
+	GrGetWindowInfo(window, &info);
+	if (!info.surface_address || info.surface_address == surface_at || gpu < 0)
+		return;
+	surface_row = info.surface_row ? (int)info.surface_row : (int)info.width;
+	offset = info.surface_address - 0x86000000u;
+	bytes = (offset & 4095) + (uint32_t)surface_row * (uint32_t)height * 4;
+	memory = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu, offset & ~4095u);
+	if (memory == MAP_FAILED)
+		return;
+	surface = (uint32_t *)((char *)memory + (offset & 4095));
+	surface_at = info.surface_address;
+}
+
+/* The selection's edge over what was just shown: every other pair of pixels turned over. */
+static void
+edge(int sx0, int sy0, int sx1, int sy1)
+{
+	int ex0 = TOOLS_W + (s_x0 - ox) * zoom, ey0 = MENU_H + (s_y0 - oy) * zoom, ex1 = TOOLS_W + (s_x1 - ox) * zoom - 1,
+	    ey1 = MENU_H + (s_y1 - oy) * zoom - 1, x, y;
+
+	if (!sel_on || !surface)
+		return;
+	for (x = ex0 > sx0 ? ex0 : sx0; x <= ex1 && x < sx1; x++) {
+		if (ey0 >= sy0 && ey0 < sy1 && (x >> 2 & 1))
+			surface[ey0 * surface_row + x] ^= 0xffffff;
+		if (ey1 >= sy0 && ey1 < sy1 && ey1 != ey0 && (x >> 2 & 1))
+			surface[ey1 * surface_row + x] ^= 0xffffff;
+	}
+	for (y = ey0 > sy0 ? ey0 : sy0; y <= ey1 && y < sy1; y++) {
+		if (ex0 >= sx0 && ex0 < sx1 && (y >> 2 & 1) && y != ey0 && y != ey1)
+			surface[y * surface_row + ex0] ^= 0xffffff;
+		if (ex1 >= sx0 && ex1 < sx1 && ex1 != ex0 && (y >> 2 & 1) && y != ey0 && y != ey1)
+			surface[y * surface_row + ex1] ^= 0xffffff;
+	}
+}
+
+/* Shows the picture's pixels from (x0, y0) to before (x1, y1), where they are in view. */
+static void
+present(int x0, int y0, int x1, int y1)
+{
+	static uint32_t line[2048];
+	int sx0, sy0, sx1, sy1, sy, sx, iy;
+
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
+	sx0 = TOOLS_W + (x0 - ox) * zoom, sy0 = MENU_H + (y0 - oy) * zoom;
+	sx1 = TOOLS_W + (x1 - ox) * zoom, sy1 = MENU_H + (y1 - oy) * zoom;
+	sx0 = sx0 < TOOLS_W ? TOOLS_W : sx0, sy0 = sy0 < MENU_H ? MENU_H : sy0;
+	sx1 = sx1 > TOOLS_W + view_w ? TOOLS_W + view_w : sx1, sy1 = sy1 > MENU_H + view_h ? MENU_H + view_h : sy1;
+	if (sx0 >= sx1 || sy0 >= sy1)
+		return;
+	settle();
+	if (!surface)
+		return;
+	for (sy = sy0; sy < sy1; sy++) {
+		iy = oy + (sy - MENU_H) / zoom;
+		if (zoom == 1) {
+			memcpy(surface + sy * surface_row + sx0, pix + iy * pw + ox + sx0 - TOOLS_W, (size_t)(sx1 - sx0) * 4);
+			continue;
+		}
+		/* a row of the picture is as many rows of the screen as the zoom: made once */
+		if (sy == sy0 || (sy - MENU_H) % zoom == 0)
+			for (sx = sx0; sx < sx1; sx++)
+				line[sx - sx0] = pix[iy * pw + ox + (sx - TOOLS_W) / zoom];
+		memcpy(surface + sy * surface_row + sx0, line, (size_t)(sx1 - sx0) * 4);
+	}
+	edge(sx0, sy0, sx1, sy1);
+}
+
+/* The whole view: the picture, and grey where it ends. */
+static void
+present_view(void)
+{
+	int sy, sx, right, bottom;
+
+	if (ox > pw - view_w / zoom)
+		ox = pw - view_w / zoom;
+	if (oy > ph - view_h / zoom)
+		oy = ph - view_h / zoom;
+	ox = ox < 0 ? 0 : ox, oy = oy < 0 ? 0 : oy;
+	present(ox, oy, ox + view_w / zoom + 1, oy + view_h / zoom + 1);
+	if (!surface)
+		return;
+	right = TOOLS_W + (pw - ox) * zoom, bottom = MENU_H + (ph - oy) * zoom;
+	for (sy = MENU_H; sy < MENU_H + view_h; sy++)
+		for (sx = sy < bottom && right > TOOLS_W ? right : TOOLS_W; sx < TOOLS_W + view_w; sx++)
+			surface[sy * surface_row + sx] = GREY;
+}
+
+/* ---- changes, kept to be taken back ---- */
 
 static void
-draw_panel(void)
+forget(struct change *stack, int *count, int from)
 {
 	int i;
 
-	ui_fill(window, 0, 0, TOOLS, CANVAS_H, UI_FACE);
-	for (i = 0; i < TOOL_COUNT; i++)
-		ui_button(window, 3, 3 + i * 22, TOOLS - 6, 20, tool_names[i], i == tool);
-	for (i = 0; i < 3; i++) {
-		ui_button(window, 3 + i * 18, 118, 17, 17, "", i == size_index);
-		ui_fill(window, 3 + i * 18 + 8 - sizes[i] / 2, 118 + 8 - sizes[i] / 2, sizes[i], sizes[i], BLACK);
-	}
-	for (i = 0; i < 16; i++) {
-		ui_fill(window, 4 + (i % 4) * 13, 142 + (i / 4) * 13, 12, 12, palette[i]);
-		ui_bevel(window, 4 + (i % 4) * 13, 142 + (i / 4) * 13, 12, 12, i == colour);
-	}
-	ui_fill(window, 4, 198, TOOLS - 8, 14, palette[colour]);
-	ui_bevel(window, 4, 198, TOOLS - 8, 14, 1);
-	ui_button(window, 3, 220, TOOLS - 6, 20, "Clear", 0);
-	ui_button(window, 3, 243, TOOLS - 6, 20, "Save", 0);
-	ui_text(window, 3, 270, notice, -1, BLACK, 0);
-}
-
-/* A square dab of the tool's size; a stroke is dabs close enough together to join. */
-static void
-dab(int x, int y)
-{
-	int size = sizes[size_index];
-
-	GrFillRect(canvas, ui_gc, x - size / 2, y - size / 2, size, size);
+	for (i = from; i < *count; i++)
+		free(stack[i].data);
+	*count = from;
 }
 
 static void
-stroke(int x0, int y0, int x1, int y1)
+push(struct change *stack, int *count, struct change c)
 {
-	int dx = x1 - x0, dy = y1 - y0, steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy), i;
+	if (*count == HISTORY) {
+		free(stack[0].data);
+		memmove(stack, stack + 1, (HISTORY - 1) * sizeof stack[0]);
+		(*count)--;
+	}
+	stack[(*count)++] = c;
+}
 
-	GrSetGCForeground(ui_gc, tool == ERASER ? WHITE : palette[colour]);
-	if (sizes[size_index] == 1) {
-		GrLine(canvas, ui_gc, x0, y0, x1, y1);
+/* The pixels from (x0, y0) to before (x1, y1) have changed, and the change is to stay. */
+static void
+keep(int x0, int y0, int x1, int y1)
+{
+	struct change c = { 0 };
+	int y;
+
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
+	if (x0 >= x1 || y0 >= y1)
+		return;
+	c.x = x0, c.y = y0, c.w = x1 - x0, c.h = y1 - y0;
+	c.data = malloc((size_t)c.w * (size_t)c.h * 4);
+	for (y = 0; y < c.h; y++) {
+		memcpy(c.data + y * c.w, back + (y0 + y) * pw + x0, (size_t)c.w * 4);
+		memcpy(back + (y0 + y) * pw + x0, pix + (y0 + y) * pw + x0, (size_t)c.w * 4);
+	}
+	forget(undone, &undone_count, 0);
+	push(done, &done_count, c);
+	modified = 1;
+}
+
+/* The picture is another one altogether (another size): `old` is what it was. */
+static void
+keep_whole(uint32_t *old, int old_w, int old_h)
+{
+	struct change c = { 1, 0, 0, 0, 0, old_w, old_h, old };
+
+	forget(undone, &undone_count, 0);
+	push(done, &done_count, c);
+	back = realloc(back, (size_t)pw * (size_t)ph * 4);
+	memcpy(back, pix, (size_t)pw * (size_t)ph * 4);
+	sel_on = 0;
+	modified = 1;
+}
+
+/* A change taken back, or made again: what it holds and what the picture has change places. */
+static void
+turn(struct change *c)
+{
+	uint32_t word;
+	int y, x, n;
+
+	if (c->whole) {
+		uint32_t *was = pix;
+
+		pix = c->data, c->data = was;
+		n = pw, pw = c->pw, c->pw = n;
+		n = ph, ph = c->ph, c->ph = n;
+		back = realloc(back, (size_t)pw * (size_t)ph * 4);
+		memcpy(back, pix, (size_t)pw * (size_t)ph * 4);
+		sel_on = 0;
+		present_view();
 		return;
 	}
-	for (i = 0; i <= steps; i++)
-		dab(x0 + (steps ? dx * i / steps : 0), y0 + (steps ? dy * i / steps : 0));
+	for (y = 0; y < c->h; y++)
+		for (x = 0; x < c->w; x++) {
+			word = pix[(c->y + y) * pw + c->x + x];
+			pix[(c->y + y) * pw + c->x + x] = back[(c->y + y) * pw + c->x + x] = c->data[y * c->w + x];
+			c->data[y * c->w + x] = word;
+		}
+	present(c->x, c->y, c->x + c->w, c->y + c->h);
 }
 
-static void
-shape(int x0, int y0, int x1, int y1)
-{
-	int x = x0 < x1 ? x0 : x1, y = y0 < y1 ? y0 : y1, w = abs(x1 - x0) + 1, h = abs(y1 - y0) + 1, size = sizes[size_index];
+/* ---- drawing into the picture ---- */
 
-	GrSetGCForeground(ui_gc, palette[colour]);
-	if (tool == LINE) {
-		stroke(x0, y0, x1, y1);
-	} else if (tool == FILLED) {
-		GrFillRect(canvas, ui_gc, x, y, w, h);
-	} else {
-		GrFillRect(canvas, ui_gc, x, y, w, size);
-		GrFillRect(canvas, ui_gc, x, y + h - size, w, size);
-		GrFillRect(canvas, ui_gc, x, y, size, h);
-		GrFillRect(canvas, ui_gc, x + w - size, y, size, h);
+static void
+touch(int x0, int y0, int x1, int y1)
+{
+	if (d_x1 <= d_x0)
+		d_x0 = x0, d_y0 = y0, d_x1 = x1, d_y1 = y1;
+	else {
+		d_x0 = x0 < d_x0 ? x0 : d_x0, d_y0 = y0 < d_y0 ? y0 : d_y0;
+		d_x1 = x1 > d_x1 ? x1 : d_x1, d_y1 = y1 > d_y1 ? y1 : d_y1;
 	}
 }
 
-/* The canvas as a PPM file: three bytes a pixel, rows top to bottom. */
+static void
+span(int x0, int x1, int y, uint32_t colour)
+{
+	if (y < 0 || y >= ph)
+		return;
+	for (x0 = x0 < 0 ? 0 : x0, x1 = x1 > pw ? pw : x1; x0 < x1; x0++)
+		pix[y * pw + x0] = colour;
+}
+
+static void
+box(int x0, int y0, int x1, int y1, uint32_t colour)
+{
+	for (; y0 < y1; y0++)
+		span(x0, x1, y0, colour);
+}
+
+/* A round dab `size` across. */
+static void
+dab(int x, int y, int size, uint32_t colour)
+{
+	int r = size / 2, dy, dx;
+
+	if (size <= 2) {
+		box(x, y, x + size, y + size, colour);
+	} else
+		for (dy = -r; dy <= r; dy++) {
+			for (dx = 0; dx * dx + dy * dy <= r * r + r / 2; dx++)
+				continue;
+			span(x - dx + 1, x + dx, y + dy, colour);
+		}
+	touch(x - r - 1, y - r - 1, x + r + 2, y + r + 2);
+}
+
+static void
+stroke(int x0, int y0, int x1, int y1, int size, uint32_t colour)
+{
+	int dx = abs(x1 - x0), dy = abs(y1 - y0), steps = dx > dy ? dx : dy, i;
+
+	for (i = 0; i <= steps; i++)
+		dab(x0 + (steps ? (x1 - x0) * i / steps : 0), y0 + (steps ? (y1 - y0) * i / steps : 0), size, colour);
+}
+
+/* A rectangle or an oval between two corners: its edge `size` thick, its inside, or both. */
+static void
+shape(int oval, int x0, int y0, int x1, int y1, int size, uint32_t line, uint32_t inside)
+{
+	int y, n, half, inner;
+	float cx, cy, rx, ry, t;
+
+	if (x0 > x1)
+		n = x0, x0 = x1, x1 = n;
+	if (y0 > y1)
+		n = y0, y0 = y1, y1 = n;
+	x1++, y1++;
+	touch(x0, y0, x1, y1);
+	if (mode == 1)
+		line = inside, size = 1 << 20;
+	cx = (float)(x0 + x1) * 0.5f, cy = (float)(y0 + y1) * 0.5f, rx = (float)(x1 - x0) * 0.5f, ry = (float)(y1 - y0) * 0.5f;
+	for (y = y0; y < y1; y++) {
+		if (!oval) {
+			if (mode == 2)
+				span(x0, x1, y, inside);
+			if (y - y0 < size || y1 - 1 - y < size)
+				span(x0, x1, y, line);
+			else
+				span(x0, x0 + size, y, line), span(x1 - size, x1, y, line);
+			continue;
+		}
+		t = ((float)y + 0.5f - cy) / ry;
+		half = (int)(rx * sqrtf(1.0f - t * t) + 0.5f);
+		inner = -1;
+		if (ry - (float)size > 0.5f && rx - (float)size > 0.5f) {
+			t = ((float)y + 0.5f - cy) / (ry - (float)size);
+			if (t > -1.0f && t < 1.0f)
+				inner = (int)((rx - (float)size) * sqrtf(1.0f - t * t) + 0.5f);
+		}
+		n = (int)(cx + 0.5f);
+		if (inner < 0)
+			span(n - half, n + half, y, line);
+		else {
+			span(n - half, n - inner, y, line), span(n + inner, n + half, y, line);
+			if (mode == 2)
+				span(n - inner, n + inner, y, inside);
+		}
+	}
+}
+
+/* Every pixel that can be reached from (x, y) through pixels of its colour takes `colour`. */
+static void
+flood(int x, int y, uint32_t colour)
+{
+	uint32_t old;
+	int *stack, room = 1024, top = 0, left, right, i, dy;
+
+	if (x < 0 || y < 0 || x >= pw || y >= ph || (old = pix[y * pw + x]) == colour)
+		return;
+	stack = malloc((size_t)room * 2 * sizeof *stack);
+	stack[0] = x, stack[1] = y, top = 1;
+	while (top) {
+		top--;
+		x = stack[top * 2], y = stack[top * 2 + 1];
+		if (pix[y * pw + x] != old)
+			continue;
+		for (left = x; left > 0 && pix[y * pw + left - 1] == old; left--)
+			continue;
+		for (right = x; right < pw - 1 && pix[y * pw + right + 1] == old; right++)
+			continue;
+		for (i = left; i <= right; i++)
+			pix[y * pw + i] = colour;
+		touch(left, y, right + 1, y + 1);
+		/* the rows above and below: one place to go on from for every run of the old colour */
+		for (dy = -1; dy <= 1; dy += 2) {
+			if (y + dy < 0 || y + dy >= ph)
+				continue;
+			for (i = left; i <= right; i++)
+				if (pix[(y + dy) * pw + i] == old && (i == left || pix[(y + dy) * pw + i - 1] != old)) {
+					if (top == room) {
+						room *= 2;
+						stack = realloc(stack, (size_t)room * 2 * sizeof *stack);
+					}
+					stack[top * 2] = i, stack[top * 2 + 1] = y + dy, top++;
+				}
+		}
+	}
+	free(stack);
+}
+
+static void
+spray(int x, int y, int size, uint32_t colour)
+{
+	static unsigned chance = 2463534242u;
+	int reach = size * 2 + 3, i, dx, dy;
+
+	for (i = 0; i < size * 3 + 6; i++) {
+		chance ^= chance << 13, chance ^= chance >> 17, chance ^= chance << 5;
+		dx = (int)(chance % (unsigned)(2 * reach + 1)) - reach, dy = (int)(chance / 4096 % (unsigned)(2 * reach + 1)) - reach;
+		if (dx * dx + dy * dy <= reach * reach)
+			span(x + dx, x + dx + 1, y + dy, colour);
+	}
+	touch(x - reach, y - reach, x + reach + 1, y + reach + 1);
+}
+
+/* The picture's pixels as they were before this change began. */
+static void
+restore(int x0, int y0, int x1, int y1)
+{
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
+	for (; y0 < y1 && x0 < x1; y0++)
+		memcpy(pix + y0 * pw + x0, back + y0 * pw + x0, (size_t)(x1 - x0) * 4);
+}
+
+/* ---- the selection, and what floats in it ---- */
+
+/* The floating piece where it is now: the picture under it and where it was is the kept one. */
+static void
+float_show(int was_x, int was_y)
+{
+	int x0 = was_x < fl.x ? was_x : fl.x, y0 = was_y < fl.y ? was_y : fl.y, x1 = (was_x > fl.x ? was_x : fl.x) + fl.w,
+	    y1 = (was_y > fl.y ? was_y : fl.y) + fl.h, y, x, n;
+
+	if (fl.hole)
+		x0 = fl.hx0 < x0 ? fl.hx0 : x0, y0 = fl.hy0 < y0 ? fl.hy0 : y0, x1 = fl.hx1 > x1 ? fl.hx1 : x1, y1 = fl.hy1 > y1 ? fl.hy1 : y1;
+	restore(x0, y0, x1, y1);
+	if (fl.hole)
+		box(fl.hx0, fl.hy0, fl.hx1, fl.hy1, bg);
+	for (y = 0; y < fl.h; y++) {
+		if (fl.y + y < 0 || fl.y + y >= ph)
+			continue;
+		x = fl.x < 0 ? -fl.x : 0;
+		n = fl.w - x - (fl.x + fl.w > pw ? fl.x + fl.w - pw : 0);
+		if (n > 0)
+			memcpy(pix + (fl.y + y) * pw + fl.x + x, fl.buf + y * fl.w + x, (size_t)n * 4);
+	}
+	touch(x0, y0, x1, y1);
+	s_x0 = fl.x, s_y0 = fl.y, s_x1 = fl.x + fl.w, s_y1 = fl.y + fl.h, sel_on = 1;
+	present(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
+}
+
+/* Puts the floating piece down for good, or with `drop` takes it away again. */
+static void
+float_end(int drop)
+{
+	if (!fl.on)
+		return;
+	fl.on = 0;
+	if (drop) {
+		restore(d_x0, d_y0, d_x1, d_y1);
+		sel_on = 0;
+		present(d_x0 - 1, d_y0 - 1, d_x1 + 1, d_y1 + 1);
+	} else
+		keep(d_x0, d_y0, d_x1, d_y1);
+	free(fl.buf);
+	fl.buf = NULL;
+	d_x1 = d_x0 = 0;
+}
+
+static uint32_t *
+copy_of(int x0, int y0, int x1, int y1)
+{
+	uint32_t *copy = malloc((size_t)(x1 - x0) * (size_t)(y1 - y0) * 4);
+	int y;
+
+	for (y = y0; y < y1; y++)
+		memcpy(copy + (y - y0) * (x1 - x0), pix + y * pw + x0, (size_t)(x1 - x0) * 4);
+	return copy;
+}
+
+/* The selected piece comes loose, leaving the background's colour where it was. */
+static void
+lift(void)
+{
+	if (fl.on || !sel_on)
+		return;
+	memset(&fl, 0, sizeof fl);
+	fl.on = 1, fl.x = s_x0, fl.y = s_y0, fl.w = s_x1 - s_x0, fl.h = s_y1 - s_y0;
+	fl.buf = copy_of(s_x0, s_y0, s_x1, s_y1);
+	fl.hole = 1, fl.hx0 = s_x0, fl.hy0 = s_y0, fl.hx1 = s_x1, fl.hy1 = s_y1;
+	d_x1 = d_x0 = 0;
+}
+
+static void
+select_none(void)
+{
+	int x0 = s_x0, y0 = s_y0, x1 = s_x1, y1 = s_y1;
+
+	float_end(0);
+	if (!sel_on)
+		return;
+	sel_on = 0;
+	present(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
+}
+
+/* ---- files: PPM, three bytes a pixel ---- */
+
+static uint32_t *
+read_ppm(const char *file_path, int *w, int *h)
+{
+	FILE *file = fopen(file_path, "rb");
+	uint32_t *pixels;
+	unsigned char *row;
+	int most = 0, x, y;
+
+	if (!file)
+		return NULL;
+	if (fscanf(file, "P6 %d %d %d", w, h, &most) != 3 || *w < 1 || *h < 1 || *w > MOST_W || *h > MOST_H || most != 255) {
+		fclose(file);
+		return NULL;
+	}
+	fgetc(file);
+	pixels = malloc((size_t)*w * (size_t)*h * 4);
+	row = malloc((size_t)*w * 3);
+	for (y = 0; y < *h; y++) {
+		if (fread(row, 3, (size_t)*w, file) != (size_t)*w)
+			memset(row, 255, (size_t)*w * 3);
+		for (x = 0; x < *w; x++)
+			pixels[y * *w + x] = 0xff000000u | (uint32_t)row[3 * x] << 16 | (uint32_t)row[3 * x + 1] << 8 | row[3 * x + 2];
+	}
+	free(row);
+	fclose(file);
+	return pixels;
+}
+
+static int
+write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
+{
+	FILE *file = fopen(file_path, "wb");
+	unsigned char *row;
+	int x, y;
+
+	if (!file)
+		return 0;
+	row = malloc((size_t)w * 3);
+	fprintf(file, "P6\n%d %d\n255\n", w, h);
+	for (y = 0; y < h; y++) {
+		for (x = 0; x < w; x++)
+			row[3 * x] = (unsigned char)(pixels[y * w + x] >> 16), row[3 * x + 1] = (unsigned char)(pixels[y * w + x] >> 8),
+			row[3 * x + 2] = (unsigned char)pixels[y * w + x];
+		fwrite(row, 3, (size_t)w, file);
+	}
+	free(row);
+	fclose(file);
+	return 1;
+}
+
+/* A new picture in place of this one, its history forgotten. */
+static void
+begin(uint32_t *pixels, int w, int h)
+{
+	forget(done, &done_count, 0);
+	forget(undone, &undone_count, 0);
+	free(fl.buf);
+	memset(&fl, 0, sizeof fl);
+	free(pix);
+	pix = pixels, pw = w, ph = h;
+	back = realloc(back, (size_t)w * (size_t)h * 4);
+	memcpy(back, pix, (size_t)w * (size_t)h * 4);
+	sel_on = modified = ox = oy = 0;
+	d_x1 = d_x0 = 0;
+	zoom = 1;
+}
+
+static void
+blank(int w, int h)
+{
+	uint32_t *pixels = malloc((size_t)w * (size_t)h * 4);
+	int i;
+
+	for (i = 0; i < w * h; i++)
+		pixels[i] = 0xffffffffu;
+	begin(pixels, w, h);
+}
+
+static void
+titled(void)
+{
+	char title[340];
+
+	snprintf(title, sizeof title, "%s - Paint", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	if (window)
+		GrSetWindowTitle(window, title);
+}
+
+/* Opens a picture: a PPM as it is, anything else through the viewer's decoder. */
+static int
+open_file(const char *file_path)
+{
+	char made[64], shell[500];
+	uint32_t *pixels;
+	int w, h;
+
+	pixels = read_ppm(file_path, &w, &h);
+	if (!pixels) {
+		snprintf(made, sizeof made, "/tmp/nxpaint-%d.ppm", (int)getpid());
+		snprintf(shell, sizeof shell, "nxview --decode '%s' %s 2>/dev/null", file_path, made);
+		if (system(shell) == 0)
+			pixels = read_ppm(made, &w, &h);
+		unlink(made);
+	}
+	if (!pixels)
+		return 0;
+	begin(pixels, w, h);
+	snprintf(path, sizeof path, "%s", file_path);
+	titled();
+	return 1;
+}
+
+/* Saves as a PPM: a picture that came from another kind of file gets that ending beside it. */
 static void
 save(void)
 {
-	static GR_PIXELVAL rows[SAVE_ROWS * CANVAS_W];
-	static unsigned char bytes[SAVE_ROWS * CANVAS_W * 3];
-	FILE *file = fopen(path, "wb");
-	int x, y;
+	char *dot = strrchr(path, '.');
 
-	if (!file) {
-		notice = "cannot save";
+	if (!dot || strcmp(dot, ".ppm")) {
+		if (dot && strlen(dot) <= 5)
+			*dot = 0;
+		strncat(path, ".ppm", sizeof path - strlen(path) - 1);
+		titled();
+	}
+	if (write_ppm(path, pix, pw, ph)) {
+		modified = 0;
+		snprintf(notice, sizeof notice, "saved as %.120s", path);
+	} else
+		snprintf(notice, sizeof notice, "cannot write %.120s", path);
+}
+
+/* ---- colours ---- */
+
+static uint32_t
+from_hsv(int h, int s, int v)
+{
+	int sector = h * 6 / 256, f = h * 6 % 256, p = v * (255 - s) / 255, q = v * (255 - s * f / 255) / 255,
+	    t = v * (255 - s * (255 - f) / 255) / 255, r, g, b;
+
+	switch (sector) {
+	case 0: r = v, g = t, b = p; break;
+	case 1: r = q, g = v, b = p; break;
+	case 2: r = p, g = v, b = t; break;
+	case 3: r = p, g = q, b = v; break;
+	case 4: r = t, g = p, b = v; break;
+	default: r = v, g = p, b = q; break;
+	}
+	return 0xff000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+}
+
+/* The foreground is another colour: where it is in the field, and on the slider. */
+static void
+foreground(uint32_t colour)
+{
+	int r = (int)(colour >> 16 & 255), g = (int)(colour >> 8 & 255), b = (int)(colour & 255);
+	int most = r > g ? (r > b ? r : b) : (g > b ? g : b), least = r < g ? (r < b ? r : b) : (g < b ? g : b), range = most - least;
+
+	fg = colour | 0xff000000u;
+	value = most;
+	sat = most ? range * 255 / most : 0;
+	if (range)
+		hue = (most == r ? (g - b) * 256 / range / 6 : most == g ? 256 / 3 + (b - r) * 256 / range / 6 : 512 / 3 + (r - g) * 256 / range / 6) & 255;
+}
+
+/* ---- the panels ---- */
+
+static int
+bottom_y(void)
+{
+	return height - STATUS - BOTTOM_H;
+}
+
+static void
+draw_status(void)
+{
+	static const char *const asks[] = { "", "New picture, WIDTHxHEIGHT: ", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: ", "Save as: " };
+	char text[420];
+
+	asked = 1;
+	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
+	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
+	if (asking)
+		snprintf(text, sizeof text, "%s%s_   (Enter, or Escape to leave)", asks[asking], answer);
+	else
+		snprintf(text, sizeof text, "%s%s   %d x %d, %dx   %s", tool_names[tool], modified ? " *" : "", pw, ph, zoom, notice);
+	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
+}
+
+static void
+draw_tools(void)
+{
+	int i, y = MENU_H + 4 + 5 * 26 + 6;
+	char text[16];
+
+	asked = 1;
+	ui_fill(window, 0, MENU_H, TOOLS_W, height - MENU_H - BOTTOM_H - STATUS, UI_FACE);
+	for (i = 0; i < TOOL_COUNT; i++)
+		ui_button(window, 3 + (i & 1) * 33, MENU_H + 4 + (i / 2) * 26, 32, 24, tool_short[i], i == tool);
+	ui_text(window, 4, y, "Size", -1, BLACK, 0);
+	for (i = 0; i < 5; i++) {
+		int dot = sizes[i] > 9 ? 9 : sizes[i];
+
+		ui_button(window, 3 + i * 13, y + 16, 13, 18, "", i == size_index);
+		ui_fill(window, 3 + i * 13 + 6 - dot / 2, y + 25 - dot / 2, dot, dot, BLACK);
+	}
+	ui_text(window, 4, y + 42, "Shapes", -1, BLACK, 0);
+	for (i = 0; i < 3; i++)
+		ui_button(window, 3, y + 58 + i * 22, TOOLS_W - 6, 20, mode_names[i], i == mode);
+	ui_text(window, 4, y + 130, "Zoom", -1, BLACK, 0);
+	ui_button(window, 3, y + 146, 20, 20, " -", 0);
+	snprintf(text, sizeof text, "%dx", zoom);
+	ui_text(window, 30, y + 149, text, -1, BLACK, 0);
+	ui_button(window, TOOLS_W - 23, y + 146, 20, 20, " +", 0);
+}
+
+/* The colours along the bottom: the two in hand, the palette, and a field of every hue. */
+static void
+draw_colours(void)
+{
+	int y = bottom_y(), i, fx = 60 + 14 * 18 + 12, sx = fx + FIELD_W + 10, row, column;
+	char text[40];
+
+	asked = 1;
+	ui_fill(window, 0, y, width, BOTTOM_H, UI_FACE);
+	ui_fill(window, 0, y, width, 1, UI_SHADOW);
+	ui_fill(window, 22, y + 22, 28, 28, bg & 0xffffff);
+	ui_bevel(window, 22, y + 22, 28, 28, 1);
+	ui_fill(window, 6, y + 8, 28, 28, fg & 0xffffff);
+	ui_bevel(window, 6, y + 8, 28, 28, 1);
+	for (i = 0; i < 28; i++) {
+		ui_fill(window, 60 + (i % 14) * 18, y + 10 + (i / 14) * 20, 17, 17, palette[i] & 0xffffff);
+		ui_bevel(window, 60 + (i % 14) * 18, y + 10 + (i / 14) * 20, 17, 17, 1);
+	}
+	if (width < sx + 130)
+		return;
+	ui_slider(window, sx, y + 6, 124, value, 255);
+	snprintf(text, sizeof text, "#%06X  light %d%%", (unsigned)(fg & 0xffffff), value * 100 / 255);
+	ui_text(window, sx + 4, y + 30, text, -1, BLACK, 0);
+	ui_text(window, sx + 4, y + 44, "right button: the other", -1, UI_SHADOW, 0);
+	/* the field: every hue across, paler downwards, at the slider's lightness */
+	settle();
+	if (!surface)
+		return;
+	for (row = 0; row < FIELD_H; row++)
+		for (column = 0; column < FIELD_W; column++)
+			surface[(y + 9 + row) * surface_row + fx + column] = from_hsv(column * 255 / (FIELD_W - 1), 255 - row * 255 / (FIELD_H - 1), value ? value : 255);
+	i = hue * (FIELD_W - 1) / 255, row = (255 - sat) * (FIELD_H - 1) / 255;
+	for (column = -3; column <= 3; column++) {
+		if (i + column >= 0 && i + column < FIELD_W)
+			surface[(y + 9 + row) * surface_row + fx + i + column] ^= 0xffffff;
+		if (row + column >= 0 && row + column < FIELD_H && column)
+			surface[(y + 9 + row + column) * surface_row + fx + i] ^= 0xffffff;
+	}
+}
+
+static const char *const menu_names[] = { "File", "Edit", "Image", "View" };
+static int menu_x[5];
+static const struct ui_menu_item file_items[] = {
+	{ "New...   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
+	{ "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
+};
+static const struct ui_menu_item edit_items[] = {
+	{ "Undo   Ctrl+Z", -1, C_UNDO }, { "Redo   Ctrl+Y", -1, C_REDO }, { "Cut   Ctrl+X", -1, C_CUT, NULL, 0, UI_MENU_LINE },
+	{ "Copy   Ctrl+C", -1, C_COPY }, { "Paste   Ctrl+V", -1, C_PASTE }, { "Delete", -1, C_DELETE },
+	{ "Select all   Ctrl+A", -1, C_ALL, NULL, 0, UI_MENU_LINE }, { "Select nothing   Escape", -1, C_DESELECT },
+};
+static const struct ui_menu_item image_items[] = {
+	{ "Canvas size...", -1, C_RESIZE }, { "Scale...", -1, C_SCALE }, { "Crop to the selection", -1, C_CROP },
+	{ "Flip left to right", -1, C_FLIP_H, NULL, 0, UI_MENU_LINE }, { "Flip top to bottom", -1, C_FLIP_V },
+	{ "Turn right", -1, C_ROTATE_R }, { "Turn left", -1, C_ROTATE_L },
+	{ "Invert the colours", -1, C_INVERT, NULL, 0, UI_MENU_LINE }, { "Clear", -1, C_CLEAR },
+};
+static const struct ui_menu_item view_items[] = {
+	{ "Zoom in   +", -1, C_ZOOM_IN }, { "Zoom out   -", -1, C_ZOOM_OUT }, { "Actual size   1", -1, C_ZOOM_1 },
+};
+static const struct { const struct ui_menu_item *items; int count; } menus[4] = { { file_items, 5 }, { edit_items, 8 }, { image_items, 9 }, { view_items, 3 } };
+
+static void
+draw_menu_bar(void)
+{
+	int i;
+
+	asked = 1;
+	ui_fill(window, 0, 0, width, MENU_H, UI_FACE);
+	for (i = 0; i < 4; i++)
+		ui_text(window, menu_x[i] + 8, 3, menu_names[i], -1, BLACK, 0);
+	ui_fill(window, 0, MENU_H - 1, width, 1, UI_SHADOW);
+}
+
+static void
+draw_all(void)
+{
+	draw_menu_bar();
+	draw_tools();
+	draw_colours();
+	draw_status();
+	present_view();
+}
+
+/* ---- commands ---- */
+
+#define CLIP "/tmp/nxpaint-clip.ppm"
+
+/* The whole picture as another one of another size: `how` says what goes where. */
+static void
+remade(int w, int h, int how)
+{
+	uint32_t *old = pix, *made;
+	int x, y, old_w = pw, old_h = ph;
+
+	if (w < 1 || h < 1 || w > MOST_W || h > MOST_H) {
+		snprintf(notice, sizeof notice, "a picture is from 1 x 1 to %d x %d", MOST_W, MOST_H);
 		return;
 	}
-	fprintf(file, "P6\n%d %d\n255\n", CANVAS_W, CANVAS_H);
-	for (y = 0; y < CANVAS_H; y += SAVE_ROWS) {
-		GrReadArea(canvas, 0, y, CANVAS_W, SAVE_ROWS, rows);
-		for (x = 0; x < SAVE_ROWS * CANVAS_W; x++) {
-			/* a pixel of this screen is 0xAARRGGBB */
-			bytes[3 * x] = rows[x] >> 16;
-			bytes[3 * x + 1] = rows[x] >> 8;
-			bytes[3 * x + 2] = rows[x];
+	made = malloc((size_t)w * (size_t)h * 4);
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++) {
+			int sx = x, sy = y, inside;
+
+			if (how == C_SCALE)
+				sx = x * old_w / w, sy = y * old_h / h;
+			else if (how == C_CROP)
+				sx = x + s_x0, sy = y + s_y0;
+			else if (how == C_ROTATE_R)
+				sx = y, sy = old_h - 1 - x;
+			else if (how == C_ROTATE_L)
+				sx = old_w - 1 - y, sy = x;
+			inside = sx >= 0 && sy >= 0 && sx < old_w && sy < old_h;
+			made[y * w + x] = inside ? old[sy * old_w + sx] : bg;
 		}
-		fwrite(bytes, 3, SAVE_ROWS * CANVAS_W, file);
+	pix = made, pw = w, ph = h;
+	keep_whole(old, old_w, old_h);
+	ox = oy = 0;
+	present_view();
+}
+
+static void
+ask(int what, const char *start)
+{
+	asking = what;
+	snprintf(answer, sizeof answer, "%s", start);
+	draw_status();
+}
+
+static void
+others(GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window)
+		draw_all();
+}
+
+static void
+command(int id)
+{
+	char chosen[300], text[40];
+	uint32_t *piece;
+	int x, y, w, h, x0, y0, x1, y1;
+
+	notice[0] = 0;
+	if (id != C_EXIT)
+		leaving = 0;
+	if (id != C_COPY && id != C_CUT && id != C_DELETE && id != C_CROP && id != C_INVERT && id != C_ZOOM_IN && id != C_ZOOM_OUT && id != C_ZOOM_1)
+		float_end(0);
+	x0 = sel_on ? s_x0 : 0, y0 = sel_on ? s_y0 : 0, x1 = sel_on ? s_x1 : pw, y1 = sel_on ? s_y1 : ph;
+	switch (id) {
+	case C_NEW:
+		snprintf(text, sizeof text, "%dx%d", pw, ph);
+		ask(ASK_NEW, text);
+		return;
+	case C_OPEN:
+		if (ui_choose_file("Open a picture", "/root/Pictures", ".ppm .png .jpg .jpeg", chosen, sizeof chosen, others) && !open_file(chosen))
+			snprintf(notice, sizeof notice, "that is not a picture this can open");
+		draw_all();
+		return;
+	case C_SAVE:
+		save();
+		break;
+	case C_SAVE_AS:
+		ask(ASK_SAVE, path);
+		return;
+	case C_EXIT:
+		if (modified && !leaving) {
+			leaving = 1;
+			snprintf(notice, sizeof notice, "not saved: Ctrl+S saves, Exit once more leaves without");
+			break;
+		}
+		GrClose();
+		exit(0);
+	case C_UNDO:
+	case C_REDO:
+		if (id == C_UNDO ? !done_count : !undone_count) {
+			snprintf(notice, sizeof notice, id == C_UNDO ? "nothing to take back" : "nothing to make again");
+			break;
+		}
+		if (id == C_UNDO) {
+			turn(&done[done_count - 1]);
+			push(undone, &undone_count, done[--done_count]);
+		} else {
+			turn(&undone[undone_count - 1]);
+			push(done, &done_count, undone[--undone_count]);
+		}
+		modified = 1;
+		break;
+	case C_COPY:
+	case C_CUT:
+		piece = fl.on ? NULL : copy_of(x0, y0, x1, y1);
+		if (write_ppm(CLIP, fl.on ? fl.buf : piece, fl.on ? fl.w : x1 - x0, fl.on ? fl.h : y1 - y0))
+			snprintf(notice, sizeof notice, "copied %d x %d", fl.on ? fl.w : x1 - x0, fl.on ? fl.h : y1 - y0);
+		free(piece);
+		if (id == C_COPY)
+			break;
+		/* fall through */
+	case C_DELETE:
+		if (fl.on) {
+			float_end(!fl.hole);	/* a pasted piece goes; a lifted one leaves its hole */
+			if (sel_on)
+				restore(s_x0, s_y0, s_x1, s_y1), box(fl.hx0, fl.hy0, fl.hx1, fl.hy1, bg);
+			sel_on = 0;
+			present_view();
+			break;
+		}
+		box(x0, y0, x1, y1, bg);
+		keep(x0, y0, x1, y1);
+		present(x0, y0, x1, y1);
+		break;
+	case C_PASTE:
+		if (!(piece = read_ppm(CLIP, &w, &h))) {
+			snprintf(notice, sizeof notice, "nothing was copied");
+			break;
+		}
+		select_none();
+		memset(&fl, 0, sizeof fl);
+		fl.on = 1, fl.buf = piece, fl.w = w, fl.h = h, fl.x = ox, fl.y = oy;
+		d_x1 = d_x0 = 0;
+		tool = T_SELECT;
+		float_show(fl.x, fl.y);
+		draw_tools();
+		break;
+	case C_ALL:
+		select_none();
+		s_x0 = s_y0 = 0, s_x1 = pw, s_y1 = ph, sel_on = 1;
+		tool = T_SELECT;
+		draw_tools();
+		present_view();
+		break;
+	case C_DESELECT:
+		select_none();
+		break;
+	case C_RESIZE:
+		snprintf(text, sizeof text, "%dx%d", pw, ph);
+		ask(ASK_RESIZE, text);
+		return;
+	case C_SCALE:
+		ask(ASK_SCALE, "200");
+		return;
+	case C_CROP:
+		float_end(0);
+		if (!sel_on)
+			snprintf(notice, sizeof notice, "select the part to keep first");
+		else
+			remade(s_x1 - s_x0, s_y1 - s_y0, C_CROP);
+		break;
+	case C_ROTATE_R:
+	case C_ROTATE_L:
+		remade(ph, pw, id);
+		break;
+	case C_FLIP_H:
+	case C_FLIP_V:
+		for (y = 0; y < (id == C_FLIP_V ? ph / 2 : ph); y++)
+			for (x = 0; x < (id == C_FLIP_V ? pw : pw / 2); x++) {
+				uint32_t *a = &pix[y * pw + x], *b = id == C_FLIP_V ? &pix[(ph - 1 - y) * pw + x] : &pix[y * pw + pw - 1 - x], word = *a;
+
+				*a = *b, *b = word;
+			}
+		keep(0, 0, pw, ph);
+		present_view();
+		break;
+	case C_INVERT:
+		float_end(0);
+		for (y = y0; y < y1; y++)
+			for (x = x0; x < x1; x++)
+				pix[y * pw + x] ^= 0xffffff;
+		keep(x0, y0, x1, y1);
+		present(x0, y0, x1, y1);
+		break;
+	case C_CLEAR:
+		box(0, 0, pw, ph, bg);
+		keep(0, 0, pw, ph);
+		present_view();
+		break;
+	case C_ZOOM_IN:
+	case C_ZOOM_OUT:
+	case C_ZOOM_1:
+		/* what is at the view's middle stays there */
+		x = ox + view_w / zoom / 2, y = oy + view_h / zoom / 2;
+		zoom = id == C_ZOOM_1 ? 1 : id == C_ZOOM_IN ? (zoom < 8 ? zoom * 2 : 8) : (zoom > 1 ? zoom / 2 : 1);
+		ox = x - view_w / zoom / 2, oy = y - view_h / zoom / 2;
+		draw_tools();
+		present_view();
+		break;
 	}
-	fclose(file);
-	notice = "saved";
+	draw_status();
+}
+
+/* ---- the pointer in the picture ---- */
+
+static uint32_t
+colour_for(int button)
+{
+	return tool == T_ERASER ? bg : button == GR_BUTTON_R ? bg : fg;
+}
+
+/* The pointer went down in the picture at (x, y), or moved there held, or came up. */
+static void
+draw_at(int x, int y, int what)
+{
+	uint32_t colour = colour_for(held_button), other = held_button == GR_BUTTON_R ? fg : bg;
+	int size = sizes[size_index], was_x0 = d_x0, was_y0 = d_y0, was_x1 = d_x1, was_y1 = d_y1, n;
+
+	switch (tool) {
+	case T_PENCIL:
+	case T_BRUSH:
+	case T_ERASER:
+	case T_SPRAY:
+		d_x1 = d_x0 = 0;
+		if (tool == T_SPRAY)
+			spray(x, y, size, colour);
+		else
+			stroke(what ? last_x : x, what ? last_y : y, x, y, tool == T_PENCIL ? 1 : size, colour);
+		present(d_x0, d_y0, d_x1, d_y1);
+		touch(was_x0 < was_x1 ? was_x0 : d_x0, was_y0 < was_y1 ? was_y0 : d_y0, was_x1 > was_x0 ? was_x1 : d_x1, was_y1 > was_y0 ? was_y1 : d_y1);
+		break;
+	case T_FILL:
+		if (what == 0) {
+			flood(x, y, colour);
+			present(d_x0, d_y0, d_x1, d_y1);
+		}
+		break;
+	case T_PICK:
+		if (x >= 0 && y >= 0 && x < pw && y < ph) {
+			if (held_button == GR_BUTTON_R)
+				bg = pix[y * pw + x];
+			else
+				foreground(pix[y * pw + x]);
+			draw_colours();
+		}
+		break;
+	case T_LINE:
+	case T_RECT:
+	case T_OVAL:
+		restore(d_x0, d_y0, d_x1, d_y1);
+		d_x1 = d_x0 = 0;
+		if (tool == T_LINE)
+			stroke(from_x, from_y, x, y, size, colour);
+		else
+			shape(tool == T_OVAL, from_x, from_y, x, y, size, colour, mode == 1 ? colour : other);
+		/* what the shape covered before and what it covers now */
+		n = d_x0, d_x0 = was_x1 > was_x0 && was_x0 < n ? was_x0 : n;
+		n = d_y0, d_y0 = was_x1 > was_x0 && was_y0 < n ? was_y0 : n;
+		n = d_x1, d_x1 = was_x1 > was_x0 && was_x1 > n ? was_x1 : n;
+		n = d_y1, d_y1 = was_x1 > was_x0 && was_y1 > n ? was_y1 : n;
+		present(d_x0, d_y0, d_x1, d_y1);
+		break;
+	case T_SELECT:
+		if (fl.moving) {
+			int was_x = fl.x, was_y = fl.y;
+
+			fl.x = x - fl.grab_x, fl.y = y - fl.grab_y;
+			if (fl.x != was_x || fl.y != was_y)
+				float_show(was_x, was_y);
+			break;
+		}
+		n = sel_on;
+		was_x0 = s_x0, was_y0 = s_y0, was_x1 = s_x1, was_y1 = s_y1;
+		s_x0 = from_x < x ? from_x : x, s_y0 = from_y < y ? from_y : y;
+		s_x1 = (from_x < x ? x : from_x) + 1, s_y1 = (from_y < y ? y : from_y) + 1;
+		s_x0 = s_x0 < 0 ? 0 : s_x0, s_y0 = s_y0 < 0 ? 0 : s_y0, s_x1 = s_x1 > pw ? pw : s_x1, s_y1 = s_y1 > ph ? ph : s_y1;
+		sel_on = s_x1 - s_x0 > 1 || s_y1 - s_y0 > 1;
+		if (n)
+			present(was_x0 - 1, was_y0 - 1, was_x1 + 1, was_y1 + 1);
+		present(s_x0 - 1, s_y0 - 1, s_x1 + 1, s_y1 + 1);
+		break;
+	}
+	last_x = x, last_y = y;
+	if (what == 2) {
+		/* the pointer is up: the change stays (a floating piece stays afloat) */
+		if (tool == T_SELECT)
+			fl.moving = 0;
+		else {
+			keep(d_x0, d_y0, d_x1, d_y1);
+			d_x1 = d_x0 = 0;
+		}
+	}
 }
 
 static void
-panel_click(int x, int y)
+press(int x, int y, int button)
 {
-	int i;
+	int inside = sel_on && x >= s_x0 && y >= s_y0 && x < s_x1 && y < s_y1;
 
-	notice = "";
+	held = 1, held_button = button;
+	from_x = last_x = x, from_y = last_y = y;
+	if (tool == T_SELECT && inside) {
+		lift();
+		fl.moving = 1, fl.grab_x = x - fl.x, fl.grab_y = y - fl.y;
+		return;
+	}
+	select_none();
+	d_x1 = d_x0 = 0;
+	draw_at(x, y, 0);
+}
+
+/* ---- the panels' clicks ---- */
+
+static int
+field_x(void)
+{
+	return 60 + 14 * 18 + 12;
+}
+
+/* A press or a drag in the field or on the slider. */
+static void
+colour_at(int x, int y)
+{
+	int fx = field_x(), sx = fx + FIELD_W + 10, by = bottom_y();
+
+	if (picking_field) {
+		hue = (x - fx) * 255 / (FIELD_W - 1), sat = 255 - (y - by - 9) * 255 / (FIELD_H - 1);
+		hue = hue < 0 ? 0 : hue > 255 ? 255 : hue, sat = sat < 0 ? 0 : sat > 255 ? 255 : sat;
+		if (!value)
+			value = 255;
+	} else
+		value = ui_slider_value(x, sx, 124, 255);
+	fg = from_hsv(hue, sat, value);
+	draw_colours();
+}
+
+static void
+panel_press(int x, int y, int button)
+{
+	int i, ty = MENU_H + 4 + 5 * 26 + 6, by = bottom_y(), fx = field_x();
+
+	if (y < MENU_H) {
+		for (i = 0; i < 4; i++)
+			if (x >= menu_x[i] && x < menu_x[i + 1]) {
+				int wx, wy;
+
+				ui_window_origin(window, &wx, &wy);
+				ui_menu_open(menus[i].items, menus[i].count, wx + menu_x[i], wy + MENU_H, 0, 0);
+			}
+		return;
+	}
+	if (y >= by) {
+		for (i = 0; i < 28; i++)
+			if (ui_inside(x, y, 60 + (i % 14) * 18, by + 10 + (i / 14) * 20, 17, 17)) {
+				if (button == GR_BUTTON_R)
+					bg = palette[i];
+				else
+					foreground(palette[i]);
+			}
+		if (ui_inside(x, y, 6, by + 8, 44, 42) && !ui_inside(x, y, 60, by, 400, BOTTOM_H)) {
+			uint32_t was = fg;	/* the two in hand change places */
+
+			foreground(bg);
+			bg = was;
+		}
+		if (ui_inside(x, y, fx, by + 9, FIELD_W, FIELD_H))
+			picking_field = 1, sliding = 1, colour_at(x, y);
+		else if (ui_inside(x, y, fx + FIELD_W + 10, by + 6, 124, 18))
+			picking_field = 0, sliding = 1, colour_at(x, y);
+		else
+			draw_colours();
+		return;
+	}
+	if (x >= TOOLS_W)
+		return;
 	for (i = 0; i < TOOL_COUNT; i++)
-		if (ui_inside(x, y, 3, 3 + i * 22, TOOLS - 6, 20))
+		if (ui_inside(x, y, 3 + (i & 1) * 33, MENU_H + 4 + (i / 2) * 26, 32, 24)) {
+			if (i != T_SELECT)
+				select_none();
 			tool = i;
-	for (i = 0; i < 3; i++)
-		if (ui_inside(x, y, 3 + i * 18, 118, 17, 17))
+		}
+	for (i = 0; i < 5; i++)
+		if (ui_inside(x, y, 3 + i * 13, ty + 16, 13, 18))
 			size_index = i;
-	for (i = 0; i < 16; i++)
-		if (ui_inside(x, y, 4 + (i % 4) * 13, 142 + (i / 4) * 13, 12, 12))
-			colour = i;
-	if (ui_inside(x, y, 3, 220, TOOLS - 6, 20))
-		ui_fill(canvas, 0, 0, CANVAS_W, CANVAS_H, WHITE);
-	if (ui_inside(x, y, 3, 243, TOOLS - 6, 20))
-		save();
-	draw_panel();
+	for (i = 0; i < 3; i++)
+		if (ui_inside(x, y, 3, ty + 58 + i * 22, TOOLS_W - 6, 20))
+			mode = i;
+	if (ui_inside(x, y, 3, ty + 146, 20, 20))
+		command(C_ZOOM_OUT);
+	else if (ui_inside(x, y, TOOLS_W - 23, ty + 146, 20, 20))
+		command(C_ZOOM_IN);
+	draw_tools();
+	draw_status();
+}
+
+/* ---- keys ---- */
+
+static void
+ask_key(int ch)
+{
+	int n = (int)strlen(answer), what = asking, w = 0, h = 0;
+
+	if (ch == MWKEY_ESCAPE) {
+		asking = ASK_NONE;
+	} else if (ch == MWKEY_ENTER || ch == '\n') {
+		asking = ASK_NONE;
+		sscanf(answer, "%d%*[xX ,]%d", &w, &h);
+		if (what == ASK_NEW && w > 0 && h > 0 && w <= MOST_W && h <= MOST_H) {
+			blank(w, h);
+			snprintf(path, sizeof path, "/root/picture.ppm");
+			titled();
+			draw_all();
+		} else if (what == ASK_RESIZE) {
+			remade(w, h, C_RESIZE);
+		} else if (what == ASK_SCALE && w > 0) {
+			remade(pw * w / 100, ph * w / 100, C_SCALE);
+		} else if (what == ASK_SAVE && answer[0] == '/') {
+			snprintf(path, sizeof path, "%s", answer);
+			titled();
+			save();
+		} else
+			snprintf(notice, sizeof notice, "that is not a size");
+	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
+		if (n)
+			answer[n - 1] = 0;
+	} else if (ch >= 32 && ch < 127 && n < (int)sizeof answer - 1) {
+		answer[n] = (char)ch, answer[n + 1] = 0;
+	}
+	draw_status();
 }
 
 static void
-key(int ch)
+key(int ch, int modifiers)
 {
-	int i;
+	static const struct { int ch, id; } controls[] = { { 'n', C_NEW }, { 'o', C_OPEN }, { 's', C_SAVE }, { 'q', C_EXIT }, { 'z', C_UNDO },
+		{ 'y', C_REDO }, { 'x', C_CUT }, { 'c', C_COPY }, { 'v', C_PASTE }, { 'a', C_ALL } };
+	static const char letters[] = "spbefklroy";	/* a tool each, in their order */
+	int i, step = 32 / zoom > 0 ? 32 / zoom : 1;
 
-	notice = "";
-	for (i = 0; i < TOOL_COUNT; i++)
-		if (ui_starts(tool_names[i], ch))
-			tool = i;
-	if (ch >= '1' && ch <= '3')
-		size_index = ch - '1';
-	else if (ch == '[' || ch == ']')
-		colour = (colour + (ch == '[' ? 15 : 1)) % 16;
-	else if (ch == ('s' & 0x1f))
-		save();
-	draw_panel();
+	if (asking) {
+		ask_key(ch);
+		return;
+	}
+	if ((modifiers & MWKMOD_CTRL) && ch < 128 && isalpha(ch))
+		ch = tolower(ch) - 'a' + 1;
+	for (i = 0; i < (int)(sizeof controls / sizeof controls[0]); i++)
+		if (ch == controls[i].ch - 'a' + 1) {
+			command(controls[i].id);
+			return;
+		}
+	switch (ch) {
+	case MWKEY_DELETE: command(C_DELETE); return;
+	case MWKEY_ESCAPE:
+		if (fl.on && !fl.hole)
+			float_end(1);
+		command(C_DESELECT);
+		return;
+	case '+': case '=': command(C_ZOOM_IN); return;
+	case '-': command(C_ZOOM_OUT); return;
+	case '1': command(C_ZOOM_1); return;
+	case '[': size_index = size_index > 0 ? size_index - 1 : 0; break;
+	case ']': size_index = size_index < 4 ? size_index + 1 : 4; break;
+	case MWKEY_LEFT: ox -= step; present_view(); return;
+	case MWKEY_RIGHT: ox += step; present_view(); return;
+	case MWKEY_UP: oy -= step; present_view(); return;
+	case MWKEY_DOWN: oy += step; present_view(); return;
+	default:
+		for (i = 0; i < TOOL_COUNT; i++)
+			if (ch == letters[i]) {
+				if (i != T_SELECT)
+					select_none();
+				tool = i;
+			}
+	}
+	draw_tools();
+	draw_status();
+}
+
+/* ---- a test's hands: NXPAINT_SCRIPT="tool:Rect drag:10,10:60,40 undo sum quit" ---- */
+
+static void
+scripted(void)
+{
+	static const struct { const char *word; int id; } words[] = {
+		{ "undo", C_UNDO }, { "redo", C_REDO }, { "copy", C_COPY }, { "cut", C_CUT }, { "paste", C_PASTE }, { "delete", C_DELETE },
+		{ "all", C_ALL }, { "none", C_DESELECT }, { "crop", C_CROP }, { "fliph", C_FLIP_H }, { "flipv", C_FLIP_V }, { "rotr", C_ROTATE_R },
+		{ "rotl", C_ROTATE_L }, { "invert", C_INVERT }, { "clear", C_CLEAR }, { "zoomin", C_ZOOM_IN }, { "zoomout", C_ZOOM_OUT },
+		{ "save", C_SAVE }, { "quit", C_EXIT },
+	};
+	char word[320];
+	int n, i, a, b, c, d;
+	unsigned sum = 2166136261u;
+
+	while (script[0]) {
+		n = (int)strcspn(script, " ");
+		snprintf(word, sizeof word, "%.*s", n, script);
+		memmove(script, script + n + (script[n] == ' '), strlen(script + n + (script[n] == ' ')) + 1);
+		if (!strncmp(word, "tool:", 5)) {
+			for (i = 0; i < TOOL_COUNT; i++)
+				if (!strcmp(word + 5, tool_names[i]))
+					key("spbefklroy"[i], 0);
+		} else if (sscanf(word, "size:%d", &a) == 1) {
+			for (i = 0; i < 5; i++)
+				if (sizes[i] == a)
+					size_index = i;
+		} else if (sscanf(word, "mode:%d", &a) == 1) {
+			mode = a;
+		} else if (sscanf(word, "fg:%x", (unsigned *)&a) == 1) {
+			foreground((uint32_t)a);
+		} else if (sscanf(word, "bg:%x", (unsigned *)&a) == 1) {
+			bg = 0xff000000u | (uint32_t)a;
+		} else if (sscanf(word, "drag:%d,%d:%d,%d", &a, &b, &c, &d) == 4 || sscanf(word, "rdrag:%d,%d:%d,%d", &a, &b, &c, &d) == 4) {
+			press(a, b, word[0] == 'r' ? GR_BUTTON_R : GR_BUTTON_L);
+			for (i = 1; i <= 4; i++)
+				draw_at(a + (c - a) * i / 4, b + (d - b) * i / 4, 1);
+			draw_at(c, d, 2);
+			held = 0;
+		} else if (sscanf(word, "press:%d,%d", &a, &b) == 2) {
+			press(a, b, GR_BUTTON_L);
+			draw_at(a, b, 2);
+			held = 0;
+		} else if (sscanf(word, "new:%dx%d", &a, &b) == 2) {
+			blank(a, b);
+		} else if (sscanf(word, "resize:%dx%d", &a, &b) == 2) {
+			float_end(0), remade(a, b, C_RESIZE);
+		} else if (sscanf(word, "scale:%d", &a) == 1) {
+			float_end(0), remade(pw * a / 100, ph * a / 100, C_SCALE);
+		} else if (!strncmp(word, "open:", 5)) {
+			printf("nxpaint: open %s: %s\n", word + 5, open_file(word + 5) ? "opened" : "NOT opened");
+		} else if (!strncmp(word, "saveas:", 7)) {
+			snprintf(path, sizeof path, "%s", word + 7);
+			save();
+		} else if (sscanf(word, "pixel:%d,%d", &a, &b) == 2) {
+			printf("nxpaint: pixel %d,%d is %06x\n", a, b, (unsigned)(pix[b * pw + a] & 0xffffff));
+		} else if (!strcmp(word, "probe")) {
+			settle();
+			if (surface)
+				printf("nxpaint: on the screen: field %06x, view %06x\n",
+				       (unsigned)(surface[(bottom_y() + 20) * surface_row + field_x() + 30] & 0xffffff),
+				       (unsigned)(surface[(MENU_H + 5) * surface_row + TOOLS_W + 5] & 0xffffff));
+		} else if (!strcmp(word, "status")) {
+			draw_status();
+		} else if (!strcmp(word, "colours")) {
+			draw_colours();
+		} else if (!strcmp(word, "sum")) {
+			sum = 2166136261u;
+			for (i = 0; i < pw * ph; i++)
+				sum = (sum ^ (pix[i] & 0xffffff)) * 16777619u;
+			printf("nxpaint: %d x %d, sum %08x, %d to take back, %d to make again%s\n", pw, ph, sum, done_count, undone_count,
+			       sel_on ? ", a selection" : "");
+		} else
+			for (i = 0; i < (int)(sizeof words / sizeof words[0]); i++)
+				if (!strcmp(word, words[i].word))
+					command(words[i].id);
+		fflush(stdout);
+	}
 }
 
 int
 main(int argc, char **argv)
 {
+	GR_SCREEN_INFO screen;
 	GR_EVENT event;
-	int loaded = 0;
+	int i, x, w, h, b, chosen;
 
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
-	if (argc > 1)
-		snprintf(path, sizeof path, "%s", argv[1]);
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Paint", GR_ROOT_WINDOW_ID, -1, -1, TOOLS + CANVAS_W, CANVAS_H, UI_FACE);
-	canvas = GrNewWindow(window, TOOLS, 0, CANVAS_W, CANVAS_H, 0, WHITE, BLACK);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
-	GrSelectEvents(canvas, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
-		GR_EVENT_MASK_MOUSE_POSITION);
-	GrMapWindow(canvas);
+	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
+	print_on = getenv("NXPAINT_PRINT") != NULL;
+	if (getenv("NXPAINT_SCRIPT"))
+		snprintf(script, sizeof script, "%s", getenv("NXPAINT_SCRIPT"));
+	GrGetScreenInfo(&screen);
+	width = screen.cols - 60 < 700 ? screen.cols - 60 : 700;
+	height = screen.rows - 90 < 480 ? screen.rows - 90 : 480;
+	view_w = width - TOOLS_W, view_h = height - MENU_H - BOTTOM_H - STATUS;
+	for (i = 0, x = 4; i < 4; i++) {
+		GrGetGCTextSize(ui_gc, (char *)menu_names[i], -1, GR_TFASCII, &w, &h, &b);
+		menu_x[i] = x;
+		x += w + 16;
+	}
+	menu_x[4] = x;
+	gpu = open("/dev/gpu", O_RDWR);
+	/* the window first: a large picture is seconds to decode */
+	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Paint", GR_ROOT_WINDOW_ID, -1, -1, width, height, UI_FACE);
+	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_POSITION |
+			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(window);
+	GrSetFocus(window);
+	ui_framed();
+	if (argc < 2 || !open_file(argv[1])) {
+		blank(view_w < 480 ? view_w : 480, view_h < 340 ? view_h : 340);
+		if (argc > 1)
+			snprintf(path, sizeof path, "%s", argv[1]);
+		titled();
+	}
+	foreground(fg);
+	draw_all();
+	scripted();
 	for (;;) {
 		GrGetNextEvent(&event);
+		switch (ui_menu_event(&event, &chosen)) {
+		case UI_MENU_CHOSEN:
+			command(chosen);
+			continue;
+		case UI_MENU_TOOK:
+		case UI_MENU_CLOSED:
+			continue;
+		}
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
-			if (event.exposure.wid == window)
-				draw_panel();
-			else if (!loaded) {
-				/* the first time the canvas is shown: the file's picture, if there is one */
-				loaded = 1;
-				if (access(path, R_OK) == 0)
-					GrDrawImageFromFile(canvas, ui_gc, 0, 0, CANVAS_W, CANVAS_H, path, 0);
-			}
+			draw_all();
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
-			if (ui_wheel(&event))
-				break;
-			if (event.button.wid == window) {
-				panel_click(event.button.x, event.button.y);
-				break;
-			}
-			drawing = 1;
-			from_x = last_x = event.button.x;
-			from_y = last_y = event.button.y;
-			if (tool == PEN || tool == ERASER)
-				stroke(last_x, last_y, last_x, last_y);
+			x = event.button.x, i = event.button.y;
+			if (ui_wheel(&event)) {
+				oy += ui_wheel_sum(&event) * (48 / zoom > 0 ? 48 / zoom : 1);
+				present_view();
+			} else if (x >= TOOLS_W && i >= MENU_H && i < MENU_H + view_h) {
+				notice[0] = 0;
+				press(ox + (x - TOOLS_W) / zoom, oy + (i - MENU_H) / zoom, event.button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L);
+			} else
+				panel_press(x, i, event.button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L);
 			break;
 		case GR_EVENT_TYPE_MOUSE_POSITION:
-			if (drawing && (tool == PEN || tool == ERASER)) {
-				stroke(last_x, last_y, event.mouse.x, event.mouse.y);
-				last_x = event.mouse.x;
-				last_y = event.mouse.y;
-			}
+			if (sliding && event.mouse.buttons)
+				colour_at(event.mouse.x, event.mouse.y);
+			else if (held && event.mouse.buttons)
+				draw_at(ox + (event.mouse.x - TOOLS_W) / zoom, oy + (event.mouse.y - MENU_H) / zoom, 1);
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
-			if (drawing && tool != PEN && tool != ERASER)
-				shape(from_x, from_y, event.button.x, event.button.y);
-			drawing = 0;
+			if (held) {
+				draw_at(ox + (event.button.x - TOOLS_W) / zoom, oy + (event.button.y - MENU_H) / zoom, 2);
+				draw_status();
+			}
+			held = sliding = 0;
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
-			key(event.keystroke.ch);
+			key(event.keystroke.ch, event.keystroke.modifiers);
 			break;
 		case GR_EVENT_TYPE_CLOSE_REQ:
-			GrClose();
-			return 0;
+			command(C_EXIT);
+			break;
 		}
 	}
 }

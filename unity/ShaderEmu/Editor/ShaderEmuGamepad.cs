@@ -18,8 +18,10 @@ public static partial class ShaderEmuBuilder
         "Keyboards on the desk: both hands type, or press 'Use my keyboard' to use your real one. Over the " +
         "display's keyboard: a field to paste text into, and one for a link the computer is to open (a page, a " +
         "picture, a game, a file).\n" +
-        "Start menu (or the Win key): games, tools, the Web (a fixed list of sites: VRChat lets a world load " +
-        "only addresses it was built with).\n" +
+        "The desktop's icons and the Start menu (or the Win key): old games (Doom, Quake, Red Alert, Command " +
+        "& Conquer, a NES, a block world), a music and a video player, pictures, the Web (a fixed list of sites: " +
+        "VRChat lets a world load only addresses it was built with), and an IDE to write C in, with the " +
+        "machine's own compiler and a debugger. A right click is a menu; icons and files are dragged.\n" +
         "CONSOLE: the machine's serial line. Four terminals (the buttons above it), and a field over its " +
         "keyboard to paste text into.\n" +
         "MEMORY: all of the machine's memory at once; what is being written glows.\n\n" +
@@ -32,6 +34,29 @@ public static partial class ShaderEmuBuilder
         "STRATEGY (Red Alert, Command & Conquer): right stick moves the pointer, the triggers are the " +
         "mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel, left grip " +
         "Esc, jump Enter.";
+
+    // The board's words written again into a scene that has a board, each at the largest size at
+    // which it fits its box, and the plate lettered from them (no bake: the plate keeps its place).
+    [MenuItem("ShaderEmu/Write the board's words again in the open scene")]
+    public static void WriteBoardAgain()
+    {
+        GameObject board = GameObject.Find("About");
+        if (board == null) { Debug.LogError("[ShaderEmu] no board in the open scene"); return; }
+        foreach (var words in new[] { ("What", WhatText, 33f), ("Do", DoText, (float)DoSize), ("Credits", CreditsText, 27f) })
+        {
+            Transform at = board.transform.Find(words.Item1);
+            TextMeshProUGUI text = at != null ? at.GetComponent<TextMeshProUGUI>() : null;
+            if (text == null) { Debug.LogWarning("[ShaderEmu] the board has no " + words.Item1); continue; }
+            text.text = words.Item2;
+            text.fontSize = words.Item3;
+            float room = text.rectTransform.rect.height;
+            while (text.fontSize > 12 && text.GetPreferredValues(words.Item2, text.rectTransform.rect.width, 0).y > room) text.fontSize -= 0.5f;
+            Debug.Log("[ShaderEmu] the board's " + words.Item1 + ": size " + text.fontSize + ", " +
+                      Mathf.CeilToInt(text.GetPreferredValues(words.Item2, text.rectTransform.rect.width, 0).y) + " of " + Mathf.RoundToInt(room));
+            EditorUtility.SetDirty(text);
+        }
+        LetterBoardAgain();
+    }
 
     // A controller in hand was a model once, two on every player's object: there is none now
     // (the stand's line and the notice over the hand say what is held).
