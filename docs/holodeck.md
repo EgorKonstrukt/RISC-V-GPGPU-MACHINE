@@ -17,6 +17,12 @@ eyes. Games and their controllers are here and nowhere else in the world.
   The station is told not to let a stick stand its sitter up, and in a headset one did all
   the same, with a controller in hand too: so whoever is stood up without having jumped is
   sat down again two frames later (`EmuHolodeck.Exited`, `SitAgain`; a respawn lets go).
+- **The seat rises under its sitter** (`EmuSeat`). VRChat puts a visitor on a station standing,
+  feet where the station is, and their pose sinks into sitting over about half a second,
+  hips where the station is: a station at the seat's height had them stand on the seat
+  first, 0.38 m too high, and then sink. The station waits on the floor and comes up to
+  the seat's height in that half second (`settle`), so the sitter only goes down. The half
+  second is what was seen, not a number VRChat gives: `settle` is the thing to change.
 - **Without a headset** the sitter's own keyboard is the game's from the moment they sit
   (the display keyboard's capture, raw keys): the game's own keys, as at a desk. End stands
   them up at once, whatever is held and whoever has the keyboard (`EmuHolodeck.StandUp`);
@@ -29,7 +35,8 @@ eyes. Games and their controllers are here and nowhere else in the world.
   faces the way the game's camera faces, and the floor stays the floor when the game looks up
   or down. The head moves freely in that.
 - **The console** beside the seat has the room's keys, the sitter's alone: Shooter, Strategy and
-  Put back (the controllers, `docs/gamepad.md`), Screen (on, off),
+  Put back (the controllers, `docs/gamepad.md`), Exit (stands the sitter up, whatever they
+  hold: `StandUp`, as the End key), Screen (the console's small one, or a large one before the seat),
   World + and World - (the scale: at its largest the picture's rectangle on the program's near
   plane is 1.28 by 0.8 m, and the keys move that plane out towards the far one).
 - **The console** at the seat's right hand is turned to the sitter and has one sloped face: the

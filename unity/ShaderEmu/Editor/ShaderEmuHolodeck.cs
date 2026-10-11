@@ -157,6 +157,77 @@ public static partial class ShaderEmuBuilder
         Debug.Log("[ShaderEmu] the holodecks have their large screens (the scene is not saved)");
     }
 
+    // The console's face: the room's keys, in the screen's plane under it. Exit stands the sitter
+    // up whatever they hold (EmuHolodeck.StandUp): the one key for it, a headset's or a desktop's.
+    static void ConsolePanel(Transform frame, int k, Vector3 at, Vector3 turn, EmuHolodeck deck, List<KeyValuePair<Button, string>> keys)
+    {
+        Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f);
+        TextMeshProUGUI unused;
+        RectTransform panel = Panel(frame, "Holodeck " + (k + 1) + " plate", at, turn, 380, 280, back);
+        Label(panel, "Title", "HOLODECK " + (k + 1), 12, 6, 356, 32, 24, TextAnchor.MiddleLeft, Color.white);
+        deck.plateLabels[k] = Label(panel, "Says", "Sit down to play", 12, 38, 356, 28, 18, TextAnchor.MiddleLeft, new Color(1f, 0.8f, 0.3f));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Shooter", "Shooter", 12, 72, 174, 60, 22, out unused), "TakeShooter"));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Strategy", "Strategy", 194, 72, 174, 60, 22, out unused), "TakeStrategy"));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Put back", "Put back", 12, 140, 174, 60, 22, out unused), "PutBack"));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Screen", "Screen", 194, 140, 174, 60, 22, out unused), "NextScreen"));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Larger", "World +", 12, 208, 84, 60, 18, out unused), "Larger"));
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Smaller", "World -", 102, 208, 84, 60, 18, out unused), "Smaller"));
+        deck.scaleLabels[k] = Label(panel, "Scale", "World 65", 190, 208, 86, 60, 16, TextAnchor.MiddleCenter, dim);
+        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Exit", "Exit", 280, 208, 88, 60, 22, out unused), "StandUp"));
+    }
+
+    // The consoles' faces made again where they are, in a scene from before they had an Exit key:
+    // new plates, which take the probes' light until the next bake.
+    [MenuItem("ShaderEmu/Give the holodecks' consoles their Exit key in the open scene")]
+    public static void ConsolesAgain()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        int count = 0;
+        foreach (EmuHolodeck deck in world.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(deck);
+            List<KeyValuePair<Button, string>> keys = new List<KeyValuePair<Button, string>>();
+            for (int k = 0; k < deck.frames.Length; k++)
+            {
+                Transform frame = deck.frames[k], old = frame.Find("Holodeck " + (k + 1) + " plate");
+                if (old == null) continue;
+                Vector3 at = old.localPosition, turn = old.localEulerAngles;
+                Object.DestroyImmediate(old.gameObject);
+                ConsolePanel(frame, k, at, turn, deck, keys);
+                count++;
+            }
+            Apply(deck);
+            foreach (KeyValuePair<Button, string> key in keys) OnClick(key.Key, deck, key.Value);
+        }
+        RetroNewPanels();
+        HoloGuards(world);
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        Debug.Log("[ShaderEmu] " + count + " consoles have their Exit key (the scene is not saved; their plates want a bake)");
+    }
+
+    // A scene from before the seats waited on the floor (EmuSeat): each put there, its reach left where it was.
+    [MenuItem("ShaderEmu/Make the holodecks' seats rise under their sitters in the open scene")]
+    public static void SeatsRise()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        int count = 0;
+        foreach (EmuSeat sits in world.GetComponentsInChildren<EmuSeat>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(sits);
+            sits.height = SeatHeight;
+            sits.settle = 0.5f;
+            Apply(sits);
+            Transform seat = sits.transform;
+            seat.localPosition = new Vector3(seat.localPosition.x, 0, seat.localPosition.z);
+            BoxCollider reach = seat.GetComponent<BoxCollider>();
+            if (reach != null) reach.center = new Vector3(0, 0.15f + SeatHeight, 0);
+            EditorUtility.SetDirty(seat);
+            count++;
+        }
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        Debug.Log("[ShaderEmu] " + count + " seats wait on the floor and rise under their sitters (the scene is not saved)");
+    }
+
     [MenuItem("ShaderEmu/Add the holodecks' guards to the open scene")]
     public static void AddHoloGuards()
     {
@@ -358,10 +429,11 @@ public static partial class ShaderEmuBuilder
             // the seat: a station of the scene, which VRChat syncs by itself, one visitor at a time
             GameObject seat = new GameObject("Seat");
             seat.transform.SetParent(frame, false);
-            seat.transform.localPosition = new Vector3(0, SeatHeight, plan.seat);
+            // (on the floor while nobody sits: it rises under a sitter as their pose sinks, EmuSeat)
+            seat.transform.localPosition = new Vector3(0, 0, plan.seat);
             BoxCollider reach = seat.AddComponent<BoxCollider>();
             reach.size = new Vector3(0.5f, 0.7f, 0.5f);
-            reach.center = new Vector3(0, 0.15f, 0);
+            reach.center = new Vector3(0, 0.15f + SeatHeight, 0);
             reach.isTrigger = true;
             Transform leave = new GameObject("Seat exit").transform;
             leave.SetParent(frame, false);
@@ -377,6 +449,7 @@ public static partial class ShaderEmuBuilder
             EmuSeat sits = Udon<EmuSeat>(seat);
             sits.holodeck = deck;
             sits.room = k;
+            sits.height = SeatHeight;
             seats.Add(sits);
             Transform eye = new GameObject("Seat eye").transform;
             eye.SetParent(frame, false);
@@ -407,18 +480,7 @@ public static partial class ShaderEmuBuilder
             deck.screenRenderers[k] = screenRenderer;
             deck.screenMaterials[k] = screenMat;
 
-            // the console's face: the room's keys, in the screen's plane under it
-            RectTransform panel = Panel(frame, "Holodeck " + (k + 1) + " plate", new Vector3(plan.panel[0], plan.panel[1], plan.panel[2]),
-                                        new Vector3(plan.screenTurn[0], plan.screenTurn[1], 0), 380, 280, back);
-            Label(panel, "Title", "HOLODECK " + (k + 1), 12, 6, 356, 32, 24, TextAnchor.MiddleLeft, Color.white);
-            deck.plateLabels[k] = Label(panel, "Says", "Sit down to play", 12, 38, 356, 28, 18, TextAnchor.MiddleLeft, new Color(1f, 0.8f, 0.3f));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Shooter", "Shooter", 12, 72, 174, 60, 22, out unused), "TakeShooter"));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Strategy", "Strategy", 194, 72, 174, 60, 22, out unused), "TakeStrategy"));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Put back", "Put back", 12, 140, 174, 60, 22, out unused), "PutBack"));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Screen", "Screen", 194, 140, 174, 60, 22, out unused), "NextScreen"));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Larger", "World +", 12, 208, 110, 60, 20, out unused), "Larger"));
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Smaller", "World -", 130, 208, 110, 60, 20, out unused), "Smaller"));
-            deck.scaleLabels[k] = Label(panel, "Scale", "World 65", 248, 208, 120, 60, 18, TextAnchor.MiddleCenter, dim);
+            ConsolePanel(frame, k, new Vector3(plan.panel[0], plan.panel[1], plan.panel[2]), new Vector3(plan.screenTurn[0], plan.screenTurn[1], 0), deck, keys);
 
             // (no controllers lie at the console: one taken with its keys appears in the sitter's hand)
 
