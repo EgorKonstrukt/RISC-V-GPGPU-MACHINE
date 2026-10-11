@@ -58,6 +58,9 @@ struct Options {
     double passMs = 0.25;    // and what a pass costs it besides
     int cores = 256;         // core 0 and 255 workers, as the shader machine
     long long sweep = -1;
+    int circleX = -1, circleY = 0, circleR = 0;    // --pointer-circle: the sweep's own circle
+    int button = 0;                                // --pointer-button: the buttons word,
+    double buttonFrom = 0, buttonTo = 0;           // between these seconds of the guest's
     bool desktop = false, tabs = false, quiet = false;
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
     double netLoss = 0, netDelay = 0;
@@ -868,7 +871,12 @@ static void control_pass() {
         double turn = guest_seconds * 2.0;
         word(CTRL + 0x20) = (u32)(width / 2 + width / 10 * cos(turn));
         word(CTRL + 0x24) = (u32)(height / 2 + height / 10 * sin(turn));
+        if (opt.circleX >= 0) {
+            word(CTRL + 0x20) = (u32)(opt.circleX + opt.circleR * cos(turn));
+            word(CTRL + 0x24) = (u32)(opt.circleY + opt.circleR * sin(turn));
+        }
     }
+    if (opt.button) word(CTRL + 0x28) = guest_seconds >= opt.buttonFrom && guest_seconds < opt.buttonTo ? opt.button : 0;
     word(CTRL + 0x2c) = key_seq;
     if (net.on()) net_pass();
 }
@@ -955,6 +963,8 @@ int main(int argc, char** argv) {
         else if (a == "--ips") opt.ips = atof(next("--ips").c_str());
         else if (a == "--pass-ms") opt.passMs = atof(next("--pass-ms").c_str());
         else if (a == "--pointer-sweep") opt.sweep = atoll(next("--pointer-sweep").c_str());
+        else if (a == "--pointer-circle") sscanf(next("--pointer-circle").c_str(), "%d,%d,%d", &opt.circleX, &opt.circleY, &opt.circleR);
+        else if (a == "--pointer-button") sscanf(next("--pointer-button").c_str(), "%d,%lf,%lf", &opt.button, &opt.buttonFrom, &opt.buttonTo);
         else if (a == "--desktop") opt.desktop = true;
         else if (a == "--tabs") opt.tabs = true;
         else if (a == "--quiet") opt.quiet = true;
@@ -979,6 +989,8 @@ int main(int argc, char** argv) {
                    "  --ips N --pass-ms M    the guest's clock: a pass takes M ms and its instructions 1/N s each\n"
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
+                   "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
+                   "  --pointer-button B,S,T the buttons word is B (2: the right one) from second S to T of the guest's\n"
                    "  --desktop --tabs       the host flags of those names\n"
                    "  --quiet                do not print the console\n"
                    "  --net PORT --net-id N  the network: this machine is 10.0.0.N (1 to 16) and hears UDP port\n"

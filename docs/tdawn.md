@@ -63,11 +63,32 @@ speech play on the sound card (`docs/sound.md`); there is no music.
   stands in it before the call that finds out (`Greatest_Threat`). A house is found by its
   kind from a table, not a search (`HouseClass::As_Pointer`). The layer's sort asks each
   object where it sorts once, not twice.
-- **Scrolling.** The game moves the map a fixed step every pass of its loop, sized for a
+- **Scrolling.** The game moved the map a fixed step every pass of its loop, sized for a
   machine that makes some twenty passes a second; here a pass that scrolls is 400k to 600k
-  instructions, six or seven a second. The step grows with the time since the last one
-  (`ShaderEmu_Scroll_Distance`), up to 36 pixels: beyond that the game draws the whole map
-  again instead of shifting it.
+  instructions, six or seven a second. `ShaderEmu_Scroll_Distance` grows a step with the
+  time since the last one, up to 36 pixels (beyond that the game draws the whole map again
+  instead of shifting it); only `TDAWN_SCROLL` uses it now.
+- **The map is dragged.** The game scrolled while the pointer was on the picture's outermost
+  row or column, which a mouse finds by being stopped there and a beam does not. That is
+  gone in both games (`ScrollClass::AI`, `shaderemu.cpp`); a margin past the edges to scroll
+  from was tried in its place and taken out too. What moves the map:
+  - The right button (the grip) held on the map and moved drags the map, a pixel for a pixel.
+    The game gets that button's press at its release, and only when the pointer stayed
+    within a 40th of the picture's width: a press that did not move is the game's right
+    click as before. A press that begins off the map (the sidebar) is never a drag.
+  - The drag follows the pointer only while the machine's own buttons word says the button
+    is down (`host_buttons`): the window system's event of the release comes later.
+  - While the map is dragged the pointer is the game's scroll arrow for the way the view
+    goes (against the hand), and its "no" arrow where the map ends.
+  `TDAWN_INPUT_LOG=1` prints each drag step and its arrow. To test without hands, under `rvc_cpu`:
+  `--pointer-sweep 0 --pointer-button 2,52,54` drags (the pointer goes round the middle of
+  the display, which is on the map), and `--pointer-circle 40,250,40` without a button goes
+  in and out over the window's left edge, which must print nothing.
+- **Events that are owed.** `host_event` asked the window system eight times when an input
+  word changed and then every 250 ms. On a fast machine (`rvc_harness --cpu`) all eight came
+  before the kernel's next tick had reported the button, so a press arrived at its release
+  and a release 250 ms later. It now also asks every 10 ms while an event the words told of
+  has not come, for a tenth of a second at most: 0 to 22 ms there.
 - A page's blit onto itself (how the map is shifted) copies rows in the order that reads each
   before it is written. Top to bottom, as it first was, a scroll downward smeared the map.
 

@@ -229,7 +229,9 @@ own start), and as long again to a mission's first frame.
 
 ## Not done
 
-- Playing it by hand: the pointer and keys are Tiberian Dawn's code, untried here.
+- Playing it by hand: the pointer and keys are Tiberian Dawn's code, untried here. So are
+  the map's drag by the right button, which is the only way the map moves (`docs/tdawn.md`,
+  "The map is dragged"), tested here as there.
 - Skirmish, the Allied mission beyond 300 frames, saving and loading.
 - The vortex in the GPU's scene; ground units sorted among walls as the game sorts them
   (the scene draws overlays first, then every object).

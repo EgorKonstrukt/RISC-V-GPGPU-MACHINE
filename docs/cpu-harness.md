@@ -92,7 +92,9 @@ anything about the shader machine's passes.
   (the submit word cleared, the counters counted), and a picture a program asked to have
   copied back into its window is not there. Those devices are cheap on the graphics card and
   stay there: `rvc_harness --cpu` (above) runs them as the shader's passes.
-- No keys or pointer buttons yet (only `--pointer-sweep`), no pages from the host
+- No keys yet. The pointer goes round (`--pointer-sweep N`, from pass N; `--pointer-circle
+  X,Y,R` for a circle of its own on the display) and its buttons word is set for a while
+  (`--pointer-button B,S,T`: B from second S to T of the guest's). No pages from the host
   (`docs/fetch.md`), no snapshots.
 - Not a model of the shader machine's limits: no write cache that fills, no one-writer-per-16
   -bytes rule for workers. It answers "how many instructions", not "does it run there".

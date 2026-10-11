@@ -1483,6 +1483,90 @@ index 6211ff4..4981582 100644
              CC_Draw_Shape(RadarAnim, val, RadX, RadY + (1 * RESFACTOR), WINDOW_MAIN, SHAPE_NORMAL);
              FullRedraw = false;
              IsToRedraw = false;
+diff --git a/redalert/scroll.cpp b/redalert/scroll.cpp
+index 5c063b8..0dc3396 100644
+--- a/redalert/scroll.cpp
++++ b/redalert/scroll.cpp
+@@ -36,6 +36,25 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++#ifdef SHADEREMU
++#include "common/host.h"
++bool ShaderEmu_Drag(int* dx, int* dy);
++extern bool InMainLoop;
++
++/*
++** How far the pointer may move with the right button down and still click: a press on the
++** map that moves further drags the map instead (shaderemu.cpp). 0 where no drag begins.
++*/
++int ShaderEmu_Drag_Slack(int x, int y)
++{
++    if (!InMainLoop || x < Map.TacPixelX || y < Map.TacPixelY
++        || x >= Map.TacPixelX + Lepton_To_Pixel(Map.TacLeptonWidth)
++        || y >= Map.TacPixelY + Lepton_To_Pixel(Map.TacLeptonHeight)) {
++        return 0;
++    }
++    return SeenBuff.Get_Width() / 40;
++}
++#endif
+ 
+ #define SCROLL_DELAY 1
+ 
+@@ -106,6 +125,53 @@ void ScrollClass::AI(KeyNumType& input, int x, int y)
+         }
+ #endif
+ 
++#ifdef SHADEREMU
++        /*
++        **	The right button drags the map, a pixel for each of the pointer's (a pixel is 32
++        **	thirds of a lepton), and nothing else moves it: no scrolling at the edges.
++        */
++        static const bool log = getenv("TDAWN_INPUT_LOG") != NULL;
++        static int drag_shape = -1; /* the arrow for the way the view last went */
++        int drag_x, drag_y;
++        if (ShaderEmu_Drag(&drag_x, &drag_y)) {
++            static int rest_x, rest_y;
++            int left = Cell_To_Lepton(MapCellX), top = Cell_To_Lepton(MapCellY);
++
++            rest_x -= drag_x * 32;
++            rest_y -= drag_y * 32;
++            if (rest_x / 3 || rest_y / 3) {
++                COORDINATE was = DesiredTacticalCoord;
++                int control = Dir_Facing((DirType)Desired_Facing256(0, 0, rest_x, rest_y));
++                int xx = (int)Coord_X(DesiredTacticalCoord) + rest_x / 3;
++                int yy = (int)Coord_Y(DesiredTacticalCoord) + rest_y / 3;
++                rest_x %= 3;
++                rest_y %= 3;
++                xx = Bound(xx, left, max(left, (int)Cell_To_Lepton(MapCellX + MapCellWidth) - (int)TacLeptonWidth));
++                yy = Bound(yy, top, max(top, (int)Cell_To_Lepton(MapCellY + MapCellHeight) - (int)TacLeptonHeight));
++                Set_Tactical_Position(XY_Coord(xx, yy));
++                drag_shape = (DesiredTacticalCoord == was ? MOUSE_NO_N : MOUSE_N) + control;
++                /* as Scroll_Map: what is above the map is drawn again */
++                for (int index = 0; index < Layer[LAYER_TOP].Count(); index++) {
++                    Layer[LAYER_TOP][index]->Mark(MARK_CHANGE);
++                }
++                for (int index = 0; index < Layer[LAYER_AIR].Count(); index++) {
++                    Layer[LAYER_AIR][index]->Mark(MARK_CHANGE);
++                }
++                if (log) {
++                    fprintf(stderr, "tdinput: the map dragged by %d,%d to %d,%d, arrow %d%s\n", drag_x, drag_y,
++                            Lepton_To_Pixel(Coord_X(DesiredTacticalCoord)), Lepton_To_Pixel(Coord_Y(DesiredTacticalCoord)), control,
++                            DesiredTacticalCoord == was ? " (no)" : "");
++                }
++            }
++            if (drag_shape >= 0) {
++                Override_Mouse_Shape((MouseType)drag_shape, false);
++            }
++        } else {
++            drag_shape = -1;
++        }
++        Inertia = 0;
++        noscroll = true;
++#endif
+         if (!noscroll) {
+             bool at_screen_edge = (y == 0 || x == 0 || x >= SeenBuff.Get_Width() - 1 || y >= SeenBuff.Get_Height() - 1);
+ 
 diff --git a/redalert/sidebar.cpp b/redalert/sidebar.cpp
 index 928dc0e..220bfd9 100644
 --- a/redalert/sidebar.cpp

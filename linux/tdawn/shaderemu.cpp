@@ -330,6 +330,48 @@ public:
     virtual KeyASCIIType To_ASCII(unsigned short key);
 };
 
+/*
+** The right button held over the map and moved drags it (docs/tdawn.md, "Scrolling"). The
+** game gets that button's press at its release, and only if the pointer stayed in place.
+*/
+int ShaderEmu_Drag_Slack(int x, int y); // the game's: how far is in place there, 0 where no drag begins
+static int Drag_State, Drag_X, Drag_Y, Drag_Slack, Drag_DX, Drag_DY; // state 1: pressed, 2: dragging
+static int Press_X, Press_Y;
+
+static void Drag_Follow(int x, int y)
+{
+    if (Drag_State == 1 && abs(x - Drag_X) + abs(y - Drag_Y) > Drag_Slack) {
+        Drag_State = 2;
+    }
+    if (Drag_State == 2) {
+        Drag_DX += x - Drag_X;
+        Drag_DY += y - Drag_Y;
+        Drag_X = x;
+        Drag_Y = y;
+    }
+}
+
+// The pointer is followed while the machine's own word says the button is down: the window
+// system's word of its release comes later, and the map must not go on until then.
+static void Drag_Poll(void)
+{
+    if (Drag_State && (host_buttons() & 2)) {
+        int x, y;
+        host_pointer(&x, &y);
+        Drag_Follow(x, y);
+    }
+}
+
+// How far the pointer has dragged the map since the last call, in the game's pixels.
+bool ShaderEmu_Drag(int* dx, int* dy)
+{
+    Drag_Poll();
+    *dx = Drag_DX;
+    *dy = Drag_DY;
+    Drag_DX = Drag_DY = 0;
+    return Drag_State == 2 || *dx || *dy;
+}
+
 void WWKeyboardClassShaderEmu::Fill_Buffer_From_System(void)
 {
     static const char* automatic = getenv("TDAWN_AUTO");
@@ -341,12 +383,31 @@ void WWKeyboardClassShaderEmu::Fill_Buffer_From_System(void)
         Put_Key_Message(VK_RETURN, false);
         Put_Key_Message(VK_RETURN, true);
     }
+    Drag_Poll();
     while (!Is_Buffer_Full() && host_event(&event)) {
         switch (event.type) {
         case HOST_KEY:
             Put_Key_Message(event.key, !event.down);
             break;
         case HOST_BUTTON:
+            if (event.key == VK_RBUTTON && event.down) {
+                Drag_Slack = ShaderEmu_Drag_Slack(event.x, event.y);
+                if (Drag_Slack) {
+                    // (where the pointer is now: an event's place is up to a tenth of a second old)
+                    Drag_State = 1;
+                    host_pointer(&Drag_X, &Drag_Y);
+                    Press_X = event.x;
+                    Press_Y = event.y;
+                    break;
+                }
+            } else if (event.key == VK_RBUTTON && Drag_State) {
+                bool dragged = Drag_State == 2;
+                Drag_State = 0;
+                if (dragged) {
+                    break;
+                }
+                Put_Mouse_Message(VK_RBUTTON, Press_X, Press_Y, false);
+            }
             Put_Mouse_Message(event.key, event.x, event.y, !event.down);
             break;
         case HOST_QUIT:

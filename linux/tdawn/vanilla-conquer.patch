@@ -1156,29 +1156,83 @@ index c4206a0..0a6f5a4 100644
      Set_Brightness(ini.Get_Int(OPTIONS, "Brightness", 0x80));
      Set_Sound_Volume(ini.Get_Int(OPTIONS, "Volume", 0xA0), false);
 diff --git a/tiberiandawn/scroll.cpp b/tiberiandawn/scroll.cpp
-index 596a8f7..e7e549e 100644
+index 596a8f7..cb485b6 100644
 --- a/tiberiandawn/scroll.cpp
 +++ b/tiberiandawn/scroll.cpp
-@@ -36,6 +36,9 @@
+@@ -36,6 +36,25 @@
   * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  
  #include "function.h"
 +#ifdef SHADEREMU
-+int ShaderEmu_Scroll_Distance(int distance);
++#include "common/host.h"
++bool ShaderEmu_Drag(int* dx, int* dy);
++extern bool ShaderEmu_Scrolled;
++
++/*
++** How far the pointer may move with the right button down and still click: a press on the
++** map that moves further drags the map instead (shaderemu.cpp). 0 where no drag begins.
++*/
++int ShaderEmu_Drag_Slack(int x, int y)
++{
++    if (!InMainLoop || x < Map.TacPixelX || y < Map.TacPixelY
++        || x >= Map.TacPixelX + Lepton_To_Pixel(Map.TacLeptonWidth)
++        || y >= Map.TacPixelY + Lepton_To_Pixel(Map.TacLeptonHeight)) {
++        return 0;
++    }
++    return SeenBuff.Get_Width() / 40;
++}
 +#endif
  
  #define SCROLL_DELAY 1
  
-@@ -181,6 +184,9 @@ void ScrollClass::AI(KeyNumType& input, int x, int y)
-                 }
+@@ -110,6 +129,47 @@ void ScrollClass::AI(KeyNumType& input, int x, int y)
+         }
+ #endif
  
-                 int distance = _rate[rate] / 2;
 +#ifdef SHADEREMU
-+                distance = ShaderEmu_Scroll_Distance(distance);
++        /*
++        **	The right button drags the map, a pixel for each of the pointer's (a pixel is 32
++        **	thirds of a lepton), and nothing else moves it: no scrolling at the edges.
++        */
++        static const bool log = getenv("TDAWN_INPUT_LOG") != NULL;
++        static int drag_shape = -1; /* the arrow for the way the view last went */
++        int drag_x, drag_y;
++        if (ShaderEmu_Drag(&drag_x, &drag_y)) {
++            static int rest_x, rest_y;
++            int left = Cell_To_Lepton(MapCellX), top = Cell_To_Lepton(MapCellY);
++
++            rest_x -= drag_x * 32;
++            rest_y -= drag_y * 32;
++            if (rest_x / 3 || rest_y / 3) {
++                COORDINATE was = DesiredTacticalCoord;
++                int control = Dir_Facing((DirType)Desired_Facing256(0, 0, rest_x, rest_y));
++                int xx = (int)Coord_X(DesiredTacticalCoord) + rest_x / 3;
++                int yy = (int)Coord_Y(DesiredTacticalCoord) + rest_y / 3;
++                rest_x %= 3;
++                rest_y %= 3;
++                xx = Bound(xx, left, MAX(left, (int)Cell_To_Lepton(MapCellX + MapCellWidth) - (int)TacLeptonWidth));
++                yy = Bound(yy, top, MAX(top, (int)Cell_To_Lepton(MapCellY + MapCellHeight) - (int)TacLeptonHeight));
++                Set_Tactical_Position(XY_Coord(xx, yy));
++                drag_shape = (DesiredTacticalCoord == was ? MOUSE_NO_N : MOUSE_N) + control;
++                ShaderEmu_Scrolled = true;
++                if (log) {
++                    fprintf(stderr, "tdinput: the map dragged by %d,%d to %d,%d, arrow %d%s\n", drag_x, drag_y,
++                            Lepton_To_Pixel(Coord_X(DesiredTacticalCoord)), Lepton_To_Pixel(Coord_Y(DesiredTacticalCoord)), control,
++                            DesiredTacticalCoord == was ? " (no)" : "");
++                }
++            }
++            if (drag_shape >= 0) {
++                Override_Mouse_Shape((MouseType)drag_shape, false);
++            }
++        } else {
++            drag_shape = -1;
++        }
++        Inertia = 0;
++        noscroll = true;
 +#endif
+         if (!noscroll) {
  
-                 if (!Scroll_Map(direction, distance, false)) {
-                     Override_Mouse_Shape((MouseType)(MOUSE_NO_N + control), false);
+             /*
 diff --git a/tiberiandawn/techno.cpp b/tiberiandawn/techno.cpp
 index 07b96eb..7af75e1 100644
 --- a/tiberiandawn/techno.cpp

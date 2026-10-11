@@ -818,6 +818,12 @@ pointer_read(void)
 		seglPicturePoint((int)input[0] - origin_x, (int)input[1] - origin_y, screen_w, screen_h, &pointer_x, &pointer_y);
 }
 
+int
+host_buttons(void)
+{
+	return screen ? (int)control(REG_INPUT)[2] : 0;
+}
+
 void
 host_pointer(int *x, int *y)
 {
@@ -861,13 +867,14 @@ virtual_key(int ch)
 /*
  * Asking the server costs two system calls and two task switches. The machine's own input
  * words (pointer, buttons, key events so far; docs/input.md) say when there can be anything:
- * ask when they have moved, for a few calls after, and a few times a second.
+ * ask when they have moved, for a few calls after, a few times a second, and every 10 ms
+ * while an event they told of is owed (a tenth of a second at most: the kernel's tick is later).
  */
 int
 host_event(struct host_event *event)
 {
-	static uint32_t seen[4], asked_ms, placed_ms;
-	static int ask = 8, log = -1;
+	static uint32_t seen[4], asked_ms, placed_ms, changed_ms;
+	static int ask = 8, log = -1, owed;
 	const volatile uint32_t *input;
 	GR_EVENT e;
 	int i;
@@ -881,9 +888,17 @@ host_event(struct host_event *event)
 	input = control(REG_INPUT);
 	for (i = 2; i < 4; i++)		/* the buttons, and the count of keys */
 		if (seen[i] != input[i]) {
+			owed += i == 3 ? (int)(input[i] - seen[i]) : 1;
 			seen[i] = input[i];
 			ask = 8;
+			changed_ms = host_ms();
 		}
+	if (!ask && owed > 0) {
+		if (host_ms() - changed_ms >= 100)
+			owed = 0;
+		else if (host_ms() - asked_ms >= 10)
+			ask = 1;
+	}
 	if (!ask && host_ms() - asked_ms >= 250) {
 		ask = 1;
 		if (host_ms() - placed_ms >= 3000) {
@@ -921,25 +936,26 @@ host_event(struct host_event *event)
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 		case GR_EVENT_TYPE_BUTTON_UP:
+			owed -= owed > 0;
 			seglPicturePoint(e.button.x, e.button.y, screen_w, screen_h, &pointer_x, &pointer_y);
 			if (!(e.button.changebuttons & (GR_BUTTON_L | GR_BUTTON_R)))
 				break;
 			event->type = HOST_BUTTON;
 			event->key = e.button.changebuttons & GR_BUTTON_L ? 0x01 : 0x02;
 			event->down = e.type == GR_EVENT_TYPE_BUTTON_DOWN;
-			pointer_held = event->down ? pointer_held | event->key : pointer_held & ~event->key;
-			event->x = pointer_x;
+			pointer_held = event->down ? pointer_held | event->key : pointer_held & ~event->key;			event->x = pointer_x;
 			event->y = pointer_y;
 			if (log) {
 				int width, height;
 
 				seglSize(&width, &height);
-				fprintf(stderr, "tdinput: button %d %s at %d,%d (%d,%d in the %dx%d window)\n", event->key,
-					event->down ? "down" : "up", pointer_x, pointer_y, e.button.x, e.button.y, width, height);
+				fprintf(stderr, "tdinput: button %d %s at %d,%d (%d,%d in the %dx%d window), %u ms after its word\n", event->key,
+					event->down ? "down" : "up", pointer_x, pointer_y, e.button.x, e.button.y, width, height, host_ms() - changed_ms);
 			}
 			return 1;
 		case GR_EVENT_TYPE_KEY_DOWN:
 		case GR_EVENT_TYPE_KEY_UP:
+			owed -= owed > 0;
 			event->key = virtual_key(e.keystroke.ch);
 			if (!event->key)
 				break;

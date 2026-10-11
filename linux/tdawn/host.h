@@ -61,6 +61,8 @@ extern unsigned int host_scene_jobs;
 /* The next event, or 0 when there is none. Asks the server only when input has moved. */
 int host_event(struct host_event *event);
 void host_pointer(int *x, int *y);
+/* The buttons as the machine has them now (bit 0 left, 1 right): an event of one comes later. */
+int host_buttons(void);
 /* The host's clock in milliseconds, and instructions run so far. */
 unsigned int host_ms(void);
 unsigned int host_cycles(void);
