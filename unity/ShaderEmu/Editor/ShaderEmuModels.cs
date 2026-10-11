@@ -43,6 +43,10 @@ public static partial class ShaderEmuBuilder
         S("PlasticBeige", "Plastic", 0.84f, 0.80f, 0.68f, 1f),
         S("PlasticGrey", "Plastic", 0.45f, 0.45f, 0.44f, 1f),
         S("PlasticDark", "Plastic", 0.17f, 0.17f, 0.18f, 1f),
+        S("GamepadBody", "Plastic", 0.78f, 0.79f, 0.82f, 1f),
+        S("GamepadBlue", "Plastic", 0.12f, 0.30f, 0.75f, 1f),
+        S("GamepadRed", "Plastic", 0.80f, 0.10f, 0.08f, 1f),
+        S("GamepadYellow", "Plastic", 0.95f, 0.75f, 0.10f, 1f),
         S("MetalSteel", "Metal", 0.55f, 0.56f, 0.58f, 1f, true, false, 0.85f),
         S("MetalBlack", "Metal", 0.15f, 0.15f, 0.16f, 1f, true, false, 0.4f),
         S("Brass", "Metal", 0.80f, 0.62f, 0.30f, 1f, true, false, 1f),
@@ -323,6 +327,7 @@ public static partial class ShaderEmuBuilder
         if (name == "Screen housings" || name == "Desk" || name == "Consoles" || name == "Tower" || name == "Radiator") return 1.5f;
         if (name == "Panelling") return 0.7f;
         if (name == "Desk things" || name == "Table things" || name == "Wall things" || name == "Cables") return 4f;   // small: or a mouse is three texels
+        if (name.StartsWith("Station ") && name.EndsWith(" rest")) return 4f;   // a key's top is a centimetre
         if (name.StartsWith("pachira") || name.StartsWith("potted_plant")) return 0.35f;   // leaves: many small pieces
         return 1f;
     }
@@ -350,10 +355,11 @@ public static partial class ShaderEmuBuilder
         if (old != null) Object.DestroyImmediate(old.gameObject);
         Transform models = new GameObject("Models").transform;
         models.SetParent(world, false);
-        foreach (string name in new[] { "Room", "Shell", "Computer", "Furniture", "Annex", "City" })
+        // (FurnitureCharted: what of the furniture brings its own place in the lightmap, the classroom's keyboards, mice and leads)
+        foreach (string name in new[] { "Room", "Shell", "Computer", "Furniture", "FurnitureCharted", "Annex", "City" })
         {
             bool city = name == "City";
-            GameObject instance = (GameObject)PrefabUtility.InstantiatePrefab(ImportModel(name, materials, !city && name != "Shell"));
+            GameObject instance = (GameObject)PrefabUtility.InstantiatePrefab(ImportModel(name, materials, !city && name != "Shell" && !name.EndsWith("Charted")));
             instance.transform.SetParent(models, false);
             foreach (MeshRenderer renderer in instance.GetComponentsInChildren<MeshRenderer>())
             {

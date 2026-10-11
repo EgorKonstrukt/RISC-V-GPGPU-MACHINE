@@ -9,6 +9,10 @@ import pc_faces
 import math
 import os
 
+from mathutils import Vector
+
+import lib
+
 FRONT = -0.150                            # the tower's front face, in its own frame
 TOWER_HIGH, TOWER_DEEP = 0.36, 0.42
 # Sizes looked up (docs/stations.md has where): a 29 inch tube with 27 inches seen (549 x 411 mm,
@@ -488,13 +492,18 @@ def tower(b):
 
 KEY_SCALE = 1.3          # the keyboard against a real one (keys 19.05 mm apart): 25 mm, for a beam from a chair
 KEYBOARD_Z = -0.31       # its middle, from the place's
+KEY_UNIT = KEY_SCALE * 0.01905 / 60       # the layout's keys are 60 apart: 19.05 mm, the standard pitch
+KEYS_HIGH = 437 * KEY_UNIT                # the layout's height (world/keyboard.json)
+TRAY_BACK = 0.016        # the tray's rim behind the keys, more than at their other sides: the lamps and their names are on it
+TRAY_AT, TRAY_TURN = (0, 0.016, KEYBOARD_Z), (90 - 7, 0, 0)   # the tray's own frame in the keyboard's: -z of it is up from the keys
+LEAD_X = 0.12            # where the lead leaves the tray's back, right of its middle
 
 
 def keyboard(b):
     """The keyboard: world/keyboard.json's layout at KEY_SCALE times a real keyboard's size,
     caps that narrow to their tops, in a tray that slopes."""
     layout = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "keyboard.json"), encoding="utf-8"))
-    wide, tall, s = layout["width"], layout["height"], KEY_SCALE * 0.01905 / 60   # the layout's keys are 60 apart: 19.05 mm, the standard pitch
+    wide, tall, s = layout["width"], layout["height"], KEY_UNIT
     vertices, faces, uvs, normals = [], [], [], []
 
     def ring(x0, y0, x1, y1, z):
@@ -508,6 +517,33 @@ def keyboard(b):
         uvs.append([(vertices[i][0] / (s * wide) + 0.5, vertices[i][1] / (s * tall) + 0.5) for i in corners])
         normals.append(normal)
     row0 = min(key[1] for key in layout["keys"] if len(key[4]) == 1) - 60   # the number row is the second
+    # The well's floor is under no key: it is the well less every key's own square, and a key
+    # rises out of the edge of its square. So the keys and the floor are one surface with no
+    # part of it over another, and one chart of the lightmap seen from above (no seam a key).
+    floor_z = 0.0016                                  # under the caps' feet, in the caps' frame
+    cells = [(x0, y0, x0 + w, y0 + h) for x0, y0, w, h, legend in layout["keys"] if not legend.startswith("Use my")]
+    edge = 0.004 / s                                  # the well is so much wider than the layout
+    xs = sorted({-edge, wide + edge} | {c[0] for c in cells} | {c[2] for c in cells})
+    ys = sorted({-edge, tall + edge} | {c[1] for c in cells} | {c[3] for c in cells})
+    floor_v, floor_f, floor_uv, floor_n = [], [], [], []
+
+    def floor_face(points, normal):
+        first = len(floor_v)
+        floor_v.extend(((px - wide / 2) * s, (tall / 2 - py) * s, z) for px, py, z in points)
+        floor_f.append(tuple(range(first, first + len(points))))
+        floor_uv.append([(floor_v[i][0] / 0.3, floor_v[i][1] / 0.3) for i in floor_f[-1]])
+        floor_n.append(normal)
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            mx, my = (xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2
+            if not any(c[0] < mx < c[2] and c[1] < my < c[3] for c in cells):
+                floor_face([(xs[i], ys[j + 1], floor_z), (xs[i + 1], ys[j + 1], floor_z), (xs[i + 1], ys[j], floor_z), (xs[i], ys[j], floor_z)], (0, 0, -1))
+    for x0, y0, x1, y1 in cells:
+        outer = [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
+        inner = [(x0 + 1.5, y1 - 1.5), (x1 - 1.5, y1 - 1.5), (x1 - 1.5, y0 + 1.5), (x0 + 1.5, y0 + 1.5)]
+        for k in range(4):
+            a, b2 = k, (k + 1) % 4
+            floor_face([(outer[a][0], outer[a][1], floor_z), (outer[b2][0], outer[b2][1], floor_z), (inner[b2][0], inner[b2][1], 0.0), (inner[a][0], inner[a][1], 0.0)], (0, 0, -1))
     for x0, y0, w, h, legend in layout["keys"]:
         if legend.startswith("Use my"):
             continue   # the console's own switch
@@ -521,18 +557,39 @@ def keyboard(b):
             for k, normal in enumerate(((0, -1, 0), (1, 0, 0), (0, 1, 0), (-1, 0, 0))):
                 face((lower + k, lower + (k + 1) % 4, upper + (k + 1) % 4, upper + k), normal)
     kw, kh = wide * s, tall * s
-    with b.at((0, 0.016, KEYBOARD_Z), (90 - 7, 0, 0)):   # -z of this frame is up from the keys
-        with b.at((0, 0, -0.012)):
-            b.mesh(vertices, faces, uvs, "Keyboard", normal=normals)
-        loft(b, [at_z(rrect(kw + 0.03, kh + 0.03, 0.01), 0.012), at_z(rrect(kw + 0.03, kh + 0.03, 0.012), -0.006),
-                 at_z(rrect(kw + 0.022, kh + 0.022, 0.012), -0.0105), at_z(rrect(kw + 0.008, kh + 0.008, 0.006), -0.0105)], "PlasticBeige",
-             first=True, normal='out')
-        b.quad((0, 0, -0.0104), (kw + 0.008, kh + 0.008), "PlasticCase")   # the well the keys stand in
+    back = TRAY_BACK / 2   # the outline's middle is so much behind the keys': the rim is wider there
+
+    def from_above(place, normal):
+        """The keyboard's chart: as seen from over the keys, and the tray's upright side folded
+        out round it. What it stands on is a part by itself, small: nobody sees it."""
+        if normal.z > 0.7 and place.z > 0.011:
+            return ("under", place.x * 0.05, place.y * 0.05)
+        down = max(0.0, place.z + 0.006)
+        if down > 0:
+            half_w, half_h = (kw + 0.03) / 2 - 0.011, (kh + 0.03 + TRAY_BACK) / 2 - 0.011
+            dx = place.x - min(max(place.x, -half_w), half_w)
+            dy = (place.y - back) - min(max(place.y - back, -half_h), half_h)
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                return (place.x + dx / d * down, place.y + dy / d * down)
+        return (place.x, place.y)
+    with b.at(TRAY_AT, TRAY_TURN):
+        with b.chart("keyboard", from_above):
+            with b.at((0, 0, -0.012)):
+                b.mesh(vertices, faces, uvs, "Keyboard", normal=normals)
+                b.mesh(floor_v, floor_f, floor_uv, "PlasticCase", normal=floor_n)   # the well, and each key's foot out of it
+            loft(b, [at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.01, cy=back), 0.012), at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.012, cy=back), -0.006),
+                     at_z(rrect(kw + 0.022, kh + 0.022 + TRAY_BACK, 0.012, cy=back), -0.0105), at_z(rrect(kw + 0.008, kh + 0.008, 0.006), -0.0104)], "PlasticBeige",
+                 first=True, normal='out')
+        # the three lamps over the number pad and their names under them, all on the rim's flat top
+        rim = kh / 2 + 0.004   # where the well ends: the flat is from here to rim + 0.007 + TRAY_BACK
         for i, mat in enumerate(("LampGreen", "PlasticDark", "PlasticDark")):   # (unlit: a lamp that glowed on a machine that was off)
-            b.box((kw / 2 - 0.02 - i * 0.012, kh / 2 + 0.006, -0.0108), (0.006, 0.002, 0.0008), mat)
-        b.quad((kw / 2 - 0.032, kh / 2 + 0.0105, -0.0106), (0.04, 0.005), "Details", decal="kb_lamps")
+            b.box((kw / 2 - 0.02 - i * 0.012, rim + 0.016, -0.0108), (0.006, 0.002, 0.0008), mat)
+        b.quad((kw / 2 - 0.032, rim + 0.0085, -0.0107), (0.04, 0.005), "Details", decal="kb_lamps")
+        # where the lead leaves, behind: a sleeve moulded on the tray's back
+        b.box((LEAD_X, kh / 2 + 0.015 + TRAY_BACK + 0.004, 0.003), (0.016, 0.01, 0.01), "PlasticCase", bevel=0.002, segs=1)
     for x in (-0.18 * KEY_SCALE, 0.18 * KEY_SCALE):   # the feet that fold out behind
-        b.box((x, 0.008, KEYBOARD_Z + kh / 2 - 0.004), (0.03, 0.016, 0.008), "PlasticCase", bevel=0.002, segs=1)
+        b.box((x, 0.008, KEYBOARD_Z + kh / 2 - 0.004 + TRAY_BACK), (0.03, 0.016, 0.008), "PlasticCase", bevel=0.002, segs=1)
 
 
 def mouse(b):
@@ -541,32 +598,62 @@ def mouse(b):
     mouse_body(b)
 
 
+MOUSE_TURN = 192      # its buttons away from the sitter, turned a little as a hand leaves it
+MOUSE_LONG = 0.108
+MOUSE_LEAD = (0.0, 0.0125, -MOUSE_LONG / 2 - 0.011)   # the end of the sleeve its lead leaves by, in the body's own frame
+
+
 def mouse_body(b):
-    """The mouse itself, standing on y = 0.004: sections of a pebble, flat below, humped under the
-    palm, its buttons away from the sitter (+z)."""
-    def section(t, lift=0.0, around=28, half_only=False):
-        z = 0.052 - t * 0.104                         # from its tail (towards the sitter's wrist) to the buttons' edge
-        half = 0.031 * (1 - (2 * t - 1) ** 4) ** 0.5 + 0.002 + lift
-        high = (0.012 + 0.024 * math.sin(math.pi * (0.12 + 0.72 * (1 - t))) ** 1.2) * (0.25 + 0.75 * (1 - (2 * t - 1) ** 8) ** 0.5) + lift   # its ends rounded over, not cut off
-        ring = []
-        for a in range(around // 2 + 1 if half_only else around):
-            angle = 2 * math.pi * a / around
+    """The mouse itself, standing on y = 0.004: sections of a pebble with a flat base and a low
+    wall round it, humped under the palm, its two buttons away from the sitter (+z)."""
+    def section(t, lift=0.0, around=18):
+        z = MOUSE_LONG / 2 - t * MOUSE_LONG               # from its tail (under the wrist) to the buttons' edge
+        ends = (1 - (2 * t - 1) ** 6) ** 0.5              # rounded over at both ends, not cut off
+        half = (0.0300 * (1 - (2 * t - 1) ** 4) ** 0.5 + 0.0015) * (0.35 + 0.65 * ends) + lift
+        # highest under the palm, a third of the way from the tail; lower and flatter at the buttons
+        hump = 0.0105 + 0.0215 * math.sin(math.pi * (0.10 + 0.74 * (1 - t))) ** 1.25
+        high = hump * (0.3 + 0.7 * ends) + lift
+        wall = 0.0055 * (0.4 + 0.6 * ends)                # the wall round the base, which the hump rises from
+        ring = [(half * 0.955, 0.0040, z), (half * 0.985, 0.0046, z), (half, 0.0040 + wall * 0.6, z)]
+        for a in range(1, around):                        # over the top, right to left: squarer than a circle
+            angle = math.pi * a / around
             x, y = math.cos(angle), math.sin(angle)
-            ring.append((x * half, 0.004 + (high * max(y, 0) ** 0.8 if y > 0 else 0.002 * y), z))
+            ring.append((half * (1 if x > 0 else -1) * abs(x) ** 0.82, 0.0040 + wall + (high - wall) * y ** 0.88, z))
+        ring += [(-half, 0.0040 + wall * 0.6, z), (-half * 0.985, 0.0046, z), (-half * 0.955, 0.0040, z)]
         return ring
     square = [(0, 0), (0.02, 0), (0.02, 0.02), (0, 0.02)]
-    with b.at((0.0, 0, 0.0), (0, 192, 0)):   # its buttons away from the sitter, turned a little as a hand leaves it
-        rings = [section(t) for t in (0.0, 0.025, 0.07, 0.14, 0.24, 0.36, 0.5, 0.64, 0.76, 0.86, 0.93, 0.975, 1.0)]
-        loft(b, rings, "PlasticBeige", first=True, last=True, normal='out', tile=0.2)
+
+    def unrolled(place, normal):
+        """The mouse's chart: where along it a point is, and how far round its section from the
+        top (so its sides are not on edge, as from above they would be). Its flat underside
+        and its two small ends are parts by themselves."""
+        if normal.y < -0.7 and place.y < 0.0047:
+            return ("under", place.x * 0.05, place.z * 0.05)
+        if abs(normal.z) > 0.95:
+            return ("end", place.x, place.y)
+        ring = section(min(1.0, max(0.0, (MOUSE_LONG / 2 - place.z) / MOUSE_LONG)))
+        top = len(ring) // 2
+        near = min(range(len(ring)), key=lambda k: (ring[k][0] - place.x) ** 2 + (ring[k][1] - place.y) ** 2)
+        low, high = min(near, top), max(near, top)
+        round_it = sum(math.hypot(ring[k + 1][0] - ring[k][0], ring[k + 1][1] - ring[k][1]) for k in range(low, high))
+        return (place.z, round_it if near > top else -round_it)
+    with b.at((0.0, 0, 0.0), (0, MOUSE_TURN, 0)):
+        steps = (0.0, 0.012, 0.035, 0.07, 0.12, 0.19, 0.27, 0.36, 0.45, 0.54, 0.63, 0.72, 0.80, 0.87, 0.93, 0.965, 0.988, 1.0)
+        with b.chart("mouse", unrolled):
+            loft(b, [section(t) for t in steps], "PlasticBeige", first=True, last=True, normal='out', tile=0.2)
         # the seams are ribbons a hair over the skin: across behind the buttons, and between them
-        near, far = section(0.51, 0.0003, half_only=True), section(0.525, 0.0003, half_only=True)
+        near, far = section(0.535, 0.0003), section(0.548, 0.0003)
         n = len(near)
-        b.mesh(near + far, [(k, k + 1, n + k + 1, n + k) for k in range(1, n - 2)], [square] * (n - 3), "PlasticDark", normal=(0, 1, 0))
-        ridge = [section(t, 0.0003)[7] for t in (0.525, 0.64, 0.76, 0.86, 0.93, 0.975)]   # the top of each section
+        top = n // 2   # the ring's point over its middle
+        ridge = [section(t, 0.0003)[top] for t in (0.548, 0.63, 0.72, 0.80, 0.87, 0.93, 0.965, 0.988)]
         left = [(-0.0006, y, z) for x, y, z in ridge]
         right = [(0.0006, y, z) for x, y, z in ridge]
-        n = len(ridge)
-        b.mesh(left + right, [(k, k + 1, n + k + 1, n + k) for k in range(n - 1)], [square] * (n - 1), "PlasticDark", normal=(0, 1, 0))
+        with b.chart("mouse seams", unrolled):
+            b.mesh(near + far, [(k, k + 1, n + k + 1, n + k) for k in range(3, n - 4)], [square] * (n - 7), "PlasticDark", normal=(0, 1, 0))
+            n = len(ridge)
+            b.mesh(left + right, [(k, k + 1, n + k + 1, n + k) for k in range(n - 1)], [square] * (n - 1), "PlasticDark", normal=(0, 1, 0))
+        # the sleeve the lead leaves by, under the buttons' edge
+        b.cyl((MOUSE_LEAD[0], MOUSE_LEAD[1], MOUSE_LEAD[2] + 0.007), 0.0036, 0.014, "PlasticCase", segs=10, bevel=0.001, rot=(90, 0, 0))
 
 
 def office_chair(b):
@@ -686,15 +773,21 @@ def station(b, which="all", lie=None):
         b.box((x, y, z + 0.014), (0.03, 0.022, 0.028), "Rubber", bevel=0.004, segs=2)   # its moulded plug (IEC C13)
     # the keyboard's lead round the monitor's foot to the DIN socket, the mouse's round the tower to COM 1
     din_x, din_y = TOWER_X + at["keyboard"][0], at["keyboard"][1]
-    key_back = KEYBOARD_Z + 0.5 * KEY_SCALE * 437 * 0.01905 / 60 + 0.012   # the tray's far edge
-    b.tube([(SET_X + kx + 0.12, 0.02, key_back + kz), (SET_X + kx + 0.2, 0.006, key_back + kz + 0.04), (0.25, 0.004, -0.05), (0.262, 0.004, behind - 0.05),
+    # (from the sleeve on the tray's back, wherever this place's keyboard lies and however it is turned)
+    tray = (lib.place((SET_X + kx, 0, KEYBOARD_Z + kz), (0, kturn, 0)) @ lib.place((0, 0, -KEYBOARD_Z)) @ lib.place(TRAY_AT, TRAY_TURN))
+    far = KEYS_HIGH / 2 + 0.015 + TRAY_BACK
+    k0, k1 = tray @ Vector((LEAD_X, far + 0.006, 0.003)), tray @ Vector((LEAD_X, far + 0.03, 0.006))
+    b.tube([tuple(k0), tuple(k1), (k1.x + 0.07, 0.006, k1.z + 0.03), (0.25, 0.004, -0.05), (0.262, 0.004, behind - 0.05),
             (din_x, 0.012, behind + 0.07), (din_x, din_y - 0.06, behind + 0.07), (din_x, din_y - 0.006, behind + 0.062), (din_x, din_y, behind + 0.046), (din_x, din_y, behind + 0.02)],
            0.0028, "PlasticCase", segs=6, smooth=5)
     b.cyl((din_x, din_y, behind + 0.004), 0.0062, 0.008, "MetalSteel", segs=14, rot=(90, 0, 0))                    # the DIN plug: its shell in the socket,
     b.cyl((din_x, din_y, behind + 0.02), 0.0078, 0.026, "PlasticCase", segs=14, bevel=0.002, rot=(90, 0, 0))     # its grip,
     b.cyl((din_x, din_y, behind + 0.038), 0.0045, 0.012, "PlasticCase", segs=10, rot=(90, 0, 0))                 # and its sleeve
     cx, cy = TOWER_X + at["com1"][0], at["com1"][1]
-    b.tube([(mouse_at[0], 0.014, mouse_at[2] + 0.052), (mouse_at[0] + 0.01, 0.006, mouse_at[2] + 0.09), (TOWER_X + 0.1, 0.004, -0.15), (TOWER_X + 0.108, 0.004, behind - 0.05),
+    # (from the sleeve under its buttons, however this place's mouse is turned)
+    body = lib.place(mouse_at, (0, mturn, 0)) @ lib.place((0, 0, 0), (0, MOUSE_TURN, 0))
+    m0, m1 = body @ Vector(MOUSE_LEAD), body @ Vector((MOUSE_LEAD[0], 0.008, MOUSE_LEAD[2] - 0.03))
+    b.tube([tuple(m0), tuple(m1), (m1.x * 0.6 + (TOWER_X + 0.1) * 0.4, 0.004, m1.z * 0.6 - 0.15 * 0.4 + 0.02), (TOWER_X + 0.1, 0.004, -0.15), (TOWER_X + 0.108, 0.004, behind - 0.05),
             (cx + 0.05, 0.012, behind + PLUG_LONG + 0.03), (cx, cy - 0.06, behind + PLUG_LONG + 0.035), (cx, cy - 0.006, behind + PLUG_LONG + 0.028),
             (cx, cy, behind + PLUG_LONG + 0.012), (cx, cy, behind + PLUG_LONG - 0.01)], 0.0022, "PlasticCase", segs=6, smooth=5)
     dsub_plug(b, cx, cy, behind, 0.031, sleeve=0.004)

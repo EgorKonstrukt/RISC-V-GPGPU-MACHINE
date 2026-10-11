@@ -144,7 +144,7 @@ def classroom(b):
                    "mat": (lay.uniform(-0.01, 0.01), lay.uniform(-0.01, 0.01), lay.uniform(-6, 6)),
                    "mouse": (lay.uniform(-0.03, 0.03), lay.uniform(-0.03, 0.03), lay.uniform(-20, 20))}
             b.asset("pc_station", at, rot=(0, turn, 0), scale=1.0, parts=("=pc_station",))
-            b.obj("Station %d rest" % (row * len(PLACES_X) + column))   # one object a place: each has a tube of its own
+            b.obj("Station %d rest" % (row * len(PLACES_X) + column), charted=True)   # one object a place: each has a tube of its own
             pc.MODE = "low"   # (the glass alone, as the baked set has it)
             with b.at(at, (0, turn, 0)):
                 pc.station(b, "rest", lie)

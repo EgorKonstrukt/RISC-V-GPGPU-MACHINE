@@ -40,12 +40,16 @@ class Builder:
         self.stack = [Matrix.Identity(4)]
         self.assets = []       # (asset, matrix, size, triangle limit, parts)
         self.random = random.Random(seed)
+        # objects that bring their own place in the lightmap ("UV2"), a chart a surface: see chart()
+        self.charted, self.chart_ids, self.chart_spec, self.fragment = set(), {}, None, 0
         atlas = os.path.join(HERE, "atlas.json")
         self.atlas = json.load(open(atlas)) if os.path.exists(atlas) else {}
 
     # ---- context
-    def obj(self, name):
+    def obj(self, name, charted=False):
         self.current = name
+        if charted:
+            self.charted.add(name)
         if name not in self.objects:
             self.objects[name] = (bmesh.new(), [])
         return self
@@ -61,11 +65,81 @@ class Builder:
                 builder.stack.pop()
         return Frame()
 
+    def chart(self, name, uv_of):
+        """In a charted object: what is made inside is one chart of the lightmap, laid out by
+        uv_of(place, normal) in metres, the place and the face's normal in the frame this is
+        entered in. It may give (part, u, v) for a part of the chart to lie by itself. Outside
+        any chart a fragment is six charts, its faces seen along each axis either way."""
+        frame, builder = self.stack[-1].copy(), self
+
+        class Chart:
+            def __enter__(self):
+                builder.chart_spec = (name, uv_of, frame)
+
+            def __exit__(self, *args):
+                builder.chart_spec = None
+        return Chart()
+
+    def _chart(self, bm):
+        uv2 = bm.loops.layers.uv.get("UV2") or bm.loops.layers.uv.new("UV2")
+        tag = bm.faces.layers.int.get("chart") or bm.faces.layers.int.new("chart")
+        self.fragment += 1
+        spec = self.chart_spec
+        back = (C @ spec[2]).inverted() if spec else None
+        turn = back.to_3x3() if spec else None
+        bm.normal_update()
+        for f in bm.faces:
+            if spec:
+                normal, part, coords = turn @ f.normal, None, []
+                for loop in f.loops:
+                    r = spec[1](back @ loop.vert.co, normal)
+                    if len(r) == 3:
+                        part, r = r[0], r[1:]
+                    coords.append(r)
+                name = (spec[0], part)
+            else:
+                axis = max(range(3), key=lambda i: abs(f.normal[i]))
+                name = (self.fragment, axis, f.normal[axis] > 0)
+                coords = [(loop.vert.co[(axis + 1) % 3], loop.vert.co[(axis + 2) % 3]) for loop in f.loops]
+            f[tag] = self.chart_ids.setdefault((self.current, name), len(self.chart_ids) + 1)
+            for loop, c in zip(f.loops, coords):
+                loop[uv2].uv = c
+
+    def _pack(self, name, bm, margin=0.012):
+        """The charts of an object side by side in a square, at one scale: rows, the tallest first."""
+        uv2, tag = bm.loops.layers.uv.get("UV2"), bm.faces.layers.int.get("chart")
+        boxes = {}
+        for f in bm.faces:
+            box = boxes.setdefault(f[tag], [1e9, 1e9, -1e9, -1e9])
+            for loop in f.loops:
+                u, v = loop[uv2].uv
+                box[0], box[1], box[2], box[3] = min(box[0], u), min(box[1], v), max(box[2], u), max(box[3], v)
+        sizes = {k: (b[2] - b[0] + margin, b[3] - b[1] + margin) for k, b in boxes.items()}
+        side = max(math.sqrt(sum(w * h for w, h in sizes.values())) * 1.1, max(w for w, h in sizes.values()))
+        while True:
+            place, x, y, row = {}, 0.0, 0.0, 0.0
+            for k in sorted(sizes, key=lambda k: -sizes[k][1]):
+                w, h = sizes[k]
+                if x + w > side:
+                    x, y, row = 0.0, y + row, 0.0
+                place[k] = (x, y)
+                x, row = x + w, max(row, h)
+            if y + row <= side:
+                break
+            side *= 1.06
+        for f in bm.faces:
+            box, (ox, oy) = boxes[f[tag]], place[f[tag]]
+            for loop in f.loops:
+                u, v = loop[uv2].uv
+                loop[uv2].uv = ((ox + margin / 2 + u - box[0]) / side, (oy + margin / 2 + v - box[1]) / side)
+        used = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes.values()) / (side * side)
+        print("CHARTS %-18s %4d charts in %.2f m square, %2.0f%% of it used" % (name, len(boxes), side, used * 100))
+
     def rand(self, a, b):
         return a + self.random.random() * (b - a)
 
     # ---- putting a finished fragment into the current object
-    def _emit(self, bm, mat, at, rot, normal=None):
+    def _emit(self, bm, mat, at, rot, normal=None, charted=False):
         world = self.stack[-1] @ place(at, rot)
         bmesh.ops.transform(bm, matrix=C @ world, verts=bm.verts)
         bm.normal_update()
@@ -83,6 +157,8 @@ class Builder:
             flip = [f for f in bm.faces if f.normal.dot(want) < 0]
         if flip:
             bmesh.ops.reverse_faces(bm, faces=flip)
+        if self.current in self.charted and not charted:
+            self._chart(bm)
         target, names = self.objects[self.current]
         if mat not in names:
             names.append(mat)
@@ -288,9 +364,26 @@ class Builder:
                 vs = (s / segs, (s + 1) / segs, (s + 1) / segs, s / segs)
                 for loop, u, v in zip(face.loops, us, vs):
                     loop[uv].uv = (u / tu, v * 2 * math.pi * radius / tv)
-        for ring in (rings[0], rings[-1]):
-            bm.faces.new(ring)
-        self._emit(bm, mat, at, rot)
+        ends = [bm.faces.new(ring) for ring in (rings[0], rings[-1])]
+        own = self.current in self.charted and self.chart_spec is None
+        if own:
+            # unrolled: its length across the chart, its girth up it, in lengths of 0.3 m one over another
+            uv2, tag = bm.loops.layers.uv.new("UV2"), bm.faces.layers.int.new("chart")
+            uv = bm.loops.layers.uv[0]   # (a new layer leaves the handles to the old ones stale)
+            self.fragment += 1
+            piece = 0.3
+            for f in bm.faces:
+                if f in ends:
+                    f[tag] = self.chart_ids.setdefault((self.current, (self.fragment, 'end', ends.index(f))), len(self.chart_ids) + 1)
+                    for k, loop in enumerate(f.loops):
+                        loop[uv2].uv = (radius * math.cos(2 * math.pi * k / segs), radius * math.sin(2 * math.pi * k / segs))
+                    continue
+                us = [loop[uv].uv[0] * tu for loop in f.loops]
+                part = int(min(us) / piece + 1e-6)
+                f[tag] = self.chart_ids.setdefault((self.current, (self.fragment, 'run', part)), len(self.chart_ids) + 1)
+                for loop, u in zip(f.loops, us):
+                    loop[uv2].uv = (u - part * piece, loop[uv].uv[1] * tv)
+        self._emit(bm, mat, at, rot, charted=own)
 
     def quad(self, at, size, mat, rot=(0, 0, 0), uvrect=None, decal=None):
         """A rectangle in the local xy plane, seen from -z, its picture upright along +y."""
@@ -360,6 +453,8 @@ class Builder:
         bpy.context.scene.collection.children.link(collection)
         made = []
         for name, (bm, names) in self.objects.items():
+            if name in self.charted:
+                self._pack(name, bm)
             for edge in bm.edges:
                 edge.smooth = len(edge.link_faces) != 2 or edge.calc_face_angle(0.0) < math.radians(38)
             mesh = bpy.data.meshes.new(name)
@@ -384,6 +479,7 @@ class Builder:
                 if hands:
                     made.extend(assets.spawn_hands(made[-1], asset, hands, collection))
         self.objects, self.assets = {}, []
+        self.was_charted, self.charted = self.charted, set()
         return made
 
 

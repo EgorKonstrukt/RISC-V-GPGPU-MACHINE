@@ -43,7 +43,11 @@ def main():
         builder = lib.Builder(seed=7)
         PARTS[name].build(builder)
         objects = builder.finish(name)
-        lib.export(objects, os.path.join(OUT, name + ".fbx"))
+        # what brings its own place in the lightmap is a file of its own: Unity lays out a whole file's, or none of it
+        own = [ob for ob in objects if ob.name in builder.was_charted]
+        if own:
+            lib.export(own, os.path.join(OUT, name + "Charted.fbx"))
+        lib.export([ob for ob in objects if ob not in own], os.path.join(OUT, name + ".fbx"))
         report[name] = lib.triangles(objects)
         print("BUILT %s: %d objects, %d triangles, %.1f s" % (name, len(objects), sum(report[name].values()), time.time() - start))
     if not args:

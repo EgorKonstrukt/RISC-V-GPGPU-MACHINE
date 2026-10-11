@@ -193,6 +193,7 @@ public static partial class ShaderEmuBuilder
 
     static void Weather(Transform world, Transform computer)
     {
+        WindowProbe(world, GlassMaterial());   // (the panes are new ones: their probe and its anchors again)
         // ---- the sky: a panorama under drifting cloud
         Material sky = Mat("NightSky", "ShaderEmu/Sky");
         sky.SetTexture("_MainTex", WorldTexture("NightSky"));

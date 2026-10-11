@@ -746,6 +746,15 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   display ("Speed wall", `WallSpeed` in `ShaderEmuStations.cs`): it is of the tower's material
   ("Speed own"), so it needs nothing set. "ShaderEmu/Add the wall's speed counter to the open
   scene" puts it into a baked scene; its light is its own.
+- A model object may bring its own lightmap layout (`docs/world.md`, "A lightmap layout of its
+  own": `b.obj(name, charted=True)`, `b.chart`): a thing of many small faces that Unity would
+  cut into a chart a face (the classroom's keyboards and mice). It is exported to
+  `<Part>Charted.fbx`; after a change to one, `world/check_charts.py` must find next to no
+  faces over one another. A lead starts where its keyboard or mouse is by the same matrices
+  that place them (`lib.place`), not by adding the place's offsets, which leaves the turn out.
+- The plastics named `Gamepad...` (`world/materials.py`, `ShaderEmuModels.cs`) are the monitors'
+  blue sockets' and the holodeck chairs' too: they stayed when the controllers' models went,
+  and taking them out stops `build.py` at the first thing that names one.
 - A controller has no model (the two on every player's object are gone, with `world/gamepad.py`): the stand's
   line says what a sitter holds, and a notice over their hand says it to them. The board's labels cut
   off what does not fit their boxes (TextMeshPro's Truncate) without a word: after rewording one, compare

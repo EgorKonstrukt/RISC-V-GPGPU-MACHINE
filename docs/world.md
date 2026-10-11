@@ -24,6 +24,20 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
 - `sounds.py` computes the rain's loop, and cuts thunder and the computer's own sounds from
   recordings (`SOURCES`: Freesound, CC0; fetched once into `build/sounds`, which needs ffmpeg)
   (`Sounds/*.wav`, 3 s).
+- **A lightmap layout of its own.** Unity (and Bakery after it) lays out a model's place in the
+  lightmap by cutting it wherever it bends, a chart a piece: a keyboard was a chart a key
+  and more, each lit by its own few texels, and it showed as blotches and lines. An object made
+  with `b.obj(name, charted=True)` brings its layout ("UV2", `lib.Builder.chart`): what is
+  built inside `with b.chart(name, uv_of)` is one chart, laid out by `uv_of(place, normal)`
+  in metres; anything else is six charts a fragment, seen along each axis, and a lead is
+  unrolled in lengths. `finish()` puts the charts side by side at one scale. Such objects are
+  exported to a file of their own (`FurnitureCharted.fbx`), because Unity lays out a whole
+  file's or none of it. The classroom's "Station N rest" are so: the keyboard is one chart
+  seen from above (its keys rise out of the well's floor, which is under no key, and the
+  tray's upright side is folded out round it), the mouse one chart unrolled round its
+  section. `blender -b build/world.blend --python world/check_charts.py -- "Station 0 rest"
+  build/charts.npz`, then `python world/check_charts.py build/charts.npz OUT.png`, counts the
+  texels where two faces lie on one place (0.19%: slivers at keys' edges) and draws the layout.
 - `build.py` writes `Models/{Shell,Room,Computer,Furniture,Annex,City}.fbx` and
   `build/world.blend` (11 s). Name parts after `--` to build only those.
 
