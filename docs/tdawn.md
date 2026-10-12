@@ -59,10 +59,23 @@ speech play on the sound card (`docs/sound.md`); there is no music.
 - **Logic that repeats itself**, each with the state sums unchanged:
   a unit that steps is lifted from the map and put down, and each half added or took its
   threat from nine regions of every enemy house: the lifting is held back and the two cancel
-  (`CellClass::Adjust_Threat`, 9% of mission 3). A scan for targets asks a cell whether anyone
-  stands in it before the call that finds out (`Greatest_Threat`). A house is found by its
+  (`CellClass::Adjust_Threat`, 9% of mission 3). A house is found by its
   kind from a table, not a search (`HouseClass::As_Pointer`). The layer's sort asks each
   object where it sorts once, not twice.
+- **A scan for targets reads bits.** `Greatest_Threat` goes round its unit in growing boxes
+  and asks every cell of each, and nearly all are empty. The map keeps a bit a cell that has
+  an occupier, once by rows and once by columns (`cell.cpp`, `cell.h`): a side of a box is a
+  word or two of them, and only the cells whose bits are set are asked, in the order the
+  game's loops ask them (top before bottom for each x, left before right for each y: the
+  scan keeps the last target it finds, so the order is the answer). The bits follow every
+  store to a cell's `OccupierPtr`: `Occupy_Down`, `Occupy_Up`, the dead occupier that
+  `Cell_Occupier` drops, the cells made anew (`Init_Cells`) and a saved game's
+  (`MapClass::Decode_Pointers`). `TDAWN_CHECK_OCCUPY=1` compares them with the cells every
+  frame and says how many were wrong: none in 1,200 frames of mission 10 and 300 of missions
+  1 and 3. The scan itself went from 11.5k to 5.7k instructions a frame in mission 10, and
+  its logic from 99k to 93k a frame over 1,200 frames (113k to 107k over 300; mission 3 124k
+  to 120k; mission 1 has few scans and stays 49k). What is left is some 70 instructions a
+  box, and the cells that do have someone (`Evaluate_Cell`, 2.8k a frame, as before).
 - **Scrolling.** The game moved the map a fixed step every pass of its loop, sized for a
   machine that makes some twenty passes a second; here a pass that scrolls is 400k to 600k
   instructions, six or seven a second. `ShaderEmu_Scroll_Distance` grows a step with the
@@ -167,7 +180,7 @@ Where a frame of mission 1 goes now (`tdstat:` says): the scene 60k to 68k, of w
 cells 13k, the shroud 8k and the objects 40k (53 written again as they were, 12 drawn anew).
 A rectangle that joins the command before it is written by a function that calls nothing
 (`seglSprite`). In missions 3 and 10 logic is the larger part: in mission 10 looking for
-targets is 8% of a frame and path finding 12%.
+targets is 6% of a frame (it was 8% to 10% before the scan read bits) and path finding 12%.
 
 The figures below are the game's own drawing (`TDAWN_RENDER=soft`), from before:
 
@@ -203,6 +216,7 @@ Each run prints these figures (`tdstat:` lines, every five seconds):
     TDAWN_SOUND_LOG=1   print every sound the game asks for, and whether the pack has it
     TDAWN_BUILD=N       put a refinery in view at frame N, which plays its construction
     TDAWN_CHECK_REDRAW=1  at the held frame, count the pixels a full redraw would change
+    TDAWN_CHECK_OCCUPY=1  every frame, count the cells whose occupancy bit is not the cell's own
     TDAWN_SKIP=N        how many frames in a row may go undrawn (0)
     TDAWN_RENDER=soft   the game draws the map itself, as before
     TDAWN_REFRESH=N     make every Nth scene from nothing (32; 0: never)

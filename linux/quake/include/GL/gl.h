@@ -7,8 +7,9 @@
 #include <GLES/segl.h>
 
 typedef float GLclampf;
-typedef double GLdouble;
-typedef double GLclampd;
+/* the game's few doubles (a projection, a depth range) are floats: the machine has no others */
+typedef float GLdouble;
+typedef float GLclampd;
 
 #define GL_POLYGON 0x0009
 #define GL_LEQUAL 0x0203

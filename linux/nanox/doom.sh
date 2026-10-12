@@ -72,7 +72,7 @@ grep -q '^int I_GetTime_port' i_system_ours.c || { echo "i_system.c: I_GetTime w
 rv32-cc $OPT -w -c -fsigned-char -DALWAYS=1 -I"$DOOM" -I"$MW/src/include" i_system_ours.c -o i_system.o
 rm i_system_ours.c
 # The game's tics are counted apart from drawing (doom_video.c prints both with the frame rate).
-rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" "$DOOM/d_main.c" -o d_main.o
+rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -DHU_Erase=HU_Erase_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" "$DOOM/d_main.c" -o d_main.o
 rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -I"$DOOM" "$DOOM/d_net.c" -o d_net.o
 # Parts of the game written again for this machine (doom_fast.c): the sight check, and the
 # marks that say a line has been visited, which leave the lines themselves.
@@ -85,10 +85,29 @@ sed 's/^P_LookForPlayers$/P_LookForPlayers_port/' "$DOOM/p_enemy.c" > p_enemy_ou
 grep -q '^P_LookForPlayers_port$' p_enemy_ours.c || { echo "p_enemy.c: P_LookForPlayers was not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_enemy_ours.c -o p_enemy.o
 rm p_enemy_ours.c
-sed 's/^void P_RunThinkers (void)$/void P_RunThinkers_port (void)/' "$DOOM/p_tick.c" > p_tick_ours.c
+sed 's/^void P_RunThinkers (void)$/void P_RunThinkers_port (void)/; s/^void P_InitThinkers (void)$/void P_InitThinkers_port (void)/' "$DOOM/p_tick.c" > p_tick_ours.c
 grep -q '^void P_RunThinkers_port' p_tick_ours.c || { echo "p_tick.c: P_RunThinkers was not found"; exit 1; }
+grep -q '^void P_InitThinkers_port' p_tick_ours.c || { echo "p_tick.c: P_InitThinkers was not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_tick_ours.c -o p_tick.o
 rm p_tick_ours.c
+# The kept level is told what the game changes (doom_gl.c) instead of looking at every sector
+# and wall every frame: a floor or ceiling that moves (all through T_MovePlane), a floor's
+# picture, a sector's light, a wall's picture (a switch, its going back, a sliding door).
+# The counts are every such write the source has outside loading a level or a saved game.
+told() {	# FILE CALL COUNT EXPRESSION [A LINE THAT MUST BE THERE]
+    sed "1i void doom_sector_changed(void *sector); extern int doom_walls_changed;
+$4" "$DOOM/$1.c" > "$1_ours.c"
+    [ "$(tail -n +2 "$1_ours.c" | grep -c "$2")" = "$3" ] || { echo "$1.c: its $3 writes were not found"; exit 1; }
+    [ -z "${5:-}" ] || grep -qx "$5" "$1_ours.c" || { echo "$1.c: $5 was not found"; exit 1; }
+    rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" "$1_ours.c" -o "$1.o"
+    rm "$1_ours.c"
+}
+told p_floor 'doom_sector_changed(' 3 's/^T_MovePlane$/T_MovePlane_port/; s/\(floor->sector\|sec\)->floorpic = /doom_sector_changed(\1), &/' T_MovePlane_port
+told p_plats 'doom_sector_changed(' 2 's/sec->floorpic = /doom_sector_changed(sec), &/'
+told p_lights 'doom_sector_changed(' 12 's/\(\(flick\|flash\|g\)-> *sector\|sector\)-> *lightlevel [-+]\?= /doom_sector_changed(\1), &/'
+told p_switch 'doom_walls_changed = 1' 3 's/sides\[line->sidenum\[0\]\]\.\(top\|mid\|bottom\)texture = /doom_walls_changed = 1, &/'
+told p_spec 'doom_walls_changed = 1' 3 's/sides\[buttonlist\[i\]\.line->sidenum\[0\]\]\.\(top\|mid\|bottom\)texture =$/doom_walls_changed = 1, &/'
+told p_doors 'doom_walls_changed = 1' 6 's/sides\[door->line->sidenum\[[01]\]\]\.midtexture =/doom_walls_changed = 1, &/'
 # The message at the top of the view stays on the screen while it says the same (doom_gl.c).
 sed 's/^static hu_stext_t	w_message;/hu_stext_t w_message;/; s/^static boolean		message_on;/boolean message_on;/' "$DOOM/hu_stuff.c" > hu_stuff_ours.c
 [ "$(grep -c '^hu_stext_t w_message;\|^boolean message_on;' hu_stuff_ours.c)" = 2 ] || { echo "hu_stuff.c: the message was not found"; exit 1; }

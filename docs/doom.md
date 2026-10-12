@@ -50,13 +50,26 @@ is 43k. Where the time went, and what was done:
 - **The view** was two thirds of a frame: walking the BSP tree for what is visible and sending
   every wall, floor and thing again. The level is kept in GPU memory now (below).
 - **The message** at the top of the view was drawn again every frame, a letter at a time (6k
-  to 9k instructions while one showed). It stays on the screen while it says the same.
+  to 9k instructions while one showed). It stays on the screen while it says the same. That
+  was first done only for a view as wide as the screen, and the view Doom starts with is
+  not (288 wide, the message on the border above it): there Doom also restores the border
+  under the message every frame, and both are left out now while the words are the same and
+  nothing has drawn on their rows. The status bar was never the cost: its numbers and face
+  are drawn when they change, about 800 patches in the first demo against some 58,000 letters.
+- **Looking for what changed.** Every frame compared every sector's heights, pictures and
+  light with what the GPU had, and every wall of a line that does something with its
+  picture: 9k instructions of a frame on a level of 215 sectors where a handful change. The
+  game says what it changes now (below).
 - **Time.** Doom asks the time several times a frame, 416 instructions a system call. It
   reads the machine's clock word (`0x87000034`) instead.
 - **Matrices.** `glOrthox` and the library's 64-bit divisions cost a frame about 5k; the flat
   views are constant matrices, and a window's size divides in 32 bits.
 - **Fixed-point division** takes as many bits a step as the divisor leaves room for, instead
   of one.
+
+The last two took the first demo, one tic a frame (`-timedemo demo1`, 5,026 tics), from 51.8k
+to 37.8k instructions a frame beside its 32k a tic (the view itself from 33.5k to 26.7k), and
+the third demo from 64.4k to 51.3k; the whole first demo from 439 to 369 million instructions.
 
 A demo must play the same after any of this. `DOOM_HASH_TICS=N` prints a sum of the game's
 state (every thing's place, state and health, and the random numbers used) every N tics;
@@ -72,8 +85,13 @@ The Microwindows tree is left as it is; `doom.sh` compiles a few files different
 - The shareware data's demos are version 1.9; the source only took 1.10.
 - `char` is signed (`-fsigned-char`): Doom's tables end with -1.
 - The video functions, the renderer's entry points, the sight check, the search for players,
-  the thinker loop, the clock, the message drawer and the screen melt are compiled under
-  other names, and `doom_video.c`, `doom_gl.c` and `doom_fast.c` take their places.
+  the thinker loop, the clock, the message drawer and eraser and the screen melt are compiled
+  under other names, and `doom_video.c`, `doom_gl.c` and `doom_fast.c` take their places.
+- Where the game writes a sector's heights, floor picture or light, or a wall's picture, it
+  tells `doom_gl.c` (`told` in `doom.sh`: `T_MovePlane`, which every mover goes through, and
+  a call or a flag put before each of the other writes; the script counts them and stops if
+  the source has another number). `P_InitThinkers` says that a level or a saved game was
+  loaded.
 
 ## The screen (`doom_video.c`)
 
@@ -101,7 +119,13 @@ each run is one command that stays at the head of every frame's list
 (`seglKeep` in `programs/linux/gles.c`). The first level of the shareware game is 2,032 quads
 in 764 runs. The depth buffer decides what is seen.
 
-A frame then sends what changed:
+A frame then sends what changed, and knows what did without looking at the level: the game
+marks a sector when it writes it (`doom_sector_changed`) and a frame looks at the marked ones
+only, once for each of the two sets of commands, since a light is a word of each. A switch's
+picture, its going back and a sliding door set one flag (`doom_walls_changed`), and only then
+are the walls of lines that do something looked at; the walls of lines that scroll are looked
+at every frame. A level or a saved game being loaded makes the kept level anew, whatever the
+addresses of its segs. So a frame sends:
 
 - the view's matrices (one block of 28 words);
 - a sector whose floor or ceiling moved: its planes' heights and the walls that stand on
@@ -111,7 +135,10 @@ A frame then sends what changed:
   and commands are 64 bytes apart: the write cache holds few such words);
 - the gun's flash, which lights everything for a tic or two, is one white rectangle added
   over the view, not a new grey for every run;
-- a floor or ceiling seen from the wrong side is not drawn, as in Doom;
+- a floor or ceiling seen from the wrong side is not drawn, as in Doom. That depends on the
+  eye's height, which changes at every step: kept are the two heights between which the eye
+  turns no floor or ceiling over, and every sector is looked at again only when it leaves
+  them (one frame in eight of the third demo);
 - a wall on a line that does something has a run of its own, so a switch changing its
   picture or a wall sliding is one command and one quad;
 - animated textures: the runs that show one take the next picture;

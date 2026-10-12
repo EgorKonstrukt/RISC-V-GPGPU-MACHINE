@@ -6,6 +6,7 @@
 #include "Errors.h"
 #include "Window.h"
 #include "World.h"
+#include "MapRenderer.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -165,6 +166,7 @@ static void* Arena_Alloc(uint32_t size) {
 *#########################################################################################################################*/
 static uint32_t clear_colour;
 static uint32_t hold_frame, stats_ms = 5000;
+static cc_bool mesh_sums;
 static int view_x, view_y, view_w, view_h;
 static struct Matrix se_view, se_proj;
 static struct SETexture* se_texture;
@@ -192,6 +194,7 @@ void Gfx_Create(void) {
 
 	if ((s = getenv("CLASSICUBE_HOLD")))     hold_frame = atoi(s);
 	if ((s = getenv("CLASSICUBE_STATS_MS"))) stats_ms   = atoi(s);
+	mesh_sums = getenv("CLASSICUBE_MESH_SUM") != NULL;
 
 	Gfx.MaxTexWidth  = 1024;
 	Gfx.MaxTexHeight = 1024;
@@ -421,7 +424,8 @@ static uint32_t MatrixBlock(const float* origin, float scale) {
 	if (proj_epoch != matrix_epoch) ProjectionRows();
 
 	u = (float*)(gpu + set_at + BLOCKS_IN) + 32 * blocks;
-	Mem_Copy(u, proj_rows, sizeof(proj_rows));
+	/* (word by word here: Mem_Copy is a call, and this is every draw's) */
+	{ const uint32_t *from = (const uint32_t*)proj_rows; uint32_t *to = (uint32_t*)u; int k; for (k = 0; k < 16; k++) to[k] = from[k]; }
 	u[16] = m->row1.x * scale; u[17] = m->row2.x * scale; u[18] = m->row3.x * scale;
 	u[20] = m->row1.y * scale; u[21] = m->row2.y * scale; u[22] = m->row3.y * scale;
 	u[24] = m->row1.z * scale; u[25] = m->row2.z * scale; u[26] = m->row3.z * scale;
@@ -491,6 +495,20 @@ static CC_INLINE int ChunkTagOf(uint32_t colour) {
 	}
 	last_colour = colour; last_tag = (int)i;
 	return (int)i;
+}
+
+/* CLASSICUBE_MESH_SUM: a line for every chunk's mesh, to compare two builds by. The second sum
+   has each tag's colour for the tag, which is the same whatever order the chunks were made in. */
+static void MeshSum(const struct SEMesh* mesh, const uint32_t* at, const uint32_t* coords, int count) {
+	uint32_t raw = 0, sum = 0;
+	int i;
+	for (i = 0; i < count; i++) {
+		raw = (raw * 31 + at[i]) * 31 + coords[i];
+		sum = ((sum * 31 + (at[i] & 0xFFFFFF)) * 31 + chunk_table[at[i] >> 24]) * 31 + coords[i];
+	}
+	printf("ccmesh: at %d %d %d, %d vertices, sums %08x %08x\n", (int)mesh->origin[0], (int)mesh->origin[1],
+		(int)mesh->origin[2], count, raw, sum);
+	fflush(stdout);
 }
 
 static CC_INLINE int RoundI(float f) { return (int)(f + 0.5f); }
@@ -573,6 +591,7 @@ static cc_bool BuildMeshIn(struct SEVb* vb, MeshAlloc alloc) {
 		mesh->coords   = mesh->vertices + words;
 		mesh->flags    = VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED;
 		mesh->colour   = GPU_PHYS + (uint32_t)((uint8_t*)chunk_table - gpu);
+		if (mesh_sums) MeshSum(mesh, to, coords, count);
 		return true;
 	}
 
@@ -701,6 +720,45 @@ cc_bool Gfx_SE_UnlockFrom(GfxResourceID vb, void* vertices, VertexFormat fmt, in
 	return data->where;
 }
 
+/* The same for a chunk's vertices packed by the builder (struct SEVertex, MapRenderer.h): their
+   bytes count from `corner` and are made to count from `least`, the mesh's origin, and each
+   quad's colour becomes its tag. What BuildMeshIn makes of the same quads as floats. */
+cc_bool Gfx_SE_UnlockPacked(GfxResourceID vb, const struct SEVertex* v, int count, const int* corner, const int* least) {
+	struct SEVb* data   = (struct SEVb*)vb;
+	struct SEMesh* mesh = &data->mesh;
+	const uint32_t began = cycles(), words = (count * 4 + 15) & ~15u;
+	const uint32_t moved = (uint32_t)(least[0] - corner[0]) << 3 | (uint32_t)(least[1] - corner[1]) << 11 |
+		(uint32_t)(least[2] - corner[2]) << 19;
+	uint32_t *restrict to, *restrict coords, prev, tag = 0;
+	uint8_t* mem;
+	int i;
+
+	data->fmt = VERTEX_FORMAT_TEXTURED; data->count = count;
+	data->staging = NULL; data->where = 0;
+	mesh->block_epoch = 0;
+	if (count < 4 || !(mem = (uint8_t*)SpanAlloc(data, 2 * words))) return false;
+	to = (uint32_t*)mem; coords = (uint32_t*)(mem + words);
+	prev = ~v->colour;
+
+	for (i = 0; i < count; i += 4, v += 4) {
+		if (v->colour != prev) { prev = v->colour; tag = (uint32_t)ChunkTagOf(DeviceColour(prev)) << 24; }
+		to[i]     = (v[0].at - moved) | tag; coords[i]     = v[0].coords;
+		to[i + 1] = (v[1].at - moved) | tag; coords[i + 1] = v[1].coords;
+		to[i + 2] = (v[2].at - moved) | tag; coords[i + 2] = v[2].coords;
+		to[i + 3] = (v[3].at - moved) | tag; coords[i + 3] = v[3].coords;
+	}
+	mesh->origin[0] = (float)least[0]; mesh->origin[1] = (float)least[1]; mesh->origin[2] = (float)least[2];
+	mesh->vertices = (uint32_t)(mem - gpu);
+	mesh->coords   = mesh->vertices + words;
+	mesh->flags    = VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED;
+	mesh->colour   = GPU_PHYS + (uint32_t)((uint8_t*)chunk_table - gpu);
+	data->where    = 1;
+	if (mesh_sums) MeshSum(mesh, to, coords, count);
+	stat_vertices += count;
+	stat_vertex_cycles += cycles() - began;
+	return true;
+}
+
 void Gfx_BindDynamicVb(GfxResourceID vb) { se_vb = (struct SEVb*)vb; }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
@@ -813,7 +871,8 @@ static void DrawQuads(int verticesCount, int startVertex) {
 	passes_used   |= (1u << pass) & 0xfe;
 
 	last_draw = c; last_vb = vb; last_end = startVertex + verticesCount;
-	Mem_Copy(last_state, state, sizeof(state));
+	last_state[0] = state[0]; last_state[1] = state[1]; last_state[2] = state[2];
+	last_state[3] = state[3]; last_state[4] = state[4]; last_state[5] = state[5];
 }
 
 void Gfx_DrawVb_IndexedTris_Range(int verticesCount, int startVertex, DrawHints hints) {

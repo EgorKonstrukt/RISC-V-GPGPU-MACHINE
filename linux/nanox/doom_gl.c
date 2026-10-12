@@ -17,6 +17,7 @@
 #include "hu_lib.h"
 #include "hu_stuff.h"
 #include "m_swap.h"
+#include "p_local.h"
 #include "r_local.h"
 #include "m_bbox.h"
 #include "m_fixed.h"
@@ -399,6 +400,52 @@ static struct own *own;		/* walls of lines that do something: their picture may 
 static int own_count;
 static int *moving, moving_count;	/* groups whose picture is one of an animation's */
 static int light_seen[2] = { -1, -1 };	/* per set of commands, as the lights in struct seen and group */
+static int *sliding, sliding_count;	/* into own: the walls of lines that scroll */
+static fixed_t eye_low, eye_high;	/* with the eye from one to the other no floor or ceiling turns its back */
+
+/*
+ * What the game has changed since the level was written: doom.sh has it say so where it
+ * moves a floor or ceiling, changes a sector's light or picture, or a wall's picture.
+ */
+static const sector_t *marked_of;	/* the sectors of the level that is kept */
+static unsigned char *marked;		/* per sector: bit n says it is in pending[n] */
+static int marked_count;
+static int *pending[2], pending_count[2];	/* per set of commands: sectors to look at again */
+int doom_walls_changed;
+static int level_loads, level_made;
+
+void
+doom_sector_changed(void *of)
+{
+	const sector_t *sector = of;
+	int s = sector - marked_of, n;
+
+	if (sector < marked_of || sector >= marked_of + marked_count || marked[s] == 3)
+		return;
+	for (n = 0; n < 2; n++)
+		if (!(marked[s] & (1 << n)))
+			pending[n][pending_count[n]++] = s;
+	marked[s] = 3;
+}
+
+result_e T_MovePlane_port(sector_t *sector, fixed_t speed, fixed_t dest, boolean crush, int floorOrCeiling, int direction);
+void P_InitThinkers_port(void);
+
+/* Every floor, ceiling, door and lift moves through here. */
+result_e
+T_MovePlane(sector_t *sector, fixed_t speed, fixed_t dest, boolean crush, int floorOrCeiling, int direction)
+{
+	doom_sector_changed(sector);
+	return T_MovePlane_port(sector, speed, dest, crush, floorOrCeiling, direction);
+}
+
+/* The game empties its thinkers when it sets a level up or loads a saved game: the kept level is made anew. */
+void
+P_InitThinkers(void)
+{
+	P_InitThinkers_port();
+	level_loads++;
+}
 
 #define THING_PLACES 512		/* a power of two */
 /* A place's quad is 64 bytes; they are 80 apart, so that one field of many of them (a frame
@@ -612,6 +659,13 @@ world_free(void)
 	free(depend);
 	free(own);
 	free(moving);
+	free(sliding);
+	free(marked);
+	free(pending[0]);
+	free(pending[1]);
+	marked = NULL;
+	marked_count = 0;
+	pending[0] = pending[1] = sliding = NULL;
 	pieces = NULL;
 	groups = NULL;
 	seen = NULL;
@@ -717,7 +771,16 @@ world_build(void)
 	depend = malloc((2 * piece_count + 1) * sizeof *depend);
 	own = malloc((piece_count + 1) * sizeof *own);
 	moving = malloc((group_count + 1) * sizeof *moving);
-	own_count = moving_count = 0;
+	sliding = malloc((piece_count + 1) * sizeof *sliding);
+	pending[0] = malloc((numsectors + 1) * sizeof *pending[0]);
+	pending[1] = malloc((numsectors + 1) * sizeof *pending[1]);
+	marked = calloc(numsectors + 1, 1);
+	marked_of = sectors;
+	marked_count = numsectors;
+	own_count = moving_count = sliding_count = pending_count[0] = pending_count[1] = 0;
+	doom_walls_changed = 0;
+	eye_low = 1;	/* no eye is between these: the first frame looks at every sector */
+	eye_high = 0;
 	for (s = 0; s < numsectors; s++) {
 		seen[s].floor = sectors[s].floorheight;
 		seen[s].ceiling = sectors[s].ceilingheight;
@@ -756,6 +819,8 @@ world_build(void)
 				o->piece = i;
 				o->texture = p->texture;
 				o->offset = o->side->textureoffset;
+				if (seg->linedef->special == 48)
+					sliding[sliding_count++] = own_count - 1;
 			}
 			wall_piece(p);
 		} else {
@@ -847,45 +912,88 @@ sector_repainted(int s)
 		}
 }
 
+/*
+ * A floor is seen from above and a ceiling from below, as Doom draws them: never their backs.
+ * The heights between which the eye changes none of that are narrowed to this sector's.
+ */
+static void
+sector_faces(struct seen *was, fixed_t eye)
+{
+	int hidden;
+
+	if (was->floor_group >= 0) {
+		if ((hidden = was->floor >= eye) != was->floor_hidden)
+			seglKeptShown(was->floor_group, (was->floor_hidden = hidden) ? 0 : groups[was->floor_group].quads);
+		if (hidden && was->floor < eye_high)
+			eye_high = was->floor;
+		else if (!hidden && was->floor >= eye_low)
+			eye_low = was->floor + 1;
+	}
+	if (was->ceiling_group >= 0) {
+		if ((hidden = was->ceiling <= eye) != was->ceiling_hidden)
+			seglKeptShown(was->ceiling_group, (was->ceiling_hidden = hidden) ? 0 : groups[was->ceiling_group].quads);
+		if (hidden && was->ceiling > eye_low)
+			eye_low = was->ceiling;
+		else if (!hidden && was->ceiling <= eye_high)
+			eye_high = was->ceiling - 1;
+	}
+}
+
+/* A wall of a line that does something: a switch's picture, a wall that slides. */
+static void
+own_update(struct own *o)
+{
+	int texture = *o->picture, offset = o->side->textureoffset;
+
+	if (texture == o->texture && offset == o->offset)
+		return;
+	o->offset = offset;
+	pieces[o->piece].texture = groups[o->group].texture = o->texture = texture;
+	wall_piece(&pieces[o->piece]);
+	seglKeptTexture(o->group, group_picture(&groups[o->group], &groups[o->group].shown));
+}
+
 /* What has changed since the last frame goes to the GPU's copy: heights, lights, pictures. */
 static void
 world_update(void)
 {
 	/* a run's grey is one word of each of its commands, 64 bytes apart, which the write cache
 	 * holds few of: only the set this frame is built in is brought up to date */
-	int set = seglSet(), light = viewplayer->fixedcolormap != 0, relight = light != light_seen[set], s, i;
-	const sector_t *sector = sectors;
-	struct seen *was = seen;
-	struct own *o = own;
+	int set = seglSet(), light = viewplayer->fixedcolormap != 0, s, i;
 	const fixed_t eye = viewz;
 
+	if (light != light_seen[set])
+		for (s = 0; s < numsectors; s++)
+			sector_relit(s, set);
 	light_seen[set] = light;
-	for (s = 0; s < numsectors; s++, sector++, was++) {
-		fixed_t floor = sector->floorheight, ceiling = sector->ceilingheight;
-		int hidden;
+	/* the sectors the game has changed since this set was last built */
+	for (i = 0; i < pending_count[set]; i++) {
+		const sector_t *sector = &sectors[s = pending[set][i]];
+		struct seen *was = &seen[s];
 
-		if (floor != was->floor || ceiling != was->ceiling)
+		marked[s] &= ~(1 << set);
+		if (sector->floorheight != was->floor || sector->ceilingheight != was->ceiling)
 			sector_moved(s);
-		/* a floor is seen from above and a ceiling from below, as Doom draws them: never their backs */
-		if ((hidden = floor >= eye) != was->floor_hidden && was->floor_group >= 0)
-			seglKeptShown(was->floor_group, (was->floor_hidden = hidden) ? 0 : groups[was->floor_group].quads);
-		if ((hidden = ceiling <= eye) != was->ceiling_hidden && was->ceiling_group >= 0)
-			seglKeptShown(was->ceiling_group, (was->ceiling_hidden = hidden) ? 0 : groups[was->ceiling_group].quads);
-		if (relight || sector->lightlevel >> 4 != was->light[set])
+		if (sector->lightlevel >> 4 != was->light[set])
 			sector_relit(s, set);
 		if (sector->floorpic != was->floorpic || sector->ceilingpic != was->ceilingpic)
 			sector_repainted(s);
+		sector_faces(was, eye);
 	}
-	/* a wall of a line that does something: a switch's picture, a wall that slides */
-	for (i = own_count; i > 0; i--, o++) {
-		int texture = *o->picture, offset = o->side->textureoffset;
-
-		if (texture == o->texture && offset == o->offset)
-			continue;
-		o->offset = offset;
-		pieces[o->piece].texture = groups[o->group].texture = o->texture = texture;
-		wall_piece(&pieces[o->piece]);
-		seglKeptTexture(o->group, group_picture(&groups[o->group], &groups[o->group].shown));
+	pending_count[set] = 0;
+	if (eye < eye_low || eye > eye_high) {
+		eye_low = MININT;
+		eye_high = MAXINT;
+		for (s = 0; s < numsectors; s++)
+			sector_faces(&seen[s], eye);
+	}
+	if (doom_walls_changed) {
+		doom_walls_changed = 0;
+		for (i = 0; i < own_count; i++)
+			own_update(&own[i]);
+	} else {
+		for (i = 0; i < sliding_count; i++)
+			own_update(&own[sliding[i]]);
 	}
 	for (i = 0; i < moving_count; i++) {
 		struct group *group = &groups[moving[i]];
@@ -1037,6 +1145,7 @@ new_level(void)
 	int i, low = -16000, high = 16000;
 
 	world_free();
+	level_made = level_loads;
 	/* the last level's pictures go; the screen's texture (doom_video.c) is not ours */
 	if (wall_gl) {
 		glDeleteTextures(textures_then, wall_gl);
@@ -1434,7 +1543,7 @@ R_RenderPlayerView(player_t *player)
 		return;
 	}
 	R_SetupFrame(player);
-	if (segs != level_segs || numsegs != level_count) {
+	if (segs != level_segs || numsegs != level_count || level_loads != level_made) {
 		unsigned now;
 
 		new_level();
@@ -1547,6 +1656,63 @@ R_RenderPlayerView(player_t *player)
 extern hu_stext_t w_message;	/* hu_stuff.c's, made reachable by doom.sh */
 extern boolean message_on, chat_on;
 void HU_Drawer(void);
+void HU_Erase(void);
+
+static unsigned message_shown;	/* a sum of the words on the screen; 0 for none */
+static int message_stays;	/* in this frame they are left as they are, on the border above the view */
+
+/* A sum of the message's words, 0 for none, and the rows they are drawn in. */
+static unsigned
+message_sum(int *top, int *bottom)
+{
+	int i, k, tall = SHORT(w_message.l[0].f[0]->height) + 1;
+	unsigned now = 0;
+
+	*top = SCREENHEIGHT;
+	*bottom = 0;
+	for (i = 0; i < w_message.h; i++) {
+		const hu_textline_t *line = &w_message.l[i];
+
+		if (line->y < *top)
+			*top = line->y;
+		if (line->y + tall > *bottom)
+			*bottom = line->y + tall;
+		for (k = 0; message_on && k < line->len; k++)
+			now = now * 31 + (unsigned char)line->l[k];
+	}
+	return message_on ? (now * 31 + w_message.cl) | 1 : 0;
+}
+
+/* Doom draws the message itself, every frame. */
+static int
+message_apart(void)
+{
+	static int every_frame = -1;
+
+	if (every_frame < 0) {
+		const char *port = getenv("DOOM_PORT");
+
+		every_frame = port && strstr(port, "message");	/* DOOM_PORT=message: as the port does, to compare */
+	}
+	return !doom_gl || automapactive || chat_on || every_frame;
+}
+
+/*
+ * A view smaller than the screen has the message on the border above it, and Doom restores
+ * the border and letters it again every frame. While the words are the same and nothing has
+ * drawn on their rows since the last view, neither is done. (d_main.c calls this for HU_Erase.)
+ */
+void
+HU_Erase_kept(void)
+{
+	int top, bottom;
+	unsigned now = message_sum(&top, &bottom);
+
+	message_stays = now && now == message_shown && keyed && viewwindowx && viewwindowy >= bottom && !message_apart() &&
+			(dirtybox[BOXTOP] < top || dirtybox[BOXBOTTOM] >= bottom);
+	if (!message_stays)
+		HU_Erase();
+}
 
 /*
  * Doom draws its message again every frame, a letter at a time, and the view then has to put
@@ -1556,46 +1722,36 @@ void HU_Drawer(void);
 void
 HU_Drawer_kept(void)
 {
-	static unsigned shown;	/* a sum of the words on the screen; 0 for none */
-	unsigned now = 0;
-	int box[4], i, k, top = SCREENHEIGHT, bottom = 0, tall = SHORT(w_message.l[0].f[0]->height) + 1;
+	int box[4], i, top, bottom;
+	unsigned now = message_sum(&top, &bottom);
 
-	static int every_frame = -1;
-
-	if (every_frame < 0) {
-		const char *port = getenv("DOOM_PORT");
-
-		every_frame = port && strstr(port, "message");	/* DOOM_PORT=message: as the port does, to compare */
-	}
-	if (!doom_gl || automapactive || chat_on || viewwindowx || every_frame) {
+	if (message_apart() || (viewwindowx && viewwindowy < bottom)) {
 		HU_Drawer();
-		shown = ~0u;
+		message_shown = ~0u;
 		return;
 	}
-	for (i = 0; i < w_message.h; i++) {
-		const hu_textline_t *line = &w_message.l[i];
-
-		if (line->y < top)
-			top = line->y;
-		if (line->y + tall > bottom)
-			bottom = line->y + tall;
-		for (k = 0; message_on && k < line->len; k++)
-			now = now * 31 + (unsigned char)line->l[k];
+	if (viewwindowx) {
+		/* on the border: HU_Erase_kept has cleared it, unless the words stay */
+		if (message_stays || (!now && !message_shown))
+			return;
+		memcpy(box, dirtybox, sizeof box);
+		HU_Drawer();
+		memcpy(dirtybox, box, sizeof box);	/* our own letters are not somebody drawing over them */
+		message_shown = now;
+		return;
 	}
-	if (message_on)
-		now = (now * 31 + w_message.cl) | 1;
 	if (bottom > viewwindowy + viewheight)
 		bottom = viewwindowy + viewheight;
-	if (now == shown && (keyed_last < top || keyed_first >= bottom))
+	if (now == message_shown && (keyed_last < top || keyed_first >= bottom))
 		return;
 	/* other words, or none: the key under them first, unless the view has just put it there */
-	if (shown && !(keyed_first <= top && keyed_last >= bottom - 1))
+	if (message_shown && !(keyed_first <= top && keyed_last >= bottom - 1))
 		for (i = top; i < bottom; i++)
 			memset(screens[0] + i * SCREENWIDTH, KEY, SCREENWIDTH);
 	memcpy(box, dirtybox, sizeof box);
 	HU_Drawer();
 	memcpy(dirtybox, box, sizeof box);	/* these rows are ours to clear, not the view's */
-	shown = now;
+	message_shown = now;
 }
 
 /*

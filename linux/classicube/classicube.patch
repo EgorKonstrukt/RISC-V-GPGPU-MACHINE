@@ -32,7 +32,7 @@ index a1602b1a1..d9af3aaf6 100644
  	Physics_TickRandomBlocks();
  }
 diff --git a/src/Builder.c b/src/Builder.c
-index dd3f3f215..5f126f39e 100644
+index dd3f3f215..fb425ee69 100644
 --- a/src/Builder.c
 +++ b/src/Builder.c
 @@ -14,7 +14,19 @@
@@ -55,7 +55,30 @@ index dd3f3f215..5f126f39e 100644
  /* Packs an index into the 16x16x16 count array. Coordinates range from 0 to 15. */
  #define Builder_PackCount(xx, yy, zz) ((((yy) << 8) | ((zz) << 4) | (xx)) * FACE_COUNT)
  /* Packs an index into the 18x18x18 chunk array. Coordinates range from -1 to 16. */
-@@ -77,10 +89,18 @@ static int Builder1DPart_CalcOffsets(struct Builder1DPart* part, int offset) {
+@@ -51,6 +63,14 @@ struct Builder1DPart {
+ The first ATLAS1D_MAX_ATLASES parts are for normal parts, remainder are for translucent parts. */
+ static CC_BIG_VAR struct Builder1DPart Builder_Parts[ATLAS1D_MAX_ATLASES * 2];
+ static struct VertexTextured* Builder_Vertices;
++#ifdef CC_BUILD_SHADEREMU
++/* The normal builder writes vertices as the GPU takes a chunk's (struct SEVertex) and not floats
++   to be converted: bytes from se_corner, the block before the chunk's corner. se_least is the
++   block the least of their coordinates are in, the mesh's origin to be. */
++static cc_bool se_packed;
++static int se_corner[3], se_least[3];
++static cc_uint32 se_serial;
++#endif
+ 
+ static int Builder1DPart_VerticesCount(struct Builder1DPart* part) {
+ 	int i, count = part->sCount;
+@@ -72,15 +92,26 @@ static int Builder1DPart_CalcOffsets(struct Builder1DPart* part, int offset) {
+ 	for (i = 0; i < FACE_COUNT; i++) 
+ 	{
+ 		part->faces.vertices[i] = &Builder_Vertices[offset];
++#ifdef CC_BUILD_SHADEREMU
++		if (se_packed) part->faces.vertices[i] = (struct VertexTextured*)((struct SEVertex*)Builder_Vertices + offset);
++#endif
+ 		offset += counts[i];
+ 	}
  	return offset;
  }
  
@@ -75,77 +98,258 @@ index dd3f3f215..5f126f39e 100644
  	}
  	return count;
  }
-@@ -146,6 +166,42 @@ static cc_bool SetPartInfo(struct Builder1DPart* part, int* offset, struct Chunk
+@@ -146,6 +177,147 @@ static cc_bool SetPartInfo(struct Builder1DPart* part, int* offset, struct Chunk
  }
  
  
 +#ifdef CC_BUILD_SHADEREMU
++#ifdef EXTENDED_BLOCKS
++#error "the rows' masks take a block for a byte"
++#endif
 +/* Most of a chunk is rock or air, and a block is some 200 instructions of that machine to look
-+   at. A row of blocks along x (with the block before and after it) is noted as all air or all
-+   full opaque blocks; a row of the latter between four such rows shows no face. */
-+#define ROW_AIR    1
-+#define ROW_SOLID  2
-+#define ROW_HIDDEN 4
-+static cc_uint8 Builder_Rows[EXTCHUNK_SIZE * EXTCHUNK_SIZE];
++   at. A row of blocks along x, with the block before and the one after it, is two masks of a
++   bit a block: the full opaque blocks, and those that are not drawn. */
++#define ROW_ALL ((1u << EXTCHUNK_SIZE) - 1)
++#define ROW_OWN (0xFFFFu << 1)
++static cc_uint32 Builder_Solid[EXTCHUNK_SIZE * EXTCHUNK_SIZE], Builder_Gas[EXTCHUNK_SIZE * EXTCHUNK_SIZE];
++/* the blocks of each of the chunk's own rows that PrepareChunk found something to draw of, a bit each from x1 */
++static cc_uint16 Builder_Drawn[CHUNK_SIZE * CHUNK_SIZE];
 +#define Builder_Row(yy, zz) (((yy) + 1) * EXTCHUNK_SIZE + (zz) + 1)
 +
-+static void Builder_ClassifyRows(void) {
-+	const BlockID* row = Builder_Chunk;
-+	int r, x, air, solid;
++#define Builder_MaskBlock(b, x) solid |= (cc_uint32)Blocks.FullOpaque[b] << (x); gas |= (cc_uint32)(Blocks.Draw[b] == DRAW_GAS) << (x);
 +
-+	for (r = 0; r < EXTCHUNK_SIZE * EXTCHUNK_SIZE; r++, row += EXTCHUNK_SIZE) {
-+		air = 1; solid = 1;
-+		for (x = 0; x < EXTCHUNK_SIZE; x++) {
-+			air   &= Blocks.Draw[row[x]] == DRAW_GAS;
-+			solid &= Blocks.FullOpaque[row[x]];
-+		}
-+		Builder_Rows[r] = air * ROW_AIR + solid * ROW_SOLID;
++/* Four blocks in a word that are not of one kind: the full opaque ones in bits 0 to 3, those not drawn in 4 to 7 */
++static CC_NOINLINE cc_uint32 Builder_MaskWord(cc_uint32 w) {
++	cc_uint32 solid = 0, gas = 0;
++	Builder_MaskBlock(w & 0xFF, 0)         Builder_MaskBlock((w >> 8) & 0xFF, 1)
++	Builder_MaskBlock((w >> 16) & 0xFF, 2) Builder_MaskBlock(w >> 24, 3)
++	return solid | gas << 4;
++}
++
++/* Row r of the chunk, whose own 16 blocks are four words of the world's, with the block before
++   them and the one after: copied by the word (the chunk starts on a word and a row is 18
++   bytes, so every other row starts on half a word), its masks made four blocks at a time. */
++static CC_INLINE void Builder_ReadRow(int r, const cc_uint32* src, cc_uint32 before, cc_uint32 after, cc_uint32 walls) {
++	BlockID* row = Builder_Chunk + r * EXTCHUNK_SIZE;
++	const cc_uint32 w0 = src[0], w1 = src[1], w2 = src[2], w3 = src[3];
++	const cc_uint32 first = w0 & 0xFF, same = first * 0x01010101u;
++	const cc_uint32 full = Blocks.FullOpaque[first], none = Blocks.Draw[first] == DRAW_GAS;
++	cc_uint32 solid = 0, gas = 0, w, b;
++	cc_uint32* to;
++	int k, x;
++
++	if (r & 1) {
++		to = (cc_uint32*)(row + 2);
++		*(cc_uint16*)row = (cc_uint16)(before | w0 << 8);
++		to[0] = w0 >> 8 | w1 << 24; to[1] = w1 >> 8 | w2 << 24;
++		to[2] = w2 >> 8 | w3 << 24; to[3] = w3 >> 8 | after << 24;
++	} else {
++		to = (cc_uint32*)row;
++		to[0] = before | w0 << 8;   to[1] = w0 >> 24 | w1 << 8;
++		to[2] = w1 >> 24 | w2 << 8; to[3] = w2 >> 24 | w3 << 8;
++		*(cc_uint16*)(row + EXTCHUNK_SIZE - 2) = (cc_uint16)(w3 >> 24 | after << 8);
 +	}
++
++	if (w0 == same && w1 == same && w2 == same && w3 == same) {
++		solid = (0 - full) & ROW_OWN;
++		gas   = (0 - none) & ROW_OWN;
++	} else {
++		for (k = 0, x = 1; k < 4; k++, x += 4) {
++			w = src[k]; b = w & 0xFF;
++			if (w == b * 0x01010101u) {
++				if (Blocks.FullOpaque[b])       solid |= 15u << x;
++				if (Blocks.Draw[b] == DRAW_GAS) gas   |= 15u << x;
++			} else {
++				b = Builder_MaskWord(w);
++				solid |= (b & 15) << x; gas |= (b >> 4) << x;
++			}
++		}
++	}
++	if (before == first) { solid |= full; gas |= none; } else { Builder_MaskBlock(before, 0) }
++	if (after == first)  { solid |= full << (EXTCHUNK_SIZE - 1); gas |= none << (EXTCHUNK_SIZE - 1); } else { Builder_MaskBlock(after, EXTCHUNK_SIZE - 1) }
++	Builder_Solid[r] = solid | walls; Builder_Gas[r] = gas;
 +}
 +
-+static cc_bool Builder_SkipRow(int yy, int zz) {
-+	int r = Builder_Row(yy, zz), f = Builder_Rows[r];
-+	if (f & (ROW_AIR | ROW_HIDDEN)) return true;
++/* Reads the chunk's blocks and those around them a row at a time, with each row's masks. Outside
++   the world is air (the caller has filled a border chunk with it), in the masks full opaque
++   where PrepareChunk shows no face towards it: under the world, beside it below the sides' level.
++   True when every block is full opaque; *outAllAir when none in the world is drawn. */
++static CC_NOINLINE cc_bool Builder_ReadRows(int x1, int y1, int z1, cc_bool onBorder, cc_bool* outAllAir) {
++	const BlockRaw* src;
++	const int from = max(x1 - 1, 0) - (x1 - 1), count = min(x1 + CHUNK_SIZE + 1, World.Width) - (x1 - 1) - from;
++	const cc_bool byWords = !(World.Width & (CHUNK_SIZE - 1)) && !((cc_uintptr)World.Blocks & 3);
++	const cc_bool before  = from == 0, after = from + count == EXTCHUNK_SIZE;
++	const cc_uint32 inside   = ((1u << count) - 1) << from;
++	const cc_uint32 airSolid = Blocks.FullOpaque[BLOCK_AIR] ? ROW_ALL : 0;
++	const cc_uint32 airGas   = Blocks.Draw[BLOCK_AIR] == DRAW_GAS ? ROW_ALL : 0;
++	cc_uint32 allSolid = ROW_ALL, allGas = ROW_ALL, solid, gas, walls;
++	BlockID* row = Builder_Chunk;
++	int yy, zz, y, z, x, r = 0;
++	cc_bool walled;
 +
-+	if (!(f & Builder_Rows[r - 1] & Builder_Rows[r + 1] & Builder_Rows[r - EXTCHUNK_SIZE] & Builder_Rows[r + EXTCHUNK_SIZE] & ROW_SOLID))
-+		return false;
-+	Builder_Rows[r] = f | ROW_HIDDEN;
-+	Mem_Set(&Builder_Counts[Builder_PackCount(0, yy, zz)], 0, CHUNK_SIZE * FACE_COUNT);
-+	return true;
++	for (yy = -1; yy < 17; yy++) {
++		y = yy + y1;
++		walled = y < Builder_SidesLevel;
++		walls  = walled ? ROW_ALL & ~inside : 0;
++		src    = World.Blocks + World_Pack(x1, y, z1 - 1);
++
++		for (zz = -1; zz < 17; zz++, r++, row += EXTCHUNK_SIZE, src += World.Width) {
++			z = zz + z1;
++			if (y < 0 || y >= World.Height) {
++				Builder_Solid[r] = y < 0 ? ROW_ALL : airSolid; Builder_Gas[r] = airGas;
++				continue;
++			}
++			if (z < 0 || z >= World.Length) {
++				Builder_Solid[r] = walled ? ROW_ALL : airSolid; Builder_Gas[r] = airGas;
++				continue;
++			}
++
++			if (byWords) {
++				Builder_ReadRow(r, (const cc_uint32*)src, before ? src[-1] : BLOCK_AIR, after ? src[CHUNK_SIZE] : BLOCK_AIR, walls);
++			} else {
++				/* (a world that is not whole chunks wide: a block at a time) */
++				Mem_Copy(row + from, src - 1 + from, count);
++				solid = 0; gas = 0;
++				for (x = 0; x < EXTCHUNK_SIZE; x++) { Builder_MaskBlock(row[x], x) }
++				Builder_Solid[r] = solid | walls; Builder_Gas[r] = gas;
++			}
++			allSolid &= Builder_Solid[r];
++			allGas   &= Builder_Gas[r] | ~inside;
++		}
++	}
++	*outAllAir = (allGas & ROW_ALL) == ROW_ALL;
++	return !onBorder && allSolid == ROW_ALL;
 +}
++
++/* The blocks of one of the chunk's rows to look at, a bit each from x1: those that are drawn,
++   but for a full opaque block among six of them, which shows no face. covered[face] has a bit
++   for each full opaque block whose neighbour that way is one too: that face is hidden. */
++static CC_INLINE cc_uint32 Builder_RowTodo(int yy, int zz, int width, cc_uint32* covered) {
++	const int r = Builder_Row(yy, zz);
++	const cc_uint32 solid = Builder_Solid[r];
++
++	covered[FACE_XMIN] = (solid & (solid << 1)) >> 1;
++	covered[FACE_XMAX] = (solid & (solid >> 1)) >> 1;
++	covered[FACE_ZMIN] = (solid & Builder_Solid[r - 1]) >> 1;
++	covered[FACE_ZMAX] = (solid & Builder_Solid[r + 1]) >> 1;
++	covered[FACE_YMIN] = (solid & Builder_Solid[r - EXTCHUNK_SIZE]) >> 1;
++	covered[FACE_YMAX] = (solid & Builder_Solid[r + EXTCHUNK_SIZE]) >> 1;
++
++	return ~(Builder_Gas[r] >> 1 | (covered[FACE_XMIN] & covered[FACE_XMAX] & covered[FACE_ZMIN] & covered[FACE_ZMAX] &
++		covered[FACE_YMIN] & covered[FACE_YMAX])) & ((1u << width) - 1);
++}
++#define Builder_Covered(face) ((covered[face] >> xx) & 1)
++#else
++#define Builder_Covered(face) 0
 +#endif
 +
  static void PrepareChunk(int x1, int y1, int z1) {
  	int xMax = min(World.Width,  x1 + CHUNK_SIZE);
  	int yMax = min(World.Height, y1 + CHUNK_SIZE);
-@@ -172,6 +228,9 @@ static void PrepareChunk(int x1, int y1, int z1) {
- 	for (y = y1, yy = 0; y < yMax; y++, yy++) {
- 		for (z = z1, zz = 0; z < zMax; z++, zz++) {
- 			cIndex = Builder_PackChunk(0, yy, zz);
+@@ -154,6 +326,9 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 	int cIndex, index, tileIdx;
+ 	BlockID b;
+ 	int x, y, z, xx, yy, zz;
 +#ifdef CC_BUILD_SHADEREMU
-+			if (Builder_SkipRow(yy, zz)) continue;
++	cc_uint32 todo, drawn, covered[FACE_COUNT];
 +#endif
  
+ #ifdef OCCLUSION
+ 	int flags = ComputeOcclusion();
+@@ -173,21 +348,31 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 		for (z = z1, zz = 0; z < zMax; z++, zz++) {
+ 			cIndex = Builder_PackChunk(0, yy, zz);
+ 
++#ifdef CC_BUILD_SHADEREMU
++			drawn = 0;
++			for (x = x1, xx = 0, todo = Builder_RowTodo(yy, zz, xMax - x1, covered); todo; todo >>= 1, x++, xx++, cIndex++) {
++				if (!(todo & 1)) continue;
++#else
  			for (x = x1, xx = 0; x < xMax; x++, xx++, cIndex++) {
++#endif
  				b = Builder_Chunk[cIndex];
-@@ -181,6 +240,16 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				if (Blocks.Draw[b] == DRAW_GAS) continue;
+ 				index = Builder_PackCount(xx, yy, zz);
+ 
  				/* Sprites can't be stretched, nor can then be they hidden by other blocks. */
  				/* Note sprites are drawn using DrawSprite and not with any of the DrawXFace. */
- 				if (Blocks.Draw[b] == DRAW_SPRITE) { AddSpriteVertices(b); continue; }
 +#ifdef CC_BUILD_SHADEREMU
-+				/* a full opaque block among six of them shows no face */
-+				if (Blocks.FullOpaque[b] && Blocks.FullOpaque[Builder_Chunk[cIndex - 1]] && Blocks.FullOpaque[Builder_Chunk[cIndex + 1]] &&
-+					Blocks.FullOpaque[Builder_Chunk[cIndex - EXTCHUNK_SIZE]] && Blocks.FullOpaque[Builder_Chunk[cIndex + EXTCHUNK_SIZE]] &&
-+					Blocks.FullOpaque[Builder_Chunk[cIndex - EXTCHUNK_SIZE_2]] && Blocks.FullOpaque[Builder_Chunk[cIndex + EXTCHUNK_SIZE_2]]) {
-+					Builder_Counts[index] = 0; Builder_Counts[index + 1] = 0; Builder_Counts[index + 2] = 0;
-+					Builder_Counts[index + 3] = 0; Builder_Counts[index + 4] = 0; Builder_Counts[index + 5] = 0;
-+					continue;
-+				}
++				if (Blocks.Draw[b] == DRAW_SPRITE) { AddSpriteVertices(b); drawn |= 1u << xx; continue; }
++#else
+ 				if (Blocks.Draw[b] == DRAW_SPRITE) { AddSpriteVertices(b); continue; }
 +#endif
  
  				Builder_X = x; Builder_Y = y; Builder_Z = z;
  				Builder_FullBright = Blocks.Brightness[b];
-@@ -344,6 +413,17 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
+ 				tileIdx = b * BLOCK_COUNT;
+ 				/* All of these function calls are inlined as they can be called tens of millions to hundreds of millions of times. */
+ 
+-				if (Builder_Counts[index] == 0 ||
++				if (Builder_Covered(FACE_XMIN) || Builder_Counts[index] == 0 ||
+ 					(x == 0 && (y < Builder_SidesLevel || (b >= BLOCK_WATER && b <= BLOCK_STILL_LAVA && y < Builder_EdgeLevel))) ||
+ 					(x != 0 && (Blocks.Hidden[tileIdx + Builder_Chunk[cIndex - 1]] & FACE_BIT_XMIN) != 0)) {
+ 					Builder_Counts[index] = 0;
+@@ -196,7 +381,7 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				}
+ 
+ 				index++;
+-				if (Builder_Counts[index] == 0 ||
++				if (Builder_Covered(FACE_XMAX) || Builder_Counts[index] == 0 ||
+ 					(x == World.MaxX && (y < Builder_SidesLevel || (b >= BLOCK_WATER && b <= BLOCK_STILL_LAVA && y < Builder_EdgeLevel))) ||
+ 					(x != World.MaxX && (Blocks.Hidden[tileIdx + Builder_Chunk[cIndex + 1]] & FACE_BIT_XMAX) != 0)) {
+ 					Builder_Counts[index] = 0;
+@@ -205,7 +390,7 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				}
+ 
+ 				index++;
+-				if (Builder_Counts[index] == 0 ||
++				if (Builder_Covered(FACE_ZMIN) || Builder_Counts[index] == 0 ||
+ 					(z == 0 && (y < Builder_SidesLevel || (b >= BLOCK_WATER && b <= BLOCK_STILL_LAVA && y < Builder_EdgeLevel))) ||
+ 					(z != 0 && (Blocks.Hidden[tileIdx + Builder_Chunk[cIndex - EXTCHUNK_SIZE]] & FACE_BIT_ZMIN) != 0)) {
+ 					Builder_Counts[index] = 0;
+@@ -214,7 +399,7 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				}
+ 
+ 				index++;
+-				if (Builder_Counts[index] == 0 ||
++				if (Builder_Covered(FACE_ZMAX) || Builder_Counts[index] == 0 ||
+ 					(z == World.MaxZ && (y < Builder_SidesLevel || (b >= BLOCK_WATER && b <= BLOCK_STILL_LAVA && y < Builder_EdgeLevel))) ||
+ 					(z != World.MaxZ && (Blocks.Hidden[tileIdx + Builder_Chunk[cIndex + EXTCHUNK_SIZE]] & FACE_BIT_ZMAX) != 0)) {
+ 					Builder_Counts[index] = 0;
+@@ -223,7 +408,7 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				}
+ 
+ 				index++;
+-				if (Builder_Counts[index] == 0 || y == 0 ||
++				if (Builder_Covered(FACE_YMIN) || Builder_Counts[index] == 0 || y == 0 ||
+ 					(Blocks.Hidden[tileIdx + Builder_Chunk[cIndex - EXTCHUNK_SIZE_2]] & FACE_BIT_YMIN) != 0) {
+ 					Builder_Counts[index] = 0;
+ 				} else {
+@@ -231,7 +416,7 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				}
+ 
+ 				index++;
+-				if (Builder_Counts[index] == 0 ||
++				if (Builder_Covered(FACE_YMAX) || Builder_Counts[index] == 0 ||
+ 					(Blocks.Hidden[tileIdx + Builder_Chunk[cIndex + EXTCHUNK_SIZE_2]] & FACE_BIT_YMAX) != 0) {
+ 					Builder_Counts[index] = 0;
+ 				} else if (b < BLOCK_WATER || b > BLOCK_STILL_LAVA) {
+@@ -239,7 +424,14 @@ static void PrepareChunk(int x1, int y1, int z1) {
+ 				} else {
+ 					Builder_Counts[index] = Builder_StretchXLiquid(index, x, y, z, cIndex, b);
+ 				}
++#ifdef CC_BUILD_SHADEREMU
++				if (Builder_Counts[index - 5] | Builder_Counts[index - 4] | Builder_Counts[index - 3] | Builder_Counts[index - 2] |
++					Builder_Counts[index - 1] | Builder_Counts[index]) drawn |= 1u << xx;
++#endif
+ 			}
++#ifdef CC_BUILD_SHADEREMU
++			Builder_Drawn[yy * CHUNK_SIZE + zz] = (cc_uint16)drawn;
++#endif
+ 		}
+ 	}
+ }
+@@ -344,6 +536,17 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
  	hasNorm = false;
  	hasTran = false;
  
@@ -163,11 +367,11 @@ index dd3f3f215..5f126f39e 100644
  	for (i = 0; i < MapRenderer_1DUsedCount; i++) {
  		j = i + ATLAS1D_MAX_ATLASES;
  		curIdx = partsIndex + i * World.ChunksCount;
-@@ -360,6 +440,16 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
+@@ -360,11 +563,26 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
  	}
  }
  
-+#ifdef SE_COUNT
++#if defined SE_COUNT && !defined SE_SECOND
 +/* Where a chunk's instructions go (ShaderEmu, CLASSICUBE_DEFINES=-DSE_COUNT): chunks built, then phases */
 +unsigned se_chunk[8];
 +static unsigned se_since;
@@ -180,29 +384,53 @@ index dd3f3f215..5f126f39e 100644
  cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
  #if CC_BUILD_MAXSTACK <= (32 * 1024)
  	void* mem        = TempMem_Alloc((EXTCHUNK_SIZE_3 * sizeof(BlockID)) + (CHUNK_SIZE_3 * FACE_COUNT));
-@@ -384,6 +474,9 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 	BlockID* chunk   = (BlockID*)mem;
+ 	cc_uint8* counts = (cc_uint8*)(chunk + EXTCHUNK_SIZE_3);
++#elif defined CC_BUILD_SHADEREMU
++	/* (on a word: Builder_ReadRow writes the blocks four at a time) */
++	cc_uint32 chunkWords[(EXTCHUNK_SIZE_3 + 3) / 4];
++	BlockID* chunk = (BlockID*)chunkWords;
++	cc_uint8 counts[CHUNK_SIZE_3 * FACE_COUNT];
+ #else
+ 	BlockID chunk[EXTCHUNK_SIZE_3]; 
+ 	cc_uint8 counts[CHUNK_SIZE_3 * FACE_COUNT]; 
+@@ -383,7 +601,13 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 	int x1 = info->centreX - HALF_CHUNK_SIZE;
  	int y1 = info->centreY - HALF_CHUNK_SIZE;
  	int z1 = info->centreZ - HALF_CHUNK_SIZE;
++#ifdef CC_BUILD_SHADEREMU
++	cc_uint32 todo;
++#endif
  
-+#ifdef SE_COUNT
++#if defined SE_COUNT && !defined SE_SECOND
 +	se_since = se_cycles(); se_chunk[0]++;
 +#endif
  	Builder_Chunk  = chunk;
  	Builder_Counts = counts;
  	Builder_BitFlags = bitFlags;
-@@ -402,7 +495,11 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+@@ -393,6 +617,10 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 		x1 == 0 || y1 == 0 || z1 == 0   || x1 + CHUNK_SIZE >= World.Width ||
+ 		y1 + CHUNK_SIZE >= World.Height || z1 + CHUNK_SIZE >= World.Length;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	if (onBorder) Mem_Set(chunk, BLOCK_AIR, EXTCHUNK_SIZE_3 * sizeof(BlockID));
++	allSolid = Builder_ReadRows(x1, y1, z1, onBorder, &allAir);
++#else
+ 	if (onBorder) {
+ 		/* less optimal case here */
+ 		Mem_Set(chunk, BLOCK_AIR, EXTCHUNK_SIZE_3 * sizeof(BlockID));
+@@ -400,8 +628,10 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 	} else {
+ 		allSolid = ReadChunkData(x1, y1, z1, &allAir);
  	}
++#endif
  
  	info->allAir = allAir;
 +	SE_PHASE(1)
  	if (allAir || allSolid) return true;
-+#ifdef CC_BUILD_SHADEREMU
-+	Builder_ClassifyRows();
-+#endif
  	Lighting.LightHint(x1 - 1, y1 - 1, z1 - 1);
  
- 	Mem_Set(counts, 1, CHUNK_SIZE_3 * FACE_COUNT);
-@@ -411,7 +508,9 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+@@ -411,7 +641,9 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
  	zMax = min(World.Length, z1 + CHUNK_SIZE);
  
  	Builder_ChunkEndX = xMax; Builder_ChunkEndZ = zMax;
@@ -212,7 +440,7 @@ index dd3f3f215..5f126f39e 100644
  
  	totalVerts = Builder_TotalVerticesCount();
  	if (!totalVerts) return true;
-@@ -422,7 +521,13 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+@@ -422,7 +654,13 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
  		info.occlusionFlags = (cc_uint8)ComputeOcclusion();
  #endif
  
@@ -227,11 +455,17 @@ index dd3f3f215..5f126f39e 100644
  	/* add an extra element to fix crashing on some GPUs */
  	info->vb = Gfx_TryCreateStaticVb(VERTEX_FORMAT_TEXTURED, totalVerts + 1);
  	if (!info->vb) return false;
-@@ -434,18 +539,27 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+@@ -433,14 +671,29 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 	/* NOTE: Relies on assumption vb is ignored by GL11 Gfx_LockVb implementation */
  	Builder_Vertices = (struct VertexTextured*)Gfx_LockVb(0, 
  													VERTEX_FORMAT_TEXTURED, totalVerts + 1);
- #endif
++#endif
 +	SE_PHASE(4)
++#ifdef CC_BUILD_SHADEREMU
++	se_corner[0] = x1 - 1; se_corner[1] = y1 - 1; se_corner[2] = z1 - 1;
++	se_least[0]  = x1 + CHUNK_SIZE; se_least[1] = y1 + CHUNK_SIZE; se_least[2] = z1 + CHUNK_SIZE;
++	se_serial++;
+ #endif
  	Builder_PostPrepareChunk();
 +	SE_PHASE(5)
  	/* now render the chunk */
@@ -239,35 +473,50 @@ index dd3f3f215..5f126f39e 100644
  	for (y = y1, yy = 0; y < yMax; y++, yy++) {
  		for (z = z1, zz = 0; z < zMax; z++, zz++) {
  			cIndex = Builder_PackChunk(0, yy, zz);
-+#ifdef CC_BUILD_SHADEREMU
-+			if (Builder_Rows[Builder_Row(yy, zz)] & (ROW_AIR | ROW_HIDDEN)) continue;
-+#endif
  
++#ifdef CC_BUILD_SHADEREMU
++			for (x = x1, xx = 0, todo = Builder_Drawn[yy * CHUNK_SIZE + zz]; todo; todo >>= 1, x++, xx++, cIndex++) {
++				while (!(todo & 1)) { todo >>= 1; x++; xx++; cIndex++; }
++				Builder_Block      = chunk[cIndex];
++				Builder_ChunkIndex = cIndex;
++				Builder_RenderBlock(Builder_PackCount(xx, yy, zz), x, y, z);
++			}
++#else
  			for (x = x1, xx = 0; x < xMax; x++, xx++, cIndex++) {
  				Builder_Block = chunk[cIndex];
  				if (Blocks.Draw[Builder_Block] == DRAW_GAS) continue;
- 
- 				index = Builder_PackCount(xx, yy, zz);
-+#ifdef CC_BUILD_SHADEREMU
-+				if (Blocks.Draw[Builder_Block] != DRAW_SPRITE && !(counts[index] | counts[index + 1] | counts[index + 2] |
-+					counts[index + 3] | counts[index + 4] | counts[index + 5])) continue;
-+#endif
+@@ -449,6 +702,7 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
  				Builder_ChunkIndex = cIndex;
  				Builder_RenderBlock(index, x, y, z);
  			}
-@@ -462,7 +576,11 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
++#endif
+ 		}
+ 	}
+ 
+@@ -461,8 +715,22 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 		BuildPartVbs(&MapRenderer_PartsNormal[curIdx]);
  		BuildPartVbs(&MapRenderer_PartsTranslucent[curIdx]);
  	}
- #else
++#else
 +	SE_PHASE(6)
-+#ifndef SE_SECOND
++#ifdef SE_SECOND
++	se_out->packed = se_packed;
++	Mem_Copy(se_out->corner, se_corner, sizeof(se_corner));
++	Mem_Copy(se_out->least,  se_least,  sizeof(se_least));
++#elif defined CC_BUILD_SHADEREMU
++	if (se_packed) {
++		Gfx_SE_UnlockPacked(info->vb, (struct SEVertex*)Builder_Vertices, totalVerts, se_corner, se_least);
++	} else {
++		Gfx_UnlockVb(info->vb);
++	}
+ #else
  	Gfx_UnlockVb(info->vb);
 +#endif
 +	SE_PHASE(7)
  #endif
  	return true;
  }
-@@ -478,13 +596,19 @@ static cc_bool Builder_OccludedLiquid(int chunkIndex) {
+@@ -478,13 +746,19 @@ static cc_bool Builder_OccludedLiquid(int chunkIndex) {
  }
  
  static void DefaultPrePrepateChunk(void) {
@@ -288,7 +537,282 @@ index dd3f3f215..5f126f39e 100644
  		j = i + ATLAS1D_MAX_ATLASES;
  
  		offset = Builder1DPart_CalcOffsets(&Builder_Parts[i], offset);
-@@ -1633,8 +1757,16 @@ static void ModernBuilder_SetActive(void) { NormalBuilder_SetActive(); }
+@@ -492,6 +766,11 @@ static void DefaultPostStretchChunk(void) {
+ 	}
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++static void SE_Sprite(struct Builder1DPart* part, PackedCol color, float x1, float y1, float z1,
++						float x2, float y2, float z2, float v1, float v2);
++#endif
++
+ static RNGState spriteRng;
+ static void Builder_DrawSprite(int x, int y, int z) {
+ 	struct Builder1DPart* part;
+@@ -532,6 +811,9 @@ static void Builder_DrawSprite(int x, int y, int z) {
+ 	part   = &Builder_Parts[Atlas1D_Index(loc)];
+ 	color  = bright ? PACKEDCOL_WHITE : Lighting.Color_Sprite_Fast(x, y, z);
+ 	Block_Tint(color, Builder_Block);
++#ifdef CC_BUILD_SHADEREMU
++	if (se_packed) { SE_Sprite(part, color, x1, y1, z1, x2, y2, z2, v1, v2); return; }
++#endif
+ 
+ 	/* Draw Z axis */
+ 	v = &Builder_Vertices[part->sOffset];
+@@ -757,6 +1039,231 @@ static void NormalBuilder_RenderBlock(int index, int x, int y, int z) {
+ 	}
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++/*########################################################################################################################*
++*-----------------------------------------------Vertices as the GPU takes them--------------------------------------------*
++*#########################################################################################################################*/
++/* What the faces of one kind of block come to, worked out once for each chunk that has the kind
++   (serial). The numbers are rounded as Graphics_ShaderEmu.c rounds floats when it packs them:
++   the same bytes either way. */
++struct SEFaces {
++	cc_uint32 serial;
++	cc_uint8 corner[6];  /* x1, y1, z1, x2, y2, z2 in eighths of a block, from a block before the block's corner */
++	cc_int8  least[6];   /* the block each of those is in, from the block itself */
++	cc_uint8 fullBright, tinted, light;
++	PackedCol tint;
++	struct SEFace {
++		struct Builder1DPart* part;
++		cc_uint32 u1, u2, v1, v2;  /* in 1,024ths, u of the atlas written four times across, v at its place in the word */
++	} face[FACE_COUNT];
++};
++static CC_BIG_VAR struct SEFaces se_faces[BLOCK_COUNT];
++
++static CC_INLINE int SE_Floor(float f) { int i = (int)f; return f < i ? i - 1 : i; }
++static CC_INLINE cc_uint32 SE_Eighths(float f) { return (cc_uint32)(int)(f * 8.0f + 0.5f); }
++
++static CC_INLINE cc_uint32 SE_U(float u) {
++	int s = (int)(u * 256.0f + 0.5f);
++	return s < 0 ? 0 : s > 4095 ? 4095 : s;
++}
++
++static CC_INLINE cc_uint32 SE_V(float v) {
++	int t = (int)(v * 1024.0f + 0.5f);
++	return (cc_uint32)(t < 0 ? 0 : t > 4095 ? 4095 : t) << 12;
++}
++
++/* (the texture coordinates are Drawer.c's, for one block: a run of them adds whole tiles to u) */
++static CC_NOINLINE struct SEFaces* SE_BlockFaces(BlockID block) {
++	struct SEFaces* f = &se_faces[block];
++	const int baseOffset = (Blocks.Draw[block] == DRAW_TRANSLUCENT) * ATLAS1D_MAX_ATLASES;
++	const float inv = Atlas1D.InvTileSize;
++	Vec3 min = Blocks.RenderMinBB[block], max = Blocks.RenderMaxBB[block];
++	Vec3 minBB = Blocks.MinBB[block], maxBB = Blocks.MaxBB[block];
++	struct SEFace* face;
++	TextureLoc loc;
++	float vOrigin;
++	int i;
++
++	f->serial = se_serial;
++	f->corner[0] = SE_Eighths(min.x + 1.0f); f->corner[1] = SE_Eighths(min.y + 1.0f); f->corner[2] = SE_Eighths(min.z + 1.0f);
++	f->corner[3] = SE_Eighths(max.x + 1.0f); f->corner[4] = SE_Eighths(max.y + 1.0f); f->corner[5] = SE_Eighths(max.z + 1.0f);
++	f->least[0]  = SE_Floor(min.x); f->least[1] = SE_Floor(min.y); f->least[2] = SE_Floor(min.z);
++	f->least[3]  = SE_Floor(max.x); f->least[4] = SE_Floor(max.y); f->least[5] = SE_Floor(max.z);
++	f->fullBright = Blocks.Brightness[block];
++	f->light      = Blocks.LightOffset[block];
++	f->tinted     = Blocks.Tinted[block];
++	f->tint       = Blocks.FogCol[block];
++	minBB.y = 1.0f - minBB.y; maxBB.y = 1.0f - maxBB.y;
++
++	for (i = 0; i < FACE_COUNT; i++) {
++		loc     = Block_Tex(block, i);
++		face    = &f->face[i];
++		vOrigin = Atlas1D_RowId(loc) * inv;
++		face->part = &Builder_Parts[baseOffset + Atlas1D_Index(loc)];
++
++		if (i >= FACE_YMIN) {
++			face->v1 = SE_V(vOrigin + minBB.z * inv);
++			face->v2 = SE_V(vOrigin + maxBB.z * inv * UV2_Scale);
++		} else {
++			face->v1 = SE_V(vOrigin + maxBB.y * inv);
++			face->v2 = SE_V(vOrigin + minBB.y * inv * UV2_Scale);
++		}
++	}
++	f->face[FACE_XMIN].u1 = SE_U(minBB.z);        f->face[FACE_XMIN].u2 = SE_U(maxBB.z * UV2_Scale);
++	f->face[FACE_XMAX].u1 = SE_U((1 - minBB.z));  f->face[FACE_XMAX].u2 = SE_U((1 - maxBB.z) * UV2_Scale);
++	f->face[FACE_ZMIN].u1 = SE_U((1 - minBB.x));  f->face[FACE_ZMIN].u2 = SE_U((1 - maxBB.x) * UV2_Scale);
++	f->face[FACE_ZMAX].u1 = SE_U(minBB.x);        f->face[FACE_ZMAX].u2 = SE_U(maxBB.x * UV2_Scale);
++	f->face[FACE_YMIN].u1 = SE_U(minBB.x);        f->face[FACE_YMIN].u2 = SE_U(maxBB.x * UV2_Scale);
++	f->face[FACE_YMAX].u1 = f->face[FACE_YMIN].u1; f->face[FACE_YMAX].u2 = f->face[FACE_YMIN].u2;
++	return f;
++}
++
++#define SE_Vertex(n, x, y, z, u, t) v[n].at = (x) | (y) | (z); v[n].coords = (u) | (t);
++/* A face's next quad: its vertices `v`, its colour, and `more`, the blocks it runs on for.
++   lx, ly and lz are the blocks its least corner is in. */
++#define SE_Quad(f_, lx, ly, lz) \
++	face = &f->face[f_]; \
++	v    = (struct SEVertex*)face->part->faces.vertices[f_]; \
++	face->part->faces.vertices[f_] = (struct VertexTextured*)(v + 4); \
++	more = counts[f_] - 1; \
++	if (f->tinted) col = PackedCol_Tint(col, f->tint); \
++	v->colour = col; \
++	if ((lx) < se_least[0]) se_least[0] = (lx); \
++	if ((ly) < se_least[1]) se_least[1] = (ly); \
++	if ((lz) < se_least[2]) se_least[2] = (lz);
++/* (a run of 16 full tiles ends at 4,096, which a vertex has no room for: Graphics_ShaderEmu.c stops at 4,095 too) */
++#define SE_Run(u) u = (u) + ((cc_uint32)more << 8); if (u > 4095) u = 4095;
++
++/* NormalBuilder_RenderBlock, whose faces are Drawer.c's vertex for vertex */
++static void SE_RenderBlock(int index, int x, int y, int z) {
++	const cc_uint8* counts = &Builder_Counts[index];
++	struct SEFaces* f;
++	struct SEFace* face;
++	struct SEVertex* v;
++	cc_uint32 x1, y1, z1, x2, y2, z2, xRun, zRun, u1, u2;
++	int lx1, ly1, lz1, offset, more;
++	PackedCol col;
++
++	if (Blocks.Draw[Builder_Block] == DRAW_SPRITE) {
++		Builder_DrawSprite(x, y, z); return;
++	}
++	f = &se_faces[Builder_Block];
++	if (f->serial != se_serial) SE_BlockFaces(Builder_Block);
++
++	x1 = (x - se_corner[0] - 1) << 3; y1 = (y - se_corner[1] - 1) << 3; z1 = (z - se_corner[2] - 1) << 3;
++	x2 = x1 + f->corner[3]; y2 = (y1 + f->corner[4]) << 8; z2 = (z1 + f->corner[5]) << 16;
++	x1 = x1 + f->corner[0]; y1 = (y1 + f->corner[1]) << 8; z1 = (z1 + f->corner[2]) << 16;
++	lx1 = x + f->least[0]; ly1 = y + f->least[1]; lz1 = z + f->least[2];
++
++	if (counts[FACE_XMIN]) {
++		offset = (f->light >> FACE_XMIN) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE :
++			x >= offset ? Lighting.Color_XSide_Fast(x - offset, y, z) : Env.SunXSide;
++		SE_Quad(FACE_XMIN, lx1, ly1, lz1)
++		u1 = face->u1; u2 = face->u2; SE_Run(u2)
++		zRun = z2 + ((cc_uint32)more << 19);
++		SE_Vertex(0, x1, y2, zRun, u2, face->v1)
++		SE_Vertex(1, x1, y2, z1,   u1, face->v1)
++		SE_Vertex(2, x1, y1, z1,   u1, face->v2)
++		SE_Vertex(3, x1, y1, zRun, u2, face->v2)
++	}
++
++	if (counts[FACE_XMAX]) {
++		offset = (f->light >> FACE_XMAX) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE :
++			x <= (World.MaxX - offset) ? Lighting.Color_XSide_Fast(x + offset, y, z) : Env.SunXSide;
++		SE_Quad(FACE_XMAX, x + f->least[3], ly1, lz1)
++		u1 = face->u1; u2 = face->u2; SE_Run(u1)
++		zRun = z2 + ((cc_uint32)more << 19);
++		SE_Vertex(0, x2, y2, z1,   u1, face->v1)
++		SE_Vertex(1, x2, y2, zRun, u2, face->v1)
++		SE_Vertex(2, x2, y1, zRun, u2, face->v2)
++		SE_Vertex(3, x2, y1, z1,   u1, face->v2)
++	}
++
++	if (counts[FACE_ZMIN]) {
++		offset = (f->light >> FACE_ZMIN) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE :
++			z >= offset ? Lighting.Color_ZSide_Fast(x, y, z - offset) : Env.SunZSide;
++		SE_Quad(FACE_ZMIN, lx1, ly1, lz1)
++		u1 = face->u1; u2 = face->u2; SE_Run(u1)
++		xRun = x2 + ((cc_uint32)more << 3);
++		SE_Vertex(0, xRun, y1, z1, u2, face->v2)
++		SE_Vertex(1, x1,   y1, z1, u1, face->v2)
++		SE_Vertex(2, x1,   y2, z1, u1, face->v1)
++		SE_Vertex(3, xRun, y2, z1, u2, face->v1)
++	}
++
++	if (counts[FACE_ZMAX]) {
++		offset = (f->light >> FACE_ZMAX) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE :
++			z <= (World.MaxZ - offset) ? Lighting.Color_ZSide_Fast(x, y, z + offset) : Env.SunZSide;
++		SE_Quad(FACE_ZMAX, lx1, ly1, z + f->least[5])
++		u1 = face->u1; u2 = face->u2; SE_Run(u2)
++		xRun = x2 + ((cc_uint32)more << 3);
++		SE_Vertex(0, xRun, y2, z2, u2, face->v1)
++		SE_Vertex(1, x1,   y2, z2, u1, face->v1)
++		SE_Vertex(2, x1,   y1, z2, u1, face->v2)
++		SE_Vertex(3, xRun, y1, z2, u2, face->v2)
++	}
++
++	if (counts[FACE_YMIN]) {
++		offset = (f->light >> FACE_YMIN) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE : Lighting.Color_YMin_Fast(x, y - offset, z);
++		SE_Quad(FACE_YMIN, lx1, ly1, lz1)
++		u1 = face->u1; u2 = face->u2; SE_Run(u2)
++		xRun = x2 + ((cc_uint32)more << 3);
++		SE_Vertex(0, xRun, y1, z2, u2, face->v2)
++		SE_Vertex(1, x1,   y1, z2, u1, face->v2)
++		SE_Vertex(2, x1,   y1, z1, u1, face->v1)
++		SE_Vertex(3, xRun, y1, z1, u2, face->v1)
++	}
++
++	if (counts[FACE_YMAX]) {
++		offset = (f->light >> FACE_YMAX) & 1;
++		col = f->fullBright ? PACKEDCOL_WHITE : Lighting.Color_YMax_Fast(x, y + offset, z);
++		SE_Quad(FACE_YMAX, lx1, y + f->least[4], lz1)
++		u1 = face->u1; u2 = face->u2; SE_Run(u2)
++		xRun = x2 + ((cc_uint32)more << 3);
++		SE_Vertex(0, xRun, y2, z1, u2, face->v1)
++		SE_Vertex(1, x1,   y2, z1, u1, face->v1)
++		SE_Vertex(2, x1,   y2, z2, u1, face->v2)
++		SE_Vertex(3, xRun, y2, z2, u2, face->v2)
++	}
++}
++
++/* Builder_DrawSprite's four quads, vertex for vertex */
++static void SE_Sprite(struct Builder1DPart* part, PackedCol color, float x1, float y1, float z1,
++						float x2, float y2, float z2, float v1, float v2) {
++	struct SEVertex* v = (struct SEVertex*)Builder_Vertices + part->sOffset;
++	const int quarter  = part->sCount >> 2;
++	const float cx = (float)se_corner[0], cy = (float)se_corner[1], cz = (float)se_corner[2];
++	const int lx = SE_Floor(x1), ly = SE_Floor(y1), lz = SE_Floor(z1);
++	const cc_uint32 X1 = SE_Eighths(x1 - cx),       X2 = SE_Eighths(x2 - cx);
++	const cc_uint32 Y1 = SE_Eighths(y1 - cy) << 8,  Y2 = SE_Eighths(y2 - cy) << 8;
++	const cc_uint32 Z1 = SE_Eighths(z1 - cz) << 16, Z2 = SE_Eighths(z2 - cz) << 16;
++	const cc_uint32 U1 = SE_U(0.0f), U2 = SE_U(UV2_Scale), V1 = SE_V(v1), V2 = SE_V(v2);
++
++	if (lx < se_least[0]) se_least[0] = lx;
++	if (ly < se_least[1]) se_least[1] = ly;
++	if (lz < se_least[2]) se_least[2] = lz;
++
++	v->colour = color;
++	SE_Vertex(0, X1, Y1, Z1, U2, V2) SE_Vertex(1, X1, Y2, Z1, U2, V1)
++	SE_Vertex(2, X2, Y2, Z2, U1, V1) SE_Vertex(3, X2, Y1, Z2, U1, V2)
++	v += quarter; v->colour = color;
++	SE_Vertex(0, X2, Y1, Z2, U2, V2) SE_Vertex(1, X2, Y2, Z2, U2, V1)
++	SE_Vertex(2, X1, Y2, Z1, U1, V1) SE_Vertex(3, X1, Y1, Z1, U1, V2)
++	v += quarter; v->colour = color;
++	SE_Vertex(0, X1, Y1, Z2, U2, V2) SE_Vertex(1, X1, Y2, Z2, U2, V1)
++	SE_Vertex(2, X2, Y2, Z1, U1, V1) SE_Vertex(3, X2, Y1, Z1, U1, V2)
++	v += quarter; v->colour = color;
++	SE_Vertex(0, X2, Y1, Z1, U2, V2) SE_Vertex(1, X2, Y2, Z1, U2, V1)
++	SE_Vertex(2, X1, Y2, Z2, U1, V1) SE_Vertex(3, X1, Y1, Z2, U1, V2)
++	part->sOffset += 4;
++}
++#endif
++
+ static void Builder_SetDefault(void) {
+ 	Builder_StretchXLiquid = NULL;
+ 	Builder_StretchX       = NULL;
+@@ -765,6 +1272,9 @@ static void Builder_SetDefault(void) {
+ 
+ 	Builder_PrePrepareChunk  = DefaultPrePrepateChunk;
+ 	Builder_PostPrepareChunk = DefaultPostStretchChunk;
++#ifdef CC_BUILD_SHADEREMU
++	se_packed = false;
++#endif
+ }
+ 
+ static void NormalBuilder_SetActive(void) {
+@@ -773,6 +1283,10 @@ static void NormalBuilder_SetActive(void) {
+ 	Builder_StretchX       = NormalBuilder_StretchX;
+ 	Builder_StretchZ       = NormalBuilder_StretchZ;
+ 	Builder_RenderBlock    = NormalBuilder_RenderBlock;
++#ifdef CC_BUILD_SHADEREMU
++	Builder_RenderBlock    = SE_RenderBlock;
++	se_packed = true;
++#endif
+ }
+ 
+ 
+@@ -1633,8 +2147,16 @@ static void ModernBuilder_SetActive(void) { NormalBuilder_SetActive(); }
  /*########################################################################################################################*
  *---------------------------------------------------Builder interface-----------------------------------------------------*
  *#########################################################################################################################*/
@@ -305,7 +829,7 @@ index dd3f3f215..5f126f39e 100644
  	if (Builder_SmoothLighting) {
  		if (Lighting_Mode != LIGHTING_MODE_CLASSIC) {
  			ModernBuilder_SetActive();
-@@ -1671,3 +1803,21 @@ struct IGameComponent Builder_Component = {
+@@ -1671,3 +2193,21 @@ struct IGameComponent Builder_Component = {
  	NULL, /* OnNewMap */
  	OnNewMapLoaded /* OnNewMapLoaded */
  };
@@ -816,7 +1340,7 @@ index 084b97498..b1d404a41 100644
  #include "LScreens.h"
  #include "LWidgets.h"
 diff --git a/src/MapRenderer.c b/src/MapRenderer.c
-index fbe36dd58..a6debcb66 100644
+index fbe36dd58..73df5aa5f 100644
 --- a/src/MapRenderer.c
 +++ b/src/MapRenderer.c
 @@ -60,6 +60,9 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
@@ -883,7 +1407,7 @@ index fbe36dd58..a6debcb66 100644
  static Vec3 lastCamPos;
  static float lastYaw, lastPitch;
  /* Max distance from camera that chunks are rendered within */
-@@ -556,6 +576,122 @@ static void CalcViewDists(void) {
+@@ -556,6 +576,126 @@ static void CalcViewDists(void) {
  	renderDistSquared = AdjustDist(Game_ViewDistance);
  }
  
@@ -940,7 +1464,11 @@ index fbe36dd58..a6debcb66 100644
 +			}
 +			if (out->hasNorm) chunk->normalParts      = &MapRenderer_PartsNormal[partsIndex];
 +			if (out->hasTran) chunk->translucentParts = &MapRenderer_PartsTranslucent[partsIndex];
-+			Gfx_SE_UnlockFrom(chunk->vb, out->at, VERTEX_FORMAT_TEXTURED, out->verts + 1);
++			if (out->packed) {
++				Gfx_SE_UnlockPacked(chunk->vb, (struct SEVertex*)out->at, out->verts, out->corner, out->least);
++			} else {
++				Gfx_SE_UnlockFrom(chunk->vb, out->at, VERTEX_FORMAT_TEXTURED, out->verts + 1);
++			}
 +		}
 +		/* (and BuildChunk's own end) */
 +		Game.ChunkUpdates++;
@@ -1006,7 +1534,7 @@ index fbe36dd58..a6debcb66 100644
  static int UpdateChunksAndVisibility(int* chunkUpdates) {
  	int renderDistSqr = renderDistSquared;
  	int buildDistSqr  = buildDistSquared;
-@@ -574,7 +710,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+@@ -574,7 +714,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -1015,7 +1543,7 @@ index fbe36dd58..a6debcb66 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  		}
-@@ -610,7 +746,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
+@@ -610,7 +750,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -1024,7 +1552,7 @@ index fbe36dd58..a6debcb66 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  
-@@ -638,11 +774,15 @@ static void UpdateChunks(float delta) {
+@@ -638,11 +778,15 @@ static void UpdateChunks(float delta) {
  
  	/* Build more chunks if 30 FPS or over, otherwise slowdown */
  	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1; 
@@ -1041,7 +1569,7 @@ index fbe36dd58..a6debcb66 100644
  
  	renderChunksCount = samePos ?
  		UpdateChunksStill(&chunkUpdates) :
-@@ -651,6 +791,9 @@ static void UpdateChunks(float delta) {
+@@ -651,6 +795,9 @@ static void UpdateChunks(float delta) {
  	lastCamPos = Camera.CurrentPos;
  	lastPitch  = p->Base.Pitch;
  	lastYaw    = p->Base.Yaw;
@@ -1051,7 +1579,7 @@ index fbe36dd58..a6debcb66 100644
  
  	if (!samePos || chunkUpdates) ResetPartFlags();
  }
-@@ -818,7 +961,7 @@ static void OnInit(void) {
+@@ -818,7 +965,7 @@ static void OnInit(void) {
  	/* This = 87 fixes map being invisible when no textures */
  	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */
  	chunkPos   = IVec3_MaxValue();
@@ -1061,7 +1589,7 @@ index fbe36dd58..a6debcb66 100644
  }
  
 diff --git a/src/MapRenderer.h b/src/MapRenderer.h
-index cf715b942..bcbb51146 100644
+index cf715b942..0d41346a2 100644
 --- a/src/MapRenderer.h
 +++ b/src/MapRenderer.h
 @@ -2,6 +2,7 @@
@@ -1080,7 +1608,7 @@ index cf715b942..bcbb51146 100644
  	cc_uint8 : 0;         /* pad to next byte*/
  
  	cc_uint8 drawXMin : 1;
-@@ -62,6 +64,29 @@ struct ChunkInfo {
+@@ -62,6 +64,36 @@ struct ChunkInfo {
  	struct ChunkPartInfo* translucentParts;
  };
  
@@ -1090,9 +1618,16 @@ index cf715b942..bcbb51146 100644
 +   at a time into them, while the first core builds others and draws. What a chunk came to is
 +   in SEMeshOut, which the first core makes the chunk's own when the job has ended. */
 +#define SE_MESH_MOST 8
++/* A chunk's vertex as the normal builder writes it: bytes of x, y and z in eighths of a block
++   from `corner`, then u | v << 12 as the GPU takes them, and in the first vertex of a quad the
++   quad's colour. Gfx_SE_UnlockPacked is Gfx_UnlockVb for `count` of them; `least` is the block
++   the least of their coordinates are in, which the mesh counts its bytes from. */
++struct SEVertex { cc_uint32 at, coords, colour; };
++cc_bool Gfx_SE_UnlockPacked(GfxResourceID vb, const struct SEVertex* v, int count, const int* corner, const int* least);
 +struct SEMeshOut {
 +	int made, hasNorm, hasTran, verts;
 +	void* at; /* the vertices, in the worker's buffer */
++	int packed, corner[3], least[3]; /* they are struct SEVertex: Gfx_SE_UnlockPacked's arguments */
 +	struct ChunkPartInfo norm[ATLAS1D_MAX_ATLASES], tran[ATLAS1D_MAX_ATLASES];
 +};
 +struct SEMeshJob {

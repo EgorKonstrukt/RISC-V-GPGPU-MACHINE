@@ -107,9 +107,11 @@ void Sys_FileSeek (int handle, int position) { lseek (handle, position, SEEK_SET
 int Sys_FileRead (int handle, void *dest, int count) { return read (handle, dest, count); }
 
 /* The machine's clock word once the window is open, going on from the system's clock before. */
-double Sys_FloatTime (void)
+static unsigned	clock_turns;
+
+unsigned Sys_Milliseconds (void)
 {
-	static unsigned	ahead, last, turns;
+	static unsigned	ahead, last;
 	static int	ours;
 	struct timespec	ts;
 	unsigned	ms;
@@ -125,9 +127,28 @@ double Sys_FloatTime (void)
 		}
 	}
 	if (ms < last)
-		turns++;
+		clock_turns++;
 	last = ms;
-	return (turns * 4294967296.0 + ms) * 0.001;
+	return ms;
+}
+
+/* For the network's stamps and the timers nobody leaves on: worked out when the clock has moved. */
+double Sys_FloatTime (void)
+{
+	static unsigned	at;
+	static int	known;
+	static double	seconds;
+	unsigned	ms = Sys_Milliseconds ();
+
+	if (!known || ms != at) {
+		seconds = (double)ms;
+		if (clock_turns)
+			seconds += (double)clock_turns * 4294967296.0;
+		seconds /= 1000.0;
+		at = ms;
+		known = 1;
+	}
+	return seconds;
 }
 
 /*
@@ -164,7 +185,7 @@ static void terminal_commands (void)
 
 int main (int c, char **v)
 {
-	double		time, oldtime, newtime;
+	unsigned	passed, oldtime, newtime;
 	quakeparms_t	parms;
 	int		j;
 
@@ -183,17 +204,17 @@ int main (int c, char **v)
 
 	Host_Init (&parms);
 
-	oldtime = Sys_FloatTime () - 0.1;
+	oldtime = Sys_Milliseconds () - 100;
 	for (;;) {
-		newtime = Sys_FloatTime ();
-		time = newtime - oldtime;
+		newtime = Sys_Milliseconds ();
 		/* the clock moves once a machine frame: end the frame instead of asking again */
-		if (time < 0.001) {
+		if (newtime == oldtime) {
 			__asm__ volatile (".word 0x0100000f");	/* pause */
 			continue;
 		}
+		passed = newtime - oldtime;
 		oldtime = newtime;
 		terminal_commands ();
-		Host_Frame (time);
+		Host_Frame (passed);
 	}
 }

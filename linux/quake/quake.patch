@@ -1,5 +1,27 @@
+diff --git a/WinQuake/cl_demo.c b/WinQuake/cl_demo.c
+index 550368e..a5d701d 100644
+--- a/WinQuake/cl_demo.c
++++ b/WinQuake/cl_demo.c
+@@ -105,7 +105,7 @@ int CL_GetMessage (void)
+ 			// if this is the second frame, grab the real td_starttime
+ 			// so the bogus time on the first frame doesn't count
+ 				if (host_framecount == cls.td_startframe + 1)
+-					cls.td_starttime = realtime;
++					cls.td_starttime = realtime_ms;
+ 			}
+ 			else if ( /* cl.time > 0 && */ cl.time <= cl.mtime[0])
+ 			{
+@@ -331,7 +331,7 @@ void CL_FinishTimeDemo (void)
+ 	
+ // the first frame didn't count
+ 	frames = (host_framecount - cls.td_startframe) - 1;
+-	time = realtime - cls.td_starttime;
++	time = REALTIME_SINCE (cls.td_starttime);
+ 	if (!time)
+ 		time = 1;
+ 	Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames/time);
 diff --git a/WinQuake/cl_main.c b/WinQuake/cl_main.c
-index 5812143..f0cd3b9 100644
+index 5812143..71ab4b3 100644
 --- a/WinQuake/cl_main.c
 +++ b/WinQuake/cl_main.c
 @@ -394,7 +394,7 @@ float	CL_LerpPoint (void)
@@ -41,11 +63,38 @@ index 5812143..f0cd3b9 100644
  	
  	do
  	{
+@@ -646,7 +651,7 @@ int CL_ReadFromServer (void)
+ 		if (!ret)
+ 			break;
+ 		
+-		cl.last_received_message = realtime;
++		cl.last_received_message = realtime_ms;
+ 		CL_ParseServerMessage ();
+ 	} while (ret && cls.state == ca_connected);
+ 	
 diff --git a/WinQuake/client.h b/WinQuake/client.h
-index 7c59ee9..5dc679f 100644
+index 7c59ee9..1f465d0 100644
 --- a/WinQuake/client.h
 +++ b/WinQuake/client.h
-@@ -193,11 +193,11 @@ typedef struct
+@@ -129,7 +129,7 @@ typedef struct
+ 	FILE		*demofile;
+ 	int			td_lastframe;		// to meter out one message a frame
+ 	int			td_startframe;		// host_framecount at start
+-	float		td_starttime;		// realtime at second frame of timedemo
++	unsigned	td_starttime;		// realtime at second frame of timedemo
+ 
+ 
+ // connection information
+@@ -181,7 +181,7 @@ typedef struct
+ 	float		pitchvel;
+ 	qboolean	nodrift;
+ 	float		driftmove;
+-	double		laststop;
++	float		laststop;
+ 
+ 	float		viewheight;
+ 	float		crouch;			// local amount for smoothing stepups
+@@ -193,15 +193,15 @@ typedef struct
  	int			intermission;	// don't change view angle, full screen, etc
  	int			completed_time;	// latched at intermission start
  	
@@ -60,6 +109,11 @@ index 7c59ee9..5dc679f 100644
  								// to decay light values and smooth step ups
  	
  
+-	float		last_received_message;	// (realtime) for net trouble icon
++	unsigned	last_received_message;	// (realtime) for net trouble icon
+ 
+ //
+ // information that is static for the entire time connected to a server
 diff --git a/WinQuake/cmd.c b/WinQuake/cmd.c
 index 0778c5e..34d4f39 100644
 --- a/WinQuake/cmd.c
@@ -88,9 +142,27 @@ index 0778c5e..34d4f39 100644
  			return;
  		}
 diff --git a/WinQuake/console.c b/WinQuake/console.c
-index cad58f8..f84e862 100644
+index cad58f8..dd72a83 100644
 --- a/WinQuake/console.c
 +++ b/WinQuake/console.c
+@@ -45,7 +45,7 @@ char		*con_text=0;
+ cvar_t		con_notifytime = {"con_notifytime","3"};		//seconds
+ 
+ #define	NUM_CON_TIMES 4
+-float		con_times[NUM_CON_TIMES];	// realtime time the line was generated
++unsigned	con_times[NUM_CON_TIMES];	// realtime time the line was generated
+ 								// for transparent notify lines
+ 
+ int			con_vislines;
+@@ -318,7 +318,7 @@ void Con_Print (char *txt)
+ 			Con_Linefeed ();
+ 		// mark time for transparent overlay
+ 			if (con_current >= 0)
+-				con_times[con_current % NUM_CON_TIMES] = realtime;
++				con_times[con_current % NUM_CON_TIMES] = realtime_ms;
+ 		}
+ 
+ 		switch (c)
 @@ -383,7 +383,13 @@ void Con_Printf (char *fmt, ...)
  	va_start (argptr,fmt);
  	vsprintf (msg,fmt,argptr);
@@ -106,10 +178,88 @@ index cad58f8..f84e862 100644
  // also echo to debugging console
  	Sys_Printf ("%s", msg);	// also echo to debugging console
  
+@@ -489,7 +495,7 @@ void Con_DrawInput (void)
+ 	text = key_lines[edit_line];
+ 	
+ // add the cursor frame
+-	text[key_linepos] = 10+((int)(realtime*con_cursorspeed)&1);
++	text[key_linepos] = 10+((int)(REALTIME_TURN (1000000)*con_cursorspeed)&1);
+ 	
+ // fill out remainder with spaces
+ 	for (i=key_linepos+1 ; i< con_linewidth ; i++)
+@@ -523,6 +529,7 @@ void Con_DrawNotify (void)
+ 	char	*text;
+ 	int		i;
+ 	float	time;
++	unsigned	made;
+ 	extern char chat_buffer[];
+ 
+ 	v = 0;
+@@ -530,10 +537,10 @@ void Con_DrawNotify (void)
+ 	{
+ 		if (i < 0)
+ 			continue;
+-		time = con_times[i % NUM_CON_TIMES];
+-		if (time == 0)
++		made = con_times[i % NUM_CON_TIMES];
++		if (made == 0)
+ 			continue;
+-		time = realtime - time;
++		time = REALTIME_SINCE (made);
+ 		if (time > con_notifytime.value)
+ 			continue;
+ 		text = con_text + (i % con_totallines)*con_linewidth;
+@@ -561,7 +568,7 @@ void Con_DrawNotify (void)
+ 			Draw_Character ( (x+5)<<3, v, chat_buffer[x]);
+ 			x++;
+ 		}
+-		Draw_Character ( (x+5)<<3, v, 10+((int)(realtime*con_cursorspeed)&1));
++		Draw_Character ( (x+5)<<3, v, 10+((int)(REALTIME_TURN (1000000)*con_cursorspeed)&1));
+ 		v += 8;
+ 	}
+ 	
+@@ -620,7 +627,7 @@ Con_NotifyBox
+ */
+ void Con_NotifyBox (char *text)
+ {
+-	double		t1, t2;
++	unsigned	t1, t2;
+ 
+ // during startup for sound / cd warnings
+ 	Con_Printf("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n");
+@@ -635,15 +642,15 @@ void Con_NotifyBox (char *text)
+ 
+ 	do
+ 	{
+-		t1 = Sys_FloatTime ();
++		t1 = Sys_Milliseconds ();
+ 		SCR_UpdateScreen ();
+ 		Sys_SendKeyEvents ();
+-		t2 = Sys_FloatTime ();
+-		realtime += t2-t1;		// make the cursor blink
++		t2 = Sys_Milliseconds ();
++		realtime_ms += t2-t1;		// make the cursor blink
+ 	} while (key_count < 0);
+ 
+ 	Con_Printf ("\n");
+ 	key_dest = key_game;
+-	realtime = 0;				// put the cursor back to invisible
++	realtime_ms = 0;				// put the cursor back to invisible
+ }
+ 
 diff --git a/WinQuake/cvar.c b/WinQuake/cvar.c
-index 07a761a..62e9938 100644
+index 07a761a..547f68a 100644
 --- a/WinQuake/cvar.c
 +++ b/WinQuake/cvar.c
+@@ -52,7 +52,7 @@ float	Cvar_VariableValue (char *var_name)
+ 	var = Cvar_FindVar (var_name);
+ 	if (!var)
+ 		return 0;
+-	return Q_atof (var->string);
++	return var->value;
+ }
+ 
+ 
 @@ -105,7 +105,12 @@ void Cvar_Set (char *var_name, char *value)
  {
  	cvar_t	*var;
@@ -484,7 +634,7 @@ index 80ada45..087e2f2 100644
  	return r;
  }
 diff --git a/WinQuake/gl_rmain.c b/WinQuake/gl_rmain.c
-index d9bf41e..20487ca 100644
+index d9bf41e..99f6480 100644
 --- a/WinQuake/gl_rmain.c
 +++ b/WinQuake/gl_rmain.c
 @@ -108,10 +108,13 @@ R_CullBox
@@ -538,7 +688,25 @@ index d9bf41e..20487ca 100644
  	float	s, t, l;
  	int		i, j;
  	int		index;
-@@ -948,6 +961,7 @@ r_refdef must be set before the first call
+@@ -845,8 +858,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
+ 		     GLdouble zNear, GLdouble zFar )
+ {
+    GLdouble xmin, xmax, ymin, ymax;
+-
+-   ymax = zNear * tan( fovy * M_PI / 360.0 );
++   static float	of, tangent;
++
++   // SHADEREMU: in doubles as it was (the picture is the same to the bit), once for an angle
++   if (fovy != of || !tangent)
++   {
++      tangent = tan( (double)fovy * M_PI / 360.0 );
++      of = fovy;
++   }
++   ymax = zNear * tangent;
+    ymin = -ymax;
+ 
+    xmin = ymin * aspect;
+@@ -948,6 +968,7 @@ r_refdef must be set before the first call
  */
  void R_RenderScene (void)
  {
@@ -546,7 +714,7 @@ index d9bf41e..20487ca 100644
  	R_SetupFrame ();
  
  	R_SetFrustum ();
-@@ -960,7 +974,9 @@ void R_RenderScene (void)
+@@ -960,7 +981,9 @@ void R_RenderScene (void)
  
  	S_ExtraUpdate ();	// don't let sound get messed up if going slow
  
@@ -579,7 +747,7 @@ index c9719b5..f389322 100644
  	for (x=0 ; x<8 ; x++)
  	{
 diff --git a/WinQuake/gl_rsurf.c b/WinQuake/gl_rsurf.c
-index 11b5a01..3d27e94 100644
+index 11b5a01..9bc3881 100644
 --- a/WinQuake/gl_rsurf.c
 +++ b/WinQuake/gl_rsurf.c
 @@ -183,6 +183,10 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
@@ -593,6 +761,74 @@ index 11b5a01..3d27e94 100644
  	switch (gl_lightmap_format)
  	{
  	case GL_RGBA:
+@@ -367,7 +371,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+ 	if (s->flags & SURF_DRAWSKY)
+ 	{
+ 		GL_Bind (solidskytexture);
+-		speedscale = realtime*8;
++		speedscale = REALTIME_TURN (16000)*8;
+ 		speedscale -= (int)speedscale;
+ 
+ 		EmitSkyPolys (s);
+@@ -375,7 +379,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+ 		glEnable (GL_BLEND);
+ 		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+ 		GL_Bind (alphaskytexture);
+-		speedscale = realtime*16;
++		speedscale = REALTIME_TURN (16000)*16;
+ 		speedscale -= (int)speedscale;
+ 		EmitSkyPolys (s);
+ 		if (gl_lightmap_format == GL_LUMINANCE)
+@@ -510,14 +514,14 @@ void R_DrawSequentialPoly (msurface_t *s)
+ 	{
+ 		GL_DisableMultitexture();
+ 		GL_Bind (solidskytexture);
+-		speedscale = realtime*8;
++		speedscale = REALTIME_TURN (16000)*8;
+ 		speedscale -= (int)speedscale & ~127;
+ 
+ 		EmitSkyPolys (s);
+ 
+ 		glEnable (GL_BLEND);
+ 		GL_Bind (alphaskytexture);
+-		speedscale = realtime*16;
++		speedscale = REALTIME_TURN (16000)*16;
+ 		speedscale -= (int)speedscale & ~127;
+ 		EmitSkyPolys (s);
+ 
+@@ -559,8 +563,8 @@ void R_DrawSequentialPoly (msurface_t *s)
+ 			qglMTexCoord2fSGIS (TEXTURE0_SGIS, v[3], v[4]);
+ 			qglMTexCoord2fSGIS (TEXTURE1_SGIS, v[5], v[6]);
+ 
+-			nv[0] = v[0] + 8*sin(v[1]*0.05+realtime)*sin(v[2]*0.05+realtime);
+-			nv[1] = v[1] + 8*sin(v[0]*0.05+realtime)*sin(v[2]*0.05+realtime);
++			nv[0] = v[0] + 8*sin(v[1]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
++			nv[1] = v[1] + 8*sin(v[0]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
+ 			nv[2] = v[2];
+ 
+ 			glVertex3fv (nv);
+@@ -605,8 +609,8 @@ void DrawGLWaterPoly (glpoly_t *p)
+ 	{
+ 		glTexCoord2f (v[3], v[4]);
+ 
+-		nv[0] = v[0] + 8*sin(v[1]*0.05+realtime)*sin(v[2]*0.05+realtime);
+-		nv[1] = v[1] + 8*sin(v[0]*0.05+realtime)*sin(v[2]*0.05+realtime);
++		nv[0] = v[0] + 8*sin(v[1]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
++		nv[1] = v[1] + 8*sin(v[0]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
+ 		nv[2] = v[2];
+ 
+ 		glVertex3fv (nv);
+@@ -629,8 +633,8 @@ void DrawGLWaterPolyLightmap (glpoly_t *p)
+ 	{
+ 		glTexCoord2f (v[5], v[6]);
+ 
+-		nv[0] = v[0] + 8*sin(v[1]*0.05+realtime)*sin(v[2]*0.05+realtime);
+-		nv[1] = v[1] + 8*sin(v[0]*0.05+realtime)*sin(v[2]*0.05+realtime);
++		nv[0] = v[0] + 8*sin(v[1]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
++		nv[1] = v[1] + 8*sin(v[0]*0.05+REALTIME_TURN (6283185))*sin(v[2]*0.05+REALTIME_TURN (6283185));
+ 		nv[2] = v[2];
+ 
+ 		glVertex3fv (nv);
 @@ -718,19 +722,7 @@ void R_BlendLightmaps (void)
  		}
  		for ( ; p ; p=p->chain)
@@ -689,7 +925,7 @@ index 11b5a01..3d27e94 100644
  }
  
 diff --git a/WinQuake/gl_screen.c b/WinQuake/gl_screen.c
-index 8a0c096..1749fae 100644
+index 8a0c096..5a874d7 100644
 --- a/WinQuake/gl_screen.c
 +++ b/WinQuake/gl_screen.c
 @@ -103,7 +103,7 @@ int			scr_fullupdate;
@@ -701,6 +937,42 @@ index 8a0c096..1749fae 100644
  
  viddef_t	vid;				// global video state
  
+@@ -111,7 +111,7 @@ vrect_t		scr_vrect;
+ 
+ qboolean	scr_disabled_for_loading;
+ qboolean	scr_drawloading;
+-float		scr_disabled_time;
++unsigned	scr_disabled_time;
+ 
+ qboolean	block_drawing;
+ 
+@@ -444,7 +444,7 @@ SCR_DrawNet
+ */
+ void SCR_DrawNet (void)
+ {
+-	if (realtime - cl.last_received_message < 0.3)
++	if (REALTIME_SINCE (cl.last_received_message) < 0.3)
+ 		return;
+ 	if (cls.demoplayback)
+ 		return;
+@@ -671,7 +671,7 @@ void SCR_BeginLoadingPlaque (void)
+ 	scr_drawloading = false;
+ 
+ 	scr_disabled_for_loading = true;
+-	scr_disabled_time = realtime;
++	scr_disabled_time = realtime_ms;
+ 	scr_fullupdate = 0;
+ }
+ 
+@@ -833,7 +833,7 @@ void SCR_UpdateScreen (void)
+ 
+ 	if (scr_disabled_for_loading)
+ 	{
+-		if (realtime - scr_disabled_time > 60)
++		if (REALTIME_SINCE (scr_disabled_time) > 60)
+ 		{
+ 			scr_disabled_for_loading = false;
+ 			Con_Printf ("load failed.\n");
 @@ -873,6 +873,7 @@ void SCR_UpdateScreen (void)
  	
  	V_RenderView ();
@@ -710,7 +982,7 @@ index 8a0c096..1749fae 100644
  
  	//
 diff --git a/WinQuake/gl_warp.c b/WinQuake/gl_warp.c
-index e8b96af..645174c 100644
+index e8b96af..78b70a5 100644
 --- a/WinQuake/gl_warp.c
 +++ b/WinQuake/gl_warp.c
 @@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -746,7 +1018,24 @@ index e8b96af..645174c 100644
  			t *= (1.0/64);
  
  			glTexCoord2f (s, t);
-@@ -305,6 +309,10 @@ void R_DrawSkyChain (msurface_t *s)
+@@ -280,14 +284,14 @@ void EmitBothSkyLayers (msurface_t *fa)
+ 	GL_DisableMultitexture();
+ 
+ 	GL_Bind (solidskytexture);
+-	speedscale = realtime*8;
++	speedscale = REALTIME_TURN (16000)*8;
+ 	speedscale -= (int)speedscale & ~127 ;
+ 
+ 	EmitSkyPolys (fa);
+ 
+ 	glEnable (GL_BLEND);
+ 	GL_Bind (alphaskytexture);
+-	speedscale = realtime*16;
++	speedscale = REALTIME_TURN (16000)*16;
+ 	speedscale -= (int)speedscale & ~127 ;
+ 
+ 	EmitSkyPolys (fa);
+@@ -305,11 +309,15 @@ void R_DrawSkyChain (msurface_t *s)
  {
  	msurface_t	*fa;
  
@@ -757,6 +1046,21 @@ index e8b96af..645174c 100644
  	GL_DisableMultitexture();
  
  	// used when gl_texsort is on
+ 	GL_Bind(solidskytexture);
+-	speedscale = realtime*8;
++	speedscale = REALTIME_TURN (16000)*8;
+ 	speedscale -= (int)speedscale & ~127 ;
+ 
+ 	for (fa=s ; fa ; fa=fa->texturechain)
+@@ -317,7 +325,7 @@ void R_DrawSkyChain (msurface_t *s)
+ 
+ 	glEnable (GL_BLEND);
+ 	GL_Bind (alphaskytexture);
+-	speedscale = realtime*16;
++	speedscale = REALTIME_TURN (16000)*16;
+ 	speedscale -= (int)speedscale & ~127 ;
+ 
+ 	for (fa=s ; fa ; fa=fa->texturechain)
 diff --git a/WinQuake/glquake.h b/WinQuake/glquake.h
 index f3c253c..66ef6ee 100644
 --- a/WinQuake/glquake.h
@@ -793,20 +1097,24 @@ index f3c253c..66ef6ee 100644
  #define    TEXTURE0_SGIS				0x835E
  #define    TEXTURE1_SGIS				0x835F
 diff --git a/WinQuake/host.c b/WinQuake/host.c
-index 603f6b3..ffe6414 100644
+index 603f6b3..53e520b 100644
 --- a/WinQuake/host.c
 +++ b/WinQuake/host.c
-@@ -37,8 +37,8 @@ quakeparms_t host_parms;
+@@ -37,10 +37,10 @@ quakeparms_t host_parms;
  
  qboolean	host_initialized;		// true if into command execution
  
 -double		host_frametime;
 -double		host_time;
+-double		realtime;				// without any filtering or bounding
+-double		oldrealtime;			// last frame run
 +float		host_frametime;
 +float		host_time;
- double		realtime;				// without any filtering or bounding
- double		oldrealtime;			// last frame run
++unsigned	realtime_ms;			// without any filtering or bounding
++unsigned	oldrealtime_ms;			// last frame run
  int			host_framecount;
+ 
+ int			host_hunklevel;
 @@ -92,6 +92,7 @@ void Host_EndGame (char *message, ...)
  	va_list		argptr;
  	char		string[1024];
@@ -849,6 +1157,27 @@ index 603f6b3..ffe6414 100644
  	if (!sv.active)
  		return;
  
+@@ -498,15 +510,15 @@ Host_FilterTime
+ Returns false if the time is too short to run a frame
+ ===================
+ */
+-qboolean Host_FilterTime (float time)
++qboolean Host_FilterTime (unsigned ms)
+ {
+-	realtime += time;
++	realtime_ms += ms;
+ 
+-	if (!cls.timedemo && realtime - oldrealtime < 1.0/72.0)
++	if (!cls.timedemo && (realtime_ms - oldrealtime_ms) * 72 < 1000)
+ 		return false;		// framerate is too high
+ 
+-	host_frametime = realtime - oldrealtime;
+-	oldrealtime = realtime;
++	host_frametime = (realtime_ms - oldrealtime_ms) * 0.001f;
++	oldrealtime_ms = realtime_ms;
+ 
+ 	if (host_framerate.value > 0)
+ 		host_frametime = host_framerate.value;
 @@ -599,12 +611,23 @@ void Host_ServerFrame (void)
  
  void Host_ServerFrame (void)
@@ -889,6 +1218,24 @@ index 603f6b3..ffe6414 100644
  
  // send all messages to the clients
  	SV_SendClientMessages ();
+@@ -630,7 +656,7 @@ Host_Frame
+ Runs all active servers
+ ==================
+ */
+-void _Host_Frame (float time)
++void _Host_Frame (unsigned ms)
+ {
+ 	static double		time1 = 0;
+ 	static double		time2 = 0;
+@@ -644,7 +670,7 @@ void _Host_Frame (float time)
+ 	rand ();
+ 	
+ // decide the simulation time
+-	if (!Host_FilterTime (time))
++	if (!Host_FilterTime (ms))
+ 		return;			// don't run too fast, or packets will flood out
+ 		
+ // get new key events
 @@ -671,8 +697,13 @@ void _Host_Frame (float time)
  // check for commands typed to the host
  	Host_GetConsoleCommands ();
@@ -918,6 +1265,30 @@ index 603f6b3..ffe6414 100644
  		time3 = Sys_FloatTime ();
  		pass2 = (time2 - time1)*1000;
  		pass3 = (time3 - time2)*1000;
+@@ -726,7 +761,7 @@ void _Host_Frame (float time)
+ 	host_framecount++;
+ }
+ 
+-void Host_Frame (float time)
++void Host_Frame (unsigned ms)
+ {
+ 	double	time1, time2;
+ 	static double	timetotal;
+@@ -735,12 +770,12 @@ void Host_Frame (float time)
+ 
+ 	if (!serverprofile.value)
+ 	{
+-		_Host_Frame (time);
++		_Host_Frame (ms);
+ 		return;
+ 	}
+ 	
+ 	time1 = Sys_FloatTime ();
+-	_Host_Frame (time);
++	_Host_Frame (ms);
+ 	time2 = Sys_FloatTime ();	
+ 	
+ 	timetotal += time2 - time1;
 diff --git a/WinQuake/mathlib.c b/WinQuake/mathlib.c
 index 9f5d644..8db04e2 100644
 --- a/WinQuake/mathlib.c
@@ -932,8 +1303,204 @@ index 9f5d644..8db04e2 100644
  
  vec_t Length(vec3_t v)
  {
+diff --git a/WinQuake/mathlib.h b/WinQuake/mathlib.h
+index b5506e2..5731930 100644
+--- a/WinQuake/mathlib.h
++++ b/WinQuake/mathlib.h
+@@ -67,6 +67,7 @@ fixed16_t Invert24To16(fixed16_t val);
+ int GreatestCommonDivisor (int i1, int i2);
+ 
+ void AngleVectors (vec3_t angles, vec3_t forward, vec3_t right, vec3_t up);
++void RotatePointAroundVector (vec3_t dst, const vec3_t dir, const vec3_t point, float degrees);
+ int BoxOnPlaneSide (vec3_t emins, vec3_t emaxs, struct mplane_s *plane);
+ float	anglemod(float a);
+ 
+diff --git a/WinQuake/menu.c b/WinQuake/menu.c
+index c3c7ebd..bcf8c4e 100644
+--- a/WinQuake/menu.c
++++ b/WinQuake/menu.c
+@@ -507,7 +507,7 @@ void M_Load_Draw (void)
+ 		M_Print (16, 32 + 8*i, m_filenames[i]);
+ 
+ // line cursor
+-	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime*4)&1));
++	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -523,7 +523,7 @@ void M_Save_Draw (void)
+ 		M_Print (16, 32 + 8*i, m_filenames[i]);
+ 
+ // line cursor
+-	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime*4)&1));
++	M_DrawCharacter (8, 32 + load_cursor*8, 12+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -732,13 +732,13 @@ void M_Setup_Draw (void)
+ 	M_BuildTranslationTable(setup_top*16, setup_bottom*16);
+ 	M_DrawTransPicTranslate (172, 72, p);
+ 
+-	M_DrawCharacter (56, setup_cursor_table [setup_cursor], 12+((int)(realtime*4)&1));
++	M_DrawCharacter (56, setup_cursor_table [setup_cursor], 12+((int)(realtime_ms/250)&1));
+ 
+ 	if (setup_cursor == 0)
+-		M_DrawCharacter (168 + 8*strlen(setup_hostname), setup_cursor_table [setup_cursor], 10+((int)(realtime*4)&1));
++		M_DrawCharacter (168 + 8*strlen(setup_hostname), setup_cursor_table [setup_cursor], 10+((int)(realtime_ms/250)&1));
+ 
+ 	if (setup_cursor == 1)
+-		M_DrawCharacter (168 + 8*strlen(setup_myname), setup_cursor_table [setup_cursor], 10+((int)(realtime*4)&1));
++		M_DrawCharacter (168 + 8*strlen(setup_myname), setup_cursor_table [setup_cursor], 10+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -1232,7 +1232,7 @@ void M_Options_Draw (void)
+ #endif
+ 
+ // cursor
+-	M_DrawCharacter (200, 32 + options_cursor*8, 12+((int)(realtime*4)&1));
++	M_DrawCharacter (200, 32 + options_cursor*8, 12+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -1439,7 +1439,7 @@ void M_Keys_Draw (void)
+ 	if (bind_grab)
+ 		M_DrawCharacter (130, 48 + keys_cursor*8, '=');
+ 	else
+-		M_DrawCharacter (130, 48 + keys_cursor*8, 12+((int)(realtime*4)&1));
++		M_DrawCharacter (130, 48 + keys_cursor*8, 12+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -1828,10 +1828,10 @@ void M_SerialConfig_Draw (void)
+ 		M_Print (basex+8, serialConfig_cursor_table[5], "OK");
+ 	}
+ 
+-	M_DrawCharacter (basex-8, serialConfig_cursor_table [serialConfig_cursor], 12+((int)(realtime*4)&1));
++	M_DrawCharacter (basex-8, serialConfig_cursor_table [serialConfig_cursor], 12+((int)(realtime_ms/250)&1));
+ 
+ 	if (serialConfig_cursor == 4)
+-		M_DrawCharacter (168 + 8*strlen(serialConfig_phone), serialConfig_cursor_table [serialConfig_cursor], 10+((int)(realtime*4)&1));
++		M_DrawCharacter (168 + 8*strlen(serialConfig_phone), serialConfig_cursor_table [serialConfig_cursor], 10+((int)(realtime_ms/250)&1));
+ 
+ 	if (*m_return_reason)
+ 		M_PrintWhite (basex, 148, m_return_reason);
+@@ -2043,24 +2043,24 @@ void M_ModemConfig_Draw (void)
+ 	M_DrawTextBox (basex, modemConfig_cursor_table[1]+4, 16, 1);
+ 	M_Print (basex+8, modemConfig_cursor_table[1]+12, modemConfig_clear);
+ 	if (modemConfig_cursor == 1)
+-		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_clear), modemConfig_cursor_table[1]+12, 10+((int)(realtime*4)&1));
++		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_clear), modemConfig_cursor_table[1]+12, 10+((int)(realtime_ms/250)&1));
+ 
+ 	M_Print (basex, modemConfig_cursor_table[2], "Init");
+ 	M_DrawTextBox (basex, modemConfig_cursor_table[2]+4, 30, 1);
+ 	M_Print (basex+8, modemConfig_cursor_table[2]+12, modemConfig_init);
+ 	if (modemConfig_cursor == 2)
+-		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_init), modemConfig_cursor_table[2]+12, 10+((int)(realtime*4)&1));
++		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_init), modemConfig_cursor_table[2]+12, 10+((int)(realtime_ms/250)&1));
+ 
+ 	M_Print (basex, modemConfig_cursor_table[3], "Hangup");
+ 	M_DrawTextBox (basex, modemConfig_cursor_table[3]+4, 16, 1);
+ 	M_Print (basex+8, modemConfig_cursor_table[3]+12, modemConfig_hangup);
+ 	if (modemConfig_cursor == 3)
+-		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_hangup), modemConfig_cursor_table[3]+12, 10+((int)(realtime*4)&1));
++		M_DrawCharacter (basex+8 + 8*strlen(modemConfig_hangup), modemConfig_cursor_table[3]+12, 10+((int)(realtime_ms/250)&1));
+ 
+ 	M_DrawTextBox (basex, modemConfig_cursor_table[4]-8, 2, 1);
+ 	M_Print (basex+8, modemConfig_cursor_table[4], "OK");
+ 
+-	M_DrawCharacter (basex-8, modemConfig_cursor_table [modemConfig_cursor], 12+((int)(realtime*4)&1));
++	M_DrawCharacter (basex-8, modemConfig_cursor_table [modemConfig_cursor], 12+((int)(realtime_ms/250)&1));
+ }
+ 
+ 
+@@ -2253,13 +2253,13 @@ void M_LanConfig_Draw (void)
+ 		M_Print (basex+8, lanConfig_cursor_table[1], "OK");
+ 	}
+ 
+-	M_DrawCharacter (basex-8, lanConfig_cursor_table [lanConfig_cursor], 12+((int)(realtime*4)&1));
++	M_DrawCharacter (basex-8, lanConfig_cursor_table [lanConfig_cursor], 12+((int)(realtime_ms/250)&1));
+ 
+ 	if (lanConfig_cursor == 0)
+-		M_DrawCharacter (basex+9*8 + 8*strlen(lanConfig_portname), lanConfig_cursor_table [0], 10+((int)(realtime*4)&1));
++		M_DrawCharacter (basex+9*8 + 8*strlen(lanConfig_portname), lanConfig_cursor_table [0], 10+((int)(realtime_ms/250)&1));
+ 
+ 	if (lanConfig_cursor == 2)
+-		M_DrawCharacter (basex+16 + 8*strlen(lanConfig_joinname), lanConfig_cursor_table [2], 10+((int)(realtime*4)&1));
++		M_DrawCharacter (basex+16 + 8*strlen(lanConfig_joinname), lanConfig_cursor_table [2], 10+((int)(realtime_ms/250)&1));
+ 
+ 	if (*m_return_reason)
+ 		M_PrintWhite (basex, 148, m_return_reason);
+@@ -2527,7 +2527,7 @@ int	startepisode;
+ int	startlevel;
+ int maxplayers;
+ qboolean m_serverInfoMessage = false;
+-double m_serverInfoMessageTime;
++unsigned m_serverInfoMessageTime;
+ 
+ void M_Menu_GameOptions_f (void)
+ {
+@@ -2648,11 +2648,11 @@ void M_GameOptions_Draw (void)
+    }
+ 
+ // line cursor
+-	M_DrawCharacter (144, gameoptions_cursor_table[gameoptions_cursor], 12+((int)(realtime*4)&1));
++	M_DrawCharacter (144, gameoptions_cursor_table[gameoptions_cursor], 12+((int)(realtime_ms/250)&1));
+ 
+ 	if (m_serverInfoMessage)
+ 	{
+-		if ((realtime - m_serverInfoMessageTime) < 5.0)
++		if (REALTIME_SINCE (m_serverInfoMessageTime) < 5.0)
+ 		{
+ 			x = (320-26*8)/2;
+ 			M_DrawTextBox (x, 138, 24, 4);
+@@ -2682,7 +2682,7 @@ void M_NetStart_Change (int dir)
+ 		{
+ 			maxplayers = svs.maxclientslimit;
+ 			m_serverInfoMessage = true;
+-			m_serverInfoMessageTime = realtime;
++			m_serverInfoMessageTime = realtime_ms;
+ 		}
+ 		if (maxplayers < 2)
+ 			maxplayers = 2;
+@@ -2837,7 +2837,7 @@ void M_GameOptions_Key (int key)
+ /* SEARCH MENU */
+ 
+ qboolean	searchComplete = false;
+-double		searchCompleteTime;
++unsigned	searchCompleteTime;
+ 
+ void M_Menu_Search_f (void)
+ {
+@@ -2872,7 +2872,7 @@ void M_Search_Draw (void)
+ 	if (! searchComplete)
+ 	{
+ 		searchComplete = true;
+-		searchCompleteTime = realtime;
++		searchCompleteTime = realtime_ms;
+ 	}
+ 
+ 	if (hostCacheCount)
+@@ -2882,7 +2882,7 @@ void M_Search_Draw (void)
+ 	}
+ 
+ 	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Quake servers found");
+-	if ((realtime - searchCompleteTime) < 3.0)
++	if (REALTIME_SINCE (searchCompleteTime) < 3.0)
+ 		return;
+ 
+ 	M_Menu_LanConfig_f ();
+@@ -2945,7 +2945,7 @@ void M_ServerList_Draw (void)
+ 			sprintf(string, "%-15.15s %-15.15s\n", hostcache[n].name, hostcache[n].map);
+ 		M_Print (16, 32 + 8*n, string);
+ 	}
+-	M_DrawCharacter (0, 32 + slist_cursor*8, 12+((int)(realtime*4)&1));
++	M_DrawCharacter (0, 32 + slist_cursor*8, 12+((int)(realtime_ms/250)&1));
+ 
+ 	if (*m_return_reason)
+ 		M_PrintWhite (16, 148, m_return_reason);
 diff --git a/WinQuake/net_main.c b/WinQuake/net_main.c
-index 5f5d2cf..2bc8b5b 100644
+index 5f5d2cf..586674a 100644
 --- a/WinQuake/net_main.c
 +++ b/WinQuake/net_main.c
 @@ -625,10 +625,13 @@ struct
@@ -981,6 +1548,16 @@ index 5f5d2cf..2bc8b5b 100644
  	if (sock->disconnected)
  		return false;
  
+@@ -943,7 +952,8 @@ void NET_Poll(void)
+ 		configRestored = true;
+ 	}
+ 
+-	SetNetTime();
++	if (pollProcedureList)		// SHADEREMU: the clock as a double is a library's work
++		SetNetTime();
+ 
+ 	for (pp = pollProcedureList; pp; pp = pp->next)
+ 	{
 diff --git a/WinQuake/net_udp.c b/WinQuake/net_udp.c
 index 3eded99..3bf66d2 100644
 --- a/WinQuake/net_udp.c
@@ -1163,7 +1740,7 @@ index 4f2aa36..9111320 100644
  		if (!a->function)
  			PR_RunError ("NULL function");
 diff --git a/WinQuake/quakedef.h b/WinQuake/quakedef.h
-index e451827..df46f85 100644
+index e451827..f4541d2 100644
 --- a/WinQuake/quakedef.h
 +++ b/WinQuake/quakedef.h
 @@ -285,6 +285,32 @@ typedef struct
@@ -1199,7 +1776,7 @@ index e451827..df46f85 100644
  
  //
  // host
-@@ -296,7 +322,7 @@ extern	cvar_t		sys_nostdout;
+@@ -296,11 +322,13 @@ extern	cvar_t		sys_nostdout;
  extern	cvar_t		developer;
  
  extern	qboolean	host_initialized;		// true if into command execution
@@ -1208,6 +1785,24 @@ index e451827..df46f85 100644
  extern	byte		*host_basepal;
  extern	byte		*host_colormap;
  extern	int			host_framecount;	// incremented every frame, never reset
+-extern	double		realtime;			// not bounded in any way, changed at
++// SHADEREMU: whole milliseconds, for a machine without doubles. It wraps after 49
++// days, and a difference is right across that
++extern	unsigned	realtime_ms;		// not bounded in any way, changed at
+ 										// start of every frame, never reset
+ 
+ void Host_ClearMemory (void);
+@@ -310,7 +338,9 @@ void Host_Init (quakeparms_t *parms);
+ void Host_Shutdown(void);
+ void Host_Error (char *error, ...);
+ void Host_EndGame (char *message, ...);
+-void Host_Frame (float time);
++void Host_Frame (unsigned ms);
++#define	REALTIME_SINCE(then)	((int)(realtime_ms - (then)) * 0.001f)	// seconds
++#define	REALTIME_TURN(ms)		((realtime_ms % (ms)) * 0.001f)			// seconds, from 0 again every so many ms
+ void Host_Quit_f (void);
+ void Host_ClientCommands (char *fmt, ...);
+ void Host_ShutdownServer (qboolean crash);
 diff --git a/WinQuake/r_part.c b/WinQuake/r_part.c
 index 3db22ab..75b0b9e 100644
 --- a/WinQuake/r_part.c
@@ -1233,11 +1828,24 @@ index 3db22ab..75b0b9e 100644
  		// hack a scale up to keep particles from disapearing
  		scale = (p->org[0] - r_origin[0])*vpn[0] + (p->org[1] - r_origin[1])*vpn[1]
  			+ (p->org[2] - r_origin[2])*vpn[2];
+diff --git a/WinQuake/render.h b/WinQuake/render.h
+index b5f8382..c29cd4c 100644
+--- a/WinQuake/render.h
++++ b/WinQuake/render.h
+@@ -44,7 +44,7 @@ typedef struct entity_s
+ 
+ 	entity_state_t			baseline;		// to fill in defaults in updates
+ 
+-	double					msgtime;		// time of last update
++	float					msgtime;		// time of last update
+ 	vec3_t					msg_origins[2];	// last two updates (0 is newest)	
+ 	vec3_t					origin;
+ 	vec3_t					msg_angles[2];	// last two updates (0 is newest)
 diff --git a/WinQuake/server.h b/WinQuake/server.h
-index 2d4dfeb..e8c3887 100644
+index 2d4dfeb..7508ce7 100644
 --- a/WinQuake/server.h
 +++ b/WinQuake/server.h
-@@ -39,7 +39,7 @@ typedef struct
+@@ -39,10 +39,10 @@ typedef struct
  	qboolean	paused;
  	qboolean	loadgame;			// handle connections specially
  
@@ -1245,7 +1853,20 @@ index 2d4dfeb..e8c3887 100644
 +	float		time;
  	
  	int			lastcheck;			// used by PF_checkclient
- 	double		lastchecktime;
+-	double		lastchecktime;
++	float		lastchecktime;
+ 	
+ 	char		name[64];			// map name
+ #ifdef QUAKE2
+@@ -83,7 +83,7 @@ typedef struct client_s
+ 	qboolean		privileged;			// can execute any host command
+ 	qboolean		sendsignon;			// only valid before spawned
+ 
+-	double			last_message;		// reliable messages must be sent
++	unsigned		last_message;		// reliable messages must be sent
+ 										// periodically
+ 
+ 	struct qsocket_s *netconnection;	// communications handle
 @@ -209,7 +209,7 @@ extern	client_t	*host_client;
  
  extern	jmp_buf 	host_abortserver;
@@ -1256,7 +1877,7 @@ index 2d4dfeb..e8c3887 100644
  extern	edict_t		*sv_player;
  
 diff --git a/WinQuake/sv_main.c b/WinQuake/sv_main.c
-index deda690..8572437 100644
+index deda690..1b7e9d4 100644
 --- a/WinQuake/sv_main.c
 +++ b/WinQuake/sv_main.c
 @@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -1267,6 +1888,33 @@ index deda690..8572437 100644
  
  server_t		sv;
  server_static_t	svs;
+@@ -808,7 +809,7 @@ void SV_SendNop (client_t *client)
+ 
+ 	if (NET_SendUnreliableMessage (client->netconnection, &msg) == -1)
+ 		SV_DropClient (true);	// if the message couldn't send, kick off
+-	client->last_message = realtime;
++	client->last_message = realtime_ms;
+ }
+ 
+ /*
+@@ -843,7 +844,7 @@ void SV_SendClientMessages (void)
+ 		// between signon stages
+ 			if (!host_client->sendsignon)
+ 			{
+-				if (realtime - host_client->last_message > 5)
++				if (REALTIME_SINCE (host_client->last_message) > 5)
+ 					SV_SendNop (host_client);
+ 				continue;	// don't send out non-signon messages
+ 			}
+@@ -875,7 +876,7 @@ void SV_SendClientMessages (void)
+ 				, &host_client->message) == -1)
+ 					SV_DropClient (true);	// if the message couldn't send, kick off
+ 				SZ_Clear (&host_client->message);
+-				host_client->last_message = realtime;
++				host_client->last_message = realtime_ms;
+ 				host_client->sendsignon = false;
+ 			}
+ 		}
 @@ -1050,6 +1051,8 @@ void SV_SpawnServer (char *server)
  	edict_t		*ent;
  	int			i;
@@ -1345,6 +1993,18 @@ index 1163949..a81e198 100644
  	for (i=0, host_client = svs.clients ; i<svs.maxclients ; i++, host_client++)
  	{
  		if (!host_client->active)
+diff --git a/WinQuake/sys.h b/WinQuake/sys.h
+index c5d61a7..aa58665 100644
+--- a/WinQuake/sys.h
++++ b/WinQuake/sys.h
+@@ -55,6 +55,7 @@ void Sys_Printf (char *fmt, ...);
+ void Sys_Quit (void);
+ 
+ double Sys_FloatTime (void);
++unsigned Sys_Milliseconds (void);
+ 
+ char *Sys_ConsoleInput (void);
+ 
 diff --git a/WinQuake/world.c b/WinQuake/world.c
 index e1acfea..f755b41 100644
 --- a/WinQuake/world.c

@@ -1404,3 +1404,57 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
   a finished build for ever when started from the desktop, never from a shell. A launcher
   sets it back before `exec` (`ui_run`), and a program that waits for children sets it at its
   start. Test such a program as the desktop starts it: `sh -c 'trap "" CHLD; exec PROGRAM'`.
+- Vector instructions for the guest were weighed in October 2026 and not built. Profiled by
+  function, what a 4-lane instruction could shrink was 2 to 8% of a frame of Doom, Quake,
+  Tiberian Dawn, Red Alert and the NES, 15 to 35% of ClassiCube's, and half of `nxphys`'s
+  substep; an extension as large as F costs every instruction 1 to 4%. What is data-parallel
+  is on the GPU and the workers already, and what is left is tree walks, lists and
+  bookkeeping. Look for the scalar waste first: each game had one worth more than the vectors.
+- A 16-byte copy instruction was weighed with it and not built: 75 to 85% of the games' own
+  `memcpy` calls are under 16 bytes and most of the rest are not aligned to a texel, source
+  and destination both. What costs is a call for a small fixed size: ClassiCube's `Mem_Copy`
+  of 24 and of 64 bytes in every draw was 8.5% of its frame, and is word copies in place now.
+  To see a program's calls, their sizes and who makes them, build a copy of `rvc_cpu.cpp`
+  that notes a0 to a2 and ra when core 0's pc is the routine's (`nm`), in user mode.
+- Doom's kept level is told what the game changes, not polled: `told` in
+  `linux/nanox/doom.sh` puts `doom_sector_changed()` / `doom_walls_changed` before every
+  write of a sector's heights, floor picture or light and of a wall's picture, and counts
+  them. Game code that writes one of those elsewhere must say so too, or the wall is drawn
+  stale; check with held frames (`DOOM_STOP_TIC`, `--gpu-capture`) against the build before.
+- When a profile blames a drawing function, count its calls by caller before designing
+  anything: Doom's 7% in `V_DrawPatch_cpu` was the message's letters drawn again every frame
+  at the default view size, not the status bar. `--ra-log` cannot name the caller of a
+  function that has made a call itself (here `V_MarkRect`).
+- Tiberian Dawn keeps a bit a cell that has an occupier, by rows and by columns (`cell.cpp`;
+  `Greatest_Threat` reads a box's side a word at a time, in the game's own order, because the
+  scan keeps the last target it finds). Any new store to `OccupierPtr` must set the bit:
+  `TDAWN_CHECK_OCCUPY=1` must print `0 cells' occupancy bits were wrong`, and the state sums
+  must hold.
+- A call added to a small function that is called everywhere (`Cell_Occupier`) gives every
+  call a stack frame, and `__builtin_ctz` is a library call on this machine: put the rare
+  path in a noinline function of its own, and find a bit with a de Bruijn table. Each was 0.6
+  to 0.8% of a mission before that.
+- Quake's clock is `realtime_ms`, whole milliseconds (`docs/quake.md`, "No doubles in a
+  frame"): a stamp is an unsigned count and a time since one is `REALTIME_SINCE`. Only the
+  network's `net_time` and the debug timers are doubles; do not bring a double back into a
+  frame. To find one, list every `jal` to a `__...df...` routine in `objdump -d` by the
+  function it is in, beside that function's share of a `--pc-log` profile.
+- Under `-fsingle-precision-constant` a "double" expression of unsigned values and constants
+  is computed in float (Quake's old `Sys_FloatTime` stepped by 2 ms after 4.6 hours): cast an
+  operand to `double`, or keep the count an integer. And a function called without a
+  prototype gets its float as a double (`RotatePointAroundVector`): with `-w` nothing says so.
+- A change to ClassiCube's chunk builder must leave the meshes' bytes: `CLASSICUBE_MESH_SUM=1`
+  prints a `ccmesh:` line a mesh (`docs/classicube.md`, "Checking it"). Compare with the
+  build before under `rvc_cpu`, `CLASSICUBE_MESH=inline` line for line and the worker's as a
+  set, with block physics off (`singleplayerphysics=false` in `/tmp/classicube/options.txt`:
+  dirt turns to grass by the clock) and digs by single presses (`down LeftMouse` and `up
+  LeftMouse` in one `--send`).
+- A file compiled a second time for a worker core (ClassiCube's `Builder.c`) must not write a
+  global of another file: both copies wrote the game's `Drawer`, and 6 of 52 start-up meshes
+  under `rvc_cpu` had another chunk's vertices. Check a worker's results against the first
+  core's own (`CLASSICUBE_MESH=inline`), not against an earlier worker run.
+- `rvc_harness --cpu` holds a ClassiCube frame in 12 s (55 s on the shader machine) and its
+  `--gpu-capture` was the same picture pixel for pixel.
+- To see where a program's instructions go by source line, link a copy with the one file
+  compiled `-g` (the code and the addresses are the same: compare `nm`) and give an
+  `rvc_cpu --pc-log` to `addr2line -a -i`; take the outermost line of each address.

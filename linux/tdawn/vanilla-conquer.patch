@@ -230,10 +230,69 @@ index a26cf46..e489e91 100644
      drive.cpp
      drop.cpp
 diff --git a/tiberiandawn/cell.cpp b/tiberiandawn/cell.cpp
-index c7ad7f4..eb74a2e 100644
+index c7ad7f4..da11175 100644
 --- a/tiberiandawn/cell.cpp
 +++ b/tiberiandawn/cell.cpp
-@@ -367,6 +367,18 @@ void CellClass::Redraw_Objects(bool forced)
+@@ -138,6 +138,58 @@ CellClass::CellClass(void)
+     OverrideLand = LAND_COUNT;
+ }
+ 
++#ifdef SHADEREMU
++unsigned ShaderEmu_Occupied_Rows[MAP_CELL_H * OCCUPIED_ROW_WORDS];
++unsigned ShaderEmu_Occupied_Columns[MAP_CELL_W * OCCUPIED_COLUMN_WORDS];
++
++/* Every store to a cell's OccupierPtr is followed by this; a cell outside the map has no bit. */
++static void Occupied_Set(CELL cell, bool occupied)
++{
++    if ((unsigned)cell >= MAP_CELL_TOTAL) {
++        return;
++    }
++    int x = Cell_X(cell), y = Cell_Y(cell);
++    unsigned* row = &ShaderEmu_Occupied_Rows[y * OCCUPIED_ROW_WORDS + (x >> 5)];
++    unsigned* column = &ShaderEmu_Occupied_Columns[x * OCCUPIED_COLUMN_WORDS + (y >> 5)];
++
++    if (occupied) {
++        *row |= 1u << (x & 31);
++        *column |= 1u << (y & 31);
++    } else {
++        *row &= ~(1u << (x & 31));
++        *column &= ~(1u << (y & 31));
++    }
++}
++
++/* After the cells were written as memory: made anew (all empty), or read from a saved game. */
++void ShaderEmu_Occupied_Rebuild(bool all_empty)
++{
++    memset(ShaderEmu_Occupied_Rows, 0, sizeof(ShaderEmu_Occupied_Rows));
++    memset(ShaderEmu_Occupied_Columns, 0, sizeof(ShaderEmu_Occupied_Columns));
++    for (int cell = 0; !all_empty && cell < MAP_CELL_TOTAL; cell++) {
++        if (Map[(CELL)cell].OccupierPtr != NULL) {
++            Occupied_Set((CELL)cell, true);
++        }
++    }
++}
++
++/* TDAWN_CHECK_OCCUPY=1: how many cells' bits are not what the cell itself says. */
++int ShaderEmu_Occupied_Check(void)
++{
++    int wrong = 0;
++
++    for (int cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        int x = Cell_X((CELL)cell), y = Cell_Y((CELL)cell);
++        unsigned row = ShaderEmu_Occupied_Rows[y * OCCUPIED_ROW_WORDS + (x >> 5)] >> (x & 31) & 1;
++        unsigned column = ShaderEmu_Occupied_Columns[x * OCCUPIED_COLUMN_WORDS + (y >> 5)] >> (y & 31) & 1;
++        unsigned occupied = Map[(CELL)cell].OccupierPtr != NULL;
++
++        wrong += row != occupied || column != occupied;
++    }
++    return (wrong);
++}
++#endif
++
+ /***********************************************************************************************
+  * CellClass::Cell_Color   -- Determine what radar color to use for this cell.                 *
+  *                                                                                             *
+@@ -367,6 +419,18 @@ void CellClass::Redraw_Objects(bool forced)
      Validate();
      CELL cell = Cell_Number();
  
@@ -252,7 +311,27 @@ index c7ad7f4..eb74a2e 100644
      if (Map.In_View(cell) && (forced || !Map.Is_Cell_Flagged(cell))) {
  
          /*
-@@ -1860,11 +1872,57 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
+@@ -566,6 +630,9 @@ void CellClass::Occupy_Down(ObjectClass* object)
+     object->Next = optr;
+ 
+     OccupierPtr = object;
++#ifdef SHADEREMU
++    Occupied_Set(Cell_Number(), true);
++#endif
+     Map.Radar_Pixel(Cell_Number());
+ 
+     /*
+@@ -640,6 +707,9 @@ void CellClass::Occupy_Up(ObjectClass* object)
+     }
+     if (optr == object) {
+         OccupierPtr = object->Next;
++#ifdef SHADEREMU
++        Occupied_Set(Cell_Number(), OccupierPtr != NULL);
++#endif
+         object->Next = 0;
+     } else {
+         while (optr) {
+@@ -1860,11 +1930,57 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
   * HISTORY:                                                                *
   *   04/24/1995 PWG : Created.                                             *
   *=========================================================================*/
@@ -310,7 +389,7 @@ index c7ad7f4..eb74a2e 100644
      for (HousesType lp = HOUSE_FIRST; lp < HOUSE_COUNT; lp++) {
          if (lp == house)
              continue;
-@@ -1874,6 +1932,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
+@@ -1874,6 +1990,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
              house_ptr->Adjust_Threat(region, threat_value);
          }
      }
@@ -318,11 +397,68 @@ index c7ad7f4..eb74a2e 100644
      if (Debug_Threat) {
          Map.Flag_To_Redraw(true);
      }
+@@ -2547,14 +2664,33 @@ void CellClass::Shimmer(void)
+  * HISTORY:                                                                                    *
+  *   08/17/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/* A dead occupier at the head, which is rare: apart, so that the common way calls nothing. */
++static ObjectClass* __attribute__((noinline)) Occupier_Lapsed(const CellClass* cell, ObjectClass* ptr)
++{
++    while (ptr && !ptr->IsActive) {
++        ptr = ptr->Next;
++        ((ObjectClass*&)cell->OccupierPtr) = 0;
++    }
++    Occupied_Set(cell->Cell_Number(), false);
++    return (ptr);
++}
++#endif
++
+ ObjectClass* CellClass::Cell_Occupier(void) const
+ {
+     ObjectClass* ptr = OccupierPtr;
+ 
++#ifdef SHADEREMU
++    if (ptr && !ptr->IsActive) {
++        return (Occupier_Lapsed(this, ptr));
++    }
++#else
+     while (ptr && !ptr->IsActive) {
+         ptr = ptr->Next;
+         ((ObjectClass*&)OccupierPtr) = 0;
+     }
++#endif
+ 
+     return (ptr);
+ }
+diff --git a/tiberiandawn/cell.h b/tiberiandawn/cell.h
+index f9c20ea..810138e 100644
+--- a/tiberiandawn/cell.h
++++ b/tiberiandawn/cell.h
+@@ -331,4 +331,17 @@ private:
+     */
+ };
+ 
++#ifdef SHADEREMU
++/*
++** A bit a cell that has an occupier, by rows and again by columns, for scans that pass
++** empty cells a word at a time (TechnoClass::Greatest_Threat). They are kept in cell.cpp.
++*/
++#define OCCUPIED_ROW_WORDS (MAP_CELL_W / 32)
++#define OCCUPIED_COLUMN_WORDS (MAP_CELL_H / 32)
++extern unsigned ShaderEmu_Occupied_Rows[MAP_CELL_H * OCCUPIED_ROW_WORDS];
++extern unsigned ShaderEmu_Occupied_Columns[MAP_CELL_W * OCCUPIED_COLUMN_WORDS];
++void ShaderEmu_Occupied_Rebuild(bool all_empty);
++int ShaderEmu_Occupied_Check(void);
++#endif
++
+ #endif
+\ No newline at end of file
 diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
-index a8aebd8..beaf143 100644
+index a8aebd8..c63e388 100644
 --- a/tiberiandawn/conquer.cpp
 +++ b/tiberiandawn/conquer.cpp
-@@ -98,6 +98,301 @@ extern void Send_Statistics_Packet(void);
+@@ -98,6 +98,320 @@ extern void Send_Statistics_Packet(void);
  extern char* __nheapbeg;
  bool InMainLoop = false;
  
@@ -348,9 +484,27 @@ index a8aebd8..beaf143 100644
 +        counter += host_cycles() - began_;                                                                             \
 +    }
 +
++/* TDAWN_CHECK_OCCUPY=1: every frame, the cells whose occupancy bit (cell.h) is not the cell's own word. */
++static int ShaderEmu_Occupy_Wrong = -1, ShaderEmu_Occupy_Checks;
++
++static void ShaderEmu_Check_Occupy(void)
++{
++    if (ShaderEmu_Occupy_Wrong == -1) {
++        ShaderEmu_Occupy_Wrong = getenv("TDAWN_CHECK_OCCUPY") ? 0 : -2;
++    }
++    if (ShaderEmu_Occupy_Wrong >= 0) {
++        ShaderEmu_Occupy_Wrong += ShaderEmu_Occupied_Check();
++        ShaderEmu_Occupy_Checks++;
++    }
++}
++
 +/* A sum of the game's state, to see two runs (or two builds) play the same. */
 +static void ShaderEmu_State(const char* when)
 +{
++    if (ShaderEmu_Occupy_Wrong >= 0) {
++        fprintf(stderr, "tdawn: %d cells' occupancy bits were wrong in %d checks of %d cells\n",
++                ShaderEmu_Occupy_Wrong, ShaderEmu_Occupy_Checks, MAP_CELL_TOTAL);
++    }
 +    unsigned hash = 2166136261u, overlays = 0;
 +    int i;
 +#define SHADEREMU_MIX(value) hash = (hash ^ (unsigned)(value)) * 16777619u
@@ -518,6 +672,7 @@ index a8aebd8..beaf143 100644
 +    unsigned ms = host_ms(), cycles = host_cycles();
 +    int frames = Frame - frame_then;
 +
++    ShaderEmu_Check_Occupy();
 +    if (every < 0) {
 +        const char* text = getenv("TDAWN_STATS_MS");
 +        every = text ? atoi(text) : 5000;
@@ -624,7 +779,7 @@ index a8aebd8..beaf143 100644
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
  #endif
-@@ -1126,12 +1421,31 @@ bool Color_Cycle(void)
+@@ -1126,12 +1440,31 @@ bool Color_Cycle(void)
      static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
      static bool _up = false;
      bool changed = false;
@@ -657,7 +812,7 @@ index a8aebd8..beaf143 100644
          _ftimer.Set(TIMER_SECOND / 8);
  
  /*
-@@ -1165,7 +1479,7 @@ bool Color_Cycle(void)
+@@ -1165,7 +1498,7 @@ bool Color_Cycle(void)
      /*
      **	Process the color cycling effects -- water.
      */
@@ -666,7 +821,7 @@ index a8aebd8..beaf143 100644
          unsigned char colors[3];
  
          _timer.Set(TIMER_SECOND / 4);
-@@ -1222,6 +1536,20 @@ void Call_Back(void)
+@@ -1222,6 +1555,20 @@ void Call_Back(void)
      if (SampleType) {
          Theme.AI();
          Speak_AI();
@@ -687,7 +842,7 @@ index a8aebd8..beaf143 100644
      }
  
  #ifdef NETWORKING
-@@ -1516,7 +1844,7 @@ static void Sync_Delay(void)
+@@ -1516,7 +1863,7 @@ static void Sync_Delay(void)
              if (input) {
                  Keyboard_Process(input);
              }
@@ -696,7 +851,7 @@ index a8aebd8..beaf143 100644
          }
  
          Frame_Limiter(FL_NONE);
-@@ -1611,6 +1939,9 @@ bool Main_Loop()
+@@ -1611,6 +1958,9 @@ bool Main_Loop()
      } else {
          FrameTimer.Set(Options.GameSpeed);
      }
@@ -706,7 +861,7 @@ index a8aebd8..beaf143 100644
  
      /*
      **	Update the display, unless we're inside a dialog.
-@@ -1624,7 +1955,10 @@ bool Main_Loop()
+@@ -1624,7 +1974,10 @@ bool Main_Loop()
                  Keyboard_Process(input);
              }
              //			HidPage.Lock();
@@ -718,7 +873,7 @@ index a8aebd8..beaf143 100644
              //			HidPage.Unlock();
          }
      }
-@@ -1650,7 +1984,11 @@ bool Main_Loop()
+@@ -1650,7 +2003,11 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -731,7 +886,7 @@ index a8aebd8..beaf143 100644
  
      //	Heap_Dump_Check( "After Logic.AI" );
  
-@@ -1710,6 +2048,9 @@ bool Main_Loop()
+@@ -1710,6 +2067,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -741,7 +896,7 @@ index a8aebd8..beaf143 100644
          Do_Win();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1726,6 +2067,9 @@ bool Main_Loop()
+@@ -1726,6 +2086,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -751,7 +906,7 @@ index a8aebd8..beaf143 100644
          Do_Lose();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1736,6 +2080,9 @@ bool Main_Loop()
+@@ -1736,6 +2099,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -761,7 +916,7 @@ index a8aebd8..beaf143 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
      }
-@@ -2656,6 +3003,11 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2656,6 +3022,11 @@ void CC_Draw_Shape(void const* shapefile,
      char* shape_pointer;
      uintptr_t shape_size;
  
@@ -1012,6 +1167,20 @@ index 8ae9955..d03bedc 100644
          if (CustomSeed != 0) {
              Seed = CustomSeed;
          } else {
+diff --git a/tiberiandawn/iomap.cpp b/tiberiandawn/iomap.cpp
+index f4f1ef3..ea8fa26 100644
+--- a/tiberiandawn/iomap.cpp
++++ b/tiberiandawn/iomap.cpp
+@@ -1011,6 +1011,9 @@ void MapClass::Decode_Pointers(void)
+     for (cell = 0; cell < MAP_CELL_TOTAL; cell++) {
+         (*this)[cell].Decode_Pointers();
+     }
++#ifdef SHADEREMU
++    ShaderEmu_Occupied_Rebuild(false);
++#endif
+ 
+     GScreenClass::Decode_Pointers();
+ }
 diff --git a/tiberiandawn/layer.cpp b/tiberiandawn/layer.cpp
 index bb688bc..01baf5a 100644
 --- a/tiberiandawn/layer.cpp
@@ -1114,10 +1283,20 @@ index 3b894e4..4f5e38b 100644
      //	Heap_Dump_Check( "After Map.Logic" );
  
 diff --git a/tiberiandawn/map.cpp b/tiberiandawn/map.cpp
-index 4d484e7..1258628 100644
+index 4d484e7..0eee7b6 100644
 --- a/tiberiandawn/map.cpp
 +++ b/tiberiandawn/map.cpp
-@@ -1536,6 +1536,10 @@ int MapClass::Cell_Region(CELL cell)
+@@ -530,6 +530,9 @@ void MapClass::Init_Cells(void)
+     for (int index = 0; index < MAP_CELL_TOTAL; index++) {
+         new (&Array[index]) CellClass;
+     }
++#ifdef SHADEREMU
++    ShaderEmu_Occupied_Rebuild(true);
++#endif
+ }
+ 
+ /***********************************************************************************************
+@@ -1536,6 +1539,10 @@ int MapClass::Cell_Region(CELL cell)
   *=========================================================================*/
  int MapClass::Cell_Threat(CELL cell, HousesType house)
  {
@@ -1234,62 +1413,123 @@ index 596a8f7..cb485b6 100644
  
              /*
 diff --git a/tiberiandawn/techno.cpp b/tiberiandawn/techno.cpp
-index 07b96eb..7af75e1 100644
+index 07b96eb..56a6ce3 100644
 --- a/tiberiandawn/techno.cpp
 +++ b/tiberiandawn/techno.cpp
-@@ -1598,6 +1598,16 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
+@@ -1598,6 +1598,43 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
   *   11/14/1994 JLB : Created.                                                                 *
   *   06/20/1995 JLB : Greatly optimized scan method.                                           *
   *=============================================================================================*/
 +#ifdef SHADEREMU
 +/*
-+** A cell nobody stands in holds no threat, which Evaluate_Cell finds out after a call, a
-+** bounds check and two more calls. Most cells of a scan are such: ask the cell first.
++** A cell nobody stands in holds no threat, and most cells of a scan are such. A side of the
++** scan's box is read from the map's bits of who is occupied (cell.h), a word of 32 cells
++** at a time, and only the occupied cells are asked, in the order the game's loops ask.
 +*/
-+#define SHADEREMU_OCCUPIED(cell) (Map[cell].OccupierPtr != NULL)
-+#else
-+#define SHADEREMU_OCCUPIED(cell) true
++static inline unsigned Occupied_Span(const unsigned* line, int word, int low, int high)
++{
++    unsigned bits = line ? line[word] : 0;
++
++    if (word == (low >> 5))
++        bits &= ~0u << (low & 31);
++    if (word == (high >> 5))
++        bits &= ~0u >> (31 - (high & 31));
++    return (bits);
++}
++
++/* Which bit a word with one bit set has; the compiler's own count is a call to the library. */
++static inline int Occupied_Bit(unsigned bit)
++{
++    static const unsigned char _where[32] = {0,  1,  28, 2,  29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4,  8,
++                                             31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6,  11, 5,  10, 9};
++
++    return (_where[(bit * 0x077CB531u) >> 27]);
++}
++
++#define SHADEREMU_THREAT_AT(x, y)                                                                                      \
++    {                                                                                                                  \
++        CELL newcell = XY_Cell(x, y);                                                                                  \
++        if (Map[newcell].OccupierPtr != NULL && Evaluate_Cell(method, mask, newcell, range, &object, value)) {         \
++            if (bestval < value) {                                                                                     \
++                bestobject = object;                                                                                   \
++            }                                                                                                          \
++        }                                                                                                              \
++    }
 +#endif
 +
  TARGET TechnoClass::Greatest_Threat(ThreatType method) const
  {
      ObjectClass const* bestobject = NULL;
-@@ -1696,7 +1706,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+@@ -1681,7 +1718,61 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+         */
+         TechnoClass const* object;
+         int value;
++#ifdef SHADEREMU
++        const int cell_x = Cell_X(cell), cell_y = Cell_Y(cell);
++        const int map_x = Map.MapCellX, map_right = Map.MapCellX + Map.MapCellWidth;
++        const int map_y = Map.MapCellY, map_bottom = Map.MapCellY + Map.MapCellHeight;
++#endif
+         for (int radius = 1; radius < crange; radius++) {
++#ifdef SHADEREMU
++            /*
++            **	The top and bottom rows of the "box": for each x, the top one first.
++            */
++            int low = MAX(cell_x - radius, map_x), high = MIN(cell_x + radius, map_right - 1);
++            const unsigned* first =
++                (cell_y - radius) >= map_y ? &ShaderEmu_Occupied_Rows[(cell_y - radius) * OCCUPIED_ROW_WORDS] : NULL;
++            const unsigned* second =
++                (cell_y + radius) < map_bottom ? &ShaderEmu_Occupied_Rows[(cell_y + radius) * OCCUPIED_ROW_WORDS] : NULL;
++
++            for (int word = low >> 5; word <= (high >> 5); word++) {
++                unsigned one = Occupied_Span(first, word, low, high), other = Occupied_Span(second, word, low, high);
++
++                for (unsigned both = one | other; both; both &= both - 1) {
++                    unsigned bit = both & -both;
++                    int x = word * 32 + Occupied_Bit(bit);
++
++                    if (one & bit)
++                        SHADEREMU_THREAT_AT(x, cell_y - radius);
++                    if (other & bit)
++                        SHADEREMU_THREAT_AT(x, cell_y + radius);
++                }
++            }
++
++            /*
++            **	The left and right columns of the "box": for each y, the left one first.
++            */
++            low = MAX(cell_y - (radius - 1), map_y), high = MIN(cell_y + (radius - 1), map_bottom - 1);
++            first = (cell_x - radius) >= map_x
++                        ? &ShaderEmu_Occupied_Columns[(cell_x - radius) * OCCUPIED_COLUMN_WORDS]
++                        : NULL;
++            second = (cell_x + radius) < map_right
++                         ? &ShaderEmu_Occupied_Columns[(cell_x + radius) * OCCUPIED_COLUMN_WORDS]
++                         : NULL;
++
++            for (int word = low >> 5; word <= (high >> 5); word++) {
++                unsigned one = Occupied_Span(first, word, low, high), other = Occupied_Span(second, word, low, high);
++
++                for (unsigned both = one | other; both; both &= both - 1) {
++                    unsigned bit = both & -both;
++                    int y = word * 32 + Occupied_Bit(bit);
++
++                    if (one & bit)
++                        SHADEREMU_THREAT_AT(cell_x - radius, y);
++                    if (other & bit)
++                        SHADEREMU_THREAT_AT(cell_x + radius, y);
++                }
++            }
++#else
  
-                 if ((Cell_Y(cell) - radius) >= Map.MapCellY) {
-                     newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) - radius);
--                    if (Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-+                    if (SHADEREMU_OCCUPIED(newcell) && Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-                         if (bestval < value) {
-                             bestobject = object;
-                         }
-@@ -1705,7 +1715,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+             /*
+             **	Scan the top and bottom rows of the "box".
+@@ -1742,6 +1833,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+                     }
+                 }
+             }
++#endif
  
-                 if ((Cell_Y(cell) + radius) < (Map.MapCellY + Map.MapCellHeight)) {
-                     newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) + radius);
--                    if (Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-+                    if (SHADEREMU_OCCUPIED(newcell) && Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-                         if (bestval < value) {
-                             bestobject = object;
-                         }
-@@ -1726,7 +1736,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
- 
-                 if ((Cell_X(cell) - radius) >= Map.MapCellX) {
-                     newcell = XY_Cell(Cell_X(cell) - radius, Cell_Y(cell) + y);
--                    if (Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-+                    if (SHADEREMU_OCCUPIED(newcell) && Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-                         if (bestval < value) {
-                             bestobject = object;
-                         }
-@@ -1735,7 +1745,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
- 
-                 if ((Cell_X(cell) + radius) < (Map.MapCellX + Map.MapCellWidth)) {
-                     newcell = XY_Cell(Cell_X(cell) + radius, Cell_Y(cell) + y);
--                    if (Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-+                    if (SHADEREMU_OCCUPIED(newcell) && Evaluate_Cell(method, mask, newcell, range, &object, value)) {
-                         if (bestval < value) {
-                             bestobject = object;
-                         }
+             /*
+             **	Bail early if a target has already been found and the range is at
 diff --git a/tiberiandawn/theme.cpp b/tiberiandawn/theme.cpp
 index 972a6dc..2e1a5ab 100644
 --- a/tiberiandawn/theme.cpp

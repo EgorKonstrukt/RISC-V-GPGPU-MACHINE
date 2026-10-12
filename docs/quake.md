@@ -112,7 +112,7 @@ A frame standing still at the start of the first level, in instructions:
 | the machine's float instructions | 752k |
 | the GL library in floats, our own sine | 576k |
 | the level kept in GPU memory | 390k |
-| the game's clocks as floats | 263k |
+| the game's clocks as floats (the game's time; the program's clock came later, below) | 263k |
 | poses and particles as the GPU takes them, 2D by `seglSprite` | 195k |
 
 The machine runs 3.7 to 3.9 million instructions a second (D3D11, fxc2), so 250k a frame is
@@ -143,6 +143,52 @@ half is its light maps being placed (`AllocBlock`, a third) and the kept level b
     hold                the console command: the frame after next stays
     -nokeep             draw the level a polygon at a time, as before it was kept
     QUAKE_DEFINES=-DSE_COUNT    (to build.sh) counts of the server's work in the quakestat: lines
+
+## No doubles in a frame
+
+The machine has float instructions and no doubles: a double addition is a call of some 100
+instructions, a division of over 200. What the game still did in doubles every frame is gone:
+
+- **The clock is whole milliseconds.** `realtime` was a double of seconds; it is
+  `realtime_ms`, an unsigned count (`Sys_Milliseconds`, the machine's clock word), and the
+  main loop hands `Host_Frame` the milliseconds that passed. A stamp is a count, a time
+  since one a float (`REALTIME_SINCE`), a thing that only turns takes the count's remainder
+  (`REALTIME_TURN`: the cursor's blink, the sky of `-nokeep`). A float of seconds would have
+  been too coarse after some hours; the count wraps after 49 days and differences are right
+  across that. The old `Sys_FloatTime` had that fault already: under the build's single
+  constants its sum was a float's, in steps of 2 ms after 4.6 hours of the machine.
+- **An entity's time of its last message, the server's time of its last look for a client
+  and the view's time of its last stop** were doubles compared with the game's time, which
+  is a float: floats now, and the same comparisons.
+- **A variable's value** asked for by name (QuakeC's `cvar`, a few times a monster's frame)
+  was read from its text again, in doubles; it is the value kept beside the text.
+- **The projection**: OpenGL's doubles are floats (`include/GL/gl.h`); the tangent of the
+  view's angle is still worked out in doubles, once for an angle, so the picture's numbers
+  are the same to the bit.
+- **The network keeps its doubles** (`net_time`, a connection's stamps: the timeouts of
+  `net_dgrm.c`), and so do the timers nobody leaves on (`host_speeds`, `r_speeds`,
+  `timerefresh`). `Sys_FloatTime` works its double out only when the clock has moved, and
+  the network's poll asks only when something is scheduled. In a single-player game that
+  is two or three conversions a frame.
+- `RotatePointAroundVector` had no prototype: its float angle went as a double and arrived
+  as nothing sensible. Only a `fov` other than 90 gets there.
+
+| | The double routines, of the game's instructions | A frame |
+|---|---|---|
+| `timedemo demo1`, before | 3.0% | 186.6k |
+| after | 0.00% | 180.0k |
+| e1m5 with the server on the first core, before | 2.9% | 472.7k |
+| after | 0.15% | 456.0k |
+
+(`rvc_cpu`; the share from `--pc-log --ticks 256 --pass-ms 0.0078`, after loading.) The sums
+of e1m5 are the ones from before in all three server modes, on `rvc_cpu` and on the shader
+machine; with `+host_framerate` a frame's length never came from the clock. Without it a
+frame's length is now the milliseconds times 0.001 in a float, where it was a difference of
+doubles: the last bit may differ, and a typed `+forward` lands a frame earlier or later,
+because every frame is shorter. The play checks below and the two machines' game of
+`docs/lan.md` pass as before. To find such a routine's callers: `objdump -d` of
+`~/shaderemu-linux/src/quake-build/quake`, every `jal` to a `__...df...` by the function it
+is in, beside that function's share of a profile.
 
 ## The server on a worker core
 

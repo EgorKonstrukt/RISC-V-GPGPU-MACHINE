@@ -56,7 +56,11 @@ machine with worker cores (`docs/multicore.md`) a second builder runs on one:
   buffer and writes nothing of the chunks'.
 - The first core goes on building the nearest chunk each frame, and when the worker's eight
   are done makes them the chunks' own (`SE_Mesh_Collect` in `MapRenderer.c`): the parts'
-  counts, and the vertices packed into GPU memory as any chunk's are (`Gfx_SE_UnlockFrom`).
+  counts, and the vertices into GPU memory as any chunk's are (`Gfx_SE_UnlockPacked`).
+- The two copies share no variable they write. They did share one, the game's `Drawer` (a
+  block's corners, written for every block drawn): a chunk of one core now and then had
+  vertices of the other's block, 6 of 52 meshes in one run. The builder's own faces (below)
+  do not use it.
 - A chunk that is made again (a block changed) stays the first core's, which draws it by its
   old mesh until the new one is there. Anything that makes chunks stale while the worker has
   some (`se_mesh_serial`) throws its eight away, and whatever frees the chunks or the blocks
@@ -82,6 +86,14 @@ finished world is the same 83 commands and 6,980 quads.
   eighths of a block from the chunk's corner, with the texture coordinates a word beside it:
   32 bytes a quad. Each chunk has a matrix block that puts it in its place. The colour of a
   vertex (a face's shade, in sun or in shadow) is a tag into one table that all chunks share.
+- **The builder writes those vertices itself** (`SE_RenderBlock` in the patch's `Builder.c`,
+  in place of the game's `NormalBuilder_RenderBlock` and `Drawer.c`): no float is made to be
+  converted. What a kind of block's faces come to (its corners in eighths, its texture
+  coordinates in 1,024ths, with the game's own float arithmetic and the backend's rounding)
+  is worked out once for each chunk that has the kind; a block is then integers added to
+  them, and a run of blocks whole tiles added to u. `Gfx_SE_UnlockPacked` moves the bytes to
+  count from the mesh's origin and puts each quad's tag in: 8 instructions a vertex, where
+  packing floats was 72. The game's builder for smooth lighting still writes floats.
 - **The terrain's textures are four across.** A packed vertex has 12 bits of u in 1,024ths,
   four repeats, and a run of 16 equal blocks is one quad that repeats its tile 16 times. So
   the atlas the chunks read is the game's (a strip 16 texels wide) written four times side
@@ -120,12 +132,44 @@ machine runs 3.9 million a second on D3D11 with fxc2:
 | building without pause at the top of a shaft | 1,200k | 3 |
 
 - A frame standing still is about 85 draws and 7,000 quads. A draw is some 130 instructions.
-- **A changed block builds its chunk again**, one chunk a frame. That was 1,000k instructions
-  and is 550k: a row of blocks that is all rock between rows of rock, or all air, is passed
-  over whole, a block of rock among six is passed over, and the bookkeeping walks the four
-  atlases a map uses instead of all 512. So a block dug is one frame of 0.15 s. A block put
-  at the top of a deep shaft changes the light of every chunk under it, and each of those is
-  such a frame: that is the last row of the table.
+- **No copy by a call in a draw.** `DrawQuads` kept its six words of state with `Mem_Copy` and
+  `MatrixBlock` copied its sixteen with it: a call of the C library's `memcpy` for 24 and 64
+  bytes, 16,000 and 5,000 times before the world stood. Both are word copies in place now: a
+  frame standing still (block physics off, under `rvc_cpu`) went from 58.6k to 53.6k, with
+  the same meshes and the same picture.
+- **A changed block builds its chunk again**, one chunk a frame. That was 1,000k instructions,
+  then 744k for the chunk under the player at the start, and is 416k (below). So a block dug
+  is one frame of 0.1 s. A block put at the top of a deep shaft changes the light of every
+  chunk under it, and each of those is such a frame: that is the last row of the table.
+- **What a chunk costs**, in thousands of instructions, for that chunk (`-DSE_COUNT`):
+
+  | | read | light | faces | blocks | vertices | all |
+  |---|---|---|---|---|---|---|
+  | rows noted after the read, floats packed after the build | 58 | 87 | 282 | 164 | 153 | 744 |
+  | rows read by the word with their masks, vertices packed | 70 | 12 | 216 | 100 | 18 | 416 |
+
+  - A row of 18 blocks along x is read as four words of the world and two bytes, written
+    into the chunk as words, and becomes two masks of a bit a block as it is read: the full
+    opaque blocks and those not drawn (`Builder_ReadRows`; four blocks of one kind are one
+    look at the tables). That was two passes over 18 x 18 x 18 blocks, 13 and 10 instructions a
+    block, and is 170 to 210 a row, half of it the loop's own. "Light" had the second pass.
+  - From the masks of a row and the four rows round it: which blocks to look at at all (not
+    air, not a full opaque block among six), and for each of those which faces a full opaque
+    neighbour hides, without the tables (`Builder_RowTodo`, `Builder_Covered`). Outside the
+    world counts as full opaque where the game shows no face towards it (under the world,
+    beside it below the sides' level): without that every buried block at the world's border
+    is looked at, in 56 chunks of 64. The blocks with a face to draw are noted for the
+    drawing loop, which asks nothing of the others.
+  - The bookkeeping walks the four atlases a map uses instead of all 512.
+  - The start's 64 chunks, the first core alone: 55.6M instructions from the first mesh to
+    the last, now 32.3M (16.8 s and 9.8 s). Of those, the builder's and the backend's own
+    functions were 41.7M and are 22.1M: the light's height map is 4.0M of that (untouched),
+    the rows' read 3.3M, looking at blocks 5.8M, writing vertices 2.6M and 0.6M. From the
+    game's first stat line to frames coming steadily, by `rvc_cpu`'s clock: 21.8 s and
+    14.7 s, with the worker 15.2 s and 10.6 s.
+  - Not done: a block whose only open face an earlier block's run has taken is still looked
+    at (some 18,000 of the 30,000 blocks looked at at the start, about 100 instructions
+    each); a mask of what runs have taken would pass over them.
 - Water flowing after a dig goes on changing blocks, a chunk each time.
 - From the command to the world standing is about 30 seconds: half of it before the first
   frame (the game's own start, the texture pack's pictures), 3 the generator and 12 the 64
@@ -138,6 +182,8 @@ the texels and vertices made for the device.
     CLASSICUBE_HOLD=N        keep frame N on the screen and stop there
     CLASSICUBE_STATS_MS=N    how often the ccstat: lines come (5000; 0: never)
     CLASSICUBE_SIZE=WxH      the window's size (854x480)
+    CLASSICUBE_MESH=inline   every mesh by the first core, in one order every time
+    CLASSICUBE_MESH_SUM=1    a ccmesh: line a chunk mesh made: origin, vertices, two sums
     CLASSICUBE_DEFINES=-DSE_COUNT   (to build.sh) a chunk's instructions by phase, in the ccstat: lines
 
 ## Checking it
@@ -146,8 +192,18 @@ the texels and vertices made for the device.
   `python tools\gpu_reference.py SNAP BMP --size 854x480`. At the start 99.87% of pixels away
   from triangle edges are identical. The model cuts triangles at the near plane now, as the
   card does: before, it left out every triangle that crossed it, here the sky and the borders.
-- A change to how it draws or builds chunks: hold the same frame of the same seed before and
-  after and compare the GPU's targets. Two runs of one build give the same picture.
+- A change to how it builds chunks: the meshes' bytes must stay what they were. Under
+  `rvc_cpu`, with `CLASSICUBE_MESH_SUM=1 CLASSICUBE_SEED=7`, the `ccmesh:` lines of the build
+  before and after are compared: with `CLASSICUBE_MESH=inline` line for line (52 meshes at
+  the start, 69,828 vertices; then a block dug by `down LeftMouse` and `up LeftMouse` typed
+  together, which makes two or three chunks again), with the worker as a set by the second
+  sum, which has each vertex's colour for its tag (the tags go by the order chunks are made
+  in). Switch block physics off for it (`echo singleplayerphysics=false >>
+  /tmp/classicube/options.txt` before the game): dirt turns to grass by the clock, and two
+  builds' worlds part after a dig.
+- A change to how it draws: hold the same frame of the same seed before and after and compare
+  the GPU's targets. Two runs of one build give the same picture (`rvc_harness --cpu` makes
+  one in 12 s). Digging held down is by the clock too: dig by single presses.
 - To see where instructions go, snapshot a run at `classicube: steady` and resume it with
   `--pc-log` (`tools\pc_profile.py`, `classicube=classicube.nm`).
 
