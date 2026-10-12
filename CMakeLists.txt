@@ -54,6 +54,12 @@ foreach(exe rvc_harness rvc_harness_dxc)
     ${CMAKE_SOURCE_DIR}/tools/fxc2/d3dcompiler_47.dll $<TARGET_FILE_DIR:${exe}>)
 endforeach()
 
+# The display stream's shaders outside Unity (docs/share.md, "Units"): tools/share_units.py compares.
+add_executable(share_test harness/apps/share_test.cpp)
+target_link_libraries(share_test PRIVATE harness_core)
+add_custom_command(TARGET share_test POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+  ${CMAKE_SOURCE_DIR}/tools/fxc2/d3dcompiler_47.dll $<TARGET_FILE_DIR:share_test>)
+
 # D3D12 runner for the same FXC bytecode, so D3D12-only profilers (Nsight GPU Trace) can attach.
 add_executable(rvc_trace12 harness/apps/rvc_trace12.cpp)
 target_link_libraries(rvc_trace12 PRIVATE harness_core d3d12)

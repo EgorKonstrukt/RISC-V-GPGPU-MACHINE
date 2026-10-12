@@ -19,6 +19,11 @@ public class EmuStreams : UdonSharpBehaviour
     public Material consoleMaterial;   // Terminal.shader, this behaviour's own
     public Material decodeMaterial;    // ShareDecode.shader, this behaviour's own
     public Texture2D blackTexture;
+    // A packet of units (docs/share.md, "Units"): its bytes as a texture, where each unit's
+    // record is in it, and the shader that draws them into a slot's picture.
+    public Material unitsMaterial;     // ShareUnitsDecode.shader
+    public Texture2D unitsPacket;      // 288 x 1
+    public RenderTexture unitsIndex;   // 80 x 113
     public bool dropTest;              // every tenth packet is treated as lost
     public bool log;                   // a line a minute in the output log
 
@@ -37,7 +42,8 @@ public class EmuStreams : UdonSharpBehaviour
     private int[] lastSeq, gotW, gotH, gotScale, stamp, shownW, shownH, top, cursorX, cursorY, version, mipsAll, mipsCore, askCount, activity;
     private uint[][] registers;
     private string[] stats;
-    private bool[] haveSeq, on, fresh, drawn;
+    private bool[] haveSeq, on, fresh, drawn, asUnits;
+    private byte[] unitsBytes = new byte[1152];
     private float[] since, askedAt, heardAt;
     private int cols, rows;
     private float nextAt, logAt;
@@ -72,6 +78,7 @@ public class EmuStreams : UdonSharpBehaviour
         haveSeq = new bool[count];
         fresh = new bool[count];
         drawn = new bool[count];
+        asUnits = new bool[count];
         on = new bool[count];
         since = new float[count];
         askedAt = new float[count];
@@ -319,9 +326,12 @@ public class EmuStreams : UdonSharpBehaviour
         bool redraw = false, all = false;
         int w = p[4] | p[5] << 8, h = p[6] | p[7] << 8;
         // where the stream is half the display's size, tiles come at the fine level too
-        int scale = w > 0 && (p[8] | p[9] << 8) / w == 2 ? 2 : 1;
-        if (w != gotW[s] || h != gotH[s] || scale != gotScale[s])
+        bool units = (p[0] & 2) != 0;
+        int scale = !units && w > 0 && (p[8] | p[9] << 8) / w == 2 ? 2 : 1;
+        if (w != gotW[s] || h != gotH[s] || scale != gotScale[s] || units != asUnits[s])
         {
+            asUnits[s] = units;
+            if (blackTexture != null) VRCGraphics.Blit(blackTexture, pictures[s]);
             for (int t = 0; t < TileCount; t++) b[t * RowBytes + LevelAt] = 3;
             for (int r = 0; r < FineRows; r++) b[(FineAt + r) * RowBytes + PresentAt] = 0;
             gotW[s] = w;
@@ -331,7 +341,7 @@ public class EmuStreams : UdonSharpBehaviour
         }
         bool moved = top[s] != p[1] || cursorX[s] != p[2] || cursorY[s] != p[3] || !drawn[s];
         drawn[s] = true;
-        on[s] = p[0] != 0;
+        on[s] = (p[0] & 1) != 0;
         top[s] = p[1];
         cursorX[s] = p[2];
         cursorY[s] = p[3];
@@ -389,6 +399,23 @@ public class EmuStreams : UdonSharpBehaviour
             VRCGraphics.Blit(grids[s], consoles[s], consoleMaterial);
         }
 
+        if (units)
+        {
+            // the rest is units: the GPU finds each in the bytes and draws the pixels it covers
+            int length = Mathf.Min(p.Length - at, unitsBytes.Length);
+            if (length <= 0 || unitsMaterial == null) return;
+            System.Buffer.BlockCopy(p, at, unitsBytes, 0, length);
+            unitsPacket.LoadRawTextureData(unitsBytes);
+            unitsPacket.Apply(false);
+            unitsMaterial.SetTexture("_Packet", unitsPacket);
+            unitsMaterial.SetFloat("_Length", length);
+            unitsMaterial.SetVector("_Stream", new Vector4(w, h, 0, 0));
+            unitsMaterial.SetVector("_TargetSize", new Vector4(pictures[s].width, pictures[s].height, 0, 0));
+            VRCGraphics.Blit(unitsPacket, unitsIndex, unitsMaterial, 0);
+            unitsMaterial.SetTexture("_Index", unitsIndex);
+            VRCGraphics.Blit(unitsPacket, pictures[s], unitsMaterial, 1);
+            return;
+        }
         while (at + 2 <= p.Length)
         {
             int v = p[at] | p[at + 1] << 8, t = v & 0xfff, level = v >> 12;

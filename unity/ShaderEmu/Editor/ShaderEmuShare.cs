@@ -39,6 +39,7 @@ public static partial class ShaderEmuBuilder
         consoleMat.CopyPropertiesFromMaterial(AssetDatabase.LoadAssetAtPath<Material>(Generated + "/Terminal.mat"));   // the font, the columns and rows
         streams.consoleMaterial = consoleMat;
         streams.blackTexture = machine.blackTexture;
+        UnitsReceiver(streams);
         const int slots = 16;   // as EmuShare's `ask`
         streams.stores = new Texture2D[slots];
         streams.pictures = new RenderTexture[slots];
@@ -88,6 +89,7 @@ public static partial class ShaderEmuBuilder
         hub.fineB = Target("ShareFineB", 1280, 960, 0);
         hub.changed = Target("ShareChanged", 20, 15, 0);
         hub.fineBlocks = Target("ShareFineBlocks", 640, 240, 0);
+        UnitsSender(hub);
         hub.streams = streams;
         streams.hub = hub;
         Apply(streams);
@@ -134,6 +136,53 @@ public static partial class ShaderEmuBuilder
         share.hub = hub;
         Apply(share);
         ShareUsers(hub, streams);
+    }
+
+    // The display as units the GPU picks (docs/share.md, "Units"): the textures of
+    // ShareUnits.shader's passes, and of the receiver's two.
+    static void UnitsSender(EmuShareHub hub)
+    {
+        hub.units = true;   // (the tiles are what `units` off sends)
+        hub.unitsMaterial = Mat("ShareUnits", "ShaderEmu/ShareUnits");
+        hub.unitsBlocks = Target("UnitsBlocks", 640, 450, 0);
+        hub.unitsExact = Target("UnitsExact", 160, 210, 0);
+        hub.unitsNeed = Target("UnitsNeed", 160, 120, 0);
+        hub.unitsStats = Target("UnitsStats", 1, 1, 0);
+        hub.unitsPlan = Target("UnitsPlan", 160, 120, 0);
+        hub.unitsTable = Target("UnitsTable", 80, 113, 0);
+        hub.unitsPrefix = Target("UnitsPrefix", 256, 1, 0);
+        hub.unitsPacket = Target("UnitsPacket", 292, 1, 0);
+        hub.unitsState = new[] { Target("UnitsState0", 160, 120, 0), Target("UnitsState1", 160, 120, 0), Target("UnitsState2", 160, 120, 0) };
+    }
+
+    static void UnitsReceiver(EmuStreams streams)
+    {
+        streams.unitsMaterial = Mat("ShareUnitsDecode", "ShaderEmu/ShareUnitsDecode");
+        Texture2D packet = LoadOrCreate(Generated + "/UnitsReceived.asset", () => new Texture2D(288, 1, TextureFormat.RGBA32, false, true));
+        packet.filterMode = FilterMode.Point;
+        packet.wrapMode = TextureWrapMode.Clamp;
+        streams.unitsPacket = packet;
+        streams.unitsIndex = Target("UnitsIndex", 80, 113, 0);
+    }
+
+    // Into a scene that has sharing: nothing of it is made again, only these are added.
+    [MenuItem("ShaderEmu/Add the units stream to the open scene")]
+    public static void AddUnits()
+    {
+        EmuShareHub hub = Object.FindObjectOfType<EmuShareHub>();
+        EmuStreams streams = Object.FindObjectOfType<EmuStreams>();
+        if (hub == null || streams == null) throw new System.Exception("no sharing in the open scene");
+        CreateProgramAssets();
+        UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(hub);
+        UnitsSender(hub);
+        Apply(hub);
+        UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(streams);
+        UnitsReceiver(streams);
+        Apply(streams);
+        AssetDatabase.SaveAssets();
+        EditorSceneManager.MarkSceneDirty(hub.gameObject.scene);
+        EditorSceneManager.SaveScene(hub.gameObject.scene);
+        Debug.Log("[ShaderEmu] units stream added");
     }
 
     // Whatever else in the scene uses the hub and the receiver is told of the new ones.

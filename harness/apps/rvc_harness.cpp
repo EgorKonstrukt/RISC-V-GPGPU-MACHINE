@@ -70,6 +70,8 @@ struct Options {
     std::string uartLog;
     std::string dumpState;
     std::string saveState, loadState;
+    std::string screenLog, screenFrom;   // --screen-log: the display, every frame, into a file
+    int screenFrames = 0, screenEvery = 0;
     std::vector<std::pair<std::string, std::string>> expectSend;
     std::string initialInput;
     std::string until;
@@ -165,6 +167,11 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --dump-state FILE    write the 64x64 state area (raw uint32 RGBA) at exit
   --save-state FILE    write a snapshot of the whole machine (128 MB) at exit
   --load-state FILE    resume from a snapshot instead of booting
+  --screen-log FILE    with --cpu: the display as it is shown (its layers, the cursor over them), every
+                       frame: 16 bytes (width, height, frame, the guest's milliseconds), then red, green,
+                       blue a pixel. --screen-from TEXT: not before the console has shown TEXT;
+                       --screen-frames N: stop (exit 0) after N of them; --screen-every MS: one not
+                       sooner than MS of the guest's milliseconds after the last
   --bench N            benchmark: skip N warm-up frames, then time the rest (GPU fully drained at both
                        ends) and print a BENCH line with IPS and a hash of the state area
   --present            present each frame to a hidden 64x64 swapchain, so tools that define a frame
@@ -321,6 +328,10 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--uart-log") o.uartLog = next("--uart-log");
         else if (a == "--dump-state") o.dumpState = next("--dump-state");
         else if (a == "--save-state") o.saveState = next("--save-state");
+        else if (a == "--screen-log") o.screenLog = next("--screen-log");
+        else if (a == "--screen-from") o.screenFrom = unescape(next("--screen-from"));
+        else if (a == "--screen-frames") o.screenFrames = atoi(next("--screen-frames").c_str());
+        else if (a == "--screen-every") o.screenEvery = atoi(next("--screen-every").c_str());
         else if (a == "--load-state") o.loadState = next("--load-state");
         else if (a == "--bench") o.benchWarmup = atoll(next("--bench").c_str());
         else if (a == "--stats") o.statsInterval = atof(next("--stats").c_str());
@@ -835,7 +846,10 @@ int main(int argc, char** argv) {
     };
     size_t expectIdx = 0, expectScanFrom = 0;
     std::string transcript;
-    bool untilHit = false, statsFromHit = false;
+    bool untilHit = false, statsFromHit = false, screenOn = false;
+    int screensKept = 0;
+    double screenAt = -1e9;
+    FILE* screenFile = nullptr;
     bool haveClock = false;
     uint32_t lastClock = 0, commits = 0;
     uint64_t guestInstructions = 0;
@@ -1494,6 +1508,54 @@ int main(int argc, char** argv) {
                         memcpy(ram.data() + offset, rows.data() + (offset - first * 32768), bytes);
                 }
             }
+            // --screen-log: the picture as tools/snapshot_screen.py makes it of a snapshot, from the
+            // state texture (the GPU draws there, not in the host's copy of RAM)
+            if (!opt.screenLog.empty() && !screenOn && (opt.screenFrom.empty() || transcript.find(opt.screenFrom) != std::string::npos)) screenOn = true;
+            uint32_t mode = word(CTRL), sw = word(CTRL + 4), sh = word(CTRL + 8);
+            if (screenOn && sw > 0 && sh > 0 && sw <= 2048 && sh <= 2048 && (guest_seconds - screenAt) * 1000.0 >= opt.screenEvery) {
+                screenAt = guest_seconds;
+                auto words = [&](uint32_t address, size_t count, std::vector<uint32_t>& out) {
+                    uint32_t offset = (address & 0x7ffffffcu), first = offset / 32768, last = (uint32_t)((offset + count * 4 - 1) / 32768);
+                    std::vector<uint8_t> rows;
+                    out.assign(count, 0);
+                    if (address < RAM_BASE || offset + count * 4 > 2048u * (4096 - 64) * 16) return false;
+                    if (!backend.readRows(64 + first, last - first + 1, rows) || rows.size() < (size_t)(last - first + 1) * 32768) return false;
+                    memcpy(out.data(), rows.data() + (offset - first * 32768), count * 4);
+                    return true;
+                };
+                std::vector<uint32_t> screen((size_t)sw * sh, 0), part;
+                if (mode == 4) {
+                    std::vector<uint32_t> table;
+                    words(word(CTRL + 0xc), 4 + 8 * 16, table);
+                    for (uint32_t k = 0; k < table[0] && k < 16; k++) {
+                        const uint32_t* l = &table[4 + 8 * k];
+                        int x = (int)l[0], y = (int)l[1], lw = (int)l[2], lh = (int)l[3];
+                        if (lw <= 0 || lh <= 0 || lw > 2048 || lh > 2048 || !words(l[4], (size_t)lw * lh, part)) continue;
+                        for (int j = (std::max)(0, -y); j < lh && y + j < (int)sh; j++)
+                            for (int i = (std::max)(0, -x); i < lw && x + i < (int)sw; i++) screen[(size_t)(y + j) * sw + x + i] = part[(size_t)j * lw + i];
+                    }
+                } else words(CTRL + 0x1000, (size_t)sw * sh, screen);
+                if (word(CTRL + 0x48) & 1) {
+                    int x = (int)word(CTRL + 0x40), y = (int)word(CTRL + 0x44);
+                    if (words(word(CTRL + 0x4c), 32 * 32, part))
+                        for (int j = 0; j < 32; j++)
+                            for (int i = 0; i < 32; i++)
+                                if (part[j * 32 + i] >> 24 && x + i >= 0 && y + j >= 0 && x + i < (int)sw && y + j < (int)sh) screen[(size_t)(y + j) * sw + x + i] = part[j * 32 + i];
+                }
+                if (!screenFile) screenFile = fopen(opt.screenLog.c_str(), "wb");
+                if (screenFile) {
+                    uint32_t head[4] = {sw, sh, (uint32_t)frame, (uint32_t)(guest_seconds * 1000.0)};
+                    std::vector<uint8_t> rgb((size_t)sw * sh * 3);
+                    for (size_t i = 0; i < screen.size(); i++) {
+                        rgb[i * 3] = (uint8_t)(screen[i] >> 16);
+                        rgb[i * 3 + 1] = (uint8_t)(screen[i] >> 8);
+                        rgb[i * 3 + 2] = (uint8_t)screen[i];
+                    }
+                    fwrite(head, 4, 4, screenFile);
+                    fwrite(rgb.data(), 1, rgb.size(), screenFile);
+                    if (++screensKept == opt.screenFrames) untilHit = true;
+                }
+            }
         }
 
         std::string removed = backend.deviceRemoved();
@@ -1613,6 +1675,7 @@ int main(int argc, char** argv) {
     while (exitCode != 1 && backend.rowPending() > 0 && takeRow()) {}
     if (audioOpen) audio.close();
     if (untilHit) exitCode = 0;
+    if (screenFile) fclose(screenFile);
 
     if (opt.benchWarmup >= 0 && exitCode != 1 && frame > (uint64_t)opt.benchWarmup) {
         // The drain above blocked on the last frame, so this interval covers all GPU work.

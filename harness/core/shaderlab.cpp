@@ -249,7 +249,8 @@ bool loadShaderLab(const std::string& path, SLShader& out, std::string& err) {
             std::string header = st.substr(passKw, b.start - passKw);
             if (std::regex_search(header, m, nameRe)) pass.name = m[1];
         }
-        std::string bodyNc = blankComments(body);
+        // (a #pragma of the code shared by every pass counts for each, as in Unity)
+        std::string bodyNc = blankComments(includeCode + '\n' + body);
         for (size_t ls = 0; ls < bodyNc.size();) {
             size_t le = bodyNc.find('\n', ls);
             if (le == std::string::npos) le = bodyNc.size();

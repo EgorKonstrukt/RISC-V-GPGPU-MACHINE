@@ -54,7 +54,12 @@ The guest's clock is this computer's, so a game runs at its own speed with a pro
 thirty times the shader machine's: `--cpu-ips 3000000` holds it to the world's speed, to see
 what a thing feels like there. Tiberian Dawn's check runs in it at the game's full 20 frames
 a second with the same state sum, and `python tools\snapshot_screen.py SNAPSHOT OUT.png`
-shows the screen a `--save-state` snapshot holds.
+shows the screen a `--save-state` snapshot holds. `--screen-log FILE` writes the display as it
+is shown (its layers, the cursor over them) every frame: 16 bytes (width, height, frame, the
+guest's milliseconds), then red, green, blue a pixel; `--screen-from TEXT` not before the
+console has shown TEXT, `--screen-every MS` one not sooner than that after the last,
+`--screen-frames N` stops after N. It reads the layers back from the state texture, where the
+GPU draws them: `tools/share_motion.py` plays such a recording (`docs/share.md`).
 
 Not there yet in this mode: sound (not tried), pages from the host for the browser, D3D12.
 The shader's own cores are not used (the cores are the interpreter's), so nothing here says

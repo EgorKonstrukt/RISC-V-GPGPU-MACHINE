@@ -143,6 +143,85 @@ only copies bytes.
   a stream pixel where there is a fine level, and only the tiles the last packet brought
   (each row has the packet's stamp).
 
+## Units
+
+How the display is sent: `units` on the hub ("Share" in the scene) is on, and may be changed
+while running; off, the tiles above are sent. The GPU makes the whole of a packet's display
+part (`ShareUnits.shader`); Udon copies one row of bytes. A packet says which it is in bit 1
+of its first byte, and a receiver takes either. "ShaderEmu/Add the units stream to the open
+scene" makes its textures and fills the hub's and the receiver's fields. Watched in the editor
+on 12 October 2026, as it first was, it was much worse than the tiles (a packet's first bytes
+were written over by the next one's header, and a packet waited a second for the link with
+the picture it was made of); what it is judged by since is below, "Judged while it moves".
+
+- The picture is the display's own pixels (divided by a whole number when it is over 1280 x
+  960), cut into blocks of four sizes: 4x4 samples of 1, 2, 4 or 8 pixels (levels 0 to 3),
+  two colours (5:6:5) and a bit a sample, as a tile's blocks are. Nothing is on the tiles' grid.
+- A unit is 4x4 blocks of one level, on that level's own grid, with a bit a block that is
+  there: 16, 32, 64 or 128 pixels square. Its record: two bytes of level and number, two of
+  bits, two bits a block of kinds, then the blocks, repeated colours left out as in a quarter.
+- The sender keeps, in a texture, for each 8x8 cell the level the receivers have it at (4:
+  stale) and the number of the packet that carried it. A cell that changed since the last
+  capture is stale. A cell needs the coarsest level whose block shows every pixel as level 0
+  does: a flat area goes as a few large blocks, text at level 0.
+- A packet: stale cells first, as sharp as one packet can carry all of them (what keeps
+  changing is then whole in every packet, if coarse; with two packets' worth a window being
+  dragged was half a sending behind), then the cells that are coarser than they need, as sharp
+  as two can. A cell goes by the coarsest block that spoils nothing
+  beside it. Units go in an order (stale before the rest, coarse before sharp, each level from
+  a place that moves with every packet) and the packet is that order's start, cut where the
+  room ends: which units go is a sum, so the GPU can pick them.
+- The passes: blocks, exact, need, marks, stats, plan, units, prefix, packet, state. They cost
+  0.36 ms a packet together in `share_test --time`.
+- A packet is made a tick ahead: its header and console rows when the GPU is asked, its units
+  when they are read back (`AskUnits`, `TakeUnits` in `EmuShareHub`). While the link is busy,
+  what is ready and two ticks old is made again of the display as it is then (`UnitsWait`): a
+  packet that waits a second for the link is not a second old when it goes.
+- A lost packet: the cells that carry its number go stale in the next packet made. Everything
+  again: all of them do.
+- The receiver keeps no store: a pass finds each unit's record in the packet's bytes, a second
+  draws the pixels those units cover into the slot's picture, the sharpest unit where two
+  overlap (`ShareUnitsDecode.shader`).
+- `tools/share_units.py` is the same in numpy, pass for pass, and `bin\share_test.exe` runs the
+  two shaders outside Unity on pictures of a display: `share_test A.png B.png --out FOLDER`,
+  then `python tools/share_units.py A.png B.png --against FOLDER` must say every packet has the
+  same bytes, the same state after it and the same picture (`--lost-at N` for a lost packet).
+  On 12 October 2026: 1,140 packets of six runs, all the same (the picture after 48 of them).
+- In a model of both senders on the desktop at 800 x 600 (not in Unity): a letter typed, 4
+  packets and 3,766 bytes as tiles, 1 and 372 as units; the editor opening, 54 packets against
+  15; the browser opening, 91 against 38.
+
+## Judged while it moves
+
+The stream is right when the picture a receiver shows is close to the display while the
+display keeps changing: a window dragged, the pointer, windows with activity, text scrolling,
+a game. Bytes and the time to a settled picture do not say that.
+
+- `rvc_harness --cpu --cpu-ips 3000000 --desktop ... --screen-log SCENE.scr --screen-every 33
+  --screen-frames 300` records the guest's display at the world's speed (`docs/cpu-harness.md`).
+- `python tools/share_motion.py SCENE.scr ... [--video FOLDER]` plays a recording through a
+  model of each sender on the recording's own clock, a packet every 0.15 s (VRChat) and every
+  second (the editor), and prints the mean difference (levels of 255) between what the
+  receiver shows and the frame current at each moment, over the pixels that change at all.
+  `--video` writes what each receiver showed as .mp4 files.
+- Five recordings of 300 frames, 12 October 2026, tiles then units; lower is better:
+
+| Scene | of the screen changes | every 0.15 s | every second |
+|---|---|---|---|
+| a window dragged about | 77% | 23.7, 23.1 | 48.3, 42.2 |
+| the pointer over two windows | 1.7% | 2.56, 2.56 | 3.03, 2.85 |
+| glxgears and the system monitor | 5.5% | 28.2, 5.8 | 30.0, 16.6 |
+| a terminal whose text scrolls | 24% | 13.2, 8.8 | 13.9, 10.8 |
+| Doom's first demo | 66% | 16.9, 13.7 | 34.1, 19.7 |
+
+- In Unity itself (the editor, `selfTest`, the receiver's picture read back four times a second
+  against the display, 12 s each, tiles then units): glxgears 7.0 and 5.4 at VRChat's rate
+  (the hub's `sending` cleared every frame), 9.4 and 6.1 at the editor's; Doom 15.2 and 12.3,
+  27.4 and 17.8. Over only the pixels that had just changed the two are level (28 and 28, 30
+  and 29, 19 and 18, 25 and 25).
+- Not measured: two real clients, and a lost packet's repair in Unity (the shader's side of it
+  is in `share_test --lost-at`).
+
 ## Using the watched machine
 
 The hub takes what the keyboards queued and the beam's place on the display, and sends them
