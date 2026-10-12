@@ -261,25 +261,21 @@ system_lines(char lines[][160], int screen_w, int screen_h)
 	return n;
 }
 
-/* The desktop again, with the size just written: the window system starts over and every
- * program on it closes, this one too. The script that does it must not die with them. */
+/* The desktop again, with another size: the window system starts over and every program on it
+ * closes, this one too. The script that does it must not die with them; with `ask` it asks
+ * first (and is the one to refuse a second press while it does). */
 static void
-restart_desktop(const char *size)
+restart_desktop(const char *size, int ask)
 {
-	static int asked;
-	FILE *file;
+	FILE *file = ask ? NULL : fopen(SIZE_CHOICE, "w");
 
-	if (asked)
-		return;		/* (the button pressed again while the desktop is going) */
-	asked = 1;
-	file = fopen(SIZE_CHOICE, "w");
 	if (file) {
 		fputs(size, file);
 		fclose(file);
 	}
 	if (fork() == 0) {
 		setsid();
-		execlp("nx", "nx", "restart", (char *)NULL);
+		execlp("nx", "nx", "restart", ask ? "ask" : (char *)NULL, size, (char *)NULL);
 		_exit(127);
 	}
 }
@@ -481,7 +477,7 @@ key(const GR_EVENT *event)
 		break;
 	case TAB_SCREEN:
 		if (ui_press_key(ch) && screens.selected >= 0)
-			restart_desktop(sizes[fits[screens.selected]]);
+			restart_desktop(sizes[fits[screens.selected]], 1);
 		else if (focus == 1 && ui_list_key(&screens, ch))
 			draw();
 		break;
@@ -529,7 +525,7 @@ press(GR_EVENT *event)
 			focus = 1;
 			draw();
 		} else if (down && ui_inside(x, y, 190, TOP + 20, 180, 22) && screens.selected >= 0)
-			restart_desktop(sizes[fits[screens.selected]]);
+			restart_desktop(sizes[fits[screens.selected]], 1);
 		break;
 	case TAB_SOUND:
 		if (have_sound <= 0)
@@ -584,7 +580,7 @@ main(int argc, char **argv)
 		return 0;
 	}
 	if (argc > 2 && !strcmp(argv[1], "size")) {
-		restart_desktop(argv[2]);
+		restart_desktop(argv[2], 0);
 		return 0;
 	}
 	/* nxsettings choose [FOLDER]: the file chooser by itself; prints what was chosen */
@@ -601,7 +597,7 @@ main(int argc, char **argv)
 		if (tab == TAB_SOUND)
 			have_sound = snd_open() == 0;
 	}
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Settings", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
+	window = GrNewWindowEx(UI_FIXED, "Settings", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	for (;;) {

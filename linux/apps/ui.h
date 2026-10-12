@@ -18,6 +18,11 @@
 #include "ui_width.h"
 #include "ui_state.h"
 
+#ifndef GR_WM_PROPS_NOMAXIMIZE
+#define GR_WM_PROPS_NOMAXIMIZE 0x00004000L
+#endif
+/* A window whose size is its layout's: not resized by its corner, and no maximise box. */
+#define UI_FIXED (GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE | GR_WM_PROPS_NOMAXIMIZE)
 #define UI_FACE MWRGB(192, 192, 192)
 #define UI_SHADOW MWRGB(128, 128, 128)
 #define UI_SELECTED MWRGB(0, 0, 128)

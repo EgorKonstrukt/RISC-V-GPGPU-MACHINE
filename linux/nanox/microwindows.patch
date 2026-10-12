@@ -1,8 +1,49 @@
 diff --git a/src/demos/nanox/nxcalc.c b/src/demos/nanox/nxcalc.c
-index 84538cc..eb58b84 100644
+index 84538cc..4e5e315 100644
 --- a/src/demos/nanox/nxcalc.c
 +++ b/src/demos/nanox/nxcalc.c
-@@ -231,7 +231,14 @@ static void redraw(void) {
+@@ -83,11 +83,11 @@ int main(int argc, char **argv) {
+         return 1;
+     }
+ 
+-    win = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "nxcalc", GR_ROOT_WINDOW_ID,
++    win = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE | GR_WM_PROPS_NOMAXIMIZE, "nxcalc", GR_ROOT_WINDOW_ID,
+                         10, 10, WIN_W, WIN_H, GrGetSysColor(GR_COLOR_WINDOW));
+ 
+     GrSelectEvents(win, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
+-                   GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ);
++                   GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_KEY_DOWN);
+ 
+     gc_text = GrNewGC();
+     gc_button = GrNewGC();
+@@ -187,6 +187,26 @@ int main(int argc, char **argv) {
+                 break;
+             }
+ 
++            case GR_EVENT_TYPE_KEY_DOWN: {
++                /* the keyboard: digits and signs as they are, Enter for =, Backspace, Escape or c to clear */
++                static char label[2];
++                int ch = event.keystroke.ch;
++
++                label[0] = (char)ch;
++                if (ch == MWKEY_ENTER || ch == '\n' || ch == '=')
++                    press_button("=");
++                else if (ch == MWKEY_BACKSPACE || ch == 127)
++                    press_button("<-");
++                else if (ch == MWKEY_ESCAPE || ch == MWKEY_DELETE || ch == 'c' || ch == 'C')
++                    press_button("C");
++                else if (ch < 128 && (isdigit(ch) || (ch && strchr("+-*/.", ch))))
++                    press_button(label);
++                else
++                    break;
++                redraw();
++                break;
++            }
++
+             case GR_EVENT_TYPE_CLOSE_REQ:
+                 GrClose();
+                 return 0;
+@@ -231,7 +251,14 @@ static void redraw(void) {
              GrRect(win, gc_border, rc->x, rc->y, rc->width, rc->height);
  
              if (lbl) {
@@ -18,6 +59,71 @@ index 84538cc..eb58b84 100644
                  GrText(win, gc_text, rc->x + rc->width/2 - tw/2, rc->y + rc->height/2 - 6, lbl, strlen(lbl), GR_TFTOP);
              }
              idx++;
+@@ -285,8 +312,11 @@ static void press_button(const char *label) {
+         val = display_to_double();
+         if (pending_op == 0)
+             acc = val;
+-        else
++        else if (entering) {
+             apply_pending(val);
++            if (!pending_op)
++                return;		/* (it could not be worked out, and says so) */
++        }
+ 
+         pending_op = label[0];
+         entering = 0;
+@@ -352,6 +382,8 @@ static void compute_equal(void) {
+     double val = display_to_double();
+     if (pending_op != 0) {
+         apply_pending(val);
++        if (!pending_op)
++            return;		/* (it could not be worked out, and says so) */
+         pending_op = 0;
+         set_display_from_double(acc);
+         entering = 0;
+diff --git a/src/demos/nanox/nxclock.c b/src/demos/nanox/nxclock.c
+index d605a6c..c4091fa 100644
+--- a/src/demos/nanox/nxclock.c
++++ b/src/demos/nanox/nxclock.c
+@@ -63,7 +63,7 @@ main(int ac, char **av)
+ 	}
+ 	
+ 	/* create window*/
+-	w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Clock", GR_ROOT_WINDOW_ID,
++	w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE | GR_WM_PROPS_NOMAXIMIZE, "Clock", GR_ROOT_WINDOW_ID,
+ 		-1, -1, CWIDTH, CHEIGHT, GrGetSysColor(GR_COLOR_WINDOW));
+ 		
+ 	GrSelectEvents(w1, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_CLOSE_REQ);
+@@ -151,7 +151,9 @@ main(int ac, char **av)
+ 
+ int bsin(int angle)
+ {
+-	if(angle < 91) {
++	if(angle < 0) {		/* (no hand drawn yet) */
++		return 0;
++	} else if(angle < 91) {
+ 		return trig[angle];
+ 	} else if (angle < 181) {
+ 		return trig[180 - angle];
+@@ -166,7 +168,9 @@ int bsin(int angle)
+ 
+ int bcos(int angle)
+ {
+-	if(angle < 91) {
++	if(angle < 0) {
++		return 0;
++	} else if(angle < 91) {
+ 		return trig[90 - angle];
+ 	} else if (angle < 181) {
+ 		return -trig[angle - 90];
+@@ -189,6 +193,7 @@ do_exposure(GR_EVENT_EXPOSURE *ep)
+ 	GR_COORD	midy = CHEIGHT / 2;
+ 	int i, l;
+ 
++	GrClearWindow(w1, GR_FALSE);
+ /*	GrFillRect(w1, gc2, 0, 0, CWIDTH, CHEIGHT); */
+ /*	GrFillEllipse(w1, gc1, midx, midy, midx, midy); */
+ /*	GrEllipse(w1, gc2, midx, midy, midx - 1, midy - 1); */
 diff --git a/src/demos/nanox/nxeyes.c b/src/demos/nanox/nxeyes.c
 index 5f7f002..ed85cbe 100644
 --- a/src/demos/nanox/nxeyes.c
@@ -34,8 +140,24 @@ index 5f7f002..ed85cbe 100644
  	if(ev->type == GR_EVENT_TYPE_BUTTON_DOWN) {
  		if(ev->buttons & GR_BUTTON_L) {
  			state->button_down = 1;
+diff --git a/src/demos/nanox/nxmine.c b/src/demos/nanox/nxmine.c
+index 8bd712b..7ed967c 100644
+--- a/src/demos/nanox/nxmine.c
++++ b/src/demos/nanox/nxmine.c
+@@ -603,7 +603,10 @@ static void
+ dobutton(GR_EVENT_BUTTON *bp)
+ {
+ 	if (bp->wid == boardwid) {
+-		movetopos(findcell(bp->x, bp->y));
++		if ((bp->buttons & GR_BUTTON_R) && playing)
++			togglecell(findcell(bp->x, bp->y));
++		else
++			movetopos(findcell(bp->x, bp->y));
+ 		return;
+ 	}
+ 
 diff --git a/src/demos/nanox/nxterm.c b/src/demos/nanox/nxterm.c
-index 91ec808..3d1164c 100755
+index 91ec808..f790bdb 100755
 --- a/src/demos/nanox/nxterm.c
 +++ b/src/demos/nanox/nxterm.c
 @@ -74,13 +74,22 @@
@@ -418,7 +540,31 @@ index 91ec808..3d1164c 100755
      			break;
  		    case 49:
      			GrSetGCBackground(gc1, stdbackground); //default color
-@@ -972,8 +1235,45 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
+@@ -616,8 +879,7 @@ void esc100(unsigned char c)	/* various ANSI control codes */
+ //leave escstate=10 till done. This states gets this function called.
+ 
+ static int escvalue1,escvalue2,escvalue3;
+-static char valuebuffer[3];
+-valuebuffer[2]='\0';
++static char valuebuffer[8];
+ 
+ if (c == '?') return; //skip question mark for now, e.g. ESC[?7h for wrap on
+ 
+@@ -629,10 +891,10 @@ if (nobracket==1){
+ else if ( (c > 0x2F) && (c<':') ) // is it a number?
+ {
+ 
+-	if (valuebuffer[0] != '\0' )
+-		{ valuebuffer[1]=c; 
++	if (strlen(valuebuffer) < 6)
++		{ int have = (int)strlen(valuebuffer); valuebuffer[have]=c; valuebuffer[have + 1]='\0'; 
+ 	} else {
+-		valuebuffer[0]=c;
++		;	/* (too long to be a number) */
+ 	}
+ 	return; 
+ }
+@@ -972,8 +1234,45 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
   * un-escaped character print routine
   */
  
@@ -464,7 +610,7 @@ index 91ec808..3d1164c 100755
      switch (c) {
      case 0:
  	   /*
-@@ -1026,13 +1326,12 @@ void esc0 (unsigned char c)
+@@ -1026,13 +1325,12 @@ void esc0 (unsigned char c)
      case 10: /* line feed */
  		sflush();
  		if (++cury >= scrollbottom) {
@@ -482,7 +628,7 @@ index 91ec808..3d1164c 100755
  		}
  		pos_yaxis(cury);
  		break;
-@@ -1053,17 +1352,25 @@ void esc0 (unsigned char c)
+@@ -1053,17 +1351,25 @@ void esc0 (unsigned char c)
  		break;
  
      default: /* any printable char */
@@ -518,7 +664,7 @@ index 91ec808..3d1164c 100755
  		break;
      }
  }
-@@ -1155,9 +1462,71 @@ term(void)
+@@ -1155,9 +1461,71 @@ term(void)
  			exit(0);
  			break;
  
@@ -590,7 +736,16 @@ index 91ec808..3d1164c 100755
  			if (kp->ch & MWKEY_NONASCII_MASK)
  				if (termtype == ANSI){
  				bufflen = do_special_key_ansi(buf,kp->ch,kp->modifiers);
-@@ -1188,6 +1557,28 @@ term(void)
+@@ -1165,7 +1533,7 @@ term(void)
+ 				bufflen = do_special_key(buf,kp->ch,kp->modifiers);
+ 				}
+ 			else {
+-				*buf = kp->ch & 0xff;
++				*buf = kp->ch == MWKEY_BACKSPACE ? 0x7f : (kp->ch & 0xff);
+ 				bufflen = 1;
+ 			}
+ 			if( bufflen > 0)
+@@ -1188,6 +1556,28 @@ term(void)
  			 */
  			if (wevent.update.utype == GR_UPDATE_UNMAPTEMP)
  				hide_cursor();
@@ -619,7 +774,7 @@ index 91ec808..3d1164c 100755
  			break;
  
  		case GR_EVENT_TYPE_EXPOSURE:
-@@ -1199,11 +1590,16 @@ term(void)
+@@ -1199,11 +1589,16 @@ term(void)
  
  		case GR_EVENT_TYPE_FDINPUT:
  			if (!gotexpose) break;	/* wait until mapped before reading */
@@ -637,7 +792,46 @@ index 91ec808..3d1164c 100755
  				sflush();
  			}
  			break;
-@@ -1683,7 +2079,7 @@ int main(int argc, char **argv)
+@@ -1359,7 +1754,7 @@ int do_special_key(unsigned char *buffer, int key, int modifier)
+ 				break;
+ 			}
+ 		}
+-		/* fall thru*/
++		break;
+ 
+ 	default:
+ 		len = 0;
+@@ -1542,7 +1937,7 @@ int do_special_key_ansi(unsigned char *buffer, int key, int modifier)
+ 				break;
+ 			}
+ 		}
+-		/* fall thru*/
++		break;
+ 
+ 	default:
+ 		len = 0;
+@@ -1593,7 +1988,8 @@ void maximize(void)
+ static void sigpipe(int sig)
+ {
+ 	GrClose();
+-	kill(-pid, SIGHUP);
++	if (pid > 0)	/* (0 would be every program of the desktop: they share the terminal's group) */
++		kill(-pid, SIGHUP);
+ 	_exit(sig);
+ }
+ 
+@@ -1607,7 +2003,9 @@ static void sigquit(int sig)
+ {
+ 	signal(sig, SIG_IGN);
+ 	GrClose();
+-	kill(-pid, SIGHUP);
++	if (pid > 0)	/* (0 would be every program of the desktop: they share the terminal's group) */
++		kill(-pid, SIGHUP);
++	_exit(0);
+ }
+ 
+ int main(int argc, char **argv)
+@@ -1683,7 +2081,7 @@ int main(int argc, char **argv)
      w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, TITLE, GR_ROOT_WINDOW_ID, -1,-1,winw,winh,
  		stdbackground);
  
@@ -646,7 +840,32 @@ index 91ec808..3d1164c 100755
  		   GR_EVENT_MASK_KEY_DOWN | 
  		   GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT |
  		   GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
-@@ -1756,6 +2152,7 @@ int main(int argc, char **argv)
+@@ -1738,14 +2136,20 @@ int main(int argc, char **argv)
+      * and everything seems to work correctly...). Unlike putenv(),
+      * setenv() allocates also the given string not just a pointer.
+      */
+-    sprintf(sbuf, "%d", col);
+-    setenv("COLUMNS", sbuf, 1);
+-    sprintf(sbuf, "%d", row);
+-    setenv("LINES", sbuf, 1);
++    /* (no COLUMNS and LINES: the shell would keep them when the window changes size) */
+ #endif
+ 
+     /* create pty, SIGCHLD handler set afterwards in case of grantpt() called */
+     termfd = term_init();       /* create pty */
++    {
++	/* the size the program inside starts with (it is asked of the terminal, not the environment) */
++	struct winsize size;
++
++	memset(&size, 0, sizeof size);
++	size.ws_col = col;
++	size.ws_row = row;
++	ioctl(termfd, TIOCSWINSZ, &size);
++    }
+     if (termfd < 0) {
+         GrClose();
+         exit(1);
+@@ -1756,6 +2160,7 @@ int main(int argc, char **argv)
      mysignal(SIGPIPE, sigpipe);
      mysignal(SIGCHLD, sigchild);
      mysignal(SIGINT,  SIG_IGN);
@@ -654,6 +873,34 @@ index 91ec808..3d1164c 100755
  #ifdef SIGTTOU
      signal(SIGTTOU, SIG_IGN);   /* just in case we're started in the background */
  #endif
+@@ -1778,7 +2183,6 @@ char * nargv[2] = {"/bin/sh", NULL};
+ int term_init(void)
+ {
+ 	int tfd;
+-	pid_t pid;
+ 	int n = 0;
+ 	char pty_name[12];
+ 
+@@ -1861,7 +2265,6 @@ int term_init(void)
+ int term_init(void)
+ {
+ 	int tfd;
+-	pid_t pid;
+ 	char ptyname[50];
+ 
+ 	tfd = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+diff --git a/src/demos/nanox/nxtetris.c b/src/demos/nanox/nxtetris.c
+index 683eb24..4fc3852 100644
+--- a/src/demos/nanox/nxtetris.c
++++ b/src/demos/nanox/nxtetris.c
+@@ -714,7 +714,6 @@ void handle_event(nstate *state)
+ 		case GR_EVENT_TYPE_NONE:
+ 			break;
+ 		default:
+-			GrError("Unhandled event type %d\n", state->event.type);
+ 			break;
+ 	}
+ }
 diff --git a/src/engine/devdraw.c b/src/engine/devdraw.c
 index c389e46..b528bb5 100644
 --- a/src/engine/devdraw.c
@@ -957,14 +1204,15 @@ index abd632c..b3b0ee2 100644
  int  	GdOpenKeyboard(void);
  void 	GdCloseKeyboard(void);
 diff --git a/src/include/nano-X.h b/src/include/nano-X.h
-index 409290c..5050037 100644
+index 409290c..34dfae0 100644
 --- a/src/include/nano-X.h
 +++ b/src/include/nano-X.h
-@@ -198,6 +198,11 @@ typedef struct {
+@@ -198,6 +198,12 @@ typedef struct {
  #define GR_WM_PROPS_BUFFER_BGRA	 0x00000400L /* Set window buffer pixtype to MWIF_BGRA8888*/
  #define GR_WM_PROPS_BUFFER_MWPF	 0x00000800L /* Set window buffer pixtype to MWPF_ config value*/
  #define GR_WM_PROPS_DRAWING_DONE 0x00001000L /* Buffer valid for output (internal flag)*/
 +#define GR_WM_PROPS_POPUP	 0x00002000L /* A menu: asked to close by a press anywhere outside it*/
++#define GR_WM_PROPS_NOMAXIMIZE	 0x00004000L /* Its size is its layout's: no maximise box, and Ctrl+F10 leaves it*/
 +/* GrDrawImageFromFile's flags for one cell of a sheet of icons 16 cells wide, its key colour left out */
 +#define GR_IMAGE_CELL(size, cell) (int)(0x80000000u | (unsigned)(size) << 16 | (unsigned)(cell))
 +/* and for the icon a file carries at its own end (a program's: 32 or 16 pixels) */
@@ -972,7 +1220,7 @@ index 409290c..5050037 100644
  
  /* default decoration style*/
  #define GR_WM_PROPS_APPWINDOW	0x00000000L /* Leave appearance to WM*/
-@@ -251,6 +256,8 @@ typedef struct {
+@@ -251,6 +257,8 @@ typedef struct {
    GR_CURSOR_ID cursor;		/**< cursor id*/
    int processid;		/**< process id of owner*/
    GR_LENGTH bufsize;		/**< mmaped buffer size if GR_WM_PROPS_BUFFER_MMAP*/
@@ -1154,7 +1402,7 @@ index de5d02a..fa5df7b 100644
  
  	FD_SET(nxSocket, rfds);
 diff --git a/src/nanox/nxpaintnc.c b/src/nanox/nxpaintnc.c
-index 9e40afe..3a82ab7 100644
+index 9e40afe..706f388 100644
 --- a/src/nanox/nxpaintnc.c
 +++ b/src/nanox/nxpaintnc.c
 @@ -18,6 +18,11 @@
@@ -1212,12 +1460,13 @@ index 9e40afe..3a82ab7 100644
  	y += CYCAPTION;
  
  	/* draw one line under caption*/
-@@ -111,6 +128,36 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+@@ -111,6 +128,38 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  		GrSetGCForeground(gc, GrGetSysColor(GR_COLOR_BTNTEXT));
  		GrLine(id, gc, r.x, r.y, r.x+r.width-1, r.y+r.height-1);
  		GrLine(id, gc, r.x, r.y+r.height-1, r.x+r.width-1, r.y);
 +
 +		/* and a maximise box to its left: a small window with a thick top */
++		if (!(props & GR_WM_PROPS_NOMAXIMIZE)) {
 +		r.x = x + w - 2 * CXCLOSEBOX - 4;
 +		r.y = y - CYCAPTION + 2;
 +		r.width = CXCLOSEBOX;
@@ -1232,6 +1481,7 @@ index 9e40afe..3a82ab7 100644
 +		GrSetGCForeground(gc, GrGetSysColor(GR_COLOR_BTNTEXT));
 +		GrRect(id, gc, r.x, r.y, r.width, r.height);
 +		GrLine(id, gc, r.x, r.y+1, r.x+r.width-1, r.y+1);
++		}
 +
 +		/* and a minimise box left of that: a line along its bottom */
 +		r.x = x + w - 3 * CXCLOSEBOX - 6;
@@ -1347,7 +1597,7 @@ index 0679f9f..29d2087 100644
  		for (; sibwp != wp; sibwp = sibwp->siblings) {
  			if (!sibwp->realized || !sibwp->output)
 diff --git a/src/nanox/srvevent.c b/src/nanox/srvevent.c
-index bc31c08..0d9bd2f 100644
+index bc31c08..4abfb71 100644
 --- a/src/nanox/srvevent.c
 +++ b/src/nanox/srvevent.c
 @@ -7,8 +7,80 @@
@@ -1431,18 +1681,29 @@ index bc31c08..0d9bd2f 100644
  /* these were required for VNC event mutex */
  #define EVENT_LOCK_DECLARE(m)
  #define EVENT_LOCK(m)
-@@ -187,6 +259,10 @@ GR_BOOL GsCheckKeyboardEvent(void)
+@@ -187,6 +259,21 @@ GR_BOOL GsCheckKeyboardEvent(void)
  #endif
  	}
  
 +	/* the window manager's own keys go no further */
-+	if (keystatus == KBD_KEYPRESS && (modifiers & (MWKMOD_ALT | MWKMOD_CTRL)) && window_key(mwkey, modifiers))
-+		return TRUE;
++	{
++		/* (a window manager's key held down acts once: at the keyboard's repeat it closed window after window) */
++		static MWKEY held;
++
++		if (mwkey != held || keystatus != KBD_KEYPRESS)
++			held = 0;
++		else if (modifiers & (MWKMOD_ALT | MWKMOD_CTRL))
++			return TRUE;
++		if (keystatus == KBD_KEYPRESS && (modifiers & (MWKMOD_ALT | MWKMOD_CTRL)) && window_key(mwkey, modifiers)) {
++			held = mwkey;
++			return TRUE;
++		}
++	}
 +
  	/* Deliver events as appropriate*/
  	GsDeliverKeyboardEvent(0, (keystatus == KBD_KEYPRESS?
  		GR_EVENT_TYPE_KEY_DOWN: GR_EVENT_TYPE_KEY_UP),
-@@ -245,6 +321,17 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
+@@ -245,6 +332,17 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
  	if (changebuttons) {
  		GsResetScreenSaver();
  		GsCheckMouseWindow();	/* fixes occasional lost window move when mousewp=root*/
@@ -1460,7 +1721,7 @@ index bc31c08..0d9bd2f 100644
  		GsDeliverButtonEvent(GR_EVENT_TYPE_BUTTON_DOWN, newbuttons,
  			changebuttons, modifiers);
  	}
-@@ -704,6 +791,10 @@ GsDeliverUpdateEvent(GR_WINDOW *wp, GR_UPDATE_TYPE utype, GR_COORD x,
+@@ -704,6 +802,10 @@ GsDeliverUpdateEvent(GR_WINDOW *wp, GR_UPDATE_TYPE utype, GR_COORD x,
  	}
  
  update_again:
@@ -1472,7 +1733,7 @@ index bc31c08..0d9bd2f 100644
  		if ((ecp->eventmask & cmask) == 0)
  			continue;
 diff --git a/src/nanox/srvfunc.c b/src/nanox/srvfunc.c
-index 3455994..63fe8de 100644
+index 3455994..d060b47 100644
 --- a/src/nanox/srvfunc.c
 +++ b/src/nanox/srvfunc.c
 @@ -9,6 +9,7 @@
@@ -1564,7 +1825,7 @@ index 3455994..63fe8de 100644
  	/*
  	 * move algorithms not requiring unmap/map
  	 */
-@@ -696,6 +735,15 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -696,13 +735,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  	wp->width = width;
  	wp->height = height;
  
@@ -1580,7 +1841,17 @@ index 3455994..63fe8de 100644
  	/* draw background and send expose events in resized window and all children*/
  	drawBackgroundAndExpose(wp);
  
-@@ -1675,6 +1723,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+ 	GsDeliverUpdateEvent(wp, GR_UPDATE_SIZE, wp->x, wp->y, width, height);
+ 
+-	/* draw backgrounds in newly exposed window regions*/
+-	if (width < oldw || height < oldh) {
++	/* draw backgrounds in newly exposed window regions (composed screen: what a top-level
++	 * window covered was never lost, and clearing it painted over the desktop's picture) */
++	if ((width < oldw || height < oldh) && !(gd_compositor && wp->parent == rootwp)) {
+ 		int bs = wp->bordersize;
+ 		int x = wp->x - bs;
+ 		int y = wp->y - bs;
+@@ -1675,6 +1724,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  		return;
  	}
  
@@ -2295,7 +2566,7 @@ index fae5bfa..6003e8b 100644
  
  /*
 diff --git a/src/nanox/wmaction.c b/src/nanox/wmaction.c
-index 27dcbe8..87a2de8 100644
+index 27dcbe8..883d291 100644
 --- a/src/nanox/wmaction.c
 +++ b/src/nanox/wmaction.c
 @@ -11,6 +11,8 @@
@@ -2361,7 +2632,18 @@ index 27dcbe8..87a2de8 100644
  	}
  
  	/* 
-@@ -255,6 +287,37 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -149,8 +181,8 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+ 	 * the focus themself.
+ 	 * -- Amit Kulkarni
+ 	 */
+-	if(window->wid==event->subwid)
+-		GrSetFocus(window->wid);
++	/* (not the keyboard to the frame itself for a press on its border: srvevent.c gave it to
++	 * the program's window, and from the frame no key reaches anyone) */
+ 
+ 	/* check for corner resize */
+ 	r.x = info.width - 5;
+@@ -255,6 +287,39 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	window->active = GR_TRUE;
  }
  
@@ -2374,6 +2656,8 @@ index 27dcbe8..87a2de8 100644
 +
 +	GrGetWindowInfo(window->wid, &info);
 +	GrGetWindowInfo(window->clientid, &cinfo);
++	if (!window->maximized && (cinfo.props & GR_WM_PROPS_NOMAXIMIZE))
++		return;		/* (it would be its small self in a corner of an empty window) */
 +	GrGetScreenInfo(&si);
 +	if (!window->maximized) {
 +		window->restore_x = info.x;
@@ -2399,7 +2683,7 @@ index 27dcbe8..87a2de8 100644
  void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  {
  	GR_RECT		r;
-@@ -299,8 +362,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -299,8 +364,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
          		return;
        		}
  		}
@@ -2424,6 +2708,18 @@ index 27dcbe8..87a2de8 100644
  
  	if(window->active) {
  #if OUTLINE_MOVE
+@@ -330,6 +411,11 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+ 
+ 	  w = info.width + (event->x - pos->xorig);
+ 	  h = info.height + (event->y - pos->yorig);
++	  /* (no smaller than a caption's boxes and a line: a size of nothing is an error that ends the program) */
++	  if (w < pos->xoff + 96)
++		w = pos->xoff + 96;
++	  if (h < pos->yoff + 24)
++		h = pos->yoff + 24;
+ 	  GrResizeWindow(window->wid, w, h);
+ 	  GrResizeWindow(window->clientid, w - pos->xoff, h - pos->yoff);
+ 
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
 index 9214904..bd667b8 100644
 --- a/src/nanox/wmclients.c

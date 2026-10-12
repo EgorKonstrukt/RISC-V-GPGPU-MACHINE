@@ -103,7 +103,7 @@ public class EmuMachine : UdonSharpBehaviour
     private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
     private const int MostCores = 256;
     // The network (docs/lan.md): the guest's packets out of its window, and packets for it into its ring.
-    private const int NetSlot = 640, NetMost = 576, NetQueue = 32;
+    private const int NetSlot = 640, NetMost = 576, NetQueue = 64;
     private byte[] netOut = new byte[NetQueue * NetMost], netIn = new byte[NetQueue * NetMost];
     private int[] netOutLength = new int[NetQueue], netInLength = new int[NetQueue];
     private int netOutHead, netOutTail, netInHead, netInTail;
@@ -1207,6 +1207,9 @@ public class EmuMachine : UdonSharpBehaviour
         }
         netAcked = sent;
     }
+
+    // The next packets are logged one a line again (a test's: the first forty are long past by then).
+    public void LanDetailAgain() { lanDetail = 0; }
 
     // The machine's number on the network, and its packets for the others (EmuShareHub takes them).
     public int NetId() { return powered ? netId : 0; }

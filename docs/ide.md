@@ -15,7 +15,10 @@ Edit of one.
 - `nxide.c`: the window. A menu bar (File, Edit, Selection, View, Run, Help: `ui_menu.h`'s
   menus), a row of keys, the text with its line numbers, a panel below with four leaves
   (Output, Problems, Variables, Call stack) and a status line that also asks (Find, Go to
-  line, Save as).
+  line). Save as is the Save window (`ui_save_file`; a test's script still types the path in
+  the status line), and a text with changes is asked about before New, Open, an example,
+  Exit or the caption's box lets it go: Save, Don't save, Cancel (`ui_ask.h`, `docs/nanox.md`).
+  New and Open wait for a build or a run to end; Build writes the file only when it changed.
 - `text.h`: the text and its history. Every change is put in or taken out through two
   functions, which keep what they did: Ctrl+Z takes a command back and Ctrl+Y makes it
   again, 1,024 changes deep; letters typed one after another are one change. A tab is

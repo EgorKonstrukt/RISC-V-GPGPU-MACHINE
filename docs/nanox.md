@@ -275,6 +275,10 @@ a brush stroke costs the pixels it touches and nothing else.
   done). Edit has Cut, Copy, Paste, Delete, Select all; the copied piece is a file
   (`/tmp/nxpaint-clip.ppm`), so it passes between two paint windows. Delete and Cut take
   the piece away wherever it floats, and do nothing with nothing selected.
+- A picture with changes is asked about before New, Open, Exit or the caption's box lets it
+  go (Save, Don't save, Cancel: `ui_ask.h`); a test's script is asked nothing, and its second
+  `quit` leaves as before. Save on a picture opened from a PNG or JPEG opens the Save window:
+  its PPM would have replaced one of that name unasked.
 - Save writes a PPM and nothing else. A picture with no file yet is asked what to be saved
   as, in a window with a name field (`ui_save_file` in `ui_files.h`) that starts in
   `/root/Pictures`, where Open starts: a name is taken in the folder shown, a file that is
@@ -349,7 +353,10 @@ Everything on the desktop can be worked without a pointer.
 `nxkey` presses keys for a test, through the keyboard's evdev device: `nxkey meta down enter
 500 ctrl+tab` (names or characters, `ctrl+`, `alt+`, `shift+` before one, a number to wait
 that many milliseconds, `X,Y` for a click of the left button there, `r:X,Y` for the right
-one, `drag:X,Y:X,Y` for the left one held from the first place to the second). A press and
+one, `drag:X,Y:X,Y` for the left one held from the first place to the second, `wheel:X,Y:N`
+for N notches of the wheel there, up positive). The first window a server gets has its
+inside at 43,46; a second one is stepped across the screen, so a test that clicks starts
+one program a server. A press and
 its release are two reports: the pointer's driver hands the window system one state at a
 time once a button changes (it used to hand over only the last of what waited, and a click
 made while the server was drawing was never seen).
@@ -379,13 +386,14 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 
 | Program | What it does |
 |---|---|
-| `nxedit FILE` | a text editor: arrows, Home, End, Page Up and Down move and with Shift select, a click places the cursor and the pointer held down selects, the wheel and a scroll bar move through the text. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste through the desktop's clipboard, Ctrl+A selects everything, Ctrl+Z undoes (512 changes back; letters typed one after another are one), Ctrl+F asks in the status line what to find and F3 finds the next. Ctrl+S saves; Ctrl+Q quits, and asks once more when the text was not saved |
-| `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry, or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Properties. Back, Forward, Up and View are buttons, with the folder's path beside them. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (a folder only when it is empty), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it |
+| `nxedit [FILE]` | a text editor with a File and an Edit menu (F10 opens them for the keyboard; the right button brings Cut, Copy, Paste, Delete, Select all): arrows, Home, End (with Ctrl the text's start and end), Page Up and Down move and with Shift select, a click places the cursor, two select the word and the pointer held down selects, the wheel and a scroll bar move through the text. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste through the desktop's clipboard, Ctrl+A selects everything, Ctrl+Z undoes and Ctrl+Y redoes (512 changes; letters typed one after another are one), Ctrl+F asks in the status line what to find and F3 finds the next, Ctrl+G asks for a line. Ctrl+N is a new text and Ctrl+O opens one in the file window; Ctrl+S saves, and a text with no file yet (or Save as) is asked what to be called in the Save window (`ui_save_file`). A text with changes is asked about before it is let go by New, Open, Exit or the caption's box: Save, Don't save, Cancel ("A question in a window" below). A line may be of any length; a write that fails says why and the text stays changed |
+| `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry, or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on a folder also Paste into it; on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Properties. In the list a click on a column's heading puts the entries in that order (Name, Size largest first, Kind). Entries dragged to a folder that has one of the same name stay where they are: nothing is replaced unasked. Back, Forward, Up, Home, View and New folder are keys with signs (`ui_glyph.h`; greyed when there is nowhere to go), with the folder's path beside them: a click on the path, or Ctrl+L, and another is typed there (Enter goes, Escape leaves). Down the left side are the places (Home, Desktop, Pictures, Music, Videos, Computer, and Network, which starts `nxnet`), the one shown picked out. The status line says how much can still be written. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (asked about first: "Delete these 3 entries?"; a folder goes with everything in it), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it. A name may have 127 letters and a folder 512 entries: what is over is counted in the status line ("3 more are not shown"), not shown cut short as an entry that cannot be opened |
 | `nxweb [ADDRESS]` | a browser for HTML and the plainer part of CSS (`docs/fetch.md`): Back, Home, Reload, an address to type, wheel and scroll bar. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace goes back, F5 reloads, Ctrl+L opens the address |
 | `nxpaint [FILE]` | the paint program (below, "Paint"): ten tools, a flood fill, a selection that is moved, copied and cropped to, pictures of any size up to 1,600 x 1,200, zoom, every change taken back and made again. Opens a PPM, or a PNG or JPEG through the viewer's decoder; saves a PPM |
-| `nxview [FILE]` | shows a picture as large as fits its window: PPM through the GPU; PNG and JPEG decoded on the worker cores into a PPM file in memory, which is then shown the same way (below); PGM, BMP, GIF and XPM through the engine's decoders. A row of keys above it, each also a key of the keyboard: Open (`o`), the folder's picture before and after (Left, Right), a quarter turn either way (`l`, `r`: a turned copy of the PPM is made in `/tmp`), smaller and larger (`-`, `+`, the wheel; a picture larger than its room is moved by a drag), Fit (`f`), and Edit (`e`: the paint program with the file). Escape or q closes it. `NXVIEW_PRINT=1` prints where the keys are and what is shown. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (3), `NXVIEW_SUM=1` prints a sum of the result |
+| `nxview [FILE]` | shows a picture as large as fits its window: PPM through the GPU; PNG and JPEG decoded on the worker cores into a PPM file in memory, which is then shown the same way (below); PGM, BMP, GIF and XPM through the engine's decoders. A row of keys above it, each also a key of the keyboard: Open (`o`), the folder's picture before and after (Left, Right), a quarter turn either way (`l`, `r`: a turned copy of the PPM is made in `/tmp`), smaller and larger (`-`, `+`, the wheel; a picture larger than its room is moved by a drag), Fit (`f`), 1:1 (`1`: a pixel of the picture a pixel of the screen), Edit (`e`: the paint program with the file), Desktop (`w`: the picture as it is shown becomes the desktop's, a copy in `/tmp`), and Delete (the Delete key: asked first, then the folder's next). Escape or q closes it. `NXVIEW_PRINT=1` prints where the keys are and what is shown. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (3), `NXVIEW_SUM=1` prints a sum of the result |
 | `nxsettings` | the settings, a tab each: the desktop's picture (the image's, any PPM file through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, and what the machine is, every line of it asked of the machine as it is: the kernel, the cores (the geometry's words), float instructions (one is run, with a handler for the trap), the first core's speed since the last look (`rdcycle`), memory, the ROM's size, the screen, the sound card, the network's address, the time since power-on. The desktop's picture may be a PNG or a JPEG too (decoded by `nxview --decode`). From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path), `system` (the System tab's lines, printed; no desktop needed). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
-| `nxmon` | three plots of the last two minutes, a sample a second: instructions a second (from `rdcycle`; the plot's top doubles as needed), how busy Linux is (kernel and programs stacked), memory in use (with the files written since the start, which live in memory). On a machine with worker cores (`docs/multicore.md`) what they run is stacked on the first plot, and a line says how many of them work, sleep, are idle and are parked. Under them: time running, load, processes, files kept in memory, task switches and interrupts a second, and the three busiest programs (looked at every third second). The plots are pixels the worker cores write into the window's buffer, some sixteen times a second (`docs/multicore.md`): they slide between samples, and the window system draws nothing of them. Under that a list of the programs, busiest first: a click or the arrows choose one, and End program (or Delete) asks it to go; pressed again for the same program it is made to (`SIGTERM`, then `SIGKILL`). The first program and the monitor itself are not in the list. Escape or q closes it |
+| `nxmon` | three plots of the last two minutes, a sample a second: instructions a second (from `rdcycle`; the plot's top doubles as needed), how busy Linux is (kernel and programs stacked), memory in use (with the files written since the start, which live in memory). On a machine with worker cores (`docs/multicore.md`) what they run is stacked on the first plot, and a line says how many of them work, sleep, are idle and are parked. Under them: time running, load, processes, files kept in memory, task switches and interrupts a second, and the three busiest programs (looked at every third second). The plots are pixels the worker cores write into the window's buffer, some sixteen times a second (`docs/multicore.md`): they slide between samples, and the window system draws nothing of them. Under that a list of the programs, busiest first (it was painted over a second after every drawing: the statistics above it cleared the window to its bottom): a click or the arrows choose one, and End program (or Delete) asks it to go; pressed again for the same program it is made to (`SIGTERM`, then `SIGKILL`). The first program and the monitor itself are not in the list. Escape or q closes it |
+| `nxnet` | the other computers of the network, and what their owners share (`docs/lan.md`, "The Network program") |
 | `nxterm` | Microwindows' terminal, patched: a character in the last column leaves the cursor on it and the next one begins the next line, as a VT100 does (it wrapped at once, and the shell's line editor, which sends a new line itself there, left a blank row in every command typed past the edge); it follows its window's size, and Shift+Page Up and Down or the wheel look back through the last 400 lines, with a mark at the right edge for how far. The pointer held down selects text, from the cell it went down on to the cell it is over, and letting go copies it to the clipboard; the right button, Shift+Insert and Ctrl+Shift+V type the clipboard's text |
 
 **PNG and JPEG pictures** (`linux/apps/ui_image.h`) are decoded by the program that shows
@@ -439,14 +447,34 @@ how much it asks for.
 - A program that draws many labels measures with `ui_width` and asks the server nothing
   while it draws.
 
+**A question in a window** (`linux/apps/ui_ask.h`): `ui_ask(title, text, answers, count, others)`
+puts up a small window in the middle of the screen with the text (lines parted by `\n`) and a
+button an answer, and comes back with the answer's number, or -1 for Escape or the caption's
+box. The first answer has the keyboard; Tab and the arrows go round, Enter or Space presses, a
+letter presses the answer that starts with it. The editor, Paint and the IDE ask it before a
+changed text or picture is let go, Files before it deletes, and the video player says in one
+why it does not play a file (it ended without a word, and from Open... the film before went
+with it). `nxask TEXT [ANSWER ...]` is the
+same for a script, which gets the answer's number as the exit status (255 for none), and
+`nxask --closing` asks every program's windows to close as their caption's box does and waits
+for them: a program with changes asks about them first, and a window low on the screen (which
+never takes the keyboard from that question) offers "Don't wait" and "Cancel" meanwhile.
+`UI_ASK_PRINT=1` prints each question, its answers with their places and where the window is,
+for a test: `(nxkey 2500 n) & nxask 'Sure?' Yes No; echo $?` must print 1.
+
 **The clipboard** is a file, `/tmp/clipboard` (`ui_clip_set` and `ui_clip_get` in `ui.h`; the
 terminal reads and writes the same file): one piece of text that is there after the program
 that left it has gone. The window system's own selections are a conversation between two
 programs that both have to be running.
 
 **The Start menu's System folder** (`nxapps.90-system`, written by `linux/apps/build.sh`) has
-"Restart the desktop" (`nx restart`) and "Shut down" (`nxoff`): the desktop's programs and the
-window system are ended, and Linux powers off. The machine has no switch a program can
+"Restart the desktop" (`nx restart ask`) and "Shut down" (`nxoff`): both ask first (`nxask`),
+then ask the open programs to close (`nxask --closing`), so that a text or a picture with
+changes is asked about and not lost; Cancel in either leaves everything as it was. Settings'
+"Use the selected size" goes the same way (`nx restart ask SIZE`). `nx restart` and `nxoff now`
+ask nothing, for a script. Both scripts move to a session of their own (`setsid`): typed in a
+terminal of the desktop they went with that terminal, and left the desktop half taken down.
+Then the desktop's programs and the window system are ended, and Linux powers off. The machine has no switch a program can
 reach, so the kernel's power-off (`shaderemu_power_off` in `linux/kernel/shaderemu_input.c`)
 stands still with interrupts off until the machine is switched off where it is shown; before
 that hook, power-off returned and a shell went on running.
@@ -535,6 +563,31 @@ the program that puts up the desktop's picture is the first to come and go.
   its data: the first write woke the program, which read two bytes and slept again for the
   rest. `GsWriteType` keeps the type back and `GsWrite` sends both (`writev`);
   `GsFlushType` after every request and before the server waits.
+- **The window manager's and the terminal's mistakes** (found by reading, 12 October 2026).
+  A window dragged smaller than its frame was resized to nothing, which is an error that ends
+  its program: it stops at 96 x 24 (a corner dragged past the window's other corner leaves a
+layer of 102 x 53 in a snapshot, and the program running). A top-level window made smaller
+  wiped the desktop where it had been to the root's plain colour (`GrResizeWindow` exposed
+  its parent there; on the composed screen nothing under a window is ever lost): after a
+  shrink the snapshot's desktop must be the picture there. A press on a frame's 3-pixel border gave the keyboard to
+  the frame, where no key reaches anyone (`nxask` and a click at its border, then a letter:
+  the letter must answer). A window manager's key held down acts once, not at the keyboard's
+  repeat (Ctrl+F4 closed window after window).
+- **The terminal**: its signal handlers hung up process group 0 (the shell's process number
+  was kept in a local variable), which is every program the desktop started: ending one
+  terminal from the monitor took the bar and the desktop with it. It no longer sets `COLUMNS`
+  and `LINES`, which busybox believes before the terminal's own size, so a resized terminal
+  stayed 80 x 24 to the shell (`stty size` in a new terminal must say `24 80`, and the window's
+  size after a resize). F1 to F12 send their strings (they were made and dropped), Backspace
+  sends DEL, the erase character a terminal's line has (`cat` showed `^H`), and a number in an
+  escape sequence may have more than two digits (a column past 99 in a wide terminal).
+- **The clock** clears its face at an exposure: the hands from before stayed, because where
+  they stood is forgotten there. **Mines** marks a mine with the right button (it was Space
+  with the pointer on the cell, and nothing said so). **Tetris** printed a line on the
+  console for every window that came or went anywhere on the desktop.
+- **The calculator** takes the keyboard (digits, the four signs, `.`, Enter or `=`, Backspace,
+  Escape or `c`), shows "Error" for a division by nothing instead of the number before, and a
+  sign pressed after a sign replaces it.
 - **A system colour is asked for once** (`GrGetSysColor` in the client library keeps the
   answer), and the calculator keeps its labels' widths: its start asked 93 colours and 40
   widths of the server, each a question and an answer, and is 1.6 million instructions now

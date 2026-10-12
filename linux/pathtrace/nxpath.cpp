@@ -29,6 +29,21 @@ void sincosf(float, float*, float*);
 #define MOST_H 480
 #define SIZES 6
 
+// A number with a comma between its thousands: 19,902,395.
+static const char *grouped(unsigned n)
+{
+    static char text[16];
+    char digits[12];
+    int count = snprintf(digits, sizeof digits, "%u", n), o = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (i && (count - i) % 3 == 0) text[o++] = ',';
+        text[o++] = digits[i];
+    }
+    text[o] = 0;
+    return text;
+}
+
 static unsigned now_ms()
 {
     struct timespec ts;
@@ -214,6 +229,8 @@ int main()
                     fprintf(stderr, "pathstat: picture %d, %d x %d, %d samples, %d turns: %u ms with %d workers (%s), %u rays, %u thousand rays a second, sum %08x\n",
                             pictures++, pt.width, pt.height, of_samples, pt.bounces, took, workers, layout_names[layout_set < 0 ? 3 : layout_set], rays,
                             took ? rays / took : 0, sum);
+                    if (getenv("NXPATH_RAYS"))  // (for a test: the count as the window writes it)
+                        fprintf(stderr, "nxpath: %s rays\n", grouped(rays));
                     if (getenv("NXPATH_PRINT")) {
                         // (for a test: the picture on the console, a row a line, six hex digits a pixel)
                         for (int y = 0; y < pt.height; y++) {
@@ -267,7 +284,7 @@ int main()
             ImGui::ProgressBar(all && tracing ? (float)have / (float)all : 1.0f, ImVec2(-1, 0));
             unsigned ms = tracing ? now - began : took;
             ImGui::Text("%d of %d samples, %u.%u s", tracing ? sample : of_samples, of_samples, ms / 1000, ms % 1000 / 100);
-            ImGui::Text("%u,%03u rays, %u thousand a second", rays / 1000, rays % 1000, ms ? rays / ms : 0);
+            ImGui::Text("%s rays, %u thousand a second", grouped(rays), ms ? rays / ms : 0);
             ImGui::Text("%d worker cores", workers);
         }
         bool quit = ImGui::Button("Quit");

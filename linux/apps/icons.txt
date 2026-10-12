@@ -18,6 +18,8 @@ nxweb                   apps/internet-web-browser
 nxmon                   apps/utilities-system-monitor
 nxsettings              apps/preferences-desktop
 nxview                  apps/image-viewer
+nxgame                  categories/applications-games
+nxnet                   places/network-workgroup places/network apps/preferences-system-network
 nxplay                  apps/multimedia-audio-player
 nxvideo                 apps/multimedia-video-player
 doom,doom.bin           doom

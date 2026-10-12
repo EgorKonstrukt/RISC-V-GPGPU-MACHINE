@@ -1,11 +1,17 @@
 /*
- * nxedit: a text editor. nxedit FILE opens or creates the file. Arrow keys, Home, End, Page
- * Up and Down move, with Shift they select, and so does the pointer held down; Ctrl+C, Ctrl+X
- * and Ctrl+V copy, cut and paste through the desktop's clipboard (ui.h), Ctrl+A selects all,
- * Ctrl+Z undoes, Ctrl+F finds and F3 finds the next; Ctrl+S saves, Ctrl+Q quits.
+ * nxedit: a text editor. nxedit FILE opens or creates the file; without one the text has no
+ * file until Save asks for a name. Its menus (File, Edit, and the right button's) say the
+ * keys. A text with changes is asked about before it is let go: Save, Don't save, Cancel.
  */
+#define _GNU_SOURCE
 #include "ui.h"
+#include "ui_files.h"
+#include "ui_icons.h"
+#include "ui_menu.h"
+#include "ui_ask.h"
+#include <errno.h>
 
+#define MENU_H 20
 #define STATUS 18
 #define MARGIN 3
 #define UNDO_MOST 512
@@ -21,16 +27,47 @@ static int top, left;		/* first line and column shown */
 static int rows, columns;	/* that fit the window */
 static int dragging;		/* the scroll bar's thumb is held */
 static int selecting;		/* the pointer is held in the text */
-static int width, height, modified, leaving;
-static char path[256] = "/root/untitled.txt";
-static const char *notice = "";
+static int width, height, modified;
+static char path[512];
+static int named;		/* the text has a file: Save writes it without asking */
+static char notice[200];
 static GR_WINDOW_ID window;
 static char sought[64];		/* what Ctrl+F looks for */
-static int finding;		/* it is being typed, in the status line */
+static char line_asked[12];	/* the line Ctrl+G goes to */
+enum { ASK_NONE, ASK_FIND, ASK_LINE };
+static int asking;		/* one of them is being typed, in the status line */
 
-/* What was done, to undo: text put in from (x0, y0) to (x1, y1), or text taken out at (x0, y0). */
-static struct change { int inserted, x0, y0, x1, y1, length, joined; char *text; } undo[UNDO_MOST];
-static int undo_count, undoing;
+enum { C_NEW = 1, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_ALL, C_FIND, C_NEXT, C_LINE };
+static const char *const menu_names[] = { "File", "Edit" };
+static int menu_x[3];
+static const struct ui_menu_item file_items[] = {
+	{ "New   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
+	{ "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
+};
+static const struct ui_menu_item edit_items[] = {
+	{ "Undo   Ctrl+Z", -1, C_UNDO }, { "Redo   Ctrl+Y", -1, C_REDO }, { "Cut   Ctrl+X", -1, C_CUT, NULL, 0, UI_MENU_LINE },
+	{ "Copy   Ctrl+C", -1, C_COPY }, { "Paste   Ctrl+V", -1, C_PASTE }, { "Delete", -1, C_DELETE },
+	{ "Select all   Ctrl+A", -1, C_ALL }, { "Find...   Ctrl+F", -1, C_FIND, NULL, 0, UI_MENU_LINE }, { "Find next   F3", -1, C_NEXT },
+	{ "Go to line...   Ctrl+G", -1, C_LINE },
+};
+static const struct ui_menu_item pointer_items[] = {
+	{ "Cut", -1, C_CUT }, { "Copy", -1, C_COPY }, { "Paste", -1, C_PASTE }, { "Delete", -1, C_DELETE },
+	{ "Select all", -1, C_ALL, NULL, 0, UI_MENU_LINE },
+};
+static const struct { const struct ui_menu_item *items; int count; } menus[2] = { { file_items, 5 }, { edit_items, 10 } };
+
+/* What was done, to undo: text put in from (x0, y0) to (x1, y1), or text taken out at (x0, y0).
+ * A change taken back is kept the same way, to be made again. */
+struct change { int inserted, x0, y0, x1, y1, length, joined; char *text; };
+static struct change undo[UNDO_MOST], redo[UNDO_MOST];
+static int undo_count, redo_count;
+static int turning;		/* 1: a change is being taken back, 2: made again */
+
+static void
+say(const char *text)
+{
+	snprintf(notice, sizeof notice, "%s", text);
+}
 
 static void
 insert_line(int at, const char *text, int length)
@@ -49,38 +86,47 @@ insert_line(int at, const char *text, int length)
 /* ---- the text's two changes, which everything else is made of ---- */
 
 static void
+push(struct change *stack, int *n, struct change c)
+{
+	if (*n == UNDO_MOST) {
+		free(stack[0].text);
+		memmove(stack, stack + 1, (UNDO_MOST - 1) * sizeof stack[0]);
+		--*n;
+	}
+	stack[(*n)++] = c;
+}
+
+static void
+forget(struct change *stack, int *n)
+{
+	while (*n)
+		free(stack[--*n].text);
+}
+
+static void
 remember(int inserted, int x0, int y0, int x1, int y1, char *text, int length)
 {
-	struct change *c;
+	struct change c = { inserted, x0, y0, x1, y1, length, 0, NULL }, *last;
 
-	if (undoing) {
-		free(text);
-		return;
-	}
-	/* a letter typed after a letter is one change with it */
-	if (inserted && undo_count && length == 1 && text[0] != '\n') {
-		c = &undo[undo_count - 1];
-		if (c->inserted && c->joined && c->y1 == y0 && c->x1 == x0) {
-			c->x1 = x1;
+	if (!turning) {
+		forget(redo, &redo_count);	/* a new change: what was taken back cannot be made again */
+		c.joined = inserted && length == 1 && text[0] != '\n';
+		/* a letter typed after a letter is one change with it */
+		last = undo_count ? &undo[undo_count - 1] : NULL;
+		if (c.joined && last && last->inserted && last->joined && last->y1 == y0 && last->x1 == x0) {
+			last->x1 = x1;
 			free(text);
 			return;
 		}
 	}
-	if (undo_count == UNDO_MOST) {
-		free(undo[0].text);
-		memmove(undo, undo + 1, (UNDO_MOST - 1) * sizeof undo[0]);
-		undo_count--;
-	}
-	c = &undo[undo_count++];
-	c->inserted = inserted, c->x0 = x0, c->y0 = y0, c->x1 = x1, c->y1 = y1;
-	c->length = length;
-	c->joined = inserted && length == 1 && text[0] != '\n';
-	if (inserted) {
+	if (inserted)
 		free(text);
-		c->text = NULL;
-	} else {
-		c->text = text;
-	}
+	else
+		c.text = text;
+	if (turning == 1)
+		push(redo, &redo_count, c);
+	else
+		push(undo, &undo_count, c);
 }
 
 /* The text from (x0, y0) to (x1, y1), lines parted by a newline; the caller frees it. */
@@ -115,6 +161,7 @@ text_insert(int x, int y, const char *text, int length)
 	char *tail = malloc(tail_length + 1), *copy = malloc(length + 1);
 
 	memcpy(copy, text, length);
+	copy[length] = 0;
 	memcpy(tail, lines[y] + x, tail_length + 1);
 	lines[y][x] = 0;
 	while (length > 0) {
@@ -167,23 +214,25 @@ text_delete(int x0, int y0, int x1, int y1)
 	remember(0, x0, y0, x1, y1, text, length);
 }
 
+/* Takes the last change back, or (`again`) makes the last one taken back again. */
 static void
-undo_last(void)
+turn(int again)
 {
-	struct change *c;
+	int *n = again ? &redo_count : &undo_count;
+	struct change c;
 
-	if (!undo_count) {
-		notice = "nothing to undo";
+	if (!*n) {
+		say(again ? "nothing to redo" : "nothing to undo");
 		return;
 	}
-	c = &undo[--undo_count];
-	undoing = 1;
-	if (c->inserted)
-		text_delete(c->x0, c->y0, c->x1, c->y1);
+	c = (again ? redo : undo)[--*n];
+	turning = again ? 2 : 1;
+	if (c.inserted)
+		text_delete(c.x0, c.y0, c.x1, c.y1);
 	else
-		text_insert(c->x0, c->y0, c->text, c->length);
-	undoing = 0;
-	free(c->text);
+		text_insert(c.x0, c.y0, c.text, c.length);
+	turning = 0;
+	free(c.text);
 	marked = 0;
 }
 
@@ -221,60 +270,114 @@ copy_selection(void)
 	char *text;
 
 	if (!selection(&x0, &y0, &x1, &y1)) {
-		notice = "nothing is selected";
+		say("nothing is selected");
 		return;
 	}
 	text = text_of(x0, y0, x1, y1, &length);
 	ui_clip_set(text, length);
 	free(text);
-	notice = "copied";
+	say("copied");
 }
 
+/* ---- the file ---- */
+
 static void
-load(void)
+titled(void)
 {
-	FILE *file = fopen(path, "r");
-	char text[1024];
+	char title[300];
 
-	while (file && fgets(text, sizeof text, file)) {
-		int length;
+	snprintf(title, sizeof title, "%.200s - Editor", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	if (window)
+		GrSetWindowTitle(window, title);
+}
 
-		/* (one pass: to the line's end, its tabs made spaces on the way) */
-		for (length = 0; text[length] && text[length] != '\r' && text[length] != '\n'; length++)
-			if (text[length] == '\t')
-				text[length] = ' ';
-		insert_line(count, text, length);
+/* No text at all: no line either, which the caller gives it. */
+static void
+clear_text(void)
+{
+	while (count)
+		free(lines[--count]);
+	forget(undo, &undo_count);
+	forget(redo, &redo_count);
+	cx = cy = ax = ay = marked = top = left = modified = 0;
+}
+
+/* A text with no file yet: Save will ask what to call it. */
+static void
+new_text(void)
+{
+	clear_text();
+	insert_line(0, "", 0);
+	snprintf(path, sizeof path, "/root/untitled.txt");
+	named = 0;
+	titled();
+}
+
+/* The file's text in place of what there was. A file that is not there is a new one. */
+static void
+open_path(const char *file)
+{
+	FILE *in = fopen(file, "r");
+	char *text = NULL;
+	size_t size = 0;
+	ssize_t n;
+	int why = errno, i;
+
+	clear_text();
+	/* a line of any length, its tabs made spaces on the way */
+	while (in && (n = getline(&text, &size, in)) >= 0) {
+		while (n && (text[n - 1] == '\n' || text[n - 1] == '\r'))
+			n--;
+		for (i = 0; i < n; i++)
+			if (text[i] == '\t')
+				text[i] = ' ';
+		insert_line(count, text, (int)n);
 	}
-	if (file)
-		fclose(file);
+	free(text);
+	if (in)
+		fclose(in);
+	else if (why == ENOENT)
+		say("new file");
 	else
-		notice = "new file";
+		snprintf(notice, sizeof notice, "cannot be read (%s)", strerror(why));
 	if (count == 0)
 		insert_line(0, "", 0);
+	snprintf(path, sizeof path, "%s", file);
+	named = 1;
+	titled();
 }
 
-static void
-save(void)
+/* Writes the text to a file, which is then the text's own; false, and why, when it cannot. */
+static int
+write_to(const char *to)
 {
-	FILE *file = fopen(path, "w");
-	int i;
+	FILE *file = fopen(to, "w");
+	int i, fine;
 
-	if (!file) {
-		notice = "cannot write the file";
-		return;
+	for (i = 0; file && i < count; i++) {
+		fputs(lines[i], file);
+		fputc('\n', file);
 	}
-	for (i = 0; i < count; i++)
-		fprintf(file, "%s\n", lines[i]);
-	fclose(file);
-	modified = 0;
-	notice = "saved";
+	fine = file && !ferror(file);
+	if (file && fclose(file) != 0)
+		fine = 0;
+	if (!fine) {
+		snprintf(notice, sizeof notice, "NOT saved: cannot write %.90s (%s)", to, strerror(errno));
+		return 0;
+	}
+	if (to != path)
+		snprintf(path, sizeof path, "%s", to);
+	named = 1, modified = 0;
+	titled();
+	snprintf(notice, sizeof notice, "saved as %.150s", path);
+	return 1;
 }
 
 /* A line of the text; `cleared`: its ground is white already (draw_all). */
 static void
 draw_line_on(int line, int cleared)
 {
-	int y = MARGIN + (line - top) * ui_fh, length, x0, y0, x1, y1, from = 0, to = 0, shown;
+	int y = MENU_H + MARGIN + (line - top) * ui_fh, length, x0, y0, x1, y1, from = 0, to = 0, shown;
 
 	if (line < top || line >= top + rows)
 		return;
@@ -322,28 +425,32 @@ draw_line(int line)
 static void
 draw_status(void)
 {
-	char text[200];
+	char text[800];
 
-	if (finding)
+	if (asking == ASK_FIND)
 		snprintf(text, sizeof text, "Find: %s_   (Enter finds, Escape leaves)", sought);
+	else if (asking == ASK_LINE)
+		snprintf(text, sizeof text, "Go to line: %s_   (of %d; Enter goes, Escape leaves)", line_asked, count);
 	else
 		snprintf(text, sizeof text, "%s%s   line %d, column %d   %s", path, modified ? " *" : "", cy + 1, cx + 1, notice);
 	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
 	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
-	ui_text(window, 6, height - STATUS + 3, text, -1, BLACK, 0);
-	if (!finding && width > 560)
-		ui_text(window, width - 236, height - STATUS + 3, "Ctrl+S save  F find  Z undo  Q quit", -1, UI_SHADOW, 0);
+	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
 }
 
 static void
 draw_all(void)
 {
-	int line;
+	int line, i;
 
-	ui_fill(window, 0, 0, width - UI_SCROLL_W, height - STATUS, WHITE);
+	ui_fill(window, 0, 0, width, MENU_H, UI_FACE);
+	for (i = 0; i < 2; i++)
+		ui_text(window, menu_x[i] + 8, 3, menu_names[i], -1, BLACK, 0);
+	ui_fill(window, 0, MENU_H - 1, width, 1, UI_SHADOW);
+	ui_fill(window, 0, MENU_H, width - UI_SCROLL_W, height - MENU_H - STATUS, WHITE);
 	for (line = top; line < top + rows; line++)
 		draw_line_on(line, 1);
-	ui_scrollbar(window, width - UI_SCROLL_W, 0, height - STATUS, count, rows, top);
+	ui_scrollbar(window, width - UI_SCROLL_W, MENU_H, height - MENU_H - STATUS, count, rows, top);
 	draw_status();
 }
 
@@ -385,7 +492,7 @@ find_next(void)
 	int n = strlen(sought), y, pass, x0, y0, x1, y1, start_x = cx, start_y = cy;
 
 	if (!n) {
-		notice = "Ctrl+F says what to find";
+		say("Ctrl+F says what to find");
 		return;
 	}
 	if (selection(&x0, &y0, &x1, &y1))
@@ -403,122 +510,227 @@ find_next(void)
 			ax = (int)(at - line), ay = y;
 			cx = ax + n, cy = y;
 			marked = 1;
-			notice = "found";
+			say("found");
 			return;
 		}
 	}
-	notice = "not found";
+	say("not found");
 }
 
 static void
-leave(void)
+resized(int w, int h)
 {
-	if (modified && !leaving) {
-		leaving = 1;
-		notice = "not saved: Ctrl+S saves, Ctrl+Q once more leaves without";
+	width = w;
+	height = h;
+	rows = (height - MENU_H - STATUS - MARGIN) / ui_fh;
+	columns = (width - 2 * MARGIN - UI_SCROLL_W) / ui_fw;
+	if (rows < 1)
+		rows = 1;
+	if (columns < 1)
+		columns = 1;
+	follow();
+}
+
+/* This window's events while a question or a file's window is up. */
+static void
+others(GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_UPDATE && event->update.wid == window && event->update.utype == GR_UPDATE_SIZE)
+		resized(event->update.width, event->update.height);
+	else if (event->type != GR_EVENT_TYPE_EXPOSURE || event->exposure.wid != window)
+		return;
+	draw_all();
+}
+
+/* Asks what to save the text as and writes it there; false if it was not written. */
+static int
+save_as(void)
+{
+	char where[512], chosen[512], *slash;
+
+	snprintf(where, sizeof where, "%s", path);
+	if ((slash = strrchr(where, '/')) != NULL)
+		*slash = 0;
+	return ui_save_file("Save the text as", !slash ? "/root" : slash == where ? "/" : where, NULL, slash ? slash + 1 : where,
+			    chosen, sizeof chosen, others) && write_to(chosen);
+}
+
+static int
+save(void)
+{
+	return named ? write_to(path) : save_as();
+}
+
+/* True if the text may be let go: it has no changes, or the answer was to save them or not to. */
+static int
+may_drop(void)
+{
+	static const char *const answers[] = { "Save", "Don't save", "Cancel" };
+	char text[400];
+
+	if (!modified)
+		return 1;
+	snprintf(text, sizeof text, "%.200s has changes that are not saved.\nSave them?", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	switch (ui_ask("Editor", text, answers, 3, others)) {
+	case 0: return save();
+	case 1: return 1;
+	}
+	return 0;
+}
+
+/* Begins the typing of an answer in the status line. */
+static void
+ask(int what)
+{
+	asking = what;
+	line_asked[0] = 0;
+	draw_status();
+}
+
+/* What a menu's row, or the key that stands for it, does. */
+static void
+command(int id)
+{
+	char chosen[512], where[512], *slash, *text;
+	int n;
+
+	notice[0] = 0;
+	switch (id) {
+	case C_NEW:
+		if (may_drop())
+			new_text();
+		break;
+	case C_OPEN:
+		if (!may_drop())
+			break;
+		snprintf(where, sizeof where, "%s", path);
+		if ((slash = strrchr(where, '/')) != NULL)
+			slash[slash == where ? 1 : 0] = 0;
+		if (ui_choose_file("Open a text", slash ? where : "/root", NULL, chosen, sizeof chosen, others))
+			open_path(chosen);
+		break;
+	case C_SAVE:
+		if (named) {
+			write_to(path);
+			draw_status();
+			return;
+		}
+		/* fall through: a text with no file is asked what to be saved as */
+	case C_SAVE_AS:
+		save_as();
+		break;
+	case C_EXIT:
+		if (may_drop()) {
+			GrClose();
+			exit(0);
+		}
+		break;
+	case C_UNDO:
+	case C_REDO:
+		turn(id == C_REDO);
+		break;
+	case C_COPY:
+		copy_selection();
 		draw_status();
 		return;
+	case C_CUT:
+		copy_selection();
+		delete_selection();
+		break;
+	case C_PASTE:
+		if ((text = ui_clip_get(&n)) == NULL) {
+			say("the clipboard is empty");
+			break;
+		}
+		delete_selection();
+		text_insert(cx, cy, text, n);
+		free(text);
+		break;
+	case C_DELETE:
+		if (!delete_selection())
+			say("nothing is selected");
+		break;
+	case C_ALL:
+		ax = ay = 0;
+		cy = count - 1, cx = strlen(lines[cy]);
+		marked = 1;
+		break;
+	case C_FIND:
+	case C_LINE:
+		ask(id == C_FIND ? ASK_FIND : ASK_LINE);
+		return;
+	case C_NEXT:
+		find_next();
+		break;
 	}
-	GrClose();
-	exit(0);
+	follow();
+	draw_all();
 }
 
-/* A key of the line Ctrl+F opens in the status bar. */
+/* A key of the line Ctrl+F or Ctrl+G opens in the status bar. */
 static void
-find_key(int ch)
+ask_key(int ch)
 {
-	int n = strlen(sought);
+	char *answer = asking == ASK_FIND ? sought : line_asked;
+	int n = strlen(answer), most = asking == ASK_FIND ? (int)sizeof sought : (int)sizeof line_asked, line;
 
 	if (ch == MWKEY_ESCAPE) {
-		finding = 0;
+		asking = ASK_NONE;
 	} else if (ch == MWKEY_ENTER || ch == '\n') {
-		finding = 0;
-		find_next();
+		if (asking == ASK_FIND)
+			find_next();
+		else if ((line = atoi(line_asked)) > 0)
+			cy = (line > count ? count : line) - 1, cx = 0, marked = 0;
+		asking = ASK_NONE;
 		follow();
 		draw_all();
 		return;
 	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
 		if (n)
-			sought[n - 1] = 0;
-	} else if (ch >= 32 && ch < 127 && n < (int)sizeof sought - 1) {
-		sought[n] = ch, sought[n + 1] = 0;
+			answer[n - 1] = 0;
+	} else if (ch >= 32 && ch < 127 && n < most - 1 && (asking == ASK_FIND || isdigit(ch))) {
+		answer[n] = ch, answer[n + 1] = 0;
 	}
 	draw_status();
+}
+
+/* The command a letter with Ctrl is, or 0. */
+static int
+command_of(int letter)
+{
+	static const char letters[] = "nosqzyxcvafg";
+	static const int ids[] = { C_NEW, C_OPEN, C_SAVE, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_ALL, C_FIND, C_LINE };
+	const char *at = letter ? strchr(letters, letter) : NULL;
+
+	return at ? ids[at - letters] : 0;
 }
 
 static void
 key(int ch, int modifiers)
 {
-	int was = cy, length = strlen(lines[cy]), whole = 0, moves = 0, command = 0, line;
-	int shift = (modifiers & MWKMOD_SHIFT) != 0, edits, cut = 0, x0, y0, x1, y1;
+	int was = cy, length = strlen(lines[cy]), whole = 0, moves = 0, letter = 0, line;
+	int shift = (modifiers & MWKMOD_SHIFT) != 0, ctrl = (modifiers & MWKMOD_CTRL) != 0, edits, cut = 0, x0, y0, x1, y1;
 	int had = selection(&x0, &y0, &x1, &y1), was_marked = marked, was_ax = ax, was_ay = ay;	/* had: something was shown selected */
 
-	if (finding) {
-		find_key(ch);
+	if (asking) {
+		ask_key(ch);
 		return;
 	}
-	notice = "";
+	notice[0] = 0;
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
-	if ((modifiers & MWKMOD_CTRL) && ch < 128 && isalpha(ch))
-		command = tolower(ch);
-	else if (ch == 1 || ch == 3 || ch == 6 || ch == 17 || ch == 19 || ch == 22 || ch == 24 || ch == 26)
-		command = 'a' + ch - 1;
-	if (command != 'q')
-		leaving = 0;
-	if (command) {
-		switch (command) {
-		case 's':
-			save();
-			draw_status();
-			return;
-		case 'q':
-			leave();
-			return;
-		case 'c':
-			copy_selection();
-			draw_status();
-			return;
-		case 'x':
-			copy_selection();
-			delete_selection();
-			break;
-		case 'v': {
-			int n;
-			char *text = ui_clip_get(&n);
-
-			if (!text) {
-				notice = "the clipboard is empty";
-				draw_status();
-				return;
-			}
-			delete_selection();
-			text_insert(cx, cy, text, n);
-			free(text);
-			break;
-		}
-		case 'a':
-			ax = ay = 0;
-			cy = count - 1, cx = strlen(lines[cy]);
-			marked = 1;
-			break;
-		case 'z':
-			undo_last();
-			break;
-		case 'f':
-			finding = 1;
-			draw_status();
-			return;
-		default:
-			return;
-		}
-		follow();
-		draw_all();
+	if (ctrl && ch < 128 && isalpha(ch))
+		letter = tolower(ch);
+	else if (ch >= 1 && ch <= 26 && ch != MWKEY_BACKSPACE && ch != MWKEY_TAB && ch != '\n' && ch != MWKEY_ENTER)
+		letter = 'a' + ch - 1;
+	if (letter || ch == MWKEY_F3) {
+		if (ch == MWKEY_F3 || command_of(letter))
+			command(ch == MWKEY_F3 ? C_NEXT : command_of(letter));
 		return;
 	}
-	if (ch == MWKEY_F3) {
-		find_next();
-		follow();
-		draw_all();
+	if (ch == MWKEY_F10) {
+		/* the menus, for the keyboard: File's, its first row picked out */
+		ui_window_origin(window, &x0, &y0);
+		ui_menu_open(menus[0].items, menus[0].count, x0 + menu_x[0], y0 + MENU_H, 0, 1);
 		return;
 	}
 	switch (ch) {
@@ -573,9 +785,13 @@ key(int ch, int modifiers)
 		break;
 	case MWKEY_HOME:
 		cx = 0;
+		if (ctrl)
+			cy = 0;		/* with Ctrl: the text's start */
 		break;
 	case MWKEY_END:
-		cx = length;
+		if (ctrl)
+			cy = count - 1;	/* with Ctrl: the text's end */
+		cx = strlen(lines[cy]);
 		break;
 	case MWKEY_ENTER:
 	case '\n':
@@ -602,7 +818,7 @@ key(int ch, int modifiers)
 		}
 		break;
 	default: {
-		char letter;
+		char typed;
 
 		if (moves)
 			break;
@@ -610,8 +826,8 @@ key(int ch, int modifiers)
 			ch = ' ';
 		if (ch < 32 || ch > 126)
 			return;
-		letter = (char)ch;
-		text_insert(cx, cy, &letter, 1);
+		typed = (char)ch;
+		text_insert(cx, cy, &typed, 1);
 	}
 	}
 	if (cx > (int)strlen(lines[cy]))
@@ -639,9 +855,9 @@ key(int ch, int modifiers)
 static void
 place(int px, int py, int *x, int *y)
 {
-	int line = top + (py - MARGIN) / ui_fh, column;
+	int line = top + (py - MENU_H - MARGIN) / ui_fh, column;
 
-	if (py < MARGIN)
+	if (py < MENU_H + MARGIN)
 		line = top;
 	if (line >= count)
 		line = count - 1;
@@ -653,47 +869,93 @@ place(int px, int py, int *x, int *y)
 	*x = column, *y = line;
 }
 
-static void
-resized(int w, int h)
+static int
+in_word(int c)
 {
-	width = w;
-	height = h;
-	rows = (height - STATUS - MARGIN) / ui_fh;
-	columns = (width - 2 * MARGIN - UI_SCROLL_W) / ui_fw;
-	if (rows < 1)
-		rows = 1;
-	if (columns < 1)
-		columns = 1;
-	follow();
+	return isalnum((unsigned char)c) || c == '_';
+}
+
+/* The left button went down in the text: the cursor goes there, and a selection begins with
+ * it; a second press at the same place selects the word there. */
+static void
+click(const GR_EVENT *event)
+{
+	static unsigned last_time;
+	static int last_x = -1, last_y;
+	int x0, y0, x1, y1, had = selection(&x0, &y0, &x1, &y1), was = cy;
+	const char *line;
+
+	place(event->button.x, event->button.y, &cx, &cy);
+	ax = cx, ay = cy;
+	marked = 1;
+	selecting = 1;
+	notice[0] = 0;
+	line = lines[cy];
+	if (cx == last_x && cy == last_y && event->button.time - last_time < 500) {
+		while (ax > 0 && in_word(line[ax - 1]))
+			ax--;
+		while (in_word(line[cx]))
+			cx++;
+		selecting = 0;
+		had = 1;
+	}
+	last_x = ax == cx ? cx : -1, last_y = cy, last_time = event->button.time;
+	if (had)
+		draw_all();
+	else {
+		draw_line(was);
+		if (cy != was)
+			draw_line(cy);
+		draw_status();
+	}
 }
 
 int
 main(int argc, char **argv)
 {
 	GR_EVENT event;
-	char title[300];
+	int i, x, id, text_bottom;
 
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
 	if (argc > 1)
-		snprintf(path, sizeof path, "%s", argv[1]);
-	load();
-	snprintf(title, sizeof title, "%s - Editor", path);
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, title, GR_ROOT_WINDOW_ID, -1, -1,
-		80 * ui_fw + 2 * MARGIN, 24 * ui_fh + MARGIN + STATUS, WHITE);
+		open_path(argv[1]);
+	else
+		new_text();
+	for (i = 0, x = 2; i < 2; i++) {
+		menu_x[i] = x;
+		x += ui_width(&ui_var_widths, ui_var, menu_names[i], -1) + 16;
+	}
+	menu_x[2] = x;
+	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Editor", GR_ROOT_WINDOW_ID, -1, -1,
+		80 * ui_fw + 2 * MARGIN + UI_SCROLL_W, 24 * ui_fh + MARGIN + MENU_H + STATUS, WHITE);
+	titled();
 	GrSelectEvents(window, EVENTS);
-	resized(80 * ui_fw + 2 * MARGIN, 24 * ui_fh + MARGIN + STATUS);
+	resized(80 * ui_fw + 2 * MARGIN + UI_SCROLL_W, 24 * ui_fh + MARGIN + MENU_H + STATUS);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
 		GrGetNextEvent(&event);
+		ui_origin_note(&event);
+		switch (ui_menu_event(&event, &id)) {
+		case UI_MENU_CHOSEN:
+			GrSetFocus(window);
+			command(id);
+			continue;
+		case UI_MENU_CLOSED:
+			GrSetFocus(window);
+			/* fall through */
+		case UI_MENU_TOOK:
+			continue;
+		}
+		text_bottom = height - STATUS;
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw_all();
 			break;
 		case GR_EVENT_TYPE_UPDATE:
-			if (event.update.utype == GR_UPDATE_SIZE) {
+			if (event.update.utype == GR_UPDATE_SIZE && event.update.wid == window) {
 				resized(event.update.width, event.update.height);
 				draw_all();
 			}
@@ -703,29 +965,28 @@ main(int argc, char **argv)
 				scroll_to(top + 3 * ui_wheel_sum(&event));
 				break;
 			}
-			ui_moves(window, EVENTS, 1);
-			if (event.button.x >= width - UI_SCROLL_W && event.button.y < height - STATUS) {
-				dragging = 1;
-				scroll_to(ui_scroll_to(event.button.y, 0, height - STATUS, count, rows));
-			} else if (event.button.y < height - STATUS && (event.button.changebuttons & GR_BUTTON_L)) {
-				/* a click puts the cursor there, and a selection begins with it */
-				int x0, y0, x1, y1, had = selection(&x0, &y0, &x1, &y1), was = cy;
+			if (event.button.y < MENU_H) {
+				for (i = 0; i < 2; i++)
+					if (event.button.x >= menu_x[i] && event.button.x < menu_x[i + 1]) {
+						int wx, wy;
 
-				place(event.button.x, event.button.y, &cx, &cy);
-				ax = cx, ay = cy;
-				marked = 1;
-				selecting = 1;
-				leaving = 0;
-				notice = "";
-				if (had)
-					draw_all();
-				else {
-					draw_line(was);
-					if (cy != was)
-						draw_line(cy);
-					draw_status();
-				}
+						ui_window_origin(window, &wx, &wy);
+						ui_menu_open(menus[i].items, menus[i].count, wx + menu_x[i], wy + MENU_H, 0, 0);
+					}
+				break;
 			}
+			if (event.button.y >= text_bottom)
+				break;
+			if (event.button.changebuttons & GR_BUTTON_R) {
+				ui_menu_open(pointer_items, 5, event.button.rootx, event.button.rooty, 0, 0);
+				break;
+			}
+			ui_moves(window, EVENTS, 1);
+			if (event.button.x >= width - UI_SCROLL_W) {
+				dragging = 1;
+				scroll_to(ui_scroll_to(event.button.y, MENU_H, text_bottom - MENU_H, count, rows));
+			} else if (event.button.changebuttons & GR_BUTTON_L)
+				click(&event);
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			dragging = selecting = 0;
@@ -734,14 +995,14 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (dragging && (event.mouse.buttons & GR_BUTTON_L)) {
-				scroll_to(ui_scroll_to(event.mouse.y, 0, height - STATUS, count, rows));
+				scroll_to(ui_scroll_to(event.mouse.y, MENU_H, text_bottom - MENU_H, count, rows));
 			} else if (selecting && (event.mouse.buttons & GR_BUTTON_L)) {
-				int x, y, from, to, line;
+				int px, py, from, to, line;
 
-				place(event.mouse.x, event.mouse.y < height - STATUS ? event.mouse.y : height - STATUS - 1, &x, &y);
-				if (x != cx || y != cy) {
-					from = y < cy ? y : cy, to = y < cy ? cy : y;
-					cx = x, cy = y;
+				place(event.mouse.x, event.mouse.y < text_bottom ? event.mouse.y : text_bottom - 1, &px, &py);
+				if (px != cx || py != cy) {
+					from = py < cy ? py : cy, to = py < cy ? cy : py;
+					cx = px, cy = py;
 					for (line = from; line <= to; line++)
 						draw_line(line);
 					draw_status();
@@ -756,7 +1017,8 @@ main(int argc, char **argv)
 			key(event.keystroke.ch, event.keystroke.modifiers);
 			break;
 		case GR_EVENT_TYPE_CLOSE_REQ:
-			leave();
+			if (event.general.wid == window)	/* (a menu's may come after the menu went) */
+				command(C_EXIT);
 			break;
 		}
 	}

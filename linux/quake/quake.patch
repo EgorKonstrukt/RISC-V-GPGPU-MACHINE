@@ -21,7 +21,7 @@ index 550368e..a5d701d 100644
  		time = 1;
  	Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames/time);
 diff --git a/WinQuake/cl_main.c b/WinQuake/cl_main.c
-index 5812143..169b347 100644
+index 5812143..e2ded71 100644
 --- a/WinQuake/cl_main.c
 +++ b/WinQuake/cl_main.c
 @@ -394,7 +394,7 @@ float	CL_LerpPoint (void)
@@ -123,6 +123,57 @@ index 5812143..169b347 100644
  		CL_ParseServerMessage ();
  	} while (ret && cls.state == ca_connected);
  	
+@@ -662,6 +697,21 @@ int CL_ReadFromServer (void)
+ 	return 0;
+ }
+ 
++/* What is sent a second to another machine, each way: a move and an update a frame were
++ * more than the link between machines carries (docs/lan.md), and most of them were lost. */
++cvar_t	net_rate = {"net_rate", "8"};
++
++/* Whether a packet to a machine is due: `last` is when the one before went. */
++qboolean Net_RateDue (unsigned *last)
++{
++	if (net_rate.value <= 0)
++		return true;
++	if ((int)(realtime_ms - *last) * net_rate.value < 1000)
++		return false;
++	*last = realtime_ms;
++	return true;
++}
++
+ /*
+ =================
+ CL_SendCmd
+@@ -669,6 +719,8 @@ CL_SendCmd
+ */
+ void CL_SendCmd (void)
+ {
++	static unsigned	moved;
++
+ 	usercmd_t		cmd;
+ 
+ 	if (cls.state != ca_connected)
+@@ -682,8 +734,9 @@ void CL_SendCmd (void)
+ 	// allow mice or other external controllers to add to the move
+ 		IN_Move (&cmd);
+ 	
+-	// send the unreliable message
+-		CL_SendMove (&cmd);
++	// send the unreliable message (to a server on another machine: at the link's rate)
++		if (sv.active || Net_RateDue (&moved))
++			CL_SendMove (&cmd);
+ 	
+ 	}
+ 
+@@ -736,6 +789,7 @@ void CL_Init (void)
+ 	Cvar_RegisterVariable (&cl_anglespeedkey);
+ 	Cvar_RegisterVariable (&cl_shownet);
+ 	Cvar_RegisterVariable (&cl_nolerp);
++	Cvar_RegisterVariable (&net_rate);
+ 	Cvar_RegisterVariable (&lookspring);
+ 	Cvar_RegisterVariable (&lookstrafe);
+ 	Cvar_RegisterVariable (&sensitivity);
 diff --git a/WinQuake/cl_parse.c b/WinQuake/cl_parse.c
 index c79ca47..327c1a3 100644
 --- a/WinQuake/cl_parse.c
@@ -1523,7 +1574,7 @@ index 11b5a01..ad01486 100644
  }
  
 diff --git a/WinQuake/gl_screen.c b/WinQuake/gl_screen.c
-index 8a0c096..5a874d7 100644
+index 8a0c096..4cdd99e 100644
 --- a/WinQuake/gl_screen.c
 +++ b/WinQuake/gl_screen.c
 @@ -103,7 +103,7 @@ int			scr_fullupdate;
@@ -1549,7 +1600,7 @@ index 8a0c096..5a874d7 100644
  void SCR_DrawNet (void)
  {
 -	if (realtime - cl.last_received_message < 0.3)
-+	if (REALTIME_SINCE (cl.last_received_message) < 0.3)
++	if (REALTIME_SINCE (cl.last_received_message) < 1.5)
  		return;
  	if (cls.demoplayback)
  		return;
@@ -2645,7 +2696,7 @@ index 2d4dfeb..7508ce7 100644
  extern	edict_t		*sv_player;
  
 diff --git a/WinQuake/sv_main.c b/WinQuake/sv_main.c
-index deda690..1b7e9d4 100644
+index deda690..cfee264 100644
 --- a/WinQuake/sv_main.c
 +++ b/WinQuake/sv_main.c
 @@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -2665,7 +2716,26 @@ index deda690..1b7e9d4 100644
  }
  
  /*
-@@ -843,7 +844,7 @@ void SV_SendClientMessages (void)
+@@ -818,6 +819,8 @@ SV_SendClientMessages
+ */
+ void SV_SendClientMessages (void)
+ {
++	extern qboolean Net_RateDue (unsigned *last);
++	static unsigned	updated[MAX_SCOREBOARD];
+ 	int			i;
+ 	
+ // update frags, names, etc
+@@ -831,7 +834,8 @@ void SV_SendClientMessages (void)
+ 
+ 		if (host_client->spawned)
+ 		{
+-			if (!SV_SendClientDatagram (host_client))
++			// (a client on another machine has its update at the link's rate; driver 0 is this machine's own)
++			if ((!host_client->netconnection->driver || Net_RateDue (&updated[i])) && !SV_SendClientDatagram (host_client))
+ 				continue;
+ 		}
+ 		else
+@@ -843,7 +847,7 @@ void SV_SendClientMessages (void)
  		// between signon stages
  			if (!host_client->sendsignon)
  			{
@@ -2674,7 +2744,16 @@ index deda690..1b7e9d4 100644
  					SV_SendNop (host_client);
  				continue;	// don't send out non-signon messages
  			}
-@@ -875,7 +876,7 @@ void SV_SendClientMessages (void)
+@@ -854,6 +858,8 @@ void SV_SendClientMessages (void)
+ 		// changes level
+ 		if (host_client->message.overflowed)
+ 		{
++			if (SE_ServerOnWorker ())	// the first core drops them, at the next frame
++				continue;
+ 			SV_DropClient (true);
+ 			host_client->message.overflowed = false;
+ 			continue;
+@@ -875,7 +881,7 @@ void SV_SendClientMessages (void)
  				, &host_client->message) == -1)
  					SV_DropClient (true);	// if the message couldn't send, kick off
  				SZ_Clear (&host_client->message);
@@ -2683,7 +2762,7 @@ index deda690..1b7e9d4 100644
  				host_client->sendsignon = false;
  			}
  		}
-@@ -1050,6 +1051,8 @@ void SV_SpawnServer (char *server)
+@@ -1050,6 +1056,8 @@ void SV_SpawnServer (char *server)
  	edict_t		*ent;
  	int			i;
  

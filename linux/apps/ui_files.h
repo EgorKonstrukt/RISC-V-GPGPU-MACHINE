@@ -20,6 +20,7 @@ static struct ui_files_entry { char name[64]; char folder; } ui_files_entries[UI
 static struct ui_list ui_files_list;
 static char ui_files_where[512];
 static int ui_files_saving;		/* the window asks for a name to save as */
+static int ui_files_stop;		/* set by `others`: the window goes with nothing chosen (its program is closing) */
 static int ui_files_offered;		/* the name is still the one offered: a typed character replaces it */
 static char ui_files_name[128], ui_files_note[160], ui_files_sure[600];
 
@@ -240,7 +241,7 @@ ui_files_named(const char *kinds, char *path, int size)
 static int
 ui_files_ask(const char *title, const char *start, const char *kinds, const char *name, char *path, int size, void (*others)(GR_EVENT *))
 {
-	GR_WINDOW_ID w = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, (char *)title, GR_ROOT_WINDOW_ID, -1, -1, UI_FILES_W, UI_FILES_H, UI_FACE);
+	GR_WINDOW_ID w = GrNewWindowEx(UI_FIXED, (char *)title, GR_ROOT_WINDOW_ID, -1, -1, UI_FILES_W, UI_FILES_H, UI_FACE);
 	GR_EVENT event;
 	int chosen = 0, done = 0, n;
 
@@ -256,7 +257,8 @@ ui_files_ask(const char *title, const char *start, const char *kinds, const char
 	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_MOUSE_MOTION |
 			  GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(w);
-	while (!done) {
+	ui_files_stop = 0;
+	while (!done && !ui_files_stop) {
 		int open = 0, how;
 
 		GrGetNextEvent(&event);
@@ -304,6 +306,8 @@ ui_files_ask(const char *title, const char *start, const char *kinds, const char
 		n = ui_files_list.selected;
 		if (name && open == 1 && (ui_files_name[0] || n < 0 || !ui_files_entries[n].folder)) {
 			/* a save's Enter and its Save button are about the name, when there is one */
+			if (!ui_files_name[0])
+				snprintf(ui_files_note, sizeof ui_files_note, "Type a name to save as");
 			chosen = done = ui_files_name[0] && ui_files_named(kinds, path, size);
 			ui_files_draw(w);
 		} else if (open && (open < 0 || n >= 0)) {

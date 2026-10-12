@@ -46,7 +46,11 @@ public class EmuShareHub : UdonSharpBehaviour
     // client gets out in practice for everything it sends (VRChat's limit is a client's).
     private const int PacketMost = 1150, ConsoleMost = 800, HeaderBytes = 19;
     private const int StatusFixed = 130, StatusTextMost = 560;   // as EmuStreams'
-    private const int NetBatchMost = 600;   // a sending's share for the network: one full packet, or several small
+    // A sending's share for the network: a full packet and more, or many small ones. While a
+    // game's packets flow the display has one sending in six (below), so this is most of
+    // what a client gets out: some 7 KB a second at eight sendings.
+    private const int NetBatchMost = 1000;
+    private float netFlowAt = -10f;   // when the machine last had packets to send
     private byte[] netScratch = new byte[NetBatchMost + 600];
     [HideInInspector] public int netBatches, netTaken;
     private const float TickSeconds = 0.1f;   // input every tick, a packet on two of three
@@ -539,10 +543,14 @@ public class EmuShareHub : UdonSharpBehaviour
         if (machine.inputAway) Drain();
         if (mine.Busy() || Networking.IsClogged) return;
 
-        // the network's packets go ahead of the display, which while they flow is sent half as often
+        // the network's packets go ahead of the display, which while they flow (a game) has one
+        // sending in six: a picture of the game a second and a half apart, and the game's
+        // packets nearly all of the link
         bool net = MoveNet();
+        if (net) netFlowAt = Time.time;
+        bool flowing = Time.time - netFlowAt < 1f;
         int length = 0;
-        if (ticks % 3 != 0 && (shareCount > 0 || selfTest) && !(net && (ticks & 1) == 0))
+        if (ticks % 3 != 0 && (shareCount > 0 || selfTest) && !(flowing && ticks % 6 != 1))
         {
             if (on && !reading) Capture();
             length = Build(on);
@@ -617,10 +625,11 @@ public class EmuShareHub : UdonSharpBehaviour
     }
 
     // Two real clients test the network (docs/lan.md): each switches its machine on, pings the
-    // other's a while after both are there, then starts a two-player game of Doom with it,
-    // and logs what its machine sent, got and printed.
-    public bool lanTest;
-    private float lanAt, lanPingAt, lanGameAt;
+    // other's a while after both are there, then asks the Network program for it (who is there,
+    // its Home, a picture fetched and compared), or with lanDoom or lanQuake starts that game
+    // with it as the desktop's shortcuts do (nxgame); and logs what its machine sent, got and printed.
+    public bool lanTest, lanDoom, lanQuake;
+    private float lanAt, lanPingAt, lanGameAt, lanDetailAt;
     private bool lanStarted, lanPinged, lanGame;
 
     private void LanTest()
@@ -639,6 +648,13 @@ public class EmuShareHub : UdonSharpBehaviour
         }
         if (Time.time < lanAt) return;
         lanAt = Time.time + 5f;
+        // (a game's packets are logged too: forty of them every half minute from its start)
+        if (lanGame && Time.time >= lanDetailAt)
+        {
+            lanDetailAt = Time.time + 30f;
+            machine.LanDetailAgain();
+            lanBatches = 0;
+        }
         string found = "", last = "";
         bool answered = false;
         for (int r = 0; r < terminal.rows; r++)
@@ -646,14 +662,23 @@ public class EmuShareHub : UdonSharpBehaviour
             string line = terminal.LineText(r);
             if (line.Contains("packets transmitted")) answered = true;
             if (line.Trim().Length > 0) last = line.Trim();
-            if (line.Contains("packets transmitted") || line.Contains("nodes)") || line.Contains("doomstat: ") && line.Contains("tics")) found += line.Trim() + " | ";
+            if (line.Contains("packets transmitted") || line.Contains("nodes)") || line.Contains("doomstat: ") && line.Contains("tics")
+                || line.Contains("NXNET") || line.Contains("computers answer") || line.Contains("nxnet:") || line.Contains(" Computer ")
+                || line.Contains("nxgame:") || line.Contains("entered the game") || line.Contains("Connection accepted") || line.Contains("TAG=") || line.Contains("TIME=")) found += line.Trim() + " | ";
         }
         // the game after the ping: the lower number is player 1, and each names the other's address
         if (!answered) lanGameAt = Time.time + 5f;
         else if (!lanGame && Time.time >= lanGameAt)
         {
             lanGame = true;
-            consoleKeyboard.TypeText("doom -net " + (myId < other ? 1 : 2) + " .10.0." + (other >> 8) + "." + (other & 255) + "\n");
+            string its = "10.0." + (other >> 8) + "." + (other & 255);
+            if (lanDoom) consoleKeyboard.TypeText("clear; nxgame doom now\n");
+            // (the host says every twenty seconds whether it is said to host; the other what it is answered)
+            else if (lanQuake) consoleKeyboard.TypeText(myId < other
+                ? "clear; (while true; do sleep 20; echo TAG=$(cat /tmp/nxhosting 2>&1) $(date +%s); done) & nxgame quake host\n"
+                : "clear; until nxnet --find 12 | grep quake; do date +TIME=%s; done; nxgame quake join\n");
+            else consoleKeyboard.TypeText("clear; nxnet --find; echo NXNET-HOME $(nxnet --ls " + its + " / | wc -l) entries; nxnet --get " + its
+                + " /Pictures/Earthrise.jpg /tmp/p; cmp /tmp/p /root/Pictures/Earthrise.jpg && echo NXNET-SAME-PICTURE\n");
         }
         Debug.Log("[LanTest] t=" + Time.time.ToString("F0") + " me=" + myId + " other=" + other + " on=" + machine.IsOn() + " pinged=" + lanPinged + " game=" + lanGame
                   + " sent=" + machine.netSent + " received=" + machine.netReceived + " batches=" + netBatches + " taken=" + netTaken

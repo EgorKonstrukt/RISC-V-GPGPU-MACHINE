@@ -18,11 +18,14 @@
 #include <signal.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include "ui.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
+#include "ui_ask.h"
+#include "ui_glyph.h"
 
 #define CARRIED "/tmp/clipboard.files"	/* "copy" or "cut", then a path a line */
 #define DROPPED "/tmp/nxdrop"		/* "x y": where on the desktop a drag from a window ended */
@@ -36,7 +39,9 @@
 #define ROW_H 18
 #define CELL_W 76			/* a place on the desktop */
 #define CELL_H 70
-#define WIDTH 532
+#define WIDTH 636
+#define SIDE 104			/* the places, left of the folder's entries */
+#define PLACE_H 22
 #define HEIGHT 350
 #define MAX_ENTRIES 512
 #define SCREEN_BAR 26			/* the bar along the screen's bottom (nxbar.c) */
@@ -47,7 +52,7 @@ enum { K_UNKNOWN, K_OTHER, K_FOLDER, K_PROGRAM, K_PICTURE, K_PAGE, K_SOUND, K_VI
 static const char *kind_names[] = { "", "File", "Folder", "Program", "Picture", "Page", "Sound", "Video", "Archive", "Shortcut" };
 
 static struct entry {
-	char name[64], label[40], run[64];	/* run: a shortcut's command */
+	char name[128], label[40], run[64];	/* run: a shortcut's command */
 	long size;
 	int kind, icon, chosen;			/* icon: a cell of the sheets, unless icon_file */
 	char icon_file[96];			/* a file with an icon of its own: this program, or a shortcut's */
@@ -65,11 +70,18 @@ static char where[512];
 static struct timespec folder_time;
 static GR_WINDOW_ID window;
 static GR_SCREEN_INFO screen;
-static const char *buttons[] = { "Back", "Forward", "Up", "View" };
-enum { B_BACK, B_FORWARD, B_UP, B_VIEW, BUTTONS };
-#define BUTTON_W 52
-static int renaming;		/* the entry at the cursor is being given a name, typed in the status line */
-static char typed[64];
+enum { B_BACK, B_FORWARD, B_UP, B_HOME, B_VIEW, B_NEW, BUTTONS };
+#define BUTTON_W 28
+static int side;		/* the places' width: none on the desktop */
+/* The places: where a click on one goes (Network: the program that shows the other machines). */
+static const struct { const char *label, *icon, *path; } places[] = {
+	{ "Home", "home", "/root" }, { "Desktop", "desktop", "/root/Desktop" }, { "Pictures", "pictures", "/root/Pictures" },
+	{ "Music", "music", "/root/Music" }, { "Videos", "videos", "/root/Videos" }, { "Computer", "computer", "/" },
+	{ "Network", "nxnet", NULL },
+};
+#define PLACES_N ((int)(sizeof places / sizeof places[0]))
+static int renaming;		/* 1: the entry at the cursor is being given a name, typed in the status line; 2: a path is typed, in its field */
+static char typed[128];
 static char notice[160];
 static char history[16][512];
 static int history_at, history_count;
@@ -80,7 +92,7 @@ static unsigned click_time;
 static char ahead[24];		/* letters typed one after another: the entry that starts so */
 static unsigned ahead_time;
 
-enum { M_OPEN = 1, M_EDIT, M_CUT, M_COPY, M_PASTE, M_RENAME, M_DELETE, M_SHORTCUT, M_PROPERTIES,
+enum { M_OPEN = 1, M_EDIT, M_CUT, M_COPY, M_PASTE, M_PASTE_IN, M_RENAME, M_DELETE, M_SHORTCUT, M_PROPERTIES,
 	M_TILES, M_DETAILS, M_REFRESH, M_FOLDER, M_FILE, M_ARRANGE, M_SETTINGS, M_FILES, M_ALL };
 
 static unsigned
@@ -126,16 +138,27 @@ ends_in(const char *name, const char *endings)
 	return 0;
 }
 
+static int sort_by;		/* the list's order: 0 by name, 1 by size (largest first), 2 by kind */
+
 static int
 order(const void *a, const void *b)
 {
 	const struct entry *x = &entries[*(const short *)a], *y = &entries[*(const short *)b];
 	int fx = x->kind == K_FOLDER, fy = y->kind == K_FOLDER;
 
-	return fx != fy ? fy - fx : strcasecmp(x->name, y->name);
+	if (fx != fy)
+		return fy - fx;
+	if (sort_by == 1 && x->size != y->size)
+		return x->size < y->size ? 1 : -1;
+	if (sort_by == 2 && x->kind != y->kind)
+		return x->kind - y->kind;
+	return strcasecmp(x->name, y->name);
 }
 
-/* Folders first, then by name. The entries' numbers are sorted and each entry then moved
+static int kind_of(int i);
+static long size_of(int i);
+
+/* Folders first, then by name (or by what a column's heading asked for, then by name). The entries' numbers are sorted and each entry then moved
  * once: an entry is hundreds of bytes, and sorting them was mostly copying. */
 static void
 sort_entries(void)
@@ -144,8 +167,11 @@ sort_entries(void)
 	static struct entry held;
 	int i, k, from;
 
-	for (i = 0; i < count; i++)
+	for (i = 0; i < count; i++) {
 		to[i] = (short)i;
+		if (sort_by)	/* every entry's size and kind are asked for: slow in a folder of hundreds */
+			kind_of(i), size_of(i);
+	}
 	qsort(to, count, sizeof to[0], order);
 	for (i = 0; i < count; i++) {
 		if (to[i] < 0 || to[i] == i)
@@ -211,7 +237,7 @@ kind_of(int i)
 {
 	struct entry *e = &entries[i];
 	struct stat info;
-	char lower[64];
+	char lower[128];
 	const char *icon = "file";
 	int k;
 
@@ -338,7 +364,7 @@ save_places(void)
 static void
 place_icons(void)
 {
-	char line[128];
+	char line[200];
 	FILE *file = fopen(PLACES, "r");
 	int i, x, y, n, dropped = 0, changed = 0;
 
@@ -375,17 +401,22 @@ read_folder(void)
 	struct dirent *item;
 	struct stat info;
 	char title[540];
-	int i;
+	int i, left_out = 0;
 
 	if (!getcwd(where, sizeof where))
 		strcpy(where, "/");
 	count = 0;
 	folder = opendir(".");
-	while (folder && count < MAX_ENTRIES && (item = readdir(folder)) != NULL) {
+	while (folder && (item = readdir(folder)) != NULL) {
 		struct entry *e = &entries[count];
 
 		if (!strcmp(item->d_name, ".") || !strcmp(item->d_name, "..") || (desktop && item->d_name[0] == '.'))
 			continue;
+		/* what is not shown is said: a name cut short would be an entry that cannot be opened */
+		if (count == MAX_ENTRIES || strlen(item->d_name) >= sizeof e->name) {
+			left_out++;
+			continue;
+		}
 		memset(e, 0, sizeof *e);
 		copy_text(e->name, item->d_name, sizeof e->name);
 		copy_text(e->label, item->d_name, sizeof e->label);
@@ -397,6 +428,9 @@ read_folder(void)
 	}
 	if (folder)
 		closedir(folder);
+	if (left_out)
+		snprintf(notice, sizeof notice, "%d more are not shown (%d entries at most, names under %d letters)", left_out, MAX_ENTRIES,
+			 (int)sizeof entries[0].name);
 	sort_entries();
 	if (stat(".", &info) == 0)
 		folder_time = info.st_mtim;
@@ -454,9 +488,9 @@ tile_at(int i, int *x, int *y, int *w, int *h)
 	if (row < 0 || row >= rows)
 		return 0;
 	if (details)
-		*x = 2, *y = BAR + 2 + ROW_H + row * ROW_H, *w = width - UI_SCROLL_W - 4, *h = ROW_H;
+		*x = side + 2, *y = BAR + 2 + ROW_H + row * ROW_H, *w = width - side - UI_SCROLL_W - 4, *h = ROW_H;
 	else
-		*x = 3 + (i % columns) * TILE_W, *y = BAR + 3 + row * TILE_H, *w = TILE_W - 2, *h = TILE_H - 2;
+		*x = side + 3 + (i % columns) * TILE_W, *y = BAR + 3 + row * TILE_H, *w = TILE_W - 2, *h = TILE_H - 2;
 	return 1;
 }
 
@@ -602,7 +636,9 @@ draw_status(void)
 	char text[700];
 	int n = chosen_count();
 
-	if (renaming)
+	if (renaming == 2)
+		snprintf(text, sizeof text, "A folder's path: Enter goes there, Escape leaves it");
+	else if (renaming)
 		snprintf(text, sizeof text, "Name: %s_   (Enter names it, Escape leaves it)", typed);
 	else if (notice[0])
 		snprintf(text, sizeof text, "%s", notice);
@@ -610,8 +646,15 @@ draw_status(void)
 		snprintf(text, sizeof text, "%d items selected", n);
 	else if (cursor >= 0 && entries[cursor].chosen && kind_of(cursor) != K_FOLDER)
 		snprintf(text, sizeof text, "%s   %ld bytes", entries[cursor].name, size_of(cursor));
-	else
-		snprintf(text, sizeof text, "%d items", count);
+	else {
+		struct statvfs room;
+
+		/* (what can still be written: it is kept in memory) */
+		if (!desktop && statvfs(".", &room) == 0)
+			snprintf(text, sizeof text, "%d items   %lu MB free", count, (unsigned long)((unsigned long long)room.f_bavail * room.f_frsize >> 20));
+		else
+			snprintf(text, sizeof text, "%d items", count);
+	}
 	if (desktop) {
 		/* the desktop has no line of its own: a strip above the bar while there is something to say */
 		if (renaming || notice[0]) {
@@ -624,10 +667,49 @@ draw_status(void)
 	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
 }
 
+/* The folder shown: its picture and its path, or the path being typed. */
+static void
+draw_path(void)
+{
+	int at = 3 + BUTTONS * (BUTTON_W + 3);
+	char text[140];
+
+	ui_fill(window, at, 3, width - at - 3, BAR - 6, WHITE);
+	ui_bevel(window, at, 3, width - at - 3, BAR - 6, 1);
+	ui_icon(window, ui_gc, at + 3, 5, ui_icon_of("folder-open"), 16);
+	snprintf(text, sizeof text, "%s_", typed);
+	ui_text_fit(window, at + 23, 7, width - at - 30, renaming == 2 ? text : where, BLACK);
+}
+
+/* The keys along the top, and the places down the left side. */
+static void
+draw_panels(void)
+{
+	int signs[BUTTONS] = { UI_G_LEFT, UI_G_RIGHT, UI_G_UP, UI_G_HOME, details ? UI_G_TILES : UI_G_LIST, UI_G_FOLDER };
+	int grey[BUTTONS] = { history_at < 1, history_at + 1 >= history_count, !where[1], 0, 0, 0 };
+	int i, y, here;
+
+	ui_fill(window, 0, 0, width, BAR, UI_FACE);
+	for (i = 0; i < BUTTONS; i++)
+		ui_tool(window, 3 + i * (BUTTON_W + 3), 3, BUTTON_W, BAR - 6, signs[i], grey[i] ? 2 : 0);
+	draw_path();
+	ui_fill(window, 0, BAR, side, height - BAR - STATUS, UI_FACE);
+	for (i = 0; i < PLACES_N; i++) {
+		y = BAR + 4 + i * PLACE_H + (places[i].path ? 0 : 8);
+		here = places[i].path && !strcmp(where, places[i].path);
+		if (!places[i].path)
+			ui_fill(window, 6, y - 5, side - 12, 1, UI_SHADOW);
+		if (here)
+			ui_fill(window, 2, y, side - 4, PLACE_H - 2, UI_SELECTED);
+		ui_icon(window, ui_gc, 6, y + 2, ui_icon_of(places[i].icon) >= 0 ? ui_icon_of(places[i].icon) : ui_icon_of("computer"), 16);
+		ui_text(window, 28, y + 4, places[i].label, -1, here ? WHITE : BLACK, 0);
+	}
+}
+
 static void
 draw_all(void)
 {
-	int i, area = height - BAR - STATUS, at = 3 + BUTTONS * (BUTTON_W + 3);
+	int i, area = height - BAR - STATUS;
 
 	if (desktop) {
 		read_wall();
@@ -637,18 +719,11 @@ draw_all(void)
 		draw_status();
 		return;
 	}
-	ui_fill(window, 0, 0, width, BAR, UI_FACE);
-	for (i = 0; i < BUTTONS; i++)
-		ui_button(window, 3 + i * (BUTTON_W + 3), 3, BUTTON_W, BAR - 6, buttons[i], 0);
-	/* the folder shown: its picture and its path */
-	ui_fill(window, at, 3, width - at - 3, BAR - 6, WHITE);
-	ui_bevel(window, at, 3, width - at - 3, BAR - 6, 1);
-	ui_icon(window, ui_gc, at + 3, 5, ui_icon_of("folder-open"), 16);
-	ui_text_fit(window, at + 23, 7, width - at - 30, where, BLACK);
-	ui_fill(window, 0, BAR, width - UI_SCROLL_W, area, WHITE);
-	ui_bevel(window, 0, BAR, width - UI_SCROLL_W, area, 1);
+	draw_panels();
+	ui_fill(window, side, BAR, width - side - UI_SCROLL_W, area, WHITE);
+	ui_bevel(window, side, BAR, width - side - UI_SCROLL_W, area, 1);
 	if (details) {
-		ui_button(window, 2, BAR + 2, width - UI_SCROLL_W - 154, ROW_H, "Name", 0);
+		ui_button(window, side + 2, BAR + 2, width - side - UI_SCROLL_W - 154, ROW_H, "Name", 0);
 		ui_button(window, width - UI_SCROLL_W - 152, BAR + 2, 70, ROW_H, "Size", 0);
 		ui_button(window, width - UI_SCROLL_W - 82, BAR + 2, 80, ROW_H, "Kind", 0);
 	}
@@ -695,7 +770,7 @@ layout(void)
 		columns = 1;
 		rows = (height - BAR - STATUS - 4 - ROW_H) / ROW_H;
 	} else {
-		columns = (width - UI_SCROLL_W - 6) / TILE_W;
+		columns = (width - side - UI_SCROLL_W - 6) / TILE_W;
 		rows = (height - BAR - STATUS - 6) / TILE_H;
 	}
 	if (columns < 1)
@@ -879,15 +954,22 @@ carry(const char *how)
 	strcpy(notice, how[1] == 'o' ? "copied: Paste puts it in the folder shown" : "cut: Paste moves it to the folder shown");
 }
 
-/* Puts what was copied or cut into this folder, each under a name that is free here. */
+/* Puts what was copied or cut into this folder (or `into`, a folder of it), each under a name
+ * that is free there. */
 static void
-paste(void)
+paste(const char *into)
 {
-	char how[8] = "", from[600], name[80] = "";
+	char how[8] = "", from[600], name[160] = "";
 	const char *base, *dot;
 	FILE *file = fopen(CARRIED, "r");
 	int n, stem, done = 0, failed = 0;
 
+	if (into && chdir(into) != 0) {
+		strcpy(notice, "that could not be put there");
+		if (file)
+			fclose(file);
+		return;
+	}
 	if (file && fgets(how, sizeof how, file))
 		while (fgets(from, sizeof from, file)) {
 			from[strcspn(from, "\r\n")] = 0;
@@ -898,9 +980,9 @@ paste(void)
 			stem = dot && dot != base ? (int)(dot - base) : (int)strlen(base);
 			for (n = 0; n < 100; n++) {
 				if (n == 0)
-					snprintf(name, sizeof name, "%.60s", base);
+					snprintf(name, sizeof name, "%.127s", base);
 				else
-					snprintf(name, sizeof name, "%.*s-%d%.12s", stem > 44 ? 44 : stem, base, n + 1, base + stem);
+					snprintf(name, sizeof name, "%.*s-%d%.12s", stem > 100 ? 100 : stem, base, n + 1, base + stem);
 				if (access(name, F_OK) != 0)
 					break;
 			}
@@ -911,6 +993,8 @@ paste(void)
 		}
 	if (file)
 		fclose(file);
+	if (into && chdir(where) != 0)
+		return;
 	if (!done && !failed) {
 		strcpy(notice, "nothing was copied or cut");
 		return;
@@ -919,7 +1003,7 @@ paste(void)
 		unlink(CARRIED);
 	strcpy(notice, failed ? "that could not be put here" : "");
 	read_folder();
-	select_name(name);
+	select_name(into ? into : name);
 }
 
 /* Begins the typing of a name for the entry at the cursor. */
@@ -965,22 +1049,46 @@ new_entry(int folder)
 		rename_begin();
 }
 
+static void draw_all(void);
+
+/* This window's events while a question's window is up. */
+static void
+others(GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window && !desktop)
+		draw_all();
+}
+
+/* Deletes the selected entries, a folder with all it holds, once the question is answered. */
 static void
 delete_chosen(void)
 {
-	int i, failed = 0, done = 0;
+	static const char *const answers[] = { "Delete", "Cancel" };
+	char text[240];
+	int i, n = chosen_count(), failed = 0, done = 0, folders = 0, one = -1;
 
 	for (i = 0; i < count; i++)
+		if (entries[i].chosen)
+			folders += kind_of(i) == K_FOLDER, one = i;
+	if (!n) {
+		strcpy(notice, "nothing is selected");
+		return;
+	}
+	if (n == 1)
+		snprintf(text, sizeof text, "Delete %.80s?%s", entries[one].label, folders ? "\nIt is a folder: everything in it goes too." : "");
+	else
+		snprintf(text, sizeof text, "Delete these %d entries?%s", n, folders ? "\nA folder goes with everything in it." : "");
+	if (ui_ask("Delete", text, answers, 2, others) != 0)
+		return;
+	for (i = 0; i < count; i++)
 		if (entries[i].chosen) {
-			if ((kind_of(i) == K_FOLDER ? rmdir(entries[i].name) : unlink(entries[i].name)) == 0)
+			if (kind_of(i) == K_FOLDER ? run_wait("rm", "-rf", "--", entries[i].name) : unlink(entries[i].name) == 0)
 				done++;
 			else
-				failed = errno == ENOTEMPTY || errno == EEXIST ? 2 : 1;
+				failed++;
 		}
-	if (!done && !failed)
-		strcpy(notice, "nothing is selected");
-	else if (failed)
-		strcpy(notice, failed == 2 ? "a folder that is not empty stays" : "that cannot be deleted");
+	if (failed)
+		snprintf(notice, sizeof notice, "%d could not be deleted", failed);
 	if (done)
 		read_folder();
 }
@@ -1119,7 +1227,7 @@ properties_window(const char *path)
 		printf("nxfiles: %s: %s\n", lines[i][0], lines[i][1]);
 	fflush(stdout);
 	snprintf(title, sizeof title, "%.90s - Properties", e->label);
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, title, GR_ROOT_WINDOW_ID, -1, -1, wide, high, UI_FACE);
+	window = GrNewWindowEx(UI_FIXED, title, GR_ROOT_WINDOW_ID, -1, -1, wide, high, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(window);
 	GrSetFocus(window);
@@ -1195,7 +1303,8 @@ act(int what)
 	case M_EDIT: open_entry(cursor, 1); return;
 	case M_CUT: carry("cut"); break;
 	case M_COPY: carry("copy"); break;
-	case M_PASTE: paste(); break;
+	case M_PASTE: paste(NULL); break;
+	case M_PASTE_IN: if (cursor >= 0) paste(entries[cursor].name); break;
 	case M_RENAME: rename_begin(); break;
 	case M_DELETE: delete_chosen(); break;
 	case M_SHORTCUT: if (cursor >= 0) shortcut_of(cursor); break;
@@ -1237,7 +1346,7 @@ context_menu(int on, int x, int y, int keyboard)
 		ROW("Cut", M_CUT, UI_MENU_LINE);
 		ROW("Copy", M_COPY, 0);
 		if (entries[on].kind == K_FOLDER)
-			ROW("Paste", M_PASTE, carried ? 0 : UI_MENU_GREY);
+			ROW("Paste into it", M_PASTE_IN, carried ? 0 : UI_MENU_GREY);
 		ROW("Rename", M_RENAME, UI_MENU_LINE);
 		ROW("Delete", M_DELETE, 0);
 		if (!desktop)
@@ -1335,14 +1444,20 @@ drop(int x, int y, int wx, int wy, int copy)
 	}
 	for (i = 0; i < count; i++)
 		if (entries[i].chosen) {
+			char there[700];
+
 			entry_path(i, from, sizeof from);
-			if (copy ? run_wait("cp", "-a", from, target) : run_wait("mv", "--", from, target))
+			/* one of that name there already stays as it is: nothing is replaced unasked */
+			snprintf(there, sizeof there, "%s/%s", target, entries[i].name);
+			if (access(there, F_OK) == 0)
+				failed++;
+			else if (copy ? run_wait("cp", "-a", from, target) : run_wait("mv", "--", from, target))
 				moved++;
 			else
 				failed++;
 		}
-	snprintf(notice, sizeof notice, failed ? "%d could not go to %.100s" : copy ? "%d copied to %.100s" : "%d moved to %.100s",
-		failed ? failed : moved, target);
+	snprintf(notice, sizeof notice, failed ? "%d could not go to %.100s (one of that name is there?)" : copy ? "%d copied to %.100s" :
+		"%d moved to %.100s", failed ? failed : moved, target);
 	read_folder();
 	draw_all();
 }
@@ -1367,14 +1482,30 @@ press(int button)
 		if (go("..", 1))
 			select_name(path);	/* the folder left is the one picked out */
 		break;
+	case B_HOME:
+		go("/root", 1);
+		break;
 	case B_VIEW:
 		set_view(!details);
 		break;
+	case B_NEW:
+		act(M_FOLDER);
+		return;
 	}
 	draw_all();
 }
 
-/* A key of the name being typed in the status line. */
+/* Begins the typing of a path in its field: the folder's own to start with. */
+static void
+path_begin(void)
+{
+	snprintf(typed, sizeof typed, "%s%s", where, where[1] ? "/" : "");
+	renaming = 2;
+	draw_path();
+	draw_status();
+}
+
+/* A key of the name being typed in the status line, or of the path in its field. */
 static void
 rename_key(int ch)
 {
@@ -1382,6 +1513,12 @@ rename_key(int ch)
 
 	if (ch == MWKEY_ESCAPE) {
 		renaming = 0;
+		draw_all();
+		return;
+	} else if (renaming == 2 && (ch == MWKEY_ENTER || ch == '\n')) {
+		renaming = 0;
+		if (n)
+			go(typed, 1);	/* (a path that is no folder is said to be none) */
 		draw_all();
 		return;
 	} else if (ch == MWKEY_ENTER || ch == '\n') {
@@ -1406,12 +1543,15 @@ rename_key(int ch)
 	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
 		if (n)
 			typed[n - 1] = 0;
-	} else if (ch > 32 && ch < 127 && ch != '/' && n < (int)sizeof typed - 1) {
+	} else if (ch > 32 && ch < 127 && (ch != '/' || renaming == 2) && n < (int)sizeof typed - 1) {
 		typed[n] = ch, typed[n + 1] = 0;
 	} else if (ch == ' ' && n && n < (int)sizeof typed - 1) {
 		typed[n] = ' ', typed[n + 1] = 0;
 	}
-	draw_status();
+	if (renaming == 2)
+		draw_path();
+	else
+		draw_status();
 }
 
 /* The icon of the desktop nearest the cursor's in a direction (dx, dy one of -1, 0, 1). */
@@ -1477,8 +1617,12 @@ key(const GR_EVENT *event)
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
 	if ((event->keystroke.modifiers & MWKMOD_CTRL) && ch < 128 && isalpha(ch))
 		command = tolower(ch);
-	else if (ch == 1 || ch == 3 || ch == 22 || ch == 24)
+	else if (ch == 1 || ch == 3 || ch == 12 || ch == 22 || ch == 24)
 		command = 'a' + ch - 1;
+	if (command == 'l' && !desktop) {
+		path_begin();
+		return;
+	}
 	if (command) {
 		if (command == 'c' || command == 'x' || command == 'v' || command == 'a')
 			act(command == 'c' ? M_COPY : command == 'x' ? M_CUT : command == 'v' ? M_PASTE : M_ALL);
@@ -1656,6 +1800,7 @@ main(int argc, char **argv)
 	} else {
 		if (chdir(argc > 1 ? argv[1] : "/root") != 0)
 			chdir("/");
+		side = SIDE;
 		layout();
 		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Files", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
 		read_folder();
@@ -1726,15 +1871,30 @@ main(int argc, char **argv)
 				for (i = 0; i < BUTTONS; i++)
 					if (ui_inside(event.button.x, event.button.y, 3 + i * (BUTTON_W + 3), 3, BUTTON_W, BAR - 6))
 						press(i);
+				if (event.button.x >= 3 + BUTTONS * (BUTTON_W + 3))
+					path_begin();	/* the path's field: another is typed there */
 			} else if (event.button.y >= height - STATUS) {
 				break;
+			} else if (event.button.x < side) {
+				/* a place: its folder (or, the last one, the program for the other machines) */
+				i = (event.button.y - BAR - 4) / PLACE_H;
+				if (i >= 0 && i < PLACES_N - 1)
+					go(places[i].path, 1);
+				else if (event.button.y >= BAR + 12 + (PLACES_N - 1) * PLACE_H && event.button.y < BAR + 12 + PLACES_N * PLACE_H)
+					ui_run("nxnet", NULL);
+				draw_all();
 			} else if (event.button.x >= width - UI_SCROLL_W) {
 				thumb_held = 1;
 				ui_moves(window, EVENTS, 1);	/* (the pointer's moves, until the button is let go) */
 				scroll_to(ui_scroll_to(event.button.y, BAR, area, total_rows(), rows));
 			} else {
 				i = hit(event.button.x, event.button.y);
-				if (event.button.changebuttons & GR_BUTTON_R)
+				if (details && event.button.y < BAR + 2 + ROW_H) {
+					/* a column's heading: the list in its order */
+					sort_by = event.button.x < width - UI_SCROLL_W - 152 ? 0 : event.button.x < width - UI_SCROLL_W - 82 ? 1 : 2;
+					read_folder();
+					draw_all();
+				} else if (event.button.changebuttons & GR_BUTTON_R)
 					context_menu(i, event.button.rootx, event.button.rooty, 0);
 				else if (event.button.changebuttons & GR_BUTTON_L)
 					click(i, &event);

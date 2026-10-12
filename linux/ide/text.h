@@ -269,7 +269,10 @@ tx_save(const char *path)
 		return 0;
 	for (i = 0; i < tx_count; i++)
 		fprintf(file, "%s\n", tx_lines[i]);
-	fclose(file);
+	/* (a write that failed is not a save: the text stays changed) */
+	i = !ferror(file);
+	if (fclose(file) != 0 || !i)
+		return 0;
 	tx_modified = 0;
 	return 1;
 }

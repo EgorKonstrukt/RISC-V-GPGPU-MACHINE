@@ -8,6 +8,7 @@
 #include "ui_files.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
+#include "ui_ask.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -671,28 +672,40 @@ write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
 	char beside[320];
 	FILE *file = NULL;
 	unsigned char *row = malloc((size_t)w * 3);
-	int x, y, good, why;
+	const char *failed = NULL;	/* the step that did not go, for the log */
+	int x, y = 0, why;
 
 	snprintf(beside, sizeof beside, "%.300s.new", file_path);
-	if (!row || !(file = fopen(beside, "wb"))) {
-		free(row);
-		return 0;
-	}
-	good = fprintf(file, "P6\n%d %d\n255\n", w, h) > 0;
-	for (y = 0; y < h && good; y++) {
-		for (x = 0; x < w; x++)
-			row[3 * x] = (unsigned char)(pixels[y * w + x] >> 16), row[3 * x + 1] = (unsigned char)(pixels[y * w + x] >> 8),
-			row[3 * x + 2] = (unsigned char)pixels[y * w + x];
-		good = fwrite(row, 3, (size_t)w, file) == (size_t)w;
+	if (!row) {
+		failed = "no memory for a row of", errno = ENOMEM;
+	} else if (!(file = fopen(beside, "wb"))) {
+		failed = "cannot make";
+	} else {
+		if (fprintf(file, "P6\n%d %d\n255\n", w, h) <= 0)
+			failed = "cannot write the first lines of";
+		for (y = 0; y < h && !failed; y++) {
+			for (x = 0; x < w; x++)
+				row[3 * x] = (unsigned char)(pixels[y * w + x] >> 16), row[3 * x + 1] = (unsigned char)(pixels[y * w + x] >> 8),
+				row[3 * x + 2] = (unsigned char)pixels[y * w + x];
+			if (fwrite(row, 3, (size_t)w, file) != (size_t)w)
+				failed = "cannot write the rows of";
+		}
+		why = errno;
+		if (fclose(file) != 0 && !failed)
+			failed = "cannot finish", why = errno;
+		errno = why;
+		if (!failed && rename(beside, file_path) != 0)
+			failed = "cannot put in the file's place";
 	}
 	free(row);
-	good = fclose(file) == 0 && good;
-	if (!(good = good && rename(beside, file_path) == 0)) {
+	if (failed) {
 		why = errno;
-		unlink(beside);
+		fprintf(stderr, "nxpaint: save: %s %s (row %d of %d): %s\n", failed, beside, file ? y : 0, h, strerror(why));
+		if (file)
+			unlink(beside);
 		errno = why;
 	}
-	return good;
+	return !failed;
 }
 
 /* A new picture in place of this one, its history forgotten; `white`: its pixels are still to
@@ -790,18 +803,28 @@ save_to(const char *wanted)
 {
 	const char *base = strrchr(wanted, '/') ? strrchr(wanted, '/') + 1 : wanted;
 	char to[300];
-	int fitted;
+	int fitted = 0;
 
-	snprintf(to, sizeof to, "%s", wanted);
-	fitted = ui_files_ending(to, sizeof to, KINDS) && ui_files_wanted(base, KINDS);
-	if (!write_ppm(to, pix, pw, ph)) {
-		snprintf(notice, sizeof notice, "NOT saved: cannot write %.90s (%s)", to, strerror(errno));
-		return;
+	/* (what was asked for, what it became and how it went are said on the console too) */
+	fprintf(stderr, "nxpaint: save: asked for \"%s\", %d x %d\n", wanted, pw, ph);
+	if (strlen(wanted) + 5 >= sizeof to) {
+		snprintf(notice, sizeof notice, "NOT saved: the name is too long (%d characters)", (int)strlen(wanted));
+	} else if (!base[0] || base[0] == '.') {
+		/* (no folder shows a name that starts with a dot: the picture would seem lost) */
+		snprintf(notice, sizeof notice, "NOT saved: \"%.60s\" is not a name (it starts with a dot or is empty)", base);
+	} else {
+		snprintf(to, sizeof to, "%s", wanted);
+		fitted = ui_files_ending(to, sizeof to, KINDS) && ui_files_wanted(base, KINDS);
+		if (!write_ppm(to, pix, pw, ph)) {
+			snprintf(notice, sizeof notice, "NOT saved: cannot write %.90s (%s)", to, strerror(errno));
+		} else {
+			snprintf(path, sizeof path, "%s", to);
+			named = 1, modified = 0;
+			titled();
+			snprintf(notice, sizeof notice, fitted ? "saved as %.90s (a PPM: Paint writes no other kind)" : "saved as %.120s", path);
+		}
 	}
-	snprintf(path, sizeof path, "%s", to);
-	named = 1, modified = 0;
-	titled();
-	snprintf(notice, sizeof notice, fitted ? "saved as %.90s (a PPM: Paint writes no other kind)" : "saved as %.120s", path);
+	fprintf(stderr, "nxpaint: save: %s\n", notice);
 }
 
 /* ---- colours ---- */
@@ -1113,6 +1136,34 @@ others(GR_EVENT *event)
 		draw_all();
 }
 
+static void command(int id);
+
+/* True if the picture may be let go: it has no changes, or the answer was to save them or not
+ * to. A test's script is asked nothing: its second "quit" leaves, as it did. */
+static int
+may_drop(void)
+{
+	static const char *const answers[] = { "Save", "Don't save", "Cancel" };
+	char text[400];
+	int answer;
+
+	if (!modified)
+		return 1;
+	if (getenv("NXPAINT_SCRIPT")) {
+		if (leaving)
+			return 1;
+		leaving = 1;
+		snprintf(notice, sizeof notice, "not saved: Ctrl+S saves, Exit once more leaves without");
+		return 0;
+	}
+	snprintf(text, sizeof text, "%.200s has changes that are not saved.\nSave them?", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	answer = ui_ask("Paint", text, answers, 3, others);
+	if (answer == 0)
+		command(C_SAVE);
+	draw_all();
+	return answer == 1 || (answer == 0 && !modified);
+}
+
 static void
 command(int id)
 {
@@ -1129,16 +1180,21 @@ command(int id)
 	x0 = sel_on ? s_x0 : 0, y0 = sel_on ? s_y0 : 0, x1 = sel_on ? s_x1 : pw, y1 = sel_on ? s_y1 : ph;
 	switch (id) {
 	case C_NEW:
+		if (!may_drop())
+			break;
 		snprintf(text, sizeof text, "%dx%d", pw, ph);
 		ask(ASK_NEW, text);
 		return;
 	case C_OPEN:
+		if (!may_drop())
+			break;
 		if (ui_choose_file("Open a picture", folder(), ".ppm .png .jpg .jpeg", chosen, sizeof chosen, others) && !open_file(chosen))
 			snprintf(notice, sizeof notice, "that is not a picture this can open");
 		draw_all();
 		return;
 	case C_SAVE:
-		if (named) {
+		/* (a picture opened from a PNG or JPEG is asked too: its PPM would replace one beside it unasked) */
+		if (named && !ui_files_ending(strcpy(where, path), sizeof where, KINDS)) {
 			save_to(path);
 			break;
 		}
@@ -1151,14 +1207,14 @@ command(int id)
 		if (ui_save_file("Save the picture as", !slash ? folder() : slash == where ? "/" : where, KINDS, slash ? slash + 1 : where, chosen,
 				 sizeof chosen, others))
 			save_to(chosen);
+		else
+			fprintf(stderr, "nxpaint: save: the window to name it in was closed with no name (it stood in %s, at \"%s\")\n", ui_files_where,
+				ui_files_name);
 		draw_all();
 		return;
 	case C_EXIT:
-		if (modified && !leaving) {
-			leaving = 1;
-			snprintf(notice, sizeof notice, "not saved: Ctrl+S saves, Exit once more leaves without");
+		if (!may_drop())
 			break;
-		}
 		GrClose();
 		exit(0);
 	case C_UNDO:
@@ -1398,7 +1454,7 @@ draw_at(int x, int y, int what)
 		s_x0 = from_x < x ? from_x : x, s_y0 = from_y < y ? from_y : y;
 		s_x1 = (from_x < x ? x : from_x) + 1, s_y1 = (from_y < y ? y : from_y) + 1;
 		s_x0 = s_x0 < 0 ? 0 : s_x0, s_y0 = s_y0 < 0 ? 0 : s_y0, s_x1 = s_x1 > pw ? pw : s_x1, s_y1 = s_y1 > ph ? ph : s_y1;
-		sel_on = s_x1 - s_x0 > 1 || s_y1 - s_y0 > 1;
+		sel_on = s_x1 > s_x0 && s_y1 > s_y0 && (s_x1 - s_x0 > 1 || s_y1 - s_y0 > 1);	/* (dragged beside the picture: none) */
 		if (n)
 			present(was_x0 - 1, was_y0 - 1, was_x1 + 1, was_y1 + 1);
 		present(s_x0 - 1, s_y0 - 1, s_x1 + 1, s_y1 + 1);
@@ -1641,6 +1697,8 @@ handle(GR_EVENT *event)
 		if (ui_wheel(event)) {
 			oy += ui_wheel_sum(event) * (48 / zoom > 0 ? 48 / zoom : 1);
 			present_view();
+		} else if (held) {
+			/* (another button while one draws: the stroke goes on as it was) */
 		} else if (x >= TOOLS_W && y >= MENU_H && y < MENU_H + view_h) {
 			notice[0] = 0;
 			press(ox + (x - TOOLS_W) / zoom, oy + (y - MENU_H) / zoom, button);

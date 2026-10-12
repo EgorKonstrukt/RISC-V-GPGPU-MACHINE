@@ -16,6 +16,7 @@
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 #include "ui.h"
+#include "ui_ask.h"
 #include "mcw.h"
 
 #define HISTORY 120
@@ -541,7 +542,7 @@ draw_stats(void)
 	char text[120];
 	int busiest[BUSIEST], i, k, n = 0;
 
-	ui_fill(window, 0, STATS_Y, WIDTH, HEIGHT - STATS_Y, UI_FACE);
+	ui_fill(window, 0, STATS_Y, WIDTH, LIST_Y - STATS_Y, UI_FACE);	/* (not the list under them: it is drawn less often) */
 	sysinfo(&info);
 	snprintf(text, sizeof text, "Running for %ld h %02ld min", info.uptime / 3600, info.uptime / 60 % 60);
 	ui_text(window, 8, STATS_Y, text, -1, BLACK, 0);
@@ -626,10 +627,38 @@ draw_list(void)
 	ui_text(window, END_W + 18, y + 5, said, -1, BLACK, 0);
 }
 
+static void draw(void);
+
+static void
+while_asking(GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window)
+		draw();
+}
+
+/* True if a program may be ended: one the desktop is made of is asked about first. */
+static int
+may_end(const char *name)
+{
+	static const char *const answers[] = { "End it", "Cancel" };
+	char text[200];
+
+	if (strcmp(name, "nano-X") && strcmp(name, "nxbar") && strcmp(name, "emuinit"))
+		return 1;
+	snprintf(text, sizeof text, "%s is part of the desktop itself.\n%s", name,
+		 !strcmp(name, "nxbar") ? "Without it there is no Start menu and no bar." : "Ending it closes every open program.");
+	return ui_ask("Monitor", text, answers, 2, while_asking) == 0;
+}
+
 /* The button: the selected program is asked to go, and made to if it is pressed again. */
 static void
 end_program(void)
 {
+	if (chosen_pid && chosen_pid != asked_pid && list.selected >= 0 && !may_end(programs[listed[list.selected]].name)) {
+		said = "Left running.";
+		draw();
+		return;
+	}
 	if (!chosen_pid) {
 		said = "Choose a program in the list first.";
 	} else if (chosen_pid == asked_pid) {
@@ -795,7 +824,7 @@ main(void)
 	sample_linux(1000);
 	sample_memory();
 	sample_programs(1000);
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Monitor", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
+	window = GrNewWindowEx(UI_FIXED, "Monitor", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
 	GrSelectEvents(window, EVENTS);
 	list_programs();
 	GrMapWindow(window);

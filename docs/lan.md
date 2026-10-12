@@ -180,12 +180,77 @@ pass defines `GPU_NET`).
   the loopback's. `quake -listen 4 +map e1m1` is a server for four; `quake +connect NAME`
   finds it by a broadcast to port 26000 and its `hostname` (its address unless set);
   `+connect 10.0.0.1` is the game's way by address. A game
-  with more than one player runs its server on the first core (`server_shaderemu.c` did that
-  already). `QUAKE_NET=1` prints what packets cost, every 200 sent.
+  with more than one player has its server's frame on a worker core as a game for one has
+  (`server_shaderemu.c`): what the worker would send is kept, a reliable message to each
+  connection at most, and goes from the first core when the frame is taken; while a player
+  is still joining the first core makes the messages itself. On the serving machine the
+  first core's frame was 134 thousand instructions before its wait for the display and is
+  75 (the server's part 70 to 5; `QUAKE_SERVER=inline` is the old way). `QUAKE_NET=1` prints what packets cost, every 200 sent.
 - **Doom**'s port had its network file all along (`i_net.c`, linuxdoom's: every player sends
   its moves to every other over UDP port 5029) and needs no change: `doom -net 1 .10.0.0.2`
   on one machine and `doom -net 2 .10.0.0.1` on the other (the player's number, then the
   others' addresses, each after a dot). Both wait until all are there.
+- **The Network program** (`linux/apps/nxnet.c`; Utilities in the Start menu, an icon on the
+  desktop, the last place in Files). `nxnet --serve`, which `nx` starts with the desktop,
+  answers the others: a UDP packet `NXNET?` to port 7474 (sent to `255.255.255.255`, which
+  is routed through the link) is answered with `NXNET! NAME`, the name a line in
+  `/tmp/nxname` or "Computer N"; over TCP at the same port `L /PATH` is answered with `OK`
+  and a line an entry (`d` or `f`, a tab, the size, a tab, the name) and `G /PATH` with
+  `OK SIZE` and the file. The paths are inside `/root`; a path with `/.` in it is refused,
+  and nothing can be written. `/tmp/nxshare.off` (the window's "Stop sharing") makes the
+  computer answer nobody. The window lists the computers that answered within a second and
+  a half (F5 or the first key asks again), then the folder of the one chosen; a file is
+  fetched to `/tmp/net/ADDRESS/` and given to `open`, or copied into `/root` under a name
+  that is free ("Copy to my Home"); Escape gives a file up while it comes. From a script:
+  `nxnet --find`, `--ls ADDRESS PATH`, `--get ADDRESS PATH FILE`. Between two interpreters
+  (`--net 47000 --net-id 1` and `2`): `--find` printed `10.0.0.1 Computer 1`, `--ls` its
+  Home, and an 83 KB picture came in 4 s, the same bytes. `NXNET_SELF=1` asks this computer
+  itself (the loopback), for a test with one machine. In the world's play mode with one
+  visitor, typed through "Console paste": `ps` has one `nxnet --serve`, `NXNET_SELF=1 nxnet
+  --find` prints `127.0.0.1 Computer 1`, `nxnet --ls 127.0.0.1 /` the Home's four folders,
+  and a plain `nxnet --find` leaves three packets in the machine's `netSent` and finds nobody.
+  Between two real clients (the hub's `lanTest`, a "Build & Test" with two clients on one
+  computer, 12 October 2026): each machine's `ping -c 5` of the other, 5 received; then each
+  one's `nxnet --find` printed the other (`10.0.0.1 Computer 1`, `10.0.0.2 Computer 2`), its
+  Home listed four entries, and a picture of 14 KB fetched from it was the same bytes as the
+  machine's own copy, some five seconds after the listing; 84 and 88 packets each way. The
+  hub's `lanDoom` asks for the game of Doom instead, as the test was before. A link that carries 600 bytes a
+  sending (the world's) is some 4 KB a second: a picture of 300 KB is over a minute.
+- **Games over the network** (`linux/apps/nxgame`; the Start menu's Games has a folder
+  Network, and the desktop its shortcuts). A computer that hosts a game says so to whoever
+  asks who is there: the word in `/tmp/nxhosting` follows its name in the answer (`NXNET!
+  Computer 1 [quake]`), whether or not it shares its Home. "Quake: host a game" (`nxgame
+  quake host`) is `quake -listen 4 +map e1m1`, said to be hosted forty seconds after it
+  starts (a join before the level is up finds no game); "Quake: join a game" connects to
+  the first computer that says `[quake]`, or says that nobody hosts. "Doom: network game"
+  (`nxgame doom host`) is started on every computer that plays and Start pressed on each:
+  the players are the computers that say `[doom]`, numbered in their addresses' order, and
+  each runs `doom -net N` with the others' addresses. `nxgame doom now` asks nothing and
+  waits eight seconds instead (`NXGAME_WAIT`), for a test. A game looks for the others with
+  `nxnet --find 12`: a computer busy with a game, over the world's link, answers seconds
+  late, and the default four are for the Network window. Checked on 12 October 2026 through
+  these scripts (the hub's `lanTest` with `lanDoom` or `lanQuake`, two clients on one
+  computer, the second of them at a fifth of the first's speed): Doom said `player 1 of 2 (2
+  nodes)` and `player 2 of 2` and ran 12 to 25 tics in five seconds on both; Quake's host
+  said `[quake]`, the other printed `joining Quake at 10.0.0.1` and `Connection accepted`,
+  and in one run of two went on into the level (787 packets one way and 257 the other in
+  the minute after), in the other neither sent a packet after the acceptance (not found
+  why). Between two harness machines the same host and join went into the level both
+  times, on the processor (6,600 packets each way in two minutes) and in the shader (1,312
+  and 895). Tiberian Dawn and Red Alert are built without the game's network code
+  (`-DNETWORKING=OFF`), and Tiberian Dawn's data is the demo's, which has no maps for
+  several players: neither plays over the network.
+- **A game has most of the world's link, and Quake keeps to it.** Quake over the world's link
+  blinked its "nothing from the server" sign all the time: a move and an update a frame are
+  more packets than a client's eight or so sendings a second carry, and the machine's queue
+  of 32 overflowed (48 times in a minute). While a machine's packets flow, the hub now gives
+  them up to 1,000 bytes of every sending (`NetBatchMost`; it was 600) and the display one
+  sending in six (it was every other); the machine keeps 64 packets each way (`NetQueue`).
+  Quake sends a move to a server on another machine, and an update to a client on one, eight
+  times a second (`net_rate`; 0 for one a frame, as before), and shows the sign after a
+  second and a half without a packet (it was 0.3 s). Two clients on one computer after
+  this: 5.6 packets a second each way, what one sent the other received to within three in
+  450, no queue overflow, no batch missed; the picture of it is the developer's to judge.
 - Anything else with sockets: `busybox httpd -p 80 -h /usr/share` on one machine and `wget
   -O /tmp/w http://10.0.0.1/web-css.html` on another gives the same file. Nothing outside
   10.0.0.0/16 exists.

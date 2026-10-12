@@ -6,6 +6,7 @@
 #include "ui_files.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
+#include "ui_ask.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/time.h>
@@ -295,12 +296,12 @@ can(int id)
 	switch (id) {
 	case C_UNDO: return tx_done_count > 0;
 	case C_REDO: return tx_undone_count > 0;
-	case C_BUILD: case C_RUN: return idle;
+	case C_BUILD: case C_RUN: case C_NEW: case C_OPEN: return idle;	/* (a build or a run is of the file shown) */
 	case C_DEBUG: return idle || dbg_state == DBG_STOPPED;
 	case C_STOP: return !idle;
 	case C_OVER: case C_INTO: case C_OUT: return dbg_state == DBG_STOPPED;
 	}
-	return 1;
+	return id < C_EXAMPLE || idle;
 }
 
 /* The keys' looks as bits: which can be pressed, and whether Debug reads "Go on". */
@@ -572,6 +573,12 @@ job_start(int kind, char *const words[])
 	if (pipe(ends) < 0)
 		return;
 	job.pid = fork();
+	if (job.pid < 0) {
+		close(ends[0]), close(ends[1]);
+		job.pid = 0;
+		say("cannot start it");
+		return;
+	}
 	if (job.pid == 0) {
 		setpgid(0, 0);
 		dup2(ends[1], 1), dup2(ends[1], 2);
@@ -1002,6 +1009,52 @@ select_word(void)
 	tx_ax = a, tx_ay = tx_y, tx_x = b, tx_marked = b > a;
 }
 
+/* Asks what to save the text as, in a window, and writes it there; false if it was not written. */
+static int
+save_as(void)
+{
+	char where[300], chosen[300], *slash;
+
+	snprintf(where, sizeof where, "%s", path);
+	if ((slash = strrchr(where, '/')) != NULL)
+		*slash = 0;
+	if (!ui_save_file("Save as", !slash ? "/root" : slash == where ? "/" : where, NULL, slash ? slash + 1 : where, chosen, sizeof chosen, others))
+		return 0;
+	if (!tx_save(chosen)) {
+		say("NOT saved: cannot write the file");
+		return 0;
+	}
+	named(chosen);
+	say("saved");
+	return 1;
+}
+
+/* True if the text may be let go: it has no changes, or the answer was to save them or not to.
+ * A test's script is asked nothing: its second "quit" leaves, as it did. */
+static int
+may_drop(void)
+{
+	static const char *const answers[] = { "Save", "Don't save", "Cancel" };
+	char text[400];
+	int answer;
+
+	if (!tx_modified)
+		return 1;
+	if (script[0]) {
+		if (leaving)
+			return 1;
+		leaving = 1;
+		say("not saved: Ctrl+S saves, Exit once more leaves without");
+		return 0;
+	}
+	snprintf(text, sizeof text, "%.200s has changes that are not saved.\nSave them?", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	answer = ui_ask("IDE", text, answers, 3, others);
+	if (answer == 0)
+		save();
+	draw_all();
+	return answer == 1 || (answer == 0 && !tx_modified);
+}
+
 static void
 build(int then)
 {
@@ -1010,7 +1063,7 @@ build(int then)
 
 	if (job.kind == J_CHECK)
 		job_stop();
-	if (!tx_save(path)) {
+	if (tx_modified && !tx_save(path)) {	/* (a file as it was opened is not written again) */
 		say("cannot write the file");
 		return;
 	}
@@ -1073,6 +1126,10 @@ command_done(int id)
 		leaving = 0;
 	switch (id) {
 	case C_NEW:
+		if (!may_drop()) {
+			draw_status();
+			return;
+		}
 		open_file("/root/untitled.c");
 		if (tx_count == 1 && !tx_lines[0][0]) {
 			tx_insert(0, 0, fresh, (int)strlen(fresh));
@@ -1082,7 +1139,7 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_OPEN:
-		if (ui_choose_file("Open", "/root", ".c .h .txt", chosen, sizeof chosen, others))
+		if (may_drop() && ui_choose_file("Open", "/root", ".c .h .txt", chosen, sizeof chosen, others))
 			open_file(chosen);
 		draw_all();
 		return;
@@ -1090,12 +1147,15 @@ command_done(int id)
 		save();
 		break;
 	case C_SAVE_AS:
-		ask(ASK_SAVE, path);
+		if (script[0]) {	/* (a test's script types the path in the status line) */
+			ask(ASK_SAVE, path);
+			return;
+		}
+		save_as();
+		draw_all();
 		return;
 	case C_EXIT:
-		if (tx_modified && !leaving) {
-			leaving = 1;
-			say("not saved: Ctrl+S saves, Exit once more leaves without");
+		if (!may_drop()) {
 			draw_status();
 			return;
 		}
@@ -1219,7 +1279,7 @@ command_done(int id)
 		help(id == C_ABOUT);
 		return;
 	default:
-		if (id >= C_EXAMPLE && id < C_EXAMPLE + example_count) {
+		if (id >= C_EXAMPLE && id < C_EXAMPLE + example_count && may_drop()) {
 			open_example(id - C_EXAMPLE);
 			draw_all();
 		}
@@ -1360,7 +1420,8 @@ key(int ch, int modifiers)
 
 		tx_delete_selection();
 		n = (int)strspn(tx_lines[tx_y], " ");
-		n = n > tx_x ? tx_x : n > 150 ? 150 : n;
+		n = n > tx_x ? tx_x : n;
+		n = n > 150 ? 150 : n;
 		memset(lead + 1, ' ', (size_t)n);
 		if (tx_x > 0 && tx_lines[tx_y][tx_x - 1] == '{')
 			memset(lead + 1 + n, ' ', TX_TAB), n += TX_TAB;

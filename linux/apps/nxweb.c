@@ -59,7 +59,7 @@ static int dragging;
 static volatile uint32_t *regs;
 static const unsigned char *fetched;
 static int loading;		/* the request the host has not answered yet, or 0 */
-static int waited;
+static int waited, ticked;	/* ticked: the event just had was the wait running out */
 static int by_hand;		/* the host may not open this address itself: asked again until it may */
 
 /* The page's pictures. The host fetches and decodes one and hands over its pixels (docs/fetch.md);
@@ -871,6 +871,16 @@ layout(void)
 				title_n = 0;
 			}
 			open_tag(page + i + 1, end - i - 1);
+			/* a script's or a sheet's text is not tags: a < in it would take the rest of the page */
+			if (!strncasecmp(page + i, "<script", 7) || !strncasecmp(page + i, "<style", 6)) {
+				const char *close = tolower((unsigned char)page[i + 2]) == 'c' ? "</script" : "</style";
+				int length = (int)strlen(close);
+
+				for (i = end + 1; i + length <= page_length && strncasecmp(page + i, close, length); i++)
+					continue;
+				i = i + length > page_length ? page_length : i;
+				continue;
+			}
 			i = end + 1;
 			continue;
 		}
@@ -1111,6 +1121,7 @@ show_kept(char *html, int n, const char *note)
 	page = html;
 	page_length = n;
 	top = 0;
+	picked = -1;	/* (a link of the page before) */
 	/* another page: the last one's pictures go */
 	for (i = 0; i < picture_count; i++)
 		if (pictures[i].state == PICTURE_HERE)
@@ -1222,7 +1233,7 @@ check_reply(void)
 	int n, code;
 
 	if ((int)regs[REG_REPLY] != loading) {
-		if (++waited > 300) {
+		if ((waited += ticked) > 300) {	/* (tenths of a second: other events are not time) */
 			loading = 0;
 			if (asking >= SHEET)
 				sheets[asking - SHEET].state = PICTURE_FAILED;
@@ -1454,6 +1465,8 @@ click(int x, int y)
 		scroll_to(ui_scroll_to(y, BAR, view_height(), page_height, view_height()));
 		return;
 	}
+	if (y >= height - STATUS)
+		return;		/* (the status line is over the page's last lines) */
 	for (i = 0; i < run_count; i++) {
 		struct run *r = &runs[i];
 
@@ -1509,6 +1522,9 @@ key(int ch, int modifiers)
 {
 	int n = strlen(typed), view = view_height();
 
+	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
+	if ((modifiers & MWKMOD_CTRL) && (ch == 'l' || ch == 'L'))
+		ch = 'l' & 0x1f;
 	if (!editing) {
 		switch (ch) {
 		case MWKEY_TAB: pick_link(modifiers & MWKMOD_SHIFT); break;
@@ -1575,6 +1591,12 @@ main(int argc, char **argv)
 	}
 	go(argc > 1 ? argv[1] : HOME, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
+	if (title[0]) {		/* (the first page was read before there was a window to name) */
+		char caption[120];
+
+		snprintf(caption, sizeof caption, "%s - Web", title);
+		GrSetWindowTitle(window, caption);
+	}
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
@@ -1621,6 +1643,7 @@ main(int argc, char **argv)
 			GrClose();
 			return 0;
 		}
+		ticked = event.type == GR_EVENT_TYPE_TIMEOUT;
 		if (loading)
 			check_reply();
 		else if (by_hand && event.type == GR_EVENT_TYPE_TIMEOUT)

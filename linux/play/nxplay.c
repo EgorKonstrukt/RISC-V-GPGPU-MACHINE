@@ -10,6 +10,8 @@
 #include <sys/time.h>
 #include "ui.h"
 #include "ui_files.h"
+#include "ui_glyph.h"
+#include <dirent.h>
 #include "shaderemu_sound.h"
 #include "mcw.h"
 #include "minimp3.h"
@@ -23,8 +25,16 @@
 #define MP3_BACK 12	/* frames before a piece that fill its bit reservoir */
 #define MP3_WARM 2	/* the last of them are decoded, for the filters' memory */
 #define SLOTS 2048
-#define W 380
-#define H 124
+#define W 440
+#define KEYS_Y 70
+#define KEY_H 24
+#define VOLUME_X 358
+#define VOLUME_W 74
+#define LIST_Y 122
+#define LIST_ROWS 8
+#define H (LIST_Y + LIST_ROWS * UI_ROW + 4 + 8)
+#define KINDS ".wav .mp3 .flac .mod"
+#define TUNES 256
 
 enum { K_NONE, K_WAV, K_MOD, K_FLAC, K_MP3 };
 enum { STOPPED, BUFFERING, PLAYING, ENDED };
@@ -78,6 +88,13 @@ static char note[160];
 
 static GR_WINDOW_ID window;
 static int window_on, drag, drag_value, shown_second = -1, shown_state = -1;
+/* The list: the tunes of the folder the one played is in, by name. */
+static char tunes[TUNES][100], list_folder[512];
+static struct ui_list list = { 8, LIST_Y, W - 16, LIST_ROWS * UI_ROW + 4, 0, 0, -1 };
+static int repeat, shuffle, muted;
+static int want_next;		/* the tune ended: the next of the list is to be played */
+enum { B_PREV, B_PLAY, B_STOP, B_NEXT, B_REPEAT, B_SHUFFLE, B_OPEN, B_MUTE, BUTTONS };
+static const struct { short x, w; } keys[BUTTONS] = { {8, 30}, {40, 30}, {72, 30}, {104, 30}, {142, 54}, {200, 56}, {264, 58}, {330, 24} };
 
 static uint32_t
 cycles(void)
@@ -593,6 +610,8 @@ finish(void)
 	stats();
 	if (exit_at_end || !window_on)
 		quit = 1;
+	else
+		want_next = 1;
 }
 
 /* Whether to play, wait for more, or change how it is decoded. */
@@ -829,8 +848,10 @@ load(const char *path)
 		return "not a WAV, MOD, FLAC or MP3 file";
 	}
 	/* (a piece is half a second of it, and a slot's size comes of that) */
-	if (tune.rate < 1000 || tune.rate > 192000)
+	if (tune.rate < 1000 || tune.rate > 192000) {
+		unload();	/* (half a tune would be played for ever) */
 		return "a sample rate this player does not take";
+	}
 	if (tune.kind == K_MP3) {
 		workers_open();
 	} else {
@@ -877,39 +898,151 @@ draw_status(void)
 		snprintf(line + n, sizeof line - (size_t)n, "   %s %d Hz %s%s%s%s", kinds[tune.kind], tune.rate, tune.channels == 2 ? "stereo" : "mono",
 			 tune.half ? ", half rate" : "", more, paused ? " (paused)" : state == BUFFERING ? " (decoding)" : "");
 	ui_fill(window, 0, 24, W, 44, UI_FACE);
-	ui_text(window, 8, 26, line, -1, BLACK, 0);
+	ui_text_fit(window, 8, 26, W - 16, line, BLACK);
 	ui_slider(window, 8, 46, W - 16, all && tune.total ? (int)((uint64_t)at * 1000 / tune.total) : 0, 1000);
 	shown_second = (int)seconds;
 	shown_state = state * 2 + paused;
 }
 
+static const char *
+list_label(int row)
+{
+	return tunes[row];
+}
+
+static void
+draw_volume(void)
+{
+	ui_tool(window, keys[B_MUTE].x, KEYS_Y, keys[B_MUTE].w, KEY_H, muted ? UI_G_MUTE : UI_G_SOUND, muted);
+	ui_slider(window, VOLUME_X, KEYS_Y + 3, VOLUME_W, out.volume, 256);
+}
+
 static void
 draw(void)
 {
+	static const int signs[] = { UI_G_PREV, UI_G_PLAY, UI_G_STOP, UI_G_NEXT };
+	int playing = tune.kind && !paused && state != ENDED && state != STOPPED, i;
+
 	ui_fill(window, 0, 0, W, H, UI_FACE);
-	ui_text_fit(window, 8, 8, W - 16, tune.kind ? tune.name : "no file", BLACK);
+	ui_text_fit(window, 8, 8, W - 16, tune.kind ? tune.name : "no tune: Open... has them, or the list below", BLACK);
+	if (tune.kind)
+		ui_text_fit(window, 9, 8, W - 16, tune.name, BLACK);	/* twice: bold */
 	draw_status();
-	ui_button(window, 8, 72, 64, 22, state == PLAYING && !paused ? "Pause" : "Play", 0);
-	ui_button(window, 78, 72, 54, 22, "Stop", 0);
-	ui_button(window, 138, 72, 70, 22, "Open...", 0);
-	ui_text(window, 222, 77, "Volume", -1, BLACK, 0);
-	ui_slider(window, 270, 74, 102, out.volume, 256);
+	for (i = B_PREV; i <= B_NEXT; i++)
+		ui_tool(window, keys[i].x, KEYS_Y, keys[i].w, KEY_H, i == B_PLAY && playing ? UI_G_PAUSE : signs[i],
+			(i == B_PREV || i == B_NEXT) && list.count < 2 ? 2 : 0);
+	ui_button(window, keys[B_REPEAT].x, KEYS_Y, keys[B_REPEAT].w, KEY_H, "Repeat", repeat);
+	ui_button(window, keys[B_SHUFFLE].x, KEYS_Y, keys[B_SHUFFLE].w, KEY_H, "Shuffle", shuffle);
+	ui_button(window, keys[B_OPEN].x, KEYS_Y, keys[B_OPEN].w, KEY_H, "Open...", 0);
+	draw_volume();
 	ui_text_fit(window, 8, 102, W - 16, note, BLACK);
+	ui_list_draw(window, &list, list_label);
 }
 
+/* How loud: 0 to 256. Muted, the card plays nothing and the slider keeps its place. */
 static void
 set_volume(int volume)
 {
 	out.volume = volume < 0 ? 0 : volume > 256 ? 256 : volume;
 	if (out.on)
-		SND_VOICE[out.voice].volume = SND_VOLUME(out.volume, out.volume);
+		SND_VOICE[out.voice].volume = muted ? 0 : SND_VOLUME(out.volume, out.volume);
 }
+
+static int
+by_name(const void *a, const void *b)
+{
+	return strcasecmp(a, b);
+}
+
+/* The list is the tunes of a folder; the one being played is its selected row. */
+static void
+read_list(const char *folder)
+{
+	DIR *names;
+	struct dirent *item;
+	int i;
+
+	if (strcmp(folder, list_folder)) {
+		snprintf(list_folder, sizeof list_folder, "%s", folder);
+		list.count = list.top = 0;
+		names = opendir(folder);
+		while (names && list.count < TUNES && (item = readdir(names)) != NULL)
+			if (item->d_name[0] != '.' && strlen(item->d_name) < sizeof tunes[0] && ui_files_wanted(item->d_name, KINDS))
+				strcpy(tunes[list.count++], item->d_name);
+		if (names)
+			closedir(names);
+		qsort(tunes, (size_t)list.count, sizeof tunes[0], by_name);
+	}
+	list.selected = -1;
+	for (i = 0; i < list.count && tune.kind; i++)
+		if (!strcmp(tunes[i], tune.name))
+			list.selected = i;
+	ui_list_show(&list);
+}
+
+/* Plays a file from its start; the list becomes its folder's. False, and why, when it cannot. */
+static int
+open_tune(const char *path)
+{
+	char folder[512], title[140];
+	const char *why = load(path), *slash;
+
+	if (why) {
+		say(why);
+		return 0;
+	}
+	slash = strrchr(tune.path, '/');
+	snprintf(folder, sizeof folder, "%.*s", slash > tune.path ? (int)(slash - tune.path) : 1, slash ? tune.path : ".");
+	read_list(folder);
+	set_volume(out.volume);		/* (the voice is a new one's) */
+	if (window_on) {
+		snprintf(title, sizeof title, "%.120s - Music", tune.name);
+		GrSetWindowTitle(window, title);
+	}
+	return 1;
+}
+
+/* Plays row `row` of the list. */
+static void
+play_row(int row)
+{
+	char path[700];
+
+	if (row < 0 || row >= list.count)
+		return;
+	snprintf(path, sizeof path, "%s/%s", list_folder[1] ? list_folder : "", tunes[row]);
+	open_tune(path);
+}
+
+/* The tune `by` rows on in the list (any other one when shuffling), round its ends. One that
+ * ended by itself (`ended`) is followed by the list's first only when repeating. */
+static void
+step(int by, int ended)
+{
+	int row = list.selected + by;
+
+	if (list.count < 1)
+		return;
+	if (shuffle && list.count > 1)
+		row = (list.selected + 1 + rand() % (list.count - 1)) % list.count;
+	else if (row >= list.count && ended && !repeat)
+		return;
+	play_row((row % list.count + list.count) % list.count);
+}
+
+static void choose(void);
 
 static void
 toggle(void)
 {
-	if (!tune.kind)
+	if (!tune.kind) {
+		/* nothing to play yet: the list's selected row, or a file to be chosen */
+		if (list.selected >= 0)
+			play_row(list.selected);
+		else
+			choose();
 		return;
+	}
 	if (state == ENDED || state == STOPPED) {
 		paused = 0;
 		seek_to(0);
@@ -925,6 +1058,9 @@ other_windows(GR_EVENT *event)
 {
 	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->general.wid == window)
 		draw();
+	/* the player's own box while the file window is up: both go */
+	if (event->type == GR_EVENT_TYPE_CLOSE_REQ && event->general.wid == window)
+		ui_files_stop = quit = 1;
 }
 
 /* The file chooser has the events until it is done: the tune waits meanwhile. */
@@ -932,7 +1068,6 @@ static void
 choose(void)
 {
 	char path[600], folder[512] = "/usr/share";
-	const char *why;
 	int held = paused;
 
 	if (access("/root/Music", R_OK) == 0)	/* the image's own tunes (tools/make_media.py) */
@@ -941,9 +1076,8 @@ choose(void)
 		snprintf(folder, sizeof folder, "%.*s", (int)(strrchr(tune.path, '/') - tune.path), tune.path);
 	paused = 1;
 	voice_run(0);
-	if (ui_choose_file("Open a sound file", folder, ".wav .mp3 .flac .mod", path, sizeof path, other_windows)) {
-		if ((why = load(path)) != NULL)
-			say(why);
+	if (ui_choose_file("Open a sound file", folder, KINDS, path, sizeof path, other_windows)) {
+		open_tune(path);
 	} else {
 		paused = held;
 		if (state == PLAYING)
@@ -955,7 +1089,7 @@ choose(void)
 static void
 handle(GR_EVENT *event)
 {
-	int x, y;
+	int x, y, how, i, key = -1;
 
 	switch (event->type) {
 	case GR_EVENT_TYPE_EXPOSURE:
@@ -965,12 +1099,21 @@ handle(GR_EVENT *event)
 		quit = 1;
 		return;
 	case GR_EVENT_TYPE_KEY_DOWN:
-		switch (event->keystroke.ch) {
+		/* the arrows and the paging keys are the list's; Enter plays its selected row */
+		if (ui_list_key(&list, event->keystroke.ch))
+			break;
+		switch (event->keystroke.ch < 128 ? tolower((int)event->keystroke.ch) : (int)event->keystroke.ch) {
 		case ' ': toggle(); break;
+		case MWKEY_ENTER: play_row(list.selected); break;
 		case 'o': choose(); break;
 		case 'q': case MWKEY_ESCAPE: quit = 1; break;
-		case MWKEY_UP: set_volume(out.volume + 16); break;
-		case MWKEY_DOWN: set_volume(out.volume - 16); break;
+		case '+': case '=': set_volume(out.volume + 16); break;
+		case '-': set_volume(out.volume - 16); break;
+		case 'm': muted = !muted, set_volume(out.volume), say(muted ? "muted" : "the sound is on again"); break;
+		case 'n': step(1, 0); break;
+		case 'p': step(-1, 0); break;
+		case 'r': repeat = !repeat, say(repeat ? "repeat: the list starts again after its last" : "repeat is off"); break;
+		case 's': shuffle = !shuffle, say(shuffle ? "shuffle: any tune of the list next" : "shuffle is off"); break;
 		case MWKEY_LEFT:
 			if (tune.kind)
 				seek_to(position() > 10u * (uint32_t)tune.rate ? position() - 10u * (uint32_t)tune.rate : 0);
@@ -985,34 +1128,59 @@ handle(GR_EVENT *event)
 	case GR_EVENT_TYPE_BUTTON_DOWN:
 		x = event->button.x;
 		y = event->button.y;
-		if (ui_wheel(event)) {
+		if (ui_wheel(event) && ui_inside(x, y, list.x, list.y, list.width, list.height)) {
+			/* (over the list the wheel moves the list, if it is longer than its room; elsewhere it is the volume) */
+			ui_list_event(&list, event);
+		} else if (ui_wheel(event)) {
 			set_volume(out.volume - 16 * ui_wheel(event));
+			printf("nxplay: volume %d of 256\n", out.volume);
+			fflush(stdout);
+		} else if (!(event->button.changebuttons & GR_BUTTON_L)) {
+			/* (the left button presses: another does nothing) */
 		} else if (ui_inside(x, y, 8, 46, W - 16, 18) && tune.kind && tune.total != ~0u) {
 			drag = 1;
 			drag_value = ui_slider_value(x, 8, W - 16, 1000);
-		} else if (ui_inside(x, y, 270, 74, 102, 18)) {
+		} else if (ui_inside(x, y, VOLUME_X, KEYS_Y, VOLUME_W, KEY_H)) {
 			drag = 2;
-			set_volume(ui_slider_value(x, 270, 102, 256));
-		} else if (ui_inside(x, y, 8, 72, 64, 22)) {
-			toggle();
-		} else if (ui_inside(x, y, 78, 72, 54, 22) && tune.kind) {
-			paused = 1;
-			seek_to(0);
-		} else if (ui_inside(x, y, 138, 72, 70, 22)) {
-			choose();
+			set_volume(ui_slider_value(x, VOLUME_X, VOLUME_W, 256));
+			printf("nxplay: volume %d of 256\n", out.volume);
+			fflush(stdout);
+		} else if ((how = ui_list_event(&list, event)) != 0) {
+			if (how == 2)
+				play_row(list.selected);	/* the selected row clicked again */
 		} else {
-			return;
+			for (i = 0; i < BUTTONS; i++)
+				if (ui_inside(x, y, keys[i].x, KEYS_Y, keys[i].w, KEY_H))
+					key = i;
+			switch (key) {
+			case B_PREV: step(-1, 0); break;
+			case B_PLAY: toggle(); break;
+			case B_STOP:
+				if (tune.kind) {
+					paused = 1;
+					seek_to(0);
+				}
+				break;
+			case B_NEXT: step(1, 0); break;
+			case B_REPEAT: repeat = !repeat, say(repeat ? "repeat: the list starts again after its last" : "repeat is off"); break;
+			case B_SHUFFLE: shuffle = !shuffle, say(shuffle ? "shuffle: any tune of the list next" : "shuffle is off"); break;
+			case B_OPEN: choose(); break;
+			case B_MUTE: muted = !muted, set_volume(out.volume), say(muted ? "muted" : "the sound is on again"); break;
+			default: return;
+			}
 		}
 		break;
 	case GR_EVENT_TYPE_MOUSE_MOTION:
+		if (!drag && (event->mouse.buttons & GR_BUTTON_L) && ui_list_event(&list, event))
+			break;		/* (the list's scroll bar, held) */
 		if (!drag || !(event->mouse.buttons & GR_BUTTON_L))
 			return;
 		if (drag == 1) {
 			drag_value = ui_slider_value(event->mouse.x, 8, W - 16, 1000);
 			draw_status();
 		} else {
-			set_volume(ui_slider_value(event->mouse.x, 270, 102, 256));
-			ui_slider(window, 270, 74, 102, out.volume, 256);
+			set_volume(ui_slider_value(event->mouse.x, VOLUME_X, VOLUME_W, 256));
+			draw_volume();
 		}
 		return;
 	case GR_EVENT_TYPE_BUTTON_UP:
@@ -1095,7 +1263,7 @@ main(int argc, char **argv)
 		/* the window first: opening a file starts the workers, which is seconds, and a desktop
 		 * with nothing new on it looks stuck */
 		ui_init();
-		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Music", GR_ROOT_WINDOW_ID, -1, -1, W, H, UI_FACE);
+		window = GrNewWindowEx(UI_FIXED, "Music", GR_ROOT_WINDOW_ID, -1, -1, W, H, UI_FACE);
 		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
 				       GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 		GrMapWindow(window);
@@ -1106,14 +1274,20 @@ main(int argc, char **argv)
 			GrFlush();
 		}
 	}
-	if (argc > 1 && (why = load(argv[1])) != NULL)
-		say(why);
+	if (argc > 1 && !open_tune(argv[1]))
+		why = note;
+	if (argc < 2 && window_on)	/* nothing asked for: the image's own tunes to choose from */
+		read_list(access("/root/Music", R_OK) == 0 ? "/root/Music" : "/usr/share");
 	if (!window_on && (argc < 2 || why)) {
 		if (argc < 2)
 			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC or MP3 file (docs/play.md)\n");
 		return 1;
 	}
 	while (!quit) {
+		if (want_next) {
+			want_next = 0;
+			step(1, 1);
+		}
 		busy = pump();
 		if (window_on)
 			events(busy);

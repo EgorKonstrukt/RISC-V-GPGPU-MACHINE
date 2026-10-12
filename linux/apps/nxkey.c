@@ -2,7 +2,8 @@
  * An argument is a key (enter, tab, up, f4, meta, ... or a character), with ctrl+, alt+ or
  * shift+ before it for keys held meanwhile, a number of milliseconds to wait, X,Y for a click
  * of the left button there, r:X,Y for the right one, or drag:X,Y:X,Y for the left one held
- * from the first place to the second:   nxkey meta down enter 500 alt+tab 60,200 r:300,200 */
+ * from the first place to the second, wheel:X,Y:N for N notches of the wheel there (up is
+ * positive):   nxkey meta down enter 500 alt+tab 60,200 r:300,200 wheel:300,200:-2 */
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,11 +56,12 @@ send(int code, int down)
 /* The pointer at x, y with a button (0x110 left, 0x111 right) down or up, through the pointer's
  * device. One state a write: the window system takes all that waits as one place and one set
  * of buttons. The kernel puts the pointer back where the host has it when the host's moves. */
+static int pointer = -1;	/* opened once: the kernel clears a reader's buffer at every open */
+
 static void
 point(int x, int y, int button, int down)
 {
 	struct event events[4] = { { 0, 0, 3, 0, x }, { 0, 0, 3, 1, y }, { 0, 0, 1, (uint16_t)button, down }, { 0, 0, 0, 0, 0 } };
-	static int pointer = -1;	/* opened once: the kernel clears a reader's buffer at every open */
 
 	if (pointer < 0)
 		pointer = open("/dev/input/event1", O_WRONLY);
@@ -87,6 +89,18 @@ drag(int x0, int y0, int x1, int y1)
 	point(x1, y1, 0x110, 0);
 }
 
+/* The wheel turned `notches` (up is positive) with the pointer at x, y. */
+static void
+wheel(int x, int y, int notches)
+{
+	struct event events[4] = { { 0, 0, 3, 0, x }, { 0, 0, 3, 1, y }, { 0, 0, 2, 8, notches }, { 0, 0, 0, 0, 0 } };
+
+	point(x, y, 0x110, 0);	/* (the pointer's device is opened there) */
+	if (write(pointer, events, sizeof events) != sizeof events)
+		perror("nxkey: /dev/input/event1");
+	usleep(120000);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -106,6 +120,10 @@ main(int argc, char **argv)
 		if (sscanf(argv[i], "drag:%d,%d:%d,%d", &x0, &y0, &x1, &y1) == 4) {
 			drag(x0, y0, x1, y1);
 			usleep(150000);
+			continue;
+		}
+		if (sscanf(argv[i], "wheel:%d,%d:%d", &x0, &y0, &x1) == 3) {
+			wheel(x0, y0, x1);
 			continue;
 		}
 		if (sscanf(argv[i], "r:%d,%d", &x0, &y0) == 2) {

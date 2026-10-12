@@ -6,6 +6,8 @@
 #include <sys/time.h>
 #include "ui.h"
 #include "ui_files.h"
+#include "ui_ask.h"
+#include "ui_glyph.h"
 #include "ui_image.h"
 
 static GR_WINDOW_ID window;
@@ -72,16 +74,20 @@ is_coded(const char *name)
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | \
 	GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP)
 
-static const struct { const char *label; int key; } keys[] = {
-	{ "Open", 'o' }, { "<", MWKEY_LEFT }, { ">", MWKEY_RIGHT }, { "Turn left", 'l' }, { "Turn right", 'r' },
-	{ "-", '-' }, { "+", '+' }, { "Fit", 'f' }, { "Edit", 'e' },
+/* The row of keys: a word, or a sign (ui_glyph.h) where the label is NULL. */
+static const struct { const char *label; int key, sign; } keys[] = {
+	{ "Open", 'o' }, { NULL, MWKEY_LEFT, UI_G_LEFT }, { NULL, MWKEY_RIGHT, UI_G_RIGHT }, { NULL, 'l', UI_G_TURN_LEFT },
+	{ NULL, 'r', UI_G_TURN_RIGHT }, { NULL, '-', UI_G_MINUS }, { NULL, '+', UI_G_PLUS }, { "Fit", 'f' }, { "1:1", '1' },
+	{ "Edit", 'e' }, { "Desktop", 'w' }, { "Delete", MWKEY_DELETE },
 };
 #define KEYS ((int)(sizeof keys / sizeof keys[0]))
 static int key_x[KEYS + 1], key_w[KEYS];
 static char path[512], turned[64], notice[120];
-static int zoom = 100;		/* percent of the size that fits */
+static int zoom = 100;		/* percent of the size that fits; 0: the picture's own size, a pixel a pixel */
 static int pan_x, pan_y, held, held_x, held_y;
 static int turns;		/* quarter turns to the right the picture is shown with */
+static int closing;		/* the window's box was pressed while a file was being chosen */
+static int fit_percent = 100;	/* the picture's pixels to the screen's when it is shown as large as fits */
 
 static const char *
 shown(void)
@@ -102,7 +108,11 @@ draw(void)
 		/* whole, as large as fits, times the zoom; a drag moves it */
 		w = pw * room_h > ph * width ? width : pw * room_h / ph;
 		h = w * ph / pw;
-		w = w * zoom / 100, h = h * zoom / 100;
+		fit_percent = w * 100 / pw;
+		if (zoom)
+			w = w * zoom / 100, h = h * zoom / 100;
+		else
+			w = pw, h = ph;
 		GrDrawImageFromFile(window, ui_gc, (width - w) / 2 + pan_x, BAR + (room_h - h) / 2 + pan_y, w, h, (char *)shown(), 0);
 	} else if (image) {
 		if (info.width * room_h > info.height * width)
@@ -118,11 +128,14 @@ draw(void)
 	/* the keys and the line go over whatever of a large picture reaches them */
 	ui_fill(window, 0, 0, width, BAR, UI_FACE);
 	for (i = 0; i < KEYS; i++)
-		ui_button(window, key_x[i], 3, key_w[i], 22, keys[i].label, 0);
+		if (keys[i].label)
+			ui_button(window, key_x[i], 3, key_w[i], 22, keys[i].label, 0);
+		else
+			ui_tool(window, key_x[i], 3, key_w[i], 22, keys[i].sign, 0);
 	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
 	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
 	if (ppm || image)
-		snprintf(text, sizeof text, "%.300s   %d x %d   %d%%   %s", path, pw, ph, zoom, notice);
+		snprintf(text, sizeof text, "%.300s   %d x %d   %d%%   %s", path, pw, ph, zoom ? fit_percent * zoom / 100 : 100, notice);
 	else
 		snprintf(text, sizeof text, "%.300s   %s", path, notice);
 	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
@@ -203,6 +216,8 @@ take(const char *file)
 	snprintf(title, sizeof title, "%s - Viewer", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
 	if (window)
 		GrSetWindowTitle(window, title);
+	if (!path[0])
+		return;		/* (no picture: the last one was deleted) */
 	if (is_coded(path)) {
 		/* what it is doing, first: decoding is seconds, and a window with nothing new looks stuck */
 		if (window) {
@@ -282,6 +297,54 @@ others(GR_EVENT *event)
 {
 	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window)
 		draw();
+	/* the viewer's own box while the file window is up: both go */
+	if (event->type == GR_EVENT_TYPE_CLOSE_REQ && event->general.wid == window)
+		ui_files_stop = closing = 1;
+}
+
+/* The picture shown is the desktop's from now on: a copy of it, which stays when this goes. */
+static void
+as_desktop(void)
+{
+	static const char to[] = "/tmp/nxwallpaper-view.ppm";
+	char block[4096];
+	FILE *in, *out;
+	size_t n;
+
+	if (!ppm || !(in = fopen(shown(), "rb"))) {
+		snprintf(notice, sizeof notice, "only a PPM, PNG or JPEG picture can be the desktop's");
+		return;
+	}
+	if ((out = fopen(to, "wb")) != NULL) {
+		while ((n = fread(block, 1, sizeof block, in)) > 0)
+			fwrite(block, 1, n, out);
+		fclose(out);
+		ui_wallpaper(to, 1);
+		snprintf(notice, sizeof notice, "it is the desktop's picture now");
+	}
+	fclose(in);
+}
+
+static void next(int by);
+
+/* Deletes the file shown, once the question is answered, and shows the folder's next. */
+static void
+delete_shown(void)
+{
+	static const char *const answers[] = { "Delete", "Cancel" };
+	char text[300], gone[512];
+
+	if (!path[0])
+		return;
+	snprintf(text, sizeof text, "Delete %.200s?", strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+	if (ui_ask("Viewer", text, answers, 2, others) != 0)
+		return;
+	snprintf(gone, sizeof gone, "%s", path);
+	next(1);
+	if (unlink(gone) != 0)
+		snprintf(notice, sizeof notice, "it cannot be deleted");
+	else if (!strcmp(gone, path))
+		take("");	/* (it was the only one) */
 }
 
 /* A key, or the key of the row that stands for it. False to leave. */
@@ -297,17 +360,26 @@ key(int ch)
 	case 'o':
 		if (ui_choose_file("Open a picture", "/root/Pictures", ".ppm .png .jpg .jpeg .gif .bmp", chosen, sizeof chosen, others))
 			take(chosen);
+		if (closing)
+			return 0;
 		break;
 	case MWKEY_LEFT: case MWKEY_PAGEUP: next(-1); break;
 	case MWKEY_RIGHT: case MWKEY_PAGEDOWN: case ' ': next(1); break;
 	case 'l': turn(-1); break;
 	case 'r': turn(1); break;
-	case '-': zoom = zoom > 25 ? zoom / 2 : 25; break;
-	case '+': case '=': zoom = zoom < 800 ? zoom * 2 : 800; break;
-	case 'f': case '1': zoom = 100, pan_x = pan_y = 0; break;
+	case '-': case '+': case '=':
+		if (!zoom)	/* from its own size: the nearest step of the size that fits */
+			zoom = fit_percent > 0 ? 10000 / fit_percent : 100;
+		zoom = ch == '-' ? (zoom > 25 ? zoom / 2 : 25) : zoom < 1600 ? zoom * 2 : 1600;
+		break;
+	case 'f': zoom = 100, pan_x = pan_y = 0; break;
+	case '1': zoom = 0, pan_x = pan_y = 0; break;
+	case 'w': as_desktop(); break;
+	case MWKEY_DELETE: delete_shown(); break;
 	case 'e':
 		/* the paint program with this file: what it saves is a PPM beside it */
 		if (path[0] && real_vfork() == 0) {
+			signal(SIGCHLD, SIG_DFL);	/* (paint waits for the decoder it starts) */
 			execlp("nxpaint", "nxpaint", path, (char *)NULL);
 			_exit(127);
 		}
@@ -315,7 +387,7 @@ key(int ch)
 	default:
 		return 1;
 	}
-	if (zoom <= 100)
+	if (zoom && zoom <= 100)
 		pan_x = pan_y = 0;
 	draw();
 	return 1;
@@ -337,11 +409,12 @@ main(int argc, char **argv)
 	}
 	if (GrOpen() < 0)
 		return 1;
+	signal(SIGCHLD, SIG_IGN);	/* (Edit's paint program is not waited for) */
 	ui_init();
 	screen = *ui_screen();
 	for (i = 0, x = 4; i < KEYS; i++) {
-		key_x[i] = x, key_w[i] = ui_width(&ui_var_widths, ui_var, keys[i].label, -1) + 14;
-		x += key_w[i] + (i == 0 || i == 2 || i == 4 || i == 7 ? 10 : 2);
+		key_x[i] = x, key_w[i] = keys[i].label ? ui_width(&ui_var_widths, ui_var, keys[i].label, -1) + 14 : 26;
+		x += key_w[i] + (i == 0 || i == 2 || i == 4 || i == 8 || i == 9 ? 10 : 2);
 	}
 	key_x[KEYS] = x;
 	/* the window first, as large as most pictures want; a picture is fitted into it */
@@ -365,7 +438,7 @@ main(int argc, char **argv)
 	}
 	if (getenv("NXVIEW_PRINT")) {
 		for (i = 0; i < KEYS; i++)
-			printf("nxview: key %s at %d\n", keys[i].label, key_x[i] + key_w[i] / 2);
+			printf("nxview: key %s at %d\n", keys[i].label ? keys[i].label : "(a sign)", key_x[i] + key_w[i] / 2);
 		printf("nxview: %s, %d x %d%s\n", path, info.width, info.height, ppm ? "" : image ? " (not a PPM)" : " (not shown)");
 		fflush(stdout);
 	}
@@ -402,7 +475,7 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			/* a picture larger than its room is moved about by a drag */
-			if (held && (event.mouse.buttons & GR_BUTTON_L) && zoom > 100) {
+			if (held && (event.mouse.buttons & GR_BUTTON_L) && (zoom > 100 || !zoom)) {
 				pan_x = event.mouse.x - held_x, pan_y = event.mouse.y - held_y;
 				draw();
 			} else

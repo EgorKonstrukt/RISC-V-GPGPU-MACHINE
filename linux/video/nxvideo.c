@@ -121,6 +121,8 @@ main(int argc, char **argv)
 #include <GLES/segl.h>
 #include "ui.h"
 #include "ui_files.h"
+#include "ui_ask.h"
+#include "ui_glyph.h"
 #include "mc.h"
 #include "shaderemu_sound.h"
 
@@ -131,6 +133,8 @@ main(int argc, char **argv)
 #define AHEAD 36		/* pictures in hand before it plays, or plays on after it ran dry: groups come in bursts */
 #define BAR 40			/* the strip of controls under the picture */
 #define KEY_W 62
+#define TOOL_W 28		/* a key with a sign: Play or Pause, Stop, the loudspeaker */
+#define VOLUME_W 56
 
 enum { IDLE, DECODING, DECODED, COPYING, SOUND };
 static struct unit {		/* a worker and the decoder it has */
@@ -151,6 +155,8 @@ static int shown = -1, dropped;
 static int seeking = -1;		/* the picture to go to once the groups being decoded have been dropped */
 
 static int sound_on, voice, sound_running;
+static int still;		/* paused and gone elsewhere: the picture there is shown once it is decoded */
+static int volume = 200, muted;	/* how loud, of 256; muted, the slider keeps its place */
 static int16_t *sound_ring;
 static uint32_t sound_ring_at, written, sound_from;	/* frames given to the card, and the film's frame its first is */
 static unsigned clock_base, clock_wall, clock_from;	/* the film's time at a moment, that moment, and the time playing began at */
@@ -159,6 +165,7 @@ static int running, paused, ended, opened;
 
 static GR_WINDOW_ID window, picture;	/* the program's window, and the part of it the GPU draws the film in */
 static GLuint texture;
+static int win_w, pic_x, pic_y, pic_w, pic_h;	/* the window's width; where in it the film is */
 static int scale, bar_y, held = -1;	/* held: the seek bar's knob is, at this picture */
 static const char *name;
 static char saying[80];
@@ -355,15 +362,36 @@ time_of(int frame)
 static int
 bar_width(void)
 {
-	return info.width * scale;
+	return win_w;
 }
 
-/* Where the seek bar is: between the Play key and the time. */
+/* The loudspeaker's key is left of Open..., and the volume between them where there is room. */
+static int
+mute_x(void)
+{
+	int open = bar_width() - KEY_W - 6;
+
+	return open - 6 - TOOL_W - (bar_width() >= 520 ? VOLUME_W + 4 : 0);
+}
+
+/* Where the seek bar is: between the Stop key and the time. */
 static void
 seek_bar(int *x, int *w)
 {
-	*x = 6 + KEY_W + 8;
-	*w = bar_width() - *x - 96 - KEY_W - 12;
+	*x = 6 + 2 * TOOL_W + 2 + 8;
+	*w = mute_x() - 96 - 6 - *x;
+}
+
+static void
+set_volume(int to)
+{
+	volume = to < 0 ? 0 : to > 256 ? 256 : to;
+	if (sound_on)
+		SND_VOICE[voice].volume = muted ? 0 : SND_VOLUME(volume, volume);
+	if (getenv("NXVIDEO_PRINT")) {	/* for a test: what the keys did */
+		printf("nxvideo: volume %d%s\n", volume, muted ? ", muted" : "");
+		fflush(stdout);
+	}
 }
 
 static void
@@ -374,7 +402,11 @@ draw_bar(void)
 	int x, w, wide = bar_width();
 
 	ui_fill(window, 0, bar_y, wide, BAR, UI_FACE);
-	ui_button(window, 6, bar_y + 8, KEY_W, 24, !opened ? "" : paused || ended ? " Play" : " Pause", 0);
+	ui_tool(window, 6, bar_y + 8, TOOL_W, 24, paused || ended || !opened ? UI_G_PLAY : UI_G_PAUSE, opened ? 0 : 2);
+	ui_tool(window, 6 + TOOL_W + 2, bar_y + 8, TOOL_W, 24, UI_G_STOP, opened ? 0 : 2);
+	ui_tool(window, mute_x(), bar_y + 8, TOOL_W, 24, muted || !sound_on ? UI_G_MUTE : UI_G_SOUND, !sound_on ? 2 : muted);
+	if (wide >= 520)
+		ui_slider(window, mute_x() + TOOL_W + 4, bar_y + 11, VOLUME_W, volume, 256);
 	ui_button(window, wide - KEY_W - 6, bar_y + 8, KEY_W, 24, " Open...", 0);
 	seek_bar(&x, &w);
 	if (saying[0]) {
@@ -427,8 +459,9 @@ play_from(int frame)
 	clock_seen = 0;
 	ended = 0;
 	running = 0;
+	still = 1;
 	if (sound_on)
-		snd_play(voice, SND_STREAM | SND_SMOOTH | SND_STEREO, sound_ring_at, RING, 0, 0, SND_VOLUME(200, 200));
+		snd_play(voice, SND_STREAM | SND_SMOOTH | SND_STEREO, sound_ring_at, RING, 0, 0, muted ? 0 : SND_VOLUME(volume, volume));
 	sound_running = 0;
 }
 
@@ -465,11 +498,16 @@ leave(void)
 	exit(0);
 }
 
+static int closing;	/* the window's box was pressed while a file was being chosen */
+
 static void
 while_choosing(GR_EVENT *event)
 {
 	if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window)
 		draw_bar();
+	/* the player's own box while the file window is up: both go */
+	if (event->type == GR_EVENT_TYPE_CLOSE_REQ && event->general.wid == window)
+		ui_files_stop = closing = 1;
 }
 
 /* Another file: this program again with it (its decoders are of this file's size). */
@@ -482,6 +520,8 @@ open_another(void)
 	run(0);
 	if (!ui_choose_file("Open a video", access("/root/Videos", R_OK) == 0 ? "/root/Videos" : "/root", ".mpg .mpeg", path, sizeof path,
 			    while_choosing)) {
+		if (closing)
+			leave();
 		if (was && !paused)
 			run(1);
 		return;
@@ -493,6 +533,43 @@ open_another(void)
 	GrClose();
 	execlp("nxvideo", "nxvideo", path, (char *)NULL);
 	exit(1);
+}
+
+/* Black round the film, where the window is larger than it. */
+static void
+draw_round(void)
+{
+	ui_fill(window, 0, 0, win_w, pic_y, BLACK);
+	ui_fill(window, 0, pic_y + pic_h, win_w, bar_y - pic_y - pic_h, BLACK);
+	ui_fill(window, 0, pic_y, pic_x, pic_h, BLACK);
+	ui_fill(window, pic_x + pic_w, pic_y, win_w - pic_x - pic_w, pic_h, BLACK);
+}
+
+/* The window is another size (its caption's box): the film as large as fits above the strip
+ * of controls, in the middle, and the strip along the bottom. */
+static void
+fit(int w, int h)
+{
+	win_w = w;
+	bar_y = h - BAR;
+	pic_w = w;
+	pic_h = info.height * w / info.width;
+	if (pic_h > bar_y) {
+		pic_h = bar_y > 16 ? bar_y : 16;
+		pic_w = info.width * pic_h / info.height;
+	}
+	pic_x = (w - pic_w) / 2;
+	pic_y = (bar_y - pic_h) / 2;
+	GrMoveWindow(picture, pic_x, pic_y);
+	GrResizeWindow(picture, pic_w, pic_h);
+	draw_round();
+	draw_bar();
+	if (!texture)
+		return;		/* (nothing is drawn by the GPU yet) */
+	seglWindowChanged();
+	glViewport(0, 0, pic_w, pic_h);
+	if (shown >= 0)
+		show(shown);
 }
 
 static void
@@ -509,9 +586,23 @@ toggle(void)
 	draw_bar();
 }
 
+/* Stop: the film waits at its start. */
+static void
+stop(void)
+{
+	if (!opened)
+		return;
+	if (!paused && !ended)
+		toggle();
+	seek(0);
+	paused = 1;
+	draw_bar();
+}
+
 static void
 events(void)
 {
+	static int loud_held;	/* the volume's knob is held */
 	GR_EVENT e;
 	int x, w, step;
 
@@ -525,17 +616,43 @@ events(void)
 			leave();
 			break;
 		case GR_EVENT_TYPE_EXPOSURE:
-			if (e.exposure.wid == window)
+			if (e.exposure.wid == window) {
+				draw_round();
 				draw_bar();
+			}
+			break;
+		case GR_EVENT_TYPE_UPDATE:
+			if (e.update.wid == window && e.update.utype == GR_UPDATE_SIZE && (e.update.width != win_w || e.update.height != bar_y + BAR))
+				fit(e.update.width, e.update.height);
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
-			if (e.button.wid != window || e.button.y < bar_y || !(e.button.changebuttons & GR_BUTTON_L))
+			if (ui_wheel(&e)) {	/* the wheel is the volume */
+				set_volume(volume - 16 * ui_wheel(&e));
+				draw_bar();
 				break;
-			if (e.button.x < 6 + KEY_W + 4)
+			}
+			if (!(e.button.changebuttons & GR_BUTTON_L))
+				break;
+			if (e.button.wid != window || e.button.y < bar_y) {
+				if (opened)
+					toggle();	/* a click on the film: pause, or play on */
+				break;
+			}
+			if (e.button.x < 6 + TOOL_W)
 				toggle();
+			else if (e.button.x < 6 + 2 * TOOL_W + 4)
+				stop();
 			else if (e.button.x >= bar_width() - KEY_W - 6)
 				open_another();
-			else if (opened && e.button.x >= x && e.button.x < x + w) {
+			else if (e.button.x >= mute_x() && e.button.x < mute_x() + TOOL_W) {
+				muted = !muted;
+				set_volume(volume);
+				draw_bar();
+			} else if (e.button.x >= mute_x() + TOOL_W && bar_width() >= 520) {
+				loud_held = 1;
+				set_volume(ui_slider_value(e.button.x, mute_x() + TOOL_W + 4, VOLUME_W, 256));
+				draw_bar();
+			} else if (opened && e.button.x >= x && e.button.x < x + w) {
 				held = ui_slider_value(e.button.x, x, w, info.frames - 1);
 				draw_bar();
 			}
@@ -544,9 +661,13 @@ events(void)
 			if (held >= 0 && (e.mouse.buttons & GR_BUTTON_L)) {
 				held = ui_slider_value(e.mouse.x, x, w, info.frames - 1);
 				draw_bar();
+			} else if (loud_held && (e.mouse.buttons & GR_BUTTON_L)) {
+				set_volume(ui_slider_value(e.mouse.x, mute_x() + TOOL_W + 4, VOLUME_W, 256));
+				draw_bar();
 			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
+			loud_held = 0;
 			if (held >= 0) {
 				seek(held);
 				held = -1;
@@ -558,6 +679,11 @@ events(void)
 			switch (e.keystroke.ch) {
 			case 'q': case MWKEY_ESCAPE: leave(); break;
 			case ' ': toggle(); break;
+			case 's': stop(); break;
+			case 'm': muted = !muted; set_volume(volume); draw_bar(); break;
+			case MWKEY_UP: case '+': case '=': set_volume(volume + 16); draw_bar(); break;
+			case MWKEY_DOWN: case '-': set_volume(volume - 16); draw_bar(); break;
+			case MWKEY_END: seek(info.frames - 1); draw_bar(); break;
 			case 'o': open_another(); break;
 			case MWKEY_LEFT: seek((seeking >= 0 ? seeking : shown) - step); draw_bar(); break;
 			case MWKEY_RIGHT: seek((seeking >= 0 ? seeking : shown) + step); draw_bar(); break;
@@ -566,6 +692,25 @@ events(void)
 			break;
 		}
 	}
+}
+
+/* Why a file is not played, on the console and (on a desktop) in a window: the player went
+ * without a word, and from Open... the film before went with it. Returns 1, for main. */
+static int
+refuse(const char *path, const char *why, int opened)
+{
+	static const char *const answers[] = { "OK" };
+	char text[300];
+
+	fprintf(stderr, "nxvideo: %s: %s\n", path, why);
+	if (!opened && GrOpen() < 0)
+		return 1;
+	if (!opened)
+		ui_init();
+	snprintf(text, sizeof text, "%.150s\n%s", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, why);
+	ui_ask("Video", text, answers, 1, NULL);
+	GrClose();
+	return 1;
 }
 
 int
@@ -583,12 +728,11 @@ main(int argc, char **argv)
 	if (argc > 2 && !strcmp(argv[1], "--decode"))
 		return decode_all(argv[2]);
 	if ((file = load(path, &bytes)) == NULL)
-		return 1;
+		return refuse(path, "cannot be read", 0);
 	/* the pictures' size by a look at the file's start, and the window at once: taking the file
 	 * apart and making the decoders is seconds, and a desktop with nothing new on it looks stuck */
 	if (!mpeg_peek(file, bytes, &info.width, &info.height) || (info.width | info.height) & 15) {
-		fprintf(stderr, "nxvideo: %s is not MPEG-1 video this plays (docs/video.md)\n", path);
-		return 1;
+		return refuse(path, "is not MPEG-1 video this plays (docs/video.md)", 0);
 	}
 	info.frames = 1;
 	info.fps_milli = 24000;
@@ -603,11 +747,12 @@ main(int argc, char **argv)
 	for (scale = 3; scale > 1 && (info.width * scale > screen.cols - 20 || info.height * scale + BAR > screen.rows - 60); scale--)
 		;
 	bar_y = info.height * scale;
+	win_w = pic_w = info.width * scale, pic_h = bar_y;
 	name = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
 	snprintf(title, sizeof title, "%.120s - Video", name);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, title, GR_ROOT_WINDOW_ID, -1, -1, info.width * scale, bar_y + BAR, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION |
-			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
 	picture = GrNewWindow(window, 0, 0, info.width * scale, bar_y, 0, BLACK, BLACK);
 	GrMapWindow(picture);
 	GrMapWindow(window);
@@ -629,8 +774,7 @@ main(int argc, char **argv)
 		}
 	}
 	if (seglInit(picture) < 0) {
-		fprintf(stderr, "nxvideo: this machine has no GPU\n");
-		return 1;
+		return refuse(path, "this machine has no GPU to show it with", 1);
 	}
 	machine = (const volatile uint32_t *)((const char *)seglPalette() - 0x400);
 	/* frames in GPU memory: what is left to a program, and the display's spare framebuffer */
@@ -640,8 +784,7 @@ main(int argc, char **argv)
 	slots_a = ring_a ? (int)(left / info.frame_bytes) : 0;
 	slots = slots_a + (ring_b ? (int)(spare / info.frame_bytes) : 0);
 	if (slots < 2 * info.gop_most) {
-		fprintf(stderr, "nxvideo: no GPU memory for pictures of this size\n");
-		return 1;
+		return refuse(path, "no GPU memory for pictures of this size", 1);
 	}
 	glGenTextures(1, &texture);
 	glViewport(0, 0, info.width * scale, bar_y);
@@ -728,6 +871,11 @@ main(int argc, char **argv)
 		    (!sound_on || written > 0 || chunks_done == info.chunks)) {
 			saying[0] = 0;
 			run(1);
+			draw_bar();
+		}
+		if (paused && still && seeking < 0 && have > shown) {
+			still = 0;
+			show(shown + 1);
 			draw_bar();
 		}
 		if (running) {

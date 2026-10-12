@@ -97,9 +97,21 @@ first groups are being decoded.
 
 The picture, and under it a strip: Play or Pause, a bar that shows where the film is and is
 clicked or dragged to go elsewhere, the time, and Open (the file chooser, in `/root/Videos`).
+Left of Open are a loudspeaker key that mutes and, in a window 520 wide or more, the volume;
+Stop (the second key) waits at the film's start. A click on the film pauses and plays on,
+the wheel and the arrows up and down are the volume, `m` mutes, `s` stops, End goes to the
+last picture, and going elsewhere while paused shows the picture there once it is decoded.
+`NXVIDEO_PRINT=1` prints the volume at every change, for a test: `nxkey drag:565,426:600,426`
+on the first window's slider prints it rising to 249, `wheel:300,200:1` 256; after `s` the
+second-a-line `nxvideostat` says `picture -1` for two seconds and then `picture 0` at
+`film at 0 ms` until Space.
 Keys: Space pauses, Left and Right go five seconds back and on, Home to the start, `o` opens
 another file, `q` leaves. The picture is a window of its own inside the program's, which is
-what the GPU draws into; frames a second are in the caption.
+what the GPU draws into; frames a second are in the caption. Made larger (the caption's box,
+Ctrl+F10) the film is as large as fits above the strip, in the middle with black round it
+(`fit` in `nxvideo.c`: the picture's window is moved and resized, and the GL library asked
+where it is now); it stayed at its size in a corner of a grey window. A file that is not
+played is said to be so in a window (`refuse`).
 
 - The window is there before the file is taken apart (`ui_framed`, `nanox.md`): two seconds
   after the program is started, with "opening it..." in the strip.

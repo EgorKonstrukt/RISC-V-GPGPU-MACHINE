@@ -12,7 +12,7 @@ MW=$WORK/src/microwindows
 OUT=$REPO/build/images/linux/root/usr
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
-for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon open; do
+for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open; do
     more=""
     # the viewer decodes on the worker cores (ui_image.h) and Paint moves pictures with them
     # (ui_bulk.h): the library every program has for them
@@ -21,11 +21,11 @@ for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon open;
     riscv32-linux-strip -o "$OUT/bin/$p" "$WORK/src/apps/$p"
 done
 # the Start menu lists what the nxapps.* files name (linux/nanox/nxbar.c)
-printf '%s\n' "Utilities/Editor=nxedit" "Utilities/Files=nxfiles" "Utilities/Paint=nxpaint" "Other/Web=nxweb" "Utilities/Monitor=nxmon" "Utilities/Settings=nxsettings" > "$OUT/share/nxapps.20-apps"
+printf '%s\n' "Utilities/Editor=nxedit" "Utilities/Files=nxfiles" "Utilities/Paint=nxpaint" "Other/Web=nxweb" "Utilities/Monitor=nxmon" "Utilities/Network=nxnet" "Utilities/Settings=nxsettings" > "$OUT/share/nxapps.20-apps"
 # two pictures for the viewer and for its test (tools/make_test_pictures.py made them)
 cp "$HERE"/pictures/picture-*.png "$HERE"/pictures/picture-*.jpg "$OUT/share/" 2>/dev/null || true
 # the Start menu's last folder: the desktop over again, and the machine stopped
-printf '%s\n' "System/Restart the desktop=setsid nx restart" "System/Shut down=setsid nxoff" > "$OUT/share/nxapps.90-system"
+printf '%s\n' "System/Restart the desktop=setsid nx restart ask" "System/Shut down=setsid nxoff" > "$OUT/share/nxapps.90-system"
 cp "$HERE/nxoff" "$OUT/bin/nxoff"
 chmod +x "$OUT/bin/nxoff"
 # what opens what (open.c, docs/open.md): a kind a line, its endings, its first bytes, its program;
@@ -33,6 +33,11 @@ chmod +x "$OUT/bin/nxoff"
 cp "$HERE/nxopen.conf" "$OUT/share/nxopen.20-apps"
 cp "$HERE/nxopen-archive" "$HERE/nxopen-run" "$OUT/bin/"
 chmod +x "$OUT/bin/nxopen-archive" "$OUT/bin/nxopen-run"
+# games with the other computers (nxgame, docs/lan.md): a folder of the menu's Games
+tr -d '\r' < "$HERE/nxgame" > "$OUT/bin/nxgame"
+chmod +x "$OUT/bin/nxgame"
+printf '%s\n' "Games/Network/Quake: host a game=nxgame quake host" "Games/Network/Quake: join a game=nxgame quake join" \
+    "Games/Network/Doom: network game=nxgame doom host" > "$OUT/share/nxapps.75-network"
 # the browser's pages: its home lists the sites of web/sites.txt (the VRChat world can ask for
 # no others, so its builder reads the same file)
 # (all in /usr/share: the image builder adds files to folders the ROM has, and makes none)

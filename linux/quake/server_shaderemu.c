@@ -1,6 +1,6 @@
 /*
- * The server's frame on a worker core (docs/quake.md, docs/multicore.md). A frame of a
- * single-player game is the server's physics and QuakeC, then the client's picture of it. Here
+ * The server's frame on a worker core (docs/quake.md, docs/multicore.md), in a game for one
+ * and in one this machine serves to others (docs/lan.md). A frame of the game is the server's physics and QuakeC, then the client's picture of it. Here
  * the physics runs on a worker while this core draws, and the two go at their own pace: the
  * client draws frames from the server's last two answers, moving things between them as it
  * does in a network game, and the server begins its next frame when its last one is done.
@@ -30,6 +30,8 @@
 enum { MODE_UNSET = -1, MODE_INLINE, MODE_LATE, MODE_WAIT, MODE_APART };
 enum { OUT_NONE, OUT_RUNNING, OUT_DONE };	/* a frame of the server's that began in SE_ServerPhysics */
 enum { KEPT_PRINT, KEPT_COMMAND, KEPT_CVAR };
+/* a frame's messages kept on the worker: one player's largest, and room for four such */
+enum { SENDS_ONE = (NET_MAXMESSAGE + MAX_DATAGRAM + 64) / 4, SENDS_WORDS = 4 * SENDS_ONE };
 
 /* what the worker writes of ours while it has the job */
 static struct {
@@ -37,8 +39,8 @@ static struct {
 	char error[240];
 	char kept[4096];	/* a kind, then text ending in 0 (a cvar: its name, 0, its value, 0) */
 	unsigned sent;		/* the frame's messages were made there too: they are in `sends` */
-	unsigned sends_used, reliable_out;
-	unsigned sends[(NET_MAXMESSAGE + MAX_DATAGRAM + 64) / 4];	/* reliable?, socket, bytes, then the bytes */
+	unsigned sends_used;
+	unsigned sends[SENDS_WORDS];	/* reliable?, socket, bytes, then the bytes */
 } work __attribute__ ((aligned (16)));
 static jmp_buf job_abort;
 static int mode = MODE_UNSET, out;
@@ -120,25 +122,35 @@ void SE_ServerWorkerError (const char *text)
 /*
  * NET_SendMessage and NET_SendUnreliableMessage on the worker: the message is kept, and goes
  * from this core when the frame is taken (the client reads its end of the connection
- * meanwhile). One reliable message a frame, as the connection allows.
+ * meanwhile). One reliable message a frame to a connection, as it allows.
  */
 int SE_ServerKeepSend (int reliable, void *sock, const void *data, int bytes)
 {
 	unsigned words = 3 + ((unsigned)bytes + 3) / 4;
 
-	if (work.sends_used + words > sizeof work.sends / 4)
-		return -1;
+	/* (a reliable one always has room: SE_ServerCanSend. An update that has none is lost) */
+	if (work.sends_used + words > SENDS_WORDS)
+		return reliable ? -1 : 1;
 	work.sends[work.sends_used] = (unsigned)reliable;
 	work.sends[work.sends_used + 1] = (unsigned)sock;
 	work.sends[work.sends_used + 2] = (unsigned)bytes;
 	memcpy (&work.sends[work.sends_used + 3], data, bytes);
 	work.sends_used += words;
-	if (reliable)
-		work.reliable_out = 1;
 	return 1;
 }
 
-int SE_ServerCanSend (qsocket_t *sock) { return !work.reliable_out && sock->canSend && sock->driverdata; }
+/* NET_CanSendMessage on the worker: nothing is sent from there, a long message's next part neither. */
+int SE_ServerCanSend (qsocket_t *sock)
+{
+	unsigned at;
+
+	if (!sock->canSend || sock->disconnected || work.sends_used + SENDS_ONE > SENDS_WORDS)
+		return 0;
+	for (at = 0; at < work.sends_used; at += 3 + (work.sends[at + 2] + 3) / 4)
+		if (work.sends[at] && work.sends[at + 1] == (unsigned)sock)
+			return 0;
+	return sock->driver ? !sock->sendNext : sock->driverdata != NULL;
+}
 
 /* The messages of a frame that has ended. */
 void SE_ServerSend (void)
@@ -152,6 +164,8 @@ void SE_ServerSend (void)
 	for (at = 0; at < work.sends_used; at += 3 + (work.sends[at + 2] + 3) / 4) {
 		sizebuf_t message;
 
+		if (((qsocket_t *)work.sends[at + 1])->disconnected)	/* dropped since */
+			continue;
 		memset (&message, 0, sizeof message);
 		message.data = (byte *)&work.sends[at + 3];
 		message.cursize = message.maxsize = (int)work.sends[at + 2];
@@ -160,7 +174,19 @@ void SE_ServerSend (void)
 		else
 			NET_SendUnreliableMessage ((qsocket_t *)work.sends[at + 1], &message);
 	}
-	work.sent = work.sends_used = work.reliable_out = 0;
+	work.sent = work.sends_used = 0;
+}
+
+/* Whether every player is in the game and none is to be dropped: the worker tells them itself. */
+static int all_playing (void)
+{
+	client_t *c = svs.clients;
+	int i;
+
+	for (i = 0; i < svs.maxclients; i++, c++)
+		if (c->active && (!c->spawned || c->sendsignon || c->dropasap || c->message.overflowed))
+			return 0;
+	return svs.clients->active;
 }
 
 static unsigned cycles (void)
@@ -178,8 +204,7 @@ static uint32_t physics_job (uint32_t and_send, uint32_t unused)
 	if (!setjmp (job_abort)) {
 		SV_Physics ();
 		/* and what the client is told of it, when that is the everyday kind */
-		if (and_send && svs.clients->active && svs.clients->spawned && !svs.clients->sendsignon
-		    && !svs.clients->dropasap && !svs.clients->message.overflowed) {
+		if (and_send && all_playing ()) {
 			SV_SendClientMessages ();
 			work.sent = 1;
 		}
@@ -370,7 +395,7 @@ int SE_ServerPhysics (void)
 {
 	setup ();
 	/* a game that is being played, and nothing else: loading and leaving are this core's */
-	if (mode == MODE_INLINE || cls.state != ca_connected || cls.signon != SIGNONS || cls.demoplayback || svs.maxclients != 1) {
+	if (mode == MODE_INLINE || cls.state != ca_connected || cls.signon != SIGNONS || cls.demoplayback) {
 		SV_Physics ();
 		sum_frame ();
 		return 0;
@@ -405,7 +430,7 @@ void SE_ServerDrop (void)
 	settle (0);
 	out = OUT_NONE;
 	since = 0;
-	work.sent = work.sends_used = work.reliable_out = 0;
+	work.sent = work.sends_used = 0;
 	/*
 	 * And the client reads what it was last sent. With the server's messages sent late (at
 	 * the end of the client's frame, or when a worker's frame is taken) one may be unread

@@ -12,9 +12,15 @@ is left can be decoded while it plays.
 
 In the guest: `nxplay FILE` plays at once; the Start menu's Other has it as "Music", and
 `open` starts it for a sound file (`nxopen.84-play`). The window has the file's name, the
-place in the tune (a bar that can be dragged), Play / Pause, Stop, Open... and the volume.
-Space pauses, the arrows left and right go ten seconds back and on, up and down change the
-volume, `o` opens a file, `q` or Escape leaves. Without a window system, or with
+place in the tune (a bar that can be dragged), keys with signs for Previous, Play or Pause,
+Stop and Next (`ui_glyph.h`), Repeat, Shuffle, Open..., a loudspeaker key that mutes and the
+volume; under them a list of the tunes of the folder the tune is in (`/root/Music` when no
+file was asked for), the one played picked out. A click on the picked row, or Enter, plays
+it; the tune after it follows by itself when one ends (the list's first after its last only
+with Repeat; any other with Shuffle). Space pauses, Left and Right go ten seconds back and
+on, the arrows up and down and the paging keys are the list's, `+` and `-` (and the wheel
+outside the list) the volume, `m` mutes, `n` and `p` are Next and Previous, `r` and `s`
+Repeat and Shuffle, `o` opens a file, `q` or Escape leaves. Without a window system, or with
 `NXPLAY_NOWINDOW=1`, it plays the file and leaves.
 
 ## What the build is made of (`linux/play`)
@@ -194,8 +200,15 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
   length of its one wait for more: under `--fixed-dt` it decodes slower than it plays).
 - The window: `nano-X -p & sleep 3; nxplay /usr/share/play-test.mod & sleep 4; nxkey right`
   must print `plays from` a second time, ten seconds on. A click of `nxkey` is only let go
-  when the host's pointer moves: with `--pointer-sweep 0`, `nxkey 324,101` (the bar, three
-  quarters along) prints `plays from 23377 ms` and `nxkey 143,129` (Stop) goes back to 0.
+  when the host's pointer moves: with `--pointer-sweep 0`, `nxkey 370,101` (the bar, three
+  quarters along) prints `plays from` some 23 s into the tune and `nxkey 130,128` (Stop) goes
+  back to 0. The list: two copies of the test tune in a folder, `nxplay` on one, `nxkey n`
+  and `p` each print a `playstat` line (the tune left) and play the other;
+  `NXPLAY_SECONDS=3` makes one end, and the other follows. The keys by the pointer, the
+  window being the server's first: `nxkey 212,128` (Repeat) and `271,128` (Shuffle) each
+  print what they turned on, `385,128` (the loudspeaker) `muted`, `438,128` (the volume's
+  middle) `volume 128 of 256`, `wheel:300,60:1` `volume 144`; the wheel over the list
+  (`wheel:200,250:-1`) prints nothing.
 
 ## Not done
 

@@ -395,7 +395,7 @@ unknown(const char *path, long size)
 		return;
 	}
 	ui_init();
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Open", GR_ROOT_WINDOW_ID, 60, 60, 420, 110, UI_FACE);
+	window = GrNewWindowEx(UI_FIXED, "Open", GR_ROOT_WINDOW_ID, 60, 60, 420, 110, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(window);
 	for (;;) {
