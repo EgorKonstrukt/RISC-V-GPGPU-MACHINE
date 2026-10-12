@@ -1197,6 +1197,20 @@ bool fast_exec_l1(L1P uint w) {
     if (!ok) {
         return false;
     }
+    // Work added to every instruction, to see what it costs (docs/tick-costs.md, "What things
+    // cost"): X_P_ALU=n is 3n operations each on the last one's result; X_P_READ=b four reads
+    // of an array's elements chosen at random among its first 2^b; X_P_TEX=n so many texels
+    // of RAM read and used at once.
+#ifdef X_P_ALU
+    { for (uint pk = 0; pk < X_P_ALU; pk++) probe = (probe + w) ^ (probe >> 3); }
+#endif
+#ifdef X_P_READ
+    { uint ph = ((w >> 7) ^ (pc >> 2)) * 0x9E3779B1u;
+      probe += tlb2_tag[ph >> (32 - X_P_READ)] + tlb2_tag[(ph << 5) >> (32 - X_P_READ)] + tlb2_tag[(ph << 10) >> (32 - X_P_READ)] + tlb2_tag[(ph << 15) >> (32 - X_P_READ)]; }
+#endif
+#ifdef X_P_TEX
+    { for (uint pk = 0; pk < X_P_TEX; pk++) probe += RAM_TEX(RAM_ADDR(((w >> 7) + pk * 977 + (probe & 1)) & 0xffff)).x; }
+#endif
     xr[(wr && rd != 0) ? rd : 32] = val;   // branch-free: discarded writes go to the scratch slot
     // cpu.clint.mtime and cpu.debug_do_tick already hold this pass's values: the first tick of
     // every pass takes the general path (irq_quiet starts false), which sets both.

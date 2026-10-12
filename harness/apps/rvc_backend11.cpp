@@ -138,6 +138,9 @@ public:
 
     bool frame(Material& mat, uint64_t tag, bool timeIt) override {
         timeIt = timeIt && ensureQueries() && !tsPending_;
+        // a timing experiment: the state is not written back, so every pass runs the same instructions
+        static const bool freezeAsked = getenv("RVC_FREEZE") != nullptr;
+        bool freeze = freezeAsked && mat.getFloat("_Init") == 0;
         if (timeIt) {
             gpu_.ctx->Begin(tsDisjoint_.Get());
             gpu_.ctx->End(tsQuery_[0].Get());
@@ -159,11 +162,14 @@ public:
             // TICK_MRT: the tick draws a pixel for every eight texels, into eight targets of its
             // own, and the pass that follows puts them where the state has them
             if (mrt_) tickDraw(mat, zones[0]);
+            if (!freeze) {
             for (auto& z : zones) crt_.copyIn(gpu_, z);
             crt_.runZone(gpu_, mrt_ ? unpackPasses_[0] : passes_[0], mat, zones[0], (std::max)(6u, 3 * groups), false);
             for (auto& z : zones) crt_.copyZone(gpu_, z);
+            }
         }
         if (timeIt) gpu_.ctx->End(tsQuery_[1].Get());
+        if (!freeze) {
         if (!gpuPasses_.empty()) mat.setTexture("_GpuTarget", gpuSrv_.Get(), kGpuTarget, kGpuTarget);   // Commit copies it back
         // With COMMIT_BANDS the vertex shader draws the state rows and the bands of RAM that changed;
         // the buffer drawn into holds the state of two commits ago, as on D3D12.
@@ -179,8 +185,9 @@ public:
             crt_.runZone(gpu_, copyPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
         } else
         crt_.runZone(gpu_, passes_[1], mat, UpdateZone{1024, 2048, 2048, 4096, 1}, bands_ ? 6 * kCommitQuads : 6);
+        }
         if (timeIt) gpu_.ctx->End(tsQuery_[2].Get());
-        if (gpuPasses_.size() == 2) {
+        if (gpuPasses_.size() == 2 && !freeze) {
             gpuDraw(mat);
             bool mixed = soundMix && !soundPasses_.empty();
             if (mixed) soundDraw(mat, tag);   // before the control zone moves the voices on
@@ -541,6 +548,23 @@ private:
         D3D11_VIEWPORT vp{0, 0, (float)tickWidth(), (float)(tickHeight() * mrtLoad_), 0, 1};
         ctx->RSSetViewports(1, &vp);
         ctx->RSSetState(gpu_.rasterNoCull.Get());
+        if (const char* sc = getenv("RVC_TICK_SCISSOR")) {
+            // a timing experiment: only these pixels of the tick are drawn (the machine does not go on)
+            static ComPtr<ID3D11RasterizerState> rs;
+            if (!rs) {
+                D3D11_RASTERIZER_DESC rd{};
+                rd.FillMode = D3D11_FILL_SOLID;
+                rd.CullMode = D3D11_CULL_NONE;
+                rd.DepthClipEnable = TRUE;
+                rd.ScissorEnable = TRUE;
+                gpu_.device->CreateRasterizerState(&rd, &rs);
+            }
+            int x0 = 0, y0 = 0, x1 = 1, y1 = 1;
+            sscanf(sc, "%d %d %d %d", &x0, &y0, &x1, &y1);
+            D3D11_RECT r{x0, y0, x1, y1};
+            ctx->RSSetScissorRects(1, &r);
+            ctx->RSSetState(rs.Get());
+        }
         ctx->OMSetBlendState(gpu_.blendOpaque.Get(), nullptr, 0xffffffff);
         ctx->OMSetDepthStencilState(gpu_.depthOff.Get(), 0);
         ctx->IASetInputLayout(nullptr);

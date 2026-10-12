@@ -128,6 +128,9 @@ uint fast_run_l1(L1P uint room) {
         PROF(PROF_stalled_tick)
     }
     cpu.clock += n;
+#ifdef X_PROBE
+    cpu.debug_last_stall ^= probe;   // (so that the probe's work is not thrown away)
+#endif
     return n;
 }
 

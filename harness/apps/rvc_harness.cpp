@@ -1163,6 +1163,8 @@ int main(int argc, char** argv) {
     int exitCode = 0;
     auto benchT0 = t0;
     uint64_t benchInstr0 = 0;
+    // (the card's clock is not the same all through a run: the fastest stretch of 1,024 frames is reported too)
+    std::vector<std::pair<double, uint64_t>> benchMarks;
     for (;;) {
         double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         double t = timeBase + (opt.fixedDt > 0 ? (double)frame * opt.fixedDt : wall);
@@ -1417,6 +1419,8 @@ int main(int argc, char** argv) {
             backend.readProf(profBase);  // warm-up events are subtracted at the end
             benchT0 = std::chrono::steady_clock::now();
         }
+        if (opt.benchWarmup >= 0 && frame >= (uint64_t)opt.benchWarmup && ((frame - (uint64_t)opt.benchWarmup) & 255) == 0)
+            benchMarks.push_back({std::chrono::duration<double>(std::chrono::steady_clock::now() - benchT0).count(), guestInstructions - benchInstr0});
         if (backend.rowFull() && !takeRow()) { exitCode = 1; break; }
         {
             // Mix when the cursor has moved on: with a device it follows the audio thread, without
@@ -1617,9 +1621,15 @@ int main(int argc, char** argv) {
         uint64_t hash = 0;
         std::vector<uint8_t> data;
         if (backend.readState(64, 64, data)) hash = fnv1a64(data.data(), data.size());
-        fprintf(stderr, "\nBENCH frames=%llu seconds=%.3f instructions=%llu ips=%.0f fps=%.1f per_frame=%.1f state=%016llx\n",
+        double best = 0, bestMs = 0;
+        for (size_t i = 4; i < benchMarks.size(); ++i) {
+            double span = benchMarks[i].first - benchMarks[i - 4].first;
+            best = (std::max)(best, (double)(benchMarks[i].second - benchMarks[i - 4].second) / span);
+            if (bestMs == 0 || span * 1000.0 / 1024.0 < bestMs) bestMs = span * 1000.0 / 1024.0;
+        }
+        fprintf(stderr, "\nBENCH frames=%llu seconds=%.3f instructions=%llu ips=%.0f fps=%.1f per_frame=%.1f state=%016llx best=%.0f best_ms=%.4f\n",
                 (unsigned long long)frames, secs, (unsigned long long)instr, instr / secs, frames / secs,
-                (double)instr / frames, (unsigned long long)hash);
+                (double)instr / frames, (unsigned long long)hash, best, bestMs);
     }
 
     std::vector<uint32_t> profNow;

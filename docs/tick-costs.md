@@ -2,7 +2,40 @@
 
 Measurements for whoever next tries to make the tick faster, taken on the D3D11 harness's
 machine as it is (eight targets, 256 cores, 384 texels of write cache, 8,192 instructions a
-pass) on an RTX 5070 laptop card. None of what was tried on the way was kept: nothing gained.
+pass) on an RTX 5070 laptop card. Most of what was tried on the way gained nothing and was not
+kept; what did gain is the first section.
+
+## Where the time was
+
+Against the machine as it was before all of this, both builds on one snapshot, in turn, the
+card's clock high, the same instructions a pass: a shell loop 3.51M to 3.90M instructions a
+second (11.2%), Doom's demo 3.15M to 3.52M (11.8%). None of it is from fewer operations in an
+instruction's own arithmetic, which is where it was looked for first (below: 12% fewer bytecode
+instructions were worth under 1%). It is from three things a pass did that it need not have:
+
+- **The TLBs were empty at the start of every pass.** They are kept in the state's texels
+  from pass to pass (`mmu.h`), and the tick's last loop, since it went to eight targets, wrote
+  zeros there: `if (!have && !_Init && fp_state_texel(at, texel))` asks for the float
+  registers' texel whether or not the TLB's was had already (`&&` runs both its sides), and
+  what that function puts in its `out` argument for a texel that is not its own is zeros. So
+  each pass walked the page table for every page it touched: 52 walks a pass of a shell loop,
+  112 of Doom's demo, each an instruction on the general path (some 2.5 microseconds). Fixed:
+  2.4 walks a pass, and 4.4% (a shell loop), 4.6% (Doom), 5.8% with passes of 2,048. Nothing
+  showed it: a walk is not an emulated instruction, so every count and checksum was the same.
+  (`--profile` now says why a page was walked: `w_empty` was every one of them.)
+- **The write cache was searched for the texel it had just been searched for.** A search is
+  a bucket's three tags read and compared, and the next table's when the bucket is full; a
+  register save, a structure, a copy go to the same texel four times running. The two texels
+  found or made last are remembered with their place, and so is the texel looked for last
+  and not found (`types.h`, `L1_KNOWN`): of a shell loop's loads that pass the filter of
+  stored addresses a third are answered by that, and 57% of its stores. 5% (a shell loop),
+  3% (Doom).
+- **Half the loads that searched found nothing.** The filter of stored addresses or-ed
+  together lets nine loads in ten through. A bit for each texel the cache was given, by a
+  hash of its number (1,024 bits, `L1_HAS`), stops nearly all of those: 1% on Doom.
+
+With these a shell loop's loads search the cache 0.043 times an instruction where it was
+0.226, its stores 0.062 where it was 0.144.
 
 ## Measure with the card's clock high
 
@@ -47,6 +80,67 @@ Two instructions a pass (`--ticks 2`), milliseconds a pass:
 A shell loop is 2.37 ms a pass of 8,192, so this is 5.6% of it, and a seventh of a pass of
 2,000 (a desktop's, a file being read). Instructions a second by pass length, the same loop:
 2.81M at 2,048, 3.21M at 4,096, 3.45M at 8,192, 3.72M at 16,384, 3.93M at 32,768.
+
+## What things cost
+
+A way to time one thing: `RVC_FREEZE=1` in the environment and the D3D11 harness draws the
+tick and nothing after it, so the state is never written back and every frame runs the same
+pass (give it `--fixed-dt 0.000000001` for guest time to stand still too, or every frame
+takes the timer's interrupt). `--bench` then prints `best_ms`, the fastest 1,024 frames'
+time a frame, which two runs give within half a percent. Work added to every fast instruction
+(`--define X_P_ALU=8`, `X_P_READ=7`, `X_P_TEX=1`: `emu.h`) is then so many nanoseconds an
+instruction (`RVC_TICK_SCISSOR="x0 y0 x1 y1"` draws only those pixels of the tick):
+
+| Added to every instruction | Nanoseconds |
+|---|---|
+| 24 operations, each on the last one's result | 31 (1.3 each) |
+| 48 of them | 51 (1.1 each) |
+| four reads of an array, among 32 of its elements | 8 |
+| ... among 64, 128 | 12, 18 |
+| ... among 256, 512 | 50, 100 |
+| all four words of a `uint4` element chosen at random among 256 | 49 |
+| one word of it | 10 |
+| a write of an array's element; of a `uint4` one | 2; 4 |
+| a texel of RAM read and used, the same one every time | 36 |
+| ... a different one every time; two | 86; 211 |
+
+So: an operation is a nanosecond and a bit, whether or not anything waits for it. An array
+element that was read lately costs two or three; about a hundred elements stay that way, and
+past that every read is 12 to 25 ns, one after another (a `uint4` element is four of them,
+and so is one of its words chosen by a number: the four are read and one kept). A write
+costs next to nothing. A texel of RAM is 36 ns when the texture's cache has it and a hundred
+when it does not.
+
+And what does not matter: **how many pixels run the tick.** The same pass drawn for one
+pixel takes 2.07 ms, for one block of 32 pixels 2.03, for all 128 of core 0's 2.02. So there
+is nothing to be had from fewer pixels, from one invocation in a vertex or geometry shader
+with the state sent on as points, or from where the pixels are. Nor does the harness's wait
+for its readback matter (spinning on `Map`, a longer ring, sixteen frames a `Map`: nothing),
+and the card's clock under this load is the highest it reaches (2,835 MHz, P0).
+
+## What a pass is made of
+
+`tools\pass_costs.ps1` times one pass of each of seven kinds of work under Linux at three
+places (a shell loop, Doom's demo, gzip, sha256sum, find, dd, grep) on a frozen state and
+counts the same pass with `--profile`; `python tools\pass_regress.py logs\pass_costs.csv` fits
+a cost to each kind of event. Twenty-one passes cannot tell apart counts that rise and fall
+together, so the kinds are few and the figures rough (the passes are fitted within 5%):
+
+| | Nanoseconds each | Of the time |
+|---|---|---|
+| an instruction that is no load or store | 115 | 33% |
+| a load | 450 | 35% |
+| a store (and 180 more when it searches the cache) | 370 | 29% |
+| an instruction on the general path | 2,700 | 2.5% |
+
+Loads and stores are 39% of a shell loop's instructions and two thirds of its time; a pass of
+sha256sum, which is 85% arithmetic, takes 1.2 ms where the others take 1.9 to 2.7. What is
+left in a load is mostly the texture: 0.09 (a shell loop) to 0.17 (Doom) data texels read an
+instruction. Sixteen texels remembered would have had a third to a half of those
+(`--profile` counted it), at two array reads for every load that gets that far: not tried.
+
+The timer's interrupt is 2.5% of a shell loop at `--fixed-dt 0.004` (which has it every 2.5
+passes; real time every five): 4.07M against 3.97M with 0.04 ms a pass.
 
 ## One workload, the builds there are
 
@@ -138,6 +232,14 @@ count is a guide; only the two builds run in turn say what a change is worth.
 - One buffer kept as the one the tick reads, each commit copied back into it (in case a
   texel read after the other buffer's turn were a slow one): nothing.
 - The GPU device's first pass drawn only when a list is submitted: 0.008 ms a pass.
+- `add` and `addi` (most of the arithmetic) taken by a branch of their own in place of the
+  eight results computed and one selected: nothing (the driver makes a select of a small
+  branch anyway). The instruction's two ends, "not taken by this path" and "the budget is
+  spent", as one test: 2% slower.
+- The write cache's texels as an array of words in place of one of `uint4`, so that a load
+  reads one element and not four: 0.5% by itself, 3% slower with the remembered texels.
+- Four texels of RAM remembered in place of one for data reads: the counts say a third fewer
+  texture reads, which choosing among four costs back.
 
 A pass at 8,192 and at 32,768 differs in its events too when timed with `--fixed-dt 0.004`:
 that is 4 ms of guest time a pass whatever its length, so the kernel's timer interrupt (some
