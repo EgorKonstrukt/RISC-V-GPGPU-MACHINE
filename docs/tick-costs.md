@@ -10,8 +10,9 @@ The card runs at 1,455 MHz (state P4) for the first two to ten seconds of a load
 2,835 MHz (P2) after, and the emulator's speed is the clock's: the same snapshot ran at
 1.70M instructions a second and at 3.41M. A short benchmark after a pause measures the
 governor. Warm the card first and watch `nvidia-smi --query-gpu=clocks.gr` while it runs;
-compare two builds by running them in turn (A B A B), long runs, and expect two runs of one
-build to differ by 2%. A cold boot is inside those first seconds: it takes twice as long on a
+compare two builds by running them in turn (A B A B), long runs, from one and the same
+snapshot (two snapshots of "the same" work differ by more than most changes are worth), and
+expect two runs of one build to differ by half a percent. A cold boot is inside those first seconds: it takes twice as long on a
 card that was idle as on one that was busy.
 
 ## Kinds of instruction
@@ -93,10 +94,15 @@ a load from the write cache 160 to 146, a store to a texel in the cache 173 to 1
 92 to 82, a jump 106 to 97 (and 27 more for any of them when the next instruction texel
 has to be taken up).
 
-In time the gain is less, the driver having done part of it already: the two builds in turn,
-the card's clock high, a shell loop 3.39M to 3.48M instructions a second before and 3.61M
-after (4 to 7%), Doom's demo 3.25M to 3.29M before and 3.36M after (2 to 3%). The state
-hash of the run is the same.
+In time the gain is far less, the driver having done most of it already. Both builds on one
+and the same snapshot, in turn, the card's clock high, the same state hash at the end: a
+shell loop 3.908M to 3.983M instructions a second (1.9%), Doom's demo 3.676M to 3.740M
+(1.7%), and of that 1.3% is the harness no longer drawing or copying anything of the
+workers' while the machine has none. On WARP (the shader as x86 code): 1.6%.
+
+(Figures of 4 to 7% in this change's first commit messages were taken with a snapshot made
+by each build for itself: the two were then at different places in the guest's work, which
+is worth more than the change. One snapshot for both builds, always.)
 
 What was taken out, all of it on the path of every instruction or of every arithmetic one:
 
