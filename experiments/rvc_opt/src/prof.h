@@ -139,5 +139,25 @@ void prof_flush(uint2 pos) {
 #define PROF_x_other 140
 #define PROF_x_refetch 141
 #define PROF_x_taken 142
+// why a page was walked: the access, whose address, and what the last pass had left where its
+// second-level entry would be
+#define PROF_w_fetch 143
+#define PROF_w_read 144
+#define PROF_w_write 145
+#define PROF_w_wiped 146
+#define PROF_w_dead 147
+#define PROF_w_empty 148
+#define PROF_w_other_page 149
+#define PROF_w_other_ctx 150
+#define PROF_w_other_gen 151
+#define PROF_w_user 152
+#define PROF_w_kernel 153
+// the write cache looked in: for a load (the rest of ram_read_bloom_pass was one of the two
+// texels remembered, or a texel the cache was known not to have) and for a store
+#define PROF_l1_load_search 154
+#define PROF_l1_load_known 155
+#define PROF_l1_load_absent 156
+#define PROF_l1_store_search 157
+#define PROF_l1_store_known 158
 
 #endif

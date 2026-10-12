@@ -157,7 +157,19 @@ uint mem_get_cached_or_tex_l1(L1P uint addr) {
     // query L1 cache
     if ((addr & mem_cache_bloom) == addr) {
         PROF(PROF_ram_read_bloom_pass)
-        uint at = l1_find(addr >> 4);
+        // (one of the two texels remembered, or one known not to be there: types.h)
+        uint lt = addr >> 4;
+        uint at = L1_KNOWN_AT(lt);
+        [branch]
+        if (!L1_KNOWN(lt)) {
+            at = 0;
+            [branch]
+            if (lt != l1_absent_t && L1_HAS(lt)) {
+                PROF(PROF_l1_load_search)
+                at = l1_find(lt);
+                if (at != 0) L1_REMEMBER(lt, at) else l1_absent_t = lt;
+            } else { PROF(PROF_l1_load_absent) }
+        } else { PROF(PROF_l1_load_known) }
         [branch]
         if (at != 0) {
             PROF(PROF_ram_read_l1_hit)
@@ -343,12 +355,18 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask, bool slow) {
     uint t = word_addr >> 4, tag = t + 1, wi = (word_addr >> 2) & 0x3;
     uint b0 = L1_B0(t), b1 = L1_B1(t);
     uint4 tags0 = 0, tags1 = 0;
+    uint e0 = 0, e1 = 0, f0 = 0, f1 = 0;
+    // (a texel remembered is not searched for: types.h)
+    uint at = L1_KNOWN_AT(t);
+    [branch]
+    if (!L1_KNOWN(t)) {
+    PROF(PROF_l1_store_search)
     [branch]
     if (L1_OCC(b0)) {
         tags0 = L1_TAGS(b0);
     }
-    uint e0 = l1_slot(tags0, tag), e1 = 0;
-    uint f0 = l1_slot(tags0, 0), f1 = 0;       // the first free entry: they fill in order
+    e0 = l1_slot(tags0, tag);
+    f0 = l1_slot(tags0, 0);       // the first free entry: they fill in order
     [branch]
     if (e0 == 0 && f0 == 0) {
         [branch]
@@ -370,7 +388,9 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask, bool slow) {
             f1 = l1_slot(tags1, 0);
         }
     }
-    uint at = e0 != 0 ? b0 * 4 + e0 : e1 != 0 ? b1 * 4 + e1 : 0;
+    at = e0 != 0 ? b0 * 4 + e0 : e1 != 0 ? b1 * 4 + e1 : 0;
+    if (at != 0) L1_REMEMBER(t, at)
+    } else { PROF(PROF_l1_store_known) }
     uint4 texel;
     [branch]
     if (at != 0 && mask == 0xffffffff) {
@@ -425,11 +445,17 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask, bool slow) {
         L1_TAGS(b0) = tags0;
         L1_DATA(b0 * 4 + f0) = texel;
         L1_OCC_SET(b0)
+        L1_REMEMBER(t, b0 * 4 + f0)
+        L1_HAS_SET(t)
+        l1_absent_t = 0xffffffff;
     } else if (f1 != 0) {
         set_idx_uint4(tags1, tag, f1 - 1);
         L1_TAGS(b1) = tags1;
         L1_DATA(b1 * 4 + f1) = texel;
         L1_OCC_SET(b1)
+        L1_REMEMBER(t, b1 * 4 + f1)
+        L1_HAS_SET(t)
+        l1_absent_t = 0xffffffff;
     } else {
         PROF(PROF_l1_stall)
         cpu.cache.ram_l1_last_addr = word_addr;

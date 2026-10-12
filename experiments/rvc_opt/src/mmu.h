@@ -298,6 +298,22 @@ uint mmu_translate_l1(L1P inout ins_ret ins, uint addr, uint mode) {
 
     bool super;
     mmu_page page;
+#ifdef PROFILE
+    {
+        // why a walk: what the last pass left where this page's entry would be
+        if (mode == MMU_ACCESS_FETCH) { PROF(PROF_w_fetch) } else if (mode == MMU_ACCESS_READ) { PROF(PROF_w_read) } else { PROF(PROF_w_write) }
+        if ((addr & 0x80000000) != 0) { PROF(PROF_w_kernel) } else { PROF(PROF_w_user) }
+        uint w_at = TLB_STATE_AT + (tlb2_k >> 1);
+        uint4 w_t = STATE_TEX(uint2(w_at & 63, w_at >> 6));
+        uint w_was = (tlb2_k & 1) != 0 ? w_t.b : w_t.r, w_tag = TLB2_TAG(addr, tlb2_ctx);
+        if (tlb_wiped) { PROF(PROF_w_wiped) }
+        else if (TLB2_DEAD(tlb2_k)) { PROF(PROF_w_dead) }
+        else if (w_was == 0) { PROF(PROF_w_empty) }
+        else if ((w_was & 0xfffff) != (w_tag & 0xfffff)) { PROF(PROF_w_other_page) }
+        else if ((w_was >> 24) != (w_tag >> 24)) { PROF(PROF_w_other_gen) }
+        else { PROF(PROF_w_other_ctx) }
+    }
+#endif
 
     // perform two-layer page walk, exit early in case of super page
     [loop]
