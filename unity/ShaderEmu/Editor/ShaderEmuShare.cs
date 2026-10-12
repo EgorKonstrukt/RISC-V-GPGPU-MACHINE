@@ -135,6 +135,7 @@ public static partial class ShaderEmuBuilder
         EmuShare share = Udon<EmuShare>(template);
         share.hub = hub;
         Apply(share);
+        ShareProbe(hub, streams);
         ShareUsers(hub, streams);
     }
 
@@ -151,6 +152,7 @@ public static partial class ShaderEmuBuilder
         hub.unitsPlan = Target("UnitsPlan", 160, 120, 0);
         hub.unitsTable = Target("UnitsTable", 80, 113, 0);
         hub.unitsPrefix = Target("UnitsPrefix", 256, 1, 0);
+        hub.unitsCut = Target("UnitsCut", 2, 1, 0);
         hub.unitsPacket = Target("UnitsPacket", 292, 1, 0);
         hub.unitsState = new[] { Target("UnitsState0", 160, 120, 0), Target("UnitsState1", 160, 120, 0), Target("UnitsState2", 160, 120, 0) };
     }
@@ -163,6 +165,21 @@ public static partial class ShaderEmuBuilder
         packet.wrapMode = TextureWrapMode.Clamp;
         streams.unitsPacket = packet;
         streams.unitsIndex = Target("UnitsIndex", 80, 113, 0);
+    }
+
+    // For the test with two clients: what each client's screen is, coarsely, in its log.
+    static void ShareProbe(EmuShareHub hub, EmuStreams streams)
+    {
+        Transform world = hub.transform.parent;
+        if (world.Find("Share probe") != null) Object.DestroyImmediate(world.Find("Share probe").gameObject);
+        EmuShareProbe probe = Udon<EmuShareProbe>(new GameObject("Share probe"));
+        probe.transform.SetParent(world, false);
+        probe.hub = hub;
+        probe.machine = hub.machine;
+        probe.streams = streams;
+        probe.material = Mat("ShareSignature", "ShaderEmu/ShareUnits");
+        probe.signature = Target("ShareSignature", 24, 18, 0);
+        Apply(probe);
     }
 
     // Into a scene that has sharing: nothing of it is made again, only these are added.
@@ -179,6 +196,7 @@ public static partial class ShaderEmuBuilder
         UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(streams);
         UnitsReceiver(streams);
         Apply(streams);
+        ShareProbe(hub, streams);
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(hub.gameObject.scene);
         EditorSceneManager.SaveScene(hub.gameObject.scene);

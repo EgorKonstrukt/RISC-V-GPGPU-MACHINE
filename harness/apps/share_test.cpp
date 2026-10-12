@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
     std::vector<GpuPass> ep, dp;
     auto t0 = std::chrono::steady_clock::now();
     if (!loadShaderLab(shaders + "/ShareUnits.shader", encode, err) ||
-        !buildPasses(gpu, encode, {"Blocks", "Exact", "Need", "Marks", "Stats", "Plan", "Units", "Prefix", "Packet", "State"}, bo, ep, err) ||
+        !buildPasses(gpu, encode, {"Blocks", "Exact", "Need", "Marks", "Stats", "Plan", "Units", "Prefix", "Cut", "Packet", "State"}, bo, ep, err) ||
         !loadShaderLab(shaders + "/ShareUnitsDecode.shader", decode, err) || !buildPasses(gpu, decode, {"Index", "Draw"}, bo, dp, err)) {
         fprintf(stderr, "share_test: %s\n", err.c_str());
         return 1;
@@ -137,10 +137,10 @@ int main(int argc, char** argv) {
     }
     printf("shaders ready in %.1f s (%s)\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), shaderCompilerName());
 
-    enum { Blocks, Exact, Need, Marks, Stats, Plan, Units, Prefix, Packet, State };
-    Target blocks, exact, need, state[3], stats, plan, units, prefix, packet, index, picture;
+    enum { Blocks, Exact, Need, Marks, Stats, Plan, Units, Prefix, Cut, Packet, State };
+    Target blocks, exact, need, state[3], stats, plan, units, prefix, cut, packet, index, picture;
     bool ok = makeTarget(blocks, 640, 450) && makeTarget(exact, 160, 210) && makeTarget(need, 160, 120) && makeTarget(stats, 1, 1) &&
-              makeTarget(plan, 160, 120) && makeTarget(units, 80, 113) && makeTarget(prefix, 256, 1) && makeTarget(packet, 292, 1) &&
+              makeTarget(plan, 160, 120) && makeTarget(units, 80, 113) && makeTarget(prefix, 256, 1) && makeTarget(cut, 2, 1) && makeTarget(packet, 292, 1) &&
               makeTarget(index, 80, 113) && makeTarget(picture, 1280, 960);
     for (auto& s : state) ok = ok && makeTarget(s, 160, 120);
     D3D11_TEXTURE2D_DESC td{};
@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
     if (!out.empty()) std::filesystem::create_directories(out);
 
     Material mat, show;
-    int committed = 0, number = 0, total = 0;
+    int committed = 0, number = 0, total = 0, turn = 0;   // (turn: where the last packet stopped, which it says)
     ComPtr<ID3D11ShaderResourceView> before;
     double seconds = 0;
     for (size_t f = 0; f < frames.size(); f++) {
@@ -191,7 +191,7 @@ int main(int argc, char** argv) {
             mat.setFloat("_Reset", before ? 0 : 1);
             mat.setFloat("_Room", room);
             mat.setFloat("_Seq", number & 255);
-            mat.setFloat("_Turn", (number % 4800) * 7919 % 4800);
+            mat.setFloat("_Turn", turn);
             blit(mat, ep[Blocks], blocks);
             mat.setTexture("_Blocks", blocks.srv.Get(), blocks.w, blocks.h);
             blit(mat, ep[Exact], exact);
@@ -209,6 +209,8 @@ int main(int argc, char** argv) {
             mat.setTexture("_Units", units.srv.Get(), units.w, units.h);
             blit(mat, ep[Prefix], prefix);
             mat.setTexture("_Prefix", prefix.srv.Get(), prefix.w, prefix.h);
+            blit(mat, ep[Cut], cut);
+            mat.setTexture("_Cut", cut.srv.Get(), cut.w, cut.h);
             blit(mat, ep[Packet], packet);
             blit(mat, ep[State], after);
             committed = (committed + 2) % 3;
@@ -217,6 +219,7 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> bytes, cells, shown;
             if (!readTarget(packet, bytes) || !readTarget(state[committed], cells)) return 1;
             int length = bytes[288 * 4] | bytes[288 * 4 + 1] << 8;
+            turn = bytes[289 * 4] | bytes[289 * 4 + 1] << 8;
             // the receiver: the packet's bytes as a texture, each unit's place in it, the picture
             std::vector<uint8_t> got(288 * 4, 0);
             memcpy(got.data(), bytes.data(), length);
@@ -244,15 +247,15 @@ int main(int argc, char** argv) {
     }
     if (timePasses) {
         // each pass 50 times over with the last packet's textures, then waited for
-        const char* names[] = {"Blocks", "Exact", "Need", "Marks", "Stats", "Plan", "Units", "Prefix", "Packet", "State", "Index", "Draw"};
-        Target* to[] = {&blocks, &exact, &need, &state[(committed + 1) % 3], &stats, &plan, &units, &prefix, &packet, &state[(committed + 2) % 3], &index, &picture};
+        const char* names[] = {"Blocks", "Exact", "Need", "Marks", "Stats", "Plan", "Units", "Prefix", "Cut", "Packet", "State", "Index", "Draw"};
+        Target* to[] = {&blocks, &exact, &need, &state[(committed + 1) % 3], &stats, &plan, &units, &prefix, &cut, &packet, &state[(committed + 2) % 3], &index, &picture};
         std::vector<uint8_t> wait;
         double all = 0;
-        for (int k = 0; k < 12; k++) {
+        for (int k = 0; k < 13; k++) {
             if (k == Marks || k == State) mat.setTexture("_State", state[committed].srv.Get(), 160, 120);
             readTarget(stats, wait);
             auto start = std::chrono::steady_clock::now();
-            for (int n = 0; n < 50; n++) blit(k < 10 ? mat : show, k < 10 ? ep[k] : dp[k - 10], *to[k]);
+            for (int n = 0; n < 50; n++) blit(k < 11 ? mat : show, k < 11 ? ep[k] : dp[k - 11], *to[k]);
             readTarget(stats, wait);
             double ms = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() * 20;
             printf("  %-7s %6.3f ms\n", names[k], ms);

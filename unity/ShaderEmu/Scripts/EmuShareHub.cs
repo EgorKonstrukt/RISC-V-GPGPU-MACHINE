@@ -39,7 +39,7 @@ public class EmuShareHub : UdonSharpBehaviour
     // copies one row of bytes. Off: tiles, as before. May be changed while running.
     public bool units = true;
     public Material unitsMaterial;          // ShareUnits.shader
-    public RenderTexture unitsBlocks, unitsExact, unitsNeed, unitsStats, unitsPlan, unitsTable, unitsPrefix, unitsPacket;
+    public RenderTexture unitsBlocks, unitsExact, unitsNeed, unitsStats, unitsPlan, unitsTable, unitsPrefix, unitsCut, unitsPacket;
     public RenderTexture[] unitsState;      // three of 160 x 120: what the receivers have, with this capture's changes, and after the packet
     public bool netTest;                    // two clients test themselves and log (docs/share.md)
 
@@ -107,9 +107,14 @@ public class EmuShareHub : UdonSharpBehaviour
     private byte[] unitsRead = new byte[UnitsRow];
     private byte[] unitsHead = new byte[2048];
     private bool unitsWas, unitsPending, unitsReady, unitsReset = true, unitsHeadNew, unitsDrop, unitsAsking;
-    private bool unitsHeadBuilt, unitsAskedReset;
+    private bool unitsHeadBuilt, unitsAskedReset, unitsCarry;
+    private bool unitsActive, unitsCredit, unitsAgain;   // units are what is sent now; a tick allowed one packet; it was made again
     private int unitsAskedLost;
-    private float unitsAskedAt;
+    private float unitsAge, unitsAgeSum;   // how old the last packet's capture was when it went, and all of them (for the tests)
+    private int unitsAgains;
+    private int unitsTurn;            // where the last packet stopped: the next goes on from there
+    private int unitsAskedMs, atlasMs, captureMs, captureAskedMs;   // the instance's clock when a packet's picture was captured (for the test with two clients)
+    private float unitsAskedAt, unitsReadyAt;   // (when it was read back: one that then waits for the link is made again)
     private int unitsHeadLength, unitsLength, unitsNow, unitsNext, unitsLostFrom, unitsLostCount;
 
     // A speed in two bytes of the packet: its four digits, and from bit 14 how many of them
@@ -129,8 +134,9 @@ public class EmuShareHub : UdonSharpBehaviour
 
     private int page;                 // of the players' rows
     private int sentPackets, sentBytes, tookEvents, repaired, refreshed;
-    private float testAt, testTypeAt;
+    private float testAt, testTypeAt, testOnAt, testFlipAt;
     private bool testStarted, testTyped;
+    [HideInInspector] public int testScene = -1;   // what the first player's machine shows in the test with two clients
 
     void Start()
     {
@@ -524,6 +530,39 @@ public class EmuShareHub : UdonSharpBehaviour
 
     void Update()
     {
+        // Units do not wait for a tick: a tick that may carry the display allows one packet, which
+        // is asked for the frame the link is free and goes the frame it has been read back. What
+        // it shows is then a few frames old, not one or two tenths of a second (or a second,
+        // where the link is busy that long: there it is made once more before it goes).
+        if (unitsActive && mine != null && !mine.Busy() && !Networking.IsClogged)
+        {
+            if (!unitsPending)
+            {
+                if (unitsCredit) AskUnits();
+            }
+            else if (unitsReady && unitsCredit)
+            {
+                if (!unitsAgain && Time.time - unitsReadyAt >= 0.09f)
+                {
+                    // (what that one was asked to do is still to do)
+                    unitsAgain = true;
+                    unitsAgains++;
+                    if (unitsAskedReset) unitsReset = true;
+                    if (unitsAskedLost > 0) unitsLostCount = unitsAskedLost;
+                    unitsPending = false;
+                    unitsReady = false;
+                    AskUnits();
+                }
+                else
+                {
+                    unitsCredit = false;
+                    unitsAgain = false;
+                    int taken = TakeUnits();
+                    if (taken > 0 || unitsCarry) SendPacket(taken, wasOn);
+                    unitsCarry = false;
+                }
+            }
+        }
         if (Time.time < nextTick) return;
         nextTick = Time.time + TickSeconds;
         ticks++;
@@ -546,6 +585,7 @@ public class EmuShareHub : UdonSharpBehaviour
         if (units != unitsWas)
         {
             unitsWas = units;
+            unitsCredit = false;
             codeAll = true;   // (the tiles' rows are as old as the last time tiles were sent)
             // (and the stream's size is the other way's until a capture has set it: no tile goes by it)
             sendW = 0;
@@ -572,11 +612,10 @@ public class EmuShareHub : UdonSharpBehaviour
         }
         if (pointerFrom != 0 && Time.time - pointerAt > 2f) DropPointer();
         if (machine.inputAway) Drain();
-        if (mine.Busy() || Networking.IsClogged)
-        {
-            UnitsWait(on);
-            return;
-        }
+        bool wanted = shareCount > 0 || selfTest;
+        unitsActive = UnitsNow(on) && wanted;
+        if (unitsActive && ticks % 3 != 0 && !(Time.time - netFlowAt < 1f && ticks % 6 != 1)) unitsCredit = true;
+        if (mine.Busy() || Networking.IsClogged) return;
 
         // the network's packets go ahead of the display, which while they flow (a game) has one
         // sending in six: a picture of the game a second and a half apart, and the game's
@@ -585,29 +624,31 @@ public class EmuShareHub : UdonSharpBehaviour
         if (net) netFlowAt = Time.time;
         bool flowing = Time.time - netFlowAt < 1f;
         int length = 0;
-        bool askUnits = false;
-        bool wanted = shareCount > 0 || selfTest, slot = ticks % 3 != 0 && wanted && !(flowing && ticks % 6 != 1);
-        if (units && unitsMaterial != null && on)
-        {
-            if (slot && unitsReady) length = TakeUnits();
-            else if (!slot) UnitsWait(on);
-            // (the next one is asked for when this one has gone: its number is the one after)
-            askUnits = wanted && !unitsPending;
-        }
-        else if (slot)
+        bool slot = ticks % 3 != 0 && wanted && !(flowing && ticks % 6 != 1);
+        // (while a packet of units is on its way this tick's own sending, if it has any, goes with it)
+        bool waits = unitsActive && unitsPending;
+        if (!unitsActive && slot)
         {
             // a packet of units made before: nothing of it goes, and its rows are sent again
             if (unitsPending && unitsReady) UnitsDropped();
             unitsDrop = unitsPending;
             if (on && !reading && !unitsPending) Capture();
             length = Build(on);
+            captureMs = atlasMs;
         }
         bool typed = MoveInput();
-        if (length == 0 && !typed && !stateOut && !net)
+        if (waits)
         {
-            if (askUnits) AskUnits();
+            unitsCarry = unitsCarry || typed || stateOut || net;
             return;
         }
+        if (length == 0 && !typed && !stateOut && !net) return;
+        SendPacket(length, on);
+    }
+
+    // What is in `scratch` (length bytes; 0: nothing of the console or the display) and the other fields.
+    private void SendPacket(int length, bool on)
+    {
         if (length > 0)
         {
             byte[] packet = new byte[length];
@@ -617,6 +658,7 @@ public class EmuShareHub : UdonSharpBehaviour
             keptSeq[building] = mine.seq;
             sentPackets++;
             sentBytes += length;
+            if (netTest) Debug.Log("[ShareLag] sent seq=" + mine.seq + " ms=" + Networking.GetServerTimeInMilliseconds() + " captured=" + captureMs + " units=" + (packet[0] >> 1 & 1) + " bytes=" + length);
         }
         else mine.packet = empty;
         mine.flags = (on ? 1 : 0) | (allow ? 2 : 0);
@@ -624,7 +666,6 @@ public class EmuShareHub : UdonSharpBehaviour
         mine.Send();
         stateOut = false;
         if (selfTest && length > 0) streams.Received(mine);
-        if (askUnits) AskUnits();
     }
 
     // The first player in the instance turns their machine on and lets it be used; the others
@@ -639,6 +680,33 @@ public class EmuShareHub : UdonSharpBehaviour
                 machine.PowerOn();
                 allow = true;
                 stateOut = true;
+            }
+        }
+        // the first player's machine shows five scenes that keep changing, 80 s each (a game,
+        // windows with activity, text scrolling, a window dragged, the pointer), and sends each
+        // as units and as tiles, 40 s each: what the other's picture of it is like, EmuShareProbe
+        // writes down (tools/share_clients.py)
+        if (Networking.IsMaster && machine.IsOn())
+        {
+            if (testOnAt == 0f) testOnAt = Time.time;
+            int step = Mathf.FloorToInt((Time.time - testOnAt - 50f) / 40f);
+            if (step >= 0)
+            {
+                int scene = (step / 2) % 5, round = step / 10;
+                units = ((step ^ round) & 1) == 1;
+                if (scene != testScene)
+                {
+                    string stop = testScene == 0 ? "killall doom doom.bin; " : testScene == 1 ? "killall glxgears nxmon; " : testScene == 2 ? "killall nxterm; "
+                                : testScene == 3 ? "rm /tmp/drag; killall nxkey nxedit; " : "";
+                    if (testScene == 4) machine.SetRemotePointer(0, 0, 0, false);
+                    testScene = scene;
+                    // (a short line: the console takes a few characters a frame)
+                    string drags = "touch /tmp/drag; nxedit & sleep 4; (while [ -f /tmp/drag ]; do nxkey drag:290,32:400,90 200 drag:400,90:250,160 200 drag:250,160:480,60 200 drag:480,60:300,200 200 drag:300,200:290,32 200; done) &";
+                    consoleKeyboard.TypeText(stop + (scene == 0 ? "doom -playdemo demo1 &" : scene == 1 ? "glxgears & nxmon &"
+                        : scene == 2 ? "nxterm & sleep 4; nxkey l s space - l space / u s r / b i n enter 2000 s e q space 1 space 2 0 0 0 0 enter &"
+                        : scene == 3 ? drags : "true") + "\n");
+                }
+                if (scene == 4) machine.SetRemotePointer((int)(400 + 160 * Mathf.Cos(Time.time * 1.5f)), (int)(300 + 120 * Mathf.Sin(Time.time * 1.5f)), 0, true);
             }
         }
         bool drive = target != 0 && Utilities.IsValid(targetShare) && (targetShare.flags & 3) == 3;
@@ -813,6 +881,7 @@ public class EmuShareHub : UdonSharpBehaviour
         VRCAsyncGPUReadback.Request(atlas, 0, (IUdonEventReceiver)this);
         asked++;
         reading = true;
+        if (netTest) captureAskedMs = Networking.GetServerTimeInMilliseconds();
         RenderTexture t2 = now;
         now = before;
         before = t2;
@@ -830,6 +899,7 @@ public class EmuShareHub : UdonSharpBehaviour
         }
         reading = false;
         done++;
+        atlasMs = captureAskedMs;
         if (request.hasError || !request.TryGetData(atlasBytes))
         {
             haveAtlas = false;
@@ -995,7 +1065,7 @@ public class EmuShareHub : UdonSharpBehaviour
         m.SetFloat("_Reset", unitsReset ? 1 : 0);
         m.SetFloat("_Room", Mathf.Max(0, PacketMost - unitsHeadLength));
         m.SetFloat("_Seq", number & 255);
-        m.SetFloat("_Turn", (number % 4800) * 7919 % 4800);
+        m.SetFloat("_Turn", unitsTurn);
         RenderTexture marked = unitsState[(unitsNow + 1) % 3];
         unitsNext = (unitsNow + 2) % 3;
         VRCGraphics.Blit(fineNow, unitsBlocks, m, 1);
@@ -1015,8 +1085,11 @@ public class EmuShareHub : UdonSharpBehaviour
         m.SetTexture("_Units", unitsTable);
         VRCGraphics.Blit(fineNow, unitsPrefix, m, 8);
         m.SetTexture("_Prefix", unitsPrefix);
-        VRCGraphics.Blit(fineNow, unitsPacket, m, 9);
-        VRCGraphics.Blit(fineNow, unitsState[unitsNext], m, 10);
+        VRCGraphics.Blit(fineNow, unitsCut, m, 9);
+        m.SetTexture("_Cut", unitsCut);
+        VRCGraphics.Blit(fineNow, unitsPacket, m, 10);
+        VRCGraphics.Blit(fineNow, unitsState[unitsNext], m, 11);
+        if (netTest) unitsAskedMs = Networking.GetServerTimeInMilliseconds();
         VRCAsyncGPUReadback.Request(unitsPacket, 0, (IUdonEventReceiver)this);
         unitsPending = true;
         unitsReady = false;
@@ -1028,22 +1101,10 @@ public class EmuShareHub : UdonSharpBehaviour
         unitsLostCount = 0;
     }
 
-    // A tick on which nothing of the display can go. What is ready and two ticks old is made
-    // again from the display as it is now: a packet that waits a second for the link (the
-    // editor's one a second) is not a second old when it goes.
-    private void UnitsWait(bool on)
+    // Whether the display goes as units now: the machine is on and has a display.
+    private bool UnitsNow(bool on)
     {
-        if (!units || unitsMaterial == null || !on || (shareCount == 0 && !selfTest)) return;
-        if (unitsPending && !(unitsReady && Time.time - unitsAskedAt >= 0.2f)) return;
-        if (unitsPending)
-        {
-            // (what that one was asked to do is still to do)
-            if (unitsAskedReset) unitsReset = true;
-            if (unitsAskedLost > 0) unitsLostCount = unitsAskedLost;
-            unitsPending = false;
-            unitsReady = false;
-        }
-        AskUnits();
+        return units && unitsMaterial != null && on && machine.displayWidth > 0 && machine.displayHeight > 0;
     }
 
     private void UnitsRead(VRCAsyncGPUReadbackRequest request)
@@ -1055,6 +1116,7 @@ public class EmuShareHub : UdonSharpBehaviour
         }
         unitsLength = Mathf.Min(unitsRead[UnitsBytes] | unitsRead[UnitsBytes + 1] << 8, PacketMost - unitsHeadLength);
         unitsReady = true;
+        unitsReadyAt = Time.time;
     }
 
     // Nothing of the packet asked for goes: its rows are sent again, and the display from nothing.
@@ -1076,6 +1138,10 @@ public class EmuShareHub : UdonSharpBehaviour
         unitsPending = false;
         unitsHeadBuilt = false;
         unitsNow = unitsNext;
+        unitsAge = Time.time - unitsAskedAt;
+        unitsAgeSum += unitsAge;
+        unitsTurn = unitsRead[UnitsBytes + 4] | unitsRead[UnitsBytes + 5] << 8;
+        captureMs = unitsAskedMs;
         // (the capture it was made of is the one the next is compared with)
         RenderTexture t = fineNow;
         fineNow = fineBefore;
@@ -1103,7 +1169,7 @@ public class EmuShareHub : UdonSharpBehaviour
             speedAll = on ? PackSpeed(machine.mipsAll) : 0;
             speedCore = on ? PackSpeed(machine.mipsCore) : 0;
         }
-        bool asUnits = units && unitsMaterial != null && on;
+        bool asUnits = UnitsNow(on);
         b[0] = (byte)((on ? 1 : 0) | (asUnits ? 2 : 0));
         b[1] = (byte)terminal.Top();
         b[2] = (byte)terminal.CursorColumn();

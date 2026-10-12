@@ -321,6 +321,7 @@ public class EmuStreams : UdonSharpBehaviour
         lastSeq[s] = share.seq;
         heardAt[s] = Time.time;
         packets++;
+        if (hub.netTest) Debug.Log("[ShareLag] got seq=" + share.seq + " ms=" + Networking.GetServerTimeInMilliseconds());
 
         byte[] b = bytes[s];
         bool redraw = false, all = false;

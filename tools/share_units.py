@@ -107,6 +107,7 @@ class Sender:
         self.have = np.full((CH, CW), 4, np.int64)
         self.seq = np.zeros((CH, CW), np.int64)
         self.cap = None
+        self.turn = 0                  # where the last packet stopped, as a unit of level 0
 
     def marks(self, cap, reset=False, lost=(0, 0)):
         """Pass "marks": a cell that changed since the last capture, or went with a lost packet, is stale."""
@@ -182,35 +183,44 @@ class Sender:
             out.append((mask, size, kind))
         return out
 
-    def order(self, units, turn):
-        """Passes "prefix" and "packet": units in their order (stale before the rest, coarse before
-        sharp, each level from a place that moves with every packet), cut where the room ends."""
+    def order(self, units, k):
+        """The units of one class (0: the stale cells', 1: the rest's) in the order they go: coarse
+        before sharp, each level from the place the last packet stopped at, and round."""
         seq = []
-        for k, level, base in SEG:
+        for level in (3, 2, 1, 0):
             mask, size, kind = units[level]
-            rot = turn % UN[level]
+            rot = self.turn * UN[level] // UN[0]
             idx = (np.arange(UN[level]) + rot) % UN[level]
             for i in idx[kind[idx] == k + 1]:
                 seq.append((level, int(i), int(mask[i]), int(size[i])))
         return seq
 
     def build(self, room, number):
-        """A packet's bytes; the state is as if it has gone."""
+        """A packet's bytes; the state is as if it has gone. Passes "prefix", "cut", "packet"
+        and "state": the stale cells' units while they fit in the room less a quarter (kept for
+        the rest, when there is any: what stands still sharpens while something else moves),
+        then the rest's while they fit; the next packet starts where the first cut fell."""
         fs, ft = self.floors(room)
         level_of, cls = self.plan(fs, ft)
         units = self.units(level_of, cls)
-        packet, sent = b'', np.full((CH, CW), 9, np.int64)
-        for level, i, mask, size in self.order(units, number * 7919):
-            if len(packet) + size > room:
-                break
-            packet += unit_bytes(self.cap, level, i, mask)
-            # pass "state": a cell is at the sharpest level a block of the packet covers it with
-            n, uy, ux = max(1, (4 << level) // 8), i // UW[level], i % UW[level]
-            for b in range(16):
-                if mask >> b & 1:
-                    by, bx = uy * 4 + (b >> 2), ux * 4 + (b & 3)
-                    y, x = (by // 2, bx // 2) if level == 0 else (by * n, bx * n)
-                    sent[y:y + n, x:x + n] = np.minimum(sent[y:y + n, x:x + n], level)
+        stale, rest = self.order(units, 0), self.order(units, 1)
+        packet, sent, stop = b'', np.full((CH, CW), 9, np.int64), None
+        for part, limit in ((stale, room - room // 4 if rest else room), (rest, room)):
+            for level, i, mask, size in part:
+                if len(packet) + size > limit:
+                    if stop is None:
+                        stop = (level, i)
+                    break
+                packet += unit_bytes(self.cap, level, i, mask)
+                # a cell is at the sharpest level a block of the packet covers it with
+                n, uy, ux = max(1, (4 << level) // 8), i // UW[level], i % UW[level]
+                for b in range(16):
+                    if mask >> b & 1:
+                        by, bx = uy * 4 + (b >> 2), ux * 4 + (b & 3)
+                        y, x = (by // 2, bx // 2) if level == 0 else (by * n, bx * n)
+                        sent[y:y + n, x:x + n] = np.minimum(sent[y:y + n, x:x + n], level)
+        if stop:
+            self.turn = stop[1] * UN[0] // UN[stop[0]]
         self.have = np.where(sent < 9, sent, self.have)
         self.seq = np.where(sent < 9, number & 255, self.seq)
         return packet

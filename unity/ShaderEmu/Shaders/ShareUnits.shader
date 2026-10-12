@@ -30,7 +30,8 @@ Shader "ShaderEmu/ShareUnits"
         Texture2D<float4> _Stats;          // 1 x 1: the level each class goes at
         Texture2D<float4> _Plan;           // 160 x 120: r, 1 + the level a cell goes at; g, its class
         Texture2D<float4> _Units;          // 80 x 113: level 3's units from row 0, 2 from 8, 1 from 23, 0 from 53
-        Texture2D<float4> _Prefix;         // 256 x 1: the bytes before each 64 places of the order
+        Texture2D<float4> _Prefix;         // 256 x 1: the bytes before each 64 places of the order; 200: all; 201: the stale cells' units'
+        Texture2D<float4> _Cut;            // 2 x 1: the stale units' bytes that go, and all that go; where the next packet starts
         float4 _Size;                      // the picture's width and height
         float4 _Lost;                      // a packet number and how many from it were lost
         float _Reset, _Room, _Seq, _Turn;
@@ -88,19 +89,19 @@ Shader "ShaderEmu/ShareUnits"
             return bytes(_Units.Load(int3(index % across, units_row(level) + index / across, 0)));
         }
 
-        // The order units go in: stale before the rest, coarse before sharp, each level from a
-        // place that moves with every packet. A place's class, level and unit.
+        // The order units go in: stale before the rest, coarse before sharp, each level from the
+        // place the last packet stopped at (_Turn, as a unit of level 0). A place's class, level and unit.
         void place(uint p, out uint cls, out uint level, out uint index) {
             cls = p >= 6380 ? 1 : 0;
             uint q = p - cls * 6380;
             level = q < 80 ? 3 : q < 380 ? 2 : q < 1580 ? 1 : 0;
             uint n = units_of(level), local = q - (level == 3 ? 0 : level == 2 ? 80 : level == 1 ? 380 : 1580);
-            index = (local + (uint)_Turn % n) % n;
+            index = (local + (uint)_Turn * n / 4800) % n;
         }
 
         uint place_of(uint cls, uint level, uint index) {
             uint n = units_of(level);
-            return cls * 6380 + (level == 3 ? 0 : level == 2 ? 80 : level == 1 ? 380 : 1580) + (index + n - (uint)_Turn % n) % n;
+            return cls * 6380 + (level == 3 ? 0 : level == 2 ? 80 : level == 1 ? 380 : 1580) + (index + n - (uint)_Turn * n / 4800) % n;
         }
 
         uint bytes_at_place(uint p) {
@@ -121,6 +122,33 @@ Shader "ShaderEmu/ShareUnits"
             [loop] for (uint q = p / Chunk * Chunk; q < p; q++) sum += bytes_at_place(q);
             return sum;
         }
+
+        // The place whose record holds byte n of the order, and where that record starts.
+        bool find(uint n, out uint p, out uint start, out uint size) {
+            uint low = 0, high = 200;
+            [loop] for (uint k = 0; k < 8; k++) {
+                uint mid = (low + high + 1) / 2;
+                if (chunk_before(mid) <= n) low = mid;
+                else high = mid - 1;
+            }
+            uint sum = chunk_before(low);
+            bool found = false;
+            p = 0;
+            start = 0;
+            size = 0;
+            [loop] for (uint q = low * Chunk; q < low * Chunk + Chunk && q < Places; q++) {
+                uint s = bytes_at_place(q);
+                if (!found && n < sum + s) {
+                    found = true;
+                    p = q;
+                    start = sum;
+                    size = s;
+                }
+                sum += s;
+            }
+            return found;
+        }
+
         ENDCG
 
         // 0: picture pixel (x, y) to texel (x, y), as sRGB values; _Src.z display pixels a texel.
@@ -376,51 +404,63 @@ Shader "ShaderEmu/ShareUnits"
             ENDCG
         }
 
-        // 8: the bytes before each 64 places of the order; texel 200 and on: all of them.
+        // 8: the bytes before each 64 places of the order; texel 200 and on: all of them, but
+        // 201: those of the stale cells' units (the places before 6380).
         Pass
         {
             Name "Prefix"
             CGPROGRAM
             float4 frag(float4 at : SV_Position) : SV_Target {
-                uint end = min((uint)at.x * Chunk, Places), sum = 0;
+                uint end = (uint)at.x == 201 ? 6380 : min((uint)at.x * Chunk, Places), sum = 0;
                 [loop] for (uint p = 0; p < end; p++) sum += bytes_at_place(p);
                 return out_bytes(sum & 255, (sum >> 8) & 255, sum >> 16, 0);
             }
             ENDCG
         }
 
-        // 9: the packet: the records of the units, in their order, that fit in _Room bytes.
-        // Texel 288: how many bytes that is.
+        // 9: where the packet is cut. The stale cells' units go while they fit in the room less a
+        // quarter (kept for the rest, when there is any: what stands still sharpens while
+        // something else moves), then the rest's while they fit. Texel 0: the stale units' bytes
+        // that go, and all that go; texel 1: where the next packet starts, which is the unit
+        // the first cut fell on (as a unit of level 0), or where this one did.
+        Pass
+        {
+            Name "Cut"
+            CGPROGRAM
+            float4 frag(float4 at : SV_Position) : SV_Target {
+                uint room = (uint)_Room, all = chunk_before(200), staleAll = chunk_before(201);
+                uint stale = staleAll, turn = (uint)_Turn, p = 0, q, start, size;
+                bool cut = false;
+                if (staleAll > (all > staleAll ? room - room / 4 : room)) {
+                    find(all > staleAll ? room - room / 4 : room, p, start, size);
+                    stale = start;
+                    cut = true;
+                }
+                uint rest = all - staleAll;
+                if (rest > room - stale) {
+                    find(staleAll + room - stale, q, start, size);
+                    rest = start - staleAll;
+                    if (!cut) p = q;
+                    cut = true;
+                }
+                if (cut) {
+                    uint cls, level, index;
+                    place(p, cls, level, index);
+                    turn = index * (4800 / units_of(level));
+                }
+                uint length = stale + rest;
+                if ((uint)at.x == 0) return out_bytes(stale & 255, stale >> 8, length & 255, length >> 8);
+                return out_bytes(turn & 255, turn >> 8, 0, 0);
+            }
+            ENDCG
+        }
+
+        // 10: the packet: the records of the units that go, in their order. Texel 288: how many
+        // bytes that is; texel 289: where the next packet starts.
         Pass
         {
             Name "Packet"
             CGPROGRAM
-            // The place whose record holds byte n of the order, and where that record starts.
-            bool find(uint n, out uint p, out uint start, out uint size) {
-                uint low = 0, high = 200;
-                [loop] for (uint k = 0; k < 8; k++) {
-                    uint mid = (low + high + 1) / 2;
-                    if (chunk_before(mid) <= n) low = mid;
-                    else high = mid - 1;
-                }
-                uint sum = chunk_before(low);
-                bool found = false;
-                p = 0;
-                start = 0;
-                size = 0;
-                [loop] for (uint q = low * Chunk; q < low * Chunk + Chunk && q < Places; q++) {
-                    uint s = bytes_at_place(q);
-                    if (!found && n < sum + s) {
-                        found = true;
-                        p = q;
-                        start = sum;
-                        size = s;
-                    }
-                    sum += s;
-                }
-                return found;
-            }
-
             uint record_byte(uint p, uint o) {
                 uint cls, level, index;
                 place(p, cls, level, index);
@@ -446,25 +486,26 @@ Shader "ShaderEmu/ShareUnits"
                 return value;
             }
 
-            uint packet_byte(uint n, uint room) {
+            // (after the stale units' bytes that go come the rest's, from where those begin in the order)
+            uint packet_byte(uint n, uint stale, uint length) {
                 uint p, start, size;
-                if (find(n, p, start, size) && start + size <= room) return record_byte(p, n - start);
+                if (n >= length) return 0;
+                uint m = n < stale ? n : n - stale + chunk_before(201);
+                if (find(m, p, start, size)) return record_byte(p, m - start);
                 return 0;
             }
 
             float4 frag(float4 at : SV_Position) : SV_Target {
-                uint x = (uint)at.x, room = (uint)_Room, p, start, size;
-                if (x >= 288) {
-                    uint total = chunk_before(200);
-                    if (total > room) total = find(room, p, start, size) ? start : total;
-                    return x == 288 ? out_bytes(total & 255, total >> 8, 0, 0) : 0;
-                }
-                return out_bytes(packet_byte(x * 4, room), packet_byte(x * 4 + 1, room), packet_byte(x * 4 + 2, room), packet_byte(x * 4 + 3, room));
+                uint x = (uint)at.x;
+                uint4 cut = bytes(_Cut.Load(int3(0, 0, 0)));
+                uint stale = cut.r | cut.g << 8, length = cut.b | cut.a << 8;
+                if (x >= 288) return x == 288 ? out_bytes(length & 255, length >> 8, 0, 0) : x == 289 ? _Cut.Load(int3(1, 0, 0)) : 0;
+                return out_bytes(packet_byte(x * 4, stale, length), packet_byte(x * 4 + 1, stale, length), packet_byte(x * 4 + 2, stale, length), packet_byte(x * 4 + 3, stale, length));
             }
             ENDCG
         }
 
-        // 10: the state when that packet has gone: a cell is at the sharpest level a block of
+        // 11: the state when that packet has gone: a cell is at the sharpest level a block of
         // the packet covers it with, and carries the packet's number.
         Pass
         {
@@ -472,18 +513,42 @@ Shader "ShaderEmu/ShareUnits"
             CGPROGRAM
             float4 frag(float4 at : SV_Position) : SV_Target {
                 uint2 c = (uint2)at.xy;
-                uint best = 9, room = (uint)_Room;
+                uint best = 9, staleAll = chunk_before(201);
+                uint4 cut = bytes(_Cut.Load(int3(0, 0, 0)));
+                uint stale = cut.r | cut.g << 8, length = cut.b | cut.a << 8;
                 [loop] for (uint level = 0; level < 4; level++) {
                     uint2 block = level == 0 ? c * 2 : c >> (level - 1);
                     uint index = (block.y / 4) * units_across(level) + block.x / 4;
                     uint4 unit = unit_at(level, index);
                     uint mask = unit.r | unit.g << 8;
                     if (unit.a != 0 && ((mask >> ((block.y & 3) * 4 + (block.x & 3))) & 1) != 0) {
-                        if (before_place(place_of(unit.a - 1, level, index)) + unit.b <= room) best = min(best, level);
+                        uint before = before_place(place_of(unit.a - 1, level, index));
+                        if (unit.a == 1 ? before + unit.b <= stale : before - staleAll + unit.b <= length - stale) best = min(best, level);
                     }
                 }
                 if (best == 9) return _State.Load(int3(c, 0));
                 return out_bytes(best, (uint)_Seq & 255, 0, 0);
+            }
+            ENDCG
+        }
+
+        // 12: for the test with two clients (EmuShareProbe): 24 x 18 pixels of the picture, the
+        // middle one of each part, of a display or of a receiver's picture of one (the same way up).
+        Pass
+        {
+            Name "Signature"
+            CGPROGRAM
+            sampler2D _MainTex;
+            float4 _Src;       // the picture's width and height
+            float4 _TexSize;   // of _MainTex
+
+            float4 frag(float4 at : SV_Position) : SV_Target {
+                float2 q = floor((floor(at.xy) + 0.5) * _Src.xy / float2(24, 18)) + 0.5;
+                float3 c = tex2Dlod(_MainTex, float4(q.x / _TexSize.x, 1.0 - q.y / _TexSize.y, 0, 0)).rgb;
+#ifndef UNITY_COLORSPACE_GAMMA
+                c = c <= 0.0031308 ? c * 12.92 : 1.055 * pow(max(c, 1e-6), 1.0 / 2.4) - 0.055;
+#endif
+                return float4(c, 1);
             }
             ENDCG
         }

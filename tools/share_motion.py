@@ -12,8 +12,9 @@ that change at all during the recording: what a watcher's eye is on. Lower is be
 (ffmpeg must be on the path), and the numbers as SCENE.json.
 
   tiles   EmuShareHub's tiles (PutTiles), its capture one sending old
-  units   ShareUnits.shader as tools/share_units.py models it, asked again while the link is
-          busy (EmuShareHub.UnitsWait): its capture 0.15 s old, or 0.3 s at a packet a second
+  units   ShareUnits.shader as tools/share_units.py models it: a packet goes the frame it has
+          been read back (EmuShareHub.SendUnits), its capture 0.04 s old, and while the link
+          is busy it is made again every tick (UnitsWait): 0.15 s old at a packet a second
 """
 import argparse
 import json
@@ -250,7 +251,7 @@ class Video:
         self.pipe.wait()
 
 
-METHODS = {'tiles': (Tiles, lambda period: period), 'units': (Units, lambda period: period if period < 0.2 else 0.3)}
+METHODS = {'tiles': (Tiles, lambda period: period), 'units': (Units, lambda period: 0.04 if period < 0.2 else 0.15)}
 
 
 def play(rec, make, period, lag, mask, video=None):
