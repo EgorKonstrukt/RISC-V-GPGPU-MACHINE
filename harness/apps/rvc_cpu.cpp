@@ -790,6 +790,10 @@ static u64 run_worker(Core& c, u64 budget) {
             w.state = MC_PARKED;
             break;
         }
+        if (ins == 0x0000100f) {   // fence.i ends its pass, as on the shader machine: it goes on in the next
+            done += run(c, 1);
+            break;
+        }
         done += run(c, 1);
     }
     (void)before;

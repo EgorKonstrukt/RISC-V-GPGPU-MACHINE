@@ -157,7 +157,7 @@ index 8bd712b..7ed967c 100644
  	}
  
 diff --git a/src/demos/nanox/nxterm.c b/src/demos/nanox/nxterm.c
-index 91ec808..f790bdb 100755
+index 91ec808..e3f7f2d 100755
 --- a/src/demos/nanox/nxterm.c
 +++ b/src/demos/nanox/nxterm.c
 @@ -74,13 +74,22 @@
@@ -186,7 +186,7 @@ index 91ec808..f790bdb 100755
  //#define stdbackground GR_COLOR_GAINSBORO
  //#define stdbackground BLUE
  #define	LINEBUF         stdcol
-@@ -160,6 +169,258 @@ void rendition(int escvalue);
+@@ -160,6 +169,274 @@ void rendition(int escvalue);
  
  /* **************************************************************************/
  
@@ -340,6 +340,22 @@ index 91ec808..f790bdb 100755
 +#define CLIPBOARD "/tmp/clipboard"
 +static int sel_on, sel_held, sel_r0, sel_c0, sel_r1, sel_c1;
 +
++/* The window's events, and the pointer's moves with them only while a selection is held: every
++ * move over a window that selects them is an event to answer, and wakes the window system. */
++#define TERM_EVENTS (GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_EXPOSURE | \
++	GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT | GR_EVENT_MASK_UPDATE | \
++	GR_EVENT_MASK_CLOSE_REQ)
++
++static void
++sel_moves(int held)
++{
++	static int asked;
++
++	if (asked != held)
++		GrSelectEvents(w1, held ? TERM_EVENTS | GR_EVENT_MASK_MOUSE_MOTION : TERM_EVENTS);
++	asked = held;
++}
++
 +/* The cells row r of the window shows now, scrolled back or not; NULL for none. */
 +static const char *row_cells(int r)
 +{
@@ -445,7 +461,7 @@ index 91ec808..f790bdb 100755
  void sflush(void)
  {
  	if (sbufcnt) {
-@@ -194,17 +455,19 @@ void sadd(char c)
+@@ -194,17 +471,19 @@ void sadd(char c)
  
  void show_cursor(void)
  {
@@ -466,7 +482,7 @@ index 91ec808..f790bdb 100755
  		if(!curvis) {
  			curvis = 1;
  			show_cursor();
-@@ -549,28 +812,28 @@ void rendition(int escvalue) {
+@@ -549,28 +828,28 @@ void rendition(int escvalue) {
  		} else if ((escvalue>29) && (escvalue<38)){
      		switch(escvalue) {
  		    case 30:
@@ -503,7 +519,7 @@ index 91ec808..f790bdb 100755
      			break;
  		    case 39:
      			GrSetGCForeground(gc1, stdforeground); //default color
-@@ -579,28 +842,28 @@ void rendition(int escvalue) {
+@@ -579,28 +858,28 @@ void rendition(int escvalue) {
  		} else if ((escvalue>39) && (escvalue<49)){
      		switch(escvalue) {
  		    case 40:
@@ -540,7 +556,7 @@ index 91ec808..f790bdb 100755
      			break;
  		    case 49:
      			GrSetGCBackground(gc1, stdbackground); //default color
-@@ -616,8 +879,7 @@ void esc100(unsigned char c)	/* various ANSI control codes */
+@@ -616,8 +895,7 @@ void esc100(unsigned char c)	/* various ANSI control codes */
  //leave escstate=10 till done. This states gets this function called.
  
  static int escvalue1,escvalue2,escvalue3;
@@ -550,7 +566,7 @@ index 91ec808..f790bdb 100755
  
  if (c == '?') return; //skip question mark for now, e.g. ESC[?7h for wrap on
  
-@@ -629,10 +891,10 @@ if (nobracket==1){
+@@ -629,10 +907,10 @@ if (nobracket==1){
  else if ( (c > 0x2F) && (c<':') ) // is it a number?
  {
  
@@ -564,7 +580,7 @@ index 91ec808..f790bdb 100755
  	}
  	return; 
  }
-@@ -972,8 +1234,45 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
+@@ -972,8 +1250,45 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
   * un-escaped character print routine
   */
  
@@ -610,7 +626,7 @@ index 91ec808..f790bdb 100755
      switch (c) {
      case 0:
  	   /*
-@@ -1026,13 +1325,12 @@ void esc0 (unsigned char c)
+@@ -1026,13 +1341,12 @@ void esc0 (unsigned char c)
      case 10: /* line feed */
  		sflush();
  		if (++cury >= scrollbottom) {
@@ -628,7 +644,7 @@ index 91ec808..f790bdb 100755
  		}
  		pos_yaxis(cury);
  		break;
-@@ -1053,17 +1351,25 @@ void esc0 (unsigned char c)
+@@ -1053,17 +1367,25 @@ void esc0 (unsigned char c)
  		break;
  
      default: /* any printable char */
@@ -664,7 +680,7 @@ index 91ec808..f790bdb 100755
  		break;
      }
  }
-@@ -1155,9 +1461,71 @@ term(void)
+@@ -1155,9 +1477,74 @@ term(void)
  			exit(0);
  			break;
  
@@ -687,6 +703,7 @@ index 91ec808..f790bdb 100755
 +				sel_r0 = sel_r1 = wevent.button.y / fonh;
 +				sel_c0 = sel_c1 = wevent.button.x / fonw;
 +				sel_held = 1;
++				sel_moves(1);
 +			}
 +			break;
 +
@@ -705,6 +722,7 @@ index 91ec808..f790bdb 100755
 +				}
 +			} else {
 +				sel_held = 0;
++				sel_moves(0);
 +			}
 +			break;
 +
@@ -712,6 +730,7 @@ index 91ec808..f790bdb 100755
 +			if (sel_held && sel_on)
 +				sel_copy();	/* it stays shown until the next key or output */
 +			sel_held = 0;
++			sel_moves(0);
 +			break;
 +
  		case GR_EVENT_TYPE_KEY_DOWN:
@@ -736,7 +755,7 @@ index 91ec808..f790bdb 100755
  			if (kp->ch & MWKEY_NONASCII_MASK)
  				if (termtype == ANSI){
  				bufflen = do_special_key_ansi(buf,kp->ch,kp->modifiers);
-@@ -1165,7 +1533,7 @@ term(void)
+@@ -1165,7 +1552,7 @@ term(void)
  				bufflen = do_special_key(buf,kp->ch,kp->modifiers);
  				}
  			else {
@@ -745,7 +764,7 @@ index 91ec808..f790bdb 100755
  				bufflen = 1;
  			}
  			if( bufflen > 0)
-@@ -1188,6 +1556,28 @@ term(void)
+@@ -1188,6 +1575,28 @@ term(void)
  			 */
  			if (wevent.update.utype == GR_UPDATE_UNMAPTEMP)
  				hide_cursor();
@@ -774,7 +793,7 @@ index 91ec808..f790bdb 100755
  			break;
  
  		case GR_EVENT_TYPE_EXPOSURE:
-@@ -1199,11 +1589,16 @@ term(void)
+@@ -1199,11 +1608,16 @@ term(void)
  
  		case GR_EVENT_TYPE_FDINPUT:
  			if (!gotexpose) break;	/* wait until mapped before reading */
@@ -792,7 +811,7 @@ index 91ec808..f790bdb 100755
  				sflush();
  			}
  			break;
-@@ -1359,7 +1754,7 @@ int do_special_key(unsigned char *buffer, int key, int modifier)
+@@ -1359,7 +1773,7 @@ int do_special_key(unsigned char *buffer, int key, int modifier)
  				break;
  			}
  		}
@@ -801,7 +820,7 @@ index 91ec808..f790bdb 100755
  
  	default:
  		len = 0;
-@@ -1542,7 +1937,7 @@ int do_special_key_ansi(unsigned char *buffer, int key, int modifier)
+@@ -1542,7 +1956,7 @@ int do_special_key_ansi(unsigned char *buffer, int key, int modifier)
  				break;
  			}
  		}
@@ -810,7 +829,7 @@ index 91ec808..f790bdb 100755
  
  	default:
  		len = 0;
-@@ -1593,7 +1988,8 @@ void maximize(void)
+@@ -1593,7 +2007,8 @@ void maximize(void)
  static void sigpipe(int sig)
  {
  	GrClose();
@@ -820,7 +839,7 @@ index 91ec808..f790bdb 100755
  	_exit(sig);
  }
  
-@@ -1607,7 +2003,9 @@ static void sigquit(int sig)
+@@ -1607,7 +2022,9 @@ static void sigquit(int sig)
  {
  	signal(sig, SIG_IGN);
  	GrClose();
@@ -831,16 +850,19 @@ index 91ec808..f790bdb 100755
  }
  
  int main(int argc, char **argv)
-@@ -1683,7 +2081,7 @@ int main(int argc, char **argv)
+@@ -1683,10 +2100,7 @@ int main(int argc, char **argv)
      w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, TITLE, GR_ROOT_WINDOW_ID, -1,-1,winw,winh,
  		stdbackground);
  
 -    GrSelectEvents(w1, GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_EXPOSURE |
-+    GrSelectEvents(w1, GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_EXPOSURE |
- 		   GR_EVENT_MASK_KEY_DOWN | 
- 		   GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT |
- 		   GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
-@@ -1738,14 +2136,20 @@ int main(int argc, char **argv)
+-		   GR_EVENT_MASK_KEY_DOWN | 
+-		   GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT |
+-		   GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
++    GrSelectEvents(w1, TERM_EVENTS);
+     GrMapWindow(w1);
+ 
+     gc1 = GrNewGC();
+@@ -1738,14 +2152,20 @@ int main(int argc, char **argv)
       * and everything seems to work correctly...). Unlike putenv(),
       * setenv() allocates also the given string not just a pointer.
       */
@@ -865,7 +887,7 @@ index 91ec808..f790bdb 100755
      if (termfd < 0) {
          GrClose();
          exit(1);
-@@ -1756,6 +2160,7 @@ int main(int argc, char **argv)
+@@ -1756,6 +2176,7 @@ int main(int argc, char **argv)
      mysignal(SIGPIPE, sigpipe);
      mysignal(SIGCHLD, sigchild);
      mysignal(SIGINT,  SIG_IGN);
@@ -873,7 +895,7 @@ index 91ec808..f790bdb 100755
  #ifdef SIGTTOU
      signal(SIGTTOU, SIG_IGN);   /* just in case we're started in the background */
  #endif
-@@ -1778,7 +2183,6 @@ char * nargv[2] = {"/bin/sh", NULL};
+@@ -1778,7 +2199,6 @@ char * nargv[2] = {"/bin/sh", NULL};
  int term_init(void)
  {
  	int tfd;
@@ -881,7 +903,7 @@ index 91ec808..f790bdb 100755
  	int n = 0;
  	char pty_name[12];
  
-@@ -1861,7 +2265,6 @@ int term_init(void)
+@@ -1861,7 +2281,6 @@ int term_init(void)
  int term_init(void)
  {
  	int tfd;
@@ -1032,15 +1054,18 @@ index be20461..7a390b2 100644
  	if (pmd) {
  		GdDrawImagePartToFit(psd, x, y, width, height, 0, 0, 0, 0, pmd);
 diff --git a/src/engine/devmouse.c b/src/engine/devmouse.c
-index ee97b9f..f774c79 100644
+index ee97b9f..15af1c8 100644
 --- a/src/engine/devmouse.c
 +++ b/src/engine/devmouse.c
-@@ -54,6 +54,13 @@ static MWPIXELVALHW cursavbits[MWMAX_CURSOR_SIZE * MWMAX_CURSOR_SIZE];
+@@ -54,6 +54,16 @@ static MWPIXELVALHW cursavbits[MWMAX_CURSOR_SIZE * MWMAX_CURSOR_SIZE];
  static MWIMAGEBITS cursormask[MWMAX_CURSOR_BUFLEN];
  static MWIMAGEBITS cursorcolor[MWMAX_CURSOR_BUFLEN];
  
 +struct gd_compositor *gd_compositor;
 +void (*gd_composite_walk)(void (*show)(PSD psd));
++int (*gd_quiet_rect)(MWCOORD *x0, MWCOORD *y0, MWCOORD *x1, MWCOORD *y1);
++unsigned gd_scene_gen;
++MWCOORD gd_cursor_hotx, gd_cursor_hoty;
 +
 +/* Set by a screen driver that shows the cursor itself; the engine then never draws it. */
 +void (*gd_hwcursor)(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
@@ -1049,7 +1074,7 @@ index ee97b9f..f774c79 100644
  extern int gr_mode;
  
  /* Advance declarations */
-@@ -203,44 +210,48 @@ MWCURSOR cursor_lg = {
+@@ -203,44 +213,48 @@ MWCURSOR cursor_lg = {
  };
  #else   /* standard Microwindows cursor */
  MWCURSOR cursor_lg = {
@@ -1135,7 +1160,16 @@ index ee97b9f..f774c79 100644
      }
  };
  #endif
-@@ -585,6 +596,11 @@ GdShowCursor(PSD psd)
+@@ -547,6 +561,8 @@ GdSetCursor(PMWCURSOR pcursor)
+ 	GdHideCursor(&scrdev);
+ 	curmaxx = curminx + pcursor->width - 1;
+ 	curmaxy = curminy + pcursor->height - 1;
++	gd_cursor_hotx = pcursor->hotx;
++	gd_cursor_hoty = pcursor->hoty;
+ 
+ 	curfg = GdFindColor(&scrdev, pcursor->fgcolor);
+ 	curbg = GdFindColor(&scrdev, pcursor->bgcolor);
+@@ -585,6 +601,11 @@ GdShowCursor(PSD psd)
  
  	if(++curvisible != 1)
  		return prevcursor;
@@ -1147,7 +1181,7 @@ index ee97b9f..f774c79 100644
  
  	cursavx = curminx;
  	cursavy = curminy;
-@@ -653,6 +669,10 @@ GdHideCursor(PSD psd)
+@@ -653,6 +674,10 @@ GdHideCursor(PSD psd)
  
  	if(curvisible-- <= 0)
  		return prevcursor;
@@ -1158,7 +1192,7 @@ index ee97b9f..f774c79 100644
  #if USE_VGA_XOR_CURSOR
  	vga_drawcursor(cursavx, cursavy, cursavy2 - cursavy + 1, cursormask);
  #else
-@@ -702,7 +722,7 @@ GdCheckCursor(PSD psd,MWCOORD x1,MWCOORD y1,MWCOORD x2,MWCOORD y2)
+@@ -702,7 +727,7 @@ GdCheckCursor(PSD psd,MWCOORD x1,MWCOORD y1,MWCOORD x2,MWCOORD y2)
  {
  	MWCOORD temp;
  
@@ -1167,7 +1201,7 @@ index ee97b9f..f774c79 100644
  		return;
  
  	if (x1 > x2) {
-@@ -728,7 +748,7 @@ GdCheckCursor(PSD psd,MWCOORD x1,MWCOORD y1,MWCOORD x2,MWCOORD y2)
+@@ -728,7 +753,7 @@ GdCheckCursor(PSD psd,MWCOORD x1,MWCOORD y1,MWCOORD x2,MWCOORD y2)
  void
  GdEraseCursor(PSD psd)
  {
@@ -1177,10 +1211,10 @@ index ee97b9f..f774c79 100644
  
  	GdHideCursor(psd);
 diff --git a/src/include/device.h b/src/include/device.h
-index abd632c..b3b0ee2 100644
+index abd632c..82b9cfe 100644
 --- a/src/include/device.h
 +++ b/src/include/device.h
-@@ -350,6 +350,22 @@ extern MOUSEDEVICE mousedev;
+@@ -350,6 +350,35 @@ extern MOUSEDEVICE mousedev;
  extern MWCURSOR cursor_lg;      /* 16x16 standard cursor */
  extern MWCURSOR cursor_sm;      /* 8x8 cursor for slow systems */
  
@@ -1195,7 +1229,20 @@ index abd632c..b3b0ee2 100644
 +	void	(*touch)(PSD psd);		/* something else drew on it */
 +	/* where the surface keeps the pixel for screen position x, y */
 +	void	(*locate)(PSD psd, MWCOORD x, MWCOORD y, uint32_t *address, uint32_t *row);
++	/* the surface follows the pointer from here on, its corner dx, dy from it (owner NULL:
++	 * no longer); 0 if the driver cannot, and the window system moves the window itself */
++	int	(*drag)(void *owner, MWCOORD dx, MWCOORD dy);
++	/* 0: the driver drags no surface; 2: it does, and has it there; 1: it has moved it nowhere yet */
++	int	(*dragged)(MWCOORD *x, MWCOORD *y);
 +};
++/* set by the window system: the rectangle round the pointer in which a move of it is nobody's
++ * news (0: there is none) */
++extern int (*gd_quiet_rect)(MWCOORD *x0, MWCOORD *y0, MWCOORD *x1, MWCOORD *y1);
++/* goes up when a window comes, goes, moves, changes size or place in the order, or who hears of
++ * the pointer changes: what gd_composite_walk shows and gd_quiet_rect answers is as it was till then */
++extern unsigned gd_scene_gen;
++/* where in its image the cursor's hot spot is, for a driver that shows the cursor itself */
++extern MWCOORD gd_cursor_hotx, gd_cursor_hoty;
 +extern struct gd_compositor *gd_compositor;
 +/* set by the window system: calls show() with each visible window's surface, lowest first */
 +extern void (*gd_composite_walk)(void (*show)(PSD psd));
@@ -1513,7 +1560,7 @@ index 3cc7679..4dffa4a 100644
  
  typedef unsigned char	BYTE8;		/* 1 byte*/
 diff --git a/src/nanox/serv.h b/src/nanox/serv.h
-index 4a9efee..4a1f3b7 100644
+index 4a9efee..52d6182 100644
 --- a/src/nanox/serv.h
 +++ b/src/nanox/serv.h
 @@ -212,6 +212,7 @@ struct gr_client {
@@ -1533,16 +1580,19 @@ index 4a9efee..4a1f3b7 100644
  void		GsTerminate(void);
  GR_TIMEOUT	GsGetTickCount(void);
  void		GsRedrawScreen(void);
-@@ -451,6 +454,8 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
+@@ -451,6 +454,11 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
  void		GsSetPortraitMode(int mode);
  void		GsSetPortraitModeFromXY(GR_COORD rootx, GR_COORD rooty);
  void		GsSetClipWindow(GR_WINDOW *wp, MWCLIPREGION *userregion, int flags);
 +void		GsWindowSurface(GR_WINDOW *wp);
 +void		GsCompositeWalk(void (*show)(PSD psd));
++int		GsQuietRect(MWCOORD *x0, MWCOORD *y0, MWCOORD *x1, MWCOORD *y1);
++int		GsDragWindow(GR_WINDOW_ID wid, int xoff, int yoff);
++int		GsDraggedTo(GR_WINDOW_ID wid, int *x, int *y);
  void		GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons);
  void		GsFreePositionEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_WINDOW_ID subwid);
  void		GsDeliverButtonEvent(GR_EVENT_TYPE type, int buttons, int changebuttons, int modifiers);
-@@ -477,6 +482,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
+@@ -477,6 +485,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
  
  void		GsCheckMouseWindow(void);
  void		GsCheckFocusWindow(void);
@@ -1597,7 +1647,7 @@ index 0679f9f..29d2087 100644
  		for (; sibwp != wp; sibwp = sibwp->siblings) {
  			if (!sibwp->realized || !sibwp->output)
 diff --git a/src/nanox/srvevent.c b/src/nanox/srvevent.c
-index bc31c08..4abfb71 100644
+index bc31c08..2dc9f2a 100644
 --- a/src/nanox/srvevent.c
 +++ b/src/nanox/srvevent.c
 @@ -7,8 +7,80 @@
@@ -1703,7 +1753,15 @@ index bc31c08..4abfb71 100644
  	/* Deliver events as appropriate*/
  	GsDeliverKeyboardEvent(0, (keystatus == KBD_KEYPRESS?
  		GR_EVENT_TYPE_KEY_DOWN: GR_EVENT_TYPE_KEY_UP),
-@@ -245,6 +332,17 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
+@@ -201,6 +288,7 @@ GR_BOOL GsCheckKeyboardEvent(void)
+  */
+ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
+ {
++	gd_scene_gen++;
+ 	int	 changebuttons;	/* buttons that have changed */
+ 	MWKEYMOD modifiers;	/* latest modifiers */
+ 	
+@@ -245,6 +333,17 @@ void GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons)
  	if (changebuttons) {
  		GsResetScreenSaver();
  		GsCheckMouseWindow();	/* fixes occasional lost window move when mousewp=root*/
@@ -1721,7 +1779,7 @@ index bc31c08..4abfb71 100644
  		GsDeliverButtonEvent(GR_EVENT_TYPE_BUTTON_DOWN, newbuttons,
  			changebuttons, modifiers);
  	}
-@@ -704,6 +802,10 @@ GsDeliverUpdateEvent(GR_WINDOW *wp, GR_UPDATE_TYPE utype, GR_COORD x,
+@@ -704,6 +803,10 @@ GsDeliverUpdateEvent(GR_WINDOW *wp, GR_UPDATE_TYPE utype, GR_COORD x,
  	}
  
  update_again:
@@ -1733,7 +1791,7 @@ index bc31c08..4abfb71 100644
  		if ((ecp->eventmask & cmask) == 0)
  			continue;
 diff --git a/src/nanox/srvfunc.c b/src/nanox/srvfunc.c
-index 3455994..d060b47 100644
+index 3455994..318a372 100644
 --- a/src/nanox/srvfunc.c
 +++ b/src/nanox/srvfunc.c
 @@ -9,6 +9,7 @@
@@ -1783,7 +1841,15 @@ index 3455994..d060b47 100644
  
  		for (evp = wp->eventclients; evp; evp = evp->next) {
  			if (evp->client == curclient)
-@@ -286,7 +308,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
+@@ -242,6 +264,7 @@ GrDestroyWindow(GR_WINDOW_ID wid)
+ void
+ GrRaiseWindow(GR_WINDOW_ID wid)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_WINDOW	*prevwp;	/* previous window pointer */
+ 	GR_BOOL		overlap;	/* TRUE if there was overlap */
+@@ -286,7 +309,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
  	/*
  	 * Finally redraw the window if necessary.
  	 */
@@ -1792,7 +1858,15 @@ index 3455994..d060b47 100644
  		GsDrawBorder(wp);
  		GsExposeArea(wp, wp->x, wp->y, wp->width, wp->height, NULL);
  	}
-@@ -352,7 +374,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
+@@ -300,6 +323,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
+ void
+ GrLowerWindow(GR_WINDOW_ID wid)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_WINDOW	*prevwp;	/* previous window pointer */
+ 	GR_WINDOW	*sibwp;		/* sibling window */
+@@ -352,7 +376,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
  	 * Finally redraw the sibling windows which this window covered
  	 * if they overlapped our window.
  	 */
@@ -1801,7 +1875,23 @@ index 3455994..d060b47 100644
  		if (GsCheckOverlap(wp, expwp)) {
  			GsExposeArea(expwp, wp->x - wp->bordersize,
  				wp->y - wp->bordersize,
-@@ -445,6 +467,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
+@@ -373,6 +397,7 @@ OffsetWindow(GR_WINDOW *wp, GR_COORD offx, GR_COORD offy)
+ 
+ 	wp->x += offx;
+ 	wp->y += offy;
++	gd_scene_gen++;
+ 	for(cp=wp->children; cp; cp=cp->siblings)
+ 		OffsetWindow(cp, offx, offy);
+ }
+@@ -417,6 +442,7 @@ IsUnobscuredBySiblings(GR_WINDOW *wp)
+ void
+ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_WINDOW	*parent;
+ 	GR_COORD	offx, offy;
+@@ -445,6 +471,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
  		return;
  	}
  
@@ -1825,7 +1915,15 @@ index 3455994..d060b47 100644
  	/*
  	 * move algorithms not requiring unmap/map
  	 */
-@@ -696,13 +735,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -640,6 +683,7 @@ drawBackgroundAndExpose(GR_WINDOW *wp)
+ void
+ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_COORD	oldw, oldh;
+ 
+@@ -696,13 +740,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  	wp->width = width;
  	wp->height = height;
  
@@ -1851,7 +1949,23 @@ index 3455994..d060b47 100644
  		int bs = wp->bordersize;
  		int x = wp->x - bs;
  		int y = wp->y - bs;
-@@ -1675,6 +1724,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+@@ -725,6 +779,7 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+ void
+ GrReparentWindow(GR_WINDOW_ID wid, GR_WINDOW_ID pwid, GR_COORD x, GR_COORD y)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_WINDOW	*pwp;		/* parent window structure */
+ 	GR_WINDOW	**mysibptr;	/* handle to my sibling ptr */
+@@ -1664,6 +1719,7 @@ GrGetFontInfo(GR_FONT_ID font, GR_FONT_INFO *fip)
+ void 
+ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*wp;		/* window structure */
+ 	GR_EVENT_CLIENT	*evp;		/* event-client structure */
+ 
+@@ -1675,6 +1731,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  		return;
  	}
  
@@ -1862,8 +1976,32 @@ index 3455994..d060b47 100644
  	/*
  	 * See if this client is already in the event client list.
  	 * If so, then just replace the events he is selecting for.
+@@ -3493,6 +3553,7 @@ GrSetWMProperties(GR_WINDOW_ID wid, GR_WM_PROPERTIES *props)
+ 			/* FIXME: check if this works if not already realized*/
+ 			GsUnrealizeWindow(wp, GR_TRUE);
+ 			wp->bordersize = props->bordersize;
++			gd_scene_gen++;
+ 			GsRealizeWindow(wp, GR_TRUE);
+ 		}
+ 	}
+@@ -3607,6 +3668,7 @@ GrGetSysColor(int index)
+ void
+ GrSetScreenSaverTimeout(GR_TIMEOUT timeout)
+ {
++	gd_scene_gen++;
+ #if MW_FEATURE_TIMERS
+ 	MWTIMER *timer;
+ 
+@@ -4074,6 +4136,7 @@ GrNewBitmapRegion(GR_BITMAP *bitmap, GR_SIZE width, GR_SIZE height)
+ void
+ GrSetWindowRegion(GR_WINDOW_ID wid, GR_REGION_ID rid, int type)
+ {
++	gd_scene_gen++;
+ #if DYNAMICREGIONS
+ 	GR_WINDOW *wp;
+ 	GR_REGION *region;
 diff --git a/src/nanox/srvmain.c b/src/nanox/srvmain.c
-index 47260c5..736189b 100644
+index 47260c5..88bc371 100644
 --- a/src/nanox/srvmain.c
 +++ b/src/nanox/srvmain.c
 @@ -18,6 +18,7 @@
@@ -2053,16 +2191,17 @@ index 47260c5..736189b 100644
  	else if (e == 0)		/* timeout*/
  	{
  		updatecount = 0;
-@@ -1032,6 +1007,7 @@ GsInitialize(void)
+@@ -1032,6 +1007,8 @@ GsInitialize(void)
  	GdMoveMouse(psd->xvirtres / 2, psd->yvirtres / 2);
  
  	/* Force root window screen paint*/
 +	gd_composite_walk = GsCompositeWalk;
++	gd_quiet_rect = GsQuietRect;
  	GsRedrawScreen();
  
  	/* 
 diff --git a/src/nanox/srvnet.c b/src/nanox/srvnet.c
-index 1f106c0..792249c 100644
+index 1f106c0..f1b8527 100644
 --- a/src/nanox/srvnet.c
 +++ b/src/nanox/srvnet.c
 @@ -17,6 +17,7 @@
@@ -2111,7 +2250,15 @@ index 1f106c0..792249c 100644
  	GsAcceptClientFd(i);
  }
  
-@@ -2209,6 +2223,26 @@ int GsWrite(int fd, void *buf, int c)
+@@ -1956,6 +1970,7 @@ GsFindClient(int fd)
+ void
+ GsDestroyClientResources(GR_CLIENT * client)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW     * wp, *nwp;
+ 	GR_PIXMAP     * pp, *npp;
+ 	GR_GC 	      * gp, *ngp;
+@@ -2209,6 +2224,26 @@ int GsWrite(int fd, void *buf, int c)
  
  	n = 0;
  
@@ -2138,7 +2285,7 @@ index 1f106c0..792249c 100644
  	while(n < c) {
  		e = write(fd, ((char *) buf + n), (c - n));
  		if(e <= 0) {
-@@ -2222,9 +2256,23 @@ int GsWrite(int fd, void *buf, int c)
+@@ -2222,9 +2257,23 @@ int GsWrite(int fd, void *buf, int c)
  	return 0;
  }
  
@@ -2163,7 +2310,7 @@ index 1f106c0..792249c 100644
  }
  
  /*
-@@ -2232,41 +2280,83 @@ int GsWriteType(int fd, short type)
+@@ -2232,41 +2281,83 @@ int GsWriteType(int fd, short type)
   * Note that the maximum request size is allocated from the stack
   * in this function.
   */
@@ -2268,7 +2415,7 @@ index 1f106c0..792249c 100644
 +	} while (rpos < rhave && GsFindClient(fd) != NULL && curclient && curclient->id == fd);
  }
 diff --git a/src/nanox/srvutil.c b/src/nanox/srvutil.c
-index fae5bfa..6003e8b 100644
+index fae5bfa..6a9fbfc 100644
 --- a/src/nanox/srvutil.c
 +++ b/src/nanox/srvutil.c
 @@ -9,6 +9,7 @@
@@ -2279,7 +2426,7 @@ index fae5bfa..6003e8b 100644
  #include "../drivers/fb.h"	/* for set_data_formatex()*/
  #if HAVE_MMAP
  #include <fcntl.h>
-@@ -58,6 +59,47 @@ GsResetScreenSaver(void)
+@@ -58,6 +59,173 @@ GsResetScreenSaver(void)
  #endif
  }
  
@@ -2324,10 +2471,144 @@ index fae5bfa..6003e8b 100644
 +	show_windows(rootwp->children, show);
 +}
 +
++static int quiet_dragging;	/* the screen driver has a frame follow the pointer */
++
++/* Takes e out of rectangle r (left, top, right, bottom) on the side that leaves most of it
++ * with point p still inside; nothing is left if p is in e. */
++static void
++quiet_cut(const int *p, int *r, int ex0, int ey0, int ex1, int ey1)
++{
++	int side = -1, best = 0, area, w = r[2] - r[0], h = r[3] - r[1];
++
++	if (ex0 >= r[2] || ex1 <= r[0] || ey0 >= r[3] || ey1 <= r[1] || w <= 0 || h <= 0)
++		return;
++	if (ex1 <= p[0] && (area = (r[2] - ex1) * h) > best)
++		best = area, side = 0;
++	if (ey1 <= p[1] && (area = w * (r[3] - ey1)) > best)
++		best = area, side = 1;
++	if (ex0 > p[0] && (area = (ex0 - r[0]) * h) > best)
++		best = area, side = 2;
++	if (ey0 > p[1] && (area = w * (ey0 - r[1])) > best)
++		best = area, side = 3;
++	if (side < 0)
++		r[2] = r[0];
++	else
++		r[side] = side == 0 ? ex1 : side == 1 ? ey1 : side == 2 ? ex0 : ey0;
++}
++
++/*
++ * The rectangle round the pointer in which a move of it is nobody's news: the same window
++ * stays under it, and nobody who would hear of a move there has asked to (docs/nanox.md,
++ * "The pointer on a core of its own"). 0 if there is none.
++ */
++int
++GsQuietRect(MWCOORD *x0, MWCOORD *y0, MWCOORD *x1, MWCOORD *y1)
++{
++	int p[2] = { cursorx, cursory }, r[4] = { 0, 0, rootwp->width, rootwp->height };
++	GR_EVENT_CLIENT *ecp;
++	GR_WINDOW *wp, *sp;
++
++	if (curbuttons && quiet_dragging && gd_compositor->dragged(x0, y0)) {
++		/* the frame follows the pointer by itself until the button is let go */
++		*x0 = *y0 = 0;
++		*x1 = *y1 = 32767;
++		return 1;
++	}
++	if (!curbuttons)
++		quiet_dragging = 0;
++	if (curbuttons || grabbuttonwp || screensaver_delay)
++		return 0;
++	/* who hears of a move, from the pointer's window up: the usual way out */
++	for (wp = mousewp; ; wp = wp->parent) {
++		for (ecp = wp->eventclients; ecp; ecp = ecp->next)
++			if (ecp->eventmask & (GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_MOUSE_POSITION)) {
++				win *frame = wm_find_window(wp->id);
++
++				/* a frame hears of moves for its corner alone (wm_container_mousemoved) */
++				if (!frame || frame->type != WINDOW_TYPE_CONTAINER || frame->active || frame->sizing)
++					return 0;
++				quiet_cut(p, r, wp->x + wp->width - 5, wp->y + wp->height - 5, wp->x + wp->width,
++					wp->y + wp->height);
++			}
++		if (wp == rootwp)
++			break;
++	}
++	if (mousewp != GsFindVisibleWindow(cursorx, cursory))
++		return 0;
++	for (sp = mousewp->children; sp; sp = sp->siblings)
++		if (sp->realized)
++			quiet_cut(p, r, sp->x, sp->y, sp->x + sp->width, sp->y + sp->height);
++	for (wp = mousewp; wp != rootwp; wp = wp->parent) {
++#if DYNAMICREGIONS
++		if (wp->clipregion)
++			return 0;
++#endif
++		/* inside the window, and outside every window that lies over it */
++		if (r[0] < wp->x) r[0] = wp->x;
++		if (r[1] < wp->y) r[1] = wp->y;
++		if (r[2] > wp->x + wp->width) r[2] = wp->x + wp->width;
++		if (r[3] > wp->y + wp->height) r[3] = wp->y + wp->height;
++		for (sp = wp->parent->children; sp && sp != wp; sp = sp->siblings)
++			if (sp->realized)
++				quiet_cut(p, r, sp->x, sp->y, sp->x + sp->width, sp->y + sp->height);
++	}
++	if (r[2] <= r[0] || r[3] <= r[1])
++		return 0;
++	*x0 = r[0];
++	*y0 = r[1];
++	*x1 = r[2];
++	*y1 = r[3];
++	return 1;
++}
++
++/* The frame follows the pointer from here on without the window system, the pointer xoff,
++ * yoff inside it (wid 0: no longer). 0: the screen driver cannot, and it is moved as before. */
++int
++GsDragWindow(GR_WINDOW_ID wid, int xoff, int yoff)
++{
++	GR_WINDOW *wp = wid ? GsFindWindow(wid) : NULL;
++
++	gd_scene_gen++;
++	quiet_dragging = 0;
++	if (!gd_compositor || !gd_compositor->drag)
++		return 0;
++	if (!wp || wp->parent != rootwp || !wp->realized)
++		return gd_compositor->drag(NULL, 0, 0);
++	GsWindowSurface(wp);
++	quiet_dragging = gd_compositor->drag(wp, xoff + wp->bordersize, yoff + wp->bordersize);
++	return quiet_dragging;
++}
++
++/* Whether the screen driver has the frame follow the pointer still (0: no), and where it has
++ * it (2) if it has taken it anywhere. */
++int
++GsDraggedTo(GR_WINDOW_ID wid, int *x, int *y)
++{
++	GR_WINDOW *wp = GsFindWindow(wid);
++	MWCOORD sx = 0, sy = 0;
++	int how;
++
++	if (!wp || !gd_compositor || !gd_compositor->dragged || !(how = gd_compositor->dragged(&sx, &sy)))
++		return 0;
++	if (how == 2) {
++		*x = sx + wp->bordersize;
++		*y = sy + wp->bordersize;
++	}
++	return how;
++}
++
  /*
   * Unmap the window to make it and its children invisible on the screen.
   * This is a recursive routine which unrealizes this window and all of its
-@@ -98,8 +140,8 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+@@ -87,6 +255,7 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+ 
+ 	/* set window invisible flag*/
+ 	wp->realized = GR_FALSE;
++	gd_scene_gen++;
+ 
+ 	for (childwp = wp->children; childwp; childwp = childwp->siblings)
+ 		GsUnrealizeWindow(childwp, temp_unmap);
+@@ -98,8 +267,8 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
  
  	if (!temp_unmap && wp == focuswp) {
  		if (focusfixed)
@@ -2338,7 +2619,7 @@ index fae5bfa..6003e8b 100644
  		else {
  			focusfixed = GR_FALSE;
  			GsCheckFocusWindow();
-@@ -116,6 +158,10 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+@@ -116,6 +285,10 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
  	if (!wp->parent->realized || !wp->output)
  		return;
  
@@ -2349,7 +2630,23 @@ index fae5bfa..6003e8b 100644
  	/*
  	 * Clear the area in the parent for this window, causing an
  	 * exposure event for it.  Take into account the border size.
-@@ -326,6 +372,8 @@ GsDestroyWindow(GR_WINDOW *wp)
+@@ -188,6 +361,7 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+ 
+ 	/* set window visible flag*/
+ 	wp->realized = GR_TRUE;
++	gd_scene_gen++;
+ 
+ 	if (!temp) {
+ 		GsCheckMouseWindow();
+@@ -225,6 +399,7 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+ void
+ GsDestroyWindow(GR_WINDOW *wp)
+ {
++	gd_scene_gen++;
+ 	GR_WINDOW	*prevwp;	/* previous window pointer */
+ 	GR_EVENT_CLIENT	*ecp;		/* selections for window */
+ 	GR_WINDOW_ID	oldwid;		/* old selection owner */
+@@ -326,6 +501,8 @@ GsDestroyWindow(GR_WINDOW *wp)
  		GsDestroyPixmap(wp->bgpixmap);
  	if (wp->buffer)
  		GsFreeWindowBuffer(wp);
@@ -2358,7 +2655,7 @@ index fae5bfa..6003e8b 100644
  #if DYNAMICREGIONS
  	if (wp->clipregion)
  		GdDestroyRegion(wp->clipregion);
-@@ -733,8 +781,15 @@ GsClearWindow(GR_WINDOW *wp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE  hei
+@@ -733,8 +910,15 @@ GsClearWindow(GR_WINDOW *wp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE  hei
  	 * with buffered windows, all drawing is postponed until the application
  	 * is finished by calling GrClearWindow(..., 2), ie. GrFlushWindow()
  	 */
@@ -2375,7 +2672,7 @@ index fae5bfa..6003e8b 100644
  
  	if (wp->props & GR_WM_PROPS_BUFFERED) {
  
-@@ -1104,6 +1159,9 @@ GsFindCursor(GR_CURSOR_ID cursorid)
+@@ -1104,6 +1288,9 @@ GsFindCursor(GR_CURSOR_ID cursorid)
  GR_DRAW_TYPE
  GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
  {
@@ -2385,7 +2682,7 @@ index fae5bfa..6003e8b 100644
  	GR_WINDOW	*wp;		/* found window */
  	GR_PIXMAP	*pp;		/* found pixmap */
  	GR_GC		*gcp;		/* found graphics context */
-@@ -1123,6 +1181,7 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
+@@ -1123,6 +1310,7 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
  	if (gcp != curgcp) {
  		curgcp = gcp;
  		gcp->changed = GR_TRUE;
@@ -2393,7 +2690,7 @@ index fae5bfa..6003e8b 100644
  	}
  
  	/*
-@@ -1187,7 +1246,17 @@ havepixmap:
+@@ -1187,7 +1375,17 @@ havepixmap:
  		 * If the window is not the currently clipped one,
  		 * then make it the current one and define its clip rectangles.
  		 */
@@ -2412,7 +2709,7 @@ index fae5bfa..6003e8b 100644
  #if DYNAMICREGIONS
  			/* find user region for intersect*/
  			regionp = gcp->regionid? GsFindRegion(gcp->regionid): NULL;
-@@ -1226,23 +1295,33 @@ havepixmap:
+@@ -1226,23 +1424,33 @@ havepixmap:
  			count = gcp->dashcount;
  		}
  
@@ -2420,13 +2717,13 @@ index fae5bfa..6003e8b 100644
 -			GdSetForegroundPixelVal(psd, gcp->foreground);
 -		else
 -			GdSetForegroundColor(psd, gcp->foreground);
--
++		int		all = told_gc != gcp;
+ 
 -		if (gcp->bgispixelval)
 -			GdSetBackgroundPixelVal(psd, gcp->background);
 -		else
 -			GdSetBackgroundColor(psd, gcp->background);
-+		int		all = told_gc != gcp;
- 
+-
 -		GdSetMode(gcp->mode & GR_MODE_DRAWMASK);
 -		GdSetUseBackground(gcp->usebackground);
 +		if (all || gcp->foreground != told.foreground || gcp->fgispixelval != told.fgispixelval) {
@@ -2460,7 +2757,7 @@ index fae5bfa..6003e8b 100644
  
  		switch(gcp->fillmode) {
  		case GR_FILL_STIPPLE:
-@@ -1255,6 +1334,18 @@ havepixmap:
+@@ -1255,6 +1463,18 @@ havepixmap:
  		}
  #endif
  		gcp->changed = GR_FALSE;
@@ -2479,7 +2776,15 @@ index fae5bfa..6003e8b 100644
  	}
  
  	*retdp = wp? (GR_DRAWABLE *)wp: (GR_DRAWABLE *)pp;
-@@ -1442,6 +1533,43 @@ GsCheckFocusWindow(void)
+@@ -1374,6 +1594,7 @@ GsCheckCursor(void)
+ void
+ GsCheckMouseWindow(void)
+ {
++	gd_scene_gen++;
+ #if 1
+ 	GR_WINDOW *oldwp, *newwp;
+ 
+@@ -1442,6 +1663,43 @@ GsCheckFocusWindow(void)
  	}
  }
  
@@ -2523,7 +2828,7 @@ index fae5bfa..6003e8b 100644
  /* Send an update activate event to top level window of passed window*/
  void
  GsNotifyActivate(GR_WINDOW *wp)
-@@ -1456,6 +1584,14 @@ GsNotifyActivate(GR_WINDOW *wp)
+@@ -1456,6 +1714,14 @@ GsNotifyActivate(GR_WINDOW *wp)
  			wp->width, wp->height);
  }
  
@@ -2538,7 +2843,7 @@ index fae5bfa..6003e8b 100644
  /*
   * Set the input focus to the specified window.
   * This generates focus out and focus in events as necessary.
-@@ -1469,13 +1605,24 @@ GsSetFocus(GR_WINDOW *wp)
+@@ -1469,13 +1735,24 @@ GsSetFocus(GR_WINDOW *wp)
  		return;
  
  	GsDeliverGeneralEvent(focuswp, GR_EVENT_TYPE_FOCUS_OUT, wp);
@@ -2566,19 +2871,22 @@ index fae5bfa..6003e8b 100644
  
  /*
 diff --git a/src/nanox/wmaction.c b/src/nanox/wmaction.c
-index 27dcbe8..883d291 100644
+index 27dcbe8..0508547 100644
 --- a/src/nanox/wmaction.c
 +++ b/src/nanox/wmaction.c
-@@ -11,6 +11,8 @@
+@@ -11,6 +11,11 @@
  #include "nanowm.h"
  
  static void set_resize_cursor(int wid);
 +int GsFocusInPopupOf(GR_WINDOW_ID client);
 +int wm_activating;	/* the repaint asked for is an activation's: only what changed is worth one */
++int GsDragWindow(GR_WINDOW_ID wid, int xoff, int yoff);
++int GsDraggedTo(GR_WINDOW_ID wid, int *x, int *y);
++static GR_WINDOW_ID wm_dragged;	/* the frame the screen driver has follow the pointer */
  
  /*
   * This function performs a depth first search on window 
-@@ -67,14 +69,32 @@ void wm_redraw_ncarea(win *window)
+@@ -67,14 +72,32 @@ void wm_redraw_ncarea(win *window)
   	 	 * A window is active even if any of its ancestors has focus
   	 	 * --Amit Kulkarni
   	 	 */	 
@@ -2613,7 +2921,7 @@ index 27dcbe8..883d291 100644
  	}
  
  	/* free title returned from GrGetWMProperties*/
-@@ -138,6 +158,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -138,6 +161,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  			window->close = GR_TRUE;
        		return;
  		}
@@ -2632,7 +2940,7 @@ index 27dcbe8..883d291 100644
  	}
  
  	/* 
-@@ -149,8 +181,8 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -149,8 +184,8 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	 * the focus themself.
  	 * -- Amit Kulkarni
  	 */
@@ -2643,7 +2951,12 @@ index 27dcbe8..883d291 100644
  
  	/* check for corner resize */
  	r.x = info.width - 5;
-@@ -255,6 +287,39 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -252,9 +287,44 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+ 	GrRect(GR_ROOT_WINDOW_ID, gc,info.x, info.y, info.width, info.height);
+ 	GrDestroyGC(gc);
+ #endif	
++	/* (no move reaches us then until the button is let go: wm_container_buttonup) */
++	wm_dragged = GsDragWindow(window->wid, pos->xoff, pos->yoff) ? window->wid : 0;
  	window->active = GR_TRUE;
  }
  
@@ -2683,7 +2996,7 @@ index 27dcbe8..883d291 100644
  void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  {
  	GR_RECT		r;
-@@ -299,8 +364,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -299,8 +369,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
          		return;
        		}
  		}
@@ -2708,7 +3021,24 @@ index 27dcbe8..883d291 100644
  
  	if(window->active) {
  #if OUTLINE_MOVE
-@@ -330,6 +411,11 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -312,6 +398,16 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+ 	  GrMoveWindow(window->wid, pos->xorig, pos->yorig);
+ 	  GrDestroyGC(gc);
+ #endif
++	  if (wm_dragged == window->wid) {
++		struct pos_size *pos = (struct pos_size *)window->data;
++		int x = event->rootx - pos->xoff, y = event->rooty - pos->yoff;
++
++		/* where the pointer left it; where the button was let go if it was taken nowhere */
++		GsDraggedTo(window->wid, &x, &y);
++		GrMoveWindow(window->wid, x, y);
++		GsDragWindow(0, 0, 0);
++		wm_dragged = 0;
++	  }
+ 	  free(window->data);
+ 	  window->active = GR_FALSE;
+ 	  window->data = 0;
+@@ -330,6 +426,11 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  
  	  w = info.width + (event->x - pos->xorig);
  	  h = info.height + (event->y - pos->yorig);
@@ -2719,6 +3049,21 @@ index 27dcbe8..883d291 100644
 +		h = pos->yoff + 24;
  	  GrResizeWindow(window->wid, w, h);
  	  GrResizeWindow(window->clientid, w - pos->xoff, h - pos->yoff);
+ 
+@@ -397,7 +498,13 @@ void wm_container_mousemoved(win *window, GR_EVENT_MOUSE *event)
+ 	
+ 	GrDestroyGC(gc);
+ #else	
+-	GrMoveWindow(window->wid, event->rootx - pos->xoff, event->rooty - pos->yoff);
++	{
++		int x, y;
++
++		/* (a frame the screen driver has follow the pointer is not ours to move meanwhile) */
++		if (wm_dragged != window->wid || !GsDraggedTo(window->wid, &x, &y))
++			GrMoveWindow(window->wid, event->rootx - pos->xoff, event->rooty - pos->yoff);
++	}
+ #endif
+ }
  
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
 index 9214904..bd667b8 100644

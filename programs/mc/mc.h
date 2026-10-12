@@ -46,6 +46,7 @@
 // mailbox or start, and looks at the core's owner word after setting it: the kernel takes no
 // core of a program whose word is set, so what is written is never another program's.
 #define MC_POSTING_AT(tag) (0x1040u + 4u * ((tag) & 15u))
+// (the texel at 0x1800 is the window system's for the kernel's pointer driver: linux/nanox/scr_shaderemu.c)
 // core k's 64 bytes: a job (core 0 writes it), its answer (the worker's), a fault (the
 // worker's, written by the machine) and the word that lets it go on (core 0's)
 #define MC_JOB_AT(k) (0x4000u + 64u * (k))

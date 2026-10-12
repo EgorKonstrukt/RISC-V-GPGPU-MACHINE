@@ -118,3 +118,12 @@
   `ShareUnits.shader` must still give `tools/share_units.py`'s bytes (`bin\share_test.exe`,
   then `--against`), under fxc2 and under Windows' FXC: a `continue` in a loop, or a vector's
   component written by index in one, compiled under one and not the other.
+- The pointer has a worker core of the window system's (`docs/nanox.md`, "The pointer on a core of its
+  own"): the cursor and a dragged window follow it every pass, and the kernel reports no move
+  inside the server's quiet rectangle. The core is lent (job, answer and "taken" words kept
+  equal: the kernel takes it at once for a program that keeps workers). The test is a drag
+  with the first core busy: where the layer is against the pointer, pass by pass (9 moves a
+  second and 19 pixels behind before, every pixel and 1 behind now), and nxray must still say
+  255 workers. A run's instructions shift half a percent with its timing: compare means of
+  several timings (`sleep 0.3; ...`), never one run. What changes the window tree must raise
+  `gd_scene_gen`, or the layer table and that rectangle are stale.

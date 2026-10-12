@@ -100,7 +100,8 @@ there (`rom_icon`). Read through the file it was two page copies, two passes end
 twelve pages into the page cache for each of the desktop's twenty-odd program icons.
 
 The cursor is not drawn at all: it is the display's cursor (`display.md`), an arrow by
-default. The driver writes its position and, when the shape changes, a 32x32 image.
+default. The driver writes its position and, when the shape changes, a 32x32 image; once the
+pointer has moved, a worker core writes the position ("The pointer on a core of its own").
 
 A program can also fill its window itself: `GrGetWindowInfo` returns the physical address of
 the window's first pixel and the row length of its buffer, and `GrFlushWindow` tells the
@@ -680,6 +681,78 @@ to 763, 20 arrows in Files 6,001 to 2,514, 10 zooms in nxview 1,410 to 695. A le
 nxterm is the least: key, terminal, shell, terminal and server are five hand-overs of the
 kernel's, and its XOR cursor is two software fills (left: a cursor redrawn from the cells
 would paint a coloured cell in the wrong colours).
+
+## The pointer on a core of its own (12 October 2026)
+
+A moving pointer woke the window system for every report of the kernel's, ten a second with
+a program running: the cursor and a dragged window moved that often, and each report was 17
+thousand instructions of the first core. Now a worker core (`docs/multicore.md`) follows the
+pointer, and the first core hears of a move only where somebody wants to.
+
+- **The worker** (`wm_job` in `scr_shaderemu.c`) reads the pointer's words every pass and
+  writes the display's cursor words, and the layer of a window that is being dragged. It
+  touches GPU memory and a stack of its own and stores to texels nobody else does. A tenth
+  of a second after the last change it sleeps on its job word, which the kernel's tick
+  changes when the pointer moves (`shaderemu_gpu_wake`) and the driver when it has news.
+- **It is started when the pointer first moves** (a machine nobody points at has none) and
+  its core is only lent: its answer and "taken" words are kept the same as its job word,
+  which to the kernel is a core with no job, so a program that keeps its workers has the
+  core at once, and the driver takes the cursor back (`wm_lost`). It asks again when cores
+  come free. `NANOX_POINTER_CORE=0` is the same binary without it.
+- **What it is told** is texels in the layer table's page (`WM_OFFSET`), each with one
+  writer: the cursor (how far its image's corner is from the pointer, the image) and a drag
+  (a surface's buffer, how far its corner is from the pointer). The kernel's rectangle is in
+  a free part of the worker cores' mailbox pages (`WM_QUIET_OFFSET`), which the kernel has
+  mapped already: a boot and a program's first workers pay nothing for it.
+- **The quiet rectangle** (`GsQuietRect` in `srvutil.c`): round the pointer, where the same
+  window stays under it and nobody who would hear of a move has asked to. The kernel reports
+  no move inside it (`pointer_hushed` in `shaderemu_input.c`); buttons and keys are reported
+  as before, a button with the pointer's place. No rectangle while a button is held, over a
+  window that selects the pointer's moves, or under `nxeyes`, which selects them on the root.
+- **A drag** (`GsDragWindow`, from `wm_container_buttondown`): the worker moves the layer
+  with the pointer until the button is let go, and the window manager moves the window once,
+  to where the worker left it. Meanwhile the rectangle is the whole screen. While a window
+  is dragged the driver looks at the table again a pass after it changed it: of two cores'
+  stores to one texel one is lost.
+- **The terminal** selects the pointer's moves while a selection is held, as `ui.h`'s
+  programs do (`sel_moves` in `nxterm.c`): it selected them always, and was never quiet.
+- **The layer table is made when the scene changed** (`gd_scene_gen`, which goes up when a
+  window comes, goes, moves, changes size or order; `layers_stale` for the driver's own
+  buffers), not every time the server is about to wait.
+- **The kernel's poll returns after its four reads** on a tick with nothing new.
+
+A window dragged by its title bar for six seconds with the pointer going round, per pass of
+`rvc_cpu` (where the layer is against where the pointer has it):
+
+| The first core | | Moves a second | Longest it stood | Furthest from the pointer |
+|---|---|---|---|---|
+| idle | before | 34 | 35 ms | 6 pixels |
+| | now | 172 | 12 ms | 1 |
+| a shell's loop | before | 9 | 113 ms | 19 |
+| | now | 158 | 12 ms | 1 |
+| Red Alert in a mission | before | 9 | 113 ms | 18 |
+| | now | 158 | 13 ms | 1 |
+
+On the shader machine (D3D11, fxc2, 2 ms a frame, a shell's loop on the first core) eight
+states of the machine 14 ms apart in such a drag: before, the layer stood at 373,321 for six
+of them while the pointer went 12 pixels on, and then jumped; now it is within a pixel of
+the pointer in each. Doom's timedemo there under a pointer going round, in fixed timesteps:
+5,026 game tics in 2,747 real ones before and 2,679 now. A worker awake in every pass costs
+a busy pass nothing that was measurable: that loop from a snapshot, six pairs in turn, 1.52
+million instructions a second before and 1.56 now (the card shared with the Unity editor).
+
+The first core's instructions, runs from power-on at four timings each (a run's count
+shifts by half a percent with what falls inside it): 20 s of a desktop under a pointer
+going round 31.1 million to 23.9; over a terminal 43.4 to 26.5; over the editor 36.1 to
+25.8; inside a window that wants every move 43.1 to 41.3; Red Alert's 300 frames 178.8 to
+174.4; a six second drag 37.6 to 25.0. With the pointer at rest: boot 10,901,598 to
+10,901,589; a desktop and three programs 26.50 to 26.36; `nxbench` 15.67 to 15.64. What is
+smaller than a run's own scatter was paired, the same timing on both: 20 s of an idle
+prompt 6,000 fewer every time, `mctest 15 2000` 325 to 665 fewer in nine of ten, Red Alert's
+300 frames 31 thousand fewer over 40 pairs (fewer in 28; a run swings 80 thousand).
+
+Not done: resizing, menus and the frame's buttons are the window manager's as before, and a
+window's program still has to take the press from its queue before a drag begins.
 
 ## Checking it
 

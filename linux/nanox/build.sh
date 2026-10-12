@@ -21,6 +21,8 @@ git -C "$MW" apply "$HERE/microwindows.patch"
 
 # our drivers, and the rules that select them
 cp "$HERE"/*_shaderemu.c "$MW/src/drivers/"
+# (the worker cores' mailboxes, for the pointer's worker: scr_shaderemu.c)
+cp "$REPO/programs/mc/mc.h" "$MW/src/drivers/"
 if ! grep -q SHADEREMU "$MW/src/drivers/Objects.rules"; then
     cat >> "$MW/src/drivers/Objects.rules" <<'EOF'
 

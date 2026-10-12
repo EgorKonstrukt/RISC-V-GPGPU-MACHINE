@@ -21,8 +21,15 @@
 #define INPUT_RING	32
 #define INPUT_WHEEL_UP	0x3fe	/* not keys: a notch of the pointer's wheel */
 #define INPUT_WHEEL_DOWN	0x3ff
+/* The window system's words for us, which shaderemu_gpu.c has mapped (scr_shaderemu.c,
+ * WM_QUIET_OFFSET): left | top << 16, right | bottom << 16, its worker core, WM_MAGIC. */
+#define WM_MAGIC	0x31514d57
+extern void __iomem *shaderemu_gpu_wm;
+extern void shaderemu_gpu_wake(u32 core);	/* shaderemu_gpu.c, which has the cores' mailboxes */
 
 static void __iomem *input_regs;
+static unsigned long hushed_at, woken_at;
+static bool pointer_quiet;	/* where it is now is in the window system's quiet rectangle, when last asked */
 static struct input_dev *keyboard_dev, *pointer_dev;
 /* An idle machine that nobody has touched for a second polls every fourth tick; any key, button
  * or move of the pointer brings it back to every tick at once (a tick's whole path for a
@@ -35,7 +42,42 @@ static u32 input_tail;
 static bool input_started, input_ready;	/* polled once; both devices are registered */
 static bool input_ticked;	/* the tick calls the poll (a kernel without the hook: the timer does, always) */
 static u32 pointer_x = ~0u, pointer_y, pointer_buttons;
+static bool pointer_owed;	/* it is not where it was last reported: a move too soon to report, or a quiet one */
 static unsigned long pointer_at;
+
+/*
+ * A move inside the window system's rectangle is nobody's news there (docs/nanox.md, "The
+ * pointer on a core of its own"): no report, and the window system sleeps on.
+ */
+static noinline bool pointer_hushed(u32 x, u32 y)
+{
+	u32 from, to;
+
+	pointer_quiet = false;
+	if (!shaderemu_gpu_wm || readl(shaderemu_gpu_wm + 12) != WM_MAGIC)
+		return false;
+	from = readl(shaderemu_gpu_wm);
+	to = readl(shaderemu_gpu_wm + 4);
+	if (x < (from & 0xffff) || y < from >> 16 || x >= (to & 0xffff) || y >= to >> 16)
+		return false;
+	hushed_at = jiffies;
+	pointer_quiet = true;
+	return true;
+}
+
+/*
+ * The pointer moved or a button changed. The worker core that shows the cursor sleeps a
+ * tenth of a second after the last change it saw and wakes when its job word changes: every
+ * 40 ms of a pointer that moves is often enough. Its answer and "taken" words go with it,
+ * which is a core with no job to shaderemu_gpu.c: one a program may have back at once.
+ */
+static noinline void pointer_moved(void)
+{
+	if (!shaderemu_gpu_wm || time_before(jiffies, woken_at + HZ / 25) || readl(shaderemu_gpu_wm + 12) != WM_MAGIC)
+		return;
+	woken_at = jiffies;
+	shaderemu_gpu_wake(readl(shaderemu_gpu_wm + 8));
+}
 
 static void shaderemu_input_poll(void)
 {
@@ -45,6 +87,11 @@ static void shaderemu_input_poll(void)
 	u32 head = readl(input_regs + INPUT_STATE + 12), keys;
 	int wheel = 0;
 
+	/* most ticks: nothing new, and nothing of the pointer still to be said (one at rest in the
+	 * quiet rectangle is asked about four times a second: the rectangle may change under it) */
+	if (head == input_tail && x == seen_x && y == seen_y && buttons == seen_buttons && input_started &&
+	    (!pointer_owed || (pointer_quiet && time_before(jiffies, hushed_at + HZ / 4))))
+		return;
 	/* first poll, a restarted host, or more events than the ring holds: start from now */
 	if (!input_started || head - input_tail > INPUT_RING) {
 		input_tail = head;
@@ -52,6 +99,8 @@ static void shaderemu_input_poll(void)
 	}
 	keys = input_tail;
 	if (head != input_tail || x != seen_x || y != seen_y || buttons != seen_buttons) {
+		if (x != seen_x || y != seen_y || buttons != seen_buttons)
+			pointer_moved();
 		seen_x = x, seen_y = y, seen_buttons = buttons;
 		touched_at = jiffies;
 	}
@@ -81,7 +130,8 @@ static void shaderemu_input_poll(void)
 	 */
 	if (buttons != pointer_buttons ||
 	    ((x != pointer_x || y != pointer_y) &&
-	     time_after_eq(jiffies, pointer_at + (idle_cpu(smp_processor_id()) ? HZ / 50 : HZ / 10)))) {
+	     time_after_eq(jiffies, pointer_at + (idle_cpu(smp_processor_id()) ? HZ / 50 : HZ / 10)) &&
+	     !pointer_hushed(x, y))) {
 		pointer_at = jiffies;
 		pointer_x = x;
 		pointer_y = y;
@@ -93,6 +143,7 @@ static void shaderemu_input_poll(void)
 		input_report_key(pointer_dev, BTN_MIDDLE, (buttons >> 2) & 1);
 		input_sync(pointer_dev);
 	}
+	pointer_owed = x != pointer_x || y != pointer_y;
 }
 
 /* Every tick, from the timer interrupt (update_process_times). */
@@ -171,6 +222,7 @@ static int __init shaderemu_input_init(void)
 		return ret;
 
 	pointer_at = jiffies;	/* (which does not begin at 0) */
+	hushed_at = woken_at = jiffies - HZ;
 	touched_at = jiffies;
 	pm_power_off = shaderemu_power_off;
 	timer_setup(&input_timer, shaderemu_input_timer, 0);

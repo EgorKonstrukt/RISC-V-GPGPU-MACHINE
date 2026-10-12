@@ -18,6 +18,7 @@
 #include "genfont.h"
 #include "genmem.h"
 #include "fb.h"
+#include "mc.h"
 
 /* /dev/gpu maps GPU memory from GPU_PHYS; offsets below are from there */
 #define GPU_PHYS	0x86000000u
@@ -48,6 +49,20 @@
 #define REG_KEYBOARD	12		/* KEYBOARD_OWNED while a program reads the keyboard device */
 #define REG_COPIES	14		/* copies of a drawn picture into RAM made so far */
 #define REG_CURSOR	16		/* x, y, on, address of a 32x32 image */
+#define REG_POINTER	8		/* the pointer: x, y, buttons (docs/input.md) */
+#define REG_CLOCK	13		/* the host's clock, in milliseconds */
+/* The pointer's worker core (docs/nanox.md, "The pointer on a core of its own"): what it is
+ * told and what it answers, a texel each, in the layer table's page. Words from WM_OFFSET. */
+#define WM_OFFSET	(LAYERS_OFFSET + 0x800)
+/* for the kernel, in the mailbox pages' free part (it has those mapped): left | top << 16,
+ * right | bottom << 16, the worker's core, WM_MAGIC */
+#define WM_QUIET_OFFSET	(MC_PAGE_GPU_OFFSET + 0x1800)
+#define WM_CURSOR	4		/* the cursor: pointer to image corner (x, y), "on", the image */
+#define WM_DRAG		8		/* a dragged surface: buffer, pointer to corner (x, y), which drag */
+#define WM_AT		12		/* the worker's: where it has it (x, y), of which drag, the drag let go */
+#define WM_RUN		16		/* which start of the worker this is; 0: it parks */
+#define WM_HERE		20		/* the worker's: the start it runs from */
+#define WM_MAGIC	0x31514d57u
 #define KEYBOARD_OWNED	0x6b657973u
 #define MAX_COMMANDS	4096
 #define MAX_SURFACES	15		/* the display shows 16 layers; one is the desktop */
@@ -104,6 +119,274 @@ static struct { const unsigned char *src; uint32_t shape, at; } cache[CACHE_SLOT
 static uint32_t cache_top = CACHE_OFFSET;
 static struct { uint32_t at, bytes; int used; } blocks[MAX_BLOCKS];
 static int block_count;
+static int wm_state;			/* 1: a worker core has the pointer; 0: none now; -1: never */
+static uint32_t wm_core, wm_tag;	/* which core, and whose the kernel says it is while it is ours */
+static uint32_t wm_offers = ~0u;	/* the kernel's count of cores come free, when one was last asked for */
+static uint32_t wm_runs;
+static struct surface *wm_dragged;	/* the surface the worker moves with the pointer, */
+static uint32_t wm_drag;		/* in which drag: they are numbered */
+static struct surface *wm_pinned;	/* a surface the worker lost in a drag stays where it had it */
+static int wm_pin_x, wm_pin_y;
+static unsigned wm_quiet_seen = ~0u;
+static int layers_stale = 1;		/* a surface came, went, moved or has another buffer: the table is made again */
+/* the cursor as the window system has it: its image's corner, and how far that is from the pointer */
+static struct { MWCOORD x, y, dx, dy; uint32_t on, image; } cursor_now;
+static void cursor_tell(void);
+static uint8_t wm_stack[4096] __attribute__((aligned(16)));
+
+/* ---------------- the pointer's worker core */
+
+/*
+ * Runs on a worker core: the cursor where the pointer is and a dragged surface with it, every
+ * pass, whatever the first core is busy with. It touches GPU memory and its stack, nothing
+ * else of the program, and stores to texels no other core does. Core 0: once through, and back.
+ */
+uint32_t wm_job(uint32_t core) __attribute__((used));
+uint32_t
+wm_job(uint32_t core)
+{
+	volatile uint32_t *r = (volatile uint32_t *)(gpu + REGS_OFFSET);
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+	volatile uint32_t *table = (volatile uint32_t *)(gpu + LAYERS_OFFSET);
+	uint32_t seen_x = ~0u, seen_y = 0, seen_b = 0, busy_at = r[REG_CLOCK];
+
+	for (;;) {
+		uint32_t x = r[REG_POINTER], y = r[REG_POINTER + 1], b = r[REG_POINTER + 2];
+		uint32_t cx = x - w[WM_CURSOR], cy = y - w[WM_CURSOR + 1];
+		uint32_t on = w[WM_CURSOR + 2], image = w[WM_CURSOR + 3];
+		uint32_t buffer = w[WM_DRAG], drag = w[WM_DRAG + 3], i, n;
+		int busy = x != seen_x || y != seen_y || b != seen_b;
+
+		if (r[REG_CURSOR] != cx) r[REG_CURSOR] = cx, busy = 1;
+		if (r[REG_CURSOR + 1] != cy) r[REG_CURSOR + 1] = cy, busy = 1;
+		if (r[REG_CURSOR + 3] != image) r[REG_CURSOR + 3] = image, busy = 1;
+		if (r[REG_CURSOR + 2] != on) r[REG_CURSOR + 2] = on, busy = 1;
+		if (buffer && w[WM_AT + 3] != drag) {
+			uint32_t ax = x - w[WM_DRAG + 1], ay = y - w[WM_DRAG + 2];
+
+			if (!(b & 1)) {
+				w[WM_AT + 3] = drag, busy = 1;	/* let go: where it is, it stays */
+			} else {
+				if (w[WM_AT] != ax) w[WM_AT] = ax, busy = 1;
+				if (w[WM_AT + 1] != ay) w[WM_AT + 1] = ay, busy = 1;
+				if (w[WM_AT + 2] != drag) w[WM_AT + 2] = drag, busy = 1;
+			}
+		}
+		if (buffer && w[WM_AT + 2] == drag)
+			for (i = 0, n = table[0]; i < n && i <= MAX_SURFACES; i++) {
+				volatile uint32_t *layer = table + 4 + 8 * i;
+
+				if (layer[4] != buffer)
+					continue;
+				if (layer[0] != w[WM_AT]) layer[0] = w[WM_AT], busy = 1;
+				if (layer[1] != w[WM_AT + 1]) layer[1] = w[WM_AT + 1], busy = 1;
+				break;
+			}
+		if (!core)
+			return 0;
+		if (!w[WM_RUN])
+			__asm__ volatile("ebreak");	/* the window system is leaving: parked */
+		if (w[WM_HERE] != w[WM_RUN]) w[WM_HERE] = w[WM_RUN], busy = 1;
+		seen_x = x, seen_y = y, seen_b = b;
+		if (busy)
+			busy_at = r[REG_CLOCK];
+		/* a tenth of a second after the last change it sleeps, until its job word changes
+		 * (the kernel's tick when the pointer moves, wm_poke()); till then a pass, and on */
+		if (r[REG_CLOCK] - busy_at < 100)
+			__asm__ volatile(".word 0x0000100f");	/* fence.i: the pass ends here */
+		else
+			next_frame();
+	}
+}
+
+/* The worker starts here: the machine gives it a stack and its number, the program's global
+ * pointer is ours to set. */
+void wm_entry(void);
+__asm__(".text\n"
+	".globl wm_entry\n"
+	"wm_entry:\n"
+	".option push\n"
+	".option norelax\n"
+	"	la gp, __global_pointer$\n"
+	".option pop\n"
+	"	call wm_job\n"
+	"	ebreak\n");
+
+/* The kernel takes no core of ours while this says we write to one (mc.h): 0 if the worker's
+ * core is another's by now. wm_ours(0) when the writing is done. */
+static int
+wm_ours(int writing)
+{
+	volatile uint32_t *box = (volatile uint32_t *)(gpu + MC_PAGE_GPU_OFFSET);
+
+	box[MC_POSTING_AT(wm_tag) / 4] = writing;
+	if (!writing || box[MC_OWNER_AT(wm_core) / 4] == wm_tag)
+		return writing;
+	box[MC_POSTING_AT(wm_tag) / 4] = 0;
+	return 0;
+}
+
+/*
+ * Wakes the worker: its job word changes. The answer and "taken" words are kept the same as
+ * it, which is how the kernel knows a core with no job: one it may have back at once.
+ */
+static void
+wm_poke(void)
+{
+	volatile uint32_t *job = (volatile uint32_t *)(gpu + MC_PAGE_GPU_OFFSET + MC_JOB_AT(wm_core));
+	uint32_t seq;
+
+	if (wm_state <= 0 || !wm_ours(1))
+		return;
+	/* (one instruction: the kernel's tick adds to it too) */
+	__atomic_fetch_add((uint32_t *)job, 1, __ATOMIC_RELAXED);
+	do {
+		seq = job[0];
+		job[4] = seq;
+		job[14] = seq;
+	} while (job[0] != seq);
+	wm_ours(0);
+}
+
+/* The worker's core is no longer ours (the kernel had another use for it), or never came:
+ * the cursor and a surface being dragged are the window system's own again, as without one. */
+static void
+wm_lost(int again)
+{
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+
+	wm_state = again ? 0 : -1;
+	wm_offers = *(volatile uint32_t *)(gpu + MC_PAGE_GPU_OFFSET + MC_OFFER_AT);
+	((volatile uint32_t *)(gpu + WM_QUIET_OFFSET))[3] = 0;
+	if (wm_dragged && w[WM_AT + 2] == wm_drag) {
+		wm_pinned = wm_dragged;
+		wm_pin_x = (int)w[WM_AT];
+		wm_pin_y = (int)w[WM_AT + 1];
+	}
+	wm_dragged = NULL;
+	layers_stale = 1;
+	if (cursor_now.image) {
+		regs[REG_CURSOR] = cursor_now.x;
+		regs[REG_CURSOR + 1] = cursor_now.y;
+		regs[REG_CURSOR + 3] = cursor_now.image;
+	}
+	regs[REG_CURSOR + 2] = cursor_now.on;
+}
+
+/*
+ * A core is asked for and the worker started on it, when the pointer first moves (a machine
+ * nobody points at has none) and again when cores have come free. It is only lent: a program
+ * that keeps its workers has it back from us at once.
+ */
+static void
+wm_start(void)
+{
+	static int asked;
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+	volatile uint32_t *box = (volatile uint32_t *)(gpu + MC_PAGE_GPU_OFFSET), *start;
+	uint32_t answer[2 + MC_MASK_WORDS] = { 1 }, core;
+	int pass;
+
+	if (box[MC_OFFER_AT / 4] == wm_offers)
+		return;		/* (none has come free since) */
+	wm_offers = box[MC_OFFER_AT / 4];
+	if (!asked) {
+		const char *off = getenv("NANOX_POINTER_CORE");
+
+		asked = 1;
+		if ((off && atoi(off) == 0) || ioctl(gpu_fd, MC_LENT) != 0) {
+			wm_state = -1;		/* (the same binary without it, to compare; a kernel without) */
+			return;
+		}
+		/* its code and its stack here and kept: nobody brings a worker a page while we sleep */
+		wm_job(0);
+		memset(wm_stack, 0, sizeof wm_stack);
+		mlock((void *)((uintptr_t)wm_job & ~4095u), 8192);
+		mlock(wm_stack, sizeof wm_stack);
+	}
+	if (ioctl(gpu_fd, MC_WORKERS_ALL, answer) != 0)
+		return;
+	for (core = 1; core < MC_MAX_CORES && !(answer[2 + core / 32] >> (core % 32) & 1); core++)
+		;
+	if (core == MC_MAX_CORES)
+		return;
+	wm_core = core;
+	wm_tag = answer[0] >> 12;
+	cursor_tell();
+	w[WM_RUN] = ++wm_runs;
+	start = box + MC_START_AT(core) / 4;
+	if (!wm_ours(1))
+		return;
+	start[1] = (uint32_t)wm_entry;
+	start[2] = (uint32_t)(wm_stack + sizeof wm_stack - 16);
+	start[3] = answer[1];
+	start[0] = MC_START;
+	wm_ours(0);
+	for (pass = 0; pass < 24 && w[WM_HERE] != wm_runs; pass++)
+		next_frame();
+	if (w[WM_HERE] != wm_runs || !wm_ours(1)) {
+		/* it never ran, or is another's already: back it goes */
+		answer[2 + core / 32] = 1u << (core % 32);
+		ioctl(gpu_fd, MC_GIVE, answer + 2);
+		wm_lost(1);
+		return;
+	}
+	start[0] = 0;
+	wm_ours(0);
+	wm_state = 1;
+	wm_poke();
+}
+
+/* Before the server waits: whether the worker is ours still and runs, and the kernel is told
+ * where the pointer's moves are nobody's news. */
+static void
+wm_look(void)
+{
+	volatile uint32_t *quiet = (volatile uint32_t *)(gpu + WM_QUIET_OFFSET);
+	volatile uint32_t *box = (volatile uint32_t *)(gpu + MC_PAGE_GPU_OFFSET);
+	volatile uint32_t *fault = box + MC_FAULT_AT(wm_core) / 4, *resume = box + MC_RESUME_AT(wm_core) / 4;
+	MWCOORD x0, y0, x1, y1;
+	uint32_t from = 0, to = 0;
+
+	if (box[MC_OWNER_AT(wm_core) / 4] != wm_tag) {
+		wm_lost(1);
+		return;
+	}
+	if (fault[0] != resume[0] && wm_ours(1)) {
+		/* it stopped at a page that is not there (it should never): brought, and on it goes */
+		volatile uint8_t *byte = (volatile uint8_t *)fault[2];
+
+		if (fault[1] == 12 || fault[1] == 13) {
+			(void)*byte;
+		} else if (fault[1] == 15) {
+			*byte = *byte;
+		} else {
+			EPRINTF("nano-X: the pointer's core stopped, cause %u at %08x\n", (unsigned)fault[1],
+				(unsigned)fault[3]);
+			wm_ours(0);
+			wm_lost(0);
+			return;
+		}
+		resume[0] = fault[0];
+		wm_ours(0);
+	}
+	if (wm_quiet_seen == gd_scene_gen && quiet[3] == WM_MAGIC)
+		return;
+	wm_quiet_seen = gd_scene_gen;
+	if (gd_quiet_rect && gd_quiet_rect(&x0, &y0, &x1, &y1)) {
+		from = (uint32_t)(x0 < 0 ? 0 : x0) | (uint32_t)(y0 < 0 ? 0 : y0) << 16;
+		to = (uint32_t)(x1 > 32767 ? 32767 : x1) | (uint32_t)(y1 > 32767 ? 32767 : y1) << 16;
+	}
+	if (quiet[0] != from || quiet[1] != to) {
+		quiet[1] = 0;	/* (none while the two are not a pair: the tick may come between) */
+		quiet[0] = from;
+		quiet[1] = to;
+	}
+	if (quiet[2] != wm_core)
+		quiet[2] = wm_core;
+	if (quiet[3] != WM_MAGIC)
+		quiet[3] = WM_MAGIC;
+}
 
 /* ---------------- buffers: first fit in the pool, neighbours merged when freed */
 
@@ -934,6 +1217,9 @@ place(struct surface *s, int x, int y)
 {
 	s->x = x;
 	s->y = y;
+	layers_stale = 1;
+	if (s == wm_pinned)
+		wm_pinned = NULL;
 	s->psd.addr = gpu + s->at - ((intptr_t)y * (intptr_t)s->psd.pitch + (intptr_t)x * 4);
 }
 
@@ -989,11 +1275,55 @@ surface_for(void *owner, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height)
 	s->psd.xvirtres = s->psd.yvirtres = 16384;
 	s->owner = owner;
 	s->at = at;
+	if (s == wm_dragged)
+		((volatile uint32_t *)(gpu + WM_OFFSET))[WM_DRAG] = GPU_PHYS + at;
 	s->w = width;
 	s->h = height;
 	place(s, x, y);
 	last = s;
 	return &s->psd;
+}
+
+/* The surface of window `owner` follows the pointer, its corner dx, dy from it, on the
+ * pointer's worker core (owner NULL: no longer). 0 where there is no such core. */
+static int
+surface_drag(void *owner, MWCOORD dx, MWCOORD dy)
+{
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+	struct surface *s;
+
+	if (wm_state <= 0)
+		return 0;
+	wm_dragged = NULL;
+	layers_stale = 1;
+	for (s = surfaces; owner && s < surfaces + MAX_SURFACES; s++)
+		if (s->owner == owner)
+			wm_dragged = s;
+	if (wm_dragged) {
+		w[WM_DRAG + 1] = dx;
+		w[WM_DRAG + 2] = dy;
+		w[WM_DRAG + 3] = ++wm_drag;
+		w[WM_DRAG] = GPU_PHYS + wm_dragged->at;
+	} else {
+		w[WM_DRAG] = 0;
+	}
+	wm_poke();
+	return wm_dragged != NULL;
+}
+
+/* Whether the worker drags a surface (0: none), and where it has it (2) if it took it anywhere. */
+static int
+surface_dragged(MWCOORD *x, MWCOORD *y)
+{
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+
+	if (!wm_dragged)
+		return 0;
+	if (w[WM_AT + 2] != wm_drag)
+		return 1;
+	*x = (int)w[WM_AT];
+	*y = (int)w[WM_AT + 1];
+	return 2;
 }
 
 static void
@@ -1003,6 +1333,11 @@ surface_release(void *owner)
 
 	for (s = surfaces; s < surfaces + MAX_SURFACES; s++)
 		if (s->owner == owner) {
+			layers_stale = 1;
+			if (s == wm_dragged)
+				surface_drag(NULL, 0, 0);
+			if (s == wm_pinned)
+				wm_pinned = NULL;
 			if (s == target) {
 				flush();
 				target = &root;
@@ -1029,26 +1364,33 @@ surface_locate(PSD psd, MWCOORD x, MWCOORD y, uint32_t *address, uint32_t *row)
 	*row = s->w;
 }
 
-static struct gd_compositor compositor = { surface_for, surface_release, surface_touch, surface_locate };
+static struct gd_compositor compositor = { surface_for, surface_release, surface_touch, surface_locate, surface_drag,
+	surface_dragged };
 
 /* ---------------- the screen: the desktop's buffer, then each window's, lowest first */
 
-static int layer_count;
+static int layer_count, layer_stores;
 
 static void
 show(PSD psd)
 {
 	struct surface *s = surface_of(psd);
 	volatile uint32_t *layer = (volatile uint32_t *)(gpu + LAYERS_OFFSET) + 4 + 8 * layer_count;
+	MWCOORD x = s->x, y = s->y;
 
 	if ((s == &root && layer_count > 0) || layer_count > MAX_SURFACES)
 		return;
+	/* a surface the pointer's worker drags is where the worker has it (or had it last) */
+	if (s == wm_dragged)
+		surface_dragged(&x, &y);
+	else if (s == wm_pinned)
+		x = wm_pin_x, y = wm_pin_y;
 	/* stores only what differs, so an unchanged screen costs no writes */
-	if ((int)layer[0] != s->x) layer[0] = s->x;
-	if ((int)layer[1] != s->y) layer[1] = s->y;
-	if ((int)layer[2] != s->w) layer[2] = s->w;
-	if ((int)layer[3] != s->h) layer[3] = s->h;
-	if (layer[4] != GPU_PHYS + s->at) layer[4] = GPU_PHYS + s->at;
+	if ((int)layer[0] != x) layer[0] = x, layer_stores++;
+	if ((int)layer[1] != y) layer[1] = y, layer_stores++;
+	if ((int)layer[2] != s->w) layer[2] = s->w, layer_stores++;
+	if ((int)layer[3] != s->h) layer[3] = s->h, layer_stores++;
+	if (layer[4] != GPU_PHYS + s->at) layer[4] = GPU_PHYS + s->at, layer_stores++;
 	layer_count++;
 }
 
@@ -1062,13 +1404,32 @@ gpu_preselect(PSD psd)
 {
 	volatile uint32_t *table = (volatile uint32_t *)(gpu + LAYERS_OFFSET);
 
+	static unsigned shown = ~0u;	/* gd_scene_gen when the table was last made */
+	int again;
+
 	flush_last();
-	layer_count = 0;
-	show(&scrdev);
-	if (gd_composite_walk)
-		gd_composite_walk(show);
-	if ((int)table[0] != layer_count)
-		table[0] = layer_count;
+	/* the table is as it was unless a window came, went, moved or changed its place in the
+	 * order, or a surface did; a drag's table is looked at every time (below) */
+	if (shown == gd_scene_gen && !layers_stale && !wm_dragged)
+		goto made;
+	shown = gd_scene_gen;
+	for (again = 0; ; again++) {
+		layers_stale = 0;
+		layer_count = layer_stores = 0;
+		show(&scrdev);
+		if (gd_composite_walk)
+			gd_composite_walk(show);
+		if ((int)table[0] != layer_count)
+			table[0] = layer_count;
+		/* during a drag the worker stores to a layer of the table as it was, and of two cores'
+		 * stores to one texel one is lost: looked at again when it has seen this table */
+		if (!wm_dragged || !layer_stores || again == 3)
+			break;
+		next_frame();
+	}
+made:
+	if (wm_state > 0)
+		wm_look();
 	return 0;
 }
 
@@ -1076,6 +1437,56 @@ gpu_preselect(PSD psd)
  * The cursor is the display's: a position and an image the display draws over the picture,
  * so moving it costs two stores and drawing never has to step around it.
  */
+/* The pointer's worker is told the cursor: how far from the pointer its image's corner is, and what. */
+static void
+cursor_tell(void)
+{
+	volatile uint32_t *w = (volatile uint32_t *)(gpu + WM_OFFSET);
+	int told = 0;
+
+	if (cursor_now.image) {
+		if (w[WM_CURSOR] != (uint32_t)cursor_now.dx) w[WM_CURSOR] = cursor_now.dx, told = 1;
+		if (w[WM_CURSOR + 1] != (uint32_t)cursor_now.dy) w[WM_CURSOR + 1] = cursor_now.dy, told = 1;
+		if (w[WM_CURSOR + 3] != cursor_now.image) w[WM_CURSOR + 3] = cursor_now.image, told = 1;
+	}
+	if (w[WM_CURSOR + 2] != cursor_now.on) w[WM_CURSOR + 2] = cursor_now.on, told = 1;
+	if (told)
+		wm_poke();
+}
+
+/* The display's cursor: its image's corner at x, y (address 0: not shown). */
+static void
+cursor_put(MWCOORD x, MWCOORD y, uint32_t address)
+{
+	static uint32_t first_x = ~0u, first_y;
+
+	cursor_now.on = 0;
+	if (address) {
+		cursor_now.x = x;
+		cursor_now.y = y;
+		cursor_now.dx = gd_cursor_hotx;
+		cursor_now.dy = gd_cursor_hoty;
+		cursor_now.image = address;
+		/* with the hot spot's place in the image, so a host can draw it under its own pointer */
+		cursor_now.on = 1 | (gd_cursor_hotx & 31) << 8 | (gd_cursor_hoty & 31) << 16;
+	}
+	if (first_x == ~0u) {
+		first_x = regs[REG_POINTER], first_y = regs[REG_POINTER + 1];
+	} else if (!wm_state && (regs[REG_POINTER] != first_x || regs[REG_POINTER + 1] != first_y)) {
+		wm_start();
+	}
+	if (wm_state > 0) {
+		cursor_tell();
+		return;
+	}
+	if (address) {
+		regs[REG_CURSOR] = x;
+		regs[REG_CURSOR + 1] = y;
+		regs[REG_CURSOR + 3] = address;
+	}
+	regs[REG_CURSOR + 2] = cursor_now.on;
+}
+
 static void
 gpu_cursor(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
 	const MWIMAGEBITS *image, const MWIMAGEBITS *mask, MWPIXELVAL fg, MWPIXELVAL bg)
@@ -1085,10 +1496,9 @@ gpu_cursor(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
 	static int drawn_width, drawn_height;
 	volatile uint32_t *pixels = (volatile uint32_t *)(gpu + CURSOR_OFFSET);
 	int words = (width + 15) >> 4, bytes = words * height * sizeof(MWIMAGEBITS), r, c;
-	MWCOORD px, py;
 
 	if (!visible) {
-		regs[REG_CURSOR + 2] = 0;
+		cursor_put(0, 0, 0);
 		return;
 	}
 	/*
@@ -1099,15 +1509,7 @@ gpu_cursor(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
 	if (width == 32 && height == 1 && mask[0] == 0x5345 && mask[1] == 0x4355) {
 		uint32_t address = (uint32_t)image[0] << 16 | image[1];
 
-		if (!address) {
-			regs[REG_CURSOR + 2] = 0;
-			return;
-		}
-		regs[REG_CURSOR] = x;
-		regs[REG_CURSOR + 1] = y;
-		regs[REG_CURSOR + 3] = address;
-		GdGetCursorPos(&px, &py);
-		regs[REG_CURSOR + 2] = 1 | ((px - x) & 31) << 8 | ((py - y) & 31) << 16;
+		cursor_put(x, y, address);
 		return;
 	}
 	if (width != drawn_width || height != drawn_height || fg != drawn_fg || bg != drawn_bg ||
@@ -1129,12 +1531,7 @@ gpu_cursor(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
 		drawn_fg = fg;
 		drawn_bg = bg;
 	}
-	regs[REG_CURSOR] = x;
-	regs[REG_CURSOR + 1] = y;
-	regs[REG_CURSOR + 3] = GPU_PHYS + CURSOR_OFFSET;
-	/* with the hot spot's place in the image, so a host can draw it under its own pointer */
-	GdGetCursorPos(&px, &py);
-	regs[REG_CURSOR + 2] = 1 | ((px - x) & 31) << 8 | ((py - y) & 31) << 16;
+	cursor_put(x, y, GPU_PHYS + CURSOR_OFFSET);
 }
 
 static PSD
@@ -1265,6 +1662,14 @@ gpu_close(PSD psd)
 	if (gpu_fd < 0)
 		return;
 	flush();
+	if (wm_state > 0) {
+		/* the worker parks, and the kernel reports every move again */
+		((volatile uint32_t *)(gpu + WM_QUIET_OFFSET))[3] = 0;
+		((volatile uint32_t *)(gpu + WM_OFFSET))[WM_RUN] = 0;
+		wm_poke();
+		next_frame();
+		next_frame();
+	}
 	regs[REG_CURSOR + 2] = 0;
 	regs[REG_KEYBOARD] = 0;
 	munmap(gpu, GPU_SIZE);

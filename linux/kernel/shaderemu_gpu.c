@@ -104,9 +104,14 @@ struct shaderemu_gpu_workers {
 #define WORKERS_PHYS	0x86C00000UL	/* the worker cores' mailboxes */
 #define WORKERS_STOP	0x5453434d	/* in a core's start word: park it */
 #define WORKERS_MOST	256
+/* in a free part of the mailbox pages: the window system's words for the pointer's driver
+ * (shaderemu_input.c), of which the third is its worker core and the fourth a mark */
+#define WORKERS_WM	0x1800
+#define WM_MAGIC	0x31514d57
 
 static void __iomem *gpu_regs;
 static void __iomem *workers;
+void __iomem *shaderemu_gpu_wm;
 static struct file *worker_owner[WORKERS_MOST];
 /* the programs that have asked for workers: how many each wants, and its share of them now */
 static struct worker_client {
@@ -193,9 +198,29 @@ static bool workers_idle(u32 k)
 
 static void workers_park(u32 k)
 {
+	/* the window system's core for the pointer: every move of the pointer is reported again */
+	if (shaderemu_gpu_wm && readl(shaderemu_gpu_wm + 8) == k && readl(shaderemu_gpu_wm + 12) == WM_MAGIC)
+		writel(0, shaderemu_gpu_wm + 12);
 	writel(WORKERS_STOP, workers + 16 * k);
 	writel(0, workers + WORKERS_OWNER + 4 * k);
 	worker_owner[k] = NULL;
+}
+
+/*
+ * For the pointer's driver, from the tick: core k's job word changes, which wakes a worker that
+ * sleeps on it, and its answer and "taken" words with it: a core with no job (workers_idle),
+ * as the window system's for the pointer is to everybody else.
+ */
+void shaderemu_gpu_wake(u32 k)
+{
+	u32 seq;
+
+	if (!workers || k - 1 >= WORKERS_MOST - 1)
+		return;
+	seq = readl(workers + WORKERS_BOX(k)) + 1;
+	writel(seq, workers + WORKERS_BOX(k));
+	writel(seq, workers + WORKERS_BOX(k) + 16);
+	writel(seq, workers + WORKERS_BOX(k) + 56);
 }
 
 static void workers_offer(void)
@@ -546,6 +571,7 @@ static int __init shaderemu_gpu_init(void)
 	workers = ioremap(WORKERS_PHYS, WORKERS_PAGES);
 	if (!gpu_regs || !workers)
 		return -ENOMEM;
+	shaderemu_gpu_wm = workers + WORKERS_WM;
 	pr_info("shaderemu_gpu: /dev/gpu at 0x%lx, %lu KiB\n", GPU_PHYS, GPU_SIZE >> 10);
 	return misc_register(&shaderemu_gpu_dev);
 }
