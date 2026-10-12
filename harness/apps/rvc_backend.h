@@ -61,6 +61,11 @@ class RvcBackend {
 public:
     // The GPU device's passes to draw in the next frame, one bit each (docs/gpu.md); pass 0 always.
     uint32_t gpuPasses = 1;
+    // Whether the machine's geometry has any worker (the harness reads its texel back with the
+    // control words): while it has none, and is not being laid out, nothing of the workers'
+    // is drawn or copied, which is a third of what a pass costs besides its instructions.
+    // (Workers are started long after the geometry that has them is set: shaderemu_gpu.c.)
+    bool workersNow = true;
     // Draw the sound card's mix in the next frame and read it back with that frame's row.
     bool soundMix = false;
     static const UINT kWidth = 2048, kHeight = 4096;   // rvc's vm_state_crt.asset

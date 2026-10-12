@@ -951,6 +951,8 @@ int main(int argc, char** argv) {
         }
         if (!soundOn && soundEnabled && audioOpen) audio.silence();
         soundEnabled = soundOn;
+        // the geometry's texel: its first word's low bit while the workers are laid out anew, its second how many there are
+        if (raw.size() >= (64 + 0x3e) * 16) backend.workersNow = (texel(64 + 0x3d, 0) & 1) != 0 || texel(64 + 0x3d, 1) != 0;
         // passes a submitted list asks for: drawn from now on, and for a while after the last use
         if (raw.size() >= (64 + 2) * 16)
             for (int p = 1; p < 8; ++p)

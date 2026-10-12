@@ -152,8 +152,10 @@ public:
             std::vector<UpdateZone> zones{UpdateZone{32, 4096 - tickRows_ / 2, 64, tickRows_, 0}};
             // the workers' bands: 248 tiles of 8 x 8 each, 49 workers to a band (MC_STRIP_BANDS)
             float band = 1984.0f, bandRows = 8.0f * (((UINT)cores_ + 47) / 49);
-            UINT groups = ((UINT)cores_ + 15) / 16;   // a primitive of the pass draws 16 cores' quads
-            if (cores_ > 1) zones.push_back(UpdateZone{64 + band / 2, 4096 - bandRows / 2, band, bandRows, 0});
+            bool workers = cores_ > 1 && (workersNow || getenv("RVC_WORKERS_ALWAYS"));
+            activeCores_ = workers ? (UINT)cores_ : 1;
+            UINT groups = (activeCores_ + 15) / 16;   // a primitive of the pass draws 16 cores' quads
+            if (workers) zones.push_back(UpdateZone{64 + band / 2, 4096 - bandRows / 2, band, bandRows, 0});
             // TICK_MRT: the tick draws a pixel for every eight texels, into eight targets of its
             // own, and the pass that follows puts them where the state has them
             if (mrt_) tickDraw(mat, zones[0]);
@@ -170,7 +172,7 @@ public:
             // points (a geometry shader makes each the rectangle it stands for); and the same
             // points into the other buffer, as copies, so that both have them
             UpdateZone all{1024, 2048, 2048, 4096, 1};
-            UINT points = 258 + ((UINT)cores_ - 1) * 130;   // a bucket a point: commit_geom
+            UINT points = 258 + (activeCores_ - 1) * 130;   // a bucket a point: commit_geom
             crt_.runZone(gpu_, passes_[1], mat, all, 6 * kCommitQuads, false);
             crt_.runZone(gpu_, pointPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
             crt_.swap();
@@ -184,7 +186,7 @@ public:
             if (mixed) soundDraw(mat, tag);   // before the control zone moves the voices on
             const float* z = kGpuControlZone;
             crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{z[0], z[1], z[2], z[3], 1});
-            if (cores_ > 16) {
+            if (cores_ > 16 && activeCores_ > 1) {
                 const float* s = kCoreStatsZone;
                 crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{s[0], s[1], s[2], s[3], 1});
             }
@@ -546,7 +548,7 @@ private:
         Material::dumpConstants = true;
         mat.bind(ctx, pass, gpu_);
         Material::dumpConstants = false;
-        ctx->Draw((std::max)(6u, 3 * mrtLoad_ * (((UINT)cores_ + 15) / 16)), 0);
+        ctx->Draw((std::max)(6u, 3 * mrtLoad_ * ((activeCores_ + 15) / 16)), 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         static const char* names[8] = {"_TickOut0", "_TickOut1", "_TickOut2", "_TickOut3", "_TickOut4", "_TickOut5", "_TickOut6", "_TickOut7"};
         for (int i = 0; i < 8; ++i) mat.setTexture(names[i], mrtSrv_[i].Get(), tickWidth(), tickHeight());
@@ -568,6 +570,7 @@ private:
     // TICK_MRT: the tick's eight targets (types.h: TICK_MRT_W wide, a band of rows for 128 workers)
     bool mrt_ = false;
     UINT mrtLoad_ = 1;   // TICK_LOAD: the workers' quads drawn so many times (a measurement)
+    UINT activeCores_ = 1;   // the cores whose pixels are drawn this frame: all, or core 0 alone (workersNow)
     UINT tickWidth() const { return 1040; }   // TICK_MRT_W
     UINT tickHeight() const { return (UINT)tickRows_ * (((UINT)cores_ + 126) / 128); }   // TICK_BANDS
     ComPtr<ID3D11Texture2D> mrtTex_[8];
