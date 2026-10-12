@@ -33,7 +33,9 @@ A visitor's own place is a terminal of their machine. Its keyboard is the consol
 layout (`world/keyboard.json`) laid over the model's caps: an `EmuKeyboard` with no plates of
 its own, whose keys go into the machine's console keyboard while the tube shows the console and
 into its display keyboard (key events) while it shows the display (`EmuKeyboard.Feed`, set by
-`EmuStations.Assign`). A mark a hand shows the key a beam is on. The tube is a flat plate
+`EmuStations.Assign`). A mark a hand shows the key a beam is on. The wide key over the number
+pad hands over the visitor's real keyboard; its name is a sign of its own on the cap
+(`captureSign`), since the words change while it is on. The tube is a flat plate
 before the glass; a beam on it in display mode is the machine's pointer, as on the wall's
 display (`EmuPointer.tubes`). Only the place's owner's beams find either: the other places'
 keyboards and tubes are skipped (`ownStation`).
@@ -71,11 +73,11 @@ sends the press to `EmuStations.Act` with the place's number):
 | tower: POWER, RESET, TURBO | the owner's machine on and off, its reset, its speed mode |
 | tower: POWER of a free place | anybody's: their machine starts, and the place is theirs |
 | tower: EXIT, in the spare bay | the place is given up |
-| monitor: RGB 2/+, RGB 1/- | the next and the last of the console's four terminals |
-| monitor: VIDEO 2, VIDEO 1 | the tube shows the console, the display |
-| monitor: PROCEED, EXIT | the links panel (`docs/fetch.md`) before this tube, small; away again |
+| monitor: TERM +, TERM - | the next and the last of the console's four terminals |
+| monitor: CONSOLE, DISPLAY | the tube shows the console, the display |
+| monitor: LINKS ON, LINKS OFF | the links panel (`docs/fetch.md`) before this tube, small; away again |
 
-A lamp over PROCEED is lit while the owner's browser wants addresses pasted.
+A lamp over LINKS ON is lit while the owner's browser wants addresses pasted.
 
 POWER has its name over it in lit letters, and a bar under it that beckons while the place is
 free (`beacons`): nobody found the key before. The capture key is the keyboard's; until 12
@@ -165,7 +167,8 @@ MultiSync XM29 Plus, and its cabinet's 645 x 533 x 518 mm from NEC's user manual
 page 31). The manual's specifications give the tube (type A68, 27 inches seen, 108
 degrees, stripes 0.60 mm apart at the middle and 0.78 in the corners) and two oval loudspeakers
 of 9 x 5.5 cm; its "Front View" lists POWER, a STANDBY/POWER indicator (green on, red standby),
-the remote's window and six keys (RGB 2/+, RGB 1/-, VIDEO 2, VIDEO 1, EXIT, PROCEED); its
+the remote's window and six keys (RGB 2/+, RGB 1/-, VIDEO 2, VIDEO 1, EXIT, PROCEED: here they are
+named for what they do, TERM +, TERM -, CONSOLE, DISPLAY, LINKS OFF, LINKS ON); its
 "Terminal Board" the BNC, D-sub and phono sockets, the clips for outside loudspeakers and the
 switches. The manual's text does not say where on the cabinet each is: their places here are a
 guess, and so is the cabinet's colour (the room's computers are beige). The tower is a mini tower's 180 x 360 x 420 mm (Chieftec's lists give 180 x 352 x
@@ -193,9 +196,10 @@ states it; the keys' 19.05 mm is ISO 1091's 19 mm +- 1 (0.75 inch), per Deskthor
   use), and a beam on its tube is marked as the place's own (`pointerOwn`): neither is sent
   to a player the wall happens to show.
 - `CRT.shader`: the picture behind bulging glass, the beam's lines (one a row of the picture)
-  and stripes of three phosphors. The picture spans 0.93 of the glass (`_Fill`; the beam's
-  place on the tube is mapped by the same number, `tubeFill`): at the whole glass the bezel's
-  rounded corners and its wall cut the picture's edges. The stripes are 560 trios across the
+  and stripes of three phosphors. The picture spans 0.97 of the glass (`_Fill`; the beam's
+  place on the tube is mapped by the same number, `tubeFill`): 8 mm of glass at the sides and
+  6 above and below. The opening's corners are rounded by 22 mm and the picture's are square:
+  above 0.973 the bezel cuts them. The stripes are 560 trios across the
   glass (0.95 mm, coarser than the tube's own 0.6), to be seen from the chair; the lines
   stay one a row. Lines and stripes are waves of mean one, each weakened by how
   much of its period a screen pixel spans: close up they show, further off they are their mean,

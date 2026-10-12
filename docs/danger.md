@@ -34,7 +34,8 @@ costs what it did). For one commit the host sets:
   that pass is a point drawn after it, and wins.
 - It is one commit's. Left set, the next commit would flip the bits back: `EmuMachine` sets
   the uniforms before a round's commit and clears `_ZapKind` after it (`Zap`, `ZapNext`;
-  sixteen may wait, one goes a round).
+  sixteen may wait, one goes a round). A machine switched on or reset starts with none
+  waiting: before, the sixteen queued for the old machine were flipped in the new one.
 - The random place is chosen by `EmuDanger`, not hashed over all RAM in the shader: a zap is
   one band or two of the 32, never all.
 
@@ -80,3 +81,6 @@ nine numbers each: 2, a column under 64, row 3584, reach 8, 0, 0xffff, 0xffff, a
 - The laser has not been tried in a headset, nor with a real mouse button on a desktop: the
   trigger was the event above.
 - A zap of a texel a core stores to in the same pass is lost.
+- Radiation's 1,000 a second is not reached: one flip goes a round, so the most is rounds a
+  frame times frames a second (357 a second in the editor at 4 rounds and 89 frames; 1, 10
+  and 100 came out as asked). The count on the panel is of what was really queued.

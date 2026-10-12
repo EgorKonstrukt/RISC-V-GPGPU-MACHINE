@@ -21,6 +21,15 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
   in `Textures/Assets`, and `Models/materials.txt`.
 - `textures.py` computes the rest (plastic, metal, rugs, book spines, the atlas of small printed
   things, the city's windows and streets, the sky, clouds, rain) and `world/atlas.json` (20 s).
+- **Plastic close to** (`plastic_detail` in `fetch.py`, `PlasticDetail` in `ShaderEmuModels.cs`):
+  ambientCG's scan "Plastic 004" (CC0; fetched into `build/ambientcg`), a pebbled case grain with
+  worn streaks, laid over every plastic's own maps as Mochie's detail maps: its normal map, and
+  its roughness and colour as overlays about 0.5, which changes nothing. It is laid by where a
+  place is in the room (triplanar, 20 cm a repeat), not by a model's own picture: through the
+  baked shells' picture the grain was a different size on every face and broke at each seam.
+  The classroom's shells take it through `PH_pc_station_m.png`, which `bake_pc.py` bakes white
+  where the shell is plastic. The key caps (`Plate.shader`) have none. A computed grain was
+  tried first: with true figures nothing of it showed at arm's length.
 - `sounds.py` computes the rain's loop, and cuts thunder and the computer's own sounds from
   recordings (`SOURCES`: Freesound, CC0; fetched once into `build/sounds`, which needs ffmpeg)
   (`Sounds/*.wav`, 3 s).

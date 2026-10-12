@@ -378,6 +378,7 @@ public class EmuMachine : UdonSharpBehaviour
         sentTag = 0;
         consumedTag = 0;
         charHead = charTail = keyHead = keyTail = 0;
+        zapHead = zapTail = 0;   // what waited for the machine before is not this one's: sixteen flips met a reset machine
         totalInstructions = 0;
         totalWorkerInstructions = 0;
         haveWorkerClock = false;

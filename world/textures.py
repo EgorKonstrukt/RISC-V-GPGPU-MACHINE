@@ -415,7 +415,12 @@ def pc_lettering(a):
     a.add("pc_cd", printed(["COMPACT DISC  8X"], 13, 150, 20))
     a.add("pc_badge", printed(["RVC 486", "DX2-66"], 15, 120, 48, paper=(28, 48, 110), ink=(232, 232, 236), frame=(190, 192, 198)))
     a.add("crt_brand", printed(["SHADERVISION  21"], 20, 220, 36, paper=(186, 188, 192), ink=(40, 42, 50), frame=(120, 122, 128)))
-    a.add("crt_osd", printed(["RGB2/+   RGB1/-   VIDEO2   VIDEO1    EXIT   PROCEED"], 9, 290, 14))
+    # the monitor's six keys, each named for what it does here (EmuPlace), under its own key:
+    # the legend is 145 mm long, the first key's middle 17.5 mm into it and the keys 22 mm apart (pc.OSD_...)
+    osd = printed([], 9, 290, 14)
+    for i, name in enumerate(("TERM +", "TERM -", "CONSOLE", "DISPLAY", "LINKS OFF", "LINKS ON")):
+        ImageDraw.Draw(osd).text((35 + 44 * i, 7), name, fill=(60, 58, 54), anchor="mm", font=font("ARIALNB.TTF", 9))
+    a.add("crt_osd", osd)
     a.add("crt_rear", printed(["SHADERVISION 21  COLOUR MONITOR", "MODEL SV-2196   100-240 V~  2.0 A  50/60 Hz", "SERIAL 96-1017-00428", "",
                                "CAUTION: HIGH VOLTAGE INSIDE.", "NO USER SERVICEABLE PARTS.", "MADE IN TAIWAN"], 12, 330, 180,
                               paper=(214, 214, 208), ink=(30, 30, 30), centre=False, frame=(60, 60, 60)))

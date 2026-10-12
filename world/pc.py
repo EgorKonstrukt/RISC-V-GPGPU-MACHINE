@@ -167,7 +167,7 @@ def monitor(b):
         b.mesh(vertices, faces, uvs, "TubeGlass", normal=(0, 0, -1))
     if MODE != "low":
         # under the glass, as NEC's manual lists the front: POWER and its indicator (green when on),
-        # the remote's window, and six keys (RGB 2/+, RGB 1/-, VIDEO 2, VIDEO 1, EXIT, PROCEED); and
+        # the remote's window, and six keys (NEC's RGB 2/+ to PROCEED; named here for what they do, textures.py); and
         # behind grilles in the chin's corners, its two oval loudspeakers of 9 x 5.5 cm
         round_button(b, 0.18, CHIN, front, 0.011, "PlasticBeige")
         b.cyl((LED_X, CHIN, front - 0.0005), 0.0035, 0.003, "Led", segs=10, rot=(90, 0, 0))
@@ -472,11 +472,14 @@ def tower(b):
     w, h, deep = 0.18, TOWER_HIGH, TOWER_DEEP
     back = FRONT + deep
     # the steel cover, the plastic front with rounded edges, the feet
-    b.box((0, h / 2 + 0.006, FRONT + 0.012 + (deep - 0.012) / 2), (w, h - 0.012, deep - 0.012), skin("PlasticCase"), bevel=0.0025, segs=1)   # a folded steel cover: one chamfer, flat faces
+    # (the cover is open where the front closes it, and the front's back is only its rim: a face
+    # of each was hidden inside the other, 12 cm2 in a hundred of the baked picture, and seen from within)
+    cover = rrect(w, h - 0.012, 0.0025, 0, h / 2 + 0.006)
+    loft(b, [at_z(cover, FRONT + 0.016), at_z(cover, back - 0.0025), at_z(rrect(w - 0.005, h - 0.017, 0.0025, 0, h / 2 + 0.006), back)], skin("PlasticCase"), last=True)   # a folded steel cover
     loft(b, [at_z(rrect(w + 0.004, h, 0.008, 0, h / 2 + 0.006), FRONT + 0.016), at_z(rrect(w + 0.004, h, 0.01, 0, h / 2 + 0.006), FRONT + 0.004),
              at_z(rrect(w - 0.002, h - 0.006, 0.01, 0, h / 2 + 0.006), FRONT)], skin("PlasticBeige"), last=True, normal=(0, 0, -1))
-    lip = at_z(rrect(w + 0.004, h, 0.008, 0, h / 2 + 0.006), FRONT + 0.016)   # the front's back, where it stands out round the cover
-    b.mesh(lip, [tuple(range(len(lip)))], [[(x / 0.3, y / 0.3) for x, y, z in lip]], skin("PlasticBeige"), normal=(0, 0, 1))
+    # the front's back, where it stands out round the cover
+    loft(b, [at_z(rrect(w + 0.004, h, 0.008, 0, h / 2 + 0.006), FRONT + 0.016), at_z(cover, FRONT + 0.016)], skin("PlasticBeige"), normal=(0, 0, 1))
     for x in (-0.07, 0.07):
         for z in (FRONT + 0.05, back - 0.05):
             b.cyl((x, 0.003, z), 0.014, 0.006, skin("Rubber"), segs=14)

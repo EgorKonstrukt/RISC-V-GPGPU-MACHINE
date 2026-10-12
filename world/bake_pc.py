@@ -204,6 +204,19 @@ def main():
         shader.inputs["Emission Strength"].default_value = 1.0
     colour = bake('EMIT', True, 4)
     print("BAKE colour: %.0f%% of the picture is the shell's" % (100 * (colour[..., :3].sum(2) > 0).mean()))
+    # which of it is plastic: the detail maps (world/textures.py: plastic_detail) are for that alone
+    was = []   # (the set's other half is exported with these materials: they are put back as they were)
+    for used in high.data.materials:
+        glow = used.node_tree.nodes.get("Principled BSDF").inputs["Emission Color"]
+        was.append((used.node_tree, glow, [link.from_socket for link in glow.links], list(glow.default_value)))
+        for link in list(glow.links):
+            used.node_tree.links.remove(link)
+        glow.default_value = [1.0 if used.name.startswith("Plastic") else 0.0] * 3 + [1.0]
+    plastic = bake('EMIT', False, 4)
+    for tree, glow, sources, value in was:
+        glow.default_value = value
+        for source in sources:
+            tree.links.new(source, glow)
 
     # Slots, grilles and holes are dark boxes a hair proud of the shell: there is no hollow for the
     # bake to find. So what is dark in the colour is let into the surface here: its edges lean
@@ -243,6 +256,7 @@ def main():
     packed[..., 2] = 0
     saved(packed, stem + "_p.jpg", False)
     saved(np.clip(light, 0, 1), stem + "_e.png", True)
+    saved(np.clip(plastic, 0, 1), stem + "_m.png", False)
     open(os.path.join(UNITY, "Models", "materials_extra.txt"), "w").write("PH_pc_station\t0\t0.00\t1\t0\t0\n")
 
     # the set, for world/assets.py: the shell with its picture's place on it, and the rest

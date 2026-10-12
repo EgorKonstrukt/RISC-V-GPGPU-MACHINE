@@ -1,4 +1,4 @@
-# Models and surfaces from Poly Haven (polyhaven.com, all CC0), for what a script models badly:
+# Models and surfaces from Poly Haven (polyhaven.com, all CC0), and one scan from ambientCG (CC0), for what a script models badly:
 #   python world/fetch.py
 # Downloads go to build/polyhaven (not kept in the repository). Written out for Unity:
 # Textures/World/<Surface>.png (+ _n.png) and, a material of each model, Textures/Assets/<name>_d.png
@@ -126,9 +126,38 @@ def model(asset, lines):
         print("model %-26s material %-34s cutout %d metallic %.2f smoothness %.2f" % (asset, name, cutout, metallic, smooth))
 
 
+# Moulded plastic seen close to: ambientCG's scan "Plastic 004" (ambientcg.com, CC0), a pebbled case
+# grain with worn streaks. It is laid over every plastic's own maps as detail maps
+# (ShaderEmuModels.cs: PlasticDetail), so its colour and roughness are written as overlays about
+# 0.5, which changes nothing: the plastic's own colour and sheen stay what they are.
+PLASTIC_SCAN = "Plastic004"
+
+
+def plastic_detail():
+    import zipfile
+    folder = os.path.join(HERE, "..", "build", "ambientcg", PLASTIC_SCAN)
+    stem = os.path.join(folder, PLASTIC_SCAN + "_2K-PNG_")
+    if not os.path.exists(stem + "NormalGL.png"):
+        archive = get("https://ambientcg.com/get?file=%s_2K-PNG.zip" % PLASTIC_SCAN, folder + "_2K.zip")
+        os.makedirs(folder, exist_ok=True)
+        with zipfile.ZipFile(archive) as z:
+            for name in z.namelist():
+                if name.endswith(".png") and os.path.basename(name) == name:   # its pictures alone, by their own names
+                    open(os.path.join(folder, name), "wb").write(z.read(name))
+    out = os.path.join(UNITY, "Textures", "World")
+    Image.open(stem + "NormalGL.png").convert("RGB").save(os.path.join(out, "PlasticDetail_n.png"))
+    rough = channel(stem + "Roughness.png", 0)
+    colour = channel(stem + "Color.png")
+    middle, tone = rough.mean(dtype=np.float64), colour.mean((0, 1), dtype=np.float64)   # (in doubles: four million floats summed came out 3% low)
+    for name, a in (("PlasticDetail_r", 0.5 + (rough - middle)[..., None].repeat(3, 2)), ("PlasticDetail", 0.5 * colour / tone)):
+        Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8)).resize((1024, 1024), Image.LANCZOS).save(os.path.join(out, name + ".png"))
+    print("plastic detail: %s, roughness %.2f +- %.3f" % (PLASTIC_SCAN, middle, rough.std()))
+
+
 def main():
     for name, spec in SURFACES.items():
         surface(name, *spec)
+    plastic_detail()
     lines = []
     for asset in MODELS:
         model(asset, lines)

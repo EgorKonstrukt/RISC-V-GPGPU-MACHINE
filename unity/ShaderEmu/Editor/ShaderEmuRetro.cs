@@ -605,6 +605,19 @@ public static partial class ShaderEmuBuilder
         foreach (GameObject away in asleep) away.SetActive(false);
     }
 
+    // The keyboards' models take the material that has the legends; a model put in anew has the plain one.
+    static void CapsOnModels(Transform world, Material caps)
+    {
+        foreach (MeshRenderer renderer in world.GetComponentsInChildren<MeshRenderer>(true))
+        {
+            Material[] materials = renderer.sharedMaterials;
+            bool any = false;
+            for (int i = 0; i < materials.Length; i++)
+                if (materials[i] != null && materials[i].name == "Keyboard") { caps.SetTexture("_MainTex", materials[i].mainTexture); materials[i] = caps; any = true; }
+            if (any) { renderer.sharedMaterials = materials; EditorUtility.SetDirty(renderer); }
+        }
+    }
+
     // The caps are a model. The canvas keeps the rectangles, and shows a key under a beam, held or latched.
     static void KeyboardLook(EmuKeyboard keyboard, TMP_FontAsset legend, TMP_FontAsset mono)
     {
@@ -639,14 +652,7 @@ public static partial class ShaderEmuBuilder
         Material caps = Mat("Keyboard caps", "ShaderEmu/Plate");
         caps.SetFloat("_Glossiness", 0.32f);
         caps.SetFloat("_InkGlossiness", 0.6f);
-        foreach (MeshRenderer renderer in keyboard.transform.root.GetComponentsInChildren<MeshRenderer>(true))
-        {
-            Material[] materials = renderer.sharedMaterials;
-            bool any = false;
-            for (int i = 0; i < materials.Length; i++)
-                if (materials[i] != null && materials[i].name == "Keyboard") { caps.SetTexture("_MainTex", materials[i].mainTexture); materials[i] = caps; any = true; }
-            if (any) renderer.sharedMaterials = materials;
-        }
+        CapsOnModels(keyboard.transform.root, caps);
         Lettering(keyboard.GetComponent<Canvas>(), "Keyboard", legends, caps);
         foreach (Graphic graphic in legends) graphic.enabled = false;
         foreach (TextMeshProUGUI label in keyboard.GetComponentsInChildren<TextMeshProUGUI>(true))

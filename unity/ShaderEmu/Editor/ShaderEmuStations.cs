@@ -46,8 +46,35 @@ public static partial class ShaderEmuBuilder
         public StationHub[] hubs;
     }
 
-    const float TubeFill = 0.93f;      // the picture's share of the glass: the bezel's rounded corners cover the rest
+    const float TubeFill = 0.97f;      // the picture's share of the glass: above 0.973 the bezel's rounded corners cut its own
+    // A classroom computer's shell is flat where the model has lenses and keys: what is lit lies this far over it.
+    const float OnShell = 0.0004f;
     const float TowerBlankBay = 0.36f - 0.088f;   // the tower's spare bay
+
+    // The name of the key that hands over the visitor's real keyboard, on its cap as the console
+    // keyboard's canvas has it: the words change while it is on, so they are not the caps' print.
+    static TextMeshPro CaptureSign(EmuKeyboard keyboard)
+    {
+        int k = System.Array.IndexOf(keyboard.keyLinux, EmuKeyboard.LinuxCapture);
+        if (k < 0) return null;
+        Transform old = keyboard.transform.Find("Capture sign");
+        if (old != null) Object.DestroyImmediate(old.gameObject);
+        TMP_FontAsset font = RetroFont("IBMPlexSansCondensed-Bold");
+        TextMeshPro sign = new GameObject("Capture sign").AddComponent<TextMeshPro>();
+        sign.transform.SetParent(keyboard.transform, false);
+        sign.transform.localPosition = new Vector3(keyboard.keyX[k] + keyboard.keyW[k] * 0.5f - keyboard.panelWidth * 0.5f,
+                                                   keyboard.panelHeight * 0.5f - keyboard.keyY[k] - keyboard.keyH[k] * 0.5f, -0.5f);
+        sign.rectTransform.sizeDelta = new Vector2(keyboard.keyW[k], keyboard.keyH[k]);
+        sign.font = font;
+        sign.fontSharedMaterial = LitFont(font);   // ink, in the room's light: the font's own material came out blue-grey
+        sign.fontSize = 180f;   // the console keyboard's 18, in a canvas's units
+        sign.alignment = TextAlignmentOptions.Center;
+        sign.enableWordWrapping = false;
+        sign.color = new Color(0.05f, 0.05f, 0.06f);
+        sign.text = "Use my keyboard";
+        sign.GetComponent<MeshRenderer>().shadowCastingMode = ShadowCastingMode.Off;
+        return sign;
+    }
 
     static StationsPlan ReadStations()
     {
@@ -211,7 +238,7 @@ public static partial class ShaderEmuBuilder
 
     // The lamps that are lit while a machine is on: the monitor's (`monitor`: its place, or none)
     // and the tower's power lamp, a hair before the model's own dull lenses.
-    static GameObject PowerLamps(Transform parent, StationsPlan plan, bool monitor, Vector3 tower, float glassZ)
+    static GameObject PowerLamps(Transform parent, StationsPlan plan, bool monitor, Vector3 tower, float glassZ, float proud)
     {
         Material green = Mat("Power lamp", "Unlit/Color");
         green.color = new Color(0.1f, 1f, 0.3f) * 2.5f;   // (lit: brighter than white, it blooms)
@@ -225,12 +252,12 @@ public static partial class ShaderEmuBuilder
             lamp.transform.SetParent(lamps.transform, false);
             if (which == 0)
             {
-                lamp.transform.localPosition = new Vector3(plan.setX + plan.led, plan.osd[2], glassZ - 0.0021f);
-                lamp.transform.localScale = new Vector3(0.0066f, 0.0066f, 0.0016f);
+                lamp.transform.localPosition = new Vector3(plan.setX + plan.led, plan.osd[2], glassZ - proud);
+                lamp.transform.localScale = new Vector3(0.0066f, 0.0066f, 0.0006f);
             }
             else
             {
-                lamp.transform.localPosition = tower + new Vector3(plan.lamps[0], plan.tower[3] - plan.speed[1] + 0.005f, -0.0028f);
+                lamp.transform.localPosition = tower + new Vector3(plan.lamps[0], plan.tower[3] - plan.speed[1] + 0.005f, -proud);
                 lamp.transform.localScale = new Vector3(0.0062f, 0.0024f, 1f);
             }
             MeshRenderer renderer = lamp.GetComponent<MeshRenderer>();
@@ -346,7 +373,7 @@ public static partial class ShaderEmuBuilder
             // what that key is, in lit letters over it, and a bar under it that beckons while the place is free
             TextMeshPro sign = new GameObject("Power sign").AddComponent<TextMeshPro>();
             sign.transform.SetParent(place, false);
-            sign.transform.localPosition = new Vector3(towerX + plan.power[0], powerY + 0.021f, towerFront - 0.0025f);
+            sign.transform.localPosition = new Vector3(towerX + plan.power[0], powerY + 0.021f, towerFront - OnShell);
             sign.rectTransform.sizeDelta = new Vector2(0.06f, 0.012f);
             sign.font = signFont;
             sign.fontSharedMaterial = signFont.material;
@@ -354,10 +381,10 @@ public static partial class ShaderEmuBuilder
             sign.alignment = TextAlignmentOptions.Center;
             sign.color = new Color(1f, 0.70f, 0.20f);
             sign.text = "POWER";
-            stations.beacons[s] = BlinkLamp(place, "Beacon " + s, new Vector3(towerX + plan.power[0], powerY - 0.019f, towerFront - 0.0025f), 0, 0.034f, 0.0035f, amber);
-            stations.diskLamps[s] = BlinkLamp(place, "Disk " + s, new Vector3(towerX + plan.lamps[2], lampY, towerFront - 0.0028f), 0, 0.0062f, 0.0024f, red);
+            stations.beacons[s] = BlinkLamp(place, "Beacon " + s, new Vector3(towerX + plan.power[0], powerY - 0.019f, towerFront - OnShell), 0, 0.034f, 0.0035f, amber);
+            stations.diskLamps[s] = BlinkLamp(place, "Disk " + s, new Vector3(towerX + plan.lamps[2], lampY, towerFront - OnShell), 0, 0.0062f, 0.0024f, red);
             if (plan.nic != null && plan.nic.Length == 3)
-                stations.netLamps[s] = BlinkLamp(place, "Net " + s, new Vector3(plan.nic[0], plan.nic[1], plan.nic[2] + 0.0008f), 180, plan.nicSize[0], plan.nicSize[1], green);
+                stations.netLamps[s] = BlinkLamp(place, "Net " + s, new Vector3(plan.nic[0], plan.nic[1], plan.nic[2] - 0.001f + OnShell), 180, plan.nicSize[0], plan.nicSize[1], green);
             // and the monitor's six, under the glass, left to right as their legend names them
             float pitch = plan.osd[1] * 1000f;
             float[] six = new float[24];
@@ -369,20 +396,20 @@ public static partial class ShaderEmuBuilder
             links.name = "Links lamp";
             Object.DestroyImmediate(links.GetComponent<Collider>());
             links.transform.SetParent(place, false);
-            links.transform.localPosition = new Vector3(plan.setX + plan.osd[0] + 5f * plan.osd[1], plan.osd[2] + 0.011f, glassZ - 0.0045f);
+            links.transform.localPosition = new Vector3(plan.setX + plan.osd[0] + 5f * plan.osd[1], plan.osd[2] + 0.011f, glassZ - OnShell);
             links.transform.localScale = new Vector3(0.014f, 0.004f, 1f);
             links.GetComponent<MeshRenderer>().sharedMaterial = lamp;
             links.GetComponent<MeshRenderer>().shadowCastingMode = ShadowCastingMode.Off;
             links.SetActive(false);
             stations.linkLamps[s] = links;
-            stations.powerLamps[s] = PowerLamps(place, plan, true, new Vector3(towerX, 0, towerFront), glassZ);
+            stations.powerLamps[s] = PowerLamps(place, plan, true, new Vector3(towerX, 0, towerFront), glassZ, OnShell);
             Transform spot = new GameObject("Links spot").transform;
             spot.SetParent(place, false);
             spot.localPosition = new Vector3(plan.setX, glassMid, glassZ - 0.06f);
             stations.linkSpots[s] = spot;
 
             // the speed's window on the tower: every core's, and core 0's
-            stations.speeds[s] = SpeedWindow(place, "Speed " + s, new Vector3(towerX + plan.speed[0], panelY, towerFront - 0.0022f), plan.speed[2], plan.speed[3]);
+            stations.speeds[s] = SpeedWindow(place, "Speed " + s, new Vector3(towerX + plan.speed[0], panelY, towerFront - OnShell), plan.speed[2], plan.speed[3]);
 
             // its keys: the layout's rectangles over the caps' tops, a beam's plate, a mark a hand
             GameObject keysGo = new GameObject("Station " + s + " keyboard");
@@ -436,6 +463,7 @@ public static partial class ShaderEmuBuilder
                 keyboard.marks[h] = mark.transform;
                 keyboard.markRenderers[h] = markRenderer;
             }
+            keyboard.captureSign = CaptureSign(keyboard);
             Apply(keyboard);
             stations.keyboards[s] = keyboard;
 
@@ -494,7 +522,7 @@ public static partial class ShaderEmuBuilder
         stations.ownSpeed = SpeedWindow(computer, "Speed own", den + new Vector3(plan.speed[0], towerHigh - plan.speed[1], plan.tower[2] - 0.0022f), plan.speed[2], plan.speed[3]);
         WallSpeed(computer);
 
-        stations.ownLamps = PowerLamps(computer, plan, false, den + new Vector3(0, 0, plan.tower[2]), 0);
+        stations.ownLamps = PowerLamps(computer, plan, false, den + new Vector3(0, 0, plan.tower[2]), 0, 0.0028f);   // the den's tower is modelled whole
         stations.ownDisk = BlinkLamp(computer, "Disk own", den + new Vector3(plan.lamps[2], lampY, plan.tower[2] - 0.0028f), 0, 0.0062f, 0.0024f, red);
         stations.machine = theMachine;
         stations.blackTexture = theMachine.blackTexture;

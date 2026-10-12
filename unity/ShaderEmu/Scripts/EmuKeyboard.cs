@@ -16,6 +16,7 @@ public class EmuKeyboard : UdonSharpBehaviour
     public bool rawKeys;
     public EmuKeyboard other;        // the other keyboard: only one captures the real one
     public TextMeshProUGUI captureLabel;
+    public TextMeshPro captureSign;  // the same words on a keyboard that is a model, with no canvas
     public TextMeshProUGUI modifierLabel;
 
     // The real keyboard's keys (filled in by the scene builder): Unity KeyCode, Linux code,
@@ -391,7 +392,9 @@ public class EmuKeyboard : UdonSharpBehaviour
         }
         VRCPlayerApi player = Networking.LocalPlayer;
         if (player != null) player.Immobilize(on);   // or typing WASD walks away
-        if (captureLabel != null) captureLabel.text = on ? "Typing here (Insert: stop)" : "Use my keyboard";
+        string words = on ? "Typing here (Insert: stop)" : "Use my keyboard";
+        if (captureLabel != null) captureLabel.text = words;
+        if (captureSign != null) captureSign.text = words;
         Paint();
     }
 

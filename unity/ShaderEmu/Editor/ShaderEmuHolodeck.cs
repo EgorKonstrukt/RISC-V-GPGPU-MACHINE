@@ -564,6 +564,7 @@ public static partial class ShaderEmuBuilder
         Plate(bar, new Color(1f, 0.6f, 0.1f)).raycastTarget = false;
         gamepad.notice = notice;
         gamepad.noticeBar = bar;
+        notice.gameObject.SetActive(false);   // until a hand holds a controller: it stood at the room's middle, on the floor
         gamepad.machine = machine;
         gamepad.keys = machine.gpuKeyboard;
 

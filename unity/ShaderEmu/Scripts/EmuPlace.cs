@@ -13,11 +13,11 @@ public class EmuPlace : UdonSharpBehaviour
     public void Power() { stations.Act(place, 0); }
     public void ResetKey() { stations.Act(place, 1); }   // (Reset is Unity's own, called when a component is added)
     public void Turbo() { stations.Act(place, 2); }
-    public void NextTerminal() { stations.Act(place, 3); }       // the monitor's RGB 2/+
-    public void LastTerminal() { stations.Act(place, 4); }       // RGB 1/-
-    public void ShowConsole() { stations.Act(place, 5); }        // VIDEO 2
-    public void ShowDisplay() { stations.Act(place, 6); }        // VIDEO 1
-    public void CloseLinks() { stations.Act(place, 7); }         // EXIT
-    public void OpenLinks() { stations.Act(place, 8); }          // PROCEED
+    public void NextTerminal() { stations.Act(place, 3); }       // the monitor's TERM +
+    public void LastTerminal() { stations.Act(place, 4); }       // TERM -
+    public void ShowConsole() { stations.Act(place, 5); }        // CONSOLE
+    public void ShowDisplay() { stations.Act(place, 6); }        // DISPLAY
+    public void CloseLinks() { stations.Act(place, 7); }         // LINKS OFF
+    public void OpenLinks() { stations.Act(place, 8); }          // LINKS ON
     public void Leave() { stations.Act(place, 9); }              // the tower's EXIT: the place is given up
 }

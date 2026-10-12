@@ -230,6 +230,13 @@ def cables(b):
         toward = 1 if cx < under else -1
         sockets = (1, 0) if toward > 0 else (3, 4)   # the two nearest the grommet, the nearer lead in the nearer
         pc.strip(b, lies, plugs=sockets)
+        # its own lead, as a classroom strip's: out of the sleeve, along the floor, into a socket let into it
+        end, sz = under - pc.STRIP[0] / 2 - 0.012, HALF_D - 0.5   # (0.07 aside: clear of the middle panel)
+        LAID.append(["strip %d" % len(LAID), drape.ruffled(drape.curve(
+            [(end, 0.02, lies[2]), (end - 0.035, 0.005, lies[2]), (end - 0.07, 0.005, lies[2]), (end - 0.07, 0.005, sz + 0.03), (end - 0.07, 0.03, sz)]),
+            random.Random(int(-under * 100)), up=0.012, wander=0.003), 0.004, "Rubber"])   # (its own chance: the other leads keep theirs)
+        b.box((end - 0.07, 0.002, sz), (0.12, 0.004, 0.12), "MetalSteel", bevel=0.001, segs=1)
+        b.box((end - 0.07, 0.017, sz), (0.036, 0.026, 0.036), "Rubber", bevel=0.006, segs=2)
         for k, mat in ((0, "Rubber"), (1, "PlasticGrey")):
             end = pc.strip_socket(sockets[k], lies)[0]
             cable(b, [(cx + 0.008 * (2 * k - 1), 0.716, HALF_D - 0.14), (cx + 0.008 * (2 * k - 1), 0.62, HALF_D - 0.125 - 0.012 * k), (cx + toward * (0.03 + 0.03 * k), 0.32, HALF_D - 0.115 - 0.03 * k),

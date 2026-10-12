@@ -178,6 +178,35 @@ public static partial class ShaderEmuBuilder
         return m;
     }
 
+    // Moulded plastic seen close to, over a surface's own maps: a scan's grain and wear
+    // (world/fetch.py: plastic_detail). Laid by where a place is in the room, along the three
+    // axes: one size on every face, and no seam where a model's own picture has one.
+    // `mask`: white where the surface is plastic (none: all of it).
+    const float PlasticDetailTile = 0.2f;   // metres a repeat: the grain's bumps come out a millimetre apart
+    const float PlasticGrainStrength = 1f;   // the scan as it is
+    static void PlasticDetail(Material m, Texture mask = null)
+    {
+        Texture colour = WorldTexture("PlasticDetail", false, false);
+        m.SetTexture("_DetailMainTex", colour);
+        m.SetTextureScale("_DetailMainTex", Vector2.one / PlasticDetailTile);
+        m.SetTexture("_DetailNormalMap", WorldTexture("PlasticDetail_n", true));
+        m.SetTexture("_DetailRoughnessMap", WorldTexture("PlasticDetail_r", false, false));
+        m.SetTexture("_DefaultDetailSampler", colour);   // (its wrap and filter are the detail's)
+        m.SetTexture("_DetailMask", mask);
+        m.SetInt("_DetailWorkflow", 0);
+        m.SetInt("_DetailSampleMode", 3);     // triplanar
+        m.SetInt("_TriplanarCoordSpace", 1);  // the room's axes (nothing of plastic moves)
+        m.SetInt("_DetailMainTexBlend", 4);   // overlays: 0.5 changes nothing
+        m.SetInt("_DetailRoughnessBlend", 4);
+        m.SetFloat("_DetailMainTexStrength", 1f);
+        m.SetFloat("_DetailRoughnessStrength", 1f);
+        m.SetFloat("_DetailNormalStrength", PlasticGrainStrength);
+        m.SetInt("_UVDetailSet", 0);
+        m.DisableKeyword("_STOCHASTIC_DETAIL_ON");
+        foreach (string keyword in new[] { "_TRIPLANAR_DETAIL_ON", "_DETAIL_MAINTEX_ON", "_DETAIL_NORMAL_ON", "_DETAIL_ROUGHNESS_ON" }) m.EnableKeyword(keyword);
+        EditorUtility.SetDirty(m);
+    }
+
     // Poly Haven's materials, as world/fetch.py lists them: name, kind (0 solid, 1 with holes,
     // 2 no picture), then metallic and "has a normal map", or for kind 2 its colour.
     static void AssetMaterials(Dictionary<string, Material> made)
@@ -216,6 +245,8 @@ public static partial class ShaderEmuBuilder
             // a model with lamps of its own has a picture of their light (world/bake_pc.py)
             Texture light = File.Exists(stem + "_e.png") ? ImportedTexture(stem + "_e.png", true, false, 4) : null;
             made[name] = Surfaced(name, Color.white, albedo, normal, packed, packed != null ? 1f : number(2), 0.6f, false, f[1] == "1", false, light, light != null ? 5f : 0f);
+            // the classroom's computers: plastic but for their plates and sockets (world/bake_pc.py's mask)
+            if (name == "PH_pc_station") PlasticDetail(made[name], ImportedTexture(stem + "_m.png", false, false, 4));
             if (leaves) made[name].SetInt("_LTCGI", 0);
             if (leaves) made[name].DisableKeyword("LTCGI");
         }
@@ -230,6 +261,7 @@ public static partial class ShaderEmuBuilder
             Texture normal = s.texture != null && s.normal ? WorldTexture(s.texture + "_n", true) : null;
             Texture packed = s.texture != null ? WorldTexture(s.texture + "_p", false, false) : null;
             made[s.name] = Surfaced(s.name, s.tint, albedo, normal, packed, s.metallic, s.rough, s.matte);
+            if (s.texture == "Plastic") PlasticDetail(made[s.name]);
         }
         // the small printed things: their LEDs and read-outs are lamps
         made["Details"] = Surfaced("Details", Color.white, WorldTexture("Details"), null, WorldTexture("Details_p", false, false), 0f, 0.7f, false,
@@ -425,6 +457,9 @@ public static partial class ShaderEmuBuilder
         Annex(world, models.Find("Annex"), materials);   // the holodecks and the corridor (ShaderEmuHolodeck.cs)
         Stations(world);                      // the classroom's computers (ShaderEmuStations.cs)
         PcSounds(world);                      // the computer's own sounds (ShaderEmuPcSound.cs)
+        // in a scene whose panels are styled the caps' legends are made already: the new models take them
+        Material caps = AssetDatabase.LoadAssetAtPath<Material>(Generated + "/Keyboard caps.mat");
+        if (caps != null && caps.GetTexture("_Index") != null) CapsOnModels(world, caps);
     }
 
     // An evening: the ceiling's back row of lamps is what lights the room, with the lamps that
