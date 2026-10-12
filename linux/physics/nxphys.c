@@ -697,6 +697,7 @@ events(void)
 		GrCheckNextEvent(&e);
 		if (e.type == GR_EVENT_TYPE_NONE)
 			return again;
+		ui_origin_note(&e);	/* (the window's place is remembered: a click says it, an update forgets it) */
 		if (e.type == GR_EVENT_TYPE_CLOSE_REQ) {
 			sim.stop = 1;
 			exit(0);
@@ -717,8 +718,9 @@ events(void)
 			continue;
 		if (e.button.y < bar_y) {
 			/* (where the pointer is now, not where the event says it was: the box is taken
-			 * under the hand; and the window where it is now, which a press may have moved) */
-			ui_window_origin(picture, &origin_x, &origin_y);
+			 * under the hand; and the window where this press says it is: the picture is its
+			 * top left corner) */
+			ui_window_origin(window, &origin_x, &origin_y);
 			press((int)*control(0x20) - origin_x, (int)*control(0x24) - origin_y);
 		} else if (e.button.y >= bar_y + 5 && e.button.y < bar_y + 27 && e.button.x >= 5 && (e.button.x - 5) % button_step < button_step - 4 &&
 			   (e.button.x - 5) / button_step < BUTTONS) {
