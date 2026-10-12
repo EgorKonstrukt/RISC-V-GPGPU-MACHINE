@@ -3,8 +3,9 @@
   python tools/share_clients.py LOG_A.txt LOG_B.txt
 
 With `netTest` set on the hub, the first client's machine shows five scenes that keep changing
-(0 a game, 1 windows with activity, 2 text scrolling, 3 a window dragged, 4 the pointer) and
-sends each as units and as tiles, 40 s each. Both clients write lines to their logs
+(0 a game, 1 windows with activity, 2 text scrolling, 3 a window dragged, 4 the pointer), 80 s
+each. (The build of 13 October 2026 sent each as tiles and as units in turn: the logs say
+which, and this still tells them apart.) Both clients write lines to their logs
 (LocalLow/VRChat/VRChat/output_log_*.txt):
 
   [ShareLag]  for every packet the instance's clock when its picture was captured, when it was

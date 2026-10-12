@@ -4,22 +4,20 @@ using VRC.SDKBase;
 
 // Other players' consoles and displays as they arrive (docs/share.md), for every screen that
 // shows one: the wall, a classroom tube, a holodeck's screen. Every player whose machine is on
-// has a slot (a store of tiles, a picture, a console) and is decoded as packets come, shown or
-// not, so a screen that turns to them has their picture at once. A surface says whose it
+// has a slot (a picture, a console) and is drawn as packets come, shown or not, so a screen
+// that turns to them has their picture at once. A surface says whose it
 // wants. This client's asks for what it lost go out in its own EmuShare.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuStreams : UdonSharpBehaviour
 {
     public EmuShareHub hub;
     public EmuTerminal terminal;       // for the console's columns and rows
-    public Texture2D[] stores;         // a slot's tiles, laid out as the sender's atlas
-    public RenderTexture[] pictures;   // and decoded
+    public RenderTexture[] pictures;   // a slot's display, as its packets' units have drawn it
     public Texture2D[] grids;          // its console, a texel a cell
     public RenderTexture[] consoles;   // and drawn (640 x 480)
     public Material consoleMaterial;   // Terminal.shader, this behaviour's own
-    public Material decodeMaterial;    // ShareDecode.shader, this behaviour's own
     public Texture2D blackTexture;
-    // A packet of units (docs/share.md, "Units"): its bytes as a texture, where each unit's
+    // A packet's units (docs/share.md, "Display"): its bytes as a texture, where each unit's
     // record is in it, and the shader that draws them into a slot's picture.
     public Material unitsMaterial;     // ShareUnitsDecode.shader
     public Texture2D unitsPacket;      // 288 x 1
@@ -30,19 +28,15 @@ public class EmuStreams : UdonSharpBehaviour
     public const int Surfaces = 28;    // 0: the wall; 1 to 12: the classroom; 13 to 20: the holodecks
     public const int HeaderBytes = 19;
     public const int StatusFixed = 130;   // a status's activity bits, pc and x1 to x31; its text follows
-    // as EmuShareHub's
-    private const int TileCount = 300, RowBytes = 512, LevelAt = 508, StampAt = 509;
-    private const int FineAt = 300, FineRows = 1200, FineMost = 400, PresentAt = 2, FineStampAt = 3;
 
     private int count;
     private int[] wants = new int[Surfaces];   // the sender each surface shows; 0: none
     private int[] sender;              // a slot's; 0: free
-    private byte[][] bytes;
     private Color32[][] cells;
-    private int[] lastSeq, gotW, gotH, gotScale, stamp, shownW, shownH, top, cursorX, cursorY, version, mipsAll, mipsCore, askCount, activity;
+    private int[] lastSeq, gotW, gotH, shownW, shownH, top, cursorX, cursorY, version, mipsAll, mipsCore, askCount, activity;
     private uint[][] registers;
     private string[] stats;
-    private bool[] haveSeq, on, fresh, drawn, asUnits;
+    private bool[] haveSeq, on, fresh, drawn;
     private byte[] unitsBytes = new byte[1152];
     private float[] since, askedAt, heardAt;
     private int cols, rows;
@@ -54,15 +48,12 @@ public class EmuStreams : UdonSharpBehaviour
     {
         if (started) return;
         started = true;
-        count = stores.Length;
+        count = pictures.Length;
         sender = new int[count];
-        bytes = new byte[count][];
         cells = new Color32[count][];
         lastSeq = new int[count];
         gotW = new int[count];
         gotH = new int[count];
-        gotScale = new int[count];
-        stamp = new int[count];
         shownW = new int[count];
         shownH = new int[count];
         top = new int[count];
@@ -78,7 +69,6 @@ public class EmuStreams : UdonSharpBehaviour
         haveSeq = new bool[count];
         fresh = new bool[count];
         drawn = new bool[count];
-        asUnits = new bool[count];
         on = new bool[count];
         since = new float[count];
         askedAt = new float[count];
@@ -87,7 +77,6 @@ public class EmuStreams : UdonSharpBehaviour
         rows = terminal.rows;
         for (int s = 0; s < count; s++)
         {
-            bytes[s] = new byte[(TileCount + FineRows) * RowBytes];
             cells[s] = new Color32[cols * rows];
             registers[s] = new uint[32];
             Blank(s);
@@ -122,8 +111,8 @@ public class EmuStreams : UdonSharpBehaviour
     public Texture Picture(int slot) { return pictures[slot]; }
     public Texture Console(int slot) { return consoles[slot]; }
     public Color32[] Cells(int slot) { return cells[slot]; }
-    public int Width(int slot) { return on[slot] ? gotW[slot] * gotScale[slot] : 0; }      // of the picture drawn
-    public int Height(int slot) { return on[slot] ? gotH[slot] * gotScale[slot] : 0; }
+    public int Width(int slot) { return on[slot] ? gotW[slot] : 0; }      // of the picture drawn
+    public int Height(int slot) { return on[slot] ? gotH[slot] : 0; }
     public int DisplayWidth(int slot) { return on[slot] && gotW[slot] > 0 ? shownW[slot] : 0; }   // of the sender's display
     public int DisplayHeight(int slot) { return on[slot] && gotW[slot] > 0 ? shownH[slot] : 0; }
     public int Top(int slot) { return top[slot]; }
@@ -149,15 +138,11 @@ public class EmuStreams : UdonSharpBehaviour
     // Nothing of a sender is held or shown.
     private void Blank(int s)
     {
-        byte[] b = bytes[s];
-        for (int t = 0; t < TileCount; t++) b[t * RowBytes + LevelAt] = 3;
-        for (int r = 0; r < FineRows; r++) b[(FineAt + r) * RowBytes + PresentAt] = 0;
         Color32 blank = new Color32(32, 7, 0, 255);
         Color32[] grid = cells[s];
         for (int i = 0; i < grid.Length; i++) grid[i] = blank;
         gotW[s] = 0;
         gotH[s] = 0;
-        gotScale[s] = 1;
         shownW[s] = 0;
         shownH[s] = 0;
         mipsAll[s] = 0;
@@ -323,22 +308,13 @@ public class EmuStreams : UdonSharpBehaviour
         packets++;
         if (hub.netTest) Debug.Log("[ShareLag] got seq=" + share.seq + " ms=" + Networking.GetServerTimeInMilliseconds());
 
-        byte[] b = bytes[s];
-        bool redraw = false, all = false;
         int w = p[4] | p[5] << 8, h = p[6] | p[7] << 8;
-        // where the stream is half the display's size, tiles come at the fine level too
-        bool units = (p[0] & 2) != 0;
-        int scale = !units && w > 0 && (p[8] | p[9] << 8) / w == 2 ? 2 : 1;
-        if (w != gotW[s] || h != gotH[s] || scale != gotScale[s] || units != asUnits[s])
+        if (w != gotW[s] || h != gotH[s])
         {
-            asUnits[s] = units;
-            if (blackTexture != null) VRCGraphics.Blit(blackTexture, pictures[s]);
-            for (int t = 0; t < TileCount; t++) b[t * RowBytes + LevelAt] = 3;
-            for (int r = 0; r < FineRows; r++) b[(FineAt + r) * RowBytes + PresentAt] = 0;
+            // another size: its units come from nothing
             gotW[s] = w;
             gotH[s] = h;
-            gotScale[s] = scale;
-            all = true;
+            if (blackTexture != null) VRCGraphics.Blit(blackTexture, pictures[s]);
         }
         bool moved = top[s] != p[1] || cursorX[s] != p[2] || cursorY[s] != p[3] || !drawn[s];
         drawn[s] = true;
@@ -350,7 +326,6 @@ public class EmuStreams : UdonSharpBehaviour
         shownH[s] = p[10] | p[11] << 8;
         mipsAll[s] = p[13] | p[14] << 8;
         mipsCore[s] = p[15] | p[16] << 8;
-        stamp[s] = stamp[s] % 255 + 1;
         version[s]++;
 
         int at = HeaderBytes, sent = p[12], status = p[17] | p[18] << 8;
@@ -400,71 +375,18 @@ public class EmuStreams : UdonSharpBehaviour
             VRCGraphics.Blit(grids[s], consoles[s], consoleMaterial);
         }
 
-        if (units)
-        {
-            // the rest is units: the GPU finds each in the bytes and draws the pixels it covers
-            int length = Mathf.Min(p.Length - at, unitsBytes.Length);
-            if (length <= 0 || unitsMaterial == null) return;
-            System.Buffer.BlockCopy(p, at, unitsBytes, 0, length);
-            unitsPacket.LoadRawTextureData(unitsBytes);
-            unitsPacket.Apply(false);
-            unitsMaterial.SetTexture("_Packet", unitsPacket);
-            unitsMaterial.SetFloat("_Length", length);
-            unitsMaterial.SetVector("_Stream", new Vector4(w, h, 0, 0));
-            unitsMaterial.SetVector("_TargetSize", new Vector4(pictures[s].width, pictures[s].height, 0, 0));
-            VRCGraphics.Blit(unitsPacket, unitsIndex, unitsMaterial, 0);
-            unitsMaterial.SetTexture("_Index", unitsIndex);
-            VRCGraphics.Blit(unitsPacket, pictures[s], unitsMaterial, 1);
-            return;
-        }
-        while (at + 2 <= p.Length)
-        {
-            int v = p[at] | p[at + 1] << 8, t = v & 0xfff, level = v >> 12;
-            if (t >= TileCount) break;
-            if (level >= 4)
-            {
-                // a quarter of the tile at the fine level: its length, its bytes
-                if (level > 7 || at + 4 > p.Length) break;
-                int length = p[at + 2] | p[at + 3] << 8, row = (FineAt + t * 4 + level - 4) * RowBytes;
-                if (length < 16 || length > FineMost || at + 4 + length > p.Length) break;
-                System.Buffer.BlockCopy(p, at + 4, b, row + 4, length);
-                b[row + PresentAt] = 1;
-                b[row + FineStampAt] = (byte)stamp[s];
-                at += 4 + length;
-                redraw = true;
-                continue;
-            }
-            int size = level == 0 ? 384 : level == 1 ? 96 : 24;
-            if (level > 2 || at + 2 + size > p.Length) break;
-            System.Buffer.BlockCopy(p, at + 2, b, t * RowBytes + (level == 0 ? 0 : level == 1 ? 384 : 480), size);
-            b[t * RowBytes + LevelAt] = (byte)level;
-            b[t * RowBytes + StampAt] = (byte)stamp[s];
-            // the tile changed: what came of it at the fine level is of the old picture
-            for (int k = 0; k < 4; k++) b[(FineAt + t * 4 + k) * RowBytes + PresentAt] = 0;
-            at += 2 + size;
-            redraw = true;
-        }
-        if (redraw || all)
-        {
-            Texture2D store = stores[s];
-            store.LoadRawTextureData(b);
-            store.Apply(false);
-            decodeMaterial.SetTexture("_Store", store);
-            decodeMaterial.SetFloat("_Scale", scale);
-            decodeMaterial.SetFloat("_Stamp", stamp[s]);
-            decodeMaterial.SetFloat("_All", all ? 1 : 0);
-            decodeMaterial.SetVector("_Stream", new Vector4(w, h, 0, 0));
-            decodeMaterial.SetVector("_TargetSize", new Vector4(pictures[s].width, pictures[s].height, 0, 0));
-            VRCGraphics.Blit(store, pictures[s], decodeMaterial);
-        }
-    }
-
-    // How many of a slot's tiles are held at each level (3: not at all), for the tests.
-    public int[] Levels(int slot)
-    {
-        int[] levels = new int[4];
-        byte[] b = bytes[slot];
-        for (int t = 0; t < TileCount; t++) levels[b[t * RowBytes + LevelAt] & 3]++;
-        return levels;
+        // the rest is units: the GPU finds each in the bytes and draws the pixels it covers
+        int bytes = Mathf.Min(p.Length - at, unitsBytes.Length);
+        if (bytes <= 0 || unitsMaterial == null || w <= 0) return;
+        System.Buffer.BlockCopy(p, at, unitsBytes, 0, bytes);
+        unitsPacket.LoadRawTextureData(unitsBytes);
+        unitsPacket.Apply(false);
+        unitsMaterial.SetTexture("_Packet", unitsPacket);
+        unitsMaterial.SetFloat("_Length", bytes);
+        unitsMaterial.SetVector("_Stream", new Vector4(w, h, 0, 0));
+        unitsMaterial.SetVector("_TargetSize", new Vector4(pictures[s].width, pictures[s].height, 0, 0));
+        VRCGraphics.Blit(unitsPacket, unitsIndex, unitsMaterial, 0);
+        unitsMaterial.SetTexture("_Index", unitsIndex);
+        VRCGraphics.Blit(unitsPacket, pictures[s], unitsMaterial, 1);
     }
 }

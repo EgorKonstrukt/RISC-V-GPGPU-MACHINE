@@ -7,7 +7,7 @@ using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
 // Players see each other's machines (docs/share.md). This is local, one a client: it fills
-// this player's EmuShare with the console's changed rows and the display's changed tiles
+// this player's EmuShare with the console's changed rows and the display's changed parts
 // while the machine is on and anybody is there, and puts the watched player's console,
 // display and panel on the wall here (EmuStreams receives them). A watcher's keys and
 // pointer go the other way, when the owner allows it.
@@ -18,12 +18,7 @@ public class EmuShareHub : UdonSharpBehaviour
     public EmuTerminal terminal;
     public EmuKeyboard consoleKeyboard, gpuKeyboard;
     public EmuStreams streams;              // what arrives, for every screen that shows a player
-    public Material encodeMaterial;         // ShareEncode.shader
-    public RenderTexture captureA, captureB;   // 640 x 480 with mipmaps: this capture and the last
-    public RenderTexture atlas;             // 128 x 1500: a row a tile, then a row a quarter of a tile at the fine level
-    public RenderTexture fineA, fineB;      // 1280 x 960: this capture and the last at the display's own size
-    public RenderTexture changed;           // 20 x 15: which tiles changed
-    public RenderTexture fineBlocks;        // 640 x 240: the fine level's blocks
+    public RenderTexture fineA, fineB;      // 1280 x 960: this capture and the last, at the display's own size
     public Material displayShowMaterial;    // the wall
     public TextMeshProUGUI watchLabel, allowLabel;
     public TextMeshProUGUI watchersLabel;   // who watches the machine shown
@@ -35,19 +30,13 @@ public class EmuShareHub : UdonSharpBehaviour
     public GameObject moreButton;
     public Color rowColour, pickedColour;
     public bool selfTest;                   // watch this machine through the stream
-    // The display as units the GPU picks and packs by itself (docs/share.md, "Units"): Udon
-    // copies one row of bytes. Off: tiles, as before. May be changed while running.
-    public bool units = true;
+    // The display goes as units the GPU picks and packs by itself (docs/share.md, "Display"):
+    // Udon copies one row of bytes.
     public Material unitsMaterial;          // ShareUnits.shader
     public RenderTexture unitsBlocks, unitsExact, unitsNeed, unitsStats, unitsPlan, unitsTable, unitsPrefix, unitsCut, unitsPacket;
     public RenderTexture[] unitsState;      // three of 160 x 120: what the receivers have, with this capture's changes, and after the packet
     public bool netTest;                    // two clients test themselves and log (docs/share.md)
 
-    private const int TileCols = 20, TileCount = 300, RowBytes = 512;
-    private const int ChangedAt = 504, FlatAt = 505;   // bytes of a tile's row
-    // The fine level: the display's own pixels, where the stream is half its size. A row a
-    // quarter of a tile from row 300: its length, (in the store) present and stamp, its bytes.
-    private const int FineAt = 300, FineMost = 400;
     // Two ticks of three carry a packet: 7.7 KB/s with the fields beside it, of the 8 to 10 a
     // client gets out in practice for everything it sends (VRChat's limit is a client's).
     private const int PacketMost = 1150, ConsoleMost = 800, HeaderBytes = 19;
@@ -78,14 +67,9 @@ public class EmuShareHub : UdonSharpBehaviour
     private int viewers;
 
     // sending
-    private RenderTexture now, before, fineNow, fineBefore;
-    private byte[] atlasBytes = new byte[(TileCount + 1200) * RowBytes];
-    private int[] have = new int[TileCount];   // the level each tile was last sent at; 3: stale
-    private int[] fineHave = new int[TileCount];   // a bit a quarter of the tile sent at the fine level
-    private bool fineOn, codeAll = true;
-    private bool reading, haveAtlas, work, headerSent;
-    private int asked, done, validFrom;
-    private int sendW, sendH, cursor;
+    private RenderTexture fineNow, fineBefore;
+    private bool headerSent;
+    private int sendW, sendH;
     private byte[] scratch = new byte[2048];
     private byte[] lastHeader = new byte[HeaderBytes];
     private byte[] empty = new byte[0];
@@ -96,7 +80,7 @@ public class EmuShareHub : UdonSharpBehaviour
     private float pointerSentAt;
     private int[] keptSeq = new int[Kept];
     private int[] keptCount = new int[Kept];
-    private int[] keptWhat = new int[Kept * KeptMost];   // a tile and its level << 12; 0x10000 + a console row
+    private int[] keptWhat = new int[Kept * KeptMost];   // 0x10000 + a console row
     private int building;             // the place in the ring of the packet being built
     private bool refreshDue;
     private float refreshedAt = -10f, speedAt, statusAt;
@@ -106,14 +90,14 @@ public class EmuShareHub : UdonSharpBehaviour
     private const int UnitsBytes = 1152, UnitsRow = 292 * 4;
     private byte[] unitsRead = new byte[UnitsRow];
     private byte[] unitsHead = new byte[2048];
-    private bool unitsWas, unitsPending, unitsReady, unitsReset = true, unitsHeadNew, unitsDrop, unitsAsking;
+    private bool unitsPending, unitsReady, unitsReset = true, unitsHeadNew, unitsDrop, unitsAsking;
     private bool unitsHeadBuilt, unitsAskedReset, unitsCarry;
     private bool unitsActive, unitsCredit, unitsAgain;   // units are what is sent now; a tick allowed one packet; it was made again
     private int unitsAskedLost;
     private float unitsAge, unitsAgeSum;   // how old the last packet's capture was when it went, and all of them (for the tests)
     private int unitsAgains;
     private int unitsTurn;            // where the last packet stopped: the next goes on from there
-    private int unitsAskedMs, atlasMs, captureMs, captureAskedMs;   // the instance's clock when a packet's picture was captured (for the test with two clients)
+    private int unitsAskedMs, captureMs;   // the instance's clock when a packet's picture was captured (for the test with two clients)
     private float unitsAskedAt, unitsReadyAt;   // (when it was read back: one that then waits for the link is made again)
     private int unitsHeadLength, unitsLength, unitsNow, unitsNext, unitsLostFrom, unitsLostCount;
 
@@ -143,11 +127,8 @@ public class EmuShareHub : UdonSharpBehaviour
         blankGrid = new Color32[terminal.cols * terminal.rows];
         Color32 blank = new Color32(32, 7, 0, 255);
         for (int i = 0; i < blankGrid.Length; i++) blankGrid[i] = blank;
-        now = captureA;
-        before = captureB;
         fineNow = fineA;
         fineBefore = fineB;
-        for (int t = 0; t < TileCount; t++) have[t] = 3;
         for (int k = 0; k < Kept; k++) keptSeq[k] = -1;
         WallShowsOwn();   // the material is an asset: it keeps whatever the last session left
         ShowLabels();
@@ -491,16 +472,6 @@ public class EmuShareHub : UdonSharpBehaviour
             {
                 int what = keptWhat[k * KeptMost + e];
                 if (what >= 0x10000) terminal.rowChanged[(what - 0x10000) % terminal.rows] = true;
-                else
-                {
-                    int t = what & 0xfff, level = what >> 12;
-                    if (level >= 4) fineHave[t] &= ~(1 << (level - 4));
-                    else
-                    {
-                        have[t] = 3;
-                        fineHave[t] = 0;
-                    }
-                }
             }
             if (keptCount[k] >= KeptMost) return false;   // more than is kept of one packet
         }
@@ -508,7 +479,6 @@ public class EmuShareHub : UdonSharpBehaviour
         if (unitsLostCount > 0) unitsReset = true;
         unitsLostFrom = from;
         unitsLostCount = n;
-        work = true;
         headerSent = false;
         repaired++;
         return true;
@@ -582,18 +552,6 @@ public class EmuShareHub : UdonSharpBehaviour
             stateOut = true;
             refreshDue = true;
         }
-        if (units != unitsWas)
-        {
-            unitsWas = units;
-            unitsCredit = false;
-            codeAll = true;   // (the tiles' rows are as old as the last time tiles were sent)
-            // (and the stream's size is the other way's until a capture has set it: no tile goes by it)
-            sendW = 0;
-            sendH = 0;
-            haveAtlas = false;
-            refreshDue = true;
-            refreshedAt = -10f;
-        }
         if (stateDirty)
         {
             stateDirty = false;
@@ -629,12 +587,16 @@ public class EmuShareHub : UdonSharpBehaviour
         bool waits = unitsActive && unitsPending;
         if (!unitsActive && slot)
         {
-            // a packet of units made before: nothing of it goes, and its rows are sent again
+            // (the machine is off, or has no display: its console alone.) A packet of units made
+            // before: nothing of it goes, and its rows are sent again
             if (unitsPending && unitsReady) UnitsDropped();
             unitsDrop = unitsPending;
-            if (on && !reading && !unitsPending) Capture();
+            if (!on || machine.displayWidth <= 0)
+            {
+                sendW = 0;
+                sendH = 0;
+            }
             length = Build(on);
-            captureMs = atlasMs;
         }
         bool typed = MoveInput();
         if (waits)
@@ -658,7 +620,7 @@ public class EmuShareHub : UdonSharpBehaviour
             keptSeq[building] = mine.seq;
             sentPackets++;
             sentBytes += length;
-            if (netTest) Debug.Log("[ShareLag] sent seq=" + mine.seq + " ms=" + Networking.GetServerTimeInMilliseconds() + " captured=" + captureMs + " units=" + (packet[0] >> 1 & 1) + " bytes=" + length);
+            if (netTest) Debug.Log("[ShareLag] sent seq=" + mine.seq + " ms=" + Networking.GetServerTimeInMilliseconds() + " captured=" + captureMs + " units=1 bytes=" + length);
         }
         else mine.packet = empty;
         mine.flags = (on ? 1 : 0) | (allow ? 2 : 0);
@@ -683,17 +645,15 @@ public class EmuShareHub : UdonSharpBehaviour
             }
         }
         // the first player's machine shows five scenes that keep changing, 80 s each (a game,
-        // windows with activity, text scrolling, a window dragged, the pointer), and sends each
-        // as units and as tiles, 40 s each: what the other's picture of it is like, EmuShareProbe
-        // writes down (tools/share_clients.py)
+        // windows with activity, text scrolling, a window dragged, the pointer): what the
+        // other's picture of it is like, EmuShareProbe writes down (tools/share_clients.py)
         if (Networking.IsMaster && machine.IsOn())
         {
             if (testOnAt == 0f) testOnAt = Time.time;
             int step = Mathf.FloorToInt((Time.time - testOnAt - 50f) / 40f);
             if (step >= 0)
             {
-                int scene = (step / 2) % 5, round = step / 10;
-                units = ((step ^ round) & 1) == 1;
+                int scene = (step / 2) % 5;
                 if (scene != testScene)
                 {
                     string stop = testScene == 0 ? "killall doom doom.bin; " : testScene == 1 ? "killall glxgears nxmon; " : testScene == 2 ? "killall nxterm; "
@@ -718,9 +678,6 @@ public class EmuShareHub : UdonSharpBehaviour
         }
         if (Time.time < testAt) return;
         testAt = Time.time + 2f;
-        int[] levels = new int[4];
-        if (target != 0 && wallSlot >= 0) levels = streams.Levels(wallSlot);
-        else for (int t = 0; t < TileCount; t++) levels[have[t]]++;
         string found = "";
         int cols = terminal.cols;
         for (int r = 0; r < terminal.rows; r++)
@@ -739,7 +696,7 @@ public class EmuShareHub : UdonSharpBehaviour
                   + " on=" + machine.IsOn() + " target=" + target + " viewers=" + viewers + " sent=" + sentPackets + "/" + sentBytes
                   + " got=" + streams.Packets() + " gaps=" + streams.Gaps() + " repaired=" + repaired + " refreshed=" + refreshed
                   + " stream=" + (target != 0 && wallSlot >= 0 ? streams.Width(wallSlot) + "x" + streams.Height(wallSlot) : sendW + "x" + sendH)
-                  + " tiles=" + levels[0] + "/" + levels[1] + "/" + levels[2] + "/" + levels[3] + " events=" + tookEvents
+                  + " events=" + tookEvents
                   + " clogged=" + Networking.IsClogged + " wall=" + displayShowMaterial.GetTexture("_MainTex").name + ":"
                   + displayShowMaterial.GetVector("_Size").x + " lines=[" + found + "]");
     }
@@ -814,230 +771,28 @@ public class EmuShareHub : UdonSharpBehaviour
     private void FullRefresh()
     {
         terminal.MarkAll();
-        for (int t = 0; t < TileCount; t++)
-        {
-            have[t] = 3;
-            fineHave[t] = 0;
-        }
         unitsReset = true;
-        work = true;
         headerSent = false;
     }
 
     // ---- sending: the display ----
 
-    // The GPU packs the whole picture; what comes back says which tiles changed.
-    private void Capture()
-    {
-        int w = machine.displayWidth, h = machine.displayHeight;
-        if (w <= 0 || h <= 0)
-        {
-            sendW = 0;
-            sendH = 0;
-            return;
-        }
-        int scale = 1;
-        while (w > 640 * scale || h > 480 * scale) scale++;
-        if (w / scale != sendW || h / scale != sendH || (scale == 2) != fineOn)
-        {
-            sendW = w / scale;
-            sendH = h / scale;
-            fineOn = scale == 2;
-            for (int t = 0; t < TileCount; t++)
-            {
-                have[t] = 3;
-                fineHave[t] = 0;
-            }
-            haveAtlas = false;
-            validFrom = asked + 1;
-            codeAll = true;
-        }
-        Material m = encodeMaterial;
-        m.SetVector("_TexSize", new Vector4(machine.displayTexture.width, machine.displayTexture.height, 0, 0));
-        m.SetVector("_Src", new Vector4(w, h, scale, 0));
-        VRCGraphics.Blit(machine.displayTexture, now, m, 0);
-        if (fineOn)
-        {
-            // the display's own pixels, for the level a still tile ends at
-            m.SetVector("_Src", new Vector4(w, h, 1, 0));
-            VRCGraphics.Blit(machine.displayTexture, fineNow, m, 0);
-        }
-        m.SetTexture("_Now", now);
-        m.SetTexture("_Before", before);
-        m.SetTexture("_FineNow", fineNow);
-        m.SetTexture("_FineBefore", fineBefore);
-        m.SetVector("_Fine", new Vector4(fineOn ? 1 : 0, codeAll ? 1 : 0, 0, 0));
-        codeAll = false;
-        VRCGraphics.Blit(now, changed, m, 2);
-        m.SetTexture("_Changed", changed);
-        VRCGraphics.Blit(now, atlas, m, 1);
-        if (fineOn)
-        {
-            // only of the tiles that changed: the rest of the target keeps its bytes
-            VRCGraphics.Blit(now, fineBlocks, m, 3);
-            m.SetTexture("_FineBlocks", fineBlocks);
-            VRCGraphics.Blit(now, atlas, m, 4);
-        }
-        VRCAsyncGPUReadback.Request(atlas, 0, (IUdonEventReceiver)this);
-        asked++;
-        reading = true;
-        if (netTest) captureAskedMs = Networking.GetServerTimeInMilliseconds();
-        RenderTexture t2 = now;
-        now = before;
-        before = t2;
-        t2 = fineNow;
-        fineNow = fineBefore;
-        fineBefore = t2;
-    }
-
     public override void OnAsyncGpuReadbackComplete(VRCAsyncGPUReadbackRequest request)
     {
-        if (unitsPending && !reading)
-        {
-            UnitsRead(request);
-            return;
-        }
-        reading = false;
-        done++;
-        atlasMs = captureAskedMs;
-        if (request.hasError || !request.TryGetData(atlasBytes))
-        {
-            haveAtlas = false;
-            for (int t = 0; t < TileCount; t++) have[t] = 3;
-            return;
-        }
-        if (done < validFrom) return;   // packed before the picture changed size
-        haveAtlas = true;
-        int across = (sendW + 31) / 32, used = across * ((sendH + 31) / 32);
-        for (int i = 0; i < used; i++)
-        {
-            int t = (i / across) * TileCols + i % across;
-            if (atlasBytes[t * RowBytes + ChangedAt] == 0) continue;
-            have[t] = 3;
-            fineHave[t] = 0;
-            work = true;
-        }
+        if (unitsPending) UnitsRead(request);
     }
-
-    // A tile at a level into the packet, if it fits: its number and level, then its blocks.
-    private int Put(byte[] b, int at, int t, int level)
-    {
-        int size = level == 0 ? 384 : level == 1 ? 96 : 24;
-        if (at + 2 + size > PacketMost) return at;
-        int v = t | level << 12;
-        b[at] = (byte)(v & 255);
-        b[at + 1] = (byte)(v >> 8);
-        System.Buffer.BlockCopy(atlasBytes, t * RowBytes + (level == 0 ? 0 : level == 1 ? 384 : 480), b, at + 2, size);
-        have[t] = level;
-        Keep(v);
-        return at + 2 + size;
-    }
-
-    // A quarter of a tile at the fine level, if it fits: the tile's number and 4 + the
-    // quarter, its length, its bytes.
-    private int PutFine(byte[] b, int at, int t, int part)
-    {
-        int row = (FineAt + t * 4 + part) * RowBytes, size = atlasBytes[row] | atlasBytes[row + 1] << 8;
-        if (size < 16 || size > FineMost)
-        {
-            fineHave[t] |= 1 << part;   // not made: nothing to wait for
-            return at;
-        }
-        if (at + 4 + size > PacketMost) return at;
-        int v = t | (4 + part) << 12;
-        b[at] = (byte)(v & 255);
-        b[at + 1] = (byte)(v >> 8);
-        b[at + 2] = (byte)(size & 255);
-        b[at + 3] = (byte)(size >> 8);
-        System.Buffer.BlockCopy(atlasBytes, row + 4, b, at + 4, size);
-        fineHave[t] |= 1 << part;
-        Keep(v);
-        return at + 4 + size;
-    }
-
-    // Stale tiles first, as sharp as two packets can carry them all; in what room they leave,
-    // the coarsest of the rest a level sharper, and then tiles that are as sharp as the
-    // stream gets, at the fine level. A flat tile is never sent sharper than it needs.
-    private int PutTiles(byte[] b, int at)
-    {
-        int across = (sendW + 31) / 32, used = across * ((sendH + 31) / 32);
-        if (used == 0) return at;
-        int stale = 0;
-        for (int i = 0; i < used; i++)
-            if (have[(i / across) * TileCols + i % across] == 3) stale++;
-        int room = PacketMost - at, start = at;
-        if (stale > 0)
-        {
-            int level = stale * 386 <= 2 * room ? 0 : stale * 98 <= 2 * room ? 1 : 2;
-            for (int i = 0; i < used; i++)
-            {
-                int index = (cursor + i) % used, t = (index / across) * TileCols + index % across;
-                if (have[t] != 3) continue;
-                int flat = atlasBytes[t * RowBytes + FlatAt];
-                int next = Put(b, at, t, flat > level ? flat : level);
-                if (next == at)
-                {
-                    cursor = index;
-                    break;
-                }
-                at = next;
-            }
-            if (at + 26 > PacketMost) return at;
-        }
-        int mark = at;
-        bool full = false;
-        for (int from = 2; from >= 1 && at == mark; from--)
-        {
-            for (int i = 0; i < used; i++)
-            {
-                int index = (cursor + i) % used, t = (index / across) * TileCols + index % across;
-                if (have[t] != from) continue;
-                int flat = atlasBytes[t * RowBytes + FlatAt];
-                if (flat >= from) continue;
-                int next = Put(b, at, t, flat > from - 1 ? flat : from - 1);
-                if (next == at)
-                {
-                    cursor = index;
-                    full = true;
-                    break;
-                }
-                at = next;
-            }
-        }
-        for (int i = 0; fineOn && !full && i < used; i++)
-        {
-            int index = (cursor + i) % used, t = (index / across) * TileCols + index % across;
-            if (have[t] != 0 || fineHave[t] == 15 || atlasBytes[t * RowBytes + FlatAt] != 0) continue;
-            for (int part = 0; part < 4 && !full; part++)
-            {
-                if ((fineHave[t] >> part & 1) != 0) continue;
-                int next = PutFine(b, at, t, part);
-                if (next == at && (fineHave[t] >> part & 1) == 0)
-                {
-                    cursor = index;
-                    full = true;
-                }
-                at = next;
-            }
-        }
-        if (at == start) work = false;
-        return at;
-    }
-
-    // ---- sending: the display as units ----
 
     // The next packet: its header and console rows now, its units by the GPU (ShareUnits.shader,
     // pass by pass as tools/share_units.py), to be read back.
     private void AskUnits()
     {
         int w = machine.displayWidth, h = machine.displayHeight, scale = 1;
-        if (w <= 0 || h <= 0 || reading) return;
+        if (w <= 0 || h <= 0) return;
         while (w > 1280 * scale || h > 960 * scale) scale++;
-        if (w / scale != sendW || h / scale != sendH || fineOn)
+        if (w / scale != sendW || h / scale != sendH)
         {
             sendW = w / scale;
             sendH = h / scale;
-            fineOn = false;
             unitsReset = true;
         }
         // its header and rows once, however often its units are asked for again (into a buffer
@@ -1104,7 +859,7 @@ public class EmuShareHub : UdonSharpBehaviour
     // Whether the display goes as units now: the machine is on and has a display.
     private bool UnitsNow(bool on)
     {
-        return units && unitsMaterial != null && on && machine.displayWidth > 0 && machine.displayHeight > 0;
+        return unitsMaterial != null && on && machine.displayWidth > 0 && machine.displayHeight > 0;
     }
 
     private void UnitsRead(VRCAsyncGPUReadbackRequest request)
@@ -1157,7 +912,8 @@ public class EmuShareHub : UdonSharpBehaviour
 
     // ---- sending: a packet ----
 
-    // Header, the console's changed rows, then tiles. Returns its length; 0: nothing is new.
+    // Header and the console's changed rows; the display's units come after (TakeUnits).
+    // Returns its length; 0: nothing is new.
     private int Build(bool on)
     {
         byte[] b = unitsAsking ? unitsHead : scratch;
@@ -1170,7 +926,7 @@ public class EmuShareHub : UdonSharpBehaviour
             speedCore = on ? PackSpeed(machine.mipsCore) : 0;
         }
         bool asUnits = UnitsNow(on);
-        b[0] = (byte)((on ? 1 : 0) | (asUnits ? 2 : 0));
+        b[0] = (byte)(on ? 1 : 0);
         b[1] = (byte)terminal.Top();
         b[2] = (byte)terminal.CursorColumn();
         b[3] = (byte)terminal.CursorRow();
@@ -1209,8 +965,6 @@ public class EmuShareHub : UdonSharpBehaviour
             count++;
         }
         b[12] = (byte)count;
-        int tilesAt = at;
-        if (w > 0 && haveAtlas && work && !asUnits) at = PutTiles(b, at);
         bool header = !headerSent;
         for (int i = 0; i < 17; i++)
             if (i != 12 && b[i] != lastHeader[i]) header = true;
@@ -1220,7 +974,7 @@ public class EmuShareHub : UdonSharpBehaviour
             unitsHeadNew = count > 0 || header || status > 0;
             return at;
         }
-        if (count == 0 && at == tilesAt && !header && status == 0) return 0;
+        if (count == 0 && !header && status == 0) return 0;
         System.Buffer.BlockCopy(b, 0, lastHeader, 0, HeaderBytes);
         headerSent = true;
         return at;

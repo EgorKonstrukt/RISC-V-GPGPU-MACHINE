@@ -115,7 +115,7 @@
   the time to a settled picture (`docs/share.md`, "Judged while it moves"): record 300 frames
   with `rvc_harness --cpu --screen-log`, play them with `python tools/share_motion.py`, and
   hold two real clients' logs together with `python tools/share_clients.py` (`netTest`)
-  (tiles against units, a packet every 0.15 s and every second), and a change to
+  (the tiles of before against the units, a packet every 0.15 s and every second), and a change to
   `ShareUnits.shader` must still give `tools/share_units.py`'s bytes (`bin\share_test.exe`,
   then `--against`), under fxc2 and under Windows' FXC: a `continue` in a loop, or a vector's
   component written by index in one, compiled under one and not the other.

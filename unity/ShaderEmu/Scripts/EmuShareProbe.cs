@@ -50,7 +50,7 @@ public class EmuShareProbe : UdonSharpBehaviour
         material.SetVector("_Src", new Vector4(w, h, 1, 0));
         VRCGraphics.Blit(source, signature, material, 12);
         stamp = Networking.GetServerTimeInMilliseconds();
-        units = hub.units ? 1 : 0;
+        units = 1;
         VRCAsyncGPUReadback.Request(signature, 0, (IUdonEventReceiver)this);
         reading = true;
     }

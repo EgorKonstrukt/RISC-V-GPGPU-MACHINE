@@ -11,7 +11,8 @@ that change at all during the recording: what a watcher's eye is on. Lower is be
 --video writes the recording and what each receiver showed as SCENE.mp4 and SCENE_RATE_SENDER.mp4
 (ffmpeg must be on the path), and the numbers as SCENE.json.
 
-  tiles   EmuShareHub's tiles (PutTiles), its capture one sending old
+  tiles   the tiles EmuShareHub sent until 13 October 2026 (its PutTiles), their capture one
+          sending old: what the units are held against
   units   ShareUnits.shader as tools/share_units.py models it: a packet goes the frame it has
           been read back (EmuShareHub.SendUnits), its capture 0.04 s old, and while the link
           is busy it is made again every tick (UnitsWait): 0.15 s old at a packet a second
@@ -63,7 +64,7 @@ class Recording:
         return grown
 
 
-# ---- the tiles, as ShareEncode.shader codes them and EmuShareHub.PutTiles picks them ----
+# ---- the tiles, as ShareEncode.shader coded them and EmuShareHub.PutTiles picked them ----
 
 def split(px):
     """4x4 blocks of [H, W, 3]: low and high 5:6:5, 16 bits, and the picture they show."""
