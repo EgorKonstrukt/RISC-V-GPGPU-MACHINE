@@ -487,6 +487,7 @@ const BootImage kImages[] = {
     {"sound", "Sound test card: every kind of voice for half a second (bare metal C)", nullptr, "sound", "none", "none", 2},
     {"raycast", "Raycaster: walk a textured maze on the display (bare metal C)", nullptr, "raycast", "none", "none", 2},
     {"raytrace", "Raytracer drawing to the display (bare metal C)", nullptr, "raytrace", "none", "none", 2},
+    {"classes", "What each kind of instruction costs: loops of one kind, a mark between them (bare metal C)", nullptr, "classes", "none", "none", 0},
     {"fpcheck", "Float instructions on the fast path: prints a sum to compare between shader builds (bare metal C)", nullptr, "fpcheck", "none", "none", 0},
     {"rvc-raytrace", "rvc's Rust raytracer, drawing into raw memory", "data", "rust_raytrace", "none", "dts", 1},
     {"bare", "C bare-metal test (no firmware)", "data", "bare", "none", "dts", 1},
@@ -681,8 +682,10 @@ int main(int argc, char** argv) {
         // With the eight targets the machine has all its cores, and so has the interpreter.
         if (!opt.dxc && !opt.noMrt && !opt.cpu && !opt.profile && !getenv("RVC11_COMPUTE")) {
             opt.defines.push_back("TICK_MRT");
-            opt.defines.push_back("CORES=" + std::to_string(kCores));
-            opt.cores = kCores;
+            // (RVC_CORES=N: a machine of fewer cores, to measure what the others cost core 0)
+            int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : kCores;
+            if (cores > 1) opt.defines.push_back("CORES=" + std::to_string(cores));
+            opt.cores = cores;
         }
         if (opt.cpu) opt.cores = kCores;
         unsigned ways = 3, tableBits = 6;
@@ -691,6 +694,8 @@ int main(int argc, char** argv) {
             if (d.rfind("L1_TABLE_BITS=", 0) == 0) tableBits = (unsigned)atoi(d.c_str() + 14);
         }
         bo.tickRows = ways == 3 && tableBits == 6 ? 16 : 32;
+        for (auto& d : opt.defines)   // (a machine with more state says how many rows: STATE_ROWS in src/types.h)
+            if (d.rfind("STATE_ROWS=", 0) == 0) bo.tickRows = (unsigned)atoi(d.c_str() + 11);
     }
     bo.present = opt.present;
     bo.readbackBatch = opt.readbackBatch;
