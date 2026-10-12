@@ -394,11 +394,19 @@
 #ifdef TICK_MRT
                     if (!_Init && !pixel_has_state(at)) { texel = TICK_KEEP(k); have = true; }
 #endif
+                    // (each asked only when the texel is not had yet: && runs both its sides, and
+                    // what these put in their out argument for a texel that is not theirs is zeros)
 #ifndef NO_PAGING
-                    if (!have && !_Init && tlb_state_texel(at, texel)) have = true;
+                    if (!have && !_Init) {
+                        uint4 kept;
+                        if (tlb_state_texel(at, kept)) { texel = kept; have = true; }
+                    }
 #endif
 #ifdef FPU
-                    if (!have && !_Init && fp_state_texel(at, texel)) have = true;
+                    if (!have && !_Init) {
+                        uint4 kept;
+                        if (fp_state_texel(at, kept)) { texel = kept; have = true; }
+                    }
 #endif
                     if (!have) texel = encode(at);
                     o[k] = texel;
