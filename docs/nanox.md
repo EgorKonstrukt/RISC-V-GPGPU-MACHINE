@@ -201,11 +201,24 @@ a brush stroke costs the pixels it touches and nothing else.
   filled, or both. The left button draws in the foreground's colour, the right in the
   background's. Fill is a flood: every pixel reached through pixels of the one clicked.
 - Colours: a palette of 28, a field of every hue (paler downwards) with a slider for its
-  lightness, the picked colour's number, and Pick takes one from the picture.
+  lightness, the picked colour's number, and Pick takes one from the picture. The left
+  button picks the foreground, the right the background, in the palette and the field both.
+  A picture's colour is `0xAARRGGBB` and the window system's the other way round (`MWRGB`):
+  a swatch is filled through `shown()`, or red and blue change places in it.
 - A selection is dragged out with Select; dragged again it comes loose and moves, leaving
   the background's colour (a pasted piece floats the same way until something else is
   done). Edit has Cut, Copy, Paste, Delete, Select all; the copied piece is a file
-  (`/tmp/nxpaint-clip.ppm`), so it passes between two paint windows.
+  (`/tmp/nxpaint-clip.ppm`), so it passes between two paint windows. Delete and Cut take
+  the piece away wherever it floats, and do nothing with nothing selected.
+- Save writes a PPM and nothing else. A picture with no file yet is asked what to be saved
+  as, in a window with a name field (`ui_save_file` in `ui_files.h`) that starts in
+  `/root/Pictures`, where Open starts: a name is taken in the folder shown, a file that is
+  there is asked about once, and a name ending in another picture's kind gets `.ppm` in its
+  place, which the notice says. A file is written beside itself and renamed, and a write
+  that fails says why.
+- The window made larger (the caption's box, Ctrl+F10) has another buffer: the program maps
+  it again when the driver's count at `0x87000064` moves, and draws everything when its
+  size changed (`locate`).
 - Image: Canvas size (the picture kept at the top left), Scale, Crop to the selection, Flip,
   Turn, Invert, Clear. View: zoom 1 to 8 (`+`, `-`), arrows and the wheel move the view.
 - Every change keeps the pixels it replaced (a rectangle of them, or the whole picture when
@@ -214,7 +227,27 @@ a brush stroke costs the pixels it touches and nothing else.
   drag:20,20:120,90 tool:Fill fg:00ff00 press:60,50 pixel:60,50 undo sum quit quit" nxpaint`
   under `rvc_cpu` with `nano-X -p &` (`tool:` `size:` `mode:` `fg:` `bg:` `drag:` `rdrag:`
   `press:` `new:` `resize:` `scale:` `open:` `saveas:` `pixel:` `sum` `probe`, and the
-  menus' commands by name). A change taken back must give the sum from before it.
+  menus' commands by name). A change taken back must give the sum from before it. Those
+  coordinates are the picture's and go past the panels.
+- The panels are tested by the window's coordinates, through what a pointer's events go
+  through: `click:X,Y`, `rclick:X,Y`, `pull:X,Y:X,Y` and `rpull:` (a drag), each printing
+  the tool, size, shape, zoom and the two colours after it; `hand` prints them alone.
+  `swatch:N` reads a pixel of palette swatch N back from the window (28: the foreground's
+  box, 29: the background's) and prints it beside the colour it stands for: `NOT the same`
+  is a failure. That needs a server that draws: `NANOX_SOFTWARE=1 nano-X -p &` under
+  `rvc_cpu`, or `rvc_harness --cpu`. In a 700 x 480 window swatch N is at
+  `68 + (N % 14) * 18, 418 + (N / 14) * 20`, the tools from `3,24` (33 x 26 apart, two a
+  row), the field at `324,409` (120 x 44) and the slider at `454,406`.
+- Saving: `saveas:NAME` (a name with no folder goes to `/root/Pictures`), then `open:` of
+  what the printed notice names and `sum`, which must be the sum from before; `saveas:x.png`
+  must say it wrote `x.ppm`, and `saveas:/nowhere/x` that it did not save. `saveas` alone
+  and `save` on a new picture open the window, which a test types into from a shell job:
+  `(nxkey 4000 t e s t enter) & NXPAINT_SCRIPT="new:40x30 saveas sum quit" nxpaint`.
+- `events:MS` hands the window to the pointer and the keys for that long, and `where`
+  prints its place on the screen, for `nxkey` to click in it or press Ctrl+F10:
+  `(nxkey 5000 165,484 4000 ctrl+f10) & NXPAINT_SCRIPT="where events:6000 hand events:5000
+  where fg:00ff00 tool:Fill press:2,2 probe swatch:17 quit quit" nxpaint`. After it `probe`'s
+  two views must agree (the program's buffer is the one the window system shows).
 
 ## Frames a second
 

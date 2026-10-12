@@ -7,10 +7,13 @@
 #include "ui_files.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
 
 #define MENU_H 20
 #define TOOLS_W 72
@@ -21,6 +24,8 @@
 #define FIELD_W 120
 #define FIELD_H 44
 #define GREY 0xff808080u
+#define PICTURES "/root/Pictures"
+#define KINDS ".ppm .png .jpg .jpeg .gif .bmp"	/* a PPM is what is written, whichever of these is asked for */
 
 enum { T_SELECT, T_PENCIL, T_BRUSH, T_ERASER, T_FILL, T_PICK, T_LINE, T_RECT, T_OVAL, T_SPRAY, TOOL_COUNT };
 static const char *const tool_names[TOOL_COUNT] = { "Select", "Pencil", "Brush", "Eraser", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
@@ -37,13 +42,14 @@ enum {
 	C_NONE, C_NEW, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_ALL, C_DESELECT,
 	C_RESIZE, C_SCALE, C_CROP, C_FLIP_H, C_FLIP_V, C_ROTATE_R, C_ROTATE_L, C_INVERT, C_CLEAR, C_ZOOM_IN, C_ZOOM_OUT, C_ZOOM_1
 };
-enum { ASK_NONE, ASK_NEW, ASK_RESIZE, ASK_SCALE, ASK_SAVE };
+enum { ASK_NONE, ASK_NEW, ASK_RESIZE, ASK_SCALE };
 
 static GR_WINDOW_ID window;
 static int width, height;		/* the window's */
 static int view_w, view_h;		/* the part of it the picture shows in, from (TOOLS_W, MENU_H) */
 static uint32_t *surface;		/* the window's own buffer, mapped: 0xAARRGGBB a pixel */
-static uint32_t surface_at;
+static uint32_t surface_at, surface_bytes, buffers_seen;
+static volatile uint32_t *buffers;	/* the screen driver's count of buffers made (0x87000064) */
 static int surface_row, gpu = -1;
 
 static uint32_t *pix, *back;		/* the picture, and the picture as of the last change that was kept */
@@ -52,7 +58,8 @@ static int zoom = 1, ox, oy;		/* the picture's pixel at the view's corner */
 static int tool = T_BRUSH, size_index = 2, mode;
 static uint32_t fg = 0xff000000, bg = 0xffffffff;
 static int hue, sat = 255, value = 0;	/* the foreground as the field and the slider have it */
-static char path[300] = "/root/picture.ppm", notice[160];
+static char path[300], notice[160];
+static int named;			/* the picture has a file: Save writes it without asking */
 static int modified, leaving;
 static int asking;
 static char answer[200];
@@ -60,7 +67,7 @@ static char answer[200];
 /* what is being done with the pointer held */
 static int held, held_button, from_x, from_y, last_x, last_y;
 static int d_x0, d_y0, d_x1, d_y1;	/* the picture's pixels this change has touched */
-static int sliding, picking_field;
+static int sliding, sliding_button, picking_field;
 
 /* the selection, and a piece of picture that floats in it until it is put down */
 static int sel_on, s_x0, s_y0, s_x1, s_y1;
@@ -72,11 +79,48 @@ static struct change done[HISTORY], undone[HISTORY];
 static int done_count, undone_count;
 
 static char script[2000];
-static int print_on;
 
 /* ---- the window's buffer, and the picture shown in it ---- */
 
 static int asked;	/* the window system has been asked to draw since settle() last waited for it */
+
+static int relaid;	/* the window is another size: all of it is to be drawn, which nobody asks for */
+
+/* Maps the window's buffer, again when the driver has made one since or with `ask` (the window
+ * made larger has another, of another size, and the old one is some other window's by then). */
+static void
+locate(int ask)
+{
+	GR_WINDOW_INFO info;
+	uint32_t offset, count = buffers ? *buffers : 0;
+	void *memory;
+
+	if (gpu < 0 || (surface && count == buffers_seen && !ask))
+		return;
+	buffers_seen = count;
+	GrGetWindowInfo(window, &info);
+	if (!info.width || !info.height)
+		return;
+	if ((int)info.width != width || (int)info.height != height)
+		relaid = 1;
+	else if (surface && info.surface_address == surface_at)
+		return;
+	if (surface)
+		munmap((void *)((uintptr_t)surface & ~(uintptr_t)4095), surface_bytes);
+	surface = NULL, surface_at = 0;
+	width = (int)info.width, height = (int)info.height;
+	view_w = width - TOOLS_W, view_h = height - MENU_H - BOTTOM_H - STATUS;
+	if (!info.surface_address)
+		return;
+	surface_row = info.surface_row ? (int)info.surface_row : width;
+	offset = info.surface_address - 0x86000000u;
+	surface_bytes = (offset & 4095) + (uint32_t)surface_row * (uint32_t)height * 4;
+	memory = mmap(NULL, surface_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu, offset & ~4095u);
+	if (memory == MAP_FAILED)
+		return;
+	surface = (uint32_t *)((char *)memory + (offset & 4095));
+	surface_at = info.surface_address;
+}
 
 /* Waits until the window system has drawn what it was asked: the GPU draws on the buffer and
  * copies it back, and what is written into it meanwhile is lost. A pixel read is the request
@@ -84,28 +128,13 @@ static int asked;	/* the window system has been asked to draw since settle() las
 static void
 settle(void)
 {
-	GR_WINDOW_INFO info;
 	GR_PIXELVAL pixel;
-	uint32_t offset, bytes;
-	void *memory;
 
 	if (asked) {
 		GrReadArea(window, 0, 0, 1, 1, &pixel);
 		asked = 0;
 	}
-	if (surface)
-		return;
-	GrGetWindowInfo(window, &info);
-	if (!info.surface_address || info.surface_address == surface_at || gpu < 0)
-		return;
-	surface_row = info.surface_row ? (int)info.surface_row : (int)info.width;
-	offset = info.surface_address - 0x86000000u;
-	bytes = (offset & 4095) + (uint32_t)surface_row * (uint32_t)height * 4;
-	memory = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu, offset & ~4095u);
-	if (memory == MAP_FAILED)
-		return;
-	surface = (uint32_t *)((char *)memory + (offset & 4095));
-	surface_at = info.surface_address;
+	locate(0);
 }
 
 /* The selection's edge over what was just shown: every other pair of pixels turned over. */
@@ -138,15 +167,15 @@ present(int x0, int y0, int x1, int y1)
 	static uint32_t line[2048];
 	int sx0, sy0, sx1, sy1, sy, sx, iy;
 
+	settle();	/* (first: the view's size is the buffer's) */
+	if (!surface)
+		return;
 	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
 	sx0 = TOOLS_W + (x0 - ox) * zoom, sy0 = MENU_H + (y0 - oy) * zoom;
 	sx1 = TOOLS_W + (x1 - ox) * zoom, sy1 = MENU_H + (y1 - oy) * zoom;
 	sx0 = sx0 < TOOLS_W ? TOOLS_W : sx0, sy0 = sy0 < MENU_H ? MENU_H : sy0;
 	sx1 = sx1 > TOOLS_W + view_w ? TOOLS_W + view_w : sx1, sy1 = sy1 > MENU_H + view_h ? MENU_H + view_h : sy1;
 	if (sx0 >= sx1 || sy0 >= sy1)
-		return;
-	settle();
-	if (!surface)
 		return;
 	for (sy = sy0; sy < sy1; sy++) {
 		iy = oy + (sy - MENU_H) / zoom;
@@ -169,6 +198,7 @@ present_view(void)
 {
 	int sy, sx, right, bottom;
 
+	locate(0);
 	if (ox > pw - view_w / zoom)
 		ox = pw - view_w / zoom;
 	if (oy > ph - view_h / zoom)
@@ -328,8 +358,8 @@ stroke(int x0, int y0, int x1, int y1, int size, uint32_t colour)
 static void
 shape(int oval, int x0, int y0, int x1, int y1, int size, uint32_t line, uint32_t inside)
 {
-	int y, n, half, inner;
-	float cx, cy, rx, ry, t;
+	int y, n, left, right, in_left, in_right;
+	float cx, cy, rx, ry, t, half;
 
 	if (x0 > x1)
 		n = x0, x0 = x1, x1 = n;
@@ -350,21 +380,24 @@ shape(int oval, int x0, int y0, int x1, int y1, int size, uint32_t line, uint32_
 				span(x0, x0 + size, y, line), span(x1 - size, x1, y, line);
 			continue;
 		}
+		/* the row's pixels whose middles are in the oval: none of them outside the corners' box */
 		t = ((float)y + 0.5f - cy) / ry;
-		half = (int)(rx * sqrtf(1.0f - t * t) + 0.5f);
-		inner = -1;
+		half = rx * sqrtf(1.0f - t * t);
+		left = (int)floorf(cx - half + 0.5f), right = (int)floorf(cx + half + 0.5f);
+		in_left = in_right = 0;
 		if (ry - (float)size > 0.5f && rx - (float)size > 0.5f) {
 			t = ((float)y + 0.5f - cy) / (ry - (float)size);
-			if (t > -1.0f && t < 1.0f)
-				inner = (int)((rx - (float)size) * sqrtf(1.0f - t * t) + 0.5f);
+			if (t > -1.0f && t < 1.0f) {
+				half = (rx - (float)size) * sqrtf(1.0f - t * t);
+				in_left = (int)floorf(cx - half + 0.5f), in_right = (int)floorf(cx + half + 0.5f);
+			}
 		}
-		n = (int)(cx + 0.5f);
-		if (inner < 0)
-			span(n - half, n + half, y, line);
+		if (in_left >= in_right)
+			span(left, right, y, line);
 		else {
-			span(n - half, n - inner, y, line), span(n + inner, n + half, y, line);
+			span(left, in_left, y, line), span(in_right, right, y, line);
 			if (mode == 2)
-				span(n - inner, n + inner, y, inside);
+				span(in_left, in_right, y, inside);
 		}
 	}
 }
@@ -516,23 +549,41 @@ select_none(void)
 
 /* ---- files: PPM, three bytes a pixel ---- */
 
+/* The next number of a PPM's header, past blanks and # lines, and the one character after it. */
+static int
+ppm_number(FILE *file)
+{
+	int ch, n = 0, digits = 0;
+
+	while ((ch = fgetc(file)) != EOF && (isspace(ch) || ch == '#'))
+		while (ch == '#' && (ch = fgetc(file)) != EOF && ch != '\n')
+			ch = '#';
+	for (; ch >= '0' && ch <= '9' && n < 100000; ch = fgetc(file), digits++)
+		n = n * 10 + ch - '0';
+	return digits ? n : -1;
+}
+
 static uint32_t *
 read_ppm(const char *file_path, int *w, int *h)
 {
 	FILE *file = fopen(file_path, "rb");
-	uint32_t *pixels;
-	unsigned char *row;
-	int most = 0, x, y;
+	uint32_t *pixels = NULL;
+	unsigned char *row = NULL;
+	int x, y, good;
 
 	if (!file)
 		return NULL;
-	if (fscanf(file, "P6 %d %d %d", w, h, &most) != 3 || *w < 1 || *h < 1 || *w > MOST_W || *h > MOST_H || most != 255) {
+	good = fgetc(file) == 'P' && fgetc(file) == '6';
+	*w = good ? ppm_number(file) : 0, *h = good ? ppm_number(file) : 0;
+	good = good && *w >= 1 && *h >= 1 && *w <= MOST_W && *h <= MOST_H && ppm_number(file) == 255;
+	if (good)
+		pixels = malloc((size_t)*w * (size_t)*h * 4), row = malloc((size_t)*w * 3);
+	if (!pixels || !row) {
+		free(pixels);
+		free(row);
 		fclose(file);
 		return NULL;
 	}
-	fgetc(file);
-	pixels = malloc((size_t)*w * (size_t)*h * 4);
-	row = malloc((size_t)*w * 3);
 	for (y = 0; y < *h; y++) {
 		if (fread(row, 3, (size_t)*w, file) != (size_t)*w)
 			memset(row, 255, (size_t)*w * 3);
@@ -544,26 +595,36 @@ read_ppm(const char *file_path, int *w, int *h)
 	return pixels;
 }
 
+/* Written beside the file and then put in its place: a write that fails (errno says why)
+ * leaves the file that was there. */
 static int
 write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
 {
-	FILE *file = fopen(file_path, "wb");
-	unsigned char *row;
-	int x, y;
+	char beside[320];
+	FILE *file = NULL;
+	unsigned char *row = malloc((size_t)w * 3);
+	int x, y, good, why;
 
-	if (!file)
+	snprintf(beside, sizeof beside, "%.300s.new", file_path);
+	if (!row || !(file = fopen(beside, "wb"))) {
+		free(row);
 		return 0;
-	row = malloc((size_t)w * 3);
-	fprintf(file, "P6\n%d %d\n255\n", w, h);
-	for (y = 0; y < h; y++) {
+	}
+	good = fprintf(file, "P6\n%d %d\n255\n", w, h) > 0;
+	for (y = 0; y < h && good; y++) {
 		for (x = 0; x < w; x++)
 			row[3 * x] = (unsigned char)(pixels[y * w + x] >> 16), row[3 * x + 1] = (unsigned char)(pixels[y * w + x] >> 8),
 			row[3 * x + 2] = (unsigned char)pixels[y * w + x];
-		fwrite(row, 3, (size_t)w, file);
+		good = fwrite(row, 3, (size_t)w, file) == (size_t)w;
 	}
 	free(row);
-	fclose(file);
-	return 1;
+	good = fclose(file) == 0 && good;
+	if (!(good = good && rename(beside, file_path) == 0)) {
+		why = errno;
+		unlink(beside);
+		errno = why;
+	}
+	return good;
 }
 
 /* A new picture in place of this one, its history forgotten. */
@@ -604,19 +665,42 @@ titled(void)
 		GrSetWindowTitle(window, title);
 }
 
+/* Where pictures are opened from and saved to, unless another folder is walked to. */
+static const char *
+folder(void)
+{
+	return access(PICTURES, R_OK) == 0 ? PICTURES : "/root";
+}
+
+/* The picture has no file yet: Save will ask for one. */
+static void
+unnamed(void)
+{
+	snprintf(path, sizeof path, "%s/picture.ppm", folder());
+	named = 0;
+	titled();
+}
+
 /* Opens a picture: a PPM as it is, anything else through the viewer's decoder. */
 static int
 open_file(const char *file_path)
 {
-	char made[64], shell[500];
+	char made[64];
 	uint32_t *pixels;
-	int w, h;
+	int w, h, status = -1;
+	pid_t child;
 
 	pixels = read_ppm(file_path, &w, &h);
 	if (!pixels) {
 		snprintf(made, sizeof made, "/tmp/nxpaint-%d.ppm", (int)getpid());
-		snprintf(shell, sizeof shell, "nxview --decode '%s' %s 2>/dev/null", file_path, made);
-		if (system(shell) == 0)
+		/* no shell: a name may have anything in it */
+		if ((child = fork()) == 0) {
+			if (!freopen("/dev/null", "w", stderr))
+				_exit(126);
+			execlp("nxview", "nxview", "--decode", file_path, made, (char *)NULL);
+			_exit(127);
+		}
+		if (child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0)
 			pixels = read_ppm(made, &w, &h);
 		unlink(made);
 	}
@@ -624,27 +708,30 @@ open_file(const char *file_path)
 		return 0;
 	begin(pixels, w, h);
 	snprintf(path, sizeof path, "%s", file_path);
+	named = 1;
 	titled();
 	return 1;
 }
 
-/* Saves as a PPM: a picture that came from another kind of file gets that ending beside it. */
+/* Saves to `wanted` as a PPM, the only kind this writes: a name that asks for another kind
+ * gets a PPM's ending, and the notice says so. */
 static void
-save(void)
+save_to(const char *wanted)
 {
-	char *dot = strrchr(path, '.');
+	const char *base = strrchr(wanted, '/') ? strrchr(wanted, '/') + 1 : wanted;
+	char to[300];
+	int fitted;
 
-	if (!dot || strcmp(dot, ".ppm")) {
-		if (dot && strlen(dot) <= 5)
-			*dot = 0;
-		strncat(path, ".ppm", sizeof path - strlen(path) - 1);
-		titled();
+	snprintf(to, sizeof to, "%s", wanted);
+	fitted = ui_files_ending(to, sizeof to, KINDS) && ui_files_wanted(base, KINDS);
+	if (!write_ppm(to, pix, pw, ph)) {
+		snprintf(notice, sizeof notice, "NOT saved: cannot write %.90s (%s)", to, strerror(errno));
+		return;
 	}
-	if (write_ppm(path, pix, pw, ph)) {
-		modified = 0;
-		snprintf(notice, sizeof notice, "saved as %.120s", path);
-	} else
-		snprintf(notice, sizeof notice, "cannot write %.120s", path);
+	snprintf(path, sizeof path, "%s", to);
+	named = 1, modified = 0;
+	titled();
+	snprintf(notice, sizeof notice, fitted ? "saved as %.90s (a PPM: Paint writes no other kind)" : "saved as %.120s", path);
 }
 
 /* ---- colours ---- */
@@ -691,7 +778,7 @@ bottom_y(void)
 static void
 draw_status(void)
 {
-	static const char *const asks[] = { "", "New picture, WIDTHxHEIGHT: ", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: ", "Save as: " };
+	static const char *const asks[] = { "", "New picture, WIDTHxHEIGHT: ", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: " };
 	char text[420];
 
 	asked = 1;
@@ -731,22 +818,31 @@ draw_tools(void)
 	ui_button(window, TOOLS_W - 23, y + 146, 20, 20, " +", 0);
 }
 
+/* A picture's colour (red highest) as the window system is told one (red lowest). */
+static GR_COLOR
+shown(uint32_t colour)
+{
+	return MWRGB(colour >> 16 & 255, colour >> 8 & 255, colour & 255);
+}
+
 /* The colours along the bottom: the two in hand, the palette, and a field of every hue. */
 static void
 draw_colours(void)
 {
-	int y = bottom_y(), i, fx = 60 + 14 * 18 + 12, sx = fx + FIELD_W + 10, row, column;
+	int y, i, fx = 60 + 14 * 18 + 12, sx = fx + FIELD_W + 10, row, column;
 	char text[40];
 
+	locate(0);
+	y = bottom_y();
 	asked = 1;
 	ui_fill(window, 0, y, width, BOTTOM_H, UI_FACE);
 	ui_fill(window, 0, y, width, 1, UI_SHADOW);
-	ui_fill(window, 22, y + 22, 28, 28, bg & 0xffffff);
+	ui_fill(window, 22, y + 22, 28, 28, shown(bg));
 	ui_bevel(window, 22, y + 22, 28, 28, 1);
-	ui_fill(window, 6, y + 8, 28, 28, fg & 0xffffff);
+	ui_fill(window, 6, y + 8, 28, 28, shown(fg));
 	ui_bevel(window, 6, y + 8, 28, 28, 1);
 	for (i = 0; i < 28; i++) {
-		ui_fill(window, 60 + (i % 14) * 18, y + 10 + (i / 14) * 20, 17, 17, palette[i] & 0xffffff);
+		ui_fill(window, 60 + (i % 14) * 18, y + 10 + (i / 14) * 20, 17, 17, shown(palette[i]));
 		ui_bevel(window, 60 + (i % 14) * 18, y + 10 + (i / 14) * 20, 17, 17, 1);
 	}
 	if (width < sx + 130)
@@ -808,6 +904,8 @@ draw_menu_bar(void)
 static void
 draw_all(void)
 {
+	locate(0);
+	relaid = 0;
 	draw_menu_bar();
 	draw_tools();
 	draw_colours();
@@ -870,7 +968,7 @@ others(GR_EVENT *event)
 static void
 command(int id)
 {
-	char chosen[300], text[40];
+	char chosen[300], text[40], where[300], *slash;
 	uint32_t *piece;
 	int x, y, w, h, x0, y0, x1, y1;
 
@@ -886,15 +984,25 @@ command(int id)
 		ask(ASK_NEW, text);
 		return;
 	case C_OPEN:
-		if (ui_choose_file("Open a picture", "/root/Pictures", ".ppm .png .jpg .jpeg", chosen, sizeof chosen, others) && !open_file(chosen))
+		if (ui_choose_file("Open a picture", folder(), ".ppm .png .jpg .jpeg", chosen, sizeof chosen, others) && !open_file(chosen))
 			snprintf(notice, sizeof notice, "that is not a picture this can open");
 		draw_all();
 		return;
 	case C_SAVE:
-		save();
-		break;
+		if (named) {
+			save_to(path);
+			break;
+		}
+		/* fall through: a picture with no file is asked what to be saved as */
 	case C_SAVE_AS:
-		ask(ASK_SAVE, path);
+		/* in the picture's own folder with its own name, or where pictures are opened from */
+		snprintf(where, sizeof where, "%s", path);
+		if ((slash = strrchr(where, '/')) != NULL)
+			*slash = 0;
+		if (ui_save_file("Save the picture as", !slash ? folder() : slash == where ? "/" : where, KINDS, slash ? slash + 1 : where, chosen,
+				 sizeof chosen, others))
+			save_to(chosen);
+		draw_all();
 		return;
 	case C_EXIT:
 		if (modified && !leaving) {
@@ -921,21 +1029,30 @@ command(int id)
 		break;
 	case C_COPY:
 	case C_CUT:
+		if (id == C_CUT && !sel_on) {
+			snprintf(notice, sizeof notice, "nothing is selected");
+			break;
+		}
 		piece = fl.on ? NULL : copy_of(x0, y0, x1, y1);
 		if (write_ppm(CLIP, fl.on ? fl.buf : piece, fl.on ? fl.w : x1 - x0, fl.on ? fl.h : y1 - y0))
 			snprintf(notice, sizeof notice, "copied %d x %d", fl.on ? fl.w : x1 - x0, fl.on ? fl.h : y1 - y0);
+		else
+			snprintf(notice, sizeof notice, "NOT copied: cannot write " CLIP " (%s)", strerror(errno));
 		free(piece);
 		if (id == C_COPY)
 			break;
 		/* fall through */
 	case C_DELETE:
-		if (fl.on) {
-			float_end(!fl.hole);	/* a pasted piece goes; a lifted one leaves its hole */
-			if (sel_on)
-				restore(s_x0, s_y0, s_x1, s_y1), box(fl.hx0, fl.hy0, fl.hx1, fl.hy1, bg);
-			sel_on = 0;
-			present_view();
+		if (!sel_on) {
+			snprintf(notice, sizeof notice, "nothing is selected");
 			break;
+		}
+		if (fl.on) {
+			/* the piece goes from wherever it floats; a lifted one leaves its hole, to be taken back */
+			x0 = fl.hx0, y0 = fl.hy0, x1 = fl.hx1, y1 = fl.hy1, w = fl.hole;
+			float_end(1);
+			if (!w)
+				break;
 		}
 		box(x0, y0, x1, y1, bg);
 		keep(x0, y0, x1, y1);
@@ -1140,11 +1257,18 @@ field_x(void)
 static void
 colour_at(int x, int y)
 {
-	int fx = field_x(), sx = fx + FIELD_W + 10, by = bottom_y();
+	int fx = field_x(), sx = fx + FIELD_W + 10, by = bottom_y(), h, s;
 
 	if (picking_field) {
-		hue = (x - fx) * 255 / (FIELD_W - 1), sat = 255 - (y - by - 9) * 255 / (FIELD_H - 1);
-		hue = hue < 0 ? 0 : hue > 255 ? 255 : hue, sat = sat < 0 ? 0 : sat > 255 ? 255 : sat;
+		h = (x - fx) * 255 / (FIELD_W - 1), s = 255 - (y - by - 9) * 255 / (FIELD_H - 1);
+		h = h < 0 ? 0 : h > 255 ? 255 : h, s = s < 0 ? 0 : s > 255 ? 255 : s;
+		if (sliding_button == GR_BUTTON_R) {
+			/* the right button: the background, as the field shows it */
+			bg = from_hsv(h, s, value ? value : 255);
+			draw_colours();
+			return;
+		}
+		hue = h, sat = s;
 		if (!value)
 			value = 255;
 	} else
@@ -1182,6 +1306,7 @@ panel_press(int x, int y, int button)
 			foreground(bg);
 			bg = was;
 		}
+		sliding_button = button;
 		if (ui_inside(x, y, fx, by + 9, FIELD_W, FIELD_H))
 			picking_field = 1, sliding = 1, colour_at(x, y);
 		else if (ui_inside(x, y, fx + FIELD_W + 10, by + 6, 124, 18))
@@ -1226,17 +1351,12 @@ ask_key(int ch)
 		sscanf(answer, "%d%*[xX ,]%d", &w, &h);
 		if (what == ASK_NEW && w > 0 && h > 0 && w <= MOST_W && h <= MOST_H) {
 			blank(w, h);
-			snprintf(path, sizeof path, "/root/picture.ppm");
-			titled();
+			unnamed();
 			draw_all();
 		} else if (what == ASK_RESIZE) {
 			remade(w, h, C_RESIZE);
 		} else if (what == ASK_SCALE && w > 0) {
 			remade(pw * w / 100, ph * w / 100, C_SCALE);
-		} else if (what == ASK_SAVE && answer[0] == '/') {
-			snprintf(path, sizeof path, "%s", answer);
-			titled();
-			save();
 		} else
 			snprintf(notice, sizeof notice, "that is not a size");
 	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
@@ -1295,7 +1415,101 @@ key(int ch, int modifiers)
 	draw_status();
 }
 
+/* ---- events ---- */
+
+static void
+handle(GR_EVENT *event)
+{
+	int x, y, chosen, button;
+
+	switch (ui_menu_event(event, &chosen)) {
+	case UI_MENU_CHOSEN:
+		command(chosen);
+		return;
+	case UI_MENU_TOOK:
+	case UI_MENU_CLOSED:
+		return;
+	}
+	switch (event->type) {
+	case GR_EVENT_TYPE_EXPOSURE:
+		draw_all();
+		break;
+	case GR_EVENT_TYPE_BUTTON_DOWN:
+		x = event->button.x, y = event->button.y;
+		button = event->button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L;
+		if (ui_wheel(event)) {
+			oy += ui_wheel_sum(event) * (48 / zoom > 0 ? 48 / zoom : 1);
+			present_view();
+		} else if (x >= TOOLS_W && y >= MENU_H && y < MENU_H + view_h) {
+			notice[0] = 0;
+			press(ox + (x - TOOLS_W) / zoom, oy + (y - MENU_H) / zoom, button);
+		} else
+			panel_press(x, y, button);
+		break;
+	case GR_EVENT_TYPE_MOUSE_POSITION:
+		if (sliding && event->mouse.buttons)
+			colour_at(event->mouse.x, event->mouse.y);
+		else if (held && event->mouse.buttons)
+			draw_at(ox + (event->mouse.x - TOOLS_W) / zoom, oy + (event->mouse.y - MENU_H) / zoom, 1);
+		break;
+	case GR_EVENT_TYPE_BUTTON_UP:
+		if (event->button.changebuttons & (GR_BUTTON_SCROLLUP | GR_BUTTON_SCROLLDN))
+			break;	/* (a notch of the wheel ending, not the button that draws) */
+		if (held) {
+			draw_at(ox + (event->button.x - TOOLS_W) / zoom, oy + (event->button.y - MENU_H) / zoom, 2);
+			draw_status();
+		}
+		held = sliding = 0;
+		break;
+	case GR_EVENT_TYPE_KEY_DOWN:
+		key(event->keystroke.ch, event->keystroke.modifiers);
+		break;
+	case GR_EVENT_TYPE_UPDATE:
+		if (event->update.wid == window)
+			locate(1);
+		break;
+	case GR_EVENT_TYPE_CLOSE_REQ:
+		command(C_EXIT);
+		break;
+	}
+	if (relaid)
+		draw_all();
+}
+
 /* ---- a test's hands: NXPAINT_SCRIPT="tool:Rect drag:10,10:60,40 undo sum quit" ---- */
+
+/* A pointer's event at the window's x, y, as the window system sends one. */
+static void
+pointer(int type, int x, int y, int button)
+{
+	GR_EVENT event;
+
+	memset(&event, 0, sizeof event);
+	event.type = type;
+	if (type == GR_EVENT_TYPE_MOUSE_POSITION)
+		event.mouse.wid = window, event.mouse.x = x, event.mouse.y = y, event.mouse.buttons = button;
+	else
+		event.button.wid = window, event.button.x = x, event.button.y = y, event.button.changebuttons = button,
+		event.button.buttons = type == GR_EVENT_TYPE_BUTTON_DOWN ? button : 0;
+	handle(&event);
+}
+
+static long
+now(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+/* What is in hand, after the script's `word`. */
+static void
+hand(const char *word)
+{
+	printf("nxpaint: %s: %s, size %d, %s, %dx, fg %06x, bg %06x\n", word, tool_names[tool], sizes[size_index], mode_names[mode], zoom,
+	       (unsigned)(fg & 0xffffff), (unsigned)(bg & 0xffffff));
+}
 
 static void
 scripted(void)
@@ -1304,16 +1518,22 @@ scripted(void)
 		{ "undo", C_UNDO }, { "redo", C_REDO }, { "copy", C_COPY }, { "cut", C_CUT }, { "paste", C_PASTE }, { "delete", C_DELETE },
 		{ "all", C_ALL }, { "none", C_DESELECT }, { "crop", C_CROP }, { "fliph", C_FLIP_H }, { "flipv", C_FLIP_V }, { "rotr", C_ROTATE_R },
 		{ "rotl", C_ROTATE_L }, { "invert", C_INVERT }, { "clear", C_CLEAR }, { "zoomin", C_ZOOM_IN }, { "zoomout", C_ZOOM_OUT },
-		{ "save", C_SAVE }, { "quit", C_EXIT },
+		{ "save", C_SAVE }, { "saveas", C_SAVE_AS }, { "quit", C_EXIT },
 	};
-	char word[320];
-	int n, i, a, b, c, d;
+	char word[320], to[300];
+	GR_PIXELVAL seen;
+	GR_EVENT event;
+	uint32_t is;
+	long until, left;
+	int n, i, a, b, c, d, right;
 	unsigned sum = 2166136261u;
 
 	while (script[0]) {
 		n = (int)strcspn(script, " ");
 		snprintf(word, sizeof word, "%.*s", n, script);
 		memmove(script, script + n + (script[n] == ' '), strlen(script + n + (script[n] == ' ')) + 1);
+		notice[0] = 0;
+		right = word[0] == 'r';
 		if (!strncmp(word, "tool:", 5)) {
 			for (i = 0; i < TOOL_COUNT; i++)
 				if (!strcmp(word + 5, tool_names[i]))
@@ -1323,13 +1543,13 @@ scripted(void)
 				if (sizes[i] == a)
 					size_index = i;
 		} else if (sscanf(word, "mode:%d", &a) == 1) {
-			mode = a;
+			mode = a < 0 ? 0 : a > 2 ? 2 : a;
 		} else if (sscanf(word, "fg:%x", (unsigned *)&a) == 1) {
 			foreground((uint32_t)a);
 		} else if (sscanf(word, "bg:%x", (unsigned *)&a) == 1) {
 			bg = 0xff000000u | (uint32_t)a;
 		} else if (sscanf(word, "drag:%d,%d:%d,%d", &a, &b, &c, &d) == 4 || sscanf(word, "rdrag:%d,%d:%d,%d", &a, &b, &c, &d) == 4) {
-			press(a, b, word[0] == 'r' ? GR_BUTTON_R : GR_BUTTON_L);
+			press(a, b, right ? GR_BUTTON_R : GR_BUTTON_L);
 			for (i = 1; i <= 4; i++)
 				draw_at(a + (c - a) * i / 4, b + (d - b) * i / 4, 1);
 			draw_at(c, d, 2);
@@ -1338,8 +1558,42 @@ scripted(void)
 			press(a, b, GR_BUTTON_L);
 			draw_at(a, b, 2);
 			held = 0;
+		} else if (sscanf(word, "click:%d,%d", &a, &b) == 2 || sscanf(word, "rclick:%d,%d", &a, &b) == 2 ||
+			   sscanf(word, "pull:%d,%d:%d,%d", &a, &b, &c, &d) == 4 || sscanf(word, "rpull:%d,%d:%d,%d", &a, &b, &c, &d) == 4) {
+			/* by the window's own coordinates, panels and all, through what the pointer's events go through */
+			pointer(GR_EVENT_TYPE_BUTTON_DOWN, a, b, right ? GR_BUTTON_R : GR_BUTTON_L);
+			if (strchr(word, 'p')) {
+				for (i = 1; i <= 4; i++)
+					pointer(GR_EVENT_TYPE_MOUSE_POSITION, a + (c - a) * i / 4, b + (d - b) * i / 4, right ? GR_BUTTON_R : GR_BUTTON_L);
+				a = c, b = d;
+			}
+			pointer(GR_EVENT_TYPE_BUTTON_UP, a, b, right ? GR_BUTTON_R : GR_BUTTON_L);
+			hand(word);
+		} else if (!strcmp(word, "hand")) {
+			hand(word);
+		} else if (sscanf(word, "swatch:%d", &a) == 1 && a >= 0 && a < 30) {
+			/* what the window shows in a swatch (28: the foreground's box, 29: the background's) */
+			draw_colours();
+			settle();
+			is = a < 28 ? palette[a] : a == 28 ? fg : bg;
+			seen = 0;
+			GrReadArea(window, a < 28 ? 68 + (a % 14) * 18 : a == 28 ? 12 : 44,
+				   bottom_y() + (a < 28 ? 18 + (a / 14) * 20 : a == 28 ? 14 : 44), 1, 1, &seen);
+			printf("nxpaint: swatch %d shows %06x and is %06x%s\n", a, (unsigned)(seen & 0xffffff), (unsigned)(is & 0xffffff),
+			       (seen & 0xffffff) == (is & 0xffffff) ? "" : ": NOT the same");
+		} else if (sscanf(word, "events:%d", &a) == 1) {
+			/* the pointer and the keys have the window for so many milliseconds (nxkey, from a shell) */
+			for (until = now() + a; (left = until - now()) > 0;) {
+				GrGetNextEventTimeout(&event, (GR_TIMEOUT)left);
+				handle(&event);
+			}
+		} else if (!strcmp(word, "where")) {
+			locate(0);
+			ui_window_origin(window, &a, &b);
+			printf("nxpaint: the window is at %d,%d on the screen, %d x %d\n", a, b, width, height);
 		} else if (sscanf(word, "new:%dx%d", &a, &b) == 2) {
 			blank(a, b);
+			unnamed();
 		} else if (sscanf(word, "resize:%dx%d", &a, &b) == 2) {
 			float_end(0), remade(a, b, C_RESIZE);
 		} else if (sscanf(word, "scale:%d", &a) == 1) {
@@ -1347,16 +1601,20 @@ scripted(void)
 		} else if (!strncmp(word, "open:", 5)) {
 			printf("nxpaint: open %s: %s\n", word + 5, open_file(word + 5) ? "opened" : "NOT opened");
 		} else if (!strncmp(word, "saveas:", 7)) {
-			snprintf(path, sizeof path, "%s", word + 7);
-			save();
+			/* a name with no folder: in the folder the window to save in starts in */
+			snprintf(to, sizeof to, "%s%s%.250s", word[7] == '/' ? "" : folder(), word[7] == '/' ? "" : "/", word + 7);
+			float_end(0);
+			save_to(to);
 		} else if (sscanf(word, "pixel:%d,%d", &a, &b) == 2) {
 			printf("nxpaint: pixel %d,%d is %06x\n", a, b, (unsigned)(pix[b * pw + a] & 0xffffff));
 		} else if (!strcmp(word, "probe")) {
 			settle();
+			seen = 0;
+			GrReadArea(window, TOOLS_W + 5, MENU_H + 5, 1, 1, &seen);
 			if (surface)
-				printf("nxpaint: on the screen: field %06x, view %06x\n",
+				printf("nxpaint: on the screen: field %06x, view %06x (the window system's: %06x)\n",
 				       (unsigned)(surface[(bottom_y() + 20) * surface_row + field_x() + 30] & 0xffffff),
-				       (unsigned)(surface[(MENU_H + 5) * surface_row + TOOLS_W + 5] & 0xffffff));
+				       (unsigned)(surface[(MENU_H + 5) * surface_row + TOOLS_W + 5] & 0xffffff), (unsigned)(seen & 0xffffff));
 		} else if (!strcmp(word, "status")) {
 			draw_status();
 		} else if (!strcmp(word, "colours")) {
@@ -1371,6 +1629,8 @@ scripted(void)
 			for (i = 0; i < (int)(sizeof words / sizeof words[0]); i++)
 				if (!strcmp(word, words[i].word))
 					command(words[i].id);
+		if (notice[0])
+			printf("nxpaint: %s: %s\n", word, notice);
 		fflush(stdout);
 	}
 }
@@ -1380,13 +1640,13 @@ main(int argc, char **argv)
 {
 	GR_SCREEN_INFO screen;
 	GR_EVENT event;
-	int i, x, w, h, b, chosen;
+	void *words;
+	int i, x, w, h, b;
 
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
 	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
-	print_on = getenv("NXPAINT_PRINT") != NULL;
 	if (getenv("NXPAINT_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXPAINT_SCRIPT"));
 	GrGetScreenInfo(&screen);
@@ -1400,66 +1660,32 @@ main(int argc, char **argv)
 	}
 	menu_x[4] = x;
 	gpu = open("/dev/gpu", O_RDWR);
+	/* the control words, which the device maps a megabyte in: only the count of buffers is read */
+	if (gpu >= 0 && (words = mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000)) != MAP_FAILED)
+		buffers = (volatile uint32_t *)words + 0x64 / 4;
 	/* the window first: a large picture is seconds to decode */
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Paint", GR_ROOT_WINDOW_ID, -1, -1, width, height, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_POSITION |
-			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	ui_framed();
 	if (argc < 2 || !open_file(argv[1])) {
 		blank(view_w < 480 ? view_w : 480, view_h < 340 ? view_h : 340);
-		if (argc > 1)
+		unnamed();
+		if (argc > 1 && access(argv[1], F_OK) != 0) {
+			/* a picture to be: Save makes the file */
 			snprintf(path, sizeof path, "%s", argv[1]);
-		titled();
+			named = 1;
+			titled();
+		} else if (argc > 1)
+			snprintf(notice, sizeof notice, "%.80s is not a picture this can open", argv[1]);
 	}
 	foreground(fg);
 	draw_all();
 	scripted();
 	for (;;) {
 		GrGetNextEvent(&event);
-		switch (ui_menu_event(&event, &chosen)) {
-		case UI_MENU_CHOSEN:
-			command(chosen);
-			continue;
-		case UI_MENU_TOOK:
-		case UI_MENU_CLOSED:
-			continue;
-		}
-		switch (event.type) {
-		case GR_EVENT_TYPE_EXPOSURE:
-			draw_all();
-			break;
-		case GR_EVENT_TYPE_BUTTON_DOWN:
-			x = event.button.x, i = event.button.y;
-			if (ui_wheel(&event)) {
-				oy += ui_wheel_sum(&event) * (48 / zoom > 0 ? 48 / zoom : 1);
-				present_view();
-			} else if (x >= TOOLS_W && i >= MENU_H && i < MENU_H + view_h) {
-				notice[0] = 0;
-				press(ox + (x - TOOLS_W) / zoom, oy + (i - MENU_H) / zoom, event.button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L);
-			} else
-				panel_press(x, i, event.button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L);
-			break;
-		case GR_EVENT_TYPE_MOUSE_POSITION:
-			if (sliding && event.mouse.buttons)
-				colour_at(event.mouse.x, event.mouse.y);
-			else if (held && event.mouse.buttons)
-				draw_at(ox + (event.mouse.x - TOOLS_W) / zoom, oy + (event.mouse.y - MENU_H) / zoom, 1);
-			break;
-		case GR_EVENT_TYPE_BUTTON_UP:
-			if (held) {
-				draw_at(ox + (event.button.x - TOOLS_W) / zoom, oy + (event.button.y - MENU_H) / zoom, 2);
-				draw_status();
-			}
-			held = sliding = 0;
-			break;
-		case GR_EVENT_TYPE_KEY_DOWN:
-			key(event.keystroke.ch, event.keystroke.modifiers);
-			break;
-		case GR_EVENT_TYPE_CLOSE_REQ:
-			command(C_EXIT);
-			break;
-		}
+		handle(&event);
 	}
 }

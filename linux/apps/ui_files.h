@@ -1,12 +1,13 @@
 /*
  * Choosing a file, for any of the desktop's programs: a window of its own with the folders to
  * walk through and the files of the kinds asked for, until the user opens one or gives up.
- * ui_choose_file() at the end is all a program calls.
+ * ui_choose_file() at the end is all a program calls to open one, ui_save_file() to name one.
  */
 #ifndef SHADEREMU_APPS_UI_FILES_H
 #define SHADEREMU_APPS_UI_FILES_H
 
 #include <dirent.h>
+#include <limits.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include "ui.h"
@@ -18,6 +19,9 @@
 static struct ui_files_entry { char name[64]; char folder; } ui_files_entries[UI_FILES_MOST];
 static struct ui_list ui_files_list;
 static char ui_files_where[512];
+static int ui_files_saving;		/* the window asks for a name to save as */
+static int ui_files_offered;		/* the name is still the one offered: a typed character replaces it */
+static char ui_files_name[128], ui_files_note[160], ui_files_sure[600];
 
 static int
 ui_files_wanted(const char *name, const char *kinds)
@@ -107,11 +111,22 @@ ui_files_find(int ch)
 static void
 ui_files_draw(GR_WINDOW_ID w)
 {
+	char text[140];
+
 	ui_fill(w, 0, 0, UI_FILES_W, UI_FILES_H, UI_FACE);
-	ui_text_fit(w, 8, 8, UI_FILES_W - 16, ui_files_where, BLACK);
+	ui_text_fit(w, 8, 8, UI_FILES_W - 16, ui_files_note[0] ? ui_files_note : ui_files_where, BLACK);
 	ui_list_draw(w, &ui_files_list, ui_files_label);
+	if (ui_files_saving) {
+		ui_text(w, 8, UI_FILES_H - 55, "Name", -1, BLACK, 0);
+		ui_fill(w, 48, UI_FILES_H - 58, UI_FILES_W - 56, 20, WHITE);
+		ui_bevel(w, 48, UI_FILES_H - 58, UI_FILES_W - 56, 20, 1);
+		snprintf(text, sizeof text, ui_files_offered ? "%s" : "%s_", ui_files_name);
+		if (ui_files_offered)
+			ui_fill(w, 50, UI_FILES_H - 56, UI_FILES_W - 60, 16, UI_SELECTED);
+		ui_text_fit(w, 53, UI_FILES_H - 55, UI_FILES_W - 66, text, ui_files_offered ? WHITE : BLACK);
+	}
 	ui_button(w, 8, UI_FILES_H - 30, 70, 22, "Up", 0);
-	ui_button(w, UI_FILES_W - 166, UI_FILES_H - 30, 76, 22, "Open", 0);
+	ui_button(w, UI_FILES_W - 166, UI_FILES_H - 30, 76, 22, ui_files_saving ? "Save" : "Open", 0);
 	ui_button(w, UI_FILES_W - 84, UI_FILES_H - 30, 76, 22, "Cancel", 0);
 }
 
@@ -134,23 +149,109 @@ ui_files_open(int row, const char *kinds)
 	return 0;
 }
 
-/*
- * Asks for a file, starting in the folder `start`; true with its path in `path`. `kinds` is the
- * endings wanted, spaces between (".ppm .bmp"; NULL: any). `others` gets the events of the
- * program's other windows meanwhile, so that they can draw themselves.
- */
+/* The list's selection moved: draws, and a save takes a file's name. True on a file. */
 static int
-ui_choose_file(const char *title, const char *start, const char *kinds, char *path, int size, void (*others)(GR_EVENT *))
+ui_files_picked(GR_WINDOW_ID w)
+{
+	int n = ui_files_list.selected, file = n >= 0 && !ui_files_entries[n].folder;
+
+	if (ui_files_saving && file) {
+		snprintf(ui_files_name, sizeof ui_files_name, "%s", ui_files_entries[n].name);
+		ui_files_note[0] = ui_files_sure[0] = 0;
+		ui_files_offered = 0;
+	}
+	ui_files_draw(w);
+	return file;
+}
+
+/* A key in a save's window: true if it was the name's (draw again), or sets *open for a folder. */
+static int
+ui_files_key(int ch, int *open)
+{
+	size_t n = strlen(ui_files_name);
+
+	if (ch == MWKEY_LEFT || (ch == MWKEY_BACKSPACE && !n)) {
+		*open = -1;
+	} else if (ch == MWKEY_RIGHT) {
+		*open = ui_files_list.selected >= 0 && ui_files_entries[ui_files_list.selected].folder ? 2 : 0;
+	} else if (ch == MWKEY_BACKSPACE) {
+		ui_files_name[n - 1] = 0;
+		ui_files_offered = 0;
+	} else if (ch >= 32 && ch < 127 && n < sizeof ui_files_name - 1) {
+		n = ui_files_offered ? 0 : n;
+		ui_files_name[n] = (char)ch, ui_files_name[n + 1] = 0;
+		ui_files_offered = 0;
+	} else {
+		return 0;
+	}
+	ui_files_note[0] = ui_files_sure[0] = 0;
+	return !*open;
+}
+
+/* Gives a path the first ending of `kinds`: in place of another of them, after anything else.
+ * Only the last part of the path is looked at. True if the path changed. */
+static int
+ui_files_ending(char *path, int size, const char *kinds)
+{
+	char *base = strrchr(path, '/'), *dot, ending[16];
+
+	base = base ? base + 1 : path;
+	dot = strrchr(base, '.');
+	snprintf(ending, sizeof ending, "%.*s", (int)strcspn(kinds, " "), kinds);
+	if (dot && !strcasecmp(dot, ending))
+		return 0;
+	if (dot && dot != base && ui_files_wanted(base, kinds))
+		*dot = 0;
+	strncat(path, ending, size - strlen(path) - 1);
+	return 1;
+}
+
+/* The name in the field is taken: a folder is gone into, a file that is there is asked about
+ * once, and anything else is the answer (true). The file asked about is the one the caller
+ * will write: the name with the first ending of `kinds` (ui_files_ending). */
+static int
+ui_files_named(const char *kinds, char *path, int size)
+{
+	char full[700], real[PATH_MAX];
+	struct stat info;
+	const char *name = ui_files_name;
+
+	snprintf(full, sizeof full, "%s%s%s", name[0] == '/' ? "" : ui_files_where, name[0] == '/' || !ui_files_where[1] ? "" : "/", name);
+	ui_files_note[0] = 0;
+	if (stat(full, &info) == 0 && S_ISDIR(info.st_mode)) {
+		if (realpath(full, real))
+			snprintf(ui_files_where, sizeof ui_files_where, "%.*s", (int)sizeof ui_files_where - 1, real);
+		ui_files_name[0] = 0;
+		ui_files_read(kinds);
+		return 0;
+	}
+	snprintf(path, size, "%.*s", size - 1, full);
+	if (kinds)
+		ui_files_ending(full, sizeof full, kinds);
+	if (access(full, F_OK) == 0 && strcmp(full, ui_files_sure)) {
+		snprintf(ui_files_sure, sizeof ui_files_sure, "%.*s", (int)sizeof ui_files_sure - 1, full);
+		snprintf(ui_files_note, sizeof ui_files_note, "%.90s is there already: Save again replaces it", strrchr(full, '/') + 1);
+		return 0;
+	}
+	return 1;
+}
+
+/* The window of both questions: `name` is NULL to open a file, or what a save starts as. */
+static int
+ui_files_ask(const char *title, const char *start, const char *kinds, const char *name, char *path, int size, void (*others)(GR_EVENT *))
 {
 	GR_WINDOW_ID w = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, (char *)title, GR_ROOT_WINDOW_ID, -1, -1, UI_FILES_W, UI_FILES_H, UI_FACE);
 	GR_EVENT event;
-	int chosen = 0, done = 0;
+	int chosen = 0, done = 0, n;
 
 	snprintf(ui_files_where, sizeof ui_files_where, "%s", start && start[0] == '/' ? start : "/");
+	ui_files_saving = ui_files_offered = name != NULL;
+	snprintf(ui_files_name, sizeof ui_files_name, "%s", name ? name : "");
+	ui_files_note[0] = ui_files_sure[0] = 0;
 	ui_files_list.x = 8;
 	ui_files_list.y = 28;
 	ui_files_list.width = UI_FILES_W - 16;
-	ui_files_list.height = UI_FILES_H - 28 - 38;
+	ui_files_list.height = UI_FILES_H - 28 - 38 - (name ? 28 : 0);
 	ui_files_read(kinds);
 	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_MOUSE_MOTION |
 			  GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
@@ -176,18 +277,20 @@ ui_choose_file(const char *title, const char *start, const char *kinds, char *pa
 				open = 1;
 			else if (event.keystroke.ch == MWKEY_ESCAPE)
 				done = 1;
+			else if (name && ui_files_key(event.keystroke.ch, &open))
+				ui_files_draw(w);
 			else if (event.keystroke.ch == MWKEY_BACKSPACE)
 				open = -1;
-			else if (ui_list_key(&ui_files_list, event.keystroke.ch) || ui_files_find(event.keystroke.ch))
-				ui_files_draw(w);
+			else if (ui_list_key(&ui_files_list, event.keystroke.ch) || (!name && ui_files_find(event.keystroke.ch)))
+				ui_files_picked(w);
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			how = ui_list_event(&ui_files_list, &event);
 			if (how == 2)
-				open = 1;
+				open = ui_files_picked(w) ? 1 : 2;
 			else if (how == 1)
-				ui_files_draw(w);
+				ui_files_picked(w);
 			else if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && !ui_wheel(&event) && event.button.y >= UI_FILES_H - 30) {
 				if (event.button.x < 78)
 					open = -1;
@@ -198,9 +301,15 @@ ui_choose_file(const char *title, const char *start, const char *kinds, char *pa
 			}
 			break;
 		}
-		if (open && (open < 0 || ui_files_list.selected >= 0)) {
-			if (ui_files_open(open < 0 ? -1 : ui_files_list.selected, kinds)) {
-				snprintf(path, size, "%s%s%s", ui_files_where, ui_files_where[1] ? "/" : "", ui_files_entries[ui_files_list.selected].name);
+		n = ui_files_list.selected;
+		if (name && open == 1 && (ui_files_name[0] || n < 0 || !ui_files_entries[n].folder)) {
+			/* a save's Enter and its Save button are about the name, when there is one */
+			chosen = done = ui_files_name[0] && ui_files_named(kinds, path, size);
+			ui_files_draw(w);
+		} else if (open && (open < 0 || n >= 0)) {
+			ui_files_note[0] = 0;
+			if (ui_files_open(open < 0 ? -1 : n, kinds)) {
+				snprintf(path, size, "%s%s%s", ui_files_where, ui_files_where[1] ? "/" : "", ui_files_entries[n].name);
 				chosen = done = 1;
 			} else {
 				ui_files_draw(w);
@@ -209,6 +318,28 @@ ui_choose_file(const char *title, const char *start, const char *kinds, char *pa
 	}
 	GrDestroyWindow(w);
 	return chosen;
+}
+
+/*
+ * Asks for a file, starting in the folder `start`; true with its path in `path`. `kinds` is the
+ * endings wanted, spaces between (".ppm .bmp"; NULL: any). `others` gets the events of the
+ * program's other windows meanwhile, so that they can draw themselves.
+ */
+static int
+ui_choose_file(const char *title, const char *start, const char *kinds, char *path, int size, void (*others)(GR_EVENT *))
+{
+	return ui_files_ask(title, start, kinds, NULL, path, size, others);
+}
+
+/*
+ * Asks what to save as, with `name` in the field: typed keys are the name's, a click on a file
+ * takes its name, Right goes into the selected folder and Left out of this one. The path comes
+ * back as named: the caller gives it the first ending of `kinds` (ui_files_ending) and writes.
+ */
+static int
+ui_save_file(const char *title, const char *start, const char *kinds, const char *name, char *path, int size, void (*others)(GR_EVENT *))
+{
+	return ui_files_ask(title, start, kinds, name, path, size, others);
 }
 
 #endif
