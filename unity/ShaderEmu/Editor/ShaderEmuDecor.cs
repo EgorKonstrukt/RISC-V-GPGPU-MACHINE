@@ -586,7 +586,7 @@ public static partial class ShaderEmuBuilder
         Vector3 boxesAt = new Vector3(-halfW + 0.5f, 0, -halfD + 0.5f);
         GameObject crate = Box(decor, "Box", boxesAt + new Vector3(0, 0.25f, 0), new Vector3(0.6f, 0.5f, 0.5f), cardboardMat);
         crate.transform.localEulerAngles = new Vector3(0, 12f, 0);
-        GameObject crate2 = Box(decor, "Box", boxesAt + new Vector3(0.03f, 0.67f, 0.02f), new Vector3(0.45f, 0.34f, 0.4f), cardboardMat);
+        GameObject crate2 = Box(decor, "Box", boxesAt + new Vector3(0.03f, 0.653f, 0.02f), new Vector3(0.45f, 0.34f, 0.4f), cardboardMat);
         crate2.transform.localEulerAngles = new Vector3(0, -9f, 0);
         GameObject crate3 = Box(decor, "Box", boxesAt + new Vector3(0.7f, 0.2f, -0.05f), new Vector3(0.5f, 0.4f, 0.42f), cardboardMat);
         crate3.transform.localEulerAngles = new Vector3(0, 31f, 0);

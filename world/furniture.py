@@ -5,6 +5,7 @@ import os
 
 from bookdesigns import CELLS, CELL_H, CELL_W, DESIGNS, size as book_size
 from room import HALF_D, HALF_W, frame, on_wall
+import drape
 import lib
 import pc
 from mathutils import Vector
@@ -83,7 +84,7 @@ def sofa(b):
 def low_table(b):
     b.obj("Rugs")
     b.quad((-0.4, 0.006, -HALF_D + 1.75), (3.8, 2.2), "Rug", rot=(90, 0, 0), uvrect=(0, 0, 1, 1))
-    at = (-0.4, 0, -HALF_D + 1.75)
+    at = (-0.4, 0.003, -HALF_D + 1.75)   # (its feet in the rug's pile, which is 6 mm, not through it)
     b.asset("modern_coffee_table_01", at, rot=(0, 90, 0), size=(None, 0.40, None))
     b.obj("Table things")
     with b.at(at):
@@ -99,69 +100,274 @@ def low_table(b):
         b.quad((0.02, top + 0.0165, 0.16), (0.21, 0.276), "Details", rot=(90, 85, 0), decal="magazine_1")
 
 
-# The classroom in the middle of the den: two rows of two tables in the main desk's oak, an office
-# chair and a computer of the decade (world/pc.py) at each of eight places, one a visitor. Unity
-# puts each owner's picture on its glass (ShaderEmuStations.cs has the same numbers).
-ROWS_Z = (1.5, -0.9)
+# The classroom in the middle of the den: three rows of two tables in the main desk's oak, an
+# office chair and a computer of the decade (world/pc.py) at each of twelve places, one a visitor.
+# Unity puts each owner's picture on its glass (ShaderEmuStations.cs reads Models/stations.json).
+ROWS_Z = (2.45, 0.45, -1.55)
 PLACES_X = (-1.5, -0.5, 0.5, 1.5)
+TABLES_X = (-1.0, 1.0)
+CHAIRS_BACK = (0.90, 0.90, 0.66)   # a row's chairs behind its places: clear of the next row's leads, the last row's pushed in clear of the rug
 TABLE_TOP = 0.765   # as the main desk's
 STATION_Z = 0.0     # a place's computer: the monitor is as deep as the table allows
 
 
+def table_parts(x, z):
+    """A table's boxes (centre, size, material, bevel, grain): its top, its panel ends and their feet, the board behind the knees."""
+    parts = [((x, TABLE_TOP - 0.022, z), (2.0, 0.044, 0.9), "WoodOak", (0.01, 3), 0), ((x, 0.45, z + 0.38), (1.89, 0.4, 0.022), "WoodOak", (0, 2), 0)]
+    for side in (-1, 1):
+        parts.append(((x + side * 0.96, (TABLE_TOP - 0.044) / 2, z), (0.03, TABLE_TOP - 0.044, 0.8), "WoodOak", (0.004, 1), 1))
+        parts.append(((x + side * 0.96, 0.012, z), (0.05, 0.024, 0.84), "PlasticDark", (0.004, 1), 'auto'))
+    return parts
+
+
 def table(b, x, z):
     """Two metres of the main desk's kind: an oak top on panel ends, a board behind the knees."""
-    with b.at((x, 0, z)):
-        b.box((0, TABLE_TOP - 0.022, 0), (2.0, 0.044, 0.9), "WoodOak", bevel=0.01, segs=3, grain=0)
-        for side in (-1, 1):
-            b.box((side * 0.96, (TABLE_TOP - 0.044) / 2, 0), (0.03, TABLE_TOP - 0.044, 0.8), "WoodOak", bevel=0.004, segs=1, grain=1)
-            b.box((side * 0.96, 0.012, 0), (0.05, 0.024, 0.84), "PlasticDark", bevel=0.004, segs=1)
-        b.box((0, 0.45, 0.38), (1.89, 0.4, 0.022), "WoodOak", grain=0)
-        for gx in (-0.5, 0.5):   # grommets for the cables
-            b.lathe((gx, TABLE_TOP + 0.0005, 0.36), [(0, 0), (0.028, 0), (0.032, 0.002), (0.032, 0.004), (0.02, 0.005)], "PlasticDark", segs=16)
+    for centre, size, mat, (bevel, segs), grain in table_parts(x, z):
+        b.box(centre, size, mat, bevel=bevel, segs=segs, grain=grain)
+    for gx in (-0.5, 0.5):   # grommets for the cables
+        b.lathe((x + gx, TABLE_TOP + 0.0005, z + 0.36), [(0, 0), (0.028, 0), (0.032, 0.002), (0.032, 0.004), (0.02, 0.005)], "PlasticDark", segs=16)
+
+
+def leaning_box(b, x, y, wall, turn, lean, decal):
+    """A game in its box standing on y at x, turned, and leaning back till its top meets the face at z = wall."""
+    w, h, t = 0.19, 0.245, 0.045
+    a, yaw = math.radians(lean), math.radians(abs(turn))
+    back = h / 2 * math.sin(a) + t / 2 * math.cos(a)
+    with b.at((x, y + h / 2 * math.cos(a) + t / 2 * math.sin(a), wall - 0.0005 - back * math.cos(yaw) - w / 2 * math.sin(yaw)), (lean, turn, 0)):
+        b.box((0, 0, 0), (w, h, t), "Cardboard")
+        b.quad((0, 0, -t / 2 - 0.001), (0.186, 0.24), "Details", decal=decal)
+
+
+HUB_HOSTS = {0: 1, 2: 9}   # a row: the place whose tower its hub stands on (the middle row's is on the floor)
+LAN_R = 0.003
+
+
+def network(b, places, laid):
+    """The room's network: a lead from every tower's card to its row's hub, the hubs to each other
+    and the first to the den's rack. places: each place's frame; laid: its own leads as they fell
+    (name, path, radius), in the room's frame. Gives the hubs for Models/stations.json."""
+    import random
+    rng = random.Random(77)
+    T, R = TABLE_TOP, LAN_R
+    back = pc.TOWER_Z + pc.FRONT + pc.TOWER_DEEP                  # a tower's back, in its place
+    card = pc.tower_back()["lan"]
+    face = pc.TOWER_X + 0.09                                      # a tower's right side
+    hub_at = (pc.TOWER_X + 0.018, pc.TOWER_HIGH, 0.17)            # a hub on a tower, in the place's frame: turned, its sockets to the right
+    boxes = [((0, -0.05, 0), (12, 0.1, 14), 0), ((0.95, 0.375, HALF_D - 0.52), (0.48, 0.75, 0.9), 0), ((3.75, 0.04, HALF_D - 0.45), (0.7, 0.08, 0.8), 0)]
+    for z in ROWS_Z:
+        for x in TABLES_X:
+            boxes += [(centre, size, 0) for centre, size, _, _, _ in table_parts(x, z)]
+    lanes = (0.255, 0.30)   # the network's leads under a table: so far behind the row's middle
+    bumps = []   # where a strip's own lead lies across a lane: from x to x, the height to clear, the row, the lane
+    for index, world in enumerate(places):
+        turn = math.degrees(math.atan2(world[0][2], world[0][0]))
+        for centre, size in (((pc.TOWER_X, pc.TOWER_HIGH / 2, back - pc.TOWER_DEEP / 2), (0.184, pc.TOWER_HIGH, pc.TOWER_DEEP)),
+                             ((pc.SET_X, pc.LOW + pc.OUT_H / 2, 0.12), (pc.OUT_W, pc.OUT_H, 0.52))):
+            boxes.append((tuple(world @ Vector(centre)), size, turn))
+        if index % 4 in (0, 2):   # its mouse's lead lies behind the tower: the network's goes over a shelf as high as a lead
+            boxes.append((tuple(world @ Vector((pc.TOWER_X, 0.006, back + 0.05))), (0.3, 0.012, 0.09), turn))
+        row_z = ROWS_Z[index // 4]
+        for name, path, radius in laid[index]:
+            every = [a.lerp(c, k / 8) for a, c in zip(path, path[1:]) for k in range(9)] if name == "strip" else []
+            for lane in lanes:
+                under = [p for p in every if abs(p.z - row_z - lane) < 0.03]
+                if under:
+                    x0, x1, high = min(p.x for p in under) - radius - 0.002, max(p.x for p in under) + radius + 0.002, max(p.y for p in under) + radius
+                    boxes.append((((x0 + x1) / 2, high / 2, row_z + lane), (x1 - x0, high, 0.06), 0))
+                    bumps.append((x0, x1, high, index // 4, lane))
+    hubs, groups, ends = [], {0: [], 1: [], 2: []}, {}
+    b.obj("Network")
+
+    def lay(group, name, corners, mat, up=0.012, bend=0.04):
+        del pc.LEADS[:]
+        pc.lead(b, name, corners, R, mat, bend=bend)
+        groups[group].append((name, drape.ruffled(pc.LEADS[0][1], rng, up=up * rng.uniform(0.3, 1.0), wander=0.002), R, mat))
+
+    def plugged(world, x, y, z, mat, turn=(0, 0, 0)):
+        """A plug in a socket at x, y, z of a frame whose +z, turned, the socket looks along; gives where its lead leaves it, and a point further out."""
+        frame = world @ lib.place((x, y, z), turn)
+        with b.at((0, 0, 0)):
+            b.stack[-1] = frame
+            pc.lan_plug(b, 0, 0, 0, mat)
+        return tuple(frame @ Vector((0, 0.0006, pc.LAN_PLUG - 0.004))), tuple(frame @ Vector((0, 0.0006, pc.LAN_PLUG + 0.03)))
+
+    def under_table(row, start, lane, stop):
+        """Along the floor under a row's tables from x = start to x = stop, lane metres behind the row's middle, over each strip's lead on the way."""
+        z, points = ROWS_Z[row] + lane, [(start, R + 0.001, ROWS_Z[row] + lane)]
+        for x0, x1, high, r, crossed in sorted(bumps, key=lambda bump: abs(bump[0] - start)):
+            if (r, crossed) == (row, lane) and min(start, stop) < x0 and x1 < max(start, stop):
+                over = [(x0 - 0.03, R + 0.001, z), (x0 - 0.006, high + R + 0.005, z), (x1 + 0.006, high + R + 0.005, z), (x1 + 0.03, R + 0.001, z)]
+                points += over if stop > start else over[::-1]
+        return points + [(stop, R + 0.001, z)]
+
+    def colour(index):
+        return "CableYellow" if index in (2, 8) else "CableBlue"
+
+    def from_card(index):
+        """A place's lead from its card over the table's back edge to the floor behind: its points, and its x there."""
+        world = places[index]
+        start, out = plugged(world, pc.TOWER_X + card[0], card[1], back, colour(index))
+        edge = ROWS_Z[index // 4] + 0.45
+        x = (world @ Vector((pc.TOWER_X + 0.055, 0, 0.45))).x
+        return [start, out, (x, T + 0.03, edge - 0.012), (x, T - 0.04, edge + 0.028), (x, 0.3, edge + 0.03), (x, R + 0.001, edge + 0.03)], x
+
+    def riser(row, k, floor_x):
+        """Up from the floor behind a row's middle into socket k of the hub on a tower: over the table's edge, along the table beside the tower, up its side."""
+        world = places[HUB_HOSTS[row]]
+        lane, z = face + 0.03 + 0.012 * k, hub_at[2] + 0.07 - pc.HUB_PITCH * k
+        edge = (world.inverted() @ Vector(((world @ Vector((lane, 0, 0.45))).x, T, ROWS_Z[row] + 0.45))).z
+        end, out = plugged(world @ lib.place(hub_at, (0, 90, 0)), pc.hub_port(k)[0], pc.hub_port(k)[1], pc.HUB[2] / 2, colours[(row, k)])
+        local = [(lane, -0.25, edge + 0.03), (lane, -0.02, edge + 0.03), (lane, 0.014, edge + 0.01), (lane, R + 0.003, edge - 0.02), (lane, R + 0.001, z + 0.04), (face + 0.012, R + 0.001, z),
+                 (face + 0.012, 0.08, z), (face + 0.03, pc.TOWER_HIGH - 0.06, z)]
+        return [(floor_x, R + 0.001, ROWS_Z[row] + 0.47)] + [tuple(world @ Vector(p)) for p in local] + [out, end]
+
+    colours = {}
+    for row, z in enumerate(ROWS_Z):
+        left, near_left, near_right, right = (row * 4 + c for c in range(4))
+        if row in HUB_HOSTS:
+            world = places[HUB_HOSTS[row]] @ lib.place(hub_at, (0, 90, 0))
+            # the sockets' leads, from the rear one: the tower's own, the left table's, the hubs' two, the right table's far and near
+            through = [None, -1, -1] if row == 0 else [None, None, -1]
+            for k, index in enumerate([near_left, left] + through[1:] + [right, near_right]):
+                colours[(row, k)] = "CableBlue" if index is None or index < 0 else colour(index)
+            floor_x = {1: -0.05, 2: 0.0, 3: 0.035, 4: 0.07, 5: 0.11}
+            # the tower's own card: round its back corner to the table beside it, and up its side
+            start, out = plugged(places[near_left], pc.TOWER_X + card[0], card[1], back, colour(near_left))
+            end, last = plugged(world, pc.hub_port(0)[0], pc.hub_port(0)[1], pc.HUB[2] / 2, colour(near_left))
+            port_z = hub_at[2] + 0.07
+            own = [(face - 0.01, 0.07, back + 0.085), (face + 0.03, R + 0.002, back + 0.06), (face + 0.03, R + 0.001, port_z + 0.04), (face + 0.012, R + 0.001, port_z),
+                   (face + 0.012, 0.08, port_z), (face + 0.03, pc.TOWER_HIGH - 0.06, port_z)]
+            lay(row, "lan %d" % near_left, [start, out] + [tuple(places[near_left] @ Vector(p)) for p in own] + [last, end], colour(near_left))
+            down, x = from_card(left)
+            lay(row, "lan %d" % left, down + under_table(row, x, lanes[1], -0.10) + [(-0.10, R + 0.001, z + 0.44)] + riser(row, 1, floor_x[1]), colour(left))
+            down, x = from_card(near_right)
+            lay(row, "lan %d" % near_right, down + under_table(row, x, lanes[1], 0.15) + [(0.15, R + 0.001, z + 0.44)] + riser(row, 5, floor_x[5]), colour(near_right))
+            down, x = from_card(right)
+            lay(row, "lan %d" % right, down[:-1] + [(min(x - 0.01, 1.92), R + 0.001, z + 0.48)] + under_table(row, min(x - 0.04, 1.89), lanes[0], 0.105)   # (clear of the table's end)
+                + [(0.105, R + 0.001, z + 0.44)] + riser(row, 4, floor_x[4]), colour(right))
+            ports = [(0, near_left), (1, left), (4, right), (5, near_right)]
+            if row == 0:
+                # to the middle row's hub: through between the two tables' feet; and to the den's rack along the desk's foot
+                ends["A-B"] = (0.0, R + 0.001, ROWS_Z[1] + 1.25)
+                lay(row, "hubs 0", list(reversed(riser(row, 2, floor_x[2]))) + [(0.0, R + 0.001, z + 0.40), (0.0, R + 0.001, z - 0.5), ends["A-B"]], "CableBlue", up=0.004)
+                desk, rack = HALF_D - 1.03, RACK_SIDE
+                lay(row, "den", list(reversed(riser(row, 3, floor_x[3]))) + [(0.03, R + 0.001, z + 0.9), (0.25, R + 0.001, desk), (3.0, R + 0.001, desk),
+                                                                             (rack[0] - 0.2, R + 0.001, rack[2] - 0.12), (rack[0] - 0.05, rack[1], rack[2]), rack], "CableBlue")
+                ports += [(2, -1), (3, -1)]
+            else:
+                lay(row, "hubs 1b", [ends["B-C"], (0.0, R + 0.001, z + 0.9)] + riser(row, 2, floor_x[2]), "CableBlue", up=0.004)
+                ports += [(2, -1)]
+            host = places[HUB_HOSTS[row]]
+            boxes.append((tuple(host @ Vector((hub_at[0], hub_at[1] + pc.HUB[1] / 2, hub_at[2]))), (pc.HUB[2], pc.HUB[1], pc.HUB[0]), math.degrees(math.atan2(host[0][2], host[0][0]))))
+        else:
+            # on the floor behind the row's middle, its sockets to the tables: world x of socket k is -hub_port(k)
+            world = lib.place((0.0, 0, z + 0.78), (0, 180 + rng.uniform(-2, 2), 0))
+            boxes.append(((0.0, pc.HUB[1] / 2, z + 0.78), pc.HUB, 0))
+
+            def into(k, mat):
+                end, out = plugged(world, pc.hub_port(k)[0], pc.hub_port(k)[1], pc.HUB[2] / 2, mat)
+                return [(out[0], R + 0.001, out[2] - 0.035), out, end]
+            down, x = from_card(left)
+            lay(row, "lan %d" % left, down + under_table(row, x, lanes[1], -0.10) + [(-0.10, R + 0.001, z + 0.50)] + into(7, colour(left)), colour(left))
+            down, x = from_card(near_left)
+            lay(row, "lan %d" % near_left, down + into(6, colour(near_left)), colour(near_left))
+            down, x = from_card(near_right)
+            lay(row, "lan %d" % near_right, down + under_table(row, x, lanes[1], 0.125) + [(0.125, R + 0.001, z + 0.49)] + into(1, colour(near_right)), colour(near_right))
+            down, x = from_card(right)
+            lay(row, "lan %d" % right, down[:-1] + [(min(x - 0.01, 1.92), R + 0.001, z + 0.48)] + under_table(row, min(x - 0.04, 1.89), lanes[0], 0.10)
+                + [(0.10, R + 0.001, z + 0.47)] + into(2, colour(right)), colour(right))
+            # from the front row's hub: round the hub's end and back into its last socket; on to the back row's through the feet
+            lay(row, "hubs 0b", [ends["A-B"], (0.0, R + 0.001, z + 1.0), (0.17, R + 0.001, z + 0.89), (0.17, R + 0.001, z + 0.69), (0.125, R + 0.001, z + 0.62)]
+                + into(0, "CableBlue"), "CableBlue", up=0.004)
+            ends["B-C"] = (0.0, R + 0.001, ROWS_Z[2] + 1.25)
+            lay(row, "hubs 1", list(reversed(into(4, "CableBlue"))) + [(0.0, R + 0.001, z + 0.50), (0.0, R + 0.001, z - 0.5), ends["B-C"]], "CableBlue", up=0.004)
+            ports = [(7, left), (6, near_left), (1, near_right), (2, right), (0, -1), (4, -1)]
+        b.obj("Hubs")
+        with b.at((0, 0, 0)):
+            b.stack[-1] = world
+            pc.hub(b)
+        b.obj("Network")
+        at = world @ Vector((0, 0, 0))
+        hubs.append({"x": at.x, "y": at.y, "z": at.z, "turn": math.degrees(math.atan2(world[0][2], world[0][0])),
+                     "ports": [v for k, index in sorted(ports) for v in pc.hub_lamp(k) + (index,)], "lamp": list(pc.HUB_LAMP)})
+    # each hub's leads fall together; a lead between two hubs is two that meet on the floor, made as one
+    # (a lead drawn tight over a table's back edge is cut by it: they fall on an edge 2.5 mm further out)
+    guards = [((x, T - 0.012, z + 0.45 + 0.00125), (2.0, 0.024, 0.0025), 0) for z in ROWS_Z for x in TABLES_X]
+    fallen = {}
+    for group, leads in groups.items():
+        for wrong in drape.check([(name, path, radius) for name, path, radius, _ in leads], boxes, [], quiet=True):
+            print("LAID", wrong)   # (a mistake in the layout above, before anything falls)
+        paths = drape.settle([(name, path, radius) for name, path, radius, _ in leads], boxes, [], guards=guards)
+        drape.check([(name, path, radius) for (name, _, radius, _), path in zip(leads, paths)], boxes, [])
+        for (name, _, radius, mat), path in zip(leads, paths):
+            fallen[name] = (path, mat)
+    for first, second in (("hubs 0", "hubs 0b"), ("hubs 1", "hubs 1b")):
+        fallen[first] = (fallen[first][0] + fallen.pop(second)[0][1:], fallen[first][1])
+    for name, (path, mat) in fallen.items():
+        b.tube([tuple(q) for q in path], R, mat, segs=6, smooth=0)
+    drape.apart([(name, path, R) for name, (path, _) in fallen.items()], [("place %d's %s" % (index, name), path, radius) for index, leads in enumerate(laid) for name, path, radius in leads])
+    return hubs
+
+
+RACK_SIDE = (3.405, 0.03, HALF_D - 0.72)   # where the network's lead goes into the den's rack: its base's left side
 
 
 def classroom(b):
     b.obj("Tables")
     for z in ROWS_Z:
-        for x in (-1.0, 1.0):
+        for x in TABLES_X:
             table(b, x, z)
     b.obj("Chairs")
-    for z in ROWS_Z:
+    import random
+    third = random.Random(12)   # (the last row's chances are its own: the room's other chances stay what they were)
+    for row, (z, behind) in enumerate(zip(ROWS_Z, CHAIRS_BACK)):
+        rand = b.rand if row < 2 else third.uniform
         for x in PLACES_X:
-            with b.at((x + b.rand(-0.05, 0.05), 0, z - 0.95 + b.rand(-0.08, 0.05)), (0, b.rand(-25, 25), 0)):
+            with b.at((x + rand(-0.05, 0.05), 0, z - behind + rand(-0.05, 0.05)), (0, rand(-25, 25), 0)):
                 office_chair(b)
     # The computers: world/bake_pc.py's shells (monitor and tower, their detail baked into their
-    # pictures), and at each place its own glass, keyboard, mouse and leads. No two places lie
+    # pictures), and at each place its own glass, keyboard, mouse, leads and stickers. No two lie
     # alike: the set a little off and turned, the keyboard and the mouse as a hand left them.
     # Models/stations.json says where, for ShaderEmuStations.cs.
     import json
-    import random
     lay = random.Random(11)   # (its own: the room's other chances stay what they were)
-    places = []
+    places, frames, laid = [], [], []
     for row, z in enumerate(ROWS_Z):
         for column, x in enumerate(PLACES_X):
+            index = row * len(PLACES_X) + column
             at = (x + lay.uniform(-0.015, 0.015), TABLE_TOP, z + STATION_Z + lay.uniform(-0.015, 0.015))
             turn = lay.uniform(-3.5, 3.5)
             lie = {"keyboard": (lay.uniform(-0.01, 0.01), lay.uniform(-0.01, 0.01), lay.uniform(-2.5, 2.5)),
                    "mat": (lay.uniform(-0.01, 0.01), lay.uniform(-0.01, 0.01), lay.uniform(-6, 6)),
                    "mouse": (lay.uniform(-0.03, 0.03), lay.uniform(-0.03, 0.03), lay.uniform(-20, 20))}
             b.asset("pc_station", at, rot=(0, turn, 0), scale=1.0, parts=("=pc_station",))
-            b.obj("Station %d rest" % (row * len(PLACES_X) + column), charted=True)   # one object a place: each has a tube of its own
+            b.obj("Station %d rest" % index, charted=True)   # one object a place: each has a tube of its own
             pc.MODE = "low"   # (the glass alone, as the baked set has it)
             # its table as the place has it: the top, and the board behind the knees
-            here = lib.place(at, (0, turn, 0)).inverted()
+            world = lib.place(at, (0, turn, 0))
+            here = world.inverted()
             tx = -1.0 if x < 0 else 1.0
             desk = [(tuple(here @ Vector((tx, TABLE_TOP - 0.022, z))), (2.0, 0.044, 0.9), -turn),
                     (tuple(here @ Vector((tx, 0.45, z + 0.38))), (1.89, 0.4, 0.022), -turn)]
             with b.at(at, (0, turn, 0)):
-                pc.station(b, "rest", lie, desk=desk, seed=row * len(PLACES_X) + column)
+                # (a hub stands on some towers, and its leads hang down their right sides)
+                pc.station(b, "rest", lie, desk=desk, seed=index, stuck=random.Random(300 + index).randint(2, 4),
+                           bare=("tower top", "tower right") if index in HUB_HOSTS.values() else ())
             pc.MODE = "full"
             places.append({"x": at[0], "z": at[2], "turn": turn, "keyboard": list(lie["keyboard"])})
+            frames.append(world)
+            laid.append([(name, [world @ p for p in path], radius) for name, path, radius, _, _ in pc.LEADS])
+    hubs = network(b, frames, laid)
     here = os.path.dirname(os.path.abspath(__file__))
+    back, card = pc.TOWER_Z + pc.FRONT + pc.TOWER_DEEP, pc.tower_back()["nic"]
+    # (flat lists: Unity's JsonUtility reads no list of lists. tables: x, z of each; a hub's ports: x, y, z, place of each)
     json.dump({"places": places, "table": TABLE_TOP, "keyScale": pc.KEY_SCALE, "keyboardZ": pc.KEYBOARD_Z, "setX": pc.SET_X,
                "glass": list(pc.GLASS), "tower": [pc.TOWER_X, pc.TOWER_Z, pc.FRONT, pc.TOWER_HIGH],
                "speed": [pc.SPEED_X, pc.SPEED_DOWN, pc.SPEED_W, pc.SPEED_H], "turbo": pc.TURBO_X, "reset": pc.RESET_X,
-               "power": list(pc.POWER_KEY), "osd": [pc.OSD_X, pc.OSD_PITCH, pc.CHIN], "led": pc.LED_X, "lamps": list(pc.LAMPS_X)},
+               "power": list(pc.POWER_KEY), "osd": [pc.OSD_X, pc.OSD_PITCH, pc.CHIN], "led": pc.LED_X, "lamps": list(pc.LAMPS_X),
+               "tables": [v for z in ROWS_Z for x in TABLES_X for v in (x, z)],
+               "keyboardHigh": pc.TRAY_LOW, "keyboardSlope": pc.KEYBOARD_SLOPE, "keyboardTops": pc.KEY_TOPS,
+               "nic": [pc.TOWER_X + card[0], card[1], back + 0.001], "nicSize": list(pc.NIC_LAMP), "hubs": hubs},
               open(os.path.join(here, "..", "unity", "ShaderEmu", "Models", "stations.json"), "w"), indent=1)
 
 
@@ -194,10 +400,8 @@ def shelf(b):
                 y = 0.05 + s * 0.40 + 0.015
                 if s == 3:   # games, face out, and a radio of its decade
                     b.obj("Books")
-                    for i in range(3):
-                        with b.at((-0.78 + i * 0.24, y + 0.123, -0.2), (8, 0, 0)):
-                            b.box((0, 0, 0), (0.19, 0.245, 0.045), "Cardboard")
-                            b.quad((0, 0, -0.0238), (0.186, 0.24), "Details", decal="game_%d" % ((i + 1) % 5))
+                    for i in range(3):   # (against the shelf's back, whose face is at -0.014)
+                        leaning_box(b, -0.78 + i * 0.24, y, -0.014, 0, 8, "game_%d" % ((i + 1) % 5))
                     b.asset("boombox", (0.5, y, -0.17), rot=(0, 180, 0), size=(0.56, None, None))
                     continue
                 # an encyclopedia at one end, single books for the rest, a few leaning or lying
@@ -237,10 +441,11 @@ def shelf(b):
 
 def boxes(b):
     at = (-HALF_W + 0.5, 0, -HALF_D + 0.5)
-    b.asset("cardboard_box_01", (at[0], 0, at[2]), rot=(0, 102, 0), size=(0.5, 0.5, 0.6), limit=5000)
-    b.asset("cardboard_box_01", (at[0] + 0.03, 0.5, at[2] + 0.02), rot=(0, 81, 0), size=(0.4, 0.34, 0.45), limit=5000)
+    # (a box's top is its flaps, not flat: what stands on one is let down till it touches)
+    low = b.asset("cardboard_box_01", (at[0], 0, at[2]), rot=(0, 102, 0), size=(0.5, 0.5, 0.6), limit=5000)
+    high = b.asset("cardboard_box_01", (at[0] + 0.03, 0.5, at[2] + 0.02), rot=(0, 81, 0), size=(0.4, 0.34, 0.45), limit=5000, on=low)
     b.asset("cardboard_box_01", (at[0] + 0.7, 0, at[2] - 0.05), rot=(0, 31, 0), size=(0.42, 0.4, 0.5), limit=5000)
-    b.asset("television_02", (at[0] + 0.03, 0.84, at[2] + 0.02), rot=(0, 40, 0))
+    b.asset("television_02", (at[0] + 0.03, 0.84, at[2] + 0.02), rot=(0, 40, 0), on=high)
 
 
 def posters(b):

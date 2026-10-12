@@ -11,6 +11,7 @@ import drape
 import furniture
 import lib
 import pc
+import pc_faces
 from mathutils import Vector
 from pc import mouse_body, office_chair
 from room import HALF_D, HALF_W, frame, on_wall
@@ -102,10 +103,11 @@ def keyboard(b, x):
         faces.append(tuple(corners))
         uvs.append([((vertices[i][0] * 1000 + wide / 2) / wide, (vertices[i][1] * 1000 + high / 2) / high) for i in corners])
         normals.append(normal)
+    sh, tp = pc_faces.CAP_SHOULDER, pc_faces.CAP_TOP   # (the classroom's keyboards have the same caps)
     for x0, y0, w, h, _ in layout["keys"]:
         base = ring(x0, y0, x0 + w, y0 + h, KEY_UNDER + KEY_HIGH)
-        shoulder = ring(x0 + 4.0, y0 + 3.0, x0 + w - 4.0, y0 + h - 6.5, KEY_UNDER + 0.002)
-        top = ring(x0 + 5.5, y0 + 4.5, x0 + w - 5.5, y0 + h - 8.0, KEY_UNDER)
+        shoulder = ring(x0 + sh[0], y0 + sh[1], x0 + w - sh[0], y0 + h - sh[2], KEY_UNDER + KEY_HIGH * pc_faces.CAP_STEP)
+        top = ring(x0 + tp[0], y0 + tp[1], x0 + w - tp[0], y0 + h - tp[2], KEY_UNDER)
         face((top, top + 1, top + 2, top + 3), (0, 0, -1))
         for lower, upper in ((base, shoulder), (shoulder, top)):
             for k, normal in enumerate(((0, -1, 0), (1, 0, 0), (0, 1, 0), (-1, 0, 0))):
@@ -183,18 +185,6 @@ def fall(b, boxes, stiff=1.0):
     del LAID[:]
 
 
-def strip(b, x, z):
-    """A power strip on the floor, its sockets up."""
-    b.box((x, 0.022, z), (0.40, 0.044, 0.062), "PlasticBeige", bevel=0.008, segs=3)
-    for k in range(5):
-        b.cyl((x - 0.14 + k * 0.062, 0.0445, z), 0.019, 0.002, "PlasticGrey", segs=14)
-    b.box((x + 0.175, 0.046, z), (0.018, 0.005, 0.03), "Amber", bevel=0.002, segs=1)
-
-
-def plug(b, x, z):
-    b.box((x, 0.062, z), (0.036, 0.034, 0.036), "Rubber", bevel=0.008, segs=2)
-
-
 def cables(b):
     """Leads let fall where they hang and lie (world/drape.py), held at their plugs and by the clips along the skirting."""
     b.obj("Cables")
@@ -203,12 +193,13 @@ def cables(b):
     at = pc.tower_back()   # where its sockets are, from its middle and the floor
     ground, panels = ((0, -0.05, HALF_D - 2), (12, 0.1, 6), 0), ((0, 1.5, wall + 0.106), (12, 3.0, 0.2), 0)
     # the tower: power to a strip beside it, two leads up through the wall, one along the floor to the rack
-    strip(b, x + 0.42, HALF_D - 0.16)
-    plug(b, x + 0.28, HALF_D - 0.16)
+    by_tower = (x + 0.42, 0, HALF_D - 0.16)   # (turned: its own lead leaves towards the rack, its switch is by the tower)
+    pc.strip(b, by_tower, 180, plugs=(4,))
+    sx = pc.strip_socket(4, by_tower, 180)[0]
     ix, iy = x + at["inlet"][0], at["inlet"][1]
     b.box((ix, iy, back + 0.014), (0.03, 0.022, 0.028), "Rubber", bevel=0.004, segs=2)   # the mains lead's moulded plug
-    cable(b, [(ix, iy, back + 0.02), (ix, iy - 0.01, back + 0.05), (ix + 0.06, 0.2, back + 0.08), (x + 0.20, 0.13, HALF_D - 0.13),
-              (x + 0.28, 0.085, HALF_D - 0.16)], 0.006)
+    cable(b, [(ix, iy, back + 0.02), (ix, iy - 0.01, back + 0.05), (ix + 0.06, 0.2, back + 0.08), (sx - 0.08, 0.14, HALF_D - 0.13),
+              pc.strip_socket(4, by_tower, 180, up=pc.PLUG_HIGH - 0.004)], 0.006)
     # the two screens' leads: from the video card's socket and the second serial one, up through the wall
     for (sx, sy), up in ((at["video"], x - 0.06), (at["com2"], x - 0.035)):
         pc.dsub_plug(b, x + sx, sy, back, 0.032)
@@ -217,12 +208,12 @@ def cables(b):
         b.lathe((up, 0.80, wall), [(0.011, 0), (0.014, 0.003), (0.014, 0.006), (0.008, 0.008)], "PlasticDark", segs=12, rot=(-90, 0, 0))
     run = HALF_D - 0.06   # the floor run, behind the strip
     clips = (x + 0.95, x + 1.4, RACK[0] - 0.7)   # over the run: a lead is held under each, and falls as it will between them
-    ny = at["first"] - 5 * pc.SLOT_PITCH   # the network card, in the sixth slot
-    b.box((x + 0.02, ny, back + 0.008), (0.014, 0.011, 0.016), "PlasticGrey", bevel=0.002, segs=1)
+    nx, ny = x + at["lan"][0], at["lan"][1]   # the network card, in the sixth slot
+    pc.lan_plug(b, nx, ny, back, "CableBlue")
     for first, last, radius, depth, mat in (
-            ([(x + 0.02, ny, back + 0.012), (x + 0.03, ny - 0.01, back + 0.04), (x + 0.06, 0.04, back + 0.08), (x + 0.20, 0.006, run), (x + 0.6, 0.006, run)],
+            ([(nx, ny, back + pc.LAN_PLUG - 0.004), (nx + 0.01, ny - 0.01, back + 0.05), (x + 0.06, 0.04, back + 0.09), (x + 0.20, 0.006, run), (x + 0.6, 0.006, run)],
              [(RACK[0] - 0.5, 0.006, run), (RACK[0] - 0.37, 0.006, run - 0.008), (RACK[0] - 0.34, 0.03, run - 0.02)], 0.005, run, "CableBlue"),
-            ([(x + 0.62, 0.03, HALF_D - 0.16), (x + 0.70, 0.008, HALF_D - 0.12), (x + 0.82, 0.007, run - 0.012)],
+            ([(x + 0.612, 0.02, HALF_D - 0.16), (x + 0.70, 0.008, HALF_D - 0.12), (x + 0.82, 0.007, run - 0.012)],
              [(RACK[0] - 0.5, 0.007, run - 0.012), (RACK[0] - 0.36, 0.007, run - 0.06)], 0.006, run - 0.012, "Rubber")):
         held = [(cx, radius + 0.001, depth) for cx in clips]
         cable(b, first + [held[0]], radius, mat, up=0.012, wander=0.003)
@@ -232,19 +223,20 @@ def cables(b):
     for cx in clips:
         b.box((cx, 0.009, run - 0.006), (0.016, 0.018, 0.034), "PlasticBeige", bevel=0.005, segs=2)
     fall(b, [ground, panels, ((x, pc.TOWER_HIGH / 2, back - pc.TOWER_DEEP / 2), (0.184, pc.TOWER_HIGH, pc.TOWER_DEEP), 0),
-             ((x + 0.42, 0.022, HALF_D - 0.16), (0.40, 0.044, 0.062), 0), ((0.95, 0.375, HALF_D - 0.52), (0.48, 0.75, 0.9), 0)])
+             pc.strip_box(by_tower, 180), ((0.95, 0.375, HALF_D - 0.52), (0.48, 0.75, 0.9), 0)])
     # under the desk: a strip at each side of its middle panel (which stands at -1.17), and two leads down to it from the grommet there
     for cx, under in ((-1.9, -1.62), (-0.5, -0.82)):
-        strip(b, under, HALF_D - 0.2)
+        lies = (under, 0, HALF_D - 0.2)
         toward = 1 if cx < under else -1
+        sockets = (1, 0) if toward > 0 else (3, 4)   # the two nearest the grommet, the nearer lead in the nearer
+        pc.strip(b, lies, plugs=sockets)
         for k, mat in ((0, "Rubber"), (1, "PlasticGrey")):
-            end = under - toward * ((0.10 if toward > 0 else 0.03) + 0.07 * k)   # (clear of the strip's switch, at its right end)
+            end = pc.strip_socket(sockets[k], lies)[0]
             cable(b, [(cx + 0.008 * (2 * k - 1), 0.716, HALF_D - 0.14), (cx + 0.008 * (2 * k - 1), 0.62, HALF_D - 0.125 - 0.012 * k), (cx + toward * (0.03 + 0.03 * k), 0.32, HALF_D - 0.115 - 0.03 * k),
                       (cx + toward * (0.12 + 0.04 * k), 0.09, HALF_D - 0.125 - 0.035 * k), ((cx + end) / 2, 0.012, HALF_D - 0.12 - 0.03 * k), (end - toward * 0.1, 0.012, HALF_D - 0.12),
-                      (end - toward * 0.015, 0.13, HALF_D - 0.18), (end, 0.07, HALF_D - 0.2)], 0.005, mat)
-            plug(b, end, HALF_D - 0.2)
+                      (end - toward * 0.015, 0.14, HALF_D - 0.18), pc.strip_socket(sockets[k], lies, up=pc.PLUG_HIGH - 0.004)], 0.005, mat)
     fall(b, [ground, panels, ((-1.15, 0.743, HALF_D - 0.5), (4.7, 0.044, 1.0), 0), ((-1.15, 0.45, HALF_D - 0.075), (4.5, 0.5, 0.022), 0),
-             ((-1.62, 0.022, HALF_D - 0.2), (0.40, 0.044, 0.062), 0), ((-0.82, 0.022, HALF_D - 0.2), (0.40, 0.044, 0.062), 0),
+             pc.strip_box((-1.62, 0, HALF_D - 0.2)), pc.strip_box((-0.82, 0, HALF_D - 0.2)),
              ((-1.17, 0.375, HALF_D - 0.45), (0.03, 0.69, 0.7), 0)])
     # the rack: patch leads hanging between its hubs in loose loops
     rx, _, rz = RACK
@@ -338,10 +330,8 @@ def clutter(b):
         b.box((-3.29, top + 0.004 + i * 0.008, 4.80), (0.21, 0.007, 0.28), "Paper", rot=(0, turn, 0))
     b.quad((-3.29, top + 0.0245, 4.80), (0.21, 0.276), "Details", rot=(90, -3, 0), decal="magazine_0")
     # at its right end, behind the controllers: games in their boxes
-    for i, (x, lean) in enumerate(((0.87, -9), (1.08, 6))):
-        with b.at((x, top + 0.12, HALF_D - 0.16), (0, lean, 0)):
-            b.box((0, 0, 0), (0.19, 0.245, 0.045), "Cardboard", rot=(10, 0, 0))
-            b.quad((0, 0.0041, -0.0233), (0.186, 0.24), "Details", rot=(10, 0, 0), decal="game_%d" % i)
+    for i, (x, turn) in enumerate(((0.87, -9), (1.08, 6))):
+        furniture.leaning_box(b, x, top, HALF_D - 0.04, turn, 11 + 3 * i, "game_%d" % i)
 
 
 def build(b):

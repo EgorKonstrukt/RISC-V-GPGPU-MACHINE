@@ -8,6 +8,7 @@ import random
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Vector
 
 import lib
@@ -129,11 +130,11 @@ def check(leads, boxes, cylinders, ends=0.03, within=0.0025, step=0.003, quiet=F
     or in another lead; not of its ends, which are in their plugs. Nothing said: none does."""
     said, sampled = [], []
 
-    def say(what):
+    def say(what, where=None):
         if what not in said:
             said.append(what)
             if not quiet:
-                print("LEADS", what)
+                print("LEADS", what, "" if where is None else "at (%.3f, %.3f, %.3f)" % tuple(where))
     frames = [(lib.place(centre, (0, turn, 0)).inverted(), Vector(size) / 2) for centre, size, turn in boxes]
     for name, path, radius in leads:
         points, along, total = [], [], 0.0
@@ -150,29 +151,58 @@ def check(leads, boxes, cylinders, ends=0.03, within=0.0025, step=0.003, quiet=F
             for k, (frame, half) in enumerate(frames):
                 local = frame @ q
                 if min(half[i] + radius - abs(local[i]) for i in range(3)) > within:
-                    say("%s is in box %d" % (name, k))
+                    say("%s is in box %d" % (name, k), q)
             for k, (centre, round_, height) in enumerate(cylinders):
                 if abs(q.y - centre[1]) < height / 2 + radius - within and math.hypot(q.x - centre[0], q.z - centre[2]) < round_ + radius - within:
                     say("%s is in cylinder %d" % (name, k))
-        for k, q in enumerate(points):
-            for m in range(k + 1, len(points)):
-                if along[m] - along[k] > 0.03 and (points[m] - q).length < 1.7 * radius:
-                    say("%s crosses itself" % name)
-                    break
+        spots, far = np.array([tuple(q) for q in points]), np.array(along)
+        for k in range(len(points)):   # (a row of numpy's at a time: a long lead has a million pairs)
+            close = (far[k + 1:] - far[k] > 0.03) & (((spots[k + 1:] - spots[k]) ** 2).sum(1) < (1.7 * radius) ** 2)
+            if close.any():
+                say("%s crosses itself" % name, points[k])
+                break
     for i in range(len(sampled)):
         for j in range(i + 1, len(sampled)):
-            near = min((q - w).length for q in sampled[i][1] for w in sampled[j][1])
+            a, c = (np.array([tuple(q) for q in sampled[n][1]]).reshape(-1, 3) for n in (i, j))
+            if not len(a) or not len(c):
+                continue
+            least = [np.sqrt(((c - q) ** 2).sum(1).min()) for q in a]
+            near, where = min(least), sampled[i][1][int(np.argmin(least))]
             if near < 0.85 * (sampled[i][3] + sampled[j][3]):
-                say("%s and %s cross (their middles %.1f mm apart)" % (sampled[i][0], sampled[j][0], near * 1000))
+                say("%s and %s cross (their middles %.1f mm apart)" % (sampled[i][0], sampled[j][0], near * 1000), where)
     return said
 
 
-def settle(leads, boxes, cylinders, stiff=1.0, again=2):
+def apart(leads, others, ends=0.03, step=0.004):
+    """Says which of `leads` lies in one of `others` (both name, path, radius), which fell apart from them."""
+    import numpy as np
+
+    def sampled(path):
+        points, far, total = [], 0.0, sum((c - a).length for a, c in zip(path, path[1:]))
+        for a, c in zip(path, path[1:]):
+            n = max(1, int((c - a).length / step))
+            points += [tuple(a.lerp(c, k / n)) for k in range(n) if ends <= far + (c - a).length * k / n <= total - ends]
+            far += (c - a).length
+        return np.array(points).reshape(-1, 3)
+    kept = [(name, sampled(path), radius) for name, path, radius in others]
+    for name, path, radius in leads:
+        mine = sampled(path)
+        for other, points, r in kept:
+            near = points[((points > mine.min(0) - 0.02) & (points < mine.max(0) + 0.02)).all(1)] if len(mine) else points[:0]
+            for q in near:
+                d = np.sqrt(((mine - q) ** 2).sum(1)).min()
+                if d < 0.85 * (radius + r):
+                    print("LEADS %s and %s cross (their middles %.1f mm apart)" % (name, other, d * 1000))
+                    break
+
+
+def settle(leads, boxes, cylinders, stiff=1.0, again=2, guards=()):
     """leads: (name, path, radius). boxes: (centre, size, turn about y). cylinders: (centre, radius,
-    height), upright. Gives each lead's path as it comes to lie; kept in build/drape by what was asked."""
+    height), upright. guards: boxes they fall on too, which a lead may come to lie in.
+    Gives each lead's path as it comes to lie; kept in build/drape by what was asked."""
     asked = repr([VERSION, SCALE, STEP, PIN, FRAMES, stiff, sorted(TUNE.items()),
                   [(name, [tuple(round(v, 5) for v in p) for p in path], round(radius, 5)) for name, path, radius in leads],
-                  [[tuple(round(v, 5) for v in part) if isinstance(part, (tuple, list)) else round(part, 5) for part in thing] for thing in list(boxes) + list(cylinders)]])
+                  [[tuple(round(v, 5) for v in part) if isinstance(part, (tuple, list)) else round(part, 5) for part in thing] for thing in list(boxes) + list(cylinders)]] + ([list(guards)] if guards else []))
     kept = os.path.join(CACHE, hashlib.sha1(asked.encode()).hexdigest()[:20] + ".json")
     if os.path.exists(kept) and not DEBUG:
         return [[Vector(p) for p in path] for path in json.load(open(kept))]
@@ -190,7 +220,7 @@ def settle(leads, boxes, cylinders, stiff=1.0, again=2):
         scene.collection.objects.link(ob)
         made.append(ob)
         return ob
-    for k, (centre, size, turn) in enumerate(boxes):
+    for k, (centre, size, turn) in enumerate(list(boxes) + list(guards)):
         ob = linked("drape box %d" % k, _box("drape box", centre, size, turn))
         ob.modifiers.new("Collision", 'COLLISION')
         ob.collision.thickness_outer, ob.collision.cloth_friction, ob.collision.damping = TUNE['outer'], TUNE['friction'], 0.8
@@ -293,7 +323,7 @@ def settle(leads, boxes, cylinders, stiff=1.0, again=2):
         for name, path, radius in leads:
             points = _resampled(path, 0.01)
             shaken.append((name, [p + Vector((0, rng.uniform(0, 0.004), 0)) if 5 < k < len(points) - 6 else p for k, p in enumerate(points)], radius))
-        out = settle(shaken, boxes, cylinders, stiff, again - 1)
+        out = settle(shaken, boxes, cylinders, stiff, again - 1, guards)
     os.makedirs(CACHE, exist_ok=True)
     json.dump([[tuple(p) for p in line] for line in out], open(kept, "w"))
     return out

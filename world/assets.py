@@ -108,6 +108,32 @@ def spawn(name, asset, world, size, limit, parts, scale, collection):
     return ob
 
 
+def rest(thing, support):
+    """Lets `thing` down on `support` (or lifts it out of it) till they touch: under every place of
+    its footprint, 4 mm apart, its underside against the support's top. Neither is flat."""
+    from mathutils.bvhtree import BVHTree
+    trees = []
+    for ob in (thing, support):
+        mesh = ob.data
+        points = [ob.matrix_world @ v.co for v in mesh.vertices]
+        trees.append((BVHTree.FromPolygons(points, [tuple(p.vertices) for p in mesh.polygons]), points))
+    (above, points), (below, _) = trees
+    x0, x1 = min(p.x for p in points), max(p.x for p in points)
+    y0, y1 = min(p.y for p in points), max(p.y for p in points)
+    low, high = min(p.z for p in points) - 1.0, max(p.z for p in points) + 1.0
+    gap, step = None, 0.004
+    for i in range(int((x1 - x0) / step) + 1):
+        for j in range(int((y1 - y0) / step) + 1):
+            x, y = x0 + i * step, y0 + j * step
+            under = above.ray_cast(Vector((x, y, low)), Vector((0, 0, 1)))[0]
+            top = below.ray_cast(Vector((x, y, high)), Vector((0, 0, -1)))[0]
+            if under is not None and top is not None and (gap is None or under.z - top.z < gap):
+                gap = under.z - top.z
+    if gap is not None:
+        thing.matrix_world = Matrix.Translation((0, 0, -gap)) @ thing.matrix_world
+        print("RESTS %s on %s: let down %.1f mm, its lowest point now at %.3f" % (thing.name, support.name, gap * 1000, min(p.z for p in points) - gap))
+
+
 def spawn_hands(body, asset, hands, collection):
     """A clock's hands as objects of their own, for ClockHand.shader to turn: `hands` is the dial's
     middle in the file (Blender's axes, the dial facing -y) and then (name, part) pairs. A hand's

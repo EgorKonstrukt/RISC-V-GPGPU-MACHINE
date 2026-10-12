@@ -486,10 +486,19 @@ public static partial class ShaderEmuBuilder
     {
         Transform bar = canvas.transform.Find("Title bar");
         if (bar != null) Object.DestroyImmediate(bar.gameObject);
-        // what is put away until it is needed (a row for a player to come) is drawn as it will be
+        // What is put away until it is needed: a row its behaviour paints (for a player to come) is
+        // drawn on the plate as it will be; any other key keeps its own cap and lettering, or the
+        // plate would show a blank key where none can be pressed.
         List<GameObject> asleep = new List<GameObject>();
+        HashSet<GameObject> apart = new HashSet<GameObject>();
         foreach (Transform child in canvas.GetComponentsInChildren<Transform>(true))
-            if (child != canvas.transform && !child.gameObject.activeSelf) { asleep.Add(child.gameObject); child.gameObject.SetActive(true); }
+        {
+            if (child == canvas.transform || child.gameObject.activeSelf) continue;
+            Button key = child.GetComponent<Button>();
+            if (key != null && !painted.Contains(key.targetGraphic)) { apart.Add(child.gameObject); continue; }
+            asleep.Add(child.gameObject);
+            child.gameObject.SetActive(true);
+        }
         List<Graphic> still = new List<Graphic>();     // drawn on the plate, then not by the canvas
         List<Graphic> live = new List<Graphic>();      // not on the plate: the canvas draws them
         List<Graphic> print = new List<Graphic>();     // lettering: the plate's own
@@ -512,13 +521,13 @@ public static partial class ShaderEmuBuilder
                 button.colors = plain;
                 image.canvasRenderer.SetColor(Color.white);
                 image.pixelsPerUnitMultiplier = 1.3f;
-                still.Add(image);
+                if (!apart.Contains(button.gameObject)) still.Add(image);
                 done.Add(image);
             }
             foreach (TextMeshProUGUI label in button.GetComponentsInChildren<TextMeshProUGUI>(true))
             {
                 Letters(label, bold, tinted || row ? Color.white : Ink, row && changing.Contains(label));
-                (changing.Contains(label) ? live : print).Add(label);
+                if (!apart.Contains(button.gameObject)) (changing.Contains(label) ? live : print).Add(label);
                 done.Add(label);
             }
         }
@@ -582,7 +591,8 @@ public static partial class ShaderEmuBuilder
         foreach (Button button in canvas.GetComponentsInChildren<Button>(true))
         {
             ColorBlock colours = button.colors;
-            bool own = painted.Contains(button.targetGraphic);   // its behaviour paints it: lit from within while picked
+            // its behaviour paints it (lit from within while picked), or it draws its own cap
+            bool own = painted.Contains(button.targetGraphic) || apart.Contains(button.gameObject);
             colours.normalColor = own ? Color.white : Color.clear;
             colours.highlightedColor = own ? Color.white : Over;
             colours.pressedColor = own ? Color.white : Held;
@@ -734,7 +744,6 @@ public static partial class ShaderEmuBuilder
             else PanelLook(canvas, raised, sunken, cap, sans, bold, mono, changing, painted);
             canvas.gameObject.SetActive(shown);
         }
-        if (onlyNew) return;
         // what the behaviours paint their own buttons with: nothing, or lit from within
         foreach (EmuScope scope in world.GetComponentsInChildren<EmuScope>(true))
         {

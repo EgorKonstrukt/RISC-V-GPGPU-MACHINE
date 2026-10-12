@@ -1,7 +1,10 @@
 # The classroom's computers
 
-In the middle of the den are four tables in the main desk's oak with eight computers of the
-decade, one a visitor (`classroom` in `world/furniture.py`; the chairs are the main desk's).
+In the middle of the den are six tables in the main desk's oak, three rows of two, with twelve
+computers of the decade, one a visitor whose machine is on (`classroom` in `world/furniture.py`; the chairs are the
+main desk's). The rows are at z 2.45, 0.45 and -1.55 (`ROWS_Z`), a place's number its row times
+four plus its column: 1.6 m are left before the main desk, and the last row's chairs are pushed
+in (`CHAIRS_BACK`), which keeps their casters off the rug.
 Each tube shows its owner's display, or their console, to everybody.
 
 The computer is `world/pc.py`, modelled to real sizes: a 29 inch presentation monitor (27
@@ -10,12 +13,13 @@ in two mouldings with a seam, slotted where its housing narrows; a mini tower on
 a 5.25 inch CD-ROM drive, a spare bay that holds the place's key, a 3.5 inch floppy drive,
 power, reset and turbo keys, lamps, a lock and a grille, and behind it a PS/2 power supply's
 plate (80 mm fan, mains inlet and outlet, voltage switch), the board's sockets and seven card
-slots 0.8 inch apart; a keyboard of 19 mm keys; a mouse on its mat; and their leads. Its
+slots 0.8 inch apart, a network card in the sixth (thin coax, twisted pair and a link lamp); a
+keyboard of 19 mm keys; a mouse on its mat; and their leads. Its
 lettering is decals. The picture is on the glass itself: the glass's texture coordinates are
 the picture's, and the glass is a lit, reflecting surface (`CRT.shader`).
 
 What is small on the monitor and the tower is not geometry in the room. `blender -b --python
-world/bake_pc.py` (43 s) builds them twice from `world/pc.py`: whole (`MODE = "high"`), and as
+world/bake_pc.py` (60 s) builds them twice from `world/pc.py`: whole (`MODE = "high"`), and as
 bare shells in one material (`"low"`), and bakes the first onto the second: colour, normals,
 roughness and occlusion, and the lamps' light (`Textures/Assets/PH_pc_station_*`). The set it
 writes (`build/polyhaven/pc_station`: shells, glass, keyboard, mouse, leads) is placed by
@@ -31,7 +35,7 @@ its own, whose keys go into the machine's console keyboard while the tube shows 
 into its display keyboard (key events) while it shows the display (`EmuKeyboard.Feed`, set by
 `EmuStations.Assign`). A mark a hand shows the key a beam is on. The tube is a flat plate
 before the glass; a beam on it in display mode is the machine's pointer, as on the wall's
-display (`EmuPointer.tubes`). Only the place's owner's beams find either: the other seven
+display (`EmuPointer.tubes`). Only the place's owner's beams find either: the other places'
 keyboards and tubes are skipped (`ownStation`).
 
 To test it in play mode: press a key by the keyboard's program variables (`__1_hand__param`,
@@ -49,7 +53,12 @@ place is up to 15 mm off its spot and turned up to 3.5 degrees, its keyboard up 
 `ShaderEmuStations.cs` puts each place's tube, keyboard and keys there ("Station N" is a frame
 of the place; everything of it is a child). There are no seats: the chairs are furniture.
 
-The keyboard is 1.3 times a real one (`KEY_SCALE` in `world/pc.py`), for beams. A beam anywhere
+The keyboard is 1.3 times a real one (`KEY_SCALE` in `world/pc.py`), for beams. It lies flat
+(no feet, `KEYBOARD_SLOPE` 0), its caps are the console keyboard's shape (the insets of
+`world/pc_faces.py`, which `world/computer.py` and `Keyboard.png` share) and all as high, and
+it has the capture key ("Use my keyboard") where the console's layout has it, over the number
+pad. `stations.json` says where Unity lays the keys' rectangles: `keyboardHigh` (the tray's own
+frame over the table), `keyboardSlope` and `keyboardTops` (the rectangles over that frame). A beam anywhere
 on its plate presses the nearest key (`EmuKeyboard.KeyAt`), so there is no gap between keys to
 miss into, and a key going down and up clicks (`Sounds/Key1-4.wav`, `keys()` in
 `world/sounds.py`, cut from a recording; only the typist's client plays it).
@@ -60,13 +69,29 @@ sends the press to `EmuStations.Act` with the place's number):
 | Key | Does |
 |---|---|
 | tower: POWER, RESET, TURBO | the owner's machine on and off, its reset, its speed mode |
+| tower: POWER of a free place | anybody's: their machine starts, and the place is theirs |
+| tower: EXIT, in the spare bay | the place is given up |
 | monitor: RGB 2/+, RGB 1/- | the next and the last of the console's four terminals |
 | monitor: VIDEO 2, VIDEO 1 | the tube shows the console, the display |
 | monitor: PROCEED, EXIT | the links panel (`docs/fetch.md`) before this tube, small; away again |
 
 A lamp over PROCEED is lit while the owner's browser wants addresses pasted.
 
-A monitor's lamp and its tower's power lamp are lit while the place's owner's machine is on, and
+POWER has its name over it in lit letters, and a bar under it that beckons while the place is
+free (`beacons`): nobody found the key before. The capture key is the keyboard's; until 12
+October 2026 a "Use my keyboard" button stood beside the place's key on the tower.
+
+**The fields.** One strip ("Station fields") stands between a visitor's own keyboard and its
+monitor, for them alone: an address for the machine to open (`placeField`, as the display
+keyboard's link field: `docs/open.md`) and text that is typed at the place's keyboard
+(`EmuPaste`, which paces itself by the machine's own queue there: `RemoteWaiting`).
+
+The tower's third lamp, the disk's, is a dull red lens, and before it a red lamp that flickers
+(`Blink.shader`, `diskLamps`): sixteen bits, an eighth of a second each, set where core 0's
+registers had changed (`EmuMachine.activity`; three in four while the machine is busy, one in
+eight while Linux idles). Its owner's machine's bits travel in the stream's status
+(`docs/share.md`), so everybody sees a place's lamp, two seconds late. The card's lamp and its
+hub port's are lit while the machine is on and flicker when it sends (`docs/lan.md`). A monitor's lamp and its tower's power lamp are lit while the place's owner's machine is on, and
 dark on a place nobody has: they are objects the builder puts before the model's lenses
 (`PowerLamps`, `EmuStations.powerLamps`; the den's own tower has one too). The bake leaves every
 lamp of the set dark (`world/bake_pc.py`): baked into its picture of light, they glowed on
@@ -84,6 +109,33 @@ To test in play mode: `SendCustomEvent("Turbo")` and the like on "Station N towe
 "Station N monitor hot" of one's own place and of another; only one's own may change
 anything (`EmuMachine`'s speed mode, `EmuTerminal.Shown()`, `stationMode`, the links panel's
 place). `speeds[N]`'s `_All` and `_Core` are ten times the machine's `mipsAll` and `mipsCore`.
+
+## Strips, the network, stickers
+
+- **One strip of sockets** (`strip` in `world/pc.py`) is the classroom's and the den's: five
+  sockets drawn on its top (the decal `strip_socket`: an empty one shows), a lit rocker
+  (`Amber`), a sleeve for its own lead. `strip_socket(k, at, turn)` is socket k's middle: plugs
+  and the leads' ends are placed by it, so a plug stands on its socket.
+- **The network.** Every tower's card has a lead to its row's hub (`network` in
+  `world/furniture.py`): the front and the back rows' hubs stand on the second place's tower,
+  turned, their leads hanging down its right side; the middle row's is on the floor behind the
+  tables' middle. The hubs are joined through between the two tables' feet, and the first to
+  the den's rack along the main desk's foot. A lead goes over the table's back edge and under
+  the table (two lanes, `lanes`), over each strip's own lead it meets. Each hub's leads fall
+  together as a group of their own (`drape.settle`, with the tables' edges 2.5 mm further out
+  as `guards`: a lead drawn tight over the true edge was cut by it), and `drape.apart` says if
+  one lies in a place's own lead. `LAID ...` in the build's output is a mistake in the layout,
+  before anything falls.
+- **Its lamps are Unity's.** The model has dull lenses only (a hub's eight, a card's one), and
+  `stations.json` says where: `nic` and `nicSize` (the card's lens in a place's frame), `hubs`
+  (each hub's place and turn, and four numbers a connected port: its lens's middle in the hub's
+  frame, the lamps towards the hub's -z, and the place it serves, -1 for a lead to another hub
+  or the rack). The file is flat (`tables` is x, z, x, z ...): Unity's `JsonUtility` reads no
+  list of lists. A hub's power lamp is the model's own, lit.
+- **Stickers** (`stickers` in `world/pc.py`, `pc_faces.STICKERS`, `stickers` in
+  `world/textures.py`): two to four a place by the place's own chance, on the bare parts of the
+  tower's sides, top and front and of the monitor's bezel, top and sides, 0.4 mm proud, in the
+  place's "rest" object. A tower with a hub on it has none on its top and right side.
 
 ## What is where on the cases
 
@@ -121,12 +173,17 @@ guess, and so is the cabinet's colour (the room's computers are beige). The towe
 states it; the keys' 19.05 mm is ISO 1091's 19 mm +- 1 (0.75 inch), per Deskthority's "Key pitch".
 
 - A visitor's place is `station` in their own `EmuShare` (-1: none): a synced number only its
-  owner can write, so nobody moves anybody else. `EmuStations` gives a new visitor the first
-  free place; the key under a tube takes that place if it is free, and at a visitor's own
-  turns the tube between display and console (`stationMode`, synced the same way). Two who name one place: the
+  owner can write, so nobody moves anybody else. A place is a running machine's:
+  `EmuStations` gives a visitor the first free one when their machine is switched on, takes it
+  back when it is switched off, and counts another visitor's claim only while their machine
+  is on (with eleven visitors and eight places, places stood dark for machines that were
+  off). The key in the tower's bay takes that place if it is free (and starts the machine),
+  and at a visitor's own turns the tube between display and console (`stationMode`, synced
+  the same way); EXIT beside it gives the place up, and none is found for that visitor again
+  until they take one or switch their machine on (`left`). Two who name one place: the
   visitor with the lower player number has it, and the other looks for a free one.
 - Whoever has a place sends their display as for any screen that shows them
-  (`docs/share.md`). `EmuStations` tells `EmuStreams` whose each place is (surfaces 1 to 8),
+  (`docs/share.md`). `EmuStations` tells `EmuStreams` whose each place is (surfaces 1 to 12),
   and puts that sender's slot's picture or console on the tube; a visitor's own tube shows
   their machine itself. Asking for what was lost, and for everything when a place is new to
   a client, is `EmuStreams`'s.
@@ -136,9 +193,20 @@ states it; the keys' 19.05 mm is ISO 1091's 19 mm +- 1 (0.75 inch), per Deskthor
   use), and a beam on its tube is marked as the place's own (`pointerOwn`): neither is sent
   to a player the wall happens to show.
 - `CRT.shader`: the picture behind bulging glass, the beam's lines (one a row of the picture)
-  and stripes of three phosphors. Lines and stripes are waves of mean one, each weakened by how
+  and stripes of three phosphors. The picture spans 0.93 of the glass (`_Fill`; the beam's
+  place on the tube is mapped by the same number, `tubeFill`): at the whole glass the bezel's
+  rounded corners and its wall cut the picture's edges. The stripes are 560 trios across the
+  glass (0.95 mm, coarser than the tube's own 0.6), to be seen from the chair; the lines
+  stay one a row. Lines and stripes are waves of mean one, each weakened by how
   much of its period a screen pixel spans: close up they show, further off they are their mean,
   and there is no moire between.
+
+To test in play mode: `SendCustomEvent("Power")` on "Station 5" (its `EmuPlace`) starts the
+machine and `station` is 5; `ClientSimMain.SpawnRemotePlayer` three times, write `flags`,
+`station`, `watching` and `netSeq` into the new players' `EmuShare` and send each
+`_onDeserialization`: one whose `flags` is 0 has no place whatever its `station` says, the
+labels name the others, and `hubLamps` are lit only for places that are taken. `Leave` on
+the place's `EmuPlace` leaves `station` at -1.
 
 To test with one player: `docs/share.md`'s hook for several players. The place's picture
 (the slot's, `StreamPicture`N) must come to within a few levels of the machine's own display.

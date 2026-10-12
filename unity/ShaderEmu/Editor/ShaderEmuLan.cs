@@ -1,4 +1,4 @@
-// The network's panel (docs/lan.md): on the right wall beside the danger zone, every visitor's
+// The network's panel (docs/lan.md): on the right wall between the danger zone and the rack, every visitor's
 // machine with its address and this visitor's own machine's counts. A canvas: no bake.
 using TMPro;
 using UdonSharpEditor;
@@ -13,9 +13,9 @@ public static partial class ShaderEmuBuilder
         Gone(world, "Network panel");
         Gone(world, "Lan");
         Color back = new Color(0.04f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f), amber = new Color(1f, 0.8f, 0.3f);
-        const float width = 760, height = 600;
-        // (the danger zone is 760 wide at z 3.5: this hangs at its left, the same height)
-        RectTransform panel = Panel(world, "Network panel", new Vector3(4.44f, 1.47f, 2.70f), new Vector3(0, 90, 0), width, height, back);
+        const float width = 700, height = 600;
+        // (the danger zone is 760 wide at z 3.5: this hangs between it and the rack, the same height)
+        RectTransform panel = Panel(world, "Network panel", new Vector3(4.44f, 1.47f, 4.27f), new Vector3(0, 90, 0), width, height, back);
         EmuLan lan = Udon<EmuLan>(new GameObject("Lan"));
         lan.transform.SetParent(world, false);
         lan.machine = machine;

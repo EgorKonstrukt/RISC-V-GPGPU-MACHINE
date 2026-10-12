@@ -37,9 +37,11 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
   itself that is its top alone, the sides drawn in to the top's edge (texels blur into their
   neighbours: with places of their own the sides and the well darkened the tops), the mouse one chart unrolled round its section. `blender -b build/world.blend --python world/check_charts.py -- "Station 0 rest"
   build/charts.npz`, then `python world/check_charts.py build/charts.npz OUT.png`, counts the
-  texels where two faces lie on one place (0.19%: slivers at keys' edges) and draws the layout.
+  texels where two faces lie on one place (0.23%: slivers at keys' edges) and draws the layout.
 - `build.py` writes `Models/{Shell,Room,Computer,Furniture,Annex,City}.fbx` and
-  `build/world.blend` (11 s). Name parts after `--` to build only those.
+  `build/world.blend` (21 s; the first time, and after a change to the classroom's leads, five
+  minutes more: a place's leads fall in 14 s and a hub's in 35, and are kept in `build/drape`).
+  Name parts after `--` to build only those.
 
 Then copy `unity/ShaderEmu` over the Unity project's `Assets/ShaderEmu` and run
 "ShaderEmu/Put the modelled room into the open scene" (twice the first time: the storm's Udon
@@ -47,7 +49,7 @@ program has to exist before it can be filled in), "ShaderEmu/Restyle the panels 
 scene", then "ShaderEmu/Bake lighting". "Build world" does the first two itself. Putting the
 models in again drops their lightmaps: the room is unlit until the next bake.
 
-After a change to `world/pc.py`, `blender -b --python world/bake_pc.py` (53 s) comes before
+After a change to `world/pc.py`, `blender -b --python world/bake_pc.py` (60 s) comes before
 `build.py` (`docs/stations.md`).
 
 After a build, `blender -b build/world.blend --python world/check_shell.py` (3 s) must print
@@ -94,7 +96,7 @@ What it does to the baked seams has not been measured: that needs a bake before 
   screens' names on label tape. The fonts are IBM Plex (`Fonts/OFL.txt`).
 - The keyboards' caps are a model: `world/keyboard.json` is the builder's layout (written out
   of the scene), `keyboard()` in `world/computer.py` stands a tapered cap on every key's
-  rectangle, their tops 1.5 mm under the canvas, and `Keyboard.png` (`textures.py`) is every
+  rectangle (its shoulder and top so far in: `CAP_SHOULDER`, `CAP_TOP` in `world/pc_faces.py`), their tops 1.5 mm under the canvas, and `Keyboard.png` (`textures.py`) is every
   cap's colour seen from above; the legends are the canvas's labels as the caps' lettering
   ("Restyle the panels" gives the model's renderers that material: run it after the models). A key
   added to the builder's layout needs the layout written out again, the texture and the model.
@@ -120,6 +122,10 @@ What it does to the baked seams has not been measured: that needs a bake before 
   chairs and leaves apart. Leaves get a second face turned over.
 - `world/materials.py` and `Surfaces` in `ShaderEmuModels.cs` name the same materials. The FBX
   carries only names; Unity's importer maps each to the material the builder made.
+- What stands on a model stands on its shape, not its bounds: `b.asset(..., on=...)` (what the
+  support's own call gave back) lets it down till they touch (`rest` in `world/assets.py`, a
+  ray every 4 mm). A cardboard box's top is its flaps: at its bounds' top a box floated 15 mm
+  and the television 16. A game's box leans till its top meets the wall (`leaning_box`).
 - Small printed things are one atlas, `Details.png`; `world/atlas.json` says where each is, and
   `quad(..., decal=NAME)` uses it. The packer stops if the atlas is full: once it did not, and
   what was packed last was cut off or drawn from outside the picture.

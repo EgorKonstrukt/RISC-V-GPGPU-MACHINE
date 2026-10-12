@@ -326,7 +326,7 @@ public static partial class ShaderEmuBuilder
         if (name == "Books" || name == "Shelf" || name == "Rack" || name.StartsWith("book_")) return 2f;
         if (name == "Screen housings" || name == "Desk" || name == "Consoles" || name == "Tower" || name == "Radiator") return 1.5f;
         if (name == "Panelling") return 0.7f;
-        if (name == "Desk things" || name == "Table things" || name == "Wall things" || name == "Cables") return 4f;   // small: or a mouse is three texels
+        if (name == "Desk things" || name == "Table things" || name == "Wall things" || name == "Cables" || name == "Network" || name == "Hubs") return 4f;   // small: or a mouse is three texels
         if (name.StartsWith("Station ") && name.EndsWith(" rest")) return 6f;   // a key's top is a centimetre, and each cap a chart with a margin
         if (name.StartsWith("pachira") || name.StartsWith("potted_plant")) return 0.35f;   // leaves: many small pieces
         return 1f;

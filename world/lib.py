@@ -201,10 +201,12 @@ class Builder:
         bmesh.ops.bevel(bm, geom=pick, offset=bevel, offset_type='OFFSET', segments=segs, profile=0.5,
                         affect='EDGES', clamp_overlap=True)
 
-    def asset(self, asset, at, rot=(0, 0, 0), size=(None, None, None), limit=None, parts=None, scale=None, hands=None):
+    def asset(self, asset, at, rot=(0, 0, 0), size=(None, None, None), limit=None, parts=None, scale=None, hands=None, on=None):
         """One of Poly Haven's models (assets.py), standing on `at` and facing local +z. `hands`: a
-        clock's (assets.spawn_hands), which become objects of their own."""
-        self.assets.append((asset, self.stack[-1] @ place(at, rot), size, limit, parts, scale, hands))
+        clock's (assets.spawn_hands), which become objects of their own. on: what an earlier call
+        gave back, if this stands on that model: it is let down on it (assets.rest)."""
+        self.assets.append((asset, self.stack[-1] @ place(at, rot), size, limit, parts, scale, hands, on))
+        return len(self.assets) - 1
 
     # ---- primitives
     def box(self, at, size, mat, bevel=0.0, segs=2, rot=(0, 0, 0), grain='auto', edges='all', wuv=False):
@@ -474,8 +476,12 @@ class Builder:
             made.append(ob)
         if self.assets:
             import assets
-            for index, (asset, world, size, limit, parts, scale, hands) in enumerate(self.assets):
+            stood = []
+            for index, (asset, world, size, limit, parts, scale, hands, on) in enumerate(self.assets):
                 made.append(assets.spawn("%s %d" % (asset, index), asset, world, size, limit, parts, scale, collection))
+                stood.append(made[-1])
+                if on is not None:
+                    assets.rest(made[-1], stood[on])
                 if hands:
                     made.extend(assets.spawn_hands(made[-1], asset, hands, collection))
         self.objects, self.assets = {}, []

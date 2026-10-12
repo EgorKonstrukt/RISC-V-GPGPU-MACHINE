@@ -285,6 +285,23 @@ def din5(b, x, y, z):
     b.box((x, y + 0.0058, z + 0.0022), (0.002, 0.0016, 0.0006), "MetalSteel")
 
 
+NIC_LAMP = (0.005, 0.003)   # the network card's link lamp: a dull lens, which Unity lights
+LAN_PLUG = 0.024            # a network lead's plug, from the panel to where the lead leaves it
+
+
+def lan_socket(b, x, y, z):
+    """A twisted pair socket (8P8C) in a face that looks towards +z: a dark opening, its latch's notch below."""
+    b.box((x, y, z + 0.0006), (0.0158, 0.0132, 0.0012), "MetalSteel", bevel=0.0004, segs=1)
+    b.box((x, y + 0.0006, z + 0.0013), (0.0118, 0.0082, 0.0004), "Rubber")
+    b.box((x, y - 0.0042, z + 0.0013), (0.006, 0.0022, 0.0004), "Rubber")
+
+
+def lan_plug(b, x, y, z, mat):
+    """A network lead's plug in such a socket: the clear plug, and a boot of the lead's colour."""
+    b.box((x, y + 0.0006, z + 0.004), (0.0114, 0.0078, 0.008), "Ceramic", bevel=0.0008, segs=1)
+    b.box((x, y + 0.0006, z + 0.015), (0.0128, 0.0098, 0.018), mat, bevel=0.003, segs=2)
+
+
 def jack(b, x, y, z):
     """A 3.5 mm socket and its nut."""
     b.cyl((x, y, z + 0.001), 0.004, 0.002, "MetalSteel", segs=6, rot=(90, 0, 0))
@@ -390,14 +407,15 @@ def tower_back(h=TOWER_HIGH):
     sy = py - 0.065
     first = sy - 0.028
     return {"supply": py, "row": sy, "first": first, "keyboard": (-0.074, sy), "com1": (-0.040, sy), "com2": (-0.004, sy), "printer": (0.046, sy),
-            "video": (-0.02, first - SLOT_PITCH), "inlet": (-0.052, py + 0.022)}
+            "video": (-0.02, first - SLOT_PITCH), "inlet": (-0.052, py + 0.022),
+            "lan": (0.020, first - 5 * SLOT_PITCH), "nic": (0.040, first - 5 * SLOT_PITCH)}   # the network card's socket, and its link lamp
 
 
 def rear(b, w, h, back):
     """The tower's back, which a visitor behind the table sees: bare steel; the power supply's
     own plate (PS/2 form, 150 x 86 mm) with its fan, the mains inlet, the monitor's outlet and
     the voltage switch; the board's sockets under their legends; seven slots' brackets, a video
-    card's socket in the second and a sound card's in the fourth; screws."""
+    card's socket in the second, a sound card's in the fourth, a network card's in the sixth; screws."""
     z = back + 0.0006
     at = tower_back(h)
     b.box((0, h / 2 + 0.006, back + 0.0002), (w - 0.006, h - 0.02, 0.001), "MetalSteel")
@@ -430,6 +448,11 @@ def rear(b, w, h, back):
             dsub(b, -0.03, y, z + 0.0012, "15")
             for k in range(3):
                 jack(b, 0.012 + k * 0.012, y, z + 0.0012)
+        elif i == 5:    # the network card: thin coax, twisted pair, and a lamp for its link
+            bnc(b, -0.026, y, z + 0.0012)
+            lan_socket(b, at["lan"][0], y, z + 0.0012)
+            b.box((at["nic"][0], y, z + 0.0018), NIC_LAMP + (0.0012,), "LampGreen")
+            legend(b, "lan", -0.051, y, z + 0.0016)
         else:
             b.box((-0.005, y, z + 0.0015), (0.098, 0.0036, 0.0004), "PlasticDark")   # a blank's slot for air
     for x in (-0.084, 0.084):   # the cover's screws down each side
@@ -472,7 +495,7 @@ def tower(b):
     b.box((0, cy, FRONT - 0.0004), (0.156, 0.046, 0.001), "PlasticCase", bevel=0.0004, segs=1)
     b.cyl((-0.06, cy, FRONT - 0.002), 0.008, 0.004, "MetalSteel", segs=20, bevel=0.001, rot=(90, 0, 0))
     b.box((-0.06, cy, FRONT - 0.0042), (0.002, 0.008, 0.0006), "PlasticDark")
-    for x, mat, name in ((LAMPS_X[0], "Led", "power"), (LAMPS_X[1], "Amber", "turbo"), (LAMPS_X[2], "Led", "hdd")):
+    for x, mat, name in ((LAMPS_X[0], "Led", "power"), (LAMPS_X[1], "Amber", "turbo"), (LAMPS_X[2], "LampRed", "hdd")):   # (the disk's: a dull red lens)
         b.box((x, cy + 0.005, FRONT - 0.0016), (0.007, 0.003, 0.002), mat, bevel=0.0006, segs=1)
         legend(b, name, x, cy - 0.005, FRONT - 0.0011, back=False)
     for x, name in (TURBO_X, "turbo"), (RESET_X, "reset"):
@@ -497,13 +520,16 @@ KEYBOARD_Z = -0.31       # its middle, from the place's
 KEY_UNIT = KEY_SCALE * 0.01905 / 60       # the layout's keys are 60 apart: 19.05 mm, the standard pitch
 KEYS_HIGH = 437 * KEY_UNIT                # the layout's height (world/keyboard.json)
 TRAY_BACK = 0.016        # the tray's rim behind the keys, more than at their other sides: the lamps and their names are on it
-TRAY_AT, TRAY_TURN = (0, 0.016, KEYBOARD_Z), (90 - 7, 0, 0)   # the tray's own frame in the keyboard's: -z of it is up from the keys
+TRAY_LOW, KEYBOARD_SLOPE = 0.008, 0.0     # the tray's underside below its own frame; it lies flat on the table
+TRAY_AT, TRAY_TURN = (0, TRAY_LOW, KEYBOARD_Z), (90 - KEYBOARD_SLOPE, 0, 0)   # the tray's own frame in the keyboard's: -z of it is up from the keys
+CAPS_AT, CAP_HIGH = 0.012, 0.0078         # the caps' feet over the tray's frame, and a cap's height
+KEY_TOPS = CAPS_AT + CAP_HIGH + 0.0012    # where Unity lays the keys' rectangles: a hair over the caps' tops
 LEAD_X = 0.12            # where the lead leaves the tray's back, right of its middle
 
 
 def keyboard(b):
-    """The keyboard: world/keyboard.json's layout at KEY_SCALE times a real keyboard's size,
-    caps that narrow to their tops, in a tray that slopes."""
+    """The keyboard: world/keyboard.json's layout at KEY_SCALE times a real keyboard's size, caps
+    of the console keyboard's shape (pc_faces.CAP_...), all as high, in a tray that lies flat."""
     layout = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "keyboard.json"), encoding="utf-8"))
     wide, tall, s = layout["width"], layout["height"], KEY_UNIT
     vertices, faces, uvs, normals, caps = [], [], [], [], []
@@ -521,18 +547,18 @@ def keyboard(b):
         px, py = place.x / s + wide / 2, tall / 2 - place.y / s
         which = min(range(len(caps)), key=lambda k: max(caps[k][0] - px, px - caps[k][0] - caps[k][2], caps[k][1] - py, py - caps[k][1] - caps[k][3]))
         x0, y0, w, h, high = caps[which]
-        return (which, (min(max(px, x0 + 6.0), x0 + w - 6.0) - wide / 2) * s, (tall / 2 - min(max(py, y0 + 4.5), y0 + h - 8.0)) * s)
+        return (which, (min(max(px, x0 + top_in[0]), x0 + w - top_in[0]) - wide / 2) * s, (tall / 2 - min(max(py, y0 + top_in[1]), y0 + h - top_in[2])) * s)
 
     def face(corners, normal):
         faces.append(tuple(corners))
         uvs.append([(vertices[i][0] / (s * wide) + 0.5, vertices[i][1] / (s * tall) + 0.5) for i in corners])
         normals.append(normal)
-    row0 = min(key[1] for key in layout["keys"] if len(key[4]) == 1) - 60   # the number row is the second
+    shoulder_in, top_in = pc_faces.CAP_SHOULDER, pc_faces.CAP_TOP
     # The well's floor is under no key: it is the well less every key's own square, and a key
     # rises out of the edge of its square. So the keys and the floor are one surface with no
     # part of it over another, and one chart of the lightmap seen from above (no seam a key).
     floor_z = 0.0016                                  # under the caps' feet, in the caps' frame
-    cells = [(x0, y0, x0 + w, y0 + h) for x0, y0, w, h, legend in layout["keys"] if not legend.startswith("Use my")]
+    cells = [(x0, y0, x0 + w, y0 + h) for x0, y0, w, h, legend in layout["keys"]]
     edge = 0.004 / s                                  # the well is so much wider than the layout
     xs = sorted({-edge, wide + edge} | {c[0] for c in cells} | {c[2] for c in cells})
     ys = sorted({-edge, tall + edge} | {c[1] for c in cells} | {c[3] for c in cells})
@@ -556,15 +582,11 @@ def keyboard(b):
         for k in range(4):
             a, b2 = k, (k + 1) % 4
             floor_face([(outer[a][0], outer[a][1], floor_z), (outer[b2][0], outer[b2][1], floor_z), (inner[b2][0], inner[b2][1], 0.0), (inner[a][0], inner[a][1], 0.0)], (0, 0, -1))
-    for x0, y0, w, h, legend in layout["keys"]:
-        if legend.startswith("Use my"):
-            continue   # the console's own switch
+    for x0, y0, w, h, legend in layout["keys"]:   # (the capture key too, where the console keyboard has it)
         base = ring(x0 + 1.5, y0 + 1.5, x0 + w - 1.5, y0 + h - 1.5, 0)
-        shoulder = ring(x0 + 4.0, y0 + 3.0, x0 + w - 4.0, y0 + h - 6.0, -0.0065)
-        # rows are sculpted: the top and the bottom rows stand a little higher than the home row
-        rise = (0.0014, 0.0016, 0.0008, 0.0, 0.0006, 0.0014)[min(5, max(0, int(round((y0 - row0) / 60.0))))]
-        top = ring(x0 + 6.0, y0 + 4.5, x0 + w - 6.0, y0 + h - 8.0, -0.0078 - rise)
-        caps.append((x0, y0, w, h, -0.0078 - rise))
+        shoulder = ring(x0 + shoulder_in[0], y0 + shoulder_in[1], x0 + w - shoulder_in[0], y0 + h - shoulder_in[2], -CAP_HIGH * (1 - pc_faces.CAP_STEP))
+        top = ring(x0 + top_in[0], y0 + top_in[1], x0 + w - top_in[0], y0 + h - top_in[2], -CAP_HIGH)
+        caps.append((x0, y0, w, h, -CAP_HIGH))
         face((top, top + 1, top + 2, top + 3), (0, 0, -1))
         for lower, upper in ((base, shoulder), (shoulder, top)):
             for k, normal in enumerate(((0, -1, 0), (1, 0, 0), (0, 1, 0), (-1, 0, 0))):
@@ -575,7 +597,7 @@ def keyboard(b):
     def from_above(place, normal):
         """The keyboard's chart: as seen from over the keys, and the tray's upright side folded
         out round it. What it stands on is a part by itself, small: nobody sees it."""
-        if normal.z > 0.7 and place.z > 0.011:
+        if normal.z > 0.7 and place.z > TRAY_LOW - 0.001:
             return ("under", place.x * 0.05, place.y * 0.05)
         down = max(0.0, place.z + 0.006)
         if down > 0:
@@ -588,12 +610,12 @@ def keyboard(b):
         return (place.x, place.y)
     with b.at(TRAY_AT, TRAY_TURN):
         with b.chart("caps", cap_chart):
-            with b.at((0, 0, -0.012)):
+            with b.at((0, 0, -CAPS_AT)):
                 b.mesh(vertices, faces, uvs, "Keyboard", normal=normals)
         with b.chart("keyboard", from_above):
-            with b.at((0, 0, -0.012)):
+            with b.at((0, 0, -CAPS_AT)):
                 b.mesh(floor_v, floor_f, floor_uv, "Keyboard", normal=floor_n)   # the well, and each key's foot out of it
-            loft(b, [at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.01, cy=back), 0.012), at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.012, cy=back), -0.006),
+            loft(b, [at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.01, cy=back), TRAY_LOW), at_z(rrect(kw + 0.03, kh + 0.03 + TRAY_BACK, 0.012, cy=back), -0.006),
                      at_z(rrect(kw + 0.022, kh + 0.022 + TRAY_BACK, 0.012, cy=back), -0.0105), at_z(rrect(kw + 0.008, kh + 0.008, 0.006), -0.0104)], "PlasticBeige",
                  first=True, normal='out')
         # the three lamps over the number pad and their names under them, all on the rim's flat top
@@ -602,9 +624,7 @@ def keyboard(b):
             b.box((kw / 2 - 0.02 - i * 0.012, rim + 0.016, -0.0108), (0.006, 0.002, 0.0008), mat)
         b.quad((kw / 2 - 0.032, rim + 0.0085, -0.0107), (0.04, 0.005), "Details", decal="kb_lamps")
         # where the lead leaves, behind: a sleeve moulded on the tray's back
-        b.box((LEAD_X, kh / 2 + 0.015 + TRAY_BACK + 0.004, 0.003), (0.016, 0.01, 0.01), "PlasticCase", bevel=0.002, segs=1)
-    for x in (-0.18 * KEY_SCALE, 0.18 * KEY_SCALE):   # the feet that fold out behind
-        b.box((x, 0.008, KEYBOARD_Z + kh / 2 - 0.004 + TRAY_BACK), (0.03, 0.016, 0.008), "PlasticCase", bevel=0.002, segs=1)
+        b.box((LEAD_X, kh / 2 + 0.015 + TRAY_BACK + 0.004, 0.001), (0.016, 0.01, 0.01), "PlasticCase", bevel=0.002, segs=1)
 
 
 def mouse(b):
@@ -724,6 +744,112 @@ def dsub_plug(b, x, y, z, wide, sleeve=0.006):
     b.cyl((x, y, z + 0.043), sleeve, 0.014, "PlasticCase", segs=12, bevel=0.001, rot=(90, 0, 0))
 
 
+STRIP = (0.36, 0.04, 0.06)               # a strip of sockets: long, high, wide
+STRIP_SOCKETS, STRIP_PITCH = 5, 0.056    # its sockets, from 0 at the end its own lead leaves by
+PLUG_HIGH = 0.034                        # a plug in it, to where its lead leaves it
+
+
+def strip_socket(k, at=(0, 0, 0), turn=0.0, up=0.0):
+    """The middle of socket k of a strip whose middle stands on `at`, turned `turn`: on its top, or `up` over it."""
+    return tuple(lib.place(at, (0, turn, 0)) @ Vector((-0.134 + k * STRIP_PITCH, STRIP[1] + up, 0)))
+
+
+def strip_box(at, turn=0.0):
+    """The strip as a box for leads to fall on (drape.settle)."""
+    return ((at[0], at[1] + STRIP[1] / 2, at[2]), STRIP, turn)
+
+
+def strip(b, at, turn=0.0, plugs=()):
+    """A strip of sockets lying on `at`: every socket drawn, a plug standing on each of `plugs`,
+    a lit rocker at one end, the sleeve its own lead leaves by at the other (-x)."""
+    long, high, wide = STRIP
+    with b.at(at, (0, turn, 0)):
+        b.box((0, high / 2, 0), STRIP, "PlasticBeige", bevel=0.005, segs=2)
+        for k in range(STRIP_SOCKETS):
+            x = -0.134 + k * STRIP_PITCH
+            b.quad((x, high + 0.0003, 0), (0.044, 0.044), "Details", rot=(90, 0, 0), decal="strip_socket")
+            if k in plugs:
+                b.box((x, high + 0.011, 0), (0.034, 0.022, 0.034), "Rubber", bevel=0.005, segs=2)
+                b.cyl((x, high + 0.027, 0), 0.0065, 0.014, "Rubber", segs=10, bevel=0.001)
+        b.box((0.151, high + 0.0008, 0), (0.03, 0.0016, 0.022), "PlasticDark", bevel=0.0005, segs=1)
+        b.box((0.151, high + 0.0034, 0), (0.022, 0.005, 0.013), "Amber", bevel=0.0012, segs=1, rot=(0, 0, 7))   # the rocker, on
+        b.cyl((-long / 2 - 0.006, high / 2, 0), 0.0075, 0.016, "PlasticBeige", segs=10, bevel=0.001, rot=(0, 0, 90))
+
+
+HUB = (0.22, 0.036, 0.12)                # a small hub: wide, high, deep
+HUB_PORTS, HUB_PITCH, HUB_LAMP = 8, 0.02, (0.005, 0.003)
+
+
+def hub_lamp(k):
+    """Port k's lamp on the hub's front, in the hub's own frame: the middle of its lens's face."""
+    return (-0.07 + k * HUB_PITCH, 0.0245, -HUB[2] / 2 - 0.0018)
+
+
+def hub_port(k):
+    """Port k's socket on the hub's back: its middle, in the panel's face."""
+    return (-0.07 + k * HUB_PITCH, 0.016, HUB[2] / 2)
+
+
+def hub(b):
+    """An eight port hub of the decade at the frame's origin, on four feet: its lettered front
+    with a dull lens a port towards -z (Unity lights them), its sockets behind."""
+    w, h, d = HUB
+    b.box((0, h / 2 + 0.002, 0), (w, h - 0.004, d), "PlasticGrey", bevel=0.004, segs=2)
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            b.cyl((sx * (w / 2 - 0.02), 0.002, sz * (d / 2 - 0.02)), 0.008, 0.004, "Rubber", segs=10)
+    b.quad((0, 0.02, -d / 2 - 0.0003), (0.21, 0.028), "Details", decal="hub_front")
+    for k in range(HUB_PORTS):
+        x, y, z = hub_lamp(k)
+        b.box((x, y, z + 0.0008), HUB_LAMP + (0.0016,), "LampGreen")
+        with b.at((0, 0, d / 2)):
+            lan_socket(b, hub_port(k)[0], hub_port(k)[1], 0)
+    b.box((-0.095, 0.0245, -d / 2 - 0.001), (0.004, 0.003, 0.0016), "Led")     # its power lamp: a hub is always on
+    b.cyl((0.094, 0.016, d / 2 + 0.001), 0.004, 0.002, "Rubber", segs=10, rot=(90, 0, 0))   # the supply's socket
+    for i in range(9):   # slots for its heat, across the top
+        b.box((-0.08 + i * 0.02, h + 0.0002, 0.01), (0.008, 0.0008, 0.06), "PlasticDark")
+
+
+def stickers(b, rng, count, skip=()):
+    """`count` stickers (pc_faces.STICKERS) at chance places and turns on a place's blank faces, a
+    fraction of a millimetre proud: no two over each other. skip: faces left bare."""
+    e = 0.0004
+    tz, top = TOWER_Z + FRONT + 0.216, LOW + OUT_H
+    z0 = GLASS[3] + 0.113
+    # a face: its middle, its turn (the picture's own up), half its width and height that are bare
+    faces = {"tower right": ((TOWER_X + 0.09 + e, 0.185, tz), (0, -90), 0.17, 0.14), "tower left": ((TOWER_X - 0.09 - e, 0.27, tz), (0, 90), 0.17, 0.05),
+             "tower top": ((TOWER_X, TOWER_HIGH + e, tz), (90, 0), 0.07, 0.17), "tower front": ((TOWER_X - 0.025, 0.1025, TOWER_Z + FRONT - e), (0, 0), 0.045, 0.0075),
+             "bezel left": ((SET_X - 0.301, GLASS[2], GLASS[3] - e), (0, 0), 0.0115, 0.19), "bezel right": ((SET_X + 0.301, GLASS[2], GLASS[3] - e), (0, 0), 0.0115, 0.19),
+             "monitor top": ((SET_X, top + e, GLASS[3] + 0.06), (90, 0), 0.29, 0.042), "monitor back top": ((SET_X, top - 0.003 + e, z0 + 0.045), (90, 0), 0.28, 0.034),
+             "monitor left": ((SET_X - OUT_W / 2 - e, 0.335, GLASS[3] + 0.06), (0, 90), 0.042, 0.22), "monitor right": ((SET_X + OUT_W / 2 + e, 0.335, GLASS[3] + 0.06), (0, -90), 0.042, 0.22)}
+    names, stuck = sorted(pc_faces.STICKERS), {}
+    while count > 0:
+        name, face = rng.choice(names), rng.choice(sorted(faces))
+        w, h, round_ = pc_faces.STICKERS[name]
+        spin = rng.choice((0, 0, 0, 90, -90)) + (rng.uniform(-25, 25) if rng.random() < 0.2 else rng.uniform(-9, 9))
+        if face in skip:
+            continue
+        middle, (rx, ry), half_w, half_h = faces[face]
+        c, s = abs(math.cos(math.radians(spin))), abs(math.sin(math.radians(spin)))
+        reach = (w * c + h * s) / 2, (w * s + h * c) / 2
+        if reach[0] > half_w or reach[1] > half_h:
+            continue
+        u, v = rng.uniform(-half_w + reach[0], half_w - reach[0]), rng.uniform(-half_h + reach[1], half_h - reach[1])
+        if any(math.hypot(u - pu, v - pv) < (math.hypot(w, h) + size) / 2 for pu, pv, size in stuck.get(face, [])):
+            continue
+        stuck.setdefault(face, []).append((u, v, math.hypot(w, h)))
+        with b.at(middle, (rx, ry, 0)):
+            if round_:
+                u0, v0, u1, v1 = b.atlas[name]
+                ring = [(math.cos(2 * math.pi * k / 20), math.sin(2 * math.pi * k / 20)) for k in range(20)]
+                b.mesh([(x * w / 2, y * h / 2, 0) for x, y in ring], [tuple(range(20))],
+                       [[((u0 + u1) / 2 + x * (u1 - u0) * 0.49, (v0 + v1) / 2 + y * (v1 - v0) * 0.49) for x, y in ring]], "Details",
+                       at=(u, v, 0), rot=(0, 0, spin), normal=(0, 0, -1))
+            else:
+                b.quad((u, v, 0), (w, h), "Details", rot=(0, 0, spin), decal=name)
+        count -= 1
+
+
 LEADS = []   # the last station()'s leads: [name, the points of its middle, its radius, its material, its sides]
 
 
@@ -749,13 +875,14 @@ TABLE_HIGH = 0.765   # the classroom's table top over the floor (furniture.TABLE
 SET_X, TOWER_X, TOWER_Z = -0.11, 0.38, 0.05   # the monitor and keyboard a little left, the tower at their right
 
 
-def station(b, which="all", lie=None, desk=None, seed=0):
+def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=()):
     """A whole place on the table at the frame's origin: the monitor and keyboard, the tower
     beside them, the mouse before the tower, and their leads. which: "shell" is the monitor and
     the tower alone, "rest" all but them (with the tube's glass, which no mode but "full" gives).
     lie: how this place's keyboard, mouse and mat lie off their places, each (x, z, turn).
     desk: the boxes its leads fall on besides its own things, the table's top first (centre, size,
-    turn), in this frame; seed: the chance its leads are laid out by, a place its own."""
+    turn), in this frame; seed: the chance its leads are laid out by, a place its own.
+    stuck: how many stickers it has, on any face but those of `bare` (stickers())."""
     lie = lie or {"keyboard": (0, 0, 0), "mouse": (0, 0, 0), "mat": (0, 0, 0)}
     kx, kz, kturn = lie["keyboard"]
     mx, mz, mturn = lie["mouse"]
@@ -780,6 +907,8 @@ def station(b, which="all", lie=None, desk=None, seed=0):
     with b.at(mat_at, (0, pturn, 0)):
         b.box((0, 0.0015, 0), (0.21, 0.003, 0.25), "Rubber", bevel=0.001, segs=1)   # the mat, lying flat
     mouse_at = (mat_at[0] + mx, 0, mat_at[2] + mz)
+    if stuck:
+        stickers(b, random.Random(7000 + seed), stuck, bare)
     with b.at(mouse_at, (0, mturn, 0)):
         mouse_body(b)
     behind = TOWER_Z + FRONT + TOWER_DEEP   # the tower's back
@@ -813,30 +942,30 @@ def station(b, which="all", lie=None, desk=None, seed=0):
         lane_keys = max(lane_keys, behind + 0.052)
         lane_mouse = rng.uniform(behind + 0.035, lane_keys - 0.014)
     # a strip of sockets on the floor behind the table: both mains leads end in it, its own goes on under the table
-    strip, out = 0.06 + rng.uniform(-0.04, 0.04), edge + 0.07 + rng.uniform(0, 0.04)
-    b.box((strip, floor + 0.02, out), (0.3, 0.04, 0.055), "PlasticBeige", bevel=0.004, segs=2)
-    b.box((strip + 0.125, floor + 0.041, out), (0.022, 0.004, 0.014), "RedPaint", bevel=0.001, segs=1)   # its lit switch
-    lead(b, "strip", [(strip - 0.15, floor + 0.02, out), (strip - 0.24, floor + 0.005, out), (strip - 0.32, floor + 0.005, out),
-                      (strip - 0.32, floor + 0.005, near - 0.3 + 0.03), (strip - 0.32, floor + 0.03, near - 0.3)], 0.004, "Rubber", bend=0.02, rng=rng, up=0.02)
+    lies = (0.06 + rng.uniform(-0.04, 0.04), floor, edge + 0.07 + rng.uniform(0, 0.04))
+    out, end = lies[2], lies[0] - STRIP[0] / 2 - 0.012
+    strip(b, lies, plugs=(1, 3))   # (the other three are empty)
+    lead(b, "strip", [(end, floor + 0.02, out), (end - 0.05, floor + 0.005, out), (end - 0.10, floor + 0.005, out),
+                      (end - 0.10, floor + 0.005, near - 0.3 + 0.03), (end - 0.10, floor + 0.03, near - 0.3)], 0.004, "Rubber", bend=0.02, rng=rng, up=0.02)
     # and ends in a socket let into the floor under the table: a steel plate, the plug in it
-    b.box((strip - 0.32, floor + 0.002, near - 0.3), (0.12, 0.004, 0.12), "MetalSteel", bevel=0.001, segs=1)
-    b.box((strip - 0.32, floor + 0.016, near - 0.3), (0.036, 0.026, 0.036), "Rubber", bevel=0.006, segs=2)
+    b.box((end - 0.10, floor + 0.002, near - 0.3), (0.12, 0.004, 0.12), "MetalSteel", bevel=0.001, segs=1)
+    b.box((end - 0.10, floor + 0.017, near - 0.3), (0.036, 0.026, 0.036), "Rubber", bevel=0.006, segs=2)
     # each unit's mains lead: out of its inlet, in an arc over the table's edge, down behind it and along to the strip
-    for name, x, y, z, socket in (("monitor mains", SET_X - 0.14, plug_y - BOARD_DOWN, back, strip - 0.07),
-                                  ("tower mains", TOWER_X + at["inlet"][0], at["inlet"][1], behind, strip + 0.04)):
+    for name, x, y, z, k in (("monitor mains", SET_X - 0.14, plug_y - BOARD_DOWN, back, 1),
+                             ("tower mains", TOWER_X + at["inlet"][0], at["inlet"][1], behind, 3)):
         # (with length to spare: it comes down to the floor, lies there, and rises into its plug)
-        over, lying = max(edge + 0.035, z + 0.07) + rng.uniform(0, 0.03), out + rng.uniform(0.09, 0.22)
+        socket = strip_socket(k, lies)[0]
+        over, lying = max(edge + 0.035, z + 0.07) + rng.uniform(0, 0.03), out + rng.uniform(0.05, 0.12)   # (no further: the next row's chairs stand there)
         lead(b, name, [(x, y, z + 0.02), (x, y, z + 0.05), (x, y - 0.05, over), (x, -0.12, over + 0.01), (x, floor + 0.05, over + 0.02),
                        ((x + socket) / 2 + rng.uniform(-0.08, 0.08), floor + 0.012, lying), (socket + rng.uniform(-0.03, 0.03), floor + 0.03, lying - 0.04),
-                       (socket, floor + 0.13, out + 0.02), (socket, floor + 0.062, out)], 0.0035, "Rubber", bend=0.05, rng=rng, up=0.02)
-        b.box((socket, floor + 0.052, out), (0.036, 0.03, 0.036), "Rubber", bevel=0.006, segs=2)   # its plug, in the strip
+                       (socket, floor + 0.14, out + 0.02), strip_socket(k, lies, up=PLUG_HIGH - 0.004)], 0.0035, "Rubber", bend=0.05, rng=rng, up=0.02)
         b.box((x, y, z + 0.014), (0.03, 0.022, 0.028), "Rubber", bevel=0.004, segs=2)   # its moulded plug (IEC C13)
     # the keyboard's lead: from the sleeve on the tray's back (wherever this place's keyboard lies and however
     # it is turned), before the monitor's foot, down the tower's left side and round behind it to the DIN socket
     din_x, din_y = TOWER_X + at["keyboard"][0], at["keyboard"][1]
     tray = (lib.place((SET_X + kx, 0, KEYBOARD_Z + kz), (0, kturn, 0)) @ lib.place((0, 0, -KEYBOARD_Z)) @ lib.place(TRAY_AT, TRAY_TURN))
     far = KEYS_HIGH / 2 + 0.015 + TRAY_BACK
-    k0, k1 = tray @ Vector((LEAD_X, far + 0.006, 0.003)), tray @ Vector((LEAD_X, far + 0.024, 0.004))
+    k0, k1 = tray @ Vector((LEAD_X, far + 0.006, 0.001)), tray @ Vector((LEAD_X, far + 0.024, 0.002))
     # (the foot is 0.208 round, 0.1 behind the set's middle: this is clear of it)
     r, side, before = 0.0028, TOWER_X - 0.124 + rng.uniform(-0.008, 0.006), -0.125 + rng.uniform(-0.015, 0.01)
     lead(b, "keyboard", [tuple(k0), tuple(k1), (k1.x + 0.012, r + 0.0005, before), (side, r + 0.0005, before), (side, r + 0.0005, lane_keys),
@@ -857,12 +986,12 @@ def station(b, which="all", lie=None, desk=None, seed=0):
     boxes = list(desk) + [((0, floor - 0.05, 0), (4, 0.1, 4), 0),
                           ((TOWER_X, TOWER_HIGH / 2, TOWER_Z + FRONT + TOWER_DEEP / 2), (0.184, TOWER_HIGH, TOWER_DEEP), 0),
                           ((SET_X, LOW + OUT_H / 2, (GLASS[3] - 0.02 + back) / 2), (OUT_W, OUT_H, back - GLASS[3] + 0.02), 0),
-                          ((SET_X + kx, 0.02, KEYBOARD_Z + kz), (0.58, 0.04, 2 * (KEYS_HIGH / 2 + 0.015 + TRAY_BACK) - 0.006), kturn),
+                          ((SET_X + kx, 0.015, KEYBOARD_Z + kz), (0.58, 0.03, 2 * (KEYS_HIGH / 2 + 0.015 + TRAY_BACK) - 0.006), kturn),
                           ((mat_at[0], 0.0015, mat_at[2]), (0.21, 0.003, 0.25), pturn),
-                          ((strip, floor + 0.02, out), (0.3, 0.04, 0.055), 0)]
+                          strip_box(lies)]
     cylinders = [((SET_X, 0.017, 0.1), 0.208, 0.034), ((SET_X, 0.05, 0.1), 0.08, 0.04)]
     fallen = drape.settle([(name, path, radius) for name, path, radius, _, _ in LEADS], boxes, cylinders)
     for one, path in zip(LEADS, fallen):
-        one[1] = path
+        one[1] = path   # (kept: the room's network leads are laid clear of these)
         b.tube([tuple(q) for q in path], one[2], one[3], segs=one[4], smooth=0)
     drape.check([(name, path, radius) for name, path, radius, _, _ in LEADS], boxes, cylinders)

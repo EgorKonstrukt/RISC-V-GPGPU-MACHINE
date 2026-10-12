@@ -7,10 +7,11 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
 
-// The classroom in the den (world/furniture.py, docs/stations.md): eight computers on four wooden
-// tables, one a visitor. The models are the furniture's; this gives each one's glass its tube,
-// its keyboard and tube their beams' plates, the keys modelled on its monitor and tower their
-// work, and its tower's window the speed of its owner's machine.
+// The classroom in the den (world/furniture.py, docs/stations.md): twelve computers on six wooden
+// tables, one a visitor whose machine is on. The models are the furniture's; this gives each
+// one's glass its tube, its keyboard and tube their beams' plates, the keys modelled on its
+// monitor and tower their work, its tower's window the speed of its owner's machine, and its
+// small lamps (disk, network, the hubs' ports) their light.
 public static partial class ShaderEmuBuilder
 {
     // Models/stations.json, which world/furniture.py writes with the models (world/pc.py's numbers)
@@ -19,6 +20,13 @@ public static partial class ShaderEmuBuilder
     {
         public float x, z, turn;       // the set on its table, and its turn about the upright
         public float[] keyboard;       // its keyboard off its place: x, z, turn
+    }
+    [System.Serializable]
+    class StationHub
+    {
+        public float x, y, z, turn;    // a hub in the room, and its turn about the upright
+        public float[] ports;          // its lamps' lenses in its own frame, facing its -z: x, y, z, the place served (-1: another hub)
+        public float[] lamp;           // a lens: wide, high
     }
     [System.Serializable]
     class StationsPlan
@@ -32,9 +40,13 @@ public static partial class ShaderEmuBuilder
         public float[] osd;            // the monitor's six keys: the first's x, their pitch, their height
         public float led;              // the monitor's lamp: x
         public float[] lamps;          // the tower's three: x of power, turbo, disk
+        public float[] tables;         // the tables' middles: x, z each
+        public float keyboardHigh, keyboardSlope, keyboardTops;   // world/pc.py's keyboard(): its plane, its tilt, its caps' tops
+        public float[] nic, nicSize;   // the network socket's lamp on the tower's back, in the place's frame; wide, high
+        public StationHub[] hubs;
     }
 
-    const float KeyboardHigh = 0.016f, KeyboardSlope = 7f, KeyboardTops = 0.0225f;   // world/pc.py's keyboard()
+    const float TubeFill = 0.93f;      // the picture's share of the glass: the bezel's rounded corners cover the rest
     const float TowerBlankBay = 0.36f - 0.088f;   // the tower's spare bay
 
     static StationsPlan ReadStations()
@@ -128,6 +140,75 @@ public static partial class ShaderEmuBuilder
         Debug.Log("[ShaderEmu] the wall's speed counter is in the scene (not saved)");
     }
 
+    // A lamp that flickers (Blink.shader), a hair before a model's dull lens: a material of its
+    // own, whose sixteen bits EmuStations writes. `turn` about the upright: 180 for a tower's back.
+    static Material BlinkLamp(Transform parent, string name, Vector3 at, float turn, float wide, float high, Color colour)
+    {
+        GameObject lamp = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        lamp.name = name;
+        Object.DestroyImmediate(lamp.GetComponent<Collider>());
+        lamp.transform.SetParent(parent, false);
+        lamp.transform.localPosition = at;
+        lamp.transform.localEulerAngles = new Vector3(0, turn, 0);
+        lamp.transform.localScale = new Vector3(wide, high, 1f);
+        Material material = Mat(name, "ShaderEmu/Blink");
+        material.SetColor("_Color", colour);
+        material.SetFloat("_Pattern", 0f);
+        MeshRenderer renderer = lamp.GetComponent<MeshRenderer>();
+        renderer.sharedMaterial = material;
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        renderer.lightProbeUsage = LightProbeUsage.Off;
+        renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+        return material;
+    }
+
+    // An address to open and text to type, for a visitor at their own place: one strip, which
+    // EmuStations stands between that place's keyboard and its monitor.
+    static void StationFields(Transform root, EmuStations stations, EmuMachine machine)
+    {
+        const float wide = 1120, high = 140, row = 58;
+        Color back = new Color(0.05f, 0.055f, 0.07f);
+        RectTransform panel = Panel(root, "Station fields", Vector3.zero, Vector3.zero, wide, high, back);
+        panel.localScale = Vector3.one * 0.0005f;
+        Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        TextMeshProUGUI unused;
+        Text[] texts = new Text[2];
+        RectTransform[] boxes = new RectTransform[2];
+        float[] widths = { 780, 680 };
+        for (int i = 0; i < 2; i++)
+        {
+            boxes[i] = Child(panel, i == 0 ? "Link" : "Field", 10, 8 + i * (row + 8), widths[i], row);
+            Plate(boxes[i], new Color(0.14f, 0.16f, 0.22f));
+            texts[i] = Child(boxes[i], "Text", 10, 6, widths[i] - 20, row - 12).gameObject.AddComponent<Text>();
+            texts[i].font = font;
+            texts[i].material = UiMaterial();
+            texts[i].fontSize = 26;
+            texts[i].color = Color.white;
+            texts[i].alignment = TextAnchor.MiddleLeft;
+            texts[i].supportRichText = false;
+        }
+        VRC.SDK3.Components.VRCUrlInputField link = boxes[0].gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
+        link.textComponent = texts[0];
+        link.targetGraphic = boxes[0].GetComponent<Image>();
+        machine.placeField = link;
+        OnClick(MakeButton(panel, "Open", "Open this link", 800, 8, 310, row, 26, out machine.placeLabel), machine, "OpenPlaceLink");
+        InputField field = boxes[1].gameObject.AddComponent<InputField>();
+        field.textComponent = texts[1];
+        field.targetGraphic = boxes[1].GetComponent<Image>();
+        field.lineType = InputField.LineType.MultiLineNewline;
+        field.characterLimit = 0;
+        EmuPaste paste = Udon<EmuPaste>(panel.gameObject);
+        paste.field = field;
+        OnClick(MakeButton(panel, "Type", "Type it", 700, 8 + row + 8, 200, row, 26, out unused), paste, "Send");
+        OnClick(MakeButton(panel, "Type line", "+ Enter", 910, 8 + row + 8, 200, row, 26, out unused), paste, "SendLine");
+        Apply(paste);
+        Apply(machine);
+        stations.fields = panel.gameObject;
+        stations.paste = paste;
+        panel.gameObject.SetActive(false);
+    }
+
     // The lamps that are lit while a machine is on: the monitor's (`monitor`: its place, or none)
     // and the tower's power lamp, a hair before the model's own dull lenses.
     static GameObject PowerLamps(Transform parent, StationsPlan plan, bool monitor, Vector3 tower, float glassZ)
@@ -169,6 +250,7 @@ public static partial class ShaderEmuBuilder
         float glassWide = plan.glass[0], glassHigh = plan.glass[1], glassMid = plan.glass[2], glassZ = plan.glass[3];
         float towerX = plan.tower[0], towerFront = plan.tower[1] + plan.tower[2], towerHigh = plan.tower[3];
         float keyUnit = plan.keyScale * 0.01905f / 60f;
+        float lampY = towerHigh - plan.speed[1] + 0.005f;   // the tower's three lamps
         Transform decor = world.Find("Decor"), computer = world.Find("Computer");
         foreach (string gone in new[] { "Round table top", "Round table post", "Stool seat" }) Gone(decor, gone);
         Gone(world, "Stations");
@@ -183,19 +265,25 @@ public static partial class ShaderEmuBuilder
         stations.linkLamps = new GameObject[count];
         stations.powerLamps = new GameObject[count];
         stations.linkSpots = new Transform[count];
+        stations.diskLamps = new Material[count];
+        stations.netLamps = new Material[count];
+        stations.beacons = new Material[count];
+        stations.fieldSpots = new Transform[count];
+        Color red = new Color(1f, 0.08f, 0.04f), green = new Color(0.1f, 1f, 0.3f), amber = new Color(1f, 0.6f, 0.1f);
+        TMP_FontAsset signFont = RetroFont("IBMPlexSansCondensed-Bold");
         foreach (EmuTerminal terminal in world.GetComponentsInChildren<EmuTerminal>(true)) stations.terminal = terminal;
         stations.ownConsole = PictureTexture("StationOwnConsole", 640, 480);
-        Button[] take = new Button[count], keys = new Button[count];
-        TextMeshProUGUI[] captions = new TextMeshProUGUI[count];
+        Button[] take = new Button[count], leave = new Button[count];
+        TextMeshProUGUI unused;
         // a place's keyboard is the console's own layout at the model's size, and its tube a pointer's plate
         EmuMachine theMachine = null;
         foreach (EmuMachine machine in world.GetComponentsInChildren<EmuMachine>(true)) theMachine = machine;
         UdonSharpEditorUtility.CopyUdonToProxy(theMachine);
         EmuKeyboard layout = theMachine.consoleKeyboard;
         UdonSharpEditorUtility.CopyUdonToProxy(layout);
+        // (every key of it, the one that hands over the visitor's real keyboard too)
         List<int> real = new List<int>();
-        for (int i = 0; i < layout.keyLinux.Length; i++)
-            if (layout.keyLinux[i] != EmuKeyboard.LinuxCapture) real.Add(i);
+        for (int i = 0; i < layout.keyLinux.Length; i++) real.Add(i);
         Material over = Mat("Station key over", "Sprites/Default"), held = Mat("Station key held", "Sprites/Default");
         over.color = new Color(1f, 0.75f, 0.2f, 0.35f);
         held.color = new Color(0.2f, 0.55f, 1f, 0.7f);
@@ -205,9 +293,8 @@ public static partial class ShaderEmuBuilder
         stations.keyboards = new EmuKeyboard[count];
         Collider[] tubes = new Collider[count], plates = new Collider[count];
         // a table stops a visitor (the tables stand as world/furniture.py has them)
-        foreach (float z in new[] { 1.5f, -0.9f })
-            foreach (float x in new[] { -1f, 1f })
-                Solid(root, "Table", x - 1f, x + 1f, 0, plan.table, z - 0.45f, z + 0.45f);
+        for (int t = 0; plan.tables != null && t + 1 < plan.tables.Length; t += 2)
+            Solid(root, "Table", plan.tables[t] - 1f, plan.tables[t] + 1f, 0, plan.table, plan.tables[t + 1] - 0.45f, plan.tables[t + 1] + 0.45f);
         List<EmuPlace> placed = new List<EmuPlace>();
         for (int s = 0; s < count; s++)
         {
@@ -223,7 +310,8 @@ public static partial class ShaderEmuBuilder
             Material screen = Mat("Station " + s, "ShaderEmu/CRT");
             screen.SetFloat("_Aspect", glassWide / glassHigh);
             screen.SetFloat("_Curve", 0f);   // the glass is the model's, and bulges itself
-            screen.SetFloat("_Triads", 880f);   // stripes 0.60 mm apart at the middle, 0.78 in the corners: 549 mm of them
+            screen.SetFloat("_Triads", 560f);   // stripes 0.95 mm apart at the middle: 549 mm of them, coarse enough to see from the chair
+            screen.SetFloat("_Fill", TubeFill);
             screen.SetColor("_Off", new Color(0.045f, 0.05f, 0.047f));
             screen.SetFloat("_Glossiness", 0.84f);   // the television's glass is 0.89 to 0.72 smooth; this 0.84 to 0.71
             screen.SetTexture("_Smudge", WorldTexture("Smudges"));   // the television's own film, a little thinner
@@ -241,20 +329,35 @@ public static partial class ShaderEmuBuilder
             RectTransform panel = Panel(place, "Station " + s + " panel", new Vector3(towerX, TowerBlankBay, towerFront - 0.003f), Vector3.zero,
                                         144, 38, new Color(0.05f, 0.055f, 0.07f));
             take[s] = MakeButton(panel, "Take", "FREE", 2, 2, 96, 34, 18, out stations.labels[s]);
-            keys[s] = MakeButton(panel, "Keys", "Use my\nkeyboard", 100, 2, 42, 34, 7, out captions[s]);
+            leave[s] = MakeButton(panel, "Leave", "EXIT", 100, 2, 42, 34, 11, out unused);
             // the name above, what a press does below it, both the key's own lettering
             stations.labels[s].alignment = TextAlignmentOptions.Top;
             stations.labels[s].fontSize = 14;
             stations.labels[s].margin = new Vector4(0, 3, 0, 0);
-            stations.modes[s] = Label((RectTransform)take[s].transform, "Mode", "press to sit here", 0, 21, 96, 11, 6, TextAnchor.MiddleCenter, stations.labels[s].color);
+            stations.modes[s] = Label((RectTransform)take[s].transform, "Mode", "press POWER: yours starts here", 0, 21, 96, 11, 6, TextAnchor.MiddleCenter, stations.labels[s].color);
             stations.modes[s].raycastTarget = false;
 
             // the tower's own keys (turbo, reset; power under them), larger to a beam than their caps
             float panelY = towerHigh - plan.speed[1], powerY = towerHigh - plan.power[1];
             HotKeys(place, "Station " + s + " tower hot", new Vector3(towerX + 0.012f, panelY, towerFront - 0.004f), 34, 30, own,
                     new float[] { 1, 2, 15, 26, 18, 2, 15, 26 }, new[] { "Turbo", "ResetKey" });
-            HotKeys(place, "Station " + s + " power hot", new Vector3(towerX + plan.power[0], powerY, towerFront - 0.008f), 42, 32, own,
-                    new float[] { 1, 1, 40, 30 }, new[] { "Power" });
+            HotKeys(place, "Station " + s + " power hot", new Vector3(towerX + plan.power[0], powerY, towerFront - 0.008f), 64, 48, own,
+                    new float[] { 1, 1, 62, 46 }, new[] { "Power" });
+            // what that key is, in lit letters over it, and a bar under it that beckons while the place is free
+            TextMeshPro sign = new GameObject("Power sign").AddComponent<TextMeshPro>();
+            sign.transform.SetParent(place, false);
+            sign.transform.localPosition = new Vector3(towerX + plan.power[0], powerY + 0.021f, towerFront - 0.0025f);
+            sign.rectTransform.sizeDelta = new Vector2(0.06f, 0.012f);
+            sign.font = signFont;
+            sign.fontSharedMaterial = signFont.material;
+            sign.fontSize = 0.085f;
+            sign.alignment = TextAlignmentOptions.Center;
+            sign.color = new Color(1f, 0.70f, 0.20f);
+            sign.text = "POWER";
+            stations.beacons[s] = BlinkLamp(place, "Beacon " + s, new Vector3(towerX + plan.power[0], powerY - 0.019f, towerFront - 0.0025f), 0, 0.034f, 0.0035f, amber);
+            stations.diskLamps[s] = BlinkLamp(place, "Disk " + s, new Vector3(towerX + plan.lamps[2], lampY, towerFront - 0.0028f), 0, 0.0062f, 0.0024f, red);
+            if (plan.nic != null && plan.nic.Length == 3)
+                stations.netLamps[s] = BlinkLamp(place, "Net " + s, new Vector3(plan.nic[0], plan.nic[1], plan.nic[2] + 0.0008f), 180, plan.nicSize[0], plan.nicSize[1], green);
             // and the monitor's six, under the glass, left to right as their legend names them
             float pitch = plan.osd[1] * 1000f;
             float[] six = new float[24];
@@ -284,8 +387,14 @@ public static partial class ShaderEmuBuilder
             // its keys: the layout's rectangles over the caps' tops, a beam's plate, a mark a hand
             GameObject keysGo = new GameObject("Station " + s + " keyboard");
             keysGo.transform.SetParent(place, false);
-            Quaternion lie = Quaternion.Euler(0f, where.keyboard[2], 0f) * Quaternion.Euler(90f - KeyboardSlope, 0f, 0f);
-            keysGo.transform.localPosition = new Vector3(plan.setX + where.keyboard[0], KeyboardHigh, plan.keyboardZ + where.keyboard[1]) + lie * new Vector3(0f, 0f, -KeyboardTops);
+            Quaternion lie = Quaternion.Euler(0f, where.keyboard[2], 0f) * Quaternion.Euler(90f - plan.keyboardSlope, 0f, 0f);
+            keysGo.transform.localPosition = new Vector3(plan.setX + where.keyboard[0], plan.keyboardHigh, plan.keyboardZ + where.keyboard[1]) + lie * new Vector3(0f, 0f, -plan.keyboardTops);
+            // where the fields stand: between the keyboard and the monitor's foot, leaning back
+            Transform fieldSpot = new GameObject("Fields spot").transform;
+            fieldSpot.SetParent(place, false);
+            fieldSpot.localPosition = new Vector3(plan.setX + where.keyboard[0], 0.045f, plan.keyboardZ + where.keyboard[1] + 0.150f);
+            fieldSpot.localEulerAngles = new Vector3(50f, where.keyboard[2], 0f);
+            stations.fieldSpots[s] = fieldSpot;
             keysGo.transform.localRotation = lie;
             keysGo.transform.localScale = Vector3.one * keyUnit;
             BoxCollider plate = keysGo.AddComponent<BoxCollider>();
@@ -306,7 +415,6 @@ public static partial class ShaderEmuBuilder
             keyboard.hostLinux = layout.hostLinux;
             keyboard.hostNormal = layout.hostNormal;
             keyboard.hostShifted = layout.hostShifted;
-            keyboard.captureLabel = captions[s];
             keyboard.other = layout;                  // only one keyboard has the real one
             keyboard.marks = new Transform[2];
             keyboard.markRenderers = new Renderer[2];
@@ -357,14 +465,37 @@ public static partial class ShaderEmuBuilder
         }
         if (glazed != count) Debug.LogWarning("[ShaderEmu] " + glazed + " of " + count + " stations have a model with glass (world/build.py)");
 
-        // the den's own tower is the same case: its window shows this visitor's machine
+        // the hubs' ports: a lamp each, lit and flickering as its place's network socket is
+        List<Material> hubLamps = new List<Material>();
+        List<int> hubPlaces = new List<int>();
+        for (int h = 0; plan.hubs != null && h < plan.hubs.Length; h++)
+        {
+            StationHub hub = plan.hubs[h];
+            Transform frame = new GameObject("Hub " + h).transform;
+            frame.SetParent(root, false);
+            frame.localPosition = new Vector3(hub.x, hub.y, hub.z);
+            frame.localEulerAngles = new Vector3(0, hub.turn, 0);
+            for (int p = 0; p + 3 < hub.ports.Length; p += 4)
+            {
+                hubLamps.Add(BlinkLamp(frame, "Hub " + h + " port " + p / 4, new Vector3(hub.ports[p], hub.ports[p + 1], hub.ports[p + 2] - 0.0008f), 0,
+                                       hub.lamp[0], hub.lamp[1], green));
+                hubPlaces.Add(Mathf.RoundToInt(hub.ports[p + 3]));
+            }
+        }
+        stations.hubLamps = hubLamps.ToArray();
+        stations.hubPlaces = hubPlaces.ToArray();
+        StationFields(root, stations, theMachine);
+
+        // the den's own tower is the same case: its window and lamps show the machine on the wall
         Gone(computer, "Speed own");
         Gone(computer, "Power lamps");
+        Gone(computer, "Disk own");
         Vector3 den = new Vector3(1.55f, 0f, 5.5f - 0.4f + 0.17f - (plan.tower[2] + 0.42f));   // world/computer.py's TOWER, its case's own origin
         stations.ownSpeed = SpeedWindow(computer, "Speed own", den + new Vector3(plan.speed[0], towerHigh - plan.speed[1], plan.tower[2] - 0.0022f), plan.speed[2], plan.speed[3]);
         WallSpeed(computer);
 
         stations.ownLamps = PowerLamps(computer, plan, false, den + new Vector3(0, 0, plan.tower[2]), 0);
+        stations.ownDisk = BlinkLamp(computer, "Disk own", den + new Vector3(plan.lamps[2], lampY, plan.tower[2] - 0.0028f), 0, 0.0062f, 0.0024f, red);
         stations.machine = theMachine;
         stations.blackTexture = theMachine.blackTexture;
         stations.click = ClickSource(root);
@@ -394,13 +525,14 @@ public static partial class ShaderEmuBuilder
             pointer.tubeAspect = glassWide / glassHigh;
             pointer.tubeBulge = 1.8f;      // world/pc.py's BULGE
             pointer.tubeGap = 0.024f;      // the plate is 12 mm before the glass's rim, the glass's middle 12 mm behind that
+            pointer.tubeFill = TubeFill;
             Apply(pointer);
             stations.pointer = pointer;
         }
         Apply(stations);
         foreach (EmuPlace own in placed) Apply(own);
         for (int s = 0; s < count; s++) OnClick(take[s], stations, "Take" + s);
-        for (int s = 0; s < count; s++) OnClick(keys[s], stations, "Keys" + s);
+        for (int s = 0; s < count; s++) OnClick(leave[s], placed[s], "Leave");
     }
 
     // The keys' strokes (world/sounds.py cut them from a recording of an old keyboard).

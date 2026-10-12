@@ -1458,3 +1458,21 @@ project's `Assets/ShaderEmu`; after changing anything there, copy it back here.
 - To see where a program's instructions go by source line, link a copy with the one file
   compiled `-g` (the code and the addresses are the same: compare `nm`) and give an
   `rvc_cpu --pc-log` to `addr2line -a -i`; take the outermost line of each address.
+- In Udon a cast of a `uint` to `int` is `Convert.ToInt32`, which throws past 2^31 and halts
+  the behaviour for the session. A guest's word that becomes a number goes through
+  `EmuMachine.Small`: the danger zone's laser scrambles the control words (`docs/danger.md`).
+- A menu command run through the editor right after a script was copied in may run the code
+  from before: `Assets/Refresh` first, and wait until `isCompiling` is false.
+- A classroom place is a running machine's (`docs/stations.md`): to test, `Power` on a place's
+  `EmuPlace`, spawned players' `EmuShare` written by hand, `Leave`. Every running machine has
+  a slot in `EmuStreams` whether shown or not (`docs/share.md`), and a packet's status carries
+  core 0's registers, the panel's text and the disk lamp's bits.
+- The program whose window has the guest's keyboard is a number at `0x87000068`
+  (`linux/apps/gameid.h`, written by `nxbar` once a second; `EmuMachine.gameId`): the
+  holodeck's controller is mapped by it (`docs/gamepad.md`). A new game with controls of its
+  own gets a number there and in `EmuGamepad.cs`.
+- A scene from before 12 October 2026: "Put the modelled room into the open scene", then
+  "ShaderEmu/Bring the open scene up to 12 October", then a bake. `stations.json` is flat
+  (Unity's `JsonUtility` reads no list of lists).
+- A key that is put away until needed keeps its own cap on its canvas (`apart` in
+  `PanelLook`): drawn on the plate, a blank key showed where none could be pressed.

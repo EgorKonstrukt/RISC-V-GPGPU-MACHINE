@@ -440,6 +440,96 @@ def pc_lettering(a):
         a.add("lg_" + name, img)
 
 
+def stickers(a):
+    """What is stuck on the classroom's computers (pc_faces.STICKERS has their sizes): 4 texels a
+    millimetre. A round one is drawn on a ground of its own colour, and the model cuts it round."""
+    def seal(colour, size):
+        img, d = card(size, size, colour)
+        return img, d
+    img, d = seal((236, 232, 214), 88)
+    d.ellipse((5, 5, 82, 82), outline=(30, 110, 60), width=3)
+    d.text((44, 30), "QC", fill=(30, 110, 60), anchor="mm", font=font("arialbd.ttf", 24))
+    d.text((44, 54), "PASSED", fill=(30, 110, 60), anchor="mm", font=font("arialbd.ttf", 13))
+    d.text((44, 68), "07", fill=(30, 110, 60), anchor="mm", font=font("arialbd.ttf", 10))
+    a.add("st_qc", img)
+    img, d = seal((250, 212, 40), 88)
+    d.ellipse((24, 26, 34, 42), fill=(30, 28, 24))
+    d.ellipse((54, 26, 64, 42), fill=(30, 28, 24))
+    d.arc((20, 22, 68, 70), 20, 160, fill=(30, 28, 24), width=4)
+    a.add("st_smiley", img)
+    img, d = card(180, 72, (226, 228, 230))
+    d.rectangle((0, 0, 179, 71), outline=(120, 124, 130), width=2)
+    d.text((90, 14), "ASSET  No.", fill=(40, 44, 60), anchor="mm", font=font("arialbd.ttf", 13))
+    for x in range(14, 166, 4):   # a bar code
+        if (x * 7919) % 5 < 3:
+            d.rectangle((x, 24, x + 1 + (x * 31) % 2, 46), fill=(20, 20, 24))
+    d.text((90, 58), "0041 7 96 128", fill=(20, 20, 24), anchor="mm", font=font("consola.ttf", 15))
+    a.add("st_asset", img)
+    img, d = card(144, 64, (250, 214, 30))
+    d.rectangle((0, 0, 143, 63), outline=(20, 20, 20), width=4)
+    d.text((72, 24), "Y2K OK", fill=(20, 20, 20), anchor="mm", font=font("impact.ttf", 30))
+    d.text((72, 50), "TESTED  11/98", fill=(20, 20, 20), anchor="mm", font=font("arialbd.ttf", 11))
+    a.add("st_y2k", img)
+    img, d = card(96, 96, (22, 60, 140))
+    d.rectangle((0, 0, 95, 95), outline=(200, 204, 214), width=3)
+    d.text((48, 24), "ZENYX", fill=(240, 240, 244), anchor="mm", font=font("arialbi.ttf", 20))
+    d.text((48, 52), "486", fill=(250, 210, 60), anchor="mm", font=font("impact.ttf", 28))
+    d.text((48, 78), "DX2-66 inside", fill=(240, 240, 244), anchor="mm", font=font("arialbd.ttf", 11))
+    a.add("st_inside", img)
+    img, d = card(280, 216, (244, 242, 232))
+    d.rectangle((0, 0, 279, 34), fill=(60, 120, 170))
+    for y in range(70, 200, 34):
+        d.line((14, y, 266, y), fill=(170, 190, 204), width=2)
+    for i, text in enumerate(("DOOM  wads", "disk 2 of 3", "do NOT format!!")):
+        d.text((20, 40 + i * 34), text, fill=(30, 40, 120) if i < 2 else (170, 30, 30), font=font("segoepr.ttf", 22))
+    a.add("st_label", img)
+    img, d = card(200, 44, (212, 214, 218))
+    for x in range(-44, 200, 22):   # the foil's stripes
+        d.polygon(((x, 44), (x + 10, 44), (x + 54, 0), (x + 44, 0)), fill=(196, 198, 204))
+    d.text((100, 14), "WARRANTY VOID", fill=(150, 20, 20), anchor="mm", font=font("arialbd.ttf", 15))
+    d.text((100, 32), "IF REMOVED", fill=(150, 20, 20), anchor="mm", font=font("arialbd.ttf", 13))
+    a.add("st_warranty", img)
+    img, d = card(240, 44, (240, 238, 228))
+    for i, colour in enumerate(((200, 50, 44), (232, 140, 40), (240, 210, 60), (70, 160, 80), (50, 100, 180), (110, 60, 150))):
+        d.rectangle((0, 4 + i * 6, 239, 9 + i * 6), fill=colour)
+    a.add("st_rainbow", img)
+    img, d = card(200, 80, (240, 240, 236))
+    d.rectangle((0, 0, 199, 79), outline=(30, 60, 130), width=4)
+    d.text((100, 26), "PROPERTY OF", fill=(30, 60, 130), anchor="mm", font=font("arialbd.ttf", 18))
+    d.text((100, 54), "ROOM 12", fill=(30, 60, 130), anchor="mm", font=font("impact.ttf", 28))
+    a.add("st_property", img)
+    img, d = card(112, 72, (238, 226, 190))   # faded
+    d.rectangle((0, 0, 111, 71), outline=(214, 180, 150), width=3)
+    d.text((56, 18), "SALE", fill=(206, 150, 130), anchor="mm", font=font("arialbd.ttf", 16))
+    d.text((56, 46), "1,499.-", fill=(190, 140, 128), anchor="mm", font=font("arialbd.ttf", 24))
+    a.add("st_price", img)
+
+
+def network(a):
+    """A socket of a mains strip seen from above, and the front of a small hub (world/pc.py: the
+    strip's sockets are 44 mm squares, the hub's front 210 x 28 mm with a lamp over each number)."""
+    img, d = card(132, 132, (212, 202, 172))
+    d.rounded_rectangle((8, 8, 123, 123), 14, fill=(196, 186, 158), outline=(150, 142, 120), width=3)
+    d.rounded_rectangle((20, 20, 111, 111), 10, fill=(222, 214, 190), outline=(160, 152, 130), width=2)
+    for x in (44, 80):   # two blades and the earth's hole, dark: an empty socket
+        d.rectangle((x, 38, x + 7, 66), fill=(26, 24, 22))
+    d.ellipse((57, 76, 75, 94), fill=(26, 24, 22))
+    d.rectangle((57, 86, 75, 96), fill=(26, 24, 22))
+    a.add("strip_socket", img)
+    img, d = card(630, 84, (46, 48, 54))
+    d.rectangle((0, 0, 629, 83), outline=(24, 24, 28), width=2)
+    d.text((30, 50), "PWR", fill=(206, 204, 192), anchor="mm", font=font("arialbd.ttf", 11))
+    for k in range(8):
+        x = 105 + k * 60
+        d.rectangle((x - 12, 16, x + 12, 38), outline=(110, 112, 120), width=1)
+        d.text((x, 50), str(k + 1), fill=(206, 204, 192), anchor="mm", font=font("arialbd.ttf", 13))
+    d.text((315, 70), "LINK / ACTIVITY", fill=(150, 152, 160), anchor="mm", font=font("arialbd.ttf", 10))
+    d.text((585, 28), "NETSTAR", fill=(232, 228, 210), anchor="mm", font=font("arialbi.ttf", 15))
+    d.text((585, 50), "HUB-8", fill=(232, 228, 210), anchor="mm", font=font("arialbd.ttf", 13))
+    d.text((585, 68), "10BASE-T", fill=(150, 152, 160), anchor="mm", font=font("arialbd.ttf", 9))
+    a.add("hub_front", img)
+
+
 def atlas():
     a = Atlas(2048, 2048)
     a.add("keyboard", keyboard_top())
@@ -532,6 +622,8 @@ def atlas():
     d.text((70, 58), "RISC-V", fill=(240, 200, 60), anchor="mm", font=font("impact.ttf", 30))
     a.add("mousepad", img)
     pc_lettering(a)
+    stickers(a)
+    network(a)
     arr = np.asarray(a.img).astype(float) / 255
     save("Details", arr, 0.25)
     # what is a lamp in those pictures: the LEDs and lit read-outs of the rack and the drives
@@ -769,7 +861,8 @@ def keyboard():
     shade = Image.new("L", img.size, 120)   # how much light reaches a place among the caps: the lightmap is too coarse to say
     draw, lit = ImageDraw.Draw(img), ImageDraw.Draw(shade)
     # a cap seen from above, as pc.py and computer.py build it: its foot, its shoulder, its top (insets left and right, behind, before)
-    foot, shoulder, top = (1.5, 1.5, 1.5), (4.0, 3.0, 6.0), (6.0, 4.5, 8.0)
+    import pc_faces
+    foot, shoulder, top = (1.5, 1.5, 1.5), pc_faces.CAP_SHOULDER, pc_faces.CAP_TOP
     for x, y, w, h, legend in layout["keys"]:
         named = (sum(c.isalpha() for c in legend) >= 2 and " " not in legend.strip()) or (len(legend) > 1 and legend[0] == "F" and legend[1].isdigit())
         named = named or legend.startswith("Use my")

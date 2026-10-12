@@ -275,7 +275,7 @@ Measured on 10 October 2026 (`rvc_cpu` for instructions; RTX 5090, D3D11 and fxc
 
 ## The panel on the wall
 
-On the right wall, at the danger zone's left ("Network panel", `EmuLan`, `ShaderEmuLan.cs`):
+On the right wall, between the danger zone and the rack ("Network panel", `EmuLan`, `ShaderEmuLan.cs`):
 this visitor's own machine's address and counts (what `[Lan]` logs every five seconds), and a
 line for every visitor's machine: address, whose, on or off, and how many sendings (batches
 of packets, `netSeq`) it has made. Nothing is synced for it.

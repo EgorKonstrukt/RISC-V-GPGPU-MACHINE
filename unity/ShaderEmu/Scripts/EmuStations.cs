@@ -132,7 +132,7 @@ public class EmuStations : UdonSharpBehaviour
     // The power key of a free place is anybody's: it starts their machine there.
     public void Act(int s, int what)
     {
-        if (what == 0 && s < count && owner[s] == 0)
+        if (what == 0 && s < count && owner[s] <= 0)
         {
             Take(s);
             return;
