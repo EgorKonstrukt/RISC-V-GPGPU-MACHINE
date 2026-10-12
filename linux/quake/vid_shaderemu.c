@@ -29,7 +29,7 @@ static cvar_t	in_mouse = {"in_mouse", "0", true};	/* the pointer turns the view 
 static GR_WINDOW_ID window;
 static int	opened;
 static int	mouse_x, mouse_y, mouse_dx, mouse_dy, mouse_known, mouse_inside = 1;
-static unsigned	frames, hold_frame, stats_ms = 5000;
+static unsigned	frames, hold_frame, hold_late, stats_ms = 5000, stats_frames;
 
 void D_BeginDirectRect (int x, int y, byte *pbitmap, int width, int height) {}
 void D_EndDirectRect (int x, int y, int width, int height) {}
@@ -61,6 +61,7 @@ void VID_SetPalette (unsigned char *palette)
 	if (!opened)
 		return;
 	words = seglPalette ();
+	seglSettle ();
 	for (i = 0; i < 256; i++)
 		words[i] = (table[i] & 0xff) << 16 | (table[i] & 0xff00) | (table[i] >> 16 & 0xff);
 }
@@ -93,6 +94,8 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	sb_updates = 0;		/* every frame is drawn whole: the status bar too */
 }
 
+unsigned se_started;	/* the instruction count at main (sys_shaderemu.c) */
+
 static unsigned cycles (void)
 {
 	unsigned v;
@@ -124,27 +127,40 @@ void VID_Phase (int next)
 /*
  * Every few seconds: frames a second, and the machine's instructions a frame (quakestat:
  * lines; QUAKE_STATS_MS says how often, 0 never). QUAKE_HOLD=N keeps frame N on the screen
- * and stops there, which is how pictures are compared.
+ * and stops there, which is how pictures are compared; with QUAKE_HOLD_LATE=1 it stops when
+ * the frame after is ready to be shown, having written whatever that one writes.
  */
 void GL_EndRendering (void)
 {
 	static unsigned since_ms, since_cycles, since_frames;
+	static int level_shown;
 	unsigned now;
 
 	SE_FrameEnd ();
-	qglSwap ();
-	VID_Phase (0);
-	frames++;
-	if (hold_frame && frames >= hold_frame) {
+	if (hold_frame && hold_late && frames >= hold_frame) {
+		hold_late = 0;
+	} else {
+		qglSwap ();
+		VID_Phase (0);
+		frames++;
+	}
+	if (hold_frame && frames >= hold_frame && !hold_late) {
+		seglSettle ();	/* (the frame is on the screen when this says so) */
 		printf ("quake: holding frame %u\n", frames);
 		fflush (stdout);
 		for (;;)
 			__asm__ volatile (".word 0x0100000f");	/* pause: the machine's frame ends */
 	}
+	if (!level_shown && stats_ms && cls.signon == SIGNONS) {
+		/* from the program's start to a level's first picture */
+		level_shown = 1;
+		printf ("quakestat: a level's first frame is frame %u, %u thousand instructions from the start\n", frames, (cycles () - se_started) / 1000);
+		fflush (stdout);
+	}
 	now = VID_Milliseconds ();
 	if (!since_ms)
 		since_ms = now, since_cycles = cycles (), since_frames = frames;
-	if (stats_ms && now - since_ms >= stats_ms) {
+	if (stats_frames ? frames - since_frames >= stats_frames : stats_ms && now - since_ms >= stats_ms) {
 		unsigned n = frames - since_frames, kept, in_gpu, gpu_size, evicted, vertices;
 
 		qglMemory (&kept, &in_gpu, &gpu_size, &evicted, &vertices);
@@ -189,6 +205,29 @@ static void gamma_palette (unsigned char *palette)
 		gamma = Q_atof (com_argv[i + 1]);
 	if (gamma == 1)
 		return;
+	if (gamma == 0.7f) {
+		/* what the sums below come to for 0.7, by byte: they are 768 powers in doubles, a
+		   twentieth of the time from the command to the first picture */
+		static const unsigned char brighter[256] = {
+	5, 9, 11, 14, 16, 18, 21, 23, 24, 26, 28, 30, 32, 33, 35, 37, 38, 40, 41, 43,
+	44, 46, 47, 49, 50, 51, 53, 54, 56, 57, 58, 59, 61, 62, 63, 65, 66, 67, 68, 70,
+	71, 72, 73, 74, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+	93, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113,
+	114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 126, 127, 128, 129, 130, 131, 132,
+	133, 134, 135, 136, 137, 138, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 147, 148, 149, 150,
+	151, 152, 153, 154, 154, 155, 156, 157, 158, 159, 160, 160, 161, 162, 163, 164, 165, 165, 166, 167,
+	168, 169, 170, 170, 171, 172, 173, 174, 175, 175, 176, 177, 178, 179, 179, 180, 181, 182, 183, 184,
+	184, 185, 186, 187, 188, 188, 189, 190, 191, 191, 192, 193, 194, 195, 195, 196, 197, 198, 199, 199,
+	200, 201, 202, 202, 203, 204, 205, 205, 206, 207, 208, 208, 209, 210, 211, 212, 212, 213, 214, 215,
+	215, 216, 217, 218, 218, 219, 220, 221, 221, 222, 223, 223, 224, 225, 226, 226, 227, 228, 229, 229,
+	230, 231, 232, 232, 233, 234, 234, 235, 236, 237, 237, 238, 239, 239, 240, 241, 242, 242, 243, 244,
+	244, 245, 246, 247, 247, 248, 249, 249, 250, 251, 252, 252, 253, 254, 254, 255,
+		};
+
+		for (i = 0; i < 768; i++)
+			palette[i] = brighter[palette[i]];
+		return;
+	}
 	for (i = 0; i < 768; i++) {
 		f = pow ((palette[i] + 1) / 256.0, gamma) * 255 + 0.5;
 		palette[i] = f < 0 ? 0 : f > 255 ? 255 : (int)f;
@@ -254,8 +293,11 @@ void VID_Init (unsigned char *palette)
 
 	if ((s = getenv ("QUAKE_HOLD")) != NULL)
 		hold_frame = atoi (s);
+	hold_late = getenv ("QUAKE_HOLD_LATE") != NULL;
 	if ((s = getenv ("QUAKE_STATS_MS")) != NULL)
 		stats_ms = atoi (s);
+	if ((s = getenv ("QUAKE_STATS_FRAMES")) != NULL)
+		stats_frames = atoi (s);	/* a line every so many frames instead: the same frames each run */
 
 	GL_Init ();
 	gamma_palette (palette);

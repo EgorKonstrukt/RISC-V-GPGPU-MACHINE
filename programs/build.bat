@@ -17,3 +17,7 @@ rem fpcheck uses the F extension (the full machine has it)
 "%LLVM_BIN%\clang.exe" %CFLAGS:rv32ima=rv32imaf% common\start.S fpcheck\fpcheck.c -o build\fpcheck.elf || exit /b 1
 "%LLVM_BIN%\llvm-objcopy.exe" -O binary build\fpcheck.elf bin\fpcheck.bin || exit /b 1
 echo built bin\fpcheck.bin
+rem lazy runs in place of the kernel, in supervisor mode (tools\make_lazy_image.py)
+"%LLVM_BIN%\clang.exe" %CFLAGS:common\link.ld=lazy\link.ld% common\start.S lazy\lazy.c -o build\lazy.elf || exit /b 1
+"%LLVM_BIN%\llvm-objcopy.exe" -O binary build\lazy.elf bin\lazy.bin || exit /b 1
+echo built bin\lazy.bin

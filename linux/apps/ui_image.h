@@ -8,9 +8,10 @@
  * writes what, each core its own memory, and the picture's pixels are written once, into
  * the file's own pages (it is mapped), by as many cores as there are:
  *
- *   PNG    worker 1 inflates the stream into the filtered rows; worker 2 follows it and
- *          takes the filters off, into rows of its own; worker 3 follows that and writes
- *          the pixels. Each looks at a count the one before it keeps.
+ *   PNG    this core inflates the stream into the filtered rows (the longest step: it
+ *          waits for nobody); worker 1 follows it and takes the filters off, into rows of
+ *          its own; worker 2 follows that and writes the pixels. Each looks at a count
+ *          the one before it keeps.
  *   JPEG   worker 1 reads the Huffman codes into a short list of the coefficients that are
  *          not zero; the others take strips of 16 rows each, as they are ready, and do the
  *          transform and the colours for them on their stacks, writing only pixels.
@@ -61,6 +62,7 @@ struct img_job {
 };
 
 static struct img_job *img;	/* (one picture at a time) */
+static int img_followers;	/* workers at the stages after the one this core does itself */
 
 static inline uint32_t img_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -214,8 +216,33 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 #define distances tables[1]
 #define meta tables[2]
 	uint8_t lengths[320];
+	uint32_t hold;
+	int count;
+	const uint8_t *at, *end;
+/* Two bytes at once while the chunk has them; at a chunk's end, and for a long code, by b. */
+#define IMG_BY_B(what) (b.hold = hold, b.count = count, b.at = at, what, hold = b.hold, count = b.count, at = b.at, end = b.chunk_end)
+#define IMG_FILL(need) do { \
+		if (count < (need)) { \
+			if (at + 2 <= end) { \
+				hold |= (uint32_t)(at[0] | at[1] << 8) << count; \
+				at += 2, count += 16; \
+			} else \
+				IMG_BY_B(img_need(&b, need)); \
+		} \
+	} while (0)
+#define IMG_CODE(symbol, codes) do { \
+		uint16_t quick; \
+		IMG_FILL(15); \
+		quick = (codes).quick[hold & ((1 << IMG_QUICK) - 1)]; \
+		if (quick) { \
+			hold >>= quick >> 12, count -= quick >> 12; \
+			symbol = quick & 0xfff; \
+		} else \
+			IMG_BY_B(symbol = img_code(&b, &(codes))); \
+	} while (0)
 	uint8_t *out = j->raw;
-	uint32_t total = (uint32_t)(j->row_bytes + 1) * (uint32_t)j->h, n = 0, last, told = 0;
+	uint32_t total = (uint32_t)(j->row_bytes + 1) * (uint32_t)j->h, n = 0, last, told = 0, looked = 0;
+	int k;
 
 	(void)unused;
 	memset(&b, 0, sizeof b);
@@ -272,24 +299,34 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 				img_codes_make(&literals, lengths, hlit);
 				img_codes_make(&distances, lengths + hlit, hdist);
 			}
+			/* the reader's state in registers here: a store to out could be one to b, for all the compiler knows */
+			hold = b.hold, count = b.count, at = b.at, end = b.chunk_end;
 			while (!b.bad) {
-				int symbol = img_code(&b, &literals);
+				int symbol, extra;
 
+				IMG_CODE(symbol, literals);
 				if (symbol < 256) {
 					if (n < total)
 						out[n++] = (uint8_t)symbol;
 				} else if (symbol == 256) {
 					break;
 				} else if (symbol < 286) {
-					uint32_t length = length_base[symbol - 257] + img_take(&b, length_extra[symbol - 257]);
-					int d = img_code(&b, &distances);
-					uint32_t distance;
+					uint32_t length, distance;
+					int d;
 
+					extra = length_extra[symbol - 257];
+					IMG_FILL(extra);
+					length = length_base[symbol - 257] + (hold & ((1u << extra) - 1));
+					hold >>= extra, count -= extra;
+					IMG_CODE(d, distances);
 					if (d >= 30) {
 						b.bad = 1;
 						break;
 					}
-					distance = distance_base[d] + img_take(&b, distance_extra[d]);
+					extra = distance_extra[d];
+					IMG_FILL(extra);
+					distance = distance_base[d] + (hold & ((1u << extra) - 1));
+					hold >>= extra, count -= extra;
 					if (distance > n) {
 						b.bad = 1;
 						break;
@@ -302,9 +339,17 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 					b.bad = 1;
 				}
 				/* the next stage is told now and then, not at every byte */
-				if (n - told >= 1024)
+				if (n - told >= 1024) {
 					*j->inflated = told = n;
+					/* (a worker that stopped at a page goes on when this core looks) */
+					if (img_followers && n - looked >= 65536) {
+						looked = n;
+						for (k = 1; k <= img_followers; k++)
+							mcw_done(k);
+					}
+				}
 			}
+			b.hold = hold, b.count = count, b.at = at;
 		} else {
 			b.bad = 1;
 		}
@@ -314,6 +359,9 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 		*j->failed = 1;
 	*j->inflated = total;
 	return n;
+#undef IMG_BY_B
+#undef IMG_FILL
+#undef IMG_CODE
 #undef literals
 #undef distances
 #undef meta
@@ -640,6 +688,19 @@ img_clip(int v)
 	return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
 }
 
+/* The same for a sum of a sample and a colour term (-384 to 639), as a table the first core
+ * fills before any job: six of these a pair of pixels. */
+static uint8_t img_clip_of[1024];
+
+static void
+img_clip_table(void)
+{
+	int i;
+
+	for (i = 0; i < 1024; i++)
+		img_clip_of[i] = img_clip(i - 384);
+}
+
 /* The inverse transform of one block, in integers (as the small public decoders do it). */
 static void
 img_idct(int *b, uint8_t *out, int pitch)
@@ -750,6 +811,16 @@ img_jpeg_strips(uint32_t first, uint32_t unused)
 							const uint16_t *q = j->quant[j->comp[c].table];
 							int n = *in++;
 
+							/* nothing but the block's mean (most of a sky): what the transform would give, without it */
+							if (n == 0 || (n == 1 && in[0] == 0)) {
+								int mean = n ? ((int16_t)(in[1] | in[2] << 8) * q[0]) << 3 : 0;
+								uint8_t *to = plane[c] + by * 8 * 16 + bx * 8;
+
+								in += 3 * n;
+								for (k = 0; k < 8; k++, to += 16)
+									memset(to, img_clip(((mean + 32) >> 6) + 128), 8);
+								continue;
+							}
 							memset(block, 0, sizeof block);
 							for (k = 0; k < n; k++, in += 3)
 								block[img_zigzag[in[0]]] = (int16_t)(in[1] | in[2] << 8) * q[in[0]];
@@ -757,7 +828,7 @@ img_jpeg_strips(uint32_t first, uint32_t unused)
 						}
 				/* the MCU's pixels, each component stretched to the MCU's size */
 				{
-					int most_x = j->w - mx * j->mcu_w, sx[3], sy[3];
+					int most_x = j->w - mx * j->mcu_w, sx[3], sy[3], paired;
 
 					if (most_x > j->mcu_w)
 						most_x = j->mcu_w;
@@ -765,6 +836,7 @@ img_jpeg_strips(uint32_t first, uint32_t unused)
 						sx[c] = j->comp[c].h * 8 == j->mcu_w ? 0 : 1;
 						sy[c] = j->comp[c].v * 8 == j->mcu_h ? 0 : 1;
 					}
+					paired = j->components == 3 && !sx[0] && sx[1] && sx[2];
 					for (y = 0; y < j->mcu_h; y++) {
 						int py = my * j->mcu_h + y;
 						const uint8_t *l = plane[0] + (y >> sy[0]) * 16;
@@ -776,7 +848,20 @@ img_jpeg_strips(uint32_t first, uint32_t unused)
 						if (j->components == 3) {
 							const uint8_t *u = plane[1] + (y >> sy[1]) * 16, *v = plane[2] + (y >> sy[2]) * 16;
 
-							for (x = 0; x < most_x; x++, out += 3) {
+							/* a colour sample for two pixels (the usual kind): its three terms once */
+							for (x = 0; paired && x < most_x; x += 2, out += 6) {
+								int cb = u[x >> 1] - 128, cr = v[x >> 1] - 128, lum = l[x];
+								const uint8_t *r = img_clip_of + 384 + ((91881 * cr + 32768) >> 16);
+								const uint8_t *g = img_clip_of + 384 - ((22554 * cb + 46802 * cr + 32768) >> 16);
+								const uint8_t *b = img_clip_of + 384 + ((116130 * cb + 32768) >> 16);
+
+								out[0] = r[lum], out[1] = g[lum], out[2] = b[lum];
+								if (x + 1 == most_x)
+									break;
+								lum = l[x + 1];
+								out[3] = r[lum], out[4] = g[lum], out[5] = b[lum];
+							}
+							for (; x < most_x; x++, out += 3) {
 								int lum = l[x >> sx[0]], cb = u[x >> sx[1]] - 128, cr = v[x >> sx[2]] - 128;
 
 								out[0] = img_clip(lum + ((91881 * cr + 32768) >> 16));
@@ -936,7 +1021,7 @@ img_memory(uint32_t bytes)
 /*
  * Reads a PNG or JPEG file and writes it as a PPM file. NULL when that went well, with the
  * picture's size; else what was wrong. `workers` is how many worker cores it may ask for
- * (3 is what it has use for now; more share a JPEG's strips).
+ * (a PNG has use for 2; more share a JPEG's strips).
  */
 static const char *
 ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int workers)
@@ -992,9 +1077,9 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 	mcw_touch(map, mapped);
 	j->failed = mcw_alloc(16);
 	*j->failed = 0;
-	/* no more than there is work for: a PNG is three steps, a JPEG its codes and its strips of 16 rows */
-	if (workers > (png ? 3 : (j->h + 15) / 16 + 1))
-		workers = png ? 3 : (j->h + 15) / 16 + 1;
+	/* no more than there is work for: a PNG is this core's step and two more, a JPEG its codes and its strips of 16 rows */
+	if (workers > (png ? 2 : (j->h + 15) / 16 + 1))
+		workers = png ? 2 : (j->h + 15) / 16 + 1;
 	if (workers > 0)
 		got = mcw_open(workers);
 	if (png) {
@@ -1009,11 +1094,14 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 			goto done;
 		}
 		*j->inflated = *j->unfiltered = 0;
-		if (got >= 3) {
-			mcw_post(1, img_png_inflate, first_idat, 0);
-			mcw_post(2, img_png_unfilter, 0, 0);
-			mcw_post(3, img_png_pixels, 0, 0);
-			for (k = 1; k <= 3; k++)
+		if (got >= 2) {
+			/* the longest stage is this core's own: it waits for nobody until the end */
+			mcw_post(1, img_png_unfilter, 0, 0);
+			mcw_post(2, img_png_pixels, 0, 0);
+			img_followers = 2;
+			img_png_inflate(first_idat, 0);
+			img_followers = 0;
+			for (k = 1; k <= 2; k++)
 				mcw_wait(k);
 		} else {
 			img_png_inflate(first_idat, 0);
@@ -1039,6 +1127,7 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 		mcw_touch(j->list, j->list_room / 4 < 3 * j->size + blocks + 4096 ? j->list_room / 4 : 3 * j->size + blocks + 4096);
 		*j->listed = 0;
 		j->strips = (j->mcus_y * j->mcu_h + 15) / 16;
+		img_clip_table();
 		if (got >= 2) {
 			j->sharers = got - 1;
 			mcw_post(1, img_jpeg_codes, 0, 0);

@@ -50,9 +50,34 @@ enum { FRAGMENT_COLOUR, FRAGMENT_TEXTURE, FRAGMENT_KEYED = 0x100 };
 /* a texel that is a hole where the alpha test is on: wholly transparent black */
 #define KEY_TEXEL 0xFF000000u
 
+/* What a draw's command has of the state, worked out when the state changes and not at every
+   draw: one for buffers of compact vertices, one for a chunk's packed ones (DeriveState). */
+struct SEState { uint32_t serial, skip, fragment, address, width, height, pass_bit, spare; };
+struct SEVb;
+
+/* What every draw reads and writes, in one place: one address in a register serves it all. */
+static struct {
+	uint32_t* set;                /* the frame's set, where its commands are */
+	uint32_t commands, mesh_vertices, passes_used;
+	uint32_t frame, matrix_epoch, state_serial;
+	uint32_t* last_draw;          /* the command a draw may go on from (Emit) */
+	const struct SEVb* last_vb;
+	uint32_t last_serial, last_block, last_end;
+	struct SEVb* vb;
+	struct SEState state[2];
+} draw = { NULL, 0, 0, 0, 1, 1, 1 };
+#define commands      draw.commands
+#define mesh_vertices draw.mesh_vertices
+#define passes_used   draw.passes_used
+#define frame_number  draw.frame
+#define matrix_epoch  draw.matrix_epoch
+#define state_serial  draw.state_serial
+#define last_draw     draw.last_draw
+#define last_vb       draw.last_vb
+#define se_vb         draw.vb
+
 static uint8_t* gpu;
-static uint32_t set_at = SETS_AT, commands, blocks, mesh_vertices, arena_top, passes_used;
-static uint32_t frame_number = 1, matrix_epoch = 1;
+static uint32_t set_at = SETS_AT, blocks, arena_top;
 static uint32_t stat_commands, stat_mesh, stat_dropped;
 /* texels and vertices made for the device, and the instructions that took */
 static uint32_t stat_texels, stat_texel_cycles, stat_vertices, stat_vertex_cycles;
@@ -138,9 +163,11 @@ static void Heap_Free(struct Span* s) {
 static struct Span* pending[2][MAX_PENDING];
 static int pending_count[2];
 
+static void Settle(void);
+
 static void Heap_FreeLater(struct Span* s) {
 	if (!s) return;
-	if (pending_count[0] == MAX_PENDING) { Heap_Free(s); return; }
+	if (pending_count[0] == MAX_PENDING) { Settle(); Heap_Free(s); return; }
 	pending[0][pending_count[0]++] = s;
 }
 
@@ -150,6 +177,20 @@ static void Heap_Age(void) {
 	Mem_Copy(pending[1], pending[0], pending_count[0] * sizeof(struct Span*));
 	pending_count[1] = pending_count[0];
 	pending_count[0] = 0;
+}
+
+/* The list submitted last is not waited for (Gfx_EndFrame): the game's next frame runs while
+   it is drawn. What it reads must stay until then: the frame before's buffers and textures.
+   Whoever writes such memory in place settles first; a frame's own set is never read by it. */
+static cc_bool unsettled;
+
+static cc_bool Drawing(void) {
+	if (unsettled && ((volatile uint32_t*)gpu)[REG_SUBMIT / 4] == 0) unsettled = false;
+	return unsettled;
+}
+
+static void Settle(void) {
+	while (Drawing()) next_frame();
 }
 
 static void* Arena_Alloc(uint32_t size) {
@@ -166,11 +207,10 @@ static void* Arena_Alloc(uint32_t size) {
 *#########################################################################################################################*/
 static uint32_t clear_colour;
 static uint32_t hold_frame, stats_ms = 5000;
-static cc_bool mesh_sums;
+static cc_bool mesh_sums, texture_sums, swap_waits, hold_late;
 static int view_x, view_y, view_w, view_h;
 static struct Matrix se_view, se_proj;
 static struct SETexture* se_texture;
-static struct SEVb* se_vb;
 static cc_bool se_depthOnly, se_alphaTest, se_alphaBlend, se_depthTest = true;
 static uint32_t* chunk_table;   /* the colours every chunk's vertices are tagged with */
 static uint32_t chunk_colours;
@@ -186,6 +226,7 @@ void Gfx_Create(void) {
 	int spare = 0, total;
 	gpu = SE_Gpu();
 	if (!gpu) Process_Abort("this machine has no GPU");
+	draw.set = (uint32_t*)(gpu + set_at);
 
 	Heap_Add(HEAP_AT, GPU_END);
 	if (((volatile uint32_t*)gpu)[0] == 4) { Heap_Add(SPARE_AT, SPARE_END); spare = SPARE_END - SPARE_AT; }
@@ -195,6 +236,11 @@ void Gfx_Create(void) {
 	if ((s = getenv("CLASSICUBE_HOLD")))     hold_frame = atoi(s);
 	if ((s = getenv("CLASSICUBE_STATS_MS"))) stats_ms   = atoi(s);
 	mesh_sums = getenv("CLASSICUBE_MESH_SUM") != NULL;
+	texture_sums = getenv("CLASSICUBE_TEXTURE_SUM") != NULL;
+	/* CLASSICUBE_SWAP=wait: every list waited for, as it was. CLASSICUBE_HOLD_LATE=1: the held
+	   frame stays while the next is made ready, and the game stops before that one is shown. */
+	swap_waits = getenv("CLASSICUBE_SWAP") != NULL;
+	hold_late  = getenv("CLASSICUBE_HOLD_LATE") != NULL;
 
 	Gfx.MaxTexWidth  = 1024;
 	Gfx.MaxTexHeight = 1024;
@@ -252,13 +298,18 @@ uint32_t cycles(void);
 
 static void CopyTexels(struct SETexture* tex, int x, int y, struct Bitmap* part, int rowWidth) {
 	uint32_t began = cycles();
-	const int width = tex->width, count = part->width, rows = part->height;
+	const int width = tex->width, count = part->width, rows = part->height, fours = count & ~3;
 	uint32_t* restrict dst = (uint32_t*)(gpu + tex->span->at) + y * width + x;
 	const BitmapCol* restrict src = part->scan0;
 	int xx, yy;
 
+	/* (four at a time: the loop's own instructions were a third of a texel's) */
 	for (yy = 0; yy < rows; yy++, src += rowWidth, dst += width) {
-		for (xx = 0; xx < count; xx++) dst[xx] = Texel(src[xx]);
+		for (xx = 0; xx < fours; xx += 4) {
+			BitmapCol p = src[xx], q = src[xx + 1], r = src[xx + 2], s = src[xx + 3];
+			dst[xx] = Texel(p); dst[xx + 1] = Texel(q); dst[xx + 2] = Texel(r); dst[xx + 3] = Texel(s);
+		}
+		for (; xx < count; xx++) dst[xx] = Texel(src[xx]);
 	}
 	stat_texels += count * rows;
 
@@ -267,8 +318,15 @@ static void CopyTexels(struct SETexture* tex, int x, int y, struct Bitmap* part,
 		const uint32_t* restrict from = (uint32_t*)(gpu + tex->span->at) + y * width + x;
 		uint32_t* restrict a = (uint32_t*)(gpu + tex->wide->at) + y * width * WIDE + x;
 		for (yy = 0; yy < rows; yy++, from += width, a += width * WIDE) {
-			uint32_t *b = a + width, *c = b + width, *d = c + width;
-			for (xx = 0; xx < count; xx++) {
+			uint32_t *restrict b = a + width, *restrict c = b + width, *restrict d = c + width;
+			for (xx = 0; xx < fours; xx += 4) {
+				uint32_t p = from[xx], q = from[xx + 1], r = from[xx + 2], s = from[xx + 3];
+				a[xx] = p; a[xx + 1] = q; a[xx + 2] = r; a[xx + 3] = s;
+				b[xx] = p; b[xx + 1] = q; b[xx + 2] = r; b[xx + 3] = s;
+				c[xx] = p; c[xx + 1] = q; c[xx + 2] = r; c[xx + 3] = s;
+				d[xx] = p; d[xx + 1] = q; d[xx + 2] = r; d[xx + 3] = s;
+			}
+			for (; xx < count; xx++) {
 				uint32_t t = from[xx];
 				a[xx] = t; b[xx] = t; c[xx] = t; d[xx] = t;
 			}
@@ -279,16 +337,29 @@ static void CopyTexels(struct SETexture* tex, int x, int y, struct Bitmap* part,
 
 static void MakeWide(struct SETexture* tex) {
 	uint32_t *src, *dst;
-	int x, y, k;
+	int x, y;
 	tex->wide = Heap_Alloc(tex->width * tex->height * 4 * WIDE);
 	if (!tex->wide) return;
 
 	src = (uint32_t*)(gpu + tex->span->at);
 	dst = (uint32_t*)(gpu + tex->wide->at);
-	for (y = 0; y < tex->height; y++, src += tex->width) {
-		for (k = 0; k < WIDE; k++)
-			for (x = 0; x < tex->width; x++) *dst++ = src[x];
+	for (y = 0; y < tex->height; y++, src += tex->width, dst += tex->width * WIDE) {
+		uint32_t *b = dst + tex->width, *c = b + tex->width, *d = c + tex->width;
+		for (x = 0; x < tex->width; x++) {
+			uint32_t t = src[x];
+			dst[x] = t; b[x] = t; c[x] = t; d[x] = t;
+		}
 	}
+}
+
+/* CLASSICUBE_TEXTURE_SUM: a line for every texture made, to compare two builds' pictures by. */
+static void TextureSum(const struct SETexture* tex) {
+	const uint32_t* at = (const uint32_t*)(gpu + tex->span->at);
+	uint32_t sum = 0;
+	int i;
+	for (i = 0; i < tex->width * tex->height; i++) sum = sum * 31 + at[i];
+	printf("cctex: %d x %d, sum %08x\n", tex->width, tex->height, sum);
+	fflush(stdout);
 }
 
 GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags, cc_bool mipmaps) {
@@ -300,19 +371,61 @@ GfxResourceID Gfx_AllocTexture(struct Bitmap* bmp, int rowWidth, cc_uint8 flags,
 	tex->width  = bmp->width;
 	tex->height = bmp->height;
 	CopyTexels(tex, 0, 0, bmp, rowWidth);
+	if (texture_sums) TextureSum(tex);
 	return tex;
 }
 
+/* Texels that change while the list being drawn may read them are kept until the frame ends:
+   its own list is the first that is to show them, and by then the one before is drawn. */
+#define LATER_MOST  32
+#define LATER_WORDS 8192
+static struct { struct SETexture* tex; int x, y; struct Bitmap part; } later[LATER_MOST];
+static BitmapCol later_words[LATER_WORDS];
+static int later_count, later_used;
+
+static void Later_Flush(void) {
+	int i;
+	for (i = 0; i < later_count; i++) {
+		if (later[i].tex) CopyTexels(later[i].tex, later[i].x, later[i].y, &later[i].part, later[i].part.width);
+	}
+	later_count = later_used = 0;
+}
+
 void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, int rowWidth, cc_bool mipmaps) {
+	const int count = part->width, rows = part->height;
+	int xx, yy;
+
+	if (Drawing() && later_count < LATER_MOST && later_used + count * rows <= LATER_WORDS) {
+		BitmapCol* to = later_words + later_used;
+		const BitmapCol* from = part->scan0;
+		later[later_count].tex = (struct SETexture*)texId;
+		later[later_count].x = x; later[later_count].y = y;
+		later[later_count].part.scan0 = to;
+		later[later_count].part.width = count; later[later_count].part.height = rows;
+		for (yy = 0; yy < rows; yy++, from += rowWidth, to += count) {
+			for (xx = 0; xx < count; xx++) to[xx] = from[xx];
+		}
+		later_used += count * rows;
+		later_count++;
+		return;
+	}
+	Settle();
+	Later_Flush();
 	CopyTexels((struct SETexture*)texId, x, y, part, rowWidth);
 }
 
-void Gfx_BindTexture(GfxResourceID texId) { se_texture = (struct SETexture*)texId; }
+void Gfx_BindTexture(GfxResourceID texId) {
+	if (se_texture == (struct SETexture*)texId) return;
+	se_texture = (struct SETexture*)texId;
+	state_serial++;
+}
 
 void Gfx_DeleteTexture(GfxResourceID* texId) {
 	struct SETexture* tex = (struct SETexture*)(*texId);
 	if (!tex) return;
 	if (se_texture == tex) se_texture = NULL;
+	state_serial++;
+	{ int i; for (i = 0; i < later_count; i++) if (later[i].tex == tex) later[i].tex = NULL; }
 
 	Heap_FreeLater(tex->span);
 	Heap_FreeLater(tex->wide);
@@ -330,14 +443,14 @@ void Gfx_DisableMipmaps(void) { }
 void Gfx_SetFaceCulling(cc_bool enabled)   { }
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
-static void SetAlphaBlend(cc_bool enabled) { se_alphaBlend = enabled; }
-static void SetAlphaTest(cc_bool enabled)  { se_alphaTest  = enabled; }
-static void SetDepthTest(cc_bool enabled)  { se_depthTest  = enabled; }
+static void SetAlphaBlend(cc_bool enabled) { se_alphaBlend = enabled; state_serial++; }
+static void SetAlphaTest(cc_bool enabled)  { se_alphaTest  = enabled; state_serial++; }
+static void SetDepthTest(cc_bool enabled)  { se_depthTest  = enabled; state_serial++; }
 static void SetDepthWrite(cc_bool enabled) { }
 static void SetColorWrite(cc_bool r, cc_bool g, cc_bool b, cc_bool a) { }
 
 /* (water's depth is laid down first elsewhere: here a blended pass tests depth and writes none) */
-void Gfx_DepthOnlyRendering(cc_bool depthOnly) { se_depthOnly = depthOnly; }
+void Gfx_DepthOnlyRendering(cc_bool depthOnly) { se_depthOnly = depthOnly; state_serial++; }
 
 void Gfx_SetFog(cc_bool enabled)         { gfx_fogEnabled = enabled; }
 static void SetFogColor(PackedCol color) { }
@@ -440,6 +553,44 @@ static uint32_t MatrixBlock(const float* origin, float scale) {
 	return GPU_PHYS + set_at + BLOCKS_IN + 128 * blocks++;
 }
 
+/* The same for a chunk (vertices in eighths from `origin`): all but three of its words are
+   every chunk's, and are made once for the matrices. */
+static uint32_t chunk_rows[28], chunk_rows_epoch;
+
+static CC_NOINLINE void ChunkRows(void) {
+	const struct Matrix* m = &se_view;
+	float* u = (float*)chunk_rows;
+	int k;
+	if (proj_epoch != matrix_epoch) ProjectionRows();
+	for (k = 0; k < 16; k++) chunk_rows[k] = ((const uint32_t*)proj_rows)[k];
+	u[16] = m->row1.x * 0.125f; u[17] = m->row2.x * 0.125f; u[18] = m->row3.x * 0.125f;
+	u[20] = m->row1.y * 0.125f; u[21] = m->row2.y * 0.125f; u[22] = m->row3.y * 0.125f;
+	u[24] = m->row1.z * 0.125f; u[25] = m->row2.z * 0.125f; u[26] = m->row3.z * 0.125f;
+	chunk_rows_epoch = matrix_epoch;
+}
+
+static uint32_t ChunkBlock(const float* origin) {
+	const struct Matrix* m = &se_view;
+	const uint32_t* from   = chunk_rows;
+	const float x = origin[0], y = origin[1], z = origin[2];
+	uint32_t* to;
+	if (blocks == MAX_BLOCKS) return 0;
+	if (chunk_rows_epoch != matrix_epoch) ChunkRows();
+
+	to = (uint32_t*)(gpu + set_at + BLOCKS_IN) + 32 * blocks;
+	to[0]  = from[0];  to[1]  = from[1];  to[2]  = from[2];  to[3]  = from[3];
+	to[4]  = from[4];  to[5]  = from[5];  to[6]  = from[6];  to[7]  = from[7];
+	to[8]  = from[8];  to[9]  = from[9];  to[10] = from[10]; to[11] = from[11];
+	to[12] = from[12]; to[13] = from[13]; to[14] = from[14]; to[15] = from[15];
+	to[16] = from[16]; to[17] = from[17]; to[18] = from[18];
+	to[20] = from[20]; to[21] = from[21]; to[22] = from[22];
+	to[24] = from[24]; to[25] = from[25]; to[26] = from[26];
+	((float*)to)[19] = m->row4.x + x * m->row1.x + y * m->row2.x + z * m->row3.x;
+	((float*)to)[23] = m->row4.y + x * m->row1.y + y * m->row2.y + z * m->row3.y;
+	((float*)to)[27] = m->row4.z + x * m->row1.z + y * m->row2.z + z * m->row3.z;
+	return GPU_PHYS + set_at + BLOCKS_IN + 128 * blocks++;
+}
+
 
 /*########################################################################################################################*
 *----------------------------------------------------------Buffers--------------------------------------------------------*
@@ -451,8 +602,9 @@ static uint32_t MatrixBlock(const float* origin, float scale) {
 struct SEMesh {
 	uint32_t vertices, coords;   /* addresses in GPU memory */
 	uint32_t flags, colour;      /* more of the vertex word; the one colour, or the table's address */
+	uint32_t packed, word;       /* 1 for a chunk's vertices; the command's vertex word */
 	float origin[3];
-	uint32_t block, block_epoch, block_frame;
+	uint32_t block, block_epoch; /* its matrix block, and the matrix_epoch that is of */
 };
 
 struct SEVb {
@@ -464,6 +616,7 @@ struct SEVb {
 	uint32_t span_size;
 	int where;                    /* 0 nowhere, 1 its span, 2 the frame's arena */
 	uint32_t where_frame, drawn_frame;
+	uint32_t span_frame;          /* the frame its span was last drawn from */
 };
 
 static void* shared_staging;
@@ -509,6 +662,14 @@ static void MeshSum(const struct SEMesh* mesh, const uint32_t* at, const uint32_
 	printf("ccmesh: at %d %d %d, %d vertices, sums %08x %08x\n", (int)mesh->origin[0], (int)mesh->origin[1],
 		(int)mesh->origin[2], count, raw, sum);
 	fflush(stdout);
+}
+
+/* A mesh made: what its commands have of it, and no draw goes on from the one before it. */
+static CC_INLINE void MeshMade(struct SEVb* vb, uint32_t flags) {
+	vb->mesh.flags  = flags;
+	vb->mesh.packed = (flags & VERTEX_PACKED) != 0;
+	vb->mesh.word   = BASE_VERTEX | flags;
+	if (last_vb == vb) last_draw = NULL;
 }
 
 static CC_INLINE int RoundI(float f) { return (int)(f + 0.5f); }
@@ -589,7 +750,7 @@ static cc_bool BuildMeshIn(struct SEVb* vb, MeshAlloc alloc) {
 		mesh->origin[0] = ox; mesh->origin[1] = oy; mesh->origin[2] = oz;
 		mesh->vertices = (uint32_t)(mem - gpu);
 		mesh->coords   = mesh->vertices + words;
-		mesh->flags    = VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED;
+		MeshMade(vb, VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED);
 		mesh->colour   = GPU_PHYS + (uint32_t)((uint8_t*)chunk_table - gpu);
 		if (mesh_sums) MeshSum(mesh, to, coords, count);
 		return true;
@@ -604,7 +765,12 @@ static cc_bool BuildMeshIn(struct SEVb* vb, MeshAlloc alloc) {
 	limit = tagged ? 4095 : 32767;
 	prev  = ~((const uint32_t*)src)[3];
 
-	for (q = 0; q < count; q += 4) {
+	if (!textured && !tagged) {
+		/* one colour and no texture (the block outline): the vertices as they are */
+		const uint32_t* restrict p = (const uint32_t*)src;
+		for (i = 0; i < count; i++, p += 4, to += 4) { to[0] = p[0]; to[1] = p[1]; to[2] = p[2]; to[3] = 0; }
+	}
+	for (q = textured || tagged ? 0 : count; q < count; q += 4) {
 		float u0 = 0, v0 = 0;
 		if (textured) {
 			/* a quad's coordinates start in the texture's first repeat */
@@ -635,17 +801,21 @@ static cc_bool BuildMeshIn(struct SEVb* vb, MeshAlloc alloc) {
 	if (tagged) {
 		uint32_t* table = (uint32_t*)(mem + size);
 		for (i = 0; i < scan_count; i++) table[i] = scan_colours[i];
-		mesh->flags  = VERTEX_TAGGED | VERTEX_TABLE;
+		MeshMade(vb, VERTEX_TAGGED | VERTEX_TABLE);
 		mesh->colour = GPU_PHYS + size + mesh->vertices;
 	} else {
-		mesh->flags  = 0;
+		MeshMade(vb, 0);
 		mesh->colour = DeviceColour(((const uint32_t*)src)[3]);
 	}
 	return true;
 }
 
 static void* SpanAlloc(struct SEVb* vb, uint32_t size) {
-	if (vb->span && vb->span_size >= size && vb->drawn_frame != frame_number) return gpu + vb->span->at;
+	if (vb->span && vb->span_size >= size && vb->drawn_frame != frame_number) {
+		/* (written in place: the list being drawn may read it as it was) */
+		if (vb->span_frame + 1 == frame_number) Settle();
+		return gpu + vb->span->at;
+	}
 	Heap_FreeLater(vb->span);
 	vb->span = Heap_Alloc(size);
 	vb->span_size = size;
@@ -682,6 +852,7 @@ void Gfx_DeleteVb(GfxResourceID* vb) {
 	struct SEVb* data = (struct SEVb*)(*vb);
 	if (!data) return;
 	if (se_vb == data) se_vb = NULL;
+	if (last_vb == data) last_draw = NULL;
 
 	Heap_FreeLater(data->span);
 	if (data->dynamic) Mem_Free(data->staging);
@@ -750,7 +921,7 @@ cc_bool Gfx_SE_UnlockPacked(GfxResourceID vb, const struct SEVertex* v, int coun
 	mesh->origin[0] = (float)least[0]; mesh->origin[1] = (float)least[1]; mesh->origin[2] = (float)least[2];
 	mesh->vertices = (uint32_t)(mem - gpu);
 	mesh->coords   = mesh->vertices + words;
-	mesh->flags    = VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED;
+	MeshMade(data, VERTEX_TAGGED | VERTEX_TABLE | VERTEX_PACKED);
 	mesh->colour   = GPU_PHYS + (uint32_t)((uint8_t*)chunk_table - gpu);
 	data->where    = 1;
 	if (mesh_sums) MeshSum(mesh, to, coords, count);
@@ -772,7 +943,9 @@ void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 void Gfx_UnlockDynamicVb(GfxResourceID vb) {
 	struct SEVb* data = (struct SEVb*)vb;
 	se_vb = data;
-	if (data->where == 1 && data->drawn_frame != frame_number && BuildMesh(data, SpanAlloc)) return;
+	/* (not into its span while the list being drawn reads that: the frame has room, and no wait) */
+	if (data->where == 1 && data->drawn_frame != frame_number && !(data->span_frame + 1 == frame_number && Drawing()) &&
+		BuildMesh(data, SpanAlloc)) return;
 	data->where       = BuildMesh(data, ArenaAlloc) ? 2 : 0;
 	data->where_frame = frame_number;
 }
@@ -783,96 +956,122 @@ void Gfx_DeleteDynamicVb(GfxResourceID* vb) { Gfx_DeleteVb(vb); }
 /*########################################################################################################################*
 *--------------------------------------------------------Rendering--------------------------------------------------------*
 *#########################################################################################################################*/
-static uint32_t* last_draw;
-static uint32_t last_state[6], last_end;
-static const struct SEVb* last_vb;
 
 void Gfx_SetVertexFormat(VertexFormat fmt) {
+	if (fmt == gfx_format) return;
 	gfx_format = fmt;
 	gfx_stride = strideSizes[fmt];
+	state_serial++;
 }
 
 void Gfx_DrawVb_Lines(int verticesCount) { }
 
-static void DrawQuads(int verticesCount, int startVertex) {
-	struct SEVb* vb = se_vb;
-	struct SEMesh* mesh;
+static CC_NOINLINE void DeriveState(int packed) {
+	struct SEState* s = &draw.state[packed];
 	struct SETexture* tex = gfx_format == VERTEX_FORMAT_TEXTURED ? se_texture : NULL;
-	uint32_t pass, fragment, vertex, block, address, mesh_count, state[6], *c;
-	cc_bool packed;
+	uint32_t pass = se_depthTest ? (se_alphaBlend ? 1 : 0) : 5, address;
 
-	if (!vb || se_depthOnly || verticesCount < 4) return;
+	s->serial   = state_serial;
+	s->skip     = se_depthOnly;
+	s->fragment = pass << 16;
+	s->pass_bit = (1u << pass) & 0xfe;
+	s->address  = GPU_PHYS;
+	s->width    = s->height = 0;
+	if (!tex) return;
+
+	s->fragment |= FRAGMENT_TEXTURE;
+	if (pass == 0 && se_alphaTest) s->fragment |= FRAGMENT_KEYED;
+	if (packed && !tex->wide) MakeWide(tex);
+	address = packed ? (tex->wide ? tex->wide->at : 0) : tex->span->at;
+	if (!address) s->skip = true;
+	s->address = GPU_PHYS + address;
+	s->width   = (uint32_t)tex->width * (packed ? WIDE : 1);
+	s->height  = (uint32_t)tex->height;
+}
+
+/* The draw's command, when nothing is left to make for it (Ready). It calls nothing. */
+static inline __attribute__((always_inline)) void Emit(struct SEVb* vb, int verticesCount, int startVertex) {
+	const struct SEMesh* mesh = &vb->mesh;
+	const uint32_t packed     = mesh->packed, block = mesh->block;
+	const struct SEState* s   = &draw.state[packed];
+	const uint32_t mesh_count = (uint32_t)(verticesCount >> 2) * 6, at = mesh_vertices, n = commands;
+	uint32_t* c = last_draw;
+
+	if (s->skip) return;
+	vb->drawn_frame = frame_number;
+	if (vb->where == 1) vb->span_frame = frame_number;
+	if (at + mesh_count > MAX_MESH || !block) { stat_dropped++; return; }
+	mesh_vertices = at + mesh_count;
+
+	if (c && last_vb == vb && draw.last_end == (uint32_t)startVertex && draw.last_serial == state_serial && draw.last_block == block) {
+		/* the vertices after the last draw's, in the same state: more of that command */
+		c[2] += mesh_count;
+		draw.last_end = startVertex + verticesCount;
+		return;
+	}
+	if (n == MAX_COMMANDS) { mesh_vertices = at; stat_dropped++; return; }
+
+	c = draw.set + 16 * n;
+	commands = n + 1;
+	c[0]  = CMD_DRAW;
+	c[1]  = GPU_PHYS + mesh->vertices + ((uint32_t)startVertex << (packed ? 2 : 4));
+	c[2]  = mesh_count;
+	c[3]  = at;
+	c[4]  = mesh->word;
+	c[5]  = s->fragment;
+	c[6]  = block;
+	c[7]  = s->address;
+	c[8]  = s->width;
+	c[9]  = s->height;
+	c[10] = KEY_TEXEL;
+	c[11] = mesh->colour;
+	c[12] = packed ? GPU_PHYS + mesh->coords + (uint32_t)startVertex * 4 : 0;
+	passes_used |= s->pass_bit;
+
+	last_draw = c; last_vb = vb; draw.last_end = startVertex + verticesCount;
+	draw.last_serial = state_serial; draw.last_block = block;
+}
+
+/* What a draw needs made first: the buffer's mesh when it is a frame old, the state's words,
+   the mesh's matrix block. False when there is nothing to draw. */
+static cc_bool Ready(struct SEVb* vb) {
+	static uint32_t plain, plain_epoch;
+	struct SEMesh* mesh = &vb->mesh;
+
+	if (se_depthOnly) return false;
 	if (vb->where == 2 && vb->where_frame != frame_number) {
 		/* drawn again as it was a frame ago */
 		vb->where = vb->staging && BuildMesh(vb, SpanAlloc) ? 1 : 0;
 	}
-	if (!vb->where) return;
-	vb->drawn_frame = frame_number;
-	mesh   = &vb->mesh;
-	packed = (mesh->flags & VERTEX_PACKED) != 0;
+	if (!vb->where) return false;
+	if (draw.state[mesh->packed].serial != state_serial) DeriveState(mesh->packed);
 
-	mesh_count = (uint32_t)(verticesCount >> 2) * 6;
-	if (mesh_vertices + mesh_count > MAX_MESH) { stat_dropped++; return; }
-
-	pass     = se_depthTest ? (se_alphaBlend ? 1 : 0) : 5;
-	fragment = pass << 16;
-	address  = 0;
-	if (tex) {
-		fragment |= FRAGMENT_TEXTURE;
-		if (pass == 0 && se_alphaTest) fragment |= FRAGMENT_KEYED;
-		if (packed && !tex->wide) MakeWide(tex);
-		address = packed ? (tex->wide ? tex->wide->at : 0) : tex->span->at;
-		if (!address) return;
-	}
-	vertex = BASE_VERTEX | mesh->flags;
-
-	if (packed) {
-		if (mesh->block_epoch != matrix_epoch || mesh->block_frame != frame_number) {
-			mesh->block = MatrixBlock(mesh->origin, 0.125f);
-			mesh->block_epoch = matrix_epoch; mesh->block_frame = frame_number;
+	if (mesh->block_epoch != matrix_epoch) {
+		if (mesh->packed) {
+			mesh->block = ChunkBlock(mesh->origin);
+		} else {
+			if (plain_epoch != matrix_epoch) { plain = MatrixBlock(NULL, 1.0f); plain_epoch = matrix_epoch; }
+			mesh->block = plain;
 		}
-		block = mesh->block;
-	} else {
-		static uint32_t plain, plain_epoch, plain_frame;
-		if (plain_epoch != matrix_epoch || plain_frame != frame_number) {
-			plain = MatrixBlock(NULL, 1.0f);
-			plain_epoch = matrix_epoch; plain_frame = frame_number;
-		}
-		block = plain;
+		mesh->block_epoch = matrix_epoch;
 	}
-	if (!block) { stat_dropped++; return; }
+	return true;
+}
 
-	state[0] = vertex; state[1] = fragment; state[2] = block; state[3] = address; state[4] = mesh->colour; state[5] = mesh->vertices;
-	if (last_draw && last_vb == vb && last_end == (uint32_t)startVertex && state[0] == last_state[0] &&
-		state[1] == last_state[1] && state[2] == last_state[2] && state[3] == last_state[3] && state[4] == last_state[4] && state[5] == last_state[5]) {
-		/* the vertices after the last draw's, in the same state: more of that command */
-		last_draw[2]  += mesh_count;
-		mesh_vertices += mesh_count;
-		last_end = startVertex + verticesCount;
+static CC_NOINLINE void DrawUnready(int verticesCount, int startVertex) {
+	struct SEVb* vb = se_vb;
+	if (Ready(vb)) Emit(vb, verticesCount, startVertex);
+}
+
+/* (the common draw, a chunk's with its block made, saves no register and calls nothing) */
+static void DrawQuads(int verticesCount, int startVertex) {
+	struct SEVb* vb = se_vb;
+	if (!vb || verticesCount < 4) return;
+	if (vb->where != 1 || vb->mesh.block_epoch != matrix_epoch || draw.state[vb->mesh.packed].serial != state_serial) {
+		DrawUnready(verticesCount, startVertex);
 		return;
 	}
-	if (commands == MAX_COMMANDS) { stat_dropped++; return; }
-
-	c = (uint32_t*)(gpu + set_at) + 16 * commands++;
-	c[0]  = CMD_DRAW;
-	c[1]  = GPU_PHYS + mesh->vertices + (uint32_t)startVertex * (packed ? 4 : 16);
-	c[2]  = mesh_count;
-	c[3]  = mesh_vertices;
-	c[4]  = vertex;
-	c[5]  = fragment;
-	c[6]  = block;
-	c[7]  = GPU_PHYS + address;
-	c[8]  = tex ? (uint32_t)tex->width * (packed ? WIDE : 1) : 0;
-	c[9]  = tex ? (uint32_t)tex->height : 0;
-	c[10] = KEY_TEXEL;
-	c[11] = mesh->colour;
-	c[12] = packed ? GPU_PHYS + mesh->coords + (uint32_t)startVertex * 4 : 0;
-	mesh_vertices += mesh_count;
-	passes_used   |= (1u << pass) & 0xfe;
-
-	last_draw = c; last_vb = vb; last_end = startVertex + verticesCount;
-	last_state[0] = state[0]; last_state[1] = state[1]; last_state[2] = state[2];
-	last_state[3] = state[3]; last_state[4] = state[4]; last_state[5] = state[5];
+	Emit(vb, verticesCount, startVertex);
 }
 
 void Gfx_DrawVb_IndexedTris_Range(int verticesCount, int startVertex, DrawHints hints) {
@@ -897,7 +1096,7 @@ void Gfx_ClearColor(PackedCol color) { clear_colour = DeviceColour(color) & 0xFF
 void Gfx_ClearBuffers(GfxBuffers buffers) {
 	uint32_t* c;
 	if (!(buffers & GFX_BUFFER_COLOR) || commands) return;
-	c = (uint32_t*)(gpu + set_at) + 16 * commands++;
+	c = draw.set + 16 * commands++;
 	c[0] = CMD_CLEAR;
 	c[1] = clear_colour;
 	c[3] = mesh_vertices;
@@ -947,8 +1146,13 @@ void Gfx_EndFrame(void) {
 	uint32_t address, row;
 	int width, height;
 
+	if (later_count) { Settle(); Later_Flush(); }
 	Stats();
-	if (commands && SE_Surface(&address, &width, &height, &row)) {
+	if (hold_late && hold_frame && frame_number > hold_frame) {
+		Settle();
+		frame_number = hold_frame;
+		hold_late    = false;
+	} else if (commands && SE_Surface(&address, &width, &height, &row)) {
 		for (;;) {
 			while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
 			if (regs[REG_SUBMIT / 4] == 0) break;
@@ -963,16 +1167,19 @@ void Gfx_EndFrame(void) {
 		regs[REG_SUBMIT / 4 + 2] = commands;
 		regs[REG_SUBMIT / 4]     = 1 | 4 | passes_used << 8;
 		__atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-		/* the list and the buffers are memory the game goes on to change: wait until drawn */
-		while (regs[REG_SUBMIT / 4] != 0) next_frame();
+		/* (not waited for: Settle) */
+		unsettled = true;
+		if (swap_waits) Settle();
 
 		regs[REG_VOLUME / 4 + 1] = commands;
 		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28;	/* (y is up: docs/holodeck.md) */
 		regs[REG_VOLUME / 4]     = GPU_PHYS + set_at;
 		regs[REG_VOLUME / 4 + 2]++;
 		set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
+		draw.set = (uint32_t*)(gpu + set_at);
 	}
-	if (hold_frame && frame_number >= hold_frame) {
+	if (hold_frame && frame_number >= hold_frame && !hold_late) {
+		Settle();
 		printf("classicube: holding frame %u\n", frame_number);
 		fflush(stdout);
 		for (;;) next_frame();

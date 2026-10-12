@@ -359,8 +359,8 @@ how much a change helps. Rank variants with it, then confirm with FXC.
 
 This section is the history of the cache of words (upstream's, 512 sets of four, sized by
 `L1_SET_BITS` and `L1_SLICES`, which no longer exist). The cache is of RAM texels now, see
-"Texels instead of words" at its end; `L1_TABLE_BITS` and `L1_WAYS` (6 and 3 by default: two tables of 64
-buckets of three texels) are its size. Any geometry stalls at different times, so state
+"Texels instead of words" at its end; `L1_TABLE_BITS` and `L1_WAYS` (6 and 3 by default: a table of 64
+buckets of three texels and two of 32) are its size. Any geometry stalls at different times, so state
 hashes differ between them and guest output is what is compared.
 
 | Geometry | Texels | Busy loop IPS (instr/frame) | Shell session IPS (instr/frame) |
@@ -425,6 +425,31 @@ full cache ended:
 | texels, two tables of 64 x 4 | 11,276, 32% | 9,411, 39% | 9,311, 17% |
 | texels, two tables of 64 x 3 (the default) | 9,486, 50% | 7,184, 62% | 8,028, 42% |
 | texels, any 819 | 12,967, 7% | 11,035, 5% | 9,913, 0% |
+
+**Three tables.** The two tables of 64 stalled on collisions, not on a full cache: at a stall
+it held a median of 198 texels of 384 in Doom, 253 in a boot, 278 in Quake, 308 in a file
+read (`--l1-log` at full passes). Another hash for the second table changes little, and a
+hash that changes when passes end on collisions is no better than a fixed one (the buckets
+that overflow are different ones every pass); a third bucket to try is what helps. The second
+table is now two of 32 buckets with a hash each (`L1_H1`, `L1_H2`: the texel number's low
+bits moved round and xor-ed with higher ones), tried in turn, in the same 128 buckets as
+before. Passes a full cache ended, replayed from stores logged 512 instructions a record
+(8,192 a pass):
+
+| Layout (all 384 texels) | Doom | Quake | desktop, glxgears | file read |
+| --- | --- | --- | --- | --- |
+| two tables of 64 (as it was) | 4,266 | 6,791 | 261 | 840 |
+| the second table's hash a multiply | 3,935 | 7,355 | 256 | 872 |
+| a second hash with a seed changed at each such pass | 3,519 | 6,897 | 264 | 791 |
+| the emptier of the two buckets | 2,234 | 5,364 | 151 | 546 |
+| 64 + 32 + 32 (the default now) | 535 | 4,072 | 111 | 134 |
+| 64 + 32 + 16 + 16 | 330 | 2,844 | 98 | 99 |
+| any 384 (no hash can do better) | 250 | 2,313 | 67 | 49 |
+
+Measured on D3D11: Doom's timedemo 1,840 such passes of 15,669 before and 93 of 15,014
+after, Quake's 2,647 and 1,322; a shell loop's instructions a second the same within the
+noise (3,983k and 3,981k, medians of seven). Four tables took Quake to 457 and measured 0.6%
+slower on the shell loop, so three it is.
 
 Measured, D3D11 + fxc2, 16,384 instructions a frame at most (the replay is pessimistic: it
 does not know which stores changed nothing):
@@ -500,6 +525,31 @@ runs):
 No layout wins on both workloads and the spread is within what unrelated code changes cause,
 so texture locality is not a limit here and the default stays row-major. The guest touches
 only a few MB, which the GPU's caches hold in any order.
+
+## The same loop, compiled slower
+
+The tick's speed is not only what the fast loop does. Changes that leave the loop's bytecode
+as it is, instruction for instruction (`python tools\cso_loops.py` on the blobs in
+`build\shadercache` says so), move a shell loop by 1 to 3%, and nearly all of them down
+(D3D11 + fxc2, medians of alternating runs, the tree at 3,583k instructions a second):
+
+| change | against the tree |
+| --- | --- |
+| a fill or copy left to the commit (`LAZY_MEMOP`, `docs/boot.md`), nothing of it in the loop | -1.1 to -1.5% (Doom's timedemo -3%) |
+| the same without its TLB purge, its cache scan, or all of its reading side | -0.8 to -1.2% |
+| three state words written in one rare branch of the general path, nothing else | -2.0% |
+| the registers decoded straight into `xr[]` (no `cpu.xreg`, an array of 32 fewer) | -1.2% |
+| the console's 64 buffer fields as one array (no 64-case switch) | -3.1% |
+| the timer's value and the single-step word no longer written at every general tick | 0.0% |
+| two console calls of the machine's own in `sbi_call` (fourteen lines) | -0.1%, and -1.9% on Doom's timedemo |
+| a statement after the loop in the source, or one more local before it | -0.2% |
+
+The difference is in every instruction (2.7 ns of 270: the same at 1,024 instructions a pass
+as at 8,192), not in the commit (0.020 ms either way) and not a warm-up (the same after 30 s).
+So a variant has to be measured whole, in alternating runs against the tree and on more than
+one workload (the shell loop and Doom's timedemo disagree), whatever the loop's bytecode says; and a change to the general path that measures 1% slower may be this
+and not its own work. The noise of such a set on a quiet card is 0.2%; with another program
+on the card a byte-identical blob has measured 0.5% under.
 
 ## ddx_fine / ddy_fine quad sharing: works, not worth it for rvc
 

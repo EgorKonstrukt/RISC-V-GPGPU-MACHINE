@@ -61,11 +61,25 @@ riscv32-linux-objcopy --set-section-alignment '.data*=16' --set-section-alignmen
 # -fno-pie: a use of a global costs a load from a table otherwise (docs/doom.md)
 # -fno-lifetime-dse: the game's operator new marks an object active before its constructor
 # runs, a store the compiler may otherwise drop (a native -O3 build then has no overlays)
+# The C++ is optimised as one program (docs/tdawn.md, "The whole program at once"): a partition
+# a source file and nothing reordered, because the game's globals are made in the files' order.
+LTO="-O3 -flto=$(nproc) -ffat-lto-objects -flto-partition=1to1 -fno-toplevel-reorder --param inline-unit-growth=2000 --param max-inline-insns-auto=400 --param max-inline-insns-single=1500 --param large-function-growth=1000 --param inline-min-speedup=5"
+# What a played game ran, for the compiler (docs/tdawn.md, "What the compiler is told"):
+# TDAWN_PROFILE=count builds the program that counts; otherwise the counts kept here are used.
+PGO=""; COUNTS=""
+if [ "${TDAWN_PROFILE:-}" = count ]; then
+    # (the counters' functions are host.c's: an empty libgcov in the way of the toolchain's)
+    mkdir -p "$WORK/src/nogcov" && riscv32-linux-ar rc "$WORK/src/nogcov/libgcov.a"
+    PGO="-L$WORK/src/nogcov -fprofile-generate -fprofile-update=single"; COUNTS="-DSHADEREMU_PGO"
+elif [ -f "$HERE/tdawn.profile" ]; then
+    python3 "$HERE/profile.py" put "$HERE/tdawn.profile" "$BUILD"
+    PGO="-fprofile-use -fprofile-partial-training -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch"
+fi
 cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLARA=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
-    -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU $GLINC" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
-    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/tdawn-configure.log" 2>&1 \
+    -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
+    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/tdawn-configure.log" 2>&1 \
     || { tail -20 "$WORK/src/tdawn-configure.log"; exit 1; }
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/tdawn-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/tdawn-build.log" | head -40; exit 1; }

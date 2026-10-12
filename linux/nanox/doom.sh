@@ -16,8 +16,11 @@ WAD=${DOOM_WAD:-https://archive.org/download/DoomsharewareEpisode/doom.ZIP}   # 
 mkdir -p "$WORK/src/doom-build" "$OUT/usr/bin" "$OUT/usr/share"
 # Optimised as one program: the small functions Doom calls everywhere (FixedMul) end up inline.
 # No position-independent code: every use of a global would go through a table.
-export OPT="-O2 -flto -fno-pie"
+# -O3 with these two is 3% fewer instructions a tic and 11% fewer a frame than -O2 (docs/doom.md).
+export OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops -flto -fno-pie"
 cd "$WORK/src/doom-build"
+# objects made with other flags are made again (the loop below only looks at dates)
+[ "$(cat flags 2>/dev/null)" = "$OPT" ] || { rm -f *.o; echo "$OPT" > flags; }
 # Doom assumes char is signed (its tables end with -1); on RISC-V it is not unless asked
 # (i_sound.c is the port's sound, which mixed for a sound server: doom_sound.c takes its place)
 SOURCES=$(cd "$DOOM" && ls *.c | grep -v _sdl | grep -vx i_sound.c)
@@ -48,7 +51,13 @@ rm i_video_ours.c
 # The 3D view goes to the GPU too (doom_gl.c): the renderer's entry points under other names,
 # which ours call when the GPU is not drawing the view.
 GLINC="-idirafter $REPO/programs/linux/include"
-rv32-cc $OPT -w -c -fsigned-char -DR_RenderPlayerView=R_RenderPlayerView_soft -I"$DOOM" "$DOOM/r_main.c" -o r_main.o
+# The search for a point's subsector is doom_fast.c's, and the tables of Doom's own renderer
+# are made when that renderer is wanted (doom_gl.c).
+sed 's/^R_PointInSubsector$/R_PointInSubsector_port/; s/^void R_InitTextureMapping (void)$/void R_InitTextureMapping_port (void)/' "$DOOM/r_main.c" > r_main_ours.c
+grep -q '^R_PointInSubsector_port$' r_main_ours.c || { echo "r_main.c: R_PointInSubsector was not found"; exit 1; }
+grep -q '^void R_InitTextureMapping_port (void)$' r_main_ours.c || { echo "r_main.c: R_InitTextureMapping was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -DR_RenderPlayerView=R_RenderPlayerView_soft -I"$DOOM" r_main_ours.c -o r_main.o
+rm r_main_ours.c
 rv32-cc $OPT -w -c -fsigned-char -DR_StoreWallRange=R_StoreWallRange_soft -I"$DOOM" "$DOOM/r_segs.c" -o r_segs.o
 sed 's/^void R_Subsector (int num)/void R_Subsector_soft (int num)/' "$DOOM/r_bsp.c" > r_bsp_ours.c
 grep -q 'R_Subsector_soft' r_bsp_ours.c || { echo "r_bsp.c: R_Subsector was not found"; exit 1; }
@@ -72,13 +81,20 @@ grep -q '^int I_GetTime_port' i_system_ours.c || { echo "i_system.c: I_GetTime w
 rv32-cc $OPT -w -c -fsigned-char -DALWAYS=1 -I"$DOOM" -I"$MW/src/include" i_system_ours.c -o i_system.o
 rm i_system_ours.c
 # The game's tics are counted apart from drawing (doom_video.c prints both with the frame rate).
-rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -DHU_Erase=HU_Erase_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" "$DOOM/d_main.c" -o d_main.o
+# A frame's drawing waits for the GPU to have drawn the frame before (doom_video.c's D_Display).
+# The melt's wait for the clock ends the machine's pass instead of spinning (doom_video.c's doom_wait).
+sed 's/^void D_Display (void)$/void D_Display_game (void)/; s/^\t    tics = nowtime - wipestart;$/& if (!tics) doom_wait();/; 1i void doom_wait(void);' "$DOOM/d_main.c" > d_main_ours.c
+grep -q '^void D_Display_game (void)$' d_main_ours.c || { echo "d_main.c: D_Display was not found"; exit 1; }
+grep -q 'if (!tics) doom_wait();$' d_main_ours.c || { echo "d_main.c: the melt's wait was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -DHU_Erase=HU_Erase_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" d_main_ours.c -o d_main.o
+rm d_main_ours.c
 rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -I"$DOOM" "$DOOM/d_net.c" -o d_net.o
 # Parts of the game written again for this machine (doom_fast.c): the sight check, and the
 # marks that say a line has been visited, which leave the lines themselves.
 rv32-cc $OPT -w -c -fsigned-char -DP_CheckSight=P_CheckSight_port -I"$DOOM" "$DOOM/p_sight.c" -o p_sight.o
-sed 's/ld->validcount/doom_line_mark[ld - lines]/g; 1i extern int doom_line_mark[];' "$DOOM/p_maputl.c" > p_maputl_ours.c
+sed 's/ld->validcount/doom_line_mark[ld - lines]/g; s/^P_Block\(Lines\|Things\)Iterator$/&_port/; 1i extern int doom_line_mark[];' "$DOOM/p_maputl.c" > p_maputl_ours.c
 [ "$(grep -c 'doom_line_mark\[ld - lines\]' p_maputl_ours.c)" = 2 ] || { echo "p_maputl.c: the line marks were not found"; exit 1; }
+[ "$(grep -c '^P_Block\(Lines\|Things\)Iterator_port$' p_maputl_ours.c)" = 2 ] || { echo "p_maputl.c: the two iterators were not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_maputl_ours.c -o p_maputl.o
 rm p_maputl_ours.c
 sed 's/^P_LookForPlayers$/P_LookForPlayers_port/' "$DOOM/p_enemy.c" > p_enemy_ours.c
@@ -113,6 +129,19 @@ sed 's/^static hu_stext_t	w_message;/hu_stext_t w_message;/; s/^static boolean		
 [ "$(grep -c '^hu_stext_t w_message;\|^boolean message_on;' hu_stuff_ours.c)" = 2 ] || { echo "hu_stuff.c: the message was not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" hu_stuff_ours.c -o hu_stuff.o
 rm hu_stuff_ours.c
+# Names are looked up in tables and a sprite's size is read from its first bytes (doom_fast.c).
+sed 's/^int W_CheckNumForName (char\* name)$/int W_CheckNumForName_port (char* name)/' "$DOOM/w_wad.c" > w_wad_ours.c
+grep -q '^int W_CheckNumForName_port' w_wad_ours.c || { echo "w_wad.c: W_CheckNumForName was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" w_wad_ours.c -o w_wad.o
+rm w_wad_ours.c
+sed 's/^int\tR_CheckTextureNumForName (char \*name)$/int R_CheckTextureNumForName_port (char *name)/; s/^void R_InitSpriteLumps (void)$/void R_InitSpriteLumps_port (void)/' "$DOOM/r_data.c" > r_data_ours.c
+[ "$(grep -c '^int R_CheckTextureNumForName_port\|^void R_InitSpriteLumps_port' r_data_ours.c)" = 2 ] || { echo "r_data.c: the texture names and sprite sizes were not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" r_data_ours.c -o r_data.o
+rm r_data_ours.c
+sed 's/^void P_GroupLines (void)$/void P_GroupLines_port (void)/' "$DOOM/p_setup.c" > p_setup_ours.c
+grep -q '^void P_GroupLines_port (void)$' p_setup_ours.c || { echo "p_setup.c: P_GroupLines was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_setup_ours.c -o p_setup.o
+rm p_setup_ours.c
 rv32-cc $OPT -Wall -c -fsigned-char -I"$DOOM" "$HERE/doom_fast.c" -o doom_fast.o
 rv32-cc $OPT -Wall -Wno-unused -c -fsigned-char -I"$DOOM" -I"$REPO/linux/userland" "$HERE/doom_sound.c" -o doom_sound.o
 rv32-cc $OPT -Wall -c $GLINC -I"$MW/src/include" "$REPO/programs/linux/gles.c" -o gles.o

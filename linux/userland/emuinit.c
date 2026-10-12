@@ -107,7 +107,7 @@ int main(void) {
     setenv("TERM", "vt100", 0);
     int wants = host_wants();
     const char* shell = wants & 2 && access("/usr/bin/emumux", X_OK) == 0 ? "/usr/bin/emumux" : "/bin/sh";
-    if (wants & 1 && access("/usr/bin/nx", X_OK) == 0 && fork() == 0) {
+    if (wants & 1 && access("/usr/bin/nx", X_OK) == 0 && vfork() == 0) {
         /* the window system, its desktop and the bar; the console keeps its shell */
         setsid();
         execl("/bin/sh", "sh", "/usr/bin/nx", (char*)NULL);
@@ -115,7 +115,8 @@ int main(void) {
     }
     for (;;) {
         mark("before fork");
-        pid_t pid = fork();
+        /* (vfork: the child only makes system calls before its exec, and no page of ours is copied for it) */
+        pid_t pid = vfork();
         if (pid == 0) {
             mark("child");
             /* a session of its own with the console as its terminal, as getty would set up */

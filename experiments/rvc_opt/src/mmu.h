@@ -215,7 +215,7 @@ uint get_effective_privilege(out uint sum, out uint mxr) {
 
 mmu_page load_page_l1(L1P uint addr) {
     PROF(PROF_pte_load)
-    uint data = mem_get_cached_or_tex(addr & 0x7ffffffc);
+    uint data = mem_get_slow(addr & 0x7ffffffc);
     mmu_page ret;
     #define BOOL(name, bit) ret.name = (data >> bit) & 0x1;
     BOOL(v, 0)
@@ -351,6 +351,16 @@ uint mmu_translate_l1(L1P inout ins_ret ins, uint addr, uint mode) {
     pa |= super ? ADDR_PART_PN0(addr) << 12 : page.ppn0 << 12;
     pa |= page.ppn1 << 22;
 
+#ifdef LAZY_MEMOP
+    // A page a pending fill or copy writes goes into no TLB: the fast path must not find it.
+    // Nor does a megapage while anything is pending (one of its pages may be such a page).
+    if ((pa & 0x80000000) != 0 && pend_page(pa & 0x7fffffff)) {
+        return pa;
+    }
+    if (pend_n_t != 0) {
+        super = false;
+    }
+#endif
     if (mode == MMU_ACCESS_FETCH) { set_idx_uint4(tlb_f_vpn, addr >> 12, tlb_slot); set_idx_uint4(tlb_f_page, pa & ~0xfff, tlb_slot); fetch_vpn = addr >> 12; fetch_page = pa & ~0xfff; }
     else if (mode == MMU_ACCESS_READ) { set_idx_uint4(tlb_r_vpn, addr >> 12, tlb_slot); set_idx_uint4(tlb_r_page, pa & ~0xfff, tlb_slot); }
     else { set_idx_uint4(tlb_w_vpn, addr >> 12, tlb_slot); set_idx_uint4(tlb_w_page, pa & ~0xfff, tlb_slot); }

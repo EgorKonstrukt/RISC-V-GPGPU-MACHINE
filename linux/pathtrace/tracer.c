@@ -15,7 +15,11 @@
 struct pt_scene pt;
 
 struct vec { float x, y, z; };
-struct hit { float t; struct vec normal, colour; int material; float glow; };
+/* What a ray meets: nothing (the box's open side), a wall, the lamp in the ceiling, a ball
+ * (and which), a side of the block (two an axis, the low one first), the model. */
+enum { MET_NONE, MET_LEFT, MET_RIGHT, MET_FLOOR, MET_CEILING, MET_BACK, MET_LAMP, MET_BALL, MET_BLOCK = MET_BALL + 3, MET_MODEL = MET_BLOCK + 6 };
+/* Where in a model: the triangle, and how far along its two edges. */
+struct met { const struct pt_triangle *triangle; float u, w; };
 
 static inline struct vec v(float x, float y, float z) { struct vec r = {x, y, z}; return r; }
 static inline struct vec add(struct vec a, struct vec b) { return v(a.x + b.x, a.y + b.y, a.z + b.z); }
@@ -65,18 +69,6 @@ in_ball(uint32_t *state)
 	}
 }
 
-static inline void
-wall(float t, struct vec normal, struct vec colour, struct hit *h)
-{
-	if (t > 0.0005f && t < h->t) {
-		h->t = t;
-		h->normal = normal;
-		h->colour = colour;
-		h->material = PT_DIFFUSE;
-		h->glow = 0.0f;
-	}
-}
-
 static inline struct vec cross(struct vec a, struct vec b) { return v(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 static inline struct vec of(const float *p) { return v(p[0], p[1], p[2]); }
 
@@ -84,17 +76,16 @@ static inline struct vec of(const float *p) { return v(p[0], p[1], p[2]); }
 static inline int
 box_met(const struct pt_node *node, struct vec from, struct vec over, float far, float *at)
 {
-	float a = (node->low[0] - from.x) * over.x, b = (node->high[0] - from.x) * over.x, low, high, t;
+	float a = (node->low[0] - from.x) * over.x, b = (node->high[0] - from.x) * over.x, low, high;
 
-	low = a < b ? a : b, high = a < b ? b : a;
+	/* (the lesser and the greater as an instruction each: no number here is not one) */
+	low = __builtin_fminf(a, b), high = __builtin_fmaxf(a, b);
 	a = (node->low[1] - from.y) * over.y, b = (node->high[1] - from.y) * over.y;
-	t = a < b ? a : b; if (t > low) low = t;
-	t = a < b ? b : a; if (t < high) high = t;
+	low = __builtin_fmaxf(low, __builtin_fminf(a, b)), high = __builtin_fminf(high, __builtin_fmaxf(a, b));
 	a = (node->low[2] - from.z) * over.z, b = (node->high[2] - from.z) * over.z;
-	t = a < b ? a : b; if (t > low) low = t;
-	t = a < b ? b : a; if (t < high) high = t;
+	low = __builtin_fmaxf(low, __builtin_fminf(a, b)), high = __builtin_fminf(high, __builtin_fmaxf(a, b));
 	*at = low;
-	return high >= low && high > 0.0f && low < far;
+	return (high >= low) & (high > 0.0f) & (low < far);
 }
 
 /* One over a ray's direction, for the boxes; a ray along an axis is given a very steep one. */
@@ -127,19 +118,20 @@ triangle_met(const struct pt_triangle *tri, struct vec from, struct vec way, flo
 	return 1;
 }
 
-/* The nearest triangle of a model a ray meets nearer than h has: down the tree of boxes, the
- * nearer of two first, so that the farther is mostly not looked into. */
-static void
-mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, struct hit *h)
+/* The nearest triangle of a model a ray meets nearer than *nearest: down the tree of boxes,
+ * the nearer of two first, so that the farther is mostly not looked into. */
+static inline int
+mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, float *nearest, struct met *met)
 {
 	uint32_t stack[64], at = 0;
+	float entered[64];	/* where the ray comes into each box put by */
 	int held = 0;
 	struct vec over = over_way(way);
 	const struct pt_triangle *found = 0;
-	float fu = 0.0f, fw = 0.0f, enter;
+	float fu = 0.0f, fw = 0.0f, enter, best = *nearest;
 
-	if (!box_met(&mesh->nodes[0], from, over, h->t, &enter))
-		return;
+	if (!box_met(&mesh->nodes[0], from, over, best, &enter))
+		return 0;
 	for (;;) {
 		const struct pt_node *node = &mesh->nodes[at];
 
@@ -149,14 +141,15 @@ mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, struct
 			for (; tri < end; tri++) {
 				float t, u, w;
 
-				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < h->t)
-					h->t = t, found = tri, fu = u, fw = w;
+				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < best)
+					best = t, found = tri, fu = u, fw = w;
 			}
 		} else {
 			float t0, t1;
-			int in0 = box_met(&mesh->nodes[node->a], from, over, h->t, &t0), in1 = box_met(&mesh->nodes[node->a + 1], from, over, h->t, &t1);
+			int in0 = box_met(&mesh->nodes[node->a], from, over, best, &t0), in1 = box_met(&mesh->nodes[node->a + 1], from, over, best, &t1);
 
 			if (in0 && in1) {
+				entered[held] = t0 <= t1 ? t1 : t0;
 				stack[held++] = t0 <= t1 ? node->a + 1 : node->a;
 				at = t0 <= t1 ? node->a : node->a + 1;
 				continue;
@@ -166,28 +159,36 @@ mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, struct
 				continue;
 			}
 		}
-		/* (a box put by may be behind what was found since: it is looked at again as it is taken) */
+		/* (a box put by may be behind what was found since: only one the ray enters nearer is taken) */
 		do {
 			if (!held)
 				goto done;
 			at = stack[--held];
-		} while (!box_met(&mesh->nodes[at], from, over, h->t, &enter));
+		} while (!(entered[held] < best));
 	}
 done:
-	if (found) {
-		float k = 1.0f - fu - fw;
-
-		h->normal = unit(add(add(scale(of(found->normal[0]), k), scale(of(found->normal[1]), fu)), scale(of(found->normal[2]), fw)));
-		h->colour = of(mesh->colour);
-		h->material = pt.material[0];
-		h->glow = 0.0f;
-		/* (seen from behind, as the inside of a spout is: matt and mirror have one side) */
-		if (h->material != PT_GLASS && dot(h->normal, way) > 0.0f)
-			h->normal = scale(h->normal, -1.0f);
-	}
+	if (!found)
+		return 0;
+	*nearest = best;
+	met->triangle = found, met->u = fu, met->w = fw;
+	return 1;
 }
 
-/* Whether any triangle of a model is in a ray's way before `far`. */
+/* A model's surface where a ray met it: towards the mean of the triangle's corners' normals. */
+static inline struct vec
+mesh_normal(const struct met *met, struct vec way)
+{
+	float k = 1.0f - met->u - met->w;
+	struct vec normal = unit(add(add(scale(of(met->triangle->normal[0]), k), scale(of(met->triangle->normal[1]), met->u)), scale(of(met->triangle->normal[2]), met->w)));
+
+	/* (seen from behind, as the inside of a spout is: matt and mirror have one side) */
+	if (pt.material[0] != PT_GLASS && dot(normal, way) > 0.0f)
+		normal = scale(normal, -1.0f);
+	return normal;
+}
+
+/* Whether any triangle of a model is in a ray's way before `far`: every box the ray is in
+ * before then is gone into, a box's two tried together as mesh_nearest() does. */
 static int
 mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float far)
 {
@@ -196,12 +197,11 @@ mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float 
 	struct vec over = over_way(way);
 	float enter;
 
-	stack[held++] = 0;
-	while (held) {
-		const struct pt_node *node = &mesh->nodes[at = stack[--held]];
+	if (!box_met(&mesh->nodes[0], from, over, far, &enter))
+		return 0;
+	for (;;) {
+		const struct pt_node *node = &mesh->nodes[at];
 
-		if (!box_met(node, from, over, far, &enter))
-			continue;
 		if (node->b) {
 			const struct pt_triangle *tri = mesh->triangles + node->a, *end = tri + node->b;
 
@@ -212,131 +212,151 @@ mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float 
 					return 1;
 			}
 		} else {
-			stack[held++] = node->a;
-			stack[held++] = node->a + 1;
-		}
-	}
-	return 0;
-}
+			int in0 = box_met(&mesh->nodes[node->a], from, over, far, &enter), in1 = box_met(&mesh->nodes[node->a + 1], from, over, far, &enter);
 
-/* The nearest thing a ray meets; false for the open side. */
-static int
-nearest(struct vec from, struct vec way, struct hit *h)
-{
-	int i, axis, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2;
-	float low = -1e30f, high = 1e30f;
-	struct vec low_normal = v(0, 0, 0);
-
-	h->t = 1e30f;
-	h->glow = 0.0f;
-	h->material = PT_DIFFUSE;
-	h->normal = h->colour = v(0, 0, 0);
-	/* the room: a ray inside it leaves by one wall of each pair */
-	if (way.x < 0.0f) wall(-from.x / way.x, v(1, 0, 0), red, h);
-	else if (way.x > 0.0f) wall((1.0f - from.x) / way.x, v(-1, 0, 0), green, h);
-	if (way.y < 0.0f) wall(-from.y / way.y, v(0, 1, 0), white, h);
-	else if (way.y > 0.0f) wall((1.0f - from.y) / way.y, v(0, -1, 0), white, h);
-	if (way.z > 0.0f) wall((1.0f - from.z) / way.z, v(0, 0, -1), white, h);
-	if (h->t < 1e29f && h->normal.y < -0.5f) {
-		/* the ceiling: the lamp is a square of it */
-		float x = from.x + way.x * h->t, z = from.z + way.z * h->t;
-
-		if (x > LAMP_X0 && x < LAMP_X1 && z > LAMP_Z0 && z < LAMP_Z1)
-			h->glow = pt.light;
-	}
-	for (i = first; i < last; i++) {
-		struct vec to = sub(balls[i].centre, from);
-		float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
-
-		if (off2 < r2) {
-			float half = __builtin_sqrtf(r2 - off2), t = along - half;
-
-			if (t < 0.0005f)
-				t = along + half;	/* from inside it (glass) */
-			if (t > 0.0005f && t < h->t) {
-				h->t = t;
-				h->normal = scale(sub(add(from, scale(way, t)), balls[i].centre), 1.0f / balls[i].radius);
-				h->colour = v(0.92f, 0.92f, 0.92f);
-				h->material = pt.material[i == 2 ? 1 : i];
-				h->glow = 0.0f;
+			if (in0 && in1) {
+				stack[held++] = node->a + 1;
+				at = node->a;
+				continue;
+			}
+			if (in0 || in1) {
+				at = in0 ? node->a : node->a + 1;
+				continue;
 			}
 		}
+		if (!held)
+			return 0;
+		at = stack[--held];
 	}
-	if (pt.scene) {
-		/* a model in the block's place */
-		mesh_nearest(&pt_meshes[pt.scene - 1], from, way, h);
-		return h->t < 1e29f;
-	}
-	/* the block: where the ray is inside all three pairs of its sides */
-	for (axis = 0; axis < 3; axis++) {
-		float o = axis == 0 ? from.x : axis == 1 ? from.y : from.z, d = axis == 0 ? way.x : axis == 1 ? way.y : way.z;
-		float a = axis == 0 ? block_low.x : axis == 1 ? block_low.y : block_low.z;
-		float b = axis == 0 ? block_high.x : axis == 1 ? block_high.y : block_high.z, t0, t1, sign = -1.0f;
+}
 
-		if (d > -1e-6f && d < 1e-6f) {
-			if (o < a || o > b)
-				return h->t < 1e29f;
-			continue;
-		}
-		t0 = (a - o) / d, t1 = (b - o) / d;
-		if (t0 > t1) {
-			float swap = t0;
+/* One pair of the block's sides, a to b along an axis: narrows where a ray (from o, going d
+ * along it) is between them, and notes the side it comes in by. False: it never is. */
+static inline int
+block_pair(float o, float d, float a, float b, int axis, float *low, float *high, int *side)
+{
+	float t0, t1;
+	int far_side = 0;
 
-			t0 = t1, t1 = swap, sign = 1.0f;
-		}
-		if (t0 > low) {
-			low = t0;
-			low_normal = axis == 0 ? v(sign, 0, 0) : axis == 1 ? v(0, sign, 0) : v(0, 0, sign);
-		}
-		if (t1 < high)
-			high = t1;
+	if (d > -1e-6f && d < 1e-6f)
+		return !(o < a || o > b);
+	t0 = (a - o) / d, t1 = (b - o) / d;
+	if (t0 > t1) {
+		float swap = t0;
+
+		t0 = t1, t1 = swap, far_side = 1;
 	}
-	if (low < high && low > 0.0005f && low < h->t) {
-		h->t = low;
-		h->normal = low_normal;
-		h->colour = v(0.72f, 0.68f, 0.50f);
-		h->material = PT_DIFFUSE;
-		h->glow = 0.0f;
+	if (t0 > *low)
+		*low = t0, *side = axis * 2 + far_side;
+	if (t1 < *high)
+		*high = t1;
+	return 1;
+}
+
+/* Whether a ray can do without the balls and the block (or, beside a model, the one ball):
+ * it starts beyond them on some side and goes away. They are within these, with room. */
+static inline int
+clear_of_things(struct vec from, struct vec way)
+{
+	if (pt.scene)
+		return (from.y >= 0.21f && way.y >= 0.0f) || (from.x >= 0.25f && way.x >= 0.0f) || (from.z >= 0.27f && way.z >= 0.0f);
+	/* (the block's top is at 0.5 itself: a ray along it is the block's to answer) */
+	return (from.y >= 0.5f && way.y > 1e-6f) || (from.x >= 0.87f && way.x >= 0.0f) || (from.x <= 0.11f && way.x <= 0.0f) ||
+	       (from.z >= 0.87f && way.z >= 0.0f) || (from.z <= 0.20f && way.z <= 0.0f);
+}
+
+/* The nearest thing a ray meets (MET_NONE: the open side) and how far; *met: where in a model. */
+static inline __attribute__((always_inline)) int
+nearest(struct vec from, struct vec way, float *distance, struct met *met)
+{
+	int i, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2, what = MET_NONE, side = 0;
+	float best = 1e30f, low = -1e30f, high = 1e30f, t;
+
+	/* the room: a ray inside it leaves by one wall of each pair */
+	if (way.x < 0.0f) {
+		t = -from.x / way.x;
+		if (t > 0.0005f && t < best) best = t, what = MET_LEFT;
+	} else if (way.x > 0.0f) {
+		t = (1.0f - from.x) / way.x;
+		if (t > 0.0005f && t < best) best = t, what = MET_RIGHT;
 	}
-	return h->t < 1e29f;
+	if (way.y < 0.0f) {
+		t = -from.y / way.y;
+		if (t > 0.0005f && t < best) best = t, what = MET_FLOOR;
+	} else if (way.y > 0.0f) {
+		t = (1.0f - from.y) / way.y;
+		if (t > 0.0005f && t < best) best = t, what = MET_CEILING;
+	}
+	if (way.z > 0.0f) {
+		t = (1.0f - from.z) / way.z;
+		if (t > 0.0005f && t < best) best = t, what = MET_BACK;
+	}
+	if (what == MET_CEILING && best < 1e29f) {
+		/* the ceiling: the lamp is a square of it */
+		float x = from.x + way.x * best, z = from.z + way.z * best;
+
+		if (x > LAMP_X0 && x < LAMP_X1 && z > LAMP_Z0 && z < LAMP_Z1)
+			what = MET_LAMP;
+	}
+	if (!clear_of_things(from, way)) {
+		for (i = first; i < last; i++) {
+			struct vec to = sub(balls[i].centre, from);
+			float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
+
+			if (off2 < r2) {
+				float half = __builtin_sqrtf(r2 - off2);
+
+				t = along - half;
+				if (t < 0.0005f)
+					t = along + half;	/* from inside it (glass) */
+				if (t > 0.0005f && t < best)
+					best = t, what = MET_BALL + i;
+			}
+		}
+		/* the block: where the ray is inside all three pairs of its sides */
+		if (!pt.scene && block_pair(from.x, way.x, block_low.x, block_high.x, 0, &low, &high, &side) &&
+		    block_pair(from.y, way.y, block_low.y, block_high.y, 1, &low, &high, &side) &&
+		    block_pair(from.z, way.z, block_low.z, block_high.z, 2, &low, &high, &side) && low < high && low > 0.0005f && low < best)
+			best = low, what = MET_BLOCK + side;
+	}
+	/* a model in the block's place */
+	if (pt.scene && mesh_nearest(&pt_meshes[pt.scene - 1], from, way, &best, met))
+		what = MET_MODEL;
+	*distance = best;
+	return best < 1e29f ? what : MET_NONE;
+}
+
+/* nearest() for the picture of distances (pt.depth), which is in no hurry. */
+static __attribute__((noinline)) int
+nearest_once(struct vec from, struct vec way, float *distance)
+{
+	struct met met;
+
+	return nearest(from, way, distance, &met);
 }
 
 /* Whether a ball or the block stands between a point and a point of the lamp, `far` away. */
-static int
+static inline int
 shadowed(struct vec from, struct vec way, float far)
 {
-	int i, axis, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2;
+	int i, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2, side;
 	float low = 0.0005f, high = far;
 
-	for (i = first; i < last; i++) {
-		struct vec to = sub(balls[i].centre, from);
-		float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
+	if (!clear_of_things(from, way)) {
+		for (i = first; i < last; i++) {
+			struct vec to = sub(balls[i].centre, from);
+			float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
 
-		if (pt.material[i == 2 ? 1 : i] != PT_GLASS && along > 0.0f && off2 < r2 && along - __builtin_sqrtf(r2 - off2) < far && along > 0.001f)
-			return 1;
+			if (pt.material[i == 2 ? 1 : i] != PT_GLASS && along > 0.0f && off2 < r2 && along - __builtin_sqrtf(r2 - off2) < far && along > 0.001f)
+				return 1;
+		}
+	} else if (!pt.scene) {
+		return 0;
 	}
 	if (pt.scene)
 		return pt.material[0] != PT_GLASS && mesh_between(&pt_meshes[pt.scene - 1], from, way, far);
-	for (axis = 0; axis < 3; axis++) {
-		float o = axis == 0 ? from.x : axis == 1 ? from.y : from.z, d = axis == 0 ? way.x : axis == 1 ? way.y : way.z;
-		float a = axis == 0 ? block_low.x : axis == 1 ? block_low.y : block_low.z;
-		float b = axis == 0 ? block_high.x : axis == 1 ? block_high.y : block_high.z, t0, t1;
-
-		if (d > -1e-6f && d < 1e-6f) {
-			if (o < a || o > b)
-				return 0;
-			continue;
-		}
-		t0 = (a - o) / d, t1 = (b - o) / d;
-		if (t0 > t1) {
-			float swap = t0;
-
-			t0 = t1, t1 = swap;
-		}
-		if (t0 > low) low = t0;
-		if (t1 < high) high = t1;
-	}
-	return low < high;
+	return block_pair(from.x, way.x, block_low.x, block_high.x, 0, &low, &high, &side) && block_pair(from.y, way.y, block_low.y, block_high.y, 1, &low, &high, &side) &&
+	       block_pair(from.z, way.z, block_low.z, block_high.z, 2, &low, &high, &side) && low < high;
 }
 
 /* The light one path brings back; *rays counts its rays. */
@@ -347,29 +367,57 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 	int bounce, straight = 1;	/* the last turn was a mirror's or the eye's: a lamp met now is seen */
 
 	for (bounce = 0; bounce < pt.bounces; bounce++) {
-		struct hit h;
-		struct vec at;
+		struct met met;
+		struct vec at, normal, colour = white;
+		float t;
+		int material = PT_DIFFUSE, what;
 
 		(*rays)++;
-		if (!nearest(from, way, &h))
+		what = nearest(from, way, &t, &met);
+		if (what == MET_NONE)
 			break;
-		if (h.glow > 0.0f) {
-			if (straight)
-				seen = add(seen, scale(weight, h.glow));
-			break;
+		if (what == MET_LAMP) {
+			if (pt.light > 0.0f) {
+				if (straight)
+					seen = add(seen, scale(weight, pt.light));
+				break;
+			}
+			what = MET_CEILING;
 		}
-		at = add(from, scale(way, h.t));
-		if (h.material == PT_MIRROR) {
-			way = sub(way, scale(h.normal, 2.0f * dot(way, h.normal)));
-			weight = mul(weight, h.colour);
+		at = add(from, scale(way, t));
+		/* what was met, as a surface */
+		if (what >= MET_MODEL) {
+			normal = mesh_normal(&met, way);
+			colour = of(pt_meshes[pt.scene - 1].colour);
+			material = pt.material[0];
+		} else if (what >= MET_BLOCK) {
+			float out = (what - MET_BLOCK) & 1 ? 1.0f : -1.0f;
+
+			normal = what < MET_BLOCK + 2 ? v(out, 0, 0) : what < MET_BLOCK + 4 ? v(0, out, 0) : v(0, 0, out);
+			colour = v(0.72f, 0.68f, 0.50f);
+		} else if (what >= MET_BALL) {
+			int i = what - MET_BALL;
+
+			normal = scale(sub(at, balls[i].centre), 1.0f / balls[i].radius);
+			colour = v(0.92f, 0.92f, 0.92f);
+			material = pt.material[i == 2 ? 1 : i];
+		} else if (what == MET_LEFT) {
+			normal = v(1, 0, 0), colour = red;
+		} else if (what == MET_RIGHT) {
+			normal = v(-1, 0, 0), colour = green;
+		} else {
+			normal = what == MET_FLOOR ? v(0, 1, 0) : what == MET_CEILING ? v(0, -1, 0) : v(0, 0, -1);
+		}
+		if (material == PT_MIRROR) {
+			way = sub(way, scale(normal, 2.0f * dot(way, normal)));
+			weight = mul(weight, colour);
 			from = at;
 			straight = 1;
 			continue;
 		}
-		if (h.material == PT_GLASS) {
+		if (material == PT_GLASS) {
 			/* in or out through the surface, or back off it: more of the latter the flatter the ray */
-			float c = -dot(way, h.normal), ratio = 1.0f / 1.5f, k, mirror;
-			struct vec normal = h.normal;
+			float c = -dot(way, normal), ratio = 1.0f / 1.5f, k, mirror;
 
 			if (c < 0.0f)
 				c = -c, normal = scale(normal, -1.0f), ratio = 1.5f;
@@ -384,14 +432,14 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 			continue;
 		}
 		/* a matt surface: the lamp's light on it, by a ray to a point of the lamp */
-		weight = mul(weight, h.colour);
+		weight = mul(weight, colour);
 		{
 			struct vec lamp = v(LAMP_X0 + (LAMP_X1 - LAMP_X0) * chance(state), 0.999f, LAMP_Z0 + (LAMP_Z1 - LAMP_Z0) * chance(state));
 			struct vec to = sub(lamp, at);
 			float d2 = dot(to, to), d = __builtin_sqrtf(d2), facing, down;
 
 			to = scale(to, 1.0f / d);
-			facing = dot(h.normal, to);
+			facing = dot(normal, to);
 			down = to.y;	/* the lamp faces down: how squarely this ray leaves it */
 			(*rays)++;
 			if (facing > 0.0f && down > 0.0f && !shadowed(at, to, d - 0.002f)) {
@@ -401,7 +449,7 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 			}
 		}
 		/* and on in a direction that favours the surface's own */
-		way = unit(add(h.normal, in_ball(state)));
+		way = unit(add(normal, in_ball(state)));
 		from = at;
 		straight = 0;
 		if (bounce >= 2) {
@@ -452,11 +500,11 @@ pt_tile(uint32_t tile, uint32_t how)
 
 			if (pt.depth) {
 				/* (through the pixel's middle, and no light: what the tree of boxes finds) */
-				struct hit h;
 				struct vec way = unit(v(((float)x + 0.5f - half_w) * zoom, (half_h - (float)y - 0.5f) * zoom, 1.35f));
+				float t;
 
 				rays++;
-				*out++ = nearest(eye, way, &h) ? (uint32_t)(h.t * 4000000.0f) & 0xffffff : 0;
+				*out++ = nearest_once(eye, way, &t) ? (uint32_t)(t * 4000000.0f) & 0xffffff : 0;
 				continue;
 			}
 			next(&state);

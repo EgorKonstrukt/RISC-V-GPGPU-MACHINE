@@ -6,7 +6,7 @@ on the same layer under it (`docs/tdawn.md`, `linux/tdawn`): a Nano-X window, th
 the GPU, the sound card. Its screen is 640 x 400, shown one to one.
 
     wsl -- bash /mnt/c/Development/ShaderX86/linux/tdawn/build.sh     (first: it makes the C++ driver)
-    wsl -- bash /mnt/c/Development/ShaderX86/linux/ralert/build.sh    (20 s; the first time it also fetches)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/ralert/build.sh    (two minutes; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
 In the guest: `nano-X -p & ralert` at the console, or Red Alert in the Start menu's Games (not
@@ -105,9 +105,11 @@ are its ordinary stages (the base class's turn 1,000 to 1,300, moving 600 to 800
 thousand instructions, some hundreds of cells in rings at two calls each; an empty cell is
 passed over without them now (`SHADEREMU_OCCUPIED` in `TechnoClass::Greatest_Threat`), 5 to
 8% of the battle's logic, with the sums as they were. Building the game with link-time
-optimisation (`-flto`) made a program a tenth smaller that ends with "out of memory" at its
-start: the source depends on what a whole-program optimiser may take away, and it was not
-looked into further.
+optimisation (`-flto`) made a program that ends with "out of memory" at its start: its
+globals are made in the order of its source files, which the optimiser's default partitions
+do not keep. With a partition a file and nothing reordered it runs, a fifth fewer
+instructions a frame, and is how both games are built now (`docs/tdawn.md`, "The whole
+program at once").
 
 What a frame costs outside its logic and its drawing ("rest", 25 thousand there) was half
 the ground layer's sort, which asked every object for its place twice, by a virtual call:
@@ -193,6 +195,93 @@ cells' loop 10%, a rectangle's way into the list another 10%), shapes drawn into
 the first time they are seen 7% (it falls as the atlas fills), the kernel's clock tick 7%,
 looking for targets 5%, and nothing else above 2%.
 
+## At two million instructions a second
+
+The figures and what the two games share are in `docs/tdawn.md` under the same heading: the
+Soviet mission went from 9.7 to 23.6 game frames a second over its first 300 frames (12.6
+to 30.9 over 1,200), the Allied one from 9.0 to 20.6 (8.7 to 21.7). Red Alert's own part:
+
+- **A house that takes no part** (`HouseClass::ShaderEmu_Takes_No_Part`). Twenty houses have a
+  turn every frame, 900 instructions each, and all but three or four have no object, no
+  trigger, no special weapon and nothing asked of them: for such a house the turn comes to
+  its timers, which are kept running in their order, and nothing else. A house with team
+  types counts as one while none is built ahead for, no team is in play and its team timer
+  has not run out. 18 to 13 thousand a frame; a house with only a civilian building or two
+  still has its whole turn.
+- **A scan for walls asks cells that have an overlay.** A computer's unit that scans for
+  targets also asked every cell of the scan whether it is a wall worth shooting
+  (`Evaluate_Just_Cell`, a hundred instructions to say no): only a cell with an overlay can be.
+- **A trigger that ends** was looked for in each of the map's 16,384 cells by a call that
+  found the trigger again every time: 1.6 million instructions, most of a second, when a
+  mission's first triggers go. Found once, and only cells that have a trigger are compared.
+- **`Shape_Dimensions`**, the smallest rectangle round a shape's pixels, looked at a pixel at a
+  time four times over the first time each frame of each shape is asked for, 20 thousand
+  instructions for a soldier. A row's first and last pixel are found a word at a time
+  (`host_first_pixel`, which the atlas uses too): the same rectangle.
+- The credits' tab is drawn at every count of the credits: `BF_Trans` by runs
+  (`docs/tdawn.md`) took it from 13 to 9 thousand.
+- **The houses' scan bits are made when something changed.** `HouseClass::Recalc_Attributes`
+  went through every unit, soldier, aircraft, building and vessel every frame to say which
+  kinds each house has, 4 thousand instructions. What it reads changes at a dozen places (an
+  object made or gone, into or out of limbo, locked onto the map, discovered, captured, and
+  where the bits are written directly): each says so (`ShaderEmu_Scans_Stale`), and a frame
+  in which none did keeps the bits. `RALERT_CHECK_SCANS=1` makes them every frame anyway and
+  compares: kept in 1,012 of 1,024 frames of a mission and 670 of 768 of a battle, never
+  wrongly. A new place that changes `IsLocked`, `IsInLimbo`, `IsDiscoveredByPlayer`, an
+  object's house or a scan word must say so too.
+- **An anim or a bullet that ends is not looked for in everything's targets**
+  (`ObjectClass::Detach_All`): that look asks every object, team, house and trigger, 15
+  thousand instructions, for each puff of smoke that ends. Nothing can hold the target value
+  of one whose value was never made, and a value is made in two places
+  (`AbstractClass::As_Target`, `TargetClass`'s constructor from a pointer), which note it by
+  the object's place in its heap (`ShaderEmu_Taken`), for good. Only these two kinds: what
+  holds a soldier or a building may hold a pointer (a bullet's `Payback`, a radio contact),
+  which no value says. `RALERT_CHECK_DETACH=1` makes the look anyway and sums every byte of
+  every object before and after: `the look changed something for 0 of them` (134 in a
+  battle of 800 frames). A saved game's values were made elsewhere: loading one notes all.
+- **A `CCPtr` is one load.** Every object's `Class->` and `House->` went through the heap's
+  buffer and object size (eight instructions, fifteen hundred times a frame: 9% of a battle
+  in the profile by line). Each heap that has such pointers has a table of its objects'
+  places now, entry 0 empty for the ID that is none (`ShaderEmu_Heap_Table` in `heap.cpp`,
+  made again when the heap's buffer is another): 3% of every frame.
+- **A unit's path searches** keep what `Can_Enter_Cell` said, as Tiberian Dawn's do
+  (`docs/tdawn.md`, "Not done"; `RALERT_CHECK_ENTER=1`).
+- **A scan for targets turns most objects away first for the least**
+  (`TechnoClass::Evaluate_Object`): whether the object's kind is asked for and whose side it
+  is on are tested before its cloak, its zone and its health. Every test only says no, so
+  their order does not change an answer.
+- **The scan passes empty cells a word at a time**, by Tiberian Dawn's bits of who is
+  occupied (`cell.h`), where it has no walls to look for (the player's units, and a computer
+  that does not shoot walls). `RALERT_CHECK_OCCUPY=1` compares the bits with the cells every
+  frame: `0 cells' occupancy bits were wrong`. Worth 1%: most scans are short.
+- **A new object is put into the drawing order with one question of its own**
+  (`LayerClass::Sorted_Add`, both games): it was asked for its place at every comparison,
+  two virtual calls for each of the 130 objects before it, 4 thousand instructions for every
+  puff of smoke that appears.
+- **An anim or a bullet does not make the houses' scan bits stale** by coming or going (it is
+  in none of the scans): the bits are kept in 986 frames of 1,024 where they were in 928.
+- **The view's own half of `Coord_To_Pixel`** is worked out when the view moves, not for
+  every object of every frame.
+- **A soldier with one weapon** is not asked which of its two is better
+  (`What_Weapon_Should_I_Use`), and **a shape that goes to the scene** is not measured
+  (`Shape_Dimensions` in `Techno_Draw_Object` is for the game's own drawing).
+- **What moves is out of the cells' overlap lists** once the scene is live (both games;
+  `SHADEREMU_NO_OVERLAP` in `map.cpp`): the lists say what to draw again when a cell is
+  painted over, which the scene never does. Buildings and trees stay in them; an object not
+  seen yet still reveals itself as a list would have made it (`ShaderEmu_Overlap_Seen`).
+  Anything new that reads `Overlapper` for more than drawing finds no units there.
+
+What is left in the Allied mission, of 89 thousand a frame, is about: 39 soldiers 26, 47
+buildings 12, the houses 9, scans for targets 7, the scene 20, the kernel's tick 8. Nothing
+in it is waste of the kinds above, and a battle is the same at one and a half times the
+size: 15.2 frames a second with everything sent to hunt, where it was 5.6, and 9.1 while
+reinforcements land (`docs/tdawn.md` lists what is still under 15). Not done: Tiberian
+Dawn's occupancy bits for Red Alert's scan (2 thousand), a unit's scan or path on a worker
+core while this one waits (a waited job is two passes: a paired path search was built for
+Tiberian Dawn and gained 1%), a soldier that only moved shown from its kept rectangles
+(what its `Draw_It` would draw is not known without calling it), and the logic itself on
+more than one core, which is what a battle at 15 frames a second would take.
+
 ## Speed
 
 On D3D11 with fxc2 (3.5M to 4.1M instructions a second), no delay between frames, nobody
@@ -215,7 +304,10 @@ own start), and as long again to a mission's first frame.
 - `TDAWN_AUTO=1` presses Return through the menus; `RALERT_SIDE=allies` or `soviet` answers
   the question of sides; `RALERT_SEED`, `RALERT_FRAMES`, `RALERT_STOP_FRAME` (with
   `RALERT_NO_DELAY=1`), `RALERT_STATS_MS`, `RALERT_RENDER=soft` and `RALERT_REFRESH` are
-  Tiberian Dawn's switches. `rastat:` lines say where a frame went.
+  Tiberian Dawn's switches (a scene from nothing every 256th time). `rastat:` lines say
+  where a frame went. `RALERT_HUNT=N` sends everything after the enemy at frame N (the sums at
+  frame 800 with `RALERT_HUNT=50`: `f5b3dbae` Soviet, `dd61e2fd` Allied), and
+  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`.
 - A change to the game must leave its `state` sum the same: `01e0dd60` for the Soviet mission
   (SCU01EA) and `ea72a5d1` for the Allied one (SCG02EA) at frame 300 with seed 7.
 - The picture against the game's own drawing (`RALERT_RENDER=soft`, both held at one frame):

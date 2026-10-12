@@ -31,11 +31,14 @@ typedef struct
    uint32 *table;                   /* 56: by byte of the program: its code, or 0; bit 0: not an entry */
    uint8 *at;                       /* 60: by byte of the program: the page (pc >> 12) it was translated for */
    uint8 *ram;                      /* 64 */
+   uint32 paged_read;               /* 68: from here up a read is of the pages, no device's */
+   uint32 paged_write;              /* 72: from here to 0x7FFF a write is to the pages */
 } rc_state_t;
 
 static rc_state_t rc;
 static int rc_fixed;                /* the cartridge's pages never change: every jump is direct */
 int rc_plain_runs_off;              /* NES_RC=plain: no unchecked copies of runs, to compare with */
+int rc_eager;                       /* NES_RC=eager: a jsr's routine translated with the jsr, as it was */
 static uint32 *rc_code, *rc_p, *rc_end;
 static unsigned rc_count, rc_runs, rc_entries;
 static int rc_full;                 /* no room for more code: what is not translated stays so */
@@ -54,13 +57,24 @@ static void rc_flush(int rem)
    remaining_cycles = rem;
 }
 
+/* (the machine's own registers are the first handlers of nofrendo's list, whatever the
+** cartridge adds: theirs are called without the search) */
+extern uint8 ppu_read(uint32 address), ppu_readhigh(uint32 address);
+extern void ppu_write(uint32 address, uint8 value), ppu_writehigh(uint32 address, uint8 value);
+extern void apu_write(uint32 address, uint8 value);
+
 /* a read that is neither RAM nor the cartridge: a device's, at the cycle the interpreter's is */
 __attribute__((used)) uint32 rc_slow_read(uint32 address, int rem)
 {
    uint32 value;
 
    rc_flush(rem);
-   value = mem_readbyte(address);
+   if (address - 0x2000 < 0x2000)
+      value = ppu_read(address);
+   else if (address - 0x4016 < 2)
+      value = ppu_readhigh(address);
+   else
+      value = mem_readbyte(address);
    rc.rem = remaining_cycles;
    return value;
 }
@@ -69,24 +83,45 @@ __attribute__((used)) uint32 rc_slow_read(uint32 address, int rem)
 __attribute__((used)) void rc_slow_write(uint32 address, uint32 value, int rem)
 {
    rc_flush(rem);
-   mem_writebyte(address, value);
    /* (the PPU's, the sound's and the pads' registers turn no pages: the code goes on) */
-   if (address >= 0x2000 && address < 0x4018)
+   if (address - 0x2000 < 0x2018)
    {
+      if (address < 0x4000)
+         ppu_write(address, value);
+      else if (address < 0x4014 || 0x4015 == address)
+         apu_write(address, value);
+      else
+         ppu_writehigh(address, value);
       rc.rem = remaining_cycles;
       return;
    }
+   mem_writebyte(address, value);
    rc.rem = remaining_cycles - RC_BIAS;
    rc.bias = RC_BIAS;
 }
 
-/* a branch back over a loop that only looks: the cycles of its turns left (idle_loop) */
+/* a branch back over a loop that only looks: the cycles of its turns left (idle_loop). X, Y
+** and the flags are the code's again from the state: a loop that counts has moved them on */
 __attribute__((used)) int rc_idle(uint32 where, uint32 a, uint32 x, uint32 y)
 {
    uint8 p = RC_N(rc.n) | (rc.v ? V_FLAG : 0) | (RC_Z(rc.n) ? 0 : Z_FLAG) | (rc.c ? C_FLAG : 0);
+   int cycles;
 
    rc_flush(rc.rem);
-   return idle_loop(where & 0xFFFF, where >> 16, a, x, y, p, remaining_cycles);
+   rc.x = x;
+   rc.y = y;
+   if (idle_never[where & 63] == (uint16) where)
+      return 0;
+   cycles = idle_loop(where & 0xFFFF, where >> 16, a, x, y, p, remaining_cycles);
+   if (idle_passed.any)
+   {
+      rc.x = idle_passed.x;
+      rc.y = idle_passed.y;
+      rc.n = RC_NZ(idle_passed.p, 0 == (idle_passed.p & Z_FLAG));
+      rc.c = idle_passed.p & C_FLAG;
+      rc.v = idle_passed.p & V_FLAG;
+   }
+   return cycles;
 }
 
 static int rc_inside;       /* a slice that rc_slice runs: the frame's loop may be asked for the next */
@@ -155,7 +190,7 @@ __asm__(
    "rc_rt_read:\n"
    "   srli t0, a0, 11\n   bnez t0, 1f\n"
    "   add t0, s9, a0\n    lbu a0, 0(t0)\n     ret\n"
-   "1: srli t0, a0, 15\n   beqz t0, 2f\n"
+   "1: lw t0, 68(s10)\n    bltu a0, t0, 2f\n"
    "   srli t0, a0, 12\n   slli t0, t0, 2\n    lw t1, 44(s10)\n    add t0, t0, t1\n"
    "   lw t0, 0(t0)\n      slli t1, a0, 20\n   srli t1, t1, 20\n   add t0, t0, t1\n"
    "   lbu a0, 0(t0)\n     ret\n"
@@ -167,7 +202,11 @@ __asm__(
    "rc_rt_write:\n"
    "   srli t0, a0, 11\n   bnez t0, 1f\n"
    "   add t0, s9, a0\n    sb a1, 0(t0)\n      ret\n"
-   "1: addi sp, sp, -16\n  sw ra, 12(sp)\n"
+   "1: lw t0, 72(s10)\n    bltu a0, t0, 3f\n   srli t0, a0, 15\n   bnez t0, 3f\n"
+   "   srli t0, a0, 12\n   slli t0, t0, 2\n    lw t1, 44(s10)\n    add t0, t0, t1\n"
+   "   lw t0, 0(t0)\n      slli t1, a0, 20\n   srli t1, t1, 20\n   add t0, t0, t1\n"
+   "   sb a1, 0(t0)\n      ret\n"
+   "3: addi sp, sp, -16\n  sw ra, 12(sp)\n"
    "   mv a2, s8\n         call rc_slow_write\n"
    "   lw ra, 12(sp)\n     addi sp, sp, 16\n"
    "   lw s8, 32(s10)\n    ret\n"
@@ -189,6 +228,7 @@ __asm__(
    "   lw a0, 0(ra)\n      mv a1, s0\n         mv a2, s1\n         mv a3, s2\n"
    "   call rc_idle\n"
    "   lw ra, 12(sp)\n     addi sp, sp, 16\n   sub s8, s8, a0\n"
+   "   lw s1, 4(s10)\n     lw s2, 8(s10)\n     lw s4, 16(s10)\n    lw s6, 24(s10)\n    lw s7, 28(s10)\n"
    "9: addi ra, ra, 4\n    ret\n"
    /* in: a0 the code, a1 the state, a2 the routines */
    ".globl rc_enter\n"
@@ -367,8 +407,9 @@ static const uint8 rc_length[12] = { 1, 1, 2, 2, 2, 2, 3, 3, 3, 2, 2, 2 };
 
 typedef struct { uint32 *site; uint32 pc; } rc_fix_t;
 
-static uint32 rc_work[RC_WORK];
-static rc_fix_t rc_fix[RC_WORK];
+/* (mapped with the tables, not the program's own memory: only the pages that are used are there) */
+static uint32 *rc_work, *rc_stack;
+static rc_fix_t *rc_fix;
 static int rc_works, rc_fixes;
 
 /* where in the program the 6502's address is now, or past its end */
@@ -591,17 +632,31 @@ static void e_pull(int reg)
    e_lbu(reg, T0, 0x100);
 }
 
-/* whether a loop is one idle_loop could pass over: loads, compares, tests and branches only */
+/* whether a loop is one idle_loop could pass over: loads, compares, tests and branches only;
+** or one that counts, with dex, dey, inx or iny as its last before the bne that closes it,
+** no other branch, and nothing else of X or Y */
 static int rc_idle_possible(uint32 top, uint32 end)
 {
    uint32 pc = top;
+   int counts = 0, branches = 0, indexes = 0;
 
    while (pc < end)
    {
       uint8 op = bank_readbyte(pc);
       const rc_op_t *info = &rc_ops[op];
 
-      if (K_BRANCH == info->kind)
+      if (K_LDX == info->kind || K_LDY == info->kind || K_CPX == info->kind || K_CPY == info->kind)
+         indexes++;
+      if (K_BRANCH == info->kind || K_JMP == info->kind)
+         branches++;
+      if (K_INX == info->kind || K_INY == info->kind || K_DEX == info->kind || K_DEY == info->kind)
+      {
+         if (pc + 3 != end || 0xD0 != bank_readbyte(pc + 1))
+            return 0;
+         counts++;
+         pc += 1;
+      }
+      else if (K_BRANCH == info->kind)
          pc += 2;
       else if (K_JMP == info->kind && pc + 3 == end)
          pc += 3;   /* (the jump that closes it: a game that waits in jmp to itself) */
@@ -618,13 +673,41 @@ static int rc_idle_possible(uint32 top, uint32 end)
 
             if (address >= 0x800 && address < 0x8000 && 0x2002 != address)
                return 0;
+            if (0x2002 == address)
+               indexes++;   /* (a loop that counts does not read the status) */
          }
          pc += rc_length[info->mode];
       }
       else
          return 0;
    }
+   if (counts && (1 != branches || indexes))
+      return 0;
    return pc == end;
+}
+
+/* A jsr to code not translated yet leaves, and its routine is translated when it is first
+** called (most of a cartridge is not, in its first frames): the jsr is then made a jump. */
+typedef struct { uint32 *site; uint32 where; uint32 page; } rc_later_t;
+
+static rc_later_t *rc_later;
+static int rc_laters, rc_later_room, rc_lazy;
+
+static int rc_later_add(uint32 *site, uint32 where, uint32 page)
+{
+   if (rc_laters == rc_later_room)
+   {
+      rc_later_t *more = realloc(rc_later, (rc_later_room + 256) * sizeof(rc_later_t));
+
+      if (NULL == more)
+         return 0;
+      rc_later = more;
+      rc_later_room += 256;
+   }
+   rc_later[rc_laters].site = site;
+   rc_later[rc_laters].where = where;
+   rc_later[rc_laters++].page = page;
+   return 1;
 }
 
 /* a jump to the code of the 6502's address: straight there when the pages between cannot
@@ -639,6 +722,11 @@ static void e_jump(uint32 from, uint32 target)
       if (rc.table[where])
       {
          E(rc_jal_word(ZERO, (int32) ((rc.table[where] & ~1u) - (uint32) rc_p)));
+         return;
+      }
+      if (rc_lazy && rc_later_add(rc_p, where, target >> 12))
+      {
+         e_out(target);
          return;
       }
       if (rc_works < RC_WORK && rc_fixes < RC_WORK)
@@ -798,7 +886,7 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       skip = rc_p;
       E(0);
       e_addi(REM, REM, -taken - extra);
-      if (back <= -4 && back >= -16 && rc_idle_possible(target, next))
+      if (back <= -3 && back >= -16 && rc_idle_possible(target, next))
       {
          e_call(rc_rt_idle);
          E(target | next << 16);
@@ -837,7 +925,9 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_li(T1, (pc + 2) & 0xFF);
       e_push(T1);
       e_addi(REM, REM, -6 - extra);
+      rc_lazy = !rc_eager;
       e_leave_to(pc, arg);
+      rc_lazy = 0;
       return;
    case K_RTS:
       e_pull(A0);
@@ -882,7 +972,7 @@ static int rc_plain(uint32 pc, int *most, int *nz)
 ** loop's body is a run from its top. */
 static void rc_leaders(uint32 start)
 {
-   static uint32 stack[RC_WORK];
+   uint32 *stack = rc_stack;
    int n = 0;
 
    stack[n++] = start;
@@ -910,7 +1000,8 @@ static void rc_leaders(uint32 start)
          if (rc_where(target) < rc.size)
          {
             rc_lead[rc_where(target)] |= 1;
-            if (n < RC_WORK)
+            /* (a jsr's routine is looked at when it is translated) */
+            if (n < RC_WORK && (K_JSR != info->kind || rc_eager))
                stack[n++] = target;
          }
          if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind)
@@ -1099,6 +1190,22 @@ static void rc_translate(uint32 start)
       *rc_fix[i].site = rc_jal_word(ZERO, (int32) (code - (uint32) rc_fix[i].site));
    }
 
+   /* the jsrs whose routines are there now */
+   {
+      int kept = 0;
+
+      for (i = 0; i < rc_laters; i++)
+      {
+         uint32 code = rc.table[rc_later[i].where] & ~1u;
+
+         if (code && rc.at[rc_later[i].where] == rc_later[i].page)
+            *rc_later[i].site = rc_jal_word(ZERO, (int32) (code - (uint32) rc_later[i].site));
+         else
+            rc_later[kept++] = rc_later[i];
+      }
+      rc_laters = kept;
+   }
+
    /* what was written is fetched as it was until the machine's pass ends: fence.i ends it */
    __asm__ volatile(".word 0x0000100f");
 }
@@ -1213,13 +1320,37 @@ void nes6502_recompile(uint8 *prg, int bytes, int fixed)
       return;
    rc_p = rc_code;
    rc_end = rc_code + RC_CODE_BYTES / 4;
-   rc.at = calloc(bytes, 1);
-   rc_lead = calloc(bytes, 1);
+   {
+      /* the tables by byte of the program and the translator's lists: mapped, so zero and untouched */
+      uint32 all = (uint32) bytes * 6 + RC_WORK * (2 * sizeof(uint32) + sizeof(rc_fix_t));
+      uint8 *tables = mmap(NULL, all, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+      if (MAP_FAILED == (void *) tables)
+         return;
+      rc_work = (uint32 *) (tables + bytes * 4);
+      rc_stack = rc_work + RC_WORK;
+      rc_fix = (rc_fix_t *) (rc_stack + RC_WORK);
+      rc.at = (uint8 *) (rc_fix + RC_WORK);
+      rc_lead = rc.at + bytes;
+      rc.table = (uint32 *) tables;
+   }
    rc.prg = prg;
    rc.size = bytes;
    rc.pages = cpu.mem_page;
    rc_fixed = fixed;
-   rc.table = calloc(bytes, sizeof(uint32));
+   /* a cartridge's own memory at 0x6000, when no handler of anybody's is there: the pages' */
+   {
+      nes6502_memread *mr;
+      nes6502_memwrite *mw;
+
+      rc.paged_read = rc.paged_write = 0x6000;
+      for (mr = cpu.read_handler; mr->min_range != 0xFFFFFFFF; mr++)
+         if (mr->max_range >= 0x6000 && mr->min_range < 0x8000)
+            rc.paged_read = 0x8000;
+      for (mw = cpu.write_handler; mw->min_range != 0xFFFFFFFF; mw++)
+         if (mw->max_range >= 0x6000 && mw->min_range < 0x8000)
+            rc.paged_write = 0x8000;
+   }
 }
 
 void nes6502_recompiled(unsigned *instructions, unsigned *bytes, unsigned *runs, unsigned *entries)

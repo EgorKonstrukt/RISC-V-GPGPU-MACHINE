@@ -11,6 +11,11 @@ int seglInit(unsigned int nano_x_window);
 void seglSize(int* width, int* height);
 // Shows what was drawn since the last swap, and returns once the GPU has drawn it.
 void seglSwap(void);
+// The same without the wait, which ends the machine's pass: the program goes on at once, and
+// calls seglSettle() before it next writes memory the list reads (its textures, kept vertices,
+// the palette: anything written through a pointer; the library's own calls settle themselves).
+void seglSwapEarly(void);
+void seglSettle(void);
 // The window was resized (a GR_UPDATE_SIZE event): learn its size now, not at the next swap.
 void seglWindowChanged(void);
 // Where a point of the window (an event's x, y) lies in a picture of width x height pixels

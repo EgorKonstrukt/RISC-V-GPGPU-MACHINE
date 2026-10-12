@@ -123,7 +123,6 @@ uint fast_run_l1(L1P uint room) {
     // only the last instruction of a run can have stalled: the loop ends there
     if (n > 0 && cpu.stall) {
         PROF(PROF_stalled_tick)
-        cpu.stall_count++;
     }
     cpu.clock += n;
     return n;
@@ -148,7 +147,6 @@ void cpu_tick_l1(L1P0) {
 
     if (cpu.stall) {
         PROF(PROF_stalled_tick)
-        cpu.stall_count++;
     }
 }
 

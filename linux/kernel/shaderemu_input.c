@@ -2,6 +2,8 @@
 /*
  * ShaderEmu keyboard and pointer (docs/input.md in the ShaderEmu repository): the machine
  * writes them into plain memory, which is polled here every timer tick into two evdev devices.
+ * The tick itself calls the poll (tick_input_hook.py); a kernel timer does only while the
+ * machine is idle and its tick may be stopped: one that expired every tick cost 900 instructions.
  */
 #include <linux/init.h>
 #include <linux/input.h>
@@ -22,13 +24,20 @@
 
 static void __iomem *input_regs;
 static struct input_dev *keyboard_dev, *pointer_dev;
+/* An idle machine that nobody has touched for a second polls every fourth tick; any key, button
+ * or move of the pointer brings it back to every tick at once (a tick's whole path for a
+ * poll of 30 instructions was most of what an idle machine runs). */
+#define IDLE_POLL 4
+static u32 seen_x = ~0u, seen_y, seen_buttons;
+static unsigned long touched_at;
 static struct timer_list input_timer;
 static u32 input_tail;
-static bool input_started;
+static bool input_started, input_ready;	/* polled once; both devices are registered */
+static bool input_ticked;	/* the tick calls the poll (a kernel without the hook: the timer does, always) */
 static u32 pointer_x = ~0u, pointer_y, pointer_buttons;
 static unsigned long pointer_at;
 
-static void shaderemu_input_poll(struct timer_list *t)
+static void shaderemu_input_poll(void)
 {
 	u32 x = readl(input_regs + INPUT_STATE);
 	u32 y = readl(input_regs + INPUT_STATE + 4);
@@ -42,6 +51,10 @@ static void shaderemu_input_poll(struct timer_list *t)
 		input_started = true;
 	}
 	keys = input_tail;
+	if (head != input_tail || x != seen_x || y != seen_y || buttons != seen_buttons) {
+		seen_x = x, seen_y = y, seen_buttons = buttons;
+		touched_at = jiffies;
+	}
 	for (; input_tail != head; input_tail++) {
 		u32 event = readl(input_regs + INPUT_KEYS + 4 * (input_tail % INPUT_RING));
 
@@ -80,7 +93,32 @@ static void shaderemu_input_poll(struct timer_list *t)
 		input_report_key(pointer_dev, BTN_MIDDLE, (buttons >> 2) & 1);
 		input_sync(pointer_dev);
 	}
-	mod_timer(&input_timer, jiffies + 1);
+}
+
+/* Every tick, from the timer interrupt (update_process_times). */
+void shaderemu_input_tick(void)
+{
+	input_ticked = true;
+	if (input_ready)
+		shaderemu_input_poll();
+}
+
+/* The idle loop, before it decides how long to sleep: the timer below wakes it at the next tick. */
+void shaderemu_input_idle(void)
+{
+	if (input_ready && !timer_pending(&input_timer))
+		mod_timer(&input_timer, jiffies + (time_before(jiffies, touched_at + HZ) ? 1 : IDLE_POLL));
+}
+
+static void shaderemu_input_timer(struct timer_list *t)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);		/* (the tick's poll must not come in the middle of this one) */
+	shaderemu_input_poll();
+	local_irq_restore(flags);
+	if (!input_ticked || idle_cpu(smp_processor_id()))
+		mod_timer(&input_timer, jiffies + (input_ticked && !time_before(jiffies, touched_at + HZ) ? IDLE_POLL : 1));
 }
 
 /*
@@ -133,8 +171,10 @@ static int __init shaderemu_input_init(void)
 		return ret;
 
 	pointer_at = jiffies;	/* (which does not begin at 0) */
+	touched_at = jiffies;
 	pm_power_off = shaderemu_power_off;
-	timer_setup(&input_timer, shaderemu_input_poll, 0);
+	timer_setup(&input_timer, shaderemu_input_timer, 0);
+	input_ready = true;
 	mod_timer(&input_timer, jiffies + 1);
 	return 0;
 }

@@ -57,6 +57,20 @@ exec riscv32-linux-gcc $ARCH_FLAGS \$inc "\$@"
 EOF
 chmod +x "$WORK/bin/rv32-cc"
 
+# Our memcpy in place of musl's (memcpy.S beside this file): two pointers on word boundaries go
+# sixteen words a turn with no stack frame; musl's own routine stays in the library as
+# memcpy_any, for every other case. Put in again when the library or the file is newer.
+OURS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ ! -f "$SYSROOT/lib/memcpy-ours" ] || [ "$OURS/memcpy.S" -nt "$SYSROOT/lib/memcpy-ours" ] || [ "$SYSROOT/lib/libc.a" -nt "$SYSROOT/lib/memcpy-ours" ]; then
+    echo "== memcpy"
+    MEMOPS="-O2 -fPIC -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns"
+    rv32-cc $MEMOPS -c "$OURS/memcpy.S" -o "$WORK/src/memcpy_ours.o"
+    rv32-cc $MEMOPS -Dmemcpy=memcpy_any -c "$WORK/src/musl/src/string/memcpy.c" -o "$WORK/src/memcpy_any.o"
+    riscv32-linux-ar d "$SYSROOT/lib/libc.a" memcpy.lo memcpy_ours.o memcpy_any.o 2>/dev/null || true
+    riscv32-linux-ar rs "$SYSROOT/lib/libc.a" "$WORK/src/memcpy_ours.o" "$WORK/src/memcpy_any.o" 2>/dev/null
+    touch "$SYSROOT/lib/memcpy-ours"
+fi
+
 # The compiler's own runtime is built for a CPU with an FPU, so the integer and soft-float
 # routines come from compiler-rt, and the 128-bit long double ones (which compiler-rt lacks
 # on a 32-bit CPU) from libgcc's soft-fp.

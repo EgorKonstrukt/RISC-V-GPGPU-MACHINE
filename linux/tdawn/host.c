@@ -47,9 +47,13 @@ static int page_rows;			/* a page's texture is this high: a row is a whole numbe
  * (scene_finish() first). TDAWN_SCENE=inline is the way it was.
  */
 #define SCENE_MOST 4096
+#define SCENE_PARTS 3		/* what is under the objects, the objects, what is over them (host.h) */
 struct scene_note { int kind, x, y, width, height, atlas_x, atlas_y; unsigned int colour; };	/* 32 bytes: two texels */
-static struct scene_note scene_notes[SCENE_MOST] __attribute__((aligned(16)));
-static int scene_noted, scene_noting, scene_out, scene_owed, scene_owed_page, scene_owed_cursor;
+static struct scene_note scene_notes[SCENE_PARTS][SCENE_MOST] __attribute__((aligned(16)));
+static int scene_noted[SCENE_PARTS] __attribute__((aligned(16)));
+static int scene_part = 1, scene_out, scene_owed, scene_owed_page, scene_owed_cursor;
+static int scene_at[2], scene_view[4];	/* the scene's origin on the screen, and the view its kept rectangles are cut to */
+#define PATH_CORES 3
 static int scene_cores = -1;	/* -1: not asked yet; 0: none */
 unsigned int host_scene_jobs;	/* scenes a worker made, for the games' figures */
 static void scene_finish(void);
@@ -460,16 +464,242 @@ host_tiles_clear(void)
 		memset(tiles, 0, tile_count * 64);
 }
 
-/* A frame's scene begins: the map's pixel (0, 0) is at this pixel of the screen. */
-void
-host_scene_begin(int origin_x, int origin_y)
+/*
+ * Shape files' frames on a second worker core (docs/tdawn.md, "Frames made ready"): a file
+ * the scene has asked a frame of is unpacked whole, from that frame on, into memory that is
+ * the worker's to write. TDAWN_FRAMES_CORE=0 leaves every frame to the game.
+ */
+int ShaderEmu_Frame_Size(const void *file, int *width, int *height);	/* keyframe.cpp's */
+int ShaderEmu_Frame_Into(const void *file, int frame, void *buffer);
+enum { FRAME_FILES = 240, FRAME_SLOTS = 40960, FRAMES_ARENA = 6 << 20, FRAMES_STEP = 128 << 10 };
+enum { FILE_WAITS, FILE_OUT, FILE_MADE, FILE_LEFT };
+enum { FRAMES_TURN = 64 };
+struct frame_file { const void *file; struct host_frame *frames; int count, from, width, height, state; };
+static struct frame_file frame_files[FRAME_FILES];
+static unsigned char frame_hash[256];	/* a file's place in those, + 1 */
+static int frame_file_count, frame_waiting, frame_out = -1, frame_slots_used;
+static int frames_wait;	/* how many files wait for a turn */
+static struct host_frame *frame_slots;	/* these four are the worker's to write */
+static unsigned char *frames_arena, *frames_scratch;
+static unsigned int *frames_used;
+static unsigned int frames_limit;	/* the arena's pages are there this far */
+static volatile int frames_stop;
+unsigned int host_frames_bytes;
+
+/*
+ * A file's frames, each cut to the rectangle that has pixels: so many of them a turn, from the
+ * one asked for last. 1: the file is done; 2: out of room; 3: more of it another turn.
+ */
+static uint32_t
+frames_job(uint32_t index, uint32_t turn)
 {
-	scene_finish();		/* the frame before is shown by now */
+	struct frame_file *f = &frame_files[index];
+	int n, y, width = f->width, size = f->width * f->height;
+
+	for (n = 0; n < f->count; n++) {
+		int frame = f->from + n < f->count ? f->from + n : f->from + n - f->count;
+		struct host_frame *r = &f->frames[frame];
+		int x0 = width, x1 = -1, y0 = -1, y1 = -1;
+		unsigned char *to;
+		unsigned int *seen;
+
+		if (r->state)
+			continue;
+		if (frames_stop || mcw_recalled(2))
+			return 0;
+		if (turn-- == 0)
+			return 3;
+		if (frames_used[0] + size + 48 > frames_limit)
+			return 2;
+		if (!ShaderEmu_Frame_Into(f->file, frame, frames_scratch)) {
+			r->state = -1;
+			continue;
+		}
+		for (y = 0; y < f->height; y++) {
+			const unsigned char *row = frames_scratch + y * width;
+			int a = host_first_pixel(row, width), b;
+
+			if (a == width)
+				continue;
+			b = host_last_pixel(row, width);
+			y0 = y0 < 0 ? y : y0, y1 = y;
+			x0 = a < x0 ? a : x0, x1 = b > x1 ? b : x1;
+		}
+		if (y0 < 0) {
+			r->state = HOST_FRAME_EMPTY;
+			continue;
+		}
+		to = frames_arena + frames_used[0];
+		seen = (unsigned int *)to;
+		memset(seen, 0, 32);
+		to += 32;
+		r->pixels = to;
+		r->left = (short)x0, r->top = (short)y0;
+		r->w = (short)(x1 - x0 + 1), r->h = (short)(y1 - y0 + 1);
+		for (y = y0; y <= y1; y++, to += r->w) {
+			const unsigned char *from = frames_scratch + y * width + x0;
+			int x;
+
+			for (x = 0; x < r->w; x++)
+				seen[from[x] >> 5] |= 1u << (from[x] & 31);
+			memcpy(to, from, r->w);
+		}
+		frames_used[0] += (unsigned int)(32 + r->w * r->h + 15) & ~15u;
+		r->state = HOST_FRAME_READY;	/* (last: the other core looks at this) */
+	}
+	return 1;
+}
+
+/* Once a frame: the worker's file is seen done, and the next one given to it. */
+static void
+frames_pump(void)
+{
+	int tries;
+
+	if (scene_cores < 2 || !frames_arena)
+		return;
+	if (frame_out >= 0) {
+		struct frame_file *f = &frame_files[frame_out];
+		uint32_t how;
+
+		if (!mcw_done(2))
+			return;
+		how = mcw_result(2);
+		host_frames_bytes = frames_used[0];
+		f->state = how == 1 ? FILE_MADE : FILE_WAITS;
+		if (how == 2 && frames_limit >= FRAMES_ARENA)
+			f->state = FILE_LEFT;
+		frames_wait += f->state == FILE_WAITS;
+		frame_out = -1;
+	}
+	if (!frames_wait || !mcw_bound(2))
+		return;
+	/* (the files in turns: one that is new has its first frames before an old one its last) */
+	for (tries = 0; tries < frame_file_count; tries++) {
+		frame_waiting = frame_waiting + 1 < frame_file_count ? frame_waiting + 1 : 0;
+		if (frame_files[frame_waiting].state == FILE_WAITS)
+			break;
+	}
+	frames_wait--;
+	if (tries == frame_file_count)
+		return;
+	if (frames_used[0] + FRAMES_STEP > frames_limit && frames_limit < FRAMES_ARENA) {
+		mcw_touch(frames_arena + frames_limit, FRAMES_STEP);
+		frames_limit += FRAMES_STEP;
+	}
+	frame_out = frame_waiting;
+	frame_files[frame_out].state = FILE_OUT;
+	mcw_post(2, frames_job, (uint32_t)frame_out, FRAMES_TURN);
+}
+
+const struct host_frame *
+host_frame(const void *file, int frame)
+{
+	unsigned int at = (unsigned int)(((uintptr_t)file >> 4) * 2654435761u) >> 24;
+	struct frame_file *f = NULL;
+	const struct host_frame *r;
+
+	if (scene_cores < 2 || !frames_arena)
+		return NULL;
+	for (; frame_hash[at]; at = (at + 1) & 255) {
+		if (frame_files[frame_hash[at] - 1].file == file) {
+			f = &frame_files[frame_hash[at] - 1];
+			break;
+		}
+	}
+	if (!f) {
+		if (frame_file_count == FRAME_FILES)
+			return NULL;
+		f = &frame_files[frame_file_count++];
+		frame_hash[at] = (unsigned char)frame_file_count;
+		f->file = file;
+		f->count = ShaderEmu_Frame_Size(file, &f->width, &f->height);
+		f->from = frame > 0 && frame < f->count ? frame : 0;
+		f->state = FILE_LEFT;
+		if (f->count > 0 && f->width > 0 && f->height > 0 && f->width * f->height < 65536
+		    && frame_slots_used + f->count <= FRAME_SLOTS) {
+			f->frames = frame_slots + frame_slots_used;
+			frame_slots_used += f->count;
+			mcw_touch(f->frames, (unsigned)f->count * sizeof *f->frames);
+			f->state = FILE_WAITS;
+			frames_wait++;
+		}
+		return NULL;
+	}
+	if (f->state == FILE_LEFT || (unsigned int)frame >= (unsigned int)f->count)
+		return NULL;
+	r = &f->frames[frame];
+	if (r->state > 0)
+		return r;
+	if (f->state == FILE_WAITS || f->state == FILE_OUT)
+		f->from = frame;	/* (its next turn begins here) */
+	return NULL;
+}
+
+/* The worker is told to end its file, and has by the time this returns. */
+static void
+frames_halt(void)
+{
+	if (frame_out < 0)
+		return;
+	frames_stop = 1;
+	mcw_wait(2);
+	frames_stop = 0;
+	frame_files[frame_out].state = mcw_result(2) == 1 ? FILE_MADE : FILE_WAITS;
+	frames_wait += frame_files[frame_out].state == FILE_WAITS;
+	frame_out = -1;
+}
+
+/* Work put off to the core that makes the scene (host.h). */
+#define FILLS_MOST 256
+static struct { host_fill_fn fn; void *what; const void *from; int unused; } fills[FILLS_MOST] __attribute__((aligned(16)));
+static int fill_count;
+
+static void
+fills_now(int count)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+		fills[i].fn(fills[i].what, fills[i].from);
+}
+
+void
+host_fill(host_fill_fn fn, void *what, const void *from)
+{
+	scene_finish();		/* (the list is the worker's while it has a scene) */
+	if (scene_cores <= 0 || fill_count == FILLS_MOST) {
+		fn(what, from);
+		return;
+	}
+	fills[fill_count].fn = fn, fills[fill_count].what = what, fills[fill_count].from = from;
+	fill_count++;
+}
+
+void
+host_frames_forget(void)
+{
+	scene_finish();
+	fills_now(fill_count);	/* (what they were given goes now) */
+	fill_count = 0;
+	frames_halt();
+	if (frame_slots && frame_slots_used)
+		memset(frame_slots, 0, (unsigned)frame_slots_used * sizeof *frame_slots);
+	memset(frame_hash, 0, sizeof frame_hash);
+	frame_file_count = frame_waiting = frame_slots_used = frames_wait = 0;
+	if (frames_used)
+		frames_used[0] = 0;
+}
+
+/* The worker cores are asked for: the first time, and after they were given back. */
+static void
+workers_open(void)
+{
 	if (scene_cores < 0 || (scene_cores > 0 && mcw_count() == 0)) {
 		const char *how = getenv("TDAWN_SCENE");
 		static int at_exit;
 
-		scene_cores = how && !strcmp(how, "inline") ? 0 : mcw_open(1);
+		scene_cores = how && !strcmp(how, "inline") ? 0 : mcw_open(2 + PATH_CORES);	/* the scene's, the frames', the paths' */
 		if (scene_cores > 0 && !at_exit) {
 			extern char __DATA_BEGIN__[], _end[];
 
@@ -477,11 +707,67 @@ host_scene_begin(int origin_x, int origin_y)
 			atexit(host_workers_close);
 			mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 		}
+		how = getenv("TDAWN_FRAMES_CORE");
+		if (scene_cores > 1 && !frames_arena && !(how && !strcmp(how, "0"))) {
+			frame_slots = mcw_alloc(FRAME_SLOTS * sizeof *frame_slots);
+			frames_used = mcw_alloc(16);
+			frames_scratch = mcw_alloc(4096 + 65536);
+			if (frame_slots && frames_used && frames_scratch) {
+				mcw_touch(frames_used, 16);
+				mcw_touch(frames_scratch, 4096 + 65536);
+				frames_scratch += 4096;	/* (a bad file's copies reach back) */
+				frames_arena = mcw_alloc(FRAMES_ARENA);
+			}
+		}
 	}
-	scene_noting = scene_cores > 0;
-	scene_noted = 0;
+}
+
+/* How many of a unit's path searches other cores can make now (they are workers 3 and up). */
+int
+host_path_cores(void)
+{
+	static int most = -1;
+	int k;
+
+	if (most < 0) {
+		const char *how = getenv("TDAWN_PATH_CORES");
+
+		most = how ? atoi(how) : PATH_CORES;
+		if (most > PATH_CORES)
+			most = PATH_CORES;
+	}
+	if (most <= 0)
+		return 0;
+	workers_open();
+	for (k = 0; k < most && 2 + k < scene_cores && mcw_bound(3 + k); k++)
+		;
+	return k;
+}
+
+void
+host_path_post(int k, unsigned int (*search)(unsigned int, unsigned int), unsigned int object, unsigned int what)
+{
+	mcw_post(2 + k, (mcw_fn)search, object, what);
+}
+
+void
+host_path_wait(int k)
+{
+	mcw_wait(2 + k);
+}
+
+/* A frame's scene begins: the map's pixel (0, 0) is at this pixel of the screen. */
+void
+host_scene_begin(int origin_x, int origin_y)
+{
+	scene_finish();		/* the frame before is shown by now */
+	workers_open();
+	frames_pump();
+	scene_part = 1;
+	scene_noted[1] = 0;
 	if (scene_built)
 		seglDiscard();		/* one nobody showed */
+	scene_at[0] = origin_x, scene_at[1] = origin_y;
 	whole_window(origin_x, origin_y);
 	seglKeptMatrices();
 	glLoadIdentity();
@@ -528,59 +814,88 @@ block_now(int x, int y, int width, int height, int atlas_x, int atlas_y, unsigne
 /* ---- the same on a worker core ---- */
 
 #define NOTE_BLOCK 3
+#define NOTE_QUADS 4	/* x: where the caller's rectangles are; y: how many */
 
+/* The notes of every part made into the GPU's commands, in the parts' order. */
 static uint32_t
-scene_job(uint32_t count, uint32_t unused)
+scene_job(uint32_t counts, uint32_t last)
 {
-	const struct scene_note *n = scene_notes;
-	uint32_t i;
+	uint32_t count[SCENE_PARTS] = {counts & 0xffff, counts >> 16, last & 0xffff};
+	int part;
 
-	(void)unused;
-	for (i = 0; i < count; i++, n++)
-		if (n->kind == NOTE_BLOCK)
-			block_now(n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
-		else
-			sprite_now(n->kind, n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
-	return count;
+	fills_now((int)(last >> 16));
+	for (part = 0; part < SCENE_PARTS; part++) {
+		const struct scene_note *n = scene_notes[part];
+		uint32_t i;
+
+		for (i = 0; i < count[part]; i++, n++)
+			if (n->kind == NOTE_QUADS) {
+				const struct host_quad *q = (const struct host_quad *)(uintptr_t)n->x;
+				int k;
+
+				for (k = 0; k < n->y; k++, q++) {
+					int x = q->x + scene_at[0], y = q->y + scene_at[1];
+
+					if (x < scene_view[2] && y < scene_view[3] && x + q->w > scene_view[0] && y + q->h > scene_view[1])
+						sprite_now(q->kind, x, y, q->w, q->h, q->ax, q->ay, q->colour);
+				}
+			} else if (n->kind == NOTE_BLOCK)
+				block_now(n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
+			else
+				sprite_now(n->kind, n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
+	}
+	return counts;
 }
 
-static void
-scene_note(int kind, int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour)
+/* A rectangle more than a part has room to note is left out (a part is 4,096 of them). */
+void
+host_sprite(int kind, int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour)
 {
 	struct scene_note *n;
 
-	if (scene_noted == SCENE_MOST) {
-		/* more than there is room to note: these are made here, in their order, and the rest too */
-		scene_job(scene_noted, 0);
-		scene_noted = 0;
-		scene_noting = 0;
-		if (kind == NOTE_BLOCK)
-			block_now(x, y, width, height, atlas_x, atlas_y, colour);
-		else
-			sprite_now(kind, x, y, width, height, atlas_x, atlas_y, colour);
+	if (scene_noted[scene_part] == SCENE_MOST)
 		return;
-	}
-	n = &scene_notes[scene_noted++];
+	n = &scene_notes[scene_part][scene_noted[scene_part]++];
 	n->kind = kind, n->x = x, n->y = y, n->width = width, n->height = height;
 	n->atlas_x = atlas_x, n->atlas_y = atlas_y, n->colour = colour;
 }
 
 void
-host_sprite(int kind, int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour)
+host_block(int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour)
 {
-	if (scene_noting)
-		scene_note(kind, x, y, width, height, atlas_x, atlas_y, colour);
-	else
-		sprite_now(kind, x, y, width, height, atlas_x, atlas_y, colour);
+	host_sprite(NOTE_BLOCK, x, y, width, height, atlas_x, atlas_y, colour);
 }
 
 void
-host_block(int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour)
+host_scene_view(int x0, int y0, int x1, int y1)
 {
-	if (scene_noting)
-		scene_note(NOTE_BLOCK, x, y, width, height, atlas_x, atlas_y, colour);
-	else
-		block_now(x, y, width, height, atlas_x, atlas_y, colour);
+	scene_view[0] = x0, scene_view[1] = y0, scene_view[2] = x1, scene_view[3] = y1;
+}
+
+void
+host_quads(const struct host_quad *quads, int count)
+{
+	struct scene_note *n;
+
+	if (scene_noted[scene_part] == SCENE_MOST || count <= 0)
+		return;
+	n = &scene_notes[scene_part][scene_noted[scene_part]++];
+	n->kind = NOTE_QUADS, n->x = (int)(uintptr_t)quads, n->y = count;
+}
+
+void
+host_scene_settle(void)
+{
+	scene_finish();
+}
+
+/* The rectangles that follow are this part's: after those it has, or in their place. */
+void
+host_scene_part(int part, int keep)
+{
+	scene_part = part;
+	if (!keep)
+		scene_noted[part] = 0;
 }
 
 /* The worker's scene is waited for, and the frame that was put off for it is shown. */
@@ -602,7 +917,7 @@ void
 host_workers_close(void)
 {
 	scene_finish();
-	scene_noting = 0;
+	frames_halt();
 	if (scene_cores > 0)
 		mcw_close();
 	scene_cores = -1;
@@ -614,24 +929,21 @@ host_scene_end(int x, int y, int width, int height, int key)
 {
 	scene_rect[0] = x, scene_rect[1] = y, scene_rect[2] = width, scene_rect[3] = height;
 	scene_key = key;
-	if (scene_noting) {
-		scene_noting = 0;
-		if (scene_noted >= 32) {
-			mcw_post(1, scene_job, (uint32_t)scene_noted, 0);
-			scene_out = 1;
-			host_scene_jobs++;
-		} else {
-			scene_job((uint32_t)scene_noted, 0);	/* not worth a pass or two of waiting */
-		}
-		scene_noted = 0;
+	if (scene_cores > 0 && scene_noted[0] + scene_noted[1] + scene_noted[2] >= 20) {
+		mcw_post(1, scene_job, (uint32_t)(scene_noted[0] | scene_noted[1] << 16), (uint32_t)(scene_noted[2] | fill_count << 16));
+		scene_out = 1;
+		host_scene_jobs++;
+	} else {
+		/* (few of them are not worth a pass or two of waiting) */
+		scene_job((uint32_t)(scene_noted[0] | scene_noted[1] << 16), (uint32_t)(scene_noted[2] | fill_count << 16));
 	}
+	fill_count = 0;
 }
 
 void
 host_scene_drop(void)
 {
 	scene_finish();
-	scene_noting = 0;
 	if (scene_built)
 		seglDiscard();
 	scene_built = scene_shown = 0;
@@ -867,13 +1179,14 @@ virtual_key(int ch)
 /*
  * Asking the server costs two system calls and two task switches. The machine's own input
  * words (pointer, buttons, key events so far; docs/input.md) say when there can be anything:
- * ask when they have moved, for a few calls after, a few times a second, and every 10 ms
- * while an event they told of is owed (a tenth of a second at most: the kernel's tick is later).
+ * ask when they have moved, for a few calls after, and every 10 ms while an event they told of
+ * is owed (a tenth of a second at most: the kernel's tick is later). Otherwise once a second,
+ * or four times while the pointer moves outside the picture (it may be coming in or going out).
  */
 int
 host_event(struct host_event *event)
 {
-	static uint32_t seen[4], asked_ms, placed_ms, changed_ms;
+	static uint32_t seen[4], asked_ms, placed_ms, changed_ms, roaming_ms;
 	static int ask = 8, log = -1, owed;
 	const volatile uint32_t *input;
 	GR_EVENT e;
@@ -899,7 +1212,13 @@ host_event(struct host_event *event)
 		else if (host_ms() - asked_ms >= 10)
 			ask = 1;
 	}
-	if (!ask && host_ms() - asked_ms >= 250) {
+	if (seen[0] != input[0] || seen[1] != input[1]) {
+		seen[0] = input[0], seen[1] = input[1];
+		pointer_read();
+		if (!pointer_inside || pointer_x < 0 || pointer_y < 0 || pointer_x >= screen_w || pointer_y >= screen_h)
+			roaming_ms = host_ms();
+	}
+	if (!ask && host_ms() - asked_ms >= (host_ms() - roaming_ms < 500 ? 250u : 1000u)) {
 		ask = 1;
 		if (host_ms() - placed_ms >= 3000) {
 			/* (a window's frame can be moved without a word to the window) */
@@ -971,3 +1290,123 @@ host_event(struct host_event *event)
 	}
 	return 0;
 }
+
+#ifdef SHADEREMU_PGO
+/*
+ * The compiler's counters, written to the console when the program ends (a build with
+ * TDAWN_PROFILE=count; the toolchain's own libgcov is of another float ABI). Branches, and
+ * for each indirect call and such the values it met; linux/tdawn/profile.py reads the lines.
+ */
+struct gcov_ctr { unsigned int num; long long *values; };
+struct gcov_fn { const void *key; unsigned int ident, lineno_checksum, cfg_checksum; struct gcov_ctr ctrs[1]; };
+struct gcov_info {
+	unsigned int version; struct gcov_info *next; unsigned int stamp, checksum; const char *filename;
+	void (*merge[8])(long long *, unsigned int); unsigned int n_functions; const struct gcov_fn *const *functions;
+};
+struct gcov_kvp { long long value, count; struct gcov_kvp *next; };
+static struct gcov_info *gcov_list;
+__thread struct { void *callee; long long *counters; } __gcov_indirect_call;
+long long __gcov_time_profiler_counter;
+
+void __gcov_init(struct gcov_info *info) { info->next = gcov_list, gcov_list = info; }
+void __gcov_merge_add(long long *counters, unsigned int count) { (void)counters, (void)count; }
+void __gcov_merge_topn(long long *counters, unsigned int count) { (void)counters, (void)count; }
+void __gcov_merge_time_profile(long long *counters, unsigned int count) { (void)counters, (void)count; }
+
+/* A value met: counted among the 32 kept for its place, as libgcov keeps them. */
+static void
+gcov_met(long long *counters, long long value)
+{
+	struct gcov_kvp *n, *last = NULL, *least = NULL;
+
+	counters[0]++;
+	for (n = (struct gcov_kvp *)(uintptr_t)counters[2]; n; last = n, n = n->next) {
+		if (n->value == value) {
+			n->count++;
+			return;
+		}
+		if (!least || n->count < least->count)
+			least = n;
+	}
+	if (counters[1] == 32) {
+		if (--least->count < 1)
+			least->value = value, least->count = 1;
+		return;
+	}
+	if (!(n = malloc(sizeof *n)))
+		return;
+	n->value = value, n->count = 1, n->next = NULL;
+	if (last)
+		last->next = n;
+	else
+		counters[2] = (uintptr_t)n;
+	counters[1]++;
+}
+
+void __gcov_topn_values_profiler(long long *counters, long long value) { gcov_met(counters, value); }
+void __gcov_merge_ior(long long *counters, unsigned int count) { (void)counters, (void)count; }
+void __gcov_ior_profiler(long long *counters, long long value) { *counters |= value; }
+void __gcov_average_profiler(long long *counters, long long value) { counters[0] += value, counters[1]++; }
+void __gcov_pow2_profiler(long long *counters, long long value) { counters[value && !(value & (value - 1))]++; }
+
+void
+__gcov_interval_profiler(long long *counters, long long value, int start, unsigned int steps)
+{
+	long long delta = value - start;
+
+	counters[delta < 0 ? steps + 1 : delta >= steps ? steps : delta]++;
+}
+
+void
+__gcov_indirect_call_profiler_v4(long long value, void *function)
+{
+	if (function == __gcov_indirect_call.callee)
+		gcov_met(__gcov_indirect_call.counters, value);
+	__gcov_indirect_call.callee = NULL;
+}
+
+void
+__gcov_exit(void)
+{
+	static int done;
+	struct gcov_info *i;
+	unsigned int f, c, kind, kinds;
+
+	if (done)
+		return;
+	done = 1;
+	for (i = gcov_list; i; i = i->next) {
+		for (kinds = 0, kind = 0; kind < 8; kind++)
+			kinds |= (i->merge[kind] != NULL) << kind;
+		fprintf(stderr, "GC F %s %x %x %x %x\n", i->filename, i->version, i->stamp, i->checksum, kinds);
+		for (f = 0; f < i->n_functions; f++) {
+			const struct gcov_fn *fn = i->functions[f];
+			const struct gcov_ctr *ctr;
+
+			if (!fn || fn->key != i)
+				continue;
+			fprintf(stderr, "GC f %x %x %x\n", fn->ident, fn->lineno_checksum, fn->cfg_checksum);
+			for (ctr = fn->ctrs, kind = 0; kind < 8; kind++) {
+				if (!i->merge[kind])
+					continue;
+				fprintf(stderr, "GC k %u %u\n", kind, ctr->num);
+				for (c = 0; c < ctr->num; c++) {
+					if (kind == 3 || kind == 4) {
+						/* (a place is three words: how often, how many values, the values) */
+						const struct gcov_kvp *n = (const struct gcov_kvp *)(uintptr_t)ctr->values[c + 2];
+
+						if (ctr->values[c])
+							fprintf(stderr, "GC t %x %llx\n", c / 3, (unsigned long long)ctr->values[c]);
+						for (; n; n = n->next)
+							fprintf(stderr, "GC v %llx %llx\n", (unsigned long long)n->value, (unsigned long long)n->count);
+						c += 2;
+					} else if (ctr->values[c])
+						fprintf(stderr, "GC c %x %llx\n", c, (unsigned long long)ctr->values[c]);
+				}
+				ctr++;
+			}
+		}
+	}
+	fprintf(stderr, "GC end\n");
+}
+#endif

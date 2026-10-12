@@ -35,9 +35,9 @@
 // The write cache holds RAM texels (four words), not words: stores come in runs (a register
 // save, a structure, a copy), and a run then takes one entry. A bucket is the tags of its
 // L1_WAYS entries in one state texel (texel number + 1; 0 is free) and then their texels.
-// There are two tables of 2^L1_TABLE_BITS buckets with different hashes; a texel goes to the
-// second only when its bucket in the first is full, so most lookups read one bucket. Entries
-// are filled in order and never freed within a pass.
+// There are three tables with different hashes, one of 2^L1_TABLE_BITS buckets and two of half
+// that; a texel goes to the next only when its bucket in the one before is full, so most
+// lookups read one bucket. Entries are filled in order and never freed within a pass.
 //   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 384 texels, an array of 512 in the tick
 //   L1_TABLE_BITS 6, L1_WAYS 4:               512 texels, arrays of 512 and 128
 //   L1_TABLE_BITS 7, L1_WAYS 3:               768 texels, an array of 1,024
@@ -55,6 +55,9 @@
 #define L1_BUCKETS (2 * L1_TABLE)
 #define L1_STRIDE (L1_WAYS + 1)
 #define L1_ENTRIES (L1_BUCKETS * L1_STRIDE)
+// the half tables' hashes of texel t into n bits: its low bits moved round, xor higher ones
+#define L1_H1(t, n) ((((t) >> 3) ^ ((t) << ((n) - 3)) ^ ((t) >> (n))) & ((1u << (n)) - 1))
+#define L1_H2(t, n) ((((t) >> 2) ^ ((t) << ((n) - 2)) ^ ((t) >> ((n) + 3))) & ((1u << (n)) - 1))
 #if defined(CORES) && CORES > 1
 // A worker core's write cache is as large as the machine's geometry says (docs/multicore.md,
 // "The geometry"): tables of 2^mc_bits_now buckets, in the first buckets of the same arrays.
@@ -63,10 +66,12 @@
 #define L1_NOW_BITS mc_bits_now
 #define L1_NOW_TABLE (1u << L1_NOW_BITS)
 #define L1_B0(t) ((t) & (L1_NOW_TABLE - 1))
-#define L1_B1(t) (L1_NOW_TABLE + ((((t) >> 3) ^ ((t) << (L1_NOW_BITS - 3)) ^ ((t) >> L1_NOW_BITS)) & (L1_NOW_TABLE - 1)))
+#define L1_B1(t) (L1_NOW_TABLE + L1_H1(t, L1_NOW_BITS - 1))
+#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + L1_H2(t, L1_NOW_BITS - 1))
 #else
 #define L1_B0(t) ((t) & (L1_TABLE - 1))
-#define L1_B1(t) (L1_TABLE + ((((t) >> 3) ^ ((t) << (L1_TABLE_BITS - 3)) ^ ((t) >> L1_TABLE_BITS)) & (L1_TABLE - 1)))
+#define L1_B1(t) (L1_TABLE + L1_H1(t, L1_TABLE_BITS - 1))
+#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + L1_H2(t, L1_TABLE_BITS - 1))
 #endif
 #endif
 
@@ -241,6 +246,11 @@ uint l1_slot(uint4 tags, uint tag) {
 #define L1_DATA(at) l1_cache[at]
 #endif
 
+
+// (a fill or copy is only left to the commit by the full machine: it goes by the pages run)
+#if defined(LAZY_MEMOP) && (defined(NO_PAGING) || defined(M_MODE_ONLY))
+#undef LAZY_MEMOP
+#endif
 
 #define STALL_EXIT_CALL 1
 #define STALL_CSR_CACHE 2
@@ -738,7 +748,12 @@ void decode() {
     cpu.debug_do_tick = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 0));
     cpu.debug_last_ins = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 1));
     cpu.debug_last_stall = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 2));
-    cpu.debug_arb_0 = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 3));
+    // The fills and copies this pass leaves to the commit (LAZY_MEMOP): none yet. The first is
+    // debug_arb_0 (1 a copy, 2 a fill, and its texels from bit 2), trap_count (its destination
+    // in RAM) and debug_last_ins (its source, or the fill word); the second is stall_count,
+    // memop_dst_p and memop_src_p, which a fill or copy that ends the pass has otherwise.
+    cpu.debug_arb_0 = 0;
+    cpu.stall_count = 0;
 
 }
 #endif
@@ -1258,6 +1273,12 @@ bool l1_state_find(uint t, out uint4 texel) {
         b = L1_B1(t);
         tags = l1_state_texel(b * L1_STRIDE);
         e = l1_slot(tags, t + 1);
+        [branch]
+        if (e == 0 && L1_LAST(tags) != 0) {
+            b = L1_B2(t);
+            tags = l1_state_texel(b * L1_STRIDE);
+            e = l1_slot(tags, t + 1);
+        }
     }
     [branch]
     if (e != 0) {
@@ -1311,6 +1332,17 @@ uint mem_get_cached_or_tex_from_state_cache_or_mtd(uint addr) {
 }
 
 // `ret` is the texel as it is (with CORES > 1, a RAM texel as the cores before this one leave it)
+// The texel at physical address `a` for a copy the pass left to the commit: RAM as the texture
+// has it, or the ROM.
+uint4 lazy_source(uint a) {
+    [branch]
+    if (a & 0x80000000) {
+        return RAM_TEX(RAM_ADDR((a & 0x7fffffff) >> 4));
+    }
+    return uint4(mem_get_cached_or_tex_from_state_cache_or_mtd(a), mem_get_cached_or_tex_from_state_cache_or_mtd(a + 4),
+                 mem_get_cached_or_tex_from_state_cache_or_mtd(a + 8), mem_get_cached_or_tex_from_state_cache_or_mtd(a + 12));
+}
+
 uint4 commit(uint2 pos, uint4 ret) {
     if (pos.y < 64 && pos.x >= 64) {
         return (uint4)0;
@@ -1450,6 +1482,27 @@ uint4 commit(uint2 pos, uint4 ret) {
             }
         } else {
             lin <<= 4;
+
+            // A fill or copy the pass left to us (LAZY_MEMOP: kind in the low bits, texels above;
+            // whole texels, its source as the texture has it): made first, so that what the
+            // pass stored to its destination afterwards, which the cache has, lies on top.
+            uint lazy = cpu.debug_arb_0, lazy2 = cpu.stall_count;
+            [branch]
+            if (lazy != 0 && lin >= cpu.trap_count && ((lin - cpu.trap_count) >> 4) < (lazy >> 2)) {
+                if ((lazy & 3) == 2) {
+                    ret = uint4(cpu.debug_last_ins, cpu.debug_last_ins, cpu.debug_last_ins, cpu.debug_last_ins);
+                } else {
+                    ret = lazy_source(cpu.debug_last_ins + (lin - cpu.trap_count));
+                }
+            }
+            [branch]
+            if (lazy2 != 0 && lin >= cpu.memop_dst_p && ((lin - cpu.memop_dst_p) >> 4) < (lazy2 >> 2)) {
+                if ((lazy2 & 3) == 2) {
+                    ret = uint4(cpu.memop_src_p, cpu.memop_src_p, cpu.memop_src_p, cpu.memop_src_p);
+                } else {
+                    ret = lazy_source(cpu.memop_src_p + (lin - cpu.memop_dst_p));
+                }
+            }
 
             if ((cpu.stall == STALL_MEMOP_COPY || cpu.stall == STALL_MEMOP_FILL) &&
                 (lin + (3 << 2)) >= cpu.memop_dst_p &&

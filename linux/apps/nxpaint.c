@@ -4,6 +4,7 @@
  * viewer's decoder) and saves to it as a PPM. */
 #define _GNU_SOURCE
 #include "ui.h"
+#include "ui_bulk.h"
 #include "ui_files.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
@@ -83,8 +84,13 @@ static char script[2000];
 /* ---- the window's buffer, and the picture shown in it ---- */
 
 static int asked;	/* the window system has been asked to draw since settle() last waited for it */
+static int showing;	/* the workers may be writing the window's buffer still (ui_bulk.h) */
+static int field_on;	/* the buffer has the field of hues as `field` has it */
 
 static int relaid;	/* the window is another size: all of it is to be drawn, which nobody asks for */
+static int following;	/* the pointer's place is asked for: a button is held */
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN | \
+	GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ)
 
 /* Maps the window's buffer, again when the driver has made one since or with `ask` (the window
  * made larger has another, of another size, and the old one is some other window's by then). */
@@ -105,9 +111,11 @@ locate(int ask)
 		relaid = 1;
 	else if (surface && info.surface_address == surface_at)
 		return;
-	if (surface)
+	if (surface) {
+		bulk_wait();
 		munmap((void *)((uintptr_t)surface & ~(uintptr_t)4095), surface_bytes);
-	surface = NULL, surface_at = 0;
+	}
+	surface = NULL, surface_at = 0, field_on = 0;
 	width = (int)info.width, height = (int)info.height;
 	view_w = width - TOOLS_W, view_h = height - MENU_H - BOTTOM_H - STATUS;
 	if (!info.surface_address)
@@ -137,6 +145,17 @@ settle(void)
 	locate(0);
 }
 
+/* The window system is about to be asked to draw: nothing of ours may be on its way into the
+ * buffer then, or the GPU's copy back loses it. */
+static void
+ask_to_draw(void)
+{
+	if (showing)
+		bulk_wait();
+	showing = 0;
+	asked = 1;
+}
+
 /* The selection's edge over what was just shown: every other pair of pixels turned over. */
 static void
 edge(int sx0, int sy0, int sx1, int sy1)
@@ -160,13 +179,18 @@ edge(int sx0, int sy0, int sx1, int sy1)
 	}
 }
 
+static int view_beside;	/* for the next present(): so many pixels right of each row are grey */
+
 /* Shows the picture's pixels from (x0, y0) to before (x1, y1), where they are in view. */
 static void
 present(int x0, int y0, int x1, int y1)
 {
 	static uint32_t line[2048];
-	int sx0, sy0, sx1, sy1, sy, sx, iy;
+	int sx0, sy0, sx1, sy1, sy, sx, iy, beside = view_beside;
 
+	view_beside = 0;
+	if (!bulk_held)
+		bulk_wait();
 	settle();	/* (first: the view's size is the buffer's) */
 	if (!surface)
 		return;
@@ -180,8 +204,14 @@ present(int x0, int y0, int x1, int y1)
 	for (sy = sy0; sy < sy1; sy++) {
 		iy = oy + (sy - MENU_H) / zoom;
 		if (zoom == 1) {
-			memcpy(surface + sy * surface_row + sx0, pix + iy * pw + ox + sx0 - TOOLS_W, (size_t)(sx1 - sx0) * 4);
-			continue;
+			/* (the rows as they are: shared out among the cores when they are many) */
+			showing = 1;
+			bulk_rows_tail(surface + sy * surface_row + sx0, (uint32_t)surface_row * 4, pix + iy * pw + ox + sx0 - TOOLS_W, (uint32_t)pw * 4,
+				(uint32_t)(sx1 - sx0) * 4, (uint32_t)(sy1 - sy), (uint32_t)beside * 4, GREY);
+			/* (the edge is drawn over the rows: they are there first) */
+			if (sel_on)
+				bulk_wait();
+			break;
 		}
 		/* a row of the picture is as many rows of the screen as the zoom: made once */
 		if (sy == sy0 || (sy - MENU_H) % zoom == 0)
@@ -196,7 +226,7 @@ present(int x0, int y0, int x1, int y1)
 static void
 present_view(void)
 {
-	int sy, sx, right, bottom;
+	int right, bottom;
 
 	locate(0);
 	if (ox > pw - view_w / zoom)
@@ -204,16 +234,44 @@ present_view(void)
 	if (oy > ph - view_h / zoom)
 		oy = ph - view_h / zoom;
 	ox = ox < 0 ? 0 : ox, oy = oy < 0 ? 0 : oy;
-	present(ox, oy, ox + view_w / zoom + 1, oy + view_h / zoom + 1);
-	if (!surface)
-		return;
 	right = TOOLS_W + (pw - ox) * zoom, bottom = MENU_H + (ph - oy) * zoom;
-	for (sy = MENU_H; sy < MENU_H + view_h; sy++)
-		for (sx = sy < bottom && right > TOOLS_W ? right : TOOLS_W; sx < TOOLS_W + view_w; sx++)
-			surface[sy * surface_row + sx] = GREY;
+	right = right < TOOLS_W ? TOOLS_W : right > TOOLS_W + view_w ? TOOLS_W + view_w : right;
+	bottom = bottom < MENU_H ? MENU_H : bottom > MENU_H + view_h ? MENU_H + view_h : bottom;
+	/* the picture, the grey beside it and the grey below it are one hand-over to the workers;
+	 * beside is the same rows' own end (two jobs would meet in 16 bytes there) */
+	bulk_hold();
+	if (zoom == 1 && right < TOOLS_W + view_w)
+		view_beside = TOOLS_W + view_w - right;
+	present(ox, oy, ox + view_w / zoom + 1, oy + view_h / zoom + 1);
+	if (surface) {
+		showing = 1;
+		if (zoom != 1 && right < TOOLS_W + view_w && bottom > MENU_H)
+			bulk_fill_rows(surface + MENU_H * surface_row + right, (uint32_t)surface_row * 4, (uint32_t)(TOOLS_W + view_w - right) * 4,
+				(uint32_t)(bottom - MENU_H), GREY);
+		if (bottom < MENU_H + view_h)
+			bulk_fill_rows(surface + bottom * surface_row + TOOLS_W, (uint32_t)surface_row * 4, (uint32_t)view_w * 4,
+				(uint32_t)(MENU_H + view_h - bottom), GREY);
+	}
+	bulk_go(1);
 }
 
 /* ---- changes, kept to be taken back ---- */
+
+/* Room in `back` for a picture of so many bytes: the largest picture's, taken once (its pages
+ * are there only as far as they are used). Made anew for each size, it was copied each time. */
+static void
+back_room(size_t bytes)
+{
+	static size_t room;
+
+	if (bytes < (size_t)MOST_W * MOST_H * 4)
+		bytes = (size_t)MOST_W * MOST_H * 4;
+	if (bytes > room) {
+		free(back);
+		back = malloc(bytes);
+		room = bytes;
+	}
+}
 
 static void
 forget(struct change *stack, int *count, int from)
@@ -241,17 +299,13 @@ static void
 keep(int x0, int y0, int x1, int y1)
 {
 	struct change c = { 0 };
-	int y;
 
 	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
 	if (x0 >= x1 || y0 >= y1)
 		return;
 	c.x = x0, c.y = y0, c.w = x1 - x0, c.h = y1 - y0;
 	c.data = malloc((size_t)c.w * (size_t)c.h * 4);
-	for (y = 0; y < c.h; y++) {
-		memcpy(c.data + y * c.w, back + (y0 + y) * pw + x0, (size_t)c.w * 4);
-		memcpy(back + (y0 + y) * pw + x0, pix + (y0 + y) * pw + x0, (size_t)c.w * 4);
-	}
+	bulk_rows_kept(c.data, back + y0 * pw + x0, pix + y0 * pw + x0, (uint32_t)pw * 4, (uint32_t)c.w * 4, (uint32_t)c.h);
 	forget(undone, &undone_count, 0);
 	push(done, &done_count, c);
 	modified = 1;
@@ -265,8 +319,8 @@ keep_whole(uint32_t *old, int old_w, int old_h)
 
 	forget(undone, &undone_count, 0);
 	push(done, &done_count, c);
-	back = realloc(back, (size_t)pw * (size_t)ph * 4);
-	memcpy(back, pix, (size_t)pw * (size_t)ph * 4);
+	back_room((size_t)pw * (size_t)ph * 4);
+	bulk_flat(back, NULL, pix, (uint32_t)pw * (uint32_t)ph * 4, 0);
 	sel_on = 0;
 	modified = 1;
 }
@@ -284,19 +338,26 @@ turn(struct change *c)
 		pix = c->data, c->data = was;
 		n = pw, pw = c->pw, c->pw = n;
 		n = ph, ph = c->ph, c->ph = n;
-		back = realloc(back, (size_t)pw * (size_t)ph * 4);
-		memcpy(back, pix, (size_t)pw * (size_t)ph * 4);
+		back_room((size_t)pw * (size_t)ph * 4);
+		bulk_hold();
+		bulk_flat(back, NULL, pix, (uint32_t)pw * (uint32_t)ph * 4, 0);
 		sel_on = 0;
 		present_view();
+		bulk_go(1);
 		return;
 	}
-	for (y = 0; y < c->h; y++)
-		for (x = 0; x < c->w; x++) {
-			word = pix[(c->y + y) * pw + c->x + x];
-			pix[(c->y + y) * pw + c->x + x] = back[(c->y + y) * pw + c->x + x] = c->data[y * c->w + x];
-			c->data[y * c->w + x] = word;
+	for (y = 0; y < c->h; y++) {
+		uint32_t *seen = pix + (c->y + y) * pw + c->x, *kept = back + (c->y + y) * pw + c->x, *held = c->data + y * c->w;
+
+		for (x = c->w; x > 0; x--) {
+			word = *seen;
+			*seen++ = *kept++ = *held;
+			*held++ = word;
 		}
+	}
+	bulk_hold();
 	present(c->x, c->y, c->x + c->w, c->y + c->h);
+	bulk_go(1);
 }
 
 /* ---- drawing into the picture ---- */
@@ -312,13 +373,20 @@ touch(int x0, int y0, int x1, int y1)
 	}
 }
 
+static int undrawing;	/* span() puts back what the picture had before this change, not a colour */
+
 static void
 span(int x0, int x1, int y, uint32_t colour)
 {
 	if (y < 0 || y >= ph)
 		return;
-	for (x0 = x0 < 0 ? 0 : x0, x1 = x1 > pw ? pw : x1; x0 < x1; x0++)
-		pix[y * pw + x0] = colour;
+	x0 = x0 < 0 ? 0 : x0, x1 = x1 > pw ? pw : x1;
+	if (undrawing)
+		for (; x0 < x1; x0++)
+			pix[y * pw + x0] = back[y * pw + x0];
+	else
+		for (; x0 < x1; x0++)
+			pix[y * pw + x0] = colour;
 }
 
 static void
@@ -462,8 +530,8 @@ static void
 restore(int x0, int y0, int x1, int y1)
 {
 	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > pw ? pw : x1, y1 = y1 > ph ? ph : y1;
-	for (; y0 < y1 && x0 < x1; y0++)
-		memcpy(pix + y0 * pw + x0, back + y0 * pw + x0, (size_t)(x1 - x0) * 4);
+	if (y0 < y1 && x0 < x1)
+		bulk_rows(pix + y0 * pw + x0, (uint32_t)pw * 4, back + y0 * pw + x0, (uint32_t)pw * 4, (uint32_t)(x1 - x0) * 4, (uint32_t)(y1 - y0));
 }
 
 /* ---- the selection, and what floats in it ---- */
@@ -627,18 +695,25 @@ write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
 	return good;
 }
 
-/* A new picture in place of this one, its history forgotten. */
+/* A new picture in place of this one, its history forgotten; `white`: its pixels are still to
+ * be made so. The workers are left at it: whatever uses the picture next waits for them. */
 static void
-begin(uint32_t *pixels, int w, int h)
+begin(uint32_t *pixels, int w, int h, int white)
 {
+	bulk_wait();
 	forget(done, &done_count, 0);
 	forget(undone, &undone_count, 0);
 	free(fl.buf);
 	memset(&fl, 0, sizeof fl);
 	free(pix);
 	pix = pixels, pw = w, ph = h;
-	back = realloc(back, (size_t)w * (size_t)h * 4);
-	memcpy(back, pix, (size_t)w * (size_t)h * 4);
+	back_room((size_t)w * (size_t)h * 4);
+	bulk_hold();
+	if (white)
+		bulk_flat(pix, back, NULL, (uint32_t)w * (uint32_t)h * 4, 0xffffffffu);
+	else
+		bulk_flat(back, NULL, pix, (uint32_t)w * (uint32_t)h * 4, 0);
+	bulk_go(1);
 	sel_on = modified = ox = oy = 0;
 	d_x1 = d_x0 = 0;
 	zoom = 1;
@@ -647,12 +722,7 @@ begin(uint32_t *pixels, int w, int h)
 static void
 blank(int w, int h)
 {
-	uint32_t *pixels = malloc((size_t)w * (size_t)h * 4);
-	int i;
-
-	for (i = 0; i < w * h; i++)
-		pixels[i] = 0xffffffffu;
-	begin(pixels, w, h);
+	begin(malloc((size_t)w * (size_t)h * 4), w, h, 1);
 }
 
 static void
@@ -706,7 +776,7 @@ open_file(const char *file_path)
 	}
 	if (!pixels)
 		return 0;
-	begin(pixels, w, h);
+	begin(pixels, w, h, 0);
 	snprintf(path, sizeof path, "%s", file_path);
 	named = 1;
 	titled();
@@ -775,29 +845,40 @@ bottom_y(void)
 	return height - STATUS - BOTTOM_H;
 }
 
+static char status_text[420];	/* what the status line and the tools show now: they are drawn */
+static int status_on, tools_on;	/* again only when they are to show something else */
+
 static void
 draw_status(void)
 {
 	static const char *const asks[] = { "", "New picture, WIDTHxHEIGHT: ", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: " };
 	char text[420];
 
-	asked = 1;
-	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
-	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
 	if (asking)
 		snprintf(text, sizeof text, "%s%s_   (Enter, or Escape to leave)", asks[asking], answer);
 	else
 		snprintf(text, sizeof text, "%s%s   %d x %d, %dx   %s", tool_names[tool], modified ? " *" : "", pw, ph, zoom, notice);
+	/* (a line that says what it said is left alone: asking for it holds up what is shown next) */
+	if (status_on && !strcmp(text, status_text))
+		return;
+	snprintf(status_text, sizeof status_text, "%s", text);
+	status_on = 1;
+	ask_to_draw();
+	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
+	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
 	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
 }
 
 static void
 draw_tools(void)
 {
-	int i, y = MENU_H + 4 + 5 * 26 + 6;
+	int i, y = MENU_H + 4 + 5 * 26 + 6, now = 1 + tool + size_index * 16 + mode * 256 + zoom * 4096;
 	char text[16];
 
-	asked = 1;
+	if (tools_on == now)
+		return;
+	tools_on = now;
+	ask_to_draw();
 	ui_fill(window, 0, MENU_H, TOOLS_W, height - MENU_H - BOTTOM_H - STATUS, UI_FACE);
 	for (i = 0; i < TOOL_COUNT; i++)
 		ui_button(window, 3 + (i & 1) * 33, MENU_H + 4 + (i / 2) * 26, 32, 24, tool_short[i], i == tool);
@@ -825,17 +906,79 @@ shown(uint32_t colour)
 	return MWRGB(colour >> 16 & 255, colour >> 8 & 255, colour & 255);
 }
 
-/* The colours along the bottom: the two in hand, the palette, and a field of every hue. */
+static uint32_t field[FIELD_H][FIELD_W];	/* the field of hues at lightness field_value, its mark in it */
+static int field_value = -1, mark_x = -1, mark_y;
+
+/* The mark where the foreground is in the field, turned over at (x, y): in `field`, and with
+ * `shown` in the window's buffer too. */
 static void
-draw_colours(void)
+field_mark(int x, int y, int shown)
 {
-	int y, i, fx = 60 + 14 * 18 + 12, sx = fx + FIELD_W + 10, row, column;
+	uint32_t *there = surface + (bottom_y() + 9) * surface_row + 60 + 14 * 18 + 12;
+	int n;
+
+	for (n = -3; n <= 3; n++) {
+		if (x + n >= 0 && x + n < FIELD_W) {
+			field[y][x + n] ^= 0xffffff;
+			if (shown)
+				there[y * surface_row + x + n] = field[y][x + n];
+		}
+		if (n && y + n >= 0 && y + n < FIELD_H) {
+			field[y + n][x] ^= 0xffffff;
+			if (shown)
+				there[(y + n) * surface_row + x] = field[y + n][x];
+		}
+	}
+}
+
+/* The field: every hue across, paler downwards, at the slider's lightness. Copied into the
+ * buffer when that lacks it; otherwise only the mark moves. */
+static void
+field_show(void)
+{
+	int y = bottom_y(), fx = 60 + 14 * 18 + 12, x = hue * (FIELD_W - 1) / 255, at = (255 - sat) * (FIELD_H - 1) / 255, row, column;
+
+	if (!surface || width < fx + FIELD_W + 10 + 130)
+		return;
+	if (field_value != (value ? value : 255)) {
+		field_value = value ? value : 255;
+		for (row = 0; row < FIELD_H; row++)
+			for (column = 0; column < FIELD_W; column++)
+				field[row][column] = from_hsv(column * 255 / (FIELD_W - 1), 255 - row * 255 / (FIELD_H - 1), field_value);
+		mark_x = -1, field_on = 0;
+	}
+	if (field_on && mark_x == x && mark_y == at)
+		return;
+	if (mark_x >= 0)
+		field_mark(mark_x, mark_y, field_on);
+	field_mark(mark_x = x, mark_y = at, field_on);
+	if (!field_on) {
+		showing = 1;
+		bulk_rows(surface + (y + 9) * surface_row + fx, (uint32_t)surface_row * 4, field, sizeof field[0], sizeof field[0], FIELD_H);
+		field_on = 1;
+	}
+}
+
+/* The colours along the bottom, as the window system draws them: the two in hand, the
+ * palette, the slider. The field's place is left as it is when the buffer has the field. */
+static void
+ask_colours(void)
+{
+	int y, i, fx = 60 + 14 * 18 + 12, sx = fx + FIELD_W + 10;
 	char text[40];
 
 	locate(0);
 	y = bottom_y();
-	asked = 1;
-	ui_fill(window, 0, y, width, BOTTOM_H, UI_FACE);
+	ask_to_draw();
+	if (field_on && width >= sx + 130) {
+		ui_fill(window, 0, y, fx, BOTTOM_H, UI_FACE);
+		ui_fill(window, fx + FIELD_W, y, width - fx - FIELD_W, BOTTOM_H, UI_FACE);
+		ui_fill(window, fx, y, FIELD_W, 9, UI_FACE);
+		ui_fill(window, fx, y + 9 + FIELD_H, FIELD_W, BOTTOM_H - 9 - FIELD_H, UI_FACE);
+	} else {
+		ui_fill(window, 0, y, width, BOTTOM_H, UI_FACE);
+		field_on = 0;
+	}
 	ui_fill(window, 0, y, width, 1, UI_SHADOW);
 	ui_fill(window, 22, y + 22, 28, 28, shown(bg));
 	ui_bevel(window, 22, y + 22, 28, 28, 1);
@@ -851,20 +994,16 @@ draw_colours(void)
 	snprintf(text, sizeof text, "#%06X  light %d%%", (unsigned)(fg & 0xffffff), value * 100 / 255);
 	ui_text(window, sx + 4, y + 30, text, -1, BLACK, 0);
 	ui_text(window, sx + 4, y + 44, "right button: the other", -1, UI_SHADOW, 0);
-	/* the field: every hue across, paler downwards, at the slider's lightness */
+}
+
+static void
+draw_colours(void)
+{
+	ask_colours();
 	settle();
-	if (!surface)
-		return;
-	for (row = 0; row < FIELD_H; row++)
-		for (column = 0; column < FIELD_W; column++)
-			surface[(y + 9 + row) * surface_row + fx + column] = from_hsv(column * 255 / (FIELD_W - 1), 255 - row * 255 / (FIELD_H - 1), value ? value : 255);
-	i = hue * (FIELD_W - 1) / 255, row = (255 - sat) * (FIELD_H - 1) / 255;
-	for (column = -3; column <= 3; column++) {
-		if (i + column >= 0 && i + column < FIELD_W)
-			surface[(y + 9 + row) * surface_row + fx + i + column] ^= 0xffffff;
-		if (row + column >= 0 && row + column < FIELD_H && column)
-			surface[(y + 9 + row + column) * surface_row + fx + i] ^= 0xffffff;
-	}
+	bulk_hold();
+	field_show();
+	bulk_go(1);
 }
 
 static const char *const menu_names[] = { "File", "Edit", "Image", "View" };
@@ -894,7 +1033,7 @@ draw_menu_bar(void)
 {
 	int i;
 
-	asked = 1;
+	ask_to_draw();
 	ui_fill(window, 0, 0, width, MENU_H, UI_FACE);
 	for (i = 0; i < 4; i++)
 		ui_text(window, menu_x[i] + 8, 3, menu_names[i], -1, BLACK, 0);
@@ -906,11 +1045,18 @@ draw_all(void)
 {
 	locate(0);
 	relaid = 0;
+	status_on = tools_on = field_on = 0;
+	/* what the window system draws first, and waited for once; then what is written into
+	 * the buffer, all of it one hand-over to the workers, who are left at it */
 	draw_menu_bar();
 	draw_tools();
-	draw_colours();
 	draw_status();
+	ask_colours();
+	settle();
+	bulk_hold();
+	field_show();
 	present_view();
+	bulk_go(1);
 }
 
 /* ---- commands ---- */
@@ -945,9 +1091,11 @@ remade(int w, int h, int how)
 			made[y * w + x] = inside ? old[sy * old_w + sx] : bg;
 		}
 	pix = made, pw = w, ph = h;
+	bulk_hold();
 	keep_whole(old, old_w, old_h);
 	ox = oy = 0;
 	present_view();
+	bulk_go(1);
 }
 
 static void
@@ -972,6 +1120,7 @@ command(int id)
 	uint32_t *piece;
 	int x, y, w, h, x0, y0, x1, y1;
 
+	bulk_wait();
 	notice[0] = 0;
 	if (id != C_EXIT)
 		leaving = 0;
@@ -1055,8 +1204,10 @@ command(int id)
 				break;
 		}
 		box(x0, y0, x1, y1, bg);
+		bulk_hold();
 		keep(x0, y0, x1, y1);
 		present(x0, y0, x1, y1);
+		bulk_go(1);
 		break;
 	case C_PASTE:
 		if (!(piece = read_ppm(CLIP, &w, &h))) {
@@ -1107,21 +1258,27 @@ command(int id)
 
 				*a = *b, *b = word;
 			}
+		bulk_hold();
 		keep(0, 0, pw, ph);
 		present_view();
+		bulk_go(1);
 		break;
 	case C_INVERT:
 		float_end(0);
 		for (y = y0; y < y1; y++)
 			for (x = x0; x < x1; x++)
 				pix[y * pw + x] ^= 0xffffff;
+		bulk_hold();
 		keep(x0, y0, x1, y1);
 		present(x0, y0, x1, y1);
+		bulk_go(1);
 		break;
 	case C_CLEAR:
 		box(0, 0, pw, ph, bg);
+		bulk_hold();
 		keep(0, 0, pw, ph);
 		present_view();
+		bulk_go(1);
 		break;
 	case C_ZOOM_IN:
 	case C_ZOOM_OUT:
@@ -1145,13 +1302,44 @@ colour_for(int button)
 	return tool == T_ERASER ? bg : button == GR_BUTTON_R ? bg : fg;
 }
 
+/* The line or shape this drag has drawn so far, to be taken out before the next one. */
+static struct { int tool, x, y, size, mode; } drawn;
+
+/* Takes it out. An outline is drawn again with the pixels from before it, which is its own
+ * pixels and no hand-over; a filled shape is most of its rectangle, which is put back whole. */
+static void
+undraw(void)
+{
+	int now = mode;
+
+	if (d_x1 <= d_x0)
+		return;
+	if (drawn.tool != T_LINE && drawn.mode) {
+		restore(d_x0, d_y0, d_x1, d_y1);
+		return;
+	}
+	undrawing = 1, mode = drawn.mode;
+	if (drawn.tool == T_LINE)
+		stroke(from_x, from_y, drawn.x, drawn.y, drawn.size, 0);
+	else
+		shape(drawn.tool == T_OVAL, from_x, from_y, drawn.x, drawn.y, drawn.size, 0, 0);
+	undrawing = 0, mode = now;
+}
+
 /* The pointer went down in the picture at (x, y), or moved there held, or came up. */
 static void
 draw_at(int x, int y, int what)
 {
 	uint32_t colour = colour_for(held_button), other = held_button == GR_BUTTON_R ? fg : bg;
 	int size = sizes[size_index], was_x0 = d_x0, was_y0 = d_y0, was_x1 = d_x1, was_y1 = d_y1, n;
+	int together = tool != T_SELECT && tool != T_PICK;
 
+	/* a shape is drawn over the picture as it was: the one before it goes first */
+	if (tool == T_LINE || tool == T_RECT || tool == T_OVAL)
+		undraw();
+	/* what is shown and what is kept go to the workers together, and are left with them */
+	if (together)
+		bulk_hold();
 	switch (tool) {
 	case T_PENCIL:
 	case T_BRUSH:
@@ -1183,12 +1371,12 @@ draw_at(int x, int y, int what)
 	case T_LINE:
 	case T_RECT:
 	case T_OVAL:
-		restore(d_x0, d_y0, d_x1, d_y1);
 		d_x1 = d_x0 = 0;
 		if (tool == T_LINE)
 			stroke(from_x, from_y, x, y, size, colour);
 		else
 			shape(tool == T_OVAL, from_x, from_y, x, y, size, colour, mode == 1 ? colour : other);
+		drawn.tool = tool, drawn.x = x, drawn.y = y, drawn.size = size, drawn.mode = mode;
 		/* what the shape covered before and what it covers now */
 		n = d_x0, d_x0 = was_x1 > was_x0 && was_x0 < n ? was_x0 : n;
 		n = d_y0, d_y0 = was_x1 > was_x0 && was_y0 < n ? was_y0 : n;
@@ -1226,6 +1414,8 @@ draw_at(int x, int y, int what)
 			d_x1 = d_x0 = 0;
 		}
 	}
+	if (together)
+		bulk_go(1);
 }
 
 static void
@@ -1422,6 +1612,11 @@ handle(GR_EVENT *event)
 {
 	int x, y, chosen, button;
 
+	/* what the event before left with the workers is waited for by what uses the picture */
+	if (event->type == GR_EVENT_TYPE_BUTTON_DOWN || event->type == GR_EVENT_TYPE_BUTTON_UP || event->type == GR_EVENT_TYPE_KEY_DOWN ||
+	    (event->type == GR_EVENT_TYPE_MOUSE_POSITION && (held || sliding)))
+		bulk_wait();
+	ui_origin_note(event);
 	switch (ui_menu_event(event, &chosen)) {
 	case UI_MENU_CHOSEN:
 		command(chosen);
@@ -1437,6 +1632,12 @@ handle(GR_EVENT *event)
 	case GR_EVENT_TYPE_BUTTON_DOWN:
 		x = event->button.x, y = event->button.y;
 		button = event->button.changebuttons & GR_BUTTON_R ? GR_BUTTON_R : GR_BUTTON_L;
+		if (!ui_wheel(event) && !following) {
+			/* where the pointer goes is asked for while a button is held: every move of it
+			 * anywhere on the screen was an event to answer, drawing or not */
+			following = 1;
+			GrSelectEvents(window, EVENTS | GR_EVENT_MASK_MOUSE_POSITION);
+		}
 		if (ui_wheel(event)) {
 			oy += ui_wheel_sum(event) * (48 / zoom > 0 ? 48 / zoom : 1);
 			present_view();
@@ -1460,6 +1661,10 @@ handle(GR_EVENT *event)
 			draw_status();
 		}
 		held = sliding = 0;
+		if (following && !event->button.buttons) {
+			following = 0;
+			GrSelectEvents(window, EVENTS);
+		}
 		break;
 	case GR_EVENT_TYPE_KEY_DOWN:
 		key(event->keystroke.ch, event->keystroke.modifiers);
@@ -1529,6 +1734,7 @@ scripted(void)
 	unsigned sum = 2166136261u;
 
 	while (script[0]) {
+		bulk_wait();
 		n = (int)strcspn(script, " ");
 		snprintf(word, sizeof word, "%.*s", n, script);
 		memmove(script, script + n + (script[n] == ' '), strlen(script + n + (script[n] == ' ')) + 1);
@@ -1641,7 +1847,7 @@ main(int argc, char **argv)
 	GR_SCREEN_INFO screen;
 	GR_EVENT event;
 	void *words;
-	int i, x, w, h, b;
+	int i, x;
 
 	if (GrOpen() < 0)
 		return 1;
@@ -1649,14 +1855,13 @@ main(int argc, char **argv)
 	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
 	if (getenv("NXPAINT_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXPAINT_SCRIPT"));
-	GrGetScreenInfo(&screen);
+	screen = *ui_screen();
 	width = screen.cols - 60 < 700 ? screen.cols - 60 : 700;
 	height = screen.rows - 90 < 480 ? screen.rows - 90 : 480;
 	view_w = width - TOOLS_W, view_h = height - MENU_H - BOTTOM_H - STATUS;
 	for (i = 0, x = 4; i < 4; i++) {
-		GrGetGCTextSize(ui_gc, (char *)menu_names[i], -1, GR_TFASCII, &w, &h, &b);
 		menu_x[i] = x;
-		x += w + 16;
+		x += ui_width(&ui_var_widths, ui_var, menu_names[i], -1) + 16;
 	}
 	menu_x[4] = x;
 	gpu = open("/dev/gpu", O_RDWR);
@@ -1665,8 +1870,7 @@ main(int argc, char **argv)
 		buffers = (volatile uint32_t *)words + 0x64 / 4;
 	/* the window first: a large picture is seconds to decode */
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, "Paint", GR_ROOT_WINDOW_ID, -1, -1, width, height, UI_FACE);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_POSITION |
-			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
+	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	ui_framed();

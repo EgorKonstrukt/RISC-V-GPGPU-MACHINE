@@ -23,12 +23,15 @@ echo "3a8cb30c83c2a1147719c30fe0c8b93da2987aa43140077c575b39aaa75fc2c9  $BUILD/f
 sed 's/^\t\tplm_buffer_discard_read_bytes(self->buffer);$/\t\tif (self->buffer->discard_read_bytes) plm_buffer_discard_read_bytes(self->buffer);/' \
     "$BUILD/fetch/pl_mpeg.h" > "$BUILD/pl_mpeg.h"
 [ "$(grep -c 'if (self->buffer->discard_read_bytes) plm_buffer_discard_read_bytes' "$BUILD/pl_mpeg.h")" = 1 ] || { echo "pl_mpeg.h: the line to change is not there"; exit 1; }
+# and the sound's window four blocks a turn (the same additions in the same order: the same sums)
+python3 "$HERE/plm_window.py" "$BUILD/pl_mpeg.h"
 
 # single-precision constants: the sound's filter is floats, and the machine has no doubles
 FLOAT="-fsingle-precision-constant -fno-math-errno"
 INC="-I$BUILD -I$HERE -I$REPO/linux/apps -idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland -I$REPO/programs/mc"
 rv32-cc -O2 -fno-pie -Wall -Wno-unused-function $INC -c "$HERE/nxvideo.c" -o "$BUILD/nxvideo.o"
-rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w $FLOAT $INC -c "$HERE/mpeg.c" -o "$BUILD/mpeg.o"
+# (the decoder at -O3 with its loops unrolled: 1,388 thousand instructions a picture where -O2 took 1,792, the same sums)
+rv32-cc -O3 -fno-tree-vectorize -fsched-pressure -funroll-loops -fno-pie -fno-common -fdata-sections -w $FLOAT $INC -c "$HERE/mpeg.c" -o "$BUILD/mpeg.o"
 rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/linux/gles.c" -o "$BUILD/gles.o"
 rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/mc/mcw.c" -o "$BUILD/mcw.o"
 rv32-cc -O2 -no-pie "$BUILD/nxvideo.o" "$BUILD/mpeg.o" "$BUILD/gles.o" "$BUILD/mcw.o" "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxvideo"

@@ -33,7 +33,8 @@ static void start(int n)
 		return;
 	}
 	ioctl(m, TIOCSWINSZ, &size);
-	shell[n] = fork();
+	/* (vfork: the child only makes system calls before its exec) */
+	shell[n] = vfork();
 	if (shell[n] == 0) {
 		int s;
 

@@ -234,6 +234,23 @@ float build, about an axis of the coordinate system in the other.
   or without; `seglPoints()` gives room for points (`docs/quake.md`: models and particles).
 - `seglMemorySpare()` is 3.9 MB more for one program: the display's own framebuffer
   (`docs/display.md`), which nothing reads while the desktop is layers.
+- `seglSwap()` waits until the list is drawn, with `pause`, which ends the machine's pass:
+  what was left of that pass is not run (4,100 instructions a frame on average, 6% of Doom).
+  `seglSwapEarly()` submits and returns at once, for a program that does other work next.
+  The list, and every texture, kept vertex and palette entry it reads, must stay as they are
+  until it is drawn: `seglSettle()` waits for that, and the program calls it before it next
+  writes any such memory through a pointer. The library's own calls that write memory both
+  sets share (the kept commands, the palette, deleting textures, the window's own texture)
+  settle themselves. Doom swaps early, runs its tics, and settles when it begins to draw
+  (`D_Display` in `doom_video.c`): the wait is over by then, and 93.4% of its passes'
+  instructions became 99.8%. `glXSwapBuffers` (`gl.c`) never waited after its submit.
+- `glXSwapBuffers` does not wait before its submit either, when the list the GPU still has
+  is the program's own last frame: the GPU draws one list a pass, and a frame shorter than a
+  pass waited for it every time. The newer frame takes the older one's place (the submit
+  word taken back first, then the list's words, then the submit), as on a card whose
+  program swaps without waiting for the display: frames drawn are one a pass, frames made
+  as many as the program can. `GL_SWAP=wait` is the old way, every frame drawn; `GL_STATS=1`
+  prints both counts every 1,024 frames. The caption's rate is of frames drawn.
 - `seglSwapAgain()` draws the last list once more. Its textures, and the commands and vertices
   `seglLastCommand()` and `seglLastVertices()` pointed at, are the program's memory: a
   pointer that moved or a picture that changed needs no new list (`docs/tdawn.md`).

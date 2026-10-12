@@ -26,6 +26,7 @@
 #define ONE 65536
 #define SPHERES 6
 #define DEPTH 3
+#define SHADE 16
 
 struct vec { float x, y, z; };
 struct sphere { struct vec centre; float radius, radius2; struct vec colour; float mirror; };
@@ -41,7 +42,16 @@ static struct {
 	 * narrower than eight pixels, which are two of the machine's texels). */
 	int tile_w, tile_h, tiles;
 	uint32_t stride, step;	/* the order the tiles are traced in: below */
+	uint32_t first;		/* the tiles before this one in that order are the first core's own */
 	int stop;		/* the picture is given up: a share ends at its next tile */
+	/* For the eye's own rays: a sphere as the eye has it, and the pixels it can be in. */
+	struct { struct vec to; float to2; int x0, x1, y0, y1; } seen[SPHERES];
+	/* And the pixels its picture in the ground can be in: it as the eye would see it under the ground. */
+	struct { int x0, x1, y0, y1; } mirrored[SPHERES];
+	/* For the ground's shadows: the spheres whose shadow a square of the ground may be in,
+	 * a bit each. The squares are SHADE each way from shade_x, shade_z, shade_by to a unit. */
+	float shade_x, shade_z, shade_by;
+	uint8_t shade[SHADE * SHADE];
 } scene __attribute__((aligned(16)));
 
 static inline struct vec v(float x, float y, float z) { struct vec r = {x, y, z}; return r; }
@@ -97,18 +107,104 @@ shadowed(struct vec from, struct vec way)
 	return 0;
 }
 
-/* The colour a ray brings back; *rays counts every ray cast for it. */
-static struct vec
-trace(struct vec from, struct vec way, uint32_t *rays)
+/* nearest() for a ray from the eye through pixel x: only the row's spheres (row, rows) that
+ * can be in that pixel are tried, with what scene.seen has of each. The same arithmetic. */
+static inline int
+nearest_seen(struct vec way, int x, const uint8_t *row, int rows, float *distance)
+{
+	float best = 1e30f;
+	int what = -1, k;
+
+	for (k = 0; k < rows; k++) {
+		int i = row[k];
+		float along, off2, radius2 = scene.spheres[i].radius2;
+
+		if (x < scene.seen[i].x0 || x > scene.seen[i].x1)
+			continue;
+		along = dot(scene.seen[i].to, way), off2 = scene.seen[i].to2 - along * along;
+		if (along > 0.0f && off2 < radius2) {
+			float t = along - __builtin_sqrtf(radius2 - off2);
+
+			if (t > 0.001f && t < best)
+				best = t, what = i;
+		}
+	}
+	if (way.y < -0.0001f) {
+		float t = -scene.eye.y / way.y;
+
+		if (t > 0.001f && t < best)
+			best = t, what = SPHERES;
+	}
+	*distance = best;
+	return what;
+}
+
+/* nearest() for the eye's ray through pixel x thrown back by the ground: only the row's
+ * spheres (row, rows) whose picture in the ground can be in that pixel are tried. */
+static inline int
+nearest_mirrored(struct vec from, struct vec way, int x, const uint8_t *row, int rows, float *distance)
+{
+	float best = 1e30f;
+	int what = -1, k;
+
+	for (k = 0; k < rows; k++) {
+		int i = row[k];
+		const struct sphere *s = &scene.spheres[i];
+		struct vec to;
+		float along, off2;
+
+		if (x < scene.mirrored[i].x0 || x > scene.mirrored[i].x1)
+			continue;
+		to = sub(s->centre, from);
+		along = dot(to, way), off2 = dot(to, to) - along * along;
+		if (along > 0.0f && off2 < s->radius2) {
+			float t = along - __builtin_sqrtf(s->radius2 - off2);
+
+			if (t > 0.001f && t < best)
+				best = t, what = i;
+		}
+	}
+	*distance = best;
+	return what;
+}
+
+/* shadowed() for a point of the ground and the scene's light: only the spheres whose shadow
+ * its square of the ground can be in are tried. */
+static inline int
+shadowed_ground(struct vec from)
+{
+	float gx = (from.x - scene.shade_x) * scene.shade_by, gz = (from.z - scene.shade_z) * scene.shade_by;
+	unsigned mask;
+	int i;
+
+	if (!(gx >= 0.0f && gx < (float)SHADE && gz >= 0.0f && gz < (float)SHADE))
+		return 0;
+	for (i = 0, mask = scene.shade[(int)gz * SHADE + (int)gx]; mask; i++, mask >>= 1)
+		if (mask & 1) {
+			const struct sphere *s = &scene.spheres[i];
+			struct vec to = sub(s->centre, from);
+			float along = dot(to, scene.light);
+
+			if (along > 0.0f && dot(to, to) - along * along < s->radius2)
+				return 1;
+		}
+	return 0;
+}
+
+/* The colour the eye's ray through pixel x brings back; *rays counts every ray cast for it.
+ * row, rows: the spheres nearest_seen() tries, and after them those nearest_mirrored() does. */
+static inline struct vec
+trace(struct vec from, struct vec way, uint32_t *rays, int x, const uint8_t *row, int rows, int rows_mirrored)
 {
 	struct vec seen = v(0, 0, 0);
 	float weight = 1.0f;
-	int bounce;
+	int bounce, ground = 0;
 
 	for (bounce = 0; bounce < DEPTH; bounce++) {
 		struct vec at, normal, colour;
 		float distance, mirror, lit;
-		int what = nearest(from, way, &distance);
+		int what = bounce == 0 ? nearest_seen(way, x, row, rows, &distance)
+		           : ground ? nearest_mirrored(from, way, x, row + rows, rows_mirrored, &distance) : nearest(from, way, &distance);
 
 		(*rays)++;
 		if (what < 0) {
@@ -119,6 +215,7 @@ trace(struct vec from, struct vec way, uint32_t *rays)
 			break;
 		}
 		at = add(from, scale(way, distance));
+		ground = bounce == 0 && what == SPHERES;
 		if (what == SPHERES) {
 			/* the ground: squares of two greys */
 			int cx = (int)(at.x + 1000.0f), cz = (int)(at.z + 1000.0f);
@@ -135,7 +232,7 @@ trace(struct vec from, struct vec way, uint32_t *rays)
 		}
 		lit = dot(normal, scene.light);
 		(*rays)++;
-		if (lit < 0.0f || shadowed(at, scene.light))
+		if (lit < 0.0f || (what == SPHERES ? shadowed_ground(at) : shadowed(at, scene.light)))
 			lit = 0.0f;
 		seen = add(seen, scale(colour, weight * (1.0f - mirror) * (0.2f + 0.8f * lit)));
 		weight *= mirror;
@@ -150,7 +247,8 @@ trace(struct vec from, struct vec way, uint32_t *rays)
 static inline uint32_t
 byte_of(float c)
 {
-	return c <= 0.0f ? 0 : c >= 1.0f ? 255 : (uint32_t)(c * 255.0f);
+	/* (0 below none and 255 above one, as two instructions) */
+	return (uint32_t)(__builtin_fminf(__builtin_fmaxf(c, 0.0f), 1.0f) * 255.0f);
 }
 
 static const uint32_t owner_colour[16] = {
@@ -174,11 +272,21 @@ trace_tile(uint32_t tile, uint32_t core)
 
 	for (y = y0; y < y1; y++) {
 		uint32_t *out = scene.pixels + y * scene.width + x0;
+		uint8_t row[2 * SPHERES];
+		int rows = 0, rows_mirrored = 0, i;
 
+		/* the spheres that can be in these pixels of the row, in their order, then those
+		 * whose pictures in the ground can */
+		for (i = 0; i < SPHERES; i++)
+			if (y >= scene.seen[i].y0 && y <= scene.seen[i].y1 && x1 > scene.seen[i].x0 && x0 <= scene.seen[i].x1)
+				row[rows++] = (uint8_t)i;
+		for (i = 0; i < SPHERES; i++)
+			if (y >= scene.mirrored[i].y0 && y <= scene.mirrored[i].y1 && x1 > scene.mirrored[i].x0 && x0 <= scene.mirrored[i].x1)
+				row[rows + rows_mirrored++] = (uint8_t)i;
 		for (x = x0; x < x1; x++) {
 			float sx = ((float)x + 0.5f - half_w) * zoom, sy = (half_h - (float)y - 0.5f) * zoom;
 			struct vec way = unit(add(add(scale(scene.right, sx), scale(scene.up, sy)), scale(scene.forward, 1.6f)));
-			struct vec c = trace(scene.eye, way, &rays);
+			struct vec c = trace(scene.eye, way, &rays, x, row, rows, rows_mirrored);
 
 			if (scene.owners && (x == x0 || y == y0))
 				*out++ = owner_colour[core & 15];
@@ -193,13 +301,14 @@ trace_tile(uint32_t tile, uint32_t core)
  * A worker's job: its share of a picture, all of it, so that it is never without work while
  * the picture is traced (handed a tile at a time, a worker waited some passes for its next:
  * 255 of them worked a fifth of the time). The tiles are taken in an order that scatters
- * them, tile j being number j * stride of the picture, and worker w of n has every n-th: as
- * many as any other, from all over the picture. which: w, and n from bit 16.
+ * them, tile j being number j * stride of the picture, and worker w of n has every n-th
+ * from scene.first on: as many as any other, from all over the picture. which: w, and n
+ * from bit 16.
  */
 static uint32_t
 trace_share(uint32_t which, uint32_t core)
 {
-	uint32_t n = which >> 16, tiles = (uint32_t)scene.tiles, j = which & 0xffff, at = j * scene.stride % tiles, rays = 0;
+	uint32_t n = which >> 16, tiles = (uint32_t)scene.tiles, j = scene.first + (which & 0xffff), at = j * scene.stride % tiles, rays = 0;
 
 	for (; j < tiles && !scene.stop; j += n) {
 		rays += trace_tile(at, core);
@@ -267,6 +376,71 @@ set_scene(float t)
 	scene.up = v(scene.right.y * scene.forward.z - scene.right.z * scene.forward.y, scene.right.z * scene.forward.x - scene.right.x * scene.forward.z,
 		scene.right.x * scene.forward.y - scene.right.y * scene.forward.x);
 	scene.light = unit(v(0.5f, 0.9f, -0.3f));
+}
+
+/* The pixels a sphere can be in along one way of the screen: between its two tangents from
+ * the eye, a few pixels more. c, z: its centre across (or up) and ahead; per: pixels to a
+ * unit of the screen, less than none where they run the other way. */
+static void
+span(float c, float z, float r, float per, float middle, int most, int *low, int *high)
+{
+	float den = z * z - r * r, root, a, b;
+
+	*low = 0, *high = most;
+	if (z < r * 1.01f + 0.01f)
+		return;	/* (round the eye or behind it: anywhere) */
+	root = r * __builtin_sqrtf(c * c + den);
+	a = middle + per * 1.6f * (c * z - root) / den, b = middle + per * 1.6f * (c * z + root) / den;
+	if (a > b) {
+		float swap = a;
+
+		a = b, b = swap;
+	}
+	*low = a > (float)most + 8.0f ? most + 1 : a > -8.0f ? (int)a - 4 : 0;
+	*high = b < -8.0f ? -1 : b < (float)most + 8.0f ? (int)b + 4 : most;
+}
+
+/* What the eye's rays and the ground's shadows are spared (scene.seen, scene.shade): where
+ * each sphere can be seen, and which squares of the ground its shadow can reach. */
+static void
+set_spared(void)
+{
+	float half_w = (float)scene.width * 0.5f, half_h = (float)scene.height * 0.5f, low_x = 1e30f, low_z = 1e30f, high_x = -1e30f, high_z = -1e30f;
+	float by = 1.0f / scene.light.y, spot[SPHERES][3];
+	int i, x, z;
+
+	for (i = 0; i < SPHERES; i++) {
+		const struct sphere *s = &scene.spheres[i];
+		struct vec to = sub(s->centre, scene.eye), under = sub(v(s->centre.x, -s->centre.y, s->centre.z), scene.eye);
+		float ahead = dot(to, scene.forward), under_ahead = dot(under, scene.forward);
+
+		scene.seen[i].to = to;
+		scene.seen[i].to2 = dot(to, to);
+		span(dot(to, scene.right), ahead, s->radius, half_h, half_w - 0.5f, scene.width - 1, &scene.seen[i].x0, &scene.seen[i].x1);
+		span(dot(to, scene.up), ahead, s->radius, -half_h, half_h - 0.5f, scene.height - 1, &scene.seen[i].y0, &scene.seen[i].y1);
+		span(dot(under, scene.right), under_ahead, s->radius, half_h, half_w - 0.5f, scene.width - 1, &scene.mirrored[i].x0, &scene.mirrored[i].x1);
+		span(dot(under, scene.up), under_ahead, s->radius, -half_h, half_h - 0.5f, scene.height - 1, &scene.mirrored[i].y0, &scene.mirrored[i].y1);
+		/* its shadow is within radius / light.y of where the light through its centre lands */
+		spot[i][0] = s->centre.x - scene.light.x * s->centre.y * by;
+		spot[i][1] = s->centre.z - scene.light.z * s->centre.y * by;
+		spot[i][2] = s->radius * by * 1.01f + 0.01f;
+		if (spot[i][0] - spot[i][2] < low_x) low_x = spot[i][0] - spot[i][2];
+		if (spot[i][1] - spot[i][2] < low_z) low_z = spot[i][1] - spot[i][2];
+		if (spot[i][0] + spot[i][2] > high_x) high_x = spot[i][0] + spot[i][2];
+		if (spot[i][1] + spot[i][2] > high_z) high_z = spot[i][1] + spot[i][2];
+	}
+	scene.shade_x = low_x;
+	scene.shade_z = low_z;
+	scene.shade_by = (float)SHADE / (high_x - low_x > high_z - low_z ? high_x - low_x : high_z - low_z);
+	memset(scene.shade, 0, sizeof scene.shade);
+	for (i = 0; i < SPHERES; i++) {
+		int x0 = (int)((spot[i][0] - spot[i][2] - low_x) * scene.shade_by), x1 = (int)((spot[i][0] + spot[i][2] - low_x) * scene.shade_by);
+		int z0 = (int)((spot[i][1] - spot[i][2] - low_z) * scene.shade_by), z1 = (int)((spot[i][1] + spot[i][2] - low_z) * scene.shade_by);
+
+		for (z = z0 < 0 ? 0 : z0; z <= z1 && z < SHADE; z++)
+			for (x = x0 < 0 ? 0 : x0; x <= x1 && x < SHADE; x++)
+				scene.shade[z * SHADE + x] |= (uint8_t)(1 << i);
+	}
 }
 
 /* Keys; true when the picture being traced is to be given up for a new one. */
@@ -369,8 +543,10 @@ main(void)
 		static uint8_t busy[MC_MAX_CORES];
 		/* when the keys were last read and the picture's figures last said, and what was traced since */
 		static unsigned keys_at, said_at, pictures_since, rays_since, clock_from;
-		int next = 0, out = 0, k, again = 0, s, tiles;
-		unsigned began = now_ms(), shown = began, rays = 0, sum = 0, took;
+		/* tiles this core traces while the workers trace theirs: as many as take it as long */
+		static unsigned own;
+		int next = 0, out = 0, k, again = 0, s, tiles, mine = 0;
+		unsigned began = now_ms(), shown = began, rays = 0, sum = 0, took, now = began, looked = began, own_took = 0, theirs_took = 0;
 		char title[120];
 
 		if (!clock_from)
@@ -381,6 +557,7 @@ main(void)
 			t = (float)(began - clock_from) * 0.0006f;
 
 		set_scene(t);
+		set_spared();
 		for (s = 32; s > 1 && ((width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((height + s - 1) / s) < 24 * workers; s >>= 1)
 			;
 		scene.tile_h = s;
@@ -396,36 +573,62 @@ main(void)
 		}
 		scene.step = (uint32_t)(workers ? workers : 1) * scene.stride % (uint32_t)tiles;
 		scene.stop = 0;
-		/* every worker its share of the picture at once: they trace, this core shows */
+		if (workers) {
+			unsigned share = (unsigned)tiles / (unsigned)(workers + 1);
+
+			if (!own)
+				own = share / 4;
+			own = own > 2 * share ? 2 * share : own < 1 ? 1 : own;
+			mine = (int)own;
+		}
+		scene.first = (uint32_t)mine;
+		/* every worker its share of the picture at once; this core has a few tiles, and shows */
 		for (k = 1; k <= workers; k++) {
 			mcw_post(k, trace_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k);
 			busy[k] = 1;
 			out++;
 		}
-		while ((out || (workers == 0 && next < tiles)) && !(again && workers == 0)) {
-			if (workers == 0)	/* core 0 alone: a tile, then a look at the window */
+		while ((out || next < (workers ? mine : tiles)) && !(again && workers == 0)) {
+			/* a tile of this core's own, then a look at the window (and at the workers) */
+			if (next < (workers ? mine : tiles)) {
 				rays += trace_tile((uint32_t)next++ * scene.stride % (uint32_t)tiles, 0);
-			for (k = 1; k <= workers; k++)
-				if (busy[k] && mcw_done(k)) {
-					rays += mcw_result(k);
-					busy[k] = 0;
-					out--;
-				}
-			if (now_ms() - shown >= 200 && now_ms() - began >= 1500) {
+				now = now_ms();
+				if (next == mine)
+					own_took = now - began;
+			} else {
+				pass();
+				now = now_ms();
+			}
+			/* (asking every worker is a pass's worth: not after every tile) */
+			if (out && (next >= mine || now - looked >= 10)) {
+				looked = now;
+				for (k = 1; k <= workers; k++)
+					if (busy[k] && mcw_done(k)) {
+						rays += mcw_result(k);
+						busy[k] = 0;
+						out--;
+					}
+				if (!out)
+					theirs_took = now - began;
+			}
+			if (now - shown >= 200 && now - began >= 1500) {
 				/* a picture is shown when it is whole; one that takes long, as it fills (the
 				 * workers' in a third of a second came out half old and half new) */
 				seglSwapAgain();
-				shown = now_ms();
+				shown = now;
 			}
-			if (now_ms() - keys_at >= 200) {
-				keys_at = now_ms();
+			if (now - keys_at >= 200) {
+				keys_at = now;
 				/* (a picture given up: the shares end at their next tiles, and are waited for) */
-				if ((again = keys()))
+				if ((again = keys())) {
 					scene.stop = 1;
-			} else if (workers) {
-				pass();
+					mine = next;
+				}
 			}
 		}
+		/* the next picture's own tiles: so many that this core and the workers end together */
+		if (workers && !again && own_took && theirs_took)
+			own = (unsigned)(((unsigned long long)own * theirs_took * 15 / own_took + 8) / 16);
 		took = now_ms() - began;
 		seglSwapAgain();
 		if (again >= 2) {

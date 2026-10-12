@@ -99,22 +99,22 @@ void mc_enter() {
         bool call_ = ret.trap.type == 8; \
         bool room_ = cpu.stall == 0; \
         if (call_) { \
-            mem_set_ram(MC_CALL_WORD(hart), xreg(17), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 4, xreg(10), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 8, xreg(11), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 12, xreg(12), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 16, xreg(13), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 20, xreg(14), 0xffffffff); \
-            mem_set_ram(MC_CALL_WORD(hart) + 24, xreg(15), 0xffffffff); \
+            mem_set_ram(MC_CALL_WORD(hart), xreg(17), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 4, xreg(10), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 8, xreg(11), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 12, xreg(12), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 16, xreg(13), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 20, xreg(14), 0xffffffff, false); \
+            mem_set_ram(MC_CALL_WORD(hart) + 24, xreg(15), 0xffffffff, false); \
         } \
-        mem_set_ram(MC_FAULT_WORD(hart) + 4, ret.trap.type, 0xffffffff); \
-        mem_set_ram(MC_FAULT_WORD(hart) + 8, ret.trap.value, 0xffffffff); \
-        mem_set_ram(MC_FAULT_WORD(hart) + 12, cpu.pc, 0xffffffff); \
+        mem_set_ram(MC_FAULT_WORD(hart) + 4, ret.trap.type, 0xffffffff, false); \
+        mem_set_ram(MC_FAULT_WORD(hart) + 8, ret.trap.value, 0xffffffff, false); \
+        mem_set_ram(MC_FAULT_WORD(hart) + 12, cpu.pc, 0xffffffff, false); \
         /* the count last: with it the record is whole. A store the cache has no room for is */ \
         /* still made, by itself, when the pass ends: were that the count, core 0 would read */ \
         /* a record of zeros with a new count (a worker "stopped, cause 0, at pc 0"). So no */ \
         /* count unless the rest went in, and no lone word of a record that did not fit. */ \
-        if (cpu.stall == 0) mem_set_ram(MC_FAULT_WORD(hart), seen_ + 1, 0xffffffff); \
+        if (cpu.stall == 0) mem_set_ram(MC_FAULT_WORD(hart), seen_ + 1, 0xffffffff, false); \
         if (cpu.stall == 0) { \
             mc_word = (call_ ? 9 : 5) | (seen_ << 8); \
             cpu.stall = STALL_WFI; \

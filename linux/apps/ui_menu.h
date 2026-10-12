@@ -11,6 +11,8 @@
 #define UI_MENU_H
 #include <ctype.h>
 #include <string.h>
+#include "ui_width.h"
+#include "ui_state.h"
 
 struct ui_menu_item {
 	const char *label;
@@ -41,6 +43,7 @@ static struct {
 } ui_menu_level[UI_MENU_LEVELS];
 static int ui_menu_depth;
 static GR_GC_ID ui_menu_gc;
+static struct ui_widths ui_menu_widths;	/* of the font a new GC has, which the menu and the bar draw in */
 
 static int
 ui_menu_is_open(void)
@@ -106,8 +109,8 @@ ui_menu_close(void)
 static void
 ui_menu_show(int k, const struct ui_menu_item *items, int count, int x, int y, int up, int pick)
 {
-	GR_SCREEN_INFO screen;
-	int width = 150, height = count * UI_MENU_ROW + 4, i, w, h, b;
+	static GR_SCREEN_INFO screen;	/* asked about once: a screen keeps its size under a running program */
+	int width = 150, height = count * UI_MENU_ROW + 4, i, w;
 
 	if (k >= UI_MENU_LEVELS || count < 1)
 		return;
@@ -117,11 +120,12 @@ ui_menu_show(int k, const struct ui_menu_item *items, int count, int x, int y, i
 	}
 	ui_menu_close_from(k);
 	for (i = 0; i < count; i++) {
-		GrGetGCTextSize(ui_menu_gc, (void *)items[i].label, strlen(items[i].label), GR_TFASCII, &w, &h, &b);
+		w = ui_width(&ui_menu_widths, 0, items[i].label, -1);
 		if (w + 27 + 20 > width)
 			width = w + 27 + 20;
 	}
-	GrGetScreenInfo(&screen);
+	if (!screen.cols)
+		GrGetScreenInfo(&screen);
 	if (up)
 		y -= height;
 	if (k > 0 && x + width > screen.cols)	/* no room to the side: on the other side of its parent */

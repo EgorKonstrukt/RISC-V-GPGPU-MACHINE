@@ -86,3 +86,6 @@ Nothing of this outlasts power-off: `/tmp` and `/root` are the overlay's.
   is the control pass reading a file's bytes out of an sRGB texture exactly.
 - Not tried: a real download in VRChat itself, which needs the picture on a public https
   host. VRChat's own texture may differ from the editor's (its colour space, a size limit).
+
+`open --dry` is 0.71 million instructions (it was 0.87): the registry's scan keeps only the
+`nxopen.*` names and reads their lines without `sscanf`.

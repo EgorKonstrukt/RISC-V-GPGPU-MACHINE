@@ -30,6 +30,12 @@ balls over a chequered ground, one light, shadows and three mirrorings, turning;
 `RAY_SIZE=WxH` the picture, `RAY_STILL=1` keeps the scene where it is. Each picture's line
 (`raystat:`) has its time, its rays and a sum of its pixels.
 
+The first core traces too: the first tiles of the order are its own (`scene.first`), and
+after each picture their number is set to what would have taken it as long as the workers
+took for theirs, so it neither waits for them nor keeps them waiting. Between its tiles it
+asks the workers how far they are, no more than a hundred times a second (asking 255 of
+them is most of a pass). It used to end its passes while they traced.
+
 One picture (201,460 rays) on the shader machine with 16 cores (it had `--cores 16` then), the same sum every time:
 
 | The cores | A picture | Against core 0 alone |
@@ -56,6 +62,25 @@ On the machine's 64 cores, the program's own choices:
 
 The path tracer gains less: core 0 draws its panel seven times a second and hands the tiles
 out in between.
+
+### A ray tries only what it can meet (12 October 2026)
+
+A picture of 320 x 240 went from 43.6 to 19.6 million instructions on one core and from
+42.9 to 20.6 on every core together; the arithmetic for what a ray does try is unchanged,
+so the sums are.
+
+- Core 0 works out per picture where each sphere can be on the screen (between its tangents
+  from the eye, four pixels more) and where its picture in the ground can be (the sphere
+  mirrored under the ground: a ray the ground throws back meets a sphere exactly when the
+  eye's ray meets that image); a tile's row lists the spheres of each kind that cross it.
+- A point of the ground asks a 16 x 16 grid which spheres' shadows can reach its square (a
+  shadow is within radius / light.y of where the light through the centre lands).
+- `-O3` was 3 to 16% worse here; it is built `-O2`.
+
+After a change, old and new must agree on `RAY_FRAMES=24 RAY_SIZE=160x120 nxray` (a moving
+scene), not only on the still picture. The start did not move: of 2.7 million instructions
+with every worker, about half is `mcw_open` (a worker's stack pages, its start, its first
+steps) and the rest the program's exec, the GPU's memory mapped and the window made.
 
 ## `nxpath`: a path tracer, with a panel
 
@@ -91,6 +116,28 @@ sum.
 | 15 small | 21 s | 48 thousand |
 | 15 of the smallest | 13.6 s | 75 thousand, 9.4 times core 0 |
 
+### A sample gone through (12 October 2026)
+
+A sample of 160 x 120 on the workers: 42.5 to 28.8 million instructions with the balls, 77.3
+to 61.3 with the teapot (the rabbit and the knot by a fifth too); the start with every
+worker 7.8 to 5.1 million.
+
+- `nearest` says what a ray met and how far, and the surface is made once, for what was
+  nearest. A ray that starts beyond the balls and the block on some side and goes away
+  skips them (`clear_of_things`; the block's top is at 0.5 itself, so a ray along it is
+  still the block's).
+- A box test takes lesser and greater as `fmin.s`/`fmax.s`, and a box put by keeps where
+  the ray enters it, so taking it up again is one comparison; `mesh_between` tries a
+  box's two together as `mesh_nearest` does. Trees with leaves of 1, 2 or 8 triangles or
+  32 bins were within 1% (a leaf of 1: 3 to 5% worse) and gave the same sums.
+- The panel's `sincosf` is nxpath's own: it keeps the library's answers by the angle's bits
+  (the radio buttons' circles were a third of a panel frame, in doubles).
+- Nothing is cleared or touched at start: a picture's own part is cleared when it is asked
+  for, and its sums touched then, with workers only.
+- `tracer.c` is built `-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops` (6% on the
+  balls, 1 to 2% on the models), `nxpath.cpp` with `-DNDEBUG`, and the link asks for LTO
+  (`-flto=auto`): Dear ImGui's objects are made for it (`docs/imgui.md`).
+
 ### Meshes
 
 What stands in the box is the panel's choice ("in the box", `NXPATH_SCENE=N`): the two balls
@@ -115,9 +162,9 @@ or glass; `NXPATH_FIRST=N`), the ball's the second.
   Trumbore's test on the kept edges. A shadow's ray stops at the first triangle
   (`mesh_between`). A ray is 1.5 to 2 times what it is among the balls: 240 x 180 with 12
   samples is 1.7 s with the balls and 3.4 to 4.5 s with a model, 255 workers.
-- The models are the program's own data (not `const`): a worker stops at a page nobody has
-  touched, and `mcw_touch` of the data, which `nxpath` does when it takes its workers,
-  brings them.
+- The models are `const`: pages of the program's file, never copied. A worker stops at a
+  page nobody has read, so `nxpath` reads the chosen model's boxes and triangles when a
+  picture is asked for (`read_model`), and touches that picture's part of the sums then.
 - To check the tree: `NXPATH_DEPTH=1 NXPATH_PRINT=1 NXPATH_SAMPLES=1 NXPATH_SCENE=N nxpath`
   prints how far every pixel's ray goes, and `python tools\pathtrace_reference.py meshes.c
   teapot LOG` tests every ray against every triangle with no tree: every ray that meets the

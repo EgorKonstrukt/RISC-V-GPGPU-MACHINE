@@ -29,12 +29,16 @@ FPU="-fno-math-errno -fsingle-precision-constant"
 # cores must not store to the same 16 bytes.
 CFLAGS="-O2 $FPU -fno-pie -fno-common -fdata-sections -fno-strict-aliasing -w -DPLAT_SHADEREMU -I$C/src -I$MW/src/include -I$REPO/programs/mc ${CLASSICUBE_DEFINES:-}"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
-export CFLAGS HERE BUILD ALIGN16
+# The files a profile is full of get more of the compiler (no vectors: the machine has none).
+# With it a frame is 3% fewer instructions, a chunk's mesh 14% and digging 20%; the meshes are the same.
+HOT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
+HOTFILES=" Builder Generator Graphics_ShaderEmu MapRenderer Lighting Particle ExtMath Vectors Animations Entity EntityComponents Physics World Block Bitmap Drawer2D "
+export CFLAGS HERE BUILD ALIGN16 HOT HOTFILES
 mkdir -p "$BUILD" && cd "$BUILD"
 { ls "$C"/src/*.c; ls "$HERE"/*.c; } |
-    xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/classicube.patch" ] && [ "$o" -nt "$HERE/build.sh" ] || { rv32-cc $CFLAGS -c {} -o "$o" && riscv32-linux-objcopy $ALIGN16 "$o"; }'
+    xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/classicube.patch" ] && [ "$o" -nt "$HERE/build.sh" ] || { b=$(basename {} .c); f=; case "$HOTFILES" in *" $b "*) f=$HOT;; esac; rv32-cc $CFLAGS $f -c {} -o "$o" && riscv32-linux-objcopy $ALIGN16 "$o"; }'
 # Builder.c a second time, for the worker core: its own buffers, and its three names another's
-rv32-cc $CFLAGS -DSE_SECOND -DBuilder_MakeChunk=Builder_MakeChunk_w -DBuilder_ApplyActive=Builder_ApplyActive_w     -DBuilder_Component=Builder_Component_w -c "$C/src/Builder.c" -o Builder_w.o
+rv32-cc $CFLAGS $HOT -DSE_SECOND -DBuilder_MakeChunk=Builder_MakeChunk_w -DBuilder_ApplyActive=Builder_ApplyActive_w     -DBuilder_Component=Builder_Component_w -c "$C/src/Builder.c" -o Builder_w.o
 # the worker cores' library, the same for every program (programs/mc)
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
 # and 16 bytes of nothing after our variables in each kind of section: the libraries' follow

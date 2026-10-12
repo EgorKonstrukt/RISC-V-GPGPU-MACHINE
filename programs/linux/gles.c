@@ -212,7 +212,17 @@ const volatile unsigned int* seglHostState(void) { return gpu ? (const volatile 
 
 unsigned int* seglPalette(void) { return (unsigned int*)(gpu + REG_PALETTE); }
 
-void seglSwap(void) {
+// A list seglSwapEarly() submitted may not be drawn yet: `unsettled` says so, and which set it is.
+static int unsettled;
+static uint32_t unsettled_set;
+void seglSettle(void) {
+    volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    if (!unsettled) return;
+    while (regs[REG_SUBMIT / 4] != 0) next_frame();
+    unsettled = 0;
+}
+
+static void swap(int wait) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
     // the window has another buffer (it was resized): ask where and how large
     if (regs[REG_BUFFERS / 4] != buffers_seen || swaps++ == 0) {
@@ -236,8 +246,12 @@ void seglSwap(void) {
         shown_set = set_at;
         shown_commands = commands | passes_used << 16;
         __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-        // the list and the textures are memory the program goes on to change: wait until drawn
-        while (regs[REG_SUBMIT / 4] != 0) next_frame();
+        // the list and the textures are memory the program goes on to change: wait until drawn,
+        // unless the program says it settles before it changes any (seglSwapEarly)
+        unsettled = !wait;
+        unsettled_set = set_at;
+        if (wait)
+            while (regs[REG_SUBMIT / 4] != 0) next_frame();
         regs[REG_VOLUME / 4 + 1] = commands;
         regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
@@ -253,6 +267,8 @@ void seglSwap(void) {
     vertex_top = set_at + VERTICES_IN;
     matrices_dirty = 1;
 }
+void seglSwap(void) { swap(1); }
+void seglSwapEarly(void) { swap(0); }
 
 // ---- frame ----
 
@@ -519,6 +535,7 @@ static uint32_t kept_to(uint32_t top, uint32_t address, uint32_t bytes) {
 // Texture memory is taken in order and given back only from the end: enough for a program
 // that drops all of a level's textures together.
 void glDeleteTextures(GLsizei n, const GLuint* which) {
+    seglSettle();   // (the memory given back is written again)
     for (int i = 0; i < n; i++)
         if (which[i] < MAX_TEXTURES) textures[which[i]].used = 0;
     uint32_t top = TEXTURES_AT;
@@ -588,6 +605,7 @@ void glColorTableEXT(GLenum target, GLenum internal, GLsizei count, GLenum forma
     (void)target, (void)internal, (void)format, (void)type;
     const uint8_t* p = table;
     uint32_t* words = seglPalette();
+    seglSettle();
     for (int i = 0; i < count && i < 256; i++, p += 3) words[i] = (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
 }
 
@@ -839,6 +857,7 @@ void seglSetMatrix(const void* m) { load_columns(m, 0); }
 
 // The window's own pixels as a texture: the picture the GPU drew last, where the server keeps it.
 int seglWindowTexture(GLuint name, GLfixed* across) {
+    seglSettle();
     if (!window_info.surface_address) return -1;
     texture* x = &textures[name < MAX_TEXTURES ? name : 0];
     uint32_t row = window_info.surface_row ? window_info.surface_row : (uint32_t)window_info.width;
@@ -1080,6 +1099,7 @@ void seglSwapAgain(void) {
     regs[REG_SUBMIT / 4] = 1 | 4 | (shown_commands >> 16) << 8;
     __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
     while (regs[REG_SUBMIT / 4] != 0) next_frame();
+    unsettled = 0;
 }
 
 // ---- commands that stay (segl.h) ----
@@ -1099,6 +1119,7 @@ int seglKeep(int count, int quads) {
     return 0;
 }
 void seglKeptQuads(int index, const void* vertices, int first_quad, int quads, GLuint name, unsigned grey, int keyed) {
+    seglSettle();
     for (int set = 0; set < 2; set++) {
         uint32_t* c = kept_command(set, index);
         const texture* t = &textures[name < MAX_TEXTURES ? name : 0];
@@ -1118,6 +1139,7 @@ void seglKeptQuads(int index, const void* vertices, int first_quad, int quads, G
 }
 void seglKeptBlend(int index, int kind, int words) {
     uint32_t fragment = (words ? FRAGMENT_TEXTURE : FRAGMENT_INDEXED) | (uint32_t)kind << 16;
+    seglSettle();
     for (int set = 0; set < 2; set++) {
         uint32_t* c = kept_command(set, index);
         c[5] = (c[5] & (FRAGMENT_KEYED | FRAGMENT_LAID | FRAGMENT_SMOOTH)) | fragment;
@@ -1126,15 +1148,21 @@ void seglKeptBlend(int index, int kind, int words) {
     passes_used |= kept_passes;
 }
 void seglKeptShown(int index, int quads) {
+    seglSettle();
     for (int set = 0; set < 2; set++) kept_command(set, index)[2] = (uint32_t)quads * 6;
 }
 int seglSet(void) { return set_at != SETS_AT; }
-void seglKeptGreyIn(int set, int index, unsigned grey) { kept_command(set, index)[11] = grey << 16 | grey << 8 | grey; }
+void seglKeptGreyIn(int set, int index, unsigned grey) {
+    if (unsettled && SETS_AT + (uint32_t)set * SET_SIZE == unsettled_set) seglSettle();
+    kept_command(set, index)[11] = grey << 16 | grey << 8 | grey;
+}
 void seglKeptGrey(int index, unsigned grey) {
+    seglSettle();
     for (int set = 0; set < 2; set++) kept_command(set, index)[11] = grey << 16 | grey << 8 | grey;
 }
 void seglKeptTexture(int index, GLuint name) {
     const texture* t = &textures[name < MAX_TEXTURES ? name : 0];
+    seglSettle();
     for (int set = 0; set < 2; set++) {
         uint32_t* c = kept_command(set, index);
         c[5] = (c[5] & ~(uint32_t)FRAGMENT_SMOOTH) | t->smooth;
@@ -1144,6 +1172,7 @@ void seglKeptTexture(int index, GLuint name) {
     }
 }
 void seglKeptLaid(int index, GLfixed u, GLfixed v, GLfixed du, GLfixed dv) {
+    seglSettle();
     for (int set = 0; set < 2; set++) {
         uint32_t* c = kept_command(set, index);
         c[5] |= FRAGMENT_LAID;

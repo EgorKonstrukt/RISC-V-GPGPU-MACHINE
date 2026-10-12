@@ -5,7 +5,7 @@
 #include "mcw.h"
 
 #define STACK_BYTES 0x10000u
-#define STACK_TOUCHED 0x4000u	/* of a stack's top, here before its worker: the rest when it is stepped on */
+#define STACK_TOUCHED 0x3000u	/* of a stack's top, here before its worker: the rest when it is stepped on (nxphys steps on three) */
 #define CHUNK_BYTES 0x40000u
 
 static uint8_t *page;		/* the mailboxes */
@@ -122,6 +122,8 @@ static void serve(int k)
 	uint32_t at, cause, address;
 
 	if (!core_now(k)) return;
+	/* (looked at first: most passes a worker has asked nothing, and taking its core costs two stores) */
+	if (fault_of(k)->count == *resume_of(k)) return;
 	/* (only a core that is this program's still: another's stops at pages of its own) */
 	if (!writing(core_now(k))) return;
 	fault = fault_of(k);
@@ -265,19 +267,22 @@ static int arrived(int k)
 static int claim(int want)
 {
 	uint32_t answer[2 + MC_MASK_WORDS] = {(uint32_t)want};
-	int core, k, n = 0;
+	uint8_t has[MC_MAX_CORES] = {0};	/* the cores a worker has or is being started on */
+	int core, k, n = 0, free_k = 1;
 
 	offer_seen = *(volatile uint32_t *)(page + MC_OFFER_AT);
 	if (call6(29, device, MC_WORKERS_ALL, (long)answer, 0, 0, 0) != 0) return 0;
 	root = answer[1];
 	share = (int)(answer[0] & 0xfff);
 	my_tag = answer[0] >> 12;
+	for (k = 1; k < MC_MAX_CORES; k++) has[core_of[k]] = has[starting[k]] = 1;
 	for (core = 1; core < MC_MAX_CORES; core++) {
 		if (!(answer[2 + core / 32] >> (core % 32) & 1)) continue;
 		n++;
-		for (k = 1; k < MC_MAX_CORES && core_of[k] != core && starting[k] != core; k++) {}
-		if (k < MC_MAX_CORES) continue;		/* one it has */
-		for (k = 1; k <= want && (core_of[k] || starting[k]); k++) {}
+		if (has[core]) continue;		/* one it has */
+		/* the first worker without a core: none before it loses one in here */
+		for (; free_k <= want && (core_of[free_k] || starting[free_k]); free_k++) {}
+		k = free_k;
 		if (k > want) {
 			/* (more than it has workers for: back it goes) */
 			uint32_t back[MC_MASK_WORDS] = {0};
@@ -442,8 +447,9 @@ void mcw_touch(void *memory, unsigned bytes)
 	volatile uint8_t *at = (volatile uint8_t *)((uintptr_t)memory & ~4095u);
 	volatile uint8_t *end = (volatile uint8_t *)memory + bytes;
 
-	/* a byte stored as it is: the page is there and this program's to write, and nothing changes */
-	for (; at < end; at += 4096) *at = *at;
+	/* a word or-ed with nothing: the page is there and this program's to write, and nothing
+	 * changes. One instruction that stores, so one fault: a load and then a store were two. */
+	for (; at < end; at += 4096) __asm__ volatile("amoor.w zero, zero, (%0)" : : "r"(at) : "memory");
 }
 
 void *mcw_alloc(unsigned bytes)

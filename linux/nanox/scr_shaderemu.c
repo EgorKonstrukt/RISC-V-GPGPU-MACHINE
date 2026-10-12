@@ -78,6 +78,7 @@ struct surface {
 extern int gr_mode;
 extern int (*gd_drawpicture)(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const char *path,
 	const MWRECT *within, int flags);
+extern int (*gd_measurestring)(PMWCFONT font, const unsigned char *text, int count);
 extern int (*gd_drawstring)(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char *text, int count,
 	MWPIXELVAL fg, MWPIXELVAL bg, int usebg, MWCOORD *endx);
 extern void (*gd_hwcursor)(MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, int visible,
@@ -95,6 +96,8 @@ static uint32_t mesh_top;		/* mesh vertices the queued commands take */
 static struct { PMWCFONT font; uint32_t table; } fonts[MAX_FONTS];
 static uint32_t fonts_top = FONTS_OFFSET;
 static uint32_t data_top = DATA_OFFSET;	/* next free byte for textures */
+/* the string last measured, whose words are at data_top until something else is put there */
+static struct { PMWCFONT font; const unsigned char *text; int count, width; uint32_t at; } measured;
 static int dirty_x0 = 1 << 30, dirty_y0 = 1 << 30, dirty_x1, dirty_y1;	/* what the queue covers */
 static struct { const unsigned char *lo, *hi; } font_bits[NUMBER_FONTS];
 static struct { const unsigned char *src; uint32_t shape, at; } cache[CACHE_SLOTS];
@@ -189,23 +192,56 @@ submit(int count, uint32_t address, int width, int height)
 	return landed;
 }
 
-/* Draws the queued commands and copies the picture back into the surface's buffer. */
-static void
-flush(void)
-{
-	uint32_t landed;
+static uint32_t landed;		/* the copy counter once the list submitted last is in its buffer */
+static int undrawn;		/* that list may not be drawn yet: its commands and textures are still read */
 
-	if (commands == 0)
+/* The list submitted last is drawn: the list and texture memory may be written again. */
+static void
+drawn(void)
+{
+	if (!undrawn)
 		return;
-	landed = submit(commands, GPU_PHYS + target->at, target->w, target->h);
-	/* software may read the buffer next, and the list memory is reused: wait for the copy */
+	while (regs[REG_SUBMIT] != 0)
+		next_frame();
+	undrawn = 0;
+}
+
+/* ...and its picture is in the surface's buffer: software may read and draw there. */
+static void
+settle(void)
+{
+	drawn();
 	while ((int32_t)(regs[REG_COPIES] - landed) < 0)
 		next_frame();
+}
+
+/*
+ * Hands the queued commands to the GPU, which draws them and copies the picture back into
+ * the surface's buffer, a pass later. Nothing waits for that here: a wait ends the machine's
+ * pass, so it is left to whoever needs the result, drawn() or settle().
+ */
+static void
+flush_last(void)
+{
+	if (commands == 0)
+		return;
+	drawn();
+	landed = submit(commands, GPU_PHYS + target->at, target->w, target->h);
+	undrawn = 1;
 	commands = 0;
 	mesh_top = 0;
 	data_top = DATA_OFFSET;
+	measured.text = NULL;
 	dirty_x0 = dirty_y0 = 1 << 30;
 	dirty_x1 = dirty_y1 = 0;
+}
+
+/* The same when more is drawn right after: the list's memory is free again on return. */
+static void
+flush(void)
+{
+	flush_last();
+	drawn();
 }
 
 /* Writes command `n`: a rectangle, x1 and y1 exclusive, optionally showing a texture. */
@@ -266,6 +302,7 @@ draw_on(PSD psd)
 {
 	struct surface *s = surface_of(psd);
 
+	drawn();
 	if (s != target) {
 		flush();
 		target = s;
@@ -286,6 +323,7 @@ software(PSD psd)
 {
 	draw_on(psd);
 	flush();
+	settle();
 }
 
 static void
@@ -305,6 +343,7 @@ gpu_readpixel(PSD psd, MWCOORD x, MWCOORD y)
 {
 	if (surface_of(psd) == target)
 		flush();
+	settle();
 	return soft.ReadPixel(psd, x, y) | 0xff000000;
 }
 
@@ -369,6 +408,8 @@ pixmap_frameblit(PSD psd, PMWBLITPARMS gc)
 {
 	if (gc->srcpsd && is_surface(gc->srcpsd) && surface_of(gc->srcpsd) == target)
 		flush();
+	if (gc->srcpsd && is_surface(gc->srcpsd))
+		settle();
 	psd->orgsubdriver->FrameBlit(psd, gc);
 }
 
@@ -509,6 +550,67 @@ font_table(PMWCFONT font)
 	return table;
 }
 
+/* One walk over a string: its width, and into `word` (if not NULL) a word a character. */
+static int
+string_words(PMWCFONT font, const unsigned char *text, int count, uint32_t *word)
+{
+	const unsigned char *widths = font->width, *end = text + count;
+	uint32_t size = font->size, first = font->firstchar;
+	int at = 0;
+
+	if (!widths) {
+		int fixed = font->maxwidth;
+
+		if (word)
+			for (; text < end; text++, at += fixed) {
+				uint32_t g = *text - first;
+
+				*word++ = (g < size ? g : 0) | (uint32_t)at << 16;
+			}
+		return count * fixed;
+	}
+	if (!word) {
+		for (; text < end; text++) {
+			uint32_t g = *text - first;
+
+			at += widths[g < size ? g : 0];
+		}
+		return at;
+	}
+	for (; text < end; text++) {
+		uint32_t g = *text - first;
+
+		if (g >= size)
+			g = 0;
+		*word++ = g | (uint32_t)at << 16;
+		at += widths[g];
+	}
+	return at;
+}
+
+/*
+ * The width of a string of a built-in font. The words of its drawing command are written
+ * as it is measured, where gpu_drawstring() will want them if it is called next.
+ */
+static int
+gpu_measurestring(PMWCFONT font, const unsigned char *text, int count)
+{
+	/* (not while the list before may still be read: its words are in the same place) */
+	int room = accelerate && !undrawn && count > 0 && count <= 4096 && data_top + 4 * count <= DATA_END;
+
+	measured.text = NULL;
+	if (count <= 0)
+		return 0;
+	measured.width = string_words(font, text, count, room ? (uint32_t *)(gpu + data_top) : NULL);
+	if (room) {
+		measured.font = font;
+		measured.text = text;
+		measured.count = count;
+		measured.at = data_top;
+	}
+	return measured.width;
+}
+
 /*
  * A whole string of a built-in font as one command (docs/gpu.md): the GPU makes a rectangle
  * of each character from the font's table. The processor's part is a word a character, the
@@ -518,24 +620,20 @@ static int
 gpu_drawstring(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char *text, int count,
 	MWPIXELVAL fg, MWPIXELVAL bg, int usebg, MWCOORD *endx)
 {
-	volatile uint32_t *c, *word;
+	volatile uint32_t *c;
 	uint32_t table;
-	int i, at = 0;
+	int at;
 
 	if (!queued(psd) || count <= 0 || count > 4096 || (table = font_table(font)) == 0)
 		return 0;
 	draw_on(psd);
 	if (commands + 3 > MAX_COMMANDS || mesh_top + 6 * count + 12 > MAX_MESH || data_top + 4 * count > DATA_END)
 		flush();
-	word = (volatile uint32_t *)(gpu + data_top);
-	for (i = 0; i < count; i++) {
-		int g = text[i] - font->firstchar;
-
-		if (g < 0 || g >= font->size)
-			g = 0;
-		word[i] = (uint32_t)g | (uint32_t)at << 16;
-		at += font->width ? font->width[g] : font->maxwidth;
-	}
+	if (measured.text == text && measured.count == count && measured.font == font && measured.at == data_top)
+		at = measured.width;
+	else
+		at = string_words(font, text, count, (uint32_t *)(gpu + data_top));
+	measured.text = NULL;
 	/* through queue(): it starts a list with the surface's picture and keeps the area covered */
 	queue(x, y, x + at, y + font->height, bg, FRAG_COLOUR, 0, 0, 0, 0, 0);
 	if (!usebg) {
@@ -618,8 +716,41 @@ rom_address(int fd, const char *begins, int count)
 #define ICON_MARK	"NXICON1"
 #define ICON_BYTES	(32 * 32 * 3 + 16 * 16 * 3 + 8)
 
-static struct { char path[80]; uint32_t at; int pw, ph, own; } pictures[8];	/* files found in the ROM */
+static struct { char path[80]; uint32_t at; int pw, ph, own; } pictures[32];	/* files found in the ROM */
 static int pictures_next;
+
+/*
+ * A file's own icon where it lies in the ROM, found without reading the file (a read is a page
+ * copied, and a pass ended): the ROM's header at the file's number has its name and size.
+ * 0 when that cannot be told; *none when the file is the ROM's and carries no icon.
+ */
+static uint32_t
+rom_icon(const char *path, int own, int *none)
+{
+	const char *name = strrchr(path, '/');
+	unsigned char head[64], mark[8];
+	struct stat st;
+	uint32_t size, data = 0;
+	unsigned at;
+	int mtd, n;
+
+	name = name ? name + 1 : path;
+	if ((own != 32 && own != 16) || stat(path, &st) || !S_ISREG(st.st_mode) || (mtd = open("/dev/mtd0", O_RDONLY)) < 0)
+		return 0;
+	n = pread(mtd, head, sizeof head, st.st_ino);
+	for (at = 16; (int)at < n && head[at]; at++)
+		continue;
+	size = (uint32_t)head[8] << 24 | head[9] << 16 | head[10] << 8 | head[11];
+	if (n >= 32 && (int)at < n && size == (uint32_t)st.st_size && !strcmp((const char *)head + 16, name)) {
+		data = (uint32_t)st.st_ino + 16 + (at & ~15u);
+		if (size < ICON_BYTES || pread(mtd, mark, 8, data + size - 8) != 8 || memcmp(mark, ICON_MARK, 8) != 0) {
+			*none = 1;
+			data = 0;
+		}
+	}
+	close(mtd);
+	return data ? ROM_PHYS + data + size - (own == 32 ? ICON_BYTES : 16 * 16 * 3 + 8) : 0;
+}
 
 static int
 gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const char *path,
@@ -635,12 +766,28 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 
 	if (!is_surface(psd))
 		return 0;
-	for (j = 0; accelerate && j < 8; j++)
+	for (j = 0; accelerate && j < 32; j++)
 		if (pictures[j].at && pictures[j].own == own && !strcmp(pictures[j].path, path)) {
 			rom = pictures[j].at;
 			pw = pictures[j].pw;
 			ph = pictures[j].ph;
 		}
+	if (!rom && own && accelerate) {
+		int none = 0;
+
+		rom = rom_icon(path, own, &none);
+		if (none)
+			return 1;
+		if (rom) {
+			pw = ph = own;
+			if (strlen(path) < sizeof pictures[0].path) {
+				j = pictures_next++ & 31;
+				strcpy(pictures[j].path, path);
+				pictures[j].at = rom;
+				pictures[j].pw = pictures[j].ph = pictures[j].own = own;
+			}
+		}
+	}
 	if (!rom) {
 		if ((fd = open(path, O_RDONLY)) < 0)
 			return 0;
@@ -668,7 +815,7 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 		if (accelerate && (rom = rom_address(fd, head, j)) != 0) {
 			rom += start;
 			if (strlen(path) < sizeof pictures[0].path) {
-				j = pictures_next++ & 7;
+				j = pictures_next++ & 31;
 				strcpy(pictures[j].path, path);
 				pictures[j].at = rom;
 				pictures[j].pw = pw;
@@ -723,6 +870,8 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 		return 1;
 	}
 	flush();
+	if (!accelerate)
+		settle();
 	for (; y0 < y1; y0 += band) {
 		band = !accelerate ? 1 : y1 - y0 < rows ? y1 - y0 : rows;
 		for (j = 0; j < band; j++)
@@ -815,6 +964,7 @@ surface_for(void *owner, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height)
 		/* another size: a new buffer, which takes over what the old one shows */
 		if (s == target)
 			flush();
+		settle();
 		old = spare = s;
 	}
 	if (!spare || width <= 0 || height <= 0 || (at = pool_take((uint32_t)width * height * 4)) == ~0u) {
@@ -857,6 +1007,7 @@ surface_release(void *owner)
 				flush();
 				target = &root;
 			}
+			settle();	/* (a copy into a buffer given back would land in the next one's) */
 			pool_give(s->at);
 			s->owner = NULL;
 		}
@@ -873,6 +1024,7 @@ surface_locate(PSD psd, MWCOORD x, MWCOORD y, uint32_t *address, uint32_t *row)
 {
 	struct surface *s = surface_of(psd);
 
+	/* (no wait for what was drawn: a program that writes the pixels itself reads one first) */
 	*address = GPU_PHYS + s->at + ((y - s->y) * s->w + (x - s->x)) * 4;
 	*row = s->w;
 }
@@ -910,7 +1062,7 @@ gpu_preselect(PSD psd)
 {
 	volatile uint32_t *table = (volatile uint32_t *)(gpu + LAYERS_OFFSET);
 
-	flush();
+	flush_last();
 	layer_count = 0;
 	show(&scrdev);
 	if (gd_composite_walk)
@@ -1094,6 +1246,7 @@ gpu_open(PSD psd)
 	regs[REG_CURSOR + 2] = 0;
 	gd_hwcursor = gpu_cursor;
 	gd_drawstring = gpu_drawstring;
+	gd_measurestring = gpu_measurestring;
 	gd_drawpicture = gpu_picture;
 	gd_compositor = &compositor;
 	regs[REG_WIDTH] = width;

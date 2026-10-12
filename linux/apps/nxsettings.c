@@ -38,6 +38,7 @@ static int cores = 1, has_float = -1;	/* the machine's cores (its control words 
 static unsigned speed_cycles, speed_ms, speed_now;	/* instructions and time at the last look; instructions a second since */
 static int focus;	/* what the keyboard works: 0 the row of tabs, 1 and 2 the tab's controls in order */
 static GR_WINDOW_ID window;
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ)
 
 static void
 add(const char *label, const char *value)
@@ -108,11 +109,9 @@ static const char *
 size_label(int row)
 {
 	static char text[40];
-	GR_SCREEN_INFO screen;
 	int w = atoi(sizes[fits[row]]), h = atoi(strchr(sizes[fits[row]], 'x') + 1);
 
-	GrGetScreenInfo(&screen);
-	snprintf(text, sizeof text, "%d x %d%s", w, h, w == screen.cols && h == screen.rows ? "  (now)" : "");
+	snprintf(text, sizeof text, "%d x %d%s", w, h, w == ui_screen()->cols && h == ui_screen()->rows ? "  (now)" : "");
 	return text;
 }
 
@@ -214,8 +213,20 @@ static int
 system_lines(char lines[][160], int screen_w, int screen_h)
 {
 	struct utsname system;
+	const char *address;
+	FILE *memory = fopen("/proc/meminfo", "r");
+	char line[160];
+	long total = 0, available = 0;
 	int n = 0;
 
+	/* (both numbers in one reading of the file: the kernel writes it out for each) */
+	while (memory && fgets(line, sizeof line, memory))
+		if (!strncmp(line, "MemTotal:", 9))
+			total = atol(line + 9);
+		else if (!strncmp(line, "MemAvailable:", 13))
+			available = atol(line + 13);
+	if (memory)
+		fclose(memory);
 	uname(&system);
 	if (has_float < 0)
 		has_float = float_unit();
@@ -234,8 +245,7 @@ system_lines(char lines[][160], int screen_w, int screen_h)
 			 speed_now / 10000 % 100);
 	else
 		snprintf(lines[n++], 160, "The first core's speed: measuring...");
-	snprintf(lines[n++], 160, "Memory: %ld MB, %ld MB free", field("/proc/meminfo", "MemTotal:") / 1024,
-		 field("/proc/meminfo", "MemAvailable:") / 1024);
+	snprintf(lines[n++], 160, "Memory: %ld MB, %ld MB free", total / 1024, available / 1024);
 	snprintf(lines[n++], 160, "Disk: a ROM of %ld MB; what is written is kept in memory", field("/sys/class/mtd/mtd0/size", "") >> 20);
 	if (screen_w)
 		snprintf(lines[n++], 160, "Screen: %d x %d (this host shows %d x %d at most)", screen_w, screen_h, most_w, most_h);
@@ -245,7 +255,8 @@ system_lines(char lines[][160], int screen_w, int screen_h)
 		snprintf(lines[n++], 160, "Sound card: %u samples a second, volume %d%%", (unsigned)SND_RATE, (int)(SND_MASTER * 100 / 256));
 	else
 		snprintf(lines[n++], 160, "Sound card: none");
-	snprintf(lines[n++], 160, "Network: %s", network_address() ? network_address() : "not connected");
+	address = network_address();
+	snprintf(lines[n++], 160, "Network: %s", address ? address : "not connected");
 	snprintf(lines[n++], 160, "Running for %ld minutes", field("/proc/uptime", "") / 60);
 	return n;
 }
@@ -294,10 +305,31 @@ beep(void)
 	close(file);	/* returns once it has been played */
 }
 
+static char system_shown[12][160];	/* the System tab's lines as they were last drawn */
+static int system_count;
+
+/* The System tab's lines again, a second later: the ones that read otherwise are drawn. */
+static void
+draw_system_changes(void)
+{
+	static char lines[12][160];
+	int n = system_lines(lines, ui_screen()->cols, ui_screen()->rows), i;
+
+	for (i = 0; i < n || i < system_count; i++) {
+		if (i < n && i < system_count && !strcmp(lines[i], system_shown[i]))
+			continue;
+		ui_fill(window, 0, TOP + i * 18, WIDTH, 18, UI_FACE);
+		if (i < n)
+			ui_text(window, 8, TOP + i * 18, lines[i], -1, BLACK, 0);
+	}
+	memcpy(system_shown, lines, sizeof lines);
+	system_count = n;
+}
+
 static void
 draw(void)
 {
-	GR_SCREEN_INFO screen;
+	GR_SCREEN_INFO screen = *ui_screen();
 	char text[160];
 	int i;
 
@@ -306,7 +338,6 @@ draw(void)
 		ui_button(window, 8 + i * (TAB_W + 2), 6, TAB_W, 22, tab_names[i], i == tab);
 	if (focus == 0)
 		ui_focus(window, 8 + tab * (TAB_W + 2) + 4, 6 + 4, TAB_W - 8, 22 - 8);
-	GrGetScreenInfo(&screen);
 	switch (tab) {
 	case TAB_DESKTOP:
 		ui_list_draw(window, &pictures, picture_label);
@@ -354,6 +385,8 @@ draw(void)
 
 		for (i = 0; i < n; i++)
 			ui_text(window, 8, TOP + i * 18, lines[i], -1, BLACK, 0);
+		memcpy(system_shown, lines, sizeof lines);
+		system_count = n;
 		}
 		ui_text(window, 8, HEIGHT - 44, "Settings last until the machine is switched off.", -1, UI_SHADOW, 0);
 		ui_text(window, 8, HEIGHT - 26, "ShaderEmu: a RISC-V computer in a pixel shader", -1, UI_SHADOW, 0);
@@ -569,19 +602,22 @@ main(int argc, char **argv)
 			have_sound = snd_open() == 0;
 	}
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Settings", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_MOUSE_MOTION |
-		GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	for (;;) {
-		GrGetNextEventTimeout(&event, 1000);
+		/* only the System tab has something to say by itself, once a second */
+		GrGetNextEventTimeout(&event, tab == TAB_SYSTEM ? 1000 : 0);
 		if (event.type == GR_EVENT_TYPE_TIMEOUT && tab == TAB_SYSTEM)
-			draw();
+			draw_system_changes();
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw();
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 		case GR_EVENT_TYPE_MOUSE_MOTION:
+			/* the pointer's moves while a button is held (a slider, a list's bar), and not otherwise */
+			if (event.type == GR_EVENT_TYPE_BUTTON_DOWN ? !ui_wheel(&event) : !event.mouse.buttons)
+				ui_moves(window, EVENTS, event.type == GR_EVENT_TYPE_BUTTON_DOWN);
 			press(&event);
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:

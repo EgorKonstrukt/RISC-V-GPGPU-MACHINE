@@ -7,6 +7,7 @@
  *   DOOM_RENDER=soft   Doom's own renderer fills the view; the GPU only shows the screen
  *   DOOM_SOFTWARE=1    no GPU at all: the port converts each frame and sends it to the server
  *   DOOM_STOP_TIC=N    hold the picture of game tic N (for comparing pictures)
+ *   DOOM_TOTALS=1      at exit: instructions of the start, the tics, the frames (doomtotal:)
  *
  * The port's i_video.c is compiled with its frame, palette and start-up functions renamed and
  * an accessor appended (linux/nanox/doom.sh). Also prints the frame rate.
@@ -65,6 +66,29 @@ cycles(void)
 static uint32_t in_tics, in_show, stats_from;
 static int tics_from;
 
+/* DOOM_TOTALS=1: the start up to the first frame shown, and the sums of all after it. */
+static uint32_t born, start_cost, all_from, all_tics, all_show, all_view, all_display, all_wait;
+static int all_frames, all_tic_count;
+
+static void
+totals(void)
+{
+	uint32_t whole = cycles() - all_from;
+
+	all_view += doom_view[0];
+	fprintf(stderr, "doomtotal: start %uk; %d tics %uk, %d frames %uk draw (the view %uk) + %uk show, the melt's waits %uk, between them %uk; all %uk\n",
+		start_cost / 1000, all_tic_count, all_tics / 1000, all_frames, (all_display - all_show - all_wait) / 1000, all_view / 1000,
+		all_show / 1000, all_wait / 1000, (whole - all_tics - all_display) / 1000, whole / 1000);
+}
+
+static void __attribute__((constructor))
+begun(void)
+{
+	born = cycles();
+	if (getenv("DOOM_TOTALS"))
+		atexit(totals);
+}
+
 /*
  * The game's tic, as d_main.c and d_net.c call it (doom.sh): counted apart from drawing, and
  * with DOOM_HASH_TICS=N a sum of the game's state every N tics, to see a demo play the same.
@@ -77,6 +101,8 @@ G_Ticker_counted(void)
 
 	G_Ticker();
 	in_tics += cycles() - began;
+	all_tics += cycles() - began;
+	all_tic_count++;
 	if (every < 0) {
 		const char *text = getenv("DOOM_HASH_TICS");
 		every = text ? atoi(text) : 0;
@@ -149,13 +175,15 @@ int
 I_GetTime(void)
 {
 	static uint32_t from;
-	static int tics_then;
+	static int tics_then, began;
 
 	if (!gpu)
 		return I_GetTime_port();
-	if (!from) {
-		from = clock_ms() | 1;
+	if (!began) {
+		/* (`from` itself must be the clock's word: a later one would give a time before it) */
+		from = clock_ms();
 		tics_then = I_GetTime_port();
+		began = 1;
 	}
 	return tics_then + (int)((clock_ms() - from) * 35 / 1000);
 }
@@ -190,6 +218,18 @@ I_StartTic(void)
 	I_StartTic_port();
 }
 
+/* The melt waits for the clock to move on by asking the time again and again (doom.sh has
+ * it call this between): the machine's pass ends instead, and the clock moves between passes. */
+void
+doom_wait(void)
+{
+	uint32_t began = cycles();
+
+	if (gpu)
+		__asm__ volatile(".word 0x0100000f");
+	all_wait += cycles() - began;
+}
+
 void
 I_SetPalette(unsigned char *palette)
 {
@@ -201,9 +241,27 @@ I_SetPalette(unsigned char *palette)
 		return;
 	}
 	words = seglPalette();
+	seglSettle();	/* (a level's start sets the palette from a tic) */
 	for (i = 0; i < 256; i++, palette += 3)
 		words[i] = (unsigned)gammatable[usegamma][palette[0]] << 16 | gammatable[usegamma][palette[1]] << 8 |
 			gammatable[usegamma][palette[2]];
+}
+
+/* A frame's drawing writes the screen, the kept level and the palette, which the list of the
+ * frame before reads: not before the GPU has drawn that one (doom.sh names the game's own). */
+void D_Display_game(void);
+
+void
+D_Display(void)
+{
+	uint32_t began;
+
+	if (gpu)
+		seglSettle();
+	began = all_from ? cycles() : 0;
+	D_Display_game();
+	if (began)
+		all_display += cycles() - began;
 }
 
 /* ---- the melt between two screens ---- */
@@ -309,6 +367,7 @@ show(void)
 {
 	/* in units of the whole window: a matrix of 16.16 numbers cannot hold 2/320 exactly */
 	static const GLfixed corners[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
+	static const GLfixed flat[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0};
 	/* glOrthox(0, 1, 1, 0, -1, 1) column by column: working it out anew costs a frame 800 instructions */
 	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
 	int width, height;
@@ -328,27 +387,16 @@ show(void)
 	glLoadMatrixx(whole);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
-	glEnable(GL_TEXTURE_2D);
 	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_BLEND);
-	if (doom_gl_scene)
-		glEnable(GL_ALPHA_TEST);	/* the view shows through where the screen holds the key */
-	else
-		glDisable(GL_ALPHA_TEST);
 	glColorKeySE(KEY);
-	glColor4ub(255, 255, 255, 255);
-	glBindTexture(GL_TEXTURE_2D, screen_texture);
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-	glVertexPointer(2, GL_FIXED, 0, corners);
-	glTexCoordPointer(2, GL_FIXED, 0, corners);
-	glDrawArrays(GL_QUADS, 0, 4);
-	glDisable(GL_ALPHA_TEST);
+	/* keyed over a view: it shows through where the screen holds the key */
+	seglQuad(flat, corners, screen_texture, 255, 255, doom_gl_scene);
 	if (melting == 1 || melting == 2)
 		melt_strips();
 	if (melting == 3)
 		melting = 0;
-	seglSwap();
+	/* the game's tics come next and write no memory the list reads: D_Display() settles */
+	seglSwapEarly();
 	doom_gl_scene = 0;
 }
 
@@ -367,6 +415,17 @@ I_FinishUpdate(void)
 	else
 		I_FinishUpdate_port();
 	in_show += cycles() - began;
+	all_show += cycles() - began;
+	if (!all_from) {
+		/* the first frame is shown: what follows is counted apart from the start */
+		start_cost = cycles() - born;
+		all_from = cycles();
+		all_tics = all_show = all_display = all_wait = 0;
+		all_view = -doom_view[0];
+		all_frames = all_tic_count = 0;
+	} else {
+		all_frames++;
+	}
 	if (gpu) {
 		ms = (long)(clock_ms() & 0x7fffffff);
 	} else {
@@ -411,6 +470,7 @@ I_FinishUpdate(void)
 		if (frames)
 		if (frames)
 			fprintf(stderr, "doomstat: the view %uk a frame, %u things\n", doom_view[0] / frames / 1000, doom_view[3] / frames);
+		all_view += doom_view[0];
 		memset(doom_view, 0, sizeof doom_view);
 		in_tics = in_show = 0;
 		stats_from = cycles();

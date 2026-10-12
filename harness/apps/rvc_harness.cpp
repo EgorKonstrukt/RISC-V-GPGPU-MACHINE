@@ -112,6 +112,7 @@ struct Options {
     int netId = 1;            // --net-id N: this machine's number, its address 10.0.0.N
     double netLoss = 0, netDelay = 0;   // --net-loss percent, --net-delay milliseconds: of every packet sent
     int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/multicore.md)
+    bool lazy = false;        // --lazy: a fill or copy is left to the commit and the pass goes on (LAZY_MEMOP)
     bool noBands = false;     // --no-bands: the commit rewrites all of RAM, as a CustomRenderTexture does
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
@@ -185,6 +186,8 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                          auto      (default) the smallest one the chosen image runs on
   --no-gpu             leave out the GPU device (the passes in <rvc>/gpu.shader, docs/gpu.md)
   --no-bands           have the commit rewrite all of RAM instead of only the bands written to
+  --lazy               leave a parallel fill or copy to the commit and run on (LAZY_MEMOP, docs/boot.md):
+                       fewer passes end early, every instruction is some 1.5 percent slower
   --readback-batch N   D3D11: read the rows of N frames back with one Map (1); the console's
                        output and typed input then come N frames later
   --gpu-capture FILE   save the GPU device's whole colour target as a BMP at exit
@@ -196,6 +199,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --ra-log FILE        per frame: pc, return address and instructions, for tools/pc_callers.py
   --pc-log FILE        sample the guest's pc once a frame, for tools/pc_profile.py
   --frame-log FILE     per frame: pc, instructions, last stall and time, for tools/boot_profile.py
+                       (with --stats-from TEXT: from where the console says TEXT)
   --cpu                run the instructions on the processor (docs/cpu-harness.md): some thirty times
                        faster; the display, the GPU, the keys and the pointer are the shader's as before
                        (D3D11, the Linux image in build\\images\\linux)
@@ -355,6 +359,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--stats-from") o.statsFrom = unescape(next("--stats-from"));
         else if (a == "--define") o.defines.push_back(next("--define"));
         else if (a == "--no-bands") o.noBands = true;
+        else if (a == "--lazy") o.lazy = true;
         else if (a == "--no-mrt") o.noMrt = true;
         else if (a == "--readback-batch") o.readbackBatch = atoi(next("--readback-batch").c_str());
         else if (a == "--holodeck") o.holodeck = true;
@@ -456,6 +461,11 @@ void findRepoRoot(const Options& o) {
 
 // What the emulated machine can boot: payload PNG sets shipped with rvc, under kUpstream.
 const char* const kUpstream = "rvc/_Nix/rvc";
+
+// The patched shader's folder, or a copy of it beside other work (any folder named rvc_opt...).
+bool isOpt(const std::string& dir) {
+    return dir == "experiments/rvc_opt" || fs::u8path(dir).filename().u8string().rfind("rvc_opt", 0) == 0;
+}
 const char* const kPrograms = "programs/bin";   // our own programs, as raw memory images
 struct BootImage {
     const char* name;
@@ -617,17 +627,18 @@ int main(int argc, char** argv) {
     // The full machine unless a named image is known to need less, or the user said so.
     if (opt.machine < 0) {
         const BootImage* im = opt.loadState.empty() ? findImage(opt.image) : nullptr;
-        opt.machine = im && (opt.rvcDir == "experiments/rvc_opt" || opt.rvcDir == "experiments/rvc_compute") ? im->machine : 0;
+        opt.machine = im && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") ? im->machine : 0;
     }
     // Our Linux image, and snapshots (which are of it), have no firmware: the machine answers
     // the kernel's calls to it (docs/boot.md).
-    opt.sbi = opt.machine == 0 && (opt.rvcDir == "experiments/rvc_opt" || opt.rvcDir == "experiments/rvc_compute") && (opt.ourKernel || !opt.loadState.empty());
+    opt.sbi = opt.machine == 0 && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") && (opt.ourKernel || !opt.loadState.empty());
     if (opt.machine == 1) opt.defines.push_back("NO_PAGING");
     if (opt.machine == 2) opt.defines.push_back("M_MODE_ONLY");
     // The full machine has single-precision float instructions (docs/fpu.md).
-    if (opt.machine == 0 && (opt.rvcDir == "experiments/rvc_opt" || opt.rvcDir == "experiments/rvc_compute") &&
+    if (opt.machine == 0 && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") &&
         std::find(opt.defines.begin(), opt.defines.end(), "FPU") == opt.defines.end())
         opt.defines.push_back("FPU");
+    if (opt.lazy && opt.machine == 0 && isOpt(opt.rvcDir)) opt.defines.push_back("LAZY_MEMOP");
     if (opt.machine > 0)
         fprintf(stderr, "[harness] machine: %s\n", opt.machine == 1 ? "no paging (NO_PAGING)" : "machine mode only (M_MODE_ONLY)");
     // Payloads live with upstream rvc; a patched shader folder usually has none of its own.
@@ -663,7 +674,7 @@ int main(int argc, char** argv) {
     bo.gpu = opt.gpu;
     bo.profile = opt.profile;
     bo.stateLog = !opt.l1Log.empty();
-    if (opt.rvcDir == "experiments/rvc_opt") {
+    if (isOpt(opt.rvcDir)) {
         // its tick keeps one rectangle from the top of the state block (STATE_ROWS in src/types.h)
         // The harness's machine: the shader's own write cache (384 texels), and on D3D11 the
         // tick in eight targets, a pixel for every eight texels of state (docs/multicore.md).
@@ -835,7 +846,7 @@ int main(int argc, char** argv) {
     double guestTime = timeBase;
 
     std::vector<uint32_t> pcSamples, raSamples;
-    std::vector<uint32_t> frameSamples;
+    std::vector<uint32_t> frameSamples, workerSamples;
     std::vector<uint32_t> l1Samples;
     uint32_t lastInstructions = 0, lastStall = 0;
     bool statsStarted = false;
@@ -1064,13 +1075,21 @@ int main(int argc, char** argv) {
         if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer
         if (haveClock) guestInstructions += (uint32_t)(clock - lastClock);
         if (opt.cores > 1 && raw.size() >= (64 + kControlTexels + kNetRead) * 16) {
+            // this pass: the workers' instructions, how many ran, how many a whole pass, how many only looked for a job
+            uint32_t ranNow = 0, coresNow = 0, fullNow = 0, waitNow = 0;
             for (int c = 1; c < opt.cores; ++c) {   // (MC_STATS, and MC_STATS_ALL from core 16)
                 uint32_t now = c < 16 ? texel(64 + 0x38 + c / 4, c % 4) : texel(64 + kControlTexels + kCoreStatsAt + c / 4, c % 4);
                 // (a geometry laid out anew starts the counts again: one that went down is all new)
-                if (haveWorkerClock) workerInstructions += now < workerClock[c] ? now : (uint32_t)(now - workerClock[c]);
+                uint32_t ran = !haveWorkerClock ? 0 : now < workerClock[c] ? now : (uint32_t)(now - workerClock[c]);
+                workerInstructions += ran;
+                if (ran != 0 && ran < 64) { waitNow++; ran = 0; }   // (a worker awake with no job runs some 18 a pass)
+                ranNow += ran;
+                coresNow += ran != 0;
+                fullNow += ran >= (uint32_t)opt.ticks;
                 workerClock[c] = now;
             }
             haveWorkerClock = true;
+            if (!opt.frameLog.empty() && (opt.statsFrom.empty() || statsStarted)) workerSamples.insert(workerSamples.end(), {ranNow, coresNow, fullNow, waitNow});
         }
         if (haveClock && !opt.pcLog.empty() && (opt.statsAfter < 0 || statsStarted)) {
             pcSamples.push_back(texel(36, 3));
@@ -1081,7 +1100,7 @@ int main(int argc, char** argv) {
             raSamples.push_back(texel(29, 0));   // x1
             raSamples.push_back((uint32_t)(clock - lastClock));
         }
-        if (haveClock && !opt.frameLog.empty()) {
+        if (haveClock && !opt.frameLog.empty() && (opt.statsFrom.empty() || statsStarted)) {
             double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
             frameSamples.insert(frameSamples.end(), {texel(36, 3), (uint32_t)(clock - lastClock), texel(40, 2), (uint32_t)us});
         }
@@ -1699,6 +1718,9 @@ int main(int argc, char** argv) {
         }
     }
     if (!opt.frameLog.empty()) writeFileBinary(opt.frameLog, (const uint8_t*)frameSamples.data(), frameSamples.size() * 4);
+    // (beside it, a pass's worker cores: their instructions, how many ran, how many a whole pass, how many only waited)
+    if (!opt.frameLog.empty() && !workerSamples.empty())
+        writeFileBinary(opt.frameLog + ".workers", (const uint8_t*)workerSamples.data(), workerSamples.size() * 4);
     if (!opt.l1Log.empty()) writeFileBinary(opt.l1Log, (const uint8_t*)l1Samples.data(), l1Samples.size() * 4);
     if (!opt.pcLog.empty()) writeFileBinary(opt.pcLog, (const uint8_t*)pcSamples.data(), pcSamples.size() * 4);
     if (!opt.raLog.empty()) writeFileBinary(opt.raLog, (const uint8_t*)raSamples.data(), raSamples.size() * 4);

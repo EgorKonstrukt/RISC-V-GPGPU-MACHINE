@@ -144,6 +144,58 @@ half is its light maps being placed (`AllocBlock`, a third) and the kept level b
     -nokeep             draw the level a polygon at a time, as before it was kept
     QUAKE_DEFINES=-DSE_COUNT    (to build.sh) counts of the server's work in the quakestat: lines
 
+### A frame gone through again (12 October 2026)
+
+`timedemo demo1` went from 182 to 119 thousand instructions a frame (its worst and best
+windows of 40 frames by 31 to 40%), a fight's frames from 338 to 230, and the time from the
+command to a level's first picture from 108 to 65 million (124 to 76 for e1m1), with the
+same sums and the same pictures. In thousands, a frame's parts as `quakestat:` has them
+(in view / level / models / particles and weapon / 2D and swap / rest): 17.4, 29.3, 45.9,
+22.1, 31.9, 33.2 before; 12.4, 16.7, 35.3, 16.1, 11.6, 24.3 now.
+
+- The 2D screen is runs of sprites the program writes itself (`qglRect`, `qglText`,
+  `qglPicture`; `seglSpriteSpace`): a letter was a glBegin, four vertices and a glEnd, about
+  350 instructions, and is about 30. The status bar's four `sprintf` a frame are digits.
+- Polygons drawn one after another (a door's faces and their light maps, water) are written
+  straight into the frame as the two triangles the GPU makes of a quad (`qglQuadsRoom`):
+  room for 64 is taken at once and the rest given back when anything is set. A draw is 200
+  instructions before its first vertex, and `seglCompact`'s copy was 80 a quad.
+- An entity's matrix is made of the world's in one go (`qglEntity`), sum for sum what
+  gles.c's translate, rotates and scale make (its sine of 90 degrees is not 1: a rotation
+  cannot be left out or simplified loosely).
+- Particles are written where the GPU reads them, and `rand()` is the program's own copy
+  of the library's (the same numbers, `sys_shaderemu.c`), inline in `r_part.c`: an explosion
+  asks for seven thousand.
+- What nobody read is not made: the nodes' marks (`R_MarkLeaves`), the palette's ramps
+  (`V_UpdatePalette`), the view model's own light, `bitcounts`.
+- The client looks only at entities that had an update (`se_entity_live`), brush models
+  only at the light maps they used, and gles.c is told only state that changes.
+- Loading: light maps are placed by looking only where a block's height changes and never
+  in a block that failed for a smaller size (the same places: a sum over `light_s`,
+  `light_t` and the kept vertices says so); the kept level's surfaces are sorted once;
+  nothing is byte-swapped; the Hunk clears memory when it is taken, not also when it is
+  given back, and not at all under a file read into it (`Hunk_AllocUnset`); the palette's
+  gamma 0.7 is a table (768 `pow` in doubles before).
+- The build is `-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops`: 6% fewer
+  instructions a frame than `-O2`.
+
+`QUAKE_STATS_FRAMES=N` gives a `quakestat:` line every N frames instead of by time (the same
+frames each run: two builds compare line by line), and a level's first line says how many
+instructions it took from the start.
+
+Tried and not kept: water's corners shared between polygons (more: only two polygons share
+a corner, and each then needs a conversion). Not attempted: `RecursiveLightPoint` (4% of a
+frame; a shorter ray would not be the same bits), the poses' `memcpy` (2%).
+
+Checking such a change: a held frame of a timedemo is the same picture each run only with
+`+host_framerate 0.05` (without it the flash over the picture fades by real time, and every
+pixel can differ by a level or three); `+map` needs `+host_framerate 0.05 +con_notifytime 0
++scr_conspeed 100000` and `QUAKE_SERVER=inline`. Frame 150 of demo1 is a fight, frame 420
+has models, text and the status bar. `+forward` typed after "track 30:" lands in whichever
+server frame is running: two builds of different speed walk the same way a frame or two
+apart and stop at the same place. A test that types console commands runs `quake` in the
+foreground.
+
 ## No doubles in a frame
 
 The machine has float instructions and no doubles: a double addition is a call of some 100
@@ -189,6 +241,42 @@ because every frame is shorter. The play checks below and the two machines' game
 `docs/lan.md` pass as before. To find such a routine's callers: `objdump -d` of
 `~/shaderemu-linux/src/quake-build/quake`, every `jal` to a `__...df...` by the function it
 is in, beside that function's share of a profile.
+
+## A pass's instructions
+
+A pass of the machine is up to 8,192 instructions, and what ends one early loses the rest
+(`docs/boot.md`, "Passes that end early"; `tools\tick_util.ps1` measures it). Quake ended
+one a frame at its swap and some more at its particles:
+
+- **The swap is not waited for** (`seglSwapEarly`, `docs/gpu.md`): `qglSwap` submits the list
+  and the next frame's sound, input, server and demo run while it is drawn. What the list
+  may still read is settled for where it is written: a texture, a pose or a light table
+  going into the pool (`resident`, `qglModel`, `qglLights`, the texture uploads, `qglLight`,
+  `qglBlock`) and the palette. Everything else a frame writes is its own set. The kept
+  level's commands settle in the library, which is where a frame's first wait now is: after
+  the leaves are marked.
+- **A particle is three texels of 16 bytes**, and the array is aligned to them: its place
+  and colour, its speed and ramp, the rest. A frame stores to the first, or the first two.
+  They were 44 bytes at any alignment: three or four texels a particle of the write cache's
+  384, which a fight's 400 to 700 particles filled several times a frame.
+
+| `timedemo demo1`, the shader machine | utilization | passes a full write cache ended | 969 frames |
+|---|---|---|---|
+| before | 96.5% (the swap 2.4%, the write cache 0.8%) | 1,318, of them 947 in the particles | 64.4 s |
+| after | 99.2% (the write cache 0.5%) | 615, 224 in the particles | 59.1 s |
+
+e1m5 with the server on a worker, from the command to frame 260: 96.7% to 98.0%. What is
+left there and in the demo is a level's start: its textures copied into the pool, 6 KB a
+pass, which is all of new stores a pass keeps (`memcpy` from `resident`).
+
+    QUAKE_SWAP=wait       every list waited for, as it was
+    QUAKE_HOLD_LATE=1     with QUAKE_HOLD=N: frame N stays while the game makes frame N + 1
+                          ready, and stops before it is shown
+
+To check a change to what is written when: `QUAKE_HOLD=420 QUAKE_HOLD_LATE=1 quake +timedemo
+demo1` with `--gpu-capture`, once with `QUAKE_SWAP=wait` and once without: the two pictures
+of frame 420 must be the same pixel for pixel. A plain hold cannot show a store that came
+too early, since the game stops before it makes one.
 
 ## The server on a worker core
 

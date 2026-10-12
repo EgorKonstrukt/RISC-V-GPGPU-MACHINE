@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <noftypes.h>
@@ -36,6 +39,8 @@ static GLuint texture;
 static void (*tick)(void);		/* nofrendo's 60 Hz timer: counts the frames owed */
 static int skip = 2;			/* emulated frames not drawn for each one that is */
 static int frames_most, frames_hold, frames_drawn, frames_emulated;
+static int swap_waits;			/* NES_SWAP=wait: every list waited for, as it was */
+static int hold_late;			/* NES_HOLD_LATE=1: NES_HOLD's frame stays while the next is made ready */
 static int frames_mark;			/* NES_MARK=N: "nesmark" at frame N, for a profile to begin at */
 static unsigned gd_spent[3];		/* instructions: following the game's writes, (unused), the swap */
 /* what whoever makes the lists counts: their instructions, quads and runs of lines */
@@ -51,12 +56,12 @@ extern void (*nes_frame_elsewhere)(int after);
 extern int nes_sum_on;			/* ours, in nofrendo's frame: NES_SUM, for tests */
 extern uint32 nes_sum;	/* ours, in nofrendo's loop: see frame_elsewhere */
 extern char __DATA_BEGIN__[], _end[];
-static void window_draw(GLuint of);
+static void window_draw(GLuint of, int wait);
 static void frame_counted(int emulated, int step, const unsigned char *shown);
 static void elsewhere_start(void);
 static void frame_paced(void);
 static int unlimited;			/* NES_FAST: as fast as it goes, for measuring */
-extern int rc_plain_runs_off;
+extern int rc_plain_runs_off, rc_eager;
 extern int nes6502_plain;		/* ours, in nofrendo's 6502: idle loops run turn by turn */
 
 static unsigned
@@ -84,9 +89,19 @@ osd_getromdata(void)
 {
 	FILE *file;
 	long size;
+	int fd;
 
 	if (rom_data)
 		return rom_data;
+	/* mapped, so that only the pages a game comes to are read; read whole where that cannot be */
+	if ((fd = open(rom_path, O_RDONLY)) >= 0) {
+		struct stat is;
+		void *at = fstat(fd, &is) ? MAP_FAILED : mmap(NULL, is.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+
+		close(fd);
+		if (at != MAP_FAILED)
+			return rom_data = at;
+	}
 	if (!(file = fopen(rom_path, "rb"))) {
 		fprintf(stderr, "nes: cannot open %s\n", rom_path);
 		exit(1);
@@ -200,7 +215,7 @@ video_show(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
 
 	for (y = 0; y < HEIGHT && y < bmp->height; y++)
 		memcpy(picture + y * WIDTH, bmp->line[y], WIDTH);
-	window_draw(texture);
+	window_draw(texture, 1);	/* (the next frame is copied into the picture it reads) */
 
 	/* the frames to emulate before the next one is drawn */
 	for (y = 0; y < skip + 1 && tick; y++)
@@ -210,9 +225,10 @@ video_show(bitmap_t *bmp, int num_dirties, rect_t *dirty_rects)
 	frame_counted(frames_emulated, skip + 1, picture);
 }
 
-/* The GPU draws a picture over the whole window. */
+/* The GPU draws a picture over the whole window. Without `wait` the list is only submitted:
+ * for a picture that nobody writes while it is the one on show. */
 static void
-window_draw(GLuint of)
+window_draw(GLuint of, int wait)
 {
 	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
 	static const GLfixed xyz[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0}, uv[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
@@ -226,7 +242,10 @@ window_draw(GLuint of)
 	glLoadIdentity();
 	glDisable(GL_DEPTH_TEST);
 	seglQuad(xyz, uv, of, 255, 255, 0);
-	seglSwap();
+	if (wait || swap_waits)
+		seglSwap();
+	else
+		seglSwapEarly();
 }
 
 /* After `step` more frames, `emulated` in all: the figures, and a test's end at `shown`. */
@@ -261,10 +280,11 @@ frame_counted(int emulated, int step, const unsigned char *shown)
 		drawn_then = frames_drawn;
 		since = 0;
 	}
-	if (frames_hold && emulated >= frames_hold) {
+	if (frames_hold && emulated >= frames_hold + hold_late) {
 		GR_EVENT event;
 
 		/* (for a test: the picture stays, and a snapshot has it in GPU memory) */
+		seglSettle();
 		fprintf(stderr, "nes: holding, picture %d bytes past the palette\n", (int)(shown - (unsigned char *)seglPalette()));
 		do
 			GrGetNextEvent(&event);
@@ -388,7 +408,7 @@ teams_show(int wait)
 		team_done(&teams[team_order[n]], 0);
 	if (shown >= 0) {
 		front = shown;
-		window_draw(textures[front]);
+		window_draw(textures[front], 0);	/* (no team is given the picture on show) */
 		frames_drawn++;
 	}
 }
@@ -503,6 +523,10 @@ static struct {
 	unsigned short *cells, *sprite_cells, *plain_cell;
 	unsigned char *plain_tile;	/* a tile of ones: the colour behind everything */
 	unsigned int *sets;
+	/* two of each: a list is made with the pair the list on show was not made with */
+	unsigned int *sets_of[2];
+	unsigned short *sprite_cells_of[2];
+	int turn;
 	int sets_used, set_pages, set_colours;
 	GLuint name;
 	unsigned int *layer;		/* the layer the library's texture is, at the moment */
@@ -521,19 +545,21 @@ static struct {
 static void
 gd_tile(unsigned tile)
 {
-	static unsigned spread[16];	/* a nibble's bits, a byte each, the leftmost pixel first */
+	static unsigned spread[256][2];	/* a byte's bits, a byte each, the leftmost pixel first: four and four */
 	const unsigned char *from = gd.chr + tile * 16;
 	unsigned int *to = (unsigned int *)(gd.atlas + tile * 64);
 	int row, n;
 
-	if (!spread[1])
-		for (n = 0; n < 16; n++)
-			spread[n] = (n >> 3 & 1) | (n >> 2 & 1) << 8 | (n >> 1 & 1) << 16 | (n & 1) << 24;
+	if (!spread[1][1])
+		for (n = 0; n < 256; n++) {
+			spread[n][0] = (n >> 7 & 1) | (n >> 6 & 1) << 8 | (n >> 5 & 1) << 16 | (n >> 4 & 1) << 24;
+			spread[n][1] = (n >> 3 & 1) | (n >> 2 & 1) << 8 | (n >> 1 & 1) << 16 | (n & 1) << 24;
+		}
 	for (row = 0; row < 8; row++) {
-		unsigned a = from[row], b = from[row + 8];
+		const unsigned *a = spread[from[row]], *b = spread[from[row + 8]];
 
-		to[2 * row] = spread[a >> 4] | spread[b >> 4] << 1;
-		to[2 * row + 1] = spread[a & 15] | spread[b & 15] << 1;
+		to[2 * row] = a[0] | b[0] << 1;
+		to[2 * row + 1] = a[1] | b[1] << 1;
 	}
 }
 
@@ -547,40 +573,91 @@ static struct {
 	int of[4];		/* which of them each of the picture's tables is; -1 other memory, -2 not known yet */
 } gd_tables;
 
-/* A cell from a table's bytes: its tile, and its palette from the attribute byte over it. */
-static unsigned short
-gd_cell_of(const unsigned char *bytes, int at)
+/* A row of a table's cells from its bytes: each its tile, and its palette from the attribute
+ * byte over it (rows 30 and 31 are the attribute bytes themselves, shown as tiles). */
+static void
+gd_row_of(const unsigned char *bytes, int cy, unsigned short *to)
 {
-	int cx = at & 31, cy = at >> 5;
-	unsigned attribute = bytes[0x3C0 + (cy >> 2) * 8 + (cx >> 2)];
-	unsigned bank = attribute >> ((cy & 2) << 1 | (cx & 2)) & 3;
+	const unsigned char *attributes = bytes + 0x3C0 + (cy >> 2) * 8, *tiles = bytes + cy * 32;
+	int shift = (cy & 2) << 1, cx;
 
-	return (unsigned short)(bytes[at] | bank << 12);
+	for (cx = 0; cx < 32; cx += 2) {
+		unsigned bank = (attributes[cx >> 2] >> (shift | (cx & 2)) & 3) << 12;
+
+		to[cx] = (unsigned short)(tiles[cx] | bank);
+		to[cx + 1] = (unsigned short)(tiles[cx + 1] | bank);
+	}
 }
 
-/* Where the picture's table `table` has its cell `at`. The layer has the tables two by two,
+/* Where the picture's table `table` has its row `cy`. The layer has the tables two by two,
  * 30 rows each, and under them two rows a pair for a table's rows 30 and 31: its attribute
  * bytes, which the PPU shows as tiles when a game scrolls into them. */
 static unsigned short *
-gd_cell_at(int table, int at)
+gd_row_at(int table, int cy)
 {
-	int cx = at & 31, cy = at >> 5;
 	int row = cy < 30 ? (table >> 1) * 30 + cy : 60 + (table >> 1) * 2 + cy - 30;
 
-	return &gd.cells[row * 64 + (table & 1) * 32 + cx];
+	return &gd.cells[row * 64 + (table & 1) * 32];
 }
 
-/* A byte of name table memory was written: its cell, in every table of the picture that is that memory. */
+/* Bytes of name table memory `memory` were written, a bit each in `written` (a word a row of
+ * 32): their cells, and the sixteen an attribute byte colours, in the memory's own copy and
+ * in every table of the picture that is that memory. A row with many is worked out whole. */
 static void
-gd_cell_written(int memory, int at)
+gd_cells_written(int memory, const unsigned int *written)
 {
-	unsigned short cell = gd_cell_of(ppu_nametables() + memory * 0x400, at);
-	int table;
+	static const unsigned char bit_of[32] = {
+		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+		31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+	};
+	const unsigned char *bytes = ppu_nametables() + memory * 0x400;
+	unsigned short *to[4];
+	unsigned int rows[32];
+	int tables[4], count = 0, cy, k;
 
-	gd_tables.cells[memory][at] = cell;
-	for (table = 0; table < 4; table++)
-		if (gd_tables.of[table] == memory)
-			*gd_cell_at(table, at) = cell;
+	for (k = 0; k < 4; k++)
+		if (gd_tables.of[k] == memory)
+			tables[count++] = k;
+	for (cy = 0; cy < 32; cy++)
+		rows[cy] = written[cy];
+	for (cy = 30; cy < 32; cy++) {
+		unsigned int set = written[cy];
+
+		while (set) {
+			unsigned int low = set & -set;
+			int j = (cy - 30) * 32 + bit_of[low * 0x077CB531u >> 27], r;
+
+			set ^= low;
+			for (r = 0; r < 4; r++)
+				rows[(j >> 3) * 4 + r] |= 0xFu << ((j & 7) * 4);
+		}
+	}
+	for (cy = 0; cy < 32; cy++) {
+		unsigned short *own = gd_tables.cells[memory] + cy * 32;
+		unsigned int set = rows[cy];
+		int shift = (cy & 2) << 1, done = 0;
+
+		if (!set)
+			continue;
+		for (k = 0; k < count; k++)
+			to[k] = gd_row_at(tables[k], cy);
+		while (set && done++ < 8) {
+			unsigned int low = set & -set;
+			int cx = bit_of[low * 0x077CB531u >> 27];
+			unsigned short cell = (unsigned short)(bytes[cy * 32 + cx]
+			    | (bytes[0x3C0 + (cy >> 2) * 8 + (cx >> 2)] >> (shift | (cx & 2)) & 3) << 12);
+
+			set ^= low;
+			own[cx] = cell;
+			for (k = 0; k < count; k++)
+				to[k][cx] = cell;
+		}
+		if (set) {
+			gd_row_of(bytes, cy, own);
+			for (k = 0; k < count; k++)
+				memcpy(to[k], own, 64);
+		}
+	}
 }
 
 /* What the game wrote since the last frame: the cells of those name table bytes, the tables
@@ -591,34 +668,19 @@ gd_follow(void)
 	static unsigned int bits[128];
 	unsigned char tiles[64];
 	const unsigned char *own = ppu_nametables();
-	int any = ppu_written_cells(bits), n, table, at, changed = any != 0, word;
+	int any = ppu_written_cells(bits), n, table, cy, changed = any != 0, bit;
 
 	if (!gd_tables.made) {
 		gd_tables.made = 1;
 		for (table = 0; table < 4; table++) {
 			gd_tables.of[table] = -2;
-			for (at = 0; at < 1024; at++)
-				gd_tables.cells[table][at] = gd_cell_of(own + table * 0x400, at);
+			for (cy = 0; cy < 32; cy++)
+				gd_row_of(own + table * 0x400, cy, gd_tables.cells[table] + cy * 32);
 		}
 		any = 0;
 	}
-	for (word = 0; word < 128 && any; word++) {
-		unsigned int set = bits[word];
-
-		while (set) {
-			int bit = __builtin_ctz(set), offset = (word * 32 + bit) & 0x3FF, memory = word >> 5;
-
-			set &= set - 1;
-			gd_cell_written(memory, offset);
-			if (offset >= 0x3C0) {
-				/* a byte of attributes: the sixteen cells it colours */
-				int cx = (offset & 7) * 4, cy = ((offset - 0x3C0) >> 3) * 4, i;
-
-				for (i = 0; i < 16; i++)
-					gd_cell_written(memory, (cy + (i >> 2)) * 32 + cx + (i & 3));
-			}
-		}
-	}
+	for (table = 0; table < 4 && any; table++)
+		gd_cells_written(table, bits + table * 32);
 	for (table = 0; table < 4; table++) {
 		const unsigned char *bytes = ppu_getpage(8 + table) + 0x2000 + table * 0x400;
 		unsigned from = (unsigned)(bytes - own);
@@ -629,14 +691,19 @@ gd_follow(void)
 			continue;
 		gd_tables.of[table] = memory;
 		changed = 1;
-		for (at = 0; at < 1024; at++)
-			*gd_cell_at(table, at) = memory < 0 ? gd_cell_of(bytes, at) : gd_tables.cells[memory][at];
+		for (cy = 0; cy < 32; cy++) {
+			if (memory < 0)
+				gd_row_of(bytes, cy, gd_row_at(table, cy));
+			else
+				memcpy(gd_row_at(table, cy), gd_tables.cells[memory] + cy * 32, 64);
+		}
 	}
 	if (gd.chr_ram && ppu_written_tiles(tiles)) {
 		changed = 1;
-		for (n = 0; n < 512 && n < (int)(gd.chr_bytes / 16); n++)
-			if (tiles[n >> 3] >> (n & 7) & 1)
-				gd_tile(n);
+		for (n = 0; n < 64 && n * 8 < (int)(gd.chr_bytes / 16); n++)
+			for (bit = 0; tiles[n] >> bit; bit++)
+				if (tiles[n] >> bit & 1)
+					gd_tile(n * 8 + bit);
 	}
 	return changed;
 }
@@ -815,6 +882,7 @@ gd_draw(uint32_t written, uint32_t unused)
 	const uint8 *ends;
 	int width, height, count = ppu_frame_runs(gd.record, &runs, &ends), run, start = 0, n, tall = 0, high = 0, crowded = 0;
 	unsigned char rows[36];		/* how many sprites begin in each eight lines */
+	unsigned char busy[36];		/* whether a line of each eight may have more than eight sprites */
 
 	/* a frame like the last is on the window already (but twice a second it is drawn all the
 	 * same: the window may have been made, or uncovered, since) */
@@ -824,6 +892,9 @@ gd_draw(uint32_t written, uint32_t unused)
 	if (gd_same(runs, ends, count) && !written && ++gd.alike < 30)
 		return 0;
 	gd.alike = 0;
+	gd.turn ^= 1;
+	gd.sets = gd.sets_of[gd.turn];
+	gd.sprite_cells = gd.sprite_cells_of[gd.turn];
 
 	for (run = 0; run < count; run++) {
 		if (runs[run].flags & PPU_LINE_OBJ) {
@@ -834,6 +905,7 @@ gd_draw(uint32_t written, uint32_t unused)
 	}
 	/* the sprites' cells: a tile each, or two for a tall one, mirrored as the sprite is */
 	memset(rows, 0, sizeof rows);
+	memset(busy, 0, sizeof busy);
 	gd.shown_count[0] = gd.shown_count[1] = 0;
 	for (n = 63; n >= 0; n--) {
 		unsigned tile = oam[4 * n + 1], how = oam[4 * n + 2];
@@ -850,15 +922,20 @@ gd_draw(uint32_t written, uint32_t unused)
 	}
 	/* the PPU draws eight sprites a line, the first eight of them that are on it: looked for
 	 * only where more than eight begin within a sprite's height of each other */
-	for (n = 0; n < 30 && !crowded; n++)
-		crowded = rows[n] + rows[n + 1] + (tall ? rows[n + 2] : 0) > 8;
+	for (n = 0; n < 32; n++) {
+		busy[n] = rows[n] + (n ? rows[n - 1] : 0) + (tall && n > 1 ? rows[n - 2] : 0) > 8;
+		crowded |= busy[n];
+	}
 	if (crowded) {
 		static unsigned char on_line[HEIGHT + 16];
 		int tall_by = tall ? 16 : 8, y;
 
 		memset(on_line, 0, sizeof on_line);
 		for (n = 0; n < 64; n++) {
-			if (oam[4 * n] >= 239)
+			int band = (oam[4 * n] + 1) >> 3;
+
+			/* (only the sprites in a band of eight lines that may have more than eight) */
+			if (oam[4 * n] >= 239 || !(busy[band] | busy[band + 1] | (tall ? busy[band + 2] : 0)))
 				continue;
 			for (y = 0; y < tall_by; y++)
 				if (on_line[oam[4 * n] + 1 + y]++ >= 8)
@@ -924,7 +1001,12 @@ gd_swap(void)
 {
 	unsigned t = cycles();
 
-	seglSwap();
+	/* not waited for: the next frame's emulation runs while it is drawn. The next list has
+	 * sets and sprite cells of its own, and the cells and tiles settle first (frame_gpu) */
+	if (swap_waits)
+		seglSwap();
+	else
+		seglSwapEarly();
 	gd_spent[2] += cycles() - t;
 	frames_drawn++;
 }
@@ -969,12 +1051,15 @@ frame_gpu(int after)
 		unsigned t0 = cycles();
 
 		ppu_capture_end();
+		seglSettle();
 		gd_written |= gd_follow();
 		gd_spent[0] += cycles() - t0;
 		gd_show(last || !gd_worker);
 		/* (a frame whose turn comes while the worker is at the one before is not shown) */
 		gd_missed += gd_out;
 		if (!gd_out) {
+			if (hold_late && frames_hold && frames_emulated > frames_hold)
+				frame_counted(frames_emulated, 0, picture);
 			gd.record = gd_records[gd_with = gd_taking];
 			if (gd_worker && !last) {
 				mcw_post(1, gd_draw, (uint32_t)gd_written, 0);
@@ -1012,10 +1097,12 @@ gpu_start(void)
 	gd.context = calloc(1, sizeof(ppu_t));
 	gd.atlas = seglMemory(gd.chr_bytes * 4);
 	gd.cells = seglMemory(64 * 64 * 2);
-	gd.sprite_cells = seglMemory(64 * 2 * 2 + 16);
+	gd.sprite_cells = gd.sprite_cells_of[0] = seglMemory(64 * 2 * 2 + 16);
+	gd.sprite_cells_of[1] = seglMemory(64 * 2 * 2);
 	gd.plain_tile = seglMemory(64 * 64);
-	gd.sets = seglMemory(SETS_MOST * SET_WORDS * 4);
-	if (!gd.record || !gd_records[1] || !gd.context || !gd.sets || !ppu_capture(gd.record))
+	gd.sets = gd.sets_of[0] = seglMemory(SETS_MOST * SET_WORDS * 4);
+	gd.sets_of[1] = seglMemory(SETS_MOST * SET_WORDS * 4);
+	if (!gd.record || !gd_records[1] || !gd.context || !gd.sets_of[1] || !gd.sprite_cells_of[1] || !ppu_capture(gd.record))
 		return 0;
 	ppu_capture_end();
 	gd.plain_cell = gd.sprite_cells + 128;
@@ -1318,11 +1405,14 @@ main(int argc, char **argv)
 		frames_hold = atoi(getenv("NES_HOLD"));
 	if (getenv("NES_MARK"))
 		frames_mark = atoi(getenv("NES_MARK"));
+	swap_waits = getenv("NES_SWAP") != NULL;
+	hold_late = getenv("NES_HOLD_LATE") != NULL;
 	unlimited = getenv("NES_FAST") != NULL || getenv("NES_FRAMES") != NULL;
 	nes_sum_on = getenv("NES_SUM") != NULL;
 	if (getenv("NES_PLAIN"))
 		nes6502_plain = atoi(getenv("NES_PLAIN"));
 	/* NES_RC=plain: translated code with every instruction's own test of the cycles (rc6502.h) */
-	rc_plain_runs_off = getenv("NES_RC") != NULL;
+	rc_plain_runs_off = getenv("NES_RC") != NULL && !strcmp(getenv("NES_RC"), "plain");
+	rc_eager = getenv("NES_RC") != NULL && !strcmp(getenv("NES_RC"), "eager");
 	return nofrendo_main(argc, argv);
 }

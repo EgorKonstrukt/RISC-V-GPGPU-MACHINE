@@ -15,6 +15,8 @@ if [ ! -d busybox ]; then
     mkdir busybox && tar -xf busybox.tar.bz2 -C busybox --strip-components=1 && rm busybox.tar.bz2
 fi
 cd busybox
+# the shell starts a plain command with vfork (a quarter of a small program's start from the prompt)
+python3 "$HERE/ash_vfork_hook.py" .
 make -s defconfig >/dev/null
 # static; and without the applets that need headers or kernel features this machine lacks
 set_option() { sed -i "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/; s/^CONFIG_$1=.*\$/CONFIG_$1=$2/" .config; }

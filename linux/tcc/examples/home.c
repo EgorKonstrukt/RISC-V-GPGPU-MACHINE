@@ -109,7 +109,7 @@ draw(GLfloat x, GLfloat z, int yaw)
 			glColor4ub(boxes[i].r * shade[pair] / 255, boxes[i].g * shade[pair] / 255, boxes[i].b * shade[pair] / 255, 255);
 			glDrawArrays(GL_QUADS, i * 24 + pair * 8, 8);
 		}
-	seglSwap();
+	seglSwapEarly();	/* handed to the GPU and not waited for: nothing here changes what it reads */
 }
 
 int

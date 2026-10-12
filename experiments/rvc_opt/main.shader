@@ -533,6 +533,17 @@
                     uint lo = (op.g >> 22) & 31, hi = min((op.g + op.b - 1) >> 22, 31u);
                     if (op.b != 0 && hi >= lo) changed |= ((2u << hi) - 1) & ~((1u << lo) - 1);
                 }
+#if !defined(COMMIT_SCATTER)
+                // a fill or copy the pass left to the commit (LAZY_MEMOP): its destination's bands
+                // (the first: its word and destination; the second: the same of the other, types.h)
+                uint2 lazy = uint2(STATE_TEX_HART(uint2(40, 0), 0).a, STATE_TEX_HART(uint2(38, 0), 0).a);
+                uint2 lazy_at = uint2(STATE_TEX_HART(uint2(39, 0), 0).r, STATE_TEX_HART(uint2(38, 0), 0).g);
+                for (uint which = 0; which < 2; which++) {
+                    if (lazy[which] == 0) continue;
+                    uint lo2 = (lazy_at[which] >> 22) & 31, hi2 = min((lazy_at[which] + ((lazy[which] >> 2) << 4) - 1) >> 22, 31u);
+                    if (hi2 >= lo2) changed |= ((2u << hi2) - 1) & ~((1u << lo2) - 1);
+                }
+#endif
 #ifdef GPU_DEVICE
                 changed |= gpu_copy_bands();
 #endif
@@ -585,6 +596,18 @@
                 stream.RestartStrip();
             }
             #define COMMIT_RAM_TEXELS (2048u * (4096u - 64u))
+            // the texels from t0 to t1, row by row
+            void commit_rows(inout TriangleStream<v2f_customrendertexture> stream, uint t0, uint t1) {
+                if (t0 > t1) return;
+                uint y0 = t0 / 2048, y1 = t1 / 2048, x0 = t0 % 2048, x1 = t1 % 2048;
+                if (y0 == y1) {
+                    commit_quad(stream, x0, 64 + y0, x1 - x0 + 1, 1);
+                } else {
+                    commit_quad(stream, x0, 64 + y0, 2048 - x0, 1);
+                    commit_quad(stream, 0, 64 + y1, x1 + 1, 1);
+                    if (y1 > y0 + 1) commit_quad(stream, 0, 64 + y0 + 1, 2048, y1 - y0 - 1);
+                }
+            }
             [maxvertexcount(12)]
             void commit_geom(point v2f_customrendertexture IN[1], inout TriangleStream<v2f_customrendertexture> stream) {
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
@@ -617,19 +640,18 @@
                     if ((addr >> 4) < COMMIT_RAM_TEXELS) commit_quad(stream, (addr >> 4) % 2048, 64 + (addr >> 4) / 2048, 1, 1);
                 } else {
                     // a copy or a fill: the texels from its destination to its end, row by row
-                    uint stalled = tick_state(core, 28).r;
+                    // (the ones the pass left to the commit, two at most and three rectangles between
+                    // them, which the tick sees to; or else the one that ended it)
+                    uint stalled = tick_state(core, 28).r, lazy = tick_state(core, 40).a;
                     uint4 op = tick_state(core, 38);
-                    if ((stalled != STALL_MEMOP_COPY && stalled != STALL_MEMOP_FILL) || op.b == 0) return;
-                    uint t0 = op.g >> 4, t1 = min((op.g + op.b - 1) >> 4, COMMIT_RAM_TEXELS - 1);
-                    if (t0 > t1) return;
-                    uint y0 = t0 / 2048, y1 = t1 / 2048, x0 = t0 % 2048, x1 = t1 % 2048;
-                    if (y0 == y1) {
-                        commit_quad(stream, x0, 64 + y0, x1 - x0 + 1, 1);
-                    } else {
-                        commit_quad(stream, x0, 64 + y0, 2048 - x0, 1);
-                        commit_quad(stream, 0, 64 + y1, x1 + 1, 1);
-                        if (y1 > y0 + 1) commit_quad(stream, 0, 64 + y0 + 1, 2048, y1 - y0 - 1);
+                    if (lazy != 0) {
+                        uint first = tick_state(core, 39).r >> 4;
+                        commit_rows(stream, first, min(first + (lazy >> 2) - 1, COMMIT_RAM_TEXELS - 1));
+                        if (op.a != 0) commit_rows(stream, op.g >> 4, min((op.g >> 4) + (op.a >> 2) - 1, COMMIT_RAM_TEXELS - 1));
+                        return;
                     }
+                    if ((stalled != STALL_MEMOP_COPY && stalled != STALL_MEMOP_FILL) || op.b == 0) return;
+                    commit_rows(stream, op.g >> 4, min((op.g + op.b - 1) >> 4, COMMIT_RAM_TEXELS - 1));
                 }
             }
 #endif

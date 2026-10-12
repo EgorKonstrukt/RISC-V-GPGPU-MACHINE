@@ -18,11 +18,13 @@
 #define SCALE 3
 #define PIECE 80	/* pixels a piece: 320 bytes, whole 16s, so no two cores write one piece of memory */
 #define PIECES (WIDTH * HEIGHT / PIECE)
+#define OWN 48		/* pixels the first core shades itself while it waits for the workers (192 bytes: whole 16s) */
 #define ONE 65536
 
 static uint32_t *pixels;	/* the picture, in memory the GPU draws from */
 static float now;		/* seconds: the first core sets it between two pictures */
 static int workers;
+static uint32_t shared;	/* the pixels before this one are shared out; the rest are the first core's */
 
 /* A wave from -1 to 1 that comes round once for every 1 of v. Not sinf(): the C library works
  * a sine out in doubles, which this machine has no instructions for (a double is a call of
@@ -61,19 +63,28 @@ static uint32_t channel(float v)
     return v <= 0.0f ? 0 : v >= 1.0f ? 255 : (uint32_t)(v * 255.0f);
 }
 
-/* A worker's job: every `count`th piece of the picture from piece `first` on (half a row
- * each, 240 of them: about one a worker). A job makes no system call. */
-static uint32_t pieces(uint32_t first, uint32_t count)
+/* The pixels from `at` to before `to`, in the order they lie in the picture. */
+static void some(uint32_t at, uint32_t to)
 {
-    uint32_t piece, at, row, column;
+    uint32_t row, column;
     float r, g, b;
 
-    for (piece = first; piece < PIECES; piece += count)
-        for (at = piece * PIECE; at < (piece + 1) * PIECE; at++) {
-            row = at / WIDTH, column = at % WIDTH;
-            shade((float)column * (2.0f / WIDTH) - 1.0f, 1.0f - (float)row * (2.0f / HEIGHT), now, &r, &g, &b);
-            pixels[at] = channel(r) | channel(g) << 8 | channel(b) << 16 | 0xff000000u;
-        }
+    for (; at < to; at++) {
+        row = at / WIDTH, column = at % WIDTH;
+        shade((float)column * (2.0f / WIDTH) - 1.0f, 1.0f - (float)row * (2.0f / HEIGHT), now, &r, &g, &b);
+        pixels[at] = channel(r) | channel(g) << 8 | channel(b) << 16 | 0xff000000u;
+    }
+}
+
+/* A worker's job: every `count`th piece of the picture from piece `first` on (half a row
+ * each, 240 of them: about one a worker), as far as the pixels are shared out. A job makes
+ * no system call. */
+static uint32_t pieces(uint32_t first, uint32_t count)
+{
+    uint32_t piece;
+
+    for (piece = first; piece * PIECE < shared; piece += count)
+        some(piece * PIECE, (piece + 1) * PIECE < shared ? (piece + 1) * PIECE : shared);
     return 0;
 }
 
@@ -118,6 +129,8 @@ int main(void)
     workers = mcw_open(mcw_most());
     mcw_touch(&pixels, sizeof pixels);
     mcw_touch(&now, sizeof now);
+    shared = workers ? WIDTH * HEIGHT - OWN : 0;
+    mcw_touch(&shared, sizeof shared);
     printf("shader: %d worker cores\n", workers);
     since = milliseconds();
     for (;;) {
@@ -125,10 +138,11 @@ int main(void)
         if (event.type == GR_EVENT_TYPE_CLOSE_REQ || (event.type == GR_EVENT_TYPE_KEY_DOWN && event.keystroke.ch == 'q'))
             break;
         now += 0.05f;
-        if (workers == 0)
-            pieces(0, 1);
         for (k = 1; k <= workers; k++)
             mcw_post(k, pieces, (uint32_t)(k - 1), (uint32_t)workers);
+        /* this core's own pixels meanwhile (all of them on a machine with no workers): waiting
+         * for an answer is passes of the machine with nothing run in them */
+        some(shared, WIDTH * HEIGHT);
         for (k = 1; k <= workers; k++)
             mcw_wait(k);
         seglSwapAgain();

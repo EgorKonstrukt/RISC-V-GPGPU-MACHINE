@@ -106,6 +106,23 @@ void Sys_FileClose (int handle) { close (handle); }
 void Sys_FileSeek (int handle, int position) { lseek (handle, position, SEEK_SET); }
 int Sys_FileRead (int handle, void *dest, int count) { return read (handle, dest, count); }
 
+/*
+ * The C library's rand and srand (musl's: the same numbers in the same order), with the seed
+ * where the game's particles can step it themselves (r_part.c in quake.patch).
+ */
+unsigned long long	se_rand_seed;
+
+int rand (void)
+{
+	se_rand_seed = 6364136223846793005ULL * se_rand_seed + 1;
+	return (int)(se_rand_seed >> 33);
+}
+
+void srand (unsigned seed)
+{
+	se_rand_seed = seed - 1;
+}
+
 /* The machine's clock word once the window is open, going on from the system's clock before. */
 static unsigned	clock_turns;
 
@@ -185,10 +202,12 @@ static void terminal_commands (void)
 
 int main (int c, char **v)
 {
+	extern unsigned	se_started;	/* vid_shaderemu.c */
 	unsigned	passed, oldtime, newtime;
 	quakeparms_t	parms;
 	int		j;
 
+	__asm__ volatile ("rdcycle %0" : "=r"(se_started));
 	memset (&parms, 0, sizeof (parms));
 	COM_InitArgv (c, v);
 	parms.argc = com_argc;

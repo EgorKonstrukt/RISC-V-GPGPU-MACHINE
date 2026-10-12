@@ -209,17 +209,32 @@ sample_programs(long ms)
 	for (i = 0; i < program_count; i++)
 		programs[i].seen = 0;
 	while (folder && (item = readdir(folder)) != NULL) {
-		int pid = atoi(item->d_name);
+		int pid = atoi(item->d_name), skip;
+		char *at;
 
 		if (pid <= 0)
 			continue;
-		snprintf(name, sizeof name, "/proc/%d/stat", pid);
+		memcpy(name, "/proc/", 6);
+		strcpy(name + 6, item->d_name);
+		strcat(name, "/stat");
 		read_file(name, text, sizeof text);
 		open_at = strchr(text, '(');
 		close_at = strrchr(text, ')');
-		/* after the name: the state and ten numbers, then the time as a program and in the kernel */
-		if (!open_at || !close_at || sscanf(close_at + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &user, &kernel) != 2)
+		if (!open_at || !close_at)
 			continue;
+		/* after the name: the state and ten numbers, then the time as a program and in the kernel */
+		for (at = close_at + 1, skip = 0; skip < 11 && *at; skip++) {
+			while (*at == ' ')
+				at++;
+			while (*at && *at != ' ')
+				at++;
+		}
+		if (skip < 11 || at[0] != ' ' || at[1] < '0' || at[1] > '9')
+			continue;
+		user = strtoul(at, &at, 10);
+		if (at[0] != ' ' || at[1] < '0' || at[1] > '9')
+			continue;
+		kernel = strtoul(at, NULL, 10);
 		for (i = 0; i < program_count && programs[i].pid != pid; i++)
 			;
 		if (i == MAX_PROGRAMS)
@@ -229,7 +244,9 @@ sample_programs(long ms)
 			programs[i].pid = pid;
 			programs[i].ticks = user + kernel;	/* new: nothing to compare with yet */
 			n = (int)(close_at - open_at - 1);
-			snprintf(programs[i].name, sizeof programs[i].name, "%.*s", n, open_at + 1);
+			n = n < (int)sizeof programs[i].name - 1 ? n : (int)sizeof programs[i].name - 1;
+			memcpy(programs[i].name, open_at + 1, (size_t)n);
+			programs[i].name[n] = 0;
 		}
 		/* a tick is a hundredth of a second */
 		programs[i].share = (int)((user + kernel - programs[i].ticks) * 1000 / ms);
@@ -428,13 +445,13 @@ check_frame(void)
 
 /* The window system draws by taking the window's buffer to the GPU and copying it back whole
  * (docs/nanox.md), which would undo what the workers wrote meanwhile: after asking it to draw,
- * a request with an answer, by which time it has drawn. */
+ * a pixel is read, which is answered when all of that is done. */
 static void
 settle(void)
 {
-	GR_WINDOW_INFO info;
+	GR_PIXELVAL pixel;
 
-	GrGetWindowInfo(window, &info);
+	GrReadArea(window, 0, 0, 1, 1, &pixel);
 }
 
 /* A frame for the workers: each some rows of the plots, `shift` 256ths of a sample on. */
@@ -683,11 +700,72 @@ sample(unsigned speed, long ms)
 	frames_shaded = 0;
 }
 
+/* Milliseconds: the machine's clock word when it is mapped (a load), else the kernel's. */
+static unsigned
+ms_now(void)
+{
+	struct timeval now;
+
+	if (core_words)
+		return core_words[0x34 / 4];
+	gettimeofday(&now, NULL);
+	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_usec / 1000);
+}
+
+static GR_EVENT taken;
+static int took;
+
+static void
+take(GR_EVENT *event)
+{
+	taken = *event;
+	took = 1;
+}
+
+/* The next event, or a timeout after `ms`. GrGetNextEventTimeout asks the window system anew
+ * at every call, which wakes it sixteen times a second for the frames' sake: here it is
+ * asked once (GrPrepareSelect) and the wait is this program's, on the socket that told. */
+static void
+next_event(GR_EVENT *event, int ms)
+{
+	static int asked, fd = -1;
+	struct timeval limit;
+	fd_set set;
+	int most = 0;
+
+	FD_ZERO(&set);
+	took = 0;
+	GrServiceSelect(&set, take);	/* one that came with an answer to something else */
+	if (took)
+		asked = 0;		/* (and was the answer to the asking, too) */
+	if (!took && !asked) {
+		GrPrepareSelect(&most, &set);
+		for (fd = most; fd > 0 && !FD_ISSET(fd, &set); fd--)
+			continue;
+		asked = 1;
+	}
+	if (!took) {
+		FD_ZERO(&set);
+		FD_SET(fd, &set);
+		limit.tv_sec = ms / 1000, limit.tv_usec = ms % 1000 * 1000;
+		if (select(fd + 1, &set, NULL, NULL, &limit) > 0) {
+			GrServiceSelect(&set, take);
+			asked = 0;
+		}
+	}
+	if (took)
+		*event = taken;
+	else
+		event->type = GR_EVENT_TYPE_TIMEOUT;
+}
+
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_BUTTON_DOWN)
+
 int
 main(void)
 {
 	GR_EVENT event;
-	struct timeval then, now, looked;
+	unsigned then, now, looked;
 	unsigned count_then = instructions();
 
 	void *words = (gpu = open("/dev/gpu", O_RDWR)) < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000);
@@ -713,21 +791,19 @@ main(void)
 		atexit(mcw_close);
 	}
 	sample_cores(1000);
-	gettimeofday(&then, NULL);
-	looked = then;
+	then = looked = ms_now();
 	sample_linux(1000);
 	sample_memory();
 	sample_programs(1000);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Monitor", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ |
-		GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_MOUSE_MOTION);
+	GrSelectEvents(window, EVENTS);
 	list_programs();
 	GrMapWindow(window);
 	for (;;) {
 		long ms;
 
 		/* (with workers, a frame of the plots at every look; this core sleeps between) */
-		GrGetNextEventTimeout(&event, workers ? FRAME_MS : 1000);
+		next_event(&event, workers ? FRAME_MS : 1000);
 		/* Escape and q close it */
 		if (event.type == GR_EVENT_TYPE_CLOSE_REQ || (event.type == GR_EVENT_TYPE_KEY_DOWN &&
 		    (event.keystroke.ch == MWKEY_ESCAPE || event.keystroke.ch == 'q'))) {
@@ -739,7 +815,12 @@ main(void)
 		/* the list: a click or the arrows choose a program, the button or Delete ends it */
 		if (event.type == GR_EVENT_TYPE_BUTTON_DOWN || event.type == GR_EVENT_TYPE_MOUSE_MOTION ||
 		    event.type == GR_EVENT_TYPE_KEY_DOWN) {
-			int changed = event.type == GR_EVENT_TYPE_KEY_DOWN ? ui_list_key(&list, event.keystroke.ch) : ui_list_event(&list, &event);
+			int changed;
+
+			/* the pointer's moves while a button is held (the list's bar), and not otherwise */
+			if (event.type == GR_EVENT_TYPE_BUTTON_DOWN ? !ui_wheel(&event) : event.type == GR_EVENT_TYPE_MOUSE_MOTION && !event.mouse.buttons)
+				ui_moves(window, EVENTS, event.type == GR_EVENT_TYPE_BUTTON_DOWN);
+			changed = event.type == GR_EVENT_TYPE_KEY_DOWN ? ui_list_key(&list, event.keystroke.ch) : ui_list_event(&list, &event);
 
 			if (changed) {
 				chosen_pid = list.selected >= 0 ? programs[listed[list.selected]].pid : 0;
@@ -751,8 +832,8 @@ main(void)
 			    (event.type == GR_EVENT_TYPE_KEY_DOWN && event.keystroke.ch == MWKEY_DELETE))
 				end_program();
 		}
-		gettimeofday(&now, NULL);
-		ms = (now.tv_sec - then.tv_sec) * 1000L + (now.tv_usec - then.tv_usec) / 1000;
+		now = ms_now();
+		ms = (long)(now - then);
 		if (workers && mcw_asked())
 			give_workers();
 		/* the workers read the samples: a new one is taken between two of their frames */
@@ -780,7 +861,7 @@ main(void)
 			then = now;
 		}
 		/* the processes are looked at every third second: each is a file to read */
-		ms = (now.tv_sec - looked.tv_sec) * 1000L + (now.tv_usec - looked.tv_usec) / 1000;
+		ms = (long)(now - looked);
 		if (ms >= 3000) {
 			sample_programs(ms);
 			looked = now;

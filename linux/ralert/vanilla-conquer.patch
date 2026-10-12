@@ -98,10 +98,10 @@ index 690e0d1..5873763 100644
      }
  
 diff --git a/common/mixfile.h b/common/mixfile.h
-index 109c35f..29e2ec5 100644
+index ba5543f..1d29b2d 100644
 --- a/common/mixfile.h
 +++ b/common/mixfile.h
-@@ -620,7 +620,12 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
+@@ -650,7 +650,12 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
          **	stream so that the actual SHA can be compared with the attached one.
          */
          SHAStraw sha;
@@ -115,7 +115,7 @@ index 109c35f..29e2ec5 100644
              sha.Get_From(fstraw);
              straw = &sha;
          }
-@@ -651,7 +656,7 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
+@@ -681,7 +686,7 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
          **	compare it to the generated digest. If they don't match, then
          **	return with the "failure to cache" error code.
          */
@@ -362,11 +362,260 @@ index 60a3e85..1bfb5f2 100644
      door.cpp
      drive.cpp
      drop.cpp
+diff --git a/redalert/abstract.h b/redalert/abstract.h
+index 73cbcc6..2ed7211 100644
+--- a/redalert/abstract.h
++++ b/redalert/abstract.h
+@@ -46,6 +46,15 @@ COORDINATE As_Coord(TARGET target);
+ **	This class is the base class for all game objects that have an existence on the
+ **	battlefield.
+ */
++#ifdef SHADEREMU
++/*
++** An anim's or a bullet's place whose target value was ever made (here, or target.cpp's): only
++** such a one can be among anything's targets, and the others end without the look through
++** every object for it (ObjectClass::Detach_All). By place and for good; no network game.
++*/
++extern unsigned char ShaderEmu_Taken[2][1024];
++#endif
++
+ class AbstractClass
+ {
+ public:
+@@ -111,6 +120,11 @@ public:
+     };
+     TARGET As_Target(void) const
+     {
++#ifdef SHADEREMU
++        if (RTTI == RTTI_ANIM || RTTI == RTTI_BULLET) {
++            ShaderEmu_Taken[RTTI == RTTI_ANIM][ID & 1023] = 1;
++        }
++#endif
+         return (Build_Target(RTTI, ID));
+     };
+     RTTIType What_Am_I(void) const
+diff --git a/redalert/aircraft.cpp b/redalert/aircraft.cpp
+index ca4eb46..48b879d 100644
+--- a/redalert/aircraft.cpp
++++ b/redalert/aircraft.cpp
+@@ -4318,6 +4318,9 @@ bool AircraftClass::Edge_Of_World_AI(void)
+             return (true);
+         }
+     } else {
++#ifdef SHADEREMU
++        ShaderEmu_Scans_Stale |= !IsLocked;
++#endif
+         IsLocked = true;
+     }
+     return (false);
+diff --git a/redalert/anim.cpp b/redalert/anim.cpp
+index 46bc70f..058ee1c 100644
+--- a/redalert/anim.cpp
++++ b/redalert/anim.cpp
+@@ -53,6 +53,21 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++#ifdef SHADEREMU
++/* (where the GPU draws the map a change only tells the scene: no cell is painted over, map.cpp) */
++extern bool ShaderEmu_GL_Live, ShaderEmu_Foot_Overlaps;
++void ShaderEmu_GL_Near(CELL cell);
++#define SHADEREMU_REFRESH(cell, list)                                                                                  \
++    do {                                                                                                               \
++        if (ShaderEmu_GL_Live && !ShaderEmu_Foot_Overlaps) {                                                           \
++            ShaderEmu_GL_Near(cell);                                                                                   \
++        } else {                                                                                                       \
++            Map.Refresh_Cells(cell, list);                                                                             \
++        }                                                                                                              \
++    } while (0)
++#else
++#define SHADEREMU_REFRESH(cell, list) Map.Refresh_Cells(cell, list)
++#endif
+ #include "keyframe.h"
+ #define VIC 1
+ 
+@@ -365,7 +380,7 @@ bool AnimClass::Mark(MarkType mark)
+     assert(IsActive);
+ 
+     if (ObjectClass::Mark(mark)) {
+-        Map.Refresh_Cells(Coord_Cell(Center_Coord()), Overlap_List());
++        SHADEREMU_REFRESH(Coord_Cell(Center_Coord()), Overlap_List());
+         //		ObjectClass::Mark(mark);
+         return (true);
+     }
+@@ -743,10 +758,10 @@ void AnimClass::AI(void)
+     */
+ #ifdef PARTIAL
+     if (!Delay && Class->IsGroundLayer) {
+-        Map.Refresh_Cells(Coord_Cell(Center_Coord()), Overlap_List());
++        SHADEREMU_REFRESH(Coord_Cell(Center_Coord()), Overlap_List());
+     }
+ #else
+-    Map.Refresh_Cells(Coord_Cell(Center_Coord()), Overlap_List());
++    SHADEREMU_REFRESH(Coord_Cell(Center_Coord()), Overlap_List());
+ #endif
+ 
+     /*
+diff --git a/redalert/building.cpp b/redalert/building.cpp
+index 0d42667..d89a229 100644
+--- a/redalert/building.cpp
++++ b/redalert/building.cpp
+@@ -2003,6 +2003,9 @@ int BuildingClass::Exit_Object(TechnoClass* base)
+     **	A unit exiting a building is always considered to be "locked". That means, it
+     **	will be considered as to have legally entered the visible map domain.
+     */
++#ifdef SHADEREMU
++    ShaderEmu_Scans_Stale = true;
++#endif
+     base->IsLocked = true;
+ 
+     /*
+diff --git a/redalert/ccptr.cpp b/redalert/ccptr.cpp
+index 60a2970..c4f292d 100644
+--- a/redalert/ccptr.cpp
++++ b/redalert/ccptr.cpp
+@@ -99,6 +99,9 @@ template class CCPtr<WeaponTypeClass>;
+ template CCPtr<WeaponTypeClass>::CCPtr(WeaponTypeClass*);
+ 
+ template <class T> FixedIHeapClass* CCPtr<T>::Heap = NULL;
++#ifdef SHADEREMU
++template <class T> T** CCPtr<T>::Table = (T**)ShaderEmu_No_Table;
++#endif
+ 
+ /*
+ **	These member functions for the CCPtr class cannot be declared inside the
+diff --git a/redalert/ccptr.h b/redalert/ccptr.h
+index dad370d..202da13 100644
+--- a/redalert/ccptr.h
++++ b/redalert/ccptr.h
+@@ -40,6 +40,12 @@
+ **	it requires no fixups for saving and loading. If pointer fixups are not an issue, than using
+ **	regular pointers would be more efficient.
+ */
++#ifdef SHADEREMU
++class FixedHeapClass;
++void ShaderEmu_Heap_Table(FixedHeapClass* heap, void*** table); /* heap.cpp */
++extern void* ShaderEmu_No_Table[2];
++#endif
++
+ template <class T> class CCPtr
+ {
+ public:
+@@ -48,6 +54,25 @@ public:
+     CCPtr(NoInitClass const&){};
+     CCPtr(T* ptr);
+ 
++#ifdef SHADEREMU
++    /*
++    ** Fifteen hundred of these a frame, eight instructions each through the heap's buffer and
++    ** object size: a table of the heap's objects' places, with nothing at its first entry for
++    ** the ID that is none, is one load (heap.cpp makes it again when the heap's buffer changes).
++    */
++    operator T*(void) const
++    {
++        return (Table[ID + 1]);
++    }
++    T& operator*(void) const
++    {
++        return (*Table[ID + 1]);
++    }
++    T* operator->(void) const
++    {
++        return (Table[ID + 1]);
++    }
++#else
+     operator T*(void) const
+     {
+         if (ID == -1)
+@@ -67,6 +92,7 @@ public:
+         assert(Heap != NULL && ID < Heap->Length());
+         return ((T*)(*Heap)[ID]);
+     }
++#endif
+ 
+     bool Is_Valid(void) const
+     {
+@@ -107,10 +133,16 @@ public:
+     static void Set_Heap(FixedIHeapClass* heap)
+     {
+         Heap = heap;
++#ifdef SHADEREMU
++        ShaderEmu_Heap_Table(heap, (void***)&Table);
++#endif
+     }
+ 
+ private:
+     static FixedIHeapClass* Heap;
++#ifdef SHADEREMU
++    static T** Table;
++#endif
+ 
+     /*
+     **	This is the ID number of the object it refers to. By using an ID number, this class can
 diff --git a/redalert/cell.cpp b/redalert/cell.cpp
-index 3f1c7f1..2c71953 100644
+index 3f1c7f1..003984b 100644
 --- a/redalert/cell.cpp
 +++ b/redalert/cell.cpp
-@@ -375,6 +375,18 @@ void CellClass::Redraw_Objects(bool forced)
+@@ -77,6 +77,58 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++
++#ifdef SHADEREMU
++unsigned ShaderEmu_Occupied_Rows[MAP_CELL_H * OCCUPIED_ROW_WORDS];
++unsigned ShaderEmu_Occupied_Columns[MAP_CELL_W * OCCUPIED_COLUMN_WORDS];
++
++/* Every store to a cell's OccupierPtr is followed by this; a cell outside the map has no bit. */
++static void Occupied_Set(CELL cell, bool occupied)
++{
++    if ((unsigned)cell >= MAP_CELL_TOTAL) {
++        return;
++    }
++    int x = Cell_X(cell), y = Cell_Y(cell);
++    unsigned* row = &ShaderEmu_Occupied_Rows[y * OCCUPIED_ROW_WORDS + (x >> 5)];
++    unsigned* column = &ShaderEmu_Occupied_Columns[x * OCCUPIED_COLUMN_WORDS + (y >> 5)];
++
++    if (occupied) {
++        *row |= 1u << (x & 31);
++        *column |= 1u << (y & 31);
++    } else {
++        *row &= ~(1u << (x & 31));
++        *column &= ~(1u << (y & 31));
++    }
++}
++
++/* After the cells were written as memory: made anew (all empty), or read from a saved game. */
++void ShaderEmu_Occupied_Rebuild(bool all_empty)
++{
++    memset(ShaderEmu_Occupied_Rows, 0, sizeof(ShaderEmu_Occupied_Rows));
++    memset(ShaderEmu_Occupied_Columns, 0, sizeof(ShaderEmu_Occupied_Columns));
++    for (int cell = 0; !all_empty && cell < MAP_CELL_TOTAL; cell++) {
++        if (Map[(CELL)cell].Cell_Occupier() != NULL) {
++            Occupied_Set((CELL)cell, true);
++        }
++    }
++}
++
++/* RALERT_CHECK_OCCUPY=1: how many cells' bits are not what the cell itself says. */
++int ShaderEmu_Occupied_Check(void)
++{
++    int wrong = 0;
++
++    for (int cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        int x = Cell_X((CELL)cell), y = Cell_Y((CELL)cell);
++        unsigned row = ShaderEmu_Occupied_Rows[y * OCCUPIED_ROW_WORDS + (x >> 5)] >> (x & 31) & 1;
++        unsigned column = ShaderEmu_Occupied_Columns[x * OCCUPIED_COLUMN_WORDS + (y >> 5)] >> (y & 31) & 1;
++        unsigned occupied = Map[(CELL)cell].Cell_Occupier() != NULL;
++
++        wrong += row != occupied || column != occupied;
++    }
++    return (wrong);
++}
++#endif
+ #include "vortex.h"
+ 
+ /*
+@@ -375,6 +427,18 @@ void CellClass::Redraw_Objects(bool forced)
  
      CELL cell = Cell_Number();
  
@@ -385,7 +634,44 @@ index 3f1c7f1..2c71953 100644
      if (Map.In_View(cell) && (forced || !Map.Is_Cell_Flagged(cell))) {
  
          /*
-@@ -1097,7 +1109,13 @@ void CellClass::Draw_It(int x, int y, bool objects) const
+@@ -615,6 +679,9 @@ void CellClass::Occupy_Down(ObjectClass* object)
+         object->Next = Cell_Occupier();
+         OccupierPtr = object;
+     }
++#ifdef SHADEREMU
++    Occupied_Set(Cell_Number(), true);
++#endif
+     Map.Radar_Pixel(Cell_Number());
+ 
+     /*
+@@ -693,6 +760,9 @@ void CellClass::Occupy_Up(ObjectClass* object)
+     if (optr == object) {
+         OccupierPtr = object->Next;
+         object->Next = 0;
++#ifdef SHADEREMU
++        Occupied_Set(Cell_Number(), OccupierPtr != NULL);
++#endif
+     } else {
+         bool found = false;
+         while (optr != NULL) {
+@@ -812,6 +882,16 @@ void CellClass::Overlap_Down(ObjectClass* object)
+  * HISTORY:                                                                                    *
+  *   07/18/1994 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/* What Overlap_Down() does for an object that is not kept in the list (map.cpp): the cell reveals it. */
++void CellClass::ShaderEmu_Overlap_Seen(ObjectClass* object)
++{
++    if (IsMapped) {
++        object->Revealed(PlayerPtr);
++    }
++}
++#endif
++
+ void CellClass::Overlap_Up(ObjectClass* object)
+ {
+     assert((unsigned)Cell_Number() <= MAP_CELL_TOTAL);
+@@ -1097,7 +1177,13 @@ void CellClass::Draw_It(int x, int y, bool objects) const
              /*
              **	This is the underlying terrain icon.
              */
@@ -399,7 +685,7 @@ index 3f1c7f1..2c71953 100644
                  LogicPage->Draw_Stamp(ttype->Get_Image_Data(), icon, x, y, NULL, WINDOW_TACTICAL);
                  if (remap) {
                      LogicPage->Remap(x + Map.TacPixelX, y + Map.TacPixelY, ICON_PIXEL_W, ICON_PIXEL_H, remap);
-@@ -2076,12 +2094,58 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
+@@ -2076,12 +2162,58 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
   * HISTORY:                                                                *
   *   04/24/1995 PWG : Created.                                             *
   *=========================================================================*/
@@ -458,7 +744,7 @@ index 3f1c7f1..2c71953 100644
      for (HousesType lp = HOUSE_FIRST; lp < HOUSE_COUNT; lp++) {
          if (lp == house)
              continue;
-@@ -2091,6 +2155,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
+@@ -2091,6 +2223,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
              house_ptr->Adjust_Threat(region, threat_value);
          }
      }
@@ -466,11 +752,44 @@ index 3f1c7f1..2c71953 100644
      if (Debug_Threat) {
          Map.Flag_To_Redraw(true);
      }
+diff --git a/redalert/cell.h b/redalert/cell.h
+index a29eb2b..a3a94a5 100644
+--- a/redalert/cell.h
++++ b/redalert/cell.h
+@@ -316,6 +316,9 @@ public:
+     void Occupy_Down(ObjectClass* object);
+     void Occupy_Up(ObjectClass* object);
+     void Overlap_Down(ObjectClass* object);
++#ifdef SHADEREMU
++    void ShaderEmu_Overlap_Seen(ObjectClass* object);
++#endif
+     void Overlap_Up(ObjectClass* object);
+     bool Flag_Place(HousesType house);
+     bool Flag_Remove(void);
+@@ -395,4 +398,17 @@ private:
+     */
+ };
+ 
++#ifdef SHADEREMU
++/*
++** A bit a cell that has an occupier, by rows and again by columns, for scans that pass
++** empty cells a word at a time (TechnoClass::Greatest_Threat). They are kept in cell.cpp.
++*/
++#define OCCUPIED_ROW_WORDS (MAP_CELL_W / 32)
++#define OCCUPIED_COLUMN_WORDS (MAP_CELL_H / 32)
++extern unsigned ShaderEmu_Occupied_Rows[MAP_CELL_H * OCCUPIED_ROW_WORDS];
++extern unsigned ShaderEmu_Occupied_Columns[MAP_CELL_W * OCCUPIED_COLUMN_WORDS];
++void ShaderEmu_Occupied_Rebuild(bool all_empty);
++int ShaderEmu_Occupied_Check(void);
++#endif
++
+ #endif
+\ No newline at end of file
 diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
-index 4825ba4..f636cc0 100644
+index 4825ba4..78161ee 100644
 --- a/redalert/conquer.cpp
 +++ b/redalert/conquer.cpp
-@@ -125,6 +125,159 @@ bool Map_Edit_Loop(void);
+@@ -125,6 +125,178 @@ bool Map_Edit_Loop(void);
  
  bool UseOldShapeDraw = false;
  
@@ -499,9 +818,27 @@ index 4825ba4..f636cc0 100644
 +        counter += host_cycles() - began_;                                                                             \
 +    }
 +
++/* RALERT_CHECK_OCCUPY=1: every frame, the cells whose occupancy bit (cell.h) is not the cell's own word. */
++static int ShaderEmu_Occupy_Wrong = -1, ShaderEmu_Occupy_Checks;
++
++static void ShaderEmu_Check_Occupy(void)
++{
++    if (ShaderEmu_Occupy_Wrong == -1) {
++        ShaderEmu_Occupy_Wrong = getenv("RALERT_CHECK_OCCUPY") ? 0 : -2;
++    }
++    if (ShaderEmu_Occupy_Wrong >= 0) {
++        ShaderEmu_Occupy_Wrong += ShaderEmu_Occupied_Check();
++        ShaderEmu_Occupy_Checks++;
++    }
++}
++
 +/* A sum of the game's state, to see two runs (or two builds) play the same. */
 +static void ShaderEmu_State(const char* when)
 +{
++    if (ShaderEmu_Occupy_Wrong >= 0) {
++        fprintf(stderr, "ralert: %d cells' occupancy bits were wrong in %d checks of %d cells\n", ShaderEmu_Occupy_Wrong,
++                ShaderEmu_Occupy_Checks, MAP_CELL_TOTAL);
++    }
 +    unsigned hash = 2166136261u, overlays = 0;
 +    int i;
 +#define SHADEREMU_MIX(value) hash = (hash ^ (unsigned)(value)) * 16777619u
@@ -541,6 +878,7 @@ index 4825ba4..f636cc0 100644
 +    unsigned ms = host_ms(), cycles = host_cycles();
 +    int frames = (int)Frame - frame_then;
 +
++    ShaderEmu_Check_Occupy();
 +    if (every < 0) {
 +        const char* text = getenv("RALERT_STATS_MS");
 +        every = text ? atoi(text) : 5000;
@@ -630,7 +968,7 @@ index 4825ba4..f636cc0 100644
  #ifdef CHEAT_KEYS
  void Dump_Heap_Pointers(void);
  void Error_In_Heap_Pointers(char* string);
-@@ -1759,7 +1912,12 @@ bool Main_Loop()
+@@ -1759,7 +1931,12 @@ bool Main_Loop()
      **	If there is no theme playing, but it looks like one is required, then start one
      **	playing. This is usually the symptom of there being no transition score.
      */
@@ -643,7 +981,7 @@ index 4825ba4..f636cc0 100644
          Theme.Queue_Song(THEME_PICK_ANOTHER);
      }
  
-@@ -1790,6 +1948,10 @@ bool Main_Loop()
+@@ -1790,6 +1967,10 @@ bool Main_Loop()
              FrameTimer = Options.GameSpeed + (PlayerPtr->Difficulty == DIFF_EASY ? 1 : 0);
          }
      }
@@ -654,7 +992,7 @@ index 4825ba4..f636cc0 100644
  
      /*
      **	Update the display, unless we're inside a dialog.
-@@ -1801,7 +1963,7 @@ bool Main_Loop()
+@@ -1801,7 +1982,7 @@ bool Main_Loop()
              if (input) {
                  Keyboard_Process(input);
              }
@@ -663,7 +1001,7 @@ index 4825ba4..f636cc0 100644
          }
      }
  
-@@ -1826,7 +1988,13 @@ bool Main_Loop()
+@@ -1826,7 +2007,13 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -678,7 +1016,7 @@ index 4825ba4..f636cc0 100644
      TimeQuake = false;
  #ifdef FIXIT_CSII //	checked - ajw 9/28/98
      if (!PendingTimeQuake) {
-@@ -1893,6 +2061,9 @@ bool Main_Loop()
+@@ -1893,6 +2080,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -688,7 +1026,7 @@ index 4825ba4..f636cc0 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
          return (!GameActive);
-@@ -2442,6 +2613,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2442,6 +2632,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
              AnimControl.ImageBuf = (unsigned char*)SysMemPage.Get_Offset();
          }
  #endif
@@ -714,7 +1052,7 @@ index 4825ba4..f636cc0 100644
  
          if (!Debug_Quiet && Get_Digi_Handle() != -1) {
              AnimControl.OptionFlags |= VQAOPTF_AUDIO;
-@@ -2465,8 +2655,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2465,8 +2674,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
                  // Set_Palette(BlackPalette);
                  SysMemPage.Clear();
                  InMovie = true;
@@ -745,7 +1083,7 @@ index 4825ba4..f636cc0 100644
                  // Resume_Audio_Thread();
                  InMovie = false;
  #ifdef MOVIE640
-@@ -2885,6 +3097,14 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2885,6 +3116,14 @@ void CC_Draw_Shape(void const* shapefile,
      if ((flags & SHAPE_FADING) && (!fadingdata)) {
          fadingdata = DisplayClass::FadingShade;
      }
@@ -760,7 +1098,46 @@ index 4825ba4..f636cc0 100644
  
      static unsigned char* _xbuffer = 0;
  
-@@ -3185,6 +3405,9 @@ extern GraphicBufferClass VQ640;
+@@ -3044,6 +3283,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
+     int width = Get_Build_Frame_Width(shapedata);
+     int height = Get_Build_Frame_Height(shapedata);
+ 
++#ifdef SHADEREMU
++    /*
++    ** The same rectangle, the smallest that has every pixel, from each row's first and last
++    ** pixel found a word at a time: the loops below look at a pixel at a time, four times over,
++    ** and a soldier's frame is mostly nothing (20 thousand instructions the first time each
++    ** frame of each shape is asked for).
++    */
++    {
++        int x0 = width, x1 = -1, y0 = -1, y1 = -1;
++        for (int y = 0; y < height; y++) {
++            const unsigned char* row = (const unsigned char*)shape + y * width;
++            int a = host_first_pixel(row, width);
++            if (a == width) {
++                continue;
++            }
++            int b = host_last_pixel(row, width);
++            y0 = y0 < 0 ? y : y0;
++            y1 = y;
++            x0 = a < x0 ? a : x0;
++            x1 = b > x1 ? b : x1;
++        }
++        if (y0 >= 0) {
++            rect.X = x0;
++            rect.Y = y0;
++            rect.Width = x1 - x0 + 1;
++            rect.Height = y1 - y0 + 1;
++        }
++        rect.X -= width / 2;
++        rect.Y -= height / 2;
++        return (rect);
++    }
++#endif
+     rect.X = 0;
+     rect.Y = 0;
+     int xlimit = width - 1;
+@@ -3185,6 +3456,9 @@ extern GraphicBufferClass VQ640;
  extern bool IsVQ640;
  int VQ_Call_Back(unsigned char*, int)
  {
@@ -770,7 +1147,7 @@ index 4825ba4..f636cc0 100644
  #ifdef REMASTER_BUILD
      return 0;
  #else
-@@ -3194,6 +3417,11 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3194,6 +3468,11 @@ int VQ_Call_Back(unsigned char*, int)
          Keyboard->Clear();
      }
      Check_VQ_Palette_Set();
@@ -782,7 +1159,7 @@ index 4825ba4..f636cc0 100644
  #ifdef MOVIE640
      if (IsVQ640) {
          VQ640.Blit(SeenBuff);
-@@ -3204,6 +3432,9 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3204,6 +3483,9 @@ int VQ_Call_Back(unsigned char*, int)
      Interpolate_2X_Scale(&SysMemPage, &SeenBuff, NULL);
  #endif
      Frame_Limiter();
@@ -793,7 +1170,7 @@ index 4825ba4..f636cc0 100644
      if ((BreakoutAllowed || Debug_Flag) && key == KN_ESC) {
          Keyboard->Clear();
 diff --git a/redalert/display.cpp b/redalert/display.cpp
-index d328d82..652e595 100644
+index d328d82..b5644c4 100644
 --- a/redalert/display.cpp
 +++ b/redalert/display.cpp
 @@ -115,6 +115,12 @@ unsigned char DisplayClass::UnitShadowAir[(USHADOW_COL_COUNT + 1) * 256];
@@ -841,7 +1218,36 @@ index d328d82..652e595 100644
              cellptr->Redraw_Objects();
          }
          return (false);
-@@ -1891,9 +1914,44 @@ void DisplayClass::Draw_It(bool forced)
+@@ -1754,12 +1777,28 @@ bool DisplayClass::Coord_To_Pixel(COORDINATE coord, int& x, int& y) const
+ bool DisplayClass::Coord_To_Pixel(COORDINATE coord, int& x, int& y) const
+ {
+     if (coord) {
++#ifdef SHADEREMU
++        /* (the view's own part of this is the same for every object of a frame: worked out when the view moves) */
++        static COORDINATE view = ~(COORDINATE)0;
++        static int view_x, view_y;
++        if (view != TacticalCoord) {
++            view = TacticalCoord;
++            view_x = Pixel_To_Lepton(Lepton_To_Pixel(Coord_X(TacticalCoord)));
++            view_y = Pixel_To_Lepton(Lepton_To_Pixel(Coord_Y(TacticalCoord)));
++        }
++        int xtac = view_x;
++#else
+         int xtac = Pixel_To_Lepton(Lepton_To_Pixel(Coord_X(TacticalCoord)));
++#endif
+         int xoff = Pixel_To_Lepton(Lepton_To_Pixel(Coord_X(coord)));
+ 
+         xoff = (xoff + EDGE_ZONE) - xtac;
+         if ((unsigned)xoff <= (unsigned)(TacLeptonWidth + EDGE_ZONE * 2)) {
++#ifdef SHADEREMU
++            int ytac = view_y;
++#else
+             int ytac = Pixel_To_Lepton(Lepton_To_Pixel(Coord_Y(TacticalCoord)));
++#endif
+             int yoff = Pixel_To_Lepton(Lepton_To_Pixel(Coord_Y(coord)));
+ 
+             yoff = (yoff + EDGE_ZONE) - ytac;
+@@ -1891,9 +1930,44 @@ void DisplayClass::Draw_It(bool forced)
  
      MapClass::Draw_It(forced);
  
@@ -886,6 +1292,21 @@ index d328d82..652e595 100644
  
          /*
          **	In rubber band mode, mark all cells under the "rubber band" to be
+@@ -4993,6 +5067,14 @@ void DisplayClass::Constrained_Look(COORDINATE center, LEPTON distance, HouseCla
+  *=============================================================================================*/
+ void DisplayClass::Flag_Cell(CELL cell)
+ {
++#ifdef SHADEREMU
++    /* (the GPU's scene keeps a cell's rectangles until it is told: gl.cpp) */
++    extern bool ShaderEmu_GL_Live;
++    void ShaderEmu_GL_Cell(CELL cell);
++    if (ShaderEmu_GL_Live) {
++        ShaderEmu_GL_Cell(cell);
++    }
++#endif
+     Flag_To_Redraw(false);
+     IsToRedraw = true;
+     CellRedraw[cell] = true;
 diff --git a/redalert/display.h b/redalert/display.h
 index c8ed7a3..1b668e5 100644
 --- a/redalert/display.h
@@ -900,6 +1321,86 @@ index c8ed7a3..1b668e5 100644
  
      /*
      **	Added functionality.
+diff --git a/redalert/findpath.cpp b/redalert/findpath.cpp
+index 7692f1c..d719e66 100644
+--- a/redalert/findpath.cpp
++++ b/redalert/findpath.cpp
+@@ -1256,12 +1256,75 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
+     return (-1);
+ }
+ 
++#ifdef SHADEREMU
++/*
++** What Can_Enter_Cell said of a cell, kept while one object's searches go on with nothing
++** changed between them (FootClass::Basic_Path: up to four, over the same cells; no version of
++** it looks at the facing). RALERT_CHECK_ENTER=1 asks again every time and compares.
++*/
++static unsigned char ShaderEmu_Enter[MAP_CELL_TOTAL];
++static unsigned short ShaderEmu_Enter_At[MAP_CELL_TOTAL];
++static unsigned short ShaderEmu_Enter_Now; /* 0: nothing is kept */
++static unsigned ShaderEmu_Enter_Kept, ShaderEmu_Enter_Wrong;
++
++static void ShaderEmu_Enter_Report(void)
++{
++    fprintf(stderr, "ralert: %u answers about cells kept within a search, %u of them wrong\n", ShaderEmu_Enter_Kept,
++            ShaderEmu_Enter_Wrong);
++}
++
++void ShaderEmu_Enter_Keep(bool keep)
++{
++    static unsigned short turn;
++    static int check = -1;
++
++    if (check < 0) {
++        check = getenv("RALERT_CHECK_ENTER") != NULL;
++        if (check) {
++            atexit(ShaderEmu_Enter_Report);
++        }
++    }
++    if (keep && ++turn == 0) {
++        memset(ShaderEmu_Enter_At, 0, sizeof(ShaderEmu_Enter_At));
++        turn = 1;
++    }
++    ShaderEmu_Enter_Now = keep ? turn : 0;
++}
++#endif
++
+ int FootClass::Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold)
+ {
++#ifdef SHADEREMU
++    MoveType move;
++    if (ShaderEmu_Enter_Now && (unsigned)cell < MAP_CELL_TOTAL) {
++        if (ShaderEmu_Enter_At[cell] == ShaderEmu_Enter_Now) {
++            static int check = -1;
++            if (check < 0) {
++                check = getenv("RALERT_CHECK_ENTER") && atoi(getenv("RALERT_CHECK_ENTER"));
++            }
++            move = (MoveType)ShaderEmu_Enter[cell];
++            ShaderEmu_Enter_Kept++;
++            ShaderEmu_Enter_Wrong += check && move != Can_Enter_Cell(cell, face);
++        } else {
++            move = Can_Enter_Cell(cell, face);
++            ShaderEmu_Enter[cell] = (unsigned char)move;
++            ShaderEmu_Enter_At[cell] = ShaderEmu_Enter_Now;
++        }
++    } else {
++        move = Can_Enter_Cell(cell, face);
++    }
++#else
+     MoveType move = Can_Enter_Cell(cell, face);
++#endif
+ 
++#ifdef SHADEREMU
++    /* (a cell that is free passes any threshold: only a cloaked blocker's distance is asked) */
++    if (move == MOVE_CLOAK && Distance(Cell_Coord(cell)) > 0x0100)
++        threshhold = MOVE_MOVING_BLOCK;
++#else
+     if (move < MOVE_MOVING_BLOCK && Distance(Cell_Coord(cell)) > 0x0100)
+         threshhold = MOVE_MOVING_BLOCK;
++#endif
+ 
+     if (move > threshhold)
+         return (0);
 diff --git a/redalert/flasher.cpp b/redalert/flasher.cpp
 index dfc44b4..815e8e0 100644
 --- a/redalert/flasher.cpp
@@ -934,6 +1435,177 @@ index dfc44b4..815e8e0 100644
  
      if (FlashCount) {
          FlashCount--;
+diff --git a/redalert/foot.cpp b/redalert/foot.cpp
+index f31f0d8..f066a40 100644
+--- a/redalert/foot.cpp
++++ b/redalert/foot.cpp
+@@ -280,6 +280,21 @@ bool FootClass::Mark(MarkType mark)
+             Map.Place_Down(cell, this);
+             break;
+ 
++#ifdef SHADEREMU
++        /* (the GPU's scene is told it changed here: no cell is painted over, and none need be found) */
++        case MARK_CHANGE_REDRAW:
++        default: {
++            extern bool ShaderEmu_GL_Live, ShaderEmu_Foot_Overlaps;
++            void ShaderEmu_GL_Near(CELL cell);
++            if (ShaderEmu_GL_Live && !ShaderEmu_Foot_Overlaps) {
++                ShaderEmu_GL_Near(cell);
++            } else {
++                Map.Refresh_Cells(cell, Overlap_List(mark == MARK_CHANGE_REDRAW));
++                Map.Refresh_Cells(cell, Occupy_List());
++            }
++            break;
++        }
++#else
+         case MARK_CHANGE_REDRAW:
+             Map.Refresh_Cells(cell, Overlap_List(true));
+             Map.Refresh_Cells(cell, Occupy_List());
+@@ -289,6 +304,7 @@ bool FootClass::Mark(MarkType mark)
+             Map.Refresh_Cells(cell, Overlap_List());
+             Map.Refresh_Cells(cell, Occupy_List());
+             break;
++#endif
+         }
+         return (true);
+     }
+@@ -311,6 +327,10 @@ bool FootClass::Mark(MarkType mark)
+  * HISTORY:                                                                                    *
+  *   10/17/1994 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++void ShaderEmu_Enter_Keep(bool keep);
++#endif
++
+ bool FootClass::Basic_Path(void)
+ {
+     assert(IsActive);
+@@ -364,6 +384,9 @@ bool FootClass::Basic_Path(void)
+ 
+         if (!skip_path) {
+             Mark(MARK_UP);
++#ifdef SHADEREMU
++            ShaderEmu_Enter_Keep(true); /* (findpath.cpp: nothing changes until the Mark below) */
++#endif
+             Path[0] = FACING_NONE; // Probably not necessary, but...
+ 
+             /*
+@@ -463,6 +486,9 @@ bool FootClass::Basic_Path(void)
+                 memcpy(&Path[0], &workpath1[0], min(path->Length, (int)sizeof(Path)));
+             }
+ 
++#ifdef SHADEREMU
++            ShaderEmu_Enter_Keep(false);
++#endif
+             Mark(MARK_DOWN);
+         }
+ 
+diff --git a/redalert/gscreen.cpp b/redalert/gscreen.cpp
+index 6940c55..46a7091 100644
+--- a/redalert/gscreen.cpp
++++ b/redalert/gscreen.cpp
+@@ -388,7 +388,14 @@ void GScreenClass::Render(void)
+         if (Session.Messages.Num_Messages() > 0) {
+             Session.Messages.Set_Width(Lepton_To_Cell(Map.TacLeptonWidth) * ICON_PIXEL_W);
+         }
+-        Session.Messages.Draw();
++#ifdef SHADEREMU
++        /* (over the GPU's map a message stays as it was printed: gl.cpp) */
++        extern bool ShaderEmu_GL_Live;
++        bool ShaderEmu_GL_Messages(unsigned signature, int count);
++        if (!ShaderEmu_GL_Live
++            || ShaderEmu_GL_Messages(Session.Messages.ShaderEmu_Signature(), Session.Messages.Num_Messages()))
++#endif
++            Session.Messages.Draw();
+ 
+ #ifndef REMASTER_BUILD
+         Blit_Display();
+diff --git a/redalert/heap.cpp b/redalert/heap.cpp
+index ccf6f31..a764eb8 100644
+--- a/redalert/heap.cpp
++++ b/redalert/heap.cpp
+@@ -155,6 +155,65 @@ FixedHeapClass::~FixedHeapClass(void)
+  * HISTORY:                                                                                    *
+  *   02/21/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/*
++** The tables CCPtr looks its objects up in (ccptr.h): one for each heap that has one, made
++** again whenever the heap's buffer is another. Entry 0 is for the ID that is none.
++*/
++void* ShaderEmu_No_Table[2];
++static struct
++{
++    FixedHeapClass* heap;
++    void*** table;
++} ShaderEmu_Tables[48];
++static int ShaderEmu_Table_Count;
++
++static void ShaderEmu_Table_Fill(FixedHeapClass* heap, void*** table)
++{
++    int count = heap->Length();
++    void** made = (void**)malloc((count + 2) * sizeof(void*));
++
++    if (!made) {
++        return;
++    }
++    made[0] = NULL;
++    for (int i = 0; i <= count; i++) {
++        made[i + 1] = (*heap)[i];
++    }
++    if (*table != ShaderEmu_No_Table) {
++        free(*table);
++    }
++    *table = made;
++}
++
++void ShaderEmu_Heap_Table(FixedHeapClass* heap, void*** table)
++{
++    int i = 0;
++
++    while (i < ShaderEmu_Table_Count && ShaderEmu_Tables[i].table != table) {
++        i++;
++    }
++    if (i == 48) {
++        abort();
++    }
++    ShaderEmu_Tables[i].heap = heap, ShaderEmu_Tables[i].table = table;
++    ShaderEmu_Table_Count += i == ShaderEmu_Table_Count;
++    ShaderEmu_Table_Fill(heap, table);
++}
++
++static void ShaderEmu_Heap_Moved(FixedHeapClass* heap)
++{
++    for (int i = 0; i < ShaderEmu_Table_Count; i++) {
++        if (ShaderEmu_Tables[i].heap == heap) {
++            ShaderEmu_Table_Fill(heap, ShaderEmu_Tables[i].table);
++        }
++    }
++}
++#define SHADEREMU_HEAP_MOVED(heap) ShaderEmu_Heap_Moved(heap)
++#else
++#define SHADEREMU_HEAP_MOVED(heap)
++#endif
++
+ int FixedHeapClass::Set_Heap(int count, void* buffer)
+ {
+     /*
+@@ -191,6 +250,7 @@ int FixedHeapClass::Set_Heap(int count, void* buffer)
+         }
+         Buffer = buffer;
+         TotalCount = count;
++        SHADEREMU_HEAP_MOVED(this);
+         return (true);
+     }
+     return (false);
+@@ -312,6 +372,7 @@ void FixedHeapClass::Clear(void)
+     ActiveCount = 0;
+     TotalCount = 0;
+     FreeFlag.Clear();
++    SHADEREMU_HEAP_MOVED(this);
+ }
+ 
+ /***********************************************************************************************
 diff --git a/redalert/help.cpp b/redalert/help.cpp
 index 42a2df9..9a85eb7 100644
 --- a/redalert/help.cpp
@@ -951,7 +1623,7 @@ index 42a2df9..9a85eb7 100644
          if (LogicPage->Lock()) {
              Plain_Text_Print(Text, DrawX, DrawY, Color, BLACK, TPF_MAP | TPF_NOSHADOW);
 diff --git a/redalert/house.cpp b/redalert/house.cpp
-index f1fd2c8..07a3a87 100644
+index f1fd2c8..7a8d5d9 100644
 --- a/redalert/house.cpp
 +++ b/redalert/house.cpp
 @@ -228,6 +228,35 @@ fixed HouseClass::Tiberium_Fraction(void) const
@@ -990,7 +1662,97 @@ index f1fd2c8..07a3a87 100644
      if (house != HOUSE_NONE) {
          for (int index = 0; index < Houses.Count(); index++) {
              if (Houses.Ptr(index)->Class->House == house) {
-@@ -6059,6 +6088,104 @@ int HouseClass::AI_Building(void)
+@@ -972,9 +1001,89 @@ extern bool MPSuperWeaponDisable;
+  *=============================================================================================*/
+ extern void Recalculate_Placement_Distances();
+ 
++#ifdef SHADEREMU
++/*
++** Whether any team type is this house's: found once a scenario (they do not change), and
++** looked at again when their number does.
++*/
++static bool ShaderEmu_Has_Team_Types(HousesType house)
++{
++    static bool has[HOUSE_COUNT];
++    static char scenario[sizeof(Scen.ScenarioName)];
++    static int types = -1;
++    static unsigned last_frame = ~0u;
++
++    if ((unsigned)Frame != last_frame || types != TeamTypes.Count()) {
++        if (types != TeamTypes.Count() || (unsigned)Frame < last_frame
++            || strncmp(scenario, Scen.ScenarioName, sizeof(scenario) - 1)) {
++            strncpy(scenario, Scen.ScenarioName, sizeof(scenario) - 1);
++            types = TeamTypes.Count();
++            memset(has, 0, sizeof(has));
++            for (int index = 0; index < TeamTypes.Count(); index++) {
++                TeamTypeClass const* team = TeamTypes.Ptr(index);
++                if (team != NULL && (unsigned)team->House < HOUSE_COUNT) {
++                    has[team->House] = true;
++                }
++            }
++        }
++        last_frame = Frame;
++    }
++    return has[house];
++}
++
++static bool ShaderEmu_Teams_Idle(HousesType house);
++
++/*
++** A house that takes no part: not the player's, with no object of any kind, no trigger, no
++** special weapon and nothing asked of it, and no team type either, or none it builds ahead
++** for and no team in play while the timer that makes its teams still runs. For such a house
++** AI() below comes to its timers and nothing else: every other part of it looks for
++** objects, teams or triggers of the house and finds none.
++*/
++bool HouseClass::ShaderEmu_Takes_No_Part(void)
++{
++    if (this == PlayerPtr || Session.Type != GAME_NORMAL || IsBaseBuilding || IsAlerted || IsToWin || IsToLose || IsToDie
++        || IQ >= Rule.IQProduction || FlagHome != 0 || Target_Legal(FlagLocation) || IsGPSActive || State == STATE_ENDGAME
++        || (CurBuildings | CurUnits | CurInfantry | CurVessels | CurAircraft) != 0
++        || (BScan | UScan | IScan | AScan | VScan) != 0 || BuildStructure != STRUCT_NONE || Base.House == Class->House
++        || HouseTriggers[Class->House].Count() != 0
++        || (ShaderEmu_Has_Team_Types(Class->House) && (!TeamTime || !ShaderEmu_Teams_Idle(Class->House)))) {
++        return false;
++    }
++    for (SpecialWeaponType special = SPC_FIRST; special < SPC_COUNT; special++) {
++        if (SuperWeapon[special].Is_Present()) {
++            return false;
++        }
++    }
++    return true;
++}
++#endif
++
+ void HouseClass::AI(void)
+ {
+     assert(Houses.ID(this) == ID);
++#ifdef SHADEREMU
++    if (ShaderEmu_Takes_No_Part()) {
++        /* (what is left of all that follows, in its order) */
++        Power = max(Power, 0);
++        Drain = max(Drain, 0);
++        if (!TeamTime) {
++            TeamTime = Rule.TeamDelay * TICKS_PER_MINUTE;
++        }
++        if (DamageTime == 0) {
++            DamageTime = TICKS_PER_MINUTE * Rule.DamageDelay;
++        }
++        if (TriggerTime == 0 || IsBuiltSomething) {
++            TriggerTime = TICKS_PER_MINUTE / 10;
++            IsBuiltSomething = false;
++        }
++        VisibleCredits.AI(false, this, true);
++        if (DidRepair && RepairTimer == 0) {
++            DidRepair = false;
++        }
++        return;
++    }
++#endif
+ #ifdef REMASTER_BUILD
+     // Set PlayerPtr to be this house. ST - 8/7/2019 10:12AM
+     Logic_Switch_Player_Context(this);
+@@ -6059,6 +6168,112 @@ int HouseClass::AI_Building(void)
   * HISTORY:                                                                                    *
   *   09/29/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
@@ -1092,10 +1854,18 @@ index f1fd2c8..07a3a87 100644
 +}
 +#endif
 +
++/* Whether a house's team types ask nothing of its production now: none built ahead, no team in play. */
++static bool ShaderEmu_Teams_Idle(HousesType house)
++{
++    const ShaderEmu_Prebuilt& ahead = ShaderEmu_Prebuilt_Of(house);
++
++    return !ShaderEmu_Teams_Want(house, ahead.AnyUnit, false) && !ahead.AnyVessel[0] && !ahead.AnyInfantry[0];
++}
++
  int HouseClass::AI_Unit(void)
  {
      assert(Houses.ID(this) == ID);
-@@ -6080,7 +6207,12 @@ int HouseClass::AI_Unit(void)
+@@ -6080,7 +6295,12 @@ int HouseClass::AI_Unit(void)
          }
      }
  
@@ -1108,7 +1878,7 @@ index f1fd2c8..07a3a87 100644
  
          int counter[UNIT_COUNT];
          memset(counter, 0x00, sizeof(counter));
-@@ -6094,9 +6226,9 @@ int HouseClass::AI_Unit(void)
+@@ -6094,9 +6314,9 @@ int HouseClass::AI_Unit(void)
              TeamClass* tptr = Teams.Ptr(index);
              if (tptr != NULL) {
                  TeamTypeClass const* team = tptr->Class;
@@ -1121,7 +1891,7 @@ index f1fd2c8..07a3a87 100644
                      for (int subindex = 0; subindex < team->ClassCount; subindex++) {
                          TechnoTypeClass const* memtype = team->Members[subindex].Class;
                          if (memtype->What_Am_I() == RTTI_UNITTYPE) {
-@@ -6112,6 +6244,16 @@ int HouseClass::AI_Unit(void)
+@@ -6112,6 +6332,16 @@ int HouseClass::AI_Unit(void)
          **	to fill one team of this type regardless of whether there is a team active
          **	of that type.
          */
@@ -1138,7 +1908,7 @@ index f1fd2c8..07a3a87 100644
          for (index = 0; index < TeamTypes.Count(); index++) {
              TeamTypeClass const* team = TeamTypes.Ptr(index);
              if (team != NULL && team->House == Class->House && team->IsPrebuilt && (!team->IsAutocreate || IsAlerted)) {
-@@ -6125,6 +6267,7 @@ int HouseClass::AI_Unit(void)
+@@ -6125,6 +6355,7 @@ int HouseClass::AI_Unit(void)
                  }
              }
          }
@@ -1146,7 +1916,7 @@ index f1fd2c8..07a3a87 100644
  
          /*
          **	Reduce the theoretical maximum by the actual number of objects currently
-@@ -6132,7 +6275,7 @@ int HouseClass::AI_Unit(void)
+@@ -6132,7 +6363,7 @@ int HouseClass::AI_Unit(void)
          */
          for (int uindex = 0; uindex < Units.Count(); uindex++) {
              UnitClass* unit = Units.Ptr(uindex);
@@ -1155,7 +1925,7 @@ index f1fd2c8..07a3a87 100644
                  counter[unit->Class->Type]--;
              }
          }
-@@ -6207,7 +6350,12 @@ int HouseClass::AI_Vessel(void)
+@@ -6207,7 +6438,12 @@ int HouseClass::AI_Vessel(void)
          return (TICKS_PER_SECOND);
      }
  
@@ -1168,7 +1938,7 @@ index f1fd2c8..07a3a87 100644
  
          int counter[VESSEL_COUNT];
          if (Session.Type == GAME_NORMAL) {
-@@ -6233,9 +6381,9 @@ int HouseClass::AI_Vessel(void)
+@@ -6233,9 +6469,9 @@ int HouseClass::AI_Vessel(void)
              if (tptr) {
                  TeamTypeClass const* team = tptr->Class;
  
@@ -1181,7 +1951,7 @@ index f1fd2c8..07a3a87 100644
                      for (int subindex = 0; subindex < team->ClassCount; subindex++) {
                          if (team->Members[subindex].Class->What_Am_I() == RTTI_VESSELTYPE) {
                              counter[((VesselTypeClass const*)(team->Members[subindex].Class))->Type] = 1;
-@@ -6250,6 +6398,16 @@ int HouseClass::AI_Vessel(void)
+@@ -6250,6 +6486,16 @@ int HouseClass::AI_Vessel(void)
          **	to fill one team of this type regardless of whether there is a team active
          **	of that type.
          */
@@ -1198,7 +1968,7 @@ index f1fd2c8..07a3a87 100644
          for (index = 0; index < TeamTypes.Count(); index++) {
              TeamTypeClass const* team = TeamTypes.Ptr(index);
              if (team) {
-@@ -6263,6 +6421,7 @@ int HouseClass::AI_Vessel(void)
+@@ -6263,6 +6509,7 @@ int HouseClass::AI_Vessel(void)
                  }
              }
          }
@@ -1206,7 +1976,7 @@ index f1fd2c8..07a3a87 100644
  
          /*
          **	Reduce the theoretical maximum by the actual number of objects currently
-@@ -6270,7 +6429,7 @@ int HouseClass::AI_Vessel(void)
+@@ -6270,7 +6517,7 @@ int HouseClass::AI_Vessel(void)
          */
          for (int vindex = 0; vindex < Vessels.Count(); vindex++) {
              VesselClass* unit = Vessels.Ptr(vindex);
@@ -1215,7 +1985,7 @@ index f1fd2c8..07a3a87 100644
                  counter[unit->Class->Type]--;
              }
          }
-@@ -6332,7 +6491,12 @@ int HouseClass::AI_Infantry(void)
+@@ -6332,7 +6579,12 @@ int HouseClass::AI_Infantry(void)
      if (CurInfantry >= Control.MaxInfantry)
          return (TICKS_PER_SECOND);
  
@@ -1228,7 +1998,7 @@ index f1fd2c8..07a3a87 100644
          TechnoTypeClass const* techno = 0;
          int counter[INFANTRY_COUNT];
          memset(counter, 0x00, sizeof(counter));
-@@ -6347,9 +6511,9 @@ int HouseClass::AI_Infantry(void)
+@@ -6347,9 +6599,9 @@ int HouseClass::AI_Infantry(void)
              if (tptr != NULL) {
                  TeamTypeClass const* team = tptr->Class;
  
@@ -1241,7 +2011,7 @@ index f1fd2c8..07a3a87 100644
                      for (int subindex = 0; subindex < team->ClassCount; subindex++) {
                          if (team->Members[subindex].Class->What_Am_I() == RTTI_INFANTRYTYPE) {
                              counter[((InfantryTypeClass const*)(team->Members[subindex].Class))->Type] +=
-@@ -6365,6 +6529,17 @@ int HouseClass::AI_Infantry(void)
+@@ -6365,6 +6617,17 @@ int HouseClass::AI_Infantry(void)
          **	to fill one team of this type regardless of whether there is a team active
          **	of that type.
          */
@@ -1259,7 +2029,7 @@ index f1fd2c8..07a3a87 100644
          for (index = 0; index < TeamTypes.Count(); index++) {
              TeamTypeClass const* team = TeamTypes.Ptr(index);
              if (team != NULL) {
-@@ -6380,6 +6555,7 @@ int HouseClass::AI_Infantry(void)
+@@ -6380,6 +6643,7 @@ int HouseClass::AI_Infantry(void)
                  }
              }
          }
@@ -1267,7 +2037,7 @@ index f1fd2c8..07a3a87 100644
  
          /*
          **	Reduce the theoretical maximum by the actual number of objects currently
-@@ -6387,7 +6563,7 @@ int HouseClass::AI_Infantry(void)
+@@ -6387,7 +6651,7 @@ int HouseClass::AI_Infantry(void)
          */
          for (int uindex = 0; uindex < Infantry.Count(); uindex++) {
              InfantryClass* infantry = Infantry.Ptr(uindex);
@@ -1276,6 +2046,127 @@ index f1fd2c8..07a3a87 100644
                  counter[infantry->Class->Type]--;
              }
          }
+@@ -6649,6 +6913,9 @@ void HouseClass::Production_Begun(TechnoClass const* product)
+ void HouseClass::Tracking_Remove(TechnoClass const* techno)
+ {
+     assert(Houses.ID(this) == ID);
++#ifdef SHADEREMU
++    ShaderEmu_Scans_Stale = true;
++#endif
+ 
+     int type;
+ 
+@@ -6719,6 +6986,9 @@ void HouseClass::Tracking_Remove(TechnoClass const* techno)
+ void HouseClass::Tracking_Add(TechnoClass const* techno)
+ {
+     assert(Houses.ID(this) == ID);
++#ifdef SHADEREMU
++    ShaderEmu_Scans_Stale = true;
++#endif
+ 
+     StructType building;
+     AircraftType aircraft;
+@@ -7011,8 +7281,48 @@ ZoneType HouseClass::Which_Zone(CELL cell) const
+  * HISTORY:                                                                                    *
+  *   10/02/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/*
++** What Recalc_Attributes() below reads has changed: an object made or gone, one into or out of
++** limbo, locked, discovered, captured, or the bits written elsewhere. It is said where that
++** happens, and while nothing was said the bits made last frame are this frame's: going through
++** every object for them was 4 thousand instructions a frame. RALERT_CHECK_SCANS=1 makes them
++** every frame all the same and says when the two differ.
++*/
++bool ShaderEmu_Scans_Stale = true;
++
++void HouseClass::ShaderEmu_Scans(unsigned* to) const
++{
++    unsigned all[15] = {BScan, ActiveBScan, IScan, ActiveIScan, UScan, ActiveUScan, AScan, ActiveAScan,
++                        VScan, ActiveVScan, OldBScan, OldUScan, OldIScan, OldAScan, OldVScan};
++    memcpy(to, all, sizeof(all));
++}
++#endif
++
+ void HouseClass::Recalc_Attributes(void)
+ {
++#ifdef SHADEREMU
++    static unsigned last_frame = ~0u, kept, wrong;
++    static int counts[5], check = -1;
++    static unsigned before[HOUSE_COUNT][15];
++    int now[5] = {Units.Count(), Infantry.Count(), Aircraft.Count(), Buildings.Count(), Vessels.Count()};
++    bool same = !ShaderEmu_Scans_Stale && (unsigned)Frame == last_frame + 1 && !memcmp(now, counts, sizeof(now));
++
++    last_frame = Frame;
++    memcpy(counts, now, sizeof(counts));
++    ShaderEmu_Scans_Stale = false;
++    if (check < 0) {
++        check = getenv("RALERT_CHECK_SCANS") != NULL;
++    }
++    if (same && !check) {
++        return;
++    }
++    if (check) {
++        for (int h = 0; h < Houses.Count() && h < HOUSE_COUNT; h++) {
++            Houses.Ptr(h)->ShaderEmu_Scans(before[h]);
++        }
++    }
++#endif
+     /*
+     **	Clear out all tracking values that will be filled in by this
+     **	routine. This allows the filling in process to not worry about
+@@ -7095,6 +7405,25 @@ void HouseClass::Recalc_Attributes(void)
+             }
+         }
+     }
++#ifdef SHADEREMU
++    if (check) {
++        if (same) {
++            kept++;
++            for (int h = 0; h < Houses.Count() && h < HOUSE_COUNT; h++) {
++                unsigned after[15];
++                Houses.Ptr(h)->ShaderEmu_Scans(after);
++                if (memcmp(after, before[h], sizeof(after))) {
++                    wrong++;
++                    fprintf(stderr, "ralert: frame %d: house %d's scan bits were kept and are others\n", (int)Frame, h);
++                    break;
++                }
++            }
++        }
++        if (((unsigned)Frame & 255) == 0 || Frame == 300) {
++            fprintf(stderr, "ralert: scan bits kept in %u frames of %d, %u of them wrongly\n", kept, (int)Frame, wrong);
++        }
++    }
++#endif
+ }
+ 
+ /***********************************************************************************************
+diff --git a/redalert/house.h b/redalert/house.h
+index 708451b..d30fb8d 100644
+--- a/redalert/house.h
++++ b/redalert/house.h
+@@ -113,6 +113,10 @@ public:
+ **	Player control structure. Each player (computer or human) has one of
+ **	these structures associated. These are located in a global array.
+ */
++#ifdef SHADEREMU
++extern bool ShaderEmu_Scans_Stale; /* what HouseClass::Recalc_Attributes reads has changed (house.cpp) */
++#endif
++
+ class HouseClass
+ {
+ public:
+@@ -750,6 +754,10 @@ public:
+     void Debug_Dump(MonoClass* mono) const;
+ #endif
+     void AI(void);
++#ifdef SHADEREMU
++    bool ShaderEmu_Takes_No_Part(void);
++    void ShaderEmu_Scans(unsigned* to) const;
++#endif
+     bool Can_Build(RTTIType rtti, int type, HousesType house) const;
+ 
+     // Factory controls.
 diff --git a/redalert/init.cpp b/redalert/init.cpp
 index b6b00d7..d28dac0 100644
 --- a/redalert/init.cpp
@@ -1331,12 +2222,49 @@ index b6b00d7..d28dac0 100644
          if (CustomSeed != 0) {
              Seed = CustomSeed;
          } else {
+diff --git a/redalert/iomap.cpp b/redalert/iomap.cpp
+index 8216bb8..73395ec 100644
+--- a/redalert/iomap.cpp
++++ b/redalert/iomap.cpp
+@@ -509,4 +509,7 @@ void MapClass::Decode_Pointers(void)
+         cellptr->Decode_Pointers();
+         cellptr++;
+     }
++#ifdef SHADEREMU
++    ShaderEmu_Occupied_Rebuild(false);
++#endif
+ }
 diff --git a/redalert/layer.cpp b/redalert/layer.cpp
-index db1ccf6..707c6b7 100644
+index db1ccf6..cf44e40 100644
 --- a/redalert/layer.cpp
 +++ b/redalert/layer.cpp
-@@ -86,6 +86,31 @@ bool LayerClass::Submit(ObjectClass const* object, bool sort)
+@@ -84,8 +84,56 @@ bool LayerClass::Submit(ObjectClass const* object, bool sort)
+  *   10/17/1994 JLB : Created.                                                                 *
+  *   03/10/1995 JLB : Uses comparison operator.                                                *
   *=============================================================================================*/
++#ifdef SHADEREMU
++/*
++** Where an object sorts. A building's and a tree's place is their coordinate and their type's
++** size, worked out again only when the coordinate is another: they are most of the layer.
++*/
++static inline COORDINATE ShaderEmu_Sort_Key(ObjectClass* object)
++{
++    if (object->ShaderEmu_SortState == 1 && object->ShaderEmu_SortFor == object->Coord) {
++        return object->ShaderEmu_SortKey;
++    }
++    COORDINATE key = object->Sort_Y();
++    if (object->ShaderEmu_SortState == 0) {
++        RTTIType kind = object->What_Am_I();
++        object->ShaderEmu_SortState = kind == RTTI_BUILDING || kind == RTTI_TERRAIN ? 1 : 2;
++    }
++    if (object->ShaderEmu_SortState == 1) {
++        object->ShaderEmu_SortFor = object->Coord;
++        object->ShaderEmu_SortKey = key;
++    }
++    return key;
++}
++#endif
++
  void LayerClass::Sort(void)
  {
 +#ifdef SHADEREMU
@@ -1350,10 +2278,10 @@ index db1ccf6..707c6b7 100644
 +        return;
 +    }
 +    ObjectClass* left = (*this)[0];
-+    COORDINATE left_y = left->Sort_Y();
++    COORDINATE left_y = ShaderEmu_Sort_Key(left);
 +    for (int index = 0; index < count - 1; index++) {
 +        ObjectClass* right = (*this)[index + 1];
-+        COORDINATE right_y = right->Sort_Y();
++        COORDINATE right_y = ShaderEmu_Sort_Key(right);
 +        if (right_y < left_y) {
 +            (*this)[index + 1] = left; // which is the next pair's left, as it was
 +            (*this)[index] = right;
@@ -1367,20 +2295,70 @@ index db1ccf6..707c6b7 100644
      for (int index = 0; index < Count() - 1; index++) {
          if (*(*this)[index + 1] < *(*this)[index]) {
              ObjectClass* temp;
+@@ -138,11 +186,21 @@ int LayerClass::Sorted_Add(ObjectClass const* const object)
+     **	There is room for the new object now. Add it to the right sorted position.
+     */
+     int index;
++#ifdef SHADEREMU
++    /* (the new object asked for its place once, not at every comparison, and the others as Sort() asks them) */
++    COORDINATE place = object->Sort_Y();
++    for (index = 0; index < ActiveCount; index++) {
++        if (ShaderEmu_Sort_Key((*this)[index]) > place) {
++            break;
++        }
++    }
++#else
+     for (index = 0; index < ActiveCount; index++) {
+         if ((*(*this)[index]) > (*object)) {
+             break;
+         }
+     }
++#endif
+ 
+     /*
+     **	Make room if the insertion spot is not at the end of the vector.
 diff --git a/redalert/map.cpp b/redalert/map.cpp
-index 471bef5..5705be4 100644
+index 471bef5..2a051f1 100644
 --- a/redalert/map.cpp
 +++ b/redalert/map.cpp
-@@ -60,6 +60,18 @@
+@@ -60,6 +60,46 @@
   * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
  
  #include "function.h"
 +#ifdef SHADEREMU
-+extern bool ShaderEmu_GL_Live;
++extern bool ShaderEmu_GL_Live, ShaderEmu_GL_Stale;
 +void ShaderEmu_GL_Near(CELL cell);
++/*
++** Which objects overlap a cell is asked by the game's own drawing of the map, and of buildings
++** and trees by the base's plan and the radar. Where the GPU draws the map (gl.cpp) what moves
++** stays out of those lists: keeping them was a quarter of a battle's logic. A cell still
++** reveals what comes to overlap it, which is the one thing the lists' keeping did besides.
++*/
++bool ShaderEmu_Foot_Overlaps = true;
++#define SHADEREMU_NO_OVERLAP(object)                                                                                   \
++    (!ShaderEmu_Foot_Overlaps && (object)->What_Am_I() != RTTI_BUILDING && (object)->What_Am_I() != RTTI_TERRAIN)
++#define SHADEREMU_KNOWN(object) (!(object)->Is_Techno() || ((TechnoClass*)(object))->IsDiscoveredByPlayer)
++
++void ShaderEmu_Foot_Overlaps_Off(void)
++{
++    if (!ShaderEmu_Foot_Overlaps) {
++        return;
++    }
++    ShaderEmu_Foot_Overlaps = false;
++    for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        CellClass& c = Map[cell];
++        for (int index = 0; index < ARRAY_SIZE(c.Overlapper); index++) {
++            if (c.Overlapper[index] != NULL && SHADEREMU_NO_OVERLAP(c.Overlapper[index])) {
++                c.Overlapper[index] = NULL;
++            }
++        }
++    }
++}
 +#define SHADEREMU_MOVED(cell)                                                                                          \
 +    if (ShaderEmu_GL_Live) {                                                                                           \
-+        ShaderEmu_GL_Near(cell);                                                                                       \
++        if (!ShaderEmu_GL_Stale) {                                                                                     \
++            ShaderEmu_GL_Near(cell);                                                                                   \
++        }                                                                                                              \
 +    } else {                                                                                                           \
 +        (*this)[cell].Redraw_Objects();                                                                                \
 +    }
@@ -1390,7 +2368,17 @@ index 471bef5..5705be4 100644
  #include "lcwpipe.h"
  #include "lcwstraw.h"
  #include "common/endianness.h"
-@@ -1019,7 +1031,7 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
+@@ -518,6 +558,9 @@ void MapClass::Init_Cells(void)
+     for (int index = 0; index < MAP_CELL_TOTAL; index++) {
+         new (&Array[index]) CellClass;
+     }
++#ifdef SHADEREMU
++    ShaderEmu_Occupied_Rebuild(true);
++#endif
+ }
+ 
+ /***********************************************************************************************
+@@ -1019,17 +1062,30 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Occupy_Down(object);
                  (*this)[newcell].Recalc_Attributes();
@@ -1399,7 +2387,22 @@ index 471bef5..5705be4 100644
              }
          }
  
-@@ -1029,7 +1041,7 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
++#ifdef SHADEREMU
++        if (SHADEREMU_NO_OVERLAP(object)) {
++            if (!SHADEREMU_KNOWN(object)) {
++                List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
++                for (list = xlist; *list != REFRESH_EOL; list++) {
++                    if ((unsigned)(cell + *list) < MAP_CELL_TOTAL) {
++                        (*this)[(CELL)(cell + *list)].ShaderEmu_Overlap_Seen(object);
++                    }
++                }
++            }
++            return;
++        }
++#endif
+         List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
+         list = xlist;
+         while (*list != REFRESH_EOL) {
              CELL newcell = cell + *list++;
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Overlap_Down(object);
@@ -1408,7 +2411,7 @@ index 471bef5..5705be4 100644
              }
          }
      }
-@@ -1067,7 +1079,7 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
+@@ -1067,17 +1123,22 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Occupy_Up(object);
                  (*this)[newcell].Recalc_Attributes();
@@ -1417,7 +2420,14 @@ index 471bef5..5705be4 100644
              }
          }
  
-@@ -1077,7 +1089,7 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
++#ifdef SHADEREMU
++        if (SHADEREMU_NO_OVERLAP(object)) {
++            return;
++        }
++#endif
+         List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
+         list = xlist;
+         while (*list != REFRESH_EOL) {
              CELL newcell = cell + *list++;
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Overlap_Up(object);
@@ -1426,7 +2436,27 @@ index 471bef5..5705be4 100644
              }
          }
      }
-@@ -1117,7 +1129,7 @@ void MapClass::Overlap_Down(CELL cell, ObjectClass* object)
+@@ -1111,13 +1172,27 @@ void MapClass::Overlap_Down(CELL cell, ObjectClass* object)
+ 
+     if (object->Class_Of().IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
+         short xlist[32];
++#ifdef SHADEREMU
++        if (SHADEREMU_NO_OVERLAP(object)) {
++            if (!SHADEREMU_KNOWN(object)) {
++                List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
++                for (short const* seen = xlist; *seen != REFRESH_EOL; seen++) {
++                    if ((unsigned)(cell + *seen) < MAP_CELL_TOTAL) {
++                        (*this)[(CELL)(cell + *seen)].ShaderEmu_Overlap_Seen(object);
++                    }
++                }
++            }
++            SHADEREMU_MOVED(cell);
++            return;
++        }
++#endif
+         List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
+         short const* list = xlist;
+         while (*list != REFRESH_EOL) {
              CELL newcell = cell + *list++;
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Overlap_Down(object);
@@ -1435,7 +2465,19 @@ index 471bef5..5705be4 100644
              }
          }
      }
-@@ -1157,7 +1169,7 @@ void MapClass::Overlap_Up(CELL cell, ObjectClass* object)
+@@ -1151,13 +1226,19 @@ void MapClass::Overlap_Up(CELL cell, ObjectClass* object)
+ 
+     if (object->Class_Of().IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
+         short xlist[32];
++#ifdef SHADEREMU
++        if (SHADEREMU_NO_OVERLAP(object)) {
++            SHADEREMU_MOVED(cell);
++            return;
++        }
++#endif
+         List_Copy(object->Overlap_List(), ARRAY_SIZE(xlist), xlist);
+         short const* list = xlist;
+         while (*list != REFRESH_EOL) {
              CELL newcell = cell + *list++;
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Overlap_Up(object);
@@ -1444,7 +2486,7 @@ index 471bef5..5705be4 100644
              }
          }
      }
-@@ -1466,6 +1478,10 @@ int MapClass::Cell_Region(CELL cell)
+@@ -1466,6 +1547,10 @@ int MapClass::Cell_Region(CELL cell)
   *=========================================================================*/
  int MapClass::Cell_Threat(CELL cell, HousesType house)
  {
@@ -1455,6 +2497,211 @@ index 471bef5..5705be4 100644
      int threat = HouseClass::As_Pointer(house)->Regions[Map.Cell_Region(Map[cell].Cell_Number())].Threat_Value();
      // using function for IsVisible so we have different results for different players - JAS 2019/09/30
      if (!threat && Map[cell].Is_Visible(house)) {
+@@ -2439,11 +2524,24 @@ void MapClass::Detach(TARGET target, bool)
+         /*
+         **	Loop through all cells; remove any reference to this trigger
+         */
++#ifdef SHADEREMU
++        /*
++        ** (the trigger is found once, and a cell that has none is not asked about it: this
++        ** was a hundred instructions for each of the map's 16,384 cells, most of a second)
++        */
++        TriggerClass* gone = As_Trigger(target);
++        for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++            if ((*this)[cell].Trigger.Is_Valid() && (TriggerClass*)(*this)[cell].Trigger == gone) {
++                (*this)[cell].Trigger = NULL;
++            }
++        }
++#else
+         for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
+             if ((*this)[cell].Trigger == As_Trigger(target)) {
+                 (*this)[cell].Trigger = NULL;
+             }
+         }
++#endif
+     }
+ }
+ 
+diff --git a/redalert/msglist.cpp b/redalert/msglist.cpp
+index 044be8b..c2832e1 100644
+--- a/redalert/msglist.cpp
++++ b/redalert/msglist.cpp
+@@ -1188,6 +1188,29 @@ void MessageListClass::Draw(void)
+  * HISTORY:                                                                *
+  *   06/26/1995 BRR : Created.                                             *
+  *=========================================================================*/
++#ifdef SHADEREMU
++/*
++** A sum of what Draw() would print: the same sum, the same picture. While a line is being
++** typed it is another every frame (the line's cursor blinks).
++*/
++unsigned MessageListClass::ShaderEmu_Signature(void)
++{
++    unsigned sum = IsEdit ? 0x9e3779b9u * (unsigned)Frame : 2166136261u;
++
++    for (GadgetClass* gadget = MessageList; gadget; gadget = gadget->Get_Next()) {
++        TextLabelClass* label = (TextLabelClass*)gadget;
++        sum = (sum ^ (unsigned)label->X) * 16777619u;
++        sum = (sum ^ (unsigned)label->Y) * 16777619u;
++        sum = (sum ^ (unsigned)(uintptr_t)label->Color) * 16777619u;
++        sum = (sum ^ (unsigned)label->Style) * 16777619u;
++        for (const char* text = label->Text; text && *text; text++) {
++            sum = (sum ^ (unsigned char)*text) * 16777619u;
++        }
++    }
++    return sum;
++}
++#endif
++
+ int MessageListClass::Num_Messages(void)
+ {
+     GadgetClass* gadg;
+diff --git a/redalert/msglist.h b/redalert/msglist.h
+index dee07b9..627a184 100644
+--- a/redalert/msglist.h
++++ b/redalert/msglist.h
+@@ -168,6 +168,9 @@ public:
+     int Input(KeyNumType& input);
+     void Draw(void);
+     int Num_Messages(void);
++#ifdef SHADEREMU
++    unsigned ShaderEmu_Signature(void);
++#endif
+     void Set_Width(int width);
+     void Set_Edit_Focus(void);
+     bool Has_Edit_Focus(void);
+diff --git a/redalert/object.cpp b/redalert/object.cpp
+index f4fd824..1b844cc 100644
+--- a/redalert/object.cpp
++++ b/redalert/object.cpp
+@@ -139,6 +139,11 @@ ObjectClass::ObjectClass(RTTIType rtti, int id)
+     , Strength(255)
+     , IsSelectedMask(0) // Mask showing who has selected this object
+ {
++#ifdef SHADEREMU
++    ShaderEmu_SortState = 0;
++    ShaderEmu_Kept = 0;
++    ShaderEmu_Away = ~(COORDINATE)0;
++#endif
+ }
+ 
+ /***********************************************************************************************
+@@ -1441,6 +1446,10 @@ bool ObjectClass::Limbo(void)
+         }
+ 
+         Hidden();
++#ifdef SHADEREMU
++        /* (an anim or a bullet is in none of the houses' scans: a battle has one come or go every frame) */
++        ShaderEmu_Scans_Stale |= RTTI != RTTI_ANIM && RTTI != RTTI_BULLET;
++#endif
+         IsInLimbo = true;
+         IsToDisplay = false;
+         return (true);
+@@ -1473,6 +1482,9 @@ bool ObjectClass::Unlimbo(COORDINATE coord, DirType)
+     assert(IsActive);
+     if (GameActive && IsInLimbo && !IsDown) {
+         if (ScenarioInit || Can_Enter_Cell(Coord_Cell(coord), FACING_NONE) == MOVE_OK) {
++#ifdef SHADEREMU
++            ShaderEmu_Scans_Stale |= RTTI != RTTI_ANIM && RTTI != RTTI_BULLET;
++#endif
+             IsInLimbo = false;
+             IsToDisplay = false;
+             Coord = Class_Of().Coord_Fixup(coord);
+@@ -1540,6 +1552,45 @@ void ObjectClass::Detach(TARGET target, bool)
+  * HISTORY:                                                                                    *
+  *   09/24/1994 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++unsigned char ShaderEmu_Taken[2][1024];
++static unsigned ShaderEmu_Detach_Left, ShaderEmu_Detach_Wrong;
++
++static void ShaderEmu_Detach_Report(void)
++{
++    fprintf(stderr, "ralert: %u anims and bullets ended without a look through everything's targets", ShaderEmu_Detach_Left);
++    if (getenv("RALERT_CHECK_DETACH") && atoi(getenv("RALERT_CHECK_DETACH"))) {
++        fprintf(stderr, "; the look changed something for %u of them", ShaderEmu_Detach_Wrong);
++    }
++    fputc(10, stderr);
++}
++
++/* Every byte of everything that has targets. */
++static unsigned ShaderEmu_Heaps_Sum(void)
++{
++    unsigned hash = 2166136261u;
++    int i;
++#define SHADEREMU_SUM(heap, type)                                                                                      \
++    for (i = 0; i < heap.Count(); i++) {                                                                               \
++        const unsigned char* p = (const unsigned char*)heap.Ptr(i);                                                    \
++        for (unsigned n = 0; n < sizeof(type); n++) {                                                                  \
++            hash = (hash ^ p[n]) * 16777619u;                                                                          \
++        }                                                                                                              \
++    }
++    SHADEREMU_SUM(Units, UnitClass)
++    SHADEREMU_SUM(Infantry, InfantryClass)
++    SHADEREMU_SUM(Vessels, VesselClass)
++    SHADEREMU_SUM(Aircraft, AircraftClass)
++    SHADEREMU_SUM(Buildings, BuildingClass)
++    SHADEREMU_SUM(Bullets, BulletClass)
++    SHADEREMU_SUM(Anims, AnimClass)
++    SHADEREMU_SUM(Teams, TeamClass)
++    SHADEREMU_SUM(Houses, HouseClass)
++#undef SHADEREMU_SUM
++    return hash ^ (unsigned)Triggers.Count() * 31u ^ (unsigned)LogicTriggers.Count() * 131u;
++}
++#endif
++
+ void ObjectClass::Detach_All(bool all)
+ {
+     assert(this != 0);
+@@ -1564,6 +1615,26 @@ void ObjectClass::Detach_All(bool all)
+ 
+     Map.Detach(this);
+ 
++#ifdef SHADEREMU
++    if ((RTTI == RTTI_ANIM || RTTI == RTTI_BULLET) && !ShaderEmu_Taken[RTTI == RTTI_ANIM][ID & 1023]) {
++        static int check = -1;
++        if (check < 0) {
++            check = getenv("RALERT_CHECK_DETACH") ? 1 + atoi(getenv("RALERT_CHECK_DETACH")) : 0;
++            if (check) {
++                atexit(ShaderEmu_Detach_Report);
++            }
++        }
++        ShaderEmu_Detach_Left++;
++        if (check < 2) {
++            return;
++        }
++        /* RALERT_CHECK_DETACH=1: the look is made all the same, and must change nothing */
++        unsigned before = ShaderEmu_Heaps_Sum();
++        Detach_This_From_All(Build_Target(RTTI, ID), all);
++        ShaderEmu_Detach_Wrong += before != ShaderEmu_Heaps_Sum();
++        return;
++    }
++#endif
+     /*
+     **	Remove from targeting computers.
+     */
+diff --git a/redalert/object.h b/redalert/object.h
+index 399ddfb..7a6fddf 100644
+--- a/redalert/object.h
++++ b/redalert/object.h
+@@ -127,6 +127,17 @@ public:
+     */
+     short Strength;
+ 
++#ifdef SHADEREMU
++    /*
++    ** Where a building or a tree sorts in its layer, for the place it was worked out at
++    ** (layer.cpp), and where the GPU's scene keeps this object's rectangles (gl.cpp).
++    */
++    unsigned char ShaderEmu_SortState; // 0: not asked yet; 1: kept; 2: asked every time
++    short ShaderEmu_Kept;
++    COORDINATE ShaderEmu_SortFor, ShaderEmu_SortKey;
++    COORDINATE ShaderEmu_Away; // the view at which gl.cpp found it to draw nothing (all ones: none)
++#endif
++
+     /*
+     ** Some additional padding in case we need to add data to the class and maintain backwards compatibility for
+     *save/load
 diff --git a/redalert/radar.cpp b/redalert/radar.cpp
 index 6211ff4..4981582 100644
 --- a/redalert/radar.cpp
@@ -1483,6 +2730,21 @@ index 6211ff4..4981582 100644
              CC_Draw_Shape(RadarAnim, val, RadX, RadY + (1 * RESFACTOR), WINDOW_MAIN, SHAPE_NORMAL);
              FullRedraw = false;
              IsToRedraw = false;
+diff --git a/redalert/saveload.cpp b/redalert/saveload.cpp
+index 36a2e3c..962ee56 100644
+--- a/redalert/saveload.cpp
++++ b/redalert/saveload.cpp
+@@ -1322,6 +1322,10 @@ void Code_All_Pointers(void)
+  *=============================================================================================*/
+ void Decode_All_Pointers(void)
+ {
++#ifdef SHADEREMU
++    ShaderEmu_Scans_Stale = true;
++    memset(ShaderEmu_Taken, 1, sizeof(ShaderEmu_Taken)); /* (a saved game's targets were made elsewhere) */
++#endif
+     /*
+     **	The Map.
+     */
 diff --git a/redalert/scroll.cpp b/redalert/scroll.cpp
 index 5c063b8..0dc3396 100644
 --- a/redalert/scroll.cpp
@@ -1606,11 +2868,141 @@ index 928dc0e..220bfd9 100644
  
          if (LogicPage->Lock()) {
              /*
+diff --git a/redalert/target.cpp b/redalert/target.cpp
+index 110368b..9976989 100644
+--- a/redalert/target.cpp
++++ b/redalert/target.cpp
+@@ -66,6 +66,11 @@ TargetClass::TargetClass(TARGET target)
+ TargetClass::TargetClass(AbstractClass const* ptr)
+ {
+     if (ptr != NULL) {
++#ifdef SHADEREMU
++        if (ptr->RTTI == RTTI_ANIM || ptr->RTTI == RTTI_BULLET) {
++            ShaderEmu_Taken[ptr->RTTI == RTTI_ANIM][ptr->ID & 1023] = 1;
++        }
++#endif
+         Target.Sub.Exponent = ptr->RTTI;
+         Target.Sub.Mantissa = ptr->ID;
+     } else {
 diff --git a/redalert/techno.cpp b/redalert/techno.cpp
-index 682741b..22b7f55 100644
+index 682741b..7d66ce6 100644
 --- a/redalert/techno.cpp
 +++ b/redalert/techno.cpp
-@@ -2246,6 +2246,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -378,6 +378,15 @@ int TechnoClass::What_Weapon_Should_I_Use(TARGET target) const
+     **	value of the weapon if it happens to be in range.
+     */
+     int w1 = 0;
++#ifdef SHADEREMU
++    /*
++    ** (with no second weapon the answer is the first whatever follows finds out: two range
++    ** checks and two "can it fire" for nothing, 1,600 instructions a fighting unit a frame)
++    */
++    if (ttype->SecondaryWeapon == NULL || ttype->SecondaryWeapon->WarheadPtr == NULL) {
++        return (0);
++    }
++#endif
+     WeaponTypeClass const* wptr = ttype->PrimaryWeapon;
+     if (wptr != NULL && wptr->WarheadPtr != NULL)
+         w1 = wptr->WarheadPtr->Modifier[armor] * 1000;
+@@ -785,6 +794,9 @@ bool TechnoClass::Revealed(HouseClass* house)
+ 
+         if (Session.Type == GAME_NORMAL) {
+             if (house == PlayerPtr) {
++#ifdef SHADEREMU
++                ShaderEmu_Scans_Stale |= !IsDiscoveredByPlayer;
++#endif
+                 IsDiscoveredByPlayer = true;
+ 
+                 if (!IsOwnedByPlayer) {
+@@ -1092,6 +1104,9 @@ void TechnoClass::Per_Cell_Process(PCPType why)
+         **	flagged so that they won't travel back off the map again.
+         */
+         if (!IsLocked && Map.In_Radar(cell)) {
++#ifdef SHADEREMU
++            ShaderEmu_Scans_Stale = true;
++#endif
+             IsLocked = true;
+         }
+ 
+@@ -1278,6 +1293,9 @@ bool TechnoClass::Unlimbo(COORDINATE coord, DirType dir)
+         Enter_Idle_Mode(true);
+         Commence();
+ 
++#ifdef SHADEREMU
++        ShaderEmu_Scans_Stale = true;
++#endif
+         IsLocked = Map.In_Radar(Coord_Cell(coord));
+         return (true);
+     }
+@@ -1563,6 +1581,22 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+ 
+     BStart(BENCH_EVAL_OBJECT);
+ 
++#ifdef SHADEREMU
++    /*
++    ** Two of the tests below first, the ones that turn most objects away for the least: its
++    ** kind is not asked for, or it is of this side (of the other, for a medic). Every test
++    ** here only says no and changes nothing, so their order does not matter to the answer.
++    */
++    if (object != NULL && !object->IsInLimbo) {
++        if (!((1 << object->What_Am_I()) & mask)) {
++            return (false);
++        }
++        bool ally = House->Is_Ally(object);
++        if (ally != (Combat_Damage() < 0)) {
++            return (false);
++        }
++    }
++#endif
+     /*
+     **	An object in limbo can never be a valid target.
+     */
+@@ -2123,6 +2157,44 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+      *   09/22/1995 JLB : Takes into account the zone (if necessary).                              *
+      *   05/30/1996 JLB : Tighter elimination mask checking.                                       *
+      *=============================================================================================*/
++#ifdef SHADEREMU
++    /*
++    ** A cell nobody stands in holds no threat, and most cells of a scan are such. A side of the
++    ** scan's box is read from the map's bits of who is occupied (cell.h), a word of 32 cells
++    ** at a time, and only the occupied cells are asked, in the order the game's loops ask.
++    */
++    static inline unsigned Occupied_Span(const unsigned* line, int word, int low, int high)
++    {
++        unsigned bits = line ? line[word] : 0;
++
++        if (word == (low >> 5))
++            bits &= ~0u << (low & 31);
++        if (word == (high >> 5))
++            bits &= ~0u >> (31 - (high & 31));
++        return (bits);
++    }
++
++    /* Which bit a word with one bit set has; the compiler's own count is a call to the library. */
++    static inline int Occupied_Bit(unsigned bit)
++    {
++        static const unsigned char _where[32] = {0,  1,  28, 2,  29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4,  8,
++                                                 31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6,  11, 5,  10, 9};
++
++        return (_where[(bit * 0x077CB531u) >> 27]);
++    }
++
++#define SHADEREMU_THREAT_AT(x, y)                                                                                      \
++    {                                                                                                                  \
++        CELL newcell = XY_Cell(x, y);                                                                                  \
++        if (Map[newcell].Cell_Occupier() != NULL                                                                       \
++            && Evaluate_Cell(method, mask, newcell, range, &object, value, zone)) {                                    \
++            if (bestval < value) {                                                                                     \
++                bestobject = object;                                                                                   \
++            }                                                                                                          \
++        }                                                                                                              \
++    }
++#endif
++
+     TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+     {
+         assert(IsActive);
+@@ -2246,6 +2318,23 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              int bestcellvalue = 0;
              TechnoClass const* object;
              int value;
@@ -1624,14 +3016,78 @@ index 682741b..22b7f55 100644
 +            */
 +            bool walls = What_Am_I() != RTTI_VESSEL && !House->IsHuman && Rule.Diff[House->Difficulty].IsWallDestroyer;
 +#define SHADEREMU_OCCUPIED(c) ((unsigned)(c) <= MAP_CELL_TOTAL && Map[c].Cell_Occupier() != NULL)
++/* (and it says 0 for a cell with no overlay, which is where a wall would be) */
++#define SHADEREMU_WALL(c) (Map[c].Overlay != OVERLAY_NONE)
 +#else
 +            bool walls = true;
 +#define SHADEREMU_OCCUPIED(c) true
++#define SHADEREMU_WALL(c) true
 +#endif
              //		int rad = 1;
  
              // BG: Medics need to be able to look in their own cell too.
-@@ -2268,12 +2282,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2254,6 +2343,60 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+             //		}
+ 
+             for (int radius = 0; radius < crange; radius++) {
++#ifdef SHADEREMU
++                /* (where no wall is looked for, only occupied cells matter: by the map's bits, in the loops' order) */
++                if (!walls) {
++                    const int cell_x = Cell_X(cell), cell_y = Cell_Y(cell);
++                    const int map_x = Map.MapCellX, map_right = Map.MapCellX + Map.MapCellWidth;
++                    const int map_y = Map.MapCellY, map_bottom = Map.MapCellY + Map.MapCellHeight;
++                    int low = cell_x - radius > map_x ? cell_x - radius : map_x;
++                    int high = cell_x + radius < map_right - 1 ? cell_x + radius : map_right - 1;
++                    const unsigned* first = (cell_y - radius) >= map_y
++                                                ? &ShaderEmu_Occupied_Rows[(cell_y - radius) * OCCUPIED_ROW_WORDS]
++                                                : NULL;
++                    const unsigned* second = (cell_y + radius) < map_bottom
++                                                 ? &ShaderEmu_Occupied_Rows[(cell_y + radius) * OCCUPIED_ROW_WORDS]
++                                                 : NULL;
++
++                    for (int word = low >> 5; low <= high && word <= (high >> 5); word++) {
++                        unsigned one = Occupied_Span(first, word, low, high);
++                        unsigned other = Occupied_Span(second, word, low, high);
++
++                        for (unsigned both = one | other; both; both &= both - 1) {
++                            unsigned bit = both & (0u - both);
++                            int x = word * 32 + Occupied_Bit(bit);
++
++                            if (one & bit)
++                                SHADEREMU_THREAT_AT(x, cell_y - radius);
++                            if (other & bit)
++                                SHADEREMU_THREAT_AT(x, cell_y + radius);
++                        }
++                    }
++                    low = cell_y - (radius - 1) > map_y ? cell_y - (radius - 1) : map_y;
++                    high = cell_y + (radius - 1) < map_bottom - 1 ? cell_y + (radius - 1) : map_bottom - 1;
++                    first = (cell_x - radius) >= map_x
++                                ? &ShaderEmu_Occupied_Columns[(cell_x - radius) * OCCUPIED_COLUMN_WORDS]
++                                : NULL;
++                    second = (cell_x + radius) < map_right
++                                 ? &ShaderEmu_Occupied_Columns[(cell_x + radius) * OCCUPIED_COLUMN_WORDS]
++                                 : NULL;
++                    for (int word = low >> 5; low <= high && word <= (high >> 5); word++) {
++                        unsigned one = Occupied_Span(first, word, low, high);
++                        unsigned other = Occupied_Span(second, word, low, high);
++
++                        for (unsigned both = one | other; both; both &= both - 1) {
++                            unsigned bit = both & (0u - both);
++                            int y = word * 32 + Occupied_Bit(bit);
++
++                            if (one & bit)
++                                SHADEREMU_THREAT_AT(cell_x - radius, y);
++                            if (other & bit)
++                                SHADEREMU_THREAT_AT(cell_x + radius, y);
++                        }
++                    }
++                } else
++#endif
++                {
+ 
+                 /*
+                 **	Scan the top and bottom rows of the "box".
+@@ -2268,12 +2411,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_Y(cell) - radius) >= Map.MapCellY) {
                          newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) - radius);
@@ -1642,11 +3098,11 @@ index 682741b..22b7f55 100644
                              }
                          }
 -                        if (bestobject == NULL) {
-+                        if (bestobject == NULL && walls) {
++                        if (bestobject == NULL && walls && SHADEREMU_WALL(newcell)) {
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2284,12 +2298,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2284,12 +2427,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_Y(cell) + radius) < (Map.MapCellY + Map.MapCellHeight)) {
                          newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) + radius);
@@ -1657,11 +3113,11 @@ index 682741b..22b7f55 100644
                              }
                          }
 -                        if (bestobject == NULL) {
-+                        if (bestobject == NULL && walls) {
++                        if (bestobject == NULL && walls && SHADEREMU_WALL(newcell)) {
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2312,12 +2326,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2312,12 +2455,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_X(cell) - radius) >= Map.MapCellX) {
                          newcell = XY_Cell(Cell_X(cell) - radius, Cell_Y(cell) + y);
@@ -1672,11 +3128,11 @@ index 682741b..22b7f55 100644
                              }
                          }
 -                        if (bestobject == NULL) {
-+                        if (bestobject == NULL && walls) {
++                        if (bestobject == NULL && walls && SHADEREMU_WALL(newcell)) {
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2328,12 +2342,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2328,12 +2471,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_X(cell) + radius) < (Map.MapCellX + Map.MapCellWidth)) {
                          newcell = XY_Cell(Cell_X(cell) + radius, Cell_Y(cell) + y);
@@ -1687,11 +3143,19 @@ index 682741b..22b7f55 100644
                              }
                          }
 -                        if (bestobject == NULL) {
-+                        if (bestobject == NULL && walls) {
++                        if (bestobject == NULL && walls && SHADEREMU_WALL(newcell)) {
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2461,6 +2475,16 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2347,6 +2490,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+                 **	Bail early if a target has already been found and the range is at
+                 **	one of the breaking points (i.e., normal range or range * 2).
+                 */
++                }
+                 if (bestobject != NULL) {
+                     if (radius == crange / 4) {
+                         return (bestobject->As_Target());
+@@ -2461,6 +2605,16 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          assert(IsActive);
  
          FlashCount = count;
@@ -1708,6 +3172,83 @@ index 682741b..22b7f55 100644
  
          // 2019/09/20 JAS - Flashing info needs to exist per player
          if (house < HOUSE_COUNT) {
+@@ -2504,7 +2658,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+         ** If this building is being spied on by the player, need to redraw if selected
+         ** since the money amount is rendering.
+         */
+-        if (Is_Selected_By_Player()) {
++        if (IsSelectedMask && Is_Selected_By_Player()) {
+             if (What_Am_I() == RTTI_BUILDING) {
+                 int spiedby = Spied_By() & (1 << (PlayerPtr->Class->House));
+                 if (spiedby) {
+@@ -2542,7 +2696,8 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+         **	If for some strange reason, the computer is firing upon itself, then
+         **	tell it not to.
+         */
+-        if (!House->IsHuman && As_Techno(TarCom) && As_Techno(TarCom)->House->Is_Ally(this) && Combat_Damage() >= 0) {
++        if (!House->IsHuman && TarCom != TARGET_NONE && As_Techno(TarCom) && As_Techno(TarCom)->House->Is_Ally(this)
++            && Combat_Damage() >= 0) {
+             //#ifdef FIXIT_CSII	//	checked - ajw 9/28/98 (commented out)
+             // if(What_Am_I() == RTTI_INFANTRY && *(InfantryClass *)this==INFANTRY_GENERAL && Session.Type==GAME_NORMAL
+             // && House->Class->House==HOUSE_UKRAINE) { } else #endif
+@@ -4060,6 +4215,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+             /*
+             **	Change ownership now.
+             */
++#ifdef SHADEREMU
++            ShaderEmu_Scans_Stale = true;
++#endif
+             House = newowner;
+             IsOwnedByPlayer = (House == PlayerPtr);
+ 
+@@ -4570,7 +4728,13 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+                 if (ttype->DimensionData == NULL) {
+                     ttype->DimensionData = new Rect[Get_Build_Frame_Count(shapefile)];
+                 }
++#ifdef SHADEREMU
++                /* (a rectangle to draw less of the map again by: nothing the GPU's scene wants, gl.cpp) */
++                extern bool ShaderEmu_GL_Emitting;
++                if (ttype->DimensionData != NULL && !ttype->DimensionData[shapenum].Is_Valid() && !ShaderEmu_GL_Emitting) {
++#else
+                 if (ttype->DimensionData != NULL && !ttype->DimensionData[shapenum].Is_Valid()) {
++#endif
+                     ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
+                 }
+             }
+@@ -4798,7 +4962,13 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+                 if (ttype->DimensionData == NULL) {
+                     ttype->DimensionData = new Rect[Get_Build_Frame_Count(shapefile)];
+                 }
++#ifdef SHADEREMU
++                /* (a rectangle to draw less of the map again by: nothing the GPU's scene wants, gl.cpp) */
++                extern bool ShaderEmu_GL_Emitting;
++                if (ttype->DimensionData != NULL && !ttype->DimensionData[shapenum].Is_Valid() && !ShaderEmu_GL_Emitting) {
++#else
+                 if (ttype->DimensionData != NULL && !ttype->DimensionData[shapenum].Is_Valid()) {
++#endif
+                     ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
+                 }
+             }
+@@ -7183,6 +7353,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+         IsDiscoveredByPlayerMask |= (1 << shift);
+ 
+         if (Session.Type != GAME_GLYPHX_MULTIPLAYER && player == PlayerPtr) {
++#ifdef SHADEREMU
++            ShaderEmu_Scans_Stale |= !IsDiscoveredByPlayer;
++#endif
+             IsDiscoveredByPlayer = true;
+         }
+     }
+@@ -7202,6 +7375,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+     void TechnoClass::Clear_Discovered_By_Players()
+     {
+         IsDiscoveredByPlayerMask = 0;
++#ifdef SHADEREMU
++        ShaderEmu_Scans_Stale = true;
++#endif
+         IsDiscoveredByPlayer = false;
+     }
+ 
 diff --git a/redalert/theme.cpp b/redalert/theme.cpp
 index c7651fe..e64da34 100644
 --- a/redalert/theme.cpp

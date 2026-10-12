@@ -760,6 +760,9 @@ static u64 run_worker(Core& c, u64 budget) {
     }
     if (w.state == MC_ASLEEP) {
         if (word(mc_job_at(c.hart)) == w.job_seen) return 0;
+        // (between two jobs its program may have unmapped memory and mapped other there: the
+        // shader machine's worker begins every pass with empty first-level TLBs)
+        c.flush();
         w.state = MC_RUNNING;
     }
     if (w.state == MC_FAULTED || w.state == MC_CALLING) {

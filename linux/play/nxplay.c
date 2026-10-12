@@ -16,7 +16,9 @@
 #include "flac.h"
 #include "mod.h"
 
-#define RING 65536u	/* the stream's ring, in frames */
+#define RING ring_frames	/* the stream's ring, in frames: a power of two */
+#define RING_LONG 262144u	/* six seconds of 44.1 kHz: room for every piece that is being decoded */
+#define RING_SHORT 65536u	/* when sound memory has no megabyte left */
 #define SLICE 2048	/* frames this core decodes between two looks at everything else */
 #define MP3_BACK 12	/* frames before a piece that fill its bit reservoir */
 #define MP3_WARM 2	/* the last of them are decoded, for the filters' memory */
@@ -44,9 +46,9 @@ static struct {
  * then the samples. */
 static struct slot {
 	uint32_t *head;
-	int16_t *pcm;
+	int16_t *pcm, *own;	/* where its samples go: its own memory, or its place in the ring */
 	uint32_t piece, frames, done;
-	int state;
+	int state, direct;
 } slots[SLOTS];
 static int slot_count, slot_most;
 static uint32_t slot_bytes;
@@ -59,7 +61,9 @@ static struct {
 	uint32_t ring_at;	/* the ring's physical address */
 	uint32_t written;
 	uint32_t base;		/* the tune's frame at the ring's first */
+	uint32_t first;		/* and the piece that begins there */
 } out;
+static uint32_t ring_frames = RING_SHORT;
 
 static int state, paused, quit;
 static uint32_t play_piece, play_at, next_piece;
@@ -272,13 +276,14 @@ mp3_decode(mp3dec_t *dec, int half, int frame, int16_t *to)
 		memset(to, 0, (size_t)want * tune.channels * 2);
 }
 
-/* A worker's job: piece `what` (bit 31: at half rate) into the slot at `at`. */
+/* A worker's job: piece `what` (bit 31: at half rate) into the slot at `at`, or into the
+ * place the slot's head names. */
 static uint32_t
 mp3_job(uint32_t what, uint32_t at)
 {
 	mp3dec_t dec;
 	volatile uint32_t *head = (volatile uint32_t *)at;
-	int16_t *to = (int16_t *)(at + 32);
+	int16_t *to = head[5] ? (int16_t *)head[5] : (int16_t *)(at + 32);
 	uint32_t before = cycles();
 	int half = (int)(what >> 31), from = (int)(what & 0x7fffffffu) * mp3.per_piece, end = from + mp3.per_piece, f;
 
@@ -367,7 +372,7 @@ slot_get(int most, int look)
 	mcw_touch(memory, slot_bytes);
 	s = &slots[slot_count++];
 	s->head = (uint32_t *)memory;
-	s->pcm = (int16_t *)(memory + 32);
+	s->pcm = s->own = (int16_t *)(memory + 32);
 	return s;
 }
 
@@ -380,6 +385,36 @@ slot_of(uint32_t piece)
 		if (slots[i].state == SLOT_READY && slots[i].piece == piece)
 			return &slots[i];
 	return NULL;
+}
+
+/*
+ * A piece's place in the ring, when it has one now: it is decoded there, and copied by nobody.
+ * The stream's frames are the pieces' in order, so the place is known before the piece is
+ * made; it must be clear of what is still to be heard, and not go round the ring's end.
+ * `far`: it has none because the ring is full that far ahead.
+ */
+static int16_t *
+piece_place(uint32_t piece, int *far)
+{
+	uint32_t first = (piece - out.first) * (tune.piece >> tune.half), n = piece_frames(piece) >> tune.half;
+	uint32_t at = first & (RING - 1);
+
+	*far = out.on && first + n > card_at() + RING;
+	if (!out.on || *far || at + n > RING)
+		return NULL;
+	return out.ring + at * (uint32_t)tune.channels;
+}
+
+/* Whether a worker still writes for a piece that was dropped: its place may be another's by now. */
+static int
+dropping(void)
+{
+	int i;
+
+	for (i = 0; i < slot_count; i++)
+		if (slots[i].state == SLOT_DROPPED)
+			return 1;
+	return 0;
 }
 
 /* Forgets every piece decoded or begun; a worker's is given back when it has heard. */
@@ -435,6 +470,7 @@ seek_to(uint32_t frame)
 		tune.origin = out.base = source_seek(frame);
 		play_piece = next_piece = 0;
 	}
+	out.first = play_piece;
 	play_at = consumed = 0;
 	decoded = work_ms = 0;
 	was_working = 0;
@@ -485,7 +521,8 @@ own_step(void)
 	}
 }
 
-/* Finished pieces into the ring, in order, as far as it has room. */
+/* Finished pieces into the ring, in order, as far as it has room: the few that were not
+ * decoded in it are copied. */
 static void
 feed(void)
 {
@@ -501,7 +538,11 @@ feed(void)
 			play_at = 0;
 			continue;
 		}
-		if (out.on) {
+		if (s->direct) {
+			/* (it was decoded where it lies: the card is told, and that is all) */
+			out.written += n;
+			SND_VOICE[out.voice].loop = out.written;
+		} else if (out.on) {
 			uint32_t room = RING - (out.written - card_at()), at = out.written & (RING - 1);
 
 			n = n > room ? room : n;
@@ -633,7 +674,8 @@ pump(void)
 {
 	uint32_t count = pieces(), now = now_ms(), s;
 	struct slot *slot;
-	int k, most, working = 0, active = state == BUFFERING || state == PLAYING;
+	int16_t *place;
+	int k, most, far, held, working = 0, active = state == BUFFERING || state == PLAYING;
 
 	if (was_working)
 		work_ms += now - last_ms;
@@ -655,27 +697,36 @@ pump(void)
 	/* as far ahead as memory lets it when decoding is slow, a few pieces when it is not */
 	s = speed();
 	most = s && s < 1100 && !workers ? slot_most : workers + 4;
+	held = active && dropping();
 	for (k = 1; k <= workers && active; k++) {
 		if (job[k]) {
 			working = 1;
-		} else if (next_piece < count && (slot = slot_get(most, 0)) != NULL) {
+		} else if (!held && next_piece < count && ((place = piece_place(next_piece, &far)) != NULL || !far) &&
+			   (slot = slot_get(most, 0)) != NULL) {
+			/* (with workers a piece the ring has no room for yet waits: there are seconds in hand) */
 			slot->piece = next_piece++;
 			slot->state = SLOT_WORKER;
 			slot->head[0] = slot->head[4] = 0;
+			slot->head[5] = (uint32_t)place;
+			slot->direct = place != NULL;
+			slot->pcm = place ? place : slot->own;
 			job[k] = slot;
 			mcw_post(k, mp3_job, slot->piece | (uint32_t)tune.half << 31, (uint32_t)slot->head);
 			working = 1;
 		}
 	}
-	if (!mine && active && next_piece < count && (mine = slot_get(most, 0)) != NULL) {
+	if (!mine && !held && active && next_piece < count && ((place = piece_place(next_piece, &far)) != NULL || !far || !workers) &&
+	    (mine = slot_get(most, 0)) != NULL) {
 		mine->piece = next_piece++;
 		mine->state = SLOT_MINE;
 		mine->done = 0;
+		mine->direct = place != NULL;
+		mine->pcm = place ? place : mine->own;
 	}
 	if (mine)
 		own_step();
 	feed();
-	decide(active && !working && !mine && next_piece < count && !slot_get(most, 1));
+	decide(active && !working && !mine && !held && next_piece < count && !slot_get(most, 1));
 	was_working = working || mine != NULL;
 	return mine != NULL;
 }
@@ -719,6 +770,8 @@ workers_open(void)
 	/* what starts as zeros is not there for a worker until this core has touched it */
 	if (workers)
 		mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
+	if (workers && out.on)
+		mcw_touch(out.ring, RING * 4);
 }
 
 /* Why not, or NULL with the tune ready to play from its start. */
@@ -1031,7 +1084,11 @@ main(int argc, char **argv)
 	signal(SIGTERM, leave);
 	atexit(mcw_close);
 	window_on = !number("NXPLAY_NOWINDOW", 0) && access("/tmp/.nano-X", F_OK) == 0 && GrOpen() >= 0;
-	out.on = snd_open() == 0 && (out.voice = snd_claim()) >= 0 && (out.ring = snd_memory(RING * 4, &out.ring_at)) != NULL;
+	out.on = snd_open() == 0 && (out.voice = snd_claim()) >= 0;
+	if (out.on && (out.ring = snd_memory(RING_LONG * 4, &out.ring_at)) != NULL)
+		ring_frames = RING_LONG;
+	else
+		out.on = out.on && (out.ring = snd_memory(RING_SHORT * 4, &out.ring_at)) != NULL;
 	if (!out.on)
 		say("no sound card here: decoding only");
 	if (window_on) {

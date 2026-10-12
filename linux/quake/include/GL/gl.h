@@ -84,6 +84,8 @@ void qglFrustum(GLdouble l, GLdouble r, GLdouble b, GLdouble t, GLdouble n, GLdo
 void qglOrtho(GLdouble l, GLdouble r, GLdouble b, GLdouble t, GLdouble n, GLdouble f);
 void qglGetFloatv(GLenum what, GLfloat* out);
 void qglLoadMatrixf(const GLfloat* m);
+// The matrix of an entity at `place`, turned and, with `move`, moved and scaled (qgl.c).
+void qglEntity(const float* base, const float* place, float yaw, float pitch, float roll, const float* move, const float* scale);
 
 void qglBindTexture(GLenum target, GLuint name);
 void qglTexImage2D(GLenum target, GLint level, GLint internal, GLsizei width, GLsizei height, GLint border, GLenum format,
@@ -99,6 +101,10 @@ void qglRelease(void);
 void qglLight(GLuint name, int x, int y, int width, int height, const unsigned int* light);
 // Palette indices as they are (no copy to RGBA, no rescaling); with `holes`, index 255 is not drawn.
 void qglTexImage8(const GLubyte* pixels, GLsizei width, GLsizei height, int holes);
+// A rectangle of the bound texture on the 2D screen, and a picture (qgl.c): 0 if not drawn.
+int qglRect(int x0, int y0, int x1, int y1, int s0, int t0, int s1, int t1);
+int qglPicture(int x, int y, int width, int height, const float* st);
+int qglText(int x, int y, const char* text, int count);
 const GLubyte* qglGetString(GLenum what);
 
 // The window the frames go to, and the end of a frame.

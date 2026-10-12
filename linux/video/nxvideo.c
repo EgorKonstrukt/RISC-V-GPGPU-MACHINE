@@ -140,6 +140,7 @@ static struct { int busy; uint32_t result; } jobs[MC_MAX_CORES];
 static unsigned char *gop_state;	/* 0 to do, 1 being decoded, 2 its pictures are in GPU memory */
 static uint32_t *gop_sum;
 static int first_gop, next_gop, next_chunk, chunks_done;
+static int ready_gop, ready_last;	/* ready(): the first group not yet in GPU memory, and the picture before it */
 static unsigned char *chunk_done;
 
 static uint8_t *ring_a, *ring_b;	/* GPU memory for frames: two pieces */
@@ -160,11 +161,16 @@ static int scale, bar_y, held = -1;	/* held: the seek bar's knob is, at this pic
 static const char *name;
 static char saying[80];
 
+/* The machine's control words once the GPU's memory is mapped: the buttons and the keys' count. */
+static const volatile uint32_t *machine;
+
 static unsigned
 milliseconds(void)
 {
 	struct timespec now;
 
+	/* (the kernel's clock, not the machine's clock word: between the sound card's steps the
+	 * film goes by this, and by the host's clock it ran ahead of its pictures) */
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
 }
@@ -203,11 +209,10 @@ slot(int frame)
 static int
 ready(void)
 {
-	int g, last = shown;
-
-	for (g = first_gop; g < info.gops && gop_state[g] == 2; g++)
-		last = mpeg_gop_first(g) + mpeg_gop_frames(g) - 1;
-	return last;
+	/* (groups only become ready, so the walk goes on from where it stopped: play_from() begins it again) */
+	for (; ready_gop < info.gops && gop_state[ready_gop] == 2; ready_gop++)
+		ready_last = mpeg_gop_first(ready_gop) + mpeg_gop_frames(ready_gop) - 1;
+	return ready_gop > first_gop ? ready_last : shown;
 }
 
 /* Gives every unit that has nothing to do its next job, and takes what the others finished. */
@@ -311,7 +316,8 @@ film_time(void)
 
 	if (sound_on && sound_running && (at = card_at()) != clock_seen && at <= written) {
 		clock_seen = at;
-		clock_base = clock_from + (unsigned)((uint64_t)at * 1000 / (unsigned)info.rate);
+		/* (whole seconds and the rest apart: a 64-bit division is a long library call) */
+		clock_base = clock_from + at / (unsigned)info.rate * 1000 + at % (unsigned)info.rate * 1000 / (unsigned)info.rate;
 		clock_wall = now;
 	}
 	return clock_base + (running ? now - clock_wall : 0);
@@ -399,7 +405,7 @@ show(int frame)
 static void
 play_from(int frame)
 {
-	first_gop = next_gop = mpeg_gop_of(frame < 0 ? 0 : frame >= info.frames ? info.frames - 1 : frame);
+	first_gop = next_gop = ready_gop = mpeg_gop_of(frame < 0 ? 0 : frame >= info.frames ? info.frames - 1 : frame);
 	memset(gop_state, 0, (size_t)info.gops);
 	shown = mpeg_gop_first(first_gop) - 1;
 	clock_from = clock_base = time_of(shown + 1);
@@ -557,7 +563,7 @@ main(int argc, char **argv)
 	const char *path = argc > 1 ? argv[1] : SAMPLE, *text, *wrong;
 	GR_SCREEN_INFO screen;
 	char title[160];
-	unsigned bytes, spare = 0, left, stat_at = 0, bar_at = 0, now;
+	unsigned bytes, spare = 0, left, stat_at = 0, bar_at = 0, now, input = 0, hot_at = 0, asked_at = 0;
 	uint8_t *file;
 	int wanted, k, hold = -1, most, was_shown = -2, once = getenv("NXVIDEO_ONCE") != NULL;
 
@@ -613,6 +619,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "nxvideo: this machine has no GPU\n");
 		return 1;
 	}
+	machine = (const volatile uint32_t *)((const char *)seglPalette() - 0x400);
 	/* frames in GPU memory: what is left to a program, and the display's spare framebuffer */
 	left = seglMemoryLeft() & ~15u;
 	ring_a = seglMemory(left);
@@ -672,7 +679,18 @@ main(int argc, char **argv)
 	for (;;) {
 		int have, due, target, drew = 0;
 
-		events();
+		/* The window system is asked when the button or key words change, for a while
+		 * after (the event is on its way) and while a button is down; else a few times a
+		 * second: a question to it is more than a pass of this core. */
+		now = milliseconds();
+		if (input != (machine[0x28 / 4] ^ machine[0x2c / 4] << 8)) {
+			input = machine[0x28 / 4] ^ machine[0x2c / 4] << 8;
+			hot_at = now;
+		}
+		if (now - asked_at >= 150 || now - hot_at < 120 || (machine[0x28 / 4] & 7)) {
+			asked_at = now;
+			events();
+		}
 		dispatch();
 		feed();
 		if (seeking >= 0 && all_idle(1)) {
@@ -700,7 +718,10 @@ main(int argc, char **argv)
 			draw_bar();
 		}
 		if (running) {
-			due = (int)((uint64_t)film_time() * (unsigned)info.fps_milli / 1000000u);
+			/* film_time() * fps_milli / 1,000,000 exactly, in 32 bits */
+			unsigned film = film_time(), turns = film / 1000 * (unsigned)info.fps_milli;
+
+			due = (int)(turns / 1000 + (turns % 1000 * 1000 + film % 1000 * (unsigned)info.fps_milli) / 1000000u);
 			target = due < have ? due : have;
 			if (hold >= 0 && target > hold)
 				target = hold;

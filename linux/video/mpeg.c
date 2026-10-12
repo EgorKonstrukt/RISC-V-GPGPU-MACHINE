@@ -86,14 +86,23 @@ over(plm_buffer_t *buffer, uint8_t *bytes, unsigned length)
 static unsigned
 next_code(const uint8_t *es, unsigned bytes, unsigned at, int *code)
 {
-	const uint8_t *one;
+	/*
+	 * `at` is where the code's 1 would be. A byte over 1 there is no part of a code, so
+	 * none has its 1 at the two places after it either: two bytes of three are not read.
+	 */
+	for (at += 2; at + 1 < bytes;) {
+		unsigned b = es[at];
 
-	/* (a 1 is rare in a stream: looked for a word at a time by the library) */
-	for (at += 2; at + 1 < bytes && (one = memchr(es + at, 1, bytes - 1 - at)) != NULL; at = (unsigned)(one - es) + 1)
-		if (one[-1] == 0 && one[-2] == 0) {
-			*code = one[1];
-			return (unsigned)(one - es) - 2;
-		}
+		if (b > 1)
+			at += 3;
+		else if (b == 0)
+			at++;
+		else if (es[at - 1] == 0 && es[at - 2] == 0) {
+			*code = es[at + 1];
+			return at - 2;
+		} else
+			at += 3;
+	}
 	return bytes;
 }
 
@@ -162,25 +171,39 @@ mpeg_open(uint8_t *file, unsigned bytes, struct mpeg_info *out)
 	info.frame_bytes = (unsigned)(info.width * info.height * 3 / 2);
 
 	/* Its groups of pictures: each begins at a sequence header when every group has one, else
-	 * at its own header. Two passes over the stream's start codes: how many, then where. */
-	for (at = next_code(video_es, video_bytes, 0, &code); at < video_bytes; at = next_code(video_es, video_bytes, at + 4, &code)) {
-		headers += code == 0xb3;
-		groups += code == 0xb8;
-	}
-	begins = headers > 1 ? 0xb3 : 0xb8;
-	gops = room(((headers > 1 ? headers : groups) + 1) * sizeof *gops);
-	g = -1;
-	for (at = next_code(video_es, video_bytes, 0, &code); at < video_bytes; at = next_code(video_es, video_bytes, at + 4, &code)) {
-		if (code == begins) {
-			if (g >= 0)
-				gops[g].bytes = at - gops[g].at;
-			g++;
-			gops[g].at = g ? at : 0;
-			gops[g].first = info.frames;
-		} else if (code == 0x00 && g >= 0) {
-			gops[g].frames++;	/* a picture */
-			info.frames++;
+	 * at its own header. One pass over the stream's start codes notes the headers and the
+	 * pictures (a slice's code is neither); the groups are made from the notes. */
+	{
+		struct { unsigned at; int code; } *notes = NULL;
+		unsigned noted = 0, held = 0, k;
+
+		for (at = next_code(video_es, video_bytes, 0, &code); at < video_bytes; at = next_code(video_es, video_bytes, at + 4, &code)) {
+			if (code != 0xb3 && code != 0xb8 && code != 0x00)
+				continue;
+			if (noted == held && (notes = realloc(notes, (held += 1024) * sizeof *notes)) == NULL)
+				abort();
+			notes[noted].at = at;
+			notes[noted++].code = code;
+			headers += code == 0xb3;
+			groups += code == 0xb8;
 		}
+		begins = headers > 1 ? 0xb3 : 0xb8;
+		gops = room(((headers > 1 ? headers : groups) + 1) * sizeof *gops);
+		g = -1;
+		for (k = 0; k < noted; k++) {
+			at = notes[k].at;
+			if (notes[k].code == begins) {
+				if (g >= 0)
+					gops[g].bytes = at - gops[g].at;
+				g++;
+				gops[g].at = g ? at : 0;
+				gops[g].first = info.frames;
+			} else if (notes[k].code == 0x00 && g >= 0) {
+				gops[g].frames++;	/* a picture */
+				info.frames++;
+			}
+		}
+		free(notes);
 	}
 	if (g < 0)
 		return "its video has no groups of pictures";

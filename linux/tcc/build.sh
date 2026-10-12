@@ -20,6 +20,11 @@ fi
 git -C "$SRC" log --oneline -1
 # its float instructions as this machine has them: single precision only (docs/fpu.md)
 python3 "$HERE/fpu_hook.py" "$SRC"
+# numbers with a point read without the C library's long doubles, and an archive's symbols
+# hashed once (docs/cc.md)
+python3 "$HERE/speed_hook.py" "$SRC"
+# and its stores in bursts, which ended the machine's passes early (docs/cc.md)
+python3 "$HERE/pass_hook.py" "$SRC"
 
 # 1. a compiler that runs here and makes code for the machine: it builds TinyCC's own runtime
 echo "== cross compiler, and the runtime"
@@ -27,19 +32,7 @@ mkdir -p "$WORK/build/tcc-cross" && cd "$WORK/build/tcc-cross"
 "$SRC/configure" --cpu=riscv32 --triplet=riscv32-linux-musl --config-musl $PATHS > configure.log
 make -j"$(nproc)" > make.log 2>&1 || { tail -20 make.log; exit 1; }
 
-# 2. the same compiler, compiled for the machine
-echo "== the guest's compiler"
-mkdir -p "$WORK/build/tcc-guest" && cd "$WORK/build/tcc-guest"
-"$SRC/configure" --cpu=riscv32 --triplet=riscv32-linux-musl --config-musl $PATHS \
-    --cc=rv32-cc --ar=riscv32-linux-ar --extra-cflags="-O2" > configure.log
-# (a header the build makes by running a small program: both taken from the build that ran
-# here, the program first, so that the header is the newer and is not made again)
-cp "$WORK/build/tcc-cross/c2str.exe" . && cp "$WORK/build/tcc-cross/tccdefs_.h" . && touch tccdefs_.h
-make tcc > make.log 2>&1 || { tail -20 make.log; exit 1; }
-mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share"
-riscv32-linux-strip -o "$ROOT/usr/bin/tcc" tcc
-
-# 3. what a program is compiled against: headers and libraries, files of the ROM where the
+# 2. what a program is compiled against: headers and libraries, files of the ROM where the
 # compiler looks for them (they were one archive unpacked at the first build: half a minute).
 echo "== headers and libraries"
 STAGE=$WORK/build/tcc-sysroot
@@ -70,8 +63,30 @@ rm -f "$STAGE/usr/lib/libmcw.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libmcw.a" "$WORK/build/mcw.o"
 cp "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mc.h" "$STAGE/usr/include/"
 riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || true
+# what the examples take of each archive goes first in it, for the ROM (pack.py, docs/cc.md);
+# the compiler is told where that is (mapped.c), so it is built after
+mkdir -p "$WORK/build/tcc-guest"
+python3 "$HERE/pack.py" "$WORK/build/tcc-cross/tcc" "$STAGE" "$HERE/examples" "$WORK/build/tcc-guest/packed.h"
+mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share"
 rm -rf "$ROOT/usr/include" "$ROOT/usr/lib" "$ROOT/usr/share/cc-sysroot.tar"
 cp -rL "$STAGE/usr/include" "$STAGE/usr/lib" "$ROOT/usr/"
+
+# 3. the same compiler, compiled for the machine
+echo "== the guest's compiler"
+mkdir -p "$WORK/build/tcc-guest" && cd "$WORK/build/tcc-guest"
+# the libraries it links are read from memory (mapped.c, under its open, read, lseek and close)
+rv32-cc -O2 -Wall -I. -c "$HERE/mapped.c" -o mapped_files.o
+"$SRC/configure" --cpu=riscv32 --triplet=riscv32-linux-musl --config-musl $PATHS \
+    --cc=rv32-cc --ar=riscv32-linux-ar --extra-cflags="-O2" \
+    "--extra-ldflags=-Wl,--wrap=open,--wrap=read,--wrap=lseek,--wrap=close $PWD/mapped_files.o" > configure.log
+# (a header the build makes by running a small program: both taken from the build that ran
+# here, the program first, so that the header is the newer and is not made again)
+cp "$WORK/build/tcc-cross/c2str.exe" . && cp "$WORK/build/tcc-cross/tccdefs_.h" . && touch tccdefs_.h
+# (as one source file: the compiler's own calls are then the host compiler's to fold. The
+# objects of a build before this one are of other flags: they go first)
+rm -f tcc tcc.o libtcc.a libtcc.o tccpp.o tccgen.o tccelf.o tccasm.o tccdbg.o tccrun.o riscv32-*.o
+make tcc ONE_SOURCE=yes > make.log 2>&1 || { tail -20 make.log; exit 1; }
+riscv32-linux-strip -o "$ROOT/usr/bin/tcc" tcc
 ls -l "$ROOT/usr/bin/tcc"; echo "$(find "$ROOT/usr/include" "$ROOT/usr/lib" -type f | wc -l) files, $(du -sh "$STAGE/usr" | cut -f1)"
 
 # 4. `cc FILES...` compiles with all of that; `example NAME` builds and runs /usr/share/example-NAME.c

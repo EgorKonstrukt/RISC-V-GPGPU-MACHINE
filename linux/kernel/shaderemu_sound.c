@@ -16,6 +16,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/workqueue.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
 #include <asm/processor.h>
@@ -67,6 +68,8 @@ static DEFINE_MUTEX(snd_lock);
 static u32 snd_claimed;
 static struct snd_file *snd_owner[SND_CHUNKS];
 static int snd_opens;
+static u32 snd_have;		/* the card's output rate as the host said it at boot; 0: no card */
+static int snd_asked;		/* the answer above is in: an open does not wait for it */
 
 /* One frame of the machine: nothing the device does can be seen before it ends. */
 static void snd_frame(void)
@@ -206,7 +209,7 @@ static int snd_stream_start(struct snd_file *f)
 	writel(SND_MEM + at, voice + 8);
 	writel(f->frames, voice + 12);
 	writel(0, voice + 16);
-	writel(div_u64((u64)f->rate << 16, readl(snd_regs + SND_RATE)), voice + 20);
+	writel(div_u64((u64)f->rate << 16, readl(snd_regs + SND_RATE) ?: snd_have), voice + 20);
 	writel(256 | 256 << 16, voice + 24);
 	writel(((readl(voice) >> 1) + 1) << 1 | 1, voice);
 	f->stream = v;
@@ -279,10 +282,11 @@ static int shaderemu_sound_open(struct inode *inode, struct file *file)
 		writel(SND_VOICES, snd_regs + SND_COUNT);
 		writel(1, snd_regs + SND_ENABLE);
 	}
-	/* a host with a sound card says so within a few frames */
-	while (!readl(snd_regs + SND_RATE) && time_before(jiffies, until))
+	/* a host with a sound card says so within a few frames: asked at boot (snd_ask), so that
+	 * an open does not sit through them; only one that comes before the answer waits */
+	while (!snd_asked && !readl(snd_regs + SND_RATE) && time_before(jiffies, until))
 		snd_frame();
-	if (!readl(snd_regs + SND_RATE)) {
+	if (!(snd_asked ? snd_have : readl(snd_regs + SND_RATE))) {
 		mutex_lock(&snd_lock);
 		if (--snd_opens == 0)
 			writel(0, snd_regs + SND_ENABLE);
@@ -331,6 +335,18 @@ static struct miscdevice shaderemu_sound_dev = {
 	.fops	= &shaderemu_sound_fops,
 };
 
+/* Half a second after the card was switched on at boot: what the host said, and off again. */
+static void snd_ask(struct work_struct *work)
+{
+	mutex_lock(&snd_lock);
+	snd_have = readl(snd_regs + SND_RATE);
+	snd_asked = 1;
+	if (snd_opens == 0)
+		writel(0, snd_regs + SND_ENABLE);
+	mutex_unlock(&snd_lock);
+}
+static DECLARE_DELAYED_WORK(snd_ask_work, snd_ask);
+
 static int __init shaderemu_sound_init(void)
 {
 	/* With a device tree that still counts this range as RAM, the kernel is using it. */
@@ -344,6 +360,9 @@ static int __init shaderemu_sound_init(void)
 		return -ENOMEM;
 	/* full volume until someone says otherwise (the desktop's Settings): it is not set again */
 	writel(256, snd_regs + SND_MASTER);
+	writel(SND_VOICES, snd_regs + SND_COUNT);
+	writel(1, snd_regs + SND_ENABLE);
+	schedule_delayed_work(&snd_ask_work, HZ / 2);
 	pr_info("shaderemu_sound: /dev/sound, %lu KiB of sample memory at 0x%lx\n", SND_MEM_SIZE >> 10, SND_MEM);
 	return misc_register(&shaderemu_sound_dev);
 }

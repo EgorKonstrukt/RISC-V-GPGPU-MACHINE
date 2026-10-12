@@ -31,11 +31,23 @@ cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/
 
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
 # (the flags are Tiberian Dawn's: docs/tdawn.md)
+LTO="-O3 -flto=$(nproc) -ffat-lto-objects -flto-partition=1to1 -fno-toplevel-reorder --param inline-unit-growth=2000 --param max-inline-insns-auto=400 --param max-inline-insns-single=1500 --param large-function-growth=1000 --param inline-min-speedup=5"
+# What a played game ran, for the compiler (docs/tdawn.md, "What the compiler is told"):
+# TDAWN_PROFILE=count builds the program that counts; otherwise the counts kept here are used.
+PGO=""; COUNTS=""
+if [ "${TDAWN_PROFILE:-}" = count ]; then
+    # (the counters' functions are host.c's: an empty libgcov in the way of the toolchain's)
+    mkdir -p "$WORK/src/nogcov" && riscv32-linux-ar rc "$WORK/src/nogcov/libgcov.a"
+    PGO="-L$WORK/src/nogcov -fprofile-generate -fprofile-update=single -fprofile-exclude-files=/common/"; COUNTS="-DSHADEREMU_PGO"
+elif [ -f "$HERE/ralert.profile" ]; then
+    python3 "$TD/profile.py" put "$HERE/ralert.profile" "$BUILD"
+    PGO="-fprofile-use -fprofile-partial-training -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch"
+fi
 cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLATD=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
-    -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU -DSHADEREMU_RA $GLINC" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
-    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU -DSHADEREMU_RA $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/ralert-configure.log" 2>&1 \
+    -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU -DSHADEREMU_RA $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
+    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU -DSHADEREMU_RA $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/ralert-configure.log" 2>&1 \
     || { tail -20 "$WORK/src/ralert-configure.log"; exit 1; }
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/ralert-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/ralert-build.log" | head -40; exit 1; }

@@ -69,6 +69,8 @@ is_coded(const char *name)
 #define BAR 28
 #define STATUS 18
 #define DARK MWRGB(40, 40, 40)
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | \
+	GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP)
 
 static const struct { const char *label; int key; } keys[] = {
 	{ "Open", 'o' }, { "<", MWKEY_LEFT }, { ">", MWKEY_RIGHT }, { "Turn left", 'l' }, { "Turn right", 'r' },
@@ -234,6 +236,12 @@ is_picture(const char *name)
 }
 
 static int
+picture_entry(const struct dirent *entry)
+{
+	return is_picture(entry->d_name);
+}
+
+static int
 by_name(const struct dirent **a, const struct dirent **b)
 {
 	return strcasecmp((*a)->d_name, (*b)->d_name);
@@ -249,13 +257,13 @@ next(int by)
 	int n, i, at = -1, count = 0, pictures[512];
 
 	snprintf(where, sizeof where, "%.*s", slash ? (int)(slash - path) : 1, slash ? path : ".");
-	n = scandir(where[0] ? where : "/", &names, NULL, by_name);
-	for (i = 0; i < n && count < 512; i++)
-		if (is_picture(names[i]->d_name)) {
-			if (!strcmp(names[i]->d_name, leaf))
-				at = count;
-			pictures[count++] = i;
-		}
+	/* (only the pictures are kept and sorted: a folder may have hundreds of other names) */
+	n = scandir(where[0] ? where : "/", &names, picture_entry, by_name);
+	for (i = 0; i < n && count < 512; i++) {
+		if (!strcmp(names[i]->d_name, leaf))
+			at = count;
+		pictures[count++] = i;
+	}
 	if (count > 1 || (count == 1 && at < 0)) {
 		at = at < 0 ? 0 : (at + by + count) % count;
 		snprintf(file, sizeof file, "%s/%s", where, names[pictures[at]]->d_name);
@@ -299,7 +307,7 @@ key(int ch)
 	case 'f': case '1': zoom = 100, pan_x = pan_y = 0; break;
 	case 'e':
 		/* the paint program with this file: what it saves is a PPM beside it */
-		if (path[0] && fork() == 0) {
+		if (path[0] && real_vfork() == 0) {
 			execlp("nxpaint", "nxpaint", path, (char *)NULL);
 			_exit(127);
 		}
@@ -318,7 +326,7 @@ main(int argc, char **argv)
 {
 	GR_EVENT event;
 	GR_SCREEN_INFO screen;
-	int pw, ph, i, x, w, h, b;
+	int pw, ph, i, x;
 
 	if (argc > 3 && !strcmp(argv[1], "--decode")) {
 		const char *why = decode(argv[2], argv[3], &pw, &ph);
@@ -330,10 +338,9 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
-	GrGetScreenInfo(&screen);
+	screen = *ui_screen();
 	for (i = 0, x = 4; i < KEYS; i++) {
-		GrGetGCTextSize(ui_gc, (char *)keys[i].label, -1, GR_TFASCII, &w, &h, &b);
-		key_x[i] = x, key_w[i] = w + 14;
+		key_x[i] = x, key_w[i] = ui_width(&ui_var_widths, ui_var, keys[i].label, -1) + 14;
 		x += key_w[i] + (i == 0 || i == 2 || i == 4 || i == 7 ? 10 : 2);
 	}
 	key_x[KEYS] = x;
@@ -344,15 +351,17 @@ main(int argc, char **argv)
 		width = key_x[KEYS];
 	atexit(forget_all);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Viewer", GR_ROOT_WINDOW_ID, -1, -1, width, height, DARK);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ |
-			       GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION);
+	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
-	ui_framed();
-	draw();
-	if (argc > 1) {
+	if (argc > 1 && is_coded(argv[1])) {
+		/* seconds of decoding: the window framed and saying so first (docs/nanox.md) */
+		ui_framed();
+		draw();
 		take(argv[1]);
 		draw();
+	} else if (argc > 1) {
+		take(argv[1]);	/* (nothing to wait for: the window's first exposure draws it) */
 	}
 	if (getenv("NXVIEW_PRINT")) {
 		for (i = 0; i < KEYS; i++)
@@ -386,8 +395,10 @@ main(int argc, char **argv)
 					printf("nxview: %s, %d x %d, turned %d, %d%%, %s\n", path, info.width, info.height, turns, zoom, notice);
 					fflush(stdout);
 				}
-			} else
+			} else {
 				held = 1, held_x = event.button.x - pan_x, held_y = event.button.y - pan_y;
+				ui_moves(window, EVENTS, 1);	/* (the pointer's moves, while the button is held) */
+			}
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			/* a picture larger than its room is moved about by a drag */
@@ -396,9 +407,12 @@ main(int argc, char **argv)
 				draw();
 			} else
 				held = 0;
+			if (!event.mouse.buttons)
+				ui_moves(window, EVENTS, 0);
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			held = 0;
+			ui_moves(window, EVENTS, 0);
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
 			if (key(event.keystroke.ch))

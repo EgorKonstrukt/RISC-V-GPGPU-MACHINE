@@ -9,6 +9,9 @@
 #define STATUS 18
 #define MARGIN 3
 #define UNDO_MOST 512
+/* (the pointer's moves are asked for while a button is held: ui_moves) */
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_BUTTON_DOWN | \
+	GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ)
 
 static char **lines;		/* each allocated, no newline */
 static int count, room;
@@ -234,11 +237,12 @@ load(void)
 	char text[1024];
 
 	while (file && fgets(text, sizeof text, file)) {
-		int length = strcspn(text, "\r\n"), i;
+		int length;
 
-		for (i = 0; i < length; i++)
-			if (text[i] == '\t')
-				text[i] = ' ';
+		/* (one pass: to the line's end, its tabs made spaces on the way) */
+		for (length = 0; text[length] && text[length] != '\r' && text[length] != '\n'; length++)
+			if (text[length] == '\t')
+				text[length] = ' ';
 		insert_line(count, text, length);
 	}
 	if (file)
@@ -266,14 +270,16 @@ save(void)
 	notice = "saved";
 }
 
+/* A line of the text; `cleared`: its ground is white already (draw_all). */
 static void
-draw_line(int line)
+draw_line_on(int line, int cleared)
 {
 	int y = MARGIN + (line - top) * ui_fh, length, x0, y0, x1, y1, from = 0, to = 0, shown;
 
 	if (line < top || line >= top + rows)
 		return;
-	ui_fill(window, 0, y, width - UI_SCROLL_W, ui_fh, WHITE);
+	if (!cleared)
+		ui_fill(window, 0, y, width - UI_SCROLL_W, ui_fh, WHITE);
 	if (line >= count)
 		return;
 	length = strlen(lines[line]);
@@ -308,6 +314,12 @@ draw_line(int line)
 }
 
 static void
+draw_line(int line)
+{
+	draw_line_on(line, 0);
+}
+
+static void
 draw_status(void)
 {
 	char text[200];
@@ -330,7 +342,7 @@ draw_all(void)
 
 	ui_fill(window, 0, 0, width - UI_SCROLL_W, height - STATUS, WHITE);
 	for (line = top; line < top + rows; line++)
-		draw_line(line);
+		draw_line_on(line, 1);
 	ui_scrollbar(window, width - UI_SCROLL_W, 0, height - STATUS, count, rows, top);
 	draw_status();
 }
@@ -437,8 +449,9 @@ find_key(int ch)
 static void
 key(int ch, int modifiers)
 {
-	int was = cy, length = strlen(lines[cy]), whole = 0, had = marked, moves = 0, command = 0;
-	int shift = (modifiers & MWKMOD_SHIFT) != 0, edits, cut = 0;
+	int was = cy, length = strlen(lines[cy]), whole = 0, moves = 0, command = 0, line;
+	int shift = (modifiers & MWKMOD_SHIFT) != 0, edits, cut = 0, x0, y0, x1, y1;
+	int had = selection(&x0, &y0, &x1, &y1), was_marked = marked, was_ax = ax, was_ay = ay;	/* had: something was shown selected */
 
 	if (finding) {
 		find_key(ch);
@@ -605,11 +618,19 @@ key(int ch, int modifiers)
 		cx = strlen(lines[cy]);
 	if (marked && ax == cx && ay == cy && !shift)
 		marked = 0;
-	if (follow() || whole || had || marked)
+	if (follow() || whole) {
 		draw_all();
-	else {
+	} else if (moves && shift && (!was_marked || (ax == was_ax && ay == was_ay))) {
+		/* the selection grew or shrank at the cursor's end: the lines the cursor passed */
+		for (line = was < cy ? was : cy; line <= (was < cy ? cy : was); line++)
+			draw_line(line);
+		draw_status();
+	} else if (had || selection(&x0, &y0, &x1, &y1)) {
+		draw_all();
+	} else {
 		draw_line(was);
-		draw_line(cy);
+		if (cy != was)
+			draw_line(cy);
 		draw_status();
 	}
 }
@@ -661,8 +682,7 @@ main(int argc, char **argv)
 	snprintf(title, sizeof title, "%s - Editor", path);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, title, GR_ROOT_WINDOW_ID, -1, -1,
 		80 * ui_fw + 2 * MARGIN, 24 * ui_fh + MARGIN + STATUS, WHITE);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE |
-		GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_CLOSE_REQ);
+	GrSelectEvents(window, EVENTS);
 	resized(80 * ui_fw + 2 * MARGIN, 24 * ui_fh + MARGIN + STATUS);
 	GrMapWindow(window);
 	GrSetFocus(window);
@@ -681,12 +701,15 @@ main(int argc, char **argv)
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (ui_wheel(&event)) {
 				scroll_to(top + 3 * ui_wheel_sum(&event));
-			} else if (event.button.x >= width - UI_SCROLL_W && event.button.y < height - STATUS) {
+				break;
+			}
+			ui_moves(window, EVENTS, 1);
+			if (event.button.x >= width - UI_SCROLL_W && event.button.y < height - STATUS) {
 				dragging = 1;
 				scroll_to(ui_scroll_to(event.button.y, 0, height - STATUS, count, rows));
 			} else if (event.button.y < height - STATUS && (event.button.changebuttons & GR_BUTTON_L)) {
 				/* a click puts the cursor there, and a selection begins with it */
-				int had = marked;
+				int x0, y0, x1, y1, had = selection(&x0, &y0, &x1, &y1), was = cy;
 
 				place(event.button.x, event.button.y, &cx, &cy);
 				ax = cx, ay = cy;
@@ -697,16 +720,17 @@ main(int argc, char **argv)
 				if (had)
 					draw_all();
 				else {
-					int line;
-
-					for (line = top; line < top + rows; line++)
-						draw_line(line);	/* (the cursor was on one of them) */
+					draw_line(was);
+					if (cy != was)
+						draw_line(cy);
 					draw_status();
 				}
 			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			dragging = selecting = 0;
+			if (!(event.button.buttons & (GR_BUTTON_L | GR_BUTTON_R | GR_BUTTON_M)))
+				ui_moves(window, EVENTS, 0);
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (dragging && (event.mouse.buttons & GR_BUTTON_L)) {
@@ -724,6 +748,8 @@ main(int argc, char **argv)
 				}
 			} else {
 				dragging = selecting = 0;
+				if (!event.mouse.buttons)
+					ui_moves(window, EVENTS, 0);
 			}
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:

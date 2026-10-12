@@ -49,7 +49,9 @@ rv32-cc -O2 -w -I"$MW/src/include" "$HERE/nxbar.c" "$MW/src/lib/libnano-X.a" -o 
 # the stock glxgears on our OpenGL driver, as a Nano-X client (programs/linux, docs/gpu.md)
 GL=$REPO/programs
 [ -f "$GL/build/fetch/glxgears.c" ] || python3 "$GL/linux/fetch.py"
-rv32-cc -O2 -w -DGL_NANOX -I"$MW/src/include" -idirafter "$GL/linux/include" "$GL/build/fetch/glxgears.c" \
+# (its time arithmetic a frame out of doubles: programs/linux/gears_time.py)
+python3 "$GL/linux/gears_time.py" "$GL/build/fetch/glxgears.c" "$WORK/src/glxgears_time.c"
+rv32-cc -O2 -w -DGL_NANOX -I"$MW/src/include" -idirafter "$GL/linux/include" "$WORK/src/glxgears_time.c" \
     "$GL/linux/gl.c" "$MW/src/lib/libnano-X.a" -lm -o "$MW/src/bin/glxgears"
 tr -d '\r' < "$HERE/nx" > "$OUT/nx"
 # the Start menu lists what the nxapps.* files name (nxbar.c): a program adds itself with one

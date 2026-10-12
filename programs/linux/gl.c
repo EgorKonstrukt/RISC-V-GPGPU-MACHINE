@@ -785,6 +785,11 @@ static void wait_for_frame(void) {
     else sched_yield();
 }
 
+#ifdef GL_NANOX
+static int swap_waits = -1;         // GL_SWAP=wait: every frame is drawn, as before
+static uint32_t frames_replaced;    // frames a newer one took the place of before the GPU drew them
+#endif
+
 // Sends the frame: its uniform blocks and command list in one write, then the submit word, and
 // waits for the GPU to count it.
 void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
@@ -803,6 +808,15 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
 #ifdef GL_NANOX
     if (nano_x) {
         volatile uint32_t* regs = (volatile uint32_t*)gpu_map;
+        static uint32_t frames_swapped;
+        static int stats;
+        if (swap_waits < 0) {
+            const char* how = getenv("GL_SWAP");
+            swap_waits = how && strcmp(how, "wait") == 0;
+            stats = getenv("GL_STATS") != 0;
+        }
+        if (stats && (++frames_swapped & 1023) == 0)
+            fprintf(stderr, "gl: %u frames, %u of them replaced before they were drawn\n", (unsigned)frames_swapped, (unsigned)frames_replaced);
         if (nano_info_stale) {
             fd_set none;
             GrGetWindowInfo(nano_window, &nano_info);
@@ -819,13 +833,24 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
         }
         if (nano_info.realized && nano_info.surface_address) {
             // Hand the list to the GPU, to be drawn into the window's part of its buffer, and
-            // go on to the next frame. Only wait while the GPU still has the last one.
+            // go on to the next frame. A frame of ours the GPU has not drawn yet (it draws one
+            // list a pass) is replaced by this newer one; only another program's list is waited for.
+            static uint32_t undrawn;   // the list handed over last
+            int replaced = 0;
             for (;;) {
                 while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
                 if (regs[REG_SUBMIT / 4] == 0) break;
+                if (undrawn && regs[REG_SUBMIT / 4 + 1] == undrawn && !swap_waits) {
+                    // (taken back first: a pass that ends among these stores draws nothing half written)
+                    regs[REG_SUBMIT / 4] = 0;
+                    frames_replaced++;
+                    replaced = 1;
+                    break;
+                }
                 __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
                 next_frame();
             }
+            undrawn = GPU_PHYS + frame_at + frame_flip + uniform_bytes;
             regs[REG_INTO / 4] = nano_info.surface_address;
             regs[REG_INTO / 4 + 1] = nano_info.width;
             regs[REG_INTO / 4 + 2] = nano_info.height;
@@ -840,7 +865,7 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
             regs[REG_VOLUME / 4 + 3] = nano_info.width | nano_info.height << 16;
             regs[REG_VOLUME / 4] = GPU_PHYS + frame_at + frame_flip + uniform_bytes;
             regs[REG_VOLUME / 4 + 2]++;
-            fps_caption(&nano_info, regs[REG_CLOCK / 4]);
+            if (!replaced) fps_caption(&nano_info, regs[REG_CLOCK / 4]);   // (frames shown)
             frame_flip ^= FRAME_FLIP;
         } else {
             sched_yield();

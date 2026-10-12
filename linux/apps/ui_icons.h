@@ -29,14 +29,27 @@ ui_icon_of(const char *name)
 	int i;
 
 	if (ui_icon_count < 0) {
-		FILE *file = fopen(UI_ICONS_INDEX, "r");
+		/* the list is a name and a number a line: read in one piece, and no scanf for it */
+		static char text[4096];
+		int fd = open(UI_ICONS_INDEX, O_RDONLY), n = fd < 0 ? 0 : (int)read(fd, text, sizeof text - 1), at = 0, k;
 
-		ui_icon_count = 0;
-		while (file && ui_icon_count < 96 &&
-		       fscanf(file, "%23s %d", ui_icon_table[ui_icon_count].name, &ui_icon_table[ui_icon_count].cell) == 2)
-			ui_icon_count++;
-		if (file)
-			fclose(file);
+		if (fd >= 0)
+			close(fd);
+		text[n < 0 ? 0 : n] = 0;
+		for (ui_icon_count = 0; ui_icon_count < 96; ui_icon_count++) {
+			while (text[at] == ' ' || text[at] == '\n' || text[at] == '\r' || text[at] == '\t')
+				at++;
+			for (k = 0; text[at] > ' ' && k < 23; k++)
+				ui_icon_table[ui_icon_count].name[k] = text[at++];
+			ui_icon_table[ui_icon_count].name[k] = 0;
+			while (text[at] == ' ' || text[at] == '\t')
+				at++;
+			if (!k || text[at] < '0' || text[at] > '9')
+				break;
+			for (k = 0; text[at] >= '0' && text[at] <= '9'; at++)
+				k = k * 10 + text[at] - '0';
+			ui_icon_table[ui_icon_count].cell = k;
+		}
 	}
 	for (i = 0; i < ui_icon_count; i++)
 		if (!strcmp(ui_icon_table[i].name, name))
@@ -93,9 +106,17 @@ ui_icon_of_command(const char *command, struct ui_icon_ref *icon)
 	snprintf(word, sizeof word, "%.*s", (int)strcspn(command, " "), command);
 	for (i = word[0] == '/' ? 0 : 1; i < (word[0] == '/' ? 1u : 4u); i++) {
 		snprintf(path, sizeof path, "%s%s", folders[i], word);
+		/* (one look at the file when it carries its icon, which says it is there too) */
+		if (strlen(path) < sizeof icon->file && ui_icon_in(path)) {
+			strcpy(icon->file, path);
+			icon->cell = -1;
+			return;
+		}
 		if (access(path, F_OK) != 0)
 			continue;
-		ui_icon_of_program(path, "", icon);
+		icon->cell = ui_icon_of(strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+		if (icon->cell < 0)
+			icon->cell = ui_icon_of("");
 		if (!icon->file[0] && icon->cell < 0) {
 			snprintf(path, sizeof path, "%s%s.bin", folders[i], word);
 			ui_icon_of_program(path, "default", icon);

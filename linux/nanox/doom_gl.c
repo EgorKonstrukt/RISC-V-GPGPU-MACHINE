@@ -109,6 +109,31 @@ FixedDiv2(fixed_t a, fixed_t b)
 /* For the figures doom_video.c prints: instructions in the view, and (in [3]) the things drawn. */
 unsigned doom_view[4];
 
+/*
+ * The tables of Doom's own renderer cost 2.5M instructions whenever the view's size is set
+ * (R_ExecuteSetViewSize calls this). While the GPU draws the kept level nothing reads them:
+ * they are made when that renderer, or its walk of the tree, is first wanted.
+ */
+void R_InitTextureMapping_port(void);
+void R_ExecuteSetViewSize(void);
+static int tables_wanted, tables_stale;
+
+void
+R_InitTextureMapping(void)
+{
+	tables_stale = doom_gl && !tables_wanted;
+	if (!tables_stale)
+		R_InitTextureMapping_port();
+}
+
+static void
+soft_tables(void)
+{
+	tables_wanted = 1;
+	if (tables_stale)
+		R_ExecuteSetViewSize();
+}
+
 /* ---- full-screen pictures ---- */
 
 static int page_held;			/* the screen holds the page last drawn, but for what dirtybox covers */
@@ -348,24 +373,33 @@ split(int number, fixed_t (*p)[2], int n)
 	}
 }
 
-/* Whole-number square root, for seg lengths. */
+/* Whole-number square root, for seg lengths: all but the last eight bits are the root of the
+ * number without its last sixteen, which fits a word for any seg under 16,384 units. */
 static unsigned
 root(unsigned long long v)
 {
-	unsigned long long r = 0, bit = 1ULL << 62;
+	unsigned top = (unsigned)(v >> 16), r = 0, bit = 1u << 30;
 
-	while (bit > v)
+	if (v >> 48) {
+		r = root(v >> 2) << 1;	/* (longer: twice the root of a quarter, or one more) */
+		return r + ((unsigned long long)(r + 1) * (r + 1) <= v);
+	}
+	while (bit > top)
 		bit >>= 2;
 	while (bit) {
-		if (v >= r + bit) {
-			v -= r + bit;
+		if (top >= r + bit) {
+			top -= r + bit;
 			r = (r >> 1) + bit;
 		} else {
 			r >>= 1;
 		}
 		bit >>= 2;
 	}
-	return (unsigned)r;
+	r <<= 8;
+	for (bit = 128; bit; bit >>= 1)
+		if ((unsigned long long)(r | bit) * (r | bit) <= v)
+			r |= bit;
+	return r;
 }
 
 /* ---- the level, kept in GPU memory ---- */
@@ -401,7 +435,16 @@ static int own_count;
 static int *moving, moving_count;	/* groups whose picture is one of an animation's */
 static int light_seen[2] = { -1, -1 };	/* per set of commands, as the lights in struct seen and group */
 static int *sliding, sliding_count;	/* into own: the walls of lines that scroll */
+static short **seen_from;		/* per sector: the sectors it can see into (sectors_seen) */
 static fixed_t eye_low, eye_high;	/* with the eye from one to the other no floor or ceiling turns its back */
+/* The floors, and the ceilings, in order of height, with how many of each are under the eye;
+ * a sector that has moved since is `loose`, and looked at by itself (sector_faces). */
+struct level { fixed_t height; int sector; };
+static struct level *floors_up, *ceilings_up;
+static int floor_count, ceiling_count, floors_under, ceilings_under;
+static unsigned char *loose;
+static int *loose_list, loose_count;
+static int anim_shown[32];		/* per animation (p_spec.c has room for 32): its first picture as last seen */
 
 /*
  * What the game has changed since the level was written: doom.sh has it say so where it
@@ -412,7 +455,8 @@ static unsigned char *marked;		/* per sector: bit n says it is in pending[n] */
 static int marked_count;
 static int *pending[2], pending_count[2];	/* per set of commands: sectors to look at again */
 int doom_walls_changed;
-static int level_loads, level_made;
+int doom_level_loads;			/* the levels and saved games loaded so far */
+static int level_made;
 
 void
 doom_sector_changed(void *of)
@@ -444,23 +488,31 @@ void
 P_InitThinkers(void)
 {
 	P_InitThinkers_port();
-	level_loads++;
+	doom_level_loads++;
 }
 
 #define THING_PLACES 512		/* a power of two */
 /* A place's quad is 64 bytes; they are 80 apart, so that one field of many of them (a frame
  * turns every thing in view) does not land in the same few sets of the machine's write cache. */
 #define PLACE_BYTES 80
-struct place { const mobj_t *of; fixed_t x, y, high; angle_t angle; int lump, frame, grey; unsigned char flip; };
+struct place {
+	const mobj_t *of;
+	const spriteframe_t *pictures;	/* of the thing's sprite and frame, which `key` is */
+	unsigned key;
+	fixed_t x, y, high, top, tall;
+	angle_t angle;			/* the view's, when the quad was turned to face it */
+	int lump, frame, grey, wide, left;	/* (wide and left in whole pixels) */
+	/* which of eight pictures shows (turn) is found again when the thing faces another way,
+	 * or has moved against the viewer by more than `still` since it was found */
+	angle_t facing;
+	fixed_t rx, ry, still;
+	short index;
+	unsigned char flip, turn;
+};
 static struct place places[THING_PLACES];
-static uint32_t *
-place_quad(int i)
-{
-	return (uint32_t *)((uint8_t *)world_vertices + world_quads * 64 + i * PLACE_BYTES);
-}
 
-static short lately[THING_PLACES];	/* the places drawn from in this frame */
-static int lately_count;
+static short lately[2][THING_PLACES];	/* the places drawn from in this frame, and in the last */
+static int lately_count[2], lately_now;
 
 static int
 grey_of(int level, int shade)
@@ -651,6 +703,8 @@ group_picture(const struct group *g, int *shown)
 static void
 world_free(void)
 {
+	int s;
+
 	free(pieces);
 	free(groups);
 	free(seen);
@@ -663,6 +717,18 @@ world_free(void)
 	free(marked);
 	free(pending[0]);
 	free(pending[1]);
+	free(floors_up);
+	free(ceilings_up);
+	free(loose);
+	free(loose_list);
+	floors_up = ceilings_up = NULL;
+	loose = NULL;
+	loose_list = NULL;
+	if (seen_from)
+		for (s = 0; s < marked_count; s++)
+			free(seen_from[s]);
+	free(seen_from);
+	seen_from = NULL;
 	marked = NULL;
 	marked_count = 0;
 	pending[0] = pending[1] = sliding = NULL;
@@ -676,6 +742,22 @@ world_free(void)
 	world_name = 0;
 	world_on = 0;
 	seglKeep(0, 0);
+}
+
+/* Into order of height (a Shell sort: a level has hundreds of sectors and few heights). */
+static void
+by_height(struct level *level, int count)
+{
+	int gap, i, k;
+
+	for (gap = count / 2; gap > 0; gap = gap == 2 ? 1 : gap * 5 / 11)
+		for (i = gap; i < count; i++) {
+			const struct level moved = level[i];
+
+			for (k = i; k >= gap && level[k - gap].height > moved.height; k -= gap)
+				level[k] = level[k - gap];
+			level[k] = moved;
+		}
 }
 
 /* Makes the level's pieces, sorts them into groups, and writes all of it. */
@@ -759,11 +841,15 @@ world_build(void)
 	seglTexturePointer(world_vertices, world_quads * 64 + THING_PLACES * PLACE_BYTES, 1, GL_COLOR_INDEX8_EXT);
 	/* the things' places: a quad and a command each, showing nothing until a thing takes it */
 	memset(places, 0, sizeof places);
-	lately_count = 0;
+	lately_count[0] = lately_count[1] = 0;
 	for (i = 0; i < THING_PLACES; i++) {
-		seglKeptQuads(group_count + i, (uint8_t *)place_quad(i) - (world_quads + i) * 64, world_quads + i, 1, 0, 255, 1);
+		uint8_t *quad = (uint8_t *)world_vertices + world_quads * 64 + i * PLACE_BYTES;
+
+		places[i].index = i;
+		seglKeptQuads(group_count + i, quad - (world_quads + i) * 64, world_quads + i, 1, 0, 255, 1);
 		seglKeptShown(group_count + i, 0);
 	}
+	seen_from = calloc(numsectors + 1, sizeof *seen_from);
 
 	seen = malloc(numsectors * sizeof *seen);
 	sector_group = malloc((numsectors + 2) * sizeof *sector_group);
@@ -849,6 +935,26 @@ world_build(void)
 		else if (group->kind == CEILING)
 			seen[group->sector].ceiling_group = g;
 	}
+	floors_up = malloc((numsectors + 1) * sizeof *floors_up);
+	ceilings_up = malloc((numsectors + 1) * sizeof *ceilings_up);
+	loose = calloc(numsectors + 1, 1);
+	loose_list = malloc((numsectors + 1) * sizeof *loose_list);
+	floor_count = ceiling_count = loose_count = 0;
+	for (i = 0; i < numsectors; i++) {
+		if (seen[i].floor_group >= 0) {
+			floors_up[floor_count].height = seen[i].floor;
+			floors_up[floor_count++].sector = i;
+		}
+		if (seen[i].ceiling_group >= 0) {
+			ceilings_up[ceiling_count].height = seen[i].ceiling;
+			ceilings_up[ceiling_count++].sector = i;
+		}
+	}
+	by_height(floors_up, floor_count);
+	by_height(ceilings_up, ceiling_count);
+	floors_under = floor_count;	/* as the runs are now: every floor and ceiling shown */
+	ceilings_under = 0;
+	memset(anim_shown, -1, sizeof anim_shown);
 	for (i = 0; i < own_count; i++)
 		for (g = sector_group[pieces[own[i].piece].sector];; g++)
 			if (groups[g].piece == own[i].piece) {
@@ -882,19 +988,28 @@ sector_moved(int s)
 		}
 	seen[s].floor = sector->floorheight;
 	seen[s].ceiling = sector->ceilingheight;
+	if (!loose[s]) {
+		loose[s] = 1;
+		loose_list[loose_count++] = s;
+	}
 }
 
+/* A sector's light has changed: the grey of its runs, as grey_of() has it for a kept level. */
 static void
 sector_relit(int s, int set)
 {
+	const int level = sectors[s].lightlevel, end = sector_group[s + 1], white = viewplayer->fixedcolormap != 0;
+	const int base = level >= 248 ? 255 : (level & ~15) + 8;
+	struct group *group = &groups[sector_group[s]];
 	int g;
 
-	seen[s].light[set] = sectors[s].lightlevel >> 4;
-	for (g = sector_group[s]; g < sector_group[s + 1]; g++) {
-		int grey = grey_of(sectors[s].lightlevel, groups[g].shade);
+	seen[s].light[set] = level >> 4;
+	for (g = sector_group[s]; g < end; g++, group++) {
+		int grey = base + group->shade;
 
-		if (grey != groups[g].grey[set])
-			seglKeptGreyIn(set, g, groups[g].grey[set] = grey);
+		grey = white || grey > 255 ? 255 : grey < 0 ? 0 : grey;
+		if (grey != group->grey[set])
+			seglKeptGreyIn(set, g, group->grey[set] = grey);
 	}
 }
 
@@ -939,6 +1054,34 @@ sector_faces(struct seen *was, fixed_t eye)
 	}
 }
 
+/* A floor (or a ceiling) the eye has passed shows its face, or its back, which is nothing. */
+static void
+face_shown(int s, int ceiling, int shown)
+{
+	struct seen *was = &seen[s];
+	unsigned char *hidden = ceiling ? &was->ceiling_hidden : &was->floor_hidden;
+	int group = ceiling ? was->ceiling_group : was->floor_group;
+
+	if (loose[s] || *hidden == !shown)
+		return;
+	*hidden = !shown;
+	seglKeptShown(group, shown ? groups[group].quads : 0);
+}
+
+/* The eye is here now: what it has passed on its way, of the sectors that have not moved. */
+static void
+eye_passed(fixed_t eye)
+{
+	while (floors_under < floor_count && floors_up[floors_under].height < eye)
+		face_shown(floors_up[floors_under++].sector, 0, 1);
+	while (floors_under > 0 && floors_up[floors_under - 1].height >= eye)
+		face_shown(floors_up[--floors_under].sector, 0, 0);
+	while (ceilings_under < ceiling_count && ceilings_up[ceilings_under].height <= eye)
+		face_shown(ceilings_up[ceilings_under++].sector, 1, 0);
+	while (ceilings_under > 0 && ceilings_up[ceilings_under - 1].height > eye)
+		face_shown(ceilings_up[--ceilings_under].sector, 1, 1);
+}
+
 /* A wall of a line that does something: a switch's picture, a wall that slides. */
 static void
 own_update(struct own *o)
@@ -959,7 +1102,10 @@ world_update(void)
 {
 	/* a run's grey is one word of each of its commands, 64 bytes apart, which the write cache
 	 * holds few of: only the set this frame is built in is brought up to date */
-	int set = seglSet(), light = viewplayer->fixedcolormap != 0, s, i;
+	int set = seglSet(), light = viewplayer->fixedcolormap != 0, s, i, waiting = 0;
+	const anim_def *anim;
+	const int from = (viewplayer->mo->subsector->sector - sectors) * numsectors;
+	const byte *reject = rejectmatrix;
 	const fixed_t eye = viewz;
 
 	if (light != light_seen[set])
@@ -971,22 +1117,30 @@ world_update(void)
 		const sector_t *sector = &sectors[s = pending[set][i]];
 		struct seen *was = &seen[s];
 
-		marked[s] &= ~(1 << set);
 		if (sector->floorheight != was->floor || sector->ceilingheight != was->ceiling)
 			sector_moved(s);
-		if (sector->lightlevel >> 4 != was->light[set])
+		/* a light the viewer's sector cannot see waits, marked, until it can: most that glow do */
+		if (sector->lightlevel >> 4 == was->light[set])
+			marked[s] &= ~(1 << set);
+		else if (reject[(from + s) >> 3] & (1 << ((from + s) & 7)))
+			pending[set][waiting++] = s;
+		else {
+			marked[s] &= ~(1 << set);
 			sector_relit(s, set);
+		}
 		if (sector->floorpic != was->floorpic || sector->ceilingpic != was->ceilingpic)
 			sector_repainted(s);
-		sector_faces(was, eye);
+		if (loose[s])
+			sector_faces(was, eye);
 	}
-	pending_count[set] = 0;
+	pending_count[set] = waiting;
 	if (eye < eye_low || eye > eye_high) {
 		eye_low = MININT;
 		eye_high = MAXINT;
-		for (s = 0; s < numsectors; s++)
-			sector_faces(&seen[s], eye);
+		for (i = 0; i < loose_count; i++)
+			sector_faces(&seen[loose_list[i]], eye);
 	}
+	eye_passed(eye);
 	if (doom_walls_changed) {
 		doom_walls_changed = 0;
 		for (i = 0; i < own_count; i++)
@@ -995,7 +1149,16 @@ world_update(void)
 		for (i = 0; i < sliding_count; i++)
 			own_update(&own[sliding[i]]);
 	}
-	for (i = 0; i < moving_count; i++) {
+	/* an animation's pictures all move on together: its first one says whether any has */
+	for (anim = anims, i = 0, s = 0; anim < lastanim && i < 32; anim++, i++) {
+		const int now = anim->istexture ? texturetranslation[anim->basepic] : flattranslation[anim->basepic];
+
+		if (now != anim_shown[i]) {
+			anim_shown[i] = now;
+			s = 1;
+		}
+	}
+	for (i = 0; s && i < moving_count; i++) {
 		struct group *group = &groups[moving[i]];
 		int now = group->kind >= FLOOR ? flattranslation[group->texture] : texturetranslation[group->texture];
 
@@ -1007,133 +1170,219 @@ world_update(void)
 /* The things that may be in view: in a sector the viewer's can see into, and not behind or beside it. */
 static void thing_billboard(mobj_t *thing, int level);
 
+/* What a frame's things all use, read once; and where the next place drawn from is noted. */
+struct eye { fixed_t x, y, sin, cos; angle_t angle; int frame, count; uint8_t *quads; short *lately; };
+
+/* A thing's own place, or else one nothing was drawn from in the last frame or this one. */
+static struct place *
+thing_place(const mobj_t *thing, unsigned at, int frame)
+{
+	struct place *place = NULL;
+	int probe;
+
+	if (thing->flags & MF_SHADOW)
+		return NULL;	/* one that is blended */
+	for (probe = 0; probe < 8; probe++) {
+		struct place *p = &places[(at + probe) & (THING_PLACES - 1)];
+
+		if (p->of == thing)
+			return p;
+		if (!place && p->frame + 1 < frame)
+			place = p;
+	}
+	return place;
+}
+
+/*
+ * Which of a frame's eight pictures the viewer sees, as Doom has it, and how far the thing
+ * may move against the viewer before that can be another: the angle is `within` its eighth
+ * by so much, less what R_PointToAngle may be off by (far below the 0.35 degrees taken), and
+ * a move of d at distance r turns it by no more than asin(d / r).
+ */
+static void
+thing_turn(struct place *place, const mobj_t *thing, fixed_t rx, fixed_t ry)
+{
+	unsigned a = R_PointToAngle(thing->x, thing->y) - thing->angle + (unsigned)(ANG45 / 2) * 9, within = a & 0x1fffffff;
+	int far = (abs(rx) > abs(ry) ? abs(rx) : abs(ry)) >> FRACBITS, room;
+
+	if (within > 0x10000000)
+		within = 0x1fffffff - within;
+	room = (int)(within >> 16) - 64;
+	place->turn = a >> 29;
+	place->facing = thing->angle;
+	place->rx = rx;
+	place->ry = ry;
+	place->still = room > 0 && far >= 32 ? (room * far) << 2 : -1;
+}
+
 /*
  * A thing in view keeps a place among the kept commands while it stays in view: a frame then
  * turns its quad to face the viewer, and sends a picture, a height or a light only when
  * they change. A thing no longer drawn gives its place up.
  */
-static void
-thing_kept(mobj_t *thing, int level)
+static inline void
+thing_kept(mobj_t *thing, int level, int level_grey, struct eye *eye)
 {
-	spriteframe_t *frame = &sprites[thing->sprite].spriteframes[thing->frame & FF_FRAMEMASK];
-	unsigned at = ((unsigned)(size_t)thing >> 4) * 2654435761u >> 23, probe;
-	int turn = 0, lump, flip, grey, command;
-	struct place *place = NULL;
-	fixed_t left, width, x1, y1, high;
+	const unsigned at = ((unsigned)(size_t)thing >> 4) * 2654435761u >> 23, key = thing->sprite | (unsigned)thing->frame << 16;
+	struct place *place = &places[at];
+	int changed = 0, grey, command;
+	fixed_t high;
 	uint32_t *to;
-	GLuint name;
 
-	if (frame->rotate)
-		turn = (R_PointToAngle(thing->x, thing->y) - thing->angle + (unsigned)(ANG45 / 2) * 9) >> 29;
-	lump = frame->lump[turn];
-	flip = frame->flip[turn];
-	/* its own place, or else one nothing was drawn from in the last frame or this one */
-	for (probe = 0; probe < 8; probe++) {
-		struct place *p = &places[(at + probe) & (THING_PLACES - 1)];
-
-		if (p->of == thing) {
-			place = p;
-			break;
-		}
-		if (!place && p->frame + 1 < frame_number)
-			place = p;
-	}
-	if (!place || (thing->flags & MF_SHADOW)) {
-		thing_billboard(thing, level);	/* no room, or one that is blended */
-		return;
-	}
-	doom_view[3]++;
-	command = group_count + (int)(place - places);
-	to = place_quad(place - places);
-	grey = grey_of(thing->frame & FF_FULLBRIGHT ? 255 : level, 0);
-	high = thing->z + spritetopoffset[lump];
-	if (place->of != thing || place->lump != lump || place->flip != flip) {
-		name = sprite_gl[lump] ? sprite_gl[lump] : sprite_texture(lump);
-		if (!name) {
-			place->of = NULL;
+	if (place->of != thing || (thing->flags & MF_SHADOW)) {
+		place = thing_place(thing, at, eye->frame);
+		if (!place) {
+			thing_billboard(thing, level);	/* no room, or one that is blended */
 			return;
 		}
-		seglKeptTexture(command, name);
-		to[3] = to[15] = (flip ? 1024 : 0) << 16;	/* (v, u): the picture lies on its side */
-		to[7] = to[11] = (flip ? 0 : 1024) << 16;
-		to[11] |= 1024;
-		to[15] |= 1024;
-		place->of = thing;
-		place->lump = lump;
-		place->flip = flip;
-		place->high = high + 1;		/* and so the heights and the corners are written below */
-		place->grey = -1;
+		if (place->of != thing) {
+			changed = 2;	/* its first frame here */
+			place->key = ~key;
+			place->still = -1;
+		}
 	}
+	eye->count++;
+	if (place->key != key) {
+		place->key = key;
+		place->pictures = &sprites[thing->sprite].spriteframes[thing->frame & FF_FRAMEMASK];
+		changed |= 1;
+	}
+	if (place->pictures->rotate) {
+		const fixed_t rx = thing->x - eye->x, ry = thing->y - eye->y;
+
+		if (thing->angle != place->facing || abs(rx - place->rx) + abs(ry - place->ry) > place->still) {
+			const int turn = place->turn;
+
+			thing_turn(place, thing, rx, ry);
+			changed |= place->turn != turn;
+		}
+	} else if (place->turn) {
+		place->turn = 0;
+		changed |= 1;
+	}
+	command = group_count + place->index;
+	to = (uint32_t *)(eye->quads + place->index * PLACE_BYTES);
+	if (changed) {
+		const int lump = place->pictures->lump[place->turn], flip = place->pictures->flip[place->turn];
+
+		if (changed & 2 || lump != place->lump || flip != place->flip) {
+			GLuint name = sprite_gl[lump] ? sprite_gl[lump] : sprite_texture(lump);
+
+			if (!name) {
+				place->of = NULL;
+				return;
+			}
+			seglKeptTexture(command, name);
+			to[3] = to[15] = (flip ? 1024 : 0) << 16;	/* (v, u): the picture lies on its side */
+			to[7] = to[11] = (flip ? 0 : 1024) << 16;
+			to[11] |= 1024;
+			to[15] |= 1024;
+			place->of = thing;
+			place->lump = lump;
+			place->flip = flip;
+			place->wide = spritewidth[lump] >> FRACBITS;
+			place->left = (flip ? spritewidth[lump] - spriteoffset[lump] : spriteoffset[lump]) >> FRACBITS;
+			place->top = spritetopoffset[lump];
+			place->tall = sprite_height[lump] << FRACBITS;
+			place->high = thing->z + place->top + 1;	/* and so the heights and the corners are written below */
+			place->grey = -1;
+		}
+	}
+	high = thing->z + place->top;
 	if (place->high != high) {
 		place->high = high;
 		to[2] = to[6] = high;
-		to[10] = to[14] = high - (sprite_height[lump] << FRACBITS);
+		to[10] = to[14] = high - place->tall;
 		place->x = thing->x + 1;
 	}
-	if (place->x != thing->x || place->y != thing->y || place->angle != viewangle) {
-		/* the viewer's right is (sin, -cos) of the view angle */
-		width = spritewidth[lump];
-		left = flip ? width - spriteoffset[lump] : spriteoffset[lump];
+	if (place->x != thing->x || place->y != thing->y || place->angle != eye->angle) {
+		/* the viewer's right is (sin, -cos) of the view angle; a width is whole pixels */
+		const fixed_t x1 = thing->x - place->left * eye->sin, y1 = thing->y + place->left * eye->cos;
+
 		place->x = thing->x;
 		place->y = thing->y;
-		place->angle = viewangle;
-		x1 = thing->x - FixedMul(left, viewsin);
-		y1 = thing->y + FixedMul(left, viewcos);
+		place->angle = eye->angle;
 		to[0] = to[12] = x1;
 		to[1] = to[13] = y1;
-		to[4] = to[8] = x1 + FixedMul(width, viewsin);
-		to[5] = to[9] = y1 - FixedMul(width, viewcos);
+		to[4] = to[8] = x1 + place->wide * eye->sin;
+		to[5] = to[9] = y1 - place->wide * eye->cos;
 	}
+	grey = thing->frame & FF_FULLBRIGHT ? 255 : level_grey;
 	if (place->grey != grey)
 		seglKeptGrey(command, place->grey = grey);
-	if (place->frame + 1 < frame_number)
-		seglKeptShown(command, 1);	/* it was not drawn in the last frame */
-	if (place->frame != frame_number && lately_count < THING_PLACES)
-		lately[lately_count++] = place - places;
-	place->frame = frame_number;
+	if (place->frame != eye->frame) {
+		if (place->frame + 1 < eye->frame)
+			seglKeptShown(command, 1);	/* it was not drawn in the last frame */
+		*eye->lately++ = place->index;	/* (each place once a frame: there is room for all) */
+		place->frame = eye->frame;
+	}
 }
 
 /* The places drawn from in the last frame and not in this one show nothing from now on. */
 static void
-things_gone(void)
+things_gone(int frame)
 {
-	static short before[THING_PLACES];
-	static int before_count;
+	const short *before = lately[!lately_now];
 	int i;
 
-	for (i = 0; i < before_count; i++)
-		if (places[before[i]].frame != frame_number)
-			seglKeptShown(group_count + before[i], 0);
-	memcpy(before, lately, lately_count * sizeof lately[0]);
-	before_count = lately_count;
-	lately_count = 0;
+	for (i = lately_count[!lately_now]; i > 0; i--, before++)
+		if (places[*before].frame != frame)
+			seglKeptShown(group_count + *before, 0);
+	lately_now = !lately_now;
+	lately_count[lately_now] = 0;
+}
+
+/* The sectors a sector's row of REJECT lets it see, ended by -1: listed when first asked for. */
+static const short *
+sectors_seen(int from)
+{
+	const byte *reject = rejectmatrix;
+	short *list;
+	int s, n = 0, at = from * numsectors;
+
+	if (seen_from[from])
+		return seen_from[from];
+	for (s = 0; s < numsectors; s++, at++)
+		n += !(reject[at >> 3] & (1 << (at & 7)));
+	list = seen_from[from] = malloc((n + 1) * sizeof *list);
+	for (s = 0, at = from * numsectors; s < numsectors; s++, at++)
+		if (!(reject[at >> 3] & (1 << (at & 7))))
+			*list++ = s;
+	*list = -1;
+	return seen_from[from];
 }
 
 static void
 world_things(void)
 {
-	int from = (viewplayer->mo->subsector->sector - sectors) * numsectors, s;
+	const short *list = sectors_seen(viewplayer->mo->subsector->sector - sectors);
 	/* in whole map units, with twelve bits of the view's direction: products fit a word */
 	const int cs = viewcos >> 4, sn = viewsin >> 4, vx = viewx >> FRACBITS, vy = viewy >> FRACBITS, margin = 96 << 12;
 	const mobj_t *self = viewplayer->mo;
-	const byte *reject = rejectmatrix;
+	struct eye eye = { viewx, viewy, viewsin, viewcos, viewangle, frame_number, 0, (uint8_t *)world_vertices + world_quads * 64,
+			   lately[lately_now] };
 
-	for (s = 0; s < numsectors; s++) {
-		sector_t *sector = &sectors[s];
+	for (; *list >= 0; list++) {
+		sector_t *sector = &sectors[*list];
 		mobj_t *thing = sector->thinglist;
+		int level, level_grey;
 
-		if (!thing || (reject[(from + s) >> 3] & (1 << ((from + s) & 7))))
+		if (!thing)
 			continue;
+		level = sector->lightlevel;
+		level_grey = grey_of(level, 0);
 		for (; thing; thing = thing->snext) {
 			int dx = (thing->x >> FRACBITS) - vx, dy = (thing->y >> FRACBITS) - vy;
 			int ahead = dx * cs + dy * sn + margin, beside = dx * sn - dy * cs;
 
 			if (ahead < 0 || beside > ahead || -beside > ahead || thing == self)
 				continue;
-			thing_kept(thing, sector->lightlevel);
+			thing_kept(thing, level, level_grey, &eye);
 		}
 	}
-	things_gone();
+	doom_view[3] += eye.count;
+	lately_count[lately_now] = eye.lately - lately[lately_now];
+	things_gone(eye.frame);
 }
 
 /* A new level: everything kept per seg, subsector and texture starts again. */
@@ -1145,7 +1394,7 @@ new_level(void)
 	int i, low = -16000, high = 16000;
 
 	world_free();
-	level_made = level_loads;
+	level_made = doom_level_loads;
 	/* the last level's pictures go; the screen's texture (doom_video.c) is not ours */
 	if (wall_gl) {
 		glDeleteTextures(textures_then, wall_gl);
@@ -1428,11 +1677,7 @@ sky(void)
 		quad_uv[k * 2] = (k == 1 || k == 2) ? u - FRACUNIT + 4 * FRACUNIT : u + 4 * FRACUNIT;
 		quad_uv[k * 2 + 1] = v + (k >= 2 ? (viewheight << FRACBITS) / 128 : 0);
 	}
-	glColor4ub(255, 255, 255, 255);
-	glBindTexture(GL_TEXTURE_2D, name);
-	glVertexPointer(3, GL_FIXED, 0, quad_xyz);
-	glTexCoordPointer(2, GL_FIXED, 0, quad_uv);
-	glDrawArrays(GL_QUADS, 0, 4);
+	seglQuad(quad_xyz, quad_uv, name, 255, 255, 0);
 }
 
 /*
@@ -1496,34 +1741,43 @@ weapon(void)
 			quad_uv[k * 2 + 1] = right != flip ? FRACUNIT : 0;	/* (v, u) */
 			quad_uv[k * 2] = low ? FRACUNIT : 0;
 		}
-		if (viewplayer->powers[pw_invisibility] > 4 * 32 || viewplayer->powers[pw_invisibility] & 8) {
-			glEnable(GL_BLEND);
-			glColor4ub(0, 0, 0, 110);
-		} else {
-			light(psp->state->frame & FF_FULLBRIGHT ? 255 : sector->lightlevel);
-		}
-		glBindTexture(GL_TEXTURE_2D, name);
-		glVertexPointer(3, GL_FIXED, 0, quad_xyz);
-		glTexCoordPointer(2, GL_FIXED, 0, quad_uv);
-		glDrawArrays(GL_QUADS, 0, 4);
-		glDisable(GL_BLEND);
+		/* (unseen, it is a dark shape blended over the view) */
+		if (viewplayer->powers[pw_invisibility] > 4 * 32 || viewplayer->powers[pw_invisibility] & 8)
+			seglQuad(quad_xyz, quad_uv, name, 0, 110, 1);
+		else
+			seglQuad(quad_xyz, quad_uv, name, grey_of(psp->state->frame & FF_FULLBRIGHT ? 255 : sector->lightlevel, 0), 255, 1);
 	}
 }
 
-/* Column-major, for glLoadMatrixx. */
+/* The view's matrices, column by column as glLoadMatrixx takes them: Doom's view is a quarter
+ * turn wide with square pixels; x and y are on the ground and z is up. */
+static GLfixed to_clip[16], to_eye[16];
+
 static void
-load(const GLfixed rows[4][4])
+view_matrices(void)
 {
-	GLfixed m[16];
-	int i, j;
+	static int wide = -1, high;
+	const fixed_t far = 8192 * FRACUNIT;
 
-	for (i = 0; i < 4; i++)
-		for (j = 0; j < 4; j++)
-			m[j * 4 + i] = rows[i][j];
-	glLoadMatrixx(m);
+	if (wide != scaledviewwidth || high != viewheight) {
+		wide = scaledviewwidth;
+		high = viewheight;
+		to_clip[0] = FRACUNIT;
+		to_clip[5] = (scaledviewwidth << FRACBITS) / viewheight;
+		to_clip[10] = -FixedDiv(far + NEAR, far - NEAR);
+		to_clip[14] = -FixedDiv(FixedMul(2 * NEAR, far >> 8), (far - NEAR) >> 8);
+		to_clip[11] = -FRACUNIT;
+	}
+	to_eye[0] = viewsin;
+	to_eye[4] = -viewcos;
+	to_eye[12] = -(FixedMul(viewsin, viewx) - FixedMul(viewcos, viewy));
+	to_eye[9] = FRACUNIT;
+	to_eye[13] = -viewz;
+	to_eye[2] = -viewcos;
+	to_eye[6] = -viewsin;
+	to_eye[14] = FixedMul(viewcos, viewx) + FixedMul(viewsin, viewy);
+	to_eye[15] = FRACUNIT;
 }
-
-static GLfixed last_projection[4][4], last_view[4][4];
 
 /* glOrthox(0, 1, 1, 0, -1, 1), column by column. */
 static const GLfixed flat_view[16] = { 2 * FRACUNIT, 0, 0, 0, 0, -2 * FRACUNIT, 0, 0, 0, 0, -FRACUNIT, 0, -FRACUNIT, FRACUNIT, 0, FRACUNIT };
@@ -1535,15 +1789,13 @@ R_RenderPlayerView(player_t *player)
 	int width, height, y;
 
 	__asm__ volatile("rdcycle %0" : "=r"(began));
-	GLfixed projection[4][4] = {{0}}, view[4][4] = {{0}};
-	fixed_t far = 8192 * FRACUNIT;
-
 	if (!doom_gl) {
+		soft_tables();
 		R_RenderPlayerView_soft(player);
 		return;
 	}
 	R_SetupFrame(player);
-	if (segs != level_segs || numsegs != level_count || level_loads != level_made) {
+	if (segs != level_segs || numsegs != level_count || doom_level_loads != level_made) {
 		unsigned now;
 
 		new_level();
@@ -1584,27 +1836,11 @@ R_RenderPlayerView(player_t *player)
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 
-	/* Doom's view: a quarter turn wide, square pixels; x and y on the ground, z up */
-	projection[0][0] = FRACUNIT;
-	projection[1][1] = (scaledviewwidth << FRACBITS) / viewheight;
-	projection[2][2] = -FixedDiv(far + NEAR, far - NEAR);
-	projection[2][3] = -FixedDiv(FixedMul(2 * NEAR, far >> 8), (far - NEAR) >> 8);
-	projection[3][2] = -FRACUNIT;
-	view[0][0] = viewsin;
-	view[0][1] = -viewcos;
-	view[0][3] = -(FixedMul(viewsin, viewx) - FixedMul(viewcos, viewy));
-	view[1][2] = FRACUNIT;
-	view[1][3] = -viewz;
-	view[2][0] = -viewcos;
-	view[2][1] = -viewsin;
-	view[2][3] = FixedMul(viewcos, viewx) + FixedMul(viewsin, viewy);
-	view[3][3] = FRACUNIT;
-	memcpy(last_projection, projection, sizeof projection);
-	memcpy(last_view, view, sizeof view);
+	view_matrices();
 	glMatrixMode(GL_PROJECTION);
-	load(projection);
+	glLoadMatrixx(to_clip);
 	glMatrixMode(GL_MODELVIEW);
-	load(view);
+	glLoadMatrixx(to_eye);
 	if (world_on) {
 		/* the level is there already: its matrices, what has changed, and the things */
 		seglKeptMatrices();
@@ -1622,6 +1858,7 @@ R_RenderPlayerView(player_t *player)
 		world_update();
 		world_things();
 	} else {
+		soft_tables();
 		R_ClearClipSegs();
 		in_view = 1;
 		R_RenderBSPNode(numnodes - 1);
@@ -1775,9 +2012,9 @@ doom_gl_again(void)
 	glEnableClientState(GL_VERTEX_ARRAY);
 	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
 	glMatrixMode(GL_PROJECTION);
-	load(last_projection);
+	glLoadMatrixx(to_clip);	/* (as the last view left them) */
 	glMatrixMode(GL_MODELVIEW);
-	load(last_view);
+	glLoadMatrixx(to_eye);
 	seglKeptMatrices();
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixx(flat_view);

@@ -46,30 +46,60 @@ crc32(const unsigned char *p, size_t n, uint32_t crc)
 	return ~crc;
 }
 
-/* The registry: every line of every /usr/share/nxopen.* file is "kind endings magic command". */
+static int
+registry_entry(const struct dirent *entry)
+{
+	return !strncmp(entry->d_name, "nxopen.", 7);
+}
+
+/* A word of a line into `to` (of `room` bytes), and the place after it and its spaces; NULL
+ * when the line has no word there, or one too long for a word of the registry. */
+static const char *
+word_of(const char *at, char *to, int room)
+{
+	int n = 0;
+
+	while (*at == ' ' || *at == '\t')
+		at++;
+	for (; (unsigned char)*at > ' '; at++) {
+		if (n == room - 1)
+			return NULL;
+		to[n++] = *at;
+	}
+	to[n] = 0;
+	while (*at == ' ' || *at == '\t' || *at == '\r' || *at == '\n')
+		at++;
+	return n ? at : NULL;
+}
+
+/* The registry: every line of every /usr/share/nxopen.* file is "kind endings magic command".
+ * (Only those files' names are kept and put in order: the folder has a hundred others.) */
 static void
 read_kinds(void)
 {
 	struct dirent **names;
-	int n = scandir("/usr/share", &names, NULL, alphasort), i;
+	int n = scandir("/usr/share", &names, registry_entry, alphasort), i;
 
 	for (i = 0; i < n; i++) {
 		char path[300], line[400];
 		FILE *file;
 
-		if (strncmp(names[i]->d_name, "nxopen.", 7) != 0)
-			continue;
-		snprintf(path, sizeof path, "/usr/share/%s", names[i]->d_name);
+		memcpy(path, "/usr/share/", 11);
+		strcpy(path + 11, names[i]->d_name);
 		if ((file = fopen(path, "r")) == NULL)
 			continue;
 		while (fgets(line, sizeof line, file) && kind_count < MAX_KINDS) {
 			struct kind *k = &kinds[kind_count];
-			int at = 0;
+			const char *at = line;
+			size_t length;
 
-			if (line[0] == '#' || sscanf(line, "%15s %95s %127s %n", k->name, k->endings, k->magic, &at) < 3 || !at)
+			if (line[0] == '#' || !(at = word_of(at, k->name, sizeof k->name)) || !(at = word_of(at, k->endings, sizeof k->endings)) ||
+			    !(at = word_of(at, k->magic, sizeof k->magic)))
 				continue;
-			snprintf(k->command, sizeof k->command, "%s", line + at);
-			k->command[strcspn(k->command, "\n")] = 0;
+			length = strcspn(at, "\n");
+			length = length < sizeof k->command - 1 ? length : sizeof k->command - 1;
+			memcpy(k->command, at, length);
+			k->command[length] = 0;
 			if (k->command[0])
 				kind_count++;
 		}
@@ -462,6 +492,28 @@ run:
 	fflush(stdout);
 	if (dry)
 		return 0;
+	/* a line of plain words and the file is run as it is: a shell between is a program started
+	 * for nothing. Anything a shell would read otherwise is the shell's still. */
+	if (!k) {
+		execlp("nxfiles", "nxfiles", path, (char *)NULL);
+	} else if (!strpbrk(k->command, "'\"\\$|&;<>()*?[]~`#!{}=")) {
+		static char line[sizeof k->command];
+		char *words[12];
+
+		strcpy(line, k->command);
+		n = 0;
+		for (words[n] = strtok(line, " \t"); words[n] && n < 10; words[n] = strtok(NULL, " \t")) {
+			if (!strcmp(words[n], "%s"))
+				words[n] = (char *)use;
+			else if (strchr(words[n], '%'))
+				break;
+			n++;
+		}
+		if (!words[n] && n) {
+			execvp(words[0], words);
+			return 127;
+		}
+	}
 	execl("/bin/sh", "sh", "-c", command, (char *)NULL);
 	return 127;
 }

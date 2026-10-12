@@ -1,8 +1,8 @@
 diff --git a/components/nofrendo/cpu/nes6502.c b/components/nofrendo/cpu/nes6502.c
-index 72be869..061def4 100644
+index 72be869..599cb0f 100644
 --- a/components/nofrendo/cpu/nes6502.c
 +++ b/components/nofrendo/cpu/nes6502.c
-@@ -279,10 +279,17 @@
+@@ -279,10 +279,23 @@
     if (condition) \
     { \
        IMMEDIATE_BYTE(btemp); \
@@ -13,16 +13,22 @@ index 72be869..061def4 100644
 +         turn = 4; \
 +      ADD_CYCLES(turn); \
        PC += (int8) btemp; \
-+      if ((int8) btemp <= -4 && (int8) btemp >= -16 && remaining_cycles > 0 \
++      if ((int8) btemp <= -3 && (int8) btemp >= -16 && remaining_cycles > 0 \
 +          && idle_never[PC & 63] != (uint16) PC) \
 +      { \
 +         turn = idle_loop(PC, PC - (int8) btemp, A, X, Y, COMBINE_FLAGS(), remaining_cycles); \
 +         ADD_CYCLES(turn); \
++         if (idle_passed.any) \
++         { \
++            X = idle_passed.x; \
++            Y = idle_passed.y; \
++            SCATTER_FLAGS(idle_passed.p); \
++         } \
 +      } \
     } \
     else \
     { \
-@@ -701,10 +708,18 @@
+@@ -701,10 +714,18 @@
     ADD_CYCLES(5); \
  }
  
@@ -41,7 +47,7 @@ index 72be869..061def4 100644
  }
  
  #define JSR() \
-@@ -1133,6 +1148,7 @@
+@@ -1133,6 +1154,7 @@
  /* internal CPU context */
  static nes6502_context cpu;
  static int remaining_cycles = 0; /* so we can release timeslice */
@@ -49,7 +55,7 @@ index 72be869..061def4 100644
  /* memory region pointers */
  static uint8 *ram = NULL, *stack = NULL;
  static uint8 null_page[NES6502_BANKSIZE];
-@@ -1264,6 +1280,7 @@ void nes6502_setcontext(nes6502_context *context)
+@@ -1264,6 +1286,7 @@ void nes6502_setcontext(nes6502_context *context)
  
     ASSERT(context);
  
@@ -57,7 +63,7 @@ index 72be869..061def4 100644
     cpu = *context;
  
     /* set dead page for all pages not pointed at anything */
-@@ -1284,6 +1301,7 @@ void nes6502_getcontext(nes6502_context *context)
+@@ -1284,6 +1307,7 @@ void nes6502_getcontext(nes6502_context *context)
  
     ASSERT(context);
  
@@ -65,7 +71,7 @@ index 72be869..061def4 100644
     *context = cpu;
  
     /* reset dead pages to null */
-@@ -1294,6 +1312,11 @@ void nes6502_getcontext(nes6502_context *context)
+@@ -1294,6 +1318,11 @@ void nes6502_getcontext(nes6502_context *context)
     }
  }
  
@@ -77,7 +83,7 @@ index 72be869..061def4 100644
  /* DMA a byte of data from ROM */
  uint8 nes6502_getbyte(uint32 address)
  {
-@@ -1346,10 +1369,11 @@ uint32 nes6502_getcycles(bool reset_flag)
+@@ -1346,10 +1375,11 @@ uint32 nes6502_getcycles(bool reset_flag)
  
  #else /* !NES6520_DISASM */
  
@@ -90,7 +96,7 @@ index 72be869..061def4 100644
  
  #endif /* !NES6502_DISASM */
  
-@@ -1359,12 +1383,260 @@ uint32 nes6502_getcycles(bool reset_flag)
+@@ -1359,12 +1389,354 @@ uint32 nes6502_getcycles(bool reset_flag)
  #endif /* !NES6502_JUMPTABLE */
  
  
@@ -118,8 +124,11 @@ index 72be869..061def4 100644
 +   idle.at = at;
 +}
 +static uint16 idle_never[64]; /* loops with something else in them, by their first address */
++/* what idle_loop made of X, Y and the flags, when it passed turns of a loop that counts */
++static struct { int any; uint8 x, y, p; } idle_passed;
 +
 +static int idle_looked;    /* the status as a trial turn read it */
++static int idle_counted;   /* a trial turn had dex, dey, inx or iny in it */
 +
 +/* a read that changes nothing (-1: not this time, -2: never); *steady: how long it gives that */
 +static int idle_read(uint32 address, uint32 *steady)
@@ -185,6 +194,13 @@ index 72be869..061def4 100644
 +   case 0xEA: *at = pc + 1; return 2;                                   /* nop */
 +   case 0x18: regs[3] = p & ~C_FLAG; *at = pc + 1; return 2;            /* clc */
 +   case 0x38: regs[3] = p | C_FLAG; *at = pc + 1; return 2;             /* sec */
++   case 0xCA: case 0xE8: case 0x88: case 0xC8:                          /* dex, inx, dey, iny */
++      idle_counted = 1;
++      reg = &regs[(0xCA == op || 0xE8 == op) ? 1 : 2];
++      *reg += (0xE8 == op || 0xC8 == op) ? 1 : -1;
++      regs[3] = (p & ~(N_FLAG | Z_FLAG)) | (*reg & N_FLAG) | (*reg ? 0 : Z_FLAG);
++      *at = pc + 1;
++      return 2;
 +   }
 +
 +   /* the rest: an operation in bits 7-5 and 1-0, how its operand is found in bits 4-2 */
@@ -250,6 +266,60 @@ index 72be869..061def4 100644
 +   return cycles;
 +}
 +
++/* A loop that counts, after its trial turn (of so many steps and cycles, which left regs):
++** X or Y, one down or up, is all that a turn changes, by the one instruction before the bne
++** that closes it. So many turns from here end in that branch taken: those that fit the slice
++** are passed (their cycles are returned), and the rest may be slept through. -1: not one. */
++static __attribute__((noinline)) int idle_counting(int steps, int turn, uint8 a, uint8 x, uint8 y, const uint8 *regs, int left)
++{
++   int counts = 0, branches = 0, of_x = 0, of_y = 0, n, k, by, taken, turns;
++   uint8 op = 0, before = 0, was, now;
++
++   for (n = 0; n <= steps; n++)
++   {
++      before = op;
++      op = bank_readbyte(idle.pc[n]);
++      if (0x10 == (op & 0x1F) || 0x4C == op)
++         branches++;
++      else if (0xCA == op || 0xE8 == op || 0x88 == op || 0xC8 == op)
++         counts++;
++      /* (dex, inx, ldx, cpx; dey, iny, ldy, cpy: by the three ways idle_step finds an operand) */
++      if (0xCA == op || 0xE8 == op || 0xA2 == op || 0xA6 == op || 0xAE == op || 0xE0 == op || 0xE4 == op || 0xEC == op)
++         of_x++;
++      if (0x88 == op || 0xC8 == op || 0xA0 == op || 0xA4 == op || 0xAC == op || 0xC0 == op || 0xC4 == op || 0xCC == op)
++         of_y++;
++   }
++   k = of_x ? 1 : 2;
++   by = (0xCA == before || 0x88 == before) ? -1 : 1;
++   was = (1 == k) ? x : y;
++   if (1 != counts || 1 != branches || 0xD0 != op || 1 != of_x + of_y || idle_looked >= 0
++       || (0xCA != before && 0xE8 != before && 0x88 != before && 0xC8 != before)
++       || regs[0] != a || regs[3 - k] != ((1 == k) ? y : x))
++      return -1;
++   taken = (by < 0) ? ((was - 1) & 0xFF) : ((255 - was) & 0xFF);
++   turns = (left - 1) / turn;
++   if (turns > taken)
++      turns = taken;
++   idle.count = steps + 1;
++   idle.turn = turn;
++   idle.status = -1;
++   idle.state = 1;
++   idle.tabled = 0;
++   idle.count_reg = k;
++   idle.count_by = by;
++   idle.turns_left = taken - turns;
++   idle.turns_done = 0;
++   if (turns > 0)
++   {
++      now = (uint8) (was + by * turns);
++      idle_passed.any = 1;
++      idle_passed.x = (1 == k) ? now : x;
++      idle_passed.y = (2 == k) ? now : y;
++      idle_passed.p = (regs[3] & ~(N_FLAG | Z_FLAG)) | (now & N_FLAG) | (now ? 0 : Z_FLAG);
++   }
++   return turns * turn;
++}
++
 +/* Returns the cycles to pass over: whole turns, leaving the slice at least one cycle. */
 +static int idle_loop(uint32 top, uint32 end, uint8 a, uint8 x, uint8 y, uint8 p, int left)
 +{
@@ -257,11 +327,13 @@ index 72be869..061def4 100644
 +   uint32 pc = top, steady = 0x7FFFFFFF, fell;
 +   int turn = 0, steps, turns, cycles, jumped;
 +
++   idle_passed.any = 0;
 +   if (1 == nes6502_plain)
 +      return 0;
 +
 +   /* a trial turn: it must come back to the top by the branch at the end, as it began */
 +   idle_looked = -1;
++   idle_counted = 0;
 +   for (steps = 0; steps < 12; steps++)
 +   {
 +      idle.pc[steps] = pc;
@@ -269,16 +341,23 @@ index 72be869..061def4 100644
 +      if (cycles < 0)
 +         goto never;
 +      if (0 == cycles)
-+         return 0;
++         goto not_now;
 +      idle.cycles[steps] = cycles;
 +      turn += cycles;
 +      if (jumped && fell == end && pc == top)
 +         break;
 +      if ((jumped && pc < fell) || pc >= end)
-+         return 0; /* a branch back inside, or the loop is left */
++         goto not_now; /* a branch back inside, or the loop is left */
 +   }
 +   if (12 == steps)
 +      goto never;
++   if (idle_counted)
++   {
++      turns = idle_counting(steps, turn, a, x, y, regs, left);
++      if (turns < 0)
++         goto never;
++      return turns;
++   }
 +   if (regs[0] != a || regs[1] != x || regs[2] != y
 +       || ((regs[3] ^ p) & (N_FLAG | V_FLAG | Z_FLAG | C_FLAG)))
 +      return 0;
@@ -287,12 +366,18 @@ index 72be869..061def4 100644
 +   idle.turn = turn;
 +   idle.status = idle_looked;
 +   idle.state = 1;
++   idle.tabled = 0;
++   idle.count_reg = 0;
 +
 +   turns = (left - 1) / turn;
 +   if ((steady - 1) / turn < turns)
 +      turns = (steady - 1) / turn;
 +   return turns * turn;
 +
++not_now:
++   /* (a loop that counts is one at its first turn, or never) */
++   if (0 == idle_counted)
++      return 0;
 +never:
 +   idle_never[top & 63] = (uint16) top;
 +   return 0;
@@ -321,20 +406,35 @@ index 72be869..061def4 100644
 +   }
 +   if (2 == idle.state)
 +   {
-+      int elapsed = 0, at = idle.at;
++      int elapsed = 0, at = idle.at, round = 0;
 +
 +      while (elapsed < timeslice_cycles)
 +      {
 +         if (0 == at)
-+            elapsed += (timeslice_cycles - elapsed - 1) / idle.turn * idle.turn;
++         {
++            int whole = (timeslice_cycles - elapsed - 1) / idle.turn;
++
++            elapsed += whole * idle.turn;
++            round += whole;
++         }
 +         elapsed += idle.cycles[at];
 +         if (++at == idle.count)
++         {
 +            at = 0;
++            round++;
++         }
 +      }
-+      idle.at = at;
-+      remaining_cycles = timeslice_cycles - elapsed;
-+      cpu.total_cycles += elapsed;
-+      return elapsed;
++      /* (a loop that counts is slept in only while its turns last: the last one is run) */
++      if (0 == idle.count_reg || round <= idle.turns_left)
++      {
++         idle.turns_left -= round;
++         idle.turns_done += round;
++         idle.at = at;
++         remaining_cycles = timeslice_cycles - elapsed;
++         cpu.total_cycles += elapsed;
++         return elapsed;
++      }
++      idle_wake();
 +   }
 +   idle.state = 0;
 +   /* a slice that begins in translated code is run from here (rc_slice) */
@@ -351,7 +451,7 @@ index 72be869..061def4 100644
  {
     int old_cycles = cpu.total_cycles;
  
-@@ -1445,6 +1717,20 @@ int nes6502_execute(int timeslice_cycles)
+@@ -1445,6 +1817,20 @@ int nes6502_execute(int timeslice_cycles)
     /* fetch first instruction */
     OPCODE_END
  
@@ -372,7 +472,7 @@ index 72be869..061def4 100644
  #else /* !NES6502_JUMPTABLE */
  
     /* Continue until we run out of cycles */
-@@ -2389,6 +2675,23 @@ int nes6502_execute(int timeslice_cycles)
+@@ -2389,6 +2775,23 @@ int nes6502_execute(int timeslice_cycles)
  #ifdef NES6502_JUMPTABLE
  end_execute:
  
@@ -396,7 +496,7 @@ index 72be869..061def4 100644
  #else /* !NES6502_JUMPTABLE */
        }
     }
-@@ -2402,8 +2705,29 @@ end_execute:
+@@ -2402,8 +2805,42 @@ end_execute:
  }
  
  /* Issue a CPU Reset */
@@ -411,6 +511,19 @@ index 72be869..061def4 100644
 +   if (2 != idle.state)
 +      return;
 +   idle.state = 0;
++   if (idle.count_reg && idle.turns_done)
++   {
++      /* a loop that counts: the whole turns gone are the count moved on, all but the last,
++      ** which is done as below so that the flags are that turn's */
++      int whole = idle.turns_done - (idle.at < idle.was_at ? 1 : 0);
++
++      if (whole > 0)
++      {
++         regs[idle.count_reg] += idle.count_by * (whole - 1);
++         for (at = 0; at < idle.count; at++)
++            idle_step(&pc, regs, idle.status, &steady, &jumped, &fell);
++      }
++   }
 +   for (at = idle.was_at; at != idle.at; at = (at + 1 == idle.count) ? 0 : at + 1)
 +      idle_step(&pc, regs, idle.status, &steady, &jumped, &fell);
 +   cpu.a_reg = regs[0];
@@ -426,7 +539,7 @@ index 72be869..061def4 100644
     cpu.p_reg = Z_FLAG | R_FLAG | I_FLAG;     /* Reserved bit always 1 */
     cpu.int_pending = 0;                      /* No pending interrupts */
     cpu.int_latency = 0;                      /* No latent interrupts */
-@@ -2424,6 +2748,7 @@ void nes6502_nmi(void)
+@@ -2424,6 +2861,7 @@ void nes6502_nmi(void)
  {
     DECLARE_LOCAL_REGS
  
@@ -434,7 +547,7 @@ index 72be869..061def4 100644
     if (false == cpu.jammed)
     {
        GET_GLOBAL_REGS();
-@@ -2438,6 +2763,13 @@ void nes6502_irq(void)
+@@ -2438,6 +2876,13 @@ void nes6502_irq(void)
  {
     DECLARE_LOCAL_REGS
  
@@ -448,7 +561,7 @@ index 72be869..061def4 100644
     if (false == cpu.jammed)
     {
        GET_GLOBAL_REGS();
-@@ -2457,6 +2789,7 @@ void nes6502_irq(void)
+@@ -2457,6 +2902,7 @@ void nes6502_irq(void)
  /* Set dead cycle period */
  void nes6502_burn(int cycles)
  {
@@ -457,10 +570,10 @@ index 72be869..061def4 100644
  }
  
 diff --git a/components/nofrendo/cpu/nes6502.h b/components/nofrendo/cpu/nes6502.h
-index c2245a1..8d2fd00 100644
+index c2245a1..8220318 100644
 --- a/components/nofrendo/cpu/nes6502.h
 +++ b/components/nofrendo/cpu/nes6502.h
-@@ -99,6 +99,22 @@ typedef struct
+@@ -99,6 +99,27 @@ typedef struct
  extern "C" {
  #endif /* __cplusplus */
  
@@ -472,8 +585,13 @@ index c2245a1..8d2fd00 100644
 +   int at, was_at;         /* the instruction the next slice begins at; the one the registers are at */
 +   int waking;
 +   int status;             /* what the loop reads the PPU's status as, or -1 if it does not */
++   /* a loop that counts X (1) or Y (2) by one a turn until it is 0: the turns it has yet to
++   ** go round, and those gone since it fell asleep */
++   int count_reg, count_by, turns_left, turns_done;
 +   uint8 cycles[12];
 +   uint16 pc[12];
++   /* for the lines that pass asleep (ppu_quiet_lines), made when the first one does */
++   uint8 tabled, cum[12], up[52], at_of[52];
 +} nes6502_idle_t;
 +
 +extern nes6502_idle_t nes6502_idle;
@@ -484,10 +602,10 @@ index c2245a1..8d2fd00 100644
  extern void nes6502_reset(void);
  extern int nes6502_execute(int total_cycles);
 diff --git a/components/nofrendo/nes/nes.c b/components/nofrendo/nes/nes.c
-index 4055d08..6a2da86 100644
+index 4055d08..5219a4f 100644
 --- a/components/nofrendo/nes/nes.c
 +++ b/components/nofrendo/nes/nes.c
-@@ -293,16 +293,40 @@ void nes_nmi(void)
+@@ -293,16 +293,48 @@ void nes_nmi(void)
     nes6502_nmi();
  }
  
@@ -517,8 +635,16 @@ index 4055d08..6a2da86 100644
 +      }
 +
 +      /* ours: lines with the 6502 asleep and nothing to draw here or to find, in one go */
-+      if (nes.scanline < 240 && false == draw_flag && NULL == mapintf->hblank)
++      if (false == draw_flag && NULL == mapintf->hblank)
++      {
++         int line = nes.scanline < 240 ? 240 : nes.scanline;
++
 +         nes.scanline += ppu_quiet_lines(nes.scanline, (float) NES_SCANLINE_CYCLES, &nes.scanline_cycles, &nes.fiq_cycles);
++         /* (a line past the picture that passed so had its look at the sound's quarter) */
++         for (; line < nes.scanline; line++)
++            if (line >= se_apu_due)
++               se_apu_quarter();
++      }
 +
 +      if (nes.scanline >= se_apu_due)
 +         se_apu_quarter();
@@ -529,7 +655,7 @@ index 4055d08..6a2da86 100644
  
        if (241 == nes.scanline)
        {
-@@ -322,7 +346,11 @@ static void nes_renderframe(bool draw_flag)
+@@ -322,7 +354,11 @@ static void nes_renderframe(bool draw_flag)
           mapintf->hblank(in_vblank);
  
        nes.scanline_cycles += (float) NES_SCANLINE_CYCLES;
@@ -541,7 +667,7 @@ index 4055d08..6a2da86 100644
        nes.scanline_cycles -= (float) elapsed_cycles;
        nes_checkfiq(elapsed_cycles);
  
-@@ -331,6 +359,17 @@ static void nes_renderframe(bool draw_flag)
+@@ -331,6 +367,17 @@ static void nes_renderframe(bool draw_flag)
     }
  
     nes.scanline = 0;
@@ -559,7 +685,7 @@ index 4055d08..6a2da86 100644
  }
  
  static void system_video(bool draw)
-@@ -356,6 +395,7 @@ static void system_video(bool draw)
+@@ -356,6 +403,7 @@ static void system_video(bool draw)
     osd_getinput();
  }
  
@@ -567,7 +693,7 @@ index 4055d08..6a2da86 100644
  /* main emulation loop */
  void nes_emulate(void)
  {
-@@ -364,12 +404,21 @@ void nes_emulate(void)
+@@ -364,12 +412,21 @@ void nes_emulate(void)
     osd_setsound(nes.apu->process);
  
     last_ticks = nofrendo_ticks;
@@ -590,8 +716,47 @@ index 4055d08..6a2da86 100644
        if (nofrendo_ticks != last_ticks)
        {
           int tick_diff = nofrendo_ticks - last_ticks;
+diff --git a/components/nofrendo/nes/nes_pal.c b/components/nofrendo/nes/nes_pal.c
+index 5756ba5..b4585cf 100644
+--- a/components/nofrendo/nes/nes_pal.c
++++ b/components/nofrendo/nes/nes_pal.c
+@@ -109,10 +109,34 @@ static const int col_angles[16] =
+ 
+ void pal_generate(void)
+ {
++   /* ours: what the lines below make of the hue and tint this starts with, worked out once
++   ** (they are doubles' sines, a library call each on this machine: 300 thousand instructions) */
++   static const uint32 made[64] =
++   {
++      0x808080, 0x10579f, 0x433ab0, 0x7722a6, 0x9f1483, 0xb01451, 0xa6231d, 0x833d00,
++      0x515900, 0x1d7200, 0x008010, 0x007f43, 0x007077, 0x000000, 0x050505, 0x050505,
++      0xc0c0c0, 0x3980c8, 0x6c63d9, 0xa04acf, 0xc83dac, 0xd93d7a, 0xcf4c46, 0xac661e,
++      0x7a820d, 0x469b17, 0x1ea939, 0x0da86c, 0x1799a0, 0x3d3d3d, 0x0a0a0a, 0x0a0a0a,
++      0xffffff, 0x81c8ff, 0xb3abff, 0xe792ff, 0xff84f4, 0xff85c2, 0xff948d, 0xf4ad65,
++      0xc2ca54, 0x8de35e, 0x65f081, 0x54f0b3, 0x5ee1e7, 0x787878, 0x0c0c0c, 0x0c0c0c,
++      0xffffff, 0xadf3ff, 0xdfd6ff, 0xffbeff, 0xffb0ff, 0xffb1ed, 0xffbfb9, 0xffd991,
++      0xedf680, 0xb9ff8a, 0x91ffad, 0x80ffdf, 0x8affff, 0xc5c5c5, 0x111111, 0x111111,
++   };
+    int x, z;
+    float s, y, theta;
+    int r, g, b;
+ 
++   if (334.0f == hue && 0.4f == tint)
++   {
++      for (x = 0; x < 64; x++)
++      {
++         nes_palette[x].r = made[x] >> 16;
++         nes_palette[x].g = (made[x] >> 8) & 0xFF;
++         nes_palette[x].b = made[x] & 0xFF;
++      }
++      return;
++   }
++
+    for (x = 0; x < 4; x++)
+    {
+       for (z = 0; z < 16; z++)
 diff --git a/components/nofrendo/nes/nes_ppu.c b/components/nofrendo/nes/nes_ppu.c
-index 9a6875b..f50946b 100644
+index 9a6875b..2ddb6c1 100644
 --- a/components/nofrendo/nes/nes_ppu.c
 +++ b/components/nofrendo/nes/nes_ppu.c
 @@ -38,6 +38,8 @@
@@ -1183,7 +1348,7 @@ index 9a6875b..f50946b 100644
     {
        int ytile;
  
-@@ -1072,6 +1451,325 @@ void ppu_endscanline(int scanline)
+@@ -1072,6 +1451,445 @@ void ppu_endscanline(int scanline)
     }
  }
  
@@ -1334,7 +1499,7 @@ index 9a6875b..f50946b 100644
 +
 +   extern int nes6502_plain;
 +
-+   if (2 != idle->state || 3 == nes6502_plain)
++   if (2 != idle->state || 3 == nes6502_plain || idle->count_reg)
 +      return 0;
 +   if (idle->status >= 0 && ((ppu.stat & PPU_STATF_VBLANK) || ppu.flipflop))
 +      return 0;
@@ -1402,28 +1567,100 @@ index 9a6875b..f50946b 100644
 +   return scanline - began;
 +}
 +
++/* What a slice of the sleeping 6502 comes to, by where in a turn of its loop it would end:
++** up[r] is the first instruction's end at or after cycle r of a turn (the turn's own end for
++** the last), at_of[c] the instruction that begins at cycle c, cum[i] where instruction i does. */
++static void quiet_tables(nes6502_idle_t *idle)
++{
++   int i, c = 0, r = 1;
++
++   idle->up[0] = 0;
++   for (i = 0; i < idle->count; i++)
++   {
++      idle->cum[i] = c;
++      idle->at_of[c] = i;
++      c += idle->cycles[i];
++      while (r <= c)
++         idle->up[r++] = c;
++   }
++   idle->tabled = 1;
++}
++
++/* Many such lines at once, in whole numbers: a line's cycles and what is left of them are
++** 131072ths (a float of their size has no finer), so the sums are the floats' own. As many
++** lines as the frame interrupt is surely not in; none when a number is not as expected. */
++static int quiet_run(int lines, bool rendering, float line_cycles, float *left, int *fiq, int *off_at, int *slept, uint32 *vaddr_at)
++{
++   const nes6502_idle_t *idle = &nes6502_idle;
++   const uint8 *up = idle->up;
++   const int turn = idle->turn;
++   float scaled = *left * 131072.0f, line_scaled = line_cycles * 131072.0f;
++   int x = (int) scaled, line = (int) line_scaled, off = *off_at, n, elapsed;
++   uint32 vaddr = *vaddr_at, began;
++
++   /* (a line takes under 128 cycles, but the first, which is well before the last) */
++   if (lines > (*fiq - 128) / 128)
++      lines = (*fiq - 128) / 128;
++   if (lines <= 0 || (float) x != scaled || (float) line != line_scaled || x <= -8 * 131072 || x >= 14 * 131072
++       || line < 100 * 131072 || line > 114 * 131072 || vaddr >= 0x8000)
++      return 0;
++   began = (uint32) x;
++   for (n = lines; n; n--)
++   {
++      int sum = x + line, r = (off + (sum >> 17)) % turn;
++
++      off = up[r];
++      x = (sum & 0x1FFFF) + ((r - off) << 17);
++   }
++   elapsed = (int) ((began + (uint32) lines * (uint32) line - (uint32) x) >> 17);
++   *left = (float) x / 131072.0f;
++   *fiq -= elapsed;
++   *slept += elapsed;
++   *off_at = off;
++   if (rendering)
++   {
++      /* down the name tables so many lines: row 29 goes on in the other pair's top, 31 in its own */
++      int fine = ((vaddr >> 12) & 7) + lines, row = (vaddr >> 5) & 0x1F, rows = fine >> 3, to_end = (row <= 29 ? 30 : 32) - row;
++
++      vaddr = (vaddr & ~(0x7000 | 0x03E0 | 0x041F)) | (ppu.vaddr_latch & 0x041F) | (fine & 7) << 12;
++      while (rows >= to_end)
++      {
++         rows -= to_end;
++         if (row <= 29)
++            vaddr ^= 0x0800;
++         row = 0;
++         to_end = 30;
++      }
++      *vaddr_at = vaddr | (row + rows) << 5;
++   }
++   return lines;
++}
++
 +int ppu_quiet_lines(int scanline, float line_cycles, float *scanline_cycles, int *fiq_cycles)
 +{
 +   extern int nes6502_plain;
 +   nes6502_idle_t *idle = &nes6502_idle;
 +   const obj_t *first = (const obj_t *) ppu.oam;
-+   const uint8 *cycles = idle->cycles;
-+   const int turn = idle->turn, count = idle->count, began = scanline;
-+   const bool rendering = ppu.bg_on || ppu.obj_on;
-+   const uint32 latch = ppu.vaddr_latch;
-+   int hit_from = 1000, hit_to = 0;   /* the lines sprite 0 might be hit in: the PPU has to look there */
-+   int slept = 0, at = idle->at, fiq = *fiq_cycles;
++   const uint8 *up = idle->up;
++   const int turn = idle->turn, began = scanline;
++   const uint32 latch = ppu.vaddr_latch & 0x041F;
++   bool rendering = ppu.bg_on || ppu.obj_on;
++   int slept = 0, fiq = *fiq_cycles, stop = 261, off, from;
 +   uint32 vaddr = ppu.vaddr;
 +   float left = *scanline_cycles;
 +
-+   if (2 != idle->state || 3 == nes6502_plain || scanline >= 240)
++   /* (not the line the blanking begins at, nor the one it ends at) */
++   if (2 != idle->state || 3 == nes6502_plain || scanline >= 261 || 241 == scanline)
 +      return 0;
-+   if (capture && ppu_capture_copies)
-+      return quiet_lines_each(scanline, line_cycles, scanline_cycles, fiq_cycles);
++   if (scanline < 240)
++   {
++      if (capture && ppu_capture_copies)
++         return quiet_lines_each(scanline, line_cycles, scanline_cycles, fiq_cycles);
++      ppu.stat &= ~PPU_STATF_MAXSPRITE;
++   }
 +
 +   /* what cannot change while the 6502 sleeps, looked at once: the status as the loop reads
 +   ** it (when it does), and where sprite 0 is */
-+   ppu.stat &= ~PPU_STATF_MAXSPRITE;
 +   if (idle->status >= 0)
 +   {
 +      int value = (ppu.stat & 0xE0) | (ppu.latch & 0x1F);
@@ -1439,69 +1676,117 @@ index 9a6875b..f50946b 100644
 +      if (value != idle->status)
 +         return 0;
 +   }
-+   if (ppu.obj_on && false == ppu.strikeflag && first->y_loc < 240)
++   if (scanline < 240)
 +   {
-+      hit_from = first->y_loc + 1;
-+      hit_to = first->y_loc + ppu.obj_height;
-+   }
-+
-+   /* (a line is not quiet when the frame interrupt could come in it) */
-+   while (scanline < 240 && fiq > 128 && (scanline < hit_from || scanline > hit_to))
-+   {
-+      int budget, elapsed = 0;
-+
-+      /* the line's start, as ppu_scanline has it; a record's run begins at the first, if at all */
-+      if (rendering)
-+         vaddr = (0 == scanline) ? latch : ((vaddr & ~0x041F) | (latch & 0x041F));
-+      if (capture && scanline == began)
++      /* the lines sprite 0 might be hit in are the PPU's to look at */
++      stop = 240;
++      if (ppu.obj_on && false == ppu.strikeflag && first->y_loc < 240)
 +      {
-+         ppu.vaddr = vaddr;
++         if (scanline <= first->y_loc)
++            stop = first->y_loc + 1;
++         else if (scanline <= first->y_loc + ppu.obj_height)
++            return 0;
++      }
++      if (fiq <= 128)
++         return 0;
++   }
++   if (0 == idle->tabled)
++      quiet_tables(idle);
++   from = off = idle->cum[idle->at];
++   if (idle->count_reg)
++   {
++      /* a loop that counts: no more lines than it surely has turns for (a line is under 128
++      ** cycles, but the first, which may be three more) */
++      int most = (idle->turns_left * turn - off - turn) / 128;
++
++      if (most <= 0 || left >= 14.0f)
++         return 0;
++      if (stop > scanline + most)
++         stop = scanline + most;
++   }
++   if (scanline < 240)
++   {
++      /* the first line's start, as ppu_scanline has it; a record's run begins there, if at all */
++      if (capture)
++      {
++         if (rendering)
++            ppu.vaddr = (0 == scanline) ? ppu.vaddr_latch : ((vaddr & ~0x041F) | latch);
 +         capture_line(scanline);
 +      }
++      if (rendering && 0 == scanline)
++         vaddr = ppu.vaddr_latch;
++   }
++   else
++   {
++      /* (line 240 by itself: the blanking begins at the next) */
++      rendering = false;
++      if (240 == scanline)
++         stop = 241;
++   }
++   if (stop - scanline > 2)
++      scanline += quiet_run(stop - scanline, rendering, line_cycles, &left, &fiq, &off, &slept, &vaddr);
 +
-+      /* the 6502's slice, as nes6502_execute has it asleep */
-+      left += line_cycles;
-+      budget = (int) left;
-+      if (1 == count && budget > 0)
-+         elapsed = ((budget - 1) / turn + 1) * turn;   /* (the loop below, for a loop of one instruction) */
-+      else while (elapsed < budget)
++   for (;;)
++   {
++      /* (a line is not quiet when the frame interrupt could come in it) */
++      while (scanline < stop && fiq > 128)
 +      {
-+         if (0 == at)
-+            elapsed += (budget - elapsed - 1) / turn * turn;
-+         elapsed += cycles[at];
-+         if (++at == count)
-+            at = 0;
-+      }
-+      left -= (float) elapsed;
-+      fiq -= elapsed;
-+      slept += elapsed;
++         int budget, elapsed = 0;
 +
-+      /* the line's end, as ppu_endscanline has it */
-+      if (rendering)
-+      {
-+         if (7 == (vaddr >> 12))
++         /* the 6502's slice, as nes6502_execute has it asleep: to the first instruction's end
++         ** at or after the slice's */
++         left += line_cycles;
++         budget = (int) left;
++         if (budget > 0)
 +         {
-+            int ytile = (vaddr >> 5) & 0x1F;
++            int r = (off + budget) % turn;
 +
-+            vaddr &= ~0x7000;
-+            if (29 == ytile)
-+               vaddr = (vaddr & ~0x03E0) ^ 0x0800;
-+            else if (31 == ytile)
-+               vaddr &= ~0x03E0;
-+            else
-+               vaddr += 0x20;
++            off = up[r];
++            elapsed = budget - r + off;
++            left -= (float) elapsed;
++            fiq -= elapsed;
++            slept += elapsed;
 +         }
-+         else
-+            vaddr += 0x1000;
++
++         /* the line's start, as ppu_scanline has it, and its end, as ppu_endscanline */
++         if (rendering)
++         {
++            vaddr = (vaddr & ~0x041F) | latch;
++            if (7 == (vaddr >> 12))
++            {
++               int ytile = (vaddr >> 5) & 0x1F;
++
++               vaddr &= ~0x7000;
++               if (29 == ytile)
++                  vaddr = (vaddr & ~0x03E0) ^ 0x0800;
++               else if (31 == ytile)
++                  vaddr &= ~0x03E0;
++               else
++                  vaddr += 0x20;
++            }
++            else
++               vaddr += 0x1000;
++         }
++         scanline++;
 +      }
-+      scanline++;
++      /* (line 240 after the picture's last: nothing of the PPU's is in it) */
++      if (240 != scanline || 240 != stop || idle->count_reg)
++         break;
++      rendering = false;
++      stop = 241;
 +   }
 +   if (scanline != began)
 +   {
 +      ppu.vaddr = vaddr;
 +      *scanline_cycles = left;
 +      *fiq_cycles = fiq;
-+      nes6502_slept(slept, at);
++      if (idle->count_reg)
++      {
++         /* (the turns that went by: each end of a turn come to is its branch taken) */
++         idle->turns_left -= (from + slept) / turn;
++         idle->turns_done += (from + slept) / turn;
++      }
++      nes6502_slept(slept, idle->at_of[off == turn ? 0 : off]);
 +   }
 +   return scanline - began;
 +}
@@ -1509,7 +1794,7 @@ index 9a6875b..f50946b 100644
  void ppu_checknmi(void)
  {
     if (ppu.ctrl0 & PPU_CTRL0F_NMI)
-@@ -1080,7 +1778,23 @@ void ppu_checknmi(void)
+@@ -1080,7 +1898,23 @@ void ppu_checknmi(void)
  
  void ppu_scanline(bitmap_t *bmp, int scanline, bool draw_flag)
  {

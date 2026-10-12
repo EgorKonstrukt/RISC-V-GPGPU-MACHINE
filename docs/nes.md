@@ -151,6 +151,25 @@ What each step is:
   (`seglSpriteSpace`, `seglSpritesUsed`), 50 instructions a sprite where the library's call
   for each was 250, and the eight-a-line count is made only when more than eight sprites
   begin within a sprite's height.
+- **A list is shown without waiting for it** (`seglSwapEarly`, `docs/gpu.md`). The swap
+  waited, with `pause`, until the GPU had drawn the list, and the rest of that pass of the
+  machine was not run (`docs/boot.md`, "Passes that end early"): 6% of a game's passes'
+  instructions with a frame drawn each sixtieth. The emulation of the next frame runs
+  meanwhile now. What the list reads and is written again: the cells and tiles, which
+  `frame_gpu` settles for before it follows the game's writes at a frame's end (the wait is
+  long over then), and the sets and sprite cells, of which there are two pairs, a list made
+  with the pair the list on show was not made with. So a list from the worker is shown and
+  the next given out at once. The workers' pictures (`NES_PPU=workers`) are shown the same
+  way: no team is given the picture on show. Only nofrendo's own drawing (`NES_PPU=here`)
+  waits, since the next frame is copied into the picture the list reads.
+
+  | a game of Thwaite, 1,500 frames as fast as they go (`tools\tick_util.ps1`) | utilization, waiting (`NES_SWAP=wait`) | not waiting |
+  |---|---|---|
+  | the list by the first core | 94.4% (the wait 5.5%) | 99.8% |
+  | the list by a worker (`NES_LIST=worker`) | 93.5% (the wait 6.2%) | 99.6% |
+
+  A game held to its sixty frames a second ends most of its passes in `frame_paced`, with
+  nothing to run: that is its pace, not a loss.
 
 - **The line's step saves no registers** (`ppu_line_plain` in `nes_ppu.c`, called from
   `rc_line`): the line that needs nothing called (no run of a record to begin, sprite 0 not
@@ -223,6 +242,59 @@ its three programs wait in three ways, and one of them was not known.
 Not done: a read of the PPU's status from translated code without the handler, when it
 changes nothing; a second pad, saved games; the first core's own drawing (one core) from
 the record, which would let it skip more frames.
+
+### A quarter to two fifths fewer again (12 October 2026)
+
+Thousands of instructions a frame under `rvc_cpu`, the build before against this one: Thwaite's
+title 39 to 26, Thwaite in a game 64-48 to 48-33, Nova's menus 81-54 to 58-41 and Nova in
+play 31 to 18; with the list by a worker the same shares. From the command to the first
+`nesstat:` line: Thwaite 7.8 million to 4.3, Nova 9.9 to 6.0. `NES_PPU=here` (Nofrendo's own
+drawing) is as it was.
+
+- **A line asleep is a table looked up** (`quiet_tables`, `quiet_run` in `nes_ppu.c`): where
+  a slice of the sleeping 6502 ends is the first instruction's end at or after the slice's,
+  by where in a turn of the loop that is. A line's cycles and what is left of them are
+  131072ths (a float of their size has no finer), so many lines are done at once in whole
+  numbers, which are the floats' own sums, with the walk down the name tables worked out
+  and not stepped: 12 instructions a line where it was 65. Line 240 and the lines of the
+  blanking (242 to 260) pass so too; the sound's quarters are called as the loop called
+  them, one a line.
+- **A loop that counts** (`dex`, `dey`, `inx` or `iny` as the last before the `bne` that
+  closes it, no other branch, nothing else of X or Y, no read of the status) is passed over
+  like one that only looks, as many turns as fit the slice (`idle_counting`), and slept in
+  while its turns last: the delay a game makes after sprite 0. A trial turn costs about 450
+  instructions; Thwaite's nine trials a frame are 11% of its frame, the next thing to take.
+- **A `jsr`'s routine is translated when it is first called** (`rc_later` in `rc6502.h`):
+  the `jsr` leaves, and is made a jump when its routine is there. Thwaite translated 3,951
+  instructions before its first frame and now 101; 1,651 after 600 frames. `NES_RC=eager`
+  is as it was (and `NES_RC` means plain only when it says `plain`).
+- **The machine's own registers are called without the search** (`rc_slow_read`,
+  `rc_slow_write`: they are the first handlers of Nofrendo's list whatever a cartridge
+  adds), and a cartridge's memory at $6000 is read and written in place when no handler is
+  there, the write no longer leaving translated code.
+- **The cells follow by rows** (`gd_cells_written`): a written byte's cell once, a row with
+  more than eight whole, a table that moves copied a row at a time; `gd_tile` by a table of
+  whole bytes; the ninth sprite looked for only in crowded bands of eight lines. Nova's
+  busy frames were 8 to 12 thousand instructions to follow its writes and are 3.
+- **Start**: Nofrendo's palette (64 colours through `sin` and `cos` in doubles, 300 thousand
+  instructions) is a table for the hue and tint it starts with; the cartridge's file is
+  mapped; the translator's tables are mapped, not cleared.
+- The build is `-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops`: 5% fewer
+  instructions a frame than `-O2` (`-O3` alone 2%, `-O2 -funroll-loops` 3%).
+
+Not done: `ppu_write` itself (60 instructions a `$2007` write, 11% of Nova's busy frames),
+what an instruction costs to translate (210), `rc_rt_dispatch` at every `rts` of a cartridge
+that turns pages (3.4% of a Nova frame).
+
+Checking these: the sums the doc lists hold in every mode, `NES_RC=eager` among them, and
+they are not enough by themselves: a quiet run that began at line 240 and went on through
+241 passed all of them and parted from the build before at frame 612 of `NES_FRAMES=1000
+NES_PRESS="20 start 50 start 80 a 100 left 110 a 200 a 210 +right 300 a 400 a 420 +up 500 a
+800 a 900 -right 1000 a 1100 +left 1300 a" nes thwaite` (RAM `bf00e7da`); Nova with
+`NES_PRESS="60 start 120 start 180 start 240 start 300 a 330 +right 600 a 700 a 800 a 900 +a
+1100 -a 1200 a 1400 +left"`, 1,000 frames: RAM `fca83c4e`. What the GPU is given can be
+compared under `rvc_cpu` without a picture: at a hold, sum the list (address and count at
+0x87000300), both sets (0x87700000 to 0x877C0000), texture memory to its top, and the palette.
 
 ## Sound
 
@@ -308,6 +380,11 @@ To check it:
   titles and in Nova scrolled; the 8 above in a Thwaite game), and the GPU's target against
   its software model (`--gpu-capture`, `tools\gpu_reference.py SNAP BMP --size 512x480`:
   every pixel away from a triangle's edge the same).
+- `NES_SWAP=wait` waits for every list, as it was. `NES_HOLD_LATE=1` with `NES_HOLD=N` leaves
+  frame N on the window while frame N + 1 is emulated and its writes followed, and stops
+  then: with `--gpu-capture`, once with `NES_SWAP=wait` and once without, the two pictures
+  must be the same (frame 260 of a Thwaite game: no pixel of 512 x 480 different). A plain
+  hold stops before the next frame writes anything, and cannot show a store made too early.
 - `NES_HOLD=N` stops at frame N with the window up and prints where the picture is in GPU
   memory (bytes past the palette at 0x87000400): in a snapshot from `rvc_harness`,
   the window's layer must be that picture through the palette, each pixel twice, and the

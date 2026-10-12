@@ -1,3 +1,23 @@
+diff --git a/src/demos/nanox/nxcalc.c b/src/demos/nanox/nxcalc.c
+index 84538cc..eb58b84 100644
+--- a/src/demos/nanox/nxcalc.c
++++ b/src/demos/nanox/nxcalc.c
+@@ -231,7 +231,14 @@ static void redraw(void) {
+             GrRect(win, gc_border, rc->x, rc->y, rc->width, rc->height);
+ 
+             if (lbl) {
+-                GrGetGCTextSize(gc_text, lbl, strlen(lbl), GR_TFTOP, &tw, &th, &tb);
++                /* a label's width is asked of the server once: the font stays */
++                static int widths[ROWS * COLS];
++
++                if (!widths[idx]) {
++                    GrGetGCTextSize(gc_text, lbl, strlen(lbl), GR_TFTOP, &tw, &th, &tb);
++                    widths[idx] = tw + 1;
++                }
++                tw = widths[idx] - 1;
+                 GrText(win, gc_text, rc->x + rc->width/2 - tw/2, rc->y + rc->height/2 - 6, lbl, strlen(lbl), GR_TFTOP);
+             }
+             idx++;
 diff --git a/src/demos/nanox/nxeyes.c b/src/demos/nanox/nxeyes.c
 index 5f7f002..ed85cbe 100644
 --- a/src/demos/nanox/nxeyes.c
@@ -15,7 +35,7 @@ index 5f7f002..ed85cbe 100644
  		if(ev->buttons & GR_BUTTON_L) {
  			state->button_down = 1;
 diff --git a/src/demos/nanox/nxterm.c b/src/demos/nanox/nxterm.c
-index 91ec808..0792667 100755
+index 91ec808..3d1164c 100755
 --- a/src/demos/nanox/nxterm.c
 +++ b/src/demos/nanox/nxterm.c
 @@ -74,13 +74,22 @@
@@ -398,11 +418,43 @@ index 91ec808..0792667 100755
      			break;
  		    case 49:
      			GrSetGCBackground(gc1, stdbackground); //default color
-@@ -972,8 +1235,13 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
+@@ -972,8 +1235,45 @@ scrolltop, scrollbottom = upper and lower scroll region limit in lines/rows
   * un-escaped character print routine
   */
  
 +static int wrapnext;	/* the cursor is on the last column's character: the next one wraps */
++
++/* What was read and is not printed yet. A line feed on the last row looks at it: with more
++ * on their way the screen moves up by all of them in one copy, and the lines between are
++ * printed where they will stand. Only text and colours are looked past. */
++static const unsigned char *ahead, *ahead_end;
++
++static int scrolls_ahead(void)
++{
++	const unsigned char *at = ahead;
++	int lines = 1, most = scrollbottom - scrolltop - 1;
++
++	while (at && at < ahead_end && lines < most) {
++		unsigned char c = *at++;
++
++		if (c == 10) {
++			lines++;
++		} else if (c == 27) {
++			const unsigned char *to = at;
++
++			if (to >= ahead_end || *to++ != '[')
++				break;
++			while (to < ahead_end && ((*to >= '0' && *to <= '9') || *to == ';'))
++				to++;
++			if (to >= ahead_end || *to != 'm')
++				break;
++			at = to + 1;
++		} else if (c < 32 && c != 13 && c != 9 && c != 8 && c != 7) {
++			break;
++		}
++	}
++	return lines < 1 || most < 1 ? 1 : lines;
++}
 +
  void esc0 (unsigned char c)
  {
@@ -412,7 +464,25 @@ index 91ec808..0792667 100755
      switch (c) {
      case 0:
  	   /*
-@@ -1053,17 +1321,25 @@ void esc0 (unsigned char c)
+@@ -1026,13 +1326,12 @@ void esc0 (unsigned char c)
+     case 10: /* line feed */
+ 		sflush();
+ 		if (++cury >= scrollbottom) {
++		int lines = scrolls_ahead();
+ 		//have to scroll before moving cursor, so reduce and add again
+ 		cury--;
+-	    	vscrollup(1);
+-	    	cury++;
+-		//set cursor into lowest line (cury zero based so -1)
+-		cury = scrollbottom-1;
+-	    	//cury = row-1;
++		vscrollup(lines);
++		//the cursor's line, with room under it for the line feeds that follow
++		cury = scrollbottom-lines;
+ 		}
+ 		pos_yaxis(cury);
+ 		break;
+@@ -1053,17 +1352,25 @@ void esc0 (unsigned char c)
  		break;
  
      default: /* any printable char */
@@ -448,7 +518,7 @@ index 91ec808..0792667 100755
  		break;
      }
  }
-@@ -1155,9 +1431,71 @@ term(void)
+@@ -1155,9 +1462,71 @@ term(void)
  			exit(0);
  			break;
  
@@ -520,7 +590,7 @@ index 91ec808..0792667 100755
  			if (kp->ch & MWKEY_NONASCII_MASK)
  				if (termtype == ANSI){
  				bufflen = do_special_key_ansi(buf,kp->ch,kp->modifiers);
-@@ -1188,6 +1526,28 @@ term(void)
+@@ -1188,6 +1557,28 @@ term(void)
  			 */
  			if (wevent.update.utype == GR_UPDATE_UNMAPTEMP)
  				hide_cursor();
@@ -549,7 +619,7 @@ index 91ec808..0792667 100755
  			break;
  
  		case GR_EVENT_TYPE_EXPOSURE:
-@@ -1199,6 +1559,8 @@ term(void)
+@@ -1199,11 +1590,16 @@ term(void)
  
  		case GR_EVENT_TYPE_FDINPUT:
  			if (!gotexpose) break;	/* wait until mapped before reading */
@@ -557,8 +627,17 @@ index 91ec808..0792667 100755
 +			scroll_back(-back);
  			hide_cursor();
  			if ((in = read(termfd, buf, sizeof(buf))) > 0) {
++				ahead_end = (unsigned char *)buf + in;
  				for (l=0; l<in; l++) {
-@@ -1683,7 +2045,7 @@ int main(int argc, char **argv)
+-					printc(buf[l]); 
++					ahead = (unsigned char *)buf + l + 1;
++					printc(buf[l]);
+ 				}
++				ahead = ahead_end = NULL;
+ 				sflush();
+ 			}
+ 			break;
+@@ -1683,7 +2079,7 @@ int main(int argc, char **argv)
      w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, TITLE, GR_ROOT_WINDOW_ID, -1,-1,winw,winh,
  		stdbackground);
  
@@ -567,7 +646,7 @@ index 91ec808..0792667 100755
  		   GR_EVENT_MASK_KEY_DOWN | 
  		   GR_EVENT_MASK_FOCUS_IN | GR_EVENT_MASK_FOCUS_OUT |
  		   GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
-@@ -1756,6 +2118,7 @@ int main(int argc, char **argv)
+@@ -1756,6 +2152,7 @@ int main(int argc, char **argv)
      mysignal(SIGPIPE, sigpipe);
      mysignal(SIGCHLD, sigchild);
      mysignal(SIGINT,  SIG_IGN);
@@ -609,28 +688,53 @@ index c389e46..b528bb5 100644
  	GdSetDash(&dm, &dc);
  
 diff --git a/src/engine/devfont.c b/src/engine/devfont.c
-index f074087..48aa6ac 100644
+index f074087..e8edbbb 100644
 --- a/src/engine/devfont.c
 +++ b/src/engine/devfont.c
-@@ -560,6 +560,11 @@ GdText(PSD psd, PMWFONT pfont, MWCOORD x, MWCOORD y, const void *str, int cc,MWT
+@@ -560,6 +560,12 @@ GdText(PSD psd, PMWFONT pfont, MWCOORD x, MWCOORD y, const void *str, int cc,MWT
  		FREEA(buf);
  }
  
 +/* Set by a screen driver that draws a whole string of a built-in font itself: true if it did,
 + * with *endx where the string ended. */
++int (*gd_measurestring)(PMWCFONT font, const unsigned char *text, int count);
 +int (*gd_drawstring)(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char *text, int count,
 +	MWPIXELVAL fg, MWPIXELVAL bg, int usebg, MWCOORD *endx);
 +
  /*
   * Draw ASCII or MWTF_UC16 text using COREFONT type font (buitin, PCF, FNT)
   */
-@@ -626,6 +631,17 @@ gen_drawtext(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y,
+@@ -578,6 +584,9 @@ gen_drawtext(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y,
+ 	int		clip;
+ 	MWBLITFUNC convblit;
+ 	MWBLITPARMS parms;
++	/* whether the driver may take the string whole */
++	int		whole = gd_drawstring && !(flags & MWTF_DBCSMASK) && pfont->fontprocs->encoding != MWTF_UC16 &&
++				pfont->fontprocs->GetTextBits == gen_gettextbits;
+ 
+ 	/* fill in unchanging convblit parms*/
+ 	parms.op = MWROP_COPY;					/* copy to dst, 1=fg (0=bg if usebg)*/
+@@ -599,6 +608,14 @@ gen_drawtext(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y,
+ 		dbcs_gettextsize(pfont, istr, cc, flags, &width, &height, &base);
+ 	else
+ #endif
++	if (whole && gd_measurestring && pfont->fontprocs->GetTextSize == gen_gettextsize) {
++		/* the driver measures, and keeps what its drawing of the string needs */
++		PMWCFONT cfont = ((PMWCOREFONT)pfont)->cfont;
++
++		width = gd_measurestring(cfont, str, cc);
++		height = cfont->height;
++		base = cfont->ascent;
++	} else
+ 		pfont->fontprocs->GetTextSize(pfont, str, cc, flags, &width, &height, &base);
+ 
+ 	/* return if nothing to draw*/
+@@ -626,6 +643,16 @@ gen_drawtext(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y,
  		return;
  	}
  
 +	/* a string that is all in view goes to the driver whole, if it takes strings */
-+	if (gd_drawstring && clip == CLIP_VISIBLE && !(flags & MWTF_DBCSMASK) &&
-+	    pfont->fontprocs->encoding != MWTF_UC16 && pfont->fontprocs->GetTextBits == gen_gettextbits &&
++	if (whole && clip == CLIP_VISIBLE &&
 +	    gd_drawstring(psd, ((PMWCOREFONT)pfont)->cfont, x, y, str, cc, gr_foreground, gr_background,
 +			  gr_usebg, &x)) {
 +		if (pfont->fontattr & MWTF_UNDERLINE)
@@ -878,7 +982,7 @@ index 409290c..5050037 100644
  
  /**
 diff --git a/src/include/nanowm.h b/src/include/nanowm.h
-index 5f31f08..cd175f5 100644
+index 5f31f08..c2f3620 100644
 --- a/src/include/nanowm.h
 +++ b/src/include/nanowm.h
 @@ -44,9 +44,9 @@
@@ -904,7 +1008,7 @@ index 5f31f08..cd175f5 100644
  /* GrGetSystemColor color scheme definitions*/
  extern const GR_COLOR nxSysColors[MAXSYSCOLORS];
  
-@@ -103,9 +106,19 @@ struct windowlist {
+@@ -103,9 +106,21 @@ struct windowlist {
  	int active;			/* Whether this window is active or not */
  	void *data;			/* Data associated with this window */
  	struct windowlist *next; /* The next window in the list */
@@ -915,6 +1019,8 @@ index 5f31f08..cd175f5 100644
 +	int restore_x, restore_y, restore_w, restore_h;
 +	int icon;			/* its program's cell in the sheet of icons, or -1 */
 +	char icon_file[96];		/* or the program's own file, when that ends in an icon */
++	int painted, painted_w, painted_h;	/* the frame as last painted: 1 + active, its size */
++	unsigned painted_key;		/* and a sum of its title, properties and icon */
  };
  typedef struct windowlist win;
  
@@ -924,7 +1030,7 @@ index 5f31f08..cd175f5 100644
  /*
   * Used to record the offset position when performing a move.
   */
-@@ -139,6 +152,7 @@ void wm_client_window_destroy(win *window);
+@@ -139,6 +154,7 @@ void wm_client_window_destroy(win *window);
  void wm_client_window_remap(win *window);
  void wm_client_window_unmap(win *window);
  void wm_redraw_ncarea(win *window);
@@ -932,6 +1038,121 @@ index 5f31f08..cd175f5 100644
  
  int wm_exposure(GR_EVENT_EXPOSURE *event);
  int wm_button_down(GR_EVENT_BUTTON *event);
+diff --git a/src/nanox/client.c b/src/nanox/client.c
+index de5d02a..fa5df7b 100644
+--- a/src/nanox/client.c
++++ b/src/nanox/client.c
+@@ -127,6 +127,9 @@ const char *nxErrorStrings[] = {
+ static void QueueEvent(GR_EVENT *ep);
+ static void GetNextQueuedEvent(GR_EVENT *ep);
+ static void _GrGetNextEventTimeout(GR_EVENT *ep, GR_TIMEOUT timeout);
++/* The server has been asked for the next event and has not answered: it answers once, so a
++ * wait that timed out does not ask again (a question wakes the server, 13,000 instructions). */
++static int event_asked;
+ 
+ /**
+  * Read n bytes of data from the server into block *b.  Make sure the data
+@@ -234,6 +237,8 @@ CheckBlockType(short packettype)
+ 	GR_EVENT	event;
+ 
+ 	while (ReadBlock(&b,sizeof(b)) != -1) {
++		if (b == GrNumGetNextEvent)
++			event_asked = 0;
+ 		if (b == packettype)
+ 			return b;
+ 
+@@ -270,11 +275,51 @@ static int
+ TypedReadBlock(void *b, int n, int type)
+ {
+ 	int r;
+-   
+-	r = CheckBlockType(type);
+-	if (r != type)
++	ACCESS_PER_THREAD_DATA()
++
++	/* A reply's type and its data come in one piece: one read() takes both. Never more than
++	 * an event's length is asked for: an event that came first is not read past its end. */
++	nxFlushReq(0L,0);
++	for (;;) {
++		union { short type; unsigned char bytes[sizeof(short) + sizeof(GR_EVENT)]; } in;
++		int want = (int)sizeof(short) + (n < (int)sizeof(GR_EVENT) ? n : (int)sizeof(GR_EVENT)), got = 0, rest;
++
++		while (got < (int)sizeof(short)) {
++			r = read(nxSocket, in.bytes + got, want - got);
++			if (r > 0) {
++				got += r;
++				continue;
++			}
++			if (r == 0) {
++				EPRINTF("nxclient: lost connection to Nano-X server\n");
++				exit(1);
++			}
++			if (errno == EINTR || errno == EAGAIN)
++				continue;
++			EPRINTF("nxclient: bad readblock %d, errno %d\n", r, errno);
++			return -1;
++		}
++		rest = got - (int)sizeof(short);
++		if (in.type == GrNumGetNextEvent)
++			event_asked = 0;
++		if (in.type == type) {
++			memcpy(b, in.bytes + sizeof(short), rest);
++			return rest < n ? ReadBlock((char *)b + rest, n - rest) : 0;
++		}
++		if (in.type == GrNumGetNextEvent) {
++			GR_EVENT event;
++
++			/* an event that came before the reply: kept for later, as CheckBlockType() does */
++			memcpy(&event, in.bytes + sizeof(short), rest);
++			if (rest < (int)sizeof(event))
++				ReadBlock((char *)&event + rest, (int)sizeof(event) - rest);
++			CheckForClientData(&event);
++			QueueEvent(&event);
++			continue;
++		}
++		EPRINTF("nxclient %d: Wrong packet type %d (expected %d)\n", getpid(), in.type, type);
+ 		return -1;
+-	return ReadBlock(b, n);
++	}
+ }
+ 
+ /**
+@@ -579,14 +624,23 @@ GrGetScreenInfo(GR_SCREEN_INFO *sip)
+ GR_COLOR
+ GrGetSysColor(int index)
+ {
++	/* asked of the server once each: a question and its answer cost more than a drawing does */
++	static GR_COLOR known[32];
++	static unsigned char have[32];
+ 	nxGetSysColorReq *req;
+ 	GR_COLOR color;
+ 
++	if (index >= 0 && index < 32 && have[index])
++		return known[index];
+ 	LOCK(&nxGlobalLock);
+ 	req = AllocReq(GetSysColor);
+ 	req->index = index;
+ 	if(TypedReadBlock(&color, sizeof(color),GrNumGetSysColor) == -1)
+ 		color = 0;
++	else if (index >= 0 && index < 32) {
++		known[index] = color;
++		have[index] = 1;
++	}
+ 	UNLOCK(&nxGlobalLock);
+ 	return color;
+ }
+@@ -762,7 +816,10 @@ GrPrepareSelect(int *maxfd,void *rfdset)
+ 	ACCESS_PER_THREAD_DATA()
+ 
+ 	LOCK(&nxGlobalLock);
+-	AllocReq(GetNextEvent);
++	if (!event_asked) {
++		AllocReq(GetNextEvent);
++		event_asked = 1;
++	}
+ 	GrFlush();
+ 
+ 	FD_SET(nxSocket, rfds);
 diff --git a/src/nanox/nxpaintnc.c b/src/nanox/nxpaintnc.c
 index 9e40afe..3a82ab7 100644
 --- a/src/nanox/nxpaintnc.c
@@ -1028,11 +1249,41 @@ index 9e40afe..3a82ab7 100644
  #endif
  	}
  
+diff --git a/src/nanox/nxproto.h b/src/nanox/nxproto.h
+index 3cc7679..4dffa4a 100644
+--- a/src/nanox/nxproto.h
++++ b/src/nanox/nxproto.h
+@@ -38,7 +38,7 @@
+ #define SZREQBUF        512	        /* initial request buffer size*/
+ #else
+ #define MAXREQUESTSZ	30000           /* max request size (65532)*/
+-#define SZREQBUF        2048	        /* initial request buffer size*/
++#define SZREQBUF        16384	        /* initial request buffer size: a redraw in one write, which the server takes in one read*/
+ #endif
+ 
+ typedef unsigned char	BYTE8;		/* 1 byte*/
 diff --git a/src/nanox/serv.h b/src/nanox/serv.h
-index 4a9efee..0f17883 100644
+index 4a9efee..4a1f3b7 100644
 --- a/src/nanox/serv.h
 +++ b/src/nanox/serv.h
-@@ -451,6 +451,8 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
+@@ -212,6 +212,7 @@ struct gr_client {
+ 	GR_CLIENT	*next;		/* the next client in the list */
+ 	GR_CLIENT	*prev;		/* the previous client in the list */
+ 	int		waiting_for_event; /* used to implement GrGetNextEvent*/
++	int		own_chld_update;	/* the program itself selected the root's child updates */
+ 	char		*shm_cmds;
+ 	int		shm_cmds_size;
+ 	int		shm_cmds_shmid;
+@@ -418,6 +419,8 @@ int		GsInitialize(void);
+ void		GsClose(int fd);
+ int		GsPumpEvents(void);
+ void		GsSelect(GR_TIMEOUT timeout);
++void		GsWatchFd(int fd);
++void		GsFlushType(void);
+ void		GsTerminate(void);
+ GR_TIMEOUT	GsGetTickCount(void);
+ void		GsRedrawScreen(void);
+@@ -451,6 +454,8 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
  void		GsSetPortraitMode(int mode);
  void		GsSetPortraitModeFromXY(GR_COORD rootx, GR_COORD rooty);
  void		GsSetClipWindow(GR_WINDOW *wp, MWCLIPREGION *userregion, int flags);
@@ -1041,7 +1292,7 @@ index 4a9efee..0f17883 100644
  void		GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons);
  void		GsFreePositionEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_WINDOW_ID subwid);
  void		GsDeliverButtonEvent(GR_EVENT_TYPE type, int buttons, int changebuttons, int modifiers);
-@@ -477,6 +479,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
+@@ -477,6 +482,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
  
  void		GsCheckMouseWindow(void);
  void		GsCheckFocusWindow(void);
@@ -1096,7 +1347,7 @@ index 0679f9f..29d2087 100644
  		for (; sibwp != wp; sibwp = sibwp->siblings) {
  			if (!sibwp->realized || !sibwp->output)
 diff --git a/src/nanox/srvevent.c b/src/nanox/srvevent.c
-index bc31c08..53cd79c 100644
+index bc31c08..0d9bd2f 100644
 --- a/src/nanox/srvevent.c
 +++ b/src/nanox/srvevent.c
 @@ -7,8 +7,80 @@
@@ -1209,11 +1460,56 @@ index bc31c08..53cd79c 100644
  		GsDeliverButtonEvent(GR_EVENT_TYPE_BUTTON_DOWN, newbuttons,
  			changebuttons, modifiers);
  	}
+@@ -704,6 +791,10 @@ GsDeliverUpdateEvent(GR_WINDOW *wp, GR_UPDATE_TYPE utype, GR_COORD x,
+ 	}
+ 
+ update_again:
++	/* a menu or a panel has no frame to keep and no button in a task bar: of the root's
++	 * listeners (every program, for the window manager) only its being shown is heard */
++	if (lcount && wp->id == GR_ROOT_WINDOW_ID && utype != GR_UPDATE_MAP && (orgwp->props & GR_WM_PROPS_NODECORATE))
++		return;
+ 	for (ecp = wp->eventclients; ecp; ecp = ecp->next) {
+ 		if ((ecp->eventmask & cmask) == 0)
+ 			continue;
 diff --git a/src/nanox/srvfunc.c b/src/nanox/srvfunc.c
-index 3455994..97f239e 100644
+index 3455994..63fe8de 100644
 --- a/src/nanox/srvfunc.c
 +++ b/src/nanox/srvfunc.c
-@@ -173,6 +173,12 @@ GrGetWindowInfo(GR_WINDOW_ID wid, GR_WINDOW_INFO *infoptr)
+@@ -9,6 +9,7 @@
+ #define MWINCLUDECOLORS
+ #include "uni_std.h"
+ #include "serv.h"
++extern int wm_selecting;
+ #include "nanowm.h"
+ #include "osdep.h"
+ #include "../drivers/genmem.h"
+@@ -100,8 +101,23 @@ GsCheckNextEvent(GR_EVENT *ep, GR_BOOL doCheckEvent)
+ 
+ #if NANOWM
+ 	/* let inline window manager look at event*/
+-	if (wm_handle_event(ep))
+-		ep->type = GR_EVENT_TYPE_NONE;
++	{
++		int taken = wm_handle_event(ep);
++
++		/*
++		 * Every program has the root's child updates selected, for the window manager. One that
++		 * selected them itself (a task bar) gets those of windows with frames, taken or not: a
++		 * menu coming and going is no news to it.
++		 */
++		if (ep->type == GR_EVENT_TYPE_CHLD_UPDATE && ep->update.wid == GR_ROOT_WINDOW_ID) {
++			GR_WINDOW *sub;
++
++			if (!curclient->own_chld_update ||
++			    ((sub = GsFindWindow(ep->update.subwid)) != NULL && (sub->props & GR_WM_PROPS_NODECORATE)))
++				ep->type = GR_EVENT_TYPE_NONE;
++		} else if (taken)
++			ep->type = GR_EVENT_TYPE_NONE;
++	}
+ #endif
+ }
+ 
+@@ -173,6 +189,12 @@ GrGetWindowInfo(GR_WINDOW_ID wid, GR_WINDOW_INFO *infoptr)
  		infoptr->processid = wp->owner? wp->owner->processid: 0;
  		infoptr->eventmask = 0;
  		infoptr->bufsize = wp->buffer? wp->buffer->psd->size: 0;
@@ -1226,7 +1522,7 @@ index 3455994..97f239e 100644
  
  		for (evp = wp->eventclients; evp; evp = evp->next) {
  			if (evp->client == curclient)
-@@ -286,7 +292,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
+@@ -286,7 +308,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
  	/*
  	 * Finally redraw the window if necessary.
  	 */
@@ -1235,7 +1531,7 @@ index 3455994..97f239e 100644
  		GsDrawBorder(wp);
  		GsExposeArea(wp, wp->x, wp->y, wp->width, wp->height, NULL);
  	}
-@@ -352,7 +358,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
+@@ -352,7 +374,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
  	 * Finally redraw the sibling windows which this window covered
  	 * if they overlapped our window.
  	 */
@@ -1244,7 +1540,7 @@ index 3455994..97f239e 100644
  		if (GsCheckOverlap(wp, expwp)) {
  			GsExposeArea(expwp, wp->x - wp->bordersize,
  				wp->y - wp->bordersize,
-@@ -445,6 +451,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
+@@ -445,6 +467,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
  		return;
  	}
  
@@ -1268,7 +1564,7 @@ index 3455994..97f239e 100644
  	/*
  	 * move algorithms not requiring unmap/map
  	 */
-@@ -696,6 +719,15 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -696,6 +735,15 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  	wp->width = width;
  	wp->height = height;
  
@@ -1284,11 +1580,209 @@ index 3455994..97f239e 100644
  	/* draw background and send expose events in resized window and all children*/
  	drawBackgroundAndExpose(wp);
  
+@@ -1675,6 +1723,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+ 		return;
+ 	}
+ 
++#if NANOWM
++	if (wid == GR_ROOT_WINDOW_ID && !wm_selecting)
++		curclient->own_chld_update = (eventmask & GR_EVENT_MASK_CHLD_UPDATE) != 0;
++#endif
+ 	/*
+ 	 * See if this client is already in the event client list.
+ 	 * If so, then just replace the events he is selecting for.
 diff --git a/src/nanox/srvmain.c b/src/nanox/srvmain.c
-index 47260c5..2205be8 100644
+index 47260c5..736189b 100644
 --- a/src/nanox/srvmain.c
 +++ b/src/nanox/srvmain.c
-@@ -1032,6 +1032,7 @@ GsInitialize(void)
+@@ -18,6 +18,7 @@
+ #endif
+ 
+ #define MWINCLUDECOLORS
++#include <sys/epoll.h>
+ #include "serv.h"
+ #include "osdep.h"
+ 
+@@ -361,15 +362,30 @@ GsPumpEvents(void)
+ }
+ #endif
+ 
++static int gs_epoll = -1;
++
++/* Has GsSelect() wake when this descriptor can be read, until it is closed. */
++void
++GsWatchFd(int fd)
++{
++	struct epoll_event ev;
++
++	if (gs_epoll < 0)
++		gs_epoll = epoll_create1(EPOLL_CLOEXEC);
++	ev.events = EPOLLIN;
++	ev.data.fd = fd;
++	epoll_ctl(gs_epoll, EPOLL_CTL_ADD, fd, &ev);
++}
++
+ void
+ GsSelect(GR_TIMEOUT timeout)
+ {
+-	fd_set	rfds;
+-	int 	e;
+-	int	setsize = 0;
++	struct epoll_event ready[16];
++	int 	e, k, ms;
+ 	struct timeval tout;
+ 	struct timeval *to;
+ 	static int updatecount;
++	static int watching;
+ 
+ #if CONFIG_ARCH_PC98
+ 	if (GsCheckMouseEvent())
+@@ -411,33 +427,17 @@ GsSelect(GR_TIMEOUT timeout)
+ 			return;
+ 	}
+ 
+-	/* Set up the FDs for use in the main select(): */
+-	FD_ZERO(&rfds);
+-	if(mouse_fd >= 0)
+-	{
+-		FD_SET(mouse_fd, &rfds);
+-		if (mouse_fd > setsize)
+-			setsize = mouse_fd;
+-	}
+-	if(keyb_fd >= 0)
++	/* the devices and the listening socket are watched from the first call on; a client
++	 * is from when it is accepted (GsWatchFd), until its descriptor is closed */
++	if (!watching)
+ 	{
+-		FD_SET(keyb_fd, &rfds);
+-		if (keyb_fd > setsize)
+-			setsize = keyb_fd;
++		watching = 1;
++		if(mouse_fd >= 0)
++			GsWatchFd(mouse_fd);
++		if(keyb_fd >= 0)
++			GsWatchFd(keyb_fd);
++		GsWatchFd(un_sock);
+ 	}
+-#if NONETWORK
+-	/* handle registered input file descriptors*/
+-	for (int fd = 0; fd < regfdmax; fd++)
+-	{
+-		if (!FD_ISSET(fd, &regfdset))
+-			continue;
+-		FD_SET(fd, &rfds);
+-		if (fd > setsize) setsize = fd;
+-	}
+-#else /* !NONETWORK */
+-	/* handle client socket connections*/
+-	FD_SET(un_sock, &rfds);
+-	if (un_sock > setsize) setsize = un_sock;
+ 	curclient = root_client;
+ 	while(curclient)
+ 	{
+@@ -447,11 +447,8 @@ GsSelect(GR_TIMEOUT timeout)
+ 			GrGetNextEventWrapperFinish(curclient->id);
+ 			return;
+ 		}
+-		FD_SET(curclient->id, &rfds);
+-		if(curclient->id > setsize) setsize = curclient->id;
+ 		curclient = curclient->next;
+ 	}
+-#endif /* NONETWORK */
+ 
+ #if CONFIG_ARCH_PC98
+ 	if (timeout == GR_TIMEOUT_BLOCK)
+@@ -495,62 +492,40 @@ GsSelect(GR_TIMEOUT timeout)
+ 	}
+ 	if (updatecount) --updatecount;
+ 
+-	/* Wait for some input on any of the fds in the set or a timeout*/
+-#if NONETWORK
+-again:
+-	SERVER_UNLOCK();	        /* allow other threads to run*/
+-#endif
+-	e = select(setsize+1, &rfds, NULL, NULL, to);
+-#if NONETWORK
+-	SERVER_LOCK();
+-#endif
++	GsFlushType();
++	/* Wait for some input on any of the watched descriptors or a timeout*/
++	ms = to ? (int)(to->tv_sec * 1000 + (to->tv_usec + 999) / 1000) : -1;
++	e = epoll_wait(gs_epoll, ready, 16, ms);
+ 	if(e > 0)			/* input ready*/
+ 	{
+-		/* service mouse file descriptor*/
+-		if(mouse_fd >= 0 && FD_ISSET(mouse_fd, &rfds))
+-			while(GsCheckMouseEvent())
+-				continue;
+-
+-		/* service keyboard file descriptor*/
+-		if(keyb_fd >= 0 && FD_ISSET(keyb_fd, &rfds))
+-			while(GsCheckKeyboardEvent())
+-				continue;
+-
+-#if NONETWORK
+-		/* check for input on registered file descriptors */
+-		for (int fd = 0; fd < regfdmax; fd++)
++		int connecting = 0;
++
++		/* the pointer and the keyboard first, as ever */
++		for (k = 0; k < e; k++)
++			if (ready[k].data.fd == mouse_fd)
++				while(GsCheckMouseEvent())
++					continue;
++		for (k = 0; k < e; k++)
++			if (ready[k].data.fd == keyb_fd)
++				while(GsCheckKeyboardEvent())
++					continue;
++
++		/* If a client is sending us a command, handle it (one may be gone by its turn): */
++		for (k = 0; k < e; k++)
+ 		{
+-			GR_EVENT_FDINPUT *	gp;
+-
+-			if (!FD_ISSET(fd, &regfdset)  ||  !FD_ISSET(fd, &rfds))
+-				continue;
++			int fd = ready[k].data.fd;
+ 
+-			gp = (GR_EVENT_FDINPUT *)GsAllocEvent(curclient);
+-			if(gp)
+-			{
+-				gp->type = GR_EVENT_TYPE_FDINPUT;
+-				gp->fd = fd;
+-			}
++			if (fd == un_sock)
++				connecting = 1;
++			else if (fd != mouse_fd && fd != keyb_fd && (curclient = GsFindClient(fd)) != NULL)
++				GsHandleClient(fd);
+ 		}
+-#else
++		curclient = NULL;
++
+ 		/* If a client is trying to connect, accept it: */
+-		if(FD_ISSET(un_sock, &rfds))
++		if (connecting)
+ 			GsAcceptClient();
+-
+-		/* If a client is sending us a command, handle it: */
+-		curclient = root_client;
+-		while (curclient)
+-		{
+-			GR_CLIENT *curclient_next;
+-
+-			/* curclient may be freed in GsDropClient*/
+-			curclient_next = curclient->next;
+-			if(FD_ISSET(curclient->id, &rfds))
+-				GsHandleClient(curclient->id);
+-			curclient = curclient_next;
+-		}
+-#endif /* NONETWORK */
+-	} 
++	}
+ 	else if (e == 0)		/* timeout*/
+ 	{
+ 		updatecount = 0;
+@@ -1032,6 +1007,7 @@ GsInitialize(void)
  	GdMoveMouse(psd->xvirtres / 2, psd->yvirtres / 2);
  
  	/* Force root window screen paint*/
@@ -1297,10 +1791,108 @@ index 47260c5..2205be8 100644
  
  	/* 
 diff --git a/src/nanox/srvnet.c b/src/nanox/srvnet.c
-index 1f106c0..a19f4b5 100644
+index 1f106c0..792249c 100644
 --- a/src/nanox/srvnet.c
 +++ b/src/nanox/srvnet.c
-@@ -2232,41 +2232,69 @@ int GsWriteType(int fd, short type)
+@@ -17,6 +17,7 @@
+ #include <errno.h>
+ #include <string.h>
+ #include <sys/socket.h>
++#include <sys/uio.h>
+ #if HAVE_SHAREDMEM_SUPPORT
+ #include <sys/types.h>
+ #include <sys/ipc.h>
+@@ -40,6 +41,8 @@ extern	GR_CLIENT	*root_client;
+ extern	int		current_fd;
+ 
+ static int GsWriteType(int,short);
++static int type_fd = -1;	/* the client a reply's type is kept back for */
++static short type_kept;
+ 
+ /*
+  * Wrapper functions called after full packet read
+@@ -525,8 +528,18 @@ GrGetNextEventWrapperFinish(int fd)
+ 	GR_EVENT_CLIENT_DATA *cde;
+ 
+ 	/* get the event and pass it to client*/
+-	/* this will never be GR_EVENT_TYPE_NONE*/
+-	GrCheckNextEvent(&evt);
++	/*
++	 * An event the window manager took comes out as none: the program asked to be told
++	 * of an event and that is not one. The next in its queue, then, or it waits on (an
++	 * answer is a wake of the program and a new question from it for nothing).
++	 */
++	do
++		GrCheckNextEvent(&evt);
++	while (evt.type == GR_EVENT_TYPE_NONE && curclient->eventhead);
++	if (evt.type == GR_EVENT_TYPE_NONE) {
++		curclient->waiting_for_event = TRUE;
++		return;
++	}
+ 
+ 	GsWriteType(fd,GrNumGetNextEvent);
+ 	GsWrite(fd, &evt, sizeof(evt));
+@@ -1924,6 +1937,7 @@ GsAcceptClient(void)
+ 		EPRINTF("nano-X: Error accept failed (%d)\n", errno);
+ 		return;
+ 	}
++	GsWatchFd(i);
+ 	GsAcceptClientFd(i);
+ }
+ 
+@@ -2209,6 +2223,26 @@ int GsWrite(int fd, void *buf, int c)
+ 
+ 	n = 0;
+ 
++	if (type_fd == fd) {
++		/* the reply's type, kept back by GsWriteType(), goes out with its data */
++		struct iovec both[2];
++
++		both[0].iov_base = &type_kept;
++		both[0].iov_len = sizeof(type_kept);
++		both[1].iov_base = buf;
++		both[1].iov_len = c;
++		type_fd = -1;
++		e = writev(fd, both, 2);
++		if (e < (int)sizeof(type_kept)) {	/* not even the type: the old way */
++			if (e > 0 || GsWrite(fd, &type_kept, sizeof(type_kept)) < 0) {
++				GsClose(fd);
++				return -1;
++			}
++		} else
++			n = e - sizeof(type_kept);
++	} else if (type_fd >= 0)
++		GsFlushType();
++
+ 	while(n < c) {
+ 		e = write(fd, ((char *) buf + n), (c - n));
+ 		if(e <= 0) {
+@@ -2222,9 +2256,23 @@ int GsWrite(int fd, void *buf, int c)
+ 	return 0;
+ }
+ 
++/* The type is kept until the data that follows it is written, or until GsFlushType(). */
+ int GsWriteType(int fd, short type)
+ {
+-	return GsWrite(fd,&type,sizeof(type));
++	GsFlushType();
++	type_fd = fd;
++	type_kept = type;
++	return 0;
++}
++
++void GsFlushType(void)
++{
++	if (type_fd >= 0) {
++		int fd = type_fd;
++
++		type_fd = -1;
++		GsWrite(fd, &type_kept, sizeof(type_kept));
++	}
+ }
+ 
+ /*
+@@ -2232,41 +2280,83 @@ int GsWriteType(int fd, short type)
   * Note that the maximum request size is allocated from the stack
   * in this function.
   */
@@ -1324,7 +1916,8 @@ index 1f106c0..a19f4b5 100644
  	nxReq *	req;
  	long	len;
  	char	buf[MAXREQUESTSZ];
-+	char	rbuf[MAXREQUESTSZ];
++	long	rwords[MAXREQUESTSZ / sizeof(long)];
++	char	*rbuf = (char *)rwords;
 +	int	rpos = 0, rhave;
  
  	current_fd = fd;
@@ -1334,7 +1927,7 @@ index 1f106c0..a19f4b5 100644
  #endif
 -	/* read request header*/
 -	if(GsRead(fd, buf, sizeof(nxReq)))
-+	rhave = read(fd, rbuf, sizeof(rbuf));
++	rhave = read(fd, rbuf, sizeof(rwords));
 +	if (rhave <= 0) {
 +		if (rhave == 0)
 +			EPRINTF("nano-X: client closed socket: %d\n", fd);
@@ -1342,19 +1935,43 @@ index 1f106c0..a19f4b5 100644
 +		GsClose(fd);
  		return;
 +	}
-+
-+	do {
-+		/* read request header*/
-+		if(GsTake(fd, rbuf, &rpos, rhave, buf, sizeof(nxReq)))
-+			return;
  
- #pragma GCC diagnostic ignored "-Wstrict-aliasing"
+-#pragma GCC diagnostic ignored "-Wstrict-aliasing"
 -	len = GetReqAlignedLen((nxReq *)&buf[0]);
 -	if(len > sizeof(nxReq)) {
 -		if(len > MAXREQUESTSZ) {
 -			EPRINTF("nano-X: GsHandleClient request too large: %ld > %d\n",
 -				len, MAXREQUESTSZ);
 -			exit(1);
++	do {
++		/* a request that is whole in what was read is handled where it lies */
++		req = (nxReq *)(rbuf + rpos);
++		if (!(rpos & (ALIGNSZ - 1)) && rhave - rpos >= (int)sizeof(nxReq) &&
++		    (len = GetReqAlignedLen(req)) >= (long)sizeof(nxReq) && len <= rhave - rpos) {
++			rpos += len;
++			if(req->reqType < GrTotalNumCalls)
++				GrFunctions[req->reqType].func(req);
++			else
++				EPRINTF("nano-X: GsHandleClient bad function\n");
++			GsFlushType();
++			continue;
+ 		}
+-		/* read additional request data*/
+-		if(GsRead(fd, &buf[sizeof(nxReq)], len-sizeof(nxReq)))
++		/* read request header*/
++		if(GsTake(fd, rbuf, &rpos, rhave, buf, sizeof(nxReq)))
+ 			return;
+-	}
+-	req = (nxReq *)&buf[0];
+ 
+-	if(req->reqType < GrTotalNumCalls) {
+-		curfunc = (char *)GrFunctions[req->reqType].name;
+-		/*DPRINTF("HandleClient %s\n", curfunc);*/
+-		GrFunctions[req->reqType].func(req);
+-	} else {
+-		EPRINTF("nano-X: GsHandleClient bad function\n");
+-	}
++#pragma GCC diagnostic ignored "-Wstrict-aliasing"
 +		len = GetReqAlignedLen((nxReq *)&buf[0]);
 +		if(len > sizeof(nxReq)) {
 +			if(len > MAXREQUESTSZ) {
@@ -1365,21 +1982,9 @@ index 1f106c0..a19f4b5 100644
 +			/* read additional request data*/
 +			if(GsTake(fd, rbuf, &rpos, rhave, &buf[sizeof(nxReq)], len-sizeof(nxReq)))
 +				return;
- 		}
--		/* read additional request data*/
--		if(GsRead(fd, &buf[sizeof(nxReq)], len-sizeof(nxReq)))
--			return;
--	}
--	req = (nxReq *)&buf[0];
++		}
 +		req = (nxReq *)&buf[0];
- 
--	if(req->reqType < GrTotalNumCalls) {
--		curfunc = (char *)GrFunctions[req->reqType].name;
--		/*DPRINTF("HandleClient %s\n", curfunc);*/
--		GrFunctions[req->reqType].func(req);
--	} else {
--		EPRINTF("nano-X: GsHandleClient bad function\n");
--	}
++
 +		if(req->reqType < GrTotalNumCalls) {
 +			curfunc = (char *)GrFunctions[req->reqType].name;
 +			/*DPRINTF("HandleClient %s\n", curfunc);*/
@@ -1387,11 +1992,12 @@ index 1f106c0..a19f4b5 100644
 +		} else {
 +			EPRINTF("nano-X: GsHandleClient bad function\n");
 +		}
++		GsFlushType();
 +		/* a request may have closed the client*/
 +	} while (rpos < rhave && GsFindClient(fd) != NULL && curclient && curclient->id == fd);
  }
 diff --git a/src/nanox/srvutil.c b/src/nanox/srvutil.c
-index fae5bfa..bd46971 100644
+index fae5bfa..6003e8b 100644
 --- a/src/nanox/srvutil.c
 +++ b/src/nanox/srvutil.c
 @@ -9,6 +9,7 @@
@@ -1498,10 +2104,124 @@ index fae5bfa..bd46971 100644
  
  	if (wp->props & GR_WM_PROPS_BUFFERED) {
  
-@@ -1442,6 +1497,33 @@ GsCheckFocusWindow(void)
+@@ -1104,6 +1159,9 @@ GsFindCursor(GR_CURSOR_ID cursorid)
+ GR_DRAW_TYPE
+ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
+ {
++	/* what the engine was last told of the current context (told_gc) */
++	static GR_GC	*told_gc;
++	static GR_GC	told;
+ 	GR_WINDOW	*wp;		/* found window */
+ 	GR_PIXMAP	*pp;		/* found pixmap */
+ 	GR_GC		*gcp;		/* found graphics context */
+@@ -1123,6 +1181,7 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
+ 	if (gcp != curgcp) {
+ 		curgcp = gcp;
+ 		gcp->changed = GR_TRUE;
++		told_gc = NULL;
+ 	}
+ 
+ 	/*
+@@ -1187,7 +1246,17 @@ havepixmap:
+ 		 * If the window is not the currently clipped one,
+ 		 * then make it the current one and define its clip rectangles.
+ 		 */
+-		if (wp != clipwp || gcp->changed) {
++		/* a colour set in the context is no reason to work the clip out again */
++		static GR_GC_ID clip_region;
++		static int clip_xoff, clip_yoff, clip_mode;
++		int clipmode = gcp->mode & ~GR_MODE_DRAWMASK;
++
++		if (wp != clipwp || gcp->regionid != clip_region || clipmode != clip_mode ||
++		    (gcp->regionid && (gcp->changed || gcp->xoff != clip_xoff || gcp->yoff != clip_yoff))) {
++			clip_region = gcp->regionid;
++			clip_xoff = gcp->xoff;
++			clip_yoff = gcp->yoff;
++			clip_mode = clipmode;
+ #if DYNAMICREGIONS
+ 			/* find user region for intersect*/
+ 			regionp = gcp->regionid? GsFindRegion(gcp->regionid): NULL;
+@@ -1226,23 +1295,33 @@ havepixmap:
+ 			count = gcp->dashcount;
+ 		}
+ 
+-		if (gcp->fgispixelval)
+-			GdSetForegroundPixelVal(psd, gcp->foreground);
+-		else
+-			GdSetForegroundColor(psd, gcp->foreground);
+-
+-		if (gcp->bgispixelval)
+-			GdSetBackgroundPixelVal(psd, gcp->background);
+-		else
+-			GdSetBackgroundColor(psd, gcp->background);
++		int		all = told_gc != gcp;
+ 
+-		GdSetMode(gcp->mode & GR_MODE_DRAWMASK);
+-		GdSetUseBackground(gcp->usebackground);
++		if (all || gcp->foreground != told.foreground || gcp->fgispixelval != told.fgispixelval) {
++			if (gcp->fgispixelval)
++				GdSetForegroundPixelVal(psd, gcp->foreground);
++			else
++				GdSetForegroundColor(psd, gcp->foreground);
++		}
++		if (all || gcp->background != told.background || gcp->bgispixelval != told.bgispixelval) {
++			if (gcp->bgispixelval)
++				GdSetBackgroundPixelVal(psd, gcp->background);
++			else
++				GdSetBackgroundColor(psd, gcp->background);
++		}
++		if (all || gcp->mode != told.mode)
++			GdSetMode(gcp->mode & GR_MODE_DRAWMASK);
++		if (all || gcp->usebackground != told.usebackground)
++			GdSetUseBackground(gcp->usebackground);
+ 		
+ #if MW_FEATURE_SHAPES
+-		GdSetDash(&mask, &count);
+-		GdSetFillMode(gcp->fillmode);
+-		GdSetTSOffset(gcp->ts_offset.x, gcp->ts_offset.y);
++		if (all || gcp->linestyle != told.linestyle || gcp->dashmask != told.dashmask ||
++		    gcp->dashcount != told.dashcount)
++			GdSetDash(&mask, &count);
++		if (all || gcp->fillmode != told.fillmode)
++			GdSetFillMode(gcp->fillmode);
++		if (all || gcp->ts_offset.x != told.ts_offset.x || gcp->ts_offset.y != told.ts_offset.y)
++			GdSetTSOffset(gcp->ts_offset.x, gcp->ts_offset.y);
+ 
+ 		switch(gcp->fillmode) {
+ 		case GR_FILL_STIPPLE:
+@@ -1255,6 +1334,18 @@ havepixmap:
+ 		}
+ #endif
+ 		gcp->changed = GR_FALSE;
++		told.foreground = gcp->foreground;
++		told.background = gcp->background;
++		told.fgispixelval = gcp->fgispixelval;
++		told.bgispixelval = gcp->bgispixelval;
++		told.mode = gcp->mode;
++		told.usebackground = gcp->usebackground;
++		told.linestyle = gcp->linestyle;
++		told.dashmask = gcp->dashmask;
++		told.dashcount = gcp->dashcount;
++		told.fillmode = gcp->fillmode;
++		told.ts_offset = gcp->ts_offset;
++		told_gc = gcp;
+ 	}
+ 
+ 	*retdp = wp? (GR_DRAWABLE *)wp: (GR_DRAWABLE *)pp;
+@@ -1442,6 +1533,43 @@ GsCheckFocusWindow(void)
  	}
  }
  
++/* Whether the keyboard is in an undecorated top-level window (a menu) of the program `client` is of. */
++int
++GsFocusInPopupOf(GR_WINDOW_ID client)
++{
++	GR_WINDOW *cp = GsFindWindow(client);
++
++	return cp && focuswp && focuswp != rootwp && focuswp->parent == rootwp && focuswp->owner == cp->owner &&
++		(focuswp->props & GR_WM_PROPS_NODECORATE);
++}
++
 +/* The program's window inside a frame the window manager made, if it may have the keyboard. */
 +GR_WINDOW *
 +GsFrameClient(GR_WINDOW *top)
@@ -1532,22 +2252,97 @@ index fae5bfa..bd46971 100644
  /* Send an update activate event to top level window of passed window*/
  void
  GsNotifyActivate(GR_WINDOW *wp)
+@@ -1456,6 +1584,14 @@ GsNotifyActivate(GR_WINDOW *wp)
+ 			wp->width, wp->height);
+ }
+ 
++/* Whether `menu` is an undecorated top-level window of the program `of` is of. */
++static int
++GsMenuOf(GR_WINDOW *menu, GR_WINDOW *of)
++{
++	return menu && of && menu != rootwp && of != rootwp && menu->parent == rootwp &&
++		(menu->props & GR_WM_PROPS_NODECORATE) && menu->owner == of->owner;
++}
++
+ /*
+  * Set the input focus to the specified window.
+  * This generates focus out and focus in events as necessary.
+@@ -1469,13 +1605,24 @@ GsSetFocus(GR_WINDOW *wp)
+ 		return;
+ 
+ 	GsDeliverGeneralEvent(focuswp, GR_EVENT_TYPE_FOCUS_OUT, wp);
+-	GsNotifyActivate(focuswp);
++	/* a program's frame looks the same while the keyboard is in a menu of its own */
++	if (!GsMenuOf(wp, focuswp))
++		GsNotifyActivate(focuswp);
+ 
+ 	oldfocus = focuswp;
+ 	focuswp = wp;
+ 
+ 	GsDeliverGeneralEvent(wp, GR_EVENT_TYPE_FOCUS_IN, oldfocus);
+-	GsNotifyActivate(focuswp);
++	if (!GsMenuOf(oldfocus, wp))
++		GsNotifyActivate(focuswp);
++	/* from a menu to another program's window: the menu's program's frames are told */
++	if (GsMenuOf(oldfocus, oldfocus) && wp->owner != oldfocus->owner) {
++		GR_WINDOW *top;
++
++		for (top = rootwp->children; top; top = top->siblings)
++			if (top->owner == oldfocus->owner && top != oldfocus && !(top->props & GR_WM_PROPS_NODECORATE))
++				GsNotifyActivate(top);
++	}
+ }
+ 
+ /*
 diff --git a/src/nanox/wmaction.c b/src/nanox/wmaction.c
-index 27dcbe8..2ba6dd3 100644
+index 27dcbe8..87a2de8 100644
 --- a/src/nanox/wmaction.c
 +++ b/src/nanox/wmaction.c
-@@ -74,7 +74,10 @@ void wm_redraw_ncarea(win *window)
+@@ -11,6 +11,8 @@
+ #include "nanowm.h"
+ 
+ static void set_resize_cursor(int wid);
++int GsFocusInPopupOf(GR_WINDOW_ID client);
++int wm_activating;	/* the repaint asked for is an activation's: only what changed is worth one */
+ 
+ /*
+  * This function performs a depth first search on window 
+@@ -67,14 +69,32 @@ void wm_redraw_ncarea(win *window)
+  	 	 * A window is active even if any of its ancestors has focus
+  	 	 * --Amit Kulkarni
+  	 	 */	 
+- 		active = checkHasFocus(window->clientid,focusedwindow);
++ 		active = checkHasFocus(window->clientid,focusedwindow) || GsFocusInPopupOf(window->clientid);
+  		/*
+  	 	 * Note that we should also raise the window if its active and behind.
+  	 	 * an active window deserves to be on the top :-)
   	 	 */
   		//if(active)
   			//GrRaiseWindow(window->wid);			// FIXME
-+		nx_caption_icon = window->icon;
-+		nx_caption_icon_file = window->icon_file;
- 		nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
-+		nx_caption_icon = -1;
+-		nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
++		unsigned key = (unsigned)props.props * 31u + (unsigned)window->icon;
++		const char *t;
++
++		for (t = (const char *)props.title; t && *t; t++)
++			key = key * 33u + (unsigned char)*t;
++		for (t = window->icon_file; *t; t++)
++			key = key * 33u + (unsigned char)*t;
++		/* every program's queue has the activation, and a menu's coming and going is one too */
++		if (!wm_activating || window->painted != 1 + active || window->painted_w != info.width ||
++		    window->painted_h != info.height || window->painted_key != key) {
++			nx_caption_icon = window->icon;
++			nx_caption_icon_file = window->icon_file;
++			nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
++			nx_caption_icon = -1;
++			window->painted = 1 + active;
++			window->painted_w = info.width;
++			window->painted_h = info.height;
++			window->painted_key = key;
++		}
  	}
  
  	/* free title returned from GrGetWMProperties*/
-@@ -138,6 +141,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -138,6 +158,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  			window->close = GR_TRUE;
        		return;
  		}
@@ -1566,7 +2361,7 @@ index 27dcbe8..2ba6dd3 100644
  	}
  
  	/* 
-@@ -255,6 +270,37 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -255,6 +287,37 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	window->active = GR_TRUE;
  }
  
@@ -1604,7 +2399,7 @@ index 27dcbe8..2ba6dd3 100644
  void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  {
  	GR_RECT		r;
-@@ -299,8 +345,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -299,8 +362,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
          		return;
        		}
  		}
@@ -1630,10 +2425,10 @@ index 27dcbe8..2ba6dd3 100644
  	if(window->active) {
  #if OUTLINE_MOVE
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
-index 9214904..2f4ee06 100644
+index 9214904..bd667b8 100644
 --- a/src/nanox/wmclients.c
 +++ b/src/nanox/wmclients.c
-@@ -9,6 +9,55 @@
+@@ -9,6 +9,72 @@
  #include "nano-X.h"
  #include "nxdraw.h"
  #include "nanowm.h"
@@ -1649,8 +2444,11 @@ index 9214904..2f4ee06 100644
 +static int
 +icon_of(int processid, char *own, int size)
 +{
++	/* the index, kept from its first reading: names, and the cell of each */
++	static struct { char name[32]; int cell; } *index;
++	static int index_count = -1, index_default = -1;
 +	char path[40], name[32] = "", line[64], known[32], mark[8];
-+	int cell, found = -1, fd, n;
++	int cell, fd, n;
 +	FILE *f;
 +
 +	/* the program's own file first: it may end in its icon (the mark is its last eight bytes) */
@@ -1672,24 +2470,38 @@ index 9214904..2f4ee06 100644
 +		fclose(f);
 +		name[strcspn(name, "\n")] = 0;
 +	}
-+	if ((f = fopen("/usr/share/icons.idx", "r")) == NULL)
-+		return -1;
-+	while (fgets(line, sizeof line, f))
-+		if (sscanf(line, "%31s %d", known, &cell) == 2) {
-+			if (!strcmp(known, name)) {
-+				found = cell;
-+				break;
++	if (index_count < 0) {
++		index_count = 0;
++		if ((f = fopen("/usr/share/icons.idx", "r")) != NULL) {
++			int room = 0;
++
++			while (fgets(line, sizeof line, f)) {
++				if (sscanf(line, "%31s %d", known, &cell) != 2)
++					continue;
++				if (index_count == room) {
++					void *more = realloc(index, (room += 64) * sizeof *index);
++
++					if (!more)
++						break;
++					index = more;
++				}
++				strcpy(index[index_count].name, known);
++				index[index_count++].cell = cell;
++				if (!strcmp(known, "default") && index_default < 0)
++					index_default = cell;
 +			}
-+			if (!strcmp(known, "default"))
-+				found = cell;
++			fclose(f);
 +		}
-+	fclose(f);
-+	return found;
++	}
++	for (n = 0; n < index_count; n++)
++		if (!strcmp(index[n].name, name))
++			return index[n].cell;
++	return index_default;
 +}
  
  /*
   * A new client window has been mapped, so we need to reparent and decorate it.
-@@ -26,6 +75,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -26,6 +92,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	/* get client window information*/
  	GrGetWindowInfo(wid, &winfo);
  	style = winfo.props;
@@ -1698,7 +2510,7 @@ index 9214904..2f4ee06 100644
  
  	/* if not redecorating or not child of root window, return*/
  	if (winfo.parent != GR_ROOT_WINDOW_ID || (style & GR_WM_PROPS_NODECORATE))
-@@ -94,7 +145,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -94,7 +162,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  		}
  	}
  
@@ -1707,7 +2519,7 @@ index 9214904..2f4ee06 100644
  	x = MWABS(winfo.x - xoffset);
  	y = MWABS(winfo.y - yoffset);
  #else
-@@ -109,16 +160,20 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -109,16 +177,20 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  
  		/* We could proably use a more intelligent algorithm here */
  		GrGetScreenInfo(&si);
@@ -1732,7 +2544,7 @@ index 9214904..2f4ee06 100644
  	/* create container window*/
  	pid = GrNewWindow(GR_ROOT_WINDOW_ID, x, y, width, height,
  		0, LTGRAY, BLACK);
-@@ -162,6 +217,9 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -162,6 +234,9 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	GrMapWindow(pid);
  
  	GrSetFocus(wid);	/* force fixed focus*/
@@ -1742,6 +2554,53 @@ index 9214904..2f4ee06 100644
  
  #if 0000
  	/* add system utility button*/
+diff --git a/src/nanox/wmevents.c b/src/nanox/wmevents.c
+index 7cb683f..a319942 100644
+--- a/src/nanox/wmevents.c
++++ b/src/nanox/wmevents.c
+@@ -8,6 +8,9 @@
+ #include "nano-X.h"
+ #include "nanowm.h"
+ 
++extern int wm_activating;
++int wm_selecting;	/* the selection being made is the window manager's, not the program's */
++
+ void wm_init(void)
+ {
+ 	GR_WM_PROPERTIES props;
+@@ -28,7 +31,9 @@ void wm_init(void)
+ 		wm_add_window(&window);
+ 
+ 		/* when window mgr linked in, this sets update only for current client of root window*/
++		wm_selecting = 1;
+ 		GrSelectEvents(GR_ROOT_WINDOW_ID, GR_EVENT_MASK_CHLD_UPDATE);
++		wm_selecting = 0;
+ 
+ 		/* Set new root window background color*/
+ 		props.flags = GR_WM_FLAGS_BACKGROUND;
+@@ -38,7 +43,9 @@ void wm_init(void)
+ #if NANOWM
+ 	else {
+ 		/* must reselect root window child update events for each client when linked in*/
++		wm_selecting = 1;
+ 		GrSelectEvents(GR_ROOT_WINDOW_ID, GR_EVENT_MASK_CHLD_UPDATE);
++		wm_selecting = 0;
+ 	}
+ #endif
+ }
+@@ -277,8 +284,11 @@ int wm_chld_update(GR_EVENT_UPDATE *event)
+ 	}
+ 
+ 	if(window->type == WINDOW_TYPE_CONTAINER) {
+-		if (event->utype == GR_UPDATE_ACTIVATE)
++		if (event->utype == GR_UPDATE_ACTIVATE) {
++			wm_activating = 1;
+ 			wm_redraw_ncarea(window);
++			wm_activating = 0;
++		}
+ 		return 1;				/* eat event*/
+ 	}
+ 
 diff --git a/src/nanox/wmutil.c b/src/nanox/wmutil.c
 index 5af65d6..64470e4 100644
 --- a/src/nanox/wmutil.c

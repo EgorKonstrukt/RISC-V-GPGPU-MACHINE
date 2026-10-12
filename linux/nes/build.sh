@@ -30,12 +30,14 @@ git -C "$SRC" apply "$HERE/nofrendo.patch"
 INC="-I$HERE -I$N -I$N/cpu -I$N/nes -I$N/sndhrdw -I$N/libsnss -I$N/mappers -I$MW/src/include -I$REPO/programs/mc -I$REPO/linux/userland -idirafter $REPO/programs/linux/include"
 # (asm: the one line of the ESP32's own in these sources, a breakpoint where an assertion fails;
 # 240: the PPU draws every line into a picture the sources make 224 high)
-CFLAGS="-O2 -flto -fno-pie -std=gnu99 -fgnu89-inline -fcommon -w -Dasm(x)=abort() -DNES_VISIBLE_HEIGHT=240 -DHOST_LITTLE_ENDIAN -DNES6502_JUMPTABLE $INC"
+# (5 to 7% fewer instructions a frame than -O2, with the same sums)
+OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
+CFLAGS="$OPT -flto -fno-pie -std=gnu99 -fgnu89-inline -fcommon -w -Dasm(x)=abort() -DNES_VISIBLE_HEIGHT=240 -DHOST_LITTLE_ENDIAN -DNES6502_JUMPTABLE $INC"
 export CFLAGS BUILD HERE
 mkdir -p "$BUILD" && cd "$BUILD"
 { find "$N" -name '*.c'; ls "$HERE"/*.c "$REPO/programs/linux/gles.c" "$REPO/programs/mc/mcw.c"; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/nofrendo.patch" ] && [ "$o" -nt "$HERE/rc6502.h" ] || rv32-cc $CFLAGS -c {} -o "$o"'
-rv32-cc -O2 -flto -flto-partition=one *.o "$MW/src/lib/libnano-X.a" -lm -o nes
+rv32-cc $OPT -flto -flto-partition=one *.o "$MW/src/lib/libnano-X.a" -lm -o nes
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/nes.bin" nes
 riscv32-linux-nm -n nes > "$WORK/src/nes.nm"

@@ -194,7 +194,6 @@ void handle_irq_and_trap(inout ins_ret ret, uint mip_override) {
         if (handled) {
             irq_last_handled = true;
             PROF(PROF_trap_taken)
-            cpu.trap_count++;
         }
         if (handled && irq && (mip_reset & 0x0A0) == 0) {
             // reset MIP value since IRQ was handled

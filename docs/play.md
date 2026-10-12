@@ -40,10 +40,32 @@ volume, `o` opens a file, `q` or Escape leaves. Without a window system, or with
 
 ## How it plays
 
-A tune is decoded in **pieces** of about half a second, each into memory of its own, and a
-finished piece is copied into the stream's ring (65,536 frames of sound memory) when it is
-its turn. The voice is 16-bit, mono or stereo, at the file's own rate: the card resamples.
-A step of 0 holds the voice (pause, and while more is decoded).
+A tune is decoded in **pieces** of about half a second, and a piece is decoded where it will
+lie in the stream's ring (262,144 frames of sound memory, six seconds at 44.1 kHz; 65,536
+when sound memory has no megabyte left). The stream's frames are the pieces' in order, so a
+piece's place is known before it is made (`piece_place`); when it is its turn the card is
+told it is there (`feed`), and nothing is copied. The voice is 16-bit, mono or stereo, at
+the file's own rate: the card resamples. A step of 0 holds the voice (pause, and while more
+is decoded).
+
+- A piece was decoded into memory of its own and copied into the ring: the same stores
+  twice, and the second time all at once. A core keeps about 6 KB of new stores a pass of
+  the machine (`docs/boot.md`, "Passes that end early"), so a piece of 18 KB to 88 KB was
+  three to fifteen passes of the first core that ran a quarter of their instructions.
+- A piece has no place in the ring when it would go round the ring's end (one in 57 of an
+  MP3 file's at 44.1 kHz), when the ring is full of sound not yet heard, or when there is
+  no card: it is decoded into memory of its own and copied, as before. With workers a piece
+  the ring has no room for waits instead (there are seconds in hand then).
+- A worker stores into the ring itself. A piece's bytes are a multiple of 16 whatever the
+  file (a frame of 576 or 1,152 samples, one or two channels, whole or half rate), so two
+  cores never store to the same 16 bytes; the ring's pages are touched before the first job.
+- After going elsewhere in the tune no piece is given out until the workers have dropped
+  theirs (`dropping`): a dropped piece's place is another piece's in the new stream.
+
+| the shader machine (`tools\tick_util.ps1`) | the first core's busy passes, before | now | its instructions |
+|---|---|---|---|
+| `play-test.mp3`, 12 s, 48 workers | 89.1% of their instructions (295 passes ended on a full write cache) | 98.7% (17) | 24.3M to 20.8M |
+| `play-test.mod`, 15 s | 98.5% (148) | 99.8% (8) | 43.4M to 40.8M |
 
 - WAV, MOD and FLAC are decoded in order by the first core, a slice at a time between two
   looks at the window.
@@ -107,6 +129,11 @@ are the same within 3% on the shader machine):
 | MP3 in pieces | 17,586 to 17,732 | 4, 8 and 16 cores: the early frames are the difference |
 | MP3 at half rate | 10,766 | 11,394 to 11,488 in pieces |
 
+(Those are of the decoders compiled `-O2`. They are `-O3 -fno-tree-vectorize
+-fsched-pressure -funroll-loops` now, `nxplay.c` with the tracker's mixer too: the test files
+played one after another, with workers and without, were 523 million instructions on the
+first core and 702 on the workers, and are 412 and 520, with every sum as it was.)
+
 And what the shader machine makes of it (`rvc_harness --d3d11`, an RTX 5090 with nothing
 else on it; seconds of sound decoded in a second):
 
@@ -162,6 +189,9 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
   `--fixed-dt 0.004 --sound-capture F.wav --save-state F.snap`, then
   `python tools\sound_reference.py F.wav F.snap --rom build\images\linux\rootfs.bin`: every
   sample and device word matches. (A second fits the ring, so the snapshot still has it.)
+  The same holds for a second of the MP3 and of the MOD file decoded in the ring, and their
+  captures are those of the build that copied, sample for sample (the MOD's but for the
+  length of its one wait for more: under `--fixed-dt` it decodes slower than it plays).
 - The window: `nano-X -p & sleep 3; nxplay /usr/share/play-test.mod & sleep 4; nxkey right`
   must print `plays from` a second time, ten seconds on. A click of `nxkey` is only let go
   when the host's pointer moves: with `--pointer-sweep 0`, `nxkey 324,101` (the bar, three
@@ -172,3 +202,9 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
 XM. FLAC on the workers. A list of tunes. Playing a WAV file where it lies in the ROM (the
 card can; a stream keeps one way for every kind). While "Open..." has its window the tune
 is held: `ui_choose_file` has the program's events until it is done.
+
+A FLAC subframe is predicted with 32-bit sums whenever its own coefficients allow it
+(`flac_bound.py`, applied to the fetched `dr_flac.h` by the build): the sum of the
+coefficients' sizes times the largest sample bounds every partial sum, and under 2^31 the
+samples are the same. A second of the sample tune went from 3.0 million instructions to 2.2,
+its start from 4.9 to 3.5, and the sum of all its samples is `d1c7bfb4` as before.

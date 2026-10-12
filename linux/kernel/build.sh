@@ -34,6 +34,14 @@ python3 "$HERE/memset_hook.py" linux
 python3 "$HERE/memcpy_hook.py" linux
 python3 "$HERE/phram_hook.py" linux
 python3 "$HERE/fpu_hook.py" linux
+python3 "$HERE/stall_hook.py" linux
+python3 "$HERE/romfs_hook.py" linux
+python3 "$HERE/faultaround_hook.py" linux
+python3 "$HERE/tick_input_hook.py" linux
+python3 "$HERE/console_hook.py" linux
+python3 "$HERE/zeropool_hook.py" linux
+python3 "$HERE/bootpages_hook.py" linux
+python3 "$HERE/icache_hook.py" linux
 cat linux.config "$HERE/config.extra" > all.config
 
 echo "== configure and build"

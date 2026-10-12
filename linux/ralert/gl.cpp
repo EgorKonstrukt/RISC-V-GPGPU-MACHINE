@@ -70,12 +70,7 @@ static int box[4] = {1, 1, 0, 0}; // or only inside this rectangle of the page (
 
 // An object's rectangles as it drew them last, by their place on the map: drawn again as they
 // are while the game has not marked the object as changed.
-struct Quad
-{
-    short x, y, w, h, ax, ay;
-    unsigned char kind;
-    unsigned colour;
-};
+typedef struct host_quad Quad; // (the scene takes an object's kept ones as they lie: host_quads)
 struct Kept
 {
     const ObjectClass* who;
@@ -122,7 +117,12 @@ static signed char edge_of[TILES]; // the shroud's shape over a cell, as last wo
 static Shape* edge_shape[64];      // and where each of those shapes is in the shades
 static int tile_x, tile_y, tile_w, tile_h; // the map's cells that have a quad
 static int shown_x0, shown_y0, shown_x1, shown_y1; // the cells of the view drawn last
-static bool stale; // something in that view changed since
+bool ShaderEmu_GL_Stale; // something in that view changed since (map.cpp looks before it tells of more)
+#define stale ShaderEmu_GL_Stale
+// What is under the objects and over them (the cells' own rectangles, the shroud) stays in the
+// scene as it was noted (host_scene_part) while no cell of the view has changed.
+static bool under_stale = true;
+static int under_view[4];
 static const unsigned char* shroud_table;
 static const unsigned char* special_ghost;
 static int solid_x, solid_y; // 24 x 24 set bits in the masks: a cell not seen yet
@@ -150,6 +150,7 @@ static int tile_of(CELL cell)
 
 static void forget(void)
 {
+    host_frames_forget(); // (first: work put off for the scene's core still looks at the shapes)
     memset(shapes, 0, sizeof(shapes));
     memset(icons, 0, sizeof(icons));
     memset(tile_done, 0, sizeof(tile_done));
@@ -187,9 +188,12 @@ void ShaderEmu_GL_Cell(CELL cell)
         settled[(ty * tile_w + tx) >> 3] &= ~(1 << ((ty * tile_w + tx) & 7));
         unseen[(ty * tile_w + tx) >> 3] &= ~(1 << ((ty * tile_w + tx) & 7));
     }
-    if (!stale && x >= shown_x0 && x <= shown_x1 && y >= shown_y0 && y <= shown_y1) {
-        stale = true;
-        Map.Flag_To_Redraw(false);
+    if (x >= shown_x0 && x <= shown_x1 && y >= shown_y0 && y <= shown_y1) {
+        under_stale = true;
+        if (!stale) {
+            stale = true;
+            Map.Flag_To_Redraw(false);
+        }
     }
 }
 
@@ -228,6 +232,29 @@ bool ShaderEmu_GL_Changed(void)
     return near;
 }
 
+// The messages over the map stay in the page as they were printed: whether they are to be
+// printed again, which is when they are others (their place is made holes first) or when
+// holes were made in the page since. A message was printed anew every frame it was up, 14k.
+static unsigned fills;
+bool ShaderEmu_GL_Messages(unsigned signature, int count)
+{
+    static unsigned last_signature, last_fills;
+    static int last_count;
+
+    if (signature == last_signature && fills == last_fills) {
+        return false;
+    }
+    if (signature != last_signature && MAX(count, last_count) > 0) {
+        int wide = Lepton_To_Pixel(Map.TacLeptonWidth), high = Lepton_To_Pixel(Map.TacLeptonHeight);
+        int rows = MIN(10 * MAX(count, last_count) + 10, high - 1);
+        LogicPage->Fill_Rect(Map.TacPixelX, Map.TacPixelY, Map.TacPixelX + wide - 1, Map.TacPixelY + rows, KEY);
+    }
+    last_signature = signature;
+    last_fills = fills;
+    last_count = count;
+    return true;
+}
+
 // The game will draw inside this rectangle of the page itself.
 void ShaderEmu_GL_Mark(int x0, int y0, int x1, int y1)
 {
@@ -254,18 +281,23 @@ static void emit(int kind, int x, int y, int w, int h, int ax, int ay, unsigned 
     }
 }
 
-static Kept* kept_of(const ObjectClass* who)
+static Kept* kept_of(ObjectClass* who)
 {
-    unsigned at = (unsigned)((uintptr_t)who >> 3) % KEPT;
+    // (the object says where it was found last: most of them are found there every frame)
+    unsigned at = (unsigned)who->ShaderEmu_Kept - 1;
 
+    if (at < KEPT && kept[at].who == who) {
+        return &kept[at];
+    }
+    at = (unsigned)((uintptr_t)who >> 3) % KEPT;
     for (int tries = 0; tries < 16; tries++, at = (at + 1) % KEPT) {
-        if (kept[at].who == who) {
-            return &kept[at];
-        }
         if (!kept[at].who) {
             kept[at].who = who;
             kept[at].whole = kept[at].away = false;
             kept_count++;
+        }
+        if (kept[at].who == who) {
+            who->ShaderEmu_Kept = (short)(at + 1);
             return &kept[at];
         }
     }
@@ -311,7 +343,88 @@ static unsigned shade_of(const unsigned char* ghost, int level)
     return (unsigned)(before ? (after * 255 / before) & 0xff : 128) << 24;
 }
 
-static void put(Shape* s, const unsigned char* pixels)
+// A ready frame's pixels into the atlas, by the core that makes the scene (host_fill): what
+// put() does a pixel at a time, with the shape's place and its masks decided already.
+static void fill_shape(void* shape, const void* from)
+{
+    const Shape* s = (const Shape*)shape;
+    const unsigned char* pixels = (const unsigned char*)from;
+    const unsigned char* fade = (const unsigned char*)s->fade;
+    const unsigned char* ghost = (const unsigned char*)s->ghost;
+
+    for (int y = 0; y < s->h; y++, pixels += s->w) {
+        unsigned char* to = host_atlas() + (s->y + y) * ATLAS_W + s->x;
+        if (!ghost && !fade) {
+            memcpy(to, pixels, s->w);
+            continue;
+        }
+        for (int x = 0; x < s->w; x++) {
+            unsigned char p = pixels[x];
+            if (p) {
+                if (ghost && ghost[p] != 0xff) {
+                    int mx = s->x, my = s->y;
+                    if (ghost[p] != s->level) {
+                        for (int k = 0; k < s->more_count; k++) {
+                            if (s->more[k].level == ghost[p]) {
+                                mx = s->more[k].x, my = s->more[k].y;
+                                break;
+                            }
+                        }
+                    }
+                    host_masks()[(my + y) * (ATLAS_W / 8) + ((mx + x) >> 3)] |= 0x80 >> ((mx + x) & 7);
+                    p = 0;
+                } else if (fade) {
+                    p = fade[p];
+                }
+            }
+            to[x] = p;
+        }
+    }
+}
+
+// Whether a ready frame's shape could be left to that: its shadow's levels are found from the
+// indexes the frame has. False (more levels than masks, no room): put() does it all, as before.
+static bool deferred(Shape* s, const struct host_frame* ready)
+{
+    static const unsigned char lowest[32] = {0,  1,  28, 2,  29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4,  8,
+                                             31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6,  11, 5,  10, 9};
+    const unsigned char* ghost = (const unsigned char*)s->ghost;
+    const unsigned* seen = (const unsigned*)(ready->pixels - 32);
+    unsigned char levels[3];
+    int count = 0;
+
+    for (int word = 0; ghost && word < 8; word++) {
+        for (unsigned bits = word ? seen[word] : seen[0] & ~1u; bits; bits &= bits - 1) {
+            unsigned char level = ghost[word * 32 + lowest[((bits & (0u - bits)) * 0x077CB531u) >> 27]];
+            if (level == 0xff || (count > 0 && levels[0] == level) || (count > 1 && levels[1] == level)
+                || (count > 2 && levels[2] == level)) {
+                continue;
+            }
+            if (count == 3) {
+                return false;
+            }
+            levels[count++] = level;
+        }
+    }
+    if (count) {
+        int rx[2], ry[2];
+        for (int k = 1; k < count; k++) {
+            if (!room(s->w, s->h, rx[k - 1], ry[k - 1])) {
+                return false;
+            }
+        }
+        s->kind = MASKED;
+        s->level = levels[0];
+        s->more_count = (unsigned char)(count - 1);
+        for (int k = 1; k < count; k++) {
+            s->more[k - 1].x = (short)rx[k - 1], s->more[k - 1].y = (short)ry[k - 1], s->more[k - 1].level = levels[k];
+        }
+    }
+    host_fill(fill_shape, s, ready->pixels);
+    return true;
+}
+
+static void put(Shape* s, const unsigned char* pixels, const struct host_frame* ready = NULL)
 {
     const unsigned char* fade = (const unsigned char*)s->fade;
     const unsigned char* ghost = (const unsigned char*)s->ghost;
@@ -354,18 +467,17 @@ static void put(Shape* s, const unsigned char* pixels)
     }
     // only the rectangle that has pixels is kept: a soldier is a small figure in a large frame
     int ax, ay, x0 = s->w, x1 = -1, y0 = -1, y1 = -1, full_w = s->w;
-    for (y = 0; y < s->h; y++) {
+    if (ready) {
+        // (a worker core found the rectangle, and has its pixels in rows of their own)
+        x0 = ready->left, y0 = ready->top, x1 = x0 + ready->w - 1, y1 = y0 + ready->h - 1;
+    }
+    for (y = 0; y < s->h && !ready; y++) {
         const unsigned char* row = pixels + y * full_w;
-        int a = 0, b = full_w - 1;
-        while (a < full_w && !row[a]) {
-            a++;
-        }
+        int a = host_first_pixel(row, full_w);
         if (a == full_w) {
             continue;
         }
-        while (!row[b]) {
-            b--;
-        }
+        int b = host_last_pixel(row, full_w);
         y0 = y0 < 0 ? y : y0;
         y1 = y;
         x0 = MIN(x0, a);
@@ -383,10 +495,18 @@ static void put(Shape* s, const unsigned char* pixels)
     s->top = (short)y0;
     s->w = (short)(x1 - x0 + 1);
     s->h = (short)(y1 - y0 + 1);
-    pixels += y0 * full_w + x0;
+    if (ready) {
+        pixels = ready->pixels;
+        full_w = ready->w;
+    } else {
+        pixels += y0 * full_w + x0;
+    }
     s->x = ax;
     s->y = ay;
     s->kind = KEYED;
+    if (ready && deferred(s, ready)) {
+        return;
+    }
     for (y = 0; y < s->h; y++, pixels += full_w) {
         unsigned char* to = host_atlas() + (ay + y) * ATLAS_W + ax;
         unsigned char* bits = host_masks() + (ay + y) * (ATLAS_W / 8);
@@ -473,6 +593,46 @@ static unsigned char* turned(const void* built, int w, int h, int turn)
     return buffer;
 }
 
+// RALERT_CHECK_FRAMES=1: a frame a worker core made ready is built by the game too, and compared
+// (0: only the count is printed when the game ends).
+static int check_frames = -1;
+static unsigned frames_taken, frames_differ;
+static void check_report(void)
+{
+    fprintf(stderr, "ralert: %u frames from a worker core (%u KB of them made ready)", frames_taken, host_frames_bytes >> 10);
+    if (check_frames > 1) {
+        fprintf(stderr, ", %u of them differ from the game's own", frames_differ);
+    }
+    fputc(10, stderr);
+}
+
+static void check_frame(const Shape* s, const struct host_frame* ready, uintptr_t built)
+{
+    const unsigned char* pixels = (const unsigned char*)built;
+    int x0 = s->w, x1 = -1, y0 = -1, y1 = -1, y;
+
+    if (built && UseBigShapeBuffer) {
+        ShapeHeader* header = (ShapeHeader*)built;
+        pixels = (unsigned char*)(header->shape_buffer ? TheaterShapeBufferStart : BigShapeBufferStart) + (uintptr_t)header->shape_data;
+    }
+    for (y = 0; pixels && y < s->h; y++) {
+        const unsigned char* row = pixels + y * s->w;
+        int a = host_first_pixel(row, s->w);
+        if (a < s->w) {
+            int b = host_last_pixel(row, s->w);
+            y0 = y0 < 0 ? y : y0, y1 = y;
+            x0 = MIN(x0, a), x1 = MAX(x1, b);
+        }
+    }
+    bool same = y0 < 0 ? ready->state == HOST_FRAME_EMPTY
+                       : ready->state == HOST_FRAME_READY && ready->left == x0 && ready->top == y0
+                             && ready->w == x1 - x0 + 1 && ready->h == y1 - y0 + 1;
+    for (y = y0; same && y0 >= 0 && y <= y1; y++) {
+        same = !memcmp(pixels + y * s->w + x0, ready->pixels + (y - y0) * ready->w, ready->w);
+    }
+    frames_differ += !same;
+}
+
 // A shape of the map, as CC_Draw_Shape was asked for it. False: the game is to draw it.
 bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, int flags, void const* fade, void const* ghost, int turn)
 {
@@ -493,11 +653,29 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
         return false;
     }
     if (s->kind == NEW) {
-        uintptr_t built = Build_Frame(file, (unsigned short)frame, _ShapeBuffer);
+        // (most frames a second worker core has ready: host.c)
+        const struct host_frame* ready = s->turn || (s->ghost && s->ghost == shroud_table) ? NULL : host_frame(file, frame);
+        if (check_frames < 0) {
+            check_frames = getenv("RALERT_CHECK_FRAMES") ? 1 + atoi(getenv("RALERT_CHECK_FRAMES")) : 0;
+            if (check_frames) {
+                atexit(check_report);
+            }
+        }
+        uintptr_t built = ready && check_frames < 2 ? 1 : Build_Frame(file, (unsigned short)frame, _ShapeBuffer);
         s->w = s->full_w = Get_Build_Frame_Width(file);
         s->h = s->full_h = Get_Build_Frame_Height(file);
         s->left = s->top = 0;
-        if (!built) {
+        if (ready) {
+            frames_taken++;
+            if (check_frames > 1) {
+                check_frame(s, ready, built);
+            }
+            if (ready->state == HOST_FRAME_EMPTY) {
+                s->kind = EMPTY;
+            } else {
+                put(s, NULL, ready);
+            }
+        } else if (!built) {
             s->kind = EMPTY;
         } else if (s->turn) {
             unsigned char* pixels = turned((void*)built, s->w, s->h, s->turn);
@@ -591,6 +769,10 @@ bool ShaderEmu_GL_Stamp(void const* set, int icon, int x, int y, void const* rem
 bool ShaderEmu_GL_On(int cells)
 {
     ShaderEmu_GL_Live = cells <= TILES && available();
+    if (ShaderEmu_GL_Live) {
+        void ShaderEmu_Foot_Overlaps_Off(void); // (map.cpp: what moves is out of the cells' overlap lists from now on)
+        ShaderEmu_Foot_Overlaps_Off();
+    }
     return ShaderEmu_GL_Live;
 }
 
@@ -611,6 +793,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     bool again; // nothing is taken from the frame before: now and then, in case a change went unmarked
     int wide = Lepton_To_Pixel(TacLeptonWidth), high = Lepton_To_Pixel(TacLeptonHeight);
 
+    host_scene_settle(); // (the scene before is made from the rectangles kept here)
     if (strncmp(scenario, Scen.ScenarioName, sizeof(scenario) - 1) || (int)Frame < last_frame) {
         strncpy(scenario, Scen.ScenarioName, sizeof(scenario) - 1);
         forget();
@@ -643,13 +826,14 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     shown_x1 = Cell_X(corner) + wide / 24 + 2;
     shown_y1 = Cell_Y(corner) + high / 24 + 2;
     host_scene_begin(TacPixelX + base_x, TacPixelY + base_y);
+    host_scene_view(TacPixelX, TacPixelY, TacPixelX + wide, TacPixelY + high);
     origin_x = TacPixelX + base_x;
     origin_y = TacPixelY + base_y;
     view_w = TacPixelX + wide;
     view_h = TacPixelY + high;
-    static int refresh = -1; // RALERT_REFRESH=N: every N frames (32); 0 for never
+    static int refresh = -1; // RALERT_REFRESH=N: every N scenes (256); 0 for never
     if (refresh < 0) {
-        refresh = getenv("RALERT_REFRESH") ? atoi(getenv("RALERT_REFRESH")) : 32;
+        refresh = getenv("RALERT_REFRESH") ? atoi(getenv("RALERT_REFRESH")) : 256;
     }
     again = forced || (refresh && ++since >= refresh) || kept_count > KEPT * 3 / 4;
     if (again) {
@@ -660,6 +844,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
         }
     }
     if (again || ShaderEmu_GL_Touched) {
+        fills++;
         LogicPage->Fill_Rect(TacPixelX, TacPixelY, TacPixelX + wide - 1, TacPixelY + high - 1, KEY);
     } else if (box[0] <= box[2]) {
         // (only what of it is over the map, and nothing if none of it is: the game's fill takes a
@@ -668,6 +853,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
         int fx0 = MAX(box[0], TacPixelX), fy0 = MAX(box[1], TacPixelY);
         int fx1 = MIN(box[2], TacPixelX + wide - 1), fy1 = MIN(box[3], TacPixelY + high - 1);
         if (fx0 <= fx1 && fy0 <= fy1) {
+            fills++;
             LogicPage->Fill_Rect(fx0, fy0, fx1, fy1, KEY);
         }
     }
@@ -677,7 +863,14 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
 
     ShaderEmu_GL_Emitting = true;
     unsigned mark = host_cycles();
-    for (int cy = Cell_Y(corner); cy < MAP_CELL_H && (y = base_y + cy * 24) < high; cy++) {
+    bool under = again || under_stale || under_view[0] != origin_x || under_view[1] != origin_y || under_view[2] != wide
+                 || under_view[3] != high;
+    under_stale = false;
+    under_view[0] = origin_x, under_view[1] = origin_y, under_view[2] = wide, under_view[3] = high;
+    if (under) {
+        host_scene_part(0, 0);
+    }
+    for (int cy = Cell_Y(corner); under && cy < MAP_CELL_H && (y = base_y + cy * 24) < high; cy++) {
         int run = -1; // where a run of cells not seen yet began
         for (int cx = Cell_X(corner); cx < MAP_CELL_W && (x = base_x + cx * 24) < wide; cx++) {
             CELL cell = XY_Cell(cx, cy);
@@ -796,6 +989,9 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
                                 ck->quad[1] = cell_recording.quad[1];
                             }
                         }
+                        if (!ck || !ck->tile) {
+                            under_stale = true; // (a cell that is asked every time: the placing cursor's)
+                        }
                         ShaderEmu_GL_Touched |= touched;
                     }
                 } else if (tile >= 0 && (cellptr->Is_Visible(PlayerPtr) || Debug_Unshroud)) {
@@ -839,20 +1035,24 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     }
     ShaderEmu_GL_Parts[0] += host_cycles() - mark;
     mark = host_cycles();
+    host_scene_part(1, 0);
+    unsigned away = 0;
     for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
         for (int index = 0; index < Layer[layer].Count(); index++) {
             ObjectClass* object = Layer[layer][index];
+            // (most objects are out of the view and were not marked: passed over at once, by what
+            // the object itself has of the view at which it drew nothing)
+            if (object->ShaderEmu_Away == TacticalCoord && !object->IsToDisplay && !again) {
+                away++;
+                continue;
+            }
             Kept* k = kept_of(object);
             if (k && !again && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
                 // as it was: its rectangles where they are on the map now, or still nothing
                 ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
-                for (int i = 0; k->whole && i < k->count && object->IsDown && !object->IsInLimbo; i++) {
-                    const Quad& q = k->quad[i];
-                    int qx = q.x + origin_x, qy = q.y + origin_y;
-                    if (qx < view_w && qy < view_h && qx + q.w > TacPixelX && qy + q.h > TacPixelY) {
-                        host_sprite(q.kind, qx, qy, q.w, q.h, q.ax, q.ay, q.colour);
-                        ShaderEmu_GL_Quads++;
-                    }
+                if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {
+                    host_quads(k->quad, k->count); // (those of them in the view, where they are on the map now)
+                    ShaderEmu_GL_Quads += k->count;
                 }
                 continue;
             }
@@ -871,12 +1071,15 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
                 k->away = !drew;
                 k->view = TacticalCoord;
             }
+            object->ShaderEmu_Away = drew ? ~(COORDINATE)0 : TacticalCoord;
             ShaderEmu_GL_Touched |= touched;
         }
     }
+    ShaderEmu_GL_Objects[1] += away;
     ShaderEmu_GL_Parts[1] += host_cycles() - mark;
     mark = host_cycles();
     // the shroud: first what was never seen, then its edges (each kind is one command that way)
+    host_scene_part(2, !under);
     for (int i = 0; i < shrouded && solid_x >= 0; i++) {
         if (shroud[i].cell == -1) {
             host_block(TacPixelX + shroud[i].x, TacPixelY + shroud[i].y, shroud[i].w, 24, solid_x, solid_y, 0);
@@ -904,9 +1107,6 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     if (IsRubberBand) {
         ShaderEmu_GL_Mark(TacPixelX + MIN(BandX, NewX) - 1, TacPixelY + MIN(BandY, NewY) - 1,
                           TacPixelX + MAX(BandX, NewX) + 1, TacPixelY + MAX(BandY, NewY) + 1);
-    }
-    if (Session.Messages.Num_Messages() > 0) {
-        ShaderEmu_GL_Mark(TacPixelX, TacPixelY, TacPixelX + wide - 1, TacPixelY + 10 * Session.Messages.Num_Messages() + 10);
     }
     host_scene_end(TacPixelX, TacPixelY, wide, high, KEY);
 }

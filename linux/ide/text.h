@@ -103,30 +103,36 @@ tx_text(int x0, int y0, int x1, int y1, int *length)
 static void
 tx_insert(int x, int y, const char *text, int length)
 {
-	int x0 = x, y0 = y, tail_length = (int)strlen(tx_lines[y]) - x, i;
-	char *tail = malloc((size_t)tail_length + 1);
+	int x0 = x, y0 = y, tail_length = (int)strlen(tx_lines[y]) - x, i, k, n, from, last;
+	char *tail = NULL, *line;
 
-	memcpy(tail, tx_lines[y] + x, (size_t)tail_length + 1);
-	tx_lines[y][x] = 0;
-	for (i = 0; i < length; i++) {
-		int ch = (unsigned char)text[i], n = 1;
-
-		if (ch == '\r')
-			continue;
-		if (ch == '\n') {
-			tx_line_in(++y, "", 0);
-			x = 0;
-			continue;
+	/* a line of the text at a time: its width first, so that its line is made longer once */
+	for (from = 0; ; from = i + 1) {
+		for (i = from, n = 0; i < length && text[i] != '\n'; i++)
+			n += text[i] == '\r' ? 0 : text[i] == '\t' ? TX_TAB - (x + n) % TX_TAB : 1;
+		last = i >= length;
+		if (!last && !from) {
+			/* what was after the cursor goes to the end of the last line put in */
+			tail = malloc((size_t)tail_length + 1);
+			memcpy(tail, tx_lines[y] + x, (size_t)tail_length + 1);
 		}
-		if (ch == '\t')
-			n = TX_TAB - x % TX_TAB;
-		tx_lines[y] = realloc(tx_lines[y], (size_t)(x + n + tail_length + 1));
-		while (n-- > 0)
-			tx_lines[y][x++] = ch < 32 || ch > 126 ? ' ' : (char)ch;
-		tx_lines[y][x] = 0;
+		line = tx_lines[y] = realloc(tx_lines[y], (size_t)(x + n + (last ? tail_length : 0) + 1));
+		if (last && tail)
+			memcpy(line + x + n, tail, (size_t)tail_length + 1);
+		else if (last)
+			memmove(line + x + n, line + x, (size_t)tail_length + 1);
+		for (k = from; k < i; k++) {
+			int ch = (unsigned char)text[k], w = ch == '\t' ? TX_TAB - x % TX_TAB : ch != '\r';
+
+			while (w-- > 0)
+				line[x++] = ch < 32 || ch > 126 ? ' ' : (char)ch;
+		}
+		if (last)
+			break;
+		line[x] = 0;
+		tx_line_in(++y, "", 0);
+		x = 0;
 	}
-	tx_lines[y] = realloc(tx_lines[y], (size_t)(x + tail_length + 1));
-	memcpy(tx_lines[y] + x, tail, (size_t)tail_length + 1);
 	free(tail);
 	tx_x = x, tx_y = y;
 	tx_modified = 1;
@@ -216,8 +222,8 @@ static int
 tx_load(const char *path)
 {
 	FILE *file = path ? fopen(path, "r") : NULL;
-	char text[2048];
-	int i;
+	char text[2048], *line = NULL;
+	int i, x = 0, room = 0;
 
 	for (i = 0; i < tx_count; i++)
 		free(tx_lines[i]);
@@ -226,14 +232,23 @@ tx_load(const char *path)
 		free(tx_done[--tx_done_count].text);
 	while (tx_undone_count)
 		free(tx_undone[--tx_undone_count].text);
-	tx_line_in(0, "", 0);
-	tx_x = tx_y = tx_marked = 0;	/* (the cursor was the text's before: its line may be gone) */
-	tx_replaying = 1;	/* (not a change to take back) */
+	/* the file's lines as tx_insert would leave them, each made once (not a change to take back) */
 	while (file && fgets(text, sizeof text, file))
-		tx_insert(tx_x, tx_y, text, (int)strlen(text));
-	tx_replaying = 0;
-	while (tx_undone_count)
-		free(tx_undone[--tx_undone_count].text);
+		for (i = 0; text[i]; i++) {
+			int ch = (unsigned char)text[i], n = ch == '\t' ? TX_TAB - x % TX_TAB : ch != '\r';
+
+			if (ch == '\n') {
+				tx_line_in(tx_count, line ? line : "", x);
+				x = 0;
+				continue;
+			}
+			if (x + n > room)
+				line = realloc(line, (size_t)(room = room * 2 + 256));
+			while (n-- > 0)
+				line[x++] = ch < 32 || ch > 126 ? ' ' : (char)ch;
+		}
+	tx_line_in(tx_count, line ? line : "", x);
+	free(line);
 	if (file)
 		fclose(file);
 	/* a file that ends in a newline has no empty last line of its own */

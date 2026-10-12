@@ -45,6 +45,27 @@ pictures a second need about 14, and more decoders are only more memory to bring
 it starts (each is most of a megabyte). It starts about six seconds after its window: the
 first groups are being decoded.
 
+## What it costs
+
+- **A picture is 1.39 million instructions** of the sample (`nxvideo --decode`), 1.79 as the
+  decoder was first built: `mpeg.c` is compiled `-O3 -fno-tree-vectorize -fsched-pressure
+  -funroll-loops` (`-O3` alone 1.40, `-O2 -funroll-loops` 1.56; the sums are the same). A
+  second of its sound went from 17.5 to 16.7 million.
+- **The first core only looks after the others**, and that was most of a pass: it asked the
+  window system for events at every turn of its loop (a question and an answer are 13
+  thousand instructions), walked every group of pictures to know how many are ready, and
+  took each worker's mailbox to see whether it wanted a page. It asks the window system
+  when the button or key words change, for a tenth of a second after, while a button is
+  down, and else seven times a second; `ready()` goes on from where it stopped; the
+  worker library looks before it takes a mailbox. With three workers the first core ran
+  443 million instructions over the film and runs 247.
+- **Opening**: the stream's start codes were looked for with `memchr` in two passes, a
+  quarter of the start. One pass now, reading one byte in three (a byte over 1 where a
+  code's 1 would be rules out the two places after it), and its notes of the headers and
+  pictures: 16.7 million instructions to the program's first line became 12.5.
+- The film's clock between the sound card's steps is the kernel's (`clock_gettime`), a
+  system call a turn. Reading the machine's clock word instead was tried with the rest.
+
 ## Not this way
 
 - Decoders made one a turn of the player's loop, so that the window need not wait: bringing
@@ -68,6 +89,9 @@ what the GPU draws into; frames a second are in the caption.
   The strip says so meanwhile.
 
 ## Checking it
+
+(`NXVIDEO_SUM=1` has the first core sum every picture: on the shader machine the film then
+leaves most pictures out, whatever the build. Look at "left out" in a run without it.)
 
 - `nxvideo --decode FILE` under `rvc_cpu` prints a sum of all pictures and of all sound, and
   what each costs. The build also makes the same program for the host
@@ -99,3 +123,9 @@ Wikimedia Commons and encodes it; the original is not kept in the repository.
 - Pictures larger than the sample at full rate: 640 x 352 is four times the work, some 56
   workers' worth, and 22 frames of GPU memory.
 - B pictures, and groups that are not closed.
+
+The sound's synthesis window adds four blocks of products a turn with the sum in a register
+(`plm_window.py`, applied to the fetched `pl_mpeg.h`): the same additions in the same order,
+so the same samples (`96a296a2`, on the host too), 17.5 million instructions a second of
+sound to 12.1. With the pictures at 1.36 million each, the sample film's whole decode
+(`nxvideo --decode FILE`) is 1,405 million instructions to 1,074.

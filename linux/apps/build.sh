@@ -14,8 +14,9 @@ OUT=$REPO/build/images/linux/root/usr
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
 for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon open; do
     more=""
-    # the viewer decodes on the worker cores (ui_image.h): the library every program has for them
-    [ $p = nxview ] || [ $p = nxmon ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
+    # the viewer decodes on the worker cores (ui_image.h) and Paint moves pictures with them
+    # (ui_bulk.h): the library every program has for them
+    [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
     rv32-cc -O2 -Wall -Wno-unused-function -I"$MW/src/include" -I"$HERE/../userland" "$HERE/$p.c" $more "$MW/src/lib/libnano-X.a" -o "$WORK/src/apps/$p"
     riscv32-linux-strip -o "$OUT/bin/$p" "$WORK/src/apps/$p"
 done

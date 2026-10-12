@@ -1,5 +1,9 @@
 // imdemo: a cube drawn with OpenGL and, over it, windows of Dear ImGui (docs/imgui.md).
-// IMDEMO_FRAMES=N ends after N frames, IMDEMO_SHOW=1 starts with ImGui's own demo window open.
+// IMDEMO_FRAMES=N ends after N frames, IMDEMO_SHOW=1 starts with ImGui's own demo window open,
+// IMDEMO_SWAP=wait waits for each frame to be drawn before the next is begun. IMDEMO_HOLD=1
+// draws a picture that the clock and the counts have no part in, for comparing two builds,
+// and IMDEMO_SCROLL=N makes the demo window low and keeps it N pixels down its list (rows cut
+// by its edges).
 #include <stdio.h>
 #include <stdlib.h>
 #include "imgui.h"
@@ -82,11 +86,21 @@ int main()
     float history[HISTORY] = {0}, background[3] = {0.10f, 0.12f, 0.16f}, speed = 40, size = 1, turn = 0;
     char text[64] = "type here";
     bool spin = true, show_demo = getenv("IMDEMO_SHOW") != nullptr;
+    bool waits = getenv("IMDEMO_SWAP") != nullptr;   // IMDEMO_SWAP=wait: every list waited for, as it was
+    bool held = getenv("IMDEMO_HOLD") != nullptr;
+    int scrolled = getenv("IMDEMO_SCROLL") ? atoi(getenv("IMDEMO_SCROLL")) : 0;
+    int oldest = 0;     // of the history, which goes round
     int frames = 0, clicks = 0, most = getenv("IMDEMO_FRAMES") ? atoi(getenv("IMDEMO_FRAMES")) : 0;
     unsigned frame_start = instructions(), whole = 0, interface = 0, drawing = 0;
 
     while (ImGui_ImplShaderEmu_NewFrame()) {
         unsigned interface_start = instructions();
+        if (held) {
+            turn = 30, spin = false;    // (the clock stays: keys repeat by it)
+            whole = 290000, interface = 280000, drawing = 100000;
+            for (int i = 0; i < HISTORY; i++) history[i] = (float)(250000 + (i * 7919) % 60000);
+            oldest = 0;
+        }
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
@@ -94,11 +108,11 @@ int main()
         ImGui::Text("Dear ImGui %s on a RISC-V", ImGui::GetVersion());
         ImGui::Text("computer in a pixel shader");
         ImGui::Separator();
-        ImGui::Text("%.1f frames a second", io.Framerate);
+        ImGui::Text("%.1f frames a second", held ? 10.0f : io.Framerate);
         ImGui::Text("a frame: %u,000 instructions", whole / 1000);
         ImGui::Text("ImGui's part: %u,000 (%d vertices)", interface / 1000, io.MetricsRenderVertices);
         ImGui::Text("of that, its triangles: %u,000", drawing / 1000);
-        ImGui::PlotLines("##frame", history, HISTORY, 0, "instructions a frame", 0, FLT_MAX, ImVec2(-1, 50));
+        ImGui::PlotLines("##frame", history, HISTORY, oldest, "instructions a frame", 0, FLT_MAX, ImVec2(-1, 50));
         ImGui::Separator();
         ImGui::Checkbox("Spin the cube", &spin);
         ImGui::SliderFloat("speed", &speed, 0, 180, "%.0f degrees/s");
@@ -113,11 +127,12 @@ int main()
         ImGui::End();
         if (show_demo) {
             static bool placed;
+            if (scrolled) ImGui::SetNextWindowScroll(ImVec2(0, (float)scrolled));
             ImGui::ShowDemoWindow(&show_demo);
             // it puts itself 650 pixels to the right, for a larger screen than this window
             if (!placed) {
                 ImGui::SetWindowPos("Dear ImGui Demo", ImVec2(322, 12));
-                ImGui::SetWindowSize("Dear ImGui Demo", ImVec2(306, 410));
+                ImGui::SetWindowSize("Dear ImGui Demo", ImVec2(306, scrolled ? 140 : 410));
                 placed = true;
             }
         }
@@ -129,13 +144,15 @@ int main()
         ImGui_ImplShaderEmu_RenderDrawData(ImGui::GetDrawData());
         drawing = instructions() - drawing_start;
         interface =instructions() - interface_start;   // (the cube's few calls are in it too)
-        seglSwap();
+        // (not waited for: the next frame writes only its own triangles and table, in the other set)
+        if (waits) seglSwap();
+        else seglSwapEarly();
 
         unsigned now = instructions();
         whole = now - frame_start;
         frame_start = now;
-        for (int i = 0; i + 1 < HISTORY; i++) history[i] = history[i + 1];
-        history[HISTORY - 1] = (float)whole;
+        history[oldest] = (float)whole;
+        oldest = (oldest + 1) % HISTORY;
         if (++frames % 30 == 0)
             fprintf(stderr, "imstat: frame %d, %u instructions, %u of them the interface (%u its triangles), %d vertices\n", frames,
                     whole, interface, drawing, io.MetricsRenderVertices);

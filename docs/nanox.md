@@ -69,8 +69,35 @@ Commands are queued for one buffer at a time and submitted when drawing moves to
 buffer, when software needs the pixels, or when the server is about to wait for events. Each
 list starts by drawing the buffer as a texture and is copied back into it, so software and GPU
 drawing can be mixed freely. Submitting takes no system call (the lock word and `pause`,
-`gpu.md`); the server waits until the copies counter says its picture is in RAM. A copy within a buffer reads RAM, which lacks what is still
+`gpu.md`). A copy within a buffer reads RAM, which lacks what is still
 queued, so it submits first if its source overlaps the queued area.
+
+A list is drawn when the machine's pass ends and copied back in the commit of the pass after,
+and waiting for either ends a pass with `pause`. So the driver waits only where the result is
+needed (`drawn`, `settle` in `scr_shaderemu.c`):
+
+- the list submitted before the server waits for events is not waited for at all: the
+  server goes to sleep and its clients run;
+- a list submitted in the middle of drawing is waited for until it is drawn (its commands
+  and textures are written again next), not until it is copied back: the next list may be
+  submitted with that copy still to come, and the copy is made before it is drawn;
+- software that reads or draws on a buffer, and a buffer freed or resized, wait for the copy.
+  `GrReadArea` is such a read: a program that writes its window's pixels itself reads one
+  pixel after its drawing requests, and has its answer when all that was drawn is there.
+- `GrGetWindowInfo` waits for nothing: where a window is, and where its pixels are, does not
+  depend on what is drawn in it. It did wait (two passes for every program that asked for
+  its window's place); the programs that meant the wait (`nxmon`, `nxpaint`) read a pixel.
+
+A desktop with a terminal, the calculator and `nxmon` starting ran 92.3% of its busy passes'
+instructions before this and 96.7% after (the server's pauses 442 to 72). `nxbench` did not
+move then: each of its phases ends by asking where its window is, which was the two passes.
+With that answered at once it went from 78.8% to 96.3% (118 pauses to 14), and a desktop
+start's pauses from 42 to 13.
+
+A program's own icon (`PICTURE_OWN`) is found in the ROM without reading the program's file:
+the ROM's header at the file's number has its name and size, and the icon's mark is read
+there (`rom_icon`). Read through the file it was two page copies, two passes ended and
+twelve pages into the page cache for each of the desktop's twenty-odd program icons.
 
 The cursor is not drawn at all: it is the display's cursor (`display.md`), an arrow by
 default. The driver writes its position and, when the shape changes, a 32x32 image.
@@ -96,6 +123,13 @@ folders are Games, Utilities, Other and System, in the order the files first nam
 folder's programs open in a menu of their own to its side, when the pointer is on it or with
 Right or Enter. `NXBAR_SHOW=1` (or `=Games`) starts the bar with the menu open (and that
 folder's beside it), for a test without a pointer: each level is a layer of its own.
+
+The bar looks for the windows (five questions to the window system each) when one came,
+went or was put away: it selects the root's `GR_EVENT_MASK_CHLD_UPDATE` and looks within a
+second of such an event, and every fifth second besides, for a title that changed. Asked
+every second, as it was, every open window cost the machine some 45 thousand instructions a
+second while nothing happened. Whose window has the keyboard is one question a second, and
+the program's name is read only when another window has it.
 
 ## Menus
 
@@ -189,13 +223,44 @@ done. To check: the program, `sleep 2`, and the layer in a snapshot has the fram
 writing it into its window's buffer (`settle`, `present` in `linux/apps/nxpaint.c`), so that
 a brush stroke costs the pixels it touches and nothing else.
 
+- **Megabytes are moved by the worker cores** (`linux/apps/ui_bulk.h`: `bulk_flat`,
+  `bulk_rows`, `bulk_rows_kept`). A new picture filled, its copy for taking changes back, and
+  the view written into the window are a megabyte or two at the start, and a core keeps 6 KB
+  of new stores a pass: a hundred passes each that end early. From 16 KB up a job goes to
+  the workers in rows or pieces of 1 KB (up to 96 of them, as many as are through in the
+  passes it takes to post to them: the square root of a 128th of the bytes); less the first
+  core moves alone. The workers are borrowed (`mcw_lend`), so with another program at work on
+  them the first core does it as before. The copy for taking changes back has the largest
+  picture's room from the start: made anew for each size it was copied each time, to no end.
+- **A hand-over is not waited for** where nothing needs its result at once. Jobs asked for
+  between `bulk_hold()` and `bulk_go(1)` are posted together and left with the workers;
+  `bulk_wait()` comes before their memory is next used (any later job waits first by itself,
+  an event that uses the picture waits in `handle`, a request to the window system waits when
+  the workers may be writing the window: `ask_to_draw`). So a new picture is filled, with its
+  copy, while the window system draws the panels; the view, the grey round it and the field
+  of hues are one hand-over at the end of `draw_all`; a stroke's piece shown and the change
+  kept are one, and the program is back at its events while they are made. Held jobs go to
+  the workers from 4 KB. Jobs held together must be of memory apart (no 16 bytes of two): the
+  grey beside the picture is the same rows' own end, not a job of its own.
+- **Nothing is asked for that is there.** The status line and the tools are drawn when what
+  they say changed, the field of hues is copied into the buffer once and then only its mark
+  moves (the panel round it is filled in four pieces), and a line or an outline being
+  dragged is taken out by drawing it again with the pixels from before (`undraw`), not by
+  putting its whole rectangle back, which was a hand-over waited for at every move. A filled
+  shape is still its rectangle.
+- Start and ten changes made with the pointer (`nxkey`): 94.4% of the passes' instructions
+  to 98.4%; the start alone 91.5% to 95.9%; ten changes of a script, one on the heels of the
+  other (each waits for the one before): 94.9% to 96.7%. What is left is the four passes
+  `mcw_open` waits for its workers, the window system's wait for the GPU before the first
+  write, and the kernel's page copies of a program's start. A zoomed view is still written
+  by the first core alone.
 - **A window's buffer written by its program.** The window system draws by handing the
   buffer to the GPU and copying it back; what is written into it meanwhile is lost. A
   program that has asked for drawing (its panels) waits before it writes, with a request the
   window system answers only when the GPU is done: `GrReadArea` of one pixel.
-  `GrGetWindowInfo` comes back sooner: the colour field, written just after the palette was
-  asked for, was gone. What was written before a later request stays (the next list starts
-  from the buffer as it is).
+  `GrGetWindowInfo` comes back sooner (the colour field, written just after the palette
+  was asked for, was gone): it does not wait for the GPU ("The screen is composed"). What was
+  written before a later request stays (the next list starts from the buffer as it is).
 - Tools (their letters): Select `s`, Pencil `p`, Brush `b`, Eraser `e`, Fill `f`, Pick `k`,
   Line `l`, Rect `r`, Oval `o`, Spray `y`; sizes 1 to 16 (`[`, `]`); shapes as an outline,
   filled, or both. The left button draws in the foreground's colour, the right in the
@@ -328,12 +393,20 @@ them, on the machine's worker cores (`docs/multicore.md`), into a PPM file the d
 draws. What costs is not the arithmetic but the writing: a core keeps about 6 KB of new
 stores a pass and a picture is megabytes, so each stage writes memory of its own and the
 pixels are written once, into the file's own pages, by as many cores as there are. For a
-PNG, three workers follow each other: one inflates the stream, one takes the filters off
-the rows that are there, one writes those rows as pixels. For a JPEG the first worker reads
+PNG, three cores follow each other: the first core inflates the stream (the longest step,
+so it waits for nobody: with all three steps on workers it sat out two passes in three),
+a worker takes the filters off the rows that are there, another writes those rows as
+pixels. The inflate loop keeps its bit reader in local variables (a store to the output
+could be a store to the reader's struct, for all the compiler knows) and takes two bytes at
+a time: 31.9 to 20.8 million instructions for a 640 x 480 photograph. For a JPEG the first worker reads
 the Huffman codes into a list of the coefficients that are not zero (three bytes each, where
 a block would be 128 written), and the others take strips of 16 rows, do the transform and
 the colours on their stacks and write only pixels; a strip begins and ends on 16 bytes of
-the picture whatever its width, so two cores never write the same 16.
+the picture whatever its width, so two cores never write the same 16. A block that is only
+its mean is filled without the transform, a colour sample's three terms are worked out once
+for its two pixels, and a sum is clamped by a table the first core fills before any job
+(`img_clip_of`): 19.9 to 26.3 million instructions for three 480 x 480 photographs became
+11.8 to 20.7, the same bytes.
 
 | 640 x 480 | Instructions, on one core | One core | Three workers | Seven (four of them small) |
 |---|---|---|---|---|
@@ -348,6 +421,20 @@ exact. `python tools/make_test_pictures.py --check` builds the same decoder for 
 compares both with Pillow and prints the sums the guest must print
 (`NXVIEW_SUM=1 nxview --decode /usr/share/picture-fox.png /tmp/a.ppm`: `72ae6c0d`; the JPEG:
 `95b8fd40`), with any number of workers.
+
+**Fewer waits for the window system** (`linux/apps/ui_width.h`, which `ui.h` and `ui_menu.h`
+include). The server draws what a program sent and then waits for the GPU's copy, each time
+its socket runs empty; so what costs a program is how often it makes the server stop, not
+how much it asks for.
+
+- A text's width is worked out by the program (`ui_width`): the font's widths are asked for
+  once. `GrGetGCTextSize` in the middle of a redraw is an answer waited for, and the half
+  redraw drawn and waited for before it.
+- The client library keeps 16 KB of requests before it writes them (it was 2 KB: a redraw
+  of a list or of a folder's tiles was several writes, each a wake of the server in the
+  middle of the drawing), and reads a reply with one `read` ("Changes to Microwindows").
+- A program that draws many labels measures with `ui_width` and asks the server nothing
+  while it draws.
 
 **The clipboard** is a file, `/tmp/clipboard` (`ui_clip_set` and `ui_clip_get` in `ui.h`; the
 terminal reads and writes the same file): one piece of text that is there after the program
@@ -408,7 +495,15 @@ the program that puts up the desktop's picture is the first to come and go.
 - The terminal is 80x24 (it was 50 rows, taller than the screen) and light on black, with
   the eight ANSI colours bright enough to read. It keeps what every character cell shows
   beside the drawing, which is what the look back through earlier lines is drawn from, and
-  tells the program inside (`TIOCSWINSZ`) when its window changes size.
+  tells the program inside (`TIOCSWINSZ`) when its window changes size. A line feed on the
+  last row looks at what else was read from the program: with more line feeds coming the
+  screen moves up by all of them in one copy, and the lines between are printed where they
+  will stand (`scrolls_ahead`; only text and colours are looked past). A copy a line was a
+  wait for the GPU a line. `kill -USR1` must print the same screen as before for the same
+  output.
+- **The client library** keeps 16 KB of requests before it writes them (`SZREQBUF`; it was
+  2 KB, a write and a wake of the server every 25 lines of text), and reads a reply with one
+  `read` (`TypedReadBlock`: the type and the data leave the server together).
 - **A driver may draw a picture file itself** (`gd_drawpicture`, asked first by
   `GdDrawImageFromFile`).
 - **A new window's frame is painted when it is made.** The window manager lives in the
@@ -420,6 +515,115 @@ the program that puts up the desktop's picture is the first to come and go.
   its window goes (it went to the desktop, where no key did anything until a caption was
   clicked), and the server takes the window manager's keys before any program sees them
   (`window_key` in `srvevent.c`; stock `wm_key_down` is a FIXME).
+- **A colour is no reason to work a window's clip out again.** `GsPrepareDrawing` rebuilt the
+  clip region (four allocations, every sibling subtracted) whenever the context had changed,
+  and `GrSetGCForeground` is a change: a button's four colours were four clips. It is
+  rebuilt when the window, the context's region or its clip mode changes; and a changed
+  context tells the engine only the fields that differ from what it was told last.
+- **A request is handled where it lies** in what was read, not copied out first (two
+  `memcpy` a request).
+- **A string is walked once.** The engine measured a string and the driver walked it again
+  for the command's words. The driver measures (`gd_measurestring`) and writes the words as
+  it does; `gpu_drawstring` uses them when the same string is drawn next, which it is.
+- **The index of icons is read once**, not parsed with `sscanf` for every new window.
+- **The server waits with `epoll`.** `select` set a wait up on every descriptor at every
+  call. A client is watched from when it is accepted (`GsWatchFd`).
+- **An answer is one write.** A reply or an event went out as its two-byte type and then
+  its data: the first write woke the program, which read two bytes and slept again for the
+  rest. `GsWriteType` keeps the type back and `GsWrite` sends both (`writev`);
+  `GsFlushType` after every request and before the server waits.
+- **A system colour is asked for once** (`GrGetSysColor` in the client library keeps the
+  answer), and the calculator keeps its labels' widths: its start asked 93 colours and 40
+  widths of the server, each a question and an answer, and is 1.6 million instructions now
+  where it was 2.75.
+
+What the six before that took off, in instructions the whole machine ran (`rvc_cpu`, `nxbench`):
+
+| | before | after |
+|---|---|---|
+| 25 fills of 480x320, each waited for | 483,636 | 317,299 |
+| 100 lines of text (5,400 characters) | 400,407 | 255,289 |
+| 15 scrolls of the window by one line | 392,955 | 243,254 |
+| 200 buttons (face, edges, label) | 2,499,049 | 1,212,232 |
+
+A question to the server and its answer are about 13,000 instructions still, nearly all of
+them the kernel's (two sockets, two switches of process): what a program asks often, it
+should keep.
+
+## Fewer questions to the window system (12 October 2026)
+
+A question and its answer are 13,000 instructions and a drawing request a few hundred, so
+what a program of the desktop costs is mostly how often it and the server wake each other.
+
+- **A program waiting for an event is not answered with one the window manager took.** The
+  window manager lives in the server and works from each program's queue; an event it took
+  came out as an answer of type none: 11 of the 17 answers of every program's start, one
+  for every pointer move over a framed window, six to each running program whenever another
+  opened a window. The server now gives the next event of the queue or lets the program
+  wait on (`GrGetNextEventWrapperFinish`). A start is 10 to 18% fewer instructions for it.
+- **The next event is asked for once.** `GrGetNextEventTimeout` sent its question at every
+  call, so a program with a one-second timer woke the server every second; the client
+  library remembers that it has asked until the answer comes (`event_asked` in `client.c`).
+- **A colour or a font a context already has is not sent again** (`ui_state.h`, under every
+  `GrSetGCForeground` and `GrSetGCFont` of a program that includes `ui.h` or `ui_menu.h`).
+  A program that changes a context's colour by another call must not rely on it.
+- **The pointer's moves are selected while a button is held** (`ui_moves` in `ui.h`) and not
+  otherwise: a window that selects them answers an event for every move over it. An idle
+  window under a moving pointer cost 5.5 to 8.2 million instructions in 8 s and costs 3.2 to
+  5.9; what is left is the server's own.
+- The screen's size is asked once (`ui_screen()`); a program with a tick of its own
+  (`nxmon`'s frames) asks for events once with `GrPrepareSelect` and waits in its own
+  `select()`.
+- Launchers start a program with `vfork` and `exec` (`ui_run`, the bar, Files, the viewer,
+  `emuinit`, `emumux`): no page of the launcher is copied for the child.
+
+Instructions, the build before against this one (`rvc_cpu`; a start is from exec until the
+window is drawn and the program waits, about 0.8 million of it the window system's and the
+kernel's for any window): nxedit 1.48M to 1.38M and with the server's two changes 1.03M;
+Files on `/usr/bin` 4.44M to 2.89M; `nxfiles --desktop` 3.55M to 3.16M; nxview with a PPM
+1.57M to 1.26M; nxmon 2.47M to 2.16M and its running ten seconds 5.25M to 4.00M; twenty
+arrows in Files 5.38M to 3.81M; nine tab changes in Settings 1.64M to 1.23M; nxpaint's
+fills and undo script 19.1M to 12.2M. What did not move: a letter typed in nxedit, a
+stroke in nxpaint, a menu opened and closed (330 thousand, nearly all the server's and the
+kernel's: a window with its buffer made and destroyed, 22 questions), `nxkey`, `nxicon`.
+
+## One program's windows are not every program's news (12 October 2026)
+
+Every program has the root's child updates selected, because the window manager works from
+each program's queue. So every map, activation, unmap and destruction of any top-level
+window was queued to every program, and where the window manager did not take it, woke it.
+A menu was the worst of it: its owner's frame was repainted twice when it opened and once
+when it closed (about 100 lines, 6 icons and 15 fills), and the bar asked for the focus every
+second and for every window every five. Five context menus opened and closed in Files cost
+3.1 million instructions alone and 15.5 million on a desktop with the bar and three
+programs; they cost 0.54 and 1.6 million.
+
+- An undecorated top-level window (a menu, a panel) is no news to the root's listeners but
+  for its being shown (`GsDeliverUpdateEvent`).
+- A root child update reaches a program only if it selected them itself (`own_chld_update`,
+  set in `GrSelectEvents`; the bar does), and then a frame's too, though the window manager
+  took it. The window manager's own selection is marked by `wm_selecting`.
+- The keyboard going to a program's own menu and back activates nothing (`GsMenuOf` in
+  `GsSetFocus`), and the program's frame stays active under its menu (`GsFocusInPopupOf`):
+  it used to turn inactive, which is the one picture that changed. Leaving the menu for
+  another program's window tells the menu's program's frames.
+- A frame is painted again for an activation only when what it shows changed
+  (`wm_activating`, `painted` in `nanowm.h`): its size, title, properties, icon, active or not.
+- `nxbar` looks for its buttons when an update names a window it has no button for, asks one
+  window's title when that window is activated, and the focus when any update came
+  (`linux/nanox/nxbar.c`); every 60 s it looks anyway. A frame's program window is asked once.
+- `ui_window_origin` keeps a window's place from its last click (`ui_origin_note`, which sees
+  every event of a program that opens menus by its window's place) until an update.
+
+What a program's handling of input costs is measured over the same `nxkey` line sent to a
+window that ignores it (`demo-hello`), which takes the tool's own sleeps and the kernel's
+input path off: against the image of the morning, 20 letters in nxedit 893 to 513 thousand,
+3 strokes in nxpaint 904 to 589, 10 pages in nxweb 1,850 to 997, 20 letters in nxide 5,981
+to 2,569, in nxterm 1,007 to 791, 10 clicks in nxcalc 2,681 to 268, 9 tabs in Settings 1,752
+to 763, 20 arrows in Files 6,001 to 2,514, 10 zooms in nxview 1,410 to 695. A letter in
+nxterm is the least: key, terminal, shell, terminal and server are five hand-overs of the
+kernel's, and its XOR cursor is two software fills (left: a cursor redrawn from the cells
+would paint a coloured cell in the wrong colours).
 
 ## Checking it
 

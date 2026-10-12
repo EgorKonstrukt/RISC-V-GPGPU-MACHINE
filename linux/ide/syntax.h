@@ -19,7 +19,7 @@ static int
 sx_word(const char *const *list, const char *word, int length)
 {
 	for (; *list; list++)
-		if ((*list)[0] == word[0] && (int)strlen(*list) == length && !memcmp(*list, word, (size_t)length))
+		if ((*list)[0] == word[0] && !strncmp(*list, word, (size_t)length) && !(*list)[length])
 			return 1;
 	return 0;
 }

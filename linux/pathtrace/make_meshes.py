@@ -185,12 +185,12 @@ def write(out, name, points, faces):
     faces = outward(points, [f for f in faces if len(set(f)) == 3])
     normals = smooth_normals(points, faces)
     tree = Tree(points, faces)
-    out.write('static union pt_word %s_nodes[][8] = {\n' % name)
+    out.write('static const union pt_word %s_nodes[][8] = {\n' % name)
     for low, high, a, b in tree.nodes:
         # (a hair wider: the tracer's test is in floats, and a ray along a box's side must not miss it)
         out.write('\t{{%s}, {%du}, {%s}, {%du}},\n' % ('}, {'.join(words([x - 1e-5 for x in low]).split(', ')), a,
                                                        '}, {'.join(words([x + 1e-5 for x in high]).split(', ')), b))
-    out.write('};\nstatic union pt_word %s_triangles[][18] = {\n' % name)
+    out.write('};\nstatic const union pt_word %s_triangles[][18] = {\n' % name)
     for i in tree.order:
         a, b, c = faces[i]
         row = list(points[a]) + list(sub(points[b], points[a])) + list(sub(points[c], points[a]))

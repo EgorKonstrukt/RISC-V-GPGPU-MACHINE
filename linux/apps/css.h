@@ -52,6 +52,7 @@ static char *css_names;			/* every atom's text */
 static int css_names_length, css_names_room;
 static int css_name_at[CSS_ATOMS];
 static unsigned short css_hash[CSS_ATOMS * 2];
+static unsigned short css_slot_of[CSS_ATOMS];	/* where an atom is in css_hash: a reset clears those, not the table */
 static int css_atoms;
 static int css_by_id[CSS_ATOMS], css_by_class[CSS_ATOMS], css_by_tag[CSS_ATOMS], css_any;
 static int css_var_at[CSS_ATOMS];	/* a custom property's value in css_text, or -1 */
@@ -108,6 +109,10 @@ css_atom(const char *text, int n, int add, int fold)
 	css_name_at[++css_atoms] = css_names_length;
 	css_names_length += n + 1;
 	css_hash[slot] = css_atoms;
+	css_slot_of[css_atoms] = (unsigned short)slot;
+	/* (what is kept by atom begins here, for this atom: nothing is cleared for all of them) */
+	css_by_id[css_atoms] = css_by_class[css_atoms] = css_by_tag[css_atoms] = css_var_at[css_atoms] = -1;
+	css_var_root[css_atoms] = 0;
 	return css_atoms;
 }
 
@@ -121,13 +126,13 @@ css_reset(int view)
 	};
 	int i;
 
+	for (i = 1; i <= css_atoms; i++)
+		css_hash[css_slot_of[i]] = 0;
 	css_atoms = css_names_length = css_text_length = css_rule_count = css_part_count = css_decl_count = 0;
 	css_view = view;
 	css_any = -1;
-	memset(css_hash, 0, sizeof css_hash);
-	for (i = 0; i < CSS_ATOMS; i++)
-		css_by_id[i] = css_by_class[i] = css_by_tag[i] = css_var_at[i] = -1;
-	memset(css_var_root, 0, sizeof css_var_root);
+	css_by_id[0] = css_by_class[0] = css_by_tag[0] = css_var_at[0] = -1;	/* (no atom: no rules) */
+	css_var_root[0] = 0;
 	for (i = 0; i < T_COUNT - 1; i++)
 		css_atom(tags[i], strlen(tags[i]), 1, 0);	/* in the enum's order: T_p is "p" */
 }

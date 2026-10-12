@@ -21,7 +21,7 @@ index 550368e..a5d701d 100644
  		time = 1;
  	Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames/time);
 diff --git a/WinQuake/cl_main.c b/WinQuake/cl_main.c
-index 5812143..71ab4b3 100644
+index 5812143..169b347 100644
 --- a/WinQuake/cl_main.c
 +++ b/WinQuake/cl_main.c
 @@ -394,7 +394,7 @@ float	CL_LerpPoint (void)
@@ -53,7 +53,58 @@ index 5812143..71ab4b3 100644
  		if (frac > 1.01)
  		{
  SetPal(2);
-@@ -636,7 +640,8 @@ int CL_ReadFromServer (void)
+@@ -439,6 +443,10 @@ SetPal(2);
+ CL_RelinkEntities
+ ===============
+ */
++unsigned	se_entity_live[(MAX_EDICTS + 31) / 32];	// a bit an entity: it may have a model, or have lost one
++static const byte	se_lowest_bit[32] = {0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
++	31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9};
++
+ void CL_RelinkEntities (void)
+ {
+ 	entity_t	*ent;
+@@ -478,6 +486,31 @@ void CL_RelinkEntities (void)
+ 	bobjrotate = anglemod(100*cl.time);
+ 	
+ // start on the entity after the world
++#ifdef SHADEREMU
++	// Only the entities an update named since they were last found empty: of some hundreds
++	// most are, and an empty one is left alone until its next update (CL_ParseUpdate).
++	for (i=1 ; i<cl.num_entities ; i++)
++	{
++		unsigned	live = se_entity_live[i >> 5] >> (i & 31);
++
++		if (!live)
++		{	// none from here to the end of these 32
++			i |= 31;
++			continue;
++		}
++		// on to the next there is (which bit is the lowest set, by a table: counting them is a library call)
++		i += se_lowest_bit[((live & -live) * 0x077cb531u) >> 27];
++		if (i >= cl.num_entities)
++			break;
++		ent = cl_entities + i;
++		if (!ent->model)
++		{	// empty slot
++			if (ent->forcelink)
++				R_RemoveEfrags (ent);	// just became empty
++			se_entity_live[i >> 5] &= ~(1u << (i & 31));
++			continue;
++		}
++#else
+ 	for (i=1,ent=cl_entities+1 ; i<cl.num_entities ; i++,ent++)
+ 	{
+ 		if (!ent->model)
+@@ -486,6 +519,7 @@ void CL_RelinkEntities (void)
+ 				R_RemoveEfrags (ent);	// just became empty
+ 			continue;
+ 		}
++#endif
+ 
+ // if the object wasn't included in the last packet, remove it
+ 		if (ent->msgtime != cl.mtime[0])
+@@ -636,7 +670,8 @@ int CL_ReadFromServer (void)
  	int		ret;
  
  	cl.oldtime = cl.time;
@@ -63,7 +114,7 @@ index 5812143..71ab4b3 100644
  	
  	do
  	{
-@@ -646,7 +651,7 @@ int CL_ReadFromServer (void)
+@@ -646,7 +681,7 @@ int CL_ReadFromServer (void)
  		if (!ret)
  			break;
  		
@@ -72,6 +123,33 @@ index 5812143..71ab4b3 100644
  		CL_ParseServerMessage ();
  	} while (ret && cls.state == ca_connected);
  	
+diff --git a/WinQuake/cl_parse.c b/WinQuake/cl_parse.c
+index c79ca47..327c1a3 100644
+--- a/WinQuake/cl_parse.c
++++ b/WinQuake/cl_parse.c
+@@ -326,6 +326,7 @@ relinked.  Other attributes can change without relinking.
+ ==================
+ */
+ int	bitcounts[16];
++extern unsigned	se_entity_live[];	// cl_main.c
+ 
+ void CL_ParseUpdate (int bits)
+ {
+@@ -356,9 +357,14 @@ void CL_ParseUpdate (int bits)
+ 
+ 	ent = CL_EntityNum (num);
+ 
++#ifdef SHADEREMU
++	// (CL_RelinkEntities looks at those that had an update; nobody reads bitcounts)
++	se_entity_live[num >> 5] |= 1u << (num & 31);
++#else
+ for (i=0 ; i<16 ; i++)
+ if (bits&(1<<i))
+ 	bitcounts[i]++;
++#endif
+ 
+ 	if (ent->msgtime != cl.mtime[1])
+ 		forcelink = true;	// no previous frame to lerp from
 diff --git a/WinQuake/client.h b/WinQuake/client.h
 index 7c59ee9..1f465d0 100644
 --- a/WinQuake/client.h
@@ -141,8 +219,99 @@ index 0778c5e..34d4f39 100644
  			cmd->function ();
  			return;
  		}
+diff --git a/WinQuake/common.c b/WinQuake/common.c
+index e07e6ce..a1ffb59 100644
+--- a/WinQuake/common.c
++++ b/WinQuake/common.c
+@@ -139,6 +139,11 @@ void Q_memset (void *dest, int fill, int count)
+ {
+ 	int             i;
+ 	
++#ifdef SHADEREMU
++	if (count > 0)
++		memset (dest, fill, count);
++	return;
++#endif
+ 	if ( (((long)dest | count) & 3) == 0)
+ 	{
+ 		count >>= 2;
+@@ -155,6 +160,11 @@ void Q_memcpy (void *dest, void *src, int count)
+ {
+ 	int             i;
+ 	
++#ifdef SHADEREMU
++	if (count > 0)
++		memmove (dest, src, count);	// (the library's: words whatever the alignment; some callers' blocks overlap)
++	return;
++#endif
+ 	if (( ( (long)dest | (long)src | count) & 3) == 0 )
+ 	{
+ 		count>>=2;
+@@ -1530,6 +1540,12 @@ Allways appends a 0 byte.
+ cache_user_t *loadcache;
+ byte    *loadbuf;
+ int             loadsize;
++#ifdef SHADEREMU
++#define HUNK_TEMP_FOR_FILE Hunk_TempAllocUnset	// (the file is read over all of it)
++#else
++#define HUNK_TEMP_FOR_FILE Hunk_TempAlloc
++#endif
++
+ byte *COM_LoadFile (char *path, int usehunk)
+ {
+ 	int             h;
+@@ -1548,9 +1564,13 @@ byte *COM_LoadFile (char *path, int usehunk)
+ 	COM_FileBase (path, base);
+ 	
+ 	if (usehunk == 1)
++#ifdef SHADEREMU
++		buf = Hunk_AllocUnset (len+1, base);	// (the file is read over all of it)
++#else
+ 		buf = Hunk_AllocName (len+1, base);
++#endif
+ 	else if (usehunk == 2)
+-		buf = Hunk_TempAlloc (len+1);
++		buf = HUNK_TEMP_FOR_FILE (len+1);
+ 	else if (usehunk == 0)
+ 		buf = Z_Malloc (len+1);
+ 	else if (usehunk == 3)
+@@ -1558,7 +1578,7 @@ byte *COM_LoadFile (char *path, int usehunk)
+ 	else if (usehunk == 4)
+ 	{
+ 		if (len+1 > loadsize)
+-			buf = Hunk_TempAlloc (len+1);
++			buf = HUNK_TEMP_FOR_FILE (len+1);
+ 		else
+ 			buf = loadbuf;
+ 	}
+@@ -1655,7 +1675,7 @@ pack_t *COM_LoadPackFile (char *packfile)
+ // crc the directory to check for modifications
+ 	CRC_Init (&crc);
+ 	for (i=0 ; i<header.dirlen ; i++)
+-		CRC_ProcessByte (&crc, ((byte *)info)[i]);
++		CRC_ProcessByte (&crc, ((byte *)info)[i]);	// (once, at the start: 21 KB)
+ 	if (crc != PAK0_CRC)
+ 		com_modified = true;
+ 
+diff --git a/WinQuake/common.h b/WinQuake/common.h
+index 87d4a55..f698323 100644
+--- a/WinQuake/common.h
++++ b/WinQuake/common.h
+@@ -93,6 +93,12 @@ extern	int	(*BigLong) (int l);
+ extern	int	(*LittleLong) (int l);
+ extern	float	(*BigFloat) (float l);
+ extern	float	(*LittleFloat) (float l);
++#ifdef SHADEREMU
++// a little-endian machine: these were calls through pointers, for every number of a file
++#define LittleShort(x) ((short)(x))
++#define LittleLong(x) ((int)(x))
++#define LittleFloat(x) ((float)(x))
++#endif
+ 
+ //============================================================================
+ 
 diff --git a/WinQuake/console.c b/WinQuake/console.c
-index cad58f8..dd72a83 100644
+index cad58f8..6608444 100644
 --- a/WinQuake/console.c
 +++ b/WinQuake/console.c
 @@ -45,7 +45,7 @@ char		*con_text=0;
@@ -209,7 +378,20 @@ index cad58f8..dd72a83 100644
  		if (time > con_notifytime.value)
  			continue;
  		text = con_text + (i % con_totallines)*con_linewidth;
-@@ -561,7 +568,7 @@ void Con_DrawNotify (void)
+@@ -541,8 +548,12 @@ void Con_DrawNotify (void)
+ 		clearnotify = 0;
+ 		scr_copytop = 1;
+ 
++#ifdef SHADEREMU
++		Draw_Characters (8, v, text, con_linewidth);
++#else
+ 		for (x = 0 ; x < con_linewidth ; x++)
+ 			Draw_Character ( (x+1)<<3, v, text[x]);
++#endif
+ 
+ 		v += 8;
+ 	}
+@@ -561,7 +572,7 @@ void Con_DrawNotify (void)
  			Draw_Character ( (x+5)<<3, v, chat_buffer[x]);
  			x++;
  		}
@@ -218,7 +400,20 @@ index cad58f8..dd72a83 100644
  		v += 8;
  	}
  	
-@@ -620,7 +627,7 @@ Con_NotifyBox
+@@ -603,8 +614,12 @@ void Con_DrawConsole (int lines, qboolean drawinput)
+ 			j = 0;
+ 		text = con_text + (j % con_totallines)*con_linewidth;
+ 
++#ifdef SHADEREMU
++		Draw_Characters (8, y, text, con_linewidth);
++#else
+ 		for (x=0 ; x<con_linewidth ; x++)
+ 			Draw_Character ( (x+1)<<3, y, text[x]);
++#endif
+ 	}
+ 
+ // draw the input prompt, user text, and cursor if desired
+@@ -620,7 +635,7 @@ Con_NotifyBox
  */
  void Con_NotifyBox (char *text)
  {
@@ -227,7 +422,7 @@ index cad58f8..dd72a83 100644
  
  // during startup for sound / cd warnings
  	Con_Printf("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n");
-@@ -635,15 +642,15 @@ void Con_NotifyBox (char *text)
+@@ -635,15 +650,15 @@ void Con_NotifyBox (char *text)
  
  	do
  	{
@@ -247,6 +442,36 @@ index cad58f8..dd72a83 100644
 +	realtime_ms = 0;				// put the cursor back to invisible
  }
  
+diff --git a/WinQuake/crc.c b/WinQuake/crc.c
+index ed4880c..1b2fc26 100644
+--- a/WinQuake/crc.c
++++ b/WinQuake/crc.c
+@@ -75,6 +75,15 @@ void CRC_ProcessByte(unsigned short *crcvalue, byte data)
+ 	*crcvalue = (*crcvalue << 8) ^ crctable[(*crcvalue >> 8) ^ data];
+ }
+ 
++void CRC_ProcessBlock(unsigned short *crcvalue, byte *data, int count)
++{
++	unsigned	crc = *crcvalue;
++
++	while (count-- > 0)
++		crc = ((crc << 8) ^ crctable[(crc >> 8) ^ *data++]) & 0xffff;
++	*crcvalue = crc;
++}
++
+ unsigned short CRC_Value(unsigned short crcvalue)
+ {
+ 	return crcvalue ^ CRC_XOR_VALUE;
+diff --git a/WinQuake/crc.h b/WinQuake/crc.h
+index cad9772..1e9094f 100644
+--- a/WinQuake/crc.h
++++ b/WinQuake/crc.h
+@@ -21,4 +21,5 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ 
+ void CRC_Init(unsigned short *crcvalue);
+ void CRC_ProcessByte(unsigned short *crcvalue, byte data);
++void CRC_ProcessBlock(unsigned short *crcvalue, byte *data, int count);
+ unsigned short CRC_Value(unsigned short crcvalue);
 diff --git a/WinQuake/cvar.c b/WinQuake/cvar.c
 index 07a761a..547f68a 100644
 --- a/WinQuake/cvar.c
@@ -274,11 +499,85 @@ index 07a761a..547f68a 100644
  	var = Cvar_FindVar (var_name);
  	if (!var)
  	{	// there is an error in C code if this happens
+diff --git a/WinQuake/draw.h b/WinQuake/draw.h
+index 5055b65..9ad212e 100644
+--- a/WinQuake/draw.h
++++ b/WinQuake/draw.h
+@@ -36,5 +36,6 @@ void Draw_TileClear (int x, int y, int w, int h);
+ void Draw_Fill (int x, int y, int w, int h, int c);
+ void Draw_FadeScreen (void);
+ void Draw_String (int x, int y, char *str);
++void Draw_Characters (int x, int y, char *text, int count);
+ qpic_t *Draw_PicFromWad (char *name);
+ qpic_t *Draw_CachePic (char *path);
 diff --git a/WinQuake/gl_draw.c b/WinQuake/gl_draw.c
-index 25a8007..d59bc9b 100644
+index 25a8007..cdb905f 100644
 --- a/WinQuake/gl_draw.c
 +++ b/WinQuake/gl_draw.c
-@@ -1124,6 +1124,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
+@@ -520,6 +520,11 @@ void Draw_Character (int x, int y, int num)
+ 
+ 	GL_Bind (char_texture);
+ 
++#ifdef SHADEREMU
++	/* (a letter is a 16th of the texture each way, 64 of its 1,024ths) */
++	if (qglRect (x, y, x + 8, y + 8, col * 64, row * 64, col * 64 + 64, row * 64 + 64))
++		return;
++#endif
+ 	glBegin (GL_QUADS);
+ 	glTexCoord2f (fcol, frow);
+ 	glVertex2f (x, y);
+@@ -532,6 +537,28 @@ void Draw_Character (int x, int y, int num)
+ 	glEnd ();
+ }
+ 
++#ifdef SHADEREMU
++/*
++================
++Draw_Characters
++
++So many characters of a line, eight pixels apart: what Draw_Character draws of each.
++================
++*/
++void Draw_Characters (int x, int y, char *text, int count)
++{
++	int	i;
++
++	if (y <= -8 || count <= 0)
++		return;			// totally off screen
++	GL_Bind (char_texture);
++	if (qglText (x, y, text, count))
++		return;
++	for (i=0 ; i<count ; i++)
++		Draw_Character (x + i*8, y, text[i]);
++}
++#endif
++
+ /*
+ ================
+ Draw_String
+@@ -539,6 +566,10 @@ Draw_String
+ */
+ void Draw_String (int x, int y, char *str)
+ {
++#ifdef SHADEREMU
++	Draw_Characters (x, y, str, strlen (str));
++	return;
++#endif
+ 	while (*str)
+ 	{
+ 		Draw_Character (x, y, *str);
+@@ -614,6 +645,10 @@ void Draw_Pic (int x, int y, qpic_t *pic)
+ 	gl = (glpic_t *)pic->data;
+ 	glColor4f (1,1,1,1);
+ 	GL_Bind (gl->texnum);
++#ifdef SHADEREMU
++	if (qglPicture (x, y, pic->width, pic->height, &gl->sl))
++		return;
++#endif
+ 	glBegin (GL_QUADS);
+ 	glTexCoord2f (gl->sl, gl->tl);
+ 	glVertex2f (x, y);
+@@ -1124,6 +1159,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
  	if (scaled_height > gl_max_size.value)
  		scaled_height = gl_max_size.value;
  
@@ -289,7 +588,7 @@ index 25a8007..d59bc9b 100644
  	if (scaled_width * scaled_height > sizeof(scaled))
  		Sys_Error ("GL_LoadTexture: too big");
  
-@@ -1190,6 +1194,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
+@@ -1190,6 +1229,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
  	int			p;
  
  	s = width*height;
@@ -307,7 +606,7 @@ index 25a8007..d59bc9b 100644
  	// if there are no transparent pixels, make it a 3 component
  	// texture even if it was specified as otherwise
  	if (alpha)
-@@ -1250,10 +1265,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
+@@ -1250,10 +1300,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
  			}
  		}
  	}
@@ -634,10 +933,10 @@ index 80ada45..087e2f2 100644
  	return r;
  }
 diff --git a/WinQuake/gl_rmain.c b/WinQuake/gl_rmain.c
-index d9bf41e..99f6480 100644
+index d9bf41e..90f862f 100644
 --- a/WinQuake/gl_rmain.c
 +++ b/WinQuake/gl_rmain.c
-@@ -108,10 +108,13 @@ R_CullBox
+@@ -108,10 +108,27 @@ R_CullBox
  Returns true if the box is completely outside the frustom
  =================
  */
@@ -648,11 +947,32 @@ index d9bf41e..99f6480 100644
  
 +	if (se_all_round)	// shaderemu: the host shows the world all round a seat (docs/holodeck.md)
 +		return false;
++#ifdef SHADEREMU
++	// Behind a plane when its corner furthest along the plane is: BoxOnPlaneSide's first sum,
++	// by itself (its second, of the nearest corner, is never the greater).
++	for (i=0 ; i<4 ; i++)
++	{
++		mplane_t	*p = &frustum[i];
++		int		bits = p->signbits;
++
++		if (p->normal[0]*(bits & 1 ? mins[0] : maxs[0]) + p->normal[1]*(bits & 2 ? mins[1] : maxs[1])
++			+ p->normal[2]*(bits & 4 ? mins[2] : maxs[2]) < p->dist)
++			return true;
++	}
++	return false;
++#endif
  	for (i=0 ; i<4 ; i++)
  		if (BoxOnPlaneSide (mins, maxs, &frustum[i]) == 2)
  			return true;
-@@ -123,9 +126,12 @@ void R_RotateForEntity (entity_t *e)
+@@ -121,11 +138,19 @@ qboolean R_CullBox (vec3_t mins, vec3_t maxs)
+ 
+ void R_RotateForEntity (entity_t *e)
  {
++#ifdef SHADEREMU
++	/* the same matrix, made of the world's in one go (qgl.c) */
++	qglEntity (r_world_matrix, e->origin, e->angles[1], -e->angles[0], e->angles[2], NULL, NULL);
++	return;
++#endif
      glTranslatef (e->origin[0],  e->origin[1],  e->origin[2]);
  
 -    glRotatef (e->angles[1],  0, 0, 1);
@@ -667,7 +987,7 @@ index d9bf41e..99f6480 100644
  }
  
  /*
-@@ -301,6 +307,10 @@ void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
+@@ -301,6 +326,10 @@ void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
  
  lastposenum = posenum;
  
@@ -678,7 +998,7 @@ index d9bf41e..99f6480 100644
  	verts = (trivertx_t *)((byte *)paliashdr + paliashdr->posedata);
  	verts += posenum * paliashdr->poseverts;
  	order = (int *)((byte *)paliashdr + paliashdr->commands);
-@@ -346,6 +356,9 @@ extern	vec3_t			lightspot;
+@@ -346,6 +375,9 @@ extern	vec3_t			lightspot;
  
  void GL_DrawAliasShadow (aliashdr_t *paliashdr, int posenum)
  {
@@ -688,7 +1008,110 @@ index d9bf41e..99f6480 100644
  	float	s, t, l;
  	int		i, j;
  	int		index;
-@@ -845,8 +858,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
+@@ -443,6 +475,10 @@ R_DrawAliasModel
+ 
+ =================
+ */
++#ifdef SHADEREMU
++static int	se_lights[MAX_DLIGHTS], se_lights_count, se_lights_frame = -1;
++#endif
++
+ void R_DrawAliasModel (entity_t *e)
+ {
+ 	int			i, j;
+@@ -479,8 +515,24 @@ void R_DrawAliasModel (entity_t *e)
+ 	if (e == &cl.viewent && ambientlight < 24)
+ 		ambientlight = shadelight = 24;
+ 
++#ifdef SHADEREMU
++	/* the lights that are on, found once a frame (the host's count: a level begins r_framecount
++	   again): mostly none of the 32 */
++	if (se_lights_frame != host_framecount)
++	{
++		se_lights_frame = host_framecount;
++		se_lights_count = 0;
++		for (lnum=0 ; lnum<MAX_DLIGHTS ; lnum++)
++			if (cl_dlights[lnum].die >= cl.time)
++				se_lights[se_lights_count++] = lnum;
++	}
++	for (i=0 ; i<se_lights_count ; i++)
++	{
++		lnum = se_lights[i];
++#else
+ 	for (lnum=0 ; lnum<MAX_DLIGHTS ; lnum++)
+ 	{
++#endif
+ 		if (cl_dlights[lnum].die >= cl.time)
+ 		{
+ 			VectorSubtract (currententity->origin,
+@@ -509,18 +561,22 @@ void R_DrawAliasModel (entity_t *e)
+ 			ambientlight = shadelight = 8;
+ 
+ 	// HACK HACK HACK -- no fullbright colors, so make torches full light
+-	if (!strcmp (clmodel->name, "progs/flame2.mdl")
+-		|| !strcmp (clmodel->name, "progs/flame.mdl") )
++	// (names of models begin "progs/": the letter after tells nearly all of them apart)
++	if (clmodel->name[6] == 'f' && (!strcmp (clmodel->name, "progs/flame2.mdl")
++		|| !strcmp (clmodel->name, "progs/flame.mdl")) )
+ 		ambientlight = shadelight = 256;
+ 
+ 	shadedots = r_avertexnormal_dots[((int)(e->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1)];
+ 	shadelight = shadelight / 200.0;
+ 	
+-	an = e->angles[1]/180*M_PI;
+-	shadevector[0] = cos(-an);
+-	shadevector[1] = sin(-an);
+-	shadevector[2] = 1;
+-	VectorNormalize (shadevector);
++	if (r_shadows.value)
++	{	// (only a shadow is drawn along it)
++		an = e->angles[1]/180*M_PI;
++		shadevector[0] = cos(-an);
++		shadevector[1] = sin(-an);
++		shadevector[2] = 1;
++		VectorNormalize (shadevector);
++	}
+ 
+ 	//
+ 	// locate the proper data
+@@ -536,6 +592,16 @@ void R_DrawAliasModel (entity_t *e)
+ 	GL_DisableMultitexture();
+ 
+     glPushMatrix ();
++#ifdef SHADEREMU
++	if (clmodel->name[6] == 'e' && !strcmp (clmodel->name, "progs/eyes.mdl") && gl_doubleeyes.value) {
++		R_RotateForEntity (e);
++		glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2] - (22 + 8));
++		glScalef (paliashdr->scale[0]*2, paliashdr->scale[1]*2, paliashdr->scale[2]*2);
++	} else {
++		// placed, turned, moved and scaled in one go (qgl.c)
++		qglEntity (r_world_matrix, e->origin, e->angles[1], -e->angles[0], e->angles[2], paliashdr->scale_origin, paliashdr->scale);
++	}
++#else
+ 	R_RotateForEntity (e);
+ 
+ 	if (!strcmp (clmodel->name, "progs/eyes.mdl") && gl_doubleeyes.value) {
+@@ -546,6 +612,7 @@ void R_DrawAliasModel (entity_t *e)
+ 		glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2]);
+ 		glScalef (paliashdr->scale[0], paliashdr->scale[1], paliashdr->scale[2]);
+ 	}
++#endif
+ 
+ 	anim = (int)(cl.time*10) & 3;
+     GL_Bind(paliashdr->gl_texturenum[currententity->skinnum][anim]);
+@@ -676,6 +743,11 @@ void R_DrawViewModel (void)
+ 	if (!currententity->model)
+ 		return;
+ 
++#ifdef SHADEREMU
++	// (the light worked out below is nobody's: R_DrawAliasModel finds the gun's own)
++	R_DrawAliasModel (currententity);
++	return;
++#endif
+ 	j = R_LightPoint (currententity->origin);
+ 
+ 	if (j < 24)
+@@ -845,8 +917,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
  		     GLdouble zNear, GLdouble zFar )
  {
     GLdouble xmin, xmax, ymin, ymax;
@@ -706,7 +1129,7 @@ index d9bf41e..99f6480 100644
     ymin = -ymax;
  
     xmin = ymin * aspect;
-@@ -948,6 +968,7 @@ r_refdef must be set before the first call
+@@ -948,6 +1027,7 @@ r_refdef must be set before the first call
  */
  void R_RenderScene (void)
  {
@@ -714,7 +1137,7 @@ index d9bf41e..99f6480 100644
  	R_SetupFrame ();
  
  	R_SetFrustum ();
-@@ -960,7 +981,9 @@ void R_RenderScene (void)
+@@ -960,7 +1040,9 @@ void R_RenderScene (void)
  
  	S_ExtraUpdate ();	// don't let sound get messed up if going slow
  
@@ -725,7 +1148,7 @@ index d9bf41e..99f6480 100644
  	GL_DisableMultitexture();
  
 diff --git a/WinQuake/gl_rmisc.c b/WinQuake/gl_rmisc.c
-index c9719b5..f389322 100644
+index c9719b5..99b980b 100644
 --- a/WinQuake/gl_rmisc.c
 +++ b/WinQuake/gl_rmisc.c
 @@ -77,6 +77,17 @@ void R_InitParticleTexture (void)
@@ -746,11 +1169,43 @@ index c9719b5..f389322 100644
  
  	for (x=0 ; x<8 ; x++)
  	{
+@@ -317,7 +328,9 @@ void R_TranslatePlayerSkin (int playernum)
+ 		byte *out2;
+ 
+ 		out2 = (byte *)pixels;
++#ifndef SHADEREMU	// (half a megabyte, of which the rows below write all that is used)
+ 		memset(pixels, 0, sizeof(pixels));
++#endif
+ 		fracstep = inwidth*0x10000/scaled_width;
+ 		for (i=0 ; i<scaled_height ; i++, out2 += scaled_width)
+ 		{
 diff --git a/WinQuake/gl_rsurf.c b/WinQuake/gl_rsurf.c
-index 11b5a01..9bc3881 100644
+index 11b5a01..ad01486 100644
 --- a/WinQuake/gl_rsurf.c
 +++ b/WinQuake/gl_rsurf.c
-@@ -183,6 +183,10 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
+@@ -45,6 +45,21 @@ typedef struct glRect_s {
+ } glRect_t;
+ 
+ glpoly_t	*lightmap_polys[MAX_LIGHTMAPS];
++#ifdef SHADEREMU
++/* The light maps that have polygons waiting: a door has one or two of the 64, and all were
++   cleared before it and looked through after it. */
++static int	lightmaps_used[MAX_LIGHTMAPS], lightmaps_used_count;
++
++static void SE_LightmapsClear (void)
++{
++	while (lightmaps_used_count)
++		lightmap_polys[lightmaps_used[--lightmaps_used_count]] = NULL;
++}
++#define SE_LIGHTMAP_USED(n) do { if (!lightmap_polys[n]) lightmaps_used[lightmaps_used_count++] = (n); } while (0)
++#else
++#define SE_LightmapsClear() memset (lightmap_polys, 0, sizeof(lightmap_polys))
++#define SE_LIGHTMAP_USED(n)
++#endif
+ qboolean	lightmap_modified[MAX_LIGHTMAPS];
+ glRect_t	lightmap_rectchange[MAX_LIGHTMAPS];
+ 
+@@ -183,6 +198,10 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
  
  // bound, invert, and shift
  store:
@@ -761,7 +1216,7 @@ index 11b5a01..9bc3881 100644
  	switch (gl_lightmap_format)
  	{
  	case GL_RGBA:
-@@ -367,7 +371,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -367,7 +386,7 @@ void R_DrawSequentialPoly (msurface_t *s)
  	if (s->flags & SURF_DRAWSKY)
  	{
  		GL_Bind (solidskytexture);
@@ -770,7 +1225,7 @@ index 11b5a01..9bc3881 100644
  		speedscale -= (int)speedscale;
  
  		EmitSkyPolys (s);
-@@ -375,7 +379,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -375,7 +394,7 @@ void R_DrawSequentialPoly (msurface_t *s)
  		glEnable (GL_BLEND);
  		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
  		GL_Bind (alphaskytexture);
@@ -779,7 +1234,7 @@ index 11b5a01..9bc3881 100644
  		speedscale -= (int)speedscale;
  		EmitSkyPolys (s);
  		if (gl_lightmap_format == GL_LUMINANCE)
-@@ -510,14 +514,14 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -510,14 +529,14 @@ void R_DrawSequentialPoly (msurface_t *s)
  	{
  		GL_DisableMultitexture();
  		GL_Bind (solidskytexture);
@@ -796,7 +1251,7 @@ index 11b5a01..9bc3881 100644
  		speedscale -= (int)speedscale & ~127;
  		EmitSkyPolys (s);
  
-@@ -559,8 +563,8 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -559,8 +578,8 @@ void R_DrawSequentialPoly (msurface_t *s)
  			qglMTexCoord2fSGIS (TEXTURE0_SGIS, v[3], v[4]);
  			qglMTexCoord2fSGIS (TEXTURE1_SGIS, v[5], v[6]);
  
@@ -807,7 +1262,7 @@ index 11b5a01..9bc3881 100644
  			nv[2] = v[2];
  
  			glVertex3fv (nv);
-@@ -605,8 +609,8 @@ void DrawGLWaterPoly (glpoly_t *p)
+@@ -605,8 +624,8 @@ void DrawGLWaterPoly (glpoly_t *p)
  	{
  		glTexCoord2f (v[3], v[4]);
  
@@ -818,7 +1273,7 @@ index 11b5a01..9bc3881 100644
  		nv[2] = v[2];
  
  		glVertex3fv (nv);
-@@ -629,8 +633,8 @@ void DrawGLWaterPolyLightmap (glpoly_t *p)
+@@ -629,8 +648,8 @@ void DrawGLWaterPolyLightmap (glpoly_t *p)
  	{
  		glTexCoord2f (v[5], v[6]);
  
@@ -829,7 +1284,31 @@ index 11b5a01..9bc3881 100644
  		nv[2] = v[2];
  
  		glVertex3fv (nv);
-@@ -718,19 +722,7 @@ void R_BlendLightmaps (void)
+@@ -692,8 +711,23 @@ void R_BlendLightmaps (void)
+ 		glEnable (GL_BLEND);
+ 	}
+ 
++#ifdef SHADEREMU
++	/* (in the light maps' order, as the loop over all of them had them) */
++	for (i=1 ; i<lightmaps_used_count ; i++)
++		for (j=i ; j>0 && lightmaps_used[j-1] > lightmaps_used[j] ; j--)
++		{
++			int	swap = lightmaps_used[j];
++
++			lightmaps_used[j] = lightmaps_used[j-1];
++			lightmaps_used[j-1] = swap;
++		}
++	for (j=0 ; j<lightmaps_used_count ; j++)
++	{
++		i = lightmaps_used[j];
++#else
+ 	for (i=0 ; i<MAX_LIGHTMAPS ; i++)
+ 	{
++#endif
+ 		p = lightmap_polys[i];
+ 		if (!p)
+ 			continue;
+@@ -718,19 +752,7 @@ void R_BlendLightmaps (void)
  		}
  		for ( ; p ; p=p->chain)
  		{
@@ -850,7 +1329,7 @@ index 11b5a01..9bc3881 100644
  		}
  	}
  
-@@ -776,10 +768,7 @@ void R_RenderBrushPoly (msurface_t *fa)
+@@ -776,13 +798,11 @@ void R_RenderBrushPoly (msurface_t *fa)
  		return;
  	}
  
@@ -862,7 +1341,34 @@ index 11b5a01..9bc3881 100644
  
  	// add the poly to the proper lightmap chain
  
-@@ -1329,8 +1318,9 @@ void R_DrawWorld (void)
++	SE_LIGHTMAP_USED (fa->lightmaptexturenum);
+ 	fa->polys->chain = lightmap_polys[fa->lightmaptexturenum];
+ 	lightmap_polys[fa->lightmaptexturenum] = fa->polys;
+ 
+@@ -842,6 +862,7 @@ void R_RenderDynamicLightmaps (msurface_t *fa)
+ 	if (fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB) )
+ 		return;
+ 		
++	SE_LIGHTMAP_USED (fa->lightmaptexturenum);
+ 	fa->polys->chain = lightmap_polys[fa->lightmaptexturenum];
+ 	lightmap_polys[fa->lightmaptexturenum] = fa->polys;
+ 
+@@ -1108,7 +1129,7 @@ void R_DrawBrushModel (entity_t *e)
+ 		return;
+ 
+ 	glColor3f (1,1,1);
+-	memset (lightmap_polys, 0, sizeof(lightmap_polys));
++	SE_LightmapsClear ();
+ 
+ 	VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
+ 	if (rotated)
+@@ -1324,13 +1345,14 @@ void R_DrawWorld (void)
+ 	currenttexture = -1;
+ 
+ 	glColor3f (1,1,1);
+-	memset (lightmap_polys, 0, sizeof(lightmap_polys));
++	SE_LightmapsClear ();
+ #ifdef QUAKE2
  	R_ClearSkyBox ();
  #endif
  
@@ -873,16 +1379,97 @@ index 11b5a01..9bc3881 100644
  	DrawTextureChains ();
  
  	R_BlendLightmaps ();
-@@ -1396,6 +1386,8 @@ void R_MarkLeaves (void)
+@@ -1353,6 +1375,9 @@ void R_MarkLeaves (void)
+ 	int		i;
+ 	byte	solid[4096];
+ 
++#ifdef SHADEREMU
++	return;		/* the nodes' marks were R_RecursiveWorldNode's, which SE_MarkWorld stands in for */
++#endif
+ 	if (r_oldviewleaf == r_viewleaf && !r_novis.value)
+ 		return;
+ 	
+@@ -1396,7 +1421,79 @@ void R_MarkLeaves (void)
  =============================================================================
  */
  
 +static int lightmap_first;	// the first block still looked at for room
 +
  // returns a texture number and the position inside it
++#ifdef SHADEREMU
++static int	lightmap_lowest[MAX_LIGHTMAPS];	// the least of each block's heights
++static int	lightmap_full[MAX_LIGHTMAPS][2];	// a size each block had no room for: nor has it for a larger
++
++/*
++The same places as the search below finds (the leftmost of the lowest), looked for only
++where a block's height changes, and not at all in a block that cannot have one.
++*/
++int AllocBlock (int w, int h, int *x, int *y)
++{
++	int		i, j;
++	int		best, best2;
++	int		texnum;
++
++	for (texnum=lightmap_first ; texnum<MAX_LIGHTMAPS ; texnum++)
++	{
++		int	*column = allocated[texnum], limit = BLOCK_WIDTH - w;
++
++		if (lightmap_lowest[texnum] + h > BLOCK_HEIGHT
++			|| (w >= lightmap_full[texnum][0] && h >= lightmap_full[texnum][1]))
++			continue;
++		best = BLOCK_HEIGHT;
++		for (i=0 ; i<limit ; )
++		{
++			best2 = 0;
++			for (j=0 ; j<w ; j++)
++			{
++				if (column[i+j] >= best)
++					break;
++				if (column[i+j] > best2)
++					best2 = column[i+j];
++			}
++			if (j == w)
++			{	// this is a valid spot
++				*x = i;
++				*y = best = best2;
++			}
++			else
++				i += j;		// (no place with that column in it is one)
++			do
++				i++;
++			while (i < limit && column[i] == column[i-1]);
++		}
++
++		if (best + h > BLOCK_HEIGHT)
++		{
++			if (w <= lightmap_full[texnum][0] && h <= lightmap_full[texnum][1])
++				lightmap_full[texnum][0] = w, lightmap_full[texnum][1] = h;
++			continue;
++		}
++
++		for (i=0 ; i<w ; i++)
++			column[*x + i] = best + h;
++		if (best == lightmap_lowest[texnum])
++		{	// the lowest columns may be gone
++			best = BLOCK_HEIGHT;
++			for (i=0 ; i<BLOCK_WIDTH ; i++)
++				if (column[i] < best)
++					best = column[i];
++			lightmap_lowest[texnum] = best;
++		}
++
++		if (texnum > lightmap_first + 1)
++			lightmap_first = texnum - 1;
++		return texnum;
++	}
++
++	Sys_Error ("AllocBlock: full");
++}
++#else
  int AllocBlock (int w, int h, int *x, int *y)
  {
-@@ -1404,7 +1396,7 @@ int AllocBlock (int w, int h, int *x, int *y)
+ 	int		i, j;
+@@ -1404,7 +1501,7 @@ int AllocBlock (int w, int h, int *x, int *y)
  	int		bestx;
  	int		texnum;
  
@@ -891,7 +1478,7 @@ index 11b5a01..9bc3881 100644
  	{
  		best = BLOCK_HEIGHT;
  
-@@ -1432,6 +1424,8 @@ int AllocBlock (int w, int h, int *x, int *y)
+@@ -1432,11 +1529,14 @@ int AllocBlock (int w, int h, int *x, int *y)
  		for (i=0 ; i<w ; i++)
  			allocated[texnum][*x + i] = best + h;
  
@@ -900,7 +1487,13 @@ index 11b5a01..9bc3881 100644
  		return texnum;
  	}
  
-@@ -1561,7 +1555,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
+ 	Sys_Error ("AllocBlock: full");
+ }
++#endif
+ 
+ 
+ mvertex_t	*r_pcurrentvertbase;
+@@ -1561,7 +1661,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
  		}
  	}
  	poly->numverts = lnumverts;
@@ -909,15 +1502,20 @@ index 11b5a01..9bc3881 100644
  }
  
  /*
-@@ -1602,6 +1596,7 @@ void GL_BuildLightmaps (void)
+@@ -1602,6 +1702,12 @@ void GL_BuildLightmaps (void)
  	extern qboolean isPermedia;
  
  	memset (allocated, 0, sizeof(allocated));
++#ifdef SHADEREMU
++	memset (lightmap_lowest, 0, sizeof(lightmap_lowest));
++	for (i=0 ; i<MAX_LIGHTMAPS ; i++)
++		lightmap_full[i][0] = lightmap_full[i][1] = BLOCK_WIDTH + BLOCK_HEIGHT;	// (none yet)
++#endif
 +	lightmap_first = 0;
  
  	r_framecount = 1;		// no dlightcache
  
-@@ -1690,5 +1685,6 @@ void GL_BuildLightmaps (void)
+@@ -1690,5 +1796,6 @@ void GL_BuildLightmaps (void)
   	if (!gl_texsort.value)
   		GL_SelectTexture(TEXTURE0_SGIS);
  
@@ -1062,10 +1660,32 @@ index e8b96af..78b70a5 100644
  
  	for (fa=s ; fa ; fa=fa->texturechain)
 diff --git a/WinQuake/glquake.h b/WinQuake/glquake.h
-index f3c253c..66ef6ee 100644
+index f3c253c..5c094de 100644
 --- a/WinQuake/glquake.h
 +++ b/WinQuake/glquake.h
-@@ -232,6 +232,30 @@ extern	const char *gl_extensions;
+@@ -139,11 +139,21 @@ typedef struct particle_s
+ 	vec3_t		org;
+ 	float		color;
+ // drivers never touch the following fields
++#ifdef SHADEREMU
++	// (16 bytes each, the array aligned: a frame stores to a particle's first, or first two)
++	vec3_t		vel;
++	float		ramp;
++	struct particle_s	*next;
++	float		die;
++	ptype_t		type;
++	int		unused;
++#else
+ 	struct particle_s	*next;
+ 	vec3_t		vel;
+ 	float		ramp;
+ 	float		die;
+ 	ptype_t		type;
++#endif
+ } particle_t;
+ 
+ 
+@@ -232,6 +242,33 @@ extern	const char *gl_extensions;
  void R_TranslatePlayerSkin (int playernum);
  void GL_Bind (int texnum);
  
@@ -1081,6 +1701,9 @@ index f3c253c..66ef6ee 100644
 +void SE_Water (struct msurface_s *fa);
 +void SE_Sky (struct msurface_s *chain);
 +void qglParticle (const float *origin, int colour);
++unsigned *qglParticleRoom (int *room);
++void qglParticleRoomLeft (int room);
++extern unsigned qgl_particle_colour[256];
 +void qglMultMatrixf (const float *m);
 +#ifdef SE_COUNT
 +extern unsigned se_count[10];
@@ -1704,6 +2327,34 @@ index 3593bb9..e914c14 100644
  	l = (leaf - sv.worldmodel->leafs) - 1;
  	if ( (l<0) || !(checkpvs[l>>3] & (1<<(l&7)) ) )
  	{
+diff --git a/WinQuake/pr_edict.c b/WinQuake/pr_edict.c
+index 544e01a..93c2fef 100644
+--- a/WinQuake/pr_edict.c
++++ b/WinQuake/pr_edict.c
+@@ -997,8 +997,7 @@ void PR_LoadProgs (void)
+ 		Sys_Error ("PR_LoadProgs: couldn't load progs.dat");
+ 	Con_DPrintf ("Programs occupy %iK.\n", com_filesize/1024);
+ 
+-	for (i=0 ; i<com_filesize ; i++)
+-		CRC_ProcessByte (&pr_crc, ((byte *)progs)[i]);
++	CRC_ProcessBlock (&pr_crc, (byte *)progs, com_filesize);
+ 
+ // byte swap the header
+ 	for (i=0 ; i<sizeof(*progs)/4 ; i++)
+@@ -1020,6 +1019,13 @@ void PR_LoadProgs (void)
+ 	
+ 	pr_edict_size = progs->entityfields * 4 + sizeof (edict_t) - sizeof(entvars_t);
+ 	
++#ifdef SHADEREMU
++	// (a little-endian machine: the lumps are as the file has them)
++	for (i=0 ; i<progs->numfielddefs ; i++)
++		if (pr_fielddefs[i].type & DEF_SAVEGLOBAL)
++			Sys_Error ("PR_LoadProgs: pr_fielddefs[i].type & DEF_SAVEGLOBAL");
++	return;
++#endif
+ // byte swap the lumps
+ 	for (i=0 ; i<progs->numstatements ; i++)
+ 	{
 diff --git a/WinQuake/pr_exec.c b/WinQuake/pr_exec.c
 index 4f2aa36..9111320 100644
 --- a/WinQuake/pr_exec.c
@@ -1804,10 +2455,60 @@ index e451827..f4541d2 100644
  void Host_ClientCommands (char *fmt, ...);
  void Host_ShutdownServer (qboolean crash);
 diff --git a/WinQuake/r_part.c b/WinQuake/r_part.c
-index 3db22ab..75b0b9e 100644
+index 3db22ab..ab897ae 100644
 --- a/WinQuake/r_part.c
 +++ b/WinQuake/r_part.c
-@@ -661,7 +661,9 @@ void R_DrawParticles (void)
+@@ -21,6 +21,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #include "quakedef.h"
+ #include "r_local.h"
+ 
++#ifdef SHADEREMU
++// The C library's rand(), stepped here: an explosion asks for seven thousand numbers, and a
++// call was most of what each cost. The seed is the program's own (sys_shaderemu.c).
++extern unsigned long long	se_rand_seed;
++
++static inline int se_rand (void)
++{
++	se_rand_seed = 6364136223846793005ULL * se_rand_seed + 1;
++	return (int)(se_rand_seed >> 33);
++}
++#define rand() se_rand ()
++#endif
++
+ #define MAX_PARTICLES			2048	// default max # of particles at one
+ 										//  time
+ #define ABSOLUTE_MIN_PARTICLES	512		// no fewer than this no matter what's
+@@ -60,8 +73,13 @@ void R_InitParticles (void)
+ 		r_numparticles = MAX_PARTICLES;
+ 	}
+ 
++#ifdef SHADEREMU
++	particles = (particle_t *)(((unsigned long)
++			Hunk_AllocName (r_numparticles * sizeof(particle_t) + 16, "particles") + 15) & ~15ul);
++#else
+ 	particles = (particle_t *)
+ 			Hunk_AllocName (r_numparticles * sizeof(particle_t), "particles");
++#endif
+ }
+ 
+ #ifdef QUAKE2
+@@ -655,13 +673,25 @@ void R_DrawParticles (void)
+ 	float			time1;
+ 	float			dvel;
+ 	float			frametime;
++#ifdef SHADEREMU
++	/* the game's time kept here (a store to a particle could be to cl.time, for all the
++	   compiler knows), and the particles written where the GPU reads them (qgl.c) */
++	float			now = cl.time;
++	unsigned		*to = NULL;
++	int			room = 0, given;	// (room is counted in a register: given is what has an address)
++#define cl_time now
++#else
++#define cl_time cl.time
++#endif
+ 	
+ #ifdef GLQUAKE
+ 	vec3_t			up, right;
  	float			scale;
  
      GL_Bind(particletexture);
@@ -1817,17 +2518,61 @@ index 3db22ab..75b0b9e 100644
  	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
  	glBegin (GL_TRIANGLES);
  
-@@ -709,7 +711,9 @@ void R_DrawParticles (void)
+@@ -684,7 +714,7 @@ void R_DrawParticles (void)
+ 	for ( ;; ) 
+ 	{
+ 		kill = active_particles;
+-		if (kill && kill->die < cl.time)
++		if (kill && kill->die < cl_time)
+ 		{
+ 			active_particles = kill->next;
+ 			kill->next = free_particles;
+@@ -699,7 +729,7 @@ void R_DrawParticles (void)
+ 		for ( ;; )
+ 		{
+ 			kill = p->next;
+-			if (kill && kill->die < cl.time)
++			if (kill && kill->die < cl_time)
+ 			{
+ 				p->next = kill->next;
+ 				kill->next = free_particles;
+@@ -709,7 +739,24 @@ void R_DrawParticles (void)
  			break;
  		}
  
 -#ifdef GLQUAKE
 +#ifdef SHADEREMU
-+		qglParticle (p->org, (int)p->color);	/* (the GPU makes its triangle, and that size) */
++		/* a point and its colour's place in the picture of all of them: the GPU makes
++		   the triangle, and its size */
++		if (!room)
++		{
++			to = qglParticleRoom (&given);
++			room = given;
++		}
++		if (room)
++		{
++			to[0] = ((unsigned *)p->org)[0];
++			to[1] = ((unsigned *)p->org)[1];
++			to[2] = ((unsigned *)p->org)[2];
++			to[3] = qgl_particle_colour[(int)p->color & 255];
++			to += 4;
++			room--;
++		}
 +#elif defined(GLQUAKE)
  		// hack a scale up to keep particles from disapearing
  		scale = (p->org[0] - r_origin[0])*vpn[0] + (p->org[1] - r_origin[1])*vpn[1]
  			+ (p->org[2] - r_origin[2])*vpn[2];
+@@ -789,6 +836,10 @@ void R_DrawParticles (void)
+ 		}
+ 	}
+ 
++#undef cl_time
++#ifdef SHADEREMU
++	qglParticleRoomLeft (room);
++#endif
+ #ifdef GLQUAKE
+ 	glEnd ();
+ 	glDisable (GL_BLEND);
 diff --git a/WinQuake/render.h b/WinQuake/render.h
 index b5f8382..c29cd4c 100644
 --- a/WinQuake/render.h
@@ -1841,6 +2586,29 @@ index b5f8382..c29cd4c 100644
  	vec3_t					msg_origins[2];	// last two updates (0 is newest)	
  	vec3_t					origin;
  	vec3_t					msg_angles[2];	// last two updates (0 is newest)
+diff --git a/WinQuake/sbar.c b/WinQuake/sbar.c
+index be9ec9c..820f47c 100644
+--- a/WinQuake/sbar.c
++++ b/WinQuake/sbar.c
+@@ -661,7 +661,17 @@ void Sbar_DrawInventory (void)
+ // ammo counts
+ 	for (i=0 ; i<4 ; i++)
+ 	{
+-		sprintf (num, "%3i",cl.stats[STAT_SHELLS+i] );
++		int	count = cl.stats[STAT_SHELLS+i];
++
++		/* ("%3i" of a count is its digits: sprintf was 900 instructions each, every frame) */
++		if (count >= 0 && count <= 999)
++		{
++			num[0] = count >= 100 ? '0' + count / 100 : ' ';
++			num[1] = count >= 10 ? '0' + count / 10 % 10 : ' ';
++			num[2] = '0' + count % 10;
++		}
++		else
++			sprintf (num, "%3i", count);
+ 		if (num[0] != ' ')
+ 			Sbar_DrawCharacter ( (6*i+1)*8 - 2, -24, 18 + num[0] - '0');
+ 		if (num[1] != ' ')
 diff --git a/WinQuake/server.h b/WinQuake/server.h
 index 2d4dfeb..7508ce7 100644
 --- a/WinQuake/server.h
@@ -2005,6 +2773,20 @@ index c5d61a7..aa58665 100644
  
  char *Sys_ConsoleInput (void);
  
+diff --git a/WinQuake/view.c b/WinQuake/view.c
+index ececf8c..419b169 100644
+--- a/WinQuake/view.c
++++ b/WinQuake/view.c
+@@ -568,6 +568,9 @@ void V_UpdatePalette (void)
+ 		return;
+ 
+ 	V_CalcBlend ();
++#ifdef SHADEREMU
++	return;		/* the blend is drawn over the picture: no palette is made of it */
++#endif
+ 
+ 	a = v_blend[3];
+ 	r = 255*v_blend[0]*a;
 diff --git a/WinQuake/world.c b/WinQuake/world.c
 index e1acfea..f755b41 100644
 --- a/WinQuake/world.c
@@ -2050,3 +2832,105 @@ index e1acfea..f755b41 100644
  	memset ( &clip, 0, sizeof ( moveclip_t ) );
  
  // clip to world
+diff --git a/WinQuake/zone.c b/WinQuake/zone.c
+index e30d7f8..e4bbf38 100644
+--- a/WinQuake/zone.c
++++ b/WinQuake/zone.c
+@@ -396,6 +396,34 @@ void Hunk_Print (qboolean all)
+ Hunk_AllocName
+ ===================
+ */
++#ifdef SHADEREMU
++static int	hunk_unset;
++
++/*
++The same for memory its caller writes all of at once (a file read into it, a model's
++poses): its header and its last 16 bytes are cleared, the rest is as it was left.
++*/
++void *Hunk_AllocUnset (int size, char *name)
++{
++	void	*made;
++
++	hunk_unset = 1;
++	made = Hunk_AllocName (size, name);
++	hunk_unset = 0;
++	return made;
++}
++
++void *Hunk_TempAllocUnset (int size)
++{
++	void	*made;
++
++	hunk_unset = 1;
++	made = Hunk_TempAlloc (size);
++	hunk_unset = 0;
++	return made;
++}
++#endif
++
+ void *Hunk_AllocName (int size, char *name)
+ {
+ 	hunk_t	*h;
+@@ -417,6 +445,14 @@ void *Hunk_AllocName (int size, char *name)
+ 
+ 	Cache_FreeLow (hunk_low_used);
+ 
++#ifdef SHADEREMU
++	if (hunk_unset && size >= (int)sizeof(hunk_t) + 32)
++	{
++		memset (h, 0, sizeof(hunk_t));
++		memset ((byte *)h + size - 16, 0, 16);
++	}
++	else
++#endif
+ 	memset (h, 0, size);
+ 	
+ 	h->size = size;
+@@ -445,7 +481,9 @@ void Hunk_FreeToLowMark (int mark)
+ {
+ 	if (mark < 0 || mark > hunk_low_used)
+ 		Sys_Error ("Hunk_FreeToLowMark: bad mark %i", mark);
++#ifndef SHADEREMU	// (what is given back is cleared when it is taken again, megabytes a level)
+ 	memset (hunk_base + mark, 0, hunk_low_used - mark);
++#endif
+ 	hunk_low_used = mark;
+ }
+ 
+@@ -469,7 +507,9 @@ void Hunk_FreeToHighMark (int mark)
+ 	}
+ 	if (mark < 0 || mark > hunk_high_used)
+ 		Sys_Error ("Hunk_FreeToHighMark: bad mark %i", mark);
++#ifndef SHADEREMU
+ 	memset (hunk_base + hunk_size - hunk_high_used, 0, hunk_high_used - mark);
++#endif
+ 	hunk_high_used = mark;
+ }
+ 
+@@ -509,6 +549,14 @@ void *Hunk_HighAllocName (int size, char *name)
+ 
+ 	h = (hunk_t *)(hunk_base + hunk_size - hunk_high_used);
+ 
++#ifdef SHADEREMU
++	if (hunk_unset && size >= (int)sizeof(hunk_t) + 32)
++	{
++		memset (h, 0, sizeof(hunk_t));
++		memset ((byte *)h + size - 16, 0, 16);
++	}
++	else
++#endif
+ 	memset (h, 0, size);
+ 	h->size = size;
+ 	h->sentinal = HUNK_SENTINAL;
+diff --git a/WinQuake/zone.h b/WinQuake/zone.h
+index 7655ad9..23b1475 100644
+--- a/WinQuake/zone.h
++++ b/WinQuake/zone.h
+@@ -95,6 +95,8 @@ int Z_FreeMemory (void);
+ 
+ void *Hunk_Alloc (int size);		// returns 0 filled memory
+ void *Hunk_AllocName (int size, char *name);
++void *Hunk_AllocUnset (int size, char *name);
++void *Hunk_TempAllocUnset (int size);
+ 
+ void *Hunk_HighAllocName (int size, char *name);
+ 

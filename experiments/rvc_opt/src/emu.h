@@ -1049,7 +1049,7 @@ bool fast_exec_l1(L1P uint w) {
         [branch]
         if (low_ok && f3 < 3 && t_ok && (pa & 0x80000000) != 0 && s_off + (1u << f3) <= 4) {
             uint s_mask = (f3 == 2 ? 0xffffffff : f3 == 1 ? 0xffff : 0xff) << (s_off * 8);
-            mem_set_ram(pa & 0x7ffffffc, rs2v << (s_off * 8), s_mask);
+            mem_set_ram(pa & 0x7ffffffc, rs2v << (s_off * 8), s_mask, false);
             ok = true;
         }
     } else if ((w & 0x7c) == 0x60) {                            // branches
@@ -1098,7 +1098,7 @@ bool fast_exec_l1(L1P uint w) {
             uint next = f5 == 0 ? old + rs2v : f5 == 4 ? old ^ rs2v : f5 == 8 ? old | rs2v : f5 == 12 ? old & rs2v : rs2v;
             [branch]
             if (is_sc ? sc_ok : !is_lr) {
-                mem_set_ram(at, next, 0xffffffff);
+                mem_set_ram(at, next, 0xffffffff, false);
             }
             if (is_lr) {
                 cpu.reservation_en = true;
@@ -1140,7 +1140,7 @@ bool fast_exec_l1(L1P uint w) {
             wr = false;
             [branch]
             if (low_ok && f3 == 2 && fs_ok && (fs_pa & 0x80000003) == 0x80000000) {
-                mem_set_ram(fs_pa & 0x7ffffffc, xr[XR_F + ((w >> 20) & 0x1f)], 0xffffffff);
+                mem_set_ram(fs_pa & 0x7ffffffc, xr[XR_F + ((w >> 20) & 0x1f)], 0xffffffff, false);
                 ok = true;
             }
         }
@@ -1182,7 +1182,6 @@ bool fast_exec_l1(L1P uint w) {
         return false;
     }
     xr[(wr && rd != 0) ? rd : 32] = val;   // branch-free: discarded writes go to the scratch slot
-    cpu.debug_last_ins = w;
     // cpu.clint.mtime and cpu.debug_do_tick already hold this pass's values: the first tick of
     // every pass takes the general path (irq_quiet starts false), which sets both.
     cpu.pc = npc;
@@ -1192,10 +1191,100 @@ bool fast_exec_l1(L1P uint w) {
 #undef rs1v
 #undef rs2v
 
+#ifdef LAZY_MEMOP
+// The pages from RAM offset `lo` to `hi` leave every TLB the fast path reads: the first level,
+// the megapages that hold them, and the second level's entries, made in this pass or left by
+// the last (those are marked dead, as a flush marks them).
+void pend_unmap_l1(L1P uint lo, uint hi) {
+    uint p0 = 0x80000000 | (lo & ~0xfff), p1 = 0x80000000 | (hi & ~0xfff);
+    tlb_f_vpn = TLB_EMPTY; tlb_r_vpn = TLB_EMPTY; tlb_w_vpn = TLB_EMPTY;
+    uint k;
+    [loop]
+    for (k = 0; k < 3 * TLBM_N; k++) {
+        uint m = tlbm_pg[k] >> 22;
+        if (m >= (p0 >> 22) && m <= (p1 >> 22)) tlbm_tag[k] = 0;
+    }
+    [loop]
+    for (k = 0; k < 3 * TLB2_N / 2; k++) {
+        uint at = TLB_STATE_AT + k;
+        uint4 t = tlb_wiped ? (uint4)0 : STATE_TEX(uint2(at & 63, at >> 6));
+        uint ka = 2 * k, kb = 2 * k + 1;
+        uint pa = TLB2_OCC(ka) ? tlb2_pg[ka] : (TLB2_DEAD(ka) || t.r == 0) ? 0 : t.g;
+        uint pb = TLB2_OCC(kb) ? tlb2_pg[kb] : (TLB2_DEAD(kb) || t.b == 0) ? 0 : t.a;
+        if (pa >= p0 && pa <= p1) {
+            tlb2_occ[ka >> 5] &= ~(1u << (ka & 31));
+            tlb2_dead[ka >> 5] |= 1u << (ka & 31);
+        }
+        if (pb >= p0 && pb <= p1) {
+            tlb2_occ[kb >> 5] &= ~(1u << (kb & 31));
+            tlb2_dead[kb >> 5] |= 1u << (kb & 31);
+        }
+    }
+}
+
+// A fill or copy was asked for: of cpu.memop_n bytes to `dst` (an offset in RAM) from `src_p`
+// (physical, RAM or ROM). True: it is left to the commit and the pass goes on (docs/boot.md).
+// Only whole texels, apart from each other and from a pending destination, none in the write
+// cache (the texture is then the source as it is now), paging on, not the page being run.
+bool memop_lazy_l1(L1P bool fill, uint src_p, uint dst) {
+    uint n = cpu.memop_n, src = src_p & 0x7fffffff;
+    bool ok = cpu.mmu.mode != MMU_MODE_OFF && cpu.csr.privilege != PRIV_MACHINE && (cpu.pc >> 12) == fetch_vpn;
+#if CORES > 1
+    ok = ok && hart == 0;
+#endif
+    ok = ok && n != 0 && ((n | dst) & 15) == 0 && dst < RAM_MAX && n <= RAM_MAX - dst;
+    // a copy's source: RAM apart from the destination, or the ROM (which nothing writes)
+    bool from_rom = (src_p & 0xc000000f) == 0x40000000;
+    uint rom_at = src_p - 0x40000000, rom_bytes = m_dim.x * m_dim.y * 16;
+    if (!fill && from_rom) {
+        ok = ok && rom_at < rom_bytes && n <= rom_bytes - rom_at;
+    } else if (!fill) {
+        ok = ok && (src_p & 0x8000000f) == 0x80000000 && src < RAM_MAX && n <= RAM_MAX - src;
+        ok = ok && (src + n <= dst || dst + n <= src);
+    }
+    uint dt = dst >> 4, nt = n >> 4, st = src >> 4, ft = (fetch_page & 0x7fffffff) >> 4;
+    ok = ok && (ft + 256 <= dt || dt + nt <= ft);
+    // the destination's rows as rectangles of the RAM texture, 2,048 texels a row
+    uint row0 = dt >> 11, row1 = (dt + nt - 1) >> 11;
+    uint rects = row0 == row1 ? 1 : row1 > row0 + 1 ? 3 : 2;
+    uint first0 = pend_dst_t >> 11, first1 = (pend_dst_t + pend_n_t - 1) >> 11;
+    uint rects_first = pend_n_t == 0 ? 0 : first0 == first1 ? 1 : first1 > first0 + 1 ? 3 : 2;
+    ok = ok && rects_first + rects <= 3;   // (the commit's point for these has twelve vertices)
+    // (pend_n_t 0: these hold; a source that is the first one's destination would need its result)
+    ok = ok && (dt + nt <= pend_dst_t || pend_dst_t + pend_n_t <= dt);
+    if (!fill && !from_rom) ok = ok && (st + nt <= pend_dst_t || pend_dst_t + pend_n_t <= st);
+    [branch]
+    if (ok) {
+        ok = !l1_holds(dt, nt);
+        [branch]
+        if (ok && !fill && !from_rom) {
+            ok = !l1_holds(st, nt);
+        }
+    }
+    [branch]
+    if (ok) {
+        // what the commit needs is kept in words of the state nothing else uses (types.h)
+        if (pend_n_t == 0) {
+            cpu.debug_arb_0 = (fill ? 2 : 1) | (nt << 2);
+            cpu.trap_count = dst;
+            cpu.debug_last_ins = fill ? cpu.memop_src_v : src_p;
+        } else {
+            cpu.stall_count = (fill ? 2 : 1) | (nt << 2);
+            cpu.memop_dst_p = dst;
+            cpu.memop_src_p = fill ? cpu.memop_src_v : src_p;
+        }
+        // from here only the general path reaches the destination (mem.h)
+        pend_unmap(dst, dst + n - 1);
+    }
+    return ok;
+}
+#endif
+
 void emulate_l1(L1P0) {
     uint ins_word = 0;
     ins_ret ret = ins_ret_noop();
     bool mtip_reset = false;
+    bool lazy_wait = false;
     if ((cpu.pc & 0x3) == 0) {
         // Same page as the last translated fetch: reuse it without re-checking mode and privilege.
         uint ins_addr = 0;
@@ -1212,12 +1301,20 @@ void emulate_l1(L1P0) {
             ins_addr = fetch_page | (cpu.pc & 0xfff);
         } else {
             ins_addr = mmu_translate(ret, cpu.pc, MMU_ACCESS_FETCH);
+#ifdef LAZY_MEMOP
+            // a page the pending fill or copy writes is not run before the commit has made it:
+            // the pass ends and this instruction is the next one's first
+            if (!ret.trap.en && (ins_addr & 0x80000000) != 0 && PEND_HAS((ins_addr & 0x7fffffff) >> 4)) {
+                cpu.stall = STALL_FENCE;
+                ret.pc_val = cpu.pc;
+                lazy_wait = true;
+            }
+#endif
         }
 #endif
 
-        if (!ret.trap.en) {
+        if (!ret.trap.en && !lazy_wait) {
             if (pre_valid) { ins_word = pre_word; } else { ins_word = mem_get_instruction(ins_addr); }
-            cpu.debug_last_ins = ins_word;
 
             ret = ins_select(ins_word, ret);
             // pause (the Zihintpause hint, a fence that does nothing): the program is waiting for
@@ -1231,18 +1328,45 @@ void emulate_l1(L1P0) {
                 set_csr(ret.csr_write, ret.csr_val, ret);
 
                 if (cpu.stall == STALL_MEMOP_COPY || cpu.stall == STALL_MEMOP_FILL) {
-                    [loop]
-                    for (uint imc = cpu.stall == STALL_MEMOP_FILL ? 1 : 0; imc < 2; imc++) {   // a fill has no source address
-                        uint phys = mmu_translate(ret,
-                            imc == 0 ? cpu.memop_src_v : cpu.memop_dst_v,
-                            imc == 0 ? MMU_ACCESS_READ : MMU_ACCESS_WRITE);
-                        if (ret.trap.en) break;
-                        if (imc == 0) {
-                            cpu.memop_src_p = phys;
-                        } else {
-                            // Note: This only allows targets within RAM
-                            cpu.memop_dst_p = phys & 0x7fffffff;
+                    bool mo_fill = cpu.stall == STALL_MEMOP_FILL, mo_now = true;
+                    uint mo_src = 0, mo_dst = 0;
+#ifdef LAZY_MEMOP
+                    // two a pass are left to the commit; a third ends the pass without being made
+                    // and is asked for again when the next begins
+                    mo_now = pend2_n_t == 0;
+#endif
+                    [branch]
+                    if (mo_now) {
+                        [loop]
+                        for (uint imc = mo_fill ? 1 : 0; imc < 2; imc++) {   // a fill has no source address
+                            uint phys = mmu_translate(ret,
+                                imc == 0 ? cpu.memop_src_v : cpu.memop_dst_v,
+                                imc == 0 ? MMU_ACCESS_READ : MMU_ACCESS_WRITE);
+                            if (ret.trap.en) break;
+                            if (imc == 0) {
+                                mo_src = phys;
+                            } else {
+                                // Note: This only allows targets within RAM
+                                mo_dst = phys & 0x7fffffff;
+                            }
                         }
+#ifdef LAZY_MEMOP
+                        [branch]
+                        if (!ret.trap.en) {
+                            if (memop_lazy_l1(L1A mo_fill, mo_src, mo_dst)) {
+                                cpu.stall = 0;
+                            } else if (pend_n_t != 0) {
+                                mo_now = false;   // one that ends the pass is not made in a pass that has others to make
+                            }
+                        }
+#endif
+                    }
+                    if (!mo_now) {
+                        cpu.stall = STALL_FENCE;
+                        ret.pc_val = cpu.pc;
+                    } else if (cpu.stall != 0 && !ret.trap.en) {
+                        cpu.memop_src_p = mo_src;
+                        cpu.memop_dst_p = mo_dst;
                     }
                 }
             }
@@ -1344,6 +1468,10 @@ void emulate_l1(L1P0) {
         bool machine = cpu.csr.privilege == PRIV_MACHINE;
         uint ms = read_mstatus();
         xl_ident_f = cpu.mmu.mode == MMU_MODE_OFF || machine;
+#ifdef LAZY_MEMOP
+        // (without paging no page run is looked at: a pending fill or copy is made first)
+        if (xl_ident_f && pend_n_t != 0 && cpu.stall == 0) cpu.stall = STALL_FENCE;
+#endif
         xl_ident_d = cpu.mmu.mode == MMU_MODE_OFF || (machine && (((ms >> 17) & 0x1) == 0 || ((ms >> 11) & 0x3) == PRIV_MACHINE));
     }
 #endif

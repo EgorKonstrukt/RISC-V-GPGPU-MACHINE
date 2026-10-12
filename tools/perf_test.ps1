@@ -29,7 +29,7 @@ if (-not (Test-Path $Snapshot)) {
 }
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-& $exe --rvc $Rvc --payload $Payload --no-stdin --load-state $Snapshot --fixed-dt 0.004 --ticks $Ticks `
+& tools\gpu_queue.ps1 $exe --rvc $Rvc --payload $Payload --no-stdin --load-state $Snapshot --fixed-dt 0.004 --ticks $Ticks `
     --bench $Warmup --frames ($Warmup + $Frames) @Extra > $null 2> logs\perf.err
 $rc = $LASTEXITCODE
 $line = Select-String -Path logs\perf.err -Pattern '^BENCH ' | Select-Object -Last 1

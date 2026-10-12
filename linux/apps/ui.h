@@ -7,6 +7,7 @@
 #define SHADEREMU_APPS_UI_H
 
 #include <signal.h>
+#include "../userland/real_vfork.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,8 @@
 #include <unistd.h>
 #define MWINCLUDECOLORS
 #include "nano-X.h"
+#include "ui_width.h"
+#include "ui_state.h"
 
 #define UI_FACE MWRGB(192, 192, 192)
 #define UI_SHADOW MWRGB(128, 128, 128)
@@ -24,6 +27,7 @@
 static GR_GC_ID ui_gc;
 static GR_FONT_ID ui_fixed, ui_var;
 static int ui_fw, ui_fh;	/* a character of the fixed font */
+static struct ui_widths ui_var_widths;	/* the other font's: ui_width(&ui_var_widths, ui_var, ...) */
 
 static void
 ui_init(void)
@@ -37,6 +41,20 @@ ui_init(void)
 	GrGetFontInfo(ui_fixed, &info);
 	ui_fw = info.maxwidth;
 	ui_fh = info.height;
+}
+
+/* The screen, asked about once: its size does not change under a running program (another
+ * size is the desktop started again, and every program with it). */
+static const GR_SCREEN_INFO *
+ui_screen(void)
+{
+	static GR_SCREEN_INFO screen;
+	static int known;
+
+	if (!known)
+		GrGetScreenInfo(&screen);
+	known = 1;
+	return &screen;
 }
 
 static void
@@ -130,17 +148,52 @@ ui_framed(void)
 
 /* Where a window's top left corner is on the screen (a menu is opened by the screen's
  * coordinates): a window's own place is in its frame, and the frame's on the screen. */
+static struct { GR_WINDOW_ID window; int x, y; } ui_origin;	/* the last one found, until the window moves */
+
 static void
 ui_window_origin(GR_WINDOW_ID window, int *x, int *y)
 {
 	GR_WINDOW_INFO info;
+	GR_WINDOW_ID w = window;
 
-	*x = *y = 0;
-	while (window && window != GR_ROOT_WINDOW_ID) {
-		GrGetWindowInfo(window, &info);
-		*x += info.x, *y += info.y;
-		window = info.parent;
+	if (window && ui_origin.window == window) {
+		*x = ui_origin.x, *y = ui_origin.y;
+		return;
 	}
+	*x = *y = 0;
+	while (w && w != GR_ROOT_WINDOW_ID) {
+		GrGetWindowInfo(w, &info);
+		*x += info.x, *y += info.y;
+		w = info.parent;
+	}
+	ui_origin.window = window, ui_origin.x = *x, ui_origin.y = *y;
+}
+
+/* Every event of a program that uses ui_window_origin passes here: a click says where its
+ * window is without a question (two round trips), and an update may have moved it. */
+static void
+ui_origin_note(const GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_BUTTON_DOWN) {
+		ui_origin.window = event->button.wid;
+		ui_origin.x = event->button.rootx - event->button.x;
+		ui_origin.y = event->button.rooty - event->button.y;
+	} else if (event->type == GR_EVENT_TYPE_UPDATE)
+		ui_origin.window = 0;
+}
+
+/* The pointer's moves, for a window whose other events are `mask`: asked for while a button is
+ * held in it (a drag) and not otherwise. Every move over a window that selects them is an
+ * event to answer: 600 thousand instructions a second under a pointer that only passes. */
+static void
+ui_moves(GR_WINDOW_ID window, GR_EVENT_MASK mask, int held)
+{
+	static GR_WINDOW_ID asked;
+
+	if (held ? asked == window : asked != window)
+		return;
+	asked = held ? window : 0;
+	GrSelectEvents(window, held ? mask | GR_EVENT_MASK_MOUSE_MOTION : mask);
 }
 
 /* A notch of the wheel arrives as a button going down: -1 for up, 1 for down, 0 for a real button. */
@@ -209,16 +262,10 @@ ui_scroll_to(int py, int y, int height, int total, int shown)
 static void
 ui_text_fit(GR_DRAW_ID w, int x, int y, int width, const char *text, GR_COLOR colour)
 {
-	int count = (int)strlen(text), tw, th, tb;
+	int count = (int)strlen(text);
 
-	GrSetGCFont(ui_gc, ui_var);
-	/* asking the server how wide costs a round trip: only when it may not fit */
-	while (count > 0 && count * 4 > width) {
-		GrGetGCTextSize(ui_gc, (void *)text, count, GR_TFASCII, &tw, &th, &tb);
-		if (tw <= width)
-			break;
+	while (count > 0 && count * 4 > width && ui_width(&ui_var_widths, ui_var, text, count) > width)
 		count -= count > 8 ? 4 : 1;
-	}
 	ui_text(w, x, y, text, count, colour, 0);
 }
 
@@ -390,11 +437,13 @@ ui_clip_get(int *length)
 	return text;
 }
 
-/* Starts a program with one argument (or none), without a shell. */
+/* Starts a program with one argument (or none), without a shell. vfork: the child runs in
+ * this program's memory until it is another program, and no page is copied for it. It may do
+ * nothing there but what is below: no variable of ours written, nothing allocated. */
 static void
 ui_run(const char *program, const char *argument)
 {
-	if (fork() == 0) {
+	if (real_vfork() == 0) {
 		signal(SIGCHLD, SIG_DFL);	/* (a program that ignores it must not hand that on: the started one's children would go unseen) */
 		execlp(program, program, argument, (char *)NULL);
 		_exit(127);
@@ -419,13 +468,25 @@ ui_picture_size(const char *path, int *pw, int *ph)
  * Draws a PPM file over a whole window of that size. A picture near the window's shape is
  * cropped to it (drawn larger, the window cutting it); another is shown whole, on `around`.
  */
+static void ui_picture_sized(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR around, int pw, int ph);
+
 static int
 ui_picture(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR around)
 {
-	int pw, ph, dw = width, dh = height;
+	int pw, ph;
 
 	if (!ui_picture_size(path, &pw, &ph))
 		return 0;
+	ui_picture_sized(w, path, width, height, around, pw, ph);
+	return 1;
+}
+
+/* The same, for a picture whose size (pw x ph) the caller has read already. */
+static void
+ui_picture_sized(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR around, int pw, int ph)
+{
+	int dw = width, dh = height;
+
 	if (pw * height * 10 > ph * width * 13 || ph * width * 10 > pw * height * 13) {
 		if (pw * height > ph * width)
 			dh = ph * width / pw;
@@ -438,17 +499,15 @@ ui_picture(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR aroun
 		dh = ph * width / pw;
 	}
 	GrDrawImageFromFile(w, ui_gc, (width - dw) / 2, (height - dh) / 2, dw, dh, (char *)path, 0);
-	return 1;
 }
 
 /* Shows a picture file, or a colour written #RRGGBB, as the desktop, and remembers the choice. */
 static void
 ui_wallpaper(const char *choice, int remember)
 {
-	GR_SCREEN_INFO screen;
+	GR_SCREEN_INFO screen = *ui_screen();
 	FILE *file;
 
-	GrGetScreenInfo(&screen);
 	if (choice[0] == '#') {
 		unsigned long rgb = strtoul(choice + 1, NULL, 16);
 

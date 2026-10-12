@@ -10,9 +10,9 @@
 // The write cache holds RAM texels (four words), not words: stores come in runs (a register
 // save, a structure, a copy), and a run then takes one entry. A bucket is the tags of its
 // L1_WAYS entries in one state texel (texel number + 1; 0 is free) and then their texels.
-// There are two tables of 2^L1_TABLE_BITS buckets with different hashes; a texel goes to the
-// second only when its bucket in the first is full, so most lookups read one bucket. Entries
-// are filled in order and never freed within a pass.
+// There are three tables with different hashes, one of 2^L1_TABLE_BITS buckets and two of half
+// that; a texel goes to the next only when its bucket in the one before is full, so most
+// lookups read one bucket. Entries are filled in order and never freed within a pass.
 //   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 384 texels, an array of 512 in the tick
 //   L1_TABLE_BITS 6, L1_WAYS 4:               512 texels, arrays of 512 and 128
 //   L1_TABLE_BITS 7, L1_WAYS 3:               768 texels, an array of 1,024
@@ -30,6 +30,9 @@
 #define L1_BUCKETS (2 * L1_TABLE)
 #define L1_STRIDE (L1_WAYS + 1)
 #define L1_ENTRIES (L1_BUCKETS * L1_STRIDE)
+// the half tables' hashes of texel t into n bits: its low bits moved round, xor higher ones
+#define L1_H1(t, n) ((((t) >> 3) ^ ((t) << ((n) - 3)) ^ ((t) >> (n))) & ((1u << (n)) - 1))
+#define L1_H2(t, n) ((((t) >> 2) ^ ((t) << ((n) - 2)) ^ ((t) >> ((n) + 3))) & ((1u << (n)) - 1))
 #if defined(CORES) && CORES > 1
 // A worker core's write cache is as large as the machine's geometry says (docs/multicore.md,
 // "The geometry"): tables of 2^mc_bits_now buckets, in the first buckets of the same arrays.
@@ -38,10 +41,12 @@
 #define L1_NOW_BITS mc_bits_now
 #define L1_NOW_TABLE (1u << L1_NOW_BITS)
 #define L1_B0(t) ((t) & (L1_NOW_TABLE - 1))
-#define L1_B1(t) (L1_NOW_TABLE + ((((t) >> 3) ^ ((t) << (L1_NOW_BITS - 3)) ^ ((t) >> L1_NOW_BITS)) & (L1_NOW_TABLE - 1)))
+#define L1_B1(t) (L1_NOW_TABLE + L1_H1(t, L1_NOW_BITS - 1))
+#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + L1_H2(t, L1_NOW_BITS - 1))
 #else
 #define L1_B0(t) ((t) & (L1_TABLE - 1))
-#define L1_B1(t) (L1_TABLE + ((((t) >> 3) ^ ((t) << (L1_TABLE_BITS - 3)) ^ ((t) >> L1_TABLE_BITS)) & (L1_TABLE - 1)))
+#define L1_B1(t) (L1_TABLE + L1_H1(t, L1_TABLE_BITS - 1))
+#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + L1_H2(t, L1_TABLE_BITS - 1))
 #endif
 #endif
 
@@ -66,6 +71,48 @@ uint mem_get_instruction(uint addr) {
 static uint dr_addr = 0xffffffff;   // the last RAM texel read for data, and its number
 static uint4 dr_tex;
 
+// LAZY_MEMOP: the fills and copies asked for in this pass that the commit will make (emu.h),
+// two at most. Until then a destination reads as its result: the fill word, or its source's
+// texels as the texture has them. Only the general path can reach one (its pages are in no
+// TLB, emu.h), so the fast loop has none of this. What they are is where the commit reads it.
+#ifdef LAZY_MEMOP
+#define pend_n_t (cpu.debug_arb_0 >> 2)                  // the first: texels (0: none), its first, a fill?
+#define pend_dst_t (cpu.trap_count >> 4)
+#define pend_is_fill ((cpu.debug_arb_0 & 3) == 2)
+#define pend2_n_t (cpu.stall_count >> 2)                 // the second, only when there is a first
+#define pend2_dst_t (cpu.memop_dst_p >> 4)
+#define pend2_is_fill ((cpu.stall_count & 3) == 2)
+// RAM texel t, which is of a pending destination, as it reads now.
+uint4 pend_texel(uint t) {
+    uint rel = t - pend_dst_t, rel2 = t - pend2_dst_t;
+    bool in1 = rel < pend_n_t, in2 = rel2 < pend2_n_t;
+    // its source's address (RAM, or the ROM at 0x40000000), or the fill's word
+    uint src = in2 ? cpu.memop_src_p : cpu.debug_last_ins;
+    bool fill = in2 ? pend2_is_fill : pend_is_fill;
+    uint at = (in2 ? rel2 : rel) + ((src & 0x3fffffff) >> 4);
+    uint4 texel;
+    [branch]
+    if ((in1 || in2) && !fill && (src & 0x80000000) == 0) {
+        // the ROM: a word of the texel in each of four textures
+        uint2 p = uint2(at % m_dim.x, m_dim.y - at / m_dim.x - 1);
+        texel = uint4(unpack_raw_float4(_Data_MTD_R[p]), unpack_raw_float4(_Data_MTD_G[p]),
+                      unpack_raw_float4(_Data_MTD_B[p]), unpack_raw_float4(_Data_MTD_A[p]));
+    } else {
+        texel = RAM_TEX(RAM_ADDR((in1 || in2) && !fill ? ((src & 0x7fffffff) >> 4) + (in2 ? rel2 : rel) : t));
+        if ((in1 || in2) && fill) texel = uint4(src, src, src, src);
+    }
+    return texel;
+}
+// whether RAM texel t is of a pending destination
+#define PEND_HAS(t) (((t) - pend_dst_t) < pend_n_t || ((t) - pend2_dst_t) < pend2_n_t)
+// whether the page of RAM that holds offset `a` has texels of a pending destination
+bool pend_page(uint a) {
+    uint pt = (a >> 12) << 8;
+    return (pend_n_t != 0 && (pt + 255 - pend_dst_t) < pend_n_t + 255) ||
+           (pend2_n_t != 0 && (pt + 255 - pend2_dst_t) < pend2_n_t + 255);
+}
+#endif
+
 // addr must be aligned to word boundary (4 byte)
 // Where RAM texel t is in the cache: its entry as 4 * bucket + entry (from 1), for L1_DATA(), or 0.
 uint l1_find_l1(L1P uint t) {
@@ -73,7 +120,7 @@ uint l1_find_l1(L1P uint t) {
     uint b = L1_B0(t);
     bool more = false;
     // An array read costs as much as a dozen additions: the tags of one bucket, and those of
-    // the second table's only when the first one's is full.
+    // the next table's only when that one is full.
     [branch]
     if (L1_OCC(b)) {
         uint4 tags = L1_TAGS(b);
@@ -84,10 +131,22 @@ uint l1_find_l1(L1P uint t) {
     [branch]
     if (more) {
         b = L1_B1(t);
+        more = false;
         [branch]
         if (L1_OCC(b)) {
-            uint e = l1_slot(L1_TAGS(b), t + 1);
+            uint4 tags = L1_TAGS(b);
+            uint e = l1_slot(tags, t + 1);
             found = e != 0 ? b * 4 + e : 0;
+            more = e == 0 && L1_LAST(tags) != 0;
+        }
+        [branch]
+        if (more) {
+            b = L1_B2(t);
+            [branch]
+            if (L1_OCC(b)) {
+                uint e = l1_slot(L1_TAGS(b), t + 1);
+                found = e != 0 ? b * 4 + e : 0;
+            }
         }
     }
     return found;
@@ -123,6 +182,46 @@ uint mem_get_cached_or_tex_l1(L1P uint addr) {
     }
     return idx_uint4(dr_tex, (addr >> 2) & 0x3);
 }
+
+// The general path's read of a RAM word: as above, but for a pending destination's texel,
+// which is the cache's if it has it and else what the fill or copy will make it.
+uint mem_get_slow_l1(L1P uint addr) {
+#ifdef LAZY_MEMOP
+    uint t = addr >> 4;
+    [branch]
+    if (PEND_HAS(t)) {
+        uint at = l1_find(t);
+        uint4 texel;
+        [branch]
+        if (at != 0) {
+            texel = L1_DATA(at);
+        } else {
+            texel = pend_texel(t);
+        }
+        return idx_uint4(texel, (addr >> 2) & 0x3);
+    }
+#endif
+    return mem_get_cached_or_tex(addr);
+}
+
+#ifdef LAZY_MEMOP
+// Whether the cache holds any of the `n` RAM texels from `t0` (asked when a fill or copy comes).
+bool l1_holds_l1(L1P uint t0, uint n) {
+    bool any = false;
+    [loop]
+    for (uint b = 0; b < L1_BUCKETS; b++) {
+        [branch]
+        if (L1_OCC(b)) {
+            uint4 tags = L1_TAGS(b);   // (a free entry's tag is 0: 0 - 1 - t0 is no texel of the range)
+            any = any || (tags.x - 1 - t0) < n || (tags.y - 1 - t0) < n || (tags.z - 1 - t0) < n;
+#if L1_WAYS == 4
+            any = any || (tags.w - 1 - t0) < n;
+#endif
+        }
+    }
+    return any;
+}
+#endif
 
 
 // little endian, zero extended, addr must be aligned to word boundary
@@ -228,13 +327,15 @@ uint mem_get_word_l1(L1P uint addr) {
         return 0;
     }
 
-    return mem_get_cached_or_tex(addr);
+    return mem_get_slow(addr);
 }
 
 // A store that lies within one RAM word: `bits` replace the word's under `mask`. The cache
 // keeps the whole RAM texel around the word, read from the texture when its entry is made, so
 // a store that changes nothing costs no entry and a partial one needs no second read.
-void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask) {
+// `slow`: from the general path, which alone reaches a pending destination (a constant where
+// it is called, so the fast loop's copies have none of that).
+void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask, bool slow) {
     if (word_addr >= RAM_MAX) {
         return;
     }
@@ -256,6 +357,18 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask) {
         }
         e1 = l1_slot(tags1, tag);
         f1 = l1_slot(tags1, 0);
+        [branch]
+        if (e1 == 0 && f1 == 0) {
+            // the second table's bucket is full too: the third's
+            b1 = L1_B2(t);
+            tags1 = 0;
+            [branch]
+            if (L1_OCC(b1)) {
+                tags1 = L1_TAGS(b1);
+            }
+            e1 = l1_slot(tags1, tag);
+            f1 = l1_slot(tags1, 0);
+        }
     }
     uint at = e0 != 0 ? b0 * 4 + e0 : e1 != 0 ? b1 * 4 + e1 : 0;
     uint4 texel;
@@ -276,6 +389,14 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask) {
     if (at != 0) {
         texel = L1_DATA(at);
     } else {
+#ifdef LAZY_MEMOP
+        // (an entry is being made: of a pending destination's texel, from what it reads as)
+        [branch]
+        if (slow && PEND_HAS(t)) {
+            texel = pend_texel(t);
+        } else
+#endif
+        {
         [branch]
         if (t != dr_addr) {
             PROF(PROF_ram_read_tex)
@@ -283,6 +404,7 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask) {
             dr_addr = t;
         }
         texel = dr_tex;
+        }
     }
     uint cur_val = idx_uint4(texel, wi);
     if (at == 0 && cpu.cache.ram_l1_last_addr == word_addr && (word_addr & mem_cache_bloom) == word_addr) {
@@ -364,7 +486,7 @@ void mem_set_byte_l1(L1P uint addr, uint val, bool whole_word) {
 
     uint word_addr = addr & (~0x3);
     uint byte_offset = (addr & 0x3) * 8;
-    mem_set_ram(word_addr, whole_word ? val : (val << byte_offset), whole_word ? 0xffffffff : (0xffu << byte_offset));
+    mem_set_ram(word_addr, whole_word ? val : (val << byte_offset), whole_word ? 0xffffffff : (0xffu << byte_offset), true);
 }
 
 void mem_set_l1(L1P uint addr, uint val, uint word_size) {

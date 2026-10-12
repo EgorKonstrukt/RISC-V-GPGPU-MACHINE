@@ -49,15 +49,18 @@ FPU="-fno-math-errno -fsingle-precision-constant"
 # with one of the client's then. -fno-pie: a use of a global costs a load from a table otherwise.
 # fmath.h before every file: the game's sin, cos, tan and atan in floats
 # (QUAKE_DEFINES=-DSE_COUNT counts what the server does in a frame, for the quakestat: lines)
-CFLAGS="-O2 $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w -DGLQUAKE -DSHADEREMU -include $HERE/fmath.h $GLINC -I$Q/WinQuake -I$REPO/programs/mc ${QUAKE_DEFINES:-}"
+# -O3 without its vectors (the machine has none), with loops unrolled: 6% fewer instructions a
+# frame of a timedemo than -O2 and 5% fewer to a level's first picture, for 190 KB of program.
+OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
+CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w -DGLQUAKE -DSHADEREMU -include $HERE/fmath.h $GLINC -I$Q/WinQuake -I$REPO/programs/mc ${QUAKE_DEFINES:-}"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
 export CFLAGS Q HERE BUILD ALIGN16
 mkdir -p "$BUILD" && cd "$BUILD"
 rm -f net_none.o   # (of a build before the network: the link takes every object here)
 { for f in $SOURCES; do echo "$Q/WinQuake/$f.c"; done; for f in $OURS; do echo "$HERE/$f.c"; done; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/quake.patch" ] && [ "$o" -nt "$HERE/include/GL/gl.h" ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/fmath.h" ] || { rv32-cc $CFLAGS -c {} -o "$o" && riscv32-linux-objcopy $ALIGN16 "$o"; }'
-rv32-cc -O2 $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLINC "$HERE/qgl.c" -o qgl.o
-rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC "$REPO/programs/linux/gles.c" -o gles.o
+rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLINC "$HERE/qgl.c" -o qgl.o
+rv32-cc $OPT -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC "$REPO/programs/linux/gles.c" -o gles.o
 # the worker cores' library, the same for every program (programs/mc)
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
 # and 16 bytes of nothing after our variables in each kind of section: the libraries' follow

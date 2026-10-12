@@ -29,6 +29,7 @@ nes,nes.bin             devices/input-gaming
 imdemo                  categories/applications-development
 nxray                   categories/applications-graphics
 nxpath                  categories/applications-science
+nxphys                  categories/applications-engineering categories/applications-science
 nxide                   categories/applications-ide categories/applications-development
 example                 categories/applications-development categories/applications-ide
 restart                 apps/system-restart

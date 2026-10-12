@@ -175,16 +175,80 @@ machine runs 3.9 million a second on D3D11 with fxc2:
   frame (the game's own start, the texture pack's pictures), 3 the generator and 12 the 64
   chunks, at five to ten frames a second. It was 100.
 
+- **The frame's list is not waited for.** `Gfx_EndFrame` waited, with `pause`, until the GPU
+  had drawn the list, and what was left of that pass of the machine was not run: half a pass
+  a frame, of a frame of seven (`docs/boot.md`, "Passes that end early"). It submits and
+  goes on now. A frame writes its own set of commands, matrices and arena, which the list
+  being drawn never reads; the two things that are written in place settle for it first
+  (`Settle`): a buffer's own span when the frame before drew from it (`SpanAlloc`; a dynamic
+  buffer goes into the frame's arena instead while the list is still out), and a texture's
+  texels. An animated tile's new texels (water, lava: some twelve updates a second, at the
+  start of a frame, when the wait would be longest) are kept and written when the frame
+  ends, before its own list is submitted (`Later_Flush`): that list is the first that is to
+  show them. Memory given back was free two frames later already.
+
+  | the shader machine, `tools\tick_util.ps1` | utilization, waiting (`CLASSICUBE_SWAP=wait`) | not waiting |
+  |---|---|---|
+  | the world being made and meshed | 95.5% | 98.1% |
+  | standing | 93.3% (the wait 6.4%) | 99.7% |
+  | walking (`down W`) | 93.7% | 99.7% |
+  | digging (`turn 0 300`, `down LeftMouse`) | 94.1% | 99.7% |
+
+  What is left standing is the animated tiles' texels: a tile is 1 KB and its four copies
+  across 4 KB more, most of what a pass keeps of new stores.
+
 `ccstat:` lines, every five seconds, give frames, instructions a frame, draws, quads, and
 the texels and vertices made for the device.
 
     CLASSICUBE_SEED=N        the same world every time
     CLASSICUBE_HOLD=N        keep frame N on the screen and stop there
+    CLASSICUBE_HOLD_LATE=1   with CLASSICUBE_HOLD: the frame stays while the next is made ready, then the game stops
+    CLASSICUBE_SWAP=wait     every list waited for, as it was
     CLASSICUBE_STATS_MS=N    how often the ccstat: lines come (5000; 0: never)
     CLASSICUBE_SIZE=WxH      the window's size (854x480)
     CLASSICUBE_MESH=inline   every mesh by the first core, in one order every time
     CLASSICUBE_MESH_SUM=1    a ccmesh: line a chunk mesh made: origin, vertices, two sums
     CLASSICUBE_DEFINES=-DSE_COUNT   (to build.sh) a chunk's instructions by phase, in the ccstat: lines
+
+## A quarter to a half fewer (12 October 2026)
+
+Under `rvc_cpu`, `CLASSICUBE_SEED=7`, block physics off: a frame standing 55.0 thousand
+instructions to 38.9, walking 54.6 to 40.9, digging straight down 1,176 to 629; from the
+command to `classicube: steady` 66.5 million on the first core to 41.5 and 33.1 on the
+workers to 28.7.
+
+- **A draw's state is worked out when it changes** (`state_serial`, `DeriveState`, `Emit` in
+  `Graphics_ShaderEmu.c`): `DrawQuads` was a third of a standing frame, 170 instructions
+  for each of some 120 calls. A new kind of state must bump `state_serial`, and anything
+  that makes a mesh again goes through `MeshMade`.
+- **A chunk's matrix block** is rows made once a matrix (`ChunkRows`) and three words a chunk.
+- **Loops over entities start at `Entities_SE_First`**: alone, the player is slot 255 of
+  256, and six loops walked all of them every frame or tick. The translucent depth-only
+  walk is left out (the device draws nothing in it), `ResetPartFlags` resets the atlases
+  in use, and the terminal is asked for a line 20 times a second, not every frame.
+- **Particles are removed in one pass** (`Terrain_Tick`, `Terrain_RemoveFirst`): one
+  `memmove` a particle was 18% of digging.
+- **The texture pack's pictures are decoded at build time** (`store_zip.py` writes
+  `SEPIXELS`, width, height, then the game's own pixel words on a word of the file;
+  `Png_Decode` reads them in one piece): decoding was a fifth of the start. An older
+  `classicube.bin` cannot read the new pack; `build.sh` writes both each time.
+- **The world's generator**: `NotchyGen_FillOblateSpheroid` in whole numbers by rows, the
+  random numbers inline (the same numbers), one cosine of phi a cave step, the surface
+  layer shared out by rows like the height map (`SE_SurfaceRows`). The same world.
+- **The light's heights are made a column at a time**, and on the first core for the
+  worker's chunks (`SE_Mesh_Post`): both builder copies called `LightHint`, so two cores
+  could store into the same 16 bytes.
+- `build.sh` compiles the 16 files a profile is full of, and the worker's `Builder.c`, with
+  `HOT` (`-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops`): 3% of a frame, a fifth
+  of digging.
+
+Not built: the matrix blocks kept while the view stands still (4 thousand of a standing
+frame; writing them in place would break the two sets); `Stopwatch_Measure` from the clock
+word (1.5 thousand a frame, and frame times in whole milliseconds).
+
+`CLASSICUBE_TEXTURE_SUM=1` prints a `cctex:` line a texture made (42 of them, the same
+sums from the PNG pack and the decoded one). A held frame's window is the top left 854 x
+480 of a `--gpu-capture`: outside it two builds may differ.
 
 ## Checking it
 
@@ -204,6 +268,10 @@ the texels and vertices made for the device.
 - A change to how it draws: hold the same frame of the same seed before and after and compare
   the GPU's targets. Two runs of one build give the same picture (`rvc_harness --cpu` makes
   one in 12 s). Digging held down is by the clock too: dig by single presses.
+- A change to what the backend writes when: `CLASSICUBE_HOLD=1500 CLASSICUBE_HOLD_LATE=1` with
+  `--gpu-capture`, once with `CLASSICUBE_SWAP=wait` and once without. The pictures were the
+  same pixel for pixel (854 x 480). A plain hold stops the game before it writes anything
+  for the next frame, and cannot show a store made too early.
 - To see where instructions go, snapshot a run at `classicube: steady` and resume it with
   `--pc-log` (`tools\pc_profile.py`, `classicube=classicube.nm`).
 

@@ -40,6 +40,8 @@
 #define HEIGHT 350
 #define MAX_ENTRIES 512
 #define SCREEN_BAR 26			/* the bar along the screen's bottom (nxbar.c) */
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN | \
+	GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ)
 
 enum { K_UNKNOWN, K_OTHER, K_FOLDER, K_PROGRAM, K_PICTURE, K_PAGE, K_SOUND, K_VIDEO, K_ARCHIVE, K_SHORTCUT };
 static const char *kind_names[] = { "", "File", "Folder", "Program", "Picture", "Page", "Sound", "Video", "Archive", "Shortcut" };
@@ -55,6 +57,7 @@ static struct entry {
 } entries[MAX_ENTRIES];
 static unsigned char shown[MAX_ENTRIES];	/* how each entry was last drawn: selected, at the cursor */
 static char wall[200];				/* the desktop's picture, or its colour */
+static int wall_w, wall_h;			/* the picture's size: 0 not read yet, -1 not a picture */
 static int count, cursor = -1, anchor = -1, top, rows, columns, width = WIDTH, height = HEIGHT;
 static int desktop, details;	/* the desktop, not a window; a list, not tiles */
 static int thumb_held;		/* the scroll bar's thumb is held */
@@ -89,6 +92,17 @@ milliseconds(void)
 	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
 }
 
+/* A text into a place of `size` bytes, cut to fit (what snprintf "%s" does, without it). */
+static void
+copy_text(char *to, const char *from, size_t size)
+{
+	size_t n = strlen(from);
+
+	n = n < size ? n : size - 1;
+	memcpy(to, from, n);
+	to[n] = 0;
+}
+
 static int
 ends_with(const char *name, const char *end)
 {
@@ -101,13 +115,12 @@ ends_with(const char *name, const char *end)
 static int
 ends_in(const char *name, const char *endings)
 {
-	char one[12];
-	int n;
+	int length = (int)strlen(name), n;
 
 	for (; *endings; endings += n + (endings[n] == ' ')) {
-		n = strcspn(endings, " ");
-		snprintf(one, sizeof one, "%.*s", n, endings);
-		if (ends_with(name, one))
+		for (n = 0; endings[n] && endings[n] != ' '; n++)
+			continue;
+		if (n < 12 && length >= n && !strncasecmp(name + length - n, endings, (size_t)n))
 			return 1;
 	}
 	return 0;
@@ -116,10 +129,35 @@ ends_in(const char *name, const char *endings)
 static int
 order(const void *a, const void *b)
 {
-	const struct entry *x = a, *y = b;
+	const struct entry *x = &entries[*(const short *)a], *y = &entries[*(const short *)b];
 	int fx = x->kind == K_FOLDER, fy = y->kind == K_FOLDER;
 
 	return fx != fy ? fy - fx : strcasecmp(x->name, y->name);
+}
+
+/* Folders first, then by name. The entries' numbers are sorted and each entry then moved
+ * once: an entry is hundreds of bytes, and sorting them was mostly copying. */
+static void
+sort_entries(void)
+{
+	static short to[MAX_ENTRIES];
+	static struct entry held;
+	int i, k, from;
+
+	for (i = 0; i < count; i++)
+		to[i] = (short)i;
+	qsort(to, count, sizeof to[0], order);
+	for (i = 0; i < count; i++) {
+		if (to[i] < 0 || to[i] == i)
+			continue;
+		held = entries[i];
+		for (k = i; (from = to[k]) != i; k = from) {
+			entries[k] = entries[from];
+			to[k] = -1;
+		}
+		entries[k] = held;
+		to[k] = -1;
+	}
 }
 
 /* A shortcut's lines: name=, icon= (a name of the icons' list) and run= (a command). */
@@ -179,7 +217,9 @@ kind_of(int i)
 
 	if (e->kind != K_UNKNOWN && e->icon != -2)
 		return e->kind;
-	if (e->kind == K_UNKNOWN) {
+	if (e->kind == K_SHORTCUT) {
+		/* (read_folder's word for a file ending in .app: its size is asked for when it is shown) */
+	} else if (e->kind == K_UNKNOWN) {
 		e->kind = K_OTHER;
 		if (stat(e->name, &info) == 0) {
 			e->size = info.st_size;
@@ -204,7 +244,7 @@ kind_of(int i)
 	for (k = 0; e->name[k]; k++)
 		lower[k] = tolower((unsigned char)e->name[k]);
 	lower[k] = 0;
-	snprintf(e->label, sizeof e->label, "%s", e->name);
+	copy_text(e->label, e->name, sizeof e->label);
 	switch (e->kind) {
 	case K_FOLDER: icon = ui_icon_of(lower) >= 0 && strcmp(lower, "default") ? lower : "folder"; break;
 	case K_PROGRAM: icon = ui_icon_of(lower) >= 0 ? lower : "program"; break;
@@ -229,6 +269,17 @@ kind_of(int i)
 		read_shortcut(e);
 	}
 	return e->kind;
+}
+
+/* An entry's size: a shortcut's is asked for here, the first time it is shown. */
+static long
+size_of(int i)
+{
+	struct stat info;
+
+	if (entries[i].size < 0)
+		entries[i].size = stat(entries[i].name, &info) == 0 ? (long)info.st_size : 0;
+	return entries[i].size;
 }
 
 static int
@@ -336,15 +387,17 @@ read_folder(void)
 		if (!strcmp(item->d_name, ".") || !strcmp(item->d_name, "..") || (desktop && item->d_name[0] == '.'))
 			continue;
 		memset(e, 0, sizeof *e);
-		snprintf(e->name, sizeof e->name, "%s", item->d_name);
-		snprintf(e->label, sizeof e->label, "%s", item->d_name);
+		copy_text(e->name, item->d_name, sizeof e->name);
+		copy_text(e->label, item->d_name, sizeof e->label);
 		e->kind = item->d_type == DT_DIR ? K_FOLDER : K_UNKNOWN;
+		if (item->d_type == DT_REG && ends_with(e->name, ".app"))
+			e->kind = K_SHORTCUT, e->size = -1;	/* what a stat would say, but for the size */
 		e->icon = -2;	/* not looked for yet */
 		count++;
 	}
 	if (folder)
 		closedir(folder);
-	qsort(entries, count, sizeof entries[0], order);
+	sort_entries();
 	if (stat(".", &info) == 0)
 		folder_time = info.st_mtim;
 	cursor = anchor = -1;
@@ -423,16 +476,17 @@ hit(int px, int py)
 static int
 fitted(const char *text, int most, int room, char *out, int size)
 {
-	int full = strlen(text), n, w = 0, h, b;
+	int full = strlen(text), n, w = 0, dots = 2 * ui_width(&ui_var_widths, ui_var, ".", 1);
 
 	GrSetGCFont(ui_gc, ui_var);
-	for (n = full > most ? most : full; ; n--) {
-		snprintf(out, size, n < full ? "%.*s.." : "%.*s", n, text);
-		GrGetGCTextSize(ui_gc, out, strlen(out), GR_TFASCII, &w, &h, &b);
-		if (w <= room || n <= 1)
-			break;
-	}
-	return w;
+	/* the longest beginning that fits, with its two dots when it is not the whole */
+	n = full > most ? most : full;
+	n = n > size - 3 ? size - 3 : n;
+	for (w = ui_width(&ui_var_widths, ui_var, text, n); n > 1 && w + (n < full ? dots : 0) > room; n--)
+		w -= ui_width(&ui_var_widths, ui_var, text + n - 1, 1);
+	memcpy(out, text, (size_t)n);
+	strcpy(out + n, n < full ? ".." : "");
+	return w + (n < full ? dots : 0);
 }
 
 /* An icon of the desktop: its picture, and its name under it in one line or two. The name's
@@ -479,8 +533,13 @@ draw_wall(void)
 		unsigned long rgb = strtoul(wall + 1, NULL, 16);
 
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255));
-	} else
-		ui_picture(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK);
+		return;
+	}
+	/* (its size is read when the choice is: this is drawn behind every icon that changes) */
+	if (!wall_w && !ui_picture_size(wall, &wall_w, &wall_h))
+		wall_w = -1;
+	if (wall_w > 0)
+		ui_picture_sized(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK, wall_w, wall_h);
 }
 
 /* What the desktop shows (Settings writes it): a picture's path, or a colour. */
@@ -489,6 +548,7 @@ read_wall(void)
 {
 	FILE *file = fopen(UI_WALLPAPER_CHOICE, "r");
 
+	wall_w = wall_h = 0;
 	strcpy(wall, UI_WALLPAPER_DEFAULT);
 	if (file) {
 		if (fgets(wall, sizeof wall, file))
@@ -520,7 +580,7 @@ draw_tile(int i)
 		fitted(e->label, 40, w - 190, name, sizeof name);
 		ui_text(window, x + 22, y + 2, name, -1, e->chosen ? WHITE : BLACK, 0);
 		if (e->kind != K_FOLDER) {
-			if (e->size < 10000)
+			if (size_of(i) < 10000)
 				snprintf(size, sizeof size, "%ld", e->size);
 			else
 				snprintf(size, sizeof size, "%ld KB", (e->size + 512) / 1024);
@@ -549,7 +609,7 @@ draw_status(void)
 	else if (n > 1)
 		snprintf(text, sizeof text, "%d items selected", n);
 	else if (cursor >= 0 && entries[cursor].chosen && kind_of(cursor) != K_FOLDER)
-		snprintf(text, sizeof text, "%s   %ld bytes", entries[cursor].name, entries[cursor].size);
+		snprintf(text, sizeof text, "%s   %ld bytes", entries[cursor].name, size_of(cursor));
 	else
 		snprintf(text, sizeof text, "%d items", count);
 	if (desktop) {
@@ -608,16 +668,20 @@ refresh(void)
 		if (shown[i] == (unsigned char)(entries[i].chosen | (i == cursor) << 1) || !tile_at(i, &x, &y, &w, &h))
 			continue;
 		if (desktop) {
-			/* the picture behind this icon first, and no more of it than that */
-			GR_REGION_ID clip = GrNewRegion();
+			/* the picture behind this icon first, and no more of it than that. (One region for
+			 * all of them, emptied each time: a new one is a question to the window system.) */
+			static GR_REGION_ID clip;
 			GR_RECT cell;
 
+			if (!clip)
+				clip = GrNewRegion();
+			else
+				GrSubtractRegion(clip, clip, clip);
 			cell.x = x, cell.y = y, cell.width = w, cell.height = h;
 			GrUnionRectWithRegion(clip, &cell);
 			GrSetGCRegion(ui_gc, clip);
 			draw_wall();
 			GrSetGCRegion(ui_gc, 0);
-			GrDestroyRegion(clip);
 		}
 		draw_tile(i);
 	}
@@ -662,15 +726,17 @@ run_command(const char *command)
 	char text[64], *words[8];
 	int n = 0;
 
-	if (!command[0] || fork() != 0)
+	if (!command[0])
 		return;
-	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
+	/* the words first: the child (vfork, as ui_run's) has this program's memory until its exec */
 	snprintf(text, sizeof text, "%s", command);
 	for (words[n] = strtok(text, " "); words[n] && n < 7; words[n] = strtok(NULL, " "))
 		n++;
 	words[n] = NULL;
-	if (n)
-		execvp(words[0], words);
+	if (!n || real_vfork() != 0)
+		return;
+	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
+	execvp(words[0], words);
 	_exit(127);
 }
 
@@ -778,7 +844,7 @@ run_wait(const char *program, const char *option, const char *from, const char *
 	int status = 0;
 
 	signal(SIGCHLD, SIG_DFL);	/* (ignored, a child leaves nothing to wait for) */
-	child = fork();
+	child = real_vfork();
 	if (child == 0) {
 		execlp(program, program, option, from, to, (char *)NULL);
 		_exit(127);
@@ -959,7 +1025,7 @@ properties(int i)
 		snprintf(path, sizeof path, "%s", where);
 	else
 		entry_path(i, path, sizeof path);
-	if (fork() == 0) {
+	if (real_vfork() == 0) {
 		signal(SIGCHLD, SIG_DFL);
 		execlp("nxfiles", "nxfiles", "--properties", path, (char *)NULL);
 		_exit(127);
@@ -1595,8 +1661,7 @@ main(int argc, char **argv)
 		read_folder();
 		snprintf(history[0], sizeof history[0], "%s", where);
 		history_count = 1;
-		GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
-			GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
+		GrSelectEvents(window, EVENTS);
 		GrMapWindow(window);
 		GrSetFocus(window);
 	}
@@ -1604,6 +1669,7 @@ main(int argc, char **argv)
 		int i, area;
 
 		GrGetNextEventTimeout(&event, 1000);
+		ui_origin_note(&event);
 		if (time(NULL) != looked) {
 			looked = time(NULL);
 			watch();
@@ -1664,6 +1730,7 @@ main(int argc, char **argv)
 				break;
 			} else if (event.button.x >= width - UI_SCROLL_W) {
 				thumb_held = 1;
+				ui_moves(window, EVENTS, 1);	/* (the pointer's moves, until the button is let go) */
 				scroll_to(ui_scroll_to(event.button.y, BAR, area, total_rows(), rows));
 			} else {
 				i = hit(event.button.x, event.button.y);
@@ -1675,6 +1742,8 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			thumb_held = 0;
+			if (!desktop)
+				ui_moves(window, EVENTS, 0);
 			/* let go some way from where it went down, with entries selected: they were dragged */
 			if (press_tile >= 0 && (event.button.changebuttons & GR_BUTTON_L) && chosen_count() &&
 			    abs(event.button.rootx - press_x) + abs(event.button.rooty - press_y) > 6) {
@@ -1688,8 +1757,10 @@ main(int argc, char **argv)
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (thumb_held && (event.mouse.buttons & GR_BUTTON_L))
 				scroll_to(ui_scroll_to(event.mouse.y, BAR, area, total_rows(), rows));
-			else
+			else {
 				thumb_held = 0;
+				ui_moves(window, EVENTS, 0);
+			}
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
 			key(&event);

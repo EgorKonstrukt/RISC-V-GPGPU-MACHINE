@@ -9,6 +9,7 @@
  * button there offers to minimise or close it.
  */
 #include <ctype.h>
+#include "../userland/real_vfork.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -183,14 +184,11 @@ draw_bar(void)
 	GrText(bar, gc, 28, 7, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);
 	GrText(bar, gc, 29, 7, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);	/* twice: bold */
 	for (i = 0; i < task_count; i++) {
-		int count = strlen(tasks[i].title), w, h, b;
+		int count = strlen(tasks[i].title);
 
 		/* as much of the title as the button has room for */
-		for (; count > 0; count--) {
-			GrGetGCTextSize(gc, tasks[i].title, count, GR_TFASCII, &w, &h, &b);
-			if (w <= width - 28)
-				break;
-		}
+		while (count > 0 && ui_width(&ui_menu_widths, 0, tasks[i].title, count) > width - 28)
+			count--;
 		bevel(bar, task_x(i), 3, width, BAR_HEIGHT - 6, 0);
 		if (width >= 28)
 			ui_icon_draw(bar, gc, task_x(i) + 4, 5, &tasks[i].icon, 16);
@@ -204,7 +202,7 @@ draw_bar(void)
 }
 
 /* The icon of the program a window is of: its file's own, or its name's in the sheets. It is
- * looked for once a window: this is asked every second. */
+ * looked for once a window. */
 static const struct ui_icon_ref *
 icon_of_frame(GR_WINDOW_ID frame, GR_WINDOW_ID client)
 {
@@ -238,12 +236,16 @@ by_frame(const void *a, const void *b)
  * screen (one that is not shown now is minimised). A decorated window is a frame the window
  * manager made around the program's window, which is the one with the title. Kept in the
  * order the windows were made, so buttons stay where they are. True if anything changed.
+ * (Five questions to the window system a window: not asked every second, see main.)
  */
 static int
 find_tasks(void)
 {
 	static GR_WINDOW_ID before[MAX_TASKS], seen[64];
+	static struct { GR_WINDOW_ID frame, client; } known[64];
+	static int known_count;
 	static int before_hidden[MAX_TASKS], before_count = -1, seen_count;
+	static char before_title[MAX_TASKS][sizeof tasks[0].title];
 	GR_WINDOW_ID still[64];
 	int still_count = 0, k;
 	GR_WINDOW_ID parent, *children = NULL, *inside;
@@ -270,12 +272,24 @@ find_tasks(void)
 			continue;	/* never shown yet */
 		if (still_count < 64)
 			still[still_count++] = children[i];
-		inside = NULL;
-		m = 0;
-		GrQueryTree(children[i], &parent, &inside, &m);
-		if (m > 0)
-			client = inside[0];
-		free(inside);
+		/* a frame's program window stays the one it was made for: asked once */
+		for (k = 0; k < known_count && known[k].frame != children[i]; k++)
+			;
+		if (k < known_count)
+			client = known[k].client;
+		else {
+			inside = NULL;
+			m = 0;
+			GrQueryTree(children[i], &parent, &inside, &m);
+			if (m > 0)
+				client = inside[0];
+			free(inside);
+			if (m > 0) {
+				k = known_count < 64 ? known_count++ : (int)(children[i] & 63);
+				known[k].frame = children[i];
+				known[k].client = client;
+			}
+		}
 		props.title = NULL;
 		GrGetWMProperties(client, &props);
 		tasks[task_count].frame = children[i];
@@ -291,10 +305,11 @@ find_tasks(void)
 	seen_count = still_count;
 	changed = task_count != before_count;
 	for (i = 0; i < task_count && !changed; i++)
-		changed = before[i] != tasks[i].frame || before_hidden[i] != tasks[i].hidden;
+		changed = before[i] != tasks[i].frame || before_hidden[i] != tasks[i].hidden || strcmp(before_title[i], tasks[i].title);
 	for (i = 0; i < task_count; i++) {
 		before[i] = tasks[i].frame;
 		before_hidden[i] = tasks[i].hidden;
+		strcpy(before_title[i], tasks[i].title);
 	}
 	before_count = task_count;
 	return changed;
@@ -348,15 +363,16 @@ launch(const char *command)
 	char text[64], *words[8];
 	int n = 0;
 
-	if (fork() != 0)
-		return;
-	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
+	/* the words first: the child of a vfork has the bar's memory until its exec (no page of it
+	 * copied), and may do nothing there but become the program */
 	snprintf(text, sizeof text, "%s", command);
 	for (words[n] = strtok(text, " "); words[n] && n < 6; words[n] = strtok(NULL, " "))
 		n++;
 	words[n] = NULL;
-	if (n)
-		execvp(words[0], words);
+	if (!n || real_vfork() != 0)
+		return;
+	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
+	execvp(words[0], words);
 	_exit(127);
 }
 
@@ -405,7 +421,7 @@ watch_open(void)
 	memcpy(address, (const void *)&regs[OPEN_FIRST], 176);
 	memcpy(address + 176, (const void *)&regs[OPEN_MORE], 80);
 	address[length] = 0;
-	if (fork() == 0) {
+	if (real_vfork() == 0) {
 		signal(SIGCHLD, SIG_DFL);
 		execlp("open", "open", address, (char *)NULL);
 		_exit(127);
@@ -418,7 +434,9 @@ watch_focus(void)
 {
 	static volatile uint32_t *regs;
 	static int tried;
+	static GR_WINDOW_ID focused = ~0u;
 	GR_WINDOW_INFO info;
+	GR_WINDOW_ID focus;
 	char path[40], comm[32] = "";
 	FILE *file;
 	uint32_t game;
@@ -434,7 +452,11 @@ watch_focus(void)
 	}
 	if (!regs)
 		return;
-	GrGetWindowInfo(GrGetFocus(), &info);
+	/* whose it is is asked only when another window has it */
+	if ((focus = GrGetFocus()) == focused)
+		return;
+	focused = focus;
+	GrGetWindowInfo(focus, &info);
 	snprintf(path, sizeof path, "/proc/%d/comm", info.processid);
 	if (info.processid > 0 && (file = fopen(path, "r")) != NULL) {
 		if (!fgets(comm, sizeof comm, file))
@@ -494,6 +516,8 @@ main(void)
 		"nxbar", GR_ROOT_WINDOW_ID, 0, screen.rows - BAR_HEIGHT, screen.cols, BAR_HEIGHT, FACE);
 	GrSelectEvents(bar, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN);
 	GrMapWindow(bar);
+	/* told when a window comes, goes or is put away: the buttons are looked for again then */
+	GrSelectEvents(GR_ROOT_WINDOW_ID, GR_EVENT_MASK_CHLD_UPDATE);
 	/* the Windows key, whatever window has the keyboard */
 	GrGrabKey(bar, MWKEY_LMETA, GR_GRAB_HOTKEY);
 	GrGrabKey(bar, MWKEY_RMETA, GR_GRAB_HOTKEY);
@@ -504,7 +528,11 @@ main(void)
 	}
 
 	for (;;) {
-		static time_t looked;
+		static time_t looked, listed;
+		static int stale = 1;	/* a window came or went since the buttons were looked for */
+		static int moved = 1;	/* the keyboard may be another window's: every such change is a child update */
+		static time_t asked;
+		static unsigned retitle;	/* buttons whose windows' titles are asked again */
 		time_t now;
 		int i;
 
@@ -546,20 +574,61 @@ main(void)
 						task_front(i);
 				}
 			break;
+		case GR_EVENT_TYPE_CHLD_UPDATE:
+			if (event.update.utype == GR_UPDATE_MOVE || event.update.utype == GR_UPDATE_SIZE)
+				break;
+			moved = 1;
+			for (i = 0; i < task_count && tasks[i].frame != event.update.subwid; i++)
+				;
+			/* a button's window activated may have a new title; a window with no button that
+			 * goes (a menu) changes nothing here; anything else, the buttons are looked for */
+			if (i < task_count && event.update.utype == GR_UPDATE_ACTIVATE)
+				retitle |= 1u << (i & 31);
+			else if (i < task_count || (event.update.utype != GR_UPDATE_DESTROY && event.update.utype != GR_UPDATE_UNMAP &&
+			    event.update.utype != GR_UPDATE_UNMAPTEMP))
+				stale = 1;
+			break;
 		case GR_EVENT_TYPE_CLOSE_REQ:
 			if (event.general.wid != bar)
 				break;	/* a menu's, come after the menu went */
 			GrClose();
 			return 0;
 		}
-		/* once a second: windows that came or went, and the minute */
+		/* once a second: windows that came or went, and the minute (a changed title is a child update too) */
 		now = time(NULL);
 		if (now == looked)
 			continue;
 		looked = now;
 		watch_open();
-		watch_focus();
-		if (find_tasks() || localtime(&now)->tm_min != minute) {
+		if (moved || now - asked >= 15) {
+			moved = 0;
+			asked = now;
+			watch_focus();
+		}
+		i = 0;
+		if (stale || now - listed >= 60) {
+			stale = 0;
+			listed = now;
+			retitle = 0;
+			i = find_tasks();
+		}
+		for (id = 0; retitle && id < task_count; id++)
+			if (retitle & (1u << (id & 31))) {
+				GR_WM_PROPERTIES props;
+				char title[sizeof tasks[0].title];
+
+				props.title = NULL;
+				GrGetWMProperties(tasks[id].client, &props);
+				snprintf(title, sizeof title, "%.13s", props.title ? (char *)props.title : "window");
+				free(props.title);
+				if (strcmp(title, tasks[id].title)) {
+					strcpy(tasks[id].title, title);
+					stale = 1;	/* (the list's own record of titles is made again next second) */
+					i = 1;
+				}
+			}
+		retitle = 0;
+		if (i || localtime(&now)->tm_min != minute) {
 			minute = localtime(&now)->tm_min;
 			draw_bar();
 		}

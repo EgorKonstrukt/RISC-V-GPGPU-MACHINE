@@ -122,6 +122,10 @@ Every sheet is read again when another arrives: a rule may use a custom property
 - `position: absolute` with a clip is taken as hidden (text meant for screen readers).
 - An element that is not shown and has no closing tag (`li`, `td`, `p`) ends where the next
   one begins. The old `bgcolor` attribute is a background.
+- A page's start clears nothing in bulk: the sheets' tables are kept by name number, and a
+  name's entries begin when the name is first seen (`css_atom`); clearing all 8,192 of each
+  was 168 KB of stores a page, twenty passes of the machine that ended early. The page's
+  text is kept where it was read, and the layout's text and runs have their room at once.
 - `/usr/share/web-css.html` is the test page. `NXWEB_TIME=1 nxweb ...` prints what reading the
   sheets and laying out cost: lobste.rs, 207 rules, 0.65 s and 1.15 s; without sheets 0.76 s.
 - To try the engine on a real sheet without the machine, compile `css.h` natively with a small

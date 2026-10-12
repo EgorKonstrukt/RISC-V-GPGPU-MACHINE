@@ -6,6 +6,7 @@
 #include "wwkeyboard.h"
 #include "wwmouse.h"
 #include "host.h"
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
@@ -108,9 +109,19 @@ void Set_DD_Palette(void* palette)
     unsigned int* to = host_palette();
 
     // (the game sets it every frame, to cycle a few of its colours: only those are made again)
+    const unsigned* whole = ((uintptr_t)from & 3) == 0 && set ? (const unsigned*)palette : NULL;
     for (int word = 0; word < 192; word++) {
         unsigned now;
-        memcpy(&now, from + word * 4, 4);
+        if (whole) {
+            // (two words at a look: nearly all of them are as they were)
+            if (!(word & 1) && whole[word] == last[word] && whole[word + 1] == last[word + 1]) {
+                word++;
+                continue;
+            }
+            now = whole[word];
+        } else {
+            memcpy(&now, from + word * 4, 4);
+        }
         if (set && now == last[word]) {
             continue;
         }

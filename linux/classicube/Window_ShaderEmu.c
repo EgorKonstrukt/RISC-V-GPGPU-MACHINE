@@ -320,8 +320,12 @@ static void TerminalLine(char* line) {
 static void PollTerminal(void) {
 	static char line[128];
 	static int length, opened_terminal;
+	static uint32_t asked_ms;
 	char c;
 
+	/* (a read with nothing to read is a system call: twenty times a second, not every frame) */
+	if (gpu && SE_Milliseconds() - asked_ms < 50) return;
+	asked_ms = SE_Milliseconds();
 	if (!opened_terminal) {
 		fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 		opened_terminal = true;

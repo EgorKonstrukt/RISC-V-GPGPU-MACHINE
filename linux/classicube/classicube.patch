@@ -17,6 +17,52 @@ index f64e11e1e..73f9f8f4a 100644
  	if (useLavaAnim)  LavaAnimation_Tick();
  	if (useWaterAnim) WaterAnimation_Tick();
  #endif
+diff --git a/src/Bitmap.c b/src/Bitmap.c
+index 43e79acab..4ed44f658 100644
+--- a/src/Bitmap.c
++++ b/src/Bitmap.c
+@@ -415,6 +415,23 @@ cc_result Png_Decode(struct Bitmap* bmp, struct Stream* stream) {
+ 
+ 	res = Stream_Read(stream, tmp, PNG_SIG_SIZE);
+ 	if (res) return DecodeFailure(bmp, res);
++#ifdef CC_BUILD_SHADEREMU
++	/* A picture the build decoded (linux/classicube/store_zip.py): its size, then its pixels as */
++	/*  they are kept here, read in one piece. Decoding the pack's PNGs was a fifth of the start. */
++	if (Mem_ReadU32_BE(tmp) == PNG_FourCC('S','E','P','I') && Mem_ReadU32_BE(tmp + 4) == PNG_FourCC('X','E','L','S')) {
++		res = Stream_Read(stream, tmp, 8);
++		if (res) return DecodeFailure(bmp, res);
++		bmp->width  = (int)(tmp[0] | tmp[1] << 8 | tmp[2] << 16 | (cc_uint32)tmp[3] << 24);
++		bmp->height = (int)(tmp[4] | tmp[5] << 8 | tmp[6] << 16 | (cc_uint32)tmp[7] << 24);
++		if (bmp->width  < 0 || bmp->width  > PNG_MAX_DIMS) return DecodeFailure(bmp, PNG_ERR_TOO_WIDE);
++		if (bmp->height < 0 || bmp->height > PNG_MAX_DIMS) return DecodeFailure(bmp, PNG_ERR_TOO_TALL);
++
++		bmp->scan0 = (BitmapCol*)Mem_TryAlloc(bmp->height, bmp->width * 4);
++		if (!bmp->scan0) return DecodeFailure(bmp, ERR_OUT_OF_MEMORY);
++		res = Stream_Read(stream, (cc_uint8*)bmp->scan0, (cc_uint32)bmp->width * bmp->height * 4);
++		return res ? DecodeFailure(bmp, res) : 0;
++	}
++#endif
+ 	if (!Png_Detect(tmp, PNG_SIG_SIZE)) return DecodeFailure(bmp, PNG_ERR_INVALID_SIG);
+ 
+ 	colorspace = 0xFF; /* Unknown colour space */
+diff --git a/src/Block.c b/src/Block.c
+index a7e91f4a2..5c184edda 100644
+--- a/src/Block.c
++++ b/src/Block.c
+@@ -398,6 +398,13 @@ static void Block_UpdateAllCulling(void) {
+ 	for (block = BLOCK_AIR; block < BLOCK_COUNT; block++) {
+ 		Block_CalcStretch((BlockID)block);
+ 		for (neighbour = BLOCK_AIR; neighbour < BLOCK_COUNT; neighbour++) {
++#ifdef CC_BUILD_SHADEREMU
++			/* (Block_CalcCulling's own first case, most of the 65,536 pairs, without the call) */
++			if (Blocks.FullOpaque[block] && Blocks.FullOpaque[neighbour]) {
++				Blocks.Hidden[(block * BLOCK_COUNT) + neighbour] = 0x3F;
++				continue;
++			}
++#endif
+ 			Block_CalcCulling((BlockID)block, (BlockID)neighbour);
+ 		}
+ 	}
 diff --git a/src/BlockPhysics.c b/src/BlockPhysics.c
 index a1602b1a1..d9af3aaf6 100644
 --- a/src/BlockPhysics.c
@@ -1077,6 +1123,96 @@ index 95be4acfa..4eb41c21b 100644
  	#undef  CC_BUILD_ADVLIGHTING
  	#undef  CC_BUILD_FILESYSTEM
  	#undef  CC_BUILD_COMPRESSION
+diff --git a/src/Entity.c b/src/Entity.c
+index 47bb81ebf..16718efaf 100644
+--- a/src/Entity.c
++++ b/src/Entity.c
+@@ -496,11 +496,14 @@ void Entity_LerpAngles(struct Entity* e, float t) {
+ *--------------------------------------------------------Entities---------------------------------------------------------*
+ *#########################################################################################################################*/
+ struct _EntitiesData Entities;
++#ifdef CC_BUILD_SHADEREMU
++int Entities_SE_First = MAX_NET_PLAYERS;
++#endif
+ 
+ static cc_bool Entities_Tick(struct ScheduledTask2* task) {
+ 	int i;
+ 
+-	for (i = 0; i < ENTITIES_MAX_COUNT; i++)
++	for (i = Entities_SE_First; i < ENTITIES_MAX_COUNT; i++)
+ 	{
+ 		if (!Entities.List[i]) continue;
+ 		Entities.List[i]->VTABLE->Tick(Entities.List[i], task->interval);
+@@ -512,7 +515,7 @@ void Entities_RenderModels(float delta, float t) {
+ 	int i;
+ 	Gfx_SetAlphaTest(true);
+ 	
+-	for (i = 0; i < ENTITIES_MAX_COUNT; i++)
++	for (i = Entities_SE_First; i < ENTITIES_MAX_COUNT; i++)
+ 	{
+ 		if (!Entities.List[i]) continue;
+ 		Entities.List[i]->VTABLE->RenderModel(Entities.List[i], delta, t);
+@@ -562,7 +565,7 @@ int Entities_GetClosest(struct Entity* src) {
+ 	float t0, t1;
+ 	int i;
+ 
+-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) /* because we don't want to pick against local player */
++	for (i = Entities_SE_First; i < ENTITIES_MAX_COUNT; i++) /* because we don't want to pick against local player */
+ 	{
+ 		struct Entity* e = Entities.List[i];
+ 		if (!e || e == &Entities.CurPlayer->Base) continue;
+diff --git a/src/Entity.h b/src/Entity.h
+index 510f96b89..714373051 100644
+--- a/src/Entity.h
++++ b/src/Entity.h
+@@ -29,6 +29,12 @@ extern struct IGameComponent Entities_Component;
+ #define ENTITY_ADJUSTMENT 0.001f
+ #define ENTITIES_MAX_COUNT (MAX_NET_PLAYERS + MAX_LOCAL_PLAYERS)
+ #define ENTITIES_SELF_ID 255
++#ifdef CC_BUILD_SHADEREMU
++/* No entity is before this one in the list: alone, a player is the last of 256 */
++extern int Entities_SE_First;
++#else
++#define Entities_SE_First 0
++#endif
+ 
+ enum NameMode {
+ 	NAME_MODE_NONE, NAME_MODE_HOVERED, NAME_MODE_ALL, NAME_MODE_ALL_HOVERED, NAME_MODE_ALL_UNSCALED, NAME_MODE_COUNT
+diff --git a/src/EntityComponents.c b/src/EntityComponents.c
+index 52c89830b..314d1b44b 100644
+--- a/src/EntityComponents.c
++++ b/src/EntityComponents.c
+@@ -1031,7 +1031,7 @@ void PhysicsComp_DoEntityPush(struct Entity* entity) {
+ 	int id;
+ 	dir.y = 0.0f;
+ 
+-	for (id = 0; id < ENTITIES_MAX_COUNT; id++) {
++	for (id = Entities_SE_First; id < ENTITIES_MAX_COUNT; id++) {
+ 		other = Entities.List[id];
+ 		if (!other || other == entity) continue;
+ 		if (!other->Model->pushes)     continue;
+diff --git a/src/EntityRenderers.c b/src/EntityRenderers.c
+index b9ab2a307..ff0259c05 100644
+--- a/src/EntityRenderers.c
++++ b/src/EntityRenderers.c
+@@ -403,7 +403,7 @@ void EntityNames_Render(void) {
+ 	hadFog = Gfx_GetFog();
+ 	if (hadFog) Gfx_SetFog(false);
+ 
+-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
++	for (i = Entities_SE_First; i < ENTITIES_MAX_COUNT; i++)
+ 	{
+ 		if (!Entities.List[i]) continue;
+ 		if (i != closestEntityId) DrawName(Entities.List[i]);
+@@ -426,7 +426,7 @@ void EntityNames_RenderHovered(void) {
+ 	allNames = !(Entities.NamesMode == NAME_MODE_HOVERED || Entities.NamesMode == NAME_MODE_ALL) 
+ 		&& p->Hacks.CanSeeAllNames;
+ 
+-	for (i = 0; i < ENTITIES_MAX_COUNT; i++) 
++	for (i = Entities_SE_First; i < ENTITIES_MAX_COUNT; i++)
+ 	{
+ 		e = Entities.List[i];
+ 		if (!e || e == &p->Base) continue;
 diff --git a/src/EnvRenderer.c b/src/EnvRenderer.c
 index 5e7cf6a4c..7edc2ed4f 100644
 --- a/src/EnvRenderer.c
@@ -1173,7 +1309,7 @@ index ccfee098e..70760c534 100644
      #define DEFAULT_VIEWDIST 192
  #else
 diff --git a/src/Generator.c b/src/Generator.c
-index d0331911e..ff15c6ab4 100644
+index d0331911e..7b86549a6 100644
 --- a/src/Generator.c
 +++ b/src/Generator.c
 @@ -1,4 +1,9 @@
@@ -1186,19 +1322,50 @@ index d0331911e..ff15c6ab4 100644
  #include "BlockID.h"
  #include "ExtMath.h"
  #include "Funcs.h"
-@@ -9,6 +14,11 @@
+@@ -9,6 +14,42 @@
  #include "Screens.h"
  #include "Window.h"
  
 +#ifdef CC_BUILD_SHADEREMU
 +/* the machine's float instructions are singles: a double is a library call an operation */
 +#define double float
++
++/* ExtMath.c's random numbers again, the same numbers, for the compiler to put in place: with */
++/*  n known the test for a power of two is its own, and a call each was 4M of the making. */
++#define SE_RND_VALUE (0x5DEECE66DULL)
++#define SE_RND_MASK ((1ULL << 48) - 1)
++
++static CC_INLINE int SE_Random_Next(RNGState* seed, int n) {
++	cc_int64 raw;
++	int bits, val;
++
++	if ((n & -n) == n) {
++		*seed = (*seed * SE_RND_VALUE + 0xBLL) & SE_RND_MASK;
++		raw   = (cc_int64)(*seed >> (48 - 31));
++		return (int)((n * raw) >> 31);
++	}
++	do {
++		*seed = (*seed * SE_RND_VALUE + 0xBLL) & SE_RND_MASK;
++		bits  = (int)(*seed >> (48 - 31));
++		val   = bits % n;
++	} while ((int)((cc_uint32)bits - (cc_uint32)val + (cc_uint32)(n - 1)) < 0);
++	return val;
++}
++
++static CC_INLINE float SE_Random_Float(RNGState* seed) {
++	int raw;
++	*seed = (*seed * SE_RND_VALUE + 0xBLL) & SE_RND_MASK;
++	raw   = (int)(*seed >> (48 - 24));
++	return raw / ((float)(1 << 24));
++}
++#define Random_Next  SE_Random_Next
++#define Random_Float SE_Random_Float
 +#endif
 +
  static const struct MapGenerator* gen_active;
  BlockRaw* Gen_Blocks;
  
-@@ -91,6 +101,15 @@ void Gen_Start(const struct MapGenerator* gen, int seed,
+@@ -91,6 +132,15 @@ void Gen_Start(const struct MapGenerator* gen, int seed,
  
  	gen_active = gen;
  	Gen_Reset();
@@ -1214,7 +1381,35 @@ index d0331911e..ff15c6ab4 100644
  	Gen_Blocks = (BlockRaw*)Mem_TryAlloc(World.Volume, 1);
  
  	if (!Gen_Blocks || !gen->Prepare(seed)) {
-@@ -314,6 +333,89 @@ static void NotchyGen_FloodFill(int index, BlockRaw block) {
+@@ -259,6 +309,27 @@ static void NotchyGen_FillOblateSpheroid(int x, int y, int z, float radius, Bloc
+ 	int index;
+ 	int xx, yy, zz, dx, dy, dz;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	/* The same blocks, in whole numbers: a sum of squares is under radiusSq when it is under */
++	/*  the next whole number, and a row's blocks are those within `dx` of x. No float a block. */
++	int whole = (int)radiusSq, left, x0, x1;
++	if ((float)whole < radiusSq) whole++;
++
++	for (yy = yBeg; yy <= yEnd; yy++) { dy = yy - y;
++		for (zz = zBeg; zz <= zEnd; zz++) { dz = zz - z;
++			left = whole - 2 * dy * dy - dz * dz;
++			if (left <= 0) continue;
++			for (dx = 0; (dx + 1) * (dx + 1) < left; dx++) { }
++
++			x0 = max(x - dx, xBeg); x1 = min(x + dx, xEnd);
++			index = World_Pack(x0, yy, zz);
++			for (xx = x0; xx <= x1; xx++, index++) {
++				if (Gen_Blocks[index] == BLOCK_STONE) Gen_Blocks[index] = block;
++			}
++		}
++	}
++	return;
++#endif
+ 	for (yy = yBeg; yy <= yEnd; yy++) { dy = yy - y;
+ 		for (zz = zBeg; zz <= zEnd; zz++) { dz = zz - z;
+ 			for (xx = xBeg; xx <= xEnd; xx++) { dx = xx - x;
+@@ -314,6 +385,114 @@ static void NotchyGen_FloodFill(int index, BlockRaw block) {
  }
  
  
@@ -1224,7 +1419,8 @@ index d0331911e..ff15c6ab4 100644
 +   which are whole 16 bytes of the height map and of every layer of blocks when the world's
 +   width is a multiple of 16. The noise tables are only read; the lowest height comes back
 +   as the job's answer. */
-+static struct { struct CombinedNoise* n1; struct CombinedNoise* n2; struct OctaveNoise* n3; struct OctaveNoise* strata; int minStoneY; } se_gen;
++static struct { struct CombinedNoise* n1; struct CombinedNoise* n2; struct OctaveNoise* n3; struct OctaveNoise* strata; int minStoneY;
++	struct OctaveNoise* sand; struct OctaveNoise* gravel; } se_gen;
 +
 +static int SE_HeightmapRows(int z0, int z1) {
 +	float hLow, hHigh, height;
@@ -1282,6 +1478,30 @@ index d0331911e..ff15c6ab4 100644
 +}
 +static unsigned SE_StrataJob(unsigned z0, unsigned z1) { SE_StrataRows((int)z0, (int)z1); return 0; }
 +
++/* The surface layer (NotchyGen_CreateSurfaceLayer's loop): a column's top block, and the one above it */
++static void SE_SurfaceRows(int z0, int z1) {
++	int hIndex = z0 * World.Width, index;
++	BlockRaw above;
++	int x, y, z;
++
++	for (z = z0; z < z1; z++) {
++		for (x = 0; x < World.Width; x++) {
++			y = heightmap[hIndex++];
++			if (y < 0 || y >= World.Height) continue;
++
++			index = World_Pack(x, y, z);
++			above = y >= World.MaxY ? BLOCK_AIR : Gen_Blocks[index + World.OneY];
++
++			if (above == BLOCK_STILL_WATER && (OctaveNoise_Calc(se_gen.gravel, (float)x, (float)z) > 12)) {
++				Gen_Blocks[index] = BLOCK_GRAVEL;
++			} else if (above == BLOCK_AIR) {
++				Gen_Blocks[index] = (y <= waterLevel && (OctaveNoise_Calc(se_gen.sand, (float)x, (float)z) > 8)) ? BLOCK_SAND : BLOCK_GRASS;
++			}
++		}
++	}
++}
++static unsigned SE_SurfaceJob(unsigned z0, unsigned z1) { SE_SurfaceRows((int)z0, (int)z1); return 0; }
++
 +/* Rows 0 to World.Length to this core and the workers; the least of what they answer. */
 +static cc_bool SE_GenShare(mcw_fn job, int (*rows)(int, int), void (*rowsVoid)(int, int), int* least) {
 +	int cores = mcw_count() + 1, share, k, z;
@@ -1304,7 +1524,7 @@ index d0331911e..ff15c6ab4 100644
  static void NotchyGen_CreateHeightmap(void) {
  	float hLow, hHigh, height;
  	int hIndex = 0, adjHeight;
-@@ -341,6 +443,11 @@ static void NotchyGen_CreateHeightmap(void) {
+@@ -341,6 +520,11 @@ static void NotchyGen_CreateHeightmap(void) {
  	OctaveNoise_Init(n3,   &rnd, 6);
  
  	Gen_CurrentState = "Building heightmap";
@@ -1316,7 +1536,7 @@ index d0331911e..ff15c6ab4 100644
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
  
-@@ -404,6 +511,11 @@ static void NotchyGen_CreateStrata(void) {
+@@ -404,6 +588,11 @@ static void NotchyGen_CreateStrata(void) {
  	OctaveNoise_Init(&n, &rnd, 8);
  
  	Gen_CurrentState = "Creating strata";
@@ -1324,6 +1544,47 @@ index d0331911e..ff15c6ab4 100644
 +	se_gen.strata = &n; se_gen.minStoneY = minStoneY;
 +	mcw_touch(Gen_Blocks, World.Volume);
 +	if (SE_GenShare(SE_StrataJob, NULL, SE_StrataRows, NULL)) return;
++#endif
+ 	for (z = 0; z < World.Length; z++) {
+ 		Gen_CurrentProgress = (float)z / World.Length;
+ 
+@@ -452,8 +641,14 @@ static void NotchyGen_CarveCaves(void) {
+ 		caveRadius = Random_Float(&rnd) * Random_Float(&rnd);
+ 
+ 		for (j = 0; j < caveLen; j++) {
++#ifdef CC_BUILD_SHADEREMU
++			float cosPhi = Math_CosF(phi);
++			caveX += Math_SinF(theta) * cosPhi;
++			caveZ += Math_CosF(theta) * cosPhi;
++#else
+ 			caveX += Math_SinF(theta) * Math_CosF(phi);
+ 			caveZ += Math_CosF(theta) * Math_CosF(phi);
++#endif
+ 			caveY += Math_SinF(phi);
+ 
+ 			theta      = theta + deltaTheta * 0.2f;
+@@ -495,8 +690,14 @@ static void NotchyGen_CarveOreVeins(float abundance, const char* state, BlockRaw
+ 		phi   = Random_Float(&rnd) * 2.0f * MATH_PI; deltaPhi   = 0.0f;
+ 
+ 		for (j = 0; j < veinLen; j++) {
++#ifdef CC_BUILD_SHADEREMU
++			float cosPhi = Math_CosF(phi);
++			veinX += Math_SinF(theta) * cosPhi;
++			veinZ += Math_CosF(theta) * cosPhi;
++#else
+ 			veinX += Math_SinF(theta) * Math_CosF(phi);
+ 			veinZ += Math_CosF(theta) * Math_CosF(phi);
++#endif
+ 			veinY += Math_SinF(phi);
+ 
+ 			theta      = deltaTheta * 0.2f;
+@@ -590,6 +791,10 @@ static void NotchyGen_CreateSurfaceLayer(void) {
+ 	OctaveNoise_Init(n2, &rnd, 8);
+ 
+ 	Gen_CurrentState = "Creating surface";
++#ifdef CC_BUILD_SHADEREMU
++	se_gen.sand = n1; se_gen.gravel = n2;
++	if (SE_GenShare(SE_SurfaceJob, NULL, SE_SurfaceRows, NULL)) return;
 +#endif
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
@@ -1339,8 +1600,36 @@ index 084b97498..b1d404a41 100644
  #include "String_.h"
  #include "LScreens.h"
  #include "LWidgets.h"
+diff --git a/src/Lighting.c b/src/Lighting.c
+index dc4055be8..5c4103952 100644
+--- a/src/Lighting.c
++++ b/src/Lighting.c
+@@ -379,8 +379,21 @@ void ClassicLighting_LightHint(int startX, int startY, int startZ) {
+ 	int z1 = max(startZ, 0), z2 = min(World.Length, startZ + EXTCHUNK_SIZE);
+ 	int xCount = x2 - x1, zCount = z2 - z1;
+ 	int skip[EXTCHUNK_SIZE * EXTCHUNK_SIZE];
+-
+-	int elemsLeft = Heightmap_InitialCoverage(x1, z1, xCount, zCount, skip);
++	int elemsLeft;
++
++#ifdef CC_BUILD_SHADEREMU
++	/* A column at a time, those not known yet: the same heights, a load and a test a block, */
++	/*  where a layer at a time with its runs to skip was 3M of the start's meshes. */
++	int x, z, hIndex;
++	for (z = z1; z < z2; z++) {
++		hIndex = Lighting_Pack(x1, z);
++		for (x = x1; x < x2; x++, hIndex++) {
++			if (classic_heightmap[hIndex] == HEIGHT_UNCALCULATED) ClassicLighting_CalcHeightAt(x, World.Height - 1, z, hIndex);
++		}
++	}
++	return;
++#endif
++	elemsLeft = Heightmap_InitialCoverage(x1, z1, xCount, zCount, skip);
+ 	if (!Heightmap_CalculateCoverage(x1, z1, xCount, zCount, elemsLeft, skip)) {
+ 		Heightmap_FinishCoverage(x1, z1, xCount, zCount);
+ 	}
 diff --git a/src/MapRenderer.c b/src/MapRenderer.c
-index fbe36dd58..73df5aa5f 100644
+index fbe36dd58..a1622ed18 100644
 --- a/src/MapRenderer.c
 +++ b/src/MapRenderer.c
 @@ -60,6 +60,9 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
@@ -1367,7 +1656,53 @@ index fbe36dd58..73df5aa5f 100644
  	if (chunk->allAir) return; /* do not recreate chunks completely air */
  
  	chunk->empty = false;
-@@ -404,12 +413,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
+@@ -279,13 +288,27 @@ void MapRenderer_RenderTranslucent(float delta) {
+ 	int vertices, batch;
+ 	if (!mapChunks) return;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	/* (the device's blended pass writes no depth: the walk that only fills it is left out) */
++	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
++	Gfx_SetAlphaBlending(true);
++	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
++	{
++		if (tranPartsCount[batch] <= 0) continue;
++		if (!hasTranParts[batch] && !checkTranParts[batch]) continue;
++
++		checkTranParts[batch] = false;
++		Atlas1D_Bind(batch);
++		RenderTranslucentBatch(batch);
++	}
++#else
+ 	/* First fill depth buffer */
+ 	vertices = Game_Vertices;
+ 	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
+ 	Gfx_SetAlphaBlending(false);
+ 	Gfx_DepthOnlyRendering(true);
+ 
+-	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) 
++	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
+ 	{
+ 		if (tranPartsCount[batch] <= 0) continue;
+ 		if (hasTranParts[batch] || checkTranParts[batch]) {
+@@ -301,7 +324,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+ 	Gfx_SetDepthWrite(false); /* already calculated depth values in depth pass */
+ 
+ 	Gfx_EnableMipmaps();
+-	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) 
++	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
+ 	{
+ 		if (tranPartsCount[batch] <= 0) continue;
+ 		if (!hasTranParts[batch]) continue;
+@@ -309,6 +332,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+ 		Atlas1D_Bind(batch);
+ 		RenderTranslucentBatch(batch);
+ 	}
++#endif
+ 	Gfx_DisableMipmaps();
+ 
+ 	Gfx_SetDepthWrite(true);
+@@ -404,12 +428,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
  *----------------------------------------------------Chunks mangagement---------------------------------------------------*
  *#########################################################################################################################*/
  static void FreeParts(void) {
@@ -1382,7 +1717,29 @@ index fbe36dd58..73df5aa5f 100644
  	Mem_Free(mapChunks);
  	Mem_Free(sortedChunks);
  	Mem_Free(renderChunks);
-@@ -482,6 +493,7 @@ static void RefreshChunks(void) {
+@@ -439,6 +465,21 @@ static void AllocateChunks(void) {
+ 
+ static void ResetPartFlags(void) {
+ 	int i;
++#ifdef CC_BUILD_SHADEREMU
++	/* (the atlases in use are all that is read, and this is every frame of a walk: the rest */
++	/*  of the 512 keep what they were given when the number in use last changed) */
++	static int used = -1;
++	int count = MapRenderer_1DUsedCount;
++	if (count != used) { used = count; count = ATLAS1D_MAX_ATLASES; }
++
++	for (i = 0; i < count; i++) {
++		checkNormParts[i] = true;
++		hasNormParts[i]   = false;
++		checkTranParts[i] = true;
++		hasTranParts[i]   = false;
++	}
++	return;
++#endif
+ 	for (i = 0; i < ATLAS1D_MAX_ATLASES; i++) {
+ 		checkNormParts[i] = true;
+ 		hasNormParts[i]   = false;
+@@ -482,6 +523,7 @@ static void RefreshChunks(void) {
  
  static void DeleteChunks(void) {
  	int i;
@@ -1390,7 +1747,7 @@ index fbe36dd58..73df5aa5f 100644
  	if (!mapChunks) return;
  
  	for (i = 0; i < chunksCount; i++) 
-@@ -535,7 +547,15 @@ static void RefreshBorderChunks(int maxHeight) {
+@@ -535,7 +577,15 @@ static void RefreshBorderChunks(int maxHeight) {
  *--------------------------------------------------Chunks updating/sorting------------------------------------------------*
  *#########################################################################################################################*/
  #define CHUNK_TARGET_TIME ((1.0f/30) + 0.01f)
@@ -1407,7 +1764,7 @@ index fbe36dd58..73df5aa5f 100644
  static Vec3 lastCamPos;
  static float lastYaw, lastPitch;
  /* Max distance from camera that chunks are rendered within */
-@@ -556,6 +576,126 @@ static void CalcViewDists(void) {
+@@ -556,6 +606,133 @@ static void CalcViewDists(void) {
  	renderDistSquared = AdjustDist(Game_ViewDistance);
  }
  
@@ -1418,6 +1775,7 @@ index fbe36dd58..73df5aa5f 100644
 +#include <stdlib.h>
 +#include <string.h>
 +#include "mcw.h"
++#include "Lighting.h"
 +cc_bool Gfx_SE_UnlockFrom(GfxResourceID vb, void* vertices, VertexFormat fmt, int count);
 +
 +static struct SEMeshJob se_job __attribute__((aligned(16)));
@@ -1523,6 +1881,12 @@ index fbe36dd58..73df5aa5f 100644
 +		n++;
 +	}
 +	if (!n) return;
++	/* (the light's heights of these chunks are made here: the worker then only reads them, and */
++	/*  never stores into 16 bytes of the height map that this core is storing into) */
++	for (i = 0; i < n; i++) {
++		Lighting.LightHint(se_chunks[i]->centreX - HALF_CHUNK_SIZE - 1, se_chunks[i]->centreY - HALF_CHUNK_SIZE - 1,
++			se_chunks[i]->centreZ - HALF_CHUNK_SIZE - 1);
++	}
 +	se_job.count  = n;
 +	se_out_serial = se_mesh_serial;
 +	se_running    = true;
@@ -1534,7 +1898,7 @@ index fbe36dd58..73df5aa5f 100644
  static int UpdateChunksAndVisibility(int* chunkUpdates) {
  	int renderDistSqr = renderDistSquared;
  	int buildDistSqr  = buildDistSquared;
-@@ -574,7 +714,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+@@ -574,7 +751,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -1543,7 +1907,7 @@ index fbe36dd58..73df5aa5f 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  		}
-@@ -610,7 +750,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
+@@ -610,7 +787,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -1552,7 +1916,7 @@ index fbe36dd58..73df5aa5f 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  
-@@ -638,11 +778,15 @@ static void UpdateChunks(float delta) {
+@@ -638,11 +815,15 @@ static void UpdateChunks(float delta) {
  
  	/* Build more chunks if 30 FPS or over, otherwise slowdown */
  	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1; 
@@ -1569,7 +1933,7 @@ index fbe36dd58..73df5aa5f 100644
  
  	renderChunksCount = samePos ?
  		UpdateChunksStill(&chunkUpdates) :
-@@ -651,6 +795,9 @@ static void UpdateChunks(float delta) {
+@@ -651,6 +832,9 @@ static void UpdateChunks(float delta) {
  	lastCamPos = Camera.CurrentPos;
  	lastPitch  = p->Base.Pitch;
  	lastYaw    = p->Base.Yaw;
@@ -1579,7 +1943,7 @@ index fbe36dd58..73df5aa5f 100644
  
  	if (!samePos || chunkUpdates) ResetPartFlags();
  }
-@@ -818,7 +965,7 @@ static void OnInit(void) {
+@@ -818,7 +1002,7 @@ static void OnInit(void) {
  	/* This = 87 fixes map being invisible when no textures */
  	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */
  	chunkPos   = IVec3_MaxValue();
@@ -1658,6 +2022,85 @@ index 0646e3916..be5e3b428 100644
  	#define PACKEDCOL_B_SHIFT  0
  	#define PACKEDCOL_G_SHIFT  8
  	#define PACKEDCOL_R_SHIFT 16
+diff --git a/src/Particle.c b/src/Particle.c
+index 690e1e9dd..90465ff6e 100644
+--- a/src/Particle.c
++++ b/src/Particle.c
+@@ -314,15 +314,36 @@ static void Terrain_RemoveAt(int i) {
+ 	terrain_count--;
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++/* The oldest `count` are gone, in one move: one by one was a copy of every particle for each */
++static void Terrain_RemoveFirst(int count) {
++	if (count <= 0) return;
++	Mem_Move(terrain_particles, terrain_particles + count, (terrain_count - count) * sizeof(struct TerrainParticle));
++	terrain_count -= count;
++}
++
++/* (those that live on keep their order, each moved once at most) */
++static void Terrain_Tick(float delta) {
++	int i, kept = 0;
++	for (i = 0; i < terrain_count; i++)
++	{
++		if (TerrainParticle_Tick(&terrain_particles[i], delta)) continue;
++		if (kept != i) terrain_particles[kept] = terrain_particles[i];
++		kept++;
++	}
++	terrain_count = kept;
++}
++#else
+ static void Terrain_Tick(float delta) {
+ 	int i;
+-	for (i = 0; i < terrain_count; i++) 
++	for (i = 0; i < terrain_count; i++)
+ 	{
+ 		if (TerrainParticle_Tick(&terrain_particles[i], delta)) {
+ 			Terrain_RemoveAt(i); i--;
+ 		}
+ 	}
+ }
++#endif
+ 
+ void Particles_BreakBlockEffect(IVec3 coords, BlockID old, BlockID now) {
+ 	struct TerrainParticle* p;
+@@ -366,6 +387,22 @@ void Particles_BreakBlockEffect(IVec3 coords, BlockID old, BlockID now) {
+ 
+ 	maxU2 = baseRec.u1 + maxU * uScale;
+ 	maxV2 = baseRec.v1 + maxV * vScale;
++#ifdef CC_BUILD_SHADEREMU
++	/* room for all of the block's particles at once: the oldest go, as they would one by one */
++	type = 0;
++	for (x = 0; x < GRID_SIZE; x++) {
++		for (y = 0; y < GRID_SIZE; y++) {
++			for (z = 0; z < GRID_SIZE; z++) {
++				cellX = (float)x / GRID_SIZE; cellY = (float)y / GRID_SIZE; cellZ = (float)z / GRID_SIZE;
++				cell  = Vec3_Create3(CELL_CENTRE + cellX, CELL_CENTRE / 2 + cellY, CELL_CENTRE + cellZ);
++				if (cell.x < minBB.x || cell.x > maxBB.x || cell.y < minBB.y
++					|| cell.y > maxBB.y || cell.z < minBB.z || cell.z > maxBB.z) continue;
++				type++;
++			}
++		}
++	}
++	Terrain_RemoveFirst(terrain_count + type - PARTICLES_MAX);
++#endif
+ 	for (x = 0; x < GRID_SIZE; x++) {
+ 		for (y = 0; y < GRID_SIZE; y++) {
+ 			for (z = 0; z < GRID_SIZE; z++) {
+diff --git a/src/Protocol.c b/src/Protocol.c
+index 7657a5ddd..721a74f9a 100644
+--- a/src/Protocol.c
++++ b/src/Protocol.c
+@@ -216,6 +216,9 @@ static void AddEntity(cc_uint8* data, EntityID id, const cc_string* name, const
+ 
+ 		NetPlayer_Init((struct NetPlayer*)e);
+ 		Entities.List[id] = e;
++#ifdef CC_BUILD_SHADEREMU
++		if (id < Entities_SE_First) Entities_SE_First = id;
++#endif
+ 		Event_RaiseInt(&EntityEvents.Added, id);
+ 	} else {
+ 		e = &Entities.CurPlayer->Base;
 diff --git a/src/Server.c b/src/Server.c
 index 761927b03..85e8ec121 100644
 --- a/src/Server.c

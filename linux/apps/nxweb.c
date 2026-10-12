@@ -53,6 +53,8 @@ static char *links;		/* every cur_link's address, one string after another */
 static int links_length, links_room, link_count;
 static int page_height, top;	/* in pixels; top is a multiple of line_h */
 static int dragging;
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN | \
+	GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ)
 
 static volatile uint32_t *regs;
 static const unsigned char *fetched;
@@ -815,6 +817,9 @@ layout(void)
 	int i = 0, n = 0, in_title = 0, title_n = 0, began = now_ms();
 
 	run_count = pool_length = links_length = link_count = 0;
+	/* room for the page's text and runs now: grown as they come, each is copied several times */
+	pool = grow(pool, &pool_room, page_length + 1024, 1);
+	runs = grow(runs, &run_room, page_length / 12 + 64, sizeof *runs);
 	memset(&root_style, 0, sizeof root_style);
 	root_style.bullet = 1;
 	root_style.display = D_BLOCK;
@@ -833,6 +838,15 @@ layout(void)
 		unsigned char c = page[i];
 		int used = 1, ch = c;
 
+		/* a word's plain letters, as many as follow: most of a page, and nothing below is theirs */
+		if (c > ' ' && c < 0x7f && c != '<' && c != '&' && !in_title && !skip && !hidden) {
+			if (n == (int)sizeof word - 1)
+				add_word(word, n), n = 0;
+			do
+				word[n++] = (char)c;
+			while (++i < page_length && n < (int)sizeof word - 1 && (c = page[i]) > ' ' && c < 0x7f && c != '<' && c != '&');
+			continue;
+		}
 		if (c == '<') {
 			int end = i + 1, quote;
 
@@ -917,8 +931,15 @@ find_sheets(void)
 	for (i = 0; i + 7 < page_length && sheet_count < MAX_SHEETS; i++) {
 		struct sheet *sh = &sheets[sheet_count];
 		char value[256], whole[256];
+		const char *tag = memchr(page + i, '<', (size_t)(page_length - i));
 
-		if (page[i] != '<' || (strncasecmp(page + i, "<style", 6) && strncasecmp(page + i, "<link", 5)))
+		/* (from tag to tag, not a character at a time) */
+		if (!tag)
+			break;
+		i = (int)(tag - page);
+		if (i + 7 >= page_length)
+			break;
+		if (strncasecmp(page + i, "<style", 6) && strncasecmp(page + i, "<link", 5))
 			continue;
 		for (end = i; end < page_length && page[end] != '>'; end++)
 			;
@@ -1080,14 +1101,14 @@ scroll_to(int y)
 
 /* ---- pages ---- */
 
+/* Shows a page whose text is the caller's allocation of n + 1 bytes or more: it is kept. */
 static void
-show(const char *html, int n, const char *note)
+show_kept(char *html, int n, const char *note)
 {
 	int i;
 
 	free(page);
-	page = malloc(n + 1);
-	memcpy(page, html, n);
+	page = html;
 	page_length = n;
 	top = 0;
 	/* another page: the last one's pictures go */
@@ -1107,6 +1128,15 @@ show(const char *html, int n, const char *note)
 		GrSetWindowTitle(window, caption);
 		draw_page();
 	}
+}
+
+static void
+show(const char *html, int n, const char *note)
+{
+	char *copy = malloc(n + 1);
+
+	memcpy(copy, html, n);
+	show_kept(copy, n, note);
 }
 
 static void
@@ -1165,11 +1195,10 @@ go(const char *where, int remember)
 			say("No such page", address);
 			return;
 		}
-		text = malloc(FETCH_MOST);
+		text = malloc(FETCH_MOST + 1);
 		n = fread(text, 1, FETCH_MOST, file);
 		fclose(file);
-		show(text, n, "from this computer");
-		free(text);
+		show_kept(text, n, "from this computer");
 		return;
 	}
 	if (!regs) {
@@ -1546,8 +1575,7 @@ main(int argc, char **argv)
 	}
 	go(argc > 1 ? argv[1] : HOME, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP |
-		GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ);
+	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
@@ -1569,17 +1597,22 @@ main(int argc, char **argv)
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (ui_wheel(&event))
 				scroll_to(top + 3 * line_h * ui_wheel_sum(&event));
-			else
+			else {
 				click(event.button.x, event.button.y);
+				ui_moves(window, EVENTS, dragging);	/* (the pointer's moves, while the scroll bar is held) */
+			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			dragging = 0;
+			ui_moves(window, EVENTS, 0);
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (dragging && (event.mouse.buttons & GR_BUTTON_L))
 				scroll_to(ui_scroll_to(event.mouse.y, BAR, view_height(), page_height, view_height()));
-			else
+			else {
 				dragging = 0;
+				ui_moves(window, EVENTS, 0);
+			}
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
 			key(event.keystroke.ch, event.keystroke.modifiers);

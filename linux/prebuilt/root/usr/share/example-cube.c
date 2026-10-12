@@ -70,7 +70,7 @@ main(void)
 			glColor4ub(colours[face][0], colours[face][1], colours[face][2], 255);
 			glDrawArrays(GL_QUADS, face * 4, 4);
 		}
-		seglSwap();
+		seglSwapEarly();	/* handed to the GPU and not waited for: the next frame is 33 ms away */
 	}
 	GrClose();
 	return 0;

@@ -21,6 +21,8 @@ extern "C" {
 #include "mcw.h"
 #include "tracer.h"
 extern char __DATA_BEGIN__[], _end[];
+float sinf(float), cosf(float);
+void sincosf(float, float*, float*);
 }
 
 #define MOST_W 640
@@ -37,6 +39,38 @@ static unsigned now_ms()
 static void pass()
 {
     __asm__ volatile(".word 0x0100000f");   // pause: the machine's pass ends
+}
+
+// The panel's circles ask for the same sines and cosines at every frame, and the C library
+// works each out in doubles, which are calls here (a third of a frame of the panel). The
+// library's own answers are kept by the angle's bits, and ImGui's calls come here.
+void sincosf(float x, float* s, float* c)
+{
+    static struct { unsigned bits; bool kept; float s, c; } known[256];
+    union { float f; unsigned u; } angle = {x};
+    auto& k = known[(angle.u * 2654435761u) >> 24];
+    if (!k.kept || k.bits != angle.u) {
+        volatile float again = x;   // (asked apart, or the compiler makes the two one call of this)
+        k.s = sinf(x);
+        k.c = cosf(again);
+        k.bits = angle.u;
+        k.kept = true;
+    }
+    *s = k.s;
+    *c = k.c;
+}
+
+// A worker stops at a page nobody has read yet: a model's boxes and triangles are read here first.
+static void read_model(int scene)
+{
+    if (scene < 1) return;
+    const struct pt_mesh& m = pt_meshes[scene - 1];
+    const volatile char* part[2] = {(const char*)m.nodes, (const char*)m.triangles};
+    size_t bytes[2] = {(size_t)m.node_count * sizeof(struct pt_node), (size_t)m.triangle_count * sizeof(struct pt_triangle)};
+    for (int i = 0; i < 2; i++) {
+        for (size_t at = 0; at < bytes[i]; at += 4096) (void)part[i][at];
+        (void)part[i][bytes[i] - 1];
+    }
 }
 
 // How many of the machine's worker cores the panel offers to trace with: all, half, a quarter,
@@ -88,15 +122,14 @@ int main()
         return 1;
     }
     // the picture: a texture where it lies, in GPU memory, and the samples' sums in memory
-    // that begins on 16 bytes (a worker's own to write, tile by tile)
+    // that begins on 16 bytes (a worker's own to write, tile by tile). Neither is cleared or
+    // touched here: a picture's own part of both is, when it is asked for.
     pt.pixels = (uint32_t*)seglMemory(MOST_W * MOST_H * 4);
     pt.sums = (float*)mcw_alloc(MOST_W * MOST_H * 3 * sizeof(float));
     if (!pt.pixels || !pt.sums) {
         fprintf(stderr, "nxpath: no memory for the picture\n");
         return 1;
     }
-    memset(pt.pixels, 0, MOST_W * MOST_H * 4);
-    mcw_touch(pt.sums, MOST_W * MOST_H * 3 * sizeof(float));
     GLuint texture;
     glGenTextures(1, &texture);
     atexit(mcw_close);
@@ -281,6 +314,11 @@ int main()
             glBindTexture(GL_TEXTURE_2D, texture);
             seglTexturePointer(pt.pixels, pt.width, pt.height, GL_RGBA);
             memset(pt.pixels, 0, (size_t)(pt.width * pt.height * 4));
+            if (workers) {
+                // (what the workers will write and read, here before them)
+                mcw_touch(pt.sums, (unsigned)(pt.width * pt.height) * 3 * sizeof(float));
+                read_model(scene);
+            }
             int s = 32;
             while (s > 1 && ((pt.width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((pt.height + s - 1) / s) < 24 * workers) s >>= 1;   // (this core alone: 32)
             pt.tile_h = s;

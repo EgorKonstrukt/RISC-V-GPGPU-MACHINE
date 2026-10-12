@@ -73,6 +73,223 @@ index d2e727d..f7dbec5 100644
  #ifndef _WIN32
      // step through each sub-directory before going for the win
      char* next = fname;
+diff --git a/common/file_posix.cpp b/common/file_posix.cpp
+index bcc4d64..31da2e1 100644
+--- a/common/file_posix.cpp
++++ b/common/file_posix.cpp
+@@ -29,6 +29,10 @@ public:
+     virtual void Close();
+ 
+ private:
++#ifdef SHADEREMU
++    struct ShaderEmu_Folder* Folder; /* the folder's names as kept, and how far into them this is */
++    int At;
++#endif
+     DIR* Directory;
+     struct dirent* DirEntry;
+     const char* FileFilter;
+@@ -38,10 +42,108 @@ private:
+     bool FindNextWithFilter();
+ };
+ 
++#ifdef SHADEREMU
++/*
++** A folder's names, read once. The game lists a folder for every file it looks for, to find it
++** in any spelling: 644 listings before Red Alert's first frame, ten million instructions.
++** Forgotten when the game writes or removes a file (rawfile.cpp) or makes a folder.
++*/
++#include <stdlib.h>
++struct ShaderEmu_Folder
++{
++    char* name;
++    struct dirent* entries;
++    unsigned char* opened; /* a name that could be opened when rawfile.cpp looked */
++    int count;
++};
++static ShaderEmu_Folder ShaderEmu_Folders[16];
++
++void ShaderEmu_Folders_Forget(void)
++{
++    for (int i = 0; i < 16; i++) {
++        free(ShaderEmu_Folders[i].name);
++        free(ShaderEmu_Folders[i].entries);
++        free(ShaderEmu_Folders[i].opened);
++        ShaderEmu_Folders[i].name = NULL;
++        ShaderEmu_Folders[i].entries = NULL;
++        ShaderEmu_Folders[i].opened = NULL;
++        ShaderEmu_Folders[i].count = 0;
++    }
++}
++
++static ShaderEmu_Folder* ShaderEmu_Folder_Of(const char* name)
++{
++    int free_at = -1;
++
++    for (int i = 0; i < 16; i++) {
++        if (ShaderEmu_Folders[i].name == NULL) {
++            free_at = free_at < 0 ? i : free_at;
++        } else if (strcmp(ShaderEmu_Folders[i].name, name) == 0) {
++            return &ShaderEmu_Folders[i];
++        }
++    }
++    DIR* directory = opendir(name);
++    if (directory == NULL) {
++        return NULL;
++    }
++    if (free_at < 0) {
++        ShaderEmu_Folders_Forget();
++        free_at = 0;
++    }
++    ShaderEmu_Folder* folder = &ShaderEmu_Folders[free_at];
++    int room = 0;
++    for (struct dirent* entry; (entry = readdir(directory)) != NULL;) {
++        if (folder->count == room) {
++            room = room ? room * 2 : 64;
++            folder->entries = (struct dirent*)realloc(folder->entries, room * sizeof(struct dirent));
++        }
++        folder->entries[folder->count++] = *entry;
++    }
++    closedir(directory);
++    folder->name = strdup(name);
++    folder->opened = (unsigned char*)calloc(folder->count + 1, 1);
++    return folder;
++}
++#endif
++
++#ifdef SHADEREMU
++/* What is known of a path before rawfile.cpp opens it only to see whether it is there (1,370 times before
++** Tiberian Dawn's first frame): 0, not among its folder's names; 1, there and opened before (`opened` says
++** that it was now); 2, not known. */
++int ShaderEmu_File_Listed(const char* path, bool opened)
++{
++    char folder_name[PATH_MAX];
++    const char* slash = strrchr(path, '/');
++    const char* name = slash ? slash + 1 : path;
++    size_t length = slash ? (size_t)(slash - path + 1) : 0;
++
++    if (length >= sizeof(folder_name) || !*name) {
++        return 2;
++    }
++    memcpy(folder_name, path, length);
++    folder_name[length] = 0;
++    ShaderEmu_Folder* folder = ShaderEmu_Folder_Of(length ? folder_name : ".");
++    if (folder == NULL || folder->opened == NULL) {
++        return 2;
++    }
++    for (int i = 0; i < folder->count; i++) {
++        if (strcmp(folder->entries[i].d_name, name) == 0) {
++            folder->opened[i] |= opened;
++            return folder->opened[i] ? 1 : 2;
++        }
++    }
++    return 0;
++}
++#endif
++
+ Find_File_Data_Posix::Find_File_Data_Posix()
+     : Directory(nullptr)
+     , DirEntry(nullptr)
+ {
++#ifdef SHADEREMU
++    Folder = NULL;
++    At = 0;
++#endif
+ }
+ 
+ Find_File_Data_Posix::~Find_File_Data_Posix()
+@@ -72,11 +174,21 @@ unsigned int Find_File_Data_Posix::GetTime() const
+ bool Find_File_Data_Posix::FindNextWithFilter()
+ {
+     while (true) {
++#ifdef SHADEREMU
++        DirEntry = Folder != NULL && At < Folder->count ? &Folder->entries[At++] : nullptr;
++#else
+         DirEntry = readdir(Directory);
++#endif
+         if (DirEntry == nullptr) {
+             return false;
+         }
++#ifdef SHADEREMU
++        /* (a name with no wildcard in it is compared: the same answer as matching it) */
++        if (strpbrk(FileFilter, "*?[\\") == NULL ? strcasecmp(FileFilter, DirEntry->d_name) == 0
++                                                  : fnmatch(FileFilter, DirEntry->d_name, FNM_PATHNAME | FNM_CASEFOLD) == 0) {
++#else
+         if (fnmatch(FileFilter, DirEntry->d_name, FNM_PATHNAME | FNM_CASEFOLD) == 0) {
++#endif
+             strcpy(FullName, DirName);
+             strcat(FullName, DirEntry->d_name);
+             break;
+@@ -96,29 +208,54 @@ bool Find_File_Data_Posix::FindFirst(const char* fname)
+     if (fdir != nullptr) {
+         strncat(DirName, fname, (fdir - fname + 1));
+         FileFilter = fdir + 1;
++#ifdef SHADEREMU
++        Folder = ShaderEmu_Folder_Of(DirName);
++#else
+         Directory = opendir(DirName);
++#endif
+     } else {
+         FileFilter = fname;
++#ifdef SHADEREMU
++        Folder = ShaderEmu_Folder_Of(".");
++#else
+         Directory = opendir(".");
++#endif
+     }
+ 
++#ifdef SHADEREMU
++    At = 0;
++    if (Folder == NULL) {
++        return false;
++    }
++#else
+     if (Directory == nullptr) {
+         return false;
+     }
++#endif
+ 
+     return FindNextWithFilter();
+ }
+ 
+ bool Find_File_Data_Posix::FindNext()
+ {
++#ifdef SHADEREMU
++    if (Folder == NULL) {
++        return false;
++    }
++#else
+     if (Directory == nullptr) {
+         return false;
+     }
++#endif
+     return FindNextWithFilter();
+ }
+ 
+ void Find_File_Data_Posix::Close()
+ {
++#ifdef SHADEREMU
++    Folder = NULL;
++    DirEntry = nullptr;
++#endif
+     if (Directory != nullptr) {
+         closedir(Directory);
+         Directory = nullptr;
+diff --git a/common/fixed.cpp b/common/fixed.cpp
+index 622c18b..73685d1 100644
+--- a/common/fixed.cpp
++++ b/common/fixed.cpp
+@@ -55,6 +55,11 @@ fixed::fixed(int numerator, int denominator)
+ {
+     if (denominator == 0) {
+         Data.Raw = 0U;
++#ifdef SHADEREMU
++    } else if ((unsigned)numerator < 65536u / (PRECISION >> 16) && denominator > 0) {
++        /* (the same in 32 bits: a 64-bit division is a library call of some 500 instructions) */
++        Data.Raw = (unsigned)numerator * PRECISION / (unsigned)denominator;
++#endif
+     } else {
+         Data.Raw = (unsigned int)(((uint64_t)numerator * PRECISION) / denominator);
+     }
 diff --git a/common/framelimit.cpp b/common/framelimit.cpp
 index 2a46e07..de9ec8e 100644
 --- a/common/framelimit.cpp
@@ -134,6 +351,504 @@ index 1dda825..c77c3fc 100644
      if (Lock()) {
          Buffer_Draw_Stamp_Clip(this,
                                 icondata,
+diff --git a/common/keybuff.cpp b/common/keybuff.cpp
+index 1f9575d..cce15ef 100644
+--- a/common/keybuff.cpp
++++ b/common/keybuff.cpp
+@@ -73,6 +73,58 @@ void BF_Copy(int width,
+ }
+ 
+ // Index 0 transparency
++#ifdef SHADEREMU
++#include "host.h"
++#include <stdlib.h>
++struct ShaderEmu_Span
++{
++    short first, last; // the row's first and last pixel (last < first: none)
++    int solid;         // nothing between them is clear
++};
++static struct
++{
++    const unsigned char* src;
++    int width, height, pitch;
++    ShaderEmu_Span* rows;
++} ShaderEmu_Spans[128];
++bool ShaderEmu_Stable_Shape; // what BF_Trans is given now does not change (Buffer_Frame_To_Page)
++
++/* (keyframe.cpp: the uncompressed shapes' buffer is used again from its start) */
++void ShaderEmu_Spans_Forget(void)
++{
++    for (int i = 0; i < 128; i++) {
++        free(ShaderEmu_Spans[i].rows);
++        ShaderEmu_Spans[i].rows = NULL;
++        ShaderEmu_Spans[i].src = NULL;
++    }
++}
++
++static ShaderEmu_Span* ShaderEmu_Spans_Of(const unsigned char* src, int width, int height, int pitch)
++{
++    unsigned at = (((uintptr_t)src >> 2) * 2654435761u) >> 25;
++
++    if (ShaderEmu_Spans[at].src != src || ShaderEmu_Spans[at].width != width || ShaderEmu_Spans[at].height != height
++        || ShaderEmu_Spans[at].pitch != pitch) {
++        ShaderEmu_Span* rows = (ShaderEmu_Span*)realloc(ShaderEmu_Spans[at].rows, height * sizeof(ShaderEmu_Span));
++        ShaderEmu_Spans[at].rows = rows;
++        ShaderEmu_Spans[at].src = rows ? src : NULL;
++        ShaderEmu_Spans[at].width = width, ShaderEmu_Spans[at].height = height, ShaderEmu_Spans[at].pitch = pitch;
++        for (int y = 0; rows && y < height; y++) {
++            const unsigned char* row = src + y * (width + pitch);
++            int a = host_first_pixel(row, width), b = a == width ? -1 : host_last_pixel(row, width);
++            rows[y].first = (short)a, rows[y].last = (short)b, rows[y].solid = 1;
++            for (int k = a; k <= b; k++) {
++                if (!row[k]) {
++                    rows[y].solid = 0;
++                    break;
++                }
++            }
++        }
++    }
++    return ShaderEmu_Spans[at].rows;
++}
++#endif
++
+ void BF_Trans(int width,
+               int height,
+               unsigned char* dst,
+@@ -84,6 +136,69 @@ void BF_Trans(int width,
+               unsigned char* fade_tab,
+               int count)
+ {
++#ifdef SHADEREMU
++    /*
++    ** The same by runs: nothing is passed over and what has pixels is copied, a word of the
++    ** source at a look where it lies on one. A pixel at a time this was most of what the
++    ** sidebar and its tabs cost (the credits' tab, drawn at every count: 13 thousand).
++    */
++    typedef unsigned int __attribute__((may_alias)) word;
++    /*
++    ** A shape that stays as it is (the uncompressed shapes' buffer) has each row's first and
++    ** last pixel kept, and whether all between are pixels: the power bar and the credits' tab
++    ** are drawn again every frame they change, 14 thousand instructions each by runs alone.
++    */
++    ShaderEmu_Span* spans = ShaderEmu_Stable_Shape && height <= 1024 ? ShaderEmu_Spans_Of(src, width, height, src_pitch) : NULL;
++    for (int row = 0; spans && row < height; row++, src += width + src_pitch, dst += width + dst_pitch) {
++        int from = spans[row].first, count = spans[row].last - from + 1;
++        if (count > 0 && spans[row].solid) {
++            memcpy(dst + from, src + from, count);
++        } else if (count > 0) {
++            for (int k = from; k < from + count; k++) {
++                if (src[k]) {
++                    dst[k] = src[k];
++                }
++            }
++        }
++    }
++    if (spans) {
++        return;
++    }
++    while (height--) {
++        int i = 0;
++        while (i < width) {
++            while (i < width && (((unsigned long)(src + i) & 3) || i + 4 > width) && !src[i]) {
++                i++;
++            }
++            while (i + 4 <= width && !((unsigned long)(src + i) & 3) && !*(const word*)(src + i)) {
++                i += 4;
++            }
++            while (i < width && !src[i]) {
++                i++;
++            }
++            int from = i;
++            while (i < width && src[i]) {
++                word four;
++                if (!((unsigned long)(src + i) & 3) && i + 4 <= width
++                    && !(((four = *(const word*)(src + i)) - 0x01010101u) & ~four & 0x80808080u)) {
++                    i += 4;
++                } else {
++                    i++;
++                }
++            }
++            if (i - from >= 16) {
++                memcpy(dst + from, src + from, i - from);
++            } else {
++                for (int k = from; k < i; k++) {
++                    dst[k] = src[k];
++                }
++            }
++        }
++        src += width + src_pitch;
++        dst += width + dst_pitch;
++    }
++    return;
++#endif
+     while (height--) {
+         for (int i = width; i > 0; --i) {
+             unsigned char sbyte = *src++;
+@@ -1424,7 +1539,13 @@ void Buffer_Frame_To_Page(int x,
+     // Here we just use the function that will blit the entire frame
+     // using the appropriate effects.
+     if (blit_height > 0 && blit_width > 0) {
++#ifdef SHADEREMU
++        ShaderEmu_Stable_Shape = UseBigShapeBuffer != 0;
++#endif
+         OldShapeJumpTable[blit_style & 0xF](
+             blit_width, blit_height, dst, src, dst_pitch, src_pitch, ghost_lookup, ghost_table, fade_table, fade_count);
++#ifdef SHADEREMU
++        ShaderEmu_Stable_Shape = false;
++#endif
+     }
+ }
+diff --git a/common/keyframe.cpp b/common/keyframe.cpp
+index 67b97b0..279b856 100644
+--- a/common/keyframe.cpp
++++ b/common/keyframe.cpp
+@@ -123,8 +123,17 @@ int Get_Last_Frame_Length(void)
+     return (Length);
+ }
+ 
++#ifdef SHADEREMU
++extern "C" void host_frames_forget(void);
++void ShaderEmu_Spans_Forget(void); /* keybuff.cpp */
++#endif
++
+ void Reset_Theater_Shapes(void)
+ {
++#ifdef SHADEREMU
++    host_frames_forget(); /* (a worker core may be reading a shape file that goes now) */
++    ShaderEmu_Spans_Forget();
++#endif
+     /*
+     ** Delete any previously allocated slots
+     */
+@@ -645,3 +654,123 @@ bool Get_Build_Frame_Palette(void const* dataptr, void* palette)
+     }
+     return (false);
+ }
++
++#ifdef SHADEREMU
++/*
++** A frame as Build_Frame makes it, with nothing of the program's but the two buffers: a worker
++** core's to call (host.c). The buffer has the frame's width times its height, and 4 KB before.
++*/
++static void ShaderEmu_Delta(unsigned char* to, unsigned char* end, const unsigned char* from)
++{
++    for (;;) {
++        unsigned count = *from++;
++        int value = -1;
++
++        if (!(count & 0x80)) {
++            if (count == 0) {
++                count = *from++;
++                value = *from++;
++            }
++        } else {
++            count &= 0x7f;
++            if (count == 0) {
++                count = from[0] + (from[1] << 8);
++                from += 2;
++                if (count == 0) {
++                    return;
++                }
++                if (count & 0x8000) {
++                    if (count & 0x4000) {
++                        value = *from++;
++                    }
++                    count &= 0x3fff;
++                } else {
++                    to += count;
++                    continue;
++                }
++            } else {
++                to += count;
++                continue;
++            }
++        }
++        if (to > end || count > (unsigned)(end - to)) {
++            return; /* (not a shape's data: the file went while this was read) */
++        }
++        if (value >= 0) {
++            for (; count > 0; --count) {
++                *to++ ^= (unsigned char)value;
++            }
++        } else {
++            for (; count > 0; --count) {
++                *to++ ^= *from++;
++            }
++        }
++    }
++}
++
++extern "C" int ShaderEmu_Frame_Size(const void* file, int* width, int* height)
++{
++    KeyFrameHeaderType keyfr;
++
++    memcpy(&keyfr, file, sizeof(keyfr));
++    *width = le16toh(keyfr.width);
++    *height = le16toh(keyfr.height);
++    return le16toh(keyfr.frames);
++}
++
++extern "C" int ShaderEmu_Frame_Into(const void* file, int frame, void* buffer)
++{
++    const unsigned char* data = (const unsigned char*)file;
++    unsigned char* to = (unsigned char*)buffer;
++    uint32_t offset[SUBFRAMEOFFS];
++    KeyFrameHeaderType keyfr;
++    int i;
++
++    memcpy(&keyfr, file, sizeof(keyfr));
++    if (frame < 0 || frame >= le16toh(keyfr.frames)) {
++        return 0;
++    }
++    unsigned short size = (unsigned short)(le16toh(keyfr.width) * le16toh(keyfr.height));
++    int skip = le16toh(keyfr.flags) & 1 ? 768 : 0;
++    memset(offset, 0, sizeof(offset));
++    memcpy(offset, data + ((unsigned)frame << 3) + sizeof(KeyFrameHeaderType), 12);
++    for (i = 0; i < 3; i++) {
++        offset[i] = le32toh(offset[i]);
++    }
++    int flags = (int)(offset[0] >> 24);
++    if (flags & KF_KEYFRAME) {
++        LCW_Uncompress(data + (offset[0] & 0x00FFFFFF) + skip, to, size);
++        return 1;
++    }
++    int at = frame;
++    if (flags & KF_DELTA) {
++        at = (unsigned short)offset[1];
++        memcpy(offset, data + ((unsigned)at << 3) + sizeof(KeyFrameHeaderType), sizeof(offset));
++        for (i = 0; i < SUBFRAMEOFFS; i++) {
++            offset[i] = le32toh(offset[i]);
++        }
++    }
++    unsigned key = offset[1] & 0x00FFFFFF;
++    const unsigned char* from = data + key + skip;
++    if ((unsigned)LCW_Uncompress(from, to, size) > size) {
++        return 0;
++    }
++    ShaderEmu_Delta(to, to + size, from + ((offset[0] & 0x00FFFFFF) - key));
++    if (flags & KF_DELTA) {
++        int sub = 2;
++        for (at++; at <= frame;) {
++            ShaderEmu_Delta(to, to + size, from + ((offset[sub] & 0x00FFFFFF) - key));
++            at++;
++            sub += 2;
++            if (sub >= SUBFRAMEOFFS - 1 && at <= frame) {
++                memcpy(offset, data + ((unsigned)at << 3) + sizeof(KeyFrameHeaderType), sizeof(offset));
++                for (i = 0; i < SUBFRAMEOFFS; i++) {
++                    offset[i] = le32toh(offset[i]);
++                }
++                sub = 0;
++            }
++        }
++    }
++    return 1;
++}
++#endif
+diff --git a/common/mixfile.h b/common/mixfile.h
+index 109c35f..ba5543f 100644
+--- a/common/mixfile.h
++++ b/common/mixfile.h
+@@ -28,6 +28,11 @@
+ #include "pkstraw.h"
+ #include "shastraw.h"
+ #include "wwstd.h"
++#ifdef SHADEREMU
++#include <stdio.h>
++void* ShaderEmu_Mix_Map(FILE* file, long at, int size); /* rawfile.cpp */
++bool ShaderEmu_Mix_Unmap(void* data);
++#endif
+ #include "rndstraw.h"
+ #include "paths.h"
+ 
+@@ -209,7 +214,10 @@ template <class T, class TCRC> MixFileClass<T, TCRC>::~MixFileClass(void)
+         free((char*)Filename);
+     }
+     if (Data != NULL && IsAllocated) {
+-        delete[] static_cast<char*>(Data);
++#ifdef SHADEREMU
++        if (!ShaderEmu_Mix_Unmap(Data))
++#endif
++            delete[] static_cast<char*>(Data);
+         IsAllocated = false;
+     }
+     Data = NULL;
+@@ -602,6 +610,28 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
+             Data = buffer->Get_Buffer();
+         }
+     } else {
++#ifdef SHADEREMU
++        /* (mapped where it is a file of its own and nothing is to be summed: rawfile.cpp) */
++#ifdef SHADEREMU_RA
++        const bool map_it = true;
++#else
++        const bool map_it = !IsDigest;
++#endif
++        if (map_it) {
++            T whole(Filename);
++            whole.Open(READ);
++            whole.Bias(0);
++            whole.Bias(DataStart);
++            if (!whole.Is_Resident() && whole.ShaderEmu_File() != NULL) {
++                Data = ShaderEmu_Mix_Map(whole.ShaderEmu_File(), whole.BiasStart, DataSize);
++            }
++            whole.Close();
++            if (Data != NULL) {
++                IsAllocated = true;
++                return (true);
++            }
++        }
++#endif
+         Data = new char[DataSize];
+         IsAllocated = true;
+     }
+@@ -689,7 +719,10 @@ template <class T, class TCRC> bool MixFileClass<T, TCRC>::Cache(Buffer const* b
+ template <class T, class TCRC> void MixFileClass<T, TCRC>::Free(void)
+ {
+     if (Data != NULL && IsAllocated) {
+-        delete[] static_cast<char*>(Data);
++#ifdef SHADEREMU
++        if (!ShaderEmu_Mix_Unmap(Data))
++#endif
++            delete[] static_cast<char*>(Data);
+     }
+     Data = NULL;
+     IsAllocated = false;
+diff --git a/common/rawfile.cpp b/common/rawfile.cpp
+index b0e0525..76b572b 100644
+--- a/common/rawfile.cpp
++++ b/common/rawfile.cpp
+@@ -55,6 +55,59 @@
+ 
+ #include "debugstring.h"
+ #include "rawfile.h"
++#ifdef SHADEREMU
++#include <sys/mman.h>
++/*
++** A file's bytes from `at` on as memory: the file's own pages, all there at once, and a page
++** the game writes to (a shape's header) becomes a copy of its own. Reading a mix into the heap
++** was the pages and a copy of them: 25 million instructions of Red Alert's start, and 24 MB.
++*/
++static struct
++{
++    void* data;
++    void* base;
++    size_t length;
++} ShaderEmu_Maps[16];
++
++void* ShaderEmu_Mix_Map(FILE* file, long at, int size)
++{
++    long page = at & ~4095L;
++    size_t length = (size_t)size + (size_t)(at - page);
++
++    for (int i = 0; i < 16; i++) {
++        if (ShaderEmu_Maps[i].data == NULL) {
++            void* base = mmap(NULL, length, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fileno(file), page);
++            if (base == MAP_FAILED) {
++                return (NULL);
++            }
++            mprotect(base, length, PROT_READ | PROT_WRITE);
++            ShaderEmu_Maps[i].base = base;
++            ShaderEmu_Maps[i].length = length;
++            ShaderEmu_Maps[i].data = (char*)base + (at - page);
++            return (ShaderEmu_Maps[i].data);
++        }
++    }
++    return (NULL);
++}
++
++bool ShaderEmu_Mix_Unmap(void* data)
++{
++    for (int i = 0; i < 16; i++) {
++        if (ShaderEmu_Maps[i].data == data && data != NULL) {
++            munmap(ShaderEmu_Maps[i].base, ShaderEmu_Maps[i].length);
++            ShaderEmu_Maps[i].data = NULL;
++            return (true);
++        }
++    }
++    return (false);
++}
++
++void ShaderEmu_Folders_Forget(void); /* file_posix.cpp: the folders' names it keeps are not all there is now */
++int ShaderEmu_File_Listed(const char* path, bool opened);
++#define SHADEREMU_FOLDERS_FORGET() ShaderEmu_Folders_Forget()
++#else
++#define SHADEREMU_FOLDERS_FORGET()
++#endif
+ #include "file.h"
+ #include "wwstd.h"
+ 
+@@ -268,10 +321,12 @@ int RawFileClass::Open(int rights)
+ 
+         case WRITE:
+             Handle = raw_fopen(Filename, "wb");
++            SHADEREMU_FOLDERS_FORGET();
+             break;
+ 
+         case READ | WRITE:
+             Handle = raw_fopen(Filename, "rwb");
++            SHADEREMU_FOLDERS_FORGET();
+             break;
+         }
+ 
+@@ -341,10 +396,19 @@ int RawFileClass::Is_Available(int forced)
+     **	CD-ROM, this routine will return a failure condition. In all but the missing file
+     **	condition, go through the normal error recover channels.
+     */
++#ifdef SHADEREMU
++    int known = ShaderEmu_File_Listed(Filename, false);
++    if (known != 2) {
++        return (known);
++    }
++#endif
+     Handle = raw_fopen(Filename, "r");
+     if (Handle == nullptr) {
+         return (false);
+     }
++#ifdef SHADEREMU
++    ShaderEmu_File_Listed(Filename, true);
++#endif
+ 
+     /*
+     **	Since the file could be opened, then close it and return that the file exists.
+@@ -795,6 +859,7 @@ int RawFileClass::Delete(void)
+             Error(errno, false, Filename);
+             return (false);
+         }
++        SHADEREMU_FOLDERS_FORGET();
+         break;
+     }
+ 
+diff --git a/common/rawfile.h b/common/rawfile.h
+index 73a5a86..cd2cd6a 100644
+--- a/common/rawfile.h
++++ b/common/rawfile.h
+@@ -124,6 +124,14 @@ protected:
+ 
+     int Raw_Seek(int pos, int dir = SEEK_CUR);
+ 
++#ifdef SHADEREMU
++public:
++    FILE* ShaderEmu_File(void) const /* (mixfile.h maps a file it keeps in memory) */
++    {
++        return (Handle);
++    }
++#endif
++
+ private:
+     /*
+     **	This is the low level DOS handle. A -1 indicates an empty condition.
+@@ -131,6 +139,11 @@ private:
+     FILE* Handle;
+ };
+ 
++#ifdef SHADEREMU
++void* ShaderEmu_Mix_Map(FILE* file, long at, int size);
++bool ShaderEmu_Mix_Unmap(void* data);
++#endif
++
+ /***********************************************************************************************
+  * RawFileClass::File_Name -- Returns with the filename associate with the file object.        *
+  *                                                                                             *
 diff --git a/common/search.h b/common/search.h
 index 53f0a1a..f1887e5 100644
 --- a/common/search.h
@@ -217,6 +932,46 @@ index ea6a5c0..31c6e4b 100644
      return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
  }
  
+diff --git a/common/winstub.cpp b/common/winstub.cpp
+index ca9dd27..3eaab0f 100644
+--- a/common/winstub.cpp
++++ b/common/winstub.cpp
+@@ -46,6 +46,35 @@ void Load_Title_Screen(const char* name, GraphicViewPortClass* video_page, unsig
+     GraphicBufferClass* load_buffer;
+     const char* ext = strrchr(name, '.');
+ 
++#ifdef SHADEREMU
++    /*
++    ** The picture last unpacked is kept, with its palette: Red Alert shows its title five times
++    ** on the way to a mission, 2.4 million instructions each time it is unpacked.
++    */
++    static char kept_name[64];
++    static GraphicBufferClass* kept;
++    static unsigned char kept_palette[768];
++    if (kept != NULL && !strcmp(kept_name, name)) {
++        if (palette != NULL) {
++            memcpy(palette, kept_palette, sizeof(kept_palette));
++        }
++        kept->Blit(*video_page);
++        return;
++    }
++    if (!strcasecmp(ext, ".PCX") && strlen(name) < sizeof(kept_name)) {
++        load_buffer = Read_PCX_File(name, (char*)kept_palette, NULL, 0);
++        if (load_buffer) {
++            delete kept;
++            kept = load_buffer;
++            strcpy(kept_name, name);
++            if (palette != NULL) {
++                memcpy(palette, kept_palette, sizeof(kept_palette));
++            }
++            kept->Blit(*video_page);
++            return;
++        }
++    } else
++#endif
+     if (!strcasecmp(ext, ".PCX"))
+         load_buffer = Read_PCX_File(name, (char*)palette, NULL, 0); // Load 640x400 title
+     else if (!strcasecmp(ext, ".CPS")) {
 diff --git a/tiberiandawn/CMakeLists.txt b/tiberiandawn/CMakeLists.txt
 index a26cf46..e489e91 100644
 --- a/tiberiandawn/CMakeLists.txt
@@ -229,8 +984,52 @@ index a26cf46..e489e91 100644
      door.cpp
      drive.cpp
      drop.cpp
+diff --git a/tiberiandawn/anim.cpp b/tiberiandawn/anim.cpp
+index 1360f92..755ba67 100644
+--- a/tiberiandawn/anim.cpp
++++ b/tiberiandawn/anim.cpp
+@@ -54,6 +54,21 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++#ifdef SHADEREMU
++/* (where the GPU draws the map a change only tells the scene: no cell is painted over, map.cpp) */
++extern bool ShaderEmu_GL_Live, ShaderEmu_Foot_Overlaps;
++void ShaderEmu_GL_Near(CELL cell);
++#define SHADEREMU_REFRESH(cell, list)                                                                                  \
++    do {                                                                                                               \
++        if (ShaderEmu_GL_Live && !ShaderEmu_Foot_Overlaps) {                                                           \
++            ShaderEmu_GL_Near(cell);                                                                                   \
++        } else {                                                                                                       \
++            Map.Refresh_Cells(cell, list);                                                                             \
++        }                                                                                                              \
++    } while (0)
++#else
++#define SHADEREMU_REFRESH(cell, list) Map.Refresh_Cells(cell, list)
++#endif
+ 
+ /***********************************************************************************************
+  * AnimClass::Validate -- validates anim pointer															  *
+@@ -343,7 +358,7 @@ bool AnimClass::Mark(MarkType mark)
+ {
+     Validate();
+     if (ObjectClass::Mark(mark)) {
+-        Map.Refresh_Cells(Coord_Cell(Center_Coord()), Overlap_List());
++        SHADEREMU_REFRESH(Coord_Cell(Center_Coord()), Overlap_List());
+         //		ObjectClass::Mark(mark);
+         return (true);
+     }
+@@ -773,7 +788,7 @@ void AnimClass::AI(void)
+     **	occur behind other ground objects) always cause the cell to be redrawn.
+     */
+     if (!Delay && Class->IsGroundLayer) {
+-        Map.Refresh_Cells(Coord_Cell(Center_Coord()), Overlap_List());
++        SHADEREMU_REFRESH(Coord_Cell(Center_Coord()), Overlap_List());
+     }
+ 
+     /*
 diff --git a/tiberiandawn/cell.cpp b/tiberiandawn/cell.cpp
-index c7ad7f4..da11175 100644
+index c7ad7f4..29ce086 100644
 --- a/tiberiandawn/cell.cpp
 +++ b/tiberiandawn/cell.cpp
 @@ -138,6 +138,58 @@ CellClass::CellClass(void)
@@ -331,7 +1130,24 @@ index c7ad7f4..da11175 100644
          object->Next = 0;
      } else {
          while (optr) {
-@@ -1860,11 +1930,57 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
+@@ -780,6 +850,16 @@ void CellClass::Overlap_Down(ObjectClass* object)
+  * HISTORY:                                                                                    *
+  *   07/18/1994 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/* What Overlap_Down() does for an object that is not kept in the list (map.cpp): the cell reveals it. */
++void CellClass::ShaderEmu_Overlap_Seen(ObjectClass* object)
++{
++    if (IsVisible) {
++        object->Revealed(PlayerPtr);
++    }
++}
++#endif
++
+ void CellClass::Overlap_Up(ObjectClass* object)
+ {
+     Validate();
+@@ -1860,11 +1940,57 @@ CellClass const* CellClass::Adjacent_Cell(FacingType face) const
   * HISTORY:                                                                *
   *   04/24/1995 PWG : Created.                                             *
   *=========================================================================*/
@@ -389,7 +1205,7 @@ index c7ad7f4..da11175 100644
      for (HousesType lp = HOUSE_FIRST; lp < HOUSE_COUNT; lp++) {
          if (lp == house)
              continue;
-@@ -1874,6 +1990,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
+@@ -1874,6 +2000,7 @@ void CellClass::Adjust_Threat(HousesType house, int threat_value)
              house_ptr->Adjust_Threat(region, threat_value);
          }
      }
@@ -397,7 +1213,7 @@ index c7ad7f4..da11175 100644
      if (Debug_Threat) {
          Map.Flag_To_Redraw(true);
      }
-@@ -2547,14 +2664,33 @@ void CellClass::Shimmer(void)
+@@ -2547,14 +2674,33 @@ void CellClass::Shimmer(void)
   * HISTORY:                                                                                    *
   *   08/17/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
@@ -432,10 +1248,39 @@ index c7ad7f4..da11175 100644
      return (ptr);
  }
 diff --git a/tiberiandawn/cell.h b/tiberiandawn/cell.h
-index f9c20ea..810138e 100644
+index f9c20ea..307e158 100644
 --- a/tiberiandawn/cell.h
 +++ b/tiberiandawn/cell.h
-@@ -331,4 +331,17 @@ private:
+@@ -191,6 +191,18 @@ public:
+     //----------------------------------------------------------------
+     CellClass(void);
+     ~CellClass(void){};
++#ifdef SHADEREMU
++    /* What the constructor sets in a cell that is all zeros already (MapClass::Init_Cells clears them in one piece). */
++    void ShaderEmu_Fresh(void)
++    {
++        Overlay = OVERLAY_NONE;
++        Smudge = SMUDGE_NONE;
++        TType = TEMPLATE_NONE;
++        Owner = HOUSE_NONE;
++        InfType = HOUSE_NONE;
++        OverrideLand = LAND_COUNT;
++    }
++#endif
+ 
+     int operator==(CellClass const& cell) const
+     {
+@@ -247,6 +259,9 @@ public:
+     void Occupy_Down(ObjectClass* object);
+     void Occupy_Up(ObjectClass* object);
+     void Overlap_Down(ObjectClass* object);
++#ifdef SHADEREMU
++    void ShaderEmu_Overlap_Seen(ObjectClass* object);
++#endif
+     void Overlap_Up(ObjectClass* object);
+     bool Flag_Place(HousesType house);
+     bool Flag_Remove(void);
+@@ -331,4 +346,17 @@ private:
      */
  };
  
@@ -1008,7 +1853,7 @@ index 20ff4f6..719e623 100644
              || Lepton_To_Pixel(Coord_Y(DesiredTacticalCoord)) != Lepton_To_Pixel(Coord_Y(TacticalCoord))) {
  
 diff --git a/tiberiandawn/display.h b/tiberiandawn/display.h
-index 42d052d..837c926 100644
+index 42d052d..48bb75e 100644
 --- a/tiberiandawn/display.h
 +++ b/tiberiandawn/display.h
 @@ -145,6 +145,9 @@ public:
@@ -1021,33 +1866,507 @@ index 42d052d..837c926 100644
  
      /*
      **	Added functionality.
+@@ -197,6 +200,14 @@ public:
+ 
+     void Flag_Cell(CELL cell)
+     {
++#ifdef SHADEREMU
++        /* (the GPU's scene keeps a cell's rectangles until it is told: gl.cpp) */
++        extern bool ShaderEmu_GL_Live;
++        void ShaderEmu_GL_Cell(CELL cell);
++        if (ShaderEmu_GL_Live) {
++            ShaderEmu_GL_Cell(cell);
++        }
++#endif
+         Flag_To_Redraw(false);
+         IsToRedraw = true;
+         CellRedraw[cell] = true;
+diff --git a/tiberiandawn/findpath.cpp b/tiberiandawn/findpath.cpp
+index 029c3fc..4ab682b 100644
+--- a/tiberiandawn/findpath.cpp
++++ b/tiberiandawn/findpath.cpp
+@@ -154,6 +154,26 @@ static unsigned int RightOverlap[MAP_CELL_TOTAL / 32]; // overlap list for the r
+ static CELL DestLocation;
+ static CELL StartLocation;
+ 
++#ifdef SHADEREMU
++extern "C" {
++#include "host.h"
++}
++/*
++** A search may be another core's (ShaderEmu_Find_Path): each core has these for itself, 16
++** bytes apart from another's. The core is in the threshold's upper bits all the way down.
++*/
++#define PATH_CORES 4
++static struct alignas(16) path_core {
++    PathType path;
++    unsigned seen; /* a bit for each answer the search has had */
++    unsigned turn; /* which unit's searches this one is of */
++    FacingType moves[256];
++    unsigned int overlap[3][MAP_CELL_TOTAL / 32];
++} ShaderEmu_Core[PATH_CORES];
++static unsigned ShaderEmu_Path_Turn, ShaderEmu_Path_Stop; /* (a search of the turn that is stopped ends early) */
++#define PATH_STOPPED(who) ((who) && ShaderEmu_Core[who].turn == ShaderEmu_Path_Stop)
++#endif
++
+ /***************************************************************************
+  * Point_Relative_To_Line -- Relation between a point and a line           *
+  *                                                                         *
+@@ -515,7 +535,15 @@ bool FootClass::Register_Cell(PathType* path, CELL cell, FacingType dir, int cos
+ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
+ {
+     CELL source = Coord_Cell(Coord); // Source expressed as cell
++#ifdef SHADEREMU
++    int who = threshhold >> 4;
++    PathType& path = ShaderEmu_Core[who].path;
++    unsigned int(&MainOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[0];
++    unsigned int(&LeftOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[1];
++    unsigned int(&RightOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[2];
++#else
+     static PathType path;            // Main path control.
++#endif
+     CELL next;                       // Next cell to enter
+     CELL startcell;                  // Cell we started in
+     FacingType direction;            // Working direction of look ahead.
+@@ -546,12 +574,19 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+     ** Set the draw path variable to draw the path of the selected unit
+     ** if necessary.
+     */
+-    if (!Debug_Find_Path) {
+-        DrawPath = Is_Selected_By_Player() && Special.IsShowPath;
+-    } else {
+-        DrawPath = Is_Selected_By_Player();
++#ifdef SHADEREMU
++    if (!who) /* (another core's search is of the same unit: these are set, and not its to store) */
++#endif
++    {
++        if (!Debug_Find_Path) {
++            DrawPath = Is_Selected_By_Player() && Special.IsShowPath;
++        } else {
++            DrawPath = Is_Selected_By_Player();
++        }
++        Debug_Draw_Map("Initial Draw", source, dest, false);
++        StartLocation = source;
++        DestLocation = dest;
+     }
+-    Debug_Draw_Map("Initial Draw", source, dest, false);
+ 
+     //	MoveMask = flags;
+     if (Team && Team->Class->IsRoundAbout) {
+@@ -562,9 +597,6 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+         unit_threat = threat = -1;
+     }
+ 
+-    StartLocation = source;
+-    DestLocation = dest;
+-
+     /*
+     ** Initialize the path structure so that we can keep track of the
+     ** path.
+@@ -614,6 +646,10 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+     **    step #1.
+     */
+     while (path.Length < maxlen) {
++#ifdef SHADEREMU
++        if (PATH_STOPPED(who))
++            break;
++#endif
+ 
+     top_of_list:
+         /*
+@@ -968,6 +1004,10 @@ bool FootClass::Follow_Edge(CELL start,
+     **	or run out of moves.
+     */
+     while (path->Length < max_cells) {
++#ifdef SHADEREMU
++        if (PATH_STOPPED(threshhold >> 4))
++            return (false);
++#endif
+ 
+         /*
+         **	Look in all the adjacent cells to determine a passable one that
+@@ -1424,12 +1464,238 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
+     return (-1);
+ }
+ 
++#ifdef SHADEREMU
++/*
++** What Can_Enter_Cell said of a cell, kept while one object's searches go on with nothing
++** changed between them (FootClass::Basic_Path: up to four, over the same cells; no version of
++** it looks at the facing). TDAWN_CHECK_ENTER=1 asks again every time and compares.
++*/
++alignas(16) static unsigned char ShaderEmu_Enter[PATH_CORES][MAP_CELL_TOTAL]; /* (a core has its own) */
++alignas(16) static unsigned short ShaderEmu_Enter_At[PATH_CORES][MAP_CELL_TOTAL];
++static unsigned short ShaderEmu_Enter_Now; /* 0: nothing is kept */
++static unsigned ShaderEmu_Enter_Kept, ShaderEmu_Enter_Wrong;
++static struct search {
++    CELL dest;
++    int maxlen;
++    int threshhold;
++    unsigned seen;
++    PathType path;
++    FacingType moves[256];
++    unsigned int overlap[MAP_CELL_TOTAL / 32];
++} ShaderEmu_Search[4];
++static int ShaderEmu_Searches;
++static int ShaderEmu_Path_Out[PATH_CORES]; /* the threshold core k is out searching with, less one */
++static bool ShaderEmu_Path_Long;           /* the last unit's first search was: the next has help */
++
++static void ShaderEmu_Enter_Report(void)
++{
++    fprintf(stderr, "tdawn: %u answers about cells kept within a search, %u of them wrong\n", ShaderEmu_Enter_Kept,
++            ShaderEmu_Enter_Wrong);
++}
++
++void ShaderEmu_Enter_Keep(bool keep)
++{
++    static unsigned short turn;
++    static int check = -1;
++
++    if (check < 0) {
++        check = getenv("TDAWN_CHECK_ENTER") != NULL;
++        if (check) {
++            atexit(ShaderEmu_Enter_Report);
++        }
++    }
++    if (keep && ++turn == 0) {
++        memset(ShaderEmu_Enter_At, 0, sizeof(ShaderEmu_Enter_At));
++        turn = 1;
++    }
++    ShaderEmu_Enter_Now = keep ? turn : 0;
++    ShaderEmu_Searches = 0;
++    /* searches nobody asked the result of are stopped, and waited for: the unit is put back next */
++    for (int k = 1; k < PATH_CORES; k++) {
++        if (ShaderEmu_Path_Out[k]) {
++            ShaderEmu_Path_Stop = ShaderEmu_Path_Turn;
++            host_path_wait(k);
++            ShaderEmu_Path_Out[k] = 0;
++        }
++    }
++    if (keep && ++ShaderEmu_Path_Turn == 0) {
++        ShaderEmu_Path_Turn = 1;
++    }
++}
++
++/*
++** Searches differ only in the threshold, which is compared with a cell's answer and nowhere
++** else: one that met no answer between its threshold and another's went the other's way,
++** step for step. Its result is put back as that search would leave it.
++*/
++static struct search* ShaderEmu_Path_Same(CELL dest, int maxlen, int threshhold)
++{
++    for (struct search* s = ShaderEmu_Search; s < ShaderEmu_Search + ShaderEmu_Searches; s++) {
++        int low = s->threshhold < threshhold ? s->threshhold : threshhold;
++        int high = s->threshhold < threshhold ? threshhold : s->threshhold;
++        if (s->dest == dest && s->maxlen == maxlen && !(s->seen & ((2u << high) - (2u << low)))) {
++            return s;
++        }
++    }
++    return NULL;
++}
++
++static struct search* ShaderEmu_Path_Keep(struct path_core* core, CELL dest, int maxlen, int threshhold)
++{
++    if (ShaderEmu_Searches == 4) {
++        return NULL;
++    }
++    struct search* s = &ShaderEmu_Search[ShaderEmu_Searches++];
++    s->dest = dest;
++    s->maxlen = maxlen;
++    s->threshhold = threshhold;
++    s->seen = core->seen;
++    s->path = core->path;
++    memcpy(s->moves, core->path.Command, maxlen);
++    memcpy(s->overlap, core->path.Overlap, sizeof(s->overlap));
++    return s;
++}
++
++/* A search on a worker core, into the core's own memory: the threshold and the core, and the place. */
++unsigned FootClass::ShaderEmu_Path_Job(unsigned object, unsigned what)
++{
++    int who = what >> 4 & 15;
++    struct path_core* core = &ShaderEmu_Core[who];
++
++    core->seen = 0;
++    core->turn = ShaderEmu_Path_Turn;
++    ((FootClass*)object)->Find_Path((CELL)(what >> 16), core->moves, what >> 8 & 255, (MoveType)(what & 255));
++    return 1;
++}
++
++/*
++** Find_Path, or what it would find. A unit that follows one whose first search was long has
++** its next search made by a worker core meanwhile (nothing changes between a unit's searches,
++** and a search stores only into its core's own memory). TDAWN_CHECK_PATHS=1 compares.
++*/
++PathType* FootClass::ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
++{
++    static int check = -1;
++    static unsigned reused, helped, wrong;
++    struct path_core* core = &ShaderEmu_Core[0];
++    struct search* s;
++    PathType* path;
++
++    if (check < 0) {
++        check = getenv("TDAWN_CHECK_PATHS") != NULL;
++        if (check) {
++            atexit([]() {
++                fprintf(stderr, "tdawn: %u searches not run again and %u another core's, %u of them wrong\n", reused,
++                        helped, wrong);
++            });
++        }
++    }
++    if (!ShaderEmu_Enter_Now || !final_moves || maxlen > 200) {
++        return Find_Path(dest, final_moves, maxlen, threshhold);
++    }
++    s = ShaderEmu_Path_Same(dest, maxlen, threshhold);
++    if (s) {
++        reused++;
++    } else {
++        for (int k = 1; k < PATH_CORES; k++) {
++            if (ShaderEmu_Path_Out[k] == threshhold + 1) {
++                host_path_wait(k);
++                ShaderEmu_Path_Out[k] = 0;
++                s = ShaderEmu_Path_Keep(&ShaderEmu_Core[k], dest, maxlen, threshhold);
++                helped += s != NULL;
++            }
++        }
++    }
++    if (s) {
++        if (check) {
++            path = Find_Path(dest, final_moves, maxlen, threshhold);
++            PathType same = s->path;
++            same.Command = final_moves;
++            same.Overlap = path->Overlap;
++            wrong += memcmp(path, &same, sizeof(same)) != 0 || memcmp(final_moves, s->moves, s->path.Length) != 0
++                     || memcmp(path->Overlap, s->overlap, sizeof(s->overlap)) != 0;
++            return path;
++        }
++        path = &core->path;
++        *path = s->path;
++        path->Command = final_moves;
++        path->Overlap = core->overlap[0];
++        memcpy(final_moves, s->moves, maxlen);
++        memcpy(path->Overlap, s->overlap, sizeof(s->overlap));
++        return path;
++    }
++
++    /*
++    ** The searches that may follow this one begin on other cores: the one that always does
++    ** after a unit's first, and after a second all the rest.
++    */
++    bool first = ShaderEmu_Searches == 0;
++    int cores = ShaderEmu_Path_Long && threshhold > MOVE_CLOAK ? host_path_cores() : 0;
++    if (cores > 0) {
++        int k = 1;
++        int from = first ? MOVE_CLOAK : threshhold + 1;
++        int to = first ? MOVE_CLOAK : ShaderEmu_Search[0].threshhold - 1;
++        StartLocation = Coord_Cell(Coord);
++        DestLocation = dest;
++        for (int other = from; other <= to && k <= cores && !ShaderEmu_Path_Out[k]; other++) {
++            if (ShaderEmu_Path_Same(dest, maxlen, other)) {
++                continue;
++            }
++            ShaderEmu_Path_Out[k] = other + 1;
++            host_path_post(k, ShaderEmu_Path_Job, (unsigned)(uintptr_t)this,
++                           (unsigned)dest << 16 | (unsigned)maxlen << 8 | k << 4 | other);
++            k++;
++        }
++    }
++    core->seen = 0;
++    unsigned began = host_cycles();
++    path = Find_Path(dest, final_moves, maxlen, threshhold);
++    if (first) {
++        ShaderEmu_Path_Long = host_cycles() - began > 30000;
++    }
++    ShaderEmu_Path_Keep(core, dest, maxlen, threshhold);
++    return path;
++}
++#endif
++
+ int FootClass::Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold)
+ {
++#ifdef SHADEREMU
++    MoveType move;
++    int who = threshhold >> 4;
++    threshhold = (MoveType)(threshhold & 15);
++    if (ShaderEmu_Enter_Now && (unsigned)cell < MAP_CELL_TOTAL) {
++        if (ShaderEmu_Enter_At[who][cell] == ShaderEmu_Enter_Now) {
++            move = (MoveType)ShaderEmu_Enter[who][cell];
++            if (!who) { /* (the counts and the check are the first core's) */
++                static int check = -1;
++                if (check < 0) {
++                    check = getenv("TDAWN_CHECK_ENTER") && atoi(getenv("TDAWN_CHECK_ENTER"));
++                }
++                ShaderEmu_Enter_Kept++;
++                ShaderEmu_Enter_Wrong += check && move != Can_Enter_Cell(cell, face);
++            }
++        } else {
++            move = Can_Enter_Cell(cell, face);
++            ShaderEmu_Enter[who][cell] = (unsigned char)move;
++            ShaderEmu_Enter_At[who][cell] = ShaderEmu_Enter_Now;
++        }
++    } else {
++        move = Can_Enter_Cell(cell, face);
++    }
++    ShaderEmu_Core[who].seen |= 1u << move;
++#else
+     MoveType move = Can_Enter_Cell(cell, face);
++#endif
+ 
++#ifdef SHADEREMU
++    /* (a cell that is free passes any threshold: only a cloaked blocker's distance is asked) */
++    if (move == MOVE_CLOAK && Distance(cell) > 1)
++        threshhold = MOVE_MOVING_BLOCK;
++#else
+     if (move < MOVE_MOVING_BLOCK && Distance(cell) > 1)
+         threshhold = MOVE_MOVING_BLOCK;
++#endif
+ 
+     if (move > threshhold)
+         return (0);
 diff --git a/tiberiandawn/flasher.cpp b/tiberiandawn/flasher.cpp
-index 05e581f..9685b10 100644
+index 05e581f..b81c326 100644
 --- a/tiberiandawn/flasher.cpp
 +++ b/tiberiandawn/flasher.cpp
-@@ -78,11 +78,19 @@ void FlasherClass::Debug_Dump(MonoClass* mono) const
+@@ -78,11 +78,15 @@ void FlasherClass::Debug_Dump(MonoClass* mono) const
  bool FlasherClass::Process(void)
  {
      // 2019/09/20 JAS - Flashing info needs to exist per player
-+#ifdef SHADEREMU
-+    /* (nearly always none of them is counting: found out without a branch for each) */
-+    unsigned any = 0;
-     for (int i = 0; i < HOUSE_COUNT; i++) {
+-    for (int i = 0; i < HOUSE_COUNT; i++) {
 -        if (FlashCountPerPlayer[i]) {
 -            FlashCountPerPlayer[i]--;
--        }
-+        any |= FlashCountPerPlayer[i];
-     }
-+    if (any)
++#ifdef SHADEREMU
++    /* (nearly always none of them is counting: the largest of them says so by itself) */
++    if (ShaderEmu_FlashLeft && ShaderEmu_FlashLeft--)
 +#endif
 +        for (int i = 0; i < HOUSE_COUNT; i++) {
 +            if (FlashCountPerPlayer[i]) {
 +                FlashCountPerPlayer[i]--;
 +            }
-+        }
+         }
+-    }
  
      if (FlashCount) {
          FlashCount--;
+diff --git a/tiberiandawn/flasher.h b/tiberiandawn/flasher.h
+index c06b275..14469ca 100644
+--- a/tiberiandawn/flasher.h
++++ b/tiberiandawn/flasher.h
+@@ -61,6 +61,9 @@ public:
+         for (int i = 0; i < HOUSE_COUNT; ++i) {
+             FlashCountPerPlayer[i] = 0;
+         }
++#ifdef SHADEREMU
++        ShaderEmu_FlashLeft = 0;
++#endif
+     }
+     FlasherClass(NoInitClass const&)
+     {
+@@ -79,6 +82,10 @@ public:
+     // 2019/09/20 JAS - Flashing info needs to exist per player
+     unsigned int Get_Flashing_Flags() const;
+     unsigned int FlashCountPerPlayer[HOUSE_COUNT];
++#ifdef SHADEREMU
++    /* The largest of those counts: while it is nothing, none of them is counting (flasher.cpp). */
++    unsigned int ShaderEmu_FlashLeft;
++#endif
+ };
+ 
+ #endif
+diff --git a/tiberiandawn/foot.cpp b/tiberiandawn/foot.cpp
+index 2c4a157..17ee12e 100644
+--- a/tiberiandawn/foot.cpp
++++ b/tiberiandawn/foot.cpp
+@@ -321,11 +321,21 @@ bool FootClass::Mark(MarkType mark)
+             }
+             break;
+ 
+-        default:
++        default: {
++#ifdef SHADEREMU
++            /* (the GPU's scene is told it changed here: no cell is painted over, and none need be found) */
++            extern bool ShaderEmu_GL_Live, ShaderEmu_Foot_Overlaps;
++            void ShaderEmu_GL_Near(CELL cell);
++            if (ShaderEmu_GL_Live && !ShaderEmu_Foot_Overlaps) {
++                ShaderEmu_GL_Near(cell);
++                break;
++            }
++#endif
+             Map.Refresh_Cells(cell, Overlap_List());
+             Map.Refresh_Cells(cell, Occupy_List());
+             break;
+         }
++        }
+         return (true);
+     }
+     return (false);
+@@ -347,6 +357,12 @@ bool FootClass::Mark(MarkType mark)
+  * HISTORY:                                                                                    *
+  *   10/17/1994 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++void ShaderEmu_Enter_Keep(bool keep);
++/* (a search that must come out as an earlier one of this object's is not run again: findpath.cpp) */
++#define Find_Path ShaderEmu_Find_Path
++#endif
++
+ bool FootClass::Basic_Path(void)
+ {
+     PathType* path; // Pointer to path control structure.
+@@ -408,6 +424,9 @@ bool FootClass::Basic_Path(void)
+ 
+         if (!skip_path) {
+             Mark(MARK_UP);
++#ifdef SHADEREMU
++            ShaderEmu_Enter_Keep(true); /* (findpath.cpp: nothing changes until the Mark below) */
++#endif
+             Path[0] = FACING_NONE; // Probably not necessary, but...
+ 
+             /*
+@@ -503,6 +522,9 @@ bool FootClass::Basic_Path(void)
+                 memcpy(&Path[0], &workpath1[0], MIN(path->Length, (int)sizeof(Path)));
+             }
+ 
++#ifdef SHADEREMU
++            ShaderEmu_Enter_Keep(false);
++#endif
+             Mark(MARK_DOWN);
+         }
+ 
+diff --git a/tiberiandawn/foot.h b/tiberiandawn/foot.h
+index 14320b1..b67299b 100644
+--- a/tiberiandawn/foot.h
++++ b/tiberiandawn/foot.h
+@@ -291,6 +291,10 @@ public:
+ private:
+     int Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold);
+     PathType* Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
++#ifdef SHADEREMU
++    PathType* ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
++    static unsigned ShaderEmu_Path_Job(unsigned object, unsigned what);
++#endif
+     void Debug_Draw_Map(const char* txt, CELL start, CELL dest, bool pause);
+     void Debug_Draw_Path(PathType* path);
+     bool Follow_Edge(CELL start,
+diff --git a/tiberiandawn/gscreen.cpp b/tiberiandawn/gscreen.cpp
+index 4efa828..9b98877 100644
+--- a/tiberiandawn/gscreen.cpp
++++ b/tiberiandawn/gscreen.cpp
+@@ -389,7 +389,13 @@ void GScreenClass::Render(void)
+         if (Messages.Num_Messages() > 0) {
+             Messages.Set_Width(Lepton_To_Cell(Map.TacLeptonWidth) * ICON_PIXEL_W);
+         }
+-        Messages.Draw();
++#ifdef SHADEREMU
++        /* (over the GPU's map a message stays as it was printed: gl.cpp) */
++        extern bool ShaderEmu_GL_Live;
++        bool ShaderEmu_GL_Messages(unsigned signature, int count);
++        if (!ShaderEmu_GL_Live || ShaderEmu_GL_Messages(Messages.ShaderEmu_Signature(), Messages.Num_Messages()))
++#endif
++            Messages.Draw();
+ 
+ #ifndef REMASTER_BUILD
+         Blit_Display();
 diff --git a/tiberiandawn/help.cpp b/tiberiandawn/help.cpp
 index eb7bece..e7a4ef0 100644
 --- a/tiberiandawn/help.cpp
@@ -1182,11 +2501,36 @@ index f4f1ef3..ea8fa26 100644
      GScreenClass::Decode_Pointers();
  }
 diff --git a/tiberiandawn/layer.cpp b/tiberiandawn/layer.cpp
-index bb688bc..01baf5a 100644
+index bb688bc..425f746 100644
 --- a/tiberiandawn/layer.cpp
 +++ b/tiberiandawn/layer.cpp
-@@ -86,6 +86,28 @@ bool LayerClass::Submit(ObjectClass const* object, bool sort)
+@@ -84,8 +84,53 @@ bool LayerClass::Submit(ObjectClass const* object, bool sort)
+  *   10/17/1994 JLB : Created.                                                                 *
+  *   03/10/1995 JLB : Uses comparison operator.                                                *
   *=============================================================================================*/
++#ifdef SHADEREMU
++/*
++** Where an object sorts. A building's and a tree's place is their coordinate and their type's
++** size, worked out again only when the coordinate is another: they are most of the layer.
++*/
++static inline COORDINATE ShaderEmu_Sort_Key(ObjectClass* object)
++{
++    if (object->ShaderEmu_SortState == 1 && object->ShaderEmu_SortFor == object->Coord) {
++        return object->ShaderEmu_SortKey;
++    }
++    COORDINATE key = object->Sort_Y();
++    if (object->ShaderEmu_SortState == 0) {
++        RTTIType kind = object->What_Am_I();
++        object->ShaderEmu_SortState = kind == RTTI_BUILDING || kind == RTTI_TERRAIN ? 1 : 2;
++    }
++    if (object->ShaderEmu_SortState == 1) {
++        object->ShaderEmu_SortFor = object->Coord;
++        object->ShaderEmu_SortKey = key;
++    }
++    return key;
++}
++#endif
++
  void LayerClass::Sort(void)
  {
 +#ifdef SHADEREMU
@@ -1196,10 +2540,10 @@ index bb688bc..01baf5a 100644
 +    */
 +    if (Count() > 1) {
 +        ObjectClass* lower = (*this)[0];
-+        COORDINATE lower_y = lower->Sort_Y();
++        COORDINATE lower_y = ShaderEmu_Sort_Key(lower);
 +        for (int index = 0; index < Count() - 1; index++) {
 +            ObjectClass* next = (*this)[index + 1];
-+            COORDINATE next_y = next->Sort_Y();
++            COORDINATE next_y = ShaderEmu_Sort_Key(next);
 +            if (next_y < lower_y) {
 +                (*this)[index + 1] = lower;
 +                (*this)[index] = next;
@@ -1214,8 +2558,30 @@ index bb688bc..01baf5a 100644
      for (int index = 0; index < Count() - 1; index++) {
          if (*(*this)[index + 1] < *(*this)[index]) {
              ObjectClass* temp;
+@@ -138,11 +183,21 @@ int LayerClass::Sorted_Add(ObjectClass const* const object)
+     **	There is room for the new object now. Add it to the right sorted position.
+     */
+     int index;
++#ifdef SHADEREMU
++    /* (the new object asked for its place once, not at every comparison, and the others as Sort() asks them) */
++    COORDINATE place = object->Sort_Y();
++    for (index = 0; index < ActiveCount; index++) {
++        if (ShaderEmu_Sort_Key((*this)[index]) > place) {
++            break;
++        }
++    }
++#else
+     for (index = 0; index < ActiveCount; index++) {
+         if ((*(*this)[index]) > (*object)) {
+             break;
+         }
+     }
++#endif
+ 
+     /*
+     **	Make room if the insertion spot is not at the end of the vector.
 diff --git a/tiberiandawn/logic.cpp b/tiberiandawn/logic.cpp
-index 3b894e4..4f5e38b 100644
+index 3b894e4..729253e 100644
 --- a/tiberiandawn/logic.cpp
 +++ b/tiberiandawn/logic.cpp
 @@ -175,9 +175,22 @@ void LogicClass::Debug_Dump(MonoClass* mono) const
@@ -1241,7 +2607,7 @@ index 3b894e4..4f5e38b 100644
  
      FramesPerSecond++;
  
-@@ -201,11 +214,22 @@ void LogicClass::AI(void)
+@@ -201,11 +214,31 @@ void LogicClass::AI(void)
      /*
      **	AI for all sentient objects is processed.
      */
@@ -1251,20 +2617,29 @@ index 3b894e4..4f5e38b 100644
          int count = Count();
  
 +#ifdef SHADEREMU
-+        unsigned began = host_cycles(), kind = (unsigned)obj->What_Am_I();
-         obj->AI();
-+        if (host_cycles() - began > ShaderEmu_Logic_Worst[0]) {
-+            ShaderEmu_Logic_Worst[0] = host_cycles() - began;
-+            ShaderEmu_Logic_Worst[1] = kind;
-+            ShaderEmu_Logic_Worst[2] = began;
++        /* (which object was the dearest is only found out for TDAWN_SLOW: asking costs each of them) */
++        static int timed = -1;
++        if (timed < 0) {
++            timed = getenv("TDAWN_SLOW") != NULL;
++        }
++        if (timed) {
++            unsigned began = host_cycles(), kind = (unsigned)obj->What_Am_I();
++            obj->AI();
++            if (host_cycles() - began > ShaderEmu_Logic_Worst[0]) {
++                ShaderEmu_Logic_Worst[0] = host_cycles() - began;
++                ShaderEmu_Logic_Worst[1] = kind;
++                ShaderEmu_Logic_Worst[2] = began;
++            }
++        } else {
++            obj->AI();
 +        }
 +#else
-+        obj->AI();
+         obj->AI();
 +#endif
  
          /*
          **	If the object was destroyed in the process of performing its AI, then
-@@ -218,6 +242,7 @@ void LogicClass::AI(void)
+@@ -218,6 +251,7 @@ void LogicClass::AI(void)
      }
  
      //	Heap_Dump_Check( "After Object AI" );
@@ -1272,7 +2647,7 @@ index 3b894e4..4f5e38b 100644
  
      /*
      **	A second pass through the sentient objects is required so that the appropriate scan
-@@ -271,7 +296,9 @@ void LogicClass::AI(void)
+@@ -271,7 +305,9 @@ void LogicClass::AI(void)
      /*
      **	Map related logic is performed.
      */
@@ -1283,20 +2658,205 @@ index 3b894e4..4f5e38b 100644
      //	Heap_Dump_Check( "After Map.Logic" );
  
 diff --git a/tiberiandawn/map.cpp b/tiberiandawn/map.cpp
-index 4d484e7..0eee7b6 100644
+index 4d484e7..2006f69 100644
 --- a/tiberiandawn/map.cpp
 +++ b/tiberiandawn/map.cpp
-@@ -530,6 +530,9 @@ void MapClass::Init_Cells(void)
+@@ -52,6 +52,55 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++#ifdef SHADEREMU
++/*
++** An object that moved does not change the cells it left and came to where the GPU draws the
++** map (gl.cpp): the scene is made again if that is near it, and no cell is asked anything.
++*/
++extern bool ShaderEmu_GL_Live, ShaderEmu_GL_Stale;
++void ShaderEmu_GL_Near(CELL cell);
++/*
++** Which objects overlap a cell is asked by the game's own drawing of the map, and of buildings
++** and trees by the base's plan and the radar. Where the GPU draws the map (gl.cpp) what moves
++** stays out of those lists: keeping them was a quarter of a battle's logic. A cell still
++** reveals what comes to overlap it, which is the one thing the lists' keeping did besides.
++*/
++bool ShaderEmu_Foot_Overlaps = true;
++static inline bool ShaderEmu_Is_Foot(ObjectClass* object)
++{
++    RTTIType kind = object->What_Am_I();
++    return kind != RTTI_BUILDING && kind != RTTI_TERRAIN; /* (what moves or passes: all but those two) */
++}
++#define SHADEREMU_NO_OVERLAP(object)                                                                                   \
++    (!ShaderEmu_Foot_Overlaps && GameToPlay != GAME_GLYPHX_MULTIPLAYER && ShaderEmu_Is_Foot(object))
++#define SHADEREMU_KNOWN(object) (!(object)->Is_Techno() || ((TechnoClass*)(object))->Is_Discovered_By_Player(PlayerPtr))
++
++void ShaderEmu_Foot_Overlaps_Off(void)
++{
++    if (!ShaderEmu_Foot_Overlaps) {
++        return;
++    }
++    ShaderEmu_Foot_Overlaps = false;
++    for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        CellClass& c = Map[cell];
++        for (int index = 0; index < (int)(sizeof(c.Overlapper) / sizeof(c.Overlapper[0])); index++) {
++            if (c.Overlapper[index] != NULL && ShaderEmu_Is_Foot(c.Overlapper[index])) {
++                c.Overlapper[index] = NULL;
++            }
++        }
++    }
++}
++#define SHADEREMU_MOVED(cell)                                                                                          \
++    if (ShaderEmu_GL_Live) {                                                                                           \
++        if (!ShaderEmu_GL_Stale) {                                                                                     \
++            ShaderEmu_GL_Near(cell);                                                                                   \
++        }                                                                                                              \
++    } else {                                                                                                           \
++        (*this)[cell].Redraw_Objects();                                                                                \
++    }
++#else
++#define SHADEREMU_MOVED(cell) (*this)[cell].Redraw_Objects()
++#endif
+ #include "tile.h"
+ 
+ #define MCW MAP_CELL_W
+@@ -527,9 +576,20 @@ void MapClass::Free_Cells(void)
+ void MapClass::Init_Cells(void)
+ {
+     TotalValue = 0;
++#ifdef SHADEREMU
++    /* (what CellClass's constructor does, the clearing in one piece: this is run 16 times before a mission's first frame) */
++    memset(&Array[0], 0, MAP_CELL_TOTAL * sizeof(CellClass));
++    for (int index = 0; index < MAP_CELL_TOTAL; index++) {
++        Array[index].ShaderEmu_Fresh();
++    }
++#else
      for (int index = 0; index < MAP_CELL_TOTAL; index++) {
          new (&Array[index]) CellClass;
      }
++#endif
 +#ifdef SHADEREMU
 +    ShaderEmu_Occupied_Rebuild(true);
 +#endif
  }
  
  /***********************************************************************************************
-@@ -1536,6 +1539,10 @@ int MapClass::Cell_Region(CELL cell)
+@@ -756,16 +816,28 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Occupy_Down(object);
+             (*this)[newcell].Recalc_Attributes();
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ 
++#ifdef SHADEREMU
++    if (SHADEREMU_NO_OVERLAP(object)) {
++        if (!SHADEREMU_KNOWN(object)) {
++            for (list = object->Overlap_List(); *list != REFRESH_EOL; list++) {
++                if ((unsigned)(cell + *list) < MAP_CELL_TOTAL) {
++                    (*this)[(CELL)(cell + *list)].ShaderEmu_Overlap_Seen(object);
++                }
++            }
++        }
++        return;
++    }
++#endif
+     list = object->Overlap_List();
+     while (*list != REFRESH_EOL) {
+         CELL newcell = cell + *list++;
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Overlap_Down(object);
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ }
+@@ -799,16 +871,21 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Occupy_Up(object);
+             (*this)[newcell].Recalc_Attributes();
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ 
++#ifdef SHADEREMU
++    if (SHADEREMU_NO_OVERLAP(object)) {
++        return;
++    }
++#endif
+     list = object->Overlap_List();
+     while (*list != REFRESH_EOL) {
+         CELL newcell = cell + *list++;
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Overlap_Up(object);
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ }
+@@ -839,12 +916,25 @@ void MapClass::Overlap_Down(CELL cell, ObjectClass* object)
+     if (!object)
+         return;
+ 
++#ifdef SHADEREMU
++    if (SHADEREMU_NO_OVERLAP(object)) {
++        if (!SHADEREMU_KNOWN(object)) {
++            for (short const* seen = object->Overlap_List(); *seen != REFRESH_EOL; seen++) {
++                if ((unsigned)(cell + *seen) < MAP_CELL_TOTAL) {
++                    (*this)[(CELL)(cell + *seen)].ShaderEmu_Overlap_Seen(object);
++                }
++            }
++        }
++        SHADEREMU_MOVED(cell);
++        return;
++    }
++#endif
+     short const* list = object->Overlap_List();
+     while (*list != REFRESH_EOL) {
+         CELL newcell = cell + *list++;
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Overlap_Down(object);
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ }
+@@ -875,12 +965,18 @@ void MapClass::Overlap_Up(CELL cell, ObjectClass* object)
+     if (!object)
+         return;
+ 
++#ifdef SHADEREMU
++    if (SHADEREMU_NO_OVERLAP(object)) {
++        SHADEREMU_MOVED(cell);
++        return;
++    }
++#endif
+     short const* list = object->Overlap_List();
+     while (*list != REFRESH_EOL) {
+         CELL newcell = cell + *list++;
+         if ((unsigned)newcell < MAP_CELL_TOTAL) {
+             (*this)[newcell].Overlap_Up(object);
+-            (*this)[newcell].Redraw_Objects();
++            SHADEREMU_MOVED(newcell);
+         }
+     }
+ }
+@@ -1384,6 +1480,15 @@ void MapClass::Logic(void)
+             cell = (MAP_CELL_TOTAL - 1) - index;
+         CellClass* ptr = &(*this)[cell];
+ 
++#ifdef SHADEREMU
++        /* (a cell with nobody in it and no Tiberium, as nearly all are, is neither of the two) */
++        if (!ptr->OccupierPtr && ptr->Land_Type() != LAND_TIBERIUM) {
++            subcount--;
++            if (!subcount)
++                break;
++            continue;
++        }
++#endif
+         if (Special.IsTGrowth && ptr->Land_Type() == LAND_TIBERIUM && ptr->OverlayData < 11) {
+             if (TiberiumGrowthCount < sizeof(TiberiumGrowth) / sizeof(TiberiumGrowth[0])) {
+                 TiberiumGrowth[TiberiumGrowthCount++] = cell;
+@@ -1536,6 +1641,10 @@ int MapClass::Cell_Region(CELL cell)
   *=========================================================================*/
  int MapClass::Cell_Threat(CELL cell, HousesType house)
  {
@@ -1307,6 +2867,92 @@ index 4d484e7..0eee7b6 100644
      int threat = HouseClass::As_Pointer(house)->Regions[Map.Cell_Region(Map[cell].Cell_Number())].Threat_Value();
      // using function for IsVisible so we have different results for different players - JAS 2019/09/30
      if (!threat && Map[cell].Is_Visible(house)) {
+diff --git a/tiberiandawn/msglist.cpp b/tiberiandawn/msglist.cpp
+index 01b705d..0a29bdd 100644
+--- a/tiberiandawn/msglist.cpp
++++ b/tiberiandawn/msglist.cpp
+@@ -746,6 +746,29 @@ void MessageListClass::Draw(void)
+  * HISTORY:                                                                *
+  *   06/26/1995 BRR : Created.                                             *
+  *=========================================================================*/
++#ifdef SHADEREMU
++/*
++** A sum of what Draw() would print: the same sum, the same picture. While a line is being
++** typed it is another every frame (the line's cursor blinks).
++*/
++unsigned MessageListClass::ShaderEmu_Signature(void)
++{
++    unsigned sum = EditLabel ? 0x9e3779b9u * (unsigned)Frame : 2166136261u;
++
++    for (GadgetClass* gadget = MessageList; gadget; gadget = gadget->Get_Next()) {
++        TextLabelClass* label = (TextLabelClass*)gadget;
++        sum = (sum ^ (unsigned)label->X) * 16777619u;
++        sum = (sum ^ (unsigned)label->Y) * 16777619u;
++        sum = (sum ^ (unsigned)label->Color) * 16777619u;
++        sum = (sum ^ (unsigned)label->Style) * 16777619u;
++        for (const char* text = label->Text; text && *text; text++) {
++            sum = (sum ^ (unsigned char)*text) * 16777619u;
++        }
++    }
++    return sum;
++}
++#endif
++
+ int MessageListClass::Num_Messages(void)
+ {
+     GadgetClass* gadg;
+diff --git a/tiberiandawn/msglist.h b/tiberiandawn/msglist.h
+index 86ef937..153a1c9 100644
+--- a/tiberiandawn/msglist.h
++++ b/tiberiandawn/msglist.h
+@@ -84,6 +84,9 @@ public:
+     int Input(KeyNumType& input);
+     void Draw(void);
+     int Num_Messages(void);
++#ifdef SHADEREMU
++    unsigned ShaderEmu_Signature(void);
++#endif
+     void Set_Width(int width);
+ 
+ private:
+diff --git a/tiberiandawn/object.cpp b/tiberiandawn/object.cpp
+index 72ed3e5..dd45585 100644
+--- a/tiberiandawn/object.cpp
++++ b/tiberiandawn/object.cpp
+@@ -289,6 +289,11 @@ ObjectClass::ObjectClass(void)
+     IsAnimAttached = false; // Anim is not attached.
+     Strength = 255;         // nominal strength value
+     IsSelectedMask = 0;     // Mask showing who has selected this object
++#ifdef SHADEREMU
++    ShaderEmu_SortState = 0;
++    ShaderEmu_Kept = 0;
++    ShaderEmu_Away = ~(COORDINATE)0;
++#endif
+ }
+ 
+ /***********************************************************************************************
+diff --git a/tiberiandawn/object.h b/tiberiandawn/object.h
+index e822e3d..3518c13 100644
+--- a/tiberiandawn/object.h
++++ b/tiberiandawn/object.h
+@@ -121,6 +121,17 @@ public:
+     */
+     short Strength;
+ 
++#ifdef SHADEREMU
++    /*
++    ** Where a building or a tree sorts in its layer, for the place it was worked out at
++    ** (layer.cpp), and where the GPU's scene keeps this object's rectangles (gl.cpp).
++    */
++    unsigned char ShaderEmu_SortState; // 0: not asked yet; 1: kept; 2: asked every time
++    short ShaderEmu_Kept;
++    COORDINATE ShaderEmu_SortFor, ShaderEmu_SortKey;
++    COORDINATE ShaderEmu_Away; // the view at which gl.cpp found it to draw nothing (all ones: none)
++#endif
++
+     /*
+     ** Some additional padding in case we need to add data to the class and maintain backwards compatibility for
+     *save/load
 diff --git a/tiberiandawn/options.cpp b/tiberiandawn/options.cpp
 index c4206a0..0a6f5a4 100644
 --- a/tiberiandawn/options.cpp
@@ -1413,7 +3059,7 @@ index 596a8f7..cb485b6 100644
  
              /*
 diff --git a/tiberiandawn/techno.cpp b/tiberiandawn/techno.cpp
-index 07b96eb..56a6ce3 100644
+index 07b96eb..a0527a1 100644
 --- a/tiberiandawn/techno.cpp
 +++ b/tiberiandawn/techno.cpp
 @@ -1598,6 +1598,43 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
@@ -1530,6 +3176,18 @@ index 07b96eb..56a6ce3 100644
  
              /*
              **	Bail early if a target has already been found and the range is at
+@@ -1872,6 +1964,11 @@ void TechnoClass::Clicked_As_Target(HousesType house,
+                                     int count) // 2019/09/20 JAS - Added record of who clicked on the object
+ {
+     FlashCount = count;
++#ifdef SHADEREMU
++    if (count > 0 && (unsigned)count > ShaderEmu_FlashLeft) {
++        ShaderEmu_FlashLeft = (unsigned)count;
++    }
++#endif
+ 
+     // 2019/09/20 JAS - Flashing info needs to exist per player
+     if (house < HOUSE_COUNT) {
 diff --git a/tiberiandawn/theme.cpp b/tiberiandawn/theme.cpp
 index 972a6dc..2e1a5ab 100644
 --- a/tiberiandawn/theme.cpp

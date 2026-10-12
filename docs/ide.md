@@ -108,9 +108,29 @@ user's own copy, `/root/NAME.c`, which is written at the first Save or Build.
 
 `shader` shares a 160 x 120 picture out in 240 pieces of half a row, about one a worker
 (`mcw.h`, which `cc` links now: `docs/multicore.md`), and draws it as one texture: 20
-pictures a second with 255 workers on the shader machine. Its waves are its own few floats
+pictures a second with 255 workers on the shader machine. The first core shades the last
+48 pixels itself while the workers' answers are on their way (two passes of the machine,
+which it sat out before); much more than that and it is the one the picture waits for. Its waves are its own few floats
 and not `sinf`: the C library works a sine out in doubles, each a call of hundreds of
 instructions here, and with it a picture took seconds.
+
+## What a key costs (12 October 2026)
+
+Twenty letters typed went from 2.98 million instructions to 1.56, a page down and up from
+6.42 to 2.82, a click in the text from 3.90 to 1.49 (ten of each), the start with a file
+from 3.73 million to 2.13, and an idle IDE runs nothing where it polled.
+
+- `tx_load` builds a file's lines directly (it went through `tx_insert`, a `realloc` a
+  character: a million instructions for `home.c`); `tx_insert` reallocs once a line.
+- A changed line is drawn once (it was up to three times a key), the tool row only when a
+  key of it looks different; a full redraw fills the ground in two pieces; a line is one
+  text request a colour, with spaces where the other colours' characters are (a space
+  draws nothing), and is lexed once. Clicks and Shift+arrows redraw only the lines the
+  selection's change touches. Widths come from `ui_width`, not from the server.
+- Jobs are started without a shell; their output wakes the loop through `GrRegisterInput`
+  and their end through SIGCHLD (a handler that does nothing: `select` returns).
+
+The debug script's last stop prints line 20 in `main`, before these changes and after.
 
 ## Checking it
 

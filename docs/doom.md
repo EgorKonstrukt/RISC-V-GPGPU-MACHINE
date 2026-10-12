@@ -76,6 +76,50 @@ state (every thing's place, state and health, and the random numbers used) every
 `-timedemo demo1 -nodraw` runs tics only. `DOOM_PORT=sight,look,think` brings the port's own
 code back for those three, and the sums of all three demos agree with it.
 
+### Gone through again (12 October 2026)
+
+The first demo, one tic a frame: 31.0k to 21.8k instructions a tic, the view 26.3k to 18.4k
+a frame, showing it 1.37k to 1.02k, and 24.6 million to the first frame of a timedemo
+became 13.2; the other two demos by about as much. `DOOM_TOTALS=1` prints the sums at exit
+(`doomtotal:`), and `DOOM_PORT=find,names,lines,group` bring the port's code back for the
+new pieces. The state sums of the three demos and held frames are as they were.
+
+- **Whose subsector.** Every move a thing tries asked `R_PointInSubsector` twice, each a
+  walk of the BSP tree from its root (17% of a tic). The walk starts at the deepest node the
+  point's blockmap cell is all inside of, found when a cell is first asked about (the side
+  is the same for a whole cell when it is the same at the corners of each part the node's
+  own x and y cut the cell into), and the last point is remembered.
+- **Looking twice.** With one player the port's search for a player looks at him twice; a
+  player not seen is not looked at again in the same search. Sight walks fell from 34,008
+  to 19,458 in the first demo.
+- **Things at rest** have their state counted down in the thinker loop, and the lines and
+  things of a blockmap cell a mover's box is clear of are passed by in the iterators,
+  without the calls.
+- **Things in view** keep their sprite frame, their width in whole pixels and which of
+  eight pictures shows; `R_PointToAngle` is asked again only when the thing has turned, or
+  moved against the viewer by more than the angle's room in its eighth allows (a move of d
+  at distance r turns it by at most asin(d/r)). 181 to 126 instructions a thing.
+- **Lights out of sight** wait: a sector whose light changed and which the viewer's sector
+  cannot see (REJECT) stays marked until it can. (A level with a doctored REJECT could show
+  a wall's light stale, where before only things vanished there.)
+- **Floors and ceilings** are in order of height with a count of those under the eye; the
+  eye's move flips only what it passed. Sectors that have moved are looked at by themselves.
+- **The melt** waited for the clock by asking the time in a loop, 40M instructions a level
+  start; it ends the machine's pass instead (`doom_wait`).
+- **Start.** Lump and texture names come from tables (the texture table keeps the port's
+  rule that a name fits whatever it begins or is begun by), a sprite's size is read from its
+  first eight bytes, the tables of Doom's own renderer are made when that renderer is
+  wanted, and a level's lines go to their sectors in one pass.
+- **Flags.** `-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops` in place of `-O2`:
+  3% a tic, 11% a frame. `doom.sh` keeps the flags in a file of the build folder and builds
+  every object again when they change.
+- `I_GetTime` began at `clock_ms() | 1`: a second call in the same millisecond came out
+  four million tics too many ("timed N gametics in -4294918 realtics"). Mended.
+
+What is left of a tic is `P_RunThinkers`' own loop and the sight walk. Not built: a box test
+a sector for things (it costs what it saves). `--pc-log` writes nothing under `rvc_harness
+--cpu`: a profile there is a build with `-finstrument-functions`.
+
 ## What the build changes
 
 The Microwindows tree is left as it is; `doom.sh` compiles a few files differently:
@@ -86,7 +130,10 @@ The Microwindows tree is left as it is; `doom.sh` compiles a few files different
 - `char` is signed (`-fsigned-char`): Doom's tables end with -1.
 - The video functions, the renderer's entry points, the sight check, the search for players,
   the thinker loop, the clock, the message drawer and eraser and the screen melt are compiled
-  under other names, and `doom_video.c`, `doom_gl.c` and `doom_fast.c` take their places.
+  under other names, and `doom_video.c`, `doom_gl.c` and `doom_fast.c` take their places. So are `R_PointInSubsector`,
+  `R_InitTextureMapping`, `W_CheckNumForName`, `R_CheckTextureNumForName`,
+  `R_InitSpriteLumps`, `P_GroupLines` and the two blockmap iterators, and the melt's loop
+  has a call of `doom_wait()` put into it.
 - Where the game writes a sector's heights, floor picture or light, or a wall's picture, it
   tells `doom_gl.c` (`told` in `doom.sh`: `T_MovePlane`, which every mover goes through, and
   a call or a flag put before each of the other writes; the script counts them and stops if

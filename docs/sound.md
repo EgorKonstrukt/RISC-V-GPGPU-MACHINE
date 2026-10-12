@@ -69,6 +69,8 @@ so its samples can be played where they lie.
 - `mmap` at offset 0 is the registers' page; at `address - 0x87000000` it is sound memory.
 - ioctls claim and free voices and hand out sound memory. When a program ends, however it
   ends, its voices stop and its memory is free; the card is off when nobody has it open.
+  Whether the host has a card is asked once, at boot (the driver switches it on for half a
+  second and keeps the rate it was told): an open does not wait for that.
 - `write()` plays 16-bit PCM through a stream voice (22,050 Hz mono unless an ioctl says
   otherwise) and blocks while the ring is full: `cat file.raw > /dev/sound`.
 - Opening fails with ENODEV on a host with no sound card (`--no-sound`).

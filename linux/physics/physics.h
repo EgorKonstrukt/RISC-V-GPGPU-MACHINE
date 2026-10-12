@@ -1,0 +1,74 @@
+/* Rigid boxes for many cores with no locks (docs/physics.md). Each phase reads what the phase
+ * before left and writes only what its share owns: body i and cell c are share i mod n's and
+ * c mod n's, and everything a share writes is whole texels of its own. */
+#ifndef PHYSICS_H
+#define PHYSICS_H
+
+#include <stdint.h>
+
+#define PHYS_HZ 60		/* substeps in a second of the boxes' time */
+#define PHYS_DT (1.0f / PHYS_HZ)
+#define PHYS_EVERY 2		/* substeps between two looks for contacts */
+#define PHYS_CELL 2.0f		/* a grid cell's side: no less than two bodies' radii and their margins */
+#define PHYS_SLOTS 39
+#define PHYS_MANIFOLDS 12
+#define PHYS_QUAD_WORDS 96	/* a box as the GPU's quads: six of four compact vertices */
+
+/* A body as a substep leaves it: four texels. `key` is its cell, from bit 20 the cell's share
+ * and PHYS_POSED when its body_pose is this state's; `held` is how many of its contact points
+ * pushed it. */
+#define PHYS_POSED 0x80000000u
+struct body_state { float pos[3]; uint32_t key; float q[4]; float vel[3]; uint32_t held; float spin[3]; uint32_t pad; };
+/* What every neighbour would work out from a state, left with it by the body's owner: its
+ * axes, where it is taken to be a substep on and its axes there, how far round itself it
+ * looks for others, that with its radius, and how large its numbers are. Eight texels, two
+ * of them nothing: a neighbour is found by a shift. */
+struct body_pose { float r[9], next_at[3], next_r[9], margin, reach, about, pad[8]; };
+/* What a body is, which nothing changes: two texels. */
+struct body_shape { float half[3], inv_mass, inv_inertia[3], radius; };
+/* How many pairs it has contacts with, whether a corner may have a push from the floor, and
+ * the push each corner has from it: three texels. */
+struct body_info { uint32_t manifolds, floored, pad[2]; float floor[8]; };
+/* A pair's contact, in both bodies' lists: the points on each body in its own frame, and the
+ * direction from the lower-numbered to the other in the lower one's frame. A point's a[3] is
+ * the list's owner's alone: the push the point has, kept from substep to substep; its b[3] is
+ * how far along the normal `a` is from its body's middle. Ten texels. */
+struct manifold {
+	uint32_t partner, points, pad[2];
+	float normal[4];
+	struct { float a[4], b[4]; } at[4];
+};
+struct gcell { uint32_t n, body[PHYS_SLOTS]; };
+
+struct phys {
+	struct body_state *states[2];	/* a substep reads one and writes the other */
+	struct body_pose *poses[2];	/* as the states; or none, and every neighbour works them out */
+	struct body_shape *shapes;
+	struct body_info *info;
+	struct manifold *manifolds;	/* PHYS_MANIFOLDS a body */
+	struct gcell *cells;
+	int bodies, gx, gy, gz;
+	float half_x, half_z, gravity;	/* the room: a floor at 0, walls at +-half */
+	/* the box somebody holds (-1: none): its point `grab_at`, in its own frame, is pulled to `grab_to` */
+	int grab;
+	float grab_at[3], grab_to[3];
+};
+
+/* For one share of `shares`: the grid of what is where, and a substep, with a look for
+ * contacts first when `looking` (the look's number, from 1). Each returns what it had no room for. */
+int phys_grid(const struct phys *w, int share, int shares, int from);
+void phys_grid_all(const struct phys *w, int from);	/* every share's grid, by one core */
+int phys_step(const struct phys *w, int share, int shares, int from, int looking);
+
+uint32_t phys_key(const struct phys *w, const float *pos, int shares);
+void phys_box(struct phys *w, int body, float hx, float hy, float hz, float density);
+/* A body's six faces as quads, each face one texel of a table 64 shades across, row `colour` of 16. */
+void phys_quads(const struct phys *w, int body, int from, uint32_t colour, uint32_t *to);
+/* How deep the deepest corner is under the floor or in a wall, and the fastest body's speed. */
+/* The box a ray from `eye` along `way` (unit) meets first, or -1: where on it, in its own frame, and how far. */
+int phys_pick(const struct phys *w, int from, const float *eye, const float *way, float *local, float *distance);
+/* Where in the room a point of a box is. */
+void phys_point(const struct phys *w, int from, int body, const float *local, float *at);
+void phys_figures(const struct phys *w, int from, float *deepest, float *fastest);
+
+#endif

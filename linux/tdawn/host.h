@@ -47,9 +47,43 @@ void host_tile(int index, int map_x, int map_y, int atlas_x, int atlas_y);
 void host_tiles_clear(void);
 /* A frame's scene: where the map's corner is on the screen, then rectangles in their order. */
 void host_scene_begin(int origin_x, int origin_y);
+/* A scene has three parts, drawn in this order: 0 under the objects, 1 the objects (begun
+ * empty every scene), 2 over them. host_scene_part() says whose the next rectangles are; with
+ * keep 0 the part's own are forgotten first. Parts 0 and 2 stay from scene to scene. */
+void host_scene_part(int part, int keep);
 void host_sprite(int kind, int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour);
 /* A rectangle of one colour, from 24 x 24 set bits in the masks at this place. */
 void host_block(int x, int y, int width, int height, int atlas_x, int atlas_y, unsigned int colour);
+/*
+ * Rectangles the caller keeps, by where they are from the scene's origin: put where that is
+ * now, those that touch the view (x0, y0 to x1, y1 of the screen). Only noted here: the memory
+ * must stay as it is until host_scene_settle() or the next host_scene_begin() has returned.
+ */
+struct host_quad { short x, y, w, h, ax, ay; unsigned char kind; unsigned int colour; };
+void host_scene_view(int x0, int y0, int x1, int y1);
+void host_quads(const struct host_quad *quads, int count);
+void host_scene_settle(void);
+/*
+ * A frame of a shape file as a second worker core has made it ready: the part of it that has
+ * pixels, rows of `w`, and in the 32 bytes before them a bit for every index among them. NULL
+ * while it has not (the file is asked for then, from this frame on): the caller has the game
+ * build the frame, which gives the same pixels.
+ */
+enum { HOST_FRAME_READY = 1, HOST_FRAME_EMPTY = 2 };
+struct host_frame { const unsigned char *pixels; short left, top, w, h; int state; };	/* 16 bytes */
+const struct host_frame *host_frame(const void *file, int frame);
+/* A unit's path searches on other cores: how many can be made now, one begun on core k (1 up), waited for. */
+int host_path_cores(void);
+void host_path_post(int k, unsigned int (*search)(unsigned int, unsigned int), unsigned int object, unsigned int what);
+void host_path_wait(int k);
+void host_frames_forget(void);	/* the files are not what they were: before they go */
+extern unsigned int host_frames_bytes;	/* of the frames made ready so far */
+/*
+ * Work for whichever core makes the next scene, done before that scene's commands: an atlas's
+ * pixels that only the scene looks at. What it is given must stay as it is until then.
+ */
+typedef void (*host_fill_fn)(void *what, const void *from);
+void host_fill(host_fill_fn fn, void *what, const void *from);
 /* The page goes over the scene, with holes of the key index inside this rectangle. */
 void host_scene_end(int x, int y, int width, int height, int key);
 /* No scene any more: the page is all there is to show. */
@@ -68,6 +102,41 @@ unsigned int host_ms(void);
 unsigned int host_cycles(void);
 /* Ends the machine's frame without showing anything. */
 void host_wait(void);
+
+/*
+ * The first byte of a row that is not 0 (n if none) and the last (-1): a word at a time,
+ * since most of a shape's frame is nothing.
+ */
+typedef unsigned int __attribute__((may_alias)) host_word;
+static inline int
+host_first_pixel(const unsigned char *row, int n)
+{
+	int i = 0;
+
+	for (; i < n && ((unsigned long)(row + i) & 3); i++)
+		if (row[i])
+			return i;
+	while (i + 4 <= n && !*(const host_word *)(row + i))
+		i += 4;
+	while (i < n && !row[i])
+		i++;
+	return i;
+}
+
+static inline int
+host_last_pixel(const unsigned char *row, int n)
+{
+	int i = n;
+
+	for (; i > 0 && ((unsigned long)(row + i) & 3); i--)
+		if (row[i - 1])
+			return i - 1;
+	while (i >= 4 && !*(const host_word *)(row + i - 4))
+		i -= 4;
+	while (i > 0 && !row[i - 1])
+		i--;
+	return i - 1;
+}
 
 #ifdef __cplusplus
 }

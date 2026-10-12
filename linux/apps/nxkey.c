@@ -59,12 +59,12 @@ static void
 point(int x, int y, int button, int down)
 {
 	struct event events[4] = { { 0, 0, 3, 0, x }, { 0, 0, 3, 1, y }, { 0, 0, 1, (uint16_t)button, down }, { 0, 0, 0, 0, 0 } };
-	int pointer = open("/dev/input/event1", O_WRONLY);
+	static int pointer = -1;	/* opened once: the kernel clears a reader's buffer at every open */
 
+	if (pointer < 0)
+		pointer = open("/dev/input/event1", O_WRONLY);
 	if (pointer < 0 || write(pointer, events, sizeof events) != sizeof events)
 		perror("nxkey: /dev/input/event1");
-	if (pointer >= 0)
-		close(pointer);
 	usleep(60000);
 }
 

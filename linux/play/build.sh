@@ -25,16 +25,21 @@ fetch dr_flac.h https://raw.githubusercontent.com/mackron/dr_libs/dfe83776310006
 # minimp3 with a half rate and with frames that only fill the bit reservoir (minimp3.patch)
 cp "$BUILD/fetch/minimp3.h" "$BUILD/minimp3.h"
 cp "$BUILD/fetch/dr_flac.h" "$BUILD/dr_flac.h"
+# (a subframe in 32-bit sums whenever its coefficients allow: a fifth of the FLAC decoder)
+python3 "$HERE/flac_bound.py" "$BUILD/dr_flac.h"
 tr -d '\r' < "$HERE/minimp3.patch" | patch -s "$BUILD/minimp3.h"
 
 # single-precision constants: minimp3 compares a float with 32766.5, which is a double
 # comparison otherwise, and the machine has no doubles
 FLOAT="-fsingle-precision-constant -fno-math-errno"
 INC="-I$BUILD -I$HERE -I$REPO/linux/apps -I$MW/src/include -I$REPO/linux/userland -I$REPO/programs/mc"
-rv32-cc -O2 -fno-pie -Wall -Wno-unused-function $INC -c "$HERE/nxplay.c" -o "$BUILD/nxplay.o"
-rv32-cc -O2 -fno-pie -w $FLOAT -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3full.o"
-rv32-cc -O2 -fno-pie -w $FLOAT -DMP3D_HALF -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3half.o"
-rv32-cc -O2 -fno-pie -w $FLOAT -I"$BUILD" -I"$HERE" -c "$HERE/flac.c" -o "$BUILD/flac.o"
+# (-O3 with loops unrolled: the decoders a fifth fewer instructions than at -O2, the tracker's
+# mixer in nxplay.c an eighth, the same sums)
+DECODE="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
+rv32-cc $DECODE -fno-pie -Wall -Wno-unused-function $INC -c "$HERE/nxplay.c" -o "$BUILD/nxplay.o"
+rv32-cc $DECODE -fno-pie -w $FLOAT -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3full.o"
+rv32-cc $DECODE -fno-pie -w $FLOAT -DMP3D_HALF -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3half.o"
+rv32-cc $DECODE -fno-pie -w $FLOAT -I"$BUILD" -I"$HERE" -c "$HERE/flac.c" -o "$BUILD/flac.o"
 rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/mc/mcw.c" -o "$BUILD/mcw.o"
 rv32-cc -O2 -no-pie "$BUILD/nxplay.o" "$BUILD/mp3full.o" "$BUILD/mp3half.o" "$BUILD/flac.o" "$BUILD/mcw.o" \
     "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxplay"
