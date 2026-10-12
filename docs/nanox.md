@@ -402,7 +402,10 @@ a time: 31.9 to 20.8 million instructions for a 640 x 480 photograph. For a JPEG
 the Huffman codes into a list of the coefficients that are not zero (three bytes each, where
 a block would be 128 written), and the others take strips of 16 rows, do the transform and
 the colours on their stacks and write only pixels; a strip begins and ends on 16 bytes of
-the picture whatever its width, so two cores never write the same 16. A block that is only
+the picture whatever its width, so two cores never write the same 16. The first core is one
+of those that take strips (the first ones, whose codes are there first) and rests while the
+codes of its next one are not there (`mcw_rest()`, `multicore.md`); it paused through the
+whole decode before, 429 passes of 1,085. A block that is only
 its mean is filled without the transform, a colour sample's three terms are worked out once
 for its two pixels, and a sum is clamped by a table the first core fills before any job
 (`img_clip_of`): 19.9 to 26.3 million instructions for three 480 x 480 photographs became

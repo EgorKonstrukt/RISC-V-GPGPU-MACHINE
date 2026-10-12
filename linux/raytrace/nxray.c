@@ -476,7 +476,7 @@ keys(void)
 static void
 pass(void)
 {
-	__asm__ volatile(".word 0x0100000f");	/* pause: the machine's pass ends */
+	mcw_rest();	/* nothing to do: the kernel has the core until the next pass (the pause hint with no workers) */
 }
 
 int

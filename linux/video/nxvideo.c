@@ -126,6 +126,8 @@ main(int argc, char **argv)
 
 #define ONE 65536
 #define RING 65536u		/* the sound stream's ring, in frames */
+#define FEED_MOST 1024u		/* frames put into the ring a turn of the loop, */
+#define FEED_AHEAD 4096u	/* while the card has so many still to play */
 #define AHEAD 36		/* pictures in hand before it plays, or plays on after it ran dry: groups come in bursts */
 #define BAR 40			/* the strip of controls under the picture */
 #define KEY_W 62
@@ -288,6 +290,7 @@ static void
 feed(void)
 {
 	uint32_t have = (uint32_t)chunks_done * MPEG_CHUNK * 1152u, room, at, n;
+	int ahead;
 
 	if (!sound_on)
 		return;
@@ -299,11 +302,18 @@ feed(void)
 		n = have - sound_from - written;
 		n = n > room ? room : n;
 		n = n > RING - at ? RING - at : n;
+		/* 4 KB a turn while the card has an eighth of a second to go on with: more is more
+		 * than a pass's stores, and the pass would end here with a picture still to show */
+		ahead = written - card_at() >= FEED_AHEAD;
+		if (ahead && n > FEED_MOST)
+			n = FEED_MOST;
 		if (!n)
 			return;
 		memcpy(sound_ring + at * 2, mpeg_pcm() + (sound_from + written) * 2, n * 4);
 		written += n;
 		SND_VOICE[voice].loop = written;
+		if (ahead)
+			return;
 	}
 }
 
@@ -397,7 +407,9 @@ show(int frame)
 	glBindTexture(GL_TEXTURE_2D, texture);
 	seglTexturePointer(slot(frame), info.width, info.height, SEGL_YUV420);
 	seglQuad(corners, uv, texture, 255, 255, 0);
-	seglSwap();
+	/* not waited for (that is a pass's end): no group is copied into the shown picture's place,
+	 * and play_from() settles before the places are anybody's */
+	seglSwapEarly();
 	shown = frame;
 }
 
@@ -405,6 +417,7 @@ show(int frame)
 static void
 play_from(int frame)
 {
+	seglSettle();
 	first_gop = next_gop = ready_gop = mpeg_gop_of(frame < 0 ? 0 : frame >= info.frames ? info.frames - 1 : frame);
 	memset(gop_state, 0, (size_t)info.gops);
 	shown = mpeg_gop_first(first_gop) - 1;
@@ -768,8 +781,9 @@ main(int argc, char **argv)
 			fflush(stdout);
 			stat_at = now;
 		}
+		/* nothing to show: the kernel has the core until the next pass (docs/multicore.md) */
 		if (!drew)
-			mc_next_pass();
+			mcw_rest();
 	}
 }
 #endif

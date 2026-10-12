@@ -632,6 +632,50 @@ What it is good for, and what not:
 What it costs: nothing to speak of while the workers sleep; 5% of a pass for the first busy
 one and 17% for three; and the commit pass looks a RAM texel up in each busy core's cache.
 
+## A core that rests
+
+The first core of a program whose workers have the work has nothing to do until the next
+pass, and said so with the pause hint in user mode, pass after pass. The pass ends either
+way; but the kernel took the program for busy (nothing else got the core, and the idle
+loop's own work was not done), and `tick_util` counted every such pass as the program's.
+
+- **`mcw_rest()`** (`mcw.h`) is what that core calls instead: the `REST` call of `/dev/gpu`
+  (`shaderemu_gpu_rest` in `linux/kernel/shaderemu_gpu.c`, `_IO('G', 11)`). The kernel lets
+  whatever else can run have the core (`yield()`, when another task is runnable); with
+  nothing to run it does the idle loop's part (a block of the zero pool cleared ahead,
+  `boot.md`) and ends the pass there with `pause`, then wakes the console's thread as the
+  idle loop does. It comes back in a later pass, never the same one.
+- **The library rests where it waited**: `mcw_wait()`, the waits of `mcw_open()` and
+  `mcw_close()`. `nxphys`, `nxvideo`, `nxray`, `nxpath` and `nxplay` rest in their own loops,
+  and the viewer's first core while the codes of its strips are not there yet.
+- **With no workers open, or a kernel from before the call, it is the pause hint** (the
+  call answers ENOTTY once and is not made again). It is the first core's only: a job on a
+  worker has the pause hint, which is its sleep.
+- **What it costs**: 322 instructions from the call to the return against 194 for a system
+  call that does nothing (`getppid`), where the pause was one. The core had nothing else to
+  do with them, and what another core stored is seen at the pass's end either way: 120
+  substeps of `nxphys`'s wall took 1,344 ms before and 1,329 after.
+- **`tools\tick_util.py` counts a pass that ended in `shaderemu_gpu_rest` apart**, as it
+  does one that ended in the idle loop, and says how many on a `REST` line: utilization is of
+  the passes in which the core had work. Only that call counts: a program's own pause is
+  still a busy pass that ended early. A pass in which the rest cleared a block ahead ends
+  in `zeroed_idle` and is an idle one.
+
+| the first core | before | after |
+|---|---|---|
+| `nxphys`, the wall on 207 workers | 27.4% (2,724 of 3,086 passes ended in its pause) | 99.8% of 367 busy passes; 2,862 rested |
+| `nxphys`, 120 substeps and out | 62.6% | 98.2%; 333 rested |
+| `nxview` on a JPEG | 65.0% (429 passes paused) | 96.2% of 732; 347 rested; 418 passes with a worker at work, as before |
+| `nxvideo`, the sample, 2 ms a pass | 47.2% (10,680 of 11,892 passes paused) | 98.0% of 1,387; 10,521 rested; none left out |
+
+(12 October 2026, with another program on the card: passes and fixed timesteps, not seconds.
+`nxray` and `nxpaint`'s start were 98.2% and 97.2% before and were not measured again.)
+
+Left with the pause hint, because they are not worker programs and have no `/dev/gpu` of
+the library's open: the OpenGL library's wait for the GPU to have drawn (`next_frame()` in
+`gles.c`, `gl.c`, `scr_shaderemu.c` and ClassiCube's), the NES's last part of a frame
+(`frame_paced`) and Doom's (`doom_video.c`). The same call would serve them.
+
 ## What paging costs a worker
 
 Nothing in pixels. A worker that runs a program's own code needs the program's page table,

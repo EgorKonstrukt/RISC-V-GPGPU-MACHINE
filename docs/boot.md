@@ -48,7 +48,9 @@ A pass runs 8,192 instructions unless something ends it: a parallel copy or fill
 full write cache, 64 characters of console output, `wfi` or `pause`. What is left of the pass
 is not run. `tools\tick_util.ps1` runs a workload and prints its utilization (instructions
 run over what the busy passes could have run) and the passes that ended early by reason; a
-pass that ended in the kernel's idle loop had nothing to run and is counted apart. In the
+pass that ended in the kernel's idle loop had nothing to run and is counted apart, and so is
+one in which a program asked the kernel for a rest (`mcw_rest()`, the `REST` line:
+`multicore.md`, "A core that rests"); a program's own `pause` is a busy pass cut short. In the
 harness a short pass is also a short time (a pass is about 0.2 ms and 0.24 us an instruction),
 so the cost there is the 0.2 ms; in the world's fixed mode it is the instructions. The worker
 cores have a line of their own (how much of their passes the workers that had a job ran;
@@ -97,8 +99,9 @@ idle loop ends a pass that had nothing left to run. So the kernel keeps cleared 
   cleared by one fill, and one more being handed out. Any request of up to eight pages
   wanted zeroed is cut from it: a page fault's page, page tables, tmpfs, pages for `vzalloc`,
   and a new task's kernel stack (two pages, a fill of its own at every `fork` before).
-- **The idle loop fills it** (`zeroed_idle`, called from `do_idle`): one block each time the
-  loop is entered while the pool lacks any. The fill is asked for there and not in `memset`,
+- **The idle loop fills it** (`zeroed_idle`, called from `do_idle`, and from the GPU driver's
+  rest call when a program's first core has nothing to do and nothing else can run): one
+  block each time the loop is entered while the pool lacks any. The fill is asked for there and not in `memset`,
   so `tick_util.py` sees the pass end in the idle loop and counts it idle.
 - **With the pool empty** (a boot, before anything was idle) the request clears a megabyte
   itself, or 256 KB or 64 KB when memory has no such block free, and hands out the rest.
@@ -127,6 +130,29 @@ is marked reserved.
 run with a `fence.i`, a pass each. The `fence.i` ends the pass and so commits every store there
 is: the sixteen pages of the file round that one are marked clean with it. `cc` on the hello
 example: 7 to 2.
+
+`romwindow_hook.py` and `poke_hook.py` (12 October 2026; not in `build.sh` yet, so in no
+kernel but a private one: checked on `rvc_cpu`, and their parts on the shader machine):
+
+- **A file's reads of the ROM are whole stretches.** The kernel's windows began at four pages
+  and lay round the page wanted: the editor's 31 pages came in five copies (0-3, 4-11, 13-29,
+  the last page by itself, then 12). A page wanted of a mapped file, or of a program being
+  started (`__FMODE_EXEC`), brings the 32 pages it is in, aligned (`rom_window` in
+  `mm/readahead.c`); a file of up to 32 pages read from its start comes whole; other reads
+  (a program's icon at its file's end, a lump of a large file) are the kernel's as before.
+- **A file's last page rides in the copy of the pages before it** (`romfs_read_run`): whole
+  texels in the one copy, the last bytes and the zeros stored. Read by itself, a part of a
+  page is stored by the processor (`phram_read` copies in the commit pass from a page up):
+  some 1,300 instructions instead of the rest of the pass.
+- **A debugger's pokes share one `fence.i`**: `POKETEXT` into another program notes it, and
+  the `fence.i` is made at the next switch of tasks (`context_switch`).
+- The shell starts `command &` with `vfork` too when its words are names only
+  (`linux/userland/ash_vfork_hook.py`): the fork's five copied pages are gone.
+
+Copies from the ROM, `rvc_cpu`: the editor's start 6 to 2, Settings' 8 to 3, the desktop
+with a terminal and the calculator 50 to 31 (before lone parts of pages went to the
+processor: 13 of the 31 were programs' icons), each in fewer instructions. Passes' instructions used on the shader machine, the kernel
+alone: that desktop 96.1% to 98.6%; the IDE's debug script 47 `fence.i` to 34.
 
 | | before | after | what ends passes early now |
 |---|---|---|---|

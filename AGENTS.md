@@ -81,3 +81,33 @@
 - Every run on the card whose seconds or passes are measured goes through
   `tools\gpu_queue.ps1` (one at a time for every session); the shared image is made through
   `tools\make_image.ps1` (one writer at a time).
+- Whether the window system lets other programs run is measured by another program's frames:
+  glxgears on the desktop under `rvc_cpu`, its 5 s lines while a load runs (menus in Files by
+  `nxkey`, letters into the editor, nxbench, programs starting, `--pointer-sweep 0`), as a
+  share of its lines with nothing else. On 12 October 2026: 52 to 95% before, 81 to 97% after
+  (menus 52 to 89, three programs starting 56 to 86).
+
+- A program's first core with nothing to do until the next pass calls `mcw_rest()`
+  (`docs/multicore.md`, "A core that rests"), not the pause hint: it is the `REST` ioctl of
+  `/dev/gpu` (`_IO('G', 11)`, `shaderemu_gpu_rest`): the kernel yields, or does the idle
+  loop's work and ends the pass. 322 instructions a call. Never from a job on a worker; with
+  no workers open or on an older kernel it is the pause hint. `tools\tick_util.py` counts a
+  pass that ended there apart (the `REST` line); the function must stay noinline with the
+  pause inside it. `shaderemu_gpu.c` calls `zeroed_idle()`: it needs `zeropool_hook.py`.
+- A page wanted of a mapped or executed ROM file brings the aligned 32 pages round it, a file
+  of up to 32 pages comes whole, a file's last partial page rides in the same copy, and a lone
+  piece under a page is copied by the processor (`linux/kernel/romwindow_hook.py`): the
+  editor's first start went from 13 parallel copies to 3. `tailtest`'s sum covers
+  `/usr/share/rom-dates`, which every image build writes anew: compare two kernels on one
+  `rootfs.bin`.
+- A breakpoint poked into another program sets a flag, and the kernel makes one `fence.i`
+  when that program next runs (`linux/kernel/poke_hook.py`); a program poking itself still
+  flushes at once.
+- The shell vforks `command &` too, when every word of the line is plain text
+  (`linux/userland/ash_vfork_hook.py`): a `$VAR`, a pipe or a redirection in the line is a
+  fork again, with its copied pages.
+- Before any timing on the card look for an `rvc_harness.exe` with no arguments (the
+  developer's own): it holds the card at 100% outside the queue. A kernel build on all cores
+  beside a run spoils a timing too.
+- In WSL `$NAME` is the computer's name: a build script must not take an image's name from a
+  variable called `NAME`.

@@ -4,8 +4,10 @@
 
 Utilization is the instructions busy passes ran over what they could have run. A pass that
 ended early is listed by why; a wfi or pause by where the guest was: the kernel's idle loop
-(nothing to run: counted apart, not a loss), a wait in the GPU driver, elsewhere in the
-kernel, or a program's own pause. Symbol files are `nm -n` output.
+(nothing to run: counted apart, not a loss), a rest the program asked the kernel for (the GPU
+driver's rest call, docs/multicore.md: it had nothing to do; counted apart as the idle passes
+are, on a line of its own), a wait in the GPU driver, elsewhere in the kernel, or a program's
+own pause, which stays a busy pass. Symbol files are `nm -n` output.
 """
 import bisect, json, sys
 import numpy as np
@@ -13,6 +15,8 @@ import numpy as np
 STALLS = {0: 'none', 1: 'exit call', 2: 'CSR cache full', 3: 'write cache full', 6: 'UART', 7: 'fence.i',
           8: 'parallel copy', 9: 'wfi/pause', 10: 'parallel fill'}
 IDLE = ('arch_cpu_idle', 'default_idle_call', 'do_idle', 'cpu_startup_entry', 'cpuidle_idle_call')
+REST = 'rest: asked for by the program'    # (only a pass that ended in the driver's rest call)
+APART = ('wfi: kernel idle', REST)         # passes with nothing to run: not busy ones
 
 args = sys.argv[1:]
 path = args.pop(0)
@@ -58,32 +62,37 @@ for pc, n, stall, us in d:
     reason = STALLS.get(stall, str(stall))
     if stall == 9:
         if kind == 'kernel':
-            reason = 'wfi: kernel idle' if sym in IDLE else 'wfi: GPU driver wait' if 'shaderemu_gpu' in sym else 'wfi: kernel, ' + sym
+            reason = ('wfi: kernel idle' if sym in IDLE else REST if sym == 'shaderemu_gpu_rest' else
+                      'wfi: GPU driver wait' if 'shaderemu_gpu' in sym else 'wfi: kernel, ' + sym)
         else:
             reason = 'pause: program'
     elif kind == 'kernel' and sym == 'zeroed_idle':
         reason = 'wfi: kernel idle'    # (the idle loop clearing memory ahead: docs/boot.md)
     r = rows.setdefault(reason, [0, 0]); r[0] += 1; r[1] += ticks - n
-    if reason != 'wfi: kernel idle':
+    if reason not in APART:
         busy_i += n
     p = places.setdefault((reason, prog + ':' + sym), [0, 0]); p[0] += 1; p[1] += ticks - n
 
 passes = len(d)
 idle = rows.get('wfi: kernel idle', [0, 0])
-busy = passes - idle[0]
-lost = sum(v[1] for k, v in rows.items() if k != 'wfi: kernel idle')
-print('%s: %d passes, %.2f s, %d instructions; %d full, %d idle, %d busy' %
-      (path.replace('\\', '/').split('/')[-1], passes, (int(d[-1, 3]) - int(d[0, 3])) / 1e6, total_i, full, idle[0], busy))
-print('UTILIZATION %.1f%%: busy passes ran %.0f instructions each of %d; lost to early ends %d (idle passes apart)' %
+rest = rows.get(REST, [0, 0])
+busy = passes - idle[0] - rest[0]
+lost = sum(v[1] for k, v in rows.items() if k not in APART)
+print('%s: %d passes, %.2f s, %d instructions; %d full, %d idle, %d rested, %d busy' %
+      (path.replace('\\', '/').split('/')[-1], passes, (int(d[-1, 3]) - int(d[0, 3])) / 1e6, total_i, full, idle[0], rest[0], busy))
+print('UTILIZATION %.1f%%: busy passes ran %.0f instructions each of %d; lost to early ends %d (idle and rested passes apart)' %
       (100.0 * busy_i / max(busy * ticks, 1), busy_i / max(busy, 1), ticks, lost))
+if rest[0]:
+    print('REST %d passes (%.1f%% of all): the program asked the kernel for a rest, having run %.0f instructions of the pass' %
+          (rest[0], 100.0 * rest[0] / passes, ticks - rest[1] / rest[0]))
 print('%-34s %8s %7s %12s %7s' % ('reason', 'passes', 'share', 'instr lost', 'of busy'))
 for k, v in sorted(rows.items(), key=lambda kv: -kv[1][1]):
-    print('%-34s %8d %6.1f%% %12d %6.1f%%' % (k, v[0], 100.0 * v[0] / passes, v[1], 0.0 if k == 'wfi: kernel idle' else 100.0 * v[1] / max(busy * ticks, 1)))
+    print('%-34s %8d %6.1f%% %12d %6.1f%%' % (k, v[0], 100.0 * v[0] / passes, v[1], 0.0 if k in APART else 100.0 * v[1] / max(busy * ticks, 1)))
 print('where (top %d by instructions lost):' % top)
 for (reason, place), v in sorted(places.items(), key=lambda kv: -kv[1][1])[:top]:
     print('  %6d passes %10d lost  %-24s %s' % (v[0], v[1], reason, place))
 if out:
-    json.dump({'passes': passes, 'full': full, 'instructions': total_i, 'rows': rows,
+    json.dump({'passes': passes, 'full': full, 'rested': rest[0],'instructions': total_i, 'rows': rows,
                'places': {k[0] + ' @ ' + k[1]: v for k, v in places.items()}}, open(out, 'w'), indent=1)
 
 # The worker cores, when the harness wrote FILE.workers: a pass's instructions on them, how

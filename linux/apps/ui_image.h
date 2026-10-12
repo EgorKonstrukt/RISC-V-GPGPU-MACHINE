@@ -62,7 +62,21 @@ struct img_job {
 };
 
 static struct img_job *img;	/* (one picture at a time) */
-static int img_followers;	/* workers at the stages after the one this core does itself */
+static int img_followers;	/* workers at the stages beside the one this core does itself */
+
+/* A worker that stopped at a page goes on when the first core looks (which a worker never does). */
+static __attribute__((noinline, cold)) void
+img_look(int rest)
+{
+	int k;
+
+	if (mcw_on_worker())
+		return;
+	for (k = 1; k <= img_followers; k++)
+		mcw_done(k);
+	if (rest)
+		mcw_rest();
+}
 
 static inline uint32_t img_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -71,9 +85,13 @@ static inline uint32_t img_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 
 static inline int
 img_wait(volatile uint32_t *count, uint32_t least)
 {
-	while (*count < least)
+	while (*count < least) {
 		if (*img->failed)
 			return 0;
+		/* (a worker turns in place; the first core looks after the workers and rests) */
+		if (img_followers)
+			img_look(1);
+	}
 	return 1;
 }
 
@@ -779,8 +797,93 @@ img_idct(int *b, uint8_t *out, int pitch)
 	}
 }
 
+/* One strip's rows of blocks into pixels. */
+static __attribute__((noinline)) void
+img_jpeg_strip(struct img_job *j, int my0, int my1)
+{
+	uint8_t plane[3][16 * 16];	/* one MCU's samples, each component at its own size */
+	int block[64];
+	int my, mx, c, by, bx, k, x, y;
+
+	for (my = my0; my < my1; my++) {
+		const uint8_t *in = j->list + j->strip_at[my];
+
+		for (mx = 0; mx < j->mcus_x; mx++) {
+			for (c = 0; c < j->components; c++)
+				for (by = 0; by < j->comp[c].v; by++)
+					for (bx = 0; bx < j->comp[c].h; bx++) {
+						const uint16_t *q = j->quant[j->comp[c].table];
+						int n = *in++;
+
+						/* nothing but the block's mean (most of a sky): what the transform would give, without it */
+						if (n == 0 || (n == 1 && in[0] == 0)) {
+							int mean = n ? ((int16_t)(in[1] | in[2] << 8) * q[0]) << 3 : 0;
+							uint8_t *to = plane[c] + by * 8 * 16 + bx * 8;
+
+							in += 3 * n;
+							for (k = 0; k < 8; k++, to += 16)
+								memset(to, img_clip(((mean + 32) >> 6) + 128), 8);
+							continue;
+						}
+						memset(block, 0, sizeof block);
+						for (k = 0; k < n; k++, in += 3)
+							block[img_zigzag[in[0]]] = (int16_t)(in[1] | in[2] << 8) * q[in[0]];
+						img_idct(block, plane[c] + by * 8 * 16 + bx * 8, 16);
+					}
+			/* the MCU's pixels, each component stretched to the MCU's size */
+			{
+				int most_x = j->w - mx * j->mcu_w, sx[3], sy[3], paired;
+
+				if (most_x > j->mcu_w)
+					most_x = j->mcu_w;
+				for (c = 0; c < j->components; c++) {
+					sx[c] = j->comp[c].h * 8 == j->mcu_w ? 0 : 1;
+					sy[c] = j->comp[c].v * 8 == j->mcu_h ? 0 : 1;
+				}
+				paired = j->components == 3 && !sx[0] && sx[1] && sx[2];
+				for (y = 0; y < j->mcu_h; y++) {
+					int py = my * j->mcu_h + y;
+					const uint8_t *l = plane[0] + (y >> sy[0]) * 16;
+					uint8_t *out;
+
+					if (py >= j->h)
+						break;
+					out = j->rgb + ((uint32_t)py * (uint32_t)j->w + (uint32_t)(mx * j->mcu_w)) * 3;
+					if (j->components == 3) {
+						const uint8_t *u = plane[1] + (y >> sy[1]) * 16, *v = plane[2] + (y >> sy[2]) * 16;
+
+						/* a colour sample for two pixels (the usual kind): its three terms once */
+						for (x = 0; paired && x < most_x; x += 2, out += 6) {
+							int cb = u[x >> 1] - 128, cr = v[x >> 1] - 128, lum = l[x];
+							const uint8_t *r = img_clip_of + 384 + ((91881 * cr + 32768) >> 16);
+							const uint8_t *g = img_clip_of + 384 - ((22554 * cb + 46802 * cr + 32768) >> 16);
+							const uint8_t *b = img_clip_of + 384 + ((116130 * cb + 32768) >> 16);
+
+							out[0] = r[lum], out[1] = g[lum], out[2] = b[lum];
+							if (x + 1 == most_x)
+								break;
+							lum = l[x + 1];
+							out[3] = r[lum], out[4] = g[lum], out[5] = b[lum];
+						}
+						for (; x < most_x; x++, out += 3) {
+							int lum = l[x >> sx[0]], cb = u[x >> sx[1]] - 128, cr = v[x >> sx[2]] - 128;
+
+							out[0] = img_clip(lum + ((91881 * cr + 32768) >> 16));
+							out[1] = img_clip(lum - ((22554 * cb + 46802 * cr + 32768) >> 16));
+							out[2] = img_clip(lum + ((116130 * cb + 32768) >> 16));
+						}
+					} else {
+						for (x = 0; x < most_x; x++, out += 3)
+							out[0] = out[1] = out[2] = l[x];
+					}
+				}
+			}
+		}
+	}
+}
+
 /*
- * Stage 2, on every core that has no other: strips of 16 rows of pixels, every sharers-th
+ * Stage 2, on every core that has no other (the first one too): strips of 16 rows of pixels, every sharers-th
  * one from `first` on. A strip's first and last bytes are on 16-byte boundaries of the
  * picture (16 rows of 3 bytes a pixel are a multiple of 16 bytes whatever the width), so two
  * cores never write the same 16 bytes.
@@ -790,92 +893,19 @@ img_jpeg_strips(uint32_t first, uint32_t unused)
 {
 	struct img_job *j = img;
 	int rows_a_strip = 16 / j->mcu_h, strip, done = 0;	/* MCU rows in a strip: 1 or 2 */
-	uint8_t plane[3][16 * 16];	/* one MCU's samples, each component at its own size */
-	int block[64];
 
 	(void)unused;
 	for (strip = (int)first; strip < j->strips; strip += j->sharers, done++) {
-		int my0 = strip * rows_a_strip, my1 = my0 + rows_a_strip, my, mx, c, by, bx, k, x, y;
+		int my0 = strip * rows_a_strip, my1 = my0 + rows_a_strip;
 
 		if (my1 > j->mcus_y)
 			my1 = j->mcus_y;
 		if (!img_wait(j->listed, (uint32_t)my1))
 			break;
-		for (my = my0; my < my1; my++) {
-			const uint8_t *in = j->list + j->strip_at[my];
-
-			for (mx = 0; mx < j->mcus_x; mx++) {
-				for (c = 0; c < j->components; c++)
-					for (by = 0; by < j->comp[c].v; by++)
-						for (bx = 0; bx < j->comp[c].h; bx++) {
-							const uint16_t *q = j->quant[j->comp[c].table];
-							int n = *in++;
-
-							/* nothing but the block's mean (most of a sky): what the transform would give, without it */
-							if (n == 0 || (n == 1 && in[0] == 0)) {
-								int mean = n ? ((int16_t)(in[1] | in[2] << 8) * q[0]) << 3 : 0;
-								uint8_t *to = plane[c] + by * 8 * 16 + bx * 8;
-
-								in += 3 * n;
-								for (k = 0; k < 8; k++, to += 16)
-									memset(to, img_clip(((mean + 32) >> 6) + 128), 8);
-								continue;
-							}
-							memset(block, 0, sizeof block);
-							for (k = 0; k < n; k++, in += 3)
-								block[img_zigzag[in[0]]] = (int16_t)(in[1] | in[2] << 8) * q[in[0]];
-							img_idct(block, plane[c] + by * 8 * 16 + bx * 8, 16);
-						}
-				/* the MCU's pixels, each component stretched to the MCU's size */
-				{
-					int most_x = j->w - mx * j->mcu_w, sx[3], sy[3], paired;
-
-					if (most_x > j->mcu_w)
-						most_x = j->mcu_w;
-					for (c = 0; c < j->components; c++) {
-						sx[c] = j->comp[c].h * 8 == j->mcu_w ? 0 : 1;
-						sy[c] = j->comp[c].v * 8 == j->mcu_h ? 0 : 1;
-					}
-					paired = j->components == 3 && !sx[0] && sx[1] && sx[2];
-					for (y = 0; y < j->mcu_h; y++) {
-						int py = my * j->mcu_h + y;
-						const uint8_t *l = plane[0] + (y >> sy[0]) * 16;
-						uint8_t *out;
-
-						if (py >= j->h)
-							break;
-						out = j->rgb + ((uint32_t)py * (uint32_t)j->w + (uint32_t)(mx * j->mcu_w)) * 3;
-						if (j->components == 3) {
-							const uint8_t *u = plane[1] + (y >> sy[1]) * 16, *v = plane[2] + (y >> sy[2]) * 16;
-
-							/* a colour sample for two pixels (the usual kind): its three terms once */
-							for (x = 0; paired && x < most_x; x += 2, out += 6) {
-								int cb = u[x >> 1] - 128, cr = v[x >> 1] - 128, lum = l[x];
-								const uint8_t *r = img_clip_of + 384 + ((91881 * cr + 32768) >> 16);
-								const uint8_t *g = img_clip_of + 384 - ((22554 * cb + 46802 * cr + 32768) >> 16);
-								const uint8_t *b = img_clip_of + 384 + ((116130 * cb + 32768) >> 16);
-
-								out[0] = r[lum], out[1] = g[lum], out[2] = b[lum];
-								if (x + 1 == most_x)
-									break;
-								lum = l[x + 1];
-								out[3] = r[lum], out[4] = g[lum], out[5] = b[lum];
-							}
-							for (; x < most_x; x++, out += 3) {
-								int lum = l[x >> sx[0]], cb = u[x >> sx[1]] - 128, cr = v[x >> sx[2]] - 128;
-
-								out[0] = img_clip(lum + ((91881 * cr + 32768) >> 16));
-								out[1] = img_clip(lum - ((22554 * cb + 46802 * cr + 32768) >> 16));
-								out[2] = img_clip(lum + ((116130 * cb + 32768) >> 16));
-							}
-						} else {
-							for (x = 0; x < most_x; x++, out += 3)
-								out[0] = out[1] = out[2] = l[x];
-						}
-					}
-				}
-			}
-		}
+		/* (a strip is this core's longest stretch without a look at the workers) */
+		if (img_followers)
+			img_look(0);
+		img_jpeg_strip(j, my0, my1);
 	}
 	return (uint32_t)done;
 }
@@ -1077,9 +1107,9 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 	mcw_touch(map, mapped);
 	j->failed = mcw_alloc(16);
 	*j->failed = 0;
-	/* no more than there is work for: a PNG is this core's step and two more, a JPEG its codes and its strips of 16 rows */
-	if (workers > (png ? 2 : (j->h + 15) / 16 + 1))
-		workers = png ? 2 : (j->h + 15) / 16 + 1;
+	/* no more than there is work for: a PNG is this core's step and two more, a JPEG its codes and its strips of 16 rows but this core's */
+	if (workers > (png ? 2 : (j->h + 15) / 16))
+		workers = png ? 2 : (j->h + 15) / 16;
 	if (workers > 0)
 		got = mcw_open(workers);
 	if (png) {
@@ -1129,10 +1159,15 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 		j->strips = (j->mcus_y * j->mcu_h + 15) / 16;
 		img_clip_table();
 		if (got >= 2) {
-			j->sharers = got - 1;
+			/* this core shares the strips with the workers: the first ones, whose codes are
+			 * there first, so that it has its work while the codes of the rest are made */
+			j->sharers = got;
 			mcw_post(1, img_jpeg_codes, 0, 0);
 			for (k = 2; k <= got; k++)
-				mcw_post(k, img_jpeg_strips, (uint32_t)(k - 2), 0);
+				mcw_post(k, img_jpeg_strips, (uint32_t)(k - 1), 0);
+			img_followers = got;
+			img_jpeg_strips(0, 0);
+			img_followers = 0;
 			for (k = 1; k <= got; k++)
 				mcw_wait(k);
 		} else {

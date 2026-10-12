@@ -1077,7 +1077,7 @@ void seglDiscard(void) {
 
 // Has the list drawn last drawn once more, as its memory is now: its textures are the
 // program's memory, and so are the commands and vertices seglLast...() pointed at.
-void seglSwapAgain(void) {
+static void swap_again(int wait) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
     if (!gpu || !shown_commands || !window_info.realized || !window_info.surface_address) return;
     if (regs[REG_BUFFERS / 4] != buffers_seen) {
@@ -1098,9 +1098,13 @@ void seglSwapAgain(void) {
     regs[REG_SUBMIT / 4 + 2] = shown_commands & 0xffff;
     regs[REG_SUBMIT / 4] = 1 | 4 | (shown_commands >> 16) << 8;
     __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-    while (regs[REG_SUBMIT / 4] != 0) next_frame();
-    unsettled = 0;
+    unsettled = !wait;
+    unsettled_set = shown_set;
+    if (wait)
+        while (regs[REG_SUBMIT / 4] != 0) next_frame();
 }
+void seglSwapAgain(void) { swap_again(1); }
+void seglSwapAgainEarly(void) { swap_again(0); }
 
 // ---- commands that stay (segl.h) ----
 

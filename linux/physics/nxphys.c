@@ -162,7 +162,7 @@ static void
 pass(void)
 {
 	waited++;
-	__asm__ volatile(".word 0x0100000f");	/* pause: the machine's pass ends */
+	mcw_rest();	/* the kernel has the core for what is left of the pass (the pause hint with no workers) */
 }
 
 static inline uint32_t bits(float f) { union { float f; uint32_t u; } c = {f}; return c.u; }

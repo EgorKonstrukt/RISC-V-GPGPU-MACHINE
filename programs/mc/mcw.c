@@ -169,6 +169,15 @@ static void serve(int k)
 
 int mcw_count(void) { return count; }
 
+void mcw_rest(void)
+{
+	static int none;	/* a kernel from before the rest: the pause hint, as it was */
+
+	if (device >= 0 && !none && call6(29, device, MC_REST, 0, 0, 0, 0) == 0) return;
+	none = device >= 0;
+	mc_next_pass();
+}
+
 int mcw_most(void)
 {
 	static int most = -1;
@@ -384,7 +393,7 @@ int mcw_open(int limit)
 			serve(k);
 		}
 		if (all) break;
-		mc_next_pass();
+		mcw_rest();
 	}
 	mc_next_pass();
 	return count;
@@ -430,7 +439,7 @@ void mcw_close(void)
 				if (answer_of(k)->done != seq[k]) out++;
 			}
 			if (!out) break;
-			mc_next_pass();
+			mcw_rest();
 		}
 	}
 	mc_next_pass();
@@ -515,7 +524,7 @@ int mcw_wait(int k)
 
 	while (!mcw_done(k)) {
 		for (other = 1; other <= count; other++) serve(other);
-		mc_next_pass();
+		mcw_rest();
 		passes++;
 	}
 	return passes;

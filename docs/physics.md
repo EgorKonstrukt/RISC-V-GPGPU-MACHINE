@@ -208,6 +208,12 @@ million instructions became 1.4 with 7 workers (2.3 with 255, of which 0.9 is `m
   with 255. On the shader machine with 255 workers core 0 therefore runs half of its
   passes' instructions (it only waits; 57% of its passes end in its loop's `pause`); with a
   share it ran 76% of them and the wall took 4% more passes.
+- **A pass with nothing to do is a rest** (`mcw_rest()` in `pass()`; `multicore.md`, "A core
+  that rests"): the kernel has the core, for another program or for its idle loop's work,
+  where the loop paused in user mode. Of 3,229 passes of the wall on 207 workers the first
+  core rests in 2,862 and runs 99.8% of the other 367 (it ran 27.4% of all of them when
+  each wait was its own pause); the substeps a second are the same 61 to 63, and 120
+  substeps took 1,329 ms where they took 1,344. `PHYS_COUNT=1` still counts them.
 - **The frame ends with `seglSwapEarly()`**: the list reads one of the two quad buffers, the
   colour table (written once) and the set's own matrices, and `ask_picture()` settles
   (`seglSettle()`) before the shares write a quad buffer again. Core 0's loop no longer

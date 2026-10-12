@@ -59,6 +59,26 @@ first groups are being decoded.
   down, and else seven times a second; `ready()` goes on from where it stopped; the
   worker library looks before it takes a mailbox. With three workers the first core ran
   443 million instructions over the film and runs 247.
+- **And then it rests** (`mcw_rest()`, `multicore.md`, "A core that rests"): a turn of its
+  loop with no picture to show ends in the kernel, which has the core for anything else,
+  where it ended in a pause of the program's own. A picture is shown without waiting for
+  the GPU to have drawn it (`seglSwapEarly()`; no group is copied into the shown picture's
+  place, and `play_from()` settles first), which was a pause a picture, and the sound goes
+  into the ring 4 KB a turn while the card has an eighth of a second in hand (a chunk at
+  once was more than a pass's stores). The sample on a fixed timestep of 2 ms a pass
+  (`--fixed-dt 0.002`): 11,892 passes, of which 10,148 ended in the loop's pause and 532 in
+  the swap's, the first core running 47.2% of them; now 11,912, of which 10,521 are rests
+  and the first core runs 98.0% of the other 1,387. None left out, the film's clock the same.
+  (Measured before the sound's 4 KB a turn went in: that has only been run under `rvc_cpu`,
+  where the film plays through and the sums hold.)
+- **The workers run 84% of their passes** (78% of them whole; the others run 2,200
+  instructions): those are passes that end on a full write cache, 3 KB of stores. A group
+  copied into GPU memory is nothing but stores (507 KB, some 170 passes of a worker), and
+  so is a block copied from the picture before. It costs the film nothing: 20 decoders
+  where 14 keep up. The first core taking a decoder's place would add a fifteenth of the
+  decoding and answer the window a picture's 166 passes late; taking the copies (6 KB a
+  pass) would need 340 of its 500 passes a second and leave pictures out when passes are
+  long. Neither is done.
 - **Opening**: the stream's start codes were looked for with `memchr` in two passes, a
   quarter of the start. One pass now, reading one byte in three (a byte over 1 where a
   code's 1 would be rules out the two places after it), and its notes of the headers and

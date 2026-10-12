@@ -35,6 +35,9 @@
 // a count at MC_OFFER_AT that goes up when cores come free.
 #define MC_LENT 0x4709u              // _IO('G', 9)
 #define MC_GIVE 0x4020470au          // _IOW('G', 10, eight words)
+// The first core with nothing to do until the next pass says so to the kernel (mcw_rest()):
+// another program runs, or the pass ends there as in the idle loop. No argument.
+#define MC_REST 0x470bu              // _IO('G', 11)
 #define MC_RECALL_AT 0x1000u
 #define MC_OFFER_AT 0x1020u
 #define MC_OWNER_AT(k) (0x1400u + 4u * (k))

@@ -42,6 +42,8 @@ python3 "$HERE/console_hook.py" linux
 python3 "$HERE/zeropool_hook.py" linux
 python3 "$HERE/bootpages_hook.py" linux
 python3 "$HERE/icache_hook.py" linux
+python3 "$HERE/romwindow_hook.py" linux
+python3 "$HERE/poke_hook.py" linux
 cat linux.config "$HERE/config.extra" > all.config
 
 echo "== configure and build"

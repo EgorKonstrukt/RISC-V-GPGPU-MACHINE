@@ -154,6 +154,8 @@ void seglScreenCompactUsed(GLsizei count, int quads, GLuint name, const unsigned
 // drawn once more, as its memory (textures, commands, vertices) is now.
 void seglDiscard(void);
 void seglSwapAgain(void);
+// The same without the wait: seglSettle() before the program next writes what that list reads.
+void seglSwapAgainEarly(void);
 
 // Commands that stay (docs/gpu.md): quads of compact vertices in memory from seglMemory(), and
 // a command per run of them with one texture and one grey, at the head of every frame's list.

@@ -1120,7 +1120,7 @@ main(int argc, char **argv)
 		else if (!busy && !quit && out.on)
 			usleep(5000);
 		else if (!busy && !quit)
-			mc_next_pass();
+			mcw_rest();
 	}
 	if (out.on && tune.kind)
 		snd_stop(out.voice);

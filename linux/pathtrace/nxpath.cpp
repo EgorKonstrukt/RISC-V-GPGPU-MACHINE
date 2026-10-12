@@ -38,7 +38,7 @@ static unsigned now_ms()
 
 static void pass()
 {
-    __asm__ volatile(".word 0x0100000f");   // pause: the machine's pass ends
+    mcw_rest();   // nothing to do: the kernel has the core until the next pass (the pause hint with no workers)
 }
 
 // The panel's circles ask for the same sines and cosines at every frame, and the C library

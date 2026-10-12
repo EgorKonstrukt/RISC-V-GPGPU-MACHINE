@@ -3,6 +3,7 @@
  * ShaderEmu GPU device (docs/gpu.md in the ShaderEmu repository): mmap of the GPU's memory,
  * and an ioctl that sleeps with wfi until the submitted list has been drawn.
  */
+#include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
 #include <linux/init.h>
@@ -16,6 +17,7 @@
 #include <linux/uaccess.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
+#include <linux/sched/stat.h>
 #include <asm/processor.h>
 
 #define GPU_PHYS	0x86000000UL	/* buffers; the registers are 16 MiB in */
@@ -90,6 +92,8 @@ struct shaderemu_gpu_workers {
  */
 #define SHADEREMU_GPU_LENT	_IO('G', 9)
 #define SHADEREMU_GPU_GIVE	_IOW('G', 10, __u32[8])
+/* A program with nothing to do until the next pass: shaderemu_gpu_rest(). */
+#define SHADEREMU_GPU_REST	_IO('G', 11)
 #define WORKERS_RECALL	0x1000
 #define WORKERS_OFFER	0x1020
 #define WORKERS_POSTING	0x1040	/* a word a program (its tag's low four bits): not 0 while it writes to a mailbox */
@@ -351,8 +355,31 @@ static bool workers_give(struct file *file, const u32 *mask)
 	return had;
 }
 
+/*
+ * The core is given away for what is left of this pass (docs/multicore.md, "A core that
+ * rests"): to anything else that can run, and with nothing to run the pass ends here, as it
+ * would in the idle loop, whose work is done here too. It returns in a later pass.
+ */
+static noinline void shaderemu_gpu_rest(void)
+{
+	extern void zeroed_idle(void);	/* mm/page_alloc.c, the zero pool */
+	unsigned long pass = csr_read(CSR_TIME);	/* (one value a pass) */
+
+	if (!single_task_running())
+		yield();
+	if (csr_read(CSR_TIME) == pass)
+		zeroed_idle();	/* (a block cleared ahead ends the pass too) */
+	if (csr_read(CSR_TIME) == pass)
+		__asm__ __volatile__(".word 0x0100000f");	/* pause: the machine's pass ends */
+	arch_cpu_idle_exit();
+}
+
 static long shaderemu_gpu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+	if (cmd == SHADEREMU_GPU_REST) {
+		shaderemu_gpu_rest();
+		return 0;
+	}
 	if (cmd == SHADEREMU_GPU_LENT) {
 		struct worker_client *c;
 
