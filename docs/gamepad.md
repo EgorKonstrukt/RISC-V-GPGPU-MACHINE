@@ -2,37 +2,43 @@
 
 The display's keyboard and the beams are a poor way to play: a shooter wants two sticks, and a
 strategy game a pointer that does not have to be aimed with a whole arm. In the VRChat world
-the console beside every holodeck's seat (`docs/holodeck.md`) has a key for each of two
-controllers, a white one for shooters and a blue one for strategy games; none lies there.
-Whoever sits there and takes one plays with their own sticks, triggers and grips
-(`EmuGamepad.cs`, one behaviour a client).
+whoever sits in a holodeck's seat in a headset (`docs/holodeck.md`) plays with their own
+sticks, triggers and grips from the moment they sit (`EmuGamepad.cs`, one behaviour a
+client). Nothing is taken or chosen: the controls are those of the program whose window has
+the guest's keyboard.
 
-Nothing in the guest knows of them: a controller presses the keys and moves the pointer the
-games already read (`docs/input.md`). What the controls do is on the board on the den's left
-wall (`DoText` in `ShaderEmuGamepad.cs`).
+A controller presses the keys and moves the pointer the games already read
+(`docs/input.md`); the guest knows nothing of it. What the guest does say is which program
+has the keyboard: the desktop's bar writes a number for it once a second to the control word
+at `0x87000068` (`watch_focus` in `linux/nanox/nxbar.c`, the numbers and the names they go
+by in `linux/apps/gameid.h`; a word nothing else used), `EmuMachine` reads it from the
+readback (`gameId`), and `EmuGamepad.SchemeOf` picks the mapping: Doom and Quake the
+shooter's, ClassiCube the blocks', the NES the pad's, anything else (the desktop, Red Alert,
+Command & Conquer) the pointer's. A new game with controls of its own needs a number in
+`gameid.h`, the same in `EmuGamepad.cs`, and a branch in `Map`. What the controls do is on
+the board on the den's left wall (`DoText` in `ShaderEmuGamepad.cs`).
 
 There are none at the den's desk or in the classroom, and no seats there: a controller that
 anybody could take anywhere held its player in an unsynced station, which others could not
 see and which went wrong when two took it.
 
-## Taking one and putting it back
+## Sitting down and standing up
 
-- Only from the seat: the stand's Shooter and Strategy keys are the sitter's. The beams
-  rest, and the seat keeps its sitter (`disableStationExit`), so that the left stick is the
-  game's and does not stand them up.
-- There is no model of a controller (there were two, on every player's object, put in the
-  holder's right hand; taken out on 11 October 2026: the visitor's own controllers are in
-  their hands already). Which one a visitor holds is a synced number in their own `EmuShare`
-  (`holding`), and the stand's line says it to everybody: "SHOOTER in hand: put it back to leave".
-- A notice hangs over the holder's hand, for them alone, for ten seconds after taking it and
-  whenever a grip is held: what it is, and that both grips held for a second put it back. A
-  bar fills while they are held.
-- The stand's Put back key does the same. A desktop has no controllers (`docs/holodeck.md`,
-  "Without a headset"): End stands a sitter up there, and puts back whatever is held.
-- Taking one while holding the other puts the other back. Getting up, a respawn and leaving
-  put back whichever is held.
+- Sitting down in a headset is taking it (`EmuHolodeck.Entered`, `EmuGamepad.Take`). The
+  beams answer only the seat's console then, and the seat keeps its sitter
+  (`disableStationExit`), so that the left stick is the game's and does not stand them up.
+  Until 12 October 2026 the console had Shooter, Strategy and Put back keys: nobody could
+  press them from the seat, and nobody should have to know which a game wants.
+- There is no model of a controller. That a visitor has it is a synced number in their own
+  `EmuShare` (`holding`), and the console's line says what the controls are.
+- A notice hangs over the right hand, for the sitter alone, for ten seconds after sitting
+  down or a change of the controls, and whenever a grip is held: what the controls are, and
+  that both grips held for a second stand them up. A bar fills while they are held.
+- The console's Exit key does the same. A desktop has no controller (`docs/holodeck.md`,
+  "Without a headset"): End stands a sitter up there.
+- A hand whose beam is on the console presses the console with its trigger, not the game.
 
-## The white one: shooters (Quake, Doom, by their own default keys)
+## Shooters (Quake, Doom, by their own default keys)
 
 | Control | Key | In the games |
 |---|---|---|
@@ -51,7 +57,7 @@ further it is pushed: a slow turn from keys that are only up or down. Quake's ow
 is not used: the guest's pointer is a place on the display, not a movement, and would stop at
 the display's edge.
 
-## The blue one: strategy (Red Alert, Command & Conquer)
+## The pointer (the desktop, Red Alert, Command & Conquer)
 
 | Control | Does |
 |---|---|
@@ -64,17 +70,33 @@ the display's edge.
 On a desktop the same events would come from the keyboard and mouse VRChat walks with, which
 is why a controller is not given out there: the visitor's own keyboard plays instead.
 
+## The pad (the NES)
+
+Left stick the pad (the arrow keys), right trigger A (`x`), left trigger B (`z`), the jump
+button Start (Enter), right grip Select (Tab), left grip Esc.
+
+## Blocks (ClassiCube)
+
+Left stick walks (`w` `a` `s` `d`), right stick turns and looks (the arrow keys, pulsed as
+the shooter's), the jump button jumps (Space), the right trigger digs and the left one
+builds (the pointer's buttons, where the pointer was left), left grip Esc, right grip Enter.
+
 ## Checking it
 
-In play mode: `stations[k].UseStation(Networking.LocalPlayer)` on "Holodeck", then its
-`TakeShooter` or `TakeStrategy` event, then `RunInputEvent("_inputMoveVertical", new
+In play mode the editor has no headset, so sitting down takes nothing: call `Take` by hand
+(`SendCustomEvent` cannot pass the seat; set `held` and `pointer.away` with
+`SetProgramVariable`, or test on a build). Then `RunInputEvent("_inputMoveVertical", new
 UdonInputEventArgs(0.9f, HandType.LEFT))` and the like on "Gamepad", and read the display
-keyboard's `queue` (a key code, plus 65536 while pressed) and the machine's `pointerX`. `held`
-on "Gamepad" and `holding` in the player's `EmuShare` must agree, the seat's
-`disableStationExit` be set, and after `ExitStation` all of it be undone.
+keyboard's `queue` (a key code, plus 65536 while pressed) and the machine's `pointerX`.
+Set the machine's `gameId` (1 Doom, 2 Quake, 3 ClassiCube, 6 the NES) and the keys held
+must change with it, the old ones let go first. In the guest: `nx; sleep 8; doom & sleep
+20`, then the word at `0x87000068` in a snapshot is 1, and 0 again once a terminal has the
+keyboard.
 
 ## Not known yet
 
-- None of it has been in a headset. Whether a seat stops the right stick from turning the
-  visitor in VR is untried; if it does not, the view turns with the game.
+- The automatic controls and the beams on the console have not been in a headset. Whether a
+  seat stops the right stick from turning the visitor in VR is untried; if it does not, the
+  view turns with the game.
+- ClassiCube's and the NES's mappings were written from their key tables and never played.
 - Doom has no key for looking up, and neither game a second stick's analogue turn.

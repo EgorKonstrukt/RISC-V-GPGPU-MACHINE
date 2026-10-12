@@ -3,10 +3,10 @@ using UnityEngine;
 using TMPro;
 using VRC.SDKBase;
 
-// The classroom's computers (docs/stations.md): eight tubes, one a visitor. A visitor's place is
-// a number in their own EmuShare, so nobody can move anybody else; whoever holds a place sends
-// their display (EmuShareHub does, as for a watcher), EmuStreams receives it and this puts it
-// on that place's tube. A visitor's own tube shows their machine itself.
+// The classroom's computers (docs/stations.md): twelve tubes, one a visitor whose machine is on.
+// A visitor's place is a number in their own EmuShare, so nobody can move anybody else; whoever
+// holds a place sends their display (EmuShareHub does, as it does anyway), EmuStreams receives
+// it and this puts it on that place's tube. A visitor's own tube shows their machine itself.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuStations : UdonSharpBehaviour
 {
@@ -22,20 +22,33 @@ public class EmuStations : UdonSharpBehaviour
     public EmuPointer pointer;         // the beams: this visitor's own keyboard and tube answer them
     public EmuKeyboard[] keyboards;    // a place's own
     public Material[] speeds;          // SevenSeg.shader on each tower: its owner's machine's speed
-    public Material ownSpeed;          // and on the den's own tower: this visitor's
+    public Material ownSpeed;          // and on the den's own tower, and the wall: the machine the wall shows
     public GameObject[] linkLamps;     // lit on a place's monitor while its owner's browser wants addresses
     public GameObject[] powerLamps;    // a place's monitor's and tower's lamps: lit while its owner's machine is on
     public GameObject ownLamps;        // and the den's own tower's
     public Transform[] linkSpots;      // where the links panel stands before a place's tube
     public AudioSource click;          // a key of a monitor or a tower
     public AudioClip clickSound;
+    // Blink.shader: a tower's disk lamp flickers as its machine's registers change, its network
+    // socket's (and its port's on a hub) as its packets go; a free place's power key beckons.
+    public Material[] diskLamps, netLamps, beacons;
+    public Material ownDisk;           // the den's own tower's
+    public Material[] hubLamps;        // a port of a hub each
+    public int[] hubPlaces;            // and the place it serves; -1: a lead to another hub
+    public GameObject fields;          // an address to open and text to type: before this visitor's own keyboard
+    public Transform[] fieldSpots;
+    public EmuPaste paste;             // the text field's, which types at whichever keyboard is this visitor's
 
-    private const int FirstSurface = 1;   // of EmuStreams' surfaces: the classroom's are 1 to 8
+    private const int FirstSurface = 1;   // of EmuStreams' surfaces: the classroom's are 1 to 12
+    private const int Steady = 0xffff, Beckon = 0x00ff;
 
     private int count;
-    private int[] owner, claimed, mode;
+    private int[] owner, claimed, mode, netSeen;
     private Texture[] showing;
     private float nextAt;
+    private bool left;                 // this visitor gave their place up: none is found for them until they ask
+    private bool wasOn;
+    private int fieldsAt = -1;
 
     void Start()
     {
@@ -43,8 +56,10 @@ public class EmuStations : UdonSharpBehaviour
         owner = new int[count];
         claimed = new int[count];
         mode = new int[count];
+        netSeen = new int[count];
         showing = new Texture[count];
         for (int s = 0; s < count; s++) owner[s] = -1;   // not looked at yet
+        if (fields != null) fields.SetActive(false);
     }
 
     void Update()
@@ -62,15 +77,10 @@ public class EmuStations : UdonSharpBehaviour
     public void Take5() { Take(5); }
     public void Take6() { Take(6); }
     public void Take7() { Take(7); }
-
-    public void Keys0() { Keys(0); }
-    public void Keys1() { Keys(1); }
-    public void Keys2() { Keys(2); }
-    public void Keys3() { Keys(3); }
-    public void Keys4() { Keys(4); }
-    public void Keys5() { Keys(5); }
-    public void Keys6() { Keys(6); }
-    public void Keys7() { Keys(7); }
+    public void Take8() { Take(8); }
+    public void Take9() { Take(9); }
+    public void Take10() { Take(10); }
+    public void Take11() { Take(11); }
 
     // The place this visitor has, or -1.
     public int Own()
@@ -81,21 +91,29 @@ public class EmuStations : UdonSharpBehaviour
         return s >= 0 && s < count && owner[s] == hub.MyId() ? s : -1;
     }
 
-    // "Use my keyboard" at a place: its owner's real keyboard types there, as at the console.
-    private void Keys(int s)
-    {
-        if (s >= count || owner[s] != hub.MyId() || keyboards == null || s >= keyboards.Length) return;
-        keyboards[s].ToggleCapture();
-    }
-
-    // A visitor sits down at a place nobody has; at their own, the key turns the tube between
-    // the display and the console.
+    // A visitor sits down at a place nobody has, which starts their machine if it is off; at
+    // their own, the key turns the tube between the display and the console.
     private void Take(int s)
     {
         EmuShare mine = hub.Mine();
         if (mine == null || s >= count || (owner[s] > 0 && owner[s] != hub.MyId())) return;
         if (owner[s] == hub.MyId()) mine.stationMode = 1 - mine.stationMode;
         mine.station = s;
+        left = false;
+        if (!machine.Powered()) machine.PowerOn();
+        hub.StateOut();
+        nextAt = 0;
+    }
+
+    // The place is given up: free for anybody, and none is found for this visitor until they
+    // take one or switch their machine on again.
+    private void Leave(int s)
+    {
+        EmuShare mine = hub.Mine();
+        if (mine == null || s != Own()) return;
+        if (keyboards != null && s < keyboards.Length) keyboards[s].SetCapture(false);
+        mine.station = -1;
+        left = true;
         hub.StateOut();
         nextAt = 0;
     }
@@ -111,8 +129,14 @@ public class EmuStations : UdonSharpBehaviour
     }
 
     // A key of a place's monitor or tower (EmuPlace): its owner's machine's, and nobody else's.
+    // The power key of a free place is anybody's: it starts their machine there.
     public void Act(int s, int what)
     {
+        if (what == 0 && s < count && owner[s] == 0)
+        {
+            Take(s);
+            return;
+        }
         if (s != Own()) return;
         if (click != null && clickSound != null)
         {
@@ -128,32 +152,40 @@ public class EmuStations : UdonSharpBehaviour
         else if (what == 6) SetMode(s, 0);
         else if (what == 7) machine.PlaceLinks(false, null);
         else if (what == 8 && linkSpots != null && s < linkSpots.Length) machine.PlaceLinks(true, linkSpots[s]);
+        else if (what == 9) Leave(s);
     }
 
-    // Whose each place is: of those who name it, the visitor who came first.
+    // Whose each place is: of those who name it and have their machine on, the visitor who came first.
     private void Assign()
     {
         hub.Prune();
         EmuShare mine = hub.Mine();
         if (mine == null) return;
         int myId = hub.MyId(), others = hub.ShareCount();
+        bool on = machine.Powered();
+        if (on && !wasOn) left = false;
+        wasOn = on;
         for (int s = 0; s < count; s++) claimed[s] = 0;
-        if (mine.station >= 0 && mine.station < count) claimed[mine.station] = myId;
+        if (on && mine.station >= 0 && mine.station < count) claimed[mine.station] = myId;
         for (int i = 0; i < others; i++)
         {
             EmuShare share = hub.ShareAt(i);
             int s = share.station;
-            if (s >= 0 && s < count && (claimed[s] == 0 || share.ownerId < claimed[s])) claimed[s] = share.ownerId;
+            if ((share.flags & 1) == 0 || s < 0 || s >= count) continue;
+            if (claimed[s] == 0 || share.ownerId < claimed[s]) claimed[s] = share.ownerId;
         }
         if (mine.station < 0 || mine.station >= count || claimed[mine.station] != myId)
         {
-            // none, or somebody earlier has it: the first that is free
+            // none, or somebody earlier has it: the first that is free, for a machine that is on
             int free = -1;
-            for (int s = 0; s < count && free < 0; s++)
+            for (int s = 0; s < count && free < 0 && on && !left; s++)
                 if (claimed[s] == 0) free = s;
-            mine.station = free;
+            if (mine.station != free)
+            {
+                mine.station = free;
+                hub.StateOut();
+            }
             if (free >= 0) claimed[free] = myId;
-            hub.StateOut();
         }
         // this visitor types and points at their own place: its keys go into their own machine,
         // as characters or key events by what its tube shows
@@ -164,12 +196,17 @@ public class EmuStations : UdonSharpBehaviour
             pointer.ownDisplay = mine.stationMode == 0;
         }
         if (own >= 0 && keyboards != null && own < keyboards.Length) keyboards[own].Feed(machine, mine.stationMode == 0);
+        Fields(own);
+        // the den's own tower and the wall's window: the machine the wall shows
+        int wall = hub.WallSlot();
+        bool wallOn = hub.WallIsOwn() ? on : wall >= 0 && streams.Width(wall) > 0;
         if (ownSpeed != null)
         {
-            ownSpeed.SetFloat("_All", machine.Powered() ? machine.mipsAll * 10f : -1f);
-            ownSpeed.SetFloat("_Core", machine.Powered() ? machine.mipsCore * 10f : -1f);
+            ownSpeed.SetFloat("_All", !wallOn ? -1f : hub.WallIsOwn() ? machine.mipsAll * 10f : streams.MipsAll(wall));
+            ownSpeed.SetFloat("_Core", !wallOn ? -1f : hub.WallIsOwn() ? machine.mipsCore * 10f : streams.MipsCore(wall));
         }
-        if (ownLamps != null && ownLamps.activeSelf != machine.Powered()) ownLamps.SetActive(machine.Powered());
+        if (ownLamps != null && ownLamps.activeSelf != wallOn) ownLamps.SetActive(wallOn);
+        if (ownDisk != null) ownDisk.SetFloat("_Pattern", hub.WallIsOwn() ? machine.activity : wall >= 0 ? streams.Activity(wall) : 0);
         for (int s = 0; s < count; s++)
         {
             int wants = claimed[s] == myId ? mine.stationMode : claimed[s] > 0 ? ModeOf(claimed[s]) : 0;
@@ -177,6 +214,7 @@ public class EmuStations : UdonSharpBehaviour
             if (claimed[s] != owner[s])
             {
                 owner[s] = claimed[s];
+                netSeen[s] = -1;
                 relabel = true;
             }
             mode[s] = wants;
@@ -188,7 +226,7 @@ public class EmuStations : UdonSharpBehaviour
                 // the key says whose the place is, what its tube shows, and to its owner that it switches
                 if (labels[s] != null) labels[s].text = owner[s] == 0 ? "FREE" : owner[s] == myId ? Networking.LocalPlayer.displayName : NameOf(owner[s]);
                 if (modes != null && modes[s] != null)
-                    modes[s].text = owner[s] == 0 ? "press to sit here" : (wants == 1 ? "CONSOLE" : "DISPLAY") + (owner[s] == myId ? " - press to switch" : "");
+                    modes[s].text = owner[s] == 0 ? "press POWER: yours starts here" : (wants == 1 ? "CONSOLE" : "DISPLAY") + (owner[s] == myId ? " - press to switch" : "");
             }
             Texture shown = blackTexture;
             int w = 0, h = 0;
@@ -211,7 +249,7 @@ public class EmuStations : UdonSharpBehaviour
             }
             else if (slot >= 0)
             {
-                // a console is always there to show; a display only while its machine is on
+                // a console is always there to show; a display only while its machine has one
                 shown = wants == 1 ? streams.Console(slot) : streams.Picture(slot);
                 w = wants == 1 ? shown.width : streams.Width(slot);
                 h = wants == 1 ? shown.height : streams.Height(slot);
@@ -220,17 +258,15 @@ public class EmuStations : UdonSharpBehaviour
             if (speeds != null && s < speeds.Length && speeds[s] != null)
             {
                 float all = -1f, core = -1f;
-                if (owner[s] == myId && machine.Powered()) { all = machine.mipsAll * 10f; core = machine.mipsCore * 10f; }
-                else if (slot >= 0 && streams.Width(slot) > 0) { all = streams.MipsAll(slot); core = streams.MipsCore(slot); }
+                if (owner[s] == myId) { all = machine.mipsAll * 10f; core = machine.mipsCore * 10f; }
+                else if (slot >= 0) { all = streams.MipsAll(slot); core = streams.MipsCore(slot); }
                 speeds[s].SetFloat("_All", all);
                 speeds[s].SetFloat("_Core", core);
             }
             if (linkLamps != null && s < linkLamps.Length && linkLamps[s] != null) linkLamps[s].SetActive(owner[s] == myId && machine.LinksWanted());
-            if (powerLamps != null && s < powerLamps.Length && powerLamps[s] != null)
-            {
-                bool on = owner[s] == myId ? machine.Powered() : slot >= 0 && streams.Width(slot) > 0;
-                if (powerLamps[s].activeSelf != on) powerLamps[s].SetActive(on);
-            }
+            if (powerLamps != null && s < powerLamps.Length && powerLamps[s] != null && powerLamps[s].activeSelf != (owner[s] > 0))
+                powerLamps[s].SetActive(owner[s] > 0);
+            Lamps(s, owner[s] == myId ? machine.activity : slot >= 0 ? streams.Activity(slot) : 0);
             Material screen = screens[s];
             if (shown != showing[s])
             {
@@ -242,6 +278,33 @@ public class EmuStations : UdonSharpBehaviour
         }
     }
 
+    // A place's small lamps: the disk's by its machine's registers, the network's lit while the
+    // machine is on and flickering in a half second in which it sent packets; the power key's
+    // beckons while the place is free.
+    private void Lamps(int s, int activity)
+    {
+        if (diskLamps != null && s < diskLamps.Length && diskLamps[s] != null) diskLamps[s].SetFloat("_Pattern", activity);
+        if (beacons != null && s < beacons.Length && beacons[s] != null) beacons[s].SetFloat("_Pattern", owner[s] == 0 ? Beckon : 0);
+        int sent = owner[s] == 0 ? -1 : owner[s] == hub.MyId() ? machine.netSent + machine.netReceived : NetOf(owner[s]);
+        int lit = owner[s] == 0 ? 0 : sent != netSeen[s] && netSeen[s] >= 0 ? Random.Range(0x1111, 0xffff) | 0x8001 : Steady;
+        netSeen[s] = sent;
+        if (netLamps != null && s < netLamps.Length && netLamps[s] != null) netLamps[s].SetFloat("_Pattern", lit);
+        if (hubLamps == null) return;
+        for (int p = 0; p < hubLamps.Length; p++)
+            if (hubPlaces[p] == s && hubLamps[p] != null) hubLamps[p].SetFloat("_Pattern", lit);
+    }
+
+    // The fields stand before this visitor's own keyboard, and type at it.
+    private void Fields(int own)
+    {
+        if (fields == null || own == fieldsAt) return;
+        fieldsAt = own;
+        fields.SetActive(own >= 0);
+        if (own < 0 || fieldSpots == null || own >= fieldSpots.Length) return;
+        fields.transform.SetPositionAndRotation(fieldSpots[own].position, fieldSpots[own].rotation);
+        if (paste != null) paste.keyboard = keyboards[own];
+    }
+
     private int ModeOf(int id)
     {
         int others = hub.ShareCount();
@@ -249,6 +312,17 @@ public class EmuStations : UdonSharpBehaviour
         {
             EmuShare share = hub.ShareAt(i);
             if (share.ownerId == id) return share.stationMode;
+        }
+        return 0;
+    }
+
+    private int NetOf(int id)
+    {
+        int others = hub.ShareCount();
+        for (int i = 0; i < others; i++)
+        {
+            EmuShare share = hub.ShareAt(i);
+            if (share.ownerId == id) return share.netSeq;
         }
         return 0;
     }

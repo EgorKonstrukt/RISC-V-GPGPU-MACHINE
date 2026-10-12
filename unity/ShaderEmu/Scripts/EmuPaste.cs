@@ -73,8 +73,9 @@ public class EmuPaste : UdonSharpBehaviour
             Show();
             return;
         }
-        // the keyboard's queue holds 1,024: it is kept under a quarter of that, for the keys pressed meanwhile
-        int room = 256 - keyboard.Count();
+        // the keyboard's queue holds 1,024: it is kept under a quarter of that, for the keys pressed
+        // meanwhile (a classroom keyboard's goes into the machine's own 256: half of that)
+        int room = (keyboard.sink != null ? 128 : 256) - keyboard.Count();
         if (room <= 0) return;
         int count = Mathf.Min(room, pending.Length - sent);
         keyboard.TypeText(pending.Substring(sent, count));

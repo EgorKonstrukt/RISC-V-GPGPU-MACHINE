@@ -8,9 +8,9 @@ using VRC.Udon.Common.Interfaces;
 
 // Players see each other's machines (docs/share.md). This is local, one a client: it fills
 // this player's EmuShare with the console's changed rows and the display's changed tiles
-// while somebody shows them, and puts the watched player's console and display on the wall
-// here (EmuStreams receives them). A watcher's keys and pointer go the other way, when the
-// owner allows it.
+// while the machine is on and anybody is there, and puts the watched player's console,
+// display and panel on the wall here (EmuStreams receives them). A watcher's keys and
+// pointer go the other way, when the owner allows it.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuShareHub : UdonSharpBehaviour
 {
@@ -26,6 +26,8 @@ public class EmuShareHub : UdonSharpBehaviour
     public RenderTexture fineBlocks;        // 640 x 240: the fine level's blocks
     public Material displayShowMaterial;    // the wall
     public TextMeshProUGUI watchLabel, allowLabel;
+    public TextMeshProUGUI watchersLabel;   // who watches the machine shown
+    public TextMeshProUGUI moreLabel;       // on the button to the next page of players
     // The panel by the display: "Automatic", "My own", then a page of the other players.
     public GameObject[] rowObjects;
     public Image[] rowPlates;
@@ -42,7 +44,8 @@ public class EmuShareHub : UdonSharpBehaviour
     private const int FineAt = 300, FineMost = 400;
     // Two ticks of three carry a packet: 7.7 KB/s with the fields beside it, of the 8 to 10 a
     // client gets out in practice for everything it sends (VRChat's limit is a client's).
-    private const int PacketMost = 1150, ConsoleMost = 800, HeaderBytes = 17;
+    private const int PacketMost = 1150, ConsoleMost = 800, HeaderBytes = 19;
+    private const int StatusFixed = 130, StatusTextMost = 560;   // as EmuStreams'
     private const int NetBatchMost = 600;   // a sending's share for the network: one full packet, or several small
     private byte[] netScratch = new byte[NetBatchMost + 600];
     [HideInInspector] public int netBatches, netTaken;
@@ -86,7 +89,7 @@ public class EmuShareHub : UdonSharpBehaviour
     private int[] keptWhat = new int[Kept * KeptMost];   // a tile and its level << 12; 0x10000 + a console row
     private int building;             // the place in the ring of the packet being built
     private bool refreshDue;
-    private float refreshedAt = -10f, speedAt;
+    private float refreshedAt = -10f, speedAt, statusAt;
     private int speedAll, speedCore;
 
     // A speed in two bytes of the packet: its four digits, and from bit 14 how many of them
@@ -163,6 +166,30 @@ public class EmuShareHub : UdonSharpBehaviour
         ShowLabels();
     }
 
+    // Who looks at a player's machine on their wall: that player's own number when at their own.
+    private int Watched(EmuShare share)
+    {
+        return share.watching == 0 ? share.ownerId : share.watching;
+    }
+
+    // How many others have this player's machine on their wall.
+    private int Watchers(int id)
+    {
+        int n = 0;
+        if (id != myId && target == id) n++;
+        for (int i = 0; i < shareCount; i++)
+            if (shares[i].ownerId != id && Watched(shares[i]) == id) n++;
+        return n;
+    }
+
+    private string WatcherNames(int id)
+    {
+        string names = id != myId && target == id ? "you" : "";
+        for (int i = 0; i < shareCount; i++)
+            if (shares[i].ownerId != id && Watched(shares[i]) == id) names += (names.Length > 0 ? ", " : "") + shares[i].ownerName;
+        return names;
+    }
+
     public void ToggleAllow()
     {
         allow = !allow;
@@ -179,9 +206,17 @@ public class EmuShareHub : UdonSharpBehaviour
         if (target != 0 && Utilities.IsValid(targetShare))
             text = "Showing " + (target == myId ? "your own, as others see it" : targetShare.ownerName + "'s computer")
                  + ((targetShare.flags & 1) == 0 ? ", which is off" : (targetShare.flags & 2) != 0 ? ": you may use it" : ": look only");
-        watchLabel.text = text + "\n" + (viewers == 0 ? "Nobody is watching yours" : viewers + " watching yours");
+        int watchingMe = Watchers(myId);
+        watchLabel.text = text + "\n" + (watchingMe == 0 ? "Nobody is watching yours" : watchingMe + " watching yours");
+        if (watchersLabel != null)
+        {
+            int shown = target != 0 && Utilities.IsValid(targetShare) ? target : myId;
+            string names = WatcherNames(shown);
+            watchersLabel.text = (shown == myId ? "Watching yours: " : "Watching " + targetShare.ownerName + "'s: ") + (names.Length > 0 ? names : "nobody");
+        }
         if (rowObjects == null || rowObjects.Length < 10) return;
         if (page * 8 >= shareCount) page = 0;
+        if (moreLabel != null) moreLabel.text = "More players  (" + (page + 1) + " of " + ((shareCount + 7) / 8) + ")";
         rowPlates[0].color = picked < 0 ? pickedColour : rowColour;
         rowPlates[1].color = picked == 0 ? pickedColour : rowColour;
         for (int row = 0; row < 8; row++)
@@ -190,7 +225,9 @@ public class EmuShareHub : UdonSharpBehaviour
             rowObjects[row + 2].SetActive(index < shareCount);
             if (index >= shareCount) continue;
             EmuShare share = shares[index];
-            rowLabels[row + 2].text = share.ownerName + ((share.flags & 1) == 0 ? "  (off)" : (share.flags & 2) != 0 ? "  (on, usable)" : "  (on)");
+            int watched = Watchers(share.ownerId);
+            rowLabels[row + 2].text = share.ownerName + ((share.flags & 1) == 0 ? "  (off)" : (share.flags & 2) != 0 ? "  (on, usable)" : "  (on)")
+                                    + (watched > 0 ? "   " + watched + " watching" : "");
             rowPlates[row + 2].color = picked == share.ownerId ? pickedColour : rowColour;
         }
         moreButton.SetActive(shareCount > 8);
@@ -329,6 +366,8 @@ public class EmuShareHub : UdonSharpBehaviour
             terminal.ShowLocal();
             WallShowsOwn();
         }
+        if (to == 0 || to == myId) machine.OwnStats();
+        else machine.RemoteStats("", null);
         stateOut = true;
         stateDirty = true;
         ShowLabels();
@@ -356,7 +395,17 @@ public class EmuShareHub : UdonSharpBehaviour
         displayShowMaterial.SetVector("_Size", new Vector4(streams.Width(slot), streams.Height(slot), 0, 0));
         machine.shownWidth = streams.DisplayWidth(slot);
         machine.shownHeight = streams.DisplayHeight(slot);
+        if (target != myId) machine.RemoteStats(streams.Stats(slot), streams.Registers(slot));
     }
+
+    // The machine on the wall, for whoever shows its speed and lamps: the slot of another
+    // player's, or -1 for this player's own.
+    public int WallSlot()
+    {
+        return target != 0 && target != myId ? streams.SlotOf(target) : -1;
+    }
+
+    public bool WallIsOwn() { return target == 0 || target == myId; }
 
     // Who shows this player on some screen, who of them is new or lost a packet, and who
     // watches on the wall (whose keys and pointer may come).
@@ -493,7 +542,7 @@ public class EmuShareHub : UdonSharpBehaviour
         // the network's packets go ahead of the display, which while they flow is sent half as often
         bool net = MoveNet();
         int length = 0;
-        if (ticks % 3 != 0 && viewers > 0 && !(net && (ticks & 1) == 0))
+        if (ticks % 3 != 0 && (shareCount > 0 || selfTest) && !(net && (ticks & 1) == 0))
         {
             if (on && !reading) Capture();
             length = Build(on);
@@ -855,9 +904,18 @@ public class EmuShareHub : UdonSharpBehaviour
         building = (mine.seq + 1) & (Kept - 1);
         keptSeq[building] = -1;
         keptCount[building] = 0;
-        int at = HeaderBytes, count = 0;
+        // what the panel says of the machine, its registers and its lamp: every two seconds
+        int status = 0;
+        if (on && Time.time - statusAt >= 2f)
+        {
+            statusAt = Time.time;
+            status = PutStatus(b, HeaderBytes);
+        }
+        b[17] = (byte)(status & 255);
+        b[18] = (byte)(status >> 8);
+        int at = HeaderBytes + status, count = 0, rowsEnd = Mathf.Min(ConsoleMost + status, PacketMost);
         bool[] changed = terminal.rowChanged;
-        for (int r = 0; r < terminal.rows && at + 3 + 2 * terminal.cols <= ConsoleMost; r++)
+        for (int r = 0; r < terminal.rows && at + 3 + 2 * terminal.cols <= rowsEnd; r++)
         {
             if (!changed[r]) continue;
             changed[r] = false;
@@ -869,12 +927,34 @@ public class EmuShareHub : UdonSharpBehaviour
         int tilesAt = at;
         if (w > 0 && haveAtlas && work) at = PutTiles(b, at);
         bool header = !headerSent;
-        for (int i = 0; i < HeaderBytes; i++)
+        for (int i = 0; i < 17; i++)
             if (i != 12 && b[i] != lastHeader[i]) header = true;
-        if (count == 0 && at == tilesAt && !header) return 0;
+        if (count == 0 && at == tilesAt && !header && status == 0) return 0;
         System.Buffer.BlockCopy(b, 0, lastHeader, 0, HeaderBytes);
         headerSent = true;
         return at;
+    }
+
+    // The machine's activity bits, pc and x1 to x31, then its panel's text.
+    private int PutStatus(byte[] b, int at)
+    {
+        int lamp = machine.activity;
+        b[at] = (byte)(lamp & 255);
+        b[at + 1] = (byte)((lamp >> 8) & 255);
+        uint[] r = machine.registers;
+        for (int i = 0; i < 32; i++)
+        {
+            int k = at + 2 + i * 4;
+            uint v = r[i];
+            b[k] = (byte)(v & 255);
+            b[k + 1] = (byte)((v >> 8) & 255);
+            b[k + 2] = (byte)((v >> 16) & 255);
+            b[k + 3] = (byte)(v >> 24);
+        }
+        string text = machine.statsLine;
+        int n = Mathf.Min(text.Length, StatusTextMost);
+        for (int i = 0; i < n; i++) b[at + StatusFixed + i] = (byte)(text[i] & 0x7f);
+        return StatusFixed + n;
     }
 
     // ---- sending: this player's hands on the watched machine ----

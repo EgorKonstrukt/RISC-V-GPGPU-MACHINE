@@ -23,10 +23,10 @@ public class EmuShare : UdonSharpBehaviour
     // The senders this player shows on some screen (EmuStreams), one a slot: the sender's number
     // (16 bits) and a count << 16 that goes up with each asking; and what is asked for again:
     // a packet number's low 16 bits and how many from it << 16 (none: everything).
-    [UdonSynced] public int[] ask = new int[12];
-    [UdonSynced] public int[] lost = new int[12];
+    [UdonSynced] public int[] ask = new int[16];
+    [UdonSynced] public int[] lost = new int[16];
     [UdonSynced] public int holo = -1;   // the holodeck whose seat this player sits in (docs/holodeck.md); -1: none
-    [UdonSynced] public int holding;     // the game controller in their hand: 0 none, 1 shooter, 2 strategy
+    [UdonSynced] public int holding;     // the game controller is in their hands (EmuGamepad): 0 no, else yes
     // The network (docs/lan.md): this player's machine's packets since the last sending, each
     // after two bytes of its length; netSeq goes up with every such batch.
     [UdonSynced] public int netSeq;
@@ -37,7 +37,7 @@ public class EmuShare : UdonSharpBehaviour
     [HideInInspector] public string ownerName = "";
     [HideInInspector] public int seenInput;
     [HideInInspector] public int seenNet;
-    [HideInInspector] public int[] seenAsk = new int[12];
+    [HideInInspector] public int[] seenAsk = new int[16];
     [HideInInspector] public bool watchedMe;
 
     private bool sending;

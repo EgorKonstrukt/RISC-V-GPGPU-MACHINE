@@ -4,8 +4,8 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
-// The game controllers (docs/gamepad.md) are taken with the keys of a holodeck's console
-// (ShaderEmuHolodeck.cs). Here: what the board on the wall says of them,
+// The game controller (docs/gamepad.md) is a holodeck sitter's own, from sitting down
+// (ShaderEmuHolodeck.cs). Here: what the board on the wall says of it,
 // and the clearing away of the two that lay on the den's desk.
 public static partial class ShaderEmuBuilder
 {
@@ -27,13 +27,16 @@ public static partial class ShaderEmuBuilder
         "MEMORY: all of the machine's memory at once; what is being written glows.\n\n" +
         "HOLODECKS, through the doorway in the left wall: eight rooms, a seat each. Sit down and a 3D game's " +
         "world is round you; the console at your right hand has the room's keys and a screen, where others " +
-        "see your display. Its Shooter and Strategy keys make your controllers the game's; Put back, or " +
-        "BOTH GRIPS held for a second, gives them back.\n" +
+        "see your display. In a headset your controllers are the game's while you sit, set for the game " +
+        "whose window is in front; BOTH GRIPS held for a second, or the console's Exit, stands you up.\n" +
         "SHOOTER (Quake, Doom): left stick walks and steps aside, right stick turns and looks, right " +
         "trigger fires, left trigger jumps or opens, right grip next weapon, left grip Esc, jump Enter.\n" +
-        "STRATEGY (Red Alert, Command & Conquer): right stick moves the pointer, the triggers are the " +
-        "mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel, left grip " +
-        "Esc, jump Enter.";
+        "POINTER (the desktop, Red Alert, Command & Conquer): right stick moves the pointer, the triggers " +
+        "are the mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel.\n" +
+        "PAD (the NES): left stick the pad, right trigger A, left trigger B, jump Start, right grip Select.\n" +
+        "BLOCKS (the block world): left stick walks, right stick looks, right trigger digs, left builds.\n\n" +
+        "CLASSROOM: twelve computers. Press POWER on a free one and your machine starts there; EXIT on " +
+        "its tower gives the place up.";
 
     // The board's words written again into a scene that has a board, each at the largest size at
     // which it fits its box, and the plate lettered from them (no bake: the plate keeps its place).

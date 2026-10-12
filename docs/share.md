@@ -8,8 +8,12 @@ type and point at it. Nothing of the machine itself is shared: only what its scr
 
 - The panel between the display and the memory view asks "Whose computer is on these
   screens?": a row for "Automatic", one for "My own", and one for each other player with
-  whether their machine is on and may be used (eight a page, "More players" for the rest).
-  Clicking a row picks it; the panel says what is shown and how many watch yours.
+  whether their machine is on and may be used, and how many have it on their wall (eight a
+  page, "More players" with the page for the rest). Clicking a row picks it; the panel says
+  what is shown, how many watch yours, and under the rows who watches the machine shown.
+- With another player's machine on the wall, everything of the den is theirs: the console,
+  the display, the control panel's read-out with core 0's registers, the wall's speed
+  window, the den's tower's lamps.
 - Automatic (the start): your own machine while it is on; while it is off, the machine of
   the first player (lowest player number) whose machine is on.
 - "Others may use my computer", on the same panel, lets whoever is watching yours type on your console and use
@@ -23,8 +27,11 @@ type and point at it. Nothing of the machine itself is shared: only what its scr
 (`RequestSerialization`). `EmuShareHub` is local, one a client: it fills this player's
 object. `EmuStreams`, also one a client, takes what the others' objects bring, for every
 screen that shows a player: the wall, a classroom tube (`docs/stations.md`), a holodeck's
-screen. A player sends console and display only while somebody shows them on some screen,
-on two ticks of three (6.7 packets a second) of at most 1,150 bytes: 7.7 KB/s, and the
+screen. A player sends console and display while their machine is on and anybody else is in
+the world, shown or not, and every client keeps what every sender brings: a screen that
+turns to a player has their picture at once (it started from nothing, and took seconds, when
+only watched players sent; in a full classroom they all did anyway). It goes out on two
+ticks of three (6.7 packets a second) of at most 1,150 bytes: 7.7 KB/s, and the
 other fields beside it. VRChat's limit is for everything a client sends, whatever the
 object: 11 KB/s on paper, 8 to 10 in practice.
 
@@ -36,25 +43,34 @@ object: 11 KB/s on paper, 8 to 10 in practice.
 | `inputSeq`, `input` | key events for the watched machine: a count and a ring of the last 16 |
 | `pointer` | x and y in the watched display's pixels (12 bits each), buttons << 24, present << 28 |
 | `station`, `stationMode` | this player's classroom place and what its tube shows |
-| `ask` | twelve words, one for each sender this player shows: the sender's number, and a count << 16 that goes up with each asking |
+| `ask` | sixteen words, one for each sender this player keeps: the sender's number, and a count << 16 that goes up with each asking |
 | `lost` | beside each: what is asked for again, a packet number's low 16 bits and how many from it << 16; none: everything |
-| `holo`, `holding` | the holodeck this player sits in, and the controller in their hand |
+| `holo`, `holding` | the holodeck this player sits in, and whether the controller is in their hands |
 | `netSeq`, `net` | the network's packets from this player's machine since the last sending (`docs/lan.md`) |
 
-A packet: 17 bytes (on, the console's first row, cursor column and row, the stream's width
-and height, the display's width and height, the number of rows, and the machine's speed:
-tenths of a million instructions a second for all cores and for core 0, two bytes each),
-the console rows, then display tiles to the end.
+A packet: 19 bytes (on, the console's first row, cursor column and row, the stream's width
+and height, the display's width and height, the number of rows, the machine's speed:
+tenths of a million instructions a second for all cores and for core 0, two bytes each, and
+the length of a status), the status if any, the console rows, then display tiles to the end.
+
+The status goes every two seconds while the machine is on (`PutStatus`): sixteen bits of
+activity (`EmuMachine.activity`: one an eighth of a second, set where core 0's registers had
+changed, which is the red disk lamp's flicker on every tower), pc and x1 to x31 as the last
+readback had them, and the control panel's text (`statsLine`, at most 560 characters). It is
+not kept for repairs: the next one comes anyway.
 
 - Everything in a packet is state, not a difference: a row or a tile replaces what the
   receiver had.
-- **A slot a sender.** `EmuStreams` has twelve slots: a store of tiles, a picture, a console.
-  Each screen says whose it wants (`SetWant`); every sender some screen wants has one slot,
-  and is decoded once however many screens show it. A slot nobody wants any more is emptied
-  and its picture made black.
-- **A sender knows who shows it** from the others' `ask`: a word that names it is a viewer.
-  A new word is a new screen, and the sender sends everything (at most once in five seconds,
-  whoever asks).
+- **A slot a sender.** `EmuStreams` has sixteen slots: a store of tiles, a picture, a console.
+  Every other player whose machine is on has one while slots last, and is decoded once
+  however many screens show it. Each screen says whose it wants (`SetWant`): a sender a
+  screen wants and that has no slot takes one from a sender no screen shows. A slot whose
+  sender left, or is off and not shown, is emptied and its picture made black.
+- **A sender knows who keeps it** from the others' `ask`: a word that names it. A new word is
+  a new receiver, and the sender sends everything (at most once in five seconds, whoever
+  asks).
+- Who watches whom is `watching` alone: the rows' counts and the names under them are
+  counted from it (`Watchers`, `WatcherNames` in `EmuShareHub`).
 - **A lost packet is repaired, not the whole picture.** A receiver that sees a gap in `seq`
   names the missing numbers in `lost` and counts its word up. The sender keeps what each of
   its last 32 packets carried (tiles and console rows) and marks only those as not sent. A

@@ -39,7 +39,7 @@ public static partial class ShaderEmuBuilder
         consoleMat.CopyPropertiesFromMaterial(AssetDatabase.LoadAssetAtPath<Material>(Generated + "/Terminal.mat"));   // the font, the columns and rows
         streams.consoleMaterial = consoleMat;
         streams.blackTexture = machine.blackTexture;
-        const int slots = 12;   // as EmuShare's `ask`
+        const int slots = 16;   // as EmuShare's `ask`
         streams.stores = new Texture2D[slots];
         streams.pictures = new RenderTexture[slots];
         streams.grids = new Texture2D[slots];
@@ -106,15 +106,16 @@ public static partial class ShaderEmuBuilder
         Button[] rowButtons = new Button[10];
         for (int i = 0; i < 10; i++)
         {
-            float y = i < 2 ? 166 + i * 68 : 318 + (i - 2) * 66;
-            rowButtons[i] = MakeButton(list, "Row " + i, i < 2 ? texts[i] : "", left, y, rowWide, 60, 24, out hub.rowLabels[i]);
+            float y = i < 2 ? 166 + i * 68 : 318 + (i - 2) * 58;
+            rowButtons[i] = MakeButton(list, "Row " + i, i < 2 ? texts[i] : "", left, y, rowWide, i < 2 ? 60 : 52, 22, out hub.rowLabels[i]);
             hub.rowObjects[i] = rowButtons[i].gameObject;
             hub.rowPlates[i] = rowButtons[i].GetComponent<Image>();
             if (i >= 2) rowButtons[i].gameObject.SetActive(false);   // until a player is there
         }
         Label(list, "Others", "Other players:", left, 300 - 2, rowWide, 20, 18, TextAnchor.MiddleLeft, dim);
-        TextMeshProUGUI unused;
-        Button more = MakeButton(list, "More", "More players", left, 848, rowWide, 46, 22, out unused);
+        // who has the shown machine on their own wall
+        hub.watchersLabel = Label(list, "Watchers", "", left, 784, rowWide, 62, 17, TextAnchor.UpperLeft, new Color(0.75f, 0.95f, 0.8f));
+        Button more = MakeButton(list, "More", "More players", left, 848, rowWide, 46, 22, out hub.moreLabel);
         more.gameObject.SetActive(false);
         hub.moreButton = more.gameObject;
         Button allow = MakeButton(list, "Allow", "Others may use my computer: no", left, 904, rowWide, 60, 22, out hub.allowLabel);
@@ -141,6 +142,13 @@ public static partial class ShaderEmuBuilder
         EmuHolodeck deck = Object.FindObjectOfType<EmuHolodeck>();
         EmuGamepad gamepad = Object.FindObjectOfType<EmuGamepad>();
         EmuStations stations = Object.FindObjectOfType<EmuStations>();
+        EmuLan lan = Object.FindObjectOfType<EmuLan>();
+        if (lan != null)
+        {
+            UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(lan);
+            lan.hub = hub;
+            Apply(lan);
+        }
         if (deck != null)
         {
             UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(deck);

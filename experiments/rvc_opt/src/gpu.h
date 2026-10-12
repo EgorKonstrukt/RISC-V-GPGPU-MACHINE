@@ -659,7 +659,9 @@ uint mc_stat_cores() {
 #ifdef GPU_INPUT
 // A word of what the host fetched: its texture holds one byte a channel, one word a texel.
 // With _FetchDeliver 2 it is a picture the host still has as a texture of its own (_HostImage,
-// any size, sRGB, rows bottom up): word n is pixel n of it scaled to _FetchW by _FetchH.
+// any size, sRGB, rows bottom up): _FetchW by _FetchH pixels of it, a word each, rows from the
+// top, of which this part begins at byte _FetchOffset (a host that hands over the picture's
+// own size hands over its pixels as they are).
 // A file carried by a picture (docs/fetch.md): its bytes are the pixels' red, green and blue,
 // rows from the top (the texture's are bottom up). The first 256 are a header: a mark, the
 // file's length, its CRC-32, its name.
@@ -687,14 +689,13 @@ uint fetch_word(uint n) {
     if (fetch_packed()) return packed_word(_FetchOffset + 4 * n);
     [branch]
     if (_FetchDeliver == 2 || _FetchDeliver == 3) {
+        n += _FetchOffset / 4;
         if (n >= _FetchW * _FetchH) return 0;
         uint2 size;
         uint levels;
         _HostImage.GetDimensions(0, size.x, size.y, levels);
-        // from the level whose texels are about the size of ours
-        uint level = min((uint)max(log2((float)size.x / _FetchW), 0.0), levels - 1);
-        uint2 at = uint2(n % _FetchW, _FetchH - 1 - n / _FetchW), small = max(size >> level, 1u);
-        float4 c = _HostImage.Load(int3(min(at * small / uint2(_FetchW, _FetchH), small - 1), level));
+        uint2 at = uint2(n % _FetchW, _FetchH - 1 - n / _FetchW);
+        float4 c = _HostImage.Load(int3(min(at * size / uint2(_FetchW, _FetchH), size - 1), 0));
         float3 seen = c.rgb <= 0.0031308 ? c.rgb * 12.92 : 1.055 * pow(abs(c.rgb), 1.0 / 2.4) - 0.055;
         seen = lerp(1.0, seen, c.a);   // what shows through is the page
         uint3 b = (uint3)(saturate(seen) * 255.0 + 0.5);

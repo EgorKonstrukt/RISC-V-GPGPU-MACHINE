@@ -228,24 +228,39 @@ fetch(const char *address, char *path, size_t room)
 	packed = status == 201;
 	mkdir(FOLDER, 0777);
 	if (!packed && regs[REG_REPLY + 3] != 0) {
-		/* a picture the host could only give as pixels: a word each, kept as a PPM file */
-		uint32_t w = regs[REG_REPLY + 3] & 0xffff, h = regs[REG_REPLY + 3] >> 16, i;
+		/* a picture the host could only give as pixels: a word each, in parts of 65,536,
+		 * kept as a PPM file */
+		uint32_t w = regs[REG_REPLY + 3] & 0xffff, h = regs[REG_REPLY + 3] >> 16, i, done = 0;
 
 		name_from(address, name, sizeof name - 4);
 		snprintf(path, room, FOLDER "/%s.ppm", name);
-		if ((uint64_t)w * h * 4 > FETCH_MOST || (file = fopen(path, "wb")) == NULL) {
+		if (w == 0 || h == 0 || (file = fopen(path, "wb")) == NULL) {
 			printf("open: the picture of %s cannot be kept\n", address);
 			return 0;
 		}
 		fprintf(file, "P6\n%u %u\n255\n", (unsigned)w, (unsigned)h);
-		for (i = 0; i < w * h; i++) {
-			uint32_t c = ((const uint32_t *)fetched)[i];
+		for (;;) {
+			uint32_t here = w * h - done < FETCH_MOST / 4 ? w * h - done : FETCH_MOST / 4;
 
-			fputc(c >> 16 & 255, file);
-			fputc(c >> 8 & 255, file);
-			fputc(c & 255, file);
+			for (i = 0; i < here; i++) {
+				uint32_t c = ((const uint32_t *)fetched)[i];
+
+				fputc(c >> 16 & 255, file);
+				fputc(c >> 8 & 255, file);
+				fputc(c & 255, file);
+			}
+			done += here;
+			if (done >= w * h)
+				break;
+			status = ask(address, done * 4, 40);
+			if (status != 200 || regs[REG_REPLY + 3] != (w | h << 16)) {
+				printf("open: the host stopped at %u of %u pixels (%d)\n", (unsigned)done, (unsigned)(w * h), status);
+				fclose(file);
+				return 0;
+			}
 		}
 		fclose(file);
+		printf("open: %s, %u x %u\n", path, (unsigned)w, (unsigned)h);
 		return 1;
 	}
 	if (packed) {

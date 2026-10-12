@@ -3,9 +3,10 @@ using UnityEngine;
 using VRC.SDKBase;
 
 // Other players' consoles and displays as they arrive (docs/share.md), for every screen that
-// shows one: the wall, a classroom tube, a holodeck's screen. A surface says whose it wants;
-// each sender wanted has a slot (a store of tiles, a picture, a console) and is decoded once.
-// This client's asks for what it lost go out in its own EmuShare.
+// shows one: the wall, a classroom tube, a holodeck's screen. Every player whose machine is on
+// has a slot (a store of tiles, a picture, a console) and is decoded as packets come, shown or
+// not, so a screen that turns to them has their picture at once. A surface says whose it
+// wants. This client's asks for what it lost go out in its own EmuShare.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuStreams : UdonSharpBehaviour
 {
@@ -21,8 +22,9 @@ public class EmuStreams : UdonSharpBehaviour
     public bool dropTest;              // every tenth packet is treated as lost
     public bool log;                   // a line a minute in the output log
 
-    public const int Surfaces = 24;    // 0: the wall; 1 to 8: the classroom; 9 to 16: the holodecks
-    public const int HeaderBytes = 17;
+    public const int Surfaces = 28;    // 0: the wall; 1 to 12: the classroom; 13 to 20: the holodecks
+    public const int HeaderBytes = 19;
+    public const int StatusFixed = 130;   // a status's activity bits, pc and x1 to x31; its text follows
     // as EmuShareHub's
     private const int TileCount = 300, RowBytes = 512, LevelAt = 508, StampAt = 509;
     private const int FineAt = 300, FineRows = 1200, FineMost = 400, PresentAt = 2, FineStampAt = 3;
@@ -32,8 +34,10 @@ public class EmuStreams : UdonSharpBehaviour
     private int[] sender;              // a slot's; 0: free
     private byte[][] bytes;
     private Color32[][] cells;
-    private int[] lastSeq, gotW, gotH, gotScale, stamp, shownW, shownH, top, cursorX, cursorY, version, mipsAll, mipsCore, askCount;
-    private bool[] haveSeq, on, fresh;
+    private int[] lastSeq, gotW, gotH, gotScale, stamp, shownW, shownH, top, cursorX, cursorY, version, mipsAll, mipsCore, askCount, activity;
+    private uint[][] registers;
+    private string[] stats;
+    private bool[] haveSeq, on, fresh, drawn;
     private float[] since, askedAt, heardAt;
     private int cols, rows;
     private float nextAt, logAt;
@@ -62,8 +66,12 @@ public class EmuStreams : UdonSharpBehaviour
         mipsAll = new int[count];
         mipsCore = new int[count];
         askCount = new int[count];
+        activity = new int[count];
+        registers = new uint[count][];
+        stats = new string[count];
         haveSeq = new bool[count];
         fresh = new bool[count];
+        drawn = new bool[count];
         on = new bool[count];
         since = new float[count];
         askedAt = new float[count];
@@ -74,6 +82,7 @@ public class EmuStreams : UdonSharpBehaviour
         {
             bytes[s] = new byte[(TileCount + FineRows) * RowBytes];
             cells[s] = new Color32[cols * rows];
+            registers[s] = new uint[32];
             Blank(s);
         }
     }
@@ -122,6 +131,9 @@ public class EmuStreams : UdonSharpBehaviour
         int after = packed >> 14;
         return (packed & 0x3fff) * (after == 3 ? 0.01f : after == 2 ? 0.1f : after == 1 ? 1f : 10f);
     }
+    public int Activity(int slot) { return on[slot] ? activity[slot] : 0; }   // EmuMachine.activity, as last sent
+    public uint[] Registers(int slot) { return registers[slot]; }
+    public string Stats(int slot) { return on[slot] ? stats[slot] : "off"; }
     public int Gaps() { return gaps; }
     public int Packets() { return packets; }
 
@@ -143,8 +155,11 @@ public class EmuStreams : UdonSharpBehaviour
         shownH[s] = 0;
         mipsAll[s] = 0;
         mipsCore[s] = 0;
+        activity[s] = 0;
+        stats[s] = "";
         on[s] = false;
         haveSeq[s] = false;
+        drawn[s] = false;
         version[s]++;
         if (blackTexture != null)
         {
@@ -153,17 +168,39 @@ public class EmuStreams : UdonSharpBehaviour
         }
     }
 
-    // Every sender some surface wants has a slot; a slot nobody wants is emptied.
+    private bool Shown(int id)
+    {
+        for (int i = 0; i < Surfaces; i++)
+            if (wants[i] == id) return true;
+        return false;
+    }
+
+    // A free slot becomes this sender's; false when there is none.
+    private bool Seat(int id)
+    {
+        for (int s = 0; s < count; s++)
+        {
+            if (sender[s] != 0) continue;
+            sender[s] = id;
+            since[s] = Time.time;
+            askedAt[s] = Time.time;
+            heardAt[s] = Time.time;
+            askCount[s] = (askCount[s] + 1) & 255;   // a new entry: its sender sends everything
+            fresh[s] = true;
+            return true;
+        }
+        return false;
+    }
+
+    // Every sender some surface wants has a slot, and so has every other player whose machine
+    // is on while slots last; a slot whose sender left, or is off and not shown, is emptied.
     private void Reconcile()
     {
         bool changed = false;
         for (int s = 0; s < count; s++)
         {
             if (sender[s] == 0) continue;
-            bool wanted = false;
-            for (int i = 0; i < Surfaces; i++)
-                if (wants[i] == sender[s]) wanted = true;
-            if (wanted && hub.Known(sender[s])) continue;
+            if (hub.Known(sender[s]) && (Shown(sender[s]) || hub.IsOn(sender[s]))) continue;
             sender[s] = 0;
             Blank(s);
             changed = true;
@@ -172,18 +209,27 @@ public class EmuStreams : UdonSharpBehaviour
         {
             int id = wants[i];
             if (id <= 0 || SlotOf(id) >= 0 || !hub.Known(id)) continue;
-            for (int s = 0; s < count; s++)
+            if (!Seat(id))
             {
-                if (sender[s] != 0) continue;
-                sender[s] = id;
-                since[s] = Time.time;
-                askedAt[s] = Time.time;
-                heardAt[s] = Time.time;
-                askCount[s] = (askCount[s] + 1) & 255;   // a new entry: its sender sends everything
-                fresh[s] = true;
-                changed = true;
-                break;
+                // full of players nobody looks at: one of them makes room
+                for (int s = 0; s < count; s++)
+                {
+                    if (Shown(sender[s])) continue;
+                    sender[s] = 0;
+                    Blank(s);
+                    break;
+                }
+                if (!Seat(id)) continue;
             }
+            changed = true;
+        }
+        int others = hub.ShareCount();
+        for (int i = 0; i < others; i++)
+        {
+            EmuShare share = hub.ShareAt(i);
+            if ((share.flags & 1) == 0 || SlotOf(share.ownerId) >= 0) continue;
+            if (!Seat(share.ownerId)) break;
+            changed = true;
         }
         if (changed) WriteAsks(-1, 0, 0);
     }
@@ -283,6 +329,8 @@ public class EmuStreams : UdonSharpBehaviour
             gotScale[s] = scale;
             all = true;
         }
+        bool moved = top[s] != p[1] || cursorX[s] != p[2] || cursorY[s] != p[3] || !drawn[s];
+        drawn[s] = true;
         on[s] = p[0] != 0;
         top[s] = p[1];
         cursorX[s] = p[2];
@@ -294,7 +342,23 @@ public class EmuStreams : UdonSharpBehaviour
         stamp[s] = stamp[s] % 255 + 1;
         version[s]++;
 
-        int at = HeaderBytes, sent = p[12];
+        int at = HeaderBytes, sent = p[12], status = p[17] | p[18] << 8;
+        if (at + status > p.Length) return;
+        if (status >= StatusFixed)
+        {
+            // what its owner's panel says of the machine (EmuShareHub.Build)
+            activity[s] = p[at] | p[at + 1] << 8;
+            uint[] r = registers[s];
+            for (int i = 0; i < 32; i++)
+            {
+                int k = at + 2 + i * 4;
+                r[i] = (uint)p[k] | (uint)p[k + 1] << 8 | (uint)p[k + 2] << 16 | (uint)p[k + 3] << 24;
+            }
+            string text = "";
+            for (int i = StatusFixed; i < status; i++) text += (char)p[at + i];
+            stats[s] = text;
+        }
+        at += status;
         Color32[] grid = cells[s];
         Color32 blank = new Color32(32, 7, 0, 255);
         for (int i = 0; i < sent; i++)
@@ -315,12 +379,15 @@ public class EmuStreams : UdonSharpBehaviour
             if (coloured) at += length;
         }
         // (the cursor moves with no row sent)
-        grids[s].SetPixels32(grid);
-        grids[s].Apply(false);
-        consoleMaterial.SetTexture("_Grid", grids[s]);
-        consoleMaterial.SetInt("_RowOffset", top[s]);
-        consoleMaterial.SetVector("_Cursor", new Vector4(cursorX[s], cursorY[s], 1, 0));
-        VRCGraphics.Blit(grids[s], consoles[s], consoleMaterial);
+        if (sent > 0 || moved)
+        {
+            grids[s].SetPixels32(grid);
+            grids[s].Apply(false);
+            consoleMaterial.SetTexture("_Grid", grids[s]);
+            consoleMaterial.SetInt("_RowOffset", top[s]);
+            consoleMaterial.SetVector("_Cursor", new Vector4(cursorX[s], cursorY[s], 1, 0));
+            VRCGraphics.Blit(grids[s], consoles[s], consoleMaterial);
+        }
 
         while (at + 2 <= p.Length)
         {

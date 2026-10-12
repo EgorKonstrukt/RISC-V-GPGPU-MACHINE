@@ -273,6 +273,18 @@ Measured on 10 October 2026 (`rvc_cpu` for instructions; RTX 5090, D3D11 and fxc
 - `linux/prebuilt` has the kernel, `emuinit`, Nano-X and Quake from before this: save it
   after the next build worth keeping.
 
+## The panel on the wall
+
+On the right wall, at the danger zone's left ("Network panel", `EmuLan`, `ShaderEmuLan.cs`):
+this visitor's own machine's address and counts (what `[Lan]` logs every five seconds), and a
+line for every visitor's machine: address, whose, on or off, and how many sendings (batches
+of packets, `netSeq`) it has made. Nothing is synced for it.
+
+In the classroom every tower's network socket has a lamp, and every port of the three hubs
+one: lit while the place's machine is on, flickering in a half second in which its owner's
+`netSeq` moved (their own machine's: `netSent` and `netReceived`). `EmuStations.Lamps`,
+`Blink.shader`.
+
 ## What the world writes to VRChat's log
 
 `[Lan]` lines (`EmuMachine`, `EmuShareHub`), always on, in each client's own

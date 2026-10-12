@@ -94,7 +94,7 @@ public class EmuSound : UdonSharpBehaviour
         {
             // carry on from the card's own clock or a little after it: a whole number of rings
             // apart, so that a sample has the same place in the card's ring and in ours
-            shift = ((int)clock - output.offset - lead + Ring - 1) & ~(Ring - 1);
+            shift = ((int)(clock & 0x7fffffffu) - output.offset - lead + Ring - 1) & ~(Ring - 1);
             enabledBefore = true;
             lastCursor = output.offset + lead + shift;
         }

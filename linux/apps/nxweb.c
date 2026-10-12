@@ -66,6 +66,8 @@ enum { PICTURE_WANTED, PICTURE_HERE, PICTURE_FAILED, PICTURE_BY_HAND };
 static struct picture { char address[256], file[40]; int w, h, state, placed; time_t asked; } pictures[MAX_PICTURES];
 static int picture_count;
 static int asking = -1;		/* the picture the request that is out is for, or -1: the page */
+static FILE *part_file;		/* a picture that comes in parts: its file, its size, pixels so far */
+static int part_w, part_h, part_done;
 
 /* The page's style sheets, in its order: text of its own, or a file the host fetches. */
 #define MAX_SHEETS 10
@@ -1119,17 +1121,24 @@ say(const char *heading_text, const char *text)
 /* Asks the host for what is at an address, a page (kind 0) or a picture (1): it sees the
  * address and the request's number, and answers when it has it. */
 static void
-ask(const char *what, int kind)
+ask_part(const char *what, int kind, uint32_t offset)
 {
 	memset((void *)&regs[REG_ADDRESS], 0, 256);
 	memcpy((void *)&regs[REG_ADDRESS], what, strlen(what));
 	regs[REG_REQUEST + 1] = strlen(what);
 	regs[REG_REQUEST + 2] = kind;
+	regs[REG_REQUEST + 3] = offset;
 	loading = regs[REG_REQUEST] + 1;
 	if (!loading)
 		loading = 1;
 	regs[REG_REQUEST] = loading;
 	waited = 0;
+}
+
+static void
+ask(const char *what, int kind)
+{
+	ask_part(what, kind, 0);
 }
 
 static void
@@ -1144,6 +1153,9 @@ go(const char *where, int remember)
 	snprintf(address, sizeof address, "%s", strncmp(where, "file://", 7) ? where : where + 7);
 	editing = loading = by_hand = 0;
 	picked = -1;
+	if (part_file)
+		fclose(part_file);
+	part_file = NULL;
 	if (address[0] == '/') {
 		FILE *file = fopen(address, "rb");
 		char *text;
@@ -1189,6 +1201,9 @@ check_reply(void)
 				pictures[asking].state = PICTURE_FAILED;
 			else if (!by_hand)
 				say("No answer", "The host did not answer in 30 seconds.");
+			if (part_file)
+				fclose(part_file);
+			part_file = NULL;
 			asking = -1;
 		}
 		return;
@@ -1222,28 +1237,47 @@ check_reply(void)
 	}
 	if (asking >= 0) {
 		struct picture *p = &pictures[asking];
-		int w = regs[REG_REPLY + 3] & 0xffff, h = regs[REG_REPLY + 3] >> 16, i;
-		FILE *file;
+		int w = regs[REG_REPLY + 3] & 0xffff, h = regs[REG_REPLY + 3] >> 16, i, here;
+		FILE *file = part_file;
 
-		asking = -1;
+		part_file = NULL;
 		p->state = code == 1 ? PICTURE_BY_HAND : PICTURE_FAILED;
 		p->asked = time(NULL);
 		if (code == 1 && !strstr(status, "by the screen")) {
 			snprintf(status, sizeof status, "styles and pictures need their addresses pasted: the button by the screen");
 			draw_status();
 		}
-		if (code != 200 || w <= 0 || h <= 0 || w * h * 4 > n || (file = fopen(p->file, "wb")) == NULL)
+		if (code != 200 || w <= 0 || h <= 0 || (file && (w != part_w || h != part_h)) ||
+		    (!file && (file = fopen(p->file, "wb")) == NULL)) {
+			if (file)
+				fclose(file);
+			asking = -1;
 			return;
-		/* a word a pixel, 0x00RRGGBB, kept as a PPM file */
-		fprintf(file, "P6\n%d %d\n255\n", w, h);
-		for (i = 0; i < w * h; i++) {
+		}
+		/* a word a pixel, 0x00RRGGBB, kept as a PPM file; 65,536 pixels a part */
+		if (!ftell(file)) {
+			fprintf(file, "P6\n%d %d\n255\n", w, h);
+			part_done = 0;
+			part_w = w;
+			part_h = h;
+		}
+		here = w * h - part_done < FETCH_MOST / 4 ? w * h - part_done : FETCH_MOST / 4;
+		for (i = 0; i < here; i++) {
 			uint32_t c = ((const uint32_t *)fetched)[i];
 
 			fputc(c >> 16 & 255, file);
 			fputc(c >> 8 & 255, file);
 			fputc(c & 255, file);
 		}
+		part_done += here;
+		if (part_done < w * h) {
+			part_file = file;
+			p->state = PICTURE_FAILED;	/* (until its last part is here) */
+			ask_part(p->address, 1, (uint32_t)part_done * 4);
+			return;
+		}
 		fclose(file);
+		asking = -1;
 		p->w = w;
 		p->h = h;
 		p->state = PICTURE_HERE;

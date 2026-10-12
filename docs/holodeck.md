@@ -11,11 +11,12 @@ eyes. Games and their controllers are here and nowhere else in the world.
 - **Sit down** in a free room's seat (a plate by each door says whose the room is, or FREE).
   The seat is a station of the scene, one visitor at a time; whoever sits has the room until
   they get up. Anybody may walk in and stand there. The seat keeps its sitter whatever the
-  sticks do (they are the game's: a stick used to put the sitter out of the chair). Jumping
-  stands them up, once no controller is in their hands, and the console's line says so
-  ("Take a controller, or jump to stand up"; with one in hand, "put it back to leave").
+  sticks do (they are the game's: a stick used to put the sitter out of the chair). In a
+  headset the sitter's controllers are the game's from the moment they sit
+  (`docs/gamepad.md`), and both grips held for a second, or the console's Exit, stands them
+  up; the console's line says what the controls are.
   The station is told not to let a stick stand its sitter up, and in a headset one did all
-  the same, with a controller in hand too: so whoever is stood up without having jumped is
+  the same, with a controller in hand too: so whoever is stood up without having asked is
   sat down again two frames later (`EmuHolodeck.Exited`, `SitAgain`; a respawn lets go).
 - **The seat rises under its sitter** (`EmuSeat`). VRChat puts a visitor on a station standing,
   feet where the station is, and their pose sinks into sitting over about half a second,
@@ -27,23 +28,31 @@ eyes. Games and their controllers are here and nowhere else in the world.
   (the display keyboard's capture, raw keys): the game's own keys, as at a desk. End stands
   them up at once, whatever is held and whoever has the keyboard (`EmuHolodeck.StandUp`);
   Insert gives the keyboard back, and Space then stands them up too. The console's line
-  says so. A controller cannot be taken there (`Hands`): its sticks would be the mouse and
-  keys the visitor looks round with, so the game turned as they looked, and with a
-  controller in hand the beams are away, so nothing could press Put back: they were stuck.
+  says so. There is no controller there: its sticks would be the mouse and keys the
+  visitor looks round with, so the game turned as they looked.
 - **One mode.** The program's camera stands at the seat's eye point and the horizon is the
   room's: of the camera's turn only what is about the world's up is followed, so the sitter
   faces the way the game's camera faces, and the floor stays the floor when the game looks up
   or down. The head moves freely in that.
-- **The console** beside the seat has the room's keys, the sitter's alone: Shooter, Strategy and
-  Put back (the controllers, `docs/gamepad.md`), Exit (stands the sitter up, whatever they
-  hold: `StandUp`, as the End key), Screen (the console's small one, or a large one before the seat),
-  World + and World - (the scale: at its largest the picture's rectangle on the program's near
-  plane is 1.28 by 0.8 m, and the keys move that plane out towards the far one).
+- **The console** beside the seat has the room's keys, the sitter's alone: Exit (stands the
+  sitter up, whatever they hold: `StandUp`, as the End key), Screen (the console's small one,
+  or a large one before the seat), World + and World - (the scale: at its largest the
+  picture's rectangle on the program's near plane is 1.28 by 0.8 m, and the keys move that
+  plane out towards the far one). There is no key for the controls: they are the game's
+  (`docs/gamepad.md`).
+- **A sitter in a headset presses those keys with their own beams** (`EmuPointer`, `holoPlates`:
+  a plate a hair before the console's face, the keys' rectangles, a mark on the key a beam is
+  on), which are out for nothing else while they sit; the trigger of a hand whose beam is on
+  the console is the console's, not the game's. VRChat's laser did not press them from the
+  seat (12 October 2026; why is not known: the seat's own Interact box is round the sitter's
+  hands), so the console's own collider is off for that sitter (`plateColliders`), or a key
+  that the laser did reach would be pressed twice. Anybody else, and a sitter without a
+  headset, presses them with VRChat's laser as any panel. Not tried in a headset yet.
 - **The console** at the seat's right hand is turned to the sitter and has one sloped face: the
   room's keys below, and above them, in the same plane, the room's one screen (0.40 by 0.30 m).
   It shows the sitter's display, whole: to the sitter their own machine's, which answers
   their beams as the den's wall does; to anybody else the sitter's display from the stream
-  (`docs/share.md`: surfaces 9 to 16 of `EmuStreams`, the syncing the classroom's tubes use).
+  (`docs/share.md`: surfaces 13 to 20 of `EmuStreams`, the syncing the classroom's tubes use).
   Only the sitter's own client draws the program's world; a visitor standing in another's
   room sees a room of grid and the console.
 - The seat, the console, its keys and its screen are before the program's world however near

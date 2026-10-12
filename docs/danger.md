@@ -67,6 +67,14 @@ while the trigger is held `shots` rises by one a round (472 in a few seconds) an
 fourth number is 1; on memory whose key is dark nothing is queued and the count's label says
 "Windows is safe: its key is dark".
 
+The control words are in the Display and GPU kind's first megabyte, exposed from the start:
+the laser there leaves words with their top bit set, and Udon's cast of such a word to a
+number throws, which halted `EmuMachine` for the session in the world on 12 October 2026
+(`ToInt32` of a `UInt32` in the readback's event). Every guest word that becomes a number
+goes through `EmuMachine.Small` now. To check: in play mode queue zaps over them (`zaps`
+nine numbers each: 2, a column under 64, row 3584, reach 8, 0, 0xffff, 0xffff, a seed,
+0x3c; then `zapTail`), and the machine must go on counting with texel 64 of `row` scrambled.
+
 ## Not done
 
 - The laser has not been tried in a headset, nor with a real mouse button on a desktop: the

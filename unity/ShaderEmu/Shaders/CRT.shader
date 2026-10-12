@@ -23,6 +23,7 @@ Shader "ShaderEmu/CRT"
         _Mask ("How deep the stripes are", Range(0, 1)) = 0.8
         _Scan ("How deep the lines are", Range(0, 1)) = 0.55
         _Curve ("The picture's bulge on a flat face (0: the mesh bulges itself)", Range(0, 0.3)) = 0
+        _Fill ("How much of the glass the picture spans", Range(0.5, 1)) = 1
     }
     SubShader
     {
@@ -33,7 +34,7 @@ Shader "ShaderEmu/CRT"
 
         sampler2D _MainTex, _Smudge;
         float4 _TexSize, _Size, _Off;
-        float _Aspect, _Glow, _Glossiness, _Smudged, _Film, _Triads, _Mask, _Scan, _Curve;
+        float _Aspect, _Glow, _Glossiness, _Smudged, _Film, _Triads, _Mask, _Scan, _Curve, _Fill;
 
         struct Input { float2 uv_MainTex; };
 
@@ -44,7 +45,9 @@ Shader "ShaderEmu/CRT"
 
         void surf(Input i, inout SurfaceOutputStandard o)
         {
-            float2 p = float2(i.uv_MainTex.x, 1.0 - i.uv_MainTex.y) - 0.5;
+            float2 glass = float2(i.uv_MainTex.x, 1.0 - i.uv_MainTex.y) - 0.5;
+            // the picture stops short of the glass's rim, which the bezel's rounded corners cover
+            float2 p = glass / _Fill;
             p *= 1.0 + _Curve * dot(p, p) * 4.0 - _Curve * 0.5;
             float2 edge = (0.5 - abs(p)) / max(fwidth(p), 1e-6);
             float inside = saturate(min(edge.x, edge.y) + 0.5);   // the picture's own edge, a pixel wide
@@ -60,9 +63,9 @@ Shader "ShaderEmu/CRT"
 
             // the beam's lines, one a row of the picture; the stripes, three colours a triad
             c *= wave(q.y, _Scan, abs(dx.y) + abs(dy.y));
-            float at = (p.x + 0.5) * _Triads, span = fwidth(at);
+            float at = (glass.x + 0.5) * _Triads, span = fwidth(at);
             c *= float3(wave(at, _Mask, span), wave(at - 1.0 / 3.0, _Mask, span), wave(at - 2.0 / 3.0, _Mask, span));
-            c *= 1.0 - 0.35 * dot(p, p) * 2.0;   // dimmer towards the corners
+            c *= 1.0 - 0.35 * dot(glass, glass) * 2.0;   // dimmer towards the corners
 
             // dust, wiped in streaks over the whole face: it has a colour, dulls the glass, and
             // takes a little of the picture's light

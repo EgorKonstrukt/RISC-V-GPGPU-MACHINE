@@ -21,6 +21,7 @@
 #include <unistd.h>
 #define MWINCLUDECOLORS
 #include "nano-X.h"
+#include "../apps/gameid.h"
 #include "../apps/ui_icons.h"
 #include "../apps/ui_menu.h"
 
@@ -411,6 +412,41 @@ watch_open(void)
 	}
 }
 
+/* Tells the host which program's window has the keyboard (../apps/gameid.h). */
+static void
+watch_focus(void)
+{
+	static volatile uint32_t *regs;
+	static int tried;
+	GR_WINDOW_INFO info;
+	char path[40], comm[32] = "";
+	FILE *file;
+	uint32_t game;
+
+	if (!tried) {
+		int fd = open("/dev/gpu", O_RDWR);
+
+		tried = 1;
+		if (fd >= 0)
+			regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x01000000);
+		if (regs == MAP_FAILED)
+			regs = NULL;
+	}
+	if (!regs)
+		return;
+	GrGetWindowInfo(GrGetFocus(), &info);
+	snprintf(path, sizeof path, "/proc/%d/comm", info.processid);
+	if (info.processid > 0 && (file = fopen(path, "r")) != NULL) {
+		if (!fgets(comm, sizeof comm, file))
+			comm[0] = 0;
+		fclose(file);
+		comm[strcspn(comm, "\n")] = 0;
+	}
+	game = game_of(comm);
+	if (regs[GAME_WORD] != game)
+		regs[GAME_WORD] = game;
+}
+
 /* What a menu's row does: a program is started, a window brought forward, put away or closed. */
 static void
 chosen(int id)
@@ -522,6 +558,7 @@ main(void)
 			continue;
 		looked = now;
 		watch_open();
+		watch_focus();
 		if (find_tasks() || localtime(&now)->tm_min != minute) {
 			minute = localtime(&now)->tm_min;
 			draw_bar();

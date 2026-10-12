@@ -26,6 +26,7 @@ public static partial class ShaderEmuBuilder
     static readonly Color Printed = new Color(0.93f, 0.90f, 0.80f), PrintedDim = new Color(0.93f, 0.90f, 0.80f);
     static readonly Color Amber = new Color(1f, 0.70f, 0.20f), Phosphor = new Color(0.35f, 1f, 0.45f);
     static readonly Color Faceplate = new Color(0.07f, 0.07f, 0.08f), CapColour = new Color(0.86f, 0.83f, 0.74f);
+    static readonly Color RowColour = new Color(0.20f, 0.21f, 0.24f);
     static readonly Color Liquid = new Color(0.62f, 0.68f, 0.56f);
     static readonly Color Over = new Color(1f, 0.95f, 0.55f, 0.30f), Held = new Color(0f, 0f, 0f, 0.45f), LitUp = new Color(1f, 0.62f, 0.10f, 0.50f);
 
@@ -485,6 +486,10 @@ public static partial class ShaderEmuBuilder
     {
         Transform bar = canvas.transform.Find("Title bar");
         if (bar != null) Object.DestroyImmediate(bar.gameObject);
+        // what is put away until it is needed (a row for a player to come) is drawn as it will be
+        List<GameObject> asleep = new List<GameObject>();
+        foreach (Transform child in canvas.GetComponentsInChildren<Transform>(true))
+            if (child != canvas.transform && !child.gameObject.activeSelf) { asleep.Add(child.gameObject); child.gameObject.SetActive(true); }
         List<Graphic> still = new List<Graphic>();     // drawn on the plate, then not by the canvas
         List<Graphic> live = new List<Graphic>();      // not on the plate: the canvas draws them
         List<Graphic> print = new List<Graphic>();     // lettering: the plate's own
@@ -495,9 +500,11 @@ public static partial class ShaderEmuBuilder
         {
             Image image = button.targetGraphic as Image;
             bool tinted = image != null && Saturation(image.color) > 0.4f && image.color.a > 0.9f && !painted.Contains(image);   // made to stand out
+            // the list of players: dark keys with white names, lit from within while picked
+            bool row = image != null && canvas.name == "Players panel" && painted.Contains(image);
             if (image != null)
             {
-                Picture(image, cap, tinted ? image.color : CapColour);
+                Picture(image, cap, tinted ? image.color : row ? RowColour : CapColour);
                 // a button tints what it draws, and after a first restyle that tint is "unseen":
                 // drawn like that, the caps were missing from the picture
                 ColorBlock plain = button.colors;
@@ -510,7 +517,7 @@ public static partial class ShaderEmuBuilder
             }
             foreach (TextMeshProUGUI label in button.GetComponentsInChildren<TextMeshProUGUI>(true))
             {
-                Letters(label, bold, tinted ? Color.white : Ink);
+                Letters(label, bold, tinted || row ? Color.white : Ink, row && changing.Contains(label));
                 (changing.Contains(label) ? live : print).Add(label);
                 done.Add(label);
             }
@@ -585,6 +592,7 @@ public static partial class ShaderEmuBuilder
             if (button.targetGraphic != null) button.targetGraphic.canvasRenderer.SetColor(colours.normalColor);
             EditorUtility.SetDirty(button);
         }
+        foreach (GameObject away in asleep) away.SetActive(false);
     }
 
     // The caps are a model. The canvas keeps the rectangles, and shows a key under a beam, held or latched.

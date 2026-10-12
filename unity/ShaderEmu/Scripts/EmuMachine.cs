@@ -63,6 +63,8 @@ public class EmuMachine : UdonSharpBehaviour
     public GameObject linksPanel;          // the eight fields, in front of the display
     public VRCUrlInputField openField;     // an address for the machine to open (docs/open.md)
     public TextMeshProUGUI openLabel;
+    public VRCUrlInputField placeField;    // the same at this visitor's classroom place (EmuStations)
+    public TextMeshProUGUI placeLabel;
     public Texture2D hostData;         // 256 x 256: an answer's bytes, four a texel
     public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/lan.md)
     public TextMeshProUGUI fetchLabel;
@@ -90,6 +92,12 @@ public class EmuMachine : UdonSharpBehaviour
     [HideInInspector] public bool pointerOn;            // a beam is on the display
     [HideInInspector] public bool pointerOwn;           // and it is on this player's own classroom tube: this machine's, whatever the wall shows
     [HideInInspector] public float mipsAll, mipsCore;   // millions of instructions a second: every core, and core 0
+    // Core 0 as the last readback had it: pc, then x1 to x31. And sixteen bits, one an eighth of
+    // a second, newest lowest: set where the registers had changed (the disk lamp's flicker).
+    [HideInInspector] public uint[] registers = new uint[32];
+    [HideInInspector] public int activity;
+    [HideInInspector] public string statsLine = "off";   // the panel's text of this machine, without the registers
+    [HideInInspector] public int gameId;                 // the program whose window has the keyboard (linux/apps/gameid.h)
 
     private const int Words = 960;      // state row 0's 64 texels, the first 64 control texels, 112 of the network's row
     private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
@@ -178,6 +186,9 @@ public class EmuMachine : UdonSharpBehaviour
     private double totalInstructions;
     private int rtcSecond = -1;
     private string speedLine = "";
+    private bool statsRemote;          // the panel's read-out is another player's machine's (EmuShareHub)
+    private uint registerSum;
+    private float sampleAt;
 
     void Start()
     {
@@ -434,9 +445,12 @@ public class EmuMachine : UdonSharpBehaviour
         if (sound != null) sound.Quiet();
         ShowLabels();
         Say("The computer is off.\r\n");
-        if (statsText != null) statsText.text = "off";
+        statsLine = "off";
+        if (statsText != null && !statsRemote) statsText.text = "off";
         mipsAll = 0f;
         mipsCore = 0f;
+        activity = 0;
+        gameId = 0;
     }
 
     public bool IsOn()
@@ -503,6 +517,12 @@ public class EmuMachine : UdonSharpBehaviour
         keyTail = next;
     }
 
+    // Characters (or key events) typed that way and not taken yet.
+    public int RemoteWaiting(bool keys)
+    {
+        return keys ? (keyTail - keyHead) & 255 : (charTail - charHead) & 255;
+    }
+
     public void SetRemotePointer(int x, int y, int buttons, bool on)
     {
         if (x != remoteX || y != remoteY || (on ? buttons : 0) != remoteButtons || on != remoteOn) remoteMovedAt = Time.time;
@@ -564,7 +584,7 @@ public class EmuMachine : UdonSharpBehaviour
         string address = "";
         for (int i = 0; i < length; i++) address += (char)((Word(64 + 18 + i / 16, (i / 4) % 4) >> (8 * (i % 4))) & 0xff);
         fetchSeq = seq;
-        fetchKind = (int)Word(64 + 16, 2);
+        fetchKind = Small(Word(64 + 16, 2));
         fetchOffset = (int)Mathf.Min(Word(64 + 16, 3), 0xffffff);
         if (fetchOffset != 0 && address == heldAddress)
         {
@@ -588,6 +608,7 @@ public class EmuMachine : UdonSharpBehaviour
         for (int i = 0; i < typedUrls.Length; i++)
             if (typedUrls[i].GetUrl().Get() == address || (i == 0 && address == "world:typed")) url = typedUrls[i].GetUrl();
         if (openField != null && openField.GetUrl().Get() == address) url = openField.GetUrl();
+        if (placeField != null && placeField.GetUrl().Get() == address) url = placeField.GetUrl();
         for (int i = 0; i < siteAddresses.Length; i++)
             if (siteAddresses[i] == address) url = siteUrls[i];
         // VRChat throws on an address that is not https, and then calls neither event below
@@ -613,12 +634,12 @@ public class EmuMachine : UdonSharpBehaviour
         heldImage = fetchKind == 1 || (fetchKind == KindFile && IsPicture(address));
         if (heldImage)
         {
-            // a picture: VRChat fetches and decodes it into a texture, which the control pass
-            // scales into the guest's memory as pixels. Asked for as a file it may carry one in
-            // its pixels (docs/fetch.md), which have to arrive as they are: no smaller copies.
+            // a picture: VRChat fetches and decodes it into a texture, whose pixels the control
+            // pass copies into the guest's memory as they are, 65,536 a part. Asked for as a file
+            // it may carry one in its pixels (docs/fetch.md).
             if (imageLoader == null) imageLoader = new VRCImageDownloader();
             TextureInfo info = new TextureInfo();
-            info.GenerateMipMaps = fetchKind == 1;
+            info.GenerateMipMaps = false;
             imageLoader.DownloadImage(url, null, (IUdonEventReceiver)this, info);
         }
         else
@@ -635,23 +656,29 @@ public class EmuMachine : UdonSharpBehaviour
         return path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg");
     }
 
-    // The button by the link field: the machine is told to open the address in it.
-    public void OpenLink()
+    // The button by a link field: the machine is told to open the address in it.
+    public void OpenLink() { Open(openField, openLabel); }
+    public void OpenPlaceLink() { Open(placeField, placeLabel); }
+
+    private TextMeshProUGUI openSays;      // the label of the field the last address came from
+
+    private void Open(VRCUrlInputField field, TextMeshProUGUI label)
     {
-        if (openField == null) return;
-        string address = openField.GetUrl().Get();
+        if (field == null) return;
+        openSays = label;
+        string address = field.GetUrl().Get();
         if (address == null || address.Length == 0 || !powered)
         {
-            if (openLabel != null) openLabel.text = powered ? "paste an address" : "computer is off";
+            if (label != null) label.text = powered ? "paste an address" : "computer is off";
             return;
         }
         if (!address.StartsWith("https://"))
         {
-            if (openLabel != null) openLabel.text = "https only";
+            if (label != null) label.text = "https only";
             return;
         }
         openDue = address.Length > 255 ? address.Substring(0, 255) : address;
-        if (openLabel != null) openLabel.text = address.Length > 255 ? "too long (255)" : "opening...";
+        if (label != null) label.text = address.Length > 255 ? "too long (255)" : "opening...";
         if (address.Length > 255) openDue = "";
     }
 
@@ -745,15 +772,10 @@ public class EmuMachine : UdonSharpBehaviour
     {
         if (fetchState != FetchLoading) return;
         hostImage = result.Result;
-        // as large as fits what the guest can be handed: 65,536 pixels, 256 either way
+        // every pixel, four bytes each: the guest asks for the parts after the first
         int w = hostImage.width, h = hostImage.height;
         fetchW = w;
         fetchH = h;
-        while (fetchW > 256 || fetchH > 256 || fetchW * fetchH > 65536)
-        {
-            fetchW = Mathf.Max(1, fetchW * 7 / 8);
-            fetchH = Mathf.Max(1, h * fetchW / w);
-        }
         fetchLength = fetchW * fetchH * 4;
         fetchStatus = 200;
         fetchState = FetchReady;
@@ -820,7 +842,7 @@ public class EmuMachine : UdonSharpBehaviour
             machineMaterial.SetInt("_FetchSeq", openCount);
             machineMaterial.SetInt("_FetchLength", openDue.Length);
             machineMaterial.SetInt("_FetchDeliver", 4);
-            if (openLabel != null) openLabel.text = "sent";
+            if (openSays != null) openSays.text = "sent";
             openDue = "";
             fetchState = FetchOpening;
         }
@@ -829,9 +851,9 @@ public class EmuMachine : UdonSharpBehaviour
             machineMaterial.SetInt("_FetchDeliver", 0);
             fetchAnswered = fetchSeq;
             fetchState = FetchIdle;
-            // a picture's texture has been copied: VRChat keeps every one until told. (One asked
-            // for as a file is kept, for its further parts, until something else is asked for.)
-            if (imageLoader != null && fetchKind != KindFile)
+            // a picture's texture has been copied: VRChat keeps every one until told. (One with
+            // parts still to come is kept until something else is asked for.)
+            if (imageLoader != null && fetchKind != KindFile && fetchOffset + FetchMost >= fetchLength)
             {
                 imageLoader.Dispose();
                 imageLoader = null;
@@ -910,7 +932,11 @@ public class EmuMachine : UdonSharpBehaviour
     void Update()
     {
         LanSay();
-        if (!powered || paused) return;
+        if (!powered || paused)
+        {
+            activity = 0;
+            return;
+        }
         frames++;
 
         bool running = initLeft == 0;
@@ -1070,6 +1096,12 @@ public class EmuMachine : UdonSharpBehaviour
         return (uint)p.r | (uint)p.g << 8 | (uint)p.b << 16 | (uint)p.a << 24;
     }
 
+    // A guest's word as a number: Udon's cast throws on one past 2^31, which a zapped word can be.
+    private int Small(uint w)
+    {
+        return w > 0x7fffffffu ? 0 : (int)w;
+    }
+
     // ---- the network (docs/lan.md) ----
 
     private void NetUniforms()
@@ -1146,7 +1178,7 @@ public class EmuMachine : UdonSharpBehaviour
         while (at + 16 <= NetSlot && found < 40)
         {
             int length = NetByte(at) | NetByte(at + 1) << 8 | NetByte(at + 2) << 16 | NetByte(at + 3) << 24;
-            uint number = (uint)(NetByte(at + 4) | NetByte(at + 5) << 8 | NetByte(at + 6) << 16 | NetByte(at + 7) << 24);
+            uint number = (uint)NetByte(at + 4) | (uint)NetByte(at + 5) << 8 | (uint)NetByte(at + 6) << 16 | (uint)NetByte(at + 7) << 24;
             if (length < 20 || length > NetMost || at + 16 + length > NetSlot) break;
             uint ahead = number - netAcked;
             if (ahead >= 1 && ahead <= 64) { starts[found] = at + 16; lengths[found] = length; found++; }
@@ -1247,7 +1279,7 @@ public class EmuMachine : UdonSharpBehaviour
     {
         if (Time.time < lanAt) return;
         lanAt = Time.time + 5f;
-        int sum = lanOut + lanMine + lanOthers + lanOff + lanFull + lanGiven + (int)netTaken;
+        int sum = lanOut + lanMine + lanOthers + lanOff + lanFull + lanGiven + (int)(netTaken & 0xffffff);
         if (sum == lanSaid) return;
         lanSaid = sum;
         Debug.Log("[Lan] 10.0." + (netId >> 8) + "." + (netId & 255) + (powered ? "" : " (off)") + ": the guest sent " + lanOut
@@ -1270,6 +1302,54 @@ public class EmuMachine : UdonSharpBehaviour
             rowAt = i * Words;
             TakeRound();
         }
+        if (Time.time >= sampleAt) Sample();
+    }
+
+    // Core 0's registers out of the last round's row (texels 28 to 36: x0 is texel 28's last
+    // word), and whether they are what they were an eighth of a second ago.
+    private void Sample()
+    {
+        sampleAt = Time.time + 0.125f;
+        uint sum = 0;
+        for (int i = 1; i < 32; i++)
+        {
+            uint v = Word(28 + (i + 3) / 4, (i + 3) % 4);
+            registers[i] = v;
+            sum = (sum ^ v) * 0x01000193u;
+        }
+        registers[0] = pc;
+        // a busy machine's lamp is lit three eighths in four, an idle one's (under half a million
+        // instructions a second: Linux with nothing to do) one in eight
+        int chance = (int)((sum >> 13) & 7);
+        bool lit = sum != registerSum && (mipsCore > 0.5f ? (chance & 3) != 0 : chance == 0);
+        registerSum = sum;
+        activity = (activity << 1 | (lit ? 1 : 0)) & 0xffff;
+    }
+
+    private string[] registerNames = { "pc", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+                                       "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6" };
+
+    // Eight lines of four registers.
+    private string RegisterText(uint[] r)
+    {
+        string text = "";
+        for (int i = 0; i < 32; i++)
+            text += (i % 4 == 0 ? "\n" : "  ") + registerNames[i].PadRight(3) + " " + r[i].ToString("x8");
+        return text;
+    }
+
+    // The panel's read-out is another player's machine's, as their packets say it (EmuShareHub).
+    public void RemoteStats(string text, uint[] r)
+    {
+        statsRemote = true;
+        if (statsText != null) statsText.text = r == null ? "..." : text + (text == "off" ? "" : RegisterText(r));
+    }
+
+    public void OwnStats()
+    {
+        if (!statsRemote) return;
+        statsRemote = false;
+        if (statsText != null) statsText.text = statsLine + (powered ? RegisterText(registers) : "");
     }
 
     // What one round left in the row at rowAt.
@@ -1280,9 +1360,9 @@ public class EmuMachine : UdonSharpBehaviour
         uint clock = Word(28, 1), commits = Word(28, 2);
         consumedTag = Word(9, 3);
         // the control words: display (texel 64), GPU (65), input (66, 67)
-        displayMode = (int)Word(64, 0);
-        displayWidth = (int)Word(64, 1);
-        displayHeight = (int)Word(64, 2);
+        displayMode = Small(Word(64, 0));
+        displayWidth = Small(Word(64, 1));
+        displayHeight = Small(Word(64, 2));
         if (displayMode < 1 || displayMode > 4 || displayWidth > 2048 || displayHeight > 2048)
         {
             displayWidth = 0;
@@ -1292,6 +1372,7 @@ public class EmuMachine : UdonSharpBehaviour
         keyboardOwned = Word(67, 0) == 0x6b657973u;
         soundEnabled = Word(64 + 0x22, 0) != 0;
         soundClock = Word(64 + 0x23, 0);
+        gameId = Small(Word(64 + 6, 2)) & 0xff;
         NetWindow();
         uint asked = Word(64 + 16, 0);
         if (fetchState == FetchIdle && asked != Word(64 + 17, 0) && asked != fetchAnswered) FetchAsked(asked);
@@ -1306,7 +1387,7 @@ public class EmuMachine : UdonSharpBehaviour
         haveClock = true;
         lastClock = clock;
         // the cores' counts of instructions, which the control pass publishes at 0x87000380
-        cores = Mathf.Clamp((int)Word(64 + 0x3c, 0), 1, MostCores);
+        cores = Mathf.Clamp(Small(Word(64 + 0x3c, 0)), 1, MostCores);
         // started, and not asleep on its job word: a texel for every 32 cores
         for (int g = 0; g < MostCores / 32; g++) coresRunning[g] = Word(CoresMore + 64 + g, 0) & ~Word(CoresMore + 64 + g, 1);
         for (int c = 1; c < cores; c++)
@@ -1353,9 +1434,8 @@ public class EmuMachine : UdonSharpBehaviour
         for (int c = 1; c < cores; c++) if (((coresRunning[c >> 5] >> (c & 31)) & 1) != 0) busy++;
         string workerLine = cores < 2 ? "one core" :
             (cores - 1) + " workers (" + busy + " running): " + workerIps.ToString("N0") + " instructions/s, all cores " + (ips + workerIps).ToString("N0");
-        if (statsText == null) return;
         string display = displayWidth > 0 ? "mode " + displayMode + ", " + displayWidth + " x " + displayHeight : "off";
-        statsText.text =
+        statsLine =
             (paused ? "paused" : "running") + ", " + (steady ? steadyRounds + " x " + ticks + " this frame (steady, at most " + roundCap + " rounds)"
                                                              : rounds + " x " + ticks + " instructions a frame at most") + "\n" +
             speedLine + "\n" +
@@ -1366,5 +1446,16 @@ public class EmuMachine : UdonSharpBehaviour
             "console: sent " + sentTag + ", taken " + consumedTag + ", waiting " + (consoleKeyboard != null ? consoleKeyboard.Count() : 0) + "\n" +
             "keyboard device: " + keySeq + " events" + (keyboardOwned ? ", owned by a program" : "") + "\n" +
             "sound: " + (sound == null ? "none" : !sound.on ? "off" : !soundEnabled ? "idle" : sound.mixes + " mixes, " + sound.late + " late");
+        if (statsText != null && !statsRemote) statsText.text = statsLine + RegisterText(registers);
     }
+
+    // ---- the network's counts, for the wall's panel (EmuLan) ----
+    public int LanOut() { return lanOut; }
+    public int LanMine() { return lanMine; }
+    public int LanOthers() { return lanOthers; }
+    public int LanOff() { return lanOff; }
+    public int LanFull() { return lanFull; }
+    public int LanGiven() { return lanGiven; }
+    public int LanTaken() { return (int)(netTaken & 0xffffff); }
+    public int LanQueuedIn() { return (netInTail - netInHead) & (NetQueue - 1); }
 }

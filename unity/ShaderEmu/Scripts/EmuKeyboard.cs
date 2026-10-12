@@ -80,8 +80,10 @@ public class EmuKeyboard : UdonSharpBehaviour
         Init();
     }
 
+    // Keys not taken yet: in the queue here, or in the machine they go straight into.
     public int Count()
     {
+        if (sink != null) return sink.RemoteWaiting(rawKeys);
         return (tail - head) & 1023;
     }
 

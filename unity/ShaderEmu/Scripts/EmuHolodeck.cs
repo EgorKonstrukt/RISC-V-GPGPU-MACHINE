@@ -7,7 +7,7 @@ using VRC.Udon.Common;
 // The holodecks (docs/holodeck.md): eight rooms, a seat each. Whoever sits in a seat has the
 // room. This is local, one a client: it draws this visitor's own program's world round the seat
 // they sit in, puts each occupant's display on their room's screen (their own machine's, or
-// what EmuStreams receives of another's), and says on each stand who holds which controller.
+// what EmuStreams receives of another's), and says on each stand what its sitter's controls are.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuHolodeck : UdonSharpBehaviour
 {
@@ -33,10 +33,11 @@ public class EmuHolodeck : UdonSharpBehaviour
     public TextMeshProUGUI[] doorLabels;   // whose a room is, by its door
     public TextMeshProUGUI[] plateLabels;  // and on its stand: what is held, what a key does
     public TextMeshProUGUI[] scaleLabels;
+    public Collider[] plateColliders;      // a console's own, which VRChat's laser presses: off for a sitter in a headset
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
 
-    private const int FirstSurface = 9;   // of EmuStreams' surfaces: the holodecks' are 9 to 16
+    private const int FirstSurface = 13;  // of EmuStreams' surfaces: the holodecks' are 13 to 20
 
     private int count;
     private int[] occupant;            // a room's sitter, by player number; 0: nobody
@@ -94,8 +95,22 @@ public class EmuHolodeck : UdonSharpBehaviour
         content.gameObject.SetActive(true);
         scene.gameObject.SetActive(true);
         if (pointer != null) pointer.ownHolo = room;
-        // without a headset the visitor's own keyboard is the game's (Insert gives it back)
-        if (!player.IsUserInVR() && gamepad != null && gamepad.keys != null) gamepad.keys.SetCapture(true);
+        // without a headset the visitor's own keyboard is the game's (Insert gives it back);
+        // with one their controllers are, and their beams press the console's keys
+        if (!player.IsUserInVR())
+        {
+            if (gamepad != null && gamepad.keys != null) gamepad.keys.SetCapture(true);
+            return;
+        }
+        if (gamepad != null) gamepad.Take(stations[room]);
+        BeamKeys(room, true);
+    }
+
+    // A console's keys are the sitter's beams' (VRChat's laser did not reach them from the seat).
+    private void BeamKeys(int room, bool on)
+    {
+        if (pointer != null) pointer.holoKeys = on;
+        if (plateColliders != null && room < plateColliders.Length && plateColliders[room] != null) plateColliders[room].enabled = !on;
     }
 
     public void Exited(int room, VRCPlayerApi player)
@@ -139,6 +154,7 @@ public class EmuHolodeck : UdonSharpBehaviour
             gamepad.PutBack();
             if (gamepad.keys != null) gamepad.keys.SetCapture(false);
         }
+        BeamKeys(own, false);
         own = -1;
         EmuShare mine = hub.Mine();
         if (mine != null)
@@ -154,8 +170,8 @@ public class EmuHolodeck : UdonSharpBehaviour
     }
 
     // The seat keeps its sitter whatever the sticks do (they are the game's): jumping stands
-    // them up, once no controller is in their hands and their keyboard is their own again
-    // (a controller's jump and the space bar are the game's too).
+    // up a sitter without a headset whose keyboard is their own again (a controller's jump and
+    // the space bar are the game's; a headset's way out is both grips, or the console's Exit).
     public override void InputJump(bool value, UdonInputEventArgs args)
     {
         if (!value || own < 0 || gamepad == null || gamepad.Holding() != 0) return;
@@ -183,15 +199,6 @@ public class EmuHolodeck : UdonSharpBehaviour
     public int Own() { return own; }
 
     // ---- a stand's keys: they are the sitter's ----
-
-    // A controller is a headset's. On a desktop its sticks are the mouse and the keys the
-    // visitor looks round and types with, so the game turned as they looked, and with the
-    // beams away nothing could put it back: there the keyboard plays, and the mouse is theirs.
-    private bool Hands() { return Networking.LocalPlayer != null && Networking.LocalPlayer.IsUserInVR(); }
-
-    public void TakeShooter() { if (own >= 0 && Hands()) gamepad.Take(1, stations[own]); nextAt = 0f; }
-    public void TakeStrategy() { if (own >= 0 && Hands()) gamepad.Take(2, stations[own]); nextAt = 0f; }
-    public void PutBack() { gamepad.PutBack(); nextAt = 0f; }
 
     public void NextScreen()
     {
@@ -272,10 +279,9 @@ public class EmuHolodeck : UdonSharpBehaviour
             if (plateLabels[k] != null)
             {
                 string says = occupant[k] == 0 ? "Sit down to play" : !me ? who + " plays here"
-                            : holds[k] == 1 ? "SHOOTER in hand: put it back to leave"
-                            : holds[k] == 2 ? "STRATEGY in hand: put it back to leave"
+                            : holds[k] != 0 ? gamepad.SchemeName() + ". Both grips: stand up"
                             : gamepad != null && gamepad.keys != null && gamepad.keys.Capturing() ? "Your keys play. End: stand up"
-                            : Networking.LocalPlayer.IsUserInVR() ? "Take a controller, or jump to stand up" : "Space or End: stand up. Sit again for the keys";
+                            : "Space or End: stand up. Sit again for the keys";
                 if (plateLabels[k].text != says) plateLabels[k].text = says;
             }
             if (scaleLabels[k] != null && me) scaleLabels[k].text = "World " + Mathf.RoundToInt((1f - plane) * 100f);

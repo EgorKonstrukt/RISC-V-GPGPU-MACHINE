@@ -157,28 +157,86 @@ public static partial class ShaderEmuBuilder
         Debug.Log("[ShaderEmu] the holodecks have their large screens (the scene is not saved)");
     }
 
+    // The console's keys: x, y, width, height on its face of ConsoleWide by ConsoleHigh, and the
+    // event of EmuHolodeck each sends. A sitter's controls are picked by the game (EmuGamepad).
+    const float ConsoleWide = 380, ConsoleHigh = 280;
+    static readonly float[] ConsoleKeys = { 12, 72, 174, 92, 194, 72, 174, 92, 12, 174, 112, 94, 132, 174, 112, 94 };
+    static readonly string[] ConsoleEvents = { "NextScreen", "StandUp", "Larger", "Smaller" };
+    static readonly string[] ConsoleNames = { "Screen", "Exit", "World +", "World -" };
+
     // The console's face: the room's keys, in the screen's plane under it. Exit stands the sitter
     // up whatever they hold (EmuHolodeck.StandUp): the one key for it, a headset's or a desktop's.
     static void ConsolePanel(Transform frame, int k, Vector3 at, Vector3 turn, EmuHolodeck deck, List<KeyValuePair<Button, string>> keys)
     {
         Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f);
         TextMeshProUGUI unused;
-        RectTransform panel = Panel(frame, "Holodeck " + (k + 1) + " plate", at, turn, 380, 280, back);
+        RectTransform panel = Panel(frame, "Holodeck " + (k + 1) + " plate", at, turn, ConsoleWide, ConsoleHigh, back);
         Label(panel, "Title", "HOLODECK " + (k + 1), 12, 6, 356, 32, 24, TextAnchor.MiddleLeft, Color.white);
         deck.plateLabels[k] = Label(panel, "Says", "Sit down to play", 12, 38, 356, 28, 18, TextAnchor.MiddleLeft, new Color(1f, 0.8f, 0.3f));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Shooter", "Shooter", 12, 72, 174, 60, 22, out unused), "TakeShooter"));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Strategy", "Strategy", 194, 72, 174, 60, 22, out unused), "TakeStrategy"));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Put back", "Put back", 12, 140, 174, 60, 22, out unused), "PutBack"));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Screen", "Screen", 194, 140, 174, 60, 22, out unused), "NextScreen"));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Larger", "World +", 12, 208, 84, 60, 18, out unused), "Larger"));
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Smaller", "World -", 102, 208, 84, 60, 18, out unused), "Smaller"));
-        deck.scaleLabels[k] = Label(panel, "Scale", "World 65", 190, 208, 86, 60, 16, TextAnchor.MiddleCenter, dim);
-        keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, "Exit", "Exit", 280, 208, 88, 60, 22, out unused), "StandUp"));
+        for (int i = 0; i < ConsoleEvents.Length; i++)
+            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, ConsoleEvents[i], ConsoleNames[i],
+                     ConsoleKeys[i * 4], ConsoleKeys[i * 4 + 1], ConsoleKeys[i * 4 + 2], ConsoleKeys[i * 4 + 3], 26, out unused), ConsoleEvents[i]));
+        deck.scaleLabels[k] = Label(panel, "Scale", "World 65", 252, 174, 116, 94, 20, TextAnchor.MiddleCenter, dim);
     }
 
-    // The consoles' faces made again where they are, in a scene from before they had an Exit key:
-    // new plates, which take the probes' light until the next bake.
-    [MenuItem("ShaderEmu/Give the holodecks' consoles their Exit key in the open scene")]
+    // The consoles' keys to a sitter's own beams (EmuPointer): a plate a room a hair before its
+    // face, and a mark for the key a beam is on. VRChat's laser did not press them from the seat.
+    static void ConsoleBeams(Transform world, EmuHolodeck deck)
+    {
+        int rooms = deck.frames.Length;
+        Collider[] plates = new Collider[rooms];
+        deck.plateColliders = new Collider[rooms];
+        for (int k = 0; k < rooms; k++)
+        {
+            Transform frame = deck.frames[k], face = frame.Find("Holodeck " + (k + 1) + " plate");
+            Gone(frame, "Keys plate");
+            if (face == null) continue;
+            deck.plateColliders[k] = face.GetComponent<BoxCollider>();
+            GameObject plate = new GameObject("Keys plate");
+            plate.transform.SetParent(frame, false);
+            plate.transform.localRotation = face.localRotation;
+            plate.transform.localPosition = face.localPosition + face.localRotation * new Vector3(0, 0, -0.002f);
+            plate.transform.localScale = new Vector3(ConsoleWide * 0.001f, ConsoleHigh * 0.001f, 1f);
+            BoxCollider box = plate.AddComponent<BoxCollider>();
+            box.size = new Vector3(1f, 1f, 0.004f);
+            box.isTrigger = true;
+            plates[k] = box;
+        }
+        Gone(deck.transform, "Key mark");
+        GameObject mark = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        mark.name = "Key mark";
+        Object.DestroyImmediate(mark.GetComponent<Collider>());
+        mark.transform.SetParent(deck.transform, false);
+        Material over = Mat("Holo key over", "Sprites/Default");
+        over.color = new Color(1f, 0.75f, 0.2f, 0.35f);
+        MeshRenderer markRenderer = mark.GetComponent<MeshRenderer>();
+        markRenderer.sharedMaterial = over;
+        markRenderer.shadowCastingMode = ShadowCastingMode.Off;
+        markRenderer.receiveShadows = false;
+        mark.SetActive(false);
+        float[] rects = new float[ConsoleKeys.Length];
+        for (int i = 0; i < rects.Length; i++) rects[i] = ConsoleKeys[i] / (i % 2 == 0 ? ConsoleWide : ConsoleHigh);
+        foreach (EmuPointer pointer in world.GetComponentsInChildren<EmuPointer>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+            pointer.holoPlates = plates;
+            pointer.holoKeyRects = rects;
+            pointer.holoKeyEvents = ConsoleEvents;
+            pointer.holodeck = deck;
+            pointer.holoMark = mark.transform;
+            Apply(pointer);
+        }
+        foreach (EmuGamepad gamepad in world.GetComponentsInChildren<EmuGamepad>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(gamepad);
+            gamepad.holodeck = deck;
+            Apply(gamepad);
+        }
+    }
+
+    // The consoles' faces made again where they are, in a scene from before their keys were the
+    // beams' and the controls the game's: new plates, which take the probes' light until the next bake.
+    [MenuItem("ShaderEmu/Make the holodecks' consoles again in the open scene")]
     public static void ConsolesAgain()
     {
         Transform world = GameObject.Find("ShaderEmu").transform;
@@ -196,13 +254,14 @@ public static partial class ShaderEmuBuilder
                 ConsolePanel(frame, k, at, turn, deck, keys);
                 count++;
             }
+            ConsoleBeams(world, deck);
             Apply(deck);
             foreach (KeyValuePair<Button, string> key in keys) OnClick(key.Key, deck, key.Value);
         }
         RetroNewPanels();
         HoloGuards(world);
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
-        Debug.Log("[ShaderEmu] " + count + " consoles have their Exit key (the scene is not saved; their plates want a bake)");
+        Debug.Log("[ShaderEmu] " + count + " consoles are made again (the scene is not saved; their plates want a bake)");
     }
 
     // A scene from before the seats waited on the floor (EmuSeat): each put there, its reach left where it was.
@@ -521,6 +580,7 @@ public static partial class ShaderEmuBuilder
         }
         Apply(gamepad);
         Apply(voices);
+        ConsoleBeams(world, deck);
         Apply(deck);
         foreach (EmuSeat sits in seats)
         {

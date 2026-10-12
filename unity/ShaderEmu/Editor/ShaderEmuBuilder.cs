@@ -1012,7 +1012,8 @@ public static partial class ShaderEmuBuilder
         RectTransform panel = Panel(computer, "Control panel", new Vector3(memAt.x, 1.22f, screenZ), Vector3.zero, 1700, 760,
                                     new Color(0.05f, 0.055f, 0.07f));
         Label(panel, "Title", "ShaderEmu: a RISC-V computer in a pixel shader", 30, 16, 1640, 56, 38, TextAnchor.MiddleLeft, Color.white);
-        machine.statsText = Label(panel, "Stats", "off", 30, 84, 1000, 420, 30, TextAnchor.UpperLeft, new Color(0.75f, 0.95f, 0.8f));
+        machine.statsText = Label(panel, "Stats", "off", 30, 84, 1000, 486, 22, TextAnchor.UpperLeft, new Color(0.75f, 0.95f, 0.8f));
+        machine.statsText.enableWordWrapping = false;
         Label(panel, "Help",
               "This machine runs on your own graphics card; other players have their own, and can show you theirs.\n" +
               "Each hand has a beam. On the big screen it is the mouse: trigger = left, grip = right, right stick = wheel.\n" +

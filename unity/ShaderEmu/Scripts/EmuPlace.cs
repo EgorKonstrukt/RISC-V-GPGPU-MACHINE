@@ -19,4 +19,5 @@ public class EmuPlace : UdonSharpBehaviour
     public void ShowDisplay() { stations.Act(place, 6); }        // VIDEO 1
     public void CloseLinks() { stations.Act(place, 7); }         // EXIT
     public void OpenLinks() { stations.Act(place, 8); }          // PROCEED
+    public void Leave() { stations.Act(place, 9); }              // the tower's EXIT: the place is given up
 }

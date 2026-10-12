@@ -26,9 +26,14 @@ pass of the GPU device's control shader. `nxweb`, the browser, asks for pages; `
   (`gpu_control` in `src/gpu.h`). Words and bytes arrive together, so a guest that sees its
   number in the answer word can read the data at once.
 - A picture is fetched and decoded by the host and arrives as pixels, a word each (red in the
-  low byte, sRGB, over white), scaled to fit 256 x 256 and 65,536 pixels. The host sets
-  `_FetchDeliver` to 2 with the picture in `_HostImage` and its size in `_FetchW`, `_FetchH`;
-  the control pass does the scaling. The guest decodes nothing.
+  low byte, sRGB, over white), every pixel of it as it was decoded: nothing is scaled. The
+  host sets `_FetchDeliver` to 2 with the picture in `_HostImage` and its size in `_FetchW`,
+  `_FetchH` (the answer's fourth word; its length is four bytes a pixel). A part is 65,536
+  pixels: the guest asks for the rest with the same address and an offset in bytes, as for a
+  file (below), and the host keeps the texture until the last part is delivered (`open.c`,
+  and `check_reply` in `nxweb.c`, which writes a picture's parts to its file as they come).
+  The guest decodes nothing. Until 12 October 2026 a picture was shrunk to fit 256 x 256.
+  VRChat's own loader gives a world at most 2048 pixels a side.
 - Under Linux a program maps both through `/dev/gpu`: the words at offset `0x01000000`, the
   data at `0x016c0000`. Nano-X's texture area ends below that.
 - One request at a time; there is no lock between programs. A program waits until the
