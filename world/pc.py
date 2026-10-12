@@ -147,9 +147,9 @@ def monitor(b):
         return [(x, y, front + 0.0115 + BULGE - math.sqrt(BULGE * BULGE - x * x - (y - mid) ** 2)) for x, y in outline]
     opening = [at_z(rrect(w + 0.024, h + 0.024, 0.03, 0, mid), front), at_z(rrect(w + 0.008, h + 0.008, 0.025, 0, mid), front + 0.014),
                on_glass(rrect(w, h, 0.022, 0, mid))]
-    if MODE == "low":   # closed behind the glass, which is a sheet of the place's own
-        opening.append(at_z(rrect(w - 0.03, h - 0.03, 0.02, 0, mid), front + 0.06))
-    loft(b, opening, skin("PlasticGrey"), last=MODE == "low", normal=(0, 0, -1))
+    # (the shell ends at the glass, a sheet of the place's own that covers the opening: a plate
+    # closed it 5 cm behind, a second screen to whoever came close, and 7 parts in a hundred of the baked picture)
+    loft(b, opening, skin("PlasticGrey"), normal=(0, 0, -1))
     if MODE == "full":
         # the tube: a patch of a ball, a little larger than what shows, its middle the nearest
         nx, ny, gw, gh = 24, 18, w + 0.012, h + 0.012
