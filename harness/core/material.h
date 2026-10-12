@@ -67,6 +67,7 @@ class Material {
 public:
     // Initialise values from the shader's Properties block defaults.
     void applyDefaults(const SLShader& shader);
+    static bool dumpConstants;   // (material.cpp: RVC_DUMP_CB)
 
     void setFloat(const std::string& name, double v) { values_[name] = {v}; }
     void setInt(const std::string& name, int64_t v) { values_[name] = {(double)v}; }

@@ -543,7 +543,9 @@ private:
         ctx->OMSetDepthStencilState(gpu_.depthOff.Get(), 0);
         ctx->IASetInputLayout(nullptr);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        Material::dumpConstants = true;
         mat.bind(ctx, pass, gpu_);
+        Material::dumpConstants = false;
         ctx->Draw((std::max)(6u, 3 * mrtLoad_ * (((UINT)cores_ + 15) / 16)), 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         static const char* names[8] = {"_TickOut0", "_TickOut1", "_TickOut2", "_TickOut3", "_TickOut4", "_TickOut5", "_TickOut6", "_TickOut7"};

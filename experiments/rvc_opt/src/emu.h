@@ -1039,8 +1039,9 @@ bool fast_exec_l1(L1P uint w) {
         // straddles two words, which is rare and would double the code on this path
         uint off = pa & 0x3;
         [branch]
-        if (va != 0 && (f3 < 3 || f3 == 4 || f3 == 5) && t_ok && (pa & 0x80000000) != 0 &&
-            off + (1u << (f3 & 3)) <= 4 && (pa & 0x7ffffffc) < RAM_MAX) {
+        // (funct3 0, 1, 2, 4 and 5 are loads, a bit each; and RAM is what is under RAM_MAX
+        // once the address's top bit is turned over)
+        if (va != 0 && ((0x37u >> f3) & 1) != 0 && t_ok && off + (1u << (f3 & 3)) <= 4 && (pa ^ 0x80000000) < RAM_MAX) {
             uint v = mem_get_cached_or_tex(pa & 0x7ffffffc) >> (off * 8);
             // a byte or a half to the top of the word, and back down with or without its sign
             uint up = (f3 & 3) == 0 ? 24 : (f3 & 3) == 1 ? 16 : 0;

@@ -64,28 +64,39 @@ The eight targets no longer make core 0 faster by themselves (they did while its
 
 ## Bytecode instructions an emulated one costs
 
-`tools/tick_path.py TICK.asm [TICK2.asm]` walks the fast loop of the tick's disassembled
-bytecode (`dxbc_disasm`, `docs/linux.md`) along the path each kind of instruction takes and
-counts what is on it, then weighs the kinds as a shell loop under Linux runs them
-(`--profile` has the shares: `x_alu`, `x_load`, `x_store`, `x_branch`, `x_jump`,
-`x_refetch`). Before and after the fast step was rewritten for it (October 2026):
+Measured, by running the bytecode: `tools/dxbc_run.py TICK.asm SNAPSHOT CONSTANTS` is an
+interpreter of the tick's pixel shader as `dxbc_disasm` prints it (`docs/linux.md`). It runs
+one pixel of one pass (the pixel whose texels have the instruction clock) from a snapshot
+taken before the pass, with the pass's constant buffer (`RVC_DUMP_CB=FILE` while the harness
+runs it), and counts every instruction executed. Its eight output texels are the harness's
+after the same pass, to the word (the commit's count, which the commit adds, aside): that is
+the check that what it counts is what ran.
 
-| One instruction of this kind | Before | After |
-|---|---|---|
-| arithmetic | 112 | 89 |
-| a load served by the write cache | 160 | 146 |
-| a load that reads the texture | 170 | 156 |
-| a store to a texel in the cache | 173 | 162 |
-| a store to a new texel | 228 | 218 |
-| a branch | 92 | 82 |
-| a jump | 106 | 97 |
-| (the next instruction texel: 27 more) | | |
-| weighted | 141.7 | 126.0 |
+Before and after the fast step was rewritten for it (October 2026), the same four passes of
+8,192 emulated instructions each, both builds giving the same texels:
 
-That is 12.5% more emulated instructions for a bytecode instruction, the same state hash, and
-in time (the two builds in turn, the card's clock high): a shell loop 3.39M to 3.62M
-instructions a second (6.6%), Doom's demo 3.25M to 3.36M (3.4%). The driver had been
-doing part of it already, which is why time gained less than the count.
+| The pass | Bytecode instructions, before | After | For an emulated one | Emulated for a bytecode one |
+|---|---|---|---|---|
+| a shell loop, pass 40 | 1,318,187 | 1,183,065 | 160.9 to 144.4 | 11.4% more |
+| a shell loop, pass 200 | 1,298,979 | 1,163,140 | 158.6 to 142.0 | 11.7% |
+| Doom's demo, pass 40 | 1,236,392 | 1,106,049 | 150.9 to 135.0 | 11.8% |
+| Doom's demo, pass 200 | 1,215,510 | 1,077,099 | 148.4 to 131.5 | 12.9% |
+| all four | | | 154.7 to 138.2 | 11.9% |
+
+(About nine of those are the pass's own beginning and end, not the fast loop's.)
+
+`tools/tick_path.py TICK.asm [TICK2.asm]` is the same count without running anything: the
+fast loop walked along the path each kind of instruction takes, weighed as a shell loop runs
+them (`--profile` has the shares: `x_alu`, `x_load`, `x_store`, `x_branch`, `x_jump`,
+`x_refetch`). It says where a change takes instructions out, by kind: arithmetic 112 to 89,
+a load from the write cache 160 to 146, a store to a texel in the cache 173 to 162, a branch
+92 to 82, a jump 106 to 97 (and 27 more for any of them when the next instruction texel
+has to be taken up).
+
+In time the gain is less, the driver having done part of it already: the two builds in turn,
+the card's clock high, a shell loop 3.39M to 3.48M instructions a second before and 3.61M
+after (4 to 7%), Doom's demo 3.25M to 3.29M before and 3.36M after (2 to 3%). The state
+hash of the run is the same.
 
 What was taken out, all of it on the path of every instruction or of every arithmetic one:
 
@@ -94,6 +105,8 @@ What was taken out, all of it on the path of every instruction or of every arith
 - a sign is carried by an arithmetic shift (`asint(w) >> 20`, one instruction) where a test,
   a select and a mask were four: the immediates, `sra`, a load's byte or half;
 - a signed comparison is the unsigned one with both signs turned over;
+- which funct3 is a load is a bit of a constant, and "in RAM" one comparison after the
+  address's top bit is turned over;
 - the two low bits of an instruction are in each kind's own test, not tested for all;
 - the loop's end is one comparison with a budget that a store which filled the write cache
   sets to nothing, where it was the budget or the stall;

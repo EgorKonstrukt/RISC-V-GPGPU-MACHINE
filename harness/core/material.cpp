@@ -260,10 +260,19 @@ void Material::fillGlobals(StageLayout& L) const {
     }
 }
 
+// RVC_DUMP_CB=FILE: the pixel stage's constants of the pass bound while dumpConstants is set,
+// written each time (the last one stays): what tools/dxbc_run.py runs the tick's bytecode with.
+bool Material::dumpConstants = false;
+
 void Material::bindStage(ID3D11DeviceContext* ctx, StageLayout& L, int stage, const Gpu& gpu) {
     if (!L.present) return;
     if (L.hasGlobals) {
         fillGlobals(L);
+        if (dumpConstants && stage == 2) {
+            if (const char* path = getenv("RVC_DUMP_CB")) {
+                if (FILE* f = fopen(path, "wb")) { fwrite(L.scratch.data(), 1, L.scratch.size(), f); fclose(f); }
+            }
+        }
         ctx->UpdateSubresource(L.globalsBuffer.Get(), 0, nullptr, L.scratch.data(), 0, 0);
         ID3D11Buffer* cb = L.globalsBuffer.Get();
         if (stage == 0) ctx->VSSetConstantBuffers(L.globalsSlot, 1, &cb);
