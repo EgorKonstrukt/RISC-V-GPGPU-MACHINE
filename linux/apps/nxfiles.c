@@ -35,7 +35,7 @@
 #define BAR 26
 #define STATUS 18
 #define TILE_W 78
-#define TILE_H 64
+#define TILE_H 70
 #define ROW_H 18
 #define CELL_W 76			/* a place on the desktop */
 #define CELL_H 70
@@ -70,7 +70,7 @@ static char where[512];
 static struct timespec folder_time;
 static GR_WINDOW_ID window;
 static GR_SCREEN_INFO screen;
-enum { B_BACK, B_FORWARD, B_UP, B_HOME, B_VIEW, B_NEW, BUTTONS };
+enum { B_BACK, B_FORWARD, B_UP, B_HOME, B_VIEW, B_NEW, B_TERMINAL, BUTTONS };
 #define BUTTON_W 28
 static int side;		/* the places' width: none on the desktop */
 /* The places: where a click on one goes (Network: the program that shows the other machines). */
@@ -93,7 +93,7 @@ static char ahead[24];		/* letters typed one after another: the entry that start
 static unsigned ahead_time;
 
 enum { M_OPEN = 1, M_EDIT, M_CUT, M_COPY, M_PASTE, M_PASTE_IN, M_RENAME, M_DELETE, M_SHORTCUT, M_PROPERTIES,
-	M_TILES, M_DETAILS, M_REFRESH, M_FOLDER, M_FILE, M_ARRANGE, M_SETTINGS, M_FILES, M_ALL };
+	M_TILES, M_DETAILS, M_REFRESH, M_FOLDER, M_FILE, M_ARRANGE, M_SETTINGS, M_FILES, M_ALL, M_TERMINAL, M_TERMINAL_IN };
 
 static unsigned
 milliseconds(void)
@@ -523,6 +523,17 @@ fitted(const char *text, int most, int room, char *out, int size)
 	return w + (n < full ? dots : 0);
 }
 
+/* How many of a text's first letters fit a width. */
+static int
+fits(const char *text, int room)
+{
+	int n = 0, w = 0;
+
+	while (text[n] && (w += ui_width(&ui_var_widths, ui_var, text + n, 1)) <= room)
+		n++;
+	return n;
+}
+
 /* An icon of the desktop: its picture, and its name under it in one line or two. The name's
  * lines are worked out once: a text's width is a question to the window system each time. */
 static void
@@ -622,9 +633,21 @@ draw_tile(int i)
 		}
 		ui_text(window, x + w - 80, y + 2, kind_names[e->kind], -1, e->chosen ? WHITE : BLACK, 0);
 	} else {
+		const char *label = e->label;
+		int n = fits(label, w - 4), cut = n;
+
 		draw_icon(window, x + (w - 32) / 2, y + 3, e, 32);
-		tw = fitted(e->label, 17, w - 4, name, sizeof name);
-		ui_text(window, x + (w - tw) / 2, y + 40, name, -1, e->chosen ? WHITE : BLACK, 0);
+		/* a name too long for one line goes on in a second, from a space when one is near */
+		while (label[n] && cut > 3 && label[cut] != ' ')
+			cut--;
+		if (label[cut] != ' ')
+			cut = n;
+		tw = ui_width(&ui_var_widths, ui_var, label, cut);
+		ui_text(window, x + (w - tw) / 2, y + 38, label, cut, e->chosen ? WHITE : BLACK, 0);
+		if (label[n]) {
+			tw = fitted(label + cut + (label[cut] == ' '), 24, w - 4, name, sizeof name);
+			ui_text(window, x + (w - tw) / 2, y + 51, name, -1, e->chosen ? WHITE : BLACK, 0);
+		}
 	}
 	if (i == cursor && !e->chosen)
 		ui_focus(window, x, y, w, h);
@@ -685,8 +708,8 @@ draw_path(void)
 static void
 draw_panels(void)
 {
-	int signs[BUTTONS] = { UI_G_LEFT, UI_G_RIGHT, UI_G_UP, UI_G_HOME, details ? UI_G_TILES : UI_G_LIST, UI_G_FOLDER };
-	int grey[BUTTONS] = { history_at < 1, history_at + 1 >= history_count, !where[1], 0, 0, 0 };
+	int signs[BUTTONS] = { UI_G_LEFT, UI_G_RIGHT, UI_G_UP, UI_G_HOME, details ? UI_G_TILES : UI_G_LIST, UI_G_FOLDER, UI_G_TERMINAL };
+	int grey[BUTTONS] = { history_at < 1, history_at + 1 >= history_count, !where[1], 0, 0, 0, 0 };
 	int i, y, here;
 
 	ui_fill(window, 0, 0, width, BAR, UI_FACE);
@@ -1293,6 +1316,19 @@ choose_all(void)
 		entries[i].chosen = 1;
 }
 
+/* A terminal whose shell starts in `folder` (NULL: the one shown, which is where this program is). */
+static void
+terminal_in(const char *folder)
+{
+	if (real_vfork() != 0)
+		return;
+	signal(SIGCHLD, SIG_DFL);	/* (as ui_run: the child may do nothing here that writes our memory) */
+	if (folder && chdir(folder) != 0)
+		_exit(126);
+	execlp("nxterm", "nxterm", (char *)NULL);
+	_exit(127);
+}
+
 /* What a menu's row (or a key, or a button that does the same) does. */
 static void
 act(int what)
@@ -1318,6 +1354,8 @@ act(int what)
 	case M_SETTINGS: ui_run("nxsettings", NULL); return;
 	case M_FILES: ui_run("nxfiles", where); return;
 	case M_ALL: choose_all(); break;
+	case M_TERMINAL: terminal_in(NULL); return;
+	case M_TERMINAL_IN: if (cursor >= 0) terminal_in(entries[cursor].name); return;
 	}
 	draw_all();
 }
@@ -1347,6 +1385,8 @@ context_menu(int on, int x, int y, int keyboard)
 		ROW("Copy", M_COPY, 0);
 		if (entries[on].kind == K_FOLDER)
 			ROW("Paste into it", M_PASTE_IN, carried ? 0 : UI_MENU_GREY);
+		if (entries[on].kind == K_FOLDER)
+			ROW("Terminal in it", M_TERMINAL_IN, 0), menu[n - 1].icon = ui_icon_of("nxterm");
 		ROW("Rename", M_RENAME, UI_MENU_LINE);
 		ROW("Delete", M_DELETE, 0);
 		if (!desktop)
@@ -1363,6 +1403,8 @@ context_menu(int on, int x, int y, int keyboard)
 		ROW("Paste", M_PASTE, UI_MENU_LINE | (carried ? 0 : UI_MENU_GREY));
 		ROW("New", 0, UI_MENU_LINE);
 		menu[n - 1].sub = made, menu[n - 1].sub_count = 2;
+		ROW("Terminal here", M_TERMINAL, 0);
+		menu[n - 1].icon = ui_icon_of("nxterm");
 		if (desktop) {
 			ROW("Open in Files", M_FILES, UI_MENU_LINE);
 			ROW("Settings", M_SETTINGS, 0);
@@ -1490,6 +1532,9 @@ press(int button)
 		break;
 	case B_NEW:
 		act(M_FOLDER);
+		return;
+	case B_TERMINAL:
+		act(M_TERMINAL);
 		return;
 	}
 	draw_all();
