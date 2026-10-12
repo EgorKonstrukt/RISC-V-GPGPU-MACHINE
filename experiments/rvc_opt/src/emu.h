@@ -1000,27 +1000,37 @@ bool fast_exec_l1(L1P uint w) {
     // A switch is the costly thing here: on the GPU one with eight cases takes as long as fifty
     // additions, a two-way branch as long as six. So the arithmetic instructions compute every
     // result and select one, and the common classes are told apart by tests, most frequent first.
-    bool low_ok = (w & 3) == 3;
+    // (Every instruction this path runs is so many of the card's: what follows is written for
+    // the fewest. A sign is carried by an arithmetic shift, one instruction, where a test and
+    // a mask were four; whether an encoding is one that exists is a bit of a table.)
+    // (An instruction's two low bits are 11: each kind's test has them in it.)
     [branch]
-    if ((w & 0x5c) == 0x10 && (opc == 0x13 || (w >> 25) != 1)) {
+    if ((w & 0x5f) == 0x13 && (w & 0xfe00007f) != 0x02000033) {
         // op-imm and op (the M extension aside): bit 5 tells them apart
+        PROF(PROF_x_alu)
         bool reg = (w & 0x20) != 0;
         bool alt = (w & 0x40000000) != 0;   // subtract, or shift right arithmetic
         uint a = rs1v;
-        uint b = reg ? rs2v : ((w & 0x80000000 ? 0xfffff800 : 0) | ((w >> 20) & 0x7ff));
-        uint sh = (reg ? rs2v : (w >> 20)) & 0x1f;
+        uint imm = AS_UNSIGNED(AS_SIGNED(w) >> 20);
+        uint b = reg ? rs2v : imm;
+        uint sh = b & 0x1f;
         uint srl = a >> sh;
-        uint sra = (a & 0x80000000) ? ~(~a >> sh) : srl;
+        uint sra = AS_UNSIGNED(AS_SIGNED(a) >> sh);
         uint r01 = (f3 & 1) ? a << sh : ((reg && alt) ? a - b : a + b);
-        uint r23 = ((f3 & 1) ? a < b : AS_SIGNED(a) < AS_SIGNED(b)) ? 1 : 0;
+        // signed is unsigned with the signs turned over
+        uint turn = (f3 & 1) ? 0 : 0x80000000;
+        uint r23 = (a ^ turn) < (b ^ turn) ? 1 : 0;
         uint r45 = (f3 & 1) ? (alt ? sra : srl) : a ^ b;
         uint r67 = (f3 & 1) ? a & b : a | b;
         val = (f3 & 4) ? ((f3 & 2) ? r67 : r45) : ((f3 & 2) ? r23 : r01);
+        // Which of these exist: a bit for each of op (8 + funct3) and op-imm (funct3), by
+        // funct7. With 0 all of them; with 0x20 sub and sra, srai, and every op-imm that is
+        // not a shift (its funct7 is part of the number); with anything else only those.
         uint f7 = w >> 25;
-        bool shift = (f3 & 3) == 1;
-        ok = low_ok && (reg ? (f7 == 0 || (f7 == 0x20 && (f3 == 0 || f3 == 5)))
-                            : (!shift || f7 == 0 || (f7 == 0x20 && f3 == 5)));
+        uint exist = f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu;
+        ok = ((exist >> (((w >> 2) & 8) | f3)) & 1) != 0;
     } else if (opc == 0x03) {                                   // loads from RAM, translation available
+        PROF(PROF_x_load)
         FormatI i = parse_FormatI(w);
         uint va = rs1v + i.imm;
         FAST_XL(xl_ident_d, MMU_ACCESS_READ, tlb_r_vpn, tlb_r_page, va, t_ok, pa)
@@ -1032,14 +1042,17 @@ bool fast_exec_l1(L1P uint w) {
         if (va != 0 && (f3 < 3 || f3 == 4 || f3 == 5) && t_ok && (pa & 0x80000000) != 0 &&
             off + (1u << (f3 & 3)) <= 4 && (pa & 0x7ffffffc) < RAM_MAX) {
             uint v = mem_get_cached_or_tex(pa & 0x7ffffffc) >> (off * 8);
-            val = f3 == 0 ? sign_extend(v & 0xff, 8) : f3 == 1 ? sign_extend(v & 0xffff, 16) :
-                  f3 == 2 ? v : f3 == 4 ? v & 0xff : v & 0xffff;
+            // a byte or a half to the top of the word, and back down with or without its sign
+            uint up = (f3 & 3) == 0 ? 24 : (f3 & 3) == 1 ? 16 : 0;
+            v <<= up;
+            val = (f3 & 4) ? v >> up : AS_UNSIGNED(AS_SIGNED(v) >> up);
             ok = true;
         }
-    } else if ((w & 0x7c) == 0x20) {                            // sb/sh/sw to RAM, translation available
+    } else if ((w & 0x7f) == 0x23) {                            // sb/sh/sw to RAM, translation available
+        PROF(PROF_x_store)
         FormatS s;
         s.rs2 = (w >> 20) & 0x1f;
-        s.addr = rs1v + ((w & 0x80000000 ? 0xfffff000 : 0) | ((w >> 20) & 0xfe0) | ((w >> 7) & 0x1f));
+        s.addr = rs1v + ((AS_UNSIGNED(AS_SIGNED(w) >> 20) & 0xffffffe0) | ((w >> 7) & 0x1f));
         FAST_XL(xl_ident_d, MMU_ACCESS_WRITE, tlb_w_vpn, tlb_w_page, s.addr, t_ok, pa)
         ok = false;
         wr = false;
@@ -1047,20 +1060,21 @@ bool fast_exec_l1(L1P uint w) {
         // cache is full). A store that straddles two words takes the general path.
         uint s_off = pa & 0x3;
         [branch]
-        if (low_ok && f3 < 3 && t_ok && (pa & 0x80000000) != 0 && s_off + (1u << f3) <= 4) {
+        if (f3 < 3 && t_ok && (pa & 0x80000000) != 0 && s_off + (1u << f3) <= 4) {
             uint s_mask = (f3 == 2 ? 0xffffffff : f3 == 1 ? 0xffff : 0xff) << (s_off * 8);
             mem_set_ram(pa & 0x7ffffffc, rs2v << (s_off * 8), s_mask, false);
             ok = true;
         }
-    } else if ((w & 0x7c) == 0x60) {                            // branches
+    } else if ((w & 0x7f) == 0x63) {                            // branches
         uint a = rs1v;
         uint b = rs2v;
         bool lt = (f3 & 2) ? a < b : AS_SIGNED(a) < AS_SIGNED(b);
         bool taken = ((f3 & 4) ? lt : a == b) != ((f3 & 1) != 0);
         FormatB br = parse_FormatB(w);
-        ok = low_ok && f3 != 2 && f3 != 3;
+        ok = (f3 & 6) != 2;   // (funct3 2 and 3 are no branch)
         wr = false;
-        if (taken) { npc = pc + br.imm; }
+        PROF(PROF_x_branch)
+        if (taken) { PROF(PROF_x_taken) npc = pc + br.imm; }
 #ifdef FPU
     } else if ((w & 0x04) != 0 && ((w & 0x08) == 0 || (w & 0x40) != 0) && (w & 0x5f) != 0x07) {
         // (flw and fsw, 0x07 and 0x27, have bit 2 as well and are the F extension's below: taken
@@ -1070,13 +1084,14 @@ bool fast_exec_l1(L1P uint w) {
 #endif
         // lui, auipc, jal and jalr share opcode bit 2 (fence and the atomics, which also have
         // it, are excluded above); bit 6 is a jump, then bit 3 says jal and bit 5 says lui
+        PROF(PROF_x_jump)
         bool jump = (w & 0x40) != 0, jal = (w & 0x08) != 0;
         FormatJ j = parse_FormatJ(w);
         FormatI i = parse_FormatI(w);
         val = jump ? pc + 4 : (w & 0xfffff000) + ((w & 0x20) ? 0 : pc);
         npc = jump ? (jal ? pc + j.imm : rs1v + i.imm) : npc;
         // of opcode bits 6..3 only 0110 (lui), 0010 (auipc), 1101 (jal) and 1100 (jalr) exist
-        ok = low_ok && ((0x3044u >> ((w >> 3) & 15)) & 1) != 0 && (jal || !jump || f3 == 0);
+        ok = (w & 3) == 3 && ((0x3044u >> ((w >> 3) & 15)) & 1) != 0 && (jal || !jump || f3 == 0);
     } else if (opc == 0x2f) {
         // atomics on a word of RAM the write TLB knows (a writable page is readable too):
         // amoadd, amoswap, lr, sc, amoxor, amoor, amoand. The rest take the general path.
@@ -1139,14 +1154,14 @@ bool fast_exec_l1(L1P uint w) {
             ok = false;
             wr = false;
             [branch]
-            if (low_ok && f3 == 2 && fs_ok && (fs_pa & 0x80000003) == 0x80000000) {
+            if (f3 == 2 && fs_ok && (fs_pa & 0x80000003) == 0x80000000) {
                 mem_set_ram(fs_pa & 0x7ffffffc, xr[XR_F + ((w >> 20) & 0x1f)], 0xffffffff, false);
                 ok = true;
             }
         }
         [branch]
         if (ok && to_f) {
-            xr[XR_F + rd] = val;
+            xr[XR_F + ((w >> 7) & 0x1f)] = val;
             wr = false;
         }
 #endif

@@ -62,6 +62,49 @@ A shell loop, passes of 8,192, long runs in turn:
 The eight targets no longer make core 0 faster by themselves (they did while its state was
 1,485 texels): what they cost is the pass's own 0.05 ms.
 
+## Bytecode instructions an emulated one costs
+
+`tools/tick_path.py TICK.asm [TICK2.asm]` walks the fast loop of the tick's disassembled
+bytecode (`dxbc_disasm`, `docs/linux.md`) along the path each kind of instruction takes and
+counts what is on it, then weighs the kinds as a shell loop under Linux runs them
+(`--profile` has the shares: `x_alu`, `x_load`, `x_store`, `x_branch`, `x_jump`,
+`x_refetch`). Before and after the fast step was rewritten for it (October 2026):
+
+| One instruction of this kind | Before | After |
+|---|---|---|
+| arithmetic | 112 | 89 |
+| a load served by the write cache | 160 | 146 |
+| a load that reads the texture | 170 | 156 |
+| a store to a texel in the cache | 173 | 162 |
+| a store to a new texel | 228 | 218 |
+| a branch | 92 | 82 |
+| a jump | 106 | 97 |
+| (the next instruction texel: 27 more) | | |
+| weighted | 141.7 | 126.0 |
+
+That is 12.5% more emulated instructions for a bytecode instruction, the same state hash, and
+in time (the two builds in turn, the card's clock high): a shell loop 3.39M to 3.62M
+instructions a second (6.6%), Doom's demo 3.25M to 3.36M (3.4%). The driver had been
+doing part of it already, which is why time gained less than the count.
+
+What was taken out, all of it on the path of every instruction or of every arithmetic one:
+
+- whether an arithmetic encoding exists was 17 instructions of comparisons; it is a bit of a
+  small table chosen by funct7, shifted by funct3 (8);
+- a sign is carried by an arithmetic shift (`asint(w) >> 20`, one instruction) where a test,
+  a select and a mask were four: the immediates, `sra`, a load's byte or half;
+- a signed comparison is the unsigned one with both signs turned over;
+- the two low bits of an instruction are in each kind's own test, not tested for all;
+- the loop's end is one comparison with a budget that a store which filled the write cache
+  sets to nothing, where it was the budget or the stall;
+- the fetched word is kept for the general path only when the step declined it.
+
+And what the driver does not forgive, each tried by itself on the same path: the "next
+instruction is in this texel" flag worked out by each kind in place of once at the end
+(3.6% slower, though three instructions fewer), register 0 turned into the scratch register
+at decode (2% slower), the old four-instruction immediate (3% slower than the shift). A
+count is a guide; only the two builds run in turn say what a change is worth.
+
 ## Tried, and not kept
 
 - The run's end looked for only after a store or a jump taken, in place of after every

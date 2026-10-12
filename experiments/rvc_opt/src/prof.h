@@ -130,5 +130,14 @@ void prof_flush(uint2 pos) {
 #define PROF_ins_sret 132
 #define PROF_ins_uret 133
 #define PROF_ins_wfi 134
+// what the fast step ran, by kind (for the count of bytecode instructions an emulated one costs: tools/tick_path.py)
+#define PROF_x_alu 135
+#define PROF_x_load 136
+#define PROF_x_store 137
+#define PROF_x_branch 138
+#define PROF_x_jump 139
+#define PROF_x_other 140
+#define PROF_x_refetch 141
+#define PROF_x_taken 142
 
 #endif

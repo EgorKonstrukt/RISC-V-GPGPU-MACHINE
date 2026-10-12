@@ -54,16 +54,17 @@ uint fast_run_l1(L1P uint room) {
     if (to_poll == 0) {
         to_poll = 256;
     }
-    uint budget = UART_INPUT_WAITING ? min(room, to_poll - 1) : room;
+    fast_budget = UART_INPUT_WAITING ? min(room, to_poll - 1) : room;
     uint n = 0;
     [branch]
-    if (budget > 0) {
+    if (fast_budget > 0) {
         [loop]
         while (true) {
             // After an instruction that stayed within its texel (three in four of straight-line code)
             // the window already holds this one: no translation, alignment or window check.
             [branch]
             if (!fast_same) {
+            PROF(PROF_x_refetch)
             // Same page as the last fetch is the common case and costs one compare; anything else goes
             // through the TLBs and becomes the new "last page".
 #ifdef NO_PAGING
@@ -107,15 +108,17 @@ uint fast_run_l1(L1P uint room) {
                 fw_tex1 = RAM_TEX(RAM_ADDR(f_t + 1));
             }
             }
-            pre_word = idx_uint4(fw_tex0, (cpu.pc >> 2) & 0x3);
-            if (!fast_exec(pre_word)) {
+            uint word = idx_uint4(fw_tex0, (cpu.pc >> 2) & 0x3);
+            if (!fast_exec(word)) {
+                pre_word = word;
                 pre_valid = true;
                 break;
             }
             PROF(PROF_tick)
             PROF(PROF_fast_step)
             n++;
-            if (n >= budget || cpu.stall) {
+            // (a store that stalled has made the budget none: types.h)
+            if (n >= fast_budget) {
                 break;
             }
         }

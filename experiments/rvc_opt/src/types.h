@@ -484,6 +484,10 @@ uint sign_extend(uint x, uint b) {
 static uint mem_cache_bloom = 0;
 // one bit per 4 MB of RAM this tick wrote to, for a commit that skips the rest (COMMIT_BANDS)
 static uint mem_dirty = 0;
+// How many instructions the fast run in progress may be (cpu.h). A store the write cache has
+// no room for makes it none, which is how the run ends there: its loop looks at this and at
+// nothing else.
+static uint fast_budget = 0;
 #if CORES > 1
 // a worker core's word (41,0).a: 1 while it runs, else what parked it (mc.h)
 static uint mc_word = 0;

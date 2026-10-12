@@ -43,8 +43,7 @@ FormatI parse_FormatI(uint word) {
     FormatI ret;
     ret.rd = (word >> 7) & 0x1f;
     ret.rs1 = (word >> 15) & 0x1f;
-    ret.imm = (word & 0x80000000 ? 0xfffff800 : 0) |
-        ((word >> 20) & 0x000007ff);
+    ret.imm = asuint(asint(word) >> 20);   // (the sign comes with the shift)
     return ret;
 }
 

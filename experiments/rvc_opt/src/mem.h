@@ -435,6 +435,7 @@ void mem_set_ram_l1(L1P uint word_addr, uint bits, uint mask, bool slow) {
         cpu.cache.ram_l1_last_addr = word_addr;
         cpu.cache.ram_l1_last_val = val;
         cpu.stall = STALL_MEM_CACHE_L1;
+        fast_budget = 0;
     }
     }
     }
