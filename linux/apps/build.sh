@@ -42,6 +42,7 @@ chmod +x "$OUT/bin/nxopen-archive" "$OUT/bin/nxopen-run"
 tr -d '\r' < "$HERE/nxgame" > "$OUT/bin/nxgame"
 chmod +x "$OUT/bin/nxgame"
 printf '%s\n' "Games/Network/Quake: host a game=nxgame quake host" "Games/Network/Quake: join a game=nxgame quake join" \
+    "Games/Network/Quake III: host a game=nxgame quake3 host" "Games/Network/Quake III: join a game=nxgame quake3 join" \
     "Games/Network/Doom: network game=nxgame doom host" > "$OUT/share/nxapps.75-network"
 # the browser's pages: its home lists the sites of web/sites.txt (the VRChat world can ask for
 # no others, so its builder reads the same file)

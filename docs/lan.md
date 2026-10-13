@@ -222,7 +222,15 @@ pass defines `GPU_NET`).
   Computer 1 [quake]`), whether or not it shares its Home. "Quake: host a game" (`nxgame
   quake host`) is `quake -listen 4 +map e1m1`, said to be hosted forty seconds after it
   starts (a join before the level is up finds no game); "Quake: join a game" connects to
-  the first computer that says `[quake]`, or says that nobody hosts. "Doom: network game"
+  the first computer that says `[quake]`, or says that nobody hosts. "Quake III: host a
+  game" and "Quake III: join a game" (`nxgame quake3 host`, `join`) are the same with
+  `[quake3]`: the host is `quake3 +map q3dm17` for four, said to be hosted a minute after it
+  starts, with a client on the LAN kept to 3,000 bytes a second as any other
+  (`sv_lanForceRate 0`, `sv_maxRate`), and the join asks for that rate, ten snapshots and
+  fifteen packets a second. Between two `rvc_cpu` machines (`--net 47300 --net-id 1` and
+  `2`, `nxnet --serve` started by hand on the host, 14 October 2026): the join found
+  `10.0.0.1 Computer 1 [quake3]`, the host printed `Client 0 connecting` and `UnnamedPlayer
+  connected`, and both said the player entered the game. Not in the world, and not played. "Doom: network game"
   (`nxgame doom host`) is started on every computer that plays and Start pressed on each:
   the players are the computers that say `[doom]`, numbered in their addresses' order, and
   each runs `doom -net N` with the others' addresses. `nxgame doom now` asks nothing and
