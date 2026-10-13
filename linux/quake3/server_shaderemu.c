@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "server/server.h"
+#include "botlib/be_aas.h"
 #include "mcw.h"
 #include "se_q3.h"
 
@@ -32,6 +33,7 @@ enum { KEPT_PRINT, KEPT_COMMAND, KEPT_CVAR, KEPT_CVAR_FORCED, KEPT_RELIABLE };
 #define BOX_BYTES	0x10000		/* of packets waiting for the server's frame, and of those it sent */
 #define MOST_MSEC	200		/* of the game's time a frame of the server's catches up, at most */
 #define STACK_BYTES	0x80000		/* the server's frame is deeper than a worker's own stack */
+#define WARM_BYTES	0x100000	/* of the server's zone made ready for the routes (they were 400 KB) */
 
 unsigned	se_main_stack;		/* where the first core's stack is (q_shared.h, SE_OnWorker) */
 unsigned	se_server_jobs, se_server_cycles, se_server_passes;	/* for the q3stat: lines */
@@ -50,6 +52,14 @@ static struct {
 static char	job_stack[STACK_BYTES] __attribute__ ((aligned (16)));
 se_abort_t	se_worker_abort[2];
 static int	mode = MODE_UNSET, out, pending, workers = -1;
+static int	pace_frame, routes_late, warming;	/* QUAKE3_SERVER=frame, QUAKE3_ROUTES=late; the job out is the routes' */
+static struct { int bytes, items, unused[2]; } warmed __attribute__ ((aligned (16)));	/* the worker's */
+int BotWarmLevelItemRoutes (int travelflags, int *items);	/* be_ai_goal.c (quake3.patch) */
+/* QUAKE3_SERVER_LOG=1: a q3srv: line for every job. The worker's part of it, and this core's */
+static struct { unsigned began, ended, frames, bots, game, tell, moves, packets; } job_log __attribute__ ((aligned (16)));
+static unsigned	log_on, log_posted, log_msec, log_jobs;
+unsigned SE_WindowClock (void);
+extern unsigned se_server_parts[3], se_server_frames;	/* sv_main.c (quake3.patch) */
 
 /* fn(arg) on another stack */
 void CL_AddReliableCommand (const char *cmd, qboolean isDisconnectCmd);
@@ -77,7 +87,12 @@ static void setup (void)
 	if (mode != MODE_UNSET)
 		return;
 	how = getenv ("QUAKE3_SERVER");	/* (asked once: this is called every frame) */
+	log_on = getenv ("QUAKE3_SERVER_LOG") != NULL;
 	mode = MODE_INLINE;
+	pace_frame = how && !strcmp (how, "frame");
+	routes_late = getenv ("QUAKE3_ROUTES") && !strcmp (getenv ("QUAKE3_ROUTES"), "late");
+	if (getenv ("QUAKE3_TRACES") && !strcmp (getenv ("QUAKE3_TRACES"), "all"))
+		se_trace_keep = 0;
 	if (!(how && !strcmp (how, "inline")) && SE_Workers () > 0) {
 		mode = MODE_WORKER;
 		/* (the stack's top is there before the worker steps on it) */
@@ -197,9 +212,12 @@ static void box_read (box_t *box)
 {
 	unsigned	at;
 
+	job_log.packets = 0;
 	for (at = 0; at < box->used; ) {
 		packet_t	*p = (packet_t *)(box->data + at);
 		msg_t		msg;
+
+		job_log.packets++;
 
 		at += sizeof (packet_t) + (((unsigned)p->length + 15) & ~15u);
 		MSG_Init (&msg, (byte *)(p + 1), p->length);
@@ -217,21 +235,29 @@ static uint32_t job_body (uint32_t msec)
 	if (!setjmp (se_worker_abort[0].at)) {
 		int	left = (int)msec, step = sv_fps->integer > 0 ? 1000 / sv_fps->integer : 100;
 
+		job_log.moves = SE_Cycles ();
 		box_read (&job_in);
+		job_log.moves = SE_Cycles () - job_log.moves;
 		/* (a frame of the game at a time: the bots look where they are before each, not once for several) */
 		do {
+			/* (of several at once the last tells the clients: they would have the others in the same moment) */
+			se_server_quiet = left > step && !pace_frame;
 			SV_Frame (left < step ? left : step);
 			left -= step;
 		} while (left > 0 && com_sv_running->integer);
 	}
+	se_server_quiet = 0;
 	return 0;
 }
 
 static uint32_t server_job (uint32_t msec, uint32_t unused)
 {
-	unsigned	began = SE_Cycles ();
+	unsigned	began = SE_Cycles (), frames = se_server_frames, *p = se_server_parts, p0 = p[0], p1 = p[1], p2 = p[2];
 
+	job_log.began = SE_WindowClock ();
 	se_call_on_stack (job_body, msec, job_stack + STACK_BYTES);
+	job_log.frames = se_server_frames - frames, job_log.bots = p[0] - p0, job_log.game = p[1] - p1, job_log.tell = p[2] - p2;
+	job_log.ended = SE_WindowClock ();
 	return SE_Cycles () - began;
 }
 
@@ -242,8 +268,20 @@ static void finish (void)
 	int		failed;
 
 	out = 0;
+	if (warming) {
+		warming = 0;
+		Com_Printf ("quake3: the bots' routes to %d items made ahead: %d KB, %u thousand instructions of the worker core\n",
+			warmed.items, warmed.bytes / 1024, (unsigned)mcw_result (1) / 1000);
+		if (SE_WorkerKept (0))
+			SE_WorkerRaise (0);
+		return;
+	}
 	se_server_cycles += mcw_result (1);
 	se_server_jobs++;
+	if (log_on)
+		printf ("q3srv: job %u: posted %u began %u ended %u taken %u ms; %d ms of the game in %u frames, %u instructions: the bots %u, the game %u, telling %u, the moves %u in %u\n",
+			++log_jobs, log_posted, job_log.began, job_log.ended, SE_WindowClock (), log_msec, job_log.frames, (unsigned)mcw_result (1),
+			job_log.bots, job_log.game, job_log.tell, job_log.moves, job_log.packets);
 	failed = SE_WorkerKept (0);
 	for (at = 0; at < outbox.used; ) {
 		packet_t *p = (packet_t *)(outbox.data + at);
@@ -265,14 +303,6 @@ void SE_ServerSettle (void)
 	finish ();
 }
 
-/* Called a few times in a frame of the client's: a worker stopped at a page nobody has touched is helped on. */
-void SE_ServerPoll (void)
-{
-	if (out)
-		mcw_done (1);
-	SE_ClientPoll ();
-}
-
 /* Whether the server's next frame is this core's: a level loading, somebody joining or leaving. */
 static int slow (void)
 {
@@ -286,11 +316,88 @@ static int slow (void)
 	return 0;
 }
 
-/* In place of SV_Frame(): so much time has passed. */
-void SE_ServerFrame (int msec)
+/* The server's next frame is given to the worker, if one is due and the worker's to make. */
+static void give (void)
 {
 	int	frame_msec;
 
+	if (slow () || (sv_paused->integer && cl_paused->integer))
+		return;
+	/* the infostrings, if a variable of them has changed: this core sets those flags too */
+	if (cvar_modifiedFlags & CVAR_SERVERINFO) {
+		SV_SetConfigstring (CS_SERVERINFO, Cvar_InfoString (CVAR_SERVERINFO));
+		cvar_modifiedFlags &= ~CVAR_SERVERINFO;
+	}
+	if (cvar_modifiedFlags & CVAR_SYSTEMINFO) {
+		SV_SetConfigstring (CS_SYSTEMINFO, Cvar_InfoString_Big (CVAR_SYSTEMINFO));
+		cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
+	}
+	/* not before a frame of the game is due: a job that only reads the client's moves is a core woken for little */
+	frame_msec = sv_fps->integer > 0 ? (int)(1000 / sv_fps->integer * com_timescale->value) : 100;
+	if (sv.timeResidual + pending < frame_msec && inbox.used < BOX_BYTES / 2)
+		return;
+	memcpy (job_in.data, inbox.data, inbox.used);
+	job_in.used = inbox.used;
+	inbox.used = 0;
+	mcw_post (1, server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
+	log_posted = SE_WindowClock (), log_msec = pending;
+	pending = 0;
+	out = 1;
+}
+
+/*
+ * Called a few times in a frame of the client's and in every pass it waits: a worker stopped
+ * at a page nobody has touched is helped on, and a frame of the server's that kept nothing
+ * for this core is taken where it is found ended and the next given out.
+ */
+void SE_ServerPoll (void)
+{
+	if (out && mcw_done (1) && !warming && !pace_frame && !works[0].used && !works[0].lost && !works[0].failed) {
+		finish ();
+		if (com_sv_running->integer && !sv_killserver->integer)
+			give ();
+	}
+	SE_ClientPoll ();
+}
+
+static uint32_t warm_body (uint32_t unused)
+{
+	/* (a bot that has the rocket launcher asks for the routes a rocket jump opens: another set) */
+	if (!setjmp (se_worker_abort[0].at))
+		warmed.bytes = BotWarmLevelItemRoutes (TFL_DEFAULT, &warmed.items) + BotWarmLevelItemRoutes (TFL_DEFAULT | TFL_ROCKETJUMP, &warmed.items);
+	return 0;
+}
+
+static uint32_t warm_job (uint32_t a, uint32_t b)
+{
+	unsigned	began = SE_Cycles ();
+
+	se_call_on_stack (warm_body, 0, job_stack + STACK_BYTES);
+	return SE_Cycles () - began;
+}
+
+/* The client is about to load the level and asks nothing of the server until it has: the bots' routes are made meanwhile. */
+void SE_ServerWarm (void)
+{
+	int	i;
+
+	setup ();
+	if (mode != MODE_WORKER || routes_late || out || !com_sv_running->integer || sv.state != SS_GAME)
+		return;
+	/* (only when a bot is there to ask for them: one added later makes its own, in its first frames) */
+	for (i = 0; i < sv_maxclients->integer; i++)
+		if (svs.clients[i].state != CS_FREE && svs.clients[i].netchan.remoteAddress.type == NA_BOT)
+			break;
+	if (i == sv_maxclients->integer)
+		return;
+	SE_ServerZoneTouch (mcw_touch, WARM_BYTES);
+	mcw_post (1, warm_job, 0, 0);
+	out = warming = 1;
+}
+
+/* In place of SV_Frame(): so much time has passed. */
+void SE_ServerFrame (int msec)
+{
 	setup ();
 	if (!com_sv_running->integer || sv_killserver->integer) {
 		SE_ServerSettle ();
@@ -330,23 +437,5 @@ void SE_ServerFrame (int msec)
 		pending = 0;
 		return;
 	}
-	/* the infostrings, if a variable of them has changed: this core sets those flags too */
-	if (cvar_modifiedFlags & CVAR_SERVERINFO) {
-		SV_SetConfigstring (CS_SERVERINFO, Cvar_InfoString (CVAR_SERVERINFO));
-		cvar_modifiedFlags &= ~CVAR_SERVERINFO;
-	}
-	if (cvar_modifiedFlags & CVAR_SYSTEMINFO) {
-		SV_SetConfigstring (CS_SYSTEMINFO, Cvar_InfoString_Big (CVAR_SYSTEMINFO));
-		cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
-	}
-	/* not before a frame of the game is due: a job that only reads the client's moves is a core woken for little */
-	frame_msec = sv_fps->integer > 0 ? (int)(1000 / sv_fps->integer * com_timescale->value) : 100;
-	if (sv.timeResidual + pending < frame_msec && inbox.used < BOX_BYTES / 2)
-		return;
-	memcpy (job_in.data, inbox.data, inbox.used);
-	job_in.used = inbox.used;
-	inbox.used = 0;
-	mcw_post (1, server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
-	pending = 0;
-	out = 1;
+	give ();
 }

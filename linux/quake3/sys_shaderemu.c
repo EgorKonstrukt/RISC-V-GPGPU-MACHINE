@@ -122,11 +122,13 @@ void SE_FrameDone (void)
 	}
 	{
 		extern unsigned se_server_parts[3], se_server_frames;	/* sv_main.c (quake3.patch) */
-		unsigned *p = se_server_parts, f = se_server_frames ? se_server_frames : 1;
+		static unsigned	was[4];		/* (the counts are the server's core's to write: read here, never cleared) */
+		unsigned	now[4] = {se_server_parts[0], se_server_parts[1], se_server_parts[2], se_server_frames};
+		unsigned	made = now[3] - was[3], f = made ? made : 1;
 
 		printf ("q3stat: the server made %u frames of the game, in thousands each: the bots %u, the game %u, telling the clients %u\n",
-			se_server_frames, p[0] / f / 1000, p[1] / f / 1000, p[2] / f / 1000);
-		p[0] = p[1] = p[2] = se_server_frames = 0;
+			made, (now[0] - was[0]) / f / 1000, (now[1] - was[1]) / f / 1000, (now[2] - was[2]) / f / 1000);
+		memcpy (was, now, sizeof was);
 	}
 #ifdef SE_PARTS
 	{

@@ -336,6 +336,17 @@ most: 0.59 of the clock's rate here, 0.49 with the server on the first core). A 
 machine takes 6.5 ms while Quake runs, against 5 for integer code: floats, loads and stores. A pass of the machine with a busy
 worker costs about 5% more than without, which those figures include.
 
+Measured again on 13 October 2026 (the same card, one run each of 15 to 20 s standing where
+the level starts, the build of the day before and that day's, both on that day's machine):
+on e1m5 the server makes 15.9 and 16.8 frames a second (224 and 217 thousand instructions
+each; a frame is 58 ms, 28 passes, the 90th of a hundred 32 and the longest 39; a pass of it
+runs 8,045 instructions of 8,192) while the client draws 50.6 and 94.2; on e1m1 49.3 and 54.2
+(62 and 60 thousand; 16 ms, 8 passes, the longest 18) to the client's 87.9 and 93.7. Above
+ten a second the game's time is the clock's, and a frame is shorter than a monster's tenth of
+a second, so fewer think in it. The twelve other workers took nothing from the server's: with
+`QUAKE_WORKERS=1` it makes 16.0 on e1m5. Its worker is what limits it: 3.6 million
+instructions a second of the 4.1 a core has at 2.0 ms a pass.
+
     QUAKE_SERVER=inline   the server on the first core
     QUAKE_SERVER=late     on the first core, its messages sent at the end of the client's frame
     QUAKE_SERVER=wait     on a worker, the client's frame waiting for it at its end

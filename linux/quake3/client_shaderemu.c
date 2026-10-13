@@ -135,6 +135,7 @@ static void wait (unsigned frames)
 			break;	/* (no worker core: this one made them, there and then) */
 		mcw_rest ();
 		se_client_passes++;
+		SE_ServerPoll ();	/* (the server's frame is not kept waiting for this core's) */
 		/* (on rvc_cpu a worker that goes to sleep in the pass the job is posted in does not see it: posted again, it wakes) */
 		if (made.jobs == job_seen && ++job_passes >= 8) {
 			job_passes = 0;

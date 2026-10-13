@@ -121,6 +121,11 @@ build with two bots: 13 to 16.5 frames a second, passes 99.9% used, the worker's
     QUAKE3_HOLD=N         keep frame N on the screen and stop there ("quake3: holding frame N")
     hold                  the console command: the frame after next stays
     QUAKE3_SERVER=inline  the server on the first core
+    QUAKE3_SERVER=frame   on its worker, taken and given out only where the first core's frame calls it,
+                          and every frame of the game told to the clients (as until 13 October 2026)
+    QUAKE3_ROUTES=late    the bots' routes made when a bot first asks, not while the level loads
+    QUAKE3_TRACES=all     the server asks the level every trace again
+    QUAKE3_SERVER_LOG=1   a q3srv: line for every job of the server's worker ("The server's pace")
     QUAKE3_CLIENT=inline  the client's game on the first core, drawn as it is made
     QUAKE3_SUM=1          a sum over what each frame of the client's game asked to have drawn, with its time
     QUAKE3_SIZE=WxH       the window (640x480)
@@ -222,9 +227,10 @@ The first core's passes are 99.9% used and it rests in a third of them, the work
 frame being the longer of the two there; a full write cache ended 5 and 7 passes of 3,300
 where it ended 96 and 111 of 6,200.
 
-With the bot the server's worker has a frame of the game of one to two million instructions
-now and then (the bot's part, as before): the level stands still for a second or more, and
-the client's frames of that time are longer (a moved player's moves are made again).
+With the bot the server's worker had a frame of the game of one to nine million instructions
+now and then (the bot's part, as before): the level stood still for a second or more, and
+the client's frames of that time were longer (a moved player's moves are made again). What
+it was, and the server's pace since: "The server's pace" below.
 
 On `rvc_cpu` a worker sees a store at once, and a worker that goes to sleep in the pass a job
 is posted in has not seen it and sleeps on (the shader machine's sleeps on the job word of
@@ -256,6 +262,95 @@ still waits 2.3 passes a frame on the card: not looked into. Not tried: the pict
 half the first core's stores a pass, and the commands are all stores), the server's
 snapshot handed over without the packet, the bot's part on a worker of its own.
 
+## The server's pace
+
+What moves in the level moves at the server's pace: the bot, the items, a hit, a door. The
+game wants ten frames of it a second (`sv_fps`), and a job of the worker's makes up to 200 ms
+of them, so a job that takes longer loses the rest and the game goes slower than the clock.
+`QUAKE3_SERVER_LOG=1` prints a `q3srv:` line a job: when it was posted, begun, ended and
+taken (the machine's clock), the game's time it was given, its frames and instructions, and
+the parts' (the bots, the game, telling the clients, the client's moves and how many).
+
+On the shader machine (an RTX 5090, D3D11, through the card queue, a pass 2.1 to 2.2 ms), the
+bot's scene of above, frames 200 to 1,000, on 13 October 2026. "Before" is the build of 12
+October and "that morning" this day's commit, one run each; the others four runs each, in turn:
+
+| | Frames a second | Jobs a second | Frames of the game a second | The game's time, of the clock's | A job, posted to taken: median, 90th, longest |
+|---|---|---|---|---|---|
+| before | 22.9 | 7.4 | 8.4 | | |
+| that morning | 46.3 | 7.5 | 8.7 | | |
+| the same by this build's switches | 40.1 to 44.0 | 5.7 to 7.2 | 8.8 to 9.1 | 88 to 91% | 100 to 152 ms, 180 to 217, 2,300 to 2,530 |
+| that, `QUAKE3_CLIENT=inline` (one run) | 31.1 | 7.8 | 9.0 | 90% | 98, 160, 2,077 |
+| now | 43.3 to 46.9 | 9.8 to 9.9 | 10.0 to 10.1 | 100% | 70 to 74 ms, 92 to 118, 243 to 274 |
+
+The level alone was at ten a second before and is (a job 171 thousand instructions, 130 now).
+The worker runs 3.3 to 3.7 million instructions a second inside its jobs, 92 to 95% of its
+passes: it is not held by its 1.5 KB of stores a pass, it has no more instructions. On
+`rvc_cpu` at 3 million a second: 8.2 to 8.7 frames of the game a second and 82% of the clock
+with the switches, 10.0 and 100% without; the longest job 3,234 ms and 322.
+
+What held it, and what was done (`server_shaderemu.c`, `quake3.patch`):
+
+- **The long frame was the bots' routes.** A bot that chooses an item asks the way to every
+  item of the level at once, and the way to a place is worked out for the whole level the
+  first time anybody asks (`AAS_UpdateAreaRoutingCache`: 280 to 450 thousand instructions a
+  place of q3dm17's 570 areas, 21 places for 29 items). That was 9 million instructions in
+  one frame of the bots': 2.1 to 2.5 s in which nothing of the level moved (3.2 s at 3
+  million a second), once when the bot came and once more when it first had the rocket
+  launcher and the health for a rocket jump, which is another set of ways. Both sets are now
+  made by the server's worker while the client loads the level (`SE_ServerWarm`, from
+  `CL_InitCGame`: 17 million instructions, 69 KB), when a bot is there by then, as it is from
+  the menu and from `+addbot` on the command line. The time to the 100th frame is the same
+  (26.7 to 27.0 s against 26.6 to 28.4): the first set was made in those frames before.
+- **A frame is taken and the next given out where the first core finds it ended**, in every
+  pass it waits for the client's worker and at a frame's parts (`SE_ServerPoll`), not once a
+  frame of the client's: 15 ms a job to 4 or 5. Not when the frame kept a line, a command or
+  an error for the first core: that waits for the frame's own call, as before.
+- **Of several frames of the game in one job only the last tells the clients**
+  (`se_server_quiet`): they got the others in the same moment, and telling is 70 thousand
+  instructions of a frame's 200. It is what a client that asks for fewer snapshots gets.
+- **The level's answer to a trace straight down is kept** (`SV_Trace`, 16 of them, by the
+  trace's own numbers): a player who stands asks the same two with every move, 4,450
+  instructions each, and the client sends a move every frame of its own. A move of a
+  standing player was 16 to 18 thousand instructions of the server's, 6.2 to 7.6 of them a
+  job since the client's frames doubled where `QUAKE3_CLIENT=inline` has 3.7: it is 11.2
+  thousand now. A player who moves gains nothing by it.
+
+So the client's worker did slow the server, by the moves: twice the frames are twice the
+moves, 100 to 121 thousand instructions a job against 65. Nothing else the two workers share
+was found to cost: a pass is as long with the client's worker (2.11 to 2.14 ms against 2.11).
+The server's worker's page stops and system calls were not counted; its passes being 92 to
+95% used leaves little for them.
+
+A key's way to the screen, counted from the code and the times above and not measured: a turn
+or a step is the client's own and is on the screen two of its frames after the key (the frame
+that reads it asks the worker for the next, which is drawn a frame later), 43 ms at 46 frames
+a second, where it was one frame of 44 ms. What the server answers (a hit, an item taken)
+waits for the job in flight, then a job of its own and the frame that shows it: about 100
+to 190 ms now, 160 to 350 that morning.
+
+**Checking it.** `QUAKE3_SUM=1 QUAKE3_SERVER=inline ... +set fixedtime 33` as above, on
+`rvc_cpu`: the sums are this day's commit's (574 of 574), with `QUAKE3_TRACES=all` and
+without (574 of 574), on the client's worker and not (573 of 573). The server on its worker
+has no such sum: which frame a move lands in is the machine's speed.
+
+Not done, with what was measured for it:
+
+- **A player who moves.** A move is then the game's whole step, several traces of the level
+  at 4 to 5 thousand instructions each: not measured here, by that count 30 thousand or more
+  a move, and at 45 moves a second about a third of the server's core. With it the server is
+  short of its ten frames again. `pmove_fixed 1` with `pmove_msec 33` is the game's own way
+  to at most 30 steps a second on both sides; the player's own motion then goes in steps of
+  33 ms under frames of 22. Not tried.
+- **A route to a place nobody went to before** is still 280 to 450 thousand instructions in
+  the frame that asks, a job of twice the length: a bot that follows a player asks for one
+  for each area the player comes to. All of them made ahead are 1,140 routes, 320 million
+  instructions and 1.4 MB: for `bake.py`, as the file the library reads (`AAS_ReadRouteCache`).
+- **A bot added by hand later** (`addbot` at the console) asks for its routes itself, as before.
+- Two bots; telling the clients (70 thousand a frame: every entity's 208 bytes copied and
+  compared for each client); the bots' part (85 thousand a frame of the game).
+- Nothing of this was played by hand: the figures are of a player who stands.
+
 ## Checking it
 
 Hold a frame under `rvc_harness --cpu` with `--save-state` and `--gpu-capture`, then
@@ -272,8 +367,8 @@ texture, the capture being a frame older than the list; `hold` now waits for the
   (`docs/input.md`).
 - A second character, the other three levels of the demo, the menu's setup pages.
 - Marks and dynamic lights; the server's frame for two bots.
-- The bot's long frames (one to two million instructions of the server's worker now and
-  then): the level stands still meanwhile. The client's game on its worker was not played by
-  hand or in the world, and its sounds were not heard.
+- The server's frame with a player who moves, a second bot, and a bot's route to a place
+  nobody went to before ("The server's pace"). The client's game on its worker was not
+  played by hand or in the world, and its sounds were not heard.
 - The menu's picture was not captured (the card was in use): it was driven by `nxkey` on
   `rvc_cpu`, 93 thousand instructions a frame, and a game started from it.

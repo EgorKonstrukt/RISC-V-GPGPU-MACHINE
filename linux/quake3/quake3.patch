@@ -61,6 +61,42 @@ index fea46411..23d6cfb3 100644
  	{
  		AAS_Error("aas file %s is out of date\n", filename);
  		botimport.FS_FCloseFile(fp);
+diff --git a/code/botlib/be_aas_route.c b/code/botlib/be_aas_route.c
+index 7bdc9f22..0620b027 100644
+--- a/code/botlib/be_aas_route.c
++++ b/code/botlib/be_aas_route.c
+@@ -1782,6 +1782,31 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
+ 	}
+ 	return 0;
+ } //end of the function AAS_AreaTravelTimeToGoalArea
++#ifdef SHADEREMU
++/* The routes to these areas from an area of every cluster, made now (docs/quake3.md, "The server's pace"); the bytes they took. */
++int AAS_WarmRoutes(const int *goalareas, int count, int travelflags)
++{
++	int first[256], cluster, area, i, clusters, before = routingcachesize;
++
++	if (!aasworld.initialized) return 0;
++	clusters = aasworld.numclusters < 256 ? aasworld.numclusters : 256;
++	Com_Memset(first, 0, sizeof(first));
++	for (area = 1; area < aasworld.numareas; area++)
++	{
++		cluster = aasworld.areasettings[area].cluster;
++		if (cluster > 0 && cluster < clusters && !first[cluster] && AAS_AreaReachability(area)) first[cluster] = area;
++	} //end for
++	for (i = 0; i < count; i++)
++	{
++		for (cluster = 1; cluster < clusters; cluster++)
++		{
++			if (first[cluster] && first[cluster] != goalareas[i])
++				AAS_AreaTravelTimeToGoalArea(first[cluster], aasworld.areas[first[cluster]].center, goalareas[i], travelflags);
++		} //end for
++	} //end for
++	return routingcachesize - before;
++} //end of the function AAS_WarmRoutes
++#endif
+ //===========================================================================
+ //
+ // Parameter:			-
 diff --git a/code/botlib/be_ai_chat.c b/code/botlib/be_ai_chat.c
 index 591ca378..636a96c6 100644
 --- a/code/botlib/be_ai_chat.c
@@ -82,6 +118,33 @@ index 591ca378..636a96c6 100644
  
  	InitConsoleMessageHeap();
  
+diff --git a/code/botlib/be_ai_goal.c b/code/botlib/be_ai_goal.c
+index 82885bd4..eec7a377 100644
+--- a/code/botlib/be_ai_goal.c
++++ b/code/botlib/be_ai_goal.c
+@@ -537,6 +537,22 @@ void BotInitInfoEntities(void)
+ // Returns:				-
+ // Changes Globals:		-
+ //===========================================================================
++#ifdef SHADEREMU
++int AAS_WarmRoutes(const int *goalareas, int count, int travelflags);
++/* The routes to every item of the level: a bot's first choice of one asks for them all at once. */
++int BotWarmLevelItemRoutes(int travelflags, int *items)
++{
++	int areas[256], count = 0;
++	levelitem_t *li;
++
++	for (li = levelitems; li && count < 256; li = li->next)
++	{
++		if (li->goalareanum > 0) areas[count++] = li->goalareanum;
++	} //end for
++	*items = count;
++	return AAS_WarmRoutes(areas, count, travelflags);
++} //end of the function BotWarmLevelItemRoutes
++#endif
+ void BotInitLevelItems(void)
+ {
+ 	int i, spawnflags, value;
 diff --git a/code/botlib/be_interface.c b/code/botlib/be_interface.c
 index ffff7628..07716260 100644
 --- a/code/botlib/be_interface.c
@@ -1211,7 +1274,7 @@ index e4cead4b..0f6e3e73 100644
  	// map torso animations to weapon animations
  	if ( cg_gun_frame.integer ) {
 diff --git a/code/client/cl_cgame.c b/code/client/cl_cgame.c
-index bfa0bea2..a645be9a 100644
+index bfa0bea2..949f1517 100644
 --- a/code/client/cl_cgame.c
 +++ b/code/client/cl_cgame.c
 @@ -79,6 +79,13 @@ qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
@@ -1331,18 +1394,19 @@ index bfa0bea2..a645be9a 100644
  	VM_Call( cgvm, CG_SHUTDOWN );
  	VM_Free( cgvm );
  	cgvm = NULL;
-@@ -714,6 +785,10 @@ void CL_InitCGame( void ) {
+@@ -714,6 +785,11 @@ void CL_InitCGame( void ) {
  	int					t1, t2;
  	vmInterpret_t		interpret;
  
 +#ifdef SHADEREMU
++	SE_ServerWarm();
 +	SE_ClientReset();
 +	SE_HeldForget();
 +#endif
  	t1 = Sys_Milliseconds();
  
  	// put away the console
-@@ -793,7 +868,11 @@ CL_CGameRendering
+@@ -793,7 +869,11 @@ CL_CGameRendering
  =====================
  */
  void CL_CGameRendering( stereoFrame_t stereo ) {
@@ -2175,7 +2239,7 @@ index ed94517f..65b4f696 100644
  			}
  			return;
 diff --git a/code/qcommon/common.c b/code/qcommon/common.c
-index d97312c4..ae5910ce 100644
+index d97312c4..8dd8a3c8 100644
 --- a/code/qcommon/common.c
 +++ b/code/qcommon/common.c
 @@ -37,12 +37,22 @@ int demo_protocols[] =
@@ -2381,7 +2445,7 @@ index d97312c4..ae5910ce 100644
  /*
  ==============================================================================
  
-@@ -1454,6 +1575,13 @@ void Com_InitZoneMemory( void ) {
+@@ -1454,9 +1575,24 @@ void Com_InitZoneMemory( void ) {
  		Com_Error( ERR_FATAL, "Zone data failed to allocate %i megs", s_zoneTotal / (1024*1024) );
  	}
  	Z_ClearZone( mainzone, s_zoneTotal );
@@ -2395,7 +2459,18 @@ index d97312c4..ae5910ce 100644
  
  }
  
-@@ -2171,6 +2299,10 @@ void Com_RunAndTimeServerPacket( netadr_t *evFrom, msg_t *buf ) {
++#ifdef SHADEREMU
++void SE_ServerZoneTouch( void (*touch)( void *, unsigned ), unsigned bytes ) {
++	byte	*at = (byte *)serverzone->rover, *end = (byte *)serverzone + SERVER_ZONE_BYTES;
++
++	touch( at, at + bytes > end ? (unsigned)( end - at ) : bytes );
++}
++#endif
++
+ /*
+ =================
+ Hunk_Log
+@@ -2171,6 +2307,10 @@ void Com_RunAndTimeServerPacket( netadr_t *evFrom, msg_t *buf ) {
  		t1 = Sys_Milliseconds ();
  	}
  
@@ -2406,7 +2481,7 @@ index d97312c4..ae5910ce 100644
  	SV_PacketEvent( *evFrom, buf );
  
  	if ( com_speeds->integer ) {
-@@ -2203,8 +2335,13 @@ int Com_EventLoop( void ) {
+@@ -2203,8 +2343,13 @@ int Com_EventLoop( void ) {
  		// if no more events are available
  		if ( ev.evType == SE_NONE ) {
  			// manually send packet events for the loopback channel
@@ -2422,7 +2497,7 @@ index d97312c4..ae5910ce 100644
  			}
  
  			while ( NET_GetLoopPacket( NS_SERVER, &evFrom, &buf ) ) {
-@@ -3146,7 +3283,11 @@ void Com_Frame( void ) {
+@@ -3146,7 +3291,11 @@ void Com_Frame( void ) {
  
  	do
  	{
@@ -2434,7 +2509,7 @@ index d97312c4..ae5910ce 100644
  		{
  			timeValSV = SV_SendQueuedPackets();
  			
-@@ -3189,7 +3330,15 @@ void Com_Frame( void ) {
+@@ -3189,7 +3338,15 @@ void Com_Frame( void ) {
  		timeBeforeServer = Sys_Milliseconds ();
  	}
  
@@ -2450,7 +2525,7 @@ index d97312c4..ae5910ce 100644
  
  	// if "dedicated" has been modified, start up
  	// or shut down the client system.
-@@ -3227,7 +3376,13 @@ void Com_Frame( void ) {
+@@ -3227,7 +3384,13 @@ void Com_Frame( void ) {
  		timeBeforeClient = Sys_Milliseconds ();
  	}
  
@@ -2892,10 +2967,10 @@ index 1877a42c..1407690b 100644
    #define HOMEPATH_NAME_UNIX_LEGACY	".foo"
    #define HOMEPATH_NAME				"FooBar"
 diff --git a/code/qcommon/qcommon.h b/code/qcommon/qcommon.h
-index 1d9b61a9..e5b86879 100644
+index 1d9b61a9..79c9908b 100644
 --- a/code/qcommon/qcommon.h
 +++ b/code/qcommon/qcommon.h
-@@ -1229,4 +1229,28 @@ extern huffman_t clientHuffTables;
+@@ -1229,4 +1229,33 @@ extern huffman_t clientHuffTables;
  #define DLF_NO_UDP 4
  #define DLF_NO_DISCONNECT 8
  
@@ -2904,6 +2979,11 @@ index 1d9b61a9..e5b86879 100644
 +void SE_ServerFrame( int msec );			/* in place of SV_Frame */
 +void SE_ServerSettle( void );				/* before this core reads or changes the server's data */
 +void SE_ServerPoll( void );					/* a worker stopped at a page nobody has touched is helped on */
++void SE_ServerWarm( void );					/* the client is about to load a level: the server's worker has that long for itself */
++void SE_ServerZoneTouch( void (*touch)( void *, unsigned ), unsigned bytes );	/* the server's zone where it next allocates */
++void SE_TracesForget( void );
++extern int se_trace_keep;					/* 0: the server asks the level every trace again (QUAKE3_TRACES=all) */
++extern int se_server_quiet;					/* this frame of the server's tells the clients nothing: another follows at once */
 +int SE_ServerInbox( netadr_t from, msg_t *msg );	/* a packet for the server: 1 when kept for its next frame */
 +void SE_ServerOutbox( netadr_t to, int length, const void *data );	/* one the server sends from the worker */
 +void SE_ServerKeepPrint( const char *text );
@@ -3185,16 +3265,17 @@ index 063b87c7..4e36420d 100644
  	Com_Printf( "----- Server Shutdown (%s) -----\n", finalmsg );
  
 diff --git a/code/server/sv_main.c b/code/server/sv_main.c
-index 88435bff..2d412e9f 100644
+index 88435bff..23817a94 100644
 --- a/code/server/sv_main.c
 +++ b/code/server/sv_main.c
-@@ -1052,9 +1052,18 @@ Player movement occurs as a result of packet events, which
+@@ -1052,9 +1052,19 @@ Player movement occurs as a result of packet events, which
  happen before SV_Frame is called
  ==================
  */
 +#ifdef SHADEREMU
 +unsigned SE_Cycles( void );
 +unsigned se_server_frames;
++int se_server_quiet;
 +unsigned se_server_parts[3];	/* instructions of the server's frames: the bots, the game, what the clients are told (the q3stat: lines) */
 +#endif
 +
@@ -3207,7 +3288,7 @@ index 88435bff..2d412e9f 100644
  
  	// the menu kills the server with this cvar
  	if ( sv_killserver->integer ) {
-@@ -1094,7 +1103,13 @@ void SV_Frame( int msec ) {
+@@ -1094,7 +1104,13 @@ void SV_Frame( int msec ) {
  
  	sv.timeResidual += msec;
  
@@ -3221,7 +3302,7 @@ index 88435bff..2d412e9f 100644
  
  	// if time is about to hit the 32nd bit, kick all clients
  	// and clear sv.time, rather
-@@ -1119,10 +1134,19 @@ void SV_Frame( int msec ) {
+@@ -1119,10 +1135,19 @@ void SV_Frame( int msec ) {
  	}
  
  	// update infostrings if anything has been changed
@@ -3241,7 +3322,7 @@ index 88435bff..2d412e9f 100644
  	if ( cvar_modifiedFlags & CVAR_SYSTEMINFO ) {
  		SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
  		cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
-@@ -1139,6 +1163,9 @@ void SV_Frame( int msec ) {
+@@ -1139,6 +1164,9 @@ void SV_Frame( int msec ) {
  
  	if (com_dedicated->integer) SV_BotFrame (sv.time);
  
@@ -3251,7 +3332,7 @@ index 88435bff..2d412e9f 100644
  	// run the game simulation in chunks
  	while ( sv.timeResidual >= frameMsec ) {
  		sv.timeResidual -= frameMsec;
-@@ -1147,6 +1174,9 @@ void SV_Frame( int msec ) {
+@@ -1147,6 +1175,9 @@ void SV_Frame( int msec ) {
  
  		// let everything in the world think and move
  		VM_Call (gvm, GAME_RUN_FRAME, sv.time);
@@ -3261,7 +3342,7 @@ index 88435bff..2d412e9f 100644
  	}
  
  	if ( com_speeds->integer ) {
-@@ -1156,8 +1186,18 @@ void SV_Frame( int msec ) {
+@@ -1156,8 +1187,21 @@ void SV_Frame( int msec ) {
  	// check timeouts
  	SV_CheckTimeouts();
  
@@ -3270,6 +3351,9 @@ index 88435bff..2d412e9f 100644
 +	se_began = SE_Cycles();
 +#endif
  	// send messages back to the clients
++#ifdef SHADEREMU
++	if ( !se_server_quiet )
++#endif
  	SV_SendClientMessages();
 +#ifdef SHADEREMU
 +	se_server_parts[2] += SE_Cycles() - se_began;
@@ -3312,6 +3396,66 @@ index ec760713..60a53199 100644
  
  	// now that all viewpoint's areabits have been OR'd together, invert
  	// all of them to make it a mask vector, which is what the renderer wants
+diff --git a/code/server/sv_world.c b/code/server/sv_world.c
+index 94868142..16476b07 100644
+--- a/code/server/sv_world.c
++++ b/code/server/sv_world.c
+@@ -145,6 +145,9 @@ SV_ClearWorld
+ ===============
+ */
+ void SV_ClearWorld( void ) {
++#ifdef SHADEREMU
++	SE_TracesForget();	/* (another level) */
++#endif
+ 	clipHandle_t	h;
+ 	vec3_t			mins, maxs;
+ 
+@@ -593,6 +596,20 @@ Moves the given mins/maxs volume through the world from start to end.
+ passEntityNum and entities owned by passEntityNum are explicitly not checked.
+ ==================
+ */
++#ifdef SHADEREMU
++/*
++ * The level's own answer to a trace straight up or down that was asked before: a player who
++ * stands asks the same two with every move, and the level does not change. The server's core's.
++ */
++#define SE_KEPT_TRACES	16
++typedef struct { int key[14], used, unused; trace_t trace; } __attribute__ ((aligned (16))) se_kept_trace_t;
++static se_kept_trace_t	se_kept_traces[SE_KEPT_TRACES];
++int						se_trace_keep = 1;
++void SE_TracesForget( void ) {
++	Com_Memset( se_kept_traces, 0, sizeof( se_kept_traces ) );
++}
++#endif
++
+ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask, int capsule ) {
+ 	moveclip_t	clip;
+ 	int			i;
+@@ -607,6 +624,24 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
+ 	Com_Memset ( &clip, 0, sizeof ( moveclip_t ) );
+ 
+ 	// clip to world
++#ifdef SHADEREMU
++	if ( se_trace_keep && start[0] == end[0] && start[1] == end[1] ) {
++		se_kept_trace_t	*kept;
++		int				key[14];
++
++		Com_Memcpy( key, start, 12 ); Com_Memcpy( key + 3, end, 12 ); Com_Memcpy( key + 6, mins, 12 ); Com_Memcpy( key + 9, maxs, 12 );
++		key[12] = contentmask; key[13] = capsule;
++		kept = &se_kept_traces[( (unsigned)( key[0] ^ key[1] * 3 ^ key[2] * 5 ^ key[5] * 7 ) >> 4 ) % SE_KEPT_TRACES];
++		if ( kept->used && !memcmp( kept->key, key, sizeof( key ) ) ) {
++			clip.trace = kept->trace;
++		} else {
++			CM_BoxTrace( &clip.trace, start, end, mins, maxs, 0, contentmask, capsule );
++			Com_Memcpy( kept->key, key, sizeof( key ) );
++			kept->trace = clip.trace;
++			kept->used = 1;
++		}
++	} else
++#endif
+ 	CM_BoxTrace( &clip.trace, start, end, mins, maxs, 0, contentmask, capsule );
+ 	clip.trace.entityNum = clip.trace.fraction != 1.0 ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
+ 	if ( clip.trace.fraction == 0 ) {
 diff --git a/code/sys/sys_loadlib.h b/code/sys/sys_loadlib.h
 index eac0f2c7..f7359699 100644
 --- a/code/sys/sys_loadlib.h
