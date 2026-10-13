@@ -106,8 +106,11 @@ Flags added to the vertex mode:
 | `0x800` float | the draw's numbers are IEEE single-precision floats, not 16.16: its vertices (a compact vertex's x, y and z; its fourth word stays 1/1024ths), its uniforms, and a laid texture's four words. A program built for the machine's float instructions (`docs/fpu.md`) then converts nothing |
 | `0x1000` tagged | a compact vertex's fourth word is u in bits 0-11 and v in bits 12-23 (1/1024ths, so within 4 repeats) and a tag in bits 24-31 |
 | `0x2000` table | with tagged: word 11 is not a colour but the address of a table of them, a word each, and a vertex has the colour its tag names. A model whose vertices carry their normal's number is shaded by a table of the light at each normal, with no vertex written |
-| `0x4000` packed | with tagged: a vertex is one word, x, y and z a byte each (whole numbers 0 to 255, which the matrix scales) and the tag in the top byte; u and v are a word a vertex in a second buffer, whose address is word 12. Quake's models are this in their files |
+| `0x4000` packed | with tagged: a vertex is one word, x, y and z a byte each (whole numbers 0 to 255, which the matrix scales) and the tag in the top byte; u and v are a word a vertex in a second buffer, whose address is word 12. Quake's models are this in their files. Both buffers may be a file's bytes where it lies in the ROM (addresses from `0x40000000`): a model's pose is then drawn with nothing copied |
 | `0x8000` points | with compact and the modelview flag: the buffer has a vertex a triangle, which faces the eye. Its corners are the point, then `s` above it and `s` to its right as the eye sees it; `s` is word 12, times 1 + word 13 x depth when the point is word 14 or more in front of the eye. All three corners have the vertex's texture coordinates |
+
+| `0x10000` moved | word 15 is the address of two texels, each a row of three numbers (floats or 16.16 as the draw's are): u' and v' are each a row's dot with (u, v, 1). A texture that slides, turns or grows costs the program those six numbers a draw, and its vertices stay as they are |
+| `0x20000` facing | with tagged: word 11 is the address of a table of the 256 ways a vertex can face, a texel each of three floats in the model's own space, and a vertex's tag is which. Word 13 is the address of three texels of floats: where the light comes from, its colour, and the colour of the light from everywhere. The vertex's colour is the last plus the second times how much it faces the first: a model is lit by those three texels and nothing is worked out for its vertices |
 
 A textured quad is then 16 words of vertices instead of 96.
 
@@ -116,7 +119,7 @@ A textured quad is then 16 words of vertices instead of 96.
 | Mode | Colour |
 |---|---|
 | 0 | the interpolated vertex colour |
-| 1 | a texture of `0x00RRGGBB` words, times the colour |
+| 1 | a texture of `0x00RRGGBB` words, times the colour. Its address may be in the ROM, as mode 4's |
 | 2 | a texture of bytes looked up in the display palette (`0x87000400`), times the colour |
 | 3 | a texture of single bits, each row a whole number of bytes, leftmost pixel in the highest bit: set bits take the colour, clear bits are not drawn |
 | 4 | a texture of three bytes a pixel (red, green, blue, as in a PPM file), rows not padded, starting at any byte, times the colour. Its address may be in the ROM (from `0x40000000`): the draw pass has the ROM's four textures (`_Data_MTD_R/G/B/A`) as well as the state |
@@ -124,7 +127,9 @@ A textured quad is then 16 words of vertices instead of 96.
 | 6 | a picture as three planes of bytes one after another: width x height of luma, then the blue and the red chroma planes, each half the size each way (both sizes even). The colour is BT.601's, luma 16 to 235; times the colour. A video's frame as its decoder leaves it (`docs/video.md`; `SEGL_YUV420` in the OpenGL library) |
 | +0x100 | texels equal to the key (a colour in modes 1 and 4, an index in mode 2) are not drawn |
 | +0x200 | (draws) the texture is laid on the picture, not on the surface: a pixel at (x, y) of the picture takes the texel at words 12-13 plus (x, y) / 1024 times words 14-15 (16.16), and the colour is not applied. The surface still writes depth: a sky that hides what is behind it |
-| +0x400 | smooth (modes 1 and 2): the four texels round the point are weighed by how near their centres are (bilinear), the texture repeating. A texel of the key counts for nothing, and where such are most of the four nothing is drawn. `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)` asks for it of the bound texture; a texture starts as `GL_NEAREST` |
+| +0x400 | smooth (modes 1, 2 and 4): the four texels round the point are weighed by how near their centres are (bilinear), the texture repeating. A texel of the key counts for nothing, and where such are most of the four nothing is drawn. `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)` asks for it of the bound texture; a texture starts as `GL_NEAREST` |
+| +0x800 | lit (compact draws): the colour is times a light map. Word 12 is the address of a word a vertex, which says where in the map the vertex is (16 bits each way of the whole map); word 13 is the map's address, a texture of mode 4's kind, in RAM or the ROM; word 14 its width and, from bit 16, its height. Its four texels round the point are weighed, and beyond its edge the edge goes on. A lit wall is one draw in the opaque pass, where a second draw that multiplied (pass 3) also dimmed whatever was blended in front of the wall before it (docs/quake3.md) |
+| +0x1000 | clamped: the texture does not repeat. Beyond its edge the edge's texels go on |
 
 Textures are anywhere in RAM, sampled nearest and repeating, with coordinates 0..1 across.
 
@@ -296,7 +301,8 @@ frames a second with this project's kernel (about 80 on upstream's):
 ## Checking it
 
 `tools/gpu_reference.py SNAPSHOT TARGET.bmp` redraws the command list left in a snapshot's RAM
-in software and compares it with the colour target saved by `--gpu-capture`. Pause the guest
+in software and compares it with the colour target saved by `--gpu-capture` (`--rom FILE`:
+the ROM of another image than `build\images\linux`, for textures and vertices that are in it). Pause the guest
 before snapshotting. The card's rasteriser is not bit-exact with the model: expect agreement
 away from triangle edges except for single-pixel shifts where a nearest-sampled texture changes
 texel.

@@ -1,0 +1,2403 @@
+diff --git a/code/botlib/be_aas_entity.c b/code/botlib/be_aas_entity.c
+index c78f9e71..7a8bed9e 100644
+--- a/code/botlib/be_aas_entity.c
++++ b/code/botlib/be_aas_entity.c
+@@ -59,6 +59,13 @@ enum {
+ // Parameter:				-
+ // Returns:					-
+ // Changes Globals:		-
++#ifdef SHADEREMU
++static int se_entities_told;	/* one more than the highest entity the library was ever told of: the rest were never linked */
++#define ENTITIES_TO_LOOK_AT se_entities_told
++#else
++#define ENTITIES_TO_LOOK_AT aasworld.maxentities
++#endif
++
+ //===========================================================================
+ int AAS_UpdateEntity(int entnum, bot_entitystate_t *state)
+ {
+@@ -73,6 +80,9 @@ int AAS_UpdateEntity(int entnum, bot_entitystate_t *state)
+ 	} //end if
+ 
+ 	ent = &aasworld.entities[entnum];
++#ifdef SHADEREMU
++	if (state && entnum >= se_entities_told) se_entities_told = entnum + 1;
++#endif
+ 
+ 	if (!state) {
+ 		//unlink the entity
+@@ -341,7 +351,7 @@ void AAS_ResetEntityLinks(void)
+ void AAS_InvalidateEntities(void)
+ {
+ 	int i;
+-	for (i = 0; i < aasworld.maxentities; i++)
++	for (i = 0; i < ENTITIES_TO_LOOK_AT; i++)
+ 	{
+ 		aasworld.entities[i].i.valid = qfalse;
+ 		aasworld.entities[i].i.number = i;
+@@ -358,7 +368,7 @@ void AAS_UnlinkInvalidEntities(void)
+ 	int i;
+ 	aas_entity_t *ent;
+ 
+-	for (i = 0; i < aasworld.maxentities; i++)
++	for (i = 0; i < ENTITIES_TO_LOOK_AT; i++)
+ 	{
+ 		ent = &aasworld.entities[i];
+ 		if (!ent->i.valid)
+diff --git a/code/botlib/be_aas_file.c b/code/botlib/be_aas_file.c
+index fea46411..23d6cfb3 100644
+--- a/code/botlib/be_aas_file.c
++++ b/code/botlib/be_aas_file.c
+@@ -383,7 +383,12 @@ int AAS_LoadAASFile(char *filename)
+ 	} //end if
+ 	//
+ 	aasworld.bspchecksum = atoi(LibVarGetString( "sv_mapChecksum"));
++#ifdef SHADEREMU
++	/* (the level here is the demo's without what only a renderer reads: its sum is another) */
++	if (0)
++#else
+ 	if (LittleLong(header.bspchecksum) != aasworld.bspchecksum)
++#endif
+ 	{
+ 		AAS_Error("aas file %s is out of date\n", filename);
+ 		botimport.FS_FCloseFile(fp);
+diff --git a/code/botlib/be_ai_chat.c b/code/botlib/be_ai_chat.c
+index 591ca378..636a96c6 100644
+--- a/code/botlib/be_ai_chat.c
++++ b/code/botlib/be_ai_chat.c
+@@ -2977,11 +2977,16 @@ int BotSetupChatAI(void)
+ 	file = LibVarString("matchfile", "match.c");
+ 	matchtemplates = BotLoadMatchTemplates(file);
+ 	//
++#ifdef SHADEREMU
++	/* (what the bots answer when spoken to is 160 KB of script to read at every level's start: they do not answer) */
++	replychats = NULL;
++#else
+ 	if (!LibVarValue("nochat", "0"))
+ 	{
+ 		file = LibVarString("rchatfile", "rchat.c");
+ 		replychats = BotLoadReplyChat(file);
+ 	} //end if
++#endif
+ 
+ 	InitConsoleMessageHeap();
+ 
+diff --git a/code/botlib/be_interface.c b/code/botlib/be_interface.c
+index ffff7628..07716260 100644
+--- a/code/botlib/be_interface.c
++++ b/code/botlib/be_interface.c
+@@ -76,7 +76,13 @@ int botlibsetup = qfalse;
+ //===========================================================================
+ int Sys_MilliSeconds(void)
+ {
++#ifdef SHADEREMU
++	extern int Sys_Milliseconds(void);
++
++	return Sys_Milliseconds();
++#else
+ 	return clock() * 1000 / CLOCKS_PER_SEC;
++#endif
+ } //end of the function Sys_MilliSeconds
+ //===========================================================================
+ //
+diff --git a/code/botlib/l_precomp.c b/code/botlib/l_precomp.c
+index 2e59d99f..d77ec8b5 100644
+--- a/code/botlib/l_precomp.c
++++ b/code/botlib/l_precomp.c
+@@ -276,7 +276,7 @@ token_t *PC_CopyToken(token_t *token)
+ 		return NULL;
+ 	} //end if
+ //	freetokens = freetokens->next;
+-	Com_Memcpy(t, token, sizeof(token_t));
++	TokenCopy(t, token);
+ 	t->next = NULL;
+ 	numtokens++;
+ 	return t;
+@@ -331,7 +331,7 @@ int PC_ReadSourceToken(source_t *source, token_t *token)
+ 		FreeScript(script);
+ 	} //end while
+ 	//copy the already available token
+-	Com_Memcpy(token, source->tokens, sizeof(token_t));
++	TokenCopy(token, source->tokens);
+ 	//free the read token
+ 	t = source->tokens;
+ 	source->tokens = source->tokens->next;
+@@ -2776,7 +2776,7 @@ int PC_ReadToken(source_t *source, token_t *token)
+ 			} //end if
+ 		} //end if
+ 		//copy token for unreading
+-		Com_Memcpy(&source->token, token, sizeof(token_t));
++		TokenCopy(&source->token, token);
+ 		//found a token
+ 		return qtrue;
+ 	} //end while
+@@ -2908,7 +2908,7 @@ int PC_CheckTokenType(source_t *source, int type, int subtype, token_t *token)
+ 	if (tok.type == type &&
+ 			(tok.subtype & subtype) == subtype)
+ 	{
+-		Com_Memcpy(token, &tok, sizeof(token_t));
++		TokenCopy(token, &tok);
+ 		return qtrue;
+ 	} //end if
+ 	//
+diff --git a/code/botlib/l_script.c b/code/botlib/l_script.c
+index dfa3a002..ae893e70 100644
+--- a/code/botlib/l_script.c
++++ b/code/botlib/l_script.c
+@@ -835,7 +835,7 @@ int PS_ReadPrimitive(script_t *script, token_t *token)
+ 	} //end while
+ 	token->string[len] = 0;
+ 	//copy the token into the script structure
+-	Com_Memcpy(&script->token, token, sizeof(token_t));
++	TokenCopy(&script->token, token);
+ 	//primitive reading successful
+ 	return 1;
+ } //end of the function PS_ReadPrimitive
+@@ -851,7 +851,7 @@ int PS_ReadToken(script_t *script, token_t *token)
+ 	if (script->tokenavailable)
+ 	{
+ 		script->tokenavailable = 0;
+-		Com_Memcpy(token, &script->token, sizeof(token_t));
++		TokenCopy(token, &script->token);
+ 		return 1;
+ 	} //end if
+ 	//save script pointer
+@@ -859,7 +859,7 @@ int PS_ReadToken(script_t *script, token_t *token)
+ 	//save line counter
+ 	script->lastline = script->line;
+ 	//clear the token stuff
+-	Com_Memset(token, 0, sizeof(token_t));
++	TokenClear(token);
+ 	//start of the white space
+ 	script->whitespace_p = script->script_p;
+ 	token->whitespace_p = script->script_p;
+@@ -909,7 +909,7 @@ int PS_ReadToken(script_t *script, token_t *token)
+ 		return 0;
+ 	} //end if
+ 	//copy the token into the script structure
+-	Com_Memcpy(&script->token, token, sizeof(token_t));
++	TokenCopy(&script->token, token);
+ 	//successfully read a token
+ 	return 1;
+ } //end of the function PS_ReadToken
+@@ -1046,7 +1046,7 @@ int PS_CheckTokenType(script_t *script, int type, int subtype, token_t *token)
+ 	if (tok.type == type &&
+ 			(tok.subtype & subtype) == subtype)
+ 	{
+-		Com_Memcpy(token, &tok, sizeof(token_t));
++		TokenCopy(token, &tok);
+ 		return 1;
+ 	} //end if
+ 	//token is not available
+@@ -1087,7 +1087,7 @@ void PS_UnreadLastToken(script_t *script)
+ //============================================================================
+ void PS_UnreadToken(script_t *script, token_t *token)
+ {
+-	Com_Memcpy(&script->token, token, sizeof(token_t));
++	TokenCopy(&script->token, token);
+ 	script->tokenavailable = 1;
+ } //end of the function UnreadToken
+ //============================================================================
+@@ -1246,7 +1246,7 @@ void ResetScript(script_t *script)
+ 	script->line = 1;
+ 	script->lastline = 1;
+ 	//clear the saved token
+-	Com_Memset(&script->token, 0, sizeof(token_t));
++	TokenClear(&script->token);
+ } //end of the function ResetScript
+ //============================================================================
+ // returns true if at the end of the script
+diff --git a/code/botlib/l_script.h b/code/botlib/l_script.h
+index 816e0b10..3998886f 100644
+--- a/code/botlib/l_script.h
++++ b/code/botlib/l_script.h
+@@ -170,6 +170,40 @@ typedef struct token_s
+ 	struct token_s *next;			//next token in chain
+ } token_t;
+ 
++#ifdef SHADEREMU
++/*
++ * A token copied or cleared without the kilobyte its string may fill: the text there is, and
++ * what follows the string.
++ */
++static ID_INLINE void TokenCopy(token_t *to, const token_t *from)
++{
++	const char *s = from->string;
++	char *d = to->string;
++
++	while ((*d++ = *s++) != 0)
++		continue;
++	to->type = from->type;
++	to->subtype = from->subtype;
++#ifdef NUMBERVALUE
++	to->intvalue = from->intvalue;
++	to->floatvalue = from->floatvalue;
++#endif
++	to->whitespace_p = from->whitespace_p;
++	to->endwhitespace_p = from->endwhitespace_p;
++	to->line = from->line;
++	to->linescrossed = from->linescrossed;
++	to->next = from->next;
++}
++static ID_INLINE void TokenClear(token_t *token)
++{
++	token->string[0] = 0;
++	memset(&token->type, 0, sizeof(token_t) - offsetof(token_t, type));
++}
++#else
++#define TokenCopy(to, from) Com_Memcpy(to, from, sizeof(token_t))
++#define TokenClear(token) Com_Memset(token, 0, sizeof(token_t))
++#endif
++
+ //script file
+ typedef struct script_s
+ {
+diff --git a/code/cgame/cg_draw.c b/code/cgame/cg_draw.c
+index afe09412..e68fd337 100644
+--- a/code/cgame/cg_draw.c
++++ b/code/cgame/cg_draw.c
+@@ -2052,7 +2052,19 @@ static void CG_DrawCrosshairNames( void ) {
+ 	}
+ 
+ 	// scan the known entities to see if the crosshair is sighted on one
++#ifdef SHADEREMU
++	{
++		/* (a trace across the whole level: not every frame) */
++		static int	scanned;
++
++		if ( cg.time - scanned >= 250 || cg.time < scanned ) {
++			scanned = cg.time;
++			CG_ScanForCrosshairEntity();
++		}
++	}
++#else
+ 	CG_ScanForCrosshairEntity();
++#endif
+ 
+ 	// draw the name of the player being looked at
+ 	color = CG_FadeColor( cg.crosshairClientTime, 1000 );
+diff --git a/code/cgame/cg_main.c b/code/cgame/cg_main.c
+index 1269e1b6..41645fbe 100644
+--- a/code/cgame/cg_main.c
++++ b/code/cgame/cg_main.c
+@@ -214,14 +214,22 @@ static cvarTable_t cvarTable[] = {
+ 	{ &cg_zoomFov, "cg_zoomfov", "22.5", CVAR_ARCHIVE },
+ 	{ &cg_fov, "cg_fov", "90", CVAR_ARCHIVE },
+ 	{ &cg_viewsize, "cg_viewsize", "100", CVAR_ARCHIVE },
++#ifdef SHADEREMU
++	{ &cg_shadows, "cg_shadows", "0", CVAR_ARCHIVE  },	/* (a trace a player a frame, for a mark this renderer does not draw) */
++#else
+ 	{ &cg_shadows, "cg_shadows", "1", CVAR_ARCHIVE  },
++#endif
+ 	{ &cg_gibs, "cg_gibs", "1", CVAR_ARCHIVE  },
+ 	{ &cg_draw2D, "cg_draw2D", "1", CVAR_ARCHIVE  },
+ 	{ &cg_drawStatus, "cg_drawStatus", "1", CVAR_ARCHIVE  },
+ 	{ &cg_drawTimer, "cg_drawTimer", "0", CVAR_ARCHIVE  },
+ 	{ &cg_drawFPS, "cg_drawFPS", "0", CVAR_ARCHIVE  },
+ 	{ &cg_drawSnapshot, "cg_drawSnapshot", "0", CVAR_ARCHIVE  },
++#ifdef SHADEREMU
++	{ &cg_draw3dIcons, "cg_draw3dIcons", "0", CVAR_ARCHIVE  },	/* (the status bar's pictures flat: each model there is a scene of its own) */
++#else
+ 	{ &cg_draw3dIcons, "cg_draw3dIcons", "1", CVAR_ARCHIVE  },
++#endif
+ 	{ &cg_drawIcons, "cg_drawIcons", "1", CVAR_ARCHIVE  },
+ 	{ &cg_drawAmmoWarning, "cg_drawAmmoWarning", "1", CVAR_ARCHIVE  },
+ 	{ &cg_drawAttacker, "cg_drawAttacker", "1", CVAR_ARCHIVE  },
+@@ -381,6 +389,19 @@ void CG_UpdateCvars( void ) {
+ 	int			i;
+ 	cvarTable_t	*cv;
+ 
++#ifdef SHADEREMU
++	{
++		/* (a hundred questions a frame, and no variable had changed: the engine counts the changes) */
++		extern int	se_cvar_changes;
++		static int	seen;
++
++		if ( seen == se_cvar_changes ) {
++			return;
++		}
++		seen = se_cvar_changes;
++	}
++#endif
++
+ 	for ( i = 0, cv = cvarTable ; i < cvarTableSize ; i++, cv++ ) {
+ 		trap_Cvar_Update( cv->vmCvar );
+ 	}
+diff --git a/code/cgame/cg_predict.c b/code/cgame/cg_predict.c
+index 6ec837c8..93af76b1 100644
+--- a/code/cgame/cg_predict.c
++++ b/code/cgame/cg_predict.c
+@@ -116,6 +116,23 @@ static void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const
+ 			bmins[2] = -zd;
+ 			bmaxs[2] = zu;
+ 
++#ifdef SHADEREMU
++			{
++				/* (a thing nowhere near the move is not asked about: each asking is a trace of its own) */
++				const float	*low = mins ? mins : vec3_origin, *high = maxs ? maxs : vec3_origin;
++				int			k;
++
++				for ( k = 0 ; k < 3 ; k++ ) {
++					if ( cent->lerpOrigin[k] + bmaxs[k] < ( start[k] < end[k] ? start[k] : end[k] ) + low[k] - 1 ||
++						cent->lerpOrigin[k] + bmins[k] > ( start[k] > end[k] ? start[k] : end[k] ) + high[k] + 1 ) {
++						break;
++					}
++				}
++				if ( k < 3 ) {
++					continue;
++				}
++			}
++#endif
+ 			cmodel = trap_CM_TempBoxModel( bmins, bmaxs );
+ 			VectorCopy( vec3_origin, angles );
+ 			VectorCopy( cent->lerpOrigin, origin );
+@@ -360,6 +377,32 @@ static void CG_TouchTriggerPrediction( void ) {
+ 			continue;
+ 		}
+ 
++#ifdef SHADEREMU
++		{
++			/* (a pad the player is nowhere near is not asked about: twenty traces a move, one of them of any use) */
++			static vec3_t	bounds[MAX_MODELS][2];
++			static byte		known[MAX_MODELS];
++			const float		*at = cg.predictedPlayerState.origin;
++			int				m = ent->modelindex, k;
++
++			if ( m > 0 && m < MAX_MODELS ) {
++				if ( !known[m] ) {
++					trap_R_ModelBounds( cgs.inlineDrawModel[m], bounds[m][0], bounds[m][1] );
++					known[m] = 1;
++				}
++				for ( k = 0 ; k < 3 ; k++ ) {
++					if ( at[k] + cg_pmove.maxs[k] < bounds[m][0][k] + cent->lerpOrigin[k] - 1 ||
++						at[k] + cg_pmove.mins[k] > bounds[m][1][k] + cent->lerpOrigin[k] + 1 ) {
++						break;
++					}
++				}
++				if ( k < 3 && ( bounds[m][0][0] != bounds[m][1][0] || bounds[m][0][2] != bounds[m][1][2] ) ) {
++					continue;
++				}
++			}
++		}
++#endif
++
+ 		trap_CM_BoxTrace( &trace, cg.predictedPlayerState.origin, cg.predictedPlayerState.origin, 
+ 			cg_pmove.mins, cg_pmove.maxs, cmodel, -1 );
+ 
+@@ -409,8 +452,98 @@ We detect prediction errors and allow them to be decayed off over several frames
+ to ease the jerk.
+ =================
+ */
++#ifdef SHADEREMU
++/*
++ * The moves made since the server's last word are not all made again every frame. The state
++ * after each is kept; when the server's next word agrees with the one kept for its time, the
++ * moves up to the last frame's are taken from what was kept and only the new one is run
++ * (after Neil Toronto's "optimized prediction"). A frame was four to eight moves of a dozen
++ * traces each, a quarter of all it did.
++ */
++#define SE_SAVED	( CMD_BACKUP + 2 )
++static playerState_t	se_saved[SE_SAVED];
++static int				se_head, se_tail, se_last_command, se_last_time;
++
++static qboolean SE_PredictionWrong( const playerState_t *ps, const playerState_t *pps ) {
++	vec3_t	delta;
++	int		i;
++
++	if ( pps->pm_type != ps->pm_type || pps->pm_flags != ps->pm_flags || pps->pm_time != ps->pm_time ) {
++		return qtrue;
++	}
++	VectorSubtract( pps->origin, ps->origin, delta );
++	if ( VectorLengthSquared( delta ) > 0.1f * 0.1f ) {
++		return qtrue;
++	}
++	VectorSubtract( pps->velocity, ps->velocity, delta );
++	if ( VectorLengthSquared( delta ) > 0.1f * 0.1f ) {
++		return qtrue;
++	}
++	if ( pps->weaponTime != ps->weaponTime || pps->gravity != ps->gravity || pps->speed != ps->speed ||
++		pps->delta_angles[0] != ps->delta_angles[0] || pps->delta_angles[1] != ps->delta_angles[1] ||
++		pps->delta_angles[2] != ps->delta_angles[2] || pps->groundEntityNum != ps->groundEntityNum ) {
++		return qtrue;
++	}
++	if ( pps->legsTimer != ps->legsTimer || pps->legsAnim != ps->legsAnim || pps->torsoTimer != ps->torsoTimer ||
++		pps->torsoAnim != ps->torsoAnim || pps->movementDir != ps->movementDir ) {
++		return qtrue;
++	}
++	VectorSubtract( pps->grapplePoint, ps->grapplePoint, delta );
++	if ( VectorLengthSquared( delta ) > 0.1f * 0.1f ) {
++		return qtrue;
++	}
++	if ( pps->eFlags != ps->eFlags || pps->eventSequence != ps->eventSequence ) {
++		return qtrue;
++	}
++	for ( i = 0 ; i < MAX_PS_EVENTS ; i++ ) {
++		if ( pps->events[i] != ps->events[i] || pps->eventParms[i] != ps->eventParms[i] ) {
++			return qtrue;
++		}
++	}
++	if ( pps->externalEvent != ps->externalEvent || pps->externalEventParm != ps->externalEventParm ||
++		pps->externalEventTime != ps->externalEventTime || pps->clientNum != ps->clientNum ||
++		pps->weapon != ps->weapon || pps->weaponstate != ps->weaponstate || pps->viewheight != ps->viewheight ) {
++		return qtrue;
++	}
++	for ( i = 0 ; i < 3 ; i++ ) {
++		if ( fabs( AngleSubtract( ps->viewangles[i], pps->viewangles[i] ) ) > 1.0f ) {
++			return qtrue;
++		}
++	}
++	if ( pps->damageEvent != ps->damageEvent || pps->damageYaw != ps->damageYaw || pps->damagePitch != ps->damagePitch ||
++		pps->damageCount != ps->damageCount || pps->generic1 != ps->generic1 || pps->loopSound != ps->loopSound ||
++		pps->jumppad_ent != ps->jumppad_ent ) {
++		return qtrue;
++	}
++	for ( i = 0 ; i < MAX_STATS ; i++ ) {
++		if ( pps->stats[i] != ps->stats[i] ) {
++			return qtrue;
++		}
++	}
++	for ( i = 0 ; i < MAX_PERSISTANT ; i++ ) {
++		if ( pps->persistant[i] != ps->persistant[i] ) {
++			return qtrue;
++		}
++	}
++	for ( i = 0 ; i < MAX_POWERUPS ; i++ ) {
++		if ( pps->powerups[i] != ps->powerups[i] ) {
++			return qtrue;
++		}
++	}
++	for ( i = 0 ; i < MAX_WEAPONS ; i++ ) {
++		if ( pps->ammo[i] != ps->ammo[i] ) {
++			return qtrue;
++		}
++	}
++	return qfalse;
++}
++#endif
++
+ void CG_PredictPlayerState( void ) {
+ 	int			cmdNum, current;
++#ifdef SHADEREMU
++	int			se_predict, se_index, se_first;
++#endif
+ 	playerState_t	oldPlayerState;
+ 	qboolean	moved;
+ 	usercmd_t	oldestCmd;
+@@ -499,9 +632,56 @@ void CG_PredictPlayerState( void ) {
+ 	cg_pmove.pmove_fixed = pmove_fixed.integer;// | cg_pmove_fixed.integer;
+ 	cg_pmove.pmove_msec = pmove_msec.integer;
+ 
++#ifdef SHADEREMU
++	if ( cg.nextFrameTeleport || cg.thisFrameTeleport ) {
++		// every move again
++		se_last_command = 0;
++		se_tail = se_head;
++		se_predict = current - CMD_BACKUP + 1;
++	} else if ( cg.physicsTime == se_last_time ) {
++		// nothing new from the server: the moves since the last frame
++		se_predict = se_last_command + 1;
++	} else {
++		// the server's next word: does the state kept for its time agree with it?
++		int			i;
++		qboolean	wrong = qtrue;
++
++		for ( i = se_head ; i != se_tail ; i = ( i + 1 ) % SE_SAVED ) {
++			if ( se_saved[i].commandTime == cg.predictedPlayerState.commandTime ) {
++				if ( SE_PredictionWrong( &cg.predictedPlayerState, &se_saved[i] ) ) {
++					break;
++				}
++				*cg_pmove.ps = se_saved[i];
++				se_head = ( i + 1 ) % SE_SAVED;
++				se_predict = se_last_command + 1;
++				wrong = qfalse;
++				break;
++			}
++		}
++		if ( wrong ) {
++			se_last_command = 0;
++			se_tail = se_head;
++			se_predict = current - CMD_BACKUP + 1;
++		}
++	}
++	se_last_time = cg.physicsTime;
++	se_index = se_head;
++	// (the first move later than the server's word, found from the newest back: not all 64 asked for)
++	for ( se_first = current ; se_first > current - CMD_BACKUP + 1 ; se_first-- ) {
++		trap_GetUserCmd( se_first - 1, &cg_pmove.cmd );
++		if ( cg_pmove.cmd.serverTime <= cg.predictedPlayerState.commandTime ) {
++			break;
++		}
++	}
++#endif
++
+ 	// run cmds
+ 	moved = qfalse;
++#ifdef SHADEREMU
++	for ( cmdNum = se_first ; cmdNum <= current ; cmdNum++ ) {
++#else
+ 	for ( cmdNum = current - CMD_BACKUP + 1 ; cmdNum <= current ; cmdNum++ ) {
++#endif
+ 		// get the command
+ 		trap_GetUserCmd( cmdNum, &cg_pmove.cmd );
+ 
+@@ -581,12 +761,33 @@ void CG_PredictPlayerState( void ) {
+ 			cg_pmove.cmd.serverTime = ((cg_pmove.cmd.serverTime + pmove_msec.integer-1) / pmove_msec.integer) * pmove_msec.integer;
+ 		}
+ 
++#ifdef SHADEREMU
++		if ( cmdNum >= se_predict || ( se_index + 1 ) % SE_SAVED == se_head ) {
++			Pmove (&cg_pmove);
++			// (what a pad or a teleporter does to the move is part of what is kept)
++			CG_TouchTriggerPrediction();
++			se_last_command = cmdNum;
++			if ( ( se_index + 1 ) % SE_SAVED != se_head ) {
++				// kept for the frames to come
++				se_saved[se_index] = *cg_pmove.ps;
++				se_index = ( se_index + 1 ) % SE_SAVED;
++				se_tail = se_index;
++			}
++		} else {
++			// made in a frame before: as it was kept
++			*cg_pmove.ps = se_saved[se_index];
++			se_index = ( se_index + 1 ) % SE_SAVED;
++		}
++#else
+ 		Pmove (&cg_pmove);
++#endif
+ 
+ 		moved = qtrue;
+ 
++#ifndef SHADEREMU
+ 		// add push trigger movement effects
+ 		CG_TouchTriggerPrediction();
++#endif
+ 
+ 		// check for predictable events that changed from previous predictions
+ 		//CG_CheckChangedPredictableEvents(&cg.predictedPlayerState);
+diff --git a/code/cgame/cg_syscalls.c b/code/cgame/cg_syscalls.c
+index 010be948..e65b3f55 100644
+--- a/code/cgame/cg_syscalls.c
++++ b/code/cgame/cg_syscalls.c
+@@ -42,6 +42,28 @@ int PASSFLOAT( float x ) {
+ 	return fi.i;
+ }
+ 
++#ifdef SHADEREMU
++/*
++ * The engine is the same program (linux/quake3/build.sh): what a frame asks of it by the
++ * hundred is called, not asked for through the one door all the modules' questions take
++ * (a hundred instructions a question more).
++ */
++void CM_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mins, vec3_t maxs, clipHandle_t model, int brushmask, int capsule );
++void CM_TransformedBoxTrace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mins, vec3_t maxs, clipHandle_t model,
++	int brushmask, const vec3_t origin, const vec3_t angles, int capsule );
++clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule );
++int CM_PointContents( const vec3_t p, clipHandle_t model );
++int CM_TransformedPointContents( const vec3_t p, clipHandle_t model, const vec3_t origin, const vec3_t angles );
++void Cvar_Update( vmCvar_t *vmCvar );
++void S_UpdateEntityPosition( int entityNum, const vec3_t origin );
++qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd );
++int CL_GetCurrentCmdNumber( void );
++void SE_AddRefEntity( const refEntity_t *re );
++void SE_SetColor( const float *rgba );
++void SE_StretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader );
++int SE_LerpTag( orientation_t *tag, qhandle_t model, int startFrame, int endFrame, float frac, const char *tagName );
++#endif
++
+ void	trap_Print( const char *fmt ) {
+ 	syscall( CG_PRINT, fmt );
+ }
+@@ -62,7 +84,11 @@ void	trap_Cvar_Register( vmCvar_t *vmCvar, const char *varName, const char *defa
+ }
+ 
+ void	trap_Cvar_Update( vmCvar_t *vmCvar ) {
++#ifdef SHADEREMU
++	Cvar_Update( vmCvar );
++#else
+ 	syscall( CG_CVAR_UPDATE, vmCvar );
++#endif
+ }
+ 
+ void	trap_Cvar_Set( const char *var_name, const char *value ) {
+@@ -138,7 +164,11 @@ clipHandle_t trap_CM_InlineModel( int index ) {
+ }
+ 
+ clipHandle_t trap_CM_TempBoxModel( const vec3_t mins, const vec3_t maxs ) {
++#ifdef SHADEREMU
++	return CM_TempBoxModel( mins, maxs, qfalse );
++#else
+ 	return syscall( CG_CM_TEMPBOXMODEL, mins, maxs );
++#endif
+ }
+ 
+ clipHandle_t trap_CM_TempCapsuleModel( const vec3_t mins, const vec3_t maxs ) {
+@@ -146,17 +176,29 @@ clipHandle_t trap_CM_TempCapsuleModel( const vec3_t mins, const vec3_t maxs ) {
+ }
+ 
+ int		trap_CM_PointContents( const vec3_t p, clipHandle_t model ) {
++#ifdef SHADEREMU
++	return CM_PointContents( p, model );
++#else
+ 	return syscall( CG_CM_POINTCONTENTS, p, model );
++#endif
+ }
+ 
+ int		trap_CM_TransformedPointContents( const vec3_t p, clipHandle_t model, const vec3_t origin, const vec3_t angles ) {
++#ifdef SHADEREMU
++	return CM_TransformedPointContents( p, model, origin, angles );
++#else
+ 	return syscall( CG_CM_TRANSFORMEDPOINTCONTENTS, p, model, origin, angles );
++#endif
+ }
+ 
+ void	trap_CM_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end,
+ 						  const vec3_t mins, const vec3_t maxs,
+ 						  clipHandle_t model, int brushmask ) {
++#ifdef SHADEREMU
++	CM_BoxTrace( results, start, end, (float *)mins, (float *)maxs, model, brushmask, qfalse );
++#else
+ 	syscall( CG_CM_BOXTRACE, results, start, end, mins, maxs, model, brushmask );
++#endif
+ }
+ 
+ void	trap_CM_CapsuleTrace( trace_t *results, const vec3_t start, const vec3_t end,
+@@ -169,7 +211,11 @@ void	trap_CM_TransformedBoxTrace( trace_t *results, const vec3_t start, const ve
+ 						  const vec3_t mins, const vec3_t maxs,
+ 						  clipHandle_t model, int brushmask,
+ 						  const vec3_t origin, const vec3_t angles ) {
++#ifdef SHADEREMU
++	CM_TransformedBoxTrace( results, start, end, (float *)mins, (float *)maxs, model, brushmask, origin, angles, qfalse );
++#else
+ 	syscall( CG_CM_TRANSFORMEDBOXTRACE, results, start, end, mins, maxs, model, brushmask, origin, angles );
++#endif
+ }
+ 
+ void	trap_CM_TransformedCapsuleTrace( trace_t *results, const vec3_t start, const vec3_t end,
+@@ -211,7 +257,11 @@ void	trap_S_StopLoopingSound( int entityNum ) {
+ }
+ 
+ void	trap_S_UpdateEntityPosition( int entityNum, const vec3_t origin ) {
++#ifdef SHADEREMU
++	S_UpdateEntityPosition( entityNum, origin );
++#else
+ 	syscall( CG_S_UPDATEENTITYPOSITION, entityNum, origin );
++#endif
+ }
+ 
+ void	trap_S_Respatialize( int entityNum, const vec3_t origin, vec3_t axis[3], int inwater ) {
+@@ -255,7 +305,11 @@ void	trap_R_ClearScene( void ) {
+ }
+ 
+ void	trap_R_AddRefEntityToScene( const refEntity_t *re ) {
++#ifdef SHADEREMU
++	SE_AddRefEntity( re );
++#else
+ 	syscall( CG_R_ADDREFENTITYTOSCENE, re );
++#endif
+ }
+ 
+ void	trap_R_AddPolyToScene( qhandle_t hShader , int numVerts, const polyVert_t *verts ) {
+@@ -283,12 +337,20 @@ void	trap_R_RenderScene( const refdef_t *fd ) {
+ }
+ 
+ void	trap_R_SetColor( const float *rgba ) {
++#ifdef SHADEREMU
++	SE_SetColor( rgba );
++#else
+ 	syscall( CG_R_SETCOLOR, rgba );
++#endif
+ }
+ 
+ void	trap_R_DrawStretchPic( float x, float y, float w, float h, 
+ 							   float s1, float t1, float s2, float t2, qhandle_t hShader ) {
++#ifdef SHADEREMU
++	SE_StretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
++#else
+ 	syscall( CG_R_DRAWSTRETCHPIC, PASSFLOAT(x), PASSFLOAT(y), PASSFLOAT(w), PASSFLOAT(h), PASSFLOAT(s1), PASSFLOAT(t1), PASSFLOAT(s2), PASSFLOAT(t2), hShader );
++#endif
+ }
+ 
+ void	trap_R_ModelBounds( clipHandle_t model, vec3_t mins, vec3_t maxs ) {
+@@ -297,7 +359,11 @@ void	trap_R_ModelBounds( clipHandle_t model, vec3_t mins, vec3_t maxs ) {
+ 
+ int		trap_R_LerpTag( orientation_t *tag, clipHandle_t mod, int startFrame, int endFrame, 
+ 					   float frac, const char *tagName ) {
++#ifdef SHADEREMU
++	return SE_LerpTag( tag, mod, startFrame, endFrame, frac, tagName );
++#else
+ 	return syscall( CG_R_LERPTAG, tag, mod, startFrame, endFrame, PASSFLOAT(frac), tagName );
++#endif
+ }
+ 
+ void	trap_R_RemapShader( const char *oldShader, const char *newShader, const char *timeOffset ) {
+@@ -325,11 +391,19 @@ qboolean	trap_GetServerCommand( int serverCommandNumber ) {
+ }
+ 
+ int			trap_GetCurrentCmdNumber( void ) {
++#ifdef SHADEREMU
++	return CL_GetCurrentCmdNumber();
++#else
+ 	return syscall( CG_GETCURRENTCMDNUMBER );
++#endif
+ }
+ 
+ qboolean	trap_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
++#ifdef SHADEREMU
++	return CL_GetUserCmd( cmdNumber, ucmd );
++#else
+ 	return syscall( CG_GETUSERCMD, cmdNumber, ucmd );
++#endif
+ }
+ 
+ void		trap_SetUserCmdValue( int stateValue, float sensitivityScale ) {
+diff --git a/code/game/ai_main.c b/code/game/ai_main.c
+index ed5653d7..02bcfba1 100644
+--- a/code/game/ai_main.c
++++ b/code/game/ai_main.c
+@@ -1482,7 +1482,12 @@ int BotAIStartFrame(int time) {
+ 		if (!trap_AAS_Initialized()) return qfalse;
+ 
+ 		//update entities in the botlib
++#ifdef SHADEREMU
++		/* (those the level has had, not all there could be: the library forgets by itself what it is not told of) */
++		for (i = 0; i < level.num_entities; i++) {
++#else
+ 		for (i = 0; i < MAX_GENTITIES; i++) {
++#endif
+ 			ent = &g_entities[i];
+ 			if (!ent->inuse) {
+ 				trap_BotLibUpdateEntity(i, NULL);
+@@ -1663,7 +1668,12 @@ BotAISetup
+ int BotAISetup( int restart ) {
+ 	int			errnum;
+ 
++#ifdef SHADEREMU
++	/* (five times a second: twice that is more than a core of this machine has for two bots) */
++	trap_Cvar_Register(&bot_thinktime, "bot_thinktime", "200", CVAR_CHEAT);
++#else
+ 	trap_Cvar_Register(&bot_thinktime, "bot_thinktime", "100", CVAR_CHEAT);
++#endif
+ 	trap_Cvar_Register(&bot_memorydump, "bot_memorydump", "0", CVAR_CHEAT);
+ 	trap_Cvar_Register(&bot_saveroutingcache, "bot_saveroutingcache", "0", CVAR_CHEAT);
+ 	trap_Cvar_Register(&bot_pause, "bot_pause", "0", CVAR_CHEAT);
+diff --git a/code/game/g_bot.c b/code/game/g_bot.c
+index b6b205f1..343cdff4 100644
+--- a/code/game/g_bot.c
++++ b/code/game/g_bot.c
+@@ -663,7 +663,11 @@ static void G_AddBot( const char *name, float skill, const char *team, int delay
+ 	}
+ 	Info_SetValueForKey( userinfo, "name", botname );
+ 	Info_SetValueForKey( userinfo, "rate", "25000" );
++#ifdef SHADEREMU
++	Info_SetValueForKey( userinfo, "snaps", "5" );	/* (what a bot sees is made for it as often as it looks) */
++#else
+ 	Info_SetValueForKey( userinfo, "snaps", "20" );
++#endif
+ 	Info_SetValueForKey( userinfo, "skill", va("%.2f", skill) );
+ 	Info_SetValueForKey( userinfo, "teampref", team );
+ 
+diff --git a/code/game/g_main.c b/code/game/g_main.c
+index ed5d4ead..e3467dad 100644
+--- a/code/game/g_main.c
++++ b/code/game/g_main.c
+@@ -375,6 +375,19 @@ void G_UpdateCvars( void ) {
+ 	cvarTable_t	*cv;
+ 	qboolean remapped = qfalse;
+ 
++#ifdef SHADEREMU
++	{
++		/* (a hundred questions a frame, and no variable had changed: the engine counts the changes) */
++		extern int	se_cvar_changes;
++		static int	seen;
++
++		if ( seen == se_cvar_changes ) {
++			return;
++		}
++		seen = se_cvar_changes;
++	}
++#endif
++
+ 	for ( i = 0, cv = gameCvarTable ; i < gameCvarTableSize ; i++, cv++ ) {
+ 		if ( cv->vmCvar ) {
+ 			trap_Cvar_Update( cv->vmCvar );
+diff --git a/code/q3_ui/ui_main.c b/code/q3_ui/ui_main.c
+index 216269cf..790668de 100644
+--- a/code/q3_ui/ui_main.c
++++ b/code/q3_ui/ui_main.c
+@@ -244,6 +244,19 @@ void UI_UpdateCvars( void ) {
+ 	int			i;
+ 	cvarTable_t	*cv;
+ 
++#ifdef SHADEREMU
++	{
++		/* (a hundred questions a frame, and no variable had changed: the engine counts the changes) */
++		extern int	se_cvar_changes;
++		static int	seen;
++
++		if ( seen == se_cvar_changes ) {
++			return;
++		}
++		seen = se_cvar_changes;
++	}
++#endif
++
+ 	for ( i = 0, cv = cvarTable ; i < cvarTableSize ; i++, cv++ ) {
+ 		if ( !cv->vmCvar ) {
+ 			continue;
+diff --git a/code/qcommon/cm_load.c b/code/qcommon/cm_load.c
+index 1aa0fbe8..7772fc92 100644
+--- a/code/qcommon/cm_load.c
++++ b/code/qcommon/cm_load.c
+@@ -43,10 +43,10 @@ void SetPlaneSignbits (cplane_t *out) {
+ 
+ // to allow boxes to be treated as brush models, we allocate
+ // some extra indexes along with those needed by the map
+-#define	BOX_BRUSHES		1
+-#define	BOX_SIDES		6
++#define	BOX_BRUSHES		2	// (SHADEREMU: a box for each of two cores)
++#define	BOX_SIDES		12
+ #define	BOX_LEAFS		2
+-#define	BOX_PLANES		12
++#define	BOX_PLANES		24
+ 
+ #define	LL(x) x=LittleLong(x)
+ 
+@@ -64,9 +64,11 @@ cvar_t		*cm_noCurves;
+ cvar_t		*cm_playerCurveClip;
+ #endif
+ 
+-cmodel_t	box_model;
+-cplane_t	*box_planes;
+-cbrush_t	*box_brush;
++// (a core its own: the server clips against a thing's box while the client does against another)
++cmodel_t	box_models[2];
++cplane_t	*box_planes_of[2];
++cbrush_t	*box_brushes[2];
++int			*se_brush_marks, *se_patch_marks, se_worker_check;
+ 
+ 
+ 
+@@ -618,7 +620,12 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+ 		Com_Error (ERR_DROP, "Couldn't load %s", name);
+ 	}
+ 
++#ifdef SHADEREMU
++	/* (a sum nothing here compares: the bots' file is not checked against it, and the game is this machine's own) */
++	last_checksum = length ^ buf.i[1] ^ buf.i[2];
++#else
+ 	last_checksum = LittleLong (Com_BlockChecksum (buf.i, length));
++#endif
+ 	*checksum = last_checksum;
+ 
+ 	header = *(dheader_t *)buf.i;
+@@ -651,6 +658,10 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+ 	FS_FreeFile (buf.v);
+ 
+ 	CM_InitBoxHull ();
++#ifdef SHADEREMU
++	/* (a trace through a patch asks for this the first time: made here, on the first core, and off) */
++	Cvar_Get( "r_debugSurfaceUpdate", "0", 0 );
++#endif
+ 
+ 	CM_FloodAreaConnections ();
+ 
+@@ -683,7 +694,7 @@ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle ) {
+ 		return &cm.cmodels[handle];
+ 	}
+ 	if ( handle == BOX_MODEL_HANDLE ) {
+-		return &box_model;
++		return &box_models[SE_OnWorker()];
+ 	}
+ 	if ( handle < MAX_SUBMODELS ) {
+ 		Com_Error( ERR_DROP, "CM_ClipHandleToModel: bad handle %i < %i < %i", 
+@@ -746,47 +757,52 @@ can just be stored out and get a proper clipping hull structure.
+ */
+ void CM_InitBoxHull (void)
+ {
+-	int			i;
++	int			i, w;
+ 	int			side;
+ 	cplane_t	*p;
+ 	cbrushside_t	*s;
+ 
+-	box_planes = &cm.planes[cm.numPlanes];
++	for (w=0 ; w<2 ; w++)
++	{
++		box_planes_of[w] = &cm.planes[cm.numPlanes + 12 * w];
+ 
+-	box_brush = &cm.brushes[cm.numBrushes];
+-	box_brush->numsides = 6;
+-	box_brush->sides = cm.brushsides + cm.numBrushSides;
+-	box_brush->contents = CONTENTS_BODY;
++		box_brushes[w] = &cm.brushes[cm.numBrushes + w];
++		box_brushes[w]->numsides = 6;
++		box_brushes[w]->sides = cm.brushsides + cm.numBrushSides + 6 * w;
++		box_brushes[w]->contents = CONTENTS_BODY;
+ 
+-	box_model.leaf.numLeafBrushes = 1;
+-//	box_model.leaf.firstLeafBrush = cm.numBrushes;
+-	box_model.leaf.firstLeafBrush = cm.numLeafBrushes;
+-	cm.leafbrushes[cm.numLeafBrushes] = cm.numBrushes;
++		box_models[w].leaf.numLeafBrushes = 1;
++		box_models[w].leaf.firstLeafBrush = cm.numLeafBrushes + w;
++		cm.leafbrushes[cm.numLeafBrushes + w] = cm.numBrushes + w;
+ 
+-	for (i=0 ; i<6 ; i++)
+-	{
+-		side = i&1;
+-
+-		// brush sides
+-		s = &cm.brushsides[cm.numBrushSides+i];
+-		s->plane = 	cm.planes + (cm.numPlanes+i*2+side);
+-		s->surfaceFlags = 0;
+-
+-		// planes
+-		p = &box_planes[i*2];
+-		p->type = i>>1;
+-		p->signbits = 0;
+-		VectorClear (p->normal);
+-		p->normal[i>>1] = 1;
+-
+-		p = &box_planes[i*2+1];
+-		p->type = 3 + (i>>1);
+-		p->signbits = 0;
+-		VectorClear (p->normal);
+-		p->normal[i>>1] = -1;
+-
+-		SetPlaneSignbits( p );
+-	}	
++		for (i=0 ; i<6 ; i++)
++		{
++			side = i&1;
++
++			// brush sides
++			s = &cm.brushsides[cm.numBrushSides + 6 * w + i];
++			s->plane = 	cm.planes + (cm.numPlanes + 12 * w + i*2+side);
++			s->surfaceFlags = 0;
++
++			// planes
++			p = &box_planes_of[w][i*2];
++			p->type = i>>1;
++			p->signbits = 0;
++			VectorClear (p->normal);
++			p->normal[i>>1] = 1;
++
++			p = &box_planes_of[w][i*2+1];
++			p->type = 3 + (i>>1);
++			p->signbits = 0;
++			VectorClear (p->normal);
++			p->normal[i>>1] = -1;
++
++			SetPlaneSignbits( p );
++		}
++	}
++	/* the worker's marks of what a trace of its has tested (cm_local.h) */
++	se_brush_marks = Hunk_Alloc( ( cm.numBrushes + BOX_BRUSHES ) * sizeof( int ), h_high );
++	se_patch_marks = Hunk_Alloc( ( cm.numSurfaces + 1 ) * sizeof( int ), h_high );
+ }
+ 
+ /*
+@@ -799,9 +815,11 @@ Capsules are handled differently though.
+ ===================
+ */
+ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule ) {
++	int			w = SE_OnWorker();
++	cplane_t	*box_planes = box_planes_of[w];
+ 
+-	VectorCopy( mins, box_model.mins );
+-	VectorCopy( maxs, box_model.maxs );
++	VectorCopy( mins, box_models[w].mins );
++	VectorCopy( maxs, box_models[w].maxs );
+ 
+ 	if ( capsule ) {
+ 		return CAPSULE_MODEL_HANDLE;
+@@ -820,8 +838,8 @@ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule
+ 	box_planes[10].dist = mins[2];
+ 	box_planes[11].dist = -mins[2];
+ 
+-	VectorCopy( mins, box_brush->bounds[0] );
+-	VectorCopy( maxs, box_brush->bounds[1] );
++	VectorCopy( mins, box_brushes[w]->bounds[0] );
++	VectorCopy( maxs, box_brushes[w]->bounds[1] );
+ 
+ 	return BOX_MODEL_HANDLE;
+ }
+diff --git a/code/qcommon/cm_local.h b/code/qcommon/cm_local.h
+index 5848fdc2..cafcb990 100644
+--- a/code/qcommon/cm_local.h
++++ b/code/qcommon/cm_local.h
+@@ -25,6 +25,19 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ #include "cm_polylib.h"
+ 
+ #define	MAX_SUBMODELS			256
++#ifdef SHADEREMU
++/*
++ * A trace marks the brushes and patches it has tested, with a count that goes up a trace, so
++ * that one in several leaves is tested once. The server's traces may run on a worker core
++ * while the client's run on this one: the worker has marks and a count of its own.
++ */
++extern int	*se_brush_marks, *se_patch_marks, se_worker_check;
++#define CM_Checked( own, number, marks ) ( SE_OnWorker() ? \
++	( (marks)[number] == se_worker_check ? 1 : ( (marks)[number] = se_worker_check, 0 ) ) : \
++	( *(own) == cm.checkcount ? 1 : ( *(own) = cm.checkcount, 0 ) ) )
++#define CM_NextCheck() ( SE_OnWorker() ? se_worker_check++ : cm.checkcount++ )
++#endif
++
+ #define	BOX_MODEL_HANDLE		255
+ #define CAPSULE_MODEL_HANDLE	254
+ 
+diff --git a/code/qcommon/cm_test.c b/code/qcommon/cm_test.c
+index 9fd1ec58..bcb948d1 100644
+--- a/code/qcommon/cm_test.c
++++ b/code/qcommon/cm_test.c
+@@ -101,10 +101,9 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
+ 	for ( k = 0 ; k < leaf->numLeafBrushes ; k++ ) {
+ 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
+ 		b = &cm.brushes[brushnum];
+-		if ( b->checkcount == cm.checkcount ) {
++		if ( CM_Checked( &b->checkcount, b - cm.brushes, se_brush_marks ) ) {
+ 			continue;	// already checked this brush in another leaf
+ 		}
+-		b->checkcount = cm.checkcount;
+ 		for ( i = 0 ; i < 3 ; i++ ) {
+ 			if ( b->bounds[0][i] >= ll->bounds[1][i] || b->bounds[1][i] <= ll->bounds[0][i] ) {
+ 				break;
+@@ -172,7 +171,7 @@ CM_BoxLeafnums
+ int	CM_BoxLeafnums( const vec3_t mins, const vec3_t maxs, int *list, int listsize, int *lastLeaf) {
+ 	leafList_t	ll;
+ 
+-	cm.checkcount++;
++	CM_NextCheck();
+ 
+ 	VectorCopy( mins, ll.bounds[0] );
+ 	VectorCopy( maxs, ll.bounds[1] );
+@@ -197,7 +196,7 @@ CM_BoxBrushes
+ int CM_BoxBrushes( const vec3_t mins, const vec3_t maxs, cbrush_t **list, int listsize ) {
+ 	leafList_t	ll;
+ 
+-	cm.checkcount++;
++	CM_NextCheck();
+ 
+ 	VectorCopy( mins, ll.bounds[0] );
+ 	VectorCopy( maxs, ll.bounds[1] );
+diff --git a/code/qcommon/cm_trace.c b/code/qcommon/cm_trace.c
+index ec9fd0a0..d7428975 100644
+--- a/code/qcommon/cm_trace.c
++++ b/code/qcommon/cm_trace.c
+@@ -249,10 +249,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 	for (k=0 ; k<leaf->numLeafBrushes ; k++) {
+ 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
+ 		b = &cm.brushes[brushnum];
+-		if (b->checkcount == cm.checkcount) {
++		if ( CM_Checked( &b->checkcount, b - cm.brushes, se_brush_marks ) ) {
+ 			continue;	// already checked this brush in another leaf
+ 		}
+-		b->checkcount = cm.checkcount;
+ 
+ 		if ( !(b->contents & tw->contents)) {
+ 			continue;
+@@ -275,10 +274,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 			if ( !patch ) {
+ 				continue;
+ 			}
+-			if ( patch->checkcount == cm.checkcount ) {
+-				continue;	// already checked this brush in another leaf
++			if ( CM_Checked( &patch->checkcount, cm.leafsurfaces[ leaf->firstLeafSurface + k ], se_patch_marks ) ) {
++				continue;	// already checked this patch in another leaf
+ 			}
+-			patch->checkcount = cm.checkcount;
+ 
+ 			if ( !(patch->contents & tw->contents)) {
+ 				continue;
+@@ -428,12 +426,12 @@ void CM_PositionTest( traceWork_t *tw ) {
+ 	ll.lastLeaf = 0;
+ 	ll.overflowed = qfalse;
+ 
+-	cm.checkcount++;
++	CM_NextCheck();
+ 
+ 	CM_BoxLeafnums_r( &ll, 0 );
+ 
+ 
+-	cm.checkcount++;
++	CM_NextCheck();
+ 
+ 	// test the contents of the leafs
+ 	for (i=0 ; i < ll.count ; i++) {
+@@ -677,10 +675,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
+ 
+ 		b = &cm.brushes[brushnum];
+-		if ( b->checkcount == cm.checkcount ) {
++		if ( CM_Checked( &b->checkcount, b - cm.brushes, se_brush_marks ) ) {
+ 			continue;	// already checked this brush in another leaf
+ 		}
+-		b->checkcount = cm.checkcount;
+ 
+ 		if ( !(b->contents & tw->contents) ) {
+ 			continue;
+@@ -708,10 +705,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 			if ( !patch ) {
+ 				continue;
+ 			}
+-			if ( patch->checkcount == cm.checkcount ) {
++			if ( CM_Checked( &patch->checkcount, cm.leafsurfaces[ leaf->firstLeafSurface + k ], se_patch_marks ) ) {
+ 				continue;	// already checked this patch in another leaf
+ 			}
+-			patch->checkcount = cm.checkcount;
+ 
+ 			if ( !(patch->contents & tw->contents) ) {
+ 				continue;
+@@ -1154,7 +1150,7 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
+ 
+ 	cmod = CM_ClipHandleToModel( model );
+ 
+-	cm.checkcount++;		// for multi-check avoidance
++	CM_NextCheck();		// for multi-check avoidance
+ 
+ 	c_traces++;				// for statistics, may be zeroed
+ 
+diff --git a/code/qcommon/cmd.c b/code/qcommon/cmd.c
+index ed94517f..0c23dbf7 100644
+--- a/code/qcommon/cmd.c
++++ b/code/qcommon/cmd.c
+@@ -89,6 +89,13 @@ Adds command text at the end of the buffer, does NOT add a final \n
+ */
+ void Cbuf_AddText( const char *text ) {
+ 	int		l;
++
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++		SE_ServerKeepCommand( text );
++		return;
++	}
++#endif
+ 	
+ 	l = strlen (text);
+ 
+@@ -142,6 +149,13 @@ Cbuf_ExecuteText
+ */
+ void Cbuf_ExecuteText (int exec_when, const char *text)
+ {
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {	/* (whenever it was to be: after the frame, on the first core) */
++		if ( text )
++			SE_ServerKeepCommand( text );
++		return;
++	}
++#endif
+ 	switch (exec_when)
+ 	{
+ 	case EXEC_NOW:
+@@ -343,13 +357,28 @@ typedef struct cmd_function_s
+ 	char					*name;
+ 	xcommand_t				function;
+ 	completionFunc_t	complete;
++	qboolean			server;		// (SHADEREMU) it reads or changes the server's data
+ } cmd_function_t;
+ 
+ 
++#ifdef SHADEREMU
++/* a core its own: the server takes a client's command apart while this core runs one of its own */
++static struct {
++	int		argc;
++	char	*argv[MAX_STRING_TOKENS];
++	char	tokenized[BIG_INFO_STRING+MAX_STRING_TOKENS];
++	char	cmd[BIG_INFO_STRING];
++} cmd_words[2] __attribute__ ((aligned (16)));
++#define cmd_argc		(cmd_words[SE_OnWorker()].argc)
++#define cmd_argv		(cmd_words[SE_OnWorker()].argv)
++#define cmd_tokenized	(cmd_words[SE_OnWorker()].tokenized)
++#define cmd_cmd			(cmd_words[SE_OnWorker()].cmd)
++#else
+ static	int			cmd_argc;
+ static	char		*cmd_argv[MAX_STRING_TOKENS];		// points into cmd_tokenized
+ static	char		cmd_tokenized[BIG_INFO_STRING+MAX_STRING_TOKENS];	// will have 0 bytes inserted
+ static	char		cmd_cmd[BIG_INFO_STRING]; // the original command we received (no token processing)
++#endif
+ 
+ static	cmd_function_t	*cmd_functions;		// possible commands to execute
+ 
+@@ -652,10 +681,24 @@ void	Cmd_AddCommand( const char *cmd_name, xcommand_t function ) {
+ 	cmd->name = CopyString( cmd_name );
+ 	cmd->function = function;
+ 	cmd->complete = NULL;
++	cmd->server = qfalse;
+ 	cmd->next = cmd_functions;
+ 	cmd_functions = cmd;
+ }
+ 
++#ifdef SHADEREMU
++/* A command of the server's (server.h has its files add theirs so): the server's frame on a
++   worker core is waited for before it runs. */
++void	SE_ServerAddCommand( const char *cmd_name, xcommand_t function ) {
++	cmd_function_t	*cmd;
++
++	Cmd_AddCommand( cmd_name, function );
++	for ( cmd = cmd_functions ; cmd ; cmd = cmd->next )
++		if ( !Q_stricmp( cmd_name, cmd->name ) )
++			cmd->server = qtrue;
++}
++#endif
++
+ /*
+ ============
+ Cmd_SetCommandCompletionFunc
+@@ -783,6 +826,10 @@ void	Cmd_ExecuteString( const char *text ) {
+ 				// let the cgame or game handle it
+ 				break;
+ 			} else {
++#ifdef SHADEREMU
++				if ( cmd->server )
++					SE_ServerSettle();
++#endif
+ 				cmd->function ();
+ 			}
+ 			return;
+diff --git a/code/qcommon/common.c b/code/qcommon/common.c
+index d97312c4..dff2186e 100644
+--- a/code/qcommon/common.c
++++ b/code/qcommon/common.c
+@@ -37,12 +37,22 @@ int demo_protocols[] =
+ #define MAX_NUM_ARGVS	50
+ 
+ #define MIN_DEDICATED_COMHUNKMEGS 1
++#ifdef SHADEREMU	/* a machine of 96 MB, and a renderer that keeps nothing there */
++#define DEF_COMHUNKMEGS 	32
++#define MIN_COMHUNKMEGS		16
++#define DEF_COMZONEMEGS		16
++#else
+ #define DEF_COMHUNKMEGS 	128
+ #define MIN_COMHUNKMEGS		DEF_COMHUNKMEGS
+ #define DEF_COMZONEMEGS		48
++#endif
+ #define DEF_COMHUNKMEGS_S	XSTRING(DEF_COMHUNKMEGS)
+ #define DEF_COMZONEMEGS_S	XSTRING(DEF_COMZONEMEGS)
+ 
++#ifdef SHADEREMU
++int SE_Phase( int next );
++#endif
++
+ int		com_argc;
+ char	*com_argv[MAX_NUM_ARGVS+1];
+ 
+@@ -173,6 +183,13 @@ void QDECL Com_Printf( const char *fmt, ... ) {
+ 	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
+ 	va_end (argptr);
+ 
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {	/* the console is the first core's: printed when the frame is taken */
++		SE_ServerKeepPrint( msg );
++		return;
++	}
++#endif
++
+ 	if ( rd_buffer ) {
+ 		if ((strlen (msg) + strlen(rd_buffer)) > (rd_buffersize - 1)) {
+ 			rd_flush(rd_buffer);
+@@ -270,6 +287,17 @@ void QDECL Com_Error( int code, const char *fmt, ... ) {
+ 	int			currentTime;
+ 	qboolean	restartClient;
+ 
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {	/* the job ends, and the first core raises it */
++		char	text[MAXPRINTMSG];
++
++		va_start (argptr,fmt);
++		Q_vsnprintf (text, sizeof(text), fmt, argptr);
++		va_end (argptr);
++		SE_ServerWorkerError( code, text );
++	}
++#endif
++
+ 	if(com_errorEntered)
+ 		Sys_Error("recursive error after: %s", com_errorMessage);
+ 
+@@ -798,6 +826,16 @@ static memzone_t	*mainzone;
+ // we also have a small zone for small allocations that would only
+ // fragment the main zone (think of cvar and cmd strings)
+ static memzone_t	*smallzone;
++#ifdef SHADEREMU
++/*
++ * A zone for what the server allocates (its strings, the bots' library): its frame runs on a
++ * worker core while this one allocates and frees too, and a zone is a list. This one is only
++ * the server's, wherever its code runs (server.h).
++ */
++#define SERVER_ZONE_BYTES (8 * 1024 * 1024)
++static memzone_t	*serverzone;
++static int			se_zone_server;	/* the allocation being made is the server's */
++#endif
+ 
+ static void Z_CheckHeap( void );
+ 
+@@ -868,12 +906,23 @@ void Z_Free( void *ptr ) {
+ 	if (block->tag == TAG_STATIC) {
+ 		return;
+ 	}
++#ifdef SHADEREMU
++	if ( SE_OnWorker() && ( (byte *)ptr < (byte *)serverzone || (byte *)ptr >= (byte *)serverzone + SERVER_ZONE_BYTES ) ) {
++		Com_Error( ERR_FATAL, "Z_Free: the server's frame freed what is not the server's" );
++	}
++#endif
+ 
+ 	// check the memory trash tester
+ 	if ( *(int *)((byte *)block + block->size - 4 ) != ZONEID ) {
+ 		Com_Error( ERR_FATAL, "Z_Free: memory block wrote past end" );
+ 	}
+ 
++	#ifdef SHADEREMU
++	if ( (byte *)ptr >= (byte *)serverzone && (byte *)ptr < (byte *)serverzone + SERVER_ZONE_BYTES ) {
++		zone = serverzone;
++	}
++	else
++#endif
+ 	if (block->tag == TAG_SMALL) {
+ 		zone = smallzone;
+ 	}
+@@ -884,7 +933,9 @@ void Z_Free( void *ptr ) {
+ 	zone->used -= block->size;
+ 	// set the block to something that should cause problems
+ 	// if it is referenced...
++#ifndef SHADEREMU	/* (a level's start frees 140 MB a kilobyte at a time, the bots' script reader's words) */
+ 	Com_Memset( ptr, 0xaa, block->size - sizeof( *block ) );
++#endif
+ 
+ 	block->tag = 0;		// mark as free
+ 	
+@@ -917,7 +968,25 @@ void Z_Free( void *ptr ) {
+ Z_FreeTags
+ ================
+ */
++#ifdef SHADEREMU
++static void Z_FreeZoneTags( memzone_t *zone, int tag ) {
++	zone->rover = zone->blocklist.next;
++	do {
++		if ( zone->rover->tag == tag ) {
++			Z_Free( (void *)(zone->rover + 1) );
++			continue;
++		}
++		zone->rover = zone->rover->next;
++	} while ( zone->rover != &zone->blocklist );
++}
++#endif
++
+ void Z_FreeTags( int tag ) {
++#ifdef SHADEREMU
++	if ( tag != TAG_SMALL )
++		Z_FreeZoneTags( serverzone, tag );
++#endif
++
+ 	memzone_t	*zone;
+ 
+ 	if ( tag == TAG_SMALL ) {
+@@ -958,6 +1027,15 @@ void *Z_TagMalloc( int size, int tag ) {
+ 		Com_Error( ERR_FATAL, "Z_TagMalloc: tried to use a 0 tag" );
+ 	}
+ 
++	#ifdef SHADEREMU
++	if ( se_zone_server ) {
++		zone = serverzone;
++	}
++	else if ( SE_OnWorker() ) {
++		Com_Error( ERR_FATAL, "Z_TagMalloc: the server's frame allocated %i bytes that are not the server's", size );
++	}
++	else
++#endif
+ 	if ( tag == TAG_SMALL ) {
+ 		zone = smallzone;
+ 	}
+@@ -1200,11 +1278,54 @@ char *CopyString( const char *in ) {
+ 			return ((char *)&numberstring[in[0]-'0']) + sizeof(memblock_t);
+ 		}
+ 	}
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++		Com_Error( ERR_FATAL, "CopyString: the server's frame copied \"%s\" into what is not the server's", in );
++	}
++#endif
+ 	out = S_Malloc (strlen(in)+1);
+ 	strcpy (out, in);
+ 	return out;
+ }
+ 
++#ifdef SHADEREMU
++void *Z_ServerTagMalloc( int size, int tag ) {
++	void	*buf;
++
++	se_zone_server++;
++#ifdef ZONE_DEBUG
++	buf = Z_TagMallocDebug( size, tag, "server", __FILE__, __LINE__ );
++#else
++	buf = Z_TagMalloc( size, tag );
++#endif
++	se_zone_server--;
++	return buf;
++}
++
++void *Z_ServerMalloc( int size ) {
++	void	*buf = Z_ServerTagMalloc( size, TAG_GENERAL );
++
++	Com_Memset( buf, 0, size );
++	return buf;
++}
++
++char *Z_ServerCopyString( const char *in ) {
++	char	*out;
++
++	if (!in[0]) {
++		return ((char *)&emptystring) + sizeof(memblock_t);
++	}
++	else if (!in[1]) {
++		if (in[0] >= '0' && in[0] <= '9') {
++			return ((char *)&numberstring[in[0]-'0']) + sizeof(memblock_t);
++		}
++	}
++	out = Z_ServerTagMalloc (strlen(in)+1, TAG_GENERAL);
++	strcpy (out, in);
++	return out;
++}
++#endif
++
+ /*
+ ==============================================================================
+ 
+@@ -1454,6 +1575,13 @@ void Com_InitZoneMemory( void ) {
+ 		Com_Error( ERR_FATAL, "Zone data failed to allocate %i megs", s_zoneTotal / (1024*1024) );
+ 	}
+ 	Z_ClearZone( mainzone, s_zoneTotal );
++#ifdef SHADEREMU
++	serverzone = calloc( SERVER_ZONE_BYTES, 1 );
++	if ( !serverzone ) {
++		Com_Error( ERR_FATAL, "Zone data failed to allocate the server's %i megs", SERVER_ZONE_BYTES / (1024*1024) );
++	}
++	Z_ClearZone( serverzone, SERVER_ZONE_BYTES );
++#endif
+ 
+ }
+ 
+@@ -2171,6 +2299,10 @@ void Com_RunAndTimeServerPacket( netadr_t *evFrom, msg_t *buf ) {
+ 		t1 = Sys_Milliseconds ();
+ 	}
+ 
++#ifdef SHADEREMU
++	if ( SE_ServerInbox( *evFrom, buf ) )	/* kept for the server's next frame, which may be a worker's */
++		return;
++#endif
+ 	SV_PacketEvent( *evFrom, buf );
+ 
+ 	if ( com_speeds->integer ) {
+@@ -3146,7 +3278,11 @@ void Com_Frame( void ) {
+ 
+ 	do
+ 	{
++#ifdef SHADEREMU
++		if(0)	/* (the server's frame sends them itself: it may be on a worker core) */
++#else
+ 		if(com_sv_running->integer)
++#endif
+ 		{
+ 			timeValSV = SV_SendQueuedPackets();
+ 			
+@@ -3189,7 +3325,15 @@ void Com_Frame( void ) {
+ 		timeBeforeServer = Sys_Milliseconds ();
+ 	}
+ 
++#ifdef SHADEREMU
++	SE_Phase( 1 );
++	SE_ServerFrame( msec );
++#else
+ 	SV_Frame( msec );
++#endif
++#ifdef SHADEREMU
++	SE_Phase( 0 );
++#endif
+ 
+ 	// if "dedicated" has been modified, start up
+ 	// or shut down the client system.
+@@ -3227,7 +3371,13 @@ void Com_Frame( void ) {
+ 		timeBeforeClient = Sys_Milliseconds ();
+ 	}
+ 
++#ifdef SHADEREMU
++	SE_Phase( 2 );
++#endif
+ 	CL_Frame( msec );
++#ifdef SHADEREMU
++	SE_Phase( 0 );
++#endif
+ 
+ 	if ( com_speeds->integer ) {
+ 		timeAfter = Sys_Milliseconds ();
+diff --git a/code/qcommon/cvar.c b/code/qcommon/cvar.c
+index 7b219f8d..9ffbdb87 100644
+--- a/code/qcommon/cvar.c
++++ b/code/qcommon/cvar.c
+@@ -24,6 +24,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ #include "q_shared.h"
+ #include "qcommon.h"
+ 
++/* (SHADEREMU) goes up when any variable is made or changed: a module looks at its own only then */
++int			se_cvar_changes = 1;
++
+ cvar_t		*cvar_vars = NULL;
+ cvar_t		*cvar_cheats;
+ int			cvar_modifiedFlags;
+@@ -434,6 +437,9 @@ cvar_t *Cvar_Get( const char *var_name, const char *var_value, int flags ) {
+ 	var->string = CopyString (var_value);
+ 	var->modified = qtrue;
+ 	var->modificationCount = 1;
++#ifdef SHADEREMU
++	se_cvar_changes++;
++#endif
+ 	var->value = atof (var->string);
+ 	var->integer = atoi(var->string);
+ 	var->resetString = CopyString( var_value );
+@@ -504,6 +510,13 @@ Cvar_Set2
+ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
+ 	cvar_t	*var;
+ 
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++		SE_ServerKeepCvar( var_name, value, force );
++		return Cvar_FindVar( var_name );
++	}
++#endif
++
+ //	Com_DPrintf( "Cvar_Set2: %s %s\n", var_name, value );
+ 
+ 	if ( !Cvar_ValidateString( var_name ) ) {
+@@ -593,6 +606,7 @@ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
+ 			var->latchedString = CopyString(value);
+ 			var->modified = qtrue;
+ 			var->modificationCount++;
++			se_cvar_changes++;
+ 			return var;
+ 		}
+ 	}
+@@ -610,6 +624,7 @@ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
+ 
+ 	var->modified = qtrue;
+ 	var->modificationCount++;
++	se_cvar_changes++;
+ 	
+ 	Z_Free (var->string);	// free the old value string
+ 	
+diff --git a/code/qcommon/files.c b/code/qcommon/files.c
+index b3b9f1e9..6c260594 100644
+--- a/code/qcommon/files.c
++++ b/code/qcommon/files.c
+@@ -1338,6 +1338,15 @@ long FS_FOpenFileRead(const char *filename, fileHandle_t *file, qboolean uniqueF
+ 	if(!fs_searchpaths)
+ 		Com_Error(ERR_FATAL, "Filesystem call made without initialization");
+ 
++#ifdef SHADEREMU
++	{
++		extern int se_wanted;
++		void SE_Wanted (const char *kind, const char *name);
++
++		if (se_wanted)
++			SE_Wanted ("file", filename);
++	}
++#endif
+ 	isLocalConfig = !strcmp(filename, "autoexec.cfg") || !strcmp(filename, Q3CONFIG_CFG);
+ 	for(search = fs_searchpaths; search; search = search->next)
+ 	{
+diff --git a/code/qcommon/huffman.c b/code/qcommon/huffman.c
+index 0283fb70..8063d2e9 100644
+--- a/code/qcommon/huffman.c
++++ b/code/qcommon/huffman.c
+@@ -30,13 +30,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ static int			bloc = 0;
+ 
+ void	Huff_putBit( int bit, byte *fout, int *offset) {
+-	bloc = *offset;
+-	if ((bloc&7) == 0) {
+-		fout[(bloc>>3)] = 0;
++	int at = *offset;	// (not the file's one counter: two cores write messages at once)
++
++	if ((at&7) == 0) {
++		fout[(at>>3)] = 0;
+ 	}
+-	fout[(bloc>>3)] |= bit << (bloc&7);
+-	bloc++;
+-	*offset = bloc;
++	fout[(at>>3)] |= bit << (at&7);
++	*offset = at + 1;
+ }
+ 
+ int		Huff_getBloc(void)
+@@ -50,11 +50,10 @@ void	Huff_setBloc(int _bloc)
+ }
+ 
+ int		Huff_getBit( byte *fin, int *offset) {
+-	int t;
+-	bloc = *offset;
+-	t = (fin[(bloc>>3)] >> (bloc&7)) & 0x1;
+-	bloc++;
+-	*offset = bloc;
++	int t, at = *offset;
++
++	t = (fin[(at>>3)] >> (at&7)) & 0x1;
++	*offset = at + 1;
+ 	return t;
+ }
+ 
+@@ -280,6 +279,20 @@ int Huff_Receive (node_t *node, int *ch, byte *fin) {
+ 
+ /* Get a symbol */
+ void Huff_offsetReceive (node_t *node, int *ch, byte *fin, int *offset, int maxoffset) {
++#ifdef SHADEREMU
++	/* a byte is its eight bits (msg.c, MSG_initHuffman) */
++	int at = *offset, shift = at & 7;
++	const byte *p = fin + (at >> 3);
++
++	if (at + 8 > maxoffset) {
++		*ch = 0;
++		*offset = maxoffset + 1;
++		return;
++	}
++	*ch = shift ? ((p[0] | p[1] << 8) >> shift) & 0xff : p[0];
++	*offset = at + 8;
++	return;
++#endif
+ 	bloc = *offset;
+ 	while (node && node->symbol == INTERNAL_NODE) {
+ 		if (bloc >= maxoffset) {
+@@ -335,6 +348,21 @@ void Huff_transmit (huff_t *huff, int ch, byte *fout, int maxoffset) {
+ }
+ 
+ void Huff_offsetTransmit (huff_t *huff, int ch, byte *fout, int *offset, int maxoffset) {
++#ifdef SHADEREMU
++	int at = *offset, shift = at & 7;
++	byte *p = fout + (at >> 3);
++
++	if (at + 8 > maxoffset) {
++		*offset = maxoffset + 1;
++		return;
++	}
++	if (shift)
++		p[0] |= (byte)(ch << shift), p[1] = (byte)((ch & 0xff) >> (8 - shift));
++	else
++		p[0] = (byte)ch;
++	*offset = at + 8;
++	return;
++#endif
+ 	bloc = *offset;
+ 	send(huff->loc[ch], NULL, fout, maxoffset);
+ 	*offset = bloc;
+diff --git a/code/qcommon/msg.c b/code/qcommon/msg.c
+index 00c1f65b..c81dc653 100644
+--- a/code/qcommon/msg.c
++++ b/code/qcommon/msg.c
+@@ -845,6 +845,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+ 	}
+ 
+ 	lc = 0;
++#ifdef SHADEREMU
++	/*
++	 * Most of what a client is told of is what it was told last time (an item where it lies):
++	 * the two are compared as words first, which is a third of looking each field up in the table.
++	 */
++	{
++		const int	*a = (const int *)from, *b = (const int *)to;
++		int			differ = 0;
++
++		for ( i = 0 ; i < (int)( sizeof( *from ) / 4 ) ; i++ ) {
++			differ |= a[i] ^ b[i];
++		}
++		if ( !differ ) {
++			goto same;
++		}
++	}
++#endif
+ 	// build the change vector as bytes so it is endien independent
+ 	for ( i = 0, field = entityStateFields ; i < numFields ; i++, field++ ) {
+ 		fromF = (int *)( (byte *)from + field->offset );
+@@ -853,6 +870,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+ 			lc = i+1;
+ 		}
+ 	}
++#ifdef SHADEREMU
++same:
++#endif
+ 
+ 	if ( lc == 0 ) {
+ 		// nothing at all changed
+@@ -1667,6 +1687,15 @@ int msg_hData[256] = {
+ };
+ 
+ void MSG_initHuffman( void ) {
++#ifdef SHADEREMU
++	/*
++	 * No table: the coder's tree is built by counting every byte of a table of frequencies,
++	 * 700 million instructions before the first frame, and coding a byte is a walk of it. A
++	 * message's bytes go as they are (huffman.c). Two of these machines understand each other.
++	 */
++	msgInit = qtrue;
++	return;
++#endif
+ 	int i,j;
+ 
+ 	msgInit = qtrue;
+diff --git a/code/qcommon/net_chan.c b/code/qcommon/net_chan.c
+index e1a27fdc..e2af6e87 100644
+--- a/code/qcommon/net_chan.c
++++ b/code/qcommon/net_chan.c
+@@ -536,6 +536,13 @@ void NET_FlushPacketQueue(void)
+ 
+ void NET_SendPacket( netsrc_t sock, int length, const void *data, netadr_t to ) {
+ 
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++		SE_ServerOutbox( to, length, data );
++		return;
++	}
++#endif
++
+ 	// sequenced packets are shown in netchan, so just show oob
+ 	if ( showpackets->integer && *(int *)data == -1 )	{
+ 		Com_Printf ("send packet %4i\n", length);
+diff --git a/code/qcommon/net_ip.c b/code/qcommon/net_ip.c
+index 294e4c03..0ca82824 100644
+--- a/code/qcommon/net_ip.c
++++ b/code/qcommon/net_ip.c
+@@ -1659,6 +1659,10 @@ NET_Sleep
+ Sleeps msec or until something happens on the network
+ ====================
+ */
++#ifdef SHADEREMU
++static int se_net_heard = -100000;	/* when a packet last came */
++#endif
++
+ void NET_Sleep(int msec)
+ {
+ 	struct timeval timeout;
+@@ -1669,6 +1673,22 @@ void NET_Sleep(int msec)
+ 	if(msec < 0)
+ 		msec = 0;
+ 
++#ifdef SHADEREMU
++	/*
++	 * A system call is tens of thousands of instructions on this machine, and this is one a
++	 * frame: while nothing has come from the network for five seconds it is asked four times a
++	 * second. (A game on one machine never hears from it.)
++	 */
++	{
++		static int asked;
++		int now = Sys_Milliseconds();
++
++		if(msec == 0 && now - se_net_heard > 5000 && now - asked < 250)
++			return;
++		asked = now;
++	}
++#endif
++
+ 	FD_ZERO(&fdr);
+ 
+ 	if(ip_socket != INVALID_SOCKET)
+@@ -1702,7 +1722,12 @@ void NET_Sleep(int msec)
+ 	if(retval == SOCKET_ERROR)
+ 		Com_Printf("Warning: select() syscall failed: %s\n", NET_ErrorString());
+ 	else if(retval > 0)
++	{
++#ifdef SHADEREMU
++		se_net_heard = Sys_Milliseconds();
++#endif
+ 		NET_Event(&fdr);
++	}
+ }
+ 
+ /*
+diff --git a/code/qcommon/q_math.c b/code/qcommon/q_math.c
+index 13158661..b8f20b35 100644
+--- a/code/qcommon/q_math.c
++++ b/code/qcommon/q_math.c
+@@ -931,7 +931,7 @@ void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
+ 
+ void AngleVectors( const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up) {
+ 	float		angle;
+-	static float		sr, sp, sy, cr, cp, cy;
++	float		sr, sp, sy, cr, cp, cy;	// (not static: two cores are in here at once)
+ 	// static to help MS compiler fp bugs
+ 
+ 	angle = angles[YAW] * (M_PI*2 / 360);
+diff --git a/code/qcommon/q_shared.c b/code/qcommon/q_shared.c
+index be72dc70..9e8b93c0 100644
+--- a/code/qcommon/q_shared.c
++++ b/code/qcommon/q_shared.c
+@@ -820,8 +820,19 @@ void Q_strncpyz( char *dest, const char *src, int destsize ) {
+ 		Com_Error(ERR_FATAL,"Q_strncpyz: destsize < 1" ); 
+ 	}
+ 
++#ifdef SHADEREMU
++	{
++		/* (the text and its end, not zeros to the end of where it goes: that is a kilobyte a copy) */
++		int i;
++
++		for ( i = 0 ; i < destsize - 1 && src[i] ; i++ )
++			dest[i] = src[i];
++		dest[i] = 0;
++	}
++#else
+ 	strncpy( dest, src, destsize-1 );
+   dest[destsize-1] = 0;
++#endif
+ }
+                  
+ int Q_stricmpn (const char *s1, const char *s2, int n) {
+@@ -1035,12 +1046,23 @@ varargs versions of all text functions.
+ */
+ char	* QDECL va( char *format, ... ) {
+ 	va_list		argptr;
++#ifdef SHADEREMU
++	static char string[2][2][32000]; // in case va is called by nested functions; a core its own
++	static int	index = 0, index_worker = 0;
++	char		*buf;
++
++	if ( SE_OnWorker() )
++		buf = string[1][index_worker++ & 1];
++	else
++		buf = string[0][index++ & 1];
++#else
+ 	static char string[2][32000]; // in case va is called by nested functions
+ 	static int	index = 0;
+ 	char		*buf;
+ 
+ 	buf = string[index & 1];
+ 	index++;
++#endif
+ 
+ 	va_start (argptr, format);
+ 	Q_vsnprintf (buf, sizeof(*string), format, argptr);
+@@ -1089,9 +1111,16 @@ FIXME: overflow check?
+ */
+ char *Info_ValueForKey( const char *s, const char *key ) {
+ 	char	pkey[BIG_INFO_KEY];
++#ifdef SHADEREMU
++	static	char values[2][2][BIG_INFO_VALUE];	// a core its own two
++	static	int	index_first = 0, index_worker = 0;
++	char	(*value)[BIG_INFO_VALUE] = values[SE_OnWorker()];
++	int		valueindex = SE_OnWorker() ? (index_worker ^= 1) ^ 1 : (index_first ^= 1) ^ 1;
++#else
+ 	static	char value[2][BIG_INFO_VALUE];	// use two buffers so compares
+ 											// work without stomping on each other
+ 	static	int	valueindex = 0;
++#endif
+ 	char	*o;
+ 	
+ 	if ( !s || !key ) {
+diff --git a/code/qcommon/q_shared.h b/code/qcommon/q_shared.h
+index 1877a42c..cba3b0b2 100644
+--- a/code/qcommon/q_shared.h
++++ b/code/qcommon/q_shared.h
+@@ -23,13 +23,27 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ #ifndef __Q_SHARED_H
+ #define __Q_SHARED_H
+ 
++#ifdef SHADEREMU
++/*
++ * The server's frame may run on a worker core (linux/quake3/server_shaderemu.c): whether the
++ * code that asks is running there, by where its stack is. What two cores would both write
++ * has one of itself for each.
++ */
++extern unsigned se_main_stack;
++static inline int SE_OnWorker( void ) {
++	char here;
++
++	return se_main_stack - (unsigned)(__UINTPTR_TYPE__)&here >= 0x400000u;
++}
++#endif
++
+ // q_shared.h -- included first by ALL program modules.
+ // A user mod should never modify this file
+ 
+ #ifdef STANDALONE
+-  #define PRODUCT_NAME				"iofoo3"
+-  #define BASEGAME					"foobar"
+-  #define CLIENT_WINDOW_TITLE		"changeme"
++  #define PRODUCT_NAME				"ioq3"
++  #define BASEGAME					"baseq3"
++  #define CLIENT_WINDOW_TITLE		"Quake III Arena"
+   #define CLIENT_WINDOW_MIN_TITLE	"changeme2"
+   #define HOMEPATH_NAME_UNIX_LEGACY	".foo"
+   #define HOMEPATH_NAME				"FooBar"
+diff --git a/code/qcommon/qcommon.h b/code/qcommon/qcommon.h
+index 1d9b61a9..66667876 100644
+--- a/code/qcommon/qcommon.h
++++ b/code/qcommon/qcommon.h
+@@ -1229,4 +1229,21 @@ extern huffman_t clientHuffTables;
+ #define DLF_NO_UDP 4
+ #define DLF_NO_DISCONNECT 8
+ 
++#ifdef SHADEREMU
++/* linux/quake3/server_shaderemu.c: the server's frame on a worker core */
++void SE_ServerFrame( int msec );			/* in place of SV_Frame */
++void SE_ServerSettle( void );				/* before this core reads or changes the server's data */
++void SE_ServerPoll( void );					/* a worker stopped at a page nobody has touched is helped on */
++int SE_ServerInbox( netadr_t from, msg_t *msg );	/* a packet for the server: 1 when kept for its next frame */
++void SE_ServerOutbox( netadr_t to, int length, const void *data );	/* one the server sends from the worker */
++void SE_ServerKeepPrint( const char *text );
++void SE_ServerKeepCommand( const char *text );
++void SE_ServerKeepCvar( const char *name, const char *value, int force );
++void SE_ServerWorkerError( int code, const char *text ) Q_NO_RETURN;
++void SE_ServerAddCommand( const char *cmd_name, xcommand_t function );
++void *Z_ServerTagMalloc( int size, int tag );
++void *Z_ServerMalloc( int size );
++char *Z_ServerCopyString( const char *in );
++#endif
++
+ #endif // _QCOMMON_H_
+diff --git a/code/qcommon/unzip.c b/code/qcommon/unzip.c
+index 9a8ee451..5376d0f4 100644
+--- a/code/qcommon/unzip.c
++++ b/code/qcommon/unzip.c
+@@ -1329,6 +1329,11 @@ extern int ZEXPORT unzReadCurrentFile  (file, buf, len)
+             else
+                 uDoCopy = pfile_in_zip_read_info->stream.avail_in ;
+ 
++#ifdef SHADEREMU
++            /* (a stored file is copied as memory is, and not summed: it is a file of the ROM) */
++            (void)i;
++            memcpy(pfile_in_zip_read_info->stream.next_out, pfile_in_zip_read_info->stream.next_in, uDoCopy);
++#else
+             for (i=0;i<uDoCopy;i++)
+                 *(pfile_in_zip_read_info->stream.next_out+i) =
+                         *(pfile_in_zip_read_info->stream.next_in+i);
+@@ -1336,6 +1341,7 @@ extern int ZEXPORT unzReadCurrentFile  (file, buf, len)
+             pfile_in_zip_read_info->crc32 = crc32(pfile_in_zip_read_info->crc32,
+                                 pfile_in_zip_read_info->stream.next_out,
+                                 uDoCopy);
++#endif
+             pfile_in_zip_read_info->rest_read_uncompressed-=uDoCopy;
+             pfile_in_zip_read_info->stream.avail_in -= uDoCopy;
+             pfile_in_zip_read_info->stream.avail_out -= uDoCopy;
+@@ -1516,7 +1522,11 @@ extern int ZEXPORT unzCloseCurrentFile (file)
+     if ((pfile_in_zip_read_info->rest_read_uncompressed == 0) &&
+         (!pfile_in_zip_read_info->raw))
+     {
++#ifdef SHADEREMU
++        if (pfile_in_zip_read_info->compression_method != 0 && pfile_in_zip_read_info->crc32 != pfile_in_zip_read_info->crc32_wait)
++#else
+         if (pfile_in_zip_read_info->crc32 != pfile_in_zip_read_info->crc32_wait)
++#endif
+             err=UNZ_CRCERROR;
+     }
+ 
+diff --git a/code/qcommon/vm.c b/code/qcommon/vm.c
+index 9de7e15f..f0afe6c4 100644
+--- a/code/qcommon/vm.c
++++ b/code/qcommon/vm.c
+@@ -335,6 +335,26 @@ Dlls will call this directly
+  
+ ============
+ */
++#ifdef SHADEREMU
++/*
++ * The modules are part of the program and call the engine without the walk of a variable
++ * argument list (a hundred instructions a call, and a frame makes a thousand): on this
++ * machine the first eight arguments of any call are in registers and the rest on the caller's
++ * stack, whether the function was declared with "..." or not, so sixteen named ones are
++ * those. And each by its own way in, not by which module was called last: the game's frame
++ * may be on a worker core while this one is in the client's.
++ */
++static intptr_t (*se_calls[3])( intptr_t * );
++#define SE_CALLS( n ) \
++static intptr_t SE_DllSyscall##n( intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, intptr_t a4, intptr_t a5, intptr_t a6, intptr_t a7, \
++	intptr_t a8, intptr_t a9, intptr_t a10, intptr_t a11, intptr_t a12, intptr_t a13, intptr_t a14, intptr_t a15 ) { \
++	intptr_t args[MAX_VMSYSCALL_ARGS] = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15 }; \
++	return se_calls[n]( args ); \
++}
++SE_CALLS( 0 ) SE_CALLS( 1 ) SE_CALLS( 2 )
++#endif
++
++
+ intptr_t QDECL VM_DllSyscall( intptr_t arg, ... ) {
+ #if !id386 || defined __clang__
+   // rcg010206 - see commentary above
+@@ -610,6 +630,22 @@ vm_t *VM_Create( const char *module, intptr_t (*systemCalls)(intptr_t *),
+ 
+ 	Q_strncpyz(vm->name, module, sizeof(vm->name));
+ 
++#ifdef SHADEREMU
++	/* the modules are part of the program (sys_shaderemu.c) */
++	{
++		int which = !strcmp(module, "qagame") ? 0 : !strcmp(module, "cgame") ? 1 : 2;
++		void *thunks[3] = { SE_DllSyscall0, SE_DllSyscall1, SE_DllSyscall2 };
++
++		se_calls[which] = systemCalls;
++		vm->dllHandle = Sys_LoadGameDll(module, &vm->entryPoint, (intptr_t (*)(intptr_t, ...))thunks[which]);
++	}
++	if(vm->dllHandle)
++	{
++		vm->systemCall = systemCalls;
++		return vm;
++	}
++#endif
++
+ 	do
+ 	{
+ 		retval = FS_FindVM(&startSearch, filename, sizeof(filename), module, (interpret == VMI_NATIVE));
+@@ -746,6 +782,9 @@ void VM_Forced_Unload_Done(void) {
+ }
+ 
+ void *VM_ArgPtr( intptr_t intValue ) {
++#ifdef SHADEREMU
++	return (void *)intValue;	/* (the modules are the program's own code: a pointer is a pointer) */
++#endif
+ 	if ( !intValue ) {
+ 		return NULL;
+ 	}
+@@ -762,6 +801,9 @@ void *VM_ArgPtr( intptr_t intValue ) {
+ }
+ 
+ void *VM_ExplicitArgPtr( vm_t *vm, intptr_t intValue ) {
++#ifdef SHADEREMU
++	return (void *)intValue;
++#endif
+ 	if ( !intValue ) {
+ 		return NULL;
+ 	}
+@@ -813,6 +855,22 @@ intptr_t QDECL VM_Call( vm_t *vm, int callnum, ... )
+ 	if(!vm || !vm->name[0])
+ 		Com_Error(ERR_FATAL, "VM_Call with NULL vm");
+ 
++#ifdef SHADEREMU
++	if ( vm->entryPoint ) {
++		/* (nothing of the engine's is written for the call: two cores may each be in one) */
++		int args[MAX_VMMAIN_ARGS-1];
++		va_list ap;
++		va_start(ap, callnum);
++		for (i = 0; i < ARRAY_LEN(args); i++) {
++			args[i] = va_arg(ap, int);
++		}
++		va_end(ap);
++		return vm->entryPoint( callnum,  args[0],  args[1],  args[2], args[3],
++                            args[4],  args[5],  args[6], args[7],
++                            args[8],  args[9], args[10], args[11]);
++	}
++#endif
++
+ 	oldVM = currentVM;
+ 	currentVM = vm;
+ 	lastVM = vm;
+diff --git a/code/server/server.h b/code/server/server.h
+index 9526d4ab..66aa0434 100644
+--- a/code/server/server.h
++++ b/code/server/server.h
+@@ -58,6 +58,7 @@ typedef struct svEntity_s {
+ 	int			lastCluster;		// if all the clusters don't fit in clusternums
+ 	int			areanum, areanum2;
+ 	int			snapshotCounter;	// used to prevent double adding from portal views
++	struct sharedEntity_s *gEnt;	// (SHADEREMU) the game's entity of this number: found without a division
+ } svEntity_t;
+ 
+ typedef enum {
+@@ -493,3 +494,13 @@ void SV_Netchan_Transmit( client_t *client, msg_t *msg);
+ int SV_Netchan_TransmitNextFragment(client_t *client);
+ qboolean SV_Netchan_Process( client_t *client, msg_t *msg );
+ void SV_Netchan_FreeQueue(client_t *client);
++
++#ifdef SHADEREMU
++/* what the server allocates is in a zone of its own, and its commands wait for its frame (qcommon.h) */
++#undef Z_Malloc
++#undef Z_TagMalloc
++#define Z_Malloc(size)				Z_ServerMalloc(size)
++#define Z_TagMalloc(size, tag)		Z_ServerTagMalloc(size, tag)
++#define CopyString(in)				Z_ServerCopyString(in)
++#define Cmd_AddCommand(name, fn)	SE_ServerAddCommand(name, fn)
++#endif
+diff --git a/code/server/sv_bot.c b/code/server/sv_bot.c
+index 44d283d2..5a57e37d 100644
+--- a/code/server/sv_bot.c
++++ b/code/server/sv_bot.c
+@@ -494,7 +494,11 @@ void SV_BotInitCvars(void) {
+ 	Cvar_Get("bot_forcewrite", "0", 0);					//force writing aas file
+ 	Cvar_Get("bot_aasoptimize", "0", 0);				//no aas file optimisation
+ 	Cvar_Get("bot_saveroutingcache", "0", 0);			//save routing cache
+-	Cvar_Get("bot_thinktime", "100", CVAR_CHEAT);		//msec the bots thinks
++#ifdef SHADEREMU
++	Cvar_Get("bot_thinktime", "200", CVAR_CHEAT);
++#else
++	Cvar_Get("bot_thinktime", "100", CVAR_CHEAT);
++#endif		//msec the bots thinks
+ 	Cvar_Get("bot_reloadcharacters", "0", 0);			//reload the bot characters each time
+ 	Cvar_Get("bot_testichat", "0", 0);					//test ichats
+ 	Cvar_Get("bot_testrchat", "0", 0);					//test rchats
+diff --git a/code/server/sv_game.c b/code/server/sv_game.c
+index 161d975e..d8a4c85f 100644
+--- a/code/server/sv_game.c
++++ b/code/server/sv_game.c
+@@ -63,6 +63,11 @@ svEntity_t	*SV_SvEntityForGentity( sharedEntity_t *gEnt ) {
+ sharedEntity_t *SV_GEntityForSvEntity( svEntity_t *svEnt ) {
+ 	int		num;
+ 
++#ifdef SHADEREMU
++	if ( svEnt->gEnt )
++		return (sharedEntity_t *)svEnt->gEnt;
++#endif
++
+ 	num = svEnt - sv.svEntities;
+ 	return SV_GentityNum( num );
+ }
+@@ -241,6 +246,13 @@ void SV_GetServerinfo( char *buffer, int bufferSize ) {
+ 	if ( bufferSize < 1 ) {
+ 		Com_Error( ERR_DROP, "SV_GetServerinfo: bufferSize == %i", bufferSize );
+ 	}
++#ifdef SHADEREMU
++	/* (the bots ask every frame: the string the server keeps is the same until a variable of it changes) */
++	if ( !( cvar_modifiedFlags & CVAR_SERVERINFO ) && sv.configstrings[CS_SERVERINFO] ) {
++		Q_strncpyz( buffer, sv.configstrings[CS_SERVERINFO], bufferSize );
++		return;
++	}
++#endif
+ 	Q_strncpyz( buffer, Cvar_InfoString( CVAR_SERVERINFO ), bufferSize );
+ }
+ 
+@@ -254,6 +266,14 @@ void SV_LocateGameData( sharedEntity_t *gEnts, int numGEntities, int sizeofGEnti
+ 					   playerState_t *clients, int sizeofGameClient ) {
+ 	sv.gentities = gEnts;
+ 	sv.gentitySize = sizeofGEntity_t;
++#ifdef SHADEREMU
++	{
++		int i;
++
++		for ( i = 0 ; i < MAX_GENTITIES ; i++ )
++			sv.svEntities[i].gEnt = (struct sharedEntity_s *)SV_GentityNum( i );
++	}
++#endif
+ 	sv.num_entities = numGEntities;
+ 
+ 	sv.gameClients = clients;
+@@ -957,6 +977,9 @@ qboolean SV_GameCommand( void ) {
+ 	if ( sv.state != SS_GAME ) {
+ 		return qfalse;
+ 	}
++#ifdef SHADEREMU
++	SE_ServerSettle();
++#endif
+ 
+ 	return VM_Call( gvm, GAME_CONSOLE_COMMAND );
+ }
+diff --git a/code/server/sv_init.c b/code/server/sv_init.c
+index 063b87c7..4e36420d 100644
+--- a/code/server/sv_init.c
++++ b/code/server/sv_init.c
+@@ -664,7 +664,11 @@ void SV_Init (void)
+ 	// server vars
+ 	sv_rconPassword = Cvar_Get ("rconPassword", "", CVAR_TEMP );
+ 	sv_privatePassword = Cvar_Get ("sv_privatePassword", "", CVAR_TEMP );
++#ifdef SHADEREMU
++	sv_fps = Cvar_Get ("sv_fps", "10", CVAR_TEMP );	/* (a frame of the game with bots is a third of a million instructions) */
++#else
+ 	sv_fps = Cvar_Get ("sv_fps", "20", CVAR_TEMP );
++#endif
+ 	sv_timeout = Cvar_Get ("sv_timeout", "200", CVAR_TEMP );
+ 	sv_zombietime = Cvar_Get ("sv_zombietime", "2", CVAR_TEMP );
+ 	Cvar_Get ("nextmap", "", CVAR_TEMP );
+@@ -743,6 +747,9 @@ void SV_Shutdown( char *finalmsg ) {
+ 	if ( !com_sv_running || !com_sv_running->integer ) {
+ 		return;
+ 	}
++#ifdef SHADEREMU
++	SE_ServerSettle();
++#endif
+ 
+ 	Com_Printf( "----- Server Shutdown (%s) -----\n", finalmsg );
+ 
+diff --git a/code/server/sv_main.c b/code/server/sv_main.c
+index 88435bff..2d412e9f 100644
+--- a/code/server/sv_main.c
++++ b/code/server/sv_main.c
+@@ -1052,9 +1052,18 @@ Player movement occurs as a result of packet events, which
+ happen before SV_Frame is called
+ ==================
+ */
++#ifdef SHADEREMU
++unsigned SE_Cycles( void );
++unsigned se_server_frames;
++unsigned se_server_parts[3];	/* instructions of the server's frames: the bots, the game, what the clients are told (the q3stat: lines) */
++#endif
++
+ void SV_Frame( int msec ) {
+ 	int		frameMsec;
+ 	int		startTime;
++#ifdef SHADEREMU
++	unsigned	se_began;
++#endif
+ 
+ 	// the menu kills the server with this cvar
+ 	if ( sv_killserver->integer ) {
+@@ -1094,7 +1103,13 @@ void SV_Frame( int msec ) {
+ 
+ 	sv.timeResidual += msec;
+ 
++#ifdef SHADEREMU
++	se_began = SE_Cycles();
++#endif
+ 	if (!com_dedicated->integer) SV_BotFrame (sv.time + sv.timeResidual);
++#ifdef SHADEREMU
++	se_server_parts[0] += SE_Cycles() - se_began;
++#endif
+ 
+ 	// if time is about to hit the 32nd bit, kick all clients
+ 	// and clear sv.time, rather
+@@ -1119,10 +1134,19 @@ void SV_Frame( int msec ) {
+ 	}
+ 
+ 	// update infostrings if anything has been changed
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++		/* (the first core does, before it hands the frame out: it sets those flags too) */
++	} else
++#endif
+ 	if ( cvar_modifiedFlags & CVAR_SERVERINFO ) {
+ 		SV_SetConfigstring( CS_SERVERINFO, Cvar_InfoString( CVAR_SERVERINFO ) );
+ 		cvar_modifiedFlags &= ~CVAR_SERVERINFO;
+ 	}
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {
++	} else
++#endif
+ 	if ( cvar_modifiedFlags & CVAR_SYSTEMINFO ) {
+ 		SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
+ 		cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
+@@ -1139,6 +1163,9 @@ void SV_Frame( int msec ) {
+ 
+ 	if (com_dedicated->integer) SV_BotFrame (sv.time);
+ 
++#ifdef SHADEREMU
++	se_began = SE_Cycles();
++#endif
+ 	// run the game simulation in chunks
+ 	while ( sv.timeResidual >= frameMsec ) {
+ 		sv.timeResidual -= frameMsec;
+@@ -1147,6 +1174,9 @@ void SV_Frame( int msec ) {
+ 
+ 		// let everything in the world think and move
+ 		VM_Call (gvm, GAME_RUN_FRAME, sv.time);
++#ifdef SHADEREMU
++		se_server_frames++;
++#endif
+ 	}
+ 
+ 	if ( com_speeds->integer ) {
+@@ -1156,8 +1186,18 @@ void SV_Frame( int msec ) {
+ 	// check timeouts
+ 	SV_CheckTimeouts();
+ 
++#ifdef SHADEREMU
++	se_server_parts[1] += SE_Cycles() - se_began;
++	se_began = SE_Cycles();
++#endif
+ 	// send messages back to the clients
+ 	SV_SendClientMessages();
++#ifdef SHADEREMU
++	se_server_parts[2] += SE_Cycles() - se_began;
++#endif
++#ifdef SHADEREMU
++	SV_SendQueuedPackets();
++#endif
+ 
+ 	// send a heartbeat to the master if needed
+ 	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);
+diff --git a/code/server/sv_snapshot.c b/code/server/sv_snapshot.c
+index ec760713..60a53199 100644
+--- a/code/server/sv_snapshot.c
++++ b/code/server/sv_snapshot.c
+@@ -495,8 +495,27 @@ static void SV_BuildClientSnapshot( client_t *client ) {
+ 	// in the list which will need to be resorted for the delta compression
+ 	// to work correctly.  This also catches the error condition
+ 	// of an entity being included twice.
++#ifdef SHADEREMU
++	{
++		/* the same order without a sort (ten thousand instructions a client a frame): a bit an entity, then the bits in order */
++		unsigned	bits[MAX_GENTITIES / 32], b;
++		int			n = 0;
++
++		Com_Memset( bits, 0, sizeof( bits ) );
++		for ( i = 0 ; i < entityNumbers.numSnapshotEntities ; i++ ) {
++			bits[entityNumbers.snapshotEntities[i] >> 5] |= 1u << ( entityNumbers.snapshotEntities[i] & 31 );
++		}
++		for ( i = 0 ; i < MAX_GENTITIES / 32 ; i++ ) {
++			for ( b = bits[i] ; b ; b &= b - 1 ) {
++				entityNumbers.snapshotEntities[n++] = i * 32 + __builtin_ctz( b );
++			}
++		}
++		entityNumbers.numSnapshotEntities = n;
++	}
++#else
+ 	qsort( entityNumbers.snapshotEntities, entityNumbers.numSnapshotEntities, 
+ 		sizeof( entityNumbers.snapshotEntities[0] ), SV_QsortEntityNumbers );
++#endif
+ 
+ 	// now that all viewpoint's areabits have been OR'd together, invert
+ 	// all of them to make it a mask vector, which is what the renderer wants
+diff --git a/code/sys/sys_loadlib.h b/code/sys/sys_loadlib.h
+index eac0f2c7..f7359699 100644
+--- a/code/sys/sys_loadlib.h
++++ b/code/sys/sys_loadlib.h
+@@ -20,7 +20,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ ===========================================================================
+ */
+ 
+-#ifdef DEDICATED
++#if defined SHADEREMU
++#	define Sys_LoadLibrary(f) ((void*)0)
++#	define Sys_UnloadLibrary(h) ((void)0)
++#	define Sys_LoadFunction(h,fn) ((void*)0)
++#	define Sys_LibraryError() "no libraries"
++#elif defined DEDICATED
+ #	ifdef _WIN32
+ #		include <windows.h>
+ #		define Sys_LoadLibrary(f) (void*)LoadLibrary(f)
+diff --git a/code/sys/sys_local.h b/code/sys/sys_local.h
+index 168d7e6d..a40a05f3 100644
+--- a/code/sys/sys_local.h
++++ b/code/sys/sys_local.h
+@@ -23,7 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ #include "../qcommon/q_shared.h"
+ #include "../qcommon/qcommon.h"
+ 
+-#ifndef DEDICATED
++#if !defined DEDICATED && !defined SHADEREMU
+ #ifdef USE_INTERNAL_SDL_HEADERS
+ #	include "SDL_version.h"
+ #else
+diff --git a/code/sys/sys_unix.c b/code/sys/sys_unix.c
+index 2ed5f1b0..889b8466 100644
+--- a/code/sys/sys_unix.c
++++ b/code/sys/sys_unix.c
+@@ -512,6 +512,7 @@ char* Sys_MicrosoftStorePath(void)
+ }
+ 
+ 
++#ifndef SHADEREMU	/* the machine's clock: sys_shaderemu.c */
+ /*
+ ================
+ Sys_Milliseconds
+@@ -544,6 +545,8 @@ int Sys_Milliseconds (void)
+ 	return curtime;
+ }
+ 
++#endif
++
+ /*
+ ==================
+ Sys_RandomBytes
+@@ -955,6 +958,7 @@ void Sys_Sleep( int msec )
+ 	}
+ }
+ 
++#ifndef SHADEREMU
+ /*
+ ==============
+ Sys_ErrorDialog
+@@ -1006,6 +1010,8 @@ void Sys_ErrorDialog( const char *error )
+ 	close( f );
+ }
+ 
++#endif
++
+ #ifndef __APPLE__
+ /*
+ ==============

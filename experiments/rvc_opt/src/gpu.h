@@ -47,6 +47,8 @@
 #define VERTEX_TABLE 0x2000      // flag (tagged): word 11 is the address of a table of colours, and a vertex has its tag's
 #define VERTEX_PACKED 0x4000     // flag (tagged): a vertex is a word, x | y << 8 | z << 16 | tag << 24; u and v are a word each at word 12's address
 #define VERTEX_POINTS 0x8000     // flag (compact, modelview): a vertex a triangle, which faces the eye; words 12-14 its size, growth and from where
+#define VERTEX_FACING 0x20000    // flag (tagged): word 11 is the address of a table of the ways a vertex faces, and it is lit from word 13's three texels
+#define VERTEX_MOVED 0x10000     // flag: word 15 is the address of two rows of three numbers the texture coordinates are turned and moved by
 
 // How fragments are coloured (low byte), plus flags.
 #define FRAGMENT_COLOUR 0     // interpolated colour
@@ -58,7 +60,9 @@
 #define FRAGMENT_YUV 6        // a picture as three planes of bytes one after another: luma, then the two of chroma at half the size each way (a video's frame)
 #define FRAGMENT_KEYED 0x100  // flag: texels equal to the key colour (or index) are not drawn
 #define FRAGMENT_LAID 0x200   // flag (draws): the texture lies on the picture, not on the surface (a sky)
-#define FRAGMENT_SMOOTH 0x400 // flag (word and indexed textures): the four texels round the point, weighed (bilinear)
+#define FRAGMENT_SMOOTH 0x400 // flag (word, indexed and three-byte textures): the four texels round the point, weighed (bilinear)
+#define FRAGMENT_CLAMPED 0x1000 // flag: the texture does not repeat: beyond its edge the edge goes on
+#define FRAGMENT_LIT 0x800    // flag (compact draws): times a light map, a three-byte texture, at a second pair of coordinates a vertex (words 12-14)
 // Bits 16-18 of the same word: the pass the command is drawn in. Passes are drawn in order, each
 // with fixed blending and depth use; within a pass commands keep the list's order.
 //   0 opaque   1 alpha blend   2 additive   3 multiply     depth tested; only pass 0 writes it
@@ -126,14 +130,23 @@ void gpu_compact(uint how, uint fourth, uint word, out float2 uv, out float4 col
 void gpu_compact_vertex(uint base, uint4 head, uint4 how, uint4 more, uint k, out float4 pos, out float2 uv, out float4 colour) {
     uint4 t;
     if (how.r & VERTEX_PACKED) {
-        uint p = ram_word(head.g + 4 * k);
-        t = uint4(p & 0xff, (p >> 8) & 0xff, (p >> 16) & 0xff, (ram_word(ram(base + 3).r + 4 * k) & 0xffffff) | (p & 0xff000000));
+        // (both buffers may be a file's bytes where it lies in the ROM)
+        uint p = texture_word(head.g + 4 * k);
+        t = uint4(p & 0xff, (p >> 8) & 0xff, (p >> 16) & 0xff, (texture_word(ram(base + 3).r + 4 * k) & 0xffffff) | (p & 0xff000000));
         pos = float4(float3(t.xyz), 1.0);
     } else {
         t = ram(texel_of(head.g) + k);
         pos = float4(gpu_number((how.r & VERTEX_FLOAT) != 0, t).xyz, 1.0);
     }
     gpu_compact(how.r, t.a, more.a, uv, colour);
+    if (how.r & VERTEX_FACING) {
+        // A vertex's tag is which of 256 ways it faces (a texel each of floats, in the model's
+        // own space); the light is three texels: from where, its colour, and the colour of
+        // the light from everywhere. The colour is that last and, by how it faces the light, the first.
+        float3 facing = asfloat(ram(texel_of(more.a) + (t.a >> 24))).xyz;
+        uint light = texel_of(ram(base + 3).g);
+        colour = float4(saturate(asfloat(ram(light + 2)).rgb + max(dot(facing, asfloat(ram(light)).xyz), 0.0) * asfloat(ram(light + 1)).rgb), 1.0);
+    }
 }
 
 // How far corner 1 (up) or 2 (right) of a point's triangle is from the point, which is `depth`
@@ -149,6 +162,8 @@ struct gpu_varyings {
     float2 uv : TEXCOORD0;
     nointerpolation uint4 texture_info : TEXCOORD1;   // mode and flags, address, width, height
     nointerpolation uint key : TEXCOORD2;
+    float2 light_uv : TEXCOORD3;                      // FRAGMENT_LIT: where in the light map
+    nointerpolation uint3 light_info : TEXCOORD4;     // and its address, width, height
 };
 
 // Pixels (x right, y down, depth 0..1) to the corner of the render target the display shows.
@@ -199,6 +214,8 @@ gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
     o.uv = 0;
     o.texture_info = 0;
     o.key = 0;
+    o.light_uv = 0;
+    o.light_info = 0;
     {
         uint op = head.r;
         uint k = id - head.a;
@@ -259,6 +276,20 @@ gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
             }
             o.texture_info = uint4(how.g, how.a, more.r, more.g);
             o.key = more.b;
+            if (how.r & VERTEX_MOVED) {
+                // a texture that slides, turns or grows: u' and v' are each a row's dot with (u, v, 1)
+                uint rows = texel_of(ram(base + 3).a);
+                float3 at = float3(o.uv, 1.0);
+                o.uv = float2(dot(gpu_number(fl, ram(rows)).xyz, at), dot(gpu_number(fl, ram(rows + 1)).xyz, at));
+            }
+            if ((how.g & FRAGMENT_LIT) && (how.r & VERTEX_COMPACT)) {
+                // words 12-14: a word a vertex of where in the light map it is (16 bits each way
+                // of the whole map), the map's address, its width | height << 16
+                uint4 lit = ram(base + 3);
+                uint at = ram_word(lit.r + 4 * k);
+                o.light_uv = float2(at & 0xffff, at >> 16) / 65535.0;
+                o.light_info = uint3(lit.g, lit.b & 0xffff, lit.b >> 16);
+            }
             if (how.g & FRAGMENT_LAID) {
                 // words 12-15: the texture coordinates of the picture's corner, and how far
                 // they go in 1,024 pixels. The colour carries the second pair to the fragments.
@@ -317,6 +348,8 @@ gpu_varyings gpu_vertex(uint id) {
     o.uv = 0;
     o.texture_info = 0;
     o.key = 0;
+    o.light_uv = 0;
+    o.light_info = 0;
     uint base;
     uint4 head;
     [branch]
@@ -324,8 +357,17 @@ gpu_varyings gpu_vertex(uint id) {
     return o;
 }
 
-// A texel of an indexed or a word texture as a colour, and whether it is drawn at all (the key
-// colour is not, when the draw is keyed).
+// Texel n of a texture of three bytes a pixel as a colour word: it may start at any byte, and
+// three bytes may run into the next word. In RAM or the ROM.
+uint gpu_rgb24(uint address, uint n) {
+    uint first = address + 3 * n, at = first & ~3u, shift = 8 * (first & 3);
+    uint texel = texture_word(at) >> shift;
+    if (shift > 8) texel |= texture_word(at + 4) << (32 - shift);
+    return (texel & 0xff) << 16 | (texel & 0xff00) | ((texel >> 16) & 0xff);
+}
+
+// A texel of an indexed, a word or a three-byte texture as a colour, and whether it is drawn
+// at all (the key colour is not, when the draw is keyed). Words and bytes may be in the ROM.
 float4 gpu_texel(gpu_varyings i, uint mode, uint x, uint y, uint width, out float there) {
     uint n = y * width + x, texel;
     if (mode == FRAGMENT_INDEXED) {
@@ -333,10 +375,27 @@ float4 gpu_texel(gpu_varyings i, uint mode, uint x, uint y, uint width, out floa
         there = (i.texture_info.r & FRAGMENT_KEYED) && texel == i.key ? 0.0 : 1.0;
         texel = ram_word(0x87000400 + 4 * texel);
     } else {
-        texel = ram_word(i.texture_info.g + 4 * n);
+        if (mode == FRAGMENT_RGB24) texel = gpu_rgb24(i.texture_info.g, n);
+        else texel = texture_word(i.texture_info.g + 4 * n);
         there = (i.texture_info.r & FRAGMENT_KEYED) && texel == i.key ? 0.0 : 1.0;
     }
     return colour_of(texel);
+}
+
+// The light a lit draw's fragment is times: its light map's four texels round the point,
+// weighed, the map's edge going on beyond it.
+float3 gpu_light(gpu_varyings i) {
+    uint width = i.light_info.g, height = i.light_info.b;
+    if (width == 0 || height == 0) return 1.0;
+    float2 at = saturate(i.light_uv) * float2(width, height) - 0.5;
+    float2 low = floor(at), part = at - low;
+    uint x0 = (uint)clamp((int)low.x, 0, (int)width - 1), y0 = (uint)clamp((int)low.y, 0, (int)height - 1);
+    uint x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
+    if (low.x < 0.0) x1 = x0;
+    if (low.y < 0.0) y1 = y0;
+    float3 c00 = colour_of(gpu_rgb24(i.light_info.r, y0 * width + x0)).rgb, c10 = colour_of(gpu_rgb24(i.light_info.r, y0 * width + x1)).rgb;
+    float3 c01 = colour_of(gpu_rgb24(i.light_info.r, y1 * width + x0)).rgb, c11 = colour_of(gpu_rgb24(i.light_info.r, y1 * width + x1)).rgb;
+    return lerp(lerp(c00, c10, part.x), lerp(c01, c11, part.x), part.y);
 }
 
 float4 gpu_fragment(gpu_varyings i) {
@@ -348,13 +407,20 @@ float4 gpu_fragment(gpu_varyings i) {
         c = 1.0;
     }
     [branch]
-    if ((i.texture_info.r & FRAGMENT_SMOOTH) && (mode == FRAGMENT_INDEXED || mode == FRAGMENT_TEXTURE) && width != 0 && height != 0) {
+    if (i.texture_info.r & FRAGMENT_LIT) c.rgb *= gpu_light(i);
+    [branch]
+    if ((i.texture_info.r & FRAGMENT_SMOOTH) && (mode == FRAGMENT_INDEXED || mode == FRAGMENT_TEXTURE || mode == FRAGMENT_RGB24) && width != 0 && height != 0) {
         // the four texels round the point, repeating, each by how near its centre is. A texel
         // of the key colour counts for nothing; where those are most of the four, nothing is drawn.
-        float2 at = frac(uv) * float2(width, height) - 0.5;
+        bool clamped = (i.texture_info.r & FRAGMENT_CLAMPED) != 0;
+        float2 at = (clamped ? saturate(uv) : frac(uv)) * float2(width, height) - 0.5;
         float2 low = floor(at), part = at - low;
         uint x0 = (uint)((int)low.x + (int)width) % width, y0 = (uint)((int)low.y + (int)height) % height;
         uint x1 = (x0 + 1) % width, y1 = (y0 + 1) % height;
+        if (clamped) {
+            x0 = (uint)clamp((int)low.x, 0, (int)width - 1), y0 = (uint)clamp((int)low.y, 0, (int)height - 1);
+            x1 = (uint)clamp((int)low.x + 1, 0, (int)width - 1), y1 = (uint)clamp((int)low.y + 1, 0, (int)height - 1);
+        }
         float t00, t10, t01, t11;
         float4 c00 = gpu_texel(i, mode, x0, y0, width, t00), c10 = gpu_texel(i, mode, x1, y0, width, t10);
         float4 c01 = gpu_texel(i, mode, x0, y1, width, t01), c11 = gpu_texel(i, mode, x1, y1, width, t11);
@@ -367,6 +433,7 @@ float4 gpu_fragment(gpu_varyings i) {
     [branch]
     if (mode != FRAGMENT_COLOUR && width != 0 && height != 0) {
         // nearest texel, repeating
+        if (i.texture_info.r & FRAGMENT_CLAMPED) uv = saturate(uv) * 0.99999;
         uint x = min((uint)(frac(uv.x) * width), width - 1), y = min((uint)(frac(uv.y) * height), height - 1);
         uint n = y * width + x, texel;
         if (mode == FRAGMENT_MASK) {
@@ -408,14 +475,10 @@ float4 gpu_fragment(gpu_varyings i) {
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
             texel = ram_word(0x87000400 + 4 * texel);
         } else if (mode == FRAGMENT_RGB24) {
-            // the texture may start at any byte, and three bytes may run into the next word
-            uint first = i.texture_info.g + 3 * n, at = first & ~3u, shift = 8 * (first & 3);
-            texel = texture_word(at) >> shift;
-            if (shift > 8) texel |= texture_word(at + 4) << (32 - shift);
-            texel = (texel & 0xff) << 16 | (texel & 0xff00) | ((texel >> 16) & 0xff);
+            texel = gpu_rgb24(i.texture_info.g, n);
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
         } else {
-            texel = ram_word(i.texture_info.g + 4 * n);
+            texel = texture_word(i.texture_info.g + 4 * n);
             if ((i.texture_info.r & FRAGMENT_KEYED) && texel == i.key) discard;
         }
         c *= colour_of(texel);
@@ -490,6 +553,8 @@ gpu_varyings volume_vertex(uint id, uint base, uint4 head, out float3 eye, out f
     gpu_varyings o;
     o.position = 0;
     o.texture_info = 0;
+    o.light_uv = 0;
+    o.light_info = 0;
     uint4 how = ram(base + 1), more = ram(base + 2);
     uint u = texel_of(how.b), k = id - head.a;
     bool fl = (how.r & VERTEX_FLOAT) != 0;

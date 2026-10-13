@@ -453,8 +453,10 @@ private:
             if (!((gpuPasses >> p) & 1)) continue;
             mat.setInt("_GpuPass", p);
             mat.bind(ctx, pass, gpu_);
-            // the state texture; the ROM's textures are the material's and already bound
-            for (auto& t : pass.vsLayout.textures) ctx->VSSetShaderResources(t.slot, 1, &state);
+            // the state texture; the ROM's textures are the material's and already bound (the
+            // vertex shader has them too: packed vertices may be a file's bytes in the ROM)
+            for (auto& t : pass.vsLayout.textures)
+                if (t.name == "_State") ctx->VSSetShaderResources(t.slot, 1, &state);
             for (auto& t : pass.psLayout.textures)
                 if (t.name == "_State") ctx->PSSetShaderResources(t.slot, 1, &state);
             ctx->OMSetBlendState(gpuBlend_[p & 3].Get(), nullptr, 0xffffffff);

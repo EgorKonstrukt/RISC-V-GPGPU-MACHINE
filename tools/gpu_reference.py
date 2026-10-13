@@ -4,7 +4,7 @@ Reads a harness snapshot taken while the guest is paused (so the command list in
 one last drawn) and the GPU's colour target saved by --gpu-capture, redraws the list in
 software and compares.
 
-    python tools/gpu_reference.py SNAPSHOT TARGET.bmp [--png PREFIX] [--size WIDTHxHEIGHT]
+    python tools/gpu_reference.py SNAPSHOT TARGET.bmp [--png PREFIX] [--size WIDTHxHEIGHT] [--rom ROOTFS.BIN]
 
 The real picture comes from the graphics card's rasteriser, so this is not bit-exact: pixels
 on triangle edges can fall either way, and colours can differ by a rounding step. The report
@@ -27,6 +27,8 @@ class Machine:
         """The ROM (addresses from 0x40000000) as words: the Linux image's root file system."""
         if self.rom_words is None:
             path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'build', 'images', 'linux', 'rootfs.bin')
+            if '--rom' in sys.argv:   # another image's (a private one: tools/private_image.py)
+                path = sys.argv[sys.argv.index('--rom') + 1]
             data = open(path, 'rb').read()
             self.rom_words = np.frombuffer(data + bytes(-len(data) % 4 + 4), dtype=np.uint32)
         return self.rom_words
@@ -34,6 +36,19 @@ class Machine:
     def w(self, addr, n=1):
         i = (addr & 0x7fffffff) >> 2
         return np.array(self.words[i:i + n])
+
+    def anywhere(self, addr, n=1):
+        """Words at an address of RAM or of the ROM (a file's bytes where it lies there)."""
+        if (addr >> 30) == 1:
+            i = (addr - 0x40000000) >> 2
+            return np.array(self.rom()[i:i + n])
+        return self.w(addr, n)
+
+    def store(self, addr):
+        """The words an address is in, and the address within them: RAM, or the ROM."""
+        if (addr >> 30) == 1:
+            return self.rom(), addr - 0x40000000
+        return self.words, addr & 0x7fffffff
 
     def fixed(self, addr, n):
         return (self.w(addr, n).view(np.int32) / f32(65536.0)).astype(f32)
@@ -98,7 +113,8 @@ def vertices(m):
                 # compact: one texel a vertex (x, y, z, packed uv), the colour from the command
                 if int(w[4]) & 0x4000:
                     # packed: a word a vertex (x, y, z bytes and a tag), u and v in a buffer of their own
-                    p, c = m.w(int(w[1]), stored)[which].astype(np.uint32), m.w(int(w[12]), stored)[which].astype(np.uint32)
+                    # (both buffers may be a file's bytes where it lies in the ROM)
+                    p, c = m.anywhere(int(w[1]), stored)[which].astype(np.uint32), m.anywhere(int(w[12]), stored)[which].astype(np.uint32)
                     t = np.stack([p & 0xff, p >> 8 & 0xff, p >> 16 & 0xff, (c & 0xffffff) | (p & 0xff000000)], axis=1)
                     xyz = t[:, :3].astype(f32)
                 else:
@@ -116,6 +132,13 @@ def vertices(m):
                     if int(w[4]) & 0x2000 and n:
                         table = m.w(int(w[11]), 256)
                         v[:, 3] = np.stack([colour_of(table[int(tag)]) for tag in packed >> 24])
+                    if int(w[4]) & 0x20000 and n:
+                        # facing: the tag is which of 256 ways the vertex faces (a texel each at word 11), and
+                        # it is lit from word 13's three texels: from where, the light's colour, the light from everywhere
+                        facing = m.w(int(w[11]), 1024).view(f32).reshape(256, 4)[(packed >> 24).astype(np.int64), :3]
+                        light = m.w(int(w[13]), 12).view(f32).reshape(3, 4)
+                        lit = light[2, :3] + np.maximum(facing @ light[0, :3], 0)[:, None] * light[1, :3]
+                        v[:, 3, :3], v[:, 3, 3] = np.clip(lit, 0, 1), 1
                 v[:, 2, :2] = uv
             else:
                 v = m.numbers(int(w[1]), stored * 16, floats).reshape(stored, 4, 4)[which]
@@ -143,29 +166,74 @@ def vertices(m):
                     facing = np.maximum(nv @ u[7, :3], 0).astype(f32)
                     colour = np.concatenate([facing[:, None] * u[8, :3] + u[9, :3], np.ones((n, 1), f32)], axis=1)
             uv = v[:, 2, :2].copy()
+            if int(w[4]) & 0x10000:
+                # moved: word 15 is the address of two rows of three numbers; u' and v' are each a row's dot with (u, v, 1)
+                rows = m.numbers(int(w[15]), 8, floats).reshape(2, 4)[:, :3]
+                uv = (np.concatenate([uv, np.ones((n, 1), f32)], axis=1) @ rows.T).astype(f32)
+            light = None
+            if int(w[5]) & 0x800 and int(w[4]) & 0x400:
+                # lit: a word a vertex of where in the light map it is (16 bits each way of the whole map)
+                at = m.w(int(w[12]), stored)[which].astype(np.uint32)
+                uv = np.concatenate([uv, np.stack([at & 0xffff, at >> 16], axis=1).astype(f32) / f32(65535.0)], axis=1)
+                light = (int(w[13]), int(w[14]) & 0xffff, int(w[14]) >> 16)
             if int(w[5]) & 0x200:
                 # laid on the picture: words 12-15 are the corner's coordinates and their change in 1,024 pixels
                 lay = w[12:16].view(f32).copy() if floats else w[12:16].astype(np.int32).astype(f32) / f32(65536.0)
                 uv = np.repeat(lay[None, :2], n, 0)
                 colour = np.repeat(np.array([[lay[2], lay[3], 0, 1]], f32), n, 0)
-            out.append(dict(op=op, pos=clip, colour=colour.astype(f32), uv=uv,
+            out.append(dict(op=op, pos=clip, colour=colour.astype(f32), uv=uv, light=light,
                             tex=(int(w[5]), int(w[7]), int(w[8]), int(w[9])), key=int(w[10])))
     return width, height, out
 
 
-def shade(m, colour, uv, tex, key):
+def rgb24(m, addr, n):
+    """Texels n of a texture of three bytes a pixel, as colour words: from any byte address, in
+    RAM or the ROM, running on into the next word."""
+    store, at = m.store(addr)
+    first = at + 3 * n
+    i, shift = first // 4, (8 * (first & 3)).astype(np.uint64)
+    texel = ((store[i].astype(np.uint64) | store[i + 1].astype(np.uint64) << np.uint64(32)) >> shift).astype(np.uint32)
+    return (texel & 0xff) << 16 | (texel & 0xff00) | (texel >> 16) & 0xff
+
+
+def lighting(m, light, uv):
+    """A lit draw's light at each fragment: its light map's four texels round the point, weighed,
+    the map's edge going on beyond it."""
+    addr, tw, th = light
+    if not tw or not th:
+        return np.ones((len(uv), 3), np.float64)
+    ax = np.clip(uv[:, 0], 0, 1).astype(f32) * f32(tw) - f32(0.5)
+    ay = np.clip(uv[:, 1], 0, 1).astype(f32) * f32(th) - f32(0.5)
+    lx, ly = np.floor(ax), np.floor(ay)
+    px, py = (ax - lx).astype(np.float64)[:, None], (ay - ly).astype(np.float64)[:, None]
+    x0, y0 = np.clip(lx.astype(np.int64), 0, tw - 1), np.clip(ly.astype(np.int64), 0, th - 1)
+    x1, y1 = np.where(lx < 0, x0, np.minimum(x0 + 1, tw - 1)), np.where(ly < 0, y0, np.minimum(y0 + 1, th - 1))
+    c = [colour_of(rgb24(m, addr, y * tw + x))[:, :3].astype(np.float64) for x, y in ((x0, y0), (x1, y0), (x0, y1), (x1, y1))]
+    return (c[0] * (1 - px) + c[1] * px) * (1 - py) + (c[2] * (1 - px) + c[3] * px) * py
+
+
+def shade(m, colour, uv, tex, key, light=None):
     """Returns (red, green, blue, alpha 0..1, keep mask)."""
     mode, addr, tw, th = tex[0] & 0xff, tex[1], tex[2], tex[3]
     keep = np.ones(len(colour), bool)
-    if tex[0] & 0x400 and mode in (1, 2) and tw and th:
-        # smooth: the four texels round the point, repeating; a key texel counts for nothing
+    if light is not None:
+        colour = colour.copy()
+        colour[:, :3] = (colour[:, :3] * lighting(m, light, uv[:, 2:4])).astype(f32)
+    clamped = bool(tex[0] & 0x1000)
+    if clamped:
+        uv = np.clip(uv[:, :2], 0, 1)
+    if tex[0] & 0x400 and mode in (1, 2, 4) and tw and th:
+        # smooth: the four texels round the point, repeating (or its edge going on); a key texel counts for nothing
         base = (addr & 0x7fffffff) >> 2
-        ax = (uv[:, 0] - np.floor(uv[:, 0])).astype(f32) * f32(tw) - f32(0.5)
-        ay = (uv[:, 1] - np.floor(uv[:, 1])).astype(f32) * f32(th) - f32(0.5)
+        ax = (uv[:, 0] - (0 if clamped else np.floor(uv[:, 0]))).astype(f32) * f32(tw) - f32(0.5)
+        ay = (uv[:, 1] - (0 if clamped else np.floor(uv[:, 1]))).astype(f32) * f32(th) - f32(0.5)
         lx, ly = np.floor(ax), np.floor(ay)
         px, py = (ax - lx).astype(np.float64), (ay - ly).astype(np.float64)
         x0, y0 = (lx.astype(np.int64) + tw) % tw, (ly.astype(np.int64) + th) % th
         x1, y1 = (x0 + 1) % tw, (y0 + 1) % th
+        if clamped:
+            x0, y0 = np.clip(lx.astype(np.int64), 0, tw - 1), np.clip(ly.astype(np.int64), 0, th - 1)
+            x1, y1 = np.clip(lx.astype(np.int64) + 1, 0, tw - 1), np.clip(ly.astype(np.int64) + 1, 0, th - 1)
         total = np.zeros((len(colour), 4))
         weight = np.zeros(len(colour))
         for x, y, w in ((x0, y0, (1 - px) * (1 - py)), (x1, y0, px * (1 - py)), (x0, y1, (1 - px) * py), (x1, y1, px * py)):
@@ -175,7 +243,9 @@ def shade(m, colour, uv, tex, key):
                 there = texel != key if tex[0] & 0x100 else np.ones(len(colour), bool)
                 texel = m.words[(0x07000400 >> 2) + texel]
             else:
-                texel = m.words[base + n]
+                # words or three bytes a texel, in RAM or the ROM
+                store, at = m.store(addr)
+                texel = rgb24(m, addr, n) if mode == 4 else store[(at >> 2) + n]
                 there = texel != key if tex[0] & 0x100 else np.ones(len(colour), bool)
             w = w * there
             total += colour_of(texel) * w[:, None]
@@ -183,6 +253,8 @@ def shade(m, colour, uv, tex, key):
         keep = weight >= 0.5
         return np.clip(colour * total / np.maximum(weight, 1e-9)[:, None], 0, 1), keep
     if mode != 0 and tw and th:
+        if clamped:
+            uv = uv * f32(0.99999)
         fx, fy = uv[:, 0] - np.floor(uv[:, 0]), uv[:, 1] - np.floor(uv[:, 1])
         x = np.minimum((fx.astype(f32) * f32(tw)).astype(np.int64), tw - 1)
         y = np.minimum((fy.astype(f32) * f32(th)).astype(np.int64), th - 1)
@@ -231,17 +303,13 @@ def shade(m, colour, uv, tex, key):
                             luma + np.float32(2.017) * blue, np.full(len(n), 255, np.float32)], axis=1) / 255
             return np.clip(colour * rgb, 0, 1), keep
         elif mode == 4:
-            # three bytes a pixel from any byte address, in RAM or the ROM, running on into the next word
-            in_rom = (addr >> 30) == 1
-            store = m.rom() if in_rom else m.words
-            first = (addr - 0x40000000 if in_rom else addr & 0x7fffffff) + 3 * n
-            at, shift = first // 4, (8 * (first & 3)).astype(np.uint64)
-            texel = ((store[at].astype(np.uint64) | store[at + 1].astype(np.uint64) << np.uint64(32)) >> shift).astype(np.uint32)
-            texel = (texel & 0xff) << 16 | (texel & 0xff00) | (texel >> 16) & 0xff
+            texel = rgb24(m, addr, n)
             if tex[0] & 0x100:
                 keep = texel != key
         else:
-            texel = m.words[base + n]
+            # words, in RAM or the ROM
+            store, at = m.store(addr)
+            texel = store[(at >> 2) + n]
             if tex[0] & 0x100:
                 keep = texel != key
         colour = colour * colour_of(texel)
@@ -348,7 +416,7 @@ def draw(m):
                 centre = np.stack([at[:, 1] + x_lo + 0.5, at[:, 0] + y_lo + 0.5], axis=1)
                 uv = uv[:, :2] + centre * col[:, :2] / 1024.0
                 col = np.ones_like(col)
-            rgba, keep = shade(m, col.astype(f32), uv.astype(f32), cmd['tex'], cmd['key'])
+            rgba, keep = shade(m, col.astype(f32), uv.astype(f32), cmd['tex'], cmd['key'], cmd.get('light'))
             idx = np.argwhere(ok)[keep]
             yy, xx = idx[:, 0] + y_lo, idx[:, 1] + x_lo
             src, alpha = rgba[keep][:, :3].astype(np.float64), rgba[keep][:, 3:4].astype(np.float64)

@@ -128,3 +128,10 @@
   255 workers. A run's instructions shift half a percent with its timing: compare means of
   several timings (`sleep 0.3; ...`), never one run. What changes the window tree must raise
   `gd_scene_gen`, or the layer table and that rectangle are stale.
+- Quake III Arena (`docs/quake3.md`) draws from the ROM: its textures, light maps and models'
+  poses are read by the GPU where `quake3-se.dat` lies, so that file must be a file of the ROM
+  and the GPU shader must have the draws of 13 October 2026 (`0x800` lit, `0x10000` moved,
+  `0x20000` facing). Its server's frame is on a worker core: anything of the engine that the
+  server and the client both write needs one for each core (`SE_OnWorker()`), and an
+  allocation the server makes goes to its own zone (`server.h`). After a change to what the
+  game asks for, run it with `QUAKE3_WANTED=1` on the whole demo pak and write `wanted.txt` anew.
