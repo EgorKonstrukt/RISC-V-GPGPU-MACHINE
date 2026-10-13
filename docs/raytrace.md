@@ -137,14 +137,20 @@ by OpenGL, and path traced by the worker cores under a tree of boxes that they b
   round a point, and the sky's light. It starts with a ground, the teapot, a mirror ball and
   a light. The example meshes are `/root/Models/teapot.obj` (6,320 triangles), `bunny.ply`
   (3,851) and `knot.obj` (5,040, `make_knot.py`).
-- **The window** (`nxpath.c`): the picture on the left, a panel of the window system's own
-  on the right (`ui.h`): Import, Add (plane, box, ball, light), Delete, the scene's list, and
-  two tabs. "Selected": what the handles do (move, turn, size), the three numbers of each with
-  a button down and up, the material, the colour's three sliders (a light: its place, radius,
-  power, colour). "Picture": the size (160 x 120 to 640 x 480), samples a pixel, turns of a
-  path, the sky's light, Render or Stop, the picture or the scene, Export (a PPM file). In
-  the picture the left button picks what is clicked and turns the view while held, the right
-  one moves it, the wheel goes nearer. Keys: g, r, s the handles, Delete, F5 renders, Escape.
+- **The window** (`nxpath.c`): menus along the top (File, Add, View, Render), the view on the
+  left, a panel of the window system's own on the right (`ui.h`), and along the bottom a line
+  of figures with the picture's bar. The panel is the scene's list and two tabs, laid out as
+  one table of rectangles that is both what is drawn and what a click is on. "Object" (or
+  "Light"): what the handles do (move, turn, size), the three numbers of each with a button
+  down and up, the material, the colour with its three sliders and their values (a light: its
+  place, radius, power, colour), Duplicate, Delete. "Render": Detail, samples a pixel (1 to
+  512, or no end), turns of a path, the sky's light, "Traced when the view is still", Render
+  or Stop, the scene or the picture, Export (a PPM file). In the view the left button picks
+  what is clicked and turns the view while held, the right one moves it, the wheel goes
+  nearer. Keys: g, r, s the handles, Delete, Ctrl+D a copy, Home the whole scene in view, L
+  tracing when still, F5 renders or goes on, Escape stops.
+- **One camera** (see "The view is the picture" below): the picture traced is the view's own
+  shape, the view's size over what Detail says (all of it, a half, a third, a quarter).
 - **OpenGL has no lights here**, no colour a vertex and no lines (`gles.c`): a mesh is drawn
   where it lies in GPU memory (`seglTagged`), each vertex tagged with the one of 256
   directions its normal is nearest, and an object has a table of 256 colours, its own colour
@@ -168,16 +174,57 @@ by OpenGL, and path traced by the worker cores under a tree of boxes that they b
   the sky for a ray that meets nothing, glass that casts no shadow, and no lamp seen after a
   matt surface by way of a mirror or glass. Tiles, shares, the numbers a path draws and the
   picture made as the samples come in are as below.
-- **Settings are the registry's** (`pathtrace.size`, `.samples`, `.turns`, `.sky`:
+- **Settings are the registry's** (`pathtrace.detail`, `.samples`, `.turns`, `.sky`, `.live`:
   `docs/persist.md`).
 
 For tests: `NXPATH_AUTO=1` renders at the start and `NXPATH_EXIT=1` leaves when the picture
 is done, `NXPATH_SIZE=WxH`, `NXPATH_SAMPLES=N`, `NXPATH_CORES=N` (0: this core alone),
-`NXPATH_SAVE=FILE`, `NXPATH_PRINT=1` (a line for every change of the scene), `NXPATH_CHECK=N`
-(N rays through the tree and by every triangle: 0 may differ). The picture's line
-(`pathstat:`) has the tree's time, the picture's, its rays and its sum. On `rvc_cpu`, 160 x
-120 with 2 samples of the scene it starts with (7,282 triangles): sum `f38bbd71` with 255
-workers and with none; the tree 483 ms against 3,632, the picture 134 ms against 12,359.
+`NXPATH_SAVE=FILE`, `NXPATH_LIVE=0` (not traced when still), `NXPATH_PRINT=1` (a line for
+every change of the scene, with the panel's controls counted: none may lie over another or
+have words wider than its place; a line when the small picture is shown, when the picture has
+its first sample, and `pathstat:` whenever a picture ends), `NXPATH_CHECK=N` (N rays through
+the tree and by every triangle: 0 may differ; and 50 N of the tracer's rays through OpenGL's
+matrices: 0 thousandths of a pixel apart). A picture of `NXPATH_SIZE` is a test's: it has its
+own shape, is shown as large as fits and has no small picture before it. The picture's line
+has the tree's time, the picture's, its rays and its sum. On `rvc_cpu`, 160 x 120 with 2
+samples of the scene it starts with (7,282 triangles): sum `f38bbd71` with 255 workers and
+with none; the tree 483 ms against 3,632, the picture 134 ms against 12,359.
+
+### The view is the picture (13 October 2026, later)
+
+The picture had a size of its own (160 x 120 to 640 x 480, four by three) and was shown as
+large as fitted in a view of another shape, 520 by 462: OpenGL's camera took the view's
+shape, the tracer's the picture's, and a thing at the picture's edge was 48 pixels from where
+OpenGL had drawn it (by the two openings' arithmetic: 0.8 across against 0.675). A picture was made on Render only, and the window showed nothing of how
+far it was but a line of text when it ended.
+
+- **One shape.** The picture is the view's width and height over Detail's number, the width
+  to four, and the camera is told how much wider than high it sees (`aspect` in `sc_camera`,
+  0 for a test's picture): `eye_way` opens across by it, so a third of 520 being 172 moves
+  nothing. The handles and a click are the same over the traced picture as over OpenGL's.
+- **Traced when still.** A change of the scene or the view (`invalidate`) gives up what is
+  being traced (`pt.stop` 2: a share ends with the tile it is at, where 1 ends with its
+  sample) and OpenGL draws; when nothing is held and nothing has changed for 300 ms the
+  picture is begun again. The tree is built again only if an object's mesh or matrix is not
+  what it was built of (`world_sum`): a turn of the view, a colour or a light costs no tree.
+- **Small first.** A quarter of the picture each way with one sample, shown as the squares
+  it is (so is the picture: the device smooths no texture of `seglTexturePointer`'s kind, and
+  asked to, drew it half its width aside), then the picture itself over it once every pixel has a sample, and sample after
+  sample from there: the bar says which of how many. "No end" goes on until something
+  changes or Stop. More samples asked of a picture that is there, or Render after Stop, go
+  on from the samples it has.
+
+On `rvc_cpu`, the scene it starts with, a view of 520 x 490 at a half (260 x 245): the small
+picture (68 x 62) 118 to 134 ms after the picture is begun, the first sample of the picture
+at 281 to 361 ms, 4 samples 636 to 690 ms; at a third (172 x 163) 68 to 76 ms and 201 ms.
+After the wheel and after Home the same three lines again with the tree's old time; the
+samples' slider from 4 to 256 goes on with no small picture, Escape stops at 35, F5 goes on
+to 56; with L off the wheel begins nothing and F5 does. The two cameras: 0 thousandths of a
+pixel apart over 1,000 rays at a half and at a third, in two views. The panel in its four
+states: 57, 20, 36 and 7 controls, none over another, none with words too wide, the lowest
+ending at 486 of 508. Not done: the handles dragged over a traced picture (as below), any of
+it on the shader machine, and a picture larger than the view (a window made larger is the
+way to one).
 
 Not done: scenes kept in files, textures, a mesh's own materials (`.mtl`), undo, more than
 one camera. A click picks by each thing's ball, not its triangles. The handles follow the

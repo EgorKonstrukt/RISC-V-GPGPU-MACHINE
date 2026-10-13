@@ -44,9 +44,10 @@ struct sc_light {
 
 /* The camera goes round a point: `turn` about the world's y and `tilt` up from level, in
  * degrees, `far` away. sc_camera_set() makes the eye and its three ways of them. `lens` is how
- * far the view opens up and down at one unit ahead (0.6: as nxphys). */
+ * far the view opens up and down at one unit ahead (0.6: as nxphys), `aspect` how much wider
+ * than high what it sees is (0: as the picture's pixels are counted). */
 struct sc_camera {
-	float target[3], turn, tilt, far, lens;
+	float target[3], turn, tilt, far, lens, aspect;
 	float eye[3], right[3], up[3], ahead[3];
 };
 
@@ -109,7 +110,7 @@ struct pt_picture {
 	int tile_w, tile_h, tiles;
 	uint32_t stride, step;	/* the order the tiles are traced in: pt_share */
 	int samples;		/* how many of every pixel the picture is to have */
-	int stop;		/* the picture is given up: a share ends with the sample it is at */
+	int stop;		/* 1: a share ends with the sample it is at; 2: with its tile, and the picture is not kept */
 	struct pt_slot *slots;	/* one a worker, by its number */
 	int bounces;		/* how many times a path may turn */
 	int owners;		/* each tile framed in its core's colour */
@@ -133,6 +134,8 @@ void pt_read_all(void);
  * click: an object's number, -1 - a light's number, or SC_OBJECTS for nothing. Needs the
  * world built. x and y in pixels of a picture `width` by `height`. */
 int pt_pick(float x, float y, int width, int height);
+/* The way an eye's ray goes through that point of such a picture, for a test of the camera. */
+void pt_way(float x, float y, int width, int height, float *way);
 
 /* ---- gizmo.cpp: Dear ImGui and ImGuizmo, for the handles of what is selected only ---- */
 

@@ -1,12 +1,7 @@
 /*
- * nxpath [MESH]: a mesh viewer with a path tracer (docs/raytrace.md). Meshes are read from .obj and
- * .ply files and put into a scene with lights; the picture on the left is OpenGL's until
- * Render, then the path tracer's, traced by the worker cores under a tree of boxes they built.
- * The panel on the right is the window system's own; Dear ImGui draws only the handles.
- * For tests: NXPATH_AUTO=1 renders at the start, NXPATH_EXIT=1 leaves when the picture is done
- * (its line is "pathstat:"), NXPATH_SIZE=WxH, NXPATH_SAMPLES=N, NXPATH_CORES=0 (no workers),
- * NXPATH_SAVE=FILE (the picture written when done), NXPATH_PRINT=1 (a line for every change),
- * NXPATH_CHECK=N (N of the eye's rays through the tree and without it: the objects must agree).
+ * nxpath [MESH]: a mesh viewer with a path tracer (docs/raytrace.md, with its switches for
+ * tests). The view is OpenGL's while it changes and the path tracer's when it is still; the
+ * panel and the menus are the window system's own, Dear ImGui draws only the handles.
  */
 #include <math.h>
 #include <stdint.h>
@@ -23,26 +18,31 @@
 #include "scene.h"
 
 #define PANEL 250		/* the panel's width, right of the picture */
-#define STATUS 18		/* the line of figures along the bottom */
-#define ROWS 7			/* of the scene's list */
+#define STATUS 22		/* the line of figures along the bottom */
+#define BAR 22			/* the menus along the top */
+#define ROWS 6			/* of the scene's list */
 #define MOST_W 640		/* the largest picture traced */
 #define MOST_H 480
 #define ONE 65536
-#define SIZES 5
+#define SMALL 32768		/* pixels of the small picture's memory */
+#define DETAILS 4
+#define ENDLESS (1 << 20)	/* samples of a picture that has no last one */
+#define STILL 300		/* ms the view is left alone before it is traced */
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE)
 
-static const int sizes[SIZES][2] = {{160, 120}, {240, 180}, {320, 240}, {480, 360}, {640, 480}};
-static const int sample_steps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512};
-#define SAMPLE_STEPS 10
+static const int sample_steps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 0};	/* 0: no last one */
+#define SAMPLE_STEPS 11
+static const char *const detail_names[DETAILS] = {" Full view", " Half", " A third", " A quarter"};
 static const char *const material_names[3] = {" Matt", " Mirror", " Glass"};
 static const char *const what_names[3] = {" Move", " Turn", " Size"};
 
 static GR_WINDOW_ID window, picture;
-static int wide = 770, high = 480, view_w, view_h;	/* the window, and the picture in it */
+static int wide = 770, high = 530, view_w, view_h;	/* the window, and the picture in it */
 static struct ui_list tree = {0, 30, PANEL - 8, ROWS * UI_ROW + 4, 0, 0, -1};
 static int tab;			/* the panel's lower part: 0 what is selected, 1 the picture's settings */
 static int what = GIZMO_MOVE;	/* what the handles do */
-static int size_at = 2, samples_at = 4, bounces = 5;
+static int detail_at = 1, samples_at = 6, bounces = 5;
+static int live = 1, wanted;	/* traced when the view is still; Render was asked for */
 static char status[160] = "";
 static int view_dirty = 1, held;	/* held: a slider of the panel, by its number + 1 */
 static int on_handle;		/* the pointer is over a handle, or holds one: gizmo_frame() said so */
@@ -228,45 +228,101 @@ view_matrices(float *view, float *projection)
 
 /* ---- the path tracer's picture ---- */
 
-static GLuint texture;
-static int tracing, traced, showing;	/* a picture is being traced; one is there; it is what the window shows */
+/* The picture is the view's own shape, a part of its size: what OpenGL draws and what is
+ * traced are one camera's. It is traced small first, then whole, sample after sample. */
+static GLuint texture, small_texture;
+static uint32_t *full_pixels, *small_pixels;
+static int tracing;		/* shares are out, or to be handed out */
+static int phase;		/* what is traced: 0 the small picture, 1 the picture */
+static int traced;		/* the picture has a sample of every pixel */
+static int showing;		/* what the view shows: 0 OpenGL's scene, 1 the small picture, 2 the picture */
+static int stale = 1;		/* the scene or the view is no longer what was traced */
 static int next_tile, sample, out;	/* this core alone: where it is; with workers: how many jobs are out */
-static unsigned began, shown_at, rays;
+static unsigned began, took, shown_at, still_since, rays;
+static int fixed_w, fixed_h;	/* a test's picture, of its own shape */
 static int leave_when_done;
+static int world_built;
+static uint32_t world_of;
 
 static void draw_panel(void);
+
+static void
+draw_bar(void)
+{
+	int x = wide - PANEL + 6, y = high - STATUS + 2, w = PANEL - 12, h = STATUS - 3, of = pt.samples > 0 ? pt.samples : 1;
+	int done = sample > of ? of : sample, fill = 0;
+	char text[48] = "the scene, by OpenGL";
+
+	if (tracing && pt.stop < 2 && phase == 0)
+		snprintf(text, sizeof text, "a small picture first");
+	else if ((tracing && pt.stop < 2) || (traced && !stale)) {
+		fill = of == ENDLESS ? 0 : (w - 2) * done / of;
+		if (of == ENDLESS)
+			snprintf(text, sizeof text, tracing ? "%d samples, and on" : "%d samples", done);
+		else
+			snprintf(text, sizeof text, tracing ? "sample %d of %d" : done < of ? "stopped at %d of %d" : "%d samples", tracing && done < of ? done + 1 : done, of);
+	}
+	ui_fill(window, x, y, w, h, WHITE);
+	ui_fill(window, x + 1, y + 1, fill, h - 2, MWRGB(140, 190, 255));
+	ui_bevel(window, x, y, w, h, 1);
+	ui_text(window, x + 6, y + 3, text, -1, BLACK, 0);
+	GrFlush();
+}
+
+static void
+draw_status(void)
+{
+	ui_fill(window, 0, high - STATUS, wide, STATUS, UI_FACE);
+	ui_text_fit(window, 6, high - STATUS + 5, wide - PANEL - 6, status, BLACK);
+	draw_bar();
+}
 
 static void
 say(const char *text)
 {
 	snprintf(status, sizeof status, "%s", text);
-	ui_fill(window, 0, high - STATUS, wide, STATUS, UI_FACE);
-	ui_text_fit(window, 6, high - STATUS + 3, wide - 12, status, BLACK);
-	GrFlush();
+	draw_status();
 }
 
-/* The picture over the window's left part, as large as fits with its own shape. */
+/* The scene or the view changed: what is traced is given up, and OpenGL shows it. */
 static void
-show_traced(void)
+invalidate(void)
 {
-	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
-	static const GLfixed corners[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0}, uv[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
-	int w = view_w, h = view_w * pt.height / pt.width;
+	stale = 1, showing = 0, view_dirty = 1;
+	still_since = now_ms();
+	if (tracing)
+		pt.stop = 2;
+}
 
-	if (h > view_h)
-		h = view_h, w = view_h * pt.width / pt.height;
-	glViewport(0, 0, view_w, view_h);
-	glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
-	glViewport((view_w - w) / 2, (view_h - h) / 2, w, h);
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixx(whole);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glDisable(GL_DEPTH_TEST);
-	seglQuad(corners, uv, texture, 255, 255, 0);
-	seglSwap();
-	shown_at = now_ms();
+/* How large the picture is traced: the view's size over what Detail says, in the memory there is. */
+static void
+picture_size(int *w, int *h)
+{
+	int by = detail_at + 1;
+
+	if (fixed_w) {
+		*w = fixed_w, *h = fixed_h;
+		return;
+	}
+	do
+		*w = view_w / by & ~3, *h = view_h / by, by++;
+	while (*w * *h > MOST_W * MOST_H);
+	*w = *w < 8 ? 8 : *w, *h = *h < 8 ? 8 : *h;
+}
+
+/* What the tree of boxes is made of: each object's mesh and where it stands. */
+static uint32_t
+world_sum(void)
+{
+	uint32_t sum = (uint32_t)sc.object_count, bits;
+	int i, k;
+
+	for (i = 0; i < sc.object_count; i++)
+		for (sum = sum * 31 + (uint32_t)sc.objects[i].mesh, k = 0; k < 16; k++) {
+			memcpy(&bits, &sc.objects[i].matrix[k], 4);
+			sum = sum * 31 + bits;
+		}
+	return sum;
 }
 
 /* For a test: the object each of `count` of the eye's rays meets by the tree, and by trying
@@ -275,12 +331,13 @@ static void
 check_tree(int count)
 {
 	const struct sc_camera *c = &sc.camera;
-	int i, k, wrong = 0, w = sizes[size_at][0], h = sizes[size_at][1];
+	int i, k, wrong = 0, w, h;
 
+	picture_size(&w, &h);
 	for (i = 0; i < count; i++) {
 		int x = (int)((unsigned)i * 7919u % (unsigned)w), y = (int)((unsigned)i * 104729u % (unsigned)h), by_tree = pt_pick((float)x + 0.5f, (float)y + 0.5f, w, h), slow;
-		float sx = (2.0f * ((float)x + 0.5f) / (float)w - 1.0f) * c->lens * (float)w / (float)h, sy = (1.0f - 2.0f * ((float)y + 0.5f) / (float)h) * c->lens;
-		float way[3], len = 0.0f, far;
+		float sx = (2.0f * ((float)x + 0.5f) / (float)w - 1.0f) * c->lens * (c->aspect > 0.0f ? c->aspect : (float)w / (float)h);
+		float sy = (1.0f - 2.0f * ((float)y + 0.5f) / (float)h) * c->lens, way[3], len = 0.0f, far;
 
 		for (k = 0; k < 3; k++)
 			way[k] = c->ahead[k] + c->right[k] * sx + c->up[k] * sy, len += way[k] * way[k];
@@ -292,38 +349,60 @@ check_tree(int count)
 	fprintf(stderr, "nxpath: %d of %d rays met another object by the tree than without it\n", wrong, count);
 }
 
+/* For a test: a point three units along each of `count` of the tracer's rays, put through
+ * OpenGL's matrices: how far from the ray's own place in the view it comes, at most. */
 static void
-begin_render(void)
+check_cameras(int count)
 {
-	char text[120];
-	int s, tiles;
+	const struct sc_camera *c = &sc.camera;
+	float view[16], projection[16], worst = 0.0f;
+	int i, k, w, h;
 
-	if (tracing)
-		return;
-	say("Building the tree of boxes...");
-	if (!sc_world_build(workers)) {
-		say("No memory for the scene's triangles.");
-		return;
+	picture_size(&w, &h);
+	view_matrices(view, projection);
+	for (i = 0; i < count; i++) {
+		float x = (float)((unsigned)i * 7919u % (unsigned)w) + 0.5f, y = (float)((unsigned)i * 104729u % (unsigned)h) + 0.5f;
+		float way[3], p[4], e[4], q[4], dx, dy;
+
+		pt_way(x, y, w, h, way);
+		for (k = 0; k < 3; k++)
+			p[k] = c->eye[k] + 3.0f * way[k];
+		for (k = 0; k < 4; k++)
+			e[k] = view[k] * p[0] + view[4 + k] * p[1] + view[8 + k] * p[2] + view[12 + k];
+		for (k = 0; k < 4; k++)
+			q[k] = projection[k] * e[0] + projection[4 + k] * e[1] + projection[8 + k] * e[2] + projection[12 + k] * e[3];
+		dx = fabsf((q[0] / q[3] * 0.5f + 0.5f) * (float)view_w - x * (float)view_w / (float)w);
+		dy = fabsf((0.5f - q[1] / q[3] * 0.5f) * (float)view_h - y * (float)view_h / (float)h);
+		worst = dx > worst ? dx : worst, worst = dy > worst ? dy : worst;
 	}
+	fprintf(stderr, "nxpath: OpenGL's camera and the tracer's are at most %d thousandths of a pixel of the view apart over %d rays\n",
+		(int)(worst * 1000.0f + 0.5f), count);
+}
+
+/* One of the two pictures begun: the small one has a sample, the other as many as are asked. */
+static void
+start_phase(int p)
+{
+	int w, h, s, tiles;
+
+	picture_size(&w, &h);
+	if (p == 0)
+		w = (w / 4 + 3) & ~3, h = (h + 3) / 4;
 	seglSettle();
-	sc_camera_set(&sc.camera);
-	pt.width = sizes[size_at][0], pt.height = sizes[size_at][1];
-	pt.bounces = bounces;
-	pt.seed = 0x9e3779b9u;
-	pt.owners = 0;
-	glBindTexture(GL_TEXTURE_2D, texture);
-	seglTexturePointer(pt.pixels, pt.width, pt.height, GL_RGBA);
-	memset(pt.pixels, 0, (size_t)(pt.width * pt.height * 4));
+	phase = p;
+	pt.width = w, pt.height = h;
+	pt.pixels = p ? full_pixels : small_pixels;
+	glBindTexture(GL_TEXTURE_2D, p ? texture : small_texture);
+	seglTexturePointer(pt.pixels, w, h, GL_RGBA);
+	/* (as the squares it is: the device smooths no texture of this kind) */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	if (workers)
-		mcw_touch(pt.sums, (unsigned)(pt.width * pt.height) * 3 * sizeof(float));
-	pt_read_all();
-	if (getenv("NXPATH_CHECK"))
-		check_tree(atoi(getenv("NXPATH_CHECK")));
-	for (s = 32; s > 1 && ((pt.width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((pt.height + s - 1) / s) < 24 * workers; s >>= 1)
+		mcw_touch(pt.sums, (unsigned)(w * h) * 3 * sizeof(float));
+	for (s = 32; s > 1 && ((w + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((h + s - 1) / s) < 24 * workers; s >>= 1)
 		continue;
 	pt.tile_h = s;
 	pt.tile_w = s < 8 ? 8 : s;
-	pt.tiles = tiles = ((pt.width + pt.tile_w - 1) / pt.tile_w) * ((pt.height + pt.tile_h - 1) / pt.tile_h);
+	pt.tiles = tiles = ((w + pt.tile_w - 1) / pt.tile_w) * ((h + pt.tile_h - 1) / pt.tile_h);
 	/* a stride with no factor in common with the number of tiles visits every one of them */
 	for (pt.stride = (uint32_t)tiles * 5 / 8 + 1;; pt.stride++) {
 		uint32_t a = pt.stride, b = (uint32_t)tiles;
@@ -333,17 +412,73 @@ begin_render(void)
 			break;
 	}
 	pt.step = (uint32_t)(workers ? workers : 1) * pt.stride % (uint32_t)tiles;
-	pt.samples = sample_steps[samples_at];
+	pt.samples = !p ? 1 : sample_steps[samples_at] ? sample_steps[samples_at] : ENDLESS;
 	pt.stop = 0;
 	memset(pt.slots, 0, MC_MAX_CORES * sizeof(struct pt_slot));
 	memset(busy, 0, sizeof busy);
 	next_tile = sample = out = 0, rays = 0;
-	tracing = traced = showing = 1;
+	if (p)
+		traced = 0;
+	tracing = 1;
+}
+
+/* The scene as it is and the view as it is, traced from the start: the tree again only when
+ * an object is not where the tree has it. */
+static void
+begin_trace(void)
+{
+	uint32_t of = world_sum();
+	char text[120];
+	int w, h;
+
+	if (tracing)
+		return;
+	if (!world_built || of != world_of) {
+		say("Building the tree of boxes...");
+		if (!sc_world_build(workers)) {
+			stale = 0;
+			say("No memory for the scene's triangles.");
+			return;
+		}
+		world_built = 1, world_of = of;
+	}
+	sc.camera.aspect = fixed_w ? 0.0f : (float)view_w / (float)view_h;
+	sc_camera_set(&sc.camera);
+	pt.bounces = bounces;
+	pt.seed = 0x9e3779b9u;
+	pt.owners = 0;
+	pt_read_all();
+	if (getenv("NXPATH_CHECK"))
+		check_tree(atoi(getenv("NXPATH_CHECK")));
+	if (getenv("NXPATH_CHECK") && !fixed_w)
+		check_cameras(atoi(getenv("NXPATH_CHECK")) * 50);
+	stale = 0;
 	began = now_ms();
-	snprintf(text, sizeof text, "%d triangles under %d boxes, built in %u ms by %u workers. Tracing...", sc_world.triangle_count,
-		 sc_world.node_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers);
+	wanted = 0;
+	start_phase(fixed_w ? 1 : 0);
+	picture_size(&w, &h);
+	snprintf(text, sizeof text, "%d triangles under %d boxes (the tree %u ms by %u workers). Tracing %d x %d...", sc_world.triangle_count,
+		 sc_world.node_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers, w, h);
 	say(text);
 	draw_panel();
+}
+
+/* More samples of the picture that is there: after Stop, or when more are asked for. */
+static int
+trace_more(void)
+{
+	int most = sample_steps[samples_at] ? sample_steps[samples_at] : ENDLESS;
+
+	if (stale || phase != 1 || (tracing ? pt.stop : !traced))
+		return 0;
+	pt.samples = most;
+	if (!tracing && sample < most) {
+		pt.stop = 0, tracing = 1;
+		began = now_ms() - took;
+		showing = 2, view_dirty = 1;
+	}
+	draw_bar();
+	return 1;
 }
 
 static void
@@ -365,23 +500,30 @@ write_picture(const char *path)
 	fclose(file);
 }
 
-/* The picture is whole (or was given up): its figures, and what a test asked of it. */
+/* The picture has its samples, or was stopped: its figures, and what a test asked of it. */
 static void
 end_render(void)
 {
-	unsigned took = now_ms() - began, sum = 0;
 	char text[160];
 	int i;
 
 	tracing = 0;
-	for (i = 0; i < pt.width * pt.height; i++)
-		sum = sum * 31 + pt.pixels[i];
-	fprintf(stderr, "pathstat: %d x %d, %d samples, %d turns, %d triangles: tree %u ms by %u workers, picture %u ms with %d workers, %u rays, sum %08x\n",
-		pt.width, pt.height, pt.samples, pt.bounces, sc_world.triangle_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers, took,
-		workers, rays, sum);
-	snprintf(text, sizeof text, "%d x %d, %d samples: %u.%u s with %d workers, %u thousand rays a second (the tree %u ms).", pt.width, pt.height,
-		 pt.samples, took / 1000, took % 1000 / 100, workers, took ? rays / took : 0, (unsigned)sc_world.build_ms);
-	show_traced();
+	took = now_ms() - began;
+	traced = sample >= 1;
+	if (leave_when_done || getenv("NXPATH_PRINT")) {
+		unsigned sum = 0;
+
+		for (i = 0; i < pt.width * pt.height; i++)
+			sum = sum * 31 + pt.pixels[i];
+		fprintf(stderr, "pathstat: %d x %d, %d samples, %d turns, %d triangles: tree %u ms by %u workers, picture %u ms with %d workers, %u rays, sum %08x\n",
+			pt.width, pt.height, sample, pt.bounces, sc_world.triangle_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers, took,
+			workers, rays, sum);
+	}
+	snprintf(text, sizeof text, "%d x %d, %d samples: %u.%u s with %d workers, %u thousand rays a second.", pt.width, pt.height, sample, took / 1000,
+		 took % 1000 / 100, workers, took ? rays / took : 0);
+	if (traced)
+		showing = 2;
+	view_dirty = 1;
 	say(text);
 	if (getenv("NXPATH_SAVE"))
 		write_picture(getenv("NXPATH_SAVE"));
@@ -396,52 +538,69 @@ static void
 trace_on(void)
 {
 	static unsigned polls;
-	int k, least = pt.samples;
+	int k, least = pt.samples, before = sample, done;
 	unsigned all = 0;
 
 	if (!workers) {
-		if (pt.stop || sample >= pt.samples) {
-			if (pt.stop && sample > 0)
-				pt.samples = sample;
-			end_render();
-			return;
+		done = pt.stop || sample >= pt.samples;
+		if (!done) {
+			rays += pt_tile((uint32_t)next_tile * pt.stride % (uint32_t)pt.tiles, (uint32_t)sample);
+			if (++next_tile >= pt.tiles)
+				next_tile = 0, sample++;
 		}
-		rays += pt_tile((uint32_t)next_tile * pt.stride % (uint32_t)pt.tiles, (uint32_t)sample);
-		if (++next_tile >= pt.tiles)
-			next_tile = 0, sample++;
+	} else {
+		for (k = 1; k <= workers; k++) {
+			int at = (int)pt.slots[k].samples;
+
+			/* (asked when its slot says it is through, and now and then: its core may have been wanted back) */
+			if (busy[k] && ((polls & 3) == 0 || at >= pt.samples || pt.stop) && mcw_done(k))
+				busy[k] = 0, out--;
+			if (!busy[k] && at < pt.samples && !pt.stop) {
+				busy[k] = 1, out++;
+				mcw_post(k, pt_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k << 24 | (mcw_bound(k) ? 0u : 1u));
+			}
+			all += pt.slots[k].rays;
+			if (at < least)
+				least = at;
+		}
+		polls++;
+		rays = all, sample = least;
+		done = out == 0 && (least >= pt.samples || pt.stop);
+	}
+	if (!done) {
+		if (phase == 1 && !traced && sample >= 1) {
+			traced = 1, showing = 2, view_dirty = 1;
+			if (getenv("NXPATH_PRINT"))
+				fprintf(stderr, "nxpath: the picture %d x %d has a sample after %u ms\n", pt.width, pt.height, now_ms() - began);
+		}
+		if (sample != before)
+			draw_bar();
 		return;
 	}
-	for (k = 1; k <= workers; k++) {
-		int at = (int)pt.slots[k].samples;
-
-		/* (asked when its slot says it is through, and now and then: its core may have been wanted back) */
-		if (busy[k] && ((polls & 3) == 0 || at >= pt.samples || pt.stop) && mcw_done(k))
-			busy[k] = 0, out--;
-		if (!busy[k] && at < pt.samples && !pt.stop) {
-			busy[k] = 1, out++;
-			mcw_post(k, pt_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k << 24 | (mcw_bound(k) ? 0u : 1u));
-		}
-		all += pt.slots[k].rays;
-		if (at < least)
-			least = at;
+	if (pt.stop == 2 || (phase == 0 && pt.stop)) {
+		tracing = 0;
+		draw_bar();
+		return;
 	}
-	polls++;
-	rays = all, sample = least;
-	if (out == 0 && (least >= pt.samples || pt.stop)) {
-		if (pt.stop)
-			pt.samples = least > 0 ? least : 1;
-		end_render();
+	if (phase == 0) {
+		showing = 1, view_dirty = 1;
+		if (getenv("NXPATH_PRINT"))
+			fprintf(stderr, "nxpath: the small picture %d x %d after %u ms\n", pt.width, pt.height, now_ms() - began);
+		start_phase(1);
+		return;
 	}
+	end_render();
 }
 
 /* The picture's settings are the registry's (registry.h): the next start has them. */
 static void
 keep_settings(void)
 {
-	reg_set_int("pathtrace.size", size_at);
+	reg_set_int("pathtrace.detail", detail_at);
 	reg_set_int("pathtrace.samples", samples_at);
 	reg_set_int("pathtrace.turns", bounces);
 	reg_set_int("pathtrace.sky", (int)(sc.sky_power * 100.0f + 0.5f));
+	reg_set_int("pathtrace.live", live);
 }
 
 /* ---- the scene's things ---- */
@@ -590,7 +749,7 @@ row_label(int row)
 	return text;
 }
 
-/* The values a line of three shows and its two small buttons change: an object's place, turn
+/* The values a line of three shows and its small buttons change: an object's place, turn
  * or size, or a light's place. */
 static float *
 line_values(int line, float *step)
@@ -603,114 +762,239 @@ line_values(int line, float *step)
 	return l >= 0 && line == 0 ? sc.lights[l].place : NULL;
 }
 
-/* The sliders of what is shown, by number: a value from 0 to its most, and where it is kept. */
+/* The sliders by number: a colour's three, a light's radius and power, then the picture's
+ * samples, turns and sky. A value from 0 to its most, and where it is kept. */
+enum { S_RED, S_GREEN, S_BLUE, S_RADIUS, S_POWER, S_SAMPLES, S_TURNS, S_SKY, SLIDERS };
+
+static int
+slider_most(int n)
+{
+	return n == S_SAMPLES ? SAMPLE_STEPS - 1 : n == S_TURNS ? 7 : 255;
+}
+
 static int
 slider_value(int n, int set, int value)
 {
 	int o = chosen_object(), l = chosen_light();
 	float *f = NULL, most = 1.0f;
 
-	if (tab == 1) {
-		if (n == 0) { if (set) samples_at = value; return samples_at; }
-		if (n == 1) { if (set) bounces = value + 1; return bounces - 1; }
-		if (n == 2) f = &sc.sky_power, most = 2.0f;
-	} else if (o >= 0 && n < 3)
+	if (n == S_SAMPLES) { if (set) samples_at = value; return samples_at; }
+	if (n == S_TURNS) { if (set) bounces = value + 1; return bounces - 1; }
+	if (n == S_SKY)
+		f = &sc.sky_power, most = 2.0f;
+	else if (n <= S_BLUE && o >= 0)
 		f = &sc.objects[o].colour[n];
-	else if (l >= 0 && n < 3)
+	else if (n <= S_BLUE && l >= 0)
 		f = &sc.lights[l].colour[n];
-	else if (l >= 0 && n == 3)
-		f = &sc.lights[l].radius, most = 1.0f;
-	else if (l >= 0 && n == 4)
+	else if (n == S_RADIUS && l >= 0)
+		f = &sc.lights[l].radius;
+	else if (n == S_POWER && l >= 0)
 		f = &sc.lights[l].power, most = 100.0f;
 	if (!f)
 		return -1;
 	if (set)
-		*f = (float)value * most / 255.0f, *f = n == 3 && *f < 0.02f ? 0.02f : *f;
+		*f = (float)value * most / 255.0f, *f = n == S_RADIUS && *f < 0.02f ? 0.02f : *f;
 	return (int)(*f * 255.0f / most + 0.5f);
 }
 
-static int
-slider_most(int n)
+/* What a control of the panel or a row of a menu does. */
+enum {
+	A_NONE, A_IMPORT, A_EXPORT, A_CLOSE, A_PLANE, A_BOX, A_BALL, A_LIGHT, A_DUPLICATE, A_DELETE, A_SCENE, A_PICTURE, A_WHOLE, A_RENDER,
+	A_STOP, A_LIVE, A_TAB, A_DETAIL = A_TAB + 2, A_WHAT, A_MATERIAL = A_WHAT + 3, A_LESS = A_MATERIAL + 3, A_MORE = A_LESS + 9, A_SLIDER = A_MORE + 9
+};
+
+/* The panel is a list of things laid out once for what is shown: what is drawn and what a
+ * click is on are the same rectangles. */
+enum { I_TEXT, I_VALUE, I_HEAD, I_BUTTON, I_SLIDER, I_SWATCH };	/* I_VALUE: words in the middle of their place */
+static struct item {
+	short kind, x, y, w, h, id, pressed;
+	char text[40];
+} items[80];
+static int item_count, held_x, held_w;
+
+static struct item *
+item(int kind, int x, int y, int w, int h, int id, const char *text)
 {
-	return tab == 1 && n == 0 ? SAMPLE_STEPS - 1 : tab == 1 && n == 1 ? 7 : 255;
+	struct item *i = &items[item_count < 79 ? item_count++ : 79];
+
+	i->kind = (short)kind, i->x = (short)x, i->y = (short)y, i->w = (short)w, i->h = (short)h, i->id = (short)id, i->pressed = 0;
+	snprintf(i->text, sizeof i->text, "%s", text ? text : "");
+	return i;
 }
 
-#define PX (wide - PANEL + 4)	/* the panel's left edge */
-#define LOW (tree.y + tree.height + 6)	/* under the list: the two tabs, then what they show */
-#define SLIDER_Y(n) (tab == 1 ? LOW + 54 + (n) * 38 : LOW + 30 + (chosen_object() >= 0 ? 124 : 28) + (n) * 22)
-
 static void
-draw_number(int x, int y, float v)
+number_text(char *text, int size, float v)
 {
-	char text[16];
 	int whole = (int)(v < 0.0f ? -v : v), part = (int)(((v < 0.0f ? -v : v) - (float)whole) * 100.0f + 0.5f);
 
 	if (part == 100)
 		whole++, part = 0;
-	snprintf(text, sizeof text, "%s%d.%02d", v < 0.0f ? "-" : "", whole, part);
-	ui_text(window, x, y, text, -1, BLACK, 0);
+	snprintf(text, (size_t)size, "%s%d.%02d", v < 0.0f ? "-" : "", whole, part);
 }
+
+#define PX (wide - PANEL + 6)		/* the panel's left edge */
+#define LOW (tree.y + tree.height + 6)	/* under the list: the two tabs, then what they show */
+
+/* A slider with its name before it and its value after it, on one line. */
+static void
+slider_line(int y, int n, const char *name, const char *value)
+{
+	item(I_TEXT, PX, y + 2, 50, 14, A_NONE, name);
+	item(I_SLIDER, PX + 52, y, PANEL - 52 - 50, 18, A_SLIDER + n, NULL);
+	item(I_TEXT, PX + PANEL - 46, y + 2, 40, 14, A_NONE, value);
+}
+
+static void
+layout(void)
+{
+	static const char *const lines[3] = {"Place", "Turn", "Size"}, *const colours[3] = {"Red", "Green", "Blue"};
+	int o = chosen_object(), l = chosen_light(), i, k, y = LOW, across = PANEL - 12;
+	char text[40], more[24];
+
+	item_count = 0;
+	item(I_HEAD, PX, BAR + 4, across, 14, A_NONE, "The scene");
+	item(I_BUTTON, PX, y, across / 2 - 2, 22, A_TAB, o < 0 && l >= 0 ? " Light" : " Object")->pressed = tab == 0;
+	item(I_BUTTON, PX + across / 2 + 2, y, across / 2 - 2, 22, A_TAB + 1, " Render")->pressed = tab == 1;
+	y += 30;
+	if (tab == 1) {
+		int w, h;
+
+		picture_size(&w, &h);
+		item(I_HEAD, PX, y, across, 14, A_NONE, "The picture");
+		y += 20;
+		item(I_TEXT, PX, y + 4, 50, 14, A_NONE, "Detail");
+		item(I_BUTTON, PX + 52, y, 86, 22, A_DETAIL, detail_names[detail_at]);
+		snprintf(text, sizeof text, "%d x %d", w, h);
+		item(I_TEXT, PX + 146, y + 4, 90, 14, A_NONE, text);
+		y += 28;
+		if (sample_steps[samples_at])
+			snprintf(text, sizeof text, "%d", sample_steps[samples_at]);
+		else
+			snprintf(text, sizeof text, "no end");
+		slider_line(y, S_SAMPLES, "Samples", text);
+		snprintf(text, sizeof text, "%d", bounces);
+		slider_line(y + 24, S_TURNS, "Turns", text);
+		number_text(text, sizeof text, sc.sky_power);
+		slider_line(y + 48, S_SKY, "Sky", text);
+		y += 78;
+		item(I_BUTTON, PX, y, across, 22, A_LIVE, live ? " Traced when the view is still: on" : " Traced when the view is still: off")->pressed = live;
+		y += 28;
+		i = tracing && !pt.stop;
+		item(I_BUTTON, PX, y, across / 2 - 2, 26, i ? A_STOP : A_RENDER, i ? " Stop" : " Render")->pressed = i;
+		item(I_BUTTON, PX + across / 2 + 2, y, across / 2 - 2, 26, showing ? A_SCENE : A_PICTURE, showing ? " Show the scene" : " Show the picture");
+		y += 32;
+		item(I_BUTTON, PX, y, across / 2 - 2, 22, A_EXPORT, " Export...");
+		return;
+	}
+	if (o < 0 && l < 0) {
+		item(I_TEXT, PX, y + 4, across, 14, A_NONE, "Nothing is selected: click a thing");
+		item(I_TEXT, PX, y + 20, across, 14, A_NONE, "in the picture or in the list.");
+		item(I_TEXT, PX, y + 44, across, 14, A_NONE, "Add has a plane, a box, a ball and");
+		item(I_TEXT, PX, y + 60, across, 14, A_NONE, "a light; File imports a mesh.");
+		return;
+	}
+	item(I_HEAD, PX, y, across, 14, A_NONE, o >= 0 ? sc.objects[o].name : sc.lights[l].name);
+	y += 18;
+	if (o >= 0) {
+		for (i = 0; i < 3; i++)
+			item(I_BUTTON, PX + i * (across / 3), y, across / 3 - 3, 22, A_WHAT + i, what_names[i])->pressed = what == i;
+		y += 28;
+	}
+	for (k = 0; k < 3; k++)
+		item(I_VALUE, PX + 49 + k * 70, y, 32, 12, A_NONE, k == 0 ? "x" : k == 1 ? "y" : "z");
+	y += 14;
+	for (i = 0; i < (o >= 0 ? 3 : 1); i++, y += 22) {
+		float step, *v = line_values(i, &step);
+
+		item(I_TEXT, PX, y + 3, 32, 14, A_NONE, lines[i]);
+		for (k = 0; k < 3; k++) {
+			number_text(more, sizeof more, v[k]);
+			item(I_BUTTON, PX + 34 + k * 70, y, 13, 18, A_LESS + i * 3 + k, "-");
+			item(I_VALUE, PX + 49 + k * 70, y + 3, 32, 14, A_NONE, more);
+			item(I_BUTTON, PX + 83 + k * 70, y, 13, 18, A_MORE + i * 3 + k, "+");
+		}
+	}
+	y += 6;
+	if (o >= 0) {
+		item(I_HEAD, PX, y, across, 14, A_NONE, "Material");
+		y += 18;
+		for (i = 0; i < 3; i++)
+			item(I_BUTTON, PX + i * (across / 3), y, across / 3 - 3, 22, A_MATERIAL + i, material_names[i])->pressed = sc.objects[o].material == i;
+		y += 30;
+	} else {
+		number_text(text, sizeof text, sc.lights[l].radius);
+		slider_line(y, S_RADIUS, "Radius", text);
+		snprintf(text, sizeof text, "%d", (int)(sc.lights[l].power + 0.5f));
+		slider_line(y + 24, S_POWER, "Power", text);
+		y += 52;
+	}
+	item(I_HEAD, PX, y, across - 30, 14, A_NONE, "Colour");
+	item(I_SWATCH, PX + across - 26, y - 2, 26, 16, A_NONE, NULL);
+	y += 18;
+	for (i = 0; i < 3; i++) {
+		snprintf(text, sizeof text, "%d", slider_value(i, 0, 0));
+		slider_line(y + i * 22, i, colours[i], text);
+	}
+	y += 74;
+	item(I_BUTTON, PX, y, across / 2 - 2, 22, A_DUPLICATE, " Duplicate");
+	item(I_BUTTON, PX + across / 2 + 2, y, across / 2 - 2, 22, A_DELETE, " Delete");
+}
+
+static void
+draw_item(const struct item *i)
+{
+	int o = chosen_object(), l = chosen_light();
+	const char *words;
+	const float *c;
+
+	switch (i->kind) {
+	case I_TEXT:
+		ui_text(window, i->x, i->y, i->text, -1, BLACK, 0);
+		break;
+	case I_VALUE:
+		ui_text(window, i->x + (i->w - ui_width(&ui_var_widths, ui_var, i->text, (int)strlen(i->text)) + 1) / 2, i->y, i->text, -1, BLACK, 0);
+		break;
+	case I_HEAD:
+		ui_text(window, i->x, i->y, i->text, -1, UI_SELECTED, 0);
+		ui_fill(window, i->x, i->y + 14, i->w, 1, UI_SHADOW);
+		break;
+	case I_BUTTON:
+		/* (its words in the middle: the toolkit's start six pixels in, past a small button's edge) */
+		words = i->text + (i->text[0] == ' ');
+		ui_button(window, i->x, i->y, i->w, i->h, "", i->pressed);
+		ui_text(window, i->x + (i->w - ui_width(&ui_var_widths, ui_var, words, (int)strlen(words)) + 1) / 2, i->y + (i->h - 12) / 2, words, -1, BLACK, 0);
+		break;
+	case I_SLIDER:
+		ui_slider(window, i->x, i->y, i->w, slider_value(i->id - A_SLIDER, 0, 0), slider_most(i->id - A_SLIDER));
+		break;
+	case I_SWATCH:
+		c = o >= 0 ? sc.objects[o].colour : l >= 0 ? sc.lights[l].colour : NULL;
+		if (c)
+			ui_fill(window, i->x, i->y, i->w, i->h, MWRGB((int)(c[0] * 255.0f), (int)(c[1] * 255.0f), (int)(c[2] * 255.0f)));
+		ui_bevel(window, i->x, i->y, i->w, i->h, 1);
+		break;
+	}
+}
+
+/* The menus along the window's top. */
+static const struct { const char *name; int x, w; } bar_menus[4] = {{"File", 6, 34}, {"Add", 40, 34}, {"View", 74, 38}, {"Render", 112, 52}};
 
 static void
 draw_panel(void)
 {
-	static const char *const lines[3] = {"Place", "Turn", "Size"}, *const colours[3] = {"Red", "Green", "Blue"};
-	int o = chosen_object(), l = chosen_light(), i, k, y = LOW;
-	char text[64];
+	int i;
 
-	tree.x = PX, tree.count = sc.object_count + sc.light_count;
-	ui_fill(window, wide - PANEL, 0, PANEL, high - STATUS, UI_FACE);
-	ui_button(window, PX, 4, 78, 22, " Import...", 0);
-	ui_button(window, PX + 82, 4, 78, 22, " Add...", 0);
-	ui_button(window, PX + 164, 4, 78, 22, " Delete", 0);
+	tree.x = PX, tree.y = BAR + 22, tree.count = sc.object_count + sc.light_count;
+	layout();
+	ui_fill(window, 0, 0, wide, BAR, UI_FACE);
+	for (i = 0; i < 4; i++)
+		ui_text(window, bar_menus[i].x + 6, 4, bar_menus[i].name, -1, BLACK, 0);
+	ui_fill(window, 0, BAR - 1, wide, 1, UI_SHADOW);
+	ui_fill(window, wide - PANEL, BAR, PANEL, high - STATUS - BAR, UI_FACE);
 	ui_list_draw(window, &tree, row_label);
-	ui_button(window, PX, y, 119, 22, " Selected", tab == 0);
-	ui_button(window, PX + 123, y, 119, 22, " Picture", tab == 1);
-	y += 30;
-	if (tab == 1) {
-		snprintf(text, sizeof text, " %d x %d", sizes[size_at][0], sizes[size_at][1]);
-		ui_button(window, PX, y, 119, 22, text, 0);
-		ui_button(window, PX + 123, y, 119, 22, tracing ? " Stop" : " Render", tracing);
-		snprintf(text, sizeof text, "Samples a pixel: %d", sample_steps[samples_at]);
-		ui_text(window, PX, SLIDER_Y(0) - 14, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "Turns of a path: %d", bounces);
-		ui_text(window, PX, SLIDER_Y(1) - 14, text, -1, BLACK, 0);
-		ui_text(window, PX, SLIDER_Y(2) - 14, "The sky's light", -1, BLACK, 0);
-		for (i = 0; i < 3; i++)
-			ui_slider(window, PX, SLIDER_Y(i), PANEL - 12, slider_value(i, 0, 0), slider_most(i));
-		y = SLIDER_Y(2) + 28;
-		ui_button(window, PX, y, 119, 22, showing ? " Edit the scene" : " Show the picture", 0);
-		ui_button(window, PX + 123, y, 119, 22, " Export...", 0);
-	} else if (o < 0 && l < 0) {
-		ui_text(window, PX, y + 4, "Nothing is selected: click a thing", -1, UI_SHADOW, 0);
-		ui_text(window, PX, y + 20, "in the picture or in the list.", -1, UI_SHADOW, 0);
-	} else {
-		if (o >= 0)
-			for (i = 0; i < 3; i++)
-				ui_button(window, PX + i * 82, y, 78, 22, what_names[i], what == i);
-		y += o >= 0 ? 28 : 0;
-		for (i = 0; i < (o >= 0 ? 3 : 1); i++, y += 22) {
-			float step, *v = line_values(i, &step);
-
-			ui_text(window, PX, y + 3, lines[i], -1, BLACK, 0);
-			for (k = 0; k < 3; k++) {
-				draw_number(PX + 36 + k * 70, y + 3, v[k]);
-				ui_button(window, PX + 78 + k * 70, y, 12, 18, "-", 0);
-				ui_button(window, PX + 91 + k * 70, y, 12, 18, "+", 0);
-			}
-		}
-		if (o >= 0) {
-			for (i = 0; i < 3; i++)
-				ui_button(window, PX + i * 82, y + 2, 78, 22, material_names[i], sc.objects[o].material == i);
-		}
-		for (i = 0; i < (o >= 0 ? 3 : 5); i++) {
-			ui_text(window, PX, SLIDER_Y(i) + 2, i < 3 ? colours[i] : i == 3 ? "Radius" : "Power", -1, BLACK, 0);
-			ui_slider(window, PX + 44, SLIDER_Y(i), PANEL - 56, slider_value(i, 0, 0), slider_most(i));
-		}
-	}
-	ui_fill(window, 0, high - STATUS, wide, STATUS, UI_FACE);
-	ui_text_fit(window, 6, high - STATUS + 3, wide - 12, status, BLACK);
-	GrFlush();
+	for (i = 0; i < item_count; i++)
+		draw_item(&items[i]);
+	draw_status();
 }
 
 static void
@@ -720,14 +1004,35 @@ others(GR_EVENT *event)
 		draw_panel();
 }
 
+/* For a test: the controls that lie over another, and the words wider than their place. */
+static void
+check_layout(void)
+{
+	int i, j, over = 0, cut = 0, lowest = 0;
+
+	layout();
+	for (i = 0; i < item_count; i++) {
+		const struct item *a = &items[i];
+		int words = ui_width(&ui_var_widths, ui_var, a->text, (int)strlen(a->text));
+
+		cut += (a->kind == I_TEXT || a->kind == I_VALUE || a->kind == I_HEAD || a->kind == I_BUTTON) && words + (a->kind == I_BUTTON ? 4 : 0) > a->w;
+		lowest = a->y + a->h > lowest ? a->y + a->h : lowest;
+		for (j = 0; j < i; j++)
+			over += a->x < items[j].x + items[j].w && items[j].x < a->x + a->w && a->y < items[j].y + items[j].h && items[j].y < a->y + a->h;
+	}
+	fprintf(stderr, "nxpath: tab %d, %d controls: %d over another, %d with words wider than their place, the lowest ends at %d of %d\n", tab, item_count,
+		over, cut, lowest, high - STATUS);
+}
+
 /* For a test without a screen: what the scene has and what is selected, on the console. */
 static void
 tell(void)
 {
-	int o = chosen_object(), l = chosen_light();
+	int o = chosen_object(), l = chosen_light(), x, y;
 
 	if (!getenv("NXPATH_PRINT"))
 		return;
+	check_layout();
 	fprintf(stderr, "nxpath: %d objects, %d lights", sc.object_count, sc.light_count);
 	if (o >= 0)
 		fprintf(stderr, "; %s is%s at %d %d %d (hundredths), size %d, colour %d %d %d", sc.objects[o].name, material_names[sc.objects[o].material],
@@ -736,6 +1041,9 @@ tell(void)
 			(int)(sc.objects[o].colour[2] * 255.0f));
 	if (l >= 0)
 		fprintf(stderr, "; %s, power %d", sc.lights[l].name, (int)sc.lights[l].power);
+	ui_window_origin(window, &x, &y);
+	fprintf(stderr, "; detail %d, samples %d, turns %d, live %d; window at %d,%d, view %d x %d", detail_at + 1, sample_steps[samples_at], bounces, live, x, y,
+		view_w, view_h);
 	fprintf(stderr, "\n");
 }
 
@@ -748,8 +1056,7 @@ changed(void)
 	tell();
 	for (i = 0; i < sc.object_count; i++)
 		sc_object_matrix(&sc.objects[i]);
-	if (!tracing)
-		showing = 0;
+	invalidate();
 	fill_tables();
 	draw_panel();
 }
@@ -769,6 +1076,7 @@ import_dialog(void)
 		return;
 	}
 	say("");
+	tab = 0;
 	choose(m);
 	changed();
 }
@@ -778,29 +1086,104 @@ export_dialog(void)
 {
 	char path[512];
 
-	if (!traced) {
-		say("There is no picture yet: Render first.");
+	if (!traced || phase != 1) {
+		say("There is no picture yet.");
 		return;
 	}
 	if (!ui_save_file("Export the picture", "/root/Pictures", ".ppm", "render.ppm", path, sizeof path, others))
 		return;
 	ui_files_ending(path, sizeof path, ".ppm");
 	write_picture(path);
+	say("The picture is written.");
 }
 
-enum { ADD_PLANE = 1, ADD_BOX, ADD_BALL, ADD_LIGHT };
-
+/* A menu of the bar, opened under its name. */
 static void
-add_menu(void)
+open_menu(int which)
 {
-	static struct ui_menu_item menu[4];
-	static const char *const labels[4] = {"Plane", "Box", "Ball", "Light"};
-	int i, x, y;
+	static struct ui_menu_item menu[6];
+	int most = sample_steps[samples_at] ? sample_steps[samples_at] : ENDLESS;
+	static const struct { const char *label; int id; } rows[4][6] = {
+		{{"Import a mesh...", A_IMPORT}, {"Export the picture...", A_EXPORT}, {"Close", A_CLOSE}},
+		{{"Plane", A_PLANE}, {"Box", A_BOX}, {"Ball", A_BALL}, {"Light", A_LIGHT}, {"Duplicate    Ctrl+D", A_DUPLICATE}, {"Delete    Del", A_DELETE}},
+		{{"The scene", A_SCENE}, {"The picture", A_PICTURE}, {"The whole scene in view    Home", A_WHOLE}},
+		{{"Render    F5", A_RENDER}, {"Stop    Esc", A_STOP}, {"Traced when the view is still    L", A_LIVE}},
+	};
+	int i, n = 0, x, y, any = tree.selected >= 0;
 
-	for (i = 0; i < 4; i++)
-		menu[i].label = labels[i], menu[i].id = ADD_PLANE + i, menu[i].icon = -1;
+	for (i = 0; i < 6 && rows[which][i].label; i++, n++) {
+		int id = rows[which][i].id;
+
+		menu[i].label = rows[which][i].label, menu[i].id = id, menu[i].icon = -1, menu[i].sub = NULL;
+		menu[i].flags = (id == A_EXPORT && !traced) || (id == A_PICTURE && (!traced || stale)) || ((id == A_DUPLICATE || id == A_DELETE) && !any) ||
+				(id == A_STOP && !tracing) || (id == A_RENDER && !stale && (tracing || sample >= most)) ? UI_MENU_GREY : 0;
+		if (id == A_CLOSE || id == A_DUPLICATE || id == A_WHOLE || id == A_LIVE)
+			menu[i].flags |= UI_MENU_LINE;
+		if (id == A_LIVE && live)
+			menu[i].flags |= UI_MENU_CHECK;
+	}
 	ui_window_origin(window, &x, &y);
-	ui_menu_open(menu, 4, x + PX + 82, y + 26, 0, 0);
+	ui_menu_open(menu, n, x + bar_menus[which].x, y + BAR, 0, 0);
+}
+
+/* A copy of what is selected, beside it. */
+static void
+duplicate(void)
+{
+	int o = chosen_object(), l = chosen_light();
+
+	if (o >= 0 && sc.object_count < SC_OBJECTS) {
+		struct sc_object *made = &sc.objects[sc.object_count];
+
+		*made = sc.objects[o];
+		name_free(made->name, sc.meshes[made->mesh].name);
+		made->place[0] += 0.4f;
+		choose(sc.object_count++);
+	} else if (l >= 0 && sc.light_count < SC_LIGHTS) {
+		struct sc_light *made = &sc.lights[sc.light_count];
+
+		*made = sc.lights[l];
+		name_free(made->name, "Light");
+		made->place[0] += 0.4f;
+		choose(sc.object_count + sc.light_count++);
+	} else
+		say("No room for another.");
+}
+
+/* The camera where it sees every object: round the middle of them, as far as they reach. */
+static void
+whole_view(void)
+{
+	float low[3] = {1e30f, 1e30f, 1e30f}, high_[3] = {-1e30f, -1e30f, -1e30f}, reach = 0.0f;
+	int i, k;
+
+	for (i = 0; i < sc.object_count; i++) {
+		const struct sc_object *o = &sc.objects[i];
+		const struct sc_mesh *m = &sc.meshes[o->mesh];
+		float half = 0.0f;
+
+		/* (the ground is as large as one likes: it does not count) */
+		if ((m->high[1] - m->low[1]) * o->size[1] * 8.0f < (m->high[0] - m->low[0]) * o->size[0])
+			continue;
+		for (k = 0; k < 3; k++)
+			half += (m->high[k] - m->low[k]) * o->size[k] * (m->high[k] - m->low[k]) * o->size[k] * 0.25f;
+		half = sqrtf(half);
+		for (k = 0; k < 3; k++) {
+			float c = o->matrix[k] * (m->low[0] + m->high[0]) * 0.5f + o->matrix[4 + k] * (m->low[1] + m->high[1]) * 0.5f +
+				  o->matrix[8 + k] * (m->low[2] + m->high[2]) * 0.5f + o->matrix[12 + k];
+
+			if (c - half < low[k]) low[k] = c - half;
+			if (c + half > high_[k]) high_[k] = c + half;
+		}
+	}
+	if (low[0] > high_[0])
+		return;
+	for (k = 0; k < 3; k++) {
+		sc.camera.target[k] = (low[k] + high_[k]) * 0.5f;
+		reach += (high_[k] - low[k]) * (high_[k] - low[k]) * 0.25f;
+	}
+	sc.camera.far = sqrtf(reach) / sc.camera.lens * 1.1f + 0.5f;
+	invalidate();
 }
 
 static void
@@ -808,95 +1191,110 @@ add_thing(int id)
 {
 	int made = -1;
 
-	if (id == ADD_PLANE)
+	if (id == A_PLANE)
 		made = add_object(sc_mesh_plane(), 4.0f, SC_MATT, 0.7f, 0.7f, 0.7f);
-	else if (id == ADD_BOX)
+	else if (id == A_BOX)
 		made = add_object(sc_mesh_box(), 0.6f, SC_MATT, 0.8f, 0.6f, 0.3f);
-	else if (id == ADD_BALL)
+	else if (id == A_BALL)
 		made = add_object(sc_mesh_ball(16), 0.6f, SC_MIRROR, 0.95f, 0.95f, 0.95f);
-	else if (id == ADD_LIGHT && (made = add_light(0.0f, 2.0f, 0.0f, 0.25f, 30.0f)) >= 0)
+	else if (id == A_LIGHT && (made = add_light(0.0f, 2.0f, 0.0f, 0.25f, 30.0f)) >= 0)
 		made += sc.object_count;
 	if (made < 0) {
 		say("No room for another.");
 		return;
 	}
+	tab = 0;
 	choose(made);
 	changed();
 }
 
-/* A click in the panel (not on its list); `x`, `y` in the window. */
+/* What a control or a menu's row asks for. */
+static void
+act(int id)
+{
+	int o = chosen_object();
+
+	if (id >= A_LESS && id < A_SLIDER) {
+		int up = id >= A_MORE, n = id - (up ? A_MORE : A_LESS), line = n / 3, k = n % 3;
+		float step, *v = line_values(line, &step);
+
+		if (!v)
+			return;
+		if (line == 2)	/* (a size grows by a tenth of itself, all three ways at once) */
+			v[0] *= up ? 1.1f : 1.0f / 1.1f, v[1] *= up ? 1.1f : 1.0f / 1.1f, v[2] *= up ? 1.1f : 1.0f / 1.1f;
+		else
+			v[k] += up ? step : -step;
+		changed();
+		return;
+	}
+	switch (id) {
+	case A_IMPORT: import_dialog(); break;
+	case A_EXPORT: export_dialog(); break;
+	case A_CLOSE: pt.stop = 2; exit(0);
+	case A_PLANE: case A_BOX: case A_BALL: case A_LIGHT: add_thing(id); break;
+	case A_DUPLICATE: duplicate(), changed(); break;
+	case A_DELETE: delete_chosen(), changed(); break;
+	case A_SCENE: showing = 0, view_dirty = 1, draw_panel(); break;
+	case A_PICTURE:
+		if (traced && !stale)
+			showing = 2, view_dirty = 1, draw_panel();
+		break;
+	case A_WHOLE: whole_view(); break;
+	case A_RENDER:
+		tab = 1;
+		if (!trace_more())
+			invalidate(), wanted = 1;
+		draw_panel();
+		break;
+	case A_STOP:
+		if (tracing && !pt.stop)
+			pt.stop = 1;
+		stale = wanted = 0;
+		draw_panel();
+		break;
+	case A_LIVE: live = !live, still_since = now_ms(), keep_settings(), tell(), draw_panel(); break;
+	case A_TAB: case A_TAB + 1: tab = id - A_TAB, tell(), draw_panel(); break;
+	case A_DETAIL: detail_at = (detail_at + 1) % DETAILS, keep_settings(), invalidate(), tell(), draw_panel(); break;
+	case A_WHAT: case A_WHAT + 1: case A_WHAT + 2: what = id - A_WHAT, view_dirty = 1, draw_panel(); break;
+	case A_MATERIAL: case A_MATERIAL + 1: case A_MATERIAL + 2:
+		if (o >= 0)
+			sc.objects[o].material = id - A_MATERIAL, changed();
+		break;
+	}
+}
+
+/* The slider that is held, moved to where the pointer is. */
+static void
+slide(int x)
+{
+	int n = held - 1;
+
+	slider_value(n, 1, ui_slider_value(x, held_x, held_w, slider_most(n)));
+	if (n != S_SAMPLES)
+		changed();
+	else if (!trace_more())
+		invalidate();
+	draw_panel();
+}
+
+/* A click in the panel (not on its list): the control there. */
 static void
 press_panel(int x, int y)
 {
-	int o = chosen_object(), l = chosen_light(), i, k, by = LOW + 30;
+	int i;
 
-	if (y < 26) {
-		if (x < PX + 80)
-			import_dialog();
-		else if (x < PX + 162)
-			add_menu();
-		else
-			delete_chosen(), changed();
-		return;
-	}
-	if (ui_inside(x, y, PX, LOW, 242, 22)) {
-		tab = x >= PX + 121;
-		draw_panel();
-		return;
-	}
-	for (i = 0; i < 5; i++)
-		if (slider_value(i, 0, 0) >= 0 && ui_inside(x, y, tab == 1 ? PX : PX + 44, SLIDER_Y(i) - 4, tab == 1 ? PANEL - 12 : PANEL - 56, 26)) {
-			held = i + 1;
+	for (i = 0; i < item_count; i++) {
+		const struct item *it = &items[i];
+
+		if (it->id == A_NONE || !ui_inside(x, y, it->x, it->y - (it->kind == I_SLIDER ? 3 : 0), it->w, it->h + (it->kind == I_SLIDER ? 6 : 0)))
+			continue;
+		if (it->kind == I_SLIDER) {
+			held = it->id - A_SLIDER + 1, held_x = it->x, held_w = it->w;
 			ui_moves(window, EVENTS, 1);
-			slider_value(i, 1, ui_slider_value(x, tab == 1 ? PX : PX + 44, tab == 1 ? PANEL - 12 : PANEL - 56, slider_most(i)));
-			changed();
-			return;
-		}
-	if (tab == 1) {
-		if (ui_inside(x, y, PX, by, 119, 22)) {
-			size_at = (size_at + 1) % SIZES;
-			keep_settings();
-			draw_panel();
-		} else if (ui_inside(x, y, PX + 123, by, 119, 22)) {
-			if (tracing)
-				pt.stop = 1;
-			else
-				begin_render();
-		} else if (ui_inside(x, y, PX, SLIDER_Y(2) + 28, 119, 22) && traced) {
-			showing = !showing, view_dirty = 1;
-			if (showing)
-				show_traced();
-			draw_panel();
-		} else if (ui_inside(x, y, PX + 123, SLIDER_Y(2) + 28, 119, 22))
-			export_dialog();
+			slide(x);
+		} else
+			act(it->id);
 		return;
-	}
-	if (o < 0 && l < 0)
-		return;
-	if (o >= 0 && y >= by && y < by + 22) {
-		what = (x - PX) / 82 > 2 ? 2 : (x - PX) / 82;
-		view_dirty = 1;
-		draw_panel();
-		return;
-	}
-	by += o >= 0 ? 28 : 0;
-	for (i = 0; i < (o >= 0 ? 3 : 1); i++, by += 22)
-		for (k = 0; k < 3 && y >= by && y < by + 18; k++) {
-			float step, *v = line_values(i, &step);
-			int up = ui_inside(x, y, PX + 91 + k * 70, by, 12, 18);
-
-			if (!up && !ui_inside(x, y, PX + 78 + k * 70, by, 12, 18))
-				continue;
-			if (i == 2)	/* (a size grows by a tenth of itself, all three ways at once) */
-				v[0] *= up ? 1.1f : 1.0f / 1.1f, v[1] *= up ? 1.1f : 1.0f / 1.1f, v[2] *= up ? 1.1f : 1.0f / 1.1f;
-			else
-				v[k] += up ? step : -step;
-			changed();
-			return;
-		}
-	if (o >= 0 && y >= by + 2 && y < by + 24) {
-		sc.objects[o].material = (x - PX) / 82 > 2 ? 2 : (x - PX) / 82;
-		changed();
 	}
 }
 
@@ -915,7 +1313,7 @@ pointer_now(int *x, int *y, int *buttons)
 	int ox, oy;
 
 	ui_window_origin(window, &ox, &oy);
-	*x = (int)*control(0x20) - ox, *y = (int)*control(0x24) - oy, *buttons = (int)*control(0x28);
+	*x = (int)*control(0x20) - ox, *y = (int)*control(0x24) - oy - BAR, *buttons = (int)*control(0x28);
 }
 
 /* The thing an eye's ray through a point of the picture meets first, by each thing's ball:
@@ -964,7 +1362,34 @@ thing_at(int px, int py)
 	return found;
 }
 
-/* The scene by OpenGL, and the handles of what is selected over it. */
+/* A traced picture over the view: all of it, or a test's picture as large as fits. */
+static void
+draw_traced(void)
+{
+	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
+	static const GLfixed corners[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0}, uv[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
+	int w = view_w, h = view_h;
+
+	if (fixed_w) {
+		h = view_w * fixed_h / fixed_w;
+		if (h > view_h)
+			h = view_h, w = view_h * fixed_w / fixed_h;
+		glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
+	glViewport((view_w - w) / 2, (view_h - h) / 2, w, h);
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixx(whole);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glDisable(GL_DEPTH_TEST);
+	seglQuad(corners, uv, showing == 1 ? small_texture : texture, 255, 255, 0);
+	glViewport(0, 0, view_w, view_h);
+	shown_at = now_ms();
+}
+
+/* The view: the scene by OpenGL or the traced picture of it, and over either the handles of
+ * what is selected. */
 static void
 draw_view(void)
 {
@@ -974,29 +1399,36 @@ draw_view(void)
 	sc_camera_set(&sc.camera);
 	view_matrices(view, projection);
 	glViewport(0, 0, view_w, view_h);
-	glClearColor(0.16f, 0.18f, 0.22f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(projection);
-	glMatrixMode(GL_MODELVIEW);
-	glEnable(GL_DEPTH_TEST);
-	glDisable(GL_TEXTURE_2D);
-	for (i = 0; i < sc.object_count; i++) {
-		const struct shown_mesh *shown = sc.meshes[sc.objects[i].mesh].shown;
+	if (showing)
+		draw_traced();
+	else {
+		/* (behind the scene the sky, about as the traced picture shows it) */
+		for (i = 0; i < 3; i++)
+			m[i] = sqrtf(sc.sky[i] * sc.sky_power > 1.0f ? 1.0f : sc.sky[i] * sc.sky_power);
+		glClearColor(m[0], m[1], m[2], 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glMatrixMode(GL_PROJECTION);
+		glLoadMatrixf(projection);
+		glMatrixMode(GL_MODELVIEW);
+		glEnable(GL_DEPTH_TEST);
+		glDisable(GL_TEXTURE_2D);
+		for (i = 0; i < sc.object_count; i++) {
+			const struct shown_mesh *shown = sc.meshes[sc.objects[i].mesh].shown;
 
-		glLoadMatrixf(view);
-		glMultMatrixf(sc.objects[i].matrix);
-		seglTagged(shown->vertices, shown->count, tables + 256 * i);
-	}
-	for (i = 0; i < sc.light_count && ball_mesh >= 0; i++) {
-		const struct shown_mesh *shown = sc.meshes[ball_mesh].shown;
+			glLoadMatrixf(view);
+			glMultMatrixf(sc.objects[i].matrix);
+			seglTagged(shown->vertices, shown->count, tables + 256 * i);
+		}
+		for (i = 0; i < sc.light_count && ball_mesh >= 0; i++) {
+			const struct shown_mesh *shown = sc.meshes[ball_mesh].shown;
 
-		light_matrix(&sc.lights[i], m);
-		glLoadMatrixf(view);
-		glMultMatrixf(m);
-		seglTagged(shown->vertices, shown->count, tables + 256 * (SC_OBJECTS + i));
+			light_matrix(&sc.lights[i], m);
+			glLoadMatrixf(view);
+			glMultMatrixf(m);
+			seglTagged(shown->vertices, shown->count, tables + 256 * (SC_OBJECTS + i));
+		}
 	}
-	if (have_gizmo && (o >= 0 || l >= 0)) {
+	if (have_gizmo && (o >= 0 || l >= 0) && !(showing && fixed_w)) {
 		pointer_now(&px, &py, &buttons);
 		if (o >= 0)
 			memcpy(m, sc.objects[o].matrix, sizeof m);
@@ -1011,9 +1443,9 @@ draw_view(void)
 	}
 	seglSwap();
 	on_handle = moved;
-	view_dirty = moved == 1;
+	view_dirty = 0;
 	if (moved == 1) {
-		showing = 0;
+		invalidate();
 		fill_tables();
 		draw_panel();
 	}
@@ -1023,22 +1455,17 @@ static void
 set_window(int w, int h)
 {
 	wide = w < PANEL + 80 ? PANEL + 80 : w, high = h < 200 ? 200 : h;
-	view_w = wide - PANEL, view_h = high - STATUS;
+	view_w = wide - PANEL, view_h = high - STATUS - BAR;
 	GrResizeWindow(picture, view_w, view_h);
 	seglWindowChanged();
-	view_dirty = 1;
+	invalidate();
 }
 
-/* A button went down in the picture: on a handle it is the handle's; else the left one
- * picks what is there and turns the view while held, the right one moves the view. */
+/* A button went down in the picture, not on a handle: the left one picks what is there and
+ * turns the view while held, the right one moves the view. */
 static void
 press_view(int x, int y, int button)
 {
-	if (showing) {
-		showing = 0, view_dirty = 1;
-		draw_panel();
-		return;
-	}
 	if (button == 1) {
 		int row = thing_at(x, y);
 
@@ -1058,6 +1485,7 @@ drag_view(void)
 	pointer_now(&x, &y, &buttons);
 	if (!(buttons & (drag == 1 ? 1 : 2))) {
 		drag = 0;
+		still_since = now_ms();
 		return;
 	}
 	if (x == drag_x && y == drag_y)
@@ -1070,14 +1498,14 @@ drag_view(void)
 		for (k = 0; k < 3; k++)
 			c->target[k] += (c->up[k] * (float)(y - drag_y) - c->right[k] * (float)(x - drag_x)) * c->far * 0.002f;
 	drag_x = x, drag_y = y;
-	view_dirty = 1;
+	invalidate();
 }
 
 static void
 events(void)
 {
 	GR_EVENT e;
-	int id, x, y;
+	int id, x, y, i;
 
 	for (;;) {
 		GrCheckNextEvent(&e);
@@ -1086,7 +1514,7 @@ events(void)
 		ui_origin_note(&e);
 		switch (ui_menu_event(&e, &id)) {
 		case UI_MENU_CHOSEN:
-			add_thing(id);
+			act(id);
 			/* fall through */
 		case UI_MENU_CLOSED:
 		case UI_MENU_TOOK:
@@ -1096,7 +1524,7 @@ events(void)
 		case GR_EVENT_TYPE_CLOSE_REQ:
 			if (e.general.wid != window)
 				break;
-			pt.stop = 1;
+			pt.stop = 2;
 			exit(0);
 		case GR_EVENT_TYPE_EXPOSURE:
 			if (e.exposure.wid == window)
@@ -1113,30 +1541,32 @@ events(void)
 				keep_settings();
 			if (held)
 				held = 0, ui_moves(window, EVENTS, 0);
+			still_since = now_ms();
 			view_dirty = 1;	/* (a handle let go: its library is told by the next frame) */
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
-			if (held && (e.mouse.buttons & GR_BUTTON_L)) {
-				int n = held - 1, at = tab == 1 ? PX : PX + 44, across = tab == 1 ? PANEL - 12 : PANEL - 56;
-
-				slider_value(n, 1, ui_slider_value(e.mouse.x, at, across, slider_most(n)));
-				changed();
-			} else if (ui_list_event(&tree, &e))
+			if (held && (e.mouse.buttons & GR_BUTTON_L))
+				slide(e.mouse.x);
+			else if (ui_list_event(&tree, &e))
 				draw_panel();
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (e.button.wid != window)
 				break;
 			x = e.button.x, y = e.button.y;
-			if (x < view_w && y < view_h) {
+			if (y < BAR) {
+				for (i = 0; i < 4 && !ui_wheel(&e); i++)
+					if (x >= bar_menus[i].x && x < bar_menus[i].x + bar_menus[i].w)
+						open_menu(i);
+			} else if (x < view_w && y < BAR + view_h) {
 				if (ui_wheel(&e)) {
 					sc.camera.far *= ui_wheel(&e) > 0 ? 1.1f : 0.9f;
 					sc.camera.far = sc.camera.far < 0.5f ? 0.5f : sc.camera.far > 60.0f ? 60.0f : sc.camera.far;
-					showing = 0, view_dirty = 1;
+					invalidate();
 				} else if (e.button.changebuttons & (GR_BUTTON_L | GR_BUTTON_R)) {
 					/* (over a handle the press is the handle's: draw_view() sees the button) */
-					if (!(have_gizmo && !showing && on_handle && (e.button.changebuttons & GR_BUTTON_L)))
-						press_view(x, y, e.button.changebuttons & GR_BUTTON_L ? 1 : 2);
+					if (!(have_gizmo && on_handle && (e.button.changebuttons & GR_BUTTON_L)))
+						press_view(x, y - BAR, e.button.changebuttons & GR_BUTTON_L ? 1 : 2);
 					view_dirty = 1;
 				}
 			} else if (y >= high - STATUS) {
@@ -1150,18 +1580,19 @@ events(void)
 				press_panel(x, y);
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
-			switch (e.keystroke.ch) {
-			case MWKEY_DELETE: delete_chosen(), changed(); break;
-			case 'g': what = GIZMO_MOVE, view_dirty = 1, draw_panel(); break;
-			case 'r': what = GIZMO_TURN, view_dirty = 1, draw_panel(); break;
-			case 's': what = GIZMO_SIZE, view_dirty = 1, draw_panel(); break;
-			case MWKEY_F5: begin_render(); break;
-			case MWKEY_ESCAPE:
-				if (tracing)
-					pt.stop = 1;
-				else
-					showing = 0, view_dirty = 1, draw_panel();
+			if ((e.keystroke.modifiers & MWKMOD_CTRL) && (e.keystroke.ch == 'd' || e.keystroke.ch == 4)) {
+				act(A_DUPLICATE);
 				break;
+			}
+			switch (e.keystroke.ch) {
+			case MWKEY_DELETE: act(A_DELETE); break;
+			case MWKEY_HOME: act(A_WHOLE); break;
+			case 'g': act(A_WHAT + GIZMO_MOVE); break;
+			case 'r': act(A_WHAT + GIZMO_TURN); break;
+			case 's': act(A_WHAT + GIZMO_SIZE); break;
+			case 'l': act(A_LIVE); break;
+			case MWKEY_F5: act(A_RENDER); break;
+			case MWKEY_ESCAPE: act(tracing ? A_STOP : A_SCENE); break;
 			}
 			break;
 		}
@@ -1208,8 +1639,8 @@ main(int argc, char **argv)
 	wide = wide > info.cols - 20 ? info.cols - 20 : wide, high = high > info.rows - 70 ? info.rows - 70 : high;
 	ui_init();
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Path tracer", GR_ROOT_WINDOW_ID, -1, -1, wide, high, UI_FACE);
-	view_w = wide - PANEL, view_h = high - STATUS;
-	picture = GrNewWindow(window, 0, 0, view_w, view_h, 0, BLACK, BLACK);
+	view_w = wide - PANEL, view_h = high - STATUS - BAR;
+	picture = GrNewWindow(window, 0, BAR, view_w, view_h, 0, BLACK, BLACK);
 	GrMapWindow(picture);
 	GrMapWindow(window);
 	GrSetFocus(window);
@@ -1221,25 +1652,31 @@ main(int argc, char **argv)
 	have_gizmo = gizmo_init(picture);
 	GrSelectEvents(picture, 0);	/* (the handles' library asked for the picture's events: they are the window's) */
 	GrSelectEvents(window, EVENTS);
-	pt.pixels = seglMemory(MOST_W * MOST_H * 4);
+	full_pixels = seglMemory(MOST_W * MOST_H * 4);
+	small_pixels = seglMemory(SMALL * 4);
 	tables = seglMemory(256 * 4 * (SC_OBJECTS + SC_LIGHTS));
 	pt.sums = mcw_alloc(MOST_W * MOST_H * 3 * sizeof(float));
 	pt.slots = mcw_alloc(MC_MAX_CORES * sizeof(struct pt_slot));
-	if (!pt.pixels || !tables || !pt.sums || !pt.slots) {
+	if (!full_pixels || !small_pixels || !tables || !pt.sums || !pt.slots) {
 		fprintf(stderr, "nxpath: no memory for the picture\n");
 		return 1;
 	}
-	memset(pt.pixels, 0, MOST_W * MOST_H * 4);	/* (this core's first store there: a worker's would stop it) */
+	/* (this core's first stores there: a worker's would stop it) */
+	memset(full_pixels, 0, MOST_W * MOST_H * 4);
+	memset(small_pixels, 0, SMALL * 4);
+	pt.pixels = full_pixels;
 	glGenTextures(1, &texture);
+	glGenTextures(1, &small_texture);
 	atexit(mcw_close);
-	size_at = reg_int("pathtrace.size", size_at) % SIZES;
+	detail_at = reg_int("pathtrace.detail", detail_at) % DETAILS;
 	samples_at = reg_int("pathtrace.samples", samples_at) % SAMPLE_STEPS;
 	bounces = reg_int("pathtrace.turns", bounces);
 	bounces = bounces < 1 || bounces > 8 ? 5 : bounces;
-	if ((text = getenv("NXPATH_SIZE")) != NULL && sscanf(text, "%dx%d", &w, &h) == 2)
-		for (i = 0; i < SIZES; i++)
-			if (sizes[i][0] == w && sizes[i][1] == h)
-				size_at = i;
+	live = reg_int("pathtrace.live", live) != 0;
+	if ((text = getenv("NXPATH_LIVE")) != NULL)
+		live = atoi(text);
+	if ((text = getenv("NXPATH_SIZE")) != NULL && sscanf(text, "%dx%d", &w, &h) == 2 && w >= 8 && h >= 8 && w * h <= MOST_W * MOST_H)
+		fixed_w = w & ~3, fixed_h = h;
 	if ((text = getenv("NXPATH_SAMPLES")) != NULL)
 		for (i = 0; i < SAMPLE_STEPS; i++)
 			if (sample_steps[i] == atoi(text))
@@ -1250,30 +1687,29 @@ main(int argc, char **argv)
 	choose(argc > 1 && sc.object_count > 3 ? sc.object_count - 1 : 1);
 	changed();
 	if (getenv("NXPATH_AUTO"))
-		begin_render();
+		begin_trace();
 	for (;;) {
 		static int last_x, last_y;
 		int x, y, buttons;
 
 		events();
-		if (tracing) {
-			trace_on();
-			if (tracing && now_ms() - shown_at >= 400)
-				show_traced();
-			if (workers)
-				mcw_rest();
-			continue;
-		}
 		if (drag)
 			drag_view();
+		if (tracing)
+			trace_on();
 		/* (the handles light up under the pointer, and follow it: a frame when it has moved in the picture) */
 		pointer_now(&x, &y, &buttons);
-		if (!showing && have_gizmo && tree.selected >= 0 && (x != last_x || y != last_y) && x >= 0 && y >= 0 && x < view_w && y < view_h)
-			view_dirty = view_dirty ? view_dirty : 1;
+		if (have_gizmo && tree.selected >= 0 && (x != last_x || y != last_y) && x >= 0 && y >= 0 && x < view_w && y < view_h)
+			view_dirty = 1;
 		last_x = x, last_y = y;
-		if (view_dirty && !showing)
+		if (tracing && showing && now_ms() - shown_at >= 400)
+			view_dirty = 1;
+		/* (the view has been still for a moment, with nothing held: its picture is begun) */
+		if (stale && !tracing && (wanted || (live && !drag && !held && !buttons && now_ms() - still_since >= STILL)))
+			begin_trace();
+		if (view_dirty)
 			draw_view();
-		else
+		else if (workers || !tracing)
 			mcw_rest();
 	}
 }

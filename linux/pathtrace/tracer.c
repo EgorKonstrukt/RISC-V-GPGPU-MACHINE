@@ -228,9 +228,9 @@ static inline struct vec
 eye_way(float x, float y, float width, float height)
 {
 	const struct sc_camera *camera = &sc.camera;
-	float open = 2.0f * camera->lens / height;
+	float open = 2.0f * camera->lens / height, across = camera->aspect > 0.0f ? 2.0f * camera->lens * camera->aspect / width : open;
 
-	return unit(add(of(camera->ahead), add(scale(of(camera->right), (x - 0.5f * width) * open), scale(of(camera->up), (0.5f * height - y) * open))));
+	return unit(add(of(camera->ahead), add(scale(of(camera->right), (x - 0.5f * width) * across), scale(of(camera->up), (0.5f * height - y) * open))));
 }
 
 /* The light one path brings back; *rays counts its rays. */
@@ -463,6 +463,8 @@ pt_share(uint32_t which, uint32_t how)
 		at = w * pt.stride % tiles;
 		last = sample;
 		for (j = w; j < tiles; j += n) {
+			if (*(volatile int *)&pt.stop > 1)
+				return did;
 			rays += pt_tile(at, sample | k << 24);
 			if ((at += pt.step) >= tiles)
 				at -= tiles;
@@ -480,6 +482,14 @@ pt_share(uint32_t which, uint32_t how)
 				at -= tiles;
 		}
 	return did;
+}
+
+void
+pt_way(float x, float y, int width, int height, float *way)
+{
+	struct vec v = eye_way(x, y, (float)width, (float)height);
+
+	way[0] = v.x, way[1] = v.y, way[2] = v.z;
 }
 
 int
