@@ -12,6 +12,7 @@
  * The port's i_video.c is compiled with its frame, palette and start-up functions renamed and
  * an accessor appended (linux/nanox/doom.sh). Also prints the frame rate.
  */
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,12 +94,15 @@ begun(void)
  * The game's tic, as d_main.c and d_net.c call it (doom.sh): counted apart from drawing, and
  * with DOOM_HASH_TICS=N a sum of the game's state every N tics, to see a demo play the same.
  */
+static void seat_tic(void);
+
 void
 G_Ticker_counted(void)
 {
 	static int every = -1;
 	uint32_t began = cycles();
 
+	seat_tic();
 	G_Ticker();
 	in_tics += cycles() - began;
 	all_tics += cycles() - began;
@@ -188,6 +192,127 @@ I_GetTime(void)
 	return tics_then + (int)((clock_ms() - from) * 35 / 1000);
 }
 
+/* ---- the pointer, and a sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat") ---- */
+
+/* (Doom's own, which this file does not include) */
+typedef struct { int type, data1, data2, data3; } doom_event;
+typedef struct { signed char forwardmove, sidemove; short angleturn, consistancy; unsigned char chatchar, buttons; } doom_cmd;
+enum { EV_MOUSE = 2, BACKUP_TICS = 12 };
+void D_PostEvent(doom_event *event);
+void I_GetEvent(GR_EVENT *event);
+void G_BuildTiccmd(doom_cmd *cmd);
+extern int maketic, viewangleoffset;
+
+static int dragging;		/* the left button is held on the game: the pointer's travel turns the view */
+static int seated;		/* 1 with tracked hands, 2 with a mouse */
+static unsigned mouse_count;
+static short hand_turn, turn_of[BACKUP_TICS];	/* the right hand's turn, and as each tic's move was made */
+
+static const volatile unsigned *
+sitter(void)
+{
+	const volatile unsigned *host = gpu ? seglHostState() : NULL;
+	int now = !host || !SEGL_HOST_HOLODECK(host) ? 0 : SEGL_HOST_HANDS(host) ? 1 : SEGL_HOST_KIND(host) == 2 ? 2 : 0;
+
+	if (now != seated) {
+		seated = now;
+		dragging = 0;
+		hand_turn = now == 1 ? SEGL_HOST_HAND_YAW(host, 1) : 0;
+		mouse_count = host ? SEGL_HOST_MOUSE_X(host) : 0;
+	}
+	return host;
+}
+
+static void
+turn_by(int buttons, int by)
+{
+	doom_event event = { EV_MOUSE, buttons, by, 0 };
+
+	D_PostEvent(&event);
+}
+
+/* The window's events. On a flat screen the left button drags the view round, as a finger on
+ * glass does, and the right one fires; a sitter's buttons are the game's own, and the pointer
+ * turns nothing (a mouse's travel does: 0.066 degrees a count, as 0.044 a unit of Doom's). */
+static void
+events(void)
+{
+	static int last_x, fire;
+	const volatile unsigned *host = sitter();
+	GR_EVENT e;
+
+	if (seated == 2) {
+		unsigned count = SEGL_HOST_MOUSE_X(host);
+		int gone = (short)(count - mouse_count);
+
+		mouse_count = count;
+		if (gone)
+			turn_by(fire, gone * 3 / 2);
+	}
+	for (;;) {
+		GrCheckNextEvent(&e);
+		if (e.type == GR_EVENT_TYPE_NONE)
+			return;
+		if (e.type == GR_EVENT_TYPE_MOUSE_MOTION) {
+			if (dragging && !seated)
+				turn_by(fire, (e.mouse.x - last_x) * 6);	/* a quarter of a degree a pixel */
+			last_x = e.mouse.x;
+		} else if ((e.type == GR_EVENT_TYPE_BUTTON_DOWN || e.type == GR_EVENT_TYPE_BUTTON_UP) && !seated) {
+			dragging = (e.button.buttons & GR_BUTTON_L) != 0;
+			fire = (e.button.buttons & GR_BUTTON_R) != 0;
+			last_x = e.button.x;
+			turn_by(fire, 0);
+		} else {
+			if (e.type == GR_EVENT_TYPE_BUTTON_DOWN || e.type == GR_EVENT_TYPE_BUTTON_UP)
+				fire = (e.button.buttons & GR_BUTTON_L) != 0;
+			I_GetEvent(&e);
+		}
+	}
+}
+
+/* A tic's move as it is made (doom.sh has d_net.c call this). With tracked hands the right
+ * hand aims: the player turns as it turns, the walk stays the body's, and the room's view is
+ * the player's angle less the hand's turn of the tic it shows (seat_tic). */
+void
+G_BuildTiccmd_seat(doom_cmd *cmd)
+{
+	const volatile unsigned *host = sitter();
+
+	G_BuildTiccmd(cmd);
+	if (seated == 1) {
+		short turn = SEGL_HOST_HAND_YAW(host, 1);
+		/* the walk goes the way the head looks: so far to the left of the aim */
+		float angle = (short)(turn - SEGL_HOST_HEAD_YAW(host)) * (6.2831853f / 65536.0f), s = sinf(angle), c = cosf(angle);
+		float look = SEGL_HOST_STICK(host, 2) / 127.0f;
+		int forward = cmd->forwardmove + SEGL_HOST_STICK(host, 1) * 50 / 127, side = cmd->sidemove + SEGL_HOST_STICK(host, 0) * 40 / 127;
+
+		forward = forward > 50 ? 50 : forward < -50 ? -50 : forward;
+		side = side > 40 ? 40 : side < -40 ? -40 : side;
+		/* (the right stick: 140 degrees a second pushed home, 35 tics a second) */
+		cmd->angleturn -= (short)((fabsf(look) < 0.15f ? 0 : look * fabsf(look)) * 728);
+		cmd->angleturn -= (short)(turn - hand_turn);
+		hand_turn = turn;
+		cmd->forwardmove = (signed char)(forward * c + side * s);
+		cmd->sidemove = (signed char)(side * c - forward * s);
+	}
+	turn_of[maketic % BACKUP_TICS] = seated == 1 ? hand_turn : 0;
+}
+
+static void
+seat_tic(void)
+{
+	extern unsigned viewangle;
+	extern int viewx, viewy;
+	static int said = -1;
+
+	if (said < 0)
+		said = getenv("DOOM_SEAT") != NULL;	/* a line every 20 tics: how it is seated, the aim, the room's view */
+	if (said && ++said % 20 == 0)
+		fprintf(stderr, "seat: %d aim %.1f body %.1f drag %d at %d %d\n", seated, (viewangle - (unsigned)viewangleoffset) * (360.0 / 4294967296.0),
+			viewangle * (360.0 / 4294967296.0), dragging, viewx >> 16, viewy >> 16);
+	viewangleoffset = (int)((unsigned)(unsigned short)turn_of[gametic % BACKUP_TICS] << 16);
+}
+
 /*
  * Asking the server for events costs two system calls and two task switches, every tic. The
  * machine's own input words (pointer, buttons, key events so far; docs/input.md) say when
@@ -203,6 +328,8 @@ I_StartTic(void)
 		const volatile uint32_t *input = (const volatile uint32_t *)((const char *)seglPalette() - REG_PALETTE + REG_INPUT);
 		int i;
 
+		if (sitter() && seated == 2 && SEGL_HOST_MOUSE_X(seglHostState()) != mouse_count)
+			ask = ask ? ask : 1;
 		for (i = 0; i < 4; i++)
 			if (seen[i] != input[i]) {
 				seen[i] = input[i];
@@ -215,7 +342,7 @@ I_StartTic(void)
 		ask--;
 		quiet = 0;
 	}
-	I_StartTic_port();
+	events();
 }
 
 /* The melt waits for the clock to move on by asking the time again and again (doom.sh has
@@ -256,8 +383,13 @@ D_Display(void)
 {
 	uint32_t began;
 
-	if (gpu)
+	if (gpu) {
+		extern int gamestate, menuactive;
+
 		seglSettle();
+		/* a menu, a screen between levels: a picture for a screen, not a world for a room */
+		seglWorldFlat(gamestate != 0 || menuactive);
+	}
 	began = all_from ? cycles() : 0;
 	D_Display_game();
 	if (began)

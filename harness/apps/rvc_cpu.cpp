@@ -61,6 +61,8 @@ struct Options {
     int circleX = -1, circleY = 0, circleR = 0;    // --pointer-circle: the sweep's own circle
     int button = 0;                                // --pointer-button: the buttons word,
     double buttonFrom = 0, buttonTo = 0;           // between these seconds of the guest's
+    unsigned host[8] = {};                         // --host: the host's eight words, hex (docs/holodeck.md)
+    double hostMouse = 0;                          // --host-mouse: counts a second a sitter's mouse goes right
     bool desktop = false, tabs = false, quiet = false;
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
     double netLoss = 0, netDelay = 0;
@@ -883,6 +885,11 @@ static void control_pass() {
             word(CTRL + 0x24) = (u32)(opt.circleY + opt.circleR * sin(turn));
         }
     }
+    if (opt.host[0]) {
+        // (docs/holodeck.md, "What the machine is told": as the world's control pass writes them)
+        for (int i = 0; i < 8; i++) word(CTRL + 0x360 + 4 * i) = opt.host[i];
+        if (opt.hostMouse != 0) word(CTRL + 0x370) = (u32)(long long)(guest_seconds * opt.hostMouse) & 0xffffu;
+    }
     if (opt.button) word(CTRL + 0x28) = guest_seconds >= opt.buttonFrom && guest_seconds < opt.buttonTo ? opt.button : 0;
     word(CTRL + 0x2c) = key_seq;
     if (net.on()) net_pass();
@@ -971,6 +978,11 @@ int main(int argc, char** argv) {
         else if (a == "--pass-ms") opt.passMs = atof(next("--pass-ms").c_str());
         else if (a == "--pointer-sweep") opt.sweep = atoll(next("--pointer-sweep").c_str());
         else if (a == "--pointer-circle") sscanf(next("--pointer-circle").c_str(), "%d,%d,%d", &opt.circleX, &opt.circleY, &opt.circleR);
+        else if (a == "--host") {
+            std::string v = next("--host");
+            sscanf(v.c_str(), "%x,%x,%x,%x,%x,%x,%x,%x", &opt.host[0], &opt.host[1], &opt.host[2], &opt.host[3], &opt.host[4], &opt.host[5], &opt.host[6], &opt.host[7]);
+        }
+        else if (a == "--host-mouse") opt.hostMouse = atof(next("--host-mouse").c_str());
         else if (a == "--pointer-button") sscanf(next("--pointer-button").c_str(), "%d,%lf,%lf", &opt.button, &opt.buttonFrom, &opt.buttonTo);
         else if (a == "--desktop") opt.desktop = true;
         else if (a == "--tabs") opt.tabs = true;
@@ -997,6 +1009,8 @@ int main(int argc, char** argv) {
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
                    "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
+                   "  --host W0,...,W7        the host's eight words in hex (docs/holodeck.md)\n"
+                   "  --host-mouse N          and a sitter's mouse going right N counts a second\n"
                    "  --pointer-button B,S,T the buttons word is B (2: the right one) from second S to T of the guest's\n"
                    "  --desktop --tabs       the host flags of those names\n"
                    "  --quiet                do not print the console\n"
@@ -1060,6 +1074,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[cpu] %llu passes in %.1fs, %llu guest instructions (%llu on worker cores), %.1f s of guest time, %.1fM instructions/s here, --until %s\n",
             (unsigned long long)frame_no, wall, (unsigned long long)c0.clock, (unsigned long long)worker_instr, guest_seconds,
             (double)(c0.clock + worker_instr) / wall / 1e6, opt.until.empty() ? "not given" : until_hit ? "matched" : "NOT matched");
+    fprintf(stderr, "[cpu] the program with the keyboard: %u (linux/apps/gameid.h); its last frame a flat screen: %u\n", word(CTRL + 0x68), word(CTRL + 0x30c) >> 31);
     fprintf(stderr, "[cpu] firmware calls: timer %llu, putchar %llu, getchar %llu, others %llu\n", (unsigned long long)sbi_counts[0],
             (unsigned long long)sbi_counts[1], (unsigned long long)sbi_counts[2], (unsigned long long)sbi_counts[15]);
     fprintf(stderr, "[cpu] traps:");

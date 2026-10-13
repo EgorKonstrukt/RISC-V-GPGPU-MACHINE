@@ -750,6 +750,74 @@ index 010be948..e65b3f55 100644
  }
  
  void		trap_SetUserCmdValue( int stateValue, float sensitivityScale ) {
+diff --git a/code/cgame/cg_view.c b/code/cgame/cg_view.c
+index 3dba5eba..e1294f61 100644
+--- a/code/cgame/cg_view.c
++++ b/code/cgame/cg_view.c
+@@ -682,6 +682,14 @@ static int CG_CalcViewValues( void ) {
+ 		CG_OffsetFirstPersonView();
+ 	}
+ 
++	{	// shaderemu: from a holodeck's seat the room's view is level and the body's (tr_shaderemu.c)
++		extern int SE_SeatView( float *yaw, float *hand );
++		float yaw, at[3];
++
++		if ( SE_SeatView( &yaw, at ) ) {
++			VectorSet( cg.refdefViewAngles, 0, yaw, 0 );
++		}
++	}
+ 	// position eye relative to origin
+ 	AnglesToAxis( cg.refdefViewAngles, cg.refdef.viewaxis );
+ 
+diff --git a/code/cgame/cg_weapons.c b/code/cgame/cg_weapons.c
+index e4cead4b..0f6e3e73 100644
+--- a/code/cgame/cg_weapons.c
++++ b/code/cgame/cg_weapons.c
+@@ -1415,6 +1415,29 @@ void CG_AddViewWeapon( playerState_t *ps ) {
+ 	VectorMA( hand.origin, (cg_gun_z.value+fovOffset), cg.refdef.viewaxis[2], hand.origin );
+ 
+ 	AnglesToAxis( angles, hand.axis );
++	{	// shaderemu: a holodeck's sitter holds the weapon in the right hand, aimed as it points
++		extern int SE_SeatView( float *yaw, float *hand );
++		float yaw, at[3];
++
++		if ( SE_SeatView( &yaw, at ) ) {
++			orientation_t	tag;
++			vec3_t		level, axis[3];
++			int		i;
++
++			VectorSet( level, 0, yaw, 0 );
++			AnglesToAxis( level, axis );
++			VectorMA( cg.refdef.vieworg, at[2], axis[0], hand.origin );
++			VectorMA( hand.origin, -at[0], axis[1], hand.origin );
++			VectorMA( hand.origin, at[1], axis[2], hand.origin );
++			AnglesToAxis( ps->viewangles, hand.axis );
++			// (the weapon's own place, not where the hands' model holds it out from the eye)
++			if ( trap_R_LerpTag( &tag, weapon->handsModel, 0, 0, 1.0, "tag_weapon" ) ) {
++				for ( i = 0; i < 3; i++ ) {
++					VectorMA( hand.origin, -tag.origin[i], hand.axis[i], hand.origin );
++				}
++			}
++		}
++	}
+ 
+ 	// map torso animations to weapon animations
+ 	if ( cg_gun_frame.integer ) {
+diff --git a/code/client/cl_input.c b/code/client/cl_input.c
+index cfdaa1d1..77416326 100644
+--- a/code/client/cl_input.c
++++ b/code/client/cl_input.c
+@@ -596,6 +596,10 @@ usercmd_t CL_CreateCmd( void ) {
+ 
+ 	// get basic movement from joystick
+ 	CL_JoystickMove( &cmd );
++	{	// shaderemu: a holodeck's sitter aims by a hand, or turns by a mouse (tr_shaderemu.c)
++		extern void SE_SeatMove( usercmd_t *cmd );
++		SE_SeatMove( &cmd );
++	}
+ 
+ 	// check to make sure the angles haven't wrapped
+ 	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
 diff --git a/code/game/ai_main.c b/code/game/ai_main.c
 index ed5653d7..02bcfba1 100644
 --- a/code/game/ai_main.c

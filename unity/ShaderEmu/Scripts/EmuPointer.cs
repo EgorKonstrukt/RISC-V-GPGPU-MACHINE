@@ -49,6 +49,13 @@ public class EmuPointer : UdonSharpBehaviour
     public UdonSharpBehaviour holodeck;
     public Transform holoMark;         // over the key a beam is on
     [HideInInspector] public bool holoKeys;
+    // The small button that brings a console back, a room: the last of holoKeyEvents is its event.
+    public Collider[] holoShow;
+    // The sitter's program shows a flat screen (a menu): their beams are its pointer on the room's screen.
+    [HideInInspector] public bool holoFlat;
+    // Where each hand's beam starts and the way it goes, in a headset (EmuHolodeck tells the machine)
+    [HideInInspector] public Vector3[] handAt = new Vector3[2], handWay = new Vector3[2];
+    [HideInInspector] public bool handsKnown;
     // The danger zone (EmuDanger): a beam on the memory screen is its laser while that is on.
     public Collider memoryScreen;      // a trigger over the memory screen's quad
     public EmuDanger danger;
@@ -200,7 +207,7 @@ public class EmuPointer : UdonSharpBehaviour
                 }
             }
         }
-        if (!away && ownHolo >= 0 && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
+        if ((!away || holoFlat) && ownHolo >= 0 && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
         {
             landed = true;
             best = hit.distance;
@@ -249,6 +256,15 @@ public class EmuPointer : UdonSharpBehaviour
                 if (x >= kx && y >= ky && x < kx + holoKeyRects[k * 4 + 2] && y < ky + holoKeyRects[k * 4 + 3]) foundKey = k;
             }
         }
+        if (holoKeys && ownHolo >= 0 && holoShow != null && ownHolo < holoShow.Length && holoShow[ownHolo] != null
+            && holoShow[ownHolo].Raycast(ray, out hit, best))
+        {
+            landed = true;
+            best = hit.distance;
+            at = hit.point;
+            found = Console;
+            foundKey = holoKeyEvents.Length - 1;
+        }
         for (int k = 0; k < keyboardPlates.Length && !away; k++)
         {
             if (stationKeysFrom >= 0 && k >= stationKeysFrom && k - stationKeysFrom != ownStation) continue;
@@ -280,6 +296,8 @@ public class EmuPointer : UdonSharpBehaviour
         {
             // the console's key under this beam, or under the other hand's
             int hand = found == Console && foundKey >= 0 ? h : target[1 - h] == Console && key[1 - h] >= 0 ? 1 - h : -1;
+            // (the small button has no mark: it is not on the console's plate)
+            if (hand >= 0 && (hand == h ? foundKey : key[hand]) == holoKeyEvents.Length - 1) hand = -1;
             holoMark.gameObject.SetActive(hand >= 0);
             if (hand >= 0)
             {
@@ -324,6 +342,7 @@ public class EmuPointer : UdonSharpBehaviour
         Init();
         VRCPlayerApi player = Networking.LocalPlayer;
         if (player == null) return;
+        handsKnown = false;
         if (away && !holoKeys)
         {
             Idle(0);
@@ -343,8 +362,11 @@ public class EmuPointer : UdonSharpBehaviour
                     origin = hand.position;
                     direction = hand.rotation * (h == 0 ? Vector3.left : Vector3.right);
                 }
+                handAt[h] = origin;
+                handWay[h] = direction;
                 Aim(h, origin, direction, true);
             }
+            handsKnown = true;
         }
         else
         {
@@ -361,7 +383,7 @@ public class EmuPointer : UdonSharpBehaviour
             else danger.Point(true, memoryU[hand], memoryV[hand], burning[hand]);
         }
 
-        if (away) return;   // (the pointer is the controller's)
+        if (away && !holoFlat) return;   // (the pointer is the controller's)
         // The machine has one pointer: a hand holding a button on the display keeps it, then
         // the hand that had it, then whichever points there.
         int other = 1 - owner;
@@ -382,7 +404,7 @@ public class EmuPointer : UdonSharpBehaviour
                 machine.Wheel(notches);
             }
         }
-        else
+        else if (!away)   // (with a controller held the pointer and its buttons are still the sticks')
         {
             machine.SetPointerButtons(0);
             turned = 0f;
@@ -412,7 +434,7 @@ public class EmuPointer : UdonSharpBehaviour
             if (key[h] >= 0 && holodeck != null) holodeck.SendCustomEvent(holoKeyEvents[key[h]]);
             return;
         }
-        if (away && value) return;
+        if (away && value && !holoFlat) return;
         if (value)
         {
             if (target[h] == Display)

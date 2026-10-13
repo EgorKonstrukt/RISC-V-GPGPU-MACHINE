@@ -74,6 +74,7 @@ static uint8_t* gpu;   // GPU memory from GPU_PHYS
 static GR_WINDOW_ID window;
 static GR_WINDOW_INFO window_info;
 static uint32_t world_up;          // seglWorldUp: which axis is up, in the frame's size word
+static uint32_t world_flat;        // seglWorldFlat: the frame is a flat screen, bit 31 of that word
 static int swaps;
 static uint32_t buffers_seen;
 
@@ -253,7 +254,7 @@ static void swap(int wait) {
         if (wait)
             while (regs[REG_SUBMIT / 4] != 0) next_frame();
         regs[REG_VOLUME / 4 + 1] = commands;
-        regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28;
+        regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28 | world_flat;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
         regs[REG_VOLUME / 4 + 2]++;
         fps_caption(&window_info, regs[0x34 / 4]);   // (the machine's clock, milliseconds)
@@ -1028,6 +1029,7 @@ void seglScreenUsed(GLsizei count, GLuint name) {
 }
 
 void seglWorldUp(int axis) { world_up = axis >= 1 && axis <= 3 ? (uint32_t)axis : 0; }
+void seglWorldFlat(int flat) { world_flat = flat ? 1u << 31 : 0; }
 
 unsigned int* seglScreenTable(void) {
     if (!gpu || vertex_top + 1024 > set_at + SET_SIZE) return 0;

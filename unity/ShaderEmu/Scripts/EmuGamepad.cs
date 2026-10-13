@@ -32,7 +32,7 @@ public class EmuGamepad : UdonSharpBehaviour
     // the mappings: a pointer (the desktop, the strategy games), two sticks, blocks, a pad
     private const int ForPointer = 0, ForShooter = 1, ForBlocks = 2, ForPad = 3;
     // the guest's programs that have a mapping of their own (linux/apps/gameid.h)
-    private const int GameDoom = 1, GameQuake = 2, GameClassiCube = 3, GameNes = 6;
+    private const int GameDoom = 1, GameQuake = 2, GameClassiCube = 3, GameNes = 6, GameQuake3 = 7;
 
     private bool held;                      // the controller is in this visitor's hands
     private int scheme;
@@ -71,8 +71,7 @@ public class EmuGamepad : UdonSharpBehaviour
             code[StrafeRight] = Dot;
             code[TurnLeft] = Left;
             code[TurnRight] = Right;
-            code[LookUp] = A;
-            code[LookDown] = Z;
+            // (no keys to look up and down: the aim's rise is the hand's, docs/holodeck.md)
             code[Fire] = Ctrl;
             code[Jump] = Space;
             code[Next] = Slash;
@@ -111,13 +110,13 @@ public class EmuGamepad : UdonSharpBehaviour
 
     private int SchemeOf(int game)
     {
-        return game == GameDoom || game == GameQuake ? ForShooter : game == GameClassiCube ? ForBlocks : game == GameNes ? ForPad : ForPointer;
+        return game == GameDoom || game == GameQuake || game == GameQuake3 ? ForShooter : game == GameClassiCube ? ForBlocks : game == GameNes ? ForPad : ForPointer;
     }
 
     public string SchemeName()
     {
         int game = machine.gameId;
-        return scheme == ForShooter ? (game == GameDoom ? "SHOOTER (Doom)" : "SHOOTER (Quake)") : scheme == ForBlocks ? "BLOCKS (ClassiCube)"
+        return scheme == ForShooter ? (game == GameDoom ? "SHOOTER (Doom)" : game == GameQuake3 ? "SHOOTER (Quake III)" : "SHOOTER (Quake)") : scheme == ForBlocks ? "BLOCKS (ClassiCube)"
              : scheme == ForPad ? "PAD (NES)" : "POINTER";
     }
 
@@ -165,6 +164,14 @@ public class EmuGamepad : UdonSharpBehaviour
     }
 
     public int Holding() { return held ? 1 : 0; }
+
+    // The sticks as the 3D games read them (docs/holodeck.md, "Played from the seat"): a signed
+    // byte an axis, 127 pushed home. Low: the left stick, right and forward; high: the right one.
+    private int Axis(float v) { return Mathf.Clamp(Mathf.RoundToInt(v * 127f), -127, 127) & 255; }
+    private bool InMenu() { return holodeck != null && holodeck.Flat(); }
+    private bool Sticks() { return held && (scheme == ForShooter || scheme == ForBlocks) && !InMenu(); }
+    public int StickLow() { return Sticks() ? Axis(moveX) | (Axis(moveY) << 8) : 0; }
+    public int StickHigh() { return Sticks() ? Axis(lookX) | (Axis(lookY) << 8) : 0; }
 
     // ---- the guest's keys ----
 
@@ -237,14 +244,13 @@ public class EmuGamepad : UdonSharpBehaviour
         Set(Menu, leftGrip);
         if (scheme == ForShooter)
         {
-            Set(Forward, moveY > 0.5f);
-            Set(Back, moveY < -0.5f);
-            Set(StrafeLeft, moveX < -0.5f);
-            Set(StrafeRight, moveX > 0.5f);
-            Set(TurnLeft, Pulsed(-lookX));
-            Set(TurnRight, Pulsed(lookX));
-            Set(LookUp, Pulsed(lookY));
-            Set(LookDown, Pulsed(-lookY));
+            // (the sticks are the game's own, as sticks: StickLow, StickHigh; in a menu the left
+            // one is the arrow keys)
+            bool menu = InMenu();
+            Set(Forward, menu && moveY > 0.5f);
+            Set(Back, menu && moveY < -0.5f);
+            Set(TurnLeft, menu && moveX < -0.5f);
+            Set(TurnRight, menu && moveX > 0.5f);
             Set(Fire, fire);
             Set(Jump, other);
             Set(Next, rightGrip);
@@ -252,18 +258,10 @@ public class EmuGamepad : UdonSharpBehaviour
         }
         else if (scheme == ForBlocks)
         {
-            Set(Forward, moveY > 0.5f);
-            Set(Back, moveY < -0.5f);
-            Set(StrafeLeft, moveX < -0.5f);
-            Set(StrafeRight, moveX > 0.5f);
-            Set(TurnLeft, Pulsed(-lookX));
-            Set(TurnRight, Pulsed(lookX));
-            Set(LookUp, Pulsed(lookY));
-            Set(LookDown, Pulsed(-lookY));
             Set(Jump, jump);
             Set(Accept, rightGrip);
             // the right trigger digs and the left one builds: the buttons, where the pointer was left
-            Point(false, fire, other);
+            if (!InMenu()) Point(false, fire, other);   // (a menu's pointer is the beam on the room's screen)
         }
         else if (scheme == ForPad)
         {

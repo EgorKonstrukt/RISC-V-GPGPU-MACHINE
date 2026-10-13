@@ -240,7 +240,7 @@ static int music_setup(void)
 {
 	static const uint32_t lowest[12] = { 535809, 567670, 601425, 637188, 675077, 715219, 757748, 802806, 850544, 901120,
 					     954703, 1011473 };   /* Hz times 65536 of notes 0 to 11 */
-	uint32_t out = SND_RATE, bytes = MUSIC_VOICES * 16 + MAX_NOTES * sizeof(snd_note) + TONES * sizeof(snd_tone);
+	uint32_t out = ready ? SND_RATE : 0, bytes = MUSIC_VOICES * 16 + MAX_NOTES * sizeof(snd_note) + TONES * sizeof(snd_tone);
 	snd_tone *tone;
 	int n, lump = W_CheckNumForName("GENMIDI");
 

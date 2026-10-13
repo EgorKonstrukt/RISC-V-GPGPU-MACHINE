@@ -97,6 +97,9 @@ public class EmuMachine : UdonSharpBehaviour
     [HideInInspector] public uint[] registers = new uint[32];
     [HideInInspector] public int activity;
     [HideInInspector] public string statsLine = "off";   // the panel's text of this machine, without the registers
+    // The frame a 3D program drew last (docs/holodeck.md): whether there is one, and whether the
+    // program says it is a flat screen (a menu, a level loading) and no world.
+    [HideInInspector] public bool worldFrame, flatFrame;
     [HideInInspector] public int gameId;                 // the program whose window has the keyboard (linux/apps/gameid.h)
 
     private const int Words = 960;      // state row 0's 64 texels, the first 64 control texels, 112 of the network's row
@@ -1408,6 +1411,8 @@ public class EmuMachine : UdonSharpBehaviour
         }
         haveClock = true;
         lastClock = clock;
+        worldFrame = Word(64 + 0x30, 0) != 0;
+        flatFrame = (Word(64 + 0x30, 3) >> 31) != 0;
         lastCommits = commits;
         pc = Word(36, 3);
         lastStall = Word(40, 2);

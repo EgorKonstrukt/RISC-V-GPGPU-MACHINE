@@ -88,7 +88,8 @@ grep -q '^void D_Display_game (void)$' d_main_ours.c || { echo "d_main.c: D_Disp
 grep -q 'if (!tics) doom_wait();$' d_main_ours.c || { echo "d_main.c: the melt's wait was not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -DHU_Erase=HU_Erase_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" d_main_ours.c -o d_main.o
 rm d_main_ours.c
-rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -I"$DOOM" "$DOOM/d_net.c" -o d_net.o
+# A tic's move is made by way of doom_video.c, which has a holodeck's sitter aim by a hand.
+rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DG_BuildTiccmd=G_BuildTiccmd_seat -I"$DOOM" "$DOOM/d_net.c" -o d_net.o
 # Parts of the game written again for this machine (doom_fast.c): the sight check, and the
 # marks that say a line has been visited, which leave the lines themselves.
 rv32-cc $OPT -w -c -fsigned-char -DP_CheckSight=P_CheckSight_port -I"$DOOM" "$DOOM/p_sight.c" -o p_sight.o

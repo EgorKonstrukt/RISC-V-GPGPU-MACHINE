@@ -56,14 +56,17 @@ it was run by typed commands only, and its pictures were compared with the GPU's
   colour that may be a wave, a texture that may move. A reflection (`tcGen environment`) is
   left out, and what is blended over one is laid on its mean colour.
 - **The level** is triangles sorted by shader stage, three vertices each, patches cut into
-  4 x 4 pieces; a light map and the texture it lights are one draw.
+  4 x 4 pieces; a light map and the texture it lights are one draw. A texture with no script
+  is lit by its surface's light map too, as the game does (until 13 October 2026 it was not:
+  2,631 of the level's 23,550 vertices were lit, the walls and floors not among them; 17,052
+  now), and on a surface with no light map it has the surface's own colours.
 - **A model's pose** is a word a vertex (three bytes of place and which of 256 ways it
   faces), every frame of it, and its texture coordinates a word a vertex.
 - **One character** (Sarge, for the player and the bot) and one level: `--bots`, `--map`.
 
 ## How it is drawn
 
-- **The level is kept in GPU memory** (383 KB, 23,550 vertices in 68 draws that stay in every
+- **The level is kept in GPU memory** (442 KB, 23,550 vertices in 75 draws that stay in every
   frame's list). A frame gives them its matrices and says what changed: a wave's colour, a
   texture's turn. Nothing of the level is looked for or sorted in a frame; the card's depth
   buffer hides what is behind.
@@ -128,7 +131,8 @@ GPU's reads: `GpuVolumePass.cginc` has the ROM's four textures (the materials ge
 "ShaderEmu/Give the holodecks' world the ROM"), and `volume_vertex` in `src/gpu.h` moves a
 texture and places a light map as `gpu_vertex_sized` does. Before, nothing of the game had
 a texture or a shape there. The level is sent whole whatever the camera sees, up is z
-(`seglWorldUp`), and with tracked hands the aim's rise is the right hand's (`SE_Input`).
+(`seglWorldUp`), and the right hand aims and holds the weapon (`docs/holodeck.md`, "Played
+from the seat"; `SE_SeatMove`, `SE_SeatView`).
 On 13 October 2026 the three shaders compiled in the editor; nobody had sat in it yet.
 
 ## The server on a worker core
@@ -158,7 +162,8 @@ texture, the capture being a frame older than the list; `hold` now waits for the
 
 ## Not done
 
-- Playing it by hand, and hearing it. The pointer turns the view only while it is over the window.
+- Playing it by hand, and hearing it. The pointer turns the view while the left button drags it
+  (`docs/input.md`).
 - A second character, the other three levels of the demo, the menu's setup pages.
 - Marks and dynamic lights; the server's frame for two bots.
 - The menu's picture was not captured (the card was in use): it was driven by `nxkey` on

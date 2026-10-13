@@ -21,7 +21,7 @@ eyes. Games and their controllers are here and nowhere else in the world.
 - **The seat rises under its sitter** (`EmuSeat`). VRChat puts a visitor on a station standing,
   feet where the station is, and their pose sinks into sitting over about half a second,
   hips where the station is: a station at the seat's height had them stand on the seat
-  first, 0.38 m too high, and then sink. The station waits on the floor and comes up to
+  first, the seat's height too high, and then sink. The station waits on the floor and comes up to
   the seat's height in that half second (`settle`), so the sitter only goes down. The half
   second is what was seen, not a number VRChat gives: `settle` is the thing to change.
 - **Without a headset** the sitter's own keyboard is the game's from the moment they sit
@@ -47,7 +47,11 @@ eyes. Games and their controllers are here and nowhere else in the world.
   seat (12 October 2026; why is not known: the seat's own Interact box is round the sitter's
   hands), so the console's own collider is off for that sitter (`plateColliders`), or a key
   that the laser did reach would be pressed twice. Anybody else, and a sitter without a
-  headset, presses them with VRChat's laser as any panel. Not tried in a headset yet.
+  headset, presses them with VRChat's laser as any panel.
+- **The seat's Interact box is off for its own sitter** (`EmuSeat`, `reach`), and for a second
+  after they stand up. It is round the sitter's hands, so a trigger pulled there used the seat:
+  in a headset the console's Exit stood the sitter up and the same pull sat them down again
+  (13 October 2026). The fix is not tried in a headset yet.
 - **The console** at the seat's right hand is turned to the sitter and has one sloped face: the
   room's keys below, and above them, in the same plane, the room's one screen (0.40 by 0.30 m).
   It shows the sitter's display, whole: to the sitter their own machine's, which answers
@@ -131,25 +135,85 @@ at `0x87000360` (`HOST_STATE` in `src/gpu.h`; the control pass, from `EmuHolodec
 
 | Word | Contents |
 |---|---|
-| 0 | bits 0-3: the host (1 the harness, 2 the world on a desktop, 3 in a headset; 0: a host that says nothing). Bit 4: the machine's owner sits in a holodeck's seat. Bit 5: the hands are tracked. Bits 8-15: visitors in the instance. Bits 16-23: this visitor's number |
+| 0 | bits 0-3: the host (1 the harness, 2 the world on a desktop, 3 in a headset; 0: a host that says nothing). Bit 4: the machine's owner sits in a holodeck's seat. Bit 5: the hands are tracked. Bits 8-15: visitors in the instance. Bits 16-23: this visitor's number. Bits 24-31: the room's scale in 255ths (`plane`: the plane that is 1.28 by 0.8 m of the room is near x (far / near) ^ this from the camera) |
 | 1 | the head's turn to the right, and from bit 16 its tilt upwards: 65,536 to a turn, signed |
 | 2 | the head's place, millimetres, signed: to the right, and from bit 16 up |
 | 3 | the head's place forward, and from bit 16 its roll |
 | 4 | the left hand's place in units of 4 mm, ten signed bits each: right, up (from bit 10), forward (from bit 20); its trigger (bit 30) and grip (bit 31) |
-| 5 | where the left hand points: its turn to the right, and from bit 16 its rise, as the head's |
+| 5 | in a headset the sitter's sticks, a signed byte each, 127 pushed home: the left one to the right, forward, the right one to the right, up (zero while a menu has them as keys). Before 13 October 2026: where the left hand points |
 | 6, 7 | the right hand, the same |
 
-Places and turns are against the seat's eye point while seated, and against the visitor's own
-feet otherwise. Quake reads them (`vid_shaderemu.c`): while its owner sits in a holodeck it
-leaves out its test of what the camera sees, so there is world behind the seat too; and when
-the hands are tracked the aim's rise is the right hand's (the room keeps the horizon level, so
-the stick's up and down showed nothing). Its turn stays the stick's: the room turns with the
-game, and a hand's turn would chase itself. The head is not aimed with.
+A hand's place and way are its beam's (`EmuPointer`: from the knuckles, along the back of the
+hand). With no hands (a desktop's sitter) the low half of word 4 is how far their mouse has
+gone to the right, a counter that wraps (`mouseCounts` of them to one of Unity's "Mouse X").
 
-Checked in the harness (`--holodeck`, and `--holodeck-aim DEGREES` for a tracked right hand
-that points up by so much) with a held frame: the view's forward in the frame's modelview
-rises 25.0 degrees for 25 and falls 15.0 for -15, and with no hands it is level and the
-stick's. In a headset it is untried.
+Places and turns are against the seat's eye point while seated, and against the visitor's own
+feet otherwise. While its owner sits in a holodeck Quake leaves out its test of what the
+camera sees, so there is world behind the seat too.
+
+## Played from the seat
+
+Doom, Quake, Quake III and ClassiCube read those words, each in its own port file
+(`doom_video.c` and `doom_gl.c`, `vid_shaderemu.c`, `tr_shaderemu.c`, `Window_ShaderEmu.c`):
+
+- **With tracked hands the right hand aims.** The game keeps two turns: the body's, which
+  the sticks and the game itself turn and by which the room is turned, and the aim's, which
+  is the body's and the hand's turn and rise from it. The picture the room draws is level and
+  the body's; shots, and ClassiCube's picked block, go the aim's way. A hand's turn does not
+  turn the room.
+- **The sticks are sticks** (word 5), not keys: the left one walks, as fast as it is pushed,
+  the way the head looks (the move is turned from the aim's way to the head's); the right
+  one turns the body, 140 degrees a second pushed home, slower near the middle.
+- **The weapon is in the right hand**, where the beam starts, pointing as it points, at the
+  room's scale (word 0's `plane`): Quake's view model held a third from its back end,
+  Quake III's by its own origin, ClassiCube's held block (and no arm when nothing is
+  held), Doom's weapon pictures standing in the world at 4 mm a pixel. Quake's axe keeps its
+  first pose: the arm that holds it swings it. Guns animate as they do. Not done: Quake's
+  and Doom's pictures have the character's hands in them.
+- **Without a headset the mouse turns the game** (word 4's counter, 0.066 degrees a count)
+  and the head's tilt is the aim's rise; the left button is Ctrl, which fires in the three
+  shooters. The mouse turns the sitter's head too, so the program's world goes round with
+  their head (`EmuHolodeck.PostLateUpdate`): the game turned twice as far as they looked.
+  ClassiCube's buttons are not sent.
+
+## The status in the room
+
+A sitter with tracked hands has no flat screen while a world is drawn, so the game's status
+bar is not seen. Quake draws it in the world instead (`SE_Hud` in `vid_shaderemu.c`, after
+the view model), facing the sitter: the ammunition over the weapon in the right hand (red
+at 10 and under; none for the axe), health over the left hand (red at 25 and under) with
+armour above it, and the lines the game says and prints mid-screen 1.2 m ahead, a little
+under the eyes. In a held frame in the harness each stood where it should on the picture
+(13 October 2026). Not done: Quake III, Doom and ClassiCube; items, keys, the face.
+
+## A flat screen in place of the world
+
+A program says that its frames are a flat screen and no world (`seglWorldFlat()`, bit 31 of
+the frame's size word at `0x8700030c`): a menu, the console, a level loading, the screen
+between levels. `EmuMachine` reads it back (`flatFrame`, and `worldFrame`: there is a list
+at all), and while it is so, or the sitter's program draws no world (the desktop, a 2D
+game), the room shows no world: the sitter's display is on the large screen before the seat,
+their beams are its pointer, and the left stick is the arrow keys (`EmuHolodeck.Flat`).
+On `rvc_cpu` (its closing line says the bit): Quake III's menu 1, its level 0.
+
+## The console put away
+
+Its Hide key, or Home, takes the console away for its sitter: the stand's model and the mark
+of it (one mesh for all eight rooms, so the other rooms' stands go too, for this visitor
+alone), the room's plate, keys and screen. A small translucent button stands where the plate
+was and brings it back (`HideConsole`, `ShowConsole`, `Arrange`; a beam presses it by
+`EmuPointer.holoShow`). Standing up brings it back. "ShaderEmu/Add the holodecks' console
+switch to the open scene" puts both into a scene, without a bake. In play mode on a desktop
+(13 October 2026): seated, hidden, shown, stood up and seated again, each thing was on or
+off as it should be; the button's look and a beam's press of it are unseen.
+
+On `rvc_cpu` (`--host W0,...,W7` gives the eight words, `--host-mouse N` a mouse going right;
+`QUAKE_SEAT`, `QUAKE3_SEAT`, `DOOM_SEAT`, `CLASSICUBE_SEAT=1` print the turns): a right hand
+30 degrees to the right and 10 up gave each game that aim with the body where it was, and
+100 counts a second turned each about 6.6 degrees a second; the left stick pushed forward
+walked each the body's way, and to its right with the head turned 90 degrees to the right. Where the weapon is drawn was
+read as numbers in Quake only; no picture of any of it was made, and none of it has been in
+a headset.
 
 ## The parts
 
@@ -187,8 +251,10 @@ the console: all of it, its keys and its screen must be seen.
 The host's words in play mode: `EmuMachine`'s `row` (the readback) has them at texel 64 + 0x36;
 on a desktop, standing, word 0 is `0x00010102` and word 2's upper half the head's height.
 
-A sitter's hips are put 0.38 m over the floor (`SeatHeight` in `ShaderEmuHolodeck.cs`; 0.50
-sat them too high in a headset) and the program's camera 0.7 m over that.
+A sitter's hips are put 0.23 m over the floor (`SeatHeight` in `ShaderEmuHolodeck.cs`; 0.50
+and then 0.38 sat them too high in a headset) and the program's camera 0.7 m over that.
+"ShaderEmu/Make the holodecks' seats rise under their sitters in the open scene" puts a
+changed height into a scene, the eye points with it.
 
 In play mode: seated, `_UdonHoloMax` is the room's far corner and the console says "Take a
 controller, or jump to stand up"; `RunInputEvent("_inputJump", ...)` on "Holodeck" stands

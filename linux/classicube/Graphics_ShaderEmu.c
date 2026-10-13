@@ -17,6 +17,7 @@
 uint8_t* SE_Gpu(void);
 int SE_Surface(uint32_t* address, int* width, int* height, uint32_t* row);
 uint32_t SE_Milliseconds(void);
+int SE_Flat(void);
 
 /*########################################################################################################################*
 *------------------------------------------------------GPU memory---------------------------------------------------------*
@@ -1172,7 +1173,7 @@ void Gfx_EndFrame(void) {
 		if (swap_waits) Settle();
 
 		regs[REG_VOLUME / 4 + 1] = commands;
-		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28;	/* (y is up: docs/holodeck.md) */
+		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28 | (SE_Flat() ? 1u << 31 : 0);	/* (y is up: docs/holodeck.md) */
 		regs[REG_VOLUME / 4]     = GPU_PHYS + set_at;
 		regs[REG_VOLUME / 4 + 2]++;
 		set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;

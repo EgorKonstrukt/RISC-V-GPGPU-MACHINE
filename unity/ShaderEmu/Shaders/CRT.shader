@@ -38,9 +38,11 @@ Shader "ShaderEmu/CRT"
 
         struct Input { float2 uv_MainTex; };
 
-        // A wave of mean one seen through a pixel `span` periods wide (a Gaussian's share of it).
+        // A wave of mean one seen through a pixel `span` periods wide (a Gaussian's share of
+        // it, a pixel in deviation: nothing is left at two pixels a period. Half a pixel left 29%
+        // there, and the stripes beat against the pixels in colours).
         float wave(float phase, float depth, float span) {
-            return 1.0 + depth * cos(6.2831853 * phase) * exp(-4.93 * span * span);
+            return 1.0 + depth * cos(6.2831853 * phase) * exp(-19.74 * span * span);
         }
 
         void surf(Input i, inout SurfaceOutputStandard o)

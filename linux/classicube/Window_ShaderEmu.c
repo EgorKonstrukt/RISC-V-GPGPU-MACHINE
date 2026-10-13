@@ -10,12 +10,18 @@
 #include "Launcher.h"
 #include "Chat.h"
 #include "Utils.h"
+#include "Entity.h"
+#include "Camera.h"
+#include "Game.h"
+#include "ExtMath.h"
+#include "World.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <math.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <errno.h>
@@ -36,6 +42,15 @@ static cc_bool opened;
 static int mouse_x, mouse_y;
 static cc_bool mouse_known, mouse_inside = true;
 static int origin_x, origin_y;	/* the window's corner on the display */
+static cc_bool dragging;	/* the left button is held on the game: the pointer's travel turns the view */
+static int drag_far, tapped;	/* how far it has gone; a press let go where it began digs once */
+static uint32_t drag_ms;
+/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+   hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
+static int seated;
+static float body, aimed;
+static uint32_t mouse_count;
+#define HOST_STATE 0x360	/* the host's eight words (GLES/segl.h has their fields) */
 static void WindowOrigin(void);
 
 /* GPU memory from 0x87000000 (the device maps from 0x86000000), or NULL without the device. */
@@ -230,10 +245,13 @@ static void WindowOrigin(void) {
    the pointer comes over the window and leaves it. */
 static void ReadPointer(const volatile uint32_t* input) {
 	int x = (int)input[0] - origin_x, y = (int)input[1] - origin_y;
-	if (!mouse_inside || (mouse_known && x == mouse_x && y == mouse_y)) return;
+	if ((!mouse_inside && !dragging) || (mouse_known && x == mouse_x && y == mouse_y)) return;
 
-	if (mouse_known && Input.RawMode)
-		Event_RaiseRawMove(&PointerEvents.RawMoved, x - mouse_x, y - mouse_y);
+	/* (a quarter of a degree a pixel at the game's own sensitivity) */
+	if (mouse_known && Input.RawMode && dragging && !seated) {
+		Event_RaiseRawMove(&PointerEvents.RawMoved, (x - mouse_x) * 2, (y - mouse_y) * 2);
+		drag_far += abs(x - mouse_x) + abs(y - mouse_y);
+	}
 	mouse_x = x; mouse_y = y; mouse_known = true;
 	Pointer_SetPosition(0, mouse_x, mouse_y);
 }
@@ -254,7 +272,18 @@ static void HandleEvent(GR_EVENT* e) {
 	case GR_EVENT_TYPE_BUTTON_DOWN:
 	case GR_EVENT_TYPE_BUTTON_UP:
 		down = e->type == GR_EVENT_TYPE_BUTTON_DOWN;
-		if (e->button.changebuttons & GR_BUTTON_L) Input_Set(CCMOUSE_L, down);
+		/* In the game the left button drags the view round, as a finger on glass does; let go
+		   where it was pressed, it is the left button's click. A sitter's buttons are the game's. */
+		if ((e->button.changebuttons & GR_BUTTON_L) && Input.RawMode && !seated) {
+			if (!down && dragging && drag_far < 6 && SE_Milliseconds() - drag_ms < 400) {
+				Input_Set(CCMOUSE_L, true);
+				tapped = 2;
+			}
+			dragging = down; drag_far = 0; drag_ms = SE_Milliseconds();
+		} else if (e->button.changebuttons & GR_BUTTON_L) {
+			dragging = false;
+			Input_Set(CCMOUSE_L, down);
+		}
 		if (e->button.changebuttons & GR_BUTTON_R) Input_Set(CCMOUSE_R, down);
 		if (e->button.changebuttons & GR_BUTTON_M) Input_Set(CCMOUSE_M, down);
 		if (down && (e->button.buttons & GR_BUTTON_SCROLLUP)) Mouse_ScrollVWheel(1.0f);
@@ -350,6 +379,90 @@ static void KeysTurn(float delta) {
 	if (dx != 0.0f || dy != 0.0f) Event_RaiseRawMove(&PointerEvents.RawMoved, dx * 600.0f * delta, dy * 400.0f * delta);
 }
 
+static void TurnTo(struct Entity* e, float yaw, float pitch) {
+	struct LocationUpdate update;
+	update.flags = LU_HAS_YAW | LU_HAS_PITCH;
+	update.yaw   = yaw;
+	update.pitch = Math_ClampAngle(pitch);
+	if (update.pitch >= 90.0f && update.pitch <= 270.0f) update.pitch = update.pitch < 180.0f ? 90.0f : 270.0f;
+	e->VTABLE->SetLocation(e, &update);
+}
+
+/* From a holodeck's seat with tracked hands the right hand aims, and the walk and the room's
+   view stay the body's; with a mouse its travel turns, and the head's tilt is the aim's rise. */
+static void Seat(float delta) {
+	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+	struct Entity* e = &Entities.CurPlayer->Base;
+	int now = !(host[0] & 16) ? 0 : (host[0] & 32) ? 1 : (host[0] & 15) == 2 ? 2 : 0;
+	static int said = -1;
+
+	if (said < 0) said = getenv("CLASSICUBE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
+	if (said && ++said % 20 == 0)
+		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f\n", seated, e->next.yaw, e->next.pitch, body, dragging, e->Position.x, e->Position.z);
+	if (now != seated) {
+		seated = now;
+		dragging = false;
+		body = aimed = e->next.yaw;
+		mouse_count = host[4] & 0xffff;
+	}
+	if (!Input.RawMode) return;
+	if (seated == 1) {
+		/* (what the keys turned the aim by since, the body turned) */
+		float look = (signed char)(host[5] >> 16) / 127.0f;
+		body += e->next.yaw - aimed;
+		body += (Math_AbsF(look) < 0.15f ? 0.0f : look * Math_AbsF(look)) * 140.0f * delta;	/* the right stick */
+		aimed = body + (short)(host[7] & 0xffff) * (360.0f / 65536.0f);
+		TurnTo(e, aimed, -(short)(host[7] >> 16) * (360.0f / 65536.0f));
+	} else if (seated == 2) {
+		uint32_t count = host[4] & 0xffff;
+		TurnTo(e, e->next.yaw + 0.066f * (short)(count - mouse_count), -(short)(host[1] >> 16) * (360.0f / 65536.0f));
+		mouse_count = count;
+	}
+}
+
+/* For the frame's words (Graphics_ShaderEmu.c): a menu, or a world not loaded yet, is a
+   picture for a screen and not a world for a room. */
+int SE_Flat(void) { return !Input.RawMode || !World.Loaded; }
+
+/* For the camera (Camera.c): whether the player sits with tracked hands, and then the yaw of
+   the room's view. */
+int SE_SeatBody(float* yaw) {
+	if (seated != 1) return 0;
+	*yaw = body;
+	return 1;
+}
+
+/* For the walk (Entity.c): then the way the head looks, and the left stick added to the keys. */
+int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving) {
+	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+	if (seated != 1) return 0;
+	*yaw = body + (short)(host[1] & 0xffff) * (360.0f / 65536.0f);
+	if (Input.RawMode) {
+		*xMoving += (signed char)(host[5]) / 127.0f;
+		*zMoving -= (signed char)(host[5] >> 8) / 127.0f;
+	}
+	return 1;
+}
+
+/* For the held block (HeldBlockRenderer.c): then also where the right hand is from the eye, in
+   blocks: right, up, forward. */
+int SE_SeatHand(float* at) {
+	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+	float c = Math_CosF(Camera.Fov * MATH_DEG2RAD * 0.5f) / Math_SinF(Camera.Fov * MATH_DEG2RAD * 0.5f);
+	float x = 1.28f * c * Game.Height / Game.Width, y = 0.8f * c, plane, metre;
+	uint32_t word;
+
+	if (seated != 1) return 0;
+	/* blocks a metre: the room's plane, 1.28 by 0.8 m, is so far from the camera (GpuVolumePass.cginc) */
+	plane = 0.1f * powf(Game_ViewDistance / 0.1f, (host[0] >> 24) / 255.0f);
+	metre = 2.0f * plane / (x < y ? x : y) * 0.004f;
+	word  = host[6];
+	at[0] = ((int)(word << 22) >> 22) * metre;
+	at[1] = ((int)(word << 12) >> 22) * metre;
+	at[2] = ((int)(word << 2) >> 22) * metre;
+	return 1;
+}
+
 /* Asking the server costs two system calls and two task switches. The machine's own input
    counters say when there can be anything: ask when they have moved, for a few calls after,
    and a few times a second. */
@@ -362,6 +475,8 @@ void Window_ProcessEvents(float delta) {
 	if (!opened) return;
 	PollTerminal();
 	KeysTurn(delta);
+	if (tapped && !--tapped) Input_Set(CCMOUSE_L, false);
+	if (gpu && Entities.CurPlayer) Seat(delta);
 
 	if (gpu) {
 		input =(const volatile uint32_t*)(gpu + REG_INPUT);

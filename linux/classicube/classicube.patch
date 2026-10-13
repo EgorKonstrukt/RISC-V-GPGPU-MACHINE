@@ -897,6 +897,21 @@ index dd3f3f215..fb425ee69 100644
 +	return 0;
 +}
 +#endif
+diff --git a/src/Camera.c b/src/Camera.c
+index a82a0d875..b56352658 100644
+--- a/src/Camera.c
++++ b/src/Camera.c
+@@ -56,6 +56,10 @@ static void PerspectiveCamera_GetProjection(struct Matrix* proj) {
+ static void PerspectiveCamera_GetView(struct Matrix* mat) {
+ 	Vec3 pos = Camera.CurrentPos;
+ 	Vec2 rot = Camera.Active->GetOrientation();
++	/* shaderemu: from a holodeck's seat the room's view is level and the body's (Window_ShaderEmu.c) */
++	extern int SE_SeatBody(float* yaw);
++	float seatYaw;
++	if (SE_SeatBody(&seatYaw)) { rot.x = seatYaw * MATH_DEG2RAD; rot.y = 0.0f; }
+ 
+ 	Matrix_LookRot(mat, pos, rot);
+ 	if (Game_ViewBobbing) Matrix_MulBy(mat, &Camera.TiltM);
 diff --git a/src/Core.h b/src/Core.h
 index 95be4acfa..4eb41c21b 100644
 --- a/src/Core.h
@@ -1124,7 +1139,7 @@ index 95be4acfa..4eb41c21b 100644
  	#undef  CC_BUILD_FILESYSTEM
  	#undef  CC_BUILD_COMPRESSION
 diff --git a/src/Entity.c b/src/Entity.c
-index 47bb81ebf..16718efaf 100644
+index 47bb81ebf..24aae13ff 100644
 --- a/src/Entity.c
 +++ b/src/Entity.c
 @@ -496,11 +496,14 @@ void Entity_LerpAngles(struct Entity* e, float t) {
@@ -1161,6 +1176,20 @@ index 47bb81ebf..16718efaf 100644
  	{
  		struct Entity* e = Entities.List[i];
  		if (!e || e == &Entities.CurPlayer->Base) continue;
+@@ -743,7 +746,12 @@ static void LocalPlayer_Tick(struct Entity* e, float delta) {
+ 	}
+ 
+ 	PhysicsComp_UpdateVelocityState(&p->Physics);
+-	headingVelocity = Vec3_RotateY3(xMoving, 0, zMoving, e->Yaw * MATH_DEG2RAD);
++	{	/* shaderemu: a holodeck's sitter aims by a hand and walks the way the head looks, by a stick */
++		extern int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving);
++		float seatYaw = e->Yaw;
++		SE_SeatWalk(&seatYaw, &xMoving, &zMoving);
++		headingVelocity = Vec3_RotateY3(xMoving, 0, zMoving, seatYaw * MATH_DEG2RAD);
++	}
+ 	PhysicsComp_PhysicsTick(&p->Physics, headingVelocity);
+ 
+ 	/* Fixes high jump, when holding down a movement key, jump, fly, then let go of fly key */
 diff --git a/src/Entity.h b/src/Entity.h
 index 510f96b89..714373051 100644
 --- a/src/Entity.h
@@ -1589,6 +1618,33 @@ index d0331911e..7b86549a6 100644
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
  
+diff --git a/src/HeldBlockRenderer.c b/src/HeldBlockRenderer.c
+index 80327e78a..e7be2bddb 100644
+--- a/src/HeldBlockRenderer.c
++++ b/src/HeldBlockRenderer.c
+@@ -234,7 +234,21 @@ void HeldBlockRenderer_Render(float delta) {
+ 
+ 	ResetHeldState();
+ 	DoAnimation(delta, lastSwingY);
+-	SetBaseOffset();
++	{	/* shaderemu: a holodeck's sitter holds the block in the right hand, and has no arm but their own */
++		extern int SE_SeatHand(float* at);
++		float at[3];
++		if (!SE_SeatHand(at)) {
++			SetBaseOffset();
++		} else if (held_block == BLOCK_AIR) {
++			Gfx.View = view;
++			Gfx_LoadMatrix(MATRIX_PROJ, &Gfx.Projection);
++			return;
++		} else {
++			held_entity.Position.x += at[0];
++			held_entity.Position.y += at[1];
++			held_entity.Position.z -= at[2];
++		}
++	}
+ 	if (!Camera.Active->isThirdPerson) HeldBlockRenderer_RenderModel();
+ 
+ 	Gfx.View = view;
 diff --git a/src/Launcher.c b/src/Launcher.c
 index 084b97498..b1d404a41 100644
 --- a/src/Launcher.c

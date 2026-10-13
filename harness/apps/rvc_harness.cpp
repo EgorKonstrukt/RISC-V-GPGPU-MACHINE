@@ -108,6 +108,7 @@ struct Options {
     bool holodeck = false;    // --holodeck: tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
     double holodeckAim = 0;   // --holodeck-aim DEGREES: with it, a tracked right hand that points up by so much
     bool holodeckHands = false;
+    unsigned host[8] = {};    // --host: the host's eight words as they are (hex), in place of those
     std::string zap;          // --zap KIND,X,Y,REACH,WORD,MASK,SEED,ZONES: the host's hand in RAM (src/zap.h, docs/danger.md)
     long long zapFrame = -1;  // --zap-frame N: in the commit of that frame, and no other
     int netPort = 0;          // --net PORT: the network device's link to other machines here (docs/lan.md)
@@ -218,6 +219,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --zap K,X,Y,R,W,M,S,Z  flip bits of RAM in one commit (docs/danger.md): kind 1 (word W of texel X,Y) or 2
                        (a square reaching R texels each way), mask M and seed S (hex), zones Z (a bit each)
   --zap-frame N        the frame whose commit does it
+  --host W0,...,W7     the host's eight words in hex, as rvc_cpu's (docs/holodeck.md)
   --holodeck-aim D     and has tracked hands, the right one pointing up by D degrees
   --net PORT           the network (docs/lan.md): this machine is 10.0.0.N and hears UDP port PORT + N of
                        this computer, where the other machines started with the same PORT send (D3D11)
@@ -374,6 +376,8 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--no-mrt") o.noMrt = true;
         else if (a == "--readback-batch") o.readbackBatch = atoi(next("--readback-batch").c_str());
         else if (a == "--holodeck") o.holodeck = true;
+        else if (a == "--host") sscanf(next("--host").c_str(), "%x,%x,%x,%x,%x,%x,%x,%x", &o.host[0], &o.host[1], &o.host[2], &o.host[3],
+                                       &o.host[4], &o.host[5], &o.host[6], &o.host[7]);
         else if (a == "--zap") o.zap = next("--zap");
         else if (a == "--zap-frame") o.zapFrame = atoll(next("--zap-frame").c_str());
         else if (a == "--holodeck-aim") { o.holodeckAim = atof(next("--holodeck-aim").c_str()); o.holodeckHands = true; }
@@ -1357,6 +1361,11 @@ int main(int argc, char** argv) {
             mat.setInt("_HostState7", (int64_t)(((uint32_t)(int32_t)(opt.holodeckAim * 65536.0 / 360.0) & 0xffffu) << 16));
             mat.setInt("_HostState2", 0);
             mat.setInt("_HostState3", 0);
+            if (opt.host[0]) {
+                static const char* const names[8] = { "_HostState0", "_HostState1", "_HostState2", "_HostState3", "_HostState4", "_HostState5",
+                                                      "_HostState6", "_HostState7" };
+                for (int i = 0; i < 8; i++) mat.setInt(names[i], (int64_t)opt.host[i]);
+            }
             mat.setInt("_InputKeySeq", keySeq);
             mat.setInt("_InputKeyCount", n);
             mat.setInt("_InputKey0", batch[0]);

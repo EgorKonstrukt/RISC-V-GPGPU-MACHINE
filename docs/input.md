@@ -68,6 +68,16 @@ below): 10 to 11 frames a second with events for every move, 100 a second from t
 17 as it is now; 19 to 20 with the pointer at rest. The whole run, from the command to frame
 300, was 365 million instructions and is 304 million; it is 300 with the pointer at rest.
 
+## A 3D game's view on a flat screen
+
+The pointer is a place on the display, not a mouse that can be held: its travel turned the
+view wherever it went and stopped at the window's edge. Doom, Quake, Quake III and ClassiCube
+turn the view only while the left button is held on the game, as a finger drags a picture
+(a quarter of a degree a pixel; the drag goes on outside the window). The right button
+fires in the three shooters. In ClassiCube it places as before, and a left press let go where
+it began, within 0.4 s, is the left click. A menu has both buttons as they were.
+`rvc_cpu --pointer-sweep 0 --pointer-circle X,Y,R --pointer-button 1,S,T` drags it round.
+
 ## In the harness
 
 The window's keys and pointer feed the device (`memoryViewTakeInput()` in

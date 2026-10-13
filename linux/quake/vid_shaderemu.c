@@ -29,6 +29,12 @@ static cvar_t	in_mouse = {"in_mouse", "0", true};	/* the pointer turns the view 
 static GR_WINDOW_ID window;
 static int	opened;
 static int	mouse_x, mouse_y, mouse_dx, mouse_dy, mouse_known, mouse_inside = 1;
+static int	dragging;	/* the left button is held on the game: the pointer's travel turns the view */
+/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+   hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
+static int	seated;
+static float	body, aimed;
+static unsigned	mouse_count;
 static unsigned	frames, hold_frame, hold_late, stats_ms = 5000, stats_frames;
 
 void D_BeginDirectRect (int x, int y, byte *pbitmap, int width, int height) {}
@@ -91,6 +97,8 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	*x = *y = 0;
 	seglSize (width, height);
 	se_all_round = host && SEGL_HOST_HOLODECK (host);
+	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
+	seglWorldFlat (key_dest != key_game || cls.state != ca_connected || cls.signon != SIGNONS);
 	sb_updates = 0;		/* every frame is drawn whole: the status bar too */
 }
 
@@ -353,7 +361,7 @@ void Sys_SendKeyEvents (void)
 	if (!opened)
 		return;
 	input = qglControl (REG_INPUT);
-	if (mouse_inside) {
+	if (mouse_inside || dragging) {		/* (a drag goes on outside the window) */
 		int x = (int)input[0], y = (int)input[1];
 
 		if (mouse_known)
@@ -389,6 +397,18 @@ void Sys_SendKeyEvents (void)
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 		case GR_EVENT_TYPE_BUTTON_UP:
+			/* In the game the left button drags the view round, as a finger on glass does, and
+			   the right one is what the left was (fire). A sitter's buttons are the game's own. */
+			if (key_dest == key_game && !seated) {
+				if (e.button.changebuttons & GR_BUTTON_L) {
+					dragging = e.type == GR_EVENT_TYPE_BUTTON_DOWN;
+					mouse_dx = mouse_dy = 0;
+				}
+				if (e.button.changebuttons & GR_BUTTON_R)
+					Key_Event (K_MOUSE1, e.type == GR_EVENT_TYPE_BUTTON_DOWN);
+				break;
+			}
+			dragging = 0;
 			if (e.button.changebuttons & GR_BUTTON_L)
 				Key_Event (K_MOUSE1, e.type == GR_EVENT_TYPE_BUTTON_DOWN);
 			if (e.button.changebuttons & GR_BUTTON_R)
@@ -412,24 +432,62 @@ void IN_Init (void) {}
 void IN_Shutdown (void) {}
 void IN_Commands (void) {}
 
-/* With in_mouse 1 the pointer's travel over the window turns the view (it is not held there). */
+static void pitch_to (float pitch)
+{
+	V_StopPitchDrift ();
+	cl.viewangles[PITCH] = pitch > 80 ? 80 : pitch < -70 ? -70 : pitch;
+}
+
+/* The view's turn. From a holodeck's seat with tracked hands the right hand aims, and the walk
+ * stays the body's; with a mouse its travel turns and the head's tilt is the aim's rise. On a
+ * flat screen the pointer dragged with the left button turns the view (in_mouse 1: its travel). */
 void IN_Move (usercmd_t *cmd)
 {
+	const volatile unsigned *host = seglHostState ();
 	float mx = mouse_dx * sensitivity.value, my = mouse_dy * sensitivity.value;
+	int now = !host || !SEGL_HOST_HOLODECK (host) ? 0 : SEGL_HOST_HANDS (host) ? 1 : SEGL_HOST_KIND (host) == 2 ? 2 : 0;
 
 	mouse_dx = mouse_dy = 0;
-	if (se_all_round) {
-		/* Seated in a holodeck, where the room keeps the horizon level: the aim's rise is the
-		   right hand's, when the host tracks hands. (Its turn stays the stick's: the room turns
-		   with the game, and a hand's turn would chase itself.) */
-		const volatile unsigned *host = seglHostState ();
+	V_StopPitchDrift ();	/* where the view was left it stays: nothing levels it */
+	if (now != seated) {
+		seated = now;
+		dragging = 0;
+		body = aimed = cl.viewangles[YAW];
+		mouse_count = host ? SEGL_HOST_MOUSE_X (host) : 0;
+	}
+	if (seated == 1) {
+		float turn = SEGL_HOST_HAND_YAW (host, 1) * (360.0f / 65536.0f), forward, s, c;
+		float look = SEGL_HOST_STICK (host, 2) / 127.0f, walk = (turn - SEGL_HOST_HEAD_YAW (host) * (360.0f / 65536.0f)) * (M_PI / 180);
 
-		if (SEGL_HOST_HANDS (host)) {
-			float rise = SEGL_HOST_HAND_PITCH (host, 1) * (360.0f / 65536.0f);
-
-			V_StopPitchDrift ();
-			cl.viewangles[PITCH] = rise > 70 ? -70 : rise < -80 ? 80 : -rise;
+		/* (what the keys or the game turned the aim by since, the body turned; and the right stick) */
+		body += cl.viewangles[YAW] - aimed;
+		if (key_dest == key_game) {
+			body -= (fabs (look) < 0.15f ? 0 : look * fabs (look)) * 140 * host_frametime;
+			cmd->forwardmove += SEGL_HOST_STICK (host, 1) * (400 / 127.0f);
+			cmd->sidemove += SEGL_HOST_STICK (host, 0) * (350 / 127.0f);
 		}
+		cl.viewangles[YAW] = aimed = body - turn;
+		pitch_to (-SEGL_HOST_HAND_PITCH (host, 1) * (360.0f / 65536.0f));
+		/* the walk goes the way the head looks: so far to the left of the aim */
+		forward = cmd->forwardmove, s = sin (walk), c = cos (walk);
+		cmd->forwardmove = forward * c + cmd->sidemove * s;
+		cmd->sidemove = cmd->sidemove * c - forward * s;
+		return;
+	}
+	if (seated == 2) {
+		unsigned count = SEGL_HOST_MOUSE_X (host);
+
+		if (key_dest == key_game)
+			cl.viewangles[YAW] -= m_yaw.value * sensitivity.value * (short)(count - mouse_count);
+		mouse_count = count;
+		pitch_to (-SEGL_HOST_HEAD_PITCH (host) * (360.0f / 65536.0f));
+		return;
+	}
+	if (dragging && key_dest == key_game) {
+		/* a quarter of a degree a pixel: the window's width is a hundred and sixty degrees */
+		cl.viewangles[YAW] -= 0.25f * mx / sensitivity.value;
+		pitch_to (cl.viewangles[PITCH] + 0.25f * my / sensitivity.value);
+		return;
 	}
 	if (!in_mouse.value || key_dest != key_game)
 		return;
@@ -447,5 +505,188 @@ void IN_Move (usercmd_t *cmd)
 			cl.viewangles[PITCH] = -70;
 	} else {
 		cmd->forwardmove -= m_forward.value * my;
+	}
+}
+
+/* Units a metre of the room's: its plane, 1.28 by 0.8 m, is `at` from the camera (GpuVolumePass.cginc). */
+static float seat_metre (const volatile unsigned *host)
+{
+	float at = 4 * pow (4096 / 4, SEGL_HOST_PLANE (host) / 255.0f);
+	float x = 1.28f / tan (r_refdef.fov_x * (M_PI / 360)), y = 0.8f / tan (r_refdef.fov_y * (M_PI / 360));
+
+	return 2 * at / (x < y ? x : y);
+}
+
+/* Where a hand is in the world (0 left, 1 right): from the eye, in the body's frame. */
+static void seat_hand (const volatile unsigned *host, int h, vec3_t hand)
+{
+	vec3_t	level = {0, body, 0}, forward, right, up;
+	float	unit = 0.004f * seat_metre (host);
+	int	i;
+
+	AngleVectors (level, forward, right, up);
+	for (i = 0; i < 3; i++)
+		hand[i] = r_refdef.vieworg[i] + (forward[i] * SEGL_HOST_HAND_Z (host, h) + right[i] * SEGL_HOST_HAND_X (host, h)
+			+ up[i] * SEGL_HOST_HAND_Y (host, h)) * unit;
+}
+
+/* ---- the status in the room (docs/holodeck.md, "The status in the room") ---- */
+
+typedef struct { int texnum; float sl, tl, sh, th; } hud_pic;	/* gl_draw.c's glpic_t */
+extern qpic_t	*sb_nums[2][11];
+extern int	char_texture, con_current, con_linewidth, con_totallines;
+extern char	*con_text, scr_centerstring[];
+extern unsigned	con_times[];
+extern float	scr_centertime_off;
+extern cvar_t	con_notifytime;
+
+/* A picture's part standing at `at`, facing the sitter: `wide` by `high` units, its middle `x` to the right. */
+static void hud_quad (int texture, float sl, float tl, float sh, float th, vec3_t at, float x, float wide, float high)
+{
+	vec3_t	level = {0, body, 0}, forward, right, up, point;
+	int	i, k;
+
+	AngleVectors (level, forward, right, up);
+	GL_Bind (texture);
+	glBegin (GL_QUADS);
+	for (k = 0; k < 4; k++) {
+		float across = k < 2 ? x - wide / 2 : x + wide / 2, rise = k == 1 || k == 2 ? high / 2 : -high / 2;
+
+		glTexCoord2f (k < 2 ? sl : sh, k == 1 || k == 2 ? tl : th);
+		for (i = 0; i < 3; i++)
+			point[i] = at[i] + right[i] * across + up[i] * rise;
+		glVertex3fv (point);
+	}
+	glEnd ();
+}
+
+/* A number in the status bar's digits, its middle at `at`, a digit `high` units tall; red when `red`. */
+static void hud_number (vec3_t at, int value, float high, int red)
+{
+	char	digits[12];
+	int	i, n = sprintf (digits, "%d", value < 0 ? 0 : value);
+	float	wide = high * 0.9f;
+
+	for (i = 0; i < n; i++) {
+		hud_pic *pic = (hud_pic *)sb_nums[red ? 1 : 0][digits[i] - '0']->data;
+
+		hud_quad (pic->texnum, pic->sl, pic->tl, pic->sh, pic->th, at, (i - (n - 1) * 0.5f) * wide, wide, high);
+	}
+}
+
+/* A line of the game's letters, its middle at `at`, a letter `high` units tall. */
+static void hud_line (vec3_t at, const char *text, int count, float high)
+{
+	int	i, last = count;
+
+	while (last > 0 && (text[last - 1] & 127) <= ' ')
+		last--;
+	for (i = 0; i < last; i++) {
+		int c = text[i] & 255;
+
+		if ((c & 127) == ' ')
+			continue;
+		hud_quad (char_texture, (c & 15) * 0.0625f, (c >> 4) * 0.0625f, (c & 15) * 0.0625f + 0.0625f, (c >> 4) * 0.0625f + 0.0625f,
+			at, (i - (last - 1) * 0.5f) * high, high, high);
+	}
+}
+
+/* A sitter with tracked hands has no flat screen: the ammunition stands over the weapon, health
+ * and armour over the left hand, and what the game says hangs before them, a little under the eyes. */
+void SE_Hud (void)
+{
+	const volatile unsigned *host = seglHostState ();
+	vec3_t	level = {0, body, 0}, forward, right, up, at;
+	float	metre;
+	int	i, line, lines = 0;
+	char	*text;
+
+	if (seated != 1 || !host || cl.intermission || cl.stats[STAT_HEALTH] <= 0)
+		return;
+	metre = seat_metre (host);
+	AngleVectors (level, forward, right, up);
+	glEnable (GL_ALPHA_TEST);
+	glColor3f (1, 1, 1);
+	if (!(cl.stats[STAT_ACTIVEWEAPON] & IT_AXE)) {
+		seat_hand (host, 1, at);
+		for (i = 0; i < 3; i++)
+			at[i] += up[i] * 0.12f * metre;
+		hud_number (at, cl.stats[STAT_AMMO], 0.035f * metre, cl.stats[STAT_AMMO] <= 10);
+	}
+	seat_hand (host, 0, at);
+	for (i = 0; i < 3; i++)
+		at[i] += up[i] * 0.10f * metre;
+	hud_number (at, cl.stats[STAT_HEALTH], 0.04f * metre, cl.stats[STAT_HEALTH] <= 25);
+	if (cl.stats[STAT_ARMOR] > 0) {
+		for (i = 0; i < 3; i++)
+			at[i] += up[i] * 0.05f * metre;
+		hud_number (at, cl.stats[STAT_ARMOR], 0.028f * metre, 0);
+	}
+	/* the last lines said, newest lowest, 1.2 m ahead; under them what is printed mid-screen */
+	for (line = con_current; line > con_current - 4 && line >= 0; line--) {
+		unsigned made = con_times[line % 4];
+
+		if (!made || REALTIME_SINCE (made) > con_notifytime.value)
+			continue;
+		text = con_text + (line % con_totallines) * con_linewidth;
+		for (i = 0; i < 3; i++)
+			at[i] = r_refdef.vieworg[i] + (forward[i] * 1.2f + up[i] * (-0.12f + 0.04f * lines)) * metre;
+		hud_line (at, text, con_linewidth, 0.03f * metre);
+		lines++;
+	}
+	if (scr_centertime_off > 0) {
+		for (text = scr_centerstring, line = 0; *text && line < 6; line++) {
+			int count = strcspn (text, "\n");
+
+			for (i = 0; i < 3; i++)
+				at[i] = r_refdef.vieworg[i] + (forward[i] * 1.2f + up[i] * (-0.20f - 0.04f * line)) * metre;
+			hud_line (at, text, count, 0.03f * metre);
+			text += count + (text[count] != 0);
+		}
+	}
+	glDisable (GL_ALPHA_TEST);
+}
+
+/* After the view is worked out, for a sitter with tracked hands: the room's picture is level
+ * and turned as the body is, and the weapon is in the right hand, pointing as it points. */
+void SE_View (void)
+{
+	const volatile unsigned *host = seglHostState ();
+	entity_t	*view = &cl.viewent;
+	vec3_t		level = {0, body, 0}, forward, right, up, hand;
+	float		at, metre, x, y, z;
+	int		i;
+
+	static int	said = -1;
+
+	if (said < 0)
+		said = getenv ("QUAKE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
+	if (said && ++said % 20 == 0)
+		Sys_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f\n", seated, cl.viewangles[YAW], cl.viewangles[PITCH], body, dragging,
+			cl_entities[cl.viewentity].origin[0], cl_entities[cl.viewentity].origin[1]);
+	if (seated != 1 || !host)
+		return;
+	VectorCopy (level, r_refdef.viewangles);
+	metre = seat_metre (host);
+	seat_hand (host, 1, hand);
+	view->angles[PITCH] = -cl.viewangles[PITCH];
+	view->angles[YAW] = cl.viewangles[YAW];
+	view->angles[ROLL] = 0;
+	VectorCopy (hand, view->origin);
+	if (view->model) {
+		/* the hand holds it a third of its length from its back end, at its middle */
+		aliashdr_t *hdr = (aliashdr_t *)Mod_Extradata (view->model);
+		float gx = hdr->scale_origin[0] + 255 * hdr->scale[0] * 0.33f, gy = hdr->scale_origin[1] + 127.5f * hdr->scale[1];
+		float gz = hdr->scale_origin[2] + 127.5f * hdr->scale[2];
+
+		AngleVectors (cl.viewangles, forward, right, up);
+		for (i = 0; i < 3; i++)
+			view->origin[i] -= forward[i] * gx - right[i] * gy + up[i] * gz;
+		/* the axe is swung by the arm that holds it, not by the game */
+		if (!strcmp (view->model->name, "progs/v_axe.mdl"))
+			view->frame = 0;
+		if (said && said % 20 == 0)
+			Sys_Printf ("seat: gun %.1f %.1f %.1f from the eye, a metre %.1f\n", view->origin[0] - r_refdef.vieworg[0],
+				view->origin[1] - r_refdef.vieworg[1], view->origin[2] - r_refdef.vieworg[2], metre);
 	}
 }

@@ -12,7 +12,7 @@ A controller presses the keys and moves the pointer the games already read
 has the keyboard: the desktop's bar writes a number for it once a second to the control word
 at `0x87000068` (`watch_focus` in `linux/nanox/nxbar.c`, the numbers and the names they go
 by in `linux/apps/gameid.h`; a word nothing else used), `EmuMachine` reads it from the
-readback (`gameId`), and `EmuGamepad.SchemeOf` picks the mapping: Doom and Quake the
+readback (`gameId`), and `EmuGamepad.SchemeOf` picks the mapping: Doom, Quake and Quake III the
 shooter's, ClassiCube the blocks', the NES the pad's, anything else (the desktop, Red Alert,
 Command & Conquer) the pointer's. A new game with controls of its own needs a number in
 `gameid.h`, the same in `EmuGamepad.cs`, and a branch in `Map`. What the controls do is on
@@ -38,22 +38,24 @@ see and which went wrong when two took it.
   "Without a headset"): End stands a sitter up there.
 - A hand whose beam is on the console presses the console with its trigger, not the game.
 
-## Shooters (Quake, Doom, by their own default keys)
+## Shooters (Quake, Quake III, Doom, by their own default keys)
+
+The right hand aims and holds the weapon (`docs/holodeck.md`, "Played from the seat"); the
+sticks turn and move the body. Until 13 October 2026 Quake III had no number in `gameid.h`
+and got the pointer's controls.
 
 | Control | Key | In the games |
 |---|---|---|
-| left stick, up and down | Up, Down | walk |
-| left stick, sideways | `,` `.` | step aside |
-| right stick, sideways | Left, Right | turn |
-| right stick, up and down | `a` `z` | look up and down (Quake) |
+| left stick | (the stick itself) | walk and step aside, the way the head looks |
+| right stick, sideways | (the stick itself) | turn the body |
+| left stick, in a menu | the arrow keys | the menu |
 | right trigger | Ctrl | fire |
 | left trigger | Space | jump (Quake), open (Doom) |
 | right grip | `/` | next weapon (Quake) |
 | left grip | Esc | menu |
 | jump button | Enter | accept |
 
-A stick pushed a little holds its turn key for part of every tenth of a second, more the
-further it is pushed: a slow turn from keys that are only up or down. Quake's own mouse look
+The sticks go to the game as sticks (`docs/holodeck.md`, word 5). Quake's own mouse look
 is not used: the guest's pointer is a place on the display, not a movement, and would stop at
 the display's edge.
 
@@ -77,8 +79,7 @@ button Start (Enter), right grip Select (Tab), left grip Esc.
 
 ## Blocks (ClassiCube)
 
-Left stick walks (`w` `a` `s` `d`), right stick turns and looks (the arrow keys, pulsed as
-the shooter's), the jump button jumps (Space), the right trigger digs and the left one
+Left stick walks and right stick turns, as sticks (the shooter's way), the jump button jumps (Space), the right trigger digs and the left one
 builds (the pointer's buttons, where the pointer was left), left grip Esc, right grip Enter.
 
 ## Checking it

@@ -44,6 +44,9 @@ const volatile unsigned int* seglHostState(void);
 // frame as a world round its visitor (docs/holodeck.md): it keeps that axis upright whatever
 // the program's camera looks at. A program whose camera looks up and down says it.
 void seglWorldUp(int axis);
+// The frames from here on are a flat screen (a menu, a level loading) and no world: such a
+// host shows the program's picture on a screen before its visitor, and no world round them.
+void seglWorldFlat(int flat);
 #define SEGL_HOST_KIND(s)      ((s)[0] & 15)            /* 1 the harness, 2 the world on a desktop, 3 in a headset */
 #define SEGL_HOST_HOLODECK(s)  (((s)[0] >> 4) & 1)      /* its owner sits in a holodeck's seat */
 #define SEGL_HOST_VISITORS(s)  (((s)[0] >> 8) & 255)
@@ -64,6 +67,14 @@ void seglWorldUp(int axis);
 #define SEGL_HOST_HAND_PITCH(s, h) ((short)((s)[5 + 2 * (h)] >> 16))
 #define SEGL_HOST_HAND_TRIGGER(s, h) (((s)[4 + 2 * (h)] >> 30) & 1)
 #define SEGL_HOST_HAND_GRIP(s, h)    (((s)[4 + 2 * (h)] >> 31) & 1)
+/* With tracked hands the left hand's second word is the sitter's sticks instead, a signed byte
+   each, 127 pushed home: 0 the left one to the right, 1 forward, 2 the right one to the right, 3 up */
+#define SEGL_HOST_STICK(s, n)  ((signed char)((s)[5] >> (8 * (n))))
+/* the room's scale, 255ths: the plane 1.28 by 0.8 m of the room is near * (far / near) ^ this */
+#define SEGL_HOST_PLANE(s)     ((s)[0] >> 24)
+/* with no hands (a desktop's sitter): how far their mouse has gone to the right, a counter of
+   16 bits that wraps; the head's pitch is the aim's rise */
+#define SEGL_HOST_MOUSE_X(s)   ((s)[4] & 0xffff)
 
 // Vertices the program has made compact itself (docs/gpu.md: x, y, z, then u | v << 16 in
 // 1,024ths), drawn as glDrawArrays draws: GL_TRIANGLES, a strip, a fan or GL_QUADS. x, y and z

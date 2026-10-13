@@ -984,7 +984,7 @@ index 80ada45..087e2f2 100644
  	return r;
  }
 diff --git a/WinQuake/gl_rmain.c b/WinQuake/gl_rmain.c
-index d9bf41e..90f862f 100644
+index d9bf41e..21bf374 100644
 --- a/WinQuake/gl_rmain.c
 +++ b/WinQuake/gl_rmain.c
 @@ -108,10 +108,27 @@ R_CullBox
@@ -1198,6 +1198,16 @@ index d9bf41e..90f862f 100644
  
  	GL_DisableMultitexture();
  
+@@ -1139,6 +1221,9 @@ void R_RenderView (void)
+ 
+ 	R_RenderScene ();
+ 	R_DrawViewModel ();
++#ifdef SHADEREMU
++	SE_Hud ();	/* a holodeck's sitter: the status stands in the room (vid_shaderemu.c) */
++#endif
+ 	R_DrawWaterSurfaces ();
+ 
+ //  More fog right here :)
 diff --git a/WinQuake/gl_rmisc.c b/WinQuake/gl_rmisc.c
 index c9719b5..99b980b 100644
 --- a/WinQuake/gl_rmisc.c
@@ -2853,7 +2863,7 @@ index c5d61a7..aa58665 100644
  char *Sys_ConsoleInput (void);
  
 diff --git a/WinQuake/view.c b/WinQuake/view.c
-index ececf8c..419b169 100644
+index ececf8c..5c92935 100644
 --- a/WinQuake/view.c
 +++ b/WinQuake/view.c
 @@ -568,6 +568,9 @@ void V_UpdatePalette (void)
@@ -2866,6 +2876,16 @@ index ececf8c..419b169 100644
  
  	a = v_blend[3];
  	r = 255*v_blend[0]*a;
+@@ -978,6 +981,9 @@ if (cl.onground && ent->origin[2] - oldz > 0)
+ else
+ 	oldz = ent->origin[2];
+ 
++#ifdef SHADEREMU
++	SE_View ();	/* a holodeck's sitter: the room's view, the weapon in the hand (vid_shaderemu.c) */
++#endif
+ 	if (chase_active.value)
+ 		Chase_Update ();
+ }
 diff --git a/WinQuake/world.c b/WinQuake/world.c
 index e1acfea..f755b41 100644
 --- a/WinQuake/world.c

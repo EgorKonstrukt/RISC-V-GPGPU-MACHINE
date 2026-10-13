@@ -8,6 +8,7 @@
  * linux/nanox/doom.sh compiles the renderer's entry points under other names; the ones here
  * call those when the GPU is not drawing the view.
  */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1749,6 +1750,69 @@ weapon(void)
 	}
 }
 
+/* A holodeck's sitter with tracked hands holds the weapon (docs/holodeck.md, "Played from the
+ * seat"): its pictures stand in the world at the right hand, facing the viewer, 4 mm a pixel
+ * of Doom's 320-wide screen, the hand at that screen's (160, 150). 1 if they were drawn. */
+static int
+weapon_in_hand(void)
+{
+	const volatile unsigned *host = seglHostState();
+	sector_t *sector = viewplayer->mo->subsector->sector;
+	float wide, tall, metre;
+	fixed_t pixel, hx, hy, hz, px, py, pz;
+	int i;
+
+	if (!host || !SEGL_HOST_HOLODECK(host) || !SEGL_HOST_HANDS(host) || !viewheight)
+		return 0;
+	/* map units a metre: the room's plane, 1.28 by 0.8 m, is so far from the camera (GpuVolumePass.cginc) */
+	wide = 1.28f, tall = 0.8f * scaledviewwidth / viewheight;
+	metre = 2 * 4 * powf(8192 / 4, SEGL_HOST_PLANE(host) / 255.0f) / (wide < tall ? wide : tall);
+	pixel = (fixed_t)(metre * 0.004f * FRACUNIT);
+	hx = SEGL_HOST_HAND_X(host, 1) * pixel;
+	hy = SEGL_HOST_HAND_Y(host, 1) * pixel;
+	hz = SEGL_HOST_HAND_Z(host, 1) * pixel;
+	/* the viewer's right is (sin, -cos) of the view angle, forward (cos, sin) */
+	px = viewx + FixedMul(hz, viewcos) + FixedMul(hx, viewsin);
+	py = viewy + FixedMul(hz, viewsin) - FixedMul(hx, viewcos);
+	pz = viewz + hy;
+	for (i = 0; i < NUMPSPRITES; i++) {
+		pspdef_t *psp = &viewplayer->psprites[i];
+		spriteframe_t *frame;
+		fixed_t left, width, x1, y1, x2, y2, high, low;
+		GLuint name;
+		int lump, flip;
+
+		if (!psp->state)
+			continue;
+		frame = &sprites[psp->state->sprite].spriteframes[psp->state->frame & FF_FRAMEMASK];
+		lump = frame->lump[0];
+		flip = frame->flip[0];
+		name = sprite_texture(lump);
+		if (!name)
+			continue;
+		left = FixedMul(psp->sx - spriteoffset[lump] - 160 * FRACUNIT, pixel);
+		width = FixedMul(spritewidth[lump], pixel);
+		x1 = px + FixedMul(left, viewsin);
+		y1 = py - FixedMul(left, viewcos);
+		x2 = x1 + FixedMul(width, viewsin);
+		y2 = y1 - FixedMul(width, viewcos);
+		high = pz - FixedMul(psp->sy - spritetopoffset[lump] - 150 * FRACUNIT, pixel);
+		low = high - sprite_height[lump] * pixel;
+		quad_xyz[0] = quad_xyz[9] = x1;
+		quad_xyz[1] = quad_xyz[10] = y1;
+		quad_xyz[3] = quad_xyz[6] = x2;
+		quad_xyz[4] = quad_xyz[7] = y2;
+		quad_xyz[2] = quad_xyz[5] = high;
+		quad_xyz[8] = quad_xyz[11] = low;
+		quad_uv[1] = quad_uv[7] = flip ? FRACUNIT : 0;	/* (v, u): the picture lies on its side */
+		quad_uv[3] = quad_uv[5] = flip ? 0 : FRACUNIT;
+		quad_uv[0] = quad_uv[2] = 0;
+		quad_uv[4] = quad_uv[6] = FRACUNIT;
+		seglQuad(quad_xyz, quad_uv, name, grey_of(psp->state->frame & FF_FULLBRIGHT ? 255 : sector->lightlevel, 0), 255, 1);
+	}
+	return 1;
+}
+
 /* The view's matrices, column by column as glLoadMatrixx takes them: Doom's view is a quarter
  * turn wide with square pixels; x and y are on the ground and z is up. */
 static GLfixed to_clip[16], to_eye[16];
@@ -1786,7 +1850,7 @@ void
 R_RenderPlayerView(player_t *player)
 {
 	unsigned began;
-	int width, height, y;
+	int width, height, y, held;
 
 	__asm__ volatile("rdcycle %0" : "=r"(began));
 	if (!doom_gl) {
@@ -1865,6 +1929,10 @@ R_RenderPlayerView(player_t *player)
 		in_view = 0;
 	}
 
+	glEnable(GL_ALPHA_TEST);
+	held = weapon_in_hand();
+	glDisable(GL_ALPHA_TEST);
+
 	/* the sky and then the weapon, in units of the view (1 by 1, y down: exact in 16.16). The
 	 * sky is as far away as depth goes, behind everything whenever it is drawn. */
 	glMatrixMode(GL_PROJECTION);
@@ -1878,7 +1946,8 @@ R_RenderPlayerView(player_t *player)
 	/* the weapon, flat on top */
 	glDisable(GL_DEPTH_TEST);
 	glEnable(GL_ALPHA_TEST);
-	weapon();
+	if (!held)
+		weapon();
 	glDisable(GL_ALPHA_TEST);
 	{
 		unsigned now;

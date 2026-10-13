@@ -140,6 +140,12 @@ int SE_ClientPlaying (void)
 
 static int		mouse_x, mouse_y, mouse_known, mouse_inside = 1;
 static int		origin_x, origin_y, origin_known, mouse_menu;	/* the window's place on the display */
+static int		dragging;	/* the left button is held on the game: the pointer's travel turns the view */
+/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+   hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
+static int		seated;
+static float		body, aimed, seat_fov_x = 90, seat_fov_y = 73.74f;
+static unsigned		mouse_count;
 static int		window_w, window_h;	/* its size now: the game's picture is config's, stretched to it */
 
 /* A rectangle of the game's picture (y down) as the window's pixels. */
@@ -190,13 +196,9 @@ void SE_Input (void)
 		return;
 	input = gpuControl (REG_INPUT);
 	host = seglHostState ();
-	if (host && SEGL_HOST_HOLODECK (host) && SEGL_HOST_HANDS (host)) {
-		/* seated in a holodeck the room keeps the horizon: the aim's rise is the right hand's (docs/holodeck.md) */
-		float rise = SEGL_HOST_HAND_PITCH (host, 1) * (360.0f / 65536.0f);
-
-		cl.viewangles[PITCH] = (rise > 80 ? -80 : rise < -80 ? 80 : -rise) - SHORT2ANGLE (cl.snap.ps.delta_angles[PITCH]);
-	}
-	if (mouse_inside) {
+	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
+	seglWorldFlat (Key_GetCatcher () != 0 || clc.state != CA_ACTIVE);
+	if (mouse_inside || dragging) {		/* (a drag goes on outside the window) */
 		int x = (int)input[0], y = (int)input[1];
 
 		int menu = (Key_GetCatcher () & KEYCATCH_UI) != 0;
@@ -206,8 +208,8 @@ void SE_Input (void)
 			if (!origin_known)
 				gpuWindowOrigin (&origin_x, &origin_y), origin_known = 1;
 			Com_QueueEvent (0, SE_MOUSE, (x - origin_x) * config.vidWidth / window_w, (y - origin_y) * config.vidHeight / window_h, 0, NULL);
-		} else if (!menu && mouse_known && (x != mouse_x || y != mouse_y))
-			Com_QueueEvent (0, SE_MOUSE, x - mouse_x, y - mouse_y, 0, NULL);
+		} else if (!menu && dragging && !seated && mouse_known && (x != mouse_x || y != mouse_y))
+			Com_QueueEvent (0, SE_MOUSE, (x - mouse_x) * 2, (y - mouse_y) * 2, 0, NULL);	/* 0.22 degrees a pixel */
 		mouse_x = x, mouse_y = y, mouse_known = 1, mouse_menu = menu;
 	}
 	for (i = 2; i < 4; i++)		/* the buttons, and the count of keys */
@@ -244,6 +246,16 @@ void SE_Input (void)
 		case GR_EVENT_TYPE_BUTTON_UP:
 			down = e.type == GR_EVENT_TYPE_BUTTON_DOWN;
 			origin_x = e.button.rootx - e.button.x, origin_y = e.button.rooty - e.button.y, origin_known = 1;
+			/* In the game the left button drags the view round, as a finger on glass does, and
+			   the right one is what the left was (fire). A sitter's buttons are the game's own. */
+			if (!Key_GetCatcher () && !seated) {
+				if (e.button.changebuttons & GR_BUTTON_L)
+					dragging = down, mouse_known = 0;
+				if (e.button.changebuttons & GR_BUTTON_R)
+					Com_QueueEvent (0, SE_KEY, K_MOUSE1, down, 0, NULL);
+				break;
+			}
+			dragging = 0;
 			if (e.button.changebuttons & GR_BUTTON_L)
 				Com_QueueEvent (0, SE_KEY, K_MOUSE1, down, 0, NULL);
 			if (e.button.changebuttons & GR_BUTTON_R)
@@ -267,6 +279,78 @@ void SE_Input (void)
 			break;
 		}
 	}
+}
+
+static void pitch_to (float pitch)
+{
+	cl.viewangles[PITCH] = (pitch > 80 ? 80 : pitch < -80 ? -80 : pitch) - SHORT2ANGLE (cl.snap.ps.delta_angles[PITCH]);
+}
+
+/* A move as it is made (cl_input.c). From a holodeck's seat with tracked hands the right hand
+ * aims and the walk stays the body's; with a mouse its travel turns, and the head's tilt is
+ * the aim's rise. */
+void SE_SeatMove (usercmd_t *cmd)
+{
+	const volatile unsigned *host = seglHostState ();
+	int now = !host || !SEGL_HOST_HOLODECK (host) ? 0 : SEGL_HOST_HANDS (host) ? 1 : SEGL_HOST_KIND (host) == 2 ? 2 : 0;
+	static int said = -1;
+
+	if (said < 0)
+		said = getenv ("QUAKE3_SEAT") != NULL;	/* a line every 20 moves: how it is seated, the aim, the body */
+	if (said && ++said % 20 == 0)
+		Com_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f\n", seated, cl.viewangles[YAW] + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]),
+			cl.viewangles[PITCH] + SHORT2ANGLE (cl.snap.ps.delta_angles[PITCH]), body + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]), dragging,
+			cl.snap.ps.origin[0], cl.snap.ps.origin[1]);
+	if (now != seated) {
+		seated = now;
+		dragging = 0;
+		body = aimed = cl.viewangles[YAW];
+		mouse_count = host ? SEGL_HOST_MOUSE_X (host) : 0;
+	}
+	if (seated == 1) {
+		float turn = SEGL_HOST_HAND_YAW (host, 1) * (360.0f / 65536.0f), forward = cmd->forwardmove, right = cmd->rightmove;
+		float look = SEGL_HOST_STICK (host, 2) / 127.0f, walk = (turn - SEGL_HOST_HEAD_YAW (host) * (360.0f / 65536.0f)) * (M_PI / 180);
+		float s = sin (walk), c = cos (walk);	/* the walk goes the way the head looks: so far to the left of the aim */
+
+		/* (what the keys turned the aim by since, the body turned; and the right stick) */
+		body += cl.viewangles[YAW] - aimed;
+		if (!Key_GetCatcher ()) {
+			body -= (fabs (look) < 0.15f ? 0 : look * fabs (look)) * 140 * cls.frametime * 0.001f;
+			forward += SEGL_HOST_STICK (host, 1);
+			right += SEGL_HOST_STICK (host, 0);
+		}
+		cl.viewangles[YAW] = aimed = body - turn;
+		pitch_to (-SEGL_HOST_HAND_PITCH (host, 1) * (360.0f / 65536.0f));
+		cmd->forwardmove = ClampChar ((int)(forward * c + right * s));
+		cmd->rightmove = ClampChar ((int)(right * c - forward * s));
+	} else if (seated == 2) {
+		unsigned count = SEGL_HOST_MOUSE_X (host);
+
+		if (!Key_GetCatcher ())
+			cl.viewangles[YAW] -= 0.066f * (short)(count - mouse_count);
+		mouse_count = count;
+		pitch_to (-SEGL_HOST_HEAD_PITCH (host) * (360.0f / 65536.0f));
+	}
+}
+
+/* For the client's game: whether its player sits with tracked hands, and then the yaw of the
+ * room's view and where the right hand is from the eye, in the game's units: right, up, forward. */
+int SE_SeatView (float *yaw, float *hand)
+{
+	const volatile unsigned *host = seglHostState ();
+	float at, x, y, metre;
+
+	if (seated != 1 || !host)
+		return 0;
+	*yaw = body + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]);
+	/* units a metre: the room's plane, 1.28 by 0.8 m, is `at` from the camera (GpuVolumePass.cginc) */
+	at = Z_NEAR * pow (Z_FAR / Z_NEAR, SEGL_HOST_PLANE (host) / 255.0f);
+	x = 1.28f / tan (seat_fov_x * (M_PI / 360)), y = 0.8f / tan (seat_fov_y * (M_PI / 360));
+	metre = 2 * at / (x < y ? x : y) * 0.004f;
+	hand[0] = SEGL_HOST_HAND_X (host, 1) * metre;
+	hand[1] = SEGL_HOST_HAND_Y (host, 1) * metre;
+	hand[2] = SEGL_HOST_HAND_Z (host, 1) * metre;
+	return 1;
 }
 
 void IN_Init (void *windowData) {}
@@ -493,6 +577,8 @@ static void view_set (const refdef_t *fd)
 	AxisCopy (fd->viewaxis, view.viewaxis);
 	view.rdflags = fd->rdflags;
 	scene_time = fd->time * 0.001f;
+	if (!(fd->rdflags & RDF_NOWORLDMODEL))
+		seat_fov_x = fd->fov_x, seat_fov_y = fd->fov_y;
 	xmax = Z_NEAR * tan (fd->fov_x * (M_PI / 360.0f));
 	ymax = Z_NEAR * tan (fd->fov_y * (M_PI / 360.0f));
 	memset (p, 0, sizeof p);

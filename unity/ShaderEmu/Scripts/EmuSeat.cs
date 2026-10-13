@@ -11,11 +11,21 @@ public class EmuSeat : UdonSharpBehaviour
 {
     public EmuHolodeck holodeck;
     public int room;
-    public float height = 0.38f;   // where a sitter's hips are, above the floor the seat waits on
+    public float height = 0.23f;   // where a sitter's hips are, above the floor the seat waits on
     public float settle = 0.5f;    // seconds VRChat takes from standing to sitting
 
     private bool taken;
     private float since;           // when the sitter came, or left
+    // The box VRChat's hands and laser use the seat by is round its sitter's hands: a trigger
+    // pulled there sat them down again as the console's Exit stood them up. Off while this
+    // visitor sits and for a second after.
+    private Collider reach;
+    private bool mine;
+
+    void Start()
+    {
+        reach = GetComponent<Collider>();
+    }
 
     public override void Interact()
     {
@@ -27,6 +37,11 @@ public class EmuSeat : UdonSharpBehaviour
     {
         taken = true;
         since = Time.time;
+        if (Utilities.IsValid(player) && player.isLocal)
+        {
+            mine = true;
+            if (reach != null) reach.enabled = false;
+        }
         if (Utilities.IsValid(player) && holodeck != null) holodeck.Entered(room, player);
     }
 
@@ -34,11 +49,13 @@ public class EmuSeat : UdonSharpBehaviour
     {
         taken = false;
         since = Time.time;
+        if (Utilities.IsValid(player) && player.isLocal) mine = false;
         if (Utilities.IsValid(player) && holodeck != null) holodeck.Exited(room, player);
     }
 
     void Update()
     {
+        if (!mine && reach != null && !reach.enabled && Time.time - since > 1f) reach.enabled = true;
         Vector3 at = transform.localPosition;
         float to = at.y;
         if (taken)
