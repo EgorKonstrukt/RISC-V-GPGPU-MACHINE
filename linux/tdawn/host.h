@@ -37,7 +37,7 @@ void host_show_picture(void);
 /*
  * The map drawn by the GPU (docs/tdawn.md). host_scene_open() makes room for so many cells, or
  * returns -1 and the game draws the map itself. The atlas is 1,024 x 2,048 bytes and the masks
- * a bit for each of them; the shades are 128 x 256 words of 0xTTRRGGBB.
+ * a bit for each of them; the shades are 256 x 256 words of 0xTTRRGGBB.
  */
 enum { HOST_KEYED, HOST_MASK, HOST_SHADE };
 int host_scene_open(int cells);
@@ -65,6 +65,10 @@ struct host_quad { short x, y, w, h, ax, ay; unsigned char kind; unsigned int co
 void host_scene_view(int x0, int y0, int x1, int y1);
 void host_quads(const struct host_quad *quads, int count);
 void host_scene_settle(void);
+/* For a test: the scene as noted, drawn here: an index and a sum of what darkens it, a pixel of the screen. */
+void host_scene_picture(unsigned char *index, unsigned int *dark);
+/* For a test: the window's picture as the GPU left it, a word a pixel in rows of *row (NULL: it has no buffer). */
+const unsigned int *host_window_picture(int *width, int *height, int *row);
 /*
  * A frame of a shape file as a worker core has made it ready: the part of it that has pixels,
  * rows of `w`, and in the 32 bytes before them a bit for every index among them. NULL while

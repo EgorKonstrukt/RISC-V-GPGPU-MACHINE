@@ -1450,10 +1450,10 @@ index f9c20ea..307e158 100644
  #endif
 \ No newline at end of file
 diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
-index a8aebd8..5e1bc95 100644
+index a8aebd8..4003364 100644
 --- a/tiberiandawn/conquer.cpp
 +++ b/tiberiandawn/conquer.cpp
-@@ -98,6 +98,357 @@ extern void Send_Statistics_Packet(void);
+@@ -98,6 +98,578 @@ extern void Send_Statistics_Packet(void);
  extern char* __nheapbeg;
  bool InMainLoop = false;
  
@@ -1595,25 +1595,41 @@ index a8aebd8..5e1bc95 100644
 +    return distance > 0x170 ? 0x170 : distance;
 +}
 +
++/* Things a player would do, for runs nobody is at. TDAWN_BUILD=N: a refinery in view at frame N. */
++
 +/*
-+** Things a player would do, for runs nobody is at:
-+**   TDAWN_SCROLL=N   from frame 20 the map is scrolled for N frames: east, south, west, north
-+**   TDAWN_BUILD=N    at frame N a refinery is put in view, which plays its construction
++** TDAWN_SCROLL=N: from frame 20 the map is scrolled for N frames, twelve each way: east, south,
++** west, north, then the four diagonals. TDAWN_SELECT=N: every N frames the player's units and
++** soldiers are selected.
 +*/
 +static void ShaderEmu_Script(void)
 +{
-+    static int scroll = -1, build;
++    static int scroll = -1, build, select;
 +
 +    if (scroll < 0) {
 +        const char* text = getenv("TDAWN_SCROLL");
 +        scroll = text ? atoi(text) : 0;
 +        text = getenv("TDAWN_BUILD");
 +        build = text ? atoi(text) : 0;
++        text = getenv("TDAWN_SELECT");
++        select = text ? atoi(text) : 0;
 +    }
 +    if (Frame >= 20 && Frame < 20 + scroll) {
-+        static const DirType way[4] = {DIR_E, DIR_S, DIR_W, DIR_N};
++        static const DirType way[8] = {DIR_E, DIR_S, DIR_W, DIR_N, DIR_SE, DIR_NE, DIR_NW, DIR_SW};
 +        int distance = ShaderEmu_Scroll_Distance(0x60);
-+        Map.Scroll_Map(way[(Frame - 20) / 12 % 4], distance, true);
++        Map.Scroll_Map(way[(Frame - 20) / 12 % 8], distance, true);
++    }
++    if (select && (int)Frame % select == 0) {
++        int count = 0;
++        for (int i = 0; i < Units.Count(); i++) {
++            count += Units.Ptr(i)->Is_Owned_By_Player() && Units.Ptr(i)->Select(true);
++        }
++        for (int i = 0; i < Infantry.Count(); i++) {
++            count += Infantry.Ptr(i)->Is_Owned_By_Player() && Infantry.Ptr(i)->Select(true);
++        }
++        if ((int)Frame == select) {
++            fprintf(stderr, "tdawn: %d selected at frame %d\n", count, (int)Frame);
++        }
 +    }
 +    if (build && Frame == build) {
 +        CELL corner = Coord_Cell(Map.TacticalCoord);
@@ -1629,25 +1645,51 @@ index a8aebd8..5e1bc95 100644
 +}
 +
 +/*
-+** TDAWN_CHECK_REDRAW=1: at the held frame, is the picture the game kept up by scrolling and
-+** redrawing parts the picture it draws from nothing? Counts the pixels that are not.
++** The picture as it is shown, a pixel's index and a sum of what darkens it: the page, and under
++** its holes over the map the GPU's scene, drawn here from what the scene is made of (host.c).
++*/
++static void ShaderEmu_Shown(unsigned char* index, unsigned* dark)
++{
++    extern bool ShaderEmu_GL_Live;
++    const unsigned char* page = host_page(1);
++    int width = SeenBuff.Get_Width(), height = SeenBuff.Get_Height();
++    int x0 = Map.TacPixelX, y0 = Map.TacPixelY;
++    int x1 = x0 + Lepton_To_Pixel(Map.TacLeptonWidth), y1 = y0 + Lepton_To_Pixel(Map.TacLeptonHeight);
++
++    host_scene_picture(index, dark);
++    for (int y = 0, i = 0; y < height; y++) {
++        for (int x = 0; x < width; x++, i++) {
++            if (!ShaderEmu_GL_Live || page[i] || x < x0 || x >= x1 || y < y0 || y >= y1) {
++                index[i] = page[i];
++                dark[i] = 0;
++            }
++        }
++    }
++}
++
++/*
++** TDAWN_CHECK_REDRAW=1: at the held frame, is the picture that was kept up (the page, the
++** scene's kept cells, objects and shroud) the one made from nothing? Counts the pixels that are not.
 +*/
 +static void ShaderEmu_Check_Redraw(void)
 +{
-+    const unsigned char* page = host_page(1);
-+    int size = SeenBuff.Get_Width() * SeenBuff.Get_Height(), differ = 0;
++    void ShaderEmu_GL_Anew(void);
++    int width = SeenBuff.Get_Width(), height = SeenBuff.Get_Height(), size = width * height, differ = 0;
 +
-+    if (!getenv("TDAWN_CHECK_REDRAW") || !page) {
++    if (!getenv("TDAWN_CHECK_REDRAW") || !host_page(1)) {
 +        return;
 +    }
 +    Map.Render();
-+    unsigned char* kept = new unsigned char[size];
-+    memcpy(kept, page, size);
++    unsigned char* index = new unsigned char[2 * size];
++    unsigned* dark = new unsigned[2 * size];
++    ShaderEmu_Shown(index, dark);
++    ShaderEmu_GL_Anew();
 +    Map.Flag_To_Redraw(true);
 +    Map.Render();
-+    int width = SeenBuff.Get_Width(), x0 = width, y0 = size, x1 = -1, y1 = -1;
++    ShaderEmu_Shown(index + size, dark + size);
++    int x0 = width, y0 = size, x1 = -1, y1 = -1;
 +    for (int i = 0; i < size; i++) {
-+        if (kept[i] != page[i]) {
++        if (index[i] != index[size + i] || dark[i] != dark[size + i]) {
 +            differ++;
 +            x0 = MIN(x0, i % width);
 +            x1 = MAX(x1, i % width);
@@ -1655,9 +1697,187 @@ index a8aebd8..5e1bc95 100644
 +            y1 = MAX(y1, i / width);
 +        }
 +    }
-+    delete[] kept;
++    delete[] index;
++    delete[] dark;
 +    fprintf(stderr, "tdawn: %d of %d pixels differ from a full redraw (x %d..%d, y %d..%d); the view is at %08x\n",
-+            differ, size, x0, x1, y0, y1, (unsigned)Map.TacticalCoord);
++            differ, size, x0, x1, differ ? y0 : height, y1, (unsigned)Map.TacticalCoord);
++}
++
++/*
++** TDAWN_PICTURE=1: at the held frame the picture as the program has it goes to the console, for
++** tools/tdawn_picture.py to hold against a capture of what the GPU drew: the palette, then
++** every row's indexes and which of its pixels something darkens.
++*/
++static void ShaderEmu_Picture(void)
++{
++    int width = SeenBuff.Get_Width(), height = SeenBuff.Get_Height();
++
++    if (!getenv("TDAWN_PICTURE") || !host_page(1)) {
++        return;
++    }
++    unsigned char* index = new unsigned char[width * height];
++    unsigned* dark = new unsigned[width * height];
++    char* line = new char[3 * width + 2];
++    ShaderEmu_Shown(index, dark);
++    fprintf(stderr, "tdpic: %d %d", width, height);
++    for (int i = 0; i < 256; i++) {
++        fprintf(stderr, " %06x", host_palette()[i] & 0xffffff);
++    }
++    for (int y = 0; y < height; y++) {
++        char* to = line;
++        for (int x = 0; x < width; x++) {
++            *to++ = "0123456789abcdef"[index[y * width + x] >> 4];
++            *to++ = "0123456789abcdef"[index[y * width + x] & 15];
++        }
++        *to++ = ' ';
++        for (int x = 0; x < width; x++) {
++            *to++ = dark[y * width + x] ? '1' : '0';
++        }
++        *to = 0;
++        fprintf(stderr, "\ntdpic: %d %s", y, line);
++    }
++    fputc(10, stderr);
++    delete[] index;
++    delete[] dark;
++    delete[] line;
++}
++
++/*
++** TDAWN_SUMS=1: after every frame's drawing, a sum of the map's part of the picture as the
++** program has it (and one of what the page has over it), with where the view is: two runs of
++** one game by different ways of drawing must say the same, frame for frame.
++*/
++static void ShaderEmu_Sums(void)
++{
++    static int on = -1;
++    static unsigned char* index;
++    static unsigned* dark;
++    int width = SeenBuff.Get_Width(), height = SeenBuff.Get_Height();
++
++    if (on < 0) {
++        on = getenv("TDAWN_SUMS") != NULL && host_page(1);
++        if (on) {
++            index = new unsigned char[width * height];
++            dark = new unsigned[width * height];
++        }
++    }
++    if (!on) {
++        return;
++    }
++    const unsigned char* page = host_page(1);
++    int x0 = Map.TacPixelX, y0 = Map.TacPixelY;
++    int x1 = x0 + Lepton_To_Pixel(Map.TacLeptonWidth), y1 = y0 + Lepton_To_Pixel(Map.TacLeptonHeight);
++    unsigned sum = 2166136261u, over = 2166136261u;
++    ShaderEmu_Shown(index, dark);
++    for (int y = y0; y < y1; y++) {
++        for (int x = x0; x < x1; x++) {
++            int i = y * width + x;
++            sum = (sum ^ index[i] ^ dark[i] * 257u) * 16777619u;
++            over = (over ^ page[i]) * 16777619u;
++        }
++    }
++    fprintf(stderr, "tdsum: frame %d view %08x sum %08x over %08x\n", (int)Frame, (unsigned)Map.TacticalCoord, sum, over);
++}
++
++/*
++** TDAWN_CHECK_GPU=1: after every frame's drawing the window's picture as the GPU left it is held
++** against the picture as the program has it, every pixel of the map's part that nothing darkens
++** and the pointer is not near: the frames that differ are said, and their count at the end.
++*/
++static unsigned ShaderEmu_GPU_Frames, ShaderEmu_GPU_Differ;
++static inline bool ShaderEmu_Colour_Near(unsigned a, unsigned b)
++{
++    return abs((int)(a >> 16 & 255) - (int)(b >> 16 & 255)) <= 8 && abs((int)(a >> 8 & 255) - (int)(b >> 8 & 255)) <= 8
++           && abs((int)(a & 255) - (int)(b & 255)) <= 8;
++}
++static void ShaderEmu_Check_GPU(void)
++{
++    static int on = -1;
++    static unsigned char* index;
++    static unsigned* dark;
++    static unsigned char* under; // (the scene alone: what shows where the page's own pixel is not taken)
++    static unsigned* under_dark;
++    int width = SeenBuff.Get_Width(), height = SeenBuff.Get_Height(), w, h, row, px, py;
++
++    if (on < 0) {
++        on = getenv("TDAWN_CHECK_GPU") != NULL && host_page(1);
++        if (on) {
++            index = new unsigned char[width * height];
++            dark = new unsigned[width * height];
++            under = new unsigned char[width * height];
++            under_dark = new unsigned[width * height];
++            atexit([]() {
++                fprintf(stderr, "tdawn: %u frames held against the GPU's picture, %u of them differ\n", ShaderEmu_GPU_Frames,
++                        ShaderEmu_GPU_Differ);
++            });
++        }
++    }
++    if (!on || !InMainLoop) {
++        return;
++    }
++    Video_Render_Frame();
++    const unsigned* shown = host_window_picture(&w, &h, &row);
++    for (int wait = 0; shown && wait < 8; wait++) {
++        host_wait(); // (the picture reaches the window's buffer a machine frame after it is drawn)
++    }
++    if (!shown) {
++        return;
++    }
++    ShaderEmu_Shown(index, dark);
++    host_scene_picture(under, under_dark);
++    host_pointer(&px, &py);
++    const unsigned* palette = host_palette();
++    int differ = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
++    // (the map's part: around it the credits count by the clock)
++    int mx0 = Map.TacPixelX, my0 = Map.TacPixelY;
++    int mx1 = mx0 + Lepton_To_Pixel(Map.TacLeptonWidth), my1 = my0 + Lepton_To_Pixel(Map.TacLeptonHeight);
++    // The game's pixel under each of the window's middles. Over a window that is not a whole
++    // multiple of the screen a rectangle's edges are on the window's pixels (host.c), and what it
++    // shows is up to a pixel of the game's away: any of the nine there is right.
++    static short* column;
++    static short* line;
++    static int made_w, made_h;
++    if (made_w != w || made_h != h) {
++        column = (short*)realloc(column, w * sizeof(short));
++        line = (short*)realloc(line, h * sizeof(short));
++        for (int x = 0; x < w; x++) {
++            column[x] = (short)((2 * x + 1) * width / (2 * w));
++        }
++        for (int y = 0; y < h; y++) {
++            line[y] = (short)((2 * y + 1) * height / (2 * h));
++        }
++        made_w = w, made_h = h;
++    }
++    bool stretched = w % width || h % height;
++    for (int y = 0; y < h; y++) {
++        int gy = line[y];
++        const unsigned char* from = index + gy * width;
++        const unsigned* shade = dark + gy * width;
++        for (int x = 0; x < w; x++) {
++            int gx = column[x];
++            unsigned want = palette[from[gx]] & 0xffffff, got = shown[y * row + x] & 0xffffff;
++            if (want == got || shade[gx] || gx <= mx0 || gx >= mx1 - 1 || gy <= my0 || gy >= my1 - 1 || (abs(gx - px) < 34 && abs(gy - py) < 34)) {
++                continue;
++            }
++            bool found = ShaderEmu_Colour_Near(want, got);
++            for (int k = 0; stretched && !found && k < 9; k++) {
++                int i = (gy + k / 3 - 1) * width + gx + k % 3 - 1;
++                found = dark[i] || under_dark[i] || ShaderEmu_Colour_Near(palette[index[i]], got)
++                        || ShaderEmu_Colour_Near(palette[under[i]], got);
++            }
++            if (found) {
++                continue;
++            }
++            differ++;
++            x0 = MIN(x0, x), x1 = MAX(x1, x), y0 = MIN(y0, y), y1 = MAX(y1, y);
++        }
++    }
++    ShaderEmu_GPU_Frames++;
++    if (differ) {
++        ShaderEmu_GPU_Differ++;
++        fprintf(stderr, "tdgpu: frame %d view %08x: %d of the window's %dx%d pixels are not the program's (x %d..%d, y %d..%d)\n",
++                (int)Frame, (unsigned)Map.TacticalCoord, differ, w, h, x0, x1, y0, y1);
++    }
 +}
 +
 +static void ShaderEmu_Stats(void)
@@ -1798,6 +2018,7 @@ index a8aebd8..5e1bc95 100644
 +        for (int wait = 0; wait < 8; wait++) {
 +            host_wait();
 +        }
++        ShaderEmu_Picture();
 +        ShaderEmu_State("stopped");
 +        for (;;) {
 +            host_wait();
@@ -1811,7 +2032,7 @@ index a8aebd8..5e1bc95 100644
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
  #endif
-@@ -1126,12 +1477,31 @@ bool Color_Cycle(void)
+@@ -1126,12 +1698,31 @@ bool Color_Cycle(void)
      static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
      static bool _up = false;
      bool changed = false;
@@ -1844,7 +2065,7 @@ index a8aebd8..5e1bc95 100644
          _ftimer.Set(TIMER_SECOND / 8);
  
  /*
-@@ -1165,7 +1535,7 @@ bool Color_Cycle(void)
+@@ -1165,7 +1756,7 @@ bool Color_Cycle(void)
      /*
      **	Process the color cycling effects -- water.
      */
@@ -1853,7 +2074,7 @@ index a8aebd8..5e1bc95 100644
          unsigned char colors[3];
  
          _timer.Set(TIMER_SECOND / 4);
-@@ -1222,6 +1592,20 @@ void Call_Back(void)
+@@ -1222,6 +1813,20 @@ void Call_Back(void)
      if (SampleType) {
          Theme.AI();
          Speak_AI();
@@ -1874,7 +2095,7 @@ index a8aebd8..5e1bc95 100644
      }
  
  #ifdef NETWORKING
-@@ -1516,7 +1900,7 @@ static void Sync_Delay(void)
+@@ -1516,7 +2121,7 @@ static void Sync_Delay(void)
              if (input) {
                  Keyboard_Process(input);
              }
@@ -1883,7 +2104,7 @@ index a8aebd8..5e1bc95 100644
          }
  
          Frame_Limiter(FL_NONE);
-@@ -1611,6 +1995,9 @@ bool Main_Loop()
+@@ -1611,6 +2216,9 @@ bool Main_Loop()
      } else {
          FrameTimer.Set(Options.GameSpeed);
      }
@@ -1893,7 +2114,7 @@ index a8aebd8..5e1bc95 100644
  
      /*
      **	Update the display, unless we're inside a dialog.
-@@ -1624,7 +2011,10 @@ bool Main_Loop()
+@@ -1624,7 +2232,17 @@ bool Main_Loop()
                  Keyboard_Process(input);
              }
              //			HidPage.Lock();
@@ -1902,10 +2123,17 @@ index a8aebd8..5e1bc95 100644
 +            if (!ShaderEmu_Skip_Draw())
 +#endif
 +                SHADEREMU_COUNT(ShaderEmu_Draw_Cycles, Map.Render());
++#ifdef SHADEREMU
++            static const bool checks = getenv("TDAWN_SUMS") || getenv("TDAWN_CHECK_GPU");
++            if (checks) {
++                ShaderEmu_Sums();
++                ShaderEmu_Check_GPU();
++            }
++#endif
              //			HidPage.Unlock();
          }
      }
-@@ -1650,7 +2040,17 @@ bool Main_Loop()
+@@ -1650,7 +2268,17 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -1924,7 +2152,7 @@ index a8aebd8..5e1bc95 100644
  
      //	Heap_Dump_Check( "After Logic.AI" );
  
-@@ -1659,8 +2059,24 @@ bool Main_Loop()
+@@ -1659,8 +2287,24 @@ bool Main_Loop()
      **	a message has expired & been removed, and the entire map must be updated.
      */
      if (Messages.Manage()) {
@@ -1951,7 +2179,7 @@ index a8aebd8..5e1bc95 100644
      }
  
      //
-@@ -1710,6 +2126,9 @@ bool Main_Loop()
+@@ -1710,6 +2354,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1961,7 +2189,7 @@ index a8aebd8..5e1bc95 100644
          Do_Win();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1726,6 +2145,9 @@ bool Main_Loop()
+@@ -1726,6 +2373,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1971,7 +2199,7 @@ index a8aebd8..5e1bc95 100644
          Do_Lose();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1736,6 +2158,9 @@ bool Main_Loop()
+@@ -1736,6 +2386,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1981,7 +2209,7 @@ index a8aebd8..5e1bc95 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
      }
-@@ -2642,6 +3067,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
+@@ -2642,6 +3295,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
   *   02/21/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
  //#pragma off(unreferenced)
@@ -2052,7 +2280,7 @@ index a8aebd8..5e1bc95 100644
  void CC_Draw_Shape(void const* shapefile,
                     int shapenum,
                     int x,
-@@ -2656,6 +3145,15 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2656,6 +3373,15 @@ void CC_Draw_Shape(void const* shapefile,
      char* shape_pointer;
      uintptr_t shape_size;
  

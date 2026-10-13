@@ -266,11 +266,16 @@ Each run prints these figures (`tdstat:` lines, every five seconds):
     TDAWN_AUTO=1        Return is pressed through the menus (with FROMINSTALL: straight to the mission)
     TDAWN_INPUT_LOG=1   print the keys and buttons that arrive, and where in the window
     TDAWN_RESIZE=WxH    give the window that size after its 60th frame, as a drag would
-    TDAWN_SCROLL=N      scroll the map for N frames from frame 20: east, south, west, north
+    TDAWN_SCROLL=N      scroll the map for N frames from frame 20, twelve each way: east, south, west, north, then the four diagonals
+    TDAWN_SELECT=N      every N frames the player's units and soldiers are selected (their bars and corners are drawn into the page)
+    TDAWN_DRAG=N[,S]    from the Nth frame the map is dragged a pixel a frame, every place of a cell and the map's edges (from step S)
+    TDAWN_SUMS=1        after every frame, a sum of the map's part of the picture as the program has it ("Checking it")
+    TDAWN_CHECK_GPU=1   after every frame, the GPU's picture in the window's buffer against the program's ("Checking it")
     TDAWN_SAY=1         in a mission, EVA says each line the data has, one after another
     TDAWN_SOUND_LOG=1   print every sound the game asks for, and whether the pack has it
     TDAWN_BUILD=N       put a refinery in view at frame N, which plays its construction
-    TDAWN_CHECK_REDRAW=1  at the held frame, count the pixels a full redraw would change
+    TDAWN_CHECK_REDRAW=1  at the held frame, count the pixels a scene from nothing would change ("Checking it")
+    TDAWN_PICTURE=1     at the held frame, the picture as the program has it, to the console ("Checking it")
     TDAWN_CHECK_OCCUPY=1  every frame, count the cells whose occupancy bit is not the cell's own
     TDAWN_SKIP=N        how many frames in a row may go undrawn (0)
     TDAWN_RENDER=soft   the game draws the map itself, as before
@@ -479,6 +484,64 @@ The pictures (`--gpu-capture`: the game's picture is the top left of the GPU's t
 only where real time shows: the pointer, a tooltip under it and the credits counter counting.
 The palette's cycling (water, the selection colour) goes by the clock in play and by the
 game's frames in a run with `TDAWN_NO_DELAY`, or two runs' pictures would differ in it.
+
+### A scrolled picture
+
+Nothing above moves the map, and what the scene keeps (a cell's quad, an object's rectangles
+by their place on the map, the shroud's part, the page's holes) is kept across a scroll. The
+check is a sweep by single pixels: `TDAWN_DRAG=20` drags the map from the 20th frame as the
+right button does (through `ShaderEmu_Drag`, so by the same thirds of a lepton), a pixel a
+frame for 1,320 frames: thirty each of the eight ways and back, a cell's 24 x 24 places row
+by row, then 120 each way and back, which runs into the map's edges. `TDAWN_SELECT=10` keeps
+the bars and corners of the player's own in the page. Three things are held against it:
+
+    TDAWN_AUTO=1 TDAWN_SEED=7 TDAWN_NO_DELAY=1 TDAWN_SCEN=1 TDAWN_DRAG=20 TDAWN_SELECT=10 TDAWN_SUMS=1 TDAWN_STATS_MS=0 TDAWN_FRAMES=1360 tdawn FROMINSTALL
+    the same with TDAWN_REFRESH=1, then: python tools/tdawn_sums.py A.log B.log
+    1360 frames in both (1360 and 1360), 1127 distinct views; view differs in 0; picture differs in 0, the page over the map in 0
+
+- **The kept scene against one made whole every time** (`rvc_cpu`, a minute): `TDAWN_SUMS=1`
+  says a sum of the map's part of the picture after every frame, of the scene drawn here in
+  the program (`host_scene_picture()` in `host.c`: the kept cells, the three parts'
+  rectangles from the atlas, a sum of what darkens a pixel, the page over it). Missions 3 and
+  10 differ in one frame each (a 6 x 7 thing in a battle, a frame late: not looked into).
+- **The GPU's picture against the program's** (`rvc_harness --cpu`): `TDAWN_CHECK_GPU=1`
+  reads the window's own buffer after every frame, where the GPU leaves its picture, and
+  counts the pixels of the map's part that are not the program's (those something darkens
+  and the pointer's surroundings left out): `1320 frames held against the GPU's picture, 0
+  of them differ`, in parts of 310 steps (`TDAWN_DRAG=20,300` begins at step 300) at the
+  world's size: a display and a GPU target of 1,280 x 720, the window 960 x 600.
+- **At one held frame**, `TDAWN_CHECK_REDRAW=1` forgets everything (atlas, kept quads, the
+  frames made ready: the game builds its own) and counts what a scene from nothing changes
+  (a tooltip that still waits for its delay counts: a full redraw prints it at once), and
+  `TDAWN_PICTURE=1` prints the picture for `python tools/tdawn_picture.py UART.log
+  CAPTURE.bmp` to hold against the harness's `--gpu-capture`.
+
+None of the three sees a fault in what the game itself draws into the page (bars, corners,
+lines): all ways of drawing share that code. Red Alert has the sums, the GPU's check and the
+selection under the same names (`docs/ralert.md`).
+
+On 13 October 2026, after a report from the world of stray pieces beside a unit at single
+scroll offsets: all 1,320 steps of missions 1 and 3 by the first two checks, mission 10 by
+the first: nothing but the two frames named, at a window of a whole multiple of the game's
+screen.
+
+**It was the window's size.** In a window that is no whole multiple (the developer's was 794
+x 545: a game pixel 2.48 by 2.73 of the window's) a quad's left or top edge can lie exactly on
+a window pixel's middle, and the card then takes the texel one before the quad's own
+rectangle: the next icon or shape of the atlas, as a column or a row a pixel thick, at single
+scroll offsets. From a snapshot made with it on the screen (`foreign.py` of that session: for
+every quad, whether a covered pixel's texel is outside its rectangle): a column of 442 pixels
+(five terrain cells and two of the shroud's shapes) and a row of 120. The software rasteriser
+(`--warp`) does not do it: this is checked on the card, `rvc_harness --cpu`. A compact
+vertex's texture place is a whole texel and the GPU has no clamp for a rectangle of an atlas,
+so the atlas has gutters: an icon and a shroud shape each in 26 x 26 with its edge said again
+round it (1,482 icons where there were 1,764; the shades' texture 256 x 256 words), a shape
+with a ring of holes. A held frame at 794 x 545: 119 and 114 of 150 quads with another's
+texel beside or above, then 1 and 0; the sweep's first 330 frames (`TDAWN_RESIZE=794x545`)
+16,315 pixels not the program's, then 670 (the largest frame 370, then 30); at 640 x 400 the
+same picture as before. Left: a shape whose edge is on a middle loses that column to the
+ring's holes, and the game's own pointer still takes its far column there. Not run on the
+card: Red Alert, which has the same atlas.
 
 ## The scene on a worker core
 

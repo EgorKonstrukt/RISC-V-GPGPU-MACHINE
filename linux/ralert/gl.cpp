@@ -9,9 +9,12 @@ enum
 {
     ATLAS_W = 1024,
     ATLAS_ROWS = 2048,
-    ICON_ROWS = 1008, // the atlas's first rows hold terrain icons, 42 x 42 of them
-    ICON_MOST = 42 * 42,
-    SHADE_MOST = 5 * 10, // the shroud's shapes, in the shades
+    ICON_ROWS = 1008, // the atlas's first rows hold terrain icons, each in a square of 26
+    ICON_ACROSS = 39,
+    ICON_MOST = 39 * 38,
+    SHADE_ACROSS = 9,
+    SHADE_MOST = 9 * 6, // the shroud's shapes, in the shades, each in a square of 26
+    SHADE_ROW = 256,
     KEY = 0,             // the page's index that lets the scene through: the game never draws it
     SLOTS = 4096,
     TILES = 128 * 128, // kept quads: a cell each of the largest map
@@ -563,11 +566,11 @@ static void put(Shape* s, const unsigned char* pixels, const struct host_frame* 
         }
         unsigned level[256];
         bool known[256] = {false};
-        s->x = shade_count % 5 * 24;
-        s->y = shade_count / 5 * 24;
+        s->x = shade_count % SHADE_ACROSS * 26 + 1;
+        s->y = shade_count / SHADE_ACROSS * 26 + 1;
         shade_count++;
         for (y = 0; y < s->h; y++) {
-            unsigned* to = host_shades() + (s->y + y) * 128 + s->x;
+            unsigned* to = host_shades() + (s->y + y) * SHADE_ROW + s->x;
             for (x = 0; x < s->w; x++) {
                 unsigned char p = *pixels++, g = ghost[p];
                 if (!p) {
@@ -584,6 +587,14 @@ static void put(Shape* s, const unsigned char* pixels, const struct host_frame* 
                 }
             }
         }
+        // (its edge once more around it, as an icon's: a rectangle sampled on its edge)
+        for (y = 0; y < s->h; y++) {
+            unsigned* row = host_shades() + (s->y + y) * SHADE_ROW + s->x;
+            row[-1] = row[0], row[s->w] = row[s->w - 1];
+        }
+        unsigned* top = host_shades() + s->y * SHADE_ROW + s->x - 1;
+        memcpy(top - SHADE_ROW, top, (s->w + 2) * sizeof(unsigned));
+        memcpy(top + s->h * SHADE_ROW, top + (s->h - 1) * SHADE_ROW, (s->w + 2) * sizeof(unsigned));
         s->kind = SHADE;
         return;
     }
@@ -609,10 +620,21 @@ static void put(Shape* s, const unsigned char* pixels, const struct host_frame* 
         s->kind = EMPTY;
         return;
     }
-    if (!room(x1 - x0 + 1, y1 - y0 + 1, ax, ay)) {
+    // (a pixel of holes around it: a rectangle sampled on its edge, as over a window stretched
+    // by a fraction, must not show the next shape of the atlas)
+    if (!room(x1 - x0 + 3, y1 - y0 + 3, ax, ay)) {
         s->kind = FAILED;
         return;
     }
+    for (y = 0; y < y1 - y0 + 3; y++) {
+        unsigned char* row = host_atlas() + (ay + y) * ATLAS_W + ax;
+        if (y == 0 || y == y1 - y0 + 2) {
+            memset(row, 0, x1 - x0 + 3);
+        } else {
+            row[0] = row[x1 - x0 + 2] = 0;
+        }
+    }
+    ax++, ay++;
     s->left = (short)x0;
     s->top = (short)y0;
     s->w = (short)(x1 - x0 + 1);
@@ -855,18 +877,34 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
     return true;
 }
 
-// An icon's 24 x 24 pixels into the atlas, by the core that makes the scene (host_fill).
+// An icon's 24 x 24 pixels into its square of the atlas, by the core that makes the scene
+// (host_fill), with its own edge pixels once more around them: a cell's rectangle sampled on
+// its edge, as it is over a window stretched by a fraction, then has the icon's own colours.
 static void fill_icon(void* place, const void* from)
 {
     unsigned char* to = (unsigned char*)place;
 
-    for (int y = 0; y < 24; y++, to += ATLAS_W) {
+    for (int y = 0; y < 26; y++, to += ATLAS_W) {
+        const unsigned char* row = (const unsigned char*)from + (y < 1 ? 0 : y > 24 ? 23 : y - 1) * 24;
         if (from) {
-            memcpy(to, (const unsigned char*)from + y * 24, 24);
+            to[0] = row[0];
+            memcpy(to + 1, row, 24);
+            to[25] = row[23];
         } else {
-            memset(to, 0, 24);
+            memset(to, 0, 26);
         }
     }
+}
+
+// Where the icon's own pixels are in the atlas.
+static inline int icon_x(int index)
+{
+    return index % ICON_ACROSS * 26 + 1;
+}
+
+static inline int icon_y(int index)
+{
+    return index / ICON_ACROSS * 26 + 1;
 }
 
 // Where an icon of a set is in the atlas, put there the first time. -1: no room.
@@ -885,7 +923,7 @@ static int icon_of(const void* set, int icon)
             }
             Init_Stamps((const IconControlType*)set);
             int which = MapPtr ? MapPtr[icon] : icon;
-            unsigned char* to = host_atlas() + (icon_count / 42 * 24) * ATLAS_W + icon_count % 42 * 24;
+            unsigned char* to = host_atlas() + (icon_y(icon_count) - 1) * ATLAS_W + icon_x(icon_count) - 1;
             // (by the core that makes the scene: a first view of the map is some hundreds of them)
             host_fill(fill_icon, to, which < IconCount ? StampPtr + which * 576 : NULL);
             i->set = set;
@@ -907,7 +945,7 @@ bool ShaderEmu_GL_Stamp(void const* set, int icon, int x, int y, void const* rem
     if (index < 0) {
         return false;
     }
-    emit(HOST_KEYED, x + WindowList[window][WINDOWX], y + WindowList[window][WINDOWY], 24, 24, index % 42 * 24, index / 42 * 24, 0x00ffffff);
+    emit(HOST_KEYED, x + WindowList[window][WINDOWX], y + WindowList[window][WINDOWY], 24, 24, icon_x(index), icon_y(index), 0x00ffffff);
     return true;
 }
 
@@ -1109,7 +1147,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
                                     ? icon_of(type.Get_Image_Data(), own ? cellptr->TIcon : cellptr->Clear_Icon())
                                     : -1;
                     if (index >= 0) {
-                        host_tile(tile, cx * 24, cy * 24, index % 42 * 24, index / 42 * 24);
+                        host_tile(tile, cx * 24, cy * 24, icon_x(index), icon_y(index));
                     }
                     tile_done[tile >> 3] |= 1 << (tile & 7);
                 }

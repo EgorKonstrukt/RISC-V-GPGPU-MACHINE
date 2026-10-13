@@ -1,5 +1,5 @@
 GC runs 3
-GC F common/CMakeFiles/common.dir/alloc.cpp.gcda 4233332a 351876da 88fe0b8 f9
+GC F common/CMakeFiles/common.dir/alloc.cpp.gcda 4233332a 3698fb58 88fe0b8 f9
 GC f 29ff8a39 57f3d019 a43083b8
 GC k 0 1
 GC k 3 0
@@ -49,10 +49,10 @@ GC k 5 2
 GC c 0 2d00
 GC c 1 f
 GC k 6 1
-GC c 0 1c1de7fd0
+GC c 0 1c1e2dfd0
 GC k 7 1
-GC c 0 ef
-GC F common/CMakeFiles/common.dir/auduncmp.cpp.gcda 4233332a 351876d9 f17755c3 e9
+GC c 0 ed
+GC F common/CMakeFiles/common.dir/auduncmp.cpp.gcda 4233332a 3698fb58 f17755c3 e9
 GC f 651298cb 80d16027 b8bd9547
 GC k 0 9
 GC k 3 3
@@ -65,7 +65,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/b64pipe.cpp.gcda 4233332a 351876dc 862cf213 f9
+GC F common/CMakeFiles/common.dir/b64pipe.cpp.gcda 4233332a 3698fb58 862cf213 f9
 GC f 69562c83 bbb33d0e f3b49cda
 GC k 0 3
 GC k 3 0
@@ -89,7 +89,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 203
+GC c 0 201
 GC f 501a05a2 6492fcfb 9752656b
 GC k 0 17
 GC k 3 6
@@ -104,7 +104,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/b64straw.cpp.gcda 4233332a 351876db e0a7d576 e9
+GC F common/CMakeFiles/common.dir/b64straw.cpp.gcda 4233332a 3698fb58 e0a7d576 e9
 GC f 6c6a6518 7c292ad5 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -123,14 +123,14 @@ GC k 3 3
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC F common/CMakeFiles/common.dir/base64.cpp.gcda 4233332a 351876dd b683264d 81
+GC F common/CMakeFiles/common.dir/base64.cpp.gcda 4233332a 3698fb58 b683264d 81
 GC f 5c9a6c38 172cbfb8 b4255191
 GC k 0 19
 GC k 7 1
 GC f 7d25a56c abdae127 dd9beb7c
 GC k 0 12
 GC k 7 1
-GC F common/CMakeFiles/common.dir/bfiofile.cpp.gcda 4233332a 351876da 8263ac18 f9
+GC F common/CMakeFiles/common.dir/bfiofile.cpp.gcda 4233332a 3698fb58 8263ac18 f9
 GC f 38396b9f a3fece49 5381adc9
 GC k 0 8
 GC c 1 119
@@ -140,7 +140,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e1
+GC c 0 df
 GC f 2dfb4046 ceef74dd 6e6d39f5
 GC k 0 3
 GC k 3 0
@@ -157,7 +157,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 12b
+GC c 0 129
 GC f 96a33dc e9799a36 a63828eb
 GC k 0 31
 GC c 0 2a
@@ -170,7 +170,7 @@ GC v 26aa6ce0 2a
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC c 0 128
+GC c 0 126
 GC f 7c67aea4 c94b58f8 e089e207
 GC k 0 36
 GC c 0 3ae
@@ -185,7 +185,7 @@ GC v 26aa6ce0 1b
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC c 0 10e
+GC c 0 10c
 GC f 78967351 90bb2607 a97bef59
 GC k 0 13
 GC c 0 2a
@@ -196,7 +196,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 10a
+GC c 0 108
 GC f 23b3932f 78ad1485 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -212,7 +212,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d6
+GC c 0 d4
 GC f 5a82a717 4be5a9bb 2d8183ea
 GC k 0 3
 GC c 0 87d
@@ -223,7 +223,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d4
+GC c 0 d2
 GC f 718d143f 39930b77 94ec001b
 GC k 0 10
 GC c 0 85f
@@ -256,7 +256,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ec
+GC c 0 ea
 GC f b96d667 c18eef56 88d822a9
 GC k 0 35
 GC k 3 0
@@ -281,7 +281,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 eb
+GC c 0 e9
 GC f 5dba957e f93669c7 a43083b8
 GC k 0 1
 GC c 0 190
@@ -340,7 +340,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/blowfish.cpp.gcda 4233332a 351876dc 45bfc536 e9
+GC F common/CMakeFiles/common.dir/blowfish.cpp.gcda 4233332a 3698fb58 45bfc536 e9
 GC f 72972a81 dcef161a b8ea5793
 GC k 0 2
 GC k 3 0
@@ -377,7 +377,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/blwstraw.cpp.gcda 4233332a 351876db 204181de e9
+GC F common/CMakeFiles/common.dir/blwstraw.cpp.gcda 4233332a 3698fb58 204181de e9
 GC f 7f833b 53658955 80a9acdf
 GC k 0 6
 GC k 3 0
@@ -402,7 +402,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/buff.cpp.gcda 4233332a 351876dd f241246a 81
+GC F common/CMakeFiles/common.dir/buff.cpp.gcda 4233332a 3698fb58 f241246a 81
 GC f 56c2a7d0 22e829c0 2812f918
 GC k 0 4
 GC k 7 1
@@ -412,7 +412,7 @@ GC c 0 1a3
 GC c 1 16
 GC c 3 16
 GC k 7 1
-GC c 0 be
+GC c 0 bc
 GC f 4afaa8c9 66f41bba f81a0007
 GC k 0 5
 GC k 7 1
@@ -425,7 +425,7 @@ GC c 0 16
 GC c 1 16
 GC c 2 16
 GC k 7 1
-GC c 0 b7
+GC c 0 b5
 GC f 4ba37359 933f877b a43083b8
 GC k 0 1
 GC k 7 1
@@ -437,7 +437,7 @@ GC k 0 1
 GC c 0 2b0
 GC k 7 1
 GC c 0 17
-GC F common/CMakeFiles/common.dir/buffer.cpp.gcda 4233332a 351876db 75bd4b94 81
+GC F common/CMakeFiles/common.dir/buffer.cpp.gcda 4233332a 3698fb58 75bd4b94 81
 GC f 4288f9ee 46dab58c 3ef8e4d4
 GC k 0 5
 GC k 7 1
@@ -456,7 +456,7 @@ GC c 0 15
 GC c 1 c
 GC c 3 c
 GC k 7 1
-GC c 0 1cc
+GC c 0 1ca
 GC f 43db36c7 ec7f0748 a43083b8
 GC k 0 1
 GC c 0 15
@@ -468,7 +468,7 @@ GC k 7 1
 GC f 7ae30304 6c9c2983 5018cc66
 GC k 0 3
 GC k 7 1
-GC F common/CMakeFiles/common.dir/ccfile.cpp.gcda 4233332a 351876e4 c1728ece f9
+GC F common/CMakeFiles/common.dir/ccfile.cpp.gcda 4233332a 3698fb58 c1728ece f9
 GC f 61b80016 56becbfa c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -503,7 +503,7 @@ GC v 19d0a946 1e
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 528
+GC c 0 527
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -582,7 +582,7 @@ GC v 47f8f4f5 c
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1c5
+GC c 0 1c3
 GC f 52a0b624 f05480ac bf6103f2
 GC k 0 5
 GC c 0 3
@@ -598,7 +598,7 @@ GC v 2956257e 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1c6
+GC c 0 1c4
 GC f 54ed0801 175d573d 441c1627
 GC k 0 6
 GC c 0 3
@@ -613,7 +613,7 @@ GC v 397c6a52 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1c3
+GC c 0 1c1
 GC f 714cd90f a0ac8ba2 d6d9a726
 GC k 0 20
 GC c 0 5e
@@ -636,7 +636,7 @@ GC v 1c6cf16d 43
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 108
+GC c 0 106
 GC f 2956257e 1ee6029a f3b49cda
 GC k 0 3
 GC c 0 e9
@@ -647,7 +647,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e0
+GC c 0 de
 GC f 26aa6ce0 fad42165 2d8183ea
 GC k 0 3
 GC c 0 3d07
@@ -658,7 +658,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d5
+GC c 0 d3
 GC f 8c867 681c98f7 c63592f
 GC k 0 7
 GC c 0 1ea
@@ -677,7 +677,7 @@ GC v 1c6cf16d 1ea
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 dc
+GC c 0 da
 GC f 2421ea18 bdeffe75 3b6734c1
 GC k 0 7
 GC c 1 6
@@ -691,7 +691,7 @@ GC v 1c6cf16d 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 138
+GC c 0 136
 GC f 1246e510 f7bdaec3 8cb93227
 GC k 0 5
 GC c 0 c
@@ -701,7 +701,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 12a
+GC c 0 128
 GC f 47f8f4f5 fccc032 da854151
 GC k 0 12
 GC c 0 3074
@@ -744,7 +744,7 @@ GC c 1 3046
 GC k 6 1
 GC c 0 1d9fffffa
 GC k 7 1
-GC c 0 127
+GC c 0 125
 GC f 39093eec 595b92af f6a20490
 GC k 0 5
 GC c 1 1b
@@ -754,7 +754,7 @@ GC k 4 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 10d
+GC c 0 10b
 GC f 11b6b6a7 39b18fa9 5f806ab3
 GC k 0 6
 GC c 0 c
@@ -765,7 +765,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 252
+GC c 0 250
 GC f 62338252 944b98fd f3b49cda
 GC k 0 3
 GC c 0 a2
@@ -859,7 +859,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/cdfile.cpp.gcda 4233332a 351876ea fd05a499 f9
+GC F common/CMakeFiles/common.dir/cdfile.cpp.gcda 4233332a 3698fb57 fd05a499 f9
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -919,7 +919,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 15d
+GC c 0 15b
 GC f 68d333d8 70e18b4d 9952841
 GC k 0 17
 GC k 3 0
@@ -947,7 +947,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 df
+GC c 0 dd
 GC f 96ebaa fb46a3a6 e8a310bd
 GC k 0 17
 GC c 1 3
@@ -988,7 +988,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 cc
+GC c 0 ca
 GC f 10b09cf4 b7c74368 a43083b8
 GC k 0 1
 GC k 3 0
@@ -1008,7 +1008,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 cd
+GC c 0 cb
 GC f 51204d1b cf64bfad ef2fa00f
 GC k 0 23
 GC c 2 6
@@ -1019,7 +1019,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ce
+GC c 0 cc
 GC f 3a717a3c d7a99ff3 1353242a
 GC k 0 7
 GC c 0 6
@@ -1034,7 +1034,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 cb
+GC c 0 c9
 GC f 7a38dc9d f4c8ca5d 5f86ea25
 GC k 0 15
 GC c 0 2a
@@ -1063,7 +1063,7 @@ GC v 1c6cf16d 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 109
+GC c 0 107
 GC f 5d36ebb8 3dd530a a43083b8
 GC k 0 1
 GC k 3 0
@@ -1091,7 +1091,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1b5
+GC c 0 1b3
 GC f 3f671caf 6674f0e5 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -1148,7 +1148,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/cliprect.cpp.gcda 4233332a 35187704 7b755c30 81
+GC F common/CMakeFiles/common.dir/cliprect.cpp.gcda 4233332a 3698fb91 7b755c30 81
 GC f 3328beca 9e0f772e 625587d4
 GC k 0 5
 GC c 0 3
@@ -1157,11 +1157,11 @@ GC c 2 17
 GC c 3 4
 GC c 4 17
 GC k 7 1
-GC c 0 16f
+GC c 0 16d
 GC f 3f4e8935 c32692fd 20aa47fa
 GC k 0 9
 GC k 7 1
-GC F common/CMakeFiles/common.dir/control.cpp.gcda 4233332a 35187729 18e84b 91
+GC F common/CMakeFiles/common.dir/control.cpp.gcda 4233332a 3698fbc9 18e84b 91
 GC f 7f75255 d60bb713 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -1209,21 +1209,21 @@ GC f 13e83f10 8db5c64e a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/crc.cpp.gcda 4233332a 3518774a 9ba6d8a0 81
+GC F common/CMakeFiles/common.dir/crc.cpp.gcda 4233332a 3698fc0e 9ba6d8a0 81
 GC f e089110 e018d358 6dced510
 GC k 0 10
 GC c 1 2e5a
 GC c 4 2e5a
-GC c 5 36ae
-GC c 7 4b69
-GC c 8 1dfd
-GC c 9 105d
+GC c 5 36a8
+GC c 7 4b6f
+GC c 8 1e00
+GC c 9 105a
 GC k 7 1
-GC c 0 c6
+GC c 0 c4
 GC f 4472cd22 db18dab8 154aaef7
 GC k 0 2
 GC k 7 1
-GC F common/CMakeFiles/common.dir/cstraw.cpp.gcda 4233332a 3518775d 4df7911d e9
+GC F common/CMakeFiles/common.dir/cstraw.cpp.gcda 4233332a 3698fc17 4df7911d e9
 GC f 2fd1cd51 af0cf27e 81f343b9
 GC k 0 4
 GC k 3 0
@@ -1250,16 +1250,16 @@ GC k 5 2
 GC c 0 a5f5
 GC c 1 a5f5
 GC k 6 1
-GC c 0 1d8d26650
+GC c 0 1d89265f0
 GC k 7 1
-GC c 0 ba
-GC F common/CMakeFiles/common.dir/dipthong.cpp.gcda 4233332a 35187777 6e383333 81
+GC c 0 b8
+GC F common/CMakeFiles/common.dir/dipthong.cpp.gcda 4233332a 3698fc35 6e383333 81
 GC f 1fb3516f 4913a70 9329f0d9
 GC k 0 5
 GC c 3 15
 GC c 4 69
 GC k 7 1
-GC c 0 210
+GC c 0 20e
 GC f 4f376c7b 6a69ed1a 722c2630
 GC k 0 3
 GC k 7 1
@@ -1269,7 +1269,7 @@ GC k 7 1
 GC f c6c62f0 c4b9158a 76f4acca
 GC k 0 5
 GC k 7 1
-GC F common/CMakeFiles/common.dir/drawbuff.cpp.gcda 4233332a 35187775 39b09339 e9
+GC F common/CMakeFiles/common.dir/drawbuff.cpp.gcda 4233332a 3698fc38 39b09339 e9
 GC f 3823573e 4239bc78 a8d5c037
 GC k 0 11
 GC k 3 3
@@ -1295,7 +1295,7 @@ GC c 1 1c20
 GC k 6 1
 GC c 0 1bf0bff40
 GC k 7 1
-GC c 0 154
+GC c 0 152
 GC f 2d5d0437 b0e325fc 5d69f519
 GC k 0 10
 GC k 3 3
@@ -1314,7 +1314,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/drawline.cpp.gcda 4233332a 35187783 6d3da8bc e9
+GC F common/CMakeFiles/common.dir/drawline.cpp.gcda 4233332a 3698fc38 6d3da8bc e9
 GC f 23d9e158 e2578750 219b2a2e
 GC k 0 34
 GC c 0 3
@@ -1328,9 +1328,9 @@ GC k 5 2
 GC c 0 3c0
 GC c 1 3
 GC k 6 1
-GC c 0 1bf068840
+GC c 0 1bf081840
 GC k 7 1
-GC c 0 394
+GC c 0 393
 GC f 5174e361 ff580b73 a43083b8
 GC k 0 1
 GC k 3 3
@@ -1361,14 +1361,14 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/drawmisc.cpp.gcda 4233332a 35187792 9e895a1e e9
+GC F common/CMakeFiles/common.dir/drawmisc.cpp.gcda 4233332a 3698fc4f 9e895a1e e9
 GC f 6e2cea45 d760c2b3 b661bd93
 GC k 0 5
 GC k 3 3
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC F common/CMakeFiles/common.dir/face.cpp.gcda 4233332a 351877ac baf2d723 89
+GC F common/CMakeFiles/common.dir/face.cpp.gcda 4233332a 3698fc68 baf2d723 89
 GC f 72033b13 a117f6d7 b3ea00a8
 GC k 0 6
 GC c 0 6f7
@@ -1379,7 +1379,7 @@ GC c 4 84f
 GC c 5 2a0
 GC k 3 0
 GC k 7 1
-GC c 0 2dc
+GC c 0 2da
 GC f 35d5b7c3 d9cd03b7 2df85ba2
 GC k 0 7
 GC c 0 5d20
@@ -1424,8 +1424,8 @@ GC v 7b 29
 GC v 6d 24
 GC v a5 23
 GC k 7 1
-GC c 0 323
-GC F common/CMakeFiles/common.dir/fading.cpp.gcda 4233332a 351877b8 9b9c1a0e 81
+GC c 0 321
+GC F common/CMakeFiles/common.dir/fading.cpp.gcda 4233332a 3698fc83 9b9c1a0e 81
 GC f 235f81cb 422024cf 2213e0f2
 GC k 0 9
 GC c 2 3
@@ -1434,7 +1434,7 @@ GC c 5 1530
 GC c 7 2cd0
 GC c 8 30
 GC k 7 1
-GC c 0 255
+GC c 0 253
 GC f f13584c c1d73de6 9713290a
 GC k 0 9
 GC c 2 3
@@ -1444,8 +1444,8 @@ GC c 6 2e2c9
 GC c 7 1d46
 GC c 8 2dc
 GC k 7 1
-GC c 0 256
-GC F common/CMakeFiles/common.dir/file.cpp.gcda 4233332a 351877e5 54cecb61 91
+GC c 0 254
+GC F common/CMakeFiles/common.dir/file.cpp.gcda 4233332a 3698fc9f 54cecb61 91
 GC f 1e6e6f3e 76ce2f40 843ca442
 GC k 0 3
 GC k 4 3
@@ -1466,7 +1466,7 @@ GC v 13fef1f1 18
 GC t 1 18
 GC v 58d99812 18
 GC k 7 1
-GC c 0 15c
+GC c 0 15a
 GC f 5e2cb9f8 f174cb2e c0bbb23e
 GC k 0 2
 GC c 0 103f
@@ -1499,7 +1499,7 @@ GC f 6ba57bab a68121bb a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/file_posix.cpp.gcda 4233332a 3518807c e0c66def f9
+GC F common/CMakeFiles/common.dir/file_posix.cpp.gcda 4233332a 3699061d e0c66def f9
 GC f a3a4169 613bfc63 d6a0c9fe
 GC k 0 3
 GC c 0 1057
@@ -1546,11 +1546,11 @@ GC c 0 72
 GC f f4906eb 12cd69a8 b399dceb
 GC k 0 8
 GC c 0 bf0
-GC c 2 3c26
+GC c 2 38d1
 GC c 3 bc9
 GC c 4 bc9
-GC c 5 3bc6
-GC c 6 3bc6
+GC c 5 3877
+GC c 6 3877
 GC c 7 27
 GC k 3 0
 GC k 4 0
@@ -1603,24 +1603,24 @@ GC c 3 1057
 GC c 4 376
 GC c 5 458
 GC c 7 5a
-GC c 8 3ca7
+GC c 8 3934
 GC c 9 18
 GC c a ba5
 GC k 3 3
 GC t 0 1057
-GC v 2d 464
+GC v 27 464
 GC v 15 458
-GC v 30 419
+GC v 2a 419
 GC v 0 376
 GC v b c
 GC k 4 0
 GC k 5 2
-GC c 0 1e600
+GC c 0 1b312
 GC c 1 1057
 GC k 6 1
-GC c 0 1d8d23fd0
+GC c 0 1d8923fd0
 GC k 7 1
-GC c 0 b2
+GC c 0 b0
 GC f 774bdca 438a37fe 62e222d2
 GC k 0 15
 GC c 0 5f17
@@ -1631,7 +1631,7 @@ GC c 4 8e3
 GC c 5 8bf
 GC c 8 24
 GC c 9 24
-GC c b ea
+GC c b db
 GC c c 24
 GC c d 24
 GC c e 24
@@ -1650,7 +1650,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 10c
+GC c 0 10a
 GC f 2fab4972 c6a89b14 154aaef7
 GC k 0 2
 GC c 0 4e
@@ -1659,7 +1659,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ea
+GC c 0 e8
 GC f 6ba57bab a68121bb a43083b8
 GC k 0 1
 GC k 3 0
@@ -1667,7 +1667,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/filepcx.cpp.gcda 4233332a 351877dc b3155cf4 e9
+GC F common/CMakeFiles/common.dir/filepcx.cpp.gcda 4233332a 3698fcae b3155cf4 e9
 GC f 47cbc675 5cfe91a7 c1420ca3
 GC k 0 27
 GC k 3 0
@@ -1722,7 +1722,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/fixed.cpp.gcda 4233332a 35187803 7a05fc30 89
+GC F common/CMakeFiles/common.dir/fixed.cpp.gcda 4233332a 3698fcaf 7a05fc30 89
 GC f 70533756 6af17b6e a43083b8
 GC k 0 1
 GC c 0 3
@@ -1739,7 +1739,7 @@ GC c 0 6f
 GC c 1 6f
 GC k 3 0
 GC k 7 1
-GC c 0 1ad
+GC c 0 1ab
 GC f 608980e9 ff6fe127 7a0fe6f5
 GC k 0 5
 GC c 1 27
@@ -1747,7 +1747,7 @@ GC c 2 48
 GC c 3 9
 GC k 3 0
 GC k 7 1
-GC c 0 1ae
+GC c 0 1ac
 GC f 6defcf74 5516d64f 5b1e6228
 GC k 0 11
 GC c 2 33
@@ -1771,7 +1771,7 @@ GC t 0 3
 GC v 4 3
 GC k 7 1
 GC c 0 66
-GC F common/CMakeFiles/common.dir/font.cpp.gcda 4233332a 35187813 aaf2b05f ef
+GC F common/CMakeFiles/common.dir/font.cpp.gcda 4233332a 3698fcb3 aaf2b05f ef
 GC f 79c1a51e c3d8997d a43083b8
 GC k 0 1
 GC k 1 0
@@ -1798,7 +1798,7 @@ GC k 3 6
 GC k 5 4
 GC k 6 2
 GC k 7 1
-GC c 0 396
+GC c 0 395
 GC f 6ff25490 ad0a73d0 a70a7aca
 GC k 0 10
 GC k 1 0
@@ -1817,7 +1817,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 247
+GC c 0 245
 GC f 4efcdb04 e717cafa c27ce21c
 GC k 0 2
 GC k 1 4
@@ -1836,7 +1836,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 248
+GC c 0 246
 GC f 32c1419e f3d9ecc7 a43083b8
 GC k 0 1
 GC k 1 0
@@ -1854,8 +1854,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 136
-GC F common/CMakeFiles/common.dir/gadget.cpp.gcda 4233332a 35187822 d1661faf 91
+GC c 0 134
+GC F common/CMakeFiles/common.dir/gadget.cpp.gcda 4233332a 3698fcbc d1661faf 91
 GC f aecbcf8 d12f2e72 a43083b8
 GC k 0 1
 GC k 4 0
@@ -1869,7 +1869,7 @@ GC k 4 3
 GC t 0 e10
 GC v 63cf9c28 e10
 GC k 7 1
-GC c 0 3ad
+GC c 0 3ac
 GC f 11541bff 6d95565c a43083b8
 GC k 0 1
 GC k 4 0
@@ -1879,7 +1879,7 @@ GC k 0 2
 GC c 0 6
 GC k 4 0
 GC k 7 1
-GC c 0 240
+GC c 0 23e
 GC f 3cd76828 9161ddea 44b2ccf8
 GC k 0 4
 GC k 4 6
@@ -1893,7 +1893,7 @@ GC k 0 1
 GC c 0 9
 GC k 4 0
 GC k 7 1
-GC c 0 24a
+GC c 0 248
 GC f 568bb1ac ec05e725 7b3a8dc3
 GC k 0 6
 GC k 4 6
@@ -1922,7 +1922,7 @@ GC v 21c0196c e10
 GC t a e10
 GC v 63cf9c28 e10
 GC k 7 1
-GC c 0 3ae
+GC c 0 3ad
 GC f 6bd5fd23 bcb2b997 5f0fb538
 GC k 0 4
 GC c 0 d39
@@ -1935,14 +1935,14 @@ GC v 136a33a9 d39
 GC t 1 d39
 GC v 63cf9c28 d39
 GC k 7 1
-GC c 0 399
+GC c 0 398
 GC f 136a33a9 4c6bc3d4 b6621c36
 GC k 0 3
 GC c 0 1b46
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 39a
+GC c 0 399
 GC f 49f6786c c1f42fa5 9c1224e2
 GC k 0 3
 GC k 4 3
@@ -1961,7 +1961,7 @@ GC c 0 2959
 GC c 1 2959
 GC k 4 0
 GC k 7 1
-GC c 0 39b
+GC c 0 39a
 GC f 4fbc65e7 42d14516 f3b49cda
 GC k 0 3
 GC c 0 3
@@ -1971,7 +1971,7 @@ GC k 4 3
 GC t 0 3
 GC v 7a1e4709 3
 GC k 7 1
-GC c 0 23f
+GC c 0 23d
 GC f 5b039cb1 73c24564 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -1980,7 +1980,7 @@ GC k 4 3
 GC t 0 3
 GC v 7a1e4709 3
 GC k 7 1
-GC c 0 24c
+GC c 0 24a
 GC f c5af95b cd492522 c0bbb23e
 GC k 0 2
 GC k 4 3
@@ -1993,7 +1993,7 @@ GC c 3 e10
 GC c 4 e10
 GC k 4 3
 GC k 7 1
-GC c 0 3b0
+GC c 0 3af
 GC f 7626a4b7 79338d5d f3b49cda
 GC k 0 3
 GC k 4 0
@@ -2005,7 +2005,7 @@ GC c 3 3
 GC c 5 39
 GC k 4 0
 GC k 7 1
-GC c 0 4ec
+GC c 0 4eb
 GC f 5e224d20 4282c7b3 a43083b8
 GC k 0 1
 GC k 4 0
@@ -2033,12 +2033,12 @@ GC f 13e83f10 8db5c64e a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/getshape.cpp.gcda 4233332a 3518781a 7159e6ad 81
+GC F common/CMakeFiles/common.dir/getshape.cpp.gcda 4233332a 3698fcc6 7159e6ad 81
 GC f bdf3326 ac5cc7ef a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 142
+GC c 0 140
 GC f 7bc51459 362473d3 a43083b8
 GC k 0 1
 GC k 7 1
@@ -2052,12 +2052,12 @@ GC f 3dbd8ade 8b96c356 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 141
+GC c 0 13f
 GC f 39d832ec 1175fa5b d26a6809
 GC k 0 4
 GC c 3 6
 GC k 7 1
-GC c 0 13c
+GC c 0 13a
 GC f 280bf93e ef034536 a43083b8
 GC k 0 1
 GC k 7 1
@@ -2068,11 +2068,11 @@ GC f 2513df39 615185ff a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 140
+GC c 0 13e
 GC f 6ebf9c79 ea40a7e1 af71a78b
 GC k 0 2
 GC k 7 1
-GC F common/CMakeFiles/common.dir/graphicsviewport.cpp.gcda 4233332a 3518783f 85102cb3 99
+GC F common/CMakeFiles/common.dir/graphicsviewport.cpp.gcda 4233332a 3698fcf9 85102cb3 99
 GC f 313da1e 3d415222 5d12e3ef
 GC k 0 7
 GC k 3 6
@@ -2111,7 +2111,7 @@ GC v 766320e5 6
 GC t 1 6
 GC v 77e336c0 6
 GC k 7 1
-GC c 0 363
+GC c 0 361
 GC f 36f9aeca ab4819a 3ef8e4d4
 GC k 0 5
 GC c 0 3
@@ -2122,7 +2122,7 @@ GC c 4 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 393
+GC c 0 392
 GC f 5c76a581 9b7a7254 5503b8fc
 GC k 0 7
 GC k 3 0
@@ -2148,7 +2148,7 @@ GC c 4 258
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 395
+GC c 0 394
 GC f 2a99b9be ff004a59 45e650c5
 GC k 0 8
 GC k 3 0
@@ -2190,7 +2190,7 @@ GC c a 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1c8
+GC c 0 1c6
 GC f 1ee5ed 9fb90ba3 990858ba
 GC k 0 11
 GC k 3 0
@@ -2204,7 +2204,7 @@ GC c 3 d41
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 3a2
+GC c 0 3a1
 GC f 25a84d11 dd7208d9 3ef8e4d4
 GC k 0 5
 GC k 3 0
@@ -2230,7 +2230,7 @@ GC c 4 24
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 14b
+GC c 0 149
 GC f 292899d6 f22d88c3 3ef8e4d4
 GC k 0 5
 GC k 3 0
@@ -2251,7 +2251,7 @@ GC c 5 4b0
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 155
+GC c 0 153
 GC f 75cbf92b ca90905f 93688c57
 GC k 0 5
 GC c 0 4e6
@@ -2261,7 +2261,7 @@ GC c 4 4e6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 14c
+GC c 0 14a
 GC f 61d1c52b d78346df 81f343b9
 GC k 0 4
 GC c 0 d4c
@@ -2273,21 +2273,21 @@ GC k 4 3
 GC t 0 d4c
 GC v 232fe67f d4c
 GC k 7 1
-GC c 0 1cf
+GC c 0 1cd
 GC f 11f09095 6fb94adc a43083b8
 GC k 0 1
 GC c 0 1b4c
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 353
+GC c 0 351
 GC f 3cafabf1 82e63836 a43083b8
 GC k 0 1
 GC c 0 1b49
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 3a3
+GC c 0 3a2
 GC f 509dfb4a 3bae2346 649635d3
 GC k 0 3
 GC k 3 0
@@ -2310,7 +2310,7 @@ GC c 0 276
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1cd
+GC c 0 1cb
 GC f 558bf59f dcd61424 a43083b8
 GC k 0 1
 GC c 0 15
@@ -2326,7 +2326,7 @@ GC k 3 0
 GC k 4 0
 GC k 7 1
 GC c 0 7c
-GC F common/CMakeFiles/common.dir/ini.cpp.gcda 4233332a 351878bd d63823cc f9
+GC F common/CMakeFiles/common.dir/ini.cpp.gcda 4233332a 3698fd72 d63823cc f9
 GC f 3f072637 fadd91e3 4462b650
 GC k 0 3
 GC c 0 615
@@ -2337,7 +2337,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1b0
+GC c 0 1ae
 GC f 3852a4eb aacdf7d1 4462b650
 GC k 0 3
 GC c 0 59
@@ -2348,7 +2348,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 19c
+GC c 0 19a
 GC f 7dcf06c2 b3f6bdb 4a1d6559
 GC k 0 8
 GC c 0 16
@@ -2362,7 +2362,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 100
+GC c 0 fe
 GC f 795b5736 4f0da248 4a1d6559
 GC k 0 8
 GC c 0 d7
@@ -2376,7 +2376,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 104
+GC c 0 102
 GC f 2b8dbabd 74204770 33b69184
 GC k 0 13
 GC c 1 d75
@@ -2429,7 +2429,7 @@ GC c 1 60d
 GC k 6 1
 GC c 0 1c1ffffe8
 GC k 7 1
-GC c 0 1af
+GC c 0 1ad
 GC f 6aa4c781 c0e43bdf 33b69184
 GC k 0 13
 GC c 1 1d3
@@ -2471,9 +2471,9 @@ GC k 5 2
 GC c 0 20a0
 GC c 1 6a
 GC k 6 1
-GC c 0 1c3ffffe8
+GC c 0 1c3b7ffe8
 GC k 7 1
-GC c 0 19b
+GC c 0 199
 GC f 795e6ab1 cf78d47a 19b9357
 GC k 0 5
 GC c 0 16
@@ -2485,7 +2485,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ff
+GC c 0 fd
 GC f 7230782e 27c25a5b 19b9357
 GC k 0 5
 GC c 0 d7
@@ -2497,7 +2497,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 103
+GC c 0 101
 GC f 7cc8fea5 16c51baa c50a4c12
 GC k 0 6
 GC c 0 7f1
@@ -2511,7 +2511,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 102
+GC c 0 100
 GC f 6fe206fc 3e7275f c50a4c12
 GC k 0 6
 GC c 0 1f0
@@ -2525,7 +2525,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c7
+GC c 0 c5
 GC f 78a7024f 264942e8 519ec7d9
 GC k 0 5
 GC k 3 0
@@ -2550,7 +2550,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c5
+GC c 0 c3
 GC f 72b85579 75a42a96 2812f918
 GC k 0 4
 GC c 1 1
@@ -2561,7 +2561,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 19a
+GC c 0 198
 GC f 14e2d293 66abbbff f3b49cda
 GC k 0 3
 GC c 0 6f
@@ -2572,7 +2572,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1ac
+GC c 0 1aa
 GC f 72079b7d 1c7f155c 75ff8cb6
 GC k 0 4
 GC k 3 0
@@ -2606,7 +2606,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 101
+GC c 0 ff
 GC f 43b66c39 7e9e07f9 2024e2bf
 GC k 0 8
 GC c 2 21
@@ -2616,7 +2616,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e6
+GC c 0 e4
 GC f 6d700a68 af60e48a f9e50e8f
 GC k 0 4
 GC c 0 18
@@ -2628,7 +2628,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 fd
+GC c 0 fb
 GC f 5fd9d978 3fc4d1d3 a6d7318e
 GC k 0 6
 GC c 0 c
@@ -2640,7 +2640,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e7
+GC c 0 e5
 GC f eb16ec3 1a574397 8f4e4ec4
 GC k 0 13
 GC c 1 59d
@@ -2652,7 +2652,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c2
+GC c 0 c0
 GC f 1b6dc0e4 60b1d4c6 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -2682,7 +2682,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 fe
+GC c 0 fc
 GC f 5a9eb848 31a4d94d afcf8382
 GC k 0 6
 GC c 1 6
@@ -2692,7 +2692,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e2
+GC c 0 e0
 GC f 207ed88 eb2a59d6 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -2711,7 +2711,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e3
+GC c 0 e1
 GC f 390db64f c032707c 565f28fd
 GC k 0 4
 GC c 0 42
@@ -2721,7 +2721,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1b1
+GC c 0 1af
 GC f 37dd69ff 76ca25c7 b2f1fb53
 GC k 0 10
 GC c 2 4
@@ -2736,7 +2736,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 343
+GC c 0 341
 GC f 253eec0b cb4d222a 1dc0f96e
 GC k 0 11
 GC k 3 0
@@ -2760,7 +2760,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 201
+GC c 0 1ff
 GC f 70745de6 434f1302 19d4e2e3
 GC k 0 13
 GC k 3 0
@@ -2779,7 +2779,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 218
+GC c 0 216
 GC f 6c75b078 38090ca9 ed537659
 GC k 0 4
 GC c 0 771
@@ -2791,7 +2791,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c3
+GC c 0 c1
 GC f 5ae62ea1 bc73a5d7 d6a0c9fe
 GC k 0 3
 GC c 0 1e
@@ -2802,7 +2802,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 212
+GC c 0 210
 GC f 3d16b5be d2e6aae3 a43083b8
 GC k 0 1
 GC k 3 0
@@ -2822,7 +2822,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c4
+GC c 0 c2
 GC f 53b18aaf d669b438 b0a426fe
 GC k 0 17
 GC c 0 9
@@ -2873,7 +2873,7 @@ GC v 4dc78558 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 106
+GC c 0 104
 GC f 1673d75c 19795825 f3b49cda
 GC k 0 3
 GC c 0 3
@@ -2884,7 +2884,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 105
+GC c 0 103
 GC f 2cac425f b6fd29e8 2ad856c
 GC k 0 55
 GC c 0 16
@@ -2932,7 +2932,7 @@ GC v 2cde15a6 7
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 b6
+GC c 0 b4
 GC f 507157d2 5ad0fca f3b49cda
 GC k 0 3
 GC c 0 10
@@ -2943,7 +2943,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 b5
+GC c 0 b3
 GC f 54d00540 bce7e7f7 f06b128f
 GC k 0 18
 GC c 0 16
@@ -2958,7 +2958,7 @@ GC v 2cde15a6 8e
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c9
+GC c 0 c7
 GC f 43d437e2 6433dc87 2c3807c9
 GC k 0 5
 GC c 0 16
@@ -2969,7 +2969,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c8
+GC c 0 c6
 GC f 4dc78558 2c3ce08 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -2981,7 +2981,7 @@ GC v 78b96835 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 20b
+GC c 0 209
 GC f 2cde15a6 cd9e30e3 f3b49cda
 GC k 0 3
 GC c 0 95
@@ -2992,7 +2992,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1a6
+GC c 0 1a4
 GC f 10c43d7f 7184183a b785ddf6
 GC k 0 9
 GC c 0 95
@@ -3009,7 +3009,7 @@ GC v 25b8037c 7e2
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1a7
+GC c 0 1a5
 GC f 27028d30 2febdbfb f3b49cda
 GC k 0 3
 GC k 3 0
@@ -3048,7 +3048,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1a8
+GC c 0 1a6
 GC f 19a22ba5 1913158e bce6a761
 GC k 0 3
 GC c 1 7e2
@@ -3057,7 +3057,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1a9
+GC c 0 1a7
 GC f 49507073 30ccf14c 3764a6f1
 GC k 0 4
 GC k 3 0
@@ -3121,7 +3121,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/irandom.cpp.gcda 4233332a 351878f5 3754d948 81
+GC F common/CMakeFiles/common.dir/irandom.cpp.gcda 4233332a 3698fda4 3754d948 81
 GC f 6ffd8dfd 12212ef2 6e18d94e
 GC k 0 8
 GC k 7 1
@@ -3134,7 +3134,7 @@ GC k 7 1
 GC f 3928ffe9 d5672a7d d56b7598
 GC k 0 5
 GC k 7 1
-GC F common/CMakeFiles/common.dir/keybuff.cpp.gcda 4233332a 35187901 7eed2af1 f9
+GC F common/CMakeFiles/common.dir/keybuff.cpp.gcda 4233332a 3698fdb6 66783c03 f9
 GC f 22b08116 53f1010d a190f1b6
 GC k 0 19
 GC k 3 3
@@ -3156,7 +3156,7 @@ GC v 3a3e2f67 25b
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 38d
+GC c 0 38c
 GC f 2b0be92a 64e02e28 ef77bc80
 GC k 0 11
 GC k 3 0
@@ -3411,9 +3411,9 @@ GC k 5 4
 GC c 0 511dd
 GC c 1 107d
 GC k 6 2
-GC c 0 1bf06ffd3
+GC c 0 1bf085fd3
 GC k 7 1
-GC c 0 38e
+GC c 0 38d
 GC f 751f22a2 509e817f 1e23b72
 GC k 0 18
 GC c 0 258
@@ -3432,7 +3432,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 38f
+GC c 0 38e
 GC f 742c9d5e 4ac79c2f b8ea5793
 GC k 0 2
 GC c 0 3
@@ -3442,8 +3442,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 236
-GC f 5cbb452c 2fa36793 94a5ac28
+GC c 0 234
+GC f 5cbb452c e11abd19 94a5ac28
 GC k 0 8
 GC c 2 15
 GC c 3 15
@@ -3455,8 +3455,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 391
-GC f 43f905e3 c5302392 412cb2e7
+GC c 0 390
+GC f 43f905e3 1dee9901 412cb2e7
 GC k 0 8
 GC c 2 15
 GC c 3 15
@@ -3468,7 +3468,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 390
+GC c 0 38f
 GC f 6a914ffe 3dfe040 b8ea5793
 GC k 0 2
 GC k 3 3
@@ -3476,7 +3476,7 @@ GC k 4 0
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC F common/CMakeFiles/common.dir/keyframe.cpp.gcda 4233332a 35187916 c0b36515 e9
+GC F common/CMakeFiles/common.dir/keyframe.cpp.gcda 4233332a 3698fdd3 c0b36515 e9
 GC f 45124dde c8c9ebd0 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -3515,7 +3515,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 18c
+GC c 0 18a
 GC f 5c6d336c ca493f12 154aaef7
 GC k 0 2
 GC c 0 a1b
@@ -3524,7 +3524,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 18b
+GC c 0 189
 GC f 5c89ae33 91f15ccd 154aaef7
 GC k 0 2
 GC k 3 0
@@ -3545,7 +3545,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 184
+GC c 0 182
 GC f 360de206 b51a0cfd 38056e8f
 GC k 0 37
 GC c 4 3
@@ -3645,10 +3645,10 @@ GC c 4 255599
 GC c 5 8e7
 GC k 6 3
 GC c 0 1c7ffffd0
-GC c 1 1bb43fff4
+GC c 1 1bb3bfff4
 GC c 2 1bbfffff4
 GC k 7 1
-GC c 0 25b
+GC c 0 259
 GC f 2b8934e4 babe8ce6 a43083b8
 GC k 0 1
 GC k 3 0
@@ -3668,7 +3668,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d9
+GC c 0 d7
 GC f 3da0bc81 4de78519 1ceefa02
 GC k 0 4
 GC c 0 e13
@@ -3676,7 +3676,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a7
+GC c 0 3a6
 GC f 6e0b1b10 4edf353e 8ab4ca3f
 GC k 0 4
 GC k 3 0
@@ -3693,7 +3693,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 235
+GC c 0 233
 GC f 5df6df62 dcfae54f a43083b8
 GC k 0 1
 GC c 0 25b
@@ -3701,7 +3701,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 38c
+GC c 0 38b
 GC f 69fe8b70 303d87d5 ba6c81c6
 GC k 0 3
 GC c 0 4da
@@ -3711,8 +3711,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 25c
-GC F common/CMakeFiles/common.dir/lcw.cpp.gcda 4233332a 3518791a 4d4c5716 e9
+GC c 0 25a
+GC F common/CMakeFiles/common.dir/lcw.cpp.gcda 4233332a 3698fde8 4d4c5716 e9
 GC f 2dfccde7 d411fc5a 8ad9e50c
 GC k 0 22
 GC k 3 0
@@ -3793,10 +3793,10 @@ GC c 1 ba
 GC c 2 1b5586
 GC c 3 1176
 GC k 6 2
-GC c 0 1c1f937fd
-GC c 1 1c1fffffd
+GC c 0 1c1dfd7fd
+GC c 1 1c1e7fffd
 GC k 7 1
-GC c 0 143
+GC c 0 141
 GC f 20e33452 5d804c8b 5e1fb1ad
 GC k 0 5
 GC c 0 39ba
@@ -3841,10 +3841,10 @@ GC k 5 2
 GC c 0 aa302
 GC c 1 493d
 GC k 6 1
-GC c 0 1c1fffffd
+GC c 0 1c1e7fffd
 GC k 7 1
-GC c 0 144
-GC F common/CMakeFiles/common.dir/linear.cpp.gcda 4233332a 3518795b faf672db e9
+GC c 0 142
+GC F common/CMakeFiles/common.dir/linear.cpp.gcda 4233332a 3698fe4c faf672db e9
 GC f 5cf2d3e1 ecc07f71 43fb4465
 GC k 0 28
 GC k 3 24
@@ -3864,8 +3864,8 @@ GC c 1 258
 GC k 6 2
 GC c 0 1bf0bff40
 GC k 7 1
-GC c 0 1c9
-GC F common/CMakeFiles/common.dir/link.cpp.gcda 4233332a 3518797b adf2ffc4 91
+GC c 0 1c7
+GC F common/CMakeFiles/common.dir/link.cpp.gcda 4233332a 3698fe59 adf2ffc4 91
 GC f 3447edbe 91d23d8c 41fb9645
 GC k 0 8
 GC c 0 3c
@@ -3879,7 +3879,7 @@ GC v 326627b3 3c
 GC t 1 3c
 GC v 271c8ddd 3c
 GC k 7 1
-GC c 0 241
+GC c 0 23f
 GC f 97b9081 cde117b3 f3b49cda
 GC k 0 3
 GC k 4 6
@@ -3897,13 +3897,13 @@ GC k 0 3
 GC c 0 3c
 GC k 4 0
 GC k 7 1
-GC c 0 243
+GC c 0 241
 GC f 326627b3 d10e21ea a2d8db6c
 GC k 0 3
 GC c 0 3c
 GC k 4 0
 GC k 7 1
-GC c 0 242
+GC c 0 240
 GC f 72c15925 3f944147 a43083b8
 GC k 0 1
 GC k 4 0
@@ -3913,7 +3913,7 @@ GC k 0 1
 GC c 0 2959
 GC k 4 0
 GC k 7 1
-GC c 0 39c
+GC c 0 39b
 GC f 323985ff 67f0b781 1ceefa02
 GC k 0 4
 GC k 4 6
@@ -3923,7 +3923,7 @@ GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 23d
+GC c 0 23b
 GC f 164666d8 df8799c9 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -3934,19 +3934,19 @@ GC c 0 39
 GC c 1 39
 GC k 4 0
 GC k 7 1
-GC c 0 4ed
+GC c 0 4ec
 GC f 49f10d9d c1741e3f 154aaef7
 GC k 0 2
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/load.cpp.gcda 4233332a 351879ae 1ad8b3ef 91
+GC F common/CMakeFiles/common.dir/load.cpp.gcda 4233332a 3698fe76 1ad8b3ef 91
 GC f 7f96d4cd e10f257e fb6bde1f
 GC k 0 7
 GC c 4 3
 GC c 6 3
 GC k 4 0
 GC k 7 1
-GC c 0 1c7
+GC c 0 1c5
 GC f 200bd531 1099c42d a4989c47
 GC k 0 12
 GC c 0 3
@@ -3961,7 +3961,7 @@ GC c a 3
 GC c b 3
 GC k 4 0
 GC k 7 1
-GC c 0 1c2
+GC c 0 1c0
 GC f 3589821 7aa5c7e3 c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -3977,7 +3977,7 @@ GC v 2421ea18 6
 GC t 1 6
 GC v 47f8f4f5 6
 GC k 7 1
-GC c 0 137
+GC c 0 135
 GC f f7ec12c 2ec4c80b 36d2e210
 GC k 0 7
 GC k 4 0
@@ -4014,7 +4014,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/misc.cpp.gcda 4233332a 35187a5a d7b795e0 89
+GC F common/CMakeFiles/common.dir/misc.cpp.gcda 4233332a 3698ff0a d7b795e0 89
 GC f e2812e9 6dd16495 925e2c93
 GC k 0 13
 GC c 1 cd
@@ -4028,7 +4028,7 @@ GC c b 1b29
 GC c c 3e7
 GC k 3 0
 GC k 7 1
-GC c 0 bd
+GC c 0 bb
 GC f 5d4c20e9 5a77d9e0 a43083b8
 GC k 0 1
 GC k 3 0
@@ -4039,7 +4039,7 @@ GC c 0 21a
 GC c 1 88e9
 GC k 3 0
 GC k 7 1
-GC c 0 e8
+GC c 0 e6
 GC f 5777030e 4bec0f1d 92e680a0
 GC k 0 4
 GC c 0 876
@@ -4048,7 +4048,7 @@ GC c 2 876
 GC c 3 cba
 GC k 3 0
 GC k 7 1
-GC c 0 216
+GC c 0 214
 GC f 668a4e7b 5485e29 92e680a0
 GC k 0 4
 GC k 3 0
@@ -4058,20 +4058,20 @@ GC k 0 2
 GC c 1 114a5
 GC k 3 0
 GC k 7 1
-GC c 0 11e
+GC c 0 11c
 GC f 6c956851 6f965de5 d42ac2ec
 GC k 0 3
 GC c 1 781
 GC c 2 e5cd
 GC k 3 0
 GC k 7 1
-GC c 0 11f
+GC c 0 11d
 GC f 6a33b82a 508be3f1 154aaef7
 GC k 0 2
 GC c 0 6b42
 GC k 3 0
 GC k 7 1
-GC c 0 19e
+GC c 0 19c
 GC f 1a34bf86 442f2b8b 154aaef7
 GC k 0 2
 GC c 0 d51c
@@ -4090,7 +4090,7 @@ GC v 96 6
 GC v 64 3
 GC v 32 2
 GC k 7 1
-GC c 0 266
+GC c 0 264
 GC f 7ce726ed fe8ad766 a43083b8
 GC k 0 1
 GC c 0 8add
@@ -4103,7 +4103,7 @@ GC c 0 8add
 GC k 3 0
 GC k 7 1
 GC c 0 3d5
-GC F common/CMakeFiles/common.dir/mixfile.cpp.gcda 4233332a 35187a5d a50bbda0 f9
+GC F common/CMakeFiles/common.dir/mixfile.cpp.gcda 4233332a 3698ff17 a50bbda0 f9
 GC f 28f93ea8 34068efd c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -4141,7 +4141,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 529
+GC c 0 528
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -4380,7 +4380,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/mp.cpp.gcda 4233332a 35187a7f 7e75f63c f9
+GC F common/CMakeFiles/common.dir/mp.cpp.gcda 4233332a 3698ff77 7e75f63c f9
 GC f 123b85b8 4e226fc2 41fe5a13
 GC k 0 8
 GC k 3 0
@@ -4745,7 +4745,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/palette.cpp.gcda 4233332a 35187b3b 32c76801 99
+GC F common/CMakeFiles/common.dir/palette.cpp.gcda 4233332a 36990031 32c76801 99
 GC f 51ee4a46 85018a91 54b2d296
 GC k 0 7
 GC c 1 8d
@@ -4757,7 +4757,7 @@ GC c 6 78
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1bd
+GC c 0 1bb
 GC f 7ac62374 6363c943 7f692f3d
 GC k 0 5
 GC c 0 15
@@ -4771,7 +4771,7 @@ GC v 3f 9
 GC v 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 1bc
+GC c 0 1ba
 GC f 242da864 2e30ab0a 5adc953c
 GC k 0 14
 GC c 1 15
@@ -4779,9 +4779,9 @@ GC c 2 15
 GC c 3 15
 GC c 4 78
 GC c 5 78
-GC c 6 2ef8
-GC c 7 2ef8
-GC c 8 45c8
+GC c 6 2fd4
+GC c 7 2fd4
+GC c 8 4700
 GC c 9 78
 GC c a 63
 GC c b 2a
@@ -4789,12 +4789,12 @@ GC c c 63
 GC c d 15
 GC k 3 0
 GC k 4 6
-GC t 0 2ef8
-GC v 844180e 2ef8
+GC t 0 2fd4
+GC v 844180e 2fd4
 GC t 1 63
 GC v 844180e 63
 GC k 7 1
-GC c 0 1bb
+GC c 0 1b9
 GC f 332c7261 1edf2c91 2d8183ea
 GC k 0 3
 GC k 3 0
@@ -4802,13 +4802,13 @@ GC k 4 0
 GC k 7 1
 GC f 57495e3e 71f09c73 c0bbb23e
 GC k 0 2
-GC c 0 9cf
-GC c 1 9cf
+GC c 0 9b4
+GC c 1 9b4
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 139
-GC F common/CMakeFiles/common.dir/paths.cpp.gcda 4233332a 35187b55 e047b169 e9
+GC c 0 137
+GC F common/CMakeFiles/common.dir/paths.cpp.gcda 4233332a 36990065 e047b169 e9
 GC f 3eae4c70 fb83dea c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -4838,7 +4838,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 52a
+GC c 0 529
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -4999,7 +4999,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/paths_posix.cpp.gcda 4233332a 351880f0 c966d364 e9
+GC F common/CMakeFiles/common.dir/paths_posix.cpp.gcda 4233332a 3699064e c966d364 e9
 GC f 7ea7e5db bfd1ead9 2cd0c15
 GC k 0 3
 GC k 3 0
@@ -5050,10 +5050,10 @@ GC k 6 0
 GC k 7 1
 GC f 7d1f20c6 f60c35a9 81f343b9
 GC k 0 4
-GC c 0 9
-GC c 1 9
-GC c 2 9
-GC c 3 9
+GC c 0 6
+GC c 1 6
+GC c 2 6
+GC c 3 6
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -5097,13 +5097,10 @@ GC k 6 0
 GC k 7 1
 GC f ecf48a5 2ff62e4 c0bbb23e
 GC k 0 2
-GC c 0 3
-GC c 1 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 a9
 GC f 4859060e 42cc7360 2cd0c15
 GC k 0 3
 GC k 3 0
@@ -5154,7 +5151,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 130
+GC c 0 12e
 GC f 23a80880 72d5821f 659d6e87
 GC k 0 8
 GC c 0 cfc
@@ -5169,7 +5166,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ae
+GC c 0 ac
 GC f 3c681c29 5efe631c b562115e
 GC k 0 3
 GC c 0 464
@@ -5178,23 +5175,22 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d3
+GC c 0 d1
 GC f 6767c42 46489c52 7b0df8cc
 GC k 0 11
 GC c 1 3
 GC c 2 3
-GC c 3 f
-GC c 4 f
-GC c 5 f
-GC c 6 f
-GC c 7 6
+GC c 3 9
+GC c 4 9
+GC c 5 9
+GC c 6 9
 GC c 9 3
 GC c a 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ab
+GC c 0 aa
 GC f 153fef26 7b0e632b 2b58af61
 GC k 0 13
 GC c 0 12
@@ -5257,12 +5253,8 @@ GC c 0 98
 GC f 1d87943c f41228b 38971a7b
 GC k 0 11
 GC c 0 3
-GC c 1 3
-GC c 6 3
-GC c 7 3
-GC c 8 3
-GC c 9 3
-GC c a 3
+GC c 4 3
+GC c 5 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -5270,19 +5262,11 @@ GC k 7 1
 GC c 0 a7
 GC f 12b83837 9c9b63b1 b76ae8df
 GC k 0 19
-GC c 0 3
-GC c 1 3
-GC c 2 3
-GC c 3 3
-GC c 4 3
-GC c 5 3
-GC c 6 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 a8
-GC F common/CMakeFiles/common.dir/pipe.cpp.gcda 4233332a 35187b55 8e3c3463 91
+GC F common/CMakeFiles/common.dir/pipe.cpp.gcda 4233332a 3699006c 8e3c3463 91
 GC f 78b96835 fadcb78c 843ca442
 GC k 0 3
 GC c 0 3
@@ -5292,13 +5276,13 @@ GC k 4 3
 GC t 0 3
 GC v 78b96835 3
 GC k 7 1
-GC c 0 111
+GC c 0 10f
 GC f 648e7174 ffba4a54 843ca442
 GC k 0 3
 GC c 1 1a6d
 GC k 4 3
 GC k 7 1
-GC c 0 209
+GC c 0 207
 GC f df18e07 2db89aaf 3fa98e39
 GC k 0 8
 GC c 1 3
@@ -5310,7 +5294,7 @@ GC k 4 6
 GC t 1 3
 GC v 78b96835 3
 GC k 7 1
-GC c 0 202
+GC c 0 200
 GC f 10ec326c 8abc23f4 a54a7e1
 GC k 0 5
 GC k 4 3
@@ -5324,12 +5308,12 @@ GC k 4 3
 GC t 0 3
 GC v df18e07 3
 GC k 7 1
-GC c 0 113
+GC c 0 111
 GC f 4dc78558 2c3ce08 c0bbb23e
 GC k 0 2
 GC k 4 3
 GC k 7 1
-GC F common/CMakeFiles/common.dir/pk.cpp.gcda 4233332a 35187bb4 c4dfdbee e9
+GC F common/CMakeFiles/common.dir/pk.cpp.gcda 4233332a 369900ab c4dfdbee e9
 GC f 648186d8 77ee1b53 ed35b8e5
 GC k 0 7
 GC k 3 6
@@ -5378,7 +5362,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/pkstraw.cpp.gcda 4233332a 35187c50 3f465f45 f9
+GC F common/CMakeFiles/common.dir/pkstraw.cpp.gcda 4233332a 36990136 3f465f45 f9
 GC f 47d23f48 fc0ec8b2 81f343b9
 GC k 0 4
 GC k 3 0
@@ -5456,7 +5440,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/random.cpp.gcda 4233332a 35187c8f 8e6d8509 81
+GC F common/CMakeFiles/common.dir/random.cpp.gcda 4233332a 36990184 8e6d8509 81
 GC f 2b64ba5e ec1b011e 5222864
 GC k 0 6
 GC c 0 f
@@ -5465,7 +5449,7 @@ GC c 3 34de8
 GC c 4 71df
 GC c 5 9a53
 GC k 7 1
-GC c 0 1d7
+GC c 0 1d5
 GC f 7284ae4f 6f386164 a43083b8
 GC k 0 1
 GC k 7 1
@@ -5474,7 +5458,7 @@ GC k 0 1
 GC c 0 9
 GC k 7 1
 GC c 0 54
-GC F common/CMakeFiles/common.dir/rawfile.cpp.gcda 4233332a 35187c91 e7ac14b0 91
+GC F common/CMakeFiles/common.dir/rawfile.cpp.gcda 4233332a 3699019e e7ac14b0 91
 GC f 1f91c39 44ed5058 b84ad941
 GC k 0 11
 GC c 0 15
@@ -5488,7 +5472,7 @@ GC k 4 9
 GC t 0 15
 GC v 26aa6ce0 15
 GC k 7 1
-GC c 0 12d
+GC c 0 12b
 GC f 37a834ba d616e6ec a0ca1b22
 GC k 0 7
 GC c 0 21
@@ -5501,7 +5485,7 @@ GC k 4 3
 GC t 0 9
 GC v 26aa6ce0 9
 GC k 7 1
-GC c 0 132
+GC c 0 130
 GC f 16d08080 313d3d82 15cf108e
 GC k 0 10
 GC k 4 12
@@ -5524,7 +5508,7 @@ GC k 4 21
 GC t 0 9
 GC v 26aa6ce0 9
 GC k 7 1
-GC c 0 133
+GC c 0 131
 GC f 25efb544 56b32a5 5529314
 GC k 0 10
 GC c 0 c
@@ -5533,7 +5517,7 @@ GC c 4 9
 GC c 9 c
 GC k 4 0
 GC k 7 1
-GC c 0 12c
+GC c 0 12a
 GC f 2022a55e 1a996e90 6c683fd9
 GC k 0 16
 GC c 0 3ae
@@ -5547,7 +5531,7 @@ GC t 0 3ae
 GC v 4363f905 393
 GC v 26aa6ce0 1b
 GC k 7 1
-GC c 0 10f
+GC c 0 10d
 GC f 4dd17d8e 87e230d7 cdcffa
 GC k 0 17
 GC c 0 2a
@@ -5562,7 +5546,7 @@ GC k 4 15
 GC t 0 2a
 GC v 26aa6ce0 2a
 GC k 7 1
-GC c 0 129
+GC c 0 127
 GC f 1eff752a 184ebbf0 b8d19f72
 GC k 0 6
 GC c 0 a8c
@@ -5576,7 +5560,7 @@ GC v 7515c88f 973
 GC v 26aa6ce0 110
 GC v 4363f905 9
 GC k 7 1
-GC c 0 b4
+GC c 0 b2
 GC f 39da736b 4126af7d e02fad49
 GC k 0 5
 GC c 1 1e
@@ -5584,7 +5568,7 @@ GC c 2 1e
 GC c 3 3
 GC k 4 0
 GC k 7 1
-GC c 0 15a
+GC c 0 158
 GC f 17b63b96 269e8ed1 348916fc
 GC k 0 15
 GC c 0 103f
@@ -5604,7 +5588,7 @@ GC v 26aa6ce0 874
 GC v 7515c88f 7c2
 GC v 4363f905 9
 GC k 7 1
-GC c 0 b0
+GC c 0 ae
 GC f 2ed2a4a9 e04f7606 b1057598
 GC k 0 17
 GC c 0 2a
@@ -5625,7 +5609,7 @@ GC v 38396b9f 3
 GC t 3 c
 GC v 11b6b6a7 c
 GC k 7 1
-GC c 0 10b
+GC c 0 109
 GC f 3f7fc784 8c91fa9f f3b49cda
 GC k 0 3
 GC k 4 6
@@ -5635,7 +5619,7 @@ GC k 0 8
 GC c 0 768
 GC c 2 103f
 GC c 3 103f
-GC c 6 293ba
+GC c 6 26096
 GC c 7 103f
 GC k 4 3
 GC k 7 1
@@ -5646,13 +5630,13 @@ GC c 0 7e0
 GC c 1 7e0
 GC k 4 0
 GC k 7 1
-GC c 0 af
+GC c 0 ad
 GC f 54f52fd8 f873d6a7 a43083b8
 GC k 0 1
 GC c 0 c
 GC k 4 0
 GC k 7 1
-GC c 0 253
+GC c 0 251
 GC f 6bfd6302 7b20b7f4 65e15789
 GC k 0 5
 GC k 4 0
@@ -5666,7 +5650,7 @@ GC c 4 9
 GC c 6 9
 GC k 4 0
 GC k 7 1
-GC c 0 134
+GC c 0 132
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 4 0
@@ -5691,7 +5675,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/readline.cpp.gcda 4233332a 35187cb5 6e61e00f 91
+GC F common/CMakeFiles/common.dir/readline.cpp.gcda 4233332a 369901c6 6e61e00f 91
 GC f 38033bf8 2926ed92 e7e59f70
 GC k 0 9
 GC c 1 839
@@ -5705,12 +5689,12 @@ GC k 4 3
 GC t 0 a60b
 GC v 25620a9d a60b
 GC k 7 1
-GC c 0 b9
+GC c 0 b7
 GC f 66d3dcf0 ac2c654b f3b49cda
 GC k 0 3
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/rect.cpp.gcda 4233332a 35187cc8 a3055a9b 81
+GC F common/CMakeFiles/common.dir/rect.cpp.gcda 4233332a 369901d9 a3055a9b 81
 GC f 593b457b ce191094 76106117
 GC k 0 9
 GC k 7 1
@@ -5722,7 +5706,7 @@ GC c a 6
 GC c d 6
 GC c e 6
 GC k 7 1
-GC c 0 365
+GC c 0 363
 GC f 68f542cf 1016ea59 b562115e
 GC k 0 3
 GC k 7 1
@@ -5730,8 +5714,8 @@ GC f 5f5986ed d83ccd03 a43083b8
 GC k 0 1
 GC c 0 1aa4
 GC k 7 1
-GC c 0 1d0
-GC F common/CMakeFiles/common.dir/rndstraw.cpp.gcda 4233332a 35187cef 94ffee7 e9
+GC c 0 1ce
+GC F common/CMakeFiles/common.dir/rndstraw.cpp.gcda 4233332a 369901fd 94ffee7 e9
 GC f 10fe62fd 1134575 b2ff03ac
 GC k 0 6
 GC k 3 0
@@ -5798,7 +5782,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/settings.cpp.gcda 4233332a 35187d3c 5af57723 e9
+GC F common/CMakeFiles/common.dir/settings.cpp.gcda 4233332a 3699025e 5af57723 e9
 GC f 1068350c 83c236d5 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -5826,7 +5810,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 52b
+GC c 0 52a
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -5898,7 +5882,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e5
+GC c 0 e3
 GC f 175a24c0 780e7ccb e9798888
 GC k 0 5
 GC c 0 3
@@ -5922,8 +5906,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 52c
-GC F common/CMakeFiles/common.dir/sha.cpp.gcda 4233332a 35187d78 2f0256aa e9
+GC c 0 52b
+GC F common/CMakeFiles/common.dir/sha.cpp.gcda 4233332a 3699027b 2f0256aa e9
 GC f 134efe83 2cc613ba f9db51d7
 GC k 0 10
 GC c 0 1b7
@@ -5940,7 +5924,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 20a
+GC c 0 208
 GC f 175bc681 a56093df e8a7b914
 GC k 0 7
 GC c 1 1
@@ -5962,10 +5946,10 @@ GC c 1 1
 GC c 2 96
 GC c 3 3
 GC k 6 2
-GC c 0 9da3615d
-GC c 1 1d8d2338a
+GC c 0 9d6ba14d
+GC c 1 1d892335a
 GC k 7 1
-GC c 0 20d
+GC c 0 20b
 GC f 5448c548 26c42058 9a59f0b2
 GC k 0 6
 GC c 0 1a6d
@@ -5978,7 +5962,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 207
+GC c 0 205
 GC f dda5ee6 35ae17c fc32527b
 GC k 0 8
 GC c 2 1b99
@@ -6024,16 +6008,16 @@ GC k 5 2
 GC c 0 6924
 GC c 1 1b99
 GC k 6 1
-GC c 0 1d8d247fd
+GC c 0 1d89247fd
 GC k 7 1
-GC c 0 208
-GC F common/CMakeFiles/common.dir/shape.cpp.gcda 4233332a 35187d79 173193ec 81
+GC c 0 206
+GC F common/CMakeFiles/common.dir/shape.cpp.gcda 4233332a 3699028c 173193ec 81
 GC f 5c8a6187 2cbf130 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 125
-GC F common/CMakeFiles/common.dir/shapipe.cpp.gcda 4233332a 35187d8a b1ea3fc 91
+GC c 0 123
+GC F common/CMakeFiles/common.dir/shapipe.cpp.gcda 4233332a 369902c1 b1ea3fc 91
 GC f 2256d13c 8bbb53fa f3b49cda
 GC k 0 3
 GC k 4 0
@@ -6048,7 +6032,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 20c
+GC c 0 20a
 GC f 7adea727 eac15d41 f3b49cda
 GC k 0 3
 GC c 0 1a6d
@@ -6056,12 +6040,12 @@ GC c 1 1a6d
 GC c 2 1a6d
 GC k 4 0
 GC k 7 1
-GC c 0 206
+GC c 0 204
 GC f 4dc78558 2c3ce08 c0bbb23e
 GC k 0 2
 GC k 4 3
 GC k 7 1
-GC F common/CMakeFiles/common.dir/shastraw.cpp.gcda 4233332a 35187d8c cfdc8315 81
+GC F common/CMakeFiles/common.dir/shastraw.cpp.gcda 4233332a 369902c3 cfdc8315 81
 GC f 68bf882b 1f5ea43 f3b49cda
 GC k 0 3
 GC k 7 1
@@ -6074,7 +6058,7 @@ GC k 7 1
 GC f 369e1da1 488d6ed4 e35fb905
 GC k 0 5
 GC k 7 1
-GC F common/CMakeFiles/common.dir/soscodec.cpp.gcda 4233332a 35187daf fffd3ddf 81
+GC F common/CMakeFiles/common.dir/soscodec.cpp.gcda 4233332a 369902c6 fffd3ddf 81
 GC f 7071e915 61b9ae61 55ebbaf6
 GC k 0 4
 GC k 7 1
@@ -6090,7 +6074,7 @@ GC k 7 1
 GC f d7df62e 4491da94 b8ea5793
 GC k 0 2
 GC k 7 1
-GC F common/CMakeFiles/common.dir/stamp.cpp.gcda 4233332a 35187db4 9fca2c7e e9
+GC F common/CMakeFiles/common.dir/stamp.cpp.gcda 4233332a 369902f2 9fca2c7e e9
 GC f 7b829a25 a2ab3577 4d2766f6
 GC k 0 3
 GC k 3 0
@@ -6117,8 +6101,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 369
-GC F common/CMakeFiles/common.dir/straw.cpp.gcda 4233332a 35187dc9 82649f13 91
+GC c 0 368
+GC F common/CMakeFiles/common.dir/straw.cpp.gcda 4233332a 369902f9 82649f13 91
 GC f 668fea66 d17bd29e 843ca442
 GC k 0 3
 GC c 0 26
@@ -6127,14 +6111,14 @@ GC k 4 3
 GC t 0 26
 GC v 21c84fc 26
 GC k 7 1
-GC c 0 bb
+GC c 0 b9
 GC f 3574794c cef47229 c7d9221b
 GC k 0 7
 GC c 3 16
 GC c 5 16
 GC k 4 3
 GC k 7 1
-GC c 0 b8
+GC c 0 b6
 GC f 137a31ad 79b968bc a54a7e1
 GC k 0 5
 GC k 4 3
@@ -6146,8 +6130,8 @@ GC c 1 34
 GC c 2 4a
 GC k 4 3
 GC k 7 1
-GC c 0 c0
-GC F common/CMakeFiles/common.dir/timer.cpp.gcda 4233332a 35187e13 1e0ee6d1 89
+GC c 0 be
+GC F common/CMakeFiles/common.dir/timer.cpp.gcda 4233332a 36990349 1e0ee6d1 89
 GC f 799b07fb fcd9597b c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -6194,13 +6178,13 @@ GC c 1 3
 GC c 2 3
 GC k 3 0
 GC k 7 1
-GC c 0 d2
+GC c 0 d0
 GC f 5851e824 c1ca70b8 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 3 0
 GC k 7 1
-GC c 0 52d
+GC c 0 52c
 GC f 7c8f3ad8 91901da8 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -6211,19 +6195,19 @@ GC k 3 0
 GC k 7 1
 GC f 2e31068 6c2c6dde f9e50e8f
 GC k 0 4
-GC c 0 36e3
+GC c 0 36dd
 GC c 1 f
-GC c 2 36e3
+GC c 2 36dd
 GC c 3 f
 GC k 3 0
 GC k 7 1
 GC c 0 63
 GC f 31bdf6ce c6084eab 5d22c86e
 GC k 0 4
-GC c 0 36ef
-GC c 1 36e9
-GC c 2 36e9
-GC c 3 36ef
+GC c 0 36e9
+GC c 1 36e3
+GC c 2 36e3
+GC c 3 36e9
 GC k 3 0
 GC k 7 1
 GC c 0 5
@@ -6233,22 +6217,22 @@ GC k 3 0
 GC k 7 1
 GC f 5fda9441 ada3a813 9c1224e2
 GC k 0 3
-GC c 0 108a8
-GC c 1 10884
-GC c 2 10884
+GC c 0 109d4
+GC c 1 109b0
+GC c 2 109b0
 GC k 3 0
 GC k 7 1
 GC c 0 7
 GC f 7bdb8c78 78cad634 af9acd42
 GC k 0 7
-GC c 1 13f6d
-GC c 3 13f6d
-GC c 4 13f6d
+GC c 1 14093
+GC c 3 14093
+GC c 4 14093
 GC k 3 12
-GC t 0 13f6d
-GC v 3c 13f6d
-GC t 1 13f6d
-GC v 10 13f6d
+GC t 0 14093
+GC v 3c 14093
+GC t 1 14093
+GC v 10 14093
 GC k 7 1
 GC c 0 6
 GC f 37cf591a 66374b90 2812f918
@@ -6265,12 +6249,12 @@ GC f 73ccb05c 9d5a3db1 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/timerdwn.cpp.gcda 4233332a 35187e17 5e65044e 81
+GC F common/CMakeFiles/common.dir/timerdwn.cpp.gcda 4233332a 36990356 5e65044e 81
 GC f 38e35c36 3c5d14ba f3b49cda
 GC k 0 3
-GC c 0 28df
-GC c 1 28df
-GC c 2 28df
+GC c 0 28d9
+GC c 1 28d9
+GC c 2 28d9
 GC k 7 1
 GC c 0 62
 GC f 65dad81f 693f0c4f c0bbb23e
@@ -6295,14 +6279,14 @@ GC c 0 7e
 GC f 2345f366 46070421 f3b49cda
 GC k 0 3
 GC k 7 1
-GC F common/CMakeFiles/common.dir/tobuff.cpp.gcda 4233332a 35187e51 4e5e5dc6 e9
+GC F common/CMakeFiles/common.dir/tobuff.cpp.gcda 4233332a 36990381 4e5e5dc6 e9
 GC f 4d64a420 6ce790a3 7c561b19
 GC k 0 13
 GC k 3 3
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC F common/CMakeFiles/common.dir/toggle.cpp.gcda 4233332a 35187e96 3608bd3a 91
+GC F common/CMakeFiles/common.dir/toggle.cpp.gcda 4233332a 369903d9 3608bd3a 91
 GC f 6a2e7b91 4c145e89 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -6342,7 +6326,7 @@ GC f 13e83f10 8db5c64e a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/vector.cpp.gcda 4233332a 35187e99 b748b7ea f9
+GC F common/CMakeFiles/common.dir/vector.cpp.gcda 4233332a 36990405 b748b7ea f9
 GC f 6b9c59ac 8e67d945 c56f9fa4
 GC k 0 3
 GC k 3 0
@@ -6412,7 +6396,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 11a
+GC c 0 118
 GC f 6086e395 aa9a3e62 154aaef7
 GC k 0 2
 GC k 3 3
@@ -6441,9 +6425,9 @@ GC k 5 2
 GC c 0 57bfc8
 GC c 1 b51
 GC k 6 1
-GC c 0 1c13fffd0
+GC c 0 1c127ffd0
 GC k 7 1
-GC c 0 1ed
+GC c 0 1eb
 GC f 51bf154a 79152065 f3b49cda
 GC k 0 3
 GC c 0 90
@@ -6454,7 +6438,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 119
+GC c 0 117
 GC f 16fecb0b d41334f 915faff0
 GC k 0 11
 GC c 0 33
@@ -6470,7 +6454,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 11d
+GC c 0 11b
 GC f 6a0e39c3 b1f5c7ab b4418b8d
 GC k 0 7
 GC k 3 0
@@ -6502,7 +6486,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 47
-GC F common/CMakeFiles/common.dir/winasm.cpp.gcda 4233332a 35187ee2 3e722289 e9
+GC F common/CMakeFiles/common.dir/winasm.cpp.gcda 4233332a 36990438 3e722289 e9
 GC f 542a4bdb 27c3992c c4ae08b5
 GC k 0 5
 GC k 3 9
@@ -6533,7 +6517,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/windows.cpp.gcda 4233332a 35187f96 2799b480 99
+GC F common/CMakeFiles/common.dir/windows.cpp.gcda 4233332a 369904c7 2799b480 99
 GC f 235f9921 424cdf63 b08cc5fe
 GC k 0 5
 GC k 3 0
@@ -6599,7 +6583,7 @@ GC k 0 5
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/winstub.cpp.gcda 4233332a 35187fbb c288d316 81
+GC F common/CMakeFiles/common.dir/winstub.cpp.gcda 4233332a 3699050b c288d316 81
 GC f 35d9db88 188d3a77 901feeba
 GC k 0 28
 GC c 1 3
@@ -6615,7 +6599,7 @@ GC c 19 3
 GC c 1a 3
 GC c 1b 3
 GC k 7 1
-GC c 0 1c0
+GC c 0 1be
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -6634,7 +6618,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F common/CMakeFiles/common.dir/wsa.cpp.gcda 4233332a 35187fbb 1bb1dbad e9
+GC F common/CMakeFiles/common.dir/wsa.cpp.gcda 4233332a 36990520 1bb1dbad e9
 GC f 6f80f852 241ee1f9 a273fa4d
 GC k 0 19
 GC k 3 0
@@ -6749,7 +6733,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/xordelta.cpp.gcda 4233332a 35187fdc 2d4af525 81
+GC F common/CMakeFiles/common.dir/xordelta.cpp.gcda 4233332a 36990538 2d4af525 81
 GC f f3f866a 4268e590 98573db1
 GC k 0 16
 GC k 7 1
@@ -6773,8 +6757,8 @@ GC c 7 42f
 GC c 8 1650
 GC c 9 222ea
 GC k 7 1
-GC c 0 25f
-GC F common/CMakeFiles/common.dir/xpipe.cpp.gcda 4233332a 3518804a 5551eb34 f9
+GC c 0 25d
+GC F common/CMakeFiles/common.dir/xpipe.cpp.gcda 4233332a 36990555 5551eb34 f9
 GC f 7a93750d 4e4da22a 81f343b9
 GC k 0 4
 GC k 3 0
@@ -6810,7 +6794,7 @@ GC v 39093eec 1b
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 107
+GC c 0 105
 GC f 22b15b14 9a7f2f92 7f20c6bc
 GC k 0 5
 GC c 0 6
@@ -6827,7 +6811,7 @@ GC v 38396b9f 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 110
+GC c 0 10e
 GC f 56f69a11 f67bbc67 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -6844,7 +6828,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 112
+GC c 0 110
 GC f 561cdda0 a51ce154 ff4dab28
 GC k 0 6
 GC k 3 3
@@ -6859,7 +6843,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/common.dir/xstraw.cpp.gcda 4233332a 3518805d 94652c84 f9
+GC F common/CMakeFiles/common.dir/xstraw.cpp.gcda 4233332a 36990581 94652c84 f9
 GC f 686116b1 c74ec2d9 81f343b9
 GC k 0 4
 GC k 3 0
@@ -6895,7 +6879,7 @@ GC v 1eff752a 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 c1
+GC c 0 bf
 GC f 21c84fc 6d4510cb feebce12
 GC k 0 11
 GC c 2 4a
@@ -6921,7 +6905,7 @@ GC v 47f8f4f5 3b
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 bc
+GC c 0 ba
 GC f 4cab6a8c 6574b9f8 ff4dab28
 GC k 0 6
 GC k 3 3
@@ -6929,7 +6913,7 @@ GC k 4 0
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/cxxrt.cpp.gcda 4233332a 35188a90 256e7bf e9
+GC F common/CMakeFiles/commonv.dir/cxxrt.cpp.gcda 4233332a 36991058 256e7bf e9
 GC f 683d131 53c6e3d8 a43083b8
 GC k 0 1
 GC k 3 0
@@ -6938,8 +6922,8 @@ GC k 6 0
 GC k 7 1
 GC f 7ea7e5db bfd1ead9 2cd0c15
 GC k 0 3
-GC c 1 1a10
-GC c 2 1a10
+GC c 1 1a0d
+GC c 2 1a0d
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7103,8 +7087,8 @@ GC k 6 0
 GC k 7 1
 GC f 23f188a4 77962f36 2cd0c15
 GC k 0 3
-GC c 1 15
-GC c 2 15
+GC c 1 f
+GC c 2 f
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7199,14 +7183,14 @@ GC k 6 0
 GC k 7 1
 GC f 170b3619 52df81d3 417656e2
 GC k 0 4
-GC c 0 c
-GC c 1 75
+GC c 0 6
+GC c 1 69
 GC c 3 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ad
+GC c 0 ab
 GC f 5a0d2d06 67d49ae7 a43083b8
 GC k 0 1
 GC k 3 0
@@ -7293,17 +7277,17 @@ GC k 6 1
 GC k 7 1
 GC f 198a712b c30f5ccc a280ecff
 GC k 0 7
-GC c 0 30
-GC c 2 d05
+GC c 0 2a
+GC c 2 cfc
 GC c 3 18
-GC c 4 c
-GC c 5 cf9
+GC c 4 9
+GC c 5 cf3
 GC c 6 18
 GC k 3 3
-GC t 0 cf9
+GC t 0 cf3
 GC v b 80d
 GC v c 186
-GC v a 162
+GC v a 15c
 GC v 8 cc
 GC v 9 a5
 GC v 7 6c
@@ -7311,31 +7295,30 @@ GC v 3 12
 GC v 6 12
 GC v 5 3
 GC k 5 2
-GC c 0 887d
-GC c 1 cf9
+GC c 0 8841
+GC c 1 cf3
 GC k 6 1
-GC c 0 1dffffffd
+GC c 0 1dfbffffd
 GC k 7 1
 GC c 0 a1
 GC f 35b0a886 534b417d c29cb14
 GC k 0 15
-GC c 1 15
-GC c 4 6
-GC c 5 6
-GC c 6 15
-GC c c 15
+GC c 1 12
+GC c 4 3
+GC c 5 3
+GC c 6 12
+GC c c 12
 GC k 3 6
-GC t 1 15
+GC t 1 12
 GC v 7 9
 GC v 5 3
 GC v 9 3
 GC v f 3
-GC v a 3
 GC k 5 4
-GC c 2 b4
-GC c 3 15
+GC c 2 96
+GC c 3 12
 GC k 6 2
-GC c 1 1d9f3fff4
+GC c 1 1d9f39ff4
 GC k 7 1
 GC c 0 c
 GC f 79c5663 14914ee8 d135ae53
@@ -7526,8 +7509,8 @@ GC k 6 0
 GC k 7 1
 GC f 522feaee b2bfb02e c0bbb23e
 GC k 0 2
-GC c 0 15
-GC c 1 15
+GC c 0 12
+GC c 1 12
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7564,7 +7547,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 15b
+GC c 0 159
 GC f 539a2d25 e3087589 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -7579,8 +7562,8 @@ GC k 6 0
 GC k 7 1
 GC f 282b258b 6e626bfe 2cd0c15
 GC k 0 3
-GC c 1 d05
-GC c 2 d05
+GC c 1 d02
+GC c 2 d02
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7588,8 +7571,8 @@ GC k 7 1
 GC c 0 a0
 GC f 375db781 92d3a52e 2cd0c15
 GC k 0 3
-GC c 1 18
-GC c 2 18
+GC c 1 12
+GC c 2 12
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7699,7 +7682,7 @@ GC k 6 1
 GC k 7 1
 GC f 5f3d5cb 14a3ebf9 705271ed
 GC k 0 8
-GC c 0 9
+GC c 0 6
 GC k 3 3
 GC k 5 2
 GC k 6 1
@@ -7844,7 +7827,7 @@ GC k 5 2
 GC c 0 f9
 GC c 1 1b
 GC k 6 1
-GC c 0 1d9f267b8
+GC c 0 1d9f3bfe8
 GC k 7 1
 GC c 0 96
 GC f 2faf5f4b 504dbf9c c0bbb23e
@@ -7867,13 +7850,10 @@ GC k 6 0
 GC k 7 1
 GC f 25c88d9f 9b63bb2c c0bbb23e
 GC k 0 2
-GC c 0 3
-GC c 1 3
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 4e5
 GC f 373fca17 aeb030f4 629c69a
 GC k 0 3
 GC k 3 3
@@ -7895,7 +7875,7 @@ GC k 7 1
 GC f 3606544a 445c7c1f 629c69a
 GC k 0 3
 GC c 0 21
-GC c 1 19e3
+GC c 1 19e0
 GC k 3 3
 GC t 0 21
 GC v c 15
@@ -7906,7 +7886,7 @@ GC k 5 2
 GC c 0 189
 GC c 1 21
 GC k 6 1
-GC c 0 1d8d22f28
+GC c 0 1d8922fe8
 GC k 7 1
 GC c 0 9f
 GC f 69cf646a 4808ad68 c0bbb23e
@@ -7917,13 +7897,13 @@ GC k 6 0
 GC k 7 1
 GC f 4859060e 42cc7360 2cd0c15
 GC k 0 3
-GC c 1 f88
-GC c 2 f88
+GC c 1 f8b
+GC c 2 f8b
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ac
+GC c 0 a8
 GC f 5a0ad376 2fa26bc2 5bc49311
 GC k 0 4
 GC k 3 0
@@ -7938,8 +7918,8 @@ GC k 6 0
 GC k 7 1
 GC f 15c550a0 a47adf97 2cd0c15
 GC k 0 3
-GC c 1 15
-GC c 2 15
+GC c 1 f
+GC c 2 f
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -7986,26 +7966,26 @@ GC c 8 18
 GC c b cff
 GC k 3 9
 GC t 0 cff
-GC v 2c 46d
+GC v 26 46d
 GC v 14 461
-GC v 2f 419
-GC v b 12
+GC v 29 419
+GC v b f
 GC v a 3
-GC v 12 3
+GC v c 3
+GC v 1c 3
 GC t 1 18
 GC v b c
-GC v a 3
-GC v 7 3
+GC v a 6
 GC v 10 3
 GC v 9 3
 GC k 5 6
-GC c 0 1dc01
+GC c 0 1a8fe
 GC c 1 cff
-GC c 2 102
+GC c 2 10b
 GC c 3 18
 GC k 6 3
-GC c 0 1c7ffffd0
-GC c 1 1c11a33f1
+GC c 0 1c73fffd0
+GC c 1 1c11ad3fd
 GC k 7 1
 GC c 0 a5
 GC f 2ecc8fbe 13fb07a3 cd401c83
@@ -8124,7 +8104,7 @@ GC k 5 2
 GC c 0 3c00
 GC c 1 f
 GC k 6 1
-GC c 0 1c11a3fd0
+GC c 0 1c11b87d0
 GC k 7 1
 GC c 0 92
 GC f 51d21696 76874ede c0bbb23e
@@ -8135,9 +8115,9 @@ GC k 6 0
 GC k 7 1
 GC f 743d34b3 b72f1b4e 6e61691f
 GC k 0 4
-GC c 0 1cde
-GC c 1 1a10
-GC c 3 1a10
+GC c 0 1cd5
+GC c 1 1a0d
+GC c 3 1a0d
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -8145,10 +8125,10 @@ GC k 7 1
 GC c 0 97
 GC f 3c804eda 7e9cf1dd d889e4c5
 GC k 0 6
-GC c 1 1a10
-GC c 2 1a10
+GC c 1 1a0d
+GC c 2 1a0d
 GC c 3 cff
-GC c 5 1a10
+GC c 5 1a0d
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -8227,10 +8207,10 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 bf
+GC c 0 bd
 GC f 40fcc00 536d1934 a43083b8
 GC k 0 1
-GC c 0 32fc
+GC c 0 32f9
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -8247,21 +8227,21 @@ GC k 7 1
 GC c 0 38
 GC f 34a8c6e3 abc981dd 9b7096fe
 GC k 0 3
-GC c 1 3912
+GC c 1 390f
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 39
-GC F common/CMakeFiles/commonv.dir/framelimit.cpp.gcda 4233332a 35188a20 430ffe37 81
+GC F common/CMakeFiles/commonv.dir/framelimit.cpp.gcda 4233332a 36990ff4 430ffe37 81
 GC f 64fa801d 28a96822 eca4cc7
 GC k 0 7
 GC c 0 e90
 GC c 1 e90
 GC c 4 e90
 GC k 7 1
-GC c 0 1be
-GC F common/CMakeFiles/commonv.dir/gbuffer.cpp.gcda 4233332a 35188a20 b051c80b 91
+GC c 0 1bc
+GC F common/CMakeFiles/commonv.dir/gbuffer.cpp.gcda 4233332a 36990ff7 b051c80b 91
 GC f 351365f9 1c0065e 70eef87e
 GC k 0 22
 GC k 4 0
@@ -8274,7 +8254,7 @@ GC k 4 3
 GC t 0 6
 GC v b0607c8 6
 GC k 7 1
-GC c 0 f5
+GC c 0 f3
 GC f 317d0071 e0a9a1da 8dc40f1d
 GC k 0 10
 GC c 0 3
@@ -8287,7 +8267,7 @@ GC k 4 3
 GC t 0 4d1
 GC v bbedb8e 4d1
 GC k 7 1
-GC c 0 156
+GC c 0 154
 GC f 19984e40 74949bd0 54361868
 GC k 0 11
 GC c 0 3
@@ -8307,7 +8287,7 @@ GC v 66fb5bec 4d1
 GC t 2 4d1
 GC v 40bd7020 4d1
 GC k 7 1
-GC c 0 14d
+GC c 0 14b
 GC f ef4ebc2 5957ba93 81f343b9
 GC k 0 4
 GC c 0 15
@@ -8316,7 +8296,7 @@ GC c 2 15
 GC c 3 15
 GC k 4 0
 GC k 7 1
-GC c 0 1ca
+GC c 0 1c8
 GC f 50bcd0a4 2dd76875 81f343b9
 GC k 0 4
 GC k 4 0
@@ -8338,7 +8318,7 @@ GC c 2 3
 GC c 3 3
 GC k 4 0
 GC k 7 1
-GC c 0 1c1
+GC c 0 1bf
 GC f 7517c0d6 68e25712 f3b49cda
 GC k 0 3
 GC c 0 9
@@ -8357,7 +8337,7 @@ GC k 4 3
 GC t 0 6
 GC v 732a8406 6
 GC k 7 1
-GC c 0 1cb
+GC c 0 1c9
 GC f 662531fc 6be1fd77 4cd56b9b
 GC k 0 6
 GC c 0 6
@@ -8375,7 +8355,7 @@ GC k 4 3
 GC t 0 3
 GC v 468fff78 3
 GC k 7 1
-GC c 0 f9
+GC c 0 f7
 GC f 6e056f25 4a57b28f f3b49cda
 GC k 0 3
 GC c 0 6
@@ -8383,8 +8363,8 @@ GC c 1 6
 GC c 2 6
 GC k 4 0
 GC k 7 1
-GC c 0 f1
-GC F common/CMakeFiles/commonv.dir/interpal.cpp.gcda 4233332a 35188a22 c7d686c8 e9
+GC c 0 ef
+GC F common/CMakeFiles/commonv.dir/interpal.cpp.gcda 4233332a 36990ff5 c7d686c8 e9
 GC f 7357116a 611a4487 f821af9a
 GC k 0 40
 GC k 3 3
@@ -8451,8 +8431,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/shaderemu.cpp.gcda 4233332a 35188a22 4f627f18 e9
-GC f 7d6eb679 26d47914 c0bbb23e
+GC F common/CMakeFiles/commonv.dir/shaderemu.cpp.gcda 4233332a 36990ff8 b26832aa e9
+GC f 7d6eb679 ddbdc25d c0bbb23e
 GC k 0 2
 GC c 0 3
 GC c 1 3
@@ -8461,7 +8441,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 18
-GC f 6389de48 dd6b2dac c0bbb23e
+GC f 6389de48 30ef904b c0bbb23e
 GC k 0 2
 GC k 3 0
 GC k 5 0
@@ -8480,7 +8460,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 527
+GC c 0 526
 GC f 33ed660f 449a7825 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -8493,7 +8473,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f ebd2ec0 f4eb7756 75ff8cb6
+GC f ebd2ec0 77471386 75ff8cb6
 GC k 0 4
 GC c 0 3
 GC c 1 3
@@ -8502,14 +8482,14 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d7
-GC f 6aef6f06 10d95407 a884c4c5
+GC c 0 d5
+GC f 6aef6f06 9e8b65bf a884c4c5
 GC k 0 9
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 65a570e7 2190c8e5 8f3e0155
+GC f 65a570e7 d231a629 8f3e0155
 GC k 0 27
 GC c 0 3
 GC c 1 3
@@ -8525,12 +8505,24 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 122
-GC f 5718254c fb5cd92c 1c39de59
-GC k 0 5
+GC c 0 120
+GC f 5718254c 9a24eb11 13ebff24
+GC k 0 7
 GC c 0 e10
-GC c 2 e10
+GC c 1 e10
 GC c 3 e10
+GC c 5 e10
+GC k 3 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC c 0 3b2
+GC f a8f6ad4 3db2271b 5e483801
+GC k 0 16
+GC c 0 3
+GC c 2 3
+GC c 3 3
+GC c a e10
 GC k 3 0
 GC k 5 0
 GC k 6 0
@@ -8543,7 +8535,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 123
+GC c 0 121
 GC f 2244fa60 6b347483 b3291660
 GC k 0 4
 GC k 3 0
@@ -8559,7 +8551,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f3
+GC c 0 f1
 GC f 135cb82 5589069c 843ca442
 GC k 0 3
 GC c 0 6
@@ -8569,7 +8561,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f2
+GC c 0 f0
 GC f 1f2c7a33 693206f9 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -8602,7 +8594,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1bf
+GC c 0 1bd
 GC f 77e336c0 ee4ba315 b1a11a4b
 GC k 0 9
 GC c 0 6
@@ -8619,7 +8611,7 @@ GC c 1 255
 GC k 6 1
 GC c 0 1bf0bff40
 GC k 7 1
-GC c 0 366
+GC c 0 364
 GC f 232fe67f 89d5074f 6f0f41aa
 GC k 0 21
 GC c 0 d48
@@ -8641,9 +8633,9 @@ GC k 5 2
 GC c 0 ba400
 GC c 1 950
 GC k 6 1
-GC c 0 94ffffc0
+GC c 0 9503ffc0
 GC k 7 1
-GC c 0 1d1
+GC c 0 1cf
 GC f bbedb8e 1c3f530a a43083b8
 GC k 0 1
 GC c 0 4d1
@@ -8651,7 +8643,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 157
+GC c 0 155
 GC f 76c61449 42f98c73 f5218490
 GC k 0 7
 GC c 0 4d1
@@ -8664,7 +8656,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 14f
+GC c 0 14d
 GC f 766320e5 d7d3cb6f a43083b8
 GC k 0 1
 GC c 0 6
@@ -8672,7 +8664,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 364
+GC c 0 362
 GC f 468fff78 1ffcd439 a43083b8
 GC k 0 1
 GC c 0 3
@@ -8680,7 +8672,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 fa
+GC c 0 f8
 GC f b0607c8 a1eac90a a43083b8
 GC k 0 1
 GC c 0 6
@@ -8688,7 +8680,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f6
+GC c 0 f4
 GC f 40bd7020 77712bd2 a43083b8
 GC k 0 1
 GC c 0 4d1
@@ -8696,7 +8688,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 152
+GC c 0 150
 GC f 66fb5bec 245e4d7e a43083b8
 GC k 0 1
 GC c 0 4d1
@@ -8704,7 +8696,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 151
+GC c 0 14f
 GC f 372f54d0 ddb7317a 5a175b23
 GC k 0 5
 GC c 0 24
@@ -8717,9 +8709,9 @@ GC k 5 2
 GC c 0 9c400
 GC c 1 a
 GC k 6 1
-GC c 0 1bf038000
+GC c 0 1bf051000
 GC k 7 1
-GC c 0 150
+GC c 0 14e
 GC f 732a8406 1145b499 f3b49cda
 GC k 0 3
 GC c 0 6
@@ -8729,7 +8721,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 4f4
+GC c 0 4f3
 GC f 4f30acdf ad5f9c40 9e0a5150
 GC k 0 6
 GC c 1 3
@@ -8741,7 +8733,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 4f5
+GC c 0 4f4
 GC f 519e1775 880d73ba fdd1e6fb
 GC k 0 11
 GC c 0 3
@@ -8758,27 +8750,27 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f4
+GC c 0 f2
 GC f 204346a1 317f688 eea9eab4
 GC k 0 13
-GC c 0 a47
-GC c 1 a44
+GC c 0 a2c
+GC c 1 a29
 GC c 2 3
 GC c 3 3
 GC c 4 240
-GC c 5 3d980
-GC c 6 3a85d
-GC c 7 39f36
+GC c 5 3cf60
+GC c 6 39e3a
+GC c 7 3951a
 GC c 8 240
-GC c 9 c1b
+GC c 9 c13
 GC c a 6ab9
 GC c b d572
-GC c c a47
+GC c c a2c
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 13b
+GC c 0 139
 GC f 748305e6 b0f84d31 a43083b8
 GC k 0 1
 GC k 3 0
@@ -8787,12 +8779,12 @@ GC k 6 0
 GC k 7 1
 GC f 4a467852 8d48f011 a43083b8
 GC k 0 1
-GC c 0 9bd
+GC c 0 9a2
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 165
+GC c 0 163
 GC f 32543e2e 5c64bf06 a43083b8
 GC k 0 1
 GC c 0 3
@@ -8800,7 +8792,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f8
+GC c 0 f6
 GC f 744e011f 6d843c72 a43083b8
 GC k 0 1
 GC c 0 3
@@ -8808,7 +8800,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f7
+GC c 0 f5
 GC f 24c6be69 d563983f c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -8817,7 +8809,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 145
+GC c 0 143
 GC f 34fd84f7 96b34d9e c0bbb23e
 GC k 0 2
 GC c 0 3868
@@ -8826,7 +8818,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 146
+GC c 0 144
 GC f 73e3c08d 51423cf7 a43083b8
 GC k 0 1
 GC k 3 0
@@ -8840,7 +8832,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a4
+GC c 0 3a3
 GC f 168557fb c37ab170 a43083b8
 GC k 0 1
 GC k 3 0
@@ -8873,7 +8865,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 f0
+GC c 0 ee
 GC f 53cdbe9d 948c53a a43083b8
 GC k 0 1
 GC k 3 0
@@ -8898,7 +8890,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/soundio_shaderemu.cpp.gcda 4233332a 35188a2f fff6f22a 8f
+GC F common/CMakeFiles/commonv.dir/soundio_shaderemu.cpp.gcda 4233332a 36991008 fff6f22a 8f
 GC f 1af1d16d fbcda753 a43083b8
 GC k 0 1
 GC k 1 0
@@ -8930,7 +8922,7 @@ GC k 1 0
 GC k 2 0
 GC k 3 0
 GC k 7 1
-GC c 0 349
+GC c 0 347
 GC f 14a5319a 3efce927 154aaef7
 GC k 0 2
 GC c 0 9
@@ -8938,7 +8930,7 @@ GC k 1 0
 GC k 2 0
 GC k 3 0
 GC k 7 1
-GC c 0 181
+GC c 0 17f
 GC f 514f246 a6b613f0 a43083b8
 GC k 0 1
 GC k 1 0
@@ -9017,7 +9009,7 @@ GC k 1 0
 GC k 2 0
 GC k 3 0
 GC k 7 1
-GC c 0 ed
+GC c 0 eb
 GC f 4318dda8 b6c98e11 a43083b8
 GC k 0 1
 GC k 1 0
@@ -9050,8 +9042,8 @@ GC k 1 0
 GC k 2 0
 GC k 3 0
 GC k 7 1
-GC c 0 ee
-GC F common/CMakeFiles/commonv.dir/unvqbuff.cpp.gcda 4233332a 35188a20 b3ebdbb8 81
+GC c 0 ec
+GC F common/CMakeFiles/commonv.dir/unvqbuff.cpp.gcda 4233332a 36990ff4 b3ebdbb8 81
 GC f 290074f3 189dd33c a43083b8
 GC k 0 1
 GC k 7 1
@@ -9061,7 +9053,7 @@ GC k 7 1
 GC f 3677ff3f a6be13af 9ee47063
 GC k 0 4
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqaaudio_null.cpp.gcda 4233332a 35188a23 61d2ab0d 81
+GC F common/CMakeFiles/commonv.dir/vqaaudio_null.cpp.gcda 4233332a 36990ff6 61d2ab0d 81
 GC f 33e84532 1e3d3144 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -9114,16 +9106,16 @@ GC k 7 1
 GC f 73ccb05c 9d5a3db1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqaconfig.cpp.gcda 4233332a 35188a23 3110f2a1 81
+GC F common/CMakeFiles/commonv.dir/vqaconfig.cpp.gcda 4233332a 36990ff5 3110f2a1 81
 GC f 1b72af11 89467cf a43083b8
 GC k 0 1
 GC c 0 9
 GC k 7 1
-GC c 0 163
+GC c 0 161
 GC f 49aa3b7f 91d414e8 a43083b8
 GC k 0 1
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqadrawer.cpp.gcda 4233332a 35188a20 7cc7693c f9
+GC F common/CMakeFiles/commonv.dir/vqadrawer.cpp.gcda 4233332a 36990ff5 7cc7693c f9
 GC f 5ae0d83d a015a732 8b865371
 GC k 0 7
 GC k 3 0
@@ -9194,7 +9186,7 @@ GC k 4 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqaloader.cpp.gcda 4233332a 35188a21 bfb1398a f9
+GC F common/CMakeFiles/commonv.dir/vqaloader.cpp.gcda 4233332a 36990ff5 bfb1398a f9
 GC f 597aa3a2 f6c7af17 77faf485
 GC k 0 6
 GC k 3 0
@@ -9248,7 +9240,7 @@ GC v 2342ac79 6
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC c 0 34c
+GC c 0 34a
 GC f 61da3956 24eb5abe adca6c7
 GC k 0 49
 GC k 3 3
@@ -9361,7 +9353,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqapalette.cpp.gcda 4233332a 35188a20 61f4a71f 81
+GC F common/CMakeFiles/commonv.dir/vqapalette.cpp.gcda 4233332a 36990ff6 61f4a71f 81
 GC f 376c555f 18e53f82 9c1224e2
 GC k 0 3
 GC k 7 1
@@ -9371,7 +9363,7 @@ GC k 7 1
 GC f 62a057b3 c12fd94d a43083b8
 GC k 0 1
 GC k 7 1
-GC F common/CMakeFiles/commonv.dir/vqatask.cpp.gcda 4233332a 35188a24 92129c59 99
+GC F common/CMakeFiles/commonv.dir/vqatask.cpp.gcda 4233332a 36990ff6 92129c59 99
 GC f 62e3099d 755bd908 9c1224e2
 GC k 0 3
 GC k 3 0
@@ -9428,7 +9420,7 @@ GC c 0 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 34b
+GC c 0 349
 GC f 1b95d1b2 b3d802e8 a43083b8
 GC k 0 1
 GC k 3 0
@@ -9440,15 +9432,15 @@ GC c 0 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 34f
+GC c 0 34d
 GC f 241ba755 ca53b5c9 154aaef7
 GC k 0 2
 GC c 0 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 34a
-GC F common/CMakeFiles/commonv.dir/wwkeyboard.cpp.gcda 4233332a 35188a22 d3389a45 91
+GC c 0 348
+GC F common/CMakeFiles/commonv.dir/wwkeyboard.cpp.gcda 4233332a 36990ff7 d3389a45 91
 GC f 23c828fc cbf48010 1cb85ee6
 GC k 0 3
 GC k 4 0
@@ -9464,7 +9456,7 @@ GC v 65a570e7 12
 GC t 1 12
 GC v 65a570e7 12
 GC k 7 1
-GC c 0 121
+GC c 0 11f
 GC f 402aad9e ac663b5a a43083b8
 GC k 0 1
 GC k 4 0
@@ -9494,14 +9486,14 @@ GC k 0 2
 GC c 0 1cfb
 GC k 4 0
 GC k 7 1
-GC c 0 124
+GC c 0 122
 GC f a4adfd9 9872bd7a 57efc0ee
 GC k 0 7
 GC c 1 6
 GC c 5 6
 GC k 4 0
 GC k 7 1
-GC c 0 1d4
+GC c 0 1d2
 GC f 7d970934 d918d890 af71a78b
 GC k 0 2
 GC k 4 0
@@ -9516,7 +9508,7 @@ GC c 0 1c20
 GC c 1 1c20
 GC k 4 0
 GC k 7 1
-GC c 0 3af
+GC c 0 3ae
 GC f 3d80a850 bbd30676 8f8f2882
 GC k 0 12
 GC k 4 0
@@ -9539,7 +9531,7 @@ GC c 13 6
 GC c 14 6
 GC k 4 0
 GC k 7 1
-GC c 0 1d3
+GC c 0 1d1
 GC f 445a576d ab693abc 649635d3
 GC k 0 3
 GC k 4 0
@@ -9555,7 +9547,7 @@ GC k 4 3
 GC t 0 b1
 GC v 65a570e7 b1
 GC k 7 1
-GC c 0 1d2
+GC c 0 1d0
 GC f 6c11dc37 c7ffe2b2 8485a30b
 GC k 0 3
 GC c 0 1c23
@@ -9564,7 +9556,7 @@ GC k 4 3
 GC t 0 1c23
 GC v 65a570e7 1c23
 GC k 7 1
-GC c 0 148
+GC c 0 146
 GC f 70e7cae2 aa3bd02e a8a45c2d
 GC k 0 4
 GC k 4 0
@@ -9579,7 +9571,7 @@ GC k 4 3
 GC t 0 3
 GC v 65a570e7 3
 GC k 7 1
-GC c 0 1d5
+GC c 0 1d3
 GC f 6d79eaeb a10026b6 c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -9593,8 +9585,8 @@ GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 d8
-GC F common/CMakeFiles/commonv.dir/wwmouse.cpp.gcda 4233332a 35188a27 7970d515 e9
+GC c 0 d6
+GC F common/CMakeFiles/commonv.dir/wwmouse.cpp.gcda 4233332a 36990ff7 7970d515 e9
 GC f 5d956461 1749fa4f 649635d3
 GC k 0 3
 GC c 1 1c20
@@ -9603,7 +9595,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3ac
+GC c 0 3ab
 GC f 5c4dc8e6 6b7d018 649635d3
 GC k 0 3
 GC c 1 1c20
@@ -9612,7 +9604,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3ab
+GC c 0 3aa
 GC f 6cea6920 bb402de8 2d8183ea
 GC k 0 3
 GC c 1 6
@@ -9621,7 +9613,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 13d
+GC c 0 13b
 GC f 70331652 3ec4535b af71a78b
 GC k 0 2
 GC c 1 1cac
@@ -9629,7 +9621,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 147
+GC c 0 145
 GC f 983c9a5 1e6beff2 2d8183ea
 GC k 0 3
 GC k 3 0
@@ -9651,7 +9643,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 193
+GC c 0 191
 GC f 46905e33 c053a9a9 af71a78b
 GC k 0 2
 GC c 1 1f
@@ -9659,7 +9651,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 164
+GC c 0 162
 GC f e189b29 7fb94f4d bd61a6ef
 GC k 0 17
 GC c 0 3
@@ -9678,7 +9670,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 13f
+GC c 0 13d
 GC f 7d2c4876 50704555 f9d499ad
 GC k 0 14
 GC k 3 0
@@ -9722,7 +9714,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 352
+GC c 0 350
 GC f 77a031ef 851196cb a43083b8
 GC k 0 1
 GC c 0 d39
@@ -9730,7 +9722,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a1
+GC c 0 3a0
 GC f 76cfacc9 b396359 8e453fb
 GC k 0 6
 GC k 3 0
@@ -9777,7 +9769,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 13e
+GC c 0 13c
 GC f f023425 82e8f323 a43083b8
 GC k 0 1
 GC k 3 0
@@ -9803,7 +9795,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 153
+GC c 0 151
 GC f 2c135378 629ca502 a43083b8
 GC k 0 1
 GC c 0 9a2
@@ -9811,7 +9803,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 14e
+GC c 0 14c
 GC f 27bd4622 bae1d7f8 b08cc5fe
 GC k 0 5
 GC k 3 0
@@ -9828,8 +9820,8 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 fc
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/aadata.cpp.gcda 4233332a 35189f1d 78957b1b 99
+GC c 0 fa
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/aadata.cpp.gcda 4233332a 36992666 78957b1b 99
 GC f 550f2127 1978105 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -9866,7 +9858,7 @@ GC c 0 f
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 4e6
+GC c 0 4e5
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC c 0 97d
@@ -9881,18 +9873,18 @@ GC c b 18d3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 de
+GC c 0 dc
 GC f 206cee41 7c26bfcb 47751c23
 GC k 0 6
 GC c 1 97d
-GC c 2 5854
-GC c 3 5854
+GC c 2 5842
+GC c 3 5842
 GC c 4 97d
 GC c 5 97d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 dd
+GC c 0 db
 GC f 32d9b208 f6925b50 a43083b8
 GC k 0 1
 GC k 3 0
@@ -9911,7 +9903,7 @@ GC c 2 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 263
+GC c 0 261
 GC f 4b8854c8 5dadad61 a43083b8
 GC k 0 1
 GC k 3 0
@@ -9964,7 +9956,7 @@ GC c 7 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 18f
+GC c 0 18d
 GC f 3bcf82b 3af978be c842fd22
 GC k 0 5
 GC c 0 2d
@@ -9973,7 +9965,7 @@ GC c 4 2d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 21e
+GC c 0 21c
 GC f 3d7ebe52 44ba5803 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -9981,20 +9973,20 @@ GC k 4 0
 GC k 7 1
 GC f 794d5961 f39d0070 4462b650
 GC k 0 3
-GC c 0 4d7b
-GC c 1 5101
-GC c 2 4b3e
+GC c 0 4d6c
+GC c 1 5110
+GC c 2 4b4d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 135
+GC c 0 133
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC c 0 1138
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 b1
+GC c 0 af
 GC f 76af03bf 52e54579 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -10008,7 +10000,7 @@ GC c 2 8d4
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 b3
+GC c 0 b1
 GC f 1c6cf16d 2a1e2c42 a43083b8
 GC k 0 1
 GC c 0 1547
@@ -10026,7 +10018,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/abstract.cpp.gcda 4233332a 35189f1e db02736d 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/abstract.cpp.gcda 4233332a 36992666 db02736d 91
 GC f 3234ed75 e9805564 c0bbb23e
 GC k 0 2
 GC c 0 6b4
@@ -10042,7 +10034,7 @@ GC v 3801a3b3 9
 GC v 1aab4f18 5
 GC v 1878f636 2
 GC k 7 1
-GC c 0 32d
+GC c 0 32b
 GC f 7379ce31 a48ffb64 a43083b8
 GC k 0 1
 GC k 4 0
@@ -10056,7 +10048,7 @@ GC k 0 1
 GC c 0 3fa
 GC k 4 0
 GC k 7 1
-GC c 0 2a5
+GC c 0 2a3
 GC f 7fd59c64 6559c991 a43083b8
 GC k 0 1
 GC k 4 0
@@ -10078,7 +10070,7 @@ GC k 4 3
 GC t 0 5e0c
 GC v 3f8b69c9 5e0c
 GC k 7 1
-GC c 0 2e4
+GC c 0 2e2
 GC f 73e044a8 b0cbecd6 b6b2669e
 GC k 0 4
 GC c 0 43
@@ -10100,7 +10092,7 @@ GC c 2 32b
 GC c 3 32b
 GC k 4 0
 GC k 7 1
-GC c 0 32e
+GC c 0 32c
 GC f 737da540 32c97bb 843ca442
 GC k 0 3
 GC k 4 0
@@ -10198,7 +10190,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/adata.cpp.gcda 4233332a 35189f1d 9ea19e23 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/adata.cpp.gcda 4233332a 36992669 9ea19e23 81
 GC f dc7e5a0 3ad6243 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -10387,7 +10379,7 @@ GC f 242f96fc 2ddac0fb a43083b8
 GC k 0 1
 GC c 0 ff
 GC k 7 1
-GC c 0 4e7
+GC c 0 4e6
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -10403,7 +10395,7 @@ GC c 5 ff
 GC c 6 ff
 GC c 7 3
 GC k 7 1
-GC c 0 18e
+GC c 0 18c
 GC f 3cb965c6 3723902b c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -10437,7 +10429,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/aircraft.cpp.gcda 4233332a 35189f1d 88e3e05f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/aircraft.cpp.gcda 4233332a 36992669 88e3e05f 91
 GC f 4498cf30 ca313fa0 a43083b8
 GC k 0 1
 GC k 4 0
@@ -10620,7 +10612,7 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1f4
+GC c 0 1f2
 GC f 2ca591bc 7bb67a5b 2d8183ea
 GC k 0 3
 GC k 4 3
@@ -10648,7 +10640,7 @@ GC c 1 3
 GC c 20 3
 GC k 4 12
 GC k 7 1
-GC c 0 2ee
+GC c 0 2ec
 GC f 2d67fa16 94ad0dde 47b6fd93
 GC k 0 32
 GC k 4 0
@@ -10698,7 +10690,7 @@ GC k 0 1
 GC c 0 15b5
 GC k 4 0
 GC k 7 1
-GC c 0 329
+GC c 0 327
 GC f 613ff71c a499870f a43083b8
 GC k 0 1
 GC c 0 78
@@ -10729,19 +10721,19 @@ GC k 0 1
 GC c 0 13c
 GC k 4 0
 GC k 7 1
-GC c 0 28e
+GC c 0 28c
 GC f 5907af0 4b05cb65 a43083b8
 GC k 0 1
 GC c 0 439
 GC k 4 0
 GC k 7 1
-GC c 0 274
+GC c 0 272
 GC f 3d7df98 6714f69d a43083b8
 GC k 0 1
 GC c 0 2a7c
 GC k 4 0
 GC k 7 1
-GC c 0 282
+GC c 0 280
 GC f 730d7bca 5de64c2e a43083b8
 GC k 0 1
 GC k 4 0
@@ -10755,13 +10747,13 @@ GC k 0 1
 GC c 0 11c24
 GC k 4 0
 GC k 7 1
-GC c 0 303
+GC c 0 301
 GC f 4c0861d9 ff6c8bd8 a43083b8
 GC k 0 1
 GC c 0 1bd19
 GC k 4 0
 GC k 7 1
-GC c 0 302
+GC c 0 300
 GC f 235c8981 741b9f97 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -10866,7 +10858,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/anim.cpp.gcda 4233332a 35189f1e 8653d28b 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/anim.cpp.gcda 4233332a 36992668 8653d28b 99
 GC f 7e2b8dc4 bde246c1 6f122ea6
 GC k 0 2
 GC k 3 0
@@ -11150,7 +11142,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1f5
+GC c 0 1f3
 GC f 6ee9094a 54196962 a43083b8
 GC k 0 1
 GC k 3 0
@@ -11373,7 +11365,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/audio.cpp.gcda 4233332a 35189f21 397db658 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/audio.cpp.gcda 4233332a 36992668 397db658 81
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -11427,7 +11419,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/base.cpp.gcda 4233332a 35189f1e 515fa0eb 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/base.cpp.gcda 4233332a 36992669 515fa0eb 91
 GC f 662e567c 90a6d53 e43a3adb
 GC k 0 13
 GC c 1 3
@@ -11457,7 +11449,7 @@ GC c 2 2
 GC c 3 2
 GC k 4 0
 GC k 7 1
-GC c 0 1ff
+GC c 0 1fd
 GC f 133430ea 2305f4f3 3d577c7f
 GC k 0 7
 GC c 0 2
@@ -11534,7 +11526,7 @@ GC c a 12
 GC c b 3
 GC k 4 0
 GC k 7 1
-GC c 0 324
+GC c 0 322
 GC f 70d71e97 214349e7 a43083b8
 GC k 0 1
 GC k 4 0
@@ -11603,7 +11595,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bbdata.cpp.gcda 4233332a 35189f1f b7e221b1 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bbdata.cpp.gcda 4233332a 36992669 b7e221b1 81
 GC f 132d5aed f9408826 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -11660,7 +11652,7 @@ GC f 2bdae9c3 130ad854 a43083b8
 GC k 0 1
 GC c 0 39
 GC k 7 1
-GC c 0 4e8
+GC c 0 4e7
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -11677,7 +11669,7 @@ GC c 6 21
 GC c 7 39
 GC c 8 3
 GC k 7 1
-GC c 0 185
+GC c 0 183
 GC f 2fac2695 342380bb c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -11711,7 +11703,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bdata.cpp.gcda 4233332a 35189f1f b3623f0 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bdata.cpp.gcda 4233332a 36992668 b3623f0 99
 GC f 368fc7b3 7dc3c c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -11868,7 +11860,7 @@ GC c 0 c3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 4e9
+GC c 0 4e8
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -11885,7 +11877,7 @@ GC c 0 3b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 305
+GC c 0 303
 GC f 7b23ecb4 f010e2c1 7cba5b97
 GC k 0 8
 GC c 4 23a
@@ -11893,7 +11885,7 @@ GC c 7 23a
 GC k 3 0
 GC k 4 3
 GC k 7 1
-GC c 0 314
+GC c 0 312
 GC f 1607f0b7 b91cddb2 aeb264c3
 GC k 0 8
 GC k 3 0
@@ -11920,7 +11912,7 @@ GC c 6 26
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 30b
+GC c 0 309
 GC f 4fcb5e01 423b8c09 a43083b8
 GC k 0 1
 GC k 3 0
@@ -11937,7 +11929,7 @@ GC c 0 862
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 310
+GC c 0 30e
 GC f 2a4c72d8 4af7e74f a43083b8
 GC k 0 1
 GC c 0 1ff
@@ -11952,7 +11944,7 @@ GC c 1 588
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 307
+GC c 0 305
 GC f 54b43b33 3d97b7ec 95cf3e23
 GC k 0 17
 GC c 0 39
@@ -11968,21 +11960,21 @@ GC k 4 3
 GC t 0 12
 GC v 7a4e4a31 12
 GC k 7 1
-GC c 0 308
+GC c 0 306
 GC f 4f36b71a cd7da7b2 a43083b8
 GC k 0 1
 GC c 0 3e
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 301
+GC c 0 2ff
 GC f 176f6cec acdcaae0 a43083b8
 GC k 0 1
 GC c 0 9a
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 389
+GC c 0 388
 GC f 426cf6d7 6931c646 fa4ee560
 GC k 0 11
 GC c 0 3
@@ -11993,7 +11985,7 @@ GC c a 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 262
+GC c 0 260
 GC f 6c770cc8 904930ee 8ee3a4b8
 GC k 0 13
 GC k 3 0
@@ -12011,7 +12003,7 @@ GC k 4 3
 GC t 0 39
 GC v 54b43b33 39
 GC k 7 1
-GC c 0 30a
+GC c 0 308
 GC f 638e5c59 a9ea209 a43083b8
 GC k 0 1
 GC k 3 0
@@ -12035,7 +12027,7 @@ GC c 3 3c8
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2ff
+GC c 0 2fd
 GC f 7a943da6 4f22f2f4 a3e51c07
 GC k 0 14
 GC c 0 3
@@ -12059,7 +12051,7 @@ GC v 1e 3
 GC v 10 3
 GC k 4 0
 GC k 7 1
-GC c 0 183
+GC c 0 181
 GC f 6874c737 f44a6ad7 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -12112,7 +12104,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/building.cpp.gcda 4233332a 35189f1f 531ca1c1 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/building.cpp.gcda 4233332a 3699266a 531ca1c1 99
 GC f 485b7232 1baebeba 10ce14f9
 GC k 0 12
 GC k 3 0
@@ -12197,7 +12189,7 @@ GC c 1 9a
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 388
+GC c 0 387
 GC f 57eef624 7949aac2 6e6d39f5
 GC k 0 3
 GC k 3 0
@@ -12228,7 +12220,7 @@ GC k 4 3
 GC t 0 3b
 GC v 4086d24 3b
 GC k 7 1
-GC c 0 311
+GC c 0 30f
 GC f 475bc1a0 d5291a6d 1a509123
 GC k 0 9
 GC c 0 3f
@@ -12244,7 +12236,7 @@ GC k 4 3
 GC t 0 3b
 GC v 18d65ea1 3b
 GC k 7 1
-GC c 0 30d
+GC c 0 30b
 GC f 72ed5c90 1ce73206 589b9260
 GC k 0 37
 GC k 3 0
@@ -12348,7 +12340,7 @@ GC k 4 3
 GC t 0 39
 GC v 5408d8d6 39
 GC k 7 1
-GC c 0 309
+GC c 0 307
 GC f 7566a344 81ce29c3 ba88342d
 GC k 0 10
 GC c 5 4
@@ -12363,7 +12355,7 @@ GC v 50e223ae 4
 GC t 3 663
 GC v 50e223ae 663
 GC k 7 1
-GC c 0 30e
+GC c 0 30c
 GC f 20697447 a8a5b4cd fbea62d5
 GC k 0 60
 GC k 3 0
@@ -12420,7 +12412,7 @@ GC c 0 36ad
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 30f
+GC c 0 30d
 GC f 78b96ae7 8abb5531 c0bbb23e
 GC k 0 2
 GC c 0 202
@@ -12466,7 +12458,7 @@ GC k 4 6
 GC t 0 3b
 GC v 27583695 3b
 GC k 7 1
-GC c 0 2fe
+GC c 0 2fc
 GC f 1fb3dc10 90f8fc7f d94827cb
 GC k 0 7
 GC c 0 3b
@@ -12478,7 +12470,7 @@ GC c 6 19
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 312
+GC c 0 310
 GC f da2e926 665808d8 ab1ba6d
 GC k 0 7
 GC k 3 0
@@ -12508,7 +12500,7 @@ GC c 3 2
 GC k 3 0
 GC k 4 36
 GC k 7 1
-GC c 0 318
+GC c 0 316
 GC f 41fc540c e2efa404 d1390d25
 GC k 0 6
 GC c 0 aab
@@ -12574,7 +12566,7 @@ GC c 0 3b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 347
+GC c 0 345
 GC f bffde5c 7f6eb6c5 e9108030
 GC k 0 80
 GC c 1 a
@@ -12615,7 +12607,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1f6
+GC c 0 1f4
 GC f 2d283db8 6beec9fa 4f4fed93
 GC k 0 5
 GC c 0 ab5
@@ -12697,7 +12689,7 @@ GC c a 3b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 300
+GC c 0 2fe
 GC f 5c00e505 4297c540 7545348d
 GC k 0 3
 GC k 3 0
@@ -12827,7 +12819,7 @@ GC k 4 18
 GC t 5 3b
 GC v 475bc1a0 3b
 GC k 7 1
-GC c 0 304
+GC c 0 302
 GC f 556ef3d3 ecb25f1a 8abf8883
 GC k 0 154
 GC c 0 3840
@@ -12974,7 +12966,7 @@ GC v 57d794c5 9a1
 GC t 4 3b
 GC v 2035b2af 3b
 GC k 7 1
-GC c 0 306
+GC c 0 304
 GC f cc74669 4dccd63 7f93f3fa
 GC k 0 47
 GC c 6 9
@@ -12989,7 +12981,7 @@ GC k 4 33
 GC t 1 9a
 GC v 21129794 9a
 GC k 7 1
-GC c 0 386
+GC c 0 385
 GC f 43bf8735 b3eba77f 26d39e8
 GC k 0 100
 GC c 0 71a
@@ -13042,7 +13034,7 @@ GC c 1 a58
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2db
+GC c 0 2d9
 GC f 168d0a44 87ea8ef6 a43083b8
 GC k 0 1
 GC k 3 0
@@ -13114,7 +13106,7 @@ GC c 0 653
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 377
+GC c 0 376
 GC f 5907af0 4b05cb65 a43083b8
 GC k 0 1
 GC k 3 0
@@ -13273,7 +13265,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bullet.cpp.gcda 4233332a 35189f21 efb3328 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/bullet.cpp.gcda 4233332a 3699266a efb3328 99
 GC f 640e730c 754edefb c0bbb23e
 GC k 0 2
 GC c 0 96
@@ -13374,7 +13366,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1f7
+GC c 0 1f5
 GC f 3dce4ea6 6a165fcd 44f269db
 GC k 0 11
 GC c 0 7
@@ -13607,7 +13599,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cargo.cpp.gcda 4233332a 35189f20 3db577da 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cargo.cpp.gcda 4233332a 3699266b 3db577da 91
 GC f 632df068 bf9cdfcb a43083b8
 GC k 0 1
 GC c 0 b2
@@ -13658,7 +13650,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ccini.cpp.gcda 4233332a 35189f21 e07d03c 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ccini.cpp.gcda 4233332a 3699266a e07d03c 81
 GC f b91164d 2a5f8b22 a43083b8
 GC k 0 1
 GC k 7 1
@@ -13669,7 +13661,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 205
+GC c 0 203
 GC f 3d81d8e 303ae5e4 b6b2669e
 GC k 0 4
 GC c 0 3
@@ -13677,7 +13669,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 204
+GC c 0 202
 GC f 119cc892 5d7d4f3b ce34bcc8
 GC k 0 6
 GC k 7 1
@@ -13695,7 +13687,7 @@ GC c 2 99
 GC c 3 99
 GC c 4 99
 GC k 7 1
-GC c 0 26f
+GC c 0 26d
 GC f 16359aa 2e976c4a c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -13706,7 +13698,7 @@ GC c 1 1e
 GC c 2 1e
 GC c 3 1e
 GC k 7 1
-GC c 0 227
+GC c 0 225
 GC f 4919d2d9 8c82947d f3b49cda
 GC k 0 3
 GC k 7 1
@@ -13717,7 +13709,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 20e
+GC c 0 20c
 GC f 41d8a439 9aa3ffee c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -13728,7 +13720,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 233
+GC c 0 231
 GC f 234ea3f2 3f057105 f3b49cda
 GC k 0 3
 GC k 7 1
@@ -13739,7 +13731,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 267
+GC c 0 265
 GC f 18455869 18e5a34d f9e50e8f
 GC k 0 4
 GC k 7 1
@@ -13756,7 +13748,7 @@ GC c 1 313
 GC c 2 313
 GC c 3 313
 GC k 7 1
-GC c 0 326
+GC c 0 324
 GC f 3acd2161 b18e2aac c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -13783,14 +13775,14 @@ GC k 0 8
 GC c 0 3
 GC c 2 3
 GC k 7 1
-GC c 0 1b7
+GC c 0 1b5
 GC f 5514a3fa 906863c6 f3b49cda
 GC k 0 3
 GC c 0 3
 GC c 1 3
 GC c 2 3
 GC k 7 1
-GC c 0 1b6
+GC c 0 1b4
 GC f 6cfe775c 84edc5c6 3f029f2
 GC k 0 9
 GC c 0 6
@@ -13799,14 +13791,14 @@ GC c 2 3
 GC c 7 3
 GC c 8 6
 GC k 7 1
-GC c 0 161
+GC c 0 15f
 GC f 3839404b 22a717e f3b49cda
 GC k 0 3
 GC c 0 6
 GC c 1 6
 GC c 2 6
 GC k 7 1
-GC c 0 160
+GC c 0 15e
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -13825,7 +13817,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cdata.cpp.gcda 4233332a 35189f21 d227bed0 89
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cdata.cpp.gcda 4233332a 3699266b d227bed0 89
 GC f 1cfac531 2e9edc85 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -14282,7 +14274,7 @@ GC k 0 1
 GC c 0 28b
 GC k 3 0
 GC k 7 1
-GC c 0 4ea
+GC c 0 4e9
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -14300,7 +14292,7 @@ GC k 0 1
 GC c 0 3
 GC k 3 0
 GC k 7 1
-GC c 0 187
+GC c 0 185
 GC f 7d4aa2a2 812b3f5e ed537659
 GC k 0 4
 GC k 3 0
@@ -14317,7 +14309,7 @@ GC c 3 288
 GC c 4 3
 GC k 3 0
 GC k 7 1
-GC c 0 25d
+GC c 0 25b
 GC f 490c4bcc 47b5d33a d7a617b2
 GC k 0 5
 GC k 3 6
@@ -14362,7 +14354,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cell.cpp.gcda 4233332a 35189f22 5d825f88 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cell.cpp.gcda 4233332a 3699266a 5d825f88 91
 GC f 6f16d7ab af5db49a 68b6462a
 GC k 0 7
 GC k 4 0
@@ -14376,7 +14368,7 @@ GC k 0 3
 GC c 1 199e
 GC k 4 0
 GC k 7 1
-GC c 0 317
+GC c 0 315
 GC f 4cd6dcac 61d139ce a43083b8
 GC k 0 1
 GC c 0 4986
@@ -14390,7 +14382,7 @@ GC c 4 9f2
 GC c 5 9f2
 GC k 4 0
 GC k 7 1
-GC c 0 2c3
+GC c 0 2c1
 GC f 5c6049ce 817add06 c27ce21c
 GC k 0 2
 GC k 4 0
@@ -14400,7 +14392,7 @@ GC k 0 3
 GC c 1 7028
 GC k 4 0
 GC k 7 1
-GC c 0 2c1
+GC c 0 2bf
 GC f 33497c20 3e64f52e a43083b8
 GC k 0 1
 GC k 4 0
@@ -14412,7 +14404,7 @@ GC c 4 1e0
 GC c 5 1e0
 GC k 4 0
 GC k 7 1
-GC c 0 2c2
+GC c 0 2c0
 GC f 4fc75cd7 1345b9d0 c27ce21c
 GC k 0 2
 GC k 4 0
@@ -14423,7 +14415,7 @@ GC c 0 5b271
 GC c 1 11406
 GC k 4 0
 GC k 7 1
-GC c 0 27f
+GC c 0 27d
 GC f 38d58d6e f44e5239 dbf53770
 GC k 0 4
 GC k 4 0
@@ -14458,7 +14450,7 @@ GC c 1 30
 GC c 2 619
 GC k 4 57
 GC k 7 1
-GC c 0 2ea
+GC c 0 2e8
 GC f 3c40ed5e a50003d8 5be82e3f
 GC k 0 12
 GC c 0 538
@@ -14471,7 +14463,7 @@ GC c a 1267
 GC c b 1247
 GC k 4 0
 GC k 7 1
-GC c 0 341
+GC c 0 33f
 GC f ab4d40f 7fe367d9 a095a707
 GC k 0 11
 GC c 0 b8d8
@@ -14485,7 +14477,7 @@ GC c 7 4f29
 GC c 8 1b82
 GC k 4 0
 GC k 7 1
-GC c 0 2ab
+GC c 0 2a9
 GC f 4191ecf9 4e71fcb8 843ca442
 GC k 0 3
 GC c 0 cdbc
@@ -14493,7 +14485,7 @@ GC c 1 fc
 GC c 2 fc
 GC k 4 0
 GC k 7 1
-GC c 0 2ad
+GC c 0 2ab
 GC f 6af3c0eb 457078b2 d18fc95c
 GC k 0 9
 GC c 0 1c7e
@@ -14506,7 +14498,7 @@ GC c 7 1547
 GC c 8 1c7e
 GC k 4 0
 GC k 7 1
-GC c 0 2ae
+GC c 0 2ac
 GC f 3ad98d2d 3a9b5232 c0459527
 GC k 0 4
 GC c 3 59c
@@ -14543,7 +14535,7 @@ GC k 0 1
 GC c 0 dc
 GC k 4 0
 GC k 7 1
-GC c 0 367
+GC c 0 366
 GC f 77fd23e5 9bbf1ce a64b1d2
 GC k 0 9
 GC c 0 276
@@ -14554,7 +14546,7 @@ GC c 7 8e
 GC c 8 43
 GC k 4 0
 GC k 7 1
-GC c 0 2f4
+GC c 0 2f2
 GC f 421b3a0e 9c83aca1 5bda535f
 GC k 0 5
 GC c 0 f12
@@ -14564,7 +14556,7 @@ GC c 3 389
 GC c 4 cdc
 GC k 4 0
 GC k 7 1
-GC c 0 2f5
+GC c 0 2f3
 GC f 6511f562 99b7c1de 154aaef7
 GC k 0 2
 GC c 0 21
@@ -14617,7 +14609,7 @@ GC c 1c 17e
 GC c 1d 17e
 GC k 4 0
 GC k 7 1
-GC c 0 32c
+GC c 0 32a
 GC f 33423360 fc9c8e6b ae259813
 GC k 0 22
 GC k 4 3
@@ -14636,7 +14628,7 @@ GC k 4 3
 GC t 0 53
 GC v 2827b401 53
 GC k 7 1
-GC c 0 36b
+GC c 0 36a
 GC f 515d18b7 3df3fc6e 2ecaba31
 GC k 0 3
 GC k 4 0
@@ -14659,7 +14651,7 @@ GC c 1 c0
 GC c 2 2aa
 GC k 4 0
 GC k 7 1
-GC c 0 2d2
+GC c 0 2d0
 GC f 6dfe44e5 b1be3cfd 843ca442
 GC k 0 3
 GC c 0 122fa
@@ -14686,7 +14678,7 @@ GC v 19e98a99 14
 GC t 2 90
 GC v 79133e6c 90
 GC k 7 1
-GC c 0 287
+GC c 0 285
 GC f 5473b989 9076c230 b01a0946
 GC k 0 14
 GC c 0 6351
@@ -14705,7 +14697,7 @@ GC v 19e98a99 4be7
 GC v 577ce65e 1768
 GC v 4c0861d9 2
 GC k 7 1
-GC c 0 2d4
+GC c 0 2d2
 GC f 36402d0a 4aa341ec 41d5e2f1
 GC k 0 22
 GC c 0 658f
@@ -14732,7 +14724,7 @@ GC v 577ce65e 1785
 GC v 3d7df98 145
 GC v 4c0861d9 7c
 GC k 7 1
-GC c 0 27e
+GC c 0 27c
 GC f 24190313 a0364f5f f7fd1c9a
 GC k 0 7
 GC c 0 6f5
@@ -14744,7 +14736,7 @@ GC c 5 2071
 GC c 6 32d3
 GC k 4 0
 GC k 7 1
-GC c 0 26b
+GC c 0 269
 GC f 528c2771 f8688063 d20b58a
 GC k 0 21
 GC c 0 17e
@@ -14758,7 +14750,7 @@ GC c 10 15
 GC c 14 15
 GC k 4 3
 GC k 7 1
-GC c 0 30c
+GC c 0 30a
 GC f 5d2f010f 16956e62 2f971ffc
 GC k 0 20
 GC c 0 475
@@ -14789,7 +14781,7 @@ GC v 6dfc3ae4 9d
 GC v 6e324bab 34
 GC v 4fc2f907 1
 GC k 7 1
-GC c 0 283
+GC c 0 281
 GC f 4e8a7fd6 99d2a0b4 7c182561
 GC k 0 6
 GC c 0 10e
@@ -14807,7 +14799,7 @@ GC c 0 2b6e
 GC c 1 2b6e
 GC k 4 0
 GC k 7 1
-GC c 0 33f
+GC c 0 33d
 GC f 4f5eed42 2f8c8664 c0bbb23e
 GC k 0 2
 GC c 0 1f968
@@ -14829,7 +14821,7 @@ GC v 577ce65e 6971
 GC v 4c0861d9 43e9
 GC v 3d7df98 b9d
 GC k 7 1
-GC c 0 340
+GC c 0 33e
 GC f 19c32d8d cb3ec19f 71dd6b0
 GC k 0 14
 GC c 1 87b
@@ -14852,7 +14844,7 @@ GC t 1 fd
 GC v 3f8b69c9 c3
 GC v 50e223ae 3a
 GC k 7 1
-GC c 0 2c5
+GC c 0 2c3
 GC f 1ab9ba52 ff591e29 63ca50bf
 GC k 0 5
 GC k 4 0
@@ -14867,20 +14859,20 @@ GC c 0 9
 GC c 3 9
 GC k 4 0
 GC k 7 1
-GC c 0 1e5
+GC c 0 1e3
 GC f 6107a8ae 4aaa500a d42ac2ec
 GC k 0 3
 GC c 1 6af6
 GC c 2 3d93
 GC k 4 0
 GC k 7 1
-GC c 0 280
+GC c 0 27e
 GC f 2a1aa98b cf991837 a43083b8
 GC k 0 1
 GC c 0 c000
 GC k 4 0
 GC k 7 1
-GC c 0 17a
+GC c 0 178
 GC f 168d0a44 87ea8ef6 a43083b8
 GC k 0 1
 GC k 4 0
@@ -14935,7 +14927,7 @@ GC k 4 3
 GC t 0 2de
 GC v 108a530c 2de
 GC k 7 1
-GC c 0 285
+GC c 0 283
 GC f 730d7bca 5de64c2e a43083b8
 GC k 0 1
 GC k 4 0
@@ -14988,7 +14980,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/checkbox.cpp.gcda 4233332a 35189f26 5c267c02 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/checkbox.cpp.gcda 4233332a 3699266c 5c267c02 81
 GC f 40aed4b2 43a0a6dd f3b49cda
 GC k 0 3
 GC k 7 1
@@ -15025,7 +15017,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cheklist.cpp.gcda 4233332a 3518a232 ef3f513b 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/cheklist.cpp.gcda 4233332a 36992964 ef3f513b 91
 GC f 530d6708 9047f9e1 ed4e0d6d
 GC k 0 10
 GC k 4 3
@@ -15122,7 +15114,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/colrlist.cpp.gcda 4233332a 3518a265 524cf7f1 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/colrlist.cpp.gcda 4233332a 369929d2 524cf7f1 91
 GC f 1cecdd7 e6fff60 c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -15251,7 +15243,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/combat.cpp.gcda 4233332a 3518a2c4 f295fb56 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/combat.cpp.gcda 4233332a 369929cf f295fb56 91
 GC f 71584aa5 2560baa1 4e22583e
 GC k 0 37
 GC c 3 a0
@@ -15367,7 +15359,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/confdlg.cpp.gcda 4233332a 3518a38e 8bd294fc 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/confdlg.cpp.gcda 4233332a 36992a71 8bd294fc 91
 GC f 29392e0 9828f3e4 b3ae9cca
 GC k 0 53
 GC k 4 12
@@ -15400,17 +15392,17 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/conquer.cpp.gcda 4233332a 3518a397 183d6ccd f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/conquer.cpp.gcda 4233332a 36992b02 a7a38d8d f9
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
-GC c 0 1a10
-GC c 1 1a10
+GC c 0 1a0d
+GC c 1 1a0d
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 aa
+GC c 0 a9
 GC f 5052a196 e7ac0fc7 c56f9fa4
 GC k 0 3
 GC c 0 922a
@@ -15421,7 +15413,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 332
+GC c 0 330
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -15443,7 +15435,7 @@ GC v 5052a196 922a
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 331
+GC c 0 32f
 GC f 206cee41 7c26bfcb 47751c23
 GC k 0 6
 GC k 3 0
@@ -15460,30 +15452,29 @@ GC k 6 0
 GC k 7 1
 GC f 3903482 643788df 8c7bf418
 GC k 0 5
-GC c 0 d02
-GC c 1 d02
-GC c 3 f9d
-GC c 4 f9d
+GC c 0 cff
+GC c 1 cff
+GC c 3 f9a
+GC c 4 f9a
 GC k 3 3
-GC t 0 f9d
-GC v 2c 476
+GC t 0 f9a
+GC v 26 476
 GC v 14 464
-GC v 2f 419
+GC v 29 419
 GC v b 15c
-GC v a 70
-GC v c 51
+GC v a 6d
+GC v c 57
 GC v 8 32
 GC v 9 31
 GC v 7 12
-GC v 38 9
-GC v 4 6
-GC v 12 3
-GC v 22 3
+GC v 32 9
+GC v 4 3
+GC v 1c 3
 GC v 6 3
 GC k 4 0
 GC k 5 2
-GC c 0 1fa54
-GC c 1 f9d
+GC c 0 1c69a
+GC c 1 f9a
 GC k 6 1
 GC c 0 1dfffffe8
 GC k 7 1
@@ -15526,7 +15517,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 126
+GC c 0 124
 GC f 6042f4d8 8d01f9ca f3b49cda
 GC k 0 3
 GC k 3 0
@@ -15541,14 +15532,14 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 126d232 dd831bf0 acb31a0d
+GC f 126d232 51ef336b acb31a0d
 GC k 0 12
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 604598a9 8342471a bd55706b
+GC f 604598a9 441b8062 bd55706b
 GC k 0 6
 GC c 0 18
 GC c 1 3
@@ -15561,8 +15552,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 e9
-GC f 3b6508d6 6f680beb 388dc65f
+GC c 0 e7
+GC f 3b6508d6 67a83199 388dc65f
 GC k 0 15
 GC c 0 4
 GC c 1 4
@@ -15582,7 +15573,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 4b9
-GC f 27bdd758 66aafea4 c0bbb23e
+GC f 27bdd758 c10699e c0bbb23e
 GC k 0 2
 GC c 0 3
 GC c 1 3
@@ -15591,8 +15582,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1ce
-GC f 2df258ef f5e78f78 a43083b8
+GC c 0 1cc
+GC f 2df258ef 3b6b4b94 a43083b8
 GC k 0 1
 GC c 0 2126
 GC k 3 0
@@ -15601,7 +15592,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 2b
-GC f 75927694 d9d818d4 f972df40
+GC f 75927694 5c673f4d f972df40
 GC k 0 3
 GC c 1 2a
 GC c 2 2a
@@ -15610,22 +15601,22 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 17e
-GC f 60e48560 529f3fcf 659bb5a6
+GC c 0 17c
+GC f 60e48560 df4f7c27 659bb5a6
 GC k 0 35
 GC k 3 0
 GC k 4 12
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3d2e78c ffebd8a8 a43083b8
+GC f 3d2e78c 8c094320 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 6d960d6f 978d4ceb a43083b8
+GC f 6d960d6f 5cbea22d a43083b8
 GC k 0 1
 GC c 0 3
 GC k 3 0
@@ -15633,8 +15624,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 da
-GC f 34218f94 15ee4a80 f3cd7878
+GC c 0 d8
+GC f 34218f94 2645cbeb f3cd7878
 GC k 0 4
 GC c 0 3
 GC c 1 12
@@ -15644,8 +15635,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 158
-GC f 74c30748 332acbbe 5ba32e9f
+GC c 0 156
+GC f 74c30748 6870230c 5ba32e9f
 GC k 0 51
 GC c 0 3
 GC c 1 3
@@ -15679,50 +15670,50 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 159
-GC f 1f4b6ded 8a086322 fda5179e
+GC c 0 157
+GC f 1f4b6ded 39c57f08 fda5179e
 GC k 0 20
 GC k 3 0
 GC k 4 9
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 4f437a0d 1e4a78d5 c590c094
+GC f 4f437a0d 11a724b6 c590c094
 GC k 0 6
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 761deafc 2c074374 5522ceee
+GC f 761deafc 3e14103b 5522ceee
 GC k 0 85
 GC k 3 0
 GC k 4 54
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 11ea1c0d efd10414 fd5c0817
+GC f 11ea1c0d 1303e384 fd5c0817
 GC k 0 17
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3f7049a1 f0c008b5 c2f3a096
+GC f 3f7049a1 ac827ed9 c2f3a096
 GC k 0 62
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 740f80a aab6166 41284ff3
+GC f 740f80a a00f9086 41284ff3
 GC k 0 7
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 4929d621 f391ff0c e6f1a3d2
+GC f 4929d621 ca343602 e6f1a3d2
 GC k 0 38
 GC c 0 67b9
 GC c 1 655e
@@ -15747,8 +15738,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 36c
-GC f 1a9fb3a7 d5f928fd 4f51a1ca
+GC c 0 36b
+GC f 1a9fb3a7 53a74b7f 4f51a1ca
 GC k 0 30
 GC c 0 3
 GC c 4 3
@@ -15761,29 +15752,29 @@ GC k 4 0
 GC k 5 6
 GC k 6 3
 GC k 7 1
-GC c 0 38b
-GC f 73bfbea5 f964851a c0bbb23e
+GC c 0 38a
+GC f 73bfbea5 32d4cffb c0bbb23e
 GC k 0 2
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3fec451 9003e340 c0bbb23e
+GC f 3fec451 f0b4d695 c0bbb23e
 GC k 0 2
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 377b099a e5d64280 c0bbb23e
+GC f 377b099a 7a738bdb c0bbb23e
 GC k 0 2
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 14e8372b 7804b650 c0bbb23e
+GC f 14e8372b 5ad302b0 c0bbb23e
 GC k 0 2
 GC c 0 428
 GC c 1 428
@@ -15792,8 +15783,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 38a
-GC f 59beb0d7 5d7f914f c0bbb23e
+GC c 0 389
+GC f 59beb0d7 7cc8b1ec c0bbb23e
 GC k 0 2
 GC c 0 5fbe
 GC c 1 5fbe
@@ -15802,15 +15793,15 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 379
-GC f 4ff3dde1 10a8d7f3 25cc72ce
+GC c 0 378
+GC f 4ff3dde1 1a30768d 25cc72ce
 GC k 0 13
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 419bd592 adac7d0c d48ad04b
+GC f 419bd592 9b1cb4dc d48ad04b
 GC k 0 21
 GC c 0 9c
 GC c 1 3
@@ -15838,8 +15829,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 25a
-GC f 6574183c 86166541 a43083b8
+GC c 0 258
+GC f 6574183c 9d878de6 a43083b8
 GC k 0 1
 GC c 0 24
 GC k 3 0
@@ -15847,22 +15838,22 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 254
-GC f 50adc1dc 8db65170 17b437b0
+GC c 0 252
+GC f 50adc1dc c80a7376 17b437b0
 GC k 0 6
 GC k 3 0
 GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3a92f7ff d9173dff 1677768a
+GC f 3a92f7ff 3cb3a1a2 1677768a
 GC k 0 5
 GC k 3 0
 GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 59562921 ee055dc8 b5c8fafd
+GC f 59562921 791db3ee b5c8fafd
 GC k 0 35
 GC c 3 6
 GC c 4 6
@@ -15889,29 +15880,29 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 348
-GC f aa1a874 19f72803 7c8f6654
+GC c 0 346
+GC f aa1a874 7e6b3d79 7c8f6654
 GC k 0 4
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 18a94387 9c92d163 d5328af0
+GC f 18a94387 139132e8 d5328af0
 GC k 0 19
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 76506e97 fbdbe4c8 1acdb2b1
+GC f 76506e97 6f8f6e6d 1acdb2b1
 GC k 0 3
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 2342ac79 96c144c 12d9e13
+GC f 2342ac79 9490c42d 12d9e13
 GC k 0 21
 GC c 2 6
 GC c 8 6
@@ -15926,9 +15917,9 @@ GC v 25ca819f 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 34d
-GC f 23824243 f08e9a06 aa9d8aaf
-GC k 0 94
+GC c 0 34b
+GC f 23824243 77916fed d9f6d17a
+GC k 0 102
 GC c 0 e13
 GC c 1 e13
 GC c 2 9
@@ -15947,27 +15938,31 @@ GC c 1a e10
 GC c 1b e10
 GC c 1c e10
 GC c 1d e10
-GC c 1f e10
-GC c 22 e10
-GC c 23 e10
-GC c 24 e10
-GC c 25 e10
-GC c 26 e10
+GC c 1e 3
+GC c 1f 3
+GC c 20 3
+GC c 21 3
 GC c 27 e10
-GC c 28 e10
-GC c 31 e10
-GC c 32 e10
-GC c 33 e10
-GC c 34 546
-GC c 40 e10
-GC c 5d e10
+GC c 2a e10
+GC c 2b e10
+GC c 2c e10
+GC c 2d e10
+GC c 2e e10
+GC c 2f e10
+GC c 30 e10
+GC c 39 e10
+GC c 3a e10
+GC c 3b e10
+GC c 3c 546
+GC c 48 e10
+GC c 65 e10
 GC k 3 3
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a5
-GC f 19f6df21 d80a3944 2b829793
+GC c 0 3a4
+GC f 19f6df21 e936a495 2b829793
 GC k 0 19
 GC c 0 e10
 GC c 1 e10
@@ -15981,14 +15976,14 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 441
-GC f 50387068 a2effa09 c27ce21c
+GC f 50387068 2880adb c27ce21c
 GC k 0 2
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 6a28c5ed 4cb38d46 c842fd22
+GC f 6a28c5ed 3367a232 c842fd22
 GC k 0 5
 GC c 0 3
 GC c 2 3
@@ -15998,15 +15993,15 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 234
-GC f 2208797e be4e36f6 154aaef7
+GC c 0 232
+GC f 2208797e da8f4e18 154aaef7
 GC k 0 2
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3dda2228 9bfd88b0 c842fd22
+GC f 3dda2228 196ee254 c842fd22
 GC k 0 5
 GC c 0 1e
 GC c 2 1e
@@ -16016,8 +16011,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 228
-GC f 4695b17a a5b2b885 af71a78b
+GC c 0 226
+GC f 4695b17a 7113f362 af71a78b
 GC k 0 2
 GC c 1 6
 GC k 3 0
@@ -16025,17 +16020,17 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 149
-GC f 844180e c4887e8 b8f5977c
+GC c 0 147
+GC f 844180e 561afcd1 b8f5977c
 GC k 0 17
-GC c 0 4bc0
+GC c 0 4c9c
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 166
-GC f 4732e017 bce75bcb 9a3f2f79
+GC c 0 164
+GC f 4732e017 4f61c36d 9a3f2f79
 GC k 0 23
 GC c 0 e10
 GC c 1 3
@@ -16047,38 +16042,38 @@ GC c 6 3
 GC c 7 e10
 GC c 8 3
 GC c 9 3
-GC c c 840
-GC c d 419
-GC c e 427
+GC c c 839
+GC c d 410
+GC c e 429
 GC c f 68
-GC c 10 69
-GC c 11 461
-GC c 12 9af
-GC c 13 461
-GC c 14 559
-GC c 15 9ba
-GC c 16 9ba
+GC c 10 6a
+GC c 11 462
+GC c 12 9ae
+GC c 13 462
+GC c 14 53d
+GC c 15 99f
+GC c 16 99f
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 442
-GC f 50844019 f9f8865 9615307e
+GC f 50844019 eb80d5bd 9615307e
 GC k 0 21
 GC k 3 0
 GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 1956dcf3 cdee49a7 d14f94df
+GC f 1956dcf3 aea74f99 d14f94df
 GC k 0 191
 GC k 3 0
 GC k 4 45
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 244c9016 130bdfef 59f42238
+GC f 244c9016 bd7cef9a 59f42238
 GC k 0 60
 GC c 0 3
 GC c 3 3
@@ -16093,9 +16088,9 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 114
-GC f 3b49963a fc4d1b99 37297b5e
-GC k 0 69
+GC c 0 112
+GC f 3b49963a a4a4505e 2dd792c9
+GC k 0 70
 GC c 0 e13
 GC c 1 e13
 GC c 2 e13
@@ -16135,19 +16130,19 @@ GC v 4b0 3
 GC t 3 3
 GC v 4b0 3
 GC t 4 3
-GC v 11cd2 1
-GC v 224d2 1
-GC v 1a682 1
+GC v 11db8 1
+GC v 22583 1
+GC v 1a6f9 1
 GC t 5 3
-GC v 11cd2 1
-GC v 224d2 1
-GC v 1a682 1
+GC v 11db8 1
+GC v 22583 1
+GC v 1a6f9 1
 GC t 6 3
 GC v 3 3
 GC t 7 3
-GC v 11cd2 1
-GC v 224d2 1
-GC v 1a682 1
+GC v 11db8 1
+GC v 22583 1
+GC v 1a6f9 1
 GC t 8 3
 GC v 4b0 3
 GC t 9 3
@@ -16176,24 +16171,67 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a8
-GC f 54eab1 f3374c3f 81844046
-GC k 0 13
-GC k 3 9
+GC c 0 3a7
+GC f 9af4724 c801d159 5c9641ae
+GC k 0 52
+GC k 3 12
 GC k 4 0
-GC k 5 2
-GC k 6 1
+GC k 5 0
+GC k 6 0
 GC k 7 1
-GC f 686d5e41 b3e836fe e91f4128
+GC f 4afbbe6c a28b19d0 c0bbb23e
+GC k 0 2
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 20eaf2 60d3e0f0 7f604482
+GC k 0 4
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 23f2b3d1 32fd98e3 e7fd9068
+GC k 0 18
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 65d8ed9a f84c1a8f c0e460a1
+GC k 0 26
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 54eab1 98e0dbc 545790e3
 GC k 0 23
+GC k 3 6
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 5c131641 42c677ae fa635b27
+GC k 0 13
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 686d5e41 897b6db0 96b155c6
+GC k 0 40
 GC c 0 e0d
 GC c 1 3
 GC c 3 3
 GC c 6 3
-GC c 7 3
-GC c 8 dd4
-GC k 3 0
-GC k 4 3
+GC c 9 3
+GC c a 3
+GC c b dd4
+GC k 3 3
+GC k 4 9
 GC k 5 0
 GC k 6 0
 GC k 7 1
@@ -16211,8 +16249,8 @@ GC c 0 e10
 GC c 1 3
 GC c 3 3
 GC c 8 3
-GC c 9 de5
-GC c a c98
+GC c 9 de3
+GC c a c9c
 GC c b e10
 GC k 3 0
 GC k 4 0
@@ -16246,7 +16284,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 3a9
+GC c 0 3a8
 GC f 5ff59631 d52904bf a43083b8
 GC k 0 1
 GC k 3 0
@@ -16340,7 +16378,7 @@ GC v 714cd90f 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1c4
+GC c 0 1c2
 GC f 25ca819f b3c07960 81f343b9
 GC k 0 4
 GC c 0 6
@@ -16352,7 +16390,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 34e
+GC c 0 34c
 GC f 19d0a946 fda51b9 f3b49cda
 GC k 0 3
 GC c 0 21
@@ -16363,7 +16401,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 4f9
+GC c 0 4f8
 GC f 794d5961 f39d0070 4462b650
 GC k 0 3
 GC k 3 0
@@ -16427,7 +16465,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/const.cpp.gcda 4233332a 3518a45e e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/const.cpp.gcda 4233332a 36992b1e e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -16446,7 +16484,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/coord.cpp.gcda 4233332a 3518a4bc a68b4abb 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/coord.cpp.gcda 4233332a 36992bc2 a68b4abb 81
 GC f 2780a181 d5abcbe7 f3b49cda
 GC k 0 3
 GC c 0 8add
@@ -16490,7 +16528,7 @@ GC c 12 2224
 GC c 13 200a
 GC c 14 1f05
 GC k 7 1
-GC c 0 2ec
+GC c 0 2ea
 GC f 3fd76f84 34ddaa6f 80c16cbb
 GC k 0 4
 GC c 0 8048
@@ -16498,12 +16536,12 @@ GC c 1 6014
 GC c 2 57e7
 GC c 3 8b26
 GC k 7 1
-GC c 0 2c7
+GC c 0 2c5
 GC f 1e567e7c d61a17e8 a43083b8
 GC k 0 1
 GC c 0 6735d
 GC k 7 1
-GC c 0 174
+GC c 0 172
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -16522,12 +16560,12 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/credits.cpp.gcda 4233332a 3518a4eb f1cf86be 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/credits.cpp.gcda 4233332a 36992c17 f1cf86be 81
 GC f 41b33f1c 5527a9a2 a43083b8
 GC k 0 1
 GC c 0 9
 GC k 7 1
-GC c 0 1ea
+GC c 0 1e8
 GC f 216aece 848dde6a a6b1f0d9
 GC k 0 12
 GC c 1 9ab0
@@ -16553,7 +16591,7 @@ GC c 6 24f
 GC c 9 252
 GC c a 252
 GC k 7 1
-GC c 0 397
+GC c 0 396
 GC f 57554911 90633d64 a43083b8
 GC k 0 1
 GC c 0 24
@@ -16577,7 +16615,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/debug.cpp.gcda 4233332a 3518a639 e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/debug.cpp.gcda 4233332a 36992d95 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -16596,7 +16634,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/dial8.cpp.gcda 4233332a 3518a6e6 a2dba5dc 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/dial8.cpp.gcda 4233332a 36992dcb a2dba5dc 91
 GC f 453527a4 32326d61 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -16661,7 +16699,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/dialog.cpp.gcda 4233332a 3518a721 78c6dc01 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/dialog.cpp.gcda 4233332a 36992dd4 78c6dc01 81
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -16676,7 +16714,7 @@ GC k 0 4
 GC c 0 252
 GC c 2 252
 GC k 7 1
-GC c 0 398
+GC c 0 397
 GC f 5d4e900 3f0a1b28 275bbca3
 GC k 0 5
 GC c 0 6
@@ -16685,7 +16723,7 @@ GC c 2 6
 GC c 3 6
 GC c 4 3
 GC k 7 1
-GC c 0 245
+GC c 0 243
 GC f 3bde20be d71373dc db07b392
 GC k 0 40
 GC c 1 258
@@ -16708,7 +16746,7 @@ GC c 25 258
 GC c 26 258
 GC c 27 258
 GC k 7 1
-GC c 0 246
+GC c 0 244
 GC f 5ef7bf9b 5b2cecda 72f691f6
 GC k 0 8
 GC k 7 1
@@ -16742,7 +16780,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/display.cpp.gcda 4233332a 3518a787 151d37a1 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/display.cpp.gcda 4233332a 36992df2 151d37a1 99
 GC f 48d83c1e 1108a877 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -16817,7 +16855,7 @@ GC c f 3
 GC k 3 0
 GC k 4 3
 GC k 7 1
-GC c 0 179
+GC c 0 177
 GC f 19f3b1b2 953a0669 154aaef7
 GC k 0 2
 GC k 3 0
@@ -16853,7 +16891,7 @@ GC c c 57
 GC k 3 0
 GC k 4 3
 GC k 7 1
-GC c 0 28d
+GC c 0 28b
 GC f 59e79f6b 76f96ac4 59b2a0bc
 GC k 0 4
 GC k 3 0
@@ -16920,7 +16958,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 4ee
+GC c 0 4ed
 GC f 429e7a52 2bcb0c41 943c3641
 GC k 0 3
 GC c 0 3
@@ -16931,7 +16969,7 @@ GC k 4 3
 GC t 0 9
 GC v 4f23947c 9
 GC k 7 1
-GC c 0 4ef
+GC c 0 4ee
 GC f 7339bca5 7ef0c559 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -16944,7 +16982,7 @@ GC c 1 9
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 4f0
+GC c 0 4ef
 GC f 1d2c5e73 6c37631 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -16957,7 +16995,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 4eb
+GC c 0 4ea
 GC f e6fc5a5 4b7ed75 5cde4138
 GC k 0 13
 GC k 3 0
@@ -17029,7 +17067,7 @@ GC c 3 c
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1e8
+GC c 0 1e6
 GC f 68f5e6ed f5168aca 903a2052
 GC k 0 4
 GC c 0 3
@@ -17038,7 +17076,7 @@ GC c 3 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 501
+GC c 0 500
 GC f 27595cd4 f2016a62 8bcc3156
 GC k 0 15
 GC k 3 0
@@ -17098,7 +17136,7 @@ GC k 4 3
 GC t 0 6
 GC v 21c84fc 6
 GC k 7 1
-GC c 0 131
+GC c 0 12f
 GC f 370f413e c3add78f fc9a397d
 GC k 0 28
 GC k 3 0
@@ -17131,7 +17169,7 @@ GC c 1 99
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1e7
+GC c 0 1e5
 GC f 671624c7 354b6cd1 c56f9fa4
 GC k 0 3
 GC k 3 0
@@ -17220,7 +17258,7 @@ GC c 2 21e
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 284
+GC c 0 282
 GC f 6c5ebd5a 3ad666cf 3d8cb0fb
 GC k 0 10
 GC k 3 0
@@ -17247,7 +17285,7 @@ GC k 4 3
 GC t 0 9
 GC v 108a530c 9
 GC k 7 1
-GC c 0 172
+GC c 0 170
 GC f 406b9008 88f3689a 51e56c20
 GC k 0 18
 GC k 3 0
@@ -17284,7 +17322,7 @@ GC c 0 af7
 GC k 3 0
 GC k 4 12
 GC k 7 1
-GC c 0 35b
+GC c 0 359
 GC f 40e8485 ba94018f a0b7de0d
 GC k 0 74
 GC k 3 0
@@ -17378,7 +17416,7 @@ GC c 29 af7
 GC k 3 0
 GC k 4 27
 GC k 7 1
-GC c 0 35a
+GC c 0 358
 GC f 53e4f37 d4026344 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -17400,7 +17438,7 @@ GC c 5 5149
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 362
+GC c 0 360
 GC f 63056375 cd0dd1aa a9eb450a
 GC k 0 23
 GC c 1 15e5
@@ -17431,7 +17469,7 @@ GC t 1 9
 GC v 79133e6c 6
 GC v 475bc1a0 3
 GC k 7 1
-GC c 0 2c0
+GC c 0 2be
 GC f 1a41305a 6d78be44 4e8fc047
 GC k 0 23
 GC c 4 954
@@ -17456,7 +17494,7 @@ GC c 16 ca
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2c4
+GC c 0 2c2
 GC f 7859d49b 9cb9853b 84c5c217
 GC k 0 8
 GC c 0 1927
@@ -17519,7 +17557,7 @@ GC v 3b5e9e93 3
 GC t 2 3
 GC v 5e42f2e3 3
 GC k 7 1
-GC c 0 230
+GC c 0 22e
 GC f 5bb18586 a5cbe5a3 b6314cbc
 GC k 0 7
 GC k 3 0
@@ -17532,7 +17570,7 @@ GC c 2 784
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 338
+GC c 0 336
 GC f 29d3746a 9bce1b04 843ca442
 GC k 0 3
 GC c 0 4fa
@@ -17540,7 +17578,7 @@ GC c 2 4fa
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 289
+GC c 0 287
 GC f 213c9ac0 fe952a7e 2f9c3f80
 GC k 0 15
 GC c 0 e10
@@ -17580,7 +17618,7 @@ GC c 3 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1b9
+GC c 0 1b7
 GC f 2bbf621a b6317572 ddbae6ae
 GC k 0 13
 GC c 0 6
@@ -17598,7 +17636,7 @@ GC v 5e42f2e3 6
 GC t 1 6
 GC v 108a530c 6
 GC k 7 1
-GC c 0 16e
+GC c 0 16c
 GC f 2d432e2e a673477c 7c18247d
 GC k 0 16
 GC k 3 0
@@ -17674,7 +17712,7 @@ GC c 49 3
 GC k 3 0
 GC k 4 6
 GC k 7 1
-GC c 0 250
+GC c 0 24e
 GC f 2d7d8663 dd63b6ce 3ef8e4d4
 GC k 0 5
 GC c 0 3
@@ -17687,7 +17725,7 @@ GC k 4 3
 GC t 0 3
 GC v 4e212141 3
 GC k 7 1
-GC c 0 23b
+GC c 0 239
 GC f 6d93ef52 777c953a 6a2510c
 GC k 0 4
 GC c 0 9
@@ -17699,7 +17737,7 @@ GC k 4 3
 GC t 0 1b
 GC v 2cfe2a24 1b
 GC k 7 1
-GC c 0 1e1
+GC c 0 1df
 GC f 4debbea0 320d71eb 3311a65d
 GC k 0 17
 GC c 0 3
@@ -17728,7 +17766,7 @@ GC v 1df6697d 9
 GC t 2 3
 GC v 2bbf621a 3
 GC k 7 1
-GC c 0 16d
+GC c 0 16b
 GC f 628f3667 41d45ba c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -17808,7 +17846,7 @@ GC c 0 9
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 17c
+GC c 0 17a
 GC f 2cfe2a24 6182c573 c0bbb23e
 GC k 0 2
 GC c 0 1b
@@ -17818,7 +17856,7 @@ GC k 4 3
 GC t 0 1b
 GC v 62ecf012 1b
 GC k 7 1
-GC c 0 1e6
+GC c 0 1e4
 GC f 1f8e88d8 1e59435 a43083b8
 GC k 0 1
 GC k 3 0
@@ -17978,7 +18016,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/door.cpp.gcda 4233332a 3518a80c fc2c79df 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/door.cpp.gcda 4233332a 36992e40 fc2c79df 81
 GC f 7edd565f a89619f5 a30889c3
 GC k 0 4
 GC k 7 1
@@ -17997,7 +18035,7 @@ GC f 12262fc3 1e8ee9fc a43083b8
 GC k 0 1
 GC c 0 c8
 GC k 7 1
-GC c 0 298
+GC c 0 296
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -18016,7 +18054,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/drive.cpp.gcda 4233332a 3518a884 2803db2c f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/drive.cpp.gcda 4233332a 36992f41 2803db2c f9
 GC f 1b95e89d 4a54cfa8 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -18044,7 +18082,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 29e
+GC c 0 29c
 GC f 26b9cbb2 52d22b2e a43083b8
 GC k 0 1
 GC k 3 0
@@ -18077,7 +18115,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2eb
+GC c 0 2e9
 GC f 6d226a88 a8adce03 a43083b8
 GC k 0 1
 GC k 3 0
@@ -18093,7 +18131,7 @@ GC k 4 6
 GC k 5 6
 GC k 6 3
 GC k 7 1
-GC c 0 2e2
+GC c 0 2e0
 GC f e68e222 14bff4a2 5d9e8657
 GC k 0 29
 GC c 0 829d
@@ -18210,7 +18248,7 @@ GC v 587b865 1
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2cb
+GC c 0 2c9
 GC f 189d26d6 4afaf104 57045a3
 GC k 0 6
 GC c 0 184
@@ -18306,7 +18344,7 @@ GC k 4 18
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2c8
+GC c 0 2c6
 GC f 56568c97 fc2c7bf3 e22c05f5
 GC k 0 4
 GC c 0 260f
@@ -18371,7 +18409,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 294
+GC c 0 292
 GC f 391e41fa d418cc4b 36054db5
 GC k 0 32
 GC c 0 20f
@@ -18387,7 +18425,7 @@ GC v 3d00097f 6c
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2e5
+GC c 0 2e3
 GC f 100ba065 eadbb3e b51d0b86
 GC k 0 16
 GC c 0 41
@@ -18452,7 +18490,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2be
+GC c 0 2bc
 GC f 168d0a44 87ea8ef6 a43083b8
 GC k 0 1
 GC k 3 0
@@ -18670,7 +18708,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/drop.cpp.gcda 4233332a 3518a887 b8d7dfd6 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/drop.cpp.gcda 4233332a 36992fa1 b8d7dfd6 91
 GC f 275e8101 81324bdb c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -18879,7 +18917,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/edit.cpp.gcda 4233332a 3518a8b9 7e819edb 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/edit.cpp.gcda 4233332a 36993024 7e819edb 91
 GC f 6841cf22 687d633f 914caaec
 GC k 0 25
 GC k 4 9
@@ -18952,7 +18990,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ending.cpp.gcda 4233332a 3518a925 d4ea6e5f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ending.cpp.gcda 4233332a 36993024 d4ea6e5f 91
 GC f 60681cad 7f978b46 edb66059
 GC k 0 122
 GC k 4 3
@@ -19037,7 +19075,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/event.cpp.gcda 4233332a 3518a9eb 580abfd6 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/event.cpp.gcda 4233332a 36993074 580abfd6 91
 GC f 147db5f3 af461352 739133e1
 GC k 0 138
 GC k 4 63
@@ -19142,7 +19180,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/expand.cpp.gcda 4233332a 3518aad7 38679a2c e9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/expand.cpp.gcda 4233332a 369930ff 38679a2c e9
 GC f 470cb352 f68f72bd 966a034d
 GC k 0 67
 GC k 3 6
@@ -19223,7 +19261,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 ca
+GC c 0 c8
 GC f d375965 ad16f3aa 3764a6f1
 GC k 0 4
 GC k 3 0
@@ -19272,7 +19310,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/facing.cpp.gcda 4233332a 3518ab95 89da1336 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/facing.cpp.gcda 4233332a 36993187 89da1336 81
 GC f 65f0c324 3d83c197 16b9c9bb
 GC k 0 4
 GC c 1 2cc
@@ -19285,18 +19323,18 @@ GC k 0 2
 GC c 0 1903
 GC c 1 754
 GC k 7 1
-GC c 0 29a
+GC c 0 298
 GC f db1aac3 ff37b466 154aaef7
 GC k 0 2
 GC c 0 6fa3
 GC c 1 a77
 GC k 7 1
-GC c 0 29b
+GC c 0 299
 GC f 774f290f 87bede37 a43083b8
 GC k 0 1
 GC c 0 17e
 GC k 7 1
-GC c 0 299
+GC c 0 297
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -19315,7 +19353,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/factory.cpp.gcda 4233332a 3518abe0 9ef7717a 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/factory.cpp.gcda 4233332a 36993216 9ef7717a 99
 GC f 92694e2 8d3b3410 e4b7b41
 GC k 0 5
 GC c 0 a
@@ -19482,7 +19520,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1fe
+GC c 0 1fc
 GC f 7fc3de3c 4e4646c3 843ca442
 GC k 0 3
 GC c 0 a
@@ -19627,7 +19665,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/findpath.cpp.gcda 4233332a 3518ac9c 881a3907 f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/findpath.cpp.gcda 4233332a 369932c0 881a3907 f9
 GC f 682c5de 28e50924 c835c602
 GC k 0 4
 GC k 3 0
@@ -19643,7 +19681,7 @@ GC k 4 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2da
+GC c 0 2d8
 GC f 2e715549 b5da6f5c 3ef46866
 GC k 0 25
 GC c 0 2a79
@@ -19671,7 +19709,7 @@ GC v 77acb0ad 9c
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2dd
+GC c 0 2db
 GC f 7cf73101 ecc8fb73 ae9f94b2
 GC k 0 27
 GC c 0 3
@@ -19693,9 +19731,9 @@ GC k 5 2
 GC c 0 8a48
 GC c 1 b1
 GC k 6 1
-GC c 0 1d8d25f30
+GC c 0 1d8925f90
 GC k 7 1
-GC c 0 2d6
+GC c 0 2d4
 GC f 9bbb9fd 146aa750 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -19751,9 +19789,9 @@ GC k 5 2
 GC c 0 12d90
 GC c 1 182
 GC k 6 1
-GC c 0 2e8bf48
+GC c 0 2eaffc8
 GC k 7 1
-GC c 0 2e1
+GC c 0 2df
 GC f 3e86cb0 278c7ab9 6bc1b002
 GC k 0 5
 GC c 0 233
@@ -19766,7 +19804,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2d7
+GC c 0 2d5
 GC f 37217f7c 46d0d9b9 48cca2d2
 GC k 0 20
 GC c 0 20a
@@ -19781,7 +19819,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2d5
+GC c 0 2d3
 GC f 3d858207 828fbfcd c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -19821,7 +19859,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2e0
+GC c 0 2de
 GC f 7da4adad 4e4fad48 9b4050fa
 GC k 0 17
 GC c 1 18e
@@ -19994,9 +20032,9 @@ GC k 5 2
 GC c 0 ae0
 GC c 1 b2
 GC k 6 1
-GC c 0 1d8d25b28
+GC c 0 1d89259e8
 GC k 7 1
-GC c 0 2d8
+GC c 0 2d6
 GC f 5b826f38 87414a72 31691f0b
 GC k 0 11
 GC c 0 67e
@@ -20014,7 +20052,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2df
+GC c 0 2dd
 GC f 6dcade9c 17f5ccf3 ee366f3
 GC k 0 9
 GC c 0 4
@@ -20042,7 +20080,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2de
+GC c 0 2dc
 GC f 345c0f9f be3b1c98 80c16cbb
 GC k 0 4
 GC k 3 0
@@ -20119,7 +20157,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/flasher.cpp.gcda 4233332a 3518ad3e 64ce6fce 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/flasher.cpp.gcda 4233332a 3699334f 64ce6fce 81
 GC f 73805312 fae394de 722c2630
 GC k 0 3
 GC k 7 1
@@ -20146,7 +20184,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/fly.cpp.gcda 4233332a 3518ae37 c8b7c732 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/fly.cpp.gcda 4233332a 3699346f c8b7c732 81
 GC f 53f75622 9709e500 c0bbb23e
 GC k 0 2
 GC c 0 96
@@ -20179,7 +20217,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/foot.cpp.gcda 4233332a 3518ae83 24837b66 f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/foot.cpp.gcda 4233332a 36993487 24837b66 f9
 GC f 68588754 7c68c6b5 2d8183ea
 GC k 0 3
 GC c 0 17b
@@ -20317,7 +20355,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2ca
+GC c 0 2c8
 GC f 6042d5f6 18341e65 122aead0
 GC k 0 20
 GC c 0 91
@@ -20540,7 +20578,7 @@ GC v 577ce65e 45
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2b5
+GC c 0 2b3
 GC f 1a47e683 abf9dde5 75ff8cb6
 GC k 0 4
 GC c 0 8b
@@ -20554,7 +20592,7 @@ GC v 79133e6c 8b
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2a3
+GC c 0 2a1
 GC f 33650d5 8a0bcd93 b8ca4524
 GC k 0 41
 GC c 0 cf2
@@ -20703,7 +20741,7 @@ GC v 4c0861d9 20d
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2f9
+GC c 0 2f7
 GC f 38151315 1131d3be c7b97ce7
 GC k 0 6
 GC c 0 2bb
@@ -20719,7 +20757,7 @@ GC v 16ead4ff b0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2e7
+GC c 0 2e5
 GC f 6a718df1 5a4da7b 9c1224e2
 GC k 0 3
 GC c 0 2b3e
@@ -20732,7 +20770,7 @@ GC v 587b865 2af
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2e9
+GC c 0 2e7
 GC f 7e764c50 8038bf28 6c639b75
 GC k 0 13
 GC k 3 0
@@ -20874,9 +20912,9 @@ GC k 5 2
 GC c 0 472
 GC c 1 105
 GC k 6 1
-GC c 0 1bf07fff0
+GC c 0 1beffbff0
 GC k 7 1
-GC c 0 2cd
+GC c 0 2cb
 GC f 6e324bab 71baea8f b5c9b02d
 GC k 0 21
 GC c 0 10393
@@ -20902,7 +20940,7 @@ GC v 577ce65e 1043
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2a6
+GC c 0 2a4
 GC f 587b865 1a47bedf a43083b8
 GC k 0 1
 GC c 0 572
@@ -20911,7 +20949,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 2e3
+GC c 0 2e1
 GC f 2f048d5c 9acfa887 c0bbb23e
 GC k 0 2
 GC c 0 8d
@@ -20921,7 +20959,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 295
+GC c 0 293
 GC f 46599a86 6f781500 3764a6f1
 GC k 0 4
 GC k 3 0
@@ -21184,7 +21222,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/fuse.cpp.gcda 4233332a 3518af5f d8490678 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/fuse.cpp.gcda 4233332a 36993524 d8490678 91
 GC f 666415aa ab78ed4e e9798888
 GC k 0 5
 GC k 4 12
@@ -21243,7 +21281,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gamedlg.cpp.gcda 4233332a 3518b041 8d9db2ae 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gamedlg.cpp.gcda 4233332a 369935a5 8d9db2ae 91
 GC f 5cf5f074 bf0a170c ea4deafb
 GC k 0 95
 GC k 4 12
@@ -21272,7 +21310,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gauge.cpp.gcda 4233332a 3518b084 2f5efb7 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gauge.cpp.gcda 4233332a 36993673 2f5efb7 91
 GC f 20297267 f5f71c9f f3b49cda
 GC k 0 3
 GC k 4 0
@@ -21389,9 +21427,9 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gl.cpp.gcda 4233332a 3518a803 27f814c7 ff
-GC f 8fa58e3 ebde8b33 bd257ac8
-GC k 0 141
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gl.cpp.gcda 4233332a 36992e22 2f6b1efe ff
+GC f 8fa58e3 2e77e5d5 2345ceb4
+GC k 0 135
 GC c 1 af7
 GC c 2 af7
 GC c 3 3
@@ -21433,75 +21471,70 @@ GC c 33 16c0
 GC c 34 1d0
 GC c 35 1b9
 GC c 36 1337
-GC c 38 42
-GC c 3a 42
-GC c 3b dc
+GC c 38 11e
+GC c 39 11e
+GC c 3a 12e4
+GC c 3b 125b
 GC c 3c dc
-GC c 3d 11e
-GC c 3e 11e
-GC c 3f 11e
-GC c 40 12e4
-GC c 41 125b
-GC c 42 dc
-GC c 43 1b9
-GC c 44 1337
-GC c 45 1d0
-GC c 46 1d0
-GC c 47 1337
-GC c 48 3fe
-GC c 49 3fe
+GC c 3d 1b9
+GC c 3e 1337
+GC c 3f 1d0
+GC c 40 1d0
+GC c 41 1337
+GC c 42 3fe
+GC c 43 3fe
+GC c 45 3fe
+GC c 46 27
+GC c 48 2f7
+GC c 49 2f7
+GC c 4a 2f7
 GC c 4b 3fe
-GC c 4c 27
-GC c 4e 2f7
-GC c 4f 2f7
-GC c 50 2f7
-GC c 51 3fe
-GC c 53 3fe
-GC c 54 1a0
-GC c 55 1a0
-GC c 56 ac3
-GC c 58 34
-GC c 59 af7
-GC c 5a af7
-GC c 5b af7
-GC c 5c 20e5
-GC c 5d 11a5
-GC c 5e 20e5
-GC c 5f 4a03e
-GC c 60 11a2
-GC c 61 28f08
-GC c 62 260ff
-GC c 63 25c86
-GC c 65 23216
-GC c 6a 1b1cd
-GC c 6b 1b1b9
-GC c 6c 1b1b9
-GC c 6d 1b1b9
-GC c 6e 1b1cd
-GC c 6f 9334
-GC c 72 92c7
-GC c 73 5f6b
-GC c 75 33c9
-GC c 76 335c
+GC c 4d 3fe
+GC c 4e 1a0
+GC c 4f 1a0
+GC c 50 ac3
+GC c 52 34
+GC c 53 af7
+GC c 54 af7
+GC c 55 af7
+GC c 56 20e5
+GC c 57 11a5
+GC c 58 20e5
+GC c 59 4a03e
+GC c 5a 11a2
+GC c 5b 28f08
+GC c 5c 260ff
+GC c 5d 25c86
+GC c 5f 23216
+GC c 64 1b1cd
+GC c 65 1b1b9
+GC c 66 1b1b9
+GC c 67 1b1b9
+GC c 68 1b1cd
+GC c 69 9334
+GC c 6c 92c7
+GC c 6d 5f6b
+GC c 6f 33c9
+GC c 70 335c
+GC c 71 af7
+GC c 72 af7
+GC c 73 af7
+GC c 74 af7
+GC c 75 1d0
+GC c 76 5ce
 GC c 77 af7
-GC c 78 af7
-GC c 79 af7
-GC c 7a af7
-GC c 7b 1d0
-GC c 7c 5ce
-GC c 7d af7
-GC c 7f 3fe
-GC c 80 1d0
-GC c 81 3e4
-GC c 82 1a
-GC c 83 3e4
-GC c 84 3e4
-GC c 85 1a
-GC c 86 1a
-GC c 87 1a
-GC c 88 af7
-GC c 89 af7
-GC c 8c af7
+GC c 79 3fe
+GC c 7a 1d0
+GC c 7b 3e4
+GC c 7c 1a
+GC c 7d 3e4
+GC c 7e 3e4
+GC c 7f 1a
+GC c 80 1a
+GC c 81 1a
+GC c 82 af7
+GC c 83 af7
+GC c 86 af7
 GC k 1 4
 GC c 0 148
 GC c 1 153
@@ -21550,8 +21583,8 @@ GC v 8f51c44 1b3a
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 360
-GC f 181a4ece a1fde6df a149dafe
+GC c 0 35e
+GC f 181a4ece ff03356d a149dafe
 GC k 0 6
 GC c 0 af7
 GC c 1 af7
@@ -21564,8 +21597,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 35d
-GC f 3eb6dcb7 45b6ea6f 31b18426
+GC c 0 35b
+GC f 3eb6dcb7 76e455f3 31b18426
 GC k 0 8
 GC k 1 0
 GC k 2 0
@@ -21574,7 +21607,24 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 3576c2d9 95e7b0bd 7c13f6c
+GC f 244fc8a5 8411b34b 1673f6f2
+GC k 0 8
+GC c 0 42
+GC c 2 42
+GC c 3 dc
+GC c 4 dc
+GC c 5 11e
+GC c 6 11e
+GC c 7 11e
+GC k 1 0
+GC k 2 0
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC c 0 365
+GC f 3576c2d9 a27d0515 7c13f6c
 GC k 0 11
 GC c 0 b7
 GC c 1 b7
@@ -21591,11 +21641,12 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 368
-GC f 52d80cf3 dc781e34 7b43d724
-GC k 0 3
+GC c 0 367
+GC f 52d80cf3 ef47d50d 36f2aaa
+GC k 0 4
 GC c 0 67
-GC c 1 9a8
+GC c 1 a0f
+GC c 2 a76
 GC k 1 0
 GC k 2 0
 GC k 3 0
@@ -21603,9 +21654,9 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 36a
-GC f 673e4d04 29fc13d ad274e2d
-GC k 0 45
+GC c 0 369
+GC f 673e4d04 7f89f56d 76abc1ea
+GC k 0 46
 GC c 0 25b
 GC c 1 655e
 GC c 4 82
@@ -21615,22 +21666,24 @@ GC c 8 ef2
 GC c a 225
 GC c b 4c6
 GC c c 1a
-GC c d 3
+GC c d 6d1
+GC c e 6d1
 GC c f 3
-GC c 14 6eb
-GC c 17 6eb
+GC c 11 3
+GC c 16 6eb
 GC c 18 6eb
-GC c 20 26
-GC c 21 6c5
-GC c 22 6eb
-GC c 25 66
-GC c 26 655e
-GC c 27 60ff
-GC c 28 1a
-GC c 29 64de
-GC c 2a 1a
-GC c 2b 472f
+GC c 19 6eb
+GC c 21 26
+GC c 22 6c5
+GC c 23 6eb
+GC c 26 66
+GC c 27 655e
+GC c 28 60ff
+GC c 29 1a
+GC c 2a 64de
+GC c 2b 1a
 GC c 2c 472f
+GC c 2d 472f
 GC k 1 0
 GC k 2 0
 GC k 3 0
@@ -21638,8 +21691,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 36d
-GC f 7d3833b4 8843e8d9 34c82e64
+GC c 0 36c
+GC f 7d3833b4 9b23d9af 34c82e64
 GC k 0 17
 GC k 1 0
 GC k 2 0
@@ -21648,7 +21701,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 31eacbd3 bc8259ac 2c3807c9
+GC f 31eacbd3 fa4d4356 2c3807c9
 GC k 0 5
 GC k 1 0
 GC k 2 0
@@ -21657,14 +21710,14 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 2e7581d8 7390d062 36ce296a
+GC f 2e7581d8 230f5962 36ce296a
 GC k 0 7
 GC c 0 6eb
 GC c 1 5e8d
 GC c 2 5e8d
 GC c 3 5e8d
 GC c 4 5e8d
-GC c 5 3c0
+GC c 5 492
 GC k 1 0
 GC k 2 0
 GC k 3 0
@@ -21672,9 +21725,9 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 36e
-GC f 44c2d104 cf602163 2d17143a
-GC k 0 34
+GC c 0 36d
+GC f 44c2d104 f639bf71 80fba4a1
+GC k 0 41
 GC c 0 225
 GC c 3 1a
 GC c 4 1a
@@ -21684,27 +21737,71 @@ GC c 7 9a8
 GC c 8 1c20
 GC c 9 68
 GC c a 1a
-GC c b 6d1
-GC c c 86f1
-GC c d 6bc
-GC c e 4506
-GC c 10 15
-GC c 11 6bc
+GC c b 270
+GC c c 1a
+GC c d 1a
+GC c e 6d1
+GC c f 86f1
+GC c 10 6bc
+GC c 11 4506
+GC c 13 15
 GC c 14 6bc
+GC c 15 6bc
+GC c 17 6bc
 GC c 18 4c8c
-GC c 19 14da
-GC c 1a 37b2
-GC c 1b 14da
-GC c 1c 28082
-GC c 1d 652f
-GC c 1e 19216
-GC c 1f 120b7
-GC c 20 715f
-GC c 21 6bc
+GC c 19 d78
+GC c 1b 6bc
+GC c 1f 4c8c
+GC c 20 14da
+GC c 21 37b2
+GC c 22 14da
+GC c 23 28082
+GC c 24 652f
+GC c 25 19216
+GC c 26 120b7
+GC c 27 715f
+GC c 28 6bc
 GC k 1 0
 GC k 2 0
-GC k 3 3
-GC t 0 14da
+GC k 3 12
+GC t 0 1a
+GC v 68 1a
+GC t 1 1a
+GC v 68 1a
+GC t 2 d78
+GC v d 1ca
+GC v b 188
+GC v e 15e
+GC v c 134
+GC v f 10f
+GC v 8 98
+GC v 11 82
+GC v a 82
+GC v 12 7a
+GC v 10 76
+GC v 6 68
+GC v 7 64
+GC v 4 63
+GC v 5 54
+GC v 9 52
+GC v 16 4e
+GC v 32 40
+GC v 1a 31
+GC v 15 21
+GC v 17 1a
+GC v 19 18
+GC v 13 16
+GC v 18 13
+GC v 3 12
+GC v 2d e
+GC v 29 e
+GC v 14 e
+GC v 41 c
+GC v 3f 8
+GC v 21 8
+GC v 1d 7
+GC v 28 6
+GC t 3 14da
 GC v 9 2c7
 GC v 6 219
 GC v f 1dd
@@ -21738,14 +21835,23 @@ GC v 21 19
 GC v 16 14
 GC v 17 14
 GC k 4 0
-GC k 5 2
-GC c 0 131b9
-GC c 1 14da
-GC k 6 1
-GC c 0 1bf5ffffd
+GC k 5 8
+GC c 0 a90
+GC c 1 1a
+GC c 2 a90
+GC c 3 1a
+GC c 4 cb78
+GC c 5 d78
+GC c 6 131b9
+GC c 7 14da
+GC k 6 4
+GC c 0 1c08391e8
+GC c 1 1c0849de8
+GC c 2 1bf5ffffd
+GC c 3 1bf57fffd
 GC k 7 1
-GC c 0 36f
-GC f 237e9e7f 9b2f0fbd 47e64647
+GC c 0 36e
+GC f 237e9e7f 625563c5 47e64647
 GC k 0 8
 GC k 1 0
 GC k 2 0
@@ -21754,7 +21860,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 63884923 58ef1912 c728b11d
+GC f 63884923 173c52bf c728b11d
 GC k 0 11
 GC k 1 0
 GC k 2 0
@@ -21763,7 +21869,7 @@ GC k 4 0
 GC k 5 2
 GC k 6 1
 GC k 7 1
-GC f 4d903992 efedb1c 154aaef7
+GC f 4d903992 3925f1b0 154aaef7
 GC k 0 2
 GC c 0 4797
 GC k 1 0
@@ -21775,12 +21881,12 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 373
-GC f a8ea9b2 ab05f416 920287ab
+GC c 0 372
+GC f a8ea9b2 8d22aea4 920287ab
 GC k 0 8
-GC c 4 6b3
-GC c 5 11
-GC c 7 1a
+GC c 4 6b0
+GC c 5 15
+GC c 7 21
 GC k 1 0
 GC k 2 0
 GC k 3 0
@@ -21788,15 +21894,15 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 372
-GC f 48934416 dd91a5cb 4eb508ff
+GC c 0 371
+GC f 48934416 8d4b07df 4eb508ff
 GC k 0 6
 GC c 0 240bc
 GC c 1 240bc
 GC c 2 445
 GC c 3 195
 GC c 4 445
-GC c 5 b
+GC c 5 78
 GC k 1 0
 GC k 2 0
 GC k 3 0
@@ -21804,8 +21910,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 375
-GC f 7a3e54e4 81ff53b0 e59a9a6f
+GC c 0 374
+GC f 7a3e54e4 22eed78e e59a9a6f
 GC k 0 4
 GC c 0 b00b
 GC c 1 563
@@ -21818,8 +21924,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 374
-GC f 7e2a7bb6 29adb7e7 c27ce21c
+GC c 0 373
+GC f 7e2a7bb6 9f69c43c c27ce21c
 GC k 0 2
 GC k 1 0
 GC k 2 0
@@ -21828,7 +21934,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 8717d52 f0ce35c7 e91a745a
+GC f 8717d52 487f188a e91a745a
 GC k 0 8
 GC c 0 d36
 GC c 1 d36
@@ -21840,8 +21946,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 39e
-GC f 2162f0c4 717a7f6c 6e4b0948
+GC c 0 39d
+GC f 2162f0c4 21a0dd78 6e4b0948
 GC k 0 12
 GC c 1 4a35
 GC c 2 5ed4
@@ -21862,7 +21968,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 3be
-GC f 772f4e5c 33ee67b0 2393a4a6
+GC f 772f4e5c 43acf598 2393a4a6
 GC k 0 7
 GC c 0 f4c1
 GC c 1 93bf
@@ -21879,7 +21985,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 3fb
-GC f 170914e6 e711217f e3f59325
+GC f 170914e6 6b3ac3de e3f59325
 GC k 0 11
 GC c 0 ac
 GC c 1 3c9
@@ -21897,7 +22003,16 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 46f
-GC f 606172b 77a91f51 1b40f3d8
+GC f 183b1a8e 9d07cf08 169e2b93
+GC k 0 4
+GC k 1 0
+GC k 2 0
+GC k 3 0
+GC k 4 0
+GC k 5 0
+GC k 6 0
+GC k 7 1
+GC f 606172b 18ee2a6a 1b40f3d8
 GC k 0 6
 GC c 1 3
 GC c 3 3
@@ -21910,8 +22025,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 361
-GC f 50b64f5e 20288182 426b9c97
+GC c 0 35f
+GC f 50b64f5e c75db26d 426b9c97
 GC k 0 19
 GC c 0 e0d
 GC c 2 3
@@ -21943,7 +22058,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 3c1
-GC f 539a5439 ce79c29e ec55337b
+GC f 539a5439 6b8e2af9 ec55337b
 GC k 0 15
 GC c 0 1f
 GC c 1 10e
@@ -21974,7 +22089,7 @@ GC k 5 0
 GC k 6 0
 GC k 7 1
 GC c 0 3c2
-GC f f9a9839 973bcbfb 22f03235
+GC f f9a9839 1a5d9456 22f03235
 GC k 0 7
 GC k 1 0
 GC k 2 0
@@ -21983,7 +22098,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 677edb61 4052060 e8f917ba
+GC f 677edb61 84e598f0 e8f917ba
 GC k 0 5
 GC k 1 0
 GC k 2 0
@@ -21992,7 +22107,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC f 82559e0 14c36d31 24e7772b
+GC f 82559e0 63978348 24e7772b
 GC k 0 7
 GC c 0 afa
 GC c 1 3
@@ -22005,8 +22120,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 35e
-GC f 37e0908 2fa36793 94a5ac28
+GC c 0 35c
+GC f 37e0908 e11abd19 94a5ac28
 GC k 0 8
 GC c 0 b4
 GC c 1 4656
@@ -22023,8 +22138,8 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 371
-GC f 2ef66614 c5302392 412cb2e7
+GC c 0 370
+GC f 2ef66614 1dee9901 412cb2e7
 GC k 0 8
 GC c 0 3c
 GC c 1 caca
@@ -22041,7 +22156,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 370
+GC c 0 36f
 GC f 168d0a44 87ea8ef6 a43083b8
 GC k 0 1
 GC k 1 0
@@ -22177,7 +22292,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/globals.cpp.gcda 4233332a 3518b086 33fd5b07 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/globals.cpp.gcda 4233332a 369936dc 33fd5b07 91
 GC f 4e3d870c 4c0ab031 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -22190,7 +22305,7 @@ GC k 0 7
 GC c 6 876
 GC k 4 3
 GC k 7 1
-GC c 0 217
+GC c 0 215
 GC f 1d079887 e0198136 c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -22209,7 +22324,7 @@ GC c c 30
 GC c d 30
 GC k 4 3
 GC k 7 1
-GC c 0 120
+GC c 0 11e
 GC f 26f50615 e60145d c56f9fa4
 GC k 0 3
 GC c 0 6c5
@@ -22217,7 +22332,7 @@ GC c 1 6c5
 GC c 2 498
 GC k 4 0
 GC k 7 1
-GC c 0 33e
+GC c 0 33c
 GC f 10a51ce5 2431ba52 a43083b8
 GC k 0 1
 GC k 4 0
@@ -22265,7 +22380,7 @@ GC c 1 57
 GC c 3 57
 GC k 4 0
 GC k 7 1
-GC c 0 28c
+GC c 0 28a
 GC f 59e79f6b 76f96ac4 59b2a0bc
 GC k 0 4
 GC k 4 0
@@ -22353,7 +22468,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 517
+GC c 0 516
 GC f 20406215 d9de3112 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22401,7 +22516,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 516
+GC c 0 515
 GC f 46703ce9 3fee6fee bce6a761
 GC k 0 3
 GC k 4 0
@@ -22449,7 +22564,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 515
+GC c 0 514
 GC f 20b3b86a 7c9d5282 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22497,7 +22612,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 514
+GC c 0 513
 GC f 779b93ea 279a9a12 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22545,7 +22660,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 513
+GC c 0 512
 GC f 6a3ffbec 13a1a8eb bce6a761
 GC k 0 3
 GC k 4 0
@@ -22593,7 +22708,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 512
+GC c 0 511
 GC f 7fe761a3 a3c98b4b bce6a761
 GC k 0 3
 GC k 4 0
@@ -22641,7 +22756,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 511
+GC c 0 510
 GC f ab28020 5ab389d8 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22689,7 +22804,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 510
+GC c 0 50f
 GC f 3c6249fe 604ca316 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22737,7 +22852,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50f
+GC c 0 50e
 GC f 3689c487 425c3d6f bce6a761
 GC k 0 3
 GC k 4 0
@@ -22785,7 +22900,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50e
+GC c 0 50d
 GC f 4533c9e4 191d230c bce6a761
 GC k 0 3
 GC k 4 0
@@ -22833,7 +22948,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50d
+GC c 0 50c
 GC f 77446b0f 8eda3808 bce6a761
 GC k 0 3
 GC k 4 0
@@ -22881,7 +22996,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50c
+GC c 0 50b
 GC f 7c375ca5 a019b64d bce6a761
 GC k 0 3
 GC k 4 0
@@ -22929,7 +23044,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50b
+GC c 0 50a
 GC f 2e0ae433 5adf1ddb bce6a761
 GC k 0 3
 GC k 4 0
@@ -22977,7 +23092,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 50a
+GC c 0 509
 GC f 637afcaf a85c3cfd bce6a761
 GC k 0 3
 GC k 4 0
@@ -23025,7 +23140,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 508
+GC c 0 507
 GC f 7563753b 907d2570 c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -23044,7 +23159,7 @@ GC c b 9
 GC c c 9
 GC k 4 3
 GC k 7 1
-GC c 0 17b
+GC c 0 179
 GC f 75a0c352 28774f29 c56f9fa4
 GC k 0 3
 GC c 0 46
@@ -23063,7 +23178,7 @@ GC c 0 5a
 GC c 1 5a
 GC k 4 0
 GC k 7 1
-GC c 0 1ee
+GC c 0 1ec
 GC f 7a6fe48a d2bbbb9b ac97fde2
 GC k 0 4
 GC c 0 6
@@ -23071,7 +23186,7 @@ GC c 1 6
 GC c 3 6
 GC k 4 0
 GC k 7 1
-GC c 0 22f
+GC c 0 22d
 GC f 160adf1 d6f5e942 59b2a0bc
 GC k 0 4
 GC k 4 0
@@ -23291,14 +23406,14 @@ GC k 4 3
 GC t 0 1e
 GC v 828dd67 1e
 GC k 7 1
-GC c 0 4fb
+GC c 0 4fa
 GC f 58da4577 862710dd c0bbb23e
 GC k 0 2
 GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 4fd
+GC c 0 4fc
 GC f 4f1eef54 7bdb14b2 943c3641
 GC k 0 3
 GC c 0 3
@@ -23306,7 +23421,7 @@ GC c 1 3
 GC c 2 30
 GC k 4 0
 GC k 7 1
-GC c 0 503
+GC c 0 502
 GC f 30475337 c262a02 943c3641
 GC k 0 3
 GC c 0 3
@@ -23316,7 +23431,7 @@ GC k 4 3
 GC t 0 1e
 GC v 11d06828 1e
 GC k 7 1
-GC c 0 506
+GC c 0 505
 GC f 3d46756e 7cd1ab21 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23327,7 +23442,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 502
+GC c 0 501
 GC f 3432f5be 42c38ad3 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23338,7 +23453,7 @@ GC c 0 21
 GC c 1 21
 GC k 4 0
 GC k 7 1
-GC c 0 4fc
+GC c 0 4fb
 GC f 4ff2a88e 6d8466a4 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23349,7 +23464,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 4f8
+GC c 0 4f7
 GC f 15e7f60f 7ad16aba f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23360,7 +23475,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 4f7
+GC c 0 4f6
 GC f 363fb130 4af5f429 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23371,25 +23486,25 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 4f1
+GC c 0 4f0
 GC f 5606e28d f38c58cb 903a2052
 GC k 0 4
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 4f2
+GC c 0 4f1
 GC f 28d49457 676d35c8 903a2052
 GC k 0 4
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 196
+GC c 0 194
 GC f 1b054335 2e6d11ff 903a2052
 GC k 0 4
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 195
+GC c 0 193
 GC f 5f4532cd 5a19a946 903a2052
 GC k 0 4
 GC c 0 9
@@ -23398,7 +23513,7 @@ GC c 2 9
 GC c 3 9
 GC k 4 0
 GC k 7 1
-GC c 0 1ef
+GC c 0 1ed
 GC f 371d7c31 2b703fc4 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23481,7 +23596,7 @@ GC c 2 30
 GC c 3 30
 GC k 4 0
 GC k 7 1
-GC c 0 11b
+GC c 0 119
 GC f 3b4b4290 b90e80ae fd209e1
 GC k 0 5
 GC c 0 30
@@ -23546,7 +23661,7 @@ GC c 0 1e
 GC c 1 1e
 GC k 4 0
 GC k 7 1
-GC c 0 507
+GC c 0 506
 GC f 54834134 a4398045 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23574,7 +23689,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 4fa
+GC c 0 4f9
 GC f 41b53c2d b7444340 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -23601,7 +23716,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 4fe
+GC c 0 4fd
 GC f 1df6697d 19ceaa0 a43083b8
 GC k 0 1
 GC k 4 0
@@ -23619,7 +23734,7 @@ GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 505
+GC c 0 504
 GC f 3d130db2 40e823f3 a43083b8
 GC k 0 1
 GC k 4 0
@@ -23649,7 +23764,7 @@ GC k 0 1
 GC c 0 c
 GC k 4 0
 GC k 7 1
-GC c 0 4f3
+GC c 0 4f2
 GC f 25ca819f b3c07960 81f343b9
 GC k 0 4
 GC k 4 0
@@ -23698,7 +23813,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/goptions.cpp.gcda 4233332a 3518b16e a6f9cdc0 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/goptions.cpp.gcda 4233332a 369936f3 a6f9cdc0 91
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 4 0
@@ -23720,7 +23835,7 @@ GC k 0 3
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 fb
+GC c 0 f9
 GC f 794d5961 f39d0070 4462b650
 GC k 0 3
 GC k 4 0
@@ -23749,7 +23864,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gscreen.cpp.gcda 4233332a 3518b16e 48d494f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/gscreen.cpp.gcda 4233332a 36993721 48d494f 91
 GC f 26655d78 e410ab61 81f343b9
 GC k 0 4
 GC c 0 d39
@@ -23758,7 +23873,7 @@ GC c 2 d39
 GC c 3 d39
 GC k 4 0
 GC k 7 1
-GC c 0 3a0
+GC c 0 39f
 GC f 64b88e19 f00fc27d b055747b
 GC k 0 17
 GC c 0 e13
@@ -23781,7 +23896,7 @@ GC v 19ba8f8 d39
 GC t 1 d39
 GC v 6bd5fd23 d39
 GC k 7 1
-GC c 0 354
+GC c 0 352
 GC f 304e4bb9 ba9baaf4 c0bbb23e
 GC k 0 2
 GC k 4 3
@@ -23794,7 +23909,7 @@ GC k 4 9
 GC t 1 3
 GC v 4fbc65e7 3
 GC k 7 1
-GC c 0 23e
+GC c 0 23c
 GC f 7b817f57 4cfe8e40 fd79bd2
 GC k 0 14
 GC c 0 e10
@@ -23814,33 +23929,33 @@ GC v 229572ee e10
 GC t 3 e10
 GC v 15db620c e10
 GC k 7 1
-GC c 0 3aa
+GC c 0 3a9
 GC f 108a530c bb43507d 154aaef7
 GC k 0 2
 GC c 0 9e92
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 173
+GC c 0 171
 GC f 81640a5 99c5bbbe a43083b8
 GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 23c
+GC c 0 23a
 GC f 38f058cb 4798622c a43083b8
 GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 251
+GC c 0 24f
 GC f 76089d9 31abffcd c0bbb23e
 GC k 0 2
 GC c 0 9
 GC c 1 9
 GC k 4 0
 GC k 7 1
-GC c 0 1e3
+GC c 0 1e1
 GC f 3b5e9e93 295cf98 81f343b9
 GC k 0 4
 GC c 0 3
@@ -23855,14 +23970,14 @@ GC v 4ca2e94e 3
 GC t 2 3
 GC v ac6acbd 3
 GC k 7 1
-GC c 0 237
+GC c 0 235
 GC f 29cba52b 2553b15f c0bbb23e
 GC k 0 2
 GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 177
+GC c 0 175
 GC f 6aa6e28e e9552492 a43083b8
 GC k 0 1
 GC c 0 3
@@ -23876,7 +23991,7 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 239
+GC c 0 237
 GC f 13e126fc c21d9bab a43083b8
 GC k 0 1
 GC k 4 0
@@ -23909,7 +24024,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/hdata.cpp.gcda 4233332a 3518b195 9cf4509c 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/hdata.cpp.gcda 4233332a 369937a6 9cf4509c 81
 GC f 62fb4ba0 43177570 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -23925,12 +24040,12 @@ GC f 6ef51540 a0b5a071 a43083b8
 GC k 0 1
 GC c 0 16e
 GC k 7 1
-GC c 0 198
+GC c 0 196
 GC f 7aa83d4 701f5857 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 186
+GC c 0 184
 GC f 338727a1 e4fbab99 c842fd22
 GC k 0 5
 GC c 0 115
@@ -23938,7 +24053,7 @@ GC c 2 10c
 GC c 3 1b7
 GC c 4 9
 GC k 7 1
-GC c 0 21a
+GC c 0 218
 GC f 20b88d72 eaca5062 a43083b8
 GC k 0 1
 GC k 7 1
@@ -23960,7 +24075,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/heap.cpp.gcda 4233332a 3518b20d 1e9af58d f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/heap.cpp.gcda 4233332a 369937e8 1e9af58d f9
 GC f 6b9c59ac 643d6b1b c56f9fa4
 GC k 0 3
 GC k 3 0
@@ -24065,7 +24180,7 @@ GC v 26f50615 6c5
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 33d
+GC c 0 33b
 GC f 643dceb0 1c079260 3d577c7f
 GC k 0 7
 GC k 3 0
@@ -24126,7 +24241,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 33b
+GC c 0 339
 GC f 2f0741af 7867e98f 75ff8cb6
 GC k 0 4
 GC c 0 876
@@ -24153,7 +24268,7 @@ GC c 1 876
 GC k 6 1
 GC c 0 1c1fffff4
 GC k 7 1
-GC c 0 213
+GC c 0 211
 GC f 61612c13 c139175 894aa02e
 GC k 0 7
 GC c 0 30
@@ -24169,7 +24284,7 @@ GC v bec28d4 30
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 116
+GC c 0 114
 GC f bec28d4 748a6fde f3b49cda
 GC k 0 3
 GC c 0 60
@@ -24180,7 +24295,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 117
+GC c 0 115
 GC f 8e1188d 4698b925 c0bbb23e
 GC k 0 2
 GC c 0 5a
@@ -24190,7 +24305,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1ec
+GC c 0 1ea
 GC f 5871d1cc 83e11ccb c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -24210,7 +24325,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 118
+GC c 0 116
 GC f 568fe6f9 c4e98ad1 bce6a761
 GC k 0 3
 GC c 1 bba
@@ -24250,7 +24365,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 33c
+GC c 0 33a
 GC f 7f9788ee be6458d9 5f5df0a2
 GC k 0 6
 GC c 0 876
@@ -24262,7 +24377,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 214
+GC c 0 212
 GC f 5ea6384a f4a814e0 cc905f90
 GC k 0 10
 GC c 0 30
@@ -24295,9 +24410,9 @@ GC k 5 2
 GC c 0 1f9c9e
 GC c 1 30
 GC k 6 1
-GC c 0 1c1fffcd0
+GC c 0 1c1ffffd0
 GC k 7 1
-GC c 0 11c
+GC c 0 11a
 GC f 46219772 a537709 81f343b9
 GC k 0 4
 GC k 3 0
@@ -24315,7 +24430,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 509
+GC c 0 508
 GC f 2c0e3284 61b882df c0bbb23e
 GC k 0 2
 GC c 0 30
@@ -24358,7 +24473,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 215
+GC c 0 213
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 3 0
@@ -24401,7 +24516,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/help.cpp.gcda 4233332a 3518b31f c8d7fc80 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/help.cpp.gcda 4233332a 369938a0 c8d7fc80 91
 GC f ce8c43f b085172d c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -24427,7 +24542,7 @@ GC k 4 3
 GC t 0 3
 GC v 1c3a9e01 3
 GC k 7 1
-GC c 0 170
+GC c 0 16e
 GC f 56aa649d 83d955f a43083b8
 GC k 0 1
 GC k 4 0
@@ -24446,13 +24561,13 @@ GC c 0 d39
 GC c 1 d39
 GC k 4 0
 GC k 7 1
-GC c 0 355
+GC c 0 353
 GC f 1c3a9e01 33566e35 713a37f2
 GC k 0 13
 GC c 0 3
 GC k 4 3
 GC k 7 1
-GC c 0 265
+GC c 0 263
 GC f ca41064 3be83353 26cfedc9
 GC k 0 19
 GC c 0 e10
@@ -24476,7 +24591,7 @@ GC c 0 9
 GC c 1 9
 GC k 4 0
 GC k 7 1
-GC c 0 1dc
+GC c 0 1da
 GC f 4e6b22e7 cb207df1 f3b49cda
 GC k 0 3
 GC c 0 3
@@ -24521,7 +24636,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/house.cpp.gcda 4233332a 3518b3c8 c9550884 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/house.cpp.gcda 4233332a 369938e1 c9550884 99
 GC f 6118f82e a5e13c2d c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -24628,7 +24743,7 @@ GC c 2 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 518
+GC c 0 517
 GC f d846b32 b89f0261 f3b49cda
 GC k 0 3
 GC c 0 3
@@ -24699,7 +24814,7 @@ GC c 0 3d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 319
+GC c 0 317
 GC f 2cc8748d 17c1c789 a43083b8
 GC k 0 1
 GC c 0 57
@@ -24800,7 +24915,7 @@ GC k 4 3
 GC t 0 232
 GC v 50e223ae 232
 GC k 7 1
-GC c 0 31d
+GC c 0 31b
 GC f 79ed13de 8ca32f3 366cddd9
 GC k 0 9
 GC c 0 232
@@ -24815,7 +24930,7 @@ GC c 8 2f
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 31e
+GC c 0 31c
 GC f 6434787 827a3be7 1ebe112f
 GC k 0 8
 GC k 3 0
@@ -24854,7 +24969,7 @@ GC v 2c59a203 6d
 GC t 4 20
 GC v 3d00097f 20
 GC k 7 1
-GC c 0 29c
+GC c 0 29a
 GC f 250d8c36 38c20b6e aaacb57e
 GC k 0 11
 GC c 0 10
@@ -25158,7 +25273,7 @@ GC v 50e223ae 321
 GC t 3 232
 GC v 50e223ae 232
 GC k 7 1
-GC c 0 313
+GC c 0 311
 GC f 31f6bac6 3def6f9f f2932a21
 GC k 0 21
 GC k 3 0
@@ -25180,7 +25295,7 @@ GC c 0 1e
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 225
+GC c 0 223
 GC f 160c13bc 98bc2528 29165067
 GC k 0 21
 GC c 0 2
@@ -25391,7 +25506,7 @@ GC c 3 892a1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2af
+GC c 0 2ad
 GC f 60b7fb1f 14109964 24605310
 GC k 0 3
 GC k 3 0
@@ -25405,7 +25520,7 @@ GC c 6 41cc
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 37f
+GC c 0 37e
 GC f 4d47f321 bf404e7c e6520e70
 GC k 0 13
 GC k 3 0
@@ -25418,7 +25533,7 @@ GC c 5 20
 GC k 3 0
 GC k 4 6
 GC k 7 1
-GC c 0 223
+GC c 0 221
 GC f 627f95a0 bc987b51 2c62de78
 GC k 0 4
 GC c 0 1c763
@@ -25438,7 +25553,7 @@ GC c 2 3f10
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 381
+GC c 0 380
 GC f 2421956e 65afb4c8 154aaef7
 GC k 0 2
 GC c 0 1e9e
@@ -25446,7 +25561,7 @@ GC c 1 1e9e
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2f6
+GC c 0 2f4
 GC f 7350ab21 996ecf0e f4db50f8
 GC k 0 14
 GC k 3 0
@@ -25473,7 +25588,7 @@ GC c 13 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 220
+GC c 0 21e
 GC f 106237cc 7ba639a8 36e3ff8
 GC k 0 10
 GC c 0 4fc
@@ -25498,7 +25613,7 @@ GC v 9c4 1
 GC v 157c 1
 GC k 4 3
 GC k 7 1
-GC c 0 31b
+GC c 0 319
 GC f 788b65ce 2aca8341 6a327242
 GC k 0 4
 GC c 0 3d
@@ -25506,7 +25621,7 @@ GC c 3 3d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 31a
+GC c 0 318
 GC f 67d6389 61b131ac a43083b8
 GC k 0 1
 GC k 3 0
@@ -25607,7 +25722,7 @@ GC k 4 3
 GC t 0 3c
 GC v d34e4eb 3c
 GC k 7 1
-GC c 0 1eb
+GC c 0 1e9
 GC f 3413bdfb eacc039e c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -25658,7 +25773,7 @@ GC k 4 3
 GC t 0 1e
 GC v d34e4eb 1e
 GC k 7 1
-GC c 0 221
+GC c 0 21f
 GC f 7131a018 1b8e1a40 7545348d
 GC k 0 3
 GC k 3 0
@@ -25675,7 +25790,7 @@ GC c 1 21
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 226
+GC c 0 224
 GC f 2fde441b c6bc7c0f c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -25683,7 +25798,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 190
+GC c 0 18e
 GC f 71e8c51 5aebf2dd 8eb35f54
 GC k 0 10
 GC c 0 3
@@ -25694,7 +25809,7 @@ GC c 5 87
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 268
+GC c 0 266
 GC f 717144ee da584d78 a43083b8
 GC k 0 1
 GC k 3 0
@@ -25945,12 +26060,12 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/iconset.cpp.gcda 4233332a 3518b59c fc494639 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/iconset.cpp.gcda 4233332a 36993a04 fc494639 81
 GC f 73e7af6a 2d586aba 154aaef7
 GC k 0 2
 GC c 0 783
 GC k 7 1
-GC c 0 26d
+GC c 0 26b
 GC f 25f258fa a4d2d534 154aaef7
 GC k 0 2
 GC k 7 1
@@ -25987,7 +26102,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/idata.cpp.gcda 4233332a 3518b5c9 55f701c5 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/idata.cpp.gcda 4233332a 36993abe 55f701c5 91
 GC f 284f887e c020e370 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -26050,7 +26165,7 @@ GC k 0 1
 GC c 0 3c
 GC k 4 0
 GC k 7 1
-GC c 0 519
+GC c 0 518
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 4 0
@@ -26073,7 +26188,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 261
+GC c 0 25f
 GC f 644b273b 5114d409 3c6f9bd3
 GC k 0 9
 GC c 0 3
@@ -26086,7 +26201,7 @@ GC c 7 3c
 GC c 8 3
 GC k 4 0
 GC k 7 1
-GC c 0 18d
+GC c 0 18b
 GC f 408b00f4 9100799f c842fd22
 GC k 0 5
 GC c 0 86
@@ -26095,13 +26210,13 @@ GC c 3 1e8
 GC c 4 e
 GC k 4 0
 GC k 7 1
-GC c 0 21b
+GC c 0 219
 GC f 38a798d8 f2cc84b8 a43083b8
 GC k 0 1
 GC c 0 9830
 GC k 4 0
 GC k 7 1
-GC c 0 2f7
+GC c 0 2f5
 GC f 55de9bf2 72263270 3340231c
 GC k 0 8
 GC k 4 6
@@ -26127,7 +26242,7 @@ GC k 0 1
 GC c 0 351a
 GC k 4 0
 GC k 7 1
-GC c 0 382
+GC c 0 381
 GC f 3f121a8b 87d663d5 a43083b8
 GC k 0 1
 GC k 4 0
@@ -26160,7 +26275,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/infantry.cpp.gcda 4233332a 3518b5e8 7c72c34e 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/infantry.cpp.gcda 4233332a 36993b23 7c72c34e 99
 GC f 6495b652 6d70f90f a43083b8
 GC k 0 1
 GC k 3 0
@@ -26172,7 +26287,7 @@ GC c 0 1fada
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2f2
+GC c 0 2f0
 GC f 137df3bb a2bebd33 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -26184,7 +26299,7 @@ GC c 0 699ec
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2f1
+GC c 0 2ef
 GC f 1151c4a0 b2727a19 5f45d6fe
 GC k 0 7
 GC c 0 2e
@@ -26275,7 +26390,7 @@ GC v 6a9352e5 59
 GC t 4 59
 GC v 7e084e58 59
 GC k 7 1
-GC c 0 2ef
+GC c 0 2ed
 GC f 35385307 666f959d 8d341d23
 GC k 0 30
 GC k 3 0
@@ -26288,7 +26403,7 @@ GC c 5 6c5
 GC k 3 0
 GC k 4 3
 GC k 7 1
-GC c 0 2fb
+GC c 0 2f9
 GC f 552f7be8 7e43e728 c0bbb23e
 GC k 0 2
 GC c 0 31
@@ -26360,7 +26475,7 @@ GC c c 6b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2f3
+GC c 0 2f1
 GC f 1d4c01df 825821d6 63c40f86
 GC k 0 10
 GC c 0 31
@@ -26558,7 +26673,7 @@ GC k 4 6
 GC t 1 b8
 GC v 6a9352e5 b8
 GC k 7 1
-GC c 0 2fa
+GC c 0 2f8
 GC f 704032c3 5dc444bc 5b0ecd3b
 GC k 0 13
 GC c 0 d2
@@ -26585,7 +26700,7 @@ GC k 4 3
 GC t 0 3b21
 GC v 733439f 3b21
 GC k 7 1
-GC c 0 2f8
+GC c 0 2f6
 GC f 305a4e05 9dfd2780 fe58e34b
 GC k 0 70
 GC c 1 751e
@@ -26882,7 +26997,7 @@ GC c 6 5d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2fd
+GC c 0 2fb
 GC f e9d12ff bf03e6fb c0bbb23e
 GC k 0 2
 GC c 0 6
@@ -26890,7 +27005,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1f8
+GC c 0 1f6
 GC f 2d5881a7 b05af18e c0bbb23e
 GC k 0 2
 GC c 0 18c
@@ -26956,7 +27071,7 @@ GC v 14 ce
 GC v 2 12
 GC k 4 0
 GC k 7 1
-GC c 0 37b
+GC c 0 37a
 GC f 1572a4c9 36160ea7 2b8fa604
 GC k 0 61
 GC c 0 e9
@@ -27047,7 +27162,7 @@ GC c 5 6d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2f0
+GC c 0 2ee
 GC f 7ff8a07e 99f5e2e5 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -27074,7 +27189,7 @@ GC k 4 3
 GC t 0 879
 GC v 77acb0ad 879
 GC k 7 1
-GC c 0 2fc
+GC c 0 2fa
 GC f 168d0a44 87ea8ef6 a43083b8
 GC k 0 1
 GC k 3 0
@@ -27215,7 +27330,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/init.cpp.gcda 4233332a 3518b606 c9bdd183 f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/init.cpp.gcda 4233332a 36993b2f c9bdd183 f9
 GC f 683d131 53c6e3d8 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -27281,7 +27396,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 12f
+GC c 0 12d
 GC f 743d34b3 b72f1b4e 6e61691f
 GC k 0 4
 GC k 3 0
@@ -27299,7 +27414,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 12e
+GC c 0 12c
 GC f 370f413e c3add78f fc9a397d
 GC k 0 28
 GC k 3 0
@@ -27321,7 +27436,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1d6
+GC c 0 1d4
 GC f 6d89bc46 ce6c139b 4dc37395
 GC k 0 16
 GC c 1 21
@@ -27341,7 +27456,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d0
+GC c 0 ce
 GC f 5c0f754b a0aef702 52b3db01
 GC k 0 28
 GC k 3 0
@@ -27368,7 +27483,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 14a
+GC c 0 148
 GC f c0e9931 55d57dc8 5ac6cfde
 GC k 0 7
 GC k 3 0
@@ -27392,7 +27507,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 cf
+GC c 0 cd
 GC f 178bcad4 f1cf88d5 d6a0c9fe
 GC k 0 3
 GC c 0 9
@@ -27403,7 +27518,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 162
+GC c 0 160
 GC f 508c79d3 e3b08c32 a1b237d
 GC k 0 19
 GC k 3 0
@@ -27469,7 +27584,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1b8
+GC c 0 1b6
 GC f 4253602d f1eb84a6 e80a0fae
 GC k 0 39
 GC k 3 0
@@ -27617,7 +27732,7 @@ GC k 4 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 115
+GC c 0 113
 GC f 794d5961 f39d0070 4462b650
 GC k 0 3
 GC k 3 0
@@ -27648,7 +27763,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 d1
+GC c 0 cf
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 3 0
@@ -27691,7 +27806,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/intro.cpp.gcda 4233332a 3518b61d c4fef34a 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/intro.cpp.gcda 4233332a 36993b57 c4fef34a 91
 GC f 3c3d7e80 a36fec7 e053efcf
 GC k 0 145
 GC k 4 3
@@ -27776,7 +27891,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/iomap.cpp.gcda 4233332a 3518b65d accbc348 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/iomap.cpp.gcda 4233332a 36993bb8 accbc348 91
 GC f 6ba97189 e30952ee 6f948ebb
 GC k 0 17
 GC k 4 3
@@ -27953,7 +28068,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ioobj.cpp.gcda 4233332a 3518b73e f8c68ef2 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/ioobj.cpp.gcda 4233332a 36993c29 f8c68ef2 91
 GC f 22377b0 6679c850 c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -28016,7 +28131,7 @@ GC k 4 3
 GC t 0 31
 GC v e8092bb 31
 GC k 7 1
-GC c 0 28f
+GC c 0 28d
 GC f 62ecf012 81f994c9 c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -28389,7 +28504,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/jshell.cpp.gcda 4233332a 3518b852 43302199 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/jshell.cpp.gcda 4233332a 36993cdb 43302199 91
 GC f ed923c9 e22e19a 1d318d94
 GC k 0 9
 GC k 4 0
@@ -28442,7 +28557,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/layer.cpp.gcda 4233332a 3518b8e3 9964ecb4 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/layer.cpp.gcda 4233332a 36993d00 9964ecb4 91
 GC f 4f50f9e1 a7b570f1 5cde4138
 GC k 0 13
 GC k 4 3
@@ -28484,7 +28599,7 @@ GC v 3267f6f 6b
 GC v 7566a344 3b
 GC v 4d3f13af 20
 GC k 7 1
-GC c 0 28b
+GC c 0 289
 GC f 251fdac9 97d1aad4 a304e759
 GC k 0 6
 GC c 0 e19
@@ -28521,7 +28636,7 @@ GC v 19e98a99 6b
 GC v 4c0861d9 3b
 GC v 577ce65e 20
 GC k 7 1
-GC c 0 290
+GC c 0 28e
 GC f 1680a445 c8092702 bd44599f
 GC k 0 4
 GC c 0 231
@@ -28530,7 +28645,7 @@ GC c 2 231
 GC c 3 754
 GC k 4 0
 GC k 7 1
-GC c 0 28a
+GC c 0 288
 GC f 5ff59631 d52904bf a43083b8
 GC k 0 1
 GC k 4 0
@@ -28591,7 +28706,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/lib.cpp.gcda 4233332a 3518b9a5 ab9f6e67 8f
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/lib.cpp.gcda 4233332a 36993eb0 ab9f6e67 8f
 GC f 9994a7c ccb57e2f 9f51a842
 GC k 0 4
 GC c 0 1ae5
@@ -28602,7 +28717,7 @@ GC k 1 0
 GC k 2 0
 GC k 3 0
 GC k 7 1
-GC c 0 1a1
+GC c 0 19f
 GC f 2c787646 83c6bdfe 913ecb8e
 GC k 0 10
 GC c 0 1ae5
@@ -28899,14 +29014,14 @@ GC v 6d 1e
 GC v 8e f
 GC v 15 3
 GC k 7 1
-GC c 0 1a0
+GC c 0 19e
 GC f 60320c77 36c229a9 a43083b8
 GC k 0 1
 GC k 1 4
 GC k 2 2
 GC k 3 6
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/list.cpp.gcda 4233332a 3518b9f0 daade553 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/list.cpp.gcda 4233332a 36993f02 daade553 99
 GC f 275e8101 81324bdb c56f9fa4
 GC k 0 3
 GC k 3 0
@@ -29172,7 +29287,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/loaddlg.cpp.gcda 4233332a 3518ba42 72d9d2aa 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/loaddlg.cpp.gcda 4233332a 36993f4a 72d9d2aa 91
 GC f 2209ff6c f689e691 c56f9fa4
 GC k 0 3
 GC k 4 0
@@ -29305,7 +29420,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/logic.cpp.gcda 4233332a 3518bb19 64ef014f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/logic.cpp.gcda 4233332a 36994027 64ef014f 91
 GC f 3d97bd96 6cea24ea b8ea5793
 GC k 0 2
 GC k 4 0
@@ -29422,7 +29537,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/map.cpp.gcda 4233332a 3518bd4f 8919a79a 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/map.cpp.gcda 4233332a 369940f0 8919a79a 99
 GC f 19f3b1b2 953a0669 154aaef7
 GC k 0 2
 GC k 3 0
@@ -29516,7 +29631,7 @@ GC c 0 b8d8
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2ac
+GC c 0 2aa
 GC f 19933a46 2e7da0fe 7cc578ce
 GC k 0 60
 GC c 2 e10
@@ -29607,7 +29722,7 @@ GC c 18 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 26a
+GC c 0 268
 GC f 11171082 150ddb4c 938c0270
 GC k 0 26
 GC k 3 0
@@ -29620,7 +29735,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 269
+GC c 0 267
 GC f 557e7144 2025232e 9f8108fd
 GC k 0 4
 GC c 0 3
@@ -29630,7 +29745,7 @@ GC c 3 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 344
+GC c 0 342
 GC f 7cd595af c99f4633 c80dc494
 GC k 0 19
 GC c 1 6b5b
@@ -29658,7 +29773,7 @@ GC t 1 9c7
 GC v 61829522 9c5
 GC v 535a38da 2
 GC k 7 1
-GC c 0 2d1
+GC c 0 2cf
 GC f 2de981a8 e8be35bc dd1dc009
 GC k 0 27
 GC c 1 8b4
@@ -29690,7 +29805,7 @@ GC v 43886ad2 c8
 GC t 2 69c
 GC v 61829522 69c
 GC k 7 1
-GC c 0 334
+GC c 0 332
 GC f 3d160965 59d1c0f1 9cb75538
 GC k 0 24
 GC c 1 5c11
@@ -29723,7 +29838,7 @@ GC t 2 4
 GC v 535a38da 2
 GC v 61829522 2
 GC k 7 1
-GC c 0 2d3
+GC c 0 2d1
 GC f 439b690f c0be7e14 fd2ab067
 GC k 0 32
 GC c 1 5d60
@@ -29768,7 +29883,7 @@ GC t 4 4547
 GC v 216e393f 3ad6
 GC v 535a38da a71
 GC k 7 1
-GC c 0 27c
+GC c 0 27a
 GC f 611ba4d7 e2c87993 63bfaaa1
 GC k 0 4
 GC c 1 3d33d
@@ -29777,7 +29892,7 @@ GC c 3 ac4
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2b8
+GC c 0 2b6
 GC f 79feb82b e78e9300 80c16cbb
 GC k 0 4
 GC c 0 37b4
@@ -29800,14 +29915,14 @@ GC c c b4
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2bd
+GC c 0 2bb
 GC f 5cdbffc4 ddb210f6 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 232
+GC c 0 230
 GC f 4f5cb184 d4a87677 f642811e
 GC k 0 3
 GC c 0 9
@@ -29816,7 +29931,7 @@ GC c 2 9
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1e4
+GC c 0 1e2
 GC f 4e84712f d7677018 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -29829,7 +29944,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 178
+GC c 0 176
 GC f 4527bd74 6deb99c f3b49cda
 GC k 0 3
 GC c 0 9
@@ -29840,7 +29955,7 @@ GC k 4 3
 GC t 0 9
 GC v 4f5cb184 9
 GC k 7 1
-GC c 0 1e2
+GC c 0 1e0
 GC f 635bfdaa 1008c1c 60618781
 GC k 0 5
 GC k 3 0
@@ -29858,7 +29973,7 @@ GC k 4 3
 GC t 0 3
 GC v 3436ee52 3
 GC k 7 1
-GC c 0 176
+GC c 0 174
 GC f 3120756e fd8025fc 1a535f13
 GC k 0 8
 GC c 0 af4
@@ -29877,7 +29992,7 @@ GC v 19e98a99 12f
 GC v 577ce65e 5c
 GC v 4c0861d9 2f
 GC k 7 1
-GC c 0 35f
+GC c 0 35d
 GC f 345c0f9f be3b1c98 80c16cbb
 GC k 0 4
 GC k 3 0
@@ -29983,7 +30098,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapeddlg.cpp.gcda 4233332a 3518bd54 e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapeddlg.cpp.gcda 4233332a 36994198 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -30002,7 +30117,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedit.cpp.gcda 4233332a 3518bee2 e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedit.cpp.gcda 4233332a 369941c6 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -30021,7 +30136,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedplc.cpp.gcda 4233332a 3518bf64 e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedplc.cpp.gcda 4233332a 36994236 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -30040,7 +30155,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedsel.cpp.gcda 4233332a 3518c161 e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedsel.cpp.gcda 4233332a 36994520 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -30059,7 +30174,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedtm.cpp.gcda 4233332a 3518c17a e278e210 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapedtm.cpp.gcda 4233332a 36994523 e278e210 81
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -30078,7 +30193,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapsel.cpp.gcda 4233332a 3518c184 50da092c 89
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mapsel.cpp.gcda 4233332a 36994579 50da092c 89
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -30143,7 +30258,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/menus.cpp.gcda 4233332a 3518c245 8961df2a 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/menus.cpp.gcda 4233332a 369945cf 8961df2a 91
 GC f 6eb3fae3 162affd8 a97cb936
 GC k 0 75
 GC k 4 15
@@ -30172,16 +30287,16 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/miscasm.cpp.gcda 4233332a 3518c2f1 79c4fdeb e9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/miscasm.cpp.gcda 4233332a 36994658 79c4fdeb e9
 GC f 75f0f090 96f86f49 2d8183ea
 GC k 0 3
-GC c 1 a47
-GC c 2 a47
+GC c 1 a2c
+GC c 2 a2c
 GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 13a
+GC c 0 138
 GC f 28e920c4 55ba3ab6 a43083b8
 GC k 0 1
 GC k 3 0
@@ -30232,7 +30347,7 @@ GC c 1 1378
 GC k 6 1
 GC c 0 1d9fffffa
 GC k 7 1
-GC c 0 17d
+GC c 0 17b
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 3 0
@@ -30269,7 +30384,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mission.cpp.gcda 4233332a 3518c3bf 50b46037 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mission.cpp.gcda 4233332a 369946ea 50b46037 91
 GC f 9909b64 b74dd2d1 9c1224e2
 GC k 0 3
 GC c 0 47
@@ -30296,21 +30411,21 @@ GC c 2 75
 GC c 3 359
 GC k 4 0
 GC k 7 1
-GC c 0 29f
+GC c 0 29d
 GC f 4086d24 97572a27 1647dca5
 GC k 0 3
 GC c 1 307
 GC c 2 446
 GC k 4 0
 GC k 7 1
-GC c 0 2b6
+GC c 0 2b4
 GC f 7e084e58 21f67b8b 154aaef7
 GC k 0 2
 GC c 0 472be
 GC c 1 1e9
 GC k 4 0
 GC k 7 1
-GC c 0 2b7
+GC c 0 2b5
 GC f 51a7f7ed 7de72ebf 301baa2f
 GC k 0 40
 GC c 0 35809
@@ -30450,7 +30565,7 @@ GC c 0 c8
 GC c 1 c8
 GC k 4 0
 GC k 7 1
-GC c 0 297
+GC c 0 295
 GC f 135d8dce 9a8ad54b a43083b8
 GC k 0 1
 GC k 4 0
@@ -30487,7 +30602,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/monoc.cpp.gcda 4233332a 3518c45f c9d87b14 e9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/monoc.cpp.gcda 4233332a 36994722 c9d87b14 e9
 GC f 524add6d 88b4dd9b a43083b8
 GC k 0 1
 GC k 3 0
@@ -30543,7 +30658,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 167
+GC c 0 165
 GC f 7c8bc331 c4939a47 614982eb
 GC k 0 8
 GC k 3 0
@@ -30617,7 +30732,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 504
+GC c 0 503
 GC f 7e25dc5 4e1e7a1f 315e0949
 GC k 0 5
 GC c 0 30
@@ -30664,7 +30779,7 @@ GC k 3 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mouse.cpp.gcda 4233332a 3518c93f f1c302c2 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mouse.cpp.gcda 4233332a 36994813 f1c302c2 99
 GC f 662fd3b5 a3c3fa3a c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -30699,7 +30814,7 @@ GC c 1 9
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1db
+GC c 0 1d9
 GC f 1f150af8 462d29a4 588718ec
 GC k 0 8
 GC c 0 3
@@ -30711,7 +30826,7 @@ GC c 7 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 168
+GC c 0 166
 GC f 17af2360 403fc9f6 81f343b9
 GC k 0 4
 GC c 0 3
@@ -30729,7 +30844,7 @@ GC c b e10
 GC k 3 3
 GC k 4 0
 GC k 7 1
-GC c 0 3b1
+GC c 0 3b0
 GC f 56c846fa ed9bd1a3 d386e528
 GC k 0 10
 GC c 1 3
@@ -30741,7 +30856,7 @@ GC c 9 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 192
+GC c 0 190
 GC f 4f16ea90 16366438 8c982ec9
 GC k 0 10
 GC k 3 0
@@ -30761,7 +30876,7 @@ GC k 4 3
 GC t 0 6
 GC v 56c846fa 6
 GC k 7 1
-GC c 0 191
+GC c 0 18f
 GC f 2575d51d 5e146c56 a43083b8
 GC k 0 1
 GC k 3 0
@@ -30832,7 +30947,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mplayer.cpp.gcda 4233332a 3518c9cd f1b51363 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/mplayer.cpp.gcda 4233332a 36994827 f1b51363 91
 GC f 261b5f4a b4325d50 5cde4138
 GC k 0 13
 GC k 4 3
@@ -30905,7 +31020,7 @@ GC c 12 3
 GC c 13 3
 GC k 4 0
 GC k 7 1
-GC c 0 194
+GC c 0 192
 GC f 2a82e147 29d93a19 f2243148
 GC k 0 10
 GC k 4 0
@@ -30970,7 +31085,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/msgbox.cpp.gcda 4233332a 3518ca5b 20d1ed3e 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/msgbox.cpp.gcda 4233332a 3699487c 20d1ed3e 91
 GC f 4a9e7930 fb6db5df e9798888
 GC k 0 5
 GC k 4 0
@@ -31007,7 +31122,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/msglist.cpp.gcda 4233332a 3518ca71 c50c415 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/msglist.cpp.gcda 4233332a 3699499a c50c415 91
 GC f 17349183 85690e2e a177765
 GC k 0 4
 GC k 4 3
@@ -31017,20 +31132,20 @@ GC k 0 4
 GC c 1 2569
 GC k 4 3
 GC k 7 1
-GC c 0 35c
+GC c 0 35a
 GC f 429a9ee1 8b327122 590a4372
 GC k 0 6
 GC c 1 d39
 GC c 5 d39
 GC k 4 3
 GC k 7 1
-GC c 0 39d
+GC c 0 39c
 GC f 7042bcb7 322eec75 feb9219a
 GC k 0 5
 GC c 1 3
 GC k 4 3
 GC k 7 1
-GC c 0 39f
+GC c 0 39e
 GC f 5e346beb e38f8616 120d3ca9
 GC k 0 25
 GC k 4 3
@@ -31061,7 +31176,7 @@ GC c 3 6
 GC c 4 3c
 GC k 4 6
 GC k 7 1
-GC c 0 351
+GC c 0 34f
 GC f 30d39c02 9f022784 f3b49cda
 GC k 0 3
 GC k 4 0
@@ -31076,7 +31191,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 4f6
+GC c 0 4f5
 GC f 28ec36cf 61550b80 b8ea5793
 GC k 0 2
 GC c 0 3
@@ -31108,7 +31223,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/nulldlg.cpp.gcda 4233332a 3518cb94 5d034e29 89
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/nulldlg.cpp.gcda 4233332a 369949b1 5d034e29 89
 GC f 16bbd9b1 147f4e8d de8521ba
 GC k 0 214
 GC k 3 3
@@ -31149,7 +31264,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/object.cpp.gcda 4233332a 3518cc4e 718e2d3d 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/object.cpp.gcda 4233332a 369949d5 718e2d3d 91
 GC f 4f50f9e1 a7b570f1 5cde4138
 GC k 0 13
 GC k 4 3
@@ -31201,7 +31316,7 @@ GC v 6fdc8a5e ca7f
 GC v 3d00097f a64
 GC v 2c59a203 2
 GC k 7 1
-GC c 0 387
+GC c 0 386
 GC f 1f468c2e 6dd32d1a 81f343b9
 GC k 0 4
 GC k 4 9
@@ -31223,7 +31338,7 @@ GC v 6662a515 a7c
 GC v bbe5ce8 99
 GC v 38beb1ff 64
 GC k 7 1
-GC c 0 286
+GC c 0 284
 GC f 57d794c5 5bc3565e f3b49cda
 GC k 0 3
 GC c 0 cf52
@@ -31241,14 +31356,14 @@ GC v 7f68e867 206b
 GC v 54b43b33 161e
 GC v 183161c1 99
 GC k 7 1
-GC c 0 27d
+GC c 0 27b
 GC f 733439f c6c27ef c8579be8
 GC k 0 3
 GC c 0 1144a
 GC c 2 1144a
 GC k 4 0
 GC k 7 1
-GC c 0 2d9
+GC c 0 2d7
 GC f 26970cec ff825f30 58bf504e
 GC k 0 6
 GC k 4 0
@@ -31262,7 +31377,7 @@ GC k 0 1
 GC c 0 d7
 GC k 4 0
 GC k 7 1
-GC c 0 2ba
+GC c 0 2b8
 GC f 12d6ed3c 56e6fcfc 73ff2042
 GC k 0 3
 GC c 0 6
@@ -31272,7 +31387,7 @@ GC k 4 3
 GC t 0 3c
 GC v 62ecf012 3c
 GC k 7 1
-GC c 0 1f0
+GC c 0 1ee
 GC f 17db439e a38f5fd8 c088ff5d
 GC k 0 34
 GC c 0 d816
@@ -31326,7 +31441,7 @@ GC v 77acb0ad b8e5
 GC t 6 63fa
 GC v 382efb5c 63fa
 GC k 7 1
-GC c 0 277
+GC c 0 275
 GC f 54245ef2 97dca080 39dbc07b
 GC k 0 23
 GC c 0 14f
@@ -31412,7 +31527,7 @@ GC v 76200314 502
 GC t 5 1928
 GC v 648cef42 1928
 GC k 7 1
-GC c 0 337
+GC c 0 335
 GC f 61f97494 13b964e2 1b40f3d8
 GC k 0 6
 GC c 0 6cc
@@ -31430,7 +31545,7 @@ GC v 2d5881a7 24
 GC v 63cded60 c
 GC v 78b96ae7 6
 GC k 7 1
-GC c 0 335
+GC c 0 333
 GC f 6ddebaa8 61c38d82 5c34af2e
 GC k 0 19
 GC c 0 7f9
@@ -31492,7 +31607,7 @@ GC v 2c59a203 6b
 GC v 6fdc8a5e 3b
 GC v 3d00097f 20
 GC k 7 1
-GC c 0 273
+GC c 0 271
 GC f 13e17392 edbde44 5138b52b
 GC k 0 12
 GC c 0 6ab
@@ -31538,7 +31653,7 @@ GC v 7f91b6b0 696
 GC v 2293138b e
 GC v 5f90c521 2
 GC k 7 1
-GC c 0 32f
+GC c 0 32d
 GC f 382efb5c 54b6f33a 843ca442
 GC k 0 3
 GC c 0 d2b9
@@ -31546,7 +31661,7 @@ GC c 1 8e4c
 GC c 2 8e4c
 GC k 4 0
 GC k 7 1
-GC c 0 279
+GC c 0 277
 GC f 75661d4 789630d5 f3b49cda
 GC k 0 3
 GC c 0 3
@@ -31554,13 +31669,13 @@ GC c 1 3
 GC c 2 3
 GC k 4 0
 GC k 7 1
-GC c 0 182
+GC c 0 180
 GC f 6e5c8323 dec1e619 a43083b8
 GC k 0 1
 GC c 0 f5f
 GC k 4 0
 GC k 7 1
-GC c 0 333
+GC c 0 331
 GC f 7e8bac75 f787a462 a43083b8
 GC k 0 1
 GC k 4 0
@@ -31587,7 +31702,7 @@ GC v 3dce4ea6 4e9
 GC v 6db68982 38c
 GC v cc74669 9a
 GC k 7 1
-GC c 0 376
+GC c 0 375
 GC f 78f2e329 f7a51b84 188015fb
 GC k 0 25
 GC k 4 33
@@ -31629,7 +31744,7 @@ GC v 405e4181 86
 GC v 6e324bab 55
 GC v 4fc2f907 a
 GC k 7 1
-GC c 0 330
+GC c 0 32e
 GC f 2e4ae510 8ccd6815 31ce59d7
 GC k 0 10
 GC k 4 18
@@ -31673,7 +31788,7 @@ GC k 0 1
 GC c 0 36e
 GC k 4 0
 GC k 7 1
-GC c 0 336
+GC c 0 334
 GC f 44b7416b 2c2b72bb a43083b8
 GC k 0 1
 GC k 4 0
@@ -31703,7 +31818,7 @@ GC k 0 1
 GC c 0 696
 GC k 4 0
 GC k 7 1
-GC c 0 339
+GC c 0 337
 GC f 52844fb1 68bad848 a43083b8
 GC k 0 1
 GC k 4 0
@@ -31747,13 +31862,13 @@ GC v 3f8b69c9 6719
 GC v 6d05013a 1985
 GC v 50e223ae a8e
 GC k 7 1
-GC c 0 37a
+GC c 0 379
 GC f 3f8b69c9 a98d7142 a43083b8
 GC k 0 1
 GC c 0 1f377
 GC k 4 0
 GC k 7 1
-GC c 0 2c6
+GC c 0 2c4
 GC f 6422efe2 56c872dd c0bbb23e
 GC k 0 2
 GC c 0 8ba
@@ -31796,13 +31911,13 @@ GC k 0 1
 GC c 0 12c87
 GC k 4 0
 GC k 7 1
-GC c 0 278
+GC c 0 276
 GC f 3282d832 b18ea43b a43083b8
 GC k 0 1
 GC c 0 1628
 GC k 4 0
 GC k 7 1
-GC c 0 288
+GC c 0 286
 GC f 7f4dbaaa c56ac5b8 a43083b8
 GC k 0 1
 GC k 4 0
@@ -31820,7 +31935,7 @@ GC k 0 1
 GC c 0 7fb
 GC k 4 0
 GC k 7 1
-GC c 0 272
+GC c 0 270
 GC f 166de276 5fd4a392 a43083b8
 GC k 0 1
 GC k 4 0
@@ -31996,7 +32111,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/odata.cpp.gcda 4233332a 3518ce8e 846c0f8a 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/odata.cpp.gcda 4233332a 36994bb6 846c0f8a 81
 GC f 1aedd111 ac3cc68d c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -32075,7 +32190,7 @@ GC f 13e94dd0 6959699d a43083b8
 GC k 0 1
 GC c 0 5a
 GC k 7 1
-GC c 0 51a
+GC c 0 519
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -32086,7 +32201,7 @@ GC f 73e580b9 e4ff503c a43083b8
 GC k 0 1
 GC c 0 32b
 GC k 7 1
-GC c 0 32a
+GC c 0 328
 GC f 4e6525d4 8cebb4cb 698293b8
 GC k 0 9
 GC c 0 3
@@ -32095,7 +32210,7 @@ GC c 4 39
 GC c 6 5a
 GC c 8 3
 GC k 7 1
-GC c 0 25e
+GC c 0 25c
 GC f 7bf1161b 9b412c8d c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -32117,12 +32232,12 @@ GC c 0 313
 GC c 2 313
 GC c 3 1c76
 GC k 7 1
-GC c 0 327
+GC c 0 325
 GC f 5b5fd3ff 455b1c00 a43083b8
 GC k 0 1
 GC c 0 3
 GC k 7 1
-GC c 0 188
+GC c 0 186
 GC f 7cd36490 18e9a148 c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -32150,7 +32265,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/options.cpp.gcda 4233332a 3518cee4 7880db00 89
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/options.cpp.gcda 4233332a 36994bfb 7880db00 89
 GC f 164159d6 dcddbe34 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -32161,7 +32276,7 @@ GC c 0 3
 GC c 1 3
 GC k 3 0
 GC k 7 1
-GC c 0 257
+GC c 0 255
 GC f 30efbd9e 379e9dc7 4d2766f6
 GC k 0 3
 GC c 0 482
@@ -32171,7 +32286,7 @@ GC k 3 3
 GC t 0 6b
 GC v 4 6b
 GC k 7 1
-GC c 0 224
+GC c 0 222
 GC f 4ad653a8 b36b20a8 1353242a
 GC k 0 7
 GC c 0 3
@@ -32183,7 +32298,7 @@ GC c 5 3
 GC c 6 3
 GC k 3 0
 GC k 7 1
-GC c 0 350
+GC c 0 34e
 GC f 260dfed9 fb564df5 98b3d572
 GC k 0 69
 GC k 3 0
@@ -32293,7 +32408,7 @@ GC c 70 3
 GC c 71 3
 GC k 3 0
 GC k 7 1
-GC c 0 199
+GC c 0 197
 GC f 4a1c7e32 3a46b551 64321e13
 GC k 0 11
 GC c 0 1b
@@ -32307,7 +32422,7 @@ GC c 9 1ae5
 GC c a 1b
 GC k 3 0
 GC k 7 1
-GC c 0 19f
+GC c 0 19d
 GC f 6f65caaa cf86aac3 a43083b8
 GC k 0 1
 GC k 3 0
@@ -32318,7 +32433,7 @@ GC c 0 6
 GC c 1 6
 GC k 3 0
 GC k 7 1
-GC c 0 1a5
+GC c 0 1a3
 GC f 191ca9d7 321b35f3 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -32330,7 +32445,7 @@ GC c 1 6
 GC c 2 6
 GC k 3 0
 GC k 7 1
-GC c 0 1a3
+GC c 0 1a1
 GC f 62515b88 ac142bac a43083b8
 GC k 0 1
 GC k 3 0
@@ -32341,7 +32456,7 @@ GC c 0 6
 GC c 1 6
 GC k 3 0
 GC k 7 1
-GC c 0 1a4
+GC c 0 1a2
 GC f 3f1d2f91 d4f4712c c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -32353,7 +32468,7 @@ GC c 1 6
 GC c 2 6
 GC k 3 0
 GC k 7 1
-GC c 0 19d
+GC c 0 19b
 GC f 442b2b7a f4be40d4 ed537659
 GC k 0 4
 GC k 3 0
@@ -32365,7 +32480,7 @@ GC c 1 6
 GC c 2 6
 GC k 3 0
 GC k 7 1
-GC c 0 1a2
+GC c 0 1a0
 GC f 3dc3c250 bb811b9e a43083b8
 GC k 0 1
 GC k 3 0
@@ -32384,7 +32499,7 @@ GC c 0 3
 GC c 1 3
 GC k 3 0
 GC k 7 1
-GC c 0 180
+GC c 0 17e
 GC f 76aed324 81b0508a a43083b8
 GC k 0 1
 GC c 0 3
@@ -32439,7 +32554,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 3 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/overlay.cpp.gcda 4233332a 3518cf52 5ca509c2 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/overlay.cpp.gcda 4233332a 36994cba 5ca509c2 91
 GC f 6d69f913 799a9151 e85787fb
 GC k 0 5
 GC k 4 0
@@ -32458,7 +32573,7 @@ GC c c 313
 GC c d 3
 GC k 4 0
 GC k 7 1
-GC c 0 325
+GC c 0 323
 GC f 1c2f0bb2 faa056aa a2bfbe19
 GC k 0 44
 GC c 0 1302
@@ -32483,7 +32598,7 @@ GC c 2a 32b
 GC c 2b 32b
 GC k 4 3
 GC k 7 1
-GC c 0 32b
+GC c 0 329
 GC f 59db7803 5b285895 75ff8cb6
 GC k 0 4
 GC c 0 32b
@@ -32492,14 +32607,14 @@ GC c 2 32b
 GC c 3 32b
 GC k 4 0
 GC k 7 1
-GC c 0 328
+GC c 0 326
 GC f 25abb107 77c1ab82 7545348d
 GC k 0 3
 GC c 0 32b
 GC c 2 32b
 GC k 4 0
 GC k 7 1
-GC c 0 33a
+GC c 0 338
 GC f d5dd3fc eb4ad938 d6a0c9fe
 GC k 0 3
 GC c 0 18
@@ -32512,7 +32627,7 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1f9
+GC c 0 1f7
 GC f 89e8e54 a24763cf c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -32541,7 +32656,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/power.cpp.gcda 4233332a 3518d05f ed6fd9f8 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/power.cpp.gcda 4233332a 36994cd8 ed6fd9f8 91
 GC f 3d5e76ff 90b0921e c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -32567,7 +32682,7 @@ GC c 0 3
 GC c 1 3
 GC k 4 0
 GC k 7 1
-GC c 0 51b
+GC c 0 51a
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 4 0
@@ -32609,7 +32724,7 @@ GC c 26 3
 GC c 27 d39
 GC k 4 0
 GC k 7 1
-GC c 0 358
+GC c 0 356
 GC f 630d4d83 732e31e9 51203dab
 GC k 0 7
 GC c 0 3
@@ -32620,14 +32735,14 @@ GC c 5 3
 GC c 6 3
 GC k 4 0
 GC k 7 1
-GC c 0 16b
+GC c 0 169
 GC f 1182559c d26c6b82 c0bbb23e
 GC k 0 2
 GC c 0 9
 GC c 1 9
 GC k 4 0
 GC k 7 1
-GC c 0 1df
+GC c 0 1dd
 GC f 5d8512a2 91adc82c c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -32691,7 +32806,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/profile.cpp.gcda 4233332a 3518d10d 6dea6e97 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/profile.cpp.gcda 4233332a 36994d49 6dea6e97 81
 GC f ae710f0 3fd0c733 2ef9ea7e
 GC k 0 15
 GC c 0 3
@@ -32708,7 +32823,7 @@ GC c a 3
 GC c b 3
 GC c e 3
 GC k 7 1
-GC c 0 db
+GC c 0 d9
 GC f 54834134 a4398045 f3b49cda
 GC k 0 3
 GC k 7 1
@@ -32745,7 +32860,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/queue.cpp.gcda 4233332a 3518d1d1 d7c31622 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/queue.cpp.gcda 4233332a 36994e21 d7c31622 91
 GC f 5a23ddb6 545fc828 7506f035
 GC k 0 15
 GC k 4 0
@@ -32772,7 +32887,7 @@ GC c 0 2f85
 GC c 1 307b
 GC k 4 0
 GC k 7 1
-GC c 0 26c
+GC c 0 26a
 GC f 332f247c 68042047 b4aed674
 GC k 0 15
 GC k 4 6
@@ -32891,7 +33006,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/radar.cpp.gcda 4233332a 3518d242 10ffe87 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/radar.cpp.gcda 4233332a 36994f0d 10ffe87 99
 GC f 677649a4 3e5ce349 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -32925,7 +33040,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 51c
+GC c 0 51b
 GC f 3cd83498 cdf49139 79e74596
 GC k 0 21
 GC k 3 0
@@ -32950,7 +33065,7 @@ GC c 3 9
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 171
+GC c 0 16f
 GC f 2ce57162 90d8545b f3b49cda
 GC k 0 3
 GC c 0 3
@@ -32959,7 +33074,7 @@ GC c 2 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 231
+GC c 0 22f
 GC f 4bb73d5b debde6d0 a43083b8
 GC k 0 1
 GC k 3 0
@@ -32980,7 +33095,7 @@ GC v 108a530c 3
 GC t 1 c
 GC v 108a530c c
 GC k 7 1
-GC c 0 175
+GC c 0 173
 GC f 8950231 acf33d1d b6b2669e
 GC k 0 4
 GC c 0 1927
@@ -33036,7 +33151,7 @@ GC c 3 1e0
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2bf
+GC c 0 2bd
 GC f 2b7d532c 13f60ea5 b0e70eca
 GC k 0 5
 GC k 3 0
@@ -33053,7 +33168,7 @@ GC c 0 cac0
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 281
+GC c 0 27f
 GC f 61080c32 275a0ff0 eeba5b48
 GC k 0 36
 GC k 3 0
@@ -33077,7 +33192,7 @@ GC k 4 3
 GC t 0 3
 GC v 108a530c 3
 GC k 7 1
-GC c 0 238
+GC c 0 236
 GC f da0099f bb60fcf6 db8c6573
 GC k 0 9
 GC k 3 0
@@ -33104,7 +33219,7 @@ GC c d d39
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 359
+GC c 0 357
 GC f 31d54c82 aee9d2a5 5198fbe2
 GC k 0 28
 GC k 3 0
@@ -33120,7 +33235,7 @@ GC c 5 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1e0
+GC c 0 1de
 GC f 1a95e663 89d153d1 61aa1bdb
 GC k 0 4
 GC c 0 3
@@ -33129,7 +33244,7 @@ GC c 3 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 16c
+GC c 0 16a
 GC f 55ab905c 4f616b3b c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -33248,7 +33363,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/radio.cpp.gcda 4233332a 3518d389 c3fe9d20 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/radio.cpp.gcda 4233332a 36994fae c3fe9d20 91
 GC f 2a8ac921 e6a58263 c0bbb23e
 GC k 0 2
 GC c 0 114
@@ -33343,7 +33458,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/reinf.cpp.gcda 4233332a 3518d3c3 210f118a 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/reinf.cpp.gcda 4233332a 36994fc2 210f118a 99
 GC f 7748ba9b f132c500 d496dd3a
 GC k 0 15
 GC k 3 0
@@ -33560,7 +33675,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/rules.cpp.gcda 4233332a 3518d3ef 953d3bdc 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/rules.cpp.gcda 4233332a 3699506a 953d3bdc 81
 GC f 7aee2b0d 5b14585a 81f343b9
 GC k 0 4
 GC c 0 3
@@ -33568,7 +33683,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 1b3
+GC c 0 1b1
 GC f 5be0568 55445832 81f343b9
 GC k 0 4
 GC k 7 1
@@ -33587,7 +33702,7 @@ GC c 9 3
 GC c a 3
 GC c b 3
 GC k 7 1
-GC c 0 1b2
+GC c 0 1b0
 GC f 4bb1d932 f5ca6093 12d24e98
 GC k 0 14
 GC k 7 1
@@ -33618,7 +33733,7 @@ GC c 15 3
 GC c 16 3
 GC c 17 3
 GC k 7 1
-GC c 0 1ab
+GC c 0 1a9
 GC f 7ead7f73 5a805bf4 e9d8cf3e
 GC k 0 26
 GC k 7 1
@@ -33629,7 +33744,7 @@ GC c 1 3
 GC c 2 3
 GC c 3 3
 GC k 7 1
-GC c 0 1aa
+GC c 0 1a8
 GC f 4bb866b1 d1b5e4b9 81f343b9
 GC k 0 4
 GC k 7 1
@@ -33649,7 +33764,7 @@ GC c a 9
 GC c b 9
 GC c c 9
 GC k 7 1
-GC c 0 1b4
+GC c 0 1b2
 GC f 3b19fb57 c4abc5c4 30700325
 GC k 0 15
 GC k 7 1
@@ -33705,7 +33820,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/saveload.cpp.gcda 4233332a 3518d496 f700a58 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/saveload.cpp.gcda 4233332a 3699513c f700a58 91
 GC f 4c562eef 8aa280f8 c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -34194,7 +34309,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scenario.cpp.gcda 4233332a 3518d4fc 1c530d30 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scenario.cpp.gcda 4233332a 3699517a 1c530d30 91
 GC f 4f4d0d6d ca1196e6 903a2052
 GC k 0 4
 GC k 4 0
@@ -34223,7 +34338,7 @@ GC c c 3
 GC c d 3
 GC k 4 0
 GC k 7 1
-GC c 0 345
+GC c 0 343
 GC f 15f69651 b2f65ecb 42af7d01
 GC k 0 27
 GC k 4 0
@@ -34268,7 +34383,7 @@ GC k 4 3
 GC t 0 3c
 GC v 62ecf012 3c
 GC k 7 1
-GC c 0 1da
+GC c 0 1d8
 GC f 3677921f 5c8bdb8b 753995cb
 GC k 0 6
 GC c 0 3
@@ -34279,7 +34394,7 @@ GC k 4 3
 GC t 0 3b
 GC v 44ea2832 3b
 GC k 7 1
-GC c 0 346
+GC c 0 344
 GC f bbf4809 63849610 992f0af
 GC k 0 10
 GC c 0 3
@@ -34289,7 +34404,7 @@ GC c 4 3
 GC c 5 2
 GC k 4 0
 GC k 7 1
-GC c 0 1d9
+GC c 0 1d7
 GC f 764e9458 40b44640 6ac79e5c
 GC k 0 8
 GC k 4 0
@@ -34307,7 +34422,7 @@ GC c 7 3
 GC c 23 3
 GC k 4 0
 GC k 7 1
-GC c 0 1d8
+GC c 0 1d6
 GC f 567e28c9 58339438 cb33aa99
 GC k 0 3
 GC c 0 3
@@ -34340,7 +34455,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scenarioini.cpp.gcda 4233332a 3518d53f 27436c3f 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scenarioini.cpp.gcda 4233332a 36995208 27436c3f 99
 GC f 1b931c37 1c7d2f45 f9dffbfa
 GC k 0 9
 GC k 3 0
@@ -34483,7 +34598,7 @@ GC c 89 3
 GC k 3 0
 GC k 4 6
 GC k 7 1
-GC c 0 200
+GC c 0 1fe
 GC f 1c8075c3 6d85af69 bc18d9be
 GC k 0 22
 GC c 0 12c
@@ -34502,7 +34617,7 @@ GC c 15 12c
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 197
+GC c 0 195
 GC f 345c0f9f be3b1c98 80c16cbb
 GC k 0 4
 GC k 3 0
@@ -34618,7 +34733,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/score.cpp.gcda 4233332a 3518d62a b2b60517 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/score.cpp.gcda 4233332a 3699520f b2b60517 99
 GC f 6a56ad91 1d55a402 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -34828,7 +34943,7 @@ GC c 0 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 51d
+GC c 0 51c
 GC f 4a889ea0 5b95ae2c c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -34944,7 +35059,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scroll.cpp.gcda 4233332a 3518d651 54999d62 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/scroll.cpp.gcda 4233332a 36995481 54999d62 91
 GC f d04d7b4 281f1af c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -34974,7 +35089,7 @@ GC c 11 e10
 GC c 12 e10
 GC k 4 6
 GC k 7 1
-GC c 0 3b2
+GC c 0 3b1
 GC f 292fdac1 fe3100da e9798888
 GC k 0 5
 GC c 0 3
@@ -35029,7 +35144,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sdata.cpp.gcda 4233332a 3518d8a6 f8f186d2 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sdata.cpp.gcda 4233332a 3699548d f8f186d2 91
 GC f 3767329c 2bb97ad8 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -35082,7 +35197,7 @@ GC k 0 1
 GC c 0 2d
 GC k 4 0
 GC k 7 1
-GC c 0 51e
+GC c 0 51d
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 4 0
@@ -35096,7 +35211,7 @@ GC k 0 1
 GC c 0 3
 GC k 4 0
 GC k 7 1
-GC c 0 189
+GC c 0 187
 GC f 2827b401 bfab38ec 9c1224e2
 GC k 0 3
 GC c 0 53
@@ -35119,7 +35234,7 @@ GC c 3 2d
 GC c 4 3
 GC k 4 0
 GC k 7 1
-GC c 0 264
+GC c 0 262
 GC f 7a4e4a31 8c668d14 e573299
 GC k 0 3
 GC c 0 76
@@ -35174,7 +35289,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/shapebtn.cpp.gcda 4233332a 3518d930 f0ed57be 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/shapebtn.cpp.gcda 4233332a 36995539 f0ed57be 81
 GC f 6f9783c9 53a1c6a0 f3b49cda
 GC k 0 3
 GC k 7 1
@@ -35183,7 +35298,7 @@ GC k 0 2
 GC c 0 c
 GC c 1 c
 GC k 7 1
-GC c 0 522
+GC c 0 521
 GC f 2a6f8587 db3bedb 8f46797e
 GC k 0 12
 GC k 7 1
@@ -35193,7 +35308,7 @@ GC c 0 c
 GC c 2 c
 GC c 3 c
 GC k 7 1
-GC c 0 24e
+GC c 0 24c
 GC f 48b034c1 a264ceaa f3b49cda
 GC k 0 3
 GC k 7 1
@@ -35230,7 +35345,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sidebar.cpp.gcda 4233332a 3518dacb a91723f3 f9
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sidebar.cpp.gcda 4233332a 36995605 a91723f3 f9
 GC f 56fbd1ba d43062d9 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -35295,7 +35410,7 @@ GC v 1d2024be 18
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 51f
+GC c 0 51e
 GC f 62f78248 958438b3 943c3641
 GC k 0 3
 GC c 0 3
@@ -35308,7 +35423,7 @@ GC v 538dab10 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 521
+GC c 0 520
 GC f 6d89a12a f6681669 943c3641
 GC k 0 3
 GC c 0 3
@@ -35321,7 +35436,7 @@ GC v 538dab10 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 523
+GC c 0 522
 GC f 6f9783c9 53a1c6a0 f3b49cda
 GC k 0 3
 GC k 3 0
@@ -35352,7 +35467,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 520
+GC c 0 51f
 GC f 15215688 76f965f f3b49cda
 GC k 0 3
 GC k 3 0
@@ -35369,7 +35484,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 524
+GC c 0 523
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -35444,7 +35559,7 @@ GC v 4c8032a 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 4ff
+GC c 0 4fe
 GC f 781bb006 799a3e6b 7f63ddfc
 GC k 0 13
 GC k 3 0
@@ -35585,7 +35700,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 258
+GC c 0 256
 GC f 3876027b fbea7099 ed91a435
 GC k 0 7
 GC c 0 6
@@ -35604,7 +35719,7 @@ GC v 6bcc62e1 6
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 24d
+GC c 0 24b
 GC f 133df489 9d099323 b8ea5793
 GC k 0 2
 GC k 3 0
@@ -35633,7 +35748,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 17f
+GC c 0 17d
 GC f 19f9f138 c606908a b8ea5793
 GC k 0 2
 GC k 3 0
@@ -35649,7 +35764,7 @@ GC k 4 60
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1e9
+GC c 0 1e7
 GC f 7ac071d cf026631 d67eb15
 GC k 0 6
 GC c 1 3
@@ -35685,7 +35800,7 @@ GC k 4 9
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 357
+GC c 0 355
 GC f 4579281a a248aa65 13681bbd
 GC k 0 7
 GC k 3 0
@@ -35756,7 +35871,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 24f
+GC c 0 24d
 GC f 266e115b bd5f57a8 be4c877e
 GC k 0 60
 GC c 0 3
@@ -35812,7 +35927,7 @@ GC v 5b039cb1 3
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 23a
+GC c 0 238
 GC f 3cc54516 1799de39 14a90f2c
 GC k 0 5
 GC c 0 9
@@ -35825,7 +35940,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 1de
+GC c 0 1dc
 GC f 75374dc1 97fd999a d8e4443a
 GC k 0 10
 GC c 0 3
@@ -35842,7 +35957,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 16a
+GC c 0 168
 GC f 4b620343 376f5f76 e0ff5df5
 GC k 0 5
 GC c 0 3
@@ -35941,7 +36056,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC c 0 24b
+GC c 0 249
 GC f 6a2e7b91 36316e4e f3b49cda
 GC k 0 3
 GC k 3 0
@@ -36033,7 +36148,7 @@ GC k 4 0
 GC k 5 0
 GC k 6 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/slider.cpp.gcda 4233332a 3518db58 693e562f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/slider.cpp.gcda 4233332a 36995611 693e562f 91
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 4 0
@@ -36150,7 +36265,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/smudge.cpp.gcda 4233332a 3518db54 5688166 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/smudge.cpp.gcda 4233332a 369957f5 5688166 81
 GC f 66af387b d79845a0 b9cb0e6
 GC k 0 7
 GC k 7 1
@@ -36163,7 +36278,7 @@ GC c 0 3
 GC c 1 3
 GC c 13 3
 GC k 7 1
-GC c 0 342
+GC c 0 340
 GC f 405e4181 9b5f92ad 6c281a5d
 GC k 0 20
 GC c 0 192
@@ -36193,7 +36308,7 @@ GC k 0 2
 GC c 0 6
 GC c 1 6
 GC k 7 1
-GC c 0 1fa
+GC c 0 1f8
 GC f 7d9ed197 5e576dc2 b8d19f72
 GC k 0 6
 GC c 0 43
@@ -36232,7 +36347,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sounddlg.cpp.gcda 4233332a 3518dc38 ebd1b032 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/sounddlg.cpp.gcda 4233332a 3699584d ebd1b032 81
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -36287,7 +36402,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/special.cpp.gcda 4233332a 3518dce1 dc814de 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/special.cpp.gcda 4233332a 369958fe dc814de 91
 GC f 308a218d 38517bb 67ca88af
 GC k 0 36
 GC k 4 0
@@ -36320,7 +36435,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/startup.cpp.gcda 4233332a 3518dd42 1a3f45d9 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/startup.cpp.gcda 4233332a 369959a3 1a3f45d9 81
 GC f 5e5a435 7617f45f 5797e7be
 GC k 0 6
 GC c 0 3
@@ -36330,7 +36445,7 @@ GC c 3 3
 GC c 4 3
 GC c 5 3
 GC k 7 1
-GC c 0 e4
+GC c 0 e2
 GC f 69cf90e2 5dec6561 d1c27be2
 GC k 0 3
 GC k 7 1
@@ -36417,7 +36532,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/stats.cpp.gcda 4233332a 3518de20 571d5008 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/stats.cpp.gcda 4233332a 369959ce 571d5008 81
 GC f 677d56a2 47e63933 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -36461,7 +36576,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/super.cpp.gcda 4233332a 3518df47 95d316e9 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/super.cpp.gcda 4233332a 36995a19 95d316e9 81
 GC f f995b80 fec88999 68e06fae
 GC k 0 5
 GC k 7 1
@@ -36493,7 +36608,7 @@ GC f 196af88a d41395f1 a43083b8
 GC k 0 1
 GC c 0 5a
 GC k 7 1
-GC c 0 222
+GC c 0 220
 GC f 7515c88f 10004d8f a43083b8
 GC k 0 1
 GC k 7 1
@@ -36512,7 +36627,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tab.cpp.gcda 4233332a 3518e0ab dc6d2f4a 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tab.cpp.gcda 4233332a 36995a8f dc6d2f4a 91
 GC f 74ea8faf b82a55c2 f3b49cda
 GC k 0 3
 GC c 0 9
@@ -36520,7 +36635,7 @@ GC c 1 9
 GC c 2 9
 GC k 4 0
 GC k 7 1
-GC c 0 1dd
+GC c 0 1db
 GC f 53f7f60f 60cbffb3 449ba5d2
 GC k 0 4
 GC c 0 3
@@ -36528,7 +36643,7 @@ GC c 2 3
 GC c 3 3
 GC k 4 0
 GC k 7 1
-GC c 0 169
+GC c 0 167
 GC f 26406080 b3ba359f 228a9d95
 GC k 0 5
 GC k 4 0
@@ -36555,7 +36670,7 @@ GC c 2 255
 GC c 3 255
 GC k 4 0
 GC k 7 1
-GC c 0 392
+GC c 0 391
 GC f 5cfedf82 f4276481 3edbca73
 GC k 0 21
 GC c 0 d39
@@ -36578,7 +36693,7 @@ GC c 13 3
 GC c 14 d39
 GC k 4 0
 GC k 7 1
-GC c 0 356
+GC c 0 354
 GC f 589da456 5795f6df f3b49cda
 GC k 0 3
 GC c 0 3
@@ -36623,7 +36738,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tarcom.cpp.gcda 4233332a 3518e0da 8a9a52b0 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tarcom.cpp.gcda 4233332a 36995ce9 8a9a52b0 91
 GC f 762d2b92 2029a89b a8b1efc2
 GC k 0 44
 GC c 0 829d
@@ -36697,7 +36812,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/target.cpp.gcda 4233332a 3518e208 98e09909 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/target.cpp.gcda 4233332a 36995d5b 98e09909 91
 GC f 30cfe6fa 5e11159c f625c9e3
 GC k 0 7
 GC k 4 3
@@ -36716,7 +36831,7 @@ GC v 56fa421a 1627
 GC v b4ba585 813
 GC v 6422efe2 4ed
 GC k 7 1
-GC c 0 2cf
+GC c 0 2cd
 GC f 5c0d70f1 6d89264b f3b49cda
 GC k 0 3
 GC c 0 464
@@ -36724,7 +36839,7 @@ GC c 1 464
 GC c 2 464
 GC k 4 0
 GC k 7 1
-GC c 0 2ce
+GC c 0 2cc
 GC f 5cf47a16 6f85992f 4462b650
 GC k 0 3
 GC c 0 87118
@@ -36732,7 +36847,7 @@ GC c 1 c956
 GC c 2 5a7a
 GC k 4 0
 GC k 7 1
-GC c 0 2b4
+GC c 0 2b2
 GC f 4ec2e215 20d89feb b5d4a864
 GC k 0 6
 GC c 0 1fe
@@ -36741,7 +36856,7 @@ GC c 3 1fe
 GC c 4 6aec
 GC k 4 0
 GC k 7 1
-GC c 0 2c9
+GC c 0 2c7
 GC f 4b4e1282 1ce27b46 b5d4a864
 GC k 0 6
 GC k 4 0
@@ -36762,7 +36877,7 @@ GC c f 6408
 GC c 10 1fa
 GC k 4 0
 GC k 7 1
-GC c 0 2cc
+GC c 0 2ca
 GC f 3dd2f7e5 e5bf7871 15262a1d
 GC k 0 4
 GC c 0 3e7
@@ -36837,7 +36952,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tdata.cpp.gcda 4233332a 3518e23e 170849e0 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/tdata.cpp.gcda 4233332a 36995d6c 170849e0 81
 GC f f88008a 4f6d63a0 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -36920,7 +37035,7 @@ GC f 72488e7c 6d38cc53 a43083b8
 GC k 0 1
 GC c 0 60
 GC k 7 1
-GC c 0 525
+GC c 0 524
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 7 1
@@ -36931,17 +37046,17 @@ GC f 40e409f1 26d8ee37 a43083b8
 GC k 0 1
 GC c 0 99
 GC k 7 1
-GC c 0 275
+GC c 0 273
 GC f bbe5ce8 f9d40573 154aaef7
 GC k 0 2
 GC c 0 1af
 GC k 7 1
-GC c 0 27a
+GC c 0 278
 GC f 183161c1 7a0719e5 154aaef7
 GC k 0 2
 GC c 0 1af
 GC k 7 1
-GC c 0 27b
+GC c 0 279
 GC f 41178a2b 584f913e ed537659
 GC k 0 4
 GC k 7 1
@@ -36954,7 +37069,7 @@ GC c 0 99
 GC c 2 99
 GC c 3 84c
 GC k 7 1
-GC c 0 270
+GC c 0 26e
 GC f 5c82aaab 6d92c537 6b0c016
 GC k 0 9
 GC c 0 3
@@ -36963,7 +37078,7 @@ GC c 5 42
 GC c 7 60
 GC c 8 3
 GC k 7 1
-GC c 0 259
+GC c 0 257
 GC f 17949c8b 7655f4a7 c0bbb23e
 GC k 0 2
 GC k 7 1
@@ -36991,7 +37106,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/team.cpp.gcda 4233332a 3518e283 1b493fbb 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/team.cpp.gcda 4233332a 36995de2 1b493fbb 99
 GC f 55cee4ac aec8ad1f 68c7486f
 GC k 0 6
 GC k 3 0
@@ -37396,7 +37511,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1f2
+GC c 0 1f0
 GC f 345c0f9f be3b1c98 80c16cbb
 GC k 0 4
 GC k 3 0
@@ -37612,7 +37727,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/teamtype.cpp.gcda 4233332a 3518e30f 5fdc140d 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/teamtype.cpp.gcda 4233332a 36995e33 5fdc140d 91
 GC f 5196a1d4 68b9d2e1 5fef3502
 GC k 0 15
 GC c 0 186
@@ -37672,7 +37787,7 @@ GC c 2 ae
 GC c 3 32a
 GC k 4 0
 GC k 7 1
-GC c 0 21f
+GC c 0 21d
 GC f 524485f0 bd19cb45 e34eb1cf
 GC k 0 4
 GC k 4 3
@@ -37685,7 +37800,7 @@ GC c 3 12
 GC c 4 fb
 GC k 4 0
 GC k 7 1
-GC c 0 22d
+GC c 0 22b
 GC f 6742248f 6ae37cc7 82761879
 GC k 0 44
 GC k 4 0
@@ -37743,7 +37858,7 @@ GC c 2f 1d
 GC c 31 1d
 GC k 4 0
 GC k 7 1
-GC c 0 219
+GC c 0 217
 GC f 4ceadda7 534d1f02 61df0c17
 GC k 0 12
 GC c 0 3
@@ -37757,14 +37872,14 @@ GC c 8 1d
 GC c 9 3
 GC k 4 0
 GC k 7 1
-GC c 0 211
+GC c 0 20f
 GC f 5f573014 77a1827e c0bbb23e
 GC k 0 2
 GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1f1
+GC c 0 1ef
 GC f 1d53bea7 9c3c4d2e b8ea5793
 GC k 0 2
 GC k 4 0
@@ -37837,7 +37952,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/techno.cpp.gcda 4233332a 3518e317 cc078190 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/techno.cpp.gcda 4233332a 36995e47 cc078190 99
 GC f 15c8a5b8 69ba1eec 7cb67b59
 GC k 0 12
 GC k 3 0
@@ -37860,7 +37975,7 @@ GC v 7761b56 225
 GC t 1 7f
 GC v 6fdc8a5e 7f
 GC k 7 1
-GC c 0 322
+GC c 0 320
 GC f 24ba351b ad301cc8 5d605cca
 GC k 0 7
 GC c 0 225
@@ -37878,7 +37993,7 @@ GC v 7761b56 225
 GC t 1 7f
 GC v 6fdc8a5e 7f
 GC k 7 1
-GC c 0 31f
+GC c 0 31d
 GC f 50f34ad9 2ba0e62f 6c4ff9ea
 GC k 0 6
 GC c 0 225
@@ -37895,7 +38010,7 @@ GC v 7761b56 225
 GC t 1 7f
 GC v 6fdc8a5e 7f
 GC k 7 1
-GC c 0 321
+GC c 0 31f
 GC f 49762e21 f4f2694 94917de3
 GC k 0 4
 GC c 0 378
@@ -37921,7 +38036,7 @@ GC c 0 3b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 31c
+GC c 0 31a
 GC f 2ff702e1 9a915806 a43083b8
 GC k 0 1
 GC k 3 0
@@ -37935,7 +38050,7 @@ GC c 4 3c
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2bb
+GC c 0 2b9
 GC f bd3f03d 5821ee22 c8579be8
 GC k 0 3
 GC c 0 b
@@ -37944,7 +38059,7 @@ GC c 2 b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 316
+GC c 0 314
 GC f 64a3e52 959baf08 1cfbab55
 GC k 0 6
 GC k 3 0
@@ -38083,14 +38198,14 @@ GC v 2c59a203 98ee
 GC v 3d00097f 20ea
 GC v 6fdc8a5e 41
 GC k 7 1
-GC c 0 2a9
+GC c 0 2a7
 GC f 43886ad2 39f144b5 a43083b8
 GC k 0 1
 GC c 0 2bf52
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2a8
+GC c 0 2a6
 GC f 1e1fa5a6 9b9efcfd c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -38181,7 +38296,7 @@ GC c 1 41a5
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 37e
+GC c 0 37d
 GC f bfca27f a686935a c7b20579
 GC k 0 18
 GC k 3 0
@@ -38200,14 +38315,14 @@ GC v 4958d268 351a
 GC v 5098a2eb cb2
 GC v df34949 9a
 GC k 7 1
-GC c 0 37c
+GC c 0 37b
 GC f 32a96f6e 34121411 df01c725
 GC k 0 15
 GC c 0 4c0d
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 37d
+GC c 0 37c
 GC f 8de2526 99933786 bce6a761
 GC k 0 3
 GC c 0 81
@@ -38348,7 +38463,7 @@ GC k 4 3
 GC t 0 66f
 GC v 6fdc8a5e 66f
 GC k 7 1
-GC c 0 320
+GC c 0 31e
 GC f 11ae3290 9e111a98 cf80cb55
 GC k 0 6
 GC k 3 0
@@ -38483,7 +38598,7 @@ GC v 2d5881a7 82
 GC v 63cded60 21
 GC v 78b96ae7 6
 GC k 7 1
-GC c 0 2ed
+GC c 0 2eb
 GC f 71fcdb43 fadf3c3d 5797e7be
 GC k 0 6
 GC c 0 19
@@ -38585,7 +38700,7 @@ GC c 0 2d4d5
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2aa
+GC c 0 2a8
 GC f 4ed2722d 4cae7d3 7f5aad23
 GC k 0 86
 GC c 1 a37
@@ -38968,7 +39083,7 @@ GC v 6267d615 20
 GC t 1 c6
 GC v 7e084e58 c6
 GC k 7 1
-GC c 0 2a4
+GC c 0 2a2
 GC f aed5110 89521513 cbff4273
 GC k 0 57
 GC c 0 3f10
@@ -38999,7 +39114,7 @@ GC v 733439f 3f5b
 GC t a 3f5b
 GC v 733439f 3f5b
 GC k 7 1
-GC c 0 380
+GC c 0 37f
 GC f 4927aa66 f05b9987 6cf1fd40
 GC k 0 13
 GC c 0 372
@@ -39036,7 +39151,7 @@ GC c 8 c8
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 296
+GC c 0 294
 GC f 742133e1 dc2a78a4 547ef78b
 GC k 0 35
 GC c 0 a8e
@@ -39084,7 +39199,7 @@ GC k 4 3
 GC t 0 7bf
 GC v 9ab023 7bf
 GC k 7 1
-GC c 0 2a7
+GC c 0 2a5
 GC f 2293138b 33243db9 4462b650
 GC k 0 3
 GC c 1 10
@@ -39114,7 +39229,7 @@ GC t 1 2b
 GC v 16997784 1a
 GC v 115b7314 11
 GC k 7 1
-GC c 0 2b9
+GC c 0 2b7
 GC f 182205d4 37a97982 837f4d32
 GC k 0 7
 GC k 3 0
@@ -39141,7 +39256,7 @@ GC c 0 259
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 315
+GC c 0 313
 GC f 27ce83e5 8f404f9f 987c8813
 GC k 0 23
 GC c 0 c
@@ -39405,7 +39520,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/template.cpp.gcda 4233332a 3518e4d5 d5d9d2ef 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/template.cpp.gcda 4233332a 36995f0f d5d9d2ef 91
 GC f 169c103b c995fa2f ed537659
 GC k 0 4
 GC k 4 0
@@ -39428,7 +39543,7 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1fb
+GC c 0 1f9
 GC f 5055bef3 692c836c c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -39521,7 +39636,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/terrain.cpp.gcda 4233332a 3518e584 b19daf66 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/terrain.cpp.gcda 4233332a 36996087 b19daf66 91
 GC f 4f75660d 5f3c78df bb95440a
 GC k 0 7
 GC k 4 0
@@ -39540,7 +39655,7 @@ GC c 9 99
 GC c a 3
 GC k 4 0
 GC k 7 1
-GC c 0 26e
+GC c 0 26c
 GC f 2ae110dc 609ae87b 8e1ca7a2
 GC k 0 4
 GC k 4 0
@@ -39614,7 +39729,7 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1fc
+GC c 0 1fa
 GC f 6db68982 79123cf7 ef5e0e05
 GC k 0 9
 GC c 1 38c
@@ -39625,7 +39740,7 @@ GC k 4 3
 GC t 0 38c
 GC v 733439f 38c
 GC k 7 1
-GC c 0 378
+GC c 0 377
 GC f 6dfc3ae4 f71db964 3f9a7cc
 GC k 0 12
 GC c 0 2b8
@@ -39644,7 +39759,7 @@ GC v bbe5ce8 116
 GC t 1 116
 GC v 183161c1 116
 GC k 7 1
-GC c 0 276
+GC c 0 274
 GC f 2a7a1ac3 11598e77 eefbafd6
 GC k 0 7
 GC c 0 99
@@ -39653,7 +39768,7 @@ GC c 3 99
 GC c 4 99
 GC k 4 0
 GC k 7 1
-GC c 0 271
+GC c 0 26f
 GC f 2eebeb10 da765cd 7545348d
 GC k 0 3
 GC k 4 0
@@ -39760,7 +39875,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/textbtn.cpp.gcda 4233332a 3518e646 782c4c5b 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/textbtn.cpp.gcda 4233332a 369960cd 782c4c5b 91
 GC f 4c8032a 776ac9fd f3b49cda
 GC k 0 3
 GC c 0 9
@@ -39768,7 +39883,7 @@ GC c 1 9
 GC c 2 9
 GC k 4 0
 GC k 7 1
-GC c 0 500
+GC c 0 4ff
 GC f 38d22bf3 cb70e124 c0bbb23e
 GC k 0 2
 GC k 4 0
@@ -39793,7 +39908,7 @@ GC k 4 3
 GC t 0 9
 GC v 5b7caf97 9
 GC k 7 1
-GC c 0 249
+GC c 0 247
 GC f 5c6578d0 3c0c74c3 b087d132
 GC k 0 9
 GC k 4 6
@@ -39808,7 +39923,7 @@ GC c 0 9
 GC c 1 9
 GC k 4 0
 GC k 7 1
-GC c 0 244
+GC c 0 242
 GC f 47afc4e1 3d02264d f954e669
 GC k 0 8
 GC k 4 0
@@ -39853,7 +39968,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/theme.cpp.gcda 4233332a 3518e64b b29e681c 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/theme.cpp.gcda 4233332a 36996171 b29e681c 81
 GC f 3073274 665e4902 4d837644
 GC k 0 7
 GC c 0 3
@@ -39864,7 +39979,7 @@ GC c 4 6f
 GC c 5 6f
 GC c 6 3
 GC k 7 1
-GC c 0 15e
+GC c 0 15c
 GC f 11f50a75 82090e35 907c12f6
 GC k 0 10
 GC c 0 3
@@ -39874,7 +39989,7 @@ GC c 6 3
 GC c 7 5a
 GC c 8 15
 GC k 7 1
-GC c 0 20f
+GC c 0 20d
 GC f 4cd6be31 cc2650a0 b64ea06
 GC k 0 23
 GC k 7 1
@@ -39895,7 +40010,7 @@ GC k 0 12
 GC c 0 12
 GC c b 6f
 GC k 7 1
-GC c 0 15f
+GC c 0 15d
 GC f 40ab22c0 74692206 a78c3ee1
 GC k 0 9
 GC k 7 1
@@ -39904,7 +40019,7 @@ GC k 0 8
 GC c 0 f
 GC c 1 f
 GC k 7 1
-GC c 0 1ba
+GC c 0 1b8
 GC f 738d0c1b 129621ed 8b037aba
 GC k 0 14
 GC k 7 1
@@ -39940,7 +40055,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/trigger.cpp.gcda 4233332a 3518e800 80310994 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/trigger.cpp.gcda 4233332a 36996176 80310994 91
 GC f 5f4532cd 5a19a946 903a2052
 GC k 0 4
 GC k 4 0
@@ -39979,7 +40094,7 @@ GC k 4 3
 GC t 0 6
 GC v 7a6fe48a 6
 GC k 7 1
-GC c 0 22e
+GC c 0 22c
 GC f 4f9b6820 241da8b4 21c81752
 GC k 0 13
 GC k 4 6
@@ -39999,7 +40114,7 @@ GC c 3 dd
 GC c 4 22
 GC k 4 0
 GC k 7 1
-GC c 0 22c
+GC c 0 22a
 GC f 70f632d4 ed0952fe a43083b8
 GC k 0 1
 GC k 4 0
@@ -40011,7 +40126,7 @@ GC c 3 123
 GC c 4 22
 GC k 4 0
 GC k 7 1
-GC c 0 22b
+GC c 0 229
 GC f 3179ca0a 2a60b9ec 7545348d
 GC k 0 3
 GC k 4 0
@@ -40028,7 +40143,7 @@ GC c 3 65
 GC c 4 89c
 GC k 4 0
 GC k 7 1
-GC c 0 2a0
+GC c 0 29e
 GC f 7014e422 5eb0e7db c7a3a96a
 GC k 0 8
 GC k 4 0
@@ -40051,7 +40166,7 @@ GC c d 22
 GC c e 22
 GC k 4 0
 GC k 7 1
-GC c 0 22a
+GC c 0 228
 GC f 7b53d459 990f0f4d 227bf044
 GC k 0 12
 GC c 0 3
@@ -40065,7 +40180,7 @@ GC c a 19
 GC c b 3
 GC k 4 0
 GC k 7 1
-GC c 0 229
+GC c 0 227
 GC f 6d95b13 3514bbf7 dcc978ea
 GC k 0 16
 GC c 0 7
@@ -40113,7 +40228,7 @@ GC c 0 6
 GC c 1 6
 GC k 4 0
 GC k 7 1
-GC c 0 1f3
+GC c 0 1f1
 GC f 2d2d6e30 8c13d0f0 6ea0291f
 GC k 0 5
 GC c 0 7
@@ -40169,7 +40284,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/turret.cpp.gcda 4233332a 3518e807 dceb5c5d 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/turret.cpp.gcda 4233332a 369962c8 dceb5c5d 91
 GC f 726bcb47 648d4f94 33359174
 GC k 0 5
 GC c 2 49
@@ -40183,7 +40298,7 @@ GC c 1 20
 GC c 2 20
 GC k 4 0
 GC k 7 1
-GC c 0 2a2
+GC c 0 2a0
 GC f 6f776c40 ed90805b 7cb5c76c
 GC k 0 24
 GC c 0 72c
@@ -40282,7 +40397,7 @@ GC c 1 20
 GC c 2 20
 GC k 4 0
 GC k 7 1
-GC c 0 293
+GC c 0 291
 GC f 22855577 43d3600c f3b49cda
 GC k 0 3
 GC k 4 0
@@ -40330,7 +40445,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/txtlabel.cpp.gcda 4233332a 3518e88a 9771718a 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/txtlabel.cpp.gcda 4233332a 3699634d 9771718a 81
 GC f 30d39c02 9f022784 f3b49cda
 GC k 0 3
 GC k 7 1
@@ -40376,7 +40491,7 @@ GC k 7 1
 GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/udata.cpp.gcda 4233332a 3518e971 f2a4d081 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/udata.cpp.gcda 4233332a 369963a5 f2a4d081 99
 GC f 59a34f49 b90a60b8 c0bbb23e
 GC k 0 2
 GC c 0 3
@@ -40447,7 +40562,7 @@ GC c 0 42
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 526
+GC c 0 525
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -40480,14 +40595,14 @@ GC c 1 57f
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 385
+GC c 0 384
 GC f 65a5c85c da623217 a43083b8
 GC k 0 1
 GC c 0 31
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 21d
+GC c 0 21b
 GC f 7191a661 42bab56d f7a240ca
 GC k 0 14
 GC k 3 0
@@ -40514,7 +40629,7 @@ GC c 1 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 260
+GC c 0 25e
 GC f 6859ddef 3c2a2b6 cba5e1c3
 GC k 0 17
 GC c 0 3
@@ -40536,7 +40651,7 @@ GC c 10 3
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 18a
+GC c 0 188
 GC f bbdf813 849b1cb8 c842fd22
 GC k 0 5
 GC c 0 49
@@ -40546,7 +40661,7 @@ GC c 4 1f
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 21c
+GC c 0 21a
 GC f 7f68e867 ae883e42 154aaef7
 GC k 0 2
 GC c 0 206b
@@ -40554,7 +40669,7 @@ GC c 1 741
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2b0
+GC c 0 2ae
 GC f 57952e32 54021672 c0bbb23e
 GC k 0 2
 GC k 3 0
@@ -40600,7 +40715,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/unit.cpp.gcda 4233332a 3518e991 d54533f 99
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/unit.cpp.gcda 4233332a 369963ac d54533f 99
 GC f 21d8bdee 376c1caf cb32e233
 GC k 0 13
 GC k 3 0
@@ -40617,7 +40732,7 @@ GC c 0 1a005
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 29d
+GC c 0 29b
 GC f 3434df30 ffab7be5 6e7f19ce
 GC k 0 5
 GC k 3 0
@@ -40633,7 +40748,7 @@ GC c 4 c8b
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 384
+GC c 0 383
 GC f 257c22d3 3f642eac f86aa6aa
 GC k 0 6
 GC k 3 0
@@ -40757,7 +40872,7 @@ GC v 7e084e58 1
 GC t 6 1
 GC v 40bc2cdd 1
 GC k 7 1
-GC c 0 291
+GC c 0 28f
 GC f 796cf193 25a3021c a3ea4d25
 GC k 0 5
 GC k 3 0
@@ -40810,7 +40925,7 @@ GC c 3 af
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2e6
+GC c 0 2e4
 GC f 16ead4ff 68bb824 e7334ff0
 GC k 0 8
 GC c 0 253b
@@ -40820,7 +40935,7 @@ GC c 7 253b
 GC k 3 0
 GC k 4 6
 GC k 7 1
-GC c 0 2e8
+GC c 0 2e6
 GC f 1f37d565 a3abbdb9 d102ba4d
 GC k 0 28
 GC c 1 5
@@ -40858,7 +40973,7 @@ GC c 1 6
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 1fd
+GC c 0 1fb
 GC f 74d45864 3c903cb0 68e72fcc
 GC k 0 69
 GC c 1 1060
@@ -40935,7 +41050,7 @@ GC v 19e98a99 31
 GC v 577ce65e 1c
 GC v 4c0861d9 12
 GC k 7 1
-GC c 0 2d0
+GC c 0 2ce
 GC f 535a38da e6514bf8 8d888ede
 GC k 0 11
 GC c 0 7
@@ -40954,7 +41069,7 @@ GC v 733439f a8c
 GC t 1 a8c
 GC v 733439f a8c
 GC k 7 1
-GC c 0 2b1
+GC c 0 2af
 GC f 115b7314 7f2c43c6 e19eacb8
 GC k 0 9
 GC c 0 196
@@ -40967,7 +41082,7 @@ GC c 8 58
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2bc
+GC c 0 2ba
 GC f b4e5e13 156afc5a a1f2e4c7
 GC k 0 11
 GC c 0 91
@@ -41159,7 +41274,7 @@ GC t 2 17d
 GC v 61234d35 147
 GC v 116c7357 36
 GC k 7 1
-GC c 0 383
+GC c 0 382
 GC f 153797b2 4357546 823d0cb0
 GC k 0 108
 GC c 0 187
@@ -41341,7 +41456,7 @@ GC v 40bc2cdd 6
 GC t 6 21
 GC v 1aae53f5 21
 GC k 7 1
-GC c 0 2b3
+GC c 0 2b1
 GC f 35805b09 a16d20bc 9961232c
 GC k 0 9
 GC k 3 0
@@ -41365,7 +41480,7 @@ GC c 5 20
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 292
+GC c 0 290
 GC f 1aab4f18 5a989d89 f3b49cda
 GC k 0 3
 GC c 0 5
@@ -41475,7 +41590,7 @@ GC c 6 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2a1
+GC c 0 29f
 GC f 11d97182 9865c3dc b31bb0c4
 GC k 0 85
 GC c 0 1cd
@@ -41550,7 +41665,7 @@ GC c 2 8fc1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC c 0 2b2
+GC c 0 2b0
 GC f 63cded60 76a87288 c0bbb23e
 GC k 0 2
 GC c 0 4ab
@@ -41749,7 +41864,7 @@ GC k 0 1
 GC k 3 0
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/visudlg.cpp.gcda 4233332a 3518eaf1 3e65d29f 91
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/visudlg.cpp.gcda 4233332a 369963ed 3e65d29f 91
 GC f 39c764e1 6ca57e29 60328dec
 GC k 0 130
 GC k 4 30
@@ -41782,7 +41897,7 @@ GC f 611c378c 6ca668f1 a43083b8
 GC k 0 1
 GC k 4 0
 GC k 7 1
-GC F tiberiandawn/CMakeFiles/VanillaTD.dir/winstub.cpp.gcda 4233332a 3518eb16 c38764df 81
+GC F tiberiandawn/CMakeFiles/VanillaTD.dir/winstub.cpp.gcda 4233332a 3699651a c38764df 81
 GC f 229473ae 97e7aec1 f42c2f58
 GC k 0 7
 GC k 7 1
@@ -41796,7 +41911,7 @@ GC f 3aeb0da8 d5f2da38 a43083b8
 GC k 0 1
 GC c 0 e13
 GC k 7 1
-GC c 0 3a6
+GC c 0 3a5
 GC f 4d78163a 5af16d39 e9798888
 GC k 0 5
 GC k 7 1

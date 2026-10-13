@@ -918,7 +918,20 @@ targets, the commit as points, the shader's own write cache (384 texels) and pas
   round is then three `Render` calls where it was four.
 - `oldPaths` of the machine's behaviour is the switch for both (bit 0 game cameras, bit 1 the
   GPU's camera every round): set from editor code in play mode it gives before and after
-  from one session.
+  from one session. Bit 4 is a test: that camera in a frame's last round only, whatever
+  comes, so that every list is drawn late.
+- **Pictures under those switches.** After a report of stray pieces beside a unit on some
+  scrolls of Tiberian Dawn in the world, its scripted scroll (`docs/tdawn.md`, "A scrolled
+  picture", stopped at frame 150) was run in play mode with `oldPaths` 3 twice, 0, 2, 16 and
+  17, every new picture of the decoded display kept (some 175 a run): the held last picture
+  is the same in all six but the pointer's pixels, the pixels that are one thing for a single
+  picture (the scroll taken out) are the same game's events in each (13 pictures over 300
+  such pixels, one over 1,000, in every run), and no picture has a row of 24 red pixels. With
+  `oldPaths` 1 the pointer lay at the window's edge and dragged the map all the run: nothing
+  either. While a game plays lists come every frame, so the camera is as it was before these
+  switches: only the first list after a second without one is drawn late. Doom's menu over a
+  running demo, 141 pictures one after another with `oldPaths` 0, 3 and 16: the logo's 23,072
+  pixels are the same in every one of a palette. The report was not reproduced.
 
 What those two are worth (13 October 2026, RTX 5090, the Game view in front at 910 x 583, a
 shell's `while :; do :; done` beside the idle desktop, windows of 4 s in turn, `oldPaths` 3

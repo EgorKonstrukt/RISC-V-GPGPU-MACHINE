@@ -373,6 +373,14 @@ own start), and as long again to a mission's first frame.
   `RALERT_MESSAGE_GONE`, `RALERT_READY_DRAW`, `RALERT_CHECK_READY` and `RALERT_CHECK_TRIGGERS`
   are as Tiberian Dawn's of those names (`docs/tdawn.md`); the 1,200-frame sums are
   `9b84ad73` and `709e53d6`.
+- A scrolled picture: `TDAWN_DRAG`, `TDAWN_SELECT`, `TDAWN_SUMS`, `TDAWN_CHECK_GPU` and
+  `TDAWN_PICTURE` are Tiberian Dawn's, under those names (`docs/tdawn.md`, "A scrolled
+  picture"; the lines begin `rasum:` and `ragpu:`). On 13 October 2026 the Allied mission's
+  1,360 frames of the one-pixel sweep are the same with `RALERT_REFRESH=1`; the Soviet
+  mission's differ in 57 frames in a row (818 pixels at the view's lower left, frame 1077),
+  and there the kept scene is the game's own drawing (`RALERT_RENDER=soft`) and the scene
+  made whole is not: something at the view's left edge that a scene from nothing leaves out.
+  Not explained, and the GPU's check was not run for Red Alert.
 - A change to the game must leave its `state` sum the same: `01e0dd60` for the Soviet mission
   (SCU01EA) and `ea72a5d1` for the Allied one (SCG02EA) at frame 300 with seed 7.
 - The picture against the game's own drawing (`RALERT_RENDER=soft`, both held at one frame):

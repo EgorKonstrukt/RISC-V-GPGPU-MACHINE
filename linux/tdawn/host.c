@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <GLES/segl.h>
 #include "nano-X.h"
 #include "host.h"
@@ -418,7 +420,7 @@ whole_window(int origin_x, int origin_y)
 #define ATLAS_W		1024		/* texels across: a texture coordinate is a 1,024th */
 #define ATLAS_ROWS	2048
 #define VIEW_ROWS	1024		/* what one texture of it shows; the sprites' start at 512 and 1024 */
-#define SHADE_W		128
+#define SHADE_W		256
 #define SHADE_H		256
 
 static unsigned char *atlas, *masks;
@@ -1088,6 +1090,107 @@ scene_job(uint32_t counts, uint32_t last)
 				sprite_now(n->kind, n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
 	}
 	return counts;
+}
+
+/* One rectangle into host_scene_picture()'s two pictures, as the GPU's pass would lay it. */
+static void
+picture_rect(unsigned char *index, unsigned int *dark, int kind, int x, int y, int w, int h, int ax, int ay, unsigned int colour)
+{
+	int r, c;
+
+	for (r = y < 0 ? -y : 0; r < h && y + r < screen_h; r++)
+		for (c = x < 0 ? -x : 0; c < w && x + c < screen_w; c++) {
+			int at = (y + r) * screen_w + x + c, u = ax + c, v = ay + r;
+
+			if (kind == NOTE_BLOCK) {
+				index[at] = 0, dark[at] = 1;
+			} else if (kind == HOST_KEYED || kind < 0) {
+				if (atlas[v * ATLAS_W + u] || kind < 0)
+					index[at] = atlas[v * ATLAS_W + u], dark[at] = 0;
+			} else if (kind == HOST_MASK) {
+				if (masks[v * (ATLAS_W / 8) + (u >> 3)] & (0x80 >> (u & 7)))
+					dark[at] = dark[at] * 31 + (colour >> 24) + 2;
+			} else {
+				dark[at] = dark[at] * 31 + shades[v * SHADE_W + u] + 1;
+			}
+		}
+}
+
+/*
+ * For a test (TDAWN_CHECK_REDRAW): the scene as its notes and the kept cells have it now, drawn
+ * here: a pixel's index from the atlas, and a sum of what darkens it. Without the page.
+ */
+void
+host_scene_picture(unsigned char *index, unsigned int *dark)
+{
+	int part, i, k;
+
+	scene_finish();
+	memset(index, 0, screen_w * screen_h);
+	memset(dark, 0, screen_w * screen_h * sizeof *dark);
+	if (!tiles)
+		return;
+	for (i = 0; i < tile_count; i++) {
+		const unsigned int *t = tiles + 16 * i;
+
+		if (t[8] | t[9])
+			picture_rect(index, dark, -1, (int)((t[0] * screen_w + ONE - 1) >> 16) + scene_at[0],
+				(int)((t[1] * screen_h + ONE - 1) >> 16) + scene_at[1], 24, 24, (int)(t[3] & 0xffff), (int)(t[3] >> 16), 0);
+	}
+	for (part = 0; part < SCENE_PARTS; part++) {
+		const struct scene_note *n = scene_notes[part];
+
+		for (i = 0; i < scene_noted[part]; i++, n++) {
+			const struct host_quad *q = (const struct host_quad *)(uintptr_t)n->x;
+
+			if (n->kind != NOTE_QUADS) {
+				picture_rect(index, dark, n->kind, n->x, n->y, n->width, n->height, n->atlas_x, n->atlas_y, n->colour);
+				continue;
+			}
+			for (k = 0; k < n->y; k++, q++) {
+				int x = q->x + scene_at[0], y = q->y + scene_at[1];
+
+				if (x < scene_view[2] && y < scene_view[3] && x + q->w > scene_view[0] && y + q->h > scene_view[1])
+					picture_rect(index, dark, q->kind, x, y, q->w, q->h, q->ax, q->ay, q->colour);
+			}
+		}
+	}
+}
+
+/*
+ * For a test (TDAWN_CHECK_GPU): the window's picture as the GPU left it in the window's own
+ * buffer (docs/gpu.md), a word a pixel in rows of *row. NULL where the window has no buffer.
+ */
+const unsigned int *
+host_window_picture(int *width, int *height, int *row)
+{
+	static int fd = -1;
+	static unsigned char *map;
+	static uint32_t mapped = ~0u;
+	GR_WINDOW_INFO info;
+	uint32_t at;
+
+	scene_finish();
+	host_settle();
+	GrGetWindowInfo(window, &info);
+	if (!info.surface_address || info.width <= 0)
+		return NULL;
+	at = info.surface_address - 0x86000000u;	/* (the device's memory, from its start) */
+	if (mapped != (at & ~0xfffu)) {
+		if (map)
+			munmap(map, 4 << 20);
+		if (fd < 0)
+			fd = open("/dev/gpu", O_RDWR);
+		map = mmap(0, 4 << 20, PROT_READ, MAP_SHARED, fd, at & ~0xfffu);
+		if (map == MAP_FAILED) {
+			map = NULL;
+			return NULL;
+		}
+		mapped = at & ~0xfffu;
+	}
+	*width = info.width, *height = info.height;
+	*row = info.surface_row ? (int)info.surface_row : info.width;
+	return (const unsigned int *)(map + (at & 0xfffu));
 }
 
 /* A rectangle more than a part has room to note is left out (a part is 4,096 of them). */

@@ -386,6 +386,35 @@ static void Drag_Poll(void)
     }
 }
 
+// TDAWN_DRAG=N, for a test: from the Nth call in a mission the map is dragged a pixel a call, so
+// that the view comes to every place of a cell: each way and back, a cell's 24 x 24 places
+// row by row, then 120 pixels each way and back (the map's edges). False when it is over.
+static bool Drag_Script(int* dx, int* dy)
+{
+    static const signed char way[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+    static int from = -1, calls, first;
+
+    if (from < 0) {
+        const char* text = getenv("TDAWN_DRAG"); // (N,S: from step S of the script)
+        from = text ? atoi(text) : 0;
+        first = text && strchr(text, ',') ? atoi(strchr(text, ',') + 1) : 0;
+    }
+    int step = from && InMainLoop ? calls++ - from : -1;
+    step = step < 0 ? -1 : step + first;
+    if (step < 0 || step >= 240 + 600 + 480) {
+        return false;
+    }
+    if (step < 240) {
+        *dx = way[step / 30][0], *dy = way[step / 30][1];
+    } else if (step < 840) {
+        int row = (step - 240) / 25, at = (step - 240) % 25;
+        *dx = at == 24 ? 0 : row & 1 ? -1 : 1, *dy = at == 24;
+    } else {
+        *dx = way[(step - 840) / 120][0], *dy = way[(step - 840) / 120][1];
+    }
+    return true;
+}
+
 // How far the pointer has dragged the map since the last call, in the game's pixels.
 bool ShaderEmu_Drag(int* dx, int* dy)
 {
@@ -393,7 +422,7 @@ bool ShaderEmu_Drag(int* dx, int* dy)
     *dx = Drag_DX;
     *dy = Drag_DY;
     Drag_DX = Drag_DY = 0;
-    return Drag_State == 2 || *dx || *dy;
+    return Drag_Script(dx, dy) || Drag_State == 2 || *dx || *dy;
 }
 
 void WWKeyboardClassShaderEmu::Fill_Buffer_From_System(void)
