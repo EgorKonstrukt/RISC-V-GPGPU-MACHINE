@@ -15,6 +15,16 @@ const volatile unsigned* gpuControl(int offset) {
     return gpu ? (const volatile unsigned*)(gpu + offset) : 0;
 }
 
+// Where the window's first pixel is on the display: its place in each window it is inside.
+void gpuWindowOrigin(int* x, int* y) {
+    GR_WINDOW_INFO info;
+    *x = *y = 0;
+    for (GR_WINDOW_ID id = window; gpu && id; id = info.parent) {
+        GrGetWindowInfo(id, &info);
+        *x += info.x, *y += info.y;
+    }
+}
+
 unsigned gpuAddress(const void* memory) { return GPU_PHYS + (uint32_t)((const uint8_t*)memory - gpu); }
 
 void gpuProjection(const float* columns) {

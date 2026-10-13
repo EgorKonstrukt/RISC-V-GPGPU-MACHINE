@@ -94,6 +94,10 @@ side (400 m both, or 0 and 25 m); nothing is synced.
 - A sky that a program lays on its picture (`FRAGMENT_LAID`: Doom's) is a panorama here, four of
   its picture to a turn round the visitor.
 - A program sends only what its own camera sees. Behind the seat there is usually nothing.
+- A program's textures, light maps and vertices may be files in the ROM (Quake III Arena's all
+  are, `docs/quake3.md`): the pass reads the ROM's four textures as the GPU's does, and the
+  two materials are given them by "ShaderEmu/Give the holodecks' world the ROM" (the first
+  image's; a second boot image would need them set when it is chosen).
 
 ## The room's own things before the program's world
 

@@ -66,7 +66,7 @@ public static partial class ShaderEmuBuilder
     // A holodeck's own things stay before the program's world (HoloGuard.shader): a copy of the
     // seats', stands' and screens' models, of each screen's glass and of each stand's panel,
     // which draws only a mark where the thing itself is seen.
-    const float SeatHeight = 0.38f;   // where a sitter's hips are put (0.50 sat them too high in a headset)
+    const float SeatHeight = 0.23f;   // where a sitter's hips are put (0.50 and 0.38 sat them too high in a headset)
 
     static void HoloGuards(Transform world)
     {
@@ -280,11 +280,34 @@ public static partial class ShaderEmuBuilder
             seat.localPosition = new Vector3(seat.localPosition.x, 0, seat.localPosition.z);
             BoxCollider reach = seat.GetComponent<BoxCollider>();
             if (reach != null) reach.center = new Vector3(0, 0.15f + SeatHeight, 0);
+            // (the program's camera stands at the sitter's eyes: it comes with them)
+            Transform eye = seat.parent.Find("Seat eye");
+            if (eye != null) eye.localPosition = new Vector3(eye.localPosition.x, SeatHeight + 0.7f, eye.localPosition.z);
             EditorUtility.SetDirty(seat);
             count++;
         }
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
         Debug.Log("[ShaderEmu] " + count + " seats wait on the floor and rise under their sitters (the scene is not saved)");
+    }
+
+    // A program's textures, light maps and models may be files in the ROM (Quake III Arena's all are).
+    static void GiveRom(Material m)
+    {
+        for (int lane = 0; lane < 4; lane++)
+            m.SetTexture("_Data_MTD_" + "RGBA"[lane], AssetDatabase.LoadAssetAtPath<Texture2D>(ShaderEmuImages.LanePath(ShaderEmuImages.Images[0].name, "rom", lane)));
+        EditorUtility.SetDirty(m);
+    }
+
+    [MenuItem("ShaderEmu/Give the holodecks' world the ROM")]
+    public static void GiveHolodecksRom()
+    {
+        foreach (string name in new[] { "GpuHolodeck", "GpuVolume" })
+        {
+            Material m = AssetDatabase.LoadAssetAtPath<Material>(Generated + "/" + name + ".mat");
+            if (m != null) GiveRom(m);
+        }
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ShaderEmu] the holodecks' world reads the ROM");
     }
 
     [MenuItem("ShaderEmu/Add the holodecks' guards to the open scene")]
@@ -376,6 +399,7 @@ public static partial class ShaderEmuBuilder
         Material volumeMat = AssetDatabase.LoadAssetAtPath<Material>(Generated + "/GpuVolume.mat");
         if (volumeMat != null) sceneMat.SetTexture("_State", volumeMat.GetTexture("_State"));
         sceneMat.SetVector("_ScreenSize", new Vector4(1.28f, 0.8f, 0, 0));
+        GiveRom(sceneMat);
         sceneMat.renderQueue = 2503;   // one later than its shader says: the room's own things are marked between the mask and it (HoloGuards)
 
         Transform content = new GameObject("Holodeck content").transform;

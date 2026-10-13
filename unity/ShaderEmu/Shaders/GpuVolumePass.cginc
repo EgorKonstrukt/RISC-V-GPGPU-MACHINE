@@ -9,6 +9,12 @@ float _Plane;
 #ifdef HOLODECK
 float4 _RoomMin, _RoomMax;   // the holodeck in use, in the world
 #endif
+// The ROM, for textures, light maps and vertices that are files in it.
+Texture2D<float4> _Data_MTD_R;
+Texture2D<float4> _Data_MTD_G;
+Texture2D<float4> _Data_MTD_B;
+Texture2D<float4> _Data_MTD_A;
+#define GPU_ROM
 #define GPU_STATE _State
 #define GPU_VOLUME
 #define GPU_VOLUME_PASS _VolumePass

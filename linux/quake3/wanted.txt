@@ -38,6 +38,7 @@ file models/players/sarge/upper_default_default.skin
 file q3history
 file scripts/arenas.txt
 file scripts/bots.txt
+model models/mapobjects/banner/banner5.md3
 model *1
 model *10
 model *11

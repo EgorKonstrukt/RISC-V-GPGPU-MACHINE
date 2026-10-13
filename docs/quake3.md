@@ -10,8 +10,20 @@ GPU, and most of what it draws it reads where a file lies in the ROM.
     python tools\make_linux_image.py
 
 In the guest: `nano-X -p & quake3 +map q3dm17 +addbot sarge 3`, or Quake III Arena in the
-Start menu's Games. Lines typed at the terminal it was started from are console commands.
-The demo's 47 MB pak is fetched by the build and not kept; what goes into the image is 15.6 MB.
+Start menu's Games, which opens the main menu. Lines typed at the terminal it was started
+from are console commands. The demo's 47 MB pak is fetched by the build and not kept; what
+goes into the image is 15.8 MB.
+
+The main menu is cut down to what works here (`q3_ui/ui_menu.c` in the patch): the level
+against Sarge at three skills (I CAN WIN, HURT ME PLENTY, HARDCORE: `addbot sarge` 1, 3, 4)
+and EXIT, which asks nothing. Its icon is ioquake3's (`linux/apps/icons/quake3.png`).
+A menu's cursor is the desktop's pointer: `SE_Input` tells the menus where it is in the
+window, not how far it went (`UI_MouseEvent` in the patch), and their own cursor is not drawn.
+
+The game's picture keeps the size the window had when it started and is stretched to the
+window as it is now (`picture_viewport` in `tr_shaderemu.c`); the pointer's place in a menu
+and the sky's repeats go by the same two ratios. Before, a resized window showed the first
+size's picture in its corner.
 
 Not tried by hand: the keys, the pointer, the menus, the sound by ear. On 13 October 2026
 it was run by typed commands only, and its pictures were compared with the GPU's model.
@@ -36,7 +48,7 @@ it was run by typed commands only, and its pictures were compared with the GPU's
 | | |
 |---|---|
 | `quake3-pak0.pk3` | 2.5 MB, stored and not compressed: what the game reads itself (the level for collision without its light maps, the bots' navigation, their scripts) |
-| `quake3-se.dat` | 13.1 MB: pictures 6.3, sounds 3.0 (halved to 11 kHz: `--sound-rate`), models 1.6, the level 1.4 (1 MB of it the light grid), light maps 0.4 |
+| `quake3-se.dat` | 13.3 MB: pictures 6.5 (0.2 of it the menu's banner), sounds 3.0 (halved to 11 kHz: `--sound-rate`), models 1.6, the level 1.4 (1 MB of it the light grid), light maps 0.4 |
 
 - **Pictures** are decoded and halved to 128 texels a side (256 for the flat screen's) when
   baked: three bytes a texel, or words where a picture's alpha is used.
@@ -109,6 +121,16 @@ build with two bots: 13 to 16.5 frames a second, passes 99.9% used, the worker's
     QUAKE3_WANTED=1       a line for every file, model, picture and sound asked for; nothing is "missing"
     QUAKE3_DEFINES=-DSE_MEMPROF QUAKE3_LINK=-Wl,--wrap=memset,--wrap=memcpy   (to build.sh) who fills and copies how much
 
+## In a holodeck
+
+The room draws the frame's list itself (`docs/holodeck.md`), so its pass must read what the
+GPU's reads: `GpuVolumePass.cginc` has the ROM's four textures (the materials get them from
+"ShaderEmu/Give the holodecks' world the ROM"), and `volume_vertex` in `src/gpu.h` moves a
+texture and places a light map as `gpu_vertex_sized` does. Before, nothing of the game had
+a texture or a shape there. The level is sent whole whatever the camera sees, up is z
+(`seglWorldUp`), and with tracked hands the aim's rise is the right hand's (`SE_Input`).
+On 13 October 2026 the three shaders compiled in the editor; nobody had sat in it yet.
+
 ## The server on a worker core
 
 As Quake's (`docs/quake.md`), and easier in that the two are a server and a client already:
@@ -137,6 +159,7 @@ texture, the capture being a frame older than the list; `hold` now waits for the
 ## Not done
 
 - Playing it by hand, and hearing it. The pointer turns the view only while it is over the window.
-- A second character, the other three levels of the demo, the main menu's way into a game.
+- A second character, the other three levels of the demo, the menu's setup pages.
 - Marks and dynamic lights; the server's frame for two bots.
-- Seeing it in the Unity world: its shader sources and boot image were brought there on 13 October 2026, and it was not started.
+- The menu's picture was not captured (the card was in use): it was driven by `nxkey` on
+  `rvc_cpu`, 93 thousand instructions a frame, and a game started from it.

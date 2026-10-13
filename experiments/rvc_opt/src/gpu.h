@@ -578,6 +578,17 @@ gpu_varyings volume_vertex(uint id, uint base, uint4 head, out float3 eye, out f
     // every pass is drawn as pass 0: what blends there is solid here
     o.texture_info = uint4(how.g, how.a, more.r, more.g);
     o.key = more.b;
+    if (how.r & VERTEX_MOVED) {
+        uint rows = texel_of(ram(base + 3).a);
+        float3 at = float3(o.uv, 1.0);
+        o.uv = float2(dot(gpu_number(fl, ram(rows)).xyz, at), dot(gpu_number(fl, ram(rows + 1)).xyz, at));
+    }
+    if ((how.g & FRAGMENT_LIT) && (how.r & VERTEX_COMPACT)) {
+        uint4 lit = ram(base + 3);
+        uint at = ram_word(lit.r + 4 * k);
+        o.light_uv = float2(at & 0xffff, at >> 16) / 65535.0;
+        o.light_info = uint3(lit.g, lit.b & 0xffff, lit.b >> 16);
+    }
     float4 mx = gpu_number(fl, ram(u + 4)), my = gpu_number(fl, ram(u + 5)), mz = gpu_number(fl, ram(u + 6));
     eye = float3(dot(mx, pos), dot(my, pos), dot(mz, pos));
     if (how.r & VERTEX_POINTS) eye.xy += gpu_corner(gpu_number(fl, ram(base + 3)), corner, -eye.z);

@@ -24,6 +24,7 @@ nxplay                  apps/multimedia-audio-player
 nxvideo                 apps/multimedia-video-player
 doom,doom.bin           doom
 quake,quake.bin         quake
+quake3,quake3.bin       quake3
 classicube,classicube.bin classicube
 tdawn,tdawn.bin         tdawn
 ralert,ralert.bin       ralert

@@ -139,6 +139,17 @@ int SE_ClientPlaying (void)
 }
 
 static int		mouse_x, mouse_y, mouse_known, mouse_inside = 1;
+static int		origin_x, origin_y, origin_known, mouse_menu;	/* the window's place on the display */
+static int		window_w, window_h;	/* its size now: the game's picture is config's, stretched to it */
+
+/* A rectangle of the game's picture (y down) as the window's pixels. */
+static void picture_viewport (int x, int y, int w, int h)
+{
+	int	x0 = x * window_w / config.vidWidth, x1 = (x + w) * window_w / config.vidWidth;
+	int	y0 = y * window_h / config.vidHeight, y1 = (y + h) * window_h / config.vidHeight;
+
+	glViewport (x0, window_h - y1, x1 - x0, y1 - y0);
+}
 
 static int game_key (int ch)
 {
@@ -171,19 +182,33 @@ void SE_Input (void)
 {
 	static unsigned	seen[4], asked_ms;
 	static int	ask = 8;
-	const volatile unsigned *input;
+	const volatile unsigned *input, *host;
 	GR_EVENT	e;
 	int		i, key, down;
 
 	if (!opened)
 		return;
 	input = gpuControl (REG_INPUT);
+	host = seglHostState ();
+	if (host && SEGL_HOST_HOLODECK (host) && SEGL_HOST_HANDS (host)) {
+		/* seated in a holodeck the room keeps the horizon: the aim's rise is the right hand's (docs/holodeck.md) */
+		float rise = SEGL_HOST_HAND_PITCH (host, 1) * (360.0f / 65536.0f);
+
+		cl.viewangles[PITCH] = (rise > 80 ? -80 : rise < -80 ? 80 : -rise) - SHORT2ANGLE (cl.snap.ps.delta_angles[PITCH]);
+	}
 	if (mouse_inside) {
 		int x = (int)input[0], y = (int)input[1];
 
-		if (mouse_known && (x != mouse_x || y != mouse_y))
+		int menu = (Key_GetCatcher () & KEYCATCH_UI) != 0;
+
+		/* a menu's cursor is the pointer itself: it is told where in the window, not how far (ui_atoms.c) */
+		if (menu && (!origin_known || !mouse_menu || x != mouse_x || y != mouse_y)) {
+			if (!origin_known)
+				gpuWindowOrigin (&origin_x, &origin_y), origin_known = 1;
+			Com_QueueEvent (0, SE_MOUSE, (x - origin_x) * config.vidWidth / window_w, (y - origin_y) * config.vidHeight / window_h, 0, NULL);
+		} else if (!menu && mouse_known && (x != mouse_x || y != mouse_y))
 			Com_QueueEvent (0, SE_MOUSE, x - mouse_x, y - mouse_y, 0, NULL);
-		mouse_x = x, mouse_y = y, mouse_known = 1;
+		mouse_x = x, mouse_y = y, mouse_known = 1, mouse_menu = menu;
 	}
 	for (i = 2; i < 4; i++)		/* the buttons, and the count of keys */
 		if (seen[i] != input[i]) {
@@ -207,12 +232,18 @@ void SE_Input (void)
 			mouse_inside = 0;
 			break;
 		case GR_EVENT_TYPE_UPDATE:
-			if (e.update.utype == GR_UPDATE_SIZE)
+			if (e.update.utype == GR_UPDATE_SIZE) {
 				seglWindowChanged ();
+				seglSize (&window_w, &window_h);
+				if (window_w < 1 || window_h < 1)
+					window_w = config.vidWidth, window_h = config.vidHeight;
+			}
+			origin_known = 0;
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 		case GR_EVENT_TYPE_BUTTON_UP:
 			down = e.type == GR_EVENT_TYPE_BUTTON_DOWN;
+			origin_x = e.button.rootx - e.button.x, origin_y = e.button.rooty - e.button.y, origin_known = 1;
 			if (e.button.changebuttons & GR_BUTTON_L)
 				Com_QueueEvent (0, SE_KEY, K_MOUSE1, down, 0, NULL);
 			if (e.button.changebuttons & GR_BUTTON_R)
@@ -472,7 +503,7 @@ static void view_set (const refdef_t *fd)
 	m[1] = u[0], m[5] = u[1], m[9] = u[2], m[13] = -DotProduct (u, o);
 	m[2] = -f[0], m[6] = -f[1], m[10] = -f[2], m[14] = DotProduct (f, o);
 	m[3] = m[7] = m[11] = 0, m[15] = 1;
-	glViewport (fd->x, config.vidHeight - (fd->y + fd->height), fd->width, fd->height);
+	picture_viewport (fd->x, fd->y, fd->width, fd->height);
 	gpuProjection (p);
 	gpuModelview (m);
 	matrix_is = 1;
@@ -639,7 +670,7 @@ static void run_now (const se_run_t *r, const run_t *w, unsigned *c)
 		float		u = -yaw * 4 * config.vidWidth * (4.0f / 1024), v = pitch * config.vidHeight * (4.0f / 1024);
 
 		c[12] = float_bits (u - floor_of (u)), c[13] = float_bits (v - floor_of (v));
-		c[14] = c[15] = float_bits (4.0f);
+		c[14] = float_bits (4.0f * config.vidWidth / window_w), c[15] = float_bits (4.0f * config.vidHeight / window_h);
 	}
 }
 
@@ -1121,7 +1152,7 @@ static void RE_StretchPic (float x, float y, float w, float h, float s1, float t
 
 		memset (m, 0, sizeof m);
 		m[0] = 2.0f / config.vidWidth, m[5] = -2.0f / config.vidHeight, m[10] = -1, m[12] = -1, m[13] = 1, m[15] = 1;
-		glViewport (0, 0, config.vidWidth, config.vidHeight);
+		picture_viewport (0, 0, config.vidWidth, config.vidHeight);
 		gpuProjection (m);
 		memset (m, 0, sizeof m);
 		m[0] = m[5] = m[10] = m[15] = 1;
@@ -1281,6 +1312,7 @@ static void RE_BeginRegistration (glconfig_t *out)
 	config.numTextureUnits = 1;
 	config.colorBits = 32, config.depthBits = 24;
 	seglSize (&config.vidWidth, &config.vidHeight);
+	window_w = config.vidWidth, window_h = config.vidHeight;
 	config.windowAspect = (float)config.vidWidth / config.vidHeight;
 	config.displayFrequency = 60;
 	*out = config;

@@ -30,6 +30,7 @@ typedef struct {
 	unsigned	more[4];		/* the command's words 12 to 15 */
 } gpu_state;
 
+void gpuWindowOrigin (int *x, int *y);	/* the window's first pixel on the display */
 unsigned gpuAddress (const void *memory);	/* GPU memory as a command names it */
 void gpuProjection (const float *columns);	/* the matrices draws are made with from now on */
 void gpuModelview (const float *columns);

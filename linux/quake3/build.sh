@@ -141,5 +141,5 @@ exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /tmp/quake3 +set s
 EOF
 chmod +x "$OUT/usr/bin/quake3"
 # (from the menu: the level, and the one bot the worker core keeps up with: docs/quake3.md)
-echo "Games/Quake III Arena=quake3 +map q3dm17 +addbot sarge 3" > "$OUT/usr/share/nxapps.71-quake3"
+echo "Games/Quake III Arena=quake3" > "$OUT/usr/share/nxapps.71-quake3"
 ls -l "$OUT/usr/bin/quake3.bin" "$OUT/usr/share/quake3-pak0.pk3" "$OUT/usr/share/quake3-se.dat"
