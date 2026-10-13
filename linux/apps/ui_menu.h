@@ -21,7 +21,7 @@ struct ui_menu_item {
 	const struct ui_menu_item *sub;		/* its own menu, or NULL */
 	int sub_count;
 	int flags;
-	const char *icon_file;			/* or a file with an icon of its own (a program), which comes first */
+	const char *icon_file;			/* or a file's own icon (a program's), which comes first: the cell if it has none */
 };
 #define UI_MENU_GREY 1		/* shown, not to be chosen */
 #define UI_MENU_LINE 2		/* a line above it */
@@ -78,7 +78,8 @@ ui_menu_draw(int k)
 			GrFillRect(w, ui_menu_gc, 2, y + 1, width - 4, UI_MENU_ROW - 1);
 		}
 		if (item->icon_file && item->icon_file[0])
-			GrDrawImageFromFile(w, ui_menu_gc, 5, y + 2, 16, 16, (char *)item->icon_file, GR_IMAGE_ICON(16));
+			GrDrawImageFromFile(w, ui_menu_gc, 5, y + 2, 16, 16, (char *)item->icon_file,
+				item->icon >= 0 ? GR_IMAGE_ICON_OR(16, item->icon) : GR_IMAGE_ICON(16));
 		else
 			ui_icon(w, ui_menu_gc, 5, y + 2, item->icon, 16);
 		GrSetGCForeground(ui_menu_gc, lit ? MWRGB(255, 255, 255) : item->flags & UI_MENU_GREY ? MWRGB(128, 128, 128) : MWRGB(0, 0, 0));

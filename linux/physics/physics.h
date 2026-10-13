@@ -13,11 +13,13 @@
 #define PHYS_SLOTS 39
 #define PHYS_MANIFOLDS 12
 #define PHYS_QUAD_WORDS 96	/* a box as the GPU's quads: six of four compact vertices */
+#define PHYS_BUFFERS 3		/* states kept: a substep's, the one it makes, and the one a look may still read */
 
 /* A body as a substep leaves it: four texels. `key` is its cell, from bit 20 the cell's share
  * and PHYS_POSED when its body_pose is this state's; `held` is how many of its contact points
  * pushed it. */
 #define PHYS_POSED 0x80000000u
+#define PHYS_KEY_SHARE 0x7ff00000u
 struct body_state { float pos[3]; uint32_t key; float q[4]; float vel[3]; uint32_t held; float spin[3]; uint32_t pad; };
 /* What every neighbour would work out from a state, left with it by the body's owner: its
  * axes, where it is taken to be a substep on and its axes there, how far round itself it
@@ -41,26 +43,32 @@ struct manifold {
 struct gcell { uint32_t n, body[PHYS_SLOTS]; };
 
 struct phys {
-	struct body_state *states[2];	/* a substep reads one and writes the other */
-	struct body_pose *poses[2];	/* as the states; or none, and every neighbour works them out */
+	struct body_state *states[PHYS_BUFFERS];	/* a substep reads one and writes the next, round and round */
+	struct body_pose *poses[PHYS_BUFFERS];	/* as the states */
 	struct body_shape *shapes;
 	struct body_info *info;
 	struct manifold *manifolds;	/* PHYS_MANIFOLDS a body */
-	struct gcell *cells;
+	struct gcell *grids[2];		/* look number t reads grids[t & 1], while the next look's is made */
+	float look_ahead;		/* how long a contact found by a look has to do for, in seconds */
 	int bodies, gx, gy, gz;
+	/* the shares that make the grid: cell c is share cell_first + c mod cell_shares's */
+	int cell_shares, cell_first;
 	float half_x, half_z, gravity;	/* the room: a floor at 0, walls at +-half */
 	/* the box somebody holds (-1: none): its point `grab_at`, in its own frame, is pulled to `grab_to` */
 	int grab;
 	float grab_at[3], grab_to[3];
 };
 
-/* For one share of `shares`: the grid of what is where, and a substep, with a look for
- * contacts first when `looking` (the look's number, from 1). Each returns what it had no room for. */
-int phys_grid(const struct phys *w, int share, int shares, int from);
-void phys_grid_all(const struct phys *w, int from);	/* every share's grid, by one core */
+/* A share's cells of the grid of what is where, for look number `turn` (a share of those
+ * that make it); and for one share of the `shares` that have the bodies: a look for contacts
+ * (its number, from 1), and a substep, with that look first when `looking` is its number.
+ * Each returns what it had no room for. */
+int phys_grid(const struct phys *w, int share, int from, int turn);
+void phys_grid_all(const struct phys *w, int from, int turn);	/* every share's grid, by one core */
+int phys_look(const struct phys *w, int share, int shares, int from, int turn);
 int phys_step(const struct phys *w, int share, int shares, int from, int looking);
 
-uint32_t phys_key(const struct phys *w, const float *pos, int shares);
+uint32_t phys_key(const struct phys *w, const float *pos);
 void phys_box(struct phys *w, int body, float hx, float hy, float hz, float density);
 /* A body's six faces as quads, each face one texel of a table 64 shades across, row `colour` of 16. */
 void phys_quads(const struct phys *w, int body, int from, uint32_t colour, uint32_t *to);

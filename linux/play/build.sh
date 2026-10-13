@@ -39,7 +39,7 @@ DECODE="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
 rv32-cc $DECODE -fno-pie -Wall -Wno-unused-function $INC -c "$HERE/nxplay.c" -o "$BUILD/nxplay.o"
 rv32-cc $DECODE -fno-pie -w $FLOAT -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3full.o"
 rv32-cc $DECODE -fno-pie -w $FLOAT -DMP3D_HALF -I"$BUILD" -c "$HERE/mp3.c" -o "$BUILD/mp3half.o"
-rv32-cc $DECODE -fno-pie -w $FLOAT -I"$BUILD" -I"$HERE" -c "$HERE/flac.c" -o "$BUILD/flac.o"
+rv32-cc $DECODE -fno-pie -w $FLOAT $INC -c "$HERE/flac.c" -o "$BUILD/flac.o"
 rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/mc/mcw.c" -o "$BUILD/mcw.o"
 rv32-cc -O2 -no-pie "$BUILD/nxplay.o" "$BUILD/mp3full.o" "$BUILD/mp3half.o" "$BUILD/flac.o" "$BUILD/mcw.o" \
     "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxplay"

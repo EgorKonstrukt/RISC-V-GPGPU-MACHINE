@@ -12,7 +12,14 @@
 #include "tracer.h"
 #include "mcw.h"
 
+/* PT_OLD: the arithmetic of before 13 October 2026, for its sums (docs/raytrace.md). The
+ * build compiles this file a second time with it, as pt_tile_old and pt_share_old. */
+#ifdef PT_OLD
+#define pt_tile pt_tile_old
+#define pt_share pt_share_old
+#else
 struct pt_scene pt;
+#endif
 
 struct vec { float x, y, z; };
 /* What a ray meets: nothing (the box's open side), a wall, the lamp in the ceiling, a ball
@@ -41,6 +48,7 @@ static const struct { struct vec centre; float radius; } balls[3] = {{{0.30f, 0.
                                                                     {{0.14f, 0.10f, 0.16f}, 0.10f}};
 static const struct vec block_low = {0.55f, 0.0f, 0.60f}, block_high = {0.82f, 0.50f, 0.86f};
 
+#ifdef PT_OLD
 static inline uint32_t
 next(uint32_t *state)
 {
@@ -49,6 +57,15 @@ next(uint32_t *state)
 	x ^= x << 13, x ^= x >> 17, x ^= x << 5;
 	return *state = x;
 }
+#else
+/* (a product and a sum, where three shifts were six instructions: a path draws thirty numbers;
+ * chance() takes the upper bits, which are the good ones) */
+static inline uint32_t
+next(uint32_t *state)
+{
+	return *state = *state * 1664525u + 1013904223u;
+}
+#endif
 
 static inline float
 chance(uint32_t *state)
@@ -56,6 +73,7 @@ chance(uint32_t *state)
 	return (float)(next(state) >> 8) * (1.0f / 16777216.0f);
 }
 
+#ifdef PT_OLD
 /* A point of the unit ball, by throwing away the cube's corners. */
 static struct vec
 in_ball(uint32_t *state)
@@ -68,6 +86,23 @@ in_ball(uint32_t *state)
 			return scale(p, 1.0f / __builtin_sqrtf(d));
 	}
 }
+#else
+/* A point of the unit sphere, evenly (Marsaglia, 1972): a point of the disc, which four draws
+ * in five are, lifted onto it. Two numbers and a root where the cube took six and a quotient. */
+static inline struct vec
+in_ball(uint32_t *state)
+{
+	for (;;) {
+		float a = 2.0f * chance(state) - 1.0f, b = 2.0f * chance(state) - 1.0f, s = a * a + b * b;
+
+		if (s < 1.0f) {
+			float f = 2.0f * __builtin_sqrtf(1.0f - s);
+
+			return v(a * f, b * f, 1.0f - 2.0f * s);
+		}
+	}
+}
+#endif
 
 static inline struct vec cross(struct vec a, struct vec b) { return v(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 static inline struct vec of(const float *p) { return v(p[0], p[1], p[2]); }
@@ -121,12 +156,11 @@ triangle_met(const struct pt_triangle *tri, struct vec from, struct vec way, flo
 /* The nearest triangle of a model a ray meets nearer than *nearest: down the tree of boxes,
  * the nearer of two first, so that the farther is mostly not looked into. */
 static inline int
-mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, float *nearest, struct met *met)
+mesh_nearest(const struct pt_mesh *mesh, struct vec from, struct vec way, struct vec over, float *nearest, struct met *met)
 {
 	uint32_t stack[64], at = 0;
 	float entered[64];	/* where the ray comes into each box put by */
 	int held = 0;
-	struct vec over = over_way(way);
 	const struct pt_triangle *found = 0;
 	float fu = 0.0f, fw = 0.0f, enter, best = *nearest;
 
@@ -190,11 +224,10 @@ mesh_normal(const struct met *met, struct vec way)
 /* Whether any triangle of a model is in a ray's way before `far`: every box the ray is in
  * before then is gone into, a box's two tried together as mesh_nearest() does. */
 static int
-mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float far)
+mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, struct vec over, float far)
 {
 	uint32_t stack[64], at = 0;
 	int held = 0;
-	struct vec over = over_way(way);
 	float enter;
 
 	if (!box_met(&mesh->nodes[0], from, over, far, &enter))
@@ -230,6 +263,22 @@ mesh_between(const struct pt_mesh *mesh, struct vec from, struct vec way, float 
 	}
 }
 
+#ifndef PT_OLD
+/* Where a ray is between each pair of the block's sides: it comes in at *in_x, *in_y, *in_z
+ * and the first it leaves is returned. `over` is one over its way: the lesser and the greater
+ * are an instruction each, and a ray along a pair has infinities that leave it in or out. */
+static inline float
+block_span(struct vec from, struct vec over, float *in_x, float *in_y, float *in_z)
+{
+	float ax = (block_low.x - from.x) * over.x, bx = (block_high.x - from.x) * over.x;
+	float ay = (block_low.y - from.y) * over.y, by = (block_high.y - from.y) * over.y;
+	float az = (block_low.z - from.z) * over.z, bz = (block_high.z - from.z) * over.z;
+
+	*in_x = __builtin_fminf(ax, bx), *in_y = __builtin_fminf(ay, by), *in_z = __builtin_fminf(az, bz);
+	return __builtin_fminf(__builtin_fminf(__builtin_fmaxf(ax, bx), __builtin_fmaxf(ay, by)), __builtin_fmaxf(az, bz));
+}
+#endif
+
 /* One pair of the block's sides, a to b along an axis: narrows where a ray (from o, going d
  * along it) is between them, and notes the side it comes in by. False: it never is. */
 static inline int
@@ -256,23 +305,49 @@ block_pair(float o, float d, float a, float b, int axis, float *low, float *high
 /* Whether a ray can do without the balls and the block (or, beside a model, the one ball):
  * it starts beyond them on some side and goes away. They are within these, with room. */
 static inline int
-clear_of_things(struct vec from, struct vec way)
+clear_of_things(struct vec from, struct vec way, int scene)
 {
-	if (pt.scene)
+	if (scene)
 		return (from.y >= 0.21f && way.y >= 0.0f) || (from.x >= 0.25f && way.x >= 0.0f) || (from.z >= 0.27f && way.z >= 0.0f);
 	/* (the block's top is at 0.5 itself: a ray along it is the block's to answer) */
+#ifndef PT_OLD
+	return from.y >= 0.5f && way.y > 1e-6f;
+#else
 	return (from.y >= 0.5f && way.y > 1e-6f) || (from.x >= 0.87f && way.x >= 0.0f) || (from.x <= 0.11f && way.x <= 0.0f) ||
 	       (from.z >= 0.87f && way.z >= 0.0f) || (from.z <= 0.20f && way.z <= 0.0f);
+#endif
 }
 
-/* The nearest thing a ray meets (MET_NONE: the open side) and how far; *met: where in a model. */
+/* The nearest thing a ray meets (MET_NONE: the open side) and how far; *met: where in a model.
+ * `scene` is pt.scene, which the two makings of a tile know one way or the other. */
 static inline __attribute__((always_inline)) int
-nearest(struct vec from, struct vec way, float *distance, struct met *met)
+nearest(struct vec from, struct vec way, float *distance, struct met *met, int scene)
 {
-	int i, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2, what = MET_NONE, side = 0;
-	float best = 1e30f, low = -1e30f, high = 1e30f, t;
+	int i, first = scene ? 2 : 0, last = scene ? 3 : 2, what = MET_NONE;
+	float best = 1e30f, t;
+#ifdef PT_OLD
+	int side = 0;
+	float low = -1e30f, high = 1e30f;
+#else
+	/* one over the way, once: a wall and a side of the block are a product each then (a ray
+	 * along a wall has an infinity there, which is never the nearest) */
+	struct vec over = v(1.0f / way.x, 1.0f / way.y, 1.0f / way.z);
+#endif
 
 	/* the room: a ray inside it leaves by one wall of each pair */
+#ifndef PT_OLD
+	{
+		/* (the wall ahead on each axis is never behind the ray: the first of the three is it) */
+		float tx = ((way.x < 0.0f ? 0.0f : 1.0f) - from.x) * over.x, ty = ((way.y < 0.0f ? 0.0f : 1.0f) - from.y) * over.y;
+
+		if (tx < ty)
+			best = tx, what = way.x < 0.0f ? MET_LEFT : MET_RIGHT;
+		else
+			best = ty, what = way.y < 0.0f ? MET_FLOOR : MET_CEILING;
+		if (way.z > 0.0f && (t = (1.0f - from.z) * over.z) < best)
+			best = t, what = MET_BACK;
+	}
+#else
 	if (way.x < 0.0f) {
 		t = -from.x / way.x;
 		if (t > 0.0005f && t < best) best = t, what = MET_LEFT;
@@ -291,6 +366,7 @@ nearest(struct vec from, struct vec way, float *distance, struct met *met)
 		t = (1.0f - from.z) / way.z;
 		if (t > 0.0005f && t < best) best = t, what = MET_BACK;
 	}
+#endif
 	if (what == MET_CEILING && best < 1e29f) {
 		/* the ceiling: the lamp is a square of it */
 		float x = from.x + way.x * best, z = from.z + way.z * best;
@@ -298,7 +374,7 @@ nearest(struct vec from, struct vec way, float *distance, struct met *met)
 		if (x > LAMP_X0 && x < LAMP_X1 && z > LAMP_Z0 && z < LAMP_Z1)
 			what = MET_LAMP;
 	}
-	if (!clear_of_things(from, way)) {
+	if (!clear_of_things(from, way, scene)) {
 		for (i = first; i < last; i++) {
 			struct vec to = sub(balls[i].centre, from);
 			float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
@@ -314,13 +390,28 @@ nearest(struct vec from, struct vec way, float *distance, struct met *met)
 			}
 		}
 		/* the block: where the ray is inside all three pairs of its sides */
-		if (!pt.scene && block_pair(from.x, way.x, block_low.x, block_high.x, 0, &low, &high, &side) &&
+#ifdef PT_OLD
+		if (!scene && block_pair(from.x, way.x, block_low.x, block_high.x, 0, &low, &high, &side) &&
 		    block_pair(from.y, way.y, block_low.y, block_high.y, 1, &low, &high, &side) &&
 		    block_pair(from.z, way.z, block_low.z, block_high.z, 2, &low, &high, &side) && low < high && low > 0.0005f && low < best)
 			best = low, what = MET_BLOCK + side;
+#else
+		if (!scene) {
+			float in_x, in_y, in_z, low, high = block_span(from, over, &in_x, &in_y, &in_z);
+
+			low = __builtin_fmaxf(__builtin_fmaxf(in_x, in_y), in_z);
+			/* (it comes in by the pair it is between last, on the side its way says) */
+			if (low < high && low > 0.0005f && low < best)
+				best = low, what = MET_BLOCK + (low == in_x ? (way.x < 0.0f) : low == in_y ? 2 + (way.y < 0.0f) : 4 + (way.z < 0.0f));
+		}
+#endif
 	}
 	/* a model in the block's place */
-	if (pt.scene && mesh_nearest(&pt_meshes[pt.scene - 1], from, way, &best, met))
+#ifdef PT_OLD
+	if (scene && mesh_nearest(&pt_meshes[scene - 1], from, way, over_way(way), &best, met))
+#else
+	if (scene && mesh_nearest(&pt_meshes[scene - 1], from, way, over, &best, met))
+#endif
 		what = MET_MODEL;
 	*distance = best;
 	return best < 1e29f ? what : MET_NONE;
@@ -332,17 +423,20 @@ nearest_once(struct vec from, struct vec way, float *distance)
 {
 	struct met met;
 
-	return nearest(from, way, distance, &met);
+	return nearest(from, way, distance, &met, pt.scene);
 }
 
 /* Whether a ball or the block stands between a point and a point of the lamp, `far` away. */
-static inline int
-shadowed(struct vec from, struct vec way, float far)
+static inline __attribute__((always_inline)) int
+shadowed(struct vec from, struct vec way, float far, int scene)
 {
-	int i, first = pt.scene ? 2 : 0, last = pt.scene ? 3 : 2, side;
+	int i, first = scene ? 2 : 0, last = scene ? 3 : 2;
 	float low = 0.0005f, high = far;
+#ifdef PT_OLD
+	int side;
+#endif
 
-	if (!clear_of_things(from, way)) {
+	if (!clear_of_things(from, way, scene)) {
 		for (i = first; i < last; i++) {
 			struct vec to = sub(balls[i].centre, from);
 			float along = dot(to, way), off2 = dot(to, to) - along * along, r2 = balls[i].radius * balls[i].radius;
@@ -350,18 +444,32 @@ shadowed(struct vec from, struct vec way, float far)
 			if (pt.material[i == 2 ? 1 : i] != PT_GLASS && along > 0.0f && off2 < r2 && along - __builtin_sqrtf(r2 - off2) < far && along > 0.001f)
 				return 1;
 		}
-	} else if (!pt.scene) {
+	} else if (!scene) {
 		return 0;
 	}
-	if (pt.scene)
-		return pt.material[0] != PT_GLASS && mesh_between(&pt_meshes[pt.scene - 1], from, way, far);
+#ifdef PT_OLD
+	if (scene)
+		return pt.material[0] != PT_GLASS && mesh_between(&pt_meshes[scene - 1], from, way, over_way(way), far);
+#else
+	if (scene)
+		return pt.material[0] != PT_GLASS && mesh_between(&pt_meshes[scene - 1], from, way, v(1.0f / way.x, 1.0f / way.y, 1.0f / way.z), far);
+#endif
+#ifdef PT_OLD
 	return block_pair(from.x, way.x, block_low.x, block_high.x, 0, &low, &high, &side) && block_pair(from.y, way.y, block_low.y, block_high.y, 1, &low, &high, &side) &&
 	       block_pair(from.z, way.z, block_low.z, block_high.z, 2, &low, &high, &side) && low < high;
+#else
+	{
+		float in_x, in_y, in_z;
+
+		high = __builtin_fminf(high, block_span(from, v(1.0f / way.x, 1.0f / way.y, 1.0f / way.z), &in_x, &in_y, &in_z));
+		return __builtin_fmaxf(__builtin_fmaxf(__builtin_fmaxf(in_x, in_y), in_z), low) < high;
+	}
+#endif
 }
 
 /* The light one path brings back; *rays counts its rays. */
-static struct vec
-path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
+static inline __attribute__((always_inline)) struct vec
+path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays, int scene)
 {
 	struct vec seen = v(0, 0, 0), weight = v(1, 1, 1);
 	int bounce, straight = 1;	/* the last turn was a mirror's or the eye's: a lamp met now is seen */
@@ -373,7 +481,7 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 		int material = PT_DIFFUSE, what;
 
 		(*rays)++;
-		what = nearest(from, way, &t, &met);
+		what = nearest(from, way, &t, &met, scene);
 		if (what == MET_NONE)
 			break;
 		if (what == MET_LAMP) {
@@ -388,7 +496,7 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 		/* what was met, as a surface */
 		if (what >= MET_MODEL) {
 			normal = mesh_normal(&met, way);
-			colour = of(pt_meshes[pt.scene - 1].colour);
+			colour = of(pt_meshes[scene - 1].colour);
 			material = pt.material[0];
 		} else if (what >= MET_BLOCK) {
 			float out = (what - MET_BLOCK) & 1 ? 1.0f : -1.0f;
@@ -436,13 +544,14 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 		{
 			struct vec lamp = v(LAMP_X0 + (LAMP_X1 - LAMP_X0) * chance(state), 0.999f, LAMP_Z0 + (LAMP_Z1 - LAMP_Z0) * chance(state));
 			struct vec to = sub(lamp, at);
-			float d2 = dot(to, to), d = __builtin_sqrtf(d2), facing, down;
+			float d2 = dot(to, to), d, facing, down;
 
+			(*rays)++;
+			d = __builtin_sqrtf(d2);
 			to = scale(to, 1.0f / d);
 			facing = dot(normal, to);
 			down = to.y;	/* the lamp faces down: how squarely this ray leaves it */
-			(*rays)++;
-			if (facing > 0.0f && down > 0.0f && !shadowed(at, to, d - 0.002f)) {
+			if (facing > 0.0f && down > 0.0f && !shadowed(at, to, d - 0.002f, scene)) {
 				float area = (LAMP_X1 - LAMP_X0) * (LAMP_Z1 - LAMP_Z0);
 
 				seen = add(seen, scale(weight, pt.light * facing * down * area / (3.14159265f * d2)));
@@ -473,14 +582,25 @@ shown(float sum, float samples)
 	return (uint32_t)(c * 255.0f);
 }
 
+/* Whether the picture is made of the sums after sample `sample` (from 0): after the first two,
+ * when their number has doubled or is a multiple of sixteen, and at the last. A sample between
+ * costs a pixel no quotients and roots; the first core alone (core 0) shows every one. */
+static inline int
+shows(uint32_t sample, uint32_t core)
+{
+	uint32_t count = sample + 1;
+
+	return core == 0 || count <= 2 || !(count & sample) || !(count & 15) || count >= (uint32_t)pt.samples;
+}
+
 static const uint32_t owner_colour[16] = {
 	0xffffff, 0xff4040, 0x40ff40, 0x4080ff, 0xffff40, 0xff40ff, 0x40ffff, 0xff8000,
 	0x80ff00, 0x0080ff, 0xff0080, 0x8000ff, 0x00ff80, 0xc0c0c0, 0xff8080, 0x80ff80,
 };
 
 /* One more sample of every pixel of a tile. how: the sample's number, and the core's in the top byte. */
-uint32_t
-pt_tile(uint32_t tile, uint32_t how)
+static inline __attribute__((always_inline)) uint32_t
+tile_sample(uint32_t tile, uint32_t how, int scene)
 {
 	uint32_t sample = how & 0xffffff, core = how >> 24, rays = 0;
 	int tw = pt.tile_w, th = pt.tile_h;
@@ -488,12 +608,13 @@ pt_tile(uint32_t tile, uint32_t how)
 	int x1 = x0 + tw < pt.width ? x0 + tw : pt.width, y1 = y0 + th < pt.height ? y0 + th : pt.height, x, y;
 	float half_w = (float)pt.width * 0.5f, half_h = (float)pt.height * 0.5f, zoom = 0.5f / half_h, samples = (float)(sample + 1);
 	const struct vec eye = v(0.5f, 0.5f, -1.35f);
+	int show = shows(sample, core);
 
 	for (y = y0; y < y1; y++) {
 		float *sum = pt.sums + (y * pt.width + x0) * 3;
 		uint32_t *out = pt.pixels + y * pt.width + x0;
 
-		for (x = x0; x < x1; x++, sum += 3) {
+		for (x = x0; x < x1; x++, sum += 3, out++) {
 			uint32_t state = ((uint32_t)(y * pt.width + x) * 9781u + sample * 6271u + pt.seed) * 2654435761u | 1u;
 			float sx, sy;
 			struct vec c;
@@ -504,14 +625,20 @@ pt_tile(uint32_t tile, uint32_t how)
 				float t;
 
 				rays++;
-				*out++ = nearest_once(eye, way, &t) ? (uint32_t)(t * 4000000.0f) & 0xffffff : 0;
+				*out = nearest_once(eye, way, &t) ? (uint32_t)(t * 4000000.0f) & 0xffffff : 0;
 				continue;
 			}
+#ifdef PT_OLD
 			next(&state);
+#else
+			/* (mixed again: every pixel's numbers are one sequence from another place, and from
+			 * places a step apart a pixel's n-th would be its neighbour's and a constant) */
+			state ^= state >> 15, state *= 0x2c1b3c6du, state ^= state >> 12;
+#endif
 			/* through a point of the pixel, not always its middle: edges come out smooth */
 			sx = ((float)x + chance(&state) - half_w) * zoom;
 			sy = (half_h - (float)y - chance(&state)) * zoom;
-			c = path(eye, unit(v(sx, sy, 1.35f)), &state, &rays);
+			c = path(eye, unit(v(sx, sy, 1.35f)), &state, &rays, scene);
 			/* one path in thousands finds the lamp by a mirror or through glass and is worth a
 			 * hundred others: held to what a bright wall is, or it is a white speck for good */
 			if (c.x > PT_MOST) c.x = PT_MOST;
@@ -521,13 +648,87 @@ pt_tile(uint32_t tile, uint32_t how)
 				sum[0] = c.x, sum[1] = c.y, sum[2] = c.z;
 			else
 				sum[0] += c.x, sum[1] += c.y, sum[2] += c.z;
+			if (!show)
+				continue;
 			if (pt.owners && (x == x0 || y == y0))
-				*out++ = owner_colour[core & 15];
+				*out = owner_colour[core & 15];
 			else
-				*out++ = shown(sum[0], samples) << 16 | shown(sum[1], samples) << 8 | shown(sum[2], samples);
+				*out = shown(sum[0], samples) << 16 | shown(sum[1], samples) << 8 | shown(sum[2], samples);
 		}
 	}
 	return rays;
+}
+
+/* A tile is made twice, for the balls and the block and for a model: each making has only
+ * its own things to try and to keep in registers (2 to 3% of a sample either way). */
+static __attribute__((noinline)) uint32_t
+tile_of_balls(uint32_t tile, uint32_t how)
+{
+	return tile_sample(tile, how, 0);
+}
+
+static __attribute__((noinline)) uint32_t
+tile_of_model(uint32_t tile, uint32_t how)
+{
+	int scene = pt.scene;
+
+	if (scene < 1)
+		__builtin_unreachable();
+	return tile_sample(tile, how, scene);
+}
+
+uint32_t
+pt_tile(uint32_t tile, uint32_t how)
+{
+	return pt.scene ? tile_of_model(tile, how) : tile_of_balls(tile, how);
+}
+
+/* A tile's pixels made of its sums as they are after `count` samples. */
+static void
+show_tile(uint32_t tile, uint32_t count, uint32_t core)
+{
+	int tw = pt.tile_w, th = pt.tile_h;
+	int across = (pt.width + tw - 1) / tw, x0 = (int)(tile % (uint32_t)across) * tw, y0 = (int)(tile / (uint32_t)across) * th;
+	int x1 = x0 + tw < pt.width ? x0 + tw : pt.width, y1 = y0 + th < pt.height ? y0 + th : pt.height, x, y;
+	float samples = (float)count;
+
+	for (y = y0; y < y1; y++) {
+		const float *sum = pt.sums + (y * pt.width + x0) * 3;
+		uint32_t *out = pt.pixels + y * pt.width + x0;
+
+		for (x = x0; x < x1; x++, sum += 3, out++)
+			if (pt.owners && (x == x0 || y == y0))
+				*out = owner_colour[core & 15];
+			else
+				*out = shown(sum[0], samples) << 16 | shown(sum[1], samples) << 8 | shown(sum[2], samples);
+	}
+}
+
+/* The tracer's code is read: a worker stops at a page of it that no core has run or read, and
+ * with workers the first core runs none of it. A making of a tile is 8 KB and the rest
+ * little: four pages either side of these four is all of this file's code. */
+#ifdef PT_OLD
+void
+pt_read_code_old(void)
+#else
+void
+pt_read_code(void)
+#endif
+{
+	extern char __executable_start[], etext[];
+	uintptr_t at[4] = {(uintptr_t)tile_of_balls, (uintptr_t)tile_of_model, (uintptr_t)pt_tile, (uintptr_t)pt_share}, low = at[0], high = at[0], page;
+	int k;
+
+	for (k = 1; k < 4; k++) {
+		if (at[k] < low) low = at[k];
+		if (at[k] > high) high = at[k];
+	}
+	low &= ~(uintptr_t)4095, high += 0x4000;
+	low = low - (uintptr_t)__executable_start > 0x4000 ? low - 0x4000 : (uintptr_t)__executable_start;
+	if (high > (uintptr_t)etext)
+		high = (uintptr_t)etext;
+	for (page = low; page < high; page += 4096)
+		(void)*(const volatile char *)page;
 }
 
 /* A worker's share of the picture (tracer.h): it is never without work while the picture is
@@ -537,11 +738,13 @@ pt_share(uint32_t which, uint32_t how)
 {
 	uint32_t k = how >> 24, limit = how & 0xffffff, n = which >> 16, w = which & 0xffff, tiles = (uint32_t)pt.tiles, did = 0;
 	struct pt_slot *slot = &pt.slots[k];
-	uint32_t sample;
+	uint32_t sample, last = 0, j, at;
 
 	for (sample = slot->samples; sample < (uint32_t)pt.samples && !pt.stop; sample++) {
-		uint32_t j, at = w * pt.stride % tiles, rays = 0;
+		uint32_t rays = 0;
 
+		at = w * pt.stride % tiles;
+		last = sample;
 		for (j = w; j < tiles; j += n) {
 			rays += pt_tile(at, sample | k << 24);
 			if ((at += pt.step) >= tiles)
@@ -552,5 +755,12 @@ pt_share(uint32_t which, uint32_t how)
 		if (++did == limit || mcw_recalled((int)k))
 			break;
 	}
+	/* (it ends between two samples that are shown: the picture of what its tiles have) */
+	if (did && !pt.depth && !shows(last, k))
+		for (j = w, at = w * pt.stride % tiles; j < tiles; j += n) {
+			show_tile(at, last + 1, k);
+			if ((at += pt.step) >= tiles)
+				at -= tiles;
+		}
 	return did;
 }

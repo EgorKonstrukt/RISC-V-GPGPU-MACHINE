@@ -112,13 +112,68 @@ read_file(const char *name, char *text, int size)
 	return n;
 }
 
-/* The number that follows `name` in a text, or 0. */
-static long
-field(const char *text, const char *name)
+/* A process's /proc/PID/stat, which comes whole with one read (a second one only said so). */
+static int
+read_once(const char *name, char *text, int size)
 {
-	const char *at = strstr(text, name);
+	int file = open(name, O_RDONLY), n = file < 0 ? 0 : (int)read(file, text, (size_t)size - 1);
 
+	if (file >= 0)
+		close(file);
+	text[n > 0 ? n : 0] = 0;
+	return n > 0 ? n : 0;
+}
+
+/* The number that follows `name` in a text, or 0; `from`, when given, is where to look from
+ * and is left after the name (the files' fields come in one order). */
+static long
+field(const char *text, const char *name, const char **from)
+{
+	const char *at = strstr(from && *from ? *from : text, name);
+
+	if (at && from)
+		*from = at + strlen(name);
 	return at ? atol(at + strlen(name)) : 0;
+}
+
+/* Texts made without printf (1,800 instructions a call here): a piece put at the end of
+ * another, a number, and a number of at least two digits. */
+static char *
+put(char *to, const char *text)
+{
+	while (*text)
+		*to++ = *text++;
+	*to = 0;
+	return to;
+}
+
+static char *
+put_number(char *to, long n)
+{
+	char digits[24];
+	unsigned long u = n < 0 ? 0ul - (unsigned long)n : (unsigned long)n;
+	int at = sizeof digits - 1;
+
+	for (digits[at] = 0; u > 0 || at == (int)sizeof digits - 1; u /= 10)
+		digits[--at] = (char)('0' + u % 10);
+	if (n < 0)
+		digits[--at] = '-';
+	return put(to, digits + at);
+}
+
+static char *
+put_two(char *to, long n)
+{
+	if (n >= 0 && n < 10)
+		*to++ = '0';
+	return put_number(to, n);
+}
+
+/* A count as millions with two places: "3.07". */
+static char *
+put_millions(char *to, unsigned n)
+{
+	return put_two(put(put_number(to, n / 1000000), "."), n % 1000000 / 10000);
 }
 
 /* Linux's time since the last sample by what it went to, and its counts of events: /proc/stat. */
@@ -128,10 +183,19 @@ sample_linux(long ms)
 	static long before[8], before_switches, before_interrupts;
 	static char text[4096];
 	long v[8] = {0}, d[8], all = 0, now_switches, now_interrupts;
+	const char *at = NULL;
+	char *next;
 	int i;
 
 	read_file("/proc/stat", text, sizeof text);
-	sscanf(text, "cpu %ld %ld %ld %ld %ld %ld %ld %ld", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+	/* the first line: "cpu" and the times */
+	for (i = 0, next = text + 3; i < 8 && !strncmp(text, "cpu ", 4); i++) {
+		char *number = next;
+
+		v[i] = strtol(number, &next, 10);
+		if (next == number)
+			break;
+	}
 	for (i = 0; i < 8; i++) {
 		d[i] = v[i] - before[i];
 		all += d[i];
@@ -140,8 +204,8 @@ sample_linux(long ms)
 	/* user and nice are programs; system and the two interrupt times the kernel */
 	plots[BUSY].low[HISTORY - 1] = all > 0 ? (unsigned)(100 * (d[2] + d[5] + d[6]) / all) : 0;
 	plots[BUSY].high[HISTORY - 1] = all > 0 ? (unsigned)(100 * (d[0] + d[1]) / all) : 0;
-	now_switches = field(text, "\nctxt ");
-	now_interrupts = field(text, "\nintr ");
+	now_interrupts = field(text, "\nintr ", &at);
+	now_switches = field(text, "\nctxt ", &at);
 	switches = (now_switches - before_switches) * 1000 / ms;
 	interrupts = (now_interrupts - before_interrupts) * 1000 / ms;
 	before_switches = now_switches;
@@ -167,7 +231,10 @@ sample_cores(long ms)
 
 		now = c < 16 ? core_words[0x380 / 4 + c] : core_more[c];
 		/* (a geometry laid out anew starts the counts again: one that went down is all new) */
-		core_rate[c] = (unsigned)((unsigned long long)(now < core_before[c] ? now : now - core_before[c]) * 1000 / ms);
+		unsigned ran = now < core_before[c] ? now : now - core_before[c];
+
+		/* (most cores ran nothing, and a small count needs no division of 64 bits) */
+		core_rate[c] = !ran ? 0 : ran < 4000000u ? ran * 1000u / (unsigned)ms : (unsigned)((unsigned long long)ran * 1000 / ms);
 		core_before[c] = now;
 		sum += core_rate[c];
 		if (core_rate[c] > core_busiest)
@@ -187,11 +254,13 @@ sample_memory(void)
 {
 	static char text[2048];
 
+	const char *at = NULL;
+
 	read_file("/proc/meminfo", text, sizeof text);
-	memory_total = field(text, "MemTotal:");
-	memory_used = memory_total - field(text, "MemAvailable:");
-	memory_files = field(text, "Shmem:");	/* files written since the start live in memory */
-	memory_cached = field(text, "\nCached:");
+	memory_total = field(text, "MemTotal:", &at);
+	memory_used = memory_total - field(text, "MemAvailable:", &at);
+	memory_cached = field(text, "\nCached:", &at);
+	memory_files = field(text, "Shmem:", &at);	/* files written since the start live in memory */
 	plots[MEMORY].top = memory_total > 0 ? memory_total : 1;
 	plots[MEMORY].low[HISTORY - 1] = memory_used > memory_files ? memory_used - memory_files : 0;
 	plots[MEMORY].high[HISTORY - 1] = memory_files;
@@ -218,7 +287,7 @@ sample_programs(long ms)
 		memcpy(name, "/proc/", 6);
 		strcpy(name + 6, item->d_name);
 		strcat(name, "/stat");
-		read_file(name, text, sizeof text);
+		read_once(name, text, sizeof text);
 		open_at = strchr(text, '(');
 		close_at = strrchr(text, ')');
 		if (!open_at || !close_at)
@@ -273,8 +342,8 @@ static void
 scale_sample(int which, int i)
 {
 	struct plot *p = &plots[which];
-	unsigned low = (unsigned)((unsigned long long)p->low[i] * (PLOT_H * 256) / p->top);
-	unsigned high = (unsigned)((unsigned long long)p->high[i] * (PLOT_H * 256) / p->top);
+	unsigned low = !p->low[i] ? 0 : (unsigned)((unsigned long long)p->low[i] * (PLOT_H * 256) / p->top);
+	unsigned high = !p->high[i] ? 0 : (unsigned)((unsigned long long)p->high[i] * (PLOT_H * 256) / p->top);
 
 	low = low > PLOT_H * 256 ? PLOT_H * 256 : low;
 	high = low + high > PLOT_H * 256 ? PLOT_H * 256 - low : high;
@@ -496,89 +565,114 @@ legend(int x, int y, GR_COLOR colour, const char *text)
 	ui_text(window, x + 12, y, text, -1, BLACK, 0);
 }
 
-/* The line over a plot: what it shows now. */
+/* The line over a plot: what it shows now. It is drawn when it reads otherwise than it did
+ * (`again`: or the window is being drawn whole): most seconds two of the three do not. */
 static void
-draw_line(int which)
+draw_line(int which, int again)
 {
-	char text[80];
+	static char shown[PLOTS][3][80];
+	char text[3][80];
 	int y = which * BLOCK + 6;
 	unsigned now = plots[which].low[HISTORY - 1], more = plots[which].high[HISTORY - 1];
 
-	ui_fill(window, 0, y, WIDTH, 15, UI_FACE);
+	memset(text, 0, sizeof text);
 	switch (which) {
 	case SPEED:
-		snprintf(text, sizeof text, core_count > 1 ? "Processor: %u.%02u million/s" : "Processor: %u.%02u million instructions a second",
-			 now / 1000000, now % 1000000 / 10000);
-		ui_text(window, 8, y, text, -1, BLACK, 0);
-		if (core_count > 1) {
-			snprintf(text, sizeof text, "%u workers %u.%02u", core_count - 1, more / 1000000, more % 1000000 / 10000);
-			legend(160, y, WORKER_COLOUR, text);
-		}
-		snprintf(text, sizeof text, "top: %u million", plots[SPEED].top / 1000000);
-		ui_text(window, WIDTH - 90, y, text, -1, UI_SHADOW, 0);
+		put(put_millions(put(text[0], "Processor: "), now), core_count > 1 ? " million/s" : " million instructions a second");
+		if (core_count > 1)
+			put_millions(put(put_number(text[1], core_count - 1), " workers "), more);
+		put(put_number(put(text[2], "top: "), plots[SPEED].top / 1000000), " million");
 		break;
 	case BUSY:
-		snprintf(text, sizeof text, "Linux: %u%% busy", now + more);
-		ui_text(window, 8, y, text, -1, BLACK, 0);
-		snprintf(text, sizeof text, "kernel %u%%", now);
-		legend(150, y, KERNEL_COLOUR, text);
-		snprintf(text, sizeof text, "programs %u%%", more);
-		legend(250, y, PROGRAM_COLOUR, text);
+		put(put_number(put(text[0], "Linux: "), now + more), "% busy");
+		put(put_number(put(text[1], "kernel "), now), "%");
+		put(put_number(put(text[2], "programs "), more), "%");
 		break;
 	case MEMORY:
-		snprintf(text, sizeof text, "Memory: %ld of %ld MB", memory_used / 1024, memory_total / 1024);
-		ui_text(window, 8, y, text, -1, BLACK, 0);
-		legend(150, y, MEMORY_COLOUR, "in use");
-		snprintf(text, sizeof text, "files %ld.%ld MB", memory_files / 1024, memory_files % 1024 * 10 / 1024);
-		legend(250, y, FILES_COLOUR, text);
+		put(put_number(put(put_number(put(text[0], "Memory: "), memory_used / 1024), " of "), memory_total / 1024), " MB");
+		put(text[1], "in use");
+		put(put_number(put(put_number(put(text[2], "files "), memory_files / 1024), "."), memory_files % 1024 * 10 / 1024), " MB");
+		break;
+	}
+	if (!again && !memcmp(shown[which], text, sizeof text))
+		return;
+	memcpy(shown[which], text, sizeof text);
+	ui_fill(window, 0, y, WIDTH, 15, UI_FACE);
+	ui_text(window, 8, y, text[0], -1, BLACK, 0);
+	switch (which) {
+	case SPEED:
+		if (core_count > 1)
+			legend(160, y, WORKER_COLOUR, text[1]);
+		ui_text(window, WIDTH - 90, y, text[2], -1, UI_SHADOW, 0);
+		break;
+	case BUSY:
+		legend(150, y, KERNEL_COLOUR, text[1]);
+		legend(250, y, PROGRAM_COLOUR, text[2]);
+		break;
+	case MEMORY:
+		legend(150, y, MEMORY_COLOUR, text[1]);
+		legend(250, y, FILES_COLOUR, text[2]);
 		break;
 	}
 }
 
+/* A row of the statistics, its ground and its two texts (the second at x1), when either reads
+ * otherwise than it did or `again`. */
 static void
-draw_stats(void)
+draw_row(int row, int y, int height, int x1, const char *one, const char *two, GR_COLOR colour, int again)
+{
+	static char shown[5][2][120];
+
+	if (!again && !strcmp(shown[row][0], one) && !strcmp(shown[row][1], two))
+		return;
+	strcpy(shown[row][0], one);
+	strcpy(shown[row][1], two);
+	ui_fill(window, 0, y, WIDTH, height, UI_FACE);
+	ui_text(window, 8, y, one, -1, BLACK, 0);
+	ui_text(window, x1, y, two, -1, colour, 0);
+}
+
+static void
+draw_stats(int again)
 {
 	struct sysinfo info;
-	char text[120];
-	int busiest[BUSIEST], i, k, n = 0;
+	char one[120], two[120], *at;
+	int busiest[BUSIEST], i, k;
 
-	ui_fill(window, 0, STATS_Y, WIDTH, LIST_Y - STATS_Y, UI_FACE);	/* (not the list under them: it is drawn less often) */
+	/* (not the list under them: it is drawn less often) */
 	sysinfo(&info);
-	snprintf(text, sizeof text, "Running for %ld h %02ld min", info.uptime / 3600, info.uptime / 60 % 60);
-	ui_text(window, 8, STATS_Y, text, -1, BLACK, 0);
+	put(put_two(put(put_number(put(one, "Running for "), info.uptime / 3600), " h "), info.uptime / 60 % 60), " min");
 	/* a load is in 65536ths */
-	snprintf(text, sizeof text, "Load %lu.%02lu over a minute, %lu.%02lu over five", info.loads[0] >> 16,
-		(info.loads[0] & 0xffff) * 100 >> 16, info.loads[1] >> 16, (info.loads[1] & 0xffff) * 100 >> 16);
-	ui_text(window, 180, STATS_Y, text, -1, BLACK, 0);
-	snprintf(text, sizeof text, "Processes: %d", program_count);
-	ui_text(window, 8, STATS_Y + 15, text, -1, BLACK, 0);
-	snprintf(text, sizeof text, "Files read and kept: %ld MB", (memory_cached - memory_files) / 1024);
-	ui_text(window, 180, STATS_Y + 15, text, -1, BLACK, 0);
-	snprintf(text, sizeof text, "Task switches: %ld a second", switches);
-	ui_text(window, 8, STATS_Y + 30, text, -1, BLACK, 0);
-	snprintf(text, sizeof text, "Interrupts: %ld a second", interrupts);
-	ui_text(window, 180, STATS_Y + 30, text, -1, BLACK, 0);
+	at = put(put_two(put(put_number(put(two, "Load "), (long)(info.loads[0] >> 16)), "."), (long)((info.loads[0] & 0xffff) * 100 >> 16)),
+		 " over a minute, ");
+	put(put_two(put(put_number(at, (long)(info.loads[1] >> 16)), "."), (long)((info.loads[1] & 0xffff) * 100 >> 16)), " over five");
+	draw_row(0, STATS_Y, 15, 180, one, two, BLACK, again);
+	put_number(put(one, "Processes: "), program_count);
+	put(put_number(put(two, "Files read and kept: "), (memory_cached - memory_files) / 1024), " MB");
+	draw_row(1, STATS_Y + 15, 15, 180, one, two, BLACK, again);
+	put(put_number(put(one, "Task switches: "), switches), " a second");
+	put(put_number(put(two, "Interrupts: "), interrupts), " a second");
+	draw_row(2, STATS_Y + 30, 20, 180, one, two, BLACK, again);
 	/* the busiest programs, most first */
-	for (k = 0; k < BUSIEST; k++) {
+	for (k = 0, at = two, two[0] = 0; k < BUSIEST; k++) {
 		busiest[k] = -1;
 		for (i = 0; i < program_count; i++)
 			if (programs[i].share > 0 && (busiest[k] < 0 || programs[i].share > programs[busiest[k]].share) &&
 			    (k < 1 || i != busiest[0]) && (k < 2 || i != busiest[1]))
 				busiest[k] = i;
 		if (busiest[k] >= 0)
-			n += snprintf(text + n, sizeof text - n, "%s%s %d%%", n ? ",  " : "", programs[busiest[k]].name, programs[busiest[k]].share);
+			at = put(put_number(put(put(put(at, at > two ? ",  " : ""), programs[busiest[k]].name), " "), programs[busiest[k]].share), "%");
 	}
-	ui_text(window, 8, STATS_Y + 50, "Busiest:", -1, BLACK, 0);
-	ui_text(window, 60, STATS_Y + 50, n ? text : "nothing", -1, BLACK, 0);
+	draw_row(3, STATS_Y + 50, 18, 60, "Busiest:", two[0] ? two : "nothing", BLACK, again);
 	/* the worker cores together: there may be 63 of them */
-	n = snprintf(text, sizeof text, "%u working, %u asleep, %u idle, %u parked", cores_working, cores_asleep, cores_idle,
-		     core_count - 1 - cores_working - cores_asleep - cores_idle);
+	at = put(put_number(put(put_number(put(put_number(put(put_number(two, cores_working), " working, "), cores_asleep), " asleep, "), cores_idle),
+				" idle, "), core_count - 1 - cores_working - cores_asleep - cores_idle), " parked");
 	if (cores_working)
-		snprintf(text + n, sizeof text - n, ";  busiest %u.%02u million/s", core_busiest / 1000000, core_busiest % 1000000 / 10000);
+		put(put_millions(put(at, ";  busiest "), core_busiest), " million/s");
 	if (core_count > 1 && print)	/* (for a test: the line as it is drawn) */
-		puts(text);
-	ui_text(window, 8, STATS_Y + 68, "Workers:", -1, BLACK, 0);
-	ui_text(window, 60, STATS_Y + 68, core_count > 1 ? text : "none (the machine has one core)", -1, core_count > 1 ? BLACK : UI_SHADOW, 0);
+		puts(two);
+	draw_row(4, STATS_Y + 68, LIST_Y - STATS_Y - 68, 60, "Workers:", core_count > 1 ? two : "none (the machine has one core)",
+		 core_count > 1 ? BLACK : UI_SHADOW, again);
 }
 
 static const char *
@@ -586,8 +680,11 @@ list_label(int row)
 {
 	static char text[64];
 	const int i = listed[row];
+	char *at = put(text, programs[i].name);
 
-	snprintf(text, sizeof text, "%-16s  process %d,  %d%%", programs[i].name, programs[i].pid, programs[i].share);
+	while (at < text + 16)
+		*at++ = ' ';
+	put(put_number(put(put_number(put(at, "  process "), programs[i].pid), ",  "), programs[i].share), "%");
 	return text;
 }
 
@@ -681,14 +778,14 @@ draw(void)
 
 	ui_fill(window, 0, 0, WIDTH, HEIGHT, UI_FACE);
 	for (i = 0; i < PLOTS; i++) {
-		draw_line(i);
+		draw_line(i, 1);
 		ui_fill(window, 8, plot_y(i), PLOT_W + 2, PLOT_H + 2, BLACK);
 	}
 	/* (the plots themselves are not the window system's to draw: the next frame has them again) */
 	GrFlush();
 	locate();
 	whole = 1;	/* (without workers: at the next sample, when the window system has cleared them) */
-	draw_stats();
+	draw_stats(1);
 	draw_list();
 }
 
@@ -718,7 +815,7 @@ sample(unsigned speed, long ms)
 	for (i = 0; i < PLOTS; i++) {
 		for (k = (i == SPEED && rescaled) ? 0 : HISTORY - 1; k < HISTORY; k++)
 			scale_sample(i, k);
-		draw_line(i);
+		draw_line(i, 0);
 	}
 	if (!workers)
 		take_workers();
@@ -897,10 +994,11 @@ main(void)
 			list_programs();
 			draw_list();
 		}
-		draw_stats();
+		draw_stats(0);
 		if (workers) {
 			settle();
 			post_frame(0);
-		}
+		} else
+			GrFlush();	/* (without workers nothing else sends what was drawn until an event comes) */
 	}
 }

@@ -90,8 +90,22 @@ int main()
     bool held = getenv("IMDEMO_HOLD") != nullptr;
     int scrolled = getenv("IMDEMO_SCROLL") ? atoi(getenv("IMDEMO_SCROLL")) : 0;
     int oldest = 0;     // of the history, which goes round
+    bool ahead = false;     // the frame made last is with the worker cores, and not shown yet
     int frames = 0, clicks = 0, most = getenv("IMDEMO_FRAMES") ? atoi(getenv("IMDEMO_FRAMES")) : 0;
     unsigned frame_start = instructions(), whole = 0, interface = 0, drawing = 0;
+
+    // The frame before, when worker cores copy its triangles while this one is made (docs/imgui.md,
+    // "The copy on worker cores"): its commands, and it is shown, as soon as they have finished.
+    unsigned finishing = 0;
+    auto show = [&](bool wait) {
+        if (!ahead || !(wait || ImGui_ImplShaderEmu_RenderReady())) return;
+        unsigned from = instructions();
+        ImGui_ImplShaderEmu_RenderFinish();
+        if (waits) seglSwap();
+        else seglSwapEarly();
+        ahead = false;
+        finishing += instructions() - from;
+    };
 
     while (ImGui_ImplShaderEmu_NewFrame()) {
         unsigned interface_start = instructions();
@@ -108,16 +122,19 @@ int main()
         ImGui::Text("Dear ImGui %s on a RISC-V", ImGui::GetVersion());
         ImGui::Text("computer in a pixel shader");
         ImGui::Separator();
+        show(false);
         ImGui::Text("%.1f frames a second", held ? 10.0f : io.Framerate);
         ImGui::Text("a frame: %u,000 instructions", whole / 1000);
         ImGui::Text("ImGui's part: %u,000 (%d vertices)", interface / 1000, io.MetricsRenderVertices);
         ImGui::Text("of that, its triangles: %u,000", drawing / 1000);
         ImGui::PlotLines("##frame", history, HISTORY, oldest, "instructions a frame", 0, FLT_MAX, ImVec2(-1, 50));
         ImGui::Separator();
+        show(false);
         ImGui::Checkbox("Spin the cube", &spin);
         ImGui::SliderFloat("speed", &speed, 0, 180, "%.0f degrees/s");
         ImGui::SliderFloat("size", &size, 0.2f, 2);
         ImGui::ColorEdit3("background", background);
+        show(false);
         ImGui::InputText("text", text, sizeof text);
         if (ImGui::Button("Count")) clicks++;
         ImGui::SameLine();
@@ -125,6 +142,7 @@ int main()
         ImGui::Checkbox("ImGui's own demo window", &show_demo);
         bool quit = ImGui::Button("Quit");
         ImGui::End();
+        show(false);
         if (show_demo) {
             static bool placed;
             if (scrolled) ImGui::SetNextWindowScroll(ImVec2(0, (float)scrolled));
@@ -138,15 +156,22 @@ int main()
         }
         ImGui::Render();
 
+        // (the frame before, if the workers were still at it: waited for)
+        show(true);
+        unsigned drawing_start = instructions();
         if (spin) turn += speed * io.DeltaTime;
         draw_cube(turn, size, background);
-        unsigned drawing_start = instructions();
-        ImGui_ImplShaderEmu_RenderDrawData(ImGui::GetDrawData());
-        drawing = instructions() - drawing_start;
-        interface =instructions() - interface_start;   // (the cube's few calls are in it too)
+        drawing_start = instructions();
+        ahead = ImGui_ImplShaderEmu_RenderAhead(ImGui::GetDrawData());
+        if (!ahead) ImGui_ImplShaderEmu_RenderDrawData(ImGui::GetDrawData());
+        drawing = finishing + instructions() - drawing_start;
+        finishing = 0;
+        interface = instructions() - interface_start;   // (the cube's few calls are in it too)
         // (not waited for: the next frame writes only its own triangles and table, in the other set)
-        if (waits) seglSwap();
-        else seglSwapEarly();
+        if (!ahead) {
+            if (waits) seglSwap();
+            else seglSwapEarly();
+        }
 
         unsigned now = instructions();
         whole = now - frame_start;
@@ -158,6 +183,7 @@ int main()
                     whole, interface, drawing, io.MetricsRenderVertices);
         if (quit || (most && frames >= most)) break;
     }
+    if (ahead) ImGui_ImplShaderEmu_RenderFinish(), seglSwap();
     fprintf(stderr, "imdemo: done\n");
     GrClose();
     return 0;

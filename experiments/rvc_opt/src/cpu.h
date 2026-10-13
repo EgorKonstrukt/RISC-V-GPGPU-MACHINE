@@ -94,8 +94,9 @@ uint fast_run_l1(L1P uint room) {
             // read is finished long before its instructions are needed. Both are keyed by physical
             // texel number, so a wrong guess is simply not used.
             uint f_t = (f_pa & 0x7FFFFFFF) >> 4;
-            [branch]
-            if (f_t != fw_addr0) {
+            // (no test of "this texel is the window's": a jump within the texel reads it again,
+            // 3 in 1,000, and every other entry passes a block less: docs/tick-costs.md)
+            {
                 [branch]
                 if (f_t == fw_addr1) {
                     fw_tex0 = fw_tex1;
@@ -107,8 +108,12 @@ uint fast_run_l1(L1P uint room) {
                 fw_addr1 = f_t + 1;
                 fw_tex1 = RAM_TEX(RAM_ADDR(f_t + 1));
             }
+            // (the texel's words turned so that this instruction's is the first: the ones after
+            // it then need no choosing among four)
+            uint f_slot = (cpu.pc >> 2) & 3;
+            fw_cur = (f_slot & 2) ? ((f_slot & 1) ? fw_tex0.wxyz : fw_tex0.zwxy) : ((f_slot & 1) ? fw_tex0.yzwx : fw_tex0);
             }
-            uint word = idx_uint4(fw_tex0, (cpu.pc >> 2) & 0x3);
+            uint word = fw_cur.x;
             if (!fast_exec(word)) {
                 pre_word = word;
                 pre_valid = true;

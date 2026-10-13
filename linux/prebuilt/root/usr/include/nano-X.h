@@ -199,10 +199,13 @@ typedef struct {
 #define GR_WM_PROPS_BUFFER_MWPF	 0x00000800L /* Set window buffer pixtype to MWPF_ config value*/
 #define GR_WM_PROPS_DRAWING_DONE 0x00001000L /* Buffer valid for output (internal flag)*/
 #define GR_WM_PROPS_POPUP	 0x00002000L /* A menu: asked to close by a press anywhere outside it*/
+#define GR_WM_PROPS_NOMAXIMIZE	 0x00004000L /* Its size is its layout's: no maximise box, and Ctrl+F10 leaves it*/
 /* GrDrawImageFromFile's flags for one cell of a sheet of icons 16 cells wide, its key colour left out */
 #define GR_IMAGE_CELL(size, cell) (int)(0x80000000u | (unsigned)(size) << 16 | (unsigned)(cell))
 /* and for the icon a file carries at its own end (a program's: 32 or 16 pixels) */
 #define GR_IMAGE_ICON(size) (int)(0x40000000u | (unsigned)(size) << 16)
+/* and for that icon, or the sheet's cell when the file carries none: nobody opens the file to know */
+#define GR_IMAGE_ICON_OR(size, cell) (int)(0xc0000000u | (unsigned)(size) << 16 | (unsigned)(cell))
 
 /* default decoration style*/
 #define GR_WM_PROPS_APPWINDOW	0x00000000L /* Leave appearance to WM*/

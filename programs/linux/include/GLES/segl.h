@@ -160,6 +160,14 @@ void seglScreenUsed(GLsizei count, GLuint name);   // (a multiple of three; a te
 unsigned int* seglScreenTable(void);
 unsigned int* seglScreenCompactSpace(GLsizei* room);
 void seglScreenCompactUsed(GLsizei count, int quads, GLuint name, const unsigned int* table);
+// For a program whose worker cores write such vertices while it does other things
+// (docs/imgui.md, "The copy on worker cores"): seglFrameSpace() is room in the frame, whole
+// 16 bytes, that the program fills as it likes (NULL: not that much; seglFrameLeft() says how
+// much there is), and seglScreenCompactAt() draws `count` vertices that lie in it, with a
+// table that does, as seglScreenCompactUsed() draws those written last.
+void* seglFrameSpace(unsigned int bytes);
+unsigned int seglFrameLeft(void);
+void seglScreenCompactAt(const unsigned int* vertices, GLsizei count, int quads, GLuint name, const unsigned int* table);
 
 // Forgets what was drawn since the last swap. seglSwapAgain() has the list of the last swap
 // drawn once more, as its memory (textures, commands, vertices) is now.

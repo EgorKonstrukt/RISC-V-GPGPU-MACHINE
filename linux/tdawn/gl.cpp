@@ -122,9 +122,96 @@ static int tile_of(CELL cell)
     return x >= 0 && y >= 0 && x < tile_w && y < tile_h ? y * tile_w + x : -1;
 }
 
+// Shape files asked for ahead of their first use (host.h), as a mission begins: what is on the
+// map, and what the game told of (ShaderEmu_GL_Ahead_File: the sidebar's pieces, which it draws
+// itself, all in the frame the sidebar comes). Called every frame, before its logic.
+static struct
+{
+    const void* file;
+    int frame;
+} ahead_files[96];
+static int ahead_count;
+static bool ahead_done; // the frames made ready are this mission's: forget() leaves them
+static bool ahead_live; // a mission has begun: a file told of from now on is asked for at once
+void ShaderEmu_GL_Ahead_File(const void* file, int frame)
+{
+    for (int i = 0; i < ahead_count; i++) {
+        if (ahead_files[i].file == file) {
+            return;
+        }
+    }
+    if (file && ahead_count < 96) {
+        ahead_files[ahead_count].file = file;
+        ahead_files[ahead_count++].frame = frame;
+        if (ahead_live) {
+            host_frames_ahead(file, frame);
+        }
+    }
+}
+
+// Everything there is of the kinds that are drawn, on the map or not yet (being built, on its
+// way in a transport): its file is unpacked before it is first seen.
+static void ahead_objects(void)
+{
+    for (int i = 0; i < Units.Count(); i++) {
+        host_frames_ahead(Units.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Infantry.Count(); i++) {
+        host_frames_ahead(Infantry.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Aircraft.Count(); i++) {
+        host_frames_ahead(Aircraft.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Buildings.Count(); i++) {
+        host_frames_ahead(Buildings.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+        host_frames_ahead(Buildings.Ptr(i)->Class->Get_Buildup_Data(), 0);
+    }
+}
+
+void ShaderEmu_GL_Ahead(void)
+{
+    static char name[16];
+    static int last = -1, objects;
+    bool begins = strncmp(name, Scen.ScenarioName, sizeof(name) - 1) || (int)Frame < last;
+    int now = Units.Count() + Infantry.Count() + Buildings.Count() + Aircraft.Count();
+
+    last = (int)Frame;
+    if (!begins) {
+        if (now != objects && ahead_live) {
+            objects = now;
+            ahead_objects();
+        }
+        return;
+    }
+    if (!available()) {
+        return;
+    }
+    objects = now;
+    strncpy(name, Scen.ScenarioName, sizeof(name) - 1);
+    host_frames_forget();
+    for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+        for (int index = 0; index < Map.Layer[layer].Count(); index++) {
+            host_frames_ahead(Map.Layer[layer][index]->Class_Of().Get_Image_Data(), 0);
+        }
+    }
+    ahead_objects();
+    for (int i = 0; i < ahead_count; i++) {
+        host_frames_ahead(ahead_files[i].file, ahead_files[i].frame);
+    }
+    for (int i = ANIM_FIRST; i < ANIM_COUNT; i++) {
+        host_frames_ahead(AnimTypeClass::As_Reference((AnimType)i).Get_Image_Data(), 0);
+    }
+    ahead_done = ahead_live = true;
+}
+
 static void forget(void)
 {
-    host_frames_forget(); // (first: work put off for the scene's core still looks at the shapes)
+    if (ahead_done) {
+        host_frames_settle(); // (first: work put off for the scene's core still looks at the shapes)
+    } else {
+        host_frames_forget();
+    }
+    ahead_done = false;
     memset(shapes, 0, sizeof(shapes));
     memset(icons, 0, sizeof(icons));
     memset(tile_done, 0, sizeof(tile_done));
@@ -515,7 +602,7 @@ static void check_frame(const Shape* s, const struct host_frame* ready, uintptr_
         }
     }
     bool same = y0 < 0 ? ready->state == HOST_FRAME_EMPTY
-                       : ready->state == HOST_FRAME_READY && ready->left == x0 && ready->top == y0
+                       : (ready->state & HOST_FRAME_READY) && ready->left == x0 && ready->top == y0
                              && ready->w == x1 - x0 + 1 && ready->h == y1 - y0 + 1;
     for (y = y0; same && y0 >= 0 && y <= y1; y++) {
         same = !memcmp(pixels + y * s->w + x0, ready->pixels + (y - y0) * ready->w, ready->w);
@@ -598,6 +685,20 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
     return true;
 }
 
+// An icon's 24 x 24 pixels into the atlas, by the core that makes the scene (host_fill).
+static void fill_icon(void* place, const void* from)
+{
+    unsigned char* to = (unsigned char*)place;
+
+    for (int y = 0; y < 24; y++, to += ATLAS_W) {
+        if (from) {
+            memcpy(to, (const unsigned char*)from + y * 24, 24);
+        } else {
+            memset(to, 0, 24);
+        }
+    }
+}
+
 // Where an icon of a set is in the atlas, put there the first time. -1: no room.
 static int icon_of(const void* set, int icon)
 {
@@ -615,13 +716,8 @@ static int icon_of(const void* set, int icon)
             Init_Stamps((const IconControlType*)set);
             int which = MapPtr ? MapPtr[icon] : icon;
             unsigned char* to = host_atlas() + (icon_count / 42 * 24) * ATLAS_W + icon_count % 42 * 24;
-            for (int y = 0; y < 24; y++, to += ATLAS_W) {
-                if (which < IconCount) {
-                    memcpy(to, StampPtr + which * 576 + y * 24, 24);
-                } else {
-                    memset(to, 0, 24);
-                }
-            }
+            // (by the core that makes the scene: a first view of the map is some hundreds of them)
+            host_fill(fill_icon, to, which < IconCount ? StampPtr + which * 576 : NULL);
             i->set = set;
             i->icon = (short)icon;
             i->index = (short)icon_count++;
@@ -711,11 +807,17 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     origin_y = TacPixelY + base_y;
     view_w = TacPixelX + wide;
     view_h = TacPixelY + high;
-    static int refresh = -1; // TDAWN_REFRESH=N: every N scenes (256); 0 for never
+    // TDAWN_REFRESH=N: every N scenes (256; 0 for never). At 256 the objects have their turns, one
+    // of a layer a scene, and the page is not filled for it: all in one scene was a long frame.
+    static int refresh = -1;
+    static unsigned scenes;
     if (refresh < 0) {
         refresh = getenv("TDAWN_REFRESH") ? atoi(getenv("TDAWN_REFRESH")) : 256;
     }
-    again = forced || (refresh && ++since >= refresh) || kept_count > KEPT * 3 / 4;
+    bool all = forced || kept_count > KEPT * 3 / 4; // every object anew, and the page's holes
+    again = all || (refresh && ++since >= refresh);
+    all |= again && refresh != 256;
+    scenes++;
     if (again) {
         since = 0;
         if (kept_count > KEPT / 2) {
@@ -723,7 +825,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
             kept_count = 0;
         }
     }
-    if (again || ShaderEmu_GL_Touched) {
+    if (all || ShaderEmu_GL_Touched) {
         fills++;
         LogicPage->Fill_Rect(TacPixelX, TacPixelY, TacPixelX + wide - 1, TacPixelY + high - 1, KEY);
     } else if (box[0] <= box[2]) {
@@ -811,16 +913,18 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     host_scene_part(1, 0);
     unsigned away = 0;
     for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+        int turn = refresh == 256 && Layer[layer].Count() ? (int)(scenes % (unsigned)Layer[layer].Count()) : -1;
         for (int index = 0; index < Layer[layer].Count(); index++) {
             ObjectClass* object = Layer[layer][index];
             // (most objects are out of the view and were not marked: passed over at once, by what
             // the object itself has of the view at which it drew nothing)
-            if (object->ShaderEmu_Away == TacticalCoord && !object->IsToDisplay && !again) {
+            bool anew = all || index == turn;
+            if (object->ShaderEmu_Away == TacticalCoord && !object->IsToDisplay && !anew) {
                 away++;
                 continue;
             }
             Kept* k = kept_of(object);
-            if (k && !again && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
+            if (k && !anew && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
                 // as it was: its rectangles where they are on the map now, or still nothing
                 ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
                 if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {

@@ -46,6 +46,7 @@
 // mailbox or start, and looks at the core's owner word after setting it: the kernel takes no
 // core of a program whose word is set, so what is written is never another program's.
 #define MC_POSTING_AT(tag) (0x1040u + 4u * ((tag) & 15u))
+// (the texel at 0x1800 is the window system's for the kernel's pointer driver: linux/nanox/scr_shaderemu.c)
 // core k's 64 bytes: a job (core 0 writes it), its answer (the worker's), a fault (the
 // worker's, written by the machine) and the word that lets it go on (core 0's)
 #define MC_JOB_AT(k) (0x4000u + 64u * (k))
@@ -68,5 +69,8 @@ typedef struct { volatile uint32_t count, cause, address, pc; } mc_fault;      /
 // The pause hint ends this core's pass: its stores reach the others, and theirs reach it. On a
 // worker it is a sleep until the first word of its job changes.
 #define mc_next_pass() __asm__ volatile(".word 0x0100000f")
+// For a job that waits for another core's stores: its pass ends here and it goes on in the next
+// (fence.i ends a pass and does no more). Turning in place costs the machine the pass's instructions.
+#define mc_end_pass() __asm__ volatile(".word 0x0000100f")
 
 #endif

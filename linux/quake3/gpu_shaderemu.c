@@ -49,6 +49,16 @@ void gpuModelviewRows(const float* rows) {
     blocks++;
 }
 
+// The next block of the frame's matrices with the projection of the one before, for the draws
+// that follow: its three rows of four, for the caller to fill. 0 when the matrices changed
+// otherwise since the last draw (gpuModelviewRows then).
+float* gpuModelviewBlock(void) {
+    if (matrices_dirty || !blocks || blocks >= MAX_BLOCKS) return 0;
+    num* u = (num*)(gpu + set_at + UNIFORMS_IN) + 32 * blocks++;
+    for (int i = 0; i < 16; i++) u[i] = u[i - 32];
+    return u + 16;
+}
+
 // The words of a draw's command but for where its vertices are, how many, and its matrices.
 static inline void command_state(uint32_t* c, const gpu_state* s) {
     c[4] = VERTEX_CLIP | VERTEX_MODELVIEW | VERTEX_COMPACT | VERTEX_FLOAT | s->vertex;

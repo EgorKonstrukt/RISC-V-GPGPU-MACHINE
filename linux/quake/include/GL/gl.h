@@ -25,6 +25,7 @@ typedef float GLclampd;
 #define GL_FOG_MODE 0x0B65
 #define GL_FOG_COLOR 0x0B66
 #define GL_MODELVIEW_MATRIX 0x0BA6
+#define GL_PROJECTION_MATRIX 0x0BA7
 #define GL_PERSPECTIVE_CORRECTION_HINT 0x0C50
 #define GL_FASTEST 0x1101
 #define GL_NICEST 0x1102
@@ -86,6 +87,9 @@ void qglGetFloatv(GLenum what, GLfloat* out);
 void qglLoadMatrixf(const GLfloat* m);
 // The matrix of an entity at `place`, turned and, with `move`, moved and scaled (qgl.c).
 void qglEntity(const float* base, const float* place, float yaw, float pitch, float roll, const float* move, const float* scale);
+void qglView(const float* base, float about_x, float about_y, float about_z, const float* move, float* out);
+void qglWorldAgain(void);
+int qglHead(int end, unsigned int key);
 
 void qglBindTexture(GLenum target, GLuint name);
 void qglTexImage2D(GLenum target, GLint level, GLint internal, GLsizei width, GLsizei height, GLint border, GLenum format,

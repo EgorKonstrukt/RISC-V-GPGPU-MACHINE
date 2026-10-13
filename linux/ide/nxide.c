@@ -9,6 +9,7 @@
 #include "ui_ask.h"
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include "text.h"
 #include "syntax.h"
@@ -33,6 +34,7 @@ enum { J_NONE, J_BUILD, J_RUN, J_CHECK };
 enum { ASK_NONE, ASK_FIND, ASK_GOTO, ASK_SAVE };
 
 static GR_WINDOW_ID window;
+static GR_GC_ID text_gc, ground_gc, bar_gc;	/* the editor's text, its white ground, the cursor's bar */
 static int width = 720, height = 500;
 static char path[300], program[320], notice[160];
 static int top, left, rows, columns, gutter;
@@ -55,6 +57,7 @@ static char answer[200], sought[64];
 
 /* what runs beside: a build, the program, or a quiet check of what is being typed */
 static struct { pid_t pid; int fd, kind, heard; } job;	/* heard: its output wakes the loop (GrRegisterInput) */
+static int job_unseen;		/* its end was not seen (no status): nothing is concluded from it */
 static int then_do;		/* what a build that works goes on to: C_RUN or C_DEBUG */
 static char job_text[8192];	/* a build's or a check's own lines, for the problems */
 static int job_length;
@@ -62,6 +65,12 @@ static int debug_fd = -1;	/* the debugged program's output */
 static int debug_heard;		/* and whether it wakes the loop */
 static unsigned edited_at;	/* when the text last changed, and whether it was checked since */
 static int unchecked;
+static int edited_now;		/* it changed since the loop last slept: edited_at is still to be read */
+/* texts the compiler found nothing in: their two sums. The image's examples are there from the
+ * build (linux/ide/build.sh writes /usr/share/ide-clean), the others from this run's checks. */
+#define CLEAN_MOST 96
+static unsigned clean[CLEAN_MOST][2], check_sum[2];
+static int clean_count, clean_next, check_closed;	/* check_closed: the text checked names no file of the user's */
 
 static char *out_lines[OUT_MOST];
 static int out_count, out_top, out_fresh, worker_marked;
@@ -127,31 +136,203 @@ resized(int w, int h)
 
 /* ---- colours: a line's kinds need to know whether it begins inside a comment ---- */
 
-static unsigned char *
-kinds_of(int line)
+/* A line as it is drawn, kept until it changes: a piece a colour (its kind, its first column
+ * in view and its length, two bytes each, then its characters), from the colour's first
+ * character to its last with spaces where the others' are (a space draws nothing). */
+#define SHOWN_MOST 512		/* columns of a line that are drawn */
+#define PIECE_HEAD 5
+struct shown {
+	unsigned short room, bytes;	/* of data, and how much of it the pieces are */
+	signed char starts, ends;	/* inside a comment where the line begins, and where it ends */
+	unsigned char valid;
+	char data[];
+};
+static struct shown **shown;		/* by line; those from shown_upto on are not the lines' any more */
+static int shown_room, shown_upto, shown_left = -1, shown_columns;
+static union { struct shown head; char room[sizeof(struct shown) + (SX_KINDS + 1) * (PIECE_HEAD + SHOWN_MOST)]; } made, picked;
+#define ROWS_KEPT 128
+static int row_line[ROWS_KEPT];	/* the line a row shows just as it is kept (no selection, no stop), or -1 */
+static int bar_line = -1, bar_x;	/* where the cursor's bar is drawn: a line, a column of the view */
+
+static int
+piece_first(const char *piece)
+{
+	return (unsigned char)piece[1] | (unsigned char)piece[2] << 8;
+}
+
+static int
+piece_count(const char *piece)
+{
+	return (unsigned char)piece[3] | (unsigned char)piece[4] << 8;
+}
+
+/* A line's kinds, in sx_kinds; what comes back is whether the next line begins inside a comment. */
+static int
+kinds_of(int line, int in_comment)
 {
 	int n = (int)strlen(tx_lines[line]) + 4;
 
+	if (n > sx_kinds_room)
+		sx_kinds = realloc(sx_kinds, (size_t)(sx_kinds_room = n * 2));
+	return sx_line(tx_lines[line], in_comment, sx_kinds);
+}
+
+/* The kept line, if it is still what the line is. */
+static struct shown *
+shown_kept(int line)
+{
+	struct shown *e = line < shown_upto ? shown[line] : NULL;
+
+	return e && e->valid && e->starts == sx_starts[line] ? e : NULL;
+}
+
+/* Makes sx_starts known up to `line`: a kept line says how it ends, another is read for it. */
+static void
+starts_upto(int line)
+{
 	if (tx_count + 2 > sx_room) {
 		sx_room = tx_count * 2 + 64;
 		sx_starts = realloc(sx_starts, (size_t)sx_room);
 	}
-	if (n > sx_kinds_room)
-		sx_kinds = realloc(sx_kinds, (size_t)(sx_kinds_room = n * 2));
+	if (shown_left != left || shown_columns != columns)
+		shown_upto = 0, shown_left = left, shown_columns = columns;
 	if (sx_known < 1)
 		sx_starts[0] = 0, sx_known = 1;
-	while (sx_known <= line) {
-		int m = (int)strlen(tx_lines[sx_known - 1]) + 4;
+	for (; sx_known <= line; sx_known++) {
+		struct shown *e = shown_kept(sx_known - 1);
 
-		if (m > sx_kinds_room)
-			sx_kinds = realloc(sx_kinds, (size_t)(sx_kinds_room = m * 2));
-		sx_starts[sx_known] = (signed char)sx_line(tx_lines[sx_known - 1], sx_starts[sx_known - 1], sx_kinds);
-		sx_known++;
+		sx_starts[sx_known] = (signed char)(e ? e->ends : kinds_of(sx_known - 1, sx_starts[sx_known - 1]));
 	}
-	n = sx_line(tx_lines[line], sx_starts[line], sx_kinds);
+}
+
+/* Makes `to` of a line whose kinds are in sx_kinds; the view's columns `from` up to `upto` are selected. */
+static void
+shown_make(struct shown *to, int line, int from, int upto)
+{
+	static char pieces[SX_KINDS + 1][SHOWN_MOST];
+	short first[SX_KINDS + 1], last[SX_KINDS + 1];
+	const char *text = tx_lines[line];
+	int length = (int)strlen(text), end = length < left + columns ? length : left + columns, a, b, k, n = 0;
+
+	end = end > left + SHOWN_MOST ? left + SHOWN_MOST : end;
+	for (b = 0; b <= SX_KINDS; b++)
+		first[b] = -1;
+	for (a = left; a < end; a++) {
+		if (text[a] == ' ')
+			continue;
+		b = a - left >= from && a - left < upto ? SX_KINDS : sx_kinds[a];
+		if (first[b] < 0)
+			first[b] = (short)a;
+		else
+			for (k = last[b] + 1; k < a; k++)
+				pieces[b][k - first[b]] = ' ';
+		pieces[b][a - first[b]] = text[a];
+		last[b] = (short)a;
+	}
+	for (b = 0; b <= SX_KINDS; b++) {
+		if (first[b] < 0)
+			continue;
+		k = last[b] - first[b] + 1;
+		to->data[n] = (char)b;
+		to->data[n + 1] = (char)(first[b] - left), to->data[n + 2] = (char)((first[b] - left) >> 8);
+		to->data[n + 3] = (char)k, to->data[n + 4] = (char)(k >> 8);
+		memcpy(to->data + n + PIECE_HEAD, pieces[b], (size_t)k);
+		n += PIECE_HEAD + k;
+	}
+	to->bytes = (unsigned short)n;
+}
+
+/* The line read anew into `made`: its colours, and how it ends. */
+static struct shown *
+shown_read(int line)
+{
+	starts_upto(line);
+	made.head.starts = sx_starts[line];
+	made.head.ends = (signed char)kinds_of(line, sx_starts[line]);
+	shown_make(&made.head, line, 0, 0);
 	if (sx_known == line + 1)
-		sx_starts[sx_known++] = (signed char)n;	/* (the next line's beginning, for when it is asked for) */
-	return sx_kinds;
+		sx_starts[sx_known++] = made.head.ends;	/* (the next line's beginning, for when it is asked for) */
+	return &made.head;
+}
+
+/* Keeps `made` as the line's. */
+static struct shown *
+shown_keep(int line)
+{
+	struct shown *e;
+	int i;
+
+	if (line >= shown_room) {
+		int room = line * 2 + 64;
+
+		shown = realloc(shown, (size_t)room * sizeof shown[0]);
+		memset(shown + shown_room, 0, (size_t)(room - shown_room) * sizeof shown[0]);
+		shown_room = room;
+	}
+	for (i = shown_upto; i < line; i++)
+		if (shown[i])
+			shown[i]->valid = 0;
+	if (line >= shown_upto)
+		shown_upto = line + 1;
+	e = shown[line];
+	if (!e || e->room < made.head.bytes) {
+		e = shown[line] = realloc(e, sizeof *e + made.head.bytes + 24u);
+		e->room = (unsigned short)(made.head.bytes + 24);
+	}
+	e->bytes = made.head.bytes, e->starts = made.head.starts, e->ends = made.head.ends, e->valid = 1;
+	memcpy(e->data, made.head.data, made.head.bytes);
+	return e;
+}
+
+/* A line's pieces as they are drawn with nothing selected: kept, or read now and kept. */
+static struct shown *
+shown_of(int line)
+{
+	struct shown *e;
+
+	starts_upto(line);
+	if ((e = shown_kept(line)) != NULL)
+		return e;
+	shown_read(line);
+	return shown_keep(line);
+}
+
+/* The first column of the view at which two lines' pieces look different, or 1 << 20. */
+static int
+shown_differ(const struct shown *a, const struct shown *b)
+{
+	const char *of[2][SX_KINDS + 1] = { { NULL } };
+	int kind, at = 1 << 20, n, i;
+
+	for (n = 0; n < a->bytes; n += PIECE_HEAD + piece_count(a->data + n))
+		of[0][(unsigned char)a->data[n]] = a->data + n;
+	for (n = 0; n < b->bytes; n += PIECE_HEAD + piece_count(b->data + n))
+		of[1][(unsigned char)b->data[n]] = b->data + n;
+	for (kind = 0; kind <= SX_KINDS; kind++) {
+		const char *p = of[0][kind], *q = of[1][kind];
+		int here = 1 << 20, least;
+
+		if (!p && !q)
+			continue;
+		if (!p || !q)
+			here = piece_first(p ? p : q);
+		else if (piece_first(p) != piece_first(q))
+			here = piece_first(p) < piece_first(q) ? piece_first(p) : piece_first(q);
+		else {
+			if (piece_count(p) < piece_count(q))
+				p = of[1][kind], q = of[0][kind];	/* (p: the longer) */
+			least = piece_count(q);
+			for (i = 0; i < least && p[PIECE_HEAD + i] == q[PIECE_HEAD + i]; i++)
+				continue;
+			/* past the shorter one's end the longer differs at its next character that is not a space */
+			for (n = piece_count(p); i >= least && i < n && p[PIECE_HEAD + i] == ' '; i++)
+				continue;
+			if (i < n)
+				here = piece_first(p) + i;
+		}
+		at = here < at ? here : at;
+	}
+	return at;
 }
 
 /* ---- drawing ---- */
@@ -167,77 +348,140 @@ problem_at(int line)
 	return found;
 }
 
-/* A line of the text; `cleared`: its ground is drawn already (draw_editor_from). */
+/* Text of the editor's font, through a context of its own: the other one keeps the panels'. */
 static void
-draw_line_on(int line, int cleared)
+ink(GR_COLOR colour)
 {
-	int y = editor_y() + (line - top) * ui_fh, x = gutter + 3, length, x0, y0, x1, y1, from = 0, to = 0, a, b, wrong;
-	int here = dbg_state == DBG_STOPPED && dbg_line_now == line + 1;
-	unsigned char *kinds, of[512];
-	const char *text;
-	char number[12], piece[512];
-	int first[SX_KINDS + 1], last[SX_KINDS + 1], end;
+	static GR_COLOR now;
+	static int known;
 
-	if (line < top || line >= top + rows)
-		return;
-	if (!cleared)
-		ui_fill(window, 0, y, gutter, ui_fh, MWRGB(232, 232, 232));
-	if (!cleared || here)
-		ui_fill(window, gutter, y, width - UI_SCROLL_W - gutter, ui_fh, here ? MWRGB(255, 255, 150) : WHITE);
-	if (line >= tx_count)
-		return;
-	if (numbers_on) {
-		/* the line's number at the right of four places, or of as many as it has */
-		int n = line + 1, at = sizeof number - 1;
+	if (!known || now != colour)
+		(GrSetGCForeground)(text_gc, colour);
+	now = colour, known = 1;
+}
 
-		for (number[at] = 0; n || at == (int)sizeof number - 1; n /= 10)
-			number[--at] = (char)('0' + n % 10);
-		while (at > (int)sizeof number - 5)
-			number[--at] = ' ';
-		ui_text(window, 14, y, number + at, -1, UI_SHADOW, 1);
+static void
+write_at(int x, int y, const char *text, int count)
+{
+	GrText(window, text_gc, x, y, (void *)text, count, GR_TFASCII | GR_TFTOP);
+}
+
+/* A line's number at the right of four places, or of as many as it has. */
+static void
+draw_number(int line, int y)
+{
+	char number[12];
+	int n = line + 1, at = sizeof number - 1;
+
+	for (number[at] = 0; n || at == (int)sizeof number - 1; n /= 10)
+		number[--at] = (char)('0' + n % 10);
+	while (at > (int)sizeof number - 5)
+		number[--at] = ' ';
+	ink(UI_SHADOW);
+	write_at(14, y, number + at, (int)sizeof number - 1 - at);
+}
+
+/* A line's pieces of one kind (all of them: -1), from column `from` of the view on. */
+static void
+draw_pieces(const struct shown *e, int y, int kind, int from)
+{
+	int n, x = gutter + 3;
+
+	for (n = 0; n < e->bytes; n += PIECE_HEAD + piece_count(e->data + n)) {
+		const char *piece = e->data + n;
+		int first = piece_first(piece), count = piece_count(piece), skip = 0;
+
+		if ((kind >= 0 && piece[0] != kind) || first + count <= from)
+			continue;
+		if (first < from)
+			for (skip = from - first; piece[PIECE_HEAD + skip] == ' '; skip++)
+				continue;
+		ink(piece[0] == SX_KINDS ? WHITE : sx_colours[(unsigned char)piece[0]]);
+		write_at(x + (first + skip) * ui_fw, y, piece + PIECE_HEAD + skip, count - skip);
 	}
+}
+
+/* The cursor's bar, if it is on this line. */
+static void
+draw_bar(int line, int y)
+{
+	if (bar_line == line)
+		bar_line = -1;
+	if (line != tx_y || tx_x < left || tx_x > left + columns)
+		return;
+	GrFillRect(window, bar_gc, gutter + 3 + (tx_x - left) * ui_fw, y, 2, ui_fh);
+	bar_line = line, bar_x = tx_x - left;
+}
+
+/* True, with the view's columns, if a line has selected columns in view. */
+static int
+selected_in(int line, int *from, int *to)
+{
+	int x0, y0, x1, y1;
+
+	if (!tx_selection(&x0, &y0, &x1, &y1) || line < y0 || line > y1)
+		return 0;
+	/* the selected columns of this line; a line's end counts as one more */
+	*from = (line == y0 ? x0 : 0) - left;
+	*to = (line == y1 ? x1 : (int)strlen(tx_lines[line]) + 1) - left;
+	*from = *from < 0 ? 0 : *from > columns ? columns : *from;
+	*to = *to < 0 ? 0 : *to > columns ? columns : *to;
+	return *to > *from;
+}
+
+/* What stands before a line's text, but its number: its mark, the stop's sign, a problem's bar. */
+static void
+draw_signs(int line, int y, int here)
+{
+	int wrong;
+
 	if (dbg_marked(line + 1)) {
 		GrSetGCForeground(ui_gc, MWRGB(200, 20, 20));
 		GrFillEllipse(window, ui_gc, 7, y + ui_fh / 2, 4, 4);
 	}
-	if (here)
-		ui_text(window, 2, y, ">", 1, BLACK, 1);
+	if (here) {
+		ink(BLACK);
+		write_at(2, y, ">", 1);
+	}
 	if ((wrong = problem_at(line)) != 0)
 		ui_fill(window, gutter - 3, y, 3, ui_fh, wrong & 2 ? MWRGB(220, 0, 0) : MWRGB(230, 150, 0));
-	text = tx_lines[line];
-	length = (int)strlen(text);
-	if (tx_selection(&x0, &y0, &x1, &y1) && line >= y0 && line <= y1) {
-		/* the selected columns of this line; a line's end counts as one more */
-		from = (line == y0 ? x0 : 0) - left;
-		to = (line == y1 ? x1 : length + 1) - left;
-		from = from < 0 ? 0 : from > columns ? columns : from;
-		to = to < 0 ? 0 : to > columns ? columns : to;
-		if (to > from)
-			ui_fill(window, x + from * ui_fw, y, (to - from) * ui_fw, ui_fh, UI_SELECTED);
+}
+
+/* A line of the text; `cleared`: its ground is drawn already (draw_editor_from). */
+static void
+draw_line_on(int line, int cleared)
+{
+	int y = editor_y() + (line - top) * ui_fh, from = 0, to = 0, picking;
+	int here = dbg_state == DBG_STOPPED && dbg_line_now == line + 1;
+	struct shown *e;
+
+	if (line < top || line >= top + rows)
+		return;
+	if (line - top < ROWS_KEPT)
+		row_line[line - top] = -1;
+	if (!cleared)
+		ui_fill(window, 0, y, gutter, ui_fh, MWRGB(232, 232, 232));
+	if (!cleared || here)
+		ui_fill(window, gutter, y, width - UI_SCROLL_W - gutter, ui_fh, here ? MWRGB(255, 255, 150) : WHITE);
+	if (line >= tx_count) {
+		draw_bar(line, y);
+		return;
 	}
-	kinds = kinds_of(line);
-	/* a colour's characters are one request, from its first to its last, with spaces where the
-	 * others' are (a space draws nothing); the selected ones are one colour more */
-	end = length < left + columns ? length : left + columns;
-	end = end > left + (int)sizeof piece ? left + (int)sizeof piece : end;
-	memset(first, -1, sizeof first);
-	for (a = left; a < end; a++) {
-		of[a - left] = (unsigned char)(text[a] == ' ' ? SX_KINDS + 1 : a - left >= from && a - left < to ? SX_KINDS : kinds[a]);
-		if (of[a - left] > SX_KINDS)
-			continue;
-		if (first[of[a - left]] < 0)
-			first[of[a - left]] = a;
-		last[of[a - left]] = a;
-	}
-	for (b = 0; b <= SX_KINDS; b++) {
-		if (first[b] < 0)
-			continue;
-		for (a = first[b]; a <= last[b]; a++)
-			piece[a - first[b]] = of[a - left] == b ? text[a] : ' ';
-		ui_text(window, x + (first[b] - left) * ui_fw, y, piece, last[b] - first[b] + 1, b == SX_KINDS ? WHITE : sx_colours[b], 1);
-	}
-	if (line == tx_y && tx_x >= left && tx_x <= left + columns)
-		ui_fill(window, x + (tx_x - left) * ui_fw, y, 2, ui_fh, BLACK);
+	if (numbers_on)
+		draw_number(line, y);
+	draw_signs(line, y, here);
+	picking = selected_in(line, &from, &to);
+	if (picking) {
+		ui_fill(window, gutter + 3 + from * ui_fw, y, (to - from) * ui_fw, ui_fh, UI_SELECTED);
+		starts_upto(line);
+		kinds_of(line, sx_starts[line]);
+		shown_make(e = &picked.head, line, from, to);
+	} else
+		e = shown_of(line);
+	draw_pieces(e, y, -1, 0);
+	draw_bar(line, y);
+	if (!picking && !here && line - top < ROWS_KEPT)
+		row_line[line - top] = line;
 }
 
 static void
@@ -246,22 +490,84 @@ draw_line(int line)
 	draw_line_on(line, 0);
 }
 
+/* A line's row from column `from` of the view on, and the cursor's bar taken from where it was
+ * and put where it is: when the row shows the line as it is kept; the whole line otherwise. */
+static void
+draw_line_tail(int line, int from)
+{
+	int y = editor_y() + (line - top) * ui_fh, x, a, b;
+
+	if (line < top || line >= top + rows)
+		return;
+	if (line < tx_count)
+		starts_upto(line);
+	if (line >= tx_count || line - top >= ROWS_KEPT || row_line[line - top] != line || !shown_kept(line) ||
+	    selected_in(line, &a, &b) || (dbg_state == DBG_STOPPED && dbg_line_now == line + 1)) {
+		draw_line(line);
+		return;
+	}
+	if (bar_line == line && (line != tx_y || bar_x != tx_x - left) && bar_x < from)
+		from = bar_x;
+	x = gutter + 3 + from * ui_fw;
+	if (from < 1 << 20 && x < width - UI_SCROLL_W) {
+		GrFillRect(window, ground_gc, x, y, width - UI_SCROLL_W - x, ui_fh);
+		draw_pieces(shown_kept(line), y, -1, from);
+	}
+	draw_bar(line, y);
+}
+
+/* The text's scroll bar. The view may begin after the last whole page (Go to line near the
+ * end, lines taken out): the thumb is then at the bar's end, where it ran past it and over
+ * the panel and the status line. */
+static void
+draw_scroll_bar(void)
+{
+	ui_scrollbar(window, width - UI_SCROLL_W, editor_y(), panel_y() - editor_y(), tx_count, rows,
+		     tx_count > rows && top > tx_count - rows ? tx_count - rows : top);
+}
+
 static void
 draw_editor_from(int line)
 {
-	int y;
+	static const unsigned char order[SX_KINDS] = { SX_KEYWORD, SX_TYPE, SX_DIRECTIVE, SX_STRING, SX_NUMBER, SX_COMMENT, SX_CALL, SX_PLAIN };
+	struct shown *plain[ROWS_KEPT];
+	int y, i, k, a, b, first;
 
 	/* the lines' ground in two pieces, not two a line */
-	line = line < top ? top : line;
+	first = line = line < top ? top : line;
 	y = editor_y() + (line - top) * ui_fh;
 	if (line < top + rows) {
 		ui_fill(window, 0, y, gutter, (top + rows - line) * ui_fh, MWRGB(232, 232, 232));
 		ui_fill(window, gutter, y, width - UI_SCROLL_W - gutter, (top + rows - line) * ui_fh, WHITE);
 	}
-	for (; line < top + rows; line++)
-		draw_line_on(line, 1);
+	/* a line with something selected or the stop on it is drawn by itself; the others together,
+	 * a colour after a colour: a colour changed is a request too, and was three a line */
+	for (; line < top + rows; line++) {
+		i = line - top;
+		if (i >= ROWS_KEPT || line >= tx_count || selected_in(line, &a, &b) || (dbg_state == DBG_STOPPED && dbg_line_now == line + 1)) {
+			draw_line_on(line, 1);
+			continue;
+		}
+		plain[i] = shown_of(line);
+		row_line[i] = line;
+		if (bar_line == line)
+			bar_line = -1;
+	}
+#define EACH_PLAIN for (line = first, y = editor_y() + (line - top) * ui_fh; line < top + rows; line++, y += ui_fh) \
+	if (line - top < ROWS_KEPT && row_line[line - top] == line)
+	if (numbers_on)
+		EACH_PLAIN
+			draw_number(line, y);
+	EACH_PLAIN
+		draw_signs(line, y, 0);
+	for (k = 0; k < SX_KINDS; k++)
+		EACH_PLAIN
+			draw_pieces(plain[line - top], y, order[k], 0);
+	EACH_PLAIN
+		draw_bar(line, y);
+#undef EACH_PLAIN
 	ui_fill(window, 0, editor_y() + rows * ui_fh, width - UI_SCROLL_W, panel_y() - editor_y() - rows * ui_fh, WHITE);
-	ui_scrollbar(window, width - UI_SCROLL_W, editor_y(), panel_y() - editor_y(), tx_count, rows, top);
+	draw_scroll_bar();
 }
 
 static const char *const menu_names[] = { "File", "Edit", "Selection", "View", "Run", "Help" };
@@ -315,37 +621,97 @@ tools_now(void)
 	return bits;
 }
 
+/* The row of keys; `all`: with its ground, else only the keys that look different now. */
 static void
-draw_tools(void)
+draw_tools_some(int all)
 {
-	int i;
+	int i, now = tools_now(), differ = all ? -1 : now ^ tools_shown;
 
-	tools_shown = tools_now();
-	ui_fill(window, 0, MENU_H, width, TOOL_H, UI_FACE);
+	/* (a key's bit is TOOLS - 1 - i; the bit above them all says what Debug reads) */
+	if (differ >> TOOLS & 1)
+		differ = -1, all = 1;
+	tools_shown = now;
+	if (all)
+		ui_fill(window, 0, MENU_H, width, TOOL_H, UI_FACE);
 	for (i = 0; i < TOOLS; i++) {
 		const char *label = tools[i].id == C_DEBUG && dbg_state == DBG_STOPPED ? "Go on" : tools[i].label;
 
+		if (!(differ >> (TOOLS - 1 - i) & 1))
+			continue;
+		if (!all)
+			ui_fill(window, tool_x[i], MENU_H + 3, tool_w[i], 22, UI_FACE);
 		ui_bevel(window, tool_x[i], MENU_H + 3, tool_w[i], 22, 0);
 		ui_text(window, tool_x[i] + 7, MENU_H + 7, label, -1, can(tools[i].id) ? BLACK : UI_SHADOW, 0);
 	}
-	ui_fill(window, 0, MENU_H + TOOL_H - 1, width, 1, UI_SHADOW);
+	if (all)
+		ui_fill(window, 0, MENU_H + TOOL_H - 1, width, 1, UI_SHADOW);
 }
 
+static void
+draw_tools(void)
+{
+	draw_tools_some(1);
+}
+
+/* Puts a text, or a number, at the end of another; where that ends is returned. */
+static char *
+put(char *to, const char *text)
+{
+	while (*text)
+		*to++ = *text++;
+	*to = 0;
+	return to;
+}
+
+static char *
+put_number(char *to, int n)
+{
+	char digits[12];
+	int at = sizeof digits - 1;
+
+	for (digits[at] = 0; n > 0 || at == (int)sizeof digits - 1; n /= 10)
+		digits[--at] = (char)('0' + n % 10);
+	return put(to, digits + at);
+}
+
+static int status_whole = 1;	/* its ground and edge are to be drawn too (draw_all) */
+
+/* The status line: of its two texts, the one that changed (a key changes where the cursor is). */
 static void
 draw_status(void)
 {
 	static const char *const asks[] = { "", "Find: ", "Go to line: ", "Save as: " };
-	char text[400];
+	static char left_shown[400], right_shown[48];
+	static int left_wide;
+	char text[400], where[48];
+	int y = height - STATUS, n, both;
 
-	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
-	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
 	if (asking)
 		snprintf(text, sizeof text, "%s%s_   (Enter, or Escape to leave)", asks[asking], answer);
-	else
-		snprintf(text, sizeof text, "%s%s   %s", path, tx_modified ? " *" : "", notice);
-	ui_text_fit(window, 6, height - STATUS + 3, width - 150, text, BLACK);
-	snprintf(text, sizeof text, "line %d, column %d", tx_y + 1, tx_x + 1);
-	ui_text(window, width - 132, height - STATUS + 3, text, -1, BLACK, 0);
+	else {
+		n = (int)(put(put(put(text, path), tx_modified ? " *" : ""), "   ") - text);
+		strncat(text, notice, sizeof text - 1 - (size_t)n);
+	}
+	put_number(put(put_number(put(where, "line "), tx_y + 1), ", column "), tx_x + 1);
+	/* (a text too long for its room runs under the other, which is then drawn over it again) */
+	both = status_whole || strcmp(text, left_shown) || (left_wide && strcmp(where, right_shown));
+	if (status_whole) {
+		ui_fill(window, 0, y, width, STATUS, UI_FACE);
+		ui_bevel(window, 0, y, width, STATUS, 1);
+	} else if (both)
+		ui_fill(window, 1, y + 1, width - 2, STATUS - 2, UI_FACE);
+	else if (strcmp(where, right_shown))
+		ui_fill(window, width - 133, y + 1, 132, STATUS - 2, UI_FACE);
+	if (both) {
+		ui_text_fit(window, 6, y + 3, width - 150, text, BLACK);
+		left_wide = 6 + ui_width(&ui_var_widths, ui_var, text, -1) > width - 133;
+		strcpy(left_shown, text);
+	}
+	if (both || strcmp(where, right_shown)) {
+		ui_text(window, width - 132, y + 3, where, -1, BLACK, 0);
+		strcpy(right_shown, where);
+	}
+	status_whole = 0;
 }
 
 static void
@@ -360,7 +726,10 @@ draw_panel(void)
 	ui_fill(window, 0, y, width, TAB_H, UI_FACE);
 	ui_fill(window, 0, y, width, 1, UI_SHADOW);
 	for (i = 0; i < PANELS; i++) {
-		snprintf(label, sizeof label, i == P_PROBLEMS && problem_count ? "%s (%d)" : "%s", names[i], problem_count);
+		char *end = put(label, names[i]);
+
+		if (i == P_PROBLEMS && problem_count)
+			put(put_number(put(end, " ("), problem_count), ")");
 		if (i == panel)
 			ui_fill(window, 4 + i * 96, y + 2, 92, TAB_H - 2, WHITE);
 		ui_text(window, 10 + i * 96, y + 3, label, -1, BLACK, 0);
@@ -374,7 +743,7 @@ draw_panel(void)
 		if (panel == P_OUTPUT)
 			ui_text_fit(window, 6, py, width - 12, out_lines[k], BLACK);
 		else if (panel == P_PROBLEMS) {
-			snprintf(label, sizeof label, "line %d", problems[k].line);
+			put_number(put(label, "line "), problems[k].line);
 			ui_text(window, 6, py, label, -1, problems[k].error ? MWRGB(200, 0, 0) : MWRGB(170, 100, 0), 0);
 			ui_text_fit(window, 76, py, width - 82, problems[k].text, BLACK);
 		} else
@@ -390,6 +759,7 @@ draw_all(void)
 	draw_tools();
 	draw_editor_from(top);
 	draw_panel();
+	status_whole = 1;
 	draw_status();
 }
 
@@ -407,11 +777,14 @@ show_panel(int which)
 
 /* ---- the view follows the cursor ---- */
 
+static int top_was;	/* the view's first line before the last follow() */
+
 static int
 follow(void)
 {
 	int old_top = top, old_left = left;
 
+	top_was = top;
 	if (tx_y < top)
 		top = tx_y;
 	if (tx_y >= top + rows)
@@ -423,16 +796,43 @@ follow(void)
 	return top != old_top || left != old_left;
 }
 
+static int scroll_drawn;	/* NXIDE_SCROLL=draw: a view that moved is drawn whole, as it was before */
+
+/* The view moved from line `was` to top and no text changed: the rows that stay in view are
+ * copied to where they now are (one request, where each line was three), and the lines that
+ * came into view are drawn. From too far, or with something selected, all of it is drawn. */
+static void
+view_moved(int was)
+{
+	int by = top - was, stay = rows - abs(by), y = editor_y(), line, x0, y0, x1, y1;
+
+	if (stay < 1 || rows > ROWS_KEPT || scroll_drawn || tx_selection(&x0, &y0, &x1, &y1)) {
+		draw_editor_from(top);
+		return;
+	}
+	GrCopyArea(window, ui_gc, 0, y + (by < 0 ? -by * ui_fh : 0), width - UI_SCROLL_W, stay * ui_fh, window, 0, y + (by > 0 ? by * ui_fh : 0),
+		   MWROP_COPY);
+	memmove(row_line + (by < 0 ? -by : 0), row_line + (by > 0 ? by : 0), (size_t)stay * sizeof row_line[0]);
+	/* (the bar the cursor left behind goes first: a line drawn with the cursor on it forgets it) */
+	if (bar_line >= 0 && bar_line != tx_y)
+		draw_line_tail(bar_line, 1 << 20);
+	for (line = by > 0 ? top + stay : top; line < (by > 0 ? top + rows : top - by); line++)
+		draw_line(line);
+	draw_scroll_bar();
+}
+
 static void
 scroll_to(int line)
 {
+	int was = top;
+
 	if (line > tx_count - rows)
 		line = tx_count - rows;
 	if (line < 0)
 		line = 0;
 	if (line != top) {
 		top = line;
-		draw_editor_from(top);
+		view_moved(was);
 	}
 }
 
@@ -456,38 +856,60 @@ go_to_line(int line)
 static void
 changed(int was_y, int all)
 {
-	int first = tx_touched, whole = tx_shifted, before;
+	int first = tx_touched, last = tx_touched_last, whole = tx_shifted, before, known = sx_known, from = 0, i;
 
 	if (first == 1 << 30) {
-		if (all) {
+		if (all == 2)
+			view_moved(top_was);	/* (the cursor took the view up or down with it) */
+		else if (all) {
 			draw_editor_from(top);
 			return;
 		}
-		draw_line(was_y);
+		/* the cursor went: its bar is taken from its old row and put on its new one */
+		draw_line_tail(was_y, 1 << 20);
 		if (tx_y != was_y)
-			draw_line(tx_y);
+			draw_line_tail(tx_y, 1 << 20);
 		return;
 	}
 	/* the line after: if it now begins inside a comment and did not, all below it changed colour */
 	before = first + 1 < sx_known ? sx_starts[first + 1] : -1;
 	if (sx_known > first + 1)
 		sx_known = first + 1;
-	if (!whole && first + 1 < tx_count) {
-		kinds_of(first + 1);
-		whole = before >= 0 && sx_starts[first + 1] != before;
+	if (whole || first >= tx_count) {
+		shown_upto = shown_upto < first ? shown_upto : first;
+	} else if (last > first) {
+		for (i = first; i <= last && i < shown_upto; i++)
+			if (shown[i])
+				shown[i]->valid = 0;
+		if (first + 1 < tx_count) {
+			starts_upto(first + 1);
+			whole = before >= 0 && sx_starts[first + 1] != before;
+		}
+	} else {
+		/* one line changed: read once, and compared with what its row shows */
+		struct shown *old;
+
+		starts_upto(first);
+		old = first >= top && first - top < ROWS_KEPT && row_line[first - top] == first ? shown_kept(first) : NULL;
+		shown_read(first);
+		from = old ? shown_differ(old, &made.head) : 0;
+		shown_keep(first);
+		whole = before >= 0 && made.head.ends != before;
+		if (before >= 0 && !whole)
+			sx_known = known;	/* (the lines below begin as they did) */
 	}
-	tx_touched = 1 << 30, tx_shifted = 0;
-	edited_at = milliseconds(), unchecked = 1;
+	tx_touched = 1 << 30, tx_shifted = 0, tx_touched_last = -1;
+	unchecked = edited_now = 1;
 	if (all)
 		draw_editor_from(top);
 	else if (whole)
 		draw_editor_from(first);
 	else {
-		draw_line(first);
 		if (was_y != first)
-			draw_line(was_y);
+			draw_line_tail(was_y, 1 << 20);	/* (first: where the cursor's bar was) */
+		draw_line_tail(first, from);
 		if (tx_y != first && tx_y != was_y)
-			draw_line(tx_y);
+			draw_line_tail(tx_y, 1 << 20);
 	}
 }
 
@@ -539,7 +961,7 @@ problems_from(const char *text)
 	problem_count = problem_top = 0;
 	while (*text && problem_count < (int)(sizeof problems / sizeof problems[0])) {
 		const char *end = strchr(text, '\n'), *at;
-		int length = end ? (int)(end - text) : (int)strlen(text);
+		int length = end ? (int)(end - text) : (int)strlen(text), n;
 
 		for (at = text; at < text + length; at++)
 			if (at[0] == ':' && isdigit((unsigned char)at[1]) && at > text) {
@@ -553,12 +975,93 @@ problems_from(const char *text)
 				p->error = !!memmem(what, (size_t)(text + length - what), "error", 5);
 				if (!p->error && !memmem(what, (size_t)(text + length - what), "warning", 7))
 					break;
-				snprintf(p->text, sizeof p->text, "%.*s", (int)(text + length - what), what);
+				n = (int)(text + length - what) < (int)sizeof p->text - 1 ? (int)(text + length - what) : (int)sizeof p->text - 1;
+				memcpy(p->text, what, (size_t)n);
+				memset(p->text + n, 0, sizeof p->text - (size_t)n);	/* (whole: two lists of them are compared) */
 				problem_count++;
 				break;
 			}
 		text += length + (end != NULL);
 	}
+}
+
+/* The problems of a check, and what they change drawn: the bars before the lines whose
+ * problems are others now, and the panel if anything in it is. */
+static void
+problems_set(const char *text)
+{
+	static struct problem before[sizeof problems / sizeof problems[0]];
+	unsigned char was[ROWS_KEPT];
+	int count = problem_count, line;
+
+	memcpy(before, problems, (size_t)count * sizeof problems[0]);
+	for (line = top; line < top + rows && line - top < ROWS_KEPT; line++)
+		was[line - top] = (unsigned char)problem_at(line);
+	problems_from(text);
+	if (count == problem_count && !memcmp(before, problems, (size_t)count * sizeof problems[0]))
+		return;
+	if (rows > ROWS_KEPT)
+		draw_editor_from(top);
+	for (line = top; line < top + rows && rows <= ROWS_KEPT; line++)
+		if (was[line - top] != problem_at(line))
+			draw_line(line);
+	draw_panel();
+}
+
+/* The text's two sums, as a check's file has it; false if it names a file by "...", which
+ * may be another tomorrow. */
+static int
+text_sums(unsigned sums[2])
+{
+	unsigned a = 2166136261u, b = 5381;
+	int i, closed = 1;
+
+	for (i = 0; i < tx_count; i++) {
+		const unsigned char *at = (const unsigned char *)tx_lines[i];
+
+		if (*at == '#' || *at == ' ')
+			closed &= !(strstr(tx_lines[i], "include") && strchr(tx_lines[i], '"'));
+		for (; *at; at++) {
+			a = (a ^ *at) * 16777619u;
+			b = b * 33 + *at;
+		}
+		a = (a ^ '\n') * 16777619u;
+		b = b * 33 + '\n';
+	}
+	sums[0] = a, sums[1] = b;
+	return closed;
+}
+
+static void
+clean_add(const unsigned sums[2])
+{
+	clean[clean_next][0] = sums[0], clean[clean_next][1] = sums[1];
+	clean_next = (clean_next + 1) % CLEAN_MOST;
+	clean_count += clean_count < CLEAN_MOST;
+}
+
+static int
+clean_has(const unsigned sums[2])
+{
+	int i;
+
+	for (i = 0; i < clean_count; i++)
+		if (clean[i][0] == sums[0] && clean[i][1] == sums[1])
+			return 1;
+	return 0;
+}
+
+/* The sums the build found clean: a line each, two numbers in hexadecimal. */
+static void
+clean_load(void)
+{
+	FILE *file = fopen("/usr/share/ide-clean", "r");
+	unsigned sums[2];
+
+	while (file && fscanf(file, "%x %x", &sums[0], &sums[1]) == 2)
+		clean_add(sums);
+	if (file)
+		fclose(file);
 }
 
 /* ---- what runs beside ---- */
@@ -572,7 +1075,9 @@ job_start(int kind, char *const words[])
 
 	if (pipe(ends) < 0)
 		return;
-	job.pid = fork();
+	/* (the kernel's vfork: the child is on this program's memory until it is another program,
+	 * and does nothing there but system calls; a fork was a copy of every page written after) */
+	job.pid = real_vfork();
 	if (job.pid < 0) {
 		close(ends[0]), close(ends[1]);
 		job.pid = 0;
@@ -719,14 +1224,16 @@ job_ended(int kind, int status)
 		draw_all();
 		return;
 	}
+	if (kind == J_CHECK) {
+		problems_set(job_text);
+		/* a text the compiler said nothing of need not be shown to it again */
+		if (!problem_count && check_closed && !job_unseen && WIFEXITED(status) && !WEXITSTATUS(status))
+			clean_add(check_sum);
+		return;
+	}
 	problems_from(job_text);
 	for (i = 0; i < problem_count; i++)
 		errors += problems[i].error;
-	if (kind == J_CHECK) {
-		draw_editor_from(top);
-		draw_panel();
-		return;
-	}
 	if (errors || !WIFEXITED(status) || WEXITSTATUS(status)) {
 		snprintf(text, sizeof text, "not built: %d error%s", errors, errors == 1 ? "" : "s");
 		say(text);
@@ -772,6 +1279,7 @@ poll_all(void)
 		if (ended == job.pid || (ended < 0 && errno == ECHILD)) {
 			int kind = job.kind;
 
+			job_unseen = ended < 0;
 			if (ended < 0)
 				status = 0;	/* (it ended unseen: what it wrote says how) */
 
@@ -798,17 +1306,40 @@ poll_all(void)
 	if (out_fresh && panel == P_OUTPUT)
 		draw_panel();
 	/* nothing typed for a while: the compiler looks at the text as it is, quietly */
-	if (checking_on && unchecked && job.kind == J_NONE && dbg_state == DBG_GONE && milliseconds() - edited_at > 1500) {
+	if (checking_on && unchecked && !edited_now && job.kind == J_NONE && dbg_state == DBG_GONE && milliseconds() - edited_at > 1500) {
 		static char *const check[] = { "tcc", "-static", "-mfpu", "-c", "/tmp/ide-check.c", "-o", "/tmp/ide-check.o", NULL };
-		FILE *file = fopen("/tmp/ide-check.c", "w");
-		int i;
+		static int file = -1, room;
+		static char *text;
+		struct stat is;
+		int i, n = 0;
 
 		unchecked = 0;
-		if (!file)
+		check_closed = text_sums(check_sum);
+		if (check_closed && clean_has(check_sum)) {
+			problems_set("");	/* (it said nothing of this text before) */
 			return;
+		}
+		/* the text as one piece, into a file kept open: made and closed anew each time it was
+		 * 30,000 instructions */
 		for (i = 0; i < tx_count; i++)
-			fprintf(file, "%s\n", tx_lines[i]);
-		fclose(file);
+			n += (int)strlen(tx_lines[i]) + 1;
+		if (n > room)
+			text = realloc(text, (size_t)(room = n + 4096));
+		for (i = n = 0; i < tx_count; i++) {
+			int length = (int)strlen(tx_lines[i]);
+
+			memcpy(text + n, tx_lines[i], (size_t)length);
+			text[n + length] = '\n';
+			n += length + 1;
+		}
+		if (file >= 0 && (fstat(file, &is) != 0 || !is.st_nlink)) {
+			close(file);	/* (somebody took the file away) */
+			file = -1;
+		}
+		if (file < 0)
+			file = open("/tmp/ide-check.c", O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+		if (file < 0 || pwrite(file, text, (size_t)n, 0) != n || ftruncate(file, n) != 0)
+			return;
 		job_start(J_CHECK, check);
 	}
 }
@@ -836,12 +1367,12 @@ named(const char *file)
 static void
 opened(void)
 {
-	sx_known = 0;
+	sx_known = 0, shown_upto = 0;
 	top = left = 0;
 	problem_count = 0;
 	dbg_mark_count = 0;
-	tx_touched = 1 << 30, tx_shifted = 0;
-	unchecked = 1, edited_at = milliseconds();
+	tx_touched = 1 << 30, tx_shifted = 0, tx_touched_last = -1;
+	unchecked = edited_now = 1;
 }
 
 static void
@@ -1287,7 +1818,7 @@ command_done(int id)
 	}
 	changed(was, follow() || tx_marked || id == C_UNDO || id == C_REDO);
 	if (tools_now() != tools_shown)
-		draw_tools();
+		draw_tools_some(0);
 	draw_status();
 }
 
@@ -1339,7 +1870,7 @@ static void
 key(int ch, int modifiers)
 {
 	int was = tx_y, length = (int)strlen(tx_lines[tx_y]), shift = (modifiers & MWKMOD_SHIFT) != 0, moves = 0, n, id = 0;
-	int x0, y0, x1, y1, had = tx_selection(&x0, &y0, &x1, &y1), was_marked = tx_marked, was_ax = tx_ax, was_ay = tx_ay;
+	int x0, y0, x1, y1, had = tx_selection(&x0, &y0, &x1, &y1), was_marked = tx_marked, was_ax = tx_ax, was_ay = tx_ay, was_left;
 	char one;
 
 	if (asking) {
@@ -1474,15 +2005,18 @@ key(int ch, int modifiers)
 	}
 	if (!moves && ch != MWKEY_ESCAPE && !(tx_marked && (ch == MWKEY_TAB || ch == '\t')))
 		tx_marked = 0;
+	was_left = left;
 	n = follow();
-	if (moves && shift && !n && (!was_marked || (tx_ax == was_ax && tx_ay == was_ay))) {
+	if (moves && n && left == was_left && !had && !tx_selection(&x0, &y0, &x1, &y1))
+		changed(was, 2);
+	else if (moves && shift && !n && (!was_marked || (tx_ax == was_ax && tx_ay == was_ay))) {
 		/* the selection grew or shrank at the cursor's end: the lines the cursor passed */
 		for (n = was < tx_y ? was : tx_y; n <= (was < tx_y ? tx_y : was); n++)
 			draw_line(n);
 	} else
 		changed(was, n || had || tx_selection(&x0, &y0, &x1, &y1));
 	if (tools_now() != tools_shown)
-		draw_tools();
+		draw_tools_some(0);
 	draw_status();
 }
 
@@ -1748,14 +2282,19 @@ static GR_TIMEOUT
 wait_ms(void)
 {
 	unsigned since;
-	int beside = job.kind != J_NONE || dbg_state == DBG_RUNNING;
+	int beside = job.kind != J_NONE || dbg_state == DBG_RUNNING, fresh = edited_now;
 
+	/* (the clock is asked once a key: a question to the kernel each time) */
+	if (edited_now)
+		edited_at = milliseconds(), edited_now = 0;
 	if (script[0])
 		return beside || debug_fd >= 0 ? 40 : 300;
 	if (beside)
-		return 250;
+		return job.kind == J_CHECK ? 2000 : 250;	/* (a check's end is heard at its pipe's) */
 	if (!checking_on || !unchecked || dbg_state != DBG_GONE)
 		return 0;
+	if (fresh)
+		return 1502;
 	since = milliseconds() - edited_at;
 	return since > 1500 ? 1 : 1502 - since;
 }
@@ -1778,6 +2317,12 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	text_gc = GrNewGC(), ground_gc = GrNewGC(), bar_gc = GrNewGC();
+	GrSetGCUseBackground(text_gc, GR_FALSE);
+	(GrSetGCFont)(text_gc, ui_fixed);
+	(GrSetGCForeground)(ground_gc, WHITE);
+	(GrSetGCForeground)(bar_gc, BLACK);
+	clean_load();
 	/* the desktop's bar ignores its children's ends, and whatever it starts inherits that: a
 	 * build would then end unseen (waitpid finds no child), and the IDE wait for it for ever.
 	 * A child's end or stop also ends the loop's wait (wait_ms), so nothing is polled for. */
@@ -1785,6 +2330,7 @@ main(int argc, char **argv)
 	signal_child.sa_flags = SA_RESTART;
 	sigaction(SIGCHLD, &signal_child, NULL);
 	print_on = getenv("NXIDE_PRINT") != NULL;
+	scroll_drawn = getenv("NXIDE_SCROLL") && !strcmp(getenv("NXIDE_SCROLL"), "draw");
 	if (getenv("NXIDE_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXIDE_SCRIPT"));
 	while (share && (entry = readdir(share)) != NULL && example_count < 12)

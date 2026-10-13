@@ -37,8 +37,14 @@ export CFLAGS HERE BUILD ALIGN16 HOT HOTFILES
 mkdir -p "$BUILD" && cd "$BUILD"
 { ls "$C"/src/*.c; ls "$HERE"/*.c; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/classicube.patch" ] && [ "$o" -nt "$HERE/build.sh" ] || { b=$(basename {} .c); f=; case "$HOTFILES" in *" $b "*) f=$HOT;; esac; rv32-cc $CFLAGS $f -c {} -o "$o" && riscv32-linux-objcopy $ALIGN16 "$o"; }'
-# Builder.c a second time, for the worker core: its own buffers, and its three names another's
-rv32-cc $CFLAGS $HOT -DSE_SECOND -DBuilder_MakeChunk=Builder_MakeChunk_w -DBuilder_ApplyActive=Builder_ApplyActive_w     -DBuilder_Component=Builder_Component_w -c "$C/src/Builder.c" -o Builder_w.o
+# Builder.c again for each worker core that makes meshes (SE_COPIES in MapRenderer.h): its own
+# buffers, and its four names another's
+rm -f Builder_w.o
+for k in 1 2 3 4 5 6 7; do
+    rv32-cc $CFLAGS $HOT -DSE_SECOND -DBuilder_MakeChunk=Builder_MakeChunk_w$k -DBuilder_ApplyActive=Builder_ApplyActive_w$k \
+        -DBuilder_Component=Builder_Component_w$k -DBuilder_Job_w=Builder_Job_w$k -c "$C/src/Builder.c" -o Builder_w$k.o &
+done
+wait
 # the worker cores' library, the same for every program (programs/mc)
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
 # and 16 bytes of nothing after our variables in each kind of section: the libraries' follow
@@ -47,7 +53,7 @@ printf 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] 
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
-for o in Builder_w.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
+for o in Builder_w[1-7].o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
 rv32-cc -O2 $FPU -w $(ls *.o | grep -v '^zz_') zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o classicube
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/classicube.bin" classicube

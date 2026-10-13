@@ -352,10 +352,10 @@ index 1dda825..c77c3fc 100644
          Buffer_Draw_Stamp_Clip(this,
                                 icondata,
 diff --git a/common/keybuff.cpp b/common/keybuff.cpp
-index 1f9575d..cce15ef 100644
+index 1f9575d..371bee9 100644
 --- a/common/keybuff.cpp
 +++ b/common/keybuff.cpp
-@@ -73,6 +73,58 @@ void BF_Copy(int width,
+@@ -73,6 +73,68 @@ void BF_Copy(int width,
  }
  
  // Index 0 transparency
@@ -398,13 +398,23 @@ index 1f9575d..cce15ef 100644
 +        for (int y = 0; rows && y < height; y++) {
 +            const unsigned char* row = src + y * (width + pitch);
 +            int a = host_first_pixel(row, width), b = a == width ? -1 : host_last_pixel(row, width);
-+            rows[y].first = (short)a, rows[y].last = (short)b, rows[y].solid = 1;
-+            for (int k = a; k <= b; k++) {
-+                if (!row[k]) {
-+                    rows[y].solid = 0;
++            rows[y].first = (short)a, rows[y].last = (short)b;
++            /* (a word of the row at a look where it lies on one: a large shape is mostly solid rows) */
++            int k = a;
++            while (k <= b && (((uintptr_t)(row + k) & 3) || k + 3 > b) && row[k]) {
++                k++;
++            }
++            while (k + 3 <= b && !((uintptr_t)(row + k) & 3)) {
++                host_word four = *(const host_word*)(row + k);
++                if ((four - 0x01010101u) & ~four & 0x80808080u) {
 +                    break;
 +                }
++                k += 4;
 +            }
++            while (k <= b && row[k]) {
++                k++;
++            }
++            rows[y].solid = k > b;
 +        }
 +    }
 +    return ShaderEmu_Spans[at].rows;
@@ -414,7 +424,7 @@ index 1f9575d..cce15ef 100644
  void BF_Trans(int width,
                int height,
                unsigned char* dst,
-@@ -84,6 +136,69 @@ void BF_Trans(int width,
+@@ -84,6 +146,69 @@ void BF_Trans(int width,
                unsigned char* fade_tab,
                int count)
  {
@@ -484,7 +494,7 @@ index 1f9575d..cce15ef 100644
      while (height--) {
          for (int i = width; i > 0; --i) {
              unsigned char sbyte = *src++;
-@@ -1424,7 +1539,13 @@ void Buffer_Frame_To_Page(int x,
+@@ -1424,7 +1549,68 @@ void Buffer_Frame_To_Page(int x,
      // Here we just use the function that will blit the entire frame
      // using the appropriate effects.
      if (blit_height > 0 && blit_width > 0) {
@@ -496,10 +506,65 @@ index 1f9575d..cce15ef 100644
 +#ifdef SHADEREMU
 +        ShaderEmu_Stable_Shape = false;
 +#endif
++    }
++}
++
++#ifdef SHADEREMU
++/*
++** A frame a worker core has made ready (host.h), drawn as Buffer_Frame_To_Page draws the whole
++** frame with index 0 let through: the rectangle that has pixels, a row's run by its span.
++*/
++void ShaderEmu_Ready_To_Page(int x, int y, int width, int height, const struct host_frame* ready, GraphicViewPortClass& viewport, int flags)
++{
++    if (flags & SHAPE_CENTER) {
++        x -= width / 2;
++        y -= height / 2;
++    }
++    int xstart = x, ystart = y, yend = y + height - 1, xend = x + width - 1;
++    if (xstart >= viewport.Get_Width() || ystart >= viewport.Get_Height() || xend <= 0 || yend <= 0) {
++        return;
++    }
++    xstart = xstart < 0 ? 0 : xstart;
++    ystart = ystart < 0 ? 0 : ystart;
++    xend = xend >= viewport.Get_Width() - 1 ? viewport.Get_Width() - 1 : xend;
++    yend = yend >= viewport.Get_Height() - 1 ? viewport.Get_Height() - 1 : yend;
++    // the frame's columns and rows that are drawn, and of those the ones the rectangle has
++    int x0 = xstart - x, x1 = xend - x, y0 = ystart - y, y1 = yend - y;
++    x0 = x0 < ready->left ? ready->left : x0;
++    y0 = y0 < ready->top ? ready->top : y0;
++    x1 = x1 > ready->left + ready->w - 1 ? ready->left + ready->w - 1 : x1;
++    y1 = y1 > ready->top + ready->h - 1 ? ready->top + ready->h - 1 : y1;
++    if (ready->state == HOST_FRAME_EMPTY || x0 > x1 || y0 > y1) {
++        return;
++    }
++    int pitch = viewport.Get_XAdd() + viewport.Get_Width() + viewport.Get_Pitch();
++    // (both from the frame's column 0)
++    unsigned char* dst = reinterpret_cast<unsigned char*>(viewport.Get_Offset()) + (y + y0) * pitch + x;
++    const unsigned char* src = ready->pixels + (y0 - ready->top) * ready->w - ready->left;
++    const struct host_span* span = ready->state & HOST_FRAME_SPANS ? host_frame_spans(ready) + (y0 - ready->top) : NULL;
++    for (int row = y0; row <= y1; row++, dst += pitch, src += ready->w) {
++        int a = x0, b = x1;
++        bool solid = false;
++        if (span) {
++            int first = ready->left + (span->first & 0x7fff), last = ready->left + span->last;
++            solid = !(span->first & 0x8000);
++            a = a < first ? first : a;
++            b = b > last ? last : b;
++            span++;
++        }
++        if (a > b) {
++            continue;
++        }
++        if (solid) {
++            memcpy(dst + a, src + a, b - a + 1);
++        } else {
++            BF_Trans(b - a + 1, 1, dst + a, const_cast<unsigned char*>(src) + a, 0, 0, NULL, NULL, NULL, 0);
++        }
      }
  }
++#endif
 diff --git a/common/keyframe.cpp b/common/keyframe.cpp
-index 67b97b0..279b856 100644
+index 67b97b0..67708ce 100644
 --- a/common/keyframe.cpp
 +++ b/common/keyframe.cpp
 @@ -123,8 +123,17 @@ int Get_Last_Frame_Length(void)
@@ -520,7 +585,7 @@ index 67b97b0..279b856 100644
      /*
      ** Delete any previously allocated slots
      */
-@@ -645,3 +654,123 @@ bool Get_Build_Frame_Palette(void const* dataptr, void* palette)
+@@ -645,3 +654,124 @@ bool Get_Build_Frame_Palette(void const* dataptr, void* palette)
      }
      return (false);
  }
@@ -588,13 +653,16 @@ index 67b97b0..279b856 100644
 +    return le16toh(keyfr.frames);
 +}
 +
-+extern "C" int ShaderEmu_Frame_Into(const void* file, int frame, void* buffer)
++/*
++** `have`: the frame the buffer holds, as this made it (-1: none). A frame that is the one
++** before it changed takes only the changes: a file's last frames were its whole chain each.
++*/
++extern "C" int ShaderEmu_Frame_Step(const void* file, int frame, void* buffer, int have)
 +{
 +    const unsigned char* data = (const unsigned char*)file;
 +    unsigned char* to = (unsigned char*)buffer;
-+    uint32_t offset[SUBFRAMEOFFS];
++    uint32_t offset[2], other[2];
 +    KeyFrameHeaderType keyfr;
-+    int i;
 +
 +    memcpy(&keyfr, file, sizeof(keyfr));
 +    if (frame < 0 || frame >= le16toh(keyfr.frames)) {
@@ -602,48 +670,130 @@ index 67b97b0..279b856 100644
 +    }
 +    unsigned short size = (unsigned short)(le16toh(keyfr.width) * le16toh(keyfr.height));
 +    int skip = le16toh(keyfr.flags) & 1 ? 768 : 0;
-+    memset(offset, 0, sizeof(offset));
-+    memcpy(offset, data + ((unsigned)frame << 3) + sizeof(KeyFrameHeaderType), 12);
-+    for (i = 0; i < 3; i++) {
-+        offset[i] = le32toh(offset[i]);
-+    }
++    memcpy(offset, data + ((unsigned)frame << 3) + sizeof(KeyFrameHeaderType), 8);
++    offset[0] = le32toh(offset[0]), offset[1] = le32toh(offset[1]);
 +    int flags = (int)(offset[0] >> 24);
 +    if (flags & KF_KEYFRAME) {
 +        LCW_Uncompress(data + (offset[0] & 0x00FFFFFF) + skip, to, size);
 +        return 1;
 +    }
-+    int at = frame;
++    // the chain's first frame (the one changed from the key frame), and the key frame's place
++    int first = frame;
 +    if (flags & KF_DELTA) {
-+        at = (unsigned short)offset[1];
-+        memcpy(offset, data + ((unsigned)at << 3) + sizeof(KeyFrameHeaderType), sizeof(offset));
-+        for (i = 0; i < SUBFRAMEOFFS; i++) {
-+            offset[i] = le32toh(offset[i]);
-+        }
++        first = (unsigned short)offset[1];
++        memcpy(offset, data + ((unsigned)first << 3) + sizeof(KeyFrameHeaderType), 8);
++        offset[0] = le32toh(offset[0]), offset[1] = le32toh(offset[1]);
 +    }
 +    unsigned key = offset[1] & 0x00FFFFFF;
 +    const unsigned char* from = data + key + skip;
-+    if ((unsigned)LCW_Uncompress(from, to, size) > size) {
++    int at = first;
++    if (have >= first && have < frame) {
++        // (the buffer's frame is of this chain if it is the chain's first or says the same first)
++        memcpy(other, data + ((unsigned)have << 3) + sizeof(KeyFrameHeaderType), 8);
++        other[0] = le32toh(other[0]), other[1] = le32toh(other[1]);
++        if (have == first || ((other[0] >> 24) & KF_DELTA && (unsigned short)other[1] == first)) {
++            at = have + 1;
++        }
++    }
++    if (at == first && (unsigned)LCW_Uncompress(from, to, size) > size) {
 +        return 0;
 +    }
-+    ShaderEmu_Delta(to, to + size, from + ((offset[0] & 0x00FFFFFF) - key));
-+    if (flags & KF_DELTA) {
-+        int sub = 2;
-+        for (at++; at <= frame;) {
-+            ShaderEmu_Delta(to, to + size, from + ((offset[sub] & 0x00FFFFFF) - key));
-+            at++;
-+            sub += 2;
-+            if (sub >= SUBFRAMEOFFS - 1 && at <= frame) {
-+                memcpy(offset, data + ((unsigned)at << 3) + sizeof(KeyFrameHeaderType), sizeof(offset));
-+                for (i = 0; i < SUBFRAMEOFFS; i++) {
-+                    offset[i] = le32toh(offset[i]);
-+                }
-+                sub = 0;
-+            }
-+        }
++    for (; at <= frame; at++) {
++        memcpy(other, data + ((unsigned)at << 3) + sizeof(KeyFrameHeaderType), 4);
++        ShaderEmu_Delta(to, to + size, from + ((le32toh(other[0]) & 0x00FFFFFF) - key));
 +    }
 +    return 1;
 +}
++
++extern "C" int ShaderEmu_Frame_Into(const void* file, int frame, void* buffer)
++{
++    return ShaderEmu_Frame_Step(file, frame, buffer, -1);
++}
 +#endif
+diff --git a/common/lcw.cpp b/common/lcw.cpp
+index cdeaabd..4a3e9a4 100644
+--- a/common/lcw.cpp
++++ b/common/lcw.cpp
+@@ -67,6 +67,33 @@
+  * HISTORY:                                                                *
+  *    03/20/1995 IML : Created.                                            *
+  *=========================================================================*/
++#ifdef SHADEREMU
++/*
++** Bytes from behind in the buffer being written, as a byte at a time copies them (what lies
++** closer than their count is a pattern that repeats), a word at a time where there are many.
++*/
++static inline unsigned char* LCW_Back(unsigned char* to, const unsigned char* from, unsigned count)
++{
++    if (count < 24 || to <= from) {
++        while (count--)
++            *to++ = *from++;
++        return to;
++    }
++    while (count) {
++        unsigned n = (unsigned)(to - from) < count ? (unsigned)(to - from) : count;
++        memcpy(to, from, n);
++        to += n;
++        count -= n;
++    }
++    return to;
++}
++#define LCW_BACK() dest_ptr = LCW_Back(dest_ptr, copy_ptr, count)
++#else
++#define LCW_BACK()                                                                                                     \
++    while (count--)                                                                                                    \
++        *dest_ptr++ = *copy_ptr++
++#endif
++
+ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+ {
+     unsigned char *source_ptr, *dest_ptr, *copy_ptr, *dest_end, op_code;
+@@ -93,8 +120,7 @@ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+                 count = dest_end - dest_ptr;
+             }
+ 
+-            while (count--)
+-                *dest_ptr++ = *copy_ptr++;
++            LCW_BACK();
+ 
+         } else {
+ 
+@@ -115,6 +141,15 @@ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+                         count = dest_end - dest_ptr;
+                     }
+ 
++#ifdef SHADEREMU
++                    /* (the source may lie ahead in the buffer that is written: never behind and in the way) */
++                    if (count >= 24 && (source_ptr >= dest_ptr || source_ptr + count <= dest_ptr)) {
++                        memmove(dest_ptr, source_ptr, count);
++                        dest_ptr += count;
++                        source_ptr += count;
++                        count = 0;
++                    }
++#endif
+                     while (count--)
+                         *dest_ptr++ = *source_ptr++;
+                 }
+@@ -148,8 +183,7 @@ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+                             count = dest_end - dest_ptr;
+                         }
+ 
+-                        while (count--)
+-                            *dest_ptr++ = *copy_ptr++;
++                        LCW_BACK();
+ 
+                     } else {
+ 
+@@ -162,8 +196,7 @@ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+                             count = dest_end - dest_ptr;
+                         }
+ 
+-                        while (count--)
+-                            *dest_ptr++ = *copy_ptr++;
++                        LCW_BACK();
+                     }
+                 }
+             }
 diff --git a/common/mixfile.h b/common/mixfile.h
 index 109c35f..ba5543f 100644
 --- a/common/mixfile.h
@@ -1300,10 +1450,10 @@ index f9c20ea..307e158 100644
  #endif
 \ No newline at end of file
 diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
-index a8aebd8..c63e388 100644
+index a8aebd8..5e1bc95 100644
 --- a/tiberiandawn/conquer.cpp
 +++ b/tiberiandawn/conquer.cpp
-@@ -98,6 +98,320 @@ extern void Send_Statistics_Packet(void);
+@@ -98,6 +98,357 @@ extern void Send_Statistics_Packet(void);
  extern char* __nheapbeg;
  bool InMainLoop = false;
  
@@ -1551,6 +1701,43 @@ index a8aebd8..c63e388 100644
 +        }
 +        memcpy(was, now, sizeof(was));
 +    }
++    {
++        /* TDAWN_MARK=A,B: a line as frame A begins and as frame B does (rvc_cpu --pc-from, --until) */
++        static int mark_a = -1, mark_b;
++        if (mark_a < 0) {
++            mark_a = mark_b = 0;
++            if (getenv("TDAWN_MARK")) {
++                sscanf(getenv("TDAWN_MARK"), "%d,%d", &mark_a, &mark_b);
++            }
++        }
++        if (mark_b && ((int)Frame == mark_a || (int)Frame == mark_b)) {
++            fprintf(stderr, "tdawn: mark %s\n", (int)Frame == mark_a ? "begins" : "ends");
++        }
++        /* TDAWN_FRAME_LOG=1: every frame's instructions (all, logic, drawing, the map and its parts) and what
++        ** the scene drew anew and put into the atlas, said when the run ends */
++        static unsigned (*log)[10], logged, was[10];
++        static int on = -1;
++        unsigned now[10] = {cycles, ShaderEmu_Logic_Cycles, ShaderEmu_Draw_Cycles, ShaderEmu_GL_Cycles,
++                            ShaderEmu_GL_Parts[0], ShaderEmu_GL_Parts[1], ShaderEmu_GL_Parts[2],
++                            ShaderEmu_GL_Objects[2], ShaderEmu_GL_Put[0], ShaderEmu_GL_Put[1]};
++        if (on < 0) {
++            on = getenv("TDAWN_FRAME_LOG") != NULL;
++            log = on ? (unsigned (*)[10])calloc(8192, sizeof *log) : NULL;
++        } else if (log && logged < 8192) {
++            for (int i = 0; i < 10; i++) {
++                log[logged][i] = now[i] >= was[i] ? now[i] - was[i] : now[i];
++            }
++            logged++;
++        }
++        memcpy(was, now, sizeof(was));
++        if (log && cap && (int)Frame >= cap) {
++            for (unsigned i = 0; i < logged; i++) {
++                fprintf(stderr, "frame %u: %u %u %u map %u %u %u %u drawn %u put %u %u\n", (unsigned)Frame - logged + i,
++                        log[i][0], log[i][1], log[i][2], log[i][3], log[i][4], log[i][5], log[i][6], log[i][7], log[i][8],
++                        log[i][9]);
++            }
++        }
++    }
 +    if (cap || (stop && getenv("TDAWN_NO_DELAY"))) {
 +        FrameTimer.Set(0);
 +    }
@@ -1624,7 +1811,7 @@ index a8aebd8..c63e388 100644
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
  #endif
-@@ -1126,12 +1440,31 @@ bool Color_Cycle(void)
+@@ -1126,12 +1477,31 @@ bool Color_Cycle(void)
      static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
      static bool _up = false;
      bool changed = false;
@@ -1657,7 +1844,7 @@ index a8aebd8..c63e388 100644
          _ftimer.Set(TIMER_SECOND / 8);
  
  /*
-@@ -1165,7 +1498,7 @@ bool Color_Cycle(void)
+@@ -1165,7 +1535,7 @@ bool Color_Cycle(void)
      /*
      **	Process the color cycling effects -- water.
      */
@@ -1666,7 +1853,7 @@ index a8aebd8..c63e388 100644
          unsigned char colors[3];
  
          _timer.Set(TIMER_SECOND / 4);
-@@ -1222,6 +1555,20 @@ void Call_Back(void)
+@@ -1222,6 +1592,20 @@ void Call_Back(void)
      if (SampleType) {
          Theme.AI();
          Speak_AI();
@@ -1687,7 +1874,7 @@ index a8aebd8..c63e388 100644
      }
  
  #ifdef NETWORKING
-@@ -1516,7 +1863,7 @@ static void Sync_Delay(void)
+@@ -1516,7 +1900,7 @@ static void Sync_Delay(void)
              if (input) {
                  Keyboard_Process(input);
              }
@@ -1696,7 +1883,7 @@ index a8aebd8..c63e388 100644
          }
  
          Frame_Limiter(FL_NONE);
-@@ -1611,6 +1958,9 @@ bool Main_Loop()
+@@ -1611,6 +1995,9 @@ bool Main_Loop()
      } else {
          FrameTimer.Set(Options.GameSpeed);
      }
@@ -1706,7 +1893,7 @@ index a8aebd8..c63e388 100644
  
      /*
      **	Update the display, unless we're inside a dialog.
-@@ -1624,7 +1974,10 @@ bool Main_Loop()
+@@ -1624,7 +2011,10 @@ bool Main_Loop()
                  Keyboard_Process(input);
              }
              //			HidPage.Lock();
@@ -1718,11 +1905,17 @@ index a8aebd8..c63e388 100644
              //			HidPage.Unlock();
          }
      }
-@@ -1650,7 +2003,11 @@ bool Main_Loop()
+@@ -1650,7 +2040,17 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
 -    Logic.AI();
++#ifdef SHADEREMU
++    {
++        void ShaderEmu_GL_Ahead(void); /* (gl.cpp: a mission's shape files asked for as it begins) */
++        ShaderEmu_GL_Ahead();
++    }
++#endif
 +    SHADEREMU_COUNT(ShaderEmu_Logic_Cycles, Logic.AI());
 +#ifdef SHADEREMU
 +    void ShaderEmu_Threat_Settle(void);
@@ -1731,7 +1924,34 @@ index a8aebd8..c63e388 100644
  
      //	Heap_Dump_Check( "After Logic.AI" );
  
-@@ -1710,6 +2067,9 @@ bool Main_Loop()
+@@ -1659,8 +2059,24 @@ bool Main_Loop()
+     **	a message has expired & been removed, and the entire map must be updated.
+     */
+     if (Messages.Manage()) {
+-        HiddenPage.Clear();
+-        Map.Flag_To_Redraw(true);
++#ifdef SHADEREMU
++        /*
++        ** Over the GPU's map a message lies in the page by itself: its rows are made holes and
++        ** what is left printed again (gl.cpp). TDAWN_MESSAGE_GONE=redraw: everything, as it was.
++        */
++        extern bool ShaderEmu_GL_Live;
++        static int whole = -1;
++        if (whole < 0) {
++            whole = getenv("TDAWN_MESSAGE_GONE") != NULL;
++        }
++        if (ShaderEmu_GL_Live && !whole) {
++            Map.Flag_To_Redraw(false);
++        } else
++#endif
++        {
++            HiddenPage.Clear();
++            Map.Flag_To_Redraw(true);
++        }
+     }
+ 
+     //
+@@ -1710,6 +2126,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1741,7 +1961,7 @@ index a8aebd8..c63e388 100644
          Do_Win();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1726,6 +2086,9 @@ bool Main_Loop()
+@@ -1726,6 +2145,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1751,7 +1971,7 @@ index a8aebd8..c63e388 100644
          Do_Lose();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1736,6 +2099,9 @@ bool Main_Loop()
+@@ -1736,6 +2158,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1761,12 +1981,87 @@ index a8aebd8..c63e388 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
      }
-@@ -2656,6 +3022,11 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2642,6 +3067,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
+  *   02/21/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
+ //#pragma off(unreferenced)
++#ifdef SHADEREMU
++/*
++** A shape the game draws itself, plainly (the sidebar's pieces, the tabs), from a frame a worker
++** core has made ready (host.h): no unpacking here, and a copy a row. False: as the game does.
++** TDAWN_READY_DRAW=0: never. TDAWN_CHECK_READY=1: both ways, and the pages compared.
++*/
++void ShaderEmu_Ready_To_Page(int x, int y, int width, int height, const struct host_frame* ready, GraphicViewPortClass& viewport, int flags);
++static unsigned ShaderEmu_Ready_Drawn, ShaderEmu_Ready_Differ;
++static unsigned char* ShaderEmu_Ready_Kept[2];
++static int ShaderEmu_Ready_Size;
++static bool ShaderEmu_Ready_Shape(void const* shapefile, int shapenum, int x, int y, WindowNumberType window, int flags)
++{
++    static int on = -1, check;
++    if (on < 0) {
++        on = !(getenv("TDAWN_READY_DRAW") && !strcmp(getenv("TDAWN_READY_DRAW"), "0"));
++        check = getenv("TDAWN_CHECK_READY") != NULL;
++        if (check) {
++            atexit([]() {
++                fprintf(stderr, "tdawn: %u shapes drawn by the game from ready frames, %u of them differ from its own\n",
++                        ShaderEmu_Ready_Drawn, ShaderEmu_Ready_Differ);
++            });
++        }
++    }
++    const struct host_frame* ready = on ? host_frame(shapefile, shapenum) : NULL;
++    if (!ready) {
++        return false;
++    }
++    GraphicViewPortClass draw_window(LogicPage->Get_Graphic_Buffer(),
++                                     WindowList[window][WINDOWX] + LogicPage->Get_XPos(),
++                                     WindowList[window][WINDOWY] + LogicPage->Get_YPos(),
++                                     WindowList[window][WINDOWWIDTH],
++                                     WindowList[window][WINDOWHEIGHT]);
++    ShaderEmu_Ready_Drawn++;
++    if (!draw_window.Lock()) {
++        return true;
++    }
++    int size = (draw_window.Get_XAdd() + draw_window.Get_Width() + draw_window.Get_Pitch()) * draw_window.Get_Height();
++    unsigned char* page = (unsigned char*)draw_window.Get_Offset();
++    if (check && size > 0) {
++        // the window as it was, and as the ready frame leaves it; then the game's own drawing over the first
++        if (size > ShaderEmu_Ready_Size) {
++            ShaderEmu_Ready_Kept[0] = (unsigned char*)realloc(ShaderEmu_Ready_Kept[0], size);
++            ShaderEmu_Ready_Kept[1] = (unsigned char*)realloc(ShaderEmu_Ready_Kept[1], size);
++            ShaderEmu_Ready_Size = size;
++        }
++        memcpy(ShaderEmu_Ready_Kept[0], page, size);
++    }
++    ShaderEmu_Ready_To_Page(x, y, Get_Build_Frame_Width(shapefile), Get_Build_Frame_Height(shapefile), ready, draw_window,
++                            flags | SHAPE_TRANS);
++    if (check && size > 0) {
++        memcpy(ShaderEmu_Ready_Kept[1], page, size);
++        memcpy(page, ShaderEmu_Ready_Kept[0], size);
++        uintptr_t built = Build_Frame(shapefile, shapenum, _ShapeBuffer);
++        if (built) {
++            Buffer_Frame_To_Page(x, y, Get_Build_Frame_Width(shapefile), Get_Build_Frame_Height(shapefile), (void*)built,
++                                 draw_window, flags | SHAPE_TRANS, (void*)NULL, 0);
++        }
++        ShaderEmu_Ready_Differ += memcmp(page, ShaderEmu_Ready_Kept[1], size) != 0;
++    }
++    draw_window.Unlock();
++    return true;
++}
++#endif
++
+ void CC_Draw_Shape(void const* shapefile,
+                    int shapenum,
+                    int x,
+@@ -2656,6 +3145,15 @@ void CC_Draw_Shape(void const* shapefile,
      char* shape_pointer;
      uintptr_t shape_size;
  
 +#ifdef SHADEREMU
 +    if (ShaderEmu_GL_Shape(shapefile, shapenum, x, y, window, flags, fadingdata, ghostdata)) {
++        return;
++    }
++    if (shapefile && shapenum != -1 && !(flags & ~(SHAPE_CENTER | SHAPE_WIN_REL | SHAPE_TRANS))
++        && ShaderEmu_Ready_Shape(shapefile, shapenum, x, y, window, flags)) {
 +        return;
 +    }
 +#endif
@@ -1882,10 +2177,10 @@ index 42d052d..48bb75e 100644
          IsToRedraw = true;
          CellRedraw[cell] = true;
 diff --git a/tiberiandawn/findpath.cpp b/tiberiandawn/findpath.cpp
-index 029c3fc..4ab682b 100644
+index 029c3fc..ea1426f 100644
 --- a/tiberiandawn/findpath.cpp
 +++ b/tiberiandawn/findpath.cpp
-@@ -154,6 +154,26 @@ static unsigned int RightOverlap[MAP_CELL_TOTAL / 32]; // overlap list for the r
+@@ -154,6 +154,43 @@ static unsigned int RightOverlap[MAP_CELL_TOTAL / 32]; // overlap list for the r
  static CELL DestLocation;
  static CELL StartLocation;
  
@@ -1902,17 +2197,34 @@ index 029c3fc..4ab682b 100644
 +    PathType path;
 +    unsigned seen; /* a bit for each answer the search has had */
 +    unsigned turn; /* which unit's searches this one is of */
++    unsigned steps; /* cells its edge walks have come by */
 +    FacingType moves[256];
 +    unsigned int overlap[3][MAP_CELL_TOTAL / 32];
 +} ShaderEmu_Core[PATH_CORES];
 +static unsigned ShaderEmu_Path_Turn, ShaderEmu_Path_Stop; /* (a search of the turn that is stopped ends early) */
 +#define PATH_STOPPED(who) ((who) && ShaderEmu_Core[who].turn == ShaderEmu_Path_Stop)
++#define PATH_HELP_STEPS 48 /* a search whose edge walks are this long has the unit's others begun */
++/*
++** What Can_Enter_Cell says of the map's cells for the unit whose searches go on, asked ahead
++** by worker cores once a search has turned out long: whole rows of the map each.
++*/
++alignas(16) static unsigned char ShaderEmu_Pre[MAP_CELL_TOTAL];
++alignas(16) static unsigned short ShaderEmu_Pre_At[MAP_CELL_TOTAL];
++alignas(16) static volatile int ShaderEmu_Pre_Stop;
++static int ShaderEmu_Pre_Out; /* how many cores are out asking */
++static bool ShaderEmu_Enter_Check; /* TDAWN_CHECK_ENTER=1: every kept answer is asked for again */
++static bool ShaderEmu_Walk_Old;    /* TDAWN_WALK=old: the game's own edge walk */
++static bool ShaderEmu_Walk_Check;  /* TDAWN_CHECK_PATHS: and both, compared */
++static unsigned ShaderEmu_Walks, ShaderEmu_Walks_Wrong;
++alignas(16) static unsigned short ShaderEmu_Enter_Now; /* the unit's turn while answers are kept (0: none are) */
++alignas(16) static unsigned char ShaderEmu_Enter[PATH_CORES][MAP_CELL_TOTAL]; /* (a core has its own) */
++alignas(16) static unsigned short ShaderEmu_Enter_At[PATH_CORES][MAP_CELL_TOTAL];
 +#endif
 +
  /***************************************************************************
   * Point_Relative_To_Line -- Relation between a point and a line           *
   *                                                                         *
-@@ -515,7 +535,15 @@ bool FootClass::Register_Cell(PathType* path, CELL cell, FacingType dir, int cos
+@@ -515,7 +552,16 @@ bool FootClass::Register_Cell(PathType* path, CELL cell, FacingType dir, int cos
  PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
  {
      CELL source = Coord_Cell(Coord); // Source expressed as cell
@@ -1922,13 +2234,14 @@ index 029c3fc..4ab682b 100644
 +    unsigned int(&MainOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[0];
 +    unsigned int(&LeftOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[1];
 +    unsigned int(&RightOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[2];
++    ShaderEmu_Core[who].steps = 0;
 +#else
      static PathType path;            // Main path control.
 +#endif
      CELL next;                       // Next cell to enter
      CELL startcell;                  // Cell we started in
      FacingType direction;            // Working direction of look ahead.
-@@ -546,12 +574,19 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+@@ -546,12 +592,19 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
      ** Set the draw path variable to draw the path of the selected unit
      ** if necessary.
      */
@@ -1953,7 +2266,7 @@ index 029c3fc..4ab682b 100644
  
      //	MoveMask = flags;
      if (Team && Team->Class->IsRoundAbout) {
-@@ -562,9 +597,6 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+@@ -562,9 +615,6 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
          unit_threat = threat = -1;
      }
  
@@ -1963,7 +2276,7 @@ index 029c3fc..4ab682b 100644
      /*
      ** Initialize the path structure so that we can keep track of the
      ** path.
-@@ -614,6 +646,10 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+@@ -614,6 +664,10 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
      **    step #1.
      */
      while (path.Length < maxlen) {
@@ -1974,18 +2287,224 @@ index 029c3fc..4ab682b 100644
  
      top_of_list:
          /*
-@@ -968,6 +1004,10 @@ bool FootClass::Follow_Edge(CELL start,
+@@ -924,7 +978,11 @@ end_of_list:
+  *   07/08/1991  CY : Created.                                                                 *
+  *   06/01/1992  JLB : Optimized & commented.                                                  *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++bool FootClass::ShaderEmu_Edge_Old(CELL start,
++#else
+ bool FootClass::Follow_Edge(CELL start,
++#endif
+                             CELL target,
+                             PathType* path,
+                             FacingType search,
+@@ -968,6 +1026,12 @@ bool FootClass::Follow_Edge(CELL start,
      **	or run out of moves.
      */
      while (path->Length < max_cells) {
 +#ifdef SHADEREMU
 +        if (PATH_STOPPED(threshhold >> 4))
 +            return (false);
++        if (!(threshhold >> 4) && ++ShaderEmu_Core[0].steps == PATH_HELP_STEPS)
++            ShaderEmu_Path_Help();
 +#endif
  
          /*
          **	Look in all the adjacent cells to determine a passable one that
-@@ -1424,12 +1464,238 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
+@@ -1165,6 +1229,191 @@ bool FootClass::Follow_Edge(CELL start,
+     return (false);
+ }
+ 
++#ifdef SHADEREMU
++/*
++** The same walk for a search that draws nothing, which is every one in play: a cell's answer
++** is read where Passable_Cell keeps it, and a cell that is new to the path is put on it here.
++** Step for step the walk above (TDAWN_CHECK_PATHS compares; TDAWN_WALK=old is the one above).
++*/
++bool FootClass::ShaderEmu_Walk(CELL start,
++                               CELL target,
++                               PathType* path,
++                               FacingType search,
++                               FacingType olddir,
++                               int threat,
++                               int max_cells,
++                               MoveType threshhold)
++{
++    static const unsigned char value[MOVE_COUNT] = {1, 1, 3, 8, 10, 0}; /* (Passable_Cell's) */
++    const int who = threshhold >> 4, most = threshhold & 15;
++    unsigned char* const enter = ShaderEmu_Enter[who];
++    unsigned short* const enter_at = ShaderEmu_Enter_At[who];
++    const unsigned short now = ShaderEmu_Enter_Now;
++    const int startx = Cell_X(start), starty = Cell_Y(start), targetx = Cell_X(target), targety = Cell_Y(target);
++    struct Seen
++    {
++        unsigned bits, &to;
++        ~Seen()
++        {
++            to |= bits;
++        }
++    } seen = {0, ShaderEmu_Core[who].seen};
++    auto cost_of = [&](CELL cell, FacingType face) -> int {
++        if ((unsigned)cell >= MAP_CELL_TOTAL) {
++            return Passable_Cell(cell, face, threat, threshhold);
++        }
++        int move;
++        if (enter_at[cell] == now) {
++            move = enter[cell];
++        } else {
++            move = ShaderEmu_Pre_At[cell] == now ? ShaderEmu_Pre[cell] : (int)Can_Enter_Cell(cell, face);
++            enter[cell] = (unsigned char)move;
++            enter_at[cell] = now;
++        }
++        seen.bits |= 1u << move;
++        int limit = most;
++        if (move == MOVE_CLOAK && Distance(cell) > 1) {
++            limit = MOVE_MOVING_BLOCK;
++        }
++        if (move > limit) {
++            return 0;
++        }
++        if (threat != -1 && GameToPlay == GAME_NORMAL && Map.Cell_Distance(cell, DestLocation) > THREAT_THRESHOLD
++            && Map.Cell_Threat(cell, Owner()) > threat) {
++            return 0;
++        }
++        return value[move];
++    };
++    FacingType newdir, firstdir = (FacingType)-1;
++    CELL oldcell = start, newcell, firstcell = -1;
++    int cost = 0, online = true, oldval = 0, cellcount = 0;
++
++    path->LastOverlap = -1;
++    path->LastFixup = -1;
++    while (path->Length < max_cells) {
++        if (who) {
++            if (PATH_STOPPED(who)) {
++                return false;
++            }
++        } else if (++ShaderEmu_Core[0].steps == PATH_HELP_STEPS) {
++            ShaderEmu_Path_Help();
++        }
++        bool forceout = false;
++        newdir = olddir;
++        for (;;) {
++            bool forcefail = false;
++
++            newdir = Next_Direction(newdir, search);
++            if (newdir & FACING_NE) {
++                CELL checkcell = Adjacent_Cell(oldcell, Next_Direction(newdir, search));
++                if (checkcell == target) {
++                    cost = cost_of(checkcell, Next_Direction(newdir, search));
++                    if (cost) {
++                        newdir = Next_Direction(newdir, search);
++                        newcell = Adjacent_Cell(oldcell, newdir);
++                        break;
++                    }
++                }
++                checkcell = Adjacent_Cell(oldcell, newdir);
++                int checkval = Point_Relative_To_Line(Cell_X(checkcell), Cell_Y(checkcell), startx, starty, targetx, targety);
++                forcefail = checkval && !online && (checkval ^ oldval) < 0;
++                if (forcefail && path->Length > 0 && (FacingType)(newdir ^ 4) == path->Command[path->Length - 1]) {
++                    forcefail = false;
++                }
++            }
++            if (newdir == olddir) {
++                return false;
++            }
++            newcell = Adjacent_Cell(oldcell, newdir);
++            if (!forcefail && (cost = cost_of(newcell, newdir)) != 0) {
++                break;
++            }
++            if (newcell == target) {
++                forceout = true;
++                break;
++            }
++        }
++        if (!forceout) {
++            int pos = newcell >> 5, bit = (newcell & 31) - 1; /* (as Register_Cell has them) */
++            if (!(path->Overlap[pos] & (1 << bit))) {
++                path->Command[path->Length++] = newdir;
++                path->Cost += cost;
++                path->Overlap[pos] |= (1 << bit);
++            } else if (!Register_Cell(path, newcell, newdir, cost, threshhold)) {
++                if (!Unravel_Loop(path, newcell, newdir, startx, starty, targetx, targety, threshhold)) {
++                    return false;
++                }
++                newdir = Next_Direction(newdir, (FacingType)(search * 2));
++            }
++            int val = Point_Relative_To_Line(Cell_X(newcell), Cell_Y(newcell), startx, starty, targetx, targety);
++            if (val) {
++                oldval = val;
++                online = false;
++            } else {
++                online = true;
++            }
++            if (++cellcount == MAX_PATH_EDGE_FOLLOW) {
++                return false;
++            }
++        }
++        if (newcell == target) {
++            path->Command[path->Length] = END;
++            return true;
++        }
++        if (newcell == firstcell && newdir == firstdir) {
++            return false;
++        }
++        if (firstcell == -1) {
++            firstcell = newcell;
++            firstdir = newdir;
++        }
++        olddir = Next_Direction(newdir, (FacingType)(-(int)search * 3));
++        oldcell = newcell;
++    }
++    return false;
++}
++
++bool FootClass::Follow_Edge(CELL start,
++                            CELL target,
++                            PathType* path,
++                            FacingType search,
++                            FacingType olddir,
++                            int threat,
++                            int threat_stage,
++                            int max_cells,
++                            MoveType threshhold)
++{
++    if (!path || DrawPath || !ShaderEmu_Enter_Now || ShaderEmu_Enter_Check || ShaderEmu_Walk_Old) {
++        return ShaderEmu_Edge_Old(start, target, path, search, olddir, threat, threat_stage, max_cells, threshhold);
++    }
++    if (!ShaderEmu_Walk_Check || (threshhold >> 4)) {
++        return ShaderEmu_Walk(start, target, path, search, olddir, threat, max_cells, threshhold);
++    }
++    /* TDAWN_CHECK_PATHS: the walk both ways from the same path, and the game's own is the one kept */
++    PathType kept = *path, made;
++    FacingType kept_moves[MAX_MLIST_SIZE + 2], made_moves[MAX_MLIST_SIZE + 2];
++    unsigned int kept_overlap[MAP_CELL_TOTAL / 32], made_overlap[MAP_CELL_TOTAL / 32];
++    unsigned seen = ShaderEmu_Core[0].seen, made_seen;
++    memcpy(kept_moves, path->Command, sizeof(kept_moves));
++    memcpy(kept_overlap, path->Overlap, sizeof(kept_overlap));
++    bool found = ShaderEmu_Walk(start, target, path, search, olddir, threat, max_cells, threshhold);
++    made = *path;
++    made_seen = ShaderEmu_Core[0].seen;
++    memcpy(made_moves, path->Command, sizeof(made_moves));
++    memcpy(made_overlap, path->Overlap, sizeof(made_overlap));
++    *path = kept;
++    ShaderEmu_Core[0].seen = seen;
++    memcpy(path->Command, kept_moves, sizeof(kept_moves));
++    memcpy(path->Overlap, kept_overlap, sizeof(kept_overlap));
++    bool old = ShaderEmu_Edge_Old(start, target, path, search, olddir, threat, threat_stage, max_cells, threshhold);
++    ShaderEmu_Walks++;
++    ShaderEmu_Walks_Wrong += old != found || memcmp(&made, path, sizeof(made)) != 0 || made_seen != ShaderEmu_Core[0].seen
++                             || memcmp(made_moves, path->Command, sizeof(made_moves)) != 0
++                             || memcmp(made_overlap, path->Overlap, sizeof(made_overlap)) != 0;
++    return old;
++}
++#endif
++
+ /***********************************************************************************************
+  * Optimize_Moves -- Optimize the move list.                                                   *
+  *                                                                                             *
+@@ -1424,12 +1673,295 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
      return (-1);
  }
  
@@ -1995,9 +2514,6 @@ index 029c3fc..4ab682b 100644
 +** changed between them (FootClass::Basic_Path: up to four, over the same cells; no version of
 +** it looks at the facing). TDAWN_CHECK_ENTER=1 asks again every time and compares.
 +*/
-+alignas(16) static unsigned char ShaderEmu_Enter[PATH_CORES][MAP_CELL_TOTAL]; /* (a core has its own) */
-+alignas(16) static unsigned short ShaderEmu_Enter_At[PATH_CORES][MAP_CELL_TOTAL];
-+static unsigned short ShaderEmu_Enter_Now; /* 0: nothing is kept */
 +static unsigned ShaderEmu_Enter_Kept, ShaderEmu_Enter_Wrong;
 +static struct search {
 +    CELL dest;
@@ -2010,7 +2526,11 @@ index 029c3fc..4ab682b 100644
 +} ShaderEmu_Search[4];
 +static int ShaderEmu_Searches;
 +static int ShaderEmu_Path_Out[PATH_CORES]; /* the threshold core k is out searching with, less one */
-+static bool ShaderEmu_Path_Long;           /* the last unit's first search was: the next has help */
++/* The search this core is in, and the unit's first threshold (0: none that others could help) */
++static struct {
++    CELL dest;
++    int maxlen, now, most;
++} ShaderEmu_Path_Asked;
 +
 +static void ShaderEmu_Enter_Report(void)
 +{
@@ -2025,12 +2545,23 @@ index 029c3fc..4ab682b 100644
 +
 +    if (check < 0) {
 +        check = getenv("TDAWN_CHECK_ENTER") != NULL;
++        ShaderEmu_Enter_Check = check && atoi(getenv("TDAWN_CHECK_ENTER"));
 +        if (check) {
 +            atexit(ShaderEmu_Enter_Report);
 +        }
 +    }
++    /* (the cores that ask about cells ahead read the map: they have ended before it changes) */
++    if (ShaderEmu_Pre_Out) {
++        ShaderEmu_Pre_Stop = 1;
++        for (int k = 0; k < ShaderEmu_Pre_Out; k++) {
++            host_pre_wait(k);
++        }
++        ShaderEmu_Pre_Stop = 0;
++        ShaderEmu_Pre_Out = 0;
++    }
 +    if (keep && ++turn == 0) {
 +        memset(ShaderEmu_Enter_At, 0, sizeof(ShaderEmu_Enter_At));
++        memset(ShaderEmu_Pre_At, 0, sizeof(ShaderEmu_Pre_At));
 +        turn = 1;
 +    }
 +    ShaderEmu_Enter_Now = keep ? turn : 0;
@@ -2093,10 +2624,68 @@ index 029c3fc..4ab682b 100644
 +    return 1;
 +}
 +
++/* Rows of the map's cells asked about ahead: y0, y1, x0, x1 a byte each. */
++unsigned FootClass::ShaderEmu_Pre_Job(unsigned object, unsigned rows)
++{
++    const FootClass* unit = (const FootClass*)object;
++    unsigned short now = ShaderEmu_Enter_Now;
++
++    for (int y = rows & 255; y < (int)(rows >> 8 & 255) && !ShaderEmu_Pre_Stop; y++) {
++        for (int x = rows >> 16 & 255; x < (int)(rows >> 24); x++) {
++            CELL cell = XY_Cell(x, y);
++            ShaderEmu_Pre[cell] = (unsigned char)unit->Can_Enter_Cell(cell, FACING_NONE);
++            ShaderEmu_Pre_At[cell] = now; /* (last: the other cores look at this) */
++        }
++    }
++    return 1;
++}
++
 +/*
-+** Find_Path, or what it would find. A unit that follows one whose first search was long has
-+** its next search made by a worker core meanwhile (nothing changes between a unit's searches,
-+** and a search stores only into its core's own memory). TDAWN_CHECK_PATHS=1 compares.
++** The unit's searches that may follow the one this core is in begin on worker cores, each
++** with its own threshold: the first core's search has turned out long (PATH_HELP_STEPS).
++** More cores ask every cell of the map what the searches will ask of some.
++*/
++void FootClass::ShaderEmu_Path_Help(void)
++{
++    CELL dest = ShaderEmu_Path_Asked.dest;
++    int maxlen = ShaderEmu_Path_Asked.maxlen, now = ShaderEmu_Path_Asked.now, most = ShaderEmu_Path_Asked.most;
++    int cores = most ? host_path_cores() : 0, k = 1;
++
++    for (int other = MOVE_CLOAK; other < most && cores > 0; other++) {
++        bool out = other == now || (now != most && other < now) || ShaderEmu_Path_Same(dest, maxlen, other);
++        for (int j = 1; j < PATH_CORES; j++) {
++            out |= ShaderEmu_Path_Out[j] == other + 1;
++        }
++        for (; k <= cores && ShaderEmu_Path_Out[k]; k++) {
++        }
++        if (out || k > cores) {
++            continue;
++        }
++        ShaderEmu_Path_Out[k] = other + 1;
++        host_path_post(k, ShaderEmu_Path_Job, (unsigned)(uintptr_t)this,
++                       (unsigned)dest << 16 | (unsigned)maxlen << 8 | k << 4 | other);
++    }
++    int pre = most && !ShaderEmu_Pre_Out ? host_pre_cores() : 0;
++    int y = Map.MapCellY, end = y + Map.MapCellHeight, each = pre ? (Map.MapCellHeight + pre - 1) / pre : 0;
++    static bool run;
++    if (pre && !run) {
++        /* (a worker stops at a page of code no core has run: this core runs the job's once) */
++        run = true;
++        ShaderEmu_Pre_Job((unsigned)(uintptr_t)this, (unsigned)y | (unsigned)(y + 1) << 8 | (unsigned)Map.MapCellX << 16
++                                                         | (unsigned)(Map.MapCellX + 1) << 24);
++    }
++    for (k = 0; k < pre && y < end; k++, y += each) {
++        host_pre_post(k, ShaderEmu_Pre_Job, (unsigned)(uintptr_t)this,
++                      (unsigned)y | (unsigned)MIN(y + each, end) << 8 | (unsigned)Map.MapCellX << 16
++                          | (unsigned)(Map.MapCellX + Map.MapCellWidth) << 24);
++        ShaderEmu_Pre_Out = k + 1;
++    }
++}
++
++/*
++** Find_Path, or what it would find. A search that turns out long has the unit's next ones
++** made by worker cores meanwhile (nothing changes between a unit's searches, and a search
++** stores only into its core's own memory). TDAWN_CHECK_PATHS=1 compares.
 +*/
 +PathType* FootClass::ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
 +{
@@ -2108,10 +2697,14 @@ index 029c3fc..4ab682b 100644
 +
 +    if (check < 0) {
 +        check = getenv("TDAWN_CHECK_PATHS") != NULL;
++        ShaderEmu_Walk_Check = check;
++        ShaderEmu_Walk_Old = getenv("TDAWN_WALK") && !strcmp(getenv("TDAWN_WALK"), "old");
 +        if (check) {
 +            atexit([]() {
 +                fprintf(stderr, "tdawn: %u searches not run again and %u another core's, %u of them wrong\n", reused,
 +                        helped, wrong);
++                fprintf(stderr, "tdawn: %u edge walks made both ways, %u of them wrong\n", ShaderEmu_Walks,
++                        ShaderEmu_Walks_Wrong);
 +            });
 +        }
 +    }
@@ -2150,34 +2743,13 @@ index 029c3fc..4ab682b 100644
 +        return path;
 +    }
 +
-+    /*
-+    ** The searches that may follow this one begin on other cores: the one that always does
-+    ** after a unit's first, and after a second all the rest.
-+    */
-+    bool first = ShaderEmu_Searches == 0;
-+    int cores = ShaderEmu_Path_Long && threshhold > MOVE_CLOAK ? host_path_cores() : 0;
-+    if (cores > 0) {
-+        int k = 1;
-+        int from = first ? MOVE_CLOAK : threshhold + 1;
-+        int to = first ? MOVE_CLOAK : ShaderEmu_Search[0].threshhold - 1;
-+        StartLocation = Coord_Cell(Coord);
-+        DestLocation = dest;
-+        for (int other = from; other <= to && k <= cores && !ShaderEmu_Path_Out[k]; other++) {
-+            if (ShaderEmu_Path_Same(dest, maxlen, other)) {
-+                continue;
-+            }
-+            ShaderEmu_Path_Out[k] = other + 1;
-+            host_path_post(k, ShaderEmu_Path_Job, (unsigned)(uintptr_t)this,
-+                           (unsigned)dest << 16 | (unsigned)maxlen << 8 | k << 4 | other);
-+            k++;
-+        }
-+    }
++    ShaderEmu_Path_Asked.dest = dest;
++    ShaderEmu_Path_Asked.maxlen = maxlen;
++    ShaderEmu_Path_Asked.now = threshhold;
++    ShaderEmu_Path_Asked.most = ShaderEmu_Searches ? ShaderEmu_Search[0].threshhold : threshhold;
 +    core->seen = 0;
-+    unsigned began = host_cycles();
 +    path = Find_Path(dest, final_moves, maxlen, threshhold);
-+    if (first) {
-+        ShaderEmu_Path_Long = host_cycles() - began > 30000;
-+    }
++    ShaderEmu_Path_Asked.most = 0;
 +    ShaderEmu_Path_Keep(core, dest, maxlen, threshhold);
 +    return path;
 +}
@@ -2193,15 +2765,19 @@ index 029c3fc..4ab682b 100644
 +        if (ShaderEmu_Enter_At[who][cell] == ShaderEmu_Enter_Now) {
 +            move = (MoveType)ShaderEmu_Enter[who][cell];
 +            if (!who) { /* (the counts and the check are the first core's) */
-+                static int check = -1;
-+                if (check < 0) {
-+                    check = getenv("TDAWN_CHECK_ENTER") && atoi(getenv("TDAWN_CHECK_ENTER"));
-+                }
 +                ShaderEmu_Enter_Kept++;
-+                ShaderEmu_Enter_Wrong += check && move != Can_Enter_Cell(cell, face);
++                ShaderEmu_Enter_Wrong += ShaderEmu_Enter_Check && move != Can_Enter_Cell(cell, face);
 +            }
 +        } else {
-+            move = Can_Enter_Cell(cell, face);
++            if (ShaderEmu_Pre_At[cell] == ShaderEmu_Enter_Now) {
++                move = (MoveType)ShaderEmu_Pre[cell]; /* (another core has asked) */
++                if (!who && ShaderEmu_Enter_Check) {
++                    ShaderEmu_Enter_Kept++;
++                    ShaderEmu_Enter_Wrong += move != Can_Enter_Cell(cell, face);
++                }
++            } else {
++                move = Can_Enter_Cell(cell, face);
++            }
 +            ShaderEmu_Enter[who][cell] = (unsigned char)move;
 +            ShaderEmu_Enter_At[who][cell] = ShaderEmu_Enter_Now;
 +        }
@@ -2334,16 +2910,22 @@ index 2c4a157..17ee12e 100644
          }
  
 diff --git a/tiberiandawn/foot.h b/tiberiandawn/foot.h
-index 14320b1..b67299b 100644
+index 14320b1..c983722 100644
 --- a/tiberiandawn/foot.h
 +++ b/tiberiandawn/foot.h
-@@ -291,6 +291,10 @@ public:
+@@ -291,6 +291,16 @@ public:
  private:
      int Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold);
      PathType* Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
 +#ifdef SHADEREMU
 +    PathType* ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
 +    static unsigned ShaderEmu_Path_Job(unsigned object, unsigned what);
++    void ShaderEmu_Path_Help(void);
++    bool ShaderEmu_Edge_Old(CELL start, CELL target, PathType* path, FacingType search, FacingType olddir, int threat,
++                            int threat_stage, int max_cells, MoveType threshhold);
++    bool ShaderEmu_Walk(CELL start, CELL target, PathType* path, FacingType search, FacingType olddir, int threat,
++                        int max_cells, MoveType threshhold);
++    static unsigned ShaderEmu_Pre_Job(unsigned object, unsigned rows);
 +#endif
      void Debug_Draw_Map(const char* txt, CELL start, CELL dest, bool pause);
      void Debug_Draw_Path(PathType* path);

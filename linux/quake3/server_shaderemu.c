@@ -28,7 +28,7 @@
 #include "se_q3.h"
 
 enum { MODE_UNSET = -1, MODE_INLINE, MODE_WORKER };
-enum { KEPT_PRINT, KEPT_COMMAND, KEPT_CVAR, KEPT_CVAR_FORCED };
+enum { KEPT_PRINT, KEPT_COMMAND, KEPT_CVAR, KEPT_CVAR_FORCED, KEPT_RELIABLE };
 #define BOX_BYTES	0x10000		/* of packets waiting for the server's frame, and of those it sent */
 #define MOST_MSEC	200		/* of the game's time a frame of the server's catches up, at most */
 #define STACK_BYTES	0x80000		/* the server's frame is deeper than a worker's own stack */
@@ -40,33 +40,45 @@ typedef struct { unsigned used, unused[3]; unsigned char data[BOX_BYTES]; } box_
 static box_t	inbox __attribute__ ((aligned (16)));		/* this core's: packets for the server */
 static box_t	job_in __attribute__ ((aligned (16)));		/* the job's: those it has to read */
 static box_t	outbox __attribute__ ((aligned (16)));		/* the job's: packets the server sent */
-/* what else the worker writes while it has the job */
+/* what else a worker writes while it has a job: the server's, and the client's game's for each of its two lists (client_shaderemu.c) */
 static struct {
 	unsigned	used, lost, failed;
 	int		code;
 	char		error[1024];
 	char		kept[8192];	/* a kind, then text ending in 0 (a cvar: its name, 0, its value, 0) */
-} work __attribute__ ((aligned (16)));
+} works[3] __attribute__ ((aligned (16)));
 static char	job_stack[STACK_BYTES] __attribute__ ((aligned (16)));
-static jmp_buf	job_abort;
-static int	mode = MODE_UNSET, out, pending;
+se_abort_t	se_worker_abort[2];
+static int	mode = MODE_UNSET, out, pending, workers = -1;
 
 /* fn(arg) on another stack */
+void CL_AddReliableCommand (const char *cmd, qboolean isDisconnectCmd);
 uint32_t se_call_on_stack (uint32_t (*fn) (uint32_t), uint32_t arg, void *stack_top);
 __asm__ (".text\n.globl se_call_on_stack\n.type se_call_on_stack, @function\nse_call_on_stack:\n"
 	"	addi a2, a2, -16\n	sw ra, 12(a2)\n	sw sp, 8(a2)\n	mv sp, a2\n	mv t0, a0\n	mv a0, a1\n	jalr t0\n"
 	"	lw ra, 12(sp)\n	lw sp, 8(sp)\n	ret\n");
 
+/* The program's worker cores: 1 is the server's, 2 the client's game's. How many there are. */
+int SE_Workers (void)
+{
+	if (workers < 0) {
+		workers = mcw_open (2);
+		if (workers > 0)
+			atexit (mcw_close);
+	}
+	return workers;
+}
+
 static void setup (void)
 {
-	const char	*how = getenv ("QUAKE3_SERVER");
+	const char	*how;
 	unsigned	i;
 
 	if (mode != MODE_UNSET)
 		return;
+	how = getenv ("QUAKE3_SERVER");	/* (asked once: this is called every frame) */
 	mode = MODE_INLINE;
-	if (!(how && !strcmp (how, "inline")) && mcw_open (1) > 0) {
-		atexit (mcw_close);
+	if (!(how && !strcmp (how, "inline")) && SE_Workers () > 0) {
 		mode = MODE_WORKER;
 		/* (the stack's top is there before the worker steps on it) */
 		for (i = 4096; i <= 0x20000; i += 4096)
@@ -80,30 +92,70 @@ static void setup (void)
 static void keep (int kind, const char *a, const char *b)
 {
 	unsigned	la = strlen (a) + 1, lb = b ? strlen (b) + 1 : 0;
+	int		w = SE_OnWorker () == 2 ? se_client_list : 0;
 
-	if (work.used + 1 + la + lb > sizeof work.kept) {
-		work.lost++;
+	if (works[w].used + 1 + la + lb > sizeof works[w].kept) {
+		works[w].lost++;
 		return;
 	}
-	work.kept[work.used++] = (char)kind;
-	memcpy (work.kept + work.used, a, la);
-	work.used += la;
+	works[w].kept[works[w].used++] = (char)kind;
+	memcpy (works[w].kept + works[w].used, a, la);
+	works[w].used += la;
 	if (b) {
-		memcpy (work.kept + work.used, b, lb);
-		work.used += lb;
+		memcpy (works[w].kept + works[w].used, b, lb);
+		works[w].used += lb;
 	}
 }
 
 void SE_ServerKeepPrint (const char *text) { keep (KEPT_PRINT, text, NULL); }
 void SE_ServerKeepCommand (const char *text) { keep (KEPT_COMMAND, text, NULL); }
 void SE_ServerKeepCvar (const char *name, const char *value, int force) { keep (force ? KEPT_CVAR_FORCED : KEPT_CVAR, name, value ? value : ""); }
+void SE_ClientKeepReliable (const char *text) { keep (KEPT_RELIABLE, text, NULL); }
 
 void SE_ServerWorkerError (int code, const char *text)
 {
-	Q_strncpyz (work.error, text, sizeof work.error);
-	work.code = code;
-	work.failed = 1;
-	longjmp (job_abort, 1);
+	int	w = SE_OnWorker () == 2 ? se_client_list : 0;
+
+	Q_strncpyz (works[w].error, text, sizeof works[w].error);
+	works[w].code = code;
+	works[w].failed = 1;
+	longjmp (se_worker_abort[w != 0].at, 1);
+}
+
+/* What a worker kept (0: the server's; 1, 2: the client's game's, by its list) is done by this core; 1 when it ended in an error (SE_WorkerRaise). */
+int SE_WorkerKept (int w)
+{
+	unsigned	at;
+
+	for (at = 0; at < works[w].used; ) {
+		int	kind = works[w].kept[at++];
+		char	*a = works[w].kept + at;
+
+		at += strlen (a) + 1;
+		if (kind == KEPT_PRINT) {
+			Com_Printf ("%s", a);
+		} else if (kind == KEPT_COMMAND) {
+			Cbuf_AddText (a);
+		} else if (kind == KEPT_RELIABLE) {
+			CL_AddReliableCommand (a, qfalse);
+		} else {
+			Cvar_Set2 (a, works[w].kept + at, kind == KEPT_CVAR_FORCED);
+			at += strlen (works[w].kept + at) + 1;
+		}
+	}
+	works[w].used = 0;
+	if (works[w].lost) {
+		Com_Printf ("(%u of the %s lines lost)\n", works[w].lost, w ? "client's game's" : "server's");
+		works[w].lost = 0;
+	}
+	at = works[w].failed;
+	works[w].failed = 0;
+	return (int)at;
+}
+
+void SE_WorkerRaise (int w)
+{
+	Com_Error (works[w].code, "%s", works[w].error);
 }
 
 /* ---- packets ---- */
@@ -162,7 +214,7 @@ static void box_read (box_t *box)
 
 static uint32_t job_body (uint32_t msec)
 {
-	if (!setjmp (job_abort)) {
+	if (!setjmp (se_worker_abort[0].at)) {
 		int	left = (int)msec, step = sv_fps->integer > 0 ? 1000 / sv_fps->integer : 100;
 
 		box_read (&job_in);
@@ -187,29 +239,12 @@ static uint32_t server_job (uint32_t msec, uint32_t unused)
 static void finish (void)
 {
 	unsigned	at;
+	int		failed;
 
 	out = 0;
 	se_server_cycles += mcw_result (1);
 	se_server_jobs++;
-	for (at = 0; at < work.used; ) {
-		int	kind = work.kept[at++];
-		char	*a = work.kept + at;
-
-		at += strlen (a) + 1;
-		if (kind == KEPT_PRINT) {
-			Com_Printf ("%s", a);
-		} else if (kind == KEPT_COMMAND) {
-			Cbuf_AddText (a);
-		} else {
-			Cvar_Set2 (a, work.kept + at, kind == KEPT_CVAR_FORCED);
-			at += strlen (work.kept + at) + 1;
-		}
-	}
-	work.used = 0;
-	if (work.lost) {
-		Com_Printf ("(%u of the server's lines lost)\n", work.lost);
-		work.lost = 0;
-	}
+	failed = SE_WorkerKept (0);
 	for (at = 0; at < outbox.used; ) {
 		packet_t *p = (packet_t *)(outbox.data + at);
 
@@ -217,10 +252,8 @@ static void finish (void)
 		NET_SendPacket (NS_SERVER, p->length, p + 1, p->adr);
 	}
 	outbox.used = 0;
-	if (work.failed) {
-		work.failed = 0;
-		Com_Error (work.code, "%s", work.error);
-	}
+	if (failed)
+		SE_WorkerRaise (0);
 }
 
 /* Before anything on this core that reads or changes the server's data. */
@@ -237,6 +270,7 @@ void SE_ServerPoll (void)
 {
 	if (out)
 		mcw_done (1);
+	SE_ClientPoll ();
 }
 
 /* Whether the server's next frame is this core's: a level loading, somebody joining or leaving. */

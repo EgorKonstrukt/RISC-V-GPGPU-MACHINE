@@ -141,6 +141,11 @@ speech play on the sound card (`docs/sound.md`); there is no music.
   - `fixed(a, b)` divides in 32 bits when both fit (`common/fixed.cpp`).
   - The window system is asked for events once a second, not four times, unless the
     machine's input words moved or the pointer is outside the picture (`host_event`).
+  - A message over the map that expired had the page cleared and everything drawn again,
+    the sidebar too: 600 to 900 thousand instructions in Red Alert, three times in its
+    Soviet mission's 1,200 frames. Where the GPU draws the map the message's rows are made
+    holes and what is left printed again (`ShaderEmu_GL_Messages`, which did that already
+    for a message that changed). `TDAWN_MESSAGE_GONE=redraw` is the game's way.
 
 ## The map on the GPU (`gl.cpp`, `host.c`)
 
@@ -165,8 +170,11 @@ goes over it with holes where the map is (index 0, which the game never draws).
   itself remembers it drew nothing at (`ShaderEmu_Away`: most objects are such, and asking
   the table about each was 2 thousand instructions a frame). The object says where
   its rectangles are kept (`ShaderEmu_Kept`). The shroud's edge over a cell is worked out
-  again only when the game says the cell changed. Every 256th scene is made from nothing
-  (`TDAWN_REFRESH=N`; it was every 32nd, which was 3 to 7 thousand instructions a frame).
+  again only when the game says the cell changed. In case a change went unmarked, every
+  256th scene has its cells from nothing, and every scene one object of each layer in
+  turn; the page is not filled for it. (All of it in one scene was a frame of 90
+  thousand instructions here and 200 thousand in Red Alert, every 13 seconds.
+  `TDAWN_REFRESH=N` other than 256 is that: every Nth scene whole.)
 - **What is under the objects and over them stays.** A scene is three parts
   (`host_scene_part`): the cells' own rectangles, the objects, the shroud. The first and the
   last are noted once and kept while no cell of the view has changed (`ShaderEmu_GL_Cell`,
@@ -268,6 +276,14 @@ Each run prints these figures (`tdstat:` lines, every five seconds):
     TDAWN_RENDER=soft   the game draws the map itself, as before
     TDAWN_REFRESH=N     make every Nth scene from nothing (256; 0: never)
     TDAWN_SLOW=N        with TDAWN_STATS_MS=0: say each frame of more than N thousand instructions, and where they went
+    TDAWN_PATH_CORES=N  worker cores for a unit's other path searches (3; 0: this core makes them all)
+    TDAWN_PRE_CORES=N   worker cores that ask about the map's cells ahead of a long search (32)
+    TDAWN_WALK=old      the game's own walk round an obstacle (Follow_Edge)
+    TDAWN_FRAME_LOG=1   at the end, every frame's instructions: all, logic, drawing, the map and its parts, shapes put
+    TDAWN_MARK=A,B      a line as frame A begins and as frame B does (rvc_cpu --pc-from ": mark begins" --until ": mark ends")
+    TDAWN_MESSAGE_GONE=redraw  a message that expires clears the page and has everything drawn again, as it was
+    TDAWN_FRAMES_CORE=N  no more than N cores unpack shape files (6; 0: the game builds every frame)
+    TDAWN_READY_DRAW=0  the game's own drawing unpacks its shapes itself
 
 ## At two million instructions a second
 
@@ -335,6 +351,118 @@ instructions, 18 thousand a battle's frame, of which the input driver's own time
 timekeeping (840) and a long tail; fewer ticks a second would be worth 5% of everything at
 this speed (measured: a kernel of 20 Hz with `HIGH_RES_TIMERS` took the Allied battle from
 147 to 139 thousand a frame), and is not done (`AGENTS.md` has why the tick is 100 Hz).
+
+### 13 October 2026: the long frames, and why a frame is not half
+
+Measured again in windows of a second and a half (`TDAWN_STATS_MS=1500`, 1,200 frames, the
+first window left out as the mission's start), before and after the path searches' help
+("A unit's path searches" below), the word-at-a-time `LCW_Uncompress` and the counts made
+again (`tdawn.profile`):
+
+| `rvc_cpu --ips 2000000` | Average, before | after | Lowest window, before | after | A frame, thousands |
+|---|---|---|---|---|---|
+| Mission 1 | 37.1 | 37.0 | 24.1 | 24.1 | 50 to 50 |
+| Mission 3 | 20.7 | 21.4 | 12.7 | 13.8 | 90 to 87 |
+| Mission 10 | 25.9 | 26.8 | 14.7 | 17.4 | 72 to 70 |
+| Red Alert, Soviet | 29.6 | 29.9 | 17.7 | 18.4 | 63 to 62 |
+| Red Alert, Allied | 21.4 | 21.5 | 10.0 | 9.9 | 87 to 86 |
+
+At `--ips 3000000 --ticks 8192` the averages are 56.5 to 56.3, 31.3 to 32.4, 39.4 to 40.7,
+45.2 to 45.6 and 32.6 to 32.7, and the lowest windows 40.9 to 41.7, 22.3 to 22.9, 21.0 to
+28.6, 30.3 to 30.9 and 17.0 to 16.8. Mission 3's first window (its start) is 13 frames
+where it was 6. On the shader machine (D3D11 with fxc2, 3.9 to 4.0 million instructions a
+second, through the card's queue, before and after in turn twice): mission 3's 800 frames
+48.6 and 49.1 frames a second before, 50.6 and 52.6 after, its lowest window 36.8 and 37.6
+to 38.3 and 41.5; mission 10's 600 frames 60.0 and 59.9 to 61.9 and 62.1, its lowest
+window 45.3 and 45.7 to 50.3 and 50.8; the state sums the same (`3025508e`, `c57c822c`),
+and three held frames (mission 3 and Red Alert's Soviet mission at frame 300, its Allied
+one at 262, with the sidebar up) the same in every pixel.
+
+The game's own speed is 20 steps a second, and from frame 4 on every mission is over it on
+average at two million instructions a second; what is under it is the windows above. They
+are single long frames: a unit's path searches in missions 3 and 10 (below), and in Red
+Alert's Allied mission one frame of 1.76 million instructions when the sidebar first shows
+(`docs/ralert.md`) and the landing.
+
+Why the frames between are not half of what they were, by what a frame of mission 3 is
+(87 thousand instructions of the first core):
+
+- **Logic, 61 thousand.** The profile by source line has no line over 1.8% and no function
+  over 7% of its own (`InfantryClass::AI`); every object's turn reads what the turn before
+  it stored and takes its random numbers in turn, and the state sums are the test. What a
+  worker can make exactly is something whose inputs do not change while it works and whose
+  result is waited for or thrown away: the path searches are that, and nothing else in the
+  list is over two passes long.
+- **Drawing, 15 thousand** (Red Alert's Allied mission 19 of 86). With all of it on other
+  cores a frame would be 1.2 times as fast, 1.3 in Red Alert, and it cannot be while the
+  next step's logic runs: `Draw_It` reads the objects that step moves. A copy of what it
+  reads was not built: an object is 300 bytes and more of stores to copy, as dear on the
+  shader machine as the 600 to 800 instructions of drawing it.
+- **The rest, 8 thousand,** and the kernel throughout: 12% of the first core's
+  instructions are the kernel's (its tick, mostly), which is not the game's to change.
+
+### 13 October 2026, second round: what the long frames are
+
+Every frame's instructions are kept and said at the end (`TDAWN_FRAME_LOG=1`, three stores a
+frame: `TDAWN_SLOW` times every object's turn and prints, which makes a frame of mission 3
+123 thousand where it is 87). Before and after this round (the frames made ready by six
+cores and asked for ahead, the game's own drawing from them, a message's expiry, the
+refresh in turns, and Red Alert's own in `docs/ralert.md`; the counts made again), at
+`rvc_cpu --ips 2000000`, windows of a second and a half, the first left out:
+
+| | Average, before | after | Lowest window, before | after | Windows under 20, before | after |
+|---|---|---|---|---|---|---|
+| Mission 1 | 37.1 | 37.5 | 24.0 | 29.0 | 0 of 20 | 0 |
+| Mission 3 | 21.5 | 21.5 | 14.4 | 15.0 | 9 of 36 | 11 |
+| Mission 10 | 26.9 | 26.8 | 17.0 | 17.9 | 2 of 28 | 2 |
+| Red Alert, Soviet | 30.1 | 30.2 | 18.5 | 17.7 | 2 of 25 | 2 |
+| Red Alert, Allied | 21.7 | 22.0 | 10.4 | 11.9 | 5 of 35 | 4 |
+
+(A window's figure moves by half a frame a second with where its stat line falls: the line
+itself is 50 to 80 thousand instructions of console, in every window of both columns. Red
+Alert's Soviet opening is the same frames before and after: 102 thousand instructions a
+frame in frames 14 to 45, 26 of them the power bar and the credits' tab counting up.)
+At `--ips 3000000 --ticks 8192` the lowest windows are 40.5 to 46.8, 23.1 to 22.9, 29.1 to
+27.3, 30.9 to 29.2 and 16.9 to 17.8.
+
+On the shader machine (D3D11 with fxc2, 3.9 to 4.1 million instructions a second, through
+the card's queue, before and after in turn): Red Alert's Allied mission, 600 frames, 50.6
+and 49.0 frames a second to 52.1 and 52.4, but its lowest window 34.2 and 37.6 to 30.9 and
+30.3 (the landing, which is slower there than before: not looked into); mission 1's 800
+frames 87.5 and 87.6 to 89.4 and 87.9, lowest 70.6 and 69.7 to 72.6 and 72.0; once each, Red
+Alert's Soviet mission 69.3 to 70.3 (lowest 53.4 to 55.2) and mission 3 54.6 to 55.4 (41.5
+to 42.3). The state sums are the same.
+
+What went: the frame in which Red Alert's sidebar comes (1,727 thousand instructions to
+521: its window 10.4 to 18.5), the frames in which a message expired (600 to 900 thousand),
+the scene's refresh (90 and 200 thousand every 256th scene), a mission's first scene (505
+thousand to 327 in Red Alert's Allied mission), mission 1's lowest window. The goal of
+that round, every window at 20, is not reached: what every window under 20 is now, by its
+frames of over 150 thousand instructions (34 in mission 3, 14 in mission 10, 9 and 39 in
+Red Alert's two):
+
+- **A unit's path search**, nearly all of mission 3's and mission 10's (150 to 430
+  thousand; mission 10's frame 188 is several units, 1,353 thousand), all 7 of mission 1's,
+  and Red Alert's of 150 to 270 thousand. It is the first core's own first search (below):
+  one long walk, which the unit's turn waits for. Mission 3's battle (frames 540 to 760) is
+  at 15 to 19 for these and for its frames between, which are 95 to 100 thousand.
+- **Red Alert's landing** (the Allied mission's frames 490 to 560, 11.9 and 12.5 frames a
+  second): logic 70 to 220 thousand a frame for 126 to 158 objects, the cells' walk 16 to
+  29 thousand every frame (the shroud opens as they land), 50 to 80 objects drawn anew.
+- **An aircraft turned** (Red Alert: 249 and 241 thousand for a large one, 40 thousand for
+  each new turn of a small one): `Scale_Rotate` on the first core, 83 thousand of the 249.
+- Red Alert's Soviet frame 130, 532 thousand (it was 680): 437 thousand of it one unit's
+  first sight of new land, a cell at a time (`MapClass::Sight_From`).
+
+Not done, and what it would take: a unit's search a frame ahead on a worker (its inputs
+are what `Can_Enter_Cell` says of the cells it asks about, as if the unit were lifted
+already: a search made on a table of those taken at a frame's end is the search the unit
+would make if the answers it used are the same when its turn comes, which 32 workers can
+say in two passes; the unit, its cell and its destination have to be guessed a frame
+before); the turning of a shape on the scene's core; the cells' part of a scene made again
+only for the cells that changed. Not kept: the objects' turns of the refresh by a sum of
+the object's address (six instructions an object a scene, a thousand a frame: by its place
+in the layer it is two).
 
 ## Checking it
 
@@ -444,29 +572,50 @@ worth making again after a large change. The state sums are the same with and wi
 ## Frames made ready
 
 A shape the scene has not shown before has to be unpacked (the game's `Build_Frame`: 5 to 18
-thousand instructions) and put into the atlas a pixel at a time (3 thousand more): one or
-two a frame in a battle, three when reinforcements land, and most of a mission's first
-frames. Both are other cores' work now (`host.c`, shared with Red Alert):
+thousand instructions, 200 thousand for a large one late in its file) and put into the atlas
+a pixel at a time (3 thousand more): one or two a frame in a battle, three when
+reinforcements land, and most of a mission's first frames. Both are other cores' work
+(`host.c`, shared with Red Alert):
 
-- A second worker unpacks shape files. The first time the scene asks for a frame of a file
-  (`host_frame()`), the file is queued and that one frame is built by the game as before;
-  the worker then unpacks every frame of the file, from the asked one on, with the game's
-  own unpacking (`ShaderEmu_Frame_Into` in `keyframe.cpp`, which touches nothing of the
-  program's but its two buffers), and keeps of each the rectangle that has pixels and a bit
-  for every index in it. Memory that is the worker's alone to write: 6 MB at most, its pages
-  brought in 128 KB at a time. A frame asked for later is there: four in five are.
+- Six workers unpack shape files (`TDAWN_FRAMES_CORE=N`: no more than N; 0: none). A file is
+  unpacked in runs: 64 frames, or 128 KB of them, from the frame that was asked for, with
+  the game's own unpacking (`ShaderEmu_Frame_Step` in `keyframe.cpp`, which touches nothing
+  of the program's but its buffer, and makes a frame from the one before it where the file
+  has it as a change: a file's last frames were its whole chain each). Of each frame it
+  keeps the rectangle that has pixels, a bit for every index in it, and each row's first and
+  last pixel. Then the file rests. A frame asked for that is not there, or one whose
+  twelfth frame after it is not, has the file go on from there: at once if a core has it (a
+  count the job looks at, `asks`), else on a core with none, in the same call.
+- What will be asked for is asked for ahead, as a mission begins and in every frame in
+  which something was made (`ShaderEmu_GL_Ahead` in `gl.cpp`): the file of every unit,
+  soldier, aircraft and building there is, on the map or not yet (being built, on its way
+  in a transport), a building's construction too, every animation's first run, and the
+  files the game tells of (`ShaderEmu_GL_Ahead_File`: Red Alert's sidebar, `docs/ralert.md`).
 - From those bits the first core knows a ready frame's shadow levels without looking at
   its pixels, gives it its place in the atlas, and leaves the pixels to the core that makes
   the scene (`host_fill()`): they are written before that scene's commands, and nothing
-  else reads the atlas.
-- `Reset_Theater_Shapes` and a new scenario stop the worker and forget everything
+  else reads the atlas. A cell's icon is copied there the same way (`fill_icon`: a
+  mission's first scene was 320 of them, 250 thousand instructions).
+- **The game's own drawing takes a ready frame too** (`ShaderEmu_Ready_Shape` in
+  `conquer.cpp`, `ShaderEmu_Ready_To_Page` in `common/keybuff.cpp`): a shape drawn plainly
+  into the page (the sidebar's pieces, tabs, buttons) is copied from the worker's
+  rectangle, a row's run by its span, and is neither unpacked nor measured by this core.
+  `TDAWN_READY_DRAW=0` is the game's own way.
+- The memory is the workers' alone to write: 8 MB of address space, of which 2 MB (3 in
+  Red Alert) have their pages from the program's start, with the cores' buffers and the
+  frames' table (1.9 to 2.4 million instructions of the start, about a second at two
+  million a second: 128 KB brought in a mission's frame was 32 page faults, 70 thousand
+  instructions). More comes two pages a frame when less than 256 KB is left.
+- `Reset_Theater_Shapes` and a new scenario stop the workers and forget everything
   (`host_frames_forget()`): a file may go then.
 
 `TDAWN_CHECK_FRAMES=1` (`RALERT_CHECK_FRAMES=1`) has the game build every such frame too and
 compares rectangle and pixels: `0 of them differ from the game's own` at the end.
-`TDAWN_FRAMES_CORE=0` leaves every frame to the game. The game's own drawing (the sidebar,
-the radar's opening) was given the worker's frames too and lost by it: every file the
-sidebar shows was queued before the battle's.
+`TDAWN_CHECK_READY=1` draws every shape of the game's own drawing both ways and compares the
+window's pixels: `0 of them differ from its own`. In 600 frames of Red Alert's Allied mission
+the game still built 55 frames itself (462 thousand instructions) where it had built some
+150 (1.4 million, 836 thousand of them in the frame the sidebar comes): 17 of the 55 are an
+aircraft's, which the game turns before they are put.
 
 ## A unit's path searches
 
@@ -485,18 +634,57 @@ doing it in one frame. Three things, all in `findpath.cpp` (`ShaderEmu_Find_Path
   else. A search notes which answers it met; one that met none between its threshold and
   another's went the other's way step for step, and that one is not run: its path, its
   moves and its list of cells are put back as the search would have left them.
-- After a unit whose first search was long (30 thousand instructions) the next unit's
-  second search is made by a worker core while the first core makes the first (workers 3 to
-  5, `host_path_cores()` in `host.c`), and if that one is not good enough the rest go out
-  together. A search stores only into its core's own memory (its path, its lists, its kept
+- A search whose edge walks have come by 48 cells is a long one, and the unit's other
+  searches begin then on worker cores, each with its own threshold, while the first core
+  goes on with its own (`ShaderEmu_Path_Help`; workers 3 to 5, `host_path_cores()` in
+  `host.c`). A search stores only into its core's own memory (its path, its lists, its kept
   answers: `ShaderEmu_Core`, 16 bytes apart); which core is in the threshold's upper bits
   all the way down. Searches nobody asks the result of are stopped and waited for before
-  the unit is put back.
+  the unit is put back. (Until 13 October 2026 the help was for the unit after one whose
+  first search had been long, and one search at a time.)
+- At the same moment up to 32 more workers ask `Can_Enter_Cell` about every cell of the
+  map for that unit, two rows of it each (`ShaderEmu_Pre_Job`, `host_pre_cores()`,
+  `TDAWN_PRE_CORES=N`): a long walk asks about some 900 cells nobody has asked about, 80 to
+  250 instructions each, and two passes later every core's search finds the answer there
+  (`Passable_Cell` looks in `ShaderEmu_Pre` before it asks). They store whole rows of two
+  tables and nothing else, and have ended before the unit is put back.
+- The walk round an obstacle is `ShaderEmu_Walk`: `Follow_Edge` step for step, with a cell's
+  kept answer read in place and a cell that is new to the path put on it in place.
+  `TDAWN_WALK=old` is the game's own.
 
 `TDAWN_CHECK_PATHS=1` makes every such search on the first core too and compares path,
-moves and cells: `26 searches not run again and 22 another core's, 0 of them wrong` in
-mission 3's 800 frames. `TDAWN_PATH_CORES=0` is one core. Mission 3's first four frames went from 1.9 s to 1.5 s; a worker's search has none of the first search's kept answers, which is why
-it is not half. Red Alert has the first of the three only: its searches are 2% of a battle.
+moves and cells, and makes every edge walk both ways: `50 searches not run again and 32
+another core's, 0 of them wrong` and `278 edge walks made both ways, 0 of them wrong` in
+mission 3's 1,200 frames (110 walks in mission 10, 64 in mission 1). `TDAWN_PATH_CORES=0`
+is one core. Red Alert has the first of the five only: its searches are 2% of a battle.
+
+What a long search is, measured (`rvc_cpu`, mission 3): one of its two walks reaches the
+other side in 3 to 50 cells, and the other goes the long way round, 230 to 280 cells kept
+of up to 400 walked, to lose the comparison; the game makes both to the end. That walk
+was 150 to 195 thousand instructions for the first search (every cell new) and 105 to 115
+for the next, and a unit made two or three such searches, or four walks when its way had
+two obstacles. A frame with such a unit, of the 1,200:
+
+| | Mission 3 | Mission 10 |
+|---|---|---|
+| Frames with a unit of over 100 thousand instructions | 23 | 10 (9 after) |
+| Their mean, before | 434 thousand | 619 thousand |
+| after | 266 thousand | 400 thousand |
+| The longest, before | 859 thousand | 2,086 thousand (several units) |
+| after | 426 thousand | 1,361 thousand |
+
+What is left is the first core's own first search: one long walk, 100 thousand
+instructions of 250 a step, and with two obstacles two. Its outcome is needed before the
+unit's turn can go on, and a walk is one step after another.
+
+Tried on the way and not kept: the answer by threshold kept for each cell of one search
+(a tenth slower: a walk asks about most cells once or twice); the first core waiting for
+the 32 workers and making its walk again from the start by reading their answers (the
+walk is as long by reading as by asking the kept answers, 120 thousand against 125, and
+the wait is three passes). Not done: the rest of a search with two obstacles made by a
+worker from the shorter walk's end while the first core finishes the longer (three frames
+of mission 3's 23, 480 thousand each); the two walks of one obstacle on two cores gain
+nothing, since it is the long one that is waited for.
 
 ## Not done
 

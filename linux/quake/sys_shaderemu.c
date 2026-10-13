@@ -203,7 +203,7 @@ static void terminal_commands (void)
 int main (int c, char **v)
 {
 	extern unsigned	se_started;	/* vid_shaderemu.c */
-	unsigned	passed, oldtime, newtime;
+	unsigned	passed, oldtime, newtime, asked = 0;
 	quakeparms_t	parms;
 	int		j;
 
@@ -233,7 +233,11 @@ int main (int c, char **v)
 		}
 		passed = newtime - oldtime;
 		oldtime = newtime;
-		terminal_commands ();
+		/* (asking is a system call, a tenth of a short frame: four times a second) */
+		if (newtime - asked >= 250) {
+			asked = newtime;
+			terminal_commands ();
+		}
 		Host_Frame (passed);
 	}
 }

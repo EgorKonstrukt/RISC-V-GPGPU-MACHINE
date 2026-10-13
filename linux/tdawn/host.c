@@ -55,7 +55,14 @@ static int scene_noted[SCENE_PARTS] __attribute__((aligned(16)));
 static int scene_part = 1, scene_out, scene_owed, scene_owed_page, scene_owed_cursor;
 static int scene_at[2], scene_view[4];	/* the scene's origin on the screen, and the view its kept rectangles are cut to */
 #define PATH_CORES 3
+#ifdef SHADEREMU_RA
+#define PRE_CORES 0
+#else
+#define PRE_CORES 32		/* workers that ask about the map's cells ahead of a long search (findpath.cpp) */
+#endif
 static int scene_cores = -1;	/* -1: not asked yet; 0: none */
+static void frames_room(void);
+static void workers_open(void);
 unsigned int host_scene_jobs;	/* scenes a worker made, for the games' figures */
 static void scene_finish(void);
 
@@ -219,6 +226,7 @@ host_open(int width, int height)
 	pointer_x = width / 2;
 	pointer_y = height / 2;
 	window_origin();
+	frames_room();
 	return 0;
 }
 
@@ -514,58 +522,87 @@ host_tiles_clear(void)
 }
 
 /*
- * Shape files' frames on a second worker core (docs/tdawn.md, "Frames made ready"): a file
- * the scene has asked a frame of is unpacked whole, from that frame on, into memory that is
- * the worker's to write. TDAWN_FRAMES_CORE=0 leaves every frame to the game.
+ * Shape files' frames on worker cores (docs/tdawn.md, "Frames made ready"): a file a frame
+ * was asked of is unpacked from that frame on, a run of frames a turn, into memory that is
+ * the worker's to write. TDAWN_FRAMES_CORE=0 leaves every frame to the game, =N has N cores.
  */
 int ShaderEmu_Frame_Size(const void *file, int *width, int *height);	/* keyframe.cpp's */
-int ShaderEmu_Frame_Into(const void *file, int frame, void *buffer);
-enum { FRAME_FILES = 240, FRAME_SLOTS = 40960, FRAMES_ARENA = 6 << 20, FRAMES_STEP = 128 << 10 };
-enum { FILE_WAITS, FILE_OUT, FILE_MADE, FILE_LEFT };
-enum { FRAMES_TURN = 64 };
-struct frame_file { const void *file; struct host_frame *frames; int count, from, width, height, state; };
+int ShaderEmu_Frame_Step(const void *file, int frame, void *buffer, int have);
+enum { FRAME_FILES = 240, FRAME_SLOTS = 40960, FRAMES_ARENA = 8 << 20, FRAMES_PIECE = 128 << 10, FRAME_CORES = 6 };
+#ifdef SHADEREMU_RA
+enum { FRAMES_FIRST = 3 << 20 };	/* the arena's pages that are there from the program's start */
+#else
+enum { FRAMES_FIRST = 2 << 20 };
+#endif
+enum { FRAMES_MORE = 8 << 10, FRAMES_SPARE = 2 * FRAMES_PIECE };
+enum { FILE_WAITS, FILE_OUT, FILE_RESTS, FILE_MADE, FILE_LEFT };
+enum { FRAMES_TURN = 64, FRAMES_BYTES = 128 << 10, FRAMES_NEAR = 12 };
+/* (asks: counted up when `from` is set while a core has the file, which then goes on from there) */
+struct frame_file { const void *file; struct host_frame *frames; int count, width, height, state; volatile int from, asks; };
 static struct frame_file frame_files[FRAME_FILES];
 static unsigned char frame_hash[256];	/* a file's place in those, + 1 */
-static int frame_file_count, frame_waiting, frame_out = -1, frame_slots_used;
+static int frame_file_count, frame_waiting, frame_slots_used;
 static int frames_wait;	/* how many files wait for a turn */
-static struct host_frame *frame_slots;	/* these four are the worker's to write */
-static unsigned char *frames_arena, *frames_scratch;
-static unsigned int *frames_used;
-static unsigned int frames_limit;	/* the arena's pages are there this far */
+static struct host_frame *frame_slots;	/* a frame's slot is its worker's to write */
+static unsigned char *frames_arena;
+static unsigned int frames_given, frames_limit;	/* the arena is shared out this far, and its pages are there this far */
+/* A core that unpacks: its piece of the arena and its buffer (this core stores here while that one has no job). */
+static struct frames_core { unsigned char *at, *end, *scratch; int job, worker, unused[3];	/* job: its file + 1 */ }
+	frames_cores[FRAME_CORES] __attribute__((aligned(16)));
+static int frames_most = -1;
 static volatile int frames_stop;
 unsigned int host_frames_bytes;
 
 /*
- * A file's frames, each cut to the rectangle that has pixels: so many of them a turn, from the
- * one asked for last. 1: the file is done; 2: out of room; 3: more of it another turn.
+ * A file's frames, each cut to the rectangle that has pixels: so many of them a turn (or so
+ * many bytes: large ones are few), from the one asked for last. The answer's low bits: 1 the file is done, 2 out of room, 3 more of it
+ * another turn, 0 stopped; above them the bytes of the piece used.
  */
 static uint32_t
-frames_job(uint32_t index, uint32_t turn)
+frames_job(uint32_t what, uint32_t turn)
 {
-	struct frame_file *f = &frame_files[index];
-	int n, y, width = f->width, size = f->width * f->height;
+	struct frame_file *f = &frame_files[what & 0xffff];
+	const struct frames_core *core = &frames_cores[what >> 16];
+	unsigned char *at = core->at, *scratch = core->scratch;
+	int y, width = f->width, size = f->width * f->height, have = -1, how = 1, bytes = FRAMES_BYTES;
+	int frame = f->from, asks = f->asks, passed = 0;
 
-	for (n = 0; n < f->count; n++) {
-		int frame = f->from + n < f->count ? f->from + n : f->from + n - f->count;
-		struct host_frame *r = &f->frames[frame];
-		int x0 = width, x1 = -1, y0 = -1, y1 = -1;
+	for (;; frame = frame + 1 < f->count ? frame + 1 : 0) {
+		struct host_frame *r;
+		int x0 = width, x1 = -1, y0 = -1, y1 = -1, w, h, spans;
 		unsigned char *to;
 		unsigned int *seen;
 
-		if (r->state)
-			continue;
-		if (frames_stop || mcw_recalled(2))
-			return 0;
-		if (turn-- == 0)
-			return 3;
-		if (frames_used[0] + size + 48 > frames_limit)
-			return 2;
-		if (!ShaderEmu_Frame_Into(f->file, frame, frames_scratch)) {
-			r->state = -1;
+		if (f->asks != asks)	/* (a frame was missed elsewhere in the file) */
+			asks = f->asks, frame = f->from, passed = 0;
+		r = &f->frames[frame];
+		if (r->state) {
+			if (++passed >= f->count)
+				break;
 			continue;
 		}
+		passed = 0;
+		if (frames_stop || mcw_recalled(core->worker)) {
+			how = 0;
+			break;
+		}
+		if (turn-- == 0 || bytes <= 0) {
+			how = 3;
+			break;
+		}
+		bytes -= size;
+		if (at + size + 4 * f->height + 64 > core->end) {
+			how = 2;
+			break;
+		}
+		if (!ShaderEmu_Frame_Step(f->file, frame, scratch, have)) {
+			r->state = -1;
+			have = -1;
+			continue;
+		}
+		have = frame;
 		for (y = 0; y < f->height; y++) {
-			const unsigned char *row = frames_scratch + y * width;
+			const unsigned char *row = scratch + y * width;
 			int a = host_first_pixel(row, width), b;
 
 			if (a == width)
@@ -578,129 +615,207 @@ frames_job(uint32_t index, uint32_t turn)
 			r->state = HOST_FRAME_EMPTY;
 			continue;
 		}
-		to = frames_arena + frames_used[0];
-		seen = (unsigned int *)to;
+		w = x1 - x0 + 1, h = y1 - y0 + 1;
+		seen = (unsigned int *)at;
 		memset(seen, 0, 32);
-		to += 32;
+		to = at + 32;
 		r->pixels = to;
 		r->left = (short)x0, r->top = (short)y0;
-		r->w = (short)(x1 - x0 + 1), r->h = (short)(y1 - y0 + 1);
-		for (y = y0; y <= y1; y++, to += r->w) {
-			const unsigned char *from = frames_scratch + y * width + x0;
+		r->w = (short)w, r->h = (short)h;
+		for (y = y0; y <= y1; y++, to += w) {
+			const unsigned char *from = scratch + y * width + x0;
 			int x;
 
-			for (x = 0; x < r->w; x++)
+			for (x = 0; x < w; x++)
 				seen[from[x] >> 5] |= 1u << (from[x] & 31);
-			memcpy(to, from, r->w);
+			memcpy(to, from, w);
 		}
-		frames_used[0] += (unsigned int)(32 + r->w * r->h + 15) & ~15u;
-		r->state = HOST_FRAME_READY;	/* (last: the other core looks at this) */
+		spans = 1;
+		if (spans) {
+			/* (for the game's own drawing: a row's first pixel and last, and whether a hole lies between) */
+			struct host_span *s = (struct host_span *)(r->pixels + ((w * h + 3) & ~3));
+
+			for (y = 0; y < h; y++, s++) {
+				const unsigned char *row = r->pixels + y * w;
+				int a = host_first_pixel(row, w), b = a == w ? -1 : host_last_pixel(row, w), k;
+
+				if (b < 0) {
+					s->first = 1, s->last = 0;
+					continue;
+				}
+				for (k = a; k <= b && row[k]; k++)
+					;
+				s->first = (unsigned short)(a | (k <= b ? 0x8000 : 0)), s->last = (unsigned short)b;
+			}
+			to = (unsigned char *)s;
+		}
+		at += (unsigned int)(to - at + 15) & ~15u;
+		r->state = spans ? HOST_FRAME_READY | HOST_FRAME_SPANS : HOST_FRAME_READY;	/* (last: the other core looks at this) */
 	}
-	return 1;
+	return (uint32_t)how | (uint32_t)(at - core->at) << 2;
 }
 
-/* Once a frame: the worker's file is seen done, and the next one given to it. */
+/* A core's job has ended: its file waits again, rests until a frame of it is missed, or is done. */
 static void
-frames_pump(void)
+frames_took(struct frames_core *core)
 {
-	int tries;
+	struct frame_file *f = &frame_files[core->job - 1];
+	uint32_t how = mcw_result(core->worker);
+
+	core->at += how >> 2;
+	host_frames_bytes += how >> 2;
+	f->state = (how & 3) == 1 ? FILE_MADE : (how & 3) == 3 ? FILE_RESTS : FILE_WAITS;
+	frames_wait += f->state == FILE_WAITS;
+	core->job = 0;
+}
+
+/*
+ * The cores' files are seen done, and the files that wait given to cores with none. more 1: once
+ * a frame, with the arena's next pages; -1: only cores that have no file are looked at.
+ */
+static void
+frames_pump(int more)
+{
+	int c, tries;
 
 	if (scene_cores < 2 || !frames_arena)
 		return;
-	if (frame_out >= 0) {
-		struct frame_file *f = &frame_files[frame_out];
-		uint32_t how;
+	for (c = 0; c < frames_most && frames_cores[c].worker <= scene_cores; c++) {
+		struct frames_core *core = &frames_cores[c];
+		struct frame_file *f;
+		unsigned int need;
 
-		if (!mcw_done(2))
-			return;
-		how = mcw_result(2);
-		host_frames_bytes = frames_used[0];
-		f->state = how == 1 ? FILE_MADE : FILE_WAITS;
-		if (how == 2 && frames_limit >= FRAMES_ARENA)
-			f->state = FILE_LEFT;
-		frames_wait += f->state == FILE_WAITS;
-		frame_out = -1;
-	}
-	if (!frames_wait || !mcw_bound(2))
-		return;
-	/* (the files in turns: one that is new has its first frames before an old one its last) */
-	for (tries = 0; tries < frame_file_count; tries++) {
-		frame_waiting = frame_waiting + 1 < frame_file_count ? frame_waiting + 1 : 0;
-		if (frame_files[frame_waiting].state == FILE_WAITS)
+		if (core->job) {
+			if (more < 0 || !mcw_done(core->worker))
+				continue;
+			frames_took(core);
+		}
+		if (!frames_wait || !mcw_bound(core->worker))
+			continue;
+		/* (the files in turns: one that is new has its first frames before an old one its last) */
+		for (tries = 0; tries < frame_file_count; tries++) {
+			frame_waiting = frame_waiting + 1 < frame_file_count ? frame_waiting + 1 : 0;
+			if (frame_files[frame_waiting].state == FILE_WAITS)
+				break;
+		}
+		if (tries == frame_file_count) {
+			frames_wait = 0;
 			break;
+		}
+		f = &frame_files[frame_waiting];
+		need = (unsigned int)(f->width * f->height + 4 * f->height + 64);
+		if (core->at + need > core->end) {
+			/* another piece of the arena, of pages that are there */
+			if (frames_given + FRAMES_PIECE > frames_limit) {
+				if (frames_given + FRAMES_PIECE > FRAMES_ARENA) {
+					f->state = FILE_LEFT;
+					frames_wait--;
+				}
+				continue;
+			}
+			core->at = frames_arena + frames_given;
+			core->end = core->at + FRAMES_PIECE;
+			frames_given += FRAMES_PIECE;
+		}
+		frames_wait--;
+		core->job = frame_waiting + 1;
+		f->state = FILE_OUT;
+		mcw_post(core->worker, frames_job, (uint32_t)(frame_waiting | c << 16), FRAMES_TURN);
 	}
-	frames_wait--;
-	if (tries == frame_file_count)
-		return;
-	if (frames_used[0] + FRAMES_STEP > frames_limit && frames_limit < FRAMES_ARENA) {
-		mcw_touch(frames_arena + frames_limit, FRAMES_STEP);
-		frames_limit += FRAMES_STEP;
+	/* (the arena's pages a few at a time, ahead of their use: 32 at once were a long frame) */
+	if (more > 0 && frames_limit < FRAMES_ARENA && frames_limit < frames_given + FRAMES_SPARE) {
+		mcw_touch(frames_arena + frames_limit, FRAMES_MORE);
+		frames_limit += FRAMES_MORE;
 	}
-	frame_out = frame_waiting;
-	frame_files[frame_out].state = FILE_OUT;
-	mcw_post(2, frames_job, (uint32_t)frame_out, FRAMES_TURN);
+}
+
+/* The file's place among those known, made if it is new (NULL: no room for more). */
+static struct frame_file *
+frames_file(const void *file, int frame, int *is_new)
+{
+	unsigned int at = (unsigned int)(((uintptr_t)file >> 4) * 2654435761u) >> 24;
+	struct frame_file *f;
+
+	*is_new = 0;
+	for (; frame_hash[at]; at = (at + 1) & 255)
+		if (frame_files[frame_hash[at] - 1].file == file)
+			return &frame_files[frame_hash[at] - 1];
+	if (frame_file_count == FRAME_FILES)
+		return NULL;
+	f = &frame_files[frame_file_count++];
+	frame_hash[at] = (unsigned char)frame_file_count;
+	f->file = file;
+	f->count = ShaderEmu_Frame_Size(file, &f->width, &f->height);
+	f->from = frame > 0 && frame < f->count ? frame : 0;
+	f->state = FILE_LEFT;
+	if (f->count > 0 && f->width > 0 && f->height > 0 && f->width * f->height < 65536
+	    && frame_slots_used + f->count <= FRAME_SLOTS) {
+		f->frames = frame_slots + frame_slots_used;
+		frame_slots_used += f->count;
+		f->state = FILE_WAITS;
+		frames_wait++;
+	}
+	*is_new = 1;
+	return f;
 }
 
 const struct host_frame *
 host_frame(const void *file, int frame)
 {
-	unsigned int at = (unsigned int)(((uintptr_t)file >> 4) * 2654435761u) >> 24;
-	struct frame_file *f = NULL;
+	struct frame_file *f;
 	const struct host_frame *r;
+	int is_new, near;
 
 	if (scene_cores < 2 || !frames_arena)
 		return NULL;
-	for (; frame_hash[at]; at = (at + 1) & 255) {
-		if (frame_files[frame_hash[at] - 1].file == file) {
-			f = &frame_files[frame_hash[at] - 1];
-			break;
-		}
-	}
-	if (!f) {
-		if (frame_file_count == FRAME_FILES)
-			return NULL;
-		f = &frame_files[frame_file_count++];
-		frame_hash[at] = (unsigned char)frame_file_count;
-		f->file = file;
-		f->count = ShaderEmu_Frame_Size(file, &f->width, &f->height);
-		f->from = frame > 0 && frame < f->count ? frame : 0;
-		f->state = FILE_LEFT;
-		if (f->count > 0 && f->width > 0 && f->height > 0 && f->width * f->height < 65536
-		    && frame_slots_used + f->count <= FRAME_SLOTS) {
-			f->frames = frame_slots + frame_slots_used;
-			frame_slots_used += f->count;
-			mcw_touch(f->frames, (unsigned)f->count * sizeof *f->frames);
-			f->state = FILE_WAITS;
-			frames_wait++;
-		}
-		return NULL;
-	}
-	if (f->state == FILE_LEFT || (unsigned int)frame >= (unsigned int)f->count)
+	f = frames_file(file, frame, &is_new);
+	if (f && is_new)
+		frames_pump(-1);
+	if (!f || is_new || f->state == FILE_LEFT || (unsigned int)frame >= (unsigned int)f->count)
 		return NULL;
 	r = &f->frames[frame];
-	if (r->state > 0)
-		return r;
-	if (f->state == FILE_WAITS || f->state == FILE_OUT)
-		f->from = frame;	/* (its next turn begins here) */
-	return NULL;
+	near = (frame + FRAMES_NEAR) % f->count;
+	if (f->state != FILE_MADE && (!r->state || (r->state > 0 && !f->frames[near].state))) {
+		/* its turn goes on from here: at this frame, or after it where what is ready ends soon */
+		f->from = r->state ? (frame + 1) % f->count : frame;
+		if (f->state == FILE_OUT) {
+			f->asks++;
+		} else if (f->state == FILE_RESTS) {
+			f->state = FILE_WAITS;
+			frames_wait++;
+			frames_pump(-1);	/* (a core now: the frames after this one are wanted in the next frame) */
+		}
+	}
+	return r->state > 0 ? r : NULL;
 }
 
-/* The worker is told to end its file, and has by the time this returns. */
+void
+host_frames_ahead(const void *file, int frame)
+{
+	int is_new;
+
+	workers_open();
+	if (file && scene_cores >= 2 && frames_arena)
+		frames_file(file, frame, &is_new);
+}
+
+/* The workers are told to end their files, and have by the time this returns. */
 static void
 frames_halt(void)
 {
-	if (frame_out < 0)
-		return;
+	int c;
+
 	frames_stop = 1;
-	mcw_wait(2);
+	for (c = 0; c < FRAME_CORES; c++)
+		if (frames_cores[c].job) {
+			mcw_wait(frames_cores[c].worker);
+			frames_took(&frames_cores[c]);
+		}
 	frames_stop = 0;
-	frame_files[frame_out].state = mcw_result(2) == 1 ? FILE_MADE : FILE_WAITS;
-	frames_wait += frame_files[frame_out].state == FILE_WAITS;
-	frame_out = -1;
 }
 
 /* Work put off to the core that makes the scene (host.h). */
-#define FILLS_MOST 256
+#define FILLS_MOST 1024
 static struct { host_fill_fn fn; void *what; const void *from; int unused; } fills[FILLS_MOST] __attribute__((aligned(16)));
 static int fill_count;
 
@@ -726,18 +841,72 @@ host_fill(host_fill_fn fn, void *what, const void *from)
 }
 
 void
-host_frames_forget(void)
+host_frames_settle(void)
 {
 	scene_finish();
 	fills_now(fill_count);	/* (what they were given goes now) */
 	fill_count = 0;
+}
+
+void
+host_frames_forget(void)
+{
+	int c;
+
+	host_frames_settle();
 	frames_halt();
 	if (frame_slots && frame_slots_used)
 		memset(frame_slots, 0, (unsigned)frame_slots_used * sizeof *frame_slots);
 	memset(frame_hash, 0, sizeof frame_hash);
 	frame_file_count = frame_waiting = frame_slots_used = frames_wait = 0;
-	if (frames_used)
-		frames_used[0] = 0;
+	frames_given = 0;	/* (the arena from its start again: its pages stay) */
+	for (c = 0; c < FRAME_CORES; c++)
+		frames_cores[c].at = frames_cores[c].end = NULL;
+}
+
+/* How many cores unpack shape files (TDAWN_FRAMES_CORE=N; 0: the game builds every frame). */
+static int
+frames_wanted(void)
+{
+	const char *how = getenv("TDAWN_SCENE");
+
+	if (frames_most < 0) {
+		frames_most = how && !strcmp(how, "inline") ? 0 : FRAME_CORES;
+		how = getenv("TDAWN_FRAMES_CORE");
+		if (how && atoi(how) < frames_most)
+			frames_most = atoi(how) < 0 ? 0 : atoi(how);
+	}
+	return frames_most;
+}
+
+/* The frames' arena, its first megabyte there: asked for as the program starts, not in a mission's frame. */
+static void
+frames_room(void)
+{
+	int c;
+
+	if (frames_arena || !frames_wanted() || mcw_most() < 2)
+		return;
+	frames_arena = mcw_alloc(FRAMES_ARENA);
+	frame_slots = mcw_alloc(FRAME_SLOTS * sizeof *frame_slots);
+	for (c = 0; c < FRAME_CORES; c++) {
+		frames_cores[c].worker = c ? 2 + PATH_CORES + PRE_CORES + c : 2;
+		frames_cores[c].scratch = mcw_alloc(4096 + 65536 + 4096);
+		if (!frames_cores[c].scratch) {
+			frames_arena = NULL;
+			break;
+		}
+		mcw_touch(frames_cores[c].scratch, 4096 + 65536 + 4096);
+		frames_cores[c].scratch += 4096;	/* (a bad file's copies reach back) */
+	}
+	if (!frames_arena || !frame_slots) {
+		frames_arena = NULL;
+		frames_most = 0;
+		return;
+	}
+	mcw_touch(frame_slots, FRAME_SLOTS * sizeof *frame_slots);
+	mcw_touch(frames_arena, FRAMES_FIRST);
+	frames_limit = FRAMES_FIRST;
 }
 
 /* The worker cores are asked for: the first time, and after they were given back. */
@@ -748,7 +917,8 @@ workers_open(void)
 		const char *how = getenv("TDAWN_SCENE");
 		static int at_exit;
 
-		scene_cores = how && !strcmp(how, "inline") ? 0 : mcw_open(2 + PATH_CORES);	/* the scene's, the frames', the paths' */
+		/* the scene's, the frames', the paths', those that ask about cells and the frames' others */
+		scene_cores = how && !strcmp(how, "inline") ? 0 : mcw_open(2 + PATH_CORES + PRE_CORES + FRAME_CORES - 1);
 		if (scene_cores > 0 && !at_exit) {
 			extern char __DATA_BEGIN__[], _end[];
 
@@ -756,18 +926,8 @@ workers_open(void)
 			atexit(host_workers_close);
 			mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 		}
-		how = getenv("TDAWN_FRAMES_CORE");
-		if (scene_cores > 1 && !frames_arena && !(how && !strcmp(how, "0"))) {
-			frame_slots = mcw_alloc(FRAME_SLOTS * sizeof *frame_slots);
-			frames_used = mcw_alloc(16);
-			frames_scratch = mcw_alloc(4096 + 65536);
-			if (frame_slots && frames_used && frames_scratch) {
-				mcw_touch(frames_used, 16);
-				mcw_touch(frames_scratch, 4096 + 65536);
-				frames_scratch += 4096;	/* (a bad file's copies reach back) */
-				frames_arena = mcw_alloc(FRAMES_ARENA);
-			}
-		}
+		if (scene_cores > 1)
+			frames_room();
 	}
 }
 
@@ -805,6 +965,39 @@ host_path_wait(int k)
 	mcw_wait(2 + k);
 }
 
+/* How many cores can ask about cells for a search now (TDAWN_PRE_CORES=N: no more than N), from 0. */
+int
+host_pre_cores(void)
+{
+	static int most = -1;
+	int k;
+
+	if (most < 0) {
+		const char *how = getenv("TDAWN_PRE_CORES");
+
+		most = how ? atoi(how) : PRE_CORES;
+		if (most > PRE_CORES)
+			most = PRE_CORES;
+	}
+	if (most <= 0 || host_path_cores() <= 0)
+		return 0;
+	for (k = 0; k < most && 2 + PATH_CORES + k < scene_cores && mcw_bound(3 + PATH_CORES + k); k++)
+		;
+	return k;
+}
+
+void
+host_pre_post(int k, unsigned int (*ask)(unsigned int, unsigned int), unsigned int object, unsigned int what)
+{
+	mcw_post(3 + PATH_CORES + k, (mcw_fn)ask, object, what);
+}
+
+void
+host_pre_wait(int k)
+{
+	mcw_wait(3 + PATH_CORES + k);
+}
+
 /* A frame's scene begins: the map's pixel (0, 0) is at this pixel of the screen. */
 void
 host_scene_begin(int origin_x, int origin_y)
@@ -812,7 +1005,7 @@ host_scene_begin(int origin_x, int origin_y)
 	scene_finish();		/* the frame before is shown by now */
 	host_settle();		/* and drawn: the worker's fills and the kept rectangles are stored from here */
 	workers_open();
-	frames_pump();
+	frames_pump(0);
 	scene_part = 1;
 	scene_noted[1] = 0;
 	if (scene_built)
@@ -1275,6 +1468,7 @@ host_event(struct host_event *event)
 		return 0;
 	if (scene_out && mcw_done(1))
 		scene_finish();		/* the worker has made the scene: its frame is shown */
+	frames_pump(1);
 	if (log < 0)
 		log = getenv("TDAWN_INPUT_LOG") != NULL;	/* say what arrives, for tests */
 	input = control(REG_INPUT);

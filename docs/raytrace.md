@@ -30,11 +30,8 @@ balls over a chequered ground, one light, shadows and three mirrorings, turning;
 `RAY_SIZE=WxH` the picture, `RAY_STILL=1` keeps the scene where it is. Each picture's line
 (`raystat:`) has its time, its rays and a sum of its pixels.
 
-The first core traces too: the first tiles of the order are its own (`scene.first`), and
-after each picture their number is set to what would have taken it as long as the workers
-took for theirs, so it neither waits for them nor keeps them waiting. Between its tiles it
-asks the workers how far they are, no more than a hundred times a second (asking 255 of
-them is most of a pass). It used to end its passes while they traced.
+The first core traces nothing while it has workers (it had some tiles of its own until 13
+October 2026: "Pictures one after another", below).
 
 One picture (201,460 rays) on the shader machine with 16 cores (it had `--cores 16` then), the same sum every time:
 
@@ -81,6 +78,38 @@ After a change, old and new must agree on `RAY_FRAMES=24 RAY_SIZE=160x120 nxray`
 scene), not only on the still picture. The start did not move: of 2.7 million instructions
 with every worker, about half is `mcw_open` (a worker's stack pages, its start, its first
 steps) and the rest the program's exec, the GPU's memory mapped and the window made.
+
+### Pictures one after another (13 October 2026)
+
+On the shader machine with 255 workers, the scene turning: 320 x 240 went from 17.4 to 17.6
+pictures a second to 28 to 31, 640 x 480 from 6.8 to 8.3 to 8.7; a test's pictures
+(`RAY_FRAMES`, each timed by itself, the same sums) from 52 to 61 ms to 37 to 44, the first
+from 75 to 94 ms to 64 to 70. Of the workers' instructions (255 times 8,192 a pass) 38% were
+run at 320 x 240 and 65% at 640 x 480; now 75% and 94%.
+
+A picture of 320 x 240 is 80 thousand instructions a share, ten passes, and took seventeen:
+the 255 jobs were four passes of the first core to give out (the last worker began that much
+later) and a pass to take back, the scene was made while every worker waited, and the picture
+shown was waited for.
+
+- **A worker's job is every picture** (`trace_pictures`): it is posted once and goes from a
+  picture to the next when that one is published (`go.frame`), saying in 16 bytes of its own
+  how far it is. A worker whose core the kernel wants ends its job between two pictures, and
+  the first core traces what it had of the pictures that are out (`look_at_jobs`).
+- **Two pictures are out at once** (`pictures[2]`, each with its scene, its plan and its
+  pixels, two textures): while the workers trace one, the first core shows the one before
+  (`seglSwapEarly`), makes the scene of the next but one and publishes it, so a worker that
+  is through begins the next in the same pass. A picture's pixels are written again only
+  when it has been shown (`go.shown`). A test has one out, to time each by itself
+  (`RAY_ONE=1` for that with the scene turning: 21 pictures a second).
+- **A share that took long gives tiles away** (`give_shares`): by what each share took in
+  the picture before (its instructions, `rdcycle`), the dearest has some of its last tiles
+  traced by the cheapest after its own, and so on inwards. At 640 x 480 the dearest share
+  was 371 thousand instructions against a mean of 302 and is 327 (166 tiles of 9,600 change
+  hands); at 320 x 240 the dearest is 7 thousand over the mean, under a pass, and nothing is
+  given. `RAY_EVEN=1` gives none, `RAY_SHARES=1` prints what the shares took.
+- **A worker with no picture ends its pass** (`mc_end_pass()`, `multicore.md`), where it
+  would turn in place; `RAY_SPIN=1` for that.
 
 ## `nxpath`: a path tracer, with a panel
 
@@ -137,6 +166,77 @@ worker 7.8 to 5.1 million.
 - `tracer.c` is built `-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops` (6% on the
   balls, 1 to 2% on the models), `nxpath.cpp` with `-DNDEBUG`, and the link asks for LTO
   (`-flto=auto`): Dear ImGui's objects are made for it (`docs/imgui.md`).
+
+### A picture noticed when it is whole (13 October 2026)
+
+160 x 120 with 2 samples took 268 to 277 ms on the shader machine and takes 104 to 108; 320 x
+240 with 8 samples 1,486 to 1,495 ms and 1,356 to 1,366; the teapot's two samples 407 ms and
+251. The sums are the same (`2c64fd53`, `27f592b2`, `83fe9a32` there). The tracing itself was
+not what took the time:
+
+- **Every worker stopped twice at the tracer's code.** With workers the first core runs none
+  of it, so its two pages were pages no core had run: 510 stops, each waiting for the first
+  core's next look. `pt_read_code()` reads them before the shares go out.
+- **A panel frame is a tenth of a second in which nothing is noticed**, neither a worker that
+  stopped nor a picture that is whole, and one began 50 ms after Render. None is drawn in a
+  picture's first 150 ms nor when the samples to come are under 120 ms away (by what the
+  samples so far took), for 600 ms at most.
+- A worker is asked about (`mcw_done`) when its slot says it is through and every fourth
+  time round, not every time: asking 255 of them is the dear part of a look.
+
+What is left in a long picture is the tracing: 320 x 240 with 8 samples is 3.78 million
+instructions for the dearest share, 461 passes, and takes 1,360 ms at 2.95 ms a pass.
+
+Tried and not kept: every float constant taken from an integer register (`li`, `fmv.w.x`)
+where the compiler loads it from memory, by rewriting its assembly. A sample then had 11%
+more instructions and a quarter of the loads, which by what an instruction costs the first
+core (`docs/tick-costs.md`) is 6% less time; on 255 workers it was 4% more (1,422 ms for
+1,365), and `nxray` 5% fewer pictures a second. A worker's time is its instructions. And
+tiles of four pixels for 160 x 120 (twice as many a worker): the dearest share was 1.08 times
+the mean where it is 1.14, and the picture took 117 to 120 ms where it takes 102.
+
+### Fewer instructions a sample (13 October 2026, later)
+
+A sample of 160 x 120 on the workers went from 28.9 to 19.9 million instructions with the
+balls and from 61 to 50 with the teapot. On the shader machine 320 x 240 with 8 samples: the
+program of the morning before 1,208 to 1,240 ms, the build above 1,097 to 1,150, this one
+763 to 838; the short picture 254, 88 and 65 to 78. A worker's time is its instructions, so that is all
+of it. The numbers a path draws are others now, so the sums are: on `rvc_cpu` at 160 x 120
+with 2 samples `98058d33` the balls, `c190195e` the teapot, `01bda610` the rabbit, `c227a663`
+the knot, the same with `NXPATH_CORES=3`; on the shader machine `2cb22f33` and, 320 x 240
+with 8, `43db5431`.
+
+- **`NXPATH_OLD=1` is the arithmetic of before**, with its sums (`84d4eafd` and the models'
+  above, `2c64fd53` and `27f592b2` on the shader machine): `tracer.c` is built twice, the
+  second time with `PT_OLD` as `pt_tile_old` and `pt_share_old`.
+- **A tile's code is made twice**, for the balls and the block and for a model
+  (`tile_of_balls`, `tile_of_model`): each has only its own things to try and to keep in
+  registers. 17% of a sample with the balls, 13% with the teapot, the same sums.
+- A number is a product and a sum (`next`), where three shifts were six instructions, and
+  a pixel's first is mixed twice (a step apart, every pixel's n-th would be its neighbour's
+  and a constant); a turn's new way is a point of the sphere by Marsaglia's two numbers and
+  a root, where the cube took six and a quotient; one over the ray's way is worked out once
+  and a wall or a side of the block is a product (`block_span`: lesser and greater as an
+  instruction each); the room is the first of the three walls ahead, with no test of each.
+- Only a ray from above the things going up is spared them (the four tests of the sides
+  cost more than they spared: 2.4%).
+- The picture is made of the sums after the first two samples, when their number has
+  doubled or is a multiple of sixteen, and at the last (`shows`); a share that ends between
+  shows what it has. The first core alone shows every sample.
+- Every worker began on a page of code the first core had not run (`mcw_entry`, which the
+  link had put beside the old tracer's): `nxpath` reads it before it opens them.
+  `NXPATH_COUNT=1` prints the pages brought for workers: 0.
+
+That it is the same picture: old and new at 16 and at 64 samples differ by 12.1 and 6.4
+levels, root mean square (the noise of each, halved by four times the samples), their
+8 x 8 blocks' means by 1.6 and 0.8, and each channel's mean by under 0.1 of a level
+(`95.8, 88.2, 70.1`). The tree of boxes is as it was checked (1,638, 1,686, 1,698).
+
+Tried and not kept: the tests against constants as whole numbers' (7% more instructions);
+the lamp's light left out before the root where the surface faces away (1% more: the
+compiler's registers); `-fira-loop-pressure` is 2% fewer and is in `build.sh`. A quotient or
+a root costs a worker what a product does, and a load less: one over the way is not faster
+for being products.
 
 ### Meshes
 

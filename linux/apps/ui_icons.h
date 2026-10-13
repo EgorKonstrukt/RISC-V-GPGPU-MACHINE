@@ -13,7 +13,8 @@
 
 #define UI_ICONS_INDEX "/usr/share/icons.idx"
 
-/* An icon: a file's own when `file` is not empty, else a cell of the sheets (-1: none). */
+/* An icon: a file's own when `file` is not empty, or the cell when that file carries none
+ * (the window system looks: ui_icon_draw); with no file, the cell of the sheets (-1: none). */
 struct ui_icon_ref {
 	int cell;
 	char file[96];
@@ -77,14 +78,11 @@ ui_icon_of_program(const char *path, const char *other, struct ui_icon_ref *icon
 	const char *slash = strrchr(path, '/');
 
 	icon->file[0] = 0;
-	icon->cell = -1;
-	if (strlen(path) < sizeof icon->file && ui_icon_in(path)) {
-		strcpy(icon->file, path);
-		return;
-	}
 	icon->cell = ui_icon_of(slash ? slash + 1 : path);
 	if (icon->cell < 0)
 		icon->cell = ui_icon_of(other);
+	if (strlen(path) < sizeof icon->file)
+		strcpy(icon->file, path);
 }
 
 /* The icon of the program a command starts: its first word's ("setsid" left out), looked for
@@ -92,7 +90,7 @@ ui_icon_of_program(const char *path, const char *other, struct ui_icon_ref *icon
 static void
 ui_icon_of_command(const char *command, struct ui_icon_ref *icon)
 {
-	static const char *folders[] = { "", "/usr/bin/", "/bin/", "/usr/sbin/" };
+	static const char *folders[] = { "", "/usr/bin/", "/bin/", "/usr/sbin/" };	/* (as PATH has them) */
 	char word[64], path[96];
 	unsigned i;
 
@@ -106,15 +104,19 @@ ui_icon_of_command(const char *command, struct ui_icon_ref *icon)
 	snprintf(word, sizeof word, "%.*s", (int)strcspn(command, " "), command);
 	for (i = word[0] == '/' ? 0 : 1; i < (word[0] == '/' ? 1u : 4u); i++) {
 		snprintf(path, sizeof path, "%s%s", folders[i], word);
-		/* (one look at the file when it carries its icon, which says it is there too) */
+		if (access(path, F_OK) != 0)
+			continue;
+		icon->cell = ui_icon_of(strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
+		/* a name the sheets have: the file's own icon or that cell, and the file is not opened */
+		if (icon->cell >= 0 && strlen(path) < sizeof icon->file) {
+			strcpy(icon->file, path);
+			return;
+		}
 		if (strlen(path) < sizeof icon->file && ui_icon_in(path)) {
 			strcpy(icon->file, path);
 			icon->cell = -1;
 			return;
 		}
-		if (access(path, F_OK) != 0)
-			continue;
-		icon->cell = ui_icon_of(strrchr(path, '/') ? strrchr(path, '/') + 1 : path);
 		if (icon->cell < 0)
 			icon->cell = ui_icon_of("");
 		if (!icon->file[0] && icon->cell < 0) {
@@ -140,7 +142,8 @@ static void
 ui_icon_draw(GR_DRAW_ID w, GR_GC_ID gc, int x, int y, const struct ui_icon_ref *icon, int size)
 {
 	if (icon->file[0])
-		GrDrawImageFromFile(w, gc, x, y, size, size, (char *)icon->file, GR_IMAGE_ICON(size));
+		GrDrawImageFromFile(w, gc, x, y, size, size, (char *)icon->file,
+			icon->cell >= 0 ? GR_IMAGE_ICON_OR(size, icon->cell) : GR_IMAGE_ICON(size));
 	else
 		ui_icon(w, gc, x, y, icon->cell, size);
 }

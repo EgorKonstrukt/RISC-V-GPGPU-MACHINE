@@ -30,7 +30,8 @@ which is 43 million a second at 24 pictures, and a second of its sound is 17 mil
 - **Two stages.** A texture has a physical address, so frames to show are in GPU memory, and
   that holds 88 of the sample's (the 3.25 MB a program has, and the display's spare
   framebuffer). Twenty groups at once would not fit. So a worker decodes into ordinary memory
-  and, when the frames before its group's have been shown, copies the group into its places.
+  and, when the frames before its group's have been shown, the group is copied into its
+  places (by several workers: below, 13 October 2026).
 - **The sound is chunks.** Fourteen frames to a chunk, each chunk a job. A chunk decodes the
   frame before its first too and throws it away (the filter's past), and starts the filter's
   ring where sequential decoding would have it (`v_pos`): the samples are then the same to
@@ -40,10 +41,10 @@ which is 43 million a second at 24 pictures, and a second of its sound is 17 mil
   (`sound.md`, as `nxplay` does) and the picture shown is the one the card has got to. A
   picture that is late is left out; when none is ready the sound waits.
 
-With every worker the machine has, `nxvideo` takes 20 for pictures and 8 for the sound: 24
-pictures a second need about 14, and more decoders are only more memory to bring in before
-it starts (each is most of a megabyte). It starts about six seconds after its window: the
-first groups are being decoded.
+With every worker the machine has, `nxvideo` takes 16 for pictures of the sample's size and
+8 for the sound: 24 pictures a second need about 10, and more decoders are only more memory
+to bring in before it starts (each is half a megabyte). It starts some seconds after its
+window: the first groups are being decoded.
 
 ## What it costs
 
@@ -85,6 +86,58 @@ first groups are being decoded.
   pictures: 16.7 million instructions to the program's first line became 12.5.
 - The film's clock between the sound card's steps is the kernel's (`clock_gettime`), a
   system call a turn. Reading the machine's clock word instead was tried with the rest.
+
+## 13 October 2026: codes from a word, a picture decoded where it is kept, a group copied by many
+
+- **Bits and codes from a word of the stream** (`plm_fast.py`, applied to the fetched
+  `pl_mpeg.h` after `plm_window.py`). pl_mpeg reads a variable-length code by walking its
+  table a bit a turn, each bit a call that asks whether the buffer has it and loads its byte
+  again. Four bytes are taken once and the same table walked on them in a register; a
+  coefficient's code, its sign and the block's end come from one such word. A picture 1,364
+  thousand instructions to 1,223.
+- **The transform only where a block has coefficients.** A column with none below its first
+  row comes out as that row's value eight times, and a row with none beside its first
+  likewise: the block's decoder notes which columns have any (`cols`, `tall`), and the
+  transform fills those without the arithmetic; with none below the first row at all, one row
+  is transformed and copied seven times. The same numbers out. 1,223 to 1,017.
+- **A picture is decoded where it is kept** (`decode_into` in `mpeg.c`): pl_mpeg's
+  `frame_current` is pointed at the picture's place in the group's memory before each
+  picture, and the next one is predicted from it there. It went round three pictures of its
+  own and each was copied out (`keep`): a third of a picture's stores, and 253 KB a decoder
+  brought in before the film began (the decoders share one such piece now, which nothing
+  uses). 1,017 to 966. Two things pl_mpeg's three pictures did by the way are done by hand,
+  for the same bytes: a block whose vector points outside the picture is not predicted and
+  kept the picture three before (`stale`), and so did the macroblocks after the last one a
+  picture's slices came to (the last picture of half the sample's groups ends a row early:
+  that was so before, and is not mended here).
+- **A group is copied into GPU memory a picture a job**, by its own worker and by every
+  worker whose group waits for its places (`mpeg_copy_one`; `NXVIDEO_COPY=1` is one worker
+  as before). A group must be there within the time its places are free, which is the room
+  less a group: 3.4 s for the sample's 88 places, 1.3 s for the 38 of 480 x 272.
+- **It plays on when the groups being decoded will be there in time**, each going on as fast
+  as it has got to where it is (`in_time`; `NXVIDEO_START=1` is the rule before: 36 pictures
+  in hand). The first groups are all begun at once and end seconds apart, and a film begun
+  on the first of them ran into the last.
+- 16 decoders for pictures of the sample's size (20), and more for larger ones as far as
+  32 MB of their groups go (`MPEG_VIDEOS` 48).
+
+On the shader machine at 2 ms a pass (`--fixed-dt 0.002`), the build before and this one:
+
+| | before | now |
+|---|---|---|
+| the sample (320 x 176): left out; from the first line of `nxvideostat` to the film's start | 0; 4.0 s | 0; 3.2 s |
+| 480 x 272, 700 kbit/s (`ffmpeg` as `tools/make_video.py` has it): left out; the film's 20 s took | 4, and it stood three times; 29 s | 0; 20 s |
+| a picture of the sample, a picture of 480 x 272 (`--decode`) | 1,364 and 3,338 thousand instructions | 966 and 2,378 |
+
+The sums are as they were (`d124dc14`, `96a296a2`, `034e8a1b`; 480 x 272: `211d5398` before
+and now), on the host too.
+
+- Not reached: 640 x 352. Its pictures are 4.1 million instructions each now (5.7 before;
+  the sum `585cd183` both), some 40 workers' worth, and a group in memory is 2 MB: 32 MB of
+  them are 16 decoders.
+- A group's pictures lie in pl_mpeg's order of planes (red chroma before blue), and
+  `as_frame` copies them in the frame's: a block at a plane's edge is predicted from the
+  bytes past it, as it was.
 
 ## Not this way
 

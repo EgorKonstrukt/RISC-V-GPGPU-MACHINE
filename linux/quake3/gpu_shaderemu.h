@@ -35,6 +35,7 @@ unsigned gpuAddress (const void *memory);	/* GPU memory as a command names it */
 void gpuProjection (const float *columns);	/* the matrices draws are made with from now on */
 void gpuModelview (const float *columns);
 void gpuModelviewRows (const float *rows);	/* the same from its three rows of four, when nothing else changed since the draw before */
+float *gpuModelviewBlock (void);		/* those rows where the GPU reads them, to be filled; NULL: gpuModelviewRows */
 
 /* What seglMemory() has given out so far, and all of it since then given back. */
 unsigned gpuMemoryMark (void);

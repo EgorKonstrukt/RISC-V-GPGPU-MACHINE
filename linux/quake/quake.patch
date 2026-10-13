@@ -175,7 +175,7 @@ index 5812143..e2ded71 100644
  	Cvar_RegisterVariable (&lookstrafe);
  	Cvar_RegisterVariable (&sensitivity);
 diff --git a/WinQuake/cl_parse.c b/WinQuake/cl_parse.c
-index c79ca47..327c1a3 100644
+index c79ca47..f335513 100644
 --- a/WinQuake/cl_parse.c
 +++ b/WinQuake/cl_parse.c
 @@ -326,6 +326,7 @@ relinked.  Other attributes can change without relinking.
@@ -201,6 +201,18 @@ index c79ca47..327c1a3 100644
  
  	if (ent->msgtime != cl.mtime[1])
  		forcelink = true;	// no previous frame to lerp from
+@@ -824,6 +830,11 @@ void CL_ParseServerMessage (void)
+ 			if (i >= MAX_LIGHTSTYLES)
+ 				Sys_Error ("svc_lightstyle > MAX_LIGHTSTYLES");
+ 			Q_strcpy (cl_lightstyle[i].map,  MSG_ReadString());
++			{
++				extern int se_lightstyles;	// (gl_rlight.c)
++
++				se_lightstyles++;
++			}
+ 			cl_lightstyle[i].length = Q_strlen(cl_lightstyle[i].map);
+ 			break;
+ 			
 diff --git a/WinQuake/client.h b/WinQuake/client.h
 index 7c59ee9..1f465d0 100644
 --- a/WinQuake/client.h
@@ -562,7 +574,7 @@ index 5055b65..9ad212e 100644
  qpic_t *Draw_PicFromWad (char *name);
  qpic_t *Draw_CachePic (char *path);
 diff --git a/WinQuake/gl_draw.c b/WinQuake/gl_draw.c
-index 25a8007..cdb905f 100644
+index 25a8007..118bb2f 100644
 --- a/WinQuake/gl_draw.c
 +++ b/WinQuake/gl_draw.c
 @@ -520,6 +520,11 @@ void Draw_Character (int x, int y, int num)
@@ -628,7 +640,33 @@ index 25a8007..cdb905f 100644
  	glBegin (GL_QUADS);
  	glTexCoord2f (gl->sl, gl->tl);
  	glVertex2f (x, y);
-@@ -1124,6 +1159,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
+@@ -838,8 +873,25 @@ void GL_Set2D (void)
+ 	glViewport (glx, gly, glwidth, glheight);
+ 
+ 	glMatrixMode(GL_PROJECTION);
++#ifdef SHADEREMU
++	{	// as it was made the last time, while the 2D screen is the same size
++		static float	made[16];
++		static int		of_width, of_height;
++
++		if (made[0] && of_width == vid.width && of_height == vid.height)
++			glLoadMatrixf (made);
++		else
++		{
++			glLoadIdentity ();
++			glOrtho  (0, vid.width, vid.height, 0, -99999, 99999);
++			glGetFloatv (GL_PROJECTION_MATRIX, made);
++			of_width = vid.width, of_height = vid.height;
++		}
++	}
++#else
+     glLoadIdentity ();
+ 	glOrtho  (0, vid.width, vid.height, 0, -99999, 99999);
++#endif
+ 
+ 	glMatrixMode(GL_MODELVIEW);
+     glLoadIdentity ();
+@@ -1124,6 +1176,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
  	if (scaled_height > gl_max_size.value)
  		scaled_height = gl_max_size.value;
  
@@ -639,7 +677,7 @@ index 25a8007..cdb905f 100644
  	if (scaled_width * scaled_height > sizeof(scaled))
  		Sys_Error ("GL_LoadTexture: too big");
  
-@@ -1190,6 +1229,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
+@@ -1190,6 +1246,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
  	int			p;
  
  	s = width*height;
@@ -657,7 +695,7 @@ index 25a8007..cdb905f 100644
  	// if there are no transparent pixels, make it a 3 component
  	// texture even if it was specified as otherwise
  	if (alpha)
-@@ -1250,10 +1300,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
+@@ -1250,10 +1317,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
  			}
  		}
  	}
@@ -792,7 +830,7 @@ index 21ef130..6163189 100644
  	total = end - start;
  	
 diff --git a/WinQuake/gl_model.h b/WinQuake/gl_model.h
-index ae576b8..359b922 100644
+index ae576b8..444a890 100644
 --- a/WinQuake/gl_model.h
 +++ b/WinQuake/gl_model.h
 @@ -118,6 +118,7 @@ typedef struct glpoly_s
@@ -803,11 +841,53 @@ index ae576b8..359b922 100644
  	float	verts[4][VERTEXSIZE];	// variable sized (xyz s1t1 s2t2)
  } glpoly_t;
  
+@@ -414,6 +415,7 @@ typedef struct model_s
+ //
+ 	cache_user_t	cache;		// only access through Mod_Extradata
+ 
++	int			se_brush, se_brush_serial;	// SHADEREMU: which kept brush model it is, of which level (world_shaderemu.c)
+ } model_t;
+ 
+ //============================================================================
 diff --git a/WinQuake/gl_rlight.c b/WinQuake/gl_rlight.c
-index 80ada45..087e2f2 100644
+index 80ada45..5387399 100644
 --- a/WinQuake/gl_rlight.c
 +++ b/WinQuake/gl_rlight.c
-@@ -88,6 +88,47 @@ void R_RenderDlight (dlight_t *light)
+@@ -29,24 +29,33 @@ int	r_dlightframecount;
+ R_AnimateLight
+ ==================
+ */
++extern int se_lights_changed;	// (world_shaderemu.c: the workers make the light maps again)
++int se_lightstyles;	// goes up when a style's letters or the values below may be others
+ void R_AnimateLight (void)
+ {
+ 	int			i,j,k;
++	static int	se_tick = -1, se_styles = -1;
+ 	
+ //
+ // light animations
+ // 'm' is normal light, 'a' is no light, 'z' is double bright
+ 	i = (int)(cl.time*10);
++	// SHADEREMU: they change ten times a second
++	if (i == se_tick && se_styles == se_lightstyles)
++		return;
++	se_tick = i, se_styles = se_lightstyles;
+ 	for (j=0 ; j<MAX_LIGHTSTYLES ; j++)
+ 	{
+ 		if (!cl_lightstyle[j].length)
+ 		{
++			se_lights_changed |= d_lightstylevalue[j] != 256;
+ 			d_lightstylevalue[j] = 256;
+ 			continue;
+ 		}
+ 		k = i % cl_lightstyle[j].length;
+ 		k = cl_lightstyle[j].map[k] - 'a';
+ 		k = k*22;
++		se_lights_changed |= d_lightstylevalue[j] != k;
+ 		d_lightstylevalue[j] = k;
+ 	}	
+ }
+@@ -88,6 +97,47 @@ void R_RenderDlight (dlight_t *light)
  		return;
  	}
  
@@ -855,7 +935,7 @@ index 80ada45..087e2f2 100644
  	glBegin (GL_TRIANGLE_FAN);
  	glColor3f (0.2,0.1,0.0);
  	for (i=0 ; i<3 ; i++)
-@@ -187,6 +228,7 @@ void R_MarkLights (dlight_t *light, int bit, mnode_t *node)
+@@ -187,6 +237,7 @@ void R_MarkLights (dlight_t *light, int bit, mnode_t *node)
  		{
  			surf->dlightbits = 0;
  			surf->dlightframe = r_dlightframecount;
@@ -863,7 +943,7 @@ index 80ada45..087e2f2 100644
  		}
  		surf->dlightbits |= bit;
  	}
-@@ -233,6 +275,14 @@ LIGHT SAMPLING
+@@ -233,6 +284,14 @@ LIGHT SAMPLING
  mplane_t		*lightplane;
  vec3_t			lightspot;
  
@@ -878,7 +958,7 @@ index 80ada45..087e2f2 100644
  int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  {
  	int			r;
-@@ -254,10 +304,33 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+@@ -254,10 +313,33 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  // calculate mid point
  
  // FIXME: optimize for axial
@@ -912,7 +992,7 @@ index 80ada45..087e2f2 100644
  	
  	if ( (back < 0) == side)
  		return RecursiveLightPoint (node->children[side], start, end);
-@@ -288,6 +361,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+@@ -288,6 +370,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  		tex = surf->texinfo;
  		
  		s = DotProduct (mid, tex->vecs[0]) + tex->vecs[0][3];
@@ -923,7 +1003,7 @@ index 80ada45..087e2f2 100644
  		t = DotProduct (mid, tex->vecs[1]) + tex->vecs[1][3];;
  
  		if (s < surf->texturemins[0] ||
-@@ -312,6 +389,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+@@ -312,6 +398,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  		{
  
  			lightmap += dt * ((surf->extents[0]>>4)+1) + ds;
@@ -934,7 +1014,7 @@ index 80ada45..087e2f2 100644
  
  			for (maps = 0 ; maps < MAXLIGHTMAPS && surf->styles[maps] != 255 ;
  					maps++)
-@@ -336,6 +417,35 @@ int R_LightPoint (vec3_t p)
+@@ -336,6 +426,35 @@ int R_LightPoint (vec3_t p)
  {
  	vec3_t		end;
  	int			r;
@@ -970,7 +1050,7 @@ index 80ada45..087e2f2 100644
  	
  	if (!cl.worldmodel->lightdata)
  		return 255;
-@@ -348,6 +458,12 @@ int R_LightPoint (vec3_t p)
+@@ -348,6 +467,12 @@ int R_LightPoint (vec3_t p)
  	
  	if (r == -1)
  		r = 0;
@@ -984,7 +1064,7 @@ index 80ada45..087e2f2 100644
  	return r;
  }
 diff --git a/WinQuake/gl_rmain.c b/WinQuake/gl_rmain.c
-index d9bf41e..21bf374 100644
+index d9bf41e..56fc7e7 100644
 --- a/WinQuake/gl_rmain.c
 +++ b/WinQuake/gl_rmain.c
 @@ -108,10 +108,27 @@ R_CullBox
@@ -1059,18 +1139,29 @@ index d9bf41e..21bf374 100644
  	float	s, t, l;
  	int		i, j;
  	int		index;
-@@ -443,6 +475,10 @@ R_DrawAliasModel
+@@ -443,6 +475,11 @@ R_DrawAliasModel
  
  =================
  */
 +#ifdef SHADEREMU
 +static int	se_lights[MAX_DLIGHTS], se_lights_count, se_lights_frame = -1;
++unsigned	se_drawn[2];	// models and brush models drawn, for the quakestat: lines
 +#endif
 +
  void R_DrawAliasModel (entity_t *e)
  {
  	int			i, j;
-@@ -479,8 +515,24 @@ void R_DrawAliasModel (entity_t *e)
+@@ -468,6 +505,9 @@ void R_DrawAliasModel (entity_t *e)
+ 
+ 	VectorCopy (currententity->origin, r_entorigin);
+ 	VectorSubtract (r_origin, r_entorigin, modelorg);
++#ifdef SHADEREMU
++	se_drawn[0]++;
++#endif
+ 
+ 	//
+ 	// get lighting information
+@@ -479,8 +519,24 @@ void R_DrawAliasModel (entity_t *e)
  	if (e == &cl.viewent && ambientlight < 24)
  		ambientlight = shadelight = 24;
  
@@ -1095,7 +1186,7 @@ index d9bf41e..21bf374 100644
  		if (cl_dlights[lnum].die >= cl.time)
  		{
  			VectorSubtract (currententity->origin,
-@@ -509,18 +561,22 @@ void R_DrawAliasModel (entity_t *e)
+@@ -509,18 +565,22 @@ void R_DrawAliasModel (entity_t *e)
  			ambientlight = shadelight = 8;
  
  	// HACK HACK HACK -- no fullbright colors, so make torches full light
@@ -1125,12 +1216,14 @@ index d9bf41e..21bf374 100644
  
  	//
  	// locate the proper data
-@@ -536,6 +592,16 @@ void R_DrawAliasModel (entity_t *e)
+@@ -535,6 +595,18 @@ void R_DrawAliasModel (entity_t *e)
+ 
  	GL_DisableMultitexture();
  
-     glPushMatrix ();
 +#ifdef SHADEREMU
++	// (an entity's matrix replaces the one before: nothing is pushed, and qglWorldAgain puts the world's back)
 +	if (clmodel->name[6] == 'e' && !strcmp (clmodel->name, "progs/eyes.mdl") && gl_doubleeyes.value) {
++		glPushMatrix ();
 +		R_RotateForEntity (e);
 +		glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2] - (22 + 8));
 +		glScalef (paliashdr->scale[0]*2, paliashdr->scale[1]*2, paliashdr->scale[2]*2);
@@ -1139,10 +1232,10 @@ index d9bf41e..21bf374 100644
 +		qglEntity (r_world_matrix, e->origin, e->angles[1], -e->angles[0], e->angles[2], paliashdr->scale_origin, paliashdr->scale);
 +	}
 +#else
+     glPushMatrix ();
  	R_RotateForEntity (e);
  
- 	if (!strcmp (clmodel->name, "progs/eyes.mdl") && gl_doubleeyes.value) {
-@@ -546,6 +612,7 @@ void R_DrawAliasModel (entity_t *e)
+@@ -546,6 +618,7 @@ void R_DrawAliasModel (entity_t *e)
  		glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2]);
  		glScalef (paliashdr->scale[0], paliashdr->scale[1], paliashdr->scale[2]);
  	}
@@ -1150,19 +1243,40 @@ index d9bf41e..21bf374 100644
  
  	anim = (int)(cl.time*10) & 3;
      GL_Bind(paliashdr->gl_texturenum[currententity->skinnum][anim]);
-@@ -676,6 +743,11 @@ void R_DrawViewModel (void)
+@@ -574,6 +647,9 @@ void R_DrawAliasModel (entity_t *e)
+ 	if (gl_affinemodels.value)
+ 		glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+ 
++#ifdef SHADEREMU
++	if (clmodel->name[6] == 'e' && !strcmp (clmodel->name, "progs/eyes.mdl") && gl_doubleeyes.value)
++#endif
+ 	glPopMatrix ();
+ 
+ 	if (r_shadows.value)
+@@ -625,6 +701,9 @@ void R_DrawEntitiesOnList (void)
+ 			break;
+ 		}
+ 	}
++#ifdef SHADEREMU
++	qglWorldAgain ();
++#endif
+ 
+ 	for (i=0 ; i<cl_numvisedicts ; i++)
+ 	{
+@@ -676,6 +755,12 @@ void R_DrawViewModel (void)
  	if (!currententity->model)
  		return;
  
 +#ifdef SHADEREMU
 +	// (the light worked out below is nobody's: R_DrawAliasModel finds the gun's own)
 +	R_DrawAliasModel (currententity);
++	qglWorldAgain ();
 +	return;
 +#endif
  	j = R_LightPoint (currententity->origin);
  
  	if (j < 24)
-@@ -845,8 +917,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
+@@ -845,8 +930,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
  		     GLdouble zNear, GLdouble zFar )
  {
     GLdouble xmin, xmax, ymin, ymax;
@@ -1180,7 +1294,63 @@ index d9bf41e..21bf374 100644
     ymin = -ymax;
  
     xmin = ymin * aspect;
-@@ -948,6 +1027,7 @@ r_refdef must be set before the first call
+@@ -901,7 +993,22 @@ void R_SetupGL (void)
+ 	glViewport (glx + x, gly + y2, w, h);
+     screenaspect = (float)r_refdef.vrect.width/r_refdef.vrect.height;
+ //	yfov = 2*atan((float)r_refdef.vrect.height/r_refdef.vrect.width)*180/M_PI;
++#ifdef SHADEREMU
++	{	// the projection as it was made the last time, while it is of the same view
++		static float	made[16], of_fov, of_aspect;
++
++		if (made[0] && of_fov == r_refdef.fov_y && of_aspect == screenaspect)
++			glLoadMatrixf (made);
++		else
++		{
++			MYgluPerspective (r_refdef.fov_y,  screenaspect,  4,  4096);
++			glGetFloatv (GL_PROJECTION_MATRIX, made);
++			of_fov = r_refdef.fov_y, of_aspect = screenaspect;
++		}
++	}
++#else
+     MYgluPerspective (r_refdef.fov_y,  screenaspect,  4,  4096);
++#endif
+ 
+ 	if (mirror)
+ 	{
+@@ -915,6 +1022,24 @@ void R_SetupGL (void)
+ 		glCullFace(GL_FRONT);
+ 
+ 	glMatrixMode(GL_MODELVIEW);
++#ifdef SHADEREMU
++	{	// the same sums in one go (qgl.c): the first two turns are the same every frame
++		static float	z_up[16];
++		static int		made;
++		float			move[3];
++
++		if (!made)
++		{
++			glLoadIdentity ();
++			glRotatef (-90,  1, 0, 0);
++			glRotatef (90,  0, 0, 1);
++			glGetFloatv (GL_MODELVIEW_MATRIX, z_up);
++			made = 1;
++		}
++		move[0] = -r_refdef.vieworg[0], move[1] = -r_refdef.vieworg[1], move[2] = -r_refdef.vieworg[2];
++		qglView (z_up, -r_refdef.viewangles[2], -r_refdef.viewangles[0], -r_refdef.viewangles[1], move, r_world_matrix);
++	}
++#else
+     glLoadIdentity ();
+ 
+     glRotatef (-90,  1, 0, 0);	    // put Z going up
+@@ -925,6 +1050,7 @@ void R_SetupGL (void)
+     glTranslatef (-r_refdef.vieworg[0],  -r_refdef.vieworg[1],  -r_refdef.vieworg[2]);
+ 
+ 	glGetFloatv (GL_MODELVIEW_MATRIX, r_world_matrix);
++#endif
+ 
+ 	//
+ 	// set drawing parms
+@@ -948,6 +1074,7 @@ r_refdef must be set before the first call
  */
  void R_RenderScene (void)
  {
@@ -1188,7 +1358,7 @@ index d9bf41e..21bf374 100644
  	R_SetupFrame ();
  
  	R_SetFrustum ();
-@@ -960,7 +1040,9 @@ void R_RenderScene (void)
+@@ -960,7 +1087,9 @@ void R_RenderScene (void)
  
  	S_ExtraUpdate ();	// don't let sound get messed up if going slow
  
@@ -1198,7 +1368,7 @@ index d9bf41e..21bf374 100644
  
  	GL_DisableMultitexture();
  
-@@ -1139,6 +1221,9 @@ void R_RenderView (void)
+@@ -1139,6 +1268,9 @@ void R_RenderView (void)
  
  	R_RenderScene ();
  	R_DrawViewModel ();
@@ -1209,7 +1379,7 @@ index d9bf41e..21bf374 100644
  
  //  More fog right here :)
 diff --git a/WinQuake/gl_rmisc.c b/WinQuake/gl_rmisc.c
-index c9719b5..99b980b 100644
+index c9719b5..f166ffa 100644
 --- a/WinQuake/gl_rmisc.c
 +++ b/WinQuake/gl_rmisc.c
 @@ -77,6 +77,17 @@ void R_InitParticleTexture (void)
@@ -1240,8 +1410,20 @@ index c9719b5..99b980b 100644
  		fracstep = inwidth*0x10000/scaled_width;
  		for (i=0 ; i<scaled_height ; i++, out2 += scaled_width)
  		{
+@@ -382,6 +395,11 @@ void R_NewMap (void)
+ 	
+ 	for (i=0 ; i<256 ; i++)
+ 		d_lightstylevalue[i] = 264;		// normal light value
++	{
++		extern int se_lightstyles;	// (gl_rlight.c: R_AnimateLight is to look again)
++
++		se_lightstyles++;
++	}
+ 
+ 	memset (&r_worldentity, 0, sizeof(r_worldentity));
+ 	r_worldentity.model = cl.worldmodel;
 diff --git a/WinQuake/gl_rsurf.c b/WinQuake/gl_rsurf.c
-index 11b5a01..ad01486 100644
+index 11b5a01..c427df1 100644
 --- a/WinQuake/gl_rsurf.c
 +++ b/WinQuake/gl_rsurf.c
 @@ -45,6 +45,21 @@ typedef struct glRect_s {
@@ -1390,7 +1572,7 @@ index 11b5a01..ad01486 100644
  		}
  	}
  
-@@ -776,13 +798,11 @@ void R_RenderBrushPoly (msurface_t *fa)
+@@ -776,18 +798,16 @@ void R_RenderBrushPoly (msurface_t *fa)
  		return;
  	}
  
@@ -1406,7 +1588,14 @@ index 11b5a01..ad01486 100644
  	fa->polys->chain = lightmap_polys[fa->lightmaptexturenum];
  	lightmap_polys[fa->lightmaptexturenum] = fa->polys;
  
-@@ -842,6 +862,7 @@ void R_RenderDynamicLightmaps (msurface_t *fa)
+-	// check for lightmap modification
+-	for (maps = 0 ; maps < MAXLIGHTMAPS && fa->styles[maps] != 255 ;
++	// check for lightmap modification (SHADEREMU: the styles' are the workers', world_shaderemu.c)
++	for (maps = 0 ; !SE_LightsApart () && maps < MAXLIGHTMAPS && fa->styles[maps] != 255 ;
+ 		 maps++)
+ 		if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps])
+ 			goto dynamic;
+@@ -842,11 +862,12 @@ void R_RenderDynamicLightmaps (msurface_t *fa)
  	if (fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB) )
  		return;
  		
@@ -1414,16 +1603,54 @@ index 11b5a01..ad01486 100644
  	fa->polys->chain = lightmap_polys[fa->lightmaptexturenum];
  	lightmap_polys[fa->lightmaptexturenum] = fa->polys;
  
-@@ -1108,7 +1129,7 @@ void R_DrawBrushModel (entity_t *e)
- 		return;
+-	// check for lightmap modification
+-	for (maps = 0 ; maps < MAXLIGHTMAPS && fa->styles[maps] != 255 ;
++	// check for lightmap modification (SHADEREMU: the styles' are the workers', world_shaderemu.c)
++	for (maps = 0 ; !SE_LightsApart () && maps < MAXLIGHTMAPS && fa->styles[maps] != 255 ;
+ 		 maps++)
+ 		if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps])
+ 			goto dynamic;
+@@ -1106,9 +1127,38 @@ void R_DrawBrushModel (entity_t *e)
  
+ 	if (R_CullBox (mins, maxs))
+ 		return;
++#ifdef SHADEREMU
++	{
++		extern unsigned se_drawn[2];
++
++		se_drawn[1]++;
++	}
++#endif
+ 
++#ifdef SHADEREMU
++	if (gl_texsort.value && SE_BrushKept (e))
++	{	// its triangles are in GPU memory: a draw a texture and a light map (world_shaderemu.c)
++		glColor3f (1,1,1);
++		qglEntity (r_world_matrix, e->origin, e->angles[1], e->angles[0], e->angles[2], NULL, NULL);
++		SE_BrushDraw (e, 0);
++		if (!r_fullbright.value)
++		{	// (as R_BlendLightmaps has it)
++			glDepthMask (0);
++			if (gl_lightmap_format == GL_LUMINANCE)
++				glBlendFunc (GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
++			if (!r_lightmap.value)
++				glEnable (GL_BLEND);
++			SE_BrushDraw (e, 1);
++			glDisable (GL_BLEND);
++			if (gl_lightmap_format == GL_LUMINANCE)
++				glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++			glDepthMask (1);
++		}
++		return;
++	}
++#endif
  	glColor3f (1,1,1);
 -	memset (lightmap_polys, 0, sizeof(lightmap_polys));
 +	SE_LightmapsClear ();
  
  	VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
  	if (rotated)
-@@ -1324,13 +1345,14 @@ void R_DrawWorld (void)
+@@ -1324,13 +1374,22 @@ void R_DrawWorld (void)
  	currenttexture = -1;
  
  	glColor3f (1,1,1);
@@ -1437,10 +1664,18 @@ index 11b5a01..ad01486 100644
 +	SE_MarkWorld ();	// in place of R_RecursiveWorldNode (cl.worldmodel->nodes)
  
 +	VID_Phase (3);
++#ifdef SHADEREMU
++	{
++		extern int se_no_chains;	// (world_shaderemu.c: the level is kept whole, water and sky too)
++
++		if (se_no_chains)
++			return;
++	}
++#endif
  	DrawTextureChains ();
  
  	R_BlendLightmaps ();
-@@ -1353,6 +1375,9 @@ void R_MarkLeaves (void)
+@@ -1353,6 +1412,9 @@ void R_MarkLeaves (void)
  	int		i;
  	byte	solid[4096];
  
@@ -1450,7 +1685,7 @@ index 11b5a01..ad01486 100644
  	if (r_oldviewleaf == r_viewleaf && !r_novis.value)
  		return;
  	
-@@ -1396,7 +1421,79 @@ void R_MarkLeaves (void)
+@@ -1396,7 +1458,79 @@ void R_MarkLeaves (void)
  =============================================================================
  */
  
@@ -1530,7 +1765,7 @@ index 11b5a01..ad01486 100644
  int AllocBlock (int w, int h, int *x, int *y)
  {
  	int		i, j;
-@@ -1404,7 +1501,7 @@ int AllocBlock (int w, int h, int *x, int *y)
+@@ -1404,7 +1538,7 @@ int AllocBlock (int w, int h, int *x, int *y)
  	int		bestx;
  	int		texnum;
  
@@ -1539,7 +1774,7 @@ index 11b5a01..ad01486 100644
  	{
  		best = BLOCK_HEIGHT;
  
-@@ -1432,11 +1529,14 @@ int AllocBlock (int w, int h, int *x, int *y)
+@@ -1432,11 +1566,14 @@ int AllocBlock (int w, int h, int *x, int *y)
  		for (i=0 ; i<w ; i++)
  			allocated[texnum][*x + i] = best + h;
  
@@ -1554,7 +1789,7 @@ index 11b5a01..ad01486 100644
  
  
  mvertex_t	*r_pcurrentvertbase;
-@@ -1561,7 +1661,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
+@@ -1561,7 +1698,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
  		}
  	}
  	poly->numverts = lnumverts;
@@ -1563,7 +1798,7 @@ index 11b5a01..ad01486 100644
  }
  
  /*
-@@ -1602,6 +1702,12 @@ void GL_BuildLightmaps (void)
+@@ -1602,6 +1739,12 @@ void GL_BuildLightmaps (void)
  	extern qboolean isPermedia;
  
  	memset (allocated, 0, sizeof(allocated));
@@ -1576,7 +1811,7 @@ index 11b5a01..ad01486 100644
  
  	r_framecount = 1;		// no dlightcache
  
-@@ -1690,5 +1796,6 @@ void GL_BuildLightmaps (void)
+@@ -1690,5 +1833,6 @@ void GL_BuildLightmaps (void)
   	if (!gl_texsort.value)
   		GL_SelectTexture(TEXTURE0_SGIS);
  
@@ -1584,7 +1819,7 @@ index 11b5a01..ad01486 100644
  }
  
 diff --git a/WinQuake/gl_screen.c b/WinQuake/gl_screen.c
-index 8a0c096..4cdd99e 100644
+index 8a0c096..4a6c13b 100644
 --- a/WinQuake/gl_screen.c
 +++ b/WinQuake/gl_screen.c
 @@ -103,7 +103,7 @@ int			scr_fullupdate;
@@ -1623,7 +1858,72 @@ index 8a0c096..4cdd99e 100644
  	scr_fullupdate = 0;
  }
  
-@@ -833,7 +833,7 @@ void SCR_UpdateScreen (void)
+@@ -818,6 +818,64 @@ WARNING: be very careful calling this from elsewhere, because the refresh
+ needs almost the entire 256k of stack space!
+ ==================
+ */
++#ifdef SHADEREMU
++/*
++The status bar of a game being played is the frame's first draws, when nothing else of the
++picture may lie under it: a frame that draws the same bar as the last-but-one, which was in
++the same memory, draws nothing of it (qglHead in qgl.c). QUAKE_SBAR=frame: where it was.
++*/
++static int	se_sbar_done;
++
++void SE_SbarHead (void)
++{
++	static int	how = -1, last = -1, steady;
++	static unsigned	was;
++	unsigned	key;
++	int			i;
++	extern int	sb_lines;
++	extern qboolean	sb_showscores;
++	extern cvar_t	r_mirroralpha;
++	void R_SetupGL (void);
++
++	if (how < 0)
++		how = !(getenv ("QUAKE_SBAR") && !strcmp (getenv ("QUAKE_SBAR"), "frame"));
++	if (!how || last == host_framecount)
++		return;
++	last = host_framecount;
++	// the plain bar only, with no tint over the picture (which is drawn before the bar, and under it)
++	if (scr_drawdialog || scr_drawloading || cl.intermission || key_dest != key_game || !sb_lines || vid.width > 320
++		|| scr_con_current == vid.height || cl.maxclients != 1 || sb_showscores || cl.stats[STAT_HEALTH] <= 0
++		|| v_blend[3] || cl.time <= cl.faceanimtime || cl.time < 2 || r_mirroralpha.value != 1.0 || scr_viewsize.value > 100)
++		return;
++	// (a weapon or a thing just picked up flashes for a second or two)
++	for (i=0 ; i<32 ; i++)
++		if (cl.time - cl.item_gettime[i] < 2)
++			return;
++	key = (unsigned)cl.items * 31 + (unsigned)sb_lines;
++	for (i=0 ; i<MAX_CL_STATS ; i++)
++		key = key * 31 + (unsigned)cl.stats[i];
++	key = (key * 31 + (unsigned)glwidth) * 31 + (unsigned)glheight;
++	// (not while it changes every frame or two: drawing it first is the dearer way to draw it)
++	if (key != was)
++	{
++		was = key;
++		steady = 0;
++		return;
++	}
++	if (++steady < 3)
++		return;
++	if (!qglHead (0, key))
++	{
++		GL_Set2D ();
++		Sbar_Draw ();
++		qglHead (1, key);
++		R_SetupGL ();	// the view's matrices and state again
++		glColor3f (1,1,1);
++	}
++	se_sbar_done = 1;
++}
++#endif
++
+ void SCR_UpdateScreen (void)
+ {
+ 	static float	oldscr_viewsize;
+@@ -833,7 +891,7 @@ void SCR_UpdateScreen (void)
  
  	if (scr_disabled_for_loading)
  	{
@@ -1632,14 +1932,29 @@ index 8a0c096..4cdd99e 100644
  		{
  			scr_disabled_for_loading = false;
  			Con_Printf ("load failed.\n");
-@@ -873,6 +873,7 @@ void SCR_UpdateScreen (void)
+@@ -871,8 +929,12 @@ void SCR_UpdateScreen (void)
+ //
+ 	SCR_SetUpToDrawConsole ();
  	
++#ifdef SHADEREMU
++	se_sbar_done = 0;
++#endif
  	V_RenderView ();
  
 +	VID_Phase (6);
  	GL_Set2D ();
  
  	//
+@@ -911,6 +973,9 @@ void SCR_UpdateScreen (void)
+ 		SCR_DrawTurtle ();
+ 		SCR_DrawPause ();
+ 		SCR_CheckDrawCenterString ();
++#ifdef SHADEREMU
++		if (!se_sbar_done)	// (else it was this frame's first draw: SE_SbarHead)
++#endif
+ 		Sbar_Draw ();
+ 		SCR_DrawConsole ();	
+ 		M_Draw ();
 diff --git a/WinQuake/gl_warp.c b/WinQuake/gl_warp.c
 index e8b96af..78b70a5 100644
 --- a/WinQuake/gl_warp.c
@@ -1781,7 +2096,7 @@ index f3c253c..5c094de 100644
  #define    TEXTURE0_SGIS				0x835E
  #define    TEXTURE1_SGIS				0x835F
 diff --git a/WinQuake/host.c b/WinQuake/host.c
-index 603f6b3..53e520b 100644
+index 603f6b3..c229ecc 100644
 --- a/WinQuake/host.c
 +++ b/WinQuake/host.c
 @@ -37,10 +37,10 @@ quakeparms_t host_parms;
@@ -2452,10 +2767,10 @@ index 4f2aa36..9111320 100644
  		if (!a->function)
  			PR_RunError ("NULL function");
 diff --git a/WinQuake/quakedef.h b/WinQuake/quakedef.h
-index e451827..f4541d2 100644
+index e451827..43e6c80 100644
 --- a/WinQuake/quakedef.h
 +++ b/WinQuake/quakedef.h
-@@ -285,6 +285,32 @@ typedef struct
+@@ -285,6 +285,36 @@ typedef struct
  
  extern qboolean noclip_anglehack;
  
@@ -2484,11 +2799,15 @@ index e451827..f4541d2 100644
 +void SE_ServerKeepCommand (const char *text);
 +void SE_ServerKeepCvar (const char *name, const char *value);
 +void SE_ServerWorkerError (const char *text);
++// the program's workers: the server's, then the light maps', the water's and the particles'
++enum { SE_WORKER_SERVER = 1, SE_WORKER_LIGHT = 2, SE_LIGHT_WORKERS = 4, SE_WORKER_WATER = 6, SE_WATER_WORKERS = 4,
++	SE_WORKER_PARTICLES = 10, SE_PARTICLE_WORKERS = 4, SE_WORKERS = 13 };
++int SE_Workers (void);
 +
  
  //
  // host
-@@ -296,11 +322,13 @@ extern	cvar_t		sys_nostdout;
+@@ -296,11 +326,13 @@ extern	cvar_t		sys_nostdout;
  extern	cvar_t		developer;
  
  extern	qboolean	host_initialized;		// true if into command execution
@@ -2504,7 +2823,7 @@ index e451827..f4541d2 100644
  										// start of every frame, never reset
  
  void Host_ClearMemory (void);
-@@ -310,7 +338,9 @@ void Host_Init (quakeparms_t *parms);
+@@ -310,7 +342,9 @@ void Host_Init (quakeparms_t *parms);
  void Host_Shutdown(void);
  void Host_Error (char *error, ...);
  void Host_EndGame (char *message, ...);
@@ -2516,7 +2835,7 @@ index e451827..f4541d2 100644
  void Host_ClientCommands (char *fmt, ...);
  void Host_ShutdownServer (qboolean crash);
 diff --git a/WinQuake/r_part.c b/WinQuake/r_part.c
-index 3db22ab..ab897ae 100644
+index 3db22ab..f266bdd 100644
 --- a/WinQuake/r_part.c
 +++ b/WinQuake/r_part.c
 @@ -21,6 +21,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -2539,7 +2858,301 @@ index 3db22ab..ab897ae 100644
  #define MAX_PARTICLES			2048	// default max # of particles at one
  										//  time
  #define ABSOLUTE_MIN_PARTICLES	512		// no fewer than this no matter what's
-@@ -60,8 +73,13 @@ void R_InitParticles (void)
+@@ -37,6 +50,293 @@ int			r_numparticles;
+ 
+ vec3_t			r_pright, r_pup, r_ppn;
+ 
++#ifdef SHADEREMU
++/*
++The particles on four workers (docs/quake.md, "The other workers"): each moves its quarter of
++the array, writes a vertex each into a buffer of its own and lists those that died; this core
++gives a new one a free place and copies the vertices last made into the frame.
++QUAKE_PARTICLES=frame: moved and drawn by this core as before; =wait: the workers, waited for.
++*/
++#include "mcw.h"
++
++#define SE_SHARES		SE_PARTICLE_WORKERS
++#define SE_SHARE_MOST	1024	// particles of a share, at most
++enum { SE_FRAME, SE_WAIT, SE_APART };
++
++// a worker's own: the places it moves, those that died in its last job, and how many it drew
++typedef struct {
++	unsigned short	alive[SE_SHARE_MOST], dead[SE_SHARE_MOST];
++	int				alive_count, dead_count, drawn, unused;
++} se_share_t;
++static se_share_t	se_shares[SE_SHARES] __attribute__ ((aligned (16)));
++// this core's: a share's free places, and the new particles of each for its next job (two
++// lists in turn: a job reads the one it was given)
++static unsigned short	se_free[SE_SHARES][SE_SHARE_MOST], se_fresh[2][SE_SHARES][SE_SHARE_MOST];
++static int		se_free_count[SE_SHARES], se_fresh_count[SE_SHARES], se_fresh_now, se_next;
++static int		se_how = -1, se_share, se_out, se_shown = -1, se_drawn[SE_SHARES], se_live[SE_SHARES];
++static float	se_pending;		// the frames' time since the last job
++static unsigned	*se_vertices;	// two buffers of a vertex a particle: the one a job writes, the one drawn
++static struct {
++	float	time, frametime, grav;
++	int		buffer, fresh_count[SE_SHARES];
++	const unsigned short	*fresh[SE_SHARES];
++} se_job __attribute__ ((aligned (16)));
++
++extern unsigned	qgl_particle_colour[256];
++extern cvar_t	sv_gravity;
++
++static uint32_t se_particle_share (uint32_t w, uint32_t unused);
++
++static void se_particles_start (void)
++{
++	const char	*how = getenv ("QUAKE_PARTICLES");
++
++	se_how = SE_APART;
++	se_share = r_numparticles / SE_SHARES;
++	if ((how && !strcmp (how, "frame")) || SE_Workers () < SE_WORKER_PARTICLES + SE_SHARES - 1 || se_share > SE_SHARE_MOST
++		|| (se_vertices = mcw_alloc (2 * r_numparticles * 16)) == NULL)
++	{
++		se_how = SE_FRAME;
++		return;
++	}
++	if (how && !strcmp (how, "wait"))
++		se_how = SE_WAIT;
++	{	// (the job's code is read here first: a worker stops at a page of it no core has run)
++		const volatile unsigned char	*text = (const volatile unsigned char *)((unsigned)se_particle_share & ~4095u);
++		unsigned	i, sum = 0;
++
++		for (i=0 ; i<2*4096 ; i+=1024)
++			sum += text[i];
++	}
++	mcw_touch (se_vertices, 2 * r_numparticles * 16);
++	mcw_touch (se_shares, sizeof se_shares);
++	mcw_touch (&se_job, sizeof se_job);
++}
++
++// A new particle's place: of the free list, or of the share whose turn it is that has one.
++static particle_t *se_new_particle (void)
++{
++	particle_t	*p;
++	int			tries, w, slot;
++
++	if (se_how == SE_FRAME)
++	{
++		if (!free_particles)
++			return NULL;
++		p = free_particles;
++		free_particles = p->next;
++		p->next = active_particles;
++		active_particles = p;
++		return p;
++	}
++	for (tries=0 ; tries<SE_SHARES ; tries++)
++	{
++		w = se_next;
++		se_next = (se_next + 1) % SE_SHARES;
++		if (se_free_count[w])
++		{
++			slot = se_free[w][--se_free_count[w]];
++			se_fresh[se_fresh_now][w][se_fresh_count[w]++] = slot;
++			return &particles[slot];
++		}
++	}
++	return NULL;
++}
++
++// A worker's job: its share's particles, as R_DrawParticles has each (the same sums).
++static uint32_t se_particle_share (uint32_t w, uint32_t unused)
++{
++	se_share_t	*s = &se_shares[w];
++	float		frametime = se_job.frametime, time3 = frametime * 15, time2 = frametime * 10, time1 = frametime * 5;
++	float		grav = se_job.grav, dvel = 4*frametime, now = se_job.time;
++	unsigned	*to = se_vertices + (se_job.buffer * r_numparticles + w * se_share) * 4;
++	int			i, j, n = s->alive_count, kept = 0, dead = 0;
++
++	for (i=0 ; i<se_job.fresh_count[w] ; i++)
++		s->alive[n++] = se_job.fresh[w][i];
++	for (j=0 ; j<n ; j++)
++	{
++		int			slot = s->alive[j];
++		particle_t	*p = &particles[slot];
++
++		if (p->die < now)
++		{
++			s->dead[dead++] = slot;
++			continue;
++		}
++		if (kept != j)
++			s->alive[kept] = slot;
++		kept++;
++		to[0] = ((unsigned *)p->org)[0];
++		to[1] = ((unsigned *)p->org)[1];
++		to[2] = ((unsigned *)p->org)[2];
++		to[3] = qgl_particle_colour[(int)p->color & 255];
++		to += 4;
++
++		p->org[0] += p->vel[0]*frametime;
++		p->org[1] += p->vel[1]*frametime;
++		p->org[2] += p->vel[2]*frametime;
++
++		switch (p->type)
++		{
++		case pt_static:
++			break;
++		case pt_fire:
++			p->ramp += time1;
++			if (p->ramp >= 6)
++				p->die = -1;
++			else
++				p->color = ramp3[(int)p->ramp];
++			p->vel[2] += grav;
++			break;
++
++		case pt_explode:
++			p->ramp += time2;
++			if (p->ramp >=8)
++				p->die = -1;
++			else
++				p->color = ramp1[(int)p->ramp];
++			for (i=0 ; i<3 ; i++)
++				p->vel[i] += p->vel[i]*dvel;
++			p->vel[2] -= grav;
++			break;
++
++		case pt_explode2:
++			p->ramp += time3;
++			if (p->ramp >=8)
++				p->die = -1;
++			else
++				p->color = ramp2[(int)p->ramp];
++			for (i=0 ; i<3 ; i++)
++				p->vel[i] -= p->vel[i]*frametime;
++			p->vel[2] -= grav;
++			break;
++
++		case pt_blob:
++			for (i=0 ; i<3 ; i++)
++				p->vel[i] += p->vel[i]*dvel;
++			p->vel[2] -= grav;
++			break;
++
++		case pt_blob2:
++			for (i=0 ; i<2 ; i++)
++				p->vel[i] -= p->vel[i]*dvel;
++			p->vel[2] -= grav;
++			break;
++
++		case pt_grav:
++		case pt_slowgrav:
++			p->vel[2] -= grav;
++			break;
++		}
++	}
++	s->alive_count = kept;
++	s->dead_count = dead;
++	s->drawn = kept;
++	return 0;
++}
++
++// The jobs that are out have ended: their dead are free places again, and their vertices the ones to draw.
++static void se_particles_take (void)
++{
++	int	w, k;
++
++	for (w=0 ; w<SE_SHARES ; w++)
++	{
++		if (!(se_out & (1 << w)))
++			continue;
++		for (k=0 ; k<se_shares[w].dead_count ; k++)
++			se_free[w][se_free_count[w]++] = se_shares[w].dead[k];
++		se_drawn[w] = se_live[w] = se_shares[w].drawn;
++	}
++	se_shown = se_job.buffer;
++	se_out = 0;
++}
++
++static void se_particles_settle (void)
++{
++	int	w;
++
++	if (!se_out)
++		return;
++	for (w=0 ; w<SE_SHARES ; w++)
++		if (se_out & (1 << w))
++			mcw_wait (SE_WORKER_PARTICLES + w);
++	se_particles_take ();
++}
++
++// A frame: the workers' last vertices are drawn, and they are told of the frame.
++static void se_draw_particles (void)
++{
++	unsigned	*to = NULL, *from;
++	int			w, n, room = 0, given, busy = 0;
++
++	se_pending += cl.time - cl.oldtime;
++	if (se_out)
++	{
++		for (w=0 ; w<SE_SHARES ; w++)
++			if (se_out & (1 << w))
++				busy |= !mcw_done (SE_WORKER_PARTICLES + w);
++		if (!busy)
++			se_particles_take ();
++	}
++	if (!se_out)
++	{
++		se_job.time = cl.time;
++		se_job.frametime = se_pending;
++		se_job.grav = se_pending * sv_gravity.value * 0.05;
++		se_job.buffer = se_shown == 0;
++		se_pending = 0;
++		for (w=0 ; w<SE_SHARES ; w++)
++		{
++			se_job.fresh[w] = se_fresh[se_fresh_now][w];
++			se_job.fresh_count[w] = se_fresh_count[w];
++			if (!se_live[w] && !se_fresh_count[w])
++			{
++				se_drawn[w] = 0;	// (a share with nothing in it is not woken)
++				continue;
++			}
++			se_out |= 1 << w;
++			se_fresh_count[w] = 0;
++		}
++		se_fresh_now ^= 1;
++		if (se_out)
++		{
++			if (se_how == SE_WAIT)
++				seglSettle ();
++			for (w=0 ; w<SE_SHARES ; w++)
++				if (se_out & (1 << w))
++					mcw_post (SE_WORKER_PARTICLES + w, se_particle_share, w, 0);
++			if (se_how == SE_WAIT)
++				se_particles_settle ();
++		}
++		else
++			se_shown = se_job.buffer;
++	}
++	if (se_shown < 0)
++		return;
++	for (w=0 ; w<SE_SHARES ; w++)
++	{
++		from = se_vertices + (se_shown * r_numparticles + w * se_share) * 4;
++		for (n=se_drawn[w] ; n>0 ; )
++		{
++			int	some;
++
++			if (!room)
++			{
++				to = qglParticleRoom (&given);
++				if ((room = given) == 0)
++					break;
++			}
++			some = n < room ? n : room;
++			memcpy (to, from, some * 16);
++			to += some * 4, from += some * 4, room -= some, n -= some;
++		}
++	}
++	qglParticleRoomLeft (room);
++}
++#endif
++
+ 
+ /*
+ ===============
+@@ -60,8 +360,13 @@ void R_InitParticles (void)
  		r_numparticles = MAX_PARTICLES;
  	}
  
@@ -2553,7 +3166,177 @@ index 3db22ab..ab897ae 100644
  }
  
  #ifdef QUAKE2
-@@ -655,13 +673,25 @@ void R_DrawParticles (void)
+@@ -80,12 +385,8 @@ void R_DarkFieldParticles (entity_t *ent)
+ 		for (j=-16 ; j<16 ; j+=8)
+ 			for (k=0 ; k<32 ; k+=8)
+ 			{
+-				if (!free_particles)
++				if ((p = se_new_particle ()) == NULL)
+ 					return;
+-				p = free_particles;
+-				free_particles = p->next;
+-				p->next = active_particles;
+-				active_particles = p;
+ 		
+ 				p->die = cl.time + 0.2 + (rand()&7) * 0.02;
+ 				p->color = 150 + rand()%6;
+@@ -157,12 +458,8 @@ avelocities[0][i] = (rand()&255) * 0.01;
+ 		forward[1] = cp*sy;
+ 		forward[2] = -sp;
+ 
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 
+ 		p->die = cl.time + 0.01;
+ 		p->color = 0x6f;
+@@ -184,6 +481,26 @@ void R_ClearParticles (void)
+ {
+ 	int		i;
+ 	
++#ifdef SHADEREMU
++	if (se_how < 0)
++		se_particles_start ();
++	if (se_how != SE_FRAME)
++	{	// the workers' shares: every place of each free, none alive, nothing to draw
++		int w;
++
++		se_particles_settle ();
++		for (w=0 ; w<SE_SHARES ; w++)
++		{
++			for (i=0 ; i<se_share ; i++)
++				se_free[w][i] = (unsigned short)(w * se_share + se_share - 1 - i);
++			se_free_count[w] = se_share;
++			se_shares[w].alive_count = se_shares[w].dead_count = se_shares[w].drawn = 0;
++			se_fresh_count[w] = se_drawn[w] = se_live[w] = 0;
++		}
++		se_shown = -1;
++		se_pending = 0;
++	}
++#endif
+ 	free_particles = &particles[0];
+ 	active_particles = NULL;
+ 
+@@ -220,15 +537,11 @@ void R_ReadPointFile_f (void)
+ 			break;
+ 		c++;
+ 		
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 		{
+ 			Con_Printf ("Not enough free particles\n");
+ 			break;
+ 		}
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 		
+ 		p->die = 99999;
+ 		p->color = (-c)&15;
+@@ -281,12 +594,8 @@ void R_ParticleExplosion (vec3_t org)
+ 	
+ 	for (i=0 ; i<1024 ; i++)
+ 	{
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 
+ 		p->die = cl.time + 5;
+ 		p->color = ramp1[0];
+@@ -326,12 +635,8 @@ void R_ParticleExplosion2 (vec3_t org, int colorStart, int colorLength)
+ 
+ 	for (i=0; i<512; i++)
+ 	{
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 
+ 		p->die = cl.time + 0.3;
+ 		p->color = colorStart + (colorMod % colorLength);
+@@ -359,12 +664,8 @@ void R_BlobExplosion (vec3_t org)
+ 	
+ 	for (i=0 ; i<1024 ; i++)
+ 	{
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 
+ 		p->die = cl.time + 1 + (rand()&8)*0.05;
+ 
+@@ -404,12 +705,8 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
+ 	
+ 	for (i=0 ; i<count ; i++)
+ 	{
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 
+ 		if (count == 1024)
+ 		{	// rocket explosion
+@@ -467,12 +764,8 @@ void R_LavaSplash (vec3_t org)
+ 		for (j=-16 ; j<16 ; j++)
+ 			for (k=0 ; k<1 ; k++)
+ 			{
+-				if (!free_particles)
++				if ((p = se_new_particle ()) == NULL)
+ 					return;
+-				p = free_particles;
+-				free_particles = p->next;
+-				p->next = active_particles;
+-				active_particles = p;
+ 		
+ 				p->die = cl.time + 2 + (rand()&31) * 0.02;
+ 				p->color = 224 + (rand()&7);
+@@ -509,12 +802,8 @@ void R_TeleportSplash (vec3_t org)
+ 		for (j=-16 ; j<16 ; j+=4)
+ 			for (k=-24 ; k<32 ; k+=4)
+ 			{
+-				if (!free_particles)
++				if ((p = se_new_particle ()) == NULL)
+ 					return;
+-				p = free_particles;
+-				free_particles = p->next;
+-				p->next = active_particles;
+-				active_particles = p;
+ 		
+ 				p->die = cl.time + 0.2 + (rand()&7) * 0.02;
+ 				p->color = 7 + (rand()&7);
+@@ -557,12 +846,8 @@ void R_RocketTrail (vec3_t start, vec3_t end, int type)
+ 	{
+ 		len -= dec;
+ 
+-		if (!free_particles)
++		if ((p = se_new_particle ()) == NULL)
+ 			return;
+-		p = free_particles;
+-		free_particles = p->next;
+-		p->next = active_particles;
+-		active_particles = p;
+ 		
+ 		VectorCopy (vec3_origin, p->vel);
+ 		p->die = cl.time + 2;
+@@ -655,15 +940,37 @@ void R_DrawParticles (void)
  	float			time1;
  	float			dvel;
  	float			frametime;
@@ -2578,8 +3361,20 @@ index 3db22ab..ab897ae 100644
 +#endif
  	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
  	glBegin (GL_TRIANGLES);
++#ifdef SHADEREMU
++	if (se_how != SE_FRAME)
++	{	// the workers move them: their last vertices are drawn
++		se_draw_particles ();
++		glEnd ();
++		glDisable (GL_BLEND);
++		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
++		return;
++	}
++#endif
  
-@@ -684,7 +714,7 @@ void R_DrawParticles (void)
+ 	VectorScale (vup, 1.5, up);
+ 	VectorScale (vright, 1.5, right);
+@@ -684,7 +991,7 @@ void R_DrawParticles (void)
  	for ( ;; ) 
  	{
  		kill = active_particles;
@@ -2588,7 +3383,7 @@ index 3db22ab..ab897ae 100644
  		{
  			active_particles = kill->next;
  			kill->next = free_particles;
-@@ -699,7 +729,7 @@ void R_DrawParticles (void)
+@@ -699,7 +1006,7 @@ void R_DrawParticles (void)
  		for ( ;; )
  		{
  			kill = p->next;
@@ -2597,7 +3392,7 @@ index 3db22ab..ab897ae 100644
  			{
  				p->next = kill->next;
  				kill->next = free_particles;
-@@ -709,7 +739,24 @@ void R_DrawParticles (void)
+@@ -709,7 +1016,24 @@ void R_DrawParticles (void)
  			break;
  		}
  
@@ -2623,7 +3418,7 @@ index 3db22ab..ab897ae 100644
  		// hack a scale up to keep particles from disapearing
  		scale = (p->org[0] - r_origin[0])*vpn[0] + (p->org[1] - r_origin[1])*vpn[1]
  			+ (p->org[2] - r_origin[2])*vpn[2];
-@@ -789,6 +836,10 @@ void R_DrawParticles (void)
+@@ -789,6 +1113,10 @@ void R_DrawParticles (void)
  		}
  	}
  

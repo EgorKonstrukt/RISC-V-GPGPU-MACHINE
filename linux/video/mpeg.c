@@ -40,8 +40,23 @@ room(unsigned bytes)
 	return memset(space(bytes), 0, bytes);
 }
 
+/* A decoder's own three pictures are never used (a picture is decoded where the group keeps
+ * it, below): every decoder has the same ones, and they are brought in once. */
+static unsigned own_bytes;
+static void *own_frames;
+
+static void *
+large(unsigned bytes)
+{
+	if (!own_bytes || bytes != own_bytes)
+		return space(bytes);
+	if (!own_frames)
+		own_frames = space(bytes);
+	return own_frames;
+}
+
 #define PLM_NO_STDIO
-#define PLM_MALLOC(sz) ((sz) > 4096 ? space((unsigned)(sz)) : room((unsigned)(sz)))
+#define PLM_MALLOC(sz) ((sz) > 4096 ? large((unsigned)(sz)) : room((unsigned)(sz)))
 #define PLM_FREE(p) ((void)(p))
 #define PLM_REALLOC(p, sz) (abort(), (void *)(p))	/* (only a buffer that grows asks, and none here does) */
 #define PL_MPEG_IMPLEMENTATION
@@ -51,7 +66,7 @@ struct video {
 	plm_video_t *decoder, *made;	/* made: as it was before its first picture */
 	plm_buffer_t buffer;		/* over the group being decoded */
 	uint8_t *frames;		/* the group's pictures, one after another */
-	uint8_t *to[MPEG_GOP_MOST];
+	uint8_t *last[3];		/* where the last pictures were decoded, by their number's remainder */
 	int worker, done;
 };
 struct audio {
@@ -264,7 +279,9 @@ mpeg_video_new(int worker)
 		return -1;
 	x = room(sizeof *x);
 	over(&probe, video_es, video_bytes);
+	own_bytes = 3 * info.frame_bytes;
 	x->decoder = plm_video_create_with_buffer(&probe, 0);
+	own_bytes = 0;
 	plm_video_set_no_delay(x->decoder, 1);	/* no B pictures: each is out as soon as it is decoded */
 	x->made = room(sizeof *x->made);
 	*x->made = *x->decoder;
@@ -291,21 +308,61 @@ mpeg_audio_new(void)
 	return audio_count++;
 }
 
-void mpeg_video_to(int video, int n, uint8_t *to) { videos[video]->to[n] = to; }
-const uint8_t *mpeg_video_frame(int video, int n) { return videos[video]->frames + (unsigned)n * info.frame_bytes; }
 
-/* A decoded picture's three planes, without the columns and rows pl_mpeg rounds them up by. */
+/* The next picture is decoded where it is kept, and the picture before it is read there:
+ * nothing is copied. Its planes lie in pl_mpeg's order, red chroma before blue (a block at a
+ * plane's edge is predicted from bytes past it, as it was); the width and height are whole
+ * macroblocks, so the planes are the picture's. */
 static void
-keep(const plm_frame_t *frame, uint8_t *to)
+decode_into(plm_video_t *decoder, uint8_t *to, uint8_t *before)
 {
-	int y, half_w = info.width / 2, half_h = info.height / 2;
+	unsigned luma = (unsigned)(info.width * info.height);
 
-	for (y = 0; y < info.height; y++, to += info.width)
-		memcpy(to, frame->y.data + (unsigned)y * frame->y.width, (size_t)info.width);
-	for (y = 0; y < half_h; y++, to += half_w)
-		memcpy(to, frame->cb.data + (unsigned)y * frame->cb.width, (size_t)half_w);
-	for (y = 0; y < half_h; y++, to += half_w)
-		memcpy(to, frame->cr.data + (unsigned)y * frame->cr.width, (size_t)half_w);
+	/* (what a block that is not predicted keeps: plm_fast.py) */
+	decoder->stale = before ? before - to : 0;
+	decoder->frame_current.y.data = to;
+	decoder->frame_current.cr.data = to + luma;
+	decoder->frame_current.cb.data = to + luma + luma / 4;
+}
+
+/* A macroblock of a kept picture copied from another's. */
+static void
+block_from(uint8_t *to, const uint8_t *from, int column, int row)
+{
+	unsigned luma = (unsigned)(info.width * info.height), at = (unsigned)(row * 16 * info.width + column * 16);
+	unsigned chroma = luma + (unsigned)(row * 8 * (info.width / 2) + column * 8);
+	int y;
+
+	for (y = 0; y < 16; y++)
+		memcpy(to + at + (unsigned)(y * info.width), from + at + (unsigned)(y * info.width), 16);
+	for (y = 0; y < 8; y++) {
+		memcpy(to + chroma + (unsigned)(y * (info.width / 2)), from + chroma + (unsigned)(y * (info.width / 2)), 8);
+		memcpy(to + chroma + luma / 4 + (unsigned)(y * (info.width / 2)), from + chroma + luma / 4 + (unsigned)(y * (info.width / 2)), 8);
+	}
+}
+
+int mpeg_video_done(int video) { return videos[video]->done; }
+
+/* A kept picture as a frame: luma, blue chroma, red chroma. */
+static void
+as_frame(uint8_t *to, const uint8_t *kept)
+{
+	unsigned luma = (unsigned)(info.width * info.height);
+
+	memcpy(to, kept, luma);
+	memcpy(to + luma, kept + luma + luma / 4, luma / 4);
+	memcpy(to + luma + luma / 4, kept + luma, luma / 4);
+}
+
+uint32_t
+mpeg_video_sum(int video, int n, uint32_t sum)
+{
+	const uint8_t *kept = videos[video]->frames + (unsigned)n * info.frame_bytes;
+	unsigned luma = (unsigned)(info.width * info.height);
+
+	sum = mpeg_sum(kept, luma, sum);
+	sum = mpeg_sum(kept + luma + luma / 4, luma / 4, sum);
+	return mpeg_sum(kept + luma, luma / 4, sum);
 }
 
 uint32_t
@@ -313,7 +370,8 @@ mpeg_decode_gop(uint32_t video, uint32_t gop)
 {
 	struct video *x = videos[video];
 	plm_frame_t *frame;
-	int g = (int)(gop & ~MPEG_AGAIN);
+	uint8_t *to, *before;
+	int g = (int)(gop & ~MPEG_AGAIN), mb;
 
 	if (!(gop & MPEG_AGAIN)) {
 		*x->decoder = *x->made;
@@ -322,8 +380,19 @@ mpeg_decode_gop(uint32_t video, uint32_t gop)
 		x->decoder->start_code = -1;
 		x->done = 0;
 	}
-	while (x->done < gops[g].frames && (frame = plm_video_decode(x->decoder)) != NULL) {
-		keep(frame, x->frames + (unsigned)x->done * info.frame_bytes);
+	while (x->done < gops[g].frames) {
+		/* pl_mpeg went round three pictures of its own: a block it does not predict kept the
+		 * picture three before, or the one of the group before that lay there */
+		to = x->frames + (unsigned)x->done * info.frame_bytes;
+		before = x->last[x->done % 3];
+		decode_into(x->decoder, to, before);
+		x->last[x->done % 3] = to;
+		if ((frame = plm_video_decode(x->decoder)) == NULL)
+			break;
+		/* and so did the macroblocks after the last one a picture's slices came to */
+		if (before && before != to)
+			for (mb = x->decoder->macroblock_address + 1; mb < x->decoder->mb_size; mb++)
+				block_from(to, before, mb % x->decoder->mb_width, mb / x->decoder->mb_width);
 		x->done++;
 		if (mpeg_stop || mpeg_drop)
 			return (uint32_t)gops[g].frames;
@@ -334,14 +403,10 @@ mpeg_decode_gop(uint32_t video, uint32_t gop)
 }
 
 uint32_t
-mpeg_copy_gop(uint32_t video, uint32_t frames)
+mpeg_copy_one(uint32_t which, uint32_t to)
 {
-	struct video *x = videos[video];
-	uint32_t i;
-
-	for (i = 0; i < frames; i++)
-		memcpy(x->to[i], x->frames + i * info.frame_bytes, info.frame_bytes);
-	return frames;
+	as_frame((uint8_t *)to, videos[which >> 8]->frames + (which & 255) * info.frame_bytes);
+	return 1;
 }
 
 uint32_t

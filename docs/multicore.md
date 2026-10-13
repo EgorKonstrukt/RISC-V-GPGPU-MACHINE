@@ -607,6 +607,15 @@ What a program has to keep to:
 - **Memory the program has not touched yet stops a worker** until core 0 looks
   (`mcw_wait()`, `mcw_done()`): two passes a page. Touch a job's buffers first where that
   matters (`workers_alloc` in `linux/ralert/workers.c`).
+  The mailboxes and GPU memory (`seglMemory`) are there from the start, but not the program's
+  to write until it has stored there: a worker's first store stops it. `mcw_open()` stores
+  to the mailboxes' pages (every worker stopped at its own at its first step, 255 stops at
+  a program's start); a program stores to the GPU memory its workers will write.
+- **A job that waits for another core's stores ends its pass** (`mc_end_pass()` in `mc.h`:
+  `fence.i`, which ends a pass and does no more) and looks again in the next. Its pause is a
+  sleep until its job changes, so it used to turn in place: 8,192 instructions a pass for
+  nothing, and a pass in which some worker runs to the end is 3.2 to 3.4 ms where one in
+  which none does is 2.0 to 2.3 (`physics.md`, `raytrace.md`).
 - **A worker keeps 6 KB of stores a pass**, as core 0 does, and runs on until its job is done
   however many passes that takes. For work that is all stores, the cores' number is the gain.
 - **Ask for what is needed, not for all.** `mcw_open(n)` gives up to n of the cores no other
@@ -628,6 +637,13 @@ What it is good for, and what not:
   can run a frame behind or ahead of the rest, on data the rest leaves alone meanwhile.
 - **Not small jobs.** Giving a job out and taking the answer costs a pass or two (some
   milliseconds): below some tens of thousands of instructions the core does it sooner itself.
+- **Not a job a round for many workers.** Giving 255 jobs out is four passes of the first
+  core, and the last worker begins that much later: a worker's job is all the rounds, and it
+  goes from one to the next by a word the first core writes (`trace_pictures` in `nxray.c`,
+  `share_job` in `nxphys.c`).
+- **A worker's time is its instructions.** Fewer loads for more instructions (float constants
+  from integer registers) is faster by what an instruction costs the first core and was 4 to
+  5% slower on 255 workers (`raytrace.md`).
 
 What it costs: nothing to speak of while the workers sleep; 5% of a pass for the first busy
 one and 17% for three; and the commit pass looks a RAM texel up in each busy core's cache.
@@ -892,6 +908,88 @@ targets, the commit as points, the shader's own write cache (384 texels) and pas
   frame and ended the other rounds at once: a third of the rounds on e1m1.
 - **The workers' counts are read ten times a second**, from a frame's last row. Read every
   round, 255 workers were 5.5 ms of an 8-round frame in Udon, and 43 ms of a 32-round one.
+- **The three cameras are preview cameras** (`Camera.cameraType`, which Udon may set: `SetPaths`
+  in `EmuMachine.cs`). A game camera's `Render` prepares every canvas of the room first, 82
+  of them: 0.30 to 0.33 ms a call on the main thread, of which the canvases were half; a
+  preview camera's is 0.13 ms and draws its mesh all the same.
+- **The GPU's camera draws every round only while lists come.** When none has come for a
+  second it draws in a frame's last round, and the control pass takes a list in no other
+  (`_GpuDrawn` in `Machine.shader`): the first list after a pause waits a frame at most. A
+  round is then three `Render` calls where it was four.
+- `oldPaths` of the machine's behaviour is the switch for both (bit 0 game cameras, bit 1 the
+  GPU's camera every round): set from editor code in play mode it gives before and after
+  from one session.
+
+What those two are worth (13 October 2026, RTX 5090, the Game view in front at 910 x 583, a
+shell's `while :; do :; done` beside the idle desktop, windows of 4 s in turn, `oldPaths` 3
+against 0): 8 rounds of 8,192, 3.82M instructions a second to 3.91M (2%); 16 rounds of 4,096,
+2.49M to 3.79M (52%); 4 rounds of 16,384, 4.01M to 4.05M. At 8,192 a round the frame was the
+card's before and after: a round more is 1.93 ms (the slope from 8 rounds to 16), 4.24M a
+second, and a frame has 1.2 ms besides its rounds (the room, the editor). With two
+instructions a round a round is 0.87 ms of the main thread's where it was 1.67 (1.5 and 3.2
+with builds on all the processor's cores beside it). So what is left of Unity's own in a
+frame of 8 rounds of 8,192 is 8%, and the rest is the tick. With the processor busy
+elsewhere the main thread is the limit at any round length and one window differs from the
+next by a third: compare only windows taken in turn.
+Quake's e1m1 is 3.1M either way (lists come all the time, the frame is the card's).
+
+All the cores together, 8 rounds of 8,192: `nxphys` 660 to 680 million instructions a second
+on 207 workers (every worker a full pass every round: 400 rounds a second), `nxray` 295 to
+318 million on 255. A round with the workers busy is 2.5 ms where core 0's alone is 2.1, so
+what limits the workers in the world is how many rounds a second there are, nothing of their
+own.
+
+The tick's changes of that day (the instruction window turned, the data texel read before
+the cache is searched, the float instructions split: `cpu.h`, `emu.h`, `mem.h`, `mmu.h`) in
+the world, the tick before against the tick after as two shaders on the tick's material,
+changed in turn in one play session, four windows of 4 s each, 8 rounds of 8,192: a shell
+loop 3.884M to 3.896M (0.3%), Doom's `-timedemo demo1` 3.554M to 3.700M (4.1%), Quake's e1m1
+3.107M to 3.304M (6.3%); 4 rounds of 16,384: 3.954M to 4.002M, 3.555M to 3.613M (one pair),
+3.139M to 3.238M. The harness had 0.7%, 4.6% and 7.3%. With them both `mctest` lines pass,
+`nxray`'s sum is `69ee69f8` and `fptest` says `0 of 15 instructions wrong`.
+
+The second lot of that day (`fast_exec_l1` telling the kinds apart by a tree of tests, one
+way out of `mem_get_cached_or_tex_l1`, the float result written without a branch: `emu.h`,
+`mem.h`), measured the same way over the first lot, 8 rounds of 8,192: a shell loop 4.025M
+to 4.192M (4.2%), Doom's timedemo 3.648M to 3.780M (3.6%), Quake's e1m1 3.300M to 3.527M
+(6.9%); 4 rounds of 16,384: a shell loop 4.115M to 4.289M (4.2%), Quake 3.250M to 3.405M
+(4.8%). The harness had 4.1%, 4.1% and 8.8%. Doom at 4 rounds of 16,384 says nothing in
+windows of 4 s: a window is 2.6M to 3.7M by where the demo is, and eight pairs gave from 12%
+under to 14% over. The same checks pass. A session's level differs from another's by 3%
+(the first lot's tick was 3.90M on the shell loop in its own session and 4.02M in this one):
+only the two sides of one session compare. From the morning's tree to this one, each step
+within its own session: a shell loop 3.82M to 4.19M, Doom 3.55M to 3.78M, Quake 3.11M to
+3.53M.
+
+**What is between the world and the harness is a frame's, not a round's.** The harness the
+same day, the same tick, `--fixed-dt 0.004 --bench` from a snapshot: a shell loop 4.58M to
+4.70M (1.74 to 1.79 ms a pass), Doom's timedemo with `-nodraw` 4.52M (1.81 ms), Quake's e1m1
+3.95M to 3.96M. In the world a frame of 8, 16 and 24 rounds of 8,192 is 15.64, 29.89 and
+43.4 to 44.1 ms on the shell loop (4.17M, 4.32M, 4.47M a second) and 15.75, 29.82 and 43.46
+on Doom with `-nodraw` (4.16M, 4.39M, 4.47M): a round more is 1.78 ms and 1.75 ms, the
+harness's pass, and a frame has 1.4 ms that is no round's, 9% of a frame of 8. Of it the
+room's two cameras are 0.65 ms (both off: 4.16M to 4.33M; no one thing of theirs is it: the
+machine's screens off 0.4%, the city 0.3%, the effects 0.9%, the menu's camera 0.5%, no
+MSAA 1.2%, the tick's, the points' and the GPU's meshes out of their culling masks nothing),
+and 0.75 ms is left with them off (the editor's own drawing, the frame's end; not taken
+apart). The main thread is not it: it waits 5.4 ms of such a frame for the render thread.
+The tick's bytecode is the harness's: the editor's compiler is the same file as the
+harness's fxc2 (`Data\Tools\fxc2_d3dcompiler.dll`), and the two fragment programs are the
+same 26,740 instructions but seven at the start, where the constants are read. So the same
+rounds a frame cannot give the harness's speed in the world; more rounds a frame can (24
+rounds: 3% under it).
+
+With the image of 13 October 2026, 15:03, in the world at 8 rounds of 8,192: Quake's e1m1
+92 frames a second of its own (22 thousand instructions a frame: its frame limit, the first
+core at 2.04M a second and resting), Doom's `-timedemo demo1` 5,026 tics in 43 s (117 a
+second; the first core 3.36M to 3.73M), ClassiCube 150 lists a second (3.66M), `nxphys` 62
+substeps and 21 pictures a second on 255 workers.
+
+Tried and not kept, on Quake at 8 rounds of 8,192, in turn: the display decoded one frame
+in eight (3.30M and 3.35M against 3.30M to 3.34M: nothing, so a decode skipped while the
+display stands still would gain nothing); one `Render` more of the points a round, to see
+what one fewer would give (3.33M and 3.29M against 3.30M: nothing, so the points drawn by
+`Blit`, a patch tessellated into them, was not written).
 
 Quake's e1m1 from where it starts, 8 rounds a frame, the Game view 2276 x 1406 (13 October
 2026, RTX 5090): 2.3 to 2.5M instructions a second on the first core before those two and

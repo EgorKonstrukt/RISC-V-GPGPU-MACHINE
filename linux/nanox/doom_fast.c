@@ -35,10 +35,15 @@ extern int rndindex, prndindex;
 int doom_line_mark[65536];
 static int sight_mark[65536], sight_pass;
 
-static int use_port_sight = -1, use_port_look, use_port_think, use_port_find, use_port_names, use_port_lines, use_port_group;
+static int use_port_sight = -1, use_port_look, use_port_think, use_port_find, use_port_names, use_port_lines, use_port_group, use_port_rest;
 
 boolean P_LookForPlayers_port(mobj_t *actor, boolean allaround);
 void P_RunThinkers_port(void);
+
+/* A thing's `validcount`, which the game has and never uses, is ours: bit 31 says it is asleep
+ * (P_RunThinkers), the rest that it is among the changed: the view's number and where. */
+#define ASLEEP		0x80000000u
+static int stamps_stale = 1;		/* every thing's validcount is to be 0 again: another level, or the numbers went round */
 
 static void
 which_port(void)
@@ -52,6 +57,7 @@ which_port(void)
 	use_port_names = port && strstr(port, "names");
 	use_port_lines = port && strstr(port, "lines");
 	use_port_group = port && strstr(port, "group");
+	use_port_rest = port && strstr(port, "rest");
 }
 
 struct trace { fixed_t x, y, dx, dy, x2, y2; };
@@ -246,13 +252,15 @@ P_LookForPlayers(mobj_t *actor, boolean allaround)
 }
 
 /*
- * Every thinker's turn. As the port's, but a thing at rest is seen to here: in a state that
- * never ends it is passed by, and in any other its state is counted down without the call.
+ * Every thinker's turn. As the port's, but a thing at rest is seen to here: its state counted
+ * down without the call, or passed by. Found at rest it is asleep, and is not asked again
+ * whether it rests until the game wakes it (doom_thing_changed). DOOM_PORT=rest: none sleeps.
  */
 void
 P_RunThinkers(void)
 {
 	thinker_t *th = thinkercap.next;
+	const int stale = stamps_stale;
 
 	if (use_port_sight < 0)
 		which_port();
@@ -260,6 +268,7 @@ P_RunThinkers(void)
 		P_RunThinkers_port();
 		return;
 	}
+	stamps_stale = 0;
 	while (th != &thinkercap) {
 		if (th->function.acv == (actionf_v)(-1)) {
 			th->next->prev = th->prev;
@@ -268,14 +277,23 @@ P_RunThinkers(void)
 		} else if (th->function.acp1 == (actionf_p1)P_MobjThinker) {
 			mobj_t *m = (mobj_t *)th;
 
-			if (m->momx | m->momy | m->momz | (m->z ^ m->floorz) | (m->flags & MF_SKULLFLY)) {
+			if (stale)
+				m->validcount = 0;	/* (a saved game's marks, or a level's of long ago) */
+			if (m->validcount < 0) {
+				if (m->tics != -1 && !--m->tics)
+					P_SetMobjState(m, m->state->nextstate);
+			} else if (m->momx | m->momy | m->momz | (m->z ^ m->floorz) | (m->flags & MF_SKULLFLY)) {
 				P_MobjThinker(m);
 			} else if (m->tics != -1) {
 				/* at rest: its thinker would count its state down and no more */
 				if (!--m->tics)
 					P_SetMobjState(m, m->state->nextstate);
+				else if (!m->player && !use_port_rest)
+					m->validcount |= ASLEEP;
 			} else if ((m->flags & MF_COUNTKILL) && respawnmonsters) {
 				P_MobjThinker(m);
+			} else if (!m->player && !use_port_rest) {
+				m->validcount |= ASLEEP;
 			}
 		} else if (th->function.acp1) {
 			th->function.acp1(th);
@@ -307,10 +325,191 @@ doom_state_hash(void)
 	return h;
 }
 
+/* ---- what the view is told (doom_gl.c; docs/doom.md, "The view on worker cores") ---- */
+
+/*
+ * The game says which things it changed (doom.sh puts the calls in), took out or put into a
+ * sector's list, in that order, and which sectors it wrote; a view takes them between tics.
+ */
+#define TOLD_MOST	600
+#define TOLD_LINKS	1024
+#define TOLD_GONE	256
+
+int doom_told_all = 1;			/* more than fits, or another level: every thing again */
+mobj_t *doom_told_changed[TOLD_MOST];	/* the things changed since the last view, each once; NULL: taken out since */
+mobj_t *doom_told_linked[TOLD_LINKS];
+mobj_t *doom_told_gone[TOLD_GONE];
+int doom_told_changes, doom_told_links, doom_told_goings;
+static unsigned told_view = 1;		/* this view's number: no thing has it before it is told of */
+short *doom_told_sectors;		/* the sectors written since the last view, each once */
+int doom_told_sector_count;
+static unsigned char *sector_told;
+static const sector_t *sectors_told;
+static int sectors_told_count;
+int doom_walls_changed;
+int doom_level_loads;			/* the levels and saved games loaded so far */
+
+/* The game is about to change what a view shows of a thing, or what P_RunThinkers goes by
+ * (its state, its place, its heights, its speed): it is awake, and the next view is told. */
+void
+doom_thing_changed(mobj_t *thing)
+{
+	unsigned mark = thing->validcount;
+
+	if (mark & ASLEEP)
+		thing->validcount = mark &= ~ASLEEP;
+	if (mark >> 12 == told_view || doom_told_all)
+		return;
+	if (doom_told_changes == TOLD_MOST) {
+		doom_told_all = 1;
+		return;
+	}
+	thing->validcount = told_view << 12 | doom_told_changes;
+	doom_told_changed[doom_told_changes++] = thing;
+}
+
+void
+doom_thing_linked(mobj_t *thing)
+{
+	doom_thing_changed(thing);
+	if (doom_told_links == TOLD_LINKS)
+		doom_told_all = 1;
+	if (!doom_told_all)
+		doom_told_linked[doom_told_links++] = thing;
+}
+
+void
+doom_thing_gone(mobj_t *thing)
+{
+	const unsigned mark = thing->validcount & ~ASLEEP;
+
+	if (doom_told_all)
+		return;
+	if (mark >> 12 == told_view)
+		doom_told_changed[mark & 0xfff] = NULL;
+	if (doom_told_goings == TOLD_GONE)
+		doom_told_all = 1;
+	else
+		doom_told_gone[doom_told_goings++] = thing;
+}
+
+/* A view has taken the sectors, and with `things` the things: of those nothing is told any
+ * more. (A view that reads the game's own things takes none, and none is noted.) */
+void
+doom_told_taken(int things)
+{
+	int i;
+
+	if (things) {
+		doom_told_changes = doom_told_links = doom_told_goings = doom_told_all = 0;
+		if (++told_view == 1u << 19) {
+			/* the numbers have gone round: the marks of long ago go, and every thing is told again */
+			told_view = 1;
+			stamps_stale = doom_told_all = 1;
+		}
+	}
+	for (i = 0; i < doom_told_sector_count; i++)
+		sector_told[doom_told_sectors[i]] = 0;
+	doom_told_sector_count = 0;
+}
+
+/* The level the view keeps is this one: its sectors are told of from now on. */
+void
+doom_told_level(void)
+{
+	free(sector_told);
+	free(doom_told_sectors);
+	sector_told = calloc(numsectors + 1, 1);
+	doom_told_sectors = malloc((numsectors + 1) * sizeof *doom_told_sectors);
+	sectors_told = sectors;
+	sectors_told_count = numsectors;
+	doom_told_sector_count = 0;
+	doom_walls_changed = 0;
+}
+
+void
+doom_sector_changed(void *of)
+{
+	const sector_t *sector = of;
+	int s = sector - sectors_told;
+
+	if (sector < sectors_told || (unsigned)s >= (unsigned)sectors_told_count || sector_told[s])
+		return;
+	sector_told[s] = 1;
+	doom_told_sectors[doom_told_sector_count++] = s;
+}
+
+result_e T_MovePlane_port(sector_t *sector, fixed_t speed, fixed_t dest, boolean crush, int floorOrCeiling, int direction);
+void P_InitThinkers_port(void);
+
+/* Every floor, ceiling, door and lift moves through here. */
+result_e
+T_MovePlane(sector_t *sector, fixed_t speed, fixed_t dest, boolean crush, int floorOrCeiling, int direction)
+{
+	doom_sector_changed(sector);
+	return T_MovePlane_port(sector, speed, dest, crush, floorOrCeiling, direction);
+}
+
+/* The game empties its thinkers when it sets a level up or loads a saved game: the kept level
+ * is made anew, and the things told of so far are no more. */
+void
+P_InitThinkers(void)
+{
+	P_InitThinkers_port();
+	doom_level_loads++;
+	doom_told_all = stamps_stale = 1;
+	sectors_told = NULL;
+	sectors_told_count = 0;
+}
+
+/*
+ * a / b in 16.16, for |a| >> 14 < |b| (FixedDiv has seen to that), rounded toward zero: the
+ * whole part by one division, the sixteen bits after it as many at a time as fit. The
+ * remainder is below b, so it can move up by the bits b leaves free at the top.
+ */
+fixed_t
+FixedDiv2(fixed_t a, fixed_t b)
+{
+	unsigned ua = a < 0 ? -(unsigned)a : (unsigned)a, ub = b < 0 ? -(unsigned)b : (unsigned)b;
+	unsigned q = ua / ub, r = ua % ub, top = ub;
+	int i = 0, room = 0;
+
+	if (!(top >> 16))
+		room = 16;
+	else {
+		if (!(top >> 24))
+			room += 8, top <<= 8;
+		if (!(top >> 28))
+			room += 4, top <<= 4;
+		if (!(top >> 30))
+			room += 2, top <<= 2;
+		if (!(top >> 31))
+			room++;
+	}
+	while (room && i < 16) {
+		int step = 16 - i < room ? 16 - i : room;
+
+		r <<= step;
+		q = q << step | r / ub;
+		r %= ub;
+		i += step;
+	}
+	for (; i < 16; i++) {
+		unsigned carry = r >> 31;
+
+		r <<= 1;
+		q <<= 1;
+		if (carry || r >= ub) {
+			r -= ub;
+			q |= 1;
+		}
+	}
+	return (a ^ b) < 0 ? -(fixed_t)q : (fixed_t)q;
+}
+
 /* ---- which subsector a point is in ---- */
 
 subsector_t *R_PointInSubsector_port(fixed_t x, fixed_t y);
-extern int doom_level_loads;	/* doom_gl.c: counts the levels and saved games loaded */
 
 /* As the port's R_PointOnSide. */
 static inline int

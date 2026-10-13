@@ -71,6 +71,8 @@ static inline uint32_t bits_of(num n) {
 enum { FRAGMENT_COLOUR, FRAGMENT_TEXTURE, FRAGMENT_INDEXED, FRAGMENT_KEYED = 0x100, FRAGMENT_LAID = 0x200, FRAGMENT_SMOOTH = 0x400 };
 
 static uint8_t* gpu;   // GPU memory from GPU_PHYS
+static int gpu_fd = -1;         // /dev/gpu, for rest()
+static uintptr_t first_stack;   // where the stack was at seglInit(): the first core's
 static GR_WINDOW_ID window;
 static GR_WINDOW_INFO window_info;
 static uint32_t world_up;          // seglWorldUp: which axis is up, in the frame's size word
@@ -153,7 +155,28 @@ static int draw_claim(int fd) {
     return -1;
 }
 
+// Nothing to do until the GPU has drawn: the kernel is told (docs/multicore.md, "A core that
+// rests"), which runs another program or ends the pass as its idle loop does. The pause hint
+// as it was on a kernel from before the call, off the first core's stack (a worker core's
+// job, another thread), and with GL_REST=pause.
+#define SEGL_REST 0x470b   // _IO('G', 11)
+static __attribute__((noinline)) void rest(void) {
+    static int none = -1;
+    uint8_t here;
+    if (none < 0) {
+        const char* how = getenv("GL_REST");
+        none = how && strcmp(how, "pause") == 0;
+    }
+    // (within 4 MB of where seglInit() was called: a worker's stack is mapped far from it)
+    if (!none && gpu_fd >= 0 && (uintptr_t)&here - first_stack + 0x400000u < 0x800000u) {
+        if (ioctl(gpu_fd, SEGL_REST, 0) == 0) return;
+        none = 1;
+    }
+    next_frame();
+}
+
 int seglInit(unsigned int nano_x_window) {
+    uint8_t here;
     int fd = open("/dev/gpu", O_RDWR);
     if (fd < 0) return -1;
     // (not "no GPU", which a program may get by without: two programs' drawings in one memory)
@@ -161,6 +184,8 @@ int seglInit(unsigned int nano_x_window) {
     void* map = mmap(0, GPU_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x01000000);   // the device maps from 0x86000000
     if (map == MAP_FAILED) return -1;
     gpu = map;
+    gpu_fd = fd;
+    first_stack = (uintptr_t)&here;
     window = nano_x_window;
     GrGetWindowInfo(window, &window_info);
     modelview[0] = projection[0] = identity;
@@ -219,7 +244,7 @@ static uint32_t unsettled_set;
 void seglSettle(void) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
     if (!unsettled) return;
-    while (regs[REG_SUBMIT / 4] != 0) next_frame();
+    while (regs[REG_SUBMIT / 4] != 0) rest();
     unsettled = 0;
 }
 
@@ -235,7 +260,7 @@ static void swap(int wait) {
             while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
             if (regs[REG_SUBMIT / 4] == 0) break;
             __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-            next_frame();
+            rest();
         }
         regs[REG_INTO / 4] = window_info.surface_address;
         regs[REG_INTO / 4 + 1] = window_info.width;
@@ -252,7 +277,7 @@ static void swap(int wait) {
         unsettled = !wait;
         unsettled_set = set_at;
         if (wait)
-            while (regs[REG_SUBMIT / 4] != 0) next_frame();
+            while (regs[REG_SUBMIT / 4] != 0) rest();
         regs[REG_VOLUME / 4 + 1] = commands;
         regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28 | world_flat;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
@@ -1062,6 +1087,36 @@ void seglScreenCompactUsed(GLsizei count, int quads, GLuint name, const unsigned
     vertex_top += (uint32_t)count * 16;
 }
 
+// Room in the frame a program fills as it likes (another core may: whole 16s), and a draw of
+// tagged vertices in screen pixels that are in it already (segl.h).
+void* seglFrameSpace(unsigned int bytes) {
+    bytes = (bytes + 15) & ~15u;
+    if (!gpu || bytes > set_at + SET_SIZE - vertex_top) return 0;
+    void* at = gpu + vertex_top;
+    vertex_top += bytes;
+    last_draw = 0;
+    return at;
+}
+unsigned int seglFrameLeft(void) { return gpu ? set_at + SET_SIZE - vertex_top : 0; }
+void seglScreenCompactAt(const unsigned int* vertices, GLsizei count, int quads, GLuint name, const unsigned int* table) {
+    const texture* x = &textures[name < MAX_TEXTURES ? name : 0];
+    uint32_t mesh = quads ? (uint32_t)count / 4 * 6 : (uint32_t)count;
+    uint32_t* c = count > 0 ? command(CMD_DRAW, mesh) : 0;
+    if (!c) return;
+    c[1] = GPU_PHYS + (uint32_t)((const uint8_t*)vertices - gpu);
+    c[2] = mesh;
+    c[4] = NUM_FORMAT | VERTEX_COMPACT | VERTEX_TAGGED | VERTEX_TABLE | (quads ? VERTEX_QUADS : 0);   // vertex mode 0: pixels
+    c[5] = (x->address ? FRAGMENT_TEXTURE : FRAGMENT_COLOUR) | 5u << 16;
+    c[6] = 0;
+    c[7] = GPU_PHYS + x->address;
+    c[8] = x->width;
+    c[9] = x->height;
+    c[10] = 0;
+    c[11] = GPU_PHYS + (uint32_t)((const uint8_t*)table - gpu);
+    passes_used |= 1u << 5;
+    last_draw = 0;
+}
+
 uint32_t* seglLastCommand(void) { return last_draw; }
 uint32_t* seglLastVertices(void) { return (uint32_t*)(gpu + vertex_top - 64); }
 uint32_t seglAddress(const void* memory) { return GPU_PHYS + (uint32_t)((const uint8_t*)memory - gpu); }
@@ -1090,7 +1145,7 @@ static void swap_again(int wait) {
         while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
         if (regs[REG_SUBMIT / 4] == 0) break;
         __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-        next_frame();
+        rest();
     }
     regs[REG_INTO / 4] = window_info.surface_address;
     regs[REG_INTO / 4 + 1] = window_info.width;
@@ -1103,7 +1158,7 @@ static void swap_again(int wait) {
     unsettled = !wait;
     unsettled_set = shown_set;
     if (wait)
-        while (regs[REG_SUBMIT / 4] != 0) next_frame();
+        while (regs[REG_SUBMIT / 4] != 0) rest();
 }
 void seglSwapAgain(void) { swap_again(1); }
 void seglSwapAgainEarly(void) { swap_again(0); }

@@ -61,6 +61,17 @@ uint32_t pt_tile(uint32_t tile, uint32_t how);
  * its core back, to be posted again. */
 uint32_t pt_share(uint32_t which, uint32_t how);
 
+/* For the core that hands the shares out, before it does: the tracer's code read, so that no
+ * worker stops at a page of it. */
+void pt_read_code(void);
+
+/* The same three with the arithmetic of before 13 October 2026 (tracer.c built with PT_OLD):
+ * another sequence of numbers, a quotient for every wall and side. NXPATH_OLD=1; its sums
+ * are docs/raytrace.md's old ones. */
+uint32_t pt_tile_old(uint32_t tile, uint32_t how);
+uint32_t pt_share_old(uint32_t which, uint32_t how);
+void pt_read_code_old(void);
+
 #ifdef __cplusplus
 }
 #endif

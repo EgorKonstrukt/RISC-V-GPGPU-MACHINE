@@ -120,6 +120,116 @@ What is left of a tic is `P_RunThinkers`' own loop and the sight walk. Not built
 a sector for things (it costs what it saves). `--pc-log` writes nothing under `rvc_harness
 --cpu`: a profile there is a build with `-finstrument-functions`.
 
+### The view on worker cores (13 October 2026)
+
+A tic and a frame were both the first core's, 45 thousand instructions together, and so the
+35 frames a second the game draws at most were there at 3 million instructions a second and
+not at 2. A frame's list is now made by up to four worker cores (`docs/multicore.md`) while
+the first core runs the next tic. Thousands of instructions are the first core's for a tic
+and a frame together; frames a second are the game's own count by the machine's clock.
+
+| `rvc_cpu`, 3M instructions a second, one tic a frame (`-timedemo`) | Frames a second | The first core |
+|---|---|---|
+| demo1 | 58.0 to 91.0 | 45.4 to 26.4 |
+| demo2 | 60.2 to 94.8 | 42.7 to 24.9 |
+| demo3 | 49.7 to 72.3 | 50.9 to 32.6 |
+
+| The shader machine, 4 ms a pass (2M a second), demo3 | Before | One worker | Two | Four |
+|---|---|---|---|---|
+| one tic a frame to tic 600: two counts of five seconds | 25.4, 29.7 | 27.8, 34.5 | 39.4, 38.9 | 42.7, 45.2 |
+| the same: passes from power-on to tic 600 | 11,307 | 11,220 | 10,415 | 10,108 |
+| in real time (`-playdemo`): the worst five seconds, the median | 14.1, 34.0 | 23.7, 34.8 | | 31.4, 34.9 |
+| the same at 6 ms a pass (1.3M a second) | 4.9, 12.3 | | | 7.0, 31.0 |
+
+(The counts of five seconds are not of the same tics from one column to the next; the worst
+five seconds in real time are the level's start, its making and the melt.) By the card's own
+clock (an RTX 5090, about 4M a second), demo1 one tic a frame to tic 1,500, a run of each in
+turn, twice: 87.4 and 90.8 frames a second in two counts of five seconds before, 125.4 with
+four workers; then 87.5 and 90.9 against 124.1. Under `rvc_cpu` in
+real time the first demo's worst five seconds at 2M went from 20.1 frames a second to 33.4
+and the slowest tenth from 26.9 to 33.7; at 3M it was at 35 before and is.
+
+- **The view reads nothing a tic writes.** That is what kept it on the first core: it walked
+  the things the tics make and free. Between two tics the first core tells it what it needs
+  (`view_take` in `doom_gl.c`): the eye and the weapon; the things the game changed since the
+  last view, each once, with their place, angle and picture; the things it took out; the
+  things it put into a sector's list, in that order; the sectors, walls and animations it
+  wrote. The cores that make the list keep their own copy of the things (`struct thing`, in
+  lists by sector that are in the order of the game's own) and of the sectors (`now_`).
+- **The game says what it changes** (`doom_fast.c`, the calls put in by `doom.sh`): a
+  thing's state (`P_SetMobjState`), its place (`P_SetThingPosition`), its height
+  (`P_ZMovement`, `P_ThingHeightClip`), its end (`P_RemoveMobj`). A thing's `validcount`,
+  which the game has and never uses, says that it is among the changed already.
+- **Up to four shares.** A job given out and its answer are a pass each way, so the cores do
+  not wait for each other within a view: each has the things whose place among the kept
+  commands ends in its number, and its own lists and notes of them; the first has the level,
+  the weapon, the sky and the 2D picture's quad as well, and the things that are blended.
+- **One job for the game's life** (`view_loop` in `doom_video.c`), its pass ended by
+  `fence.i` while there is no view to make: a worker's pause is its sleep until the next job,
+  and under `rvc_cpu` a job posted in the very pass the last one ends in is never begun (a
+  job a view stopped after some 1,950 frames).
+- **The first core shows the list when it finds it made**: at a tic's start and end, while
+  it waits for the next tic's time, and before the next frame's drawing, where it waits. A
+  frame is on the window some passes later than it was. What the first core then writes of
+  the 2D picture and the palette is not waited for (a pass): they may show a frame early.
+- **A picture no core has made yet** is read from the game's data, which is the tic's: a
+  worker asks for it, the thing keeps its place and shows the picture it had (or nothing
+  yet), and the first core makes it before the next view. A level's first three frames and
+  a melt's are the first core's own.
+- **What a worker writes is compiled apart** (`doom_gl.c`, the GPU's library, the workers'):
+  a variable a section, each on 16 bytes of its own, last in the link.
+- **A thing at rest is asleep** (`P_RunThinkers`): whether it still rests was six loads a
+  thing a tic. The same calls wake it, and one where a hit pushes it (`P_DamageMobj`); a
+  player's thing never sleeps. A tic of the first demo: 22.6 to 20.8 thousand (22.0 with
+  the calls that tell the view).
+- **The wait for the next tic's time** asked the clock in a loop, and the clock moves between
+  passes: 177 million of the first demo's 402 in real time at 3M. The pass ends there
+  (`doom_idle`), by `mcw_rest()`.
+
+`DOOM_VIEW=N` is N worker cores (4 if not said). `DOOM_VIEW=inline` is none, which is also
+what a machine without workers does: the list is made by the first core from the game's own
+things, as it was; the first demo is then 246 million instructions where it was 235 (the
+library is no longer compiled into its callers). `DOOM_VIEW=told` is none, with the list made
+from what workers would be told.
+
+Checking it, all under `rvc_cpu`:
+
+- the state sums of the three demos, with 4 workers, inline and told, and with
+  `DOOM_PORT=rest` (no thing asleep): as before;
+- `DOOM_VIEW=told DOOM_VIEW_CHECK=1` holds what the view was told against the game at every
+  view (`doomcheck:` lines): every thing of every sector's list in its order, the sectors,
+  the walls that change, the pictures after animation. The 11 thousand views of the three
+  demos: none wrong;
+- `DOOM_SUM=1` with `DOOM_STOP_TIC=N` prints a sum of all the GPU is given for the held
+  frame (each command drawn, its matrices, vertices and texture, the palette), and one that
+  is the same in any order. At twelve tics of the three demos the second is the same as
+  before in every mode; the first inline and told, on an image where the game's memory lies
+  as it did for the build before. A thing's place among the commands goes by where the game
+  keeps the thing: that differs from one image to another, when pictures are made at other
+  times (workers), and by its share. A held frame is drawn once more by the first core when
+  a worker went without a picture.
+- the game's own title and demo loop for 170 seconds, and `killall -9` in the middle of a
+  demo, twice, with `mctest 3 20000` after each (PASS).
+
+On the shader machine: the state sums of demo3 to tic 500 and of demo1 to tic 1,500 as
+under `rvc_cpu`, the sums in any order at demo3's tic 600 and demo1's tic 1,500 as the build
+before gives them there, and the window's picture of those two frames against the ones from
+before: no pixel of the game's 640 by 400 different with four workers (and with one, at tic
+600); the caption's frame rate is. (By the card's own clock the sum in order is not the same
+from one run of one build to the next.)
+
+Tried and not kept, or not done:
+
+- **A job a view**, by `mcw_post`: lost under `rvc_cpu` as above.
+- **The whole program as one object** with every variable on 16 bytes (`-flto -r`, then
+  `objcopy`), so that the library stays compiled into its callers: a tic 7% longer, the
+  small variables no longer within reach of the global pointer.
+- **The tics on a worker** and the view on the first core: not tried. A worker keeps 1.5 KB
+  of new stores a pass where the first core keeps 6, and a tic stores to hundreds of things.
+- **Sight checks made ahead** on a worker: they are asked after the player's move of the
+  same tic, so the places are not known a pass earlier.
+- Not looked at by hand: the menu, a saved game loaded, a window resized while workers draw.
+
 ## What the build changes
 
 The Microwindows tree is left as it is; `doom.sh` compiles a few files differently:
@@ -139,6 +249,12 @@ The Microwindows tree is left as it is; `doom.sh` compiles a few files different
   a call or a flag put before each of the other writes; the script counts them and stops if
   the source has another number). `P_InitThinkers` says that a level or a saved game was
   loaded.
+- Where the game changes what a view shows of a thing, or takes a thing out, it says so
+  (`doom_thing_changed`, `doom_thing_linked`, `doom_thing_gone` in `doom_fast.c`: a line put
+  into `P_SetMobjState`, `P_ZMovement`, `P_RemoveMobj`, `P_SetThingPosition`,
+  `P_ThingHeightClip` and `P_DamageMobj`), and the wait for a tic's time calls `doom_idle()`.
+- `doom_gl.c`, the GPU's library and the workers' (`programs/mc/mcw.c`) are compiled apart
+  from the rest, a variable a section on 16 bytes of its own (`APART` in `doom.sh`).
 
 ## The screen (`doom_video.c`)
 
@@ -228,5 +344,6 @@ the window's size, the screen stretched from its 320 by 200.
 
 A tic is the game itself: sight checks (about a third still), thinkers, movement. A frame is
 the things in view (about 250 instructions each, and 20 for each one looked at and left out),
-the status bar and the frame's bookkeeping. Sound costs it next to nothing: effects and music
+which are the worker cores' now, and on the first core what the view is told (2 thousand),
+the status bar and the frame's bookkeeping (2 thousand). Sound costs it next to nothing: effects and music
 are the sound card's (`docs/sound.md`, `linux/nanox/doom_sound.c`).

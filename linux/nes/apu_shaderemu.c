@@ -107,11 +107,25 @@ level_of(int c)
 	return ch[c].reg[0] & 0x10 ? ch[c].reg[0] & 15 : ch[c].env.decay;
 }
 
+/* What a channel was last shown as (seen): four times a frame it is the same, and nothing is worked out. */
+static uint32_t seen[CHANNELS];
+
+static int
+as_seen(int c, uint32_t now)
+{
+	if (seen[c] == (now | 0x80000000))
+		return 1;
+	seen[c] = now | 0x80000000;
+	return 0;
+}
+
 static void
 show_pulse(int c)
 {
 	int level = ch[c].length && ch[c].period >= 8 && sweep_target(c) <= 0x7ff ? level_of(c) : 0;
 
+	if (as_seen(c, (uint32_t)ch[c].period | (uint32_t)level << 12 | (uint32_t)(ch[c].reg[0] >> 6) << 16))
+		return;
 	voice(c, SND_PCM16 | SND_LOOPED, wave_at[ch[c].reg[0] >> 6], WAVE, base / (unsigned)(ch[c].period + 1) * (WAVE / 16),
 	      SND_VOLUME(level * 17, level * 17));
 }
@@ -122,6 +136,8 @@ show_triangle(void)
 {
 	int runs = ch[TRI].length && ch[TRI].linear && ch[TRI].period >= 2;
 
+	if (as_seen(TRI, (uint32_t)ch[TRI].period | (uint32_t)runs << 12))
+		return;
 	voice(TRI, SND_PCM16 | SND_LOOPED, triangle_at, 32, runs ? base / (unsigned)(ch[TRI].period + 1) : 0, SND_VOLUME(256, 256));
 }
 
@@ -130,6 +146,8 @@ show_noise(void)
 {
 	int level = ch[NOISE].length ? level_of(NOISE) : 0, brief = ch[NOISE].reg[2] >> 7;
 
+	if (as_seen(NOISE, (uint32_t)ch[NOISE].reg[2] | (uint32_t)level << 12))
+		return;
 	voice(NOISE, SND_PCM16 | SND_LOOPED, noise_at[brief], brief ? NOISE_SHORT : NOISE_LONG, base / noise_periods[ch[NOISE].reg[2] & 15],
 	      SND_VOLUME(level * 17, level * 17));
 }
@@ -475,6 +493,7 @@ se_apu_init(int a_worker)
 		slots[i].samples = (uint8_t *)memory + 4 * WAVE * 2 + 64 + 256 + (NOISE_LONG + 1) * 2 + i * 32768;
 		slots[i].at = at + (uint32_t)(slots[i].samples - (uint8_t *)memory);
 	}
+	memset(seen, 0, sizeof seen);
 	on = 1;
 	fprintf(stderr, "nes: sound on the card's voices %d to %d%s\n", voices[0], voices[CHANNELS - 1],
 		worker ? ", recordings decoded by a worker core" : "");

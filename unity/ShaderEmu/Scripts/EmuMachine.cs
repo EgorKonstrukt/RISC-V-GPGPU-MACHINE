@@ -124,6 +124,13 @@ public class EmuMachine : UdonSharpBehaviour
     private const int MaxRounds = 32;
     private const int PassCommit = 0, PassControl = 1, PassUnpack = 2;
     private bool targetsSet;
+    // To compare (docs/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
+    // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round.
+    [HideInInspector] public int oldPaths;
+    private int pathsSet = -1;
+    private bool gpuDrew = true;       // what the control pass was last told of this round's camera
+    private uint gpuFramesSeen;
+    private float gpuBusyUntil;        // lists have come lately: the GPU's camera draws every round
 
     private bool powered, paused;
     private int budget = 32768;        // instructions a frame
@@ -405,6 +412,9 @@ public class EmuMachine : UdonSharpBehaviour
             }
             tickCamera.SetTargetBuffers(colours, tickDepth.depthBuffer);
         }
+        gpuDrew = true;
+        machineMaterial.SetInt("_GpuDrawn", 1);
+        gpuBusyUntil = 0f;
         machineMaterial.SetInt("_Init", 1);
         tickMaterial.SetInt("_Init", 1);
         machineMaterial.SetInt("_InitRaw", 0);
@@ -616,8 +626,17 @@ public class EmuMachine : UdonSharpBehaviour
             if (typedUrls[i].GetUrl().Get() == address || (i == 0 && address == "world:typed")) url = typedUrls[i].GetUrl();
         if (openField != null && openField.GetUrl().Get() == address) url = openField.GetUrl();
         if (placeField != null && placeField.GetUrl().Get() == address) url = placeField.GetUrl();
-        for (int i = 0; i < siteAddresses.Length; i++)
-            if (siteAddresses[i] == address) url = siteUrls[i];
+        // the addresses the world was built with are in the order of their characters' numbers
+        // (the builder sorts them): thousands of them, found in a dozen steps
+        int siteLow = 0, siteHigh = siteAddresses.Length;
+        while (siteLow < siteHigh)
+        {
+            int middle = (siteLow + siteHigh) / 2;
+            int order = string.CompareOrdinal(address, siteAddresses[middle]);
+            if (order == 0) { url = siteUrls[middle]; break; }
+            if (order < 0) siteHigh = middle;
+            else siteLow = middle + 1;
+        }
         // VRChat throws on an address that is not https, and then calls neither event below
         if (address != "world:typed" && !address.StartsWith("https://"))
         {
@@ -814,12 +833,13 @@ public class EmuMachine : UdonSharpBehaviour
     public override void OnStringLoadSuccess(IVRCStringDownload result)
     {
         if (fetchState != FetchLoading) return;
-        // (a page is cut to what the browser takes at once; a file is handed over in parts)
+        // (a page, a sheet or a file: its whole length is said, and it is handed over in parts
+        // of 256 KB as the guest asks for them; a browser of before takes the first and no more)
         fetchBytes = result.ResultBytes;
-        fetchLength = fetchKind == KindFile ? fetchBytes.Length : Mathf.Min(fetchBytes.Length, FetchMost);
+        fetchLength = fetchBytes.Length;
         fetchStatus = 200;
-        // (the part asked for, when a file's later part had to be loaded again)
-        fetchOffset = fetchKind == KindFile ? Mathf.Min(fetchOffset, fetchLength) & ~3 : 0;
+        // (the part asked for, when a later part had to be loaded again)
+        fetchOffset = Mathf.Min(fetchOffset, fetchLength) & ~3;
         fetchPacked = fetchOffset;
         fetchState = FetchPacking;
         FetchSays("Loaded " + fetchLength.ToString("N0") + " bytes");
@@ -949,6 +969,17 @@ public class EmuMachine : UdonSharpBehaviour
         pointsCamera.Render();
     }
 
+    // A preview camera prepares none of the room's canvases when it renders (82 of them: half
+    // of a Render's time on the main thread), and draws its own mesh all the same.
+    private void SetPaths()
+    {
+        pathsSet = oldPaths;
+        CameraType kind = (oldPaths & 1) != 0 ? CameraType.Game : CameraType.Preview;
+        tickCamera.cameraType = kind;
+        pointsCamera.cameraType = kind;
+        gpuCamera.cameraType = kind;
+    }
+
     void Update()
     {
         LanSay();
@@ -958,6 +989,10 @@ public class EmuMachine : UdonSharpBehaviour
             return;
         }
         frames++;
+        if (pathsSet != oldPaths) SetPaths();
+        // While no list has come for a second the GPU's camera draws in a frame's last round
+        // only, and the control pass takes a list in no other: the first one waits a frame at most.
+        bool gpuAlways = initLeft != 0 || (oldPaths & 2) != 0 || Time.time < gpuBusyUntil;
 
         bool running = initLeft == 0;
         if (running) Inputs();
@@ -988,8 +1023,17 @@ public class EmuMachine : UdonSharpBehaviour
             {
                 // The GPU: draw the list the guest has submitted, if any; the control pass
                 // then takes the submit word back and delivers the input.
-                gpuMaterial.SetTexture("_State", current);
-                gpuCamera.Render();
+                bool draws = gpuAlways || i == n - 1;
+                if (draws)
+                {
+                    gpuMaterial.SetTexture("_State", current);
+                    gpuCamera.Render();
+                }
+                if (draws != gpuDrew)
+                {
+                    gpuDrew = draws;
+                    machineMaterial.SetInt("_GpuDrawn", draws ? 1 : 0);
+                }
                 // The sound card mixes once a frame, before the last control pass, which then
                 // moves its voices up to where the mix began.
                 if (i == n - 1 && sound != null) sound.Mix(current, machineMaterial, soundEnabled, soundClock);
@@ -1407,6 +1451,11 @@ public class EmuMachine : UdonSharpBehaviour
             displayHeight = 0;
         }
         gpuFrames = Word(65, 3);
+        if (gpuFrames != gpuFramesSeen)
+        {
+            gpuFramesSeen = gpuFrames;
+            gpuBusyUntil = Time.time + 1f;
+        }
         keyboardOwned = Word(67, 0) == 0x6b657973u;
         soundEnabled = Word(64 + 0x22, 0) != 0;
         soundClock = Word(64 + 0x23, 0);

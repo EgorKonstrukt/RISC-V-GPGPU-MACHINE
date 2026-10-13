@@ -91,42 +91,48 @@ pass of the GPU device's control shader. `nxweb`, the browser, asks for pages; `
 
 ## The browser
 
-`linux/apps/nxweb.c`: text, headings, bold, links, lists, rules, preformatted text, tables as
-rows of text. No scripts. Style sheets in part (below). A picture's pixels from the host are written as a PPM file in `/tmp` and drawn by
-the GPU from that file, as one in the image is from the ROM. Its place is kept from the
-`width` and `height` the page gives, so the page is laid out once; until it arrives, and when
-it fails, its description stands there in brackets.
-A page that is a file (`/usr/share/web-*.html`) is read directly. Layout uses the font's
-width table, with no round trips to the server, and only lines in view are drawn.
+`linux/apps/nxweb.c`, `docs/web.md`: what it does with a page is there. What it asks of the
+host:
 
-## Style sheets
+- **The page** (kind 0), then its style sheets (kind 2), then its pictures (kind 1), each in
+  the page's order, at most three such requests open at a time (the host has that many
+  slots). An address is asked for without its `#fragment`, made whole with the page's own or
+  its `<base>`, its `./` and `../` folded; one over 255 bytes is not asked for.
+- **Text longer than 256 KB comes in parts.** The answer's length word is the whole answer's;
+  the browser takes the first 256 KB and asks again with the same address, the same kind
+  and the offset of the next part, up to 1.5 MB of a page and 768 KB of a sheet (`part_text`
+  in `nxweb.c`). The harness always answered so; the world (`EmuMachine.cs`) cut a page at
+  256 KB until 13 October 2026 and now keeps it whole as it keeps a file.
+- A picture's pixels are written as a PPM file in `/tmp` and drawn by the GPU from that file.
+  Its place is kept from the `width` and `height` the page gives; until it arrives, and when
+  it fails, its description stands there.
 
-`linux/apps/css.h`. The page's `<style>` text and up to four linked sheets (256 KB each, the
-host's limit; an address over 255 bytes is not asked for) are read into rules, kept by the last
-step of their selector, so an element only meets the rules that name its tag, id or classes.
-Every sheet is read again when another arrives: a rule may use a custom property a later one sets.
+## What the image keeps of the network
 
-| Understood | |
-|---|---|
-| Selectors | tag, `.class`, `#id`, `*`, descendants and `>` children, lists with commas, `:root`, `:link` |
-| Left out, with their whole rule | `:hover` and other states, `[attributes]`, `+` and `~`, `:not()`, nesting |
-| Properties | `display` (none, block, inline), `color`, `background` (a colour), `font-weight`, margins, padding, `width`, `max-width`, `text-align`, `text-decoration`, `border` (and top, bottom), `list-style`, `white-space: pre`, `visibility` |
-| Values | px, em, rem, pt, %, `auto`; `#rgb`, `rgb()`, `hsl()`, names, `light-dark()`; `var()` with fallbacks; `!important` |
-| At-rules | `@media` with widths, `screen`, `print`, `prefers-color-scheme` (light); `@supports` and `@layer` are read as if true |
+VRChat lets a world open only the addresses it was built with, and starts one download of
+each kind every five seconds: a listed site opened at a click, and then each of its sheets
+and pictures was a paste by hand and five seconds. `python linux/apps/web/preload.py` reads
+the sites of `linux/apps/web/sites.txt` as the browser would and writes two things:
 
-- Lengths are scaled by 13/16, our font against the 16 pixels pages are written for, and a
-  vertical margin or padding is at most two lines. Media queries are answered with the page
-  area's real width (about 570), so sites give their narrow layout.
-- Nothing goes side by side: flex, grid, floats and table cells come one under the other or in
-  a line. A width is kept only when it leaves at least half of its container.
-- `position: absolute` with a clip is taken as hidden (text meant for screen readers).
-- An element that is not shown and has no closing tag (`li`, `td`, `p`) ends where the next
-  one begins. The old `bgcolor` attribute is a background.
-- A page's start clears nothing in bulk: the sheets' tables are kept by name number, and a
-  name's entries begin when the name is first seen (`css_atom`); clearing all 8,192 of each
-  was 168 KB of stores a page, twenty passes of the machine that ended early. The page's
-  text is kept where it was read, and the layout's text and runs have their room at once.
-- `/usr/share/web-css.html` is the test page. `NXWEB_TIME=1 nxweb ...` prints what reading the
-  sheets and laying out cost: lobste.rs, 207 rules, 0.65 s and 1.15 s; without sheets 0.76 s.
-- To try the engine on a real sheet without the machine, compile `css.h` natively with a small
-  `main` under `-fsanitize=address`; it has no part of Nano-X in it.
+- **Addresses for the world**, `build/web/links.txt`: the listed pages, the pages one link
+  on from them on the same site, and every sheet and picture those ask for
+  (`kind<TAB>address` a line: P, S or I; pictures only as VRChat's loader takes them, PNG or
+  JPEG up to 2048 a side). `build/web/links-stable.txt` is the part of it that does not go
+  stale in days (no address with a content's hash or a date in it, no story of the hour):
+  the world's builder (`ShaderEmuBuilder.cs`) adds it to the sites, and `EmuMachine` finds
+  an address among them by halving (they are sorted). A hashed address is right until its
+  site next changes its sheet: then that sheet is a paste again, and nothing breaks.
+- **Copies in the ROM**, with `--cache DIR` (`build/images/linux/root/usr/share` for the
+  image; `--budget BYTES`, 8 MB if not said): the sheets as they came (`webc-N.css`) and the
+  pictures as PPM (`webc-N.ppm`, any format the host's Pillow reads, SVG too where it can),
+  and `web-cache.idx`, a line an address in the order of their bytes: kind, file, a
+  picture's size, the address. The browser looks an address up there before it asks the host
+  (`web_cache_find` in `web.h`, which halves the index where it lies): a sheet is read as a
+  file and a picture is drawn by the GPU from the ROM, with no host, no paste and no five
+  seconds. `--pages` keeps the pages too, for tests of the browser on real sites in a
+  machine without a network (`rvc_cpu`, `tools/web_test.c`); the browser shows a kept page
+  and says so, and Reload asks the host.
+- Run it before the image and the world are made. What it fetches is not kept in this
+  repository.
+
+`/usr/share/web-css.html` and `web-layout.html` are the browser's own test pages.

@@ -6,7 +6,7 @@
 #define SHADEREMU_MPEG_H
 #include <stdint.h>
 
-#define MPEG_VIDEOS 20		/* decoders at most, each on a worker of its own (24 pictures a second take some 14) */
+#define MPEG_VIDEOS 48		/* decoders at most, each on a worker of its own */
 #define MPEG_AUDIOS 16
 #define MPEG_GOP_MOST 16	/* pictures in a group, at most */
 #define MPEG_CHUNK 14		/* sound frames in a chunk: half a second at 32 kHz */
@@ -34,13 +34,13 @@ int16_t *mpeg_pcm(void);	/* the sound as it is decoded: left and right, 16 bits 
 /* A decoder with room for one group's pictures, for worker `worker` to use; -1 when there are enough. */
 int mpeg_video_new(int worker);
 int mpeg_audio_new(void);
-/* Where picture `n` of the decoder's group is to be copied by mpeg_copy_gop. */
-void mpeg_video_to(int video, int n, uint8_t *to);
-const uint8_t *mpeg_video_frame(int video, int n);
+/* Picture `n` of the decoder's group added to a sum, as the frame it is copied as. */
+uint32_t mpeg_video_sum(int video, int n, uint32_t sum);
+int mpeg_video_done(int video);	/* pictures of its group the decoder has got through */
 
 /* The workers' jobs (a0, a1): each returns how many pictures, or sound frames, it did. */
 uint32_t mpeg_decode_gop(uint32_t video, uint32_t gop);
-uint32_t mpeg_copy_gop(uint32_t video, uint32_t frames);
+uint32_t mpeg_copy_one(uint32_t which, uint32_t to);	/* picture (which & 255) of decoder (which >> 8)'s group, as a frame at `to` */
 uint32_t mpeg_decode_chunk(uint32_t audio, uint32_t chunk);
 
 /* The sound decoded from its first frame to its last in one go, summed: what the chunks must come to. */

@@ -58,6 +58,8 @@
 #define FRAGMENT_RGB24 4      // texture of three bytes a pixel (red, green, blue), rows with no padding, at any byte address, in RAM or ROM; times colour
 #define FRAGMENT_TILES 5      // a layer of tiles: the address is a texel of four words (cells, tiles, palette, sizes; docs/gpu.md)
 #define FRAGMENT_YUV 6        // a picture as three planes of bytes one after another: luma, then the two of chroma at half the size each way (a video's frame)
+#define FRAGMENT_COVER 7      // (text) four bits a pixel of how much of it the glyph covers, rows of whole bytes, the left pixel in the high half
+#define TEXT_MORE 0x100       // flag (text): words 9-11 are a scale, a slant and what a glyph's bitmap address is from
 #define FRAGMENT_KEYED 0x100  // flag: texels equal to the key colour (or index) are not drawn
 #define FRAGMENT_LAID 0x200   // flag (draws): the texture lies on the picture, not on the surface (a sky)
 #define FRAGMENT_SMOOTH 0x400 // flag (word, indexed and three-byte textures): the four texels round the point, weighed (bilinear)
@@ -98,8 +100,15 @@ uint texture_word(uint address) {
     uint4 b = (uint4)(t * 255.0 + 0.5);
     return b.r | b.g << 8 | b.b << 16 | b.a << 24;
 }
+// A 16-byte texel there.
+uint4 texture_texel(uint address) {
+    [branch]
+    if ((address >> 30) != 1) return ram(texel_of(address));
+    return uint4(texture_word(address), texture_word(address + 4), texture_word(address + 8), texture_word(address + 12));
+}
 #else
 #define texture_word ram_word
+uint4 texture_texel(uint address) { return ram(texel_of(address)); }
 #endif
 // Guest numbers are 16.16 fixed point.
 float4 from_fixed(uint4 t) {
@@ -239,17 +248,28 @@ gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
         } else if (op == CMD_TEXT) {
             // head.g colour, head.b the font's table; then x, y, count, the string; then the
             // fragment word. A character is a word: its glyph, and in the high half where it
-            // starts along the line. The table has a texel a glyph: bitmap, width, height.
-            uint4 at = ram(base + 1);
+            // starts along the line. The table has a texel a glyph: bitmap, width, height, and
+            // where its corner is from the character's (a signed byte each way). The table and
+            // the bitmaps may be a file's where it lies in the ROM (a font: docs/fonts.md).
+            // With TEXT_MORE: a scale (16.16), a slant (256ths of a pixel a row, and from bit 16
+            // the row that stays), and what the table's bitmap addresses are counted from.
+            uint4 at = ram(base + 1), how = ram(base + 2);
+            bool more = (how.r & TEXT_MORE) != 0;
             uint part = k % 6, corner = part < 3 ? part : (part == 3 ? 2 : (part == 4 ? 1 : 3));
             uint letter = ram_word(at.a + 4 * (k / 6));
-            uint4 glyph = ram(texel_of(head.b) + (letter & 0xffff));
+            uint4 glyph = texture_texel(head.b + 16 * (letter & 0xffff));
             bool right = (corner & 1) != 0, low = (corner & 2) != 0;
-            o.position = place_pixels(float2(asint(at.r) + (int)(letter >> 16) + (right ? (int)glyph.g : 0),
-                                             asint(at.g) + (low ? (int)glyph.b : 0)), 0.0);
+            float2 in_glyph = float2((asint(glyph.a << 24) >> 24) + (right ? (int)glyph.g : 0),
+                                     (asint(glyph.a << 16) >> 24) + (low ? (int)glyph.b : 0));
+            if (more) {
+                in_glyph.x += ((float)(how.b >> 16) - in_glyph.y) * (float)(how.b & 0xffff) / 256.0;
+                if (how.g != 0) in_glyph *= (float)how.g / 65536.0;
+            }
+            o.position = place_pixels(float2(asint(at.r) + (int)(letter >> 16), asint(at.g)) + in_glyph, 0.0);
             o.colour = colour_of(head.g);
             o.uv = float2(right ? 1.0 : 0.0, low ? 1.0 : 0.0);
-            o.texture_info = uint4(FRAGMENT_MASK | (ram(base + 2).r & 0x70000), glyph.r, glyph.g, glyph.b);
+            o.texture_info = uint4(((how.r & 0xff) == FRAGMENT_COVER ? FRAGMENT_COVER : FRAGMENT_MASK) | (how.r & 0x70000),
+                                   glyph.r + (more ? how.a : 0), glyph.g, glyph.b);
         } else {
             // head.g vertex buffer, head.b count; then vertex mode, fragment mode, uniforms,
             // texture address; width, height, key
@@ -438,8 +458,17 @@ float4 gpu_fragment(gpu_varyings i) {
         uint n = y * width + x, texel;
         if (mode == FRAGMENT_MASK) {
             n = y * ((width + 7) >> 3) + (x >> 3);
-            texel = (ram_word(i.texture_info.g + (n & ~3u)) >> (8 * (n & 3))) & 0xff;
+            texel = (texture_word(i.texture_info.g + (n & ~3u)) >> (8 * (n & 3))) & 0xff;
             if (((texel << (x & 7)) & 0x80) == 0) discard;
+            return saturate(c);
+        }
+        if (mode == FRAGMENT_COVER) {
+            // a glyph's coverage is the colour's alpha: drawn in a pass that blends
+            n = y * ((width + 1) >> 1) + (x >> 1);
+            texel = (texture_word(i.texture_info.g + (n & ~3u)) >> (8 * (n & 3))) & 0xff;
+            texel = (x & 1) ? texel & 15 : texel >> 4;
+            if (texel == 0) discard;
+            c.a *= (float)texel / 15.0;
             return saturate(c);
         }
         if (mode == FRAGMENT_TILES) {

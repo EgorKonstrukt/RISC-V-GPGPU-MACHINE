@@ -66,18 +66,34 @@ void host_scene_view(int x0, int y0, int x1, int y1);
 void host_quads(const struct host_quad *quads, int count);
 void host_scene_settle(void);
 /*
- * A frame of a shape file as a second worker core has made it ready: the part of it that has
- * pixels, rows of `w`, and in the 32 bytes before them a bit for every index among them. NULL
- * while it has not (the file is asked for then, from this frame on): the caller has the game
- * build the frame, which gives the same pixels.
+ * A frame of a shape file as a worker core has made it ready: the part of it that has pixels,
+ * rows of `w`, and in the 32 bytes before them a bit for every index among them. NULL while
+ * it has not (the file is asked for then, a run of frames from this one on): the caller has
+ * the game build the frame, which gives the same pixels. After the pixels are its rows' spans
+ * (HOST_FRAME_SPANS): each row's first and last pixel from the rectangle's left, bit 15 of the
+ * first set when a hole lies between (a row with none: last < first).
  */
-enum { HOST_FRAME_READY = 1, HOST_FRAME_EMPTY = 2 };
+enum { HOST_FRAME_READY = 1, HOST_FRAME_EMPTY = 2, HOST_FRAME_SPANS = 4 };
 struct host_frame { const unsigned char *pixels; short left, top, w, h; int state; };	/* 16 bytes */
+struct host_span { unsigned short first, last; };
 const struct host_frame *host_frame(const void *file, int frame);
+static inline const struct host_span *
+host_frame_spans(const struct host_frame *r)
+{
+	return (const struct host_span *)(r->pixels + ((r->w * r->h + 3) & ~3));
+}
+/* A file that will be asked for is unpacked ahead, from this frame on. */
+void host_frames_ahead(const void *file, int frame);
+/* What was put off for the scene's core is done by the time this returns (it looks at shapes). */
+void host_frames_settle(void);
 /* A unit's path searches on other cores: how many can be made now, one begun on core k (1 up), waited for. */
 int host_path_cores(void);
 void host_path_post(int k, unsigned int (*search)(unsigned int, unsigned int), unsigned int object, unsigned int what);
 void host_path_wait(int k);
+/* And cores that ask about the map's cells ahead of a search, k from 0. */
+int host_pre_cores(void);
+void host_pre_post(int k, unsigned int (*ask)(unsigned int, unsigned int), unsigned int object, unsigned int what);
+void host_pre_wait(int k);
 void host_frames_forget(void);	/* the files are not what they were: before they go */
 extern unsigned int host_frames_bytes;	/* of the frames made ready so far */
 /*

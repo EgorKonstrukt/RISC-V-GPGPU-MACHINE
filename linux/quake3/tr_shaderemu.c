@@ -46,7 +46,9 @@ static const se_world_t	*world;
 static const se_run_t	*runs;
 static const se_bmodel_t *bmodels;
 static const float	*normals;
-static int		shader_count, model_count, skin_count;
+static int		shader_count, model_count, skin_count, stage_count;
+
+static void stages_open (void);
 
 static const void *section (const char *tag, unsigned each, int *count)
 {
@@ -68,7 +70,7 @@ static void data_open (void)
 		ri.Error (ERR_FATAL, "%s is not a file of the ROM: the GPU reads it there", SE_DATA_FILE);
 	textures = section ("TEXS", sizeof (se_texture_t), NULL);
 	shaders = section ("SHAD", sizeof (se_shader_t), &shader_count);
-	stages = section ("STAG", sizeof (se_stage_t), NULL);
+	stages = section ("STAG", sizeof (se_stage_t), &stage_count);
 	models = section ("MODL", sizeof (se_model_t), &model_count);
 	surfaces = section ("SURF", sizeof (se_surface_t), NULL);
 	skins = section ("SKIN", sizeof (se_skin_t), &skin_count);
@@ -80,6 +82,7 @@ static void data_open (void)
 	shader_of = malloc (shader_count * sizeof *shader_of);
 	for (i = 0; i < shader_count; i++)
 		shader_of[shaders[i].number] = &shaders[i];
+	stages_open ();
 }
 
 /* A game path as the file's tables have it: lower case, forward slashes, and with `strip` no extension. */
@@ -497,16 +500,64 @@ static unsigned stage_colour (const se_stage_t *st, const byte *entity, const by
 	return colour_word (r, g, b, a);
 }
 
-/*
- * How its texture slides, turns and grows now (tcMod), for the GPU to move it by: two rows of
- * three, in the frame's memory, and their address. 0 when the frame has no room. `whole` is
- * what the vertices' own coordinates had taken off.
- */
-static unsigned stage_moved (const se_stage_t *st, const float *whole)
+/* Every stage's state as stage_state makes it, in a scene and flat (for a quad), and its
+   colour where that is the same whatever is drawn with it: made when the file is opened. A
+   stage of several pictures is asked about each time. */
+static gpu_state	*stage_kept[2];
+static unsigned		*stage_colours;
+static unsigned char	*stage_fixed;
+typedef struct { unsigned frame, at; float time, m[6]; } moved_t;
+static moved_t		*moved_kept;	/* how each one's texture is moved in the frame being made */
+static unsigned		frame_number = 2;
+
+static void stages_open (void)
 {
-	float	m[6] = {1, 0, 0, 0, 1, 0}, a[6], n[6], *out;
 	int	i;
 
+	stage_kept[0] = malloc (stage_count * sizeof (gpu_state));
+	stage_kept[1] = malloc (stage_count * sizeof (gpu_state));
+	stage_colours = malloc (stage_count * sizeof *stage_colours);
+	stage_fixed = malloc (stage_count);
+	moved_kept = calloc (stage_count, sizeof *moved_kept);
+	for (i = 0; i < stage_count; i++) {
+		const se_stage_t *st = &stages[i];
+
+		stage_state (&stage_kept[0][i], st, 0);
+		stage_state (&stage_kept[1][i], st, 1);
+		stage_kept[1][i].vertex = GPU_QUADS;
+		stage_colours[i] = stage_colour (st, NULL, NULL);
+		stage_fixed[i] = (st->rgb == SE_RGB_IDENTITY || st->rgb == SE_RGB_CONST || st->rgb == SE_RGB_VERTEX || st->rgb == SE_RGB_DIFFUSE) &&
+			(st->alpha == SE_A_IDENTITY || st->alpha == SE_A_CONST || st->alpha == SE_A_VERTEX);
+	}
+}
+
+static inline const gpu_state *stage_base (gpu_state *own, const se_stage_t *st, int flat)
+{
+	if (st->frames > 1) {
+		stage_state (own, st, flat);
+		if (flat)
+			own->vertex = GPU_QUADS;
+		return own;
+	}
+	return &stage_kept[flat][st - stages];
+}
+
+/* How its texture slides, turns and grows now (tcMod): two rows of three, the same for everything a frame draws with it. */
+static const float *stage_rows (const se_stage_t *st)
+{
+	moved_t	*k = &moved_kept[st - stages];
+	float	*m = k->m, a[6], n[6];
+	int	i;
+
+	if (k->frame == frame_number && k->time == scene_time)
+		return m;
+	k->frame = frame_number, k->time = scene_time, k->at = 0;
+	m[0] = 1, m[1] = 0, m[2] = 0, m[3] = 0, m[4] = 1, m[5] = 0;
+	if (st->tcmods == 1 && st->tcmod[0].kind == SE_SCROLL) {	/* (most are only this) */
+		m[2] = st->tcmod[0].p[0] * scene_time, m[5] = st->tcmod[0].p[1] * scene_time;
+		m[2] -= floor_of (m[2]), m[5] -= floor_of (m[5]);
+		return m;
+	}
 	for (i = 0; i < st->tcmods; i++) {
 		const se_tcmod_t *t = &st->tcmod[i];
 		float	p, sn, cs, turn;
@@ -541,19 +592,36 @@ static unsigned stage_moved (const se_stage_t *st, const float *whole)
 		/* this one after those before it */
 		n[0] = a[0] * m[0] + a[1] * m[3], n[1] = a[0] * m[1] + a[1] * m[4], n[2] = a[0] * m[2] + a[1] * m[5] + a[2];
 		n[3] = a[3] * m[0] + a[4] * m[3], n[4] = a[3] * m[1] + a[4] * m[4], n[5] = a[3] * m[2] + a[4] * m[5] + a[5];
-		memcpy (m, n, sizeof m);
+		memcpy (m, n, sizeof n);
 	}
+	return m;
+}
+
+/*
+ * Those rows in the frame's memory for the GPU to move the texture by, and their address; 0
+ * when the frame has no room. `whole` is what the vertices' own coordinates had taken off.
+ */
+static unsigned stage_moved (const se_stage_t *st, const float *whole)
+{
+	const float	*m = stage_rows (st);
+	moved_t		*k = &moved_kept[st - stages];
+	float		x = m[2], y = m[5], *out;
+
+	if (!whole && k->at)
+		return k->at;	/* (a model's, written for another this frame) */
 	if (whole) {
-		m[2] += m[0] * whole[0] + m[1] * whole[1];
-		m[5] += m[3] * whole[0] + m[4] * whole[1];
+		x += m[0] * whole[0] + m[1] * whole[1];
+		y += m[3] * whole[0] + m[4] * whole[1];
 	}
 	if (!(st->flags & SE_CLAMP))
-		m[2] -= floor_of (m[2]), m[5] -= floor_of (m[5]);
+		x -= floor_of (x), y -= floor_of (y);
 	out = gpuFrameMemory (32);
 	if (!out)
 		return 0;
-	out[0] = m[0], out[1] = m[1], out[2] = m[2], out[3] = 0;
-	out[4] = m[3], out[5] = m[4], out[6] = m[5], out[7] = 0;
+	out[0] = m[0], out[1] = m[1], out[2] = x, out[3] = 0;
+	out[4] = m[3], out[5] = m[4], out[6] = y, out[7] = 0;
+	if (!whole)
+		k->at = gpuAddress (out);
 	return gpuAddress (out);
 }
 
@@ -563,12 +631,28 @@ static unsigned stage_moved (const se_stage_t *st, const float *whole)
 static struct { vec3_t vieworg, viewaxis[3]; int rdflags; } view;
 static float		view_matrix[16], view_planes[4][4];
 static int		matrix_is;	/* what the GPU's matrices are now: 0 unknown, 1 the scene's own, 2 the flat screen's */
-static unsigned		frame_number = 2;
 unsigned		se_counts[6];	/* since the last q3stat: line: models, their draws, how many were lit, sprites and beams, polygons, flat pictures */
+
+/* The tangent, sine and cosine of half a field of view: a frame's scenes have the same few. */
+static const float *half_angle (float fov)
+{
+	static struct { float fov, of[3]; } kept[4];
+	static int	next;
+	float		half = fov * (M_PI / 360.0f);
+	int		i;
+
+	for (i = 0; i < 4; i++)
+		if (kept[i].fov == fov && kept[i].of[2] != 0)
+			return kept[i].of;
+	i = next++ & 3;
+	kept[i].fov = fov, kept[i].of[0] = tan (half), kept[i].of[1] = sin (half), kept[i].of[2] = cos (half);
+	return kept[i].of;
+}
 
 static void view_set (const refdef_t *fd)
 {
-	float		p[16], xmax, ymax, ang, sn, cs;
+	float		p[16], xmax, ymax, sn, cs;
+	const float	*half_x = half_angle (fd->fov_x), *half_y = half_angle (fd->fov_y);
 	const float	*o = fd->vieworg, *f = fd->viewaxis[0], *l = fd->viewaxis[1], *u = fd->viewaxis[2];
 	float		*m = view_matrix;
 	int		i;
@@ -579,8 +663,8 @@ static void view_set (const refdef_t *fd)
 	scene_time = fd->time * 0.001f;
 	if (!(fd->rdflags & RDF_NOWORLDMODEL))
 		seat_fov_x = fd->fov_x, seat_fov_y = fd->fov_y;
-	xmax = Z_NEAR * tan (fd->fov_x * (M_PI / 360.0f));
-	ymax = Z_NEAR * tan (fd->fov_y * (M_PI / 360.0f));
+	xmax = Z_NEAR * half_x[0];
+	ymax = Z_NEAR * half_y[0];
 	memset (p, 0, sizeof p);
 	p[0] = Z_NEAR / xmax, p[5] = Z_NEAR / ymax;
 	p[10] = -(Z_FAR + Z_NEAR) / (Z_FAR - Z_NEAR), p[11] = -1, p[14] = -2 * Z_FAR * Z_NEAR / (Z_FAR - Z_NEAR);
@@ -596,11 +680,9 @@ static void view_set (const refdef_t *fd)
 	/* the view's four sides, facing in: what is wholly behind one is not drawn */
 	for (i = 0; i < 4; i++) {
 		const float	*side = i < 2 ? l : u;
-		float		half = (i < 2 ? fd->fov_x : fd->fov_y) * (M_PI / 360.0f), sign = i & 1 ? -1 : 1;
-		float		*n = view_planes[i];
+		float		sign = i & 1 ? -1 : 1, *n = view_planes[i];
 
-		ang = half;
-		sn = sin (ang), cs = cos (ang);
+		sn = (i < 2 ? half_x : half_y)[1], cs = (i < 2 ? half_x : half_y)[2];
 		n[0] = f[0] * sn + sign * side[0] * cs;
 		n[1] = f[1] * sn + sign * side[1] * cs;
 		n[2] = f[2] * sn + sign * side[2] * cs;
@@ -621,19 +703,35 @@ static int culled (const float *centre, float radius)
 /* The GPU's matrix for a thing at `origin` turned to `axis`, its own units `scale` and `move`d (or NULL). */
 static void entity_matrix (const float *origin, const vec3_t *axis, const float *scale, const float *move)
 {
-	float		rows[12], col[4][3];
+	float		rows[12], *block = gpuModelviewBlock (), *to = block ? block : rows;
+	float		x[3], y[3], z[3], at[3];
 	const float	*v = view_matrix;
-	int		i, j;
+	int		i;
 
-	for (j = 0; j < 3; j++)
-		for (i = 0; i < 3; i++)
-			col[j][i] = scale ? axis[j][i] * scale[j] : axis[j][i];
-	for (i = 0; i < 3; i++)
-		col[3][i] = origin[i] + (move ? axis[0][i] * move[0] + axis[1][i] * move[1] + axis[2][i] * move[2] : 0);
-	for (j = 0; j < 4; j++)
-		for (i = 0; i < 3; i++)
-			rows[i * 4 + j] = v[i] * col[j][0] + v[4 + i] * col[j][1] + v[8 + i] * col[j][2] + (j == 3 ? v[12 + i] : 0);
-	gpuModelviewRows (rows);
+	VectorCopy (axis[0], x);
+	VectorCopy (axis[1], y);
+	VectorCopy (axis[2], z);
+	VectorCopy (origin, at);
+	if (move) {
+		at[0] += x[0] * move[0] + y[0] * move[1] + z[0] * move[2];
+		at[1] += x[1] * move[0] + y[1] * move[1] + z[1] * move[2];
+		at[2] += x[2] * move[0] + y[2] * move[1] + z[2] * move[2];
+	}
+	if (scale) {
+		VectorScale (x, scale[0], x);
+		VectorScale (y, scale[1], y);
+		VectorScale (z, scale[2], z);
+	}
+	for (i = 0; i < 3; i++, to += 4) {
+		float	a = v[i], b = v[4 + i], c = v[8 + i];
+
+		to[0] = a * x[0] + b * x[1] + c * x[2];
+		to[1] = a * y[0] + b * y[1] + c * y[2];
+		to[2] = a * z[0] + b * z[1] + c * z[2];
+		to[3] = a * at[0] + b * at[1] + c * at[2] + v[12 + i];
+	}
+	if (!block)
+		gpuModelviewRows (rows);
 	matrix_is = 0;
 }
 
@@ -658,6 +756,7 @@ typedef struct {
 } run_t;
 
 static run_t		*world_runs;
+static int		*world_changing, world_changes;	/* the kept ones a frame says something of */
 static int		world_count, world_kept, world_hidden[2], world_loaded;
 static unsigned		world_mark;
 static int		world_seen;	/* this frame drew a scene with the level in it */
@@ -679,7 +778,8 @@ static void world_free (void)
 	gpuKeep (0, 0);
 	gpuMemoryRelease (world_mark);
 	free (world_runs);
-	world_runs = NULL;
+	free (world_changing);
+	world_runs = NULL, world_changing = NULL, world_changes = 0;
 	world_loaded = world_count = world_kept = 0;
 }
 
@@ -729,6 +829,10 @@ static void RE_LoadWorld (const char *name)
 	for (set = 0; set < 2; set++)
 		for (i = 0; i < world_kept; i++)
 			gpuKept (set, i, &world_runs[i].state, world_runs[i].vertices, world_runs[i].first, world_runs[i].count);
+	world_changing = malloc ((world_kept + 1) * sizeof (int));
+	for (i = 0; i < world_kept; i++)
+		if (world_runs[i].changes)
+			world_changing[world_changes++] = i;
 	world_hidden[0] = world_hidden[1] = 0;
 	world_loaded = 1;
 	ri.Printf (PRINT_ALL, "the level is kept in GPU memory: %i vertices in %i draws, %u KB\n", mesh, world_kept,
@@ -768,16 +872,13 @@ static void world_frame (void)
 	if (world_seen)
 		return;		/* (a frame's second scene of the level: the kept draws have the first's matrices) */
 	seglKeptMatrices ();
-	for (i = 0; i < world_kept; i++) {
-		const run_t	*w = &world_runs[i];
-		unsigned	*c;
+	if (world_hidden[set])
+		for (i = 0; i < world_kept; i++)
+			gpuKeptCommand (i)[2] = world_runs[i].count;
+	for (i = 0; i < world_changes; i++) {
+		int	n = world_changing[i];
 
-		if (!w->changes && !world_hidden[set])
-			continue;
-		c = gpuKeptCommand (i);
-		c[2] = w->count;
-		if (w->changes)
-			run_now (&runs[i], w, c);
+		run_now (&runs[n], &world_runs[n], gpuKeptCommand (n));
 	}
 	world_hidden[set] = 0;
 	world_seen = 1;
@@ -826,9 +927,10 @@ static void draw_inline (const refEntity_t *e)
 /* ---- the light on what moves ---- */
 
 static float		*facings;	/* in GPU memory: the 256 ways a model's vertex can face */
+static unsigned		facings_at;	/* as a command names it */
 
 /* The light at a place, from the level's grid of it: ambient, directed (0 to 255) and from where. */
-static int light_at (const float *place, float *ambient, float *directed, float *from)
+static int light_at (const float *place, float *ambient, float *directed, float *from, int keep)
 {
 	const unsigned char	*grid;
 	float			frac[3], total = 0;
@@ -837,13 +939,13 @@ static int light_at (const float *place, float *ambient, float *directed, float 
 	VectorClear (ambient);
 	VectorClear (directed);
 	VectorClear (from);
-	if (!world_loaded || !world->grid_points || (view.rdflags & RDF_NOWORLDMODEL))
+	if (!world_loaded || !world->grid_points || (keep && (view.rdflags & RDF_NOWORLDMODEL)))
 		return 0;
 	/* (a thing at rest, or bobbing where it lies, was asked about last frame: the grid's points are 64 units apart) */
 	for (i = 0; i < 3; i++)
 		at[i] = (int)floor_of (place[i] * (1.0f / 16));
 	kept = (int)(((unsigned)at[0] * 73856093u ^ (unsigned)at[1] * 19349663u ^ (unsigned)at[2] * 83492791u) >> 8) & (LIGHT_KEPT - 1);
-	if (light_kept[kept].valid && light_kept[kept].at[0] == at[0] && light_kept[kept].at[1] == at[1] && light_kept[kept].at[2] == at[2]) {
+	if (keep && light_kept[kept].valid && light_kept[kept].at[0] == at[0] && light_kept[kept].at[1] == at[1] && light_kept[kept].at[2] == at[2]) {
 		const float *l = light_kept[kept].light;
 
 		VectorCopy (l, ambient);
@@ -891,6 +993,8 @@ static int light_at (const float *place, float *ambient, float *directed, float 
 		VectorScale (directed, total, directed);
 	}
 	VectorNormalize (from);
+	if (!keep)
+		return 1;
 	VectorCopy (at, light_kept[kept].at);
 	VectorCopy (ambient, light_kept[kept].light);
 	VectorCopy (directed, light_kept[kept].light + 3);
@@ -911,7 +1015,7 @@ static unsigned entity_light (const refEntity_t *e)
 
 	if (!out)
 		return 0;
-	if (!light_at (e->renderfx & RF_LIGHTING_ORIGIN ? e->lightingOrigin : e->origin, ambient, directed, from)) {
+	if (!light_at (e->renderfx & RF_LIGHTING_ORIGIN ? e->lightingOrigin : e->origin, ambient, directed, from, 1)) {
 		ambient[0] = ambient[1] = ambient[2] = directed[0] = directed[1] = directed[2] = 150;
 		from[0] = 0.57735f, from[1] = 0.57735f, from[2] = 0.57735f;
 	}
@@ -932,16 +1036,72 @@ static const se_shader_t *shader_handle (qhandle_t h)
 	return h > 0 && h <= shader_count ? shader_of[h - 1] : NULL;
 }
 
+/* What a model is drawn as with the skin or the shader it is given: its surfaces' stages, found once. */
+typedef struct { const se_surface_t *surface; const se_stage_t *stage; } way_draw_t;
+typedef struct { int model, skin, shader, first, count; } way_t;
+#define WAYS		256
+#define WAY_DRAWS	4096
+static way_t		ways[WAYS];
+static way_draw_t	way_draws[WAY_DRAWS];
+static int		way_draw_count;
+
+static const way_t *model_way (const refEntity_t *e, const se_model_t *m)
+{
+	way_t			*w = &ways[((unsigned)e->hModel * 31 + (unsigned)e->customSkin * 17 + (unsigned)e->customShader) & (WAYS - 1)];
+	const se_surface_t	*surf;
+	const se_shader_t	*custom;
+	const se_skin_t		*skin;
+	int			i, j, k;
+
+	if (w->model == e->hModel && w->skin == e->customSkin && w->shader == e->customShader)
+		return w;
+	custom = shader_handle (e->customShader);
+	skin = e->customSkin > 0 && e->customSkin <= skin_count ? &skins[e->customSkin - 1] : NULL;
+	if (way_draw_count + m->surfaces * 8 > WAY_DRAWS) {
+		memset (ways, 0, sizeof ways);
+		way_draw_count = 0;
+	}
+	w->model = e->hModel, w->skin = e->customSkin, w->shader = e->customShader;
+	w->first = way_draw_count;
+	for (i = 0, surf = &surfaces[m->first_surface]; i < m->surfaces; i++, surf++) {
+		const se_shader_t	*sh = custom;
+
+		if (!sh && skin) {
+			/* (which of a skin's shaders a surface has, by its name) */
+			for (j = 0; j < skin->count; j++)
+				if (!strcmp (skin_entries[skin->first + j].surface, surf->name)) {
+					int n = skin_entries[skin->first + j].shader;
+
+					sh = n >= 0 ? shader_of[n] : NULL;
+					break;
+				}
+		} else if (!sh && surf->shader >= 0) {
+			sh = shader_of[surf->shader];
+		}
+		if (!sh || (sh->flags & SE_NODRAW))
+			continue;
+		for (k = 0; k < sh->stages && way_draw_count < WAY_DRAWS; k++) {
+			const se_stage_t	*st = &stages[sh->first_stage + k];
+
+			if (st->flags & SE_LIGHTMAP)
+				continue;
+			way_draws[way_draw_count].surface = surf, way_draws[way_draw_count].stage = st;
+			way_draw_count++;
+		}
+	}
+	w->count = way_draw_count - w->first;
+	return w;
+}
+
 static void draw_model (const refEntity_t *e)
 {
 	const se_model_t	*m;
-	const se_surface_t	*surf;
-	const se_shader_t	*custom = shader_handle (e->customShader);
-	const se_skin_t		*skin = e->customSkin > 0 && e->customSkin <= skin_count ? &skins[e->customSkin - 1] : NULL;
-	unsigned		light = 0;
+	const way_t		*way;
+	const way_draw_t	*d, *end;
+	unsigned		light = 0, moved, *c;
 	const float		*info;
 	float			centre[3], radius;
-	int			frame, i, j, k, lit = 0;
+	int			frame, i, lit = 0;
 
 	if (e->hModel >= INLINE_MODEL) {
 		draw_inline (e);
@@ -961,53 +1121,28 @@ static void draw_model (const refEntity_t *e)
 		return;
 	entity_matrix (e->origin, e->axis, m->scale, m->translate);
 	se_counts[0]++;
-	for (i = 0, surf = &surfaces[m->first_surface]; i < m->surfaces; i++, surf++) {
-		const se_shader_t	*sh = custom;
-		unsigned		vertices = dat_rom + surf->vertices_at + (unsigned)frame * surf->vertices * 4;
+	way = model_way (e, m);
+	for (d = &way_draws[way->first], end = d + way->count; d < end; d++) {
+		const se_stage_t	*st = d->stage;
+		gpu_state		own;
 
-		if (!sh && skin) {
-			/* (which of a skin's shaders a surface has, by its name: found once) */
-			static struct { const se_skin_t *skin; const se_surface_t *surface; const se_shader_t *shader; } found[64], *f;
-
-			f = &found[((unsigned)(skin - skins) * 31 + (unsigned)(surf - surfaces)) & 63];
-			if (f->skin != skin || f->surface != surf) {
-				f->skin = skin, f->surface = surf, f->shader = NULL;
-				for (j = 0; j < skin->count; j++)
-					if (!strcmp (skin_entries[skin->first + j].surface, surf->name)) {
-						int n = skin_entries[skin->first + j].shader;
-
-						f->shader = n >= 0 ? shader_of[n] : NULL;
-						break;
-					}
-			}
-			sh = f->shader;
-		} else if (!sh && surf->shader >= 0) {
-			sh = shader_of[surf->shader];
+		c = gpuDrawAt (stage_base (&own, st, 0), dat_rom + d->surface->vertices_at + (unsigned)frame * d->surface->vertices * 4,
+			(int)d->surface->vertices);
+		if (!c)
+			return;
+		c[4] |= GPU_PACKED | GPU_TAGGED;
+		c[12] = dat_rom + d->surface->coords_at;
+		if (st->rgb == SE_RGB_DIFFUSE) {
+			if (!lit)
+				light = entity_light (e), lit = 1;
+			if (light)
+				c[4] |= GPU_FACING, c[11] = facings_at, c[13] = light;
+		} else {
+			c[11] = stage_fixed[st - stages] ? stage_colours[st - stages] : stage_colour (st, e->shaderRGBA, NULL);
 		}
-		if (!sh || (sh->flags & SE_NODRAW))
-			continue;
-		for (k = 0; k < sh->stages; k++) {
-			const se_stage_t	*st = &stages[sh->first_stage + k];
-			gpu_state		s;
-
-			if (st->flags & SE_LIGHTMAP)
-				continue;
-			stage_state (&s, st, 0);
-			s.vertex = GPU_PACKED | GPU_TAGGED;
-			s.more[0] = dat_rom + surf->coords_at;
-			if (st->rgb == SE_RGB_DIFFUSE) {
-				if (!lit)
-					light = entity_light (e), lit = 1;
-				if (light)
-					s.vertex |= GPU_FACING, s.colour = gpuAddress (facings), s.more[1] = light;
-			} else {
-				s.colour = stage_colour (st, e->shaderRGBA, NULL);
-			}
-			if (st->tcmods && (s.more[3] = stage_moved (st, NULL)) != 0)
-				s.vertex |= GPU_MOVED;
-			gpuDrawAt (&s, vertices, (int)surf->vertices);
-			se_counts[1]++;
-		}
+		if (st->tcmods && (moved = stage_moved (st, NULL)) != 0)
+			c[4] |= GPU_MOVED, c[15] = moved;
+		se_counts[1]++;
 	}
 }
 
@@ -1035,7 +1170,7 @@ static void draw_quad (const se_shader_t *sh, const float corners[4][3], const b
 
 		if (st->flags & SE_LIGHTMAP)
 			continue;
-		stage_state (&s, st, 0);
+		s = *stage_base (&s, st, 0);
 		s.vertex = GPU_QUADS;
 		s.colour = stage_colour (st, colour, colour);
 		if (st->tcmods && (s.more[3] = stage_moved (st, NULL)) != 0)
@@ -1098,14 +1233,31 @@ static void draw_beam (const refEntity_t *e, float half, int crossed)
 }
 
 typedef struct { const se_shader_t *shader; int first, count; } scene_poly_t;
-static refEntity_t	scene_entities[MAX_SCENE];
-static scene_poly_t		scene_polys[MAX_POLYS];
-static polyVert_t	scene_verts[MAX_POLY_VERTS];
-static int		entity_count, poly_count, vert_count;
+#define LIST_WORDS	8192
+#define VIEW_WORDS	22		/* of a refdef_t: where its picture is, the eye, the clock, its flags */
+enum { REC_PICTURE = 1, REC_SCENE };
+/* What a frame adds and draws. The first is this core's and drawn as it comes. The other two
+   are the client's game's on its worker core (client_shaderemu.c), written there in turn and
+   drawn here a frame later: `words` has the scenes and flat pictures in their order. */
+typedef struct {
+	refEntity_t	entities[MAX_SCENE];
+	scene_poly_t	polys[MAX_POLYS];
+	polyVert_t	verts[MAX_POLY_VERTS];
+	unsigned	words[LIST_WORDS];
+	int		entity_count, poly_count, vert_count, word_count;
+	int		scene_entity, scene_poly, scene_vert;	/* where the scene being added to begins */
+	unsigned	colour;				/* of the flat pictures that follow */
+} frame_list_t;
+static frame_list_t	lists[3] __attribute__ ((aligned (16)));
+static int		recording;	/* which of them the client's game on its worker writes */
 
-static void draw_poly (const scene_poly_t *p)
+static inline frame_list_t *list_now (void)
 {
-	const polyVert_t	*pv = &scene_verts[p->first];
+	return &lists[SE_OnWorker () == 2 ? recording : 0];
+}
+
+static void draw_poly (const scene_poly_t *p, const polyVert_t *pv)
+{
 	const se_shader_t	*sh = p->shader;
 	float			nudge[3] = {0, 0, 0};
 	int			k, i, n = p->count, quad = n == 4;
@@ -1121,7 +1273,7 @@ static void draw_poly (const scene_poly_t *p)
 
 		if (st->flags & SE_LIGHTMAP)
 			continue;
-		stage_state (&s, st, 0);
+		s = *stage_base (&s, st, 0);
 		s.vertex = quad ? GPU_QUADS : 0;
 		s.colour = stage_colour (st, pv[0].modulate, pv[0].modulate);
 		if (st->tcmods && (s.more[3] = stage_moved (st, NULL)) != 0)
@@ -1147,47 +1299,87 @@ static void draw_poly (const scene_poly_t *p)
 
 static void RE_ClearScene (void)
 {
-	entity_count = poly_count = vert_count = 0;
+	frame_list_t	*l = list_now ();
+
+	l->entity_count = l->scene_entity, l->poly_count = l->scene_poly, l->vert_count = l->scene_vert;
 }
 
 static void RE_AddRefEntityToScene (const refEntity_t *e)
 {
-	if (entity_count < MAX_SCENE && e->reType >= 0 && e->reType < RT_MAX_REF_ENTITY_TYPE)
-		scene_entities[entity_count++] = *e;
+	frame_list_t	*l = list_now ();
+
+	if (l->entity_count < MAX_SCENE && e->reType >= 0 && e->reType < RT_MAX_REF_ENTITY_TYPE)
+		l->entities[l->entity_count++] = *e;
 }
 
 static void RE_AddPolyToScene (qhandle_t hShader, int numVerts, const polyVert_t *verts, int num)
 {
 	const se_shader_t	*sh = shader_handle (hShader);
+	frame_list_t		*l = list_now ();
 	int			i;
 
 	if (!sh)
 		return;
 	for (i = 0; i < num; i++, verts += numVerts) {
-		if (numVerts < 3 || poly_count == MAX_POLYS || vert_count + numVerts > MAX_POLY_VERTS)
+		scene_poly_t	*p = &l->polys[l->poly_count];
+
+		if (numVerts < 3 || l->poly_count == MAX_POLYS || l->vert_count + numVerts > MAX_POLY_VERTS)
 			return;
-		scene_polys[poly_count].shader = sh, scene_polys[poly_count].first = vert_count, scene_polys[poly_count].count = numVerts;
-		memcpy (&scene_verts[vert_count], verts, numVerts * sizeof (polyVert_t));
-		vert_count += numVerts, poly_count++;
+		p->shader = sh, p->first = l->vert_count, p->count = numVerts;
+		memcpy (&l->verts[l->vert_count], verts, numVerts * sizeof (polyVert_t));
+		l->vert_count += numVerts, l->poly_count++;
 	}
 }
 
 static int RE_LightForPoint (vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir)
 {
-	return light_at (point, ambientLight, directedLight, lightDir);
+	return light_at (point, ambientLight, directedLight, lightDir, !SE_OnWorker ());	/* (what is kept is this core's) */
 }
 
 static void RE_AddLightToScene (const vec3_t org, float intensity, float r, float g, float b) {}
 
-static void RE_RenderScene (const refdef_t *fd)
+/* QUAKE3_SUM=1: a sum over what each frame of the client's game asked to have drawn (its
+   scenes' views, entities and polygons, its flat pictures), printed with the frame's time.
+   The same game gives the same sums whichever core made the frame. */
+static unsigned	sum, sum_time;
+static int	sums, summing, summed;
+
+
+static void sum_words (const void *words, int count)
+{
+	const unsigned	*w = words;
+
+	for (; count > 0; count--)
+		sum = (sum ^ *w++) * 0x01000193u;
+}
+
+void SE_SceneSum (int on)
+{
+	static int	asked;
+
+	if (!asked)
+		asked = 1, sums = getenv ("QUAKE3_SUM") != NULL;
+	summing = sums && on;
+}
+
+/* A scene drawn: `fd` may be only a refdef_t's first VIEW_WORDS words. */
+static void scene_draw (const refdef_t *fd, const frame_list_t *l, int entity, int entities, int poly, int polys)
 {
 	int	i, was = SE_Phase (3);
 
+	if (summing) {
+		sum_words (fd, VIEW_WORDS);
+		sum_words (&l->entities[entity], (entities - entity) * (int)(sizeof (refEntity_t) / 4));
+		for (i = poly; i < polys; i++)
+			sum_words (&l->verts[l->polys[i].first], l->polys[i].count * (int)(sizeof (polyVert_t) / 4));
+		if (!(fd->rdflags & RDF_NOWORLDMODEL))
+			sum_time = (unsigned)fd->time, summed = 1;
+	}
 	view_set (fd);
 	if (!(fd->rdflags & RDF_NOWORLDMODEL) && world_loaded)
 		world_frame ();
-	for (i = 0; i < entity_count; i++) {
-		const refEntity_t *e = &scene_entities[i];
+	for (i = entity; i < entities; i++) {
+		const refEntity_t *e = &l->entities[i];
 
 		switch (e->reType) {
 		case RT_MODEL:
@@ -1208,56 +1400,130 @@ static void RE_RenderScene (const refdef_t *fd)
 		}
 	}
 	view_matrix_again ();
-	for (i = 0; i < poly_count; i++)
-		draw_poly (&scene_polys[i]);
-	/* (as the game's own renderer: a scene's entities and polygons are drawn once) */
-	entity_count = poly_count = vert_count = 0;
+	for (i = poly; i < polys; i++)
+		draw_poly (&l->polys[i], &l->verts[l->polys[i].first]);
 	SE_Phase (was);
+}
+
+static void RE_RenderScene (const refdef_t *fd)
+{
+	frame_list_t	*l = list_now ();
+
+	if (l == &lists[0]) {
+		scene_draw (fd, l, 0, l->entity_count, 0, l->poly_count);
+		/* (as the game's own renderer: a scene's entities and polygons are drawn once) */
+		l->entity_count = l->poly_count = l->vert_count = 0;
+		return;
+	}
+	if (l->word_count + 5 + VIEW_WORDS <= LIST_WORDS) {
+		unsigned *w = &l->words[l->word_count];
+
+		w[0] = REC_SCENE, w[1] = l->scene_entity, w[2] = l->entity_count, w[3] = l->scene_poly, w[4] = l->poly_count;
+		memcpy (w + 5, fd, VIEW_WORDS * 4);
+		l->word_count += 5 + VIEW_WORDS;
+	}
+	l->scene_entity = l->entity_count, l->scene_poly = l->poly_count, l->scene_vert = l->vert_count;
 }
 
 /* ---- the flat screen: the status bar, the console, the menus ---- */
 
-static unsigned		flat_colour = 0x00ffffff;
-
 static void RE_SetColor (const float *rgba)
 {
-	flat_colour = rgba ? colour_word (level (rgba[0] * 255.0f), level (rgba[1] * 255.0f), level (rgba[2] * 255.0f), level (rgba[3] * 255.0f)) : 0x00ffffff;
+	list_now ()->colour = rgba ? colour_word (level (rgba[0] * 255.0f), level (rgba[1] * 255.0f), level (rgba[2] * 255.0f), level (rgba[3] * 255.0f)) : 0x00ffffff;
 }
 
-static void RE_StretchPic (float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader)
+#define PICTURE_WORDS	8
+/* A flat picture as eight words: what it is and its shader, its colour, two corners, and the texture's two. */
+static inline void picture_words (unsigned *w, unsigned colour, float x, float y, float wide, float high, float s1, float t1, float s2, float t2,
+	qhandle_t hShader)
 {
-	const se_shader_t	*sh = shader_handle (hShader);
-	gpu_state		s;
-	unsigned		*v, x0, y0, x1, y1, u0, u1, v0, v1;
+	w[0] = REC_PICTURE | (unsigned)hShader << 8, w[1] = colour;
+	w[2] = float_bits (x), w[3] = float_bits (y), w[4] = float_bits (x + wide), w[5] = float_bits (y + high);
+	w[6] = ((unsigned)(int)(s1 * 1024.0f) & 0xffff) | (unsigned)(int)(s2 * 1024.0f) << 16;
+	w[7] = ((unsigned)(int)(t1 * 1024.0f) & 0xffff) | (unsigned)(int)(t2 * 1024.0f) << 16;
+}
 
+static void picture_draw (const unsigned *w)
+{
+	const se_shader_t	*sh = shader_handle ((qhandle_t)(w[0] >> 8));
+	gpu_state		s;
+	unsigned		*v, u0 = w[6] & 0xffff, u1 = w[6] >> 16, v0 = w[7] << 16, v1 = w[7] & 0xffff0000u;
+
+	if (summing)
+		sum_words (w, PICTURE_WORDS);
 	if (!sh || !sh->stages)
 		return;
 	se_counts[5]++;
 	if (matrix_is != 2) {
-		float	m[16];
+		static const float	one[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+		float			m[16];
 
 		memset (m, 0, sizeof m);
 		m[0] = 2.0f / config.vidWidth, m[5] = -2.0f / config.vidHeight, m[10] = -1, m[12] = -1, m[13] = 1, m[15] = 1;
 		picture_viewport (0, 0, config.vidWidth, config.vidHeight);
 		gpuProjection (m);
-		memset (m, 0, sizeof m);
-		m[0] = m[5] = m[10] = m[15] = 1;
-		gpuModelview (m);
+		gpuModelview (one);
 		matrix_is = 2;
 	}
 	/* (drawn in the order they come, in the one pass that blends without depth: the first stage of each) */
-	stage_state (&s, &stages[sh->first_stage], 1);
-	s.vertex = GPU_QUADS;
-	s.colour = flat_colour;
+	s = *stage_base (&s, &stages[sh->first_stage], 1);
+	s.colour = w[1];
 	if ((v = gpuDrawRoom (&s, 4, 6)) == NULL)
 		return;
-	x0 = float_bits (x), y0 = float_bits (y), x1 = float_bits (x + w), y1 = float_bits (y + h);
-	u0 = (unsigned)(int)(s1 * 1024.0f) & 0xffff, u1 = (unsigned)(int)(s2 * 1024.0f) & 0xffff;
-	v0 = (unsigned)(int)(t1 * 1024.0f) << 16, v1 = (unsigned)(int)(t2 * 1024.0f) << 16;
-	v[0] = x0, v[1] = y0, v[2] = 0, v[3] = u0 | v0;
-	v[4] = x1, v[5] = y0, v[6] = 0, v[7] = u1 | v0;
-	v[8] = x1, v[9] = y1, v[10] = 0, v[11] = u1 | v1;
-	v[12] = x0, v[13] = y1, v[14] = 0, v[15] = u0 | v1;
+	v[0] = w[2], v[1] = w[3], v[2] = 0, v[3] = u0 | v0;
+	v[4] = w[4], v[5] = w[3], v[6] = 0, v[7] = u1 | v0;
+	v[8] = w[4], v[9] = w[5], v[10] = 0, v[11] = u1 | v1;
+	v[12] = w[2], v[13] = w[5], v[14] = 0, v[15] = u0 | v1;
+}
+
+static void RE_StretchPic (float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader)
+{
+	frame_list_t	*l = list_now ();
+	unsigned	words[PICTURE_WORDS];
+
+	if (l == &lists[0]) {
+		picture_words (words, l->colour, x, y, w, h, s1, t1, s2, t2, hShader);
+		picture_draw (words);
+	} else if (l->word_count + PICTURE_WORDS <= LIST_WORDS) {
+		picture_words (&l->words[l->word_count], l->colour, x, y, w, h, s1, t1, s2, t2, hShader);
+		l->word_count += PICTURE_WORDS;
+	}
+}
+
+/* The client's game on its worker core begins a frame: its scenes and pictures go to list `which` (1 or 2). */
+void SE_SceneRecord (int which)
+{
+	frame_list_t	*l = &lists[which];
+
+	recording = which;
+	l->entity_count = l->poly_count = l->vert_count = l->word_count = 0;
+	l->scene_entity = l->scene_poly = l->scene_vert = 0;
+	l->colour = 0x00ffffff;
+}
+
+/* That frame drawn, by this core. */
+void SE_SceneReplay (int which)
+{
+	const frame_list_t	*l = &lists[which];
+	int			at = 0;
+
+	while (at < l->word_count) {
+		const unsigned *w = &l->words[at];
+
+		if ((w[0] & 0xff) == REC_PICTURE) {
+			picture_draw (w);
+			at += PICTURE_WORDS;
+		} else {
+			scene_draw ((const refdef_t *)(w + 5), l, (int)w[1], (int)w[2], (int)w[3], (int)w[4]);
+			at += 5 + VIEW_WORDS;
+		}
+	}
+}
+
+/* The lists' pages are there before a worker writes them (docs/multicore.md). */
+void SE_SceneTouch (void (*touch) (void *, unsigned))
+{
+	touch (lists, sizeof lists);
 }
 
 static void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {}
@@ -1282,8 +1548,13 @@ static void RE_EndFrame (int *frontEndMsec, int *backEndMsec)
 		*backEndMsec = 0;
 	if (!world_seen)
 		world_hide ();
+	if (summed)
+		printf ("q3sum: %u %08x\n", sum_time, sum);
+	sum = 0, summed = 0;
 	was = SE_Phase (4);
+	SE_Part (12);
 	gpuSwap (0);
+	SE_Part (10);
 	SE_Phase (was);
 	frame_number++;
 	SE_FrameDone ();
@@ -1388,6 +1659,7 @@ static void RE_BeginRegistration (glconfig_t *out)
 			memcpy (facings + 4 * i, normals + 3 * i, 12);
 			facings[4 * i + 3] = 0;
 		}
+		facings_at = gpuAddress (facings);
 		glClearColor (0, 0, 0, 0);
 	}
 	memset (&config, 0, sizeof config);

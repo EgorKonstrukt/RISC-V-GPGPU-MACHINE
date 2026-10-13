@@ -23,7 +23,9 @@
 #define RING_SHORT 65536u	/* when sound memory has no megabyte left */
 #define SLICE 2048	/* frames this core decodes between two looks at everything else */
 #define MP3_BACK 12	/* frames before a piece that fill its bit reservoir */
-#define MP3_WARM 2	/* the last of them are decoded, for the filters' memory */
+#define MP3_WARM 2	/* as it was (NXPLAY_WARM=2): the last of them are decoded whole */
+#define OWN_UNDER 8	/* with fewer workers than this the first core takes pieces too */
+#define FLAC_WORKERS 24	/* a FLAC file's: a block is a tenth of a second, a worker's for half a second */
 #define SLOTS 2048
 #define W 440
 #define KEYS_Y 70
@@ -83,6 +85,7 @@ static int was_working, decided, half_wanted = -1, underruns;
 static uint64_t own_cycles, worker_cycles, all_decoded;
 static uint32_t began_ms, began_cycles, limit_seconds, memory_mb;
 static int want_sum, exit_at_end, mod_rate = 22050, piece_frames_asked;
+static int warm_asked, own_under = OWN_UNDER;
 static uint32_t sum = 2166136261u, sum_count;
 static char note[160];
 
@@ -219,7 +222,9 @@ int mp3half_frame(mp3dec_t *dec, const uint8_t *mp3, int bytes, mp3d_sample_t *p
 static struct {
 	uint32_t *at;		/* where each frame begins in the file */
 	int count, samples;	/* frames, and the samples of one channel in each */
-	int per_piece;
+	int per_piece, layer;
+	int warm;		/* frames before a piece that are decoded for what they leave, and how */
+	mp3d_sample_t *warm_as;
 	mp3dec_t dec;		/* this core's decoder */
 	int next, half;		/* the frame it would decode next, -1 for none; its rate */
 } mp3;
@@ -258,6 +263,11 @@ mp3_index(void)
 		}
 		pos += (uint32_t)info.frame_bytes;
 	}
+	/* A layer III granule's overlap comes of its own coefficients and the filter's past of the
+	 * granule before: two granules decoded without their samples are all a piece needs. */
+	mp3.layer = layer;
+	mp3.warm = warm_asked ? warm_asked : layer == 3 && mp3.samples == 1152 ? 1 : 2;
+	mp3.warm_as = layer == 3 && !warm_asked ? MP3D_WARM : NULL;
 	return mp3.count >= 4;
 }
 
@@ -281,7 +291,7 @@ mp3_warm(mp3dec_t *dec, int half, int frame)
 
 	memset(dec, 0, sizeof *dec);
 	for (; f < frame; f++)
-		mp3_one(dec, half, f, f < frame - MP3_WARM ? MP3D_SKIP : drop);
+		mp3_one(dec, half, f, f < frame - mp3.warm ? MP3D_SKIP : mp3.warm_as ? mp3.warm_as : drop);
 }
 
 static void
@@ -308,12 +318,41 @@ mp3_job(uint32_t what, uint32_t at)
 		end = mp3.count;
 	mp3_warm(&dec, half, from);
 	/* how far it is, for the speed: the frames decoded to begin with count as work too */
-	head[0] = MP3_WARM;
+	head[0] = 1;
 	for (f = from; f < end && !head[4]; f++) {
 		mp3_decode(&dec, half, f, to);
 		to += (mp3.samples >> half) * tune.channels;
-		head[0] = (uint32_t)(f + 1 - from + MP3_WARM);
+		head[0] = (uint32_t)(f + 1 - from + 1);
 	}
+	return cycles() - before;
+}
+
+/* ---- FLAC: its blocks are decoded each by itself, so a piece is some blocks and any core's ---- */
+
+static struct {
+	int pieces;		/* decoded so: the file's blocks are all as long, and there are workers */
+	uint32_t block;		/* frames a block */
+} flacs;
+
+/* A worker's job: piece `piece` into the slot at `at` (or the place its head names) with the
+ * decoder and from the byte the head names. */
+static uint32_t
+flac_job(uint32_t piece, uint32_t at)
+{
+	volatile uint32_t *head = (volatile uint32_t *)at;
+	int16_t *to = head[5] ? (int16_t *)head[5] : (int16_t *)(at + 32);
+	uint32_t before = cycles(), want = tune.total - piece * tune.piece, done = 0;
+	int decoder = (int)head[7], got = 1;
+
+	if (want > tune.piece)
+		want = tune.piece;
+	flac_from(decoder, head[6]);
+	for (; done < want && got > 0 && !head[4]; done += (uint32_t)got) {
+		got = flac_next(decoder, to + done * (uint32_t)tune.channels, (int)(want - done < flacs.block ? want - done : flacs.block));
+		head[0] = done + (uint32_t)got;
+	}
+	if (done < want && !head[4])
+		memset(to + done * (uint32_t)tune.channels, 0, (want - done) * (uint32_t)tune.channels * 2);
 	return cycles() - before;
 }
 
@@ -460,7 +499,7 @@ progress(void)
 
 	for (k = 1; k <= workers; k++)
 		if (job[k] && job[k]->state == SLOT_WORKER)
-			frames += job[k]->head[0] * tune.piece / (uint32_t)(mp3.per_piece + MP3_WARM);
+			frames += flacs.pieces ? job[k]->head[0] : job[k]->head[0] * tune.piece / (uint32_t)(mp3.per_piece + 1);
 	return frames;
 }
 
@@ -479,7 +518,7 @@ seek_to(uint32_t frame)
 	drop_all();
 	if (tune.total != ~0u && frame >= tune.total)
 		frame = tune.total ? tune.total - 1 : 0;
-	if (tune.kind == K_MP3) {
+	if (tune.kind == K_MP3 || flacs.pieces) {
 		play_piece = next_piece = frame / tune.piece;
 		out.base = play_piece * tune.piece;
 		mp3.next = -1;
@@ -517,6 +556,17 @@ own_step(void)
 		s->done += (uint32_t)mp3.samples;
 		decoded += (uint32_t)mp3.samples;
 		all_decoded += (uint32_t)mp3.samples;
+	} else if (flacs.pieces) {
+		int ask = want - s->done > SLICE ? SLICE : (int)(want - s->done), got;
+
+		if (!s->done)
+			flac_from(0, flac_block_at(s->piece * (tune.piece / flacs.block), ~0u));
+		got = flac_next(0, s->pcm + s->done * (uint32_t)tune.channels, ask);
+		if (got < ask)	/* (a block that is not there: silence, as a worker's) */
+			memset(s->pcm + (s->done + (uint32_t)got) * (uint32_t)tune.channels, 0, (size_t)(ask - got) * tune.channels * 2);
+		s->done += (uint32_t)ask;
+		decoded += (uint32_t)ask;
+		all_decoded += (uint32_t)ask;
 	} else {
 		int ask = want - s->done > SLICE ? SLICE : (int)(want - s->done);
 		int got = ask > 0 ? source_read(s->pcm + s->done * (uint32_t)tune.channels, ask) : 0;
@@ -694,6 +744,7 @@ pump(void)
 	uint32_t count = pieces(), now = now_ms(), s;
 	struct slot *slot;
 	int16_t *place;
+	uint32_t from = 0;
 	int k, most, far, held, working = 0, active = state == BUFFERING || state == PLAYING;
 
 	if (was_working)
@@ -721,20 +772,31 @@ pump(void)
 		if (job[k]) {
 			working = 1;
 		} else if (!held && next_piece < count && ((place = piece_place(next_piece, &far)) != NULL || !far) &&
+			   (!flacs.pieces || (flac_decoder(k) && (from = flac_block_at(next_piece * (tune.piece / flacs.block), 65536u)) != 0)) &&
 			   (slot = slot_get(most, 0)) != NULL) {
 			/* (with workers a piece the ring has no room for yet waits: there are seconds in hand) */
 			slot->piece = next_piece++;
 			slot->state = SLOT_WORKER;
 			slot->head[0] = slot->head[4] = 0;
 			slot->head[5] = (uint32_t)place;
+			slot->head[6] = from;
+			slot->head[7] = (uint32_t)k;
 			slot->direct = place != NULL;
 			slot->pcm = place ? place : slot->own;
 			job[k] = slot;
-			mcw_post(k, mp3_job, slot->piece | (uint32_t)tune.half << 31, (uint32_t)slot->head);
+			if (flacs.pieces)
+				mcw_post(k, flac_job, slot->piece, (uint32_t)slot->head);
+			else
+				mcw_post(k, mp3_job, slot->piece | (uint32_t)tune.half << 31, (uint32_t)slot->head);
 			working = 1;
+		} else if (flacs.pieces && next_piece < count) {
+			working = 1;	/* (a block being looked for, or a piece waiting for room: not stuck) */
 		}
 	}
-	if (!mine && !held && active && next_piece < count && ((place = piece_place(next_piece, &far)) != NULL || !far || !workers) &&
+	/* with workers enough the first core decodes nothing: it gives pieces out sooner for it */
+	if (!mine && !held && active && next_piece < count && (workers < own_under || !workers) &&
+	    ((place = piece_place(next_piece, &far)) != NULL || !far || !workers) &&
+	    (!flacs.pieces || (flac_decoder(0) && flac_block_at(next_piece * (tune.piece / flacs.block), 65536u))) &&
 	    (mine = slot_get(most, 0)) != NULL) {
 		mine->piece = next_piece++;
 		mine->state = SLOT_MINE;
@@ -771,6 +833,11 @@ unload(void)
 	slot_count = 0;
 	if (tune.kind == K_FLAC)
 		flac_close();
+	if (flacs.pieces) {	/* (a FLAC file's workers are fewer than another kind's) */
+		mcw_close();
+		workers = 0;
+	}
+	flacs.pieces = 0;
 	free(tune.file);
 	free(mp3.at);
 	mp3.at = NULL;
@@ -778,14 +845,19 @@ unload(void)
 	state = STOPPED;
 }
 
+/* Up to `most` workers, or those it has when they are no more than that. */
 static void
-workers_open(void)
+workers_open(int most)
 {
 	extern char __DATA_BEGIN__[], _end[];
 
+	if (workers > most) {
+		mcw_close();
+		workers = 0;
+	}
 	if (workers || workers_wanted <= 0)
 		return;
-	workers = mcw_open(workers_wanted);
+	workers = mcw_open(workers_wanted < most ? workers_wanted : most);
 	/* what starts as zeros is not there for a worker until this core has touched it */
 	if (workers)
 		mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
@@ -841,7 +913,7 @@ load(const char *path)
 		tune.half = half_wanted > 0;
 		/* a piece is half a second; with many workers (63 make 8 s of sound in 2.5 s) a tenth,
 		 * which is heard a piece sooner for more early frames decoded */
-		workers_open();
+		workers_open(MC_MAX_CORES);
 		mp3.per_piece = piece_frames_asked > 0 ? piece_frames_asked : workers >= 24 ? 4 : (tune.rate / 2 + mp3.samples - 1) / mp3.samples;
 		tune.piece = (uint32_t)(mp3.per_piece * mp3.samples);
 	} else {
@@ -853,8 +925,20 @@ load(const char *path)
 		return "a sample rate this player does not take";
 	}
 	if (tune.kind == K_MP3) {
-		workers_open();
-	} else {
+		workers_open(MC_MAX_CORES);
+	} else if (tune.kind == K_FLAC && tune.total != ~0u && workers_wanted > 0 && flac_blocks(tune.file, tune.size, &flacs.block)) {
+		uint32_t blocks;
+
+		/* a piece is blocks of about a tenth of a second (half a second with few workers), and
+		 * whole 16 bytes, for two cores never to store to the same */
+		workers_open(FLAC_WORKERS);
+		blocks = ((uint32_t)tune.rate / (workers >= 12 ? 16 : 2) + flacs.block - 1) / flacs.block;
+		while ((blocks * flacs.block * (uint32_t)tune.channels * 2) & 15)
+			blocks++;
+		tune.piece = blocks * flacs.block;
+		flacs.pieces = workers > 0;
+	}
+	if (tune.kind != K_MP3 && !flacs.pieces) {
 		/* the other kinds are one core's work: the workers are someone else's meanwhile */
 		mcw_close();
 		workers = 0;
@@ -1247,6 +1331,10 @@ main(int argc, char **argv)
 	memory_mb = (uint32_t)number("NXPLAY_MEMORY", 0);
 	mod_rate = number("NXPLAY_MODRATE", mod_rate);
 	piece_frames_asked = number("NXPLAY_PIECE", 0);
+	warm_asked = number("NXPLAY_WARM", 0);	/* 2: a piece's early frames as they were, decoded whole */
+	mod_by_channel = number("NXPLAY_MODMIX", 0);
+	if (number("NXPLAY_OWN", 0))		/* the first core takes pieces whatever the workers */
+		own_under = MC_MAX_CORES;
 	out.volume = number("NXPLAY_VOLUME", 200);
 	signal(SIGINT, leave);
 	signal(SIGTERM, leave);

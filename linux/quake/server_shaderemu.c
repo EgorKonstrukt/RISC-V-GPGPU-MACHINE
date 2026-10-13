@@ -51,6 +51,27 @@ float sv_frametime;		/* the server's host_frametime */
 unsigned se_load_jobs;
 unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind;	/* for the quakestat: lines */
 
+/*
+ * The program's workers, opened once: the server's frame has the first, the light maps, the
+ * water and the particles those after it (world_shaderemu.c, r_part.c). QUAKE_WORKERS=N asks
+ * for N in all (0: none).
+ */
+int SE_Workers (void)
+{
+	static int count = -1;
+
+	if (count < 0) {
+		const char *want = getenv ("QUAKE_WORKERS");
+
+		count = mcw_open (want ? atoi (want) : SE_WORKERS);
+		if (count > 0)
+			atexit (mcw_close);
+		else
+			count = 0;
+	}
+	return count;
+}
+
 static void setup (void)
 {
 	const char *how = getenv ("QUAKE_SERVER");
@@ -65,12 +86,8 @@ static void setup (void)
 		mode = MODE_LATE;
 	else if (how && !strcmp (how, "wait"))
 		mode = MODE_WAIT;
-	if (mode >= MODE_WAIT) {
-		if (mcw_open (1) > 0)
-			atexit (mcw_close);
-		else
-			mode = MODE_INLINE;
-	}
+	if (mode >= MODE_WAIT && SE_Workers () < 1)
+		mode = MODE_INLINE;
 	Sys_Printf ("quake: the server's frame is on %s\n", mode >= MODE_WAIT ? "a worker core" : "this core");
 }
 

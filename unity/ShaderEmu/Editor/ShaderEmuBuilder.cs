@@ -996,6 +996,18 @@ public static partial class ShaderEmuBuilder
         List<string> sites = new List<string>();
         foreach (string line in File.ReadAllLines(ShaderEmuImages.Repo + "/linux/apps/web/sites.txt"))
             if (line.Contains("\t")) sites.Add(line.Split('\t')[0]);
+        // and what those pages ask for themselves, their sheets and pictures and the pages one
+        // link on (linux/apps/web/preload.py writes the list: "kind<TAB>address" a line)
+        string more = ShaderEmuImages.Repo + "/build/web/links.txt";
+        if (File.Exists(more))
+            foreach (string line in File.ReadAllLines(more))
+            {
+                string[] part = line.Split('\t');
+                if (part.Length == 2 && part[1].StartsWith("https://") && part[1].Length < 256 && sites.Count < 6000) sites.Add(part[1]);
+            }
+        else Debug.LogWarning("[ShaderEmu] no build/web/links.txt: the browser opens only the sites of sites.txt without a paste (python linux/apps/web/preload.py)");
+        // EmuMachine looks an address up by halving: in the order of the characters' numbers
+        sites = new List<string>(new SortedSet<string>(sites, System.StringComparer.Ordinal));
         machine.siteAddresses = sites.ToArray();
         machine.siteUrls = sites.ConvertAll(s => new VRC.SDKBase.VRCUrl(s)).ToArray();
 

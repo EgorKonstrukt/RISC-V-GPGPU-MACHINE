@@ -39,6 +39,28 @@ static struct { int sfx, entnum, loud; } looping[LOOPS];
 static vec3_t	entity_at[MAX_GENTITIES], ear, ear_axis[3];
 static int	ear_entity;
 
+/*
+ * What the client's game asks for on its worker core (client_shaderemu.c) is kept in one of
+ * two lists and done by the first core when it takes the frame: the voices are that core's.
+ */
+enum { KEPT_START, KEPT_CLEAR, KEPT_LOOP, KEPT_STOP_LOOP, KEPT_EARS };
+#define MAX_KEPT	256
+typedef struct { int kind, a, b, c; float v[12]; } kept_t;
+static struct { kept_t sound[MAX_KEPT]; int count, unused[3]; } kept[3] __attribute__ ((aligned (16)));
+static int	recording;
+
+/* Room for one more of the worker's askings, or NULL on the first core (which does it at once). */
+static kept_t *keep (int kind, int a, int b, int c)
+{
+	kept_t	*k;
+
+	if (SE_OnWorker () != 2)
+		return NULL;
+	k = &kept[recording].sound[kept[recording].count < MAX_KEPT - 1 ? kept[recording].count++ : MAX_KEPT - 1];
+	k->kind = kind, k->a = a, k->b = b, k->c = c;
+	return k;
+}
+
 /* The card's volume word for a sound at a place, as the game's mixer had it; *loud is how loud in all. */
 static uint32_t heard (const float *origin, int local, int *loud)
 {
@@ -77,7 +99,14 @@ void S_StartSound (vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx)
 	heard_t	*c, probe;
 	uint32_t	volume;
 	int		i, pick = -1, loud;
+	kept_t		*k = keep (KEPT_START, entnum, entchannel, sfx);
 
+	if (k) {
+		k->v[3] = origin != NULL;
+		if (origin)
+			VectorCopy (origin, k->v);
+		return;
+	}
 	if (!ready || sfx <= 0 || sfx > sound_count || entnum < 0 || entnum >= MAX_GENTITIES)
 		return;
 	memset (&probe, 0, sizeof probe);
@@ -129,11 +158,19 @@ void S_StopAllSounds (void)
 
 void S_ClearLoopingSounds (qboolean killall)
 {
+	if (keep (KEPT_CLEAR, 0, 0, 0))
+		return;
 	asked_count = 0;
 }
 
 void S_AddLoopingSound (int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx)
 {
+	kept_t	*k = keep (KEPT_LOOP, entityNum, sfx, 0);
+
+	if (k) {
+		VectorCopy (origin, k->v);
+		return;
+	}
 	if (!ready || sfx <= 0 || sfx > sound_count || asked_count == MAX_ASKED)
 		return;
 	asked[asked_count].sfx = sfx, asked[asked_count].entnum = entityNum;
@@ -150,6 +187,8 @@ void S_StopLoopingSound (int entityNum)
 {
 	int	i, n = 0;
 
+	if (keep (KEPT_STOP_LOOP, entityNum, 0, 0))
+		return;
 	for (i = 0; i < asked_count; i++)
 		if (asked[i].entnum != entityNum)
 			asked[n++] = asked[i];
@@ -158,6 +197,13 @@ void S_StopLoopingSound (int entityNum)
 
 void S_Respatialize (int entityNum, const vec3_t origin, vec3_t axis[3], int inwater)
 {
+	kept_t	*k = keep (KEPT_EARS, entityNum, inwater, 0);
+
+	if (k) {
+		VectorCopy (origin, k->v);
+		memcpy (k->v + 3, axis, 9 * sizeof (float));
+		return;
+	}
 	ear_entity = entityNum;
 	VectorCopy (origin, ear);
 	AxisCopy (axis, ear_axis);
@@ -167,6 +213,32 @@ void S_UpdateEntityPosition (int entityNum, const vec3_t origin)
 {
 	if (entityNum >= 0 && entityNum < MAX_GENTITIES)
 		VectorCopy (origin, entity_at[entityNum]);
+}
+
+/* The client's game on its worker begins a frame: what it asks for goes to list `which` (1 or 2). */
+void SE_SoundRecord (int which)
+{
+	recording = which;
+	kept[which].count = 0;
+}
+
+/* The first core does what that frame asked for. */
+void SE_SoundReplay (int which)
+{
+	int	i;
+
+	for (i = 0; i < kept[which].count; i++) {
+		kept_t	*k = &kept[which].sound[i];
+
+		switch (k->kind) {
+		case KEPT_START:	S_StartSound (k->v[3] ? k->v : NULL, k->a, k->b, k->c); break;
+		case KEPT_CLEAR:	S_ClearLoopingSounds (qfalse); break;
+		case KEPT_LOOP:		S_AddLoopingSound (k->a, k->v, NULL, k->b); break;
+		case KEPT_STOP_LOOP:	S_StopLoopingSound (k->a); break;
+		case KEPT_EARS:		S_Respatialize (k->a, k->v, (vec3_t *)(k->v + 3), k->b); break;
+		}
+	}
+	kept[which].count = 0;
 }
 
 /* Once a frame: every playing sound as loud as it is from where the listener is now. */

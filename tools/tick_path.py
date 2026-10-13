@@ -23,17 +23,18 @@ OPEN = ('if_nz', 'if_z', 'loop', 'switch')
 # or in the next one, which was read ahead (R: into the fetch block, no page change, a new
 # texel, and it is the one read ahead).
 PREFIX = {'S': 'e', 'R': 'tett'}
-# After the prefix: the kinds' tests in order (arithmetic, load, store, branch, jump), then
-# what the kind's own block meets; the last turn is the step's "was it ours" test.
+# After the prefix: the tree of the kinds' tests (the group of arithmetic, loads, stores and
+# floats; in it arithmetic and loads; then the kind), and what the kind's own block meets; the
+# last turn is the step's "was it ours" test.
 KINDS = {
-    'arithmetic':                   't' + 'e',
-    'load, from the write cache':   'et' + 'e' + 't' + 't' + 'te' + 't' + 'e',
-    'load, a texture read':         'et' + 'e' + 't' + 't' + 'te' + 'eet' + 'e',
-    'load, nothing stored near':    'et' + 'e' + 't' + 'e' + 'e' + 'e',
-    'store, texel in the cache':    'eet' + 'e' + 't' + 'e' + 't' + 'e' + 'tt' + 'e',
-    'store, a new texel':           'eet' + 'e' + 't' + 'e' + 't' + 'e' + 'e' + 'ett' + 'e',
-    'branch':                       'eeet' + 'e',
-    'jump':                         'eeeet' + 'e',
+    'arithmetic':                   'ttt' + 'e',
+    'load, from the write cache':   'tte' + 'e' + 't' + 't' + 'te' + 't' + 'e',
+    'load, a texture read':         'tte' + 'e' + 't' + 't' + 'tte' + 'e' + 'e',
+    'load, nothing stored near':    'tte' + 'e' + 't' + 'e' + 'e' + 'e' + 'e',
+    'store, texel in the cache':    'tet' + 'e' + 't' + 'e' + 'e' + 'ttt' + 'e',
+    'store, a new texel':           'tet' + 'e' + 't' + 'e' + 'tee' + 'ee' + 't' + 't' + 'et' + 'e',
+    'branch':                       'et' + 'e',
+    'jump':                         'eet' + 'e',
 }
 # Shares of the instructions a shell loop under Linux runs (--profile, October 2026).
 MIX = {

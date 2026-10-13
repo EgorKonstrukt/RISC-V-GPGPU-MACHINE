@@ -409,7 +409,15 @@ draw_line_on(int line, int cleared)
 			if (shown > b)
 				ui_text(window, MARGIN + b * ui_fw, y, text + b, shown - b, BLACK, 1);
 		} else {
-			ui_text(window, MARGIN, y, text, shown, BLACK, 1);
+			/* (spaces at its ends draw nothing, and each is a word of the request's) */
+			int lead = 0;
+
+			while (lead < shown && text[lead] == ' ')
+				lead++;
+			while (shown > lead && text[shown - 1] == ' ')
+				shown--;
+			if (shown > lead)
+				ui_text(window, MARGIN + lead * ui_fw, y, text + lead, shown - lead, BLACK, 1);
 		}
 	}
 	if (line == cy)
@@ -422,6 +430,29 @@ draw_line(int line)
 	draw_line_on(line, 0);
 }
 
+static int status_edge = 1;	/* the status line's edge is to be drawn too */
+
+/* Puts a text, or a number, at the end of another; where that ends is returned. */
+static char *
+put(char *to, const char *text)
+{
+	while (*text)
+		*to++ = *text++;
+	*to = 0;
+	return to;
+}
+
+static char *
+put_number(char *to, int n)
+{
+	char digits[12];
+	int at = sizeof digits - 1;
+
+	for (digits[at] = 0; n > 0 || at == (int)sizeof digits - 1; n /= 10)
+		digits[--at] = (char)('0' + n % 10);
+	return put(to, digits + at);
+}
+
 static void
 draw_status(void)
 {
@@ -431,25 +462,66 @@ draw_status(void)
 		snprintf(text, sizeof text, "Find: %s_   (Enter finds, Escape leaves)", sought);
 	else if (asking == ASK_LINE)
 		snprintf(text, sizeof text, "Go to line: %s_   (of %d; Enter goes, Escape leaves)", line_asked, count);
-	else
-		snprintf(text, sizeof text, "%s%s   line %d, column %d   %s", path, modified ? " *" : "", cy + 1, cx + 1, notice);
-	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
-	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
+	else	/* (what every key changes, made without printf: 2,800 instructions a key) */
+		put(put(put_number(put(put_number(put(put(put(text, path), modified ? " *" : ""), "   line "), cy + 1), ", column "), cx + 1), "   "), notice);
+	/* its edge is drawn with the whole window (draw_all); a key changes the line inside it */
+	if (status_edge) {
+		ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
+		ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
+		status_edge = 0;
+	} else
+		ui_fill(window, 1, height - STATUS + 1, width - 2, STATUS - 2, UI_FACE);
 	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
+}
+
+/* The text in view, its scroll bar and the status line: what a move through the text changes. */
+static void
+draw_text(void)
+{
+	int line;
+
+	ui_fill(window, 0, MENU_H, width - UI_SCROLL_W, height - MENU_H - STATUS, WHITE);
+	for (line = top; line < top + rows; line++)
+		draw_line_on(line, 1);
+	ui_scrollbar(window, width - UI_SCROLL_W, MENU_H, height - MENU_H - STATUS, count, rows, top);
+	draw_status();
 }
 
 static void
 draw_all(void)
 {
-	int line, i;
+	int i;
 
 	ui_fill(window, 0, 0, width, MENU_H, UI_FACE);
 	for (i = 0; i < 2; i++)
 		ui_text(window, menu_x[i] + 8, 3, menu_names[i], -1, BLACK, 0);
 	ui_fill(window, 0, MENU_H - 1, width, 1, UI_SHADOW);
-	ui_fill(window, 0, MENU_H, width - UI_SCROLL_W, height - MENU_H - STATUS, WHITE);
-	for (line = top; line < top + rows; line++)
-		draw_line_on(line, 1);
+	status_edge = 1;
+	draw_text();
+}
+
+static int scroll_drawn;	/* NXEDIT_SCROLL=draw: a view that moved is drawn whole, as it was before */
+
+/* The view moved from line `was` to top, with nothing selected: the lines that stay in view are
+ * copied to their new rows (one request, where each was one), those that came are drawn, and
+ * the cursor's bar is taken from the line `bar` it was on. All of it is drawn from too far. */
+static void
+view_moved(int was, int bar)
+{
+	int by = top - was, stay = rows - abs(by), y = MENU_H + MARGIN, line;
+
+	if (stay < 1 || scroll_drawn) {
+		draw_text();
+		return;
+	}
+	GrCopyArea(window, ui_gc, 0, y + (by < 0 ? -by * ui_fh : 0), width - UI_SCROLL_W, stay * ui_fh, window, 0, y + (by > 0 ? by * ui_fh : 0),
+		   MWROP_COPY);
+	for (line = by > 0 ? top + stay : top; line < (by > 0 ? top + rows : top - by); line++)
+		draw_line(line);
+	if (bar != cy && bar >= top && bar < top + rows && (by > 0 ? bar < top + stay : bar >= top - by))
+		draw_line(bar);
+	if (bar != cy && cy >= top && cy < top + rows && (by > 0 ? cy < top + stay : cy >= top - by))
+		draw_line(cy);
 	ui_scrollbar(window, width - UI_SCROLL_W, MENU_H, height - MENU_H - STATUS, count, rows, top);
 	draw_status();
 }
@@ -458,13 +530,18 @@ draw_all(void)
 static void
 scroll_to(int line)
 {
+	int was = top, x0, y0, x1, y1;
+
 	if (line > count - rows)
 		line = count - rows;
 	if (line < 0)
 		line = 0;
 	if (line != top) {
 		top = line;
-		draw_all();
+		if (selection(&x0, &y0, &x1, &y1))
+			draw_text();
+		else
+			view_moved(was, cy);
 	}
 }
 
@@ -711,6 +788,7 @@ key(int ch, int modifiers)
 	int was = cy, length = strlen(lines[cy]), whole = 0, moves = 0, letter = 0, line;
 	int shift = (modifiers & MWKMOD_SHIFT) != 0, ctrl = (modifiers & MWKMOD_CTRL) != 0, edits, cut = 0, x0, y0, x1, y1;
 	int had = selection(&x0, &y0, &x1, &y1), was_marked = marked, was_ax = ax, was_ay = ay;	/* had: something was shown selected */
+	int was_top = top, was_left = left;
 
 	if (asking) {
 		ask_key(ch);
@@ -835,14 +913,18 @@ key(int ch, int modifiers)
 	if (marked && ax == cx && ay == cy && !shift)
 		marked = 0;
 	if (follow() || whole) {
-		draw_all();
+		/* the cursor's move took the view with it, up or down: no text changed and none is selected */
+		if (moves && !whole && !had && !selection(&x0, &y0, &x1, &y1) && left == was_left && top != was_top)
+			view_moved(was_top, was);
+		else
+			draw_text();
 	} else if (moves && shift && (!was_marked || (ax == was_ax && ay == was_ay))) {
 		/* the selection grew or shrank at the cursor's end: the lines the cursor passed */
 		for (line = was < cy ? was : cy; line <= (was < cy ? cy : was); line++)
 			draw_line(line);
 		draw_status();
 	} else if (had || selection(&x0, &y0, &x1, &y1)) {
-		draw_all();
+		draw_text();
 	} else {
 		draw_line(was);
 		if (cy != was)
@@ -919,6 +1001,7 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	scroll_drawn = getenv("NXEDIT_SCROLL") && !strcmp(getenv("NXEDIT_SCROLL"), "draw");
 	if (argc > 1)
 		open_path(argv[1]);
 	else

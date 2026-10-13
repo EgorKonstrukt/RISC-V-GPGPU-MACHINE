@@ -120,7 +120,18 @@ static uint32_t gpu_frames(void) {
 
 typedef int32_t fx;
 #define ONE 65536
+// (the product's two halves by the processor's two instructions: left to the compiler, a
+//  product of numbers it has just made from floats became four multiplies)
+#if defined __riscv && __riscv_xlen == 32
+static inline fx mul(fx a, fx b) {
+    uint32_t low = (uint32_t)a * (uint32_t)b;
+    int32_t high;
+    __asm__("mulh %0, %1, %2" : "=r"(high) : "r"(a), "r"(b));
+    return (fx)((uint32_t)high << 16 | low >> 16);
+}
+#else
 static inline fx mul(fx a, fx b) { return (fx)(((int64_t)a * b) >> 16); }
+#endif
 // A float as 16.16, from its bits: the CPU has no FPU, and the library's multiply and
 // convert cost a few hundred instructions where this costs a dozen.
 static inline fx from_float(float f) {
@@ -221,9 +232,25 @@ void glScalef(GLfloat x, GLfloat y, GLfloat z) {
     apply(&s);
 }
 
+// The sine and cosine of an angle, kept by the angle: a view's three turns are the same angles
+// frame after frame, and the series is some hundred instructions each.
+static void sin_cos(fx degrees, fx* s, fx* c) {
+    static struct { fx degrees, s, c; int used; } kept[8], *k;
+    k = &kept[((uint32_t)degrees ^ (uint32_t)degrees >> 16) & 7];
+    if (!k->used || k->degrees != degrees) {
+        k->degrees = degrees;
+        k->s = sin_degrees(degrees);
+        k->c = sin_degrees(degrees + 90 * ONE);
+        k->used = 1;
+    }
+    *s = k->s;
+    *c = k->c;
+}
+
 void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z) {
     fx degrees = from_float(angle);
-    fx s = sin_degrees(degrees), c = sin_degrees(degrees + 90 * ONE);
+    fx s, c;
+    sin_cos(degrees, &s, &c);
     fx ax = from_float(x), ay = from_float(y), az = from_float(z);
     if ((ax != 0) + (ay != 0) + (az != 0) == 1) {
         // about a coordinate axis: two columns turn into each other
@@ -441,14 +468,22 @@ static uint32_t commands[MAX_COMMANDS][16];
 static fx uniforms[MAX_UNIFORMS][10][4];
 static uint32_t command_count, uniform_count, vertex_slots;
 static uint32_t frame_vertices;   // loose geometry of this frame, parked above the display lists
+// With GPU memory mapped a frame is written where the GPU reads it, the blocks first and the
+// commands at a fixed place after them; otherwise into the two arrays, sent at the swap.
+#define COMMANDS_IN (MAX_UNIFORMS * sizeof uniforms[0])
 
 static uint32_t* command(uint32_t op, uint32_t vertices) {
     static uint32_t spare[16];
     if (command_count == MAX_COMMANDS) return spare;
-    uint32_t* c = commands[command_count++];
-    memset(c, 0, sizeof commands[0]);
+    uint32_t* c = gpu_map ? (uint32_t*)(gpu_map + frame_at + frame_flip + COMMANDS_IN) + 16 * command_count : commands[command_count];
+    command_count++;
     c[0] = op;
+    c[1] = c[2] = 0;
     c[3] = vertex_slots;
+    // (stores, not a loop: the compiler makes a loop a call of memset)
+    c[4] = c[5] = c[6] = c[7] = 0;
+    c[8] = c[9] = c[10] = c[11] = 0;
+    c[12] = c[13] = c[14] = c[15] = 0;
     vertex_slots += vertices;
     return c;
 }
@@ -456,11 +491,15 @@ static uint32_t* command(uint32_t op, uint32_t vertices) {
 // A draw of `count` vertices at `address` with the current matrices and the given material.
 static void draw(uint32_t address, uint32_t count, const fx* colour, int lit) {
     if (uniform_count == MAX_UNIFORMS || count == 0) return;
-    fx (*u)[4] = uniforms[uniform_count];
+    fx (*u)[4] = gpu_map ? (fx (*)[4])(gpu_map + frame_at + frame_flip + uniform_count * sizeof uniforms[0]) : uniforms[uniform_count];
     const mat* mv = &modelview[modelview_top];
     // the GPU multiplies the two: rows 0-3 are the projection, 4-6 the modelview's first three
-    memcpy(u, projection[projection_top].m, sizeof(mat));
-    memcpy(u + 4, mv->m, 3 * sizeof mv->m[0]);
+    // (word by word: a call of memcpy for 64 bytes is more than the copy)
+    const fx* p = &projection[projection_top].m[0][0];
+    const fx* m = &mv->m[0][0];
+    fx* to = &u[0][0];
+    for (int i = 0; i < 16; i++) to[i] = p[i];
+    for (int i = 0; i < 12; i++) to[16 + i] = m[i];
     for (int i = 0; i < 3; i++) {
         u[7][i] = light_direction[i];
         u[8][i] = colour[i];              // light 0's diffuse is white
@@ -555,10 +594,29 @@ static XVisualInfo the_visual_info = {&the_visual, 0, 0, 24};
 #ifdef GL_NANOX
 #define REG_INTO 0x50            // where the picture is copied: address, width, height, row
 #define REG_LOCK 0x60            // taken with an atomic swap by whoever writes a new list's registers
+#define REG_BUFFERS 0x64         // goes up when the window system gives a window another buffer
 #define REG_VOLUME 0x300         // the last whole frame: list address, command count, frames so far, picture size
 #define REG_CLOCK 0x34           // the host's clock in milliseconds
+#define REG_INPUT 0x20           // the pointer's place (two words), its buttons, the count of keys
 // The pause hint: this machine ends its frame there, which is when the GPU does its work.
 #define next_frame() __asm__ volatile(".word 0x0100000f")
+// Nothing to do until the GPU has drawn another program's list: the kernel is told, which runs
+// that program or ends the pass (docs/multicore.md, "A core that rests"). The pause hint on a
+// kernel from before the call, and with GL_REST=pause.
+#define GPU_REST 0x470b   // _IO('G', 11)
+static __attribute__((noinline)) void rest(void) {
+    static int none = -1;
+    if (none < 0) {
+        const char* how = getenv("GL_REST");
+        none = how && strcmp(how, "pause") == 0;
+    }
+    if (!none && gpu_map) {
+        if (ioctl(gpu_fd, GPU_REST, 0) == 0) return;
+        none = 1;
+    }
+    next_frame();
+}
+
 
 static int nano_x;               // a Nano-X server is running: be one of its clients
 static GR_WINDOW_ID nano_window;
@@ -702,11 +760,21 @@ int XFree(void* data) { (void)data; return 0; }
 int XPending(Display* dpy) {
     (void)dpy;
 #ifdef GL_NANOX
-    static int skipped;
+    static int skipped, asks = 8;
+    static uint32_t seen[2], asked_at;
     XEvent unused;
     if (!nano_x || nano_pending) return nano_pending;
     if (++skipped < 6) return 0;
     skipped = 0;
+    // (the machine's own words, docs/input.md: the buttons and the count of keys. An event comes
+    //  of one of them changing; while a button is held, and four times a second, it is asked anyway)
+    const volatile uint32_t* input = (const volatile uint32_t*)(gpu_map + REG_INPUT);
+    uint32_t clock = *(volatile uint32_t*)(gpu_map + REG_CLOCK);
+    for (int i = 0; i < 2; i++)
+        if (seen[i] != input[2 + i]) seen[i] = input[2 + i], asks = 8;
+    if (!asks && !input[2] && clock - asked_at < 250) return 0;
+    if (asks) asks--;
+    asked_at = clock;
     while (!nano_pending && nano_poll(0)) nano_pending = translate(&nano_event, &unused);
     return nano_pending;
 #else
@@ -797,9 +865,8 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
     static uint32_t frame[(sizeof uniforms + sizeof commands) / 4];
     uint32_t uniform_bytes = uniform_count * sizeof uniforms[0], command_bytes = command_count * sizeof commands[0];
     if (gpu_map) {
-        // mapped: the two parts go straight to GPU memory
-        memcpy(gpu_map + frame_at + frame_flip, uniforms, uniform_bytes);
-        memcpy(gpu_map + frame_at + frame_flip + uniform_bytes, commands, command_bytes);
+        // mapped: both parts are in GPU memory already, the commands at their own place
+        uniform_bytes = COMMANDS_IN;
     } else {
         memcpy(frame, uniforms, uniform_bytes);
         memcpy((char*)frame + uniform_bytes, commands, command_bytes);
@@ -817,6 +884,12 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
         }
         if (stats && (++frames_swapped & 1023) == 0)
             fprintf(stderr, "gl: %u frames, %u of them replaced before they were drawn\n", (unsigned)frames_swapped, (unsigned)frames_replaced);
+        // (the window has another buffer: ask where, whether or not the event has been taken yet)
+        static uint32_t buffers_seen;
+        if (regs[REG_BUFFERS / 4] != buffers_seen) {
+            buffers_seen = regs[REG_BUFFERS / 4];
+            nano_info_stale = 1;
+        }
         if (nano_info_stale) {
             fd_set none;
             GrGetWindowInfo(nano_window, &nano_info);
@@ -848,7 +921,7 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
                     break;
                 }
                 __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-                next_frame();
+                rest();
             }
             undrawn = GPU_PHYS + frame_at + frame_flip + uniform_bytes;
             regs[REG_INTO / 4] = nano_info.surface_address;

@@ -73,14 +73,19 @@ mesh order.
 | 1 | clear | 3 | 1: colour. Fills the picture, at the far plane |
 | 2 | rectangle | 6 | 1: colour, 2: key, 4-7: x0, y0, x1, y1 (exclusive), 8: fragment mode, 9-11: texture address, width, height, 12-15: u0, v0, u1, v1. Drawn at the near plane |
 | 3 | draw | count | 1: vertex buffer, 2: count, 4: vertex mode, 5: fragment mode, 6: uniforms address, 7-9: texture address, width, height, 10: key, 11: colour (compact vertices), 12-15: where a laid texture lies |
-| 4 | text | 6 a character | 1: colour, 2: font table, 4-5: x, y of the string's top left, 6: characters, 7: address of the string, 8: fragment word (its pass). Drawn at the near plane |
+| 4 | text | 6 a character | 1: colour, 2: font table, 4-5: x, y of the string's top left, 6: characters, 7: address of the string, 8: fragment word (its pass; mode 7 for glyphs of coverage; `0x100`: words 9-11 are there), 9: a scale (16.16; 0: none), 10: a slant in 256ths of a pixel a row, and from bit 16 the row that stays where it is, 11: what the table's bitmap addresses are counted from. Drawn at the near plane |
 
 A string for command 4 is a word a character: the glyph's number in its low half and, in the
 high half, how many pixels right of x the character starts (the program adds the widths up;
 the GPU cannot, a vertex at a time). A font table is a texel a glyph: the address of its
-bitmap (fragment mode 3's layout), its width and its height. The GPU makes the six vertices
-of each character's rectangle from those, so a line of text costs the program a store a
-character, not a command.
+bitmap (fragment mode 3's layout), its width and its height, and in its fourth word how far
+the bitmap's corner is from the character's (a signed byte right, a signed byte down). The
+GPU makes the six vertices of each character's rectangle from those, so a line of text costs
+the program a store a character, not a command. The table and the bitmaps may be a file's
+bytes where it lies in the ROM (addresses from `0x40000000`): a font of `docs/fonts.md` is
+drawn with nothing copied. Its glyphs are fragment mode 7: four bits a pixel of how much of
+the pixel the glyph covers, rows of whole bytes, the left pixel in the high half; the
+coverage is the colour's alpha, so such a command names a pass that blends.
 
 A vertex is 64 bytes: position, normal, texture coordinates, colour, four numbers each.
 Numbers are 16.16 fixed point, or floats when the draw says so (the float flag below). A colour given as one word is `0xTTRRGGBB`, T being
@@ -125,6 +130,7 @@ A textured quad is then 16 words of vertices instead of 96.
 | 4 | a texture of three bytes a pixel (red, green, blue, as in a PPM file), rows not padded, starting at any byte, times the colour. Its address may be in the ROM (from `0x40000000`): the draw pass has the ROM's four textures (`_Data_MTD_R/G/B/A`) as well as the state |
 | 5 | a layer of tiles (below): the texture's address is four words that say where its cells, its tiles and its palette are |
 | 6 | a picture as three planes of bytes one after another: width x height of luma, then the blue and the red chroma planes, each half the size each way (both sizes even). The colour is BT.601's, luma 16 to 235; times the colour. A video's frame as its decoder leaves it (`docs/video.md`; `SEGL_YUV420` in the OpenGL library) |
+| 7 | (text) four bits of coverage a pixel: the colour, its alpha times the coverage |
 | +0x100 | texels equal to the key (a colour in modes 1 and 4, an index in mode 2) are not drawn |
 | +0x200 | (draws) the texture is laid on the picture, not on the surface: a pixel at (x, y) of the picture takes the texel at words 12-13 plus (x, y) / 1024 times words 14-15 (16.16), and the colour is not applied. The surface still writes depth: a sky that hides what is behind it |
 | +0x400 | smooth (modes 1, 2 and 4): the four texels round the point are weighed by how near their centres are (bilinear), the texture repeating. A texel of the key counts for nothing, and where such are most of the four nothing is drawn. `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)` asks for it of the bound texture; a texture starts as `GL_NEAREST` |
@@ -260,6 +266,15 @@ float build, about an axis of the coordinate system in the other.
   `seglLastCommand()` and `seglLastVertices()` pointed at, are the program's memory: a
   pointer that moved or a picture that changed needs no new list (`docs/tdawn.md`).
 - A set holds 3,072 commands, 256 matrix blocks and 10,240 compact vertices of a frame's own.
+- `seglFrameSpace()` is room in the frame that a program fills as it likes, another core
+  of its too, and `seglScreenCompactAt()` draws tagged vertices in screen pixels that lie
+  in it (`docs/imgui.md`, "The copy on worker cores").
+- Where the library waits for the GPU (`seglSwap()`, `seglSettle()`, a list of another
+  program's in the way) the first core rests (`rest()` in `gles.c` and `gl.c`: the `REST`
+  call of `/dev/gpu`, `docs/multicore.md`, "A core that rests"), so that another program
+  has what is left of the pass and `tools/tick_util.py` counts the pass apart. On a
+  worker core's stack, on a kernel from before the call and with `GL_REST=pause` it is
+  the pause hint, as it was. It is 322 instructions a wait where the pause was one.
 
 ## From Linux
 
@@ -287,6 +302,20 @@ frames a second with this project's kernel (about 80 on upstream's):
   pixels are and has each frame copied there (about 500 frames a second at 300x300 on an RTX
   5090 with DXC, one emulator frame of about 8,000 instructions each). With no server running
   it takes the whole display, as before.
+- A frame of `glxgears` was 5,900 instructions and is 4,600 (13 October 2026; under
+  `rvc_cpu` at 3 million a second 507 frames made a second and 650): a frame's matrix
+  blocks and commands are written where the GPU reads them, not into arrays copied at the
+  swap; the sine and cosine of an angle are kept by the angle (the view's three turns are
+  the same every frame); the 16.16 product is the processor's two instructions (`mul` in
+  `gl.c`: the compiler made four multiplies of a product of numbers it had just converted
+  from floats); the window system is asked for events when a button or a key changed, while
+  a button is held and four times a second, where it was every sixth frame; and the
+  demo's milliseconds are 32-bit (`gears_time.py`). The numbers are the same numbers.
+  Frames drawn stay one a pass: more frames made are more frames replaced before the GPU
+  drew them (`GL_STATS=1`). On the shader machine its 5 s lines said 864 to 889 frames a
+  second before and 1,178 to 1,209 after, 37% and 51% of them replaced. A window's new
+  buffer is noticed by the machine's word for it (`REG_BUFFERS`), as `gles.c` does, not
+  only by the event.
 - Upstream's kernel has neither `/dev/gpu` nor `/dev/mem`. There the library falls back to
   an MTD device: the phram driver makes one for a physical range written to
   `/sys/module/phram/parameters/phram`, and the library uses `pread` and `pwrite` on it and

@@ -117,6 +117,7 @@ static unsigned cycles (void)
  * is in view, 3 drawing it, 4 models, 5 particles and the weapon, 6 the 2D screen and the swap.
  */
 static unsigned phase, phase_since, phase_cycles[7];
+extern unsigned se_drawn[2];	/* gl_rmain.c */
 extern unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind;	/* server_shaderemu.c */
 #ifdef SE_COUNT
 unsigned se_count[10];	/* what the server did, counted where it does it (quake.patch) */
@@ -177,9 +178,11 @@ void GL_EndRendering (void)
 		if (n) {
 			unsigned *c = phase_cycles;
 
-			printf ("quakestat: a frame in thousands: server %u, in view %u, level %u, models %u, particles and weapon %u, 2D and swap %u, rest %u\n",
-				c[1] / n / 1000, c[2] / n / 1000, c[3] / n / 1000, c[4] / n / 1000, c[5] / n / 1000, c[6] / n / 1000, c[0] / n / 1000);
+			printf ("quakestat: a frame in thousands: server %u, in view %u, level %u, models %u, particles and weapon %u, 2D and swap %u, rest %u; %u.%u models and %u.%u brush models drawn\n",
+				c[1] / n / 1000, c[2] / n / 1000, c[3] / n / 1000, c[4] / n / 1000, c[5] / n / 1000, c[6] / n / 1000, c[0] / n / 1000,
+				se_drawn[0] / n, se_drawn[0] * 10 / n % 10, se_drawn[1] / n, se_drawn[1] * 10 / n % 10);
 			memset (phase_cycles, 0, sizeof phase_cycles);
+			se_drawn[0] = se_drawn[1] = 0;
 			if (se_server_frames) {
 				printf ("quakestat: the server on a worker core: %u frames of its own to these %u (%u drawn between two of them, %u standing at the newer, %u behind the older), %u thousand instructions each, %u.%u passes waited for one\n",
 					se_server_frames, n, se_server_between, se_server_held, se_server_behind, se_server_cycles / se_server_frames / 1000, se_server_passes / se_server_frames, se_server_passes * 10 / se_server_frames % 10);

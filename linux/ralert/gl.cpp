@@ -148,9 +148,106 @@ static int tile_of(CELL cell)
     return x >= 0 && y >= 0 && x < tile_w && y < tile_h ? y * tile_w + x : -1;
 }
 
+static unsigned char told[TILES / 8];
+static unsigned short told_list[512];
+static int told_count;
+// Shape files asked for ahead of their first use (host.h), as a mission begins: what is on the
+// map, and what the game told of (ShaderEmu_GL_Ahead_File: the sidebar's pieces, which it draws
+// itself, all in the frame the sidebar comes). Called every frame, before its logic.
+static struct
+{
+    const void* file;
+    int frame;
+} ahead_files[96];
+static int ahead_count;
+static bool ahead_done; // the frames made ready are this mission's: forget() leaves them
+static bool ahead_live; // a mission has begun: a file told of from now on is asked for at once
+void ShaderEmu_GL_Ahead_File(const void* file, int frame)
+{
+    for (int i = 0; i < ahead_count; i++) {
+        if (ahead_files[i].file == file) {
+            return;
+        }
+    }
+    if (file && ahead_count < 96) {
+        ahead_files[ahead_count].file = file;
+        ahead_files[ahead_count++].frame = frame;
+        if (ahead_live) {
+            host_frames_ahead(file, frame);
+        }
+    }
+}
+
+// Everything there is of the kinds that are drawn, on the map or not yet (being built, on its
+// way in a transport): its file is unpacked before it is first seen.
+static void ahead_objects(void)
+{
+    for (int i = 0; i < Units.Count(); i++) {
+        host_frames_ahead(Units.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Infantry.Count(); i++) {
+        host_frames_ahead(Infantry.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Aircraft.Count(); i++) {
+        host_frames_ahead(Aircraft.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Vessels.Count(); i++) {
+        host_frames_ahead(Vessels.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+    }
+    for (int i = 0; i < Buildings.Count(); i++) {
+        host_frames_ahead(Buildings.Ptr(i)->Class_Of().Get_Image_Data(), 0);
+        host_frames_ahead(Buildings.Ptr(i)->Class->Get_Buildup_Data(), 0);
+    }
+}
+
+void ShaderEmu_GL_Ahead(void)
+{
+    static char name[16];
+    static int last = -1, objects;
+    bool begins = strncmp(name, Scen.ScenarioName, sizeof(name) - 1) || (int)Frame < last;
+    int now = Units.Count() + Infantry.Count() + Buildings.Count() + Aircraft.Count() + Vessels.Count();
+
+    last = (int)Frame;
+    if (!begins) {
+        if (now != objects && ahead_live) {
+            objects = now;
+            ahead_objects();
+        }
+        return;
+    }
+    if (!available()) {
+        return;
+    }
+    objects = now;
+    strncpy(name, Scen.ScenarioName, sizeof(name) - 1);
+    host_frames_forget();
+    for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+        for (int index = 0; index < Map.Layer[layer].Count(); index++) {
+            host_frames_ahead(Map.Layer[layer][index]->Class_Of().Get_Image_Data(), 0);
+        }
+    }
+    ahead_objects();
+    {
+        void ShaderEmu_Radar_Ahead(void); // (radar.cpp: its files are found only when it is first drawn)
+        ShaderEmu_Radar_Ahead();
+    }
+    for (int i = 0; i < ahead_count; i++) {
+        host_frames_ahead(ahead_files[i].file, ahead_files[i].frame);
+    }
+    for (int i = 0; i < AnimTypes.Count(); i++) {
+        host_frames_ahead(AnimTypes.Ptr(i)->Get_Image_Data(), 0);
+    }
+    ahead_done = ahead_live = true;
+}
+
 static void forget(void)
 {
-    host_frames_forget(); // (first: work put off for the scene's core still looks at the shapes)
+    if (ahead_done) {
+        host_frames_settle(); // (first: work put off for the scene's core still looks at the shapes)
+    } else {
+        host_frames_forget();
+    }
+    ahead_done = false;
     memset(shapes, 0, sizeof(shapes));
     memset(icons, 0, sizeof(icons));
     memset(tile_done, 0, sizeof(tile_done));
@@ -168,17 +265,42 @@ static void forget(void)
     memset(edged, 0, sizeof(edged));
     memset(edge_of, -2, sizeof(edge_of));
     memset(edge_shape, 0, sizeof(edge_shape));
+    memset(told, 0, sizeof(told));
+    told_count = 0;
     kept_count = 0;
     solid_x = -1;
 }
 
 // Something of this cell changed (CellClass::Redraw_Objects): its edge of the shroud is worked
 // out again, and the scene made again if the cell is in it.
+// (A cell is told of nine times when one beside it is first seen: the times after the first, until
+// the next scene, find its bit in `told` and have nothing to do. A sight of new land was a long frame.)
+static void told_forget(void)
+{
+    if (told_count > 512) {
+        memset(told, 0, sizeof(told));
+    } else {
+        for (int i = 0; i < told_count; i++) {
+            told[told_list[i] >> 3] = 0;
+        }
+    }
+    told_count = 0;
+}
+
 void ShaderEmu_GL_Cell(CELL cell)
 {
     int x = Cell_X(cell), y = Cell_Y(cell), tx = x - tile_x, ty = y - tile_y;
 
     if (tx >= 0 && ty >= 0 && tx < tile_w && ty < tile_h) {
+        int tile = ty * tile_w + tx;
+        if (told[tile >> 3] & (1 << (tile & 7))) {
+            return;
+        }
+        told[tile >> 3] |= 1 << (tile & 7);
+        if (told_count < 512) {
+            told_list[told_count] = (unsigned short)tile;
+        }
+        told_count++;
         edge_of[ty * tile_w + tx] = -2;
         if (cell_kept[(ty * tile_w + tx) % CELLS_KEPT].tile == ty * tile_w + tx + 1) {
             cell_kept[(ty * tile_w + tx) % CELLS_KEPT].tile = 0;
@@ -575,18 +697,28 @@ static Shape* shape_of(const void* file, int frame, const void* fade, const void
 // aircraft that flies over was 250 thousand instructions a frame, more than everything else.
 // Here it is done once for each turn of each frame, and kept in the atlas like any shape.
 void* Get_Shape_Header_Data(void* ptr);
-static unsigned char* turned(const void* built, int w, int h, int turn)
+static unsigned char* turned(const void* built, int w, int h, int turn, const struct host_frame* ready = NULL)
 {
     static unsigned char* buffer;
+    static unsigned char* whole;
     static int size;
 
     if (4 * w * h > size) {
         delete[] buffer;
+        delete[] whole;
         size = 4 * w * h;
         buffer = new unsigned char[size];
+        whole = new unsigned char[w * h];
     }
     memset(buffer, 0, 4 * w * h);
-    BitmapClass bm(w, h, (unsigned char*)Get_Shape_Header_Data((void*)built));
+    if (ready) {
+        // (a worker core's frame is the rectangle that has pixels: the frame around it is nothing)
+        memset(whole, 0, w * h);
+        for (int y = 0; ready->state != HOST_FRAME_EMPTY && y < ready->h; y++) {
+            memcpy(whole + (ready->top + y) * w + ready->left, ready->pixels + y * ready->w, ready->w);
+        }
+    }
+    BitmapClass bm(w, h, ready ? whole : (unsigned char*)Get_Shape_Header_Data((void*)built));
     GraphicBufferClass gb(2 * w, 2 * h, buffer);
     TPoint2D pt(w, h);
     gb.Scale_Rotate(bm, pt, 0x0100, (256 - (turn - 64)));
@@ -625,7 +757,7 @@ static void check_frame(const Shape* s, const struct host_frame* ready, uintptr_
         }
     }
     bool same = y0 < 0 ? ready->state == HOST_FRAME_EMPTY
-                       : ready->state == HOST_FRAME_READY && ready->left == x0 && ready->top == y0
+                       : (ready->state & HOST_FRAME_READY) && ready->left == x0 && ready->top == y0
                              && ready->w == x1 - x0 + 1 && ready->h == y1 - y0 + 1;
     for (y = y0; same && y0 >= 0 && y <= y1; y++) {
         same = !memcmp(pixels + y * s->w + x0, ready->pixels + (y - y0) * ready->w, ready->w);
@@ -654,7 +786,7 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
     }
     if (s->kind == NEW) {
         // (most frames a second worker core has ready: host.c)
-        const struct host_frame* ready = s->turn || (s->ghost && s->ghost == shroud_table) ? NULL : host_frame(file, frame);
+        const struct host_frame* ready = (s->ghost && s->ghost == shroud_table) ? NULL : host_frame(file, frame);
         if (check_frames < 0) {
             check_frames = getenv("RALERT_CHECK_FRAMES") ? 1 + atoi(getenv("RALERT_CHECK_FRAMES")) : 0;
             if (check_frames) {
@@ -672,6 +804,11 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
             }
             if (ready->state == HOST_FRAME_EMPTY) {
                 s->kind = EMPTY;
+            } else if (s->turn) {
+                unsigned char* pixels = turned(NULL, s->w, s->h, s->turn, ready);
+                s->w = s->full_w = (short)(2 * s->w);
+                s->h = s->full_h = (short)(2 * s->h);
+                put(s, pixels);
             } else {
                 put(s, NULL, ready);
             }
@@ -718,6 +855,20 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
     return true;
 }
 
+// An icon's 24 x 24 pixels into the atlas, by the core that makes the scene (host_fill).
+static void fill_icon(void* place, const void* from)
+{
+    unsigned char* to = (unsigned char*)place;
+
+    for (int y = 0; y < 24; y++, to += ATLAS_W) {
+        if (from) {
+            memcpy(to, (const unsigned char*)from + y * 24, 24);
+        } else {
+            memset(to, 0, 24);
+        }
+    }
+}
+
 // Where an icon of a set is in the atlas, put there the first time. -1: no room.
 static int icon_of(const void* set, int icon)
 {
@@ -735,13 +886,8 @@ static int icon_of(const void* set, int icon)
             Init_Stamps((const IconControlType*)set);
             int which = MapPtr ? MapPtr[icon] : icon;
             unsigned char* to = host_atlas() + (icon_count / 42 * 24) * ATLAS_W + icon_count % 42 * 24;
-            for (int y = 0; y < 24; y++, to += ATLAS_W) {
-                if (which < IconCount) {
-                    memcpy(to, StampPtr + which * 576 + y * 24, 24);
-                } else {
-                    memset(to, 0, 24);
-                }
-            }
+            // (by the core that makes the scene: a first view of the map is some hundreds of them)
+            host_fill(fill_icon, to, which < IconCount ? StampPtr + which * 576 : NULL);
             i->set = set;
             i->icon = (short)icon;
             i->index = (short)icon_count++;
@@ -831,11 +977,17 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     origin_y = TacPixelY + base_y;
     view_w = TacPixelX + wide;
     view_h = TacPixelY + high;
-    static int refresh = -1; // RALERT_REFRESH=N: every N scenes (256); 0 for never
+    // RALERT_REFRESH=N: every N scenes (256; 0 for never). At 256 the objects have their turns, one
+    // of a layer a scene, and the page is not filled for it: all in one scene was a long frame.
+    static int refresh = -1;
+    static unsigned scenes;
     if (refresh < 0) {
         refresh = getenv("RALERT_REFRESH") ? atoi(getenv("RALERT_REFRESH")) : 256;
     }
-    again = forced || (refresh && ++since >= refresh) || kept_count > KEPT * 3 / 4;
+    bool all = forced || kept_count > KEPT * 3 / 4; // every object anew, and the page's holes
+    again = all || (refresh && ++since >= refresh);
+    all |= again && refresh != 256;
+    scenes++;
     if (again) {
         since = 0;
         if (kept_count > KEPT / 2) {
@@ -843,7 +995,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
             kept_count = 0;
         }
     }
-    if (again || ShaderEmu_GL_Touched) {
+    if (all || ShaderEmu_GL_Touched) {
         fills++;
         LogicPage->Fill_Rect(TacPixelX, TacPixelY, TacPixelX + wide - 1, TacPixelY + high - 1, KEY);
     } else if (box[0] <= box[2]) {
@@ -859,6 +1011,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     }
     ShaderEmu_GL_Touched = false;
     stale = false;
+    told_forget();
     box[0] = 1, box[2] = 0;
 
     ShaderEmu_GL_Emitting = true;
@@ -1038,16 +1191,18 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     host_scene_part(1, 0);
     unsigned away = 0;
     for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+        int turn = refresh == 256 && Layer[layer].Count() ? (int)(scenes % (unsigned)Layer[layer].Count()) : -1;
         for (int index = 0; index < Layer[layer].Count(); index++) {
             ObjectClass* object = Layer[layer][index];
             // (most objects are out of the view and were not marked: passed over at once, by what
             // the object itself has of the view at which it drew nothing)
-            if (object->ShaderEmu_Away == TacticalCoord && !object->IsToDisplay && !again) {
+            bool anew = all || index == turn;
+            if (object->ShaderEmu_Away == TacticalCoord && !object->IsToDisplay && !anew) {
                 away++;
                 continue;
             }
             Kept* k = kept_of(object);
-            if (k && !again && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
+            if (k && !anew && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
                 // as it was: its rectangles where they are on the map now, or still nothing
                 ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
                 if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {

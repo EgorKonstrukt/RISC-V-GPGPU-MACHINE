@@ -26,7 +26,7 @@ edits = [
      '/* milliseconds since the first call */\n'
      'static long\ncurrent_ms(void)\n{\n   static long first;\n   struct timeval tv;\n\n'
      '   (void) gettimeofday(&tv, NULL);\n   if (!first)\n      first = tv.tv_sec;\n'
-     '   return (tv.tv_sec - first) * 1000 + tv.tv_usec / 1000;\n}\n\n'
+     '   return (long) (tv.tv_sec - first) * 1000 + (long) tv.tv_usec / 1000;  /* (32-bit: no library call) */\n}\n\n'
      '/** Draw single frame, do SwapBuffers, compute FPS */\n'),
     ('   static double tRot0 = -1.0, tRate0 = -1.0;\n   double dt, t = current_time();\n\n   if (tRot0 < 0.0)\n      tRot0 = t;\n',
      '   static long tRot0 = -1, tRate0 = -1;\n   long dt, t = current_ms();\n\n   if (tRot0 < 0)\n      tRot0 = t;\n'),

@@ -786,10 +786,10 @@ index a29eb2b..a3a94a5 100644
  #endif
 \ No newline at end of file
 diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
-index 4825ba4..78161ee 100644
+index 4825ba4..f337d44 100644
 --- a/redalert/conquer.cpp
 +++ b/redalert/conquer.cpp
-@@ -125,6 +125,178 @@ bool Map_Edit_Loop(void);
+@@ -125,6 +125,215 @@ bool Map_Edit_Loop(void);
  
  bool UseOldShapeDraw = false;
  
@@ -913,6 +913,43 @@ index 4825ba4..78161ee 100644
 +            }
 +        }
 +    }
++    {
++        /* RALERT_MARK=A,B: a line as frame A begins and as frame B does (rvc_cpu --pc-from, --until) */
++        static int mark_a = -1, mark_b;
++        if (mark_a < 0) {
++            mark_a = mark_b = 0;
++            if (getenv("RALERT_MARK")) {
++                sscanf(getenv("RALERT_MARK"), "%d,%d", &mark_a, &mark_b);
++            }
++        }
++        if (mark_b && ((int)Frame == mark_a || (int)Frame == mark_b)) {
++            fprintf(stderr, "ralert: mark %s\n", (int)Frame == mark_a ? "begins" : "ends");
++        }
++        /* RALERT_FRAME_LOG=1: every frame's instructions (all, logic, drawing, the map and its parts) and what
++        ** the scene drew anew and put into the atlas, said when the run ends */
++        static unsigned (*log)[10], logged, was[10];
++        static int on = -1;
++        unsigned now[10] = {cycles, ShaderEmu_Logic_Cycles, ShaderEmu_Draw_Cycles, ShaderEmu_GL_Cycles,
++                            ShaderEmu_GL_Parts[0], ShaderEmu_GL_Parts[1], ShaderEmu_GL_Parts[2],
++                            ShaderEmu_GL_Objects[2], ShaderEmu_GL_Put[0], ShaderEmu_GL_Put[1]};
++        if (on < 0) {
++            on = getenv("RALERT_FRAME_LOG") != NULL;
++            log = on ? (unsigned (*)[10])calloc(8192, sizeof *log) : NULL;
++        } else if (log && logged < 8192) {
++            for (int i = 0; i < 10; i++) {
++                log[logged][i] = now[i] >= was[i] ? now[i] - was[i] : now[i];
++            }
++            logged++;
++        }
++        memcpy(was, now, sizeof(was));
++        if (log && cap && (int)Frame >= cap) {
++            for (unsigned i = 0; i < logged; i++) {
++                fprintf(stderr, "frame %u: %u %u %u map %u %u %u %u drawn %u put %u %u\n", (unsigned)Frame - logged + i,
++                        log[i][0], log[i][1], log[i][2], log[i][3], log[i][4], log[i][5], log[i][6], log[i][7], log[i][8],
++                        log[i][9]);
++            }
++        }
++    }
 +    if (cap || (stop && getenv("RALERT_NO_DELAY"))) {
 +        FrameTimer = 0;
 +    }
@@ -968,7 +1005,7 @@ index 4825ba4..78161ee 100644
  #ifdef CHEAT_KEYS
  void Dump_Heap_Pointers(void);
  void Error_In_Heap_Pointers(char* string);
-@@ -1759,7 +1931,12 @@ bool Main_Loop()
+@@ -1759,7 +1968,12 @@ bool Main_Loop()
      **	If there is no theme playing, but it looks like one is required, then start one
      **	playing. This is usually the symptom of there being no transition score.
      */
@@ -981,7 +1018,7 @@ index 4825ba4..78161ee 100644
          Theme.Queue_Song(THEME_PICK_ANOTHER);
      }
  
-@@ -1790,6 +1967,10 @@ bool Main_Loop()
+@@ -1790,6 +2004,10 @@ bool Main_Loop()
              FrameTimer = Options.GameSpeed + (PlayerPtr->Difficulty == DIFF_EASY ? 1 : 0);
          }
      }
@@ -992,7 +1029,7 @@ index 4825ba4..78161ee 100644
  
      /*
      **	Update the display, unless we're inside a dialog.
-@@ -1801,7 +1982,7 @@ bool Main_Loop()
+@@ -1801,7 +2019,7 @@ bool Main_Loop()
              if (input) {
                  Keyboard_Process(input);
              }
@@ -1001,11 +1038,17 @@ index 4825ba4..78161ee 100644
          }
      }
  
-@@ -1826,7 +2007,13 @@ bool Main_Loop()
+@@ -1826,7 +2044,19 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
 -    Logic.AI();
++#ifdef SHADEREMU
++    {
++        void ShaderEmu_GL_Ahead(void); /* (gl.cpp: a mission's shape files asked for as it begins) */
++        ShaderEmu_GL_Ahead();
++    }
++#endif
 +    SHADEREMU_COUNT(ShaderEmu_Logic_Cycles, Logic.AI());
 +#ifdef SHADEREMU
 +    {
@@ -1016,7 +1059,34 @@ index 4825ba4..78161ee 100644
      TimeQuake = false;
  #ifdef FIXIT_CSII //	checked - ajw 9/28/98
      if (!PendingTimeQuake) {
-@@ -1893,6 +2080,9 @@ bool Main_Loop()
+@@ -1839,8 +2069,24 @@ bool Main_Loop()
+     **	a message has expired & been removed, and the entire map must be updated.
+     */
+     if (Session.Messages.Manage()) {
+-        HiddenPage.Clear();
+-        Map.Flag_To_Redraw(true);
++#ifdef SHADEREMU
++        /*
++        ** Over the GPU's map a message lies in the page by itself: its rows are made holes and
++        ** what is left printed again (gl.cpp). RALERT_MESSAGE_GONE=redraw: everything, as it was.
++        */
++        extern bool ShaderEmu_GL_Live;
++        static int whole = -1;
++        if (whole < 0) {
++            whole = getenv("RALERT_MESSAGE_GONE") != NULL;
++        }
++        if (ShaderEmu_GL_Live && !whole) {
++            Map.Flag_To_Redraw(false);
++        } else
++#endif
++        {
++            HiddenPage.Clear();
++            Map.Flag_To_Redraw(true);
++        }
+     }
+ 
+     //
+@@ -1893,6 +2139,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1026,7 +1096,7 @@ index 4825ba4..78161ee 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
          return (!GameActive);
-@@ -2442,6 +2632,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2442,6 +2691,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
              AnimControl.ImageBuf = (unsigned char*)SysMemPage.Get_Offset();
          }
  #endif
@@ -1052,7 +1122,7 @@ index 4825ba4..78161ee 100644
  
          if (!Debug_Quiet && Get_Digi_Handle() != -1) {
              AnimControl.OptionFlags |= VQAOPTF_AUDIO;
-@@ -2465,8 +2674,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2465,8 +2733,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
                  // Set_Palette(BlackPalette);
                  SysMemPage.Clear();
                  InMovie = true;
@@ -1083,7 +1153,78 @@ index 4825ba4..78161ee 100644
                  // Resume_Audio_Thread();
                  InMovie = false;
  #ifdef MOVIE640
-@@ -2885,6 +3116,14 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2863,6 +3153,70 @@ void CC_Draw_Pip(const ObjectClass* object,
+  * HISTORY:                                                                                    *
+  *   02/21/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/*
++** A shape the game draws itself, plainly (the sidebar's pieces, the tabs), from a frame a worker
++** core has made ready (host.h): no unpacking here, and a copy a row. False: as the game does.
++** RALERT_READY_DRAW=0: never. RALERT_CHECK_READY=1: both ways, and the pages compared.
++*/
++void ShaderEmu_Ready_To_Page(int x, int y, int width, int height, const struct host_frame* ready, GraphicViewPortClass& viewport, int flags);
++static unsigned ShaderEmu_Ready_Drawn, ShaderEmu_Ready_Differ;
++static unsigned char* ShaderEmu_Ready_Kept[2];
++static int ShaderEmu_Ready_Size;
++static bool ShaderEmu_Ready_Shape(void const* shapefile, int shapenum, int x, int y, WindowNumberType window, int flags)
++{
++    static int on = -1, check;
++    if (on < 0) {
++        on = !(getenv("RALERT_READY_DRAW") && !strcmp(getenv("RALERT_READY_DRAW"), "0"));
++        check = getenv("RALERT_CHECK_READY") != NULL;
++        if (check) {
++            atexit([]() {
++                fprintf(stderr, "ralert: %u shapes drawn by the game from ready frames, %u of them differ from its own\n",
++                        ShaderEmu_Ready_Drawn, ShaderEmu_Ready_Differ);
++            });
++        }
++    }
++    const struct host_frame* ready = on ? host_frame(shapefile, shapenum) : NULL;
++    if (!ready) {
++        return false;
++    }
++    GraphicViewPortClass draw_window(LogicPage->Get_Graphic_Buffer(),
++                                     WindowList[window][WINDOWX] + LogicPage->Get_XPos(),
++                                     WindowList[window][WINDOWY] + LogicPage->Get_YPos(),
++                                     WindowList[window][WINDOWWIDTH],
++                                     WindowList[window][WINDOWHEIGHT]);
++    ShaderEmu_Ready_Drawn++;
++    if (!draw_window.Lock()) {
++        return true;
++    }
++    int size = (draw_window.Get_XAdd() + draw_window.Get_Width() + draw_window.Get_Pitch()) * draw_window.Get_Height();
++    unsigned char* page = (unsigned char*)draw_window.Get_Offset();
++    if (check && size > 0) {
++        // the window as it was, and as the ready frame leaves it; then the game's own drawing over the first
++        if (size > ShaderEmu_Ready_Size) {
++            ShaderEmu_Ready_Kept[0] = (unsigned char*)realloc(ShaderEmu_Ready_Kept[0], size);
++            ShaderEmu_Ready_Kept[1] = (unsigned char*)realloc(ShaderEmu_Ready_Kept[1], size);
++            ShaderEmu_Ready_Size = size;
++        }
++        memcpy(ShaderEmu_Ready_Kept[0], page, size);
++    }
++    ShaderEmu_Ready_To_Page(x, y, Get_Build_Frame_Width(shapefile), Get_Build_Frame_Height(shapefile), ready, draw_window,
++                            flags | SHAPE_TRANS);
++    if (check && size > 0) {
++        memcpy(ShaderEmu_Ready_Kept[1], page, size);
++        memcpy(page, ShaderEmu_Ready_Kept[0], size);
++        uintptr_t built = Build_Frame(shapefile, shapenum, _ShapeBuffer);
++        if (built) {
++            Buffer_Frame_To_Page(x, y, Get_Build_Frame_Width(shapefile), Get_Build_Frame_Height(shapefile), (void*)built,
++                                 draw_window, flags | SHAPE_TRANS, (void*)NULL, 0);
++        }
++        ShaderEmu_Ready_Differ += memcmp(page, ShaderEmu_Ready_Kept[1], size) != 0;
++    }
++    draw_window.Unlock();
++    return true;
++}
++#endif
++
+ void CC_Draw_Shape(void const* shapefile,
+                    int shapenum,
+                    int x,
+@@ -2885,6 +3239,18 @@ void CC_Draw_Shape(void const* shapefile,
      if ((flags & SHAPE_FADING) && (!fadingdata)) {
          fadingdata = DisplayClass::FadingShade;
      }
@@ -1093,12 +1234,16 @@ index 4825ba4..78161ee 100644
 +        if (ShaderEmu_GL_Shape(shapefile, shapenum, x, y, window, flags, fadingdata, ghostdata, (int)rotation)) {
 +            return;
 +        }
++        if (shapefile != NULL && shapenum != -1 && rotation == DIR_N && !(flags & ~(SHAPE_CENTER | SHAPE_WIN_REL | SHAPE_TRANS))
++            && ShaderEmu_Ready_Shape(shapefile, shapenum, x, y, window, flags)) {
++            return;
++        }
 +    }
 +#endif
  
      static unsigned char* _xbuffer = 0;
  
-@@ -3044,6 +3283,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
+@@ -3044,6 +3410,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
      int width = Get_Build_Frame_Width(shapedata);
      int height = Get_Build_Frame_Height(shapedata);
  
@@ -1137,7 +1282,7 @@ index 4825ba4..78161ee 100644
      rect.X = 0;
      rect.Y = 0;
      int xlimit = width - 1;
-@@ -3185,6 +3456,9 @@ extern GraphicBufferClass VQ640;
+@@ -3185,6 +3583,9 @@ extern GraphicBufferClass VQ640;
  extern bool IsVQ640;
  int VQ_Call_Back(unsigned char*, int)
  {
@@ -1147,7 +1292,7 @@ index 4825ba4..78161ee 100644
  #ifdef REMASTER_BUILD
      return 0;
  #else
-@@ -3194,6 +3468,11 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3194,6 +3595,11 @@ int VQ_Call_Back(unsigned char*, int)
          Keyboard->Clear();
      }
      Check_VQ_Palette_Set();
@@ -1159,7 +1304,7 @@ index 4825ba4..78161ee 100644
  #ifdef MOVIE640
      if (IsVQ640) {
          VQ640.Blit(SeenBuff);
-@@ -3204,6 +3483,9 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3204,6 +3610,9 @@ int VQ_Call_Back(unsigned char*, int)
      Interpolate_2X_Scale(&SysMemPage, &SeenBuff, NULL);
  #endif
      Frame_Limiter();
@@ -1170,7 +1315,7 @@ index 4825ba4..78161ee 100644
      if ((BreakoutAllowed || Debug_Flag) && key == KN_ESC) {
          Keyboard->Clear();
 diff --git a/redalert/display.cpp b/redalert/display.cpp
-index d328d82..b5644c4 100644
+index d328d82..dfd21c8 100644
 --- a/redalert/display.cpp
 +++ b/redalert/display.cpp
 @@ -115,6 +115,12 @@ unsigned char DisplayClass::UnitShadowAir[(USHADOW_COL_COUNT + 1) * 256];
@@ -1292,7 +1437,18 @@ index d328d82..b5644c4 100644
  
          /*
          **	In rubber band mode, mark all cells under the "rubber band" to be
-@@ -4993,6 +5067,14 @@ void DisplayClass::Constrained_Look(COORDINATE center, LEPTON distance, HouseCla
+@@ -4792,6 +4866,10 @@ void DisplayClass::Read_INI(CCINIClass& ini)
+                 tt->AttachCount++;
+                 tt->Cell = cell;
+                 (*this)[cell].Trigger = tt;
++#ifdef SHADEREMU
++                extern bool ShaderEmu_Cell_Triggers_Stale; /* (map.cpp: the cells that have one are listed) */
++                ShaderEmu_Cell_Triggers_Stale = true;
++#endif
+             }
+         }
+     }
+@@ -4993,6 +5071,14 @@ void DisplayClass::Constrained_Look(COORDINATE center, LEPTON distance, HouseCla
   *=============================================================================================*/
  void DisplayClass::Flag_Cell(CELL cell)
  {
@@ -2223,10 +2379,19 @@ index b6b00d7..d28dac0 100644
              Seed = CustomSeed;
          } else {
 diff --git a/redalert/iomap.cpp b/redalert/iomap.cpp
-index 8216bb8..73395ec 100644
+index 8216bb8..293a9a6 100644
 --- a/redalert/iomap.cpp
 +++ b/redalert/iomap.cpp
-@@ -509,4 +509,7 @@ void MapClass::Decode_Pointers(void)
+@@ -504,9 +504,16 @@ void MapClass::Code_Pointers(void)
+  *=============================================================================================*/
+ void MapClass::Decode_Pointers(void)
+ {
++#ifdef SHADEREMU
++    extern bool ShaderEmu_Cell_Triggers_Stale; /* (map.cpp: the cells that have one are listed) */
++    ShaderEmu_Cell_Triggers_Stale = true;
++#endif
+     CellClass* cellptr = &(*this)[(CELL)0];
+     for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
          cellptr->Decode_Pointers();
          cellptr++;
      }
@@ -2318,7 +2483,7 @@ index db1ccf6..cf44e40 100644
      /*
      **	Make room if the insertion spot is not at the end of the vector.
 diff --git a/redalert/map.cpp b/redalert/map.cpp
-index 471bef5..2a051f1 100644
+index 471bef5..bc4a14a 100644
 --- a/redalert/map.cpp
 +++ b/redalert/map.cpp
 @@ -60,6 +60,46 @@
@@ -2368,7 +2533,15 @@ index 471bef5..2a051f1 100644
  #include "lcwpipe.h"
  #include "lcwstraw.h"
  #include "common/endianness.h"
-@@ -518,6 +558,9 @@ void MapClass::Init_Cells(void)
+@@ -514,10 +554,17 @@ void MapClass::Free_Cells(void)
+  *=============================================================================================*/
+ void MapClass::Init_Cells(void)
+ {
++#ifdef SHADEREMU
++    extern bool ShaderEmu_Cell_Triggers_Stale; /* (Detach, below: the cells that have a trigger are listed) */
++    ShaderEmu_Cell_Triggers_Stale = true;
++#endif
+     TotalValue = 0;
      for (int index = 0; index < MAP_CELL_TOTAL; index++) {
          new (&Array[index]) CellClass;
      }
@@ -2378,7 +2551,7 @@ index 471bef5..2a051f1 100644
  }
  
  /***********************************************************************************************
-@@ -1019,17 +1062,30 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
+@@ -1019,17 +1066,30 @@ void MapClass::Place_Down(CELL cell, ObjectClass* object)
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Occupy_Down(object);
                  (*this)[newcell].Recalc_Attributes();
@@ -2411,7 +2584,7 @@ index 471bef5..2a051f1 100644
              }
          }
      }
-@@ -1067,17 +1123,22 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
+@@ -1067,17 +1127,22 @@ void MapClass::Pick_Up(CELL cell, ObjectClass* object)
              if ((unsigned)newcell < MAP_CELL_TOTAL) {
                  (*this)[newcell].Occupy_Up(object);
                  (*this)[newcell].Recalc_Attributes();
@@ -2436,7 +2609,7 @@ index 471bef5..2a051f1 100644
              }
          }
      }
-@@ -1111,13 +1172,27 @@ void MapClass::Overlap_Down(CELL cell, ObjectClass* object)
+@@ -1111,13 +1176,27 @@ void MapClass::Overlap_Down(CELL cell, ObjectClass* object)
  
      if (object->Class_Of().IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
          short xlist[32];
@@ -2465,7 +2638,7 @@ index 471bef5..2a051f1 100644
              }
          }
      }
-@@ -1151,13 +1226,19 @@ void MapClass::Overlap_Up(CELL cell, ObjectClass* object)
+@@ -1151,13 +1230,19 @@ void MapClass::Overlap_Up(CELL cell, ObjectClass* object)
  
      if (object->Class_Of().IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
          short xlist[32];
@@ -2486,7 +2659,7 @@ index 471bef5..2a051f1 100644
              }
          }
      }
-@@ -1466,6 +1547,10 @@ int MapClass::Cell_Region(CELL cell)
+@@ -1466,6 +1551,10 @@ int MapClass::Cell_Region(CELL cell)
   *=========================================================================*/
  int MapClass::Cell_Threat(CELL cell, HousesType house)
  {
@@ -2497,7 +2670,19 @@ index 471bef5..2a051f1 100644
      int threat = HouseClass::As_Pointer(house)->Regions[Map.Cell_Region(Map[cell].Cell_Number())].Threat_Value();
      // using function for IsVisible so we have different results for different players - JAS 2019/09/30
      if (!threat && Map[cell].Is_Visible(house)) {
-@@ -2439,11 +2524,24 @@ void MapClass::Detach(TARGET target, bool)
+@@ -2423,6 +2512,11 @@ bool MapClass::Destroy_Bridge_At(CELL cell)
+  * HISTORY:                                                                                    *
+  *   07/28/1996 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++bool ShaderEmu_Cell_Triggers_Stale = true; /* a cell may have a trigger the list below has not */
++static unsigned ShaderEmu_Cell_Triggers_Taken, ShaderEmu_Cell_Triggers_Missed;
++#endif
++
+ void MapClass::Detach(TARGET target, bool)
+ {
+     /*
+@@ -2439,11 +2533,62 @@ void MapClass::Detach(TARGET target, bool)
          /*
          **	Loop through all cells; remove any reference to this trigger
          */
@@ -2506,9 +2691,47 @@ index 471bef5..2a051f1 100644
 +        ** (the trigger is found once, and a cell that has none is not asked about it: this
 +        ** was a hundred instructions for each of the map's 16,384 cells, most of a second)
 +        */
++        /*
++        ** The cells that have a trigger are few, and stay as they are after a mission's start:
++        ** they are listed when one is first wanted, and listed again when a cell was given one
++        ** since (ShaderEmu_Cell_Triggers_Stale). RALERT_CHECK_TRIGGERS=1 asks every cell too.
++        */
 +        TriggerClass* gone = As_Trigger(target);
-+        for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        static CELL listed[512];
++        static int listed_count = -1;
++        static int check = -1;
++        if (check < 0) {
++            check = getenv("RALERT_CHECK_TRIGGERS") != NULL;
++            if (check) {
++                atexit([]() {
++                    fprintf(stderr, "ralert: %u triggers taken out of the cells by the list, %u cells missed\n",
++                            ShaderEmu_Cell_Triggers_Taken, ShaderEmu_Cell_Triggers_Missed);
++                });
++            }
++        }
++        if (ShaderEmu_Cell_Triggers_Stale || listed_count < 0) {
++            ShaderEmu_Cell_Triggers_Stale = false;
++            listed_count = 0;
++            for (CELL cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++                if ((*this)[cell].Trigger.Is_Valid()) {
++                    if (listed_count == 512) {
++                        listed_count = -1; /* (too many for the list: every cell, every time) */
++                        break;
++                    }
++                    listed[listed_count++] = cell;
++                }
++            }
++        }
++        ShaderEmu_Cell_Triggers_Taken++;
++        for (int index = 0; index < listed_count; index++) {
++            CELL cell = listed[index];
 +            if ((*this)[cell].Trigger.Is_Valid() && (TriggerClass*)(*this)[cell].Trigger == gone) {
++                (*this)[cell].Trigger = NULL;
++            }
++        }
++        for (CELL cell = 0; (listed_count < 0 || check) && cell < MAP_CELL_TOTAL; cell++) {
++            if ((*this)[cell].Trigger.Is_Valid() && (TriggerClass*)(*this)[cell].Trigger == gone) {
++                ShaderEmu_Cell_Triggers_Missed += listed_count >= 0;
 +                (*this)[cell].Trigger = NULL;
 +            }
 +        }
@@ -2522,6 +2745,21 @@ index 471bef5..2a051f1 100644
      }
  }
  
+diff --git a/redalert/mapedplc.cpp b/redalert/mapedplc.cpp
+index 776ad8f..c750f13 100644
+--- a/redalert/mapedplc.cpp
++++ b/redalert/mapedplc.cpp
+@@ -1679,6 +1679,10 @@ void MapEditClass::Place_Trigger(void)
+             if (CurTrigger) {
+                 TriggerClass* tt = Find_Or_Make(CurTrigger);
+                 Map[cell].Trigger = tt;
++#ifdef SHADEREMU
++                extern bool ShaderEmu_Cell_Triggers_Stale; /* (map.cpp: the cells that have one are listed) */
++                ShaderEmu_Cell_Triggers_Stale = true;
++#endif
+             }
+             //			CellTriggers[cell] = CurTrigger;
+         }
 diff --git a/redalert/msglist.cpp b/redalert/msglist.cpp
 index 044be8b..c2832e1 100644
 --- a/redalert/msglist.cpp
@@ -2702,8 +2940,24 @@ index 399ddfb..7a6fddf 100644
      /*
      ** Some additional padding in case we need to add data to the class and maintain backwards compatibility for
      *save/load
+diff --git a/redalert/power.cpp b/redalert/power.cpp
+index 3a9fada..a42b5bd 100644
+--- a/redalert/power.cpp
++++ b/redalert/power.cpp
+@@ -143,6 +143,11 @@ void PowerClass::One_Time(void)
+     PowerButton.Height = POWER_HEIGHT * RESFACTOR;
+     PowerShape = MFCD::Retrieve("POWER.SHP");
+     PowerBarShape = MFCD::Retrieve("POWERBAR.SHP");
++#ifdef SHADEREMU
++    void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++    ShaderEmu_GL_Ahead_File(PowerShape, 0);
++    ShaderEmu_GL_Ahead_File(PowerBarShape, 0);
++#endif
+ }
+ 
+ /***********************************************************************************************
 diff --git a/redalert/radar.cpp b/redalert/radar.cpp
-index 6211ff4..4981582 100644
+index 6211ff4..892472c 100644
 --- a/redalert/radar.cpp
 +++ b/redalert/radar.cpp
 @@ -595,6 +595,23 @@ void RadarClass::Draw_It(bool forced)
@@ -2730,6 +2984,30 @@ index 6211ff4..4981582 100644
              CC_Draw_Shape(RadarAnim, val, RadX, RadY + (1 * RESFACTOR), WINDOW_MAIN, SHAPE_NORMAL);
              FullRedraw = false;
              IsToRedraw = false;
+@@ -2557,4 +2574,21 @@ void RadarClass::Flag_Cell(CELL cell)
+ {
+     //	Radar_Pixel(cell);
+     DisplayClass::Flag_Cell(cell);
+-}
+\ No newline at end of file
++}
++
++#ifdef SHADEREMU
++/*
++** The radar's two files are found when it is first drawn (Draw_It): asked for ahead as a
++** mission begins, by the same names. 41 is MAX_RADAR_FRAMES: the cover plate, then the opening.
++*/
++void ShaderEmu_Radar_Ahead(void)
++{
++    void ShaderEmu_GL_Ahead_File(const void* file, int frame);
++    if (PlayerPtr) {
++        HousesType h = PlayerPtr->ActLike;
++        bool ussr = h == HOUSE_USSR || h == HOUSE_UKRAINE || h == HOUSE_BAD;
++        ShaderEmu_GL_Ahead_File(MFCD::Retrieve(ussr ? "uradrfrm.shp" : "nradrfrm.shp"), 0);
++        ShaderEmu_GL_Ahead_File(MFCD::Retrieve(ussr ? "ussrradr.shp" : "natoradr.shp"), 41);
++    }
++}
++#endif
 diff --git a/redalert/saveload.cpp b/redalert/saveload.cpp
 index 36a2e3c..962ee56 100644
 --- a/redalert/saveload.cpp
@@ -2830,10 +3108,40 @@ index 5c063b8..0dc3396 100644
              bool at_screen_edge = (y == 0 || x == 0 || x >= SeenBuff.Get_Width() - 1 || y >= SeenBuff.Get_Height() - 1);
  
 diff --git a/redalert/sidebar.cpp b/redalert/sidebar.cpp
-index 928dc0e..220bfd9 100644
+index 928dc0e..f133efa 100644
 --- a/redalert/sidebar.cpp
 +++ b/redalert/sidebar.cpp
-@@ -497,7 +497,12 @@ bool SidebarClass::Factory_Link(int factory, RTTIType type, int id)
+@@ -324,6 +324,16 @@ void SidebarClass::Init_IO(void)
+         Zoom.Y = (0x96 / 2) * RESFACTOR;
+         Zoom.IsPressed = false;
+         Zoom.Set_Shape(MFCD::Retrieve("MAP.SHP"));
++#ifdef SHADEREMU
++        {
++            void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++            ShaderEmu_GL_Ahead_File(MFCD::Retrieve("REPAIR.SHP"), 0);
++            ShaderEmu_GL_Ahead_File(MFCD::Retrieve("SELL.SHP"), 0);
++            ShaderEmu_GL_Ahead_File(MFCD::Retrieve("MAP.SHP"), 0);
++            ShaderEmu_GL_Ahead_File(MFCD::Retrieve("STRIPUP.SHP"), 0);
++            ShaderEmu_GL_Ahead_File(MFCD::Retrieve("STRIPDN.SHP"), 0);
++        }
++#endif
+ 
+         if ((IsRadarActive && Is_Zoomable()) || Session.Type != GAME_NORMAL) {
+             Zoom.Enable();
+@@ -419,6 +429,12 @@ void SidebarClass::Reload_Sidebar(void)
+     sb_name[4] = '3';
+     SidebarBottomShape = (void*)MFCD::Retrieve(sb_name);
+ 
++#endif
++#ifdef SHADEREMU
++    void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++    ShaderEmu_GL_Ahead_File(SidebarShape, 0);
++    ShaderEmu_GL_Ahead_File(SidebarMiddleShape, 0);
++    ShaderEmu_GL_Ahead_File(SidebarBottomShape, 0);
+ #endif
+ 
+     Column[0].Reload_LogoShapes();
+@@ -497,7 +513,12 @@ bool SidebarClass::Factory_Link(int factory, RTTIType type, int id)
   *=============================================================================================*/
  void SidebarClass::Refresh_Cells(CELL cell, short const* list)
  {
@@ -2846,7 +3154,7 @@ index 928dc0e..220bfd9 100644
          IsToRedraw = true;
          Column[0].IsToRedraw = true;
          Column[1].IsToRedraw = true;
-@@ -740,6 +745,10 @@ bool SidebarClass::Scroll(bool up, int column)
+@@ -740,6 +761,10 @@ bool SidebarClass::Scroll(bool up, int column)
   *   10/28/94   JLB : Created.                                                                 *
   *   12/31/1994 JLB : Split rendering off into the sidebar strip class.                        *
   *=============================================================================================*/
@@ -2857,7 +3165,7 @@ index 928dc0e..220bfd9 100644
  void SidebarClass::Draw_It(bool complete)
  {
      PowerClass::Draw_It(complete);
-@@ -748,6 +757,10 @@ void SidebarClass::Draw_It(bool complete)
+@@ -748,6 +773,10 @@ void SidebarClass::Draw_It(bool complete)
  
      if (IsSidebarActive && (IsToRedraw || complete) && !Debug_Map) {
          IsToRedraw = false;
@@ -2868,6 +3176,46 @@ index 928dc0e..220bfd9 100644
  
          if (LogicPage->Lock()) {
              /*
+@@ -1272,6 +1301,10 @@ void SidebarClass::StripClass::Reload_LogoShapes(void)
+         houseloaded = PlayerPtr->ActLike;
+     }
+     LogoShapes = (void*)MFCD::Retrieve(stripnames[houseloaded]);
++#ifdef SHADEREMU
++    void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++    ShaderEmu_GL_Ahead_File(LogoShapes, 0);
++#endif
+ }
+ 
+ /***********************************************************************************************
+@@ -1360,6 +1393,13 @@ bool SidebarClass::StripClass::Add(RTTIType type, int id, bool via_capture)
+         Buildables[BuildableCount].BuildableID = id;
+         Buildables[BuildableCount].BuildableViaCapture = via_capture;
+         BuildableCount++;
++#ifdef SHADEREMU
++        {
++            void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++            TechnoTypeClass const* tech = type != RTTI_SPECIAL ? Fetch_Techno_Type(type, id) : NULL;
++            ShaderEmu_GL_Ahead_File(tech ? tech->Get_Cameo_Data() : type == RTTI_SPECIAL ? SpecialShapes[id] : NULL, 0);
++        }
++#endif
+         IsToRedraw = true;
+         return (true);
+     }
+diff --git a/redalert/tab.cpp b/redalert/tab.cpp
+index 732eb24..5bcd802 100644
+--- a/redalert/tab.cpp
++++ b/redalert/tab.cpp
+@@ -303,6 +303,10 @@ void TabClass::One_Time(void)
+     SidebarClass::One_Time();
+     RawFileClass file("tabs.shp");
+     TabShape = MFCD::Retrieve("TABS.SHP");
++#ifdef SHADEREMU
++    void ShaderEmu_GL_Ahead_File(const void* file, int frame); /* (gl.cpp: unpacked ahead by worker cores) */
++    ShaderEmu_GL_Ahead_File(TabShape, 0);
++#endif
+ }
+ 
+ void TabClass::Flash_Money(void)
 diff --git a/redalert/target.cpp b/redalert/target.cpp
 index 110368b..9976989 100644
 --- a/redalert/target.cpp

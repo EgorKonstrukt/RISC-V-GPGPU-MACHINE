@@ -253,10 +253,119 @@ index 816e0b10..3998886f 100644
  typedef struct script_s
  {
 diff --git a/code/cgame/cg_draw.c b/code/cgame/cg_draw.c
-index afe09412..e68fd337 100644
+index afe09412..98f72ea7 100644
 --- a/code/cgame/cg_draw.c
 +++ b/code/cgame/cg_draw.c
-@@ -2052,7 +2052,19 @@ static void CG_DrawCrosshairNames( void ) {
+@@ -203,6 +203,42 @@ Draws large numbers for status bar and powerups
+ ==============
+ */
+ #ifndef MISSIONPACK
++#ifdef SHADEREMU
++#define SE_SCORE( value )	SE_Number( value, 2 )
++#else
++#define SE_SCORE( value )	va( "%2i", value )
++#endif
++
++#ifdef SHADEREMU
++/*
++ * A whole number as text, at least `least` characters wide: the status bar's and the scores'
++ * are made every frame, and the general formatter is some six hundred instructions each.
++ */
++static char *SE_Number( int value, int least ) {
++	static char	text[8][16];
++	static int	next;
++	char		*out = text[next++ & 7], digits[12];
++	unsigned	u = value < 0 ? 0u - (unsigned)value : (unsigned)value;
++	int			n = 0, at = 0;
++
++	do {
++		digits[n++] = '0' + u % 10;
++		u /= 10;
++	} while ( u );
++	if ( value < 0 ) {
++		digits[n++] = '-';
++	}
++	for ( ; at < least - n ; at++ ) {
++		out[at] = ' ';
++	}
++	while ( n ) {
++		out[at++] = digits[--n];
++	}
++	out[at] = 0;
++	return out;
++}
++#endif
++
+ static void CG_DrawField (int x, int y, int width, int value) {
+ 	char	num[16], *ptr;
+ 	int		l;
+@@ -236,7 +272,11 @@ static void CG_DrawField (int x, int y, int width, int value) {
+ 		break;
+ 	}
+ 
++#ifdef SHADEREMU
++	Q_strncpyz( num, SE_Number( value, 0 ), sizeof( num ) );
++#else
+ 	Com_sprintf (num, sizeof(num), "%i", value);
++#endif
+ 	l = strlen(num);
+ 	if (l > width)
+ 		l = width;
+@@ -1038,7 +1078,7 @@ static float CG_DrawScores( float y ) {
+ 		color[1] = 0.0f;
+ 		color[2] = 1.0f;
+ 		color[3] = 0.33f;
+-		s = va( "%2i", s2 );
++		s = SE_SCORE( s2 );
+ 		w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 		x -= w;
+ 		CG_FillRect( x, y-4,  w, BIGCHAR_HEIGHT+8, color );
+@@ -1062,7 +1102,7 @@ static float CG_DrawScores( float y ) {
+ 		color[1] = 0.0f;
+ 		color[2] = 0.0f;
+ 		color[3] = 0.33f;
+-		s = va( "%2i", s1 );
++		s = SE_SCORE( s1 );
+ 		w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 		x -= w;
+ 		CG_FillRect( x, y-4,  w, BIGCHAR_HEIGHT+8, color );
+@@ -1089,7 +1129,7 @@ static float CG_DrawScores( float y ) {
+ 			v = cgs.fraglimit;
+ 		}
+ 		if ( v ) {
+-			s = va( "%2i", v );
++			s = SE_SCORE( v );
+ 			w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 			x -= w;
+ 			CG_DrawBigString( x + 4, y, s, 1.0F);
+@@ -1107,7 +1147,7 @@ static float CG_DrawScores( float y ) {
+ 			s2 = score;
+ 		}
+ 		if ( s2 != SCORE_NOT_PRESENT ) {
+-			s = va( "%2i", s2 );
++			s = SE_SCORE( s2 );
+ 			w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 			x -= w;
+ 			if ( !spectator && score == s2 && score != s1 ) {
+@@ -1129,7 +1169,7 @@ static float CG_DrawScores( float y ) {
+ 
+ 		// first place
+ 		if ( s1 != SCORE_NOT_PRESENT ) {
+-			s = va( "%2i", s1 );
++			s = SE_SCORE( s1 );
+ 			w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 			x -= w;
+ 			if ( !spectator && score == s1 ) {
+@@ -1150,7 +1190,7 @@ static float CG_DrawScores( float y ) {
+ 		}
+ 
+ 		if ( cgs.fraglimit ) {
+-			s = va( "%2i", cgs.fraglimit );
++			s = SE_SCORE( cgs.fraglimit );
+ 			w = CG_DrawStrlen( s ) * BIGCHAR_WIDTH + 8;
+ 			x -= w;
+ 			CG_DrawBigString( x + 4, y, s, 1.0F);
+@@ -2052,7 +2092,19 @@ static void CG_DrawCrosshairNames( void ) {
  	}
  
  	// scan the known entities to see if the crosshair is sighted on one
@@ -276,6 +385,135 @@ index afe09412..e68fd337 100644
  
  	// draw the name of the player being looked at
  	color = CG_FadeColor( cg.crosshairClientTime, 1000 );
+@@ -2648,10 +2700,13 @@ void CG_DrawActive( stereoFrame_t stereoView ) {
+ 		CG_DrawCrosshair3D();
+ 
+ 	// draw 3D view
++	SE_Part( 8 );
+ 	trap_R_RenderScene( &cg.refdef );
++	SE_Part( 9 );
+ 
+ 	// draw status bar and other floating elements
+  	CG_Draw2D(stereoView);
++	SE_Part( 10 );
+ }
+ 
+ 
+diff --git a/code/cgame/cg_ents.c b/code/cgame/cg_ents.c
+index ec8b02ff..a8a64010 100644
+--- a/code/cgame/cg_ents.c
++++ b/code/cgame/cg_ents.c
+@@ -224,6 +224,49 @@ static void CG_Speaker( centity_t *cent ) {
+ CG_Item
+ ==================
+ */
++#ifdef SHADEREMU
++/*
++ * The view's four sides, facing in, as the renderer has them (tr_shaderemu.c). An item far
++ * outside one is not made ready and added, where it was added and then not drawn.
++ */
++#define SE_ITEM_REACH	128		/* further from where an item lies than any of its models goes */
++static float	se_sides[4][4];
++
++static void SE_ViewSides( void ) {
++	static float	fov[2], sn[2], cs[2];
++	const float		*o = cg.refdef.vieworg, *f = cg.refdef.viewaxis[0];
++	int				i;
++
++	if ( fov[0] != cg.refdef.fov_x || fov[1] != cg.refdef.fov_y ) {
++		fov[0] = cg.refdef.fov_x, fov[1] = cg.refdef.fov_y;
++		for ( i = 0 ; i < 2 ; i++ ) {
++			sn[i] = sin( fov[i] * ( M_PI / 360.0f ) );
++			cs[i] = cos( fov[i] * ( M_PI / 360.0f ) );
++		}
++	}
++	for ( i = 0 ; i < 4 ; i++ ) {
++		const float	*side = cg.refdef.viewaxis[i < 2 ? 1 : 2];
++		float		s = sn[i >> 1], c = i & 1 ? -cs[i >> 1] : cs[i >> 1], *n = se_sides[i];
++
++		n[0] = f[0] * s + side[0] * c;
++		n[1] = f[1] * s + side[1] * c;
++		n[2] = f[2] * s + side[2] * c;
++		n[3] = DotProduct( o, n );
++	}
++}
++
++static qboolean SE_OutOfView( const vec3_t at, float reach ) {
++	int		i;
++
++	for ( i = 0 ; i < 4 ; i++ ) {
++		if ( DotProduct( at, se_sides[i] ) - se_sides[i][3] < -reach ) {
++			return qtrue;
++		}
++	}
++	return qfalse;
++}
++#endif
++
+ static void CG_Item( centity_t *cent ) {
+ 	refEntity_t		ent;
+ 	entityState_t	*es;
+@@ -258,6 +301,12 @@ static void CG_Item( centity_t *cent ) {
+ 		return;
+ 	}
+ 
++#ifdef SHADEREMU
++	if ( SE_OutOfView( cent->lerpOrigin, SE_ITEM_REACH ) ) {
++		return;
++	}
++#endif
++
+ 	// items bob up and down continuously
+ 	scale = 0.005 + cent->currentState.number * 0.00001;
+ 	cent->lerpOrigin[2] += 4 + cos( ( cg.time + 1000 ) *  scale ) * 4;
+@@ -818,8 +867,23 @@ static void CG_CalcEntityLerpPositions( centity_t *cent ) {
+ 	}
+ 
+ 	// just use the current frame and evaluate as best we can
++#ifdef SHADEREMU
++	if ( cent->currentState.pos.trType == TR_STATIONARY && cent->currentState.apos.trType == TR_STATIONARY ) {
++		// (most things of a level lie still: what the two calls below come to)
++		VectorCopy( cent->currentState.pos.trBase, cent->lerpOrigin );
++		VectorCopy( cent->currentState.apos.trBase, cent->lerpAngles );
++	} else {
++		BG_EvaluateTrajectory( &cent->currentState.pos, cg.time, cent->lerpOrigin );
++		BG_EvaluateTrajectory( &cent->currentState.apos, cg.time, cent->lerpAngles );
++	}
++	// (on no mover: the call below copies the place onto itself)
++	if ( cent->currentState.groundEntityNum <= 0 || cent->currentState.groundEntityNum >= ENTITYNUM_MAX_NORMAL ) {
++		return;
++	}
++#else
+ 	BG_EvaluateTrajectory( &cent->currentState.pos, cg.time, cent->lerpOrigin );
+ 	BG_EvaluateTrajectory( &cent->currentState.apos, cg.time, cent->lerpAngles );
++#endif
+ 
+ 	// adjust for riding a mover if it wasn't rolled into the predicted
+ 	// player state
+@@ -1078,6 +1142,9 @@ void CG_AddPacketEntities( void ) {
+ 
+ 	AnglesToAxis( cg.autoAngles, cg.autoAxis );
+ 	AnglesToAxis( cg.autoAnglesFast, cg.autoAxisFast );
++#ifdef SHADEREMU
++	SE_ViewSides();
++#endif
+ 
+ 	// generate and add the entity from the playerstate
+ 	ps = &cg.predictedPlayerState;
+diff --git a/code/cgame/cg_local.h b/code/cgame/cg_local.h
+index 6546d4d5..26ee48ea 100644
+--- a/code/cgame/cg_local.h
++++ b/code/cgame/cg_local.h
+@@ -192,6 +192,9 @@ typedef struct centity_s {
+ 	// exact interpolated position of entity on this frame
+ 	vec3_t			lerpOrigin;
+ 	vec3_t			lerpAngles;
++#ifdef SHADEREMU
++	unsigned		se_current, se_next;	// which bytes currentState and nextState have (cl_parse.c); 0: not known
++#endif
+ } centity_t;
+ 
+ 
 diff --git a/code/cgame/cg_main.c b/code/cgame/cg_main.c
 index 1269e1b6..41645fbe 100644
 --- a/code/cgame/cg_main.c
@@ -324,7 +562,7 @@ index 1269e1b6..41645fbe 100644
  		trap_Cvar_Update( cv->vmCvar );
  	}
 diff --git a/code/cgame/cg_predict.c b/code/cgame/cg_predict.c
-index 6ec837c8..93af76b1 100644
+index 6ec837c8..3d7df2a9 100644
 --- a/code/cgame/cg_predict.c
 +++ b/code/cgame/cg_predict.c
 @@ -116,6 +116,23 @@ static void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const
@@ -351,7 +589,63 @@ index 6ec837c8..93af76b1 100644
  			cmodel = trap_CM_TempBoxModel( bmins, bmaxs );
  			VectorCopy( vec3_origin, angles );
  			VectorCopy( cent->lerpOrigin, origin );
-@@ -360,6 +377,32 @@ static void CG_TouchTriggerPrediction( void ) {
+@@ -142,11 +159,55 @@ static void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const
+ CG_Trace
+ ================
+ */
++#ifdef SHADEREMU
++/*
++ * The level itself does not change: a trace through it that was asked for before (a player
++ * who stands makes the same ones every frame) is answered as it was then, bit for bit.
++ */
++#define SE_TRACES	16
++static struct {
++	int		key[13];	/* start, end, mins, maxs as their bits, and the mask */
++	int		valid;
++	trace_t	trace;
++} se_traces[SE_TRACES];
++
++static void SE_LevelTrace( trace_t *t, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs, int mask ) {
++	int				key[13], i;
++	unsigned		hash = 0;
++
++	memcpy( key, start, 12 );
++	memcpy( key + 3, end, 12 );
++	memcpy( key + 6, mins ? mins : vec3_origin, 12 );
++	memcpy( key + 9, maxs ? maxs : vec3_origin, 12 );
++	key[12] = mask;
++	for ( i = 0 ; i < 6 ; i++ ) {
++		hash = ( hash ^ (unsigned)key[i] ) * 0x9e3779b1u;
++	}
++	hash = ( hash >> 24 ) & ( SE_TRACES - 1 );
++	if ( se_traces[hash].valid ) {
++		for ( i = 0 ; i < 13 && se_traces[hash].key[i] == key[i] ; i++ ) {
++		}
++		if ( i == 13 ) {
++			*t = se_traces[hash].trace;
++			return;
++		}
++	}
++	trap_CM_BoxTrace( t, start, end, mins, maxs, 0, mask );
++	memcpy( se_traces[hash].key, key, sizeof( key ) );
++	se_traces[hash].trace = *t;
++	se_traces[hash].valid = 1;
++}
++#endif
++
+ void	CG_Trace( trace_t *result, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, 
+ 					 int skipNumber, int mask ) {
+ 	trace_t	t;
+ 
++#ifdef SHADEREMU
++	SE_LevelTrace( &t, start, end, mins, maxs, mask );
++#else
+ 	trap_CM_BoxTrace ( &t, start, end, mins, maxs, 0, mask);
++#endif
+ 	t.entityNum = t.fraction != 1.0 ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
+ 	// check all other solid models
+ 	CG_ClipMoveToEntities (start, mins, maxs, end, skipNumber, mask, &t);
+@@ -360,6 +421,32 @@ static void CG_TouchTriggerPrediction( void ) {
  			continue;
  		}
  
@@ -384,7 +678,7 @@ index 6ec837c8..93af76b1 100644
  		trap_CM_BoxTrace( &trace, cg.predictedPlayerState.origin, cg.predictedPlayerState.origin, 
  			cg_pmove.mins, cg_pmove.maxs, cmodel, -1 );
  
-@@ -409,8 +452,98 @@ We detect prediction errors and allow them to be decayed off over several frames
+@@ -409,8 +496,98 @@ We detect prediction errors and allow them to be decayed off over several frames
  to ease the jerk.
  =================
  */
@@ -483,7 +777,7 @@ index 6ec837c8..93af76b1 100644
  	playerState_t	oldPlayerState;
  	qboolean	moved;
  	usercmd_t	oldestCmd;
-@@ -499,9 +632,56 @@ void CG_PredictPlayerState( void ) {
+@@ -499,9 +676,56 @@ void CG_PredictPlayerState( void ) {
  	cg_pmove.pmove_fixed = pmove_fixed.integer;// | cg_pmove_fixed.integer;
  	cg_pmove.pmove_msec = pmove_msec.integer;
  
@@ -540,7 +834,7 @@ index 6ec837c8..93af76b1 100644
  		// get the command
  		trap_GetUserCmd( cmdNum, &cg_pmove.cmd );
  
-@@ -581,12 +761,33 @@ void CG_PredictPlayerState( void ) {
+@@ -581,12 +805,33 @@ void CG_PredictPlayerState( void ) {
  			cg_pmove.cmd.serverTime = ((cg_pmove.cmd.serverTime + pmove_msec.integer-1) / pmove_msec.integer) * pmove_msec.integer;
  		}
  
@@ -574,6 +868,82 @@ index 6ec837c8..93af76b1 100644
  
  		// check for predictable events that changed from previous predictions
  		//CG_CheckChangedPredictableEvents(&cg.predictedPlayerState);
+diff --git a/code/cgame/cg_snapshot.c b/code/cgame/cg_snapshot.c
+index 11b9a067..4158e063 100644
+--- a/code/cgame/cg_snapshot.c
++++ b/code/cgame/cg_snapshot.c
+@@ -55,8 +55,30 @@ CG_TransitionEntity
+ cent->nextState is moved to cent->currentState and events are fired
+ ===============
+ */
++#ifdef SHADEREMU
++const unsigned *SE_SnapshotVersions( snapshot_t *snapshot );
++
++/* Whether a state may be left as it is when its number says it is the same: not a player's or an event's, which are changed here. */
++static qboolean SE_Kept( const entityState_t *es ) {
++	return es->number >= MAX_CLIENTS && es->eType < ET_EVENTS;
++}
++#endif
++
+ static void CG_TransitionEntity( centity_t *cent ) {
++#ifdef SHADEREMU
++	if ( cent->se_next && cent->se_current == cent->se_next && SE_Kept( &cent->nextState ) ) {
++#ifdef SE_CHECK_VERSIONS
++		if ( memcmp( &cent->currentState, &cent->nextState, sizeof( entityState_t ) ) ) {
++			CG_Error( "CG_TransitionEntity: entity %i is not what its number says", cent->nextState.number );
++		}
++#endif
++	} else {
++		cent->currentState = cent->nextState;
++		cent->se_current = cent->se_next;
++	}
++#else
+ 	cent->currentState = cent->nextState;
++#endif
+ 	cent->currentValid = qtrue;
+ 
+ 	// reset if the entity wasn't in the last frame or was teleported
+@@ -104,6 +126,9 @@ void CG_SetInitialSnapshot( snapshot_t *snap ) {
+ 
+ 		memcpy(&cent->currentState, state, sizeof(entityState_t));
+ 		//cent->currentState = *state;
++#ifdef SHADEREMU
++		cent->se_current = cent->se_next = 0;
++#endif
+ 		cent->interpolate = qfalse;
+ 		cent->currentValid = qtrue;
+ 
+@@ -197,6 +222,9 @@ static void CG_SetNextSnap( snapshot_t *snap ) {
+ 	int					num;
+ 	entityState_t		*es;
+ 	centity_t			*cent;
++#ifdef SHADEREMU
++	const unsigned		*versions = SE_SnapshotVersions( snap );
++#endif
+ 
+ 	cg.nextSnap = snap;
+ 
+@@ -208,7 +236,20 @@ static void CG_SetNextSnap( snapshot_t *snap ) {
+ 		es = &snap->entities[num];
+ 		cent = &cg_entities[ es->number ];
+ 
++#ifdef SHADEREMU
++		if ( versions[num] && cent->se_next == versions[num] && SE_Kept( es ) ) {
++#ifdef SE_CHECK_VERSIONS
++			if ( memcmp( &cent->nextState, es, sizeof( entityState_t ) ) ) {
++				CG_Error( "CG_SetNextSnap: entity %i is not what its number says", es->number );
++			}
++#endif
++		} else {
++			memcpy(&cent->nextState, es, sizeof(entityState_t));
++			cent->se_next = versions[num];
++		}
++#else
+ 		memcpy(&cent->nextState, es, sizeof(entityState_t));
++#endif
+ 		//cent->nextState = *es;
+ 
+ 		// if this frame is a teleport, or the entity wasn't in the
 diff --git a/code/cgame/cg_syscalls.c b/code/cgame/cg_syscalls.c
 index 010be948..e65b3f55 100644
 --- a/code/cgame/cg_syscalls.c
@@ -751,7 +1121,7 @@ index 010be948..e65b3f55 100644
  
  void		trap_SetUserCmdValue( int stateValue, float sensitivityScale ) {
 diff --git a/code/cgame/cg_view.c b/code/cgame/cg_view.c
-index 3dba5eba..e1294f61 100644
+index 3dba5eba..207cd792 100644
 --- a/code/cgame/cg_view.c
 +++ b/code/cgame/cg_view.c
 @@ -682,6 +682,14 @@ static int CG_CalcViewValues( void ) {
@@ -769,6 +1139,43 @@ index 3dba5eba..e1294f61 100644
  	// position eye relative to origin
  	AnglesToAxis( cg.refdefViewAngles, cg.refdef.viewaxis );
  
+@@ -782,7 +790,9 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView, qboolean demo
+ 	trap_R_ClearScene();
+ 
+ 	// set up cg.snap and possibly cg.nextSnap
++	SE_Part( 3 );
+ 	CG_ProcessSnapshots();
++	SE_Part( 14 );
+ 
+ 	// if we haven't received any snapshots yet, all
+ 	// we can draw is the information screen
+@@ -798,7 +808,9 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView, qboolean demo
+ 	cg.clientFrame++;
+ 
+ 	// update cg.predictedPlayerState
++	SE_Part( 4 );
+ 	CG_PredictPlayerState();
++	SE_Part( 14 );
+ 
+ 	// decide on third person view
+ 	cg.renderingThirdPerson = cg.snap->ps.persistant[PERS_TEAM] != TEAM_SPECTATOR
+@@ -814,12 +826,16 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView, qboolean demo
+ 
+ 	// build the render lists
+ 	if ( !cg.hyperspace ) {
++		SE_Part( 5 );
+ 		CG_AddPacketEntities();			// adter calcViewValues, so predicted player state is correct
++		SE_Part( 6 );
+ 		CG_AddMarks();
+ 		CG_AddParticles ();
+ 		CG_AddLocalEntities();
+ 	}
++	SE_Part( 7 );
+ 	CG_AddViewWeapon( &cg.predictedPlayerState );
++	SE_Part( 14 );
+ 
+ 	// add buffered sounds
+ 	CG_PlayBufferedSounds();
 diff --git a/code/cgame/cg_weapons.c b/code/cgame/cg_weapons.c
 index e4cead4b..0f6e3e73 100644
 --- a/code/cgame/cg_weapons.c
@@ -803,6 +1210,150 @@ index e4cead4b..0f6e3e73 100644
  
  	// map torso animations to weapon animations
  	if ( cg_gun_frame.integer ) {
+diff --git a/code/client/cl_cgame.c b/code/client/cl_cgame.c
+index bfa0bea2..a645be9a 100644
+--- a/code/client/cl_cgame.c
++++ b/code/client/cl_cgame.c
+@@ -79,6 +79,13 @@ qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
+ }
+ 
+ int CL_GetCurrentCmdNumber( void ) {
++#ifdef SHADEREMU
++	int		number;
++
++	if ( SE_ClientPinned( &number, NULL, NULL ) ) {
++		return number;
++	}
++#endif
+ 	return cl.cmdNumber;
+ }
+ 
+@@ -110,6 +117,11 @@ CL_GetCurrentSnapshotNumber
+ ====================
+ */
+ void	CL_GetCurrentSnapshotNumber( int *snapshotNumber, int *serverTime ) {
++#ifdef SHADEREMU
++	if ( SE_ClientPinned( NULL, snapshotNumber, serverTime ) ) {
++		return;
++	}
++#endif
+ 	*snapshotNumber = cl.snap.messageNum;
+ 	*serverTime = cl.snap.serverTime;
+ }
+@@ -119,6 +131,35 @@ void	CL_GetCurrentSnapshotNumber( int *snapshotNumber, int *serverTime ) {
+ CL_GetSnapshot
+ ====================
+ */
++#ifdef SHADEREMU
++/* What each of the client's game's two snapshots holds: its entities' numbers of cl_parse.c's. */
++extern unsigned	se_entity_versions[MAX_PARSE_ENTITIES];
++static struct {
++	snapshot_t	*snapshot;
++	unsigned	version[MAX_ENTITIES_IN_SNAPSHOT];
++} se_held[2];
++
++static unsigned *SE_Held( snapshot_t *snapshot ) {
++	static int	next;
++	int			i = se_held[0].snapshot == snapshot ? 0 : se_held[1].snapshot == snapshot ? 1 : -1;
++
++	if ( i < 0 ) {
++		i = next++ & 1;
++		se_held[i].snapshot = snapshot;
++		Com_Memset( se_held[i].version, 0, sizeof( se_held[i].version ) );
++	}
++	return se_held[i].version;
++}
++
++const unsigned *SE_SnapshotVersions( snapshot_t *snapshot ) {
++	return SE_Held( snapshot );
++}
++
++static void SE_HeldForget( void ) {
++	Com_Memset( se_held, 0, sizeof( se_held ) );
++}
++#endif
++
+ qboolean	CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
+ 	clSnapshot_t	*clSnap;
+ 	int				i, count;
+@@ -157,10 +198,32 @@ qboolean	CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
+ 		count = MAX_ENTITIES_IN_SNAPSHOT;
+ 	}
+ 	snapshot->numEntities = count;
++#ifdef SHADEREMU
++	{
++		unsigned	*held = SE_Held( snapshot );
++
++		for ( i = 0 ; i < count ; i++ ) {
++			int			from = ( clSnap->parseEntitiesNum + i ) & (MAX_PARSE_ENTITIES-1);
++
++			// (the same bytes as are there: this snapshot is written where the one before the last was)
++			if ( held[i] == se_entity_versions[from] ) {
++#ifdef SE_CHECK_VERSIONS
++				if ( memcmp( &snapshot->entities[i], &cl.parseEntities[from], sizeof( entityState_t ) ) ) {
++					Com_Error( ERR_DROP, "CL_GetSnapshot: entity %i is not what its number says", i );
++				}
++#endif
++				continue;
++			}
++			snapshot->entities[i] = cl.parseEntities[from];
++			held[i] = se_entity_versions[from];
++		}
++	}
++#else
+ 	for ( i = 0 ; i < count ; i++ ) {
+ 		snapshot->entities[i] = 
+ 			cl.parseEntities[ ( clSnap->parseEntitiesNum + i ) & (MAX_PARSE_ENTITIES-1) ];
+ 	}
++#endif
+ 
+ 	// FIXME: configstring changes and server commands!!!
+ 
+@@ -173,6 +236,11 @@ CL_SetUserCmdValue
+ =====================
+ */
+ void CL_SetUserCmdValue( int userCmdValue, float sensitivityScale ) {
++#ifdef SHADEREMU
++	if ( SE_ClientUserCmdValue( userCmdValue, sensitivityScale ) ) {
++		return;
++	}
++#endif
+ 	cl.cgameUserCmdValue = userCmdValue;
+ 	cl.cgameSensitivity = sensitivityScale;
+ }
+@@ -389,6 +457,9 @@ void CL_ShutdownCGame( void ) {
+ 	if ( !cgvm ) {
+ 		return;
+ 	}
++#ifdef SHADEREMU
++	SE_ClientReset();
++#endif
+ 	VM_Call( cgvm, CG_SHUTDOWN );
+ 	VM_Free( cgvm );
+ 	cgvm = NULL;
+@@ -714,6 +785,10 @@ void CL_InitCGame( void ) {
+ 	int					t1, t2;
+ 	vmInterpret_t		interpret;
+ 
++#ifdef SHADEREMU
++	SE_ClientReset();
++	SE_HeldForget();
++#endif
+ 	t1 = Sys_Milliseconds();
+ 
+ 	// put away the console
+@@ -793,7 +868,11 @@ CL_CGameRendering
+ =====================
+ */
+ void CL_CGameRendering( stereoFrame_t stereo ) {
++#ifdef SHADEREMU
++	SE_ClientFrame( cl.serverTime, stereo, clc.demoplaying );
++#else
+ 	VM_Call( cgvm, CG_DRAW_ACTIVE_FRAME, cl.serverTime, stereo, clc.demoplaying );
++#endif
+ 	VM_Debug( 0 );
+ }
+ 
 diff --git a/code/client/cl_input.c b/code/client/cl_input.c
 index cfdaa1d1..77416326 100644
 --- a/code/client/cl_input.c
@@ -818,6 +1369,90 @@ index cfdaa1d1..77416326 100644
  
  	// check to make sure the angles haven't wrapped
  	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
+diff --git a/code/client/cl_main.c b/code/client/cl_main.c
+index d8c8c669..f62abd5a 100644
+--- a/code/client/cl_main.c
++++ b/code/client/cl_main.c
+@@ -580,7 +580,13 @@ not have future usercmd_t executed before it is executed
+ void CL_AddReliableCommand(const char *cmd, qboolean isDisconnectCmd)
+ {
+ 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
+-	
++
++#ifdef SHADEREMU
++	if ( SE_OnWorker() ) {	/* (the connection is the first core's: sent when the frame is taken) */
++		SE_ClientKeepReliable( cmd );
++		return;
++	}
++#endif
+ 	// if we would be losing an old command that hasn't been acknowledged,
+ 	// we must drop the connection
+ 	// also leave one slot open for the disconnect command in this case.
+@@ -1328,6 +1334,9 @@ Called before parsing a gamestate
+ =====================
+ */
+ void CL_ClearState (void) {
++#ifdef SHADEREMU
++	SE_ClientSettle();
++#endif
+ 
+ //	S_StopAllSounds();
+ 
+@@ -3077,6 +3086,7 @@ void CL_Frame ( int msec ) {
+ 		SCR_DebugGraph ( cls.realFrametime * 0.25 );
+ 	}
+ 
++	SE_Part( 2 );
+ 	// see if we need to update any userinfo
+ 	CL_CheckUserinfo();
+ 
+@@ -3094,10 +3104,13 @@ void CL_Frame ( int msec ) {
+ 	CL_SetCGameTime();
+ 
+ 	// update the screen
++	SE_Part( 10 );
+ 	SCR_UpdateScreen();
+ 
+ 	// update audio
++	SE_Part( 11 );
+ 	S_Update();
++	SE_Part( 0 );
+ 
+ #ifdef USE_VOIP
+ 	CL_CaptureVoip();
+diff --git a/code/client/cl_parse.c b/code/client/cl_parse.c
+index d8b5e2a5..cf42abf0 100644
+--- a/code/client/cl_parse.c
++++ b/code/client/cl_parse.c
+@@ -61,6 +61,16 @@ Parses deltas from the given base and adds the resulting entity
+ to the current frame
+ ==================
+ */
++#ifdef SHADEREMU
++/*
++ * A number for each entity state kept: two with the same number are the same bytes (one that
++ * came unchanged has the number of what it came from). Most things of a level never change,
++ * and what has a state already is not copied to where it already is (cl_cgame.c, cg_snapshot.c).
++ */
++unsigned	se_entity_versions[MAX_PARSE_ENTITIES];
++static unsigned	se_version_next = 1;
++#endif
++
+ void CL_DeltaEntity (msg_t *msg, clSnapshot_t *frame, int newnum, entityState_t *old, 
+ 					 qboolean unchanged) {
+ 	entityState_t	*state;
+@@ -74,6 +84,11 @@ void CL_DeltaEntity (msg_t *msg, clSnapshot_t *frame, int newnum, entityState_t
+ 	} else {
+ 		MSG_ReadDeltaEntity( msg, old, state, newnum );
+ 	}
++#ifdef SHADEREMU
++	se_entity_versions[cl.parseEntitiesNum & (MAX_PARSE_ENTITIES-1)] =
++		unchanged && old >= cl.parseEntities && old < cl.parseEntities + MAX_PARSE_ENTITIES ?
++		se_entity_versions[old - cl.parseEntities] : se_version_next++;
++#endif
+ 
+ 	if ( state->number == (MAX_GENTITIES-1) ) {
+ 		return;		// entity was delta removed
 diff --git a/code/game/ai_main.c b/code/game/ai_main.c
 index ed5653d7..02bcfba1 100644
 --- a/code/game/ai_main.c
@@ -1083,7 +1718,7 @@ index 6afacbac..2069944b 100644
  
  	trap_Key_SetCatcher( KEYCATCH_UI );
 diff --git a/code/qcommon/cm_load.c b/code/qcommon/cm_load.c
-index 1aa0fbe8..7772fc92 100644
+index 1aa0fbe8..678319d8 100644
 --- a/code/qcommon/cm_load.c
 +++ b/code/qcommon/cm_load.c
 @@ -43,10 +43,10 @@ void SetPlaneSignbits (cplane_t *out) {
@@ -1092,15 +1727,15 @@ index 1aa0fbe8..7772fc92 100644
  // some extra indexes along with those needed by the map
 -#define	BOX_BRUSHES		1
 -#define	BOX_SIDES		6
-+#define	BOX_BRUSHES		2	// (SHADEREMU: a box for each of two cores)
-+#define	BOX_SIDES		12
++#define	BOX_BRUSHES		5	// (SHADEREMU: a box for each of three cores, and one between two: 16 bytes have one writer)
++#define	BOX_SIDES		18
  #define	BOX_LEAFS		2
 -#define	BOX_PLANES		12
-+#define	BOX_PLANES		24
++#define	BOX_PLANES		36
  
  #define	LL(x) x=LittleLong(x)
  
-@@ -64,9 +64,11 @@ cvar_t		*cm_noCurves;
+@@ -64,9 +64,12 @@ cvar_t		*cm_noCurves;
  cvar_t		*cm_playerCurveClip;
  #endif
  
@@ -1108,14 +1743,15 @@ index 1aa0fbe8..7772fc92 100644
 -cplane_t	*box_planes;
 -cbrush_t	*box_brush;
 +// (a core its own: the server clips against a thing's box while the client does against another)
-+cmodel_t	box_models[2];
-+cplane_t	*box_planes_of[2];
-+cbrush_t	*box_brushes[2];
-+int			*se_brush_marks, *se_patch_marks, se_worker_check;
++cmodel_t	box_models[SE_CORES];
++cplane_t	*box_planes_of[SE_CORES];
++cbrush_t	*box_brushes[SE_CORES];
++int			*se_brush_marks[2], *se_patch_marks[2];
++struct se_check_s	se_worker_checks[2] __attribute__ ((aligned (16)));
  
  
  
-@@ -618,7 +620,12 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+@@ -618,7 +621,12 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
  		Com_Error (ERR_DROP, "Couldn't load %s", name);
  	}
  
@@ -1128,7 +1764,7 @@ index 1aa0fbe8..7772fc92 100644
  	*checksum = last_checksum;
  
  	header = *(dheader_t *)buf.i;
-@@ -651,6 +658,10 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+@@ -651,6 +659,10 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
  	FS_FreeFile (buf.v);
  
  	CM_InitBoxHull ();
@@ -1139,7 +1775,17 @@ index 1aa0fbe8..7772fc92 100644
  
  	CM_FloodAreaConnections ();
  
-@@ -683,7 +694,7 @@ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle ) {
+@@ -666,6 +678,9 @@ CM_ClearMap
+ ==================
+ */
+ void CM_ClearMap( void ) {
++#ifdef SHADEREMU
++	SE_ClientSettle();
++#endif
+ 	Com_Memset( &cm, 0, sizeof( cm ) );
+ 	CM_ClearLevelPatches();
+ }
+@@ -683,7 +698,7 @@ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle ) {
  		return &cm.cmodels[handle];
  	}
  	if ( handle == BOX_MODEL_HANDLE ) {
@@ -1148,7 +1794,7 @@ index 1aa0fbe8..7772fc92 100644
  	}
  	if ( handle < MAX_SUBMODELS ) {
  		Com_Error( ERR_DROP, "CM_ClipHandleToModel: bad handle %i < %i < %i", 
-@@ -746,47 +757,52 @@ can just be stored out and get a proper clipping hull structure.
+@@ -746,47 +761,55 @@ can just be stored out and get a proper clipping hull structure.
  */
  void CM_InitBoxHull (void)
  {
@@ -1159,7 +1805,7 @@ index 1aa0fbe8..7772fc92 100644
  	cbrushside_t	*s;
  
 -	box_planes = &cm.planes[cm.numPlanes];
-+	for (w=0 ; w<2 ; w++)
++	for (w=0 ; w<SE_CORES ; w++)
 +	{
 +		box_planes_of[w] = &cm.planes[cm.numPlanes + 12 * w];
  
@@ -1167,7 +1813,7 @@ index 1aa0fbe8..7772fc92 100644
 -	box_brush->numsides = 6;
 -	box_brush->sides = cm.brushsides + cm.numBrushSides;
 -	box_brush->contents = CONTENTS_BODY;
-+		box_brushes[w] = &cm.brushes[cm.numBrushes + w];
++		box_brushes[w] = &cm.brushes[cm.numBrushes + 2 * w];
 +		box_brushes[w]->numsides = 6;
 +		box_brushes[w]->sides = cm.brushsides + cm.numBrushSides + 6 * w;
 +		box_brushes[w]->contents = CONTENTS_BODY;
@@ -1178,32 +1824,9 @@ index 1aa0fbe8..7772fc92 100644
 -	cm.leafbrushes[cm.numLeafBrushes] = cm.numBrushes;
 +		box_models[w].leaf.numLeafBrushes = 1;
 +		box_models[w].leaf.firstLeafBrush = cm.numLeafBrushes + w;
-+		cm.leafbrushes[cm.numLeafBrushes + w] = cm.numBrushes + w;
++		cm.leafbrushes[cm.numLeafBrushes + w] = cm.numBrushes + 2 * w;
  
 -	for (i=0 ; i<6 ; i++)
--	{
--		side = i&1;
--
--		// brush sides
--		s = &cm.brushsides[cm.numBrushSides+i];
--		s->plane = 	cm.planes + (cm.numPlanes+i*2+side);
--		s->surfaceFlags = 0;
--
--		// planes
--		p = &box_planes[i*2];
--		p->type = i>>1;
--		p->signbits = 0;
--		VectorClear (p->normal);
--		p->normal[i>>1] = 1;
--
--		p = &box_planes[i*2+1];
--		p->type = 3 + (i>>1);
--		p->signbits = 0;
--		VectorClear (p->normal);
--		p->normal[i>>1] = -1;
--
--		SetPlaneSignbits( p );
--	}	
 +		for (i=0 ; i<6 ; i++)
 +		{
 +			side = i&1;
@@ -1230,12 +1853,37 @@ index 1aa0fbe8..7772fc92 100644
 +		}
 +	}
 +	/* the worker's marks of what a trace of its has tested (cm_local.h) */
-+	se_brush_marks = Hunk_Alloc( ( cm.numBrushes + BOX_BRUSHES ) * sizeof( int ), h_high );
-+	se_patch_marks = Hunk_Alloc( ( cm.numSurfaces + 1 ) * sizeof( int ), h_high );
++	for (w=0 ; w<2 ; w++)
+ 	{
+-		side = i&1;
+-
+-		// brush sides
+-		s = &cm.brushsides[cm.numBrushSides+i];
+-		s->plane = 	cm.planes + (cm.numPlanes+i*2+side);
+-		s->surfaceFlags = 0;
+-
+-		// planes
+-		p = &box_planes[i*2];
+-		p->type = i>>1;
+-		p->signbits = 0;
+-		VectorClear (p->normal);
+-		p->normal[i>>1] = 1;
+-
+-		p = &box_planes[i*2+1];
+-		p->type = 3 + (i>>1);
+-		p->signbits = 0;
+-		VectorClear (p->normal);
+-		p->normal[i>>1] = -1;
+-
+-		SetPlaneSignbits( p );
+-	}	
++		se_brush_marks[w] = Hunk_Alloc( ( cm.numBrushes + BOX_BRUSHES + 4 ) * sizeof( int ), h_high );
++		se_patch_marks[w] = Hunk_Alloc( ( cm.numSurfaces + 4 ) * sizeof( int ), h_high );
++	}
  }
  
  /*
-@@ -799,9 +815,11 @@ Capsules are handled differently though.
+@@ -799,9 +822,11 @@ Capsules are handled differently though.
  ===================
  */
  clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule ) {
@@ -1249,7 +1897,7 @@ index 1aa0fbe8..7772fc92 100644
  
  	if ( capsule ) {
  		return CAPSULE_MODEL_HANDLE;
-@@ -820,8 +838,8 @@ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule
+@@ -820,8 +845,8 @@ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule
  	box_planes[10].dist = mins[2];
  	box_planes[11].dist = -mins[2];
  
@@ -1261,29 +1909,63 @@ index 1aa0fbe8..7772fc92 100644
  	return BOX_MODEL_HANDLE;
  }
 diff --git a/code/qcommon/cm_local.h b/code/qcommon/cm_local.h
-index 5848fdc2..cafcb990 100644
+index 5848fdc2..e8a7d1b9 100644
 --- a/code/qcommon/cm_local.h
 +++ b/code/qcommon/cm_local.h
-@@ -25,6 +25,19 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+@@ -25,6 +25,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  #include "cm_polylib.h"
  
  #define	MAX_SUBMODELS			256
 +#ifdef SHADEREMU
 +/*
 + * A trace marks the brushes and patches it has tested, with a count that goes up a trace, so
-+ * that one in several leaves is tested once. The server's traces may run on a worker core
-+ * while the client's run on this one: the worker has marks and a count of its own.
++ * that one in several leaves is tested once. The server's traces and the client's game's may
++ * each run on a worker core: a worker has marks and a count of its own (at this file's end).
 + */
-+extern int	*se_brush_marks, *se_patch_marks, se_worker_check;
-+#define CM_Checked( own, number, marks ) ( SE_OnWorker() ? \
-+	( (marks)[number] == se_worker_check ? 1 : ( (marks)[number] = se_worker_check, 0 ) ) : \
-+	( *(own) == cm.checkcount ? 1 : ( *(own) = cm.checkcount, 0 ) ) )
-+#define CM_NextCheck() ( SE_OnWorker() ? se_worker_check++ : cm.checkcount++ )
++extern int	*se_brush_marks[2], *se_patch_marks[2];
++extern struct se_check_s { int count, unused[3]; } se_worker_checks[2];
++#define CM_Checked( own, number, marks ) SE_Checked( own, number, marks )
++#define CM_NextCheck() SE_NextCheck()
 +#endif
 +
  #define	BOX_MODEL_HANDLE		255
  #define CAPSULE_MODEL_HANDLE	254
  
+@@ -134,6 +146,34 @@ typedef struct {
+ #define	SURFACE_CLIP_EPSILON	(0.125)
+ 
+ extern	clipMap_t	cm;
++#ifdef SHADEREMU
++static inline int SE_Checked( int *own, int number, int **marks ) {
++	int		w = SE_OnWorker();
++
++	if ( !w ) {
++		if ( *own == cm.checkcount ) {
++			return 1;
++		}
++		*own = cm.checkcount;
++		return 0;
++	}
++	if ( marks[w - 1][number] == se_worker_checks[w - 1].count ) {
++		return 1;
++	}
++	marks[w - 1][number] = se_worker_checks[w - 1].count;
++	return 0;
++}
++
++static inline void SE_NextCheck( void ) {
++	int		w = SE_OnWorker();
++
++	if ( w ) {
++		se_worker_checks[w - 1].count++;
++	} else {
++		cm.checkcount++;
++	}
++}
++#endif
+ extern	int			c_pointcontents;
+ extern	int			c_traces, c_brush_traces, c_patch_traces;
+ extern	cvar_t		*cm_noAreas;
 diff --git a/code/qcommon/cm_test.c b/code/qcommon/cm_test.c
 index 9fd1ec58..bcb948d1 100644
 --- a/code/qcommon/cm_test.c
@@ -1396,7 +2078,7 @@ index ec9fd0a0..d7428975 100644
  	c_traces++;				// for statistics, may be zeroed
  
 diff --git a/code/qcommon/cmd.c b/code/qcommon/cmd.c
-index ed94517f..0c23dbf7 100644
+index ed94517f..65b4f696 100644
 --- a/code/qcommon/cmd.c
 +++ b/code/qcommon/cmd.c
 @@ -89,6 +89,13 @@ Adds command text at the end of the buffer, does NOT add a final \n
@@ -1442,7 +2124,7 @@ index ed94517f..0c23dbf7 100644
 +	char	*argv[MAX_STRING_TOKENS];
 +	char	tokenized[BIG_INFO_STRING+MAX_STRING_TOKENS];
 +	char	cmd[BIG_INFO_STRING];
-+} cmd_words[2] __attribute__ ((aligned (16)));
++} cmd_words[SE_CORES] __attribute__ ((aligned (16)));
 +#define cmd_argc		(cmd_words[SE_OnWorker()].argc)
 +#define cmd_argv		(cmd_words[SE_OnWorker()].argv)
 +#define cmd_tokenized	(cmd_words[SE_OnWorker()].tokenized)
@@ -1493,7 +2175,7 @@ index ed94517f..0c23dbf7 100644
  			}
  			return;
 diff --git a/code/qcommon/common.c b/code/qcommon/common.c
-index d97312c4..dff2186e 100644
+index d97312c4..ae5910ce 100644
 --- a/code/qcommon/common.c
 +++ b/code/qcommon/common.c
 @@ -37,12 +37,22 @@ int demo_protocols[] =
@@ -1724,7 +2406,23 @@ index d97312c4..dff2186e 100644
  	SV_PacketEvent( *evFrom, buf );
  
  	if ( com_speeds->integer ) {
-@@ -3146,7 +3278,11 @@ void Com_Frame( void ) {
+@@ -2203,8 +2335,13 @@ int Com_EventLoop( void ) {
+ 		// if no more events are available
+ 		if ( ev.evType == SE_NONE ) {
+ 			// manually send packet events for the loopback channel
+-			while ( NET_GetLoopPacket( NS_CLIENT, &evFrom, &buf ) ) {
+-				CL_PacketEvent( evFrom, &buf );
++			{
++				int was = SE_Part( 1 );
++
++				while ( NET_GetLoopPacket( NS_CLIENT, &evFrom, &buf ) ) {
++					CL_PacketEvent( evFrom, &buf );
++				}
++				SE_Part( was );
+ 			}
+ 
+ 			while ( NET_GetLoopPacket( NS_SERVER, &evFrom, &buf ) ) {
+@@ -3146,7 +3283,11 @@ void Com_Frame( void ) {
  
  	do
  	{
@@ -1736,7 +2434,7 @@ index d97312c4..dff2186e 100644
  		{
  			timeValSV = SV_SendQueuedPackets();
  			
-@@ -3189,7 +3325,15 @@ void Com_Frame( void ) {
+@@ -3189,7 +3330,15 @@ void Com_Frame( void ) {
  		timeBeforeServer = Sys_Milliseconds ();
  	}
  
@@ -1752,7 +2450,7 @@ index d97312c4..dff2186e 100644
  
  	// if "dedicated" has been modified, start up
  	// or shut down the client system.
-@@ -3227,7 +3371,13 @@ void Com_Frame( void ) {
+@@ -3227,7 +3376,13 @@ void Com_Frame( void ) {
  		timeBeforeClient = Sys_Milliseconds ();
  	}
  
@@ -2047,10 +2745,25 @@ index 294e4c03..0ca82824 100644
  
  /*
 diff --git a/code/qcommon/q_math.c b/code/qcommon/q_math.c
-index 13158661..b8f20b35 100644
+index 13158661..d67366cc 100644
 --- a/code/qcommon/q_math.c
 +++ b/code/qcommon/q_math.c
-@@ -931,7 +931,7 @@ void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
+@@ -421,6 +421,14 @@ AnglesToAxis
+ void AnglesToAxis( const vec3_t angles, vec3_t axis[3] ) {
+ 	vec3_t	right;
+ 
++#ifdef SHADEREMU
++	/* (not turned at all, which is what an item's second model is: six sines and cosines of nothing) */
++	if ( angles[0] == 0 && angles[1] == 0 && angles[2] == 0 ) {
++		AxisClear( axis );
++		return;
++	}
++#endif
++
+ 	// angle vectors returns "right" instead of "y axis"
+ 	AngleVectors( angles, axis[0], right, axis[2] );
+ 	VectorSubtract( vec3_origin, right, axis[1] );
+@@ -931,7 +939,7 @@ void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
  
  void AngleVectors( const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up) {
  	float		angle;
@@ -2060,7 +2773,7 @@ index 13158661..b8f20b35 100644
  
  	angle = angles[YAW] * (M_PI*2 / 360);
 diff --git a/code/qcommon/q_shared.c b/code/qcommon/q_shared.c
-index be72dc70..9e8b93c0 100644
+index be72dc70..1cfa9cfa 100644
 --- a/code/qcommon/q_shared.c
 +++ b/code/qcommon/q_shared.c
 @@ -820,8 +820,19 @@ void Q_strncpyz( char *dest, const char *src, int destsize ) {
@@ -2083,19 +2796,17 @@ index be72dc70..9e8b93c0 100644
  }
                   
  int Q_stricmpn (const char *s1, const char *s2, int n) {
-@@ -1035,12 +1046,23 @@ varargs versions of all text functions.
+@@ -1035,12 +1046,21 @@ varargs versions of all text functions.
  */
  char	* QDECL va( char *format, ... ) {
  	va_list		argptr;
 +#ifdef SHADEREMU
-+	static char string[2][2][32000]; // in case va is called by nested functions; a core its own
-+	static int	index = 0, index_worker = 0;
++	static char string[SE_CORES][2][32000]; // in case va is called by nested functions; a core its own
++	static struct { int index, unused[3]; } next[SE_CORES] __attribute__ ((aligned (16)));
 +	char		*buf;
++	int			w = SE_OnWorker();
 +
-+	if ( SE_OnWorker() )
-+		buf = string[1][index_worker++ & 1];
-+	else
-+		buf = string[0][index++ & 1];
++	buf = string[w][next[w].index++ & 1];
 +#else
  	static char string[2][32000]; // in case va is called by nested functions
  	static int	index = 0;
@@ -2107,15 +2818,16 @@ index be72dc70..9e8b93c0 100644
  
  	va_start (argptr, format);
  	Q_vsnprintf (buf, sizeof(*string), format, argptr);
-@@ -1089,9 +1111,16 @@ FIXME: overflow check?
+@@ -1089,9 +1109,17 @@ FIXME: overflow check?
  */
  char *Info_ValueForKey( const char *s, const char *key ) {
  	char	pkey[BIG_INFO_KEY];
 +#ifdef SHADEREMU
-+	static	char values[2][2][BIG_INFO_VALUE];	// a core its own two
-+	static	int	index_first = 0, index_worker = 0;
-+	char	(*value)[BIG_INFO_VALUE] = values[SE_OnWorker()];
-+	int		valueindex = SE_OnWorker() ? (index_worker ^= 1) ^ 1 : (index_first ^= 1) ^ 1;
++	static	char values[SE_CORES][2][BIG_INFO_VALUE];	// a core its own two
++	static	struct { int index, unused[3]; } next[SE_CORES] __attribute__ ((aligned (16)));
++	int		core = SE_OnWorker();
++	char	(*value)[BIG_INFO_VALUE] = values[core];
++	int		valueindex = ( next[core].index ^= 1 ) ^ 1;
 +#else
  	static	char value[2][BIG_INFO_VALUE];	// use two buffers so compares
  											// work without stomping on each other
@@ -2125,25 +2837,45 @@ index be72dc70..9e8b93c0 100644
  	
  	if ( !s || !key ) {
 diff --git a/code/qcommon/q_shared.h b/code/qcommon/q_shared.h
-index 1877a42c..cba3b0b2 100644
+index 1877a42c..1407690b 100644
 --- a/code/qcommon/q_shared.h
 +++ b/code/qcommon/q_shared.h
-@@ -23,13 +23,27 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+@@ -23,13 +23,47 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  #ifndef __Q_SHARED_H
  #define __Q_SHARED_H
  
 +#ifdef SHADEREMU
 +/*
-+ * The server's frame may run on a worker core (linux/quake3/server_shaderemu.c): whether the
-+ * code that asks is running there, by where its stack is. What two cores would both write
-+ * has one of itself for each.
++ * The server's frame may run on a worker core (linux/quake3/server_shaderemu.c) and the
++ * client's game on another (client_shaderemu.c): which the code that asks is running on, by
++ * where its stack is: 0 the first core, 1 the server's, 2 the client's game's. What two
++ * cores would both write has one of itself for each.
 + */
-+extern unsigned se_main_stack;
++extern unsigned se_main_stack, se_client_stack;
++#define SE_CORES	3
 +static inline int SE_OnWorker( void ) {
 +	char here;
 +
-+	return se_main_stack - (unsigned)(__UINTPTR_TYPE__)&here >= 0x400000u;
++	if ( se_main_stack - (unsigned)(__UINTPTR_TYPE__)&here < 0x400000u ) {
++		return 0;
++	}
++	return se_client_stack - (unsigned)(__UINTPTR_TYPE__)&here < 0x80000u ? 2 : 1;
 +}
++#ifdef SE_PARTS
++/* QUAKE3_DEFINES=-DSE_PARTS: the first core's instructions by part of a frame (the q3parts: line) */
++extern unsigned se_part, se_part_since, se_part_cycles[24];
++static inline int SE_Part( int next ) {
++	unsigned	now;
++	int			was = (int)se_part;
++
++	__asm__ volatile ( "rdcycle %0" : "=r"( now ) );
++	se_part_cycles[se_part] += now - se_part_since;
++	se_part = (unsigned)next, se_part_since = now;
++	return was;
++}
++#else
++#define SE_Part( next ) 0
++#endif
 +#endif
 +
  // q_shared.h -- included first by ALL program modules.
@@ -2160,10 +2892,10 @@ index 1877a42c..cba3b0b2 100644
    #define HOMEPATH_NAME_UNIX_LEGACY	".foo"
    #define HOMEPATH_NAME				"FooBar"
 diff --git a/code/qcommon/qcommon.h b/code/qcommon/qcommon.h
-index 1d9b61a9..66667876 100644
+index 1d9b61a9..e5b86879 100644
 --- a/code/qcommon/qcommon.h
 +++ b/code/qcommon/qcommon.h
-@@ -1229,4 +1229,21 @@ extern huffman_t clientHuffTables;
+@@ -1229,4 +1229,28 @@ extern huffman_t clientHuffTables;
  #define DLF_NO_UDP 4
  #define DLF_NO_DISCONNECT 8
  
@@ -2179,6 +2911,13 @@ index 1d9b61a9..66667876 100644
 +void SE_ServerKeepCvar( const char *name, const char *value, int force );
 +void SE_ServerWorkerError( int code, const char *text ) Q_NO_RETURN;
 +void SE_ServerAddCommand( const char *cmd_name, xcommand_t function );
++/* linux/quake3/client_shaderemu.c: the client's game on a worker core, a frame ahead of what is drawn */
++void SE_ClientFrame( int serverTime, int stereo, int demo );	/* in place of the call of its frame */
++void SE_ClientSettle( void );				/* before this core reads or changes what its frame does */
++void SE_ClientReset( void );				/* the client's game is loaded or unloaded */
++void SE_ClientKeepReliable( const char *text );	/* a command to the server it sends from the worker */
++int SE_ClientPinned( int *cmdNumber, int *snapshotNumber, int *serverTime );	/* 1 on its worker: those as its frame began */
++int SE_ClientUserCmdValue( int value, float scale );	/* 1 on its worker: kept for this core */
 +void *Z_ServerTagMalloc( int size, int tag );
 +void *Z_ServerMalloc( int size );
 +char *Z_ServerCopyString( const char *in );
@@ -2222,7 +2961,7 @@ index 9a8ee451..5376d0f4 100644
      }
  
 diff --git a/code/qcommon/vm.c b/code/qcommon/vm.c
-index 9de7e15f..f0afe6c4 100644
+index 9de7e15f..0ca799f6 100644
 --- a/code/qcommon/vm.c
 +++ b/code/qcommon/vm.c
 @@ -335,6 +335,26 @@ Dlls will call this directly
@@ -2295,13 +3034,16 @@ index 9de7e15f..f0afe6c4 100644
  	if ( !intValue ) {
  		return NULL;
  	}
-@@ -813,6 +855,22 @@ intptr_t QDECL VM_Call( vm_t *vm, int callnum, ... )
+@@ -813,6 +855,25 @@ intptr_t QDECL VM_Call( vm_t *vm, int callnum, ... )
  	if(!vm || !vm->name[0])
  		Com_Error(ERR_FATAL, "VM_Call with NULL vm");
  
 +#ifdef SHADEREMU
 +	if ( vm->entryPoint ) {
 +		/* (nothing of the engine's is written for the call: two cores may each be in one) */
++		if ( vm->name[0] == 'c' ) {
++			SE_ClientSettle();	/* the client's game: its frame may be out on a worker core */
++		}
 +		int args[MAX_VMMAIN_ARGS-1];
 +		va_list ap;
 +		va_start(ap, callnum);

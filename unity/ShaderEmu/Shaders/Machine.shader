@@ -66,6 +66,7 @@ Shader "ShaderEmu/Machine"
         _SoundCursorHi ("and high half", Int) = 0
         _SoundMixed ("Sound: the host mixed before this control pass", Int) = 0
         _SoundRate ("Sound: output samples a second", Int) = 48000
+        _GpuDrawn ("The GPU's camera drew before this control pass", Int) = 1
     }
     SubShader
     {
@@ -133,6 +134,7 @@ Shader "ShaderEmu/Machine"
             uniform uint _InputKeyCode0, _InputKeyCode1, _InputKeyCode2, _InputKeyCode3;
             uniform uint _HostMsLo, _HostMsHi;
             uniform uint _HostFlags;   // bit 0: the guest should start its desktop when it boots
+            uniform uint _GpuDrawn;    // 0: a submitted list stays submitted, its camera did not draw this round
             static uint _InputKey0, _InputKey1, _InputKey2, _InputKey3, _HostMs;
             // Where the machine is shown (docs/holodeck.md): eight words, each in two halves.
             uniform uint _HostS0, _HostS1, _HostS2, _HostS3, _HostS4, _HostS5, _HostS6, _HostS7;
@@ -180,7 +182,12 @@ Shader "ShaderEmu/Machine"
                 _HostMs = _HostMsLo | (_HostMsHi << 16);
                 _NetTxAck = (_NetTxAckLo & 0xffff) | (_NetTxAckHi << 16);
                 _NetRxSeq = (_NetRxSeqLo & 0xffff) | (_NetRxSeqHi << 16);
-                return gpu_control((uint2)i.vertex.xy);
+                uint2 pos = (uint2)i.vertex.xy;
+                if (_GpuDrawn == 0 && pos.y >= 64) {
+                    uint index = (pos.y - 64) * 2048 + pos.x;
+                    if (index == GPU_CTRL || index == GPU_COPY) return _SelfTexture2D[pos];
+                }
+                return gpu_control(pos);
             }
             ENDCG
         }

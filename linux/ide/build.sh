@@ -14,6 +14,13 @@ rv32-cc -O2 -Wall -Wno-unused-function -I"$MW/src/include" -I"$HERE/../apps" -I"
     "$MW/src/lib/libnano-X.a" -o "$WORK/src/ide/nxide"
 riscv32-linux-strip -o "$OUT/bin/nxide" "$WORK/src/ide/nxide"
 riscv32-linux-nm -n "$WORK/src/ide/nxide" > "$WORK/src/nxide.nm"
+# the examples the compiler says nothing of: the IDE does not show them to it again (clean.py).
+# Needs linux/tcc/build.sh's compiler for the host; without it the IDE checks them as any text.
+if [ -x "$WORK/build/tcc-cross/tcc" ] && [ -d "$WORK/build/tcc-sysroot/usr/include" ]; then
+    python3 "$HERE/clean.py" "$WORK/build/tcc-cross/tcc" "$WORK/build/tcc-sysroot" "$HERE"/../tcc/examples/*.c > "$OUT/share/ide-clean"
+else
+    rm -f "$OUT/share/ide-clean"
+fi
 # the Start menu, and whose a C file is (docs/open.md: before the editor's line for text)
 printf '%s\n' "Programming/IDE=nxide" > "$OUT/share/nxapps.28-ide"
 printf '%s\n' "source   c,h   -   nxide %s" > "$OUT/share/nxopen.15-ide"

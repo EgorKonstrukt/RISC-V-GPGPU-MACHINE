@@ -1,5 +1,5 @@
 diff --git a/components/nofrendo/cpu/nes6502.c b/components/nofrendo/cpu/nes6502.c
-index 72be869..599cb0f 100644
+index 72be869..ffbf59c 100644
 --- a/components/nofrendo/cpu/nes6502.c
 +++ b/components/nofrendo/cpu/nes6502.c
 @@ -279,10 +279,23 @@
@@ -96,7 +96,7 @@ index 72be869..599cb0f 100644
  
  #endif /* !NES6502_DISASM */
  
-@@ -1359,12 +1389,354 @@ uint32 nes6502_getcycles(bool reset_flag)
+@@ -1359,12 +1389,370 @@ uint32 nes6502_getcycles(bool reset_flag)
  #endif /* !NES6502_JUMPTABLE */
  
  
@@ -383,6 +383,22 @@ index 72be869..599cb0f 100644
 +   return 0;
 +}
 +
++/* A loop that counts, as the 6502 goes to sleep in it at instruction at: the turns still to
++** end in the branch taken, from the register as it is. (The count idle_counting made has not
++** the turn that was run after it, when the slice had exactly one left.) */
++static void idle_count_from(int at, uint8 x, uint8 y)
++{
++   uint8 now = (1 == idle.count_reg) ? x : y;
++
++   if (0 == idle.count_reg)
++      return;
++   if (at == idle.count - 1)
++      idle.turns_left = (idle.count_by < 0) ? now : ((256 - now) & 0xFF);
++   else
++      idle.turns_left = (idle.count_by < 0) ? ((now - 1) & 0xFF) : ((255 - now) & 0xFF);
++   idle.turns_done = 0;
++}
++
 +#include "rc6502.h"
 +
  /* Execute instructions until count expires
@@ -451,7 +467,7 @@ index 72be869..599cb0f 100644
  {
     int old_cycles = cpu.total_cycles;
  
-@@ -1445,6 +1817,20 @@ int nes6502_execute(int timeslice_cycles)
+@@ -1445,6 +1833,20 @@ int nes6502_execute(int timeslice_cycles)
     /* fetch first instruction */
     OPCODE_END
  
@@ -472,7 +488,7 @@ index 72be869..599cb0f 100644
  #else /* !NES6502_JUMPTABLE */
  
     /* Continue until we run out of cycles */
-@@ -2389,6 +2775,23 @@ int nes6502_execute(int timeslice_cycles)
+@@ -2389,6 +2791,24 @@ int nes6502_execute(int timeslice_cycles)
  #ifdef NES6502_JUMPTABLE
  end_execute:
  
@@ -488,6 +504,7 @@ index 72be869..599cb0f 100644
 +         {
 +            idle.at = idle.was_at = at;
 +            idle.state = 2;
++            idle_count_from(at, X, Y);
 +            break;
 +         }
 +      }
@@ -496,7 +513,7 @@ index 72be869..599cb0f 100644
  #else /* !NES6502_JUMPTABLE */
        }
     }
-@@ -2402,8 +2805,42 @@ end_execute:
+@@ -2402,8 +2822,42 @@ end_execute:
  }
  
  /* Issue a CPU Reset */
@@ -539,7 +556,7 @@ index 72be869..599cb0f 100644
     cpu.p_reg = Z_FLAG | R_FLAG | I_FLAG;     /* Reserved bit always 1 */
     cpu.int_pending = 0;                      /* No pending interrupts */
     cpu.int_latency = 0;                      /* No latent interrupts */
-@@ -2424,6 +2861,7 @@ void nes6502_nmi(void)
+@@ -2424,6 +2878,7 @@ void nes6502_nmi(void)
  {
     DECLARE_LOCAL_REGS
  
@@ -547,7 +564,7 @@ index 72be869..599cb0f 100644
     if (false == cpu.jammed)
     {
        GET_GLOBAL_REGS();
-@@ -2438,6 +2876,13 @@ void nes6502_irq(void)
+@@ -2438,6 +2893,13 @@ void nes6502_irq(void)
  {
     DECLARE_LOCAL_REGS
  
@@ -561,7 +578,7 @@ index 72be869..599cb0f 100644
     if (false == cpu.jammed)
     {
        GET_GLOBAL_REGS();
-@@ -2457,6 +2902,7 @@ void nes6502_irq(void)
+@@ -2457,6 +2919,7 @@ void nes6502_irq(void)
  /* Set dead cycle period */
  void nes6502_burn(int cycles)
  {
@@ -756,7 +773,7 @@ index 5756ba5..b4585cf 100644
     {
        for (z = 0; z < 16; z++)
 diff --git a/components/nofrendo/nes/nes_ppu.c b/components/nofrendo/nes/nes_ppu.c
-index 9a6875b..2ddb6c1 100644
+index 9a6875b..90e06b5 100644
 --- a/components/nofrendo/nes/nes_ppu.c
 +++ b/components/nofrendo/nes/nes_ppu.c
 @@ -38,6 +38,8 @@
@@ -1080,7 +1097,90 @@ index 9a6875b..2ddb6c1 100644
  uint8 ppu_read(uint32 address)
  {
     uint8 value;
-@@ -406,11 +653,13 @@ void ppu_write(uint32 address, uint8 value)
+@@ -401,16 +648,96 @@ uint8 ppu_read(uint32 address)
+    return value;
+ }
+ 
++/* (ours: the data register's write apart, for ppu_write_data) */
++static inline __attribute__((always_inline)) void write_data(uint8 value)
++{
++   if (ppu.vaddr < 0x3F00)
++   {
++      if (ppu.vaddr < 0x2000)
++      {
++         /* (a tile is sixteen bytes: its bit is set at the first, and with it tiles_logged) */
++         uint8 *log = &tiles_log[ppu.vaddr >> 7], bit = 1 << ((ppu.vaddr >> 4) & 7);
++
++         vram_written++;
++         if (0 == (*log & bit))
++         {
++            *log |= bit;
++            tiles_logged = true;
++         }
++      }
++      else
++      {
++         uint32 at = (uint32) (ppu.page[ppu.vaddr >> 10] + ppu.vaddr - ppu.nametab);
++
++         nametab_written++;
++         if (at < sizeof(ppu.nametab))
++         {
++            cells_bits[at >> 5] |= 1u << (at & 31);
++            if (0 == cells_any)
++               cells_any = 1;
++         }
++         else
++            cells_any = -1;
++      }
++
++      /* VRAM only accessible during scanlines 241-260 */
++      if ((ppu.bg_on || ppu.obj_on) && !ppu.vram_accessible)
++      {
++         log_printf("VRAM write to $%04X, scanline %d\n", 
++                    ppu.vaddr, nes_getcontextptr()->scanline);
++         PPU_MEM(ppu.vaddr) = 0xFF; /* corrupt */
++      }
++      else 
++      {
++         uint32 addr = ppu.vaddr;
++
++         if (false == ppu.vram_present && addr >= 0x3000)
++            ppu.vaddr -= 0x1000;
++
++         PPU_MEM(addr) = value;
++      }
++   }
++   else
++   {
++      if (0 == (ppu.vaddr & 0x0F))
++      {
++         int i;
++
++         for (i = 0; i < 8; i ++)
++            ppu.palette[i << 2] = (value & 0x3F) | BG_TRANS;
++         colours_changed = true;
++      }
++      else if (ppu.vaddr & 3)
++      {
++         ppu.palette[ppu.vaddr & 0x1F] = value & 0x3F;
++         colours_changed = true;
++      }
++   }
++
++   ppu.vaddr += ppu.vaddr_inc;
++   ppu.vaddr &= 0x3FFF;
++}
++
++/* ours: ppu_write of the data register, for translated code (rc_vdata in rc6502.h) */
++void ppu_write_data(uint8 value)
++{
++   ppu.latch = value;
++   line_dirty = true;
++   write_data(value);
++}
++
+ /* Write to $2000-$2007 */
+ void ppu_write(uint32 address, uint8 value)
  {
     /* write goes into ppu latch... */
     ppu.latch = value;
@@ -1094,7 +1194,7 @@ index 9a6875b..2ddb6c1 100644
  
        ppu.obj_height = (value & PPU_CTRL0F_OBJ16) ? 16 : 8;
        ppu.bg_base = (value & PPU_CTRL0F_BGADDR) ? 0x1000 : 0;
-@@ -425,6 +674,7 @@ void ppu_write(uint32 address, uint8 value)
+@@ -425,6 +752,7 @@ void ppu_write(uint32 address, uint8 value)
  
     case PPU_CTRL1:
        ppu.ctrl1 = value;
@@ -1102,48 +1202,51 @@ index 9a6875b..2ddb6c1 100644
  
        ppu.obj_on = (value & PPU_CTRL1F_OBJON) ? true : false;
        ppu.bg_on = (value & PPU_CTRL1F_BGON) ? true : false;
-@@ -482,6 +732,27 @@ void ppu_write(uint32 address, uint8 value)
+@@ -480,42 +808,7 @@ void ppu_write(uint32 address, uint8 value)
+       break;
+ 
     case PPU_VDATA:
-       if (ppu.vaddr < 0x3F00)
-       {
-+         if (ppu.vaddr < 0x2000)
-+         {
-+            vram_written++;
-+            tiles_log[ppu.vaddr >> 7] |= 1 << ((ppu.vaddr >> 4) & 7);
-+            tiles_logged = true;
-+         }
-+         else
-+         {
-+            uint32 at = (uint32) (ppu.page[ppu.vaddr >> 10] + ppu.vaddr - ppu.nametab);
-+
-+            nametab_written++;
-+            if (at < sizeof(ppu.nametab))
-+            {
-+               cells_bits[at >> 5] |= 1u << (at & 31);
-+               if (0 == cells_any)
-+                  cells_any = 1;
-+            }
-+            else
-+               cells_any = -1;
-+         }
-+
-          /* VRAM only accessible during scanlines 241-260 */
-          if ((ppu.bg_on || ppu.obj_on) && !ppu.vram_accessible)
-          {
-@@ -507,10 +778,12 @@ void ppu_write(uint32 address, uint8 value)
+-      if (ppu.vaddr < 0x3F00)
+-      {
+-         /* VRAM only accessible during scanlines 241-260 */
+-         if ((ppu.bg_on || ppu.obj_on) && !ppu.vram_accessible)
+-         {
+-            log_printf("VRAM write to $%04X, scanline %d\n", 
+-                       ppu.vaddr, nes_getcontextptr()->scanline);
+-            PPU_MEM(ppu.vaddr) = 0xFF; /* corrupt */
+-         }
+-         else 
+-         {
+-            uint32 addr = ppu.vaddr;
+-
+-            if (false == ppu.vram_present && addr >= 0x3000)
+-               ppu.vaddr -= 0x1000;
+-
+-            PPU_MEM(addr) = value;
+-         }
+-      }
+-      else
+-      {
+-         if (0 == (ppu.vaddr & 0x0F))
+-         {
+-            int i;
+-
+-            for (i = 0; i < 8; i ++)
+-               ppu.palette[i << 2] = (value & 0x3F) | BG_TRANS;
+-         }
+-         else if (ppu.vaddr & 3)
+-         {
+-            ppu.palette[ppu.vaddr & 0x1F] = value & 0x3F;
+-         }
+-      }
+-
+-      ppu.vaddr += ppu.vaddr_inc;
+-      ppu.vaddr &= 0x3FFF;
++      write_data(value);
+       break;
  
-             for (i = 0; i < 8; i ++)
-                ppu.palette[i << 2] = (value & 0x3F) | BG_TRANS;
-+            colours_changed = true;
-          }
-          else if (ppu.vaddr & 3)
-          {
-             ppu.palette[ppu.vaddr & 0x1F] = value & 0x3F;
-+            colours_changed = true;
-          }
-       }
- 
-@@ -693,9 +966,39 @@ INLINE int draw_oamtile(uint8 *surface, uint8 attrib, uint8 pat1,
+    default:
+@@ -693,9 +986,39 @@ INLINE int draw_oamtile(uint8 *surface, uint8 attrib, uint8 pat1,
     return strike_pixel;
  }
  
@@ -1185,7 +1288,7 @@ index 9a6875b..2ddb6c1 100644
     uint32 refresh_vaddr, bg_offset, attrib_base;
     int tile_count;
     uint8 tile_index, x_tile, y_tile;
-@@ -708,7 +1011,12 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -708,7 +1031,12 @@ static void ppu_renderbg(uint8 *vidbuf)
        return;
     }
  
@@ -1199,7 +1302,7 @@ index 9a6875b..2ddb6c1 100644
     refresh_vaddr = 0x2000 + (ppu.vaddr & 0x0FE0); /* mask out x tile */
     x_tile = ppu.vaddr & 0x1F;
     y_tile = (ppu.vaddr >> 5) & 0x1F; /* to simplify calculations */
-@@ -720,10 +1028,10 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -720,10 +1048,10 @@ static void ppu_renderbg(uint8 *vidbuf)
     attrib_ptr = &PPU_MEM(attrib_base + (x_tile >> 2));
     attrib = *attrib_ptr++;
     attrib_shift = (x_tile & 2) + ((y_tile & 2) << 1);
@@ -1212,7 +1315,7 @@ index 9a6875b..2ddb6c1 100644
     while (tile_count--)
     {
        /* Tile number from nametable */
-@@ -734,8 +1042,11 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -734,8 +1062,11 @@ static void ppu_renderbg(uint8 *vidbuf)
        if (ppu.latchfunc)
           ppu.latchfunc(ppu.bg_base, tile_index);
  
@@ -1226,7 +1329,7 @@ index 9a6875b..2ddb6c1 100644
  
        x_tile++;
  
-@@ -759,10 +1070,13 @@ static void ppu_renderbg(uint8 *vidbuf)
+@@ -759,10 +1090,13 @@ static void ppu_renderbg(uint8 *vidbuf)
           }
  
           attrib_shift ^= 2;
@@ -1241,7 +1344,7 @@ index 9a6875b..2ddb6c1 100644
     /* Blank left hand column if need be */
     if (ppu.bg_mask)
     {
-@@ -784,7 +1098,7 @@ typedef struct obj_s
+@@ -784,7 +1118,7 @@ typedef struct obj_s
  } obj_t;
  
  /* TODO: fetch valid OAM a scanline before, like the Real Thing */
@@ -1250,7 +1353,7 @@ index 9a6875b..2ddb6c1 100644
  {
     uint8 *buf_ptr;
     uint32 vram_offset, savecol[2];
-@@ -894,6 +1208,67 @@ static void ppu_renderoam(uint8 *vidbuf, int scanline)
+@@ -894,6 +1228,67 @@ static void ppu_renderoam(uint8 *vidbuf, int scanline)
     }
  }
  
@@ -1318,7 +1421,7 @@ index 9a6875b..2ddb6c1 100644
  /* Fake rendering a line */
  /* This is needed for sprite 0 hits when we're skipping drawing a frame */
  static void ppu_fakeoam(int scanline)
-@@ -1027,21 +1402,25 @@ static void ppu_renderscanline(bitmap_t *bmp, int scanline, bool draw_flag)
+@@ -1027,21 +1422,25 @@ static void ppu_renderscanline(bitmap_t *bmp, int scanline, bool draw_flag)
        }
     }
  
@@ -1348,7 +1451,7 @@ index 9a6875b..2ddb6c1 100644
     {
        int ytile;
  
-@@ -1072,6 +1451,445 @@ void ppu_endscanline(int scanline)
+@@ -1072,6 +1471,537 @@ void ppu_endscanline(int scanline)
     }
  }
  
@@ -1364,6 +1467,95 @@ index 9a6875b..2ddb6c1 100644
 +** slice's cycles, or 0 with nothing done when the line after is not an ordinary one. */
 +ppu_lines_t ppu_lines;
 +
++/* A slice given several lines at once (docs/nes.md, "Lines ahead"): the lines after its first
++** are counted only when something looks (ppu_lines_settle), or at its end. x is the first
++** line's cycles and step a line's, in 131072ths; granted the cycles of them all. */
++int ppu_lines_ahead;
++int ppu_lines_each;   /* NES_LINES=each: a line a slice, as it was */
++static struct { uint32 x, step; int granted; } ahead;
++#define  REST_LINES  4
++static int ahead_rest;   /* lines to give one by one: a slice of several was cut in its first */
++
++/* down the name tables so many lines: row 29 goes on in the other pair's top, 31 in its own */
++static inline __attribute__((always_inline)) uint32 vaddr_down(uint32 vaddr, int lines)
++{
++   int fine = ((vaddr >> 12) & 7) + lines, row = (vaddr >> 5) & 0x1F, rows = fine >> 3, to_end = (row <= 29 ? 30 : 32) - row;
++
++   vaddr = (vaddr & ~(0x7000 | 0x03E0 | 0x041F)) | (ppu.vaddr_latch & 0x041F) | (fine & 7) << 12;
++   while (rows >= to_end)
++   {
++      rows -= to_end;
++      if (row <= 29)
++         vaddr ^= 0x0800;
++      row = 0;
++      to_end = 30;
++   }
++   return vaddr | (row + rows) << 5;
++}
++
++/* The cycles of a slice whose first line has cycles, with up to most lines after it that
++** nothing is in: none when the frame interrupt could come, or a number is not as expected. */
++static inline __attribute__((always_inline)) int lines_ahead(const nes_t *n, float cycles, int most)
++{
++   float scaled = cycles * 131072.0f;
++   int x = (int) scaled, fiq_most = (n->fiq_cycles - 256) >> 7;
++
++   /* (a game that looks at the PPU in every line: nothing to gain, and a count to lose) */
++   if (ahead_rest)
++   {
++      ahead_rest--;
++      return (int) cycles;
++   }
++   if (most > fiq_most)
++      most = fiq_most;
++   if (most <= 0 || (float) x != scaled || ppu.vaddr >= 0x8000 || ppu_lines_each)
++      return (int) cycles;
++   if (0 == ahead.step)
++   {
++      float line_scaled = ppu_lines.line_cycles * 131072.0f;
++
++      if ((float) (int) line_scaled != line_scaled)
++         return (int) cycles;
++      ahead.step = (uint32) (int) line_scaled;
++   }
++   ppu_lines_ahead = most;
++   ahead.x = (uint32) x;
++   ahead.granted = (int) ((ahead.x + (uint32) most * ahead.step) >> 17);
++   return ahead.granted;
++}
++
++/* Counts the lines ahead that have passed, t cycles into the slice, at an instruction's
++** start. *passed: the cycles they were given, for the slice to begin after; returns the
++** cycles of the lines that have not begun, which the slice is cut by. */
++int ppu_lines_settle(int t, int *passed)
++{
++   nes_t *n = ppu_lines.nes;
++   uint32 reach = (uint32) (t + 1) << 17, upto;
++   int lines = 0, given = 0;
++
++   if (reach > ahead.x)
++   {
++      lines = (int) ((reach - ahead.x - 1) / ahead.step) + 1;
++      if (lines > ppu_lines_ahead)
++         lines = ppu_lines_ahead;
++   }
++   upto = ahead.x + (uint32) lines * ahead.step;
++   if (lines)
++   {
++      given = (int) ((upto - ahead.step) >> 17);
++      n->scanline_cycles = (float) (int) (upto - ((uint32) given << 17)) / 131072.0f;
++      n->fiq_cycles -= given;
++      if (n->scanline < 240 && (ppu.bg_on || ppu.obj_on))
++         ppu.vaddr = vaddr_down(ppu.vaddr, lines);
++      n->scanline += lines;
++   }
++   else
++      ahead_rest = REST_LINES;
++   ppu_lines_ahead = 0;
++   *passed = given;
++   return ahead.granted - (int) (upto >> 17);
++}
++
 +/* (a function of its own: in line, its registers were saved at every line that had no use for it) */
 +static __attribute__((noinline)) void capture_line_apart(int scanline)
 +{
@@ -1377,7 +1569,7 @@ index 9a6875b..2ddb6c1 100644
 +{
 +   nes_t *n = ppu_lines.nes;
 +   float cycles;
-+   int next;
++   int next, ahead_most;
 +
 +   if (NULL == n)
 +      return 0;
@@ -1424,7 +1616,20 @@ index 9a6875b..2ddb6c1 100644
 +         vaddr += 0x1000;
 +      ppu.vaddr = (vaddr & ~0x041F) | (ppu.vaddr_latch & 0x041F);
 +   }
-+   return (int) cycles;
++   if (ppu_lines_each)
++      return (int) cycles;
++   /* (the lines after it that are as plain: to the picture's end, or to sprite 0's first) */
++   ahead_most = 239 - next;
++   if (ppu.obj_on && false == ppu.strikeflag)
++   {
++      int y = ((const obj_t *) ppu.oam)->y_loc + 1;
++
++      if (y > next && y <= 240)
++         ahead_most = y - 1 - next;
++      else if (y > next - ppu.obj_height && y <= 240)
++         ahead_most = 0;
++   }
++   return lines_ahead(n, cycles, ahead_most);
 +}
 +
 +int ppu_line_between(int elapsed)
@@ -1486,6 +1691,8 @@ index 9a6875b..2ddb6c1 100644
 +   }
 +   if (ppu_lines.hblank)
 +      ppu_lines.hblank(next > 240);
++   else if (next >= 242)
++      return lines_ahead(n, cycles, 260 - next);   /* (the blanking's lines have nothing in them) */
 +   return (int) cycles;
 +}
 +
@@ -1595,7 +1802,7 @@ index 9a6875b..2ddb6c1 100644
 +   const uint8 *up = idle->up;
 +   const int turn = idle->turn;
 +   float scaled = *left * 131072.0f, line_scaled = line_cycles * 131072.0f;
-+   int x = (int) scaled, line = (int) line_scaled, off = *off_at, n, elapsed;
++   int x = (int) scaled, line = (int) line_scaled, off = *off_at, elapsed;
 +   uint32 vaddr = *vaddr_at, began;
 +
 +   /* (a line takes under 128 cycles, but the first, which is well before the last) */
@@ -1605,12 +1812,14 @@ index 9a6875b..2ddb6c1 100644
 +       || line < 100 * 131072 || line > 114 * 131072 || vaddr >= 0x8000)
 +      return 0;
 +   began = (uint32) x;
-+   for (n = lines; n; n--)
 +   {
-+      int sum = x + line, r = (off + (sum >> 17)) % turn;
++      /* (where a line's slice ends is the first instruction's end at or after its cycles, whatever
++      ** the lines before it came to: so the last line's says where they all end) */
++      uint32 sum = began + (uint32) lines * (uint32) line;
++      int r = (off + (int) (sum >> 17)) % turn;
 +
 +      off = up[r];
-+      x = (sum & 0x1FFFF) + ((r - off) << 17);
++      x = (int) (sum & 0x1FFFF) + ((r - off) << 17);
 +   }
 +   elapsed = (int) ((began + (uint32) lines * (uint32) line - (uint32) x) >> 17);
 +   *left = (float) x / 131072.0f;
@@ -1618,21 +1827,7 @@ index 9a6875b..2ddb6c1 100644
 +   *slept += elapsed;
 +   *off_at = off;
 +   if (rendering)
-+   {
-+      /* down the name tables so many lines: row 29 goes on in the other pair's top, 31 in its own */
-+      int fine = ((vaddr >> 12) & 7) + lines, row = (vaddr >> 5) & 0x1F, rows = fine >> 3, to_end = (row <= 29 ? 30 : 32) - row;
-+
-+      vaddr = (vaddr & ~(0x7000 | 0x03E0 | 0x041F)) | (ppu.vaddr_latch & 0x041F) | (fine & 7) << 12;
-+      while (rows >= to_end)
-+      {
-+         rows -= to_end;
-+         if (row <= 29)
-+            vaddr ^= 0x0800;
-+         row = 0;
-+         to_end = 30;
-+      }
-+      *vaddr_at = vaddr | (row + rows) << 5;
-+   }
++      *vaddr_at = vaddr_down(vaddr, lines);
 +   return lines;
 +}
 +
@@ -1794,7 +1989,7 @@ index 9a6875b..2ddb6c1 100644
  void ppu_checknmi(void)
  {
     if (ppu.ctrl0 & PPU_CTRL0F_NMI)
-@@ -1080,7 +1898,23 @@ void ppu_checknmi(void)
+@@ -1080,7 +2010,23 @@ void ppu_checknmi(void)
  
  void ppu_scanline(bitmap_t *bmp, int scanline, bool draw_flag)
  {
@@ -1820,7 +2015,7 @@ index 9a6875b..2ddb6c1 100644
        /* Lower the Max Sprite per scanline flag */
        ppu.stat &= ~PPU_STATF_MAXSPRITE;
 diff --git a/components/nofrendo/nes/nes_ppu.h b/components/nofrendo/nes/nes_ppu.h
-index ab020f3..b90c4ca 100644
+index ab020f3..aded985 100644
 --- a/components/nofrendo/nes/nes_ppu.h
 +++ b/components/nofrendo/nes/nes_ppu.h
 @@ -111,8 +111,73 @@ typedef struct ppu_s
@@ -1897,18 +2092,89 @@ index ab020f3..b90c4ca 100644
  
  /* TODO: should use this pointers */
  extern void ppu_setlatchfunc(ppulatchfunc_t func);
-@@ -136,6 +201,11 @@ extern void ppu_reset(int reset_type);
+@@ -136,6 +201,13 @@ extern void ppu_reset(int reset_type);
  extern bool ppu_enabled(void);
  extern void ppu_scanline(bitmap_t *bmp, int scanline, bool draw_flag);
  extern void ppu_endscanline(int scanline);
 +/* (ours: for ppu_line_between; nes is NULL but in a slice the frame's loop may be asked to go on from) */
 +typedef struct { struct nes_s *nes; void (*hblank)(int vblank); float line_cycles; } ppu_lines_t;
 +extern ppu_lines_t ppu_lines;
++extern int ppu_lines_ahead, ppu_lines_each;
++extern int ppu_lines_settle(int t, int *passed);
 +extern int ppu_line_between(int elapsed);
 +extern int ppu_line_plain(int elapsed);
  extern void ppu_checknmi();
  
  extern ppu_t *ppu_create(void);
+diff --git a/components/nofrendo/nes/nesinput.c b/components/nofrendo/nes/nesinput.c
+index d425f9c..2a59e04 100644
+--- a/components/nofrendo/nes/nesinput.c
++++ b/components/nofrendo/nes/nesinput.c
+@@ -38,10 +38,19 @@ static int active_entries = 0;
+ static int pad0_readcount, pad1_readcount, ppad_readcount, ark_readcount;
+ 
+ 
++/* ours: the two pads' sources apart, as they were registered: a game reads a pad's eight
++** bits one at a time, twice a frame, and each read went through the whole list */
++static nesinput_t *pad_input[2][MAX_CONTROLLERS];
++static int pad_entries[2];
++static int types_there;   /* every type registered */
++
+ static int retrieve_type(int type)
+ {
+    int i, value = 0;
+ 
++   if (0 == (types_there & type))
++      return 0;
++
+    for (i = 0; i < active_entries; i++)
+    {
+       ASSERT(nes_input[i]);
+@@ -53,11 +62,20 @@ static int retrieve_type(int type)
+    return value;
+ }
+ 
++static inline int retrieve_pad(int pad)
++{
++   int i, value = 0;
++
++   for (i = 0; i < pad_entries[pad]; i++)
++      value |= pad_input[pad][i]->data;
++   return value;
++}
++
+ static uint8 get_pad0(void)
+ {
+    uint8 value;
+ 
+-   value = (uint8) retrieve_type(INP_JOYPAD0);
++   value = (uint8) retrieve_pad(0);
+ 
+    /* mask out left/right simultaneous keypresses */
+    if ((value & INP_PAD_UP) && (value & INP_PAD_DOWN))
+@@ -74,7 +92,7 @@ static uint8 get_pad1(void)
+ {
+    uint8 value;
+ 
+-   value = (uint8) retrieve_type(INP_JOYPAD1);
++   value = (uint8) retrieve_pad(1);
+ 
+    /* mask out left/right simultaneous keypresses */
+    if ((value & INP_PAD_UP) && (value & INP_PAD_DOWN))
+@@ -160,6 +178,13 @@ void input_register(nesinput_t *input)
+ 
+    nes_input[active_entries] = input;
+    active_entries++;
++   types_there |= input->type;
++   if (INP_JOYPAD0 == input->type || INP_JOYPAD1 == input->type)
++   {
++      int pad = INP_JOYPAD1 == input->type;
++
++      pad_input[pad][pad_entries[pad]++] = input;
++   }
+ }
+ 
+ void input_event(nesinput_t *input, int state, int value)
 diff --git a/components/nofrendo/sndhrdw/nes_apu.c b/components/nofrendo/sndhrdw/nes_apu.c
 index 0fc0e8e..c4591c8 100644
 --- a/components/nofrendo/sndhrdw/nes_apu.c

@@ -26,6 +26,8 @@ The games are Thwaite by Damian Yerrick (mapper 0) and Nova the Squirrel by Nova
 - `nofrendo.patch` is ours (edit a clean clone at the commit `build.sh` names and save
   `git diff`); the build puts the tree back each time.
 - `apu_shaderemu.c` is the sound (below).
+- `exact_rom.py` makes a cartridge of our own that a change to the 6502 is checked with
+  ("Lines ahead", below).
 
 ## Speed
 
@@ -296,6 +298,149 @@ NES_PRESS="20 start 50 start 80 a 100 left 110 a 200 a 210 +right 300 a 400 a 42
 compared under `rvc_cpu` without a picture: at a hold, sum the list (address and count at
 0x87000300), both sets (0x87700000 to 0x877C0000), texture memory to its top, and the palette.
 
+### The window system asked less (13 October 2026)
+
+Thousands of instructions a frame under `rvc_cpu`, the list by a worker, the two runs of
+1,000 frames above: Thwaite 39.2 to 37.1, Nova 38.7 to 36.6. The RAM sums are as they were
+(`bf00e7da`, `fca83c4e`), and every sum of "Testing" in every mode it names. On the shader
+machine at 4 ms a pass (2M instructions a second) the same runs, as fast as they go: Thwaite
+49.0 to 51.5 frames a second, Nova 48.7 to 51.4, with those sums; and a Thwaite game held to
+its time there, eleven counts of 60 frames: 51.0 to 53.8 a second.
+
+- **The pad is asked for when something moved.** Every fourth frame the window system was
+  asked for events: two system calls and two task switches, some 8 thousand instructions a
+  time, nearly always for nothing. The machine's own input words (`docs/input.md`: the
+  pointer, the buttons, the key events so far) say when there can be any: it is asked when
+  they have moved, eight times after that, and twice a second (`input_due`).
+- **A game ahead of its time rests** (`mcw_rest()` in `frame_paced`, `docs/multicore.md`,
+  "A core that rests") where it paused: the kernel has the core meanwhile.
+
+Looked at and not done: the emulation itself on a worker core, with the first core only
+showing lists and asking for the pad. A worker has no kernel in its way (the tick and the
+rest are 7% of the first core's frame now, 12% before the above), so a frame would be near
+34 thousand of the worker's instructions. Against it: a job and its answer are a pass each
+way, a worker keeps 1.5 KB of new stores a pass where the first core keeps 6, and every
+variable of Nofrendo would need 16 bytes of its own (the build is one program with common
+variables). A frame's instructions were not halved: what is left is spread thin (translated
+code 29%, the lines' steps 20%, the ways in and out of translated code 12%).
+
+A game held to its time that falls behind is not owed the time back (`frame_paced`): Nova's
+menus at 3M instructions a second show 60 frames in 1,650 ms where the same frames as fast
+as they go take 1,090, the slow frames (a level made ready, new code translated) late and
+the quick ones between them held to a sixtieth.
+
+### Lines ahead: a third fewer (13 October 2026, later)
+
+Thousands of instructions a frame on the first core under `rvc_cpu`, the two runs of 1,000
+frames above, the build before against this one:
+
+| | all 1,000, the list a worker's | the game itself | the list this core's |
+|---|---|---|---|
+| Thwaite | 36.9 to 25.5 | 35 to 40, now 23 to 24 | 43.1 to 32.3 |
+| Nova | 36.5 to 28.6 | 14 to 19, now 10 to 15 (a level made ready 154 to 128) | 38.5 to 30.7 |
+
+On the shader machine, the same runs as fast as they go, frames a second, with the RAM
+sums as they were (`bf00e7da`, `fca83c4e`):
+
+| | Thwaite's 960 counted frames | Thwaite in its game | Nova's 960 |
+|---|---|---|---|
+| 4 ms a pass (2M instructions a second) | 47.5 to 66.4 | 52.4 to 82.5 | 47.4 to 59.3 |
+| 5.46 ms a pass (1.5M) | 34.1 to 47.5 | 37.4 to 59.2 | 33.9 to 42.6 |
+| as the card goes (RTX 5090, in turn twice) | 121.9 to 165.8 | 137 to 216 | |
+
+Held to its time, 60 frames of a Thwaite game took 1,028 to 1,108 ms at 2M and take 1,000,
+59 or 60 of them shown, the first core resting in 36% of its passes; at 1.5M they took 1,524
+to 2,124 and take 999 to 1,076. So it holds a NES's speed at 2M with a third to spare and is
+at its edge at 1.5M. Of the passes that have work, 99.7% of the instructions are run, as before.
+
+- **A slice of the 6502 is many lines** (`lines_ahead`, `ppu_lines_settle` in `nes_ppu.c`;
+  `rc_settle` in `rc6502.h`). When a line begins from inside translated code and the lines
+  after it have nothing in them (no record's run to begin, sprite 0 not before them, no
+  cartridge counting, the frame interrupt far off, the picture's end or the blanking's not
+  reached), the slice is given the cycles of them all. A line's cycles and what is left of
+  them are 131072ths, so where each of those lines would have ended is known without the
+  6502 stopping there: the first instruction's end at or after the line's cycles, whatever
+  the lines before came to. They are counted when something looks: a read or write of a
+  register that is not a pad's or a sound channel's, a loop tried for idleness, translated
+  code left, or the slice's end. The lines that have passed are then done at once (the walk
+  down the name tables worked out) and the slice is cut to the line it is in, so what looks
+  finds the line and the cycles it would have. Awake lines were 16% of a Thwaite frame and
+  are 4%; `NES_LINES=each` is a line a slice, as it was (32.6 thousand a frame against 25.5).
+- **A read that may be a device's is in no unchecked copy of a run**: the slice may be cut
+  there, so the cycles left must be tested after it. It cost 0.3% of a frame.
+- **A game that looks at the PPU in every line gains nothing by it and loses 3%**: a slice
+  cut in its first line gives the next four lines one by one (`ahead_rest`), which is a
+  third of what it lost. The cartridge of our own (below), which reads the PPU three times
+  a turn of its loop: 163.8 thousand instructions a frame before, 170.9 without the rest,
+  168.4 with it.
+- **Quiet lines are one sum** (`quiet_run`): where the last of them ends says where they all
+  do, for the same reason, so the loop over the lines is gone (5% of a Thwaite frame).
+- **C and V in a run's copy** are worked out only where they are read before they are set
+  again (`rc_flags`), as N and Z were; `adc` after `clc` and `sbc` after `sec` add no carry;
+  a comparison's C is one instruction (the difference against -1, which a register keeps);
+  `inx`, `iny`, `dex`, `dey`, `asl a` and `lsr a` several times over are done once. The code
+  of a cartridge is 7% smaller.
+- **`rts` goes by a table of the 6502's addresses** when the cartridge turns no pages
+  (`rc_rt_direct`): two loads where the search by page was eight.
+- **`rti` is translated**, a routine's (`rc_rti`): the interpreter's only when it has the
+  registers or the flags it restores let a waiting interrupt in. **Cycles to burn are burnt
+  in the slice** (`rc_slice`), the four lines and a half of a copy of the sprites among
+  them, with the lines stepped from there. So the line the interrupt comes in no longer
+  goes through the interpreter.
+- **The PPU's data register and the pads have routines of their own** (`rc_vdata`,
+  `rc_pad`): a write to `$2007` was near 115 instructions and is 70, a pad's bit near 100
+  and is 57; a pad's sources are a list of their own (`nesinput.c`). Nova's level made
+  ready is a tenth shorter by the first.
+- **The sound's four quarters** work a channel's voice out only when its period, level or
+  wave is another than last time (`as_seen` in `apu_shaderemu.c`).
+
+- **The GPU's library is built apart, a section a variable and each on 16 bytes**
+  (`build.sh`, as `linux/tdawn/build.sh` has it), and the tables the list's worker writes
+  (`across`, `down`, `on_line`) are whole 16s. Since the build was made one program, the
+  library's variables lay among the emulator's by chance of the build, and two cores must
+  not store to the same 16 bytes (`docs/multicore.md`): in this round's builds the PPU's
+  `line_news`, which the first core stores to at every write of a register, shared 16 bytes
+  with the library's `matrices_dirty`, which the worker stores to once a list, and `on_line`
+  with `gd_spent`; the build before had `gd_out` and `drawn` with the library's `bound`. One
+  run of nine as fast as the card goes showed no frame after the first second, the worker
+  never done: its cause was not found, and it was not seen in eight runs after this. The
+  list this core's (`NES_LIST=inline`) is 2% more instructions for it; a worker's is none.
+
+Where a Thwaite game frame's 23 to 24 thousand go now: translated code 42%, the kernel 7%
+(its tick: nothing a program can do), the frame's loop and quiet lines 6%, slices begun and
+ended 5%, the rest in pieces of 1 to 3%.
+
+Not done, and why: the emulation on a worker core (what would be gained is the kernel's 7%
+and the pad and the swap, against a pass each way and a worker's 1.5 KB of stores a pass);
+translation on a worker (a level made ready is a fifth translation, 300 instructions for
+one of the 6502's: two cores would write one table and one block of code); `php`, `plp`,
+`sei` and `cli` as routines like `rti`'s (neither game uses them in a frame); the kernel's
+tick at a lower rate (`AGENTS.md`).
+
+Checking it: every sum of "Testing" in every mode, `NES_LINES=each` among them; and since
+two games are few, each with three more scripts of presses over 2,000 frames, the build
+before against this one, this one with `NES_LINES=each`, `NES_RC=plain` and
+`NES_CPU=interp`: thirty runs, each game's five agreeing in RAM and picture. Held frames
+of the GPU's target (`--gpu-capture`, frame 600 of the Thwaite run, 450 and 700 of Nova's)
+are the build before's, no pixel different.
+
+**A cartridge of our own** (`linux/nes/exact_rom.py OUT.nes [0 to 4]`, to be put in an
+image as `/usr/share/nes-own0.nes` and run as `nes own0`): its program never waits long,
+reads the PPU's status through a pointer and across a page at every cycle of a line,
+pushes its flags (the interpreter's instruction) every turn, and folds what it reads into
+RAM, so a cycle or a line out of place is another RAM sum. 600 frames of each of its five
+forms give one sum in nine modes (`NES_CPU=interp` and `NES_PLAIN=1` among them): `596309bb`,
+`e0f45e7f`, `6bc942f0`, `61402db1`, `c0df8670`. It does not read the data register: Nofrendo
+reads memory it does not have when the address there is what a picture left.
+
+It found a mistake that was there before, in the interpreter as in translated code: **a
+loop that counts was slept in for a turn too many** when the slice it was found in had
+exactly one turn left after the turns passed over. That turn is run, and the count made
+before it stood, so the sleep took the loop's last turn for one whose branch is taken: a
+cycle more (forms 1 and 4 gave `033d4345` and `550cefc2` asleep, and the sums above with
+`NES_PLAIN=1` or `2`). The count is made again from the register as the 6502 goes to
+sleep (`idle_count_from` in `nes6502.c`). Neither game's sums moved.
+
 ## Sound
 
 No sample is computed. The NES's five channels are five voices of the sound card
@@ -367,7 +512,7 @@ To check it:
   --pass-ms 0.0078` then samples the first core from there, for `tools\pc_profile.py` with
   `nes.nm` (a profile of a cartridge in seconds; the pass's milliseconds go down with its
   instructions, or the kernel's timer is a quarter of the profile).
-- Each of these must give the same: `NES_RC=plain`, `NES_LIST=worker`, `NES_CPU=interp` (no recompiler), `NES_PLAIN=1` (every
+- Each of these must give the same: `NES_RC=plain`, `NES_LINES=each` (a slice of the 6502 is one line), `NES_LIST=worker`, `NES_CPU=interp` (no recompiler), `NES_PLAIN=1` (every
   turn of an idle loop run), `NES_PLAIN=2` (loops passed over, nothing asleep), `NES_PLAIN=3`
   (asleep, no quiet lines), `NES_PPU=workers`, `NES_PPU=inline`. `NES_PPU=here` is nofrendo's own drawing, a frame in three: its
   frames are counted otherwise, so it has sums of its own (`b6f2e9ee`, `451f1f1d`,
@@ -389,6 +534,8 @@ To check it:
   memory (bytes past the palette at 0x87000400): in a snapshot from `rvc_harness`,
   the window's layer must be that picture through the palette, each pixel twice, and the
   workers' picture the same as `NES_PPU=inline`'s, with no pixel different.
+- The cartridge of our own (`exact_rom.py`, "Lines ahead" above) must give its five sums in
+  every mode.
 - `mctest 3 120000` must print `PASS` before and after `nes` in one boot, and after one
   killed while its worker made lists (`nes nova & sleep 8; killall -9 nes.bin`).
 - A key let go between two of the emulator's looks at the keyboard (every fourth frame)

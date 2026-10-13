@@ -204,19 +204,17 @@ draw_bar(void)
 /* The icon of the program a window is of: its file's own, or its name's in the sheets. It is
  * looked for once a window. */
 static const struct ui_icon_ref *
-icon_of_frame(GR_WINDOW_ID frame, GR_WINDOW_ID client)
+icon_of_frame(GR_WINDOW_ID frame, int process)
 {
 	static struct { GR_WINDOW_ID frame; struct ui_icon_ref icon; } known[MAX_TASKS];
 	static int next;
-	GR_WINDOW_INFO info;
 	char path[40], program[96];
 	int i, n;
 
 	for (i = 0; i < MAX_TASKS; i++)
 		if (known[i].frame == frame)
 			return &known[i].icon;
-	GrGetWindowInfo(client, &info);
-	snprintf(path, sizeof path, "/proc/%d/exe", info.processid);
+	snprintf(path, sizeof path, "/proc/%d/exe", process);
 	n = (int)readlink(path, program, sizeof program - 1);
 	program[n > 0 ? n : 0] = 0;
 	i = next++ % MAX_TASKS;
@@ -236,13 +234,25 @@ by_frame(const void *a, const void *b)
  * screen (one that is not shown now is minimised). A decorated window is a frame the window
  * manager made around the program's window, which is the one with the title. Kept in the
  * order the windows were made, so buttons stay where they are. True if anything changed.
- * (Five questions to the window system a window: not asked every second, see main.)
+ * (Three questions a window: asked when it is new or an update named it, or of all when `all`.)
  */
+static GR_WINDOW_ID noted[8];
+static int noted_count;
+
+/* An update named this window: what the bar knows of it is asked again. */
+static void
+note_window(GR_WINDOW_ID id)
+{
+	if (noted_count < 8)
+		noted[noted_count] = id;
+	noted_count++;		/* (more than there is room for: every window is asked about) */
+}
+
 static int
-find_tasks(void)
+find_tasks(int all)
 {
 	static GR_WINDOW_ID before[MAX_TASKS], seen[64];
-	static struct { GR_WINDOW_ID frame, client; } known[64];
+	static struct { GR_WINDOW_ID frame, client; int plain, mapped, process; char title[sizeof tasks[0].title]; } known[64];
 	static int known_count;
 	static int before_hidden[MAX_TASKS], before_count = -1, seen_count;
 	static char before_title[MAX_TASKS][sizeof tasks[0].title];
@@ -253,54 +263,68 @@ find_tasks(void)
 	int changed;
 
 	task_count = 0;
+	if (noted_count > 8)
+		all = 1;
 	GrQueryTree(GR_ROOT_WINDOW_ID, &parent, &children, &n);
 	if (n > 1)
 		qsort(children, n, sizeof *children, by_frame);
 	for (i = 0; i < n && task_count < MAX_TASKS; i++) {
 		GR_WINDOW_INFO info;
 		GR_WM_PROPERTIES props;
-		GR_WINDOW_ID client = children[i];
+		int at, ask = all, j;
 
 		if (children[i] == bar)
 			continue;
-		GrGetWindowInfo(children[i], &info);
-		if (info.props & GR_WM_PROPS_NODECORATE)
+		for (at = 0; at < known_count && known[at].frame != children[i]; at++)
+			;
+		for (j = 0; j < noted_count && j < 8 && !ask; j++)
+			ask = noted[j] == children[i];
+		if (at == known_count) {
+			/* a new window: one with no frame is no task, and is not asked about again */
+			at = known_count < 64 ? known_count++ : (int)(children[i] & 63);
+			known[at].frame = children[i];
+			known[at].client = 0;
+			known[at].plain = 0;
+			ask = 1;
+		}
+		if (ask) {
+			GrGetWindowInfo(children[i], &info);
+			known[at].plain = (info.props & GR_WM_PROPS_NODECORATE) != 0;
+			known[at].mapped = info.mapped;
+			known[at].process = info.processid;	/* (a frame is made as its program: the same process) */
+		}
+		if (known[at].plain)
 			continue;
 		for (k = 0; k < seen_count && seen[k] != children[i]; k++)
 			;
-		if (!info.mapped && k == seen_count)
+		if (!known[at].mapped && k == seen_count)
 			continue;	/* never shown yet */
 		if (still_count < 64)
 			still[still_count++] = children[i];
 		/* a frame's program window stays the one it was made for: asked once */
-		for (k = 0; k < known_count && known[k].frame != children[i]; k++)
-			;
-		if (k < known_count)
-			client = known[k].client;
-		else {
+		if (!known[at].client) {
 			inside = NULL;
 			m = 0;
 			GrQueryTree(children[i], &parent, &inside, &m);
-			if (m > 0)
-				client = inside[0];
+			known[at].client = m > 0 ? inside[0] : 0;
 			free(inside);
-			if (m > 0) {
-				k = known_count < 64 ? known_count++ : (int)(children[i] & 63);
-				known[k].frame = children[i];
-				known[k].client = client;
-			}
+			ask = 1;
 		}
-		props.title = NULL;
-		GrGetWMProperties(client, &props);
+		if (ask) {
+			props.title = NULL;
+			GrGetWMProperties(known[at].client ? known[at].client : children[i], &props);
+			snprintf(known[at].title, sizeof known[at].title, "%.13s", props.title ? (char *)props.title : "window");
+			free(props.title);
+		}
 		tasks[task_count].frame = children[i];
-		tasks[task_count].client = client;
-		tasks[task_count].hidden = !info.mapped;
-		tasks[task_count].icon = *icon_of_frame(children[i], client);
-		snprintf(tasks[task_count].title, sizeof tasks[0].title, "%.13s", props.title ? (char *)props.title : "window");
-		free(props.title);
+		tasks[task_count].client = known[at].client ? known[at].client : children[i];
+		tasks[task_count].hidden = !known[at].mapped;
+		tasks[task_count].icon = *icon_of_frame(children[i], known[at].process);
+		strcpy(tasks[task_count].title, known[at].title);
 		task_count++;
 	}
 	free(children);
+	noted_count = 0;
 	memcpy(seen, still, sizeof still);
 	seen_count = still_count;
 	changed = task_count != before_count;
@@ -585,8 +609,10 @@ main(void)
 			if (i < task_count && event.update.utype == GR_UPDATE_ACTIVATE)
 				retitle |= 1u << (i & 31);
 			else if (i < task_count || (event.update.utype != GR_UPDATE_DESTROY && event.update.utype != GR_UPDATE_UNMAP &&
-			    event.update.utype != GR_UPDATE_UNMAPTEMP))
+			    event.update.utype != GR_UPDATE_UNMAPTEMP)) {
 				stale = 1;
+				note_window(event.update.subwid);
+			}
 			break;
 		case GR_EVENT_TYPE_CLOSE_REQ:
 			if (event.general.wid != bar)
@@ -607,10 +633,11 @@ main(void)
 		}
 		i = 0;
 		if (stale || now - listed >= 60) {
+			i = find_tasks(now - listed >= 60);
+			if (now - listed >= 60)
+				listed = now;
 			stale = 0;
-			listed = now;
 			retitle = 0;
-			i = find_tasks();
 		}
 		for (id = 0; retitle && id < task_count; id++)
 			if (retitle & (1u << (id & 31))) {
@@ -623,6 +650,7 @@ main(void)
 				free(props.title);
 				if (strcmp(title, tasks[id].title)) {
 					strcpy(tasks[id].title, title);
+					note_window(tasks[id].frame);
 					stale = 1;	/* (the list's own record of titles is made again next second) */
 					i = 1;
 				}

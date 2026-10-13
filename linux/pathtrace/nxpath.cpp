@@ -6,7 +6,9 @@
 // For tests: NXPATH_AUTO=1 presses Render at the start, NXPATH_EXIT=1 leaves when the picture
 // is done, NXPATH_SAMPLES, NXPATH_BOUNCES, NXPATH_SIZE=WxH, NXPATH_CORES=N (0 to 3: which
 // of the panel's layouts of the cores), NXPATH_SCENE=N (0: the balls; from 1, a model) and
-// NXPATH_FIRST=N (the first thing's material, 0 to 2) set the panel. NXPATH_PRINT=1 prints the
+// NXPATH_FIRST=N (the first thing's material, 0 to 2) set the panel. NXPATH_OLD=1 traces with the
+// arithmetic of before 13 October 2026, NXPATH_COUNT=1 says how many pages workers stopped at.
+// NXPATH_PRINT=1 prints the
 // picture, and with NXPATH_DEPTH=1 it is of distances (tools/pathtrace_reference.py). Every picture's line (pathstat:) has its
 // time, its rays and a sum of its pixels, which is the same whichever cores traced it.
 #include <stdio.h>
@@ -21,6 +23,8 @@ extern "C" {
 #include "mcw.h"
 #include "tracer.h"
 extern char __DATA_BEGIN__[], _end[];
+extern unsigned mcw_faults;
+void mcw_entry(void);
 float sinf(float), cosf(float);
 void sincosf(float, float*, float*);
 }
@@ -111,6 +115,8 @@ static void take_workers(int layout)
     workers = 0;
     layout_set = layout;
     if (layout >= 3 || layout_workers[layout] <= 0) return;
+    // (where a worker begins is read first: on a page of code this core has not run, every one stopped there)
+    (void)*(const volatile char*)mcw_entry;
     workers = mcw_open(layout_workers[layout]);
     if (workers) mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 }
@@ -159,6 +165,10 @@ int main()
     for (int i = 0; i < pt_mesh_count && i < 7; i++) scene_names[i + 1] = pt_meshes[i].name;
     float light = 12.0f;
     bool owners = false, leave_when_done = getenv("NXPATH_EXIT") != nullptr, press = getenv("NXPATH_AUTO") != nullptr;
+    // NXPATH_OLD=1: the tracer with the arithmetic of before 13 October 2026, for its sums (tracer.h)
+    bool old = getenv("NXPATH_OLD") != nullptr;
+    uint32_t (*const trace_tile)(uint32_t, uint32_t) = old ? pt_tile_old : pt_tile;
+    uint32_t (*const trace_share)(uint32_t, uint32_t) = old ? pt_share_old : pt_share;
     const char* text;
     if ((text = getenv("NXPATH_SAMPLES")) != nullptr) samples = atoi(text);
     if ((text = getenv("NXPATH_BOUNCES")) != nullptr) bounces = atoi(text);
@@ -173,7 +183,7 @@ int main()
     bool tracing = false, drawn_once = false;
     int tiles = 0, sample = 0, next = 0, out = 0, pictures = 0, shown_w = 160, shown_h = 120, of_samples = 0, have = 0;
     static uint8_t busy[MC_MAX_CORES];
-    unsigned began = 0, took = 0, rays = 0, drew = 0;
+    unsigned began = 0, took = 0, rays = 0, drew = 0, polls = 0;
     bool stopping = false;
     make_layouts();
     pt.slots = (struct pt_slot*)mcw_alloc(MC_MAX_CORES * sizeof(struct pt_slot));
@@ -184,24 +194,27 @@ int main()
         if (tracing) {
             if (workers == 0 && next < tiles) {
                 // this core alone: a tile, then the panel
-                rays += pt_tile((uint32_t)next++ * pt.stride % (uint32_t)tiles, (uint32_t)sample);
+                rays += trace_tile((uint32_t)next++ * pt.stride % (uint32_t)tiles, (uint32_t)sample);
                 have++;
                 idle = false;
             }
             if (workers) {
                 unsigned all = 0;
                 int least = of_samples, done = 0;
+                // (a worker is asked about when its slot says it is through, and every fourth time
+                // round in case its core was wanted back or it stopped at a page: asking is the dear part)
+                bool ask = (polls++ & 3) == 0 || stopping;
                 for (int k = 1; k <= workers; k++) {
-                    if (busy[k] && mcw_done(k)) {
+                    int at = (int)pt.slots[k].samples;
+                    if (busy[k] && (ask || at >= of_samples) && mcw_done(k)) {
                         busy[k] = 0;
                         out--;
                     }
-                    int at = (int)pt.slots[k].samples;
                     if (!busy[k] && at < of_samples && !stopping) {
                         // (its core was wanted elsewhere, or it has none and this one works for it: the rest, again)
                         busy[k] = 1;
                         out++;
-                        mcw_post(k, pt_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k << 24 | (mcw_bound(k) ? 0u : 1u));
+                        mcw_post(k, trace_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k << 24 | (mcw_bound(k) ? 0u : 1u));
                         idle = false;
                     }
                     all += pt.slots[k].rays;
@@ -231,6 +244,8 @@ int main()
                             took ? rays / took : 0, sum);
                     if (getenv("NXPATH_RAYS"))  // (for a test: the count as the window writes it)
                         fprintf(stderr, "nxpath: %s rays\n", grouped(rays));
+                    if (getenv("NXPATH_COUNT"))  // (for a test: pages a worker stopped at, which this core brought)
+                        fprintf(stderr, "nxpath: %u pages brought for workers\n", mcw_faults);
                     if (getenv("NXPATH_PRINT")) {
                         // (for a test: the picture on the console, a row a line, six hex digits a pixel)
                         for (int y = 0; y < pt.height; y++) {
@@ -248,7 +263,14 @@ int main()
         }
         // ---- the panel, ten times a second (it is 200 thousand instructions of this core) ----
         unsigned now = now_ms();
-        if (drawn_once && now - drew < (tracing ? 150u : 50u)) {
+        // (a panel frame is a tenth of a second in which nothing is noticed: none in a picture's
+        // first 150 ms nor when the samples to come are under 120 ms away, for 600 ms at most)
+        bool hold = false;
+        if (tracing && workers && now - drew < 600) {
+            unsigned since = now - began, all = (unsigned)(workers * of_samples), left = all - (unsigned)have;
+            hold = since < 150 || (have > 0 && (unsigned long long)since * left < 120ull * (unsigned)have);
+        }
+        if (drawn_once && (hold || now - drew < (tracing ? 150u : 50u))) {
             if (idle) pass();
             continue;
         }
@@ -335,6 +357,8 @@ int main()
                 // (what the workers will write and read, here before them)
                 mcw_touch(pt.sums, (unsigned)(pt.width * pt.height) * 3 * sizeof(float));
                 read_model(scene);
+                if (old) pt_read_code_old();
+                else pt_read_code();
             }
             int s = 32;
             while (s > 1 && ((pt.width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((pt.height + s - 1) / s) < 24 * workers) s >>= 1;   // (this core alone: 32)

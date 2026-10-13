@@ -240,7 +240,9 @@ deepest corner in the floor or a wall, the fastest box, a sum of every box's sta
 the rest), `PHYS_OWNERS=1` (the `w` key), `PHYS_SIZE=WxH` (the picture's size at the start), `PHYS_SAY=1` (a
 `physstat:` line a second, and a line for a box held or let go), `PHYS_PICK=X,Y` (the box at that pixel held from the start, its
 point wanted three metres up), `PHYS_PRINT=1` (every box's place and velocity),
-`PHYS_COUNT=1` (instructions a box; with `PHYS_WORKERS=0`).
+`PHYS_COUNT=1` (instructions a box; with `PHYS_WORKERS=0`), `PHYS_SPIN=1` (a share that waits
+turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHYS_ORDER=ahead`
+(the look a substep earlier: other sums).
 
 ## Checking it
 
@@ -285,7 +287,81 @@ whatever the work: 6.35 million a substep before, 5.26 now, of which 2.2 are wor
 (`PHYS_WORKERS=0`: 2.83 to 2.18). Fewer shares than workers with the same fullest share were
 tried and are slower (9.1 ms a substep against 6.1 on the wall).
 
-It asks for 207 workers, not all 255 (`WORKERS_ASKED`; `a` at its window and `PHYS_WORKERS`
+### A share that waits ends its pass (13 October 2026)
+
+240 substeps on the shader machine, the build before and this one in turn: the wall 2,398 and
+2,411 ms to 2,191 and 2,198, the towers 1,364 and 1,355 to 1,112, the heap 3,270 and 3,376 to
+2,958 and 2,972; the wall's first 120 substeps 1,240 to 1,281 ms to 1,109. The sums are the
+same.
+
+- **`PHYS_COUNT=1` said 606 pages, not 0.** Every worker stopped at its mailbox's page at its
+  first step (the library's part: `multicore.md`), and at its boxes' quads in each of the two
+  pictures' buffers: GPU memory is there from the start but not the program's to write until
+  it has stored there, and a stopped worker waits for the first core's next look, up to 50
+  ms. `bodies_there()` now stores to the quads' pages too. It says 0 again.
+- **A share with nothing to do ends its pass** (`mc_end_pass()`), where it turned in place
+  to the pass's end. The passes are as many (755 for 757), and the ones in which no worker
+  runs a whole pass are 2.0 to 2.3 ms where the others are 3.2 to 3.4: a third of the
+  workers' instructions were the work (39% run of 255 times 8,192 a pass, where 77% were
+  run). `PHYS_SPIN=1` turns in place: the wall 2,293 and 2,298 ms, the towers 1,244 and
+  1,251, the heap 3,111 and 3,128, and three boxes on 207 shares 1,442 ms for 600 substeps
+  against 1,075.
+
+What holds the rest is the dearest share: a substep is as many passes as it takes, and
+with a look that is 26 to 43 thousand instructions for the wall once it is hit (the mean is
+13), 41 to 50 for the heap's two boxes a share (the mean 24 to 27); without one 14 to 17.
+So the wall's pair of substeps is four passes and two, the heap's six and two.
+
+Tried and not kept: a store the write cache has no room for as the pass's end (thirteen
+texels of one bucket): it ends the pass, and the commit then has every waiting worker's
+stores to go through: three boxes on 207 shares took 1,985 ms for 600 substeps against
+1,436. And float constants from integer registers (`raytrace.md`): the same within 0.3%.
+
+With this, 240 substeps of the wall by workers asked for (`PHYS_WORKERS`): 2,453 ms with 191,
+2,192 and 2,198 with 207, 2,194 with 223, 2,198 with 239, 2,211 with 255. It still asks for 207.
+
+### Shares with no bodies, and what a substep's time is (13 October 2026, later)
+
+120 substeps on the shader machine (RTX 5090, the tick of that day), the program of the
+morning before, the build above and this one in turn: the wall 1,072 to 1,143 ms, 894, and
+849 to 880; the heap 1,497 to 1,538, 1,191, and 1,126 to 1,137; the towers 615, 468, and 445.
+The wall's 240 substeps: 2,020 ms, and 1,716. The sums are the same, on `rvc_cpu` and there.
+
+- **It asks for all 255 workers, and those the bodies do not need have the grid and the
+  pictures** (`service_of`, `PHYS_SERVICE=N`, 0 for none): three shares in sixteen, never so
+  many that the fullest share gets another body, none under 64 shares. A share with bodies
+  then scans nobody's keys and writes no quads. The wall by workers asked for, 240 substeps:
+  2,328 ms with 191, 1,740 with 207, 1,704 to 1,718 with 223 to 255; the heap's 120: 1,181
+  with 207 and 223, 1,133 with 255.
+- The grid's scan is three instructions a body (881 a share for the wall where it was
+  1,531), and the look at every other share's substep is four shares a turn.
+- **What the time is**: a pass is as long as the worker that runs longest in it (2.5 to 2.9
+  ms when one runs all of it, 0.3 to 0.5 when all only look), so a substep is its dearest
+  share's instructions, rounded up to passes. `PHYS_COUNT=1` (with `PHYS_STEPS`) prints that
+  sum and how many substeps took how many passes: the wall 1.57 million with a look and 0.78
+  without, mostly four passes and two. A worker's float arithmetic costs 1.6 times its other
+  instructions, loads and stores included; a quotient or a root no more than a product.
+
+`PHYS_ORDER=ahead` makes the look for a pair of substeps after the second substep of the pair
+before (on that substep's boxes, when the share has already said they are made), not just
+before the pair: the share with the longest look then holds no other up, and the wall's 120
+substeps take 771 to 805 ms, the towers' 413, the heap's 1,096. It is not the order it runs in: a
+contact is found a substep later, and where the heavy box lands on the wall a brick was 48 cm
+in the floor for some substeps where it is 19 cm (`PHYS_PRINT=1` now has every box's turn and
+size; the deepest pair of boxes over substeps 44 to 56: 22 cm, and 33). At rest the two are
+the same within 3 mm, and the towers' fall as deep either way (13 to 26 cm). Its sums on
+`rvc_cpu`: the wall `094d8d9a`, its quads `044ab11c`, the same with 0, 7 and 255 workers.
+For it a state is kept in three buffers and the grid in two.
+
+Tried and not kept: every sixteenth share saying how far its sixteen are, for the last share
+to read sixteen words and not 255 (the wall the same, the heap and the towers 2 to 3%
+slower); `box_box` from one place and in line (1.4% more instructions); a pair of bodies
+moving alike kept as two slow ones are (the wall's dearest look 5% less, the heap's none, and
+boxes deeper in the floor); the look on another share, by a plan of what each cost before
+(by the costs measured, within 1% of now: one look that is longer than planned is the
+substep). Compiler flags: none within 0.5% of `-O3 -fsched-pressure` was better.
+
+It asked for 207 workers, not all 255, until then (`WORKERS_ASKED`; `a` at its window and `PHYS_WORKERS`
 give any number): with 207 a substep is as long as with 255 in every scene (the wall 6.2 ms
 against 6.1, the towers 3.7 against 3.8, the heap 7.4 against 7.6; 191 is slower), and 48
 cores are not turning in place. All cores a substep, the morning's build against this one:

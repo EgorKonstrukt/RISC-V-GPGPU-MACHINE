@@ -37,6 +37,146 @@ instructions were worth under 1%). It is from three things a pass did that it ne
 With these a shell loop's loads search the cache 0.043 times an instruction where it was
 0.226, its stores 0.062 where it was 0.144.
 
+## A read asked for early, the window turned, the common floats apart (13 October 2026)
+
+Looked for: a fifth more instructions a second from the tick. Found: 0.7% on a shell loop,
+4.6% on Doom's demo, 7.3% on Quake's first level. On an RTX 5090, D3D11 + fxc2, passes of
+8,192, one snapshot for both builds, in turn, twice, the same state hash at the end:
+
+| | Before | After | |
+|---|---|---|---|
+| a shell loop | 4.434M instructions a second | 4.466M | 0.7% |
+| Doom's timedemo (`-nodraw`) | 4.103M | 4.292M | 4.6% |
+| Quake, e1m1 where it starts | 3.433M | 3.683M | 7.3% |
+| the same three, passes of 16,384 | 4.598M, 4.178M, 3.304M | 4.621M, 4.381M, 3.539M | 0.5%, 4.8%, 7.1% |
+
+- **A data texel is asked of the texture before the write cache is searched for it**
+  (`mem_get_cached_or_tex`). A texture read that is used at once costs 90 ns on this card
+  (`X_P_TEX=1`: 0.74 ms a pass), and one that is not used yet costs next to nothing: the
+  instruction window's read-ahead taken out is 3 to 5% slower, though it is fewer reads. So
+  the read goes out first and the search runs while it is under way; a load the cache
+  answers has asked for nothing it uses. Doom reads 0.17 data texels an instruction, Quake
+  0.11, a shell loop 0.06: 3.3% on Doom alone, level on the others. Asked for later, after
+  the two remembered texels are looked at, it is worth a third less; asked for sooner, where
+  the load has its address and before it is known to be a load of RAM, less again.
+- **The instruction window is kept turned** (`fw_cur`: its first word is the instruction to
+  run, and it turns by a word an instruction), where the word was chosen among the texel's
+  four every time; a jump within the texel is fetched anew. 1% on all three.
+- **A float sum, difference or product, and the moves, signs and comparisons, each by
+  itself** (`fast_exec`, `fp_light`), where `fp_exec` worked out every result there is (a
+  quotient, a root, four conversions, a class) and chose one. They are 8 in 9 of the float
+  instructions Quake runs (15% of all it runs; `flw` and `fsw` 6% more). 3.7% on Quake.
+
+What the three loads run, counted on the interpreter (a private `rvc_cpu` with counters:
+kinds, pairs, texels fetched and read, what a larger memo or TLB would have had):
+
+| Of every 100 instructions | A shell loop | Doom's demo | Quake e1m1 |
+|---|---|---|---|
+| arithmetic; loads; stores | 36; 24; 14 | 37; 29; 8.5 | 30; 20; 12 |
+| branches; jumps and `lui`, `auipc`; floats | 16; 8.6; 0 | 19; 4.1; 0 | 11; 9.1; 15 |
+| in the texel of the one before; the next texel; another | 62; 25; 12 | 68; 24; 8 | 69; 24; 8 |
+| instruction texels read (one ahead) | 50 | 41 | 39 |
+| loads the write cache answers; the texel read last; the texture | 12; 5.9; 6.2 | 7.6; 4.5; 17 | 11; 2.8; 11 |
+| first-level TLB misses (fetch, load, store) | 2.4; 2.0; 0.3 | 0.9; 5.2; 0.7 | 2.1; 5.1; 1.3 |
+
+Why not a fifth. On this card an operation is 1.35 ns (`X_P_ALU=8`: 32 ns for 24) and an
+array element 5 to 7, so an instruction's 225 to 290 ns are some 130 to 140 operations of
+its own path, which the last rewrite left little in, and what the table's reads cost. All
+the data texture reads for nothing would be 2.5% (a shell loop) to 6% (Doom); every
+instruction texel of a jump for nothing 3 to 4%; every first-level TLB miss for nothing 2 to
+3%. What was had of those is above; the rest was tried and is below.
+
+## The kinds as a tree, a load with one way out (13 October 2026, the second round)
+
+Looked for: a structure with fewer operations an emulated instruction (a predecoded form,
+two instructions a turn, work begun before it is known to be wanted, a build for each use).
+None of those is one: the figures are below. Found instead that the shape of the fast step's
+tests is worth more than its operations. The same card and method, against the tree as the
+section above left it, in turn, twice, the same state hash and instruction count:
+
+| | Before | After | |
+|---|---|---|---|
+| a shell loop | 4.504M instructions a second | 4.687M | 4.1% |
+| Doom's timedemo (`-nodraw`) | 4.332M | 4.507M | 4.1% |
+| Quake, e1m1 where it starts | 3.715M | 4.042M | 8.8% |
+| the same three, passes of 16,384 | 4.661M, 4.416M, 3.576M | 4.866M, 4.617M, 3.906M | 4.4%, 4.5%, 9.2% |
+
+(With the section above that is 4.8%, 8.9% and 16.7% over the tree of that morning.)
+
+- **The kinds are told apart by a tree of tests** (`fast_exec`, `K_ALU`, `K_FP`): arithmetic,
+  loads, stores and the floats are a group, and in it arithmetic and loads are one. They were
+  tests one after another (arithmetic, load, store, branch, jump, atomic, float), and every
+  step down that row cost the kinds after it 16 ns: floats moved up one place are 1.4% of
+  Quake, two places 2.3%, and each place costs the integer kinds they pass as much. In the
+  tree a store passes two tests' else and not two blocks, a float three. 1.8%, 1.4% and 6.0%.
+- **A load from RAM has one way out** (`mem_get_cached_or_tex`). It returned from three
+  places (the cache's word, the word the cache had no room for, the texture's), which the
+  compiler makes into blocks inside one another with the last lines in each. One texel
+  chosen, one word of it taken: 1.8%, 2.3% and 2.2% more.
+- **A float result goes to its register by a write with no branch** (the scratch slot when
+  it is none): 0.4%, 0.4%, 0.6% more.
+
+It is 10 bytecode instructions more an emulated one (a shell loop 120.8 to 130.0, Doom
+117.2 to 126.1, Quake 136.6 to 141.8, `tools/dxbc_run.py`, the same texels out), and
+`tools/tick_path.py` has the new tree's turns. Checked with it: `fptest` 0 of 15 wrong,
+`mctest 3 60000` and `mctest 63 20000`, `programs\lazy` off and on (`1a4a1226`), a cold boot
+to the desktop (25,733,311 instructions in 8,999 passes, the tree's state hash), and the
+raytracer's machine, which has no floats and no paging (the same state, 0.3% faster).
+Windows' FXC compiles the fragment stage (494 s); nothing was run under it, the tick's
+geometry stage not compiling there.
+
+### Where an instruction's operations are
+
+`python tools/dxbc_run.py TICK.asm SNAPSHOT CONSTANTS --lines FILE` writes how often each
+line of the bytecode ran. One pass of 8,192 of each load, the tree before this section,
+bytecode instructions an emulated one by what they are for:
+
+| | A shell loop | Doom's demo | Quake e1m1 |
+|---|---|---|---|
+| fetch (the texel's test, the window, the pc, the turn) | 20.7 | 18.0 | 18.4 |
+| decode (fields, the kinds' tests, whether the encoding exists) | 28.2 | 28.0 | 30.6 |
+| the two register reads | 2.0 | 2.0 | 2.0 |
+| execute, integer | 31.0 | 30.5 | 25.6 |
+| execute, float | 0 | 0.1 | 14.8 |
+| the data TLB (first level, and the second on a miss) | 10.3 | 10.8 | 10.0 |
+| the write cache (a load's search, a store) | 14.6 | 15.0 | 19.4 |
+| a data texel read | 2.0 | 2.5 | 1.3 |
+| the result's write | 4.0 | 4.0 | 4.0 |
+| the loop (was it this path's, the budget) | 5.0 | 5.0 | 5.0 |
+| the fetch's TLB | 2.1 | 0.5 | 2.2 |
+| all | 119.9 | 116.6 | 133.2 |
+| of them tests that branch | 9.7 | 9.7 | 11.8 |
+| texels read: instruction, data | 0.52, 0.16 | 0.40, 0.22 | 0.41, 0.20 |
+
+Fetch and decode are two fifths of the count, and what a predecoded form could take of them
+is the existence tests and the immediates, some ten operations. That bound was measured:
+the existence tests of arithmetic and of the jumps taken out (four operations an
+instruction fewer, the same state) is 1.0 to 1.4% slower.
+
+### What costs, measured on this path
+
+Two runs of one build differ by 0.1% here (2,000 passes, a warm card), and the same work
+written in another order is the same speed to that 0.1% (three such, alone and together).
+So a difference of half a percent between two builds is the builds'.
+
+- An operation more on the last one's result: 1.1 ns (24 of them 26.6 ns, 48 of them 50).
+- An operation more that nothing waits for: 0.55 ns. Arithmetic, branches and jumps as one
+  block with no branch in it (55 operations more an instruction) is 13% slower on the
+  integer loads; a load's and a store's address and first-level translation worked out
+  before the kind is known (44 more) 9%; both 20%. Nothing overlaps for nothing.
+- A test and its block that an instruction has to pass: 16 to 19 ns. The kinds as eight ifs
+  one after another, no else, is 39% slower (134 ns an instruction, seven blocks more to
+  pass); a place down the row of tests is 16 ns (above).
+- But a count of tests does not say it either: in the tree arithmetic passes three tests
+  where it passed one, and is faster. Only the two builds in turn say.
+- Values changed in a rare branch and alive after the loop: nothing (8, 16 and 32 more).
+- The tests' results as values worked out first (`bool k = ...`) and the same tree on
+  those: -0.5%, -0.1%, +4.6%, where the tests written in the ifs are +4.1%, +4.3%, +8.9%.
+
+So the fifth that was looked for is not in the operations (all of fetch and decode for
+nothing would be some 25 ns of 220 to 270), and what is left of it is in which blocks an
+instruction passes on its way, which nothing predicts: each shape has to be run.
+
 ## Measure with the card's clock high
 
 The card runs at 1,455 MHz (state P4) for the first two to ten seconds of a load and at
@@ -241,7 +381,149 @@ count is a guide; only the two builds run in turn say what a change is worth.
 - Four texels of RAM remembered in place of one for data reads: the counts say a third fewer
   texture reads, which choosing among four costs back.
 
+Of 13 October 2026 (an RTX 5090; a shell loop, Doom's demo, Quake e1m1, each against the
+tree in turn):
+
+- The first-level TLB as arrays of 8 or 16 pages a mode, an element read in place of a
+  choice among a vector's four: its misses fall by half (Quake's loads 21% to 10%) and it is
+  3%, 3% and 2.4% slower. Searched whole (a vector compared at once, the newest page first),
+  4 or 8 pages: 0.4% slower.
+- No read-ahead of the next instruction texel (a third fewer texture reads): 3 to 5% slower.
+- A jump's target texel asked for where the target is known, into the window's second place:
+  2% slower and worse.
+- Three texels of the write cache remembered in place of two (a fifth fewer searches): level.
+- A float result sent to its register by the instruction's one write at the end (`rd` made
+  the float register's number) in place of a write and a branch of its own: 4.5% slower on
+  the two loads that run no float at all. Nothing an instruction of another kind passes
+  through is touched for one kind's sake.
+- Not built, by their counts: sixteen data texels remembered would have 24% (Doom) to 62% (a
+  shell loop) of the data texture reads, 32 instruction texels 34% (Quake) to 56% (Doom) of
+  the jumps' (the code a pass runs is wide), each for an array's reads at every miss.
+
+Of the second round of 13 October 2026 (the same three loads, each against the tree in turn;
+a shell loop, Doom's demo, Quake):
+
+- A straight run into the next texel of the page taken by a short way of its own (no page,
+  alignment or window test; 3.7 operations fewer): -4.2%, -2.3%, -3.1%.
+- The float block out of the fast loop, for a build of integer programs (a twentieth of the
+  bytecode less): -2.9% and -3.0% on the two integer loads. A smaller pass is not a faster one.
+- The page of the last load, and of the last store, tried before the first level's four:
+  +0.1%, -0.1%, -0.4%. A load's funct3 and "within the word" as one bit of a table (five
+  operations fewer a load): 0.0%. The M extension's test inside arithmetic's block: -0.9%,
+  -0.2%, -0.4%.
+- A store's two buckets worked out only when it has to search (15 operations fewer for
+  four stores in seven): -2.1%, -2.5%, -2.1%.
+- The run's end looked for where a texel is entered (at most four instructions run from
+  there; the last three of a pass on the general path), no test of it an instruction:
+  0.0%, -0.3%, -0.8%.
+- "Was it this path's" as a test that leaves the loop, the result written after it in the
+  loop: -2.4%, -2.5%, -2.3%. With that, an instruction within its texel going round by
+  `continue` and the fetch below it in the loop: -7.9%, -6.7%, -6.6%.
+- The step with one way out (its end inside `if (ok)`): -3.6%, -3.3%, -3.2% on the tree.
+  The fetch's "general path takes it" as a test after its block: -1.4%, -1.1%, -1.0%.
+- Other trees of the kinds, of thirty: arithmetic and loads a group and the rest a row,
+  +1.6%, +1.4%, +3.4%; branches and jumps a group as well, +0.9%, +0.6%, +5.7%; arithmetic,
+  loads, stores and the M extension by one test of the opcode (`(w & 0x4f) == 0x03`),
+  -0.1%, +0.5%, +3.5%, and with the floats or the branches in that group -6%. `flw`, `fsw`
+  and opcode 0x53 as three kinds of the tree: -3% to -4.5% under the one kept.
+- A whole word into a texel of the cache as the texel read, changed and written (no test of
+  which word): -2.0%, -1.0%, -1.6%; as four small ifs: -0.8%, -0.4%, -0.4%.
+
 A pass at 8,192 and at 32,768 differs in its events too when timed with `--fixed-dt 0.004`:
 that is 4 ms of guest time a pass whatever its length, so the kernel's timer interrupt (some
 60 page walks and 65 general-path instructions each) comes four times as often an instruction
 in the shorter pass. Real time has it a hundred times a second either way.
+
+## The window's own texel not asked after, and what a block costs (13 October 2026, the third round)
+
+Looked for: the same fifth, in the functions the second round left (`mem_set_ram`, the fetch,
+the data TLB, the loop's end), by the bytecode's lowering. Found: 1.0%. The same card and
+method (D3D11 + fxc2, passes of 8,192, one snapshot, in turn, twice, 2,000 passes, the same
+state hash and instruction count), against the tree as the section above left it:
+
+| | Before | After | |
+|---|---|---|---|
+| a shell loop | 4.699M instructions a second | 4.763M | 1.3% |
+| Doom's timedemo (`-nodraw`) | 4.523M | 4.565M | 0.9% |
+| Quake, e1m1 where it starts | 4.053M | 4.087M | 0.9% |
+
+(Three batches gave 1.3, 1.4, 1.3; 1.0, 0.9, 0.9; 0.8, 0.8, 0.9. Over the tree of that
+morning: 7.4%, 11.3% and 19.0%.)
+
+- **A texel entered is not asked whether it is the window's own** (`fast_run_l1`,
+  `f_t != fw_addr0`). It was the window's own 3 times in 1,000 instructions (a jump within
+  the texel), and those read it again now; the other 390 pass a block less.
+
+Checked with it: `fptest` 0 of 15 wrong, `mctest 3 60000` and `mctest 63 20000`,
+`programs\lazy` off and on (`1a4a1226`), a cold boot to the desktop (25,733,311 instructions
+in 8,999 passes, state `7a86a436e5ce44b2`), the `--profile` build compiles. Not run: Windows'
+FXC, the raytracer's machine, passes of 16,384.
+
+### What a block costs, added by itself
+
+Work added after the kinds and before the result's write, each build against the tree in
+turn (one clean batch each; nanoseconds an instruction, a shell loop, Doom, Quake alike):
+
+| Added to every instruction | Nanoseconds |
+|---|---|
+| a write of an array's element | 1 |
+| ... inside a test that never holds, or that always holds | 1 (the driver makes it a write with no branch) |
+| a test that never holds, with 3, 6, 12, 18, 30, 300, 1,500 operations in it | 10, 8, 14, 13, 15.5, 17.5, 17.5 |
+| the same with a loop of 100 turns in it | 17.5 |
+| 30 operations, no test; in a test that always holds | 32; 44 |
+| a test that never holds, with a texture read in it | 46 |
+| two blocks (`if`, `else`), a write in each | 7 |
+| a value chosen into the result (`if (..) val = pc`) | 4 |
+
+So a block that is not made into a choice costs 8 to 17 ns to pass over and 12 to enter,
+whatever its size, and a small block with a texture read in it has its read made whether or
+not the test holds. How deep in blocks the loop lies is nothing (four more round it: -0.2%).
+None of it says what a given shape will cost: of what follows, most takes blocks out of a path.
+
+### Tried, and not kept (a shell loop, Doom, Quake; against the tree in turn)
+
+- The window's read of a jump's texel in other shapes. Read into the second place and moved
+  (`if (f_t != fw_addr1) fw_tex1 = read; fw_tex0 = fw_tex1`): -7.7%, -5.9%, -6.2%, and with
+  no outer test -4.2%, -2.0%, -3.8%. The read ahead written in both ways of the test:
+  -10.8%, -8.4%, -8.5%. Read always and chosen: -3.2%, -2.2%, -2.1%. The read ahead asked for
+  first: 0.0%. The two ways changed over: +0.3%, +0.2%, +0.2%. The page of the last fetch
+  and "the texel read ahead" as one test, the rest in its else: +0.5%, +0.7%, +0.4% (under
+  the kept one).
+- The texel a jump left and the one it came to kept (16 to 21% of the jumps' reads are one
+  of them): -2.6%, -0.9%, -1.7%; of the last two jumps (20 to 38%): -3.1%, -1.7%, -1.9%.
+- The data texel after the one read, read ahead as the window's is: not timed. It is the
+  next one wanted for 6 to 10% of a load's reads (a store's: 17%, 0%, 49%).
+- The loop's body twice a turn, every test kept (the same bytecode instructions run): -2.9%,
+  -4.6%, -4.4%; three times: -5.4%, -5.8%, -9.6%.
+- The step's end and the loop's as one test (nothing written for an instruction not taken,
+  by choices): -1.2%, -0.7%, -1.0%. With that, a loop of one texel's instructions inside the
+  loop of texels, so that no instruction asks "the same texel": -3.0%, -0.7%, -1.7%.
+- A store that looks for its texel as a load does (not one the cache was never given, nor
+  the one looked for last and not found; the bucket's tags read again when an entry is
+  made): Quake's stores search 123 times in 1,000 instructions and find 15, and it is +0.2%,
+  -0.1%, +0.2% (2.7, 1.3 and 5.8 bytecode instructions fewer). With a texel the cache has
+  and one it has not each by itself: 0.0%. `mem_set_ram` with one way out (its callers say
+  the word is in RAM): -0.6%, -0.6%, -0.4%.
+- A load's search under one test in place of three: -0.7%, +0.4%, +0.2%. Its last lines as
+  two ways (the cache's word, the texture's): -2.3%, -1.2%, -1.5%. A word load passing over
+  the shifts of a byte and a half: -1.4%, -1.7%, -2.1%.
+- A first-level TLB hit and "it is a load of RAM" as one test, the miss's work and the load
+  again in its else: -0.4%, -0.4%, -1.4%; a store's too: +0.6%, -0.3%, -1.3%.
+- A branch's target worked out only when it is taken: -1.2%, -0.5%, -1.5%. Its comparison
+  as arithmetic's (signs turned over): +0.1%, +0.7%, -0.7%.
+- A float's first operand by one read with no branch: -0.3%, -0.2%, -0.4%.
+- A block's texture read kept from being made early (a write of an array put beside it):
+  -0.6% to +0.1%; it is not made early in the tree's shapes.
+- Together: the kept one with the store's search +0.6%, 0.0%, +0.5%; with the load's one
+  test +0.2%, +0.9%, +0.6%. Each under the kept one alone.
+
+### Not built: the general path's share
+
+`--profile` on the three snapshots, 300 passes with `--fixed-dt 0.004`: 2.1, 4.0 and 6.4
+instructions in 1,000 take the general path (5,173, 9,816 and 15,702), which at 2,700 ns is
+some 3%, 5% and 7% of the time. Of them 55%, 43% and 40% are the kernel's CSR instructions
+(a timer interrupt every 2.5 passes at that step: twice real time's), and 36%, 51% and 46%
+are loads, stores and fetches whose page neither TLB level had (`w_other_page`: 5, 10 and 20
+walks a pass). `mmu_translate` called where the fast step declines such an instruction, and
+the instruction run again on the fast path, was written down and not built; so was a second
+level of more than 256 pages (it moves the state's texels).

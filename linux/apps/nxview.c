@@ -36,6 +36,9 @@ decode(const char *from, const char *to, int *pw, int *ph)
 
 	gettimeofday(&then, NULL);
 	__asm__ volatile("rdcycle %0" : "=r"(then_n));
+	img_codes_worker = getenv("NXVIEW_CODES") != NULL;	/* a JPEG's codes on a worker, as before */
+	if (getenv("NXVIEW_BANDS") && atoi(getenv("NXVIEW_BANDS")) >= 1 && atoi(getenv("NXVIEW_BANDS")) <= IMG_BANDS)
+		img_bands = atoi(getenv("NXVIEW_BANDS"));
 	why = ui_image_to_ppm(from, to, pw, ph, workers);
 	__asm__ volatile("rdcycle %0" : "=r"(now_n));
 	gettimeofday(&now, NULL);

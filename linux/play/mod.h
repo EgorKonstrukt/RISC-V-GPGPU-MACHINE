@@ -349,6 +349,73 @@ mod_mix(struct mod_channel *ch, int32_t *sum, int count)
 	ch->at = at;
 }
 
+static int mod_by_channel;	/* NXPLAY_MODMIX=1: every tune a channel at a time into sums, as it was */
+
+/* Four channels' next `count` frames straight into the stream: each frame is the four
+ * samples added in registers, for as long as no channel comes to its sample's end. */
+static void
+mod_mix4(int16_t *to, int count)
+{
+	static const int8_t nothing[1];
+	const int8_t *data[4];
+	uint32_t at[4], step[4], end[4], loop[4], kept[4];
+	int volume[4], alive[4], c, shift = mod.shift;
+
+	for (c = 0; c < 4; c++) {
+		const struct mod_sample *s = mod.ch[c].sample;
+
+		alive[c] = s && s->length && mod.ch[c].step;
+		kept[c] = at[c] = mod.ch[c].at;
+		if (alive[c]) {
+			data[c] = s->data, step[c] = mod.ch[c].step, volume[c] = mod.ch[c].out_volume;
+			end[c] = (s->loop_length ? s->loop_at + s->loop_length : s->length) << 14;
+			loop[c] = s->loop_length << 14;
+		} else {
+			data[c] = nothing, at[c] = step[c] = 0, volume[c] = 0;
+		}
+	}
+	while (count > 0) {
+		uint32_t run = (uint32_t)count, a0, a1, a2, a3, s0, s1, s2, s3;
+		const int8_t *d0, *d1, *d2, *d3;
+		int v0, v1, v2, v3;
+
+		for (c = 0; c < 4; c++) {
+			uint32_t most;
+
+			if (!alive[c])
+				continue;
+			if (at[c] >= end[c]) {
+				if (!loop[c]) {
+					/* played out: it stays where it is, and adds nothing */
+					alive[c] = 0, kept[c] = at[c];
+					data[c] = nothing, at[c] = step[c] = 0, volume[c] = 0;
+					continue;
+				}
+				at[c] = end[c] - loop[c] + (at[c] - end[c]) % loop[c];
+			}
+			most = (end[c] - at[c] + step[c] - 1) / step[c];
+			if (most < run)
+				run = most;
+		}
+		count -= (int)run;
+		a0 = at[0], a1 = at[1], a2 = at[2], a3 = at[3], s0 = step[0], s1 = step[1], s2 = step[2], s3 = step[3];
+		d0 = data[0], d1 = data[1], d2 = data[2], d3 = data[3], v0 = volume[0], v1 = volume[1], v2 = volume[2], v3 = volume[3];
+		for (; run; run--) {
+			/* the Amiga's sides: left, right, right, left; a quarter of each is heard on the other */
+			int left = d0[a0 >> 14] * v0 + d3[a3 >> 14] * v3, right = d1[a1 >> 14] * v1 + d2[a2 >> 14] * v2;
+			int l = (left * 3 + right) >> shift, r = (right * 3 + left) >> shift;
+
+			a0 += s0, a1 += s1, a2 += s2, a3 += s3;
+			to[0] = (int16_t)(l < -32768 ? -32768 : l > 32767 ? 32767 : l);
+			to[1] = (int16_t)(r < -32768 ? -32768 : r > 32767 ? 32767 : r);
+			to += 2;
+		}
+		at[0] = a0, at[1] = a1, at[2] = a2, at[3] = a3;
+	}
+	for (c = 0; c < 4; c++)
+		mod.ch[c].at = alive[c] ? at[c] : kept[c];
+}
+
 /*
  * The next frames of the tune, left and right; fewer than asked for at its end. Without `to`
  * only the sequencer runs (the samples stay where they are): that is how a place is found.
@@ -369,7 +436,10 @@ mod_read(int16_t *to, int frames)
 		}
 		if ((uint32_t)n > mod.tick_left)
 			n = (int)mod.tick_left;
-		if (to) {
+		if (to && mod.channels == 4 && !mod_by_channel) {
+			mod_mix4(to, n);
+			to += 2 * n;
+		} else if (to) {
 			if (n > MOD_CHUNK)
 				n = MOD_CHUNK;
 			memset(left, 0, n * sizeof left[0]);

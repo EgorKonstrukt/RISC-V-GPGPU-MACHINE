@@ -282,6 +282,68 @@ Tiberian Dawn and gained 1%), a soldier that only moved shown from its kept rect
 (what its `Draw_It` would draw is not known without calling it), and the logic itself on
 more than one core, which is what a battle at 15 frames a second would take.
 
+On 13 October 2026 the two missions were measured again with Tiberian Dawn's (the table in
+`docs/tdawn.md`, "the long frames, and why a frame is not half"): 29.6 and 21.4 frames a
+second on average before, 29.9 and 21.5 after, the lowest windows 17.7 and 10.0 to 18.4 and
+9.9. Nothing of that day's work is in Red Alert's own code: its path searches are 2% of a
+battle and were left as they are, and what holds its lowest windows is the frame below
+and the landing (frames 500 to 560: logic 87 thousand a frame and drawing 54, 11.5 frames
+a second). Tried and not kept: the shared code counted for the compiler too, with
+only the files of the key arithmetic left out (`-fprofile-exclude-files=/common/[bimprs]`:
+the counting build then starts and plays with the right sums); the missions were 29.8 and
+21.4.
+
+## The frame in which the sidebar comes
+
+Mended in that day's second round (below, "and what was done"): 1,727 thousand
+instructions to 521. As it was found: the longest frame of the Allied mission is frame
+254, 1.76 million instructions (most of a second at two million a second, where the frames
+round it are 80 to 130 thousand). It is the frame in which the sidebar and the radar's
+frame are first drawn whole: pieces of 64 x 192, 160 x 124, 160 x 100 and 160 x 160
+pixels, the tabs, two cameos, 165 KB of pixels unpacked, measured for their rows' spans and
+copied to the page in one frame. Of frames 252 to 256 (2.72 million instructions):
+`Build_Frame` 21% (all of it `LCW_Uncompress`), `BF_Trans` 18% (16 of them
+`ShaderEmu_Spans_Of`), `memcpy` 9%, `memset` 3%, and the kernel 28% (pages given and
+taken back). It is not the scene's refresh (`RALERT_REFRESH=0` has it too), and the 1.5 s
+window it falls in is the mission's lowest (10 frames a second).
+
+Done for it, in the shared code, and worth nothing to that frame (1.78 million after):
+`LCW_Uncompress` copies a run of 24 bytes or more a word at a time (`LCW_Back` in
+`common/lcw.cpp`: bytes from behind that are closer than their count are a pattern that
+repeats, copied in pieces no longer than the distance), which took its part from 20% to
+14% and gave as much to `memcpy`; and a row's span is tested for holes a word at a time.
+Both give the same bytes: a build that also unpacked everything a byte at a time found 0
+of 819 and 1,161 calls different in 600 frames of the two missions (185 more, the
+movie's, write into the buffer they read and were not compared), and 2 million random
+rows have the same spans. What would mend it: those shapes built before they are wanted,
+one a frame from the mission's start or by the worker that unpacks shape files ("Frames
+made ready" in `docs/tdawn.md`, which was tried for all of the sidebar's files at once and
+lost by their turn in its queue), and the page's part under the sidebar written by rows on
+several cores.
+
+**And what was done** (the same day's second round; the figures and what is left are in
+`docs/tdawn.md`, "second round: what the long frames are"):
+
+- The sidebar's files are told of when they are found (`ShaderEmu_GL_Ahead_File` in
+  `sidebar.cpp`, `power.cpp`, `tab.cpp`; a cameo when its strip gets it; the radar's two
+  by name, `ShaderEmu_Radar_Ahead`, because the game finds them only when the radar is
+  first drawn), the worker cores unpack them as the mission begins, and the game's own
+  drawing copies them from there (`docs/tdawn.md`, "Frames made ready"). Of that frame's
+  521 thousand that are left: the copies to the page 240, the page's holes made again 80
+  (the sidebar's coming forces everything), the scene from nothing 190.
+- **A trigger that ends is looked for in the cells that have one, by a list**
+  (`MapClass::Detach`): the 16,384 cells were still gone through for each, 66 thousand
+  instructions. The list is made when a trigger first ends and made again after a cell was
+  given one (`ShaderEmu_Cell_Triggers_Stale`: the scenario's cell triggers, a saved game's
+  cells, the editor). `RALERT_CHECK_TRIGGERS=1` asks every cell as well: `0 cells missed`.
+- **A cell that changed is noted once a scene** (`told` in `gl.cpp`): a cell first seen
+  tells of itself and its eight neighbours, so a unit's first sight of new land told of
+  each cell nine times, 141 thousand instructions of the Soviet mission's frame 130.
+- **A turned shape is turned from a ready frame** (`turned()` in `gl.cpp`): the aircraft
+  that flies over the Allied mission's start had each frame unpacked by the game first,
+  11 to 18 thousand each. The turning itself is still this core's.
+- A message that expires, the scene's refresh in turns: `docs/tdawn.md`.
+
 ## Speed
 
 On D3D11 with fxc2 (3.5M to 4.1M instructions a second), no delay between frames, nobody
@@ -307,7 +369,10 @@ own start), and as long again to a mission's first frame.
   Tiberian Dawn's switches (a scene from nothing every 256th time). `rastat:` lines say
   where a frame went. `RALERT_HUNT=N` sends everything after the enemy at frame N (the sums at
   frame 800 with `RALERT_HUNT=50`: `f5b3dbae` Soviet, `dd61e2fd` Allied), and
-  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`.
+  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_FRAME_LOG`, `RALERT_MARK`,
+  `RALERT_MESSAGE_GONE`, `RALERT_READY_DRAW`, `RALERT_CHECK_READY` and `RALERT_CHECK_TRIGGERS`
+  are as Tiberian Dawn's of those names (`docs/tdawn.md`); the 1,200-frame sums are
+  `9b84ad73` and `709e53d6`.
 - A change to the game must leave its `state` sum the same: `01e0dd60` for the Soviet mission
   (SCU01EA) and `ea72a5d1` for the Allied one (SCG02EA) at frame 300 with seed 7.
 - The picture against the game's own drawing (`RALERT_RENDER=soft`, both held at one frame):

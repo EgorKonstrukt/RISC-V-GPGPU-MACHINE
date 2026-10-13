@@ -9,6 +9,7 @@ extern "C" {
 #include <GLES/segl.h>
 #include <nano-X.h>
 }
+#include "mcw.h"
 
 static GR_WINDOW_ID window;
 static GLuint font_texture;
@@ -279,72 +280,12 @@ bool ImGui_ImplShaderEmu_NewFrame()
 // A corner as ImGui has it (ImDrawVert's layout).
 struct corner { float x, y, u, v; ImU32 colour; };
 
-// A vertex goes to the GPU as four words (docs/gpu.md, a tagged vertex): ImGui's x and y as
-// the floats they are, 0, and the texture coordinates in 1,024ths with a tag, which is the
-// number of the vertex's colour in a table of the colours the frame has used.
-static ImU32* table;                    // the table being filled: 256 words in the frame
-static int colours;                     // how many it has
-static ImU32 slot_colour[256];          // the table's colours by a hash of them
-static unsigned char slot_tag[256], slot_used[256];
-
-// The copy's own state, kept here between its pieces (docs/imgui.md, "The copy").
-static struct {
-    ImU32 *to, *first, *last;   // the next corner's place, the run's first, the last place a cut triangle may begin
-    int quads;                  // the run being written: four corners a quad (1), or three a triangle (0)
-    GLuint name;                // the texture of ImGui's command
-    ImU32 colour[3], tag[3];    // the colours looked up last, the newest first, and their tags as a vertex has them:
-    bool tagged;                // (once there are any) a bar's, its text's, and what a shape's edge fades to
-    ImU32 left, top, wide, high;    // the command's clip rectangle, for inside() below
-    const ImDrawIdx* next_lone; // triangles one after the other in a run of quads: where the next would begin,
-    int lone;                   // and how many there are so far
-} out;
-
-static bool new_table()
-{
-    table = (ImU32*)seglScreenTable();
-    colours = 0;
-    out.tagged = false;
-    memset(slot_used, 0, sizeof slot_used);
-    return table != nullptr;
-}
-
-// A colour and its tag become the newest of the three remembered, in place of entry `old`.
-static inline void newest(ImU32 colour, ImU32 tag, int old)
-{
-    for (; old > 0; old--) out.colour[old] = out.colour[old - 1], out.tag[old] = out.tag[old - 1];
-    out.colour[0] = colour, out.tag[0] = tag;
-}
-
-// Is `colour` one of the two remembered before the newest? Then it is the newest now.
-static __attribute__((noinline)) bool recalled(ImU32 colour)
-{
-    for (int i = 1; i < 3; i++)
-        if (colour == out.colour[i]) return newest(colour, out.tag[i], i), true;
-    return false;
-}
-
-// The tag of a colour as a vertex has it, into `word`. False when the table is full.
-static inline bool tag_of(ImU32 colour, ImU32* word)
-{
-    if (out.tagged) {
-        if (colour == out.colour[0]) return *word = out.tag[0], true;
-        if (recalled(colour)) return *word = out.tag[0], true;
-    }
-    unsigned at = (colour * 2654435761u) >> 24;
-    while (slot_used[at] && slot_colour[at] != colour) at = (at + 1) & 255;
-    if (!slot_used[at]) {
-        if (colours == 256) return false;
-        slot_used[at] = 1;
-        slot_colour[at] = colour;
-        slot_tag[at] = (unsigned char)colours;
-        // ImGui's is alpha, blue, green, red from the top; the device's transparency, red, green, blue
-        table[colours++] = (255 - (colour >> 24)) << 24 | (colour & 255) << 16 | (colour & 0xff00) | (colour >> 16 & 255);
-    }
-    *word = (ImU32)slot_tag[at] << 24;
-    if (!out.tagged) out.colour[1] = out.colour[2] = colour, out.tag[1] = out.tag[2] = *word, out.tagged = true;
-    newest(colour, *word, 2);
-    return true;
-}
+// A piece of one of ImGui's commands: its clip rectangle and texture, where its vertices are,
+// and the indices of it that are this piece's.
+struct piece { ImVec4 clip; GLuint name; const char* base; const ImDrawIdx *index, *end; };
+// Vertices a worker core wrote, for the first core to make a command of.
+struct run { ImU32 *first, *table; int count, quads; GLuint name; };
+#define MOST_RUNS 256
 
 // A texture coordinate (a float's bits) in 1,024ths.
 static inline ImU32 texels(ImU32 coordinate)
@@ -359,65 +300,6 @@ static inline ImU32* put(ImU32* to, const ImU32* from, ImU32 tag)
     to[0] = from[0], to[1] = from[1], to[2] = 0;
     to[3] = texels(from[2]) | texels(from[3]) << 12 | tag;
     return to + 4;
-}
-
-static void more_room()
-{
-    GLsizei room = 0;
-    out.to = out.first = (ImU32*)seglScreenCompactSpace(&room);
-    out.last = out.to + 4 * (room - 24);    // (a triangle cut into a fan is 24 corners at most)
-}
-
-// What is written of the run becomes a command of the device's.
-static void run_done()
-{
-    seglScreenCompactUsed((GLsizei)(out.to - out.first) / 4, out.quads, out.name, (const unsigned int*)table);
-}
-
-// The run ends, and one of quads or of triangles begins in the room there is now.
-static void flush(int next_quads)
-{
-    run_done();
-    out.quads = next_quads;
-    more_room();
-}
-
-static bool full_table()
-{
-    run_done();
-    if (!new_table()) return false;
-    more_room();
-    return true;
-}
-
-// A few triangles among quads (an arrow in a list) are quads whose last two corners are one,
-// which draws the triangle and nothing more: no run of their own, and none after them.
-// Many in a row (a plot's line) are a run. True: the triangle at `index` is to be a quad.
-static inline bool lone_as_quad(const ImDrawIdx* index)
-{
-    if (index != out.next_lone) out.lone = 0;
-    out.next_lone = index + 3;
-    return ++out.lone <= 16;
-}
-
-// A quad or (no `s`) a triangle that is all inside its clip rectangle, the long way: its
-// colours looked up, and a run of the other kind begun if it must be. False: the table is full.
-static bool coloured(const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s)
-{
-    const bool quad = s != nullptr;
-    ImU32 a, b, c, d;
-    if (!quad) s = r;
-    // (in the corners' order: the table has its colours in the order they were first seen)
-    bool fit = tag_of(p[4], &a);
-    fit &= tag_of(q[4], &b);
-    fit &= tag_of(r[4], &c);
-    fit &= tag_of(s[4], &d);
-    if (!fit) return false;
-    const bool as_quad = quad || (out.quads && lone_as_quad(index));
-    if (out.quads != as_quad) flush(as_quad);
-    ImU32* to = put(put(put(out.to, p, a), q, b), r, c);
-    out.to = as_quad ? put(to, s, d) : to;
-    return true;
 }
 
 static corner between(const corner& a, const corner& b, float t)
@@ -454,9 +336,192 @@ static inline float least(float a, float b, float c)
     return m < c ? m : c;
 }
 
+static inline ImU32 bits(float f)
+{
+    ImU32 u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+
+// The clip rectangle is kept as the bits of its floats, which are in the floats' order when
+// none is negative: a corner is inside when its own bits are within `wide` and `high` of the
+// left and the top. (With 0 and 0 no corner is, and the floats are asked.)
+static inline bool inside(const ImU32* corner, ImU32 left, ImU32 top, ImU32 wide, ImU32 high)
+{
+    return corner[0] - left < wide && corner[1] - top < high;
+}
+
+// The copy and all it keeps, so that several cores can each make one (docs/imgui.md, "The copy
+// on worker cores"). A vertex goes to the GPU as four words (docs/gpu.md, a tagged vertex):
+// ImGui's x and y as the floats they are, 0, and the texture coordinates in 1,024ths with a
+// tag, the number of the vertex's colour in a table of the colours the copy has used.
+struct alignas(16) copier {
+    ImU32* table;                           // the table being filled: 256 words in the frame
+    int colours;                            // how many it has
+    ImU32 slot_colour[256];                 // the table's colours by a hash of them
+    unsigned char slot_tag[256], slot_used[256];
+    // The copy's own state, kept here between its pieces (docs/imgui.md, "The copy").
+    struct {
+        ImU32 *to, *first, *last;   // the next corner's place, the run's first, the last place a cut triangle may begin
+        int quads;                  // the run being written: four corners a quad (1), or three a triangle (0)
+        GLuint name;                // the texture of ImGui's command
+        ImU32 colour[3], tag[3];    // the colours looked up last, the newest first, and their tags as a vertex has them:
+        bool tagged;                // (once there are any) a bar's, its text's, and what a shape's edge fades to
+        ImU32 left, top, wide, high;    // the command's clip rectangle, for inside() below
+        const ImDrawIdx* next_lone; // triangles one after the other in a run of quads: where the next would begin,
+        int lone;                   // and how many there are so far
+    } out;
+    // On a worker core (`ahead`): room and tables of its own in the frame, the pieces that are
+    // its share, and the runs it wrote. `noted`: the first core's runs are kept too (the sum).
+    bool ahead, noted, failed;
+    ImU32 *room, *room_end, *tables;
+    int tables_left, run_count;
+    const piece *pieces, *pieces_end;
+    run runs[MOST_RUNS];
+
+    bool new_table();
+    void more_room();
+    void run_done();
+    void flush(int next_quads);
+    bool full_table();
+    bool recalled(ImU32 colour);
+    bool coloured(const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s);
+    bool edge_triangle(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r);
+    int edge_quad(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s);
+    int one_shape(const ImVec4& clip, const char* base, const ImDrawIdx* index, const ImDrawIdx* end);
+    bool copy_command(const ImVec4& clip, const char* base, const ImDrawIdx* index, const ImDrawIdx* end);
+    void copy_pieces();
+
+    // A colour and its tag become the newest of the three remembered, in place of entry `old`.
+    inline void newest(ImU32 colour, ImU32 tag, int old)
+    {
+        for (; old > 0; old--) out.colour[old] = out.colour[old - 1], out.tag[old] = out.tag[old - 1];
+        out.colour[0] = colour, out.tag[0] = tag;
+    }
+
+    // The tag of a colour as a vertex has it, into `word`. False when the table is full.
+    inline bool tag_of(ImU32 colour, ImU32* word)
+    {
+        if (out.tagged) {
+            if (colour == out.colour[0]) return *word = out.tag[0], true;
+            if (recalled(colour)) return *word = out.tag[0], true;
+        }
+        unsigned at = (colour * 2654435761u) >> 24;
+        while (slot_used[at] && slot_colour[at] != colour) at = (at + 1) & 255;
+        if (!slot_used[at]) {
+            if (colours == 256) return false;
+            slot_used[at] = 1;
+            slot_colour[at] = colour;
+            slot_tag[at] = (unsigned char)colours;
+            // ImGui's is alpha, blue, green, red from the top; the device's transparency, red, green, blue
+            table[colours++] = (255 - (colour >> 24)) << 24 | (colour & 255) << 16 | (colour & 0xff00) | (colour >> 16 & 255);
+        }
+        *word = (ImU32)slot_tag[at] << 24;
+        // (all three: one left from the table before would be found again with that table's tag)
+        if (!out.tagged) out.colour[0] = out.colour[1] = out.colour[2] = colour, out.tag[0] = out.tag[1] = out.tag[2] = *word, out.tagged = true;
+        newest(colour, *word, 2);
+        return true;
+    }
+
+    // A few triangles among quads (an arrow in a list) are quads whose last two corners are one,
+    // which draws the triangle and nothing more: no run of their own, and none after them.
+    // Many in a row (a plot's line) are a run. True: the triangle at `index` is to be a quad.
+    inline bool lone_as_quad(const ImDrawIdx* index)
+    {
+        if (index != out.next_lone) out.lone = 0;
+        out.next_lone = index + 3;
+        return ++out.lone <= 16;
+    }
+};
+
+bool copier::new_table()
+{
+    if (ahead) {
+        // (a worker has the tables it was given: with none left its share is the first core's)
+        table = tables_left ? tables : nullptr;
+        tables += 256, tables_left -= tables_left ? 1 : 0;
+        if (!table) failed = true;
+    } else {
+        table = (ImU32*)seglScreenTable();
+    }
+    colours = 0;
+    out.tagged = false;
+    memset(slot_used, 0, sizeof slot_used);
+    return table != nullptr;
+}
+
+// Is `colour` one of the two remembered before the newest? Then it is the newest now.
+__attribute__((noinline)) bool copier::recalled(ImU32 colour)
+{
+    for (int i = 1; i < 3; i++)
+        if (colour == out.colour[i]) return newest(colour, out.tag[i], i), true;
+    return false;
+}
+
+void copier::more_room()
+{
+    if (ahead) {
+        out.to = out.first = room;
+        out.last = room_end - 4 * 24;
+        return;
+    }
+    GLsizei count = 0;
+    out.to = out.first = (ImU32*)seglScreenCompactSpace(&count);
+    out.last = out.to + 4 * (count - 24);    // (a triangle cut into a fan is 24 corners at most)
+}
+
+// What is written of the run becomes a command of the device's: now, or on a worker noted
+// for the first core to make one of.
+void copier::run_done()
+{
+    const int count = (int)(out.to - out.first) / 4;
+    if ((ahead || noted) && count > 0) {
+        if (run_count == MOST_RUNS) failed = true;
+        else runs[run_count++] = {out.first, table, count, out.quads, out.name};
+    }
+    if (ahead) room = out.to;
+    else seglScreenCompactUsed(count, out.quads, out.name, (const unsigned int*)table);
+}
+
+// The run ends, and one of quads or of triangles begins in the room there is now.
+void copier::flush(int next_quads)
+{
+    run_done();
+    out.quads = next_quads;
+    more_room();
+}
+
+bool copier::full_table()
+{
+    run_done();
+    if (!new_table()) return false;
+    more_room();
+    return true;
+}
+
+// A quad or (no `s`) a triangle that is all inside its clip rectangle, the long way: its
+// colours looked up, and a run of the other kind begun if it must be. False: the table is full.
+bool copier::coloured(const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s)
+{
+    const bool quad = s != nullptr;
+    ImU32 a, b, c, d;
+    if (!quad) s = r;
+    // (in the corners' order: the table has its colours in the order they were first seen)
+    bool fit = tag_of(p[4], &a);
+    fit &= tag_of(q[4], &b);
+    fit &= tag_of(r[4], &c);
+    fit &= tag_of(s[4], &d);
+    if (!fit) return false;
+    const bool as_quad = quad || (out.quads && lone_as_quad(index));
+    if (out.quads != as_quad) flush(as_quad);
+    ImU32* to = put(put(put(out.to, p, a), q, b), r, c);
+    out.to = as_quad ? put(to, s, d) : to;
+    return true;
+}
+
 // A triangle that may reach over its clip rectangle: by its box, drawn whole, or left out, or
 // cut by each edge in turn (up to seven corners, drawn as a fan). False when the table is full.
-static bool edge_triangle(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r)
+bool copier::edge_triangle(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r)
 {
     const corner *a = (const corner*)p, *b = (const corner*)q, *c = (const corner*)r;
     float x0 = least(a->x, b->x, c->x), x1 = -least(-a->x, -b->x, -c->x);
@@ -480,7 +545,7 @@ static bool edge_triangle(const ImVec4& clip, const ImDrawIdx* index, const ImU3
 
 // A quad that may reach over its clip rectangle, by its box. 1: drawn whole, or left out;
 // 0: its two triangles are to be looked at one by one; -1: the table is full.
-static int edge_quad(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s)
+int copier::edge_quad(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p, const ImU32* q, const ImU32* r, const ImU32* s)
 {
     const corner *a = (const corner*)p, *b = (const corner*)q, *c = (const corner*)r, *d = (const corner*)s;
     float x0 = least(a->x, b->x, c->x), x1 = -least(-a->x, -b->x, -c->x);
@@ -491,24 +556,9 @@ static int edge_quad(const ImVec4& clip, const ImDrawIdx* index, const ImU32* p,
     return !(x1 >= clip.x && x0 <= clip.z && y1 >= clip.y && y0 <= clip.w);
 }
 
-static inline ImU32 bits(float f)
-{
-    ImU32 u;
-    memcpy(&u, &f, 4);
-    return u;
-}
-
-// The clip rectangle is kept as the bits of its floats, which are in the floats' order when
-// none is negative: a corner is inside when its own bits are within `wide` and `high` of the
-// left and the top. (With 0 and 0 no corner is, and the floats are asked.)
-static inline bool inside(const ImU32* corner, ImU32 left, ImU32 top, ImU32 wide, ImU32 high)
-{
-    return corner[0] - left < wide && corner[1] - top < high;
-}
-
 // One triangle or quad the long way: whatever it is. How many indices it was, or 0 when the
 // table is full.
-static __attribute__((noinline)) int one_shape(const ImVec4& clip, const char* base, const ImDrawIdx* index, const ImDrawIdx* end)
+__attribute__((noinline)) int copier::one_shape(const ImVec4& clip, const char* base, const ImDrawIdx* index, const ImDrawIdx* end)
 {
     const ImU32 *p = (const ImU32*)(base + index[0] * sizeof(ImDrawVert)), *q = (const ImU32*)(base + index[1] * sizeof(ImDrawVert)),
                 *r = (const ImU32*)(base + index[2] * sizeof(ImDrawVert));
@@ -524,14 +574,13 @@ static __attribute__((noinline)) int one_shape(const ImVec4& clip, const char* b
     return (three ? coloured(index, p, q, r, nullptr) : edge_triangle(clip, index, p, q, r)) ? 3 : 0;
 }
 
-// One of ImGui's commands: its triangles into the frame, as the runs of quads and of triangles
-// they make. Nearly all are inside the clip rectangle and of the two colours looked up last:
-// those are written by the two loops here, a run of each kind, and the rest by one_shape().
-// False: no table.
-static __attribute__((noinline)) bool copy_command(const ImDrawCmd& cmd, const char* base, const ImDrawIdx* index)
+// One of ImGui's commands, or a piece of one: its triangles into the frame, as the runs of
+// quads and of triangles they make. Nearly all are inside the clip rectangle and of the two
+// colours looked up last: those are written by the two loops here, a run of each kind, and
+// the rest by one_shape(). False: no table.
+__attribute__((noinline)) bool copier::copy_command(const ImVec4& clip, const char* base, const ImDrawIdx* index, const ImDrawIdx* const end)
 {
-    const ImDrawIdx* const end = index + cmd.ElemCount;
-    const ImU32 left = bits(cmd.ClipRect.x), top = bits(cmd.ClipRect.y), right = bits(cmd.ClipRect.z), bottom = bits(cmd.ClipRect.w);
+    const ImU32 left = bits(clip.x), top = bits(clip.y), right = bits(clip.z), bottom = bits(clip.w);
     const bool ordered = !((left | top | right | bottom) >> 31) && right >= left && bottom >= top;
     const ImU32 wide = ordered ? right - left + 1 : 0, high = ordered ? bottom - top + 1 : 0;
     out.left = left, out.top = top, out.wide = wide, out.high = high;
@@ -613,29 +662,209 @@ static __attribute__((noinline)) bool copy_command(const ImDrawCmd& cmd, const c
         out.to = to;
         if (!(index + 2 < end && to <= last)) return true;
         if (again) continue;
-        int indices = one_shape(cmd.ClipRect, base, index, end);
+        int indices = one_shape(clip, base, index, end);
         if (!indices && !full_table()) return false;    // (with a new table, the same one again)
         index += indices;
+    }
+}
+
+// The pieces from `pieces` to `pieces_end`, a command of the device's for every one that drew.
+void copier::copy_pieces()
+{
+    run_count = 0, failed = false;
+    if (!new_table()) return;
+    out.quads = 0, out.next_lone = nullptr;
+    more_room();
+    for (const piece* p = pieces; p != pieces_end && out.to && !failed; p++) {
+        out.name = p->name;
+        if (!copy_command(p->clip, p->base, p->index, p->end)) return;
+        flush(out.quads);
+    }
+}
+
+static copier own;          // the first core's
+static bool summing;        // IMGUI_SUM=1: an imsum: line a frame, to compare two ways of copying by
+static unsigned summed;
+
+// The triangles of some runs in order, leaving out those with two corners the same, each
+// corner with its colour in place of its tag: the same whoever copied, and however cut.
+static void sum_runs(const run* runs, int count, unsigned* sum, unsigned* triangles)
+{
+    for (int k = 0; k < count; k++) {
+        const run& r = runs[k];
+        for (int i = 0; i + (r.quads ? 3 : 2) < r.count; i += r.quads ? 4 : 3) {
+            for (int half = 0; half < (r.quads ? 2 : 1); half++) {
+                const ImU32* v[3] = {r.first + 4 * i, r.first + 4 * (i + 1 + half), r.first + 4 * (i + 2 + half)};
+                bool flat = false;
+                for (int a = 0; a < 3; a++) {
+                    const ImU32 *p = v[a], *q = v[(a + 1) % 3];
+                    flat |= p[0] == q[0] && p[1] == q[1] && p[3] == q[3];
+                }
+                if (flat) continue;
+                for (int a = 0; a < 3; a++)
+                    *sum = (((*sum * 31 + v[a][0]) * 31 + v[a][1]) * 31 + (v[a][3] & 0xffffff)) * 31 + r.table[v[a][3] >> 24];
+                ++*triangles;
+            }
+        }
     }
 }
 
 void ImGui_ImplShaderEmu_RenderDrawData(ImDrawData* draw_data)
 {
     static_assert(sizeof(ImDrawVert) == sizeof(corner) && sizeof(ImDrawIdx) == 2, "a corner is an ImDrawVert");
-    if (!new_table()) return;
-    out.quads = 0, out.next_lone = nullptr;
-    more_room();
-    for (int n = 0; n < draw_data->CmdListsCount && out.to; n++) {
+    static int asked;
+    if (!asked) asked = 1, summing = getenv("IMGUI_SUM") != nullptr;
+    own.noted = summing, own.run_count = 0, own.failed = false;
+    if (!own.new_table()) return;
+    own.out.quads = 0, own.out.next_lone = nullptr;
+    own.more_room();
+    for (int n = 0; n < draw_data->CmdListsCount && own.out.to; n++) {
         const ImDrawList* list = draw_data->CmdLists[n];
         for (const ImDrawCmd& cmd : list->CmdBuffer) {
             if (cmd.UserCallback) {
                 if (cmd.UserCallback != ImDrawCallback_ResetRenderState) cmd.UserCallback(list, &cmd);
                 continue;
             }
-            out.name = (GLuint)cmd.TextureId;
-            if (!copy_command(cmd, (const char*)(list->VtxBuffer.Data + cmd.VtxOffset), list->IdxBuffer.Data + cmd.IdxOffset)) return;
+            own.out.name = (GLuint)cmd.TextureId;
+            const ImDrawIdx* index = list->IdxBuffer.Data + cmd.IdxOffset;
+            if (!own.copy_command(cmd.ClipRect, (const char*)(list->VtxBuffer.Data + cmd.VtxOffset), index, index + cmd.ElemCount)) return;
             // a command of the device's for every one of ImGui's that drew: each has one texture
-            flush(out.quads);
+            own.flush(own.out.quads);
         }
     }
+    if (summing) {
+        unsigned sum = 0, triangles = 0;
+        sum_runs(own.runs, own.run_count, &sum, &triangles);
+        fprintf(stderr, "imsum: frame %u, %u triangles, sum %08x\n", ++summed, triangles, sum);
+    }
+}
+
+// ---- the copy on worker cores (docs/imgui.md) ----
+
+#define MOST_AHEAD 4        // workers asked for
+#define MOST_PIECES 512
+#define MOST_LISTS 32
+#define AHEAD_TABLES 2      // a worker's colour tables: 512 colours in its share, or the first core copies
+#define AHEAD_LEAST 1200    // indices a frame from which the workers are worth their two passes
+
+extern "C" char __DATA_BEGIN__[], _end[];
+static copier ahead[MOST_AHEAD];
+static piece pieces[MOST_PIECES];
+// ImGui's vertices and indices of the frame the workers are copying: its lists have others
+// meanwhile, these of two frames ago, which a list empties before it writes
+static ImVector<ImDrawVert> kept_vertices[MOST_LISTS];
+static ImVector<ImDrawIdx> kept_indices[MOST_LISTS];
+static int workers = -1, jobs, piece_count, touched;
+
+static unsigned copy_job(unsigned copier_at, unsigned)
+{
+    ((copier*)copier_at)->copy_pieces();
+    return 0;
+}
+
+bool ImGui_ImplShaderEmu_RenderAhead(ImDrawData* draw_data)
+{
+    if (workers < 0) {
+        const char* how = getenv("IMGUI_COPY");
+        summing = getenv("IMGUI_SUM") != nullptr;
+        workers = how && !strcmp(how, "inline") ? 0 : mcw_open(MOST_AHEAD);
+        if (workers > MOST_AHEAD) workers = MOST_AHEAD;
+        if (workers > 0) {
+            atexit(mcw_close);
+            // (a worker stops at a page of the program's that nobody has touched: mcw.h)
+            mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
+            // (and at a page of code no core has run: the copy's is round its job)
+            const volatile char* code = (const volatile char*)&copy_job;
+            for (int i = -64 * 1024; i <= 64 * 1024; i += 4096) (void)code[i];
+        }
+    }
+    const int total = draw_data->TotalIdxCount;
+    if (workers <= 0 || jobs || total < AHEAD_LEAST || draw_data->CmdListsCount > MOST_LISTS) return false;
+
+    // the commands as pieces, each worker's share of the indices a run of them: a command is
+    // cut where a share ends, at a whole number of its quads
+    const int share = (total / workers / 6 + 1) * 6;
+    int first[MOST_AHEAD + 1], indices[MOST_AHEAD] = {0}, job = 0, room = share;
+    piece_count = first[0] = 0;
+    for (int n = 0; n < draw_data->CmdListsCount; n++) {
+        const ImDrawList* list = draw_data->CmdLists[n];
+        for (const ImDrawCmd& cmd : list->CmdBuffer) {
+            // (a call of the program's is the first core's to make, in its place among the draws)
+            if (cmd.UserCallback && cmd.UserCallback != ImDrawCallback_ResetRenderState) return false;
+            if (cmd.UserCallback) continue;
+            const ImDrawIdx *index = list->IdxBuffer.Data + cmd.IdxOffset, *end = index + cmd.ElemCount;
+            while (index < end) {
+                if (piece_count == MOST_PIECES) return false;
+                if (room <= 0 && job + 1 < workers) first[++job] = piece_count, room = share;
+                const ImDrawIdx* to = end - index > room && job + 1 < workers ? index + room : end;
+                pieces[piece_count++] = {cmd.ClipRect, (GLuint)cmd.TextureId, (const char*)(list->VtxBuffer.Data + cmd.VtxOffset), index, to};
+                indices[job] += (int)(to - index), room -= (int)(to - index);
+                index = to;
+            }
+        }
+    }
+    first[job + 1] = piece_count;
+
+    // room for each: no cut triangle is more than five corners an index, and a quad is fewer
+    unsigned bytes = 0, at = 0;
+    for (int k = 0; k <= job; k++) bytes += AHEAD_TABLES * 1024 + (5 * indices[k] + 24) * 16;
+    ImU32* memory = bytes <= seglFrameLeft() ? (ImU32*)seglFrameSpace(bytes) : nullptr;
+    if (!memory) return false;
+    // (the frame's pages there before a worker steps on them: a set's are new to its first frames)
+    if (touched < 4) {
+        for (unsigned i = 0; i < bytes; i += 4096) memory[i / 4] = 0;
+        touched++;
+    }
+    for (int k = 0; k <= job; k++) {
+        copier& c = ahead[k];
+        c.ahead = true;
+        c.tables = memory + at, c.tables_left = AHEAD_TABLES;
+        c.room = c.tables + AHEAD_TABLES * 256;
+        c.room_end = c.room + (5 * indices[k] + 24) * 4;
+        at += (unsigned)(c.room_end - c.tables);
+        c.pieces = pieces + first[k], c.pieces_end = pieces + first[k + 1];
+    }
+    // the lists' vertices and indices are ours until the frame is finished
+    for (int n = 0; n < draw_data->CmdListsCount; n++) {
+        draw_data->CmdLists[n]->VtxBuffer.swap(kept_vertices[n]);
+        draw_data->CmdLists[n]->IdxBuffer.swap(kept_indices[n]);
+    }
+    jobs = job + 1;
+    for (int k = 0; k < jobs; k++) mcw_post(k + 1, copy_job, (unsigned)&ahead[k], 0);
+    return true;
+}
+
+bool ImGui_ImplShaderEmu_RenderReady()
+{
+    for (int k = 0; k < jobs; k++)
+        if (!mcw_done(k + 1)) return false;
+    return true;
+}
+
+void ImGui_ImplShaderEmu_RenderFinish()
+{
+    if (!jobs) return;
+    bool failed = false;
+    for (int k = 0; k < jobs; k++) {
+        mcw_wait(k + 1);
+        failed |= ahead[k].failed;
+    }
+    unsigned sum = 0, triangles = 0;
+    if (failed) {
+        // (colours or runs beyond what a worker has room for: all of it again, by this core)
+        own.ahead = false, own.noted = summing;
+        own.pieces = pieces, own.pieces_end = pieces + piece_count;
+        own.copy_pieces();
+        if (summing) sum_runs(own.runs, own.run_count, &sum, &triangles);
+    } else {
+        for (int k = 0; k < jobs; k++) {
+            const copier& c = ahead[k];
+            for (int i = 0; i < c.run_count; i++)
+                seglScreenCompactAt((const unsigned int*)c.runs[i].first, c.runs[i].count, c.runs[i].quads, c.runs[i].name,
+                                    (const unsigned int*)c.runs[i].table);
+            if (summing) sum_runs(c.runs, c.run_count, &sum, &triangles);
+        }
+    }
+    if (summing) fprintf(stderr, "imsum: frame %u, %u triangles, sum %08x%s\n", ++summed, triangles, sum, failed ? " (this core's)" : "");
+    jobs = 0;
 }

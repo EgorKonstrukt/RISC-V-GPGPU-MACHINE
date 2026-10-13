@@ -363,6 +363,93 @@ before the server is replaced (`SE_ServerDrop`). And a button counts as down for
 the server's if any of the client's moves since the last had it down: the server took the
 last move only, and a tap between two of its frames (a jump, a shot) was lost.
 
+## The other workers, and draws made again (13 October 2026)
+
+The first core's frame was gone through once more, this time for what workers could have
+of it a frame behind and for what a frame draws that it drew before. The program asks for
+thirteen workers (`SE_Workers` in `server_shaderemu.c`; `QUAKE_WORKERS=N`): the server's, and
+four each for the light maps, the water and the particles.
+
+| `rvc_cpu`, passes of 8,192, 3 million instructions a second | A frame before | now | Frames a second before | now |
+|---|---|---|---|---|
+| e1m5, where the level starts | 75.0k | 32.6k | 36.5 | 81 |
+| e1m1, where the level starts | 44.4k | 20.4k | 61.7 | 86.6 |
+| `timedemo demo1`, 969 frames | 41.6 s | 24.8 s | 23.3 | 39.0 |
+
+A frame under four passes waits for the fourth (`Host_FilterTime`'s 10 ms is 3.4 passes): 84 to
+87 frames a second is as fast as the game draws at this speed, and both levels are there.
+On the shader machine (RTX 5090, D3D11, before and after in turn in one turn of the card): e1m5
+42.5 to 89.8 frames a second (213 and 450 frames in 5 s, twice each; 77.8 to 35.6 thousand
+instructions a frame), `timedemo demo1` 36.4 to 22.5 s (26.6 to 43.0 frames a second, once
+each), e1m1 76 to between 77 and 91 (once each; 44.6 to 22.0 thousand a frame: its 5 s counts
+fell from 455 to 384 during the run, which was not looked into). From the command to a
+level's first frame is 1.5 to 2 million instructions more (2%): the kept brush models.
+
+- **Light maps that flicker are the workers'** (`light_share` in `world_shaderemu.c`). When a
+  style's brightness changes, ten times a second, four workers make again every light map of
+  the level that has that style, into the light map's own texels in GPU memory. A page of
+  light maps has one worker (two surfaces side by side share 16 bytes). Before, the first core
+  made those in view again, in the frame (`R_BuildLightMap`): 4 thousand instructions a frame
+  on e1m1, up to 30 in demo1. A brush model's are the workers' too.
+- **Water is kept in GPU memory as the level is**, a run a texture, and its ripple is written
+  there by workers: the texture coordinates of the water the viewer's leaf can see, as often as
+  they get round (`water_share`; one worker to 160 quads). It was 10 thousand a frame on e1m5.
+- **With both, and the sky kept, a frame asks nothing of a leaf**: no surface goes on a chain,
+  and the torches and the like that stand in the leaves in sight are a list made when the
+  viewer changes leaf, each tested against the view by its own box (`static_add`). The loop
+  over the leaves in sight was 5 to 9 thousand a frame.
+- **Brush models are kept too** (`brush_build`): a door's or a box's triangles lie in GPU
+  memory, sorted by texture and again by light map, and a frame is its matrix and a draw a
+  run. All of its faces are drawn, not those that face the viewer: the others are behind them.
+  A brush model was 5 thousand instructions, and is 2.
+- **A draw made again is its command copied** (`gpu_shaderemu.c`, which is `gles.c` and three
+  calls after it; `qglModel`, `qglTrianglesAt`). A model's pose drawn with the skin and the
+  pose where they were in GPU memory is the sixteen words it was drawn with before, with the
+  frame's matrices and the light's table. An entity's matrix is written as rows where the
+  draws read it (`qgpuRows`), and nothing is pushed or popped: the next entity's replaces it,
+  and the world's is put back when something else is drawn (`qglWorldAgain`).
+- **The status bar is the frame's first draws when it can be** (`SE_SbarHead` in
+  `gl_screen.c`, `qglHead`): the bar of a game being played, the same for three frames, with
+  no tint over the picture. A frame is built in one of two sets of memory in turn; when this
+  set's last frame began with the same bar, the commands, vertices and matrices are still
+  there and are counted, not written. It was 8 thousand instructions a frame.
+- **Particles are four workers'** (`se_particle_share` in `r_part.c`): each has a quarter of
+  the array, moves its particles and writes a vertex each into a buffer of its own; the first
+  core gives a new particle a free place, and copies the vertices the workers last made into
+  the frame, 16 bytes a particle where moving one was 70 instructions and two or three texels
+  of the write cache. A particle is seen a frame after it is made.
+- Smaller: the view's matrix in one go (`qglView`: the same sums as the five calls), the
+  projections kept while the view's size is the same, `R_AnimateLight` when the tenth of a
+  second or a style changes, and the terminal asked for a typed line four times a second and
+  not every pass (a `select` was 800 instructions).
+
+    QUAKE_LIGHT=frame     light maps made by this core, in view, as before (and brush models a polygon at a time)
+    QUAKE_WATER=frame     water drawn into the frame by this core
+    QUAKE_PARTICLES=frame particles moved and drawn by this core
+    QUAKE_LIGHT=wait, QUAKE_WATER=wait, QUAKE_PARTICLES=wait   the workers, waited for in the frame
+    QUAKE_MARK=leaves     the loop over the leaves in sight
+    QUAKE_BRUSH=frame     brush models a polygon at a time
+    QUAKE_SBAR=frame      the status bar drawn where it was, every frame
+    QUAKE_WORKERS=N       so many workers in all (1: the server's only; 0: none)
+
+With `wait` a frame's picture is what the first core's own work made of it; without, a light
+map is some passes behind its style, the water's ripple a frame behind the clock and a
+particle a frame behind its place.
+
+Checked: the server's sums of e1m5 are the ones from before with `inline`, `late` and `wait`;
+`+forward` stops where it did and the exit test loads the next level; with every switch above
+set to the old way the game runs as it did. Held frames compared with the build before, pixel
+by pixel (`+host_framerate 0.05`; under `rvc_harness --cpu`, and on the shader machine for
+frame 60 of e1m5 and frames 150 and 300 of demo1): frames 150, 300 and 420 of demo1 and frame
+60 of e1m5 are the same picture, with `wait` and without; frame 60 of e1m1 differs in one
+pixel by 8 levels with `wait` (not found out which draw; not the brush models), and without
+in 2% of its pixels, where a flickering light is a tenth of a second behind.
+
+Tried and not kept: nothing of this round. Not attempted: the light at a thing that moves
+(`RecursiveLightPoint`, 6% of e1m5's frame and of demo1's: a shorter ray is not the same
+bits, and a worker's answer comes a pass too late for a frame of four); the status bar in
+pieces, for a fight in which it changes every few frames; a demo's messages read ahead.
+
 ## The server's frame, and what could be taken from it
 
 Not done: what was measured on 13 October 2026, and what it suggests. e1m5 standing where

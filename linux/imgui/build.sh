@@ -24,7 +24,7 @@ fi
 # files at the link (-flto; the objects keep ordinary code too, for a link without it).
 TUNE="--param=max-inline-insns-auto=60 --param=inline-unit-growth=80 -fsched-pressure -fno-tree-vectorize -funroll-loops"
 FLAGS="-O3 $TUNE -flto -ffat-lto-objects -DNDEBUG -fno-pie -fno-math-errno -fno-strict-aliasing -w -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_DEFAULT_FORMAT_FUNCTIONS"
-INC="-I$IMGUI -I$HERE -I$BUILD -I$MW/src/include -idirafter $REPO/programs/linux/include"
+INC="-I$IMGUI -I$HERE -I$BUILD -I$MW/src/include -I$REPO/programs/mc -idirafter $REPO/programs/linux/include"
 mkdir -p "$BUILD" && cd "$BUILD"
 # the default font's atlas, built here once by the library's own code and compiled into the
 # backend (host/bake_font.cpp): rasterising it was half of a program's start
@@ -47,6 +47,9 @@ export FLAGS INC BUILD HERE
 # 64 bytes each (the two megabytes left are textures)
 rv32-cc -O2 -fno-pie -w -DSEGL_FLOAT -DSET_SIZE=0x100000u -DUNIFORMS_IN=0x30000u -DVERTICES_IN=0x38000u -DMAX_COMMANDS=3072 \
     $INC -c "$REPO/programs/linux/gles.c" -o gles.o
+# the worker cores' library, the same for every program (programs/mc): the backend's copy on worker
+# cores (docs/imgui.md). nxpath links the backend with its own.
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcw.c" -o mcw.o
 # (linked away from the window system, so that a profile can tell the two apart: tools/pc_profile.py)
 rv32-c++ -O3 $TUNE -flto=auto -w -Wl,-Ttext-segment=0x2000000 *.o "$MW/src/lib/libnano-X.a" -o imdemo
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"

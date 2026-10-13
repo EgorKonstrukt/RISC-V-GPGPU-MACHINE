@@ -63,12 +63,17 @@ Ptr_Read(MWCOORD *dx, MWCOORD *dy, MWCOORD *dz, int *bp)
 	static const int button[3] = { MWBUTTON_L, MWBUTTON_R, MWBUTTON_M };
 	static struct event ev[32];
 	static int have, at;	/* events read, and how many of them are dealt with */
+	/* a read that did not fill the room took all there was: no second one to hear so */
+	static int emptied;
 	int n, changed = 0, pressed = 0;
 
 	for (;;) {
 		if (at == have) {
+			at = have = 0;
+			if (emptied)
+				break;
 			n = read(fd, ev, sizeof(ev));
-			at = 0;
+			emptied = n > 0 && n < (int)sizeof(ev);
 			have = n >= (int)sizeof(ev[0]) ? n / (int)sizeof(ev[0]) : 0;
 			if (!have)
 				break;
@@ -102,8 +107,10 @@ Ptr_Read(MWCOORD *dx, MWCOORD *dy, MWCOORD *dz, int *bp)
 		wheel += wheel > 0 ? -1 : 1;
 		changed = 1;
 	}
-	if (!changed)
+	if (!changed) {
+		emptied = 0;
 		return MOUSE_NODATA;
+	}
 	*dx = cur_x;
 	*dy = cur_y;
 	*dz = 0;

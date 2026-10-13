@@ -715,7 +715,7 @@ static inline u32 mc_fault_at(int hart) { return mc_job_at(hart) + 32; }
 static inline u32 mc_resume_at(int hart) { return mc_job_at(hart) + 48; }
 static inline u32 mc_call_at(int hart) { return MC_MBOX + 0x2000 + 32 * hart; }
 enum { MC_PARKED, MC_RUNNING, MC_ASLEEP, MC_FAULTED, MC_CALLING };
-struct Worker { int state = MC_PARKED; u32 seen = 0, start_seen = 0, job_seen = 0; };
+struct Worker { int state = MC_PARKED; u32 seen = 0, start_seen = 0, job_seen = 0, job_was = 0; };
 static std::vector<Worker> workers;
 static u32 geometry[256];   // each worker's cache bits as the machine's geometry has them; 0: no such worker
 
@@ -783,7 +783,9 @@ static u64 run_worker(Core& c, u64 budget) {
         Trap t;
         if (page_of(c, pc, FETCH, phys, t) && phys - RAM_BASE < RAM_SIZE) memcpy(&ins, &ram[phys - RAM_BASE], 4);
         if (ins == 0x0100000f) {   // pause: asleep until the job word changes
-            w.job_seen = word(mc_job_at(c.hart));
+            // (from what it was when the pass began, as the shader machine's worker reads it: a
+            // job the first core posted in this very pass is a change, not what it sleeps on)
+            w.job_seen = w.job_was;
             w.state = MC_ASLEEP;
             c.pc += 4;
             break;
@@ -932,6 +934,8 @@ static u64 worker_instr = 0;
 static u64 machine_pass(u32 ticks) {
     control_pass();
     mtime_now = (u64)(guest_seconds * 5000.0);
+    for (size_t i = 1; i < cores.size(); i++)
+        if (geometry[i]) workers[i].job_was = word(mc_job_at((int)i));
     u64 most = run(cores[0], ticks);
     for (size_t i = 1; i < cores.size(); i++) {
         u64 n = run_worker(cores[i], ticks);

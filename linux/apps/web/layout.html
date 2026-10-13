@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Layout and fonts</title>
+<style>
+body { font-family: sans-serif; margin: 12px; }
+h1 { font-size: 26px; margin: 0 0 8px; }
+h2 { font-size: 18px; border-bottom: 1px solid #c0c0c0; padding-bottom: 2px; }
+.row { display: flex; gap: 10px; }
+.row > div { flex: 1; background: #eef3fa; border: 1px solid #9db3d0; padding: 6px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.grid > div { background: #f6eedd; border: 1px solid #c8b890; padding: 4px; text-align: center; }
+.note { float: right; width: 150px; margin: 0 0 6px 10px; padding: 6px; background: #fff7c8; border: 1px solid #d0c070; font-size: 12px; }
+table.t { border-collapse: collapse; }
+table.t td, table.t th { border: 1px solid #808080; padding: 3px 8px; }
+table.t th { background: #dde6dd; }
+.badge { display: inline-block; background: #2a6; color: white; padding: 1px 7px; font-size: 12px; font-weight: bold; }
+code { background: #eee; }
+.serif { font-family: Georgia, serif; }
+.small { font-size: 11px; color: #666; }
+ul.bar { list-style: none; padding: 0; margin: 0; }
+ul.bar li { float: left; padding: 3px 10px; background: #333; }
+ul.bar li a { color: white; text-decoration: none; }
+</style></head>
+<body>
+<h1>Layout and fonts</h1>
+<p class="small">What this browser lays out, on one page: each part says what it should look like.</p>
+
+<ul class="bar"><li><a href="web-index.html">Home</a></li><li><a href="#fonts">Fonts</a></li><li><a href="#scripts">Scripts</a></li><li><a href="#boxes">Boxes</a></li><li><a href="#form">A form</a></li></ul>
+
+<h2 id="fonts">Fonts</h2>
+<p>Sans, <b>bold</b>, <i>italic</i>, <b><i>both</i></b>, <u>underlined</u>, <s>struck</s>, <code>fixed(width)</code>,
+<span class="serif">with serifs, <b>bold</b> and <i>italic</i></span>, x<sup>2</sup> and H<sub>2</sub>O,
+<small>small</small> and <big>big</big>, <span class="badge">a badge</span>.</p>
+<p style="font-size:10px">10 pixels. <span style="font-size:11px">11.</span> <span style="font-size:13px">13.</span>
+<span style="font-size:15px">15.</span> <span style="font-size:17px">17.</span> <span style="font-size:20px">20.</span>
+<span style="font-size:24px">24.</span> <span style="font-size:28px">28.</span> <span style="font-size:32px">32.</span></p>
+<pre>a listing   keeps  its   columns
+    and its indents</pre>
+
+<h2 id="scripts">Scripts</h2>
+<p>Ελληνικά · Русский язык · Українська мова · Tiếng Việt · Çeşme · Łódź · Þórr · naïve café</p>
+<p>中文简体 · 日本語のテキスト · 한국어 · עברית · العربية · हिन्दी · ไทย · ქართული · Հայերեն</p>
+<p>Signs: € £ ¥ © ® ™ § ¶ † ‡ • … — – « » “ ” ‘ ’ → ← ↑ ↓ ⇒ ≤ ≥ ≠ ≈ ± × ÷ ∞ √ ∑ ∫ π Ω µ ° ½ ¼ ¾</p>
+
+<h2 id="boxes">Boxes</h2>
+<div class="note">A note that floats at the right: the text beside it goes round it and on under it.</div>
+<p>Three boxes side by side (a flex row), then six cells of a grid, then a table whose columns are as wide as what
+is in them. This paragraph is long enough to go past the floating note, so that the lines after it are the full
+width of the page again, which shows that the note's height was taken into account by the lines.</p>
+<div class="row"><div><b>One.</b> The first of three.</div><div><b>Two.</b> The second, with more text in it than the others have.</div><div><b>Three.</b></div></div>
+<p></p>
+<div class="grid"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div></div>
+<p></p>
+<table class="t"><tr><th>Site</th><th>Kind</th><th align="right">Rules</th></tr>
+<tr><td>Hacker News</td><td>a table of old</td><td align="right">88</td></tr>
+<tr><td>Lobsters</td><td>flex rows</td><td align="right">276</td></tr>
+<tr><td colspan="2">A cell over two columns</td><td align="right">0</td></tr></table>
+<ol><li>A numbered item</li><li>Another, <a href="web-test.html">with a link</a></li><ul><li>and a bullet inside</li></ul></ol>
+<details><summary>A summary: click to open</summary><p>What was folded away.</p></details>
+<noscript><p>This line is shown by a browser that runs no scripts.</p></noscript>
+
+<h2 id="form">A form</h2>
+<form action="https://en.wikipedia.org/w/index.php" method="get">
+<p>Search Wikipedia: <input type="text" name="search" size="24" placeholder="type here"> <input type="submit" value="Go">
+<input type="checkbox" name="fulltext" value="1"> full text
+<select name="ns0"><option value="1">articles</option><option value="0">everything</option></select></p>
+</form>
+<p class="small">The end of the page.</p>
+</body></html>

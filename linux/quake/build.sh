@@ -7,11 +7,13 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
-MW=$WORK/src/microwindows
+MW=${SE_MW:-$WORK/src/microwindows}
 Q=$WORK/src/quake
-BUILD=$WORK/src/quake-build
+BUILD=${QUAKE_BUILD:-$WORK/src/quake-build}
 DATA=$WORK/src/quake-data
-OUT=$REPO/build/images/linux/root
+OUT=${QUAKE_OUT:-$REPO/build/images/linux/root}
+# (SE_PROGRAMS: a copy of programs/ to build against, for a comparison that keeps its libraries)
+PROGRAMS=${SE_PROGRAMS:-$REPO/programs}
 COMMIT=bf4ac42
 SHAREWARE=${QUAKE_SHAREWARE:-https://ftp.netbsd.org/pub/pkgsrc/distfiles/quake106.zip}
 LHASA=https://github.com/fragglet/lhasa/releases/download/v0.4.0/lhasa-0.4.0.tar.gz
@@ -22,8 +24,11 @@ if [ ! -d "$Q/.git" ]; then
     git clone -q https://github.com/id-Software/Quake.git "$Q"
 fi
 # the tree is id's commit plus our patch, put there again on every build
-git -C "$Q" checkout -q -f "$COMMIT" && git -C "$Q" clean -q -fd
-git -C "$Q" apply "$HERE/quake.patch"
+# (QUAKE_TREE=keep: the tree as it stands, for writing that patch)
+if [ "${QUAKE_TREE:-}" != keep ]; then
+    git -C "$Q" checkout -q -f "$COMMIT" && git -C "$Q" clean -q -fd
+    git -C "$Q" apply "$HERE/quake.patch"
+fi
 
 # GLQuake without the x86 assembly, with the null CD driver, the game's own network drivers
 # (the loopback and UDP: docs/lan.md), and ours for
@@ -35,7 +40,7 @@ SOURCES="cl_demo cl_input cl_main cl_parse cl_tent chase cmd common console crc 
 OURS="vid_shaderemu sys_shaderemu mesh_shaderemu world_shaderemu fmath_shaderemu snd_shaderemu server_shaderemu"
 # gles.c in its float build. (Texture names from 3,072 up are qgl.c's own, for models' poses.)
 GLES="-DSEGL_FLOAT -DMAX_TEXTURES=4096"
-GLINC="-I$HERE/include -idirafter $REPO/programs/linux/include -I$MW/src/include"
+GLINC="-I$HERE/include -idirafter $PROGRAMS/linux/include -I$MW/src/include"
 # On top of the toolchain's flags (the machine's float instructions, docs/fpu.md): no errno
 # from sqrt, which is then one instruction, and a constant written without an f is a float
 # too. As a double, as C has it, every "x * 0.5" in the source was a library call for a double
@@ -52,7 +57,7 @@ FPU="-fno-math-errno -fsingle-precision-constant"
 # -O3 without its vectors (the machine has none), with loops unrolled: 6% fewer instructions a
 # frame of a timedemo than -O2 and 5% fewer to a level's first picture, for 190 KB of program.
 OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
-CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w -DGLQUAKE -DSHADEREMU -include $HERE/fmath.h $GLINC -I$Q/WinQuake -I$REPO/programs/mc ${QUAKE_DEFINES:-}"
+CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w -DGLQUAKE -DSHADEREMU -include $HERE/fmath.h $GLINC -I$Q/WinQuake -I$PROGRAMS/mc ${QUAKE_DEFINES:-}"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
 export CFLAGS Q HERE BUILD ALIGN16
 mkdir -p "$BUILD" && cd "$BUILD"
@@ -60,9 +65,10 @@ rm -f net_none.o   # (of a build before the network: the link takes every object
 { for f in $SOURCES; do echo "$Q/WinQuake/$f.c"; done; for f in $OURS; do echo "$HERE/$f.c"; done; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/quake.patch" ] && [ "$o" -nt "$HERE/include/GL/gl.h" ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/fmath.h" ] || { rv32-cc $CFLAGS -c {} -o "$o" && riscv32-linux-objcopy $ALIGN16 "$o"; }'
 rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLINC "$HERE/qgl.c" -o qgl.o
-rv32-cc $OPT -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC "$REPO/programs/linux/gles.c" -o gles.o
+# gles.c with what a thing drawn again asks of it (gpu_shaderemu.c includes it)
+rv32-cc $OPT -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC -I"$PROGRAMS/linux" "$HERE/gpu_shaderemu.c" -o gles.o
 # the worker cores' library, the same for every program (programs/mc)
-rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcw.c" -o mcw.o
 # and 16 bytes of nothing after our variables in each kind of section: the libraries' follow
 printf 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));\n' > zz_pad.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
@@ -72,7 +78,7 @@ for o in qgl.o gles.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objc
 rv32-cc -O2 $FPU -w $(ls *.o | grep -v '^zz_') zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/quake.bin" quake
-riscv32-linux-nm -n quake > "$WORK/src/quake.nm"
+riscv32-linux-nm -n quake > "${QUAKE_NM:-$WORK/src/quake.nm}"
 
 # The shareware episode: a zip holding an LHA archive, which a small extractor built here opens.
 if [ ! -f "$DATA/id1/pak0.pak" ]; then

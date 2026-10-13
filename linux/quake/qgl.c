@@ -78,6 +78,21 @@ static int block_count;
 static uint8_t* pool;
 static uint32_t pool_size, pool_used, host_bytes, evictions, frame = 1;
 static GLuint bound, ramp_name = MAX_TEXTURES - 1;
+static uint32_t uploads;   // goes up when a texture's pixels or kind may be others: a kept command's words are then stale
+
+// gpu_shaderemu.c: a draw made again from its command's words, and the modelview as rows
+unsigned qgpuCommands(void);
+const unsigned* qgpuLastCommand(void);
+void qgpuRows(const float* rows);
+int qgpuReplay(const unsigned* words);
+void qgpuHeadBegin(unsigned* kept);
+void qgpuHeadEnd(unsigned* kept);
+int qgpuHeadAgain(const unsigned* kept);
+
+// The frame's first draws, when they are the same as in the frame this set last held (qglHead).
+#define HEAD_TEXTURES 32
+typedef struct { uint32_t key, frame, uploads, names, name[HEAD_TEXTURES], at[HEAD_TEXTURES]; unsigned kept[9]; } head;
+static head heads[2], *head_made;
 static unsigned int frame_vertices, last_vertices;
 
 static void block_remove(int i) {
@@ -137,6 +152,16 @@ static uint32_t pool_room(uint32_t bytes, int owner, int any) {
     return at;
 }
 
+// A texture the frame's first draws are drawn with: they hold while it is where it is.
+static void head_texture(int name) {
+    head* h = head_made;
+    if (h->names > HEAD_TEXTURES) return;
+    for (uint32_t i = 0; i < h->names; i++)
+        if (h->name[i] == (uint32_t)name) return;
+    if (h->names < HEAD_TEXTURES) h->name[h->names] = (uint32_t)name, h->at[h->names] = textures[name].at;
+    h->names++;   // (one more than there is room for: too many, and not kept)
+}
+
 // Has the texture in GPU memory for the draw that follows. 0: it has no pixels, or everything
 // in GPU memory is this frame's own and nothing may go.
 static int resident(int name) {
@@ -144,6 +169,7 @@ static int resident(int name) {
     uint32_t at;
     if (t->kind == NONE || t->kind == POSE) return 0;
     t->drawn = frame;
+    if (head_made && t->at != NOWHERE) head_texture(name);
     if (t->at != NOWHERE) return 1;
     if ((at = pool_room(t->bytes, name, 0)) == NOWHERE) return 0;
     t->at = at;
@@ -153,6 +179,7 @@ static int resident(int name) {
     seglTexturePointer(pool + at, t->width, t->height, t->kind == INDEXED ? GL_COLOR_INDEX8_EXT : GL_RGBA);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, t->smooth ? GL_LINEAR : GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, bound);
+    if (head_made) head_texture(name);
     return 1;
 }
 
@@ -166,6 +193,7 @@ void qglTexParameterf(GLenum target, GLenum name, GLfloat value) {
         never = how && !strcmp(how, "nearest");
     }
     if (name != GL_TEXTURE_MAG_FILTER || bound >= POSE_FIRST) return;
+    uploads++;
     textures[bound].smooth = !never && (int)value != GL_NEAREST;
     glTexParameteri(target, name, textures[bound].smooth ? GL_LINEAR : GL_NEAREST);
 }
@@ -200,6 +228,7 @@ void* qglBlock(unsigned int bytes) {
 }
 // The block is given back, no texture stays, and the poses of the level's models are forgotten.
 void qglRelease(void) {
+    uploads++;
     pool_give(BLOCK_OWNER);
     for (int i = 0; i < MAX_TEXTURES; i++) textures[i].stays = i == GAP_OWNER;
     for (int i = 0; i < POSES; i++) {
@@ -216,8 +245,14 @@ void qglMemory(unsigned int* kept, unsigned int* in_gpu, unsigned int* gpu_size,
     *vertices = last_vertices;
 }
 
-static void shade_flush(void);
+static void shade_flush_all(void);
 static void run_flush(void);
+static int run_room, quads_open;   // (sprites and quads that wait for their draw: below)
+
+// Before anything is set or drawn: what waits for its draw gets it. (Mostly nothing does.)
+static inline void shade_flush(void) {
+    if (run_room | quads_open | shade_count) shade_flush_all();
+}
 
 // A model's pose as compact vertices with its skin's coordinates is kept in the pool like a
 // texture: a pose drawn again (a thing at rest, a flame's few) is a command and no vertices.
@@ -252,6 +287,7 @@ void qglBindTexture(GLenum target, GLuint name) {
 void qglTexImage8(const GLubyte* pixels, GLsizei width, GLsizei height, int holes) {
     texture* t = &textures[bound];
     uint8_t* to = bound ? texture_memory(width, height, INDEXED) : 0;
+    uploads++;
     if (!to) return;
     t->holes = holes;
     if (pixels) memcpy(to, pixels, t->bytes);
@@ -294,6 +330,13 @@ void qglLight(GLuint name, int x, int y, int width, int height, const unsigned i
     }
 }
 
+// The words of a light map that stays in GPU memory (qglStay), for a worker to write a
+// surface's light there (world_shaderemu.c); NULL when it is not such a one.
+unsigned int* qglLightWords(GLuint name) {
+    const texture* t = &textures[name < MAX_TEXTURES ? name : 0];
+    return t->kind == WORDS && t->width == LIGHT_BLOCK && t->stays && t->at != NOWHERE ? (unsigned int*)(pool + t->at) : 0;
+}
+
 void qglTexImage2D(GLenum target, GLint level, GLint internal, GLsizei width, GLsizei height, GLint border, GLenum format,
                    GLenum type, const GLvoid* pixels) {
     (void)target, (void)internal, (void)border, (void)type;
@@ -304,6 +347,7 @@ void qglTexImage2D(GLenum target, GLint level, GLint internal, GLsizei width, GL
     }
     texture* t = &textures[bound];
     uint32_t* to = (uint32_t*)texture_memory(width, height, WORDS);
+    uploads++;
     if (!to) return;
     t->holes = 0;
     if (pixels) words(to, pixels, width * height, format);
@@ -416,15 +460,32 @@ void qglViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
 
 // ---- matrices ----
 
+// An entity's matrix is set as it is (qglEntity) and not taken off again: the world's is put
+// back when something is drawn or turned from it (qglWorldAgain).
+static const float* entity_base;   // the world's matrix, while the modelview is an entity's
+
+void qglWorldAgain(void) {
+    const float* m = entity_base;
+    if (!m) return;
+    shade_flush();
+    float rows[12] = {m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14]};
+    qgpuRows(rows);
+    entity_base = 0;
+}
+
 void qglMatrixMode(GLenum which) {
     shade_flush();
     glMatrixMode(which);
 }
 void qglLoadIdentity(void) {
     shade_flush();
+    entity_base = 0;
     glLoadIdentity();
 }
-void qglPushMatrix(void) { glPushMatrix(); }
+void qglPushMatrix(void) {
+    qglWorldAgain();
+    glPushMatrix();
+}
 void qglPopMatrix(void) {
     shade_flush();
     glPopMatrix();
@@ -455,9 +516,11 @@ void qglMultMatrixf(const GLfloat* m) {
 }
 void qglGetFloatv(GLenum what, GLfloat* out) {
     if (what == GL_MODELVIEW_MATRIX) seglGetMatrix(GL_MODELVIEW, out);
+    else if (what == GL_PROJECTION_MATRIX) seglGetMatrix(GL_PROJECTION, out);
 }
 void qglLoadMatrixf(const GLfloat* m) {
     shade_flush();
+    entity_base = 0;
     seglSetMatrix(m);
 }
 
@@ -474,12 +537,37 @@ static float turn_sine(float degrees) {
     return negative ? -s : s;
 }
 
+// The view's modelview as GLQuake makes it: from `base` (its two turns that put z up, made by
+// the library once) turned about x, y and z by so many degrees and moved by `move`: what
+// glRotatef and glTranslatef make of it in gles.c, sum for sum, without the products by 0 and
+// 1. `out` is what glGetFloatv gives of it.
+void qglView(const float* base, float about_x, float about_y, float about_z, const float* move, float* out) {
+    float xs = turn_sine(about_x), xc = turn_sine(about_x + 90.0f), xa = (1 - xc) + xc;
+    float ys = turn_sine(about_y), yc = turn_sine(about_y + 90.0f), yb = (1 - yc) + yc;
+    float zs = turn_sine(about_z), zc = turn_sine(about_z + 90.0f);
+    shade_flush();
+    for (int i = 0; i < 3; i++) {
+        float a = base[i], b = base[4 + i], c = base[8 + i], d = base[12 + i], a0, b0, c0;
+        b0 = b, c0 = c;
+        a = a * xa, b = b0 * xc + c0 * xs, c = c0 * xc - b0 * xs;
+        a0 = a, c0 = c;
+        a = a0 * yc - c0 * ys, b = b * yb, c = a0 * ys + c0 * yc;
+        a0 = a, b0 = b;
+        a = a0 * zc + b0 * zs, b = b0 * zc - a0 * zs;
+        d += a * move[0] + b * move[1] + c * move[2];
+        out[i] = a, out[4 + i] = b, out[8 + i] = c, out[12 + i] = d;
+    }
+    out[3] = out[7] = out[11] = 0, out[15] = 1;
+    entity_base = 0;
+    seglSetMatrix(out);
+}
+
 // An entity's modelview from the world's (`base`, as glGetFloatv gave it): what glTranslatef
 // to its place, glRotatef about z, y and x by its angles (those that are not 0) and, with
 // `move`, glTranslatef and glScalef make of it in gles.c, sum for sum, without the products
 // by the 0s and 1s of a turn about an axis. The fourth row, which no draw reads, is base's.
 void qglEntity(const float* base, const float* place, float yaw, float pitch, float roll, const float* move, const float* scale) {
-    float m[16], yaw_s = 0, yaw_c = 0, pitch_s = 0, pitch_c = 0, pitch_b = 0, roll_s = 0, roll_c = 0, roll_a = 0;
+    float m[12], yaw_s = 0, yaw_c = 0, pitch_s = 0, pitch_c = 0, pitch_b = 0, roll_s = 0, roll_c = 0, roll_a = 0;
     shade_flush();
     if (yaw != 0) yaw_s = turn_sine(yaw), yaw_c = turn_sine(yaw + 90.0f);
     if (pitch != 0) pitch_s = turn_sine(pitch), pitch_c = turn_sine(pitch + 90.0f), pitch_b = (1 - pitch_c) + pitch_c;
@@ -503,10 +591,10 @@ void qglEntity(const float* base, const float* place, float yaw, float pitch, fl
             d += a * move[0] + b * move[1] + c * move[2];
             a = a * scale[0], b = b * scale[1], c = c * scale[2];
         }
-        m[i] = a, m[4 + i] = b, m[8 + i] = c, m[12 + i] = d;
+        m[4 * i] = a, m[4 * i + 1] = b, m[4 * i + 2] = c, m[4 * i + 3] = d;
     }
-    m[3] = base[3], m[7] = base[7], m[11] = base[11], m[15] = base[15];
-    seglSetMatrix(m);
+    qgpuRows(m);
+    entity_base = base;
 }
 
 // ---- drawing ----
@@ -540,7 +628,7 @@ static void quads_close(void) {
 
 // A model's shading: the triangles drawn once more, multiplying what is there by a ramp of
 // greys looked up with the vertex's light. Kept until the state they were drawn in changes.
-static void shade_flush(void) {
+static void shade_flush_all(void) {
     if (run_room) run_flush();
     if (quads_open) quads_close();
     if (!shade_count) return;
@@ -776,6 +864,36 @@ void qglFan(const unsigned int* v, int n) {
     qglQuadsUsed((n - 1) / 2);
 }
 
+// What Quake asked a draw to be made with: a kept command's words hold while it is the same.
+static inline uint32_t asked(void) {
+    return (uint32_t)want_texture | (uint32_t)want_blend << 1 | (uint32_t)want_alpha << 2 | (uint32_t)want_depth << 3 |
+           (blend_source & 0xfff) << 4 | (blend_destination & 0xfff) << 16;
+}
+
+// Triangles of compact vertices that are in GPU memory already (a brush model's, kept by
+// world_shaderemu.c), drawn with what is set now.
+// `kept` is 24 words of the caller's for the command they were last drawn with (0 at first):
+// drawn again with the same texture where it was, it is copied (qgpuReplay).
+void qglTrianglesAt(const unsigned int* vertices, int count, unsigned int* kept) {
+    const texture* t = &textures[bound];
+    uint32_t tint = (uint32_t)colour[0] << 24 | (uint32_t)colour[1] << 16 | (uint32_t)colour[2] << 8 | colour[3];
+    shade_flush();
+    if (kept[0] == bound + 1 && kept[1] == t->at && kept[2] == uploads && kept[3] == asked() && kept[4] == tint &&
+        kept[5] == (uint32_t)count && kept[6] == (uint32_t)(uintptr_t)vertices) {
+        textures[bound].drawn = frame;
+        qgpuReplay(kept + 8);
+        return;
+    }
+    kept[0] = 0;
+    state(0);
+    unsigned before = qgpuCommands();
+    seglCompactAt(vertices, count);
+    if (qgpuCommands() != before + 1 || t->at == NOWHERE || !want_texture) return;
+    kept[0] = bound + 1, kept[1] = t->at, kept[2] = uploads, kept[3] = asked(), kept[4] = tint;
+    kept[5] = (uint32_t)count, kept[6] = (uint32_t)(uintptr_t)vertices;
+    memcpy(kept + 8, qgpuLastCommand(), 64);
+}
+
 // Quads, four corners each: many polygons of one surface in one go (a draw costs some 200
 // instructions before its first vertex).
 void qglQuads(const unsigned int* vertices, int n) {
@@ -788,9 +906,10 @@ void qglQuads(const unsigned int* vertices, int n) {
 // Where `bytes` of a model's are kept in the pool (a pose's vertices, or with pose COORDS its
 // texture coordinates), or NULL when they cannot be; `fresh` when they are still to be written there.
 #define COORDS 0x7fffffff
-static uint32_t* pose_place(const void* model, int pose, uint32_t bytes, int* fresh) {
+static uint32_t* pose_place(const void* model, int pose, uint32_t bytes, int* fresh, int* which) {
     int there, slot = pose_slot(model, pose, &there);
     if (slot < 0) return 0;
+    *which = slot;
     texture* kept = &textures[POSE_FIRST + slot];
     *fresh = !there;
     if (!there) {
@@ -831,29 +950,96 @@ static void pose_write(uint32_t* p, const unsigned char* v, const unsigned int* 
         p[0] = byte_bits[v[0]], p[1] = byte_bits[v[1]], p[2] = byte_bits[v[2]], p[3] = uv[i] | (uint32_t)v[3] << 24;
 }
 
+// The two commands a model's pose was last drawn with, kept by model, pose and skin: drawn
+// again they are copied, with the frame's matrices (qgpuReplay) and the light's table as it is
+// now, while the skin and the pose are where they were in GPU memory.
+typedef struct {
+    const void* model;
+    int pose, count, coords_slot, pose_slot, shaded;
+    GLuint name;
+    uint32_t skin_at, coords_at, pose_at, uploads, asked, skin[16], shade[16];
+} drawn_model;
+#define DRAWN 256
+static drawn_model drawn[DRAWN];
+
 // A model's pose: triangles of byte vertices (x, y, z, which normal) and their texture
 // coordinates, packed already. Drawn with its skin, and with `light` (qglLights) once more as
 // shading: the same vertices, copies in the pool of what the model's file has, coloured by
 // their normals. (Without room in the pool they are written out into the frame.)
 void qglModel(const void* model, int pose, const unsigned char* v, const unsigned int* uv, const unsigned int* light, int n) {
-    int fresh = 0;
+    int fresh = 0, coords_slot = 0, pose_slot = 0, kept_words = 0;
+    drawn_model* d = &drawn[(((uint32_t)(uintptr_t)model >> 4) ^ ((uint32_t)pose * 2654435761u >> 8) ^ bound * 40503u) % DRAWN];
     shade_flush();
+    if (d->model == model && d->pose == pose && d->name == bound && (d->shaded || !light) && d->count == n && d->uploads == uploads &&
+        d->asked == asked() && textures[bound].at == d->skin_at &&
+        pose_of[d->coords_slot].model == model && pose_of[d->coords_slot].pose == COORDS && textures[POSE_FIRST + d->coords_slot].at == d->coords_at &&
+        pose_of[d->pose_slot].model == model && pose_of[d->pose_slot].pose == pose && textures[POSE_FIRST + d->pose_slot].at == d->pose_at) {
+        textures[bound].drawn = textures[POSE_FIRST + d->coords_slot].drawn = textures[POSE_FIRST + d->pose_slot].drawn = frame;
+        if (!qgpuReplay(d->skin) && light) {
+            d->shade[11] = seglAddress(light);   // (the one word of it that is the light's)
+            qgpuReplay(d->shade);
+        }
+        return;
+    }
+    d->model = 0, d->shaded = 0;
     state(1);
-    uint32_t* coords = pose_place(model, COORDS, (uint32_t)n * 4, &fresh);
+    uint32_t* coords = pose_place(model, COORDS, (uint32_t)n * 4, &fresh, &coords_slot);
     if (coords && fresh) seglSettle(), memcpy(coords, uv, (size_t)n * 4);
-    uint32_t* kept = coords ? pose_place(model, pose, (uint32_t)n * 4, &fresh) : 0;
+    uint32_t* kept = coords ? pose_place(model, pose, (uint32_t)n * 4, &fresh, &pose_slot) : 0;
     if (kept && fresh) seglSettle(), memcpy(kept, v, (size_t)n * 4), frame_vertices += n;
     uint32_t* p = 0;
-    if (kept) seglPacked(kept, coords, n, 0);
-    else if ((p = seglTagged(0, n, 0)) != 0) pose_write(p, v, uv, n), frame_vertices += n;
-    if (!light) return;   // lit all over (a flame): no shading to draw
-    give(&given_texture, GL_TEXTURE_2D, 0);
-    give(&given_blend, GL_BLEND, 1);
-    give_blend(GL_ZERO, GL_SRC_COLOR);
-    give(&given_alpha, GL_ALPHA_TEST, 0);
-    told = -1;
-    if (kept) seglPacked(kept, coords, n, light);
-    else if ((p = seglTagged(0, n, light)) != 0) pose_write(p, v, uv, n), frame_vertices += n;
+    unsigned before = qgpuCommands();
+    if (kept) {
+        seglPacked(kept, coords, n, 0);
+        if (qgpuCommands() == before + 1) memcpy(d->skin, qgpuLastCommand(), 64), kept_words = 1;
+    } else if ((p = seglTagged(0, n, 0)) != 0) pose_write(p, v, uv, n), frame_vertices += n;
+    if (light) {   // (lit all over, a flame, has no shading to draw)
+        give(&given_texture, GL_TEXTURE_2D, 0);
+        give(&given_blend, GL_BLEND, 1);
+        give_blend(GL_ZERO, GL_SRC_COLOR);
+        give(&given_alpha, GL_ALPHA_TEST, 0);
+        told = -1;
+        before = qgpuCommands();
+        if (kept) {
+            seglPacked(kept, coords, n, light);
+            if (qgpuCommands() == before + 1) memcpy(d->shade, qgpuLastCommand(), 64), d->shaded = 1;
+            else kept_words = 0;
+        } else if ((p = seglTagged(0, n, light)) != 0) pose_write(p, v, uv, n), frame_vertices += n;
+    }
+    if (!kept_words || textures[bound].at == NOWHERE || !want_texture) return;
+    d->model = model, d->pose = pose, d->count = n, d->name = bound, d->uploads = uploads, d->asked = asked();
+    d->coords_slot = coords_slot, d->pose_slot = pose_slot, d->skin_at = textures[bound].at;
+    d->coords_at = textures[POSE_FIRST + coords_slot].at, d->pose_at = textures[POSE_FIRST + pose_slot].at;
+}
+
+// The frame's first draws, which `key` names (the status bar as it is now), before anything
+// else of the frame is drawn. With `end` 0: 1 when this set held the same two frames ago, the
+// last time it was drawn into, and they are still there: nothing is to be drawn. Else the
+// caller draws them and says so with `end` 1.
+int qglHead(int end, unsigned int key) {
+    head* h = &heads[seglSet() & 1];
+    shade_flush();
+    if (end) {
+        if (!head_made) return 0;
+        qgpuHeadEnd(h->kept);
+        h->key = key, h->uploads = uploads;
+        h->frame = h->names > HEAD_TEXTURES ? 0 : frame;
+        head_made = 0;
+        return 0;
+    }
+    if (h->frame + 2 == frame && h->key == key && h->uploads == uploads) {
+        uint32_t i;
+        for (i = 0; i < h->names && textures[h->name[i]].at == h->at[i]; i++) continue;
+        if (i == h->names && qgpuHeadAgain(h->kept)) {
+            for (i = 0; i < h->names; i++) textures[h->name[i]].drawn = frame;
+            h->frame = frame;
+            return 1;
+        }
+    }
+    h->frame = 0, h->names = 0;
+    head_made = h;
+    qgpuHeadBegin(h->kept);
+    return 0;
 }
 
 // ---- the window ----

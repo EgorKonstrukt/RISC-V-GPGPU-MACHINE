@@ -148,6 +148,12 @@ kernel but a private one: checked on `rvc_cpu`, and their parts on the shader ma
   the `fence.i` is made at the next switch of tasks (`context_switch`).
 - The shell starts `command &` with `vfork` too when its words are names only
   (`linux/userland/ash_vfork_hook.py`): the fork's five copied pages are gone.
+- **A reader of a Unix socket sleeps through a wake for room to write**
+  (`linux/kernel/unixwake_hook.py`, 13 October 2026; `unix_data_wake` in `net/unix/af_unix.c`).
+  A program writes a question and sleeps reading the answer; the other side taking the
+  question freed the socket's room, which woke the reader for nothing: two switches of
+  process an answer, 1,400 instructions of the window system's 12,500 (`docs/nanox.md`).
+  `zerotest`, `tailtest` and `mctest` say PASS with it, `nxray` 255 workers.
 
 Copies from the ROM, `rvc_cpu`: the editor's start 6 to 2, Settings' 8 to 3, the desktop
 with a terminal and the calculator 50 to 31 (before lone parts of pages went to the

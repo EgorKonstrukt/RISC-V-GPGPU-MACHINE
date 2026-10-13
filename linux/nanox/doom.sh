@@ -89,11 +89,40 @@ grep -q 'if (!tics) doom_wait();$' d_main_ours.c || { echo "d_main.c: the melt's
 rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DHU_Drawer=HU_Drawer_kept -DHU_Erase=HU_Erase_kept -Dwipe_StartScreen=wipe_StartScreen_ours -Dwipe_EndScreen=wipe_EndScreen_ours -Dwipe_ScreenWipe=wipe_ScreenWipe_ours -I"$DOOM" d_main_ours.c -o d_main.o
 rm d_main_ours.c
 # A tic's move is made by way of doom_video.c, which has a holodeck's sitter aim by a hand.
-rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DG_BuildTiccmd=G_BuildTiccmd_seat -I"$DOOM" "$DOOM/d_net.c" -o d_net.o
+# The wait for the next tic's time asked the clock in a loop, and the clock moves between the
+# machine's passes: the pass ends there instead (doom_video.c's doom_idle).
+sed '/while (lowtic < gametic\/ticdup + counts)/,/NetUpdate ();/ s/NetUpdate ();/doom_idle(); &/; 1i void doom_idle(void);' "$DOOM/d_net.c" > d_net_ours.c
+[ "$(grep -c 'doom_idle(); NetUpdate ();' d_net_ours.c)" = 1 ] || { echo "d_net.c: the wait for a tic was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -DG_Ticker=G_Ticker_counted -DG_BuildTiccmd=G_BuildTiccmd_seat -I"$DOOM" d_net_ours.c -o d_net.o
+rm d_net_ours.c
+# The view is made on a worker core from what it is told (doom_gl.c): the game says which things
+# it changes (a state, a place, a height), puts into a sector's list or takes out (doom_fast.c).
+TOLD='1i struct mobj_s; void doom_thing_changed(struct mobj_s *thing); void doom_thing_linked(struct mobj_s *thing); void doom_thing_gone(struct mobj_s *thing);'
+sed "$TOLD"'
+/^P_SetMobjState$/,/^{$/ s/^{$/{ doom_thing_changed(mobj);/
+/^void P_ZMovement (mobj_t\* mo)$/,/^{$/ s/^{$/{ doom_thing_changed(mo);/
+/^void P_RemoveMobj (mobj_t\* mobj)$/,/^{$/ s/^{$/{ doom_thing_gone(mobj);/' "$DOOM/p_mobj.c" > p_mobj_ours.c
+[ "$(tail -n +2 p_mobj_ours.c | grep -c '^{ doom_thing_\(changed(mobj)\|changed(mo)\|gone(mobj)\);$')" = 3 ] || { echo "p_mobj.c: a thing's state, height and end were not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_mobj_ours.c -o p_mobj.o
+rm p_mobj_ours.c
+sed "$TOLD"'
+/^boolean P_ThingHeightClip (mobj_t\* thing)$/,/^{$/ s/^{$/{ doom_thing_changed(thing);/' "$DOOM/p_map.c" > p_map_ours.c
+[ "$(tail -n +2 p_map_ours.c | grep -c '^{ doom_thing_changed(thing);$')" = 1 ] || { echo "p_map.c: P_ThingHeightClip was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_map_ours.c -o p_map.o
+rm p_map_ours.c
+# (a hit pushes a thing that may be at rest and asleep: doom_fast.c's P_RunThinkers)
+sed "$TOLD"'
+/^P_DamageMobj$/,/^{$/ s/^{$/{ doom_thing_changed(target);/' "$DOOM/p_inter.c" > p_inter_ours.c
+[ "$(tail -n +2 p_inter_ours.c | grep -c '^{ doom_thing_changed(target);$')" = 1 ] || { echo "p_inter.c: P_DamageMobj was not found"; exit 1; }
+rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_inter_ours.c -o p_inter.o
+rm p_inter_ours.c
 # Parts of the game written again for this machine (doom_fast.c): the sight check, and the
 # marks that say a line has been visited, which leave the lines themselves.
 rv32-cc $OPT -w -c -fsigned-char -DP_CheckSight=P_CheckSight_port -I"$DOOM" "$DOOM/p_sight.c" -o p_sight.o
-sed 's/ld->validcount/doom_line_mark[ld - lines]/g; s/^P_Block\(Lines\|Things\)Iterator$/&_port/; 1i extern int doom_line_mark[];' "$DOOM/p_maputl.c" > p_maputl_ours.c
+sed 's/ld->validcount/doom_line_mark[ld - lines]/g; s/^P_Block\(Lines\|Things\)Iterator$/&_port/; 1i extern int doom_line_mark[];
+'"$TOLD"'
+/^P_SetThingPosition (mobj_t\* thing)$/,/^{$/ s/^{$/{ doom_thing_linked(thing);/' "$DOOM/p_maputl.c" > p_maputl_ours.c
+[ "$(grep -c '^{ doom_thing_linked(thing);$' p_maputl_ours.c)" = 1 ] || { echo "p_maputl.c: P_SetThingPosition was not found"; exit 1; }
 [ "$(grep -c 'doom_line_mark\[ld - lines\]' p_maputl_ours.c)" = 2 ] || { echo "p_maputl.c: the line marks were not found"; exit 1; }
 [ "$(grep -c '^P_Block\(Lines\|Things\)Iterator_port$' p_maputl_ours.c)" = 2 ] || { echo "p_maputl.c: the two iterators were not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_maputl_ours.c -o p_maputl.o
@@ -145,11 +174,24 @@ rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_setup_ours.c -o p_setup.o
 rm p_setup_ours.c
 rv32-cc $OPT -Wall -c -fsigned-char -I"$DOOM" "$HERE/doom_fast.c" -o doom_fast.o
 rv32-cc $OPT -Wall -Wno-unused -c -fsigned-char -I"$DOOM" -I"$REPO/linux/userland" "$HERE/doom_sound.c" -o doom_sound.o
-rv32-cc $OPT -Wall -c $GLINC -I"$MW/src/include" "$REPO/programs/linux/gles.c" -o gles.o
-rv32-cc $OPT -Wall -Wno-unused -c -fsigned-char $GLINC -I"$DOOM" "$HERE/doom_gl.c" -o doom_gl.o
-rv32-cc $OPT -Wall -c $GLINC -I"$MW/src/include" "$HERE/doom_video.c" -o doom_video.o
+# What a worker core writes while the first runs a tic is compiled apart, a variable a section
+# and each on 16 bytes of its own: the view (doom_gl.c), the GPU's library and the workers'
+# (docs/multicore.md: two cores must not store to the same 16 bytes). They come last in the
+# link, with 16 bytes of nothing after them in each kind of section: the libraries' follow.
+APART="${OPT/-flto /} -fno-common -fdata-sections"
+ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
+rv32-cc $APART -Wall -c $GLINC -I"$MW/src/include" "$REPO/programs/linux/gles.c" -o gles.o
+rv32-cc $APART -Wall -Wno-unused -c -fsigned-char $GLINC -I"$DOOM" -I"$REPO/programs/mc" "$HERE/doom_gl.c" -o doom_gl.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
+echo 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));' > zz_pad.c
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
+sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
+rm zz_pad.c zz_pads.c
+for o in gles.o doom_gl.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
+rv32-cc $OPT -Wall -c $GLINC -I"$MW/src/include" -I"$REPO/programs/mc" "$HERE/doom_video.c" -o doom_video.o
 rm -f doom_fps.o
-rv32-cc $OPT -w *.o "$MW/src/lib/libnano-X.a" -lm -o doom
+rv32-cc $OPT -w $(ls *.o | grep -vx -e 'zz_pad_.*' -e doom_gl.o -e gles.o -e mcw.o) doom_gl.o gles.o mcw.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o doom
 riscv32-linux-strip -o "$OUT/usr/bin/doom.bin" doom
 # the image builder adds files to directories the image has, so the data sits in /usr/share
 printf '#!/bin/sh

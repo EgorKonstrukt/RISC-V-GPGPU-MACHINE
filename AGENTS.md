@@ -140,3 +140,47 @@
   several seconds, a change and the tree in turn (`docs/multicore.md`, "In Unity"). A frame of 8
   rounds is the card's: the room is 3% of it and a round's other draws 5%, the ticks the rest. A guest's wait for
   something the host gives once a Unity frame shows as rounds of 52 instructions to the frame's end.
+- The browser's engine (`linux/apps/css.h`, `web.h`, `web_layout.h`; `docs/web.md`) has no part of
+  the window system in it and is tried on the host first: `tools/web_test.c` lays a page out
+  with the image's own fonts, counts texts past the edge and over each other (both must be 0
+  but for a listing), and `nxweb` with `NXWEB_DUMP=1` must print the same counts in the
+  machine. Real pages for it come from `python linux/apps/web/preload.py --pages --cache DIR`
+  into a private image's overlay. The fonts are `python tools\make_fonts.py`, before the image
+  is made (`docs/fonts.md`); without them, or under a window system from before them, `nxweb`
+  says so and draws in the built-in font. A capture that is not a timing needs no turn on
+  the card: `rvc_harness --cpu --warp`.
+
+- The fast step tells an instruction's kind by a tree of tests and a load has one way out
+  (`fast_exec_l1` in `emu.h`, `mem_get_cached_or_tex_l1` in `mem.h`; `docs/tick-costs.md`, the
+  sections of 13 October 2026). The text's form is the gain: the same tests as bools computed
+  first were 4% slower, and operations counted do not say which way a shape goes. After any
+  change to the fast loop's control flow run the three loads in turn from one snapshot (a
+  shell loop, Doom's timedemo, Quake e1m1), and bring the function to Unity's copy verbatim.
+- A round in Unity costs what a pass costs in the harness (the same fxc2 bytecode); what is
+  left between them is 1.4 ms of every frame that is no round's (the room's cameras 0.65).
+- Doom's view is made by up to four worker cores from what the first core tells it between
+  tics (`docs/doom.md`, "The view on worker cores"). A new place the game writes a thing's
+  state, place, height or speed needs `doom_thing_changed`, or a sleeping thing never wakes:
+  `DOOM_VIEW=told DOOM_VIEW_CHECK=1` must say 0 not as told, and the three demos' state sums
+  must hold with and without `DOOM_PORT=rest`. Compare held frames by `DOOM_SUM`'s order-free
+  sum: the ordered one depends on where the heap lies.
+- A program whose worker calls `gles.c` compiles the library apart, a variable a section on 16
+  bytes (`doom.sh`, `linux/tdawn/build.sh`, `linux/nes/build.sh`): inside a whole-program LTO
+  link the library's worker-written statics lie among the program's by chance (the NES had
+  `line_news` in one texel with `matrices_dirty`).
+- Memory a worker will store to wants a store by the first core first, GPU memory and the
+  mailbox pages too, and the code a worker starts in a read (`mcw_open` stores to the
+  mailboxes; nxpath reads `mcw_entry`'s page): `PHYS_COUNT=1`, `NXPATH_COUNT=1` and mctest's
+  "pages brought for their start" must say 0. A job that waits ends its pass with
+  `mc_end_pass()`, never with the pause hint, which is a worker's sleep.
+- Events are pushed to a program (`GrNumPushEvents`) and a window's, GC's and font's ids are
+  the program's own (requests 127 to 129; `docs/nanox.md`). A program with its own `select()`
+  on the socket still gets one event a `GrServiceSelect`. A program's start is measured as the
+  first window of a session and as a later one: the first pays for the icon list and the font.
+- nxphys asks for 255 workers and gives the grid and the pictures to shares with no bodies
+  (`PHYS_SERVICE=0` is the old sharing; this replaces the 207 above). nxpath's sums are those
+  of its new arithmetic; `NXPATH_OLD=1` has the old ones.
+- `tools/private_image.py` reads the shared root each time: a "before" image made again after
+  the root was rebuilt is no longer before. `linux/prebuilt/root` of the last commit is.
+- A `Con_Printf` while a Quake level loads draws a frame: prints added there move the numbers
+  of held frames.

@@ -30,11 +30,18 @@ static struct {
 	struct share *shares;
 	uint32_t *quads[2];	/* a picture's quads, for the GPU: one drawn while the other is made */
 	uint8_t *colours;
-	int nshares;
+	/* the shares: `nbody` of them have the bodies (body i is share i mod nbody's), and the
+	 * `nservice` after those the grid and the pictures; with none of those every share has
+	 * its bodies, its cells of the grid and its bodies' part of a picture */
+	int nshares, nbody, nservice;
+	uint32_t *costs;	/* PHYS_COUNT: what each substep cost each share, `cost_row` words a share */
+	uint32_t cost_row;
 	uint32_t base;		/* substeps made before the shares' first */
 	volatile uint32_t limit, show_step, show;	/* picture `show` is of substep show_step, or the first after */
 	volatile int stop, owners;
 	int count;
+	int ahead;		/* PHYS_ORDER=ahead: the look for a pair of substeps is made after the pair before, not just before it */
+	int spin;		/* PHYS_SPIN: a share with nothing to do turns in place, as it did */
 } sim __attribute__((aligned(16)));
 static char sim_end[16] __attribute__((aligned(16), used));	/* (nothing else in sim's last 16 bytes) */
 
@@ -47,57 +54,99 @@ cycles(void)
 	return count;
 }
 
-/* Share s's boxes as quads of the picture being made. */
+/* Share s's part of the picture being made: boxes as quads. */
 static void
 show_share(int s, int from, int into)
 {
 	uint32_t *quads = sim.quads[into] + 16 * FLOOR_QUADS;
-	int owners = sim.owners, i;
+	int owners = sim.owners, every = sim.nservice ? sim.nservice : sim.nshares, i;
 
-	for (i = s; i < sim.w.bodies; i += sim.nshares)
-		phys_quads(&sim.w, i, from, owners ? (uint32_t)s % COLOURS : sim.colours[i], quads + PHYS_QUAD_WORDS * i);
+	for (i = sim.nservice ? s - sim.nbody : s; i < sim.w.bodies; i += every)
+		phys_quads(&sim.w, i, from, owners ? (uint32_t)(i % sim.nbody) % COLOURS : sim.colours[i], quads + PHYS_QUAD_WORDS * i);
 }
 
-/* What share s can do now, done: its part of the picture asked for, or its next substep once
- * every share has made the one before (`seen` is how far that was found so). Every
- * PHYS_EVERY-th looks for contacts first, and the one before it leaves the grid for that. */
+/* The first share from `at` on that has not made the substep before `phase`, or n. (The share
+ * that is last to make a substep looks at every other each time: four a turn.) */
+static inline int
+behind(int at, int n, uint32_t phase)
+{
+	const struct share *shares = sim.shares;
+
+	for (; at + 4 <= n; at += 4) {
+		if (shares[at].phase < phase) return at;
+		if (shares[at + 1].phase < phase) return at + 1;
+		if (shares[at + 2].phase < phase) return at + 2;
+		if (shares[at + 3].phase < phase) return at + 3;
+	}
+	for (; at < n; at++)
+		if (shares[at].phase < phase)
+			break;
+	return at;
+}
+
+/* What share s can do now, done, once every share has made the substep before (`seen` is how
+ * far that was found so, the number of shares when it is): its part of the picture asked for,
+ * or its next substep. A share of the grid and the pictures has no bodies. */
 static int
 share_advance(int s, int *seen)
 {
 	struct share *st = &sim.shares[s];
-	uint32_t phase = st->phase, show = sim.show, made = phase, kind = phase % PHYS_EVERY;
-	int from = (int)((sim.base + made) & 1), trouble = 0;
-	uint32_t began = 0;
+	uint32_t phase = st->phase, show = sim.show, kind = phase % PHYS_EVERY;
+	int from = (int)((sim.base + phase) % PHYS_BUFFERS), trouble = 0, n = sim.nshares, bodied = s < sim.nbody, serves = !sim.nservice || !bodied;
+	int wanted = serves && st->shown != show && phase >= sim.show_step;
+	/* (a look's number is that of the pair of substeps it is for. Every PHYS_EVERY-th substep
+	 * looks for contacts first; or, looking ahead, the substep before does when it has said
+	 * its boxes are made: the longest look then holds no share up. docs/physics.md) */
+	int turn = (int)((sim.base + phase) / PHYS_EVERY) + 1, ahead = sim.ahead;
+	uint32_t began = 0, took = 0;
 
-	if (st->shown != show && made >= sim.show_step) {
+	if (!wanted && phase >= sim.limit)
+		return 0;
+	if (*seen < n && (*seen = behind(*seen, n, phase)) < n)
+		return 0;
+	if (wanted) {
+		/* (the bodies are all at this substep, and none goes on until this share does) */
 		show_share(s, from, (int)(show & 1));
 		st->shown = show;
 		return 1;
 	}
 	if (phase >= sim.limit)
 		return 0;
-	for (; *seen < sim.nshares; (*seen)++)
-		if (sim.shares[*seen].phase < phase)
-			return 0;
-	*seen = 0;
 	if (sim.count)
 		began = cycles();
-	trouble = phys_step(&sim.w, s, sim.nshares, from, kind == 0 ? (int)((sim.base + phase) / PHYS_EVERY) + 1 : 0);
+	/* (looking ahead, the first substep of all has its look first too: there was none before it) */
+	if (bodied)
+		trouble = phys_step(&sim.w, s, sim.nbody, from, (ahead ? phase == 0 : kind == 0) ? turn : 0);
 	if (sim.count) {
-		uint32_t took = cycles() - began;
-
-		st->spent[kind == 0 ? 1 : 2] += took;
-		if (kind && took > st->most)
+		took = cycles() - began;
+		st->spent[kind == 0 && !ahead ? 1 : 2] += took;
+		if ((kind || ahead) && took > st->most)
 			st->most = took;
 		began = cycles();
 	}
-	if (kind == PHYS_EVERY - 1)
-		trouble += phys_grid(&sim.w, s, sim.nshares, from);
-	if (sim.count)
+	/* the grid the next look reads: made a substep before that look */
+	if (kind == (ahead ? 0 : PHYS_EVERY - 1) && serves)
+		trouble += phys_grid(&sim.w, s, from, ahead ? turn + 1 : (int)((sim.base + phase + 1) / PHYS_EVERY) + 1);
+	if (sim.count) {
 		st->spent[0] += cycles() - began;
+		took += cycles() - began;
+	}
+	*seen = 0;
+	st->phase = phase + 1;
+	if (ahead && kind == PHYS_EVERY - 1 && bodied) {
+		/* the next pair's look, where the bodies were before this substep: nobody waits for it */
+		if (sim.count)
+			began = cycles();
+		trouble += phys_look(&sim.w, s, sim.nbody, from, (int)((sim.base + phase + 1) / PHYS_EVERY) + 1);
+		if (sim.count) {
+			st->spent[1] += cycles() - began;
+			took += cycles() - began;
+		}
+	}
+	if (sim.costs && phase < sim.cost_row)
+		sim.costs[(uint32_t)s * sim.cost_row + phase] = took;
 	if (trouble)
 		st->trouble += (uint32_t)trouble;
-	st->phase = phase + 1;
 	return 1;
 }
 
@@ -110,9 +159,11 @@ share_job(uint32_t s, uint32_t worker)
 
 	if (!mcw_on_worker())
 		return 0;
-	/* (with nothing to do it turns in place: the pause hint, on a worker, is a sleep until its job's word changes) */
+	/* (with nothing to do its pass ends there and it looks again in the next: turning in
+	 * place it cost the machine the pass's instructions, 8,192 of them, for nothing) */
 	while (!sim.stop && !mcw_recalled((int)worker))
-		share_advance((int)s, &seen);
+		if (!share_advance((int)s, &seen) && !sim.spin)
+			mc_end_pass();
 	return 1;
 }
 
@@ -135,12 +186,14 @@ static int holding, held_for_good, origin_x, origin_y, last_x, last_y;
 static float held_far;
 static int view_moved, shown_buffer = -1;	/* the view is not the shown picture's; which buffer that picture is */
 static GLuint texture;
-/* The workers asked for: a waiting worker turns in place for the pass, so every one past what
- * the substep needs is 8,192 instructions a pass for nothing. With 207 a substep is as long as
- * with 255 in every scene (the wall 6.2 ms, the towers 3.7, the heap 7.4); 191 is slower. */
-#define WORKERS_ASKED 207
+/* The workers asked for: all of them. With more than the bodies need, some have the grid and
+ * the pictures (service_of); the wall's 240 substeps took 1,740 ms with 207 and 1,704 to 1,718
+ * with 223 to 255, the heap's 120 took 1,181 and 1,133 (docs/physics.md). */
+#define WORKERS_ASKED 255
 static int workers, wanted = WORKERS_ASKED, stopped, scene = 1, bodies_wanted = 400, total_quads;
 #define OWN_UP_TO 7		/* this core has a share of its own with so many workers or fewer: with more it costs passes */
+#define SERVICE_FROM 64		/* from so many shares on some of them have no bodies, but the grid and the pictures; */
+#define SERVICE_LEAST 16	/* never fewer of those than so many: the grid is every body's key looked at by each */
 static int own;			/* 1: share 0 is this core's and worker k has share k; 0: worker k has share k - 1 */
 static uint8_t running[MC_MAX_CORES];	/* worker k has its share's job out */
 static int seen_by[MC_MAX_CORES];
@@ -232,7 +285,7 @@ throw_box(int buffer)
 	s->q[3] = 1.0f;
 	s->vel[1] = 2.0f, s->vel[2] = -14.0f;
 	s->spin[0] = 1.5f, s->spin[1] = 0.7f;
-	s->key = phys_key(&sim.w, s->pos, sim.nshares ? sim.nshares : 1);
+	s->key = phys_key(&sim.w, s->pos);
 }
 
 /* Memory nobody has written yet (zeros, from mcw_alloc()) is there for the workers: a store
@@ -255,11 +308,15 @@ bodies_there(int n)
 
 	if (n <= so_far)
 		return;
-	for (k = 0; k < 2; k++)
+	for (k = 0; k < PHYS_BUFFERS; k++)
 		there(&sim.w.poses[k][so_far], (unsigned)(n - so_far) * sizeof(struct body_pose));
-	there(&sim.w.states[1][so_far], (unsigned)(n - so_far) * sizeof(struct body_state));
+	for (k = 1; k < PHYS_BUFFERS; k++)
+		there(&sim.w.states[k][so_far], (unsigned)(n - so_far) * sizeof(struct body_state));
 	there(&sim.w.info[so_far], (unsigned)(n - so_far) * sizeof(struct body_info));
 	there(&sim.w.manifolds[so_far * PHYS_MANIFOLDS], (unsigned)(n - so_far) * PHYS_MANIFOLDS * sizeof(struct manifold));
+	/* (and their quads of both pictures: GPU memory is a worker's to write after a store of this core's) */
+	for (k = 0; k < 2; k++)
+		there(sim.quads[k] + 16 * FLOOR_QUADS + PHYS_QUAD_WORDS * so_far, (unsigned)(n - so_far) * PHYS_QUAD_WORDS * 4);
 	so_far = n;
 }
 
@@ -309,13 +366,35 @@ set_scene(void)
 		sim.w.states[0][n - 1].pos[1] = 0.4f, sim.w.states[0][n - 1].pos[0] = ROOM - 1.0f;
 }
 
+/* How many of n shares have no bodies, but the grid and the pictures: none of a few, three
+ * in sixteen of many, and no more than leaves the fullest share with as many bodies as it
+ * would have (a share is as long as its bodies: one more of them costs more than the grid). */
+static int
+service_of(int n)
+{
+	const char *text = getenv("PHYS_SERVICE");
+	int most = n * 3 / 16, each = (sim.w.bodies + n - 1) / n, spare;
+
+	if (text)
+		return atoi(text) > 0 && atoi(text) < n ? atoi(text) : 0;
+	if (n < SERVICE_FROM)
+		return 0;
+	spare = n - (sim.w.bodies + (each > 0 ? each : 1) - 1) / (each > 0 ? each : 1);
+	if (spare < most)
+		most = spare;
+	return most >= SERVICE_LEAST ? most : 0;
+}
+
 /* The bodies shared out among `n` shares, all to begin a round of phases. */
 static void
 set_shares(int n)
 {
-	int s, i, buffer = (int)(sim.base & 1);
+	int s, i, buffer = (int)(sim.base % PHYS_BUFFERS);
 
 	sim.nshares = n;
+	sim.nservice = service_of(n);
+	sim.nbody = n - sim.nservice;
+	sim.w.cell_shares = sim.nservice ? sim.nservice : n, sim.w.cell_first = sim.nservice ? sim.nbody : 0;
 	jobs_changed = 1, shown_so_far = 0;
 	for (s = 0; s < n; s++) {
 		memset(&sim.shares[s], 0, sizeof sim.shares[s]);
@@ -324,9 +403,9 @@ set_shares(int n)
 	}
 	/* (a body's key names its cell's share: other shares, other keys) */
 	for (i = 0; i < sim.w.bodies; i++)
-		sim.w.states[buffer][i].key = phys_key(&sim.w, sim.w.states[buffer][i].pos, n);
+		sim.w.states[buffer][i].key = phys_key(&sim.w, sim.w.states[buffer][i].pos);
 	/* (and the grid the first look needs: the shares make every one after) */
-	phys_grid_all(&sim.w, buffer);
+	phys_grid_all(&sim.w, buffer, (int)(sim.base / PHYS_EVERY) + 1);
 }
 
 static uint32_t
@@ -351,6 +430,22 @@ phase_most(void)
 		if (sim.shares[s].phase > most)
 			most = sim.shares[s].phase;
 	return most;
+}
+
+/* PHYS_COUNT: how many of this core's passes each substep took, with a look and without (it
+ * sees a substep made a pass late, every one alike). */
+static uint32_t passes_of[2][8], noted_phase, noted_at;
+
+static void
+note_substeps(void)
+{
+	uint32_t least = phase_least();
+
+	for (; noted_phase < least; noted_phase++, noted_at = waited) {
+		uint32_t took = waited - noted_at;
+
+		passes_of[noted_phase % PHYS_EVERY != 0][took < 7 ? took : 7]++;
+	}
 }
 
 /* This core's own share, when it has one, and those of workers that have no core or no job out. */
@@ -496,6 +591,9 @@ ask_picture(void)
 static int
 picture_made(void)
 {
+	/* (with shares of the pictures, those: the ones before them make none) */
+	if (shown_so_far < sim.nbody && sim.nservice)
+		shown_so_far = sim.nbody;
 	for (; shown_so_far < sim.nshares; shown_so_far++)
 		if (sim.shares[shown_so_far].shown != sim.show)
 			return 0;
@@ -629,7 +727,7 @@ static void
 press(int px, int py)
 {
 	float way[3], local[3], distance;
-	int buffer = (int)((sim.base + phase_least()) & 1), body, k;
+	int buffer = (int)((sim.base + phase_least()) % PHYS_BUFFERS), body, k;
 
 	ray(px, py, way);
 	body = phys_pick(&sim.w, buffer, eye, way, local, &distance);
@@ -734,7 +832,7 @@ events(void)
 static void
 say_done(unsigned took, int print)
 {
-	int buffer = (int)((sim.base + sim.limit) & 1), trouble = 0, i, k, s;
+	int buffer = (int)((sim.base + sim.limit) % PHYS_BUFFERS), trouble = 0, i, k, s;
 	const uint32_t *words = (const uint32_t *)sim.w.states[buffer];
 	uint32_t sum = 0;
 	float deepest, fastest, top = 0.0f;
@@ -746,11 +844,16 @@ say_done(unsigned took, int print)
 				sum = sum * 31 + words[16 * i + k];
 		if (sim.w.states[buffer][i].pos[1] > top)
 			top = sim.w.states[buffer][i].pos[1];
-		if (print)
-			fprintf(stderr, "nxphys| %d: at %d %d %d going %d %d %d\n", i, (int)(sim.w.states[buffer][i].pos[0] * 1000.0f),
-				(int)(sim.w.states[buffer][i].pos[1] * 1000.0f), (int)(sim.w.states[buffer][i].pos[2] * 1000.0f),
-				(int)(sim.w.states[buffer][i].vel[0] * 1000.0f), (int)(sim.w.states[buffer][i].vel[1] * 1000.0f),
-				(int)(sim.w.states[buffer][i].vel[2] * 1000.0f));
+		if (print) {
+			const struct body_state *b = &sim.w.states[buffer][i];
+
+			/* (its turn in ten-thousandths, its half sides in millimetres, its spin in thousandths a second) */
+			fprintf(stderr, "nxphys| %d: at %d %d %d going %d %d %d turned %d %d %d %d half %d %d %d spinning %d %d %d\n", i, (int)(b->pos[0] * 1000.0f),
+				(int)(b->pos[1] * 1000.0f), (int)(b->pos[2] * 1000.0f), (int)(b->vel[0] * 1000.0f), (int)(b->vel[1] * 1000.0f), (int)(b->vel[2] * 1000.0f),
+				(int)(b->q[0] * 10000.0f), (int)(b->q[1] * 10000.0f), (int)(b->q[2] * 10000.0f), (int)(b->q[3] * 10000.0f),
+				(int)(sim.w.shapes[i].half[0] * 1000.0f), (int)(sim.w.shapes[i].half[1] * 1000.0f), (int)(sim.w.shapes[i].half[2] * 1000.0f),
+				(int)(b->spin[0] * 1000.0f), (int)(b->spin[1] * 1000.0f), (int)(b->spin[2] * 1000.0f));
+		}
 	}
 	for (s = 0; s < sim.nshares; s++)
 		trouble += (int)sim.shares[s].trouble;
@@ -777,6 +880,25 @@ say_done(unsigned took, int print)
 		fprintf(stderr, "physstat: the first core ended %u passes with nothing to do, in %u substeps; %u pages brought for workers\n",
 			(unsigned)(waited - waited_before), (unsigned)sim.limit, mcw_faults);
 	}
+	if (sim.count && sim.costs) {
+		/* what the time is made of: a substep is as long as its dearest share */
+		uint32_t dearest[2] = {0, 0}, step;
+
+		for (step = 0; step < sim.limit && step < sim.cost_row; step++) {
+			uint32_t most = 0;
+
+			for (s = 0; s < sim.nshares; s++)
+				if (sim.costs[(uint32_t)s * sim.cost_row + step] > most)
+					most = sim.costs[(uint32_t)s * sim.cost_row + step];
+			dearest[step % PHYS_EVERY != 0] += most;
+		}
+		fprintf(stderr, "physstat: the dearest share's instructions, substep by substep: %u in all with a look, %u without; %d shares have the bodies, %d the grid and the pictures\n",
+			(unsigned)dearest[0], (unsigned)dearest[1], sim.nbody, sim.nservice);
+		for (k = 0; k < 2; k++)
+			fprintf(stderr, "physstat: substeps %s a look by the passes they took, 0 to 7 and over: %u %u %u %u %u %u %u %u\n", k ? "without" : "with",
+				(unsigned)passes_of[k][0], (unsigned)passes_of[k][1], (unsigned)passes_of[k][2], (unsigned)passes_of[k][3], (unsigned)passes_of[k][4],
+				(unsigned)passes_of[k][5], (unsigned)passes_of[k][6], (unsigned)passes_of[k][7]);
+	}
 	if (sim.count) {
 		uint32_t spent[3] = {0, 0, 0}, most = 0, looks = (sim.limit + PHYS_EVERY - 1) / PHYS_EVERY, plain = sim.limit - looks;
 
@@ -801,7 +923,7 @@ main(void)
 	const char *text;
 	GR_SCREEN_INFO info;
 	uint32_t *table, steps = 0;
-	int width = 640, height = 400, hold, print, frames = 0, asked = 0, cells;
+	int width = 640, height = 400, hold, print, frames = 0, asked = 0, cells, k;
 	int pick_x = -1, pick_y = -1;
 	uint32_t input = 0;
 	unsigned hot_at = 0, drawn_at = 0;
@@ -821,6 +943,11 @@ main(void)
 	hold = getenv("PHYS_HOLD") != NULL;
 	print = getenv("PHYS_PRINT") != NULL;
 	sim.count = getenv("PHYS_COUNT") != NULL;
+	sim.spin = getenv("PHYS_SPIN") != NULL;
+	sim.ahead = (text = getenv("PHYS_ORDER")) != NULL && !strcmp(text, "ahead");
+	/* a contact found by a look has to do until the last substep before the next look's is
+	 * made: two substeps and one to spare, or with the look one ahead three and none */
+	sim.w.look_ahead = (PHYS_EVERY + 1) * PHYS_DT;
 	sim.owners = getenv("PHYS_OWNERS") != NULL;
 	if ((text = getenv("PHYS_PICK")) != NULL)
 		sscanf(text, "%d,%d", &pick_x, &pick_y);
@@ -856,30 +983,41 @@ main(void)
 	sim.w.gravity = 9.81f;
 	sim.w.gx = sim.w.gz = (int)(2.0f * ROOM / PHYS_CELL);
 	sim.w.gy = ROOM_HIGH;
+	sim.w.cell_shares = 1;
 	cells = sim.w.gx * sim.w.gy * sim.w.gz;
 	total_quads = FLOOR_QUADS + 6 * MAX_BODIES;
-	sim.w.states[0] = mcw_alloc(MAX_BODIES * sizeof(struct body_state));
-	sim.w.states[1] = mcw_alloc(MAX_BODIES * sizeof(struct body_state));
-	sim.w.poses[0] = mcw_alloc(MAX_BODIES * sizeof(struct body_pose));
-	sim.w.poses[1] = mcw_alloc(MAX_BODIES * sizeof(struct body_pose));
+	for (k = 0; k < PHYS_BUFFERS; k++) {
+		sim.w.states[k] = mcw_alloc(MAX_BODIES * sizeof(struct body_state));
+		sim.w.poses[k] = mcw_alloc(MAX_BODIES * sizeof(struct body_pose));
+	}
 	sim.w.shapes = mcw_alloc(MAX_BODIES * sizeof(struct body_shape));
 	sim.w.info = mcw_alloc(MAX_BODIES * sizeof(struct body_info));
 	sim.w.manifolds = mcw_alloc(MAX_BODIES * PHYS_MANIFOLDS * sizeof(struct manifold));
-	sim.w.cells = mcw_alloc((unsigned)cells * sizeof(struct gcell));
+	sim.w.grids[0] = mcw_alloc((unsigned)cells * sizeof(struct gcell));
+	sim.w.grids[1] = mcw_alloc((unsigned)cells * sizeof(struct gcell));
 	sim.shares = mcw_alloc(MC_MAX_CORES * sizeof(struct share));
 	sim.colours = mcw_alloc(MAX_BODIES);
 	sim.quads[0] = seglMemory((unsigned)total_quads * 64);
 	sim.quads[1] = seglMemory((unsigned)total_quads * 64);
 	table = seglMemory(COLOURS * SHADES * 4);
-	if (!sim.w.states[0] || !sim.w.states[1] || !sim.w.poses[0] || !sim.w.poses[1] || !sim.w.shapes || !sim.w.info || !sim.w.manifolds || !sim.w.cells || !sim.shares || !sim.colours ||
+	if (!sim.w.states[0] || !sim.w.states[1] || !sim.w.states[2] || !sim.w.poses[0] || !sim.w.poses[1] || !sim.w.poses[2] || !sim.w.shapes || !sim.w.info || !sim.w.manifolds ||
+	    !sim.w.grids[0] || !sim.w.grids[1] || !sim.shares || !sim.colours ||
 	    !sim.quads[0] || !sim.quads[1] || !table || seglKeep(1, total_quads) < 0) {
 		fprintf(stderr, "nxphys: no memory\n");
 		return 1;
 	}
 	/* (the bodies' own memory when a scene says how many: bodies_there(); a picture's quads
 	 * are written before they are drawn, and none past the bodies is) */
-	there(sim.w.cells, (unsigned)cells * sizeof(struct gcell));
+	there(sim.w.grids[0], (unsigned)cells * sizeof(struct gcell));
+	there(sim.w.grids[1], (unsigned)cells * sizeof(struct gcell));
 	there(sim.shares, MC_MAX_CORES * sizeof(struct share));
+	if (sim.count && steps && steps <= 4096) {
+		/* (a test's: every share's every substep, a row of whole texels a share) */
+		sim.cost_row = (steps + 3) & ~3u;
+		sim.costs = mcw_alloc(MC_MAX_CORES * sim.cost_row * 4);
+		if (sim.costs)
+			there(sim.costs, MC_MAX_CORES * sim.cost_row * 4);
+	}
 	make_table(table);
 	glGenTextures(1, &texture);
 	glBindTexture(GL_TEXTURE_2D, texture);
@@ -893,7 +1031,7 @@ main(void)
 	fprintf(stderr, "nxphys: %d boxes, %d shares on %d workers\n", sim.w.bodies, sim.nshares, workers);
 	start_jobs();
 	began = said_at = now_ms();
-	waited_before = waited;
+	waited_before = noted_at = waited;
 	if (pick_x >= 0) {
 		/* a test: the box at that pixel held from the start, its point wanted three metres up */
 		press(pick_x, pick_y);
@@ -903,6 +1041,9 @@ main(void)
 	for (;;) {
 		unsigned now = now_ms();
 		int did = stopped ? 0 : own_shares(), again = 0;
+
+		if (sim.costs)
+			note_substeps();
 
 		/* as fast as time goes and no faster; what was not made in its time is not owed */
 		if (!steps && !stopped) {
@@ -972,7 +1113,7 @@ main(void)
 			if (again == 1)
 				set_scene();
 			if (again == 3)
-				throw_box((int)(sim.base & 1));
+				throw_box((int)(sim.base % PHYS_BUFFERS));
 			if (again == 2)
 				take_workers();
 			else if (again == 1)

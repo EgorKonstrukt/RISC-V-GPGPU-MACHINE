@@ -29,6 +29,7 @@ static bool irq_quiet = false;
 static bool irq_last_handled = false;  // did the last interrupt/trap step take a trap
 static uint fw_addr0 = 0xffffffff, fw_addr1 = 0xffffffff;  // instruction window: current and next texel
 static uint4 fw_tex0, fw_tex1;
+static uint4 fw_cur;   // fw_tex0 turned: its first word is the instruction to run
 #ifndef NO_PAGING
 static uint fetch_vpn = 0xffffffff, fetch_page;  // last translated fetch page (OPT_FETCH_FAST)
 // Second-level TLB: TLB2_N direct-mapped entries per access mode, behind the small first level.

@@ -62,6 +62,7 @@ static void elsewhere_start(void);
 static void frame_paced(void);
 static int unlimited;			/* NES_FAST: as fast as it goes, for measuring */
 extern int rc_plain_runs_off, rc_eager;
+extern int ppu_lines_each;		/* ours, in nofrendo's PPU: a slice of the 6502 is one line */
 extern int nes6502_plain;		/* ours, in nofrendo's 6502: idle loops run turn by turn */
 
 static unsigned
@@ -501,7 +502,7 @@ frame_paced(void)
 		if ((int)(due - now) > 20)
 			usleep((due - now - 12) * 1000);
 		while ((int)(due - *clock) > 0)
-			__asm__ volatile(".word 0x0100000f");
+			mcw_rest();	/* (the kernel has the core meanwhile; with no worker open, the pause hint) */
 	}
 }
 
@@ -781,7 +782,8 @@ gd_quad(unsigned int *layer, int layer_w, int layer_h, int x0, int y0, int x1, i
 static void
 gd_sprites(unsigned int *set, const ppu_lineinfo_t *line, int y0, int y1, int behind)
 {
-	static unsigned across[WIDTH + 1], down[HEIGHT + 1];	/* a pixel's place as the library's number */
+	/* a pixel's place as the library's number (a worker core's to write: whole 16 bytes, docs/multicore.md) */
+	static unsigned across[WIDTH + 4] __attribute__((aligned(16))), down[HEIGHT + 4] __attribute__((aligned(16)));
 	const unsigned char *oam = ppu_frame_oam(gd.record);
 	int height = line->flags & PPU_LINE_TALL ? 16 : 8, left = line->flags & PPU_LINE_OBJMASK ? 8 : 0, k, room, quads = 0;
 	unsigned int *to = seglSpriteSpace(&room);
@@ -927,7 +929,7 @@ gd_draw(uint32_t written, uint32_t unused)
 		crowded |= busy[n];
 	}
 	if (crowded) {
-		static unsigned char on_line[HEIGHT + 16];
+		static unsigned char on_line[HEIGHT + 16] __attribute__((aligned(16)));	/* (a worker core's, as across) */
 		int tall_by = tall ? 16 : 8, y;
 
 		memset(on_line, 0, sizeof on_line);
@@ -1255,6 +1257,33 @@ button_of(int key)
 	return -1;
 }
 
+/*
+ * Asking the window system for events is two system calls and two task switches. The machine's
+ * own input words (docs/input.md: pointer, buttons, key events so far) say when there can be
+ * any: it is asked when they have moved, a few times after, and twice a second.
+ */
+static int
+input_due(void)
+{
+	static unsigned seen[4];
+	static int ask = 8, quiet;
+	const volatile unsigned *input = (const volatile unsigned *)((char *)seglPalette() - 0x400 + 0x20);
+	int i;
+
+	for (i = 0; i < 4; i++)
+		if (seen[i] != input[i]) {
+			seen[i] = input[i];
+			ask = 8;
+		}
+	if (++quiet >= 8)
+		ask = ask ? ask : 1;
+	if (!ask)
+		return 0;
+	ask--;
+	quiet = 0;
+	return 1;
+}
+
 /* Asked once a drawn frame. A key let go in the call it went down in stays down until the
  * next call: the game would never have seen it. */
 void
@@ -1286,6 +1315,8 @@ osd_getinput(void)
 					let_go |= 1u << button;
 			}
 	}
+	if (!input_due())
+		return;
 	for (;;) {
 		GrCheckNextEvent(&event);
 		if (event.type == GR_EVENT_TYPE_NONE)
@@ -1414,5 +1445,6 @@ main(int argc, char **argv)
 	/* NES_RC=plain: translated code with every instruction's own test of the cycles (rc6502.h) */
 	rc_plain_runs_off = getenv("NES_RC") != NULL && !strcmp(getenv("NES_RC"), "plain");
 	rc_eager = getenv("NES_RC") != NULL && !strcmp(getenv("NES_RC"), "eager");
+	ppu_lines_each = getenv("NES_LINES") != NULL && !strcmp(getenv("NES_LINES"), "each");
 	return nofrendo_main(argc, argv);
 }

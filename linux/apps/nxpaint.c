@@ -382,12 +382,19 @@ span(int x0, int x1, int y, uint32_t colour)
 	if (y < 0 || y >= ph)
 		return;
 	x0 = x0 < 0 ? 0 : x0, x1 = x1 > pw ? pw : x1;
-	if (undrawing)
-		for (; x0 < x1; x0++)
-			pix[y * pw + x0] = back[y * pw + x0];
-	else
-		for (; x0 < x1; x0++)
-			pix[y * pw + x0] = colour;
+	if (x0 >= x1)
+		return;
+	if (undrawing) {
+		memcpy(pix + y * pw + x0, back + y * pw + x0, (size_t)(x1 - x0) * 4);
+	} else {
+		/* (the row's place in a register: a store here could be one to pw, for all the compiler knows) */
+		uint32_t *at = pix + y * pw + x0, *end = at + (x1 - x0);
+
+		for (; at + 4 <= end; at += 4)
+			at[0] = at[1] = at[2] = at[3] = colour;
+		for (; at < end; at++)
+			*at = colour;
+	}
 }
 
 static void
@@ -414,13 +421,48 @@ dab(int x, int y, int size, uint32_t colour)
 	touch(x - r - 1, y - r - 1, x + r + 2, y + r + 2);
 }
 
+static int stroke_dabs;	/* NXPAINT_DABS=1: a stroke is its dabs one after another, as it was */
+
+/* A line of dabs. Dabs a step apart cover one run of a row between them, so each row the line
+ * touches is found from where to where and written once (the same pixels as the dabs'). */
 static void
 stroke(int x0, int y0, int x1, int y1, int size, uint32_t colour)
 {
-	int dx = abs(x1 - x0), dy = abs(y1 - y0), steps = dx > dy ? dx : dy, i;
+	static int from[MOST_H], to[MOST_H];
+	int dx = abs(x1 - x0), dy = abs(y1 - y0), steps = dx > dy ? dx : dy, i, r = size / 2, x, y, row, n, top, bottom;
+	int reach[17], rows = size <= 2 ? size : 2 * r + 1;
 
-	for (i = 0; i <= steps; i++)
-		dab(x0 + (steps ? (x1 - x0) * i / steps : 0), y0 + (steps ? (y1 - y0) * i / steps : 0), size, colour);
+	if (stroke_dabs || r > 8 || ph > MOST_H) {
+		for (i = 0; i <= steps; i++)
+			dab(x0 + (steps ? (x1 - x0) * i / steps : 0), y0 + (steps ? (y1 - y0) * i / steps : 0), size, colour);
+		return;
+	}
+	/* a dab's rows: from x - before to x + after, as dab() has them */
+	for (i = 0; i < rows; i++) {
+		for (n = 0; size > 2 && n * n + (i - r) * (i - r) <= r * r + r / 2; n++)
+			continue;
+		reach[i] = size <= 2 ? size : n;
+	}
+	top = (y0 < y1 ? y0 : y1) - (size <= 2 ? 0 : r), bottom = (y0 < y1 ? y1 : y0) + (size <= 2 ? size : r + 1);
+	top = top < 0 ? 0 : top, bottom = bottom > ph ? ph : bottom;
+	for (row = top; row < bottom; row++)
+		from[row] = 1 << 30, to[row] = -(1 << 30);
+	for (i = 0; i <= steps; i++) {
+		x = x0 + (steps ? (x1 - x0) * i / steps : 0), y = y0 + (steps ? (y1 - y0) * i / steps : 0);
+		for (n = 0, row = y - (size <= 2 ? 0 : r); n < rows; n++, row++) {
+			int left = size <= 2 ? x : x - reach[n] + 1, right = x + reach[n];
+
+			if (row < 0 || row >= ph)
+				continue;
+			if (left < from[row])
+				from[row] = left;
+			if (right > to[row])
+				to[row] = right;
+		}
+	}
+	for (row = top; row < bottom; row++)
+		span(from[row], to[row], row, colour);
+	touch((x0 < x1 ? x0 : x1) - r - 1, (y0 < y1 ? y0 : y1) - r - 1, (x0 < x1 ? x1 : x0) + r + 2, (y0 < y1 ? y1 : y0) + r + 2);
 }
 
 /* A rectangle or an oval between two corners: its edge `size` thick, its inside, or both. */
@@ -472,6 +514,57 @@ shape(int oval, int x0, int y0, int x1, int y1, int size, uint32_t line, uint32_
 }
 
 /* Every pixel that can be reached from (x, y) through pixels of its colour takes `colour`. */
+static int flood_plain;	/* NXPAINT_FLOOD=plain: the flood as it was, every row looked at from both sides */
+
+/* The same by runs that remember which way they came: a pixel is looked at once where it is
+ * filled, and the row a run came from only where the run is wider than its parent. */
+static void
+flood_runs(int x, int y, uint32_t colour, uint32_t old)
+{
+	uint32_t *all = pix, *row;
+	int w = pw, h = ph, room = 1024, top = 0, x1, x2, dy, lx0 = x, ly0 = y, lx1 = x + 1, ly1 = y + 1;
+	int *stack = malloc((size_t)room * 4 * sizeof *stack);
+
+#define FLOOD_PUSH(a, b, c, d) do { \
+		if ((c) >= 0 && (c) < h) { \
+			if (top == room) \
+				room *= 2, stack = realloc(stack, (size_t)room * 4 * sizeof *stack); \
+			stack[top * 4] = (a), stack[top * 4 + 1] = (b), stack[top * 4 + 2] = (c), stack[top * 4 + 3] = (d), top++; \
+		} \
+	} while (0)
+	FLOOD_PUSH(x, x, y, 1);
+	FLOOD_PUSH(x, x, y - 1, -1);
+	while (top) {
+		top--;
+		x1 = stack[top * 4], x2 = stack[top * 4 + 1], y = stack[top * 4 + 2], dy = stack[top * 4 + 3];
+		row = all + y * w;
+		x = x1;
+		if (row[x] == old) {
+			while (x > 0 && row[x - 1] == old)
+				row[--x] = colour;
+			if (x < x1)
+				FLOOD_PUSH(x, x1 - 1, y - dy, -dy);
+		}
+		while (x1 <= x2) {
+			while (x1 < w && row[x1] == old)
+				row[x1++] = colour;
+			if (x1 > x) {
+				FLOOD_PUSH(x, x1 - 1, y + dy, dy);
+				lx0 = x < lx0 ? x : lx0, lx1 = x1 > lx1 ? x1 : lx1, ly0 = y < ly0 ? y : ly0, ly1 = y + 1 > ly1 ? y + 1 : ly1;
+			}
+			if (x1 - 1 > x2)
+				FLOOD_PUSH(x2 + 1, x1 - 1, y - dy, -dy);
+			x1++;
+			while (x1 < x2 && row[x1] != old)
+				x1++;
+			x = x1;
+		}
+	}
+#undef FLOOD_PUSH
+	free(stack);
+	touch(lx0, ly0, lx1, ly1);
+}
+
 static void
 flood(int x, int y, uint32_t colour)
 {
@@ -480,6 +573,10 @@ flood(int x, int y, uint32_t colour)
 
 	if (x < 0 || y < 0 || x >= pw || y >= ph || (old = pix[y * pw + x]) == colour)
 		return;
+	if (!flood_plain) {
+		flood_runs(x, y, colour, old);
+		return;
+	}
 	stack = malloc((size_t)room * 2 * sizeof *stack);
 	stack[0] = x, stack[1] = y, top = 1;
 	while (top) {
@@ -1911,6 +2008,9 @@ main(int argc, char **argv)
 	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
 	if (getenv("NXPAINT_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXPAINT_SCRIPT"));
+	/* (the ways before these, for a test to compare pictures with) */
+	stroke_dabs = getenv("NXPAINT_DABS") != NULL;
+	flood_plain = getenv("NXPAINT_FLOOD") != NULL;
 	screen = *ui_screen();
 	width = screen.cols - 60 < 700 ? screen.cols - 60 : 700;
 	height = screen.rows - 90 < 480 ? screen.rows - 90 : 480;

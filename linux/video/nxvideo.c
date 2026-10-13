@@ -91,7 +91,7 @@ decode_all(const char *path)
 		n = (int)mpeg_decode_gop((uint32_t)video, (uint32_t)g);
 		spent += cycles() - before;
 		for (i = 0; i < n; i++)
-			sum = mpeg_sum(mpeg_video_frame(video, i), info.frame_bytes, sum);
+			sum = mpeg_video_sum(video, i, sum);
 		if (n != mpeg_gop_frames(g))
 			printf("nxvideo: group %d gave %d pictures of %d\n", g, n, mpeg_gop_frames(g));
 	}
@@ -140,7 +140,11 @@ enum { IDLE, DECODING, DECODED, COPYING, SOUND };
 static struct unit {		/* a worker and the decoder it has */
 	int video, audio;	/* one of them is -1 */
 	int state, gop, frames;
+	unsigned began;		/* when its group was begun, in milliseconds */
+	int copy_next, copied, own;	/* COPYING: pictures given out, pictures there, and whether one is this worker's now */
+	int helping;		/* the unit whose picture this worker is copying (it had no job of its own) */
 } units[MC_MAX_CORES];
+static int copies_wanted;	/* pictures of groups being copied that no worker has yet */
 static int unit_count, sounds, workers;
 static struct { int busy; uint32_t result; } jobs[MC_MAX_CORES];
 static unsigned char *gop_state;	/* 0 to do, 1 being decoded, 2 its pictures are in GPU memory */
@@ -152,6 +156,8 @@ static unsigned char *chunk_done;
 static uint8_t *ring_a, *ring_b;	/* GPU memory for frames: two pieces */
 static int slots_a, slots;
 static int shown = -1, dropped;
+static int wait_for_groups = 1;	/* NXVIDEO_START=1: it plays as soon as it has pictures in hand, as it did */
+static int split_copies = 1;	/* NXVIDEO_COPY=1: a group is copied by its own worker alone, as it was */
 static int seeking = -1;		/* the picture to go to once the groups being decoded have been dropped */
 
 static int sound_on, voice, sound_running;
@@ -233,6 +239,12 @@ dispatch(void)
 	for (k = 1; k <= unit_count; k++) {
 		struct unit *u = &units[k];
 
+		if (u->helping) {
+			if (!finished(k))
+				continue;
+			units[u->helping].copied++;
+			u->helping = 0;
+		}
 		if (u->state == SOUND && finished(k)) {
 			chunk_done[u->gop] = 1;
 			u->state = IDLE;
@@ -243,21 +255,44 @@ dispatch(void)
 				post(k, mpeg_decode_gop, (uint32_t)u->video, (uint32_t)u->gop | MPEG_AGAIN);
 			else
 				u->state = DECODED;
-		} else if (u->state == COPYING && finished(k)) {
+		} else if (u->state == COPYING && u->own && finished(k)) {
+			u->own = 0;
+			u->copied++;
+		}
+		if (u->state == DECODED && seeking >= 0)
+			u->state = IDLE;
+		/* A group goes to GPU memory once the frames its places hold have been shown: a picture
+		 * a job, this worker's and every worker's that has none (the group must be there in the
+		 * time its places are free, and a worker keeps few kilobytes of stores a pass). */
+		if (u->state == DECODED && mpeg_gop_first(u->gop) + u->frames - 1 <= shown + slots - 1) {
+			u->state = COPYING;
+			u->copy_next = u->copied = u->own = 0;
+			copies_wanted += u->frames;
+		}
+		if (u->state == COPYING && u->copied == u->frames) {
 			if (gop_sum)
 				for (i = 0; i < u->frames; i++)
 					gop_sum[u->gop] = mpeg_sum(slot(mpeg_gop_first(u->gop) + i), info.frame_bytes, gop_sum[u->gop]);
 			gop_state[u->gop] = 2;
 			u->state = IDLE;
 		}
-		if (u->state == DECODED && seeking >= 0)
-			u->state = IDLE;
-		/* a group goes to GPU memory once the frames its places hold have been shown */
-		if (u->state == DECODED && mpeg_gop_first(u->gop) + u->frames - 1 <= shown + slots - 1) {
-			for (i = 0; i < u->frames; i++)
-				mpeg_video_to(u->video, i, slot(mpeg_gop_first(u->gop) + i));
-			post(k, mpeg_copy_gop, (uint32_t)u->video, (uint32_t)u->frames);
-			u->state = COPYING;
+		if (u->state == COPYING && !u->own && u->copy_next < u->frames) {
+			copies_wanted--;
+			u->own = 1;
+			post(k, mpeg_copy_one, (uint32_t)(u->video << 8 | u->copy_next), (uint32_t)slot(mpeg_gop_first(u->gop) + u->copy_next));
+			u->copy_next++;
+		}
+		/* (a worker whose group waits for its places has no job either) */
+		if (u->state == DECODED && copies_wanted > 0 && split_copies) {
+			for (i = 1; i <= unit_count; i++)
+				if (units[i].state == COPYING && units[i].copy_next < units[i].frames) {
+					copies_wanted--;
+					u->helping = i;
+					post(k, mpeg_copy_one, (uint32_t)(units[i].video << 8 | units[i].copy_next),
+					     (uint32_t)slot(mpeg_gop_first(units[i].gop) + units[i].copy_next));
+					units[i].copy_next++;
+					break;
+				}
 		}
 		if (u->state != IDLE)
 			continue;
@@ -268,6 +303,7 @@ dispatch(void)
 		} else if (u->video >= 0 && next_gop < info.gops && seeking < 0) {
 			u->gop = next_gop++;
 			u->frames = mpeg_gop_frames(u->gop);
+			u->began = milliseconds();
 			gop_state[u->gop] = 1;
 			u->state = DECODING;
 			post(k, mpeg_decode_gop, (uint32_t)u->video, (uint32_t)u->gop);
@@ -478,13 +514,36 @@ seek(int frame)
 	draw_bar();
 }
 
+/* Whether the groups being decoded will be there when a film that plays on now comes to them,
+ * each going on as fast as it has got to where it is. (The first groups are all begun at once
+ * and end a few seconds apart: begun on the first of them, a film ran into the last.) */
+static int
+in_time(void)
+{
+	unsigned now = milliseconds();
+	int k;
+
+	for (k = 1; k <= unit_count; k++) {
+		struct unit *u = &units[k];
+		int done, until;
+
+		if (u->state != DECODING)
+			continue;
+		done = mpeg_video_done(u->video);
+		until = (int)(time_of(mpeg_gop_first(u->gop)) - time_of(shown + 1));
+		if (until < 0 || (now - u->began) * (unsigned)(u->frames - done) > (unsigned)until * (unsigned)(done ? done : 1))
+			return 0;
+	}
+	return 1;
+}
+
 static int
 all_idle(int pictures_only)
 {
 	int k;
 
 	for (k = 1; k <= unit_count; k++)
-		if (units[k].state != IDLE && !(pictures_only && units[k].state == SOUND))
+		if (units[k].helping || (units[k].state != IDLE && !(pictures_only && units[k].state == SOUND)))
 			return 0;
 	return 1;
 }
@@ -723,7 +782,7 @@ main(int argc, char **argv)
 	char title[160];
 	unsigned bytes, spare = 0, left, stat_at = 0, bar_at = 0, now, input = 0, hot_at = 0, asked_at = 0;
 	uint8_t *file;
-	int wanted, k, hold = -1, most, was_shown = -2, once = getenv("NXVIDEO_ONCE") != NULL;
+	int wanted, k, hold = -1, most, decoders, was_shown = -2, once = getenv("NXVIDEO_ONCE") != NULL;
 
 	if (argc > 2 && !strcmp(argv[1], "--decode"))
 		return decode_all(argv[2]);
@@ -738,6 +797,8 @@ main(int argc, char **argv)
 	info.fps_milli = 24000;
 	if ((text = getenv("NXVIDEO_HOLD")) != NULL)
 		hold = atoi(text);
+	split_copies = getenv("NXVIDEO_COPY") == NULL;
+	wait_for_groups = getenv("NXVIDEO_START") == NULL;
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxvideo: no Nano-X server (start one: nano-X -p &)\n");
 		return 1;
@@ -794,21 +855,22 @@ main(int argc, char **argv)
 	glLoadIdentity();
 	glDisable(GL_DEPTH_TEST);
 
-	/* the workers: some for the sound, the rest a decoder each, as many as 24 MB of their
+	/* the workers: some for the sound, the rest a decoder each: 16 for pictures of the sample's
+	 * size (24 a second take some 10) and more for larger ones, as many as 32 MB of their
 	 * groups' pictures allow */
 	say("starting the workers...");
-	wanted = (text = getenv("NXVIDEO_WORKERS")) != NULL ? atoi(text) : MPEG_VIDEOS + 8;
+	most = (int)((32u << 20) / ((unsigned)info.gop_most * info.frame_bytes));
+	decoders = (16 * info.width * info.height + 320 * 176 - 1) / (320 * 176);
+	decoders = decoders > MPEG_VIDEOS ? MPEG_VIDEOS : decoders > most ? most : decoders;
+	wanted = (text = getenv("NXVIDEO_WORKERS")) != NULL ? atoi(text) : decoders + 8;
 	atexit(mcw_close);
 	workers = wanted > 0 ? mcw_open(wanted) : 0;
-	most = (int)((24u << 20) / ((unsigned)info.gop_most * info.frame_bytes));
-	/* (a second of sound is some 17 million instructions: several cores' work, as the pictures are;
+	/* (a second of sound is some 12 million instructions: several cores' work, as the pictures are;
 	 * one worker: the pictures have it, and the film is silent) */
-	sounds = !info.rate || workers == 1 ? 0 : workers >= MPEG_VIDEOS + 8 ? 8 : workers >= 6 ? workers / 4 : 1;
+	sounds = !info.rate || workers == 1 ? 0 : workers >= decoders + 8 ? 8 : workers >= 6 ? workers / 4 : 1;
 	unit_count = workers ? workers : 1 + sounds;
-	if (unit_count > sounds + most)
-		unit_count = sounds + most;
-	if (unit_count > sounds + MPEG_VIDEOS)
-		unit_count = sounds + MPEG_VIDEOS;
+	if (unit_count > sounds + decoders)
+		unit_count = sounds + decoders;
 	/* Their decoders, all before a worker has a job: memory brought in on this core while
 	 * workers run holds them up (made one a turn of the loop, no picture was ready in 13 s). */
 	for (k = 1; k <= unit_count; k++) {
@@ -868,7 +930,7 @@ main(int argc, char **argv)
 			gop_sum = NULL;
 		}
 		if (!running && !paused && !ended && seeking < 0 && (have >= shown + AHEAD || have == info.frames - 1) &&
-		    (!sound_on || written > 0 || chunks_done == info.chunks)) {
+		    (!sound_on || written > 0 || chunks_done == info.chunks) && (have == info.frames - 1 || !wait_for_groups || in_time())) {
 			saying[0] = 0;
 			run(1);
 			draw_bar();

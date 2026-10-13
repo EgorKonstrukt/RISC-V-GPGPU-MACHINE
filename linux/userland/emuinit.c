@@ -102,7 +102,8 @@ int main(void) {
     say(banner);
     say("> Starting login shell on TTY /dev/hvc0\n");
 
-    setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin", 1);
+    /* (the image's own programs first: a name looked for in a folder that lacks it costs 6,000 instructions) */
+    setenv("PATH", "/usr/bin:/bin:/sbin:/usr/sbin:/usr/local/bin", 1);
     setenv("HOME", "/root", 1);   // not "/": the shell would show the prompt there as "~ # "
     setenv("TERM", "vt100", 0);
     int wants = host_wants();

@@ -122,6 +122,12 @@ main(int argc, char **argv)
 			usleep(150000);
 			continue;
 		}
+		/* a drag by hand, a step at a time: hold:X,Y, then to:X,Y as often as wanted, then drop:X,Y */
+		if ((!strncmp(argv[i], "hold:", 5) || !strncmp(argv[i], "to:", 3) || !strncmp(argv[i], "drop:", 5)) &&
+		    sscanf(strchr(argv[i], ':'), ":%d,%d", &x0, &y0) == 2) {
+			point(x0, y0, 0x110, argv[i][0] != 'd');
+			continue;
+		}
 		if (sscanf(argv[i], "wheel:%d,%d:%d", &x0, &y0, &x1) == 3) {
 			wheel(x0, y0, x1);
 			continue;

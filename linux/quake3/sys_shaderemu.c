@@ -33,6 +33,9 @@ unsigned SE_Cycles (void)
 }
 
 static unsigned	phase, phase_since, phase_cycles[6];
+#ifdef SE_PARTS
+unsigned	se_part, se_part_since, se_part_cycles[24];
+#endif
 
 int SE_Phase (int next)
 {
@@ -112,6 +115,11 @@ void SE_FrameDone (void)
 			se_server_jobs, n, se_server_cycles / se_server_jobs / 1000, se_server_passes / se_server_jobs, se_server_passes * 10 / se_server_jobs % 10);
 		se_server_jobs = se_server_cycles = se_server_passes = 0;
 	}
+	if (se_client_jobs) {
+		printf ("q3stat: the client's game on a worker core: %u frames of its own to these %u, %u thousand instructions each, %u.%u passes waited for one\n",
+			se_client_jobs, n, se_client_cycles / se_client_jobs / 1000, se_client_passes / se_client_jobs, se_client_passes * 10 / se_client_jobs % 10);
+		se_client_jobs = se_client_cycles = se_client_passes = 0;
+	}
 	{
 		extern unsigned se_server_parts[3], se_server_frames;	/* sv_main.c (quake3.patch) */
 		unsigned *p = se_server_parts, f = se_server_frames ? se_server_frames : 1;
@@ -120,6 +128,20 @@ void SE_FrameDone (void)
 			se_server_frames, p[0] / f / 1000, p[1] / f / 1000, p[2] / f / 1000);
 		p[0] = p[1] = p[2] = se_server_frames = 0;
 	}
+#ifdef SE_PARTS
+	{
+		static const char *const names[] = {"rest", "packets", "moves", "snapshots", "prediction", "entities", "effects", "weapon",
+			"scene", "flat", "screen", "sound", "swap", "server", "view"};
+		unsigned i;
+
+		SE_Part ((int)se_part);
+		printf ("q3parts:");
+		for (i = 0; i < ARRAY_LEN (names); i++)
+			printf (" %s %u.%u", names[i], se_part_cycles[i] / n / 1000, se_part_cycles[i] / n / 100 % 10);
+		printf ("\n");
+		memset (se_part_cycles, 0, sizeof se_part_cycles);
+	}
+#endif
 	fflush (stdout);
 	memset (phase_cycles, 0, sizeof phase_cycles);
 	since_frames = frames, since_cycles = SE_Cycles (), since_ms = now;

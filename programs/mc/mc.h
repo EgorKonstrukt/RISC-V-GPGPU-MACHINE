@@ -69,5 +69,8 @@ typedef struct { volatile uint32_t count, cause, address, pc; } mc_fault;      /
 // The pause hint ends this core's pass: its stores reach the others, and theirs reach it. On a
 // worker it is a sleep until the first word of its job changes.
 #define mc_next_pass() __asm__ volatile(".word 0x0100000f")
+// For a job that waits for another core's stores: its pass ends here and it goes on in the next
+// (fence.i ends a pass and does no more). Turning in place costs the machine the pass's instructions.
+#define mc_end_pass() __asm__ volatile(".word 0x0000100f")
 
 #endif

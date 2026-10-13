@@ -154,12 +154,24 @@ uint l1_find_l1(L1P uint t) {
 
 uint mem_get_cached_or_tex_l1(L1P uint addr) {
     PROF(PROF_ram_read)
+    // The texture is asked for the texel before the write cache is searched for it: a read is
+    // not waited for until its texel is used, and the search goes on meanwhile
+    // (docs/tick-costs.md). The texel read last is the texture's own whether or not it is used.
+    [branch]
+    if ((addr >> 4) != dr_addr) {
+        PROF(PROF_ram_read_tex)
+        dr_tex = RAM_TEX(RAM_ADDR(addr >> 4));
+        dr_addr = addr >> 4;
+    }
     // query L1 cache
-    if ((addr & mem_cache_bloom) == addr) {
+    bool bl = (addr & mem_cache_bloom) == addr;
+    uint lt = addr >> 4;
+    uint at = 0;
+    [branch]
+    if (bl) {
         PROF(PROF_ram_read_bloom_pass)
         // (one of the two texels remembered, or one known not to be there: types.h)
-        uint lt = addr >> 4;
-        uint at = L1_KNOWN_AT(lt);
+        at = L1_KNOWN_AT(lt);
         [branch]
         if (!L1_KNOWN(lt)) {
             at = 0;
@@ -170,29 +182,19 @@ uint mem_get_cached_or_tex_l1(L1P uint addr) {
                 if (at != 0) L1_REMEMBER(lt, at) else l1_absent_t = lt;
             } else { PROF(PROF_l1_load_absent) }
         } else { PROF(PROF_l1_load_known) }
-        [branch]
-        if (at != 0) {
-            PROF(PROF_ram_read_l1_hit)
-            return idx_uint4(L1_DATA(at), (addr >> 2) & 0x3);
-        }
-
-        if (cpu.cache.ram_l1_last_addr == addr) {
-            // the word the cache had no room for (the store that ended the pass)
-            return cpu.cache.ram_l1_last_val;
-        }
     }
-
-    // Not in the cache: the RAM texture, whose texels hold four words. The texture does not
-    // change during a pass, so the last texel read stays good, and data next to what was just
-    // read (the rest of a structure, the next stack slot) costs no texture read.
-    uint t = addr >> 4;
+    // The cache's texel, or the RAM texture's (it does not change during a pass, so the last
+    // texel read stays good and data next to what was just read costs no texture read).
+    uint4 tx = dr_tex;
     [branch]
-    if (t != dr_addr) {
-        PROF(PROF_ram_read_tex)
-        dr_tex = RAM_TEX(RAM_ADDR(t));
-        dr_addr = t;
+    if (at != 0) {
+        PROF(PROF_ram_read_l1_hit)
+        tx = L1_DATA(at);
     }
-    return idx_uint4(dr_tex, (addr >> 2) & 0x3);
+    uint v = idx_uint4(tx, (addr >> 2) & 0x3);
+    // (the word the cache had no room for: the store that ended the pass)
+    if (bl && at == 0 && cpu.cache.ram_l1_last_addr == addr) v = cpu.cache.ram_l1_last_val;
+    return v;
 }
 
 // The general path's read of a RAM word: as above, but for a pending destination's texel,

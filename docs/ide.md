@@ -135,6 +135,43 @@ from 3.73 million to 2.13, and an idle IDE runs nothing where it polled.
 
 The debug script's last stop prints line 20 in `main`, before these changes and after.
 
+**13 October 2026.** Instructions on `rvc_cpu`, over the same keys sent to `demo-hello`:
+20 letters 779 thousand to 390, ten pages down in `home.c` 1,778 to 1,340, the start with
+hello 4,543 to 1,400, 20 letters with the check that follows them 2,583 to 2,130.
+
+- **A line is kept as it is drawn** (`struct shown` in `nxide.c`): its pieces, a colour each,
+  and whether it ends inside a comment. It is read by the lexer once, when it changed; a
+  line below a changed one is not read at all while the changed one ends as it did. The
+  lexer looks characters up in a table and words by their first letter (`syntax.h`).
+- **A key draws from the first column that looks different** (`shown_differ`,
+  `draw_line_tail`): the kept line against the new one, the row's ground from there and the
+  pieces' ends. The cursor's bar is taken away where it was (`bar_line`). A row with a
+  selection or the stop on it is drawn whole as before.
+- **A whole view is drawn a colour after a colour** (`draw_editor_from`): a colour changed is
+  a request too, and was three a line. The editor's text has a context of its own.
+- **A view that moved a few lines is a copy** (`view_moved`: `GrCopyArea` of the rows that
+  stay, the new lines drawn). `NXIDE_SCROLL=draw` draws it whole as before.
+- The status line draws the text that changed, the row of keys the keys that look
+  different, a check's end the lines whose bars changed and the panel if its problems did.
+- **A text the compiler said nothing of is not shown to it again**: two sums of it are kept
+  (`text_sums`), and `linux/ide/build.sh` writes the examples' into `/usr/share/ide-clean`
+  (`clean.py` compiles each as the check does, with the compiler built for the host: run
+  the IDE's build after `linux/tcc/build.sh`). Not for a text that includes a file by
+  `"..."`. Without the list the start is 4,003 thousand.
+- The check is started with the kernel's vfork, its file is written with one call, and the
+  clock is asked once a key.
+- The scroll bar's thumb stays in its bar when the view begins after the last whole page (Go
+  to line near the end): it was painted over the panel and the status line. The one place
+  the picture is not as before.
+
+What is left of a check is the compiler's: `tcc -c` of an empty file is 1.34 million
+instructions (its own tables and predefined macros, 150 pages first touched), of hello 2.6.
+Its frees before it exits are 100 thousand of that (`linux/tcc`, not done).
+
+To check the drawing: `NANOX_SOFTWARE=1`, a script of keys by chance with no command that
+draws everything last, and the window's sum against the build before (20 scripts the same).
+A script's `mark:N` moves the cursor without its column: keep it at a script's start.
+
 ## Checking it
 
 `NXIDE_PRINT=1` prints what happens (`nxide: ...`, the program's output after `nxide|`,

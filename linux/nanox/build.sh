@@ -23,6 +23,8 @@ git -C "$MW" apply "$HERE/microwindows.patch"
 cp "$HERE"/*_shaderemu.c "$MW/src/drivers/"
 # (the worker cores' mailboxes, for the pointer's worker: scr_shaderemu.c)
 cp "$REPO/programs/mc/mc.h" "$MW/src/drivers/"
+# (a font file of the ROM, for the screen driver and for programs that measure text: docs/fonts.md)
+cp "$HERE/sef.h" "$MW/src/drivers/"
 if ! grep -q SHADEREMU "$MW/src/drivers/Objects.rules"; then
     cat >> "$MW/src/drivers/Objects.rules" <<'EOF'
 

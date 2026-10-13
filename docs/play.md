@@ -73,12 +73,25 @@ is decoded).
 | `play-test.mp3`, 12 s, 48 workers | 89.1% of their instructions (295 passes ended on a full write cache) | 98.7% (17) | 24.3M to 20.8M |
 | `play-test.mod`, 15 s | 98.5% (148) | 99.8% (8) | 43.4M to 40.8M |
 
-- WAV, MOD and FLAC are decoded in order by the first core, a slice at a time between two
-  looks at the window.
+- WAV and MOD are decoded in order by the first core, a slice at a time between two looks at
+  the window; so is a FLAC file with no workers, or one whose blocks are not all as long.
+- A FLAC file's blocks stand by themselves, so a piece is whole blocks (one of 4,096 frames
+  with twelve workers or more, else half a second) and any core's (`flac_job`; `flac.c` from
+  "its blocks"). It asks for 24 workers; each has a decoder of its own, made by the first
+  core when the worker gets its first piece. A block's frame has no length in the file: the
+  first core finds where blocks begin by their headers (the two sync bytes, the block's
+  number, the header's check byte), a word of the file at a time, as far ahead as pieces are
+  given out, and after going elsewhere by guesses at where a block lies (a header found
+  there says which block it is, and counts when the next one follows it).
 - An MP3 file is cut where its frames begin (a table made when it is opened). A piece is 20
-  frames, and any core can decode any piece: it starts 12 frames early, gives the first ten
-  for their bits only and decodes two for the filters' memory, after which its samples are
-  those of a decoder that began at the file's start. That costs 5% over decoding in order.
+  frames, and any core can decode any piece: it starts 12 frames early, gives the first eleven
+  for their bits only and the last for what it leaves (`MP3D_WARM` in `minimp3.patch`: a
+  granule's overlap comes of its own coefficients, and the filter's past is the last
+  granule's transform, so the two granules go as far as that and no samples are made), after
+  which its samples are those of a decoder that began at the file's start. Two frames were
+  decoded whole for that: with pieces of 4 frames a piece was six frames' work, and is 4.6.
+- With eight workers or more the first core takes no piece: it gives them out, and is back at
+  the window in a turn (`OWN_UNDER`; `NXPLAY_OWN=1` has it decode as before).
 - With 24 workers or more (it asks for all 63, and has its share of them) a piece is 4
   frames, not 20: 63 workers make
   8 s of the test file's sound in 2.5 s, so 44.1 kHz stereo plays at its full rate with no
@@ -116,6 +129,9 @@ is decoded).
 | `NXPLAY_MODRATE=N` | the rate a tracker tune is mixed at (22050) |
 | `NXPLAY_MEMORY=N` | megabytes of decoded sound it may keep |
 | `NXPLAY_VOLUME=N` | 0 to 256 (200) |
+| `NXPLAY_WARM=2` | an MP3 piece's two early frames decoded whole, as before |
+| `NXPLAY_OWN=1` | the first core takes pieces too, whatever the workers |
+| `NXPLAY_MODMIX=1` | a tracker tune mixed a channel at a time into sums, as before |
 
 It prints when it starts to play (`nxplay: plays from ...`), and at a tune's end a
 `playstat:` line: the sound decoded, the time, and the instructions a second of sound cost
@@ -153,9 +169,8 @@ else on it; seconds of sound decoded in a second):
 
 - **WAV and MOD play as they are decoded** on one core: the tracker tune is heard 0.45 s
   after the file is opened.
-- **FLAC does not**: it is decoded whole first on the one core it has (2 s of sound: heard
-  after 4.7 s). Its frames stand by themselves, so it could be given to the workers as MP3
-  is, without early frames; that is not built.
+- **FLAC did not** on the one core it had (2 s of the 24-bit test file: heard after 4.7 s).
+  Its blocks are the workers' now (below, 13 October 2026).
 - **MP3 at 44.1 kHz stereo does not play as it is decoded on any number of cores.** The
   instructions would be there (16 cores were thought to run 18 to 21 million a second), but
   this work gets 6 million a second out of 4 cores and 11 million out of 16: a core that
@@ -169,6 +184,39 @@ else on it; seconds of sound decoded in a second):
   the 16-core runs; two of them a while apart agreed.)
 - A file of half the rate or one channel costs about half; both, a quarter, which 4 cores
   have. None was measured.
+
+## 13 October 2026: FLAC on the workers, an MP3 piece's early frames, the tracker's mixer
+
+On the shader machine with no sound card (`rvc_harness --no-sound`: nothing waits for the
+ring, so the time is the decoding's), 12 s of each test file and the 20 s of
+`/root/Music/Bach - Goldberg Aria.flac` (22,050 Hz, one channel, 16 bits), in turn with the
+build before; every sum the same in both:
+
+| | Decoded in, before | now | The first core ran, before | now |
+|---|---|---|---|---|
+| MP3, 48 workers | 5,108 ms (2.3 times as fast as it plays) | 3,359 ms (3.6) | 12.7 million | 7.4 |
+| MP3 at half rate | 3,806 ms | 2,382 ms | 9.7 | 5.2 |
+| FLAC, the test file (24 bits, 2 s) | 4,523 ms (0.44) | 976 ms (2.0) | 23.9 | 3.6 |
+| FLAC, the Aria | 8,778 ms (2.3) | 975 ms (20) | 43.2 | 3.9 |
+| MOD | 3,329 ms (3.6) | 2,729 ms (4.4) | 17.4 | 15.7 |
+| WAV, 1.6 s | 224 ms | 225 ms | 0.93 | 0.93 |
+
+With the card: 8 s of the MP3 file is heard 1.7 s after it is opened (2.8 s), the FLAC test
+file after 1.2 s (4.8 s, decoded whole first); a worker's instructions for a second of MP3
+sound are 13.2 million where they were 16.9, and the first core's 0.
+
+- **The tracker's mixer** (`mod_mix4` in `mod.h`): a tune of four channels is mixed a frame
+  at a time, the four samples added in registers and stored once, for as long as no channel
+  comes to its sample's end. It was a channel at a time into two arrays of sums, then the
+  sums into the stream: ten loads and eight stores a frame, now four and two. 1,277 thousand
+  instructions a second of sound to 1,137.
+- Tried and not kept: the same warm frame with a test in the filter's loop instead of a
+  function of its own (`if (!dstl) continue`): every frame decoded 10% slower, in order too
+  (11.9 million instructions a second of sound to 13.2).
+- Not done: WAV (a copy as it is: the file is read whole first, then copied into the ring;
+  played where it lies in the ROM it would be no copy at all). The decoders' own loops:
+  minimp3's filter window is 41% of a frame and the transform 17%; dr_flac's Rice codes and
+  predictor are 74% of a FLAC block.
 
 ## Checking it
 
@@ -212,7 +260,7 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
 
 ## Not done
 
-XM. FLAC on the workers. A list of tunes. Playing a WAV file where it lies in the ROM (the
+XM. A list of tunes. Playing a WAV file where it lies in the ROM (the
 card can; a stream keeps one way for every kind). While "Open..." has its window the tune
 is held: `ui_choose_file` has the program's events until it is done.
 

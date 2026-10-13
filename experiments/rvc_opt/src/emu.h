@@ -562,6 +562,24 @@ uint fp_exec(uint w, uint ra, uint rb, out bool to_float, out bool ok) {
          : f7 == 0x70 ? (f3 == 0 ? ra : cls)
          : ra;                                        // fmv.w.x
 }
+// The same for funct7 0x10, 0x14, 0x50, 0x78 and fmv.x.w alone (signs, the lesser and the
+// greater, comparisons, moves): fp_exec's results for them, and none of its other work.
+uint fp_light(uint w, uint ra, uint rb, out bool to_float, out bool ok) {
+    uint f7 = w >> 25, f3 = (w >> 12) & 7, sel = (w >> 20) & 0x1f;
+    precise float a = asfloat(ra);
+    precise float b = asfloat(rb);
+    bool a_nan = (ra & 0x7fffffff) > 0x7f800000, b_nan = (rb & 0x7fffffff) > 0x7f800000;
+    uint sgn = (ra & 0x7fffffff) | ((f3 == 0 ? rb : f3 == 1 ? ~rb : ra ^ rb) & 0x80000000);
+    bool less = a < b || (ra == 0x80000000 && rb == 0);
+    uint pick = a_nan ? (b_nan ? 0x7fc00000 : rb) : b_nan ? ra : ((less == (f3 == 0)) ? ra : rb);
+    uint cmp = (!a_nan && !b_nan && (f3 == 2 ? a == b : f3 == 1 ? a < b : a <= b)) ? 1 : 0;
+    to_float = f7 == 0x10 || f7 == 0x14 || f7 == 0x78;
+    ok = f7 == 0x10 ? f3 < 3
+       : f7 == 0x14 ? f3 < 2
+       : f7 == 0x50 ? f3 < 3
+       : (sel == 0 && f3 == 0);
+    return f7 == 0x10 ? sgn : f7 == 0x14 ? pick : f7 == 0x50 ? cmp : ra;
+}
 #endif
 
 #define RUN(name, data, insf) case data : { \
@@ -925,7 +943,7 @@ void time_prepare() {
 
 // The instruction word cpu_tick already fetched for this tick, if any.
 static bool pre_valid = false;
-static bool fast_same = false;   // the last fast instruction left pc in the texel it was fetched from
+static bool fast_same = false;   // the last fast instruction's next one is the next word of its texel
 static uint pre_word;
 
 void xreg_set(uint r, uint v) {
@@ -977,6 +995,10 @@ static bool xl_ident_d = false;  // loads/stores: paging off, or machine mode wi
     }
 #endif
 
+// fast_exec()'s kinds: op-imm and op, the M extension aside; flw, fsw and opcode 0x53
+#define K_ALU ((w & 0x5f) == 0x13 && (w & 0xfe00007f) != 0x02000033)
+#define K_FP ((w & 0x5f) == 0x07 || opc == 0x53)
+
 // Runs one instruction that cannot trap, touch memory or change what interrupts see (integer
 // ALU, branches, jumps) without the general path. Only called while irq_quiet holds, so the
 // general path's interrupt/UART step would have done nothing. Returns false, having changed
@@ -997,76 +1019,143 @@ bool fast_exec_l1(L1P uint w) {
     uint val = 0;
     bool wr = true;
     bool ok = true;
-    // A switch is the costly thing here: on the GPU one with eight cases takes as long as fifty
-    // additions, a two-way branch as long as six. So the arithmetic instructions compute every
-    // result and select one, and the common classes are told apart by tests, most frequent first.
-    // (Every instruction this path runs is so many of the card's: what follows is written for
-    // the fewest. A sign is carried by an arithmetic shift, one instruction, where a test and
-    // a mask were four; whether an encoding is one that exists is a bit of a table.)
-    // (An instruction's two low bits are 11: each kind's test has them in it.)
+    // A switch is the costly thing here, and a test whose block is large the next: arithmetic
+    // computes every result and selects one, and the kinds are told apart by a tree of tests
+    // (arithmetic, loads, stores and floats a group, in it arithmetic and loads one). One after
+    // another they cost each kind after the first two more (docs/tick-costs.md).
     [branch]
-    if ((w & 0x5f) == 0x13 && (w & 0xfe00007f) != 0x02000033) {
-        // op-imm and op (the M extension aside): bit 5 tells them apart
-        PROF(PROF_x_alu)
-        bool reg = (w & 0x20) != 0;
-        bool alt = (w & 0x40000000) != 0;   // subtract, or shift right arithmetic
-        uint a = rs1v;
-        uint imm = AS_UNSIGNED(AS_SIGNED(w) >> 20);
-        uint b = reg ? rs2v : imm;
-        uint sh = b & 0x1f;
-        uint srl = a >> sh;
-        uint sra = AS_UNSIGNED(AS_SIGNED(a) >> sh);
-        uint r01 = (f3 & 1) ? a << sh : ((reg && alt) ? a - b : a + b);
-        // signed is unsigned with the signs turned over
-        uint turn = (f3 & 1) ? 0 : 0x80000000;
-        uint r23 = (a ^ turn) < (b ^ turn) ? 1 : 0;
-        uint r45 = (f3 & 1) ? (alt ? sra : srl) : a ^ b;
-        uint r67 = (f3 & 1) ? a & b : a | b;
-        val = (f3 & 4) ? ((f3 & 2) ? r67 : r45) : ((f3 & 2) ? r23 : r01);
-        // Which of these exist: a bit for each of op (8 + funct3) and op-imm (funct3), by
-        // funct7. With 0 all of them; with 0x20 sub and sra, srai, and every op-imm that is
-        // not a shift (its funct7 is part of the number); with anything else only those.
-        uint f7 = w >> 25;
-        uint exist = f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu;
-        ok = ((exist >> (((w >> 2) & 8) | f3)) & 1) != 0;
-    } else if (opc == 0x03) {                                   // loads from RAM, translation available
-        PROF(PROF_x_load)
-        FormatI i = parse_FormatI(w);
-        uint va = rs1v + i.imm;
-        FAST_XL(xl_ident_d, MMU_ACCESS_READ, tlb_r_vpn, tlb_r_page, va, t_ok, pa)
-        ok = false;
-        // va == 0 is left to the general path, which treats it specially; so is a load that
-        // straddles two words, which is rare and would double the code on this path
-        uint off = pa & 0x3;
+#ifdef FPU
+    if (K_ALU || opc == 0x03 || opc == 0x23 || K_FP) {
+#else
+    if (K_ALU || opc == 0x03 || opc == 0x23) {
+#endif
         [branch]
-        // (funct3 0, 1, 2, 4 and 5 are loads, a bit each; and RAM is what is under RAM_MAX
-        // once the address's top bit is turned over)
-        if (va != 0 && ((0x37u >> f3) & 1) != 0 && t_ok && off + (1u << (f3 & 3)) <= 4 && (pa ^ 0x80000000) < RAM_MAX) {
-            uint v = mem_get_cached_or_tex(pa & 0x7ffffffc) >> (off * 8);
-            // a byte or a half to the top of the word, and back down with or without its sign
-            uint up = (f3 & 3) == 0 ? 24 : (f3 & 3) == 1 ? 16 : 0;
-            v <<= up;
-            val = (f3 & 4) ? v >> up : AS_UNSIGNED(AS_SIGNED(v) >> up);
-            ok = true;
+        if (K_ALU || opc == 0x03) {
+            [branch]
+            if (K_ALU) {
+                // bit 5 tells op-imm and op apart
+                PROF(PROF_x_alu)
+                bool reg = (w & 0x20) != 0;
+                bool alt = (w & 0x40000000) != 0;   // subtract, or shift right arithmetic
+                uint a = rs1v;
+                uint imm = AS_UNSIGNED(AS_SIGNED(w) >> 20);
+                uint b = reg ? rs2v : imm;
+                uint sh = b & 0x1f;
+                uint srl = a >> sh;
+                uint sra = AS_UNSIGNED(AS_SIGNED(a) >> sh);
+                uint r01 = (f3 & 1) ? a << sh : ((reg && alt) ? a - b : a + b);
+                // signed is unsigned with the signs turned over
+                uint turn = (f3 & 1) ? 0 : 0x80000000;
+                uint r23 = (a ^ turn) < (b ^ turn) ? 1 : 0;
+                uint r45 = (f3 & 1) ? (alt ? sra : srl) : a ^ b;
+                uint r67 = (f3 & 1) ? a & b : a | b;
+                val = (f3 & 4) ? ((f3 & 2) ? r67 : r45) : ((f3 & 2) ? r23 : r01);
+                // Which of these exist: a bit for each of op (8 + funct3) and op-imm (funct3), by
+                // funct7. With 0 all of them; with 0x20 sub and sra, srai, and every op-imm that is
+                // not a shift (its funct7 is part of the number); with anything else only those.
+                uint f7 = w >> 25;
+                uint exist = f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu;
+                ok = ((exist >> (((w >> 2) & 8) | f3)) & 1) != 0;
+            } else {                                                    // loads from RAM, translation available
+                PROF(PROF_x_load)
+                FormatI i = parse_FormatI(w);
+                uint va = rs1v + i.imm;
+                FAST_XL(xl_ident_d, MMU_ACCESS_READ, tlb_r_vpn, tlb_r_page, va, t_ok, pa)
+                ok = false;
+                // va == 0 is left to the general path, which treats it specially; so is a load that
+                // straddles two words, which is rare and would double the code on this path
+                uint off = pa & 0x3;
+                [branch]
+                // (funct3 0, 1, 2, 4 and 5 are loads, a bit each; and RAM is what is under RAM_MAX
+                // once the address's top bit is turned over)
+                if (va != 0 && ((0x37u >> f3) & 1) != 0 && t_ok && off + (1u << (f3 & 3)) <= 4 && (pa ^ 0x80000000) < RAM_MAX) {
+                    uint v = mem_get_cached_or_tex(pa & 0x7ffffffc) >> (off * 8);
+                    // a byte or a half to the top of the word, and back down with or without its sign
+                    uint up = (f3 & 3) == 0 ? 24 : (f3 & 3) == 1 ? 16 : 0;
+                    v <<= up;
+                    val = (f3 & 4) ? v >> up : AS_UNSIGNED(AS_SIGNED(v) >> up);
+                    ok = true;
+                }
+            }
+        } else {
+            // sb/sh/sw to RAM, translation available; and the F extension, all of it here: its
+            // results go to the float registers from here too
+#ifdef FPU
+            [branch]
+            if (opc == 0x23) {
+#endif
+                PROF(PROF_x_store)
+                FormatS s;
+                s.rs2 = (w >> 20) & 0x1f;
+                s.addr = rs1v + ((AS_UNSIGNED(AS_SIGNED(w) >> 20) & 0xffffffe0) | ((w >> 7) & 0x1f));
+                FAST_XL(xl_ident_d, MMU_ACCESS_WRITE, tlb_w_vpn, tlb_w_page, s.addr, t_ok, pa)
+                ok = false;
+                wr = false;
+                // within one RAM word: a single read-modify-write (may set cpu.stall when the
+                // cache is full). A store that straddles two words takes the general path.
+                uint s_off = pa & 0x3;
+                [branch]
+                if (f3 < 3 && t_ok && (pa & 0x80000000) != 0 && s_off + (1u << f3) <= 4) {
+                    uint s_mask = (f3 == 2 ? 0xffffffff : f3 == 1 ? 0xffff : 0xff) << (s_off * 8);
+                    mem_set_ram(pa & 0x7ffffffc, rs2v << (s_off * 8), s_mask, false);
+                    ok = true;
+                }
+#ifdef FPU
+            } else {
+                bool to_f = false;
+                [branch]
+                if (opc == 0x53) {
+                    uint fp_a = rs1v;       // an integer being converted or moved, else a float register
+                    [branch]
+                    if (((w >> 25) & 0x68) != 0x68) {
+                        fp_a = xr[XR_F + ((w >> 15) & 0x1f)];
+                    }
+                    // A sum, a difference or a product, and the moves, signs and comparisons, are nearly
+                    // all a program runs (Quake: 8 in 9): each by itself, fp_exec's every result for the rest.
+                    uint fp_b = xr[XR_F + ((w >> 20) & 0x1f)];
+                    uint fp7 = w >> 25;
+                    [branch]
+                    if ((fp7 & 0x73) == 0 && fp7 != 0x0c) {
+                        precise float fa = asfloat(fp_a);
+                        precise float fb = asfloat(fp_b);
+                        precise float f_sum = fa + fb;
+                        precise float f_dif = fa - fb;
+                        precise float f_prod = fa * fb;
+                        val = asuint(fp7 == 0x00 ? f_sum : fp7 == 0x04 ? f_dif : f_prod);
+                        if ((val & 0x7fffffff) > 0x7f800000) val = 0x7fc00000;
+                        to_f = true;
+                    } else if (((0x50100030u >> (fp7 >> 2)) & 1) != 0 && (fp7 & 3) == 0 && (fp7 != 0x70 || f3 == 0)) {
+                        val = fp_light(w, fp_a, fp_b, to_f, ok);
+                    } else {
+                        val = fp_exec(w, fp_a, fp_b, to_f, ok);
+                    }
+                } else if (opc == 0x07) {
+                    uint f_va = rs1v + ((w & 0x80000000 ? 0xfffff800 : 0) | ((w >> 20) & 0x7ff));
+                    FAST_XL(xl_ident_d, MMU_ACCESS_READ, tlb_r_vpn, tlb_r_page, f_va, fl_ok, fl_pa)
+                    ok = false;
+                    [branch]
+                    if (f_va != 0 && f3 == 2 && fl_ok && (fl_pa & 0x80000003) == 0x80000000 && (fl_pa & 0x7ffffffc) < RAM_MAX) {
+                        val = mem_get_cached_or_tex(fl_pa & 0x7ffffffc);
+                        to_f = true;
+                        ok = true;
+                    }
+                } else {
+                    uint f_sa = rs1v + ((w & 0x80000000 ? 0xfffff000 : 0) | ((w >> 20) & 0xfe0) | ((w >> 7) & 0x1f));
+                    FAST_XL(xl_ident_d, MMU_ACCESS_WRITE, tlb_w_vpn, tlb_w_page, f_sa, fs_ok, fs_pa)
+                    ok = false;
+                    wr = false;
+                    [branch]
+                    if (f3 == 2 && fs_ok && (fs_pa & 0x80000003) == 0x80000000) {
+                        mem_set_ram(fs_pa & 0x7ffffffc, xr[XR_F + ((w >> 20) & 0x1f)], 0xffffffff, false);
+                        ok = true;
+                    }
+                }
+                xr[(ok && to_f) ? XR_F + ((w >> 7) & 0x1f) : 32] = val;   // (or to the scratch slot)
+                wr = wr && !to_f;
+            }
+#endif
         }
-    } else if ((w & 0x7f) == 0x23) {                            // sb/sh/sw to RAM, translation available
-        PROF(PROF_x_store)
-        FormatS s;
-        s.rs2 = (w >> 20) & 0x1f;
-        s.addr = rs1v + ((AS_UNSIGNED(AS_SIGNED(w) >> 20) & 0xffffffe0) | ((w >> 7) & 0x1f));
-        FAST_XL(xl_ident_d, MMU_ACCESS_WRITE, tlb_w_vpn, tlb_w_page, s.addr, t_ok, pa)
-        ok = false;
-        wr = false;
-        // within one RAM word: a single read-modify-write (may set cpu.stall when the
-        // cache is full). A store that straddles two words takes the general path.
-        uint s_off = pa & 0x3;
-        [branch]
-        if (f3 < 3 && t_ok && (pa & 0x80000000) != 0 && s_off + (1u << f3) <= 4) {
-            uint s_mask = (f3 == 2 ? 0xffffffff : f3 == 1 ? 0xffff : 0xff) << (s_off * 8);
-            mem_set_ram(pa & 0x7ffffffc, rs2v << (s_off * 8), s_mask, false);
-            ok = true;
-        }
-    } else if ((w & 0x7f) == 0x63) {                            // branches
+    } else if (opc == 0x63) {                                           // branches
         uint a = rs1v;
         uint b = rs2v;
         bool lt = (f3 & 2) ? a < b : AS_SIGNED(a) < AS_SIGNED(b);
@@ -1078,8 +1167,7 @@ bool fast_exec_l1(L1P uint w) {
         if (taken) { PROF(PROF_x_taken) npc = pc + br.imm; }
 #ifdef FPU
     } else if ((w & 0x04) != 0 && ((w & 0x08) == 0 || (w & 0x40) != 0) && (w & 0x5f) != 0x07) {
-        // (flw and fsw, 0x07 and 0x27, have bit 2 as well and are the F extension's below: taken
-        // here they were sent to the general path, every one, three times the cost)
+        // (flw and fsw, 0x07 and 0x27, have bit 2 as well: they are the floats' above)
 #else
     } else if ((w & 0x04) != 0 && ((w & 0x08) == 0 || (w & 0x40) != 0)) {
 #endif
@@ -1126,46 +1214,6 @@ bool fast_exec_l1(L1P uint w) {
             val = is_sc ? (sc_ok ? 0 : 1) : old;
             ok = true;
         }
-#ifdef FPU
-    } else if ((w & 0x5f) == 0x07 || opc == 0x53) {
-        // The F extension, all of it here: flw, fsw and opcode 0x53. Its results go to the float
-        // registers from here too, so the instruction's end is the integer one's.
-        bool to_f = false;
-        [branch]
-        if (opc == 0x53) {
-            uint fp_a = rs1v;       // an integer being converted or moved, else a float register
-            [branch]
-            if (((w >> 25) & 0x68) != 0x68) {
-                fp_a = xr[XR_F + ((w >> 15) & 0x1f)];
-            }
-            val = fp_exec(w, fp_a, xr[XR_F + ((w >> 20) & 0x1f)], to_f, ok);
-        } else if (opc == 0x07) {
-            uint f_va = rs1v + ((w & 0x80000000 ? 0xfffff800 : 0) | ((w >> 20) & 0x7ff));
-            FAST_XL(xl_ident_d, MMU_ACCESS_READ, tlb_r_vpn, tlb_r_page, f_va, fl_ok, fl_pa)
-            ok = false;
-            [branch]
-            if (f_va != 0 && f3 == 2 && fl_ok && (fl_pa & 0x80000003) == 0x80000000 && (fl_pa & 0x7ffffffc) < RAM_MAX) {
-                val = mem_get_cached_or_tex(fl_pa & 0x7ffffffc);
-                to_f = true;
-                ok = true;
-            }
-        } else {
-            uint f_sa = rs1v + ((w & 0x80000000 ? 0xfffff000 : 0) | ((w >> 20) & 0xfe0) | ((w >> 7) & 0x1f));
-            FAST_XL(xl_ident_d, MMU_ACCESS_WRITE, tlb_w_vpn, tlb_w_page, f_sa, fs_ok, fs_pa)
-            ok = false;
-            wr = false;
-            [branch]
-            if (f3 == 2 && fs_ok && (fs_pa & 0x80000003) == 0x80000000) {
-                mem_set_ram(fs_pa & 0x7ffffffc, xr[XR_F + ((w >> 20) & 0x1f)], 0xffffffff, false);
-                ok = true;
-            }
-        }
-        [branch]
-        if (ok && to_f) {
-            xr[XR_F + ((w >> 7) & 0x1f)] = val;
-            wr = false;
-        }
-#endif
     } else {
         [forcecase]
         switch (opc) {
@@ -1215,11 +1263,15 @@ bool fast_exec_l1(L1P uint w) {
     // cpu.clint.mtime and cpu.debug_do_tick already hold this pass's values: the first tick of
     // every pass takes the general path (irq_quiet starts false), which sets both.
     cpu.pc = npc;
-    fast_same = (npc ^ pc) < 16 && (npc & 3) == 0;
+    // (the texel's next word is the next instruction; a jump within the texel is fetched anew)
+    fast_same = npc == pc + 4 && (npc & 12) != 0;
+    fw_cur = fw_cur.yzwx;
     return true;
 }
 #undef rs1v
 #undef rs2v
+#undef K_ALU
+#undef K_FP
 
 #ifdef LAZY_MEMOP
 // The pages from RAM offset `lo` to `hi` leave every TLB the fast path reads: the first level,

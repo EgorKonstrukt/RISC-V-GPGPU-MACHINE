@@ -16,6 +16,7 @@ static int tx_ax, tx_ay, tx_marked;	/* where a selection began, when there is on
 static int tx_modified;
 static int tx_touched = 1 << 30;	/* the first line changed since whoever draws last set this */
 static int tx_shifted;		/* lines were added or taken out since then */
+static int tx_touched_last = -1;	/* the last line changed since then, while none was added or taken out */
 
 /* What was done: text put in from (x0, y0) to (x1, y1), or `text` taken out at (x0, y0).
  * Changes with one `step` were one command, and go back together. */
@@ -57,6 +58,8 @@ tx_remember(int inserted, int x0, int y0, int x1, int y1, char *text, int length
 
 	if (y0 < tx_touched)
 		tx_touched = y0;
+	if ((inserted ? y1 : y0) > tx_touched_last)
+		tx_touched_last = inserted ? y1 : y0;
 	if (tx_replaying == 1) {
 		tx_push(tx_undone, &tx_undone_count, c);
 		return;
@@ -255,7 +258,7 @@ tx_load(const char *path)
 	if (tx_count > 1 && !tx_lines[tx_count - 1][0])
 		free(tx_lines[--tx_count]);
 	tx_x = tx_y = tx_marked = tx_modified = 0;
-	tx_touched = 0, tx_shifted = 1;
+	tx_touched = 0, tx_shifted = 1, tx_touched_last = -1;
 	return file != NULL;
 }
 

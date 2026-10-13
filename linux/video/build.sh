@@ -25,6 +25,9 @@ sed 's/^\t\tplm_buffer_discard_read_bytes(self->buffer);$/\t\tif (self->buffer->
 [ "$(grep -c 'if (self->buffer->discard_read_bytes) plm_buffer_discard_read_bytes' "$BUILD/pl_mpeg.h")" = 1 ] || { echo "pl_mpeg.h: the line to change is not there"; exit 1; }
 # and the sound's window four blocks a turn (the same additions in the same order: the same sums)
 python3 "$HERE/plm_window.py" "$BUILD/pl_mpeg.h"
+# and bits and codes from a word of the stream, the transform only where a block has
+# coefficients (docs/video.md): a picture 1,364 thousand instructions to 966, the same sums
+python3 "$HERE/plm_fast.py" "$BUILD/pl_mpeg.h"
 
 # single-precision constants: the sound's filter is floats, and the machine has no doubles
 FLOAT="-fsingle-precision-constant -fno-math-errno"

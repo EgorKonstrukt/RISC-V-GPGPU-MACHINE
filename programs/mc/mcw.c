@@ -367,8 +367,9 @@ int mcw_open(int limit)
 	lost = share = 0;
 	if (lent) call6(29, fd, MC_LENT, 0, 0, 0, 0);
 	if (!(page = map(MC_PAGE_SIZE, fd, MC_PAGE_GPU_OFFSET))) goto none;
-	/* (the mailboxes' pages here now: a worker's first look at its own would stop it) */
-	for (i = 0; i < MC_PAGE_SIZE; i += 4096) { volatile uint8_t byte = page[i]; (void)byte; }
+	/* (the mailboxes' pages here now, and this program's to write: a worker's first store to its
+	 * own, which is its first step, would stop it until this core had stored there) */
+	mcw_touch(page, MC_PAGE_SIZE);
 	/* (the stacks of an earlier open serve again when they are enough) */
 	if (stack_count < limit) {
 		if (!(stacks = map((long)(limit + 1) * STACK_BYTES, -1, 0))) goto none;

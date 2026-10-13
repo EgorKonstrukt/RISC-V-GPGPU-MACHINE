@@ -114,8 +114,16 @@ Kbd_Read(MWKEY *kbuf, MWKEYMOD *modifiers, MWSCANCODE *pscancode)
 		int pressed;
 
 		if (taken == queued) {
-			int n = read(fd, queue, sizeof(queue));
+			/* a read that did not fill the queue took all there was: no second one to hear so */
+			static int emptied;
+			int n;
 
+			if (emptied) {
+				emptied = 0;
+				return KBD_NODATA;
+			}
+			n = read(fd, queue, sizeof(queue));
+			emptied = n > 0 && n < (int)sizeof(queue);
 			if (n < (int)sizeof(queue[0]))
 				return (n < 0 && errno != EINTR && errno != EAGAIN) ? KBD_FAIL : KBD_NODATA;
 			queued = n / sizeof(queue[0]);

@@ -320,11 +320,11 @@ cell_of(const struct phys *w, v3 x)
 }
 
 uint32_t
-phys_key(const struct phys *w, const float *pos, int shares)
+phys_key(const struct phys *w, const float *pos)
 {
 	uint32_t cell = (uint32_t)cell_of(w, of(pos));
 
-	return cell | cell % (uint32_t)shares << 20;
+	return cell | ((uint32_t)w->cell_first + cell % (uint32_t)w->cell_shares) << 20;
 }
 
 void
@@ -341,46 +341,61 @@ phys_box(struct phys *w, int body, float hx, float hy, float hz, float density)
 	s->radius = __builtin_sqrtf(hx * hx + hy * hy + hz * hz);
 }
 
-/* The grid: this share's cells take the bodies that are in them, in the bodies' order. */
+/* A body into its cell, if the cell is the share's whose key bits are `mine`; 1 when the
+ * cell has no room. */
+static inline int
+grid_take(struct gcell *grid, uint32_t key, uint32_t mine, int body)
+{
+	struct gcell *cell = &grid[key & 0xfffff];
+	uint32_t n;
+
+	if (__builtin_expect((key & PHYS_KEY_SHARE) != mine, 1))
+		return 0;
+	n = cell->n;
+	if (n >= PHYS_SLOTS)
+		return 1;
+	cell->body[n] = (uint32_t)body;
+	cell->n = n + 1;
+	return 0;
+}
+
+/* The grid: this share's cells take the bodies that are in them, in the bodies' order. (Every
+ * body's key is looked at, most of them another share's: four a turn, three instructions each.) */
 int
-phys_grid(const struct phys *w, int share, int shares, int from)
+phys_grid(const struct phys *w, int share, int from, int turn)
 {
 	const struct body_state *s = w->states[from];
-	int cells = w->gx * w->gy * w->gz, c, i, missed = 0;
+	struct gcell *grid = w->grids[turn & 1];
+	uint32_t mine = (uint32_t)share << 20;
+	int cells = w->gx * w->gy * w->gz, bodies = w->bodies, c, i, missed = 0;
 
-	for (c = share; c < cells; c += shares)
-		if (w->cells[c].n)
-			w->cells[c].n = 0;
-	for (i = 0; i < w->bodies; i++) {
-		uint32_t key = s[i].key;
-
-		if ((key >> 20 & 0x7ff) == (uint32_t)share) {
-			struct gcell *cell = &w->cells[key & 0xfffff];
-			uint32_t n = cell->n;
-
-			if (n < PHYS_SLOTS) {
-				cell->body[n] = (uint32_t)i;
-				cell->n = n + 1;
-			} else {
-				missed++;
-			}
-		}
+	for (c = share - w->cell_first; c < cells; c += w->cell_shares)
+		if (grid[c].n)
+			grid[c].n = 0;
+	for (i = 0; i + 4 <= bodies; i += 4) {
+		missed += grid_take(grid, s[i].key, mine, i);
+		missed += grid_take(grid, s[i + 1].key, mine, i + 1);
+		missed += grid_take(grid, s[i + 2].key, mine, i + 2);
+		missed += grid_take(grid, s[i + 3].key, mine, i + 3);
 	}
+	for (; i < bodies; i++)
+		missed += grid_take(grid, s[i].key, mine, i);
 	return missed;
 }
 
 /* The whole grid by one core: what every share's phys_grid() together leaves. */
 void
-phys_grid_all(const struct phys *w, int from)
+phys_grid_all(const struct phys *w, int from, int turn)
 {
 	const struct body_state *s = w->states[from];
+	struct gcell *grid = w->grids[turn & 1];
 	int cells = w->gx * w->gy * w->gz, c, i;
 
 	for (c = 0; c < cells; c++)
-		if (w->cells[c].n)
-			w->cells[c].n = 0;
+		if (grid[c].n)
+			grid[c].n = 0;
 	for (i = 0; i < w->bodies; i++) {
-		struct gcell *cell = &w->cells[s[i].key & 0xfffff];
+		struct gcell *cell = &grid[s[i].key & 0xfffff];
 
 		if (cell->n < PHYS_SLOTS)
 			cell->body[cell->n++] = (uint32_t)i;
@@ -388,13 +403,13 @@ phys_grid_all(const struct phys *w, int from)
 }
 
 /* How far round itself a body looks for others: it is not looked for again for a while, and
- * the grid is a substep old when it is. */
+ * the grid is a substep old when it is (w->look_ahead: how long that comes to). */
 static inline float
-margin_of(const struct body_state *s)
+margin_of(const struct phys *w, const struct body_state *s)
 {
 	v3 vel = of(s->vel);
 
-	return MARGIN + __builtin_sqrtf(dot(vel, vel)) * ((PHYS_EVERY + 1) * PHYS_DT);
+	return MARGIN + __builtin_sqrtf(dot(vel, vel)) * w->look_ahead;
 }
 
 /* (not in line: it is the rare way, and its floats would be in the common one's) */
@@ -426,13 +441,13 @@ about_of(const v3 *at, const struct body_shape *shape)
 }
 
 static inline void
-poses_kept(const struct body_state *s, const struct body_shape *shape, const m3 *r, float gravity, struct body_pose *kept)
+poses_kept(const struct phys *w, const struct body_state *s, const struct body_shape *shape, const m3 *r, float gravity, struct body_pose *kept)
 {
 	struct pose next;
 
 	pose_guess(s, gravity, &next);
 	*(m3 *)kept->r = *r, *(v3 *)kept->next_at = next.x, *(m3 *)kept->next_r = next.r;
-	kept->margin = margin_of(s);
+	kept->margin = margin_of(w, s);
 	kept->reach = shape->radius + kept->margin;
 	kept->about = about_of(&next.x, shape);
 }
@@ -451,12 +466,13 @@ look(const struct phys *w, const struct body_state *st, const struct body_pose *
 	uint8_t source[PHYS_MANIFOLDS];
 	struct pose made_me, made_other;
 	struct place me, other;
-	float margin = s->key & PHYS_POSED ? kept[i].margin : margin_of(s), mine = shape->radius + margin;
+	float margin = s->key & PHYS_POSED ? kept[i].margin : margin_of(w, s), mine = shape->radius + margin;
 	int slow = dot(of(s->vel), of(s->vel)) < SLOW * SLOW;
 	int cell = (int)(s->key & 0xfffff), cx = cell % w->gx, cz = cell / w->gx % w->gz, cy = cell / (w->gx * w->gz), x, y, z, dropped = 0;
 	int x0 = cx > 0 ? cx - 1 : 0, x1 = cx + 1 < w->gx ? cx + 1 : w->gx - 1, y1 = cy + 1 < w->gy ? cy + 1 : w->gy - 1, z1 = cz + 1 < w->gz ? cz + 1 : w->gz - 1;
 	uint32_t pairs = 0, had = w->info[i].manifolds, fresh = 0, nears = 0, k, m, o;
 	int *near = __builtin_alloca(27 * PHYS_SLOTS * sizeof *near);
+	const struct gcell *grid = w->grids[turn & 1];
 	v3 here;
 
 	me.x = (const v3 *)s->pos, me.r = &made_me.r;
@@ -469,7 +485,7 @@ look(const struct phys *w, const struct body_state *st, const struct body_pose *
 	for (y = cy > 0 ? cy - 1 : 0; y <= y1; y++)
 		for (z = cz > 0 ? cz - 1 : 0; z <= z1; z++)
 			for (x = x0; x <= x1; x++) {
-				const struct gcell *c = &w->cells[(y * w->gz + z) * w->gx + x];
+				const struct gcell *c = &grid[(y * w->gz + z) * w->gx + x];
 				uint32_t in_cell = c->n;
 
 				for (k = 0; k < in_cell; k++) {
@@ -481,7 +497,7 @@ look(const struct phys *w, const struct body_state *st, const struct body_pose *
 					if (__builtin_expect((t->key & PHYS_POSED) != 0, 1))
 						reach = mine + kept[j].reach;
 					else
-						reach = mine + (w->shapes[j].radius + margin_of(t));
+						reach = mine + (w->shapes[j].radius + margin_of(w, t));
 					/* (too far along x alone is too far: most of a cell's are) */
 					along = t->pos[0] - here.x;
 					if (size(along) >= reach)
@@ -494,7 +510,7 @@ look(const struct phys *w, const struct body_state *st, const struct body_pose *
 	for (k = 0; k < nears; k++) {
 		int j = near[k], n, p;
 		const struct body_state *t = &st[j];
-		float theirs = t->key & PHYS_POSED ? kept[j].margin : margin_of(t);
+		float theirs = t->key & PHYS_POSED ? kept[j].margin : margin_of(w, t);
 
 		for (m = 0; m < had && list[m].partner != (uint32_t)j; m++)
 			;
@@ -656,7 +672,20 @@ settle_points(struct pose *cur, struct pose *speed, struct point *points, int n_
 	shifted(cur, scale(move, all - new), scale(spun, all - new));
 }
 
-/* A substep of this share's bodies, from one buffer into the other; with `looking` (which
+/* A look for the contacts of this share's bodies, where they are in buffer `from`. */
+int
+phys_look(const struct phys *w, int share, int shares, int from, int turn)
+{
+	const struct body_state *st = w->states[from];
+	const struct body_pose *kept = w->poses[from];
+	int i, dropped = 0;
+
+	for (i = share; i < w->bodies; i += shares)
+		dropped += look(w, st, kept, i, turn);
+	return dropped;
+}
+
+/* A substep of this share's bodies, from one buffer into the next; with `looking` (which
  * look it is, from 1), each body's contacts are found first. A body goes where it would go,
  * the others where pose_guess() says; then it takes its mass's part of every contact, and
  * the other body of each pair takes the rest for itself, from the same numbers. */
@@ -664,7 +693,8 @@ int
 phys_step(const struct phys *w, int share, int shares, int from, int looking)
 {
 	const struct body_state *st = w->states[from];
-	struct body_state *to = w->states[!from];
+	int next = from + 1 == PHYS_BUFFERS ? 0 : from + 1;
+	struct body_state *to = w->states[next];
 	const struct body_pose *kept = w->poses[from];
 	int i, dropped = 0;
 
@@ -807,15 +837,13 @@ phys_step(const struct phys *w, int share, int shares, int from, int looking)
 		if (spin2 > MAX_SPIN * MAX_SPIN)
 			spin = scale(spin, MAX_SPIN / __builtin_sqrtf(spin2));
 		out->pos[0] = cur.x.x, out->pos[1] = cur.x.y, out->pos[2] = cur.x.z;
-		out->key = phys_key(w, out->pos, shares);
+		out->key = phys_key(w, out->pos);
 		out->held = held;
 		out->q[0] = cur.q[0], out->q[1] = cur.q[1], out->q[2] = cur.q[2], out->q[3] = cur.q[3];
 		out->vel[0] = vel.x, out->vel[1] = vel.y, out->vel[2] = vel.z;
 		out->spin[0] = spin.x, out->spin[1] = spin.y, out->spin[2] = spin.z;
-		if (w->poses[!from]) {
-			poses_kept(out, shape, &cur.r, w->gravity, &w->poses[!from][i]);
-			out->key |= PHYS_POSED;
-		}
+		poses_kept(w, out, shape, &cur.r, w->gravity, &w->poses[next][i]);
+		out->key |= PHYS_POSED;
 	}
 	return dropped;
 }

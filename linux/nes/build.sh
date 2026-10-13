@@ -35,8 +35,16 @@ OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
 CFLAGS="$OPT -flto -fno-pie -std=gnu99 -fgnu89-inline -fcommon -w -Dasm(x)=abort() -DNES_VISIBLE_HEIGHT=240 -DHOST_LITTLE_ENDIAN -DNES6502_JUMPTABLE $INC"
 export CFLAGS BUILD HERE
 mkdir -p "$BUILD" && cd "$BUILD"
-{ find "$N" -name '*.c'; ls "$HERE"/*.c "$REPO/programs/linux/gles.c" "$REPO/programs/mc/mcw.c"; } |
+{ find "$N" -name '*.c'; ls "$HERE"/*.c "$REPO/programs/mc/mcw.c"; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/nofrendo.patch" ] && [ "$o" -nt "$HERE/rc6502.h" ] || rv32-cc $CFLAGS -c {} -o "$o"'
+# The GPU's library apart, a section a variable and each on 16 bytes (as linux/tdawn/build.sh
+# has it): a worker core makes the lists with it while this one emulates, and two cores must
+# not store to the same 16 bytes (docs/multicore.md). Optimised with the rest, its variables
+# lay among the emulator's, by chance of the build.
+[ gles.o -nt "$REPO/programs/linux/gles.c" ] && [ gles.o -nt "$HERE/build.sh" ] || {
+    rv32-cc $OPT -fno-pie -w $INC -fno-common -fdata-sections -fno-toplevel-reorder -msmall-data-limit=0 -c "$REPO/programs/linux/gles.c" -o gles.o
+    riscv32-linux-objcopy --set-section-alignment '.data*=16' --set-section-alignment '.bss*=16' gles.o
+}
 rv32-cc $OPT -flto -flto-partition=one *.o "$MW/src/lib/libnano-X.a" -lm -o nes
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/nes.bin" nes

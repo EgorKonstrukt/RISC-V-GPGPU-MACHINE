@@ -47,15 +47,19 @@ struct img_job {
 	int row_pitch;
 	void *codes;		/* the inflating stage's tables */
 	volatile uint32_t *inflated;	/* bytes of raw there are */
-	volatile uint32_t *unfiltered;	/* rows of rows there are */
+	volatile uint32_t *unfiltered;	/* rows of rows there are: the last band's count */
+	int bands, band_at[9];		/* the bands a row is unfiltered in: where each begins, and the row's end */
+	volatile uint32_t *banded[8];	/* rows each band has done */
 	/* JPEG */
 	int components, mcu_w, mcu_h, mcus_x, mcus_y, restart;
 	struct { int h, v, table, dc, ac; } comp[3];
 	uint16_t quant[4][64];
-	struct img_huff { uint8_t length[17]; uint8_t symbol[256]; uint16_t fast[512]; int32_t max[18]; int32_t first[17]; } huff[2][2];
+	/* whole: for the next 9 bits, a code and its value together when they fit in them
+	 * (value << 8 | zeros before it << 4 | bits taken; 0: not so short) */
+	struct img_huff { uint8_t length[17]; uint8_t symbol[256]; uint16_t fast[512]; int16_t whole[512]; int32_t max[18]; int32_t first[17]; } huff[2][2];
 	uint32_t scan_at;	/* where the entropy-coded data begins in the file */
-	uint8_t *list;		/* the coefficients that are not zero, a strip of MCU rows after another */
-	uint32_t list_room;
+	uint32_t *list;		/* the coefficients that are not zero, a strip of MCU rows after another */
+	uint32_t list_room;	/* in bytes */
 	uint32_t *strip_at;	/* where each MCU row's part of the list begins (mcus_y + 1 of them) */
 	volatile uint32_t *listed;	/* MCU rows of the list there are */
 	int strips, sharers;
@@ -238,7 +242,14 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 	int count;
 	const uint8_t *at, *end;
 /* Two bytes at once while the chunk has them; at a chunk's end, and for a long code, by b. */
-#define IMG_BY_B(what) (b.hold = hold, b.count = count, b.at = at, what, hold = b.hold, count = b.count, at = b.at, end = b.chunk_end)
+/* (b is in memory: whether it went wrong is asked only after it was used, not at every code) */
+#define IMG_BY_B(what) do { \
+		b.hold = hold, b.count = count, b.at = at; \
+		what; \
+		hold = b.hold, count = b.count, at = b.at, end = b.chunk_end; \
+		if (b.bad) \
+			goto stopped; \
+	} while (0)
 #define IMG_FILL(need) do { \
 		if (count < (need)) { \
 			if (at + 2 <= end) { \
@@ -323,10 +334,21 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 				int symbol, extra;
 
 				IMG_CODE(symbol, literals);
+				/* literals come in runs: one check a byte, for the next telling or the rows' end */
 				if (symbol < 256) {
-					if (n < total)
-						out[n++] = (uint8_t)symbol;
-				} else if (symbol == 256) {
+					uint8_t *to = out + n, *stop = out + (total - told > 1024 ? told + 1024 : total);
+
+					do {
+						*to++ = (uint8_t)symbol;
+						if (to == stop) {
+							n = (uint32_t)(to - out);
+							goto tell;
+						}
+						IMG_CODE(symbol, literals);
+					} while (symbol < 256);
+					n = (uint32_t)(to - out);
+				}
+				if (symbol == 256) {
 					break;
 				} else if (symbol < 286) {
 					uint32_t length, distance;
@@ -349,14 +371,21 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 						b.bad = 1;
 						break;
 					}
-					while (length-- && n < total) {
-						out[n] = out[n - distance];
-						n++;
+					if (length > total - n)
+						length = total - n;
+					{
+						uint8_t *to = out + n, *stop = to + length;
+						const uint8_t *from = to - distance;
+
+						n += length;
+						while (to < stop)
+							*to++ = *from++;
 					}
 				} else {
 					b.bad = 1;
 				}
 				/* the next stage is told now and then, not at every byte */
+tell:
 				if (n - told >= 1024) {
 					*j->inflated = told = n;
 					/* (a worker that stopped at a page goes on when this core looks) */
@@ -366,7 +395,10 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 							mcw_done(k);
 					}
 				}
+				if (n >= total)
+					break;	/* (every row is there: what the stream still has is not looked at) */
 			}
+stopped:
 			b.hold = hold, b.count = count, b.at = at;
 		} else {
 			b.bad = 1;
@@ -390,19 +422,28 @@ img_png_inflate(uint32_t first_chunk, uint32_t unused)
 static inline int
 img_paeth(int a, int b, int c)
 {
-	int p = a + b - c, pa = p > a ? p - a : a - p, pb = p > b ? p - b : b - p, pc = p > c ? p - c : c - p;
+	/* how far each of the three is from a + b - c: the nearest, a before b before c */
+	int pa = b - c, pb = a - c, pc = pa + pb;
 
-	return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+	pa = pa < 0 ? -pa : pa, pb = pb < 0 ? -pb : pb, pc = pc < 0 ? -pc : pc;
+	if (pb < pa)
+		a = b, pa = pb;
+	return pc < pa ? c : a;
 }
 
-/* Stage 2: each row without its filter, into a row of its own. */
+#define IMG_BANDS 4
+static int img_bands = IMG_BANDS;	/* 1: a row unfiltered by one worker, as it was (NXVIEW_BANDS) */
+
+/* Stage 2: each row without its filter, into a row of its own. A row is cut into bands, a
+ * worker each: a band needs of its row only what is left of it, so it follows the band before
+ * it a row behind, as that follows the inflating (a band begins on 16 bytes and on a pixel). */
 static uint32_t
-img_png_unfilter(uint32_t unused0, uint32_t unused1)
+img_png_unfilter(uint32_t band, uint32_t unused1)
 {
 	struct img_job *j = img;
-	int y, x, n = j->row_bytes, bpp = j->pixel_bytes;
+	int y, x, n = j->row_bytes, bpp = j->pixel_bytes, x0 = j->band_at[band], x1 = j->band_at[band + 1];
 
-	(void)unused0, (void)unused1;
+	(void)unused1;
 	for (y = 0; y < j->h; y++) {
 		const uint8_t *in = j->raw + (uint32_t)y * (uint32_t)(n + 1);
 		uint8_t *out = j->rows + (uint32_t)y * (uint32_t)j->row_pitch;
@@ -410,46 +451,63 @@ img_png_unfilter(uint32_t unused0, uint32_t unused1)
 
 		if (!img_wait(j->inflated, (uint32_t)(y + 1) * (uint32_t)(n + 1)))
 			break;
+		if (band && !img_wait(j->banded[band - 1], (uint32_t)y + 1))
+			break;
+		x = x0;
 		switch (in[0]) {
 		case 0:
-			memcpy(out, in + 1, n);
+			memcpy(out + x0, in + 1 + x0, x1 - x0);
 			break;
 		case 1:
-			for (x = 0; x < bpp && x < n; x++)
+			for (; x < bpp && x < x1; x++)
 				out[x] = in[1 + x];
-			for (; x < n; x++)
+			for (; x < x1; x++)
 				out[x] = (uint8_t)(in[1 + x] + out[x - bpp]);
 			break;
 		case 2:
 			if (!up)
-				memcpy(out, in + 1, n);
+				memcpy(out + x0, in + 1 + x0, x1 - x0);
 			else
-				for (x = 0; x < n; x++)
+				for (; x < x1; x++)
 					out[x] = (uint8_t)(in[1 + x] + up[x]);
 			break;
 		case 3:
-			for (x = 0; x < bpp && x < n; x++)
+			for (; x < bpp && x < x1; x++)
 				out[x] = (uint8_t)(in[1 + x] + ((up ? up[x] : 0) >> 1));
-			for (; x < n; x++)
+			for (; x < x1; x++)
 				out[x] = (uint8_t)(in[1 + x] + ((out[x - bpp] + (up ? up[x] : 0)) >> 1));
 			break;
 		case 4:
-			for (x = 0; x < bpp && x < n; x++)
+			for (; x < bpp && x < x1; x++)
 				out[x] = (uint8_t)(in[1 + x] + (up ? up[x] : 0));
+			if (up && (bpp == 3 || bpp == 4) && x + bpp <= x1) {
+				/* a pixel at a time: what is left of each byte and above that are kept, not loaded again */
+				int a0 = out[x - bpp], a1 = out[x - bpp + 1], a2 = out[x - bpp + 2], a3 = bpp == 4 ? out[x - 1] : 0;
+				int c0 = up[x - bpp], c1 = up[x - bpp + 1], c2 = up[x - bpp + 2], c3 = bpp == 4 ? up[x - 1] : 0, b;
+
+#define IMG_PAETH(a, c, k) (b = up[x + k], a = (uint8_t)(in[1 + x + k] + img_paeth(a, b, c)), c = b, out[x + k] = (uint8_t)a)
+				for (; x + bpp <= x1; x += bpp) {
+					IMG_PAETH(a0, c0, 0);
+					IMG_PAETH(a1, c1, 1);
+					IMG_PAETH(a2, c2, 2);
+					if (bpp == 4)
+						IMG_PAETH(a3, c3, 3);
+				}
+#undef IMG_PAETH
+			}
 			if (up)
-				for (; x < n; x++)
+				for (; x < x1; x++)
 					out[x] = (uint8_t)(in[1 + x] + img_paeth(out[x - bpp], up[x], up[x - bpp]));
 			else
-				for (; x < n; x++)
+				for (; x < x1; x++)
 					out[x] = (uint8_t)(in[1 + x] + out[x - bpp]);
 			break;
 		default:
 			*j->failed = 1;
 		}
-		if ((y & 3) == 3 || y == j->h - 1)
-			*j->unfiltered = (uint32_t)y + 1;
+		*j->banded[band] = (uint32_t)y + 1;
 	}
-	*j->unfiltered = (uint32_t)j->h;
+	*j->banded[band] = (uint32_t)j->h;
 	return (uint32_t)y;
 }
 
@@ -532,6 +590,13 @@ img_scan_fill(struct img_scan *s)
 	while (s->count <= 24) {
 		int byte = 0;
 
+		/* two bytes at once where neither can be a marker's */
+		if (s->count <= 16 && s->at + 2 <= s->end && s->at[0] != 0xff && s->at[1] != 0xff) {
+			s->hold |= (uint32_t)(s->at[0] << 8 | s->at[1]) << (16 - s->count);
+			s->count += 16;
+			s->at += 2;
+			continue;
+		}
 		if (s->at < s->end) {
 			byte = *s->at;
 			if (byte == 0xff) {
@@ -582,6 +647,20 @@ img_huff_make(struct img_huff *h)
 		code <<= 1;
 	}
 	h->max[17] = 0x7fffffff;
+	for (i = 0; i < 512; i++) {
+		int fast = h->fast[i], run = (fast & 255) >> 4, size = fast & 15, taken = fast >> 8;
+
+		h->whole[i] = 0;
+		if (fast && size && taken + size <= 9) {
+			int v = (i << taken & 511) >> (9 - size);
+
+			if (v < 1 << (size - 1))
+				v += 1 - (1 << size);
+			/* (a value of up to 8 bits beside the two counts) */
+			if (v >= -128 && v <= 127)
+				h->whole[i] = (int16_t)(v * 256 + run * 16 + taken + size);
+		}
+	}
 }
 
 static inline int
@@ -617,15 +696,15 @@ img_extend(int v, int bits)
 
 /*
  * Stage 1: the scan's codes into the list. A block is a count, then for each coefficient
- * that is not zero its place in the block (as the file orders them) and its value: three
- * bytes each, where the block itself would be 128 written.
+ * that is not zero a word: its place in the block (as the file orders them) and its value
+ * above that. One store each, where the block itself would be 128 written.
  */
 static uint32_t
 img_jpeg_codes(uint32_t unused0, uint32_t unused1)
 {
 	struct img_job *j = img;
 	struct img_scan s;
-	uint8_t *out = j->list, *end = j->list + j->list_room - 4096;
+	uint32_t *out = j->list, *end = j->list + (j->list_room - 4096) / 4;
 	int dc[3] = {0, 0, 0}, my, mx, c, by, bx, k, left = j->restart;
 
 	(void)unused0, (void)unused1;
@@ -634,6 +713,9 @@ img_jpeg_codes(uint32_t unused0, uint32_t unused1)
 	s.end = j->file + j->size;
 	for (my = 0; my < j->mcus_y && !s.bad; my++) {
 		j->strip_at[my] = (uint32_t)(out - j->list);
+		/* (on the first core: a worker that stopped at a page goes on when this core looks) */
+		if (img_followers)
+			img_look(0);
 		for (mx = 0; mx < j->mcus_x && !s.bad; mx++) {
 			if (j->restart && left-- == 0) {
 				/* a restart: to the next byte, past the marker, the predictions at zero */
@@ -648,17 +730,29 @@ img_jpeg_codes(uint32_t unused0, uint32_t unused1)
 			for (c = 0; c < j->components; c++)
 				for (by = 0; by < j->comp[c].v; by++)
 					for (bx = 0; bx < j->comp[c].h; bx++) {
-						uint8_t *count = out++;
-						int bits = img_huff_symbol(&s, &j->huff[0][j->comp[c].dc]), n = 0;
+						const struct img_huff *ac = &j->huff[1][j->comp[c].ac];
+						uint32_t *count = out++;
+						int bits = img_huff_symbol(&s, &j->huff[0][j->comp[c].dc]);
 
 						dc[c] += img_extend(img_scan_bits(&s, bits), bits);
-						if (dc[c]) {
-							out[0] = 0, out[1] = (uint8_t)dc[c], out[2] = (uint8_t)(dc[c] >> 8);
-							out += 3, n++;
-						}
+						if (dc[c])
+							*out++ = (uint32_t)dc[c] << 8;
 						for (k = 1; k < 64; k++) {
-							int symbol = img_huff_symbol(&s, &j->huff[1][j->comp[c].ac]), run = symbol >> 4, size = symbol & 15, v;
+							int symbol, run, size, v;
 
+							if (s.count < 16)
+								img_scan_fill(&s);
+							/* a short code and its value in one look */
+							v = ac->whole[s.hold >> 23];
+							if (v) {
+								k += v >> 4 & 15;
+								s.hold <<= v & 15;
+								s.count -= v & 15;
+								if (k < 64)
+									*out++ = (uint32_t)(v >> 8) << 8 | (uint32_t)k;
+								continue;
+							}
+							symbol = img_huff_symbol(&s, ac), run = symbol >> 4, size = symbol & 15;
 							if (!size) {
 								if (run != 15)
 									break;
@@ -667,12 +761,10 @@ img_jpeg_codes(uint32_t unused0, uint32_t unused1)
 							}
 							k += run;
 							v = img_extend(img_scan_bits(&s, size), size);
-							if (k < 64) {
-								out[0] = (uint8_t)k, out[1] = (uint8_t)v, out[2] = (uint8_t)(v >> 8);
-								out += 3, n++;
-							}
+							if (k < 64)
+								*out++ = (uint32_t)v << 8 | (uint32_t)k;
 						}
-						*count = (uint8_t)n;
+						*count = (uint32_t)(out - count - 1);
 					}
 			if (out > end)
 				s.bad = 1;
@@ -685,6 +777,8 @@ img_jpeg_codes(uint32_t unused0, uint32_t unused1)
 	*j->listed = (uint32_t)j->mcus_y;
 	return (uint32_t)(out - j->list);
 }
+
+static int img_codes_worker;	/* the codes on a worker and strips on this core too, as it was (NXVIEW_CODES=worker) */
 
 /* ---------------------------------------------------------------- JPEG: the transform, the colours */
 
@@ -806,28 +900,28 @@ img_jpeg_strip(struct img_job *j, int my0, int my1)
 	int my, mx, c, by, bx, k, x, y;
 
 	for (my = my0; my < my1; my++) {
-		const uint8_t *in = j->list + j->strip_at[my];
+		const uint32_t *in = j->list + j->strip_at[my];
 
 		for (mx = 0; mx < j->mcus_x; mx++) {
 			for (c = 0; c < j->components; c++)
 				for (by = 0; by < j->comp[c].v; by++)
 					for (bx = 0; bx < j->comp[c].h; bx++) {
 						const uint16_t *q = j->quant[j->comp[c].table];
-						int n = *in++;
+						int n = (int)*in++;
 
 						/* nothing but the block's mean (most of a sky): what the transform would give, without it */
-						if (n == 0 || (n == 1 && in[0] == 0)) {
-							int mean = n ? ((int16_t)(in[1] | in[2] << 8) * q[0]) << 3 : 0;
+						if (n == 0 || (n == 1 && !(in[0] & 255))) {
+							int mean = n ? ((int16_t)(in[0] >> 8) * q[0]) << 3 : 0;
 							uint8_t *to = plane[c] + by * 8 * 16 + bx * 8;
 
-							in += 3 * n;
+							in += n;
 							for (k = 0; k < 8; k++, to += 16)
 								memset(to, img_clip(((mean + 32) >> 6) + 128), 8);
 							continue;
 						}
 						memset(block, 0, sizeof block);
-						for (k = 0; k < n; k++, in += 3)
-							block[img_zigzag[in[0]]] = (int16_t)(in[1] | in[2] << 8) * q[in[0]];
+						for (k = 0; k < n; k++, in++)
+							block[img_zigzag[in[0] & 255]] = (int16_t)(in[0] >> 8) * q[in[0] & 255];
 						img_idct(block, plane[c] + by * 8 * 16 + bx * 8, 16);
 					}
 			/* the MCU's pixels, each component stretched to the MCU's size */
@@ -1040,7 +1134,7 @@ img_jpeg_header(struct img_job *j)
 static void *
 img_memory(uint32_t bytes)
 {
-	void *m = mmap(NULL, (bytes + 4095) & ~4095u, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	void *m = mmap(NULL, (bytes + 4095) & ~4095u, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
 
 	if (m == MAP_FAILED)
 		return NULL;
@@ -1098,7 +1192,7 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 	pixels = (uint32_t)j->w * (uint32_t)j->h * 3;
 	mapped = (uint32_t)head + pixels;
 	out = open(ppm_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-	if (out < 0 || ftruncate(out, mapped) != 0 || (map = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_SHARED, out, 0)) == MAP_FAILED) {
+	if (out < 0 || ftruncate(out, mapped) != 0 || (map = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, out, 0)) == MAP_FAILED) {
 		wrong = "the picture cannot be written";
 		goto done;
 	}
@@ -1108,8 +1202,8 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 	j->failed = mcw_alloc(16);
 	*j->failed = 0;
 	/* no more than there is work for: a PNG is this core's step and two more, a JPEG its codes and its strips of 16 rows but this core's */
-	if (workers > (png ? 2 : (j->h + 15) / 16))
-		workers = png ? 2 : (j->h + 15) / 16;
+	if (workers > (png ? img_bands + 1 : (j->h + 15) / 16))
+		workers = png ? img_bands + 1 : (j->h + 15) / 16;
 	if (workers > 0)
 		got = mcw_open(workers);
 	if (png) {
@@ -1117,21 +1211,33 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 		j->raw = img_memory((uint32_t)(j->row_bytes + 1) * (uint32_t)j->h + 16);
 		j->rows = img_memory((uint32_t)j->row_pitch * (uint32_t)j->h);
 		j->inflated = mcw_alloc(16);
-		j->unfiltered = mcw_alloc(16);
+		/* a band a worker but the last, which writes the pixels; a band is 96 bytes of a row or more */
+		j->bands = got >= 2 ? got - 1 : 1;
+		while (j->bands > 1 && j->row_bytes / j->bands < 96)
+			j->bands--;
+		for (k = 0; k < j->bands; k++) {
+			j->band_at[k] = j->row_bytes / j->bands * k / 48 * 48;
+			j->banded[k] = mcw_alloc(16);
+			if (j->banded[k])
+				*j->banded[k] = 0;
+		}
+		j->band_at[j->bands] = j->row_bytes;
+		j->unfiltered = j->banded[j->bands - 1];
 		j->codes = img_memory(3 * sizeof(struct img_codes));
 		if (!j->raw || !j->rows || !j->codes) {
 			wrong = "not enough memory for the picture";
 			goto done;
 		}
-		*j->inflated = *j->unfiltered = 0;
+		*j->inflated = 0;
 		if (got >= 2) {
 			/* the longest stage is this core's own: it waits for nobody until the end */
-			mcw_post(1, img_png_unfilter, 0, 0);
-			mcw_post(2, img_png_pixels, 0, 0);
-			img_followers = 2;
+			for (k = 1; k <= j->bands; k++)
+				mcw_post(k, img_png_unfilter, (uint32_t)(k - 1), 0);
+			mcw_post(j->bands + 1, img_png_pixels, 0, 0);
+			img_followers = j->bands + 1;
 			img_png_inflate(first_idat, 0);
 			img_followers = 0;
-			for (k = 1; k <= 2; k++)
+			for (k = 1; k <= j->bands + 1; k++)
 				mcw_wait(k);
 		} else {
 			img_png_inflate(first_idat, 0);
@@ -1144,8 +1250,8 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 		for (k = 0; k < j->components; k++)
 			blocks += (uint32_t)(j->comp[k].h * j->comp[k].v);
 		blocks *= (uint32_t)(j->mcus_x * j->mcus_y);
-		/* a coefficient that is not zero is at least two bits of the file */
-		j->list_room = 12 * j->size + blocks + 8192;
+		/* a coefficient that is not zero is at least two bits of the file, and a word here */
+		j->list_room = 16 * j->size + 4 * blocks + 8192;
 		j->list = mmap(NULL, (j->list_room + 4095) & ~4095u, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		j->strip_at = img_memory((uint32_t)(j->mcus_y + 1) * 4 + 16);
 		j->listed = mcw_alloc(16);
@@ -1154,11 +1260,22 @@ ui_image_to_ppm(const char *path, const char *ppm_path, int *pw, int *ph, int wo
 			goto done;
 		}
 		/* (the list is seldom a quarter of that: so much is made to be there, the rest when it is stepped on) */
-		mcw_touch(j->list, j->list_room / 4 < 3 * j->size + blocks + 4096 ? j->list_room / 4 : 3 * j->size + blocks + 4096);
+		mcw_touch(j->list, j->list_room / 4 < 4 * j->size + 4 * blocks + 4096 ? j->list_room / 4 : 4 * j->size + 4 * blocks + 4096);
 		*j->listed = 0;
 		j->strips = (j->mcus_y * j->mcu_h + 15) / 16;
 		img_clip_table();
-		if (got >= 2) {
+		if (got >= 2 && !img_codes_worker) {
+			/* The codes are one stream, and what the picture waits for: this core has them (it
+			 * keeps four times a worker's stores a pass), and every worker has strips. */
+			j->sharers = got;
+			for (k = 1; k <= got; k++)
+				mcw_post(k, img_jpeg_strips, (uint32_t)(k - 1), 0);
+			img_followers = got;
+			img_jpeg_codes(0, 0);
+			img_followers = 0;
+			for (k = 1; k <= got; k++)
+				mcw_wait(k);
+		} else if (got >= 2) {
 			/* this core shares the strips with the workers: the first ones, whose codes are
 			 * there first, so that it has its work while the codes of the rest are made */
 			j->sharers = got;

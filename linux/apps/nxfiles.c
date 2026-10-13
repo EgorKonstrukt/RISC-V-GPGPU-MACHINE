@@ -55,7 +55,7 @@ static struct entry {
 	char name[128], label[40], run[64];	/* run: a shortcut's command */
 	long size;
 	int kind, icon, chosen;			/* icon: a cell of the sheets, unless icon_file */
-	char icon_file[96];			/* a file with an icon of its own: this program, or a shortcut's */
+	char icon_file[96];			/* a file whose own icon comes first (this program, a shortcut's): `icon` if it has none */
 	int x, y, placed;			/* on the desktop */
 	char line[2][20];			/* and its name there, in one line or two */
 	short line_w[2], lines;
@@ -160,28 +160,59 @@ static long size_of(int i);
 
 /* Folders first, then by name (or by what a column's heading asked for, then by name). The entries' numbers are sorted and each entry then moved
  * once: an entry is hundreds of bytes, and sorting them was mostly copying. */
+/* An entry to another place. One only just read (read_folder) has its name, kind and size
+ * and nothing else to carry: the whole of it is 400 bytes, and a folder has hundreds. */
 static void
-sort_entries(void)
+move_entry(struct entry *to, const struct entry *from, int only_read)
 {
-	static short to[MAX_ENTRIES];
+	if (!only_read) {
+		*to = *from;
+		return;
+	}
+	strcpy(to->name, from->name);
+	strcpy(to->label, from->label);
+	to->kind = from->kind;
+	to->size = from->size;
+}
+
+/* `only_read`: the entries are as read_folder made them (see move_entry). A merge sort of
+ * the numbers: the C library's qsort moved each two bytes through memcpy, and compared twice
+ * as often. Entries that compare the same keep the folder's order. */
+static void
+sort_entries(int only_read)
+{
+	static short to[MAX_ENTRIES], other[MAX_ENTRIES];
 	static struct entry held;
-	int i, k, from;
+	short *in = to, *out = other, *swap;
+	int i, k, from, span, low, mid, high, a, b;
 
 	for (i = 0; i < count; i++) {
 		to[i] = (short)i;
 		if (sort_by)	/* every entry's size and kind are asked for: slow in a folder of hundreds */
 			kind_of(i), size_of(i);
 	}
-	qsort(to, count, sizeof to[0], order);
+	if (sort_by)
+		only_read = 0;
+	for (span = 1; span < count; span *= 2) {
+		for (low = 0; low < count; low += 2 * span) {
+			mid = low + span < count ? low + span : count;
+			high = low + 2 * span < count ? low + 2 * span : count;
+			for (a = low, b = mid, k = low; k < high; k++)
+				out[k] = b >= high || (a < mid && order(&in[a], &in[b]) <= 0) ? in[a++] : in[b++];
+		}
+		swap = in, in = out, out = swap;
+	}
+	if (in != to)
+		memcpy(to, in, count * sizeof to[0]);
 	for (i = 0; i < count; i++) {
 		if (to[i] < 0 || to[i] == i)
 			continue;
-		held = entries[i];
+		move_entry(&held, &entries[i], only_read);
 		for (k = i; (from = to[k]) != i; k = from) {
-			entries[k] = entries[from];
+			move_entry(&entries[k], &entries[from], only_read);
 			to[k] = -1;
 		}
-		entries[k] = held;
+		move_entry(&entries[k], &held, only_read);
 		to[k] = -1;
 	}
 }
@@ -225,7 +256,8 @@ static void
 draw_icon(GR_DRAW_ID to, int x, int y, const struct entry *e, int size)
 {
 	if (e->icon_file[0])
-		GrDrawImageFromFile(to, ui_gc, x, y, size, size, (char *)e->icon_file, GR_IMAGE_ICON(size));
+		GrDrawImageFromFile(to, ui_gc, x, y, size, size, (char *)e->icon_file,
+			e->icon >= 0 ? GR_IMAGE_ICON_OR(size, e->icon) : GR_IMAGE_ICON(size));
 	else
 		ui_icon(to, ui_gc, x, y, e->icon, size);
 }
@@ -283,11 +315,12 @@ kind_of(int i)
 	e->icon = ui_icon_of(icon);
 	e->icon_file[0] = 0;
 	if (e->kind == K_PROGRAM) {
-		/* its own icon, when its file ends in one (the window system opens it by its whole path) */
+		/* its own icon, when its file ends in one: the window system looks, by its whole path,
+		 * and draws the cell above for a file without (a look from here was four calls a file) */
 		char path[600];
 
 		snprintf(path, sizeof path, "%s/%s", strcmp(where, "/") ? where : "", e->name);
-		if (strlen(path) < sizeof e->icon_file && ui_icon_in(path))
+		if (strlen(path) < sizeof e->icon_file)
 			strcpy(e->icon_file, path);
 	}
 	if (e->kind == K_SHORTCUT) {
@@ -417,9 +450,13 @@ read_folder(void)
 			left_out++;
 			continue;
 		}
-		memset(e, 0, sizeof *e);
+		/* (what an entry starts with, field by field: cleared whole it was 400 bytes of stores) */
 		copy_text(e->name, item->d_name, sizeof e->name);
 		copy_text(e->label, item->d_name, sizeof e->label);
+		e->run[0] = e->icon_file[0] = e->line[0][0] = e->line[1][0] = 0;
+		e->size = 0;
+		e->chosen = e->x = e->y = e->placed = 0;
+		e->line_w[0] = e->line_w[1] = e->lines = 0;
 		e->kind = item->d_type == DT_DIR ? K_FOLDER : K_UNKNOWN;
 		if (item->d_type == DT_REG && ends_with(e->name, ".app"))
 			e->kind = K_SHORTCUT, e->size = -1;	/* what a stat would say, but for the size */
@@ -431,7 +468,7 @@ read_folder(void)
 	if (left_out)
 		snprintf(notice, sizeof notice, "%d more are not shown (%d entries at most, names under %d letters)", left_out, MAX_ENTRIES,
 			 (int)sizeof entries[0].name);
-	sort_entries();
+	sort_entries(1);
 	if (stat(".", &info) == 0)
 		folder_time = info.st_mtim;
 	cursor = anchor = -1;
@@ -1217,7 +1254,7 @@ properties_window(const char *path)
 	count = 1;
 	kind_of(0);
 #define LINE(what, ...) (snprintf(lines[n][0], sizeof lines[0][0], "%s", what), snprintf(lines[n][1], sizeof lines[0][1], __VA_ARGS__), n++)
-	LINE("Kind", "%s", e->kind == K_PROGRAM && e->icon_file[0] ? "Program, with an icon of its own" : kind_names[e->kind]);
+	LINE("Kind", "%s", e->kind == K_PROGRAM && e->icon_file[0] && ui_icon_in(e->icon_file) ? "Program, with an icon of its own" : kind_names[e->kind]);
 	LINE("Where", "%s", where);
 	if (e->kind == K_FOLDER) {
 		if ((inside = opendir(leaf)) != NULL) {

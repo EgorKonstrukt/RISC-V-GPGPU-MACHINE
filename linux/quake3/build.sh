@@ -8,11 +8,12 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
-MW=$WORK/src/microwindows
+MW=${SE_MW:-$WORK/src/microwindows}
 Q=$WORK/src/ioq3
-BUILD=$WORK/src/quake3-build
+BUILD=${QUAKE3_BUILD:-$WORK/src/quake3-build}
 DATA=$WORK/src/quake3-data
 OUT=${QUAKE3_OUT:-$REPO/build/images/linux/root}
+PROGRAMS=${SE_PROGRAMS:-$REPO/programs}
 COMMIT=87a99d18
 DEMO=${QUAKE3_DEMO:-https://ftp.gwdg.de/pub/misc/ftp.idsoftware.com/idstuff/quake3/linux/linuxq3ademo-1.11-6.x86.gz.sh}
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
@@ -57,16 +58,16 @@ UI="q3_ui/ui_main game/bg_misc q3_ui/ui_addbots q3_ui/ui_atoms q3_ui/ui_cdkey q3
     q3_ui/ui_removebots q3_ui/ui_serverinfo q3_ui/ui_servers2 q3_ui/ui_setup q3_ui/ui_sound q3_ui/ui_sparena
     q3_ui/ui_specifyserver q3_ui/ui_splevel q3_ui/ui_sppostgame q3_ui/ui_spskill q3_ui/ui_startserver q3_ui/ui_team
     q3_ui/ui_teamorders q3_ui/ui_video ui/ui_syscalls"
-OURS="sys_shaderemu tr_shaderemu snd_shaderemu server_shaderemu"
+OURS="sys_shaderemu tr_shaderemu snd_shaderemu server_shaderemu client_shaderemu"
 
 # The flags are Quake's (linux/quake/build.sh says why each): floats only, a variable a section
 # of its own on 16 bytes, and the game's sine, cosine and square root in floats (fmath.h).
 GLES="-DSEGL_FLOAT -DMAX_TEXTURES=64"
-GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include"
+GLINC="-idirafter $PROGRAMS/linux/include -I$MW/src/include"
 FPU="-fno-math-errno -fsingle-precision-constant"
 OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
 DEFS="-DSTANDALONE -DBOTLIB -DNO_VM_COMPILED -DNDEBUG -DSHADEREMU -DPRODUCT_VERSION=\"1.36-shaderemu\" ${QUAKE3_DEFINES:-}"
-CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w $DEFS -include $HERE/fmath.h $GLINC -I$C/thirdparty/zlib-1.3.1 -I$REPO/programs/mc -I$HERE -I$C"
+CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w $DEFS -include $HERE/fmath.h $GLINC -I$C/thirdparty/zlib-1.3.1 -I$PROGRAMS/mc -I$HERE -I$C"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
 export CFLAGS C HERE BUILD ALIGN16
 mkdir -p "$BUILD/engine" "$BUILD/game" "$BUILD/cgame" "$BUILD/ui" && cd "$BUILD"
@@ -99,8 +100,8 @@ EOF
     riscv32-linux-objcopy --redefine-sym vmMain=${m}_vmMain --redefine-sym dllEntry=${m}_dllEntry "$m.o"
 done
 # gles.c in its float build, with what the renderer adds to it (gpu_shaderemu.c includes it)
-rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC -I"$REPO/programs/linux" "$HERE/gpu_shaderemu.c" -o gpu.o
-rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
+rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC -I"$PROGRAMS/linux" "$HERE/gpu_shaderemu.c" -o gpu.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcw.c" -o mcw.o
 printf 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));\n' > zz_pad.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
@@ -109,7 +110,7 @@ for o in gpu.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $AL
 rv32-cc -O2 $FPU -w ${QUAKE3_LINK:-} engine/*.o game.o cgame.o ui.o gpu.o mcw.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake3
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/quake3.bin" quake3
-riscv32-linux-nm -n quake3 > "$WORK/src/quake3.nm"
+riscv32-linux-nm -n quake3 > "${QUAKE3_NM:-$WORK/src/quake3.nm}"
 
 # The demo: a shell script with an archive after line 164, and in it demoq3/pak0.pk3.
 if [ ! -f "$DATA/demo/demoq3/pak0.pk3" ]; then

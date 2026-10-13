@@ -8,6 +8,9 @@ pass's constant buffer (RVC_DUMP_CB=FILE while the harness runs that pass). The 
 of the eight-target tick's: (3, 0) by default, whose texels 24 to 31 of core 0's state have
 the instruction clock (texel 28, second word), so the pass's emulated instructions are known.
 
+With `--lines FILE` after those it also writes how many times each line of TICK.asm ran (the
+count, the line's number among the instructions, its text): what tools/tick_shares.py reads.
+
 Prints how many bytecode instructions ran, how many of them inside the fast loop, how many
 emulated instructions the pass was, and the pixel's eight texels (to hold against the state
 the harness has after the same pass). The ROM's and the device tree's textures read as zeros:
@@ -182,6 +185,11 @@ class Machine:
                     if s[0] in ('loop', 'switch'):
                         s[2].append(i)
                         break
+            elif op in ('continue', 'continuec_nz', 'continuec_z'):
+                for s in reversed(stack):
+                    if s[0] == 'loop':
+                        self.jump[i] = s[1]
+                        break
         # the fast loop: the largest loop inside the outer one
         depth, loops, st = 0, [], []
         for i, (op, _, _) in enumerate(self.ins):
@@ -268,6 +276,7 @@ class Machine:
     def run(self):
         ins, jump = self.ins, self.jump
         count = fast = trips = 0
+        hits = self.hits = [0] * len(ins)
         f0, f1 = self.fast
         pc = 0
         n = len(ins)
@@ -284,10 +293,12 @@ class Machine:
                 pc += 1
                 continue
             count += 1
+            hits[pc] += 1
             if f0 <= pc <= f1:
                 fast += 1
             if op == 'loop':
                 count -= 1
+                hits[pc] -= 1
                 if f0 <= pc <= f1:
                     fast -= 1
                 pc += 1
@@ -311,6 +322,18 @@ class Machine:
             if op in ('breakc_nz', 'breakc_z'):
                 v = self.read(o[0])[0]
                 if (v != 0) == (op == 'breakc_nz'):
+                    pc = jump[pc] + 1
+                else:
+                    pc += 1
+                continue
+            if op == 'continue':
+                trips += jump[pc] == f0
+                pc = jump[pc] + 1
+                continue
+            if op in ('continuec_nz', 'continuec_z'):
+                v = self.read(o[0])[0]
+                if (v != 0) == (op == 'continuec_nz'):
+                    trips += jump[pc] == f0
                     pc = jump[pc] + 1
                 else:
                     pc += 1
@@ -495,10 +518,21 @@ class Machine:
 
 
 def main():
-    asm, snapshot, constants = sys.argv[1:4]
-    pixel = (int(sys.argv[4]), int(sys.argv[5])) if len(sys.argv) > 5 else (3, 0)
+    args = sys.argv[1:]
+    lines = None
+    if '--lines' in args:
+        at = args.index('--lines')
+        lines = args[at + 1]
+        del args[at:at + 2]
+    asm, snapshot, constants = args[0:3]
+    pixel = (int(args[3]), int(args[4])) if len(args) > 4 else (3, 0)
     m = Machine(asm, snapshot, constants, pixel)
     count, fast, trips = m.run()
+    if lines:
+        with open(lines, 'w') as f:
+            f.write('# fast loop %d %d\n' % m.fast)
+            for i, (op, _, raw) in enumerate(m.ins):
+                f.write('%d\t%d\t%s %s\n' % (m.hits[i], i, op, raw))
     before = int(m.state[0, 28, 1])
     after = m.out.get(4, [0, 0, 0, 0])[1] if pixel == (3, 0) else None
     print('%s: %d bytecode instructions for the pixel, %d of them in the fast loop (%d trips of it)' % (asm, count, fast, trips))

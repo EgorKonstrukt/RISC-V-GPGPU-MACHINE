@@ -85,6 +85,52 @@ and by the pictures. Where a frame goes now: the copy 27%, `AddPolyline` 14% (th
 lines of two points, 340 instructions each, the next thing worth a special case),
 `RenderText` 14%, the cube's two rotations 1.6% (doubles in `sinf`).
 
+## The copy on worker cores (13 October 2026)
+
+The copy is a third of a frame, all of it stores into the frame's memory, and nothing in
+the next frame of ImGui waits for it. So it is four worker cores' (`docs/multicore.md`),
+and the first core goes on to the next frame:
+
+| under `rvc_cpu` at 3 million instructions a second | the first core copies | workers copy |
+|---|---|---|
+| the demo's own window: the first core's instructions a frame | 220,000 | 153,000 |
+| frames a second (300 frames and the start) | 12.0 | 16.5 |
+| with ImGui's demo window | 322,000 | 214,000 |
+| frames a second | 8.3 | 12.2 |
+
+On the shader machine (D3D11, fxc2; 300 frames and the start, from power-on): 16.1 frames
+a second with the build before, 15.8 with this one and `IMGUI_COPY=inline`, 21.3 with the
+workers; with ImGui's demo window 11.2, 10.9 and 15.6. The sums below are the same there.
+
+- `ImGui_ImplShaderEmu_RenderAhead()` in place of `RenderDrawData()`: ImGui's commands are
+  cut into pieces, each worker's share of the indices a run of them (a command is cut where
+  a share ends, at a whole triangle), and each worker gets room in the frame for its
+  vertices (five corners an index: no cut triangle is more) and two colour tables of its
+  own (`seglFrameSpace` in `gles.c`). ImGui's vertex and index buffers are taken from its
+  lists (the lists get those of two frames ago, which they empty before they write), so
+  ImGui may make its next frame at once.
+- `ImGui_ImplShaderEmu_RenderFinish()`, before the program draws its next frame: waits for
+  the workers, makes a command of each run they wrote (`seglScreenCompactAt`), and the
+  program swaps. `ImGui_ImplShaderEmu_RenderReady()` says whether they have finished, and
+  `imdemo` asks four times while it makes its next frame (`show` in `demo.cpp`), so that
+  the frame before is shown a few passes into the next one (a frame of ImGui is 18 passes,
+  the workers' shares two to five) and not at its end. From the pointer to the picture is
+  then some 24 passes where it was 27, with frames 18 passes apart.
+- A worker that needs a third table or more than 256 runs says so, and the first core
+  copies the whole frame itself, as it also does (`RenderAhead()` answers false) with no
+  workers, under 1,200 indices, with a callback among the commands, and with
+  `IMGUI_COPY=inline`. The copy is one piece of code for both (`struct copier`): the first
+  core's and each worker's have their own state.
+- The colours remembered last had one left from the table before when a table began: it
+  was found again with that table's tag. In a picture that stands still the tag was the
+  same number and nobody saw; with a table a worker it was another colour's (the plot's
+  line black). All three are the table's first colour now.
+
+`IMGUI_SUM=1` prints an `imsum:` line a frame: the triangles handed to the device in order,
+those with two corners the same left out, each corner with its colour for its tag. The
+same for both ways of copying, every frame of 40, in `IMDEMO_HOLD=1` alone, with
+`IMDEMO_SHOW=1` and with `IMDEMO_SCROLL=300` and `1000`.
+
 ## What it costs
 
 On the harness (D3D11, about 2.7 million instructions a second with the desktop running):

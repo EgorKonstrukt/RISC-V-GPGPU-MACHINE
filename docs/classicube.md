@@ -44,27 +44,38 @@ through the machine's serial console:
   distance of 128 and a seed from `CLASSICUBE_SEED`.
 
 
-## Meshes from a worker core
+## Meshes from worker cores
 
-A chunk's mesh is some 100 to 200 thousand instructions, and the game builds one a frame
-while it has any to build: 15 seconds at 4 frames a second after the world is made. On a
-machine with worker cores (`docs/multicore.md`) a second builder runs on one:
+A chunk's mesh is some 100 to 400 thousand instructions, and the game built one a frame
+while it had any to build: 15 seconds at 4 frames a second after the world is made, and a
+frame of 0.14 s for every block dug. On a machine with worker cores (`docs/multicore.md`)
+the meshes are all theirs, and the first core builds none:
 
-- `Builder.c` is compiled twice (`build.sh`: `-DSE_SECOND`, its three public names renamed).
-  The second copy has every buffer of the first as its own, takes eight chunks at a time
-  that have never had a mesh, and builds them into memory of its own; it makes no vertex
-  buffer and writes nothing of the chunks'.
-- The first core goes on building the nearest chunk each frame, and when the worker's eight
-  are done makes them the chunks' own (`SE_Mesh_Collect` in `MapRenderer.c`): the parts'
-  counts, and the vertices into GPU memory as any chunk's are (`Gfx_SE_UnlockPacked`).
-- The two copies share no variable they write. They did share one, the game's `Drawer` (a
+- `Builder.c` is compiled again for each of seven workers (`build.sh`: `-DSE_SECOND`, its
+  four public names renamed; `SE_COPIES` in `MapRenderer.h`). A copy has every buffer of the
+  first as its own, takes up to two chunks at a time and builds them into memory of its
+  own; it makes no vertex buffer and writes nothing of the chunks'.
+- Each frame the first core gives the nearest chunks that wait for a mesh to the workers
+  that have none (`SE_Mesh_Post` in `MapRenderer.c`), and makes what a worker has finished
+  the chunks' own (`SE_Mesh_Take`): the parts' counts, and the vertices into GPU memory as
+  any chunk's are (`Gfx_SE_UnlockPacked`). Two chunks a job, so that the nearest are drawn
+  soon and every worker has some.
+- The copies share no variable they write. Two did share one, the game's `Drawer` (a
   block's corners, written for every block drawn): a chunk of one core now and then had
   vertices of the other's block, 6 of 52 meshes in one run. The builder's own faces (below)
   do not use it.
-- A chunk that is made again (a block changed) stays the first core's, which draws it by its
-  old mesh until the new one is there. Anything that makes chunks stale while the worker has
-  some (`se_mesh_serial`) throws its eight away, and whatever frees the chunks or the blocks
-  waits for it first (`MapRenderer_SE_Settle`).
+- A chunk that is made again (a block changed) is a worker's too, and is drawn by its old
+  mesh until the new one is there: the old is let go and the new put in its place in one
+  frame. A chunk has a count of the times it was asked to be made again (`made`): a mesh
+  begun before the last of them is thrown away and begun again, and whatever frees the
+  chunks or the blocks waits for the workers first (`MapRenderer_SE_Settle`). (One count
+  for all chunks threw every worker's job away at each block changed: with water flowing
+  no mesh would have been finished.)
+- The light's heights of the whole map are made by the workers before the first mesh, rows
+  of z each (`SE_Light`, `ClassicLighting_SE_Rows`): a row is whole 16 bytes. After that a
+  changed column is the first core's, as it was.
+- A chunk too large for a worker's buffer (16,384 vertices) is the first core's (`se_own`),
+  and with no workers (`CLASSICUBE_MESH=inline`) all are, one a frame, as before.
 - The build gives every variable its own 16 bytes, as Quake's does, and the game touches all
   of its data once before the first job (`mcw_touch`), or the worker would stop at each page
   of its own buffers until the next frame.
@@ -78,7 +89,8 @@ and stays in order.
 
 From the command to the whole world drawn: 38.0 s on four cores (40.3 s on two, where only
 the meshes have a worker), 52 s with `CLASSICUBE_MESH=inline` (the first core alone); the
-finished world is the same 83 commands and 6,980 quads.
+finished world is the same 83 commands and 6,980 quads. With seven workers for the meshes
+(13 October 2026, below) the meshes' part of it is 2 s where it was 7.
 
 ## How it is drawn
 
@@ -207,6 +219,8 @@ the texels and vertices made for the device.
     CLASSICUBE_STATS_MS=N    how often the ccstat: lines come (5000; 0: never)
     CLASSICUBE_SIZE=WxH      the window's size (854x480)
     CLASSICUBE_MESH=inline   every mesh by the first core, in one order every time
+    CLASSICUBE_MESH_WORKERS=N   at most N workers for the meshes (7)
+    CLASSICUBE_WALK=every    the chunks' commands made anew every frame, as they were
     CLASSICUBE_MESH_SUM=1    a ccmesh: line a chunk mesh made: origin, vertices, two sums
     CLASSICUBE_DEFINES=-DSE_COUNT   (to build.sh) a chunk's instructions by phase, in the ccstat: lines
 
@@ -242,13 +256,89 @@ workers to 28.7.
   `HOT` (`-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops`): 3% of a frame, a fifth
   of digging.
 
-Not built: the matrix blocks kept while the view stands still (4 thousand of a standing
-frame; writing them in place would break the two sets); `Stopwatch_Measure` from the clock
-word (1.5 thousand a frame, and frame times in whole milliseconds).
+Not built then, and built the day after (below): the matrix blocks kept while the view
+stands still, and `Stopwatch_Measure` from the clock word.
 
 `CLASSICUBE_TEXTURE_SUM=1` prints a `cctex:` line a texture made (42 of them, the same
 sums from the PNG pack and the decoded one). A held frame's window is the top left 854 x
 480 of a `--gpu-capture`: outside it two builds may differ.
+
+## The chunks' commands kept, and the meshes all the workers' (13 October 2026)
+
+Under `rvc_cpu` at 3 million instructions a second and passes of 8,192, `CLASSICUBE_SEED=7`,
+block physics off (frames in two seconds of the `ccstat:` lines, and instructions a frame):
+
+| | before | after | |
+|---|---|---|---|
+| standing where the game starts | 134 frames, 40.8k | 276 frames, 19.9k | 2.06 times |
+| jumping there (`down Space`: the camera moves every frame) | 121, 45.5k | 186, 29.5k | 1.54 |
+| walking and jumping into a hill (`turn 1200 0`, `down W`, `down Space`) | 123, 44.5k | 169, 32.3k | 1.37 |
+| digging down a shaft (`turn 0 300`, `down LeftMouse`), its two seconds | 65, 84k | 189, 29k | 2.9 |
+| from the command to the whole world drawn | 16.7 s | 12.8 s | the meshes 7 s to 2 |
+
+On the shader machine (D3D11, fxc2; one binary of each build from power-on, in turn, the
+`ccstat:` lines of six seconds each):
+
+| | before | after | |
+|---|---|---|---|
+| standing | 91.0 and 91.1 frames a second | 160.7 and 166.1 | 1.8 times |
+| jumping | 79.9 and 80.3 | 108.4 and 115.0 | 1.4 |
+| from the game's first stat line to the whole world | 7.7 s and 7.7 s | 5.4 s and 5.5 s | |
+
+The machine ran 3.5 million instructions a second before and 3.1 after: what went was
+cheap (a draw's words copied), what stayed is loads, stores and floats. Utilization 98.9%
+and 98.7%, the loss in both the animated tiles' texels filling the write cache
+(`CopyTexels`). The picture held after standing, jumping, looking down and two blocks dug
+is the same in both builds, pixel for pixel (854 x 480), and the start's 52 meshes made by
+the seven workers there are the old build's set by the second sum.
+
+- **A walk of the chunks leaves its commands in the set, and they stay.** The game's two
+  walks (`MapRenderer_RenderNormal`, `MapRenderer_RenderTranslucent`) came to the same 70 to
+  80 draws frame after frame, each 110 instructions of the walk and the draw. The map's
+  renderer counts what would change them (`se_walk_serial`: the list of chunks in view or
+  its order, the faces towards the camera, a mesh made or let go, the atlases, the camera
+  under water or not) and the backend notes a walk as it is made (`Gfx_SE_SegmentBegin`,
+  `Gfx_SE_SegmentEnd`): where its commands are in the set, what they come to, the buffers
+  drawn. While the count stands, no buffer or texture was made again (`kept_epoch`) and the
+  walk would begin at the same command and vertex, the commands are left where they are in
+  that set and the walk is not made. Each of the two sets has its own note, and one that a
+  frame did not use is forgotten. `CLASSICUBE_WALK=every` is the old way; the `ccstat:`
+  lines say how many walks were made and how many kept.
+- **A chunk's matrix block has a place of its own in each set** (`KEPT_BLOCKS`, a slot a
+  packed mesh), and the matrices have a number that stays while they are what they were
+  (`MatricesLoaded`: the camera's, compared word for word when it is loaded; any other
+  load has a number never used before). A block written for the camera's number is right
+  until the camera moves: standing, nothing of the chunks is written at all. The 2D
+  screen's and the held block's blocks are the frame's, as before.
+- **Which chunks are in view is asked without going through them** when no chunk waits for
+  a mesh: a plane's products with the grid's x, y and z are made once (`SE_Frustum`), a
+  chunk's test is three sums a plane in the order `Frustum_TestSphere` makes them (the same
+  floats), in the map's own order, and when every chunk is in or out as it was the list of
+  those drawn stands (`SE_SameView`). With the camera where it was nothing is asked.
+- **The frame's time is the machine's clock word** (`Stopwatch_Measure` in
+  `Platform_Posix.c`): whole milliseconds, no system call and no division of doubles a
+  frame (1.5 thousand instructions of a frame of 23).
+- **The meshes are the workers'** (above): a block dug is not a frame of 0.14 s any more,
+  and the world's 52 meshes are there 2 s after the map where they took 7. What is left of
+  those 2 s is the first core's: the vertices into GPU memory (8 instructions each), the
+  borders' buffers, the atlas four times across at its first draw.
+
+Tried and not kept: every chunk in every list, with no test of what is in view (the list
+then changes only when the camera leaves a chunk). 170 commands and 12,764 quads a frame
+where 83 and 6,980 are in view at the start; jumping 30.4 thousand instructions a frame
+against 29.5 with the test above, since every chunk's block is then written when the
+camera moves, and walking into a hill 37.3 against 32.3.
+
+Not done: a chunk's block is 28 words written whenever the camera moves, 25 of them the
+same for every chunk (2 to 3 thousand instructions of a moving frame, and on the shader
+machine, where a load or a store is four times an addition, an eighth of its time: it is
+most of why jumping gained less than standing). The device reads a
+block where the command says, so one block for all chunks wants an origin in the command
+(a change to the GPU's shader, its model and Unity's copy). The held block and the 2D
+screen are made anew every frame (some 5 thousand of a standing frame's 20). The
+vertices of a worker's mesh could be the device's when the first core gets them. The
+seven copies of the builder are 3.3 MB of variables that the first core touches at the
+start (a million instructions).
 
 ## Checking it
 
@@ -259,10 +349,11 @@ sums from the PNG pack and the decoded one). A held frame's window is the top le
 - A change to how it builds chunks: the meshes' bytes must stay what they were. Under
   `rvc_cpu`, with `CLASSICUBE_MESH_SUM=1 CLASSICUBE_SEED=7`, the `ccmesh:` lines of the build
   before and after are compared: with `CLASSICUBE_MESH=inline` line for line (52 meshes at
-  the start, 69,828 vertices; then a block dug by `down LeftMouse` and `up LeftMouse` typed
-  together, which makes two or three chunks again), with the worker as a set by the second
-  sum, which has each vertex's colour for its tag (the tags go by the order chunks are made
-  in). Switch block physics off for it (`echo singleplayerphysics=false >>
+  the start, 69,828 vertices; then `turn 0 300`, and at a later `ccstat:` line a block dug
+  by `down LeftMouse` and `up LeftMouse` typed together, which makes two or three chunks
+  again: the turn must have had a frame), with the workers as a set by the second sum,
+  which has each vertex's colour for its tag (the tags go by the order chunks are made
+  in). On 13 October 2026: 57 meshes with two blocks dug, the same lines and the same set. Switch block physics off for it (`echo singleplayerphysics=false >>
   /tmp/classicube/options.txt` before the game): dirt turns to grass by the clock, and two
   builds' worlds part after a dig.
 - A change to how it draws: hold the same frame of the same seed before and after and compare

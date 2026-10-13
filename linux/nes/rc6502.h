@@ -7,8 +7,8 @@
  * and takes the same cycles: after each one the cycles left are tested, and code that runs
  * out leaves with the 6502's pc. So a run is the same with and without (NES_CPU=interp).
  *
- * Registers while translated code runs: s0 A, s1 X, s2 Y, s3 S, s4 N and Z (below), s6 C (0 or
- * 1), s7 V (zero or not), s8 the cycles left, s9 the RAM, s10 the state below, s11 the
+ * Registers while translated code runs: s0 A, s1 X, s2 Y, s3 S, s4 N and Z (below), s5 -1, s6 C
+ * (0 or 1), s7 V (zero or not), s8 the cycles left, s9 the RAM, s10 the state below, s11 the
  * routines (rc_rt). The other flags stay the interpreter's.
  * N and Z are one value: Z is set when its low byte is zero, N when bit 7 or 8 is set. A result
  * is that value as it is; only bit, whose N is not its Z's, sets bit 8 (RC_NZ, RC_N, RC_Z).
@@ -21,7 +21,7 @@
 
 typedef struct
 {
-   uint32 a, x, y, s, n, z, c, v;   /* 0 to 28; n is N and Z, z is not used */
+   uint32 a, x, y, s, n, z, c, v;   /* 0 to 28; n is N and Z, z is -1 */
    int32 rem;                       /* 32: cycles left */
    uint32 pc;                       /* 36: where translated code left */
    int32 bias;                      /* 40: taken off rem by a write that must leave */
@@ -33,6 +33,7 @@ typedef struct
    uint8 *ram;                      /* 64 */
    uint32 paged_read;               /* 68: from here up a read is of the pages, no device's */
    uint32 paged_write;              /* 72: from here to 0x7FFF a write is to the pages */
+   uint32 *direct;                  /* 76: by the 6502's address: its code (a cartridge whose pages never turn) */
 } rc_state_t;
 
 static rc_state_t rc;
@@ -46,7 +47,8 @@ static int rc_full;                 /* no room for more code: what is not transl
 #define  RC_CODE_BYTES  0x100000    /* a jal reaches all of it */
 #define  RC_BIAS        0x1000000
 
-extern char rc_rt[], rc_rt_out[], rc_rt_read[], rc_rt_write[], rc_rt_dispatch[], rc_rt_idle[];
+extern char rc_rt[], rc_rt_out[], rc_rt_read[], rc_rt_write[], rc_rt_dispatch[], rc_rt_direct[], rc_rt_idle[];
+extern char rc_rt_rti[], rc_rt_vdata[], rc_rt_pad[];
 extern void rc_enter(uint32 code, rc_state_t *state, char *routines);
 
 /* ---- what translated code calls: the routines, and the slow ways out of them ---- */
@@ -63,16 +65,36 @@ extern uint8 ppu_read(uint32 address), ppu_readhigh(uint32 address);
 extern void ppu_write(uint32 address, uint8 value), ppu_writehigh(uint32 address, uint8 value);
 extern void apu_write(uint32 address, uint8 value);
 
-/* a read that is neither RAM nor the cartridge: a device's, at the cycle the interpreter's is */
-__attribute__((used)) uint32 rc_slow_read(uint32 address, int rem)
+static int rc_slice_from;   /* the cycles so far, as the slice began */
+extern int ppu_lines_ahead;
+extern int ppu_lines_settle(int t, int *passed);
+
+/* A slice of several lines (ppu_lines_ahead): those that have passed are counted and the
+** slice is cut to the line it is in, before anything looks at a line or changes what one is.
+** late: cycles the instruction has taken already. Returns what the slice was cut by. */
+static inline __attribute__((always_inline)) int rc_settle(int late)
+{
+   int passed, cut;
+
+   if (0 == ppu_lines_ahead)
+      return 0;
+   cut = ppu_lines_settle(cpu.total_cycles - rc_slice_from - late, &passed);
+   rc_slice_from += passed;
+   remaining_cycles -= cut;
+   return cut;
+}
+
+/* a read that is neither RAM nor the cartridge: a device's, at the cycle the interpreter's is
+** (crossed: the cycle a read across a page has taken by now) */
+__attribute__((used)) uint32 rc_slow_read(uint32 address, int rem, int crossed)
 {
    uint32 value;
 
    rc_flush(rem);
-   if (address - 0x2000 < 0x2000)
+   if (address - 0x4016 < 2)
+      value = ppu_readhigh(address);   /* (the pads: no line's business) */
+   else if (rc_settle(crossed), address - 0x2000 < 0x2000)
       value = ppu_read(address);
-   else if (address - 0x4016 < 2)
-      value = ppu_readhigh(address);
    else
       value = mem_readbyte(address);
    rc.rem = remaining_cycles;
@@ -83,6 +105,9 @@ __attribute__((used)) uint32 rc_slow_read(uint32 address, int rem)
 __attribute__((used)) void rc_slow_write(uint32 address, uint32 value, int rem)
 {
    rc_flush(rem);
+   /* (the sound's channels and the pads' strobe are no line's business) */
+   if (address - 0x4000 >= 0x14 && 0x4016 != address)
+      rc_settle(0);
    /* (the PPU's, the sound's and the pads' registers turn no pages: the code goes on) */
    if (address - 0x2000 < 0x2018)
    {
@@ -112,7 +137,8 @@ __attribute__((used)) int rc_idle(uint32 where, uint32 a, uint32 x, uint32 y)
    rc.y = y;
    if (idle_never[where & 63] == (uint16) where)
       return 0;
-   cycles = idle_loop(where & 0xFFFF, where >> 16, a, x, y, p, remaining_cycles);
+   cycles = rc_settle(0);
+   cycles += idle_loop(where & 0xFFFF, where >> 16, a, x, y, p, remaining_cycles);
    if (idle_passed.any)
    {
       rc.x = idle_passed.x;
@@ -126,7 +152,52 @@ __attribute__((used)) int rc_idle(uint32 where, uint32 a, uint32 x, uint32 y)
 
 static int rc_inside;       /* a slice that rc_slice runs: the frame's loop may be asked for the next */
 static int rc_running;      /* translated code has the 6502's registers: an interrupt waits for it to be left */
-static int rc_slice_from;   /* the cycles so far, as the slice began */
+
+/* rti in translated code that a slice runs: the flags are set and the 6502's pc returned. -1:
+** the interpreter's (it has the other flags, or an interrupt waits that this lets in). */
+__attribute__((used)) int rc_rti(uint32 s)
+{
+   uint8 p = ram[0x100 + ((s + 1) & 0xFF)];
+
+   if (!rc_running || (0 == (p & I_FLAG) && cpu.int_pending))
+      return -1;
+   rc.s = (s + 3) & 0xFF;
+   rc.n = RC_NZ(p, 0 == (p & Z_FLAG));
+   rc.c = p & C_FLAG;
+   rc.v = p & V_FLAG;
+   cpu.p_reg = (cpu.p_reg & ~(B_FLAG | D_FLAG | I_FLAG)) | (p & (B_FLAG | D_FLAG | I_FLAG));
+   return ram[0x100 + ((s + 2) & 0xFF)] | ram[0x100 + ((s + 3) & 0xFF)] << 8;
+}
+
+/* a read of a pad's register: sixteen or more a frame, and no cycle's or line's business */
+__attribute__((used)) uint32 rc_pad(uint32 address)
+{
+   return ppu_readhigh(address);
+}
+
+/* a write to the PPU's data register, of which a game makes thousands in a row */
+extern void ppu_write_data(uint8 value);
+
+/* (in a slice of several lines: apart, so that the write itself saves no registers) */
+static __attribute__((noinline)) int rc_vdata_ahead(uint32 value, int rem)
+{
+   int cut;
+
+   rc_flush(rem);
+   cut = rc_settle(0);
+   ppu_write_data(value);
+   return cut;
+}
+
+/* (the register is no cycle's business: nothing is brought up to date for it. Returns what
+** the slice is cut by) */
+__attribute__((used)) int rc_vdata(uint32 value, int rem)
+{
+   if (ppu_lines_ahead)
+      return rc_vdata_ahead(value, rem);
+   ppu_write_data(value);
+   return 0;
+}
 int rc_leave;               /* the next line has begun and the interpreter is to go on: it has an interrupt to take */
 
 /* (rc_line for a line whose work calls something: apart, so that rc_line saves no registers) */
@@ -144,6 +215,23 @@ static __attribute__((noinline)) int rc_line_called(void)
    return next;
 }
 
+/* (rc_line at the end of a slice of several lines: apart, as rc_line_called is) */
+static __attribute__((noinline)) int rc_line_ahead(int rem)
+{
+   int next;
+
+   rc_flush(rem);
+   rc_settle(0);
+   next = ppu_line_plain(cpu.total_cycles - rc_slice_from);
+   if (next < 0)
+      return rc_line_called();
+   if (0 == next)
+      return 0;
+   rc_slice_from = cpu.total_cycles;
+   remaining_cycles = next;
+   return next;
+}
+
 /* A slice has ended in translated code. The next one's cycles, when all the frame's loop has
 ** to do between the two is an ordinary line's work (ppu_line_between does it); else 0, and
 ** the code leaves as it did. An awake line was 350 instructions round its slice, so. */
@@ -156,6 +244,8 @@ __attribute__((used)) int rc_line(int rem)
    if (!rc_inside || rem < -64 || nes6502_idle.state || cpu.burn_cycles
        || (cpu.int_pending && 0 == (cpu.p_reg & I_FLAG)))
       return 0;
+   if (ppu_lines_ahead)
+      return rc_line_ahead(rem);
    rc_flush(rem);
    next = ppu_line_plain(cpu.total_cycles - rc_slice_from);
    if (next < 0)
@@ -186,7 +276,7 @@ __asm__(
    "   lw s3, 44(sp)\n   lw s4, 40(sp)\n   lw s5, 36(sp)\n   lw s6, 32(sp)\n"
    "   lw s7, 28(sp)\n   lw s8, 24(sp)\n   lw s9, 20(sp)\n   lw s10, 16(sp)\n"
    "   lw s11, 12(sp)\n  addi sp, sp, 64\n ret\n"
-   /* read: a0 an address, then its byte; a2 and a3 are kept */
+   /* read: a0 an address, then its byte; t1 the cycle a page crossed took; a2 and a3 are kept */
    "rc_rt_read:\n"
    "   srli t0, a0, 11\n   bnez t0, 1f\n"
    "   add t0, s9, a0\n    lbu a0, 0(t0)\n     ret\n"
@@ -195,7 +285,7 @@ __asm__(
    "   lw t0, 0(t0)\n      slli t1, a0, 20\n   srli t1, t1, 20\n   add t0, t0, t1\n"
    "   lbu a0, 0(t0)\n     ret\n"
    "2: addi sp, sp, -16\n  sw ra, 12(sp)\n     sw a2, 8(sp)\n      sw a3, 4(sp)\n"
-   "   mv a1, s8\n         call rc_slow_read\n"
+   "   mv a1, s8\n         mv a2, t1\n        call rc_slow_read\n"
    "   lw ra, 12(sp)\n     lw a2, 8(sp)\n      lw a3, 4(sp)\n      addi sp, sp, 16\n"
    "   lw s8, 32(s10)\n    ret\n"
    /* write: a0 an address, a1 a byte */
@@ -219,6 +309,27 @@ __asm__(
    "   lw t2, 60(s10)\n    add t2, t2, t1\n    lbu t2, 0(t2)\n     bne t2, t0, rc_rt_out_pc\n"
    "   lw t2, 56(s10)\n    slli t1, t1, 2\n    add t2, t2, t1\n    lw t1, 0(t2)\n"
    "   andi t2, t1, 1\n    bnez t2, rc_rt_out_pc\n beqz t1, rc_rt_out_pc\n jr t1\n"
+   /* the same when the pages never turn: the code is by the 6502's address */
+   "rc_rt_direct:\n"
+   "   blez s8, rc_rt_out_pc\n"
+   "   lw t1, 76(s10)\n    slli t0, a0, 2\n    add t0, t0, t1\n    lw t1, 0(t0)\n"
+   "   beqz t1, rc_rt_out_pc\n jr t1\n"
+   /* rti: a0 is where the word with its pc is, for when it is the interpreter's */
+   "rc_rt_rti:\n"
+   "   addi sp, sp, -16\n  sw a0, 12(sp)\n     mv a0, s3\n         call rc_rti\n"
+   "   bltz a0, 1f\n"
+   "   lw s3, 12(s10)\n    lw s4, 16(s10)\n    lw s6, 24(s10)\n    lw s7, 28(s10)\n"
+   "   addi sp, sp, 16\n   addi s8, s8, -6\n"
+   "   lw t0, 76(s10)\n    bnez t0, rc_rt_direct\n j rc_rt_dispatch\n"
+   "1: lw a0, 12(sp)\n     addi sp, sp, 16\n   lw a0, 0(a0)\n      j rc_rt_out_pc\n"
+   /* pad: a0 the address of a pad's register, then its byte */
+   "rc_rt_pad:\n"
+   "   addi sp, sp, -16\n  sw ra, 12(sp)\n     call rc_pad\n"
+   "   lw ra, 12(sp)\n     addi sp, sp, 16\n   ret\n"
+   /* vdata: a0 a byte for the PPU's data register */
+   "rc_rt_vdata:\n"
+   "   addi sp, sp, -16\n  sw ra, 12(sp)\n     mv a1, s8\n         call rc_vdata\n"
+   "   lw ra, 12(sp)\n     addi sp, sp, 16\n   sub s8, s8, a0\n    ret\n"
    /* idle: after a taken branch back; the word after the call is the loop's top and end */
    "rc_rt_idle:\n"
    "   blez s8, 9f\n"
@@ -249,7 +360,7 @@ __asm__(
 /* ---- the assembler ---- */
 
 enum { ZERO = 0, RA = 1, T0 = 5, T1 = 6, T2 = 7, A0 = 10, A1 = 11, A2 = 12, A3 = 13,
-       RA_ = 8 /* A */, RX = 9, RY = 18, RS = 19, RN = 20, RZ = 21, RC = 22, RV = 23,
+       RA_ = 8 /* A */, RX = 9, RY = 18, RS = 19, RN = 20, RM1 = 21, RC = 22, RV = 23,
        REM = 24, RAM = 25, RT = 27 };
 
 #define  E(word)                 (*rc_p++ = (uint32) (word))
@@ -261,6 +372,7 @@ enum { ZERO = 0, RA = 1, T0 = 5, T1 = 6, T2 = 7, A0 = 10, A1 = 11, A2 = 12, A3 =
 #define  e_or(rd, a, b)          E_R(0, b, a, 6, rd)
 #define  e_xor(rd, a, b)         E_R(0, b, a, 4, rd)
 #define  e_sltu(rd, a, b)        E_R(0, b, a, 3, rd)
+#define  e_slt(rd, a, b)         E_R(0, b, a, 2, rd)
 #define  e_addi(rd, a, imm)      E_I(0x13, 0, rd, a, imm)
 #define  e_xori(rd, a, imm)      E_I(0x13, 4, rd, a, imm)
 #define  e_andi(rd, a, imm)      E_I(0x13, 7, rd, a, imm)
@@ -305,6 +417,8 @@ static void e_li(int rd, uint32 value)
 
 #define  RT_OFF(routine)         ((int) ((routine) - rc_rt))
 #define  e_call(routine)         e_jalr(RA, RT, RT_OFF(routine))
+/* to the code of the 6502's address in a0, wherever that is */
+#define  e_dispatch()            e_jalr(ZERO, RT, RT_OFF(rc_fixed ? rc_rt_direct : rc_rt_dispatch))
 
 /* leave with the 6502 at pc */
 static void e_out(uint32 pc)
@@ -316,6 +430,9 @@ static void e_out(uint32 pc)
 /* A run's unchecked copy (rc_run_copy): its instructions' cycles are counted here, not by the
 ** code, until something must have them (rc_owed), and N and Z are set by its last setter only. */
 static int rc_fast, rc_pending, rc_nz_live;
+/* in a copy: whether an instruction's C and V are read before they are set again (rc_flags),
+** and what C is known to be before it (after clc or sec), or -1 */
+static int rc_c_live, rc_v_live, rc_c_known = -1;
 static int rc_extra;   /* cycles of a run's copy that the jump ending it takes with its own */
 static uint8 *rc_lead; /* by byte of the program: 1 a jump comes here, 2 looked at (rc_leaders) */
 
@@ -340,6 +457,8 @@ static void e_tail(int cycles, uint32 next)
 }
 
 #define  rc_nz_wanted()          (!rc_fast || rc_nz_live)
+#define  rc_c_wanted()           (!rc_fast || rc_c_live)
+#define  rc_v_wanted()           (!rc_fast || rc_v_live)
 #define  e_nz(reg)               (rc_nz_wanted() ? (void) e_mv(RN, reg) : (void) 0)   /* (a result is 0 to 255) */
 
 /* ---- the 6502's instructions ---- */
@@ -348,12 +467,12 @@ enum { M_IMP, M_ACC, M_IMM, M_ZP, M_ZPX, M_ZPY, M_ABS, M_ABX, M_ABY, M_INX, M_IN
 enum { K_NONE, K_INTERP1, K_LDA, K_LDX, K_LDY, K_STA, K_STX, K_STY, K_ADC, K_SBC, K_AND, K_ORA,
        K_EOR, K_CMP, K_CPX, K_CPY, K_BIT, K_INC, K_DEC, K_ASL, K_LSR, K_ROL, K_ROR, K_INX, K_INY,
        K_DEX, K_DEY, K_TAX, K_TAY, K_TXA, K_TYA, K_TSX, K_TXS, K_PHA, K_PLA, K_CLC, K_SEC, K_CLV,
-       K_NOP, K_BRANCH, K_JMP, K_JSR, K_RTS, K_JMPI };
+       K_NOP, K_BRANCH, K_JMP, K_JSR, K_RTS, K_JMPI, K_RTI };
 
 typedef struct { uint8 kind, mode, cycles; } rc_op_t;
 
-/* (not here, so the interpreter's: brk, rti, the flags i and d, php, plp, all undocumented; and
-** jmp () through a pointer that is not in RAM) */
+/* (not here, so the interpreter's: brk, the flags i and d, php, plp, all undocumented; and
+** jmp () through a pointer that is not in RAM; rti is a routine's, in a slice of rc_slice's) */
 static const rc_op_t rc_ops[256] =
 {
 #define  ALU(base, k) \
@@ -392,6 +511,7 @@ static const rc_op_t rc_ops[256] =
    [0x70] = { K_BRANCH, M_REL, 2 }, [0x90] = { K_BRANCH, M_REL, 2 }, [0xB0] = { K_BRANCH, M_REL, 2 },
    [0xD0] = { K_BRANCH, M_REL, 2 }, [0xF0] = { K_BRANCH, M_REL, 2 },
    [0x4C] = { K_JMP, M_ABS, 3 }, [0x6C] = { K_JMPI, M_ABS, 5 }, [0x20] = { K_JSR, M_ABS, 6 }, [0x60] = { K_RTS, M_IMP, 6 },
+   [0x40] = { K_RTI, M_IMP, 6 },
    [0x08] = { K_INTERP1 }, [0x28] = { K_INTERP1 }, [0x58] = { K_INTERP1 }, [0x78] = { K_INTERP1 },
    [0xD8] = { K_INTERP1 }, [0xF8] = { K_INTERP1 },
 #undef   ALU
@@ -506,6 +626,17 @@ static int e_ram_place(int mode, uint32 arg, int *offset)
    }
 }
 
+#define  rc_is_pad(mode, arg)    (M_ABS == (mode) && (0x4016 == (arg) || 0x4017 == (arg)))
+
+/* whether a mode's operand is read through the routine, which may come to a device */
+static int rc_read_called(int mode, uint32 arg)
+{
+   if (M_IMM == mode || M_IMP == mode || M_ACC == mode || rc_in_ram(mode, arg) || rc_is_pad(mode, arg))
+      return 0;
+   return !((M_ABS == mode && arg >= 0x8000)
+            || ((M_ABX == mode || M_ABY == mode) && arg >= 0x8000 && (arg & 0xFFF) + 0xFF < 0x1000));
+}
+
 /* an operand's value into a register */
 static void e_load(int mode, uint32 arg, int penalty, int to)
 {
@@ -520,7 +651,14 @@ static void e_load(int mode, uint32 arg, int penalty, int to)
       base = e_ram_place(mode, arg, &offset);
       e_lbu(to, base, offset);
    }
-   else if ((M_ABS == mode && arg >= 0x8000) || ((M_ABX == mode || M_ABY == mode) && arg >= 0x8000 && (arg & 0xFFF) + 0xFF < 0x1000))
+   else if (rc_is_pad(mode, arg))
+   {
+      e_li(A0, arg);
+      e_call(rc_rt_pad);
+      if (to != A0)
+         e_mv(to, A0);
+   }
+   else if (!rc_read_called(mode, arg))
    {
       /* the cartridge, and all of it in one page: through the pages as they are now, in place */
       uint32 in_page = arg & 0xFFF;
@@ -542,6 +680,9 @@ static void e_load(int mode, uint32 arg, int penalty, int to)
    else
    {
       e_address(mode, arg, penalty);
+      /* (t1 for the routine: the cycle a read across a page took, which e_address leaves there) */
+      if (!penalty || (M_ABX != mode && M_ABY != mode && M_INY != mode))
+         e_mv(T1, ZERO);
       rc_owed();
       e_call(rc_rt_read);
       if (to != A0)
@@ -558,6 +699,12 @@ static void e_store(int mode, uint32 arg, int from)
       base = e_ram_place(mode, arg, &offset);
       e_sb(from, base, offset);
    }
+   else if (M_ABS == mode && 0x2007 == (arg & 0xE007))
+   {
+      e_mv(A0, from);
+      rc_owed();
+      e_call(rc_rt_vdata);
+   }
    else
    {
       e_address(mode, arg, 0);
@@ -573,24 +720,29 @@ static void e_modify(int kind, int reg)
    switch (kind)
    {
    case K_ASL:
-      e_srli(RC, reg, 7);
+      if (rc_c_wanted())
+         e_srli(RC, reg, 7);
       e_slli(reg, reg, 1);
       e_andi(reg, reg, 0xFF);
       break;
    case K_LSR:
-      e_andi(RC, reg, 1);
+      if (rc_c_wanted())
+         e_andi(RC, reg, 1);
       e_srli(reg, reg, 1);
       break;
    case K_ROL:
-      e_srli(T1, reg, 7);
+      if (rc_c_wanted())
+         e_srli(T1, reg, 7);
       e_slli(reg, reg, 1);
       e_or(reg, reg, RC);
       e_andi(reg, reg, 0xFF);
-      e_mv(RC, T1);
+      if (rc_c_wanted())
+         e_mv(RC, T1);
       break;
    case K_ROR:
       e_slli(T1, RC, 7);
-      e_andi(RC, reg, 1);
+      if (rc_c_wanted())
+         e_andi(RC, reg, 1);
       e_srli(reg, reg, 1);
       e_or(reg, reg, T1);
       break;
@@ -606,12 +758,11 @@ static void e_modify(int kind, int reg)
    e_nz(reg);
 }
 
-static void e_compare(int reg)
+/* the flags of a comparison whose difference is in t1 (C: it is not below zero) */
+static void e_compared(void)
 {
-   e_sub(T1, reg, A0);
-   e_srli(T0, T1, 8);
-   e_andi(T0, T0, 1);
-   e_xori(RC, T0, 1);
+   if (rc_c_wanted())
+      e_slt(RC, RM1, T1);
    if (rc_nz_wanted())
       e_andi(RN, T1, 0xFF);
 }
@@ -739,7 +890,7 @@ static void e_jump(uint32 from, uint32 target)
       }
    }
    e_li(A0, target);
-   e_jalr(ZERO, RT, RT_OFF(rc_rt_dispatch));
+   e_dispatch();
 }
 
 /* out if no cycles are left, as the interpreter looks after every instruction; then the jump */
@@ -769,30 +920,50 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_store(mode, arg, (K_STA == kind) ? RA_ : (K_STX == kind) ? RX : RY);
       break;
    case K_ADC:
-      e_load(mode, arg, 1, A0);
-      e_add(T1, RA_, A0);
-      e_add(T1, T1, RC);
-      e_xor(T2, RA_, A0);
-      e_xori(T2, T2, -1);
-      e_xor(T0, RA_, T1);
-      e_and(T2, T2, T0);
-      e_andi(RV, T2, 0x80);
-      e_srli(RC, T1, 8);
+      if (M_IMM == mode && !rc_v_wanted())
+         e_addi(T1, RA_, arg & 0xFF);
+      else
+      {
+         e_load(mode, arg, 1, A0);
+         e_add(T1, RA_, A0);
+      }
+      if (0 != rc_c_known)
+         e_add(T1, T1, RC);
+      if (rc_v_wanted())
+      {
+         e_xor(T2, RA_, A0);
+         e_xori(T2, T2, -1);
+         e_xor(T0, RA_, T1);
+         e_and(T2, T2, T0);
+         e_andi(RV, T2, 0x80);
+      }
+      if (rc_c_wanted())
+         e_srli(RC, T1, 8);
       e_andi(RA_, T1, 0xFF);
       e_nz(RA_);
       break;
    case K_SBC:
-      e_load(mode, arg, 1, A0);
-      e_sub(T1, RA_, A0);
-      e_xori(T0, RC, 1);
-      e_sub(T1, T1, T0);
-      e_xor(T2, RA_, A0);
-      e_xor(T0, RA_, T1);
-      e_and(T2, T2, T0);
-      e_andi(RV, T2, 0x80);
-      e_srli(T0, T1, 8);
-      e_andi(T0, T0, 1);
-      e_xori(RC, T0, 1);
+      if (M_IMM == mode && !rc_v_wanted())
+         e_addi(T1, RA_, -(int) (arg & 0xFF));
+      else
+      {
+         e_load(mode, arg, 1, A0);
+         e_sub(T1, RA_, A0);
+      }
+      if (1 != rc_c_known)
+      {
+         e_xori(T0, RC, 1);
+         e_sub(T1, T1, T0);
+      }
+      if (rc_v_wanted())
+      {
+         e_xor(T2, RA_, A0);
+         e_xor(T0, RA_, T1);
+         e_and(T2, T2, T0);
+         e_andi(RV, T2, 0x80);
+      }
+      if (rc_c_wanted())
+         e_slt(RC, RM1, T1);
       e_andi(RA_, T1, 0xFF);
       e_nz(RA_);
       break;
@@ -813,12 +984,20 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_nz(RA_);
       break;
    case K_CMP: case K_CPX: case K_CPY:
-      e_load(mode, arg, 1, A0);
-      e_compare((K_CMP == kind) ? RA_ : (K_CPX == kind) ? RX : RY);
+      reg = (K_CMP == kind) ? RA_ : (K_CPX == kind) ? RX : RY;
+      if (M_IMM == mode)
+         e_addi(T1, reg, -(int) (arg & 0xFF));
+      else
+      {
+         e_load(mode, arg, 1, A0);
+         e_sub(T1, reg, A0);
+      }
+      e_compared();
       break;
    case K_BIT:
       e_load(mode, arg, 0, A0);
-      e_andi(RV, A0, 0x40);
+      if (rc_v_wanted())
+         e_andi(RV, A0, 0x40);
       if (rc_nz_wanted())
       {
          e_andi(T0, A0, 0x80);
@@ -846,6 +1025,7 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       {
          e_address(mode, arg, 0);
          e_mv(A2, A0);
+         e_mv(T1, ZERO);
          rc_owed();
          e_call(rc_rt_read);
          e_modify(kind, A0);
@@ -866,9 +1046,9 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
    case K_TXS: e_mv(RS, RX); break;
    case K_PHA: e_push(RA_); break;
    case K_PLA: e_pull(RA_); e_nz(RA_); break;
-   case K_CLC: e_mv(RC, ZERO); break;
-   case K_SEC: e_addi(RC, ZERO, 1); break;
-   case K_CLV: e_mv(RV, ZERO); break;
+   case K_CLC: if (rc_c_wanted()) e_mv(RC, ZERO); break;
+   case K_SEC: if (rc_c_wanted()) e_addi(RC, ZERO, 1); break;
+   case K_CLV: if (rc_v_wanted()) e_mv(RV, ZERO); break;
    case K_NOP: break;
 
    case K_BRANCH:
@@ -917,7 +1097,7 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_slli(T1, T1, 8);
       e_or(A0, A0, T1);
       e_addi(REM, REM, -5 - extra);
-      e_jalr(ZERO, RT, RT_OFF(rc_rt_dispatch));
+      e_dispatch();
       return;
    case K_JSR:
       e_li(T1, (pc + 2) >> 8);
@@ -929,6 +1109,10 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_leave_to(pc, arg);
       rc_lazy = 0;
       return;
+   case K_RTI:
+      e_jalr(A0, RT, RT_OFF(rc_rt_rti));
+      E(pc);
+      return;
    case K_RTS:
       e_pull(A0);
       e_pull(T1);
@@ -936,7 +1120,7 @@ static void rc_instruction(uint32 pc, uint8 op, uint32 arg)
       e_or(A0, A0, T1);
       e_addi(A0, A0, 1);
       e_addi(REM, REM, -6 - extra);
-      e_jalr(ZERO, RT, RT_OFF(rc_rt_dispatch));
+      e_dispatch();
       return;
    }
    e_tail(info->cycles, next);
@@ -956,6 +1140,9 @@ static int rc_plain(uint32 pc, int *most, int *nz)
    if (kind < K_LDA || kind > K_NOP)
       return 0;
    if ((K_STA == kind || K_STX == kind || K_STY == kind || (kind >= K_INC && kind <= K_ROR && M_ACC != mode)) && !rc_in_ram(mode, arg))
+      return 0;
+   /* (a read that may be a device's: the slice may be cut there, so the cycles are tested after it) */
+   if (rc_read_called(mode, arg))
       return 0;
    *nz = !(K_STA == kind || K_STX == kind || K_STY == kind || K_TXS == kind || K_PHA == kind || K_CLC == kind
            || K_SEC == kind || K_CLV == kind || K_NOP == kind);
@@ -1004,7 +1191,7 @@ static void rc_leaders(uint32 start)
             if (n < RC_WORK && (K_JSR != info->kind || rc_eager))
                stack[n++] = target;
          }
-         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind)
+         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind || K_RTI == info->kind)
             break;
          pc += (K_INTERP1 == info->kind) ? 1 : rc_length[info->mode];
       }
@@ -1036,20 +1223,95 @@ static int rc_run_length(uint32 pc, int *most, int *last_nz)
 
 static void rc_instruction(uint32 pc, uint8 op, uint32 arg);
 
+#define  rc_sets_c(kind)   (K_ADC == (kind) || K_SBC == (kind) || K_CMP == (kind) || K_CPX == (kind) || K_CPY == (kind) \
+                            || ((kind) >= K_ASL && (kind) <= K_ROR) || K_CLC == (kind) || K_SEC == (kind))
+
+/* For each of a run's n instructions: whether the C and the V it sets are read before they are
+** set again (all are at the run's end), and what C is known to be as it begins, or -1. */
+static void rc_flags(uint32 pc, int n, uint8 *c_live, uint8 *v_live, int8 *c_known)
+{
+   uint8 kinds[RC_RUN_MOST];
+   int i, known = -1, c = 1, v = 1;
+
+   for (i = 0; i < n; i++)
+   {
+      const rc_op_t *info = &rc_ops[bank_readbyte(pc)];
+
+      kinds[i] = info->kind;
+      c_known[i] = known;
+      if (K_CLC == info->kind || K_SEC == info->kind)
+         known = (K_SEC == info->kind);
+      else if (rc_sets_c(info->kind))
+         known = -1;
+      pc += rc_length[info->mode];
+   }
+   for (i = n - 1; i >= 0; i--)
+   {
+      int kind = kinds[i];
+
+      c_live[i] = c;
+      v_live[i] = v;
+      if (rc_sets_c(kind))
+         c = 0;
+      if ((K_ADC == kind && 0 != c_known[i]) || (K_SBC == kind && 1 != c_known[i]) || K_ROL == kind || K_ROR == kind)
+         c = 1;
+      if (K_ADC == kind || K_SBC == kind || K_BIT == kind || K_CLV == kind)
+         v = 0;
+   }
+}
+
+/* inx, iny, dex, dey, asl a, lsr a: several of one in a row are done at once in a run's copy */
+#define  rc_repeats(op)    (0xE8 == (op) || 0xC8 == (op) || 0xCA == (op) || 0x88 == (op) || 0x0A == (op) || 0x4A == (op))
+
+static void e_repeated(uint8 op, int times)
+{
+   int reg = (0xE8 == op || 0xCA == op) ? RX : (0xC8 == op || 0x88 == op) ? RY : RA_;
+
+   if (0x4A == op)
+   {
+      if (rc_c_wanted())
+      {
+         e_srli(RC, reg, times - 1);
+         e_andi(RC, RC, 1);
+      }
+      e_srli(reg, reg, times);
+   }
+   else
+   {
+      if (0x0A != op)
+         e_addi(reg, reg, (0xE8 == op || 0xC8 == op) ? times : -times);
+      else
+      {
+         if (rc_c_wanted())
+         {
+            e_srli(RC, reg, 8 - times);
+            e_andi(RC, RC, 1);
+         }
+         e_slli(reg, reg, times);
+      }
+      e_andi(reg, reg, 0xFF);
+   }
+   e_nz(reg);
+   rc_pending += 2 * times;
+}
+
 /* A run's unchecked copy, before its instructions one by one: taken when the cycles left are
 ** more than the run can take, so that none of it could have been the slice's last. Returns
 ** the jump at its end, to be pointed past the run's own code. */
 static uint32 *rc_run_copy(uint32 pc, int n, int most, int last_nz)
 {
    uint32 *guard, *jump;
-   int i;
+   uint8 c_live[RC_RUN_MOST], v_live[RC_RUN_MOST];
+   int8 c_known[RC_RUN_MOST];
+   int i, same;
 
+   rc_flags(pc, n, c_live, v_live, c_known);
    e_addi(T0, REM, -most);
    guard = rc_p;
    E(0);
    rc_fast = 1;
    rc_pending = 0;
-   for (i = 0; i < n; i++)
+   for (i = 0; i < n; i += same)
    {
       uint8 op = bank_readbyte(pc);
       const rc_op_t *info = &rc_ops[op];
@@ -1057,10 +1319,20 @@ static uint32 *rc_run_copy(uint32 pc, int n, int most, int last_nz)
 
       if (3 == rc_length[info->mode])
          arg |= bank_readbyte(pc + 2) << 8;
-      rc_nz_live = (i == last_nz);
-      rc_instruction(pc, op, arg);
-      pc += rc_length[info->mode];
+      for (same = 1; rc_repeats(op) && same < 7 && i + same < n && bank_readbyte(pc + same) == op; same++)
+         continue;
+      /* (the last of them is the one whose flags may be read) */
+      rc_nz_live = (last_nz >= i && last_nz < i + same);
+      rc_c_live = c_live[i + same - 1];
+      rc_v_live = v_live[i];
+      rc_c_known = c_known[i];
+      if (same > 1)
+         e_repeated(op, same);
+      else
+         rc_instruction(pc, op, arg);
+      pc += same * rc_length[info->mode];
    }
+   rc_c_known = -1;
    {
       /* the jump that ends the run, in the copy too: the run's cycles go with its own */
       uint8 op = bank_readbyte(pc);
@@ -1165,12 +1437,15 @@ static void rc_translate(uint32 start)
          arg = bank_readbyte(pc + 1);
          if (3 == rc_length[info->mode])
             arg |= bank_readbyte(pc + 2) << 8;
-         rc.table[where] = code;
+         /* (rti is come to from translated code only: found at a slice's start it is the interpreter's) */
+         rc.table[where] = (K_RTI == info->kind) ? (code | 1) : code;
+         if (rc.direct && K_RTI != info->kind)
+            rc.direct[pc] = code;
          rc_instruction(pc, op, arg);
          rc_count++;
          if (run_left && 0 == --run_left && run_jump)
             *run_jump = rc_jal_word(ZERO, (int32) ((uint32) rc_p - (uint32) run_jump));
-         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind)
+         if (K_JMP == info->kind || K_RTS == info->kind || K_JMPI == info->kind || K_RTI == info->kind)
             break;
          pc += rc_length[info->mode];
          falls = 1;
@@ -1253,8 +1528,39 @@ static int rc_slice(int timeslice_cycles, int *elapsed)
 
    *elapsed = 0;
    remaining_cycles = timeslice_cycles;
-   if (NULL == rc.table || timeslice_cycles <= 0 || cpu.burn_cycles || (cpu.int_pending && 0 == (p & I_FLAG)))
+   if (NULL == rc.table || timeslice_cycles <= 0 || (cpu.int_pending && 0 == (p & I_FLAG)))
       return 0;
+   /* cycles to burn, as the interpreter's slice begins with them: after an interrupt, or a copy
+   ** of the sprites, which is four lines and a half. A line all burnt goes on into the next
+   ** from here, as one that ends in translated code does. */
+   while (cpu.burn_cycles)
+   {
+      int burn_for = MIN(remaining_cycles, cpu.burn_cycles), next;
+
+      remaining_cycles -= burn_for;
+      cpu.total_cycles += burn_for;
+      cpu.burn_cycles -= burn_for;
+      if (remaining_cycles > 0)
+         break;
+      rc_settle(0);
+      if (rc_plain_runs_off || nes6502_idle.state)
+         next = 0;
+      else if ((next = ppu_line_plain(cpu.total_cycles - rc_slice_from)) < 0)
+         next = ppu_line_between(cpu.total_cycles - rc_slice_from);
+      if (next <= 0)
+      {
+         *elapsed = cpu.total_cycles - rc_slice_from;
+         return 1;
+      }
+      rc_slice_from = cpu.total_cycles;
+      remaining_cycles = next;
+      /* (the cartridge counted the line and asks for an interrupt: the interpreter's, at this slice's start) */
+      if (cpu.int_pending && 0 == (p & I_FLAG))
+      {
+         rc_settle(0);
+         return 0;
+      }
+   }
    rc.a = cpu.a_reg; rc.x = cpu.x_reg; rc.y = cpu.y_reg; rc.s = cpu.s_reg;
    rc.n = RC_NZ(p, 0 == (p & Z_FLAG)); rc.c = p & C_FLAG; rc.v = p & V_FLAG;
    rc.ram = ram;
@@ -1277,6 +1583,7 @@ static int rc_slice(int timeslice_cycles, int *elapsed)
       pc = rc.pc;
       rc_flush(rc.rem + rc.bias);
       rc.bias = 0;
+      rc_settle(0);
       if (rc_leave)
       {
          rc_leave = 0;
@@ -1290,7 +1597,7 @@ static int rc_slice(int timeslice_cycles, int *elapsed)
    }
    cpu.pc_reg = pc;
    cpu.a_reg = rc.a; cpu.x_reg = rc.x; cpu.y_reg = rc.y; cpu.s_reg = rc.s;
-   cpu.p_reg = (p & (B_FLAG | D_FLAG | I_FLAG)) | R_FLAG | RC_N(rc.n) | (rc.v ? V_FLAG : 0)
+   cpu.p_reg = (cpu.p_reg & (B_FLAG | D_FLAG | I_FLAG)) | R_FLAG | RC_N(rc.n) | (rc.v ? V_FLAG : 0)
                | (RC_Z(rc.n) ? 0 : Z_FLAG) | (rc.c ? C_FLAG : 0);
    /* (as the interpreter's slice ends: one that found an idle loop and ends inside it sleeps) */
    if (done && 1 == idle.state)
@@ -1304,6 +1611,7 @@ static int rc_slice(int timeslice_cycles, int *elapsed)
          {
             idle.at = idle.was_at = at;
             idle.state = 2;
+            idle_count_from(at, cpu.x_reg, cpu.y_reg);
             break;
          }
       }
@@ -1336,8 +1644,15 @@ void nes6502_recompile(uint8 *prg, int bytes, int fixed)
    }
    rc.prg = prg;
    rc.size = bytes;
+   rc.z = 0xFFFFFFFF;
+   if (fixed)
+   {
+      rc.direct = mmap(NULL, 0x10004 * sizeof(uint32), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (MAP_FAILED == (void *) rc.direct)
+         rc.direct = NULL;
+   }
+   rc_fixed = fixed && rc.direct;
    rc.pages = cpu.mem_page;
-   rc_fixed = fixed;
    /* a cartridge's own memory at 0x6000, when no handler of anybody's is there: the pages' */
    {
       nes6502_memread *mr;

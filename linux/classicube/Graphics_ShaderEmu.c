@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
+#include "mcw.h"
 
 /* from Window_ShaderEmu.c: GPU memory from 0x87000000, and where the window's pixels are */
 uint8_t* SE_Gpu(void);
@@ -28,6 +29,10 @@ int SE_Flat(void);
 #define SETS_AT 0x00700000u
 #define MAX_COMMANDS 2048
 #define MAX_BLOCKS 512
+/* The first blocks of a set stay a chunk mesh's own from frame to frame (its slot), and the
+   last of them is the camera's with no origin; the rest are handed out anew every frame. */
+#define KEPT_BLOCKS 384
+#define PLAIN_SLOT  (KEPT_BLOCKS - 1)
 #define BLOCKS_IN (MAX_COMMANDS * 64)
 #define ARENA_IN  (BLOCKS_IN + MAX_BLOCKS * 128)
 #define SET_SIZE  0x00060000u
@@ -59,6 +64,8 @@ struct SEVb;
 /* What every draw reads and writes, in one place: one address in a register serves it all. */
 static struct {
 	uint32_t* set;                /* the frame's set, where its commands are */
+	uint32_t si;                  /* which of the two it is */
+	struct SESeg* rec;            /* the walk being noted (Gfx_SE_SegmentBegin), or NULL */
 	uint32_t commands, mesh_vertices, passes_used;
 	uint32_t frame, matrix_epoch, state_serial;
 	uint32_t* last_draw;          /* the command a draw may go on from (Emit) */
@@ -66,7 +73,7 @@ static struct {
 	uint32_t last_serial, last_block, last_end;
 	struct SEVb* vb;
 	struct SEState state[2];
-} draw = { NULL, 0, 0, 0, 1, 1, 1 };
+} draw = { NULL, 0, NULL, 0, 0, 0, 1, 1, 1 };
 #define commands      draw.commands
 #define mesh_vertices draw.mesh_vertices
 #define passes_used   draw.passes_used
@@ -78,7 +85,7 @@ static struct {
 #define se_vb         draw.vb
 
 static uint8_t* gpu;
-static uint32_t set_at = SETS_AT, blocks, arena_top;
+static uint32_t set_at = SETS_AT, blocks = KEPT_BLOCKS, arena_top;
 static uint32_t stat_commands, stat_mesh, stat_dropped;
 /* texels and vertices made for the device, and the instructions that took */
 static uint32_t stat_texels, stat_texel_cycles, stat_vertices, stat_vertex_cycles;
@@ -190,8 +197,9 @@ static cc_bool Drawing(void) {
 	return unsettled;
 }
 
+/* (the first core with nothing to do until the next pass says so: docs/multicore.md, "A core that rests") */
 static void Settle(void) {
-	while (Drawing()) next_frame();
+	while (Drawing()) mcw_rest();
 }
 
 static void* Arena_Alloc(uint32_t size) {
@@ -208,7 +216,9 @@ static void* Arena_Alloc(uint32_t size) {
 *#########################################################################################################################*/
 static uint32_t clear_colour;
 static uint32_t hold_frame, stats_ms = 5000;
-static cc_bool mesh_sums, texture_sums, swap_waits, hold_late;
+static cc_bool mesh_sums, texture_sums, swap_waits, hold_late, segs_off;
+/* Goes up when a buffer or a texture is made again or let go: a walk noted before is stale. */
+static uint32_t kept_epoch = 1;
 static int view_x, view_y, view_w, view_h;
 static struct Matrix se_view, se_proj;
 static struct SETexture* se_texture;
@@ -241,6 +251,8 @@ void Gfx_Create(void) {
 	/* CLASSICUBE_SWAP=wait: every list waited for, as it was. CLASSICUBE_HOLD_LATE=1: the held
 	   frame stays while the next is made ready, and the game stops before that one is shown. */
 	swap_waits = getenv("CLASSICUBE_SWAP") != NULL;
+	/* CLASSICUBE_WALK=every: the chunks' commands are made anew every frame, as they were */
+	segs_off   = getenv("CLASSICUBE_WALK") != NULL;
 	hold_late  = getenv("CLASSICUBE_HOLD_LATE") != NULL;
 
 	Gfx.MaxTexWidth  = 1024;
@@ -276,9 +288,18 @@ cc_bool Gfx_GetUIOptions(struct MenuOptionsScreen* s) { return false; }
 
 void Gfx_OnWindowResize(int width, int height) { Gfx_SetViewport(0, 0, width, height); }
 
+/* An epoch names what the matrices and the viewport are. The camera's (Gfx_LoadMVP) keeps its
+   number while they stay what they were, over frames too: a block written for it in a set is
+   then still right. Any other gets a number never used before. */
+static struct Matrix main_view, main_proj;
+static uint32_t main_epoch, epoch_counter = 1;
+static cc_bool main_valid;
+
 void Gfx_SetViewport(int x, int y, int w, int h) {
+	if (x == view_x && y == view_y && w == view_w && h == view_h) return;
 	view_x = x; view_y = y; view_w = w; view_h = h;
-	matrix_epoch++;
+	main_valid   = false;
+	matrix_epoch = ++epoch_counter;
 }
 void Gfx_SetScissor(int x, int y, int w, int h) { }
 
@@ -426,6 +447,7 @@ void Gfx_DeleteTexture(GfxResourceID* texId) {
 	if (!tex) return;
 	if (se_texture == tex) se_texture = NULL;
 	state_serial++;
+	kept_epoch++;
 	{ int i; for (i = 0; i < later_count; i++) if (later[i].tex == tex) later[i].tex = NULL; }
 
 	Heap_FreeLater(tex->span);
@@ -489,16 +511,35 @@ void Gfx_CalcPerspectiveMatrix(struct Matrix* matrix, float fov, float aspect, f
 	matrix->row4.w =  0.0f;
 }
 
+static CC_INLINE cc_bool SameMatrix(const struct Matrix* a, const struct Matrix* b) {
+	const uint32_t *p = (const uint32_t*)a, *q = (const uint32_t*)b;
+	int i;
+	for (i = 0; i < 16; i++) if (p[i] != q[i]) return false;
+	return true;
+}
+
+static void MatricesLoaded(cc_bool camera) {
+	static int width, height;
+	if (Window_Main.Width != width || Window_Main.Height != height) {
+		width = Window_Main.Width; height = Window_Main.Height; main_valid = false;
+	}
+	if (main_valid && SameMatrix(&se_view, &main_view) && SameMatrix(&se_proj, &main_proj)) { matrix_epoch = main_epoch; return; }
+	matrix_epoch = ++epoch_counter;
+	if (!camera) return;
+	main_view  = se_view; main_proj = se_proj;
+	main_epoch = matrix_epoch; main_valid = true;
+}
+
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	if (type == MATRIX_VIEW) se_view = *matrix;
 	if (type == MATRIX_PROJ) se_proj = *matrix;
-	matrix_epoch++;
+	MatricesLoaded(false);
 }
 
 void Gfx_LoadMVP(const struct Matrix* view, const struct Matrix* proj, struct Matrix* mvp) {
 	se_view = *view;
 	se_proj = *proj;
-	matrix_epoch++;
+	MatricesLoaded(true);
 	Matrix_Mul(mvp, view, proj);
 }
 
@@ -529,34 +570,43 @@ static void ProjectionRows(void) {
 	proj_epoch = matrix_epoch;
 }
 
-/* A block of vectors for a draw: the projection, then the modelview's rows, for vertices that
-   are `scale` times themselves plus `origin` (a chunk's are bytes from its corner). */
-static uint32_t MatrixBlock(const float* origin, float scale) {
+/* A block of vectors for a draw: the projection, then the modelview's rows. */
+static void PlainRows(uint32_t* to) {
 	const struct Matrix* m = &se_view;
-	float* u;
-	if (blocks == MAX_BLOCKS) return 0;
+	float* u = (float*)to;
+	int k;
 	if (proj_epoch != matrix_epoch) ProjectionRows();
 
-	u = (float*)(gpu + set_at + BLOCKS_IN) + 32 * blocks;
 	/* (word by word here: Mem_Copy is a call, and this is every draw's) */
-	{ const uint32_t *from = (const uint32_t*)proj_rows; uint32_t *to = (uint32_t*)u; int k; for (k = 0; k < 16; k++) to[k] = from[k]; }
-	u[16] = m->row1.x * scale; u[17] = m->row2.x * scale; u[18] = m->row3.x * scale;
-	u[20] = m->row1.y * scale; u[21] = m->row2.y * scale; u[22] = m->row3.y * scale;
-	u[24] = m->row1.z * scale; u[25] = m->row2.z * scale; u[26] = m->row3.z * scale;
-	if (origin) {
-		float x = origin[0], y = origin[1], z = origin[2];
-		u[19] = m->row4.x + x * m->row1.x + y * m->row2.x + z * m->row3.x;
-		u[23] = m->row4.y + x * m->row1.y + y * m->row2.y + z * m->row3.y;
-		u[27] = m->row4.z + x * m->row1.z + y * m->row2.z + z * m->row3.z;
-	} else {
-		u[19] = m->row4.x; u[23] = m->row4.y; u[27] = m->row4.z;
+	for (k = 0; k < 16; k++) to[k] = ((const uint32_t*)proj_rows)[k];
+	u[16] = m->row1.x; u[17] = m->row2.x; u[18] = m->row3.x; u[19] = m->row4.x;
+	u[20] = m->row1.y; u[21] = m->row2.y; u[22] = m->row3.y; u[23] = m->row4.y;
+	u[24] = m->row1.z; u[25] = m->row2.z; u[26] = m->row3.z; u[27] = m->row4.z;
+}
+
+/* The block of a buffer with no origin: the camera's is a slot of the set, any other the frame's. */
+static uint32_t PlainBlock(void) {
+	static uint32_t plain, plain_epoch, kept[2];
+	if (matrix_epoch == main_epoch) {
+		if (kept[draw.si] != matrix_epoch) {
+			PlainRows((uint32_t*)(gpu + set_at + BLOCKS_IN) + 32 * PLAIN_SLOT);
+			kept[draw.si] = matrix_epoch;
+		}
+		return GPU_PHYS + set_at + BLOCKS_IN + 128 * PLAIN_SLOT;
 	}
-	return GPU_PHYS + set_at + BLOCKS_IN + 128 * blocks++;
+	if (plain_epoch != matrix_epoch) {
+		if (blocks == MAX_BLOCKS) return 0;
+		PlainRows((uint32_t*)(gpu + set_at + BLOCKS_IN) + 32 * blocks);
+		plain = GPU_PHYS + set_at + BLOCKS_IN + 128 * blocks++;
+		plain_epoch = matrix_epoch;
+	}
+	return plain;
 }
 
 /* The same for a chunk (vertices in eighths from `origin`): all but three of its words are
    every chunk's, and are made once for the matrices. */
 static uint32_t chunk_rows[28], chunk_rows_epoch;
+static cc_bool block_of_frame;   /* a chunk had no slot and got a block of the frame's */
 
 static CC_NOINLINE void ChunkRows(void) {
 	const struct Matrix* m = &se_view;
@@ -570,15 +620,21 @@ static CC_NOINLINE void ChunkRows(void) {
 	chunk_rows_epoch = matrix_epoch;
 }
 
-static uint32_t ChunkBlock(const float* origin) {
+/* `slot`: the mesh's own block of the set, from 1; 0 when it has none. */
+static uint32_t ChunkBlock(const float* origin, uint32_t slot) {
 	const struct Matrix* m = &se_view;
 	const uint32_t* from   = chunk_rows;
 	const float x = origin[0], y = origin[1], z = origin[2];
 	uint32_t* to;
-	if (blocks == MAX_BLOCKS) return 0;
+	uint32_t index = slot - 1;
+	if (!slot) {
+		if (blocks == MAX_BLOCKS) return 0;
+		index = blocks++;
+		block_of_frame = true;
+	}
 	if (chunk_rows_epoch != matrix_epoch) ChunkRows();
 
-	to = (uint32_t*)(gpu + set_at + BLOCKS_IN) + 32 * blocks;
+	to = (uint32_t*)(gpu + set_at + BLOCKS_IN) + 32 * index;
 	to[0]  = from[0];  to[1]  = from[1];  to[2]  = from[2];  to[3]  = from[3];
 	to[4]  = from[4];  to[5]  = from[5];  to[6]  = from[6];  to[7]  = from[7];
 	to[8]  = from[8];  to[9]  = from[9];  to[10] = from[10]; to[11] = from[11];
@@ -589,7 +645,7 @@ static uint32_t ChunkBlock(const float* origin) {
 	((float*)to)[19] = m->row4.x + x * m->row1.x + y * m->row2.x + z * m->row3.x;
 	((float*)to)[23] = m->row4.y + x * m->row1.y + y * m->row2.y + z * m->row3.y;
 	((float*)to)[27] = m->row4.z + x * m->row1.z + y * m->row2.z + z * m->row3.z;
-	return GPU_PHYS + set_at + BLOCKS_IN + 128 * blocks++;
+	return GPU_PHYS + set_at + BLOCKS_IN + 128 * index;
 }
 
 
@@ -605,7 +661,8 @@ struct SEMesh {
 	uint32_t flags, colour;      /* more of the vertex word; the one colour, or the table's address */
 	uint32_t packed, word;       /* 1 for a chunk's vertices; the command's vertex word */
 	float origin[3];
-	uint32_t block, block_epoch; /* its matrix block, and the matrix_epoch that is of */
+	uint32_t slot;               /* a packed mesh's own block in both sets, from 1 (0: none) */
+	uint32_t block[2], block_epoch[2]; /* its matrix block in each set, and the matrix_epoch that is of */
 };
 
 struct SEVb {
@@ -665,11 +722,22 @@ static void MeshSum(const struct SEMesh* mesh, const uint32_t* at, const uint32_
 	fflush(stdout);
 }
 
+/* Slots of the sets' kept blocks that no mesh has. */
+static uint16_t slot_free[KEPT_BLOCKS];
+static uint32_t slot_free_count, slots_used;
+
+static uint32_t Slot_Take(void) {
+	if (slot_free_count) return slot_free[--slot_free_count];
+	return slots_used < PLAIN_SLOT ? ++slots_used : 0;
+}
+
 /* A mesh made: what its commands have of it, and no draw goes on from the one before it. */
 static CC_INLINE void MeshMade(struct SEVb* vb, uint32_t flags) {
 	vb->mesh.flags  = flags;
 	vb->mesh.packed = (flags & VERTEX_PACKED) != 0;
 	vb->mesh.word   = BASE_VERTEX | flags;
+	if (vb->mesh.packed && !vb->mesh.slot) vb->mesh.slot = Slot_Take();
+	if (!vb->dynamic) kept_epoch++;
 	if (last_vb == vb) last_draw = NULL;
 }
 
@@ -700,7 +768,7 @@ static cc_bool BuildMeshIn(struct SEVb* vb, MeshAlloc alloc) {
 	int i, q, k, tag = 0;
 	uint8_t* mem;
 
-	mesh->block_epoch = 0;
+	mesh->block_epoch[0] = mesh->block_epoch[1] = 0;
 	if (!count) return false;
 
 	/* what kind: how many colours and, of a buffer that stays, how large a box */
@@ -854,6 +922,8 @@ void Gfx_DeleteVb(GfxResourceID* vb) {
 	if (!data) return;
 	if (se_vb == data) se_vb = NULL;
 	if (last_vb == data) last_draw = NULL;
+	if (data->mesh.slot) slot_free[slot_free_count++] = (uint16_t)data->mesh.slot;
+	kept_epoch++;
 
 	Heap_FreeLater(data->span);
 	if (data->dynamic) Mem_Free(data->staging);
@@ -907,7 +977,7 @@ cc_bool Gfx_SE_UnlockPacked(GfxResourceID vb, const struct SEVertex* v, int coun
 
 	data->fmt = VERTEX_FORMAT_TEXTURED; data->count = count;
 	data->staging = NULL; data->where = 0;
-	mesh->block_epoch = 0;
+	mesh->block_epoch[0] = mesh->block_epoch[1] = 0;
 	if (count < 4 || !(mem = (uint8_t*)SpanAlloc(data, 2 * words))) return false;
 	to = (uint32_t*)mem; coords = (uint32_t*)(mem + words);
 	prev = ~v->colour;
@@ -990,10 +1060,77 @@ static CC_NOINLINE void DeriveState(int packed) {
 	s->height  = (uint32_t)tex->height;
 }
 
+/* A walk of the map's chunks is noted as it is made: the buffers it drew, where its commands
+   are in the set and what they come to. While the map's renderer says the walk would be the
+   same (`serial`) and nothing it drew was made again, the commands stay as they are in the
+   set and only the blocks of a camera that moved are written (docs/classicube.md). */
+#define SEG_BUFFERS 512
+struct SESeg { uint32_t serial, kept, frame, first, first_mesh, count, mesh, passes, buffers, dropped; cc_bool valid, bad; };
+static struct SESeg segs[2][2];
+static struct SEVb* seg_buffers[2][2][SEG_BUFFERS];
+static uint32_t stat_kept, stat_walked;
+
+static CC_NOINLINE void Seg_Note(struct SEVb* vb) {
+	struct SESeg* g = draw.rec;
+	struct SEVb** list = seg_buffers[draw.si][g - segs[draw.si]];
+	if (g->buffers && list[g->buffers - 1] == vb) return;
+	if (g->buffers == SEG_BUFFERS || vb->dynamic || vb->where != 1 || (vb->mesh.packed && !vb->mesh.slot)) { g->bad = true; return; }
+	list[g->buffers++] = vb;
+}
+
+cc_bool Gfx_SE_SegmentBegin(int id, uint32_t serial) {
+	struct SESeg* g = &segs[draw.si][id];
+	const uint32_t si = draw.si, frame = frame_number, epoch = matrix_epoch;
+	struct SEVb** list = seg_buffers[si][id];
+	uint32_t i;
+
+	last_draw = NULL;
+	if (segs_off || se_depthOnly || epoch != main_epoch) return false;
+	if (g->valid && g->serial == serial && g->kept == kept_epoch && g->first == commands && g->first_mesh == mesh_vertices) {
+		for (i = 0; i < g->buffers; i++) {
+			struct SEVb* vb = list[i];
+			struct SEMesh* mesh = &vb->mesh;
+			vb->drawn_frame = frame; vb->span_frame = frame;
+			if (mesh->block_epoch[si] == epoch) continue;
+			mesh->block[si]       = mesh->packed ? ChunkBlock(mesh->origin, mesh->slot) : PlainBlock();
+			mesh->block_epoch[si] = epoch;
+		}
+		commands      += g->count;
+		mesh_vertices += g->mesh;
+		passes_used   |= g->passes;
+		g->frame = frame;
+		stat_kept++;
+		return true;
+	}
+	g->valid   = false; g->bad = false;
+	g->serial  = serial; g->kept = kept_epoch;
+	g->first   = commands; g->first_mesh = mesh_vertices;
+	g->passes  = passes_used; g->buffers = 0; g->dropped = stat_dropped;
+	passes_used = 0;
+	draw.rec    = g;
+	stat_walked++;
+	return false;
+}
+
+void Gfx_SE_SegmentEnd(int id) {
+	struct SESeg* g = draw.rec;
+	uint32_t before;
+	if (!g) return;
+	draw.rec  = NULL;
+	last_draw = NULL;
+	before    = g->passes;
+	g->passes = passes_used;
+	passes_used |= before;
+	g->count  = commands - g->first;
+	g->mesh   = mesh_vertices - g->first_mesh;
+	g->frame  = frame_number;
+	g->valid  = !g->bad && g->kept == kept_epoch && g->dropped == stat_dropped;
+}
+
 /* The draw's command, when nothing is left to make for it (Ready). It calls nothing. */
 static inline __attribute__((always_inline)) void Emit(struct SEVb* vb, int verticesCount, int startVertex) {
 	const struct SEMesh* mesh = &vb->mesh;
-	const uint32_t packed     = mesh->packed, block = mesh->block;
+	const uint32_t packed     = mesh->packed, block = mesh->block[draw.si];
 	const struct SEState* s   = &draw.state[packed];
 	const uint32_t mesh_count = (uint32_t)(verticesCount >> 2) * 6, at = mesh_vertices, n = commands;
 	uint32_t* c = last_draw;
@@ -1012,6 +1149,7 @@ static inline __attribute__((always_inline)) void Emit(struct SEVb* vb, int vert
 	}
 	if (n == MAX_COMMANDS) { mesh_vertices = at; stat_dropped++; return; }
 
+	if (draw.rec) Seg_Note(vb);
 	c = draw.set + 16 * n;
 	commands = n + 1;
 	c[0]  = CMD_DRAW;
@@ -1036,8 +1174,8 @@ static inline __attribute__((always_inline)) void Emit(struct SEVb* vb, int vert
 /* What a draw needs made first: the buffer's mesh when it is a frame old, the state's words,
    the mesh's matrix block. False when there is nothing to draw. */
 static cc_bool Ready(struct SEVb* vb) {
-	static uint32_t plain, plain_epoch;
 	struct SEMesh* mesh = &vb->mesh;
+	const uint32_t si   = draw.si;
 
 	if (se_depthOnly) return false;
 	if (vb->where == 2 && vb->where_frame != frame_number) {
@@ -1047,14 +1185,9 @@ static cc_bool Ready(struct SEVb* vb) {
 	if (!vb->where) return false;
 	if (draw.state[mesh->packed].serial != state_serial) DeriveState(mesh->packed);
 
-	if (mesh->block_epoch != matrix_epoch) {
-		if (mesh->packed) {
-			mesh->block = ChunkBlock(mesh->origin);
-		} else {
-			if (plain_epoch != matrix_epoch) { plain = MatrixBlock(NULL, 1.0f); plain_epoch = matrix_epoch; }
-			mesh->block = plain;
-		}
-		mesh->block_epoch = matrix_epoch;
+	if (mesh->block_epoch[si] != matrix_epoch) {
+		mesh->block[si]       = mesh->packed ? ChunkBlock(mesh->origin, mesh->slot) : PlainBlock();
+		mesh->block_epoch[si] = matrix_epoch;
 	}
 	return true;
 }
@@ -1068,7 +1201,7 @@ static CC_NOINLINE void DrawUnready(int verticesCount, int startVertex) {
 static void DrawQuads(int verticesCount, int startVertex) {
 	struct SEVb* vb = se_vb;
 	if (!vb || verticesCount < 4) return;
-	if (vb->where != 1 || vb->mesh.block_epoch != matrix_epoch || draw.state[vb->mesh.packed].serial != state_serial) {
+	if (vb->where != 1 || vb->mesh.block_epoch[draw.si] != matrix_epoch || draw.state[vb->mesh.packed].serial != state_serial) {
 		DrawUnready(verticesCount, startVertex);
 		return;
 	}
@@ -1122,8 +1255,9 @@ static void Stats(void) {
 
 	printf("ccstat: %u frames in %u ms, %u instructions a frame, %u commands, %u quads, %u draws dropped; GPU memory %u KB free\n",
 		n, now - since_ms, (cycles() - since_cycles) / n, stat_commands / n, stat_mesh / n / 6, stat_dropped, heap_free >> 10);
-	printf("ccstat: a frame: %u texels in %u instructions, %u vertices in %u\n",
-		stat_texels / n, stat_texel_cycles / n, stat_vertices / n, stat_vertex_cycles / n);
+	printf("ccstat: a frame: %u texels in %u instructions, %u vertices in %u; chunk walks %u made, %u kept\n",
+		stat_texels / n, stat_texel_cycles / n, stat_vertices / n, stat_vertex_cycles / n, stat_walked, stat_kept);
+	stat_walked = stat_kept = 0;
 #ifdef SE_COUNT
 	{
 		extern unsigned se_chunk[8];
@@ -1135,7 +1269,7 @@ static void Stats(void) {
 	}
 #endif
 	/* (for a test to wait for: the world is built and frames come steadily) */
-	if (!said_steady && n >= 40 && World.Loaded) { said_steady = true; printf("classicube: steady\n"); }
+	if (!said_steady && n >= 40 && World.Loaded && !MapRenderer_SE_Busy()) { said_steady = true; printf("classicube: steady\n"); }
 	fflush(stdout);
 	since_ms = now; since_cycles = cycles(); since_frames = frame_number;
 	stat_commands = stat_mesh = stat_dropped = 0;
@@ -1158,7 +1292,7 @@ void Gfx_EndFrame(void) {
 			while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
 			if (regs[REG_SUBMIT / 4] == 0) break;
 			__atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-			next_frame();
+			mcw_rest();
 		}
 		regs[REG_INTO / 4]     = address;
 		regs[REG_INTO / 4 + 1] = width;
@@ -1176,8 +1310,14 @@ void Gfx_EndFrame(void) {
 		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28 | (SE_Flat() ? 1u << 31 : 0);	/* (y is up: docs/holodeck.md) */
 		regs[REG_VOLUME / 4]     = GPU_PHYS + set_at;
 		regs[REG_VOLUME / 4 + 2]++;
+		/* (a walk this frame did not make is not in this set any more) */
+		segs[draw.si][0].valid &= segs[draw.si][0].frame == frame_number;
+		segs[draw.si][1].valid &= segs[draw.si][1].frame == frame_number;
 		set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
 		draw.set = (uint32_t*)(gpu + set_at);
+		draw.si ^= 1;
+	} else {
+		segs[draw.si][0].valid = segs[draw.si][1].valid = false;
 	}
 	if (hold_frame && frame_number >= hold_frame && !hold_late) {
 		Settle();
@@ -1188,8 +1328,10 @@ void Gfx_EndFrame(void) {
 
 	Heap_Age();
 	frame_number++;
-	matrix_epoch++;
-	commands = blocks = mesh_vertices = passes_used = 0;
+	/* (a block of the frame's under the camera's epoch would be taken for a kept one) */
+	if (block_of_frame) { block_of_frame = false; main_valid = false; matrix_epoch = ++epoch_counter; }
+	commands = mesh_vertices = passes_used = 0;
+	blocks = KEPT_BLOCKS;
 	arena_top = set_at + ARENA_IN;
 	last_draw = NULL;
 }

@@ -5,13 +5,17 @@
  */
 #include <stdlib.h>
 #include "quakedef.h"
+#include "mcw.h"
 
 void qglFan (const unsigned *vertices, int count);
 void qglModel (const void *model, int pose, const unsigned char *vertices, const unsigned *coords, const unsigned *light,
 	int count);
 unsigned *qglLights (int key, int *fresh);
+unsigned *qglLightWords (unsigned name);
 void R_StoreEfrags (efrag_t **ppefrag);
 void SE_NewMap (void);
+
+int	se_map_serial;	/* goes up when the models go: what is remembered about a level is then stale */
 
 typedef struct { int normal[3], dist; } plane_i;	/* normal in 1/16384ths, dist in units * 16384 */
 typedef struct { short box[6]; } box_i;
@@ -82,7 +86,8 @@ typedef struct { texture_t *texture; int quads, shown; } run_t;
 
 extern int	lightmap_textures, solidskytexture, alphaskytexture, glwidth, glheight;
 
-static int	kept_on, kept_runs, kept_hidden, world_drawn;
+static int	kept_on, kept_runs, kept_anims, kept_hidden, world_drawn;
+static int	level_sky, level_water;	/* the level has any */
 static int	sky_run;		/* the first of the sky's two commands, or -1 */
 static run_t	*runs;
 static byte	*styled;		/* by surface: its light flickers or switches */
@@ -115,6 +120,379 @@ static unsigned *put_quads (unsigned *to, const unsigned *v, int n)
 	return to;
 }
 
+/* ---- what workers do of a frame (docs/quake.md, "The other workers") ---- */
+
+#define MAX_WARP	64		/* corners of one of water's polygons (they are cut into small ones) */
+#define MAX_STYLED	4096		/* surfaces whose light flickers or switches */
+#define LIGHT_ROW	128		/* a light map's row, in words (gl_rsurf.c) */
+enum { HOW_FRAME, HOW_WAIT, HOW_APART };
+
+extern float	turbsin[];
+extern cvar_t	gl_flashblend, r_fullbright, r_wateralpha;
+extern int	lightmap_textures;
+int		se_lights_changed;	/* a style's brightness is another (R_AnimateLight) */
+
+/* What a variable says of a piece of the frame: "frame", this core in the frame, as before;
+ * "wait", its workers, waited for; else its workers at their own pace. Without them, the first. */
+/* A job's code is read here first: a worker stops at a page of it that no core has run yet,
+ * until this core next asks after it. */
+static void text_here (const void *function)
+{
+	const volatile unsigned char	*at = (const volatile unsigned char *)((unsigned)function & ~4095u);
+	unsigned			sum = 0, i;
+
+	for (i = 0; i < 2 * 4096; i += 1024)
+		sum += at[i];
+	(void)sum;
+}
+
+static int how_of (const char *variable, int first, int workers)
+{
+	const char *how = getenv (variable);
+
+	if ((how && !strcmp (how, "frame")) || SE_Workers () < first + workers - 1)
+		return HOW_FRAME;
+	return how && !strcmp (how, "wait") ? HOW_WAIT : HOW_APART;
+}
+
+/* floorf, which is a call, for numbers an int holds */
+static inline float floor_of (float f)
+{
+	float whole = (float)(int)f;
+
+	return whole > f ? whole - 1 : whole;
+}
+
+/* -- light maps that flicker: made again by workers when a style's brightness changes -- */
+
+typedef struct { const byte *samples; unsigned *to; unsigned char wide, high, page, maps; byte styles[MAXLIGHTMAPS]; } styled_t;
+static styled_t	styled_surfs[MAX_STYLED] __attribute__ ((aligned (16)));
+/* the brightness of its styles each one's light map was made with: its worker's to write */
+static int	styled_cached[MAX_STYLED][MAXLIGHTMAPS] __attribute__ ((aligned (16)));
+static struct { int values[MAX_LIGHTSTYLES]; int count, unused[3]; } light_job __attribute__ ((aligned (16)));
+static int	light_how = -1, light_on, light_out, light_was;
+
+/* A worker's share: the light maps of every `step`th page of them, so that no two workers
+ * store to the same 16 bytes. GLQuake's sum of a surface's maps by their styles (R_BuildLightMap). */
+static uint32_t light_share (uint32_t first, uint32_t step)
+{
+	int	i, m, x, y, made = 0;
+
+	for (i = 0; i < light_job.count; i++) {
+		const styled_t	*s = &styled_surfs[i];
+		int		*was = styled_cached[i], scale[MAXLIGHTMAPS], differs = 0, size = s->wide * s->high;
+		const byte	*light = s->samples;
+		unsigned	*to = s->to;
+
+		if (s->page % step != first)
+			continue;
+		for (m = 0; m < s->maps; m++) {
+			scale[m] = light_job.values[s->styles[m]];
+			differs |= scale[m] ^ was[m];
+		}
+		if (!differs)
+			continue;
+		for (m = 0; m < s->maps; m++)
+			was[m] = scale[m];
+		for (y = 0; y < s->high; y++, to += LIGHT_ROW, light += s->wide)
+			for (x = 0; x < s->wide; x++) {
+				unsigned	v = 0;
+
+				for (m = 0; m < s->maps; m++)
+					v += light[m * size + x] * (unsigned)scale[m];
+				v >>= 7;
+				to[x] = (v > 255 ? 255 : v) * 0x010101u;
+			}
+		made++;
+	}
+	return (uint32_t)made;
+}
+
+/* The level's surfaces with such light, and where each one's is in its light map in GPU memory. */
+static void light_build (model_t *world)
+{
+	msurface_t	*s;
+	int		i, m, n = 0;
+
+	light_on = 0;
+	light_job.count = 0;
+	if (light_how < 0) {
+		light_how = how_of ("QUAKE_LIGHT", SE_WORKER_LIGHT, SE_LIGHT_WORKERS);
+		text_here (light_share);
+		mcw_touch (styled_surfs, sizeof styled_surfs);
+		mcw_touch (styled_cached, sizeof styled_cached);
+		mcw_touch (&light_job, sizeof light_job);
+	}
+	if (light_how == HOW_FRAME || !world->lightdata)
+		return;
+	for (i = 0, s = world->surfaces; i < world->numsurfaces; i++, s++) {
+		styled_t	*e = &styled_surfs[n];
+		unsigned	*words;
+		int		any = 0;
+
+		for (m = 0; m < MAXLIGHTMAPS && s->styles[m] != 255; m++)
+			any |= s->styles[m] != 0;
+		if (!any || !s->samples || (s->flags & (SURF_DRAWSKY | SURF_DRAWTURB)))
+			continue;
+		/* (too many, or a light map that cannot stay where it is: this core's, as before) */
+		if (n == MAX_STYLED || !qglStay (lightmap_textures + s->lightmaptexturenum) ||
+		    (words = qglLightWords (lightmap_textures + s->lightmaptexturenum)) == NULL)
+			return;
+		e->samples = s->samples;
+		e->to = words + s->light_t * LIGHT_ROW + s->light_s;
+		e->wide = (s->extents[0] >> 4) + 1, e->high = (s->extents[1] >> 4) + 1;
+		e->page = s->lightmaptexturenum, e->maps = m;
+		for (m = 0; m < MAXLIGHTMAPS; m++) {
+			e->styles[m] = s->styles[m];
+			styled_cached[n][m] = s->cached_light[m];
+		}
+		n++;
+	}
+	light_job.count = n;
+	light_on = 1;
+	light_was = 1;
+	se_lights_changed = 1;
+}
+
+static void light_settle (void)
+{
+	int k;
+
+	for (k = 0; light_out && k < SE_LIGHT_WORKERS; k++)
+		mcw_wait (SE_WORKER_LIGHT + k);
+	light_out = 0;
+}
+
+/* Whether the workers have the flickering light maps this frame (and R_RenderBrushPoly leaves them be). */
+int SE_LightsApart (void)
+{
+	return light_on && gl_flashblend.value && !r_fullbright.value;
+}
+
+/* A frame: when a style's brightness has changed and the workers are free, they are told. */
+static void light_frame (void)
+{
+	int k, i;
+
+	if (!light_was) {
+		/* this core made them meanwhile (a setting): what the workers know of them is stale */
+		light_settle ();
+		for (i = 0; i < light_job.count; i++)
+			styled_cached[i][0] = -1;
+		light_was = se_lights_changed = 1;
+	}
+	if (!se_lights_changed || !light_job.count)
+		return;
+	if (light_out) {
+		for (k = 0, i = 0; k < SE_LIGHT_WORKERS; k++)
+			i |= !mcw_done (SE_WORKER_LIGHT + k);
+		if (i)
+			return;
+		light_out = 0;
+	}
+	se_lights_changed = 0;
+	memcpy (light_job.values, d_lightstylevalue, sizeof light_job.values);
+	if (light_how == HOW_WAIT)
+		seglSettle ();	/* (the list being drawn reads the light maps as they are) */
+	for (k = 0; k < SE_LIGHT_WORKERS; k++)
+		mcw_post (SE_WORKER_LIGHT + k, light_share, k, SE_LIGHT_WORKERS);
+	light_out = 1;
+	if (light_how == HOW_WAIT)
+		light_settle ();
+}
+
+/* -- water: kept in GPU memory, and its ripple written there by workers -- */
+
+typedef struct { msurface_t *surf; unsigned *quads; } water_t;
+static water_t	*water_surfs;
+static int	*water_of;		/* by surface: which of water_surfs, or -1 */
+static int	*water_seen[2], water_seen_count[2], water_seen_quads[2], water_now;	/* those the viewer's leaf sees */
+static int	water_how = -1, water_on, water_out, water_count, water_first_run, water_runs, water_shown;
+static unsigned	*water_stamp, water_serial;
+static struct { const int *list; int count; float clock; int unused; } water_job __attribute__ ((aligned (16)));
+
+static inline unsigned warp_bits (float s, float t)
+{
+	return ((unsigned)(int)(s * 1024.0f) & 0xffff) | (unsigned)(int)(t * 1024.0f) << 16;
+}
+
+/* GLQuake's EmitWaterPolys for a surface's quads where they are kept: each corner's texture
+ * coordinates ripple by a table of sines and the clock. Only that word of a vertex is stored. */
+static void water_warp (const water_t *w, float clock)
+{
+	unsigned	word[MAX_WARP], *to = w->quads;
+	glpoly_t	*p;
+	const float	*v;
+	float		s, t, base_s = 0, base_t = 0, step = 256 / (2 * 3.14159265f);
+	int		i, n;
+
+	for (p = w->surf->polys; p; p = p->next) {
+		n = p->numverts < MAX_WARP ? p->numverts : MAX_WARP;
+		for (i = 0, v = p->verts[0]; i < n; i++, v += VERTEXSIZE) {
+			s = (v[3] + turbsin[(int)((v[4] * 0.125f + clock) * step) & 255]) * (1.0f / 64);
+			t = (v[4] + turbsin[(int)((v[3] * 0.125f + clock) * step) & 255]) * (1.0f / 64);
+			if (!i)
+				base_s = floor_of (s) - 1, base_t = floor_of (t) - 1;	/* whole repeats off: see SE_BuildPoly */
+			word[i] = warp_bits (s - base_s, t - base_t);
+		}
+		for (i = 1; i + 1 < n; i += 2, to += 16) {
+			to[3] = word[0], to[7] = word[i], to[11] = word[i + 1];
+			to[15] = word[i + 2 < n ? i + 2 : n - 1];
+		}
+	}
+}
+
+static uint32_t water_share (uint32_t first, uint32_t step)
+{
+	int	i;
+
+	for (i = (int)first; i < water_job.count; i += (int)step)
+		water_warp (&water_surfs[water_job.list[i]], water_job.clock);
+	return 0;
+}
+
+static int water_quads_of (const msurface_t *s)
+{
+	const glpoly_t	*p;
+	int		quads = 0;
+
+	for (p = s->polys; p; p = p->next)
+		quads += p->numverts >= 3 ? ((p->numverts < MAX_WARP ? p->numverts : MAX_WARP) - 1) / 2 : 0;
+	return quads;
+}
+
+static void water_settle (void)
+{
+	int k;
+
+	for (k = 0; k < water_out; k++)
+		mcw_wait (SE_WORKER_WATER + k);
+	water_out = 0;
+}
+
+/* A frame: the workers ripple the water the viewer's leaf sees, as often as they get round. */
+static void water_frame (void)
+{
+	int k, busy = 0, workers;
+
+	if (water_out) {
+		for (k = 0; k < water_out; k++)
+			busy |= !mcw_done (SE_WORKER_WATER + k);
+		if (busy)
+			return;
+		water_out = 0;
+	}
+	if (!water_seen_count[water_now])
+		return;
+	water_job.list = water_seen[water_now];
+	water_job.count = water_seen_count[water_now];
+	water_job.clock = cl.time;
+	/* (a worker keeps some 190 vertices a pass, and a frame is four passes or more) */
+	workers = 1 + water_seen_quads[water_now] / 160;
+	if (workers > SE_WATER_WORKERS)
+		workers = SE_WATER_WORKERS;
+	if (water_how == HOW_WAIT)
+		seglSettle ();
+	for (k = 0; k < workers; k++)
+		mcw_post (SE_WORKER_WATER + k, water_share, k, workers);
+	water_out = workers;
+	if (water_how == HOW_WAIT)
+		water_settle ();
+}
+
+/* -- brush models (doors, boxes of ammunition): their triangles kept as the level's quads are -- */
+
+#define MAX_BRUSH	256
+typedef struct { texture_t *texture; int light, count; unsigned *triangles; unsigned drawn[24]; } brush_run_t;
+typedef struct { int first, textures, lights; } brush_t;
+static brush_t		brushes[MAX_BRUSH];
+static brush_run_t	*brush_runs;
+static int		brush_count, brush_how = -1;
+void qglTrianglesAt (const unsigned *vertices, int count, unsigned *kept);
+
+/* How many vertices a brush model's triangles are, twice over (0: it is drawn a polygon at a time). */
+static int brush_vertices (const model_t *m)
+{
+	const msurface_t	*s = m->surfaces + m->firstmodelsurface;
+	int			i, vertices = 0;
+
+	for (i = 0; i < m->nummodelsurfaces; i++, s++) {
+		if ((s->flags & KEPT_SPECIAL) || !s->polys || s->polys->next || s->polys->numverts < 3 || !s->polys->compact ||
+		    s->lightmaptexturenum < 0 || s->lightmaptexturenum >= 64)
+			return 0;
+		vertices += (s->polys->numverts - 2) * 6;
+	}
+	return vertices;
+}
+
+static unsigned *put_triangles (unsigned *to, const unsigned *v, int n)
+{
+	int i;
+
+	for (i = 1; i + 1 < n; i++, to += 12) {
+		memcpy (to, v, 16);
+		memcpy (to + 4, v + 4 * i, 32);
+	}
+	return to;
+}
+
+/* A model's runs: its surfaces by texture, in the order the textures first come, then by light map. */
+static unsigned *brush_build (model_t *m, unsigned *to)
+{
+	msurface_t	*s, *first = m->surfaces + m->firstmodelsurface;
+	brush_t		*b = &brushes[brush_count];
+	brush_run_t	*r = brush_runs + b->first;
+	int		i, k, page;
+
+	b->textures = b->lights = 0;
+	for (i = 0, s = first; i < m->nummodelsurfaces; i++, s++) {
+		for (k = 0; k < i && first[k].texinfo->texture != s->texinfo->texture; k++)
+			continue;
+		if (k < i)
+			continue;
+		r->texture = s->texinfo->texture, r->light = -1, r->triangles = to, r->drawn[0] = 0;
+		for (k = i; k < m->nummodelsurfaces; k++)
+			if (first[k].texinfo->texture == r->texture)
+				to = put_triangles (to, first[k].polys->compact, first[k].polys->numverts);
+		r->count = (int)(to - r->triangles) / 4;
+		r++, b->textures++;
+	}
+	for (page = 0; page < 64; page++) {
+		r->texture = NULL, r->light = page, r->triangles = to, r->drawn[0] = 0;
+		for (k = 0, s = first; k < m->nummodelsurfaces; k++, s++)
+			if (s->lightmaptexturenum == page)
+				to = put_triangles (to, s->polys->compact + s->polys->numverts * 4, s->polys->numverts);
+		if (to == r->triangles)
+			continue;
+		r->count = (int)(to - r->triangles) / 4;
+		r++, b->lights++;
+	}
+	b[1].first = b->first + b->textures + b->lights;
+	m->se_brush = ++brush_count;
+	m->se_brush_serial = se_map_serial;
+	return to;
+}
+
+int SE_BrushKept (entity_t *e)
+{
+	const model_t *m = e->model;
+
+	return m->se_brush && m->se_brush_serial == se_map_serial && kept_on && SE_LightsApart ();
+}
+
+/* Its draws with its textures, or with its light maps (R_DrawBrushModel sets the blending). */
+void SE_BrushDraw (entity_t *e, int light)
+{
+	const brush_t		*b = &brushes[e->model->se_brush - 1];
+	brush_run_t		*r = brush_runs + b->first + (light ? b->textures : 0);
+	int			n = light ? b->lights : b->textures;
+
+	for (; n > 0; n--, r++) {
+		GL_Bind (light ? lightmap_textures + r->light : R_TextureAnimation (r->texture)->gl_texturenum);
+		qglTrianglesAt (r->triangles, r->count, r->drawn);
+	}
+}
+
 static unsigned	place[MAX_EDICTS][3];	/* where each entity was when last asked about, as bits */
 
 /* Is this entity where it was the last time this was asked? (And now it is noted there.) */
@@ -128,10 +506,14 @@ int SE_SamePlace (int number, const float *origin)
 	return same;
 }
 
-int	se_map_serial;	/* goes up when the models go: what is remembered about a level is then stale */
-
 void SE_ClearMap (void)
 {
+	/* (the workers read the level that is going) */
+	light_settle ();
+	water_settle ();
+	light_on = water_on = 0;
+	light_job.count = 0;
+	water_seen_count[0] = water_seen_count[1] = 0;
 	se_map_serial++;
 	memset (place, 0xff, sizeof place);
 	if (kept_on) {
@@ -152,23 +534,61 @@ static void kept_build (model_t *world)
 	texture_t	*frame;
 	glpoly_t	*p;
 	int		slots = world->numtextures + 64, *first_of, *next_of, *slot_of_info;
+	int		water = 0, sky_put, r, brush = 0, brush_most = 0;
+	struct { texture_t *texture; int first, quads; } *water_run = NULL;
 
-	kept_on = 0;
+	kept_on = water_on = 0;
+	level_sky = level_water = 0;
 	if (COM_CheckParm ("-nokeep"))
 		return;
 	sky_run = -1;
+	if (water_how < 0) {
+		water_how = how_of ("QUAKE_WATER", SE_WORKER_WATER, SE_WATER_WORKERS);
+		text_here (water_share);
+		mcw_touch (&water_job, sizeof water_job);
+	}
 	for (i = 0, s = world->surfaces; i < surfaces; i++, s++) {
 		if (kept_surface (s))
 			quads += (s->polys->numverts - 1) / 2;
+		level_sky |= (s->flags & SURF_DRAWSKY) != 0;
+		if (s->flags & SURF_DRAWTURB) {
+			level_water = 1;
+			if (water_how != HOW_FRAME && r_wateralpha.value == 1.0f)
+				water += water_quads_of (s);
+		}
 		if (s->flags & SURF_DRAWSKY)
 			for (p = s->polys; p; p = p->next)
 				sky += p->numverts >= 3 && p->numverts <= 64 ? (p->numverts - 1) / 2 : 0;
 	}
 	if (!quads)
 		return;
-	block = qglBlock ((quads * 2 + sky) * 64);
-	runs = Hunk_AllocName ((world->numtextures + 64) * sizeof (run_t), "runs");
+	/* the other brush models there are: the level's own (doors), and those of files (boxes) */
+	brush_count = 0;
+	if (brush_how < 0)
+		brush_how = !(getenv ("QUAKE_BRUSH") && !strcmp (getenv ("QUAKE_BRUSH"), "frame"));
+	for (i = 2; brush_how && i < MAX_MODELS && cl.model_precache[i]; i++) {
+		model_t *model = cl.model_precache[i];
+
+		if (model->type == mod_brush && (m = brush_vertices (model)) != 0)
+			brush += m, brush_most += 2 * model->nummodelsurfaces;
+	}
+	block = qglBlock ((quads * 2 + sky + water) * 64 + brush * 16);
+	brush_runs = Hunk_AllocName ((brush_most + 1) * sizeof (brush_run_t), "brushes");
+	runs = Hunk_AllocName ((2 * world->numtextures + 64) * sizeof (run_t), "runs");
 	styled = Hunk_AllocName (world->numsurfaces, "styled");
+	if (water) {
+		int n = 0;
+
+		for (i = 0, s = world->surfaces; i < surfaces; i++, s++)
+			n += (s->flags & SURF_DRAWTURB) != 0;
+		water_surfs = Hunk_AllocName (n * sizeof (water_t), "water");
+		water_of = Hunk_AllocName (surfaces * sizeof (int), "water");
+		water_seen[0] = Hunk_AllocName (2 * n * sizeof (int), "water");
+		water_seen[1] = water_seen[0] + n;
+		water_stamp = Hunk_AllocName (n * sizeof (unsigned), "water");
+		for (i = 0; i < surfaces; i++)
+			water_of[i] = -1;
+	}
 	if (!block) {
 		Con_Printf ("no GPU memory to keep the level in (%i KB): drawn a polygon at a time\n", quads * 2 * 64 >> 10);
 		return;
@@ -241,11 +661,54 @@ static void kept_build (model_t *world)
 			to = put_quads (to, corners, p->numverts);
 		}
 	}
+	sky_put = sky;
 	if (sky && (!qglStay (solidskytexture) || !qglStay (alphaskytexture)))
 		sky = 0;
-	if (seglKeep (count + (sky ? 2 : 0), quads * 2 + sky * 2) < 0) {
-		Con_Printf ("the level is too large to keep in GPU memory (%i quads): drawn a polygon at a time\n", quads * 2 + sky * 2);
+	/* the water's quads, by texture: where each surface's are, and a run a texture */
+	water_count = water_runs = 0;
+	if (water) {
+		water_run = malloc (world->numtextures * sizeof *water_run);
+		for (t = 0; water_run && t < world->numtextures; t++) {
+			texture_t *texture = world->textures[t];
+
+			if (!texture || texture->name[0] != '*')
+				continue;
+			first = (to - block) / 16;
+			for (i = 0, s = world->surfaces; i < surfaces; i++, s++) {
+				if (!(s->flags & SURF_DRAWTURB) || s->texinfo->texture != texture || !(m = water_quads_of (s)))
+					continue;
+				water_of[i] = water_count;
+				water_surfs[water_count].surf = s, water_surfs[water_count].quads = to;
+				for (p = s->polys; p; p = p->next) {
+					int n = p->numverts < MAX_WARP ? p->numverts : MAX_WARP;
+
+					for (m = 0; m < n; m++) {
+						corners[4 * m] = float_bits (p->verts[m][0]);
+						corners[4 * m + 1] = float_bits (p->verts[m][1]);
+						corners[4 * m + 2] = float_bits (p->verts[m][2]);
+						corners[4 * m + 3] = 0;
+					}
+					if (n >= 3)
+						to = put_quads (to, corners, n);
+				}
+				water_warp (&water_surfs[water_count++], 0);
+			}
+			if ((to - block) / 16 == first)
+				continue;
+			if (!qglStay (texture->gl_texturenum))
+				water = 0;
+			water_run[water_runs].texture = texture, water_run[water_runs].first = first - (quads * 2 + sky_put);
+			water_run[water_runs++].quads = (to - block) / 16 - first;
+		}
+		if (!water_run)
+			water = 0;
+	}
+	if (!water)
+		water_runs = 0;
+	if (seglKeep (count + (sky ? 2 : 0) + water_runs, quads * 2 + sky * 2 + water) < 0) {
+		Con_Printf ("the level is too large to keep in GPU memory (%i quads): drawn a polygon at a time\n", quads * 2 + sky * 2 + water);
 		qglRelease ();
+		free (water_run);
 		return;
 	}
 	for (i = 0; i < count; i++) {
@@ -260,6 +723,7 @@ static void kept_build (model_t *world)
 			Con_Printf ("no GPU memory for the level's textures: drawn a polygon at a time\n");
 			seglKeep (0, 0);
 			qglRelease ();
+			free (water_run);
 			return;
 		}
 		seglKeptQuads (i, block, at, runs[i].quads, runs[i].shown, 255, 0);
@@ -292,11 +756,33 @@ static void kept_build (model_t *world)
 		sky_run = count;
 		count += 2;
 	}
+	/* (the water's vertices are after the sky's one set; its mesh places after the sky's two) */
+	for (i = 0, kept_anims = 0; i < count; i++)
+		if (runs[i].texture && runs[i].texture->anim_total)
+			kept_anims = i + 1;
+	water_first_run = count;
+	for (r = 0; r < water_runs; r++, count++) {
+		seglKeptQuads (count, block + (sky_put - sky * 2) * 16, quads * 2 + sky * 2 + water_run[r].first, water_run[r].quads,
+			water_run[r].texture->gl_texturenum, 255, 0);
+		runs[count].texture = NULL;
+		runs[count].quads = water_run[r].quads;
+		runs[count].shown = water_run[r].texture->gl_texturenum;
+	}
+	free (water_run);
+	brushes[0].first = 0;
+	for (i = 2; brush && brush_count < MAX_BRUSH - 1 && i < MAX_MODELS && cl.model_precache[i]; i++)
+		if (cl.model_precache[i]->type == mod_brush && brush_vertices (cl.model_precache[i]))
+			to = brush_build (cl.model_precache[i], to);
+	water_on = water_runs > 0;
+	water_shown = 1;
 	kept_runs = count;
 	kept_hidden = 0;
 	kept_on = 1;
-	Con_Printf ("the level is kept in GPU memory: %i quads in %i runs, %i KB; %i surfaces flicker\n", quads * 2, count,
-		quads * 2 * 64 >> 10, styled_count);
+	light_build (world);
+	/* (one line, said once: a line said while a level loads is a frame drawn) */
+	Con_Printf ("the level is kept in GPU memory: %i quads in %i runs, %i KB; %i surfaces flicker; the workers have %i quads of water and %i light maps; %i brush models kept, %i KB\n",
+		quads * 2 + water, count, (quads * 2 + water) * 64 >> 10, styled_count, water_on ? water : 0, light_on ? light_job.count : 0,
+		brush_count, brush * 16 >> 10);
 }
 
 /* the part of a number after its whole part, 16.16: where in a repeating texture it is */
@@ -320,8 +806,9 @@ static void kept_frame (void)
 	msurface_t	*s;
 
 	seglKeptMatrices ();
-	for (i = 0; i < kept_runs; i++) {
-		if (kept_hidden)
+	/* (no run after the first kept_anims has a texture that is one of several) */
+	for (i = 0; i < (kept_hidden ? kept_runs : kept_anims); i++) {
+		if (kept_hidden && (water_shown || i < water_first_run || i >= water_first_run + water_runs))
 			seglKeptShown (i, runs[i].quads);
 		if (runs[i].texture && runs[i].texture->anim_total) {
 			int name = R_TextureAnimation (runs[i].texture)->gl_texturenum;
@@ -436,49 +923,161 @@ void SE_NewMap (void)
 /* What GLQuake's R_RecursiveWorldNode did: every surface in view is put on its texture's chain. */
 float	se_warp_time;	/* the clock water ripples by (gl_warp.c) */
 
+/* The things that stand in the leaves the viewer's leaf sees (torches and the like), once each. */
+static entity_t	*static_seen[MAX_STATIC_ENTITIES];
+static short	static_box[MAX_STATIC_ENTITIES][6];
+static byte	static_out[MAX_STATIC_ENTITIES], static_boxed[MAX_STATIC_ENTITIES];
+static unsigned	static_stamp[MAX_STATIC_ENTITIES], static_serial;
+static int	static_count, seen_free, mark_leaves = -1;
+int		se_no_chains;	/* this frame put no surface of the level on a chain: R_DrawWorld has none to draw */
+
+static void static_add (efrag_t *frag)
+{
+	for (; frag; frag = frag->leafnext) {
+		entity_t	*e = frag->entity;
+		unsigned	n = (unsigned)(e - cl_static_entities);
+		int		j;
+
+		if (n >= MAX_STATIC_ENTITIES || static_stamp[n] == static_serial)
+			continue;
+		static_stamp[n] = static_serial;
+		static_seen[static_count] = e;
+		static_out[static_count] = 0;
+		/* a model's box as R_DrawAliasModel has it, and two units more: only what that would cull too is left out */
+		static_boxed[static_count] = e->model && e->model->type == mod_alias;
+		for (j = 0; static_boxed[static_count] && j < 3; j++) {
+			static_box[static_count][j] = (short)((int)floorf (e->origin[j] + e->model->mins[j]) - 2);
+			static_box[static_count][j + 3] = (short)((int)ceilf (e->origin[j] + e->model->maxs[j]) + 2);
+		}
+		static_count++;
+	}
+}
+
+/* The water of a leaf the viewer's leaf sees, for the workers' list. */
+static void water_add (int leaf, int into)
+{
+	msurface_t	**mark = special_marks + special_first[2 * leaf];
+	int		j, w;
+
+	for (j = special_first[2 * leaf + 1]; j > 0; j--, mark++) {
+		if (!((*mark)->flags & SURF_DRAWTURB) || (w = water_of[*mark - cl.worldmodel->surfaces]) < 0 || water_stamp[w] == water_serial)
+			continue;
+		water_stamp[w] = water_serial;
+		water_seen[into][water_seen_count[into]++] = w;
+		water_seen_quads[into] += water_quads_of (*mark);
+	}
+}
+
 void SE_MarkWorld (void)
 {
 	model_t	*world = cl.worldmodel;
 	/* a plane of the view, and which of a box's six numbers are its corner furthest along it */
 	struct { int normal[3], dist, far[3], unused; } view[4], *v;
-	int	i, j, k, eye[3], count;
+	int	i, j, k, eye[3], count, lights_apart, water_apart, free_of_leaves;
 	mleaf_t	**list;
 	const short **boxes;
 	byte	*out;
 
 	if (made_for != world)
 		SE_NewMap ();
+	if (mark_leaves < 0)
+		mark_leaves = getenv ("QUAKE_MARK") && !strcmp (getenv ("QUAKE_MARK"), "leaves");
 	se_warp_time = cl.time;
-	if (kept_on)
+	se_no_chains = 0;
+	water_apart = kept_on && water_on && r_wateralpha.value == 1.0f;
+	if (water_on && water_apart != water_shown) {
+		/* (water one can see through is drawn in the frame, after everything, as before) */
+		for (i = 0; i < water_runs; i++)
+			seglKeptShown (water_first_run + i, water_apart ? runs[water_first_run + i].quads : 0);
+		water_shown = water_apart;
+	}
+	if (kept_on) {
 		kept_frame ();
-	if (seen_from != r_viewleaf || r_novis.value || seen_statics != cl.num_statics || seen_kept != kept_on) {
+		SE_SbarHead ();		/* (gl_screen.c: the status bar, when it can be the frame's first draws) */
+	}
+	lights_apart = kept_on && SE_LightsApart ();
+	if (lights_apart)
+		light_frame ();
+	else
+		light_was = 0;
+	/* with the light maps and the water the workers', and the sky kept, a frame has nothing to
+	 * ask of a leaf: what stands in the leaves in sight is a list of its own */
+	free_of_leaves = lights_apart && (water_apart || !level_water) && (sky_run >= 0 || !level_sky) && !mark_leaves && !r_novis.value;
+	if (seen_from != r_viewleaf || r_novis.value || seen_statics != cl.num_statics || seen_kept != kept_on || seen_free != free_of_leaves) {
 		byte *vis = Mod_LeafPVS (r_viewleaf, world);
 		/* (of a kept level a leaf has something to do each frame only if it has water, sky or
 		 * lights that flicker in it, or a torch or the like standing in it: the others, which
 		 * are most, are not looked at at all) */
-		int	all = r_novis.value != 0, count = 0, bits;
+		int	all = r_novis.value != 0, count = 0, bits, into = !water_now;
 
+		/* (the list a worker still reads is left as it is) */
+		if (water_out && water_job.list == water_seen[into])
+			into = water_now;
+		if (water_apart) {
+			water_seen_count[into] = water_seen_quads[into] = 0;
+			water_serial++;
+		}
+		static_count = 0;
+		static_serial++;
 		/* (eight leaves a byte of the table, and most bytes are 0) */
 		for (i = 0; i < world->numleafs; i += 8) {
 			if ((bits = all ? 255 : vis[i >> 3]) == 0)
 				continue;
-			for (j = i; bits && j < world->numleafs; j++, bits >>= 1)
-				if ((bits & 1) && (!kept_on || leaf_special[j + 1] || world->leafs[j + 1].efrags)) {
+			for (j = i; bits && j < world->numleafs; j++, bits >>= 1) {
+				if (!(bits & 1))
+					continue;
+				if (free_of_leaves) {
+					if (world->leafs[j + 1].efrags)
+						static_add (world->leafs[j + 1].efrags);
+				} else if (!kept_on || leaf_special[j + 1] || world->leafs[j + 1].efrags) {
 					seen_box[count] = leaf_boxes[j + 1].box;
 					seen[count++] = &world->leafs[j + 1];
 				}
+				if (water_apart && (leaf_special[j + 1] & 1))
+					water_add (j + 1, into);
+			}
 		}
+		if (water_apart)
+			water_now = into;
 		seen_count = count;
 		seen_from = r_viewleaf;
 		seen_statics = cl.num_statics;
 		seen_kept = kept_on;
+		seen_free = free_of_leaves;
 	}
+	if (water_apart)
+		water_frame ();
 	for (i = 0; i < 4; i++) {
 		for (j = 0; j < 3; j++) {
 			view[i].normal[j] = (int)(frustum[i].normal[j] * 16384.0f);
 			view[i].far[j] = view[i].normal[j] < 0 ? j : j + 3;
 		}
 		view[i].dist = (int)(frustum[i].dist * 16384.0f);
+	}
+	if (free_of_leaves) {
+		se_no_chains = 1;
+		for (i = 0; i < static_count; i++) {
+			const short	*box = static_box[i];
+			entity_t	*e = static_seen[i];
+
+			if (static_boxed[i]) {
+				v = &view[static_out[i]];
+				if (v->normal[0] * box[v->far[0]] + v->normal[1] * box[v->far[1]] + v->normal[2] * box[v->far[2]] < v->dist)
+					continue;
+				for (k = 0, v = view; k < 4; k++, v++)
+					if (v->normal[0] * box[v->far[0]] + v->normal[1] * box[v->far[1]] + v->normal[2] * box[v->far[2]] < v->dist)
+						break;
+				if (k < 4) {
+					static_out[i] = (byte)k;
+					continue;
+				}
+			}
+			if (cl_numvisedicts < MAX_VISEDICTS) {
+				cl_visedicts[cl_numvisedicts++] = e;
+				e->visframe = r_framecount;
+			}
+		}
+		return;
 	}
 	for (j = 0; j < 3; j++)
 		eye[j] = (int)(modelorg[j] * 4.0f);	/* quarter units: the products below fit 32 bits */
@@ -522,7 +1121,7 @@ void SE_MarkWorld (void)
 				continue;
 			if (kept_on && !(surf->flags & (sky_run >= 0 ? SURF_DRAWTURB : KEPT_SPECIAL))) {
 				/* kept: only its light map may need making again, when a style's brightness changed */
-				if (styled[surf - world->surfaces]) {
+				if (styled[surf - world->surfaces] && !lights_apart) {
 					int m;
 
 					surf->visframe = r_framecount;
@@ -535,6 +1134,8 @@ void SE_MarkWorld (void)
 				continue;
 			}
 			surf->visframe = r_framecount;
+			if (water_apart && (surf->flags & SURF_DRAWTURB))
+				continue;	/* kept, and the workers' */
 			p = &surface_planes[surf - world->surfaces];
 			if ((p->normal[0] >> 2) * eye[0] + (p->normal[1] >> 2) * eye[1] + (p->normal[2] >> 2) * eye[2] <= p->dist)
 				continue;	/* seen from behind */
@@ -559,24 +1160,14 @@ void SE_DrawPoly (glpoly_t *p, int lightmap)
 #define se_count_add(k, n)
 #endif
 
-#define MAX_WARP	64		/* corners of one of their polygons (they are cut into small ones) */
 #define MAX_SKY		8192		/* vertices of sky in view */
 
-extern float	turbsin[];
 extern int	solidskytexture, alphaskytexture;
 
 /* GLQuake's EmitWaterPolys: each vertex's texture coordinates ripple by a table of sines. */
 void qglQuads (const unsigned int *vertices, int n);
 unsigned *qglQuadsRoom (int most);
 void qglQuadsUsed (int quads);
-
-/* floorf, which is a call, for numbers an int holds */
-static inline float floor_of (float f)
-{
-	float whole = (float)(int)f;
-
-	return whole > f ? whole - 1 : whole;
-}
 
 void SE_Water (msurface_t *fa)
 {

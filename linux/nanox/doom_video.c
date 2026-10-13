@@ -21,6 +21,7 @@
 #include <sys/time.h>
 #include <GLES/segl.h>
 #include "nano-X.h"
+#include "mcw.h"
 
 void I_FinishUpdate_port(void);
 void I_SetPalette_port(unsigned char *palette);
@@ -31,7 +32,16 @@ extern unsigned char gammatable[5][256];
 extern int usegamma;
 extern int gametic;
 extern int doom_gl, doom_gl_scene, doom_gl_kept;
+extern int doom_view_inline;	/* so many views more are this core's own to draw (doom_gl.c) */
+extern volatile unsigned doom_view_wanted, doom_view_leave;	/* the views this core has told the workers to make */
+extern volatile struct { unsigned views; } __attribute__((aligned(16))) doom_view_made[4];	/* and those each has made */
+extern char __DATA_BEGIN__[], _end[];
 void doom_gl_again(void);
+void doom_view_draw(int share);
+int doom_view_crew(int workers, int as_told);
+void doom_view_taken(unsigned *cost, unsigned *things);
+int doom_view_asked(void);
+void doom_view_again(void);
 int wipe_StartScreen(int x, int y, int width, int height);
 int wipe_EndScreen(int x, int y, int width, int height);
 int wipe_ScreenWipe(int wipeno, int x, int y, int width, int height, int ticks);
@@ -53,6 +63,10 @@ extern unsigned doom_view[4];	/* the view's instructions, walls, planes and thin
 static int stop_tic = -1;
 static int gpu;			/* the GPU shows the screen */
 static GLuint screen_texture;
+static int worker;		/* worker cores make the view's list while the next tic runs, */
+static int crew = 1;		/* so many of them, each its share of the things */
+static int loops;		/* the workers that are in their loops (view_loop) */
+static int view_out;		/* they have one, or have made one that is not shown yet */
 
 /* Instructions the machine has run, for the figures printed with the frame rate. */
 static inline uint32_t
@@ -64,11 +78,11 @@ cycles(void)
 	return v;
 }
 
-static uint32_t in_tics, in_show, stats_from;
+static uint32_t in_tics, in_show, in_worker, stats_from;
 static int tics_from;
 
 /* DOOM_TOTALS=1: the start up to the first frame shown, and the sums of all after it. */
-static uint32_t born, start_cost, all_from, all_tics, all_show, all_view, all_display, all_wait;
+static uint32_t born, start_cost, all_from, all_tics, all_show, all_view, all_display, all_wait, all_worker;
 static int all_frames, all_tic_count;
 
 static void
@@ -77,9 +91,9 @@ totals(void)
 	uint32_t whole = cycles() - all_from;
 
 	all_view += doom_view[0];
-	fprintf(stderr, "doomtotal: start %uk; %d tics %uk, %d frames %uk draw (the view %uk) + %uk show, the melt's waits %uk, between them %uk; all %uk\n",
+	fprintf(stderr, "doomtotal: start %uk; %d tics %uk, %d frames %uk draw (the view %uk) + %uk show, the melt's waits %uk, between them %uk; all %uk; a worker core's %uk\n",
 		start_cost / 1000, all_tic_count, all_tics / 1000, all_frames, (all_display - all_show - all_wait) / 1000, all_view / 1000,
-		all_show / 1000, all_wait / 1000, (whole - all_tics - all_display) / 1000, whole / 1000);
+		all_show / 1000, all_wait / 1000, (whole - all_tics - all_display) / 1000, whole / 1000, all_worker / 1000);
 }
 
 static void __attribute__((constructor))
@@ -95,6 +109,9 @@ begun(void)
  * with DOOM_HASH_TICS=N a sum of the game's state every N tics, to see a demo play the same.
  */
 static void seat_tic(void);
+static void view_poll(void);
+static uint32_t view_loop(uint32_t share, uint32_t unused);
+static void view_leave(void);
 
 void
 G_Ticker_counted(void)
@@ -102,8 +119,10 @@ G_Ticker_counted(void)
 	static int every = -1;
 	uint32_t began = cycles();
 
+	view_poll();
 	seat_tic();
 	G_Ticker();
+	view_poll();
 	in_tics += cycles() - began;
 	all_tics += cycles() - began;
 	all_tic_count++;
@@ -160,6 +179,139 @@ I_InitGraphics(void)
 	seglTexturePointer(screen, SCREEN_W, SCREEN_H, GL_COLOR_INDEX8_EXT);
 	gpu = 1;
 	doom_gl = !(render && !strcmp(render, "soft"));
+	/* DOOM_VIEW=N: so many worker cores for the view's list (4); inline: none; told: none, and
+	 * the list made from what they would be told (docs/doom.md) */
+	render = getenv("DOOM_VIEW");
+	if (doom_gl && !(render && atoi(render) <= 0) && (crew = mcw_open(render ? atoi(render) : 4)) > 0) {
+		int k;
+
+		atexit(mcw_close);
+		mcw_touch(__DATA_BEGIN__, _end - __DATA_BEGIN__);	/* a worker stops at a page nobody has written yet */
+		crew = doom_view_crew(crew, 0);
+		for (k = 0, worker = 1; k < crew; k++) {
+			mcw_post(k + 1, view_loop, k, 0);
+			worker &= !mcw_done(k + 1);	/* (with no core for it the loop came straight back) */
+		}
+		loops = crew;
+		atexit(view_leave);
+		if (!worker)
+			view_leave();
+	}
+	if (!worker)
+		crew = doom_view_crew(0, render && !strcmp(render, "told"));
+}
+
+/* ---- the view's list on worker cores (docs/doom.md, "The view on worker cores") ---- */
+
+static void show_list(int scene);
+
+/*
+ * A worker's one job, for as long as the game runs: its share of each view it is told to
+ * make, its pass ended (fence.i) while there is none. Not a job a view: the library's worker
+ * sleeps after a job until the next is posted, and one posted in the pass it ends in is lost.
+ */
+static uint32_t
+view_loop(uint32_t share, uint32_t unused)
+{
+	unsigned made = doom_view_made[share].views;
+
+	if (!mcw_on_worker())
+		return 0;
+	for (;;) {
+		if (doom_view_wanted != made) {
+			doom_view_draw(share);
+			if (!share)
+				show_list(1);
+			doom_view_made[share].views = ++made;
+		} else if (doom_view_leave || mcw_recalled(share + 1)) {
+			return 0;
+		} else {
+			__asm__ volatile(".word 0x0000100f");
+		}
+	}
+}
+
+/* The loops end (the program leaves, or a core was wanted back): what they have not made of
+ * the view that is out is made here, and every view after it. */
+static void
+view_leave(void)
+{
+	int k;
+
+	doom_view_leave = 1;
+	for (k = 0; k < loops; k++)
+		mcw_wait(k + 1);
+	loops = worker = 0;
+	for (k = 0; k < crew && view_out; k++)
+		if (doom_view_made[k].views != doom_view_wanted) {
+			doom_view_draw(k);
+			if (!k)
+				show_list(1);
+			doom_view_made[k].views = doom_view_wanted;
+		}
+}
+
+/* Whether the workers have made the view they were told to (their pages are brought meanwhile). */
+static int
+view_made(void)
+{
+	int k, made = 1, ended = 0;
+
+	for (k = 0; k < crew; k++) {
+		ended |= k < loops && mcw_done(k + 1);
+		made &= doom_view_made[k].views == doom_view_wanted;
+	}
+	if (ended && !made) {
+		view_leave();
+		made = 1;
+	}
+	return made;
+}
+
+static void
+view_cost(void)
+{
+	unsigned cost = 0;
+
+	doom_view_taken(&cost, &doom_view[3]);
+	in_worker += cost;
+	all_worker += cost;
+}
+
+/* The list the workers made goes to the GPU, and what it cost is taken. */
+static void
+view_shown(void)
+{
+	seglSwapEarly();
+	view_out = 0;
+	view_cost();
+}
+
+static void
+view_poll(void)
+{
+	if (view_out && view_made())
+		view_shown();
+}
+
+/* Before anything is written that the worker's view reads, or another list is begun. */
+void
+doom_view_finish(void)
+{
+	if (!view_out)
+		return;
+	while (!view_made())
+		mcw_rest();
+	view_shown();
+}
+
+/* The game waits for the next tic's time (doom.sh has d_net.c call this in its loop): the
+ * clock moves between the machine's passes, so the pass ends here. */
+void
+doom_idle(void)
+{
+	view_poll();
+	mcw_rest();
 }
 
 int I_GetTime_port(void);
@@ -368,7 +520,8 @@ I_SetPalette(unsigned char *palette)
 		return;
 	}
 	words = seglPalette();
-	seglSettle();	/* (a level's start sets the palette from a tic) */
+	if (!view_out)
+		seglSettle();	/* (a level's start sets the palette from a tic) */
 	for (i = 0; i < 256; i++, palette += 3)
 		words[i] = (unsigned)gammatable[usegamma][palette[0]] << 16 | gammatable[usegamma][palette[1]] << 8 |
 			gammatable[usegamma][palette[2]];
@@ -386,7 +539,11 @@ D_Display(void)
 	if (gpu) {
 		extern int gamestate, menuactive;
 
-		seglSettle();
+		/* the worker's view is shown first; what this core then writes of the screen may
+		 * come a frame early, which waiting for the GPU here (a pass) would mend */
+		doom_view_finish();
+		if (!worker)
+			seglSettle();
 		/* a menu, a screen between levels: a picture for a screen, not a world for a room */
 		seglWorldFlat(gamestate != 0 || menuactive);
 	}
@@ -493,9 +650,9 @@ melt_strips(void)
 	}
 }
 
-/* The screen as one rectangle over the whole window, then the frame goes to the GPU. */
+/* The screen as one rectangle over the whole window, after the view if there is one (`scene`). */
 static void
-show(void)
+show_list(int scene)
 {
 	/* in units of the whole window: a matrix of 16.16 numbers cannot hold 2/320 exactly */
 	static const GLfixed corners[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
@@ -504,15 +661,8 @@ show(void)
 	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
 	int width, height;
 
-	static int melt_scene;
-
-	/* a melt's later frames have the view of its first under them, which Doom does not draw again */
-	if (melting == 1)
-		melt_scene = doom_gl_scene;
-	else if (melting && melt_scene)
-		doom_gl_again();
 	seglSize(&width, &height);
-	if (!doom_gl_scene)
+	if (!scene)
 		glClear(GL_COLOR_BUFFER_BIT);	/* nothing under it this frame */
 	glViewport(0, 0, width, height);
 	glMatrixMode(GL_PROJECTION);
@@ -522,14 +672,115 @@ show(void)
 	glDisable(GL_DEPTH_TEST);
 	glColorKeySE(KEY);
 	/* keyed over a view: it shows through where the screen holds the key */
-	seglQuad(flat, corners, screen_texture, 255, 255, doom_gl_scene);
+	seglQuad(flat, corners, screen_texture, 255, 255, scene);
 	if (melting == 1 || melting == 2)
 		melt_strips();
+}
+
+/* A frame is drawn: its list is the worker's to make from what the view was told, or made
+ * here and now (no view in it, a level's first frames, a melt, a level that is not kept). */
+static void
+show(void)
+{
+	static int melt_scene;
+	int scene = doom_gl_scene;
+
+	doom_gl_scene = 0;
+	if (scene && worker && doom_gl_kept && !melting && doom_view_inline <= 0) {
+		/* (R_RenderPlayerView saw the worker's last view shown before it told this one) */
+		doom_view_wanted++;
+		view_out = 1;
+		return;
+	}
+	doom_view_finish();
+	if (scene) {
+		int k;
+
+		doom_view_inline -= doom_view_inline > 0;
+		for (k = 0; k < crew; k++)
+			doom_view_draw(k);
+		view_cost();
+	}
+	/* a melt's later frames have the view of its first under them, which Doom does not draw again */
+	if (melting == 1)
+		melt_scene = scene;
+	else if (melting && melt_scene) {
+		doom_gl_again();
+		doom_gl_scene = 0;
+		scene = 1;
+	}
+	show_list(scene);
 	if (melting == 3)
 		melting = 0;
 	/* the game's tics come next and write no memory the list reads: D_Display() settles */
 	seglSwapEarly();
-	doom_gl_scene = 0;
+}
+
+/* ---- DOOM_SUM=1: at a held tic, a sum of all the GPU was given for the picture on show ---- */
+
+#define GPU_FROM	0x87000000u
+#define GPU_BYTES	0x00b00000u
+#define REG_SHOWN	0x300		/* the last whole frame: its list's address, how many commands */
+
+static unsigned
+sum_of(unsigned h, const unsigned char *gpu_at, unsigned address, unsigned bytes)
+{
+	const unsigned *p;
+
+	if (address < GPU_FROM || address - GPU_FROM > GPU_BYTES - bytes || bytes > GPU_BYTES)
+		return h * 16777619u ^ 0xbadbad;
+	for (p = (const unsigned *)(gpu_at + (address - GPU_FROM)); bytes >= 4; bytes -= 4)
+		h = (h ^ *p++) * 16777619u;
+	while (bytes--)
+		h = (h ^ ((const unsigned char *)p)[bytes]) * 16777619u;
+	return h;
+}
+
+/* Each command drawn, its matrices, its vertices and its texture, and the palette. The second
+ * sum is the same whatever the commands' order: a thing's place among them goes by where the
+ * game keeps the thing, which is not the same when pictures are made at other times. */
+static void
+list_sum(void)
+{
+	const unsigned char *at = (const unsigned char *)seglPalette() - REG_PALETTE;
+	const unsigned *regs = (const unsigned *)at, list = regs[REG_SHOWN / 4], count = regs[REG_SHOWN / 4 + 1];
+	unsigned h = 2166136261u, any = 0, i, k, drawn = 0, texture = 0;
+	const int each = atoi(getenv("DOOM_SUM")) > 1;
+
+	for (i = 0; i < count; i++) {
+		const unsigned *c = (const unsigned *)(at + (list - GPU_FROM)) + 16 * i;
+
+		if (c[0] == 3 && !c[2])
+			continue;	/* a kept command that shows nothing */
+		drawn++;
+		/* (not where its vertices, matrices and texture lie: what is in them) */
+		for (k = 0; k < 16; k++)
+			if (c[0] != 3 || (k != 1 && k != 6 && k != 7))
+				h = (h ^ c[k]) * 16777619u;
+		if (c[0] != 3)
+			continue;
+		h = sum_of(h, at, c[6], 128);
+		h = sum_of(h, at, c[1], c[4] & 0x200 ? c[2] / 6 * 64 : c[2] * 16);
+		if ((c[5] & 0xff) == 2 && c[7] != texture)
+			h = sum_of(h, at, texture = c[7], c[8] * c[9]);
+		{
+			unsigned one = 2166136261u;
+
+			for (k = 0; k < 16; k++)
+				if (k != 1 && k != 3 && k != 6 && k != 7)
+					one = (one ^ c[k]) * 16777619u;
+			one = sum_of(one, at, c[6], 128);
+			one = sum_of(one, at, c[1], c[4] & 0x200 ? c[2] / 6 * 64 : c[2] * 16);
+			if ((c[5] & 0xff) == 2)
+				one = sum_of(one, at, c[7], c[8] * c[9]);
+			any += one * 2654435761u;
+		}
+		if (each)	/* DOOM_SUM=2: where two lists part */
+			fprintf(stderr, "doomlist: %u: %u %x %x %ux%u %x, vertices %08x, picture %08x, so far %08x\n", i, c[2], c[4], c[5], c[8], c[9],
+				c[11], sum_of(0, at, c[1], c[4] & 0x200 ? c[2] / 6 * 64 : c[2] * 16), sum_of(0, at, c[7], c[8] * c[9]), h);
+	}
+	h = sum_of(h, at, GPU_FROM + REG_PALETTE, 1024);
+	fprintf(stderr, "doom: tic %d list of %u commands, %u drawn, sum %08x, in any order %08x\n", gametic, count, drawn, h, any);
 }
 
 void
@@ -576,12 +827,25 @@ I_FinishUpdate(void)
 		GR_WINDOW_INFO info;
 		int wait;
 
+		if (view_out) {
+			/* the held picture is the one this core would have made: with every
+			 * picture the worker asked for and went without */
+			while (!view_made())
+				mcw_rest();
+			while (doom_view_asked()) {
+				doom_view_again();
+				show_list(1);
+			}
+			view_shown();
+		}
 		/* the picture reaches the window a frame after it is drawn; the port's path has
 		 * it in a buffer the server has not read yet, and an answer from the server
 		 * means it has drawn everything sent before the question */
 		for (wait = 0; gpu && wait < 4; wait++)
 			__asm__ volatile(".word 0x0100000f");
 		GrGetWindowInfo(doom_window(), &info);
+		if (gpu && getenv("DOOM_SUM"))
+			list_sum();
 		fprintf(stderr, "doom: stopped at tic %d\n", gametic);
 		for (;;)
 			select(0, NULL, NULL, NULL, NULL);
@@ -600,11 +864,11 @@ I_FinishUpdate(void)
 				(cycles() - stats_from) / (unsigned)(ms - start), in_tics / (gametic - tics_from) / 1000,
 				gametic - tics_from, (cycles() - stats_from - in_tics - in_show) / frames / 1000, in_show / frames / 1000);
 		if (frames)
-		if (frames)
-			fprintf(stderr, "doomstat: the view %uk a frame, %u things\n", doom_view[0] / frames / 1000, doom_view[3] / frames);
+			fprintf(stderr, "doomstat: the view %uk a frame and %uk its list (%s), %u things\n", doom_view[0] / frames / 1000,
+				in_worker / frames / 1000, worker ? "a worker core's" : "this core's", doom_view[3] / frames);
 		all_view += doom_view[0];
 		memset(doom_view, 0, sizeof doom_view);
-		in_tics = in_show = 0;
+		in_tics = in_show = in_worker = 0;
 		stats_from = cycles();
 		tics_from = gametic;
 		frames = 0;

@@ -19,6 +19,7 @@
 #include "genmem.h"
 #include "fb.h"
 #include "mc.h"
+#include "sef.h"
 
 /* /dev/gpu maps GPU memory from GPU_PHYS; offsets below are from there */
 #define GPU_PHYS	0x86000000u
@@ -62,6 +63,7 @@
 #define WM_AT		12		/* the worker's: where it has it (x, y), of which drag, the drag let go */
 #define WM_RUN		16		/* which start of the worker this is; 0: it parks */
 #define WM_HERE		20		/* the worker's: the start it runs from */
+#define WM_PIXMAPS	28		/* pixmaps given the GPU's memory so far: a program sees whether its own was */
 #define WM_MAGIC	0x31514d57u
 #define KEYBOARD_OWNED	0x6b657973u
 #define MAX_COMMANDS	4096
@@ -76,6 +78,10 @@
 #define FRAG_TEXTURE	1
 #define FRAG_MASK	3
 #define FRAG_RGB24	4
+#define FRAG_COVER	7		/* text: four bits of coverage a pixel */
+#define TEXT_MORE	0x100		/* a text command with words 9 to 11 */
+#define PASS_OVER	(5u << 16)	/* the pass that blends by alpha and uses no depth */
+#define MAX_PIXMAPS	8
 #define ROM_PHYS	0x40000000u	/* the ROM the root file system is in */
 #define SUBMIT_DRAW	1
 #define SUBMIT_INTO	4		/* then copy the picture to the given rectangle of RAM */
@@ -88,6 +94,7 @@ struct surface {
 	void *owner;			/* the window; NULL for a free slot */
 	uint32_t at;			/* the buffer, in GPU memory */
 	int x, y, w, h;			/* where the window is on the screen */
+	int pixmap;			/* of pixmaps[]: 1 in memory of the server's, 2 in the GPU's */
 };
 
 extern int gr_mode;
@@ -105,6 +112,9 @@ static volatile uint32_t *regs;
 static SUBDRIVER soft;			/* the software drawing routines */
 static int accelerate = 1;
 static struct surface root, surfaces[MAX_SURFACES];
+/* pixmaps: one whose pixels are the GPU's is drawn on and copied from as a window is */
+static struct surface pixmaps[MAX_PIXMAPS];
+static int blended;			/* the queue has blended text: what follows it is queued in that pass */
 static struct surface *target = &root;	/* the surface the queued commands draw on */
 static int commands;			/* queued so far, including the first */
 static uint32_t mesh_top;		/* mesh vertices the queued commands take */
@@ -435,7 +445,10 @@ pool_give(uint32_t at)
 static int
 is_surface(PSD psd)
 {
-	return psd == &scrdev || ((struct surface *)psd >= surfaces && (struct surface *)psd < surfaces + MAX_SURFACES);
+	struct surface *s = (struct surface *)psd;
+
+	return psd == &scrdev || (s >= surfaces && s < surfaces + MAX_SURFACES) ||
+	       (s >= pixmaps && s < pixmaps + MAX_PIXMAPS && s->pixmap == 2);
 }
 
 static struct surface *
@@ -450,7 +463,7 @@ surface_of(PSD psd)
  * the copy counter will have when this list's picture is in RAM.
  */
 static uint32_t
-submit(int count, uint32_t address, int width, int height)
+submit(int count, uint32_t address, int width, int height, uint32_t passes)
 {
 	uint32_t landed;
 
@@ -470,7 +483,7 @@ submit(int count, uint32_t address, int width, int height)
 	regs[REG_INTO + 3] = width;
 	regs[REG_LIST] = GPU_PHYS + LIST_OFFSET;
 	regs[REG_COUNT] = count;
-	regs[REG_SUBMIT] = SUBMIT_DRAW | SUBMIT_INTO;
+	regs[REG_SUBMIT] = SUBMIT_DRAW | SUBMIT_INTO | passes;
 	__atomic_store_n(&regs[REG_LOCK], 0, __ATOMIC_RELEASE);
 	return landed;
 }
@@ -509,7 +522,9 @@ flush_last(void)
 	if (commands == 0)
 		return;
 	drawn();
-	landed = submit(commands, GPU_PHYS + target->at, target->w, target->h);
+	/* (bit 8 + n of the submit word: the list has commands of pass n) */
+	landed = submit(commands, GPU_PHYS + target->at, target->w, target->h, blended ? 1u << 13 : 0);
+	blended = 0;
 	undrawn = 1;
 	commands = 0;
 	mesh_top = 0;
@@ -528,7 +543,7 @@ flush(void)
 }
 
 /* Writes command `n`: a rectangle, x1 and y1 exclusive, optionally showing a texture. */
-static void
+static inline __attribute__((always_inline)) void
 emit(int n, int x0, int y0, int x1, int y1, uint32_t colour, int mode, uint32_t at,
 	int w, int h, int sx, int sy)
 {
@@ -543,7 +558,7 @@ emit(int n, int x0, int y0, int x1, int y1, uint32_t colour, int mode, uint32_t 
 	c[5] = y0;
 	c[6] = x1;
 	c[7] = y1;
-	c[8] = mode;
+	c[8] = mode | (blended && n ? PASS_OVER : 0);
 	if (mode == FRAG_COLOUR)
 		return;
 	c[9] = GPU_PHYS + at;
@@ -560,7 +575,7 @@ emit(int n, int x0, int y0, int x1, int y1, uint32_t colour, int mode, uint32_t 
  * Queues a rectangle on the target surface, given in screen coordinates. A list starts by
  * drawing the surface's buffer, so the picture begins as what RAM holds.
  */
-static void
+static inline __attribute__((always_inline)) void
 queue(int x0, int y0, int x1, int y1, uint32_t colour, int mode, uint32_t at, int w, int h, int sx, int sy)
 {
 	if (commands == MAX_COMMANDS || mesh_top + 6 > MAX_MESH)
@@ -696,15 +711,91 @@ pixmap_frameblit(PSD psd, PMWBLITPARMS gc)
 	psd->orgsubdriver->FrameBlit(psd, gc);
 }
 
+static void gpu_fillrect(PSD psd, MWCOORD x1, MWCOORD y1, MWCOORD x2, MWCOORD y2, MWPIXELVAL c);
+
+/* A pixmap's device is one of pixmaps[] while there is one free. */
+static PSD
+pixmap_new(PSD psd)
+{
+	struct surface *s;
+
+	for (s = pixmaps; s < pixmaps + MAX_PIXMAPS && s->pixmap; s++)
+		;
+	if (s == pixmaps + MAX_PIXMAPS)
+		return gen_allocatememgc(psd);
+	memset(s, 0, sizeof *s);
+	s->psd = *psd;
+	s->psd.flags = PSF_MEMORY;
+	s->psd.portrait = MWPORTRAIT_NONE;
+	s->psd.addr = NULL;
+	s->psd.Update = NULL;
+	s->psd.palette = NULL;
+	s->psd.palsize = 0;
+	s->psd.transcolor = MWNOCOLOR;
+	s->pixmap = 1;
+	return &s->psd;
+}
+
+/*
+ * A pixmap of the screen's kind has its pixels in the GPU's memory when there is room: what is
+ * drawn on it the GPU draws, and a copy from it to a window is one rectangle (a page drawn
+ * once and scrolled). Another is the server's memory, drawn on in software.
+ */
 static MWBOOL
 pixmap_map(PSD mempsd, MWCOORD w, MWCOORD h, int planes, int bpp, MWIMGDATFMT data_format,
 	unsigned int pitch, int size, void *addr)
 {
+	struct surface *s = (struct surface *)mempsd;
+	uint32_t at;
+
 	if (!gen_mapmemgc(mempsd, w, h, planes, bpp, data_format, pitch, size, addr))
 		return 0;
 	if (mempsd->FrameBlit)
 		mempsd->FrameBlit = pixmap_frameblit;
+	if (s < pixmaps || s >= pixmaps + MAX_PIXMAPS || !accelerate || bpp != 32 || pitch != (unsigned)w * 4 ||
+	    w > 2048 || h > 2048 || (at = pool_take((uint32_t)w * h * 4)) == ~0u)
+		return 1;
+	if (mempsd->flags & PSF_ADDRMALLOC)
+		free(addr);
+	mempsd->flags &= ~PSF_ADDRMALLOC;
+	mempsd->addr = gpu + at;
+	s->at = at;
+	s->w = w;
+	s->h = h;
+	s->pixmap = 2;
+	((volatile uint32_t *)(gpu + WM_OFFSET))[WM_PIXMAPS]++;
+#define SCREENS(member) mempsd->member = scrdev.member
+	SCREENS(DrawPixel); SCREENS(ReadPixel); SCREENS(DrawHorzLine); SCREENS(DrawVertLine); SCREENS(FillRect);
+	SCREENS(BlitFallback); SCREENS(FrameBlit); SCREENS(FrameStretchBlit); SCREENS(BlitCopyMaskMonoByteMSB);
+	SCREENS(BlitCopyMaskMonoByteLSB); SCREENS(BlitCopyMaskMonoWordMSB); SCREENS(BlitBlendMaskAlphaByte);
+	SCREENS(BlitCopyRGBA8888); SCREENS(BlitSrcOverRGBA8888); SCREENS(BlitCopyRGB888); SCREENS(BlitStretchRGBA8888);
+	/* a new pixmap is black: the GPU's fill, where the processor's would be megabytes of stores */
+	gpu_fillrect(mempsd, 0, 0, w - 1, h - 1, 0);
 	return 1;
+}
+
+static void
+pixmap_free(PSD mempsd)
+{
+	struct surface *s = (struct surface *)mempsd;
+
+	if (s < pixmaps || s >= pixmaps + MAX_PIXMAPS) {
+		gen_freememgc(mempsd);
+		return;
+	}
+	if (s->pixmap == 2) {
+		if (s == target) {
+			flush();
+			target = &root;
+		}
+		settle();
+		pool_give(s->at);
+	} else if (mempsd->addr && (mempsd->flags & PSF_ADDRMALLOC)) {
+		free(mempsd->addr);
+	}
+	if (mempsd->palette)
+		free(mempsd->palette);
+	s->pixmap = 0;
 }
 
 /* Copies bitmap rows into GPU memory at `at`, first pixel in the highest bit of each byte. */
@@ -907,7 +998,7 @@ gpu_drawstring(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char
 	uint32_t table;
 	int at;
 
-	if (!queued(psd) || count <= 0 || count > 4096 || (table = font_table(font)) == 0)
+	if (!is_surface(psd) || !queued(psd) || count <= 0 || count > 4096 || (table = font_table(font)) == 0)
 		return 0;
 	draw_on(psd);
 	if (commands + 3 > MAX_COMMANDS || mesh_top + 6 * count + 12 > MAX_MESH || data_top + 4 * count > DATA_END)
@@ -932,7 +1023,7 @@ gpu_drawstring(PSD psd, PMWCFONT font, MWCOORD x, MWCOORD y, const unsigned char
 	c[5] = y - target->y;
 	c[6] = count;
 	c[7] = GPU_PHYS + data_top;
-	c[8] = 0;
+	c[8] = blended ? PASS_OVER : 0;
 	mesh_top += 6 * count;
 	data_top += (4 * count + 15) & ~15u;
 	*endx = x + at;
@@ -957,6 +1048,17 @@ gpu_maskbytemsb(PSD psd, PMWBLITPARMS gc)
 	soft.BlitCopyMaskMonoByteMSB(psd, gc);
 }
 
+/* The ROM as a device, opened once and kept: every picture and icon is looked for in it. */
+static int
+rom_device(void)
+{
+	static int mtd = -2;
+
+	if (mtd == -2)
+		mtd = open("/dev/mtd0", O_RDONLY | O_CLOEXEC);
+	return mtd;
+}
+
 /*
  * The physical address of a file's first byte when the file is in the ROM, else 0. romfs
  * numbers a file by where its header is (16 bytes, then its name, each padded to 16, then the
@@ -971,7 +1073,7 @@ rom_address(int fd, const char *begins, int count)
 	uint32_t at;
 	int mtd, n;
 
-	if (fstat(fd, &st) || !S_ISREG(st.st_mode) || count > (int)sizeof data || (mtd = open("/dev/mtd0", O_RDONLY)) < 0)
+	if (fstat(fd, &st) || !S_ISREG(st.st_mode) || count > (int)sizeof data || (mtd = rom_device()) < 0)
 		return 0;
 	n = pread(mtd, head, sizeof head, st.st_ino);
 	for (at = 16; (int)at < n && head[at]; at++)
@@ -981,7 +1083,6 @@ rom_address(int fd, const char *begins, int count)
 	    ((uint32_t)head[8] << 24 | head[9] << 16 | head[10] << 8 | head[11]) != (uint32_t)st.st_size ||
 	    pread(mtd, data, count, st.st_ino + 16 + (at & ~15u)) != count || memcmp(data, begins, count) != 0)
 		at = 0;
-	close(mtd);
 	return at ? ROM_PHYS + (uint32_t)st.st_ino + 16 + (at & ~15u) : 0;
 }
 
@@ -990,7 +1091,8 @@ rom_address(int fd, const char *begins, int count)
  * it is; another has its rows read into texture memory, as many as fit at a time. 0 leaves
  * the file to the engine's decoder. Only what lies within the given rectangle is drawn.
  * With PICTURE_CELL in the flags it is one cell of a sheet of icons, its key colour left out;
- * with PICTURE_OWN the icon a file carries at its own end (any file: a program's, mostly).
+ * with PICTURE_OWN the icon a file carries at its own end (any file: a program's, mostly);
+ * with both the file's own icon, or that cell of the sheets when the file has none.
  */
 #define PICTURE_CELL	0x80000000u	/* a cell of a sheet 16 cells wide: its size in bits 16-23, its number below */
 #define PICTURE_OWN	0x40000000u	/* the file's own icon, of the size in bits 16-23 (32 or 16) */
@@ -999,8 +1101,43 @@ rom_address(int fd, const char *begins, int count)
 #define ICON_MARK	"NXICON1"
 #define ICON_BYTES	(32 * 32 * 3 + 16 * 16 * 3 + 8)
 
-static struct { char path[80]; uint32_t at; int pw, ph, own; } pictures[32];	/* files found in the ROM */
+#define PICTURES	64
+#define PICTURE_NONE	1u		/* (for `at`) a file of the ROM known to carry no icon */
+/* files found in the ROM, with a sum of the name to look by */
+static struct { char path[80]; uint32_t at, sum; int pw, ph, own; } pictures[PICTURES];
 static int pictures_next;
+
+static uint32_t
+picture_sum(const char *path)
+{
+	uint32_t sum = 2166136261u;
+
+	while (*path)
+		sum = (sum ^ (unsigned char)*path++) * 16777619u;
+	return sum;
+}
+
+static void
+picture_keep(const char *path, uint32_t sum, uint32_t at, int pw, int ph, int own)
+{
+	int j = pictures_next++ & (PICTURES - 1);
+
+	if (strlen(path) >= sizeof pictures[0].path)
+		return;
+	strcpy(pictures[j].path, path);
+	pictures[j].sum = sum;
+	pictures[j].at = at;
+	pictures[j].pw = pw;
+	pictures[j].ph = ph;
+	pictures[j].own = own;
+}
+
+/* The sheet of icons of a size, for a file that was to show its own and has none. */
+static const char *
+picture_sheet(int size)
+{
+	return size == 16 ? "/usr/share/icons16.ppm" : "/usr/share/icons32.ppm";
+}
 
 /*
  * A file's own icon where it lies in the ROM, found without reading the file (a read is a page
@@ -1010,28 +1147,35 @@ static int pictures_next;
 static uint32_t
 rom_icon(const char *path, int own, int *none)
 {
+	static dev_t rom_dev;		/* what the kernel says a file of the ROM is on, once one was found */
+	static int rom_known;
 	const char *name = strrchr(path, '/');
 	unsigned char head[64], mark[8];
 	struct stat st;
 	uint32_t size, data = 0;
 	unsigned at;
-	int mtd, n;
+	int mtd, n, same;
 
 	name = name ? name + 1 : path;
-	if ((own != 32 && own != 16) || stat(path, &st) || !S_ISREG(st.st_mode) || (mtd = open("/dev/mtd0", O_RDONLY)) < 0)
+	if ((own != 32 && own != 16) || stat(path, &st) || !S_ISREG(st.st_mode) || (mtd = rom_device()) < 0)
 		return 0;
 	n = pread(mtd, head, sizeof head, st.st_ino);
 	for (at = 16; (int)at < n && head[at]; at++)
 		continue;
 	size = (uint32_t)head[8] << 24 | head[9] << 16 | head[10] << 8 | head[11];
-	if (n >= 32 && (int)at < n && size == (uint32_t)st.st_size && !strcmp((const char *)head + 16, name)) {
+	/* the header's name is the file's; under a link's name, the ROM's device says whose it is */
+	same = !strcmp((const char *)head + 16, name);
+	if (n >= 32 && (int)at < n && size == (uint32_t)st.st_size && (same || (rom_known && st.st_dev == rom_dev))) {
+		if (same) {
+			rom_dev = st.st_dev;
+			rom_known = 1;
+		}
 		data = (uint32_t)st.st_ino + 16 + (at & ~15u);
 		if (size < ICON_BYTES || pread(mtd, mark, 8, data + size - 8) != 8 || memcmp(mark, ICON_MARK, 8) != 0) {
 			*none = 1;
 			data = 0;
 		}
 	}
-	close(mtd);
 	return data ? ROM_PHYS + data + size - (own == 32 ? ICON_BYTES : 16 * 16 * 3 + 8) : 0;
 }
 
@@ -1045,12 +1189,13 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 	int own = (uint32_t)flags & PICTURE_OWN ? (flags >> 16) & 0xff : 0;
 	char head[64];
 	volatile uint32_t *c;
-	uint32_t rom = 0;
+	uint32_t rom = 0, sum;
 
 	if (!is_surface(psd))
 		return 0;
-	for (j = 0; accelerate && j < 32; j++)
-		if (pictures[j].at && pictures[j].own == own && !strcmp(pictures[j].path, path)) {
+	sum = accelerate ? picture_sum(path) : 0;
+	for (j = 0; accelerate && j < PICTURES; j++)
+		if (pictures[j].sum == sum && pictures[j].at && pictures[j].own == own && !strcmp(pictures[j].path, path)) {
 			rom = pictures[j].at;
 			pw = pictures[j].pw;
 			ph = pictures[j].ph;
@@ -1059,21 +1204,22 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 		int none = 0;
 
 		rom = rom_icon(path, own, &none);
-		if (none)
-			return 1;
-		if (rom) {
+		if (none) {
+			picture_keep(path, sum, PICTURE_NONE, 0, 0, own);
+			rom = PICTURE_NONE;
+		} else if (rom) {
 			pw = ph = own;
-			if (strlen(path) < sizeof pictures[0].path) {
-				j = pictures_next++ & 31;
-				strcpy(pictures[j].path, path);
-				pictures[j].at = rom;
-				pictures[j].pw = pictures[j].ph = pictures[j].own = own;
-			}
+			picture_keep(path, sum, rom, own, own, own);
 		}
 	}
+	/* no icon of its own: the sheet's cell, when one was named with it */
+	if (rom == PICTURE_NONE)
+		return ((uint32_t)flags & PICTURE_CELL) ? gpu_picture(psd, x, y, width, height, picture_sheet(own), within,
+			flags & ~PICTURE_OWN) : 1;
 	if (!rom) {
 		if ((fd = open(path, O_RDONLY)) < 0)
-			return 0;
+			return own && ((uint32_t)flags & PICTURE_CELL) ? gpu_picture(psd, x, y, width, height,
+				picture_sheet(own), within, flags & ~PICTURE_OWN) : 0;
 		j = read(fd, head, sizeof head - 1);
 		head[j > 0 ? j : 0] = 0;
 		if (own) {
@@ -1084,7 +1230,8 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 			if ((own != 32 && own != 16) || fstat(fd, &st) || st.st_size < ICON_BYTES ||
 			    pread(fd, mark, 8, st.st_size - 8) != 8 || memcmp(mark, ICON_MARK, 8) != 0) {
 				close(fd);
-				return 1;
+				return ((uint32_t)flags & PICTURE_CELL) ? gpu_picture(psd, x, y, width, height,
+					picture_sheet(own), within, flags & ~PICTURE_OWN) : 1;
 			}
 			pw = ph = own;
 			rows = own;
@@ -1097,14 +1244,7 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 			start++;	/* one white space ends the header */
 		if (accelerate && (rom = rom_address(fd, head, j)) != 0) {
 			rom += start;
-			if (strlen(path) < sizeof pictures[0].path) {
-				j = pictures_next++ & 31;
-				strcpy(pictures[j].path, path);
-				pictures[j].at = rom;
-				pictures[j].pw = pw;
-				pictures[j].ph = ph;
-				pictures[j].own = own;
-			}
+			picture_keep(path, sum, rom, pw, ph, own);
 		}
 	}
 	sw = pw;
@@ -1208,6 +1348,202 @@ soft_blitfallback(PSD psd, MWCOORD x, MWCOORD y, MWCOORD w, MWCOORD h, PSD src, 
 	software(psd);
 	soft.BlitFallback(psd, x, y, w, h, src, sx, sy, op);
 }
+
+/* ---------------- fonts in the ROM (docs/fonts.md) */
+
+/* A font file of ours: the GPU draws its glyphs from where the file lies. */
+struct romfont {
+	PMWFONTPROCS fontprocs;		/* an MWFONT's fields */
+	MWCOORD fontsize, fontwidth;
+	int fontrotation, fontattr;
+	struct romfile *file;
+	uint32_t scale;			/* 16.16, or 0 for the file's own size */
+	uint32_t slant;			/* 256ths of a pixel a row */
+};
+
+static struct romfile { char path[64]; const unsigned char *bytes; uint32_t size, rom; } romfiles[64];
+
+extern PMWFONT (*gd_createfont)(const char *name, MWCOORD height, MWCOORD width, int attr) __attribute__((weak));
+static MWFONTPROCS romfont_procs;
+
+static int
+rom_scaled(const struct romfont *f, int v)
+{
+	return f->scale ? (int)(((int64_t)v * f->scale + 0x8000) >> 16) : v;
+}
+
+/* The glyph a font draws for a code point: its own, or the one it has for what it lacks. */
+static int
+rom_glyph(const struct romfile *file, unsigned code)
+{
+	const struct sef_head *h = (const struct sef_head *)file->bytes;
+	int g = sef_glyph(file->bytes, code < 32 ? 32 : code);	/* (a line's end inside a run of text is a space) */
+
+	return g >= 0 ? g : h->missing < h->glyphs ? (int)h->missing : 0;
+}
+
+/* A font by its file's name (it ends in .sef), `height` pixels high (0: as the file is) and
+ * leaning `width` 256ths of a pixel a row. NULL for a file that is not such a font in the ROM. */
+static PMWFONT
+romfont_create(const char *name, MWCOORD height, MWCOORD width, int attr)
+{
+	size_t n = strlen(name);
+	struct romfile *file;
+	struct romfont *f;
+	struct stat st;
+	void *bytes;
+	int fd;
+
+	if (n < 5 || n >= sizeof romfiles[0].path || strcmp(name + n - 4, ".sef") != 0 || !accelerate)
+		return NULL;
+	for (file = romfiles; file < romfiles + 64 && file->bytes && strcmp(file->path, name) != 0; file++)
+		;
+	if (file == romfiles + 64)
+		return NULL;
+	if (!file->bytes) {
+		uint32_t rom;
+
+		if ((fd = open(name, O_RDONLY)) < 0)
+			return NULL;
+		bytes = fstat(fd, &st) == 0 && st.st_size >= 64 ? mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
+		rom = bytes != MAP_FAILED && sef_ok(bytes, st.st_size) ? rom_address(fd, bytes, 64) : 0;
+		close(fd);
+		if (!rom) {
+			if (bytes != MAP_FAILED)
+				munmap(bytes, st.st_size);
+			return NULL;
+		}
+		strcpy(file->path, name);
+		file->bytes = bytes;
+		file->size = st.st_size;
+		file->rom = rom;
+	}
+	if ((f = calloc(1, sizeof *f)) == NULL)
+		return NULL;
+	f->fontprocs = &romfont_procs;
+	f->file = file;
+	f->fontattr = attr;
+	f->slant = width > 0 ? width : 0;
+	f->fontsize = ((const struct sef_head *)file->bytes)->height;
+	if (height > 0 && height != f->fontsize) {
+		f->scale = ((uint32_t)height << 16) / f->fontsize;
+		f->fontsize = height;
+	}
+	return (PMWFONT)f;
+}
+
+static void
+romfont_destroy(PMWFONT pfont)
+{
+	free(pfont);
+}
+
+static MWBOOL
+romfont_info(PMWFONT pfont, PMWFONTINFO info)
+{
+	const struct romfont *f = (const struct romfont *)pfont;
+	const struct sef_head *h = (const struct sef_head *)f->file->bytes;
+	int i;
+
+	memset(info, 0, sizeof *info);
+	info->height = rom_scaled(f, h->height);
+	info->baseline = rom_scaled(f, h->ascent);
+	info->descent = info->height - info->baseline;
+	info->maxascent = info->baseline;
+	info->maxdescent = info->descent;
+	info->linespacing = info->height;
+	info->lastchar = 0xffff;
+	for (i = 32; i < 256; i++) {
+		info->widths[i] = rom_scaled(f, sef_advance(f->file->bytes, rom_glyph(f->file, i)));
+		if (info->widths[i] > info->maxwidth)
+			info->maxwidth = info->widths[i];
+	}
+	return TRUE;
+}
+
+static void
+romfont_size(PMWFONT pfont, const void *text, int cc, MWTEXTFLAGS flags, MWCOORD *pwidth, MWCOORD *pheight,
+	MWCOORD *pbase)
+{
+	const struct romfont *f = (const struct romfont *)pfont;
+	const struct sef_head *h = (const struct sef_head *)f->file->bytes;
+	const unsigned short *code = text;
+	int width = 0;
+
+	while (cc-- > 0)
+		width += sef_advance(f->file->bytes, rom_glyph(f->file, *code++));
+	*pwidth = rom_scaled(f, width);
+	*pheight = rom_scaled(f, h->height);
+	*pbase = rom_scaled(f, h->ascent);
+}
+
+/* A string as one command: a word a character, and the table and the bitmaps in the ROM.
+ * Glyphs of coverage are blended, in a pass of their own that the rest of the list follows. */
+static void
+romfont_draw(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y, const void *text, int cc, MWTEXTFLAGS flags)
+{
+	const struct romfont *f = (const struct romfont *)pfont;
+	const struct sef_head *h = (const struct sef_head *)f->file->bytes;
+	const unsigned short *code = text;
+	volatile uint32_t *c, *word;
+	int at = 0, height = rom_scaled(f, h->height), i;
+
+	if (!is_surface(psd) || !queued(psd) || cc <= 0 || cc > 4096)
+		return;
+	if (flags & MWTF_BASELINE)
+		y -= rom_scaled(f, h->ascent);
+	else if (flags & MWTF_BOTTOM)
+		y -= height - 1;
+	draw_on(psd);
+	if (commands + 3 > MAX_COMMANDS || mesh_top + 6 * cc + 12 > MAX_MESH || data_top + 4 * cc > DATA_END)
+		flush();
+	measured.text = NULL;
+	word = (volatile uint32_t *)(gpu + data_top);
+	for (i = 0; i < cc; i++) {
+		int g = rom_glyph(f->file, code[i]);
+
+		word[i] = (uint32_t)g | (uint32_t)rom_scaled(f, at) << 16;
+		at += sef_advance(f->file->bytes, g);
+	}
+	at = rom_scaled(f, at);
+	if (GdClipArea(psd, x, y, x + at - 1, y + height - 1) == CLIP_INVISIBLE)
+		return;
+	/* (through queue(): it starts a list with the surface's picture and keeps the area covered) */
+	queue(x, y, x + at, y + height, 0, FRAG_COLOUR, 0, 0, 0, 0, 0);
+	commands--;
+	mesh_top -= 6;
+	if (h->bpp == 4)
+		blended = 1;
+	c = (volatile uint32_t *)(gpu + LIST_OFFSET) + 16 * commands++;
+	c[0] = CMD_TEXT;
+	c[1] = gr_foreground & 0xffffff;
+	c[2] = f->file->rom + h->table_at;
+	c[3] = mesh_top;
+	c[4] = x - target->x;
+	c[5] = y - target->y;
+	c[6] = cc;
+	c[7] = GPU_PHYS + data_top;
+	c[8] = (h->bpp == 4 ? FRAG_COVER : FRAG_MASK) | TEXT_MORE | (blended ? PASS_OVER : 0);
+	c[9] = f->scale;
+	c[10] = f->slant | (uint32_t)h->ascent << 16;
+	c[11] = f->file->rom;
+	mesh_top += 6 * cc;
+	data_top += (4 * cc + 15) & ~15u;
+}
+
+static int
+romfont_setattr(PMWFONT pfont, int setflags, int clrflags)
+{
+	int old = pfont->fontattr;
+
+	pfont->fontattr = (old & ~clrflags) | setflags;
+	return old;
+}
+
+static MWFONTPROCS romfont_procs = {
+	0, MWTF_UC16, NULL, NULL, romfont_info, romfont_size, NULL, romfont_destroy, romfont_draw, NULL, NULL,
+	romfont_setattr, NULL
+};
 
 /* ---------------- surfaces, for the window system */
 
@@ -1645,6 +1981,8 @@ gpu_open(PSD psd)
 	gd_drawstring = gpu_drawstring;
 	gd_measurestring = gpu_measurestring;
 	gd_drawpicture = gpu_picture;
+	if (&gd_createfont)
+		gd_createfont = romfont_create;
 	gd_compositor = &compositor;
 	regs[REG_WIDTH] = width;
 	regs[REG_HEIGHT] = height;
@@ -1689,9 +2027,9 @@ SCREENDEVICE scrdev = {
 	gpu_close,
 	gpu_setpalette,
 	gen_getscreeninfo,
-	gen_allocatememgc,
+	pixmap_new,
 	pixmap_map,
-	gen_freememgc,
+	pixmap_free,
 	NULL,				/* SetPortrait: the screen is not rotated */
 	NULL,				/* Update */
 	gpu_preselect

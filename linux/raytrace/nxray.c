@@ -3,8 +3,8 @@
  * (docs/raytrace.md, docs/multicore.md). The work this machine's small cores are for: a pixel
  * is a few thousand instructions of float arithmetic and four bytes stored.
  *
- * Core 0 traces nothing. It gives every worker its share of a picture at once (trace_share),
- * shows the picture as it fills, and reads the keys:
+ * Core 0 traces nothing. It makes each picture's scene and shares it out; every worker has a
+ * job for all the pictures (trace_pictures) and goes from one to the next. The keys:
  *   a   all the workers the geometry has      1   one worker      0   core 0 alone
  *   s   the next geometry (15 small, 3 large and 12 small, 7 large, 15 of the smallest)
  *   w   each tile framed in its core's colour  space  stop and go   q, Escape  leave
@@ -31,9 +31,10 @@
 struct vec { float x, y, z; };
 struct sphere { struct vec centre; float radius, radius2; struct vec colour; float mirror; };
 
-/* The scene and the camera of the picture being traced: core 0 writes them between two
- * pictures, the workers only read. */
-static struct {
+/* A picture's scene and camera, and how it is shared out: core 0 writes them before the
+ * picture is published, the workers only read. Picture f is pictures[f & 1]: two are out at
+ * once, and a worker goes from one to the next without the first core. */
+static struct picture {
 	struct sphere spheres[SPHERES];
 	struct vec eye, right, up, forward, light;
 	int width, height, owners;
@@ -42,8 +43,11 @@ static struct {
 	 * narrower than eight pixels, which are two of the machine's texels). */
 	int tile_w, tile_h, tiles;
 	uint32_t stride, step;	/* the order the tiles are traced in: below */
-	uint32_t first;		/* the tiles before this one in that order are the first core's own */
-	int stop;		/* the picture is given up: a share ends at its next tile */
+	int shares;		/* how many shares the picture is in: one a worker that has a core */
+	uint32_t jobs;		/* which workers had jobs out when it was shared out (jobs_now then) */
+	int traced_by;		/* how many workers trace it: none, and the first core does */
+	/* Worker k's share (NO_SHARE: none), how many of its last tiles another traces, and whose last tiles it traces after its own (and how many). */
+	struct { uint16_t share, given, helps, takes; } plan[MC_MAX_CORES];
 	/* For the eye's own rays: a sphere as the eye has it, and the pixels it can be in. */
 	struct { struct vec to; float to2; int x0, x1, y0, y1; } seen[SPHERES];
 	/* And the pixels its picture in the ground can be in: it as the eye would see it under the ground. */
@@ -52,7 +56,13 @@ static struct {
 	 * a bit each. The squares are SHADE each way from shade_x, shade_z, shade_by to a unit. */
 	float shade_x, shade_z, shade_by;
 	uint8_t shade[SHADE * SHADE];
-} scene __attribute__((aligned(16)));
+} pictures[2] __attribute__((aligned(16)));
+#define NO_SHARE 0xffff
+
+/* What the workers go by, core 0's: the last picture published, the last one shown (the
+ * picture two after it has its pixels), a picture given up (a share ends at its next tile),
+ * the jobs to end, and RAY_SPIN (a worker with no picture to trace turns in place). */
+static struct { volatile uint32_t frame, shown; volatile int stop, leave; int spin, unused[3]; } go __attribute__((aligned(16)));
 
 static inline struct vec v(float x, float y, float z) { struct vec r = {x, y, z}; return r; }
 static inline struct vec add(struct vec a, struct vec b) { return v(a.x + b.x, a.y + b.y, a.z + b.z); }
@@ -63,13 +73,13 @@ static inline struct vec unit(struct vec a) { return scale(a, 1.0f / __builtin_s
 
 /* The nearest thing a ray meets: a sphere's number, SPHERES for the ground, -1 for the sky. */
 static int
-nearest(struct vec from, struct vec way, float *distance)
+nearest(const struct picture *sc, struct vec from, struct vec way, float *distance)
 {
 	float best = 1e30f;
 	int what = -1, i;
 
 	for (i = 0; i < SPHERES; i++) {
-		const struct sphere *s = &scene.spheres[i];
+		const struct sphere *s = &sc->spheres[i];
 		struct vec to = sub(s->centre, from);
 		float along = dot(to, way), off2 = dot(to, to) - along * along;
 
@@ -92,12 +102,12 @@ nearest(struct vec from, struct vec way, float *distance)
 
 /* Whether anything stands between a point and the light. */
 static int
-shadowed(struct vec from, struct vec way)
+shadowed(const struct picture *sc, struct vec from, struct vec way)
 {
 	int i;
 
 	for (i = 0; i < SPHERES; i++) {
-		const struct sphere *s = &scene.spheres[i];
+		const struct sphere *s = &sc->spheres[i];
 		struct vec to = sub(s->centre, from);
 		float along = dot(to, way);
 
@@ -108,20 +118,20 @@ shadowed(struct vec from, struct vec way)
 }
 
 /* nearest() for a ray from the eye through pixel x: only the row's spheres (row, rows) that
- * can be in that pixel are tried, with what scene.seen has of each. The same arithmetic. */
+ * can be in that pixel are tried, with what sc->seen has of each. The same arithmetic. */
 static inline int
-nearest_seen(struct vec way, int x, const uint8_t *row, int rows, float *distance)
+nearest_seen(const struct picture *sc, struct vec way, int x, const uint8_t *row, int rows, float *distance)
 {
 	float best = 1e30f;
 	int what = -1, k;
 
 	for (k = 0; k < rows; k++) {
 		int i = row[k];
-		float along, off2, radius2 = scene.spheres[i].radius2;
+		float along, off2, radius2 = sc->spheres[i].radius2;
 
-		if (x < scene.seen[i].x0 || x > scene.seen[i].x1)
+		if (x < sc->seen[i].x0 || x > sc->seen[i].x1)
 			continue;
-		along = dot(scene.seen[i].to, way), off2 = scene.seen[i].to2 - along * along;
+		along = dot(sc->seen[i].to, way), off2 = sc->seen[i].to2 - along * along;
 		if (along > 0.0f && off2 < radius2) {
 			float t = along - __builtin_sqrtf(radius2 - off2);
 
@@ -130,7 +140,7 @@ nearest_seen(struct vec way, int x, const uint8_t *row, int rows, float *distanc
 		}
 	}
 	if (way.y < -0.0001f) {
-		float t = -scene.eye.y / way.y;
+		float t = -sc->eye.y / way.y;
 
 		if (t > 0.001f && t < best)
 			best = t, what = SPHERES;
@@ -142,18 +152,18 @@ nearest_seen(struct vec way, int x, const uint8_t *row, int rows, float *distanc
 /* nearest() for the eye's ray through pixel x thrown back by the ground: only the row's
  * spheres (row, rows) whose picture in the ground can be in that pixel are tried. */
 static inline int
-nearest_mirrored(struct vec from, struct vec way, int x, const uint8_t *row, int rows, float *distance)
+nearest_mirrored(const struct picture *sc, struct vec from, struct vec way, int x, const uint8_t *row, int rows, float *distance)
 {
 	float best = 1e30f;
 	int what = -1, k;
 
 	for (k = 0; k < rows; k++) {
 		int i = row[k];
-		const struct sphere *s = &scene.spheres[i];
+		const struct sphere *s = &sc->spheres[i];
 		struct vec to;
 		float along, off2;
 
-		if (x < scene.mirrored[i].x0 || x > scene.mirrored[i].x1)
+		if (x < sc->mirrored[i].x0 || x > sc->mirrored[i].x1)
 			continue;
 		to = sub(s->centre, from);
 		along = dot(to, way), off2 = dot(to, to) - along * along;
@@ -171,19 +181,19 @@ nearest_mirrored(struct vec from, struct vec way, int x, const uint8_t *row, int
 /* shadowed() for a point of the ground and the scene's light: only the spheres whose shadow
  * its square of the ground can be in are tried. */
 static inline int
-shadowed_ground(struct vec from)
+shadowed_ground(const struct picture *sc, struct vec from)
 {
-	float gx = (from.x - scene.shade_x) * scene.shade_by, gz = (from.z - scene.shade_z) * scene.shade_by;
+	float gx = (from.x - sc->shade_x) * sc->shade_by, gz = (from.z - sc->shade_z) * sc->shade_by;
 	unsigned mask;
 	int i;
 
 	if (!(gx >= 0.0f && gx < (float)SHADE && gz >= 0.0f && gz < (float)SHADE))
 		return 0;
-	for (i = 0, mask = scene.shade[(int)gz * SHADE + (int)gx]; mask; i++, mask >>= 1)
+	for (i = 0, mask = sc->shade[(int)gz * SHADE + (int)gx]; mask; i++, mask >>= 1)
 		if (mask & 1) {
-			const struct sphere *s = &scene.spheres[i];
+			const struct sphere *s = &sc->spheres[i];
 			struct vec to = sub(s->centre, from);
-			float along = dot(to, scene.light);
+			float along = dot(to, sc->light);
 
 			if (along > 0.0f && dot(to, to) - along * along < s->radius2)
 				return 1;
@@ -194,7 +204,7 @@ shadowed_ground(struct vec from)
 /* The colour the eye's ray through pixel x brings back; *rays counts every ray cast for it.
  * row, rows: the spheres nearest_seen() tries, and after them those nearest_mirrored() does. */
 static inline struct vec
-trace(struct vec from, struct vec way, uint32_t *rays, int x, const uint8_t *row, int rows, int rows_mirrored)
+trace(const struct picture *sc, struct vec from, struct vec way, uint32_t *rays, int x, const uint8_t *row, int rows, int rows_mirrored)
 {
 	struct vec seen = v(0, 0, 0);
 	float weight = 1.0f;
@@ -203,8 +213,8 @@ trace(struct vec from, struct vec way, uint32_t *rays, int x, const uint8_t *row
 	for (bounce = 0; bounce < DEPTH; bounce++) {
 		struct vec at, normal, colour;
 		float distance, mirror, lit;
-		int what = bounce == 0 ? nearest_seen(way, x, row, rows, &distance)
-		           : ground ? nearest_mirrored(from, way, x, row + rows, rows_mirrored, &distance) : nearest(from, way, &distance);
+		int what = bounce == 0 ? nearest_seen(sc, way, x, row, rows, &distance)
+		           : ground ? nearest_mirrored(sc, from, way, x, row + rows, rows_mirrored, &distance) : nearest(sc, from, way, &distance);
 
 		(*rays)++;
 		if (what < 0) {
@@ -224,15 +234,15 @@ trace(struct vec from, struct vec way, uint32_t *rays, int x, const uint8_t *row
 			colour = (cx ^ cz) & 1 ? v(0.85f, 0.85f, 0.8f) : v(0.25f, 0.27f, 0.3f);
 			mirror = 0.25f;
 		} else {
-			const struct sphere *s = &scene.spheres[what];
+			const struct sphere *s = &sc->spheres[what];
 
 			normal = scale(sub(at, s->centre), 1.0f / s->radius);
 			colour = s->colour;
 			mirror = s->mirror;
 		}
-		lit = dot(normal, scene.light);
+		lit = dot(normal, sc->light);
 		(*rays)++;
-		if (lit < 0.0f || (what == SPHERES ? shadowed_ground(at) : shadowed(at, scene.light)))
+		if (lit < 0.0f || (what == SPHERES ? shadowed_ground(sc, at) : shadowed(sc, at, sc->light)))
 			lit = 0.0f;
 		seen = add(seen, scale(colour, weight * (1.0f - mirror) * (0.2f + 0.8f * lit)));
 		weight *= mirror;
@@ -262,33 +272,33 @@ static const uint32_t owner_colour[16] = {
  * cores store to the same 16 bytes; everything else it writes is its own stack.
  */
 static uint32_t
-trace_tile(uint32_t tile, uint32_t core)
+trace_tile(const struct picture *sc, uint32_t tile, uint32_t core)
 {
-	int tw = scene.tile_w, th = scene.tile_h;
-	int across = (scene.width + tw - 1) / tw, x0 = (int)(tile % (uint32_t)across) * tw, y0 = (int)(tile / (uint32_t)across) * th;
-	int x1 = x0 + tw < scene.width ? x0 + tw : scene.width, y1 = y0 + th < scene.height ? y0 + th : scene.height, x, y;
-	float half_w = (float)scene.width * 0.5f, half_h = (float)scene.height * 0.5f, zoom = 1.0f / half_h;
+	int tw = sc->tile_w, th = sc->tile_h;
+	int across = (sc->width + tw - 1) / tw, x0 = (int)(tile % (uint32_t)across) * tw, y0 = (int)(tile / (uint32_t)across) * th;
+	int x1 = x0 + tw < sc->width ? x0 + tw : sc->width, y1 = y0 + th < sc->height ? y0 + th : sc->height, x, y;
+	float half_w = (float)sc->width * 0.5f, half_h = (float)sc->height * 0.5f, zoom = 1.0f / half_h;
 	uint32_t rays = 0;
 
 	for (y = y0; y < y1; y++) {
-		uint32_t *out = scene.pixels + y * scene.width + x0;
+		uint32_t *out = sc->pixels + y * sc->width + x0;
 		uint8_t row[2 * SPHERES];
 		int rows = 0, rows_mirrored = 0, i;
 
 		/* the spheres that can be in these pixels of the row, in their order, then those
 		 * whose pictures in the ground can */
 		for (i = 0; i < SPHERES; i++)
-			if (y >= scene.seen[i].y0 && y <= scene.seen[i].y1 && x1 > scene.seen[i].x0 && x0 <= scene.seen[i].x1)
+			if (y >= sc->seen[i].y0 && y <= sc->seen[i].y1 && x1 > sc->seen[i].x0 && x0 <= sc->seen[i].x1)
 				row[rows++] = (uint8_t)i;
 		for (i = 0; i < SPHERES; i++)
-			if (y >= scene.mirrored[i].y0 && y <= scene.mirrored[i].y1 && x1 > scene.mirrored[i].x0 && x0 <= scene.mirrored[i].x1)
+			if (y >= sc->mirrored[i].y0 && y <= sc->mirrored[i].y1 && x1 > sc->mirrored[i].x0 && x0 <= sc->mirrored[i].x1)
 				row[rows + rows_mirrored++] = (uint8_t)i;
 		for (x = x0; x < x1; x++) {
 			float sx = ((float)x + 0.5f - half_w) * zoom, sy = (half_h - (float)y - 0.5f) * zoom;
-			struct vec way = unit(add(add(scale(scene.right, sx), scale(scene.up, sy)), scale(scene.forward, 1.6f)));
-			struct vec c = trace(scene.eye, way, &rays, x, row, rows, rows_mirrored);
+			struct vec way = unit(add(add(scale(sc->right, sx), scale(sc->up, sy)), scale(sc->forward, 1.6f)));
+			struct vec c = trace(sc, sc->eye, way, &rays, x, row, rows, rows_mirrored);
 
-			if (scene.owners && (x == x0 || y == y0))
+			if (sc->owners && (x == x0 || y == y0))
 				*out++ = owner_colour[core & 15];
 			else
 				*out++ = byte_of(c.x) << 16 | byte_of(c.y) << 8 | byte_of(c.z);
@@ -297,34 +307,98 @@ trace_tile(uint32_t tile, uint32_t core)
 	return rays;
 }
 
-/*
- * A worker's job: its share of a picture, all of it, so that it is never without work while
- * the picture is traced (handed a tile at a time, a worker waited some passes for its next:
- * 255 of them worked a fifth of the time). The tiles are taken in an order that scatters
- * them, tile j being number j * stride of the picture, and worker w of n has every n-th
- * from scene.first on: as many as any other, from all over the picture. which: w, and n
- * from bit 16.
- */
-static uint32_t
-trace_share(uint32_t which, uint32_t core)
-{
-	uint32_t n = which >> 16, tiles = (uint32_t)scene.tiles, j = scene.first + (which & 0xffff), at = j * scene.stride % tiles, rays = 0;
+/* How far a worker is with picture f and what the picture took it, in instructions: its own
+ * tiles, and those of another's share. slots[f & 1][k]: its own 16 bytes. */
+struct slot { volatile uint32_t frame, rays, spent, lent; };
+static struct slot slots[2][MC_MAX_CORES] __attribute__((aligned(16)));
 
-	for (; j < tiles && !scene.stop; j += n) {
-		rays += trace_tile(at, core);
-		if ((at += scene.step) >= tiles)
+static inline uint32_t
+cycles(void)
+{
+	uint32_t count;
+
+	__asm__ volatile("rdcycle %0" : "=r"(count));
+	return count;
+}
+
+/* The tiles are taken in an order that scatters them, tile j being number j * stride of the
+ * picture, and share w of n has every n-th of them from the w-th: as many as any other,
+ * from all over the picture. How many that is. */
+static inline uint32_t
+share_length(const struct picture *sc, uint32_t share)
+{
+	uint32_t tiles = (uint32_t)sc->tiles, n = (uint32_t)sc->shares;
+
+	return share < tiles ? (tiles - share + n - 1) / n : 0;
+}
+
+/* A share's tiles `from` to `to` of its own, traced. */
+static uint32_t
+share_tiles(const struct picture *sc, uint32_t share, uint32_t from, uint32_t to, uint32_t core)
+{
+	uint32_t tiles = (uint32_t)sc->tiles, rays = 0;
+	uint32_t at = (uint32_t)((uint64_t)(share + from * (uint32_t)sc->shares) * sc->stride % tiles);
+
+	for (; from < to && !go.stop; from++) {
+		rays += trace_tile(sc, at, core);
+		if ((at += sc->step) >= tiles)
 			at -= tiles;
 	}
 	return rays;
 }
 
+/* Worker k's part of picture `frame`: its share but the tiles given to another, then what it
+ * was given of another's (the picture's plan). */
+static void
+worker_picture(const struct picture *sc, uint32_t frame, uint32_t k)
+{
+	struct slot *slot = &slots[frame & 1][k];
+	uint32_t share = sc->plan[k].share, length = share_length(sc, share), given = sc->plan[k].given, takes = sc->plan[k].takes;
+	uint32_t began = cycles(), between, rays;
+
+	rays = share_tiles(sc, share, 0, length - given, k);
+	between = cycles();
+	if (takes) {
+		uint32_t theirs = share_length(sc, sc->plan[k].helps);
+
+		rays += share_tiles(sc, sc->plan[k].helps, theirs - takes, theirs, k);
+	}
+	slot->spent = between - began;
+	slot->lent = cycles() - between;
+	slot->rays = rays;
+	slot->frame = frame;
+}
+
+/* A worker's job: its part of every picture after `seen`, for as long as pictures are traced.
+ * Handed a share a picture, the 255 jobs took the first core four passes to give out and one
+ * to take back, of a picture's ten. (Run by the first core, it does nothing: that core then
+ * traces the part itself.) */
+static uint32_t
+trace_pictures(uint32_t k, uint32_t seen)
+{
+	if (!mcw_on_worker())
+		return 0;
+	while (!go.leave && !mcw_recalled((int)k)) {
+		/* the next picture, once it is published and the one two before it, whose pixels it has, is shown */
+		if (go.frame == seen || go.shown + 1 < seen) {
+			/* (its pass ends here: turning in place cost the machine the pass's instructions) */
+			if (!go.spin)
+				mc_end_pass();
+			continue;
+		}
+		seen++;
+		worker_picture(&pictures[seen & 1], seen, k);
+	}
+	return 1;
+}
+
 /* ---- core 0 ---- */
 
 static GR_WINDOW_ID window;
-static int workers, wanted = MC_MAX_CORES, stopped, frames_left = -1, still;
-/* The geometries offered, as many workers of each as this machine has room for (15 on a
- * machine of 16 cores, 63 on one of 64): small, three large and the rest small, large, the
- * smallest. */
+static int workers, wanted = MC_MAX_CORES, stopped, frames_left = -1, still, owners, even;
+static uint8_t running[MC_MAX_CORES];	/* worker k has its job out */
+static uint32_t jobs_now = 1;		/* goes up when a job begins or ends: a picture shared out before has other shares */
+
 static unsigned
 now_ms(void)
 {
@@ -334,20 +408,156 @@ now_ms(void)
 	return (unsigned)ts.tv_sec * 1000u + (unsigned)ts.tv_nsec / 1000000u;
 }
 
+/* A job for every worker that has a core and none out: it begins with the next picture published. */
+static void
+start_jobs(void)
+{
+	int k;
+
+	for (k = 1; k <= workers; k++) {
+		if (running[k])
+			continue;
+		mcw_done(k);	/* (a worker without a core is asked about: the library asks for one again) */
+		if (!mcw_bound(k))
+			continue;
+		running[k] = 1, jobs_now++;
+		mcw_post(k, trace_pictures, (uint32_t)k, go.frame);
+	}
+}
+
+/* The jobs that have ended (a core the kernel wanted back): what such a worker had of the
+ * pictures after `done` and did not trace is traced here. */
+static void
+look_at_jobs(uint32_t done)
+{
+	uint32_t f;
+	int k;
+
+	for (k = 1; k <= workers; k++)
+		if (running[k] && mcw_done(k)) {
+			running[k] = 0, jobs_now++;
+			for (f = done + 1; f - done <= go.frame - done; f++)
+				if (pictures[f & 1].plan[k].share != NO_SHARE && slots[f & 1][k].frame != f)
+					worker_picture(&pictures[f & 1], f, (uint32_t)k);
+		}
+}
+
+/* Whether every worker's part of picture f is in (*from: the first worker not known to be through). */
+static int
+all_in(uint32_t f, int *from)
+{
+	const struct picture *sc = &pictures[f & 1];
+
+	for (; *from <= workers; (*from)++)
+		if (sc->plan[*from].share != NO_SHARE && slots[f & 1][*from].frame != f)
+			return 0;
+	return 1;
+}
+
+static void
+end_jobs(void)
+{
+	int k;
+
+	go.stop = go.leave = 1;
+	for (k = 1; k <= workers; k++)
+		if (running[k]) {
+			mcw_wait(k);
+			running[k] = 0;
+		}
+	go.leave = 0;
+	jobs_now++;
+}
+
 /* The workers given back, and as many taken as wanted. */
 static void
 take_workers(void)
 {
-	extern char __DATA_BEGIN__[], _end[];
+	extern char __DATA_BEGIN__[], _end[], __executable_start[], etext[];
+	const volatile char *code;
 
+	end_jobs();
+	go.stop = 0;
 	mcw_close();
 	workers = wanted > 0 ? mcw_open(wanted) : 0;
-	if (workers)
-		mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
+	if (!workers)
+		return;
+	mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
+	/* (and the program's code: a page of it that no core has run or read stops every worker that comes to it) */
+	for (code = __executable_start; code < etext; code += 4096)
+		(void)*code;
+	go.spin = getenv("RAY_SPIN") != NULL;
+	start_jobs();
+}
+
+/* A picture's shares: one for each worker that has a job out. How many. When they are the
+ * workers picture `done` was shared among, one whose share took long there has some of its
+ * last tiles traced by one whose share was short: the dearest with the cheapest and so on
+ * inwards, each pair to end together if the tiles cost what they did. */
+static int
+give_shares(struct picture *sc, uint32_t done)
+{
+	static uint32_t cost[MC_MAX_CORES];
+	static uint8_t worker_of[MC_MAX_CORES], order[MC_MAX_CORES];
+	const struct picture *old = &pictures[done & 1];
+	const struct slot *was = slots[done & 1];
+	uint16_t starts[66];
+	uint32_t least = ~0u, most = 0, total = 0, step;
+	int n = 0, k, i, same = done != 0 && old->jobs == jobs_now && old->traced_by > 0;
+
+	/* what each share of that picture took, whoever traced its tiles */
+	for (k = 1; k <= workers && same; k++)
+		if (old->plan[k].share != NO_SHARE)
+			cost[old->plan[k].share] = was[k].spent, worker_of[old->plan[k].share] = (uint8_t)k;
+	for (k = 1; k <= workers && same; k++)
+		if (old->plan[k].share != NO_SHARE && old->plan[k].takes)
+			cost[old->plan[k].helps] += was[k].lent;
+	for (k = 1; k <= workers; k++) {
+		uint16_t share = same ? old->plan[k].share : running[k] ? (uint16_t)n : NO_SHARE;
+
+		n += share != NO_SHARE;
+		if (sc->plan[k].share != share)
+			sc->plan[k].share = share;
+		if (sc->plan[k].given || sc->plan[k].takes)
+			sc->plan[k].given = sc->plan[k].takes = 0;
+	}
+	sc->shares = n ? n : 1;
+	sc->traced_by = n;
+	sc->jobs = jobs_now;
+	if (!same || even || !n)
+		return n;
+	for (i = 0; i < n; i++) {
+		total += cost[i] >> 4;
+		if (cost[i] < least) least = cost[i];
+		if (cost[i] > most) most = cost[i];
+	}
+	/* (nothing to gain under a pass and a half between the dearest and the mean) */
+	if (most - (total / (uint32_t)n << 4) < 12288)
+		return n;
+	/* the shares by cost, in 64 steps from the least to the most */
+	step = (most - least) / 64 + 1;
+	memset(starts, 0, sizeof starts);
+	for (i = 0; i < n; i++)
+		starts[(cost[i] - least) / step + 2]++;
+	for (i = 2; i < 66; i++)
+		starts[i] = (uint16_t)(starts[i] + starts[i - 1]);
+	for (i = 0; i < n; i++)
+		order[starts[(cost[i] - least) / step + 1]++] = (uint8_t)i;
+	for (i = 0; i < n / 2; i++) {
+		uint32_t cheap = order[i], dear = order[n - 1 - i], length = share_length(old, dear);	/* (as that picture was shared out: so is this one) */
+		uint32_t give = (uint32_t)((uint64_t)(cost[dear] - cost[cheap]) * length / (2 * (uint64_t)cost[dear] + 1));
+
+		if (give > length / 2)
+			give = length / 2;
+		sc->plan[worker_of[dear]].given = (uint16_t)give;
+		sc->plan[worker_of[cheap]].helps = (uint16_t)dear;
+		sc->plan[worker_of[cheap]].takes = (uint16_t)give;
+	}
+	return n;
 }
 
 static void
-set_scene(float t)
+set_scene(struct picture *sc, float t)
 {
 	static const struct { float ring, height, radius, speed, phase, r, g, b, mirror; } made[SPHERES] = {
 		{0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.9f, 0.9f, 0.95f, 0.75f},
@@ -364,18 +574,18 @@ set_scene(float t)
 	for (i = 0; i < SPHERES; i++) {
 		float a = made[i].speed * t + made[i].phase;
 
-		scene.spheres[i].centre = v(made[i].ring * cosf(a), made[i].height + (i ? 0.25f * sinf(2.0f * a) + 0.25f : 0.0f), made[i].ring * sinf(a));
-		scene.spheres[i].radius = made[i].radius;
-		scene.spheres[i].radius2 = made[i].radius * made[i].radius;
-		scene.spheres[i].colour = v(made[i].r, made[i].g, made[i].b);
-		scene.spheres[i].mirror = made[i].mirror;
+		sc->spheres[i].centre = v(made[i].ring * cosf(a), made[i].height + (i ? 0.25f * sinf(2.0f * a) + 0.25f : 0.0f), made[i].ring * sinf(a));
+		sc->spheres[i].radius = made[i].radius;
+		sc->spheres[i].radius2 = made[i].radius * made[i].radius;
+		sc->spheres[i].colour = v(made[i].r, made[i].g, made[i].b);
+		sc->spheres[i].mirror = made[i].mirror;
 	}
-	scene.eye = v(7.0f * cosf(turn), 2.6f, 7.0f * sinf(turn));
-	scene.forward = unit(sub(target, scene.eye));
-	scene.right = unit(v(-scene.forward.z, 0, scene.forward.x));
-	scene.up = v(scene.right.y * scene.forward.z - scene.right.z * scene.forward.y, scene.right.z * scene.forward.x - scene.right.x * scene.forward.z,
-		scene.right.x * scene.forward.y - scene.right.y * scene.forward.x);
-	scene.light = unit(v(0.5f, 0.9f, -0.3f));
+	sc->eye = v(7.0f * cosf(turn), 2.6f, 7.0f * sinf(turn));
+	sc->forward = unit(sub(target, sc->eye));
+	sc->right = unit(v(-sc->forward.z, 0, sc->forward.x));
+	sc->up = v(sc->right.y * sc->forward.z - sc->right.z * sc->forward.y, sc->right.z * sc->forward.x - sc->right.x * sc->forward.z,
+		sc->right.x * sc->forward.y - sc->right.y * sc->forward.x);
+	sc->light = unit(v(0.5f, 0.9f, -0.3f));
 }
 
 /* The pixels a sphere can be in along one way of the screen: between its two tangents from
@@ -400,47 +610,82 @@ span(float c, float z, float r, float per, float middle, int most, int *low, int
 	*high = b < -8.0f ? -1 : b < (float)most + 8.0f ? (int)b + 4 : most;
 }
 
-/* What the eye's rays and the ground's shadows are spared (scene.seen, scene.shade): where
+/* What the eye's rays and the ground's shadows are spared (sc->seen, sc->shade): where
  * each sphere can be seen, and which squares of the ground its shadow can reach. */
 static void
-set_spared(void)
+set_spared(struct picture *sc)
 {
-	float half_w = (float)scene.width * 0.5f, half_h = (float)scene.height * 0.5f, low_x = 1e30f, low_z = 1e30f, high_x = -1e30f, high_z = -1e30f;
-	float by = 1.0f / scene.light.y, spot[SPHERES][3];
+	float half_w = (float)sc->width * 0.5f, half_h = (float)sc->height * 0.5f, low_x = 1e30f, low_z = 1e30f, high_x = -1e30f, high_z = -1e30f;
+	float by = 1.0f / sc->light.y, spot[SPHERES][3];
 	int i, x, z;
 
 	for (i = 0; i < SPHERES; i++) {
-		const struct sphere *s = &scene.spheres[i];
-		struct vec to = sub(s->centre, scene.eye), under = sub(v(s->centre.x, -s->centre.y, s->centre.z), scene.eye);
-		float ahead = dot(to, scene.forward), under_ahead = dot(under, scene.forward);
+		const struct sphere *s = &sc->spheres[i];
+		struct vec to = sub(s->centre, sc->eye), under = sub(v(s->centre.x, -s->centre.y, s->centre.z), sc->eye);
+		float ahead = dot(to, sc->forward), under_ahead = dot(under, sc->forward);
 
-		scene.seen[i].to = to;
-		scene.seen[i].to2 = dot(to, to);
-		span(dot(to, scene.right), ahead, s->radius, half_h, half_w - 0.5f, scene.width - 1, &scene.seen[i].x0, &scene.seen[i].x1);
-		span(dot(to, scene.up), ahead, s->radius, -half_h, half_h - 0.5f, scene.height - 1, &scene.seen[i].y0, &scene.seen[i].y1);
-		span(dot(under, scene.right), under_ahead, s->radius, half_h, half_w - 0.5f, scene.width - 1, &scene.mirrored[i].x0, &scene.mirrored[i].x1);
-		span(dot(under, scene.up), under_ahead, s->radius, -half_h, half_h - 0.5f, scene.height - 1, &scene.mirrored[i].y0, &scene.mirrored[i].y1);
+		sc->seen[i].to = to;
+		sc->seen[i].to2 = dot(to, to);
+		span(dot(to, sc->right), ahead, s->radius, half_h, half_w - 0.5f, sc->width - 1, &sc->seen[i].x0, &sc->seen[i].x1);
+		span(dot(to, sc->up), ahead, s->radius, -half_h, half_h - 0.5f, sc->height - 1, &sc->seen[i].y0, &sc->seen[i].y1);
+		span(dot(under, sc->right), under_ahead, s->radius, half_h, half_w - 0.5f, sc->width - 1, &sc->mirrored[i].x0, &sc->mirrored[i].x1);
+		span(dot(under, sc->up), under_ahead, s->radius, -half_h, half_h - 0.5f, sc->height - 1, &sc->mirrored[i].y0, &sc->mirrored[i].y1);
 		/* its shadow is within radius / light.y of where the light through its centre lands */
-		spot[i][0] = s->centre.x - scene.light.x * s->centre.y * by;
-		spot[i][1] = s->centre.z - scene.light.z * s->centre.y * by;
+		spot[i][0] = s->centre.x - sc->light.x * s->centre.y * by;
+		spot[i][1] = s->centre.z - sc->light.z * s->centre.y * by;
 		spot[i][2] = s->radius * by * 1.01f + 0.01f;
 		if (spot[i][0] - spot[i][2] < low_x) low_x = spot[i][0] - spot[i][2];
 		if (spot[i][1] - spot[i][2] < low_z) low_z = spot[i][1] - spot[i][2];
 		if (spot[i][0] + spot[i][2] > high_x) high_x = spot[i][0] + spot[i][2];
 		if (spot[i][1] + spot[i][2] > high_z) high_z = spot[i][1] + spot[i][2];
 	}
-	scene.shade_x = low_x;
-	scene.shade_z = low_z;
-	scene.shade_by = (float)SHADE / (high_x - low_x > high_z - low_z ? high_x - low_x : high_z - low_z);
-	memset(scene.shade, 0, sizeof scene.shade);
+	sc->shade_x = low_x;
+	sc->shade_z = low_z;
+	sc->shade_by = (float)SHADE / (high_x - low_x > high_z - low_z ? high_x - low_x : high_z - low_z);
+	memset(sc->shade, 0, sizeof sc->shade);
 	for (i = 0; i < SPHERES; i++) {
-		int x0 = (int)((spot[i][0] - spot[i][2] - low_x) * scene.shade_by), x1 = (int)((spot[i][0] + spot[i][2] - low_x) * scene.shade_by);
-		int z0 = (int)((spot[i][1] - spot[i][2] - low_z) * scene.shade_by), z1 = (int)((spot[i][1] + spot[i][2] - low_z) * scene.shade_by);
+		int x0 = (int)((spot[i][0] - spot[i][2] - low_x) * sc->shade_by), x1 = (int)((spot[i][0] + spot[i][2] - low_x) * sc->shade_by);
+		int z0 = (int)((spot[i][1] - spot[i][2] - low_z) * sc->shade_by), z1 = (int)((spot[i][1] + spot[i][2] - low_z) * sc->shade_by);
 
 		for (z = z0 < 0 ? 0 : z0; z <= z1 && z < SHADE; z++)
 			for (x = x0 < 0 ? 0 : x0; x <= x1 && x < SHADE; x++)
-				scene.shade[z * SHADE + x] |= (uint8_t)(1 << i);
+				sc->shade[z * SHADE + x] |= (uint8_t)(1 << i);
 	}
+}
+
+/* The next picture made, shared out and published. The workers that had the last of the
+ * picture two before it (`done` or the one before: all are through with it) begin it when
+ * they are through with the one between. */
+static void
+publish(float t, uint32_t done)
+{
+	uint32_t frame = go.frame + 1;
+	struct picture *sc = &pictures[frame & 1];
+	int width = sc->width, height = sc->height, shares, s;
+
+	sc->owners = owners;
+	set_scene(sc, t);
+	set_spared(sc);
+	shares = give_shares(sc, done);
+	for (s = 32; s > 1 && ((width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((height + s - 1) / s) < 24 * shares; s >>= 1)
+		;
+	sc->tile_h = s;
+	sc->tile_w = s < 8 ? 8 : s;
+	sc->tiles = ((width + sc->tile_w - 1) / sc->tile_w) * ((height + sc->tile_h - 1) / sc->tile_h);
+	/* a stride with no factor in common with the number of tiles visits every one of them */
+	for (sc->stride = (uint32_t)sc->tiles * 5 / 8 + 1;; sc->stride++) {
+		uint32_t a = sc->stride, b = (uint32_t)sc->tiles;
+
+		while (b) { uint32_t r = a % b; a = b; b = r; }
+		if (a == 1)
+			break;
+	}
+	sc->step = (uint32_t)((uint64_t)sc->shares * sc->stride % (uint32_t)sc->tiles);
+	/* (its pixels were picture `done`'s or the one's before: the list that shows that one has
+	 * been drawn while the scene was made, mostly) */
+	seglSettle();
+	go.shown = done;
+	go.frame = frame;
 }
 
 /* Keys; true when the picture being traced is to be given up for a new one. */
@@ -455,7 +700,7 @@ keys(void)
 		if (e.type == GR_EVENT_TYPE_NONE)
 			return again;
 		if (e.type == GR_EVENT_TYPE_CLOSE_REQ) {
-			scene.stop = 1;	/* (the shares end at their next tiles: the workers are waited for) */
+			go.stop = go.leave = 1;	/* (the shares end at their next tiles and the jobs with them: the workers are waited for) */
 			exit(0);
 		}
 		if (e.type == GR_EVENT_TYPE_UPDATE && e.update.utype == GR_UPDATE_SIZE)
@@ -463,9 +708,9 @@ keys(void)
 		if (e.type != GR_EVENT_TYPE_KEY_DOWN)
 			continue;
 		switch (e.keystroke.ch) {
-		case 'q': case MWKEY_ESCAPE: scene.stop = 1; exit(0);
+		case 'q': case MWKEY_ESCAPE: go.stop = go.leave = 1; exit(0);
 		case ' ': stopped = !stopped; break;
-		case 'w': scene.owners = !scene.owners; again = 1; break;
+		case 'w': owners = !owners; again = 1; break;
 		case 'a': wanted = MC_MAX_CORES; again = 2; break;
 		case '1': wanted = 1; again = 2; break;
 		case '0': wanted = 0; again = 2; break;
@@ -486,9 +731,9 @@ main(void)
 	static const GLfixed corners[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0}, uv[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
 	const char *text;
 	GR_SCREEN_INFO info;
-	GLuint texture;
+	GLuint texture[2];
 	int width = 320, height = 240, scale_by, frame = 0, i, view_w, view_h;
-	unsigned started = 0;
+	uint32_t done = 0;	/* the last picture that is whole and has been seen to */
 	float t = 0.0f;
 
 	if ((text = getenv("RAY_SIZE")) != NULL && sscanf(text, "%dx%d", &width, &height) == 2)
@@ -515,18 +760,21 @@ main(void)
 		fprintf(stderr, "nxray: this machine has no GPU\n");
 		return 1;
 	}
-	scene.width = width;
-	scene.height = height;
-	scene.pixels = seglMemory((unsigned)(width * height * 4));
-	if (!scene.pixels) {
-		fprintf(stderr, "nxray: no GPU memory left\n");
-		return 1;
+	/* a picture is a texture where it lies, one rectangle over the window; two, one shown
+	 * while the other is traced */
+	glGenTextures(2, texture);
+	for (i = 0; i < 2; i++) {
+		pictures[i].width = width;
+		pictures[i].height = height;
+		pictures[i].pixels = seglMemory((unsigned)(width * height * 4));
+		if (!pictures[i].pixels) {
+			fprintf(stderr, "nxray: no GPU memory left\n");
+			return 1;
+		}
+		memset(pictures[i].pixels, 0, (size_t)(width * height * 4));
+		glBindTexture(GL_TEXTURE_2D, texture[i]);
+		seglTexturePointer(pictures[i].pixels, width, height, GL_RGBA);
 	}
-	memset(scene.pixels, 0, (size_t)(width * height * 4));
-	/* the picture is a texture where it lies: one rectangle over the window, drawn again as it fills */
-	glGenTextures(1, &texture);
-	glBindTexture(GL_TEXTURE_2D, texture);
-	seglTexturePointer(scene.pixels, width, height, GL_RGBA);
 	seglSize(&view_w, &view_h);
 	glViewport(0, 0, view_w, view_h);
 	glMatrixMode(GL_PROJECTION);
@@ -534,112 +782,136 @@ main(void)
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 	glDisable(GL_DEPTH_TEST);
-	seglQuad(corners, uv, texture, 255, 255, 0);
+	seglQuad(corners, uv, texture[0], 255, 255, 0);
 	seglSwap();
 
 	atexit(mcw_close);
+	atexit(end_jobs);	/* (first: the workers' jobs end only when told) */
+	even = getenv("RAY_EVEN") != NULL;
 	take_workers();
 	while (frames_left != 0) {
-		static uint8_t busy[MC_MAX_CORES];
 		/* when the keys were last read and the picture's figures last said, and what was traced since */
-		static unsigned keys_at, said_at, pictures_since, rays_since, clock_from;
-		/* tiles this core traces while the workers trace theirs: as many as take it as long */
-		static unsigned own;
-		int next = 0, out = 0, k, again = 0, s, tiles, mine = 0;
-		unsigned began = now_ms(), shown = began, rays = 0, sum = 0, took, now = began, looked = began, own_took = 0, theirs_took = 0;
+		static unsigned keys_at, said_at, pictures_since, rays_since, clock_from, jobs_at, whole_at, began_at[2];
+		struct picture *sc;
+		int next = 0, k, again = 0, ahead = 1, from = 1, tiles;
+		unsigned now = now_ms(), shown = now, rays = 0, sum = 0, took, looked = now;
+		uint32_t at;
 		char title[120];
 
 		if (!clock_from)
-			clock_from = said_at = began;
-		/* the scene moves by the clock, so it moves as fast whatever a picture takes (a test's
-		 * pictures are a fixed step apart, to be the same pictures every time) */
-		if (!still && frames_left < 0)
-			t = (float)(began - clock_from) * 0.0006f;
-
-		set_scene(t);
-		set_spared();
-		for (s = 32; s > 1 && ((width + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((height + s - 1) / s) < 24 * workers; s >>= 1)
-			;
-		scene.tile_h = s;
-		scene.tile_w = s < 8 ? 8 : s;
-		scene.tiles = tiles = ((width + scene.tile_w - 1) / scene.tile_w) * ((height + scene.tile_h - 1) / scene.tile_h);
-		/* a stride with no factor in common with the number of tiles visits every one of them */
-		for (scene.stride = (uint32_t)tiles * 5 / 8 + 1;; scene.stride++) {
-			uint32_t a = scene.stride, b = (uint32_t)tiles;
-
-			while (b) { uint32_t r = a % b; a = b; b = r; }
-			if (a == 1)
+			clock_from = said_at = jobs_at = whole_at = now;
+		/* a worker that lost its core is asked for again now and then */
+		if (workers && now - jobs_at >= 1000) {
+			jobs_at = now;
+			start_jobs();
+		}
+		/* Two pictures are out while they follow each other freely: a worker goes from one to
+		 * the next, and this core shows one and makes the next but one meanwhile. One for a
+		 * test, whose pictures are timed each by itself, and with no workers. */
+		for (k = 1; k <= workers && frames_left < 0 && !getenv("RAY_ONE"); k++)
+			if (running[k]) {
+				ahead = 2;
 				break;
-		}
-		scene.step = (uint32_t)(workers ? workers : 1) * scene.stride % (uint32_t)tiles;
-		scene.stop = 0;
-		if (workers) {
-			unsigned share = (unsigned)tiles / (unsigned)(workers + 1);
-
-			if (!own)
-				own = share / 4;
-			own = own > 2 * share ? 2 * share : own < 1 ? 1 : own;
-			mine = (int)own;
-		}
-		scene.first = (uint32_t)mine;
-		/* every worker its share of the picture at once; this core has a few tiles, and shows */
-		for (k = 1; k <= workers; k++) {
-			mcw_post(k, trace_share, (uint32_t)(k - 1) | (uint32_t)workers << 16, (uint32_t)k);
-			busy[k] = 1;
-			out++;
-		}
-		while ((out || next < (workers ? mine : tiles)) && !(again && workers == 0)) {
-			/* a tile of this core's own, then a look at the window (and at the workers) */
-			if (next < (workers ? mine : tiles)) {
-				rays += trace_tile((uint32_t)next++ * scene.stride % (uint32_t)tiles, 0);
-				now = now_ms();
-				if (next == mine)
-					own_took = now - began;
-			} else {
-				pass();
-				now = now_ms();
 			}
-			/* (asking every worker is a pass's worth: not after every tile) */
-			if (out && (next >= mine || now - looked >= 10)) {
+		while (!stopped && go.frame - done < (uint32_t)ahead) {
+			/* the scene moves by the clock, so it moves as fast whatever a picture takes (a test's
+			 * pictures are a fixed step apart, to be the same pictures every time) */
+			began_at[(go.frame + 1) & 1] = now = now_ms();
+			if (!still && frames_left < 0)
+				t = (float)(now - clock_from) * 0.0006f;
+			publish(t, done);
+			if (!still && frames_left >= 0)
+				t += 0.35f;
+		}
+		if (go.frame == done) {
+			/* stopped, and nothing out */
+			pass();
+			if (now - keys_at >= 200) {
+				keys_at = now;
+				if (keys() >= 2)
+					take_workers();
+			}
+			continue;
+		}
+		at = done + 1;
+		sc = &pictures[at & 1];
+		tiles = sc->tiles;
+		while (sc->traced_by && !all_in(at, &from)) {
+			pass();
+			now = now_ms();
+			/* (asking every worker is a pass's worth: now and then, for one that stopped or lost its core) */
+			if (now - looked >= 50) {
 				looked = now;
-				for (k = 1; k <= workers; k++)
-					if (busy[k] && mcw_done(k)) {
-						rays += mcw_result(k);
-						busy[k] = 0;
-						out--;
-					}
-				if (!out)
-					theirs_took = now - began;
+				look_at_jobs(done);
 			}
-			if (now - shown >= 200 && now - began >= 1500) {
-				/* a picture is shown when it is whole; one that takes long, as it fills (the
-				 * workers' in a third of a second came out half old and half new) */
-				seglSwapAgain();
+			if (now - shown >= 200 && now - began_at[at & 1] >= 1500) {
+				/* a picture is shown when it is whole; one that takes long, as it fills */
+				seglQuad(corners, uv, texture[at & 1], 255, 255, 0);
+				seglSwap();
 				shown = now;
 			}
 			if (now - keys_at >= 200) {
 				keys_at = now;
-				/* (a picture given up: the shares end at their next tiles, and are waited for) */
-				if ((again = keys())) {
-					scene.stop = 1;
-					mine = next;
-				}
+				/* (a picture given up: the shares end at their next tiles) */
+				if ((k = keys()) != 0)
+					again = k, go.stop = 1;
 			}
 		}
-		/* the next picture's own tiles: so many that this core and the workers end together */
-		if (workers && !again && own_took && theirs_took)
-			own = (unsigned)(((unsigned long long)own * theirs_took * 15 / own_took + 8) / 16);
-		took = now_ms() - began;
-		seglSwapAgain();
-		if (again >= 2) {
-			take_workers();
+		while (!sc->traced_by && next < tiles && !again) {
+			/* this core alone: a tile, then a look at the window */
+			rays += trace_tile(sc, (uint32_t)next++ * sc->stride % (uint32_t)tiles, 0);
+			now = now_ms();
+			if (now - shown >= 200 && now - began_at[at & 1] >= 1500) {
+				seglQuad(corners, uv, texture[at & 1], 255, 255, 0);
+				seglSwap();
+				shown = now;
+			}
+			if (now - keys_at >= 200) {
+				keys_at = now;
+				again = keys();
+			}
+		}
+		if (again) {
+			/* the pictures that are out are given up, and are waited for: then all begins again */
+			go.stop = 1;
+			for (from = 1; pictures[go.frame & 1].traced_by && !all_in(go.frame, &from);) {
+				pass();
+				look_at_jobs(done);
+			}
+			done = go.frame;
+			if (again >= 2)
+				take_workers();
+			go.stop = 0;
 			continue;
 		}
-		if (again)
-			continue;
+		now = now_ms();
+		took = ahead > 1 ? now - whole_at : now - began_at[at & 1];
+		whole_at = now;
+		for (k = 1; k <= workers && sc->traced_by; k++)
+			if (sc->plan[k].share != NO_SHARE)
+				rays += slots[at & 1][k].rays;
+		/* (shown, and not waited for: its pixels are written again by the picture after the next, which publish() holds until this is drawn) */
+		seglQuad(corners, uv, texture[at & 1], 255, 255, 0);
+		seglSwapEarly();
+		done = at;
 		/* (the sum is a test's: 300 thousand pixels are half a second of this core, with every worker waiting) */
 		for (i = 0; frames_left > 0 && i < width * height; i++)
-			sum = sum * 31 + scene.pixels[i];
+			sum = sum * 31 + sc->pixels[i];
+		if (sc->traced_by && getenv("RAY_SHARES")) {
+			/* (for a test: what the workers' parts of the picture took, in instructions) */
+			uint32_t least = ~0u, most = 0, all = 0, lent = 0;
+
+			for (k = 1; k <= workers; k++)
+				if (sc->plan[k].share != NO_SHARE) {
+					uint32_t took_k = slots[at & 1][k].spent + slots[at & 1][k].lent;
+
+					all += took_k >> 4, lent += sc->plan[k].takes;
+					if (took_k < least) least = took_k;
+					if (took_k > most) most = took_k;
+				}
+			fprintf(stderr, "raystat: %d shares of %d tiles: %u to %u instructions, %u the mean; %u tiles traced for another\n", sc->traced_by, tiles,
+				(unsigned)least, (unsigned)most, (unsigned)(all / (uint32_t)sc->traced_by << 4), (unsigned)lent);
+		}
 		pictures_since++;
 		rays_since += rays;
 		if (frames_left > 0) {
@@ -663,14 +935,7 @@ main(void)
 		frame++;
 		if (frames_left > 0)
 			frames_left--;
-		if (!still && frames_left >= 0)
-			t += 0.35f;
-		(void)started;
-		while (stopped && frames_left != 0) {
-			pass();
-			if (keys())
-				break;
-		}
 	}
+	seglSettle();
 	return 0;
 }

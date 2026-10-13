@@ -1,7 +1,9 @@
 /*
- * nxweb: a browser for HTML with the plainer part of its style sheets (css.h); no scripts. A
- * page in the image is read as a file; any other address is asked of the host (docs/fetch.md),
- * which is the only part of this machine that has a network.
+ * nxweb: a browser (docs/web.md). The page is HTML laid out by web.h and web_layout.h with
+ * the sheets css.h reads, in the fonts of the ROM; no scripts. It is drawn once into a pixmap
+ * the GPU keeps, and scrolling copies from that. A page in the image is read as a file; any
+ * other address is asked of the host (docs/fetch.md), which is the only part of this machine
+ * that has a network, unless the image keeps a copy (web/preload.py).
  *   nxweb [ADDRESS or FILE]
  */
 #define _GNU_SOURCE
@@ -10,49 +12,41 @@
 #include <stdint.h>
 #include <strings.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include "ui.h"
-#include "css.h"
+#include "web_layout.h"
 
 #define BAR 26
 #define STATUS 18
-#define MARGIN 8
 #define WIDTH 600
 #define HEIGHT 420
 #define HOME "/usr/share/web-index.html"
-#define FETCH_MOST 0x40000	/* bytes the host can hand over */
-#define REG_REQUEST 64		/* words of the control block: requests made, length of the address, kind */
+#define FETCH_MOST 0x40000	/* bytes the host hands over at a time */
+#define PAGE_MOST (3 << 19)	/* of a page that are read */
+#define SHEET_MOST (3 << 18)
+#define REG_REQUEST 64		/* words of the control block: requests made, length of the address, kind, offset */
 #define REG_REPLY 68		/* requests answered, bytes, status, a picture's width | height << 16 */
-#define MAX_PICTURES 12
 #define REG_ADDRESS 72		/* the address, 256 bytes */
-
-enum { BOLD = 1, LINK = 2, FIXED = 4, UNDER = 8, RULE = 16, PICTURE = 32, BOX = 64 };
-
-/* A piece of the page. A box (a block's background) keeps its height in `link`, as a picture
- * does, and in `length` whether it is filled (1) and framed (2, in the colour kept in `text`). */
-struct run { int x, y, text, length, width, link; GR_COLOR colour; unsigned char style; };
+#define REG_PIXMAPS (0x1800 / 4 + 28)	/* pixmaps the GPU keeps, counted by the screen's driver */
+#define MAX_PICTURES 160
+#define TILE_BYTES (3200 * 1024)	/* of the GPU's memory for the page as drawn */
 
 static GR_WINDOW_ID window;
 static int width = WIDTH, height = HEIGHT;
-static unsigned char var_w[256];
 static int line_h;
 
 static char *page;		/* the HTML as it came */
 static int page_length;
-static char address[256], typed[256], status[200], title[80];
+static char address[256], typed[256], status[200];
 static int editing;		/* the address field has the keyboard */
-static int picked = -1;		/* the link the keyboard is on (Tab): its place in `links`, or -1 */
-static char history[16][256];
+static int picked = -1;		/* the link the keyboard is on (Tab): its element, or -1 */
+static struct { char address[256]; int top; } history[16];
 static int history_count;
-
-static struct run *runs;
-static int run_count, run_room;
-static char *pool;		/* the text of every run */
-static int pool_length, pool_room;
-static char *links;		/* every cur_link's address, one string after another */
-static int links_length, links_room, link_count;
-static int page_height, top;	/* in pixels; top is a multiple of line_h */
+static int top, goal;		/* the page's row at the view's top, and where it is scrolling to */
 static int dragging;
+static int sent_on;		/* pages in a row that sent their reader on to another */
+static int verbose, dump;
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN | \
 	GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ)
 
@@ -61,73 +55,162 @@ static const unsigned char *fetched;
 static int loading;		/* the request the host has not answered yet, or 0 */
 static int waited, ticked;	/* ticked: the event just had was the wait running out */
 static int by_hand;		/* the host may not open this address itself: asked again until it may */
+static char *part;		/* a page or a sheet that comes in parts: what is here of it */
+static int part_have;
 
-/* The page's pictures. The host fetches and decodes one and hands over its pixels (docs/fetch.md);
- * they are kept as a file, which the GPU then draws from. */
+/* The page's pictures. One the image keeps is drawn from there; one the host fetches and
+ * decodes arrives as pixels (docs/fetch.md), kept as a file the GPU then draws from. */
 enum { PICTURE_WANTED, PICTURE_HERE, PICTURE_FAILED, PICTURE_BY_HAND };
-static struct picture { char address[256], file[40]; int w, h, state, placed; time_t asked; } pictures[MAX_PICTURES];
+static struct picture { char address[256], file[64]; int w, h, state, sized, ours; time_t asked; } *pictures;
 static int picture_count;
 static int asking = -1;		/* the picture the request that is out is for, or -1: the page */
 static FILE *part_file;		/* a picture that comes in parts: its file, its size, pixels so far */
 static int part_w, part_h, part_done;
+#define SHEET 1000		/* `asking` for sheet 0 */
 
-/* The page's style sheets, in its order: text of its own, or a file the host fetches. */
-#define MAX_SHEETS 10
-#define MAX_FETCHED_SHEETS 4
-#define SHEET 100		/* `asking` for sheet 0 */
-static struct sheet { char address[256]; char *text; int length, state, own; time_t asked; } sheets[MAX_SHEETS];
-static int sheet_count;
-static GR_COLOR page_bg = WHITE;
+/* The page as drawn: `tile_h` rows of it from `tile_top`, in a pixmap. */
+static GR_WINDOW_ID tile;
+static int tile_w, tile_h, tile_top, tile_drawn, tile_gpu;
+static GR_FONT_ID fonts[WEB_FACES][2];
 
-static int resolve(const char *href, char *whole);
+/* What a visitor has typed into the page's fields. */
+static struct field { int node, n, checked, option; unsigned short text[128]; } *fields;
+static int field_count, focus = -1;
 
-static struct picture *
-picture_for(const char *where)
+static void show_view(void);
+
+/* Instructions the first core has run (the low word of its count): what a step cost. */
+static unsigned
+now(void)
 {
-	int i;
+	unsigned n;
 
-	for (i = 0; i < picture_count; i++)
-		if (!strcmp(pictures[i].address, where))
-			return &pictures[i];
-	if (picture_count == MAX_PICTURES)
+	__asm__ volatile("rdcycle %0" : "=r"(n));
+	return n;
+}
+
+static int
+view_height(void)
+{
+	return height - BAR - STATUS;
+}
+
+static int
+view_width(void)
+{
+	return width - UI_SCROLL_W;
+}
+
+/* ---- what the engine asks for ---- */
+
+static const void *
+web_file(const char *name, int *size)
+{
+	char path[80];
+	struct stat st;
+	void *bytes;
+	int fd;
+
+	snprintf(path, sizeof path, "/usr/share/%s", name);
+	if ((fd = open(path, O_RDONLY)) < 0)
 		return NULL;
-	snprintf(pictures[i].address, sizeof pictures[i].address, "%s", where);
-	snprintf(pictures[i].file, sizeof pictures[i].file, "/tmp/nxweb-%d-%d.ppm", (int)getpid(), i);
-	pictures[i].state = PICTURE_WANTED;
-	pictures[i].placed = 0;
-	return &pictures[picture_count++];
+	bytes = fstat(fd, &st) == 0 ? mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
+	close(fd);
+	*size = (int)st.st_size;
+	return bytes == MAP_FAILED ? NULL : bytes;
 }
 
-/* ---- layout ---- */
-
-#define MAX_DEPTH 160
-#define NO_GAP 100000
-
-/* An element that is open: how it looks, and what to put back when it ends. */
-struct open { struct css_style s; int indent, right, box, bx, bw, link, block; };
-static struct css_elem elems[MAX_DEPTH];	/* the same elements as a selector sees them */
-static struct open opens[MAX_DEPTH];
-static int depth;
-static struct css_style root_style;
-
-static int lx, ly, indent, right, cur_link = -1, skip;
-static int gap_done;		/* the space already left under the last thing placed */
-static int line_first;		/* the first run of the line being filled */
-static int in_pre, bold_now, under_now;	/* of the innermost open element */
-static GR_COLOR ink;
-static int hidden;		/* inside an element that is not shown: how deep */
-static char hidden_tag[16];	/* that element's name: only its like are counted, so a stray tag cannot lose the page */
-static int hidden_kind;		/* T_li, T_dt, T_tr, T_td or T_p: one that ends without a closing tag */
-static int hidden_inner;	/* lists (tables) open inside it, whose items are not its end */
-
-static void *
-grow(void *block, int *room, int need, int size)
+static int
+web_picture(int node, const char *where, int *w, int *h)
 {
-	if (need <= *room)
-		return block;
-	*room = need * 2 + 256;
-	return realloc(block, (size_t)*room * size);
+	struct picture *p;
+	int i, said_w = web_attr_int(node, "width", -1), said_h = web_attr_int(node, "height", -1);
+
+	for (i = 0; i < picture_count && strcmp(pictures[i].address, where); i++)
+		;
+	if (i == picture_count) {
+		if (picture_count == MAX_PICTURES)
+			return -1;
+		p = &pictures[picture_count++];
+		memset(p, 0, sizeof *p);
+		snprintf(p->address, sizeof p->address, "%s", where);
+		if (where[0] == '/') {
+			/* a picture in the image: drawn by the GPU from the file where it lies */
+			snprintf(p->file, sizeof p->file, "%.60s", where);
+			p->state = strlen(where) < 60 && ui_picture_size(where, &p->w, &p->h) ? PICTURE_HERE : PICTURE_FAILED;
+		} else if (web_cache_find(where, 'I', p->file, sizeof p->file, &p->w, &p->h)) {
+			p->state = PICTURE_HERE;
+		} else {
+			snprintf(p->file, sizeof p->file, "/tmp/nxweb-%d-%d.ppm", (int)getpid(), i);
+			p->ours = 1;
+			/* (one the page says is a dot or nothing is a spacer or counts visitors: not fetched) */
+			p->state = regs && !(said_w >= 0 && said_w <= 2) && !(said_h >= 0 && said_h <= 2) ? PICTURE_WANTED : PICTURE_FAILED;
+		}
+	}
+	p = &pictures[i];
+	if (p->state == PICTURE_FAILED)
+		return -1;
+	*w = p->state == PICTURE_HERE ? p->w : 0;
+	*h = p->state == PICTURE_HERE ? p->h : 0;
+	if (p->state != PICTURE_HERE && (said_w < 0 || said_h < 0))
+		p->sized = 0;	/* (laid out before it came, the page not saying its size: laid out again when it does) */
+	return i;
 }
+
+/* ---- fields ---- */
+
+static struct field *
+field_of(int node)
+{
+	char value[300];
+	struct field *f;
+	int i, used, left;
+	const char *v;
+
+	for (i = 0; i < field_count; i++)
+		if (fields[i].node == node)
+			return &fields[i];
+	fields = realloc(fields, (field_count + 1) * sizeof *fields);
+	f = &fields[field_count++];
+	memset(f, 0, sizeof *f);
+	f->node = node;
+	f->checked = web_attr(node, "checked", &v, &i);
+	if (web_nodes[node].c.tag == T_input && web_attr_text(node, "value", value, sizeof value))
+		for (v = value, left = strlen(value); left > 0 && f->n < 127; v += used, left -= used)
+			f->text[f->n++] = web_char((const unsigned char *)v, left, &used);
+	if (web_nodes[node].c.tag == T_select) {
+		int kid, k = 0;
+
+		for (kid = web_nodes[node].first; kid >= 0; kid = web_nodes[kid].next)
+			if (web_nodes[kid].c.tag == T_option) {
+				if (web_attr(kid, "selected", &v, &i))
+					f->option = k;
+				k++;
+			}
+	}
+	return f;
+}
+
+static const char *
+field_type(int node)
+{
+	static char type[24];
+
+	strcpy(type, "text");
+	if (web_nodes[node].c.tag == T_input)
+		web_attr_text(node, "type", type, sizeof type);
+	else
+		strcpy(type, web_nodes[node].c.tag == T_select ? "select" : "textarea");
+	return type;
+}
+
+static int
+field_is_button(const char *type)
+{
+	return !strcasecmp(type, "submit") || !strcasecmp(type, "button") || !strcasecmp(type, "reset") || !strcasecmp(type, "image");
+}
+
+/* ---- drawing ---- */
 
 static GR_COLOR
 mw(int rgb)
@@ -135,888 +218,205 @@ mw(int rgb)
 	return MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255);
 }
 
-static int
-least(int a, int b)
-{
-	return a < b ? a : b;
-}
-
-static const struct css_style *
-cur_style(void)
-{
-	return depth ? &opens[depth - 1].s : &root_style;
-}
-
+/* Characters in one of the ROM's faces, their top left corner at x, y. */
 static void
-restyle(void)
+page_text(GR_DRAW_ID to, int x, int y, const unsigned short *text, int n, int face, int italic, int colour)
 {
-	const struct css_style *s = cur_style();
+	GR_FONT_ID *font = &fonts[face][italic];
 
-	in_pre = s->pre;
-	bold_now = s->bold;
-	under_now = s->underline;
-	ink = mw(s->colour);
-}
+	if (web_plain) {
+		/* the window system's own font: Latin letters, bold by drawing twice */
+		char plain[256];
+		int i, bold = face < FACE_UNI && (face / WEB_SIZES) % 2;
 
-static int
-text_width(const char *text, int n, int style)
-{
-	int w = 0;
-
-	if (style & FIXED)
-		return n * ui_fw;
-	while (n-- > 0)
-		w += var_w[(unsigned char)*text++];
-	return w + ((style & BOLD) ? 1 : 0);
-}
-
-/* Ends the line being filled where it is: moves it over if its block centres or right-aligns. */
-static void
-end_line(void)
-{
-	int align = cur_style()->align, i;
-
-	if (align && lx > indent && lx < right)
-		for (i = line_first; i < run_count; i++)
-			runs[i].x += (right - lx) / (align == 1 ? 2 : 1);
-	line_first = run_count;
-	lx = indent;
-}
-
-static void
-new_line(void)
-{
-	end_line();
-	ly += line_h;
-}
-
-/* Ends the line being filled and leaves at least `gap` above what comes next. */
-static void
-block(int gap)
-{
-	if (lx != indent)
-		new_line();
-	line_first = run_count;
-	if (gap > gap_done) {
-		ly += gap - gap_done;
-		gap_done = gap;
-	}
-}
-
-static void
-add_run(const char *text, int n, int style, int w)
-{
-	struct run *r;
-
-	runs = grow(runs, &run_room, run_count + 1, sizeof *runs);
-	pool = grow(pool, &pool_room, pool_length + n + 2, 1);
-	r = &runs[run_count++];
-	r->x = lx;
-	r->y = ly;
-	r->text = pool_length;
-	r->length = n;
-	r->width = w;
-	r->link = cur_link;
-	r->colour = ink;
-	r->style = style;
-	memcpy(pool + pool_length, text, n);
-	pool_length += n;
-	gap_done = 0;
-}
-
-/* A rectangle behind what follows: filled, framed, or both (a colour of CSS_NONE is neither). */
-static int
-add_box(int x, int y, int w, int h, int fill, int frame)
-{
-	struct run *r;
-
-	lx = x;
-	add_run("", 0, BOX, w);
-	r = &runs[run_count - 1];
-	r->y = y;
-	r->link = h;
-	r->colour = fill >= 0 ? mw(fill) : 0;
-	r->text = frame >= 0 ? (int)mw(frame) : 0;
-	r->length = (fill >= 0 ? 1 : 0) | (frame >= 0 ? 2 : 0);
-	lx = indent;
-	line_first = run_count;
-	return run_count - 1;
-}
-
-static int
-style_now(void)
-{
-	return (bold_now ? BOLD : 0) | (under_now ? UNDER : 0) | (cur_link >= 0 ? LINK : 0) | (in_pre ? FIXED : 0);
-}
-
-/* A word after the last one: on the same line if it fits, joined to a run of the same kind. */
-static void
-add_word(const char *text, int n)
-{
-	int style = style_now(), w = text_width(text, n, style), space = style & FIXED ? ui_fw : var_w[' '];
-	struct run *last = run_count ? &runs[run_count - 1] : NULL;
-
-	if (lx > indent && lx + space + w > right)
-		new_line();
-	if (lx > indent && last && last->y == ly && last->style == style && last->link == cur_link &&
-	    last->colour == ink && last->text + last->length == pool_length) {
-		pool = grow(pool, &pool_room, pool_length + n + 2, 1);
-		pool[pool_length++] = ' ';
-		memcpy(pool + pool_length, text, n);
-		pool_length += n;
-		last->length += n + 1;
-		last->width += space + w;
-		lx += space + w;
+		for (; n > 0; n -= i, text += i, x += ui_width(&ui_var_widths, ui_var, plain, i)) {
+			for (i = 0; i < n && i < 255; i++)
+				plain[i] = text[i] >= 32 && text[i] < 127 ? text[i] : text[i] < 32 ? ' ' : '?';
+			ui_text(to, x, y, plain, i, mw(colour), 0);
+			if (bold)
+				ui_text(to, x + 1, y, plain, i, mw(colour), 0);
+		}
 		return;
 	}
-	if (lx > indent)
-		lx += space;
-	add_run(text, n, style, w);
-	lx += w;
+	if (!*font) {
+		char path[80];
+
+		snprintf(path, sizeof path, "/usr/share/%s", web_faces[face].name);
+		/* (the height asks for a size, the width for a slant in 256ths of a pixel a row) */
+		*font = GrCreateFontEx(path, web_faces[face].twice ? 32 : 0, italic ? 51 : 0, NULL);
+	}
+	GrSetGCFont(ui_gc, *font);
+	GrSetGCForeground(ui_gc, mw(colour));
+	GrText(to, ui_gc, x, y, (void *)text, n, GR_TFUC16 | GR_TFTOP);
 }
 
 static int
-tag_is(const char *tag, int n, const char *name)
+plain_face(void)
 {
-	return (int)strlen(name) == n && !strncasecmp(tag, name, n);
+	int face = web_face_for(0, 0, CSS_EM);
+
+	web_face(face);
+	return face;
 }
-
-/* A value as a page writes it, with its &amp; as the & it stands for. */
-static void
-attr_copy(const char *from, int n, char *out, int room)
-{
-	int i, k = 0;
-
-	for (i = 0; i < n && k < room - 1; i++) {
-		if (i + 4 < n && !strncmp(from + i, "&amp;", 5))
-			i += 4, out[k++] = '&';
-		else
-			out[k++] = from[i];
-	}
-	out[k] = 0;
-}
-
-/* The value of an attribute in a tag's text, or 0. */
-static int
-attribute(const char *tag, int n, const char *name, char *out, int room)
-{
-	int m = strlen(name), i, start;
-
-	for (i = 0; i + m < n; i++) {
-		char quote;
-
-		if (strncasecmp(tag + i, name, m) || (i > 0 && !isspace((unsigned char)tag[i - 1])))
-			continue;
-		i += m;
-		while (i < n && isspace((unsigned char)tag[i]))
-			i++;
-		if (i >= n || tag[i] != '=')
-			continue;
-		for (i++; i < n && isspace((unsigned char)tag[i]); i++)
-			;
-		quote = i < n && (tag[i] == '"' || tag[i] == '\'') ? tag[i++] : 0;
-		for (start = i; i < n && (quote ? tag[i] != quote : !isspace((unsigned char)tag[i])); i++)
-			;
-		attr_copy(tag + start, i - start, out, room);
-		return 1;
-	}
-	return 0;
-}
-
-/* The attributes every element is asked for, found in one pass over its tag. */
-struct attrs { const char *id, *cls, *style, *href, *bg; int id_n, cls_n, style_n, href_n, bg_n; };
 
 static void
-scan_attrs(const char *s, int n, struct attrs *a)
+draw_field(GR_DRAW_ID to, const struct web_item *it, int y)
 {
-	int i = 0;
+	struct field *f = field_of(it->node);
+	const char *type = field_type(it->node);
+	unsigned short label[128];
+	char text[200];
+	int face = plain_face(), n = 0, w = 0, i, grey = 0, used, left;
+	const char *v;
 
-	memset(a, 0, sizeof *a);
-	while (i < n) {
-		int name, name_n, value = 0, value_n = 0;
+	if (field_is_button(type)) {
+		ui_fill(to, it->x, y, it->w, it->h, UI_FACE);
+		ui_bevel(to, it->x, y, it->w, it->h, 0);
+		if (!web_attr_text(it->node, "value", text, sizeof text) && !web_attr_text(it->node, "alt", text, sizeof text))
+			strcpy(text, !strcasecmp(type, "reset") ? "Reset" : "Submit");
+		for (v = text, left = strlen(text); left > 0 && n < 127; v += used, left -= used)
+			label[n++] = web_char((const unsigned char *)v, left, &used);
+		for (i = 0; i < n; i++)
+			w += web_most(0, web_advance(face, label[i]));
+		page_text(to, it->x + (it->w - w) / 2, y + 3, label, n, face, 0, 0);
+		return;
+	}
+	ui_fill(to, it->x, y, it->w, it->h, WHITE);
+	GrSetGCForeground(ui_gc, focus == it->node ? BLACK : UI_SHADOW);
+	GrRect(to, ui_gc, it->x, y, it->w, it->h);
+	if (!strcasecmp(type, "checkbox") || !strcasecmp(type, "radio")) {
+		if (f->checked)
+			ui_fill(to, it->x + 3, y + 3, it->w - 6, it->h - 6, BLACK);
+		return;
+	}
+	if (!strcasecmp(type, "select")) {
+		int kid, k = 0;
 
-		while (i < n && (isspace((unsigned char)s[i]) || s[i] == '/'))
-			i++;
-		name = i;
-		while (i < n && !isspace((unsigned char)s[i]) && s[i] != '=')
-			i++;
-		name_n = i - name;
-		while (i < n && isspace((unsigned char)s[i]))
-			i++;
-		if (i < n && s[i] == '=') {
-			for (i++; i < n && isspace((unsigned char)s[i]); i++)
-				;
-			if (i < n && (s[i] == '"' || s[i] == '\'')) {
-				char quote = s[i++];
+		for (kid = web_nodes[it->node].first; kid >= 0; kid = web_nodes[kid].next)
+			if (web_nodes[kid].c.tag == T_option && k++ == f->option && web_nodes[kid].first >= 0 &&
+			    web_nodes[web_nodes[kid].first].c.tag == T_TEXT) {
+				const struct web_node *t = &web_nodes[web_nodes[kid].first];
 
-				for (value = i; i < n && s[i] != quote; i++)
-					;
-				value_n = i++ - value;
-			} else {
-				for (value = i; i < n && !isspace((unsigned char)s[i]); i++)
-					;
-				value_n = i - value;
+				n = web_least(t->text_n, 127);
+				memcpy(label, web_u + t->text, n * sizeof *label);
 			}
-		}
-		if (name_n == 2 && !strncasecmp(s + name, "id", 2))
-			a->id = s + value, a->id_n = value_n;
-		else if (name_n == 5 && !strncasecmp(s + name, "class", 5))
-			a->cls = s + value, a->cls_n = value_n;
-		else if (name_n == 5 && !strncasecmp(s + name, "style", 5))
-			a->style = s + value, a->style_n = value_n;
-		else if (name_n == 4 && !strncasecmp(s + name, "href", 4))
-			a->href = s + value, a->href_n = value_n;
-		else if (name_n == 7 && !strncasecmp(s + name, "bgcolor", 7))
-			a->bg = s + value, a->bg_n = value_n;
-		else if (!name_n)
-			i++;
-	}
-}
-
-/* One character for an entity such as &amp; or &#8217;, and how much of the text it was. */
-static int
-entity(const char *at, int left, int *used)
-{
-	static const struct { const char *name; char ch; } known[] = {
-		{ "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", ' ' },
-		{ "mdash", '-' }, { "ndash", '-' }, { "rsquo", '\'' }, { "lsquo", '\'' }, { "rdquo", '"' },
-		{ "ldquo", '"' }, { "hellip", '.' }, { "copy", 'c' }, { "middot", '.' }, { "bull", '*' },
-	};
-	int i, n = 1, code;
-
-	while (n < left && n < 10 && at[n] != ';')
-		n++;
-	if (n >= left || at[n] != ';')
-		return 0;
-	*used = n + 1;
-	if (at[1] == '#') {
-		code = at[2] == 'x' || at[2] == 'X' ? (int)strtol(at + 3, NULL, 16) : atoi(at + 2);
-		return code >= 32 && code < 127 ? code : code == 160 ? ' ' : code == 8217 || code == 8216 ? '\'' :
-		       code == 8220 || code == 8221 ? '"' : code == 8211 || code == 8212 ? '-' : '?';
-	}
-	for (i = 0; i < (int)(sizeof known / sizeof known[0]); i++)
-		if ((int)strlen(known[i].name) == n - 1 && !strncmp(at + 1, known[i].name, n - 1))
-			return known[i].ch;
-	return 0;
-}
-
-/* The ASCII character to show for the UTF-8 sequence at `at`, and its length. */
-static int
-utf8(const unsigned char *at, int left, int *used)
-{
-	int n = *at >= 0xf0 ? 4 : *at >= 0xe0 ? 3 : *at >= 0xc0 ? 2 : 1, code, i;
-
-	if (n > left)
-		n = left;
-	*used = n;
-	code = n == 1 ? *at : *at & (0xff >> (n + 1));
-	for (i = 1; i < n; i++)
-		code = code << 6 | (at[i] & 0x3f);
-	return code == 0xa0 ? ' ' : code == 0x2018 || code == 0x2019 ? '\'' : code == 0x201c || code == 0x201d ? '"' :
-	       code == 0x2013 || code == 0x2014 ? '-' : code == 0x2022 || code == 0xb7 ? '*' : code == 0x2026 ? '.' : '?';
-}
-
-/* Ends the innermost open element. */
-static void
-pop(void)
-{
-	struct open *o = &opens[depth - 1];
-
-	if (o->block) {
-		block(0);
-		if (o->s.pb) {
-			ly += least(o->s.pb, 2 * line_h);
-			gap_done = 0;
-		}
-		if (o->box >= 0)
-			runs[o->box].link = ly - runs[o->box].y;
-		indent = o->indent;
-		right = o->right;
-		if (o->s.border_b >= 0)
-			add_box(o->bx, ly++, o->bw, 1, o->s.border_b, CSS_NONE);
-		lx = indent;
-		depth--;
-		block(least(o->s.mb, 2 * line_h));
+		ui_fill(to, it->x + it->w - 16, y + 1, 15, it->h - 2, UI_FACE);
+		label[127] = 'v';
+		page_text(to, it->x + it->w - 12, y + 3, label + 127, 1, face, 0, 0);
 	} else {
-		depth--;
+		n = f->n;
+		memcpy(label, f->text, n * sizeof *label);
+		if (!n && web_attr_text(it->node, "placeholder", text, sizeof text)) {
+			for (v = text, left = strlen(text); left > 0 && n < 127; v += used, left -= used)
+				label[n++] = web_char((const unsigned char *)v, left, &used);
+			grey = 1;
+		}
+		if (!strcasecmp(type, "password"))
+			for (i = 0; i < n && !grey; i++)
+				label[i] = '*';
 	}
-	cur_link = o->link;
-	restyle();
+	/* as much of the text as the field holds: its end, while it is typed into */
+	for (i = n, w = 0; i > 0 && w + web_most(0, web_advance(face, label[i - 1])) < it->w - 8 - (it->h > 30 ? 0 : 0); i--)
+		w += web_most(0, web_advance(face, label[i - 1]));
+	if (focus != it->node || grey) {
+		for (i = 0, w = 0; i < n && w + web_most(0, web_advance(face, label[i])) < it->w - 8; i++)
+			w += web_most(0, web_advance(face, label[i]));
+		n = i;
+		i = 0;
+	}
+	if (n > i)
+		page_text(to, it->x + 4, y + 3, label + i, n - i, face, 0, grey ? 0x808080 : 0);
+	if (focus == it->node)
+		ui_fill(to, it->x + 4 + (grey ? 0 : w) + 1, y + 3, 1, it->h - 6, BLACK);
 }
 
-/* Ends the nearest open `a` or `b` and what is inside it, looking no further out than a `stop`. */
+/* One thing of the page, `dy` above where the page has it. */
 static void
-close_inside(int a, int b, int stop1, int stop2)
+draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
 {
-	int i;
+	int y = it->y - dy;
 
-	for (i = depth - 1; i >= 0 && elems[i].tag != stop1 && elems[i].tag != stop2; i--)
-		if (elems[i].tag == a || elems[i].tag == b) {
-			while (depth > i)
-				pop();
-			return;
-		}
-}
-
-/* How a tag looks before any style sheet has its say. */
-static void
-plain_style(int t, struct css_style *s, int in_list, int is_link)
-{
-	int gap = line_h / 2;
-
-	switch (t) {
-	case T_h1: case T_h2: case T_h3: case T_h4: case T_h5: case T_h6:
-		s->bold = s->underline = 1;
-		/* fall through */
-	case T_p: case T_table: case T_blockquote: case T_section: case T_article: case T_header: case T_footer:
-	case T_form:
-		s->display = D_BLOCK;
-		s->mt = s->mb = gap;
-		break;
-	case T_pre:
-		s->display = D_BLOCK;
-		s->mt = s->mb = gap;
-		s->pre = 1;
-		break;
-	case T_ul: case T_ol:
-		s->display = D_BLOCK;
-		s->mt = s->mb = in_list ? 0 : gap;
-		s->pl = 18;
-		break;
-	case T_center:
-		s->align = 1;
-		/* fall through */
-	case T_html: case T_body: case T_div: case T_tr: case T_dt: case T_dd: case T_li: case T_main: case T_nav:
-	case T_aside: case T_figure: case T_figcaption: case T_dl: case T_address: case T_details: case T_summary:
-	case T_fieldset: case T_caption:
-		s->display = D_BLOCK;
-		break;
-	case T_b: case T_strong:
-		s->bold = 1;
-		break;
-	case T_a:
-		if (is_link) {
-			s->colour = 0x0000c8;
-			s->underline = 1;
+	switch (it->kind) {
+	case I_BOX:
+		if (it->colour >= 0 && it->w > 0 && it->h > 0)
+			ui_fill(to, it->x, y, it->w, it->h, mw(it->colour));
+		if (it->flags && it->w > 0) {
+			GrSetGCForeground(ui_gc, mw(it->b));
+			GrRect(to, ui_gc, it->x, y, it->w, it->h);
 		}
 		break;
-	}
-}
-
-static void
-picture(const char *rest, int n)
-{
-	char value[256], label[300], whole[256];
-	int pw = 0, ph = 0, here = 0;
-	GR_COLOR keep = ink;
-
-	if (attribute(rest, n, "src", value, sizeof value)) {
-		struct picture *p;
-
-		if (address[0] == '/' && value[0] == '/' && strlen(value) > 4 && !strcmp(value + strlen(value) - 4, ".ppm")) {
-			/* a picture in the image: drawn by the GPU from the file where it lies */
-			here = ui_picture_size(value, &pw, &ph);
-			strcpy(whole, value);
-		} else if (address[0] != '/' && resolve(value, whole) && (p = picture_for(whole)) != NULL) {
-			/* one the host fetches: its pixels come to a file of ours. A page that says
-			 * how large it is gets the room now, and need not be laid out again then. */
-			char number[16];
-
-			if (p->state == PICTURE_HERE) {
-				here = 1;
-				pw = p->w;
-				ph = p->h;
-			} else if (attribute(rest, n, "width", number, sizeof number) && (pw = atoi(number)) > 0 &&
-				   attribute(rest, n, "height", number, sizeof number) && (ph = atoi(number)) > 0) {
-				here = p->placed = 1;
-			}
-			strcpy(whole, p->file);
+	case I_TEXT:
+		page_text(to, it->x, y, web_u + it->a, it->b, it->face, (it->flags & IF_ITALIC) != 0, it->colour);
+		if (it->flags & IF_UNDER)
+			ui_fill(to, it->x, y + web_faces[it->face].ascent + 1, it->w, 1, mw(it->colour));
+		if (it->flags & IF_THROUGH)
+			ui_fill(to, it->x, y + web_faces[it->face].ascent * 2 / 3, it->w, 1, mw(it->colour));
+		if (picked >= 0 && web_link_of(it->node) == picked) {
+			GrSetGCForeground(ui_gc, mw(it->colour));
+			GrRect(to, ui_gc, it->x - 2, y - 1, it->w + 4, it->h + 2);
 		}
-	}
-	if (here) {
-		int most = right - indent > 16 ? right - indent : 16, align = cur_style()->align;
-
-		if (pw > most)
-			ph = ph * most / pw, pw = most;
-		block(0);
-		lx = indent + (align == 1 ? (most - pw) / 2 : align == 2 ? most - pw : 0);
-		add_run(whole, strlen(whole), PICTURE, pw);
-		runs[run_count - 1].link = ph;
-		ly += (ph + line_h - 1) / line_h * line_h;
-		lx = indent;
-		line_first = run_count;
-		return;
-	}
-	if (!attribute(rest, n, "alt", value, sizeof value) || !value[0])
-		strcpy(value, "picture");
-	snprintf(label, sizeof label, "[%s]", value);
-	ink = UI_SHADOW;
-	add_word(label, strlen(label));
-	ink = keep;
-}
-
-/* Whether a tag ends a paragraph that was left open. */
-static int
-ends_p(int t)
-{
-	switch (t) {
-	case T_p: case T_div: case T_ul: case T_ol: case T_table: case T_pre: case T_blockquote: case T_hr: case T_h1:
-	case T_h2: case T_h3: case T_h4: case T_h5: case T_h6: case T_section: case T_article: case T_header:
-	case T_footer: case T_form: case T_dl: case T_nav: case T_main: case T_aside: case T_figure:
-		return 1;
-	}
-	return 0;
-}
-
-/* An element begins: `rest` is its tag's text after the name. */
-static void
-element(int t, const char *name, int name_n, const char *rest, int n)
-{
-	static const unsigned char voids[] = { T_br, T_img, T_hr, T_input, T_meta, T_link, T_source, T_wbr, T_area,
-					       T_col, T_embed, T_param, T_track, T_base };
-	struct css_decl own[32];
-	struct attrs at;
-	struct css_elem *e;
-	struct css_style s;
-	struct open *o;
-	int found[48], count, i, is_void = n > 0 && rest[n - 1] == '/', in_list = 0, is_link;
-	unsigned locked = 0;
-
-	for (i = 0; i < (int)sizeof voids; i++)
-		is_void |= t == voids[i];
-	/* what a new element ends without saying so */
-	switch (t) {
-	case T_li: close_inside(T_li, T_li, T_ul, T_ol); break;
-	case T_dt: case T_dd: close_inside(T_dt, T_dd, T_dl, T_dl); break;
-	case T_tr: close_inside(T_tr, T_tr, T_table, T_table); break;
-	case T_td: case T_th: close_inside(T_td, T_th, T_tr, T_table); break;
-	}
-	if (ends_p(t) && depth && elems[depth - 1].tag == T_p)
-		pop();
-	if (depth >= MAX_DEPTH - 1)
-		return;
-	scan_attrs(rest, n, &at);
-	e = &elems[depth];
-	memset(e, 0, sizeof *e);
-	e->tag = t;
-	if (css_rule_count) {
-		e->id = css_atom(at.id, at.id_n, 0, 0);
-		for (i = 0; i < at.cls_n && e->classes < 8;) {
-			int start;
-
-			while (i < at.cls_n && isspace((unsigned char)at.cls[i]))
-				i++;
-			for (start = i; i < at.cls_n && !isspace((unsigned char)at.cls[i]); i++)
-				;
-			if ((e->cls[e->classes] = css_atom(at.cls + start, i - start, 0, 0)) != 0)
-				e->classes++;
-		}
-	}
-	/* its look: what it is inside passes some on, the tag says some, then the sheets, then itself */
-	s = *cur_style();
-	s.display = D_INLINE;
-	s.absolute = s.clipped = 0;
-	s.bg = s.border = s.border_t = s.border_b = CSS_NONE;
-	s.mt = s.mb = s.ml = s.mr = s.pt = s.pb = s.pl = s.pr = 0;
-	s.width = s.maxw = CSS_UNSET;
-	for (i = 0; i < depth; i++)
-		in_list |= elems[i].tag == T_ul || elems[i].tag == T_ol;
-	is_link = t == T_a && at.href_n > 0 && at.href[0] != '#';
-	plain_style(t, &s, in_list, is_link);
-	if (at.bg_n && at.bg_n < 30) {
-		/* the old way to colour a table or a page; some write the colour without its # */
-		char colour[32];
-
-		snprintf(colour, sizeof colour, "#%.*s", at.bg_n, at.bg);
-		if ((i = css_colour(colour + 1)) >= 0 || (i = css_colour(colour)) >= 0)
-			s.bg = i;
-	}
-	if (css_rule_count) {
-		count = css_find(elems, depth, found, 48);
-		for (i = 0; i < count; i++)
-			css_apply(&s, css_decls + css_rules[found[i]].decl, css_rules[found[i]].decls, right - indent, &locked);
-	}
-	if (at.style_n) {
-		count = css_body(at.style, at.style_n, own, 32, 0, 0);
-		css_apply(&s, own, count, right - indent, &locked);
-	}
-	if (s.display == D_NONE || (s.absolute && s.clipped)) {
-		if (!is_void && name_n < (int)sizeof hidden_tag) {
-			snprintf(hidden_tag, sizeof hidden_tag, "%.*s", name_n, name);
-			hidden = 1;
-			hidden_inner = 0;
-			hidden_kind = t == T_li || t == T_tr || t == T_p ? t : t == T_dt || t == T_dd ? T_dt :
-				      t == T_td || t == T_th ? T_td : 0;
-		}
-		return;
-	}
-	if (t == T_br) {
-		if (lx == indent)
-			ly += line_h;
+		break;
+	case I_IMAGE:
+		if (pictures[it->a].state != PICTURE_HERE)
+			ui_fill(to, it->x, y, it->w, it->h, MWRGB(232, 232, 232));	/* not here yet */
 		else
-			new_line();
-		return;
-	}
-	if (t == T_hr) {
-		block(line_h / 2);
-		add_run("", 0, RULE, right - indent);
-		line_first = run_count;
-		new_line();
-		block(line_h / 2);
-		return;
-	}
-	if (t == T_img) {
-		picture(rest, n);
-		return;
-	}
-	if (is_void)
-		return;
-	o = &opens[depth];
-	o->s = s;
-	o->link = cur_link;
-	o->block = s.display == D_BLOCK;
-	o->box = -1;
-	if (o->block) {
-		int avail, ml, mr, w, want;
-
-		block(least(s.mt, 2 * line_h));
-		o->indent = indent;
-		o->right = right;
-		avail = right - indent;
-		ml = s.ml == CSS_AUTO ? 0 : least(s.ml, avail / 4);
-		mr = s.mr == CSS_AUTO ? 0 : least(s.mr, avail / 4);
-		w = avail - ml - mr;
-		/* a width is kept when it leaves a column worth reading: narrower ones are for
-		 * boxes side by side, which here come one under the other */
-		want = s.width != CSS_UNSET ? s.width : w;
-		if (s.maxw != CSS_UNSET && want > s.maxw)
-			want = s.maxw;
-		if (want < w && want >= avail / 2) {
-			if (s.ml == CSS_AUTO)
-				ml += s.mr == CSS_AUTO ? (w - want) / 2 : w - want;
-			w = want;
-		}
-		indent += ml;
-		right = indent + w;
-		o->bx = indent;
-		o->bw = w;
-		if (t == T_body || t == T_html) {
-			if (s.bg >= 0)
-				page_bg = mw(s.bg);
-		} else if (s.bg >= 0 || s.border >= 0) {
-			o->box = add_box(indent, ly, w, 0, s.bg, s.border);
-		}
-		if (s.border_t >= 0)
-			add_box(indent, ly++, w, 1, s.border_t, CSS_NONE);
-		if (s.pt) {
-			ly += least(s.pt, 2 * line_h);
-			gap_done = 0;
-		}
-		indent += least(s.pl, w / 4);
-		right -= least(s.pr, w / 4);
-		lx = indent;
-		line_first = run_count;
-	}
-	depth++;
-	if (t == T_a) {
-		cur_link = -1;
-		if (is_link) {
-			char value[256];
-			int m;
-
-			attr_copy(at.href, at.href_n, value, sizeof value);
-			m = strlen(value) + 1;
-			links = grow(links, &links_room, links_length + m, 1);
-			memcpy(links + links_length, value, m);
-			cur_link = links_length;
-			links_length += m;
-			link_count++;
-		}
-	}
-	restyle();
-	if (t == T_li && o->block && s.bullet) {
-		lx = indent - 10;
-		add_run("*", 1, 0, var_w['*']);
-		lx = indent;
-		gap_done = NO_GAP;
-	} else if ((t == T_li || t == T_td || t == T_th) && !o->block && lx > indent) {
-		lx += 2 * var_w[' '];
+			GrDrawImageFromFile(to, ui_gc, it->x, y, it->w, it->h, pictures[it->a].file, 0);
+		break;
+	case I_FIELD:
+		draw_field(to, it, y);
+		break;
 	}
 }
 
+/* Draws the page's rows y0 to y1 on `to`, whose own top row is the page's `dy`. */
 static void
-open_tag(const char *tag, int n)
+draw_rows(GR_DRAW_ID to, int dy, int y0, int y1)
 {
-	int name = 0, closing = n > 0 && tag[0] == '/', t, i;
+	unsigned began = now();
+	int i, drawn = 0;
 
-	if (closing)
-		tag++, n--;
-	while (name < n && (isalnum((unsigned char)tag[name])))
-		name++;
-	t = css_atom(tag, name, 1, 1);
-	if (hidden && !hidden_kind) {
-		if (tag_is(tag, name, hidden_tag))
-			hidden += closing ? -1 : 1;
-		return;
-	}
-	if (hidden) {
-		/* an item, a cell or a paragraph: its end is the next one, or its list's */
-		int k = hidden_kind, inside, like;
+	ui_fill(to, 0, y0 - dy, view_width(), y1 - y0, mw(web_page_bg));
+	for (i = 0; i < web_item_count; i++) {
+		const struct web_item *it = &web_items[i];
 
-		inside = k == T_li ? t == T_ul || t == T_ol : k == T_dt ? t == T_dl : k != T_p && t == T_table;
-		like = k == T_li ? t == T_li : k == T_dt ? t == T_dt || t == T_dd : k == T_tr ? t == T_tr :
-		       k == T_td ? t == T_td || t == T_th || t == T_tr : ends_p(t);
-		if (inside && !closing)
-			hidden_inner++;
-		else if (inside && hidden_inner)
-			hidden_inner--;
-		else if (inside || (like && !hidden_inner))
-			hidden = 0;
-		if (hidden)
-			return;
-		if (closing && (k == T_p ? t == T_p : like && (k != T_td || t != T_tr)))
-			return;		/* its own closing tag */
+		if (it->y >= y1 || it->y + it->h + 2 <= y0)
+			continue;
+		draw_item(to, it, dy);
+		drawn++;
 	}
-	if (t == T_script || t == T_style || t == T_head || t == T_svg || t == T_noscript || t == T_template) {
-		skip += closing ? (skip > 0 ? -1 : 0) : 1;
-		return;
-	}
-	if (t == T_body)
-		skip = 0;	/* a head that was never closed ends here */
-	if (skip || !t)
-		return;
-	if (!closing) {
-		element(t, tag, name, tag + name, n - name);
-		return;
-	}
-	for (i = depth - 1; i >= 0 && elems[i].tag != t; i--)
-		;
-	if (i < 0) {
-		if (t == T_p)
-			block(line_h / 2);
-		return;
-	}
-	while (depth > i)
-		pop();
+	if (verbose)
+		printf("nxweb: asked for %d of %d things, rows %d to %d, %u thousand instructions\n", drawn, web_item_count, y0, y1,
+		       (now() - began) / 1000);
 }
 
+/* The pixmap the page is drawn in, for the window as it is now: as high as TILE_BYTES allow.
+ * The driver counts the pixmaps the GPU keeps; one it does not keep is no use (0). */
 static int
-now_ms(void)
+tile_make(void)
 {
-	struct timespec ts;
+	GR_FONT_INFO info;
+	uint32_t before = regs ? regs[REG_PIXMAPS] : 0;
+	int w = view_width(), h = TILE_BYTES / (4 * w);
 
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (int)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
-}
-
-/* Lays the page out for the window's width. */
-static void
-layout(void)
-{
-	char word[200], name[sizeof title];
-	int i = 0, n = 0, in_title = 0, title_n = 0, began = now_ms();
-
-	run_count = pool_length = links_length = link_count = 0;
-	/* room for the page's text and runs now: grown as they come, each is copied several times */
-	pool = grow(pool, &pool_room, page_length + 1024, 1);
-	runs = grow(runs, &run_room, page_length / 12 + 64, sizeof *runs);
-	memset(&root_style, 0, sizeof root_style);
-	root_style.bullet = 1;
-	root_style.display = D_BLOCK;
-	depth = 0;
-	restyle();
-	page_bg = WHITE;
-	lx = indent = MARGIN;
-	right = width - UI_SCROLL_W - MARGIN;
-	ly = MARGIN;
-	gap_done = NO_GAP;
-	line_first = 0;
-	skip = hidden = 0;
-	cur_link = -1;
-	title[0] = 0;
-	while (i < page_length) {
-		unsigned char c = page[i];
-		int used = 1, ch = c;
-
-		/* a word's plain letters, as many as follow: most of a page, and nothing below is theirs */
-		if (c > ' ' && c < 0x7f && c != '<' && c != '&' && !in_title && !skip && !hidden) {
-			if (n == (int)sizeof word - 1)
-				add_word(word, n), n = 0;
-			do
-				word[n++] = (char)c;
-			while (++i < page_length && n < (int)sizeof word - 1 && (c = page[i]) > ' ' && c < 0x7f && c != '<' && c != '&');
-			continue;
-		}
-		if (c == '<') {
-			int end = i + 1, quote;
-
-			if (n)
-				add_word(word, n), n = 0;
-			if (!strncmp(page + i, "<!--", 4)) {
-				char *close = memmem(page + i, page_length - i, "-->", 3);
-
-				i = close ? (int)(close - page) + 3 : page_length;
-				continue;
-			}
-			/* to the tag's end: a > inside a quoted value is not it */
-			for (quote = 0; end < page_length && (quote || page[end] != '>'); end++)
-				if (page[end] == '"' || page[end] == '\'')
-					quote = quote == page[end] ? 0 : quote ? quote : page[end];
-			if (in_title) {
-				name[title_n] = 0;
-				snprintf(title, sizeof title, "%s", name);
-				in_title = 0;
-			} else if (!strncasecmp(page + i, "<title", 6)) {
-				in_title = 1;
-				title_n = 0;
-			}
-			open_tag(page + i + 1, end - i - 1);
-			/* a script's or a sheet's text is not tags: a < in it would take the rest of the page */
-			if (!strncasecmp(page + i, "<script", 7) || !strncasecmp(page + i, "<style", 6)) {
-				const char *close = tolower((unsigned char)page[i + 2]) == 'c' ? "</script" : "</style";
-				int length = (int)strlen(close);
-
-				for (i = end + 1; i + length <= page_length && strncasecmp(page + i, close, length); i++)
-					continue;
-				i = i + length > page_length ? page_length : i;
-				continue;
-			}
-			i = end + 1;
-			continue;
-		}
-		if (c == '&')
-			ch = entity(page + i, page_length - i, &used);
-		else if (c >= 0x80)
-			ch = utf8((unsigned char *)page + i, page_length - i, &used);
-		if (!ch)
-			ch = c, used = 1;
-		i += used;
-		if (in_title) {
-			if (title_n < (int)sizeof name - 1)
-				name[title_n++] = ch < 32 ? ' ' : ch;
-			continue;
-		}
-		if (skip || hidden)
-			continue;
-		if (in_pre && ch == '\n') {
-			if (n)
-				add_word(word, n), n = 0;
-			new_line();
-			gap_done = 0;
-		} else if (isspace(ch) && !(in_pre && ch == ' ' && n == 0)) {
-			if (n)
-				add_word(word, n), n = 0;
-		} else if (isspace(ch)) {
-			lx += ui_fw;	/* leading spaces of a preformatted line */
-		} else {
-			if (n == (int)sizeof word - 1)
-				add_word(word, n), n = 0;
-			word[n++] = ch < 32 || ch > 126 ? '?' : ch;
-		}
+	if (tile_w == w)
+		return tile_gpu;	/* (made, or tried in vain, for this width already) */
+	if (tile)
+		GrDestroyWindow(tile);
+	tile = 0;
+	tile_drawn = 0;
+	tile_gpu = 0;
+	tile_w = w;
+	tile_h = h > 2048 ? 2048 : h;
+	if (!regs || tile_h < view_height() + 64 || getenv("NXWEB_DIRECT"))
+		return 0;
+	tile = GrNewPixmap(w, tile_h, NULL);
+	GrGetFontInfo(ui_var, &info);	/* (an answer: the pixmap is made by now) */
+	tile_gpu = regs[REG_PIXMAPS] != before;
+	if (!tile_gpu) {
+		GrDestroyWindow(tile);
+		tile = 0;
 	}
-	if (n)
-		add_word(word, n);
-	while (depth)
-		pop();
-	block(0);
-	page_height = ly + line_h + MARGIN;
-	if (getenv("NXWEB_TIME"))
-		printf("nxweb: layout %d ms, %d runs, %d rules\n", now_ms() - began, run_count, css_rule_count);
-}
-
-/* ---- style sheets ---- */
-
-/* Finds the page's sheets: text between style tags, and files it links to. One in the image
- * is read at once; one the host has to fetch is asked for like a picture. */
-static void
-find_sheets(void)
-{
-	int i, end, asked = 0;
-
-	for (i = 0; i < sheet_count; i++)
-		if (sheets[i].own)
-			free(sheets[i].text);
-	sheet_count = 0;
-	css_view = width - UI_SCROLL_W - 2 * MARGIN;
-	for (i = 0; i + 7 < page_length && sheet_count < MAX_SHEETS; i++) {
-		struct sheet *sh = &sheets[sheet_count];
-		char value[256], whole[256];
-		const char *tag = memchr(page + i, '<', (size_t)(page_length - i));
-
-		/* (from tag to tag, not a character at a time) */
-		if (!tag)
-			break;
-		i = (int)(tag - page);
-		if (i + 7 >= page_length)
-			break;
-		if (strncasecmp(page + i, "<style", 6) && strncasecmp(page + i, "<link", 5))
-			continue;
-		for (end = i; end < page_length && page[end] != '>'; end++)
-			;
-		memset(sh, 0, sizeof *sh);
-		if (tolower((unsigned char)page[i + 1]) == 's') {
-			char *close = memmem(page + end, page_length - end, "</style", 7);
-
-			if (!close && (close = memmem(page + end, page_length - end, "</STYLE", 7)) == NULL)
-				break;
-			if (!attribute(page + i + 6, end - i - 6, "media", value, sizeof value) || css_media(value, strlen(value))) {
-				sh->text = page + end + 1;
-				sh->length = (int)(close - sh->text);
-				sh->state = PICTURE_HERE;
-				sheet_count++;
-			}
-			i = (int)(close - page);
-			continue;
-		}
-		if (attribute(page + i + 5, end - i - 5, "rel", value, sizeof value) && strcasestr(value, "stylesheet") &&
-		    !strcasestr(value, "alternate") &&
-		    (!attribute(page + i + 5, end - i - 5, "media", value, sizeof value) || css_media(value, strlen(value))) &&
-		    attribute(page + i + 5, end - i - 5, "href", value, sizeof value) && resolve(value, whole)) {
-			snprintf(sh->address, sizeof sh->address, "%s", whole);
-			if (whole[0] == '/') {
-				FILE *file = fopen(whole, "rb");
-
-				if (file && (sh->text = malloc(FETCH_MOST)) != NULL) {
-					sh->length = fread(sh->text, 1, FETCH_MOST, file);
-					sh->own = 1;
-					sh->state = PICTURE_HERE;
-					sheet_count++;
-				}
-				if (file)
-					fclose(file);
-			} else if (regs && asked < MAX_FETCHED_SHEETS) {
-				sh->state = PICTURE_WANTED;
-				asked++;
-				sheet_count++;
-			}
-		}
-		i = end;
-	}
-}
-
-/* Reads every sheet that is here, again from the first: a rule may use a custom property that
- * a sheet which came later sets. */
-static void
-read_sheets(void)
-{
-	int pass, i, began = now_ms();
-
-	css_reset(width - UI_SCROLL_W - 2 * MARGIN);
-	css_order = 0;
-	for (pass = 1; pass >= 0; pass--)
-		for (i = 0; i < sheet_count; i++)
-			if (sheets[i].state == PICTURE_HERE)
-				css_parse(sheets[i].text, sheets[i].length, pass);
-	if (getenv("NXWEB_TIME"))
-		printf("nxweb: sheets %d ms, %d rules, %d names\n", now_ms() - began, css_rule_count, css_atoms);
-}
-
-/* ---- drawing ---- */
-
-static int
-view_height(void)
-{
-	return height - BAR - STATUS;
+	return tile_gpu;
 }
 
 static void
@@ -1030,115 +430,229 @@ draw_bar(void)
 		ui_button(window, 3 + i * 55, 3, 52, BAR - 6, names[i], 0);
 	ui_fill(window, x, 3, width - x - 3, BAR - 6, WHITE);
 	ui_bevel(window, x, 3, width - x - 3, BAR - 6, 1);
-	ui_text(window, x + 5, 7, editing ? typed : address, -1, BLACK, 0);
+	ui_text_fit(window, x + 5, 7, width - x - 14, editing ? typed : address, BLACK);
 	if (editing)
-		ui_fill(window, x + 5 + text_width(typed, strlen(typed), 0), 6, 1, BAR - 12, BLACK);
+		ui_fill(window, x + 5 + ui_width(&ui_var_widths, ui_var, typed, strlen(typed)), 6, 1, BAR - 12, BLACK);
 }
 
 static void
 draw_status(void)
 {
 	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
-	ui_text(window, 6, height - STATUS + 3, status, -1, BLACK, 0);
+	ui_text_fit(window, 6, height - STATUS + 3, width - 12, status, BLACK);
+}
+
+/* The view shows rows `top` on: the pixmap is drawn anew when they are not all in it, and
+ * the view is a copy of a part of it. With no pixmap the rows are drawn on the window. */
+static void
+show_view(void)
+{
+	int view = view_height(), most = web_page_h - view;
+
+	if (!window)
+		return;
+	top = top > most ? most : top;
+	top = top < 0 ? 0 : top;
+	if (!tile_make()) {
+		draw_rows(window, top - BAR, top, top + view);
+		draw_bar();
+		draw_status();
+	} else {
+		if (!tile_drawn || top < tile_top || top + view > tile_top + tile_h) {
+			/* the view in its middle, or nearer the way it is going */
+			tile_top = top - (tile_h - view) / 2 + (goal > top ? view / 2 : goal < top ? -view / 2 : 0);
+			tile_top = tile_top > web_page_h - tile_h ? web_page_h - tile_h : tile_top;
+			tile_top = tile_top < 0 ? 0 : tile_top;
+			draw_rows(tile, tile_top, tile_top, tile_top + tile_h);
+			tile_drawn = 1;
+		}
+		GrCopyArea(window, ui_gc, 0, BAR, view_width(), view, tile, 0, top - tile_top, MWROP_COPY);
+	}
+	ui_scrollbar(window, width - UI_SCROLL_W, BAR, view, web_page_h, view, top);
 }
 
 static void
-draw_page(void)
+draw_all(void)
 {
-	int i, view = view_height();
-
-	ui_fill(window, 0, BAR, width - UI_SCROLL_W, view, page_bg);
-	for (i = 0; i < run_count; i++) {
-		struct run *r = &runs[i];
-		int y = BAR + r->y - top, tall = r->style & (PICTURE | BOX) ? r->link : line_h;
-		GR_COLOR colour = r->colour;
-
-		if (y + tall <= BAR || y >= BAR + view)
-			continue;
-		if (r->style & BOX) {
-			if (r->length & 1)
-				ui_fill(window, r->x, y, r->width, r->link, colour);
-			if (r->length & 2) {
-				GrSetGCForeground(ui_gc, (GR_COLOR)r->text);
-				GrRect(window, ui_gc, r->x, y, r->width, r->link);
-			}
-		} else if (r->style & RULE) {
-			ui_fill(window, r->x, y + line_h / 2, r->width, 1, UI_SHADOW);
-		} else if (r->style & PICTURE) {
-			char path[256];
-			int k;
-
-			snprintf(path, sizeof path, "%.*s", r->length, pool + r->text);
-			for (k = 0; k < picture_count && strcmp(pictures[k].file, path); k++)
-				;
-			if (k < picture_count && pictures[k].state != PICTURE_HERE)
-				ui_fill(window, r->x, y, r->width, r->link, MWRGB(232, 232, 232));	/* not here yet */
-			else
-				GrDrawImageFromFile(window, ui_gc, r->x, y, r->width, r->link, path, 0);
-		} else {
-			ui_text(window, r->x, y, pool + r->text, r->length, colour, r->style & FIXED);
-			if (r->style & BOLD)
-				ui_text(window, r->x + 1, y, pool + r->text, r->length, colour, r->style & FIXED);
-			if (r->style & UNDER)
-				ui_fill(window, r->x, y + line_h - 2, r->width, 1, colour);
-			if ((r->style & LINK) && r->link == picked) {
-				GrSetGCForeground(ui_gc, colour);
-				GrRect(window, ui_gc, r->x - 2, y - 1, r->width + 4, line_h + 1);
-			}
-		}
-	}
-	/* what was drawn over the edges of the view */
 	draw_bar();
 	draw_status();
-	ui_scrollbar(window, width - UI_SCROLL_W, BAR, view, page_height, view, top);
+	show_view();
 }
 
 static void
-scroll_to(int y)
+scroll_to(int y, int at_once)
 {
-	int most = page_height - view_height();
+	int most = web_page_h - view_height();
 
-	y -= y % line_h;
-	if (y > most)
-		y = most + line_h - 1 - (most + line_h - 1) % line_h;
-	if (y < 0)
-		y = 0;
-	if (y != top) {
+	y = y > most ? most : y;
+	y = y < 0 ? 0 : y;
+	goal = y;
+	if (at_once && top != y) {
 		top = y;
-		draw_page();
+		show_view();
+	}
+}
+
+/* A step of a scroll that is under way: a third of what is left, eight rows at least. With
+ * NXWEB_TIME a scroll says when it ends how its steps went: the host's clock (word 13 of the
+ * control block) at each, and whether the GPU's copy of the step before had been made by then
+ * (word 14 counts the copies: a step whose picture never got to the window was not seen). */
+static void
+scroll_step(void)
+{
+	static unsigned first_ms, last_ms, longest, copies, shown, steps;
+	int left = goal - top, step = left / 3;
+
+	if (!left)
+		return;
+	if (abs(step) < 8)
+		step = abs(left) < 8 ? left : left > 0 ? 8 : -8;
+	top += step;
+	show_view();
+	if (verbose && regs) {
+		unsigned ms = regs[13], made = regs[14];
+
+		if (!steps)
+			first_ms = ms, longest = shown = 0;
+		else {
+			longest = ms - last_ms > longest ? ms - last_ms : longest;
+			shown += made != copies;
+		}
+		last_ms = ms, copies = made, steps++;
+		if (top == goal) {
+			printf("nxweb: a scroll of %u steps in %u ms, %u ms the longest between two; %u of the %u before the last were on the screen by the next\n",
+			       steps, ms - first_ms, longest, shown, steps - 1);
+			steps = 0;
+		}
 	}
 }
 
 /* ---- pages ---- */
 
+static void
+say_time(const char *what, unsigned began)
+{
+	if (verbose)
+		printf("nxweb: %s %u thousand instructions\n", what, (now() - began) / 1000);
+}
+
+/* Lays the page out again: its sheets read (0: they are as they were), its tree made, its
+ * styles worked out, each only when something it comes from changed. */
+static void
+lay_out(int sheets, int tree)
+{
+	unsigned began = now();
+	int i, texts = 0, chars = 0, boxes = 0, images = 0, items = 0;
+
+	if (sheets) {
+		web_read_sheets(view_width(), view_height());
+		say_time("sheets", began);
+	}
+	if (sheets || tree) {
+		began = now();
+		web_parse(page, page_length);
+		say_time("tree", began);
+		began = now();
+		web_style_all();
+		say_time("styles", began);
+	}
+	began = now();
+	for (i = 0; i < picture_count; i++)
+		pictures[i].sized = 1;
+	web_layout(view_width());
+	say_time("layout", began);
+	tile_drawn = 0;
+	if (dump) {
+		for (i = 0; i < web_item_count; i++) {
+			const struct web_item *it = &web_items[i];
+
+			texts += it->kind == I_TEXT, boxes += it->kind == I_BOX, images += it->kind == I_IMAGE, items += it->kind == I_FIELD;
+			chars += it->kind == I_TEXT ? it->b : 0;
+		}
+		printf("nxweb: %s: %d nodes, %d rules, %d x %d; %d texts (%d characters), %d boxes, %d pictures, %d fields\n", address,
+		       web_node_count, css_rule_count, view_width(), web_page_h, texts, chars, boxes, images, items);
+	}
+}
+
+static void
+set_title(void)
+{
+	char caption[160];
+
+	if (!window)
+		return;
+	snprintf(caption, sizeof caption, "%s - Web", web_title[0] ? web_title : address);
+	GrSetWindowTitle(window, caption);
+}
+
+/* Where the element with an id is on the page, or -1. */
+static int
+anchor(const char *id)
+{
+	const char *value;
+	int i, n, m = strlen(id);
+
+	for (i = 0; m && i < web_node_count; i++)
+		if (web_nodes[i].c.tag != T_TEXT && (web_attr(i, "id", &value, &n) || (web_nodes[i].c.tag == T_a && web_attr(i, "name", &value, &n))) &&
+		    n == m && !strncmp(value, id, n))
+			return web_nodes[i].y;
+	return -1;
+}
+
 /* Shows a page whose text is the caller's allocation of n + 1 bytes or more: it is kept. */
 static void
 show_kept(char *html, int n, const char *note)
 {
+	const char *hash = strchr(address, '#');
 	int i;
+
+	unsigned began = now();
 
 	free(page);
 	page = html;
 	page_length = n;
-	top = 0;
-	picked = -1;	/* (a link of the page before) */
-	/* another page: the last one's pictures go */
+	top = goal = 0;
+	picked = focus = -1;
+	/* another page: the last one's pictures and what was typed go */
 	for (i = 0; i < picture_count; i++)
-		if (pictures[i].state == PICTURE_HERE)
+		if (pictures[i].state == PICTURE_HERE && pictures[i].ours)
 			unlink(pictures[i].file);
-	picture_count = 0;
+	picture_count = field_count = 0;
 	asking = -1;
-	find_sheets();
-	read_sheets();
-	layout();
-	snprintf(status, sizeof status, "%s", note);
-	if (window) {
-		char caption[120];
+	snprintf(web_address, sizeof web_address, "%s", address);
+	web_find_sheets(page, page_length, view_width());
+	for (i = 0; i < web_sheet_count; i++) {
+		struct web_sheet *sh = &web_sheets[i];
+		char file[80];
+		FILE *f;
 
-		snprintf(caption, sizeof caption, "%s - Web", title[0] ? title : address);
-		GrSetWindowTitle(window, caption);
-		draw_page();
+		if (sh->state != SHEET_WANTED)
+			continue;
+		/* one in the image, or one the image keeps a copy of, is read at once */
+		if (sh->address[0] == '/')
+			snprintf(file, sizeof file, "%.79s", sh->address);
+		else if (!web_cache_find(sh->address, 'S', file, sizeof file, NULL, NULL))
+			file[0] = 0;
+		sh->state = regs && sh->address[0] != '/' ? SHEET_WANTED : SHEET_FAILED;
+		if (file[0] && (f = fopen(file, "rb")) != NULL) {
+			if ((sh->text = malloc(SHEET_MOST)) != NULL) {
+				sh->length = fread(sh->text, 1, SHEET_MOST, f);
+				sh->own = 1;
+				sh->state = SHEET_HERE;
+			}
+			fclose(f);
+		}
 	}
+	say_time("finding the sheets", began);
+	lay_out(1, 1);
+	if (getenv("NXWEB_AGAIN"))
+		lay_out(1, 1);	/* (what a page costs once the program's own pages are in memory) */
+	snprintf(status, sizeof status, "%s", note);
+	set_title();
+	if (hash && (i = anchor(hash + 1)) >= 0)
+		top = goal = i;
+	if (window)
+		draw_all();
 }
 
 static void
@@ -1147,6 +661,7 @@ show(const char *html, int n, const char *note)
 	char *copy = malloc(n + 1);
 
 	memcpy(copy, html, n);
+	copy[n] = 0;
 	show_kept(copy, n, note);
 }
 
@@ -1154,19 +669,22 @@ static void
 say(const char *heading_text, const char *text)
 {
 	char html[800];
-	int n = snprintf(html, sizeof html, "<h1>%s</h1><p>%s</p><p><a href=\"" HOME "\">Home</a></p>", heading_text, text);
+	int n = snprintf(html, sizeof html, "<body style=\"font-family:sans-serif\"><h2>%s</h2><p>%s</p><p><a href=\"" HOME "\">Home</a></p>", heading_text, text);
 
 	show(html, n, "");
 }
 
-/* Asks the host for what is at an address, a page (kind 0) or a picture (1): it sees the
- * address and the request's number, and answers when it has it. */
+/* Asks the host for what is at an address, a page (kind 0), a picture (1) or a sheet (2), from
+ * a byte of it on: it sees the address and the request's number, and answers when it has it. */
 static void
 ask_part(const char *what, int kind, uint32_t offset)
 {
+	const char *hash = strchr(what, '#');
+	int n = hash ? (int)(hash - what) : (int)strlen(what);
+
 	memset((void *)&regs[REG_ADDRESS], 0, 256);
-	memcpy((void *)&regs[REG_ADDRESS], what, strlen(what));
-	regs[REG_REQUEST + 1] = strlen(what);
+	memcpy((void *)&regs[REG_ADDRESS], what, n);
+	regs[REG_REQUEST + 1] = n;
 	regs[REG_REQUEST + 2] = kind;
 	regs[REG_REQUEST + 3] = offset;
 	loading = regs[REG_REQUEST] + 1;
@@ -1179,17 +697,42 @@ ask_part(const char *what, int kind, uint32_t offset)
 static void
 ask(const char *what, int kind)
 {
+	part_have = 0;
 	ask_part(what, kind, 0);
 }
 
-static void
-go(const char *where, int remember)
+static int
+read_file(const char *path, const char *note)
 {
-	if (remember && address[0] && history_count < 16)
-		strcpy(history[history_count++], address);
-	else if (remember && address[0]) {
-		memmove(history[0], history[1], sizeof history[0] * 15);
-		strcpy(history[15], address);
+	FILE *file = fopen(path, "rb");
+	char *text;
+	int n;
+
+	if (!file)
+		return 0;
+	text = malloc(PAGE_MOST + 1);
+	n = fread(text, 1, PAGE_MOST, file);
+	text[n] = 0;
+	fclose(file);
+	show_kept(text, n, note);
+	return 1;
+}
+
+/* Goes to an address. `how`: 1 remembers the page left behind, 2 asks the host even for a
+ * page the image keeps a copy of. */
+static void
+go(const char *where, int how)
+{
+	char file[80], plain[256];
+	char *hash;
+
+	if (how)
+		sent_on = 0;
+	if (how == 1 && address[0]) {
+		if (history_count == 16)
+			memmove(&history[0], &history[1], sizeof history[0] * --history_count);
+		strcpy(history[history_count].address, address);
+		history[history_count++].top = top;
 	}
 	snprintf(address, sizeof address, "%s", strncmp(where, "file://", 7) ? where : where + 7);
 	editing = loading = by_hand = 0;
@@ -1197,21 +740,16 @@ go(const char *where, int remember)
 	if (part_file)
 		fclose(part_file);
 	part_file = NULL;
+	snprintf(plain, sizeof plain, "%s", address);
+	if ((hash = strchr(plain, '#')) != NULL)
+		*hash = 0;
 	if (address[0] == '/') {
-		FILE *file = fopen(address, "rb");
-		char *text;
-		int n;
-
-		if (!file) {
+		if (!read_file(plain, "from this computer"))
 			say("No such page", address);
-			return;
-		}
-		text = malloc(FETCH_MOST + 1);
-		n = fread(text, 1, FETCH_MOST, file);
-		fclose(file);
-		show_kept(text, n, "from this computer");
 		return;
 	}
+	if (how != 2 && web_cache_find(plain, 'P', file, sizeof file, NULL, NULL) && read_file(file, "a copy this computer keeps (Reload asks the network)"))
+		return;
 	if (!regs) {
 		say("No network", "This machine has no way to ask its host for a page.");
 		return;
@@ -1221,6 +759,37 @@ go(const char *where, int remember)
 	snprintf(status, sizeof status, "asking the host for %.150s ...", address);
 	if (window) {
 		draw_bar();
+		draw_status();
+	}
+}
+
+/* Text that comes in parts (a page, a sheet): true when all that is wanted of it is in `part`. */
+static int
+part_text(const char *what, int kind, int total, int most)
+{
+	int here;
+
+	if (total > most)
+		total = most;
+	here = total - part_have < FETCH_MOST ? total - part_have : FETCH_MOST;
+	if (!part_have)
+		part = malloc(total + 1);
+	if (!part || here <= 0)
+		return 1;
+	memcpy(part + part_have, fetched, here);
+	part_have += here;
+	part[part_have] = 0;
+	if (part_have >= total)
+		return 1;
+	ask_part(what, kind, (uint32_t)part_have);
+	return 0;
+}
+
+static void
+by_hand_note(void)
+{
+	if (!strstr(status, "by the screen")) {
+		snprintf(status, sizeof status, "styles and pictures need their addresses pasted: the button by the screen");
 		draw_status();
 	}
 }
@@ -1236,7 +805,7 @@ check_reply(void)
 		if ((waited += ticked) > 300) {	/* (tenths of a second: other events are not time) */
 			loading = 0;
 			if (asking >= SHEET)
-				sheets[asking - SHEET].state = PICTURE_FAILED;
+				web_sheets[asking - SHEET].state = SHEET_FAILED;
 			else if (asking >= 0)
 				pictures[asking].state = PICTURE_FAILED;
 			else if (!by_hand)
@@ -1251,28 +820,30 @@ check_reply(void)
 	loading = 0;
 	n = regs[REG_REPLY + 1];
 	code = regs[REG_REPLY + 2];
-	if (n > FETCH_MOST)
-		n = FETCH_MOST;
 	if (asking >= SHEET) {
-		struct sheet *sh = &sheets[asking - SHEET];
+		struct web_sheet *sh = &web_sheets[asking - SHEET];
 
-		asking = -1;
-		sh->state = code == 1 ? PICTURE_BY_HAND : PICTURE_FAILED;
+		sh->state = code == 1 ? SHEET_BY_HAND : SHEET_FAILED;
 		sh->asked = time(NULL);
-		if (code == 1 && !strstr(status, "by the screen")) {
-			snprintf(status, sizeof status, "styles and pictures need their addresses pasted: the button by the screen");
-			draw_status();
-		}
-		if (code != 200 || n <= 0 || (sh->text = malloc(n)) == NULL)
+		if (code == 1)
+			by_hand_note();
+		if (code != 200 || n <= 0 || !part_text(sh->address, 2, n, SHEET_MOST)) {
+			if (code != 200 || n <= 0)
+				asking = -1;
+			else
+				sh->state = SHEET_WANTED;	/* (more of it to come) */
 			return;
-		memcpy(sh->text, fetched, n);
-		sh->length = n;
+		}
+		asking = -1;
+		if (!part)
+			return;
+		sh->text = part;
+		sh->length = part_have;
 		sh->own = 1;
-		sh->state = PICTURE_HERE;
-		read_sheets();
-		layout();
-		scroll_to(top);
-		draw_page();
+		sh->state = SHEET_HERE;
+		part = NULL;
+		lay_out(1, 1);
+		show_view();
 		return;
 	}
 	if (asking >= 0) {
@@ -1283,10 +854,8 @@ check_reply(void)
 		part_file = NULL;
 		p->state = code == 1 ? PICTURE_BY_HAND : PICTURE_FAILED;
 		p->asked = time(NULL);
-		if (code == 1 && !strstr(status, "by the screen")) {
-			snprintf(status, sizeof status, "styles and pictures need their addresses pasted: the button by the screen");
-			draw_status();
-		}
+		if (code == 1)
+			by_hand_note();
 		if (code != 200 || w <= 0 || h <= 0 || (file && (w != part_w || h != part_h)) ||
 		    (!file && (file = fopen(p->file, "wb")) == NULL)) {
 			if (file)
@@ -1321,9 +890,10 @@ check_reply(void)
 		p->w = w;
 		p->h = h;
 		p->state = PICTURE_HERE;
-		if (!p->placed)
-			layout();
-		draw_page();
+		if (!p->sized)
+			lay_out(0, 0);
+		tile_drawn = 0;
+		show_view();
 		return;
 	}
 	if (code == 1) {
@@ -1347,70 +917,43 @@ check_reply(void)
 		say("Page not loaded", text);
 		return;
 	}
-	snprintf(note, sizeof note, "%d bytes from the host%s", n, n == FETCH_MOST ? " (cut short)" : "");
-	show((const char *)fetched, n, note);
-}
-
-/* An address a page gives (256 bytes of room), made whole with the page's own. 0 for what is
- * not an address to fetch: mailto: and the like, and pictures written into the page itself. */
-static int
-resolve(const char *href, char *whole)
-{
-	char base[256];
-	char *slash, *host;
-
-	if (!strncmp(href, "data:", 5) || !href[0])
-		return 0;
-	if (strstr(href, "://") || !strncmp(href, "world:", 6)) {
-		snprintf(whole, 256, "%s", href);
-	} else if (strchr(href, ':') && !strchr(href, '/')) {
-		return 0;
-	} else {
-		snprintf(base, sizeof base, "%s", address);
-		host = strstr(base, "://");
-		if (!strncmp(href, "//", 2) && host) {
-			host[1] = 0;
-			snprintf(whole, 256, "%s%s", base, href);
-		} else if (href[0] == '/') {
-			/* from the site's root, or from this computer's for a page that is a file */
-			if (host && (slash = strchr(host + 3, '/')) != NULL)
-				*slash = 0;
-			snprintf(whole, 256, "%s%s", host ? base : "", href);
-		} else {
-			slash = strrchr(base, '/');
-			if (slash && (!host || slash > host + 2))
-				slash[1] = 0;
-			else
-				strcat(base, "/");
-			snprintf(whole, 256, "%s%s", base, href);
-		}
-	}
-	return 1;
+	if (!part_text(address, 0, n, PAGE_MOST))
+		return;
+	snprintf(note, sizeof note, "%d bytes from the host%s", part_have, n > PAGE_MOST ? " (cut short)" : "");
+	n = part_have;
+	show_kept(part, n, note);
+	part = NULL;
 }
 
 static void
 follow(const char *href)
 {
 	char whole[256];
+	int y;
 
-	if (resolve(href, whole))
+	if (href[0] == '#') {
+		if ((y = href[1] ? anchor(href + 1) : 0) >= 0)
+			scroll_to(y, 0);
+		return;
+	}
+	if (web_resolve(href, whole))
 		go(whole, 1);
 }
 
-/* The picture to ask the host for next, or -1: the first three it does not have yet, in the
- * page's order (the host has room for three), one that waits for a visitor once a second. */
+/* The sheet or picture to ask the host for next, or -1: the first three it does not have yet,
+ * in the page's order (the host has room for three), one that waits for a visitor once a second. */
 static int
-next_picture(void)
+next_wanted(void)
 {
 	time_t now = time(NULL);
 	int i, open = 0;
 
 	/* style sheets first: one changes the whole page */
-	for (i = 0; i < sheet_count && open < 3; i++) {
-		if (sheets[i].state != PICTURE_WANTED && sheets[i].state != PICTURE_BY_HAND)
+	for (i = 0; i < web_sheet_count && open < 3; i++) {
+		if (web_sheets[i].state != SHEET_WANTED && web_sheets[i].state != SHEET_BY_HAND)
 			continue;
 		open++;
-		if (sheets[i].state == PICTURE_WANTED || sheets[i].asked != now)
+		if (web_sheets[i].state == SHEET_WANTED || web_sheets[i].asked != now)
 			return SHEET + i;
 	}
 	for (i = 0; i < picture_count && open < 3; i++) {
@@ -1424,31 +967,174 @@ next_picture(void)
 }
 
 static int
-pictures_open(void)
+wanted_open(void)
 {
 	int i, open = 0;
 
 	for (i = 0; i < picture_count; i++)
 		open += pictures[i].state == PICTURE_WANTED || pictures[i].state == PICTURE_BY_HAND;
-	for (i = 0; i < sheet_count; i++)
-		open += sheets[i].state == PICTURE_WANTED || sheets[i].state == PICTURE_BY_HAND;
+	for (i = 0; i < web_sheet_count; i++)
+		open += web_sheets[i].state == SHEET_WANTED || web_sheets[i].state == SHEET_BY_HAND;
 	return open;
 }
+
+/* ---- forms ---- */
+
+static void
+query_add(char *query, int room, const char *name, const unsigned short *value, int n)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	int k = strlen(query), i;
+
+	if (k && k < room - 1)
+		query[k++] = '&';
+	for (; *name && k < room - 4; name++)
+		query[k++] = *name;
+	if (k < room - 1)
+		query[k++] = '=';
+	for (i = 0; i < n && k < room - 10; i++) {
+		unsigned c = value[i];
+		unsigned char utf[3];
+		int bytes = c < 0x80 ? 1 : c < 0x800 ? 2 : 3, b;
+
+		if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+			query[k++] = c;
+			continue;
+		}
+		if (c == ' ') {
+			query[k++] = '+';
+			continue;
+		}
+		utf[0] = bytes == 1 ? c : bytes == 2 ? 0xc0 | c >> 6 : 0xe0 | c >> 12;
+		utf[1] = bytes == 2 ? 0x80 | (c & 0x3f) : 0x80 | (c >> 6 & 0x3f);
+		utf[2] = 0x80 | (c & 0x3f);
+		for (b = 0; b < bytes; b++) {
+			query[k++] = '%';
+			query[k++] = hex[utf[b] >> 4];
+			query[k++] = hex[utf[b] & 15];
+		}
+	}
+	query[k] = 0;
+}
+
+/* Sends the form a field is in, as an address with the fields' values after it. `pressed` is
+ * the button that was pressed, or -1. */
+static void
+submit(int node, int pressed)
+{
+	char query[1200] = "", action[600] = "", method[16] = "get", name[80], whole[256], value[200];
+	unsigned short wide[128];
+	int form, i, end, used, left, n;
+	const char *v;
+	char *cut;
+
+	for (form = node; form >= 0 && web_nodes[form].c.tag != T_form; form = web_nodes[form].c.parent)
+		;
+	if (form < 0)
+		return;
+	web_attr_text(form, "method", method, sizeof method);
+	if (strcasecmp(method, "get")) {
+		snprintf(status, sizeof status, "this form is sent as a post, which this browser cannot do");
+		draw_status();
+		return;
+	}
+	/* (the form's elements are the nodes after it, up to the first that is not inside it) */
+	for (end = form + 1; end < web_node_count; end++) {
+		for (i = end; i >= 0 && i != form; i = web_nodes[i].c.parent)
+			;
+		if (i < 0)
+			break;
+	}
+	for (i = form + 1; i < end; i++) {
+		const char *type;
+		struct field *f;
+
+		if (!web_is_field(i) || !web_attr_text(i, "name", name, sizeof name) || !name[0])
+			continue;
+		type = field_type(i);
+		f = field_of(i);
+		if (field_is_button(type)) {
+			if (i != pressed)
+				continue;
+		} else if ((!strcasecmp(type, "checkbox") || !strcasecmp(type, "radio")) && !f->checked) {
+			continue;
+		}
+		n = f->n;
+		memcpy(wide, f->text, n * sizeof *wide);
+		if (!strcasecmp(type, "select")) {
+			int kid, k = 0;
+
+			n = 0;
+			for (kid = web_nodes[i].first; kid >= 0; kid = web_nodes[kid].next)
+				if (web_nodes[kid].c.tag == T_option && k++ == f->option) {
+					if (web_attr_text(kid, "value", value, sizeof value)) {
+						for (v = value, left = strlen(value); left > 0 && n < 127; v += used, left -= used)
+							wide[n++] = web_char((const unsigned char *)v, left, &used);
+					} else if (web_nodes[kid].first >= 0) {
+						n = web_least(web_nodes[web_nodes[kid].first].text_n, 127);
+						memcpy(wide, web_u + web_nodes[web_nodes[kid].first].text, n * sizeof *wide);
+					}
+				}
+		} else if (!n && (!strcasecmp(type, "checkbox") || !strcasecmp(type, "radio"))) {
+			wide[0] = 'o', wide[1] = 'n', n = 2;
+		}
+		query_add(query, sizeof query, name, wide, n);
+	}
+	if (!web_attr_text(form, "action", action, sizeof action) || !action[0])
+		snprintf(action, sizeof action, "%s", address);
+	if ((cut = strpbrk(action, "?#")) != NULL)
+		*cut = 0;
+	if (strlen(action) + strlen(query) + 2 > sizeof action) {
+		snprintf(status, sizeof status, "the form's address is longer than the host can be asked for");
+		draw_status();
+		return;
+	}
+	strcat(action, "?");
+	strcat(action, query);
+	if (web_resolve(action, whole))
+		go(whole, 1);
+	else {
+		snprintf(status, sizeof status, "the form's address is longer than the host can be asked for");
+		draw_status();
+	}
+}
+
+/* A field drawn again where it is: in the pixmap and in the view. */
+static void
+field_again(int node)
+{
+	int i;
+
+	for (i = 0; i < web_item_count; i++)
+		if (web_items[i].kind == I_FIELD && web_items[i].node == node && tile_gpu && tile_drawn)
+			draw_item(tile, &web_items[i], tile_top);
+	if (!tile_gpu)
+		tile_drawn = 0;
+	show_view();
+}
+
+/* ---- the pointer and the keys ---- */
 
 static void
 click(int x, int y)
 {
-	int i;
+	int i, was = focus;
 
 	if (y < BAR) {
 		if (x < 3 + 3 * 55) {
 			editing = 0;
-			if (x < 55 && history_count)
-				go(history[--history_count], 0);
-			else if (x >= 55 && x < 110)
+			if (x < 55 && history_count) {
+				int back = history[--history_count].top;
+
+				go(history[history_count].address, 0);
+				if (!loading) {
+					top = goal = back;
+					show_view();
+				}
+			} else if (x >= 55 && x < 110)
 				go(HOME, 1);
 			else if (x >= 110)
-				go(address, 0);
+				go(address, 2);
 			return;
 		}
 		editing = 1;
@@ -1462,28 +1148,62 @@ click(int x, int y)
 	}
 	if (x >= width - UI_SCROLL_W) {
 		dragging = 1;
-		scroll_to(ui_scroll_to(y, BAR, view_height(), page_height, view_height()));
+		scroll_to(ui_scroll_to(y, BAR, view_height(), web_page_h, view_height()), 1);
 		return;
 	}
 	if (y >= height - STATUS)
-		return;		/* (the status line is over the page's last lines) */
-	for (i = 0; i < run_count; i++) {
-		struct run *r = &runs[i];
+		return;
+	focus = -1;
+	/* the thing drawn last at that place is the one on top */
+	for (i = web_item_count - 1; i >= 0; i--) {
+		const struct web_item *it = &web_items[i];
+		int node = it->node, link, up;
+		char href[600];
 
-		if ((r->style & LINK) && ui_inside(x, y - BAR + top, r->x, r->y, r->width, line_h)) {
-			char href[256];
+		if (it->kind == I_BOX || !ui_inside(x, y - BAR + top, it->x, it->y, it->w, it->h))
+			continue;
+		if (it->kind == I_FIELD) {
+			const char *type = field_type(node);
+			struct field *f = field_of(node);
 
-			snprintf(href, sizeof href, "%s", links + r->link);
+			if (field_is_button(type)) {
+				submit(node, node);
+			} else if (!strcasecmp(type, "checkbox") || !strcasecmp(type, "radio")) {
+				f->checked = !f->checked;
+				field_again(node);
+			} else if (!strcasecmp(type, "select")) {
+				int kid, options = 0;
+
+				for (kid = web_nodes[node].first; kid >= 0; kid = web_nodes[kid].next)
+					options += web_nodes[kid].c.tag == T_option;
+				f->option = options ? (f->option + 1) % options : 0;
+				field_again(node);
+			} else {
+				focus = node;
+				field_again(node);
+			}
+			break;
+		}
+		for (up = node; up >= 0; up = web_nodes[up].c.parent) {
+			if (web_nodes[up].c.tag == T_summary && web_nodes[up].c.parent >= 0) {
+				web_nodes[web_nodes[up].c.parent].flags ^= N_OPEN;
+				lay_out(0, 0);
+				show_view();
+				return;
+			}
+			if (web_nodes[up].c.tag == T_button) {
+				submit(up, up);
+				return;
+			}
+		}
+		if ((link = web_link_of(node)) >= 0 && web_attr_text(link, "href", href, sizeof href)) {
 			follow(href);
 			return;
 		}
+		break;
 	}
-}
-
-static int
-is_link(const struct run *r)
-{
-	return (r->style & (LINK | PICTURE | BOX)) == LINK;
+	if (was >= 0 && was != focus)
+		field_again(was);
 }
 
 /* Moves the keyboard to the page's next link, or the one before, and brings it into view.
@@ -1491,32 +1211,40 @@ is_link(const struct run *r)
 static void
 pick_link(int back)
 {
-	int i, first = run_count, last = -1, was = top, view = view_height();
+	int i, found = -1, seen = picked < 0, last = -1, y = 0;
+	char href[600];
 
-	for (i = 0; i < run_count; i++)
-		if (is_link(&runs[i]) && runs[i].link == picked) {
-			first = i < first ? i : first;
-			last = i;
+	for (i = 0; i < web_item_count; i++) {
+		int link = web_items[i].kind == I_TEXT || web_items[i].kind == I_IMAGE ? web_link_of(web_items[i].node) : -1;
+
+		if (link < 0 || link == last)
+			continue;
+		if (back) {
+			if (link == picked)
+				break;
+			found = link, y = web_items[i].y;
+		} else if (seen && link != picked) {
+			found = link, y = web_items[i].y;
+			break;
 		}
-	if (back)
-		for (i = first - 1; i >= 0 && !is_link(&runs[i]); i--)
-			;
-	else
-		for (i = last + 1; i < run_count && !is_link(&runs[i]); i++)
-			;
-	picked = i >= 0 && i < run_count ? runs[i].link : -1;
-	if (picked >= 0) {
-		snprintf(status, sizeof status, "%.190s", links + picked);
-		if (runs[i].y < top || runs[i].y + line_h > top + view)
-			scroll_to(runs[i].y - view / 3);
+		seen |= link == picked;
+		last = link;
 	}
-	if (top == was)
-		draw_page();
+	picked = found;
+	tile_drawn = 0;
+	if (picked >= 0) {
+		if (web_attr_text(picked, "href", href, sizeof href))
+			snprintf(status, sizeof status, "%.190s", href);
+		draw_status();
+		if (y < top || y + line_h > top + view_height())
+			top = goal = y - view_height() / 3;
+	}
+	show_view();
 }
 
-/* Keys: with the address field open they are typed into it. Otherwise arrows and the paging
- * keys scroll, Tab goes from link to link and Enter follows, Backspace goes back, F5 loads
- * the page again, and Ctrl+L opens the address field. */
+/* Keys: with the address field or one of the page's fields open they are typed into it.
+ * Otherwise arrows and the paging keys scroll, Tab goes from link to link and Enter follows,
+ * Backspace goes back, F5 loads the page again, and Ctrl+L opens the address field. */
 static void
 key(int ch, int modifiers)
 {
@@ -1525,25 +1253,48 @@ key(int ch, int modifiers)
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
 	if ((modifiers & MWKMOD_CTRL) && (ch == 'l' || ch == 'L'))
 		ch = 'l' & 0x1f;
+	if (focus >= 0 && !editing) {
+		struct field *f = field_of(focus);
+
+		if (ch == MWKEY_ENTER || ch == '\n' || ch == '\r') {
+			submit(focus, -1);
+			return;
+		}
+		if (ch == MWKEY_ESCAPE || ch == MWKEY_TAB) {
+			int was = focus;
+
+			focus = -1;
+			field_again(was);
+			return;
+		}
+		if ((ch == MWKEY_BACKSPACE || ch == 127) && f->n > 0)
+			f->n--;
+		else if (ch >= 32 && ch < 127 && f->n < 127)
+			f->text[f->n++] = ch;
+		else
+			return;
+		field_again(focus);
+		return;
+	}
 	if (!editing) {
 		switch (ch) {
 		case MWKEY_TAB: pick_link(modifiers & MWKMOD_SHIFT); break;
 		case MWKEY_ENTER:
 			if (picked >= 0) {
-				char href[256];
+				char href[600];
 
-				snprintf(href, sizeof href, "%s", links + picked);
-				follow(href);
+				if (web_attr_text(picked, "href", href, sizeof href))
+					follow(href);
 			}
 			break;
 		case MWKEY_F5: click(120, 10); break;
 		case 'l' & 0x1f: click(width - 20, 10); break;
-		case MWKEY_UP: scroll_to(top - line_h); break;
-		case MWKEY_DOWN: scroll_to(top + line_h); break;
-		case MWKEY_PAGEUP: scroll_to(top - view + line_h); break;
-		case MWKEY_PAGEDOWN: case ' ': scroll_to(top + view - line_h); break;
-		case MWKEY_HOME: scroll_to(0); break;
-		case MWKEY_END: scroll_to(page_height); break;
+		case MWKEY_UP: scroll_to(goal - 3 * line_h, 0); break;
+		case MWKEY_DOWN: scroll_to(goal + 3 * line_h, 0); break;
+		case MWKEY_PAGEUP: scroll_to(goal - view + line_h, 0); break;
+		case MWKEY_PAGEDOWN: case ' ': scroll_to(goal + view - line_h, 0); break;
+		case MWKEY_HOME: scroll_to(0, 0); break;
+		case MWKEY_END: scroll_to(web_page_h, 0); break;
 		case MWKEY_BACKSPACE: click(10, 10); break;
 		}
 		return;
@@ -1554,6 +1305,8 @@ key(int ch, int modifiers)
 		/* a bare name is a site */
 		snprintf(where, sizeof where, "%s%s", typed[0] == '/' || strstr(typed, ":") ? "" : "https://", typed);
 		where[255] = 0;
+		if (!strchr(where + 8, '/') && where[0] != '/' && strlen(where) < 254)
+			strcat(where, "/");
 		go(where, 1);
 		return;
 	}
@@ -1576,12 +1329,20 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	verbose = getenv("NXWEB_TIME") != NULL;
+	dump = getenv("NXWEB_DUMP") != NULL;
+	int c, plain;
+
 	GrGetFontInfo(ui_var, &info);
-	memcpy(var_w, info.widths, sizeof var_w);
+	/* (the same answer is what ui_width would ask for at the first label) */
+	for (c = 0; c < 256; c++)
+		ui_var_widths.of[c] = info.widths[c >= info.firstchar && c <= info.lastchar ? c : info.firstchar];
+	ui_var_widths.known = 1;
 	line_h = (info.height > ui_fh ? info.height : ui_fh) + 2;
+	pictures = malloc(MAX_PICTURES * sizeof *pictures);
 	fd = open("/dev/gpu", O_RDWR);
 	if (fd >= 0) {
-		void *words = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x01000000);
+		void *words = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x01000000);
 		void *data = mmap(NULL, FETCH_MOST, PROT_READ, MAP_SHARED, fd, 0x016c0000);
 
 		if (words != MAP_FAILED && data != MAP_FAILED) {
@@ -1589,36 +1350,56 @@ main(int argc, char **argv)
 			fetched = data;
 		}
 	}
+	{
+		/* the ROM's fonts, if the image has them and the window system draws them (its font
+		 * of such a file says it has every character); else the window system's own */
+		static unsigned char widths[256];
+		GR_FONT_INFO sef;
+		GR_FONT_ID test;
+
+		plain = web_face_for(0, 0, CSS_EM);
+		test = web_face(plain)->file ? GrCreateFontEx("/usr/share/font-sans-13.sef", 0, 0, NULL) : 0;
+
+		memset(&sef, 0, sizeof sef);
+		if (test)
+			GrGetFontInfo(test, &sef);
+		if (!test || sef.lastchar != 0xffff || getenv("NXWEB_PLAIN")) {
+			fprintf(stderr, "nxweb: the window system's own font (no fonts of the ROM: tools/make_fonts.py, docs/fonts.md)\n");
+			memcpy(widths, info.widths, sizeof widths);
+			memset(web_faces, 0, sizeof web_faces);
+			web_plain = widths;
+			web_plain_height = info.height;
+			web_plain_ascent = info.baseline;
+		} else if (!strcmp(web_faces[plain].name, "font-sans-13.sef"))
+			fonts[plain][0] = test;	/* (the page's plain face is this file: not made a second time) */
+	}
 	go(argc > 1 ? argv[1] : HOME, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
-	if (title[0]) {		/* (the first page was read before there was a window to name) */
-		char caption[120];
-
-		snprintf(caption, sizeof caption, "%s - Web", title);
-		GrSetWindowTitle(window, caption);
-	}
+	set_title();
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
-		GrGetNextEventTimeout(&event, loading ? 100 : by_hand ? 3000 : regs && pictures_open() ? 400 : 60000);
+		GrGetNextEventTimeout(&event, top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000);
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
-			draw_page();
+			draw_all();
 			break;
 		case GR_EVENT_TYPE_UPDATE:
 			if (event.update.utype == GR_UPDATE_SIZE && (event.update.width != width || event.update.height != height)) {
+				int wider = event.update.width != width;
+
 				width = event.update.width;
 				height = event.update.height;
-				read_sheets();	/* their media queries ask about the width */
-				layout();
-				scroll_to(top);
-				draw_page();
+				if (wider)
+					lay_out(1, 1);	/* (the sheets' media queries ask about the width) */
+				tile_drawn = 0;
+				draw_all();
 			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (ui_wheel(&event))
-				scroll_to(top + 3 * line_h * ui_wheel_sum(&event));
+				scroll_to(goal + 3 * line_h * ui_wheel_sum(&event), 0);
 			else {
 				click(event.button.x, event.button.y);
 				ui_moves(window, EVENTS, dragging);	/* (the pointer's moves, while the scroll bar is held) */
@@ -1630,7 +1411,7 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (dragging && (event.mouse.buttons & GR_BUTTON_L))
-				scroll_to(ui_scroll_to(event.mouse.y, BAR, view_height(), page_height, view_height()));
+				scroll_to(ui_scroll_to(event.mouse.y, BAR, view_height(), web_page_h, view_height()), 1);
 			else {
 				dragging = 0;
 				ui_moves(window, EVENTS, 0);
@@ -1643,13 +1424,24 @@ main(int argc, char **argv)
 			GrClose();
 			return 0;
 		}
-		ticked = event.type == GR_EVENT_TYPE_TIMEOUT;
+		ticked = event.type == GR_EVENT_TYPE_TIMEOUT && top == goal;
+		if (top != goal)
+			scroll_step();
+		if (web_refresh[0] && !loading && sent_on < 3) {
+			/* the page sends its reader on (three times in a row at most) */
+			char where[256];
+
+			strcpy(where, web_refresh);
+			web_refresh[0] = 0;
+			sent_on++;
+			go(where, 0);
+		}
 		if (loading)
 			check_reply();
 		else if (by_hand && event.type == GR_EVENT_TYPE_TIMEOUT)
 			ask(address, 0);
-		else if (!by_hand && regs && (asking = next_picture()) >= SHEET)
-			ask(sheets[asking - SHEET].address, 2);
+		else if (!by_hand && regs && (asking = next_wanted()) >= SHEET)
+			ask(web_sheets[asking - SHEET].address, 2);
 		else if (!by_hand && regs && asking >= 0)
 			ask(pictures[asking].address, 1);
 	}
