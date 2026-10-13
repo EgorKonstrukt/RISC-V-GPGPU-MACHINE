@@ -29,6 +29,7 @@
 #define BAR_HEIGHT 26
 #define START_WIDTH 64
 #define CLOCK_WIDTH 52
+#define SPEED_WIDTH 96	/* the machine's speed, before the clock */
 #define TASK_WIDTH 110
 #define MAX_ITEMS 96
 #define MAX_TASKS 12
@@ -154,7 +155,7 @@ bevel(GR_WINDOW_ID w, int x, int y, int width, int height, int pressed)
 static int
 task_width(void)
 {
-	int room = screen.cols - CLOCK_WIDTH - 6 - (START_WIDTH + 12);
+	int room = screen.cols - CLOCK_WIDTH - SPEED_WIDTH - 9 - (START_WIDTH + 12);
 	int width = task_count ? room / task_count - 4 : TASK_WIDTH;
 
 	return width > TASK_WIDTH ? TASK_WIDTH : width < 8 ? 8 : width;
@@ -164,6 +165,70 @@ static int
 task_x(int i)
 {
 	return START_WIDTH + 12 + i * (task_width() + 4);
+}
+
+/* The machine's speed in millions of instructions a second: the first core's (its cycle
+ * counter counts them), then all cores' (the workers' counts are the machine's control words,
+ * as nxmon reads them: docs/multicore.md). True when the text is another than it was. */
+static char speed_text[24] = "";
+
+static int
+speed_sample(unsigned ms)
+{
+	static const volatile uint32_t *words, *more;
+	static uint32_t before[256], first_before, shown[2];
+	static unsigned then;
+	static int tried;
+	uint32_t first, ran, all = 0;
+	unsigned c, cores, span = ms - then;
+
+	if (!tried) {
+		int fd = open("/dev/gpu", O_RDWR);
+		void *at = fd < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0x01000000);
+
+		tried = 1;
+		if (at != MAP_FAILED)
+			words = at;
+		at = fd < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0x01000000 + 0x6ba000);
+		if (at != MAP_FAILED)
+			more = at;
+	}
+	__asm__ volatile("rdcycle %0" : "=r"(first));
+	ran = first - first_before;
+	first_before = first;
+	cores = !words || words[0x3c0 / 4] < 1 ? 1 : words[0x3c0 / 4] > 256 ? 256 : words[0x3c0 / 4];
+	if (cores > 16 && !more)
+		cores = 16;
+	for (c = 1; c < cores; c++) {
+		uint32_t now = c < 16 ? words[0x380 / 4 + c] : more[c];
+
+		all += now < before[c] ? now : now - before[c];	/* (counts begun again: all of it is new) */
+		before[c] = now;
+	}
+	then = ms;
+	if (span < 200 || span > 10000)
+		return 0;	/* the first sample, or too short a time to say */
+	ran = (uint32_t)((unsigned long long)ran * 1000 / span);
+	all = ran + (uint32_t)((unsigned long long)all * 1000 / span);
+	ran /= 100000, all /= 100000;
+	if (ran == shown[0] && all == shown[1] && speed_text[0])
+		return 0;	/* (no text is made for a second that reads as the last did) */
+	shown[0] = ran, shown[1] = all;
+	snprintf(speed_text, sizeof speed_text, "%u.%u / %u.%u M", ran / 10, ran % 10, all / 10, all % 10);
+	return 1;
+}
+
+static void
+draw_speed(void)
+{
+	int x = screen.cols - CLOCK_WIDTH - 6 - SPEED_WIDTH;
+
+	GrSetGCForeground(gc, FACE);
+	GrFillRect(bar, gc, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6);
+	bevel(bar, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6, 1);
+	GrSetGCForeground(gc, BLACK);
+	GrText(bar, gc, x + (SPEED_WIDTH - ui_width(&ui_menu_widths, 0, speed_text, strlen(speed_text))) / 2, 7, speed_text,
+		strlen(speed_text), GR_TFASCII | GR_TFTOP);
 }
 
 static void
@@ -199,6 +264,7 @@ draw_bar(void)
 	snprintf(text, sizeof(text), "%02d:%02d", tm->tm_hour, tm->tm_min);
 	GrSetGCForeground(gc, BLACK);
 	GrText(bar, gc, screen.cols - CLOCK_WIDTH + 8, 7, text, strlen(text), GR_TFASCII | GR_TFTOP);
+	draw_speed();
 }
 
 /* The icon of the program a window is of: its file's own, or its name's in the sheets. It is
@@ -656,9 +722,12 @@ main(void)
 				}
 			}
 		retitle = 0;
+		/* (the speed's box alone when only it reads otherwise: a tenth of a million is its step) */
+		id = speed_sample(milliseconds());
 		if (i || localtime(&now)->tm_min != minute) {
 			minute = localtime(&now)->tm_min;
 			draw_bar();
-		}
+		} else if (id)
+			draw_speed();
 	}
 }

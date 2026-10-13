@@ -139,6 +139,13 @@ folder's programs open in a menu of their own to its side, when the pointer is o
 Right or Enter. `NXBAR_SHOW=1` (or `=Games`) starts the bar with the menu open (and that
 folder's beside it), for a test without a pointer: each level is a layer of its own.
 
+Before the clock is the machine's speed in millions of instructions a second, the first core's
+and all cores' (`0.3 / 43.7 M`: `speed_sample`, from the core's cycle counter and the workers'
+counts in the control words, as `nxmon` reads them). It is sampled once a second and its box
+alone drawn again when a figure is another tenth. An idle desktop on `rvc_cpu`, the sixty
+seconds between a sleep of 30 and one of 90: 147.2 thousand instructions a second before it,
+147.7 with it.
+
 The bar looks for the windows (five questions to the window system each) when one came,
 went or was put away: it selects the root's `GR_EVENT_MASK_CHLD_UPDATE` and looks within a
 second of such an event, and every fifth second besides, for a title that changed. Asked
