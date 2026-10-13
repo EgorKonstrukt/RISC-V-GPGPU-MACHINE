@@ -260,6 +260,12 @@ one a frame at its swap and some more at its particles:
   They were 44 bytes at any alignment: three or four texels a particle of the write cache's
   384, which a fight's 400 to 700 particles filled several times a frame.
 
+- **A frame is refused under 10 ms, not under 13.9** (`Host_FilterTime`, 100 a second where the
+  game has 72). On e1m1 a frame is 45 thousand instructions, 13 ms: it was refused, and the main
+  loop, which waits for the clock by ending the pass, ended one to three passes a frame doing
+  so. e1m1 from where it starts, on the harness: 89.7% to 98.2% of the passes' instructions,
+  3.28M to 3.46M instructions a second on the first core; the game draws 68 frames a second.
+
 | `timedemo demo1`, the shader machine | utilization | passes a full write cache ended | 969 frames |
 |---|---|---|---|
 | before | 96.5% (the swap 2.4%, the write cache 0.8%) | 1,318, of them 947 in the particles | 64.4 s |

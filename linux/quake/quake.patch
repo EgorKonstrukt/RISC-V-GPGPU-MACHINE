@@ -1842,7 +1842,7 @@ index 603f6b3..53e520b 100644
 +	realtime_ms += ms;
  
 -	if (!cls.timedemo && realtime - oldrealtime < 1.0/72.0)
-+	if (!cls.timedemo && (realtime_ms - oldrealtime_ms) * 72 < 1000)
++	if (!cls.timedemo && (realtime_ms - oldrealtime_ms) * 100 < 1000)	/* (72 was two passes of waiting a frame: docs/quake.md) */
  		return false;		// framerate is too high
  
 -	host_frametime = realtime - oldrealtime;

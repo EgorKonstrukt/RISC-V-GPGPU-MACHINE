@@ -886,6 +886,22 @@ targets, the commit as points, the shader's own write cache (384 texels) and pas
 - **The readback** has the first 64 control texels and 64 of the network's row, where the
   counts are: the panel's statistics have a line for the workers and for all cores together.
 
+- **The host's clock moves every round** (`HostClock` in `EmuMachine.cs`): a frame's length
+  spread over its rounds, as the harness's moves every pass. It moved once a Unity frame, and a
+  program that waits for it (Quake after each of its frames) ran one frame of its own a Unity
+  frame and ended the other rounds at once: a third of the rounds on e1m1.
+- **The workers' counts are read ten times a second**, from a frame's last row. Read every
+  round, 255 workers were 5.5 ms of an 8-round frame in Udon, and 43 ms of a 32-round one.
+
+Quake's e1m1 from where it starts, 8 rounds a frame, the Game view 2276 x 1406 (13 October
+2026, RTX 5090): 2.3 to 2.5M instructions a second on the first core before those two and
+Quake's frame limit (`docs/quake.md`), 3.08 to 3.15M after; the harness 3.46M. A frame there
+is the card's: eight ticks of 2.3 to 2.7 ms (RenderDoc: every other draw of a round together
+0.13 ms), the room 0.6 ms, and the main thread alone would need 15 ms (four `Camera.Render` a
+round at 0.26 ms, 0.10 of it the room's canvases). In the editor, measure with the Game view
+in front: play mode started by a script leaves the Scene view there, and the room is then
+drawn small.
+
 "ShaderEmu/Add the tick's and the commit's cameras to the open scene" puts the cameras, their
 meshes and the targets into a scene without building the world again.
 

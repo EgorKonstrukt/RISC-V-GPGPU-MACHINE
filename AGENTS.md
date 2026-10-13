@@ -135,3 +135,8 @@
   server and the client both write needs one for each core (`SE_OnWorker()`), and an
   allocation the server makes goes to its own zone (`server.h`). After a change to what the
   game asks for, run it with `QUAKE3_WANTED=1` on the whole demo pak and write `wanted.txt` anew.
+- The world's speed is measured in the editor with the Game view in front (play mode started by a
+  script leaves the Scene view there and the room is drawn small), by `totalInstructions` over
+  several seconds, a change and the tree in turn (`docs/multicore.md`, "In Unity"). A frame of 8
+  rounds is the card's: the room is 3% of it and a round's other draws 5%, the ticks the rest. A guest's wait for
+  something the host gives once a Unity frame shows as rounds of 52 instructions to the frame's end.

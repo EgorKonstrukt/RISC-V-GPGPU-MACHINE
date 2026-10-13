@@ -142,6 +142,7 @@ public class EmuMachine : UdonSharpBehaviour
     private uint sentTag, consumedTag;
     private uint keySeq;
     private uint lastMs;
+    private float frameMs, frameLength = 11f;   // this frame's start on the host's clock, and how long frames are lately
     private int remoteX, remoteY, remoteButtons;   // a watching player's pointer
     private bool remoteOn;
     private float ownMovedAt, remoteMovedAt;
@@ -179,6 +180,8 @@ public class EmuMachine : UdonSharpBehaviour
     private uint[] coresRunning = new uint[MostCores / 32];   // a bit a core that is at work
     private uint[] workerClock = new uint[MostCores];
     private bool haveWorkerClock;
+    private bool countWorkers;         // this round's row is one the workers' counts are taken from
+    private float workersAt;
     private float workerInstructions;  // since the last stats line
     private double totalWorkerInstructions;
     private int frames;
@@ -976,6 +979,7 @@ public class EmuMachine : UdonSharpBehaviour
                 if (i == n - 1 && sound != null) sound.Mix(current, machineMaterial, soundEnabled, soundClock);
                 // (the points before the control pass, whose bands are newer than they are)
                 Points(true);
+                HostClock(i, n);
                 Pass(PassControl, false);
             }
         }
@@ -1069,9 +1073,8 @@ public class EmuMachine : UdonSharpBehaviour
                                                                displayWidth + 16, displayHeight + 16));
         machineMaterial.SetInt("_InputButtons", theirs ? remoteButtons : inputAway && !pointerOwn ? 0 : pointerButtons);
 
-        uint ms = (uint)(Time.timeSinceLevelLoad * 1000f);
-        machineMaterial.SetInt("_HostMsLo", (int)(ms & 0xffff));
-        machineMaterial.SetInt("_HostMsHi", (int)(ms >> 16));
+        frameMs = Time.timeSinceLevelLoad * 1000f;
+        frameLength += (Mathf.Min(Time.unscaledDeltaTime, 0.1f) * 1000f - frameLength) * 0.2f;
 
         // The clock chip (DS1742): local time as BCD, century in the control byte.
         DateTime now = DateTime.Now;
@@ -1084,6 +1087,19 @@ public class EmuMachine : UdonSharpBehaviour
             tickMaterial.SetInt("_Rtc1Lo", Bcd((int)now.DayOfWeek + 1) | Bcd(now.Day) << 8);
             tickMaterial.SetInt("_Rtc1Hi", Bcd(now.Month) | Bcd(year % 100) << 8);
         }
+    }
+
+    // The host's clock for round i of a frame's n: the frame's length is spread over its rounds,
+    // as the harness's clock moves every pass. A program that waits for the clock to move
+    // (Quake's loop after each of its frames) waited for the next Unity frame before.
+    private void HostClock(int i, int n)
+    {
+        uint ms = (uint)(frameMs + frameLength * i / n);
+        if (ms < lastMs && lastMs - ms < 1000) ms = lastMs;   // never back (but a scene loaded anew starts again)
+        if (ms == lastMs && i > 0) return;
+        lastMs = ms;
+        machineMaterial.SetInt("_HostMsLo", (int)(ms & 0xffff));
+        machineMaterial.SetInt("_HostMsHi", (int)(ms >> 16));
     }
 
     private int Bcd(int v)
@@ -1304,8 +1320,10 @@ public class EmuMachine : UdonSharpBehaviour
         for (int i = 0; i < n; i++)
         {
             rowAt = i * Words;
+            countWorkers = i == n - 1 && Time.time >= workersAt;
             TakeRound();
         }
+        if (countWorkers) workersAt = Time.time + 0.1f;
         if (Time.time >= sampleAt) Sample();
     }
 
@@ -1390,6 +1408,17 @@ public class EmuMachine : UdonSharpBehaviour
         }
         haveClock = true;
         lastClock = clock;
+        lastCommits = commits;
+        pc = Word(36, 3);
+        lastStall = Word(40, 2);
+        if (countWorkers) Workers();
+        Printed();
+    }
+
+    // What the workers ran, for the statistics: the counts only grow, so a row now and then
+    // is enough (255 workers a round were most of a frame's script time).
+    private void Workers()
+    {
         // the cores' counts of instructions, which the control pass publishes at 0x87000380
         cores = Mathf.Clamp(Small(Word(64 + 0x3c, 0)), 1, MostCores);
         // started, and not asleep on its job word: a texel for every 32 cores
@@ -1407,11 +1436,11 @@ public class EmuMachine : UdonSharpBehaviour
             workerClock[c] = now;
         }
         haveWorkerClock = cores > 1;
-        lastCommits = commits;
-        pc = Word(36, 3);
-        lastStall = Word(40, 2);
+    }
 
-        // what the guest printed in that round: at most 64 characters
+    // What the guest printed in the round at rowAt: at most 64 characters.
+    private void Printed()
+    {
         uint ptr = Word(11, 3);
         if (ptr == 0xFFFFFFFFu || terminal == null) return;
         int n = (int)Mathf.Min(ptr + 1, 64);
