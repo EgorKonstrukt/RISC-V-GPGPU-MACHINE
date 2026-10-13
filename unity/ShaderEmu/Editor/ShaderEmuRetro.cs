@@ -659,7 +659,7 @@ public static partial class ShaderEmuBuilder
         {
             if (label.transform.parent != keyboard.transform) continue;
             if (label.name == "Modifiers") Letters(label, mono, Amber, true);   // a row of lamps, in effect
-            else Letters(label, legend, Printed);   // its name, printed on the tray
+            else Letters(label, legend, Color.white, true);   // its name: white and unlit, the tray gets too little light for print
         }
         Transform oldPlate = keyboard.transform.Find(keyboard.name + " plate");   // from when its name was a picture
         if (oldPlate != null) Object.DestroyImmediate(oldPlate.gameObject);

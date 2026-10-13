@@ -160,9 +160,9 @@ public static partial class ShaderEmuBuilder
     // The console's keys: x, y, width, height on its face of ConsoleWide by ConsoleHigh, and the
     // event of EmuHolodeck each sends. A sitter's controls are picked by the game (EmuGamepad).
     const float ConsoleWide = 380, ConsoleHigh = 280;
-    static readonly float[] ConsoleKeys = { 12, 72, 174, 92, 194, 72, 174, 92, 12, 174, 112, 94, 132, 174, 112, 94, 268, 6, 100, 30 };
-    static readonly string[] ConsoleEvents = { "NextScreen", "StandUp", "Larger", "Smaller", "HideConsole" };
-    static readonly string[] ConsoleNames = { "Screen", "Exit", "World +", "World -", "Hide" };
+    static readonly float[] ConsoleKeys = { 12, 72, 174, 92, 194, 72, 174, 92, 12, 174, 112, 94, 132, 174, 112, 94, 268, 6, 100, 30, 162, 6, 100, 30 };
+    static readonly string[] ConsoleEvents = { "NextScreen", "StandUp", "Larger", "Smaller", "HideConsole", "ToggleBeam" };
+    static readonly string[] ConsoleNames = { "Screen", "Exit", "World +", "World -", "Hide", "Beam" };
     const float ShowWide = 120, ShowHigh = 46;   // the small button that brings a console back
 
     // The console's face: the room's keys, in the screen's plane under it. Exit stands the sitter
@@ -176,8 +176,21 @@ public static partial class ShaderEmuBuilder
         deck.plateLabels[k] = Label(panel, "Says", "Sit down to play", 12, 38, 356, 28, 18, TextAnchor.MiddleLeft, new Color(1f, 0.8f, 0.3f));
         for (int i = 0; i < ConsoleEvents.Length; i++)
             keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, ConsoleEvents[i], ConsoleNames[i],
-                     ConsoleKeys[i * 4], ConsoleKeys[i * 4 + 1], ConsoleKeys[i * 4 + 2], ConsoleKeys[i * 4 + 3], i == 4 ? 18 : 26, out unused), ConsoleEvents[i]));
+                     ConsoleKeys[i * 4], ConsoleKeys[i * 4 + 1], ConsoleKeys[i * 4 + 2], ConsoleKeys[i * 4 + 3], i >= 4 ? 18 : 26, out unused), ConsoleEvents[i]));
         deck.scaleLabels[k] = Label(panel, "Scale", "World 65", 252, 174, 116, 94, 20, TextAnchor.MiddleCenter, dim);
+    }
+
+    // The keys' rectangles as shares of the plate, and their events; after the console's own
+    // keys the small button's event, which has no place on the plate.
+    static void ConsoleKeyTable(EmuPointer pointer)
+    {
+        float[] rects = new float[ConsoleKeys.Length + 4];
+        for (int i = 0; i < ConsoleKeys.Length; i++) rects[i] = ConsoleKeys[i] / (i % 2 == 0 ? ConsoleWide : ConsoleHigh);
+        string[] events = new string[ConsoleEvents.Length + 1];
+        ConsoleEvents.CopyTo(events, 0);
+        events[ConsoleEvents.Length] = "ShowConsole";
+        pointer.holoKeyRects = rects;
+        pointer.holoKeyEvents = events;
     }
 
     // The consoles' keys to a sitter's own beams (EmuPointer): a plate a room a hair before its
@@ -217,18 +230,11 @@ public static partial class ShaderEmuBuilder
         markRenderer.shadowCastingMode = ShadowCastingMode.Off;
         markRenderer.receiveShadows = false;
         mark.SetActive(false);
-        // (after the console's own keys the small button's event, which has no place on the plate)
-        float[] rects = new float[ConsoleKeys.Length + 4];
-        for (int i = 0; i < ConsoleKeys.Length; i++) rects[i] = ConsoleKeys[i] / (i % 2 == 0 ? ConsoleWide : ConsoleHigh);
-        string[] events = new string[ConsoleEvents.Length + 1];
-        ConsoleEvents.CopyTo(events, 0);
-        events[ConsoleEvents.Length] = "ShowConsole";
         foreach (EmuPointer pointer in world.GetComponentsInChildren<EmuPointer>(true))
         {
             UdonSharpEditorUtility.CopyUdonToProxy(pointer);
             pointer.holoPlates = plates;
-            pointer.holoKeyRects = rects;
-            pointer.holoKeyEvents = events;
+            ConsoleKeyTable(pointer);
             pointer.holoShow = shows;
             pointer.holodeck = deck;
             pointer.holoMark = mark.transform;
@@ -240,6 +246,109 @@ public static partial class ShaderEmuBuilder
             gamepad.holodeck = deck;
             Apply(gamepad);
         }
+    }
+
+    // Where a sitter's hand points in their program's world (HandBeam.shader): a ribbon a hand,
+    // which EmuPointer puts on the hand. Drawn after the world and before the seal, which is
+    // one later for it: the world's own depth cuts the beam at the first thing it meets.
+    const float HandBeamLength = 3f;
+
+    static void HandBeams(Transform world, EmuHolodeck deck)
+    {
+        Mesh ribbon = LoadOrCreate(Generated + "/HandBeam.asset", () => new Mesh { name = "HandBeam" });
+        ribbon.Clear();
+        ribbon.vertices = new[] { Vector3.zero, Vector3.zero, new Vector3(0, 0, HandBeamLength), new Vector3(0, 0, HandBeamLength) };
+        ribbon.uv = new[] { new Vector2(-1, 0), new Vector2(1, 0), new Vector2(-1, 1), new Vector2(1, 1) };
+        ribbon.triangles = new[] { 0, 2, 1, 1, 2, 3 };
+        ribbon.bounds = new Bounds(new Vector3(0, 0, HandBeamLength / 2), new Vector3(0.2f, 0.2f, HandBeamLength));
+        EditorUtility.SetDirty(ribbon);
+        Material light = Mat("HandBeam", "ShaderEmu/HandBeam");   // (its colour and width are the material's: left as they are)
+        light.SetFloat("_Length", HandBeamLength);
+        light.renderQueue = 2504;
+        Material seal = AssetDatabase.LoadAssetAtPath<Material>(Generated + "/VolumeSeal.mat");
+        if (seal != null) { seal.renderQueue = 2505; EditorUtility.SetDirty(seal); }
+
+        Gone(deck.transform, "Hand beams");
+        Transform beams = new GameObject("Hand beams").transform;
+        beams.SetParent(deck.transform, false);
+        Transform[] aims = new Transform[2];
+        for (int h = 0; h < 2; h++)
+        {
+            GameObject aim = new GameObject(h == 0 ? "Left aim" : "Right aim", typeof(MeshFilter), typeof(MeshRenderer));
+            aim.transform.SetParent(beams, false);
+            aim.GetComponent<MeshFilter>().sharedMesh = ribbon;
+            MeshRenderer renderer = aim.GetComponent<MeshRenderer>();
+            renderer.sharedMaterial = light;
+            renderer.shadowCastingMode = ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+            renderer.lightProbeUsage = LightProbeUsage.Off;
+            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            aim.SetActive(false);   // until a sitter in a headset has a world round them
+            aims[h] = aim.transform;
+        }
+        foreach (EmuPointer pointer in world.GetComponentsInChildren<EmuPointer>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+            pointer.aimBeams = aims;
+            ConsoleKeyTable(pointer);
+            Apply(pointer);
+        }
+    }
+
+    // A key added to a console whose plate is drawn already: a cap and lettering of its own in
+    // the plate's look, lit as the room is (a plate made again would want a bake).
+    static void OwnCap(Button key)
+    {
+        Image image = key.targetGraphic as Image;
+        if (image == null) return;
+        Picture(image, UiSprite("Keycap", 16, true), CapColour);
+        image.material = Mat("LitUI", "ShaderEmu/LitUI");
+        image.pixelsPerUnitMultiplier = 1.3f;
+        ColorBlock colours = key.colors;
+        colours.normalColor = colours.selectedColor = Color.white;
+        colours.highlightedColor = new Color(1f, 0.95f, 0.7f);
+        colours.pressedColor = new Color(0.6f, 0.6f, 0.6f);
+        colours.colorMultiplier = 1f;
+        key.colors = colours;
+        foreach (TextMeshProUGUI label in key.GetComponentsInChildren<TextMeshProUGUI>(true))
+            Letters(label, RetroFont("IBMPlexSansCondensed-Bold"), Ink);
+        EditorUtility.SetDirty(key);
+    }
+
+    // The beams and their key on each console, beside Hide; that key and Hide get their caps.
+    // Nothing here wants a bake, and no plate is made again.
+    [MenuItem("ShaderEmu/Add the holodecks' hand beams to the open scene")]
+    public static void AddHandBeams()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        TextMeshProUGUI unused;
+        int keys = 0;
+        foreach (EmuHolodeck deck in world.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(deck);
+            for (int k = 0; k < deck.frames.Length; k++)
+            {
+                Transform plate = deck.frames[k].Find("Holodeck " + (k + 1) + " plate");
+                if (plate == null) continue;
+                if (plate.Find("ToggleBeam") == null)
+                {
+                    OnClick(MakeButton((RectTransform)plate, "ToggleBeam", "Beam", ConsoleKeys[20], ConsoleKeys[21], ConsoleKeys[22], ConsoleKeys[23], 18,
+                                       out unused), deck, "ToggleBeam");
+                    keys++;
+                }
+                foreach (string name in new[] { "ToggleBeam", "HideConsole" })
+                {
+                    Transform key = plate.Find(name);
+                    if (key != null) OwnCap(key.GetComponent<Button>());
+                }
+            }
+            deck.beam = true;
+            Apply(deck);
+            HandBeams(world, deck);
+        }
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ShaderEmu] the holodecks have their hand beams, and " + keys + " consoles a Beam key (the scene is not saved)");
     }
 
     // A console can be put away: a Hide key on each plate, and in the console's place a small
@@ -405,7 +514,7 @@ public static partial class ShaderEmuBuilder
         {
             Material m = AssetDatabase.LoadAssetAtPath<Material>(Generated + "/" + name + ".mat");
             if (m == null) continue;
-            m.renderQueue = name == "GpuHolodeck" ? 2503 : 2504;
+            m.renderQueue = name == "GpuHolodeck" ? 2503 : 2505;   // (2504: the hand beams, between the world and its seal)
             EditorUtility.SetDirty(m);
         }
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
@@ -503,7 +612,7 @@ public static partial class ShaderEmuBuilder
         if (volumeMat != null) maskMat.SetTexture("_State", volumeMat.GetTexture("_State"));
         mask.GetComponent<MeshRenderer>().sharedMaterial = maskMat;
         Material sealMat = Mat("VolumeSeal", "ShaderEmu/VolumeSeal");
-        sealMat.renderQueue = 2504;
+        sealMat.renderQueue = 2505;   // (the hand beams are between the world and it)
         seal.GetComponent<MeshRenderer>().sharedMaterial = sealMat;
         foreach (MeshRenderer renderer in content.GetComponentsInChildren<MeshRenderer>())
         {
@@ -693,6 +802,7 @@ public static partial class ShaderEmuBuilder
         Apply(voices);
         ConsoleBeams(world, deck);
         Apply(deck);
+        HandBeams(world, deck);
         foreach (EmuSeat sits in seats)
         {
             Apply(sits);

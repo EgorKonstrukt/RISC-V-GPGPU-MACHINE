@@ -56,6 +56,13 @@ public class EmuPointer : UdonSharpBehaviour
     // Where each hand's beam starts and the way it goes, in a headset (EmuHolodeck tells the machine)
     [HideInInspector] public Vector3[] handAt = new Vector3[2], handWay = new Vector3[2];
     [HideInInspector] public bool handsKnown;
+    // A sitter's aim in their program's world: a beam a hand (HandBeam.shader), from where and
+    // the way the machine is told that hand points. aimHands: bit 0 the left, bit 1 the right.
+    public Transform[] aimBeams;
+    [HideInInspector] public int aimHands;
+    // A test's alone, set from editor code in play mode: hands that stand before the head, as
+    // if tracked. Kept in no scene and set by nothing here: a sitter without a headset has no beam.
+    [System.NonSerialized] public bool debugBeam;
     // The danger zone (EmuDanger): a beam on the memory screen is its laser while that is on.
     public Collider memoryScreen;      // a trigger over the memory screen's quad
     public EmuDanger danger;
@@ -78,6 +85,8 @@ public class EmuPointer : UdonSharpBehaviour
     private float stick;                    // the right stick, up positive
     private float turned;                   // notches of the wheel not sent yet
     private bool started;
+    private bool aimShown;                  // an aim's beam is on
+    private bool[] landedOn = new bool[2];  // a hand's beam is on something of the room's
     private Collider linksPlate;            // the links panel, in front of the display while open
 
     private void Init()
@@ -311,6 +320,7 @@ public class EmuPointer : UdonSharpBehaviour
         }
 
         // nothing is drawn for a hand that points at neither
+        landedOn[h] = landed;
         beams[h].enabled = drawBeam && landed;
         if (drawBeam && landed)
         {
@@ -332,8 +342,28 @@ public class EmuPointer : UdonSharpBehaviour
         if (target[h] >= 1) keyboards[target[h] - 1].SetHover(h, -1);
         target[h] = Nothing;
         key[h] = -1;
+        landedOn[h] = false;
         beams[h].enabled = false;
         dots[h].gameObject.SetActive(false);
+    }
+
+    // A hand's aim: on while its program's world is drawn and the hand points at nothing of the room's.
+    private void PutAim(int h, Vector3 origin, Vector3 direction, bool on)
+    {
+        if (aimBeams == null || h >= aimBeams.Length || aimBeams[h] == null) return;
+        GameObject beam = aimBeams[h].gameObject;
+        if (beam.activeSelf != on) beam.SetActive(on);
+        if (!on) return;
+        aimBeams[h].SetPositionAndRotation(origin, Quaternion.LookRotation(direction));
+        aimShown = true;
+    }
+
+    private void NoAims()
+    {
+        if (!aimShown) return;
+        aimShown = false;
+        PutAim(0, Vector3.zero, Vector3.forward, false);
+        PutAim(1, Vector3.zero, Vector3.forward, false);
     }
 
     // After the avatar has been posed for this frame, so the beams sit on the hands.
@@ -347,6 +377,7 @@ public class EmuPointer : UdonSharpBehaviour
         {
             Idle(0);
             Idle(1);
+            NoAims();
             return;
         }
         if (player.IsUserInVR())
@@ -365,7 +396,9 @@ public class EmuPointer : UdonSharpBehaviour
                 handAt[h] = origin;
                 handWay[h] = direction;
                 Aim(h, origin, direction, true);
+                if (aimHands != 0 || aimShown) PutAim(h, origin, direction, (aimHands >> h & 1) != 0 && !beams[h].enabled);
             }
+            if (aimHands == 0) aimShown = false;
             handsKnown = true;
         }
         else
@@ -374,6 +407,18 @@ public class EmuPointer : UdonSharpBehaviour
             VRCPlayerApi.TrackingData head = player.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
             Aim(1, head.position, head.rotation * Vector3.forward, false);
             grip[1] = target[1] == Display && Input.GetMouseButton(1);
+            if (debugBeam)
+            {
+                for (int h = 0; h < 2; h++)
+                {
+                    float side = h == 0 ? -1f : 1f;
+                    handAt[h] = head.position + head.rotation * new Vector3(0.22f * side, -0.25f, 0.35f);
+                    handWay[h] = head.rotation * Quaternion.Euler(-4f, -9f * side, 0f) * Vector3.forward;
+                    PutAim(h, handAt[h], handWay[h], (aimHands >> h & 1) != 0);
+                }
+                handsKnown = true;
+            }
+            else NoAims();
         }
         if (danger != null)
         {
@@ -472,6 +517,8 @@ public class EmuPointer : UdonSharpBehaviour
 
     // A hand's beam is on the holodeck's console: its trigger is that console's.
     public bool OnConsole(int h) { return target[h] == Console; }
+    // A hand's beam is on the console or a screen: its trigger and grip are no program's hand's.
+    public bool Landed(int h) { return landedOn[h]; }
 
     // ---- the beam's angle (buttons on the control panel) ----
 

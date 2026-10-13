@@ -175,6 +175,50 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   shooters. The mouse turns the sitter's head too, so the program's world goes round with
   their head (`EmuHolodeck.PostLateUpdate`): the game turned twice as far as they looked.
   ClassiCube's buttons are not sent.
+- **A beam shows where a hand points** (`HandBeam.shader`), in a headset only: a ribbon 3.5 mm
+  wide and 3 m long from where the hand's aim starts, the way it goes, brightest at the hand
+  and fading to nothing, added to the picture (no depth written, no light given). `EmuPointer`
+  puts it there each frame from the same place and way `Tell` sends the machine
+  (`handAt`, `handWay`), so the beam and the game's aim are one thing; it is in the room's
+  space, where the hand is. It is drawn after the program's world and before the room's
+  seal (queues 2503, 2504, 2505): the world's own depth cuts it at the first surface, and
+  there is no dot at its end, which would need that depth read back. It is on while the
+  sitter's program draws a world (not on a flat screen), and off for a hand whose own beam
+  is on the console. The right hand has one in every program; both have one in a program
+  named in `twoHanded` of `EmuHolodeck.cs` by its number in `linux/apps/gameid.h` (the
+  physics demo, 8). The console's Beam key turns it off and on (`ToggleBeam`), until the visitor
+  leaves the world; it is on at first. Only the sitter sees it, as only they see the world.
+  A sitter without a headset has none: their aim is the middle of their view.
+  "ShaderEmu/Add the holodecks' hand beams to the open scene" puts the two ribbons, the
+  key and the seal's queue into a scene, without a bake; it also gives that key and Hide
+  the caps of the room's panels, which Hide had not. In play mode on a desktop (13 October
+  2026, hands invented before the head by `debugBeam`, which nothing but a test sets): on
+  with Quake's e1m1 round the seat and at the invented hand to the last digit, off while
+  the level loaded, off by the key and on again, off standing; a beam aimed at the floor
+  ended at Quake's floor 0.9 m off, where one drawn after the seal went on to the room's
+  at 1.5 m; the machine ran 1.88 million instructions a second with it and without. Not in
+  a headset: none of it.
+
+## Boxes in the hands
+
+`nxphys` (`docs/physics.md`, "The controls") reads the same words and is no shooter: each
+hand takes the box it is at, or the first it points at, by its trigger or grip, carries it and
+throws it, the two hands at once; the sticks walk and turn the sitter, who is as large in
+its room as the scale makes them. It is the first program to use the left hand's place and
+buttons (word 4). Its controls in the world are the hands' (`GAME_PHYS`, 8; `ForHands` in
+`EmuGamepad.cs`, "HANDS (Physics)" on the notice): the sticks go as sticks in word 5, no
+trigger or grip is a key or a button of the pointer's (the left grip is not Esc there), and
+the jump button is Enter. Both its hands have a beam (`twoHanded`). A hand whose own beam
+is on the console or a screen has neither trigger nor grip in the words (`EmuPointer.Landed`,
+in `Tell`): a console's key pressed took a box. The four games do not read those two bits.
+The guest's side was checked on `rvc_cpu` with the words given; the world's in the editor
+with invented hands and the number forced (the words read back: sticks in word 5, the bits
+gone under a beam on the console); none of it in a headset, and not the two together.
+- **The number is the keyboard's window's** (`watch_focus` in `nxbar.c`): a click that lands
+  beside the program's window gives the keyboard to what is there, the word goes to 0, and
+  the controls are the pointer's and the beam the right hand's until a click on the window.
+  On `rvc_cpu`, Quake started from the console on the desktop: 2 after 76 s with the pointer
+  still, moving beside the window, and clicked on the window; 0 after one click beside it.
 
 ## The status in the room
 

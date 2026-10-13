@@ -41,6 +41,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
     public float mouseCounts = 20f;    // a desktop sitter's mouse: counts told the game for one of Unity's "Mouse X"
+    public bool beam = true;           // a sitter in a headset sees where their hand points (the console's Beam key)
 
     private const int FirstSurface = 13;  // of EmuStreams' surfaces: the holodecks' are 13 to 20
 
@@ -63,6 +64,9 @@ public class EmuHolodeck : UdonSharpBehaviour
     private float mouseGone;           // a desktop sitter's mouse: how far right it has gone, in counts
     private bool firing;               // and its left button, which is the games' Ctrl
     private const int Ctrl = 29, Pressed = 65536;
+    // The programs that are played with both hands, by their numbers in linux/apps/gameid.h:
+    // each hand has a beam there. Any other program's aim is the right hand's.
+    private int[] twoHanded = { 8 };   // nxphys
 
     void Start()
     {
@@ -225,6 +229,27 @@ public class EmuHolodeck : UdonSharpBehaviour
         Arrange();
     }
 
+    // ---- where a hand points: a beam in the program's world (EmuPointer draws it, as the machine is told)
+
+    public void ToggleBeam()
+    {
+        beam = !beam;
+        Aims();
+    }
+
+    private void Aims()
+    {
+        if (pointer == null) return;
+        VRCPlayerApi player = Networking.LocalPlayer;
+        int hands = 0;
+        if (beam && own >= 0 && !flat && Utilities.IsValid(player) && (player.IsUserInVR() || pointer.debugBeam))
+        {
+            hands = 2;
+            for (int i = 0; i < twoHanded.Length; i++) if (twoHanded[i] == machine.gameId) hands = 3;
+        }
+        if (pointer.aimHands != hands) pointer.aimHands = hands;
+    }
+
     private void Put(GameObject[] things, int k, bool on)
     {
         if (things != null && k < things.Length && things[k] != null && things[k].activeSelf != on) things[k].SetActive(on);
@@ -249,6 +274,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         content.gameObject.SetActive(world);
         scene.gameObject.SetActive(world);
         if (pointer != null) pointer.holoFlat = seated && flat;
+        Aims();
         nextAt = 0f;
     }
 
@@ -285,6 +311,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         Tell();
         if (Time.time < nextAt) return;
         nextAt = Time.time + 0.25f;
+        Aims();   // (the program in front may have changed)
         hub.Prune();
         EmuShare mine = hub.Mine();
         if (mine == null) return;
@@ -392,8 +419,10 @@ public class EmuHolodeck : UdonSharpBehaviour
         VRCPlayerApi.TrackingData head = player.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
         Vector3 at = back * (head.position - origin) * 1000f, turn = (back * head.rotation).eulerAngles;
         int[] now = new int[16];
+        // (a test's invented hands are told as a headset's)
+        bool headset = player.IsUserInVR() || (pointer != null && pointer.debugBeam);
         // (bit 5: the hands are tracked, and a program may aim by one)
-        now[0] = (player.IsUserInVR() ? 3 | 32 : 2) | (own >= 0 ? 16 : 0) | (Mathf.Min(VRCPlayerApi.GetPlayerCount(), 255) << 8);
+        now[0] = (headset ? 3 | 32 : 2) | (own >= 0 ? 16 : 0) | (Mathf.Min(VRCPlayerApi.GetPlayerCount(), 255) << 8);
         now[1] = (player.playerId & 255) | (Mathf.RoundToInt(plane * 255f) << 8);   // (and the room's scale)
         now[2] = Turn(turn.y);    // to the right
         now[3] = Turn(-turn.x);   // upwards
@@ -413,14 +442,16 @@ public class EmuHolodeck : UdonSharpBehaviour
             int x = Mathf.Clamp(Mathf.RoundToInt(place.x), -512, 511) & 1023, y = Mathf.Clamp(Mathf.RoundToInt(place.y), -512, 511) & 1023;
             int z = Mathf.Clamp(Mathf.RoundToInt(place.z), -512, 511) & 1023;
             int word = x | (y << 10) | (z << 20);
+            // (a hand whose beam is on the console or a screen presses that: no program's hand takes by it)
+            bool free = pointer == null || !pointer.Landed(h);
             now[8 + h * 4] = word & 0xffff;
-            now[9 + h * 4] = ((word >> 16) & 0x3fff) | (trigger[h] ? 1 << 14 : 0) | (grip[h] ? 1 << 15 : 0);
+            now[9 + h * 4] = ((word >> 16) & 0x3fff) | (trigger[h] && free ? 1 << 14 : 0) | (grip[h] && free ? 1 << 15 : 0);
             now[10 + h * 4] = Turn(Mathf.Atan2(way.x, way.z) * Mathf.Rad2Deg);
             now[11 + h * 4] = Turn(Mathf.Asin(Mathf.Clamp(way.y, -1f, 1f)) * Mathf.Rad2Deg);
         }
         // (no hands: the first of their words is how far a sitter's mouse has gone to the right;
         // with hands, the left one's second word is the sticks)
-        if (!player.IsUserInVR()) now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
+        if (!headset) now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
         else if (gamepad != null) { now[10] = gamepad.StickLow(); now[11] = gamepad.StickHigh(); }
         for (int i = 0; i < 16; i++)
         {
