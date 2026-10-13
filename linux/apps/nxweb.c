@@ -15,13 +15,26 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "ui.h"
+#include "registry.h"
+#include "ui_files.h"
+#include "ui_icons.h"
+#include "ui_menu.h"
+#include "ui_glyph.h"
 #include "web_layout.h"
 
+#define MENU_H 20
 #define BAR 26
+#define TOP (MENU_H + BAR)	/* the window's row where the page begins */
 #define STATUS 18
+#define STATUS_CELL 96		/* the status line's right part: what is to come, or the page's size */
 #define WIDTH 600
-#define HEIGHT 420
+#define HEIGHT 440
+#define TOOLS 5
+#define TOOL_W 26
+#define FIELD_X (3 + TOOLS * (TOOL_W + 3))
 #define HOME "/usr/share/web-index.html"
+#define HISTORY 16
+#define BOOKMARKS 24		/* a menu of them fits the screen, and the registry stays small */
 #define FETCH_MOST 0x40000	/* bytes the host hands over at a time */
 #define PAGE_MOST (3 << 19)	/* of a page that are read */
 #define SHEET_MOST (3 << 18)
@@ -29,6 +42,7 @@
 #define REG_REPLY 68		/* requests answered, bytes, status, a picture's width | height << 16 */
 #define REG_ADDRESS 72		/* the address, 256 bytes */
 #define REG_PIXMAPS (0x1800 / 4 + 28)	/* pixmaps the GPU keeps, counted by the screen's driver */
+#define REG_HOST 15		/* bits 8-15, 16-23: the GPU's target as this host has it, in 16s of pixels (0: not said) */
 #define MAX_PICTURES 160
 #define TILE_BYTES (3200 * 1024)	/* of the GPU's memory for the page as drawn */
 
@@ -40,9 +54,21 @@ static char *page;		/* the HTML as it came */
 static int page_length;
 static char address[256], typed[256], status[200];
 static int editing;		/* the address field has the keyboard */
+static int offered;		/* its text is still the one it opened with: a typed character replaces it */
 static int picked = -1;		/* the link the keyboard is on (Tab): its element, or -1 */
-static struct { char address[256]; int top; } history[16];
-static int history_count;
+static struct { char address[256], title[60]; int top; } history[HISTORY];
+static int history_count, history_at;	/* the pages of this session, and which of them is shown */
+static struct bookmark { char address[256], title[60]; } bookmarks[BOOKMARKS];
+static int bookmark_count;
+static char home[256] = HOME;
+static int load_pictures = 1;
+static char sought[64];		/* what Find looks for */
+static int finding;		/* it is being typed, in the status line */
+static int found = -1, found_from;	/* the text it was found in (an item), and from which character */
+static int menu_at = -1;	/* the menu of the bar that is open, or -1 */
+static int shown_busy, shown_open;	/* as the Stop key and the status line were drawn last */
+static int print;		/* NXWEB_PRINT: says what a key, a click or a menu's row left */
+static char link_asked[256];	/* the link the right button's menu is about */
 static int top, goal;		/* the page's row at the view's top, and where it is scrolling to */
 static int dragging;
 static int sent_on;		/* pages in a row that sent their reader on to another */
@@ -78,6 +104,8 @@ static struct field { int node, n, checked, option; unsigned short text[128]; } 
 static int field_count, focus = -1;
 
 static void show_view(void);
+static int wanted_open(void);
+static int bookmark_of(const char *where);
 
 /* Instructions the first core has run (the low word of its count): what a step cost. */
 static unsigned
@@ -92,7 +120,7 @@ now(void)
 static int
 view_height(void)
 {
-	return height - BAR - STATUS;
+	return height - TOP - STATUS;
 }
 
 static int
@@ -126,6 +154,8 @@ web_picture(int node, const char *where, int *w, int *h)
 	struct picture *p;
 	int i, said_w = web_attr_int(node, "width", -1), said_h = web_attr_int(node, "height", -1);
 
+	if (!load_pictures)
+		return -1;	/* (the options: the page says what each would have been) */
 	for (i = 0; i < picture_count && strcmp(pictures[i].address, where); i++)
 		;
 	if (i == picture_count) {
@@ -330,6 +360,17 @@ draw_field(GR_DRAW_ID to, const struct web_item *it, int y)
 		ui_fill(to, it->x + 4 + (grey ? 0 : w) + 1, y + 3, 1, it->h - 6, BLACK);
 }
 
+/* How wide `n` characters of a text are, from its character `from`. */
+static int
+item_width(const struct web_item *it, int from, int n)
+{
+	int i, w = 0;
+
+	for (i = 0; i < n; i++)
+		w += web_most(0, web_advance(it->face, web_u[it->a + from + i]));
+	return w;
+}
+
 /* One thing of the page, `dy` above where the page has it. */
 static void
 draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
@@ -351,6 +392,13 @@ draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
 			ui_fill(to, it->x, y + web_faces[it->face].ascent + 1, it->w, 1, mw(it->colour));
 		if (it->flags & IF_THROUGH)
 			ui_fill(to, it->x, y + web_faces[it->face].ascent * 2 / 3, it->w, 1, mw(it->colour));
+		if (found >= 0 && it == &web_items[found]) {
+			/* what Find found: those characters again, white on the selection's colour */
+			int n = web_least((int)strlen(sought), it->b - found_from), x = it->x + item_width(it, 0, found_from);
+
+			ui_fill(to, x, y, item_width(it, found_from, n), it->h, UI_SELECTED);
+			page_text(to, x, y, web_u + it->a + found_from, n, it->face, (it->flags & IF_ITALIC) != 0, 0xffffff);
+		}
 		if (picked >= 0 && web_link_of(it->node) == picked) {
 			GrSetGCForeground(ui_gc, mw(it->colour));
 			GrRect(to, ui_gc, it->x - 2, y - 1, it->w + 4, it->h + 2);
@@ -389,7 +437,8 @@ draw_rows(GR_DRAW_ID to, int dy, int y0, int y1)
 		       (now() - began) / 1000);
 }
 
-/* The pixmap the page is drawn in, for the window as it is now: as high as TILE_BYTES allow.
+/* The pixmap the page is drawn in, for the window as it is now: as high as TILE_BYTES allow
+ * and no higher than the GPU's target, whose rows are all it draws (720 in the Unity world).
  * The driver counts the pixmaps the GPU keeps; one it does not keep is no use (0). */
 static int
 tile_make(void)
@@ -397,6 +446,7 @@ tile_make(void)
 	GR_FONT_INFO info;
 	uint32_t before = regs ? regs[REG_PIXMAPS] : 0;
 	int w = view_width(), h = TILE_BYTES / (4 * w);
+	int most = regs && (regs[REG_HOST] >> 16 & 255) ? (regs[REG_HOST] >> 16 & 255) * 16 : 2048;
 
 	if (tile_w == w)
 		return tile_gpu;	/* (made, or tried in vain, for this width already) */
@@ -406,7 +456,7 @@ tile_make(void)
 	tile_drawn = 0;
 	tile_gpu = 0;
 	tile_w = w;
-	tile_h = h > 2048 ? 2048 : h;
+	tile_h = h > most ? most : h;
 	if (!regs || tile_h < view_height() + 64 || getenv("NXWEB_DIRECT"))
 		return 0;
 	tile = GrNewPixmap(w, tile_h, NULL);
@@ -419,27 +469,94 @@ tile_make(void)
 	return tile_gpu;
 }
 
-static void
-draw_bar(void)
-{
-	static const char *names[] = { "Back", "Home", "Reload" };
-	int i, x = 3 + 3 * 55;
+static const char *const menu_names[] = { "File", "Edit", "View", "Go", "Bookmarks", "Help" };
+#define MENUS 6
+static int menu_x[MENUS + 1];
 
-	ui_fill(window, 0, 0, width, BAR, UI_FACE);
-	for (i = 0; i < 3; i++)
-		ui_button(window, 3 + i * 55, 3, 52, BAR - 6, names[i], 0);
-	ui_fill(window, x, 3, width - x - 3, BAR - 6, WHITE);
-	ui_bevel(window, x, 3, width - x - 3, BAR - 6, 1);
-	ui_text_fit(window, x + 5, 7, width - x - 14, editing ? typed : address, BLACK);
-	if (editing)
-		ui_fill(window, x + 5 + ui_width(&ui_var_widths, ui_var, typed, strlen(typed)), 6, 1, BAR - 12, BLACK);
+static void
+draw_menus(void)
+{
+	int i;
+
+	ui_fill(window, 0, 0, width, MENU_H, UI_FACE);
+	for (i = 0; i < MENUS; i++) {
+		if (i == menu_at)
+			ui_fill(window, menu_x[i], 1, menu_x[i + 1] - menu_x[i], MENU_H - 3, UI_SELECTED);
+		ui_text(window, menu_x[i] + 8, 3, menu_names[i], -1, i == menu_at ? WHITE : BLACK, 0);
+	}
+	ui_fill(window, 0, MENU_H - 1, width, 1, UI_SHADOW);
+}
+
+/* A key of the bar: back, forward, again (Stop while something is to come), home, bookmark. */
+static void
+draw_tool(int i)
+{
+	static const int signs[TOOLS] = { UI_G_LEFT, UI_G_RIGHT, UI_G_AGAIN, UI_G_HOME, UI_G_MARK };
+	int how = i == 0 ? (history_at < 1) * 2 : i == 1 ? (history_at + 1 >= history_count) * 2 : i == 4 && bookmark_of(address) >= 0;
+
+	ui_tool(window, 3 + i * (TOOL_W + 3), MENU_H + 3, TOOL_W, BAR - 6, i == 2 && shown_busy ? UI_G_STOP : signs[i], how);
+}
+
+/* The address, or the one being typed: its end, when the field does not hold it all. */
+static void
+draw_address(void)
+{
+	const char *text = editing ? typed : address;
+	int x = FIELD_X, y = MENU_H + 3, w = width - x - 3, room = w - 12, tw;
+
+	ui_fill(window, x, y, w, BAR - 6, WHITE);
+	ui_bevel(window, x, y, w, BAR - 6, 1);
+	while (editing && text[0] && ui_width(&ui_var_widths, ui_var, text, -1) > room)
+		text++;
+	tw = ui_width(&ui_var_widths, ui_var, text, -1);
+	if (editing && offered)
+		ui_fill(window, x + 3, y + 2, (tw < room ? tw : room) + 4, BAR - 10, UI_SELECTED);
+	ui_text_fit(window, x + 5, y + 4, room, text, editing && offered ? WHITE : BLACK);
+	if (editing && !offered)
+		ui_fill(window, x + 5 + tw, y + 3, 1, BAR - 12, BLACK);
 }
 
 static void
+draw_bar(void)
+{
+	int i;
+
+	ui_fill(window, 0, MENU_H, width, BAR, UI_FACE);
+	for (i = 0; i < TOOLS; i++)
+		draw_tool(i);
+	draw_address();
+}
+
+/* What the browser has to say, or what Find is being told, and in the right part what is
+ * still to come of the page, or how much of it there was. */
+static void
 draw_status(void)
 {
-	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
-	ui_text_fit(window, 6, height - STATUS + 3, width - 12, status, BLACK);
+	char text[240], cell[40];
+	int y = height - STATUS, w = width - STATUS_CELL - 4;
+
+	if (finding)
+		snprintf(text, sizeof text, "Find: %s_   (Enter finds, Escape leaves it)", sought);
+	else
+		snprintf(text, sizeof text, "%s", status[0] ? status : "Done");
+	if (shown_busy)
+		snprintf(cell, sizeof cell, shown_open ? "%d to come" : "Loading...", shown_open);
+	else
+		snprintf(cell, sizeof cell, page_length < 10000 ? "%d bytes" : "%d KB", page_length < 10000 ? page_length : page_length / 1000);
+	ui_fill(window, 0, y, width, STATUS, UI_FACE);
+	ui_bevel(window, 1, y + 1, w, STATUS - 2, 1);
+	ui_bevel(window, w + 2, y + 1, STATUS_CELL, STATUS - 2, 1);
+	ui_text_fit(window, 6, y + 3, w - 10, text, BLACK);
+	ui_text_fit(window, w + 7, y + 3, STATUS_CELL - 10, cell, BLACK);
+}
+
+/* Says something in the status line. */
+static void
+note(const char *text)
+{
+	snprintf(status, sizeof status, "%.199s", text);
+	if (window)
+		draw_status();
 }
 
 /* The view shows rows `top` on: the pixmap is drawn anew when they are not all in it, and
@@ -454,26 +571,30 @@ show_view(void)
 	top = top > most ? most : top;
 	top = top < 0 ? 0 : top;
 	if (!tile_make()) {
-		draw_rows(window, top - BAR, top, top + view);
+		draw_rows(window, top - TOP, top, top + view);
+		draw_menus();
 		draw_bar();
 		draw_status();
 	} else {
 		if (!tile_drawn || top < tile_top || top + view > tile_top + tile_h) {
-			/* the view in its middle, or nearer the way it is going */
-			tile_top = top - (tile_h - view) / 2 + (goal > top ? view / 2 : goal < top ? -view / 2 : 0);
+			/* the view in its middle, or nearer the way it is going: never out of a low pixmap */
+			int spare = tile_h - view, lead = view / 2 < spare / 4 ? view / 2 : spare / 4;
+
+			tile_top = top - spare / 2 + (goal > top ? lead : goal < top ? -lead : 0);
 			tile_top = tile_top > web_page_h - tile_h ? web_page_h - tile_h : tile_top;
 			tile_top = tile_top < 0 ? 0 : tile_top;
 			draw_rows(tile, tile_top, tile_top, tile_top + tile_h);
 			tile_drawn = 1;
 		}
-		GrCopyArea(window, ui_gc, 0, BAR, view_width(), view, tile, 0, top - tile_top, MWROP_COPY);
+		GrCopyArea(window, ui_gc, 0, TOP, view_width(), view, tile, 0, top - tile_top, MWROP_COPY);
 	}
-	ui_scrollbar(window, width - UI_SCROLL_W, BAR, view, web_page_h, view, top);
+	ui_scrollbar(window, width - UI_SCROLL_W, TOP, view, web_page_h, view, top);
 }
 
 static void
 draw_all(void)
 {
+	draw_menus();
 	draw_bar();
 	draw_status();
 	show_view();
@@ -562,6 +683,7 @@ lay_out(int sheets, int tree)
 	web_layout(view_width());
 	say_time("layout", began);
 	tile_drawn = 0;
+	found = -1;
 	if (dump) {
 		for (i = 0; i < web_item_count; i++) {
 			const struct web_item *it = &web_items[i];
@@ -648,6 +770,7 @@ show_kept(char *html, int n, const char *note)
 	if (getenv("NXWEB_AGAIN"))
 		lay_out(1, 1);	/* (what a page costs once the program's own pages are in memory) */
 	snprintf(status, sizeof status, "%s", note);
+	snprintf(history[history_at].title, sizeof history[0].title, "%.59s", web_title);
 	set_title();
 	if (hash && (i = anchor(hash + 1)) >= 0)
 		top = goal = i;
@@ -668,8 +791,8 @@ show(const char *html, int n, const char *note)
 static void
 say(const char *heading_text, const char *text)
 {
-	char html[800];
-	int n = snprintf(html, sizeof html, "<body style=\"font-family:sans-serif\"><h2>%s</h2><p>%s</p><p><a href=\"" HOME "\">Home</a></p>", heading_text, text);
+	char html[1100];
+	int n = snprintf(html, sizeof html, "<body style=\"font-family:sans-serif\"><h2>%s</h2><p>%s</p><p><a href=\"%s\">Home</a></p>", heading_text, text, home);
 
 	show(html, n, "");
 }
@@ -718,6 +841,28 @@ read_file(const char *path, const char *note)
 	return 1;
 }
 
+/* Help's page (about:keys). */
+static const char keys_page[] =
+	"<html><head><title>The browser's keys</title></head><body style=\"font-family:sans-serif\"><h2>The browser's keys</h2>"
+	"<table cellpadding=3>"
+	"<tr><td><b>Ctrl+L</b>, <b>F6</b><td>the address: type one and press Enter (Escape leaves it)"
+	"<tr><td><b>Alt+Left</b>, <b>Backspace</b><td>back"
+	"<tr><td><b>Alt+Right</b><td>forward"
+	"<tr><td><b>Alt+Home</b><td>the home page (View, Options says which)"
+	"<tr><td><b>F5</b>, <b>Ctrl+R</b><td>the page again, from the network"
+	"<tr><td><b>Escape</b><td>stops what is still to come"
+	"<tr><td><b>Ctrl+D</b><td>a bookmark for this page, or none any more"
+	"<tr><td><b>Ctrl+F</b>, <b>F3</b><td>find in the page, and the next place"
+	"<tr><td><b>Ctrl+O</b>, <b>Ctrl+S</b><td>open a file, save the page as one"
+	"<tr><td><b>Ctrl+U</b><td>the page's source, in the editor"
+	"<tr><td><b>Ctrl+C</b>, <b>Ctrl+V</b><td>the address to the clipboard, an address from it"
+	"<tr><td><b>Tab</b>, <b>Enter</b><td>from link to link, and follow the one picked"
+	"<tr><td>arrows, <b>Page Up</b>, <b>Page Down</b>, <b>Space</b>, <b>Home</b>, <b>End</b><td>scroll"
+	"<tr><td><b>F10</b><td>the menus: arrows, Enter, Escape"
+	"<tr><td><b>Ctrl+Q</b><td>close"
+	"</table><p>The right button on a link or on the page has a menu of its own. "
+	"Bookmarks and options are kept in the registry, which lasts when the machine's storage is saved.</p>";
+
 /* Goes to an address. `how`: 1 remembers the page left behind, 2 asks the host even for a
  * page the image keeps a copy of. */
 static void
@@ -728,14 +873,19 @@ go(const char *where, int how)
 
 	if (how)
 		sent_on = 0;
-	if (how == 1 && address[0]) {
-		if (history_count == 16)
+	if (how == 1 && history_count) {
+		/* a new page: the ones Forward would have gone to are forgotten */
+		history[history_at].top = top;
+		history_count = history_at + 1;
+		if (history_count == HISTORY)
 			memmove(&history[0], &history[1], sizeof history[0] * --history_count);
-		strcpy(history[history_count].address, address);
-		history[history_count++].top = top;
+		history_at = history_count++;
+		history[history_at].title[0] = 0;
 	}
+	history_count += !history_count;
 	snprintf(address, sizeof address, "%s", strncmp(where, "file://", 7) ? where : where + 7);
-	editing = loading = by_hand = 0;
+	strcpy(history[history_at].address, address);
+	editing = finding = loading = by_hand = 0;
 	picked = -1;
 	if (part_file)
 		fclose(part_file);
@@ -743,6 +893,10 @@ go(const char *where, int how)
 	snprintf(plain, sizeof plain, "%s", address);
 	if ((hash = strchr(plain, '#')) != NULL)
 		*hash = 0;
+	if (!strncmp(address, "about:", 6)) {
+		show(keys_page, sizeof keys_page - 1, "");
+		return;
+	}
 	if (address[0] == '/') {
 		if (!read_file(plain, "from this computer"))
 			say("No such page", address);
@@ -1113,42 +1267,716 @@ field_again(int node)
 	show_view();
 }
 
+/* ---- what is kept ---- */
+
+/* The options and the bookmarks are keys of the desktop's registry (registry.h): web.home,
+ * web.pictures, web.bookmarks (how many) and web.bookmark.N, each "ADDRESS TITLE". */
+static void
+kept_read(void)
+{
+	char key[32], *space;
+	int i, count = reg_int("web.bookmarks", 0);
+
+	snprintf(home, sizeof home, "%s", reg_get("web.home", HOME));
+	load_pictures = reg_int("web.pictures", 1) != 0;
+	for (i = 0; i < count && bookmark_count < BOOKMARKS; i++) {
+		struct bookmark *b = &bookmarks[bookmark_count];
+
+		snprintf(key, sizeof key, "web.bookmark.%d", i);
+		snprintf(b->address, sizeof b->address, "%s", reg_get(key, ""));
+		if ((space = strchr(b->address, ' ')) != NULL)
+			*space++ = 0;
+		snprintf(b->title, sizeof b->title, "%s", space ? space : "");
+		bookmark_count += b->address[0] != 0;
+	}
+}
+
+static int
+options_write(void)
+{
+	return reg_set("web.home", home) & reg_set_int("web.pictures", load_pictures);
+}
+
+/* Writes the bookmarks from number `from` on, and how many there are; one more key than
+ * there are bookmarks is taken out (the last, when one was taken away). */
+static int
+bookmarks_write(int from)
+{
+	char key[32], value[340];
+	int i, fine = 1;
+
+	for (i = from; i < bookmark_count; i++) {
+		snprintf(key, sizeof key, "web.bookmark.%d", i);
+		snprintf(value, sizeof value, "%s%s%.50s", bookmarks[i].address, bookmarks[i].title[0] ? " " : "", bookmarks[i].title);
+		fine &= reg_set(key, value);
+	}
+	snprintf(key, sizeof key, "web.bookmark.%d", bookmark_count);
+	reg_set(key, NULL);
+	return fine & reg_set_int("web.bookmarks", bookmark_count);
+}
+
+/* The bookmark of an address, or -1. */
+static int
+bookmark_of(const char *where)
+{
+	int i;
+
+	for (i = 0; i < bookmark_count; i++)
+		if (!strcmp(bookmarks[i].address, where))
+			return i;
+	return -1;
+}
+
+/* Adds a bookmark for an address; with `toggle`, one that is there is taken away instead. */
+static void
+bookmark(const char *where, const char *title, int toggle)
+{
+	int at = bookmark_of(where);
+	const char *did = "a bookmark is added";
+
+	if (at >= 0 && !toggle) {
+		note("that link has a bookmark already");
+		return;
+	}
+	if (at < 0 && bookmark_count == BOOKMARKS) {
+		note("there is room for 24 bookmarks: take one away first (Bookmarks, Remove)");
+		return;
+	}
+	if (at < 0 && (strchr(where, ' ') || strlen(where) > 180)) {
+		note("an address with a space in it, or one over 180 characters, gets no bookmark");
+		return;
+	}
+	if (at >= 0) {
+		memmove(&bookmarks[at], &bookmarks[at + 1], sizeof bookmarks[0] * (--bookmark_count - at));
+		did = "the bookmark is taken away";
+	} else {
+		at = bookmark_count++;
+		snprintf(bookmarks[at].address, sizeof bookmarks[0].address, "%s", where);
+		snprintf(bookmarks[at].title, sizeof bookmarks[0].title, "%s", title);
+	}
+	snprintf(status, sizeof status, "%s%s", did, bookmarks_write(at) ? "" : " (not kept: /persistence cannot be written)");
+	draw_status();
+	draw_tool(4);
+}
+
+/* ---- what the menus' rows do ---- */
+
+static int
+busy(void)
+{
+	return loading || by_hand || (regs && wanted_open());
+}
+
+/* Gives up what the host has not sent yet: the page, or its sheets and pictures. */
+static void
+stop(void)
+{
+	int i;
+
+	loading = by_hand = 0;
+	for (i = 0; i < picture_count; i++)
+		if (pictures[i].state == PICTURE_WANTED || pictures[i].state == PICTURE_BY_HAND)
+			pictures[i].state = PICTURE_FAILED;
+	for (i = 0; i < web_sheet_count; i++)
+		if (web_sheets[i].state == SHEET_WANTED || web_sheets[i].state == SHEET_BY_HAND)
+			web_sheets[i].state = SHEET_FAILED;
+	if (part_file)
+		fclose(part_file);
+	part_file = NULL;
+	asking = -1;
+	note("stopped");
+}
+
+/* The page laid out anew with its pictures looked for again, or with none (the options). */
+static void
+pictures_again(void)
+{
+	int i;
+
+	for (i = 0; i < picture_count; i++)
+		if (pictures[i].state == PICTURE_HERE && pictures[i].ours)
+			unlink(pictures[i].file);
+	if (loading && asking >= 0 && asking < SHEET) {
+		loading = 0;
+		if (part_file)
+			fclose(part_file);
+		part_file = NULL;
+		asking = -1;
+	}
+	picture_count = 0;
+	lay_out(0, 0);
+	top = goal = top > web_page_h - view_height() ? web_page_h - view_height() : top;
+	show_view();
+}
+
+/* The next place the page's text has what is sought, from the last one found or from the
+ * view's top, and round to the page's start. A place is inside one text of one face. */
+static void
+find_next(void)
+{
+	int n = strlen(sought), item = found, from = found_from + 1, tried, i, j;
+
+	if (!n || !web_item_count)
+		return;
+	if (item < 0)
+		for (item = from = 0; item < web_item_count - 1 && web_items[item].y + web_items[item].h <= top; item++)
+			;
+	for (tried = 0; tried <= web_item_count; tried++, item = (item + 1) % web_item_count, from = 0) {
+		const struct web_item *it = &web_items[item];
+
+		for (i = from; it->kind == I_TEXT && i + n <= it->b; i++) {
+			for (j = 0; j < n && web_u[it->a + i + j] < 128 && tolower(web_u[it->a + i + j]) == tolower((unsigned char)sought[j]); j++)
+				;
+			if (j < n)
+				continue;
+			found = item, found_from = i;
+			if (it->y < top || it->y + it->h > top + view_height())
+				top = goal = it->y - view_height() / 3;
+			snprintf(status, sizeof status, "found \"%s\" (F3: the next place)", sought);
+			tile_drawn = 0;
+			show_view();
+			draw_status();
+			return;
+		}
+	}
+	snprintf(status, sizeof status, "\"%s\" is not in the page's text", sought);
+	if (found >= 0) {
+		found = -1;
+		tile_drawn = 0;
+		show_view();
+	}
+	draw_status();
+}
+
+/* A key of what Find is told, in the status line. */
+static void
+find_key(int ch)
+{
+	int n = strlen(sought);
+
+	if (ch == MWKEY_ESCAPE) {
+		finding = 0;
+	} else if (ch == MWKEY_ENTER || ch == '\n' || ch == '\r') {
+		finding = 0;
+		find_next();
+		return;
+	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
+		if (n)
+			sought[n - 1] = 0;
+	} else if (ch >= 32 && ch < 127 && n < (int)sizeof sought - 1) {
+		sought[n] = ch, sought[n + 1] = 0;
+	}
+	draw_status();
+}
+
+/* Opens the address field with a text in it, which `select` shows as one to type over. */
+static void
+field_open(const char *text, int select)
+{
+	int was = focus, told = finding;
+
+	snprintf(typed, sizeof typed, "%.250s", text);
+	editing = 1;
+	offered = select;
+	finding = 0;
+	focus = -1;
+	if (was >= 0)
+		field_again(was);
+	draw_address();
+	if (told)
+		draw_status();
+}
+
+/* What was typed as an address, as one to go to: a bare name is a site. */
+static void
+typed_address(const char *text, char *where, int room)
+{
+	snprintf(where, room, "%s%s", text[0] == '/' || strstr(text, ":") ? "" : "https://", text);
+	where[255] = 0;
+	if (where[0] != '/' && strlen(where) < 254 && (strlen(where) < 8 || !strchr(where + 8, '/')))
+		strcat(where, "/");
+}
+
+/* To another page of this session's, where it was left. */
+static void
+travel(int to)
+{
+	history[history_at].top = top;
+	history_at = to;
+	go(history[to].address, 0);
+	if (!loading) {
+		top = goal = history[to].top;
+		show_view();
+	}
+}
+
+static void
+resized(int w, int h)
+{
+	int wider = w != width;
+
+	if (w == width && h == height)
+		return;
+	width = w;
+	height = h;
+	if (wider)
+		lay_out(1, 1);	/* (the sheets' media queries ask about the width) */
+	tile_drawn = 0;
+	draw_all();
+}
+
+/* This window's events while the options or a file's window is up. */
+static void
+others(GR_EVENT *event)
+{
+	if (event->type == GR_EVENT_TYPE_UPDATE && event->update.wid == window && event->update.utype == GR_UPDATE_SIZE)
+		resized(event->update.width, event->update.height);
+	else if (event->type == GR_EVENT_TYPE_EXPOSURE && event->exposure.wid == window)
+		draw_all();
+}
+
+/* ---- the options' window ---- */
+
+#define OPT_W 400
+#define OPT_H 150
+enum { O_HOME, O_THIS, O_FIRST, O_PICTURES, O_OK, O_CANCEL, O_COUNT };
+static const struct { int x, y, w, h; const char *label; } opt_at[O_COUNT] = {
+	{ 84, 10, OPT_W - 94, 20, NULL }, { 84, 36, 100, 22, "This page" }, { 190, 36, 100, 22, "The first one" },
+	{ 10, 72, 180, 15, NULL }, { OPT_W - 170, OPT_H - 32, 76, 22, "OK" }, { OPT_W - 86, OPT_H - 32, 76, 22, "Cancel" },
+};
+static struct { char home[256]; int pictures, focus; } opt;
+
+static void
+options_draw(GR_WINDOW_ID w)
+{
+	const char *text = opt.home;
+	int i, j, room = opt_at[O_HOME].w - 12;
+
+	ui_fill(w, 0, 0, OPT_W, OPT_H, UI_FACE);
+	ui_text(w, 10, 14, "Home page", -1, BLACK, 0);
+	ui_fill(w, opt_at[O_HOME].x, opt_at[O_HOME].y, opt_at[O_HOME].w, opt_at[O_HOME].h, WHITE);
+	ui_bevel(w, opt_at[O_HOME].x, opt_at[O_HOME].y, opt_at[O_HOME].w, opt_at[O_HOME].h, 1);
+	while (text[0] && ui_width(&ui_var_widths, ui_var, text, -1) > room)
+		text++;
+	ui_text(w, opt_at[O_HOME].x + 5, 14, text, -1, BLACK, 0);
+	if (opt.focus == O_HOME)
+		ui_fill(w, opt_at[O_HOME].x + 5 + ui_width(&ui_var_widths, ui_var, text, -1), 13, 1, 14, BLACK);
+	for (i = O_THIS; i < O_COUNT; i++) {
+		if (opt_at[i].label)
+			ui_button(w, opt_at[i].x, opt_at[i].y, opt_at[i].w, opt_at[i].h, opt_at[i].label, 0);
+		if (i == opt.focus)
+			ui_focus(w, opt_at[i].x + 4, opt_at[i].y + 4, opt_at[i].w - 8, opt_at[i].h - 8);
+	}
+	/* a box with a tick in it when the choice is on */
+	ui_fill(w, 14, 73, 13, 13, WHITE);
+	ui_bevel(w, 14, 73, 13, 13, 1);
+	GrSetGCForeground(ui_gc, BLACK);
+	for (j = 0; opt.pictures && j < 7; j++)
+		GrLine(w, ui_gc, 17 + j, 73 + (j < 3 ? 5 + j : 9 - j), 17 + j, 73 + (j < 3 ? 7 + j : 11 - j));
+	ui_text(w, 34, 74, "Load the pages' pictures", -1, BLACK, 0);
+	ui_text(w, 10, 98, "Kept in the registry, which lasts when the storage is saved.", -1, UI_SHADOW, 0);
+}
+
+/* The options, in a window of their own until OK or Cancel: the home page's address, typed,
+ * and whether pictures are loaded. Tab goes round, Enter is OK, Escape is Cancel. */
+static void
+options(void)
+{
+	GR_WINDOW_ID w = GrNewWindowEx(UI_FIXED, "Options", GR_ROOT_WINDOW_ID, -1, -1, OPT_W, OPT_H, UI_FACE);
+	GR_EVENT event;
+	int done = 0, press, i, n, ch, x, y;
+
+	snprintf(opt.home, sizeof opt.home, "%s", home);
+	opt.pictures = load_pictures;
+	opt.focus = O_HOME;
+	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+	GrMapWindow(w);
+	GrRaiseWindow(w);
+	GrSetFocus(w);
+	while (!done) {
+		GrGetNextEvent(&event);
+		if (event.general.wid != w) {
+			if (event.type != GR_EVENT_TYPE_NONE)
+				others(&event);
+			continue;
+		}
+		press = -1;
+		switch (event.type) {
+		case GR_EVENT_TYPE_EXPOSURE:
+			if (print) {	/* where it is, for a test to click in */
+				ui_window_origin(w, &x, &y);
+				printf("nxweb: options at %d,%d\n", x, y);
+				fflush(stdout);
+			}
+			break;
+		case GR_EVENT_TYPE_CLOSE_REQ:
+			done = 2;
+			break;
+		case GR_EVENT_TYPE_BUTTON_DOWN:
+			for (i = 0; i < O_COUNT && !ui_wheel(&event); i++)
+				if (ui_inside(event.button.x, event.button.y, opt_at[i].x, opt_at[i].y, opt_at[i].w, opt_at[i].h))
+					press = opt.focus = i;
+			break;
+		case GR_EVENT_TYPE_KEY_DOWN:
+			ch = event.keystroke.ch;
+			n = strlen(opt.home);
+			if (ch == MWKEY_ESCAPE)
+				done = 2;
+			else if (ui_tab(&event, &opt.focus, O_COUNT))
+				break;
+			else if (ch == MWKEY_ENTER)
+				press = opt.focus == O_HOME || opt.focus == O_PICTURES ? O_OK : opt.focus;
+			else if (opt.focus != O_HOME)
+				press = ch == ' ' ? opt.focus : -1;
+			else if ((ch == MWKEY_BACKSPACE || ch == 127) && n)
+				opt.home[n - 1] = 0;
+			else if (ch >= 32 && ch < 127 && n < 250)
+				opt.home[n] = ch, opt.home[n + 1] = 0;
+			break;
+		default:
+			continue;
+		}
+		switch (press) {
+		case O_THIS: snprintf(opt.home, sizeof opt.home, "%s", address); break;
+		case O_FIRST: strcpy(opt.home, HOME); break;
+		case O_PICTURES: opt.pictures = !opt.pictures; break;
+		case O_OK: done = 1; break;
+		case O_CANCEL: done = 2; break;
+		}
+		if (!done)
+			options_draw(w);
+	}
+	GrDestroyWindow(w);
+	if (done != 1)
+		return;
+	if (opt.home[0]) {
+		char where[280];
+
+		typed_address(opt.home, where, sizeof where);
+		strcpy(home, where);
+	} else
+		strcpy(home, HOME);
+	i = opt.pictures != load_pictures;
+	load_pictures = opt.pictures;
+	note(options_write() ? "the options are in the registry" : "the options hold until the browser closes (/persistence cannot be written)");
+	if (i)
+		pictures_again();
+}
+
+/* ---- the menus ---- */
+
+enum { C_ADDRESS = 1, C_OPEN, C_SAVE, C_CLOSE, C_COPY, C_PASTE, C_FIND, C_NEXT, C_STOP, C_RELOAD, C_PICTURES, C_SOURCE, C_OPTIONS,
+       C_BACK, C_FORWARD, C_HOME, C_MARK, C_KEYS, C_ABOUT, C_LINK, C_LINK_COPY, C_LINK_MARK,
+       C_VISIT = 100, C_BOOKMARK = 200, C_REMOVE = 300 };	/* and from each of these three, a row a page */
+
+/* A menu is made when it opens: what its rows say and which are grey depend on the page. */
+static struct ui_menu_item rows[HISTORY + BOOKMARKS + 8], removals[BOOKMARKS];
+static char labels[BOOKMARKS][56];
+static int row_count;
+
+static struct ui_menu_item *
+row(const char *label, int id, int flags)
+{
+	struct ui_menu_item *r = &rows[row_count++];
+
+	memset(r, 0, sizeof *r);
+	r->label = label;
+	r->icon = -1;
+	r->id = id;
+	r->flags = flags;
+	return r;
+}
+
+/* A page as a row: its title, or its address when it has none. */
+static const char *
+page_label(int k, const char *title, const char *where)
+{
+	const char *text = title[0] ? title : where;
+
+	snprintf(labels[k], sizeof labels[0], "%.48s%s", text, strlen(text) > 48 ? "..." : "");
+	return labels[k];
+}
+
+static void
+menu_make(int which)
+{
+	int i, marked = bookmark_of(address) >= 0, grey = UI_MENU_GREY;
+
+	row_count = 0;
+	switch (which) {
+	case 0:
+		row("Open address...   Ctrl+L", C_ADDRESS, 0);
+		row("Open file...   Ctrl+O", C_OPEN, 0);
+		row("Save page as...   Ctrl+S", C_SAVE, page_length ? 0 : grey);
+		row("Close   Ctrl+Q", C_CLOSE, UI_MENU_LINE);
+		break;
+	case 1:
+		row("Copy the address   Ctrl+C", C_COPY, 0);
+		row("Paste an address   Ctrl+V", C_PASTE, 0);
+		row("Find in page...   Ctrl+F", C_FIND, UI_MENU_LINE);
+		row("Find next   F3", C_NEXT, sought[0] ? 0 : grey);
+		break;
+	case 2:
+		row("Stop   Escape", C_STOP, busy() ? 0 : grey);
+		row("Reload   F5", C_RELOAD, 0);
+		row("Pictures", C_PICTURES, UI_MENU_LINE | (load_pictures ? UI_MENU_CHECK : 0));
+		row("Page source   Ctrl+U", C_SOURCE, page_length ? 0 : grey);
+		row("Options...", C_OPTIONS, UI_MENU_LINE);
+		break;
+	case 3:
+		row("Back   Alt+Left", C_BACK, history_at > 0 ? 0 : grey);
+		row("Forward   Alt+Right", C_FORWARD, history_at + 1 < history_count ? 0 : grey);
+		row("Home   Alt+Home", C_HOME, 0);
+		/* the session's pages, the newest first, a tick at the one shown */
+		for (i = history_count - 1; i >= 0; i--)
+			row(page_label(i, history[i].title, history[i].address), C_VISIT + i,
+			    (i == history_count - 1 ? UI_MENU_LINE : 0) | (i == history_at ? UI_MENU_CHECK : 0));
+		break;
+	case 4:
+		row(marked ? "Remove this page   Ctrl+D" : "Add this page   Ctrl+D", C_MARK, 0);
+		row("Remove", 0, bookmark_count ? 0 : grey)->sub = removals;
+		rows[1].sub_count = bookmark_count;
+		for (i = 0; i < bookmark_count; i++) {
+			row(page_label(i, bookmarks[i].title, bookmarks[i].address), C_BOOKMARK + i, i ? 0 : UI_MENU_LINE)->icon = ui_icon_of("page");
+			removals[i] = rows[row_count - 1];
+			removals[i].id = C_REMOVE + i;
+			removals[i].flags = 0;
+		}
+		break;
+	case 5:
+		row("Keys", C_KEYS, 0);
+		row("About this machine", C_ABOUT, 0);
+		break;
+	}
+}
+
+/* NXWEB_PRINT: the rows of the menu just opened, for a test to read. */
+static void
+menu_say(const char *name)
+{
+	int i;
+
+	for (i = 0; print && i < row_count; i++)
+		printf("nxweb: menu %s %d: %s%s%s\n", name, i, rows[i].label, (rows[i].flags & UI_MENU_GREY) ? " (grey)" : "",
+		       (rows[i].flags & UI_MENU_CHECK) ? " (on)" : "");
+}
+
+/* Opens a menu of the bar under its name; `keyboard` picks out its first row. */
+static void
+menu_open(int which, int keyboard)
+{
+	int x, y;
+
+	ui_window_origin(window, &x, &y);
+	menu_make(which);
+	menu_at = which;
+	draw_menus();
+	ui_menu_open(rows, row_count, x + menu_x[which], y + MENU_H, 0, keyboard);
+	menu_say(menu_names[which]);
+}
+
+/* What a menu's row, a key of the bar, or the key that stands for one does. */
+static void
+command(int id)
+{
+	char chosen[512], name[128], again[256], *text;
+	FILE *file;
+	int n;
+
+	switch (id) {
+	case C_ADDRESS:
+		field_open(address, 1);
+		break;
+	case C_PASTE:
+		if ((text = ui_clip_get(&n)) == NULL) {
+			note("the clipboard is empty");
+			break;
+		}
+		text[strcspn(text, "\r\n\t")] = 0;
+		field_open(text, 0);
+		free(text);
+		break;
+	case C_COPY:
+		ui_clip_set(address, strlen(address));
+		note("the address is on the clipboard");
+		break;
+	case C_OPEN:
+		if (ui_choose_file("Open a page", "/root", ".html .htm", chosen, sizeof chosen, others) && strlen(chosen) < sizeof address)
+			go(chosen, 1);
+		break;
+	case C_SAVE:
+		snprintf(name, sizeof name, "%.100s", strrchr(address, '/') ? strrchr(address, '/') + 1 : "");
+		name[strcspn(name, "?#")] = 0;
+		if (!strchr(name, '.'))
+			strcpy(name, "page.html");
+		if (!page_length || !ui_save_file("Save the page as", "/root", NULL, name, chosen, sizeof chosen, others))
+			break;
+		file = fopen(chosen, "wb");
+		n = file && fwrite(page, 1, page_length, file) == (size_t)page_length;
+		if (file && fclose(file))
+			n = 0;
+		if (n)
+			snprintf(status, sizeof status, "saved as %.180s", chosen);
+		else
+			snprintf(status, sizeof status, "%.170s could not be written", chosen);
+		draw_status();
+		break;
+	case C_CLOSE:
+		GrClose();
+		exit(0);
+	case C_FIND:
+		finding = 1;
+		editing = 0;
+		sought[0] = 0;
+		draw_address();
+		draw_status();
+		break;
+	case C_NEXT:
+		find_next();
+		break;
+	case C_STOP:
+		stop();
+		break;
+	case C_RELOAD:
+		strcpy(again, address);
+		go(again, 2);
+		break;
+	case C_PICTURES:
+		load_pictures = !load_pictures;
+		options_write();
+		pictures_again();
+		note(load_pictures ? "pictures are loaded" : "pictures are not loaded: the page says what each would be");
+		break;
+	case C_SOURCE:
+		if (!page_length || (file = fopen("/tmp/nxweb-source.html", "wb")) == NULL)
+			break;
+		fwrite(page, 1, page_length, file);
+		fclose(file);
+		ui_run("nxedit", "/tmp/nxweb-source.html");
+		break;
+	case C_OPTIONS:
+		options();
+		break;
+	case C_BACK:
+		if (history_at > 0)
+			travel(history_at - 1);
+		break;
+	case C_FORWARD:
+		if (history_at + 1 < history_count)
+			travel(history_at + 1);
+		break;
+	case C_HOME:
+		go(home, 1);
+		break;
+	case C_MARK:
+		bookmark(address, web_title, 1);
+		break;
+	case C_KEYS:
+		go("about:keys", 1);
+		break;
+	case C_ABOUT:
+		go("/usr/share/web-about.html", 1);
+		break;
+	case C_LINK:
+		go(link_asked, 1);
+		break;
+	case C_LINK_COPY:
+		ui_clip_set(link_asked, strlen(link_asked));
+		note("the link's address is on the clipboard");
+		break;
+	case C_LINK_MARK:
+		bookmark(link_asked, "", 0);
+		break;
+	default:
+		if (id >= C_REMOVE && id < C_REMOVE + bookmark_count)
+			bookmark(bookmarks[id - C_REMOVE].address, "", 1);
+		else if (id >= C_BOOKMARK && id < C_BOOKMARK + bookmark_count)
+			go(bookmarks[id - C_BOOKMARK].address, 1);
+		else if (id >= C_VISIT && id < C_VISIT + history_count && id - C_VISIT != history_at)
+			travel(id - C_VISIT);
+	}
+}
+
 /* ---- the pointer and the keys ---- */
+
+/* The address of the link at a place of the window, made whole; false where there is none. */
+static int
+link_at(int x, int y, char *whole)
+{
+	char href[600];
+	int i, link;
+
+	for (i = web_item_count - 1; i >= 0; i--) {
+		const struct web_item *it = &web_items[i];
+
+		if (it->kind == I_BOX || !ui_inside(x, y - TOP + top, it->x, it->y, it->w, it->h))
+			continue;
+		return (it->kind == I_TEXT || it->kind == I_IMAGE) && (link = web_link_of(it->node)) >= 0 &&
+		       web_attr_text(link, "href", href, sizeof href) && href[0] != '#' && web_resolve(href, whole);
+	}
+	return 0;
+}
+
+/* The right button's menu: what can be done with the link under it, and with the page. */
+static void
+context(const GR_EVENT *event)
+{
+	int x = event->button.x, y = event->button.y, has;
+
+	if (y < TOP || y >= height - STATUS || x >= width - UI_SCROLL_W)
+		return;
+	has = link_at(x, y, link_asked);
+	row_count = 0;
+	if (has) {
+		row("Open the link", C_LINK, 0);
+		row("Copy the link's address", C_LINK_COPY, 0);
+		row("Bookmark the link", C_LINK_MARK, 0);
+		note(link_asked);
+	}
+	row("Back", C_BACK, (has ? UI_MENU_LINE : 0) | (history_at > 0 ? 0 : UI_MENU_GREY));
+	row("Forward", C_FORWARD, history_at + 1 < history_count ? 0 : UI_MENU_GREY);
+	row("Reload", C_RELOAD, 0);
+	row(bookmark_of(address) >= 0 ? "Remove this page's bookmark" : "Bookmark this page", C_MARK, UI_MENU_LINE);
+	row("Page source", C_SOURCE, page_length ? 0 : UI_MENU_GREY);
+	ui_menu_open(rows, row_count, event->button.rootx, event->button.rooty, 0, 0);
+	menu_say("pointer");
+}
 
 static void
 click(int x, int y)
 {
+	static const int tools[TOOLS] = { C_BACK, C_FORWARD, C_RELOAD, C_HOME, C_MARK };
 	int i, was = focus;
 
-	if (y < BAR) {
-		if (x < 3 + 3 * 55) {
-			editing = 0;
-			if (x < 55 && history_count) {
-				int back = history[--history_count].top;
-
-				go(history[history_count].address, 0);
-				if (!loading) {
-					top = goal = back;
-					show_view();
-				}
-			} else if (x >= 55 && x < 110)
-				go(HOME, 1);
-			else if (x >= 110)
-				go(address, 2);
-			return;
-		}
-		editing = 1;
-		strcpy(typed, address);
-		draw_bar();
+	if (y < MENU_H) {
+		for (i = 0; i < MENUS; i++)
+			if (x >= menu_x[i] && x < menu_x[i + 1])
+				menu_open(i, 0);
+		return;
+	}
+	if (y < TOP) {
+		if (x < FIELD_X) {
+			i = (x - 3) / (TOOL_W + 3);
+			if (x >= 3 && i < TOOLS && (x - 3) % (TOOL_W + 3) < TOOL_W)
+				command(i == 2 && busy() ? C_STOP : tools[i]);
+		} else if (editing) {
+			offered = 0;	/* a second click: the text is to be added to */
+			draw_address();
+		} else
+			field_open(address, 1);
 		return;
 	}
 	if (editing) {
 		editing = 0;
-		draw_bar();
+		draw_address();
+	}
+	if (finding) {
+		finding = 0;
+		draw_status();
 	}
 	if (x >= width - UI_SCROLL_W) {
 		dragging = 1;
-		scroll_to(ui_scroll_to(y, BAR, view_height(), web_page_h, view_height()), 1);
+		scroll_to(ui_scroll_to(y, TOP, view_height(), web_page_h, view_height()), 1);
 		return;
 	}
 	if (y >= height - STATUS)
@@ -1160,7 +1988,7 @@ click(int x, int y)
 		int node = it->node, link, up;
 		char href[600];
 
-		if (it->kind == I_BOX || !ui_inside(x, y - BAR + top, it->x, it->y, it->w, it->h))
+		if (it->kind == I_BOX || !ui_inside(x, y - TOP + top, it->x, it->y, it->w, it->h))
 			continue;
 		if (it->kind == I_FIELD) {
 			const char *type = field_type(node);
@@ -1211,7 +2039,7 @@ click(int x, int y)
 static void
 pick_link(int back)
 {
-	int i, found = -1, seen = picked < 0, last = -1, y = 0;
+	int i, found_link = -1, seen = picked < 0, last = -1, y = 0;
 	char href[600];
 
 	for (i = 0; i < web_item_count; i++) {
@@ -1222,15 +2050,15 @@ pick_link(int back)
 		if (back) {
 			if (link == picked)
 				break;
-			found = link, y = web_items[i].y;
+			found_link = link, y = web_items[i].y;
 		} else if (seen && link != picked) {
-			found = link, y = web_items[i].y;
+			found_link = link, y = web_items[i].y;
 			break;
 		}
 		seen |= link == picked;
 		last = link;
 	}
-	picked = found;
+	picked = found_link;
 	tile_drawn = 0;
 	if (picked >= 0) {
 		if (web_attr_text(picked, "href", href, sizeof href))
@@ -1242,17 +2070,50 @@ pick_link(int back)
 	show_view();
 }
 
-/* Keys: with the address field or one of the page's fields open they are typed into it.
- * Otherwise arrows and the paging keys scroll, Tab goes from link to link and Enter follows,
- * Backspace goes back, F5 loads the page again, and Ctrl+L opens the address field. */
+/* The command a letter with Ctrl is, or 0. */
+static int
+command_of(int letter)
+{
+	static const char letters[] = "losqwcvfdur";
+	static const int ids[] = { C_ADDRESS, C_OPEN, C_SAVE, C_CLOSE, C_CLOSE, C_COPY, C_PASTE, C_FIND, C_MARK, C_SOURCE, C_RELOAD };
+	const char *at = letter ? strchr(letters, letter) : NULL;
+
+	return at ? ids[at - letters] : 0;
+}
+
+/* Keys: the menus' own (they say which), then with the address field or one of the page's
+ * fields open they are typed into it. Otherwise arrows and the paging keys scroll, Tab goes
+ * from link to link and Enter follows, Backspace goes back, Escape stops. */
 static void
 key(int ch, int modifiers)
 {
-	int n = strlen(typed), view = view_height();
+	int n = strlen(typed), view = view_height(), letter = 0;
 
+	if (finding) {
+		find_key(ch);
+		return;
+	}
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
-	if ((modifiers & MWKMOD_CTRL) && (ch == 'l' || ch == 'L'))
-		ch = 'l' & 0x1f;
+	if ((modifiers & MWKMOD_CTRL) && ch < 128 && isalpha(ch))
+		letter = tolower(ch);
+	else if (ch >= 1 && ch <= 26 && ch != MWKEY_BACKSPACE && ch != MWKEY_TAB && ch != '\n' && ch != MWKEY_ENTER)
+		letter = 'a' + ch - 1;
+	if (letter) {
+		if (command_of(letter))
+			command(command_of(letter));
+		return;
+	}
+	switch (ch) {
+	case MWKEY_F3: command(C_NEXT); return;
+	case MWKEY_F5: command(C_RELOAD); return;
+	case MWKEY_F6: command(C_ADDRESS); return;
+	case MWKEY_F10: menu_open(0, 1); return;
+	case MWKEY_LEFT: case MWKEY_RIGHT: case MWKEY_HOME:
+		if (!(modifiers & MWKMOD_ALT))
+			break;
+		command(ch == MWKEY_LEFT ? C_BACK : ch == MWKEY_RIGHT ? C_FORWARD : C_HOME);
+		return;
+	}
 	if (focus >= 0 && !editing) {
 		struct field *f = field_of(focus);
 
@@ -1287,36 +2148,42 @@ key(int ch, int modifiers)
 					follow(href);
 			}
 			break;
-		case MWKEY_F5: click(120, 10); break;
-		case 'l' & 0x1f: click(width - 20, 10); break;
 		case MWKEY_UP: scroll_to(goal - 3 * line_h, 0); break;
 		case MWKEY_DOWN: scroll_to(goal + 3 * line_h, 0); break;
 		case MWKEY_PAGEUP: scroll_to(goal - view + line_h, 0); break;
 		case MWKEY_PAGEDOWN: case ' ': scroll_to(goal + view - line_h, 0); break;
 		case MWKEY_HOME: scroll_to(0, 0); break;
 		case MWKEY_END: scroll_to(web_page_h, 0); break;
-		case MWKEY_BACKSPACE: click(10, 10); break;
+		case MWKEY_BACKSPACE: command(C_BACK); break;
+		case MWKEY_ESCAPE:
+			if (busy())
+				stop();
+			else if (found >= 0) {
+				found = -1;
+				tile_drawn = 0;
+				show_view();
+			}
+			break;
 		}
 		return;
 	}
 	if (ch == MWKEY_ENTER || ch == '\n' || ch == '\r') {
 		char where[280];
 
-		/* a bare name is a site */
-		snprintf(where, sizeof where, "%s%s", typed[0] == '/' || strstr(typed, ":") ? "" : "https://", typed);
-		where[255] = 0;
-		if (!strchr(where + 8, '/') && where[0] != '/' && strlen(where) < 254)
-			strcat(where, "/");
+		typed_address(typed, where, sizeof where);
 		go(where, 1);
 		return;
 	}
 	if (ch == MWKEY_ESCAPE)
 		editing = 0;
-	else if ((ch == MWKEY_BACKSPACE || ch == 127) && n > 0)
-		typed[n - 1] = 0;
-	else if (ch >= 32 && ch < 127 && n < 250)
+	else if (ch == MWKEY_BACKSPACE || ch == 127)
+		typed[n ? n - 1 : 0] = 0;
+	else if (ch >= 32 && ch < 127 && n < 250) {
+		n = offered ? 0 : n;
 		typed[n] = ch, typed[n + 1] = 0;
-	draw_bar();
+	}
+	offered = 0;
+	draw_address();
 }
 
 int
@@ -1324,13 +2191,15 @@ main(int argc, char **argv)
 {
 	GR_EVENT event;
 	GR_FONT_INFO info;
-	int fd;
+	int fd, id;
 
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	signal(SIGCHLD, SIG_IGN);	/* (the editor, started for a page's source) */
 	verbose = getenv("NXWEB_TIME") != NULL;
 	dump = getenv("NXWEB_DUMP") != NULL;
+	print = getenv("NXWEB_PRINT") != NULL;
 	int c, plain;
 
 	GrGetFontInfo(ui_var, &info);
@@ -1339,6 +2208,9 @@ main(int argc, char **argv)
 		ui_var_widths.of[c] = info.widths[c >= info.firstchar && c <= info.lastchar ? c : info.firstchar];
 	ui_var_widths.known = 1;
 	line_h = (info.height > ui_fh ? info.height : ui_fh) + 2;
+	for (c = 0, menu_x[0] = 2; c < MENUS; c++)
+		menu_x[c + 1] = menu_x[c] + ui_width(&ui_var_widths, ui_var, menu_names[c], -1) + 16;
+	kept_read();
 	pictures = malloc(MAX_PICTURES * sizeof *pictures);
 	fd = open("/dev/gpu", O_RDWR);
 	if (fd >= 0) {
@@ -1373,33 +2245,48 @@ main(int argc, char **argv)
 		} else if (!strcmp(web_faces[plain].name, "font-sans-13.sef"))
 			fonts[plain][0] = test;	/* (the page's plain face is this file: not made a second time) */
 	}
-	go(argc > 1 ? argv[1] : HOME, 0);
+	go(argc > 1 ? argv[1] : home, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
 	set_title();
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
+		int menu, open;
+
 		GrGetNextEventTimeout(&event, top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000);
-		switch (event.type) {
+		ui_origin_note(&event);
+		if (menu_at >= 0 && ui_menu_depth == 1 && event.type == GR_EVENT_TYPE_KEY_DOWN &&
+		    (event.keystroke.ch == MWKEY_LEFT || (event.keystroke.ch == MWKEY_RIGHT &&
+		     !(ui_menu_level[0].hover >= 0 && ui_menu_level[0].items[ui_menu_level[0].hover].sub)))) {
+			/* Left and Right in a menu of the bar: the menu beside it */
+			menu_open((menu_at + (event.keystroke.ch == MWKEY_LEFT ? MENUS - 1 : 1)) % MENUS, 1);
+			menu = UI_MENU_TOOK;
+		} else
+			menu = ui_menu_event(&event, &id);
+		if (menu == UI_MENU_CHOSEN || menu == UI_MENU_CLOSED) {
+			int was = menu_at;
+
+			menu_at = -1;
+			if (was >= 0)
+				draw_menus();
+			GrSetFocus(window);
+			if (menu == UI_MENU_CHOSEN)
+				command(id);
+		}
+		switch (menu ? GR_EVENT_TYPE_NONE : event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw_all();
 			break;
 		case GR_EVENT_TYPE_UPDATE:
-			if (event.update.utype == GR_UPDATE_SIZE && (event.update.width != width || event.update.height != height)) {
-				int wider = event.update.width != width;
-
-				width = event.update.width;
-				height = event.update.height;
-				if (wider)
-					lay_out(1, 1);	/* (the sheets' media queries ask about the width) */
-				tile_drawn = 0;
-				draw_all();
-			}
+			if (event.update.utype == GR_UPDATE_SIZE && event.update.wid == window)
+				resized(event.update.width, event.update.height);
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (ui_wheel(&event))
 				scroll_to(goal + 3 * line_h * ui_wheel_sum(&event), 0);
+			else if (event.button.changebuttons & GR_BUTTON_R)
+				context(&event);
 			else {
 				click(event.button.x, event.button.y);
 				ui_moves(window, EVENTS, dragging);	/* (the pointer's moves, while the scroll bar is held) */
@@ -1411,7 +2298,7 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (dragging && (event.mouse.buttons & GR_BUTTON_L))
-				scroll_to(ui_scroll_to(event.mouse.y, BAR, view_height(), web_page_h, view_height()), 1);
+				scroll_to(ui_scroll_to(event.mouse.y, TOP, view_height(), web_page_h, view_height()), 1);
 			else {
 				dragging = 0;
 				ui_moves(window, EVENTS, 0);
@@ -1421,8 +2308,23 @@ main(int argc, char **argv)
 			key(event.keystroke.ch, event.keystroke.modifiers);
 			break;
 		case GR_EVENT_TYPE_CLOSE_REQ:
+			if (event.general.wid != window)	/* (a menu's may come after the menu went) */
+				break;
 			GrClose();
 			return 0;
+		}
+		if (print && (menu == UI_MENU_CHOSEN || (!menu && (event.type == GR_EVENT_TYPE_KEY_DOWN || event.type == GR_EVENT_TYPE_BUTTON_DOWN)))) {
+			int i;
+
+			printf("nxweb: at %s, page %d of %d, top %d, %d bookmarks, home %s, pictures %d, typing %d \"%s\", status \"%s\"\n", address,
+			       history_at + 1, history_count, top, bookmark_count, home, load_pictures, editing, editing ? typed : "", status);
+			/* where the link the keyboard is on stands in the window, for a test to click */
+			for (i = 0; picked >= 0 && i < web_item_count; i++)
+				if (web_items[i].kind == I_TEXT && web_link_of(web_items[i].node) == picked) {
+					printf("nxweb: the link picked is at %d,%d\n", web_items[i].x + 2, web_items[i].y - top + TOP + 2);
+					break;
+				}
+			fflush(stdout);
 		}
 		ticked = event.type == GR_EVENT_TYPE_TIMEOUT && top == goal;
 		if (top != goal)
@@ -1444,5 +2346,13 @@ main(int argc, char **argv)
 			ask(web_sheets[asking - SHEET].address, 2);
 		else if (!by_hand && regs && asking >= 0)
 			ask(pictures[asking].address, 1);
+		/* the Stop key and the status line's right part say what is still to come */
+		open = regs ? wanted_open() : 0;
+		if ((loading || by_hand || open) != shown_busy || open != shown_open) {
+			shown_busy = loading || by_hand || open;
+			shown_open = open;
+			draw_tool(2);
+			draw_status();
+		}
 	}
 }

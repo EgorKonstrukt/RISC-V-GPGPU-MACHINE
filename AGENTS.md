@@ -170,7 +170,7 @@
   `line_news` in one texel with `matrices_dirty`).
 - Memory a worker will store to wants a store by the first core first, GPU memory and the
   mailbox pages too, and the code a worker starts in a read (`mcw_open` stores to the
-  mailboxes; nxpath reads `mcw_entry`'s page): `PHYS_COUNT=1`, `NXPATH_COUNT=1` and mctest's
+  mailboxes; nxpath reads `mcw_entry`'s page): `PHYS_COUNT=1` and mctest's
   "pages brought for their start" must say 0. A job that waits ends its pass with
   `mc_end_pass()`, never with the pause hint, which is a worker's sleep.
 - Events are pushed to a program (`GrNumPushEvents`) and a window's, GC's and font's ids are
@@ -178,9 +178,18 @@
   on the socket still gets one event a `GrServiceSelect`. A program's start is measured as the
   first window of a session and as a later one: the first pays for the icon list and the font.
 - nxphys asks for 255 workers and gives the grid and the pictures to shares with no bodies
-  (`PHYS_SERVICE=0` is the old sharing; this replaces the 207 above). nxpath's sums are those
-  of its new arithmetic; `NXPATH_OLD=1` has the old ones.
+  (`PHYS_SERVICE=0` is the old sharing; this replaces the 207 above). nxpath is a mesh viewer
+  since 13 October 2026 (`docs/raytrace.md`): its sum is `f38bbd71` (160 x 120, 2 samples, with
+  workers and with `NXPATH_CORES=0`), and `NXPATH_CHECK=500` must say 0.
 - `tools/private_image.py` reads the shared root each time: a "before" image made again after
   the root was rebuilt is no longer before. `linux/prebuilt/root` of the last commit is.
 - A `Con_Printf` while a Quake level loads draws a frame: prints added there move the numbers
   of held frames.
+- `/persistence` is the one folder a host keeps between sessions, and only when asked
+  (`docs/persist.md`): `nxpersist`, the fetch's `persist:` addresses, `--persist FILE` on
+  `rvc_cpu` and `rvc_harness`. The `nx` script runs `nxpersist load` before the desktop: a
+  desktop's start has that program's start in it. A program that should keep a file writes it
+  under that folder (its starter's `cd`, `HOME` or a link), and 96,000 packed bytes are all.
+- A setting a program wants kept is a key of the registry all programs share (`registry.h`,
+  `nxreg`; `/persistence/registry`, `docs/persist.md`), not a file of its own: `program.name`,
+  set at once, read at start. A test that must have the defaults does not read it (`RAY_FRAMES`).

@@ -194,8 +194,10 @@ rm -f doom_fps.o
 rv32-cc $OPT -w $(ls *.o | grep -vx -e 'zz_pad_.*' -e doom_gl.o -e gles.o -e mcw.o) doom_gl.o gles.o mcw.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o doom
 riscv32-linux-strip -o "$OUT/usr/bin/doom.bin" doom
 # the image builder adds files to directories the image has, so the data sits in /usr/share
+# its settings and saved games go to the folder the host keeps (docs/persist.md)
 printf '#!/bin/sh
-DOOMWADDIR=/usr/share exec doom.bin "$@"
+mkdir -p /persistence/doom && cd /persistence/doom || exit 1
+HOME=/persistence/doom DOOMWADDIR=/usr/share exec doom.bin "$@"
 ' > "$OUT/usr/bin/doom"
 if [ ! -f "$WORK/src/doom1.wad" ]; then
     echo "== shareware doom1.wad"

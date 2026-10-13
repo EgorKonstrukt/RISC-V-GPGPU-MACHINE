@@ -119,7 +119,8 @@ for f in DEMO DEMOL SOUNDS SPEECH; do ln -sf /usr/share/tdawn-$f.MIX $f.MIX; don
 for f in MAP1 WIN1; do ln -sf /usr/share/tdawn-$f.AUD $f.AUD; done
 # the game reads the whole of its program's folder for every file it looks for: not /usr/bin
 [ -x game ] || cp /usr/bin/tdawn.bin game
-HOME=/tmp/tdawn exec ./game "$@"
+# its settings and saved games go to the folder the host keeps (docs/persist.md)
+HOME=/tmp/tdawn XDG_CONFIG_HOME=/persistence exec ./game "$@"
 EOF
 chmod +x "$OUT/usr/bin/tdawn"
 echo "Games/Tiberian Dawn=tdawn" > "$OUT/usr/share/nxapps.60-tdawn"

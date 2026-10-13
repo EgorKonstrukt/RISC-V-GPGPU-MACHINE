@@ -1,7 +1,7 @@
 /*
  * nxsettings: the desktop's settings, a tab each. Desktop: what the desktop shows (a picture
- * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. System:
- * what the machine is. From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system.
+ * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. Storage:
+ * what the host keeps (docs/persist.md). System: what the machine is. From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system.
  */
 #include <dirent.h>
 #include <setjmp.h>
@@ -15,17 +15,20 @@
 #include <time.h>
 #include "ui.h"
 #include "ui_files.h"
+#include "ui_ask.h"
 #include "shaderemu_sound.h"
 
 #define WIDTH 380
 #define HEIGHT 300
-#define TAB_W 90
+#define TAB_W 72
 #define TOP 36			/* where a tab's own part begins */
 #define MAX_CHOICES 64
-#define SIZE_CHOICE "/tmp/nxsize"	/* the screen size the desktop starts with: WIDTHxHEIGHT (the nx script reads it) */
+#define SIZE_CHOICE "desktop.size"	/* the registry's key for the screen size the desktop starts with: WIDTHxHEIGHT (the nx script reads it) */
 
-enum { TAB_DESKTOP, TAB_SCREEN, TAB_SOUND, TAB_SYSTEM, TABS };
-static const char *tab_names[TABS] = { "Desktop", "Screen", "Sound", "System" };
+enum { TAB_DESKTOP, TAB_SCREEN, TAB_SOUND, TAB_STORAGE, TAB_SYSTEM, TABS };
+static const char *tab_names[TABS] = { "Desktop", "Screen", "Sound", "Storage", "System" };
+static const char *const storage_names[3] = { "Save now", "Load at start: on", "Clear the kept data" };
+static int kept_bytes = -1, kept_most, kept_auto = 1;	/* what the host keeps of /persistence; -1: it keeps nothing */
 
 static struct { char label[64], value[512]; } choices[MAX_CHOICES];
 static struct ui_list pictures = { 8, TOP, WIDTH - 16, 196, 0, 0, -1 };
@@ -267,17 +270,66 @@ system_lines(char lines[][160], int screen_w, int screen_h)
 static void
 restart_desktop(const char *size, int ask)
 {
-	FILE *file = ask ? NULL : fopen(SIZE_CHOICE, "w");
-
-	if (file) {
-		fputs(size, file);
-		fclose(file);
-	}
+	if (!ask)
+		reg_set(SIZE_CHOICE, size);
 	if (fork() == 0) {
 		setsid();
 		execlp("nx", "nx", "restart", ask ? "ask" : (char *)NULL, size, (char *)NULL);
 		_exit(127);
 	}
+}
+
+/* The volume, as the next session will have it once the folder is saved. */
+static void
+keep_volume(void)
+{
+	reg_set_int("sound.volume", (int)(SND_MASTER * 100 / 256));
+}
+
+/* nxpersist with a word or two, waited for; its exit status. */
+static int
+persist(const char *what, const char *more)
+{
+	int status = -1;
+	pid_t child = fork();
+
+	if (child == 0) {
+		execlp("nxpersist", "nxpersist", what, more, (char *)NULL);
+		_exit(127);
+	}
+	return child > 0 && waitpid(child, &status, 0) == child ? status : -1;
+}
+
+/* What the host keeps, asked of it (nxpersist state). */
+static void
+read_kept(void)
+{
+	FILE *from = popen("nxpersist state", "r");
+	char line[64];
+
+	kept_bytes = -1;
+	while (from && fgets(line, sizeof line, from)) {
+		sscanf(line, "stored %d", &kept_bytes);
+		sscanf(line, "limit %d", &kept_most);
+		sscanf(line, "auto %d", &kept_auto);
+	}
+	if (from)
+		pclose(from);
+}
+
+/* The Storage tab's three buttons. */
+static void
+storage(int which)
+{
+	static const char *const answers[] = { "Clear", "Cancel" };
+
+	if (which == 0)
+		persist("save", NULL);
+	else if (which == 1)
+		persist("auto", kept_auto ? "0" : "1");
+	else if (ui_ask("Storage", "Clear what the host keeps of /persistence?\nThe folder itself stays until the machine is switched off.", answers, 2, NULL) == 0)
+		persist("clear", NULL);
+	read_kept();
 }
 
 /* A short tone through the card, to hear the volume by. */
@@ -375,6 +427,22 @@ draw(void)
 		ui_text(window, 8, TOP + 90, text, -1, UI_SHADOW, 0);
 		ui_text(window, 8, TOP + 106, "How loud the host plays it is set on the host.", -1, UI_SHADOW, 0);
 		break;
+	case TAB_STORAGE:
+		if (kept_bytes < 0)
+			snprintf(text, sizeof text, "This machine's host keeps nothing between sessions.");
+		else if (kept_bytes == 0)
+			snprintf(text, sizeof text, "The host keeps nothing of /persistence yet.");
+		else
+			snprintf(text, sizeof text, "The host keeps %d KB of /persistence (%d at most).", (kept_bytes + 999) / 1000, kept_most / 1000);
+		ui_text(window, 8, TOP, text, -1, BLACK, 0);
+		for (i = 0; i < 3; i++) {
+			ui_button(window, 8, TOP + 24 + i * 28, 170, 22, i == 1 && !kept_auto ? "Load at start: off" : storage_names[i], 0);
+			if (focus == i + 1)
+				ui_focus(window, 8 + 4, TOP + 24 + i * 28 + 4, 170 - 8, 22 - 8);
+		}
+		ui_text(window, 8, HEIGHT - 44, "/persistence holds settings and saved games. It is kept", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 26, "only when saved: here, or with the button by the computer.", -1, UI_SHADOW, 0);
+		break;
 	case TAB_SYSTEM: {
 		static char lines[12][160];
 		int n = system_lines(lines, screen.cols, screen.rows);
@@ -384,7 +452,7 @@ draw(void)
 		memcpy(system_shown, lines, sizeof lines);
 		system_count = n;
 		}
-		ui_text(window, 8, HEIGHT - 44, "Settings last until the machine is switched off.", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 44, "Settings are kept when saved (the Storage tab).", -1, UI_SHADOW, 0);
 		ui_text(window, 8, HEIGHT - 26, "ShaderEmu: a RISC-V computer in a pixel shader", -1, UI_SHADOW, 0);
 		break;
 	}
@@ -439,6 +507,8 @@ show_tab(int which)
 	focus = 0;
 	if (tab == TAB_SOUND && have_sound < 0)
 		have_sound = snd_open() == 0;
+	if (tab == TAB_STORAGE)
+		read_kept();
 	draw();
 }
 
@@ -446,7 +516,7 @@ show_tab(int which)
 static int
 controls(void)
 {
-	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : 3;
+	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : tab == TAB_STORAGE ? 4 : 3;
 }
 
 /* Tab goes round the row of tabs and the controls of the tab shown; arrows change the tab,
@@ -490,6 +560,13 @@ key(const GR_EVENT *event)
 		value = ch == MWKEY_LEFT ? value - 8 : ch == MWKEY_RIGHT ? value + 8 : ch == MWKEY_HOME ? 0 : ch == MWKEY_END ? 256 : -1;
 		if (focus == 1 && value != -1) {
 			SND_MASTER = value < 0 ? 0 : value > 256 ? 256 : value;
+			keep_volume();
+			draw();
+		}
+		break;
+	case TAB_STORAGE:
+		if (ui_press_key(ch)) {
+			storage(focus - 1);
 			draw();
 		}
 		break;
@@ -534,10 +611,19 @@ press(GR_EVENT *event)
 		if ((down || (event->type == GR_EVENT_TYPE_MOUSE_MOTION && (event->mouse.buttons & GR_BUTTON_L))) &&
 		    ui_inside(x, y, 8, TOP + 18, WIDTH - 16, 26)) {
 			SND_MASTER = ui_slider_value(x, 8, WIDTH - 16, 256);
+			keep_volume();
 			draw();
 		} else if (down && ui_inside(x, y, 8, TOP + 52, 90, 22)) {
 			beep();
 		}
+		break;
+	case TAB_STORAGE:
+		for (how = 0; down && how < 3; how++)
+			if (ui_inside(x, y, 8, TOP + 24 + how * 28, 170, 22)) {
+				focus = how + 1;
+				storage(how);
+				draw();
+			}
 		break;
 	}
 }
@@ -596,6 +682,8 @@ main(int argc, char **argv)
 		tab = atoi(getenv("NXSETTINGS_TAB")) % TABS;
 		if (tab == TAB_SOUND)
 			have_sound = snd_open() == 0;
+		if (tab == TAB_STORAGE)
+			read_kept();
 	}
 	window = GrNewWindowEx(UI_FIXED, "Settings", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
 	GrSelectEvents(window, EVENTS);

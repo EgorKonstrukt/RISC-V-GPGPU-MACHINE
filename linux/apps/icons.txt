@@ -2,23 +2,25 @@
 # A name is a program as the kernel calls it (the window manager reads /proc/PID/comm for a
 # caption's icon), a file kind (nxfiles, nxdesk), or a place. A source is FOLDER/NAME in
 # Chicago95's icon theme, or the name of a picture in linux/apps/icons (NAME.png, any size).
+# (Every picture of the theme's "categories" is the same plain program group: for a menu's
+# folder, not for a program.)
 
 default,program         mimes/application-x-executable
 nxterm                  apps/utilities-terminal
 nxcalc                  apps/accessories-calculator
 nxclock                 apps/clock
-nxtetris                apps/quadrapassel apps/gnome-tetravex categories/applications-puzzles
+nxtetris                apps/quadrapassel apps/gnome-tetravex apps/gnome-sudoku
 nxmine                  apps/gnome-mines apps/mines
-nxeyes                  apps/xeyes categories/applications-other
-glxgears                categories/applications-3D
+nxeyes                  nxeyes
+glxgears                glxgears
 nxedit                  apps/accessories-text-editor
 nxfiles                 apps/system-file-manager
-nxpaint                 apps/kolourpaint apps/gnome-paint categories/applications-painting
+nxpaint                 apps/kolourpaint apps/gnome-paint apps/gimp
 nxweb                   apps/internet-web-browser
 nxmon                   apps/utilities-system-monitor
 nxsettings              apps/preferences-desktop
 nxview                  apps/image-viewer
-nxgame                  categories/applications-games
+nxgame                  devices/joystick
 nxnet                   places/network-workgroup places/network apps/preferences-system-network
 nxplay                  apps/multimedia-audio-player
 nxvideo                 apps/multimedia-video-player
@@ -29,12 +31,12 @@ classicube,classicube.bin classicube
 tdawn,tdawn.bin         tdawn
 ralert,ralert.bin       ralert
 nes,nes.bin             devices/input-gaming
-imdemo                  categories/applications-development
-nxray                   categories/applications-graphics
-nxpath                  categories/applications-science
-nxphys                  categories/applications-engineering categories/applications-science
-nxide                   categories/applications-ide categories/applications-development
-example                 categories/applications-development categories/applications-ide
+imdemo                  apps/desktop-effects apps/glade
+nxray                   apps/multimedia-photo-manager
+nxpath                  devices/camera-photo
+nxphys                  devices/processor
+nxide                   apps/geany
+example                 mimes/text-x-csrc
 restart                 apps/system-restart
 nxoff                   apps/system-shutdown
 
@@ -49,9 +51,25 @@ page                    mimes/text-html
 archive                 mimes/application-x-tar
 script                  mimes/application-x-shellscript
 shortcut                mimes/application-x-desktop
+# a file's own kind by its ending (types[] in nxfiles.c): only pictures the kinds above have not
+# (the theme's zip is its tar, its css and xml its html, its readme its text)
+c-source                mimes/text-x-csrc
+c-header                mimes/text-x-chdr
+cpp-source              mimes/text-x-c++src
+code                    mimes/text-x-python
+font                    mimes/font-x-generic
+png                     mimes/image-png
+jpeg                    mimes/image-jpeg
+gif                     mimes/image-gif
+bitmap                  mimes/image-bmp
+tune                    mimes/audio-mpeg
+data                    mimes/application-x-object
+library                 mimes/application-x-sharedlib
+disk                    mimes/application-x-cd-image
 
 desktop                 places/user-desktop
 home                    places/user-home
+persistence             devices/media-floppy
 pictures                places/folder-pictures
 music                   places/folder-music
 videos                  places/folder-videos

@@ -50,6 +50,7 @@ namespace fs = std::filesystem;
 // The machine as an interpreter (rvc_cpu.cpp, docs/cpu-harness.md), for --cpu: the same file
 // that is bin\\rvc_cpu.exe, without its main().
 #define RVC_CPU_LIBRARY
+#include "rvc_persist.h"
 namespace cpuemu {
 #include "rvc_cpu.cpp"
 }
@@ -77,6 +78,7 @@ struct Options {
     std::string until;
     std::vector<std::string> open;   // --open: addresses or files the guest is told to open (docs/open.md)
     std::string openAfter;           // --open-after: not before the console has shown this
+    std::string persist;             // --persist: the file the guest's /persistence is kept in (docs/persist.md)
     int ticks = 8192;
     int initFrames = 2;
     uint64_t maxFrames = 0;
@@ -215,6 +217,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --open ADDRESS       tell the guest to open an address, or a file of this computer (file:// and its path);
                        several are told ten seconds apart (docs/open.md)
   --open-after TEXT    not before the console has shown TEXT
+  --persist FILE       the file the guest's /persistence is kept in (docs/persist.md)
   --holodeck           tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
   --zap K,X,Y,R,W,M,S,Z  flip bits of RAM in one commit (docs/danger.md): kind 1 (word W of texel X,Y) or 2
                        (a square reaching R texels each way), mask M and seed S (hex), zones Z (a bit each)
@@ -356,6 +359,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--tabs") o.tabs = true;
         else if (a == "--open") o.open.push_back(next("--open"));
         else if (a == "--open-after") o.openAfter = unescape(next("--open-after"));
+        else if (a == "--persist") o.persist = next("--persist");
         else if (a == "--viz-capture") { o.vizCapture = next("--viz-capture"); o.viz = true; }
         else if (a == "--no-doubles") o.noDoubles = true;
         else if (a == "--no-gpu") o.noGpu = true;
@@ -986,7 +990,27 @@ int main(int argc, char** argv) {
                 uint32_t kind = texel(64 + 16, 2), offset = texel(64 + 16, 3);
                 fetch.seq = texel(64 + 16, 0);
                 fetch.offset = offset;
-                bool held = offset != 0 && url == fetch.url;   // a further part of what is held
+                bool kept = PersistHost::is(url);
+                bool held = !kept && offset != 0 && url == fetch.url;   // a further part of what is held
+                if (kept) {
+                    // the guest's kept folder (docs/persist.md): answered here, from the file; what
+                    // it hands over lies in the fetch's own 256 KB (four rows are the 100,000 bytes)
+                    PersistHost keeper;
+                    std::vector<uint8_t> data(PersistHost::kLimit + 32768, 0), rows, reply;
+                    keeper.file = opt.persist;
+                    bool read = true;
+                    if (opt.cpu) memcpy(data.data(), &cpuemu::ram[0x876c0000u - cpuemu::RAM_BASE], PersistHost::kLimit);
+                    else if (url == "persist:save" && (read = backend.readRows(64 + 0x76c000 / 2048, 4, rows)))
+                        memcpy(data.data(), rows.data(), (std::min)(rows.size(), data.size()));
+                    fetch.status = read ? keeper.answer(url, offset, data.data(), reply) : 500;
+                    fetch.offset = 0;
+                    fetch.body.assign(reply.begin(), reply.end());
+                    fetch.url = url;
+                    fetch.info = 0;
+                    fetch.ready = true;
+                    fprintf(stderr, "[harness] the guest's kept folder: %s, status %u\n", url.c_str(), fetch.status);
+                    held = true;   // (no thread)
+                } else
                 (held ? fetch.ready : fetch.busy) = true;
                 bool picture = kind == 1, file = kind == 3;
                 if (!held) fprintf(stderr, "[harness] the guest asks for %s\n", url.c_str());
@@ -1390,6 +1414,12 @@ int main(int argc, char** argv) {
                 memcpy(bytes.data(), fetch.body.data() + from, n);
                 std::string err;
                 if (backend.deliverHostData(mat, bytes.data(), err)) {
+                    // (--cpu: the processor's own memory has only the control words copied back,
+                    // so the answer's bytes are put there here, before its words say it has come)
+                    if (opt.cpu) {
+                        memcpy(&cpuemu::ram[0x876c0000u - cpuemu::RAM_BASE], bytes.data(), bytes.size());
+                        cpuemu::dirty(0x876c0000u);
+                    }
                     mat.setInt("_FetchDeliver", 1);
                     mat.setInt("_FetchSeq", fetch.seq);
                     mat.setInt("_FetchLength", (int64_t)fetch.body.size());

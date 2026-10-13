@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "rvc_net.h"
+#include "rvc_persist.h"
 
 typedef uint32_t u32;
 typedef int32_t i32;
@@ -66,6 +67,7 @@ struct Options {
     bool desktop = false, tabs = false, quiet = false;
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
     double netLoss = 0, netDelay = 0;
+    std::string persist;                 // --persist FILE: the guest's kept folder (docs/persist.md)
 };
 static Options opt;
 
@@ -826,6 +828,28 @@ static void net_pass() {
     dirty(NET);
 }
 
+// The addresses "persist:..." of a fetch (docs/fetch.md, docs/persist.md): the only ones this
+// host answers, and at once.
+static void persist_pass() {
+    const u32 DATA = 0x876c0000u;
+    u32 asked = word(CTRL + 0x100), length = word(CTRL + 0x104) > 255 ? 255 : word(CTRL + 0x104);
+    if (asked == word(CTRL + 0x110)) return;
+    std::string address((const char*)&ram[CTRL + 0x120 - RAM_BASE], length);
+    if (!PersistHost::is(address)) return;
+    PersistHost host;
+    host.file = opt.persist;
+    std::vector<uint8_t> reply;
+    u32 status = host.answer(address, word(CTRL + 0x10c), &ram[DATA - RAM_BASE], reply);
+    if (!reply.empty()) {
+        memcpy(&ram[DATA - RAM_BASE], reply.data(), reply.size() < 0x40000 ? reply.size() : 0x40000);
+        dirty(DATA);
+    }
+    word(CTRL + 0x110) = asked;
+    word(CTRL + 0x114) = (u32)reply.size();
+    word(CTRL + 0x118) = status;
+    word(CTRL + 0x11c) = 0;
+}
+
 static void control_pass() {
     dirty(CTRL);
     // what each core ran, how many workers the geometry has (docs/multicore.md: the cores have
@@ -895,6 +919,7 @@ static void control_pass() {
     if (opt.button) word(CTRL + 0x28) = guest_seconds >= opt.buttonFrom && guest_seconds < opt.buttonTo ? opt.button : 0;
     word(CTRL + 0x2c) = key_seq;
     if (net.on()) net_pass();
+    persist_pass();
 }
 
 static bool read_file(const std::string& path, std::vector<uint8_t>& to) {
@@ -995,6 +1020,7 @@ int main(int argc, char** argv) {
         else if (a == "--net-id") opt.netId = atoi(next("--net-id").c_str());
         else if (a == "--net-loss") opt.netLoss = atof(next("--net-loss").c_str());
         else if (a == "--net-delay") opt.netDelay = atof(next("--net-delay").c_str());
+        else if (a == "--persist") opt.persist = next("--persist");
         else if (a == "--no-stdin" || a == "--d3d11" || a == "--dxc") {}
         else if (a == "--rvc" || a == "--fixed-dt") next(a.c_str());   // (the shader machine's: taken and ignored)
         else if (a == "--help" || a == "-h") {
@@ -1020,7 +1046,8 @@ int main(int argc, char** argv) {
                    "  --quiet                do not print the console\n"
                    "  --net PORT --net-id N  the network: this machine is 10.0.0.N (1 to 16) and hears UDP port\n"
                    "                         PORT + N; its clock then keeps to this computer's (docs/lan.md)\n"
-                   "  --net-loss P --net-delay MS   lose P percent of what it sends, hold the rest back MS ms\n");
+                   "  --net-loss P --net-delay MS   lose P percent of what it sends, hold the rest back MS ms\n"
+                   "  --persist FILE         the file the guest's /persistence is kept in (docs/persist.md)\n");
             return 0;
         } else { fprintf(stderr, "rvc_cpu: unknown option %s\n", a.c_str()); return 2; }
     }

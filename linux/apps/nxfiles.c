@@ -89,6 +89,10 @@ static int press_tile = -1, press_x, press_y;	/* where the left button went down
 static unsigned press_time;
 static int click_tile = -1;
 static unsigned click_time;
+/* A box pulled with the left button from an empty place: what it touches is selected. */
+static int band, band_x0, band_y0, band_x1, band_y1;	/* band: 1 held, 2 pulled far enough to be drawn */
+static unsigned char band_before[MAX_ENTRIES];		/* what was selected when it began: Ctrl keeps it */
+#define DESK_EVENTS (GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN)
 static char ahead[24];		/* letters typed one after another: the entry that starts so */
 static unsigned ahead_time;
 
@@ -262,6 +266,29 @@ draw_icon(GR_DRAW_ID to, int x, int y, const struct entry *e, int size)
 		ui_icon(to, ui_gc, x, y, e->icon, size);
 }
 
+/* A file's icon by its name's ending (icons.txt has the pictures), where the kind's own says
+ * less: a game's data has the game's, a source file its language's. */
+static const struct { const char *endings, *icon; } types[] = {
+	{ ".nes", "nes" }, { ".wad .dsg", "doom" }, { ".pak .bsp .mdl", "quake" }, { ".pk3", "quake3" }, { ".cw", "classicube" },
+	{ ".c", "c-source" }, { ".h", "c-header" }, { ".cpp .cc .cxx .hpp", "cpp-source" }, { ".py .js .json .mk", "code" },
+	{ ".css .xml .svg", "page" }, { ".ttf .otf .bdf .pcf .fnt", "font" }, { ".png", "png" }, { ".jpg .jpeg", "jpeg" },
+	{ ".gif", "gif" }, { ".bmp .ppm .pgm", "bitmap" }, { ".flac .mp3 .wav", "tune" }, { ".so", "library" },
+	{ ".o .a .dat .rom .mix .aud .idx", "data" }, { ".iso .img", "disk" },
+};
+
+static const char *
+type_icon(const char *lower)
+{
+	unsigned k;
+
+	if (!strcmp(lower, "makefile"))
+		return "code";
+	for (k = 0; k < sizeof types / sizeof types[0]; k++)
+		if (ends_in(lower, types[k].endings) && ui_icon_of(types[k].icon) >= 0)
+			return types[k].icon;
+	return NULL;
+}
+
 /* What an entry is, asked of the file system the first time it matters: in a folder of
  * hundreds of names, asking for all of them takes seconds. */
 static int
@@ -270,7 +297,7 @@ kind_of(int i)
 	struct entry *e = &entries[i];
 	struct stat info;
 	char lower[128];
-	const char *icon = "file";
+	const char *icon = "file", *typed;
 	int k;
 
 	if (e->kind != K_UNKNOWN && e->icon != -2)
@@ -311,6 +338,14 @@ kind_of(int i)
 	case K_SOUND: icon = "sound"; break;
 	case K_VIDEO: icon = "video"; break;
 	case K_ARCHIVE: icon = "archive"; break;
+	}
+	/* (the image's files all say they can be run: one whose ending says what it is, is that,
+	 * and is opened with its program; a program under its own name keeps its own icon) */
+	if (e->kind != K_FOLDER && e->kind != K_SHORTCUT && (typed = type_icon(lower)) != NULL &&
+	    !(e->kind == K_PROGRAM && ui_icon_of(lower) >= 0)) {
+		icon = typed;
+		if (e->kind == K_PROGRAM)
+			e->kind = K_OTHER;
 	}
 	e->icon = ui_icon_of(icon);
 	e->icon_file[0] = 0;
@@ -628,15 +663,8 @@ draw_wall(void)
 static void
 read_wall(void)
 {
-	FILE *file = fopen(UI_WALLPAPER_CHOICE, "r");
-
 	wall_w = wall_h = 0;
-	strcpy(wall, UI_WALLPAPER_DEFAULT);
-	if (file) {
-		if (fgets(wall, sizeof wall, file))
-			wall[strcspn(wall, "\r\n")] = 0;
-		fclose(file);
-	}
+	snprintf(wall, sizeof wall, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
 	if (wall[0] != '#' && access(wall, R_OK) != 0)
 		strcpy(wall, "#008080");	/* the picture is not in this image */
 }
@@ -820,6 +848,116 @@ refresh(void)
 		}
 		draw_tile(i);
 	}
+	draw_status();
+}
+
+/* The box's four edges, a pixel wide, and (returned) whether it is drawn at all. */
+static int
+band_edges(GR_RECT *e)
+{
+	int x = band_x0 < band_x1 ? band_x0 : band_x1, y = band_y0 < band_y1 ? band_y0 : band_y1;
+	int w = abs(band_x1 - band_x0) + 1, h = abs(band_y1 - band_y0) + 1;
+
+	e[0].x = e[1].x = e[2].x = x, e[3].x = x + w - 1;
+	e[0].y = e[2].y = e[3].y = y, e[1].y = y + h - 1;
+	e[0].width = e[1].width = w, e[2].width = e[3].width = 1;
+	e[0].height = e[1].height = 1, e[2].height = e[3].height = h;
+	return band == 2;
+}
+
+/* The box's outline, or (not `on`) what was under it again: drawn clipped to the four edges. */
+static void
+band_draw(int on)
+{
+	static GR_REGION_ID clip;
+	GR_RECT e[4];
+	int i, k, x, y, w, h;
+
+	if (!band_edges(e))
+		return;
+	if (on) {
+		for (k = 0; k < 4; k++)
+			ui_fill(window, e[k].x, e[k].y, e[k].width, e[k].height, desktop ? WHITE : UI_SELECTED);
+		GrFlush();
+		return;
+	}
+	if (!clip)
+		clip = GrNewRegion();
+	else
+		GrSubtractRegion(clip, clip, clip);
+	for (k = 0; k < 4; k++)
+		GrUnionRectWithRegion(clip, &e[k]);
+	GrSetGCRegion(ui_gc, clip);
+	if (desktop)
+		draw_wall();
+	else
+		ui_fill(window, e[0].x, e[0].y, e[0].width, e[2].height, WHITE);
+	for (i = 0; i < count; i++)
+		for (k = 0; k < 4 && tile_at(i, &x, &y, &w, &h); k++)
+			if (x < e[k].x + e[k].width && e[k].x < x + w && y < e[k].y + e[k].height && e[k].y < y + h) {
+				draw_tile(i);
+				break;
+			}
+	GrSetGCRegion(ui_gc, 0);
+}
+
+/* The box's other corner follows the pointer: every entry it touches is selected, with what
+ * was selected before it began. */
+static void
+band_move(int px, int py)
+{
+	int left = desktop ? 0 : side + 2, right = desktop ? screen.cols - 1 : width - UI_SCROLL_W - 3;
+	int up = desktop ? 0 : BAR + 2 + (details ? ROW_H : 0), down = desktop ? screen.rows - SCREEN_BAR - 1 : height - STATUS - 3;
+	int i, x, y, w, h, x0, y0, x1, y1;
+
+	band_draw(0);
+	band_x1 = px < left ? left : px > right ? right : px;
+	band_y1 = py < up ? up : py > down ? down : py;
+	if (abs(band_x1 - band_x0) + abs(band_y1 - band_y0) > 4)
+		band = 2;
+	if (band != 2)
+		return;
+	x0 = band_x0 < band_x1 ? band_x0 : band_x1, x1 = band_x0 + band_x1 - x0;
+	y0 = band_y0 < band_y1 ? band_y0 : band_y1, y1 = band_y0 + band_y1 - y0;
+	for (i = 0; i < count; i++) {
+		struct entry *e = &entries[i];
+		int tw, lines = desktop && e->lines ? e->lines : 1, in = 0;
+
+		if (!tile_at(i, &x, &y, &w, &h))
+			continue;
+		/* what is touched is the picture or the name, not the whole place they stand in
+		 * (a row of the list is lit from side to side, and is touched so) */
+		if (details) {
+			in = x <= x1 && x0 < x + w && y <= y1 && y0 < y + h;
+		} else {
+			tw = desktop && e->lines ? (e->line_w[0] > e->line_w[1] ? e->line_w[0] : e->line_w[1]) :
+			     ui_width(&ui_var_widths, ui_var, e->label, -1);
+			tw = tw > w - 4 ? w - 4 : tw;
+			in = (x + (w - 32) / 2 <= x1 && x0 < x + (w + 32) / 2 && y + 2 <= y1 && y0 < y + 35) ||
+			     (x + (w - tw) / 2 <= x1 && x0 < x + (w + tw) / 2 && y + 37 <= y1 && y0 < y + 37 + lines * 13);
+		}
+		entries[i].chosen = band_before[i] || in;
+		if (entries[i].chosen && !band_before[i])
+			cursor = anchor = i;
+	}
+	refresh();
+	band_draw(1);
+}
+
+/* The button is let go (or the pull is otherwise over): the box goes, the selection stays. */
+static void
+band_end(void)
+{
+	band_draw(0);
+	if (band == 2 && getenv("NXFILES_PRINT")) {	/* for a test without a screen */
+		printf("nxfiles: the box selected %d (%d,%d to %d,%d)\n", chosen_count(), band_x0, band_y0, band_x1, band_y1);
+		fflush(stdout);
+	}
+	band = 0;
+	if (desktop)
+		GrSelectEvents(GR_ROOT_WINDOW_ID, DESK_EVENTS);
+	else
+		ui_moves(window, EVENTS, 0);
 	draw_status();
 }
 
@@ -1334,10 +1472,19 @@ arrange(void)
 	save_places();
 }
 
+/* How a window shows a folder, for the next window and (once saved) the next session. */
+static void
+keep_view(void)
+{
+	reg_set_int("files.details", details);
+	reg_set_int("files.order", sort_by);
+}
+
 static void
 set_view(int list)
 {
 	details = list;
+	keep_view();
 	layout();
 	top = 0;
 	if (cursor >= 0)
@@ -1778,11 +1925,21 @@ click(int i, const GR_EVENT *event)
 	press_y = event->button.rooty;
 	press_time = now;
 	if (i < 0) {
-		if (chosen_count() || cursor >= 0) {
+		/* an empty place: nothing is selected any more (Ctrl: what is, stays), and a box begins */
+		for (k = 0; k < count; k++)
+			band_before[k] = (modifiers & MWKMOD_CTRL) ? entries[k].chosen : 0;
+		if (!(modifiers & MWKMOD_CTRL) && (chosen_count() || cursor >= 0)) {
 			choose_only(-1);
 			refresh();
 		}
 		click_tile = -1;
+		band = 1;
+		band_x0 = band_x1 = event->button.x;
+		band_y0 = band_y1 = event->button.y;
+		if (desktop)
+			GrSelectEvents(GR_ROOT_WINDOW_ID, DESK_EVENTS | GR_EVENT_MASK_MOUSE_MOTION);
+		else
+			ui_moves(window, EVENTS, 1);
 		return;
 	}
 	if (i == click_tile && now - click_time < 700 && !(modifiers & (MWKMOD_CTRL | MWKMOD_SHIFT))) {
@@ -1813,26 +1970,21 @@ click(int i, const GR_EVENT *event)
 static void
 watch(void)
 {
-	static struct timespec picture_time;
-	static int looked;
 	struct stat info;
 
-	if (renaming || ui_menu_is_open())
+	if (renaming || band || ui_menu_is_open())
 		return;
 	if (stat(".", &info) == 0 && (info.st_mtim.tv_sec != folder_time.tv_sec || info.st_mtim.tv_nsec != folder_time.tv_nsec)) {
 		read_folder();
 		draw_all();
 	} else if (desktop) {
-		/* Settings chose another picture and painted it over the icons: the first choice makes
-		 * the file, and two may come within a second */
-		struct timespec now = { 0, 0 };
+		/* Settings chose another picture and painted it over the icons */
+		static char chosen[sizeof wall];
 
-		if (stat(UI_WALLPAPER_CHOICE, &info) == 0)
-			now = info.st_mtim;
-		if (looked && (now.tv_sec != picture_time.tv_sec || now.tv_nsec != picture_time.tv_nsec))
+		if (reg_changed() && strcmp(chosen, reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT))) {
+			snprintf(chosen, sizeof chosen, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
 			draw_all();
-		looked = 1;
-		picture_time = now;
+		}
 	}
 }
 
@@ -1884,11 +2036,14 @@ main(int argc, char **argv)
 			return 1;
 		window = GR_ROOT_WINDOW_ID;
 		read_folder();
-		GrSelectEvents(GR_ROOT_WINDOW_ID, GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN);
+		GrSelectEvents(GR_ROOT_WINDOW_ID, DESK_EVENTS);
 		draw_all();
 	} else {
 		if (chdir(argc > 1 ? argv[1] : "/root") != 0)
 			chdir("/");
+		details = reg_int("files.details", 0) != 0;
+		sort_by = reg_int("files.order", 0);
+		sort_by = sort_by < 0 || sort_by > 2 ? 0 : sort_by;
 		side = SIDE;
 		layout();
 		window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Files", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
@@ -1981,6 +2136,7 @@ main(int argc, char **argv)
 				if (details && event.button.y < BAR + 2 + ROW_H) {
 					/* a column's heading: the list in its order */
 					sort_by = event.button.x < width - UI_SCROLL_W - 152 ? 0 : event.button.x < width - UI_SCROLL_W - 82 ? 1 : 2;
+					keep_view();
 					read_folder();
 					draw_all();
 				} else if (event.button.changebuttons & GR_BUTTON_R)
@@ -1991,6 +2147,8 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
 			thumb_held = 0;
+			if (band)
+				band_end();
 			if (!desktop)
 				ui_moves(window, EVENTS, 0);
 			/* let go some way from where it went down, with entries selected: they were dragged */
@@ -2004,7 +2162,16 @@ main(int argc, char **argv)
 			press_tile = -1;
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
-			if (thumb_held && (event.mouse.buttons & GR_BUTTON_L))
+			if (band && (event.mouse.buttons & GR_BUTTON_L)) {
+				/* (the last of the moves that wait: each one is every touched entry drawn) */
+				GR_EVENT next;
+
+				while (GrPeekEvent(&next) && next.type == GR_EVENT_TYPE_MOUSE_MOTION)
+					GrGetNextEvent(&event);
+				band_move(event.mouse.x, event.mouse.y);
+			} else if (band)
+				band_end();
+			else if (thumb_held && (event.mouse.buttons & GR_BUTTON_L))
 				scroll_to(ui_scroll_to(event.mouse.y, BAR, area, total_rows(), rows));
 			else {
 				thumb_held = 0;

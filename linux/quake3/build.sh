@@ -136,9 +136,10 @@ cp "$DATA/pak0.pk3" "$OUT/usr/share/quake3-pak0.pk3"
 cp "$DATA/se.dat" "$OUT/usr/share/quake3-se.dat"
 cat > "$OUT/usr/bin/quake3" <<'EOF'
 #!/bin/sh
-mkdir -p /tmp/quake3/baseq3 && cd /tmp/quake3 || exit 1
+# what it writes (its settings) goes to the folder the host keeps (docs/persist.md)
+mkdir -p /tmp/quake3/baseq3 /persistence/quake3 && cd /tmp/quake3 || exit 1
 ln -sf /usr/share/quake3-pak0.pk3 baseq3/pak0.pk3
-exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /tmp/quake3 +set sv_pure 0 "$@"
+exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /persistence/quake3 +set sv_pure 0 "$@"
 EOF
 chmod +x "$OUT/usr/bin/quake3"
 # (from the menu: the level, and the one bot the worker core keeps up with: docs/quake3.md)

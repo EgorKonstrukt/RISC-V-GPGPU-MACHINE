@@ -94,5 +94,6 @@ tr -d '\r' < "$HERE/cc" > "$ROOT/usr/bin/cc"
 tr -d '\r' < "$HERE/example" > "$ROOT/usr/bin/example"
 chmod +x "$ROOT/usr/bin/cc" "$ROOT/usr/bin/example"
 for f in "$HERE"/examples/*.c; do cp "$f" "$ROOT/usr/share/example-$(basename "$f")"; done
-printf '%s\n' "Programming/Cube (C, built here)=example cube" "Programming/Home (C, built here)=example home" \
-    "Programming/Shader on 255 cores (C, built here)=example shader" > "$ROOT/usr/share/nxapps.30-examples"
+# (each opens in the IDE, to be read, changed and run from there; `example NAME` still builds and runs one)
+printf '%s\n' "Programming/Cube (C example)=nxide /usr/share/example-cube.c" "Programming/Home (C example)=nxide /usr/share/example-home.c" \
+    "Programming/Shader on 255 cores (C example)=nxide /usr/share/example-shader.c" > "$ROOT/usr/share/nxapps.30-examples"

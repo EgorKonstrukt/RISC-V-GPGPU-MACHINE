@@ -22,8 +22,19 @@ shortcuts = m.desktop_shortcuts
 
 
 def with_overlay(extra):
-    """The desktop's shortcuts come last in the builder's list: the overlay after them wins."""
-    files = shortcuts(extra)
+    """The desktop's shortcuts come last in the builder's list: the overlay after them wins.
+    They are made of the Start menu's lists as the image will have them: the overlay's too."""
+    import shutil, tempfile
+    with tempfile.TemporaryDirectory() as both:
+        os.makedirs(os.path.join(both, 'usr', 'share'))
+        for _, _, run in m.PLACES:
+            if os.path.isdir(os.path.join(extra, *run.split(' ', 1)[1].split('/'))):
+                os.makedirs(os.path.join(both, *run.split(' ', 1)[1].split('/')), exist_ok=True)
+        for share in (os.path.join(extra, 'usr', 'share'), os.path.join(overlay, 'usr', 'share')):
+            for n in os.listdir(share) if os.path.isdir(share) else []:
+                if n.startswith('nxapps.'):
+                    shutil.copy(os.path.join(share, n), os.path.join(both, 'usr', 'share', n))
+        files = shortcuts(both)
     for folder, _, names in os.walk(overlay):
         directory = '/' + os.path.relpath(folder, overlay).replace(os.sep, '/')
         files += [(os.path.join(folder, n), directory, n) for n in sorted(names)]
@@ -31,4 +42,8 @@ def with_overlay(extra):
 
 
 m.desktop_shortcuts = with_overlay
+# icon sheets of the overlay's own are the ones the programs' icons are cut from
+icons = m.with_icon
+own = os.path.join(overlay, 'usr', 'share')
+m.with_icon = lambda share, name, content: icons(own if os.path.exists(os.path.join(own, 'icons.idx')) else share, name, content)
 m.main()

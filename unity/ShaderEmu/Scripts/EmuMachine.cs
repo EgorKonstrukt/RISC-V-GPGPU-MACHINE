@@ -68,6 +68,7 @@ public class EmuMachine : UdonSharpBehaviour
     public Texture2D hostData;         // 256 x 256: an answer's bytes, four a texel
     public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/lan.md)
     public TextMeshProUGUI fetchLabel;
+    public EmuPersist persist;         // the guest's kept folder, as this player's PlayerData (docs/persist.md)
 
     public TextMeshProUGUI statsText;
     public TextMeshProUGUI speedLabel;
@@ -125,7 +126,8 @@ public class EmuMachine : UdonSharpBehaviour
     private const int PassCommit = 0, PassControl = 1, PassUnpack = 2;
     private bool targetsSet;
     // To compare (docs/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
-    // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round.
+    // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round;
+    // bit 4, a test: that camera in a frame's last round only, whatever comes.
     [HideInInspector] public int oldPaths;
     private int pathsSet = -1;
     private bool gpuDrew = true;       // what the control pass was last told of this round's camera
@@ -178,6 +180,9 @@ public class EmuMachine : UdonSharpBehaviour
     private string[] wanted = new string[4];
     private float[] wantedAt = new float[4];
     private byte[] fetchBytes;
+    private string persistWhat = "";   // what the guest asks of its kept folder ("persist:" and this)
+    private bool persistReading;
+    private byte[] persistPart = new byte[FetchMost];
     private Color32[] fetchPixels = new Color32[65536];
 
     private bool soundEnabled;         // the guest has the sound card on, and where its clock is
@@ -437,6 +442,7 @@ public class EmuMachine : UdonSharpBehaviour
         fetchState = FetchIdle;
         fetchAnswered = 0;
         heldAddress = "";
+        persistWhat = "";
         openDue = "";
         openCount = 0;
         machineMaterial.SetInt("_FetchDeliver", 0);
@@ -618,6 +624,23 @@ public class EmuMachine : UdonSharpBehaviour
             // the picture kept for its parts is done with: VRChat keeps every one until told
             imageLoader.Dispose();
             imageLoader = null;
+        }
+        if (address.StartsWith("persist:"))
+        {
+            // the guest's kept folder: answered from PlayerData, once VRChat has brought it
+            heldImage = false;
+            persistWhat = address.Substring(8);
+            persistReading = false;
+            fetchState = FetchLoading;
+            fetchStarted = Time.time;
+            if (persist == null)
+            {
+                // (a world without the storage sign keeps nothing: said at once)
+                persistWhat = "";
+                fetchStatus = 404;
+                fetchState = FetchReady;
+            }
+            return;
         }
         VRCUrl url = null;
         // an address a visitor has put into one of the fields is theirs to open: the very one
@@ -900,8 +923,13 @@ public class EmuMachine : UdonSharpBehaviour
                 heldAddress = "";
             }
         }
+        else if (fetchState == FetchLoading && persistWhat.Length > 0 && persist != null && persist.Ready())
+        {
+            PersistStep();
+        }
         else if (fetchState == FetchLoading && Time.time - fetchStarted > 20f)
         {
+            persistWhat = "";
             // no answer and no error: tell the guest, and be free for its next request
             fetchLength = 0;
             fetchStatus = 2;
@@ -941,6 +969,63 @@ public class EmuMachine : UdonSharpBehaviour
             machineMaterial.SetInt("_FetchDeliver", !picture ? 1 : fetchKind == KindFile ? 3 : 2);
             fetchState = FetchDelivering;
         }
+    }
+
+    // The guest's kept folder (docs/persist.md): what it asks is answered as a fetch is, its
+    // bytes into the answer's texture as they are. A save waits for the readback of what the
+    // guest left in the fetch's memory, whose length is the request's offset word.
+    private void PersistStep()
+    {
+        int length = 0;
+        fetchStatus = 200;
+        if (persistWhat == "save")
+        {
+            if (!persistReading)
+            {
+                persistReading = true;
+                persist.Read(current, fetchOffset);
+            }
+            if (persist.reading) return;
+            fetchStatus = persist.saveStatus;
+        }
+        else if (persistWhat == "load" || persistWhat == "load!")
+        {
+            byte[] blob = persist.Blob();
+            if (persistWhat == "load" && !persist.Auto()) fetchStatus = 403;
+            else if (blob.Length == 0 || blob.Length > FetchMost) fetchStatus = 404;
+            else
+            {
+                System.Buffer.BlockCopy(blob, 0, persistPart, 0, blob.Length);
+                length = blob.Length;
+            }
+        }
+        else if (persistWhat == "clear") persist.Forget();
+        else if (persistWhat == "auto=0" || persistWhat == "auto=1") persist.SetAuto(persistWhat == "auto=1");
+        else if (persistWhat == "state")
+        {
+            string text = "stored " + persist.Blob().Length + "\nlimit " + EmuPersist.Limit + "\nauto " + (persist.Auto() ? 1 : 0) + "\n";
+            for (length = 0; length < text.Length; length++) persistPart[length] = (byte)text[length];
+        }
+        else fetchStatus = 400;
+        if (length > 0)
+        {
+            hostData.LoadRawTextureData(persistPart);
+            hostData.Apply(false);
+        }
+        FetchSays(fetchStatus == 200 ? "The kept folder: " + persistWhat : "The kept folder: " + persistWhat + " (" + fetchStatus + ")");
+        fetchLength = length;
+        fetchOffset = 0;
+        persistWhat = "";
+        fetchState = FetchReady;
+    }
+
+    // The storage sign's Save: the guest is told to pack its folder, as it is told to open an address.
+    public bool AskSave()
+    {
+        if (!powered || displayWidth == 0) return false;
+        openSays = null;
+        openDue = "persist:save";
+        return true;
     }
 
     // ---- one frame ----
@@ -992,7 +1077,7 @@ public class EmuMachine : UdonSharpBehaviour
         if (pathsSet != oldPaths) SetPaths();
         // While no list has come for a second the GPU's camera draws in a frame's last round
         // only, and the control pass takes a list in no other: the first one waits a frame at most.
-        bool gpuAlways = initLeft != 0 || (oldPaths & 2) != 0 || Time.time < gpuBusyUntil;
+        bool gpuAlways = initLeft != 0 || (oldPaths & 2) != 0 || ((oldPaths & 16) == 0 && Time.time < gpuBusyUntil);
 
         bool running = initLeft == 0;
         if (running) Inputs();

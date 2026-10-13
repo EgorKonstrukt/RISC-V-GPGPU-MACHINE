@@ -65,10 +65,12 @@ riscv32-linux-nm -n classicube > "$WORK/src/classicube.nm"
 python3 "$HERE/store_zip.py" "$C/misc/cc_textures.zip" "$OUT/usr/share/classicube-default.zip"
 cat > "$OUT/usr/bin/classicube" <<'EOF'
 #!/bin/sh
-mkdir -p /tmp/classicube/texpacks && cd /tmp/classicube || exit 1
+mkdir -p /tmp/classicube/texpacks /persistence/classicube && cd /tmp/classicube || exit 1
 ln -sf /usr/share/classicube-default.zip texpacks/default.zip
+# its settings are of the folder the host keeps (docs/persist.md); its maps are too large for it
 # (the frame rate in the corner is a line of text drawn again every second: 7% of the machine)
-[ -f options.txt ] || echo "gui-showfps=false" > options.txt
+[ -f /persistence/classicube/options.txt ] || echo "gui-showfps=false" > /persistence/classicube/options.txt
+ln -sf /persistence/classicube/options.txt options.txt
 [ $# = 0 ] && set -- --singleplayer
 exec classicube.bin "$@"
 EOF

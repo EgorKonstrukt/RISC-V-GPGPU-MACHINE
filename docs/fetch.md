@@ -65,6 +65,8 @@ pass of the GPU device's control shader. `nxweb`, the browser, asks for pages; `
 
 ## Hosts
 
+- An address that begins `persist:` is no network's: every host answers it itself, from what
+  it keeps of the guest's folder `/persistence` (`docs/persist.md`).
 - The harness fetches with WinINet on a thread (`rvc_harness.cpp`), any `http` or `https`
   address or a file of its own that `--open` named (`file://` and a path; any other gets status 3), up to 16 MB, and decodes pictures with
   WIC: a PNG asked for as a file is looked into for the mark there. Its backends draw a second zone over the data's

@@ -101,6 +101,14 @@ ui_icon_of_command(const char *command, struct ui_icon_ref *icon)
 		icon->cell = ui_icon_of("restart");
 		return;
 	}
+	/* (a C file for the IDE, as the examples are: the file's picture, not the IDE's) */
+	if (!strncmp(command, "nxide ", 6) && strlen(command) > 8 && !strcmp(command + strlen(command) - 2, ".c")) {
+		icon->cell = ui_icon_of("c-source");
+		return;
+	}
+	/* (a game over the network is started by nxgame GAME ...: the game's own icon) */
+	if (!strncmp(command, "nxgame ", 7) && command[7])
+		command += 7;
 	snprintf(word, sizeof word, "%.*s", (int)strcspn(command, " "), command);
 	for (i = word[0] == '/' ? 0 : 1; i < (word[0] == '/' ? 1u : 4u); i++) {
 		snprintf(path, sizeof path, "%s%s", folders[i], word);

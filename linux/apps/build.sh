@@ -12,8 +12,13 @@ MW=$WORK/src/microwindows
 OUT=$REPO/build/images/linux/root/usr
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
-for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open; do
+# nxpersist packs with zlib (docs/persist.md): its source is fetched once
+Z=$WORK/src/zlib-1.3.1
+[ -f "$Z/deflate.c" ] || (cd "$WORK/src" && curl -fsSL -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz && tar -xzf zlib-1.3.1.tar.gz)
+ZLIB="-w -I$Z $Z/deflate.c $Z/trees.c $Z/inflate.c $Z/inftrees.c $Z/inffast.c $Z/adler32.c $Z/crc32.c $Z/zutil.c"
+for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg; do
     more=""
+    [ $p = nxpersist ] && more=$ZLIB
     # the viewer decodes on the worker cores (ui_image.h) and Paint moves pictures with them
     # (ui_bulk.h): the library every program has for them
     [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
@@ -25,7 +30,7 @@ printf '%s\n' "Utilities/Editor=nxedit" "Utilities/Files=nxfiles" "Utilities/Pai
 # two pictures for the viewer and for its test (tools/make_test_pictures.py made them)
 cp "$HERE"/pictures/picture-*.png "$HERE"/pictures/picture-*.jpg "$OUT/share/" 2>/dev/null || true
 # the Start menu's last folder: the desktop over again, and the machine stopped
-printf '%s\n' "System/Restart the desktop=setsid nx restart ask" "System/Shut down=setsid nxoff" > "$OUT/share/nxapps.90-system"
+printf '%s\n' "System/Restart the desktop=setsid nx restart ask" "System/Save and shut down=setsid nxoff save" "System/Shut down=setsid nxoff" > "$OUT/share/nxapps.90-system"
 cp "$HERE/nxoff" "$OUT/bin/nxoff"
 chmod +x "$OUT/bin/nxoff"
 # what opens what (open.c, docs/open.md): a kind a line, its endings, its first bytes, its program;

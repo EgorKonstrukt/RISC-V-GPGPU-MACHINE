@@ -7,10 +7,64 @@ side, floats, forms that search. It runs no scripts. Where its pages come from i
 
     nxweb [ADDRESS or FILE]
 
-Back, Home, Reload, an address to type. Keys: arrows and the paging keys scroll, Tab goes
-from link to link (its address in the status line) and Enter follows, Backspace goes back, F5
-reloads, Ctrl+L opens the address. A click in a text field types into it and Enter sends its
-form; a click on a `<summary>` opens and closes what it folds away.
+A menu bar, a bar of keys with the address, the page, a status line ("The window" below).
+A click in a text field types into it and Enter sends its form; a click on a `<summary>`
+opens and closes what it folds away.
+
+## The window
+
+- **Menus** (`ui_menu.h`, made when they open: `menu_make`). File: Open address, Open file,
+  Save page as, Close. Edit: Copy the address, Paste an address, Find in page, Find next.
+  View: Stop, Reload, Pictures (a tick), Page source (the page's bytes in the editor),
+  Options. Go: Back, Forward, Home, then the session's pages (16 at most, the newest first, a
+  tick at the one shown). Bookmarks: Add this page or Remove this page, Remove (a menu of
+  them all), then the bookmarks. Help: Keys (`about:keys`), About this machine. A row that
+  cannot apply is grey. F10 opens File; Left and Right go to the menu beside.
+- **The bar**: Back, Forward, Reload (Stop while something is still to come), Home, Bookmark
+  (pressed in when the page has one; a click adds it or takes it away), then the address. A
+  click, Ctrl+L or F6 opens the address shown selected: a typed character replaces it, a
+  second click or Backspace edits it; a long one shows its end. A bare name is a site.
+- **The status line**: what the browser has to say (where the page came from, a link picked
+  with Tab, what a command did, what Find is told), and in its right part what is still to
+  come ("Loading...", "3 to come") or the page's size. It does not follow the pointer: that
+  would be the pointer's moves all the time (`ui_moves` in `ui.h`). The right button on a
+  link shows its address there, with a menu: Open the link, Copy the link's address,
+  Bookmark the link, and the page's Back, Forward, Reload, Bookmark, Page source.
+- **Find** looks through the page's texts as they are drawn, without regard to case, from the
+  view's top and round again; the place is shown white on blue and scrolled to. What is
+  sought must lie in one piece of text (one line, one face).
+- **Options** (View, Options): the home page's address (typed, or "This page", or "The first
+  one") and whether pictures are loaded; without them a page says what each would be (its
+  `alt`), and is laid out anew at once.
+- **Kept** in the desktop's registry (`registry.h`, `/persistence/registry`, `docs/persist.md`):
+  `web.home`, `web.pictures` (0 or 1), `web.bookmarks` (how many) and `web.bookmark.0` on,
+  each `ADDRESS TITLE`. 24 bookmarks at most (a menu of them fits the screen), no address
+  with a space or over 180 characters. Where `/persistence` cannot be written the status
+  line says so and the browser goes on with what it has until it closes.
+
+| Key | |
+|---|---|
+| Ctrl+L, F6 | the address |
+| Alt+Left, Backspace; Alt+Right; Alt+Home | back; forward; the home page |
+| F5, Ctrl+R; Escape | the page again, from the network; stop |
+| Ctrl+D | a bookmark for this page, or none any more |
+| Ctrl+F, F3 | find in the page, the next place |
+| Ctrl+O, Ctrl+S, Ctrl+U | open a file, save the page, its source in the editor |
+| Ctrl+C, Ctrl+V | the address to the clipboard, an address from it |
+| Tab, Shift+Tab, Enter | from link to link (its address in the status line), follow it |
+| arrows, Page Up, Page Down, Space, Home, End | scroll |
+| F10; Ctrl+Q | the menus; close |
+
+The window is 600 x 440: the menu bar's 20 rows came on top of the 420 of before, and the
+page's view is the 586 x 376 it was, so `NXWEB_DUMP=1` and `tools/web_test.c` count as before.
+`NXWEB_PRINT=1` prints after every key, click and menu's row where the browser is (address,
+page of the session, bookmarks, options, status), a menu's rows as it opens, where the
+options' window is, and where a link picked with Tab stands, for a test with `nxkey`.
+
+The start with the home page was 1,799 thousand instructions and is 1,873 (13 October 2026,
+`rvc_cpu`, a run with the browser less the same run without): the two bars and the status
+line's cells are some hundred requests more. An icon in the address field, as Files has one,
+was 56 thousand more for the icons' list read and was left out.
 
 ## The parts
 
@@ -109,9 +163,17 @@ framed box, a picture, a form's field. Their order is the order to draw them in.
 ## Drawn once, scrolled as a copy
 
 The page is not drawn into the window. `nxweb` asks for a pixmap as wide as its view and as
-high as 3.2 MB of GPU memory allow (1,365 rows at the usual width, three and a half views),
-draws the page's rows into it once, and the view is a copy of a part of it
-(`show_view`): one textured rectangle of the GPU's, whatever is on the page.
+high as 3.2 MB of GPU memory allow (1,365 rows at the usual width, three and a half views)
+and no higher than the GPU's target on this host (`tile_make`: 2,048 rows in the harness,
+720 in the Unity world, under two views), draws the page's rows into it once, and the view
+is a copy of a part of it (`show_view`): one textured rectangle of the GPU's, whatever is on
+the page.
+
+- **The GPU draws no row past its target's.** The host says the target's size in its flags
+  (`0x8700003c`, `docs/gpu.md`). A pixmap of 1,365 rows in the world had its rows from 720 on
+  never drawn, black as a new pixmap is: the home page scrolled to its end showed 152 black
+  rows of its 376 (13 October 2026). The driver gives no pixmap larger than the target the
+  GPU's memory any more, and the browser asks for none.
 
 - **A pixmap in the GPU's memory** (`pixmap_map` in `scr_shaderemu.c`, `docs/nanox.md`): a
   pixmap of the screen's kind gets its pixels from the pool the windows' buffers come from,
@@ -183,6 +245,19 @@ Lobsters 99.6%, text.npr.org 99.9%, kernel.org 99.9%, Wikipedia's main page 97.5
 pictures are scaled by the GPU and by the test differently). What differs by more is slanted
 text, which the test only approximates.
 
+**A scrolled page is checked with the world's target, not the harness's.** `rvc_harness`
+draws the GPU's lists into 2,048 rows and the Unity world into 720, so a row the world never
+draws is drawn there: every capture of 13 October 2026 was right while the world showed a
+black band. The check: the harness with its viewport, the host's flags and `GPU_TARGET_W`,
+`GPU_TARGET_H` at 1280 x 720 (three places; a build of it apart, the tree's has no switch
+yet), `--cpu --warp --desktop --save-state`, the home page and `web-long.html` scrolled by
+each means (`nxkey wheel:300,250:-3`, `pagedown`, `end`, the bar's thumb dragged by
+`hold:` `to:` `drop:`, a click under it), and in the window's layer of the snapshot the rows
+that are black for more than half their width counted: none but the frame's last. Before,
+on the home page: 152 rows by each means (at its end the view is the pixmap's rows 496 to
+871); `web-long.html` at its end all 376, `web-layout.html` 246. After: none, and each
+picture is the 2,048-row harness's pixel for pixel.
+
 ## Scripts
 
 Not run, and measured before deciding (13 October 2026; QuickJS, quickjs-ng, MuJS, Duktape
@@ -222,4 +297,5 @@ and mquickjs built for the machine and counted with `rdcycle` under `rvc_cpu`):
 
 Not done: scripts, POST, cookies, pictures as backgrounds, SVG drawn (a page's inline `<svg>`
 is passed over, which is Google's own logo), positioned boxes, clipping and scrolling inside
-a box, text selection, a find in the page.
+a box, text selection, text larger or smaller (the 13 of 16 is a constant of `css.h`), a find across
+two pieces of text.

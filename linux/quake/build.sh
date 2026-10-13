@@ -101,7 +101,9 @@ fi
 cp "$DATA/id1/pak0.pak" "$OUT/usr/share/quake-pak0.pak"
 cat > "$OUT/usr/bin/quake" <<'EOF'
 #!/bin/sh
-mkdir -p /tmp/quake/id1 && cd /tmp/quake || exit 1
+# id1, with the settings and saved games, is of the folder the host keeps (docs/persist.md)
+mkdir -p /persistence/quake /tmp/quake && cd /tmp/quake || exit 1
+ln -sfn /persistence/quake id1
 ln -sf /usr/share/quake-pak0.pak id1/pak0.pak
 exec quake.bin "$@"
 EOF

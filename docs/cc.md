@@ -30,7 +30,8 @@ Nano-X's build.
   builtins (64-bit division, soft float, which the C library needs too) are put into that
   archive.
 - The examples are `linux/tcc/examples/*.c`, in the image as `/usr/share/example-NAME.c`, in
-  the Start menu's Programming and in the IDE's File menu. `hello` prints; `cube` is the
+  the Start menu's Programming and in the IDE's File menu (the menu's and the desktop's
+  entries open the source in the IDE; `example NAME` builds and runs one). `hello` prints; `cube` is the
   smallest OpenGL program (it hands a frame over with `seglSwapEarly`, `docs/gpu.md`: nothing
 it would write is read by the GPU, and its next frame is 33 ms away); `home` is a small place to walk round, a list of boxes drawn
   again only when the viewer moves; `shader` is a picture worked out a pixel at a time by

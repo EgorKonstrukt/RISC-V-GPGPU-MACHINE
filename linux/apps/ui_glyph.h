@@ -6,7 +6,8 @@
 #include "ui.h"
 
 enum { UI_G_PLAY, UI_G_PAUSE, UI_G_STOP, UI_G_PREV, UI_G_NEXT, UI_G_SOUND, UI_G_MUTE, UI_G_LEFT, UI_G_RIGHT, UI_G_UP,
-       UI_G_PLUS, UI_G_MINUS, UI_G_TURN_LEFT, UI_G_TURN_RIGHT, UI_G_HOME, UI_G_AGAIN, UI_G_FOLDER, UI_G_LIST, UI_G_TILES, UI_G_TERMINAL };
+       UI_G_PLUS, UI_G_MINUS, UI_G_TURN_LEFT, UI_G_TURN_RIGHT, UI_G_HOME, UI_G_AGAIN, UI_G_FOLDER, UI_G_LIST, UI_G_TILES, UI_G_TERMINAL,
+       UI_G_MARK };
 
 /* A triangle whose base is the column at x, `size` high either way, its point `size` columns
  * to the right (dir 1) or to the left (-1). */
@@ -131,6 +132,13 @@ ui_glyph(GR_DRAW_ID w, int cx, int cy, int which, GR_COLOR colour)
 		GrLine(w, ui_gc, cx - 4, cy - 2, cx - 2, cy);
 		GrLine(w, ui_gc, cx - 2, cy, cx - 4, cy + 2);
 		GrLine(w, ui_gc, cx, cy + 2, cx + 3, cy + 2);
+		break;
+	case UI_G_MARK:		/* a ribbon between a book's pages, its end cut to two points */
+		GrFillRect(w, ui_gc, cx - 3, cy - 5, 7, 8);
+		for (k = 0; k < 3; k++) {
+			GrLine(w, ui_gc, cx - 3, cy + 3 + k, cx - 1 - k, cy + 3 + k);
+			GrLine(w, ui_gc, cx + 1 + k, cy + 3 + k, cx + 3, cy + 3 + k);
+		}
 		break;
 	}
 }

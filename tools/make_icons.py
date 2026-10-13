@@ -16,7 +16,8 @@ import os, subprocess, sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, 'build', 'images', 'linux', 'root', 'usr', 'share')
+# (ICONS_OUT: another folder, for an image of one's own: tools/private_image.py)
+OUT = os.environ.get('ICONS_OUT') or os.path.join(ROOT, 'build', 'images', 'linux', 'root', 'usr', 'share')
 LIST = os.path.join(ROOT, 'linux', 'apps', 'icons.txt')
 OURS = os.path.join(ROOT, 'linux', 'apps', 'icons')
 FETCH = os.path.join(ROOT, 'build', 'fetch', 'Chicago95')

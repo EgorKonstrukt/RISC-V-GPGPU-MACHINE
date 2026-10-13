@@ -4,10 +4,11 @@
  * is a few thousand instructions of float arithmetic and four bytes stored.
  *
  * Core 0 traces nothing. It makes each picture's scene and shares it out; every worker has a
- * job for all the pictures (trace_pictures) and goes from one to the next. The keys:
- *   a   all the workers the geometry has      1   one worker      0   core 0 alone
- *   s   the next geometry (15 small, 3 large and 12 small, 7 large, 15 of the smallest)
- *   w   each tile framed in its core's colour  space  stop and go   q, Escape  leave
+ * job for all the pictures (trace_pictures) and goes from one to the next. The bar under the
+ * picture has a button for each of these keys but the last:
+ *   r   the next size of picture     m   how often a ray is mirrored (0 to 2)     h   shadows
+ *   space  stop and go     w   each tile framed in its core's colour
+ *   W   all the workers, one, none (a, 1, 0: each by itself)     q, Escape  leave
  * For tests: RAY_FRAMES=N leaves after N pictures, RAY_WORKERS=N and RAY_SHAPE=4,4,... set
  * the start, RAY_SIZE=WxH the picture (320x240), RAY_STILL=1 keeps the scene where it is.
  * Each picture's line (raystat:) has its time, its rays and a sum of its pixels, which is the
@@ -20,7 +21,7 @@
 #include <string.h>
 #include <time.h>
 #include <GLES/segl.h>
-#include "nano-X.h"
+#include "ui.h"
 #include "mcw.h"
 
 #define ONE 65536
@@ -38,6 +39,7 @@ static struct picture {
 	struct sphere spheres[SPHERES];
 	struct vec eye, right, up, forward, light;
 	int width, height, owners;
+	int depth, shadows;	/* how many times a ray turns at most (DEPTH), and whether a point asks if it is lit */
 	uint32_t *pixels;
 	/* A tile is 32 pixels square, or as much smaller as gives a worker two dozen of them (never
 	 * narrower than eight pixels, which are two of the machine's texels). */
@@ -210,7 +212,7 @@ trace(const struct picture *sc, struct vec from, struct vec way, uint32_t *rays,
 	float weight = 1.0f;
 	int bounce, ground = 0;
 
-	for (bounce = 0; bounce < DEPTH; bounce++) {
+	for (bounce = 0; bounce < sc->depth; bounce++) {
 		struct vec at, normal, colour;
 		float distance, mirror, lit;
 		int what = bounce == 0 ? nearest_seen(sc, way, x, row, rows, &distance)
@@ -241,8 +243,8 @@ trace(const struct picture *sc, struct vec from, struct vec way, uint32_t *rays,
 			mirror = s->mirror;
 		}
 		lit = dot(normal, sc->light);
-		(*rays)++;
-		if (lit < 0.0f || (what == SPHERES ? shadowed_ground(sc, at) : shadowed(sc, at, sc->light)))
+		*rays += (uint32_t)sc->shadows;
+		if (lit < 0.0f || (sc->shadows && (what == SPHERES ? shadowed_ground(sc, at) : shadowed(sc, at, sc->light))))
 			lit = 0.0f;
 		seen = add(seen, scale(colour, weight * (1.0f - mirror) * (0.2f + 0.8f * lit)));
 		weight *= mirror;
@@ -394,7 +396,17 @@ trace_pictures(uint32_t k, uint32_t seen)
 
 /* ---- core 0 ---- */
 
-static GR_WINDOW_ID window;
+#define BAR 54		/* the bar under the picture: a row of buttons and a line of figures */
+#define BUTTONS 6
+#define SIZES 5
+static const int sizes[SIZES][2] = {{160, 120}, {240, 180}, {320, 240}, {480, 360}, {640, 480}};
+static const int button_keys[BUTTONS] = {'r', 'm', 'h', ' ', 'w', 'W'};
+static GR_WINDOW_ID window, picture;
+static GLuint texture[2];
+static int bar_y, wide, button_step = 90;
+static char status[120] = "";
+static int width = 320, height = 240, room;	/* the picture, and how many pixels its memory holds */
+static int depth = DEPTH, shadows = 1;
 static int workers, wanted = MC_MAX_CORES, stopped, frames_left = -1, still, owners, even;
 static uint8_t running[MC_MAX_CORES];	/* worker k has its job out */
 static uint32_t jobs_now = 1;		/* goes up when a job begins or ends: a picture shared out before has other shares */
@@ -664,6 +676,8 @@ publish(float t, uint32_t done)
 	int width = sc->width, height = sc->height, shares, s;
 
 	sc->owners = owners;
+	sc->depth = depth;
+	sc->shadows = shadows;
 	set_scene(sc, t);
 	set_spared(sc);
 	shares = give_shares(sc, done);
@@ -688,12 +702,101 @@ publish(float t, uint32_t done)
 	go.frame = frame;
 }
 
-/* Keys; true when the picture being traced is to be given up for a new one. */
+/* The bar under the picture: a button for what the keys do, saying how each stands, and a line of figures. */
+static void
+draw_bar(void)
+{
+	char label[BUTTONS][24];
+	int k;
+
+	snprintf(label[0], sizeof label[0], " %d x %d", width, height);
+	snprintf(label[1], sizeof label[1], " Mirrors: %d", depth - 1);
+	snprintf(label[2], sizeof label[2], " Shadows");
+	snprintf(label[3], sizeof label[3], stopped ? " Go" : " Stop");
+	snprintf(label[4], sizeof label[4], " Cores");
+	snprintf(label[5], sizeof label[5], wanted > 1 ? " All workers" : wanted ? " One worker" : " No workers");
+	ui_fill(window, 0, bar_y, wide, BAR, UI_FACE);
+	for (k = 0; k < BUTTONS; k++)
+		ui_button(window, 5 + button_step * k, bar_y + 5, button_step - 4, 22, label[k], (k == 2 && shadows) || (k == 3 && stopped) || (k == 4 && owners));
+	ui_text(window, 8, bar_y + 33, status, -1, BLACK, 0);
+	GrFlush();
+}
+
+/* The window is so large now: the picture has all of it but the bar, the buttons its width. */
+static void
+set_window(int w, int h)
+{
+	int view_w, view_h;
+
+	wide = w;
+	bar_y = h > BAR + 40 ? h - BAR : 40;
+	button_step = wide > 10 + 20 * BUTTONS ? (wide - 10) / BUTTONS : 20;
+	GrResizeWindow(picture, wide, bar_y);
+	seglWindowChanged();
+	seglSize(&view_w, &view_h);
+	glViewport(0, 0, view_w, view_h);
+}
+
+/* The two pictures at another size, in the memory they have: called with no picture out. */
+static void
+set_size(int w, int h)
+{
+	int i;
+
+	if (w * h > room)
+		return;
+	width = w, height = h;
+	for (i = 0; i < 2; i++) {
+		pictures[i].width = w, pictures[i].height = h;
+		memset(pictures[i].pixels, 0, (size_t)(w * h * 4));
+		glBindTexture(GL_TEXTURE_2D, texture[i]);
+		seglTexturePointer(pictures[i].pixels, w, h, GL_RGBA);
+	}
+}
+
+/* The sizes in turn, from the one that is nearest above the picture's own. */
+static void
+next_size(int *w, int *h)
+{
+	int k;
+
+	for (k = 0; k < SIZES && (sizes[k][0] * sizes[k][1] <= width * height || sizes[k][0] * sizes[k][1] > room); k++)
+		continue;
+	k = k < SIZES ? k : 0;
+	*w = sizes[k][0], *h = sizes[k][1];
+}
+
+static int want_w, want_h;	/* the size asked for with the picture given up */
+
+/* What a key or its button does; what keys() is to return for it: 1 the picture given up
+ * for a new one, with 2 other workers taken, with 4 another size. */
+static int
+act(int key)
+{
+	switch (key) {
+	case 'q': case MWKEY_ESCAPE: go.stop = go.leave = 1; exit(0);
+	case ' ': stopped = !stopped; return 0;
+	case 'w': owners = !owners; return 1;
+	case 'm': depth = depth % DEPTH + 1; reg_set_int("rays.turns", depth); return 1;
+	case 'h': shadows = !shadows; reg_set_int("rays.shadows", shadows); return 1;
+	case 'r':
+		next_size(&want_w, &want_h);
+		reg_set_int("rays.width", want_w), reg_set_int("rays.height", want_h);
+		return 5;
+	case 'W': wanted = wanted > 1 ? 1 : wanted ? 0 : MC_MAX_CORES; return 3;
+	case 'a': wanted = MC_MAX_CORES; return 3;
+	case '1': wanted = 1; return 3;
+	case '0': wanted = 0; return 3;
+	}
+	return -1;
+}
+
+/* Keys and buttons: what they ask for together, as act() says it. */
 static int
 keys(void)
 {
 	GR_EVENT e;
-	int again = 0;
+	int again = 0, k;
 
 	for (;;) {
 		GrCheckNextEvent(&e);
@@ -703,18 +806,23 @@ keys(void)
 			go.stop = go.leave = 1;	/* (the shares end at their next tiles and the jobs with them: the workers are waited for) */
 			exit(0);
 		}
-		if (e.type == GR_EVENT_TYPE_UPDATE && e.update.utype == GR_UPDATE_SIZE)
-			seglWindowChanged();
-		if (e.type != GR_EVENT_TYPE_KEY_DOWN)
-			continue;
-		switch (e.keystroke.ch) {
-		case 'q': case MWKEY_ESCAPE: go.stop = go.leave = 1; exit(0);
-		case ' ': stopped = !stopped; break;
-		case 'w': owners = !owners; again = 1; break;
-		case 'a': wanted = MC_MAX_CORES; again = 2; break;
-		case '1': wanted = 1; again = 2; break;
-		case '0': wanted = 0; again = 2; break;
+		if (e.type == GR_EVENT_TYPE_UPDATE && e.update.utype == GR_UPDATE_SIZE && e.update.wid == window) {
+			set_window(e.update.width, e.update.height);
+			draw_bar();
 		}
+		if (e.type == GR_EVENT_TYPE_EXPOSURE && e.exposure.wid == window)
+			draw_bar();
+		k = -1;
+		if (e.type == GR_EVENT_TYPE_KEY_DOWN)
+			k = act(e.keystroke.ch);
+		else if (e.type == GR_EVENT_TYPE_BUTTON_DOWN && (e.button.changebuttons & GR_BUTTON_L) && e.button.y >= bar_y + 5 &&
+			 e.button.y < bar_y + 27 && e.button.x >= 5 && (e.button.x - 5) % button_step < button_step - 4 &&
+			 (e.button.x - 5) / button_step < BUTTONS)
+			k = act(button_keys[(e.button.x - 5) / button_step]);
+		if (k < 0)
+			continue;
+		again |= k;
+		draw_bar();
 	}
 }
 
@@ -731,8 +839,7 @@ main(void)
 	static const GLfixed corners[12] = {0, 0, 0, ONE, 0, 0, ONE, ONE, 0, 0, ONE, 0}, uv[8] = {0, 0, ONE, 0, ONE, ONE, 0, ONE};
 	const char *text;
 	GR_SCREEN_INFO info;
-	GLuint texture[2];
-	int width = 320, height = 240, scale_by, frame = 0, i, view_w, view_h;
+	int scale_by, frame = 0, i;
 	uint32_t done = 0;	/* the last picture that is whole and has been seen to */
 	float t = 0.0f;
 
@@ -745,38 +852,52 @@ main(void)
 	if ((text = getenv("RAY_WORKERS")) != NULL)
 		wanted = atoi(text);
 	still = getenv("RAY_STILL") != NULL;
+	if (frames_left < 0 && !getenv("RAY_SIZE")) {
+		/* as it was left (registry.h); a test has what it says and the rest as it comes */
+		int w = reg_int("rays.width", width), h = reg_int("rays.height", height);
+
+		if (w >= 32 && h >= 32 && w <= 640 && h <= 480 && !(w & 3))
+			width = w, height = h;
+		depth = reg_int("rays.turns", DEPTH);
+		depth = depth < 1 || depth > DEPTH ? DEPTH : depth;
+		shadows = reg_int("rays.shadows", 1) != 0;
+	}
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxray: no Nano-X server (start one: nano-X -p &)\n");
 		return 1;
 	}
 	GrGetScreenInfo(&info);
-	for (scale_by = 3; scale_by > 1 && (width * scale_by > info.cols - 20 || height * scale_by > info.rows - 60); scale_by--)
+	for (scale_by = 3; scale_by > 1 && (width * scale_by > info.cols - 20 || height * scale_by > info.rows - 60 - BAR); scale_by--)
 		;
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Rays", GR_ROOT_WINDOW_ID, -1, -1, width * scale_by, height * scale_by, 0);
-	GrSelectEvents(window, GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
+	ui_init();
+	wide = width * scale_by, bar_y = height * scale_by;
+	button_step = (wide - 10) / BUTTONS;
+	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Rays", GR_ROOT_WINDOW_ID, -1, -1, wide, bar_y + BAR, UI_FACE);
+	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
+	picture = GrNewWindow(window, 0, 0, wide, bar_y, 0, BLACK, BLACK);
+	GrMapWindow(picture);
 	GrMapWindow(window);
 	GrSetFocus(window);
-	if (seglInit(window) < 0) {
+	ui_framed();
+	draw_bar();
+	if (seglInit(picture) < 0) {
 		fprintf(stderr, "nxray: this machine has no GPU\n");
 		return 1;
 	}
 	/* a picture is a texture where it lies, one rectangle over the window; two, one shown
 	 * while the other is traced */
+	/* (their memory is for the largest size the button gives, or this one's if it is larger) */
 	glGenTextures(2, texture);
+	room = width * height > sizes[SIZES - 1][0] * sizes[SIZES - 1][1] ? width * height : sizes[SIZES - 1][0] * sizes[SIZES - 1][1];
 	for (i = 0; i < 2; i++) {
-		pictures[i].width = width;
-		pictures[i].height = height;
-		pictures[i].pixels = seglMemory((unsigned)(width * height * 4));
+		pictures[i].pixels = seglMemory((unsigned)(room * 4));
 		if (!pictures[i].pixels) {
 			fprintf(stderr, "nxray: no GPU memory left\n");
 			return 1;
 		}
-		memset(pictures[i].pixels, 0, (size_t)(width * height * 4));
-		glBindTexture(GL_TEXTURE_2D, texture[i]);
-		seglTexturePointer(pictures[i].pixels, width, height, GL_RGBA);
 	}
-	seglSize(&view_w, &view_h);
-	glViewport(0, 0, view_w, view_h);
+	set_size(width, height);
+	set_window(wide, bar_y + BAR);
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixx(whole);
 	glMatrixMode(GL_MODELVIEW);
@@ -828,7 +949,13 @@ main(void)
 			pass();
 			if (now - keys_at >= 200) {
 				keys_at = now;
-				if (keys() >= 2)
+				k = keys();
+				if (k & 4) {
+					seglSettle();
+					set_size(want_w, want_h);
+					draw_bar();
+				}
+				if (k & 2)
 					take_workers();
 			}
 			continue;
@@ -854,7 +981,7 @@ main(void)
 				keys_at = now;
 				/* (a picture given up: the shares end at their next tiles) */
 				if ((k = keys()) != 0)
-					again = k, go.stop = 1;
+					again |= k, go.stop = 1;
 			}
 		}
 		while (!sc->traced_by && next < tiles && !again) {
@@ -868,8 +995,13 @@ main(void)
 			}
 			if (now - keys_at >= 200) {
 				keys_at = now;
-				again = keys();
+				again |= keys();
 			}
+		}
+		/* (a picture that was whole when it was asked about has had no look at the keys) */
+		if (!again && now_ms() - keys_at >= 200) {
+			keys_at = now_ms();
+			again = keys();
 		}
 		if (again) {
 			/* the pictures that are out are given up, and are waited for: then all begins again */
@@ -879,7 +1011,13 @@ main(void)
 				look_at_jobs(done);
 			}
 			done = go.frame;
-			if (again >= 2)
+			if (again & 4) {
+				/* (what shows the last picture has been drawn before its texture is another size) */
+				seglSettle();
+				set_size(want_w, want_h);
+				draw_bar();
+			}
+			if (again & 2)
 				take_workers();
 			go.stop = 0;
 			continue;
@@ -925,8 +1063,8 @@ main(void)
 
 			snprintf(title, sizeof title, "Rays - %d workers: %u.%u pictures a second, %u thousand rays a second", workers, tenths / 10, tenths % 10,
 				rays_since / span);
-			GrSetWindowTitle(window, title);
-			GrFlush();
+			snprintf(status, sizeof status, "%s", title + 7);
+			draw_bar();
 			fprintf(stderr, "raystat: %d x %d with %d workers: %u.%u pictures a second (%u ms the last), %u thousand rays a second\n", width, height,
 				workers, tenths / 10, tenths % 10, took, rays_since / span);
 			said_at = now_ms();

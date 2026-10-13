@@ -1,3 +1,3 @@
-Programming/Cube (C, built here)=example cube
-Programming/Home (C, built here)=example home
-Programming/Shader on 255 cores (C, built here)=example shader
+Programming/Cube (C example)=nxide /usr/share/example-cube.c
+Programming/Home (C example)=nxide /usr/share/example-home.c
+Programming/Shader on 255 cores (C example)=nxide /usr/share/example-shader.c

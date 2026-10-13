@@ -183,28 +183,32 @@ def with_icon(share, name, content):
 
 
 DESKTOP = '/root/Desktop'
+WITH_PLACES = ('nxnet', 'nxsettings')
 PLACES = [('Home', 'home', 'nxfiles /root'), ('Pictures', 'pictures', 'nxfiles /root/Pictures'),
-          ('Music', 'music', 'nxfiles /root/Music'), ('Videos', 'videos', 'nxfiles /root/Videos')]
+          ('Music', 'music', 'nxfiles /root/Music'), ('Videos', 'videos', 'nxfiles /root/Videos'),
+          ('Persistence', 'persistence', 'nxfiles /persistence')]   # (the nx script makes the folder: docs/persist.md)
 
 
 def desktop_shortcuts(extra):
     """The desktop as the image starts with it (linux/apps/nxfiles.c): a shortcut for every
     program of the Start menu (the nxapps.* files) but the System folder's, and for the places
-    of PLACES whose folder the image has; and where each stands, a column a folder of the menu."""
+    of PLACES whose folder the image has; and where each stands, a column a folder of the menu.
+    The machine's own programs (WITH_PLACES) stand with the places, in the first column."""
     share = os.path.join(extra, 'usr', 'share')
     if not os.path.isdir(share):
         return []
     columns = {}   # a column of icons: the places, then each folder of the menu
     for label, icon, run in PLACES:
         folder = run.split(' ', 1)[1]
-        if folder == '/root' or os.path.isdir(os.path.join(extra, *folder.split('/'))):
+        if folder in ('/root', '/persistence') or os.path.isdir(os.path.join(extra, *folder.split('/'))):
             columns.setdefault('', []).append((label, 'name=%s\nicon=%s\nrun=%s\n' % (label, icon, run)))
     for registry in sorted(n for n in os.listdir(share) if n.startswith('nxapps.')):
         for line in open(os.path.join(share, registry)).read().splitlines():
             path, _, run = line.partition('=')
             folder, _, label = path.rpartition('/')
             if run and label and folder != 'System':
-                columns.setdefault(folder or 'Other', []).append((label, 'name=%s\nrun=%s\n' % (label, run)))
+                folder = '' if run.split()[0] in WITH_PLACES else folder or 'Other'
+                columns.setdefault(folder, []).append((label, 'name=%s\nrun=%s\n' % (label, run)))
     files, places, column = [], [], 0
     for folder in columns:
         for row, (label, text) in enumerate(columns[folder]):

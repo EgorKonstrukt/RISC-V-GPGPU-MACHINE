@@ -22,9 +22,21 @@ to the same 16 bytes. Everything else a job writes is its own stack; the scene i
 `linux/raytrace` (`build.sh` after Nano-X's; Start menu: Other, "Rays (every core)"). Six
 balls over a chequered ground, one light, shadows and three mirrorings, turning; 320 x 240.
 
-    a   all the workers the geometry has      1   one worker      0   core 0 alone
-    s   the next geometry (small, 3 large and the rest small, large, the smallest: as many as fit)
-    w   each tile framed in its core's colour  space  stop and go   q, Escape  leave
+A bar under the picture has a button for each of these keys but the last, saying how each
+stands, and a line of figures (pictures and rays a second), as `nxphys` has:
+
+    r   the next size of picture: 160 x 120, 240 x 180, 320 x 240, 480 x 360, 640 x 480
+    m   how often a ray is mirrored: 2, 0, 1          h   shadows, on and off
+    space  stop and go                                w   each tile framed in its core's colour
+    W   all the workers, one, none (a, 1, 0: each by itself)        q, Escape  leave
+
+The two pictures' memory is for 640 x 480 from the start (or `RAY_SIZE`'s, if larger): a new
+size is the same memory given to the textures again, with no picture out. The window keeps
+its size and the picture is stretched over it. The keys are looked at after every picture
+now: before, only while one was waited for, and with pictures that were whole at once (160 x
+120 with every worker) a key was not taken at all. With the defaults a test's sums and rays are
+what they were (`9383472e`, `226b5e92`, `c69f022b`, `337a52f6` for `RAY_FRAMES=4` on
+`rvc_cpu`), and a picture takes as long (36 to 43 ms there, 40 to 42 before).
 
 `RAY_FRAMES=N` leaves after N pictures, `RAY_WORKERS=N` sets the start (every worker has its share of a picture in one job: `docs/multicore.md`, "A share, not a tile"),
 `RAY_SIZE=WxH` the picture, `RAY_STILL=1` keeps the scene where it is. Each picture's line
@@ -111,7 +123,73 @@ shown was waited for.
 - **A worker with no picture ends its pass** (`mc_end_pass()`, `multicore.md`), where it
   would turn in place; `RAY_SPIN=1` for that.
 
-## `nxpath`: a path tracer, with a panel
+## `nxpath`: a mesh viewer with a path tracer
+
+`linux/pathtrace` (`build.sh` after Dear ImGui's; Start menu: Other, "Path tracer (every
+core)"; `nxpath [MESH]`, and Files opens an `.obj` or `.ply` with it). Since 13 October 2026
+it is a small scene editor: meshes are read from files, put into a scene with lights, shown
+by OpenGL, and path traced by the worker cores under a tree of boxes that they built.
+
+- **The scene** (`scene.h`): meshes as read (`mesh.c`: Wavefront `.obj`, Stanford `.ply` as
+  text or little-endian bytes, faces of any size, normals made where the file has none; a
+  plane, a box and a ball made here), objects that place a mesh (place, turn, size; matt,
+  mirror or glass; a colour), up to eight lights (balls that shine), one camera that goes
+  round a point, and the sky's light. It starts with a ground, the teapot, a mirror ball and
+  a light. The example meshes are `/root/Models/teapot.obj` (6,320 triangles), `bunny.ply`
+  (3,851) and `knot.obj` (5,040, `make_knot.py`).
+- **The window** (`nxpath.c`): the picture on the left, a panel of the window system's own
+  on the right (`ui.h`): Import, Add (plane, box, ball, light), Delete, the scene's list, and
+  two tabs. "Selected": what the handles do (move, turn, size), the three numbers of each with
+  a button down and up, the material, the colour's three sliders (a light: its place, radius,
+  power, colour). "Picture": the size (160 x 120 to 640 x 480), samples a pixel, turns of a
+  path, the sky's light, Render or Stop, the picture or the scene, Export (a PPM file). In
+  the picture the left button picks what is clicked and turns the view while held, the right
+  one moves it, the wheel goes nearer. Keys: g, r, s the handles, Delete, F5 renders, Escape.
+- **OpenGL has no lights here**, no colour a vertex and no lines (`gles.c`): a mesh is drawn
+  where it lies in GPU memory (`seglTagged`), each vertex tagged with the one of 256
+  directions its normal is nearest, and an object has a table of 256 colours, its own colour
+  lit from each direction as its matrix turns it. A turn, a colour or a selection is 256
+  words written, not the mesh.
+- **The handles are ImGuizmo's** (`gizmo.cpp`), Dear ImGui's only part here: its frame is
+  made of the pointer and the picture's matrices, drawn over the picture, and is 55 thousand
+  instructions for the move handles, 120 for the turn ones. ImGuizmo is fetched at a commit
+  and has three circles' side counts changed at build time (`build.sh`): a stated count was a
+  sine and a cosine a side in doubles. A frame is drawn only when something changed or the
+  pointer moved in the picture.
+- **The world** (`bvh.c`): every object's triangles where they stand, 80 bytes each, under
+  one tree of boxes of at most four triangles a leaf. The first core cuts the triangles into
+  parts by a grid, the workers build a binned tree a part in memory that is each one's own,
+  and the first core builds the tree over the parts. It is the same tree whichever cores
+  built it. The test scene's 12,105 triangles: 5.7 to 6.0 s on the first core alone, 0.36 s
+  with 63 or 255 workers (1.6 s with three); 75,842 triangles 42 s and 1.7 s (`rvc_cpu`). The
+  first core's own part is what is left, so more than 63 workers gain nothing.
+- **The tracer** (`tracer.c`) is the one of before with another scene: the tree and the
+  lights' balls, a light picked by chance at every matt surface and a ray to a point of it,
+  the sky for a ray that meets nothing, glass that casts no shadow, and no lamp seen after a
+  matt surface by way of a mirror or glass. Tiles, shares, the numbers a path draws and the
+  picture made as the samples come in are as below.
+- **Settings are the registry's** (`pathtrace.size`, `.samples`, `.turns`, `.sky`:
+  `docs/persist.md`).
+
+For tests: `NXPATH_AUTO=1` renders at the start and `NXPATH_EXIT=1` leaves when the picture
+is done, `NXPATH_SIZE=WxH`, `NXPATH_SAMPLES=N`, `NXPATH_CORES=N` (0: this core alone),
+`NXPATH_SAVE=FILE`, `NXPATH_PRINT=1` (a line for every change of the scene), `NXPATH_CHECK=N`
+(N rays through the tree and by every triangle: 0 may differ). The picture's line
+(`pathstat:`) has the tree's time, the picture's, its rays and its sum. On `rvc_cpu`, 160 x
+120 with 2 samples of the scene it starts with (7,282 triangles): sum `f38bbd71` with 255
+workers and with none; the tree 483 ms against 3,632, the picture 134 ms against 12,359.
+
+Not done: scenes kept in files, textures, a mesh's own materials (`.mtl`), undo, more than
+one camera. A click picks by each thing's ball, not its triangles. The handles follow the
+machine's own pointer words, which `nxkey` does not move: a drag is tested with `rvc_cpu
+--pointer-circle` and `--pointer-button`, and was, in a test of `gizmo.cpp` alone, not in
+this program. Nothing of it has run on the shader machine.
+
+## The path tracer of before (to 13 October 2026)
+
+What follows is the Cornell box that `nxpath` was: one baked mesh, analytic balls, a Dear
+ImGui panel. Its sums and switches (`NXPATH_OLD`, `NXPATH_SCENE`, `NXPATH_DEPTH`) went with
+it; the tracer's arithmetic, tiles and shares are still the program's.
 
 `linux/pathtrace` (`build.sh` after Dear ImGui's, `linux/imgui`; Start menu: Other, "Path
 tracer (every core)"). A Cornell box: a red and a green wall, a lamp in the ceiling, a block
@@ -120,8 +198,18 @@ job is one more sample of every pixel of a tile: a path from the eye that turns 
 many times, the lamp's light on every matt surface it meets by a ray to a point of the lamp,
 a path that carries little ended by chance. The samples' sums are three floats a pixel in
 memory from `mcw_alloc`; the picture is made from them as each sample comes in, so it clears
-while one watches. A sample is held to 2.5 times white: one path in thousands reaches the
-lamp by a mirror or through glass and would be a white speck for good.
+while one watches. A sample is held to 2.5 times white (the lamp itself, seen in a mirror).
+
+**No light by way of a mirror or glass onto a matt surface.** A path that has met a matt
+surface and then finds the lamp by a mirror or through glass is one in thousands and worth a
+hundred others, and held to 2.5 it was still a speck: 443 pixels of 320 x 240 at 16 samples
+stood more than 40 levels out of the middle of the eight round them, where a room with matt
+balls has 51 (362 with the mirror alone, 138 with the glass alone; the arithmetic of before
+13 October had 434). Such a lamp is not seen now: 41 specks, which is the matt room's, and
+the picture 0.7% darker (level 84.5 to 83.9; at 1,024 samples 85.0 to 84.2). The lamp in the
+mirror or through the glass, as the eye sees it, is as it was. Glass lets the lamp's light
+through as if it were not there (it casts no shadow), so that light was counted twice
+before. Measured with `tracer.c` built for the host, the sums written to a file.
 
 `nxpath.cpp` is the panel, Dear ImGui (`imgui.md`): the picture's size (160 x 120 to 640 x 480, which is 4.2 s a sample with 63 workers), samples a pixel,
 turns of a path, the lamp, the two balls' kinds, which core traced what, and how the cores
@@ -204,7 +292,9 @@ program of the morning before 1,208 to 1,240 ms, the build above 1,097 to 1,150,
 of it. The numbers a path draws are others now, so the sums are: on `rvc_cpu` at 160 x 120
 with 2 samples `98058d33` the balls, `c190195e` the teapot, `01bda610` the rabbit, `c227a663`
 the knot, the same with `NXPATH_CORES=3`; on the shader machine `2cb22f33` and, 320 x 240
-with 8, `43db5431`.
+with 8, `43db5431`. (Those were before the specks went, above: since then `74dbb1bc`,
+`baa6fdd8`, `3f4a65e7` and `1673bf2f` on `rvc_cpu`, the balls' the same with `NXPATH_CORES=3`;
+the shader machine's have not been taken again. `NXPATH_OLD=1` is still `84d4eafd`.)
 
 - **`NXPATH_OLD=1` is the arithmetic of before**, with its sums (`84d4eafd` and the models'
   above, `2c64fd53` and `27f592b2` on the shader machine): `tracer.c` is built twice, the

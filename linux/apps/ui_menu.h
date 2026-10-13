@@ -25,6 +25,7 @@ struct ui_menu_item {
 };
 #define UI_MENU_GREY 1		/* shown, not to be chosen */
 #define UI_MENU_LINE 2		/* a line above it */
+#define UI_MENU_CHECK 4		/* a tick where an icon would be: a choice that is on */
 
 #define UI_MENU_NOT 0		/* the event was not a menu's */
 #define UI_MENU_TOOK 1		/* it was, and that is all */
@@ -84,6 +85,8 @@ ui_menu_draw(int k)
 			ui_icon(w, ui_menu_gc, 5, y + 2, item->icon, 16);
 		GrSetGCForeground(ui_menu_gc, lit ? MWRGB(255, 255, 255) : item->flags & UI_MENU_GREY ? MWRGB(128, 128, 128) : MWRGB(0, 0, 0));
 		GrText(w, ui_menu_gc, 27, y + 3, (void *)item->label, strlen(item->label), GR_TFASCII | GR_TFTOP);
+		for (j = 0; (item->flags & UI_MENU_CHECK) && j < 7; j++)
+			GrLine(w, ui_menu_gc, 9 + j, y + (j < 3 ? 8 + j : 12 - j), 9 + j, y + (j < 3 ? 10 + j : 14 - j));
 		for (j = 0; item->sub && j < 4; j++)	/* an arrow: its own menu opens to the side */
 			GrLine(w, ui_menu_gc, width - 12 + j, y + 6 + j, width - 12 + j, y + 14 - j);
 	}

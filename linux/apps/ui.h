@@ -8,6 +8,7 @@
 
 #include <signal.h>
 #include "../userland/real_vfork.h"
+#include "registry.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +27,8 @@
 #define UI_FACE MWRGB(192, 192, 192)
 #define UI_SHADOW MWRGB(128, 128, 128)
 #define UI_SELECTED MWRGB(0, 0, 128)
-#define UI_WALLPAPER_CHOICE "/tmp/nxwallpaper"	/* what the desktop shows: a picture's path, or #RRGGBB */
+#define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/persist.md) */
+#define UI_WALLPAPER_CHOICE "desktop.wallpaper"	/* the registry's key for what the desktop shows: a picture's path, or #RRGGBB */
 #define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.ppm"
 
 static GR_GC_ID ui_gc;
@@ -513,7 +515,6 @@ static void
 ui_wallpaper(const char *choice, int remember)
 {
 	GR_SCREEN_INFO screen = *ui_screen();
-	FILE *file;
 
 	if (choice[0] == '#') {
 		unsigned long rgb = strtoul(choice + 1, NULL, 16);
@@ -522,24 +523,17 @@ ui_wallpaper(const char *choice, int remember)
 	} else {
 		ui_picture(GR_ROOT_WINDOW_ID, choice, screen.cols, screen.rows, BLACK);
 	}
-	if (remember && (file = fopen(UI_WALLPAPER_CHOICE, "w")) != NULL) {
-		fputs(choice, file);
-		fclose(file);
-	}
+	if (remember)
+		reg_set(UI_WALLPAPER_CHOICE, choice);
 }
 
 /* The desktop as last chosen, or the default picture. */
 static void
 ui_wallpaper_restore(void)
 {
-	char choice[200] = UI_WALLPAPER_DEFAULT;
-	FILE *file = fopen(UI_WALLPAPER_CHOICE, "r");
+	char choice[200];
 
-	if (file) {
-		if (fgets(choice, sizeof choice, file))
-			choice[strcspn(choice, "\r\n")] = 0;
-		fclose(file);
-	}
+	snprintf(choice, sizeof choice, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
 	if (choice[0] != '#' && access(choice, R_OK) != 0)
 		strcpy(choice, "#008080");	/* the picture is not in this image */
 	ui_wallpaper(choice, 0);

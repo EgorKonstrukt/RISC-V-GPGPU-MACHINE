@@ -1,2 +1,3 @@
 #!/bin/sh
-DOOMWADDIR=/usr/share exec doom.bin "$@"
+mkdir -p /persistence/doom && cd /persistence/doom || exit 1
+HOME=/persistence/doom DOOMWADDIR=/usr/share exec doom.bin "$@"

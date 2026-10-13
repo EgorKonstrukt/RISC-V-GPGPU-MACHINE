@@ -11,7 +11,7 @@ OUT=$REPO/build/images/linux/root
 BUILD=$WORK/src/raytrace-build
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share"
-INC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland -I$REPO/programs/mc"
+INC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland -I$REPO/programs/mc -I$REPO/linux/apps"
 # single-precision constants: a float times 0.5 is a double multiplication otherwise, and the
 # machine has no doubles. No errno from sqrt: it is the machine's instruction then.
 rv32-cc -O2 -fno-pie -Wall -Wno-unused-function -fsingle-precision-constant -fno-math-errno $INC -c "$HERE/nxray.c" -o "$BUILD/nxray.o"

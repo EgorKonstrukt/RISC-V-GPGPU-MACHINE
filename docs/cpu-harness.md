@@ -100,7 +100,7 @@ anything about the shader machine's passes.
 - No keys yet. The pointer goes round (`--pointer-sweep N`, from pass N; `--pointer-circle
   X,Y,R` for a circle of its own on the display) and its buttons word is set for a while
   (`--pointer-button B,S,T`: B from second S to T of the guest's). No pages from the host
-  (`docs/fetch.md`), no snapshots.
+  (`docs/fetch.md`) but the kept folder's (`--persist FILE`, `docs/persist.md`), no snapshots.
 - Not a model of the shader machine's limits: no write cache that fills, no one-writer-per-16
   -bytes rule for workers. It answers "how many instructions", not "does it run there".
 

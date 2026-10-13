@@ -441,6 +441,11 @@ main(int argc, char **argv)
 		return 2;
 	}
 	what = argv[1 + dry];
+	/* the host's button for the kept folder comes as an address (docs/persist.md) */
+	if (!strcmp(what, "persist:save") && !dry) {
+		execlp("nxpersist", "nxpersist", "save", (char *)NULL);
+		return 1;
+	}
 	read_kinds();
 	if (strstr(what, "://")) {
 		snprintf(address, sizeof address, "%s", what);
