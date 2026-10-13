@@ -1,0 +1,59 @@
+#!/bin/sh
+# nxgame quake host|join, nxgame doom host|now: a game over the network with the other
+# computers (docs/lan.md, "Games over the network"). A computer that hosts says so to whoever
+# asks who is there (/tmp/nxhosting, which nxnet --serve reads); a join looks for it.
+game="$1"
+how="${2:-host}"
+own=$(ifconfig lan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+say() { echo "nxgame: $1"; [ -f /tmp/nano-X.lock ] && nxask "$1" OK; }
+# (twelve seconds of answers: a computer busy with a game answers late over the world's link)
+others() { nxnet --find 12 | grep "\[$1\]" | cut -d' ' -f1; }
+if [ -z "$own" ]; then
+    say "This computer is not on a network."
+    exit 1
+fi
+later=""
+trap 'rm -f /tmp/nxhosting; [ -n "$later" ] && kill $later 2>/dev/null' EXIT INT TERM
+case "$game $how" in
+"quake host")
+    # said to be hosting once the level is up: a join before that finds no game
+    # (without this script's trap: it would take the word away again as the waiting part ends)
+    (trap - EXIT INT TERM; sleep "${NXGAME_WAIT:-40}"; echo quake > /tmp/nxhosting) &
+    later=$!
+    quake -listen 4 +hostname "$own" +map e1m1
+    ;;
+"quake join")
+    it=$(others quake | head -1)
+    if [ -z "$it" ]; then
+        say "Nobody is hosting Quake yet: a computer that hosts says so some forty seconds after it starts."
+        exit 1
+    fi
+    echo "nxgame: joining Quake at $it"
+    quake +connect "$it"
+    ;;
+"doom host" | "doom now")
+    # every player starts this: the players are the computers that say doom, in their addresses' order
+    echo doom > /tmp/nxhosting
+    if [ "$how" = host ]; then
+        nxask "Doom over the network: start this on every computer that plays, then press Start on each." Start Cancel || exit 0
+    else
+        sleep "${NXGAME_WAIT:-8}"
+    fi
+    all=$( (echo "$own"; others doom) | sort -t. -k3,3n -k4,4n)
+    n=0; me=0; rest=""
+    for a in $all; do
+        n=$((n + 1))
+        if [ "$a" = "$own" ]; then me=$n; else rest="$rest .$a"; fi
+    done
+    if [ -z "$rest" ]; then
+        say "No other computer has started Doom over the network."
+        exit 1
+    fi
+    echo "nxgame: Doom, player $me of $n:$rest"
+    doom -net "$me"$rest
+    ;;
+*)
+    echo "usage: nxgame quake host|join, nxgame doom host|now"
+    exit 2
+    ;;
+esac

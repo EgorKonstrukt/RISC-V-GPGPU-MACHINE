@@ -64,7 +64,7 @@ public class EmuMachine : UdonSharpBehaviour
     public VRCUrlInputField openField;     // an address for the machine to open (docs/open.md)
     public TextMeshProUGUI openLabel;
     public VRCUrlInputField placeField;    // the same at this visitor's classroom place (EmuStations)
-    public TextMeshProUGUI placeLabel;
+    public TextMeshProUGUI placeLabel;     // that strip's own line: the link's and the fetch's news
     public Texture2D hostData;         // 256 x 256: an answer's bytes, four a texel
     public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/lan.md)
     public TextMeshProUGUI fetchLabel;
@@ -623,7 +623,7 @@ public class EmuMachine : UdonSharpBehaviour
         {
             fetchStatus = 3;   // never, in VRChat
             fetchState = FetchReady;
-            if (fetchLabel != null) fetchLabel.text = "VRChat opens only https addresses";
+            FetchSays("VRChat opens only https addresses");
             return;
         }
         if (url == null || !url.Get().StartsWith("https://"))
@@ -636,7 +636,7 @@ public class EmuMachine : UdonSharpBehaviour
         Unwant(address);
         fetchState = FetchLoading;
         fetchStarted = Time.time;
-        if (fetchLabel != null) fetchLabel.text = "Loading " + address;
+        FetchSays("Loading " + address);
         heldAddress = address;
         heldImage = fetchKind == 1 || (fetchKind == KindFile && IsPicture(address));
         if (heldImage)
@@ -663,6 +663,13 @@ public class EmuMachine : UdonSharpBehaviour
         return path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg");
     }
 
+    // What a fetch has come to: on the wall's panel, and at this visitor's classroom place.
+    private void FetchSays(string text)
+    {
+        if (fetchLabel != null) fetchLabel.text = text;
+        if (placeLabel != null) placeLabel.text = text;
+    }
+
     // The button by a link field: the machine is told to open the address in it.
     public void OpenLink() { Open(openField, openLabel); }
     public void OpenPlaceLink() { Open(placeField, placeLabel); }
@@ -684,7 +691,13 @@ public class EmuMachine : UdonSharpBehaviour
             if (label != null) label.text = "https only";
             return;
         }
-        openDue = address.Length > 255 ? address.Substring(0, 255) : address;
+        if (displayWidth == 0)
+        {
+            // the desktop's bar is what takes the address (docs/open.md): nobody would
+            if (label != null) label.text = "start the desktop first";
+            return;
+        }
+        openDue =address.Length > 255 ? address.Substring(0, 255) : address;
         if (label != null) label.text = address.Length > 255 ? "too long (255)" : "opening...";
         if (address.Length > 255) openDue = "";
     }
@@ -733,7 +746,7 @@ public class EmuMachine : UdonSharpBehaviour
             if (wantedLinks[i].text != wanted[i]) wantedLinks[i].text = wanted[i];
         }
         linksButton.SetActive(any && !linksPanel.activeSelf);
-        if (fetchLabel != null && any) fetchLabel.text = "The browser needs addresses pasted: the button by the display";
+        if (any) FetchSays("The browser needs addresses pasted: the button by the display");
     }
 
     // The button by the display, and the panel's Close.
@@ -786,7 +799,7 @@ public class EmuMachine : UdonSharpBehaviour
         fetchLength = fetchW * fetchH * 4;
         fetchStatus = 200;
         fetchState = FetchReady;
-        if (fetchLabel != null) fetchLabel.text = "Loaded a picture, " + w + " x " + h;
+        FetchSays("Loaded a picture, " + w + " x " + h);
     }
 
     public override void OnImageLoadError(IVRCImageDownload result)
@@ -795,7 +808,7 @@ public class EmuMachine : UdonSharpBehaviour
         fetchLength = 0;
         fetchStatus = 415;
         fetchState = FetchReady;
-        if (fetchLabel != null) fetchLabel.text = "Picture not loaded: " + result.ErrorMessage;
+        FetchSays("Picture not loaded: " + result.ErrorMessage);
     }
 
     public override void OnStringLoadSuccess(IVRCStringDownload result)
@@ -809,7 +822,7 @@ public class EmuMachine : UdonSharpBehaviour
         fetchOffset = fetchKind == KindFile ? Mathf.Min(fetchOffset, fetchLength) & ~3 : 0;
         fetchPacked = fetchOffset;
         fetchState = FetchPacking;
-        if (fetchLabel != null) fetchLabel.text = "Loaded " + fetchLength.ToString("N0") + " bytes";
+        FetchSays("Loaded " + fetchLength.ToString("N0") + " bytes");
     }
 
     public override void OnStringLoadError(IVRCStringDownload result)
@@ -818,7 +831,7 @@ public class EmuMachine : UdonSharpBehaviour
         fetchLength = 0;
         fetchStatus = result.ErrorCode > 1 && result.ErrorCode != 200 ? result.ErrorCode : 2;
         fetchState = FetchReady;
-        if (fetchLabel != null) fetchLabel.text = "Not loaded: " + result.Error;
+        FetchSays("Not loaded: " + result.Error);
     }
 
     // A part of the answer a frame goes into the texture's pixels, then the control pass
@@ -873,7 +886,7 @@ public class EmuMachine : UdonSharpBehaviour
             fetchLength = 0;
             fetchStatus = 2;
             fetchState = FetchReady;
-            if (fetchLabel != null) fetchLabel.text = "Not loaded: VRChat gave no answer in 20 seconds";
+            FetchSays("Not loaded: VRChat gave no answer in 20 seconds");
         }
         else if (fetchState == FetchPacking)
         {
@@ -1398,6 +1411,8 @@ public class EmuMachine : UdonSharpBehaviour
         soundEnabled = Word(64 + 0x22, 0) != 0;
         soundClock = Word(64 + 0x23, 0);
         gameId = Small(Word(64 + 6, 2)) & 0xff;
+        worldFrame = Word(64 + 0x30, 0) != 0;
+        flatFrame = (Word(64 + 0x30, 3) >> 31) != 0;
         NetWindow();
         uint asked = Word(64 + 16, 0);
         if (fetchState == FetchIdle && asked != Word(64 + 17, 0) && asked != fetchAnswered) FetchAsked(asked);
@@ -1411,8 +1426,6 @@ public class EmuMachine : UdonSharpBehaviour
         }
         haveClock = true;
         lastClock = clock;
-        worldFrame = Word(64 + 0x30, 0) != 0;
-        flatFrame = (Word(64 + 0x30, 3) >> 31) != 0;
         lastCommits = commits;
         pc = Word(36, 3);
         lastStall = Word(40, 2);

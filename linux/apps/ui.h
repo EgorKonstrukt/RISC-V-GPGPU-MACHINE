@@ -189,7 +189,9 @@ ui_origin_note(const GR_EVENT *event)
 
 /* The pointer's moves, for a window whose other events are `mask`: asked for while a button is
  * held in it (a drag) and not otherwise. Every move over a window that selects them is an
- * event to answer: 600 thousand instructions a second under a pointer that only passes. */
+ * event to answer: 600 thousand instructions a second under a pointer that only passes. The
+ * button's release is asked for with them: the window system sends no moves of a held button
+ * to a window that would not hear it let go. */
 static void
 ui_moves(GR_WINDOW_ID window, GR_EVENT_MASK mask, int held)
 {
@@ -198,7 +200,7 @@ ui_moves(GR_WINDOW_ID window, GR_EVENT_MASK mask, int held)
 	if (held ? asked == window : asked != window)
 		return;
 	asked = held ? window : 0;
-	GrSelectEvents(window, held ? mask | GR_EVENT_MASK_MOUSE_MOTION : mask);
+	GrSelectEvents(window, held ? mask | GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_BUTTON_UP : mask);
 }
 
 /* A notch of the wheel arrives as a button going down: -1 for up, 1 for down, 0 for a real button. */

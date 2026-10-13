@@ -494,6 +494,26 @@ public static partial class ShaderEmuBuilder
 
     static readonly Color KeyColour = new Color(0.17f, 0.18f, 0.21f), KeyText = new Color(0.9f, 0.92f, 0.95f);
 
+    // The den's wall of screens in the open scene: the world's own child. Not by name alone:
+    // the model Models/Computer has the same one.
+    static Transform Den()
+    {
+        EmuMachine machine = Object.FindObjectOfType<EmuMachine>();
+        return machine == null ? null : machine.transform.parent.Find("Computer");
+    }
+
+    // The fetch's line on the control panel: under the scope's keys, two lines of it. It lay in
+    // the read-out's field once, over the registers.
+    static void FetchLinePlace(TextMeshProUGUI label)
+    {
+        label.rectTransform.anchoredPosition = new Vector2(1060, -690);
+        label.rectTransform.sizeDelta = new Vector2(600, 60);
+        label.fontSize = 20;
+        label.alignment = TextAlignmentOptions.TopLeft;
+        label.enableWordWrapping = true;
+        EditorUtility.SetDirty(label);
+    }
+
     static Button MakeButton(RectTransform parent, string name, string text, float x, float y, float width, float height, int size,
                              out TextMeshProUGUI label)
     {
@@ -1055,6 +1075,7 @@ public static partial class ShaderEmuBuilder
         // typed into a field of this kind
         WebLinks(computer, machine, dispAt, dispW, dispH);
         machine.fetchLabel = Label(panel, "Web status", "", 30, 520, 1000, 50, 24, TextAnchor.MiddleLeft, new Color(0.75f, 0.85f, 1f));
+        FetchLinePlace(machine.fetchLabel);
         Apply(machine);
 
         OnClick(power, machine, "Power");

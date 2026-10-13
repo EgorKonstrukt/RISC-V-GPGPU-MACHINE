@@ -97,11 +97,11 @@ public static partial class ShaderEmuBuilder
     public static void AddDanger()
     {
         EmuMachine machine = Object.FindObjectOfType<EmuMachine>();
-        GameObject computer = GameObject.Find("Computer");
+        Transform computer = Den();
         if (machine == null || computer == null) throw new System.Exception("no machine in the open scene: run ShaderEmu/Build world");
         CreateProgramAssets();
         UdonSharpEditorUtility.CopyUdonToProxy(machine);
-        Danger(machine.transform.parent, computer.transform, machine);
+        Danger(machine.transform.parent, computer, machine);
         RetroNewPanels();   // never left as a bare canvas
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);

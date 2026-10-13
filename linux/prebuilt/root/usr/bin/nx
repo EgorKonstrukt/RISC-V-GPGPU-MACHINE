@@ -4,13 +4,22 @@
 # nx restart: the desktop over again (Settings does this for a new screen size). First it is
 # taken down whole: its own programs are asked to go, then the window system, and nothing is
 # started until that has really gone. Any other program on it goes with it.
+# nx restart ask [SIZE]: asked first, and the programs get to ask about what is not saved.
 if [ "$1" = restart ]; then
+    # in a session of its own: typed in a terminal of the desktop it would go with that terminal
+    [ -z "$NX_OWN_SESSION" ] && NX_OWN_SESSION=1 exec setsid "$0" "$@"
+    unset NX_OWN_SESSION
     # one restart at a time: a second one (the button pressed twice) would take down the
     # window system the first is starting, and leave two of everything or none
     if [ -f /tmp/nxrestart.pid ] && kill -0 "$(cat /tmp/nxrestart.pid)" 2>/dev/null; then
         exit 0
     fi
     echo $$ > /tmp/nxrestart.pid
+    if [ "$2" = ask ]; then
+        { nxask "Start the desktop again?\nEvery open program closes." "Start again" Cancel && nxask --closing; } ||
+            { rm -f /tmp/nxrestart.pid; exit 0; }
+    fi
+    [ -n "$3" ] && echo "$3" > /tmp/nxsize
     killall nxbar nxfiles nxterm nxsettings 2>/dev/null
     sleep 1
     killall nano-X 2>/dev/null
@@ -31,6 +40,7 @@ fi
 [ -d /dev/pts ] || { mkdir /dev/pts && mount -t devpts devpts /dev/pts; }
 nano-X -p &            # -p: it stays when the last program has gone
 sleep 2
+nxnet --serve 2>/dev/null &   # answers the other computers' Network program (one a machine: a second finds the port taken)
 nxfiles --desktop &   # the desktop: its picture, and the icons of /root/Desktop on it
 nxbar &
 if [ "$1" = restart ]; then sleep 2; rm -f /tmp/nxrestart.pid; fi

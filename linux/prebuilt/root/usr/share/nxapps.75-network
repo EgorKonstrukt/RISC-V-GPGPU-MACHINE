@@ -1,0 +1,3 @@
+Games/Network/Quake: host a game=nxgame quake host
+Games/Network/Quake: join a game=nxgame quake join
+Games/Network/Doom: network game=nxgame doom host

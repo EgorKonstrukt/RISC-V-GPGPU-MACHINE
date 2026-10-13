@@ -77,6 +77,12 @@ uint32_t mcw_result(int k);
  * program with a line saying where.
  */
 int mcw_wait(int k);
+/*
+ * For the first core when it has nothing to do until the next pass (its workers have the work,
+ * or it waits for the clock): the kernel is told, which runs another program or ends the pass
+ * as its idle loop does. With no workers open it is the pause hint. Not for a job.
+ */
+void mcw_rest(void);
 /* Whether the code that asks is running on a worker. */
 int mcw_on_worker(void);
 

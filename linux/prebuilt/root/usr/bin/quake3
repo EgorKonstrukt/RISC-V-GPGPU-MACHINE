@@ -1,0 +1,4 @@
+#!/bin/sh
+mkdir -p /tmp/quake3/baseq3 && cd /tmp/quake3 || exit 1
+ln -sf /usr/share/quake3-pak0.pk3 baseq3/pak0.pk3
+exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /tmp/quake3 +set sv_pure 0 "$@"

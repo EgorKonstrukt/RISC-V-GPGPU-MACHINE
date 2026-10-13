@@ -254,7 +254,8 @@ ui_files_ask(const char *title, const char *start, const char *kinds, const char
 	ui_files_list.width = UI_FILES_W - 16;
 	ui_files_list.height = UI_FILES_H - 28 - 38 - (name ? 28 : 0);
 	ui_files_read(kinds);
-	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_MOUSE_MOTION |
+	/* (the release too: without it the moves of a held button do not come, and the bar is not dragged) */
+	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION |
 			  GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
 	GrMapWindow(w);
 	ui_files_stop = 0;

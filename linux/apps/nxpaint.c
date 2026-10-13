@@ -44,7 +44,7 @@ enum {
 	C_NONE, C_NEW, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_ALL, C_DESELECT,
 	C_RESIZE, C_SCALE, C_CROP, C_FLIP_H, C_FLIP_V, C_ROTATE_R, C_ROTATE_L, C_INVERT, C_CLEAR, C_ZOOM_IN, C_ZOOM_OUT, C_ZOOM_1
 };
-enum { ASK_NONE, ASK_NEW, ASK_RESIZE, ASK_SCALE };
+enum { ASK_NONE, ASK_RESIZE, ASK_SCALE };
 
 static GR_WINDOW_ID window;
 static int width, height;		/* the window's */
@@ -874,7 +874,7 @@ static int status_on, tools_on;	/* again only when they are to show something el
 static void
 draw_status(void)
 {
-	static const char *const asks[] = { "", "New picture, WIDTHxHEIGHT: ", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: " };
+	static const char *const asks[] = { "", "Canvas size, WIDTHxHEIGHT: ", "Scale to percent: " };
 	char text[420];
 
 	if (asking)
@@ -1032,7 +1032,7 @@ draw_colours(void)
 static const char *const menu_names[] = { "File", "Edit", "Image", "View" };
 static int menu_x[5];
 static const struct ui_menu_item file_items[] = {
-	{ "New...   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
+	{ "New   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
 	{ "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
 };
 static const struct ui_menu_item edit_items[] = {
@@ -1180,10 +1180,12 @@ command(int id)
 	x0 = sel_on ? s_x0 : 0, y0 = sel_on ? s_y0 : 0, x1 = sel_on ? s_x1 : pw, y1 = sel_on ? s_y1 : ph;
 	switch (id) {
 	case C_NEW:
+		/* a white picture of this one's size at once: "Canvas size" is where another is asked for */
 		if (!may_drop())
 			break;
-		snprintf(text, sizeof text, "%dx%d", pw, ph);
-		ask(ASK_NEW, text);
+		blank(pw, ph);
+		unnamed();
+		draw_all();
 		return;
 	case C_OPEN:
 		if (!may_drop())
@@ -1595,11 +1597,7 @@ ask_key(int ch)
 	} else if (ch == MWKEY_ENTER || ch == '\n') {
 		asking = ASK_NONE;
 		sscanf(answer, "%d%*[xX ,]%d", &w, &h);
-		if (what == ASK_NEW && w > 0 && h > 0 && w <= MOST_W && h <= MOST_H) {
-			blank(w, h);
-			unnamed();
-			draw_all();
-		} else if (what == ASK_RESIZE) {
+		if (what == ASK_RESIZE) {
 			remade(w, h, C_RESIZE);
 		} else if (what == ASK_SCALE && w > 0) {
 			remade(pw * w / 100, ph * w / 100, C_SCALE);
@@ -1781,7 +1779,7 @@ scripted(void)
 		{ "undo", C_UNDO }, { "redo", C_REDO }, { "copy", C_COPY }, { "cut", C_CUT }, { "paste", C_PASTE }, { "delete", C_DELETE },
 		{ "all", C_ALL }, { "none", C_DESELECT }, { "crop", C_CROP }, { "fliph", C_FLIP_H }, { "flipv", C_FLIP_V }, { "rotr", C_ROTATE_R },
 		{ "rotl", C_ROTATE_L }, { "invert", C_INVERT }, { "clear", C_CLEAR }, { "zoomin", C_ZOOM_IN }, { "zoomout", C_ZOOM_OUT },
-		{ "save", C_SAVE }, { "saveas", C_SAVE_AS }, { "quit", C_EXIT },
+		{ "save", C_SAVE }, { "saveas", C_SAVE_AS }, { "new", C_NEW }, { "quit", C_EXIT },
 	};
 	char word[320], to[300];
 	GR_PIXELVAL seen;

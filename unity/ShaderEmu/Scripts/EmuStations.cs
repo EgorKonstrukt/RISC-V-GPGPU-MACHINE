@@ -49,6 +49,8 @@ public class EmuStations : UdonSharpBehaviour
     private bool left;                 // this visitor gave their place up: none is found for them until they ask
     private bool wasOn;
     private int fieldsAt = -1;
+    private int tubeFor = -1;          // the place whose tube was last turned to what its machine has
+    private bool tubeHad;              // and whether the machine had a display then
 
     void Start()
     {
@@ -190,6 +192,16 @@ public class EmuStations : UdonSharpBehaviour
         // this visitor types and points at their own place: its keys go into their own machine,
         // as characters or key events by what its tube shows
         int own = mine.station >= 0 && mine.station < count && claimed[mine.station] == myId ? mine.station : -1;
+        // the tube follows the machine: the console until it has a display, then the display.
+        // Between the two its owner's keys choose.
+        bool has = machine.OwnWidth() > 0;
+        if (own >= 0 && (own != tubeFor || has != tubeHad) && mine.stationMode != (has ? 0 : 1))
+        {
+            mine.stationMode = has ? 0 : 1;
+            hub.StateOut();
+        }
+        tubeFor = own;
+        tubeHad = has;
         if (pointer != null)
         {
             pointer.ownStation = own;

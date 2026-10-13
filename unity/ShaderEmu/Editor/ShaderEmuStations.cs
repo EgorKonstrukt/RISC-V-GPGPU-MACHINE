@@ -159,12 +159,31 @@ public static partial class ShaderEmuBuilder
     [MenuItem("ShaderEmu/Add the wall's speed counter to the open scene")]
     public static void AddWallSpeed()
     {
-        GameObject computer = GameObject.Find("Computer");
+        Transform computer = Den();
         if (computer == null) { Debug.LogError("[ShaderEmu] no Computer in the open scene: run ShaderEmu/Build world"); return; }
-        WallSpeed(computer.transform);
+        WallSpeed(computer);
         AssetDatabase.SaveAssets();
-        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(computer.scene);
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(computer.gameObject.scene);
         Debug.Log("[ShaderEmu] the wall's speed counter is in the scene (not saved)");
+    }
+
+    // The 12 October 2026 changes to a scene that is built: the fetch's line out of the read-out's
+    // field, and the classroom strip made again with a line of its own. No bake: the strip opens later.
+    [MenuItem("ShaderEmu/Move the fetch's line and remake the classroom strip in the open scene")]
+    public static void FetchLines()
+    {
+        EmuMachine machine = Object.FindObjectOfType<EmuMachine>();
+        EmuStations stations = Object.FindObjectOfType<EmuStations>();
+        if (machine == null || stations == null) { Debug.LogError("[ShaderEmu] no machine or classroom in the open scene: run ShaderEmu/Build world"); return; }
+        CreateProgramAssets();
+        UdonSharpEditorUtility.CopyUdonToProxy(machine);
+        UdonSharpEditorUtility.CopyUdonToProxy(stations);
+        if (machine.fetchLabel != null) FetchLinePlace(machine.fetchLabel);
+        StationFields(stations.transform, stations, machine);
+        Apply(stations);
+        RetroNewPanels();
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
+        Debug.Log("[ShaderEmu] the fetch's line is under the scope's keys and the classroom strip has its own (the scene is not saved)");
     }
 
     // A lamp that flickers (Blink.shader), a hair before a model's dull lens: a material of its
@@ -191,10 +210,12 @@ public static partial class ShaderEmuBuilder
     }
 
     // An address to open and text to type, for a visitor at their own place: one strip, which
-    // EmuStations stands between that place's keyboard and its monitor.
+    // EmuStations stands between that place's keyboard and its monitor. Its third line says
+    // what came of the link.
     static void StationFields(Transform root, EmuStations stations, EmuMachine machine)
     {
-        const float wide = 1120, high = 140, row = 58;
+        const float wide = 1120, high = 140, row = 44, gap = 4;
+        Gone(root, "Station fields");
         Color back = new Color(0.05f, 0.055f, 0.07f);
         RectTransform panel = Panel(root, "Station fields", Vector3.zero, Vector3.zero, wide, high, back);
         panel.localScale = Vector3.one * 0.0005f;
@@ -205,12 +226,12 @@ public static partial class ShaderEmuBuilder
         float[] widths = { 780, 680 };
         for (int i = 0; i < 2; i++)
         {
-            boxes[i] = Child(panel, i == 0 ? "Link" : "Field", 10, 8 + i * (row + 8), widths[i], row);
+            boxes[i] = Child(panel, i == 0 ? "Link" : "Field", 10, gap + i * (row + gap), widths[i], row);
             Plate(boxes[i], new Color(0.14f, 0.16f, 0.22f));
             texts[i] = Child(boxes[i], "Text", 10, 6, widths[i] - 20, row - 12).gameObject.AddComponent<Text>();
             texts[i].font = font;
             texts[i].material = UiMaterial();
-            texts[i].fontSize = 26;
+            texts[i].fontSize = 24;
             texts[i].color = Color.white;
             texts[i].alignment = TextAnchor.MiddleLeft;
             texts[i].supportRichText = false;
@@ -219,7 +240,10 @@ public static partial class ShaderEmuBuilder
         link.textComponent = texts[0];
         link.targetGraphic = boxes[0].GetComponent<Image>();
         machine.placeField = link;
-        OnClick(MakeButton(panel, "Open", "Open this link", 800, 8, 310, row, 26, out machine.placeLabel), machine, "OpenPlaceLink");
+        OnClick(MakeButton(panel, "Open", "Open this link", 800, gap, 310, row, 26, out unused), machine, "OpenPlaceLink");
+        machine.placeLabel = Label(panel, "Link says", "", 14, gap + 2 * (row + gap), wide - 28, high - 3 * gap - 2 * row, 22, TextAnchor.MiddleLeft,
+                                   new Color(1f, 0.8f, 0.3f));
+        machine.placeLabel.enableWordWrapping = false;
         InputField field = boxes[1].gameObject.AddComponent<InputField>();
         field.textComponent = texts[1];
         field.targetGraphic = boxes[1].GetComponent<Image>();
@@ -227,8 +251,8 @@ public static partial class ShaderEmuBuilder
         field.characterLimit = 0;
         EmuPaste paste = Udon<EmuPaste>(panel.gameObject);
         paste.field = field;
-        OnClick(MakeButton(panel, "Type", "Type it", 700, 8 + row + 8, 200, row, 26, out unused), paste, "Send");
-        OnClick(MakeButton(panel, "Type line", "+ Enter", 910, 8 + row + 8, 200, row, 26, out unused), paste, "SendLine");
+        OnClick(MakeButton(panel, "Type", "Type it", 700, 2 * gap + row, 200, row, 26, out unused), paste, "Send");
+        OnClick(MakeButton(panel, "Type line", "+ Enter", 910, 2 * gap + row, 200, row, 26, out unused), paste, "SendLine");
         Apply(paste);
         Apply(machine);
         stations.fields = panel.gameObject;

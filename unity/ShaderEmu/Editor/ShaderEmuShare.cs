@@ -40,7 +40,9 @@ public static partial class ShaderEmuBuilder
     // `at`: the middle of the players' panel, between the display and the memory view.
     static void Sharing(Transform world, Transform computer, RectTransform panel, EmuMachine machine, Vector3 at)
     {
-        if (computer.Find("Players panel") != null) Object.DestroyImmediate(computer.Find("Players panel").gameObject);
+        // (wherever one is: a panel left behind lies over the new one and takes its clicks)
+        foreach (Canvas old in world.GetComponentsInChildren<Canvas>(true))
+            if (old != null && old.name == "Players panel") Object.DestroyImmediate(old.gameObject);
         foreach (string old in new[] { "Share", "Share player", "Streams" })
             if (world.Find(old) != null) Object.DestroyImmediate(world.Find(old).gameObject);
         for (int i = panel.childCount - 1; i >= 0; i--)
@@ -216,7 +218,7 @@ public static partial class ShaderEmuBuilder
         EmuMachine machine = Object.FindObjectOfType<EmuMachine>();
         GameObject panel = GameObject.Find("Control panel");
         if (machine == null || panel == null) throw new System.Exception("no machine in the open scene: run ShaderEmu/Build world");
-        Transform computer = GameObject.Find("Computer").transform;
+        Transform computer = Den();
         CreateProgramAssets();
         UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(machine);
         Sharing(machine.transform.parent, computer, panel.GetComponent<RectTransform>(), machine,
@@ -227,6 +229,32 @@ public static partial class ShaderEmuBuilder
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
         EditorSceneManager.SaveScene(machine.gameObject.scene);
         Debug.Log("[ShaderEmu] sharing added");
+    }
+
+    // A scene where "Add sharing" hung the panel on the model Models/Computer and left the one
+    // before it, whose buttons call nothing, in the same place: that one goes, and the hub's
+    // own comes to the den. Nothing is made again, so no plate loses its place in the lightmap.
+    [MenuItem("ShaderEmu/Remove the dead players' panel in the open scene")]
+    public static void RemoveDeadPlayersPanel()
+    {
+        EmuShareHub hub = Object.FindObjectOfType<EmuShareHub>();
+        Transform computer = Den();
+        if (hub == null || computer == null) throw new System.Exception("no sharing in the open scene");
+        UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(hub);
+        if (hub.watchLabel == null) throw new System.Exception("the hub has no panel: run ShaderEmu/Add sharing to the open scene");
+        Transform live = hub.watchLabel.transform.parent;
+        int removed = 0;
+        foreach (Canvas canvas in hub.transform.parent.GetComponentsInChildren<Canvas>(true))
+        {
+            if (canvas == null || canvas.name != "Players panel" || canvas.transform == live) continue;
+            Object.DestroyImmediate(canvas.gameObject);
+            removed++;
+        }
+        bool moved = live.parent != computer;
+        if (moved) live.SetParent(computer, true);
+        EditorSceneManager.MarkSceneDirty(hub.gameObject.scene);
+        EditorSceneManager.SaveScene(hub.gameObject.scene);
+        Debug.Log("[ShaderEmu] players' panels removed: " + removed + (moved ? "; the hub's own moved to the den" : ""));
     }
 
     // The receiver alone, into a scene that has sharing and the classroom: no panel is made

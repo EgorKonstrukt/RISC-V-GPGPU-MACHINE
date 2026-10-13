@@ -20,6 +20,7 @@
 #define REG_PALETTE	0x400		/* offsets in the machine's control words (docs/gpu.md) */
 #define REG_INPUT	0x20
 #define REG_CLOCK	0x34
+#define REG_SUBMIT	0x10
 
 static GR_WINDOW_ID window;
 static int screen_w, screen_h;
@@ -62,6 +63,47 @@ static const volatile uint32_t *
 control(int offset)
 {
 	return (const volatile uint32_t *)((const char *)seglPalette() - REG_PALETTE + offset);
+}
+
+/*
+ * A frame is handed to the GPU and not waited for (docs/gpu.md): host_settle() comes before
+ * every store to memory that list reads. TDAWN_SWAP=wait waits at the swap, as it was.
+ */
+static int flight;	/* a list was handed over and may not be drawn yet */
+
+void
+host_settle(void)
+{
+	if (!flight)
+		return;
+	while (*control(REG_SUBMIT))
+		__asm__ volatile(".word 0x0100000f");	/* pause */
+	flight = 0;
+}
+
+/* The list made since the last one is shown, or the last one once more as its memory is now. */
+static void
+show(int again)
+{
+	static int waits = -1;
+
+	if (waits < 0) {
+		const char *how = getenv("TDAWN_SWAP");
+
+		waits = how && !strcmp(how, "wait");
+	}
+	if (waits) {
+		if (again)
+			seglSwapAgain();
+		else
+			seglSwap();
+		return;
+	}
+	if (again)
+		seglSwapAgainEarly();
+	else
+		seglSwapEarly();
+	flight = 1;
 }
 
 /* The machine's clock word once the GPU is ours, going on from the system's clock before. */
@@ -308,6 +350,7 @@ host_cursor(const unsigned char *pixels, int width, int height, int hot_x, int h
 	if (!cursor || width <= 0 || height <= 0 || width > CURSOR_MAX || height > CURSOR_MAX)
 		return;
 	scene_finish();
+	host_settle();
 	memcpy(cursor, pixels, width * height);
 	cursor_w = width;
 	cursor_h = height;
@@ -375,6 +418,7 @@ static unsigned int *shades, *tiles;
 static GLuint icon_texture, sprite_texture[2], mask_texture[2], shade_texture;
 static int tile_count;
 static int scene_built, scene_shown;	/* a scene waits for its swap; the list shown last has one */
+static int scenes_shown;
 static int scene_rect[4], scene_key;	/* where the page lets the scene through, and by which index */
 static unsigned int *page_commands[2], *cursor_command, *cursor_vertices;
 
@@ -421,18 +465,21 @@ host_scene_open(int cells)
 unsigned char *
 host_atlas(void)
 {
+	host_settle();
 	return atlas;
 }
 
 unsigned char *
 host_masks(void)
 {
+	host_settle();
 	return masks;
 }
 
 unsigned int *
 host_shades(void)
 {
+	host_settle();
 	return shades;
 }
 
@@ -445,6 +492,7 @@ host_tile(int index, int map_x, int map_y, int atlas_x, int atlas_y)
 
 	if (!tiles || index < 0 || index >= tile_count)
 		return;
+	host_settle();
 	if (atlas_x < 0) {
 		memset(to, 0, 64);
 		return;
@@ -460,6 +508,7 @@ host_tile(int index, int map_x, int map_y, int atlas_x, int atlas_y)
 void
 host_tiles_clear(void)
 {
+	host_settle();
 	if (tiles)
 		memset(tiles, 0, tile_count * 64);
 }
@@ -761,6 +810,7 @@ void
 host_scene_begin(int origin_x, int origin_y)
 {
 	scene_finish();		/* the frame before is shown by now */
+	host_settle();		/* and drawn: the worker's fills and the kept rectangles are stored from here */
 	workers_open();
 	frames_pump();
 	scene_part = 1;
@@ -944,6 +994,7 @@ void
 host_scene_drop(void)
 {
 	scene_finish();
+	host_settle();
 	if (scene_built)
 		seglDiscard();
 	scene_built = scene_shown = 0;
@@ -1037,9 +1088,34 @@ present_scene(int page, int with_cursor)
 	cursor_command = seglLastCommand();
 	cursor_vertices = seglLastVertices();
 	cursor_corners(cursor_vertices, with_cursor);
-	seglSwap();
+	show(0);
 	scene_built = 0;
 	scene_shown = 1;
+	scenes_shown++;
+}
+
+/* TDAWN_HOLD_LATE=N, for a test: the Nth scene stays while the next frame is made ready, then the game stops. */
+static int
+held_late(void)
+{
+	static int at = -1;
+
+	if (at < 0) {
+		const char *text = getenv("TDAWN_HOLD_LATE");
+
+		at = text ? atoi(text) : 0;
+	}
+	if (!at || scenes_shown < at)
+		return 0;
+	if (scene_built) {
+		scene_owed = 0;
+		scene_finish();
+		host_settle();
+		fprintf(stderr, "tdawn: held late after %d scenes\n", scenes_shown);
+		for (;;)
+			__asm__ volatile(".word 0x0100000f");	/* pause */
+	}
+	return 1;
 }
 
 void
@@ -1054,6 +1130,8 @@ host_present(int page, int with_cursor)
 	}
 	if (hw_on)
 		pointer_colours();
+	if (held_late())
+		return;
 	if (scene_out) {
 		if (scene_owed || !scene_built) {
 			scene_finish();		/* a second frame before the first is shown: in their order */
@@ -1071,20 +1149,21 @@ host_present(int page, int with_cursor)
 		present_scene(page, with_cursor);
 	} else if (scene_shown) {
 		/* the same scene: the page it shows may be the other one now, the pointer elsewhere */
+		host_settle();
 		page_commands[1][7] = seglAddress(screen + (page & 1) * screen_w * screen_h);
 		if (page_commands[0])
 			page_commands[0][7] = page_commands[1][7];
 		cursor_command[8] = cursor_w;
 		cursor_command[9] = cursor_h;
 		cursor_corners(cursor_vertices, with_cursor);
-		seglSwapAgain();
+		show(1);
 	} else {
 		whole_window(0, 0);
 		glColorKeySE(0);
 		page_part(page, 0, 0, screen_w, screen_h, 0);
 		if (with_cursor && cursor_w && !hw_on)
 			quad(cursor_texture, pointer_x - cursor_hot_x, pointer_y - cursor_hot_y, cursor_w, cursor_h, 1);
-		seglSwap();
+		show(0);
 	}
 	resize_for_test();
 }

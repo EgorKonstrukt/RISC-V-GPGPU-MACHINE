@@ -126,6 +126,7 @@ void Set_DD_Palette(void* palette)
             continue;
         }
         last[word] = now;
+        host_settle(); // (the frame in flight is looked up in it)
         for (int i = word * 4 / 3; i <= (word * 4 + 3) / 3; i++) {
             const unsigned char* c = from + i * 3;
             to[i] = (unsigned)(c[0] << 2 | c[0] >> 4) << 16 | (unsigned)(c[1] << 2 | c[1] >> 4) << 8
@@ -178,6 +179,7 @@ public:
     {
         if (Stale && Visible && Hidden) {
             ShaderEmu_Page_Copies++;
+            host_settle();
             memcpy(Visible->Pixels, Hidden->Pixels, (size_t)game_w * game_h);
         }
         Stale = false;
@@ -186,6 +188,14 @@ public:
     static VideoSurfaceShaderEmu* Visible;
     static VideoSurfaceShaderEmu* Hidden;
     static bool Stale;
+
+    // a page is what the frame handed to the GPU shows: drawn before the page is written
+    void Settle()
+    {
+        if (!Ours) {
+            host_settle();
+        }
+    }
 
     virtual void* GetData() const
     {
@@ -208,6 +218,7 @@ public:
     }
     virtual bool LockWait()
     {
+        Settle();
         if (this == Visible) {
             Catch_Up();
         } else if (this == Hidden && ShaderEmu_GL_Emitting) {
@@ -234,6 +245,7 @@ public:
         if (this == Visible || from == Visible) {
             Catch_Up();
         }
+        Settle();
         if (sx < 0) {
             w += sx, dx -= sx, sx = 0;
         }
@@ -275,6 +287,7 @@ public:
         int x0 = rect.X < 0 ? 0 : rect.X, y0 = rect.Y < 0 ? 0 : rect.Y;
         int x1 = rect.X + rect.Width + 1, y1 = rect.Y + rect.Height + 1;
 
+        Settle();
         if (this == Visible) {
             Catch_Up();
         } else if (this == Hidden && ShaderEmu_GL_Emitting) {

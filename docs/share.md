@@ -247,6 +247,12 @@ the display and dropped by the owner after two seconds of silence.
   player's number in place of the sender's) and sends it `_onDeserialization`. `dropTest`
   on `EmuStreams` loses every tenth packet: its `repairs` and the hub's `repaired` must go
   up and the hub's `refreshed` must not.
+- The scene has one "Players panel", under the den's Computer, and every button of it calls
+  the hub. On 13 October 2026 it had two in one place: "Add sharing" had found the model
+  Models/Computer by name, left the old panel (its hub gone, its buttons calling nothing)
+  and hung the new one on the model; the old one took the clicks. "ShaderEmu/Remove the dead
+  players' panel in the open scene" mends such a scene; the den is now looked up as the
+  world's own child (`Den()`).
 - Destroy a spawned player's "Share player" object before its `OnPlayerLeft`: no behaviour
   may halt (`enabled` stays true), and the place reads FREE with a black picture.
 - ClientSim never raises `OnPostSerialization` for these objects, so `EmuShare.Busy()` runs

@@ -513,6 +513,8 @@ def stage_runs(sh):
         else:
             before = [i for i in range(l) if st[i]['pass_'] == OPAQUE]
             if before: base = before[-1]
+    elif count == 1 and st[0]['flags'] & S_IMPLICIT:
+        base = 0      # a texture with no script: the game lights it by the surface's light map
     out = []
     for i, s in enumerate(st):
         if s['flags'] & S_LIGHTMAP: continue      # (alone it is not drawn: only with the texture it lights)
@@ -561,7 +563,9 @@ for (m, sh, stage, page) in sorted(runs, key=lambda k: (k[0], stages_out[shaders
     # A texture that moves (tcMod) is moved by the GPU, a matrix a draw: every triangle then
     # has the same whole repeats taken off, which the matrix is told. (A draw whose coordinates
     # span too many repeats for that stands still.)
-    whole, tagged = None, page < 0 and page != -2 and s['rgb'] == RGB_VERTEX
+    # (a texture with no script on a surface with no light map has the surface's own colours)
+    by_vertex = s['rgb'] == RGB_VERTEX or bool(s['flags'] & S_IMPLICIT)
+    whole, tagged = None, page < 0 and page != -2 and by_vertex
     if s['tcmods'] and page != -2:
         low = np.floor(st.reshape(-1, 2).min(axis=0))
         if (st.reshape(-1, 2).max(axis=0) - low).max() < (3.9 if tagged else 31):
@@ -574,7 +578,7 @@ for (m, sh, stage, page) in sorted(runs, key=lambda k: (k[0], stages_out[shaders
         flags, pass_, light = flags | R_LIGHT, OPAQUE, light_pages[page]
         lm = np.clip(np.round(tri[:, 5:7] * 65535), 0, 65535).astype(np.uint32)
         uv2_at = place((lm[:, 0] | lm[:, 1] << 16).astype('<u4').tobytes())
-    elif s['rgb'] == RGB_VERTEX:
+    elif by_vertex:
         # the level's own colour at each vertex: one of 256 of a table, which is as fine as it need be made
         colour = brighter(tri[:, 7:10].astype(np.uint8)).astype(np.uint32)
         alpha = tri[:, 10].astype(np.uint32) if s['alpha'] == A_VERTEX else np.full(n, 255, np.uint32)

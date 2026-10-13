@@ -195,10 +195,10 @@ public static partial class ShaderEmuBuilder
     public static void AddPowerSign()
     {
         EmuMachine machine = Object.FindObjectOfType<EmuMachine>();
-        GameObject computer = GameObject.Find("Computer");
+        Transform computer = Den();
         if (machine == null || computer == null) throw new System.Exception("no machine in the open scene: run ShaderEmu/Build world");
         CreateProgramAssets();
-        PowerSign(computer.transform, machine);
+        PowerSign(computer, machine);
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
         EditorSceneManager.SaveScene(machine.gameObject.scene);

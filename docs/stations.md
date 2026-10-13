@@ -86,7 +86,14 @@ October 2026 a "Use my keyboard" button stood beside the place's key on the towe
 **The fields.** One strip ("Station fields") stands between a visitor's own keyboard and its
 monitor, for them alone: an address for the machine to open (`placeField`, as the display
 keyboard's link field: `docs/open.md`) and text that is typed at the place's keyboard
-(`EmuPaste`, which paces itself by the machine's own queue there: `RemoteWaiting`).
+(`EmuPaste`, which paces itself by the machine's own queue there: `RemoteWaiting`). Its third
+line (`placeLabel`) says what came of the link: "start the desktop first" while the machine
+has no display (the desktop's bar is what takes an address), then the fetch's own news, which
+the wall's control panel shows too (`EmuMachine.FetchSays`).
+
+**Console, then display.** A tube shows the console while its owner's machine has no display
+and turns to the display when it has one, and back when it is gone (`tubeFor`, `tubeHad` in
+`EmuStations.Assign`, written to `stationMode`); between the two CONSOLE and DISPLAY choose.
 
 The tower's third lamp, the disk's, is a dull red lens, and before it a red lamp that flickers
 (`Blink.shader`, `diskLamps`): sixteen bits, an eighth of a second each, set where core 0's

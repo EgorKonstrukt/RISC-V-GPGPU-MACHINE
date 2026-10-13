@@ -25,6 +25,8 @@ unsigned int *host_palette(void);
 void host_cursor(const unsigned char *pixels, int width, int height, int hot_x, int hot_y);
 /* Shows a page as it is now, with the pointer on it or not. */
 void host_present(int page, int with_cursor);
+/* The frame shown last is drawn by the time this returns: before a store to a page it shows. */
+void host_settle(void);
 /*
  * A picture of bytes smaller than the screen, which the GPU stretches over the window: a
  * movie's frames (docs/ralert.md). The memory is the GPU's, and *physical is its address for

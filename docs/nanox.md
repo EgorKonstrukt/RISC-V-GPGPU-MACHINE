@@ -168,7 +168,9 @@ they take no window and no buffer).
 - It is in the overlay's memory, as everything a program writes is: what was moved or made
   is as the image has it again after power-off.
 - Settings draws a chosen picture on the root itself; the desktop sees the choice change
-  within a second and draws picture and icons again.
+  within a second and draws picture and icons again. The first choice of a session too:
+  it makes `/tmp/nxwallpaper`, and until 13 October 2026 the desktop took a file it had not
+  seen before for no change and left the icons painted over.
 
 A drag between windows: where the button is let go, the explorer asks the window system
 which window is in front there (`GrQueryTree`, the one in front first). A Files window says
@@ -289,6 +291,13 @@ a brush stroke costs the pixels it touches and nothing else.
 - The window made larger (the caption's box, Ctrl+F10) has another buffer: the program maps
   it again when the driver's count at `0x87000064` moves, and draws everything when its
   size changed (`locate`).
+- A window that takes the pointer's moves while a button is held (`ui_moves` in `ui.h`) asks
+  for the button's release with them: the window system sends a held button's moves only to
+  a window that would hear it let go. The Monitor's, Settings' and the file chooser's bars
+  took a click and could not be dragged until 13 October 2026. To test a bar: `nxkey
+  drag:X,Y:X,Y` on it under `rvc_cpu`, the program printing its list's first row.
+- File's New is a white picture of the present size at once (it asked for a size in the
+  status line and waited for Enter, which nobody saw); another size is Canvas size.
 - Image: Canvas size (the picture kept at the top left), Scale, Crop to the selection, Flip,
   Turn, Invert, Clear. View: zoom 1 to 8 (`+`, `-`), arrows and the wheel move the view.
 - Every change keeps the pixels it replaced (a rectangle of them, or the whole picture when

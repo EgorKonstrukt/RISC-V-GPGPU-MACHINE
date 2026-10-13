@@ -116,7 +116,7 @@ public static partial class ShaderEmuBuilder
         GameObject panel = GameObject.Find("Control panel");
         if (machine == null || panel == null) throw new System.Exception("no machine in the open scene: run ShaderEmu/Build world");
         CreateProgramAssets();
-        Scope(machine.transform.parent, GameObject.Find("Computer").transform, panel.GetComponent<RectTransform>(), machine);
+        Scope(machine.transform.parent, Den(), panel.GetComponent<RectTransform>(), machine);
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
         EditorSceneManager.SaveScene(machine.gameObject.scene);

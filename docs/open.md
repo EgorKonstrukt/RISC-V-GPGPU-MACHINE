@@ -25,7 +25,10 @@ program registered for what it is. The file manager opens a file the same way.
   the text of `--open-after TEXT`. An address may be a file of the host's (`file://C:\...`):
   the harness hands the guest only those of its files that an `--open` named. Its count goes
   on from the guest's own word, so an `--open` after a snapshot that had one is seen.
-- The world: the field and the Open key over the display's keyboard (`EmuMachine.OpenLink`).
+- The world: the field and the Open key over the display's keyboard (`EmuMachine.OpenLink`),
+  and the strip at a classroom place (`OpenPlaceLink`, `docs/stations.md`). With no display
+  mode set the bar is not running and nothing would take the address: the key says "start the
+  desktop first".
 
 ## What `open` does (`linux/apps/open.c`)
 

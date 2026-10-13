@@ -1776,7 +1776,8 @@ click(int i, const GR_EVENT *event)
 static void
 watch(void)
 {
-	static time_t picture_time;
+	static struct timespec picture_time;
+	static int looked;
 	struct stat info;
 
 	if (renaming || ui_menu_is_open())
@@ -1784,11 +1785,17 @@ watch(void)
 	if (stat(".", &info) == 0 && (info.st_mtim.tv_sec != folder_time.tv_sec || info.st_mtim.tv_nsec != folder_time.tv_nsec)) {
 		read_folder();
 		draw_all();
-	} else if (desktop && stat(UI_WALLPAPER_CHOICE, &info) == 0 && info.st_mtime != picture_time) {
-		/* Settings chose another picture and painted it over the icons */
-		if (picture_time)
+	} else if (desktop) {
+		/* Settings chose another picture and painted it over the icons: the first choice makes
+		 * the file, and two may come within a second */
+		struct timespec now = { 0, 0 };
+
+		if (stat(UI_WALLPAPER_CHOICE, &info) == 0)
+			now = info.st_mtim;
+		if (looked && (now.tv_sec != picture_time.tv_sec || now.tv_nsec != picture_time.tv_nsec))
 			draw_all();
-		picture_time = info.st_mtime;
+		looked = 1;
+		picture_time = now;
 	}
 }
 

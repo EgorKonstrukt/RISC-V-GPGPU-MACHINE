@@ -363,6 +363,72 @@ before the server is replaced (`SE_ServerDrop`). And a button counts as down for
 the server's if any of the client's moves since the last had it down: the server took the
 last move only, and a tap between two of its frames (a jump, a shot) was lost.
 
+## The server's frame, and what could be taken from it
+
+Not done: what was measured on 13 October 2026, and what it suggests. e1m5 standing where
+the level starts, `QUAKE_SERVER=inline +host_framerate 0.1`, 341 frames on `rvc_cpu`,
+sampled every 256 instructions with the call chain of each sample (a private `rvc_cpu` that
+wrote the stack's return addresses beside `--pc-log`, unwound by each function's frame;
+99.9% of samples reached `main`; it is not in the tree). A frame is 405 thousand
+instructions, the server 311 of them. In thousands a frame:
+
+| The server by who asked | | Of the server |
+|---|---|---|
+| the monsters' `movetogoal` (a builtin: C) | 127 | 41% |
+| the interpreter itself (`PR_ExecuteProgram`, entering and leaving a function) | 68 | 22% |
+| other builtins: `checkclient` 15, `traceline` 12, `cvar` 5 | 35 | 11% |
+| not under QuakeC | 81 | 26% |
+
+Not under QuakeC: the messages 31 (16 of them `SV_SetIdealPitch`'s traces), doors and
+platforms 19 (15 in `SV_PushMove`'s own loop over every entity), the player 13, a monster's
+water check after its think 12 (`SV_CheckWaterTransition`). So 74% of the server is under
+QuakeC and 22% is interpreting it.
+
+| The server by where the instructions are | | Of the server |
+|---|---|---|
+| the interpreter | 70 | 22.5% |
+| the level's clip tree walked (`SV_RecursiveHullCheck`) | 58 | 18.7% |
+| point tests (`SV_PointContents`) | 40 | 13.0% |
+| links (`SV_LinkEdict`, `SV_FindTouchedLeafs`, `SV_TouchLinks`) | 29 | 9.4% |
+| a move clipped against the entities (`SV_Move`, `SV_ClipToLinks`, `SV_ClipMoveToEntity`) | 27 | 8.7% |
+| `SV_PushMove` | 15 | 4.7% |
+
+A monster's step is `SV_StepDirection` (125 with what it calls), `SV_movestep` in it 90,
+and the floor looked for under the step 52 (`SV_CheckBottom`: 30 of the 40 of point tests;
+the water check is the other 10).
+
+What could be taken, none of it tried:
+
+- **On one core, about 73 (23%).** The ideal pitch's traces every frame (16: the view's
+  tilt on a slope), the pushers' loop (15), the water check of a monster that did not move
+  (12), the floor check's point tests (30). Whether each can be left out or kept from one
+  frame to the next with the same sums is not looked at.
+- **The level's answers ahead, on workers: up to 62 (20%).** The clip tree walk and the
+  point tests (98, 32%) read what does not change in a frame and are the same in any order.
+  What has an order is what is asked and what is done with the answer: a step is tried,
+  traced, its floor checked, and another direction only then; a later monster is clipped
+  against where an earlier one went; `movetogoal` and the search for a direction draw from
+  the one sequence of random numbers; QuakeC's globals are one set. So the frame stays as it
+  is on its core, and workers answer the questions a monster will probably ask into a table
+  kept by the question itself (start, end, box): an answer found is the same bits, one not
+  found is worked out as now. It is what Tiberian Dawn's path searches do (`docs/tdawn.md`).
+  The 20% supposes two questions in three guessed: a step's direction is the monster's state
+  and a random draw, its length the animation frame's QuakeC. Measure that first: write each
+  step's start, direction and length for some hundred frames and count what a guess from the
+  frame's beginning would have hit.
+- **QuakeC as machine code: about 47 (15%).** The interpreter is 22%, and what its
+  statements did is still to be done. The most work for the least certain gain.
+- **Not: thinks side by side on a copy of the frame's beginning**, put in order afterwards.
+  It would gain more and give other results: random numbers a monster, two monsters wanting
+  one place. The sums would not be the one core's.
+
+The first three touch different instructions, the floor check apart, which the first two
+share. The second and third together are about 35%: a frame of the server's of 200 thousand
+where it is 311. The server makes 7.5 frames a second on its worker and the game's time
+goes at 0.59 of the clock's, a frame being 0.1 s of the game at most; at 200 thousand it
+would make about 11.5 and the game go at the clock's rate. Above ten a second a monster
+no longer thinks in every frame, which is less again.
+
 ## Checking it
 
 - The GPU against its model: hold a frame, pass `--save-state` and `--gpu-capture`, and run
@@ -381,5 +447,6 @@ last move only, and a tap between two of its frames (a jump, a shot) was lost.
 
 - Music, and hearing the sound by ear: it was checked against the card's model only.
 - Playing it: keys and the pointer by hand, in the harness's window and in the VRChat world.
-- The server: a busy level is 350k instructions a frame before anything is drawn.
+- The server: a busy level is 350k instructions a frame before anything is drawn ("The
+  server's frame, and what could be taken from it").
 - Loading: the light maps' placement is a search of every block for every surface.
