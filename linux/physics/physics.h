@@ -42,6 +42,11 @@ struct manifold {
 };
 struct gcell { uint32_t n, body[PHYS_SLOTS]; };
 
+/* A box somebody holds (`body` -1: nobody): its point `at`, in its own frame, is pulled to `to`.
+ * The first core's, two texels: a share only reads them, and `to` changes in one store's texel. */
+#define PHYS_HOLDS 3		/* the pointer's, the left hand's, the right hand's */
+struct phys_hold { int body; float at[3]; float to[3]; uint32_t pad; } __attribute__((aligned(16)));
+
 struct phys {
 	struct body_state *states[PHYS_BUFFERS];	/* a substep reads one and writes the next, round and round */
 	struct body_pose *poses[PHYS_BUFFERS];	/* as the states */
@@ -54,9 +59,8 @@ struct phys {
 	/* the shares that make the grid: cell c is share cell_first + c mod cell_shares's */
 	int cell_shares, cell_first;
 	float half_x, half_z, gravity;	/* the room: a floor at 0, walls at +-half */
-	/* the box somebody holds (-1: none): its point `grab_at`, in its own frame, is pulled to `grab_to` */
-	int grab;
-	float grab_at[3], grab_to[3];
+	int held;			/* how many of the holds have a box */
+	struct phys_hold holds[PHYS_HOLDS];
 };
 
 /* A share's cells of the grid of what is where, for look number `turn` (a share of those
@@ -75,6 +79,8 @@ void phys_quads(const struct phys *w, int body, int from, uint32_t colour, uint3
 /* How deep the deepest corner is under the floor or in a wall, and the fastest body's speed. */
 /* The box a ray from `eye` along `way` (unit) meets first, or -1: where on it, in its own frame, and how far. */
 int phys_pick(const struct phys *w, int from, const float *eye, const float *way, float *local, float *distance);
+/* The box whose surface is nearest a point and no further than `reach`, or -1: the point of it, in its own frame. */
+int phys_near(const struct phys *w, int from, const float *point, float reach, float *local);
 /* Where in the room a point of a box is. */
 void phys_point(const struct phys *w, int from, int body, const float *local, float *at);
 void phys_figures(const struct phys *w, int from, float *deepest, float *fastest);

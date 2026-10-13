@@ -115,6 +115,7 @@ static struct surface root, surfaces[MAX_SURFACES];
 /* pixmaps: one whose pixels are the GPU's is drawn on and copied from as a window is */
 static struct surface pixmaps[MAX_PIXMAPS];
 static int blended;			/* the queue has blended text: what follows it is queued in that pass */
+static int most_w = 2048, most_h = 2048;	/* the GPU's target as the host has it: it draws nothing past them */
 static struct surface *target = &root;	/* the surface the queued commands draw on */
 static int commands;			/* queued so far, including the first */
 static uint32_t mesh_top;		/* mesh vertices the queued commands take */
@@ -753,7 +754,7 @@ pixmap_map(PSD mempsd, MWCOORD w, MWCOORD h, int planes, int bpp, MWIMGDATFMT da
 	if (mempsd->FrameBlit)
 		mempsd->FrameBlit = pixmap_frameblit;
 	if (s < pixmaps || s >= pixmaps + MAX_PIXMAPS || !accelerate || bpp != 32 || pitch != (unsigned)w * 4 ||
-	    w > 2048 || h > 2048 || (at = pool_take((uint32_t)w * h * 4)) == ~0u)
+	    w > most_w || h > most_h || (at = pool_take((uint32_t)w * h * 4)) == ~0u)
 		return 1;
 	if (mempsd->flags & PSF_ADDRMALLOC)
 		free(addr);
@@ -1928,6 +1929,10 @@ gpu_open(PSD psd)
 			(int)(f >> 16 & 255) * 16);
 		width = SCREEN_WIDTH;
 		height = SCREEN_HEIGHT;
+	}
+	if ((f >> 8 & 255) && (f >> 16 & 255)) {
+		most_w = (f >> 8 & 255) * 16;
+		most_h = (f >> 16 & 255) * 16;
 	}
 	blocks[0].at = 0;
 	blocks[0].bytes = POOL_SIZE;

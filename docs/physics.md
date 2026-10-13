@@ -10,14 +10,16 @@ machine has none to give.
     / # nano-X -p & nxphys
 
     arrows  turn the view          space  throw the heavy box      1 2 3  a wall, towers, a heap
-    r  the scene again             w  each box in its core's colour     p  stop and go
-    a  all the workers             0  core 0 alone                      q, Escape  leave
+    w a s d  walk the view about   Enter  the next scene           r  the scene again
+    c  each box in its core's colour     p  stop and go            q, Escape  leave
+    9  all the workers             0  core 0 alone
 
-The bar under the picture has a button for each of those but the arrows, and a line of
-figures. In the picture the pointer takes a box by where it is pressed and carries it; pressed
-where no box is, it turns the view. The wheel (or `+` and `-`) brings the eye nearer or takes
-it further, and a held box instead while one is held. The window may be any size: the
-picture has all of it but the bar, and the buttons share the bar's width.
+The bar under the picture has a button for some of those, and a line of figures. In the
+picture the pointer takes a box by where it is pressed, carries it and throws it; from a
+holodeck's seat both hands do. All of it is in "The controls" below. The window may be any
+size: the picture has all of it but the bar, and the buttons share the bar's width.
+
+Until 13 October 2026 `w` was the colours and `a` all the workers.
 
 ## What the workers allow
 
@@ -115,10 +117,15 @@ GPU's picture never meets it. A button does what its key does (`act`).
   (`ray`, from the view's own three directions), tried against every box in the box's own
   frame (`phys_pick`): three pairs of sides, on core 0, once a press.
 - **Carrying it.** Core 0 writes which box, the point on it in the box's frame and where
-  that point is wanted (`grab`, `grab_at`, `grab_to` of `struct phys`, which the workers only
-  read). The box's own share moves that point a quarter of the way there each substep, 30 cm
-  at most, before the contacts are settled: so a held box pushes what it is carried into and
-  swings from where it was taken. Nothing but that share writes the box.
+  that point is wanted (a `struct phys_hold` of `struct phys`: two texels of core 0's own,
+  which the workers only read; there are three, the pointer's and a sitter's two hands'). The
+  box's own share moves that point a quarter of the way there each substep, 30 cm at most,
+  before the contacts are settled: so a held box pushes what it is carried into, swings from
+  where it was taken, and cannot be carried through the floor. Nothing but that share writes
+  the box. With no box held a body's substep asks one word (`held`) and no more.
+- **Throwing it.** A box's velocity is what it did in its last substep, the pull included,
+  so a box let go flies on as the hand went: nothing is done at the letting go but the hold's
+  `body` set to -1.
 - **Where the pointer is** comes from the machine's words while the button is down
   (`docs/input.md`), not from events: the press says where the window is on the display.
   The wanted place is the pointer's ray at the distance ahead of the eye the box was taken at.
@@ -131,6 +138,57 @@ GPU's picture never meets it. A button does what its key does (`act`).
   shares are asked nothing, so turning does not wait for the boxes, and works while they stand.
 - **Nothing is said on the console as it runs** unless `PHYS_SAY=1`: a line there is a tenth
   of a second of core 0, and one a second was a stutter a second.
+
+## The controls (13 October 2026)
+
+| | In the window | In a holodeck's seat, no headset | In a headset |
+|---|---|---|---|
+| take a box, carry it, throw it | the left button on it, held; let go, it flies as the pointer went | Ctrl held (the sitter's left mouse button): the box the view's middle is on | a hand's trigger or grip: the box at the hand (within 15 cm of the room), else the first one the hand points at; each hand its own |
+| a held box nearer, further | the wheel, `+` `-` | `+` `-` | the wheel (a box taken by pointing) |
+| turn the view | the right button dragged, the left one dragged on no box, the arrows | the mouse | the right stick; the arrow keys left and right |
+| walk | `w` `a` `s` `d` (what the view looks at walks) | `w` `a` `s` `d` | the left stick, the way the head looks; the arrow keys up and down |
+| fire the heavy box | a left click on no box: from the eye through that pixel; space: from the room's end | space: the way the view's middle looks | the right stick pushed up: from the right hand, the way it points |
+| the scene again, the next one | `r`, `1` `2` `3`, Enter | the same | the right stick pulled down; the jump button (Enter) |
+| stop and go | `p` | `p` | |
+
+- **A sitter is known by the host's words** (`seglHostState()`, `docs/holodeck.md`: bit 4 of
+  word 0, bit 5 for tracked hands), read every turn of core 0's loop (`seat`). The view is
+  then theirs: level, from where they are (`body_at`), 0.93 m of the room over the floor,
+  which is the seat's eye point over the room's, so the two floors are one. A metre of the
+  room is `metre` of the scene's (word 0's scale, as Quake reads it): at the room's first
+  scale 4.8, so the sitter is a giant before a wall they can reach across. They are put a
+  step and a half before what the view looked at.
+- **A hand** is its place from words 4 and 6 (4 mm of the room a unit, from the eye, in the
+  body's frame) and its trigger and grip. The right hand points as its beam does (word 7).
+  Of the left one only the place is told (word 5 is the sticks), so it points along the line
+  from the eye through it. A box taken by pointing stays as far along the hand's way as it
+  was. Both hands at once have a hold each (`holds[1]`, `holds[2]`).
+- **The sticks are word 5**, as the games read them: the left one walks (1.2 m of the room a
+  second), the right one turns (140 degrees a second pushed home) and, pushed up or down
+  with nothing sideways, fires and begins again.
+- **Without a headset** the mouse's counter (word 4) turns the view, 0.066 degrees a count,
+  and the head's tilt is the aim's rise; the keys are the window's, and Ctrl takes.
+- **Until the world knows the program** (`GAME_PHYS`, 8, in `gameid.h`; `EmuGamepad.cs` has
+  no such number yet) a headset's controls are the pointer's: word 5 is nothing, the left
+  stick is the arrow keys, which is why a sitter's arrows walk and turn; the left grip is
+  Esc, which a sitter with hands does not leave by; the triggers are the pointer's buttons,
+  which do nothing in a sitter's picture. What the world needs: the number, the sticks sent
+  as sticks for it and no keys from the grips and triggers, and a trigger left out of the
+  host's words while its beam is on the console.
+- **A window's keys that are held** (`w` `a` `s` `d`, Ctrl, a sitter's arrows) go by the
+  key's release, which the window now asks for; a window that loses the keyboard lets all go.
+
+Not tried in a headset, nor from a seat in the world: any of it. On `rvc_cpu` with the
+host's words given (`--host`, `--host-mouse`): "Checking it".
+
+With nothing held the boxes are as they were: every sum above the same, `PHYS_COUNT=1` 0
+pages, the wall's dearest share 1,561,829 instructions with a look where it was 1,563,575
+(the pull is out of line and by a copy of the pose: called by the pose's address it cost
+2% of a substep, the pose leaving its registers). On the shader machine, 120 substeps,
+the program before and this one in turn: the wall 796 and 707 ms against 795 and 712, the
+towers 421 and 372 against 409 and 373, the heap 986, 994, 987 against 979, 1,011, 991. A
+held frame of the wall after 120 substeps (the interpreter with the GPU's passes): no pixel
+of the picture differs.
 
 ## The picture
 
@@ -237,9 +295,13 @@ deepest corner in the floor or a wall, the fastest box, a sum of every box's sta
 `PHYS_HOLD=1` stays there and says `nxphys: holding`. `PHYS_SCENE=N` (4: one tower),
 `PHYS_BODIES=N` (the heap's and the tower's), `PHYS_ROWS=N` (the wall's), `PHYS_STILL=1`
 (nothing thrown), `PHYS_WORKERS=N`, `PHYS_SHARES=N` (more shares than workers: core 0 has
-the rest), `PHYS_OWNERS=1` (the `w` key), `PHYS_SIZE=WxH` (the picture's size at the start), `PHYS_SAY=1` (a
-`physstat:` line a second, and a line for a box held or let go), `PHYS_PICK=X,Y` (the box at that pixel held from the start, its
-point wanted three metres up), `PHYS_PRINT=1` (every box's place and velocity),
+the rest), `PHYS_OWNERS=1` (the `c` key), `PHYS_SIZE=WxH` (the picture's size at the start), `PHYS_SAY=1` (a
+`physstat:` line a second, and a line for a box held, let go or fired and for a view that moved), `PHYS_PICK=X,Y` (the box at that pixel held from the start, its
+point wanted three metres up), `PHYS_HANDS="S:H,X,Y,Z,G ..."` (with `PHYS_STEPS`: hand H, 0 or
+1, is at X, Y, Z of the room in millimetres after S substeps, its grip closed or open from
+then, and on its way between two such; the shares stop at every substep of it until core 0
+has told them the hands, so a run is the same whoever computes it), `PHYS_SEAT=1` (a line a
+second of a sitter's place, turn and hands), `PHYS_PRINT=1` (every box's place and velocity),
 `PHYS_COUNT=1` (instructions a box; with `PHYS_WORKERS=0`), `PHYS_SPIN=1` (a share that waits
 turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHYS_ORDER=ahead`
 (the look a substep earlier: other sums).
@@ -267,6 +329,36 @@ turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHY
   `nxkey - - - -` leaves the boxes 0.018 of the picture where they were 0.046, and
   `nxkey drag:684,501:560,420` (the frame's corner) leaves a picture of 516 x 319 with the bar
   under it and seven buttons 72 apart.
+
+- **Hands, whoever computes them.** `PHYS_SCENE=1 PHYS_STILL=1 PHYS_STEPS=150
+  PHYS_HANDS="10:1,-240,4760,0,1 50:1,-240,6500,3000,1 70:1,-240,6500,7000,0
+  10:0,-4244,4760,0,1 60:0,-4244,-500,3000,1 100:0,-4244,-500,3000,0" nxphys` (hand 1 lifts a
+  brick off the wall's top and throws it at 12 m a second; hand 0 takes another and presses
+  it at the floor) prints one sum with `PHYS_WORKERS=0`, 7 and 255 (`4ca48d6c` on `rvc_cpu`),
+  and for each hand a line: the held point at most 146 mm (hand 1, as it swings) and 79 mm
+  from where the hand wanted it, from 20 substeps after it was taken; box 194 let go at
+  12,428 mm/s where the hand went 12,000; and the deepest corner in the floor or a wall at
+  any substep, 98 mm (the thrown brick meeting the room's wall; the pressed one alone 34).
+  Hands that take nothing (`PHYS_HANDS="0:0,0,5000,11000,0 150:0,0,5000,11000,0"`) leave the
+  thrown wall's sum `e444ba29`, and its deepest corner at any substep is 206 mm: no hand
+  put a box deeper than a throw does. On the shader machine the hands' run is one sum too
+  (`28d9b9c1` with 255 workers, twice, and with 15), the same three lines, 0 pages.
+- **The pointer's throw, its click, the view.** With `PHYS_SAY=1 PHYS_STILL=1 nxphys` under
+  `rvc_cpu --pointer-sweep 0`: `--pointer-circle 400,300,12 --pointer-button 1,6,20` says
+  `box 99 held` and `let go at 1711 mm/s`; `--pointer-circle 400,330,0 --pointer-button
+  1,6,6.2` (the floor, for a fifth of a second) says `a box fired from 10643 3199 3152`;
+  `--pointer-circle 400,300,40 --pointer-button 2,6,8` says where the view is from after
+  the right button's drag. `nxkey d+x` moves what the view looks at, `nxkey enter` is the
+  towers (109 boxes in the next `physstat:` line).
+- **The seat.** `PHYS_SAY=1 PHYS_SEAT=1 PHYS_STILL=1 nxphys` under `rvc_cpu --host
+  59000031,0,0,0,06400000,0,40000000,0` (seated, hands tracked, the first scale; the right
+  hand at the eye with its trigger held, pointing ahead): `box 174 held by hand 2, 7537 mm
+  away`, a metre 4766, the left hand 1.9 units ahead of the eye, and `nxkey escape` does
+  not end it. `--host 59000031,0,0,0,06400000,407f00,0,0` (the left stick forward, the right
+  one half to the right): the place goes 5.7 units a second the way it faces and the turn
+  35 degrees a second. `--host 59000012,0,0,0,0,0,0,0 --host-mouse 100` (no headset): the
+  turn goes 6.6 degrees a second, `nxkey ctrl+x` says `held by hand 0` and `let go`, `nxkey
+  space` `a box fired`.
 
 A change to the solver is tried on a wall and on a tower both: every bug in it so far showed
 in one and not the other.

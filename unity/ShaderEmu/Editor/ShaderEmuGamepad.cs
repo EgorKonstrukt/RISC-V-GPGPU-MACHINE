@@ -34,7 +34,9 @@ public static partial class ShaderEmuBuilder
         "POINTER (the desktop, Red Alert, Command & Conquer): right stick moves the pointer, the triggers " +
         "are the mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel.\n" +
         "PAD (the NES): left stick the pad, right trigger A, left trigger B, jump Start, right grip Select.\n" +
-        "BLOCKS (the block world): left stick walks, right stick looks, right trigger digs, left builds.\n\n" +
+        "BLOCKS (the block world): left stick walks, right stick looks, right trigger digs, left builds.\n" +
+        "HANDS (the physics demo): a hand's trigger or grip takes the box it is at or points at, and lets it " +
+        "fly; left stick walks, right stick turns, up fires a box, down begins again, jump the next scene.\n\n" +
         "CLASSROOM: twelve computers. Press POWER on a free one and your machine starts there; EXIT on " +
         "its tower gives the place up.";
 

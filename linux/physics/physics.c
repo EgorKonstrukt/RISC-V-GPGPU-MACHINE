@@ -672,6 +672,26 @@ settle_points(struct pose *cur, struct pose *speed, struct point *points, int n_
 	shifted(cur, scale(move, all - new), scale(spun, all - new));
 }
 
+/* A held body: its point a quarter of the way to where each hold wants it, 30 cm at most.
+ * (Not in line: the rare way.) */
+static __attribute__((noinline)) void
+pulled(const struct phys *w, int i, struct pose *cur, v3 inv_inertia, float inv_mass)
+{
+	const struct phys_hold *hold;
+
+	for (hold = w->holds; hold < w->holds + PHYS_HOLDS; hold++)
+		if (hold->body == i) {
+			v3 arm = rot(&cur->r, of(hold->at)), pull = sub(of(hold->to), add(cur->x, arm)), turn;
+			float len = __builtin_sqrtf(dot(pull, pull)), go = len * 0.25f > 0.3f ? 0.3f : len * 0.25f;
+
+			if (len > 1e-4f) {
+				pull = scale(pull, 1.0f / len);
+				go /= give(&cur->r, inv_inertia, inv_mass, arm, pull, &turn);
+				shifted(cur, scale(pull, inv_mass * go), scale(turn, go));
+			}
+		}
+}
+
 /* A look for the contacts of this share's bodies, where they are in buffer `from`. */
 int
 phys_look(const struct phys *w, int share, int shares, int from, int turn)
@@ -721,16 +741,12 @@ phys_step(const struct phys *w, int share, int shares, int from, int looking)
 			pose_now(s, &now);
 		}
 		pose_next(s, w->gravity, &cur);
-		if (w->grab == i) {
-			/* held: its point a quarter of the way to where it is wanted, 30 cm at most */
-			v3 arm = rot(&cur.r, of(w->grab_at)), pull = sub(of(w->grab_to), add(cur.x, arm)), turn;
-			float len = __builtin_sqrtf(dot(pull, pull)), go = len * 0.25f > 0.3f ? 0.3f : len * 0.25f;
+		if (__builtin_expect(w->held != 0, 0)) {
+			/* (by a copy: the pose itself stays in registers) */
+			struct pose held_at = cur;
 
-			if (len > 1e-4f) {
-				pull = scale(pull, 1.0f / len);
-				go /= give(&cur.r, inv_inertia, inv_mass, arm, pull, &turn);
-				shifted(&cur, scale(pull, inv_mass * go), scale(turn, go));
-			}
+			pulled(w, i, &held_at, inv_inertia, inv_mass);
+			cur = held_at;
 		}
 		about = about_of(&cur.x, shape);
 		for (m = 0; m < pairs; m++) {
@@ -929,6 +945,30 @@ phys_pick(const struct phys *w, int from, const float *eye, const float *way, fl
 		}
 	}
 	*distance = nearest;
+	return best;
+}
+
+int
+phys_near(const struct phys *w, int from, const float *point, float reach, float *local)
+{
+	float nearest = reach * reach;
+	int i, best = -1;
+
+	for (i = 0; i < w->bodies; i++) {
+		const float *half = w->shapes[i].half;
+		struct pose p;
+		v3 o, on, off;
+
+		pose_now(&w->states[from][i], &p);
+		o = unrot(&p.r, sub(of(point), p.x));
+		on = v(o.x > half[0] ? half[0] : o.x < -half[0] ? -half[0] : o.x, o.y > half[1] ? half[1] : o.y < -half[1] ? -half[1] : o.y,
+			o.z > half[2] ? half[2] : o.z < -half[2] ? -half[2] : o.z);
+		off = sub(o, on);
+		if (dot(off, off) <= nearest && (dot(off, off) < nearest || best < 0)) {
+			nearest = dot(off, off), best = i;
+			local[0] = on.x, local[1] = on.y, local[2] = on.z;
+		}
+	}
 	return best;
 }
 

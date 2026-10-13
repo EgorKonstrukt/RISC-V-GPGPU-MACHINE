@@ -29,10 +29,10 @@ public class EmuGamepad : UdonSharpBehaviour
     // what a mapping can hold down: indices into `down`
     private const int Forward = 0, Back = 1, StrafeLeft = 2, StrafeRight = 3, TurnLeft = 4, TurnRight = 5, LookUp = 6,
                       LookDown = 7, Fire = 8, Jump = 9, Next = 10, Menu = 11, Accept = 12, Held = 13;
-    // the mappings: a pointer (the desktop, the strategy games), two sticks, blocks, a pad
-    private const int ForPointer = 0, ForShooter = 1, ForBlocks = 2, ForPad = 3;
+    // the mappings: a pointer (the desktop, the strategy games), two sticks, blocks, a pad, the hands
+    private const int ForPointer = 0, ForShooter = 1, ForBlocks = 2, ForPad = 3, ForHands = 4;
     // the guest's programs that have a mapping of their own (linux/apps/gameid.h)
-    private const int GameDoom = 1, GameQuake = 2, GameClassiCube = 3, GameNes = 6, GameQuake3 = 7;
+    private const int GameDoom = 1, GameQuake = 2, GameClassiCube = 3, GameNes = 6, GameQuake3 = 7, GamePhysics = 8;
 
     private bool held;                      // the controller is in this visitor's hands
     private int scheme;
@@ -59,9 +59,11 @@ public class EmuGamepad : UdonSharpBehaviour
     private void Map(int to)
     {
         ReleaseAll();
+        // (a button of the pointer's that a trigger held goes up with the mapping that pressed it)
+        if (held && (scheme == ForPointer || scheme == ForBlocks)) machine.SetPointerButtons(0);
         scheme = to;
         for (int i = 0; i < Held; i++) code[i] = 0;
-        code[Menu] = Esc;
+        code[Menu] = to == ForHands ? 0 : Esc;   // (the hands' grips take things: none of them is a key)
         code[Accept] = Enter;
         if (to == ForShooter)
         {
@@ -98,6 +100,10 @@ public class EmuGamepad : UdonSharpBehaviour
             code[Jump] = Z;       // B
             code[Next] = Tab;     // Select; Enter is Start
         }
+        else if (to == ForHands)
+        {
+            // no keys but Enter: the program reads the hands and the sticks from the host's words
+        }
         else
         {
             code[Forward] = Up;   // the arrow keys: the strategy games scroll their maps by them
@@ -110,14 +116,15 @@ public class EmuGamepad : UdonSharpBehaviour
 
     private int SchemeOf(int game)
     {
-        return game == GameDoom || game == GameQuake || game == GameQuake3 ? ForShooter : game == GameClassiCube ? ForBlocks : game == GameNes ? ForPad : ForPointer;
+        return game == GameDoom || game == GameQuake || game == GameQuake3 ? ForShooter : game == GameClassiCube ? ForBlocks : game == GameNes ? ForPad
+             : game == GamePhysics ? ForHands : ForPointer;
     }
 
     public string SchemeName()
     {
         int game = machine.gameId;
         return scheme == ForShooter ? (game == GameDoom ? "SHOOTER (Doom)" : game == GameQuake3 ? "SHOOTER (Quake III)" : "SHOOTER (Quake)") : scheme == ForBlocks ? "BLOCKS (ClassiCube)"
-             : scheme == ForPad ? "PAD (NES)" : "POINTER";
+             : scheme == ForPad ? "PAD (NES)" : scheme == ForHands ? "HANDS (Physics)" : "POINTER";
     }
 
     // ---- sitting down and standing up (EmuHolodeck) ----
@@ -169,7 +176,7 @@ public class EmuGamepad : UdonSharpBehaviour
     // byte an axis, 127 pushed home. Low: the left stick, right and forward; high: the right one.
     private int Axis(float v) { return Mathf.Clamp(Mathf.RoundToInt(v * 127f), -127, 127) & 255; }
     private bool InMenu() { return holodeck != null && holodeck.Flat(); }
-    private bool Sticks() { return held && (scheme == ForShooter || scheme == ForBlocks) && !InMenu(); }
+    private bool Sticks() { return held && (scheme == ForShooter || scheme == ForBlocks || scheme == ForHands) && !InMenu(); }
     public int StickLow() { return Sticks() ? Axis(moveX) | (Axis(moveY) << 8) : 0; }
     public int StickHigh() { return Sticks() ? Axis(lookX) | (Axis(lookY) << 8) : 0; }
 
@@ -272,6 +279,11 @@ public class EmuGamepad : UdonSharpBehaviour
             Set(Fire, fire);
             Set(Jump, other);
             Set(Next, rightGrip);
+            Set(Accept, jump);
+        }
+        else if (scheme == ForHands)
+        {
+            // (triggers, grips and sticks are told as they are: EmuHolodeck.Tell, StickLow, StickHigh)
             Set(Accept, jump);
         }
         else

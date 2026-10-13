@@ -13,7 +13,9 @@ has the keyboard: the desktop's bar writes a number for it once a second to the 
 at `0x87000068` (`watch_focus` in `linux/nanox/nxbar.c`, the numbers and the names they go
 by in `linux/apps/gameid.h`; a word nothing else used), `EmuMachine` reads it from the
 readback (`gameId`), and `EmuGamepad.SchemeOf` picks the mapping: Doom, Quake and Quake III the
-shooter's, ClassiCube the blocks', the NES the pad's, anything else (the desktop, Red Alert,
+shooter's, ClassiCube the blocks', the NES the pad's, the physics demo the hands' (no keys but
+the jump button's Enter: it reads the hands and the sticks from the host's words,
+`docs/holodeck.md`, "Boxes in the hands"), anything else (the desktop, Red Alert,
 Command & Conquer) the pointer's. A new game with controls of its own needs a number in
 `gameid.h`, the same in `EmuGamepad.cs`, and a branch in `Map`. What the controls do is on
 the board on the den's left wall (`DoText` in `ShaderEmuGamepad.cs`).

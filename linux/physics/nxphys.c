@@ -1,7 +1,7 @@
 /* nxphys: rigid boxes, every worker core moving its share of them (docs/physics.md).
  * Keys, and the bar's buttons: 1 2 3 a wall, towers, a heap; space the heavy box thrown; p stop;
- * w each box in its core's colour; a / 0 all the workers, none; r again; q leave. The pointer
- * carries the box it is pressed on, or turns the view; the wheel (+ -) brings it or the eye nearer. */
+ * c each box in its core's colour; 9 / 0 all the workers, none; r again; w a s d walk; q leave.
+ * The pointer and a holodeck sitter's hands carry boxes and throw them ("The controls" there). */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -173,8 +173,10 @@ share_job(uint32_t s, uint32_t worker)
 #define BUTTONS 7
 #define LENS 0.6f		/* how far the view opens up and down at one unit ahead */
 static const struct { const char *label; int key; } buttons[BUTTONS] = {
-	{" Wall", '1'}, {" Towers", '2'}, {" Heap", '3'}, {" Throw", ' '}, {" Stop", 'p'}, {" Cores", 'w'}, {" Workers", 'W'},
+	{" Wall", '1'}, {" Towers", '2'}, {" Heap", '3'}, {" Throw", ' '}, {" Stop", 'p'}, {" Cores", 'c'}, {" Workers", 'W'},
 };
+#define REACH 60.0f		/* how far along a hand's or a sitter's aim a box is taken */
+#define WALK 6.0f		/* what the keys move the view by, a second */
 static GR_WINDOW_ID window, picture;
 static int bar_y, wide, button_step = 90;	/* (the buttons share the bar's width) */
 static char status[120] = "";
@@ -182,8 +184,22 @@ static float eye[3], ahead[3], right[3], up[3];
 /* the button held in the picture: where the window is on the display, where the pointer was
  * last, and how far ahead of the eye the held box's point was taken */
 static int talk;	/* PHYS_SAY: lines on the console as it runs (a line is a tenth of a second of this core) */
-static int holding, held_for_good, origin_x, origin_y, last_x, last_y;
+static int holding, held_for_good, origin_x, origin_y, last_x, last_y;	/* (holding: 1 the left button, 2 the right) */
 static float held_far;
+static int press_x, press_y, dragged;	/* a left press on no box, let go at once where it was: a box is fired */
+static unsigned press_at;
+static float centre[3] = {0.0f, 2.5f, 0.0f};	/* what the view looks at: the keys walk it about */
+/* A holodeck's sitter (docs/holodeck.md): 1 with tracked hands, 2 with a mouse. The view is
+ * then theirs, level, from `body_at`; `metre` is a metre of their room in the scene's units. */
+static int seated, seat_say;
+static float body_at[3], metre = 1.0f;
+static unsigned mouse_count, moved_at;
+static int keys_down;			/* the keys held that walk and turn: KEY_ bits */
+enum { KEY_AHEAD = 1, KEY_BACK = 2, KEY_LEFT = 4, KEY_RIGHT = 8, KEY_TURN_LEFT = 16, KEY_TURN_RIGHT = 32, KEY_TAKE = 64 };
+static int hand_down[PHYS_HOLDS], stick_was;	/* a hold's button as it was; the right stick pushed up or down */
+static float hand_far[PHYS_HOLDS];	/* how far along its hand's way a hold's box was taken */
+static int wanted_again;		/* what a hand or a click asks of the main loop: act()'s numbers, 4 a box fired */
+static float fire_from[3], fire_way[3];
 static int view_moved, shown_buffer = -1;	/* the view is not the shown picture's; which buffer that picture is */
 static GLuint texture;
 /* The workers asked for: all of them. With more than the bodies need, some have the grid and
@@ -600,14 +616,20 @@ picture_made(void)
 	return 1;
 }
 
-/* The view: from a circle round the room's middle, looking at the middle. */
+/* The view: from a circle round the room's middle (or where the keys have walked), looking at it. */
 static void
 set_view(void)
 {
-	float to[3] = {0.0f, 2.5f, 0.0f}, len, m[16];
+	float to[3] = {centre[0], centre[1], centre[2]}, len, m[16];
 	int width, height, k;
 
-	eye[0] = view_far * sinf(view_turn), eye[1] = view_high * view_far * (1.0f / 22.0f), eye[2] = view_far * cosf(view_turn);
+	eye[0] = centre[0] + view_far * sinf(view_turn), eye[1] = view_high * view_far * (1.0f / 22.0f), eye[2] = centre[2] + view_far * cosf(view_turn);
+	if (seated) {
+		/* a sitter's: from where they are, level (the room keeps its own horizon) */
+		for (k = 0; k < 3; k++)
+			eye[k] = to[k] = body_at[k];
+		to[0] -= sinf(view_turn), to[2] -= cosf(view_turn);
+	}
 	for (len = 0.0f, k = 0; k < 3; k++)
 		ahead[k] = to[k] - eye[k], len += ahead[k] * ahead[k];
 	for (len = sqrtf(len), k = 0; k < 3; k++)
@@ -663,17 +685,28 @@ set_size(int width, int height)
 	view_moved = 1;
 }
 
-/* Nearer or further: the held box along the pointer's ray, or with none held the eye. */
+/* Nearer or further: a held box along the ray it was taken by, or with none held the eye. */
 static void
 zoom(int out)
 {
-	if (sim.w.grab >= 0) {
+	int slot, any = 0;
+
+	if (!seated && sim.w.holds[0].body >= 0) {
 		held_far *= out ? 1.1f : 0.9f;
 		if (held_far < 2.0f) held_far = 2.0f;
 		if (held_far > 60.0f) held_far = 60.0f;
 		last_x = -1;	/* (the box's place is worked out again) */
 		return;
 	}
+	for (slot = 0; slot < PHYS_HOLDS; slot++)
+		if (sim.w.holds[slot].body >= 0 && hand_far[slot] > 0.0f) {
+			hand_far[slot] *= out ? 1.1f : 0.9f;
+			if (hand_far[slot] < 0.5f) hand_far[slot] = 0.5f;
+			if (hand_far[slot] > REACH) hand_far[slot] = REACH;
+			any = 1;
+		}
+	if (any || seated)
+		return;
 	view_far *= out ? 1.1f : 0.9f;
 	if (view_far < 6.0f) view_far = 6.0f;
 	if (view_far > 45.0f) view_far = 45.0f;
@@ -689,7 +722,7 @@ draw_bar(void)
 
 	ui_fill(window, 0, bar_y, wide, BAR, UI_FACE);
 	for (k = 0; k < BUTTONS; k++) {
-		int key = buttons[k].key, down = (key == 'p' && stopped) || (key == 'w' && sim.owners) || (key == 'W' && workers > 0);
+		int key = buttons[k].key, down = (key == 'p' && stopped) || (key == 'c' && sim.owners) || (key == 'W' && workers > 0);
 
 		ui_button(window, 5 + button_step * k, bar_y + 5, button_step - 4, 22, key == 'p' && stopped ? " Go" : buttons[k].label, down);
 	}
@@ -697,20 +730,376 @@ draw_bar(void)
 	GrFlush();
 }
 
-/* What a key or its button does. 1: the scene again; 2: other workers; 3: the heavy box thrown. */
+/* ---- boxes in the hand: the pointer's is hold 0, a sitter's hands' 1 and 2 ---- */
+
+static int
+state_now(void)
+{
+	return (int)((sim.base + phase_least()) % PHYS_BUFFERS);
+}
+
+/* Where a hold's point is wanted: inside the room and over the floor. */
+static void
+hold_to(int slot, const float *to)
+{
+	struct phys_hold *hold = &sim.w.holds[slot];
+	int k;
+
+	for (k = 0; k < 3; k++) {
+		float most = k == 1 ? 2.0f * ROOM_HIGH - 1.0f : ROOM - 0.5f, least = k == 1 ? 0.3f : -most;
+		float at = to[k] > most ? most : to[k] < least ? least : to[k];
+
+		if (hold->to[k] != at)
+			hold->to[k] = at;
+	}
+}
+
+static void
+hold_take(int slot, int body, const float *local, const float *to)
+{
+	struct phys_hold *hold = &sim.w.holds[slot];
+	int k;
+
+	/* (where it is wanted first, in its own texel: a share that sees the box sees that) */
+	hold_to(slot, to);
+	for (k = 0; k < 3; k++)
+		hold->at[k] = local[k];
+	hold->body = body;
+	sim.w.held++;
+}
+
+static void
+hold_drop(int slot)
+{
+	if (sim.w.holds[slot].body < 0)
+		return;
+	sim.w.holds[slot].body = -1;
+	sim.w.held--;
+}
+
+static int
+speed_of(int body)
+{
+	const float *vel = sim.w.states[state_now()][body].vel;
+
+	return (int)(1000.0f * sqrtf(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]));
+}
+
+/* Let go, a box keeps what speed the hand gave it: it is thrown. */
+static void
+let_go(int slot)
+{
+	if (sim.w.holds[slot].body >= 0 && talk)
+		fprintf(stderr, "nxphys: box %d let go at %d mm/s\n", sim.w.holds[slot].body, speed_of(sim.w.holds[slot].body));
+	hold_drop(slot);
+}
+
+/* A hold's hand: where it is, the way it points (or none), how near a box it must be to take
+ * it without pointing, its button. The box is taken as the button goes down, wanted where
+ * the hand is (or as far along its way as it was) while held, and let go as it comes up. */
+static void
+hand(int slot, const float *at, const float *way, float near, int down)
+{
+	struct phys_hold *hold = &sim.w.holds[slot];
+	float local[3], to[3], distance = 0.0f;
+	int was = hand_down[slot], body, k;
+
+	hand_down[slot] = down;
+	if (!down) {
+		let_go(slot);
+		return;
+	}
+	if (!was) {
+		hand_far[slot] = 0.0f;
+		body = near > 0.0f ? phys_near(&sim.w, state_now(), at, near, local) : -1;
+		if (body < 0 && way && (body = phys_pick(&sim.w, state_now(), at, way, local, &distance)) >= 0) {
+			if (distance > REACH)
+				body = -1;
+			else
+				hand_far[slot] = distance;
+		}
+		if (body < 0)
+			return;
+		for (k = 0; k < 3; k++)
+			to[k] = at[k] + (way ? way[k] * hand_far[slot] : 0.0f);
+		hold_take(slot, body, local, to);
+		if (talk)
+			fprintf(stderr, "nxphys: box %d held by hand %d, %d mm away\n", body, slot, (int)(distance * 1000.0f));
+		return;
+	}
+	if (hold->body < 0)
+		return;
+	for (k = 0; k < 3; k++)
+		to[k] = at[k] + (way ? way[k] * hand_far[slot] : 0.0f);
+	hold_to(slot, to);
+}
+
+static void
+say_view(void)
+{
+	if (talk)
+		fprintf(stderr, "nxphys: the view is from %d %d %d, looking at %d %d %d\n", (int)(eye[0] * 1000.0f), (int)(eye[1] * 1000.0f), (int)(eye[2] * 1000.0f),
+			(int)(centre[0] * 1000.0f), (int)(centre[1] * 1000.0f), (int)(centre[2] * 1000.0f));
+}
+
+/* A box to be fired from `from` along `way` (unit), from where that way is inside the room:
+ * 4 for the main loop, 0 when it never is. */
+static int
+fire_asked(const float *from, const float *way)
+{
+	float in = 0.0f, out = 1e30f;
+	int k;
+
+	for (k = 0; k < 3; k++) {
+		float most = k == 1 ? 2.0f * ROOM_HIGH - 1.0f : ROOM - 0.8f, least = k == 1 ? 0.6f : -most;
+
+		if (fabsf(way[k]) < 1e-6f) {
+			if (from[k] < least || from[k] > most)
+				return 0;
+		} else {
+			float a = (least - from[k]) / way[k], b = (most - from[k]) / way[k];
+
+			if (a > b) { float c = a; a = b; b = c; }
+			if (a > in) in = a;
+			if (b < out) out = b;
+		}
+	}
+	in += 0.8f;	/* (clear of whoever fires it, or of the wall it came in by) */
+	if (in > out)
+		return 0;
+	for (k = 0; k < 3; k++)
+		fire_from[k] = from[k] + way[k] * in, fire_way[k] = way[k];
+	return 4;
+}
+
+/* The heavy box, the last body, fired from there. */
+static void
+fire_box(int buffer)
+{
+	struct body_state *s = &sim.w.states[buffer][sim.w.bodies - 1];
+	int k;
+
+	memset(s, 0, sizeof *s);
+	for (k = 0; k < 3; k++)
+		s->pos[k] = fire_from[k], s->vel[k] = 16.0f * fire_way[k];
+	s->q[3] = 1.0f;
+	s->spin[0] = 1.5f, s->spin[1] = 0.7f;
+	s->key = phys_key(&sim.w, s->pos);
+}
+
+/* The way that is `yaw` to the right of the view's and `pitch` up (65,536ths of a turn). */
+static void
+way_of(int yaw, int pitch, float *way)
+{
+	float a = (float)yaw * (6.2831853f / 65536.0f), p = (float)pitch * (6.2831853f / 65536.0f), c = cosf(p), ca = cosf(a) * c, sa = sinf(a) * c, sp = sinf(p);
+	int k;
+
+	for (k = 0; k < 3; k++)
+		way[k] = ahead[k] * ca + right[k] * sa + up[k] * sp;
+}
+
+/* A place walked over the floor: so far ahead and to the right of the level way `f` (x and z). */
+static void
+walked(float *place, const float *f, float along, float aside, float most)
+{
+	place[0] += f[0] * along - f[1] * aside;
+	place[2] += f[1] * along + f[0] * aside;
+	if (place[0] > most) place[0] = most;
+	if (place[0] < -most) place[0] = -most;
+	if (place[2] > most) place[2] = most;
+	if (place[2] < -most) place[2] = -most;
+}
+
+/* A holodeck's sitter (docs/holodeck.md, "Played from the seat"; docs/physics.md, "The
+ * controls"): the view is theirs, their hands take boxes, their sticks or keys walk and turn. */
+static void
+seat(float dt)
+{
+	static unsigned plane, said_at;
+	static int placed;
+	const volatile unsigned *host = seglHostState();
+	unsigned w0 = host ? host[0] : 0;
+	int kind = !(w0 & 16) ? 0 : (w0 & 32) ? 1 : (w0 & 15) == 2 ? 2 : 0, slot, h, k, moved = 0;
+	float f[2], along, aside, way[3];
+
+	if (kind != seated) {
+		for (slot = 0; slot < PHYS_HOLDS; slot++) {
+			hold_drop(slot);
+			hand_down[slot] = 0;
+		}
+		holding = keys_down = placed = 0;
+		seated = kind;
+		if (!kind) {
+			set_view();
+			view_moved = 1;
+			return;
+		}
+		mouse_count = SEGL_HOST_MOUSE_X(host);
+	}
+	if (!seated)
+		return;
+	if (!placed || SEGL_HOST_PLANE(host) != plane) {
+		/* a metre of the room: its plane, 1.28 by 0.8 m, is `at` from the camera (GpuVolumePass.cginc) */
+		float at = 0.5f * powf(100.0f / 0.5f, (float)(plane = SEGL_HOST_PLANE(host)) * (1.0f / 255.0f)), across;
+		int width, height;
+
+		seglSize(&width, &height);
+		across = (float)width / (float)(height > 0 ? height : 1) * (1.0f / 1.28f);
+		metre = 2.0f * at * LENS * (across > 1.25f ? across : 1.25f);
+		if (!placed) {
+			/* before what the view looked at, a step and a half away, facing it */
+			body_at[0] = centre[0], body_at[2] = centre[2];
+			f[0] = sinf(view_turn), f[1] = cosf(view_turn);
+			walked(body_at, f, 1.0f + 1.5f * metre, 0.0f, ROOM - 0.5f);
+			placed = 1;
+		}
+		body_at[1] = 0.93f * metre;	/* the seat's eye point over the room's floor: the floors are one */
+		moved = 1;
+	}
+	along = (float)(!!(keys_down & KEY_AHEAD) - !!(keys_down & KEY_BACK)), aside = (float)(!!(keys_down & KEY_RIGHT) - !!(keys_down & KEY_LEFT));
+	if (keys_down & (KEY_TURN_LEFT | KEY_TURN_RIGHT)) {
+		view_turn += (keys_down & KEY_TURN_LEFT ? 1.6f : -1.6f) * dt;
+		moved = 1;
+	}
+	f[0] = -sinf(view_turn), f[1] = -cosf(view_turn);
+	if (seated == 1) {
+		float look = (float)SEGL_HOST_STICK(host, 2) * (1.0f / 127.0f);
+
+		/* the sticks as sticks: the right one turns, the left one walks the way the head looks */
+		if (fabsf(look) >= 0.15f) {
+			view_turn -= look * fabsf(look) * 2.44f * dt;
+			moved = 1;
+		}
+		along += (float)SEGL_HOST_STICK(host, 1) * (1.0f / 127.0f), aside += (float)SEGL_HOST_STICK(host, 0) * (1.0f / 127.0f);
+		way_of(SEGL_HOST_HEAD_YAW(host), 0, way);
+		f[0] = way[0], f[1] = way[2];
+	} else {
+		unsigned count = SEGL_HOST_MOUSE_X(host);
+
+		/* the mouse turns, as it turns the games: 0.066 degrees a count */
+		if (count != mouse_count) {
+			view_turn -= 0.001152f * (float)(short)(count - mouse_count);
+			mouse_count = count;
+			moved = 1;
+		}
+	}
+	if (along != 0.0f || aside != 0.0f) {
+		walked(body_at, f, along * 1.2f * metre * dt, aside * 1.2f * metre * dt, ROOM - 0.5f);
+		moved = 1;
+	}
+	if (moved) {
+		set_view();
+		view_moved = 1;
+	}
+	if (seated == 1) {
+		float at[2][3], unit = 0.004f * metre, len;
+		int push = (int)SEGL_HOST_STICK(host, 3), now = abs((int)SEGL_HOST_STICK(host, 2)) > 50 ? 0 : push > 100 ? 1 : push < -100 ? -1 : 0;
+
+		for (h = 1; h >= 0; h--) {
+			for (k = 0; k < 3; k++)
+				at[h][k] = eye[k] + (right[k] * (float)SEGL_HOST_HAND_X(host, h) + up[k] * (float)SEGL_HOST_HAND_Y(host, h) +
+						     ahead[k] * (float)SEGL_HOST_HAND_Z(host, h)) * unit;
+			/* the right hand points as its beam does; of the left one only the place is told
+			 * (its second word is the sticks): it points as the eye sees it */
+			if (h)
+				way_of(SEGL_HOST_HAND_YAW(host, 1), SEGL_HOST_HAND_PITCH(host, 1), way);
+			else {
+				for (len = 0.0f, k = 0; k < 3; k++)
+					way[k] = at[0][k] - eye[k], len += way[k] * way[k];
+				for (len = sqrtf(len), k = 0; k < 3; k++)
+					way[k] = len > 1e-3f ? way[k] / len : ahead[k];
+			}
+			hand(1 + h, at[h], way, 0.15f * metre, SEGL_HOST_HAND_TRIGGER(host, h) | SEGL_HOST_HAND_GRIP(host, h));
+			/* the right stick pushed up fires a box from the right hand, pulled down is the scene again */
+			if (h && now != stick_was && now > 0)
+				wanted_again = fire_asked(at[1], way);
+		}
+		if (now != stick_was && now < 0)
+			wanted_again = 1;
+		stick_was = now;
+		if (seat_say && now_ms() - said_at >= 1000) {
+			said_at = now_ms();
+			fprintf(stderr, "nxphys: seat 1 at %d %d %d turned %d, a metre %d, left %d %d %d right %d %d %d, boxes %d %d\n", (int)(eye[0] * 1000.0f),
+				(int)(eye[1] * 1000.0f), (int)(eye[2] * 1000.0f), (int)(view_turn * 57.29578f), (int)(metre * 1000.0f), (int)(at[0][0] * 1000.0f),
+				(int)(at[0][1] * 1000.0f), (int)(at[0][2] * 1000.0f), (int)(at[1][0] * 1000.0f), (int)(at[1][1] * 1000.0f), (int)(at[1][2] * 1000.0f),
+				sim.w.holds[1].body, sim.w.holds[2].body);
+		}
+	} else {
+		/* no hands: the aim is the view's way at the head's tilt, and Ctrl (their left button) takes */
+		way_of(0, SEGL_HOST_HEAD_PITCH(host), way);
+		hand(0, eye, way, 0.0f, !!(keys_down & KEY_TAKE));
+		if (seat_say && now_ms() - said_at >= 1000) {
+			said_at = now_ms();
+			fprintf(stderr, "nxphys: seat 2 at %d %d %d turned %d, a metre %d, the aim %d %d %d, box %d\n", (int)(eye[0] * 1000.0f), (int)(eye[1] * 1000.0f),
+				(int)(eye[2] * 1000.0f), (int)(view_turn * 57.29578f), (int)(metre * 1000.0f), (int)(way[0] * 1000.0f), (int)(way[1] * 1000.0f),
+				(int)(way[2] * 1000.0f), sim.w.holds[0].body);
+		}
+	}
+}
+
+/* What moves with time: a sitter's view and hands, or with nobody seated the keys' walk. */
+static void
+motion(unsigned now)
+{
+	float dt = (float)(now - moved_at > 100 ? 100 : now - moved_at) * 0.001f, f[2];
+
+	moved_at = now;
+	seat(dt);
+	if (seated || !(keys_down & (KEY_AHEAD | KEY_BACK | KEY_LEFT | KEY_RIGHT)))
+		return;
+	f[0] = -sinf(view_turn), f[1] = -cosf(view_turn);
+	walked(centre, f, (float)(!!(keys_down & KEY_AHEAD) - !!(keys_down & KEY_BACK)) * WALK * dt,
+		(float)(!!(keys_down & KEY_RIGHT) - !!(keys_down & KEY_LEFT)) * WALK * dt, ROOM);
+	set_view();
+	view_moved = 1;
+}
+
+/* The key's bit of those that are held to walk and turn, or 0. (A sitter's arrows walk and
+ * turn: a headset's left stick is the arrow keys under the pointer's controls.) */
+static int
+key_bit(int key)
+{
+	switch (key) {
+	case 'w': return KEY_AHEAD;
+	case 's': return KEY_BACK;
+	case 'a': return KEY_LEFT;
+	case 'd': return KEY_RIGHT;
+	case MWKEY_LCTRL: case MWKEY_RCTRL: return KEY_TAKE;
+	case MWKEY_UP: return seated ? KEY_AHEAD : 0;
+	case MWKEY_DOWN: return seated ? KEY_BACK : 0;
+	case MWKEY_LEFT: return seated ? KEY_TURN_LEFT : 0;
+	case MWKEY_RIGHT: return seated ? KEY_TURN_RIGHT : 0;
+	}
+	return 0;
+}
+
+/* What a key or its button does. 1: the scene again; 2: other workers; 3: the heavy box
+ * thrown; 4: fired the way a sitter looks. */
 static int
 act(int key)
 {
+	float way[3];
+
 	switch (key) {
-	case 'q': case MWKEY_ESCAPE: sim.stop = 1; exit(0);
+	case MWKEY_ESCAPE:
+		/* (a sitter's left grip is Esc under the pointer's controls: it takes a box here) */
+		if (seated == 1)
+			break;
+		/* fall through */
+	case 'q': sim.stop = 1; exit(0);
 	case 'p': stopped = !stopped; break;
-	case 'w': sim.owners = !sim.owners; break;
+	case 'c': sim.owners = !sim.owners; break;
 	case 'r': return 1;
 	case '1': case '2': case '3': scene = key - '0'; return 1;
-	case 'a': wanted = MC_MAX_CORES; return 2;
+	case MWKEY_ENTER: scene = scene % 3 + 1; return 1;	/* the next scene: a headset's jump button */
+	case '9': wanted = MC_MAX_CORES; return 2;
 	case '0': wanted = 0; return 2;
 	case 'W': wanted = workers ? 0 : WORKERS_ASKED; return 2;
-	case ' ': return 3;
+	case ' ':
+		if (!seated)
+			return 3;
+		way_of(0, seated == 2 ? SEGL_HOST_HEAD_PITCH(seglHostState()) : 0, way);
+		return fire_asked(eye, way);
 	case '+': case '=': zoom(0); break;
 	case '-': zoom(1); break;
 	case MWKEY_LEFT: view_turn -= 0.15f; set_view(); view_moved = 1; break;
@@ -721,18 +1110,20 @@ act(int key)
 	return 0;
 }
 
-/* The button went down at that pixel of the picture: the box under it is held by that point,
- * or with no box there the view is. */
+/* A button went down at that pixel of the picture (1 the left, 2 the right). The left one
+ * holds the box under it by that point; with no box there, and the right one, the view. */
 static void
-press(int px, int py)
+press(int px, int py, int button)
 {
-	float way[3], local[3], distance;
-	int buffer = (int)((sim.base + phase_least()) % PHYS_BUFFERS), body, k;
+	float way[3], local[3], to[3], distance;
+	int body, k;
 
+	last_x = press_x = px, last_y = press_y = py;
+	holding = button, dragged = 0, press_at = now_ms();
+	if (button != 1)
+		return;
 	ray(px, py, way);
-	body = phys_pick(&sim.w, buffer, eye, way, local, &distance);
-	last_x = px, last_y = py;
-	holding = 1;
+	body = phys_pick(&sim.w, state_now(), eye, way, local, &distance);
 	if (body < 0) {
 		if (talk)
 			fprintf(stderr, "nxphys: no box at %d, %d: the view is held\n", px, py);
@@ -740,39 +1131,45 @@ press(int px, int py)
 	}
 	held_far = distance * (way[0] * ahead[0] + way[1] * ahead[1] + way[2] * ahead[2]);
 	for (k = 0; k < 3; k++)
-		sim.w.grab_at[k] = local[k], sim.w.grab_to[k] = eye[k] + way[k] * distance;
-	sim.w.grab = body;
+		to[k] = eye[k] + way[k] * distance;
+	hold_take(0, body, local, to);
 	if (talk)
 		fprintf(stderr, "nxphys: box %d held, %d mm away\n", body, (int)(distance * 1000.0f));
 }
 
 /* While the button is down: the held box's point goes where the pointer is, as far from the
- * eye as it was taken; or the view turns. The pointer is the machine's words (docs/input.md). */
+ * eye as it was taken; or the view turns. The pointer is the machine's words (docs/input.md).
+ * A left press on no box that comes up at once where it went down fires a box that way. */
 static void
 pointer(void)
 {
 	int px = (int)*control(0x20) - origin_x, py = (int)*control(0x24) - origin_y, k;
-	float way[3], far;
+	float way[3], to[3], far;
 
 	if (!holding || held_for_good)
 		return;
-	if (!(*control(0x28) & 1)) {
-		if (sim.w.grab >= 0 && talk)
-			fprintf(stderr, "nxphys: box %d let go\n", sim.w.grab);
-		sim.w.grab = -1;
+	if (!(*control(0x28) & (unsigned)holding)) {
+		if (sim.w.holds[0].body >= 0) {
+			let_go(0);
+		} else if (holding == 1 && !dragged && now_ms() - press_at < 350) {
+			ray(press_x, press_y, way);
+			wanted_again = fire_asked(eye, way);
+		} else {
+			say_view();
+		}
 		holding = 0;
 		return;
 	}
 	if (px == last_x && py == last_y)
 		return;
-	if (sim.w.grab >= 0) {
+	if (abs(px - press_x) + abs(py - press_y) > 3)
+		dragged = 1;
+	if (sim.w.holds[0].body >= 0) {
 		ray(px, py, way);
 		far = held_far / (way[0] * ahead[0] + way[1] * ahead[1] + way[2] * ahead[2]);
-		for (k = 0; k < 3; k++) {
-			float to = eye[k] + way[k] * far, most = k == 1 ? 2.0f * ROOM_HIGH - 1.0f : ROOM - 0.5f;
-
-			sim.w.grab_to[k] = to > most ? most : to < (k == 1 ? 0.3f : -most) ? (k == 1 ? 0.3f : -most) : to;
-		}
+		for (k = 0; k < 3; k++)
+			to[k] = eye[k] + way[k] * far;
+		hold_to(0, to);
 	} else {
 		view_turn -= 0.01f * (float)(px - last_x);
 		view_high += 0.05f * (float)(py - last_y);
@@ -784,7 +1181,7 @@ pointer(void)
 	last_x = px, last_y = py;
 }
 
-/* Keys and the button. What act() said, of the last thing that said anything. */
+/* Keys and the buttons. What act() said, of the last thing that said anything. */
 static int
 events(void)
 {
@@ -802,8 +1199,18 @@ events(void)
 		}
 		if (e.type == GR_EVENT_TYPE_EXPOSURE && e.exposure.wid == window)
 			draw_bar();
-		if (e.type == GR_EVENT_TYPE_KEY_DOWN && (k = act(e.keystroke.ch)) != 0)
-			again = k;
+		if (e.type == GR_EVENT_TYPE_KEY_DOWN) {
+			if (key_bit(e.keystroke.ch))
+				keys_down |= key_bit(e.keystroke.ch);
+			else if ((k = act(e.keystroke.ch)) != 0)
+				again = k;
+		}
+		if (e.type == GR_EVENT_TYPE_KEY_UP && key_bit(e.keystroke.ch)) {
+			keys_down &= ~key_bit(e.keystroke.ch);
+			say_view();
+		}
+		if (e.type == GR_EVENT_TYPE_FOCUS_OUT)
+			keys_down = 0;
 		if (e.type == GR_EVENT_TYPE_UPDATE && e.update.utype == GR_UPDATE_SIZE && e.update.wid == window) {
 			set_size(e.update.width, e.update.height);
 			draw_bar();
@@ -812,20 +1219,116 @@ events(void)
 			zoom(ui_wheel(&e) > 0);
 			continue;
 		}
-		if (e.type != GR_EVENT_TYPE_BUTTON_DOWN || !(e.button.changebuttons & GR_BUTTON_L))
+		if (e.type != GR_EVENT_TYPE_BUTTON_DOWN || !(e.button.changebuttons & (GR_BUTTON_L | GR_BUTTON_R)))
 			continue;
 		if (e.button.y < bar_y) {
+			/* (a sitter's trigger is the pointer's button too, under the pointer's controls) */
+			if (seated)
+				continue;
 			/* (where the pointer is now, not where the event says it was: the box is taken
 			 * under the hand; and the window where this press says it is: the picture is its
 			 * top left corner) */
 			ui_window_origin(window, &origin_x, &origin_y);
-			press((int)*control(0x20) - origin_x, (int)*control(0x24) - origin_y);
-		} else if (e.button.y >= bar_y + 5 && e.button.y < bar_y + 27 && e.button.x >= 5 && (e.button.x - 5) % button_step < button_step - 4 &&
-			   (e.button.x - 5) / button_step < BUTTONS) {
+			press((int)*control(0x20) - origin_x, (int)*control(0x24) - origin_y, e.button.changebuttons & GR_BUTTON_L ? 1 : 2);
+		} else if ((e.button.changebuttons & GR_BUTTON_L) && e.button.y >= bar_y + 5 && e.button.y < bar_y + 27 && e.button.x >= 5 &&
+			   (e.button.x - 5) % button_step < button_step - 4 && (e.button.x - 5) / button_step < BUTTONS) {
 			if ((k = act(buttons[(e.button.x - 5) / button_step].key)) != 0)
 				again = k;
 		}
 	}
+}
+
+/* ---- PHYS_HANDS: a test's hands, moved between substeps so that every run of it is the same ---- */
+
+#define SCRIPT_KEYS 32
+static struct {
+	int n;
+	struct { uint32_t step; float at[3]; int grip; } key[SCRIPT_KEYS];
+	uint32_t taken_at, let_go_at;
+	int box, box_speed, hand_speed, worst;
+} scripted[2];
+static uint32_t script_first = ~0u, script_last;
+static int script_on, script_deepest;
+
+/* "SUBSTEP:HAND,X,Y,Z,GRIP ...": hand 0 or 1 is at that place of the room (millimetres) after
+ * so many substeps, its grip closed or open from then; between two lines it is on the way. */
+static void
+script_read(const char *text)
+{
+	for (;;) {
+		unsigned step;
+		int h, x, y, z, grip, used = 0;
+
+		if (sscanf(text, " %u:%d,%d,%d,%d,%d%n", &step, &h, &x, &y, &z, &grip, &used) < 6 || !used)
+			return;
+		text += used;
+		if (h < 0 || h > 1 || scripted[h].n == SCRIPT_KEYS)
+			continue;
+		scripted[h].key[scripted[h].n].step = step, scripted[h].key[scripted[h].n].grip = grip;
+		scripted[h].key[scripted[h].n].at[0] = (float)x * 0.001f, scripted[h].key[scripted[h].n].at[1] = (float)y * 0.001f;
+		scripted[h].key[scripted[h].n++].at[2] = (float)z * 0.001f;
+		scripted[h].box = -1;
+		if (step < script_first) script_first = step;
+		if (step > script_last) script_last = step;
+		script_on = 1;
+	}
+}
+
+/* Where a test's hand is after `step` substeps, and its grip (-1: it is not there yet). */
+static int
+script_at(int h, uint32_t step, float *at)
+{
+	int n = scripted[h].n, i, k;
+
+	if (!n || step < scripted[h].key[0].step)
+		return -1;
+	for (i = 0; i + 1 < n && scripted[h].key[i + 1].step <= step; i++)
+		;
+	for (k = 0; k < 3; k++) {
+		at[k] = scripted[h].key[i].at[k];
+		if (i + 1 < n)
+			at[k] += (scripted[h].key[i + 1].at[k] - at[k]) * (float)(step - scripted[h].key[i].step) /
+				 (float)(scripted[h].key[i + 1].step - scripted[h].key[i].step);
+	}
+	return scripted[h].key[i].grip;
+}
+
+/* A test's hands after `step` substeps, every share being there: how far the held boxes are
+ * from where they were wanted and how fast one let go is, then where they are wanted next. */
+static void
+script_apply(uint32_t step)
+{
+	float at[3], was[3], point[3], deepest, fastest;
+	int h, k;
+
+	for (h = 0; h < 2; h++) {
+		struct phys_hold *hold = &sim.w.holds[1 + h];
+		int grip = script_at(h, step, at), body = hold->body;
+
+		if (grip < 0)
+			continue;
+		if (body >= 0) {
+			float off = 0.0f, went = 0.0f;
+
+			phys_point(&sim.w, state_now(), body, hold->at, point);
+			for (k = 0; k < 3; k++)
+				off += (point[k] - hold->to[k]) * (point[k] - hold->to[k]);
+			if (step >= scripted[h].taken_at + 20 && (int)(1000.0f * sqrtf(off)) > scripted[h].worst)
+				scripted[h].worst = (int)(1000.0f * sqrtf(off));
+			if (!grip && step && script_at(h, step - 1, was) >= 0) {
+				for (k = 0; k < 3; k++)
+					went += (at[k] - was[k]) * (at[k] - was[k]);
+				scripted[h].let_go_at = step, scripted[h].box = body;
+				scripted[h].box_speed = speed_of(body), scripted[h].hand_speed = (int)(1000.0f * PHYS_HZ * sqrtf(went));
+			}
+		}
+		hand(1 + h, at, NULL, 0.3f, grip);
+		if (body < 0 && hold->body >= 0)
+			scripted[h].taken_at = step, scripted[h].box = hold->body;
+	}
+	phys_figures(&sim.w, state_now(), &deepest, &fastest);
+	if ((int)(deepest * 1000.0f) > script_deepest)
+		script_deepest = (int)(deepest * 1000.0f);
 }
 
 /* A test's last lines: a sum of every body's state, and where and how fast the bodies are. */
@@ -866,14 +1369,24 @@ say_done(unsigned took, int print)
 			quads = quads * 31 + sim.quads[shown_buffer][i];
 		fprintf(stderr, "physstat: quads %08x\n", (unsigned)quads);
 	}
-	if (sim.w.grab >= 0) {
+	for (k = 0; k < PHYS_HOLDS; k++) {
+		const struct phys_hold *hold = &sim.w.holds[k];
 		float at[3];
 
-		phys_point(&sim.w, buffer, sim.w.grab, sim.w.grab_at, at);
-		fprintf(stderr, "nxphys: box %d's held point is %d mm from where it is wanted\n", sim.w.grab, (int)(1000.0f * sqrtf(
-			(at[0] - sim.w.grab_to[0]) * (at[0] - sim.w.grab_to[0]) + (at[1] - sim.w.grab_to[1]) * (at[1] - sim.w.grab_to[1]) +
-			(at[2] - sim.w.grab_to[2]) * (at[2] - sim.w.grab_to[2]))));
+		if (hold->body < 0)
+			continue;
+		phys_point(&sim.w, buffer, hold->body, hold->at, at);
+		fprintf(stderr, "nxphys: box %d's held point is %d mm from where it is wanted\n", hold->body, (int)(1000.0f * sqrtf(
+			(at[0] - hold->to[0]) * (at[0] - hold->to[0]) + (at[1] - hold->to[1]) * (at[1] - hold->to[1]) +
+			(at[2] - hold->to[2]) * (at[2] - hold->to[2]))));
 	}
+	for (k = 0; k < 2 && script_on; k++)
+		if (scripted[k].n && scripted[k].box >= 0)
+			fprintf(stderr, "nxphys: hand %d took box %d after %u substeps: its held point at most %d mm from where the hand wanted it (from 20 substeps on); "
+				"let go after %u going %d mm/s, the hand %d mm/s\n", k, scripted[k].box, (unsigned)scripted[k].taken_at, scripted[k].worst,
+				(unsigned)scripted[k].let_go_at, scripted[k].box_speed, scripted[k].hand_speed);
+	if (script_on)
+		fprintf(stderr, "nxphys: the deepest corner while the hands moved: %d mm\n", script_deepest);
 	if (sim.count) {
 		extern unsigned mcw_faults;	/* (pages a worker stopped at, each brought by this core) */
 
@@ -952,7 +1465,13 @@ main(void)
 	if ((text = getenv("PHYS_PICK")) != NULL)
 		sscanf(text, "%d,%d", &pick_x, &pick_y);
 	talk = getenv("PHYS_SAY") != NULL || pick_x >= 0;
-	sim.w.grab = -1;
+	seat_say = getenv("PHYS_SEAT") != NULL;
+	for (k = 0; k < PHYS_HOLDS; k++)
+		sim.w.holds[k].body = -1;
+	if ((text = getenv("PHYS_HANDS")) != NULL && steps)
+		script_read(text);
+	if (script_on && script_first < steps)
+		sim.limit = script_first;
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxphys: no Nano-X server (start one: nano-X -p &)\n");
 		return 1;
@@ -968,7 +1487,8 @@ main(void)
 	button_step = (wide - 10) / BUTTONS;
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Physics", GR_ROOT_WINDOW_ID, -1, -1, width, height + BAR, UI_FACE);
 	/* (not the pointer's moves: while the button is down its place is read from the machine's words) */
-	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
+	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_KEY_UP | GR_EVENT_MASK_FOCUS_OUT | GR_EVENT_MASK_BUTTON_DOWN |
+		GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
 	picture = GrNewWindow(window, 0, 0, width, height, 0, BLACK, BLACK);
 	GrMapWindow(picture);
 	GrMapWindow(window);
@@ -1034,8 +1554,8 @@ main(void)
 	waited_before = noted_at = waited;
 	if (pick_x >= 0) {
 		/* a test: the box at that pixel held from the start, its point wanted three metres up */
-		press(pick_x, pick_y);
-		sim.w.grab_to[1] += 3.0f;
+		press(pick_x, pick_y, 1);
+		sim.w.holds[0].to[1] += 3.0f;
 		held_for_good = 1;
 	}
 	for (;;) {
@@ -1044,6 +1564,11 @@ main(void)
 
 		if (sim.costs)
 			note_substeps();
+		/* a test's hands: the shares stop at each of its substeps, and go on when the hands are told */
+		if (script_on && sim.limit < steps && phase_least() >= sim.limit) {
+			script_apply(sim.limit);
+			sim.limit = sim.limit < script_last && sim.limit + 1 < steps ? sim.limit + 1 : steps;
+		}
 
 		/* as fast as time goes and no faster; what was not made in its time is not owed */
 		if (!steps && !stopped) {
@@ -1091,6 +1616,12 @@ main(void)
 				draw_bar();
 		}
 		pointer();
+		motion(now);
+		if (wanted_again) {
+			if (!again)
+				again = wanted_again;
+			wanted_again = 0;
+		}
 		if (view_moved && now - drawn_at >= 30) {
 			show_picture(1);
 			drawn_at = now;
@@ -1107,13 +1638,20 @@ main(void)
 		if (again) {
 			settle();
 			begin_again();
-			sim.w.grab = -1;
+			for (k = 0; k < PHYS_HOLDS; k++)
+				hold_drop(k);
 			if (again == 1)
 				shown_buffer = -1;
 			if (again == 1)
 				set_scene();
 			if (again == 3)
 				throw_box((int)(sim.base % PHYS_BUFFERS));
+			if (again == 4) {
+				fire_box((int)(sim.base % PHYS_BUFFERS));
+				if (talk)
+					fprintf(stderr, "nxphys: a box fired from %d %d %d\n", (int)(fire_from[0] * 1000.0f), (int)(fire_from[1] * 1000.0f),
+						(int)(fire_from[2] * 1000.0f));
+			}
 			if (again == 2)
 				take_workers();
 			else if (again == 1)
@@ -1131,7 +1669,7 @@ main(void)
 			frames = 0;
 			continue;
 		}
-		if (steps && !asked && sim.shares[0].phase >= sim.limit && phase_least() >= sim.limit) {
+		if (steps && !asked && sim.limit >= steps && sim.shares[0].phase >= sim.limit && phase_least() >= sim.limit) {
 			/* a test: so many substeps, the last picture, and what the boxes come to */
 			unsigned took = now_ms() - began;
 
