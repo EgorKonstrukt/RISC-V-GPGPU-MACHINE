@@ -537,12 +537,13 @@ D_Display(void)
 	uint32_t began;
 
 	if (gpu) {
-		extern int gamestate, menuactive;
+		extern int gamestate, menuactive, automapactive, dirtybox[4];
 
-		/* the worker's view is shown first; what this core then writes of the screen may
-		 * come a frame early, which waiting for the GPU here (a pass) would mend */
+		/* the worker's view is shown first. What this core then adds to the screen may come
+		 * a frame early; what it clears and draws again (a menu, the map, a page under
+		 * what moves on it: all that drew last frame is in dirtybox) waits for the GPU */
 		doom_view_finish();
-		if (!worker)
+		if (!worker || gamestate != 0 || menuactive || automapactive || dirtybox[0] >= dirtybox[1])
 			seglSettle();
 		/* a menu, a screen between levels: a picture for a screen, not a world for a room */
 		seglWorldFlat(gamestate != 0 || menuactive);

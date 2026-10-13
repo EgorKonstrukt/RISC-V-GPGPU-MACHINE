@@ -170,8 +170,11 @@ and the slowest tenth from 26.9 to 33.7; at 3M it was at 35 before and is.
   job a view stopped after some 1,950 frames).
 - **The first core shows the list when it finds it made**: at a tic's start and end, while
   it waits for the next tic's time, and before the next frame's drawing, where it waits. A
-  frame is on the window some passes later than it was. What the first core then writes of
+  frame is on the window some passes later than it was. What the first core then adds to
   the 2D picture and the palette is not waited for (a pass): they may show a frame early.
+  What it clears and draws again is waited for (`D_Display` settles when the frame before
+  drew on the screen, in a menu, on the map and outside a level): the GPU drew the list
+  while the menu's rows held the key or the bare page, and the logo was cut or gone.
 - **A picture no core has made yet** is read from the game's data, which is the tic's: a
   worker asks for it, the thing keeps its place and shows the picture it had (or nothing
   yet), and the first core makes it before the next view. A level's first three frames and
@@ -210,6 +213,12 @@ Checking it, all under `rvc_cpu`:
   a worker went without a picture.
 - the game's own title and demo loop for 170 seconds, and `killall -9` in the middle of a
   demo, twice, with `mctest 3 20000` after each (PASS).
+- the screens with no view of their own, which the sums above never held: `rvc_harness --cpu
+  --cpu-ips 2000000 --screen-log` (a slow first core is what swaps at a frame's start), a key
+  by `nxkey`, 60 to 240 frames in a row against the build before: the pixels still there
+  must be right in every frame. The menu over a paused level (wrong in 240 of 240 frames
+  before the mend), over the title (47 of 60) and over a demo (4 of 240), the tally between
+  levels (`-deathmatch -timer 1`: 200 of 240), the help page and the map: none wrong now.
 
 On the shader machine: the state sums of demo3 to tic 500 and of demo1 to tic 1,500 as
 under `rvc_cpu`, the sums in any order at demo3's tic 600 and demo1's tic 1,500 as the build
