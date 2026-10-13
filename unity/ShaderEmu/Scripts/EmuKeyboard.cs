@@ -62,6 +62,10 @@ public class EmuKeyboard : UdonSharpBehaviour
     private int[] held = new int[2];     // per hand: the key it holds down, or -1
     private bool started;
 
+    // A holodeck's sitter on a desktop (EmuHolodeck): the keys they play by are told the machine
+    // as sticks and triggers, and are no key events meanwhile.
+    [HideInInspector] public bool playAway;
+
     private bool capturing;
     private bool[] hostDown;         // real keyboard, raw keys: the ones the guest has been told are down
     private int repeatKey = -1;      // real keyboard, index into hostKeys
@@ -369,6 +373,13 @@ public class EmuKeyboard : UdonSharpBehaviour
 
     // ---- the player's real keyboard ----
 
+    // W, A, S, D, the arrows, Space and Ctrl
+    private bool PlayKey(int linux)
+    {
+        return linux == 17 || linux == 30 || linux == 31 || linux == 32 || linux == 103 || linux == 105 || linux == 106
+            || linux == 108 || linux == 57 || linux == LinuxCtrl || linux == LinuxRightCtrl;
+    }
+
     public void ToggleCapture()
     {
         SetCapture(!capturing);
@@ -423,12 +434,13 @@ public class EmuKeyboard : UdonSharpBehaviour
             {
                 // by the key's state, not by its release event: the release of a key that took
                 // the focus away (the Windows key) never arrives, and the guest held it for ever
-                if (Input.GetKeyDown(key) && !hostDown[i])
+                bool mine = !playAway || !PlayKey(hostLinux[i]);
+                if (mine && Input.GetKeyDown(key) && !hostDown[i])
                 {
                     hostDown[i] = true;
                     Push(hostLinux[i] | Pressed);
                 }
-                if (hostDown[i] && !Input.GetKey(key))
+                if (hostDown[i] && (!mine || !Input.GetKey(key)))
                 {
                     hostDown[i] = false;
                     Push(hostLinux[i]);

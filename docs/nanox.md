@@ -558,6 +558,9 @@ Then the desktop's programs and the window system are ended, and Linux powers of
 reach, so the kernel's power-off (`shaderemu_power_off` in `linux/kernel/shaderemu_input.c`)
 stands still with interrupts off until the machine is switched off where it is shown; before
 that hook, power-off returned and a shell went on running.
+When Linux has stopped, `nxoff` asks the host to switch the machine off (`nxpersist off`: the
+address `power:off` of a fetch): the world does (`EmuMachine.FetchAsked`, as its Power key);
+the harness and `rvc_cpu` do not, and there the machine stands still as before.
 
 **Pictures for the desktop** are `/usr/share/wallpaper-NAME.ppm`, made on the host by
 `python tools\make_wallpaper.py [FOLDER ...]`: the Unsplash photographs listed in

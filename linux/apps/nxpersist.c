@@ -329,8 +329,10 @@ main(int argc, char **argv)
 		status = ask("persist:state", 0, 10) != 200;
 		if (!status && regs[REG_REPLY + 1] < 200)
 			fwrite(fetched, 1, regs[REG_REPLY + 1], stdout);
-	} else
-		fprintf(stderr, "usage: nxpersist load | save | clear | auto 0|1 | state\n");
+	} else if (!strcmp(what, "off"))
+		status = ask("power:off", 0, 3) != 200;	/* a host that can switches the machine off (nxoff) */
+	else
+		fprintf(stderr, "usage: nxpersist load | save | clear | auto 0|1 | state | off\n");
 	if (window)
 		GrClose();
 	return status;

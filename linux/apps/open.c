@@ -412,7 +412,12 @@ unknown(const char *path, long size)
 			continue;
 		if (ui_inside(event.button.x, event.button.y, 12, 60, 150, 28)) {
 			GrClose();
-			execlp("nxedit", "nxedit", path, (char *)NULL);
+			/* (as a program of its own: started in this one's place, which had a window, the
+			   editor's window got no frame) */
+			if (fork() == 0) {
+				execlp("nxedit", "nxedit", path, (char *)NULL);
+				_exit(1);
+			}
 			return;
 		}
 		if (ui_inside(event.button.x, event.button.y, 174, 60, 150, 28)) {

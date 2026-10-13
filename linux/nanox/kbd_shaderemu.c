@@ -21,6 +21,7 @@ static int fd = -1;
 static MWKEYMOD modstate;
 static struct event queue[32];
 static int queued, taken;
+static MWKEY sent[128];	/* by key code: what its press was reported as */
 
 static int
 Kbd_Open(KBDDEVICE *pkd)
@@ -152,6 +153,12 @@ Kbd_Read(MWKEY *kbuf, MWKEYMOD *modifiers, MWSCANCODE *pscancode)
 				modstate ^= key == MWKEY_CAPSLOCK ? MWKMOD_CAPS : MWKMOD_NUM;
 		} else
 			key = translate(key);
+		/* a release is the key its press was, whatever is held by now: W let go under Ctrl
+		 * was another key's release, and a game went on walking */
+		if (ev->value == 1)
+			sent[ev->code] = key;
+		else if (!pressed && sent[ev->code])
+			key = sent[ev->code];
 
 		*kbuf = key;
 		*modifiers = modstate;

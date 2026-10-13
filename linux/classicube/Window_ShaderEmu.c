@@ -405,6 +405,15 @@ static void Seat(float delta) {
 		body = aimed = e->next.yaw;
 		mouse_count = host[4] & 0xffff;
 	}
+	{	/* a sitter's jump: the left trigger, or a desktop's key for it, as the game's own key */
+		static int jump;
+		int now = seated && Input.RawMode && (host[4] >> 30 & 1);
+		if (now != jump) {
+			jump = now;
+			if (now) Input_SetPressed(CCKEY_SPACE);
+			else Input_SetReleased(CCKEY_SPACE);
+		}
+	}
 	if (!Input.RawMode) return;
 	if (seated == 1) {
 		/* (what the keys turned the aim by since, the body turned) */
@@ -435,8 +444,9 @@ int SE_SeatBody(float* yaw) {
 /* For the walk (Entity.c): then the way the head looks, and the left stick added to the keys. */
 int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving) {
 	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
-	if (seated != 1) return 0;
-	*yaw = body + (short)(host[1] & 0xffff) * (360.0f / 65536.0f);
+	if (!seated) return 0;
+	/* (a desktop's sitter walks the way they look, by the keys that come as the left stick) */
+	if (seated == 1) *yaw = body + (short)(host[1] & 0xffff) * (360.0f / 65536.0f);
 	if (Input.RawMode) {
 		*xMoving += (signed char)(host[5]) / 127.0f;
 		*zMoving -= (signed char)(host[5] >> 8) / 127.0f;

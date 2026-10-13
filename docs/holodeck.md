@@ -171,10 +171,24 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   first pose: the arm that holds it swings it. Guns animate as they do. Not done: Quake's
   and Doom's pictures have the character's hands in them.
 - **Without a headset the mouse turns the game** (word 4's counter, 0.066 degrees a count)
-  and the head's tilt is the aim's rise; the left button is Ctrl, which fires in the three
-  shooters. The mouse turns the sitter's head too, so the program's world goes round with
-  their head (`EmuHolodeck.PostLateUpdate`): the game turned twice as far as they looked.
-  ClassiCube's buttons are not sent.
+  and the head's tilt is the aim's rise. The mouse turns the sitter's head too, so the
+  program's world goes round with their head (`EmuHolodeck.PostLateUpdate`): the game turned
+  twice as far as they looked. ClassiCube's buttons are not sent.
+- **Without a headset the keys played by are told in the words too**, the same in Doom,
+  Quake, Quake III and ClassiCube whatever each game's own keys are: W, A, S, D or the arrows
+  are the left stick (word 5: they walk and step aside), the left button or Ctrl is the right
+  hand's trigger (fire) and Space the left one's (jump; use in Doom). While the sitter's
+  world is one of those games' (`EmuHolodeck.ByWords`, `played`: the program's number, kept
+  while another window has the guest's keyboard) these keys are no key events
+  (`EmuKeyboard.playAway`) and the mouse is no pointer on the room's screen
+  (`EmuPointer.holoPlaying`): before 14 October 2026 they were the window's keys, and a click
+  that landed beside the game's window, the same click that fired, left the game with
+  none. Every other key (the numbers, Esc, Enter) is still the window's. In a menu or with
+  the keyboard given back (Insert) all keys and the pointer are as they were. A headset's
+  triggers fire and jump by the same two bits, beside the keys its controller sends.
+  On `rvc_cpu` with the words of a desktop's sitter (`--host 00000112,0,0,0,0,00007f00,0,0`)
+  each of the four walked on from where it stood, and stood still with the word 0; fire and
+  jump were not seen there, and none of it was played by hand.
 - **A beam shows where a hand points** (`HandBeam.shader`), in a headset only: a ribbon 3.5 mm
   wide and 3 m long from where the hand's aim starts, the way it goes, brightest at the hand
   and fading to nothing, added to the picture (no depth written, no light given). `EmuPointer`
@@ -242,14 +256,17 @@ On `rvc_cpu` (its closing line says the bit): Quake III's menu 1, its level 0.
 
 ## The console put away
 
-Its Hide key, or Home, takes the console away for its sitter: the stand's model and the mark
-of it (one mesh for all eight rooms, so the other rooms' stands go too, for this visitor
-alone), the room's plate, keys and screen. A small translucent button stands where the plate
+Its Hide key, or Home, takes the console away for its sitter: the stand's model and the chair's
+and the marks of both (one mesh each for all eight rooms, so the other rooms' go too, for this
+visitor alone; the chair's baked shadow stays on the floor), the room's plate, keys and screen. A small translucent button stands where the plate
 was and brings it back (`HideConsole`, `ShowConsole`, `Arrange`; a beam presses it by
 `EmuPointer.holoShow`). Standing up brings it back. "ShaderEmu/Add the holodecks' console
 switch to the open scene" puts both into a scene, without a bake. In play mode on a desktop
 (13 October 2026): seated, hidden, shown, stood up and seated again, each thing was on or
-off as it should be; the button's look and a beam's press of it are unseen.
+off as it should be. The Hide and Beam keys and the small button have caps and lettering of
+their own that the room does not light (`OwnCap`): lit by the room's light volume the two
+keys were black in the client. Seen in play mode from the seat's eye point on 14 October
+2026, shown and hidden; a beam's press of the button is unseen.
 
 On `rvc_cpu` (`--host W0,...,W7` gives the eight words, `--host-mouse N` a mouse going right;
 `QUAKE_SEAT`, `QUAKE3_SEAT`, `DOOM_SEAT`, `CLASSICUBE_SEAT=1` print the turns): a right hand

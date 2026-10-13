@@ -296,13 +296,12 @@ public static partial class ShaderEmuBuilder
     }
 
     // A key added to a console whose plate is drawn already: a cap and lettering of its own in
-    // the plate's look, lit as the room is (a plate made again would want a bake).
+    // the plate's look, unlit (lit by the room's light volume they were black in a holodeck).
     static void OwnCap(Button key)
     {
         Image image = key.targetGraphic as Image;
         if (image == null) return;
         Picture(image, UiSprite("Keycap", 16, true), CapColour);
-        image.material = Mat("LitUI", "ShaderEmu/LitUI");
         image.pixelsPerUnitMultiplier = 1.3f;
         ColorBlock colours = key.colors;
         colours.normalColor = colours.selectedColor = Color.white;
@@ -311,7 +310,7 @@ public static partial class ShaderEmuBuilder
         colours.colorMultiplier = 1f;
         key.colors = colours;
         foreach (TextMeshProUGUI label in key.GetComponentsInChildren<TextMeshProUGUI>(true))
-            Letters(label, RetroFont("IBMPlexSansCondensed-Bold"), Ink);
+            Letters(label, RetroFont("IBMPlexSansCondensed-Bold"), Ink, true);
         EditorUtility.SetDirty(key);
     }
 
@@ -393,9 +392,13 @@ public static partial class ShaderEmuBuilder
             deck.keyPlates = new GameObject[rooms];
             deck.showButtons = shows;
             foreach (MeshFilter filter in models.GetComponentsInChildren<MeshFilter>(true))
+            {
                 if (filter.name == "Holo consoles") deck.consolesModel = filter.gameObject;
-            Transform all = guards.Find("Holo consoles guard");
+                if (filter.name == "Holo seats") deck.seatsModel = filter.gameObject;
+            }
+            Transform all = guards.Find("Holo consoles guard"), chairs = guards.Find("Holo seats guard");
             deck.consolesGuard = all != null ? all.gameObject : null;
+            deck.seatsGuard = chairs != null ? chairs.gameObject : null;
             for (int k = 0; k < rooms; k++)
             {
                 Transform frame = deck.frames[k], plate = frame.Find("Holodeck " + (k + 1) + " plate"), keysPlate = frame.Find("Keys plate");

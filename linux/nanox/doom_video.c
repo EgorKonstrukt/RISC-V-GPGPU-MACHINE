@@ -431,6 +431,22 @@ G_BuildTiccmd_seat(doom_cmd *cmd)
 	const volatile unsigned *host = sitter();
 
 	G_BuildTiccmd(cmd);
+	if (seated) {
+		extern int menuactive;
+
+		/* a sitter's fire and use: the right trigger and the left, or a desktop's keys for them */
+		if (!menuactive && SEGL_HOST_HAND_TRIGGER(host, 1))
+			cmd->buttons |= 1;
+		if (!menuactive && SEGL_HOST_HAND_TRIGGER(host, 0))
+			cmd->buttons |= 2;
+	}
+	if (seated == 2) {
+		/* (the keys they walk by come as the left stick: no window need have the keyboard) */
+		int forward = cmd->forwardmove + SEGL_HOST_STICK(host, 1) * 50 / 127, side = cmd->sidemove + SEGL_HOST_STICK(host, 0) * 40 / 127;
+
+		cmd->forwardmove = (signed char)(forward > 50 ? 50 : forward < -50 ? -50 : forward);
+		cmd->sidemove = (signed char)(side > 40 ? 40 : side < -40 ? -40 : side);
+	}
 	if (seated == 1) {
 		short turn = SEGL_HOST_HAND_YAW(host, 1);
 		/* the walk goes the way the head looks: so far to the left of the aim */

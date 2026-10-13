@@ -625,6 +625,13 @@ public class EmuMachine : UdonSharpBehaviour
             imageLoader.Dispose();
             imageLoader = null;
         }
+        if (address == "power:off")
+        {
+            // the guest has shut down (nxoff): the machine is switched off, as by the panel's key
+            fetchState = FetchIdle;
+            PowerOff();
+            return;
+        }
         if (address.StartsWith("persist:"))
         {
             // the guest's kept folder: answered from PlayerData, once VRChat has brought it

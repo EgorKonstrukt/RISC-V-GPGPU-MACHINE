@@ -92,3 +92,7 @@ Nothing of this outlasts power-off: `/tmp` and `/root` are the overlay's.
 
 `open --dry` is 0.71 million instructions (it was 0.87): the registry's scan keeps only the
 `nxopen.*` names and reads their lines without `sscanf`.
+
+"Open as text" starts the editor as a program of its own: started in `open`'s place, which had
+a window of its own, the editor's window got no frame (`open /tmp/file` of 2,048 random
+bytes and a click on the key, in the harness: no frame before, a frame now).

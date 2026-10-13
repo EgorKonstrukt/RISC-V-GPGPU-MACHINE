@@ -45,6 +45,10 @@ pointer (below), and a program that wants every move reads the words above itsel
 | `/dev/input/event0` "ShaderEmu keyboard" | `EV_KEY` for the key codes, with the kernel's auto-repeat |
 | `/dev/input/event1` "ShaderEmu pointer" | `EV_ABS` `ABS_X`, `ABS_Y` in display pixels; `EV_KEY` `BTN_LEFT`, `BTN_RIGHT`, `BTN_MIDDLE`; `EV_REL` `REL_WHEEL` |
 
+Nano-X's keyboard driver (`kbd_shaderemu.c`) reports a key's release as the key its press
+was: a letter let go while Ctrl or Shift had come down meanwhile was another key's release
+(W under Ctrl is 0x17), which a game drops, and it went on walking.
+
 Nano-X's pointer driver turns a notch into one of Microwindows' scroll buttons, down in one
 report and up in the next; a program sees a button-down event with `GR_BUTTON_SCROLLUP` or
 `GR_BUTTON_SCROLLDN` (`ui_wheel()` in `linux/apps/ui.h`).

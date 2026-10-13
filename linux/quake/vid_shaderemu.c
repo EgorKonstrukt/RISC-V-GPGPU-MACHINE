@@ -441,6 +441,18 @@ static void pitch_to (float pitch)
 	cl.viewangles[PITCH] = pitch > 80 ? 80 : pitch < -70 ? -70 : pitch;
 }
 
+/* A sitter's button from the host's words, on the game's own: down and up as its key would be. */
+static void word_button (kbutton_t *button, int *was, int now)
+{
+	if (now == *was)
+		return;
+	*was = now;
+	if (now)
+		button->state |= 1 + 2;
+	else if (!button->down[0] && !button->down[1])
+		button->state = (button->state & ~1) | 4;
+}
+
 /* The view's turn. From a holodeck's seat with tracked hands the right hand aims, and the walk
  * stays the body's; with a mouse its travel turns and the head's tilt is the aim's rise. On a
  * flat screen the pointer dragged with the left button turns the view (in_mouse 1: its travel). */
@@ -457,6 +469,14 @@ void IN_Move (usercmd_t *cmd)
 		dragging = 0;
 		body = aimed = cl.viewangles[YAW];
 		mouse_count = host ? SEGL_HOST_MOUSE_X (host) : 0;
+	}
+	{	/* a sitter's fire and jump: the right trigger and the left, or a desktop's keys for them */
+		extern kbutton_t in_attack, in_jump;
+		static int fire, jump;
+		int play = seated && key_dest == key_game;
+
+		word_button (&in_attack, &fire, play && SEGL_HOST_HAND_TRIGGER (host, 1));
+		word_button (&in_jump, &jump, play && SEGL_HOST_HAND_TRIGGER (host, 0));
 	}
 	if (seated == 1) {
 		float turn = SEGL_HOST_HAND_YAW (host, 1) * (360.0f / 65536.0f), forward, s, c;
@@ -480,8 +500,12 @@ void IN_Move (usercmd_t *cmd)
 	if (seated == 2) {
 		unsigned count = SEGL_HOST_MOUSE_X (host);
 
-		if (key_dest == key_game)
+		if (key_dest == key_game) {
 			cl.viewangles[YAW] -= m_yaw.value * sensitivity.value * (short)(count - mouse_count);
+			/* (the keys they walk by come as the left stick: no window need have the keyboard) */
+			cmd->forwardmove += SEGL_HOST_STICK (host, 1) * (400 / 127.0f);
+			cmd->sidemove += SEGL_HOST_STICK (host, 0) * (350 / 127.0f);
+		}
 		mouse_count = count;
 		pitch_to (-SEGL_HOST_HEAD_PITCH (host) * (360.0f / 65536.0f));
 		return;

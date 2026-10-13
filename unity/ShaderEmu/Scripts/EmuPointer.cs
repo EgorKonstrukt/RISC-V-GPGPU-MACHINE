@@ -53,6 +53,8 @@ public class EmuPointer : UdonSharpBehaviour
     public Collider[] holoShow;
     // The sitter's program shows a flat screen (a menu): their beams are its pointer on the room's screen.
     [HideInInspector] public bool holoFlat;
+    // A desktop's sitter plays (EmuHolodeck.ByWords): their mouse is the game's, no pointer on the room's screen.
+    [HideInInspector] public bool holoPlaying;
     // Where each hand's beam starts and the way it goes, in a headset (EmuHolodeck tells the machine)
     [HideInInspector] public Vector3[] handAt = new Vector3[2], handWay = new Vector3[2];
     [HideInInspector] public bool handsKnown;
@@ -216,7 +218,7 @@ public class EmuPointer : UdonSharpBehaviour
                 }
             }
         }
-        if ((!away || holoFlat) && ownHolo >= 0 && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
+        if ((!away || holoFlat) && !holoPlaying && ownHolo >= 0 && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
         {
             landed = true;
             best = hit.distance;

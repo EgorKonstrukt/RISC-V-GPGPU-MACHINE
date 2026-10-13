@@ -67,8 +67,9 @@ void seglWorldFlat(int flat);
 #define SEGL_HOST_HAND_PITCH(s, h) ((short)((s)[5 + 2 * (h)] >> 16))
 #define SEGL_HOST_HAND_TRIGGER(s, h) (((s)[4 + 2 * (h)] >> 30) & 1)
 #define SEGL_HOST_HAND_GRIP(s, h)    (((s)[4 + 2 * (h)] >> 31) & 1)
-/* With tracked hands the left hand's second word is the sitter's sticks instead, a signed byte
-   each, 127 pushed home: 0 the left one to the right, 1 forward, 2 the right one to the right, 3 up */
+/* The left hand's second word is the sitter's sticks instead, a signed byte each, 127 pushed
+   home: 0 the left one to the right, 1 forward, 2 the right one to the right, 3 up. A desktop's
+   sitter has the keys they walk by as the left one, and fire and jump as the triggers, right and left */
 #define SEGL_HOST_STICK(s, n)  ((signed char)((s)[5] >> (8 * (n))))
 /* the room's scale, 255ths: the plane 1.28 by 0.8 m of the room is near * (far / near) ^ this */
 #define SEGL_HOST_PLANE(s)     ((s)[0] >> 24)

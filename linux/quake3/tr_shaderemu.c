@@ -329,10 +329,21 @@ void SE_SeatMove (usercmd_t *cmd)
 	} else if (seated == 2) {
 		unsigned count = SEGL_HOST_MOUSE_X (host);
 
-		if (!Key_GetCatcher ())
+		if (!Key_GetCatcher ()) {
 			cl.viewangles[YAW] -= 0.066f * (short)(count - mouse_count);
+			/* (the keys they walk by come as the left stick: no window need have the keyboard) */
+			cmd->forwardmove = ClampChar (cmd->forwardmove + SEGL_HOST_STICK (host, 1));
+			cmd->rightmove = ClampChar (cmd->rightmove + SEGL_HOST_STICK (host, 0));
+		}
 		mouse_count = count;
 		pitch_to (-SEGL_HOST_HEAD_PITCH (host) * (360.0f / 65536.0f));
+	}
+	/* a sitter's fire and jump: the right trigger and the left, or a desktop's keys for them */
+	if (seated && !Key_GetCatcher ()) {
+		if (SEGL_HOST_HAND_TRIGGER (host, 1))
+			cmd->buttons |= BUTTON_ATTACK;
+		if (SEGL_HOST_HAND_TRIGGER (host, 0))
+			cmd->upmove = 127;
 	}
 }
 

@@ -37,6 +37,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     // The console can be put away (HideConsole): its model and the mark of it, one for all the
     // rooms, and a room's own plate, keys and screen; a small button in its place brings it back.
     public GameObject consolesModel, consolesGuard;
+    public GameObject seatsModel, seatsGuard;   // the chairs go with it: one mesh for all the rooms too
     public GameObject[] plates, plateGuards, keyPlates, showButtons;
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
@@ -63,6 +64,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     private bool flat;                 // their program shows a flat screen now, or draws no world: the large screen, no world
     private float mouseGone;           // a desktop sitter's mouse: how far right it has gone, in counts
     private bool firing;               // and its left button, which is the games' Ctrl
+    private int played;                // the program whose world is round them: kept while another window has the keyboard
     private const int Ctrl = 29, Pressed = 65536;
     // The programs that are played with both hands, by their numbers in linux/apps/gameid.h:
     // each hand has a beam there. Any other program's aim is the right hand's.
@@ -170,6 +172,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         BeamKeys(own, false);
         own = -1;
+        played = 0;
         EmuShare mine = hub.Mine();
         if (mine != null)
         {
@@ -261,6 +264,8 @@ public class EmuHolodeck : UdonSharpBehaviour
         bool seated = own >= 0, hidden = seated && consoleHidden, world = seated && !flat;
         if (consolesModel != null) consolesModel.SetActive(!hidden);
         if (consolesGuard != null) consolesGuard.SetActive(!hidden);
+        if (seatsModel != null) seatsModel.SetActive(!hidden);
+        if (seatsGuard != null) seatsGuard.SetActive(!hidden);
         for (int k = 0; k < count; k++)
         {
             bool mine = k == own, away = mine && hidden, screen = !away || flat;
@@ -307,6 +312,10 @@ public class EmuHolodeck : UdonSharpBehaviour
         // a menu, a level loading, or a program that draws no world: its picture on the large screen
         bool flatNow = own >= 0 && (machine.flatFrame || !machine.worldFrame);
         if (flatNow != flat) { flat = flatNow; Arrange(); }
+        if (own >= 0 && machine.gameId != 0) played = machine.gameId;
+        bool byWords = ByWords();
+        if (gamepad != null && gamepad.keys != null && gamepad.keys.playAway != byWords) gamepad.keys.playAway = byWords;
+        if (pointer != null && pointer.holoPlaying != byWords) pointer.holoPlaying = byWords;
         Mouse();
         Tell();
         if (Time.time < nextAt) return;
@@ -374,6 +383,19 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
     }
 
+    // A desktop's sitter in the world of a game that reads the host's words (Doom, Quake,
+    // ClassiCube, Quake III in linux/apps/gameid.h): the keys they walk, fire and jump by are told
+    // it as the left stick and the triggers (Tell), whichever window has the guest's keyboard.
+    private bool ByWords()
+    {
+        VRCPlayerApi player = Networking.LocalPlayer;
+        if (own < 0 || flat || !Utilities.IsValid(player) || player.IsUserInVR()) return false;
+        if (gamepad == null || gamepad.keys == null || !gamepad.keys.Capturing()) return false;
+        return played == 1 || played == 2 || played == 3 || played == 7;
+    }
+
+    private int Key(KeyCode key) { return Input.GetKey(key) ? 127 : 0; }
+
     // A sitter without a headset plays as at a desk (docs/holodeck.md, "Played from the seat"):
     // while their keys are the game's, their mouse turns it and its left button is Ctrl.
     private void Mouse()
@@ -382,7 +404,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         bool playing = own >= 0 && Utilities.IsValid(player) && !player.IsUserInVR()
                     && gamepad != null && gamepad.keys != null && gamepad.keys.Capturing();
         if (playing) mouseGone = Mathf.Repeat(mouseGone + Input.GetAxis("Mouse X") * mouseCounts, 65536f);
-        bool fire = playing && Input.GetMouseButton(0);
+        bool fire = playing && !ByWords() && Input.GetMouseButton(0);   // (by words it is the right trigger)
         if (fire == firing) return;
         firing = fire;
         if (gamepad == null || gamepad.keys == null) return;
@@ -451,7 +473,19 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         // (no hands: the first of their words is how far a sitter's mouse has gone to the right;
         // with hands, the left one's second word is the sticks)
-        if (!headset) now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
+        if (!headset)
+        {
+            // (and the keys played by: the left stick, the left trigger jumps, the right one fires)
+            bool play = ByWords();
+            int x = Mathf.Clamp(Key(KeyCode.D) + Key(KeyCode.RightArrow) - Key(KeyCode.A) - Key(KeyCode.LeftArrow), -127, 127);
+            int y = Mathf.Clamp(Key(KeyCode.W) + Key(KeyCode.UpArrow) - Key(KeyCode.S) - Key(KeyCode.DownArrow), -127, 127);
+            bool fires = Input.GetMouseButton(0) || Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
+            now[9] = (now[9] & 0x3fff) | (play && Input.GetKey(KeyCode.Space) ? 1 << 14 : 0);
+            now[10] = play ? (x & 255) | ((y & 255) << 8) : 0;
+            now[11] = 0;
+            now[13] = (now[13] & 0x3fff) | (play && fires ? 1 << 14 : 0);
+        }
         else if (gamepad != null) { now[10] = gamepad.StickLow(); now[11] = gamepad.StickHigh(); }
         for (int i = 0; i < 16; i++)
         {
