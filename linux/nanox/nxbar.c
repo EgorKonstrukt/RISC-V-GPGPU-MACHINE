@@ -30,6 +30,7 @@
 #define START_WIDTH 64
 #define CLOCK_WIDTH 52
 #define SPEED_WIDTH 96	/* the machine's speed, before the clock */
+#define NAME_MOST 120	/* the player's name before that, at most so wide */
 #define TASK_WIDTH 110
 #define MAX_ITEMS 96
 #define MAX_TASKS 12
@@ -151,11 +152,35 @@ bevel(GR_WINDOW_ID w, int x, int y, int width, int height, int pressed)
 	GrLine(w, gc, x + width - 1, y, x + width - 1, y + height - 1);
 }
 
+/* The player's name ($USER, which the desktop's starter sets: docs/persist.md) and its box's width, 0 for none. */
+static const char *
+player_name(void)
+{
+	const char *name = getenv("USER");
+
+	return name && *name ? name : NULL;
+}
+
+static int
+name_width(void)
+{
+	static int width = -1;
+
+	if (width < 0) {
+		const char *name = player_name();
+
+		width = name ? ui_width(&ui_menu_widths, 0, name, strlen(name)) + 16 : 0;
+		if (width > NAME_MOST)
+			width = NAME_MOST;
+	}
+	return width ? width + 3 : 0;
+}
+
 /* A task button's width: TASK_WIDTH, or less when that many would not fit before the clock. */
 static int
 task_width(void)
 {
-	int room = screen.cols - CLOCK_WIDTH - SPEED_WIDTH - 9 - (START_WIDTH + 12);
+	int room = screen.cols - CLOCK_WIDTH - SPEED_WIDTH - name_width() - 9 - (START_WIDTH + 12);
 	int width = task_count ? room / task_count - 4 : TASK_WIDTH;
 
 	return width > TASK_WIDTH ? TASK_WIDTH : width < 8 ? 8 : width;
@@ -265,6 +290,16 @@ draw_bar(void)
 	GrSetGCForeground(gc, BLACK);
 	GrText(bar, gc, screen.cols - CLOCK_WIDTH + 8, 7, text, strlen(text), GR_TFASCII | GR_TFTOP);
 	draw_speed();
+	if (name_width()) {
+		const char *name = player_name();
+		int x = screen.cols - CLOCK_WIDTH - 6 - SPEED_WIDTH - name_width(), count = strlen(name);
+
+		bevel(bar, x, 3, name_width() - 3, BAR_HEIGHT - 6, 1);
+		while (count > 0 && ui_width(&ui_menu_widths, 0, name, count) > name_width() - 19)
+			count--;
+		GrSetGCForeground(gc, BLACK);
+		GrText(bar, gc, x + 8, 7, (void *)name, count, GR_TFASCII | GR_TFTOP);
+	}
 }
 
 /* The icon of the program a window is of: its file's own, or its name's in the sheets. It is

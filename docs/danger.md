@@ -3,7 +3,9 @@
 A panel on the den's right wall, by the rack, lets a visitor harm their own machine's memory
 and see what it does. A machine is its visitor's own (`share.md`): nobody else's is touched.
 
-- **Radiation** flips single bits, 1 to 1,000 a second, each at a random place.
+- **Radiation** flips bits at random places, 1 to 10,000 a second on a logarithmic scale (1, 2, 5
+  in each decade). One flip goes a round, so past what the rounds take a flip is several bits
+  of one word, up to 32: 10,000 a second is some 14 bits a flip at 8 rounds and 90 frames.
 - **The laser** scrambles a square of memory where a beam points on the memory screen (while
   that shows RAM) and its trigger is held: 5 to 129 texels a side. A square on the screen
   shows where it is, red while it burns.
@@ -81,6 +83,6 @@ nine numbers each: 2, a column under 64, row 3584, reach 8, 0, 0xffff, 0xffff, a
 - The laser has not been tried in a headset, nor with a real mouse button on a desktop: the
   trigger was the event above.
 - A zap of a texel a core stores to in the same pass is lost.
-- Radiation's 1,000 a second is not reached: one flip goes a round, so the most is rounds a
-  frame times frames a second (357 a second in the editor at 4 rounds and 89 frames; 1, 10
-  and 100 came out as asked). The count on the panel is of what was really queued.
+- Before 15 October 2026 a flip was one bit, and 1,000 a second was not reached (357 in the
+  editor at 4 rounds and 89 frames). The scale past that, with a flip's bits packed into one
+  word, has not been measured. The count on the panel is of what was really queued.

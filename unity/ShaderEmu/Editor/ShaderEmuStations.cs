@@ -214,45 +214,45 @@ public static partial class ShaderEmuBuilder
     // what came of the link.
     static void StationFields(Transform root, EmuStations stations, EmuMachine machine)
     {
-        const float wide = 1120, high = 140, row = 44, gap = 4;
+        const float wide = 1120, high = 84, gap = 5, key = 190, row = high - 2 * gap;
         Gone(root, "Station fields");
         Color back = new Color(0.05f, 0.055f, 0.07f);
         RectTransform panel = Panel(root, "Station fields", Vector3.zero, Vector3.zero, wide, high, back);
         panel.localScale = Vector3.one * 0.0005f;
+        // the hit box stands 40 mm proud of the face: VRChat's laser, coming low over the
+        // table, met the table's collider before the strip and was not drawn
+        BoxCollider hit = panel.GetComponent<BoxCollider>();
+        hit.size = new Vector3(wide, high, 80f);
+        hit.center = new Vector3(0, 0, -40f);
         Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         TextMeshProUGUI unused;
-        Text[] texts = new Text[2];
-        RectTransform[] boxes = new RectTransform[2];
-        float[] widths = { 780, 680 };
-        for (int i = 0; i < 2; i++)
-        {
-            boxes[i] = Child(panel, i == 0 ? "Link" : "Field", 10, gap + i * (row + gap), widths[i], row);
-            Plate(boxes[i], new Color(0.14f, 0.16f, 0.22f));
-            texts[i] = Child(boxes[i], "Text", 10, 6, widths[i] - 20, row - 12).gameObject.AddComponent<Text>();
-            texts[i].font = font;
-            texts[i].material = UiMaterial();
-            texts[i].fontSize = 24;
-            texts[i].color = Color.white;
-            texts[i].alignment = TextAnchor.MiddleLeft;
-            texts[i].supportRichText = false;
-        }
-        VRC.SDK3.Components.VRCUrlInputField link = boxes[0].gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
-        link.textComponent = texts[0];
-        link.targetGraphic = boxes[0].GetComponent<Image>();
-        machine.placeField = link;
-        OnClick(MakeButton(panel, "Open", "Open this link", 800, gap, 310, row, 26, out unused), machine, "OpenPlaceLink");
-        machine.placeLabel = Label(panel, "Link says", "", 14, gap + 2 * (row + gap), wide - 28, high - 3 * gap - 2 * row, 22, TextAnchor.MiddleLeft,
-                                   new Color(1f, 0.8f, 0.3f));
-        machine.placeLabel.enableWordWrapping = false;
-        InputField field = boxes[1].gameObject.AddComponent<InputField>();
-        field.textComponent = texts[1];
-        field.targetGraphic = boxes[1].GetComponent<Image>();
-        field.lineType = InputField.LineType.MultiLineNewline;
-        field.characterLimit = 0;
+        float fieldWidth = wide - 20 - 3 * (key + 10);
+        RectTransform box = Child(panel, "Field", 10, gap, fieldWidth, row);
+        Plate(box, new Color(0.14f, 0.16f, 0.22f));
+        Text text = Child(box, "Text", 10, 2, fieldWidth - 20, row - 26).gameObject.AddComponent<Text>();
+        text.font = font;
+        text.material = UiMaterial();
+        text.fontSize = 24;
+        text.color = Color.white;
+        text.alignment = TextAnchor.MiddleLeft;
+        text.supportRichText = false;
+        // one field: an address to open, or text typed at this place's keyboard
+        VRC.SDK3.Components.VRCUrlInputField field = box.gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
+        field.textComponent = text;
+        field.targetGraphic = box.GetComponent<Image>();
+        machine.placeField = field;
         EmuPaste paste = Udon<EmuPaste>(panel.gameObject);
-        paste.field = field;
-        OnClick(MakeButton(panel, "Type", "Type it", 700, 2 * gap + row, 200, row, 26, out unused), paste, "Send");
-        OnClick(MakeButton(panel, "Type line", "+ Enter", 910, 2 * gap + row, 200, row, 26, out unused), paste, "SendLine");
+        paste.field = null;
+        paste.urlField = field;
+        float x = 10 + fieldWidth + 10;
+        OnClick(MakeButton(panel, "Open", "Open Link", x, gap, key, row, 26, out unused), machine, "OpenPlaceLink");
+        OnClick(MakeButton(panel, "Type", "Type as Text", x + key + 10, gap, key, row, 26, out unused), paste, "Send");
+        OnClick(MakeButton(panel, "Type line", "+Enter", x + 2 * (key + 10), gap, key, row, 26, out unused), paste, "SendLine");
+        // (the link's news in the field's lowest line: the strip has no row to spare)
+        machine.placeLabel = Label(panel, "Link says", "", 20, gap + row - 24, fieldWidth - 20, 22, 16, TextAnchor.MiddleLeft,
+                                   new Color(1f, 0.8f, 0.3f));
+        machine.placeLabel.raycastTarget = false;
+        machine.placeLabel.enableWordWrapping = false;
         Apply(paste);
         Apply(machine);
         stations.fields = panel.gameObject;

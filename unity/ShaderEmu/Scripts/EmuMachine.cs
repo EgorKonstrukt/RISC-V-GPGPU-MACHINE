@@ -64,7 +64,9 @@ public class EmuMachine : UdonSharpBehaviour
     public VRCUrlInputField openField;     // an address for the machine to open (docs/open.md)
     public TextMeshProUGUI openLabel;
     public VRCUrlInputField placeField;    // the same at this visitor's classroom place (EmuStations)
-    public TextMeshProUGUI placeLabel;     // that strip's own line: the link's and the fetch's news
+    public TextMeshProUGUI placeLabel;
+    public VRCUrlInputField consoleField;  // and the console's strip, whose text is typed at the console or opened
+    public TextMeshProUGUI consoleLabel;     // that strip's own line: the link's and the fetch's news
     public Texture2D hostData;         // 256 x 256: an answer's bytes, four a texel
     public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/lan.md)
     public TextMeshProUGUI fetchLabel;
@@ -625,6 +627,24 @@ public class EmuMachine : UdonSharpBehaviour
             imageLoader.Dispose();
             imageLoader = null;
         }
+        if (address == "host:name")
+        {
+            // the player's name, for the guest's programs (docs/persist.md, "The player's name"):
+            // what of it a shell and a game can carry, printable ASCII, the rest '_'
+            VRCPlayerApi player = Networking.LocalPlayer;
+            string name = Utilities.IsValid(player) ? player.displayName : "player";
+            int named = Mathf.Min(name.Length, 64);
+            for (int i = 0; i < 256; i++) persistPart[i] = 0;
+            for (int i = 0; i < named; i++) persistPart[i] = name[i] > ' ' && name[i] < 127 ? (byte)name[i] : (byte)'_';
+            hostData.LoadRawTextureData(persistPart);
+            hostData.Apply(false);
+            heldImage = false;
+            fetchOffset = 0;
+            fetchLength = named;
+            fetchStatus = 200;
+            fetchState = FetchReady;
+            return;
+        }
         if (address == "power:off")
         {
             // the guest has shut down (nxoff): the machine is switched off, as by the panel's key
@@ -656,6 +676,7 @@ public class EmuMachine : UdonSharpBehaviour
             if (typedUrls[i].GetUrl().Get() == address || (i == 0 && address == "world:typed")) url = typedUrls[i].GetUrl();
         if (openField != null && openField.GetUrl().Get() == address) url = openField.GetUrl();
         if (placeField != null && placeField.GetUrl().Get() == address) url = placeField.GetUrl();
+        if (consoleField != null && consoleField.GetUrl().Get() == address) url = consoleField.GetUrl();
         // the addresses the world was built with are in the order of their characters' numbers
         // (the builder sorts them): thousands of them, found in a dozen steps
         int siteLow = 0, siteHigh = siteAddresses.Length;
@@ -722,6 +743,7 @@ public class EmuMachine : UdonSharpBehaviour
     // The button by a link field: the machine is told to open the address in it.
     public void OpenLink() { Open(openField, openLabel); }
     public void OpenPlaceLink() { Open(placeField, placeLabel); }
+    public void OpenConsoleLink() { Open(consoleField, consoleLabel); }
 
     private TextMeshProUGUI openSays;      // the label of the field the last address came from
 

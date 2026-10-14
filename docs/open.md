@@ -34,7 +34,11 @@ program registered for what it is. The file manager opens a file the same way.
 
 1. A file in the machine is opened as it is; a folder in the file manager.
 2. An address is asked of the host as a file (`docs/fetch.md`, kind 3) and written to
-   `/tmp/open/NAME`, part by part when it is over 256 KB. A file that came inside a picture
+   `/tmp/open/NAME`, part by part when it is over 256 KB. A window says how far
+   (`ui_progress.h`, from 0.7 s on): the seconds waited for the host, then the megabytes come.
+   A picture given as pixels is written a part at a time from a buffer: a byte a `fputc` was
+   76 instructions a pixel and this is 12 (`rvc_cpu`, a million pixels), some 80 s against
+   13 for a picture of three megapixels at three million instructions a second. A file that came inside a picture
    has its own name and a CRC-32, which is checked. A plain picture the host could only give
    as pixels becomes a PPM file.
 3. Its kind: by its first bytes where a kind's marks say (after a byte order mark and blank
@@ -61,7 +65,9 @@ as it adds its line to the Start menu (`nxapps.*`).
   (`nxopen-run`), which stays until Enter when the program has ended. A program for another
   processor is said to be that and is not run.
 - **An archive**: unpacked into `/tmp/open/NAME.d` by the image's own `unzip` and `tar`, and
-  the file manager opens on it (`nxopen-archive`). A `.gz` of one file is unpacked and opened
+  the file manager opens on it (`nxopen-archive`). `open --unpack` runs them with a window
+  that says how far: a zip by its files (`unzip -l` counts them, a line of the unpacking a
+  file), a tar, a `.tar.gz` or a `.gz` by the bytes it has been fed through a pipe. A `.gz` of one file is unpacked and opened
   as what it holds.
 - **Nobody's kind**: a small window that says so, with "Open as text" and "Save to /root".
 - The file manager starts a file with its execute bit itself, as before, and `open` for

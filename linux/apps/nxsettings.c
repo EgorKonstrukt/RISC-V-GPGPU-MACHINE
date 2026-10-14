@@ -1,7 +1,8 @@
 /*
  * nxsettings: the desktop's settings, a tab each. Desktop: what the desktop shows (a picture
  * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. Storage:
- * what the host keeps (docs/persist.md). System: what the machine is. From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system.
+ * what the host keeps (docs/persist.md). System: what the machine is. Devices: each device and how it runs.
+ * From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system | devices.
  */
 #include <dirent.h>
 #include <setjmp.h>
@@ -10,6 +11,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -18,15 +20,15 @@
 #include "ui_ask.h"
 #include "shaderemu_sound.h"
 
-#define WIDTH 380
+#define WIDTH 470
 #define HEIGHT 300
 #define TAB_W 72
 #define TOP 36			/* where a tab's own part begins */
 #define MAX_CHOICES 64
 #define SIZE_CHOICE "desktop.size"	/* the registry's key for the screen size the desktop starts with: WIDTHxHEIGHT (the nx script reads it) */
 
-enum { TAB_DESKTOP, TAB_SCREEN, TAB_SOUND, TAB_STORAGE, TAB_SYSTEM, TABS };
-static const char *tab_names[TABS] = { "Desktop", "Screen", "Sound", "Storage", "System" };
+enum { TAB_DESKTOP, TAB_SCREEN, TAB_SOUND, TAB_STORAGE, TAB_SYSTEM, TAB_DEVICES, TABS };
+static const char *tab_names[TABS] = { "Desktop", "Screen", "Sound", "Storage", "System", "Devices" };
 static const char *const storage_names[3] = { "Save now", "Load at start: on", "Clear the kept data" };
 static int kept_bytes = -1, kept_most, kept_auto = 1;	/* what the host keeps of /persistence; -1: it keeps nothing */
 
@@ -353,6 +355,224 @@ beep(void)
 	close(file);	/* returns once it has been played */
 }
 
+/* ---- the Devices tab: the machine's devices and what each is now (docs/nanox.md, "Settings") ---- */
+
+enum { DEV_CPU, DEV_MEMORY, DEV_STORAGE, DEV_GPU, DEV_SOUND, DEV_NETWORK, DEV_INPUT, DEV_CLOCK, DEV_CONSOLE, DEV_HOST, DEVICES };
+static const char *device_names[DEVICES] = { "Processor", "Memory", "Storage", "GPU and display", "Sound card", "Network",
+	"Keyboard and pointer", "Clock", "Console", "Host" };
+static struct ui_list devices = { 8, TOP, 150, HEIGHT - TOP - 8, DEVICES, 0, 0 };
+static char device_shown[24][96];	/* the selected device's lines as they were last drawn */
+static int device_count = -1;
+static const volatile unsigned *dev_words, *dev_more;	/* the control words, and the page of every core's count */
+
+static const char *
+device_label(int row)
+{
+	return device_names[row];
+}
+
+static void
+device_words(void)
+{
+	static int tried;
+	int gpu;
+	void *at;
+
+	if (tried)
+		return;
+	tried = 1;
+	if ((gpu = open("/dev/gpu", O_RDWR)) < 0)
+		return;
+	if ((at = mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000)) != MAP_FAILED)
+		dev_words = at;
+	if ((at = mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000 + 0x6ba000)) != MAP_FAILED)
+		dev_more = at;
+}
+
+/* A line of a file (its first, or the one that begins with `name`), without its end. */
+static const char *
+file_line(const char *path, const char *name)
+{
+	static char line[160];
+	FILE *file = fopen(path, "r");
+	int found = 0;
+
+	line[0] = 0;
+	while (file && !found && fgets(line, sizeof line, file))
+		found = !name || !strncmp(line, name, strlen(name));
+	if (file)
+		fclose(file);
+	if (!found)
+		line[0] = 0;
+	line[strcspn(line, "\n")] = 0;
+	return line;
+}
+
+static long
+file_number(const char *path)
+{
+	return atol(file_line(path, NULL));
+}
+
+/* What a device is and how it runs, a line each; returns how many. */
+static int
+device_lines(int which, char lines[][96])
+{
+	int n = 0;
+
+	device_words();
+	measure_speed();
+	switch (which) {
+	case DEV_CPU: {
+		const char *isa = file_line("/proc/cpuinfo", "isa");
+		unsigned now = dev_words ? dev_words[0x3c0 / 4] : 1, most = dev_words ? dev_words[0x3cc / 4] : 1, c, working = 0, asleep = 0;
+
+		if (has_float < 0)
+			has_float = float_unit();
+		snprintf(lines[n++], 96, "Architecture: RISC-V, 32 bits (RV32I)");
+		snprintf(lines[n++], 96, "Extensions: M (multiply), A (atomics)%s, Zicsr, Zifencei", has_float ? ", F (float)" : "");
+		snprintf(lines[n++], 96, "No compressed (C) instructions: every one is 32 bits");
+		snprintf(lines[n++], 96, "Linux says: %s", isa[0] ? strchr(isa, ':') ? strchr(isa, ':') + 2 : isa : "-");
+		snprintf(lines[n++], 96, "Modes: machine (the firmware, in the GPU), supervisor, user");
+		snprintf(lines[n++], 96, "Memory translation: %s, 4 KB pages", file_line("/proc/cpuinfo", "mmu")[0] ? "Sv32" : "none");
+		snprintf(lines[n++], 96, "Cores: %u laid out now, %u at most", now ? now : 1, most ? most : 1);
+		snprintf(lines[n++], 96, "Core 0 runs Linux; the others are workers lent to programs");
+		if (dev_words && now > 1) {
+			for (c = 1; c < now && c < 256; c++) {
+				unsigned runs = c < 32 ? dev_words[0x3c4 / 4] >> c : dev_more ? dev_more[0x400 / 4 + 4 * (c / 32)] >> (c % 32) : 0;
+				unsigned sleeps = c < 32 ? dev_words[0x3c8 / 4] >> c : dev_more ? dev_more[0x404 / 4 + 4 * (c / 32)] >> (c % 32) : 0;
+
+				working += runs & 1 && !(sleeps & 1);
+				asleep += sleeps & 1;
+			}
+			snprintf(lines[n++], 96, "Workers: %u running, %u asleep, %u parked", working, asleep, now - 1 - working - asleep);
+		}
+		snprintf(lines[n++], 96, "Core 0: %u.%02u million instructions a second just now", speed_now / 1000000, speed_now / 10000 % 100);
+		snprintf(lines[n++], 96, "A pass of the GPU runs at most 8,192 instructions a core");
+		snprintf(lines[n++], 96, "Each core: its registers and a write cache in the GPU's state");
+		break;
+	}
+	case DEV_MEMORY: {
+		long total = atol(file_line("/proc/meminfo", "MemTotal:") + 9), free = atol(file_line("/proc/meminfo", "MemAvailable:") + 13);
+
+		snprintf(lines[n++], 96, "RAM: %ld MB, %ld MB free", total / 1024, free / 1024);
+		snprintf(lines[n++], 96, "Where: 0x80000000 up (Linux from 0x80400000)");
+		snprintf(lines[n++], 96, "Kept in: the GPU's state texture, 16 bytes a texel");
+		snprintf(lines[n++], 96, "Page cache: %ld MB", atol(file_line("/proc/meminfo", "Cached:") + 7) / 1024);
+		snprintf(lines[n++], 96, "GPU memory: 0x86000000 to 0x87000000, 16 MB (the GPU's)");
+		break;
+	}
+	case DEV_STORAGE: {
+		struct statvfs root;
+
+		snprintf(lines[n++], 96, "ROM: %ld MB, read only (/dev/mtd0, %s)", file_number("/sys/class/mtd/mtd0/size") >> 20,
+			 file_line("/sys/class/mtd/mtd0/name", NULL));
+		snprintf(lines[n++], 96, "Its files: romfs, read where they lie in the ROM");
+		if (statvfs("/tmp", &root) == 0)
+			snprintf(lines[n++], 96, "Written files: in memory, %lu MB free of it", (unsigned long)(root.f_bavail * root.f_frsize >> 20));
+		snprintf(lines[n++], 96, "Kept between sessions: /persistence, by the host");
+		if (kept_bytes >= 0)
+			snprintf(lines[n++], 96, "The host keeps %d KB of it (%d KB at most)", (kept_bytes + 999) / 1000, kept_most / 1000);
+		break;
+	}
+	case DEV_GPU: {
+		unsigned mode = dev_words ? dev_words[0] : 0;
+		static const char *modes[] = { "off", "32-bit colour", "8-bit indexed", "the GPU's picture", "layers (the desktop)" };
+
+		snprintf(lines[n++], 96, "Device: /dev/gpu, its words at 0x87000000");
+		snprintf(lines[n++], 96, "Draws: triangle lists into pictures in GPU memory");
+		snprintf(lines[n++], 96, "Textures: in GPU memory, or files of the ROM where they lie");
+		snprintf(lines[n++], 96, "Display mode: %s", mode < 5 ? modes[mode] : "?");
+		if (dev_words && dev_words[1])
+			snprintf(lines[n++], 96, "Screen: %u x %u", dev_words[1], dev_words[2]);
+		snprintf(lines[n++], 96, "The largest this host shows: %d x %d", most_w, most_h);
+		snprintf(lines[n++], 96, "Frame buffer device: /dev/fb0");
+		break;
+	}
+	case DEV_SOUND:
+		if (have_sound < 0)
+			have_sound = snd_open() == 0;
+		if (have_sound <= 0) {
+			snprintf(lines[n++], 96, "None (or its host plays nothing)");
+			break;
+		}
+		snprintf(lines[n++], 96, "Device: /dev/sound, mixed by the host");
+		snprintf(lines[n++], 96, "Rate: %u samples a second", (unsigned)SND_RATE);
+		snprintf(lines[n++], 96, "Volume: %d%%", (int)(SND_MASTER * 100 / 256));
+		break;
+	case DEV_NETWORK: {
+		const char *address = network_address();
+
+		snprintf(lines[n++], 96, "Device: lan0, a link through the host");
+		snprintf(lines[n++], 96, "Address: %s", address ? address : "none");
+		snprintf(lines[n++], 96, "Hardware address: %s", file_line("/sys/class/net/lan0/address", NULL)[0] ? file_line("/sys/class/net/lan0/address", NULL) : "none");
+		snprintf(lines[n++], 96, "Largest packet: %ld bytes", file_number("/sys/class/net/lan0/mtu"));
+		snprintf(lines[n++], 96, "Received: %ld packets, %ld KB", file_number("/sys/class/net/lan0/statistics/rx_packets"),
+			 file_number("/sys/class/net/lan0/statistics/rx_bytes") / 1024);
+		snprintf(lines[n++], 96, "Sent: %ld packets, %ld KB", file_number("/sys/class/net/lan0/statistics/tx_packets"),
+			 file_number("/sys/class/net/lan0/statistics/tx_bytes") / 1024);
+		break;
+	}
+	case DEV_INPUT:
+		snprintf(lines[n++], 96, "Keyboard: /dev/input/event0, Linux key codes");
+		snprintf(lines[n++], 96, "Pointer: /dev/input/event1, the display's pixels");
+		if (dev_words) {
+			snprintf(lines[n++], 96, "Key events so far: %u", dev_words[0x2c / 4]);
+			snprintf(lines[n++], 96, "Pointer at %u, %u; buttons %u", dev_words[0x20 / 4], dev_words[0x24 / 4], dev_words[0x28 / 4]);
+			snprintf(lines[n++], 96, "The keyboard's owner: %s", dev_words[0x30 / 4] == 0x6b657973 ? "a program" : "the console");
+		}
+		break;
+	case DEV_CLOCK: {
+		time_t now = time(NULL);
+		char when[40];
+
+		strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&now));
+		snprintf(lines[n++], 96, "Clock chip: DS1742 at 0x03000000, set by the host");
+		snprintf(lines[n++], 96, "Now: %s", when);
+		snprintf(lines[n++], 96, "Timer: the machine's own, 100 ticks a second");
+		snprintf(lines[n++], 96, "Running for %ld minutes", field("/proc/uptime", "") / 60);
+		break;
+	}
+	case DEV_CONSOLE:
+		snprintf(lines[n++], 96, "Console: /dev/hvc0, a line to the host (the firmware's)");
+		snprintf(lines[n++], 96, "Terminals: hvc0 to hvc7, the host's console tabs");
+		break;
+	case DEV_HOST: {
+		static const char *kinds[] = { "says nothing", "the harness", "the world, on a desktop", "the world, in a headset" };
+		unsigned word = dev_words ? dev_words[0x360 / 4] : 0;
+		const char *user = getenv("USER");
+
+		snprintf(lines[n++], 96, "Host: %s", (word & 15) < 4 ? kinds[word & 15] : "?");
+		snprintf(lines[n++], 96, "Player: %s", user && *user ? user : "player");
+		if ((word & 15) >= 2) {
+			snprintf(lines[n++], 96, "Visitors here: %u", word >> 8 & 255);
+			snprintf(lines[n++], 96, "In a holodeck's seat: %s", word & 16 ? "yes" : "no");
+		}
+		break;
+	}
+	}
+	return n;
+}
+
+static void
+draw_devices(int whole)
+{
+	static char lines[24][96];
+	int n = device_lines(devices.selected < 0 ? 0 : devices.selected, lines), i, x = devices.x + devices.width + 10;
+
+	if (whole)
+		ui_list_draw(window, &devices, device_label);
+	for (i = 0; i < n || i < device_count; i++) {
+		if (!whole && i < n && i < device_count && !strcmp(lines[i], device_shown[i]))
+			continue;
+		ui_fill(window, x, TOP + i * 18, WIDTH - x, 18, UI_FACE);
+		if (i < n)
+			ui_text_fit(window, x, TOP + i * 18, WIDTH - x - 6, lines[i], BLACK);
+	}
+	memcpy(device_shown, lines, sizeof lines);
+	device_count = n;
+}
+
 static char system_shown[12][160];	/* the System tab's lines as they were last drawn */
 static int system_count;
 
@@ -455,6 +675,11 @@ draw(void)
 		ui_text(window, 8, HEIGHT - 44, "Settings are kept when saved (the Storage tab).", -1, UI_SHADOW, 0);
 		ui_text(window, 8, HEIGHT - 26, "ShaderEmu: a RISC-V computer in a pixel shader", -1, UI_SHADOW, 0);
 		break;
+	case TAB_DEVICES:
+		draw_devices(1);
+		if (focus == 1)
+			ui_focus(window, devices.x, devices.y, devices.width, devices.height);
+		break;
 	}
 }
 
@@ -477,22 +702,8 @@ choose_picture(void)
 		return;
 	name = strrchr(path, '/') + 1;
 	snprintf(label, sizeof label, "File: %s", name);
-	if (!strstr(path, ".ppm")) {
-		/* the viewer decodes it (on the worker cores) into a PPM file in memory, which is what the desktop shows */
-		static int made;
-		char decoded[64];
-		pid_t child;
-		int status = 1;
-
-		snprintf(decoded, sizeof decoded, "/tmp/nxwallpaper-%d.ppm", made++);
-		if ((child = fork()) == 0) {
-			execlp("nxview", "nxview", "--decode", path, decoded, (char *)NULL);
-			_exit(127);
-		}
-		if (child < 0 || waitpid(child, &status, 0) < 0 || status != 0)
-			return;
-		snprintf(path, sizeof path, "%s", decoded);
-	}
+	/* (the file itself is kept as the choice; a PNG or JPEG is decoded now, into its copy in /tmp) */
+	ui_wallpaper_decode(path, 1);
 	add(label, path);
 	pictures.selected = pictures.count - 1;
 	ui_list_show(&pictures);
@@ -507,8 +718,9 @@ show_tab(int which)
 	focus = 0;
 	if (tab == TAB_SOUND && have_sound < 0)
 		have_sound = snd_open() == 0;
-	if (tab == TAB_STORAGE)
+	if (tab == TAB_STORAGE || tab == TAB_DEVICES)
 		read_kept();
+	device_count = -1;
 	draw();
 }
 
@@ -516,7 +728,7 @@ show_tab(int which)
 static int
 controls(void)
 {
-	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : tab == TAB_STORAGE ? 4 : 3;
+	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : tab == TAB_STORAGE ? 4 : tab == TAB_DEVICES ? 2 : 3;
 }
 
 /* Tab goes round the row of tabs and the controls of the tab shown; arrows change the tab,
@@ -567,6 +779,12 @@ key(const GR_EVENT *event)
 	case TAB_STORAGE:
 		if (ui_press_key(ch)) {
 			storage(focus - 1);
+			draw();
+		}
+		break;
+	case TAB_DEVICES:
+		if (focus == 1 && ui_list_key(&devices, ch)) {
+			device_count = -1;
 			draw();
 		}
 		break;
@@ -625,6 +843,13 @@ press(GR_EVENT *event)
 				draw();
 			}
 		break;
+	case TAB_DEVICES:
+		if (ui_list_event(&devices, event)) {
+			focus = 1;
+			device_count = -1;
+			draw();
+		}
+		break;
 	}
 }
 
@@ -645,6 +870,22 @@ main(int argc, char **argv)
 		n = system_lines(lines, 0, 0);
 		for (i = 0; i < n; i++)
 			printf("%s\n", lines[i]);
+		return 0;
+	}
+	/* nxsettings devices: what the Devices tab says of each device, printed */
+	if (argc > 1 && !strcmp(argv[1], "devices")) {
+		static char lines[24][96];
+		int d, i, n;
+
+		find_sizes();
+		measure_speed();
+		usleep(300000);
+		for (d = 0; d < DEVICES; d++) {
+			n = device_lines(d, lines);
+			printf("%s\n", device_names[d]);
+			for (i = 0; i < n; i++)
+				printf("    %s\n", lines[i]);
+		}
 		return 0;
 	}
 	/* nxsettings volume N: how loud, without the desktop */
@@ -689,10 +930,12 @@ main(int argc, char **argv)
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);
 	for (;;) {
-		/* only the System tab has something to say by itself, once a second */
-		GrGetNextEventTimeout(&event, tab == TAB_SYSTEM ? 1000 : 0);
+		/* only the System and Devices tabs have something to say by themselves, once a second */
+		GrGetNextEventTimeout(&event, tab == TAB_SYSTEM || tab == TAB_DEVICES ? 1000 : 0);
 		if (event.type == GR_EVENT_TYPE_TIMEOUT && tab == TAB_SYSTEM)
 			draw_system_changes();
+		if (event.type == GR_EVENT_TYPE_TIMEOUT && tab == TAB_DEVICES)
+			draw_devices(0);
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw();

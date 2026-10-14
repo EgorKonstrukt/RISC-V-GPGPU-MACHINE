@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #define MWINCLUDECOLORS
 #include "nano-X.h"
 #include "ui_width.h"
@@ -510,18 +511,70 @@ ui_picture_sized(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR
 	GrDrawImageFromFile(w, ui_gc, (width - dw) / 2, (height - dh) / 2, dw, dh, (char *)path, 0);
 }
 
+/* The registry keeps the picture file chosen, wherever it is; one that is no PPM is shown from a
+ * copy decoded into /tmp, named by its path, and made again after a restart (nxview --decode). */
+static void
+ui_wallpaper_copy(const char *choice, char *to, int room)
+{
+	unsigned hash = 2166136261u;
+	const char *c;
+
+	for (c = choice; *c; c++)
+		hash = (hash ^ (unsigned char)*c) * 16777619u;
+	snprintf(to, room, "/tmp/nxwallpaper-%08x.ppm", hash);
+}
+
+/* The PPM file that shows a choice: itself, or its decoded copy. 0 while that is not made. */
+static int
+ui_wallpaper_file(const char *choice, char *to, int room)
+{
+	int pw, ph;
+
+	if (ui_picture_size(choice, &pw, &ph)) {
+		snprintf(to, room, "%s", choice);
+		return 1;
+	}
+	ui_wallpaper_copy(choice, to, room);
+	return access(to, R_OK) == 0;
+}
+
+/* The copy made, in the background unless `wait`: written beside and renamed, never seen half done. */
+static void
+ui_wallpaper_decode(const char *choice, int wait)
+{
+	char to[64], part[72];
+	pid_t child;
+	int status;
+
+	if (choice[0] == '#' || access(choice, R_OK) != 0 || ui_wallpaper_file(choice, to, sizeof to))
+		return;
+	snprintf(part, sizeof part, "%s.part", to);
+	if (access(part, F_OK) == 0 && !wait)
+		return;	/* (being made already) */
+	if ((child = fork()) == 0) {
+		execl("/bin/sh", "sh", "-c", "nxview --decode \"$1\" \"$2.part\" && mv \"$2.part\" \"$2\"", "sh", choice, to, (char *)NULL);
+		_exit(127);
+	}
+	if (wait && child > 0)
+		waitpid(child, &status, 0);
+}
+
 /* Shows a picture file, or a colour written #RRGGBB, as the desktop, and remembers the choice. */
 static void
 ui_wallpaper(const char *choice, int remember)
 {
 	GR_SCREEN_INFO screen = *ui_screen();
+	char file[200];
 
 	if (choice[0] == '#') {
 		unsigned long rgb = strtoul(choice + 1, NULL, 16);
 
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255));
+	} else if (ui_wallpaper_file(choice, file, sizeof file)) {
+		ui_picture(GR_ROOT_WINDOW_ID, file, screen.cols, screen.rows, BLACK);
 	} else {
-		ui_picture(GR_ROOT_WINDOW_ID, choice, screen.cols, screen.rows, BLACK);
+		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(0, 128, 128));
+		ui_wallpaper_decode(choice, 0);
 	}
 	if (remember)
 		reg_set(UI_WALLPAPER_CHOICE, choice);

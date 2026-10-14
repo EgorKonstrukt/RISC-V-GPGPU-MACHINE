@@ -38,6 +38,8 @@ public class EmuHolodeck : UdonSharpBehaviour
     // rooms, and a room's own plate, keys and screen; a small button in its place brings it back.
     public GameObject consolesModel, consolesGuard;
     public GameObject seatsModel, seatsGuard;   // the chairs go with it: one mesh for all the rooms too
+    public EmuKeyboard keyboard;               // a keyboard before the seat, the sitter's own machine's: one, moved to their room
+    public Vector3 keyboardAt, keyboardTurn;   // in a room's frame
     public GameObject[] plates, plateGuards, keyPlates, showButtons;
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
@@ -109,6 +111,11 @@ public class EmuHolodeck : UdonSharpBehaviour
         VRCShader.SetGlobalVector(roomMinId, Vector3.Min(a, b));
         VRCShader.SetGlobalVector(roomMaxId, Vector3.Max(a, b));
         flat = false;
+        if (keyboard != null)
+        {
+            keyboard.transform.SetPositionAndRotation(frame.TransformPoint(keyboardAt), frame.rotation * Quaternion.Euler(keyboardTurn));
+            keyboard.Feed(machine, true);
+        }
         Arrange();
         if (pointer != null) pointer.ownHolo = room;
         // without a headset the visitor's own keyboard is the game's (Insert gives it back);
@@ -266,6 +273,11 @@ public class EmuHolodeck : UdonSharpBehaviour
         if (consolesGuard != null) consolesGuard.SetActive(!hidden);
         if (seatsModel != null) seatsModel.SetActive(!hidden);
         if (seatsGuard != null) seatsGuard.SetActive(!hidden);
+        if (keyboard != null && keyboard.gameObject.activeSelf != (seated && !hidden))
+        {
+            if (!(seated && !hidden)) { keyboard.Release(0); keyboard.Release(1); }   // (a key held as it goes comes up)
+            keyboard.gameObject.SetActive(seated && !hidden);
+        }
         for (int k = 0; k < count; k++)
         {
             bool mine = k == own, away = mine && hidden, screen = !away || flat;
@@ -278,7 +290,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         content.gameObject.SetActive(world);
         scene.gameObject.SetActive(world);
-        if (pointer != null) pointer.holoFlat = seated && flat;
+        if (pointer != null) { pointer.holoFlat = seated && flat; pointer.holoHidden = hidden; }
         Aims();
         nextAt = 0f;
     }
@@ -315,7 +327,6 @@ public class EmuHolodeck : UdonSharpBehaviour
         if (own >= 0 && machine.gameId != 0) played = machine.gameId;
         bool byWords = ByWords();
         if (gamepad != null && gamepad.keys != null && gamepad.keys.playAway != byWords) gamepad.keys.playAway = byWords;
-        if (pointer != null && pointer.holoPlaying != byWords) pointer.holoPlaying = byWords;
         Mouse();
         Tell();
         if (Time.time < nextAt) return;
@@ -479,7 +490,9 @@ public class EmuHolodeck : UdonSharpBehaviour
             bool play = ByWords();
             int x = Mathf.Clamp(Key(KeyCode.D) + Key(KeyCode.RightArrow) - Key(KeyCode.A) - Key(KeyCode.LeftArrow), -127, 127);
             int y = Mathf.Clamp(Key(KeyCode.W) + Key(KeyCode.UpArrow) - Key(KeyCode.S) - Key(KeyCode.DownArrow), -127, 127);
-            bool fires = Input.GetMouseButton(0) || Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            // (a click with the view on the console or the room's screen is theirs, not the game's)
+            bool fires = (Input.GetMouseButton(0) && (pointer == null || !pointer.Landed(1))) || Input.GetKey(KeyCode.LeftControl)
+                      || Input.GetKey(KeyCode.RightControl);
             now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
             now[9] = (now[9] & 0x3fff) | (play && Input.GetKey(KeyCode.Space) ? 1 << 14 : 0);
             now[10] = play ? (x & 255) | ((y & 255) << 8) : 0;

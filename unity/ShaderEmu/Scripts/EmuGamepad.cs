@@ -244,9 +244,9 @@ public class EmuGamepad : UdonSharpBehaviour
         if (wanted != scheme) Map(wanted);
         Notice(player);
 
-        // a hand whose beam is on the seat's console presses that, not the game
-        bool fire = trigger[1] && !pointer.OnConsole(1), other = trigger[0] && !pointer.OnConsole(0);
-        bool leftGrip = grip[0] && !grip[1], rightGrip = grip[1] && !grip[0];
+        // a hand whose beam is on the seat's console or screen presses that, not the game
+        bool fire = trigger[1] && !pointer.Landed(1), other = trigger[0] && !pointer.Landed(0);
+        bool leftGrip = grip[0] && !grip[1] && !pointer.Landed(0), rightGrip = grip[1] && !grip[0] && !pointer.Landed(1);
         phase = (phase + Time.deltaTime * 10f) % 1f;
         Set(Menu, leftGrip);
         if (scheme == ForShooter)

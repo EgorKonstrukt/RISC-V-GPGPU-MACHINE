@@ -329,10 +329,17 @@ main(int argc, char **argv)
 		status = ask("persist:state", 0, 10) != 200;
 		if (!status && regs[REG_REPLY + 1] < 200)
 			fwrite(fetched, 1, regs[REG_REPLY + 1], stdout);
+	} else if (!strcmp(what, "name")) {
+		/* the player's name, as the host gives it: a line (docs/persist.md, "The player's name") */
+		status = ask("host:name", 0, 2) != 200;
+		if (!status && regs[REG_REPLY + 1] > 0 && regs[REG_REPLY + 1] < 200)
+			printf("%.*s\n", (int)regs[REG_REPLY + 1], (const char *)fetched);
+		else
+			status = 1;
 	} else if (!strcmp(what, "off"))
 		status = ask("power:off", 0, 3) != 200;	/* a host that can switches the machine off (nxoff) */
 	else
-		fprintf(stderr, "usage: nxpersist load | save | clear | auto 0|1 | state | off\n");
+		fprintf(stderr, "usage: nxpersist load | save | clear | auto 0|1 | state | name | off\n");
 	if (window)
 		GrClose();
 	return status;

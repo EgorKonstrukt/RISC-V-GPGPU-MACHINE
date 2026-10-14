@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -10,7 +11,15 @@ struct PersistHost {
     static const unsigned kLimit = 100000;   // bytes a player's data may be
     std::string file;                        // --persist FILE; FILE.auto says "0" when loading at start is off
 
-    static bool is(const std::string& address) { return address.rfind("persist:", 0) == 0; }
+    static bool is(const std::string& address) { return address.rfind("persist:", 0) == 0 || address == "host:name"; }
+
+    // The player's name for "host:name" (docs/persist.md, "The player's name"): SHADEREMU_PLAYER,
+    // else this computer's user, else "player".
+    static std::string player() {
+        const char* name = getenv("SHADEREMU_PLAYER");
+        if (!name || !*name) name = getenv("USERNAME");
+        return name && *name ? std::string(name) : std::string("player");
+    }
 
     bool stored(std::vector<uint8_t>& to) const {
         FILE* f = file.empty() ? nullptr : fopen(file.c_str(), "rb");
@@ -35,6 +44,11 @@ struct PersistHost {
     unsigned answer(const std::string& address, unsigned offset, const uint8_t* data, std::vector<uint8_t>& reply) const {
         std::string what = address.substr(8);
         reply.clear();
+        if (address == "host:name") {
+            std::string name = player();
+            reply.assign(name.begin(), name.end());
+            return 200;
+        }
         if (file.empty()) return 404;
         if (what == "load" || what == "load!") {
             if (what == "load" && !automatic()) return 403;

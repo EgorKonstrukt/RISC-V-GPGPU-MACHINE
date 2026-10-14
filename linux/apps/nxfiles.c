@@ -660,13 +660,26 @@ draw_wall(void)
 }
 
 /* What the desktop shows (Settings writes it): a picture's path, or a colour. */
+static int wall_waiting;	/* the chosen picture's decoded copy is being made */
+
 static void
 read_wall(void)
 {
+	char file[sizeof wall];
+
 	wall_w = wall_h = 0;
+	wall_waiting = 0;
 	snprintf(wall, sizeof wall, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
 	if (wall[0] != '#' && access(wall, R_OK) != 0)
 		strcpy(wall, "#008080");	/* the picture is not in this image */
+	else if (wall[0] != '#' && ui_wallpaper_file(wall, file, sizeof file))
+		snprintf(wall, sizeof wall, "%s", file);
+	else if (wall[0] != '#') {
+		/* (a PNG or JPEG: its copy is made after a restart, shown when there) */
+		ui_wallpaper_decode(wall, 0);
+		strcpy(wall, "#008080");
+		wall_waiting = 1;
+	}
 }
 
 static void
@@ -1981,8 +1994,13 @@ watch(void)
 		/* Settings chose another picture and painted it over the icons */
 		static char chosen[sizeof wall];
 
+		char file[sizeof wall];
+
 		if (reg_changed() && strcmp(chosen, reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT))) {
 			snprintf(chosen, sizeof chosen, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
+			draw_all();
+		} else if (wall_waiting && ui_wallpaper_file(reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT), file, sizeof file)) {
+			read_wall();	/* the decoded copy is there now */
 			draw_all();
 		}
 	}

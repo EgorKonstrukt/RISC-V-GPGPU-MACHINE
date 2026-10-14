@@ -1,6 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 using UnityEngine.UI;
+using VRC.SDKBase;
 
 // Text from a field a visitor types or pastes into (docs/console.md): it goes to a keyboard as
 // if typed there, a little at a time, as the guest takes it. At the console's as characters,
@@ -9,6 +10,7 @@ using UnityEngine.UI;
 public class EmuPaste : UdonSharpBehaviour
 {
     public InputField field;
+    public VRC.SDK3.Components.VRCUrlInputField urlField;   // or a link's field, shared with Open: its text typed as it is
     public EmuKeyboard keyboard;
     public Text status;
 
@@ -27,18 +29,33 @@ public class EmuPaste : UdonSharpBehaviour
         pending += text;
     }
 
+    // What the field holds, and the field emptied.
+    private string Taken()
+    {
+        string text = "";
+        if (field != null)
+        {
+            text = field.text;
+            field.text = "";
+        }
+        else if (urlField != null)
+        {
+            text = urlField.GetUrl().Get();
+            urlField.SetUrl(VRCUrl.Empty);
+        }
+        return text;
+    }
+
     // The field's text, typed.
     public void Send()
     {
-        Queue(field.text);
-        field.text = "";
+        Queue(Taken());
     }
 
     // And Return after it.
     public void SendLine()
     {
-        Queue(field.text + "\n");
-        field.text = "";
+        Queue(Taken() + "\n");
     }
 
     // What has not been typed yet is dropped, and the field emptied.
@@ -47,7 +64,7 @@ public class EmuPaste : UdonSharpBehaviour
         pending = "";
         sent = 0;
         skipped = 0;
-        field.text = "";
+        Taken();
         Show();
     }
 

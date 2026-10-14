@@ -39,14 +39,24 @@ public static partial class ShaderEmuBuilder
         terminal.keyboard = keys;
         Apply(terminal);
 
-        // along the keyboard's far edge, in its plane
+        ConsolePaste(computer, keys, Object.FindObjectOfType<EmuMachine>());
+    }
+
+    // Along the console keyboard's far edge, in its plane: one field, whose text is typed at the
+    // console or is an address the machine is told to open (docs/open.md).
+    static void ConsolePaste(Transform computer, EmuKeyboard keys, EmuMachine machine)
+    {
+        if (computer.Find("Console paste") != null) Object.DestroyImmediate(computer.Find("Console paste").gameObject);
+        Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f), amber = new Color(1f, 0.8f, 0.3f);
+        TextMeshProUGUI unused;
         RectTransform board = keys.GetComponent<RectTransform>();
-        const float height = 150f;
+        const float height = 150f, key = 160f;
         float width = board.sizeDelta.x;
         Vector3 at = board.localPosition + board.localRotation * new Vector3(0, (board.sizeDelta.y / 2 + height / 2 + 14f) * 0.001f, 0);
         RectTransform panel = Panel(computer, "Console paste", at, board.localEulerAngles, width, height, back);
-        Label(panel, "Title", "Text for the console: click the field, type or paste (Ctrl+V), then:", 12, 4, width - 24, 30, 20, TextAnchor.MiddleLeft, dim);
-        float buttons = 3 * 170 + 10, fieldWidth = width - buttons - 20;
+        Label(panel, "Title", "Text for the console, or a link to open: click the field, type or paste (Ctrl+V), then:", 12, 4, width - 300, 30, 20,
+              TextAnchor.MiddleLeft, dim);
+        float fieldWidth = width - 3 * (key + 10) - 20;
         RectTransform box = Child(panel, "Field", 10, 40, fieldWidth, height - 50);
         Plate(box, new Color(0.14f, 0.16f, 0.22f));
         Text text = Child(box, "Text", 10, 6, fieldWidth - 20, height - 62).gameObject.AddComponent<Text>();
@@ -54,95 +64,99 @@ public static partial class ShaderEmuBuilder
         text.material = UiMaterial();
         text.fontSize = 22;
         text.color = Color.white;
-        text.alignment = TextAnchor.UpperLeft;
+        text.alignment = TextAnchor.MiddleLeft;
         text.supportRichText = false;
-        InputField field = box.gameObject.AddComponent<InputField>();
+        VRC.SDK3.Components.VRCUrlInputField field = box.gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
         field.textComponent = text;
         field.targetGraphic = box.GetComponent<Image>();
-        field.lineType = InputField.LineType.MultiLineNewline;
-        field.characterLimit = 0;
 
         EmuPaste paste = Udon<EmuPaste>(panel.gameObject);
-        paste.field = field;
+        paste.field = null;
+        paste.urlField = field;
         paste.keyboard = keys;
         float x = 10 + fieldWidth + 10;
-        OnClick(MakeButton(panel, "Type", "Type it", x, 40, 160, height - 50, 24, out unused), paste, "Send");
-        OnClick(MakeButton(panel, "Type line", "Type it\n+ Enter", x + 170, 40, 160, height - 50, 24, out unused), paste, "SendLine");
-        OnClick(MakeButton(panel, "Drop", "Clear", x + 340, 40, 160, height - 50, 24, out unused), paste, "Drop");
-        Text status = Child(panel, "Status", width - 260, 6, 250, 28).gameObject.AddComponent<Text>();
+        if (machine != null)
+        {
+            UdonSharpEditor.UdonSharpEditorUtility.CopyUdonToProxy(machine);
+            machine.consoleField = field;
+            machine.consoleLabel = Label(panel, "Link says", "", width - 290, 4, 140, 30, 16, TextAnchor.MiddleRight, amber);
+            OnClick(MakeButton(panel, "Open", "Open Link", x, 40, key, height - 50, 24, out unused), machine, "OpenConsoleLink");
+            Apply(machine);
+        }
+        OnClick(MakeButton(panel, "Type", "Type as Text", x + key + 10, 40, key, height - 50, 22, out unused), paste, "Send");
+        OnClick(MakeButton(panel, "Type line", "+Enter", x + 2 * (key + 10), 40, key, height - 50, 24, out unused), paste, "SendLine");
+        Text status = Child(panel, "Status", width - 140, 6, 130, 28).gameObject.AddComponent<Text>();
         status.font = text.font;
         status.material = UiMaterial();
-        status.fontSize = 20;
-        status.color = new Color(1f, 0.8f, 0.3f);
+        status.fontSize = 18;
+        status.color = amber;
         status.alignment = TextAnchor.MiddleRight;
         status.raycastTarget = false;
         paste.status = status;
         Apply(paste);
     }
 
+    // The console's strip alone, as one field and three keys; nothing else is made again.
+    [MenuItem("ShaderEmu/Make the console's field again in the open scene")]
+    public static void ConsoleFieldAgain()
+    {
+        EmuKeyboard keys = null;
+        foreach (EmuKeyboard k in Object.FindObjectsOfType<EmuKeyboard>())
+            if (k.name == "Console keyboard") keys = k;
+        if (keys == null) throw new System.Exception("no console keyboard in the open scene");
+        ConsolePaste(keys.transform.parent, keys, Object.FindObjectOfType<EmuMachine>());
+        RetroNewPanels();
+        EditorSceneManager.MarkSceneDirty(keys.gameObject.scene);
+        Debug.Log("[ShaderEmu] the console's field is made again (the scene is not saved)");
+    }
+
     // Along the display keyboard's far edge, the size of the console's strip there (the desk's
-    // model has room for that and no more): a row for an address the machine is told to open
-    // (docs/open.md), and a row whose text is typed at the display as key events.
+    // model has room for that and no more): one field, whose text is an address the machine is
+    // told to open (docs/open.md) or is typed at the display as key events.
     static void DisplayFields(Transform computer, EmuMachine machine, EmuKeyboard keys)
     {
         if (computer.Find("Display paste") != null) Object.DestroyImmediate(computer.Find("Display paste").gameObject);
         Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f), amber = new Color(1f, 0.8f, 0.3f);
         TextMeshProUGUI unused;
         RectTransform board = keys.GetComponent<RectTransform>();
-        const float height = 150f, row = 62f, name = 150f, key = 150f;
+        const float height = 150f, key = 150f, top = 44f, row = height - top - 10f;
         float width = board.sizeDelta.x;
         Vector3 at = board.localPosition + board.localRotation * new Vector3(0, (board.sizeDelta.y / 2 + height / 2 + 14f) * 0.001f, 0);
         RectTransform panel = Panel(computer, "Display paste", at, board.localEulerAngles, width, height, back);
         Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        float fieldX = 10 + name + 10, fieldWidth = width - fieldX - 3 * (key + 10) - 10;
+        float fieldX = 10, fieldWidth = width - fieldX - 3 * (key + 10) - 10;
 
-        // the link: an https address, and the key that hands it to the machine
-        Label(panel, "Link title", "Open a link", 12, 8, name, 30, 22, TextAnchor.MiddleLeft, dim);
-        machine.openLabel = Label(panel, "Link says", "", 12, 38, name, 30, 14, TextAnchor.MiddleLeft, amber);
-        RectTransform linkBox = Child(panel, "Link", fieldX, 8, fieldWidth + key + 10, row);
-        Plate(linkBox, new Color(0.14f, 0.16f, 0.22f));
-        Text linkText = Child(linkBox, "Text", 10, 6, fieldWidth + key - 10, row - 12).gameObject.AddComponent<Text>();
-        linkText.font = font;
-        linkText.material = UiMaterial();
-        linkText.fontSize = 22;
-        linkText.color = Color.white;
-        linkText.alignment = TextAnchor.MiddleLeft;
-        linkText.supportRichText = false;
-        VRC.SDK3.Components.VRCUrlInputField link = linkBox.gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
-        link.textComponent = linkText;
-        link.targetGraphic = linkBox.GetComponent<Image>();
-        machine.openField = link;
-        OnClick(MakeButton(panel, "Open", "Open", width - 2 * (key + 10), 8, 2 * key + 10, row, 24, out unused), machine, "OpenLink");
-
-        // the text: typed at the display, key by key
-        Label(panel, "Title", "Type text", 12, 80, name, 30, 22, TextAnchor.MiddleLeft, dim);
-        RectTransform box = Child(panel, "Field", fieldX, 80, fieldWidth, row);
+        // (the title's row also has the link's news and what is left to type, at its right)
+        Label(panel, "Title", "A link to open, or text to type: click the field, type or paste (Ctrl+V)", 12, 8, width - 460, 30, 20,
+              TextAnchor.MiddleLeft, dim);
+        machine.openLabel = Label(panel, "Link says", "", width - 440, 8, 220, 30, 16, TextAnchor.MiddleRight, amber);
+        RectTransform box = Child(panel, "Field", fieldX, top, fieldWidth, row);
         Plate(box, new Color(0.14f, 0.16f, 0.22f));
         Text text = Child(box, "Text", 10, 6, fieldWidth - 20, row - 12).gameObject.AddComponent<Text>();
         text.font = font;
         text.material = UiMaterial();
         text.fontSize = 22;
         text.color = Color.white;
-        text.alignment = TextAnchor.UpperLeft;
+        text.alignment = TextAnchor.MiddleLeft;
         text.supportRichText = false;
-        InputField field = box.gameObject.AddComponent<InputField>();
+        VRC.SDK3.Components.VRCUrlInputField field = box.gameObject.AddComponent<VRC.SDK3.Components.VRCUrlInputField>();
         field.textComponent = text;
         field.targetGraphic = box.GetComponent<Image>();
-        field.lineType = InputField.LineType.MultiLineNewline;
-        field.characterLimit = 0;
+        machine.openField = field;
         EmuPaste paste = Udon<EmuPaste>(panel.gameObject);
-        paste.field = field;
+        paste.field = null;
+        paste.urlField = field;
         paste.keyboard = keys;
         float x = fieldX + fieldWidth + 10;
-        OnClick(MakeButton(panel, "Type", "Type it", x, 80, key, row, 22, out unused), paste, "Send");
-        OnClick(MakeButton(panel, "Type line", "+ Enter", x + key + 10, 80, key, row, 22, out unused), paste, "SendLine");
-        OnClick(MakeButton(panel, "Drop", "Clear", x + 2 * (key + 10), 80, key, row, 22, out unused), paste, "Drop");
-        Text status = Child(panel, "Status", 12, 110, name, 30).gameObject.AddComponent<Text>();
+        OnClick(MakeButton(panel, "Open", "Open Link", x, top, key, row, 24, out unused), machine, "OpenLink");
+        OnClick(MakeButton(panel, "Type", "Type as Text", x + key + 10, top, key, row, 22, out unused), paste, "Send");
+        OnClick(MakeButton(panel, "Type line", "+Enter", x + 2 * (key + 10), top, key, row, 22, out unused), paste, "SendLine");
+        Text status = Child(panel, "Status", width - 210, 8, 200, 30).gameObject.AddComponent<Text>();
         status.font = font;
         status.material = UiMaterial();
-        status.fontSize = 14;
+        status.fontSize = 16;
         status.color = amber;
-        status.alignment = TextAnchor.MiddleLeft;
+        status.alignment = TextAnchor.MiddleRight;
         status.raycastTarget = false;
         paste.status = status;
         Apply(paste);

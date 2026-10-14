@@ -139,6 +139,16 @@ folder's programs open in a menu of their own to its side, when the pointer is o
 Right or Enter. `NXBAR_SHOW=1` (or `=Games`) starts the bar with the menu open (and that
 folder's beside it), for a test without a pointer: each level is a layer of its own.
 
+The player's name (`$USER`, docs/persist.md) is in a box before the speed's when the desktop's
+starter has one.
+
+Settings has a Devices tab (`device_lines` in `nxsettings.c`; `nxsettings devices` prints it):
+a list of the machine's devices and, for the one picked, what it is and how it runs now, drawn
+again where it changed once a second. The processor's extensions are tried, not read (Linux's
+`isa` line comes from the device tree), its cores and workers are the control words'
+(`0x870003c0` on), the network's figures `/sys/class/net/lan0`'s, the host's kind and its
+visitors the host's words (`0x87000360`).
+
 Before the clock is the machine's speed in millions of instructions a second, the first core's
 and all cores' (`0.3 / 43.7 M`: `speed_sample`, from the core's cycle counter and the workers'
 counts in the control words, as `nxmon` reads them). It is sampled once a second and its box

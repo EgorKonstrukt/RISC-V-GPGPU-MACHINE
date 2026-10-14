@@ -180,12 +180,32 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   hand's trigger (fire) and Space the left one's (jump; use in Doom). While the sitter's
   world is one of those games' (`EmuHolodeck.ByWords`, `played`: the program's number, kept
   while another window has the guest's keyboard) these keys are no key events
-  (`EmuKeyboard.playAway`) and the mouse is no pointer on the room's screen
-  (`EmuPointer.holoPlaying`): before 14 October 2026 they were the window's keys, and a click
-  that landed beside the game's window, the same click that fired, left the game with
-  none. Every other key (the numbers, Esc, Enter) is still the window's. In a menu or with
-  the keyboard given back (Insert) all keys and the pointer are as they were. A headset's
-  triggers fire and jump by the same two bits, beside the keys its controller sends.
+  (`EmuKeyboard.playAway`): before 14 October 2026 they were the window's keys, and a click
+  that landed beside the game's window, the same click that fired, left the game with none.
+  Every other key (the numbers, Esc, Enter) is still the window's. In a menu or with the
+  keyboard given back (Insert) all keys are as they were. A headset's triggers fire and jump
+  by the same two bits, beside the keys its controller sends.
+- **The room's screen is a pointer's all the time**, the console's small one or the large
+  one, with a world drawn round the seat or not: the view's middle and the left button on a
+  desktop, each hand's beam and its trigger and grip in a headset (`EmuPointer`: the screen
+  answers `holoKeys`, a sitter's beams, and the pointer is the beam's while one is on it). A
+  click or a trigger on the screen or the console is theirs and fires nothing in the game
+  (`Landed`: in `Tell`, and in `EmuGamepad` for the keys its controls send), and a sitter's
+  right stick turns them, not the screen's wheel. Before this the screen answered a headset's
+  beams only while the program showed a flat screen, and a desktop's mouse not at all while
+  it played by the words. While the console is put away the screen answers no beam and no
+  click (`EmuPointer.holoHidden`); it is still shown when the program's picture is flat.
+- **A keyboard before the seat** (`EmuHolodeck.keyboard`, "Holodeck keyboard"): the den's
+  display keyboard copied, 0.54 m wide, at knee height before the sitter and tipped up to
+  them (`keyboardAt`, `keyboardTurn`), its caps and legends drawn by the canvas and unlit. One
+  for all rooms, moved to the sitter's when they sit, fed to their own machine as raw keys
+  (`Feed`), pressed by beams and by a desktop's view and click as any keyboard of the world
+  (`EmuPointer.holoKeyboard`, its place in `keyboards`), and put away with the console: a key
+  held as it goes comes up. A mark of its own (`HoloGuard.shader`) keeps the program's world
+  off it. "ShaderEmu/Add the holodecks' keyboard to the open scene" makes it. Seen in play mode
+  on a desktop (14 October 2026): shown before the seat, a key under the view found and lit,
+  gone with the console and the screen then answering nothing; not pressed there, and not in
+  a headset.
   On `rvc_cpu` with the words of a desktop's sitter (`--host 00000112,0,0,0,0,00007f00,0,0`)
   each of the four walked on from where it stood, and stood still with the word 0; fire and
   jump were not seen there, and none of it was played by hand.

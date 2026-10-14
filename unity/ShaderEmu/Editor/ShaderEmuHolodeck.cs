@@ -488,6 +488,94 @@ public static partial class ShaderEmuBuilder
         Debug.Log("[ShaderEmu] " + count + " seats wait on the floor and rise under their sitters (the scene is not saved)");
     }
 
+    // A keyboard before the seat (EmuHolodeck.keyboard): the den's display keyboard copied, its
+    // caps drawn by the canvas (the den's are a model's) and unlit, a mark of its own for the
+    // world's depth. One for all rooms, moved to the sitter's and put away with the console.
+    [MenuItem("ShaderEmu/Add the holodecks' keyboard to the open scene")]
+    public static void AddHoloKeyboard()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        EmuKeyboard den = world.Find("Computer/Display keyboard").GetComponent<EmuKeyboard>();
+        EmuHolodeck deck = world.GetComponentInChildren<EmuHolodeck>(true);
+        UdonSharpEditorUtility.CopyUdonToProxy(deck);
+        UdonSharpEditorUtility.CopyUdonToProxy(den);
+        Gone(deck.transform, "Holodeck keyboard");
+        GameObject copy = Object.Instantiate(den.gameObject, deck.transform, false);
+        copy.name = "Holodeck keyboard";
+        copy.transform.localScale = Vector3.one * 0.0004f;   // 0.54 m wide: a keyboard on the knees
+        EmuKeyboard keys = copy.GetComponent<EmuKeyboard>();
+        UdonSharpEditorUtility.CopyUdonToProxy(keys);
+        Sprite cap = UiSprite("Keycap", 16, true);
+        TMP_FontAsset bold = RetroFont("IBMPlexSansCondensed-Bold");
+        Color[] colours = new Color[keys.keyPlate.Length];
+        for (int i = 0; i < keys.keyPlate.Length; i++)
+        {
+            Image plate = keys.keyPlate[i];
+            if (keys.keyLinux[i] == EmuKeyboard.LinuxCapture)
+            {
+                // (the real keyboard's switch is the den's: here it is no key)
+                plate.gameObject.SetActive(false);
+                keys.keyX[i] = -100000f;
+                colours[i] = Color.clear;
+                continue;
+            }
+            Picture(plate, cap, CapColour);
+            plate.pixelsPerUnitMultiplier = 1.3f;
+            colours[i] = CapColour;
+            TextMeshProUGUI label = plate.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label != null) Letters(label, bold, Ink, true);
+        }
+        Transform back = copy.transform.Find("Back");
+        if (back != null) Picture(back.GetComponent<Image>(), UiSprite("Raised", 6), Faceplate);
+        foreach (string name in new[] { "Title", "Modifiers" })
+        {
+            Transform t = copy.transform.Find(name);
+            if (t != null) t.gameObject.SetActive(name == "Modifiers");
+        }
+        keys.keyColour = colours;
+        keys.plateColour = CapColour;
+        keys.hoverColour = new Color(1f, 0.85f, 0.45f);
+        keys.pressedColour = new Color(0.55f, 0.55f, 0.55f);
+        keys.latchedColour = new Color(1f, 0.62f, 0.10f);
+        keys.other = null;
+        keys.captureLabel = null;
+        keys.rawKeys = true;
+        Apply(keys);
+        // the program's world draws nowhere the keyboard is (HoloGuard.shader)
+        GameObject guard = new GameObject("Guard", typeof(MeshFilter), typeof(MeshRenderer));
+        guard.transform.SetParent(copy.transform, false);
+        guard.transform.localScale = new Vector3(keys.panelWidth, keys.panelHeight, 1f);
+        guard.GetComponent<MeshFilter>().sharedMesh = deck.screens[0].GetComponent<MeshFilter>().sharedMesh;
+        MeshRenderer renderer = guard.GetComponent<MeshRenderer>();
+        renderer.sharedMaterial = Mat("HoloGuard", "ShaderEmu/HoloGuard");
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        renderer.lightProbeUsage = LightProbeUsage.Off;
+        renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+        copy.SetActive(false);
+        deck.keyboard = keys;
+        deck.keyboardAt = new Vector3(0f, 0.62f, deck.eyes[0].localPosition.z + 0.40f);
+        deck.keyboardTurn = new Vector3(50f, 0f, 0f);
+        Apply(deck);
+        foreach (EmuPointer pointer in world.GetComponentsInChildren<EmuPointer>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+            List<EmuKeyboard> all = new List<EmuKeyboard>(pointer.keyboards);
+            List<Collider> plates = new List<Collider>(pointer.keyboardPlates);
+            // (made again: in the place the last one had, so the others keep theirs)
+            int at = pointer.holoKeyboard >= 0 && pointer.holoKeyboard < all.Count ? pointer.holoKeyboard : all.Count;
+            if (at == all.Count) { all.Add(keys); plates.Add(copy.GetComponent<Collider>()); }
+            else { all[at] = keys; plates[at] = copy.GetComponent<Collider>(); }
+            pointer.holoKeyboard = at;
+            pointer.keyboards = all.ToArray();
+            pointer.keyboardPlates = plates.ToArray();
+            Apply(pointer);
+        }
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ShaderEmu] the holodecks have a keyboard (the scene is not saved)");
+    }
+
     // A program's textures, light maps and models may be files in the ROM (Quake III Arena's all are).
     static void GiveRom(Material m)
     {

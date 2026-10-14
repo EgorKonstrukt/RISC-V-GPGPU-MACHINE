@@ -139,3 +139,17 @@ Not done: the folder across two sessions of an uploaded world; VRChat's own coun
 bytes, and whether one key may hold 100 KB (1 KB was kept); a save of more than a few
 kilobytes on the card; Doom's and Quake's files after a quit by hand; a restart for a kept
 screen size; a headset.
+
+## The player's name
+
+The address `host:name` of a fetch is answered by every host with the name of whoever the
+machine is theirs: the world with the visitor's VRChat display name (printable ASCII, the rest
+`_`), the harness and `rvc_cpu` with `SHADEREMU_PLAYER`, else the computer's user, else
+`player`. `nxpersist name` prints it. The desktop's starter (`nx`) keeps it, the letters,
+digits, `.`, `_` and `-` of it and 32 at most, in the registry's `user.name` and exports it as
+`USER` and `LOGNAME` to every program of the desktop: the bar shows it before its speed's box,
+Quake is started with `+name`, Quake III with `+set name`, ClassiCube with it as the
+launcher's name (`launcher-cc-username` in its options). A program that wants an identifier
+for its player reads `$USER`, or the registry's key outside the desktop. On `rvc_cpu` with
+`SHADEREMU_PLAYER="Mykhailo Test"` (14 October 2026): `user.name` was `MykhailoTest` and Quake
+III said `MykhailoTest entered the game`.

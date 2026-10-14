@@ -41,6 +41,13 @@ mkdir -p /persistence/desktop
 # (the registry is every program's kept settings: registry.h, docs/persist.md)
 [ -z "$NANOX_SIZE" ] && NANOX_SIZE="$(nxreg get desktop.size)" && export NANOX_SIZE
 [ -d /dev/pts ] || { mkdir /dev/pts && mount -t devpts devpts /dev/pts; }
+# the player's name, every program's: $USER and the registry's user.name (docs/persist.md)
+name=$(nxpersist name 2>/dev/null | tr -cd 'A-Za-z0-9._-' | cut -c1-32)
+[ -n "$name" ] && nxreg set user.name "$name"
+USER=$(nxreg get user.name)
+[ -n "$USER" ] || USER=player
+LOGNAME=$USER
+export USER LOGNAME
 nano-X -p &            # -p: it stays when the last program has gone
 sleep 2
 # what the host keeps of /persistence, once a session and before the desktop shows it (docs/persist.md)

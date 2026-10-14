@@ -1,6 +1,7 @@
 /*
  * open [--dry] ADDRESS-OR-FILE: opens a file, or what an address holds, with the program
  * registered for its kind (docs/open.md). --dry prints the kind and the command only.
+ * open --unpack zip|tar|tgz|gz FILE TO: an archive unpacked, with its progress (nxopen-archive).
  */
 #include <signal.h>
 #include <ctype.h>
@@ -12,9 +13,11 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "nano-X.h"
 #include "ui.h"
+#include "ui_progress.h"
 
 #define FETCH_MOST 0x40000	/* bytes the host hands over at a time (docs/fetch.md) */
 #define REG_ASKED 64		/* requests made, the address's length, the kind, the offset */
@@ -31,6 +34,7 @@ static struct kind {
 static int kind_count;
 static volatile uint32_t *regs;
 static const unsigned char *fetched;
+static unsigned long long fetch_total;	/* the answer's size, once the host has said it */
 
 static uint32_t
 crc32(const unsigned char *p, size_t n, uint32_t crc)
@@ -206,6 +210,12 @@ ask(const char *address, uint32_t offset, int seconds)
 	for (waited = 0; regs[REG_REPLY] != mine; waited++) {
 		if (waited > seconds * 20)
 			return 0;
+		if (!fetch_total && waited % 10 == 0) {
+			char line[48];
+
+			snprintf(line, sizeof line, "Waiting for the host: %d s", waited / 20);
+			progress_show(0, 0, line);
+		}
 		usleep(50000);
 	}
 	return regs[REG_REPLY + 2];
@@ -244,6 +254,9 @@ fetch(const char *address, char *path, size_t room)
 		printf("open: this machine has no way to ask its host for a file\n");
 		return 0;
 	}
+	name_from(address, name, sizeof name - 4);
+	snprintf(path, room, "Loading %s", name);
+	progress_begin(path);
 	/* (a world may not have been handed the address yet: asked again for a minute) */
 	for (tries = 0; (status = ask(address, 0, 40)) == 1 && tries < 20; tries++) {
 		if (!by_hand++)
@@ -255,11 +268,14 @@ fetch(const char *address, char *path, size_t room)
 		return 0;
 	}
 	total = regs[REG_REPLY + 1];
+	fetch_total = total;
 	packed = status == 201;
 	mkdir(FOLDER, 0777);
 	if (!packed && regs[REG_REPLY + 3] != 0) {
 		/* a picture the host could only give as pixels: a word each, in parts of 65,536,
-		 * kept as a PPM file */
+		 * kept as a PPM file (a part's bytes made first and written at once: a byte a call
+		 * was 76 instructions a pixel, this is 12) */
+		static uint8_t rgb[FETCH_MOST / 4 * 3];
 		uint32_t w = regs[REG_REPLY + 3] & 0xffff, h = regs[REG_REPLY + 3] >> 16, i, done = 0;
 
 		name_from(address, name, sizeof name - 4);
@@ -272,14 +288,16 @@ fetch(const char *address, char *path, size_t room)
 		for (;;) {
 			uint32_t here = w * h - done < FETCH_MOST / 4 ? w * h - done : FETCH_MOST / 4;
 
-			for (i = 0; i < here; i++) {
+			uint8_t *to = rgb;
+
+			for (i = 0; i < here; i++, to += 3) {
 				uint32_t c = ((const uint32_t *)fetched)[i];
 
-				fputc(c >> 16 & 255, file);
-				fputc(c >> 8 & 255, file);
-				fputc(c & 255, file);
+				to[0] = c >> 16, to[1] = c >> 8, to[2] = c;
 			}
+			fwrite(rgb, 3, here, file);
 			done += here;
+			progress_show(done, (unsigned long long)w * h, progress_megabytes(done * 3ull, w * h * 3ull));
 			if (done >= w * h)
 				break;
 			status = ask(address, done * 4, 40);
@@ -320,6 +338,7 @@ fetch(const char *address, char *path, size_t room)
 		}
 		skip = 0;
 		got += here;
+		progress_show(got, total, progress_megabytes(got, total));
 		if (got >= total)
 			break;
 		status = ask(address, got, 40);
@@ -338,6 +357,112 @@ fetch(const char *address, char *path, size_t room)
 	printf("open: %s, %u bytes%s, sum %08x\n", path, (unsigned)(total - (packed ? HEADER : 0)), packed ? " from a picture" : "",
 	       (unsigned)crc);
 	return 1;
+}
+
+/* A program run with its output (and its errors) to be read. */
+static FILE *
+reading(char *const argv[], pid_t *pid)
+{
+	int out[2];
+
+	if (pipe(out) != 0 || (*pid = fork()) < 0)
+		return NULL;
+	if (*pid == 0) {
+		dup2(out[1], 1);
+		dup2(out[1], 2);
+		close(out[0]);
+		close(out[1]);
+		execvp(argv[0], argv);
+		_exit(127);
+	}
+	close(out[1]);
+	return fdopen(out[0], "r");
+}
+
+/* An archive unpacked into `to` (a .gz of one file: into the file `to`), with a window that
+ * says how far: a zip by its files done of all, anything else by the bytes it has been fed. */
+static int
+unpack(const char *kind, const char *path, const char *to)
+{
+	static char block[65536];
+	char line[300], title[300];
+	const char *name = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+	int feed[2], status = 1;
+	struct stat info;
+	pid_t pid;
+
+	snprintf(title, sizeof title, "Unpacking %s", name);
+	progress_begin(title);
+	if (!strcmp(kind, "zip")) {
+		unsigned files = 0, done = 0;
+		char *const list_args[] = { "unzip", "-l", (char *)path, NULL };
+		char *const unzip_args[] = { "unzip", "-o", (char *)path, "-d", (char *)to, NULL };
+		FILE *list;
+
+		/* (the listing's last line counts the files: "  12345   3 files") */
+		if ((list = reading(list_args, &pid)) != NULL) {
+			char *at;
+
+			while (fgets(line, sizeof line, list))
+				if ((at = strstr(line, " file")) != NULL) {
+					while (at > line && at[-1] >= '0' && at[-1] <= '9')
+						at--;
+					files = (unsigned)atoi(at);
+				}
+			fclose(list);
+			waitpid(pid, &status, 0);
+		}
+		if ((list = reading(unzip_args, &pid)) == NULL)
+			return 0;
+		while (fgets(line, sizeof line, list)) {
+			char said[48];
+
+			if (strstr(line, "inflating:") || strstr(line, "extracting:") || strstr(line, "creating:"))
+				done++;
+			snprintf(said, sizeof said, "%u of %u files", done, files);
+			progress_show(done, files, said);
+		}
+		fclose(list);
+		waitpid(pid, &status, 0);
+		progress_end();
+		return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	}
+	if (stat(path, &info) != 0 || pipe(feed) != 0)
+		return 0;
+	if ((pid = fork()) == 0) {
+		dup2(feed[0], 0);
+		close(feed[0]);
+		close(feed[1]);
+		if (!strcmp(kind, "gz")) {
+			int out = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+			if (out < 0)
+				_exit(1);
+			dup2(out, 1);
+			execlp("gunzip", "gunzip", "-c", (char *)NULL);
+		} else
+			execlp("tar", "tar", !strcmp(kind, "tgz") ? "-xzf" : "-xf", "-", "-C", to, (char *)NULL);
+		_exit(127);
+	}
+	close(feed[0]);
+	if (pid > 0) {
+		int from = open(path, O_RDONLY);
+		unsigned long long fed = 0;
+		ssize_t n;
+
+		while (from >= 0 && (n = read(from, block, sizeof block)) > 0) {
+			if (write(feed[1], block, (size_t)n) != n)
+				break;
+			fed += (unsigned long long)n;
+			progress_show(fed, (unsigned long long)info.st_size, progress_megabytes(fed, (unsigned long long)info.st_size));
+		}
+		if (from >= 0)
+			close(from);
+		close(feed[1]);
+		waitpid(pid, &status, 0);
+	}
+	progress_end();
+	return pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 /* A copy of a file in /root, under its own name. */
@@ -441,8 +566,10 @@ main(int argc, char **argv)
 
 	signal(SIGCHLD, SIG_DFL);	/* (the bar that starts this ignores it: the opened program must not) */
 
+	if (argc == 5 && !strcmp(argv[1], "--unpack"))
+		return unpack(argv[2], argv[3], argv[4]) ? 0 : 1;
 	if (argc < 2 + dry) {
-		fprintf(stderr, "usage: open [--dry] ADDRESS-OR-FILE\n");
+		fprintf(stderr, "usage: open [--dry] ADDRESS-OR-FILE, open --unpack zip|tar|tgz|gz FILE TO\n");
 		return 2;
 	}
 	what = argv[1 + dry];
@@ -454,7 +581,9 @@ main(int argc, char **argv)
 	read_kinds();
 	if (strstr(what, "://")) {
 		snprintf(address, sizeof address, "%s", what);
-		if (!fetch(address, path, sizeof path))
+		n = fetch(address, path, sizeof path);
+		progress_end();
+		if (!n)
 			return 1;
 	} else
 		snprintf(path, sizeof path, "%s", what);

@@ -305,7 +305,8 @@ others(GR_EVENT *event)
 		ui_files_stop = closing = 1;
 }
 
-/* The picture shown is the desktop's from now on: a copy of it, which stays when this goes. */
+/* The picture shown is the desktop's from now on: the file itself, kept in the registry (its
+ * decoded copy is the desktop's to make); one turned is a copy, which lasts until a restart. */
 static void
 as_desktop(void)
 {
@@ -316,6 +317,26 @@ as_desktop(void)
 
 	if (!ppm || !(in = fopen(shown(), "rb"))) {
 		snprintf(notice, sizeof notice, "only a PPM, PNG or JPEG picture can be the desktop's");
+		return;
+	}
+	if (!turns) {
+		char copy[64];
+		int pw, ph;
+
+		fclose(in);
+		/* (the decoded picture this has is that copy already: no second decoding) */
+		if (decoded[0] && !ui_picture_size(path, &pw, &ph)) {
+			ui_wallpaper_copy(path, copy, sizeof copy);
+			if ((in = fopen(decoded, "rb")) != NULL && (out = fopen(copy, "wb")) != NULL) {
+				while ((n = fread(block, 1, sizeof block, in)) > 0)
+					fwrite(block, 1, n, out);
+				fclose(out);
+			}
+			if (in)
+				fclose(in);
+		}
+		ui_wallpaper(path, 1);
+		snprintf(notice, sizeof notice, "it is the desktop's picture now");
 		return;
 	}
 	if ((out = fopen(to, "wb")) != NULL) {

@@ -20,13 +20,14 @@ public class EmuDanger : UdonSharpBehaviour
     public Color plain, picked;
 
     private bool radiation, laser;
-    private int rate = 1, brush = 1;
+    private int rate = 3, brush = 1;
     private int zones = 0x3c;              // what is safe to play with first: not the kernel, not Linux
     private float owed;
     private int flips, shots;
     private bool told;
 
-    private readonly int[] rates = { 1, 10, 100, 1000 };
+    // bits a second, a logarithmic scale: 1, 2, 5 in each decade
+    private readonly int[] rates = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
     private readonly int[] reaches = { 2, 8, 24, 64 };
     // where each kind of memory begins, in megabytes (MemView.shader's owner(), src/zap.h's zap_zone)
     private readonly int[] zoneFrom = { 0, 9, 96, 112, 119, 123, 126 };
@@ -120,7 +121,9 @@ public class EmuDanger : UdonSharpBehaviour
         int most = 0;
         for (int z = 0; z < 6; z++)
             if ((zones & (1 << z)) != 0) most += zoneFrom[z + 1] - zoneFrom[z];
-        // (a round of the machine takes one: a faster rate than the machine has rounds is not kept up)
+        // A round of the machine takes one flip, so a frame has room for a few: what is owed beyond
+        // that goes as more bits of the same word, up to all 32 of it.
+        int wanted = Mathf.FloorToInt(owed), each = Mathf.Clamp((wanted + 7) / 8, 1, 32);
         for (int n = 0; n < 16 && owed >= 1f; n++)
         {
             int megabyte = Random.Range(0, most), bit = Random.Range(0, 32);
@@ -131,14 +134,17 @@ public class EmuDanger : UdonSharpBehaviour
                 if (megabyte < size) { megabyte += zoneFrom[z]; break; }
                 megabyte -= size;
             }
-            int row = megabyte * 32 + Random.Range(0, 32);
-            if (!machine.Zap(1, Random.Range(0, 2048), row, 0, Random.Range(0, 4), bit < 16 ? 1 << bit : 0, bit >= 16 ? 1 << (bit - 16) : 0, 0, zones))
+            int row = megabyte * 32 + Random.Range(0, 32), bits = Mathf.Min(each, Mathf.FloorToInt(owed)), mask = 0;
+            for (int b = 0; b < bits; b++) mask |= 1 << ((bit + b * 7) & 31);   // (spread over the word)
+            int got = 0;
+            for (int b = 0; b < 32; b++) got += (mask >> b) & 1;
+            if (!machine.Zap(1, Random.Range(0, 2048), row, 0, Random.Range(0, 4), mask & 0xffff, (mask >> 16) & 0xffff, 0, zones))
             {
-                owed = Mathf.Min(owed, 1f);
+                owed = Mathf.Min(owed, 32f);
                 break;
             }
-            owed -= 1f;
-            flips++;
+            owed -= got;
+            flips += got;
             told = false;
         }
     }
@@ -146,7 +152,7 @@ public class EmuDanger : UdonSharpBehaviour
     private void Show()
     {
         if (radiationLabel != null) radiationLabel.text = radiation ? "Radiation: ON" : "Radiation: off";
-        if (rateLabel != null) rateLabel.text = rates[rate].ToString() + (rates[rate] == 1 ? " bit a second" : " bits a second");
+        if (rateLabel != null) rateLabel.text = rates[rate].ToString("N0") + (rates[rate] == 1 ? " bit a second" : " bits a second");
         if (laserLabel != null) laserLabel.text = laser ? "Laser: ON" : "Laser: off";
         if (brushLabel != null) brushLabel.text = "burns " + (2 * reaches[brush] + 1).ToString() + " x " + (2 * reaches[brush] + 1).ToString() + " texels";
         for (int z = 0; z < 6; z++)

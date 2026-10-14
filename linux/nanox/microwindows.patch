@@ -1482,10 +1482,18 @@ index 5f31f08..d75390d 100644
  int wm_exposure(GR_EVENT_EXPOSURE *event);
  int wm_button_down(GR_EVENT_BUTTON *event);
 diff --git a/src/nanox/client.c b/src/nanox/client.c
-index de5d02a..c7902e7 100644
+index de5d02a..7a4e40b 100644
 --- a/src/nanox/client.c
 +++ b/src/nanox/client.c
-@@ -127,6 +127,95 @@ const char *nxErrorStrings[] = {
+@@ -18,6 +18,7 @@
+  * documentation, just skip that step and we will do it for you.
+  */
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ #include "uni_std.h"
+ #include "sys_time.h"
+@@ -127,6 +128,95 @@ const char *nxErrorStrings[] = {
  static void QueueEvent(GR_EVENT *ep);
  static void GetNextQueuedEvent(GR_EVENT *ep);
  static void _GrGetNextEventTimeout(GR_EVENT *ep, GR_TIMEOUT timeout);
@@ -1581,7 +1589,7 @@ index de5d02a..c7902e7 100644
  
  /**
   * Read n bytes of data from the server into block *b.  Make sure the data
-@@ -142,33 +231,8 @@ static void _GrGetNextEventTimeout(GR_EVENT *ep, GR_TIMEOUT timeout);
+@@ -142,33 +232,8 @@ static void _GrGetNextEventTimeout(GR_EVENT *ep, GR_TIMEOUT timeout);
  static int
  ReadBlock(void *b, int n)
  {
@@ -1616,7 +1624,7 @@ index de5d02a..c7902e7 100644
  }
  
  #if !MW_FEATURE_TINY
-@@ -218,63 +282,110 @@ CheckForClientData(GR_EVENT *evp)
+@@ -218,63 +283,121 @@ CheckForClientData(GR_EVENT *evp)
  }
  
  /**
@@ -1749,12 +1757,23 @@ index de5d02a..c7902e7 100644
 +nx_new_id(void)
 +{
 +	static unsigned made, process;
++	char said[16];
 +
-+	if (!process)
++	/* a program started in this one's place (exec) counts on from where it stopped: begun
++	 * again at 1, its first window had the number of the window before, and got no frame */
++	if (!process) {
++		const char *was = getenv("NX_IDS_MADE");
++
 +		process = (unsigned)getpid();
++		if (was && (unsigned)atoi(was) >> 15 == process)
++			made = (unsigned)atoi(was) & 0x7fff;
++	}
 +	if (made >= 0x7fff || process > 0x7fff)
 +		return 0;
-+	return 0x40000000u | process << 15 | ++made;
++	made++;
++	snprintf(said, sizeof said, "%u", process << 15 | made);
++	setenv("NX_IDS_MADE", said, 1);
++	return 0x40000000u | process << 15 | made;
 +}
 +
 +/* The server is asked, once, to send this program's events as they come. */
@@ -1768,7 +1787,7 @@ index de5d02a..c7902e7 100644
  }
  
  /**
-@@ -579,14 +690,23 @@ GrGetScreenInfo(GR_SCREEN_INFO *sip)
+@@ -579,14 +702,23 @@ GrGetScreenInfo(GR_SCREEN_INFO *sip)
  GR_COLOR
  GrGetSysColor(int index)
  {
@@ -1792,7 +1811,7 @@ index de5d02a..c7902e7 100644
  	UNLOCK(&nxGlobalLock);
  	return color;
  }
-@@ -762,7 +882,7 @@ GrPrepareSelect(int *maxfd,void *rfdset)
+@@ -762,7 +894,7 @@ GrPrepareSelect(int *maxfd,void *rfdset)
  	ACCESS_PER_THREAD_DATA()
  
  	LOCK(&nxGlobalLock);
@@ -1801,7 +1820,7 @@ index de5d02a..c7902e7 100644
  	GrFlush();
  
  	FD_SET(nxSocket, rfds);
-@@ -809,20 +929,13 @@ GrServiceSelect(void *rfdset, GR_FNCALLBACKEVENT fncb)
+@@ -809,20 +941,13 @@ GrServiceSelect(void *rfdset, GR_FNCALLBACKEVENT fncb)
  	 * an event is generated in Nano-X at the same time as the
  	 * client wakes up for some reason and calls Nano-X functions.
  	 */
@@ -1824,7 +1843,7 @@ index de5d02a..c7902e7 100644
  
  	/* check for input on registered file descriptors */
  	for (fd = 0; fd < regfdmax; fd++) {
-@@ -1083,14 +1196,16 @@ GrPeekEvent(GR_EVENT *ep)
+@@ -1083,14 +1208,16 @@ GrPeekEvent(GR_EVENT *ep)
  static int
  _GrPeekEvent(GR_EVENT * ep)
  {
@@ -1847,7 +1866,7 @@ index de5d02a..c7902e7 100644
  }
  
  /**
-@@ -1154,10 +1269,13 @@ GrCheckNextEvent(GR_EVENT *ep)
+@@ -1154,10 +1281,13 @@ GrCheckNextEvent(GR_EVENT *ep)
  		return;
  	}
  
@@ -1865,7 +1884,7 @@ index de5d02a..c7902e7 100644
  	UNLOCK(&nxGlobalLock);
  }
  
-@@ -1242,7 +1360,11 @@ GrGetTypedEventPred(GR_WINDOW_ID wid, GR_EVENT_MASK mask, GR_UPDATE_TYPE update,
+@@ -1242,7 +1372,11 @@ GrGetTypedEventPred(GR_WINDOW_ID wid, GR_EVENT_MASK mask, GR_UPDATE_TYPE update,
    
  	LOCK(&nxGlobalLock);
  	/* First, suck up all events and place them into the event queue */
@@ -1878,7 +1897,7 @@ index de5d02a..c7902e7 100644
  getevent:
  		_GrGetNextEventTimeout(&event, GR_TIMEOUT_BLOCK);
  		QueueEvent(&event);
-@@ -1323,6 +1445,21 @@ GrNewWindow(GR_WINDOW_ID parent, GR_COORD x, GR_COORD y, GR_SIZE width,
+@@ -1323,6 +1457,21 @@ GrNewWindow(GR_WINDOW_ID parent, GR_COORD x, GR_COORD y, GR_SIZE width,
  	GR_WINDOW_ID 	wid;
  
  	LOCK(&nxGlobalLock);
@@ -1900,7 +1919,7 @@ index de5d02a..c7902e7 100644
  	req = AllocReq(NewWindow);
  	req->parentid = parent;
  	req->x = x;
-@@ -1458,6 +1595,13 @@ GrNewGC(void)
+@@ -1458,6 +1607,13 @@ GrNewGC(void)
  	GR_GC_ID    gc;
  
  	LOCK(&nxGlobalLock);
@@ -1914,7 +1933,7 @@ index de5d02a..c7902e7 100644
  	AllocReq(NewGC);
  	if(TypedReadBlock(&gc, sizeof(gc),GrNumNewGC) == -1)
  		gc = 0;
-@@ -2575,6 +2719,16 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
+@@ -2575,6 +2731,16 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
  		if (!name)
  			name = "";
  
@@ -1932,11 +1951,14 @@ index de5d02a..c7902e7 100644
  		req->height = height;
  		req->width = width;
 diff --git a/src/nanox/nxpaintnc.c b/src/nanox/nxpaintnc.c
-index 9e40afe..4806e0b 100644
+index 9e40afe..f0e14ea 100644
 --- a/src/nanox/nxpaintnc.c
 +++ b/src/nanox/nxpaintnc.c
-@@ -18,6 +18,11 @@
+@@ -16,8 +16,14 @@
+ #endif
+ #include "nano-X.h"
  #include "nanowm.h"
++#include <string.h>
  #include "nxdraw.h"
  
 +/* the cell of the icon the next caption painted gets, or -1 (the window manager sets it) */
@@ -1947,7 +1969,7 @@ index 9e40afe..4806e0b 100644
  void
  nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PROPS props)
  {
-@@ -57,24 +62,36 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+@@ -57,24 +63,52 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  	if (!(props & GR_WM_PROPS_CAPTION))
  		goto out;
  
@@ -1982,7 +2004,23 @@ index 9e40afe..4806e0b 100644
  		GrText(id, gc, x+2*4, y+2*4+CYTEXTBASE, title, -1, GR_TFASCII|GR_TFBASELINE);
  #else
 -		GrText(id, gc, x+4, y-1, title, -1, GR_TFASCII|GR_TFTOP);
-+		GrText(id, gc, x+4, y+(CYCAPTION-14)/2, title, -1, GR_TFASCII|GR_TFTOP);
++		{
++			/* only as much as ends before the caption's buttons, with "..." where it is cut */
++			char cut[256];
++			int room = w - 8 - (nx_caption_icon >= 0 ? 18 : 0) - ((props & GR_WM_PROPS_CLOSEBOX) ? 3 * CXCLOSEBOX + 10 : 0);
++			int n = strlen(title), tw, th, tb;
++
++			GrGetGCTextSize(gc, title, n, GR_TFASCII, &tw, &th, &tb);
++			if (tw > room && n < (int)sizeof cut - 4) {
++				do {
++					memcpy(cut, title, --n);
++					strcpy(cut + n, "...");
++					GrGetGCTextSize(gc, cut, n + 3, GR_TFASCII, &tw, &th, &tb);
++				} while (n > 0 && tw > room);
++				GrText(id, gc, x+4, y+(CYCAPTION-14)/2, cut, -1, GR_TFASCII|GR_TFTOP);
++			} else
++				GrText(id, gc, x+4, y+(CYCAPTION-14)/2, title, -1, GR_TFASCII|GR_TFTOP);
++		}
  #endif
  	}
 +	if (nx_caption_icon >= 0)
@@ -1990,7 +2028,7 @@ index 9e40afe..4806e0b 100644
  	y += CYCAPTION;
  
  	/* draw one line under caption*/
-@@ -111,6 +128,38 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+@@ -111,6 +145,38 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  		GrSetGCForeground(gc, GrGetSysColor(GR_COLOR_BTNTEXT));
  		GrLine(id, gc, r.x, r.y, r.x+r.width-1, r.y+r.height-1);
  		GrLine(id, gc, r.x, r.y+r.height-1, r.x+r.width-1, r.y);
@@ -4080,7 +4118,7 @@ index 9214904..5dbf87d 100644
  #if 0000
  	/* add system utility button*/
 diff --git a/src/nanox/wmevents.c b/src/nanox/wmevents.c
-index 7cb683f..a319942 100644
+index 7cb683f..c14d070 100644
 --- a/src/nanox/wmevents.c
 +++ b/src/nanox/wmevents.c
 @@ -8,6 +8,9 @@
@@ -4113,7 +4151,30 @@ index 7cb683f..a319942 100644
  	}
  #endif
  }
-@@ -277,8 +284,11 @@ int wm_chld_update(GR_EVENT_UPDATE *event)
+@@ -268,7 +275,21 @@ int wm_chld_update(GR_EVENT_UPDATE *event)
+ 	       "utype %d\n", event->wid, event->subwid, event->x, event->y, event->width,
+ 	       event->height, event->utype);
+ 	
+-	if(!(window = wm_find_window(event->subwid))) {
++	window = wm_find_window(event->subwid);
++	/* a client's record whose window is the root's child again is another window under its
++	 * number (a program started in the place of the one that had it): framed anew */
++	if (window && window->type == WINDOW_TYPE_CLIENT && event->utype == GR_UPDATE_MAP) {
++		GR_WINDOW_INFO info;
++
++		GrGetWindowInfo(event->subwid, &info);
++		if (info.parent == GR_ROOT_WINDOW_ID) {
++			wm_client_window_destroy(window);
++			if ((window = wm_find_window(event->subwid)) != NULL)
++				wm_remove_window(window);
++			window = NULL;
++		}
++	}
++	if(!window) {
+ 		if (event->utype == GR_UPDATE_MAP) {
+ 			if (wm_new_client_window(event->subwid))
+ 				return 0;		/* don't eat: allow passthrough in case application selected CHLD_UPDATE*/
+@@ -277,8 +298,11 @@ int wm_chld_update(GR_EVENT_UPDATE *event)
  	}
  
  	if(window->type == WINDOW_TYPE_CONTAINER) {
