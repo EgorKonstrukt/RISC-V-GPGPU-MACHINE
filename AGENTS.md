@@ -179,7 +179,7 @@
   first window of a session and as a later one: the first pays for the icon list and the font.
 - nxphys asks for 255 workers and gives the grid and the pictures to shares with no bodies
   (`PHYS_SERVICE=0` is the old sharing; this replaces the 207 above). nxpath is a mesh viewer
-  since 13 October 2026 (`docs/raytrace.md`): its sum is `f38bbd71` (160 x 120, 2 samples, with
+  since 13 October 2026 (`docs/raytrace.md`): its sum is `02f213e9` (160 x 120, 2 samples, with
   workers and with `NXPATH_CORES=0`), and `NXPATH_CHECK=500` must say 0.
 - `tools/private_image.py` reads the shared root each time: a "before" image made again after
   the root was rebuilt is no longer before. `linux/prebuilt/root` of the last commit is.

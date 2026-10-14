@@ -150,10 +150,11 @@ done:
 	return 1;
 }
 
-/* Whether a triangle of the world that is not glass is in a ray's way before `far`: every box
- * the ray is in before then is gone into, a box's two tried together as world_nearest() does. */
+/* Whether a triangle of the world that is not mostly glass is in a ray's way before `far`: every box
+ * the ray is in before then is gone into, a box's two tried together as world_nearest() does.
+ * Glass in the way: *through is how much it takes of each colour, *crossed its surfaces met. */
 static int
-world_between(struct vec from, struct vec way, struct vec over, float far)
+world_between(struct vec from, struct vec way, struct vec over, float far, struct vec *through, int *crossed)
 {
 	const struct sc_node *nodes = sc_world.nodes;
 	const struct sc_triangle *triangles = sc_world.triangles;
@@ -172,8 +173,18 @@ world_between(struct vec from, struct vec way, struct vec over, float far)
 			for (; tri < end; tri++) {
 				float t, u, w;
 
-				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < far && sc.objects[tri->object].material != SC_GLASS)
-					return 1;
+				if (triangle_met(tri, from, way, &t, &u, &w) && t > 0.0005f && t < far) {
+					const struct sc_object *glass = &sc.objects[tri->object];
+					struct vec flat = cross(of(tri->edge1), of(tri->edge2));
+					float out = dot(way, flat);
+
+					if (glass->glass < 0.5f)
+						return 1;
+					/* (the way inside it is as much longer as where the ray leaves, and shorter as where it came in) */
+					t = (dot(flat, of(tri->normal[0])) < 0.0f ? -out : out) > 0.0f ? t * glass->density : -t * glass->density;
+					*through = add(*through, v(t * (1.0f - glass->colour[0]), t * (1.0f - glass->colour[1]), t * (1.0f - glass->colour[2])));
+					(*crossed)++;
+				}
 			}
 		} else {
 			int in0 = box_met(&nodes[node->a], from, over, far, &enter), in1 = box_met(&nodes[node->a + 1], from, over, far, &enter);
@@ -233,22 +244,107 @@ eye_way(float x, float y, float width, float height)
 	return unit(add(of(camera->ahead), add(scale(of(camera->right), (x - 0.5f * width) * across), scale(of(camera->up), (0.5f * height - y) * open))));
 }
 
+/* (1 - x/8) to the eighth: e to the -x near enough for a colour, and nothing from 8 on */
+static inline float
+fade(float x)
+{
+	float e = 1.0f - x * 0.125f;
+
+	if (e <= 0.0f || x <= 0.0f)
+		return x <= 0.0f ? 1.0f : 0.0f;
+	e *= e, e *= e;
+	return e * e;
+}
+
+static inline float
+power_of(float c, int n)
+{
+	float r = 1.0f;
+
+	for (; n; n >>= 1, c *= c)
+		if (n & 1)
+			r *= c;
+	return r;
+}
+
+/* Two ways square to a unit way and to each other (Duff and others, 2017). */
+static inline void
+square_to(struct vec n, struct vec *a, struct vec *b)
+{
+	float s = n.z >= 0.0f ? 1.0f : -1.0f, p = -1.0f / (s + n.z), q = n.x * n.y * p;
+
+	*a = v(1.0f + s * n.x * n.x * p, s * q, -s * n.x);
+	*b = v(q, s + n.y * n.y * p, -n.y);
+}
+
+/* What a light's ball sends out, each way from each point: its power is of the whole ball. */
+static inline float
+shine(const struct sc_light *light)
+{
+	return light->power * 0.25f / (light->radius * light->radius);
+}
+
+/* A way put a little off, by how rough the surface is. */
+static inline struct vec
+roughened(struct vec way, float rough, uint32_t *state)
+{
+	return rough > 0.0f ? unit(add(way, scale(in_ball(state), rough * rough))) : way;
+}
+
+/* One light's light at a point (next event estimation): a ray into the cone its ball fills
+ * from there, evenly by solid angle. *to: the way taken. Nothing when something is between. */
+static inline struct vec
+light_at(struct vec at, uint32_t *state, uint32_t *rays, struct vec *to)
+{
+	int lights = sc.light_count;
+	const struct sc_light *light = &sc.lights[(int)(chance(state) * (float)lights)];
+	struct vec axis = sub(of(light->place), at), ta, tb;
+	struct vec through = v(0, 0, 0), comes;
+	float d2 = dot(axis, axis), r2 = light->radius * light->radius, d, top, less, c, s, a, b, q, reach;
+	int crossed = 0;
+
+	*to = v(0, 0, 0);
+	if (d2 <= r2)
+		return v(0, 0, 0);
+	d = __builtin_sqrtf(d2);
+	axis = scale(axis, 1.0f / d);
+	top = __builtin_sqrtf(1.0f - r2 / d2);	/* the cosine at the cone's edge */
+	less = r2 / d2 / (1.0f + top);		/* one less that, with its digits */
+	c = 1.0f - chance(state) * less;
+	s = __builtin_sqrtf(1.0f - c * c);
+	do
+		a = 2.0f * chance(state) - 1.0f, b = 2.0f * chance(state) - 1.0f, q = a * a + b * b;
+	while (q >= 1.0f || q < 1e-6f);
+	q = s / __builtin_sqrtf(q);
+	square_to(axis, &ta, &tb);
+	*to = add(scale(axis, c), add(scale(ta, a * q), scale(tb, b * q)));
+	reach = r2 - d2 * s * s;
+	reach = d * c - __builtin_sqrtf(reach > 0.0f ? reach : 0.0f);
+	(*rays)++;
+	if (world_between(at, *to, v(1.0f / to->x, 1.0f / to->y, 1.0f / to->z), reach - 0.002f, &through, &crossed))
+		return v(0, 0, 0);
+	/* (the cone's solid angle, and the one light stands for them all) */
+	comes = scale(of(light->colour), shine(light) * 6.2831853f * less * (float)lights);
+	if (crossed)	/* through glass: less by its colour, and by a twelfth a surface */
+		comes = scale(mul(comes, v(fade(through.x), fade(through.y), fade(through.z))), power_of(0.92f, crossed));
+	return comes;
+}
+
 /* The light one path brings back; *rays counts its rays. */
 static inline __attribute__((always_inline)) struct vec
 path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 {
 	struct vec seen = v(0, 0, 0), weight = v(1, 1, 1);
-	int bounce, straight = 1;	/* the last turn was a mirror's or the eye's: a light met now is seen */
+	int bounce, straight = 1;	/* the last turn asked no light for its light: one met now is seen */
 	int matt = 0;			/* but not after a matt surface: such a path is one in thousands, and a speck */
 	int lights = sc.light_count;
 
 	for (bounce = 0; bounce < pt.bounces; bounce++) {
 		const struct sc_object *object;
-		const struct sc_light *light;
 		struct met met = {0, 0.0f, 0.0f};
-		struct vec at, normal, colour, out, to;
-		float t, d2, d, facing, leaving;
-		int what;
+		struct vec at, normal, flat, colour, to, got, mirror;
+		float t, facing, c, keep;
+		int what, back, shiny = 0;
 
 		(*rays)++;
 		what = nearest(from, way, &t, &met);
@@ -257,72 +353,101 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 			break;
 		}
 		if (what >= MET_LIGHT) {
-			light = &sc.lights[what - MET_LIGHT];
 			if (straight && !matt)
-				seen = add(seen, mul(weight, scale(of(light->colour), light->power)));
+				seen = add(seen, mul(weight, scale(of(sc.lights[what - MET_LIGHT].colour), shine(&sc.lights[what - MET_LIGHT]))));
 			break;
 		}
 		at = add(from, scale(way, t));
 		object = &sc.objects[met.triangle->object];
 		colour = of(object->colour);
-		/* the surface there: towards the mean of the triangle's corners' normals */
+		if (object->glow > 0.0f) {
+			seen = add(seen, mul(weight, scale(colour, object->glow)));
+			break;
+		}
+		/* the surface there: towards the mean of the triangle's corners' normals; which side the
+		 * ray is on is the flat triangle's to say, turned the way its normals are */
 		normal = unit(add(add(scale(of(met.triangle->normal[0]), 1.0f - met.u - met.w), scale(of(met.triangle->normal[1]), met.u)), scale(of(met.triangle->normal[2]), met.w)));
-		if (object->material == SC_GLASS) {
-			/* in or out through the surface, or back off it: more of the latter the flatter the ray */
-			float c = -dot(way, normal), ratio = 1.0f / 1.5f, k, mirror;
+		flat = cross(of(met.triangle->edge1), of(met.triangle->edge2));
+		if (dot(flat, normal) < 0.0f)
+			flat = scale(flat, -1.0f);
+		back = dot(way, flat) > 0.0f;
+		if (back)
+			normal = scale(normal, -1.0f), flat = scale(flat, -1.0f);
+		c = -dot(way, normal);
+		if (c <= 0.0f)	/* (a ray that skims a round thing's edge: the flat triangle is what it met) */
+			normal = unit(flat), c = -dot(way, normal);
+		if (object->glass > 0.0f && (object->glass >= 1.0f || chance(state) < object->glass)) {
+			float ratio = back ? object->ior : 1.0f / object->ior, k = 1.0f - ratio * ratio * (1.0f - c * c);
+			float f0 = (object->ior - 1.0f) / (object->ior + 1.0f), turned;
 
-			if (c < 0.0f)
-				c = -c, normal = scale(normal, -1.0f), ratio = 1.5f;
-			k = 1.0f - ratio * ratio * (1.0f - c * c);
-			mirror = 0.04f + 0.96f * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c);
-			if (k < 0.0f || chance(state) < mirror)
+			/* what the glass took of the light on the way through it, by its colour (Beer and Lambert) */
+			if (back && object->density > 0.0f) {
+				float through = object->density * t;
+
+				weight = mul(weight, v(fade(through * (1.0f - colour.x)), fade(through * (1.0f - colour.y)), fade(through * (1.0f - colour.z))));
+			}
+			/* in or out through the surface, or back off it: more of the latter the flatter the ray */
+			f0 *= f0;
+			turned = f0 + (1.0f - f0) * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c);
+			if (k < 0.0f || chance(state) < turned)
 				way = add(way, scale(normal, 2.0f * c));
 			else
 				way = unit(add(scale(way, ratio), scale(normal, ratio * c - __builtin_sqrtf(k))));
-			from = at;
+			way = roughened(way, object->rough, state);
 			straight = 1;
-			continue;
-		}
-		/* (seen from behind, as the inside of a spout is: matt and mirror have one side) */
-		if (dot(normal, way) > 0.0f)
-			normal = scale(normal, -1.0f);
-		weight = mul(weight, colour);
-		if (object->material == SC_MIRROR) {
-			way = sub(way, scale(normal, 2.0f * dot(way, normal)));
-			from = at;
-			straight = 1;
-			continue;
-		}
-		/* a matt surface: one light's light on it, by a ray to a point of the light's ball */
-		if (lights) {
-			light = &sc.lights[(int)(chance(state) * (float)lights)];
-			out = in_ball(state);
-			to = sub(add(of(light->place), scale(out, light->radius)), at);
-			d2 = dot(to, to);
-			(*rays)++;
-			d = __builtin_sqrtf(d2);
-			to = scale(to, 1.0f / d);
-			facing = dot(normal, to);
-			leaving = -dot(out, to);	/* how squarely this ray leaves the ball */
-			if (facing > 0.0f && leaving > 0.0f && !world_between(at, to, v(1.0f / to.x, 1.0f / to.y, 1.0f / to.z), d - 0.002f)) {
-				/* (the ball's area over pi, and the one light stands for them all) */
-				float area = 4.0f * light->radius * light->radius * (float)lights;
+		} else {
+			if (object->metal > 0.0f && (object->metal >= 1.0f || chance(state) < object->metal))
+				shiny = 1, weight = mul(weight, colour);
+			else if (object->rough < 0.99f) {
+				/* a coat over the colour: it mirrors more the flatter the ray */
+				float f0 = (object->ior - 1.0f) / (object->ior + 1.0f);
 
-				seen = add(seen, mul(weight, scale(of(light->colour), light->power * facing * leaving * area / d2)));
+				f0 *= f0;
+				shiny = chance(state) < f0 + (1.0f - f0) * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c) * (1.0f - c);
+			}
+			if (shiny && object->rough < 0.15f) {
+				way = roughened(add(way, scale(normal, 2.0f * c)), object->rough, state);
+				straight = 1;
+			} else if (shiny) {
+				/* a rough shine: a light's light by how near the mirrored way it comes */
+				mirror = add(way, scale(normal, 2.0f * c));
+				if (lights) {
+					got = light_at(at, state, rays, &to);
+					facing = dot(normal, to);
+					keep = dot(mirror, to);
+					if (facing > 0.0f && keep > 0.0f) {
+						int n = (int)(2.0f / (object->rough * object->rough * object->rough * object->rough)) - 2;
+
+						n = n < 1 ? 1 : n;
+						seen = add(seen, mul(weight, scale(got, (float)(n + 2) * 0.15915494f * power_of(keep, n) * facing)));
+					}
+				}
+				way = roughened(mirror, object->rough, state);
+				if (dot(way, normal) <= 0.0f)
+					way = sub(way, scale(normal, 2.0f * dot(way, normal)));
+				straight = 0, matt = 1;
+			} else {
+				/* a matt surface: one light's light on it, then on in a way that favours the surface's own */
+				weight = mul(weight, colour);
+				if (lights) {
+					got = light_at(at, state, rays, &to);
+					facing = dot(normal, to);
+					if (facing > 0.0f)
+						seen = add(seen, mul(weight, scale(got, facing * 0.31830989f)));
+				}
+				way = unit(add(normal, in_ball(state)));
+				straight = 0, matt = 1;
 			}
 		}
-		/* and on in a direction that favours the surface's own */
-		way = unit(add(normal, in_ball(state)));
 		from = at;
-		straight = 0;
-		matt = 1;
 		if (bounce >= 2) {
 			/* a path that carries little ends by chance, and the others count for it */
-			float keep = weight.x > weight.y ? (weight.x > weight.z ? weight.x : weight.z) : (weight.y > weight.z ? weight.y : weight.z);
-
-			if (chance(state) >= keep)
-				break;
-			weight = scale(weight, 1.0f / keep);
+			keep = weight.x > weight.y ? (weight.x > weight.z ? weight.x : weight.z) : (weight.y > weight.z ? weight.y : weight.z);
+			if (keep < 1.0f) {
+				if (chance(state) >= keep)
+					break;
+				weight = scale(weight, 1.0f / keep);
+			}
 		}
 	}
 	return seen;

@@ -50,7 +50,7 @@ the session only when the folder is saved.
 | `sound.volume` | Settings, the `nx` script | 0 to 100 |
 | `files.details`, `files.order` | Files | the list or the icons; the list's order |
 | `rays.width`, `rays.height`, `rays.turns`, `rays.shadows` | `nxray` | its bar's settings (a test with `RAY_FRAMES` takes none of them) |
-| `pathtrace.detail`, `.samples`, `.turns`, `.sky`, `.live` | `nxpath` | the picture's settings |
+| `pathtrace.detail`, `.samples`, `.turns`, `.background`, `.background.colour`, `.live` | `nxpath` | the picture's settings |
 | `web.home`, `web.pictures`, `web.bookmarks`, `web.bookmark.N` | the browser | its home page, whether pictures are loaded, and up to 24 bookmarks, `ADDRESS TITLE` each (`docs/web.md`) |
 
 Not in it: the games' own settings and saved games (their files, in their folders above),

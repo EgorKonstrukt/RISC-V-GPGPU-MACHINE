@@ -725,6 +725,17 @@ sc_object_matrix(struct sc_object *object)
  * the eye is at +z of the target and looks along -z, +x to its right and +y up; a turn takes
  * the eye towards +x, a tilt lifts it. */
 void
+sc_material(struct sc_object *object, int kind)
+{
+	object->rough = kind == SC_PLASTIC ? 0.3f : kind == SC_METAL ? 0.35f : kind == SC_MIRROR || kind == SC_GLASS ? 0.0f : 1.0f;
+	object->metal = kind == SC_METAL || kind == SC_MIRROR ? 1.0f : 0.0f;
+	object->glass = kind == SC_GLASS ? 1.0f : 0.0f;
+	object->ior = 1.5f;
+	object->density = kind == SC_GLASS ? 2.0f : 0.0f;
+	object->glow = kind == SC_GLOW ? 5.0f : 0.0f;
+}
+
+void
 sc_camera_set(struct sc_camera *camera)
 {
 	const float degree = 3.14159265f / 180.0f;

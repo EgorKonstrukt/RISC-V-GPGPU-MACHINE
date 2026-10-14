@@ -174,7 +174,7 @@ by OpenGL, and path traced by the worker cores under a tree of boxes that they b
   the sky for a ray that meets nothing, glass that casts no shadow, and no lamp seen after a
   matt surface by way of a mirror or glass. Tiles, shares, the numbers a path draws and the
   picture made as the samples come in are as below.
-- **Settings are the registry's** (`pathtrace.detail`, `.samples`, `.turns`, `.sky`, `.live`:
+- **Settings are the registry's** (`pathtrace.detail`, `.samples`, `.turns`, `.background`, `.live`:
   `docs/persist.md`).
 
 For tests: `NXPATH_AUTO=1` renders at the start and `NXPATH_EXIT=1` leaves when the picture
@@ -225,6 +225,50 @@ states: 57, 20, 36 and 7 controls, none over another, none with words too wide, 
 ending at 486 of 508. Not done: the handles dragged over a traced picture (as below), any of
 it on the shader machine, and a picture larger than the view (a window made larger is the
 way to one).
+
+### What a thing is made of, and the light (14 October 2026)
+
+An object was matt, a mirror or glass, glass had no colour and cast no shadow, the sky always
+shone, and a light's brightness went with the square of its radius.
+
+- **A material is six numbers and a colour** (`sc_object`, `sc_material()` for the six
+  starting points Matt, Plastic, Metal, Mirror, Glass, Glow): `rough` (0 a mirror's shine to
+  1 none), `metal` (how much of it mirrors in its colour), `glass` (how much lets light
+  through), `ior` (1 to 2.5: how glass bends, and how much a coat mirrors), `density` (how
+  soon glass takes the light that is not of its colour) and `glow` (its own light). A path
+  picks by chance among them at each surface: through the glass; the metal's shine; or, under
+  1 of roughness, a coat that mirrors more the flatter the ray (Schlick) over the colour's
+  matt. A shine under 0.15 of roughness is a mirror's with its way put a little off; a
+  rougher one asks a light for its light, weighed by how near the mirrored way it comes.
+- **Glass takes light by its colour** (Beer and Lambert): a ray that meets a surface of it
+  from inside has gone its length through it, and each colour is less by `density` times that
+  length times what the colour lacks (`fade`, (1 - x/8) to the eighth for e to the -x). Which
+  side a ray is on is the flat triangle's to say, turned the way its corners' normals are:
+  the mean normal said it wrong where a ray skims a round thing. Light to a surface through
+  glass is less the same way (the lengths inside from where the ray leaves less where it came
+  in) and by a twelfth a surface: glass has a shadow of its colour. No light gathered by it.
+- **A light's light at a surface** (next event estimation, `light_at`): a ray into the cone
+  the light's ball fills from there, evenly by solid angle, where it was a ray to a point of
+  the whole ball, half of them to its far side. `power` is of the whole ball (`shine`): a
+  smaller light is as bright on the ground and brighter to look at. Lights start at 0.12 and
+  0.1 of radius.
+- **The background gives no light** unless asked: its colour and power are the Render tab's,
+  and the registry's `pathtrace.background` and `.background.colour` (`pathtrace.sky` is gone).
+- **Turns** are 1 to 16, 8 at first (glass uses two a thing), and from the third on any path
+  that carries little ends by chance, not only one off a matt surface.
+- **The panel** has a third tab, Material: the six starting points, the colour, and a slider
+  with its number for each of the six.
+
+On `rvc_cpu`, the scene it starts with, 160 x 120: the sum is now `02f213e9` (2 samples, 255
+workers and none, 81,647 rays, 230 ms with workers as before), 0 of 20 rays wrong by the
+tree. The picture's mean light (`light` in `pathstat:`, thousandths, 16 samples) with the
+light at 0.05, 0.12 and 0.30 of radius: 146, 147 and 161, which is the same but for the
+light's own disc in the picture (0.4, 2 and 15 by its size). The panel in its seven states: no
+control over another, none with words too wide, the lowest ending at 500 of 508. Looked at:
+a matt, a metal and a glass teapot at 32 and 64 samples. Not done: a roughened glass, a
+glowing mesh, a glass mesh that is not closed, more than one light, the shader machine; a
+rough shine's light is weighed by a rule (Phong's) that is not the one its next way is drawn
+by, and nothing compared it with a tracer known to be right.
 
 Not done: scenes kept in files, textures, a mesh's own materials (`.mtl`), undo, more than
 one camera. A click picks by each thing's ball, not its triangles. The handles follow the

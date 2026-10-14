@@ -12,7 +12,8 @@ extern "C" {
 #define SC_MESHES 32
 #define SC_OBJECTS 64
 #define SC_LIGHTS 8
-enum { SC_MATT, SC_MIRROR, SC_GLASS };
+/* What sc_material() makes an object of: where its numbers start, no more. */
+enum { SC_MATT, SC_PLASTIC, SC_METAL, SC_MIRROR, SC_GLASS, SC_GLOW, SC_KINDS };
 
 /* A mesh in its own space: three corners a triangle, nine floats, and as many of normals (a
  * corner's is its vertex's, the mean of the faces round it, when the file gave none). */
@@ -31,12 +32,17 @@ struct sc_object {
 	int mesh;
 	float place[3], turn[3], size[3];
 	float matrix[16];
-	int material;		/* SC_MATT, SC_MIRROR or SC_GLASS */
 	float colour[3];
+	float rough;		/* 0 a mirror's shine to 1 none: the metal's, the coat's over a colour, the glass's */
+	float metal;		/* how much of it mirrors, in its colour */
+	float glass;		/* how much of it lets light through */
+	float ior;		/* how much glass bends light and a coat mirrors: 1.5 */
+	float density;		/* how soon glass has taken the light that is not of its colour, a unit of the way */
+	float glow;		/* its own light, times its colour */
 	void *shown;		/* the viewer's own */
 };
 
-/* A light is a ball that shines: `power` times its colour from every point of it. */
+/* A light is a ball that shines its colour: `power` is of the whole ball, whatever its radius. */
 struct sc_light {
 	char name[SC_NAME];
 	float place[3], radius, colour[3], power;
@@ -74,6 +80,7 @@ int sc_mesh_box(void);
 int sc_mesh_ball(int rings);
 void sc_mesh_free(int mesh);
 void sc_object_matrix(struct sc_object *object);
+void sc_material(struct sc_object *object, int kind);
 void sc_camera_set(struct sc_camera *camera);
 
 /* ---- bvh.c: the world ---- */

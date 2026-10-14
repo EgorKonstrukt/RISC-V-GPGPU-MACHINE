@@ -33,7 +33,9 @@
 static const int sample_steps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 0};	/* 0: no last one */
 #define SAMPLE_STEPS 11
 static const char *const detail_names[DETAILS] = {" Full view", " Half", " A third", " A quarter"};
-static const char *const material_names[3] = {" Matt", " Mirror", " Glass"};
+static const char *const kind_names[SC_KINDS] = {" Matt", " Plastic", " Metal", " Mirror", " Glass", " Glow"};
+enum { TAB_OBJECT, TAB_MATERIAL, TAB_RENDER };
+#define TURNS 16		/* the most turns a path may be given */
 static const char *const what_names[3] = {" Move", " Turn", " Size"};
 
 static GR_WINDOW_ID window, picture;
@@ -41,7 +43,7 @@ static int wide = 770, high = 530, view_w, view_h;	/* the window, and the pictur
 static struct ui_list tree = {0, 30, PANEL - 8, ROWS * UI_ROW + 4, 0, 0, -1};
 static int tab;			/* the panel's lower part: 0 what is selected, 1 the picture's settings */
 static int what = GIZMO_MOVE;	/* what the handles do */
-static int detail_at = 1, samples_at = 6, bounces = 5;
+static int detail_at = 1, samples_at = 6, bounces = 8;
 static int live = 1, wanted;	/* traced when the view is still; Render was asked for */
 static char status[160] = "";
 static int view_dirty = 1, held;	/* held: a slider of the panel, by its number + 1 */
@@ -193,11 +195,11 @@ fill_tables(void)
 		struct sc_object *o = &sc.objects[i];
 		float c[3] = {o->colour[0], o->colour[1], o->colour[2]};
 
-		if (o->material == SC_MIRROR)
+		if (o->metal > 0.5f)
 			c[0] = 0.5f + 0.5f * c[0], c[1] = 0.5f + 0.5f * c[1], c[2] = 0.55f + 0.45f * c[2];
-		if (o->material == SC_GLASS)
+		if (o->glass > 0.5f)
 			c[0] = 0.7f * c[0], c[1] = 0.85f * c[1], c[2] = 0.6f + 0.4f * c[2];
-		fill_table(tables + 256 * i, o->matrix, c, i == chosen_object() ? 0.25f : 0.0f);
+		fill_table(tables + 256 * i, o->matrix, c, (i == chosen_object() ? 0.25f : 0.0f) + (o->glow > 0.0f ? 0.6f : 0.0f));
 	}
 	for (i = 0; i < sc.light_count; i++) {
 		float m[16];
@@ -512,12 +514,13 @@ end_render(void)
 	traced = sample >= 1;
 	if (leave_when_done || getenv("NXPATH_PRINT")) {
 		unsigned sum = 0;
+		float light = 0.0f;
 
 		for (i = 0; i < pt.width * pt.height; i++)
-			sum = sum * 31 + pt.pixels[i];
-		fprintf(stderr, "pathstat: %d x %d, %d samples, %d turns, %d triangles: tree %u ms by %u workers, picture %u ms with %d workers, %u rays, sum %08x\n",
+			sum = sum * 31 + pt.pixels[i], light += pt.sums[i * 3] + pt.sums[i * 3 + 1] + pt.sums[i * 3 + 2];
+		fprintf(stderr, "pathstat: %d x %d, %d samples, %d turns, %d triangles: tree %u ms by %u workers, picture %u ms with %d workers, %u rays, light %d, sum %08x\n",
 			pt.width, pt.height, sample, pt.bounces, sc_world.triangle_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers, took,
-			workers, rays, sum);
+			workers, rays, sample ? (int)(light * 1000.0f / (float)(pt.width * pt.height * 3 * sample)) : 0, sum);
 	}
 	snprintf(text, sizeof text, "%d x %d, %d samples: %u.%u s with %d workers, %u thousand rays a second.", pt.width, pt.height, sample, took / 1000,
 		 took % 1000 / 100, workers, took ? rays / took : 0);
@@ -599,7 +602,8 @@ keep_settings(void)
 	reg_set_int("pathtrace.detail", detail_at);
 	reg_set_int("pathtrace.samples", samples_at);
 	reg_set_int("pathtrace.turns", bounces);
-	reg_set_int("pathtrace.sky", (int)(sc.sky_power * 100.0f + 0.5f));
+	reg_set_int("pathtrace.background", (int)(sc.sky_power * 100.0f + 0.5f));
+	reg_set_int("pathtrace.background.colour", (int)(sc.sky[0] * 255.0f + 0.5f) << 16 | (int)(sc.sky[1] * 255.0f + 0.5f) << 8 | (int)(sc.sky[2] * 255.0f + 0.5f));
 	reg_set_int("pathtrace.live", live);
 }
 
@@ -623,7 +627,7 @@ name_free(char *name, const char *wanted)
 
 /* An object of a mesh, standing on the ground at the middle; `across`: how large its longest side is made. */
 static int
-add_object(int mesh, float across, int material, float r, float g, float b)
+add_object(int mesh, float across, int kind, float r, float g, float b)
 {
 	struct sc_object *o;
 	const struct sc_mesh *m;
@@ -646,7 +650,7 @@ add_object(int mesh, float across, int material, float r, float g, float b)
 		o->place[k] = -(m->low[k] + m->high[k]) * 0.5f * o->size[k];
 	}
 	o->place[1] = -m->low[1] * o->size[1];
-	o->material = material;
+	sc_material(o, kind);
 	o->colour[0] = r, o->colour[1] = g, o->colour[2] = b;
 	sc_object_matrix(o);
 	return sc.object_count++;
@@ -762,45 +766,62 @@ line_values(int line, float *step)
 	return l >= 0 && line == 0 ? sc.lights[l].place : NULL;
 }
 
-/* The sliders by number: a colour's three, a light's radius and power, then the picture's
- * samples, turns and sky. A value from 0 to its most, and where it is kept. */
-enum { S_RED, S_GREEN, S_BLUE, S_RADIUS, S_POWER, S_SAMPLES, S_TURNS, S_SKY, SLIDERS };
+/* The sliders by number. A value from 0 to its most, and where it is kept. */
+enum {
+	S_RED, S_GREEN, S_BLUE, S_RADIUS, S_POWER, S_SAMPLES, S_TURNS, S_SKY, S_ROUGH, S_METAL, S_GLASS, S_IOR, S_DENSITY, S_GLOW,
+	S_SKY_RED, S_SKY_GREEN, S_SKY_BLUE, SLIDERS
+};
 
 static int
 slider_most(int n)
 {
-	return n == S_SAMPLES ? SAMPLE_STEPS - 1 : n == S_TURNS ? 7 : 255;
+	return n == S_SAMPLES ? SAMPLE_STEPS - 1 : n == S_TURNS ? TURNS - 1 : 255;
+}
+
+/* A slider's number of the selected thing or of the scene: where it is, and from what it goes how far. */
+static float *
+slider_place(int n, float *least, float *span)
+{
+	struct sc_object *o = chosen_object() >= 0 ? &sc.objects[chosen_object()] : NULL;
+	struct sc_light *l = chosen_light() >= 0 ? &sc.lights[chosen_light()] : NULL;
+
+	*least = 0.0f, *span = 1.0f;
+	switch (n) {
+	case S_RED: case S_GREEN: case S_BLUE: return o ? &o->colour[n] : l ? &l->colour[n] : NULL;
+	case S_RADIUS: *least = 0.02f, *span = 0.98f; return l ? &l->radius : NULL;
+	case S_POWER: *span = 100.0f; return l ? &l->power : NULL;
+	case S_SKY: *span = 2.0f; return &sc.sky_power;
+	case S_SKY_RED: case S_SKY_GREEN: case S_SKY_BLUE: return &sc.sky[n - S_SKY_RED];
+	case S_ROUGH: return o ? &o->rough : NULL;
+	case S_METAL: return o ? &o->metal : NULL;
+	case S_GLASS: return o ? &o->glass : NULL;
+	case S_IOR: *least = 1.0f, *span = 1.5f; return o ? &o->ior : NULL;
+	case S_DENSITY: *span = 10.0f; return o ? &o->density : NULL;
+	case S_GLOW: *span = 20.0f; return o ? &o->glow : NULL;
+	}
+	return NULL;
 }
 
 static int
 slider_value(int n, int set, int value)
 {
-	int o = chosen_object(), l = chosen_light();
-	float *f = NULL, most = 1.0f;
+	float least, span, *f;
 
 	if (n == S_SAMPLES) { if (set) samples_at = value; return samples_at; }
 	if (n == S_TURNS) { if (set) bounces = value + 1; return bounces - 1; }
-	if (n == S_SKY)
-		f = &sc.sky_power, most = 2.0f;
-	else if (n <= S_BLUE && o >= 0)
-		f = &sc.objects[o].colour[n];
-	else if (n <= S_BLUE && l >= 0)
-		f = &sc.lights[l].colour[n];
-	else if (n == S_RADIUS && l >= 0)
-		f = &sc.lights[l].radius;
-	else if (n == S_POWER && l >= 0)
-		f = &sc.lights[l].power, most = 100.0f;
+	f = slider_place(n, &least, &span);
 	if (!f)
 		return -1;
 	if (set)
-		*f = (float)value * most / 255.0f, *f = n == S_RADIUS && *f < 0.02f ? 0.02f : *f;
-	return (int)(*f * 255.0f / most + 0.5f);
+		*f = least + (float)value * span / 255.0f;
+	value = (int)((*f - least) * 255.0f / span + 0.5f);
+	return value < 0 ? 0 : value > 255 ? 255 : value;
 }
 
 /* What a control of the panel or a row of a menu does. */
 enum {
 	A_NONE, A_IMPORT, A_EXPORT, A_CLOSE, A_PLANE, A_BOX, A_BALL, A_LIGHT, A_DUPLICATE, A_DELETE, A_SCENE, A_PICTURE, A_WHOLE, A_RENDER,
-	A_STOP, A_LIVE, A_TAB, A_DETAIL = A_TAB + 2, A_WHAT, A_MATERIAL = A_WHAT + 3, A_LESS = A_MATERIAL + 3, A_MORE = A_LESS + 9, A_SLIDER = A_MORE + 9
+	A_STOP, A_LIVE, A_TAB, A_DETAIL = A_TAB + 3, A_WHAT, A_MATERIAL = A_WHAT + 3, A_LESS = A_MATERIAL + SC_KINDS, A_MORE = A_LESS + 9, A_SLIDER = A_MORE + 9
 };
 
 /* The panel is a list of things laid out once for what is shown: what is drawn and what a
@@ -809,13 +830,13 @@ enum { I_TEXT, I_VALUE, I_HEAD, I_BUTTON, I_SLIDER, I_SWATCH };	/* I_VALUE: word
 static struct item {
 	short kind, x, y, w, h, id, pressed;
 	char text[40];
-} items[80];
+} items[96];
 static int item_count, held_x, held_w;
 
 static struct item *
 item(int kind, int x, int y, int w, int h, int id, const char *text)
 {
-	struct item *i = &items[item_count < 79 ? item_count++ : 79];
+	struct item *i = &items[item_count < 95 ? item_count++ : 95];
 
 	i->kind = (short)kind, i->x = (short)x, i->y = (short)y, i->w = (short)w, i->h = (short)h, i->id = (short)id, i->pressed = 0;
 	snprintf(i->text, sizeof i->text, "%s", text ? text : "");
@@ -835,10 +856,26 @@ number_text(char *text, int size, float v)
 #define PX (wide - PANEL + 6)		/* the panel's left edge */
 #define LOW (tree.y + tree.height + 6)	/* under the list: the two tabs, then what they show */
 
-/* A slider with its name before it and its value after it, on one line. */
+/* A slider with its name before it and its value after it, on one line: a colour's part as
+ * it is counted, a whole number of a light's power, the others to hundredths. */
 static void
-slider_line(int y, int n, const char *name, const char *value)
+slider_line(int y, int n, const char *name)
 {
+	float least, span, *f = slider_place(n, &least, &span);
+	char value[24] = "";
+
+	if (n == S_SAMPLES && sample_steps[samples_at])
+		snprintf(value, sizeof value, "%d", sample_steps[samples_at]);
+	else if (n == S_SAMPLES)
+		snprintf(value, sizeof value, "no end");
+	else if (n == S_TURNS)
+		snprintf(value, sizeof value, "%d", bounces);
+	else if (f && (n <= S_BLUE || n >= S_SKY_RED))
+		snprintf(value, sizeof value, "%d", slider_value(n, 0, 0));
+	else if (f && n == S_POWER)
+		snprintf(value, sizeof value, "%d", (int)(*f + 0.5f));
+	else if (f)
+		number_text(value, sizeof value, *f);
 	item(I_TEXT, PX, y + 2, 50, 14, A_NONE, name);
 	item(I_SLIDER, PX + 52, y, PANEL - 52 - 50, 18, A_SLIDER + n, NULL);
 	item(I_TEXT, PX + PANEL - 46, y + 2, 40, 14, A_NONE, value);
@@ -848,15 +885,17 @@ static void
 layout(void)
 {
 	static const char *const lines[3] = {"Place", "Turn", "Size"}, *const colours[3] = {"Red", "Green", "Blue"};
-	int o = chosen_object(), l = chosen_light(), i, k, y = LOW, across = PANEL - 12;
+	static const char *const made[6] = {"Rough", "Metal", "Glass", "Index", "Density", "Glow"};
+	int o = chosen_object(), l = chosen_light(), i, k, y = LOW, across = PANEL - 12, third = across / 3;
 	char text[40], more[24];
 
 	item_count = 0;
 	item(I_HEAD, PX, BAR + 4, across, 14, A_NONE, "The scene");
-	item(I_BUTTON, PX, y, across / 2 - 2, 22, A_TAB, o < 0 && l >= 0 ? " Light" : " Object")->pressed = tab == 0;
-	item(I_BUTTON, PX + across / 2 + 2, y, across / 2 - 2, 22, A_TAB + 1, " Render")->pressed = tab == 1;
+	item(I_BUTTON, PX, y, third - 3, 22, A_TAB + TAB_OBJECT, o < 0 && l >= 0 ? " Light" : " Object")->pressed = tab == TAB_OBJECT;
+	item(I_BUTTON, PX + third, y, third - 3, 22, A_TAB + TAB_MATERIAL, " Material")->pressed = tab == TAB_MATERIAL;
+	item(I_BUTTON, PX + 2 * third, y, third - 3, 22, A_TAB + TAB_RENDER, " Render")->pressed = tab == TAB_RENDER;
 	y += 30;
-	if (tab == 1) {
+	if (tab == TAB_RENDER) {
 		int w, h;
 
 		picture_size(&w, &h);
@@ -867,16 +906,15 @@ layout(void)
 		snprintf(text, sizeof text, "%d x %d", w, h);
 		item(I_TEXT, PX + 146, y + 4, 90, 14, A_NONE, text);
 		y += 28;
-		if (sample_steps[samples_at])
-			snprintf(text, sizeof text, "%d", sample_steps[samples_at]);
-		else
-			snprintf(text, sizeof text, "no end");
-		slider_line(y, S_SAMPLES, "Samples", text);
-		snprintf(text, sizeof text, "%d", bounces);
-		slider_line(y + 24, S_TURNS, "Turns", text);
-		number_text(text, sizeof text, sc.sky_power);
-		slider_line(y + 48, S_SKY, "Sky", text);
-		y += 78;
+		slider_line(y, S_SAMPLES, "Samples");
+		slider_line(y + 24, S_TURNS, "Turns");
+		y += 54;
+		item(I_HEAD, PX, y, across, 14, A_NONE, "The background's light");
+		y += 18;
+		for (i = 0; i < 3; i++)
+			slider_line(y + i * 22, S_SKY_RED + i, colours[i]);
+		slider_line(y + 66, S_SKY, "Power");
+		y += 94;
 		item(I_BUTTON, PX, y, across, 22, A_LIVE, live ? " Traced when the view is still: on" : " Traced when the view is still: off")->pressed = live;
 		y += 28;
 		i = tracing && !pt.stop;
@@ -894,10 +932,31 @@ layout(void)
 		return;
 	}
 	item(I_HEAD, PX, y, across, 14, A_NONE, o >= 0 ? sc.objects[o].name : sc.lights[l].name);
-	y += 18;
+	y += 20;
+	if (tab == TAB_MATERIAL && o < 0) {
+		item(I_TEXT, PX, y + 4, across, 14, A_NONE, "A light has no material: its size,");
+		item(I_TEXT, PX, y + 20, across, 14, A_NONE, "power and colour are under Light.");
+		return;
+	}
+	if (tab == TAB_MATERIAL) {
+		for (i = 0; i < SC_KINDS; i++)
+			item(I_BUTTON, PX + i % 3 * third, y + i / 3 * 24, third - 3, 22, A_MATERIAL + i, kind_names[i]);
+		y += 54;
+		item(I_HEAD, PX, y, across - 30, 14, A_NONE, "Colour");
+		item(I_SWATCH, PX + across - 26, y - 2, 26, 16, A_NONE, NULL);
+		y += 18;
+		for (i = 0; i < 3; i++)
+			slider_line(y + i * 22, i, colours[i]);
+		y += 70;
+		item(I_HEAD, PX, y, across, 14, A_NONE, "What it is made of");
+		y += 18;
+		for (i = 0; i < 6; i++)
+			slider_line(y + i * 22, S_ROUGH + i, made[i]);
+		return;
+	}
 	if (o >= 0) {
 		for (i = 0; i < 3; i++)
-			item(I_BUTTON, PX + i * (across / 3), y, across / 3 - 3, 22, A_WHAT + i, what_names[i])->pressed = what == i;
+			item(I_BUTTON, PX + i * third, y, third - 3, 22, A_WHAT + i, what_names[i])->pressed = what == i;
 		y += 28;
 	}
 	for (k = 0; k < 3; k++)
@@ -915,27 +974,17 @@ layout(void)
 		}
 	}
 	y += 6;
-	if (o >= 0) {
-		item(I_HEAD, PX, y, across, 14, A_NONE, "Material");
+	if (l >= 0) {
+		slider_line(y, S_RADIUS, "Radius");
+		slider_line(y + 24, S_POWER, "Power");
+		y += 52;
+		item(I_HEAD, PX, y, across - 30, 14, A_NONE, "Colour");
+		item(I_SWATCH, PX + across - 26, y - 2, 26, 16, A_NONE, NULL);
 		y += 18;
 		for (i = 0; i < 3; i++)
-			item(I_BUTTON, PX + i * (across / 3), y, across / 3 - 3, 22, A_MATERIAL + i, material_names[i])->pressed = sc.objects[o].material == i;
-		y += 30;
-	} else {
-		number_text(text, sizeof text, sc.lights[l].radius);
-		slider_line(y, S_RADIUS, "Radius", text);
-		snprintf(text, sizeof text, "%d", (int)(sc.lights[l].power + 0.5f));
-		slider_line(y + 24, S_POWER, "Power", text);
-		y += 52;
+			slider_line(y + i * 22, i, colours[i]);
+		y += 74;
 	}
-	item(I_HEAD, PX, y, across - 30, 14, A_NONE, "Colour");
-	item(I_SWATCH, PX + across - 26, y - 2, 26, 16, A_NONE, NULL);
-	y += 18;
-	for (i = 0; i < 3; i++) {
-		snprintf(text, sizeof text, "%d", slider_value(i, 0, 0));
-		slider_line(y + i * 22, i, colours[i], text);
-	}
-	y += 74;
 	item(I_BUTTON, PX, y, across / 2 - 2, 22, A_DUPLICATE, " Duplicate");
 	item(I_BUTTON, PX + across / 2 + 2, y, across / 2 - 2, 22, A_DELETE, " Delete");
 }
@@ -1035,13 +1084,17 @@ tell(void)
 	check_layout();
 	fprintf(stderr, "nxpath: %d objects, %d lights", sc.object_count, sc.light_count);
 	if (o >= 0)
-		fprintf(stderr, "; %s is%s at %d %d %d (hundredths), size %d, colour %d %d %d", sc.objects[o].name, material_names[sc.objects[o].material],
+		fprintf(stderr, "; %s (rough %d, metal %d, glass %d, index %d, density %d, glow %d) at %d %d %d (hundredths), size %d, colour %d %d %d", sc.objects[o].name,
+			(int)(sc.objects[o].rough * 100.0f + 0.5f), (int)(sc.objects[o].metal * 100.0f + 0.5f), (int)(sc.objects[o].glass * 100.0f + 0.5f),
+			(int)(sc.objects[o].ior * 100.0f + 0.5f), (int)(sc.objects[o].density * 100.0f + 0.5f), (int)(sc.objects[o].glow * 100.0f + 0.5f),
 			(int)(sc.objects[o].place[0] * 100.0f), (int)(sc.objects[o].place[1] * 100.0f), (int)(sc.objects[o].place[2] * 100.0f),
 			(int)(sc.objects[o].size[0] * 100.0f), (int)(sc.objects[o].colour[0] * 255.0f), (int)(sc.objects[o].colour[1] * 255.0f),
 			(int)(sc.objects[o].colour[2] * 255.0f));
 	if (l >= 0)
 		fprintf(stderr, "; %s, power %d", sc.lights[l].name, (int)sc.lights[l].power);
 	ui_window_origin(window, &x, &y);
+	fprintf(stderr, "; background %d of %02x%02x%02x", (int)(sc.sky_power * 100.0f + 0.5f), (int)(sc.sky[0] * 255.0f + 0.5f), (int)(sc.sky[1] * 255.0f + 0.5f),
+		(int)(sc.sky[2] * 255.0f + 0.5f));
 	fprintf(stderr, "; detail %d, samples %d, turns %d, live %d; window at %d,%d, view %d x %d", detail_at + 1, sample_steps[samples_at], bounces, live, x, y,
 		view_w, view_h);
 	fprintf(stderr, "\n");
@@ -1197,7 +1250,7 @@ add_thing(int id)
 		made = add_object(sc_mesh_box(), 0.6f, SC_MATT, 0.8f, 0.6f, 0.3f);
 	else if (id == A_BALL)
 		made = add_object(sc_mesh_ball(16), 0.6f, SC_MIRROR, 0.95f, 0.95f, 0.95f);
-	else if (id == A_LIGHT && (made = add_light(0.0f, 2.0f, 0.0f, 0.25f, 30.0f)) >= 0)
+	else if (id == A_LIGHT && (made = add_light(0.0f, 2.0f, 0.0f, 0.1f, 30.0f)) >= 0)
 		made += sc.object_count;
 	if (made < 0) {
 		say("No room for another.");
@@ -1241,7 +1294,7 @@ act(int id)
 		break;
 	case A_WHOLE: whole_view(); break;
 	case A_RENDER:
-		tab = 1;
+		tab = TAB_RENDER;
 		if (!trace_more())
 			invalidate(), wanted = 1;
 		draw_panel();
@@ -1253,12 +1306,12 @@ act(int id)
 		draw_panel();
 		break;
 	case A_LIVE: live = !live, still_since = now_ms(), keep_settings(), tell(), draw_panel(); break;
-	case A_TAB: case A_TAB + 1: tab = id - A_TAB, tell(), draw_panel(); break;
+	case A_TAB: case A_TAB + 1: case A_TAB + 2: tab = id - A_TAB, tell(), draw_panel(); break;
 	case A_DETAIL: detail_at = (detail_at + 1) % DETAILS, keep_settings(), invalidate(), tell(), draw_panel(); break;
 	case A_WHAT: case A_WHAT + 1: case A_WHAT + 2: what = id - A_WHAT, view_dirty = 1, draw_panel(); break;
-	case A_MATERIAL: case A_MATERIAL + 1: case A_MATERIAL + 2:
+	case A_MATERIAL: case A_MATERIAL + 1: case A_MATERIAL + 2: case A_MATERIAL + 3: case A_MATERIAL + 4: case A_MATERIAL + 5:
 		if (o >= 0)
-			sc.objects[o].material = id - A_MATERIAL, changed();
+			sc_material(&sc.objects[o], id - A_MATERIAL), changed();
 		break;
 	}
 }
@@ -1537,7 +1590,7 @@ events(void)
 			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_UP:
-			if (held && tab == 1)
+			if (held && tab == TAB_RENDER)
 				keep_settings();
 			if (held)
 				held = 0, ui_moves(window, EVENTS, 0);
@@ -1600,7 +1653,7 @@ events(void)
 }
 
 /* What the program starts with: a ground, the teapot (or a box, without its file), a mirror
- * ball, a light and a pale sky; and beside them the mesh it was started with. */
+ * ball and a light under a background that gives no light; and beside them the mesh it was started with. */
 static void
 first_scene(const char *more)
 {
@@ -1616,8 +1669,10 @@ first_scene(const char *more)
 		sc.objects[made].place[0] = 1.1f, sc.objects[made].place[2] = -0.5f;
 		snprintf(sc.objects[made].name, SC_NAME, "Ball");
 	}
-	add_light(-1.2f, 2.4f, -1.4f, 0.3f, 40.0f);
-	sc.sky[0] = 0.6f, sc.sky[1] = 0.75f, sc.sky[2] = 1.0f, sc.sky_power = (float)reg_int("pathtrace.sky", 35) * 0.01f;
+	add_light(-1.2f, 2.4f, -1.4f, getenv("NXPATH_RADIUS") ? (float)atoi(getenv("NXPATH_RADIUS")) * 0.01f : 0.12f, 50.0f);
+	made = reg_int("pathtrace.background.colour", 0x99bfff);
+	sc.sky[0] = (float)(made >> 16 & 255) / 255.0f, sc.sky[1] = (float)(made >> 8 & 255) / 255.0f, sc.sky[2] = (float)(made & 255) / 255.0f;
+	sc.sky_power = (float)reg_int("pathtrace.background", 0) * 0.01f;
 	sc.camera.target[1] = 0.45f, sc.camera.turn = 35.0f, sc.camera.tilt = 22.0f, sc.camera.far = 4.2f, sc.camera.lens = 0.6f;
 	say("");
 	if (more && (made = import_mesh(more)) >= 0 && (made = add_object(made, 1.0f, SC_MATT, 0.8f, 0.8f, 0.8f)) >= 0)
@@ -1671,7 +1726,7 @@ main(int argc, char **argv)
 	detail_at = reg_int("pathtrace.detail", detail_at) % DETAILS;
 	samples_at = reg_int("pathtrace.samples", samples_at) % SAMPLE_STEPS;
 	bounces = reg_int("pathtrace.turns", bounces);
-	bounces = bounces < 1 || bounces > 8 ? 5 : bounces;
+	bounces = bounces < 1 || bounces > TURNS ? 8 : bounces;
 	live = reg_int("pathtrace.live", live) != 0;
 	if ((text = getenv("NXPATH_LIVE")) != NULL)
 		live = atoi(text);
