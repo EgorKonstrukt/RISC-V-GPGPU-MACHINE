@@ -62,6 +62,17 @@
 
 #define MC_ALIVE 0x600d0000u
 
+// Counters (mcwx.h): 1024 words, 64 for each program's slot (its tag's low four bits). A worker
+// adds into a region of its own (core 0 into region 0) and sets the head's first word; some
+// passes later the machine makes each total the sum of all regions, and counts it in the head.
+#define MC_COUNT_PHYS 0x86C10000u
+#define MC_COUNT_GPU_OFFSET (MC_COUNT_PHYS - 0x86000000u)
+#define MC_COUNT_BYTES 0x101000u                         // the totals, then the regions
+#define MC_COUNT_REGION_AT(k) (0x1000u + 0x1000u * (k))
+#define MC_COUNT_HEAD_PHYS 0x87000320u                   // a control word: { added, MC_COUNT_MERGED, merges, 0 }
+#define MC_COUNT_MERGED 0x4d475245u                      // "ERGM": a machine that merges
+#define MC_COUNTERS 64
+
 typedef struct { volatile uint32_t seq, fn, a0, a1; } mc_job;                  // seq changes: a new job
 typedef struct { volatile uint32_t done, result, alive, pad; } mc_answer;      // done == seq: finished
 typedef struct { volatile uint32_t count, cause, address, pc; } mc_fault;      // count != resume: stopped

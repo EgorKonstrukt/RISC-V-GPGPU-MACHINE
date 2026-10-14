@@ -173,6 +173,11 @@
   mailboxes; nxpath reads `mcw_entry`'s page): `PHYS_COUNT=1` and mctest's
   "pages brought for their start" must say 0. A job that waits ends its pass with
   `mc_end_pass()`, never with the pause hint, which is a worker's sleep.
+- A program that uses workers is run once with `RVC_RACES=FILE` on `rvc_cpu`: 0 undone, and
+  its own checks as without it, or it is wrong on the card now and then (`docs/multicore.md`,
+  "Races"; reads "as it was" are a core waiting on another's word, and are no fault).
+  Its loops, calls, prints and counters go through `mcwx.h` ("The second layer"), not code of
+  its own; `RVC_CALLS=FILE` and `tools/mc_candidates.py` say what of core 0's is worth a job.
 - Events are pushed to a program (`GrNumPushEvents`) and a window's, GC's and font's ids are
   the program's own (requests 127 to 129; `docs/nanox.md`). A program with its own `select()`
   on the socket still gets one event a `GrServiceSelect`. A program's start is measured as the

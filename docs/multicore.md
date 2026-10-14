@@ -77,6 +77,10 @@ workers and checks them (`programs\mc\build.bat`, then `python tools\make_linux_
 | pages | a worker writes and reads 64 pages nobody has touched: 64 stops, each answered by core 0 in two passes |
 | calls | a worker asks the kernel for memory, fills it, writes a line and gives the memory back |
 | floats | float arithmetic kept in registers over many passes gives what it gives on core 0 |
+| loop | eight rounds of `mcw_for` over 256 KB; 64 small ones back to back, the team waiting on the round word; a loop asked inside a piece |
+| async | 24 `mcw_call`s, more than there are workers, joined last to first |
+| effects | jobs print, defer a call, take scratch memory, and one fails: core 0 sees each at the join |
+| counters | every core adds to two counters in the same passes; the totals are exact |
 | park | `ebreak` parks them; the next run starts them again |
 
 All pass. With four cores and the workers parked, Linux boots in the same number of
@@ -570,6 +574,7 @@ copy back, or the commit that reads it, would have to know.)
 |---|---|
 | `mc.h` | the mailboxes: what the machine, the library and a worker agree on |
 | `mcw.h`, `mcw.c` | the library a program links: the workers' start and stacks, jobs, the wait, the pages a worker stops at |
+| `mcwx.h`, `mcwx.c` | over it: a parallel loop, calls joined later, a job's prints, deferred calls, scratch and failures, counters ("The second layer") |
 | `mctest.c` | the test |
 
 A job is a function of the program and two words for it:
@@ -647,6 +652,109 @@ What it is good for, and what not:
 
 What it costs: nothing to speak of while the workers sleep; 5% of a pass for the first busy
 one and 17% for three; and the commit pass looks a RAM texel up in each busy core's cache.
+
+## The second layer (`mcwx.h`)
+
+Fourteen programs open workers, and each wrote the same things again round `mcw_post()`:
+the shares of a loop, rounds driven by a word, buffers touched first, a log a worker fills for
+core 0 to print, calls kept for core 0, errors raised after the job (`server_shaderemu.c` is
+the fullest). `programs/mc/mcwx.h` and `mcwx.c` are those, over `mcw.h`, with no C library
+(`linux/tcc/build.sh` puts them in the machine's own `libmcw.a`):
+
+- **`mcw_for(n, fn, ctx)`**: `fn(ctx, from, to)` over pieces of `0..n-1`, every core taking
+  every so many (four pieces a core unless `mcw_for_opts.grain` says), core 0 too unless
+  `first_idle`. `out_bytes` makes a piece whole 16 bytes of an output in a row; `touch` is
+  made present first. The workers are a team: a job posted once that waits on a round word
+  (`mc_end_pass()` between looks) for `mcw_for_linger()` passes, 16 at first, and leaves;
+  the next round posts again only to those that left. A worker with no core now has no
+  piece. With no workers, asked on a worker, or asked inside a round's piece, it is one call.
+- **`h = mcw_call(fn, a0, a1)` ... `mcw_join(h)`**: the call on a worker with nothing to do
+  (not one holding a call, nor one still in the team: `mcw_for_end()` sends the team away
+  and waits until it has gone, as before a plain `mcw_post()`),
+  or made at once on core 0 when there is none. `mcw_ready(h)` asks without waiting.
+- **What a job may do that only core 0 may**: `mcw_print()` (a log of 2 KB a worker, written
+  at the join; a full one is written then and there by a system call), `mcw_defer(fn, a0, a1)`
+  (made by core 0 at the join, in order), `mcw_scratch(bytes)` (memory of the core's own, in
+  chunks of 64 KB it maps; `mcw_scratch_reset()`), and `mcw_fail(what, value)`: a jump back
+  to the job's start, and core 0 calls `mcw_on_failure()`'s function at the join (by default
+  it says where and the program ends). On core 0 all of these are done at once.
+- **Counters** (below).
+
+`mctest` has a test for each, and `mctest N 0 race` stores to one 16 bytes from two workers
+for the race checker. With three workers and with 255, on `rvc_cpu` and on the shader
+machine, all pass. On the shader machine eight rounds over 256 KB take 1.05 s (three workers)
+and 1.07 s (255), and 64 rounds of 16 KB back to back 0.23 s and 0.65 s.
+
+### Counters
+
+A counter is a word every core may add to in the same pass, with no lock: 1024 of them, 64 for
+each program that has workers (its slot, the low four bits of its tag). Worker k adds to its
+own region of the counters (`MC_COUNT_REGION_AT(k)` at `0x86C10000`, core 0 the first) with
+`amoadd.w`, which is one instruction on one core, and sets the word "added" of the counters'
+head, a control word at `0x87000320` (`{ added, "ERGM", merges, 0 }`). Regions only grow. The
+host reads the control words back every frame; when it sees "added" it draws the 256 texels of
+the totals after the commit, each the sum of its word over the 256 regions, and the control
+pass clears "added" and counts the merge (`count_total` in `src/gpu.h`, `kCountZone`). A merge
+at any time is right, since it adds up everything there is: it comes a frame or two after the
+adds. `mcw_get()` is the last merge's total and this core's own adds since (it keeps them,
+counter by counter, with the merge count it saw); `mcw_counters_settle()` waits for a merge
+after the last add. Two cores may get the same answer, so a counter is a sum, not a ticket.
+
+A machine that does not merge (the world's: no `_CountMerged`) never writes "ERGM", and the
+library adds the 256 regions itself at each `mcw_get()` (`RVC_COUNT_MERGE=0` runs `rvc_cpu`
+so). `rvc_cpu` merges after every pass in which a core added.
+
+What it costs: the merge drawn every frame, as the first try did over the regions too (65,536
+texels cleared each frame), was 8.5 us a frame, measured as 50 draws a frame against none
+(0.438 and 0.013 ms of the device's GPU time, two runs each): half a percent of a shell loop's
+1.8 ms frame. Over the totals alone, every frame, it was still 6 us (0.019 ms): a draw's own
+cost, whatever its size. Drawn only after "added" it is nothing while no program counts (0.013 ms).
+
+## Races (`RVC_RACES`)
+
+On the shader machine every core reads what the last commit left, and the highest core's
+16 bytes win at the next; on `rvc_cpu` the cores run one after another and see each other's
+stores at once. So a program right on `rvc_cpu` may be wrong on the card, now and then.
+`RVC_RACES=FILE bin\rvc_cpu.exe ...` gives the cores memory as the card has it, and says where
+that made a difference:
+
+- **as it was**: a core read bytes another core had changed in the same pass, and is given
+  them as the pass began. A core that waits on a word another writes (a round, a publish
+  count) does this every round, and is right to: it sees the word a pass later.
+- **undone**: a core changed 16 bytes another, lower core had changed in the same pass. The
+  higher core's 16 bytes, as it saw them, are what is left, as at the GPU's commit: the
+  lower core's change is lost. This is always a fault.
+
+Since the program then runs as on the card, its own checks (sums, `mctest`) say whether what
+it was given mattered. A store that changes nothing is no store (the machine keeps none); the
+mailboxes and the counters are left out, being written by several cores by design. A worker is
+woken by its mailbox as the pass found it (a start, a job or an answer core 0 wrote in the pass
+is seen in the next). At the end it prints the counts and the eight commonest places; the file
+has them all, and `python tools\mc_candidates.py CALLS ELF --races FILE` names them.
+
+`mctest 3 0 race`: two workers store to the two halves of one 16 bytes, pass after pass. Plain
+`rvc_cpu` keeps both (`49 0 49 0`); the shader machine and `rvc_cpu` with `RVC_RACES` lose the
+first worker's (`0 0 49 0`), and it reports 49 undone at `race_job+0x1c`. `mctest` with 3 and
+255 workers has nothing undone and passes; its reads as they were are all `team_job`'s look at
+the round word, one a worker a round (192 and 16,320). nxpath has nothing; nxray has 1,275 reads
+as they were, all of its `go` words in `trace_pictures`, and the same four sums.
+Not covered: the parallel copy and fill (`memop`), which only the kernel makes.
+Before the bytes were compared, two places were a word read beside a word written (`page`
+and `count` of `mcw.c`, in one 16 bytes); before the reads were given as the card gives them,
+every read of a picture after its publish word was reported too.
+
+## Finding the work (`RVC_CALLS`)
+
+A job pays from some tens of thousands of instructions (a pass each way, above). `RVC_CALLS=FILE
+bin\rvc_cpu.exe ...` counts, for every call core 0 makes, its own instructions until it returns
+(a stack for each program and one for the kernel; what the call calls is in it, the kernel's
+work for it is not, and a function that recurses counts its outermost call), and
+`python tools\mc_candidates.py FILE ELF` names the functions from the unstripped program and
+ranks them by instructions a call, the program being the context whose calls are most in its
+functions. Quake's `timedemo demo1` (the unstripped build in WSL, the same bytes as `quake.bin`
+stripped): `CL_ParseServerInfo` 45.0 million in its one call, `GL_BuildLightmaps` 27.5
+million, `Mod_LoadAliasModel` 255 thousand a call (41), `R_ParticleExplosion` 171 thousand (17),
+`Host_Frame` 114 thousand on average and 48.5 million the first. A run is three seconds.
 
 ## A core that rests
 
@@ -1046,3 +1154,6 @@ loop and was not measured again.)
 ## Switches
 
     RVC_MC_FULL=1      draw a worker's whole 64 x 16, as before (to compare)
+    RVC_RACES=FILE     rvc_cpu: memory as the GPU has it, and where that mattered ("Races")
+    RVC_CALLS=FILE     rvc_cpu: core 0's calls by their instructions ("Finding the work")
+    RVC_COUNT_MERGE=0  rvc_cpu: no merge of the counters, as the world's machine

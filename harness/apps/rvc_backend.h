@@ -48,6 +48,9 @@ const unsigned kNetRow = 64 + 0x76b800 / 2048, kNetSlot = 40, kNetRing = 64, kNe
 const unsigned kCoreStatsAt = 0x200, kNetRead = kCoreStatsAt + 72;
 const float kCoreStatsZone[4] = {kCoreStatsAt + 36.0f, 4096 - (64 + 0x76b800 / 2048) - 0.5f, 72, 1};
 const float kNetZone[4] = {kNetRing + kNetSlot * kNetSlots / 2.0f, 4096 - kNetRow - 0.5f, (float)(kNetSlot * kNetSlots), 1};
+// The counters' totals (programs/mc/mc.h, MC_COUNT_*): RAM 0x86C10000 to 0x86C11000, drawn after
+// the commit when the control words read back say a core added (src/gpu.h).
+const float kCountZone[4] = {128, 4096 - (64 + 0x6c1000 / 2048) - 0.5f, 256, 1};
 // Quads the Commit pass draws when its vertex shader chooses them: the state rows and 32 bands of RAM.
 const unsigned kCommitQuads = 33;
 // The machine's control words (display, GPU, input, sound: RAM from 0x87000000) as a row of the
@@ -66,6 +69,7 @@ public:
     // is drawn or copied, which is a third of what a pass costs besides its instructions.
     // (Workers are started long after the geometry that has them is set: shaderemu_gpu.c.)
     bool workersNow = true;
+    bool countsAdded = false;   // the counters' head read back says a core added (kCountZone)
     // Draw the sound card's mix in the next frame and read it back with that frame's row.
     bool soundMix = false;
     static const UINT kWidth = 2048, kHeight = 4096;   // rvc's vm_state_crt.asset

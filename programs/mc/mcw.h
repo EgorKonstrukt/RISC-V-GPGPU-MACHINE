@@ -65,6 +65,8 @@ void *mcw_alloc(unsigned bytes);
  * as zeros are such pages (from __DATA_BEGIN__ to _end is all of its data).
  */
 void mcw_touch(void *memory, unsigned bytes);
+/* The same for code a job will run that this core may not have run yet: a read is enough. */
+void mcw_touch_code(const void *code, unsigned bytes);
 /* A job for worker k (1 to mcw_count()): it calls fn(a0, a1). */
 void mcw_post(int k, mcw_fn fn, uint32_t a0, uint32_t a1);
 /* Whether worker k has finished what it was posted last; what the function returned. */
@@ -85,6 +87,12 @@ int mcw_wait(int k);
 void mcw_rest(void);
 /* Whether the code that asks is running on a worker. */
 int mcw_on_worker(void);
+/* Which worker runs the code that asks (1 to mcw_count()); 0 on the first core. */
+int mcw_self(void);
+/* This program's place among the programs with workers (0 to 15), -1 without workers. */
+int mcw_slot(void);
+/* GPU memory at that offset of /dev/gpu, mapped through the workers' device; 0 without workers. */
+void *mcw_map(uint32_t offset, uint32_t bytes);
 
 #ifdef __cplusplus
 }

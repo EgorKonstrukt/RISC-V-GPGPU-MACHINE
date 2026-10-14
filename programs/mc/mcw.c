@@ -379,6 +379,9 @@ int mcw_open(int limit)
 	for (k = 1; k < stack_count; k++)
 		for (i = 4096; i <= STACK_TOUCHED; i += 4096) stacks[(uint32_t)k * STACK_BYTES - i] = 0;
 	__asm__ volatile("mv %0, tp" : "=r"(own_tp));
+	/* the code a worker starts in, read here: a page of it no core has run stops it (cause 12) */
+	mcw_touch_code((const void *)mcw_entry, 64);
+	mcw_touch_code((const void *)mcw_loop, 512);
 	/* this program's share of the cores (the kernel waits a while for those other programs
 	 * have over theirs); from here the kernel parks them when the program ends */
 	claim(limit);
@@ -450,6 +453,14 @@ void mcw_close(void)
 	page = 0;
 	count = 0;
 	/* (the stacks stay: a worker is on one until the machine has parked it) */
+}
+
+void mcw_touch_code(const void *code, unsigned bytes)
+{
+	const volatile uint8_t *at = (const volatile uint8_t *)((uintptr_t)code & ~4095u);
+	const volatile uint8_t *end = (const volatile uint8_t *)code + bytes;
+
+	for (; at < end; at += 4096) (void)*at;
 }
 
 void mcw_touch(void *memory, unsigned bytes)
@@ -530,6 +541,18 @@ int mcw_wait(int k)
 	}
 	return passes;
 }
+
+int mcw_self(void)
+{
+	uint8_t here;
+
+	if (!mcw_on_worker()) return 0;
+	return (int)((uint32_t)(&here - stacks) / STACK_BYTES) + 1;
+}
+
+int mcw_slot(void) { return page ? (int)(my_tag & 15) : -1; }
+
+void *mcw_map(uint32_t offset, uint32_t bytes) { return device >= 0 ? map((long)bytes, device, (long)offset) : 0; }
 
 int mcw_on_worker(void)
 {

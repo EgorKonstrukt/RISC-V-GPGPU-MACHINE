@@ -9,6 +9,7 @@
 // console, some fifty times faster. It draws nothing: a submitted list is taken as drawn, and
 // a picture a program asked to have copied back is not there. Pictures, sound and timings in
 // seconds are the shader machine's (rvc_harness) to check.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <deque>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "rvc_net.h"
@@ -216,6 +218,74 @@ static void device_write(Core& c, u32 phys, u32 value, int size) {
     }
 }
 
+// ---- RVC_RACES=FILE: memory as the shader machine has it (docs/multicore.md, "Races") ----
+//
+// Every core reads what the last pass left, its own stores apart, and at the commit the highest
+// core's 16 bytes win. Here the cores run one after another, lowest first, so a core that reads
+// 16 bytes another changed in this pass is given them as they were, and a higher core's change
+// to them undoes the lower one's. Both are noted, where and by whom.
+static bool races_on = false;
+static u64 race_pass = 1;
+struct TexelMark { u64 pass; u32 pc, satp; int core; u32 bytes; uint8_t old[16]; };   // (bytes: which it changed)
+static std::unordered_map<u32, TexelMark> texel_marks;   // texels changed in this pass: by whom, and before
+struct RaceStat { u64 count = 0; int kind = 0; u32 pc = 0, phys = 0, other_pc = 0, satp = 0, other_satp = 0; int core = 0, other = 0; };
+static std::unordered_map<u64, RaceStat> race_stats[2];  // stale reads, lost stores: by (pc, the other's pc)
+static const u32 ATOM_BASE = 0x86C10000u, ATOM_END = ATOM_BASE + 0x101000u;   // (counters: mc.h)
+static const u32 ATOM_HEAD = 0x87000320u;
+
+static inline bool race_watched(u32 phys) {
+    // (the mailboxes and the counters' regions are written by several cores by design)
+    return phys - RAM_BASE < RAM_SIZE && phys - 0x86C00000u >= 0x8000u && phys - ATOM_BASE >= ATOM_END - ATOM_BASE &&
+           (phys & ~15u) != ATOM_HEAD;
+}
+static void race_note(int kind, Core& c, u32 phys, const TexelMark& m) {
+    RaceStat& r = race_stats[kind][((u64)c.pc << 32) | m.pc];
+    if (!r.count++) r.kind = kind, r.pc = c.pc, r.phys = phys, r.other_pc = m.pc, r.satp = c.satp, r.other_satp = m.satp, r.core = c.hart, r.other = m.core;
+}
+static inline u32 byte_mask(u32 phys, int size) { return ((1u << size) - 1) << (phys & 15); }
+// The bytes this core sees: its own, or as the pass began for 16 bytes another core changed.
+static u32 race_load(Core& c, u32 phys, int size) {
+    u32 value = 0;
+    if ((phys & 15) + (u32)size > 16) {   // (across two texels: a byte at a time)
+        for (int i = 0; i < size; i++) value |= race_load(c, phys + (u32)i, 1) << (8 * i);
+        return value;
+    }
+    const uint8_t* from = &ram[phys - RAM_BASE];
+    auto it = texel_marks.find(phys >> 4);
+    if (it != texel_marks.end() && it->second.core != c.hart) {
+        if (it->second.bytes & byte_mask(phys, size)) race_note(0, c, phys, it->second);
+        from = it->second.old + (phys & 15);
+    }
+    memcpy(&value, from, (size_t)size);
+    return value;
+}
+static void race_store(Core& c, u32 phys, u32 value, int size) {
+    if ((phys & 15) + (u32)size > 16) {
+        for (int i = 0; i < size; i++) race_store(c, phys + (u32)i, value >> (8 * i), 1);
+        return;
+    }
+    uint8_t* texel = &ram[(phys & ~15u) - RAM_BASE];
+    auto it = texel_marks.find(phys >> 4);
+    bool other = it != texel_marks.end() && it->second.core != c.hart;
+    const uint8_t* seen = other ? it->second.old : texel;
+    u32 changed = 0;
+    for (int i = 0; i < size; i++)
+        if (seen[(phys & 15) + i] != (uint8_t)(value >> (8 * i))) changed |= byte_mask(phys + (u32)i, 1);
+    if (!changed) return;   // (the machine keeps no store that changes nothing)
+    if (it == texel_marks.end()) {
+        TexelMark m{race_pass, c.pc, c.satp, c.hart, 0, {}};
+        memcpy(m.old, texel, 16);
+        it = texel_marks.emplace(phys >> 4, m).first;
+    } else if (other) {
+        race_note(1, c, phys, it->second);
+        memcpy(texel, it->second.old, 16);   // (this core's 16 bytes, as it had them, win)
+        it->second.core = c.hart, it->second.bytes = 0, it->second.satp = c.satp;
+    }
+    for (int i = 0; i < size; i++) texel[(phys & 15) + i] = (uint8_t)(value >> (8 * i));
+    it->second.bytes |= changed;
+    it->second.pc = c.pc;
+}
+
 static inline bool load(Core& c, u32 va, int size, u32& value, Trap& t) {
     u32 phys;
     if (((va & 0xfff) + size) > 0x1000) {   // across two pages: a byte at a time
@@ -230,6 +300,10 @@ static inline bool load(Core& c, u32 va, int size, u32& value, Trap& t) {
     if (!page_of(c, va, READ, phys, t)) return false;
     if (phys - RAM_BASE < RAM_SIZE) {
         const uint8_t* p = &ram[phys - RAM_BASE];
+        if (races_on && race_watched(phys)) {
+            value = race_load(c, phys, size);
+            return true;
+        }
         if (size == 4) memcpy(&value, p, 4);
         else if (size == 2) { uint16_t h; memcpy(&h, p, 2); value = h; }
         else value = *p;
@@ -251,6 +325,10 @@ static inline bool store(Core& c, u32 va, int size, u32 value, Trap& t) {
     if (phys - RAM_BASE < RAM_SIZE) {
         uint8_t* p = &ram[phys - RAM_BASE];
         dirty(phys);
+        if (races_on && race_watched(phys)) {
+            race_store(c, phys, value, size);
+            return true;
+        }
         if (size == 4) memcpy(p, &value, 4);
         else if (size == 2) { uint16_t h = (uint16_t)value; memcpy(p, &h, 2); }
         else *p = (uint8_t)value;
@@ -442,6 +520,72 @@ static u32 fclass(u32 b) {
 
 bool mc_fault(Core& c, const Trap& t);
 static u32 last_pc[32], last_ins[32];   // core 0's last instructions, for the summary of a run that stopped oddly
+
+// ---- RVC_CALLS=FILE: what core 0's calls cost, its own instructions in each (tools/mc_candidates.py) ----
+//
+// A stack of calls for each program (by its page table) and one for the kernel; a call is
+// what jal or jalr does into ra, ended by the return to its address. Inclusive of what it
+// calls, not of the kernel's work for it; a function that recurses counts its outermost call.
+static bool calls_on = false;
+struct CallFrame { u32 target, ret; u64 at; };
+struct CallCtx { std::vector<CallFrame> stack; u64 clock = 0; std::unordered_map<u32, u32> active; };
+struct CallStat { u64 calls = 0, inclusive = 0, most = 0; };
+static std::unordered_map<u64, CallCtx> call_ctx;
+static std::unordered_map<u64, CallStat> call_stats;   // (the program's table << 32) | the function
+static CallCtx* call_cur = nullptr;
+static u64 call_cur_key = ~0ull;
+
+static void call_step(Core& c, u32 op, u32 rd, u32 rs1, u32 ins, u32 pc, u32 next) {
+    u64 key = c.priv == PRIV_S ? 0 : (u64)((c.satp & 0x3fffff) | 0x400000);
+    if (key != call_cur_key) call_cur = &call_ctx[key], call_cur_key = key;
+    CallCtx& x = *call_cur;
+    x.clock++;
+    if (op != 0x6f && op != 0x67) return;
+    if (rd == 1 || rd == 5) {
+        if (x.stack.size() < 4096) {
+            x.stack.push_back(CallFrame{next, pc + 4, x.clock});
+            x.active[next]++;
+        }
+    } else if (op == 0x67 && rd == 0 && (rs1 == 1 || rs1 == 5) && (ins >> 20) == 0) {
+        size_t depth = x.stack.size(), k = depth;
+        while (k > 0 && depth - k < 64 && x.stack[k - 1].ret != next) k--;
+        if (k == 0 || x.stack[k - 1].ret != next) return;   // (not a return of a call it saw)
+        while (x.stack.size() >= k) {   // (frames above it left by a longjmp end here too)
+            CallFrame f = x.stack.back();
+            x.stack.pop_back();
+            CallStat& s = call_stats[(key << 32) | f.target];
+            u64 spent = x.clock - f.at;
+            if (--x.active[f.target] == 0) {   // (a recursion is one call, its outermost)
+                s.calls++;
+                s.inclusive += spent;
+                if (spent > s.most) s.most = spent;
+            }
+        }
+    }
+}
+
+// ---- the counters' merge (mc.h, "Counters"): what every core added this pass, into the totals ----
+//
+// As the shader machine does it after the commit (there a frame or two later), when a core said
+// it added: each total is the sum of its word in every core's region.
+static const u32 ATOM_MAGIC = 0x4d475245u;
+static bool atom_merging = true;   // RVC_COUNT_MERGE=0: as a machine without the merge (the world's)
+static void atom_merge() {
+    if (!atom_merging) return;
+    u32* head = &word(ATOM_HEAD);
+    if (head[1] != ATOM_MAGIC) { head[1] = ATOM_MAGIC; dirty(CTRL); }
+    if (!head[0]) return;
+    u32* total = &word(ATOM_BASE);
+    memset(total, 0, 4096);
+    for (u32 k = 0; k < 256; k++) {
+        const u32* region = &word(ATOM_BASE + 0x1000 + 0x1000 * k);
+        for (u32 i = 0; i < 1024; i++) total[i] += region[i];
+    }
+    head[0] = 0;
+    head[2]++;
+    dirty(ATOM_BASE);
+    dirty(CTRL);
+}
 
 // ---- one pass of a core: up to `budget` instructions ----
 
@@ -693,6 +837,7 @@ static u64 run(Core& c, u64 budget) {
                 break;
             }
             if (write && rd) c.x[rd] = result;
+            if (calls_on && c.hart == 0) call_step(c, op, rd, rs1, ins, pc, next);
             c.pc = next;
             if (c.recheck) {
                 // (the kernel's idle loop lets interrupts in for three instructions at a time)
@@ -740,20 +885,34 @@ bool mc_fault(Core& c, const Trap& t) {
     return true;
 }
 
+// Under RVC_RACES a worker is woken by its mailbox as the pass found it, as on the GPU: a
+// start, a job or an answer core 0 wrote in this pass is seen in the next.
+static u32 mbox_was[256][7];
+static void mbox_keep() {
+    for (size_t i = 1; i < cores.size(); i++) {
+        int k = (int)i;
+        for (int j = 0; j < 4; j++) mbox_was[i][j] = word(mc_start_at(k) + 4 * j);
+        mbox_was[i][4] = word(mc_job_at(k));
+        mbox_was[i][5] = word(mc_resume_at(k));
+        mbox_was[i][6] = word(mc_resume_at(k) + 4);
+    }
+}
+static inline u32 mbox(int hart, int j, u32 now) { return races_on ? mbox_was[hart][j] : now; }
+
 static u64 run_worker(Core& c, u64 budget) {
     Worker& w = workers[c.hart];
     if (!geometry[c.hart]) return 0;
-    u32 start = word(mc_start_at(c.hart));
+    u32 start = mbox(c.hart, 0, word(mc_start_at(c.hart)));
     if (start == MC_STOP) { w.state = MC_PARKED; c.started = false; return 0; }
     if (w.state == MC_PARKED) {
         if (start != MC_START) return 0;
         // a start: its texel is pc, stack, page table; a0 is the core's number
-        u32 pc = word(mc_start_at(c.hart) + 4);
+        u32 pc = mbox(c.hart, 1, word(mc_start_at(c.hart) + 4));
         if (pc == w.start_seen && c.started) return 0;
         memset(c.x, 0, sizeof c.x);
         c.pc = pc;
-        c.x[2] = word(mc_start_at(c.hart) + 8);
-        c.satp = 0x80000000u | word(mc_start_at(c.hart) + 12);
+        c.x[2] = mbox(c.hart, 2, word(mc_start_at(c.hart) + 8));
+        c.satp = 0x80000000u | mbox(c.hart, 3, word(mc_start_at(c.hart) + 12));
         c.x[10] = (u32)c.hart;
         c.priv = PRIV_U;
         c.mstatus = 0x6000;   // floats on
@@ -763,16 +922,16 @@ static u64 run_worker(Core& c, u64 budget) {
         w.state = MC_RUNNING;
     }
     if (w.state == MC_ASLEEP) {
-        if (word(mc_job_at(c.hart)) == w.job_seen) return 0;
+        if (mbox(c.hart, 4, word(mc_job_at(c.hart))) == w.job_seen) return 0;
         // (between two jobs its program may have unmapped memory and mapped other there: the
         // shader machine's worker begins every pass with empty first-level TLBs)
         c.flush();
         w.state = MC_RUNNING;
     }
     if (w.state == MC_FAULTED || w.state == MC_CALLING) {
-        if ((word(mc_resume_at(c.hart)) & 0xffffff) == (w.seen & 0xffffff)) return 0;
+        if ((mbox(c.hart, 5, word(mc_resume_at(c.hart))) & 0xffffff) == (w.seen & 0xffffff)) return 0;
         if (w.state == MC_CALLING) {
-            c.x[10] = word(mc_resume_at(c.hart) + 4);
+            c.x[10] = mbox(c.hart, 6, word(mc_resume_at(c.hart) + 4));
             c.pc += 4;
         }
         c.flush();   // core 0 has put a page there
@@ -961,17 +1120,60 @@ static u64 machine_pass(u32 ticks) {
     mtime_now = (u64)(guest_seconds * 5000.0);
     for (size_t i = 1; i < cores.size(); i++)
         if (geometry[i]) workers[i].job_was = word(mc_job_at((int)i));
+    if (races_on) mbox_keep();
     u64 most = run(cores[0], ticks);
     for (size_t i = 1; i < cores.size(); i++) {
         u64 n = run_worker(cores[i], ticks);
         worker_instr += n;
         if (n > most) most = n;
     }
+    atom_merge();
+    if (races_on) texel_marks.clear(), race_pass++;
     frame_no++;
     return most;
 }
 
 #ifndef RVC_CPU_LIBRARY
+// What RVC_RACES and RVC_CALLS found, into their files and a few lines here.
+static void races_report(const char* file) {
+    std::vector<std::pair<u64, RaceStat>> all(race_stats[0].begin(), race_stats[0].end());
+    all.insert(all.end(), race_stats[1].begin(), race_stats[1].end());
+    std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+    FILE* f = fopen(file, "w");
+    u64 kinds[2] = {0, 0};
+    for (auto& e : all) {
+        const RaceStat& r = e.second;
+        int kind = r.kind;
+        u32 pc = r.pc;
+        kinds[kind] += r.count;
+        if (f) fprintf(f, "%s %llu core %d pc %08x satp %08x other %d pc %08x satp %08x phys %08x\n", kind ? "undone" : "as-it-was",
+                       (unsigned long long)r.count, r.core, pc, r.satp, r.other, r.other_pc, r.other_satp, r.phys);
+    }
+    if (f) fclose(f);
+    fprintf(stderr, "[races] %llu reads given bytes as the pass began, another core having changed them (as on the GPU), %llu changes "
+            "undone by a higher core's to the same 16 bytes (as at the GPU's commit); %zu places, in %s\n",
+            (unsigned long long)kinds[0], (unsigned long long)kinds[1], all.size(), file);
+    for (size_t i = 0; i < all.size() && i < 8; i++) {
+        const RaceStat& r = all[i].second;
+        int kind = r.kind;
+        fprintf(stderr, "[races]   %s x %llu: core %d at pc %08x, core %d at pc %08x, e.g. %08x\n", kind ? "undone" : "as it was",
+                (unsigned long long)r.count, r.core, r.pc, r.other, r.other_pc, r.phys);
+    }
+}
+
+static void calls_report(const char* file) {
+    FILE* f = fopen(file, "w");
+    if (!f) return;
+    fprintf(f, "# context instructions\n");
+    for (auto& e : call_ctx) fprintf(f, "ctx %08x %llu\n", (u32)e.first, (unsigned long long)e.second.clock);
+    fprintf(f, "# context function calls inclusive most\n");
+    for (auto& e : call_stats)
+        fprintf(f, "fn %08x %08x %llu %llu %llu\n", (u32)(e.first >> 32), (u32)e.first, (unsigned long long)e.second.calls,
+                (unsigned long long)e.second.inclusive, (unsigned long long)e.second.most);
+    fclose(f);
+    fprintf(stderr, "[calls] %zu functions in %zu contexts, in %s (python tools/mc_candidates.py %s ELF)\n", call_stats.size(), call_ctx.size(), file, file);
+}
+
 static std::string unescape(const std::string& s) {
     std::string out;
     for (size_t i = 0; i < s.size(); i++) {
@@ -1060,6 +1262,11 @@ int main(int argc, char** argv) {
         if (uart_log) fprintf(uart_log, "\n=== rvc_cpu ===\n");
     }
     Core& c0 = cores[0];
+    const char* races_file = getenv("RVC_RACES");
+    const char* calls_file = getenv("RVC_CALLS");
+    races_on = races_file && *races_file;
+    atom_merging = !getenv("RVC_COUNT_MERGE") || atoi(getenv("RVC_COUNT_MERGE")) != 0;
+    calls_on = calls_file && *calls_file;
     if (opt.netPort) {
         std::string why = "--net-id is 1 to 16";
         if (opt.netId < 1 || opt.netId > (int)NetLink::kBroadcastTo || !net.open(opt.netPort, (unsigned)opt.netId, opt.netLoss, opt.netDelay, why)) {
@@ -1119,6 +1326,8 @@ int main(int argc, char** argv) {
     if (getenv("RVC_CPU_LAST"))
         for (u64 k = 1; k <= 32; k++)
             fprintf(stderr, "  %08x: %08x\n", last_pc[(c0.clock + k) & 31], last_ins[(c0.clock + k) & 31]);
+    if (races_on) races_report(races_file);
+    if (calls_on) calls_report(calls_file);
     if (uart_log) fclose(uart_log);
     if (!opt.pcLog.empty()) {
         FILE* f = fopen(opt.pcLog.c_str(), "wb");

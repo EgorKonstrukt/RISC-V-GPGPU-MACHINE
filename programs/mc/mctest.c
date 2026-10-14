@@ -10,10 +10,15 @@
 //   floats   float arithmetic over many passes gives what it gives on core 0
 //   pages    a worker reads and writes memory the program has never touched: every page of it
 //            stops the worker, and the library brings the page and lets it go on
+//   loop     mcw_for (mcwx.h): rounds of a loop over a buffer, the team kept between them
+//   async    mcw_call and mcw_join: more calls than workers, joined out of order
+//   effects  a job prints, defers a call, takes scratch memory and fails; core 0 sees each
+//   counters every core adds to two counters in the same passes; the totals are exact
 //
 // Prints one line a test and "mctest: PASS" or "mctest: FAIL".
 //   mctest [WORKERS [LIMIT [bench [LINE]]]]
 //   mctest WORKERS SECONDS share [lend]     (the kernel's sharing: how many of them have cores, second by second)
+//   mctest WORKERS 0 race                   (two workers store to one 16 bytes: for RVC_RACES, docs/multicore.md)
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,6 +28,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include "mcw.h"
+#include "mcwx.h"
 
 extern unsigned mcw_faults;
 static int workers, failed;
@@ -127,6 +133,73 @@ static uint32_t calls(uint32_t words, uint32_t seed) {
     return total;
 }
 
+// ---- the second layer's jobs (mcwx.h) ----
+
+struct loop { uint32_t* words; uint32_t seed; };
+
+static void loop_piece(void* ctx, uint32_t from, uint32_t to) {
+    const struct loop* l = (const struct loop*)ctx;
+    for (uint32_t i = from; i < to; i++) l->words[i] = pattern(l->seed, i);
+}
+
+// A piece that asks for a loop of its own: run as one call wherever it is.
+static void inner_piece(void* ctx, uint32_t from, uint32_t to) {
+    uint32_t* row = (uint32_t*)ctx;
+    for (uint32_t i = from; i < to; i++) row[i] = i + 1;
+}
+static void nested_piece(void* ctx, uint32_t from, uint32_t to) {
+    uint32_t* rows = (uint32_t*)ctx;
+    for (uint32_t r = from; r < to; r++) mcw_for(16, inner_piece, rows + 16 * r);
+}
+
+static void count_piece(void* ctx, uint32_t from, uint32_t to) {
+    (void)ctx;
+    for (uint32_t i = from; i < to; i++) {
+        mcw_add(0, 1);
+        mcw_add(1, i);
+    }
+}
+
+static uint32_t deferred_sum;
+static uint32_t defer_add(uint32_t a, uint32_t b) { deferred_sum += a * b; return 0; }
+
+static uint32_t effects(uint32_t which, uint32_t fail) {
+    uint32_t* m = mcw_scratch(4096);
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < 1024; i++) m[i] = pattern(which, i);
+    for (uint32_t i = 0; i < 1024; i++) total += m[i];
+    mcw_print("mctest: effects: job %u on worker %d, %08x\n", which, mcw_self(), total);
+    mcw_defer(defer_add, which, 3);
+    if (fail) mcw_fail("mctest: asked to fail", which);
+    mcw_scratch_reset();
+    return total;
+}
+
+static int failures, failed_value;
+static void failed_here(int worker, const char* what, uint32_t value) {
+    (void)worker;
+    (void)what;
+    failures++;
+    failed_value = (int)value;
+}
+
+static uint32_t async_job(uint32_t seed, uint32_t count) {
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < count; i++) total += pattern(seed, i);
+    return total;
+}
+
+// Two workers store to the two halves of one 16 bytes in the same passes: on the GPU one of
+// them is undone at the commit. For RVC_RACES to find.
+static uint32_t race_words[4] __attribute__((aligned(16)));
+static uint32_t race_job(uint32_t half, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        race_words[half * 2] = i;
+        mc_end_pass();
+    }
+    return race_words[half * 2];
+}
+
 // ---- core 0 ----
 
 static uint32_t guest_ms(void) {
@@ -182,6 +255,17 @@ int main(int argc, char** argv) {
         printf("mctest: share: done, %u jobs, %u wrong\n", jobs, wrong);
         mcw_close();
         return wrong != 0;
+    }
+
+    if (argc > 3 && !strcmp(argv[3], "race")) {
+        if (workers < 2) return 1;
+        mcw_post(1, race_job, 0, 50);
+        mcw_post(2, race_job, 1, 50);
+        mcw_wait(1);
+        mcw_wait(2);
+        printf("mctest: race: %u %u %u %u\n", race_words[0], race_words[1], race_words[2], race_words[3]);
+        mcw_close();
+        return 0;
     }
 
     // "mctest N LIMIT bench": what a pass costs with more cores busy. Each line is the same
@@ -323,6 +407,93 @@ int main(int argc, char** argv) {
             }
         }
         check("floats", ok);
+    }
+
+    // ---- loop: rounds of mcw_for, one after another ----
+    {
+        const uint32_t words = 64 * 1024, rounds = 8;
+        static struct loop l;
+        int ok = 1;
+        uint32_t t0 = guest_ms(), bad = 0;
+        l.words = mcw_alloc(words * 4);
+        mcw_for_opts o = {0, 4, l.words, words * 4, 0, 0};
+        for (uint32_t r = 0; r < rounds; r++) {
+            l.seed = 100 + r;
+            mcw_for_opt(words, loop_piece, &l, &o);
+            for (uint32_t i = 0; i < words; i++) bad += l.words[i] != pattern(100 + r, i);
+        }
+        if (bad) { printf("mctest: loop: %u wrong words\n", bad); ok = 0; }
+        printf("mctest: loop: %u rounds of %u words, %u ms\n", rounds, words, guest_ms() - t0);
+        // rounds back to back: the team waits on the round word between them
+        uint32_t t1 = guest_ms();
+        for (uint32_t r = 0; r < 64; r++) {
+            l.seed = 500 + r;
+            mcw_for_opt(4096, loop_piece, &l, &o);
+        }
+        for (uint32_t i = 0; i < 4096; i++) bad += l.words[i] != pattern(563, i);
+        printf("mctest: loop: 64 rounds of 4096 words back to back, %u ms\n", guest_ms() - t1);
+        // a loop asked inside a piece
+        static uint32_t rows[64 * 16] __attribute__((aligned(16)));
+        mcw_for(64, nested_piece, rows);
+        for (uint32_t i = 0; i < 64 * 16; i++) bad += rows[i] != i % 16 + 1;
+        if (bad) { printf("mctest: loop: %u wrong words after the rounds\n", bad); ok = 0; }
+        check("loop", ok);
+    }
+
+    // ---- async: more calls than workers, joined last to first ----
+    {
+        enum { CALLS = 24 };
+        mcw_handle h[CALLS];
+        int ok = 1;
+        fflush(stdout);
+        for (int i = 0; i < CALLS; i++) h[i] = mcw_call(async_job, (uint32_t)i, 20000);
+        for (int i = CALLS - 1; i >= 0; i--) {
+            uint32_t got = mcw_join(h[i]), expect = async_job((uint32_t)i, 20000);
+            if (got != expect) { printf("mctest: async: call %d has %08x, expected %08x\n", i, got, expect); ok = 0; }
+        }
+        check("async", ok);
+    }
+
+    // ---- effects: printing, a deferred call, scratch memory and a failure, from a job ----
+    {
+        int ok = 1;
+        uint32_t expect_sum = 0;
+        mcw_handle h[4];
+        fflush(stdout);
+        mcw_on_failure(failed_here);
+        deferred_sum = 0;
+        failures = 0;
+        mcw_for_end();   // (the team leaves: the calls have its workers)
+        for (uint32_t i = 0; i < 4; i++) h[i] = mcw_call(effects, i + 1, i == 2);
+        for (uint32_t i = 0; i < 4; i++) {
+            uint32_t got = mcw_join(h[i]), expect = 0;
+            for (uint32_t j = 0; j < 1024; j++) expect += pattern(i + 1, j);
+            if (i != 2 && got != expect) { printf("mctest: effects: job %u has %08x, expected %08x\n", i + 1, got, expect); ok = 0; }
+            expect_sum += (i + 1) * 3;
+        }
+        if (deferred_sum != expect_sum || failures != 1 || failed_value != 3) {
+            printf("mctest: effects: deferred %u (expected %u), %d failures (value %d)\n", deferred_sum, expect_sum, failures, failed_value);
+            ok = 0;
+        }
+        mcw_on_failure(0);
+        check("effects", ok);
+    }
+
+    // ---- counters: every core adds to two of them in the same passes ----
+    {
+        const uint32_t n = 20000;
+        int ok = 1;
+        mcw_counters();
+        mcw_set(0, 0);
+        mcw_set(1, 7);
+        mcw_for_opts o = {16, 0, 0, 0, 0, 0};
+        mcw_for_opt(n, count_piece, 0, &o);
+        mcw_counters_settle();
+        uint32_t got = mcw_get(0), sum = mcw_get(1), expect = 7;
+        for (uint32_t i = 0; i < n; i++) expect += i;
+        if (got != n || sum != expect) { printf("mctest: counters: %u and %u, expected %u and %u\n", got, sum, n, expect); ok = 0; }
+        printf("mctest: counters: %s\n", mcw_counters_merged() ? "merged by the machine" : "added up here");
+        check("counters", ok);
     }
 
     mcw_close();   // parked: the next program starts them again

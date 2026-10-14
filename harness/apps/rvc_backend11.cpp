@@ -191,6 +191,13 @@ public:
             gpuDraw(mat);
             bool mixed = soundMix && !soundPasses_.empty();
             if (mixed) soundDraw(mat, tag);   // before the control zone moves the voices on
+            bool merge = countsAdded && !cpuMode;
+            if (merge) {
+                const float* m = kCountZone;
+                crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{m[0], m[1], m[2], m[3], 1});
+                countsAdded = false;
+            }
+            mat.setInt("_CountMerged", merge ? 2 : 1);
             const float* z = kGpuControlZone;
             crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{z[0], z[1], z[2], z[3], 1});
             if (cores_ > 16 && activeCores_ > 1) {

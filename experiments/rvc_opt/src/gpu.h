@@ -840,10 +840,24 @@ bool net_arrives(uint slot, uint k, out uint4 texel) {
 
 // GPUControl: the machine's control words. Once a submitted list has been drawn, take the
 // submit word back and count it; and deliver the host's keyboard and pointer (docs/input.md).
+// The counters (programs/mc/mc.h, MC_COUNT_*): drawn when the host has read "added" in the head,
+// each total is the sum of that word in all 256 regions (which only grow).
+#define COUNT_TOTAL 0x6c1000u
+#define COUNT_REGIONS (COUNT_TOTAL + 0x100u)
+#define COUNT_HEAD 0x700032u   // { added, COUNT_MERGED, merges, 0 }: the control pass's
+#define COUNT_MERGED 0x4d475245u
+uint4 count_total(uint index) {
+    uint4 sum = uint4(0, 0, 0, 0);
+    [loop] for (uint k = 0; k < 256; k++) sum += ram(COUNT_REGIONS + 0x100u * k + (index - COUNT_TOTAL));
+    return sum;
+}
+
 uint4 gpu_control(uint2 pos) {
     uint4 keep = GPU_STATE[pos];
     if (pos.y < 64) return keep;
     uint index = (pos.y - 64) * 2048 + pos.x;
+    [branch]
+    if (index >= COUNT_TOTAL && index < COUNT_REGIONS) return count_total(index);
     // A submitted list has been drawn by now: the GPU is free for the next one. A copy it asked
     // for is noted in GPU_COPY, for the next commit to make.
     // (A list that needs passes the host is not drawing yet waits, submitted, until it is.)
@@ -885,6 +899,10 @@ uint4 gpu_control(uint2 pos) {
 #endif
 #ifdef GPU_INPUT
     if (index == GPU_CLOCK) return uint4(keep.r, _HostMs, keep.b, _HostFlags);
+#ifdef GPU_COUNT_MERGE
+    if (index == COUNT_HEAD && _CountMerged != 0)
+        return _CountMerged == 2 ? uint4(0, COUNT_MERGED, keep.b + 1, 0) : uint4(keep.r, COUNT_MERGED, keep.b, 0);
+#endif
 #ifdef HOST_STATE_WORDS
     if (index == HOST_STATE) return uint4(HOST_STATE_WORDS(0), HOST_STATE_WORDS(1), HOST_STATE_WORDS(2), HOST_STATE_WORDS(3));
     if (index == HOST_STATE + 1) return uint4(HOST_STATE_WORDS(4), HOST_STATE_WORDS(5), HOST_STATE_WORDS(6), HOST_STATE_WORDS(7));

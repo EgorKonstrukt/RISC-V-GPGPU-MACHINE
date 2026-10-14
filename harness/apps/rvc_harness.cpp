@@ -43,6 +43,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -975,6 +976,7 @@ int main(int argc, char** argv) {
         soundEnabled = soundOn;
         // the geometry's texel: its first word's low bit while the workers are laid out anew, its second how many there are
         if (raw.size() >= (64 + 0x3e) * 16) backend.workersNow = (texel(64 + 0x3d, 0) & 1) != 0 || texel(64 + 0x3d, 1) != 0;
+        if (raw.size() >= (64 + 0x33) * 16 && texel(64 + 0x32, 0) != 0) backend.countsAdded = true;
         // passes a submitted list asks for: drawn from now on, and for a while after the last use
         if (raw.size() >= (64 + 2) * 16)
             for (int p = 1; p < 8; ++p)

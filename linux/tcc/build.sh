@@ -59,9 +59,10 @@ rm -f "$STAGE/usr/lib/libgles.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libgles.a" "$WORK/build/gles.o"
 # the worker cores' library (docs/multicore.md), for a program that shares its work out
 rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o "$WORK/build/mcw.o"
+rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcwx.c" -o "$WORK/build/mcwx.o"
 rm -f "$STAGE/usr/lib/libmcw.a"
-riscv32-linux-ar rcs "$STAGE/usr/lib/libmcw.a" "$WORK/build/mcw.o"
-cp "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mc.h" "$STAGE/usr/include/"
+riscv32-linux-ar rcs "$STAGE/usr/lib/libmcw.a" "$WORK/build/mcw.o" "$WORK/build/mcwx.o"
+cp "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mc.h" "$STAGE/usr/include/"
 riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || true
 # what the examples take of each archive goes first in it, for the ROM (pack.py, docs/cc.md);
 # the compiler is told where that is (mapped.c), so it is built after
