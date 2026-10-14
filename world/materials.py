@@ -36,6 +36,7 @@ material("Glass", 1.0, (0.55, 0.65, 0.75))
 material("Books", 1.0, (1, 1, 1), "Books")
 material("Keyboard", 1.0, (1, 1, 1), "Keyboard")
 material("Details", 1.0, (1, 1, 1), "Details")
+material("GameBoxes", 1.0, (1, 1, 1), "GameBoxes")   # world/gameboxes.py
 material("Rug", 1.0, (1, 1, 1), "Rug")
 material("RoundRug", 1.0, (1, 1, 1), "RoundRug")
 material("PropScreen", 1.0, (1, 1, 1), "PropScreen", emit=1.0)

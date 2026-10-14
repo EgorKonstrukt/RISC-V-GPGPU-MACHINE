@@ -1,7 +1,10 @@
 # What stands in the room. The sofa, tables, stools, plants, laptop, television, boxes and
 # some of the books are Poly Haven's models (assets.py); the rest is modelled here.
+import json
 import math
 import os
+
+import bmesh
 
 from bookdesigns import CELLS, CELL_H, CELL_W, DESIGNS, size as book_size
 from room import HALF_D, HALF_W, frame, on_wall
@@ -128,14 +131,41 @@ def table(b, x, z):
         b.lathe((x + gx, TABLE_TOP + 0.0005, z + 0.36), [(0, 0), (0.028, 0), (0.032, 0.002), (0.032, 0.004), (0.02, 0.005)], "PlasticDark", segs=16)
 
 
-def leaning_box(b, x, y, wall, turn, lean, decal):
+GAME_BOXES = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gameboxes.json")))
+GAME_AXES = {"front": ((0, 0, -1), (1, 0, 0), (0, 1, 0)), "back": ((0, 0, 1), (-1, 0, 0), (0, 1, 0)),   # as world/gameboxes.py's
+             "left": ((-1, 0, 0), (0, 0, -1), (0, 1, 0)), "right": ((1, 0, 0), (0, 0, 1), (0, 1, 0)),
+             "top": ((0, 1, 0), (1, 0, 0), (0, 0, 1)), "bottom": ((0, -1, 0), (1, 0, 0), (0, 0, -1))}
+
+
+def game_box(b, game, at, rot=(0, 0, 0)):
+    """A game's box from world/gameboxes.json, its middle at `at`, its front towards -z, its edges worn round a millimetre."""
+    box = GAME_BOXES[game]
+    half = Vector(box["size"]) / 2
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=Vector(box["size"]), verts=bm.verts)
+    b._bevel(bm, 0.001, 1)
+    uv = bm.loops.layers.uv.verify()
+    bm.normal_update()
+    for f in bm.faces:   # a bevel's face takes the line along the edge of the face it is most of
+        face, (n, right, up) = max(GAME_AXES.items(), key=lambda kv: f.normal.dot(Vector(kv[1][0])))
+        u0, v0, u1, v1 = box["faces"][face]
+        r, t = Vector(right), Vector(up)
+        hr, ht = abs(half.dot(r)), abs(half.dot(t))
+        for loop in f.loops:
+            s, q = (loop.vert.co.dot(r) / hr + 1) / 2, (loop.vert.co.dot(t) / ht + 1) / 2
+            loop[uv].uv = (u0 + s * (u1 - u0), v0 + q * (v1 - v0))
+    b.random.random(), b.random.random()   # what a plain box drew for its texture: the books after it stay where they were
+    b._emit(bm, "GameBoxes", at, rot)
+
+
+def leaning_box(b, x, y, wall, turn, lean, game):
     """A game in its box standing on y at x, turned, and leaning back till its top meets the face at z = wall."""
-    w, h, t = 0.19, 0.245, 0.045
+    w, h, t = GAME_BOXES[game]["size"]
     a, yaw = math.radians(lean), math.radians(abs(turn))
     back = h / 2 * math.sin(a) + t / 2 * math.cos(a)
     with b.at((x, y + h / 2 * math.cos(a) + t / 2 * math.sin(a), wall - 0.0005 - back * math.cos(yaw) - w / 2 * math.sin(yaw)), (lean, turn, 0)):
-        b.box((0, 0, 0), (w, h, t), "Cardboard")
-        b.quad((0, 0, -t / 2 - 0.001), (0.186, 0.24), "Details", decal=decal)
+        game_box(b, game, (0, 0, 0))
 
 
 HUB_HOSTS = {0: 1, 2: 9}   # a row: the place whose tower its hub stands on (the middle row's is on the floor)
@@ -400,8 +430,8 @@ def shelf(b):
                 y = 0.05 + s * 0.40 + 0.015
                 if s == 3:   # games, face out, and a radio of its decade
                     b.obj("Books")
-                    for i in range(3):   # (against the shelf's back, whose face is at -0.014)
-                        leaning_box(b, -0.78 + i * 0.24, y, -0.014, 0, 8, "game_%d" % ((i + 1) % 5))
+                    for i, game in enumerate(("red_alert", "command_conquer", "steel_sky")):   # (against the shelf's back, whose face is at -0.014)
+                        leaning_box(b, -0.78 + i * 0.24, y, -0.014, 0, 8, game)
                     b.asset("boombox", (0.5, y, -0.17), rot=(0, 180, 0), size=(0.56, None, None))
                     continue
                 # an encyclopedia at one end, single books for the rest, a few leaning or lying

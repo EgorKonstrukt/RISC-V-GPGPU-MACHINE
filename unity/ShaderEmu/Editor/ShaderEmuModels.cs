@@ -61,6 +61,7 @@ public static partial class ShaderEmuBuilder
         S("CableBlue", null, 0.08f, 0.20f, 0.50f, 0.55f),
         S("CableYellow", null, 0.78f, 0.60f, 0.08f, 0.55f),
         S("Books", "Books", 1f, 1f, 1f, 1f, false),
+        S("GameBoxes", "GameBoxes", 1f, 1f, 1f, 1f, false),   // world/gameboxes.py
         S("Keyboard", "Keyboard", 1f, 1f, 1f, 1f, false),
         S("Rug", "Rug", 1f, 1f, 1f, 1f, true, true),
         S("RoundRug", "RoundRug", 1f, 1f, 1f, 1f, false, true),

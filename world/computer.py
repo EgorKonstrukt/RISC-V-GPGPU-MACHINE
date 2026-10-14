@@ -337,8 +337,8 @@ def clutter(b):
         b.box((-3.29, top + 0.004 + i * 0.008, 4.80), (0.21, 0.007, 0.28), "Paper", rot=(0, turn, 0))
     b.quad((-3.29, top + 0.0245, 4.80), (0.21, 0.276), "Details", rot=(90, -3, 0), decal="magazine_0")
     # at its right end, behind the controllers: games in their boxes
-    for i, (x, turn) in enumerate(((0.87, -9), (1.08, 6))):
-        furniture.leaning_box(b, x, top, HALF_D - 0.04, turn, 11 + 3 * i, "game_%d" % i)
+    for i, (x, turn, game) in enumerate(((0.87, -9, "doom"), (1.08, 6, "quake"))):
+        furniture.leaning_box(b, x, top, HALF_D - 0.04, turn, 11 + 3 * i, game)
 
 
 def build(b):
