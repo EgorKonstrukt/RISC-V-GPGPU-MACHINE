@@ -9,16 +9,17 @@ REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
 MW=$WORK/src/microwindows
 DOOM=$MW/src/contrib/doom
-OUT=$REPO/build/images/linux/root
+OUT=${DOOM_OUT:-$REPO/build/images/linux/root}	# DOOM_OUT, DOOM_BUILD: a private image's overlay, a build folder of its own
+BUILD=$WORK/src/${DOOM_BUILD:-doom-build}
 WAD=${DOOM_WAD:-https://archive.org/download/DoomsharewareEpisode/doom.ZIP}   # a zip holding the IWAD
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 
-mkdir -p "$WORK/src/doom-build" "$OUT/usr/bin" "$OUT/usr/share"
+mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share"
 # Optimised as one program: the small functions Doom calls everywhere (FixedMul) end up inline.
 # No position-independent code: every use of a global would go through a table.
 # -O3 with these two is 3% fewer instructions a tic and 11% fewer a frame than -O2 (docs/doom.md).
 export OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops -flto -fno-pie"
-cd "$WORK/src/doom-build"
+cd "$BUILD"
 # objects made with other flags are made again (the loop below only looks at dates)
 [ "$(cat flags 2>/dev/null)" = "$OPT" ] || { rm -f *.o; echo "$OPT" > flags; }
 # Doom assumes char is signed (its tables end with -1); on RISC-V it is not unless asked
@@ -172,10 +173,10 @@ sed 's/^void P_GroupLines (void)$/void P_GroupLines_port (void)/' "$DOOM/p_setup
 grep -q '^void P_GroupLines_port (void)$' p_setup_ours.c || { echo "p_setup.c: P_GroupLines was not found"; exit 1; }
 rv32-cc $OPT -w -c -fsigned-char -I"$DOOM" p_setup_ours.c -o p_setup.o
 rm p_setup_ours.c
-rv32-cc $OPT -Wall -c -fsigned-char -I"$DOOM" "$HERE/doom_fast.c" -o doom_fast.o
+rv32-cc $OPT -Wall -c -fsigned-char -I"$DOOM" -I"$REPO/programs/mc" "$HERE/doom_fast.c" -o doom_fast.o
 rv32-cc $OPT -Wall -Wno-unused -c -fsigned-char -I"$DOOM" -I"$REPO/linux/userland" "$HERE/doom_sound.c" -o doom_sound.o
 # What a worker core writes while the first runs a tic is compiled apart, a variable a section
-# and each on 16 bytes of its own: the view (doom_gl.c), the GPU's library and the workers'
+# and each on 16 bytes of its own: the view (doom_gl.c), the GPU's library and the workers' (mcw, mcwx)
 # (docs/multicore.md: two cores must not store to the same 16 bytes). They come last in the
 # link, with 16 bytes of nothing after them in each kind of section: the libraries' follow.
 APART="${OPT/-flto /} -fno-common -fdata-sections"
@@ -183,15 +184,16 @@ ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --
 rv32-cc $APART -Wall -c $GLINC -I"$MW/src/include" "$REPO/programs/linux/gles.c" -o gles.o
 rv32-cc $APART -Wall -Wno-unused -c -fsigned-char $GLINC -I"$DOOM" -I"$REPO/programs/mc" "$HERE/doom_gl.c" -o doom_gl.o
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o mcw.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcwx.c" -o mcwx.o
 echo 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));' > zz_pad.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
 rm zz_pad.c zz_pads.c
-for o in gles.o doom_gl.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
+for o in gles.o doom_gl.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
 rv32-cc $OPT -Wall -c $GLINC -I"$MW/src/include" -I"$REPO/programs/mc" "$HERE/doom_video.c" -o doom_video.o
 rm -f doom_fps.o
-rv32-cc $OPT -w $(ls *.o | grep -vx -e 'zz_pad_.*' -e doom_gl.o -e gles.o -e mcw.o) doom_gl.o gles.o mcw.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o doom
+rv32-cc $OPT -w $(ls *.o | grep -vx -e 'zz_pad_.*' -e doom_gl.o -e gles.o -e mcw.o -e mcwx.o) doom_gl.o gles.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o doom
 riscv32-linux-strip -o "$OUT/usr/bin/doom.bin" doom
 # the image builder adds files to directories the image has, so the data sits in /usr/share
 # its settings and saved games go to the folder the host keeps (docs/persist.md)

@@ -463,7 +463,7 @@ index afe09412..98f72ea7 100644
  
  
 diff --git a/code/cgame/cg_ents.c b/code/cgame/cg_ents.c
-index ec8b02ff..a8a64010 100644
+index ec8b02ff..3560f7b6 100644
 --- a/code/cgame/cg_ents.c
 +++ b/code/cgame/cg_ents.c
 @@ -224,6 +224,49 @@ static void CG_Speaker( centity_t *cent ) {
@@ -501,7 +501,7 @@ index ec8b02ff..a8a64010 100644
 +	}
 +}
 +
-+static qboolean SE_OutOfView( const vec3_t at, float reach ) {
++qboolean SE_OutOfView( const vec3_t at, float reach ) {
 +	int		i;
 +
 +	for ( i = 0 ; i < 4 ; i++ ) {
@@ -564,7 +564,7 @@ index ec8b02ff..a8a64010 100644
  	// generate and add the entity from the playerstate
  	ps = &cg.predictedPlayerState;
 diff --git a/code/cgame/cg_local.h b/code/cgame/cg_local.h
-index 6546d4d5..26ee48ea 100644
+index 6546d4d5..c4b5bee0 100644
 --- a/code/cgame/cg_local.h
 +++ b/code/cgame/cg_local.h
 @@ -192,6 +192,9 @@ typedef struct centity_s {
@@ -577,6 +577,17 @@ index 6546d4d5..26ee48ea 100644
  } centity_t;
  
  
+@@ -1370,6 +1373,10 @@ void CG_RailTrail( clientInfo_t *ci, vec3_t start, vec3_t end );
+ void CG_GrappleTrail( centity_t *ent, const weaponInfo_t *wi );
+ void CG_AddViewWeapon (playerState_t *ps);
+ void CG_AddPlayerWeapon( refEntity_t *parent, playerState_t *ps, centity_t *cent, int team );
++#ifdef SHADEREMU
++void SE_PlayerWeaponUnseen( centity_t *cent );
++qboolean SE_OutOfView( const vec3_t at, float reach );
++#endif
+ void CG_DrawWeaponSelect( void );
+ 
+ void CG_OutOfAmmoChange( void );	// should this be in pmove?
 diff --git a/code/cgame/cg_main.c b/code/cgame/cg_main.c
 index 1269e1b6..41645fbe 100644
 --- a/code/cgame/cg_main.c
@@ -624,8 +635,37 @@ index 1269e1b6..41645fbe 100644
  	for ( i = 0, cv = cvarTable ; i < cvarTableSize ; i++, cv++ ) {
  		trap_Cvar_Update( cv->vmCvar );
  	}
+diff --git a/code/cgame/cg_players.c b/code/cgame/cg_players.c
+index 4a4abaad..295e6c27 100644
+--- a/code/cgame/cg_players.c
++++ b/code/cgame/cg_players.c
+@@ -2284,6 +2284,24 @@ void CG_Player( centity_t *cent ) {
+ 	}
+ 
+ 
++#ifdef SHADEREMU
++	/* A body not drawn (the player's own in the first person, for mirrors, which this renderer has
++	   none of; one wholly out of view not firing a beam) keeps what it does besides: the animation
++	   the view's weapon reads, the sprites, the sounds. */
++	static int	se_all = -1;
++
++	if ( se_all < 0 ) {
++		se_all = getenv( "QUAKE3_BODIES" ) != NULL;
++	}
++	if ( !se_all && !cent->currentState.powerups && ( ( renderfx & RF_THIRD_PERSON ) || ( SE_OutOfView( cent->lerpOrigin, 192 ) &&
++		!( cent->currentState.weapon == WP_LIGHTNING && ( cent->currentState.eFlags & EF_FIRING ) ) ) ) ) {
++		CG_PlayerAnimation( cent, &legs.oldframe, &legs.frame, &legs.backlerp, &torso.oldframe, &torso.frame, &torso.backlerp );
++		CG_PlayerSprites( cent );
++		CG_PlayerSplash( cent );
++		SE_PlayerWeaponUnseen( cent );
++		return;
++	}
++#endif
+ 	memset( &legs, 0, sizeof(legs) );
+ 	memset( &torso, 0, sizeof(torso) );
+ 	memset( &head, 0, sizeof(head) );
 diff --git a/code/cgame/cg_predict.c b/code/cgame/cg_predict.c
-index 6ec837c8..3d7df2a9 100644
+index 6ec837c8..9f6aa42a 100644
 --- a/code/cgame/cg_predict.c
 +++ b/code/cgame/cg_predict.c
 @@ -116,6 +116,23 @@ static void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const
@@ -741,7 +781,7 @@ index 6ec837c8..3d7df2a9 100644
  		trap_CM_BoxTrace( &trace, cg.predictedPlayerState.origin, cg.predictedPlayerState.origin, 
  			cg_pmove.mins, cg_pmove.maxs, cmodel, -1 );
  
-@@ -409,8 +496,98 @@ We detect prediction errors and allow them to be decayed off over several frames
+@@ -409,8 +496,100 @@ We detect prediction errors and allow them to be decayed off over several frames
  to ease the jerk.
  =================
  */
@@ -836,11 +876,13 @@ index 6ec837c8..3d7df2a9 100644
  	int			cmdNum, current;
 +#ifdef SHADEREMU
 +	int			se_predict, se_index, se_first;
++	int			se_pending = -1;	// the kept state the move stands at, not yet copied to cg.predictedPlayerState
++	const playerState_t	*se_now;
 +#endif
  	playerState_t	oldPlayerState;
  	qboolean	moved;
  	usercmd_t	oldestCmd;
-@@ -499,9 +676,56 @@ void CG_PredictPlayerState( void ) {
+@@ -499,18 +678,75 @@ void CG_PredictPlayerState( void ) {
  	cg_pmove.pmove_fixed = pmove_fixed.integer;// | cg_pmove_fixed.integer;
  	cg_pmove.pmove_msec = pmove_msec.integer;
  
@@ -897,12 +939,57 @@ index 6ec837c8..3d7df2a9 100644
  		// get the command
  		trap_GetUserCmd( cmdNum, &cg_pmove.cmd );
  
-@@ -581,12 +805,33 @@ void CG_PredictPlayerState( void ) {
++#ifdef SHADEREMU
++		if ( cg_pmove.pmove_fixed && se_pending >= 0 ) {
++			cg.predictedPlayerState = se_saved[se_pending];
++			se_pending = -1;
++		}
++		se_now = se_pending >= 0 ? &se_saved[se_pending] : &cg.predictedPlayerState;
++#define	cg_predicted	( *se_now )
++#else
++#define	cg_predicted	cg.predictedPlayerState
++#endif
+ 		if ( cg_pmove.pmove_fixed ) {
+ 			PM_UpdateViewAngles( cg_pmove.ps, &cg_pmove.cmd );
+ 		}
+ 
+ 		// don't do anything if the time is before the snapshot player time
+-		if ( cg_pmove.cmd.serverTime <= cg.predictedPlayerState.commandTime ) {
++		if ( cg_pmove.cmd.serverTime <= cg_predicted.commandTime ) {
+ 			continue;
+ 		}
+ 
+@@ -524,7 +760,7 @@ void CG_PredictPlayerState( void ) {
+ 		// from the snapshot, but on a wan we will have
+ 		// to predict several commands to get to the point
+ 		// we want to compare
+-		if ( cg.predictedPlayerState.commandTime == oldPlayerState.commandTime ) {
++		if ( cg_predicted.commandTime == oldPlayerState.commandTime ) {
+ 			vec3_t	delta;
+ 			float	len;
+ 
+@@ -537,8 +773,8 @@ void CG_PredictPlayerState( void ) {
+ 				cg.thisFrameTeleport = qfalse;
+ 			} else {
+ 				vec3_t adjusted, new_angles;
+-				CG_AdjustPositionForMover( cg.predictedPlayerState.origin, 
+-				cg.predictedPlayerState.groundEntityNum, cg.physicsTime, cg.oldTime, adjusted, cg.predictedPlayerState.viewangles, new_angles);
++				CG_AdjustPositionForMover( cg_predicted.origin,
++				cg_predicted.groundEntityNum, cg.physicsTime, cg.oldTime, adjusted, cg_predicted.viewangles, new_angles);
+ 
+ 				if ( cg_showmiss.integer ) {
+ 					if (!VectorCompare( oldPlayerState.origin, adjusted )) {
+@@ -581,17 +817,48 @@ void CG_PredictPlayerState( void ) {
  			cg_pmove.cmd.serverTime = ((cg_pmove.cmd.serverTime + pmove_msec.integer-1) / pmove_msec.integer) * pmove_msec.integer;
  		}
  
++#undef	cg_predicted
 +#ifdef SHADEREMU
 +		if ( cmdNum >= se_predict || ( se_index + 1 ) % SE_SAVED == se_head ) {
++			if ( se_pending >= 0 ) {
++				cg.predictedPlayerState = se_saved[se_pending];
++				se_pending = -1;
++			}
 +			Pmove (&cg_pmove);
 +			// (what a pad or a teleporter does to the move is part of what is kept)
 +			CG_TouchTriggerPrediction();
@@ -914,8 +1001,8 @@ index 6ec837c8..3d7df2a9 100644
 +				se_tail = se_index;
 +			}
 +		} else {
-+			// made in a frame before: as it was kept
-+			*cg_pmove.ps = se_saved[se_index];
++			// made in a frame before: as it was kept (copied when the moves are done, or one is made)
++			se_pending = se_index;
 +			se_index = ( se_index + 1 ) % SE_SAVED;
 +		}
 +#else
@@ -931,6 +1018,16 @@ index 6ec837c8..3d7df2a9 100644
  
  		// check for predictable events that changed from previous predictions
  		//CG_CheckChangedPredictableEvents(&cg.predictedPlayerState);
+ 	}
+ 
++#ifdef SHADEREMU
++	if ( se_pending >= 0 ) {
++		cg.predictedPlayerState = se_saved[se_pending];
++	}
++#endif
+ 	if ( cg_showmiss.integer > 1 ) {
+ 		CG_Printf( "[%i : %i] ", cg_pmove.cmd.serverTime, cg.time );
+ 	}
 diff --git a/code/cgame/cg_snapshot.c b/code/cgame/cg_snapshot.c
 index 11b9a067..4158e063 100644
 --- a/code/cgame/cg_snapshot.c
@@ -1240,10 +1337,58 @@ index 3dba5eba..207cd792 100644
  	// add buffered sounds
  	CG_PlayBufferedSounds();
 diff --git a/code/cgame/cg_weapons.c b/code/cgame/cg_weapons.c
-index e4cead4b..0f6e3e73 100644
+index e4cead4b..cff31552 100644
 --- a/code/cgame/cg_weapons.c
 +++ b/code/cgame/cg_weapons.c
-@@ -1415,6 +1415,29 @@ void CG_AddViewWeapon( playerState_t *ps ) {
+@@ -1195,6 +1195,47 @@ The main player will have this called for BOTH cases, so effects like light and
+ sound should only be done on the world model case.
+ =============
+ */
++#ifdef SHADEREMU
++/*
++ * What CG_AddPlayerWeapon does for a player's weapon that is not drawn: its sounds, the barrel's
++ * spin, and the numbers its flash draws from rand(), so that what is drawn after is the same.
++ */
++void SE_PlayerWeaponUnseen( centity_t *cent ) {
++	weaponInfo_t	*weapon;
++	weapon_t		weaponNum = cent->currentState.weapon;
++	centity_t		*nonPredictedCent = &cg_entities[cent->currentState.number];
++
++	CG_RegisterWeapon( weaponNum );
++	weapon = &cg_weapons[weaponNum];
++	if ( !weapon->weaponModel ) {
++		return;
++	}
++	if ( ( nonPredictedCent - cg_entities ) != cent->currentState.clientNum ) {
++		nonPredictedCent = cent;
++	}
++	if ( ( ( weaponNum == WP_LIGHTNING || weaponNum == WP_GAUNTLET || weaponNum == WP_GRAPPLING_HOOK ) &&
++		( nonPredictedCent->currentState.eFlags & EF_FIRING ) ) || cg.time - cent->muzzleFlashTime <= MUZZLE_FLASH_TIME ) {
++		if ( weapon->flashModel ) {
++			(void)crandom();
++			if ( ( cg.renderingThirdPerson || cent->currentState.number != cg.predictedPlayerState.clientNum ) &&
++				( weapon->flashDlightColor[0] || weapon->flashDlightColor[1] || weapon->flashDlightColor[2] ) ) {
++				(void)rand();
++			}
++		}
++	}
++	cent->pe.lightningFiring = qfalse;
++	if ( ( cent->currentState.eFlags & EF_FIRING ) && weapon->firingSound ) {
++		trap_S_AddLoopingSound( cent->currentState.number, cent->lerpOrigin, vec3_origin, weapon->firingSound );
++		cent->pe.lightningFiring = qtrue;
++	} else if ( weapon->readySound ) {
++		trap_S_AddLoopingSound( cent->currentState.number, cent->lerpOrigin, vec3_origin, weapon->readySound );
++	}
++	if ( weapon->barrelModel ) {
++		CG_MachinegunSpinAngle( cent );
++	}
++}
++#endif
++
+ void CG_AddPlayerWeapon( refEntity_t *parent, playerState_t *ps, centity_t *cent, int team ) {
+ 	refEntity_t	gun;
+ 	refEntity_t	barrel;
+@@ -1415,6 +1456,29 @@ void CG_AddViewWeapon( playerState_t *ps ) {
  	VectorMA( hand.origin, (cg_gun_z.value+fovOffset), cg.refdef.viewaxis[2], hand.origin );
  
  	AnglesToAxis( angles, hand.axis );
@@ -2031,10 +2176,20 @@ index 5848fdc2..e8a7d1b9 100644
  extern	int			c_traces, c_brush_traces, c_patch_traces;
  extern	cvar_t		*cm_noAreas;
 diff --git a/code/qcommon/cm_test.c b/code/qcommon/cm_test.c
-index 9fd1ec58..bcb948d1 100644
+index 9fd1ec58..327889d7 100644
 --- a/code/qcommon/cm_test.c
 +++ b/code/qcommon/cm_test.c
-@@ -101,10 +101,9 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
+@@ -48,7 +48,9 @@ int CM_PointLeafnum_r( const vec3_t p, int num ) {
+ 			num = node->children[0];
+ 	}
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	c_pointcontents++;		// optimize counter
++#endif
+ 
+ 	return -1 - num;
+ }
+@@ -101,10 +103,9 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
  	for ( k = 0 ; k < leaf->numLeafBrushes ; k++ ) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  		b = &cm.brushes[brushnum];
@@ -2046,7 +2201,7 @@ index 9fd1ec58..bcb948d1 100644
  		for ( i = 0 ; i < 3 ; i++ ) {
  			if ( b->bounds[0][i] >= ll->bounds[1][i] || b->bounds[1][i] <= ll->bounds[0][i] ) {
  				break;
-@@ -172,7 +171,7 @@ CM_BoxLeafnums
+@@ -172,7 +173,7 @@ CM_BoxLeafnums
  int	CM_BoxLeafnums( const vec3_t mins, const vec3_t maxs, int *list, int listsize, int *lastLeaf) {
  	leafList_t	ll;
  
@@ -2055,7 +2210,7 @@ index 9fd1ec58..bcb948d1 100644
  
  	VectorCopy( mins, ll.bounds[0] );
  	VectorCopy( maxs, ll.bounds[1] );
-@@ -197,7 +196,7 @@ CM_BoxBrushes
+@@ -197,7 +198,7 @@ CM_BoxBrushes
  int CM_BoxBrushes( const vec3_t mins, const vec3_t maxs, cbrush_t **list, int listsize ) {
  	leafList_t	ll;
  
@@ -2065,7 +2220,7 @@ index 9fd1ec58..bcb948d1 100644
  	VectorCopy( mins, ll.bounds[0] );
  	VectorCopy( maxs, ll.bounds[1] );
 diff --git a/code/qcommon/cm_trace.c b/code/qcommon/cm_trace.c
-index ec9fd0a0..d7428975 100644
+index ec9fd0a0..1ab2fc28 100644
 --- a/code/qcommon/cm_trace.c
 +++ b/code/qcommon/cm_trace.c
 @@ -249,10 +249,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
@@ -2108,7 +2263,27 @@ index ec9fd0a0..d7428975 100644
  
  	// test the contents of the leafs
  	for (i=0 ; i < ll.count ; i++) {
-@@ -677,10 +675,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -462,7 +460,9 @@ CM_TraceThroughPatch
+ void CM_TraceThroughPatch( traceWork_t *tw, cPatch_t *patch ) {
+ 	float		oldFrac;
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	c_patch_traces++;
++#endif
+ 
+ 	oldFrac = tw->trace.fraction;
+ 
+@@ -500,7 +500,9 @@ void CM_TraceThroughBrush( traceWork_t *tw, cbrush_t *brush ) {
+ 		return;
+ 	}
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	c_brush_traces++;
++#endif
+ 
+ 	getout = qfalse;
+ 	startout = qfalse;
+@@ -677,10 +679,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  
  		b = &cm.brushes[brushnum];
@@ -2120,7 +2295,7 @@ index ec9fd0a0..d7428975 100644
  
  		if ( !(b->contents & tw->contents) ) {
  			continue;
-@@ -708,10 +705,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -708,10 +709,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  			if ( !patch ) {
  				continue;
  			}
@@ -2132,15 +2307,19 @@ index ec9fd0a0..d7428975 100644
  
  			if ( !(patch->contents & tw->contents) ) {
  				continue;
-@@ -1154,7 +1150,7 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
+@@ -1154,9 +1154,11 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
  
  	cmod = CM_ClipHandleToModel( model );
  
 -	cm.checkcount++;		// for multi-check avoidance
 +	CM_NextCheck();		// for multi-check avoidance
  
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
  	c_traces++;				// for statistics, may be zeroed
++#endif
  
+ 	// fill in a default trace
+ 	Com_Memset( &tw, 0, sizeof(tw) );
 diff --git a/code/qcommon/cmd.c b/code/qcommon/cmd.c
 index ed94517f..65b4f696 100644
 --- a/code/qcommon/cmd.c
@@ -2697,10 +2876,30 @@ index 0283fb70..8063d2e9 100644
  	send(huff->loc[ch], NULL, fout, maxoffset);
  	*offset = bloc;
 diff --git a/code/qcommon/msg.c b/code/qcommon/msg.c
-index 00c1f65b..c81dc653 100644
+index 00c1f65b..86b0bb5f 100644
 --- a/code/qcommon/msg.c
 +++ b/code/qcommon/msg.c
-@@ -845,6 +845,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -105,7 +105,9 @@ bit functions
+ void MSG_WriteBits( msg_t *msg, int value, int bits ) {
+ 	int	i;
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	oldsize += bits;
++#endif
+ 
+ 	if ( msg->overflowed ) {
+ 		return;
+@@ -653,7 +655,9 @@ void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *
+ 		from->buttons == to->buttons &&
+ 		from->weapon == to->weapon) {
+ 			MSG_WriteBits( msg, 0, 1 );				// no change
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 			oldsize += 7;
++#endif
+ 			return;
+ 	}
+ 	key ^= to->serverTime;
+@@ -845,6 +849,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  	}
  
  	lc = 0;
@@ -2724,7 +2923,7 @@ index 00c1f65b..c81dc653 100644
  	// build the change vector as bytes so it is endien independent
  	for ( i = 0, field = entityStateFields ; i < numFields ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -853,6 +870,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -853,6 +874,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  			lc = i+1;
  		}
  	}
@@ -2734,7 +2933,47 @@ index 00c1f65b..c81dc653 100644
  
  	if ( lc == 0 ) {
  		// nothing at all changed
-@@ -1667,6 +1687,15 @@ int msg_hData[256] = {
+@@ -872,7 +896,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+ 
+ 	MSG_WriteByte( msg, lc );	// # of changes
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	oldsize += numFields;
++#endif
+ 
+ 	for ( i = 0, field = entityStateFields ; i < lc ; i++, field++ ) {
+ 		fromF = (int *)( (byte *)from + field->offset );
+@@ -892,7 +918,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+ 
+ 			if (fullFloat == 0.0f) {
+ 					MSG_WriteBits( msg, 0, 1 );
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 					oldsize += FLOAT_INT_BITS;
++#endif
+ 			} else {
+ 				MSG_WriteBits( msg, 1, 1 );
+ 				if ( trunc == fullFloat && trunc + FLOAT_INT_BIAS >= 0 && 
+@@ -1147,7 +1175,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+ 
+ 	MSG_WriteByte( msg, lc );	// # of changes
+ 
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 	oldsize += numFields - lc;
++#endif
+ 
+ 	for ( i = 0, field = playerStateFields ; i < lc ; i++, field++ ) {
+ 		fromF = (int *)( (byte *)from + field->offset );
+@@ -1213,7 +1243,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+ 
+ 	if (!statsbits && !persistantbits && !ammobits && !powerupbits) {
+ 		MSG_WriteBits( msg, 0, 1 );	// no change
++#ifndef SHADEREMU	/* (a count every core would add to: the statistics are not kept) */
+ 		oldsize += 4;
++#endif
+ 		return;
+ 	}
+ 	MSG_WriteBits( msg, 1, 1 );	// changed
+@@ -1667,6 +1699,15 @@ int msg_hData[256] = {
  };
  
  void MSG_initHuffman( void ) {
@@ -2820,7 +3059,7 @@ index 294e4c03..0ca82824 100644
  
  /*
 diff --git a/code/qcommon/q_math.c b/code/qcommon/q_math.c
-index 13158661..d67366cc 100644
+index 13158661..6ecb0019 100644
 --- a/code/qcommon/q_math.c
 +++ b/code/qcommon/q_math.c
 @@ -421,6 +421,14 @@ AnglesToAxis
@@ -2838,7 +3077,7 @@ index 13158661..d67366cc 100644
  	// angle vectors returns "right" instead of "y axis"
  	AngleVectors( angles, axis[0], right, axis[2] );
  	VectorSubtract( vec3_origin, right, axis[1] );
-@@ -931,7 +939,7 @@ void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
+@@ -931,9 +939,16 @@ void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
  
  void AngleVectors( const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up) {
  	float		angle;
@@ -2846,7 +3085,24 @@ index 13158661..d67366cc 100644
 +	float		sr, sp, sy, cr, cp, cy;	// (not static: two cores are in here at once)
  	// static to help MS compiler fp bugs
  
++#ifdef SHADEREMU
++	/* (an angle of nothing, most often the roll: its sine is the angle, zero of its sign, and its cosine 1, as sin() and cos() give them) */
++#define SE_SINCOS( a, s, c )	( angle = ( a ) * (M_PI*2 / 360), angle == 0 ? ( s = angle, c = 1.0f ) : ( s = sin(angle), c = cos(angle) ) )
++	SE_SINCOS( angles[YAW], sy, cy );
++	SE_SINCOS( angles[PITCH], sp, cp );
++	SE_SINCOS( angles[ROLL], sr, cr );
++#else
  	angle = angles[YAW] * (M_PI*2 / 360);
+ 	sy = sin(angle);
+ 	cy = cos(angle);
+@@ -943,6 +958,7 @@ void AngleVectors( const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
+ 	angle = angles[ROLL] * (M_PI*2 / 360);
+ 	sr = sin(angle);
+ 	cr = cos(angle);
++#endif
+ 
+ 	if (forward)
+ 	{
 diff --git a/code/qcommon/q_shared.c b/code/qcommon/q_shared.c
 index be72dc70..1cfa9cfa 100644
 --- a/code/qcommon/q_shared.c

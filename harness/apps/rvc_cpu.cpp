@@ -52,6 +52,8 @@ static inline void dirty(u32 phys) { dirty_bands |= 1u << (((phys - RAM_BASE) >>
 struct Options {
     std::string image = "build/images/linux", uartLog, until;
     std::string pcLog, pcFrom;   // --pc-log: core 0's pc and instructions each pass, once the console has said --pc-from
+    std::string countFrom;       // --count-from: every core's instructions from when the console said this
+    int untilTimes = 1;          // --until-times: --until said this many times (after --count-from's mark)
     std::vector<std::pair<std::string, std::string>> script;   // expect, send
     double seconds = 0;      // of guest time; 0: no limit
     double wall = 0;         // of the host's time
@@ -79,7 +81,13 @@ static std::deque<uint8_t> console_in;
 static FILE* uart_log = nullptr;
 static bool until_hit = false;
 static bool pc_sampling = false;
+static bool count_marked = false;
+static int until_seen = 0;
+static std::vector<u64> count_at;   // each core's clock when --count-from was said
+static u64 count_pass = 0;
+static double count_seconds = 0;
 
+static void count_mark();
 static void console_put(u32 c) {
     char ch = (char)c;
     if (console_hook) { console_hook(ch); return; }
@@ -89,6 +97,9 @@ static void console_put(u32 c) {
     if (!pc_sampling && !opt.pcFrom.empty() && ch == opt.pcFrom.back() && console_text.size() >= opt.pcFrom.size() &&
         console_text.compare(console_text.size() - opt.pcFrom.size(), opt.pcFrom.size(), opt.pcFrom) == 0)
         pc_sampling = true;
+    if (!count_marked && !opt.countFrom.empty() && ch == opt.countFrom.back() && console_text.size() >= opt.countFrom.size() &&
+        console_text.compare(console_text.size() - opt.countFrom.size(), opt.countFrom.size(), opt.countFrom) == 0)
+        count_mark();
     if (ch == '\n' || ch == ' ' || ch == '#') {
         if (!opt.quiet) fflush(stdout);
     }
@@ -100,9 +111,14 @@ static void console_put(u32 c) {
             expect_from = at + want.size();
             script_at++;
         }
-    } else if (!opt.until.empty() && !until_hit && console_text.size() >= opt.until.size()) {
-        // (only once the script has been typed: its echo may hold the text)
-        if (console_text.find(opt.until, expect_from) != std::string::npos) until_hit = true;
+    } else if (!opt.until.empty() && !until_hit && console_text.size() >= opt.until.size() &&
+               (opt.untilTimes < 2 || opt.countFrom.empty() || count_marked)) {
+        // (only once the script has been typed: its echo may hold the text; --until-times: after --count-from's mark)
+        size_t at = console_text.find(opt.until, expect_from);
+        if (at != std::string::npos) {
+            expect_from = at + opt.until.size();
+            if (++until_seen >= opt.untilTimes) until_hit = true;
+        }
     }
 }
 
@@ -1133,6 +1149,15 @@ static u64 machine_pass(u32 ticks) {
     return most;
 }
 
+static void count_mark() {
+    count_marked = true;
+    count_at.resize(cores.size());
+    for (size_t i = 0; i < cores.size(); i++) count_at[i] = cores[i].clock;
+    count_pass = frame_no;
+    count_seconds = guest_seconds;
+    if (opt.untilTimes > 1 && script_at >= opt.script.size()) expect_from = console_text.size();
+}
+
 #ifndef RVC_CPU_LIBRARY
 // What RVC_RACES and RVC_CALLS found, into their files and a few lines here.
 static void races_report(const char* file) {
@@ -1204,6 +1229,8 @@ int main(int argc, char** argv) {
         else if (a == "--uart-log") opt.uartLog = next("--uart-log");
         else if (a == "--pc-log") opt.pcLog = next("--pc-log");
         else if (a == "--pc-from") opt.pcFrom = next("--pc-from");
+        else if (a == "--count-from") opt.countFrom = next("--count-from");
+        else if (a == "--until-times") opt.untilTimes = atoi(next("--until-times").c_str());
         else if (a == "--ticks") opt.ticks = (u32)atoi(next("--ticks").c_str());
         else if (a == "--ips") opt.ips = atof(next("--ips").c_str());
         else if (a == "--pass-ms") opt.passMs = atof(next("--pass-ms").c_str());
@@ -1234,6 +1261,8 @@ int main(int argc, char** argv) {
                    "  --wall S               or S of this computer's\n"
                    "  --instructions N       or N instructions of core 0\n"
                    "  --uart-log FILE        the console, added to the file\n"
+                   "  --count-from T         every core's instructions from when the console said T (tools/game_par.py)\n"
+                   "  --until-times N        stop when --until has been said N times after that\n"
                    "  --ticks N              instructions a pass (8192)\n"
                    "  --pc-log FILE          core 0's pc at the end of each pass, for tools/pc_profile.py (a small --ticks\n"
                    "  --pc-from T            for finer samples); from when the console has said T\n"
@@ -1326,6 +1355,20 @@ int main(int argc, char** argv) {
     if (getenv("RVC_CPU_LAST"))
         for (u64 k = 1; k <= 32; k++)
             fprintf(stderr, "  %08x: %08x\n", last_pc[(c0.clock + k) & 31], last_ins[(c0.clock + k) & 31]);
+    if (count_marked) {
+        u64 all = 0, c0n = cores[0].clock - count_at[0];
+        int ran = 0;
+        u64 most = 0;
+        for (size_t i = 0; i < cores.size(); i++) {
+            u64 n = cores[i].clock - count_at[i];
+            all += n;
+            if (n) ran++;
+            if (i && n > most) most = n;
+        }
+        fprintf(stderr, "COUNT from \"%s\": core 0 %llu, all cores %llu, %d cores ran, the busiest worker %llu, %llu passes, %.3f s of guest time\n",
+                opt.countFrom.c_str(), (unsigned long long)c0n, (unsigned long long)all, ran, (unsigned long long)most,
+                (unsigned long long)(frame_no - count_pass), guest_seconds - count_seconds);
+    } else if (!opt.countFrom.empty()) fprintf(stderr, "COUNT never: the console did not say \"%s\"\n", opt.countFrom.c_str());
     if (races_on) races_report(races_file);
     if (calls_on) calls_report(calls_file);
     if (uart_log) fclose(uart_log);

@@ -27,6 +27,24 @@ static int told = -1;   // what gles.c was last told: -1 nothing that still hold
 static GLenum blend_source = GL_SRC_ALPHA, blend_destination = GL_ONE_MINUS_SRC_ALPHA;
 static uint8_t colour[4] = {255, 255, 255, 255};
 
+// The 2D screen made on the first core while a worker draws the rest (scene_shaderemu.c): its
+// rectangles go where that core is told, as runs of one texture and tint, which the worker draws
+// as they are (qglRecordDraw). Anything else asked of this file meanwhile on that core spoils it.
+typedef struct { GLuint name; uint32_t colour; int keyed, first, count, unused[3]; } qgl_run;
+static int rec_on, rec_failed, rec_room, rec_quads, rec_runs, rec_most, rec_texture;
+static uint32_t* rec_at;
+static GLuint rec_bound;
+static uint8_t rec_colour[4];
+static uintptr_t rec_stack;
+static qgl_run* rec_run;
+// (on the stack of the core that records, within 32 KB below where it began: the workers' stacks
+// are 64 KB apart, and the first core's far from them)
+static inline int recording(void) {
+    uint8_t here;
+    return rec_on && rec_stack + 0x1000u - (uintptr_t)&here < 0x9000u;
+}
+static int rec_fail(void) { return rec_failed = 1; }
+
 static uint32_t primitive[MAX_PRIMITIVE * 4];   // x, y, z as float bits, then the shade
 static float coords[MAX_PRIMITIVE * 2];
 static int mode, count, shaded;   // mode: 0 outside glBegin .. glEnd
@@ -187,6 +205,10 @@ static int resident(int name) {
 // the pictures, GL_NEAREST for the letters. The GPU weighs four texels for the first
 // (docs/gpu.md). QUAKE_FILTER=nearest has every texture as it was before the GPU could.
 void qglTexParameterf(GLenum target, GLenum name, GLfloat value) {
+    if (recording()) {
+        rec_fail();
+        return;
+    }
     static int never = -1;
     if (never < 0) {
         const char* how = getenv("QUAKE_FILTER");
@@ -251,6 +273,10 @@ static int run_room, quads_open;   // (sprites and quads that wait for their dra
 
 // Before anything is set or drawn: what waits for its draw gets it. (Mostly nothing does.)
 static inline void shade_flush(void) {
+    if (rec_on && recording()) {
+        rec_fail();
+        return;
+    }
     if (run_room | quads_open | shade_count) shade_flush_all();
 }
 
@@ -278,6 +304,10 @@ static int pose_slot(const void* model, int pose, int* there) {
 }
 
 void qglBindTexture(GLenum target, GLuint name) {
+    if (recording()) {
+        rec_bound = name < POSE_FIRST ? name : 0;
+        return;
+    }
     shade_flush();
     told = -1;
     bound = name < POSE_FIRST ? name : 0;
@@ -381,13 +411,23 @@ static int* wanted(GLenum what) {
 }
 void qglEnable(GLenum what) {
     int* w = wanted(what);
+    if (recording()) {   // (the 2D screen's state: a texture or none; blending is the sprites' own)
+        if (what == GL_TEXTURE_2D) rec_texture = 1;
+        else if (what == GL_DEPTH_TEST) rec_fail();
+        return;
+    }
     if (w && !*w) shade_flush(), *w = 1, told = -1;
 }
 void qglDisable(GLenum what) {
     int* w = wanted(what);
+    if (recording()) {
+        if (what == GL_TEXTURE_2D) rec_texture = 0;
+        return;
+    }
     if (w && *w) shade_flush(), *w = 0, told = -1;
 }
 void qglBlendFunc(GLenum source, GLenum destination) {
+    if (recording()) return;
     blend_source = source;
     blend_destination = destination;
     told = -1;
@@ -436,6 +476,10 @@ static void state(int white) {
 }
 
 void qglColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
+    if (recording()) {
+        rec_colour[0] = level(r), rec_colour[1] = level(g), rec_colour[2] = level(b), rec_colour[3] = level(a);
+        return;
+    }
     colour[0] = level(r), colour[1] = level(g), colour[2] = level(b), colour[3] = level(a);
     if (told == 0) told = -1;
     if (mode) shaded = 1;
@@ -443,6 +487,10 @@ void qglColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
 void qglColor3f(GLfloat r, GLfloat g, GLfloat b) { qglColor4f(r, g, b, 1); }
 void qglColor4fv(const GLfloat* v) { qglColor4f(v[0], v[1], v[2], v[3]); }
 void qglColor3ubv(const GLubyte* v) {
+    if (recording()) {
+        rec_colour[0] = v[0], rec_colour[1] = v[1], rec_colour[2] = v[2], rec_colour[3] = 255;
+        return;
+    }
     colour[0] = v[0], colour[1] = v[1], colour[2] = v[2], colour[3] = 255;
     if (told == 0) told = -1;
     if (mode) shaded = 1;
@@ -668,17 +716,22 @@ static void shade_add(int mode) {
 }
 
 void qglBegin(GLenum what) {
+    if (recording()) {
+        rec_fail();
+        return;
+    }
     mode = what == GL_POLYGON ? GL_TRIANGLE_FAN : what;
     count = shaded = 0;
 }
 
 void qglTexCoord2f(GLfloat s, GLfloat t) {
+    if (recording()) return;
     coord_s = s;
     coord_t = t;
 }
 
 void qglVertex3f(GLfloat x, GLfloat y, GLfloat z) {
-    if (count == MAX_PRIMITIVE) return;
+    if (count == MAX_PRIMITIVE || recording()) return;
     uint32_t* v = primitive + 4 * count;
     v[0] = bits(x), v[1] = bits(y), v[2] = bits(z);
     v[3] = colour[1];
@@ -711,7 +764,30 @@ static int rectangle(void) {
 // A rectangle of the bound texture, corners in pixels of the 2D screen and in 1,024ths of the
 // texture: what glBegin(GL_QUADS) and four corners in order come to (rectangle() below),
 // without them. 0 when it is not to be drawn so, and nothing was done.
+static int rec_rect(int x0, int y0, int x1, int y1, int s0, int t0, int s1, int t1) {
+    uint32_t tint = (255u - rec_colour[3]) << 24 | (uint32_t)rec_colour[0] << 16 | (uint32_t)rec_colour[1] << 8 | rec_colour[2];
+    const texture* t = &textures[rec_bound];
+    int keyed = t->holes && t->kind == INDEXED;
+    qgl_run* r = rec_runs ? &rec_run[rec_runs - 1] : 0;
+    if (!rec_texture || rec_quads == rec_room) return rec_fail();
+    if (!r || r->name != rec_bound || r->colour != tint || r->keyed != keyed) {
+        if (rec_runs == rec_most) return rec_fail();
+        r = &rec_run[rec_runs++];
+        r->name = rec_bound, r->colour = tint, r->keyed = keyed, r->first = rec_quads, r->count = 0;
+    }
+    uint32_t* v = rec_at + 16 * rec_quads;
+    uint32_t left = bits((float)x0), top = bits((float)y0), right = bits((float)x1), bottom = bits((float)y1);
+    uint32_t u0 = (uint32_t)s0 & 0xffff, u1 = (uint32_t)s1 & 0xffff, v0 = (uint32_t)t0 << 16, v1 = (uint32_t)t1 << 16;
+    v[0] = left, v[1] = top, v[2] = 0, v[3] = u0 | v0;
+    v[4] = right, v[5] = top, v[6] = 0, v[7] = u1 | v0;
+    v[8] = right, v[9] = bottom, v[10] = 0, v[11] = u1 | v1;
+    v[12] = left, v[13] = bottom, v[14] = 0, v[15] = u0 | v1;
+    rec_quads++, r->count++;
+    return 1;
+}
+
 int qglRect(int x0, int y0, int x1, int y1, int s0, int t0, int s1, int t1) {
+    if (recording()) return rec_rect(x0, y0, x1, y1, s0, t0, s1, t1);
     uint32_t tint = (255u - colour[3]) << 24 | (uint32_t)colour[0] << 16 | (uint32_t)colour[1] << 8 | colour[2];
     if (run_count == run_room || run_name != bound || run_colour != tint) {
         const texture* t = &textures[bound];
@@ -735,6 +811,13 @@ int qglRect(int x0, int y0, int x1, int y1, int s0, int t0, int s1, int t1) {
 // Letters of the bound texture, 16 x 16 of them in it, 8 pixels square and 8 apart from x, y:
 // each what qglRect draws of one, and none for a space. 0 if nothing was done.
 int qglText(int x, int y, const char* text, int count) {
+    if (recording()) {
+        for (int i = 0; i < count; i++, x += 8) {
+            uint32_t c = (uint8_t)text[i];
+            if (c != 32) rec_rect(x, y, x + 8, y + 8, (int)(c & 15) * 64, (int)(c >> 4) * 64, (int)(c & 15) * 64 + 64, (int)(c >> 4) * 64 + 64);
+        }
+        return 1;
+    }
     uint32_t tint = (255u - colour[3]) << 24 | (uint32_t)colour[0] << 16 | (uint32_t)colour[1] << 8 | colour[2];
     uint32_t top = bits((float)y), bottom = bits((float)(y + 8));
     for (int i = 0; i < count; i++, x += 8) {
@@ -764,8 +847,42 @@ int qglPicture(int x, int y, int width, int height, const float* st) {
                    (int)(st[3] * 1024.0f));
 }
 
+// The recording (scene_shaderemu.c): on the first core, into `vertices` (room for `quads`) and
+// `runs` (room for `most`); its end says how many runs, -1 if it was spoilt.
+void seglSpritesAt(const void* vertices, GLsizei quads, GLuint name, unsigned colour, int keyed);   // gles.c
+int qglRecording(void) { return recording(); }
+void qglRecordFail(void) { rec_fail(); }
+void qglRecordBegin(unsigned int* vertices, int quads, void* runs, int most) {
+    uint8_t here;
+    rec_stack = (uintptr_t)&here;
+    rec_at = vertices, rec_room = quads, rec_run = runs, rec_most = most;
+    rec_quads = rec_runs = rec_failed = 0;
+    rec_bound = 0, rec_texture = 1;
+    rec_colour[0] = rec_colour[1] = rec_colour[2] = rec_colour[3] = 255;
+    rec_on = 1;
+}
+int qglRecordEnd(void) {
+    rec_on = 0;
+    return rec_failed ? -1 : rec_runs;
+}
+// On the core that draws: the runs recorded, in order, where the recording left their vertices.
+void qglRecordDraw(const unsigned int* vertices, const void* runs, int count) {
+    const qgl_run* r = runs;
+    shade_flush();
+    for (int i = 0; i < count; i++, r++)
+        if (resident(r->name)) {
+            seglSpritesAt(vertices + 16 * r->first, r->count, r->name, r->colour, r->keyed);
+            frame_vertices += 4 * (unsigned int)r->count;
+        }
+}
+// GPU memory for the recordings' vertices: three of `bytes` (a frame's, the next one's, one being drawn).
+#define STAGE_MEMORY (3 * 1024 * 64)
+static uint32_t* stage_memory;
+unsigned int* qglStageMemory(int which) { return stage_memory ? stage_memory + which * (STAGE_MEMORY / 3 / 4) : 0; }
+
 void qglEnd(void) {
     int what = mode, lit;
+    if (recording()) return;
     mode = 0;
     if (quads_open) quads_close();
     if (particle_room) seglCompactTrim(particle_room);
@@ -824,6 +941,19 @@ void qglParticleRoomLeft(int room) {
     particle_room = room;
     frame_vertices -= (unsigned int)room;
 }
+// Particles drawn where workers wrote them in GPU memory (qglParticleMemory), 3 or more.
+int qgpuPointsAt(const void* vertices, int count, const float* how);
+int qglParticlesAt(const unsigned int* vertices, int count) {
+    static const float how[3] = {1.5f, 0.004f, 20.0f};
+    if (!particles) shade_flush(), state(0);
+    particles = 1;
+    if (!qgpuPointsAt(vertices, count, how)) return 0;
+    frame_vertices += (unsigned int)count;
+    return 1;
+}
+static uint32_t* particle_memory;
+#define PARTICLE_MEMORY (4 * 2048 * 16)
+unsigned int* qglParticleMemory(unsigned int bytes) { return bytes <= PARTICLE_MEMORY ? particle_memory : 0; }
 
 // Room for `most` quads drawn with what is set now, 24 words each: the compact vertices of
 // corners 0 1 2 and then 0 2 3. The caller writes them there and says how many it wrote
@@ -1070,6 +1200,8 @@ int qglOpen(unsigned int nano_x_window, const unsigned char* palette) {
     for (int i = 0; i < MAX_TEXTURES; i++) textures[i].at = NOWHERE;
     lights = seglMemory(LIGHTS * 256 * 4);
     if (!lights) return -1;
+    particle_memory = seglMemory(PARTICLE_MEMORY);
+    stage_memory = seglMemory(STAGE_MEMORY);   // (the 2D screen made on the first core)   // (the workers' particles, drawn from where they are)
     // the pool: what seglMemory has, and before it the spare memory when there is some, with
     // what lies between them as a block that never leaves
     unsigned int spare_size, main_size = seglMemoryLeft() & ~15u;

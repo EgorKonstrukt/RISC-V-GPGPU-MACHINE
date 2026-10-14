@@ -172,6 +172,13 @@ void mcw_print(const char *f, ...)
 	s->log_used += n;
 }
 
+void mcw_print_now(void)
+{
+	side *s = here();
+
+	if (s && s != &first_side && s->log_used) write_out(s->log, s->log_used), s->log_used = 0;
+}
+
 /* ---- failures, deferred calls, scratch ---- */
 
 static void say_failed(int worker, const char *what, uint32_t value)
@@ -387,11 +394,15 @@ static uint32_t gcd(uint32_t a, uint32_t b)
 	return a;
 }
 
+static int out_on;	/* a round begun by mcw_for_begin() is out */
+void mcw_for_wait(void);
+
 void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 {
 	int list[MC_MAX_CORES], members = 0, workers = mcw_count(), want, first, i, k;
 	uint32_t shares, grain, r;
 
+	if (out_on) mcw_for_wait();
 	if (!n) return;
 	if (o && o->touch) mcw_touch(o->touch, o->touch_bytes);
 	if (workers == 0 || mcw_self() || in_round || !setup()) {
@@ -458,10 +469,101 @@ void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 
 void mcw_for(uint32_t n, mcw_body fn, void *ctx) { mcw_for_opt(n, fn, ctx, 0); }
 
+/* ---- a round begun and not waited for ---- */
+
+static int out_list[MC_MAX_CORES], out_members;
+static uint32_t out_round;
+
+void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
+{
+	int workers = mcw_count(), want, first, i, k;
+	uint32_t shares, grain, r;
+
+	if (out_on) mcw_for_wait();
+	if (!n) return;
+	if (o && o->touch) mcw_touch(o->touch, o->touch_bytes);
+	if (workers == 0 || mcw_self() || in_round || !setup()) {
+		fn(ctx, 0, n);
+		return;
+	}
+	want = o && o->workers > 0 && o->workers < workers ? o->workers : workers;
+	out_members = 0;
+	for (k = 1; k <= workers && out_members < want; k++) {
+		if (busy[k]) continue;
+		if (in_team[k] && mcw_done(k)) in_team[k] = 0;
+		if (!in_team[k] && (!mcw_bound(k) || !side_for(k))) continue;
+		out_list[out_members++] = k;
+	}
+	first = !(o && o->first_idle) || out_members == 0;
+	shares = (uint32_t)(out_members + first);
+	grain = o && o->grain ? o->grain : (n + shares * 4 - 1) / (shares * 4);
+	if (o && o->out_bytes) {
+		uint32_t unit = 16 / gcd(o->out_bytes, 16);
+		grain = (grain + unit - 1) / unit * unit;
+	}
+	if (!grain) grain = 1;
+	team->fn = (uint32_t)fn;
+	team->ctx = (uint32_t)ctx;
+	team->n = n;
+	team->grain = grain;
+	team->shares = shares;
+	team->linger = (uint32_t)linger;
+	r = team->round + 1;
+	for (i = 0; i < out_members; i++) {
+		plan[out_list[i]].share = (uint32_t)(i + first);
+		plan[out_list[i]].round = r;
+	}
+	team->round = r;
+	for (i = 0; i < out_members; i++) {
+		k = out_list[i];
+		if (in_team[k]) continue;
+		in_team[k] = 1;
+		mcw_post(k, team_job, 0, (uint32_t)k);
+	}
+	out_round = r;
+	out_on = 1;
+	if (first) {
+		in_round = 1;
+		guarded(run_share, 0, 0);
+		in_round = 0;
+	}
+}
+
+int mcw_for_ready(void)
+{
+	int i, k, out = 0;
+
+	if (!out_on) return 1;
+	for (i = 0; i < out_members; i++) {
+		k = out_list[i];
+		if (done_of[k].round == out_round) continue;
+		out = 1;
+		if (!mcw_done(k)) continue;
+		/* (its team job ended before it saw the round: posted again) */
+		in_team[k] = 0;
+		if (done_of[k].round == out_round) continue;
+		in_team[k] = 1;
+		mcw_post(k, team_job, 0, (uint32_t)k);
+	}
+	return !out;
+}
+
+void mcw_for_wait(void)
+{
+	int i;
+
+	if (!out_on) return;
+	while (!mcw_for_ready()) mcw_rest();
+	out_on = 0;
+	settle(0);
+	for (i = 0; i < out_members; i++) settle(out_list[i]);
+}
+
 void mcw_for_end(void)
 {
 	int k, any = 0;
 
+	if (out_on) mcw_for_wait();
 	if (!team) return;
 	for (k = 1; k <= mcw_count(); k++)
 		if (in_team[k]) any = 1;
@@ -525,6 +627,36 @@ mcw_handle mcw_call(mcw_fn fn, uint32_t a0, uint32_t a1)
 		call_answer[h] = call_job((uint32_t)c, 0);
 		call_state[h] = 2;
 	}
+	return h + 1;
+}
+
+/* mcw_call() on a worker with nothing to do, or nothing at all (0): for work only a worker pays for. */
+mcw_handle mcw_try_call(mcw_fn fn, uint32_t a0, uint32_t a1)
+{
+	int h, k = 0, tries, workers = mcw_count();
+
+	if (!workers || mcw_self() || !setup()) return 0;
+	for (h = 0; h < CALLS && call_state[h]; h++) {}
+	if (h == CALLS) return 0;
+	for (tries = 0; tries < workers && !k; tries++) {
+		int w = next_worker;
+
+		next_worker = next_worker % workers + 1;
+		if (busy[w] || !mcw_bound(w)) continue;
+		if (in_team[w]) {
+			if (!mcw_done(w)) continue;
+			in_team[w] = 0;
+		}
+		if (mcw_done(w) && side_for(w)) k = w;
+	}
+	if (!k) return 0;
+	calls[h].fn = (uint32_t)fn;
+	calls[h].a0 = a0;
+	calls[h].a1 = a1;
+	calls[h].k = (uint32_t)k;
+	busy[k] = 1;
+	call_state[h] = 1;
+	mcw_post(k, call_job, (uint32_t)&calls[h], 0);
 	return h + 1;
 }
 

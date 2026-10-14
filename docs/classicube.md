@@ -223,6 +223,9 @@ the texels and vertices made for the device.
     CLASSICUBE_WALK=every    the chunks' commands made anew every frame, as they were
     CLASSICUBE_MESH_SUM=1    a ccmesh: line a chunk mesh made: origin, vertices, two sums
     CLASSICUBE_DEFINES=-DSE_COUNT   (to build.sh) a chunk's instructions by phase, in the ccstat: lines
+    CLASSICUBE_RENDER=inline the rest of a frame's list by core 0 too, not a worker
+    CLASSICUBE_CHECK_KEPT=1  the outline and the held block are made again when kept, and compared (cccheck: lines)
+    CLASSICUBE_OUT=DIR       (to build.sh) the files go to DIR, a private image's overlay, not the shared root
 
 ## A quarter to a half fewer (12 October 2026)
 
@@ -339,6 +342,104 @@ screen are made anew every frame (some 5 thousand of a standing frame's 20). The
 vertices of a worker's mesh could be the device's when the first core gets them. The
 seven copies of the builder are 3.3 MB of variables that the first core touches at the
 start (a million instructions).
+
+## What stays the same is not made again, and the workers through mcwx (14 October 2026)
+
+`python tools\game_par.py classicube` (`docs/multicore.md`, "Every core's share of a game's
+frame": seed 7, block physics off, walking and jumping into a hill, five windows of 2 s from
+`classicube: steady`), the mean of three timings, each build in a private image:
+
+| | frames | core 0 a frame | all cores a frame | factor |
+|---|---|---|---|---|
+| before | 1,048 | 31.9k | 31.9k | 1.00 |
+| after | 1,284 | 25.9k | 25.9k | 1.00 |
+
+- **The block outline is made only for a new box** (`SelOutlineRenderer.c`): its 96 vertices
+  were worked out and made the device's every frame, 7% and most of `BuildMeshIn`'s 11%. The
+  four corners it is made of are compared with those it was last made of; when they are the
+  same its buffer is drawn as it stands.
+- **So is the held block** (`BlockModel_BuildParts` in `Model.c`): the same block, colours
+  and textures, with no other model's vertices put in the shared buffer since (`se_locks`),
+  is drawn from the vertices there. Its matrix is still made every frame.
+- **A dynamic buffer filled as it was keeps its mesh** (`SameFill` in
+  `Graphics_ShaderEmu.c`): a buffer of 16 vertices or more keeps a copy of what its mesh was
+  made of, and a fill that is word for word the same makes nothing.
+- `CLASSICUBE_CHECK_KEPT=1` makes the outline and the held block again whenever they are kept
+  and compares: walking, jumping and two blocks dug, 1,831 outlines and 2,061 held blocks
+  kept and none different. The meshes of a start and two blocks dug are the old build's, line
+  for line with `CLASSICUBE_MESH=inline` and as a set with the workers (57 each).
+
+The workers are asked through the second layer of the library (`programs/mc/mcwx.h`): the
+world's height map, strata and surface by `mcw_for` (rows of z, up to 15 workers and the first
+core; the lowest height is read off the finished map), the light's heights and the meshes by
+`mcw_call`, looked at with `mcw_ready` and taken with `mcw_join`. A copy of the builder is no
+longer worker k's: it is the call's, on whichever worker is idle. The world is there as soon
+as before (16.7 s of the guest from power-on to `classicube: steady`, 16.8 before), and
+`RVC_RACES` finds nothing, at the start or with blocks dug.
+
+With this alone no worker runs while the game is played (the next section changes that). A frame is some 25
+thousand instructions, three passes, in pieces of one or two thousand that each need this
+frame's camera (the chunks in view and their blocks, the camera and its bobbing, picking,
+the held block's matrix, the 2D screen); a worker would give its answer a pass or two later.
+What runs at its own pace is small: the animated tiles (water and lava, about 1.3 thousand a
+frame, into textures the list in flight reads) and the 20 ticks a second (some 13 thousand a
+tick, of which the player's movement is 7, and the frames read what a tick writes). Either on
+a worker would need its own copy of what it writes, handed over a frame later.
+
+## The frame's list on a worker (14 October 2026)
+
+A frame is now made in two halves. Core 0 ticks, reads the input, moves the camera, picks the
+block looked at and keeps what the frame is seen from (`struct SEFrame` in `Game.h`: the view,
+the camera's place, bobbing and tilt, pitch and yaw, the block picked, the held block's colour,
+the time); then it waits for the list of the frame before (`Gfx_SE_Settle`: `mcw_join` and the
+submit that was `Gfx_EndFrame`'s), begins the new list (the clear, the matrices, the frustum,
+the particles; meshes the mesh workers finished are taken and new ones given out, which
+`mcw_call` wants of core 0: `MapRenderer_SE_Between`), and gives the rest to a worker by
+`mcw_call` (`SE_FrameRest` in `Game.c`): the animated water and lava, the sky and clouds, the
+map's walk, its sides and edges, the outline, the held block, the 2D screen, and the animated
+tiles' texels at the list's end. Its next frame's ticks and input run beside it. So a frame is
+shown a frame later than it was.
+
+What the worker reads that core 0 goes on changing it reads from the kept frame (`SE_Frame`):
+`MapRenderer.c`, `EnvRenderer.c`, `SelOutlineRenderer.c`, `HeldBlockRenderer.c`. What both may
+change, core 0 waits for the worker before it changes (`Gfx_SE_Own`): textures and buffers
+(`Gfx_UpdateTexture`, `Gfx_DeleteTexture`, the buffers' making, locks and deletes, the
+viewport), the C library's heap (`Mem_*` in `_PlatformBase.h`: one core at a time in it; the
+game's other thread, HTTP's, does not join the worker but waits on a lock the game's thread
+holds while a list is out, `Gfx_SE_HeapEnter`: when it joined, it could end a frame while the
+game's thread had given the worker the next, 3 changes undone in one run of five), a
+block changed (`Game_UpdateBlock`), the chunks made again (`ChunkInfo_Refresh` and the map's
+events), the held block's animations, and every key, button, pointer move or terminal line
+(`Window_ShaderEmu.c`). The ticks only count the animated tiles; the worker makes them
+(`Animations_SE_Catchup`). The chat's line of a texture pack's download asks the HTTP thread's
+two words without its lock on the worker (`Http_GetCurrent`): a lock taken on a worker was
+the one change `RVC_RACES` found undone.
+
+The rest is a worker's while the player is alone in the world and seen from the eye (the
+player's model is then not drawn: core 0 makes its animation, `AnimatedComp_GetCurrent`); with
+others, from behind, without workers, or `CLASSICUBE_RENDER=inline`, core 0 makes the same
+list itself, in the same order.
+
+`game_par.py classicube --runs 3` (as above):
+
+| | frames | core 0 a frame | all cores a frame | factor |
+|---|---|---|---|---|
+| before these two days | 1,048 | 31.9k | 31.9k | 1.00 |
+| what stays the same kept (above) | 1,284 | 25.9k | 25.9k | 1.00 |
+| the same build, `CLASSICUBE_RENDER=inline` | 1,269 | 26.2k | 26.2k | 1.00 |
+| the rest on a worker | 2,126 | 11.1k | 25.8k | 2.33 |
+
+Of core 0's 11.1k, about 2.5k is waiting in `mcw_join` for the worker's list; the worker
+makes it in 13.6k and waits for nothing (the `ccstat:` line "the frame's worker"). Its
+instructions are spread over all the workers, since `mcw_call` takes the next idle one.
+With the halves beside each other the frames are two thirds more in the same ten seconds.
+The `ccstat:` line's instructions a frame are core 0's.
+
+Checked: `RVC_RACES` 0 undone walking and jumping (641 reads as they were: the guard's look at
+the call, the HUD's at the player's place, the tiles' count) and digging (1,396); the meshes of
+the start and two blocks dug the old build's, line for line with `CLASSICUBE_MESH=inline` and
+as a set with the workers (57); `CLASSICUBE_CHECK_KEPT=1` 0 wrong in both. Held frames of the
+three builds standing, digging and walking, by `rvc_harness --cpu --warp`.
 
 ## Checking it
 

@@ -12,7 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
-#include "mcw.h"
+#include <pthread.h>
+#include "mcwx.h"
 
 /* from Window_ShaderEmu.c: GPU memory from 0x87000000, and where the window's pixels are */
 uint8_t* SE_Gpu(void);
@@ -197,9 +198,64 @@ static cc_bool Drawing(void) {
 	return unsettled;
 }
 
-/* (the first core with nothing to do until the next pass says so: docs/multicore.md, "A core that rests") */
+/* (the first core with nothing to do until the next pass says so: docs/multicore.md, "A core
+   that rests"; the frame's worker ends its pass) */
+static uint32_t stat_job, stat_job_wait, stat_join;   /* the frame's worker's instructions, and waits */
+uint32_t cycles(void);
+
 static void Settle(void) {
-	while (Drawing()) mcw_rest();
+	uint32_t began;
+	if (!Drawing()) return;
+	if (!mcw_on_worker()) { while (Drawing()) mcw_rest(); return; }
+	began = cycles();
+	while (Drawing()) mc_end_pass();
+	stat_job_wait += cycles() - began;
+}
+
+/* The rest of a frame's list made by a worker (Game.c): a call, joined when core 0 next needs
+   the list or what it is made of, and then submitted. */
+static mcw_handle frame_job;
+void Gfx_EndFrame(void);
+
+/* The game's other threads (HTTP's) wait for the heap while a job is out: only the game's
+   own thread joins it (Gfx_SE_Own). */
+static pthread_mutex_t se_heap = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t se_main;
+static cc_bool se_main_known;
+
+void Gfx_SE_Post(mcw_fn job) {
+	pthread_mutex_lock(&se_heap);
+	frame_job = mcw_call(job, 0, 0);
+}
+/* (by the job: its instructions) */
+void Gfx_SE_JobCycles(uint32_t n) { stat_job += n; }
+
+void Gfx_SE_Settle(void) {
+	mcw_handle h = frame_job;
+	if (!h) return;
+	uint32_t began = cycles();
+	frame_job = 0;
+	mcw_join(h);
+	pthread_mutex_unlock(&se_heap);
+	stat_join += cycles() - began;
+	Gfx_EndFrame();
+}
+
+static cc_bool OnMainThread(void) { return !se_main_known || pthread_equal(pthread_self(), se_main); }
+
+/* The game's thread, before it changes what the list is made of: textures, buffers, the heap, the map */
+void Gfx_SE_Own(void) {
+	if (frame_job && !mcw_on_worker() && OnMainThread()) Gfx_SE_Settle();
+}
+
+/* Around the C library's heap (Mem_* in _PlatformBase.h): one core at a time in it */
+void Gfx_SE_HeapEnter(void) {
+	if (mcw_on_worker()) return;
+	if (OnMainThread()) Gfx_SE_Own();
+	else pthread_mutex_lock(&se_heap);
+}
+void Gfx_SE_HeapLeave(void) {
+	if (!mcw_on_worker() && !OnMainThread()) pthread_mutex_unlock(&se_heap);
 }
 
 static void* Arena_Alloc(uint32_t size) {
@@ -216,7 +272,10 @@ static void* Arena_Alloc(uint32_t size) {
 *#########################################################################################################################*/
 static uint32_t clear_colour;
 static uint32_t hold_frame, stats_ms = 5000;
-static cc_bool mesh_sums, texture_sums, swap_waits, hold_late, segs_off;
+static cc_bool mesh_sums, texture_sums, swap_waits, hold_late, segs_off, check_kept;
+/* CLASSICUBE_CHECK_KEPT=1: the outline and the held block are made again when kept, and compared */
+unsigned se_kept_checked[4];
+int SE_CheckKept(void) { return check_kept; }
 /* Goes up when a buffer or a texture is made again or let go: a walk noted before is stale. */
 static uint32_t kept_epoch = 1;
 static int view_x, view_y, view_w, view_h;
@@ -238,6 +297,7 @@ void Gfx_Create(void) {
 	gpu = SE_Gpu();
 	if (!gpu) Process_Abort("this machine has no GPU");
 	draw.set = (uint32_t*)(gpu + set_at);
+	se_main = pthread_self(); se_main_known = true;
 
 	Heap_Add(HEAP_AT, GPU_END);
 	if (((volatile uint32_t*)gpu)[0] == 4) { Heap_Add(SPARE_AT, SPARE_END); spare = SPARE_END - SPARE_AT; }
@@ -254,6 +314,7 @@ void Gfx_Create(void) {
 	/* CLASSICUBE_WALK=every: the chunks' commands are made anew every frame, as they were */
 	segs_off   = getenv("CLASSICUBE_WALK") != NULL;
 	hold_late  = getenv("CLASSICUBE_HOLD_LATE") != NULL;
+	check_kept = getenv("CLASSICUBE_CHECK_KEPT") != NULL;
 
 	Gfx.MaxTexWidth  = 1024;
 	Gfx.MaxTexHeight = 1024;
@@ -296,6 +357,7 @@ static uint32_t main_epoch, epoch_counter = 1;
 static cc_bool main_valid;
 
 void Gfx_SetViewport(int x, int y, int w, int h) {
+	Gfx_SE_Own();
 	if (x == view_x && y == view_y && w == view_w && h == view_h) return;
 	view_x = x; view_y = y; view_w = w; view_h = h;
 	main_valid   = false;
@@ -415,6 +477,7 @@ static void Later_Flush(void) {
 
 void Gfx_UpdateTexture(GfxResourceID texId, int x, int y, struct Bitmap* part, int rowWidth, cc_bool mipmaps) {
 	const int count = part->width, rows = part->height;
+	Gfx_SE_Own();
 	int xx, yy;
 
 	if (Drawing() && later_count < LATER_MOST && later_used + count * rows <= LATER_WORDS) {
@@ -444,6 +507,7 @@ void Gfx_BindTexture(GfxResourceID texId) {
 
 void Gfx_DeleteTexture(GfxResourceID* texId) {
 	struct SETexture* tex = (struct SETexture*)(*texId);
+	Gfx_SE_Own();
 	if (!tex) return;
 	if (se_texture == tex) se_texture = NULL;
 	state_serial++;
@@ -675,6 +739,8 @@ struct SEVb {
 	int where;                    /* 0 nowhere, 1 its span, 2 the frame's arena */
 	uint32_t where_frame, drawn_frame;
 	uint32_t span_frame;          /* the frame its span was last drawn from */
+	uint32_t* shadow;             /* a dynamic buffer's vertices as its mesh was last made of them */
+	int shadow_count, shadow_fmt;
 };
 
 static void* shared_staging;
@@ -898,6 +964,7 @@ void Gfx_DeleteIb(GfxResourceID* ib) { }
 
 static GfxResourceID Gfx_AllocStaticVb(VertexFormat fmt, int count) {
 	struct SEVb* vb;
+	Gfx_SE_Own();
 	/* (a chunk takes 8 bytes a vertex; with less than that left the game is to draw less far) */
 	if (heap_free < (uint32_t)count * 8 + 65536) return NULL;
 	vb = (struct SEVb*)Mem_TryAllocCleared(1, sizeof(struct SEVb));
@@ -919,6 +986,7 @@ void Gfx_BindVb(GfxResourceID vb) { se_vb = (struct SEVb*)vb; }
 
 void Gfx_DeleteVb(GfxResourceID* vb) {
 	struct SEVb* data = (struct SEVb*)(*vb);
+	Gfx_SE_Own();
 	if (!data) return;
 	if (se_vb == data) se_vb = NULL;
 	if (last_vb == data) last_draw = NULL;
@@ -927,12 +995,14 @@ void Gfx_DeleteVb(GfxResourceID* vb) {
 
 	Heap_FreeLater(data->span);
 	if (data->dynamic) Mem_Free(data->staging);
+	Mem_Free(data->shadow);
 	Mem_Free(data);
 	*vb = NULL;
 }
 
 void* Gfx_LockVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	struct SEVb* data = (struct SEVb*)vb;
+	Gfx_SE_Own();
 	int size = count * strideSizes[fmt];
 	data->fmt = fmt; data->count = count;
 
@@ -1005,8 +1075,27 @@ void Gfx_BindDynamicVb(GfxResourceID vb) { se_vb = (struct SEVb*)vb; }
 
 void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 	struct SEVb* data = (struct SEVb*)vb;
+	Gfx_SE_Own();
 	data->fmt = fmt; data->count = count;
 	return data->staging;
+}
+
+/* Whether a buffer of 16 vertices or more was filled as it was when its mesh was made; a copy
+   is kept for the next time when it was not. */
+static cc_bool SameFill(struct SEVb* vb) {
+	const uint32_t* now = (const uint32_t*)vb->staging;
+	int words = vb->count * strideSizes[vb->fmt] / 4, i;
+
+	if (vb->count < 16) return false;
+	if (vb->where && vb->shadow && vb->shadow_count == vb->count && vb->shadow_fmt == vb->fmt) {
+		for (i = 0; i < words && vb->shadow[i] == now[i]; i++) { }
+		if (i == words) return true;
+	}
+	if (!vb->shadow) vb->shadow = (uint32_t*)Mem_TryAlloc(vb->max, SIZEOF_VERTEX_TEXTURED);
+	if (!vb->shadow || vb->count > vb->max) { vb->shadow_count = 0; return false; }
+	for (i = 0; i < words; i++) vb->shadow[i] = now[i];
+	vb->shadow_count = vb->count; vb->shadow_fmt = vb->fmt;
+	return false;
 }
 
 /* A buffer filled again before it was drawn a second time lives in the frame; one that is
@@ -1014,6 +1103,7 @@ void* Gfx_LockDynamicVb(GfxResourceID vb, VertexFormat fmt, int count) {
 void Gfx_UnlockDynamicVb(GfxResourceID vb) {
 	struct SEVb* data = (struct SEVb*)vb;
 	se_vb = data;
+	if (SameFill(data)) return;
 	/* (not into its span while the list being drawn reads that: the frame has room, and no wait) */
 	if (data->where == 1 && data->drawn_frame != frame_number && !(data->span_frame + 1 == frame_number && Drawing()) &&
 		BuildMesh(data, SpanAlloc)) return;
@@ -1258,6 +1348,11 @@ static void Stats(void) {
 	printf("ccstat: a frame: %u texels in %u instructions, %u vertices in %u; chunk walks %u made, %u kept\n",
 		stat_texels / n, stat_texel_cycles / n, stat_vertices / n, stat_vertex_cycles / n, stat_walked, stat_kept);
 	stat_walked = stat_kept = 0;
+	if (stat_job) printf("ccstat: the frame's worker %u instructions a frame, %u of them waiting for the list shown; core 0 %u waiting for it\n",
+		stat_job / n, stat_job_wait / n, stat_join / n);
+	stat_job = stat_job_wait = stat_join = 0;
+	if (check_kept) printf("cccheck: the outline kept %u times, %u of them wrong; the held block kept %u times, %u wrong\n",
+		se_kept_checked[0], se_kept_checked[1], se_kept_checked[2], se_kept_checked[3]);
 #ifdef SE_COUNT
 	{
 		extern unsigned se_chunk[8];
@@ -1274,6 +1369,10 @@ static void Stats(void) {
 	since_ms = now; since_cycles = cycles(); since_frames = frame_number;
 	stat_commands = stat_mesh = stat_dropped = 0;
 	stat_texels = stat_texel_cycles = stat_vertices = stat_vertex_cycles = 0;
+}
+
+void Gfx_SE_FrameLater(void) {
+	if (later_count) { Settle(); Later_Flush(); }
 }
 
 void Gfx_EndFrame(void) {

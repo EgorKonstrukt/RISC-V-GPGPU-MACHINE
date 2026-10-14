@@ -243,9 +243,12 @@ static void WindowOrigin(void) {
 /* The pointer, from the machine's input words themselves (docs/input.md) and not from the
    server, whose word of every move was a question and an answer each. The server says when
    the pointer comes over the window and leaves it. */
+void Gfx_SE_Own(void);
 static void ReadPointer(const volatile uint32_t* input) {
 	int x = (int)input[0] - origin_x, y = (int)input[1] - origin_y;
 	if ((!mouse_inside && !dragging) || (mouse_known && x == mouse_x && y == mouse_y)) return;
+	/* (an event waits for the frame's worker: what it changes may be what the list is made of) */
+	Gfx_SE_Own();
 
 	/* (a quarter of a degree a pixel at the game's own sensitivity) */
 	if (mouse_known && Input.RawMode && dragging && !seated) {
@@ -258,6 +261,7 @@ static void ReadPointer(const volatile uint32_t* input) {
 
 static void HandleEvent(GR_EVENT* e) {
 	int key, down;
+	Gfx_SE_Own();
 
 	switch (e->type) {
 	case GR_EVENT_TYPE_MOUSE_ENTER:
@@ -330,6 +334,7 @@ void SE_Hold(void);
 static void TerminalLine(char* line) {
 	cc_string text = String_FromReadonly(line), name;
 	int key, x, y;
+	Gfx_SE_Own();
 
 	if (!strncmp(line, "down ", 5) || !strncmp(line, "up ", 3)) {
 		name = String_FromReadonly(strchr(line, ' ') + 1);

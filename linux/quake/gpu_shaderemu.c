@@ -59,3 +59,10 @@ int qgpuHeadAgain(const unsigned* kept) {
     last_draw = 0;
     return 1;
 }
+
+// Points whose vertices lie in GPU memory already (a worker wrote them there): a draw of its own.
+// 0 if not drawn (fewer than three, or the frame is full).
+int qgpuPointsAt(const void* vertices, int count, const float* how) {
+    uint32_t stored;
+    return compact_begin(GL_TRIANGLES, count, &stored, vertices, VERTEX_POINTS, 0, how) != 0;
+}

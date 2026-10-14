@@ -25,7 +25,7 @@
 #include <string.h>
 
 #include "quakedef.h"
-#include "mcw.h"
+#include "mcwx.h"
 
 enum { MODE_UNSET = -1, MODE_INLINE, MODE_LATE, MODE_WAIT, MODE_APART };
 enum { OUT_NONE, OUT_RUNNING, OUT_DONE };	/* a frame of the server's that began in SE_ServerPhysics */
@@ -44,6 +44,9 @@ static struct {
 } work __attribute__ ((aligned (16)));
 static jmp_buf job_abort;
 static int mode = MODE_UNSET, out;
+static mcw_handle server_call, load_call;	/* the server's frame, a loader's job (mcwx.h) */
+static unsigned server_serial, server_looked;
+static volatile unsigned server_ended;	/* the worker's: the serial of the last frame it ended */
 static float rate = 1;
 static int draining;
 static float since;		/* time the client's frames have taken since the server's last began */
@@ -214,7 +217,7 @@ static unsigned cycles (void)
 	return v;
 }
 
-static uint32_t physics_job (uint32_t and_send, uint32_t unused)
+static uint32_t physics_job (uint32_t and_send, uint32_t serial)
 {
 	unsigned began = cycles ();
 
@@ -226,6 +229,7 @@ static uint32_t physics_job (uint32_t and_send, uint32_t unused)
 			work.sent = 1;
 		}
 	}
+	server_ended = serial;
 	return cycles () - began;
 }
 
@@ -295,7 +299,14 @@ void SE_ServerPoll (void)
 	static int inside;
 	extern void Host_ServerFrame (void);
 
-	if (out != OUT_RUNNING || !mcw_done (1))
+	if (out != OUT_RUNNING)
+		return;
+	/* (asked of the library once a frame until the worker says it has ended: a page it stopped
+	 * at is served then. A question of the library is some hundred instructions) */
+	if (server_ended != server_serial && server_looked == (unsigned)host_framecount)
+		return;
+	server_looked = host_framecount;
+	if (!mcw_ready (server_call))
 		return;
 	/* and one whose frame has ended is given its next now, not at the client's next frame:
 	 * the worker would stand still for half a frame of the client's, on average */
@@ -357,8 +368,10 @@ static void settle (int raise)
 
 	if (out != OUT_RUNNING)
 		return;
-	se_server_passes += mcw_wait (1);
-	se_server_cycles += mcw_result (1);
+	for (; !mcw_ready (server_call); se_server_passes++)
+		mcw_rest ();
+	se_server_cycles += mcw_join (server_call);
+	server_call = 0;
 	se_server_frames++;
 	out = OUT_DONE;
 	sum_frame ();
@@ -396,7 +409,7 @@ static void settle (int raise)
 int SE_ServerTake (void)
 {
 	if (out == OUT_RUNNING) {
-		if (mode == MODE_APART && !mcw_done (1))
+		if (mode == MODE_APART && !mcw_ready (server_call))
 			return 2;
 		settle (1);
 	}
@@ -422,7 +435,7 @@ int SE_ServerPhysics (void)
 		sum_frame ();
 		out = OUT_DONE;
 	} else {
-		mcw_post (1, physics_job, mode == MODE_APART, 0);
+		server_call = mcw_call (physics_job, mode == MODE_APART, ++server_serial);
 		out = OUT_RUNNING;
 	}
 	return 1;
@@ -471,12 +484,41 @@ int SE_JobBegin (unsigned (*job) (unsigned, unsigned), unsigned a0, unsigned a1)
 	setup ();
 	if (mode < MODE_WAIT || out == OUT_RUNNING)
 		return 0;
-	mcw_post (1, (mcw_fn)job, a0, a1);
+	load_call = mcw_call ((mcw_fn)job, a0, a1);
 	se_load_jobs++;
 	return 1;
 }
 
-void SE_JobEnd (void) { mcw_wait (1); }
+void SE_JobEnd (void)
+{
+	mcw_join (load_call);
+	load_call = 0;
+}
+
+/* Calls of one function given out to idle workers (mcw_call), joined together. */
+void SE_GroupAdd (se_group_t *g, unsigned (*fn) (unsigned, unsigned), unsigned a0, unsigned a1)
+{
+	g->h[g->n++] = mcw_call ((mcw_fn)fn, a0, a1);
+}
+
+int SE_GroupReady (const se_group_t *g)
+{
+	int i;
+
+	for (i = 0; i < g->n; i++)
+		if (!mcw_ready (g->h[i]))
+			return 0;
+	return 1;
+}
+
+void SE_GroupJoin (se_group_t *g)
+{
+	int i;
+
+	for (i = 0; i < g->n; i++)
+		mcw_join (g->h[i]);
+	g->n = 0;
+}
 
 /* A console command is about to run. Most are the client's; any other may be the server's. */
 void SE_ServerCommand (const char *name)

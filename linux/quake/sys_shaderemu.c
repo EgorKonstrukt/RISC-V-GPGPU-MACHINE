@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "quakedef.h"
+#include "mcwx.h"
 
 qboolean	isDedicated;
 
@@ -61,6 +62,11 @@ void Sys_Error (char *error, ...)
 	va_end (argptr);
 	if (SE_ServerOnWorker ())
 		SE_ServerWorkerError (string);	/* the server's frame on a worker core: this core raises it */
+	if (mcw_on_worker ()) {		/* a frame drawn on one (scene_shaderemu.c): said, and the program ends */
+		mcw_print ("quake: error: %s\n", string);
+		mcw_fail ("Sys_Error", 0);
+	}
+	SE_SceneOwn ();
 	SE_ServerSettle ();
 	fprintf (stderr, "quake: error: %s\n", string);
 	Host_Shutdown ();

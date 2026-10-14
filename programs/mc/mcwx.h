@@ -36,6 +36,14 @@ void mcw_for(uint32_t n, mcw_body fn, void *ctx);
 void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o);
 void mcw_for_linger(int passes);	/* 16 at first; 0: a worker leaves the team at once */
 void mcw_for_end(void);			/* the team leaves, and is waited for (before calls or mcw_post) */
+/*
+ * The same round begun and not waited for: the first core's own pieces (unless first_idle) are
+ * made before it returns, the workers' while it goes on. mcw_for_ready() asks (and helps a
+ * worker on); mcw_for_wait() waits and handles prints, deferred calls and failures. One out at a time.
+ */
+void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o);
+int mcw_for_ready(void);
+void mcw_for_wait(void);
 
 /* ---- calls collected later ---- */
 
@@ -45,6 +53,8 @@ void mcw_for_end(void);			/* the team leaves, and is waited for (before calls or
  */
 typedef int mcw_handle;
 mcw_handle mcw_call(mcw_fn fn, uint32_t a0, uint32_t a1);
+/* The same only where a worker has nothing to do: 0, and nothing made, where none has. */
+mcw_handle mcw_try_call(mcw_fn fn, uint32_t a0, uint32_t a1);
 int mcw_ready(mcw_handle h);
 uint32_t mcw_join(mcw_handle h);
 
@@ -52,6 +62,8 @@ uint32_t mcw_join(mcw_handle h);
 
 /* A line for the first core to write when the job is joined (%d %u %x %s %c %p, widths, 0). */
 void mcw_print(const char *format, ...);
+/* A long job's lines so far written now (on a worker by a system call the first core makes). */
+void mcw_print_now(void);
 /* fn(a0, a1) made by the first core when the job is joined, in the order asked. */
 void mcw_defer(mcw_fn fn, uint32_t a0, uint32_t a1);
 /* Memory of this core's own, 16-byte aligned, until mcw_scratch_reset() on this core. */

@@ -21,10 +21,31 @@ index 550368e..a5d701d 100644
  		time = 1;
  	Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames/time);
 diff --git a/WinQuake/cl_main.c b/WinQuake/cl_main.c
-index 5812143..e2ded71 100644
+index 5812143..d437e2a 100644
 --- a/WinQuake/cl_main.c
 +++ b/WinQuake/cl_main.c
-@@ -394,7 +394,7 @@ float	CL_LerpPoint (void)
+@@ -63,6 +63,10 @@ void CL_ClearState (void)
+ {
+ 	int			i;
+ 
++#ifdef SHADEREMU
++	SE_SceneOwn ();
++#endif
++
+ 	if (!sv.active)
+ 		Host_ClearMemory ();
+ 
+@@ -98,6 +102,9 @@ This is also called on Host_Error, so it shouldn't cause any errors
+ */
+ void CL_Disconnect (void)
+ {
++#ifdef SHADEREMU
++	SE_SceneOwn ();
++#endif
+ // stop sounds (especially looping!)
+ 	S_StopAllSounds (true);
+ 	
+@@ -394,7 +401,7 @@ float	CL_LerpPoint (void)
  
  	f = cl.mtime[0] - cl.mtime[1];
  	
@@ -33,7 +54,7 @@ index 5812143..e2ded71 100644
  	{
  		cl.time = cl.mtime[0];
  		return 1;
-@@ -409,6 +409,7 @@ float	CL_LerpPoint (void)
+@@ -409,6 +416,7 @@ float	CL_LerpPoint (void)
  //Con_Printf ("frac: %f\n",frac);
  	if (frac < 0)
  	{
@@ -41,7 +62,7 @@ index 5812143..e2ded71 100644
  		if (frac < -0.01)
  		{
  SetPal(1);
-@@ -417,8 +418,11 @@ SetPal(1);
+@@ -417,8 +425,11 @@ SetPal(1);
  		}
  		frac = 0;
  	}
@@ -53,7 +74,7 @@ index 5812143..e2ded71 100644
  		if (frac > 1.01)
  		{
  SetPal(2);
-@@ -439,6 +443,10 @@ SetPal(2);
+@@ -439,6 +450,10 @@ SetPal(2);
  CL_RelinkEntities
  ===============
  */
@@ -64,7 +85,7 @@ index 5812143..e2ded71 100644
  void CL_RelinkEntities (void)
  {
  	entity_t	*ent;
-@@ -478,6 +486,31 @@ void CL_RelinkEntities (void)
+@@ -478,6 +493,31 @@ void CL_RelinkEntities (void)
  	bobjrotate = anglemod(100*cl.time);
  	
  // start on the entity after the world
@@ -96,7 +117,7 @@ index 5812143..e2ded71 100644
  	for (i=1,ent=cl_entities+1 ; i<cl.num_entities ; i++,ent++)
  	{
  		if (!ent->model)
-@@ -486,6 +519,7 @@ void CL_RelinkEntities (void)
+@@ -486,6 +526,7 @@ void CL_RelinkEntities (void)
  				R_RemoveEfrags (ent);	// just became empty
  			continue;
  		}
@@ -104,7 +125,7 @@ index 5812143..e2ded71 100644
  
  // if the object wasn't included in the last packet, remove it
  		if (ent->msgtime != cl.mtime[0])
-@@ -636,7 +670,8 @@ int CL_ReadFromServer (void)
+@@ -636,7 +677,8 @@ int CL_ReadFromServer (void)
  	int		ret;
  
  	cl.oldtime = cl.time;
@@ -114,7 +135,7 @@ index 5812143..e2ded71 100644
  	
  	do
  	{
-@@ -646,7 +681,7 @@ int CL_ReadFromServer (void)
+@@ -646,7 +688,7 @@ int CL_ReadFromServer (void)
  		if (!ret)
  			break;
  		
@@ -123,7 +144,18 @@ index 5812143..e2ded71 100644
  		CL_ParseServerMessage ();
  	} while (ret && cls.state == ca_connected);
  	
-@@ -662,6 +697,21 @@ int CL_ReadFromServer (void)
+@@ -654,6 +696,10 @@ int CL_ReadFromServer (void)
+ 		Con_Printf ("\n");
+ 
+ 	CL_RelinkEntities ();
++#ifdef SHADEREMU
++	if (!SE_SceneSplitLast ())	// (else when the frame is given out: scene_shaderemu.c)
++		SE_FrameJobs ();	// (the light under the models that moved, the water, the particles: on workers)
++#endif
+ 	CL_UpdateTEnts ();
+ 
+ //
+@@ -662,6 +708,21 @@ int CL_ReadFromServer (void)
  	return 0;
  }
  
@@ -145,7 +177,7 @@ index 5812143..e2ded71 100644
  /*
  =================
  CL_SendCmd
-@@ -669,6 +719,8 @@ CL_SendCmd
+@@ -669,6 +730,8 @@ CL_SendCmd
  */
  void CL_SendCmd (void)
  {
@@ -154,7 +186,7 @@ index 5812143..e2ded71 100644
  	usercmd_t		cmd;
  
  	if (cls.state != ca_connected)
-@@ -682,8 +734,9 @@ void CL_SendCmd (void)
+@@ -682,8 +745,9 @@ void CL_SendCmd (void)
  	// allow mice or other external controllers to add to the move
  		IN_Move (&cmd);
  	
@@ -166,7 +198,7 @@ index 5812143..e2ded71 100644
  	
  	}
  
-@@ -736,6 +789,7 @@ void CL_Init (void)
+@@ -736,6 +800,7 @@ void CL_Init (void)
  	Cvar_RegisterVariable (&cl_anglespeedkey);
  	Cvar_RegisterVariable (&cl_shownet);
  	Cvar_RegisterVariable (&cl_nolerp);
@@ -175,10 +207,18 @@ index 5812143..e2ded71 100644
  	Cvar_RegisterVariable (&lookstrafe);
  	Cvar_RegisterVariable (&sensitivity);
 diff --git a/WinQuake/cl_parse.c b/WinQuake/cl_parse.c
-index c79ca47..f335513 100644
+index c79ca47..50a2d74 100644
 --- a/WinQuake/cl_parse.c
 +++ b/WinQuake/cl_parse.c
-@@ -326,6 +326,7 @@ relinked.  Other attributes can change without relinking.
+@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+ // cl_parse.c  -- parse a message received from the server
+ 
++#define SE_MSG_INLINE	// (common.h: the message's readers inline)
+ #include "quakedef.h"
+ 
+ char *svc_strings[] =
+@@ -326,6 +327,7 @@ relinked.  Other attributes can change without relinking.
  ==================
  */
  int	bitcounts[16];
@@ -186,7 +226,7 @@ index c79ca47..f335513 100644
  
  void CL_ParseUpdate (int bits)
  {
-@@ -356,9 +357,14 @@ void CL_ParseUpdate (int bits)
+@@ -356,9 +358,14 @@ void CL_ParseUpdate (int bits)
  
  	ent = CL_EntityNum (num);
  
@@ -201,7 +241,24 @@ index c79ca47..f335513 100644
  
  	if (ent->msgtime != cl.mtime[1])
  		forcelink = true;	// no previous frame to lerp from
-@@ -824,6 +830,11 @@ void CL_ParseServerMessage (void)
+@@ -758,7 +765,15 @@ void CL_ParseServerMessage (void)
+ 		}
+ 
+ 		SHOWNET(svc_strings[cmd]);
+-	
++#ifdef SHADEREMU
++		// (but a frame's everyday messages, what changes what a worker's frame draws waits for it)
++		if (cmd != svc_time && cmd != svc_clientdata && cmd != svc_damage && cmd != svc_setangle && cmd != svc_sound
++			&& cmd != svc_stopsound && cmd != svc_particle && cmd != svc_temp_entity && cmd != svc_updatestat && cmd != svc_stufftext
++			&& cmd != svc_lightstyle && cmd != svc_killedmonster && cmd != svc_foundsecret && cmd != svc_updatefrags
++			&& cmd != svc_setview && cmd != svc_spawnbaseline && cmd != svc_nop)
++			SE_SceneOwn ();
++#endif
++
+ 	// other commands
+ 		switch (cmd)
+ 		{
+@@ -824,6 +839,11 @@ void CL_ParseServerMessage (void)
  			if (i >= MAX_LIGHTSTYLES)
  				Sys_Error ("svc_lightstyle > MAX_LIGHTSTYLES");
  			Q_strcpy (cl_lightstyle[i].map,  MSG_ReadString());
@@ -213,6 +270,18 @@ index c79ca47..f335513 100644
  			cl_lightstyle[i].length = Q_strlen(cl_lightstyle[i].map);
  			break;
  			
+diff --git a/WinQuake/cl_tent.c b/WinQuake/cl_tent.c
+index 546e832..245f15f 100644
+--- a/WinQuake/cl_tent.c
++++ b/WinQuake/cl_tent.c
+@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+ // cl_tent.c -- client side temporary entities
+ 
++#define SE_MSG_INLINE	// (common.h: the message's readers inline)
+ #include "quakedef.h"
+ 
+ int			num_temp_entities;
 diff --git a/WinQuake/client.h b/WinQuake/client.h
 index 7c59ee9..1f465d0 100644
 --- a/WinQuake/client.h
@@ -256,7 +325,7 @@ index 7c59ee9..1f465d0 100644
  //
  // information that is static for the entire time connected to a server
 diff --git a/WinQuake/cmd.c b/WinQuake/cmd.c
-index 0778c5e..34d4f39 100644
+index 0778c5e..cdb0a06 100644
 --- a/WinQuake/cmd.c
 +++ b/WinQuake/cmd.c
 @@ -86,7 +86,13 @@ Adds command text at the end of the buffer
@@ -274,7 +343,20 @@ index 0778c5e..34d4f39 100644
  	l = Q_strlen (text);
  
  	if (cmd_text.cursize + l >= cmd_text.maxsize)
-@@ -628,6 +634,7 @@ void	Cmd_ExecuteString (char *text, cmd_source_t src)
+@@ -146,7 +152,11 @@ void Cbuf_Execute (void)
+ 	char	*text;
+ 	char	line[1024];
+ 	int		quotes;
+-	
++
++#ifdef SHADEREMU
++	if (cmd_text.cursize)
++		SE_SceneOwn ();	// (a command may change anything a worker's frame draws)
++#endif
+ 	while (cmd_text.cursize)
+ 	{
+ // find a \n or ; line break
+@@ -628,6 +638,7 @@ void	Cmd_ExecuteString (char *text, cmd_source_t src)
  	{
  		if (!Q_strcasecmp (cmd_argv[0],cmd->name))
  		{
@@ -357,7 +439,7 @@ index e07e6ce..a1ffb59 100644
  		com_modified = true;
  
 diff --git a/WinQuake/common.h b/WinQuake/common.h
-index 87d4a55..f698323 100644
+index 87d4a55..8f1f1db 100644
 --- a/WinQuake/common.h
 +++ b/WinQuake/common.h
 @@ -93,6 +93,12 @@ extern	int	(*BigLong) (int l);
@@ -373,11 +455,91 @@ index 87d4a55..f698323 100644
  
  //============================================================================
  
+@@ -119,6 +125,55 @@ char *MSG_ReadString (void);
+ float MSG_ReadCoord (void);
+ float MSG_ReadAngle (void);
+ 
++#if defined (SHADEREMU) && defined (SE_MSG_INLINE)
++// The readers as common.c has them, inline where a message is read byte by byte every frame
++// (the client's updates): a call each was much of what a byte cost.
++extern	sizebuf_t	net_message;
++
++static inline int se_msg_char (void)
++{
++	if (msg_readcount+1 > net_message.cursize)
++	{
++		msg_badread = true;
++		return -1;
++	}
++	return (signed char)net_message.data[msg_readcount++];
++}
++
++static inline int se_msg_byte (void)
++{
++	if (msg_readcount+1 > net_message.cursize)
++	{
++		msg_badread = true;
++		return -1;
++	}
++	return (unsigned char)net_message.data[msg_readcount++];
++}
++
++static inline int se_msg_short (void)
++{
++	int	c;
++
++	if (msg_readcount+2 > net_message.cursize)
++	{
++		msg_badread = true;
++		return -1;
++	}
++	c = (short)(net_message.data[msg_readcount] + (net_message.data[msg_readcount+1]<<8));
++	msg_readcount += 2;
++	return c;
++}
++
++static inline float se_msg_coord (void) { return se_msg_short() * (1.0/8); }
++static inline float se_msg_angle (void) { return se_msg_char() * (360.0/256); }
++
++#define MSG_ReadChar	se_msg_char
++#define MSG_ReadByte	se_msg_byte
++#define MSG_ReadShort	se_msg_short
++#define MSG_ReadCoord	se_msg_coord
++#define MSG_ReadAngle	se_msg_angle
++#endif
++
+ //============================================================================
+ 
+ void Q_memset (void *dest, int fill, int count);
 diff --git a/WinQuake/console.c b/WinQuake/console.c
-index cad58f8..6608444 100644
+index cad58f8..c12d85c 100644
 --- a/WinQuake/console.c
 +++ b/WinQuake/console.c
-@@ -45,7 +45,7 @@ char		*con_text=0;
+@@ -41,11 +41,31 @@ int			con_backscroll;		// lines up from bottom to display
+ int			con_current;		// where next message will be printed
+ int			con_x;				// offset in current line for next print
+ char		*con_text=0;
++#ifdef SHADEREMU
++// The text changes (a print, a new line, a resize): what se_line_length knows of a line is stale.
++static unsigned	se_con_serial = 1;
++
++// A line's characters up to its trailing spaces, which draw nothing: most of a notify line is
++// those, and each was some instructions of the drawing's loop every frame.
++static int se_line_length (int line)
++{
++	static struct { int line; unsigned serial; int length, unused; } was[8];
++	const char	*text = con_text + (line % con_totallines)*con_linewidth;
++	int			n = con_linewidth, *w = &was[line & 7].line;
++
++	if (w[0] == line && w[1] == (int)se_con_serial)
++		return w[2];
++	while (n > 0 && text[n - 1] == ' ')
++		n--;
++	w[0] = line, w[1] = (int)se_con_serial, w[2] = n;
++	return n;
++}
++#endif
+ 
  cvar_t		con_notifytime = {"con_notifytime","3"};		//seconds
  
  #define	NUM_CON_TIMES 4
@@ -386,7 +548,47 @@ index cad58f8..6608444 100644
  								// for transparent notify lines
  
  int			con_vislines;
-@@ -318,7 +318,7 @@ void Con_Print (char *txt)
+@@ -100,6 +120,9 @@ void Con_Clear_f (void)
+ {
+ 	if (con_text)
+ 		Q_memset (con_text, ' ', CON_TEXTSIZE);
++#ifdef SHADEREMU
++	se_con_serial++;
++#endif
+ }
+ 
+ 						
+@@ -159,6 +182,9 @@ void Con_CheckResize (void)
+ 
+ 	if (width == con_linewidth)
+ 		return;
++#ifdef SHADEREMU
++	se_con_serial++;
++#endif
+ 
+ 	if (width < 1)			// video hasn't been initialized yet
+ 	{
+@@ -253,6 +279,9 @@ Con_Linefeed
+ */
+ void Con_Linefeed (void)
+ {
++#ifdef SHADEREMU
++	se_con_serial++;
++#endif
+ 	con_x = 0;
+ 	con_current++;
+ 	Q_memset (&con_text[(con_current%con_totallines)*con_linewidth]
+@@ -270,6 +299,9 @@ If no console is visible, the notify window will pop up.
+ */
+ void Con_Print (char *txt)
+ {
++#ifdef SHADEREMU
++	SE_SceneOwn ();	// (the console's text: the frame a worker draws is waited for)
++#endif
+ 	int		y;
+ 	int		c, l;
+ 	static int	cr;
+@@ -318,7 +350,7 @@ void Con_Print (char *txt)
  			Con_Linefeed ();
  		// mark time for transparent overlay
  			if (con_current >= 0)
@@ -395,7 +597,17 @@ index cad58f8..6608444 100644
  		}
  
  		switch (c)
-@@ -383,7 +383,13 @@ void Con_Printf (char *fmt, ...)
+@@ -335,6 +367,9 @@ void Con_Print (char *txt)
+ 		default:	// display character and advance
+ 			y = con_current % con_totallines;
+ 			con_text[y*con_linewidth+con_x] = c | mask;
++#ifdef SHADEREMU
++			se_con_serial++;
++#endif
+ 			con_x++;
+ 			if (con_x >= con_linewidth)
+ 				con_x = 0;
+@@ -383,7 +418,20 @@ void Con_Printf (char *fmt, ...)
  	va_start (argptr,fmt);
  	vsprintf (msg,fmt,argptr);
  	va_end (argptr);
@@ -406,11 +618,18 @@ index cad58f8..6608444 100644
 +		SE_ServerKeepPrint (msg);
 +		return;
 +	}
++#ifdef SHADEREMU
++	if (mcw_on_worker ())
++	{	// (a frame drawn on a worker core: the line is written when the frame is joined)
++		mcw_print ("%s", msg);
++		return;
++	}
++#endif
 +
  // also echo to debugging console
  	Sys_Printf ("%s", msg);	// also echo to debugging console
  
-@@ -489,7 +495,7 @@ void Con_DrawInput (void)
+@@ -489,7 +537,7 @@ void Con_DrawInput (void)
  	text = key_lines[edit_line];
  	
  // add the cursor frame
@@ -419,7 +638,7 @@ index cad58f8..6608444 100644
  	
  // fill out remainder with spaces
  	for (i=key_linepos+1 ; i< con_linewidth ; i++)
-@@ -523,6 +529,7 @@ void Con_DrawNotify (void)
+@@ -523,6 +571,7 @@ void Con_DrawNotify (void)
  	char	*text;
  	int		i;
  	float	time;
@@ -427,7 +646,7 @@ index cad58f8..6608444 100644
  	extern char chat_buffer[];
  
  	v = 0;
-@@ -530,10 +537,10 @@ void Con_DrawNotify (void)
+@@ -530,10 +579,10 @@ void Con_DrawNotify (void)
  	{
  		if (i < 0)
  			continue;
@@ -441,12 +660,12 @@ index cad58f8..6608444 100644
  		if (time > con_notifytime.value)
  			continue;
  		text = con_text + (i % con_totallines)*con_linewidth;
-@@ -541,8 +548,12 @@ void Con_DrawNotify (void)
+@@ -541,8 +590,12 @@ void Con_DrawNotify (void)
  		clearnotify = 0;
  		scr_copytop = 1;
  
 +#ifdef SHADEREMU
-+		Draw_Characters (8, v, text, con_linewidth);
++		Draw_Characters (8, v, text, se_line_length (i));
 +#else
  		for (x = 0 ; x < con_linewidth ; x++)
  			Draw_Character ( (x+1)<<3, v, text[x]);
@@ -454,7 +673,7 @@ index cad58f8..6608444 100644
  
  		v += 8;
  	}
-@@ -561,7 +572,7 @@ void Con_DrawNotify (void)
+@@ -561,7 +614,7 @@ void Con_DrawNotify (void)
  			Draw_Character ( (x+5)<<3, v, chat_buffer[x]);
  			x++;
  		}
@@ -463,7 +682,7 @@ index cad58f8..6608444 100644
  		v += 8;
  	}
  	
-@@ -603,8 +614,12 @@ void Con_DrawConsole (int lines, qboolean drawinput)
+@@ -603,8 +656,12 @@ void Con_DrawConsole (int lines, qboolean drawinput)
  			j = 0;
  		text = con_text + (j % con_totallines)*con_linewidth;
  
@@ -476,7 +695,7 @@ index cad58f8..6608444 100644
  	}
  
  // draw the input prompt, user text, and cursor if desired
-@@ -620,7 +635,7 @@ Con_NotifyBox
+@@ -620,7 +677,7 @@ Con_NotifyBox
  */
  void Con_NotifyBox (char *text)
  {
@@ -485,7 +704,7 @@ index cad58f8..6608444 100644
  
  // during startup for sound / cd warnings
  	Con_Printf("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n");
-@@ -635,15 +650,15 @@ void Con_NotifyBox (char *text)
+@@ -635,15 +692,15 @@ void Con_NotifyBox (char *text)
  
  	do
  	{
@@ -536,7 +755,7 @@ index cad9772..1e9094f 100644
 +void CRC_ProcessBlock(unsigned short *crcvalue, byte *data, int count);
  unsigned short CRC_Value(unsigned short crcvalue);
 diff --git a/WinQuake/cvar.c b/WinQuake/cvar.c
-index 07a761a..547f68a 100644
+index 07a761a..2dd83f7 100644
 --- a/WinQuake/cvar.c
 +++ b/WinQuake/cvar.c
 @@ -52,7 +52,7 @@ float	Cvar_VariableValue (char *var_name)
@@ -548,7 +767,7 @@ index 07a761a..547f68a 100644
  }
  
  
-@@ -105,7 +105,12 @@ void Cvar_Set (char *var_name, char *value)
+@@ -105,7 +105,16 @@ void Cvar_Set (char *var_name, char *value)
  {
  	cvar_t	*var;
  	qboolean changed;
@@ -558,6 +777,10 @@ index 07a761a..547f68a 100644
 +	{
 +		SE_ServerKeepCvar (var_name, value);
 +		return;
++	}
++	if (!mcw_on_worker ())
++	{
++		SE_SceneOwn ();	// (a setting a worker's frame reads)
 +	}
  	var = Cvar_FindVar (var_name);
  	if (!var)
@@ -574,10 +797,24 @@ index 5055b65..9ad212e 100644
  qpic_t *Draw_PicFromWad (char *name);
  qpic_t *Draw_CachePic (char *path);
 diff --git a/WinQuake/gl_draw.c b/WinQuake/gl_draw.c
-index 25a8007..118bb2f 100644
+index 25a8007..1d07424 100644
 --- a/WinQuake/gl_draw.c
 +++ b/WinQuake/gl_draw.c
-@@ -520,6 +520,11 @@ void Draw_Character (int x, int y, int num)
+@@ -74,6 +74,13 @@ void GL_Bind (int texnum)
+ {
+ 	if (gl_nobind.value)
+ 		texnum = char_texture;
++#ifdef SHADEREMU
++	if (qglRecording ())
++	{	// (the 2D screen recorded on the first core: what the drawing core has bound is its own)
++		glBindTexture (GL_TEXTURE_2D, texnum);
++		return;
++	}
++#endif
+ 	if (currenttexture == texnum)
+ 		return;
+ 	currenttexture = texnum;
+@@ -520,6 +527,11 @@ void Draw_Character (int x, int y, int num)
  
  	GL_Bind (char_texture);
  
@@ -589,7 +826,7 @@ index 25a8007..118bb2f 100644
  	glBegin (GL_QUADS);
  	glTexCoord2f (fcol, frow);
  	glVertex2f (x, y);
-@@ -532,6 +537,28 @@ void Draw_Character (int x, int y, int num)
+@@ -532,6 +544,28 @@ void Draw_Character (int x, int y, int num)
  	glEnd ();
  }
  
@@ -618,7 +855,7 @@ index 25a8007..118bb2f 100644
  /*
  ================
  Draw_String
-@@ -539,6 +566,10 @@ Draw_String
+@@ -539,6 +573,10 @@ Draw_String
  */
  void Draw_String (int x, int y, char *str)
  {
@@ -629,7 +866,33 @@ index 25a8007..118bb2f 100644
  	while (*str)
  	{
  		Draw_Character (x, y, *str);
-@@ -614,6 +645,10 @@ void Draw_Pic (int x, int y, qpic_t *pic)
+@@ -573,7 +611,14 @@ void Draw_AlphaPic (int x, int y, qpic_t *pic, float alpha)
+ 	glpic_t			*gl;
+ 
+ 	if (scrap_dirty)
++	{
++		if (qglRecording ())
++		{	// (a texture made: not on the core that records the 2D screen)
++			qglRecordFail ();
++			return;
++		}
+ 		Scrap_Upload ();
++	}
+ 	gl = (glpic_t *)pic->data;
+ 	glDisable(GL_ALPHA_TEST);
+ 	glEnable (GL_BLEND);
+@@ -610,10 +655,21 @@ void Draw_Pic (int x, int y, qpic_t *pic)
+ 	glpic_t			*gl;
+ 
+ 	if (scrap_dirty)
++	{
++		if (qglRecording ())
++		{	// (a texture made: not on the core that records the 2D screen)
++			qglRecordFail ();
++			return;
++		}
+ 		Scrap_Upload ();
++	}
  	gl = (glpic_t *)pic->data;
  	glColor4f (1,1,1,1);
  	GL_Bind (gl->texnum);
@@ -640,7 +903,7 @@ index 25a8007..118bb2f 100644
  	glBegin (GL_QUADS);
  	glTexCoord2f (gl->sl, gl->tl);
  	glVertex2f (x, y);
-@@ -838,8 +873,25 @@ void GL_Set2D (void)
+@@ -838,8 +894,25 @@ void GL_Set2D (void)
  	glViewport (glx, gly, glwidth, glheight);
  
  	glMatrixMode(GL_PROJECTION);
@@ -666,7 +929,7 @@ index 25a8007..118bb2f 100644
  
  	glMatrixMode(GL_MODELVIEW);
      glLoadIdentity ();
-@@ -1124,6 +1176,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
+@@ -1124,6 +1197,10 @@ void GL_Upload8_EXT (byte *data, int width, int height,  qboolean mipmap, qboole
  	if (scaled_height > gl_max_size.value)
  		scaled_height = gl_max_size.value;
  
@@ -677,7 +940,7 @@ index 25a8007..118bb2f 100644
  	if (scaled_width * scaled_height > sizeof(scaled))
  		Sys_Error ("GL_LoadTexture: too big");
  
-@@ -1190,6 +1246,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
+@@ -1190,6 +1267,17 @@ static	unsigned	trans[640*480];		// FIXME, temporary
  	int			p;
  
  	s = width*height;
@@ -695,7 +958,7 @@ index 25a8007..118bb2f 100644
  	// if there are no transparent pixels, make it a 3 component
  	// texture even if it was specified as otherwise
  	if (alpha)
-@@ -1250,10 +1317,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
+@@ -1250,10 +1338,10 @@ int GL_LoadTexture (char *identifier, int width, int height, byte *data, qboolea
  			}
  		}
  	}
@@ -849,14 +1112,35 @@ index ae576b8..444a890 100644
  } model_t;
  
  //============================================================================
+diff --git a/WinQuake/gl_refrag.c b/WinQuake/gl_refrag.c
+index 1b060b3..f6fa07d 100644
+--- a/WinQuake/gl_refrag.c
++++ b/WinQuake/gl_refrag.c
+@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // r_efrag.c
+ 
+ #include "quakedef.h"
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
+ 
+ mnode_t	*r_pefragtopnode;
+ 
 diff --git a/WinQuake/gl_rlight.c b/WinQuake/gl_rlight.c
-index 80ada45..5387399 100644
+index 80ada45..c4f7382 100644
 --- a/WinQuake/gl_rlight.c
 +++ b/WinQuake/gl_rlight.c
-@@ -29,24 +29,33 @@ int	r_dlightframecount;
+@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // r_light.c
+ 
+ #include "quakedef.h"
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
+ 
+ int	r_dlightframecount;
+ 
+@@ -29,27 +30,38 @@ int	r_dlightframecount;
  R_AnimateLight
  ==================
  */
++#include "se_real.h"	// (the first core's, when the frame is given out)
 +extern int se_lights_changed;	// (world_shaderemu.c: the workers make the light maps again)
 +int se_lightstyles;	// goes up when a style's letters or the values below may be others
  void R_AnimateLight (void)
@@ -885,9 +1169,14 @@ index 80ada45..5387399 100644
  		k = k*22;
 +		se_lights_changed |= d_lightstylevalue[j] != k;
  		d_lightstylevalue[j] = k;
- 	}	
+-	}	
++	}
  }
-@@ -88,6 +97,47 @@ void R_RenderDlight (dlight_t *light)
++#include "se_scene.h"
+ 
+ /*
+ =============================================================================
+@@ -88,6 +100,47 @@ void R_RenderDlight (dlight_t *light)
  		return;
  	}
  
@@ -935,7 +1224,7 @@ index 80ada45..5387399 100644
  	glBegin (GL_TRIANGLE_FAN);
  	glColor3f (0.2,0.1,0.0);
  	for (i=0 ; i<3 ; i++)
-@@ -187,6 +237,7 @@ void R_MarkLights (dlight_t *light, int bit, mnode_t *node)
+@@ -187,6 +240,7 @@ void R_MarkLights (dlight_t *light, int bit, mnode_t *node)
  		{
  			surf->dlightbits = 0;
  			surf->dlightframe = r_dlightframecount;
@@ -943,22 +1232,25 @@ index 80ada45..5387399 100644
  		}
  		surf->dlightbits |= bit;
  	}
-@@ -233,6 +284,14 @@ LIGHT SAMPLING
+@@ -233,7 +287,17 @@ LIGHT SAMPLING
  mplane_t		*lightplane;
  vec3_t			lightspot;
  
 +#ifdef SHADEREMU
-+// The surface under a point and the sample of its light map there, as RecursiveLightPoint last
-+// found them. For a thing that has not moved (a torch, a monster standing) the walk down the
-+// level is not made again when the lights flicker, ten times a second: the sample is read anew.
-+static msurface_t	*se_light_surf;
-+static byte		*se_light_at;
-+#endif
++// What RecursiveLightPoint found: where it last looked (lightspot, lightplane, if it looked) and
++// the surface under the point with the sample of its light map there. For a thing that has not
++// moved (a torch, a monster standing) the walk down the level is not made again when the lights
++// flicker, ten times a second: the sample is read anew. A worker walks for things that moved.
++typedef struct { vec3_t spot; mplane_t *plane; msurface_t *surf; byte *sample; model_t *world; int looked, light; } se_hit_t;
 +
++int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end, se_hit_t *hit)
++#else
  int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
++#endif
  {
  	int			r;
-@@ -254,10 +313,33 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+ 	float		front, back, frac;
+@@ -254,11 +318,37 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  // calculate mid point
  
  // FIXME: optimize for axial
@@ -990,9 +1282,34 @@ index 80ada45..5387399 100644
  	side = front < 0;
 +#endif
  	
++#ifdef SHADEREMU
++#define RecursiveLightPoint(n, s, e) RecursiveLightPoint (n, s, e, hit)
++#endif
  	if ( (back < 0) == side)
  		return RecursiveLightPoint (node->children[side], start, end);
-@@ -288,6 +370,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+ 	
+@@ -276,10 +366,20 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+ 		return -1;		// didn't hit anuthing
+ 		
+ // check for impact on this node
++#ifdef SHADEREMU
++	VectorCopy (mid, hit->spot);
++	hit->plane = plane;
++	hit->looked = 1;
++#else
+ 	VectorCopy (mid, lightspot);
+ 	lightplane = plane;
++#endif
+ 
++#ifdef SHADEREMU
++	surf = hit->world->surfaces + node->firstsurface;	// (the level the caller walks)
++#else
+ 	surf = cl.worldmodel->surfaces + node->firstsurface;
++#endif
+ 	for (i=0 ; i<node->numsurfaces ; i++, surf++)
+ 	{
+ 		if (surf->flags & SURF_DRAWTILED)
+@@ -288,6 +388,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  		tex = surf->texinfo;
  		
  		s = DotProduct (mid, tex->vecs[0]) + tex->vecs[0][3];
@@ -1003,27 +1320,228 @@ index 80ada45..5387399 100644
  		t = DotProduct (mid, tex->vecs[1]) + tex->vecs[1][3];;
  
  		if (s < surf->texturemins[0] ||
-@@ -312,6 +398,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+@@ -312,6 +416,10 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
  		{
  
  			lightmap += dt * ((surf->extents[0]>>4)+1) + ds;
 +#ifdef SHADEREMU
-+			se_light_surf = surf;	// where the light is: R_LightPoint remembers it
-+			se_light_at = lightmap;
++			hit->surf = surf;	// where the light is: R_LightPoint remembers it
++			hit->sample = lightmap;
 +#endif
  
  			for (maps = 0 ; maps < MAXLIGHTMAPS && surf->styles[maps] != 255 ;
  					maps++)
-@@ -336,6 +426,35 @@ int R_LightPoint (vec3_t p)
+@@ -330,12 +438,235 @@ int RecursiveLightPoint (mnode_t *node, vec3_t start, vec3_t end)
+ 
+ // go down back side
+ 	return RecursiveLightPoint (node->children[!side], mid, end);
++#undef RecursiveLightPoint
++}
++
++#ifdef SHADEREMU
++/*
++The light under things that moved, found by a worker while this core goes on to the picture
++(the frame's jobs, after the entities are placed): the walk down the level for each, which is all
++that is kept. The sample's light is worked out again when it is used, by the styles as they are
++then. A thing whose answer is not there yet when it is drawn has its walk made here, as before.
++*/
++#include "mcwx.h"
++#define SE_AHEAD	32
++typedef struct {
++	vec3_t		at[SE_AHEAD];
++	model_t		*world;
++	int			count, frame;
++	se_hit_t	hit[SE_AHEAD] __attribute__ ((aligned (16)));
++	volatile int	done __attribute__ ((aligned (16)));	// the worker's: 1 + the frame whose walks it has made (seen a pass later)
++} se_ahead_t;
++// one for each copy of a frame (scene_shaderemu.c): the first core fills one while a frame drawn
++// from the other reads its own
++static se_ahead_t	se_aheads[2] __attribute__ ((aligned (16)));
++static se_ahead_t	*se_ahead_fill = &se_aheads[0], *se_ahead_draw;
++#define se_ahead (*se_ahead_fill)
++static int se_ahead_next;	// the table the next walks go into, taken when no walk is out
++void SE_LightAheadFill (int slot) { se_ahead_next = slot; }
++void SE_LightAheadDraw (int slot) { se_ahead_draw = slot < 0 ? NULL : &se_aheads[slot]; }	// (-1: the one filled)
++static struct { vec3_t at, spot; mplane_t *plane; model_t *world; int when, light, serial; msurface_t *surf; byte *sample; } se_was[256];
++extern int se_map_serial;	// (world_shaderemu.c: goes up when the models go)
++unsigned se_ahead_used, se_ahead_late, se_ahead_own, se_ahead_wrong;
++static int se_ahead_check;	// QUAKE_LIGHTPOINT=check: each walk a worker made is made here too, and compared
++// the weapon's: placed after the entities (V_CalcRefdef), and drawn after the rest of the view
++static struct { vec3_t at; int frame, call, unused; se_hit_t hit __attribute__ ((aligned (16))); } se_gun __attribute__ ((aligned (16)));
++
++#include "se_real.h"	// (the first core's, when the frame is given out)
++static int se_was_of (const vec3_t p)
++{
++	return ((int)p[0] ^ (int)p[1] * 7 ^ (int)p[2] * 31) & 255;
++}
++
++void SE_LightAheadJob (void)
++{
++	vec3_t	end;
++	int		k;
++
++	for (k=0 ; k<se_ahead.count ; k++)
++	{
++		se_hit_t	*h = &se_ahead.hit[k];
++
++		h->looked = 0, h->surf = NULL, h->sample = NULL, h->world = se_ahead.world;
++		end[0] = se_ahead.at[k][0];
++		end[1] = se_ahead.at[k][1];
++		end[2] = se_ahead.at[k][2] - 2048;
++		h->light = RecursiveLightPoint (se_ahead.world->nodes, se_ahead.at[k], end, h);
++	}
++	se_ahead.done = se_ahead.frame + 1;
++}
++
++// Whether workers walk (QUAKE_LIGHTPOINT=frame: every walk made here, as before).
++static int se_ahead_how (void)
++{
++	static int	how = -1;
++
++	if (how < 0)
++	{
++		how = !(getenv ("QUAKE_LIGHTPOINT") && !strcmp (getenv ("QUAKE_LIGHTPOINT"), "frame")) && SE_Workers () > 0;
++		se_ahead_check = getenv ("QUAKE_LIGHTPOINT") && !strcmp (getenv ("QUAKE_LIGHTPOINT"), "check");
++		if (how)
++		{
++			mcw_touch (se_aheads, sizeof se_aheads);
++			mcw_touch (&se_gun, sizeof se_gun);
++		}
++	}
++	return how;
++}
++
++// After the entities are placed: the models that moved, for a worker's walks (how many).
++int SE_LightAheadPrepare (void)
++{
++	int			i, n = 0;
++
++	se_ahead_fill = &se_aheads[se_ahead_next];	// (none is out: SE_FramePoll)
++	se_ahead.count = 0;
++	if (!se_ahead_how () || !cl.worldmodel || !cl.worldmodel->lightdata)
++		return 0;
++	for (i=0 ; i<cl_numvisedicts && n<SE_AHEAD ; i++)
++	{
++		entity_t	*e = cl_visedicts[i];
++		const float	*p = e->origin;
++		__typeof__ (&se_was[0])	w;
++
++		if (e->model->type != mod_alias || e->se_culled == host_framecount - 1)
++			continue;	// (out of view last frame: if it comes in, its walk is made when it is drawn)
++		w = &se_was[se_was_of (p)];
++		if (w->when && w->at[0] == p[0] && w->at[1] == p[1] && w->at[2] == p[2] && w->serial == se_map_serial && w->world == cl.worldmodel)
++			continue;	// (R_LightPoint has it)
++		VectorCopy (p, se_ahead.at[n]);
++		n++;
++	}
++	if (SE_SceneSplitLast () && cl.viewent.model && n < SE_AHEAD)
++	{	// (given out with a frame a worker draws: the weapon is placed already)
++		const float	*p = cl.viewent.origin;
++		__typeof__ (&se_was[0])	w = &se_was[se_was_of (p)];
++
++		if (!(w->when && w->at[0] == p[0] && w->at[1] == p[1] && w->at[2] == p[2] && w->serial == se_map_serial && w->world == cl.worldmodel))
++		{
++			VectorCopy (p, se_ahead.at[n]);
++			n++;
++		}
++	}
++	se_ahead.count = n;
++	se_ahead.world = cl.worldmodel;
++	se_ahead.frame = host_framecount;
++	return n;
+ }
+ 
++static unsigned se_gun_walk (unsigned unused0, unsigned unused1)
++{
++	vec3_t	end;
++
++	se_gun.hit.looked = 0, se_gun.hit.surf = NULL, se_gun.hit.sample = NULL, se_gun.hit.world = cl.worldmodel;
++	end[0] = se_gun.at[0];
++	end[1] = se_gun.at[1];
++	end[2] = se_gun.at[2] - 2048;
++	se_gun.hit.light = RecursiveLightPoint (cl.worldmodel->nodes, se_gun.at, end, &se_gun.hit);
++	return 0;
++}
++
++// The weapon's walk for a worker, when it has moved.
++void SE_GunAhead (void)
++{
++	const float	*p = cl.viewent.origin;
++	__typeof__ (&se_was[0])	w = &se_was[se_was_of (p)];
++
++	if (se_gun.call)
++	{
++		if (!mcw_ready (se_gun.call))
++			return;
++		mcw_join (se_gun.call);
++		se_gun.call = 0;
++	}
++	if (!se_ahead_how () || SE_SceneSplitLast () || !cl.viewent.model || !cl.worldmodel || !cl.worldmodel->lightdata
++		|| (w->when && w->at[0] == p[0] && w->at[1] == p[1] && w->at[2] == p[2] && w->serial == se_map_serial && w->world == cl.worldmodel))
++		return;
++	VectorCopy (p, se_gun.at);
++	se_gun.frame = host_framecount;
++	se_gun.call = mcw_call (se_gun_walk, 0, 0);
++}
++
++void SE_GunSettle (void)
++{
++	if (se_gun.call)
++		mcw_join (se_gun.call);
++	se_gun.call = 0;
++}
++
++#include "se_scene.h"
++#undef se_ahead
++// The worker's walk for p, if it has made it this frame.
++static se_hit_t *se_ahead_hit (const vec3_t p)
++{
++	int		k;
++	const se_ahead_t	*a = se_ahead_draw ? se_ahead_draw : se_ahead_fill;
++
++	if (se_gun.call && se_gun.frame == host_framecount && se_gun.at[0] == p[0] && se_gun.at[1] == p[1] && se_gun.at[2] == p[2])
++	{
++		if (!mcw_ready (se_gun.call))
++		{
++			se_ahead_late++;
++			return NULL;
++		}
++		mcw_join (se_gun.call);
++		se_gun.call = 0;
++		se_ahead_used++;
++		return &se_gun.hit;
++	}
++
++	if (!a->count || a->frame != host_framecount || a->world != cl.worldmodel)
++	{
++		se_ahead_own++;
++		return NULL;
++	}
++	for (k=0 ; k<a->count ; k++)
++		if (a->at[k][0] == p[0] && a->at[k][1] == p[1] && a->at[k][2] == p[2])
++		{
++			if (a->done != a->frame + 1)
++			{
++				se_ahead_late++;
++				return NULL;
++			}
++			se_ahead_used++;
++			return &a->hit[k];
++		}
++	se_ahead_own++;
++	return NULL;
++}
++#endif
++
+ int R_LightPoint (vec3_t p)
  {
  	vec3_t		end;
  	int			r;
 +#ifdef SHADEREMU
-+	static struct { vec3_t at, spot; mplane_t *plane; model_t *world; int when, light, serial; msurface_t *surf; byte *sample; } was[64], *w;
-+	extern int se_map_serial;	// (world_shaderemu.c: goes up when the models go)
 +	int			when = (int)(cl.time * 10) + 1;
++	se_hit_t	own, *hit;
++	__typeof__ (&se_was[0])	w = &se_was[se_was_of (p)];
 +
-+	w = &was[((int)p[0] ^ (int)p[1] * 7 ^ (int)p[2] * 31) & 63];
 +	if (w->when && w->serial == se_map_serial && w->world == cl.worldmodel && w->at[0] == p[0] && w->at[1] == p[1] && w->at[2] == p[2])
 +	{
 +		VectorCopy (w->spot, lightspot);
@@ -1045,12 +1563,56 @@ index 80ada45..5387399 100644
 +		if (w->when == when)
 +			return w->light;
 +	}
-+	se_light_surf = NULL;
 +#endif
  	
  	if (!cl.worldmodel->lightdata)
  		return 255;
-@@ -348,6 +467,12 @@ int R_LightPoint (vec3_t p)
+@@ -344,10 +675,57 @@ int R_LightPoint (vec3_t p)
+ 	end[1] = p[1];
+ 	end[2] = p[2] - 2048;
+ 	
++#ifdef SHADEREMU
++	if ((hit = se_ahead_hit (p)) != NULL)
++	{	// (the same sum as RecursiveLightPoint's, by the styles as they are now)
++		r = hit->light;
++		if (hit->surf && hit->sample)
++		{
++			msurface_t	*surf = hit->surf;
++			byte		*lightmap = hit->sample;
++			int			maps;
++
++			for (r = 0, maps = 0 ; maps < MAXLIGHTMAPS && surf->styles[maps] != 255 ; maps++)
++			{
++				r += *lightmap * d_lightstylevalue[surf->styles[maps]];
++				lightmap += ((surf->extents[0]>>4)+1) * ((surf->extents[1]>>4)+1);
++			}
++			r >>= 8;
++		}
++		if (se_ahead_check)
++		{
++			int	mine;
++
++			own.looked = 0, own.surf = NULL, own.sample = NULL, own.world = cl.worldmodel;
++			mine = RecursiveLightPoint (cl.worldmodel->nodes, p, end, &own);
++			if (mine != r || own.looked != hit->looked || own.surf != hit->surf || own.sample != hit->sample
++				|| (own.looked && (own.plane != hit->plane || !VectorCompare (own.spot, hit->spot))))
++				se_ahead_wrong++;
++		}
++	}
++	else
++	{
++		hit = &own;
++		own.looked = 0, own.surf = NULL, own.sample = NULL, own.world = cl.worldmodel;
++		r = RecursiveLightPoint (cl.worldmodel->nodes, p, end, hit);
++	}
++	if (hit->looked)
++	{
++		VectorCopy (hit->spot, lightspot);
++		lightplane = hit->plane;
++	}
++#else
+ 	r = RecursiveLightPoint (cl.worldmodel->nodes, p, end);
++#endif
  	
  	if (r == -1)
  		r = 0;
@@ -1058,16 +1620,24 @@ index 80ada45..5387399 100644
 +	VectorCopy (p, w->at);
 +	VectorCopy (lightspot, w->spot);
 +	w->plane = lightplane, w->world = cl.worldmodel, w->when = when, w->light = r;
-+	w->surf = se_light_surf, w->sample = se_light_at, w->serial = se_map_serial;
++	w->surf = hit->surf, w->sample = hit->sample, w->serial = se_map_serial;
 +#endif
  
  	return r;
  }
 diff --git a/WinQuake/gl_rmain.c b/WinQuake/gl_rmain.c
-index d9bf41e..56fc7e7 100644
+index d9bf41e..5ceac29 100644
 --- a/WinQuake/gl_rmain.c
 +++ b/WinQuake/gl_rmain.c
-@@ -108,10 +108,27 @@ R_CullBox
+@@ -69,6 +69,7 @@ mleaf_t		*r_viewleaf, *r_oldviewleaf;
+ texture_t	*r_notexture_mip;
+ 
+ int		d_lightstylevalue[256];	// 8.8 fraction of base light value
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
+ 
+ 
+ void R_MarkLeaves (void);
+@@ -108,10 +109,27 @@ R_CullBox
  Returns true if the box is completely outside the frustom
  =================
  */
@@ -1095,7 +1665,7 @@ index d9bf41e..56fc7e7 100644
  	for (i=0 ; i<4 ; i++)
  		if (BoxOnPlaneSide (mins, maxs, &frustum[i]) == 2)
  			return true;
-@@ -121,11 +138,19 @@ qboolean R_CullBox (vec3_t mins, vec3_t maxs)
+@@ -121,11 +139,19 @@ qboolean R_CullBox (vec3_t mins, vec3_t maxs)
  
  void R_RotateForEntity (entity_t *e)
  {
@@ -1118,7 +1688,7 @@ index d9bf41e..56fc7e7 100644
  }
  
  /*
-@@ -301,6 +326,10 @@ void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
+@@ -301,6 +327,10 @@ void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
  
  lastposenum = posenum;
  
@@ -1129,7 +1699,7 @@ index d9bf41e..56fc7e7 100644
  	verts = (trivertx_t *)((byte *)paliashdr + paliashdr->posedata);
  	verts += posenum * paliashdr->poseverts;
  	order = (int *)((byte *)paliashdr + paliashdr->commands);
-@@ -346,6 +375,9 @@ extern	vec3_t			lightspot;
+@@ -346,6 +376,9 @@ extern	vec3_t			lightspot;
  
  void GL_DrawAliasShadow (aliashdr_t *paliashdr, int posenum)
  {
@@ -1139,7 +1709,7 @@ index d9bf41e..56fc7e7 100644
  	float	s, t, l;
  	int		i, j;
  	int		index;
-@@ -443,6 +475,11 @@ R_DrawAliasModel
+@@ -443,6 +476,11 @@ R_DrawAliasModel
  
  =================
  */
@@ -1151,7 +1721,17 @@ index d9bf41e..56fc7e7 100644
  void R_DrawAliasModel (entity_t *e)
  {
  	int			i, j;
-@@ -468,6 +505,9 @@ void R_DrawAliasModel (entity_t *e)
+@@ -463,11 +501,19 @@ void R_DrawAliasModel (entity_t *e)
+ 	VectorAdd (currententity->origin, clmodel->maxs, maxs);
+ 
+ 	if (R_CullBox (mins, maxs))
++	{
++#ifdef SHADEREMU
++		e->se_culled = host_framecount;
++#endif
+ 		return;
++	}
+ 
  
  	VectorCopy (currententity->origin, r_entorigin);
  	VectorSubtract (r_origin, r_entorigin, modelorg);
@@ -1161,7 +1741,7 @@ index d9bf41e..56fc7e7 100644
  
  	//
  	// get lighting information
-@@ -479,8 +519,24 @@ void R_DrawAliasModel (entity_t *e)
+@@ -479,8 +525,24 @@ void R_DrawAliasModel (entity_t *e)
  	if (e == &cl.viewent && ambientlight < 24)
  		ambientlight = shadelight = 24;
  
@@ -1186,7 +1766,7 @@ index d9bf41e..56fc7e7 100644
  		if (cl_dlights[lnum].die >= cl.time)
  		{
  			VectorSubtract (currententity->origin,
-@@ -509,18 +565,22 @@ void R_DrawAliasModel (entity_t *e)
+@@ -509,18 +571,22 @@ void R_DrawAliasModel (entity_t *e)
  			ambientlight = shadelight = 8;
  
  	// HACK HACK HACK -- no fullbright colors, so make torches full light
@@ -1216,7 +1796,7 @@ index d9bf41e..56fc7e7 100644
  
  	//
  	// locate the proper data
-@@ -535,6 +595,18 @@ void R_DrawAliasModel (entity_t *e)
+@@ -535,6 +601,18 @@ void R_DrawAliasModel (entity_t *e)
  
  	GL_DisableMultitexture();
  
@@ -1235,7 +1815,7 @@ index d9bf41e..56fc7e7 100644
      glPushMatrix ();
  	R_RotateForEntity (e);
  
-@@ -546,6 +618,7 @@ void R_DrawAliasModel (entity_t *e)
+@@ -546,6 +624,7 @@ void R_DrawAliasModel (entity_t *e)
  		glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2]);
  		glScalef (paliashdr->scale[0], paliashdr->scale[1], paliashdr->scale[2]);
  	}
@@ -1243,7 +1823,7 @@ index d9bf41e..56fc7e7 100644
  
  	anim = (int)(cl.time*10) & 3;
      GL_Bind(paliashdr->gl_texturenum[currententity->skinnum][anim]);
-@@ -574,6 +647,9 @@ void R_DrawAliasModel (entity_t *e)
+@@ -574,6 +653,9 @@ void R_DrawAliasModel (entity_t *e)
  	if (gl_affinemodels.value)
  		glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
  
@@ -1253,7 +1833,7 @@ index d9bf41e..56fc7e7 100644
  	glPopMatrix ();
  
  	if (r_shadows.value)
-@@ -625,6 +701,9 @@ void R_DrawEntitiesOnList (void)
+@@ -625,6 +707,9 @@ void R_DrawEntitiesOnList (void)
  			break;
  		}
  	}
@@ -1263,7 +1843,7 @@ index d9bf41e..56fc7e7 100644
  
  	for (i=0 ; i<cl_numvisedicts ; i++)
  	{
-@@ -676,6 +755,12 @@ void R_DrawViewModel (void)
+@@ -676,6 +761,12 @@ void R_DrawViewModel (void)
  	if (!currententity->model)
  		return;
  
@@ -1276,7 +1856,50 @@ index d9bf41e..56fc7e7 100644
  	j = R_LightPoint (currententity->origin);
  
  	if (j < 24)
-@@ -845,8 +930,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
+@@ -807,12 +898,42 @@ void R_SetFrustum (void)
+ R_SetupFrame
+ ===============
+ */
++#ifdef SHADEREMU
++#include "se_real.h"	// (the first core's, when the frame is given out)
++
++// R_SetupFrame's part that reads and changes the client's state: on the first core, when the
++// frame is given to a worker (scene_shaderemu.c), the same sums in the same order.
++void SE_SceneFront (void)
++{
++	if (cl.maxclients > 1)
++		Cvar_Set ("r_fullbright", "0");
++	R_AnimateLight ();
++	VectorCopy (r_refdef.vieworg, r_origin);
++	AngleVectors (r_refdef.viewangles, vpn, vright, vup);
++	r_oldviewleaf = r_viewleaf;
++	r_viewleaf = Mod_PointInLeaf (r_origin, cl.worldmodel);
++	V_SetContentsColor (r_viewleaf->contents);
++	V_CalcBlend ();
++}
++#include "se_scene.h"
++#endif
++
+ void R_SetupFrame (void)
+ {
+ 	int				edgecount;
+ 	vrect_t			vrect;
+ 	float			w, h;
+ 
++#ifdef SHADEREMU
++	if (se_scene_split)
++	{	// (the first core made the rest, when it gave the frame out)
++		r_framecount++;
++		r_cache_thrash = false;
++		c_brush_polys = 0;
++		c_alias_polys = 0;
++		return;
++	}
++#endif
+ // don't allow cheats in multiplayer
+ 	if (cl.maxclients > 1)
+ 		Cvar_Set ("r_fullbright", "0");
+@@ -845,8 +966,15 @@ void MYgluPerspective( GLdouble fovy, GLdouble aspect,
  		     GLdouble zNear, GLdouble zFar )
  {
     GLdouble xmin, xmax, ymin, ymax;
@@ -1294,7 +1917,7 @@ index d9bf41e..56fc7e7 100644
     ymin = -ymax;
  
     xmin = ymin * aspect;
-@@ -901,7 +993,22 @@ void R_SetupGL (void)
+@@ -901,7 +1029,22 @@ void R_SetupGL (void)
  	glViewport (glx + x, gly + y2, w, h);
      screenaspect = (float)r_refdef.vrect.width/r_refdef.vrect.height;
  //	yfov = 2*atan((float)r_refdef.vrect.height/r_refdef.vrect.width)*180/M_PI;
@@ -1317,7 +1940,7 @@ index d9bf41e..56fc7e7 100644
  
  	if (mirror)
  	{
-@@ -915,6 +1022,24 @@ void R_SetupGL (void)
+@@ -915,6 +1058,24 @@ void R_SetupGL (void)
  		glCullFace(GL_FRONT);
  
  	glMatrixMode(GL_MODELVIEW);
@@ -1342,7 +1965,7 @@ index d9bf41e..56fc7e7 100644
      glLoadIdentity ();
  
      glRotatef (-90,  1, 0, 0);	    // put Z going up
-@@ -925,6 +1050,7 @@ void R_SetupGL (void)
+@@ -925,6 +1086,7 @@ void R_SetupGL (void)
      glTranslatef (-r_refdef.vieworg[0],  -r_refdef.vieworg[1],  -r_refdef.vieworg[2]);
  
  	glGetFloatv (GL_MODELVIEW_MATRIX, r_world_matrix);
@@ -1350,7 +1973,7 @@ index d9bf41e..56fc7e7 100644
  
  	//
  	// set drawing parms
-@@ -948,6 +1074,7 @@ r_refdef must be set before the first call
+@@ -948,6 +1110,7 @@ r_refdef must be set before the first call
  */
  void R_RenderScene (void)
  {
@@ -1358,7 +1981,7 @@ index d9bf41e..56fc7e7 100644
  	R_SetupFrame ();
  
  	R_SetFrustum ();
-@@ -960,7 +1087,9 @@ void R_RenderScene (void)
+@@ -960,7 +1123,9 @@ void R_RenderScene (void)
  
  	S_ExtraUpdate ();	// don't let sound get messed up if going slow
  
@@ -1368,7 +1991,7 @@ index d9bf41e..56fc7e7 100644
  
  	GL_DisableMultitexture();
  
-@@ -1139,6 +1268,9 @@ void R_RenderView (void)
+@@ -1139,6 +1304,9 @@ void R_RenderView (void)
  
  	R_RenderScene ();
  	R_DrawViewModel ();
@@ -1379,10 +2002,18 @@ index d9bf41e..56fc7e7 100644
  
  //  More fog right here :)
 diff --git a/WinQuake/gl_rmisc.c b/WinQuake/gl_rmisc.c
-index c9719b5..f166ffa 100644
+index c9719b5..52d37d6 100644
 --- a/WinQuake/gl_rmisc.c
 +++ b/WinQuake/gl_rmisc.c
-@@ -77,6 +77,17 @@ void R_InitParticleTexture (void)
+@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // r_misc.c
+ 
+ #include "quakedef.h"
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
+ 
+ 
+ 
+@@ -77,6 +78,17 @@ void R_InitParticleTexture (void)
  	//
  	particletexture = texture_extension_number++;
      GL_Bind(particletexture);
@@ -1400,7 +2031,18 @@ index c9719b5..f166ffa 100644
  
  	for (x=0 ; x<8 ; x++)
  	{
-@@ -317,7 +328,9 @@ void R_TranslatePlayerSkin (int playernum)
+@@ -236,6 +248,10 @@ void R_TranslatePlayerSkin (int playernum)
+ 	model_t	*model;
+ 	aliashdr_t *paliashdr;
+ 	byte	*original;
++
++#ifdef SHADEREMU
++	SE_SceneOwn ();	// (a texture: the frame a worker draws is waited for)
++#endif
+ 	unsigned	pixels[512*256], *out;
+ 	unsigned	scaled_width, scaled_height;
+ 	int			inwidth, inheight;
+@@ -317,7 +333,9 @@ void R_TranslatePlayerSkin (int playernum)
  		byte *out2;
  
  		out2 = (byte *)pixels;
@@ -1410,8 +2052,15 @@ index c9719b5..f166ffa 100644
  		fracstep = inwidth*0x10000/scaled_width;
  		for (i=0 ; i<scaled_height ; i++, out2 += scaled_width)
  		{
-@@ -382,6 +395,11 @@ void R_NewMap (void)
- 	
+@@ -379,9 +397,17 @@ R_NewMap
+ void R_NewMap (void)
+ {
+ 	int		i;
+-	
++
++#ifdef SHADEREMU
++	SE_SceneOwn ();
++#endif
  	for (i=0 ; i<256 ; i++)
  		d_lightstylevalue[i] = 264;		// normal light value
 +	{
@@ -1423,10 +2072,18 @@ index c9719b5..f166ffa 100644
  	memset (&r_worldentity, 0, sizeof(r_worldentity));
  	r_worldentity.model = cl.worldmodel;
 diff --git a/WinQuake/gl_rsurf.c b/WinQuake/gl_rsurf.c
-index 11b5a01..c427df1 100644
+index 11b5a01..14133c6 100644
 --- a/WinQuake/gl_rsurf.c
 +++ b/WinQuake/gl_rsurf.c
-@@ -45,6 +45,21 @@ typedef struct glRect_s {
+@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // r_surf.c: surface-related refresh code
+ 
+ #include "quakedef.h"
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
+ 
+ int			skytexturenum;
+ 
+@@ -45,6 +46,21 @@ typedef struct glRect_s {
  } glRect_t;
  
  glpoly_t	*lightmap_polys[MAX_LIGHTMAPS];
@@ -1448,7 +2105,7 @@ index 11b5a01..c427df1 100644
  qboolean	lightmap_modified[MAX_LIGHTMAPS];
  glRect_t	lightmap_rectchange[MAX_LIGHTMAPS];
  
-@@ -183,6 +198,10 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
+@@ -183,6 +199,10 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
  
  // bound, invert, and shift
  store:
@@ -1459,7 +2116,7 @@ index 11b5a01..c427df1 100644
  	switch (gl_lightmap_format)
  	{
  	case GL_RGBA:
-@@ -367,7 +386,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -367,7 +387,7 @@ void R_DrawSequentialPoly (msurface_t *s)
  	if (s->flags & SURF_DRAWSKY)
  	{
  		GL_Bind (solidskytexture);
@@ -1468,7 +2125,7 @@ index 11b5a01..c427df1 100644
  		speedscale -= (int)speedscale;
  
  		EmitSkyPolys (s);
-@@ -375,7 +394,7 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -375,7 +395,7 @@ void R_DrawSequentialPoly (msurface_t *s)
  		glEnable (GL_BLEND);
  		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
  		GL_Bind (alphaskytexture);
@@ -1477,7 +2134,7 @@ index 11b5a01..c427df1 100644
  		speedscale -= (int)speedscale;
  		EmitSkyPolys (s);
  		if (gl_lightmap_format == GL_LUMINANCE)
-@@ -510,14 +529,14 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -510,14 +530,14 @@ void R_DrawSequentialPoly (msurface_t *s)
  	{
  		GL_DisableMultitexture();
  		GL_Bind (solidskytexture);
@@ -1494,7 +2151,7 @@ index 11b5a01..c427df1 100644
  		speedscale -= (int)speedscale & ~127;
  		EmitSkyPolys (s);
  
-@@ -559,8 +578,8 @@ void R_DrawSequentialPoly (msurface_t *s)
+@@ -559,8 +579,8 @@ void R_DrawSequentialPoly (msurface_t *s)
  			qglMTexCoord2fSGIS (TEXTURE0_SGIS, v[3], v[4]);
  			qglMTexCoord2fSGIS (TEXTURE1_SGIS, v[5], v[6]);
  
@@ -1505,7 +2162,7 @@ index 11b5a01..c427df1 100644
  			nv[2] = v[2];
  
  			glVertex3fv (nv);
-@@ -605,8 +624,8 @@ void DrawGLWaterPoly (glpoly_t *p)
+@@ -605,8 +625,8 @@ void DrawGLWaterPoly (glpoly_t *p)
  	{
  		glTexCoord2f (v[3], v[4]);
  
@@ -1516,7 +2173,7 @@ index 11b5a01..c427df1 100644
  		nv[2] = v[2];
  
  		glVertex3fv (nv);
-@@ -629,8 +648,8 @@ void DrawGLWaterPolyLightmap (glpoly_t *p)
+@@ -629,8 +649,8 @@ void DrawGLWaterPolyLightmap (glpoly_t *p)
  	{
  		glTexCoord2f (v[5], v[6]);
  
@@ -1527,7 +2184,7 @@ index 11b5a01..c427df1 100644
  		nv[2] = v[2];
  
  		glVertex3fv (nv);
-@@ -692,8 +711,23 @@ void R_BlendLightmaps (void)
+@@ -692,8 +712,23 @@ void R_BlendLightmaps (void)
  		glEnable (GL_BLEND);
  	}
  
@@ -1551,7 +2208,7 @@ index 11b5a01..c427df1 100644
  		p = lightmap_polys[i];
  		if (!p)
  			continue;
-@@ -718,19 +752,7 @@ void R_BlendLightmaps (void)
+@@ -718,19 +753,7 @@ void R_BlendLightmaps (void)
  		}
  		for ( ; p ; p=p->chain)
  		{
@@ -1572,7 +2229,7 @@ index 11b5a01..c427df1 100644
  		}
  	}
  
-@@ -776,18 +798,16 @@ void R_RenderBrushPoly (msurface_t *fa)
+@@ -776,18 +799,16 @@ void R_RenderBrushPoly (msurface_t *fa)
  		return;
  	}
  
@@ -1595,7 +2252,7 @@ index 11b5a01..c427df1 100644
  		 maps++)
  		if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps])
  			goto dynamic;
-@@ -842,11 +862,12 @@ void R_RenderDynamicLightmaps (msurface_t *fa)
+@@ -842,11 +863,12 @@ void R_RenderDynamicLightmaps (msurface_t *fa)
  	if (fa->flags & ( SURF_DRAWSKY | SURF_DRAWTURB) )
  		return;
  		
@@ -1610,7 +2267,7 @@ index 11b5a01..c427df1 100644
  		 maps++)
  		if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps])
  			goto dynamic;
-@@ -1106,9 +1127,38 @@ void R_DrawBrushModel (entity_t *e)
+@@ -1106,9 +1128,38 @@ void R_DrawBrushModel (entity_t *e)
  
  	if (R_CullBox (mins, maxs))
  		return;
@@ -1650,7 +2307,7 @@ index 11b5a01..c427df1 100644
  
  	VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
  	if (rotated)
-@@ -1324,13 +1374,22 @@ void R_DrawWorld (void)
+@@ -1324,13 +1375,22 @@ void R_DrawWorld (void)
  	currenttexture = -1;
  
  	glColor3f (1,1,1);
@@ -1675,7 +2332,7 @@ index 11b5a01..c427df1 100644
  	DrawTextureChains ();
  
  	R_BlendLightmaps ();
-@@ -1353,6 +1412,9 @@ void R_MarkLeaves (void)
+@@ -1353,6 +1413,9 @@ void R_MarkLeaves (void)
  	int		i;
  	byte	solid[4096];
  
@@ -1685,7 +2342,7 @@ index 11b5a01..c427df1 100644
  	if (r_oldviewleaf == r_viewleaf && !r_novis.value)
  		return;
  	
-@@ -1396,7 +1458,79 @@ void R_MarkLeaves (void)
+@@ -1396,7 +1459,79 @@ void R_MarkLeaves (void)
  =============================================================================
  */
  
@@ -1765,7 +2422,7 @@ index 11b5a01..c427df1 100644
  int AllocBlock (int w, int h, int *x, int *y)
  {
  	int		i, j;
-@@ -1404,7 +1538,7 @@ int AllocBlock (int w, int h, int *x, int *y)
+@@ -1404,7 +1539,7 @@ int AllocBlock (int w, int h, int *x, int *y)
  	int		bestx;
  	int		texnum;
  
@@ -1774,7 +2431,7 @@ index 11b5a01..c427df1 100644
  	{
  		best = BLOCK_HEIGHT;
  
-@@ -1432,11 +1566,14 @@ int AllocBlock (int w, int h, int *x, int *y)
+@@ -1432,11 +1567,14 @@ int AllocBlock (int w, int h, int *x, int *y)
  		for (i=0 ; i<w ; i++)
  			allocated[texnum][*x + i] = best + h;
  
@@ -1789,7 +2446,7 @@ index 11b5a01..c427df1 100644
  
  
  mvertex_t	*r_pcurrentvertbase;
-@@ -1561,7 +1698,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
+@@ -1561,7 +1699,7 @@ void BuildSurfaceDisplayList (msurface_t *fa)
  		}
  	}
  	poly->numverts = lnumverts;
@@ -1798,7 +2455,7 @@ index 11b5a01..c427df1 100644
  }
  
  /*
-@@ -1602,6 +1739,12 @@ void GL_BuildLightmaps (void)
+@@ -1602,6 +1740,12 @@ void GL_BuildLightmaps (void)
  	extern qboolean isPermedia;
  
  	memset (allocated, 0, sizeof(allocated));
@@ -1811,7 +2468,7 @@ index 11b5a01..c427df1 100644
  
  	r_framecount = 1;		// no dlightcache
  
-@@ -1690,5 +1833,6 @@ void GL_BuildLightmaps (void)
+@@ -1690,5 +1834,6 @@ void GL_BuildLightmaps (void)
   	if (!gl_texsort.value)
   		GL_SelectTexture(TEXTURE0_SGIS);
  
@@ -1819,10 +2476,19 @@ index 11b5a01..c427df1 100644
  }
  
 diff --git a/WinQuake/gl_screen.c b/WinQuake/gl_screen.c
-index 8a0c096..4a6c13b 100644
+index 8a0c096..fa257d5 100644
 --- a/WinQuake/gl_screen.c
 +++ b/WinQuake/gl_screen.c
-@@ -103,7 +103,7 @@ int			scr_fullupdate;
+@@ -21,6 +21,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // screen.c -- master for refresh, status bar, console, chat, notify, etc
+ 
+ #include "quakedef.h"
++#include "se_scene2d.h"	// (what the 2D screen reads: scene_shaderemu.c)
++extern int	se_scene_split;	// (scene_shaderemu.c: a frame drawn on a worker core)
+ 
+ /*
+ 
+@@ -103,7 +105,7 @@ int			scr_fullupdate;
  int			clearconsole;
  int			clearnotify;
  
@@ -1831,7 +2497,7 @@ index 8a0c096..4a6c13b 100644
  
  viddef_t	vid;				// global video state
  
-@@ -111,7 +111,7 @@ vrect_t		scr_vrect;
+@@ -111,7 +113,7 @@ vrect_t		scr_vrect;
  
  qboolean	scr_disabled_for_loading;
  qboolean	scr_drawloading;
@@ -1840,7 +2506,17 @@ index 8a0c096..4a6c13b 100644
  
  qboolean	block_drawing;
  
-@@ -444,7 +444,7 @@ SCR_DrawNet
+@@ -142,6 +144,9 @@ for a few moments
+ */
+ void SCR_CenterPrint (char *str)
+ {
++#ifdef SHADEREMU
++	SE_SceneOwn ();
++#endif
+ 	strncpy (scr_centerstring, str, sizeof(scr_centerstring)-1);
+ 	scr_centertime_off = scr_centertime.value;
+ 	scr_centertime_start = cl.time;
+@@ -444,7 +449,7 @@ SCR_DrawNet
  */
  void SCR_DrawNet (void)
  {
@@ -1849,7 +2525,7 @@ index 8a0c096..4a6c13b 100644
  		return;
  	if (cls.demoplayback)
  		return;
-@@ -671,7 +671,7 @@ void SCR_BeginLoadingPlaque (void)
+@@ -671,7 +676,7 @@ void SCR_BeginLoadingPlaque (void)
  	scr_drawloading = false;
  
  	scr_disabled_for_loading = true;
@@ -1858,7 +2534,7 @@ index 8a0c096..4a6c13b 100644
  	scr_fullupdate = 0;
  }
  
-@@ -818,6 +818,64 @@ WARNING: be very careful calling this from elsewhere, because the refresh
+@@ -818,11 +823,72 @@ WARNING: be very careful calling this from elsewhere, because the refresh
  needs almost the entire 256k of stack space!
  ==================
  */
@@ -1883,8 +2559,8 @@ index 8a0c096..4a6c13b 100644
 +
 +	if (how < 0)
 +		how = !(getenv ("QUAKE_SBAR") && !strcmp (getenv ("QUAKE_SBAR"), "frame"));
-+	if (!how || last == host_framecount)
-+		return;
++	if (!how || last == host_framecount || se_scene_split)
++		return;	// (a frame drawn on a worker: its 2D screen was recorded, SE_ScreenRecord)
 +	last = host_framecount;
 +	// the plain bar only, with no tint over the picture (which is drawn before the bar, and under it)
 +	if (scr_drawdialog || scr_drawloading || cl.intermission || key_dest != key_game || !sb_lines || vid.width > 320
@@ -1923,7 +2599,15 @@ index 8a0c096..4a6c13b 100644
  void SCR_UpdateScreen (void)
  {
  	static float	oldscr_viewsize;
-@@ -833,7 +891,7 @@ void SCR_UpdateScreen (void)
+ 	vrect_t		vrect;
+ 
++#ifdef SHADEREMU
++	SE_SceneOwn ();	// (a frame a worker draws is waited for: this one is drawn here)
++#endif
+ 	if (block_drawing)
+ 		return;
+ 
+@@ -833,7 +899,7 @@ void SCR_UpdateScreen (void)
  
  	if (scr_disabled_for_loading)
  	{
@@ -1932,7 +2616,7 @@ index 8a0c096..4a6c13b 100644
  		{
  			scr_disabled_for_loading = false;
  			Con_Printf ("load failed.\n");
-@@ -871,8 +929,12 @@ void SCR_UpdateScreen (void)
+@@ -871,8 +937,12 @@ void SCR_UpdateScreen (void)
  //
  	SCR_SetUpToDrawConsole ();
  	
@@ -1945,7 +2629,7 @@ index 8a0c096..4a6c13b 100644
  	GL_Set2D ();
  
  	//
-@@ -911,6 +973,9 @@ void SCR_UpdateScreen (void)
+@@ -911,6 +981,9 @@ void SCR_UpdateScreen (void)
  		SCR_DrawTurtle ();
  		SCR_DrawPause ();
  		SCR_CheckDrawCenterString ();
@@ -1955,11 +2639,77 @@ index 8a0c096..4a6c13b 100644
  		Sbar_Draw ();
  		SCR_DrawConsole ();	
  		M_Draw ();
+@@ -921,3 +994,61 @@ void SCR_UpdateScreen (void)
+ 	GL_EndRendering ();
+ }
+ 
++#ifdef SHADEREMU
++// Whether a frame may be drawn by a worker core (scene_shaderemu.c): nothing of SCR_UpdateScreen's
++// that only this core may do (a picture loaded, a setting changed) is to be done in it.
++int SE_ScreenSplitOk (void)
++{
++	extern qboolean	sb_showscores;
++
++	return !block_drawing && !scr_disabled_for_loading && scr_initialized && con_initialized && !scr_drawdialog
++		&& !scr_drawloading && !vid.recalc_refdef && oldfov == scr_fov.value && oldscreensize == scr_viewsize.value
++		&& !scr_con_current && !sb_showscores && !r_refdef.vrect.x && !r_refdef.vrect.y;
++}
++
++// The 2D screen of a frame a worker draws, made on the first core: what SCR_UpdateScreen draws
++// after the view, recorded (qgl.c), from the client's state as it is. How many runs, -1 spoilt.
++int SE_ScreenRecord (unsigned *vertices, int quads, void *runs, int most)
++{
++	extern int	sb_updates;
++
++	scr_copytop = 0;
++	scr_copyeverything = 0;
++	SCR_SetUpToDrawConsole ();
++	sb_updates = 0;	// (as GL_BeginRendering has it)
++	qglRecordBegin (vertices, quads, runs, most);
++	SCR_TileClear ();
++	if (crosshair.value)
++		Draw_Character (scr_vrect.x + scr_vrect.width/2, scr_vrect.y + scr_vrect.height/2, '+');
++	SCR_DrawRam ();
++	SCR_DrawNet ();
++	SCR_DrawTurtle ();
++	SCR_DrawPause ();
++	SCR_CheckDrawCenterString ();
++	Sbar_Draw ();
++	SCR_DrawConsole ();
++	M_Draw ();
++	return qglRecordEnd ();
++}
++
++// SCR_UpdateScreen's frame of a game being played, on a worker core: the view, its light styles
++// and blend and the palette are this core's, made when the frame was given out.
++void SE_SceneRecorded (const unsigned **vertices, const void **runs, int *count);	// scene_shaderemu.c
++
++void SE_ScreenWorker (void)
++{
++	const unsigned	*vertices;
++	const void	*runs;
++	int		count;
++
++	vid.numpages = 2 + gl_triplebuffer.value;
++	GL_BeginRendering (&glx, &gly, &glwidth, &glheight);
++	R_PushDlights ();
++	R_RenderView ();
++	GL_Set2D ();
++	SE_SceneRecorded (&vertices, &runs, &count);	// (the 2D screen, recorded by another worker: SE_ScreenRecord)
++	qglRecordDraw (vertices, runs, count);
++	SE_SceneSwap ();
++}
++#endif
++
 diff --git a/WinQuake/gl_warp.c b/WinQuake/gl_warp.c
-index e8b96af..78b70a5 100644
+index e8b96af..eac585b 100644
 --- a/WinQuake/gl_warp.c
 +++ b/WinQuake/gl_warp.c
-@@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+@@ -20,10 +20,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // gl_warp.c -- sky and water polygons
+ 
+ #include "quakedef.h"
++#include "se_scene.h"	// (what the frame's drawing reads: scene_shaderemu.c)
  
  extern	model_t	*loadmodel;
  
@@ -1968,7 +2718,7 @@ index e8b96af..78b70a5 100644
  
  int		solidskytexture;
  int		alphaskytexture;
-@@ -198,6 +198,10 @@ void EmitWaterPolys (msurface_t *fa)
+@@ -198,6 +199,10 @@ void EmitWaterPolys (msurface_t *fa)
  	int			i;
  	float		s, t, os, ot;
  
@@ -1979,7 +2729,7 @@ index e8b96af..78b70a5 100644
  
  	for (p=fa->polys ; p ; p=p->next)
  	{
-@@ -207,10 +211,10 @@ void EmitWaterPolys (msurface_t *fa)
+@@ -207,10 +212,10 @@ void EmitWaterPolys (msurface_t *fa)
  			os = v[3];
  			ot = v[4];
  
@@ -1992,7 +2742,7 @@ index e8b96af..78b70a5 100644
  			t *= (1.0/64);
  
  			glTexCoord2f (s, t);
-@@ -280,14 +284,14 @@ void EmitBothSkyLayers (msurface_t *fa)
+@@ -280,14 +285,14 @@ void EmitBothSkyLayers (msurface_t *fa)
  	GL_DisableMultitexture();
  
  	GL_Bind (solidskytexture);
@@ -2009,7 +2759,7 @@ index e8b96af..78b70a5 100644
  	speedscale -= (int)speedscale & ~127 ;
  
  	EmitSkyPolys (fa);
-@@ -305,11 +309,15 @@ void R_DrawSkyChain (msurface_t *s)
+@@ -305,11 +310,15 @@ void R_DrawSkyChain (msurface_t *s)
  {
  	msurface_t	*fa;
  
@@ -2026,7 +2776,7 @@ index e8b96af..78b70a5 100644
  	speedscale -= (int)speedscale & ~127 ;
  
  	for (fa=s ; fa ; fa=fa->texturechain)
-@@ -317,7 +325,7 @@ void R_DrawSkyChain (msurface_t *s)
+@@ -317,7 +326,7 @@ void R_DrawSkyChain (msurface_t *s)
  
  	glEnable (GL_BLEND);
  	GL_Bind (alphaskytexture);
@@ -2036,7 +2786,7 @@ index e8b96af..78b70a5 100644
  
  	for (fa=s ; fa ; fa=fa->texturechain)
 diff --git a/WinQuake/glquake.h b/WinQuake/glquake.h
-index f3c253c..5c094de 100644
+index f3c253c..5470fa7 100644
 --- a/WinQuake/glquake.h
 +++ b/WinQuake/glquake.h
 @@ -139,11 +139,21 @@ typedef struct particle_s
@@ -2061,7 +2811,7 @@ index f3c253c..5c094de 100644
  } particle_t;
  
  
-@@ -232,6 +242,33 @@ extern	const char *gl_extensions;
+@@ -232,6 +242,41 @@ extern	const char *gl_extensions;
  void R_TranslatePlayerSkin (int playernum);
  void GL_Bind (int texnum);
  
@@ -2079,6 +2829,14 @@ index f3c253c..5c094de 100644
 +void qglParticle (const float *origin, int colour);
 +unsigned *qglParticleRoom (int *room);
 +void qglParticleRoomLeft (int room);
++unsigned *qglParticleMemory (unsigned bytes);
++int qglParticlesAt (const unsigned *vertices, int count);
++int qglRecording (void);
++void qglRecordFail (void);
++void qglRecordBegin (unsigned *vertices, int quads, void *runs, int most);
++int qglRecordEnd (void);
++void qglRecordDraw (const unsigned *vertices, const void *runs, int count);
++unsigned *qglStageMemory (int which);
 +extern unsigned qgl_particle_colour[256];
 +void qglMultMatrixf (const float *m);
 +#ifdef SE_COUNT
@@ -2096,7 +2854,7 @@ index f3c253c..5c094de 100644
  #define    TEXTURE0_SGIS				0x835E
  #define    TEXTURE1_SGIS				0x835F
 diff --git a/WinQuake/host.c b/WinQuake/host.c
-index 603f6b3..c229ecc 100644
+index 603f6b3..e3c8236 100644
 --- a/WinQuake/host.c
 +++ b/WinQuake/host.c
 @@ -37,10 +37,10 @@ quakeparms_t host_parms;
@@ -2114,15 +2872,18 @@ index 603f6b3..c229ecc 100644
  int			host_framecount;
  
  int			host_hunklevel;
-@@ -92,6 +92,7 @@ void Host_EndGame (char *message, ...)
+@@ -91,7 +91,9 @@ void Host_EndGame (char *message, ...)
+ {
  	va_list		argptr;
  	char		string[1024];
- 	
+-	
++
++	SE_SceneOwn ();
 +	SE_ServerSettle ();
  	va_start (argptr,message);
  	vsprintf (string,message,argptr);
  	va_end (argptr);
-@@ -123,7 +124,15 @@ void Host_Error (char *error, ...)
+@@ -123,7 +125,23 @@ void Host_Error (char *error, ...)
  	va_list		argptr;
  	char		string[1024];
  	static	qboolean inerror = false;
@@ -2135,11 +2896,19 @@ index 603f6b3..c229ecc 100644
 +		va_end (argptr);
 +		SE_ServerWorkerError (string);
 +	}
++	if (mcw_on_worker ())
++	{	// (a frame drawn on a worker core: said, and the program ends)
++		va_start (argptr,error);
++		vsprintf (string,error,argptr);
++		va_end (argptr);
++		Sys_Error ("Host_Error: %s", string);
++	}
++	SE_SceneOwn ();
 +	SE_ServerSettle ();
  	if (inerror)
  		Sys_Error ("Host_Error: recursively entered");
  	inerror = true;
-@@ -342,6 +351,8 @@ if (crash = true), don't bother sending signofs
+@@ -342,6 +360,8 @@ if (crash = true), don't bother sending signofs
  */
  void SV_DropClient (qboolean crash)
  {
@@ -2148,7 +2917,7 @@ index 603f6b3..c229ecc 100644
  	int		saveSelf;
  	int		i;
  	client_t *client;
-@@ -410,6 +421,7 @@ void Host_ShutdownServer(qboolean crash)
+@@ -410,6 +430,7 @@ void Host_ShutdownServer(qboolean crash)
  	char		message[4];
  	double	start;
  
@@ -2156,7 +2925,17 @@ index 603f6b3..c229ecc 100644
  	if (!sv.active)
  		return;
  
-@@ -498,15 +510,15 @@ Host_FilterTime
+@@ -476,6 +497,9 @@ not reinitialize anything.
+ */
+ void Host_ClearMemory (void)
+ {
++#ifdef SHADEREMU
++	SE_SceneOwn ();
++#endif
+ 	Con_DPrintf ("Clearing memory\n");
+ 	D_FlushCaches ();
+ 	Mod_ClearAll ();
+@@ -498,15 +522,15 @@ Host_FilterTime
  Returns false if the time is too short to run a frame
  ===================
  */
@@ -2177,7 +2956,7 @@ index 603f6b3..c229ecc 100644
  
  	if (host_framerate.value > 0)
  		host_frametime = host_framerate.value;
-@@ -599,12 +611,23 @@ void Host_ServerFrame (void)
+@@ -599,12 +623,23 @@ void Host_ServerFrame (void)
  
  void Host_ServerFrame (void)
  {
@@ -2204,7 +2983,7 @@ index 603f6b3..c229ecc 100644
  // check for new clients
  	SV_CheckForNewClients ();
  
-@@ -613,8 +636,11 @@ void Host_ServerFrame (void)
+@@ -613,8 +648,11 @@ void Host_ServerFrame (void)
  	
  // move things around and think
  // always pause in single player if in console or menus
@@ -2217,7 +2996,7 @@ index 603f6b3..c229ecc 100644
  
  // send all messages to the clients
  	SV_SendClientMessages ();
-@@ -630,7 +656,7 @@ Host_Frame
+@@ -630,7 +668,7 @@ Host_Frame
  Runs all active servers
  ==================
  */
@@ -2226,7 +3005,7 @@ index 603f6b3..c229ecc 100644
  {
  	static double		time1 = 0;
  	static double		time2 = 0;
-@@ -644,7 +670,7 @@ void _Host_Frame (float time)
+@@ -644,7 +682,7 @@ void _Host_Frame (float time)
  	rand ();
  	
  // decide the simulation time
@@ -2235,7 +3014,7 @@ index 603f6b3..c229ecc 100644
  		return;			// don't run too fast, or packets will flood out
  		
  // get new key events
-@@ -671,8 +697,13 @@ void _Host_Frame (float time)
+@@ -671,8 +709,13 @@ void _Host_Frame (float time)
  // check for commands typed to the host
  	Host_GetConsoleCommands ();
  	
@@ -2249,7 +3028,19 @@ index 603f6b3..c229ecc 100644
  
  //-------------------
  //
-@@ -713,9 +744,13 @@ void _Host_Frame (float time)
+@@ -697,7 +740,11 @@ void _Host_Frame (float time)
+ 	if (host_speeds.value)
+ 		time1 = Sys_FloatTime ();
+ 		
++#ifdef SHADEREMU
++	SE_SceneFrame ();	// (drawn by a worker core while this one goes on to the next frame)
++#else
+ 	SCR_UpdateScreen ();
++#endif
+ 
+ 	if (host_speeds.value)
+ 		time2 = Sys_FloatTime ();
+@@ -713,9 +760,13 @@ void _Host_Frame (float time)
  	
  	CDAudio_Update();
  
@@ -2264,7 +3055,7 @@ index 603f6b3..c229ecc 100644
  		time3 = Sys_FloatTime ();
  		pass2 = (time2 - time1)*1000;
  		pass3 = (time3 - time2)*1000;
-@@ -726,7 +761,7 @@ void _Host_Frame (float time)
+@@ -726,7 +777,7 @@ void _Host_Frame (float time)
  	host_framecount++;
  }
  
@@ -2273,7 +3064,7 @@ index 603f6b3..c229ecc 100644
  {
  	double	time1, time2;
  	static double	timetotal;
-@@ -735,12 +770,12 @@ void Host_Frame (float time)
+@@ -735,12 +786,12 @@ void Host_Frame (float time)
  
  	if (!serverprofile.value)
  	{
@@ -2288,6 +3079,21 @@ index 603f6b3..c229ecc 100644
  	time2 = Sys_FloatTime ();	
  	
  	timetotal += time2 - time1;
+diff --git a/WinQuake/keys.c b/WinQuake/keys.c
+index 6e48ad4..01c7c75 100644
+--- a/WinQuake/keys.c
++++ b/WinQuake/keys.c
+@@ -601,6 +601,10 @@ void Key_Event (int key, qboolean down)
+ 	char	*kb;
+ 	char	cmd[1024];
+ 
++#ifdef SHADEREMU
++	SE_SceneOwn ();	// (menus, the console: what a worker's frame draws)
++#endif
++
+ 	keydown[key] = down;
+ 
+ 	if (!down)
 diff --git a/WinQuake/mathlib.c b/WinQuake/mathlib.c
 index 9f5d644..8db04e2 100644
 --- a/WinQuake/mathlib.c
@@ -2767,10 +3573,10 @@ index 4f2aa36..9111320 100644
  		if (!a->function)
  			PR_RunError ("NULL function");
 diff --git a/WinQuake/quakedef.h b/WinQuake/quakedef.h
-index e451827..43e6c80 100644
+index e451827..e87da3f 100644
 --- a/WinQuake/quakedef.h
 +++ b/WinQuake/quakedef.h
-@@ -285,6 +285,36 @@ typedef struct
+@@ -285,6 +285,70 @@ typedef struct
  
  extern qboolean noclip_anglehack;
  
@@ -2799,15 +3605,49 @@ index e451827..43e6c80 100644
 +void SE_ServerKeepCommand (const char *text);
 +void SE_ServerKeepCvar (const char *name, const char *value);
 +void SE_ServerWorkerError (const char *text);
-+// the program's workers: the server's, then the light maps', the water's and the particles'
++// the program's workers: thirteen asked for, and so many for each part or it is this core's
++// (the server's frame, the light maps, the water, the particles); any idle one takes a call
 +enum { SE_WORKER_SERVER = 1, SE_WORKER_LIGHT = 2, SE_LIGHT_WORKERS = 4, SE_WORKER_WATER = 6, SE_WATER_WORKERS = 4,
 +	SE_WORKER_PARTICLES = 10, SE_PARTICLE_WORKERS = 4, SE_WORKERS = 13 };
 +int SE_Workers (void);
++// calls of one function given out to idle workers and joined together (mcwx.h's mcw_call)
++typedef struct { int h[4], n; } se_group_t;
++void SE_GroupAdd (se_group_t *g, unsigned (*fn) (unsigned, unsigned), unsigned a0, unsigned a1);
++int SE_GroupReady (const se_group_t *g);
++void SE_GroupJoin (se_group_t *g);
++// the frame's jobs on workers, given out when the entities are placed (world_shaderemu.c)
++void SE_FrameJobs (void);
++// the frame's drawing on a worker core (scene_shaderemu.c)
++void SE_SceneFrame (void);
++void SE_SceneOwn (void);
++int SE_SceneSplitLast (void);
++void SE_SceneSwap (void);
++int mcw_on_worker (void);	// (programs/mc/mcw.h, mcwx.h)
++void mcw_print (const char *format, ...);
++// the frame's drawing on a worker core (scene_shaderemu.c)
++void SE_SceneFrame (void);
++void SE_SceneOwn (void);
++int SE_SceneSplitLast (void);
++void SE_SceneSwap (void);
++int mcw_on_worker (void);	// (programs/mc/mcw.h, mcwx.h)
++void mcw_print (const char *format, ...);
++int SE_FrameFirst (void);
++int SE_FramePoll (void);
++void SE_FrameSettle (void);
++int SE_LightAheadPrepare (void);
++void SE_GunAhead (void);
++void SE_GunSettle (void);
++void SE_LightAheadJob (void);
++void SE_ParticlesClock (void);
++int SE_ParticlesGive (unsigned *calls);
++unsigned SE_ParticlesJob (unsigned mask, unsigned unused);
++void SE_ParticlesTaken (void);
++int SE_ParticlesWait (void);
 +
  
  //
  // host
-@@ -296,11 +326,13 @@ extern	cvar_t		sys_nostdout;
+@@ -296,11 +360,13 @@ extern	cvar_t		sys_nostdout;
  extern	cvar_t		developer;
  
  extern	qboolean	host_initialized;		// true if into command execution
@@ -2823,7 +3663,7 @@ index e451827..43e6c80 100644
  										// start of every frame, never reset
  
  void Host_ClearMemory (void);
-@@ -310,7 +342,9 @@ void Host_Init (quakeparms_t *parms);
+@@ -310,7 +376,9 @@ void Host_Init (quakeparms_t *parms);
  void Host_Shutdown(void);
  void Host_Error (char *error, ...);
  void Host_EndGame (char *message, ...);
@@ -2835,7 +3675,7 @@ index e451827..43e6c80 100644
  void Host_ClientCommands (char *fmt, ...);
  void Host_ShutdownServer (qboolean crash);
 diff --git a/WinQuake/r_part.c b/WinQuake/r_part.c
-index 3db22ab..f266bdd 100644
+index 3db22ab..6af0f10 100644
 --- a/WinQuake/r_part.c
 +++ b/WinQuake/r_part.c
 @@ -21,6 +21,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -2858,18 +3698,21 @@ index 3db22ab..f266bdd 100644
  #define MAX_PARTICLES			2048	// default max # of particles at one
  										//  time
  #define ABSOLUTE_MIN_PARTICLES	512		// no fewer than this no matter what's
-@@ -37,6 +50,293 @@ int			r_numparticles;
+@@ -37,6 +50,437 @@ int			r_numparticles;
  
  vec3_t			r_pright, r_pup, r_ppn;
  
 +#ifdef SHADEREMU
 +/*
-+The particles on four workers (docs/quake.md, "The other workers"): each moves its quarter of
-+the array, writes a vertex each into a buffer of its own and lists those that died; this core
-+gives a new one a free place and copies the vertices last made into the frame.
-+QUAKE_PARTICLES=frame: moved and drawn by this core as before; =wait: the workers, waited for.
++The particles on workers (docs/quake.md, "The other workers", "Calls of the second layer"): the
++array is four shares, each moved by a worker that writes a vertex each into a buffer of its own in
++GPU memory, which the frame draws from there, and lists those that died; this core gives a new one
++a free place, and an explosion's particles are made by their share's worker from its random
++numbers. The calls are the frame's jobs (world_shaderemu.c), given out when the entities are placed.
++QUAKE_PARTICLES=frame: moved and drawn by this core as before; =wait: the workers, waited for;
++=copy: their vertices copied into the frame. QUAKE_EXPLODE=frame: explosions made by this core.
 +*/
-+#include "mcw.h"
++#include "mcwx.h"
 +
 +#define SE_SHARES		SE_PARTICLE_WORKERS
 +#define SE_SHARE_MOST	1024	// particles of a share, at most
@@ -2884,20 +3727,49 @@ index 3db22ab..f266bdd 100644
 +// this core's: a share's free places, and the new particles of each for its next job (two
 +// lists in turn: a job reads the one it was given)
 +static unsigned short	se_free[SE_SHARES][SE_SHARE_MOST], se_fresh[2][SE_SHARES][SE_SHARE_MOST];
++// beside each new one: 0, made here; else which explosion of the list's makes it, and its number
++// in it (SE_MADE_BY): its worker makes it from the explosion's random numbers (se_explode)
++static unsigned short	se_made[2][SE_SHARES][SE_SHARE_MOST];
++#define SE_EFFECTS		63	// (SE_MADE_BY of the last fits 16 bits)
++#define SE_CALL_WORK	512		// particles a call, about, before another is given out
++#define SE_MADE_BY(e, i)	((e + 1) << 10 | (i))
++typedef struct { vec3_t org; float die; unsigned long long seed; int unused[2]; } se_effect_t;
++static se_effect_t	se_effects[2][SE_EFFECTS] __attribute__ ((aligned (16)));
++static int		se_effect_count, se_explode_here, se_sum_every;
++static unsigned	se_sum, se_sum_frames;
++// rand()'s step taken 2^b times at once: x' = mul x + add
++static struct { unsigned long long mul, add; } se_leaps[14];
 +static int		se_free_count[SE_SHARES], se_fresh_count[SE_SHARES], se_fresh_now, se_next;
++#define SE_BUFFERS	4	// the workers' vertices: one written, one shown, two frames' lists that may read theirs
++static int		se_last_drawn = -1;	// the buffer the last frame drew
++int			*se_particles_now;	// a frame drawn on a worker: its copy of se_shown and se_drawn (scene_shaderemu.c)
++unsigned SE_SceneParticlesBusy (void);
 +static int		se_how = -1, se_share, se_out, se_shown = -1, se_drawn[SE_SHARES], se_live[SE_SHARES];
 +static float	se_pending;		// the frames' time since the last job
 +static unsigned	*se_vertices;	// two buffers of a vertex a particle: the one a job writes, the one drawn
++static int		se_vertices_drawn;	// they are in GPU memory, and drawn from there
 +static struct {
 +	float	time, frametime, grav;
 +	int		buffer, fresh_count[SE_SHARES];
-+	const unsigned short	*fresh[SE_SHARES];
++	const unsigned short	*fresh[SE_SHARES], *made[SE_SHARES];
++	const se_effect_t	*effects;
 +} se_job __attribute__ ((aligned (16)));
 +
 +extern unsigned	qgl_particle_colour[256];
 +extern cvar_t	sv_gravity;
 +
 +static uint32_t se_particle_share (uint32_t w, uint32_t unused);
++
++// The seed of rand() as it is `steps` numbers later.
++static unsigned long long se_leap (unsigned long long x, unsigned steps)
++{
++	int	b;
++
++	for (b=0 ; steps ; b++, steps >>= 1)
++		if (steps & 1)
++			x = se_leaps[b].mul * x + se_leaps[b].add;
++	return x;
++}
 +
 +static void se_particles_start (void)
 +{
@@ -2906,21 +3778,32 @@ index 3db22ab..f266bdd 100644
 +	se_how = SE_APART;
 +	se_share = r_numparticles / SE_SHARES;
 +	if ((how && !strcmp (how, "frame")) || SE_Workers () < SE_WORKER_PARTICLES + SE_SHARES - 1 || se_share > SE_SHARE_MOST
-+		|| (se_vertices = mcw_alloc (2 * r_numparticles * 16)) == NULL)
++		|| ((se_vertices = qglParticleMemory (SE_BUFFERS * r_numparticles * 16)) == NULL
++			&& (se_vertices = mcw_alloc (SE_BUFFERS * r_numparticles * 16)) == NULL))
 +	{
 +		se_how = SE_FRAME;
 +		return;
 +	}
 +	if (how && !strcmp (how, "wait"))
 +		se_how = SE_WAIT;
-+	{	// (the job's code is read here first: a worker stops at a page of it no core has run)
-+		const volatile unsigned char	*text = (const volatile unsigned char *)((unsigned)se_particle_share & ~4095u);
-+		unsigned	i, sum = 0;
++	// QUAKE_PARTICLES=copy: the workers' vertices copied into the frame, as before
++	se_vertices_drawn = se_vertices == qglParticleMemory (SE_BUFFERS * r_numparticles * 16) && !(how && !strcmp (how, "copy"));
++	// QUAKE_EXPLODE=frame: an explosion's particles made by this core, as before
++	se_explode_here = getenv ("QUAKE_EXPLODE") && !strcmp (getenv ("QUAKE_EXPLODE"), "frame");
++	se_sum_every = getenv ("QUAKE_PARTICLE_SUM") ? atoi (getenv ("QUAKE_PARTICLE_SUM")) : 0;
++	{
++		unsigned long long	mul = 6364136223846793005ULL, add = 1;
++		int		b;
 +
-+		for (i=0 ; i<2*4096 ; i+=1024)
-+			sum += text[i];
++		for (b=0 ; b<14 ; b++)
++		{
++			se_leaps[b].mul = mul, se_leaps[b].add = add;
++			add = mul * add + add, mul *= mul;
++		}
 +	}
-+	mcw_touch (se_vertices, 2 * r_numparticles * 16);
++	// (the job's code is read here first: a worker stops at a page of it no core has run)
++	mcw_touch_code ((const void *)((unsigned)SE_ParticlesJob & ~4095u), 2*4096);
++	mcw_touch (se_vertices, SE_BUFFERS * r_numparticles * 16);
 +	mcw_touch (se_shares, sizeof se_shares);
 +	mcw_touch (&se_job, sizeof se_job);
 +}
@@ -2948,6 +3831,7 @@ index 3db22ab..f266bdd 100644
 +		if (se_free_count[w])
 +		{
 +			slot = se_free[w][--se_free_count[w]];
++			se_made[se_fresh_now][w][se_fresh_count[w]] = 0;
 +			se_fresh[se_fresh_now][w][se_fresh_count[w]++] = slot;
 +			return &particles[slot];
 +		}
@@ -2964,8 +3848,38 @@ index 3db22ab..f266bdd 100644
 +	unsigned	*to = se_vertices + (se_job.buffer * r_numparticles + w * se_share) * 4;
 +	int			i, j, n = s->alive_count, kept = 0, dead = 0;
 +
++	int			by = -1, at = 0;
++	unsigned long long	x = 0;
++
 +	for (i=0 ; i<se_job.fresh_count[w] ; i++)
++	{
++		int			made = se_job.made[w][i];
++		particle_t	*p = &particles[se_job.fresh[w][i]];
++		const se_effect_t	*e;
++
 +		s->alive[n++] = se_job.fresh[w][i];
++		if (!made)
++			continue;
++		// R_ParticleExplosion's particle number made & 1023, with its seven random numbers
++		e = &se_job.effects[(made >> 10) - 1];
++		if (by != made >> 10 || 7 * (made & 1023) < at)
++			by = made >> 10, x = e->seed, at = 0;
++		made &= 1023;
++		x = se_leap (x, 7 * made - at);
++		at = 7 * made + 7;
++		p->die = e->die;
++		p->color = ramp1[0];
++		x = 6364136223846793005ULL * x + 1;
++		p->ramp = (int)(x >> 33) & 3;
++		p->type = made & 1 ? pt_explode : pt_explode2;
++		for (j=0 ; j<3 ; j++)
++		{
++			x = 6364136223846793005ULL * x + 1;
++			p->org[j] = e->org[j] + (((int)(x >> 33) % 32) - 16);
++			x = 6364136223846793005ULL * x + 1;
++			p->vel[j] = ((int)(x >> 33) % 512) - 256;
++		}
++	}
 +	for (j=0 ; j<n ; j++)
 +	{
 +		int			slot = s->alive[j];
@@ -3048,6 +3962,17 @@ index 3db22ab..f266bdd 100644
 +	return 0;
 +}
 +
++// A call's shares, a bit each (the frame's jobs: world_shaderemu.c).
++unsigned SE_ParticlesJob (unsigned mask, unsigned unused)
++{
++	int	w;
++
++	for (w=0 ; w<SE_SHARES ; w++)
++		if (mask & (1 << w))
++			se_particle_share (w, 0);
++	return 0;
++}
++
 +// The jobs that are out have ended: their dead are free places again, and their vertices the ones to draw.
 +static void se_particles_take (void)
 +{
@@ -3065,43 +3990,60 @@ index 3db22ab..f266bdd 100644
 +	se_out = 0;
 +}
 +
-+static void se_particles_settle (void)
++void SE_ParticlesTaken (void)
++{
++	if (se_out)
++		se_particles_take ();
++}
++
++int SE_ParticlesWait (void) { return se_how == SE_WAIT; }
++int SE_ParticlesApart (void) { return se_how > SE_FRAME; }
++
++// What a frame given to a worker draws of them (scene_shaderemu.c).
++void SE_ParticlesView (int *view)
 +{
 +	int	w;
 +
-+	if (!se_out)
-+		return;
++	view[0] = se_shown;
 +	for (w=0 ; w<SE_SHARES ; w++)
-+		if (se_out & (1 << w))
-+			mcw_wait (SE_WORKER_PARTICLES + w);
-+	se_particles_take ();
++		view[1 + w] = se_drawn[w];
 +}
 +
-+// A frame: the workers' last vertices are drawn, and they are told of the frame.
-+static void se_draw_particles (void)
++void SE_ParticlesClock (void)
 +{
-+	unsigned	*to = NULL, *from;
-+	int			w, n, room = 0, given, busy = 0;
++	if (se_how > SE_FRAME)
++		se_pending += cl.time - cl.oldtime;
++}
 +
-+	se_pending += cl.time - cl.oldtime;
-+	if (se_out)
-+	{
-+		for (w=0 ; w<SE_SHARES ; w++)
-+			if (se_out & (1 << w))
-+				busy |= !mcw_done (SE_WORKER_PARTICLES + w);
-+		if (!busy)
-+			se_particles_take ();
-+	}
-+	if (!se_out)
++// The frame's jobs: what the workers are to do of the particles, as the shares of each call
++// (how many calls; 0: none). None is out when this is asked.
++int SE_ParticlesGive (unsigned *mask)
++{
++	int		w, calls = 0;
++
++	if (se_how <= SE_FRAME)
++		return 0;
 +	{
 +		se_job.time = cl.time;
 +		se_job.frametime = se_pending;
 +		se_job.grav = se_pending * sv_gravity.value * 0.05;
-+		se_job.buffer = se_shown == 0;
++		{	// (a buffer no frame given out or a list being drawn may read: SE_BUFFERS has one)
++			unsigned	busy = SE_SceneParticlesBusy ();
++			int			b;
++
++			if (se_shown >= 0)
++				busy |= 1u << se_shown;
++			if (se_last_drawn >= 0 && !SE_SceneParticlesBusy ())
++				busy |= 1u << se_last_drawn;	// (no frame out: the last one's list may be drawn still)
++			for (b=0 ; b<SE_BUFFERS-1 && (busy >> b & 1) ; b++)
++				;
++			se_job.buffer = b;
++		}
 +		se_pending = 0;
 +		for (w=0 ; w<SE_SHARES ; w++)
 +		{
 +			se_job.fresh[w] = se_fresh[se_fresh_now][w];
++			se_job.made[w] = se_made[se_fresh_now][w];
 +			se_job.fresh_count[w] = se_fresh_count[w];
 +			if (!se_live[w] && !se_fresh_count[w])
 +			{
@@ -3111,26 +4053,68 @@ index 3db22ab..f266bdd 100644
 +			se_out |= 1 << w;
 +			se_fresh_count[w] = 0;
 +		}
++		se_job.effects = se_effects[se_fresh_now];
 +		se_fresh_now ^= 1;
++		se_effect_count = 0;
 +		if (se_out)
 +		{
-+			if (se_how == SE_WAIT)
-+				seglSettle ();
++			int		work = 0, c = 0;
++
++			// (a call a share in a fight, one for a few particles: a call has its own cost)
 +			for (w=0 ; w<SE_SHARES ; w++)
 +				if (se_out & (1 << w))
-+					mcw_post (SE_WORKER_PARTICLES + w, se_particle_share, w, 0);
-+			if (se_how == SE_WAIT)
-+				se_particles_settle ();
++					work += se_live[w] + 2 * se_job.fresh_count[w];
++			calls = 1 + work / SE_CALL_WORK;
++			for (w=0 ; w<SE_SHARES ; w++)
++				if (se_out & (1 << w))
++					mask[c] |= 1 << w, c = c + 1 < calls ? c + 1 : 0;
++			for (calls=0 ; calls<SE_SHARES && mask[calls] ; calls++)
++				;
 +		}
 +		else
 +			se_shown = se_job.buffer;
 +	}
-+	if (se_shown < 0)
++	return calls;
++}
++
++// A frame: the workers' last vertices are drawn.
++static void se_draw_particles (void)
++{
++	unsigned	*to = NULL, *from;
++	int			w, n, room = 0, given, done = 0;
++
++	int			shown, drawn[SE_SHARES];
++
++	if (!se_particles_now)	// (a frame drawn on a worker: the first core took them)
++		SE_FramePoll ();	// (particles moved meanwhile are drawn now)
++	shown = se_particles_now ? se_particles_now[0] : se_shown;
++	for (w=0 ; w<SE_SHARES ; w++)
++		drawn[w] = se_particles_now ? se_particles_now[1 + w] : se_drawn[w];
++	if (shown < 0)
 +		return;
++	se_last_drawn = shown;
++	if (se_sum_every)
++	{	// (QUAKE_PARTICLE_SUM: a check that two ways of making them draw the same)
++		for (w=0 ; w<SE_SHARES ; w++)
++			for (from = se_vertices + (shown * r_numparticles + w * se_share) * 4, n=0 ; n<drawn[w]*4 ; n++)
++				se_sum = (se_sum << 5 | se_sum >> 27) + from[n];
++		if (++se_sum_frames % se_sum_every == 0)
++		{
++			if (mcw_on_worker ())
++				mcw_print ("quake: particles at frame %u: %08x\n", se_sum_frames, se_sum);
++			else
++				Sys_Printf ("quake: particles at frame %u: %08x\n", se_sum_frames, se_sum);
++		}
++	}
++	// (drawn where they are first: a copy's room is trimmed at the end, after its own draw)
++	for (w=0 ; w<SE_SHARES ; w++)
++		if (se_vertices_drawn && drawn[w] >= 3
++			&& qglParticlesAt (se_vertices + (shown * r_numparticles + w * se_share) * 4, drawn[w]))
++			done |= 1 << w;
 +	for (w=0 ; w<SE_SHARES ; w++)
 +	{
-+		from = se_vertices + (se_shown * r_numparticles + w * se_share) * 4;
-+		for (n=se_drawn[w] ; n>0 ; )
++		from = se_vertices + (shown * r_numparticles + w * se_share) * 4;
++		for (n=done & (1 << w) ? 0 : drawn[w] ; n>0 ; )
 +		{
 +			int	some;
 +
@@ -3152,7 +4136,7 @@ index 3db22ab..f266bdd 100644
  
  /*
  ===============
-@@ -60,8 +360,13 @@ void R_InitParticles (void)
+@@ -60,8 +504,13 @@ void R_InitParticles (void)
  		r_numparticles = MAX_PARTICLES;
  	}
  
@@ -3166,7 +4150,7 @@ index 3db22ab..f266bdd 100644
  }
  
  #ifdef QUAKE2
-@@ -80,12 +385,8 @@ void R_DarkFieldParticles (entity_t *ent)
+@@ -80,12 +529,8 @@ void R_DarkFieldParticles (entity_t *ent)
  		for (j=-16 ; j<16 ; j+=8)
  			for (k=0 ; k<32 ; k+=8)
  			{
@@ -3180,7 +4164,7 @@ index 3db22ab..f266bdd 100644
  		
  				p->die = cl.time + 0.2 + (rand()&7) * 0.02;
  				p->color = 150 + rand()%6;
-@@ -157,12 +458,8 @@ avelocities[0][i] = (rand()&255) * 0.01;
+@@ -157,12 +602,8 @@ avelocities[0][i] = (rand()&255) * 0.01;
  		forward[1] = cp*sy;
  		forward[2] = -sp;
  
@@ -3194,7 +4178,7 @@ index 3db22ab..f266bdd 100644
  
  		p->die = cl.time + 0.01;
  		p->color = 0x6f;
-@@ -184,6 +481,26 @@ void R_ClearParticles (void)
+@@ -184,6 +625,27 @@ void R_ClearParticles (void)
  {
  	int		i;
  	
@@ -3205,7 +4189,7 @@ index 3db22ab..f266bdd 100644
 +	{	// the workers' shares: every place of each free, none alive, nothing to draw
 +		int w;
 +
-+		se_particles_settle ();
++		SE_FrameSettle ();
 +		for (w=0 ; w<SE_SHARES ; w++)
 +		{
 +			for (i=0 ; i<se_share ; i++)
@@ -3216,12 +4200,13 @@ index 3db22ab..f266bdd 100644
 +		}
 +		se_shown = -1;
 +		se_pending = 0;
++		se_effect_count = 0;
 +	}
 +#endif
  	free_particles = &particles[0];
  	active_particles = NULL;
  
-@@ -220,15 +537,11 @@ void R_ReadPointFile_f (void)
+@@ -220,15 +682,11 @@ void R_ReadPointFile_f (void)
  			break;
  		c++;
  		
@@ -3238,8 +4223,70 @@ index 3db22ab..f266bdd 100644
  		
  		p->die = 99999;
  		p->color = (-c)&15;
-@@ -281,12 +594,8 @@ void R_ParticleExplosion (vec3_t org)
+@@ -274,19 +732,70 @@ R_ParticleExplosion
+ 
+ ===============
+ */
++#ifdef SHADEREMU
++// R_ParticleExplosion with what it makes of each particle left to the share's worker: here its
++// place and the seed of its seven random numbers, which go on as if they had been drawn.
++static int se_explode (const vec3_t org, float die)
++{
++	se_effect_t	*e;
++	int			i, w, tries;
++
++	if ((se_how != SE_APART && se_how != SE_WAIT) || se_effect_count == SE_EFFECTS || se_explode_here)
++		return 0;
++	e = &se_effects[se_fresh_now][se_effect_count++];
++	VectorCopy (org, e->org);
++	e->die = die;
++	e->seed = se_rand_seed;
++	for (w=0 ; w<SE_SHARES && se_free_count[w] >= 1024 / SE_SHARES ; w++)
++		;
++	if (w == SE_SHARES)
++	{	// (each share has room for its quarter: particle i is share (se_next + i) % 4's)
++		for (w=0 ; w<SE_SHARES ; w++)
++		{
++			unsigned short	*fresh = se_fresh[se_fresh_now][w] + se_fresh_count[w], *made = se_made[se_fresh_now][w] + se_fresh_count[w];
++			const unsigned short	*free = se_free[w] + se_free_count[w];
++			int		first = SE_MADE_BY (se_effect_count - 1, (w - se_next) & (SE_SHARES - 1));
++
++			for (i=0 ; i<1024 / SE_SHARES ; i++)
++				fresh[i] = free[-1 - i], made[i] = first + SE_SHARES * i;
++			se_fresh_count[w] += 1024 / SE_SHARES;
++			se_free_count[w] -= 1024 / SE_SHARES;
++		}
++		se_rand_seed = se_leap (se_rand_seed, 7 * 1024);
++		return 1;
++	}
++	for (i=0 ; i<1024 ; i++)
++	{
++		for (tries=0 ; tries<SE_SHARES ; tries++)
++		{
++			w = se_next;
++			se_next = (se_next + 1) % SE_SHARES;
++			if (se_free_count[w])
++				break;
++		}
++		if (tries == SE_SHARES)
++			break;
++		se_made[se_fresh_now][w][se_fresh_count[w]] = SE_MADE_BY (se_effect_count - 1, i);
++		se_fresh[se_fresh_now][w][se_fresh_count[w]++] = se_free[w][--se_free_count[w]];
++	}
++	se_rand_seed = se_leap (se_rand_seed, 7 * i);
++	return 1;
++}
++#endif
++
+ void R_ParticleExplosion (vec3_t org)
+ {
+ 	int			i, j;
+ 	particle_t	*p;
  	
++#ifdef SHADEREMU
++	if (se_explode (org, cl.time + 5))
++		return;
++#endif
  	for (i=0 ; i<1024 ; i++)
  	{
 -		if (!free_particles)
@@ -3252,7 +4299,7 @@ index 3db22ab..f266bdd 100644
  
  		p->die = cl.time + 5;
  		p->color = ramp1[0];
-@@ -326,12 +635,8 @@ void R_ParticleExplosion2 (vec3_t org, int colorStart, int colorLength)
+@@ -326,12 +835,8 @@ void R_ParticleExplosion2 (vec3_t org, int colorStart, int colorLength)
  
  	for (i=0; i<512; i++)
  	{
@@ -3266,7 +4313,7 @@ index 3db22ab..f266bdd 100644
  
  		p->die = cl.time + 0.3;
  		p->color = colorStart + (colorMod % colorLength);
-@@ -359,12 +664,8 @@ void R_BlobExplosion (vec3_t org)
+@@ -359,12 +864,8 @@ void R_BlobExplosion (vec3_t org)
  	
  	for (i=0 ; i<1024 ; i++)
  	{
@@ -3280,8 +4327,14 @@ index 3db22ab..f266bdd 100644
  
  		p->die = cl.time + 1 + (rand()&8)*0.05;
  
-@@ -404,12 +705,8 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
+@@ -402,14 +903,14 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
+ 	int			i, j;
+ 	particle_t	*p;
  	
++#ifdef SHADEREMU
++	if (count == 1024 && se_explode (org, cl.time + 5))
++		return;
++#endif
  	for (i=0 ; i<count ; i++)
  	{
 -		if (!free_particles)
@@ -3294,7 +4347,7 @@ index 3db22ab..f266bdd 100644
  
  		if (count == 1024)
  		{	// rocket explosion
-@@ -467,12 +764,8 @@ void R_LavaSplash (vec3_t org)
+@@ -467,12 +968,8 @@ void R_LavaSplash (vec3_t org)
  		for (j=-16 ; j<16 ; j++)
  			for (k=0 ; k<1 ; k++)
  			{
@@ -3308,7 +4361,7 @@ index 3db22ab..f266bdd 100644
  		
  				p->die = cl.time + 2 + (rand()&31) * 0.02;
  				p->color = 224 + (rand()&7);
-@@ -509,12 +802,8 @@ void R_TeleportSplash (vec3_t org)
+@@ -509,12 +1006,8 @@ void R_TeleportSplash (vec3_t org)
  		for (j=-16 ; j<16 ; j+=4)
  			for (k=-24 ; k<32 ; k+=4)
  			{
@@ -3322,7 +4375,7 @@ index 3db22ab..f266bdd 100644
  		
  				p->die = cl.time + 0.2 + (rand()&7) * 0.02;
  				p->color = 7 + (rand()&7);
-@@ -557,12 +846,8 @@ void R_RocketTrail (vec3_t start, vec3_t end, int type)
+@@ -557,12 +1050,8 @@ void R_RocketTrail (vec3_t start, vec3_t end, int type)
  	{
  		len -= dec;
  
@@ -3336,14 +4389,14 @@ index 3db22ab..f266bdd 100644
  		
  		VectorCopy (vec3_origin, p->vel);
  		p->die = cl.time + 2;
-@@ -655,15 +940,37 @@ void R_DrawParticles (void)
+@@ -655,15 +1144,40 @@ void R_DrawParticles (void)
  	float			time1;
  	float			dvel;
  	float			frametime;
 +#ifdef SHADEREMU
 +	/* the game's time kept here (a store to a particle could be to cl.time, for all the
 +	   compiler knows), and the particles written where the GPU reads them (qgl.c) */
-+	float			now = cl.time;
++	float			now;
 +	unsigned		*to = NULL;
 +	int			room = 0, given;	// (room is counted in a register: given is what has an address)
 +#define cl_time now
@@ -3371,10 +4424,13 @@ index 3db22ab..f266bdd 100644
 +		return;
 +	}
 +#endif
++#ifdef SHADEREMU
++	now = cl.time;	// (not before: a worker drawing the frame reads none of the client)
++#endif
  
  	VectorScale (vup, 1.5, up);
  	VectorScale (vright, 1.5, right);
-@@ -684,7 +991,7 @@ void R_DrawParticles (void)
+@@ -684,7 +1198,7 @@ void R_DrawParticles (void)
  	for ( ;; ) 
  	{
  		kill = active_particles;
@@ -3383,7 +4439,7 @@ index 3db22ab..f266bdd 100644
  		{
  			active_particles = kill->next;
  			kill->next = free_particles;
-@@ -699,7 +1006,7 @@ void R_DrawParticles (void)
+@@ -699,7 +1213,7 @@ void R_DrawParticles (void)
  		for ( ;; )
  		{
  			kill = p->next;
@@ -3392,7 +4448,7 @@ index 3db22ab..f266bdd 100644
  			{
  				p->next = kill->next;
  				kill->next = free_particles;
-@@ -709,7 +1016,24 @@ void R_DrawParticles (void)
+@@ -709,7 +1223,24 @@ void R_DrawParticles (void)
  			break;
  		}
  
@@ -3418,7 +4474,7 @@ index 3db22ab..f266bdd 100644
  		// hack a scale up to keep particles from disapearing
  		scale = (p->org[0] - r_origin[0])*vpn[0] + (p->org[1] - r_origin[1])*vpn[1]
  			+ (p->org[2] - r_origin[2])*vpn[2];
-@@ -789,6 +1113,10 @@ void R_DrawParticles (void)
+@@ -789,6 +1320,10 @@ void R_DrawParticles (void)
  		}
  	}
  
@@ -3430,7 +4486,7 @@ index 3db22ab..f266bdd 100644
  	glEnd ();
  	glDisable (GL_BLEND);
 diff --git a/WinQuake/render.h b/WinQuake/render.h
-index b5f8382..c29cd4c 100644
+index b5f8382..8175a8f 100644
 --- a/WinQuake/render.h
 +++ b/WinQuake/render.h
 @@ -44,7 +44,7 @@ typedef struct entity_s
@@ -3442,11 +4498,39 @@ index b5f8382..c29cd4c 100644
  	vec3_t					msg_origins[2];	// last two updates (0 is newest)	
  	vec3_t					origin;
  	vec3_t					msg_angles[2];	// last two updates (0 is newest)
+@@ -68,6 +68,9 @@ typedef struct entity_s
+ 											//  that splits bmodel, or NULL if
+ 											//  not split
+ } entity_t;
++#ifdef SHADEREMU
++#define se_culled	trivial_accept	// (the software renderer's, not built): host_framecount when culled
++#endif
+ 
+ // !!! if this is changed, it must be changed in asm_draw.h too !!!
+ typedef struct
 diff --git a/WinQuake/sbar.c b/WinQuake/sbar.c
-index be9ec9c..820f47c 100644
+index be9ec9c..adcd111 100644
 --- a/WinQuake/sbar.c
 +++ b/WinQuake/sbar.c
-@@ -661,7 +661,17 @@ void Sbar_DrawInventory (void)
+@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // sbar.c -- status bar code
+ 
+ #include "quakedef.h"
++#include "se_scene2d.h"	// (what the 2D screen reads: scene_shaderemu.c)
+ 
+ 
+ int			sb_updates;		// if >= vid.numpages, no update needed
+@@ -100,7 +101,9 @@ Sbar_Changed
+ */
+ void Sbar_Changed (void)
+ {
++#ifndef SHADEREMU	// (GL_BeginRendering has every frame's bar drawn whole)
+ 	sb_updates = 0;	// update next frame
++#endif
+ }
+ 
+ /*
+@@ -661,7 +664,17 @@ void Sbar_DrawInventory (void)
  // ammo counts
  	for (i=0 ; i<4 ; i++)
  	{
@@ -3658,7 +4742,7 @@ index c5d61a7..aa58665 100644
  char *Sys_ConsoleInput (void);
  
 diff --git a/WinQuake/view.c b/WinQuake/view.c
-index ececf8c..5c92935 100644
+index ececf8c..9aa5eb6 100644
 --- a/WinQuake/view.c
 +++ b/WinQuake/view.c
 @@ -568,6 +568,9 @@ void V_UpdatePalette (void)
@@ -3681,6 +4765,39 @@ index ececf8c..5c92935 100644
  	if (chase_active.value)
  		Chase_Update ();
  }
+@@ -992,6 +998,22 @@ the entity origin, so any view position inside that will be valid
+ */
+ extern vrect_t	scr_vrect;
+ 
++#ifdef SHADEREMU
++// V_RenderView's view of a frame of a game being played, made on the first core when the frame is
++// given to a worker (scene_shaderemu.c): the same as below but the drawing.
++void SE_ViewFront (void)
++{
++	if (cl.maxclients > 1)
++	{
++		Cvar_Set ("scr_ofsx", "0");
++		Cvar_Set ("scr_ofsy", "0");
++		Cvar_Set ("scr_ofsz", "0");
++	}
++	if (!cl.paused)
++		V_CalcRefdef ();
++}
++#endif
++
+ void V_RenderView (void)
+ {
+ 	if (con_forcedup)
+@@ -1013,6 +1035,9 @@ void V_RenderView (void)
+ 	{
+ 		if (!cl.paused /* && (sv.maxclients > 1 || key_dest == key_game) */ )
+ 			V_CalcRefdef ();
++#ifdef SHADEREMU
++		SE_GunAhead ();	// (gl_rlight.c: the light under the weapon, on a worker while the view is drawn)
++#endif
+ 	}
+ 
+ 	R_PushDlights ();
 diff --git a/WinQuake/world.c b/WinQuake/world.c
 index e1acfea..f755b41 100644
 --- a/WinQuake/world.c

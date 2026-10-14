@@ -46,7 +46,7 @@ static int	ear_entity;
 enum { KEPT_START, KEPT_CLEAR, KEPT_LOOP, KEPT_STOP_LOOP, KEPT_EARS };
 #define MAX_KEPT	256
 typedef struct { int kind, a, b, c; float v[12]; } kept_t;
-static struct { kept_t sound[MAX_KEPT]; int count, unused[3]; } kept[3] __attribute__ ((aligned (16)));
+static struct { kept_t sound[MAX_KEPT]; int count, unused[3]; } kept[1 + SE_LISTS] __attribute__ ((aligned (16)));
 static int	recording;
 
 /* Room for one more of the worker's askings, or NULL on the first core (which does it at once). */

@@ -18,7 +18,9 @@ The games are Thwaite by Damian Yerrick (mapper 0) and Nova the Squirrel by Nova
 ## What the build is made of (`linux/nes`)
 
 - `build.sh` fetches esp32-nesemu at a fixed commit, applies `nofrendo.patch` and compiles
-  Nofrendo with the files below, `programs/linux/gles.c` and `programs/mc/mcw.c`.
+  Nofrendo with the files below, `programs/linux/gles.c` and `programs/mc/mcw.c` and
+  `mcwx.c`. `NES_OUT=DIR` puts the program in DIR (a private image's overlay,
+  `tools/private_image.py`) where it would go in the shared root.
 - `osd_shaderemu.c` is the machine's side: the window, the pad, the frame and its pace. The
   NES's picture is 256 x 240 bytes of GPU memory, each a place in the display's palette, which
   holds the NES's colours; the GPU stretches it over the window.
@@ -315,8 +317,9 @@ its time there, eleven counts of 60 frames: 51.0 to 53.8 a second.
 - **A game ahead of its time rests** (`mcw_rest()` in `frame_paced`, `docs/multicore.md`,
   "A core that rests") where it paused: the kernel has the core meanwhile.
 
-Looked at and not done: the emulation itself on a worker core, with the first core only
-showing lists and asking for the pad. A worker has no kernel in its way (the tick and the
+Looked at and not done then (done since: "The emulation on a worker core" below): the
+emulation itself on a worker core, with the first core only showing lists and asking for the
+pad. A worker has no kernel in its way (the tick and the
 rest are 7% of the first core's frame now, 12% before the above), so a frame would be near
 34 thousand of the worker's instructions. Against it: a job and its answer are a pass each
 way, a worker keeps 1.5 KB of new stores a pass where the first core keeps 6, and every
@@ -410,8 +413,7 @@ Where a Thwaite game frame's 23 to 24 thousand go now: translated code 42%, the 
 (its tick: nothing a program can do), the frame's loop and quiet lines 6%, slices begun and
 ended 5%, the rest in pieces of 1 to 3%.
 
-Not done, and why: the emulation on a worker core (what would be gained is the kernel's 7%
-and the pad and the swap, against a pass each way and a worker's 1.5 KB of stores a pass);
+Not done, and why: the emulation on a worker core (done since, below);
 translation on a worker (a level made ready is a fifth translation, 300 instructions for
 one of the 6502's: two cores would write one table and one block of code); `php`, `plp`,
 `sei` and `cli` as routines like `rti`'s (neither game uses them in a frame); the kernel's
@@ -441,6 +443,88 @@ cycle more (forms 1 and 4 gave `033d4345` and `550cefc2` asleep, and the sums ab
 `NES_PLAIN=1` or `2`). The count is made again from the register as the 6502 goes to
 sleep (`idle_count_from` in `nes6502.c`). Neither game's sums moved.
 
+### The emulation on a worker core (14 October 2026)
+
+The first core no longer emulates. A worker runs the frames, another makes the GPU's lists
+from them, and the first core shows the lists, reads the window's events for the pad and helps
+the two on at a page or a system call (`run_elsewhere`, `emulate`, `lists_job`, `lists_step`
+in `osd_shaderemu.c`). `python tools\game_par.py nes` (Thwaite, the 1,000-frame run below, the
+list by a worker, frames 100 to 1,000; the mean of three timings under `rvc_cpu`), and Nova's
+1,000-frame run measured the same way:
+
+| | first core a frame | all cores | all over the first | lists shown of 900 | guest seconds |
+|---|---|---|---|---|---|
+| Thwaite, before | 24.6k | 31.0k | 1.26 | 792 | 6.74 |
+| Thwaite, now | 3.3k | 30.9k | 9.33 | 798 | 5.94 |
+| Thwaite, `NES_EMU=lists-here` | 9.4k | 30.6k | 3.27 | 798 | 5.95 |
+| Thwaite, `NES_EMU=here` (as before) | 23.8k | 30.1k | 1.26 | 792 | 6.45 |
+| Nova, before | 25.8k | 27.9k | 1.08 | | |
+| Nova, now | 3.7k | 29.3k | 7.96 | | |
+| Nova, `NES_EMU=lists-here` | 5.5k | 29.0k | 5.22 | | |
+
+The game is 12% faster as fast as it goes (the emulating worker has no kernel in its way:
+21.3k instructions a frame where the first core spent 24.6k), and held to its time Thwaite
+keeps 60 frames a second with 60 shown. All cores together run as many instructions as before
+for Thwaite and 5% more for Nova, whose frames are short: a first core with nothing to do still
+costs about 1,100 instructions a pass (the rest, 322, and the kernel's own), 3.0k of its 3.3k a
+frame, where the emulation's kernel was 1.85k. Sleeping in the kernel instead of resting was
+tried: 830 a pass, and a list shown in four. The lists' worker waited in 2,675 passes of the
+run, some 40 instructions each (2% of its 6.3k a frame); the emulating worker waits only for
+the last frame's list.
+
+- **The frames are one long call** (`mcw_try_call(emulate)`, `programs/mc/mcwx.h`): nofrendo's
+  loop of frames is the job (`nes_run_elsewhere` in `nes.c`). It ends at the test's last frame
+  or hold by a jump out (the first core then writes its lines and ends or holds), and at the
+  end of a frame when the kernel wants its core back (`mcw_recalled`): the frames go on in
+  another call, or on the first core as without workers.
+- **What each side says is 16 bytes of its own**: the frame given out, its record and copy
+  (`emu_said`); the list made (`lists_said`); the frame whose list is drawn, the keys
+  (`first_said`). Everything else a side writes is its own too: the emulating worker all of
+  nofrendo, the lists' worker `gd` and the GPU's library, the first core the window system and
+  the swap (which takes the GPU's lock, also the window system's: never from a worker).
+- **The cells and pattern RAM's patterns are three copies** (`COPIES`, `gd_tables`): a list is
+  made with one while the GPU draws another and the emulation makes a third up. Each copy keeps
+  the bytes and tiles written since it was last made up (a word of bits a row of 32, and a word
+  a row of those words: `ppu_written_rows` in `nes_ppu.c`), and a frame is given out only when
+  the list its copy last went into is drawn: `nesgpu` counts the others as not shown. With two
+  copies 711 of 900 were shown. `NES_CELLS_CHECK=1` works every copy out whole as it is given
+  out and must say `0 of N frames differ`.
+- **Its lines are `mcw_print()`'s**, written when the call ends, or at once for `nesmark` and
+  each `nesstat`, by a system call the first core makes (`mcw_print_now()`, added to
+  `mcwx.h`). Written in one go, the 2 KB log stopped the emulating worker for 450 ms while the
+  console took it. The clock in `nesstat` is the machine's word, not a system call.
+- **The pad**: the first core counts each key's presses and keeps those down; the emulating
+  worker presses them every fourth frame, as `osd_getinput` did. A test's presses (`NES_PRESS`)
+  are the worker's, at the same frames, so every sum is as it was.
+- **Pages**: the first core reads the cartridge and writes the translator's tables and the
+  first 256 KB of its code before the worker starts (`nes6502_recompile_touch` in
+  `rc6502.h`): 134 pages were brought for it in the run, now about 50. The translator's list of
+  routines to come back to is in its tables, not `realloc`ed (no `malloc` on two cores).
+- **The sound's recordings** go to `mcw_call()` too (`apu_shaderemu.c`); on the emulating
+  worker a recording is decoded there and then.
+- **Without a sound card the voices are not worked out** (`show` in `apu_shaderemu.c`): the
+  channels are followed as before, and what a voice would be told is left; 0.7k a frame.
+- **A line with more than eight sprites is found by counts** of the sprites that begin and end
+  on each line, and only such a line is walked in their order (`gd_draw`): it was a byte
+  counted for each of a sprite's 8 or 16 lines, behind a clear of 256. The same lines are lost
+  (200,000 random sets of sprites on the host, 118,403 with such a line: none different).
+- Smaller: the sprites' cells and quads are made with the counts and tables in registers (the
+  list 0.6k fewer), the test's presses read once each (`sscanf` every fourth frame was 0.4k a
+  frame), and the last picture's sum four bytes a step (the same sum).
+
+`NES_EMU=here` is the old way, `NES_EMU=lists-here` makes the lists on the first core (the
+fewest instructions in all, a third of the first core's). Checked: every sum of "Testing" in
+all the modes it names, `NES_EMU=here` and `lists-here` among them; the cartridge of our own's
+five forms; `RVC_RACES` over both 1,000-frame runs, 0 undone (the reads as they were are the
+words above); `mctest 3 120000` before and after a `nes nova` killed with `-9` and a held one;
+Thwaite held to its time; `NES_HOLD` and `NES_HOLD_LATE`; held frames on `rvc_harness --cpu
+--warp` (Thwaite 260, Nova 450) against the build before: no pixel of the NES's picture
+different (the caption's frames a second and the bar's figures are). Not checked: the shader
+machine and the world (no runs on the card), a recall (the kernel never asked for these cores with 256 of
+them), sound on a card. What would take the instructions down from here: the first core's
+1,100 a pass of looking on (it can neither sleep longer nor end its pass without the kernel),
+and the list's 6.3k a frame, of which the sprites' cells and quads are some 3k.
+
 ## Sound
 
 No sample is computed. The NES's five channels are five voices of the sound card
@@ -462,12 +546,13 @@ what a game reads back at `$4015` is what it read before.
   triangle's linear counter at each, length counters and sweeps at every other. Each is a
   few stores to the voices' words. A game's frame did not move: 60 thousand instructions.
 - **Workers.** With the channels on the card there is nothing to give a worker every frame.
-  Two things are work, and both are a worker's when the program has one (the second of the
-  two it opens; the first makes the GPU's lists): the long noise table at the start, and a
-  DMC recording the first time a game plays it (up to 32,648 samples from one bit each).
-  The first core copies the recording's bytes out of the cartridge, posts the job, and
-  starts the voice at the quarter of a frame after the worker is done; the same recording
-  again is found in its slot (by address, length, start level and first bytes).
+  Two things are work, and both are a worker's when the program has one (`mcw_call()`, on a
+  worker with nothing to do): the long noise table at the start, and a DMC recording the
+  first time a game plays it (up to 32,648 samples from one bit each). The first core copies
+  the recording's bytes out of the cartridge, gives out the call, and starts the voice at the
+  quarter of a frame after it is made; the same recording again is found in its slot (by
+  address, length, start level and first bytes). While the emulation is a worker's, a
+  recording is decoded on that worker there and then.
 - **A game that runs slower than a NES plays its tune slower**, with no gaps: nothing is
   queued that could run dry.
 - Loudness is the NES's own mix in its linear form (a pulse 0.00752 a level, the triangle
@@ -514,7 +599,9 @@ To check it:
   instructions, or the kernel's timer is a quarter of the profile).
 - Each of these must give the same: `NES_RC=plain`, `NES_LINES=each` (a slice of the 6502 is one line), `NES_LIST=worker`, `NES_CPU=interp` (no recompiler), `NES_PLAIN=1` (every
   turn of an idle loop run), `NES_PLAIN=2` (loops passed over, nothing asleep), `NES_PLAIN=3`
-  (asleep, no quiet lines), `NES_PPU=workers`, `NES_PPU=inline`. `NES_PPU=here` is nofrendo's own drawing, a frame in three: its
+  (asleep, no quiet lines), `NES_PPU=workers`, `NES_PPU=inline`, `NES_EMU=here` (the
+  emulation on the first core), `NES_EMU=lists-here` (the lists on the first core);
+  `NES_CELLS_CHECK=1` must say `0 of N frames differ`. `NES_PPU=here` is nofrendo's own drawing, a frame in three: its
   frames are counted otherwise, so it has sums of its own (`b6f2e9ee`, `451f1f1d`,
   `70810528`), the same with each switch.
 - All of that is instructions, so `rvc_cpu` does it (`docs/cpu-harness.md`), workers and

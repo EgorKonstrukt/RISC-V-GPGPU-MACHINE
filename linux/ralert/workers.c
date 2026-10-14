@@ -1,22 +1,23 @@
 /*
  * Red Alert's side of the machine's worker cores (workers.h): its jobs, which are functions
  * here that a worker calls in the game's own memory, over the library every program that
- * uses the workers has (programs/mc/mcw.h).
+ * uses the workers has and its second layer (programs/mc/mcwx.h: a frame's rows by mcw_for,
+ * the next frame's pointers by mcw_try_call).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "mcw.h"
+#include "mcwx.h"
 #include "workers.h"
 #include "host.h"	/* linux/tdawn: the scene has a worker core between movies */
 
-unsigned workers_frames, workers_passes;
+unsigned workers_frames;
 
 static int count = -1, at_exit;
 static struct workers_unvq shared __attribute__((aligned(16)));
 static struct workers_lcw unpacking __attribute__((aligned(16)));
-static int unpacker_busy;
+static mcw_handle unpacker;
 /* the memory the workers are to write a frame into */
 static uint8_t *target;
 static uint32_t target_bytes;
@@ -105,10 +106,9 @@ static void lcw(const struct workers_lcw *job)
 	}
 }
 
-static uint32_t unvq_job(uint32_t job, uint32_t rows)
+static void unvq_piece(void *job, uint32_t from, uint32_t to)
 {
-	unvq_rows((const struct workers_unvq *)job, rows >> 16, rows & 0xffff);
-	return 0;
+	unvq_rows((const struct workers_unvq *)job, from, to);
 }
 
 static uint32_t lcw_job(uint32_t job, uint32_t unused)
@@ -177,9 +177,9 @@ void workers_release(void *memory)
 /* The last worker unpacks; the others, and it when it has nothing to unpack, share frames. */
 void workers_lcw_wait(void)
 {
-	if (!unpacker_busy) return;
-	workers_passes += mcw_wait(count);
-	unpacker_busy = 0;
+	if (!unpacker) return;
+	mcw_join(unpacker);
+	unpacker = 0;
 }
 
 int workers_lcw(const uint8_t *source, uint8_t *dest, unsigned length)
@@ -189,9 +189,8 @@ int workers_lcw(const uint8_t *source, uint8_t *dest, unsigned length)
 	unpacking.source = source;
 	unpacking.dest = dest;
 	unpacking.length = length;
-	mcw_post(count, lcw_job, (uint32_t)&unpacking, 0);
-	unpacker_busy = 1;
-	return 1;
+	unpacker = mcw_try_call(lcw_job, (uint32_t)&unpacking, 0);
+	return unpacker != 0;
 }
 
 void workers_target(void *memory, unsigned physical, unsigned bytes)
@@ -202,6 +201,7 @@ void workers_target(void *memory, unsigned physical, unsigned bytes)
 	/* the movie is over: the cores are another program's to have until the next one */
 	if (!memory && count > 0) {
 		workers_lcw_wait();
+		mcw_for_end();
 		mcw_close();
 		count = -1;
 	}
@@ -210,7 +210,8 @@ void workers_target(void *memory, unsigned physical, unsigned bytes)
 int workers_unvq(uint8_t *codebook, uint8_t *pointers, uint8_t *buffer, unsigned blocks_per_row, unsigned num_rows,
 		 unsigned buff_width)
 {
-	unsigned bytes = num_rows * 4 * buff_width, cores, share, row, k;
+	unsigned bytes = num_rows * 4 * buff_width;
+	mcw_for_opts rows = {0};
 
 	/* rows of whole texels, or two cores would store to one */
 	if (workers_count() == 0 || (buff_width & 15) != 0 || blocks_per_row * 4 > buff_width || num_rows < 2 || !target
@@ -223,21 +224,9 @@ int workers_unvq(uint8_t *codebook, uint8_t *pointers, uint8_t *buffer, unsigned
 	shared.num_rows = num_rows;
 	shared.buff_width = buff_width;
 
-	/* (the worker that unpacks the next frame is left to it) */
-	if (unpacker_busy && mcw_done(count)) unpacker_busy = 0;
-	cores = (unsigned)count + 1 - (unpacker_busy ? 1 : 0);
-	if (cores > num_rows) cores = num_rows;
-	share = (num_rows + cores - 1) / cores;
-	/* the first share is this core's, the rest a worker's each */
-	for (k = 1, row = share; k < cores && row < num_rows; k++, row += share) {
-		unsigned end = row + share < num_rows ? row + share : num_rows;
-		mcw_post((int)k, unvq_job, (uint32_t)&shared, (row << 16) | end);
-	}
-	cores = k;
-	mc_next_pass();	/* the workers see the frame and their jobs from here on */
-	workers_passes++;
-	unvq_rows(&shared, 0, share);	/* this core's rows */
-	for (k = 1; k < cores; k++) workers_passes += mcw_wait((int)k);
+	/* every core rows of it, this one too (the worker that unpacks the next frame is left to it) */
+	rows.out_bytes = 4 * buff_width;
+	mcw_for_opt(num_rows, unvq_piece, &shared, &rows);
 	workers_frames++;
 	return 1;
 }

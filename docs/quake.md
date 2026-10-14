@@ -461,6 +461,241 @@ Tried and not kept: nothing of this round. Not attempted: the light at a thing t
 bits, and a worker's answer comes a pass too late for a frame of four); the status bar in
 pieces, for a fight in which it changes every few frames; a demo's messages read ahead.
 
+## Calls of the second layer, and the frame's jobs (14 October 2026)
+
+Every job of the program is now a call of the workers' second layer (`programs/mc/mcwx.h`,
+`docs/multicore.md`; `build.sh` compiles `mcwx.c` beside `mcw.c`): `mcw_call` gives it to a worker
+that has nothing to do, `mcw_ready` asks after it and `mcw_join` takes it. No worker is the
+server's or the particles' any more: the server's frame, a loader's job, the light maps and the
+frame's jobs below each go to whichever is idle (`SE_GroupAdd` and the like in
+`server_shaderemu.c`). The program still asks for thirteen, and each part is this core's with
+fewer, as before. A call costs this core some 600 to 700 instructions from `mcw_call` to
+`mcw_join` (a worker is looked at when it is chosen, when it is asked after and when it is
+joined), where a post and a look at the mailbox were about 150; the first port, a call a piece,
+was 2,800 instructions a frame dearer than the tree. So the pieces of a frame are as few calls
+as they can be:
+
+- **The frame's jobs** (`SE_FrameJobs` in `world_shaderemu.c`, after `CL_RelinkEntities`) are one
+  call: the light under the models that moved, the water's ripple and the particles. A fight's
+  particles (more than 512 a call) and much water take more calls. Water is rippled for the
+  leaves the viewer saw the frame before; particles a call moved before the frame draws them are
+  drawn in that frame (they were a frame behind).
+- **The light under a model that moved** is walked down the level by the worker
+  (`SE_LightAheadPrepare`, `SE_LightAheadJob` in `gl_rlight.c`) while this core goes on to the
+  picture, some 11 to 13 thousand instructions. The walk is all that is kept; the sample's light
+  is worked out again when the model is drawn, by the styles as they are then, so the light is
+  the bits it was. A model out of view the frame before is left to this core, and an answer not
+  there yet in time is worked out here as before (the worker says it has made them by a word, a
+  pass later). The weapon is placed later (`V_CalcRefdef`) and drawn after the rest of the view:
+  its walk is a call of its own (`SE_GunAhead`). The cache of points already walked has 256
+  places (64: torches and moving models put each other out). In demo1's windows of five
+  seconds 240 to 570 walks came from a worker, up to 22 were late and 40 to 200 were this core's. `QUAKE_LIGHTPOINT=check` makes every walk a worker made here too and counts those not
+  the same (the `quakestat:` line about the light): 0 in demo1, with `+host_framerate 0.05`
+  and without, and on e1m5 with `RVC_RACES`.
+- **An explosion's 1,024 particles are made by their shares' workers** (`se_explode` in
+  `r_part.c`, and `R_RunParticleEffect` of 1,024). This core gives each a free place as before
+  and writes its number in the explosion beside it; the worker makes it from the explosion's
+  place and the seed `rand()` had, stepped on by seven numbers a particle at once (a step taken
+  2^b times is a multiply and an add: `se_leap`), and this core's `rand()` goes on as if the
+  7,168 numbers had been drawn. When each share has a quarter free, the places are written a
+  share at a time. An explosion was 170 thousand instructions of this core; a particle is still
+  seen a frame after it is made.
+- **The particles' vertices are in GPU memory** (`qglParticleMemory`, 64 KB taken from the pool,
+  `qgpuPointsAt` in `gpu_shaderemu.c`), and each share is a draw from where its worker wrote them:
+  they were copied into the frame, 16 bytes a particle. A share's buffer is written again only when
+  the list that may still read it has been drawn (`seglSettle` when the frame before drew it).
+- **The light maps are one call** a change of the styles (four calls before, each going through
+  every surface for its pages).
+- **The server's end is a word.** Its frame writes its number when it has ended, and
+  `SE_ServerPoll`, a few times a frame, asks the library only when the word says so, or once a
+  frame (a page the worker stopped at is served then).
+- Smaller, on this core: the message's readers inline in `cl_parse.c` and `cl_tent.c`
+  (`SE_MSG_INLINE` in `common.h`, the same arithmetic), a notify line drawn up to its trailing
+  spaces (`se_line_length` in `console.c`).
+
+Calls a frame of demo1 went from 4.8 to 2.5. Nothing a worker does is waiting: they have calls
+only, never a team that lingers, and a worker without a call sleeps (with every part on this
+core the thirteen ran no instruction in the window).
+
+| `python tools/game_par.py quake --runs 3` (`rvc_cpu`, demo1's 969 frames) | this core a frame | all cores | factor |
+|---|---|---|---|
+| before (the tree of 13 October) | 68.8k | 99.9k | 1.45 |
+| every job a call, a call a piece | 71.6k | 103.1k | 1.44 |
+| now | 61.6k | 94.3k | 1.53 |
+| now, with every part on this core (`QUAKE_WATER`, `_LIGHT`, `_PARTICLES`, `_LIGHTPOINT=frame`) | 105.2k | 105.2k | 1.00 |
+
+What each new part is worth, by its switch: an explosion on this core 2.8k more of this core's
+a frame (all cores 0.5k), the light walks here 2.35k more (all cores 1.1k fewer: a worker also
+walks for models that leave the view), the particles copied 0.9k more. Of the workers' 32.7k a
+frame, the particles are 12.6k, the water 11.0k, the light walks 3.5k and the light maps 3.4k.
+
+On e1m5 and e1m1 where they start (`rvc_cpu`, the `quakestat:` lines, the frame at its 10 ms
+floor in both builds): 31.5k to 30.7k and 20.2k to 20.3k instructions a frame of this core, the
+server's frames as many.
+
+    QUAKE_EXPLODE=frame        an explosion's particles made by this core, as before
+    QUAKE_PARTICLES=copy       the workers' particles copied into the frame, as before
+    QUAKE_PARTICLE_SUM=N       a sum of the particles drawn every N frames, and rand()'s seed
+    QUAKE_LIGHTPOINT=frame     every walk for a model's light made by this core, as before
+    QUAKE_LIGHTPOINT=check     and made here too when a worker made it, and compared
+
+Checked, on `rvc_cpu`: `QUAKE_PARTICLES=wait QUAKE_PARTICLE_SUM=1 +host_framerate 0.05` prints the
+same sum at each of the 969 frames with explosions made by workers and by this core (and as the
+first build of the day, before the frame's jobs); without `+host_framerate` a sum is the machine's
+timing, which a word more in the command line changes. The server's sums of e1m5 (`QUAKE_SUM=10`,
+`+host_framerate 0.05`) are the tree's with `inline`, `late` and `wait`; `+forward` after "track
+30:" stops at 480 687 24 in every mode in both builds; the exit test loads e1m2 and goes on.
+`RVC_RACES` on demo1 and on e1m5 (the server on a worker): nothing undone and nothing read as it
+was. `QUAKE_WORKERS=0`, 1 and 3 run the demo to its end. Pictures: in the next section. Not
+checked: the shader machine and the world.
+
+Tried and not kept: water in one call up to 480 quads (demo1's water is one call already). The
+first core's frame was still the client's and its drawing, all into one GPU list: the next
+section gives the drawing to a worker whole.
+
+## The picture on a worker core (14 October 2026)
+
+A frame's drawing is now a worker's, a frame late (`scene_shaderemu.c`, `SE_SceneFrame` in place
+of `SCR_UpdateScreen` in `_Host_Frame`): everything that writes the GPU's list and swaps it, the
+level, the models, the particles, the 2D screen (`SE_ScreenWorker` in `gl_screen.c`). The first
+core gives frame N out with `mcw_call` and goes on to frame N + 1: the input, the server's part,
+the demo's or the server's messages, the entities placed. It joins frame N's call when frame N +
+1 is to be given out, so there is one writer of the list at a time, and the picture is a frame
+later than it was.
+
+- **What the worker reads that the first core goes on changing, it reads from a copy** made when
+  the frame is given out: the client's state (`cl`, but its lists of models and sounds, which only
+  a new level changes), the entities drawn (from their place on: not the messages' and baselines'
+  fields, about 100 bytes of each), the dynamic lights, the frame's count, length and time, and the
+  view's blend. The files that draw see those through `include/se_scene.h`: `cl`, `cl_entities`,
+  `cl_visedicts`, `cl_dlights`, `host_framecount`, `host_frametime`, `realtime_ms` and `v_blend` are
+  pointers there, at the copy while a worker draws and at the client's own otherwise.
+- **What only the first core changes, it changes between the two frames**, when the worker has
+  none: the view (`V_CalcRefdef`, `SE_ViewFront` in `view.c`), what `R_SetupFrame` made of the
+  client's state (the light styles, the view's leaf, its contents' colour and blend:
+  `SE_SceneFront` in `gl_rmain.c`, the same sums in the same order), the light maps' call
+  (`SE_LightFrame`), the frame's jobs (water, particles, the light under models that moved and the
+  weapon, whose place is known then), and the palette's decay (`V_UpdatePalette`). The light maps'
+  call and the palette are made after the frame is given out: the frame does not read them, and
+  the time between two frames is the frame's.
+- **Anything else of the first core's that changes what the frame draws waits for it first**
+  (`SE_SceneOwn`): a line printed or centred, a key, a command, a setting, a skin made for a player,
+  a window resized, a level loaded, cleared or left, an error, and every message of the server's but
+  a frame's everyday ones (`cl_parse.c`). A line the worker prints is written when it is joined
+  (`mcw_print`); an error there ends the program (`mcw_fail`). The server's own lines and errors
+  go where they went: `SE_ServerOnWorker` is now true on the server's worker only.
+- **A frame is drawn here**, as before, in a menu, the console, a level's first frame, an
+  intermission, a pause, a holodeck's seat, with mirrors or `lcd_x`, a held frame drawn late, a
+  setting of the view's size changed, and with `QUAKE_SCENE=inline` or without workers.
+- The first core waits for the frame by the word its call writes last, and asks the library only
+  every fourth pass: `mcw_join`'s wait looks at every worker each pass, which was 2 to 3 thousand
+  instructions a frame.
+
+`python tools/game_par.py quake --runs 3` (demo1's 969 frames, `rvc_cpu`):
+
+| | the first core a frame | all cores | factor | guest seconds for the demo |
+|---|---|---|---|---|
+| the tree of 13 October | 68.8k | 99.9k | 1.45 | 20.1 |
+| the frame's jobs (above), `QUAKE_SCENE=inline` | 62.0k | 94.7k | 1.53 | 18.1 |
+| the picture on a worker | 28.4k | 98.7k | 3.47 | 13.9 |
+
+The demo is 31% shorter: 70 frames a second of the machine's time where it was 48. The
+frame is as long as the worker's drawing and a pass or so to give it out and take it back: the
+first core waits for it in nearly every frame (`quakestat: N of these frames drawn by a worker
+core, K thousand instructions each, W waited for`: 34 to 46 thousand). The first core's 28.4k are
+its own frame and the waiting. All cores run 3.6k more than with the picture here: the copy, the
+waits, and light walked for models the worker does not draw. On e1m5 and e1m1 at their start the
+first core's frame went from 30.7k to 16.4k and from 20.3k to 13.9k; both draw at the game's
+floor of 10 ms a frame, as before.
+
+    QUAKE_SCENE=inline     every frame drawn by the first core, as before
+
+Checked on `rvc_cpu`, as for the section above: the particles' sums at all 969 frames of demo1 the
+same as the first build's (`QUAKE_PARTICLES=wait`, `+host_framerate 0.05`); the server's sums of
+e1m5 the tree's with `inline`, `late` and `wait`; `+forward` stops at 480 687 24 in every mode;
+the exit test loads e1m2; `QUAKE_LIGHTPOINT=check` 0 not the same; `RVC_RACES` on demo1 and
+e1m5 nothing undone, and reads as they were only of the walks' word, which the drawing worker
+looks at (and of the client's time by `R_DrawParticles`, before it read it later).
+
+Pictures, by `rvc_harness --cpu --warp` (the software rasteriser, no card): frames 150 (a fight),
+300 and 420 of demo1 held (`QUAKE_HOLD`, `+host_framerate 0.05`), the tree's build against this
+one, the GPU's whole target compared pixel by pixel. With the particles, light maps and water
+waited for, the picture on a worker is the tree's at 150 and 420, and with `QUAKE_SCENE=inline` at
+all three; at 300 1,912 pixels differ, all in the console's notify lines at the top, which go after
+three seconds of the clock, and this build is faster: with `+con_notifytime 0` none differs. With
+everything at its own pace (the default), the three are the tree's too. The particles there are
+drawn from GPU memory in this build and copied into the frame in the tree's.
+
+## Drawn without a gap, the 2D screen on a worker of its own (15 October 2026)
+
+With the picture on a worker the frame was as long as three things one after another: the first
+core's part between two frames (the view, the copy, the frame's jobs: 10 thousand instructions),
+the pass or so it took to give the frame out and take it back, and the drawing (40 to 45
+thousand). Now the drawing is the frame:
+
+- **The drawing worker stays** (`scene_job`): one call that draws frame after frame, each from one
+  of two copies in turn, and goes on to the next as soon as it has swapped one if the first core
+  has given it. The first core fills a copy while the worker draws from the other, waiting only
+  until the frame two before has been swapped (that copy's last reader), and says "no more"
+  before anything that changes what drawing reads (`SE_SceneOwn`, as before). A frame is so shown
+  up to two frames of the first core's after it was made. Between frames a worker with nothing to
+  draw ends its passes (`mc_end_pass`), which costs it a few instructions a pass.
+- **The view is in the copy too**: the refdef, the view's place and axes, its leaf and the light
+  styles' values (`se_scene.h`), with which the first core makes the next frame's view while the
+  worker draws the last. Code of the first core's in the files that draw reads its own state again
+  between `se_real.h` and `se_scene.h` (`SE_SceneFront`, `R_AnimateLight`, the walks, the frame's
+  jobs, the light maps). The particles' vertices are in four buffers: one being written, one
+  shown, and two that a frame given out or a list being drawn may still read; a job writes into
+  one of none of those, and no frame waits for the GPU for it. The walks' tables are two, a copy's
+  each, and one is taken for walks only when none is out.
+- **A worker waiting for the GPU ends its pass** (`rest` in `programs/linux/gles.c`): its pause was
+  a sleep until its job changed, which a call that draws frame after frame never has. And the sky's
+  place on the picture, set every frame, is written in the set being built only
+  (`seglKeptLaidHere`, new in `gles.c`): written in both, it waited for the list being drawn every
+  frame, 0.7 of a pass, the drawing worker's only wait.
+- **The 2D screen is recorded by a third worker** (`record_screen`, `SE_ScreenRecord` in
+  `gl_screen.c`) from the same copy, while the drawing worker draws the view: the status bar, the
+  notify lines, the centre print, the crosshair, the icons, recorded as rectangles into GPU memory
+  (one of three buffers) and runs of one texture and tint (`qglRecordBegin` .. `qglRecordEnd` in
+  `qgl.c`: on the core that records, the texture, the colour and the rectangles go into the
+  recording, anything else spoils it). The drawing worker draws the runs after the view, a command
+  each pointing at the rectangles where they lie (`qglRecordDraw`, `seglSpritesAt` new in `gles.c`),
+  waiting for the recording if it is not done (it always was). `gl_screen.c` and `sbar.c` read the
+  client's state through `se_scene2d.h`, the copy of the frame being recorded. A frame with the
+  console down, the scores, a menu or a smaller view is drawn by the first core, as before;
+  `quakestat:` counts frames whose screen could not be recorded (0).
+
+`python tools/game_par.py quake --runs 3` (demo1's 969 frames):
+
+| | the first core a frame | all cores | factor | guest seconds for the demo | frames a second |
+|---|---|---|---|---|---|
+| the tree of 13 October | 68.8k | 99.9k | 1.45 | 20.1 | 48 |
+| the picture on a worker (above) | 28.4k | 98.7k | 3.47 | 13.9 | 70 |
+| drawn without a gap | 28.2k | 100.0k | 3.54 | 12.3 | 79 |
+| and the sky laid in one set | 28.2k | 99.0k | 3.51 | 12.1 | 80 |
+| and the 2D screen on a worker of its own | 29.3k | 102.2k | 3.49 | 10.5 | 92 |
+| the same, `QUAKE_SCENE=inline` | 62.7k | 95.4k | 1.52 | 18.3 | 53 |
+
+The drawing worker's frame is 31 to 37 thousand instructions, and is the frame: the first core
+waits for it now and then (`quakestat:`, "waited for"). All cores run 2% more than the tree: the
+copies, the walks made for models that are not drawn, and the 2D screen's runs. On e1m5 and e1m1 at
+their start the first core's frame is 16.2k and 13.9k; both draw at the game's floor of 10 ms.
+
+Checked on `rvc_cpu` as before: the particles' sums at all 969 frames as the tree's
+(`QUAKE_PARTICLES=wait`, which now waits for every one of the frame's jobs, the walks too: with the
+walks out the particles were given a frame later, by the walks' timing); the server's sums of e1m5
+with `inline`, `late` and `wait`; `+forward` to 480 687 24; the exit test; `QUAKE_LIGHTPOINT=check`
+0; `RVC_RACES` on demo1 and e1m5 nothing undone. Reads as they were: the drawing worker's look at
+the words it is given (`published`, `stop`) and at the 2D worker's word, the walks' word, the
+water's list as the frame's jobs left it (a frame's ripple may be of the list before), and every
+`qgl` call's look at whether it records (`rec_on`, which the recording core writes; a call on
+another core goes on as it would).
+
+Pictures, as for the section above (`rvc_harness --cpu --warp`, frames 150, 300 and 420 of demo1
+held, `+host_framerate 0.05`, against the tree's build): with the particles, light maps and water
+waited for and with everything at its own pace, all six are the tree's to the pixel, the 2D screen
+recorded and the frames drawn by the staying worker; frame 300 with `+con_notifytime 0` too.
+
 ## The server's frame, and what could be taken from it
 
 Not done: what was measured on 13 October 2026, and what it suggests. e1m5 standing where

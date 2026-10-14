@@ -8,30 +8,30 @@
 #include <string.h>
 
 #include "client/client.h"
-#include "mcw.h"
+#include "mcwx.h"
 #include "se_q3.h"
 
 enum { MODE_UNSET = -1, MODE_INLINE, MODE_WORKER };
 #define WORKER		2
 #define STACK_BYTES	0x80000
 #define FIRST_FRAMES	4		/* of a game this core makes itself before the worker has them */
-#define LIST(frame)	(1 + ((frame) & 1))	/* which of the two lists a frame is written to */
+#define LIST(frame)	(1 + (frame) % SE_LISTS)	/* which of the lists a frame is written to */
 
 unsigned	se_client_stack;	/* its stack's top (q_shared.h, SE_OnWorker) */
 unsigned	se_client_jobs, se_client_cycles, se_client_passes;	/* for the q3stat: lines */
 int		se_client_list;		/* the list of the frame the worker is at (server_shaderemu.c keeps by it) */
 
 /* what a frame is given, by its list: this core's, written before the frame is asked for */
-static struct { int serverTime, stereo, demo, cmdNumber, snapNumber, snapTime, unused[2]; } given[2] __attribute__ ((aligned (16)));
+static struct { int serverTime, stereo, demo, cmdNumber, snapNumber, snapTime, unused[2]; } given[SE_LISTS] __attribute__ ((aligned (16)));
 /* how many frames have been asked for: this core's. The worker goes on to the next without waiting to be told */
 static struct { unsigned frames, unused[3]; } asked __attribute__ ((aligned (16)));
 /* how many it has made, what the last cost, and a frame's two words for the next move: the worker's */
 static struct { unsigned frames, cycles, jobs, unused; } made __attribute__ ((aligned (16)));
-static struct { int has, value; float scale; int unused; } answer[2] __attribute__ ((aligned (16)));
+static struct { int has, value; float scale; int unused; } answer[SE_LISTS] __attribute__ ((aligned (16)));
 static char	stack[STACK_BYTES] __attribute__ ((aligned (16)));
 static int	mode = MODE_UNSET, first_frames;
 static unsigned	taken;			/* frames this core has taken */
-static unsigned	job_seen, job_passes;	/* the worker's count of jobs when one was last posted, and passes waited since */
+static mcw_handle	job;		/* the worker's call (mcwx.h), while it is out */
 
 intptr_t cgame_vmMain (int, int, int, int, int, int, int, int, int, int, int, int, int);
 uint32_t se_call_on_stack (uint32_t (*fn) (uint32_t), uint32_t arg, void *stack_top);
@@ -109,10 +109,10 @@ int SE_ClientUserCmdValue (int value, float scale)
 /* The worker is given the frames asked for, if it is not at them already. */
 static void start (void)
 {
-	if (made.frames < asked.frames && mcw_done (WORKER)) {
-		job_seen = made.jobs, job_passes = 0;
-		mcw_post (WORKER, client_job, 0, 0);
-	}
+	if (job && mcw_ready (job))
+		mcw_join (job), job = 0;
+	if (!job && made.frames < asked.frames)
+		job = mcw_call (client_job, 0, 0);
 }
 
 /* One more frame is asked for: its list was last drawn from two frames ago. */
@@ -136,11 +136,6 @@ static void wait (unsigned frames)
 		mcw_rest ();
 		se_client_passes++;
 		SE_ServerPoll ();	/* (the server's frame is not kept waiting for this core's) */
-		/* (on rvc_cpu a worker that goes to sleep in the pass the job is posted in does not see it: posted again, it wakes) */
-		if (made.jobs == job_seen && ++job_passes >= 8) {
-			job_passes = 0;
-			mcw_post (WORKER, client_job, 0, 0);
-		}
 	}
 }
 
@@ -167,8 +162,8 @@ void SE_ClientSettle (void)
 
 void SE_ClientPoll (void)
 {
-	if (made.frames < asked.frames)
-		mcw_done (WORKER);
+	if (job)
+		mcw_ready (job);	/* (a page it stopped at is brought) */
 }
 
 void SE_ClientReset (void)

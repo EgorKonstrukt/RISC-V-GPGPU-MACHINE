@@ -59,5 +59,7 @@ int gpuKeep (int commands, int mesh);
 unsigned *gpuKept (int set, int index, const gpu_state *s, unsigned vertices, int first_mesh, int mesh);
 unsigned *gpuKeptCommand (int index);		/* in the set of the frame being made: its 16 words */
 void gpuSwap (int wait);			/* shows the frame; waits until it is drawn, or does not */
+void gpuTouchSets (void (*touch) (void *, unsigned));	/* the two sets' memory, for a worker core to write */
+unsigned gpuListSum (unsigned rom);			/* a sum over the list being built (QUAKE3_SUM) */
 
 #endif

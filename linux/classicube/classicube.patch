@@ -1,10 +1,22 @@
 diff --git a/src/Animations.c b/src/Animations.c
-index f64e11e..73f9f8f 100644
+index f64e11e..9626b97 100644
 --- a/src/Animations.c
 +++ b/src/Animations.c
-@@ -336,7 +336,13 @@ static void Animations_Validate(void) {
+@@ -334,18 +334,39 @@ static void Animations_Validate(void) {
+ 	}
+ }
  
++#if defined CC_BUILD_SHADEREMU
++static cc_uint32 se_anim_asked, se_anim_made;
++static void Animations_SE_Now(void);
++static cc_bool Animations_Tick(struct ScheduledTask2* task) { se_anim_asked++; return true; }
++void Animations_SE_Catchup(void) {
++	while (se_anim_made != se_anim_asked) { se_anim_made++; Animations_SE_Now(); }
++}
++static void Animations_SE_Now(void) {
++#else
  static cc_bool Animations_Tick(struct ScheduledTask2* task) {
++#endif
  	int i;
 -#ifndef CC_BUILD_WEB
 +#if defined CC_BUILD_SHADEREMU
@@ -17,6 +29,33 @@ index f64e11e..73f9f8f 100644
  	if (useLavaAnim)  LavaAnimation_Tick();
  	if (useWaterAnim) WaterAnimation_Tick();
  #endif
+ 
+-	if (!anims_count) return true;
++#if defined CC_BUILD_SHADEREMU
++#define return_true return
++#else
++#define return_true return true
++#endif
++	if (!anims_count) return_true;
+ 	if (!anims_bmp.scan0) {
+ 		Chat_AddRaw("&cCurrent texture pack specifies it uses animations,");
+ 		Chat_AddRaw("&cbut is missing animations.png");
+-		anims_count = 0; return true;
++		anims_count = 0; return_true;
+ 	}
+ 
+ 	/* deferred, because when reading animations.txt, might not have read animations.png yet */
+@@ -353,8 +374,9 @@ static cc_bool Animations_Tick(struct ScheduledTask2* task) {
+ 	for (i = 0; i < anims_count; i++) {
+ 		Animations_Apply(&anims_list[i]);
+ 	}
+-	return true;
++	return_true;
+ }
++#undef return_true
+ 
+ 
+ /*########################################################################################################################*
 diff --git a/src/Bitmap.c b/src/Bitmap.c
 index 43e79ac..4ed44f6 100644
 --- a/src/Bitmap.c
@@ -1244,10 +1283,21 @@ index b9ab2a3..ff0259c 100644
  		e = Entities.List[i];
  		if (!e || e == &p->Base) continue;
 diff --git a/src/EnvRenderer.c b/src/EnvRenderer.c
-index 5e7cf6a..7edc2ed 100644
+index 5e7cf6a..1b766ad 100644
 --- a/src/EnvRenderer.c
 +++ b/src/EnvRenderer.c
-@@ -22,7 +22,13 @@
+@@ -16,13 +16,24 @@
+ #include "TexturePack.h"
+ #include "Platform.h"
+ #include "Camera.h"
++#ifdef CC_BUILD_SHADEREMU
++#define SE_CAMPOS (&SE_Frame->camPos)
++#else
++#define SE_CAMPOS (&Camera.CurrentPos)
++#endif
+ #include "Particle.h"
+ #include "Options.h"
+ #include "Entity.h"
  
  cc_bool EnvRenderer_Legacy, EnvRenderer_Minimal;
  
@@ -1261,7 +1311,65 @@ index 5e7cf6a..7edc2ed 100644
  	if (Gfx.Limitations & GFX_LIMIT_MAX_VERTEX_SIZE) return 8;
  
  	return EnvRenderer_Legacy ? 128 : 2048;
-@@ -714,6 +720,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -202,7 +213,11 @@ void EnvRenderer_RenderClouds(void) {
+ 		if (!clouds_vb) return;
+ 	}
+ 	
++#ifdef CC_BUILD_SHADEREMU
++	offset = (float)(SE_Frame->time / 2048.0f * 0.6f * Env.CloudsSpeed);
++#else
+ 	offset = (float)(Game.Time / 2048.0f * 0.6f * Env.CloudsSpeed);
++#endif
+ 
+ 	Gfx_EnableTextureOffset(offset, 0);
+ 	Gfx_SetAlphaTest(true);
+@@ -275,7 +290,11 @@ void EnvRenderer_RenderSky(void) {
+ 	}
+ 
+ 	normY = (float)World.Height + 8.0f;
++#ifdef CC_BUILD_SHADEREMU
++	skyY  = max(SE_Frame->camPos.y + 8.0f, normY);
++#else
+ 	skyY  = max(Camera.CurrentPos.y + 8.0f, normY);
++#endif
+ 	Gfx_SetVertexFormat(VERTEX_FORMAT_COLOURED);
+ 	Gfx_BindVb(sky_vb);
+ 
+@@ -490,7 +509,7 @@ void EnvRenderer_RenderWeather(float delta) {
+ 	if (!weather_vb)
+ 		weather_vb = Gfx_CreateScratchVb(VERTEX_FORMAT_TEXTURED, WEATHER_VERTS_COUNT);
+ 
+-	IVec3_Floor(&pos, &Camera.CurrentPos);
++	IVec3_Floor(&pos, SE_CAMPOS);
+ 	moved   = pos.x != lastPos.x || pos.y != lastPos.y || pos.z != lastPos.z;
+ 	lastPos = pos;
+ 
+@@ -531,7 +550,11 @@ void EnvRenderer_RenderWeather(float delta) {
+ 	color = Env.SunCol;
+ 	speed = (weather == WEATHER_RAINY ? 1.0f : 0.2f) * Env.WeatherSpeed;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	vOffsetBase   = (float)SE_Frame->time * speed;
++#else
+ 	vOffsetBase   = (float)Game.Time * speed;
++#endif
+ 	vPlane1Offset = weather == WEATHER_RAINY  ? 0 : 0.25f; /* Offset v on 1 plane while snowing to avoid the unnatural mirrored texture effect */
+ 
+ 	for (i = 0; i < numCoords; i++)
+@@ -556,7 +579,11 @@ void EnvRenderer_RenderWeather(float delta) {
+ 			Random_Seed(&snowDirRng, (x + 1217 * z) & 0x7fffffff);
+ 
+ 			/* Multiply horizontal speed by a random float from -1 to 1 */
+-			uSpeed   = (float)Game.Time * Env.WeatherSpeed * 0.5f;
++		#ifdef CC_BUILD_SHADEREMU
++	uSpeed   = (float)SE_Frame->time * Env.WeatherSpeed * 0.5f;
++#else
++	uSpeed   = (float)Game.Time * Env.WeatherSpeed * 0.5f;
++#endif
+ 			uOffset1 = uSpeed * (Random_Float(&snowDirRng) * 2 + -1);
+ 			uOffset2 = uSpeed * (Random_Float(&snowDirRng) * 2 + -1);
+ 
+@@ -714,6 +741,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	block = Env.SidesBlock;
  
  	if (Blocks.Draw[block] == DRAW_GAS) return;
@@ -1269,7 +1377,7 @@ index 5e7cf6a..7edc2ed 100644
  	CalcBorderRects(rects);
  
  	sides_vertices = 0;
-@@ -728,7 +735,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -728,7 +756,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	sides_vertices += 2 * CalcNumVertices(World.Length, Math_AbsI(y)); /* XQuads */
  
  	sides_vb = Gfx_TryCreateStaticVb(VERTEX_FORMAT_TEXTURED, sides_vertices);
@@ -1278,7 +1386,7 @@ index 5e7cf6a..7edc2ed 100644
  
  	data = (struct VertexTextured*)Gfx_LockVb(sides_vb,
  										VERTEX_FORMAT_TEXTURED, sides_vertices);
-@@ -754,6 +761,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -754,6 +782,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	DrawBorderX(World.Width, 0, World.Length, y1, y2, color, &data);
  
  	Gfx_UnlockVb(sides_vb);
@@ -1286,7 +1394,7 @@ index 5e7cf6a..7edc2ed 100644
  }
  
  static CC_NOINLINE void BuildMapEdges(void) {
-@@ -769,6 +777,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -769,6 +798,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  	block = Env.EdgeBlock;
  
  	if (Blocks.Draw[block] == DRAW_GAS) return;
@@ -1294,7 +1402,7 @@ index 5e7cf6a..7edc2ed 100644
  	CalcBorderRects(rects);
  
  	edges_vertices = 0;
-@@ -778,7 +787,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -778,7 +808,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  	}
  
  	edges_vb = Gfx_TryCreateStaticVb(VERTEX_FORMAT_TEXTURED, edges_vertices);
@@ -1303,7 +1411,7 @@ index 5e7cf6a..7edc2ed 100644
  
  	data = (struct VertexTextured*)Gfx_LockVb(edges_vb,
  										VERTEX_FORMAT_TEXTURED, edges_vertices);
-@@ -794,6 +803,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -794,6 +824,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  			Borders_HorOffset(block), Borders_YOffset(block), &data);
  	}
  	Gfx_UnlockVb(edges_vb);
@@ -1311,11 +1419,36 @@ index 5e7cf6a..7edc2ed 100644
  }
  
  static void RenderBorders(BlockID block, GfxResourceID vb, GfxResourceID tex, int count) {
+@@ -822,7 +853,11 @@ void EnvRenderer_RenderMapEdges(void) {
+ 	/* Do not draw water when player cannot see it */
+ 	/* Fixes some 'depth bleeding through' issues with 16 bit depth buffers on large maps */
+ 	int yVisible = min(0, Env_SidesHeight);
++#ifdef CC_BUILD_SHADEREMU
++	if (SE_Frame->camPos.y < yVisible && sides_vb) return;
++#else
+ 	if (Camera.CurrentPos.y < yVisible && sides_vb) return;
++#endif
+ 
+ 	if (!edges_vb) {
+ 		BuildMapEdges();
 diff --git a/src/Game.c b/src/Game.c
-index acf9554..7fdc8d7 100644
+index acf9554..b22a12a 100644
 --- a/src/Game.c
 +++ b/src/Game.c
-@@ -425,6 +425,10 @@ static void Game_Load(void) {
+@@ -219,7 +219,11 @@ void Game_Reset(void) {
+ }
+ 
+ void Game_UpdateBlock(int x, int y, int z, BlockID block) {
+-	BlockID old = World_GetBlock(x, y, z);
++	BlockID old;
++#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
++	old = World_GetBlock(x, y, z);
+ 	World_SetBlock(x, y, z, block);
+ 
+ 	if (Weather_Heightmap) {
+@@ -425,6 +429,10 @@ static void Game_Load(void) {
  	Game_AddComponent(&Animations_Component);
  	Game_AddComponent(&Inventory_Component);
  	Game_AddComponent(&Builder_Component);
@@ -1326,7 +1459,189 @@ index acf9554..7fdc8d7 100644
  	Game_AddComponent(&MapRenderer_Component);
  	Game_AddComponent(&EnvRenderer_Component);
  	Game_AddComponent(&Server_Component);
-@@ -729,8 +733,14 @@ void Game_RenderFrame(void) {
+@@ -720,17 +728,196 @@ int Game_MapState(int deviceIndex) {
+ }
+ #endif
+ 
++#ifdef CC_BUILD_SHADEREMU
++/*########################################################################################################################*
++*-------------------------------------------------A frame's list on a worker----------------------------------------------*
++*#########################################################################################################################*/
++/* Core 0 ticks, reads the input and keeps what a frame is seen from (se_frames) while a worker
++   makes the list of the frame before; the list's start is core 0's, the rest the worker's. */
++#include <stdlib.h>
++#include <string.h>
++#include "mcwx.h"
++#include "EntityComponents.h"
++static struct SEFrame se_frames[2];
++const struct SEFrame* SE_Frame = &se_frames[0];
++static int se_next, se_split = -1;
++void Gfx_SE_Settle(void);
++void Gfx_SE_Post(mcw_fn job);
++void Gfx_SE_FrameLater(void);
++void MapRenderer_SE_Between(void);
++void Animations_SE_Catchup(void);
++PackedCol HeldBlockRenderer_SE_Col(void);
++
++/* The world after the particles, the block in the hand and the 2D screen: what the worker makes */
++static void SE_FrameRest(void) {
++	const struct SEFrame* f = SE_Frame;
++	struct RayTracer* sel   = (struct RayTracer*)&f->selected;
++	float delta = f->delta;
++	int i;
++
++	Animations_SE_Catchup();
++	if (f->world) {
++		EnvRenderer_RenderSky();
++		EnvRenderer_RenderClouds();
++		MapRenderer_Update(delta);
++		MapRenderer_RenderNormal(delta);
++		EnvRenderer_RenderMapSides();
++		EntityShadows_Render();
++		if (sel->valid && !Game_HideGui) SelOutlineRenderer_Render(sel, true);
++
++		if (f->camPos.y < Env.EdgeHeight && (f->camPos.x < 0 || f->camPos.z < 0 || f->camPos.x > World.Width || f->camPos.z > World.Length)) {
++			MapRenderer_RenderTranslucent(delta);
++			EnvRenderer_RenderMapEdges();
++		} else {
++			EnvRenderer_RenderMapEdges();
++			MapRenderer_RenderTranslucent(delta);
++		}
++		if (sel->valid && !Game_HideGui && Blocks.Draw[sel->block] == DRAW_TRANSLUCENT) SelOutlineRenderer_Render(sel, false);
++
++		Selections_Render();
++		EntityNames_RenderHovered();
++		if (!Game_HideGui) HeldBlockRenderer_Render(delta);
++	}
++	Gfx_Begin2D(Game.Width, Game.Height);
++	Gui_RenderGui(delta);
++	for (i = 0; i < Array_Elems(Game.Draw2DHooks); i++)
++	{
++		if (Game.Draw2DHooks[i]) Game.Draw2DHooks[i](delta);
++	}
++	Gfx_End2D();
++	Gfx_SE_FrameLater();
++}
++cc_uint32 cycles(void);
++void Gfx_SE_JobCycles(cc_uint32 n);
++static cc_uint32 SE_FrameJob(cc_uint32 a, cc_uint32 b) {
++	cc_uint32 began = cycles();
++	SE_FrameRest();
++	Gfx_SE_JobCycles(cycles() - began);
++	return 0;
++}
++
++/* Whether the rest can be a worker's: alone in the world and seen from the eye, the player's
++   model is not drawn and nothing else reads what the ticks change (CLASSICUBE_RENDER=inline: never) */
++static cc_bool SE_CanSplit(const struct SEFrame* f) {
++	if (se_split < 0) {
++		const char* how = getenv("CLASSICUBE_RENDER");
++		se_split = !(how && !strcmp(how, "inline"));
++	}
++	return se_split && f->world && mcw_count() > 0 && !Game_Anaglyph3D && !Game_ScreenshotRequested &&
++		Entities_SE_First == ENTITIES_SELF_ID && !Camera.Active->isThirdPerson;
++}
++
++static void SE_GameFrame(void) {
++	struct SEFrame* f;
++	struct LocalPlayer* p;
++	struct Matrix mvp;
++	cc_bool split;
++	float t, delta;
++	cc_uint64 render  = Stopwatch_Measure();
++	cc_uint64 elapsed = Stopwatch_ElapsedMicroseconds(frameStart, render);
++	if (elapsed > 5000000) elapsed = 5000000;
++
++	delta = (float)(int)elapsed * 0.000001f;
++	if (delta <= 0.0f) return;
++	frameStart = render;
++	Game.Time += delta;
++	Gamepad_Tick(delta);
++
++	/* beside the worker's list of the frame before (what it is made of is waited for: Gfx_SE_Own) */
++	PerformScheduledTasks(delta);
++	Window_ProcessEvents(delta);
++	Camera.Active->UpdateMouse(Entities.CurPlayer, delta);
++	if (!Window_Main.Focused && !Gui.InputGrab && autoPause) { Gfx_SE_Settle(); Gui_ShowPauseMenu(); }
++	if (Bind_IsTriggered[BIND_ZOOM_SCROLL] && !Gui.InputGrab) { Gfx_SE_Settle(); InputHandler_SetFOV(Camera.ZoomFov); }
++
++	t = (float)(Game_Tasks.entities.accumulator / Game_Tasks.entities.interval);
++	LocalPlayer_SetInterpPosition(Entities.CurPlayer, t);
++	Camera.CurrentPos = Camera.Active->GetPosition(t);
++	AudioBackend_Tick();
++
++	f = &se_frames[se_next];
++	f->delta = delta; f->t = t; f->time = Game.Time;
++	f->world = !Gui_GetBlocksWorld();
++	if (f->world) {
++		Camera.Active->GetPickedBlock(&Game_SelectedPos);
++		Camera_KeyLookUpdate(delta);
++		InputHandler_Tick(delta);
++
++		p = Entities.CurPlayer;
++		Camera.Active->GetView(&f->view);
++		f->tiltM      = Camera.TiltM;
++		f->camPos     = Camera.CurrentPos;
++		f->bobbingHor = Camera.BobbingHor;
++		f->bobbingVer = Camera.BobbingVer;
++		f->pitch      = p->Base.Pitch;
++		f->yaw        = p->Base.Yaw;
++		f->selected   = Game_SelectedPos;
++		f->heldCol    = HeldBlockRenderer_SE_Col();
++	} else {
++		RayTracer_SetInvalid(&Game_SelectedPos);
++	}
++	split = SE_CanSplit(f);
++	/* (all that drawing the player's model in the eye does: Entities_RenderModels) */
++	if (split) AnimatedComp_GetCurrent(&Entities.CurPlayer->Base, t);
++
++	/* the frame before's list is made and submitted: this frame's is begun here */
++	Gfx_SE_Settle();
++	EnvRenderer_UpdateFog();
++	if (Window_Main.Inactive) return;
++	SE_Frame = f;
++	se_next ^= 1;
++	MapRenderer_SE_Between();
++
++	Gfx_BeginFrame();
++	Gfx_BindIb(Gfx.DefaultIb);
++	Game_Vertices = 0;
++	Gfx_ClearBuffers(GFX_BUFFER_COLOR | GFX_BUFFER_DEPTH);
++	if (f->world) {
++		Gfx.View = f->view;
++		Gfx_LoadMVP(&Gfx.View, &Gfx.Projection, &mvp);
++		Frustum_CalcPlanes(&mvp);
++		Gfx_SetDepthTest(true);
++		Gfx_SetDepthWrite(true);
++
++		if (EnvRenderer_ShouldRenderSkybox()) EnvRenderer_RenderSkybox();
++		AxisLinesRenderer_Render();
++		if (!split) Entities_RenderModels(delta, t);
++		EntityNames_Render();
++		Particles_Render(t);
++	}
++
++	if (split) {
++		Gfx_SE_Post(SE_FrameJob);
++	} else {
++		SE_FrameRest();
++		if (Game_ScreenshotRequested) Game_TakeScreenshot();
++		Gfx_EndFrame();
++	}
++	if (gfx_minFrameMs != 0.0f) LimitFPS();
++}
++#endif
++
+ void Game_RenderFrame(void) {
+ 	double deltaD;
+ 	float t, delta;
++#ifdef CC_BUILD_SHADEREMU
++	SE_GameFrame();
++	return;
++#endif
+ 
+ 	cc_uint64 render  = Stopwatch_Measure();
+ 	cc_uint64 elapsed = Stopwatch_ElapsedMicroseconds(frameStart, render);
  	/* avoid large delta with suspended process */
  	if (elapsed > 5000000) elapsed = 5000000;
  	
@@ -1342,10 +1657,35 @@ index acf9554..7fdc8d7 100644
  
  	if (delta <= 0.0f) return;
 diff --git a/src/Game.h b/src/Game.h
-index ccfee09..70760c5 100644
+index ccfee09..464e1e5 100644
 --- a/src/Game.h
 +++ b/src/Game.h
-@@ -41,6 +41,8 @@ extern cc_string Game_Mppass;
+@@ -24,6 +24,24 @@ CC_VAR extern struct _GameData {
+ } Game;
+ 
+ extern struct RayTracer Game_SelectedPos;
++#ifdef CC_BUILD_SHADEREMU
++#include "Picking.h"
++#include "PackedCol.h"
++/* What a frame is seen from, kept by core 0 for the worker that makes the frame's list while
++   core 0 goes on to the next (Game.c, docs/classicube.md) */
++struct SEFrame {
++	struct Matrix view, tiltM;
++	struct RayTracer selected;
++	Vec3 camPos;
++	float bobbingHor, bobbingVer, pitch, yaw, delta, t;
++	double time;
++	PackedCol heldCol;
++	cc_bool world;
++};
++extern const struct SEFrame* SE_Frame;
++/* Core 0 waits for the worker's list before it changes what the list is made of */
++void Gfx_SE_Own(void);
++#endif
+ extern cc_bool Game_UseCPEBlocks, Game_Running;
+ 
+ extern cc_string Game_Username;
+@@ -41,6 +59,8 @@ extern cc_string Game_Mppass;
      #define DEFAULT_VIEWDIST 20
  #elif defined CC_BUILD_SYMBIAN
  	#define DEFAULT_VIEWDIST 64
@@ -1355,7 +1695,7 @@ index ccfee09..70760c5 100644
      #define DEFAULT_VIEWDIST 192
  #else
 diff --git a/src/Generator.c b/src/Generator.c
-index d033191..7b86549 100644
+index d033191..e965cc8 100644
 --- a/src/Generator.c
 +++ b/src/Generator.c
 @@ -1,4 +1,9 @@
@@ -1363,7 +1703,7 @@ index d033191..7b86549 100644
 +#ifdef CC_BUILD_SHADEREMU
 +#include <stdlib.h>
 +#include <string.h>
-+#include "mcw.h"
++#include "mcwx.h"
 +#endif
  #include "BlockID.h"
  #include "ExtMath.h"
@@ -1455,7 +1795,7 @@ index d033191..7b86549 100644
  	for (yy = yBeg; yy <= yEnd; yy++) { dy = yy - y;
  		for (zz = zBeg; zz <= zEnd; zz++) { dz = zz - z;
  			for (xx = xBeg; xx <= xEnd; xx++) { dx = xx - x;
-@@ -314,6 +385,114 @@ static void NotchyGen_FloodFill(int index, BlockRaw block) {
+@@ -314,6 +385,106 @@ static void NotchyGen_FloodFill(int index, BlockRaw block) {
  }
  
  
@@ -1493,7 +1833,7 @@ index d033191..7b86549 100644
 +	}
 +	return lowest;
 +}
-+static unsigned SE_HeightmapJob(unsigned z0, unsigned z1) { return (unsigned)SE_HeightmapRows((int)z0, (int)z1); }
++static void SE_HeightmapJob(void* ctx, uint32_t z0, uint32_t z1) { SE_HeightmapRows((int)z0, (int)z1); }
 +
 +static void SE_StrataRows(int z0, int z1) {
 +	int dirtThickness, dirtHeight, stoneHeight;
@@ -1522,7 +1862,7 @@ index d033191..7b86549 100644
 +		}
 +	}
 +}
-+static unsigned SE_StrataJob(unsigned z0, unsigned z1) { SE_StrataRows((int)z0, (int)z1); return 0; }
++static void SE_StrataJob(void* ctx, uint32_t z0, uint32_t z1) { SE_StrataRows((int)z0, (int)z1); }
 +
 +/* The surface layer (NotchyGen_CreateSurfaceLayer's loop): a column's top block, and the one above it */
 +static void SE_SurfaceRows(int z0, int z1) {
@@ -1546,23 +1886,15 @@ index d033191..7b86549 100644
 +		}
 +	}
 +}
-+static unsigned SE_SurfaceJob(unsigned z0, unsigned z1) { SE_SurfaceRows((int)z0, (int)z1); return 0; }
++static void SE_SurfaceJob(void* ctx, uint32_t z0, uint32_t z1) { SE_SurfaceRows((int)z0, (int)z1); }
 +
-+/* Rows 0 to World.Length to this core and the workers; the least of what they answer. */
-+static cc_bool SE_GenShare(mcw_fn job, int (*rows)(int, int), void (*rowsVoid)(int, int), int* least) {
-+	int cores = mcw_count() + 1, share, k, z;
-+
-+	if (cores < 2 || (World.Width & 15) || World.Length < cores * 4) return false;
-+	share = (World.Length + cores - 1) / cores;
-+	for (k = 1, z = share; k < cores && z < World.Length; k++, z += share) {
-+		mcw_post(k, job, (unsigned)z, (unsigned)min(z + share, World.Length));
-+	}
-+	cores = k;
-+	if (rows) { z = rows(0, share); if (least) *least = min(*least, z); } else rowsVoid(0, share);
-+	for (k = 1; k < cores; k++) {
-+		mcw_wait(k);
-+		if (least) *least = min(*least, (int)mcw_result(k));
-+	}
++/* Rows 0 to World.Length to this core and up to 15 workers (mcw_for), a row `row_bytes` of output */
++static cc_bool SE_GenShare(mcw_body job, uint32_t row_bytes) {
++	mcw_for_opts o = { 0 };
++	if (!mcw_count() || (World.Width & 15)) return false;
++	o.out_bytes = row_bytes;
++	o.workers   = 15;
++	mcw_for_opt((uint32_t)World.Length, job, NULL, &o);
 +	return true;
 +}
 +#endif
@@ -1570,31 +1902,34 @@ index d033191..7b86549 100644
  static void NotchyGen_CreateHeightmap(void) {
  	float hLow, hHigh, height;
  	int hIndex = 0, adjHeight;
-@@ -341,6 +520,11 @@ static void NotchyGen_CreateHeightmap(void) {
+@@ -341,6 +512,14 @@ static void NotchyGen_CreateHeightmap(void) {
  	OctaveNoise_Init(n3,   &rnd, 6);
  
  	Gen_CurrentState = "Building heightmap";
 +#ifdef CC_BUILD_SHADEREMU
 +	se_gen.n1 = n1; se_gen.n2 = n2; se_gen.n3 = n3;
 +	mcw_touch(heightmap, World.Width * World.Length * 2);
-+	if (SE_GenShare(SE_HeightmapJob, SE_HeightmapRows, NULL, &minHeight)) return;
++	if (SE_GenShare(SE_HeightmapJob, World.Width * 2)) {
++		for (z = 0; z < World.Width * World.Length; z++) minHeight = min(heightmap[z], minHeight);
++		return;
++	}
 +#endif
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
  
-@@ -404,6 +588,11 @@ static void NotchyGen_CreateStrata(void) {
+@@ -404,6 +583,11 @@ static void NotchyGen_CreateStrata(void) {
  	OctaveNoise_Init(&n, &rnd, 8);
  
  	Gen_CurrentState = "Creating strata";
 +#ifdef CC_BUILD_SHADEREMU
 +	se_gen.strata = &n; se_gen.minStoneY = minStoneY;
 +	mcw_touch(Gen_Blocks, World.Volume);
-+	if (SE_GenShare(SE_StrataJob, NULL, SE_StrataRows, NULL)) return;
++	if (SE_GenShare(SE_StrataJob, World.Width)) return;
 +#endif
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
  
-@@ -452,8 +641,14 @@ static void NotchyGen_CarveCaves(void) {
+@@ -452,8 +636,14 @@ static void NotchyGen_CarveCaves(void) {
  		caveRadius = Random_Float(&rnd) * Random_Float(&rnd);
  
  		for (j = 0; j < caveLen; j++) {
@@ -1609,7 +1944,7 @@ index d033191..7b86549 100644
  			caveY += Math_SinF(phi);
  
  			theta      = theta + deltaTheta * 0.2f;
-@@ -495,8 +690,14 @@ static void NotchyGen_CarveOreVeins(float abundance, const char* state, BlockRaw
+@@ -495,8 +685,14 @@ static void NotchyGen_CarveOreVeins(float abundance, const char* state, BlockRaw
  		phi   = Random_Float(&rnd) * 2.0f * MATH_PI; deltaPhi   = 0.0f;
  
  		for (j = 0; j < veinLen; j++) {
@@ -1624,22 +1959,85 @@ index d033191..7b86549 100644
  			veinY += Math_SinF(phi);
  
  			theta      = deltaTheta * 0.2f;
-@@ -590,6 +791,10 @@ static void NotchyGen_CreateSurfaceLayer(void) {
+@@ -590,6 +786,10 @@ static void NotchyGen_CreateSurfaceLayer(void) {
  	OctaveNoise_Init(n2, &rnd, 8);
  
  	Gen_CurrentState = "Creating surface";
 +#ifdef CC_BUILD_SHADEREMU
 +	se_gen.sand = n1; se_gen.gravel = n2;
-+	if (SE_GenShare(SE_SurfaceJob, NULL, SE_SurfaceRows, NULL)) return;
++	if (SE_GenShare(SE_SurfaceJob, World.Width)) return;
 +#endif
  	for (z = 0; z < World.Length; z++) {
  		Gen_CurrentProgress = (float)z / World.Length;
  
 diff --git a/src/HeldBlockRenderer.c b/src/HeldBlockRenderer.c
-index 80327e7..e7be2bd 100644
+index 80327e7..8bf7154 100644
 --- a/src/HeldBlockRenderer.c
 +++ b/src/HeldBlockRenderer.c
-@@ -234,7 +234,21 @@ void HeldBlockRenderer_Render(float delta) {
+@@ -69,7 +69,11 @@ static void SetMatrix(void) {
+ 	Vec3 eye = { 0,0,0 }; eye.y = Entity_GetEyeHeight(p);
+ 
+ 	Matrix_Translate(&lookAt, -eye.x, -eye.y, -eye.z);
++#ifdef CC_BUILD_SHADEREMU
++	Matrix_Mul(&Gfx.View, &lookAt, &SE_Frame->tiltM);
++#else
+ 	Matrix_Mul(&Gfx.View, &lookAt, &Camera.TiltM);
++#endif
+ }
+ 
+ static void ResetHeldState(void) {
+@@ -78,9 +82,15 @@ static void ResetHeldState(void) {
+ 	Vec3 eye = { 0,0,0 }; eye.y = Entity_GetEyeHeight(p);
+ 	held_entity.Position = eye;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	held_entity.Position.x -= SE_Frame->bobbingHor;
++	held_entity.Position.y -= SE_Frame->bobbingVer;
++	held_entity.Position.z -= SE_Frame->bobbingHor;
++#else
+ 	held_entity.Position.x -= Camera.BobbingHor;
+ 	held_entity.Position.y -= Camera.BobbingVer;
+ 	held_entity.Position.z -= Camera.BobbingHor;
++#endif
+ 
+ 	held_entity.Yaw   = -45.0f; held_entity.RotY = -45.0f;
+ 	held_entity.Pitch = 0.0f;   held_entity.RotX = 0.0f;
+@@ -145,7 +155,14 @@ static void HeldBlockRenderer_ResetAnim(cc_bool setLastHeld, float period) {
+ 	if (setLastHeld) { held_lastBlock = Inventory_SelectedBlock; }
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++/* (worked out by core 0 for the frame, Game.c) */
++PackedCol HeldBlockRenderer_SE_Col(void);
++static PackedCol HeldBlockRenderer_GetCol(struct Entity* entity) { return SE_Frame->heldCol; }
++PackedCol HeldBlockRenderer_SE_Col(void) {
++#else
+ static PackedCol HeldBlockRenderer_GetCol(struct Entity* entity) {
++#endif
+ 	struct Entity* player;
+ 	PackedCol col;
+ 	float adjPitch, t, scale;
+@@ -164,6 +181,9 @@ static PackedCol HeldBlockRenderer_GetCol(struct Entity* entity) {
+ }
+ 
+ void HeldBlockRenderer_ClickAnim(cc_bool digging) {
++#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
+ 	/* TODO: timing still not quite right, rotate2 still not quite right */
+ 	HeldBlockRenderer_ResetAnim(true, digging ? 0.35 : 0.25);
+ 	held_swinging  = false;
+@@ -174,6 +194,9 @@ void HeldBlockRenderer_ClickAnim(cc_bool digging) {
+ }
+ 
+ static void DoSwitchBlockAnim(void* obj) {
++#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
+ 	if (held_swinging) {
+ 		/* Like graph -sin(x) : x=0.5 and x=2.5 have same y values,
+ 		   but increasing x causes y to change in opposite directions */
+@@ -234,7 +257,21 @@ void HeldBlockRenderer_Render(float delta) {
  
  	ResetHeldState();
  	DoAnimation(delta, lastSwingY);
@@ -1662,6 +2060,26 @@ index 80327e7..e7be2bd 100644
  	if (!Camera.Active->isThirdPerson) HeldBlockRenderer_RenderModel();
  
  	Gfx.View = view;
+diff --git a/src/Http_Worker.c b/src/Http_Worker.c
+index 46fc17e..8fc6aef 100644
+--- a/src/Http_Worker.c
++++ b/src/Http_Worker.c
+@@ -744,6 +744,15 @@ cc_bool Http_GetResult(int reqID, struct HttpRequest* item) {
+ }
+ 
+ cc_bool Http_GetCurrent(int* reqID, int* progress) {
++#ifdef CC_BUILD_SHADEREMU
++	/* (the frame's worker core, Game.c, reads the two words as they are: a lock is for threads) */
++	extern int mcw_on_worker(void);
++	if (mcw_on_worker()) {
++		*reqID    = http_curRequest.id;
++		*progress = http_curRequest.progress;
++		return *reqID != 0;
++	}
++#endif
+ 	Mutex_Lock(curRequestMutex);
+ 	{
+ 		*reqID    = http_curRequest.id;
 diff --git a/src/Launcher.c b/src/Launcher.c
 index 084b974..b1d404a 100644
 --- a/src/Launcher.c
@@ -1746,7 +2164,7 @@ index dc4055b..74bb53f 100644
  	Mem_Free(classic_heightmap);
  	classic_heightmap = NULL;
 diff --git a/src/MapRenderer.c b/src/MapRenderer.c
-index fbe36dd..0b2e016 100644
+index fbe36dd..7a97444 100644
 --- a/src/MapRenderer.c
 +++ b/src/MapRenderer.c
 @@ -14,6 +14,9 @@
@@ -1770,7 +2188,7 @@ index fbe36dd..0b2e016 100644
  
  	chunk->drawXMin = false; chunk->drawXMax = false; chunk->drawZMin = false;
  	chunk->drawZMax = false; chunk->drawYMin = false; chunk->drawYMax = false;
-@@ -68,7 +75,28 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
+@@ -68,7 +75,30 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
  	chunk->translucentParts = NULL;
  }
  
@@ -1785,6 +2203,7 @@ index fbe36dd..0b2e016 100644
 +static int se_workers = -1, se_light;
 +/* A chunk was beyond the distance drawn when the chunks were last gone through */
 +static cc_bool se_far;
++static cc_bool se_collected;           /* core 0 took meshes before the frame's walk */
 +/* Whether the first core makes this chunk's mesh itself: only with no worker to make it */
 +static struct ChunkInfo* se_own;       /* a chunk no worker's buffer has room for: the first core's */
 +#define SE_MINE(chunk) ((se_workers <= 0 || (chunk) == se_own) && !(chunk)->building)
@@ -1793,13 +2212,22 @@ index fbe36dd..0b2e016 100644
 +#endif
  static CC_INLINE void ChunkInfo_Refresh(struct ChunkInfo* chunk) {
 +#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
 +	chunk->made++;
 +	se_stale = true;
 +#endif
  	if (chunk->allAir) return; /* do not recreate chunks completely air */
  
  	chunk->empty = false;
-@@ -98,6 +126,9 @@ static void CheckWeather(float delta) {
+@@ -94,10 +124,17 @@ static void CheckWeather(float delta) {
+ 	IVec3 pos;
+ 	BlockID block;
+ 	cc_bool outside;
++#ifdef CC_BUILD_SHADEREMU
++	IVec3_Floor(&pos, &SE_Frame->camPos);
++#else
+ 	IVec3_Floor(&pos, &Camera.CurrentPos);
++#endif
  
  	block   = World_SafeGetBlock(pos.x, pos.y, pos.z);
  	outside = pos.y < 0 || !World_ContainsXZ(pos.x, pos.z);
@@ -1809,7 +2237,7 @@ index fbe36dd..0b2e016 100644
  	inTranslucent = Blocks.Draw[block] == DRAW_TRANSLUCENT || (pos.y < Env.EdgeHeight && outside);
  
  	/* If we are under water, render weather before to blend properly */
-@@ -209,15 +240,31 @@ void MapRenderer_RenderNormal(float delta) {
+@@ -209,15 +246,31 @@ void MapRenderer_RenderNormal(float delta) {
  	Gfx_SetAlphaTest(true);
  	
  	Gfx_EnableMipmaps();
@@ -1842,7 +2270,7 @@ index fbe36dd..0b2e016 100644
  	Gfx_DisableMipmaps();
  
  	CheckWeather(delta);
-@@ -279,13 +326,36 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -279,13 +332,36 @@ void MapRenderer_RenderTranslucent(float delta) {
  	int vertices, batch;
  	if (!mapChunks) return;
  
@@ -1880,7 +2308,7 @@ index fbe36dd..0b2e016 100644
  	{
  		if (tranPartsCount[batch] <= 0) continue;
  		if (hasTranParts[batch] || checkTranParts[batch]) {
-@@ -301,7 +371,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -301,7 +377,7 @@ void MapRenderer_RenderTranslucent(float delta) {
  	Gfx_SetDepthWrite(false); /* already calculated depth values in depth pass */
  
  	Gfx_EnableMipmaps();
@@ -1889,7 +2317,7 @@ index fbe36dd..0b2e016 100644
  	{
  		if (tranPartsCount[batch] <= 0) continue;
  		if (!hasTranParts[batch]) continue;
-@@ -309,6 +379,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -309,6 +385,7 @@ void MapRenderer_RenderTranslucent(float delta) {
  		Atlas1D_Bind(batch);
  		RenderTranslucentBatch(batch);
  	}
@@ -1897,7 +2325,7 @@ index fbe36dd..0b2e016 100644
  	Gfx_DisableMipmaps();
  
  	Gfx_SetDepthWrite(true);
-@@ -329,6 +400,9 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -329,6 +406,9 @@ void MapRenderer_RenderTranslucent(float delta) {
  static void DeleteChunk(struct ChunkInfo* chunk) {
  	struct ChunkPartInfo* ptr;
  	int i;
@@ -1907,7 +2335,7 @@ index fbe36dd..0b2e016 100644
  #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
  	int j;
  #else
-@@ -377,6 +451,9 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
+@@ -377,6 +457,9 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
  
  	Game.ChunkUpdates++;
  	(*chunkUpdates)++;
@@ -1917,7 +2345,7 @@ index fbe36dd..0b2e016 100644
  	if (!Builder_MakeChunk(chunk)) return;
  
  	chunk->dirty  = false;
-@@ -404,12 +481,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
+@@ -404,12 +487,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
  *----------------------------------------------------Chunks mangagement---------------------------------------------------*
  *#########################################################################################################################*/
  static void FreeParts(void) {
@@ -1932,7 +2360,7 @@ index fbe36dd..0b2e016 100644
  	Mem_Free(mapChunks);
  	Mem_Free(sortedChunks);
  	Mem_Free(renderChunks);
-@@ -439,6 +518,21 @@ static void AllocateChunks(void) {
+@@ -439,6 +524,21 @@ static void AllocateChunks(void) {
  
  static void ResetPartFlags(void) {
  	int i;
@@ -1954,7 +2382,7 @@ index fbe36dd..0b2e016 100644
  	for (i = 0; i < ATLAS1D_MAX_ATLASES; i++) {
  		checkNormParts[i] = true;
  		hasNormParts[i]   = false;
-@@ -457,6 +551,11 @@ static void ResetPartCounts(void) {
+@@ -457,6 +557,11 @@ static void ResetPartCounts(void) {
  
  static void InitChunks(void) {
  	int x, y, z, index = 0;
@@ -1966,7 +2394,7 @@ index fbe36dd..0b2e016 100644
  	for (z = 0; z < World.Length; z += CHUNK_SIZE) {
  		for (y = 0; y < World.Height; y += CHUNK_SIZE) {
  			for (x = 0; x < World.Width; x += CHUNK_SIZE) {
-@@ -482,6 +581,7 @@ static void RefreshChunks(void) {
+@@ -482,6 +587,7 @@ static void RefreshChunks(void) {
  
  static void DeleteChunks(void) {
  	int i;
@@ -1974,7 +2402,7 @@ index fbe36dd..0b2e016 100644
  	if (!mapChunks) return;
  
  	for (i = 0; i < chunksCount; i++) 
-@@ -535,7 +635,15 @@ static void RefreshBorderChunks(int maxHeight) {
+@@ -535,7 +641,15 @@ static void RefreshBorderChunks(int maxHeight) {
  *--------------------------------------------------Chunks updating/sorting------------------------------------------------*
  *#########################################################################################################################*/
  #define CHUNK_TARGET_TIME ((1.0f/30) + 0.01f)
@@ -1991,7 +2419,7 @@ index fbe36dd..0b2e016 100644
  static Vec3 lastCamPos;
  static float lastYaw, lastPitch;
  /* Max distance from camera that chunks are rendered within */
-@@ -556,12 +664,311 @@ static void CalcViewDists(void) {
+@@ -556,12 +670,323 @@ static void CalcViewDists(void) {
  	renderDistSquared = AdjustDist(Game_ViewDistance);
  }
  
@@ -2001,7 +2429,7 @@ index fbe36dd..0b2e016 100644
 +*#########################################################################################################################*/
 +#include <stdlib.h>
 +#include <string.h>
-+#include "mcw.h"
++#include "mcwx.h"
 +#include "Lighting.h"
 +cc_bool Gfx_SE_UnlockFrom(GfxResourceID vb, void* vertices, VertexFormat fmt, int count);
 +
@@ -2016,17 +2444,19 @@ index fbe36dd..0b2e016 100644
 +static struct SEWork se_work[SE_COPIES];
 +#define SE_JOB_OF_COPY(k) Builder_Job_w##k,
 +static const mcw_fn se_jobs[SE_COPIES] = { SE_EACH_COPY(SE_JOB_OF_COPY) };
++static mcw_handle se_handle[SE_COPIES]; /* a copy's call out (mcw_call) */
 +static int se_running;                 /* jobs out */
 +/* The light's heights of the whole map are made by the workers, rows each, before the first
 +   mesh: 0 not begun, 1 the workers have them, 2 made (a column at a time after that) */
 +static int se_light_jobs;
++static mcw_handle se_light_calls[SE_COPIES * 2];
 +unsigned ClassicLighting_SE_Rows(unsigned z0, unsigned z1);
 +cc_bool ClassicLighting_SE_Shared(void);
 +
 +void MapRenderer_SE_LightSettle(void) {
 +	int k;
 +	if (se_light != 1) return;
-+	for (k = 1; k <= se_light_jobs; k++) mcw_wait(k);
++	for (k = 0; k < se_light_jobs; k++) mcw_join(se_light_calls[k]);
 +	se_light = 2;
 +}
 +
@@ -2036,17 +2466,17 @@ index fbe36dd..0b2e016 100644
 +		se_light = 2;
 +		if (se_workers < 2 || se_running || !ClassicLighting_SE_Shared()) return true;
 +		share = (World.Length + se_workers - 1) / se_workers;
-+		for (k = 1, z = 0; z < World.Length; k++, z += share) {
-+			mcw_post(k, ClassicLighting_SE_Rows, (unsigned)z, (unsigned)min(z + share, World.Length));
++		for (k = 0, z = 0; z < World.Length; k++, z += share) {
++			se_light_calls[k] = mcw_call(ClassicLighting_SE_Rows, (unsigned)z, (unsigned)min(z + share, World.Length));
 +		}
-+		se_light_jobs = k - 1;
++		se_light_jobs = k;
 +		se_light      = 1;
 +		return false;
 +	}
-+	for (k = 1; k <= se_light_jobs; k++) {
-+		if (!mcw_done(k)) return false;
++	for (k = 0; k < se_light_jobs; k++) {
++		if (!mcw_ready(se_light_calls[k])) return false;
 +	}
-+	se_light = 2;
++	MapRenderer_SE_LightSettle();
 +	return true;
 +}
 +unsigned se_mesh_chunks, se_mesh_jobs; /* for the ccstat: lines */
@@ -2056,11 +2486,12 @@ index fbe36dd..0b2e016 100644
 +void MapRenderer_SE_Settle(void) {
 +	struct SEWork* w;
 +	int i, k;
++	Gfx_SE_Own();
 +	MapRenderer_SE_LightSettle();
 +	for (k = 0; k < SE_COPIES; k++) {
 +		w = &se_work[k];
 +		if (!w->running) continue;
-+		mcw_wait(k + 1);
++		mcw_join(se_handle[k]);
 +		w->running = false;
 +		if (!mapChunks) continue;
 +		for (i = 0; i < w->job.count; i++) w->chunks[i]->building = false;
@@ -2151,7 +2582,7 @@ index fbe36dd..0b2e016 100644
 +	int k;
 +	if (!se_running) return false;
 +	for (k = 0; k < SE_COPIES; k++) {
-+		if (se_work[k].running && mcw_done(k + 1)) any |= SE_Mesh_Take(&se_work[k]);
++		if (se_work[k].running && mcw_ready(se_handle[k])) { mcw_join(se_handle[k]); any |= SE_Mesh_Take(&se_work[k]); }
 +	}
 +	return any;
 +}
@@ -2177,6 +2608,15 @@ index fbe36dd..0b2e016 100644
 +			for (i = -48 * 1024; i <= 4096; i += 4096) (void)code[i];
 +		}
 +	}
++}
++
++static void SE_Mesh_Post(void);
++/* Before the frame's worker walks the map: core 0 takes what the mesh workers made and gives
++   out what waits (mcw_call is core 0's) */
++void MapRenderer_SE_Between(void) {
++	if (se_workers < 0) SE_Workers();
++	if (SE_Mesh_Collect()) se_collected = true;
++	SE_Mesh_Post();
 +}
 +
 +/* The nearest chunks that wait for a mesh go to the workers that have none to make, a new
@@ -2220,7 +2660,7 @@ index fbe36dd..0b2e016 100644
 +		w->running   = true;
 +		se_running++;
 +		se_mesh_jobs++;
-+		mcw_post(k + 1, se_jobs[k], (unsigned)&w->job, 0);
++		se_handle[k] = mcw_call(se_jobs[k], (unsigned)&w->job, 0);
 +	}
 +}
 +#endif
@@ -2303,7 +2743,7 @@ index fbe36dd..0b2e016 100644
  
  	for (i = 0; i < chunksCount; i++) 
  	{
-@@ -574,20 +981,32 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+@@ -574,20 +999,32 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -2338,7 +2778,7 @@ index fbe36dd..0b2e016 100644
  	}
  	return j;
  }
-@@ -610,7 +1029,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
+@@ -610,7 +1047,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -2347,7 +2787,7 @@ index fbe36dd..0b2e016 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  
-@@ -638,19 +1057,36 @@ static void UpdateChunks(float delta) {
+@@ -638,19 +1075,48 @@ static void UpdateChunks(float delta) {
  
  	/* Build more chunks if 30 FPS or over, otherwise slowdown */
  	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1; 
@@ -2355,12 +2795,20 @@ index fbe36dd..0b2e016 100644
 +	Math_Clamp(chunksTarget, CHUNKS_MIN, maxChunkUpdates);
  
  	p = Entities.CurPlayer;
++#ifdef CC_BUILD_SHADEREMU
++	/* (the camera as the frame keeps it: core 0 has gone on, Game.c) */
++	samePos = Vec3_Equals(&SE_Frame->camPos, &lastCamPos)
++		&& SE_Frame->pitch == lastPitch && SE_Frame->yaw == lastYaw;
++	/* chunks a worker core has made are new to the list of what is drawn (on the frame's
++	   worker core 0 has collected them, MapRenderer_SE_Between) */
++	if (!mcw_on_worker()) {
++		if (se_workers < 0) SE_Workers();
++		if (SE_Mesh_Collect()) samePos = false;
++	}
++	if (se_collected) { se_collected = false; samePos = false; }
++#else
  	samePos = Vec3_Equals(&Camera.CurrentPos, &lastCamPos)
  		&& p->Base.Pitch == lastPitch && p->Base.Yaw == lastYaw;
-+#ifdef CC_BUILD_SHADEREMU
-+	/* chunks a worker core has made are new to the list of what is drawn */
-+	if (se_workers < 0) SE_Workers();
-+	if (SE_Mesh_Collect()) samePos = false;
 +#endif
  
 +#ifdef CC_BUILD_SHADEREMU
@@ -2376,16 +2824,32 @@ index fbe36dd..0b2e016 100644
  		UpdateChunksAndVisibility(&chunkUpdates);
 +#endif
  
++#ifdef CC_BUILD_SHADEREMU
++	lastCamPos = SE_Frame->camPos;
++	lastPitch  = SE_Frame->pitch;
++	lastYaw    = SE_Frame->yaw;
++	if (!mcw_on_worker()) SE_Mesh_Post();
++#else
  	lastCamPos = Camera.CurrentPos;
  	lastPitch  = p->Base.Pitch;
  	lastYaw    = p->Base.Yaw;
-+#ifdef CC_BUILD_SHADEREMU
-+	SE_Mesh_Post();
 +#endif
  
  	if (!samePos || chunkUpdates) ResetPartFlags();
  }
-@@ -688,6 +1124,10 @@ static void UpdateSortOrder(void) {
+@@ -680,7 +1146,11 @@ static void UpdateSortOrder(void) {
+ 	int i, dx, dy, dz;
+ 
+ 	/* pos is centre coordinate of chunk camera is in */
++#ifdef CC_BUILD_SHADEREMU
++	IVec3_Floor(&pos, &SE_Frame->camPos);
++#else
+ 	IVec3_Floor(&pos, &Camera.CurrentPos);
++#endif
+ 	pos.x = (pos.x & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
+ 	pos.y = (pos.y & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
+ 	pos.z = (pos.z & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
+@@ -688,6 +1158,10 @@ static void UpdateSortOrder(void) {
  	/* If in same chunk, don't need to recalculate sort order */
  	if (pos.x == chunkPos.x && pos.y == chunkPos.y && pos.z == chunkPos.z) return;
  	chunkPos = pos;
@@ -2396,7 +2860,17 @@ index fbe36dd..0b2e016 100644
  	if (!chunksCount) return;
  
  	for (i = 0; i < chunksCount; i++) {
-@@ -764,16 +1204,25 @@ static void OnTerrainAtlasChanged(void* obj) {
+@@ -756,6 +1230,9 @@ static void OnEnvVariableChanged(void* obj, int envVar) {
+ }
+ 
+ static void OnTerrainAtlasChanged(void* obj) {
++#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
+ 	static int tilesPerAtlas;
+ 	/* e.g. If old atlas was 256x256 and new is 256x256, don't need to refresh */
+ 	if (MapRenderer_1DUsedCount && tilesPerAtlas != Atlas1D.TilesPerAtlas) {
+@@ -764,16 +1241,31 @@ static void OnTerrainAtlasChanged(void* obj) {
  
  	MapRenderer_1DUsedCount = MapRenderer_UsedAtlases();
  	tilesPerAtlas = Atlas1D.TilesPerAtlas;
@@ -2407,6 +2881,9 @@ index fbe36dd..0b2e016 100644
  }
  
  static void OnBlockDefinitionChanged(void* obj) {
++#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
  	MapRenderer_Refresh();
  	MapRenderer_1DUsedCount = MapRenderer_UsedAtlases();
 +#ifdef CC_BUILD_SHADEREMU
@@ -2417,12 +2894,15 @@ index fbe36dd..0b2e016 100644
  
  static void OnVisibilityChanged(void* obj) {
 +#ifdef CC_BUILD_SHADEREMU
++	Gfx_SE_Own();
++#endif
++#ifdef CC_BUILD_SHADEREMU
 +	se_stale = true;
 +#endif
  	lastCamPos = Vec3_BigPos();
  	CalcViewDists();
  }
-@@ -818,7 +1267,7 @@ static void OnInit(void) {
+@@ -818,7 +1310,7 @@ static void OnInit(void) {
  	/* This = 87 fixes map being invisible when no textures */
  	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */
  	chunkPos   = IVec3_MaxValue();
@@ -2507,6 +2987,98 @@ index cf715b9..5fbe5e6 100644
  /* Renders the meshes of non-translucent blocks in visible chunks. */
  void MapRenderer_RenderNormal(float delta);
  /* Renders the meshes of translucent blocks in visible chunks. */
+diff --git a/src/Model.c b/src/Model.c
+index 5b13319..d2f7027 100644
+--- a/src/Model.c
++++ b/src/Model.c
+@@ -183,6 +183,13 @@ void Model_UpdateVB(void) {
+ /* Need to restore vertices array to keep third party plugins such as MoreModels working */
+ static struct VertexTextured* real_vertices;
+ static GfxResourceID modelVB;
++#ifdef CC_BUILD_SHADEREMU
++static cc_uint32 se_locks; /* Model_LockVB's calls: the shared buffer's vertices are another's */
++#include <string.h>
++int SE_CheckKept(void);
++extern unsigned se_kept_checked[4];
++static struct VertexTextured se_had[64];
++#endif
+ 
+ void Model_LockVB(struct Entity* entity, int verticesCount) {
+ #ifdef CC_BUILD_CONSOLE
+@@ -198,6 +205,9 @@ void Model_LockVB(struct Entity* entity, int verticesCount) {
+ #endif
+ 
+ 	real_vertices   = Models.Vertices;
++#ifdef CC_BUILD_SHADEREMU
++	se_locks++;
++#endif
+ 	Models.Vertices = (struct VertexTextured*)Gfx_LockScratchVb(modelVB, VERTEX_FORMAT_TEXTURED, verticesCount);
+ }
+ 
+@@ -867,6 +877,9 @@ static void CheckMaxVertices(void) {
+ 	if (Models.MaxVertices < MODELS_MAX_VERTICES) {
+ 		Platform_LogConst("CheckMaxVertices found smaller buffer, resetting Models.Vb");
+ 		Models.MaxVertices = MODELS_MAX_VERTICES;
++#ifdef CC_BUILD_SHADEREMU
++		se_locks++;
++#endif
+ 		Gfx_DeleteScratchVb(&Models.Vb);
+ 	}
+ }
+@@ -2155,8 +2168,24 @@ static void BlockModel_BuildParts(struct Entity* e, cc_bool sprite) {
+ 	struct VertexTextured* ptr;
+ 	Vec3 min, max;
+ 	TextureLoc loc;
++#ifdef CC_BUILD_SHADEREMU
++	/* (the held block, frame after frame: the same block in the same colours is in the buffer still) */
++	static struct { GfxResourceID vb; cc_uint32 locks; BlockID block; cc_bool sprite; PackedCol cols[FACE_COUNT];
++		TextureLoc tex[FACE_COUNT]; int index, atlas; } made;
++	int f;
++	cc_bool same = made.vb && made.vb == Models.Vb && made.locks == se_locks && made.block == bModel_block &&
++		made.sprite == sprite && made.atlas == Atlas1D.TilesPerAtlas;
++	for (f = 0; f < FACE_COUNT && same; f++) {
++		same = made.cols[f] == Models.Cols[f] && made.tex[f] == Block_Tex(bModel_block, f);
++	}
++	if (same && !SE_CheckKept()) { bModel_index = made.index; Gfx_BindDynamicVb(made.vb); return; }
++	if (same) bModel_index = 0;
++#endif
+ 
+ 	Model_LockVB(e, sprite ? BLOCKMODEL_SPRITE_COUNT : BLOCKMODEL_CUBE_COUNT);
++#ifdef CC_BUILD_SHADEREMU
++	if (same) Mem_Copy(se_had, Models.Vertices, made.index * 4 * sizeof(struct VertexTextured));
++#endif
+ 	ptr = Models.Vertices;
+ 
+ 	if (sprite) {
+@@ -2191,7 +2220,18 @@ static void BlockModel_BuildParts(struct Entity* e, cc_bool sprite) {
+ 		loc = BlockModel_GetTex(FACE_YMAX); Drawer_YMax(1, Models.Cols[0], loc, &ptr);
+ 	}
+ 
++#ifdef CC_BUILD_SHADEREMU
++	if (same) {
++		se_kept_checked[2]++;
++		se_kept_checked[3] += bModel_index != made.index || memcmp(se_had, Models.Vertices, made.index * 4 * sizeof(struct VertexTextured));
++	}
++#endif
+ 	Model_UnlockVB();
++#ifdef CC_BUILD_SHADEREMU
++	made.vb = Models.Vb; made.locks = se_locks; made.block = bModel_block; made.sprite = sprite;
++	made.index = bModel_index; made.atlas = Atlas1D.TilesPerAtlas;
++	for (f = 0; f < FACE_COUNT; f++) { made.cols[f] = Models.Cols[f]; made.tex[f] = Block_Tex(bModel_block, f); }
++#endif
+ }
+ 
+ static void BlockModel_DrawParts(void) {
+@@ -2420,6 +2460,9 @@ static void RegisterDefaultModels(void) {
+ 
+ static void OnContextLost(void* obj) {
+ 	struct ModelTex* tex;
++#ifdef CC_BUILD_SHADEREMU
++	se_locks++;
++#endif
+ 	Gfx_DeleteScratchVb(&Models.Vb);
+ 	if (Gfx.ManagedTextures) return;
+ 
 diff --git a/src/PackedCol.h b/src/PackedCol.h
 index 0646e39..be5e3b4 100644
 --- a/src/PackedCol.h
@@ -2636,6 +3208,74 @@ index 7657a5d..721a74f 100644
  		Event_RaiseInt(&EntityEvents.Added, id);
  	} else {
  		e = &Entities.CurPlayer->Base;
+diff --git a/src/SelOutlineRenderer.c b/src/SelOutlineRenderer.c
+index 6333d62..8f684bc 100644
+--- a/src/SelOutlineRenderer.c
++++ b/src/SelOutlineRenderer.c
+@@ -7,8 +7,19 @@
+ #include "Funcs.h"
+ #include "Camera.h"
+ #include "Options.h"
++#ifdef CC_BUILD_SHADEREMU
++#include <string.h>
++#endif
+ 
+ static GfxResourceID selOutline_vb;
++#ifdef CC_BUILD_SHADEREMU
++/* the box the buffer's vertices were made for: the same box is not made again */
++static Vec3 sel_made[4];
++static cc_bool sel_kept;
++/* CLASSICUBE_CHECK_KEPT: what is kept is made again and compared (Graphics_ShaderEmu.c) */
++int SE_CheckKept(void);
++extern unsigned se_kept_checked[4];
++#endif
+ static float base_size;
+ static PackedCol color;
+ #define SELOUTLINE_NUM_VERTICES (16 * 6)
+@@ -46,7 +57,11 @@ static void BuildMesh(struct RayTracer* selected) {
+ 	float size, scale;
+ 	Vec3 coords[4];
+ 
++#ifdef CC_BUILD_SHADEREMU
++	Vec3_Sub(&delta, &SE_Frame->camPos, &selected->Min);
++#else
+ 	Vec3_Sub(&delta, &Camera.CurrentPos, &selected->Min);
++#endif
+ 	dist = Vec3_LengthSquared(&delta);
+ 
+ 	offset = 0.01f;
+@@ -79,6 +94,21 @@ static void BuildMesh(struct RayTracer* selected) {
+ 	Vec3_Add1(&coords[1], &coords[0],      size);
+ 	Vec3_Add1(&coords[3], &selected->Max,  offset);
+ 	Vec3_Add1(&coords[2], &coords[3],     -size);
++#ifdef CC_BUILD_SHADEREMU
++	if (sel_kept && !memcmp(coords, sel_made, sizeof(coords))) {
++		if (SE_CheckKept()) {
++			struct VertexColoured* had = (struct VertexColoured*)Gfx_LockDynamicVb(selOutline_vb, VERTEX_FORMAT_COLOURED, SELOUTLINE_NUM_VERTICES);
++			int wrong = 0;
++			for (i = 0; i < Array_Elems(indices); i += 3, had++) {
++				wrong |= had->x != coords[indices[i]].x || had->y != coords[indices[i + 1]].y || had->z != coords[indices[i + 2]].z || had->Col != color;
++			}
++			se_kept_checked[0]++; se_kept_checked[1] += wrong;
++		}
++		Gfx_BindDynamicVb(selOutline_vb); return;
++	}
++	Mem_Copy(sel_made, coords, sizeof(coords));
++	sel_kept = true;
++#endif
+ 	
+ 	ptr = (struct VertexColoured*)Gfx_LockDynamicVb(selOutline_vb, 
+ 									VERTEX_FORMAT_COLOURED, SELOUTLINE_NUM_VERTICES);
+@@ -115,6 +145,9 @@ void SelOutlineRenderer_Render(struct RayTracer* selected, cc_bool dirty) {
+ *-----------------------------------------------SelOutlineRenderer component----------------------------------------------*
+ *#########################################################################################################################*/
+ static void OnContextLost(void* obj) {
++#ifdef CC_BUILD_SHADEREMU
++	sel_kept = false;
++#endif
+ 	Gfx_DeleteDynamicVb(&selOutline_vb);
+ }
+ 
 diff --git a/src/Server.c b/src/Server.c
 index 761927b..85e8ec1 100644
 --- a/src/Server.c
@@ -2685,6 +3325,58 @@ index e9b3334..6a6b99a 100644
  #ifdef EXTENDED_BLOCKS
  	if (World.Blocks != World.Blocks2) Mem_Free(World.Blocks2);
  	World.Blocks2 = NULL;
+diff --git a/src/_PlatformBase.h b/src/_PlatformBase.h
+index 6e050f9..4fdcbca 100644
+--- a/src/_PlatformBase.h
++++ b/src/_PlatformBase.h
+@@ -113,22 +113,44 @@ static CC_NOINLINE cc_uint32 CalcMemSize(cc_uint32 numElems, cc_uint32 elemsSize
+ }
+ 
+ #ifndef OVERRIDE_MEM_FUNCTIONS
++#ifdef CC_BUILD_SHADEREMU
++/* (one core at a time in the C library's heap: the game's thread waits for the frame's worker,
++   another thread for the game's to have done so: Graphics_ShaderEmu.c) */
++void Gfx_SE_HeapEnter(void);
++void Gfx_SE_HeapLeave(void);
++#else
++#define Gfx_SE_HeapEnter()
++#define Gfx_SE_HeapLeave()
++#endif
+ void* Mem_TryAlloc(cc_uint32 numElems, cc_uint32 elemsSize) {
+ 	cc_uint32 size = CalcMemSize(numElems, elemsSize);
+-	return size ? malloc(size) : NULL;
++	void* mem;
++	Gfx_SE_HeapEnter();
++	mem = size ? malloc(size) : NULL;
++	Gfx_SE_HeapLeave();
++	return mem;
+ }
+ 
+ void* Mem_TryAllocCleared(cc_uint32 numElems, cc_uint32 elemsSize) {
+-	return calloc(numElems, elemsSize);
++	void* mem;
++	Gfx_SE_HeapEnter();
++	mem = calloc(numElems, elemsSize);
++	Gfx_SE_HeapLeave();
++	return mem;
+ }
+ 
+ void* Mem_TryRealloc(void* mem, cc_uint32 numElems, cc_uint32 elemsSize) {
+ 	cc_uint32 size = CalcMemSize(numElems, elemsSize);
+-	return size ? realloc(mem, size) : NULL;
++	Gfx_SE_HeapEnter();
++	mem = size ? realloc(mem, size) : NULL;
++	Gfx_SE_HeapLeave();
++	return mem;
+ }
+ 
+ void Mem_Free(void* mem) {
++	Gfx_SE_HeapEnter();
+ 	if (mem) free(mem);
++	Gfx_SE_HeapLeave();
+ }
+ #endif
+ 
 diff --git a/src/main_impl.h b/src/main_impl.h
 index 21c7255..0960c06 100644
 --- a/src/main_impl.h

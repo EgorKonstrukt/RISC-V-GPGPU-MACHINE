@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include "quakedef.h"
 #include "nano-X.h"
+#include "mcwx.h"
 
 #define CAPTION		22		/* the window manager's caption and frame (nanowm.h) */
 #define FRAME		4
@@ -89,6 +90,8 @@ void GL_Init (void)
 /* the host shows the world round a seat: what is beside and behind the camera is drawn too (docs/holodeck.md) */
 int se_all_round;
 
+extern int se_scene_split;	/* scene_shaderemu.c */
+
 void GL_BeginRendering (int *x, int *y, int *width, int *height)
 {
 	extern int sb_updates;
@@ -99,7 +102,8 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	se_all_round = host && SEGL_HOST_HOLODECK (host);
 	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
 	seglWorldFlat (key_dest != key_game || cls.state != ca_connected || cls.signon != SIGNONS);
-	sb_updates = 0;		/* every frame is drawn whole: the status bar too */
+	if (!se_scene_split)	/* (a frame drawn on a worker: the first core drew its bar, SE_ScreenRecord) */
+		sb_updates = 0;		/* every frame is drawn whole: the status bar too */
 }
 
 unsigned se_started;	/* the instruction count at main (sys_shaderemu.c) */
@@ -119,14 +123,20 @@ static unsigned cycles (void)
 static unsigned phase, phase_since, phase_cycles[7];
 extern unsigned se_drawn[2];	/* gl_rmain.c */
 extern unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind;	/* server_shaderemu.c */
+extern unsigned se_ahead_used, se_ahead_late, se_ahead_own, se_ahead_wrong;	/* gl_rlight.c */
+extern unsigned se_scene_frames, se_scene_waits, se_scene_instructions, se_scene_window, se_scene_waited, se_scene_unrecorded;
+extern int se_scene_split;	/* scene_shaderemu.c */
 #ifdef SE_COUNT
 unsigned se_count[10];	/* what the server did, counted where it does it (quake.patch) */
 #endif
 
 void VID_Phase (int next)
 {
-	unsigned now = cycles ();
+	unsigned now;
 
+	if (mcw_on_worker ())
+		return;		/* (a frame drawn on a worker core: its parts are not counted) */
+	now = cycles ();
 	SE_ServerPoll ();	/* a worker core with the server's frame may want a page */
 	phase_cycles[phase] += now - phase_since;
 	phase = next;
@@ -139,12 +149,10 @@ void VID_Phase (int next)
  * and stops there, which is how pictures are compared; with QUAKE_HOLD_LATE=1 it stops when
  * the frame after is ready to be shown, having written whatever that one writes.
  */
+static void after_swap (void);
+
 void GL_EndRendering (void)
 {
-	static unsigned since_ms, since_cycles, since_frames;
-	static int level_shown;
-	unsigned now;
-
 	SE_FrameEnd ();
 	if (hold_frame && hold_late && frames >= hold_frame) {
 		hold_late = 0;
@@ -153,6 +161,34 @@ void GL_EndRendering (void)
 		VID_Phase (0);
 		frames++;
 	}
+	after_swap ();
+}
+
+/* A frame drawn on a worker core ends there with the swap (scene_shaderemu.c); this core counts
+ * it, holds it and says what the frames cost when it has joined it. */
+void SE_SceneSwap (void)
+{
+	SE_FrameEnd ();
+	qglSwap ();
+}
+
+void SE_AfterSwap (void)
+{
+	frames++;
+	after_swap ();
+}
+
+int SE_HoldLate (void) { return hold_frame && hold_late; }
+/* Whether the frame `ahead` swaps from now is one to hold (scene_shaderemu.c: none is drawn after it). */
+int SE_HoldAt (unsigned ahead) { return hold_frame && frames + ahead >= hold_frame; }
+int SE_Seated (void) { return seated; }
+
+static void after_swap (void)
+{
+	static unsigned since_ms, since_cycles, since_frames;
+	static int level_shown;
+	unsigned now;
+
 	if (hold_frame && frames >= hold_frame && !hold_late) {
 		seglSettle ();	/* (the frame is on the screen when this says so) */
 		printf ("quake: holding frame %u\n", frames);
@@ -187,6 +223,19 @@ void GL_EndRendering (void)
 				printf ("quakestat: the server on a worker core: %u frames of its own to these %u (%u drawn between two of them, %u standing at the newer, %u behind the older), %u thousand instructions each, %u.%u passes waited for one\n",
 					se_server_frames, n, se_server_between, se_server_held, se_server_behind, se_server_cycles / se_server_frames / 1000, se_server_passes / se_server_frames, se_server_passes * 10 / se_server_frames % 10);
 				se_server_cycles = se_server_frames = se_server_passes = se_server_between = se_server_held = se_server_behind = 0;
+			}
+			if (se_scene_frames) {
+				printf ("quakestat: %u of these frames drawn by a worker core, %u instructions each, %u waited for; here %u between two frames and %u waiting, a frame\n",
+					se_scene_frames, se_scene_instructions / se_scene_frames, se_scene_waits, se_scene_window / se_scene_frames,
+					se_scene_waited / se_scene_frames);
+				if (se_scene_unrecorded)
+					printf ("quakestat: %u frames without their 2D screen (not recorded)\n", se_scene_unrecorded), se_scene_unrecorded = 0;
+				se_scene_frames = se_scene_waits = se_scene_instructions = se_scene_window = se_scene_waited = 0;
+			}
+			if (se_ahead_used || se_ahead_late || se_ahead_own) {
+				printf ("quakestat: the light under models that moved: %u walks a worker made, %u made here while it had not, %u made here and not given out; %u not as made here (QUAKE_LIGHTPOINT=check)\n",
+					se_ahead_used, se_ahead_late, se_ahead_own, se_ahead_wrong);
+				se_ahead_used = se_ahead_late = se_ahead_own = se_ahead_wrong = 0;
 			}
 #ifdef SE_COUNT
 			printf ("quakestat: a frame's server: %u point tests of %u nodes, %u moves, %u point contents, %u links, %u QuakeC calls of %u statements; %u water and %u sky vertices\n",
@@ -394,6 +443,7 @@ void Sys_SendKeyEvents (void)
 			break;
 		case GR_EVENT_TYPE_UPDATE:
 			if (e.update.utype == GR_UPDATE_SIZE) {
+				SE_SceneOwn ();
 				seglWindowChanged ();
 				vid.recalc_refdef = 1;
 			}

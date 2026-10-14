@@ -21,7 +21,7 @@
 #include <sys/time.h>
 #include <GLES/segl.h>
 #include "nano-X.h"
-#include "mcw.h"
+#include "mcwx.h"
 
 void I_FinishUpdate_port(void);
 void I_SetPalette_port(unsigned char *palette);
@@ -30,11 +30,9 @@ GR_WINDOW_ID doom_window(void);
 extern unsigned char *screens[5];
 extern unsigned char gammatable[5][256];
 extern int usegamma;
-extern int gametic;
+extern int gametic, gameaction;
 extern int doom_gl, doom_gl_scene, doom_gl_kept;
 extern int doom_view_inline;	/* so many views more are this core's own to draw (doom_gl.c) */
-extern volatile unsigned doom_view_wanted, doom_view_leave;	/* the views this core has told the workers to make */
-extern volatile struct { unsigned views; } __attribute__((aligned(16))) doom_view_made[4];	/* and those each has made */
 extern char __DATA_BEGIN__[], _end[];
 void doom_gl_again(void);
 void doom_view_draw(int share);
@@ -42,6 +40,12 @@ int doom_view_crew(int workers, int as_told);
 void doom_view_taken(unsigned *cost, unsigned *things);
 int doom_view_asked(void);
 void doom_view_again(void);
+void doom_ahead_init(void);
+int doom_ahead_wanted(int next);
+void doom_ahead(void);
+void doom_ahead_made(void);
+unsigned doom_ahead_walked(void);
+extern unsigned doom_ahead_count[2];
 int wipe_StartScreen(int x, int y, int width, int height);
 int wipe_EndScreen(int x, int y, int width, int height);
 int wipe_ScreenWipe(int wipeno, int x, int y, int width, int height, int ticks);
@@ -65,7 +69,6 @@ static int gpu;			/* the GPU shows the screen */
 static GLuint screen_texture;
 static int worker;		/* worker cores make the view's list while the next tic runs, */
 static int crew = 1;		/* so many of them, each its share of the things */
-static int loops;		/* the workers that are in their loops (view_loop) */
 static int view_out;		/* they have one, or have made one that is not shown yet */
 
 /* Instructions the machine has run, for the figures printed with the frame rate. */
@@ -110,8 +113,9 @@ begun(void)
  */
 static void seat_tic(void);
 static void view_poll(void);
-static uint32_t view_loop(uint32_t share, uint32_t unused);
+static void view_shares(void *unused, uint32_t from, uint32_t to);
 static void view_leave(void);
+void doom_view_finish(void);
 
 void
 G_Ticker_counted(void)
@@ -119,7 +123,8 @@ G_Ticker_counted(void)
 	static int every = -1;
 	uint32_t began = cycles();
 
-	view_poll();
+	if (gameaction)
+		doom_view_finish();	/* (a level may be made anew: the workers read the one there is) */
 	seat_tic();
 	G_Ticker();
 	view_poll();
@@ -182,20 +187,16 @@ I_InitGraphics(void)
 	/* DOOM_VIEW=N: so many worker cores for the view's list (4); inline: none; told: none, and
 	 * the list made from what they would be told (docs/doom.md) */
 	render = getenv("DOOM_VIEW");
-	if (doom_gl && !(render && atoi(render) <= 0) && (crew = mcw_open(render ? atoi(render) : 4)) > 0) {
-		int k;
-
+	if (doom_gl && !(render && atoi(render) <= 0) && (crew = mcw_open((render ? atoi(render) : 4) + 1)) > 0) {
 		atexit(mcw_close);
 		mcw_touch(__DATA_BEGIN__, _end - __DATA_BEGIN__);	/* a worker stops at a page nobody has written yet */
+		/* one more than the view's: the next tic's sight checks (doom_fast.c) */
+		if (crew > 1 && crew > (render ? atoi(render) : 4))
+			crew--, doom_ahead_init();
 		crew = doom_view_crew(crew, 0);
-		for (k = 0, worker = 1; k < crew; k++) {
-			mcw_post(k + 1, view_loop, k, 0);
-			worker &= !mcw_done(k + 1);	/* (with no core for it the loop came straight back) */
-		}
-		loops = crew;
+		worker = 1;
+		mcw_touch_code((const void *)view_shares, 64);
 		atexit(view_leave);
-		if (!worker)
-			view_leave();
 	}
 	if (!worker)
 		crew = doom_view_crew(0, render && !strcmp(render, "told"));
@@ -206,66 +207,32 @@ I_InitGraphics(void)
 static void show_list(int scene);
 
 /*
- * A worker's one job, for as long as the game runs: its share of each view it is told to
- * make, its pass ended (fence.i) while there is none. Not a job a view: the library's worker
- * sleeps after a job until the next is posted, and one posted in the pass it ends in is lost.
+ * The shares of a view, one to a worker by mcw_for_begin(), made while this core runs the next
+ * tic and taken when all are made. The first share shows the screen over the view; a piece
+ * after the shares walks the sight checks of the tic after the next (doom_fast.c).
  */
-static uint32_t
-view_loop(uint32_t share, uint32_t unused)
-{
-	unsigned made = doom_view_made[share].views;
+static int ahead_out;		/* the round has the checks ahead of the tic after the next too */
 
-	if (!mcw_on_worker())
-		return 0;
-	for (;;) {
-		if (doom_view_wanted != made) {
-			doom_view_draw(share);
-			if (!share)
-				show_list(1);
-			doom_view_made[share].views = ++made;
-		} else if (doom_view_leave || mcw_recalled(share + 1)) {
-			return 0;
+static void
+view_shares(void *unused, uint32_t from, uint32_t to)
+{
+	(void)unused;
+	for (; from < to; from++)
+		if (from == (uint32_t)crew) {
+			doom_ahead();
 		} else {
-			__asm__ volatile(".word 0x0000100f");
+			doom_view_draw(from);
+			if (!from)
+				show_list(1);
 		}
-	}
 }
 
-/* The loops end (the program leaves, or a core was wanted back): what they have not made of
- * the view that is out is made here, and every view after it. */
+/* The program leaves: the view that is out is waited for. */
 static void
 view_leave(void)
 {
-	int k;
-
-	doom_view_leave = 1;
-	for (k = 0; k < loops; k++)
-		mcw_wait(k + 1);
-	loops = worker = 0;
-	for (k = 0; k < crew && view_out; k++)
-		if (doom_view_made[k].views != doom_view_wanted) {
-			doom_view_draw(k);
-			if (!k)
-				show_list(1);
-			doom_view_made[k].views = doom_view_wanted;
-		}
-}
-
-/* Whether the workers have made the view they were told to (their pages are brought meanwhile). */
-static int
-view_made(void)
-{
-	int k, made = 1, ended = 0;
-
-	for (k = 0; k < crew; k++) {
-		ended |= k < loops && mcw_done(k + 1);
-		made &= doom_view_made[k].views == doom_view_wanted;
-	}
-	if (ended && !made) {
-		view_leave();
-		made = 1;
-	}
-	return made;
+	mcw_for_wait();
+	view_out = worker = 0;
 }
 
 static void
@@ -282,6 +249,10 @@ view_cost(void)
 static void
 view_shown(void)
 {
+	mcw_for_wait();
+	if (ahead_out)
+		doom_ahead_made();
+	ahead_out = 0;
 	seglSwapEarly();
 	view_out = 0;
 	view_cost();
@@ -290,7 +261,7 @@ view_shown(void)
 static void
 view_poll(void)
 {
-	if (view_out && view_made())
+	if (view_out && mcw_for_ready())
 		view_shown();
 }
 
@@ -300,7 +271,7 @@ doom_view_finish(void)
 {
 	if (!view_out)
 		return;
-	while (!view_made())
+	while (!mcw_for_ready())
 		mcw_rest();
 	view_shown();
 }
@@ -705,7 +676,10 @@ show(void)
 	doom_gl_scene = 0;
 	if (scene && worker && doom_gl_kept && !melting && doom_view_inline <= 0) {
 		/* (R_RenderPlayerView saw the worker's last view shown before it told this one) */
-		doom_view_wanted++;
+		const int pieces = crew + (ahead_out = doom_ahead_wanted(gametic));
+		const mcw_for_opts one_each = { 1, 0, 0, 0, pieces, 1 };	/* a piece a worker, none here */
+
+		mcw_for_begin(pieces, view_shares, NULL, &one_each);
 		view_out = 1;
 		return;
 	}
@@ -847,7 +821,7 @@ I_FinishUpdate(void)
 		if (view_out) {
 			/* the held picture is the one this core would have made: with every
 			 * picture the worker asked for and went without */
-			while (!view_made())
+			while (!mcw_for_ready())
 				mcw_rest();
 			while (doom_view_asked()) {
 				doom_view_again();
@@ -883,6 +857,9 @@ I_FinishUpdate(void)
 		if (frames)
 			fprintf(stderr, "doomstat: the view %uk a frame and %uk its list (%s), %u things\n", doom_view[0] / frames / 1000,
 				in_worker / frames / 1000, worker ? "a worker core's" : "this core's", doom_view[3] / frames);
+		if (doom_ahead_count[0])
+			fprintf(stderr, "doomstat: %u sight checks, %u answered by a worker's walks (%u of them)\n",
+				doom_ahead_count[0], doom_ahead_count[1], doom_ahead_walked());
 		all_view += doom_view[0];
 		memset(doom_view, 0, sizeof doom_view);
 		in_tics = in_show = in_worker = 0;

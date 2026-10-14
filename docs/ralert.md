@@ -147,6 +147,11 @@ a pass (its write cache: `docs/multicore.md`).
   a pass for the rows and a large one to unpack) it was 13.7 s, with the same pictures, and
   that layout was not kept. What a frame takes is this core's own 190 to 214 thousand
   instructions (reading the file, the sound, the frame's bookkeeping), not the rows.
+- Since 14 October 2026 a frame's rows are shared by `mcw_for` (every core takes pieces, this
+  one too) and the next frame's pointers unpacked by `mcw_try_call` (`docs/tdawn.md`, "The
+  workers on the second layer"): 156 frames in 16.2 s where they were 16.8, 0 of them differ.
+  The mission's ground layer is sorted by a worker while the frame is drawn, and the objects
+  are drawn a frame behind by a worker (`docs/tdawn.md`, "The objects a frame behind").
 - `RALERT_MOVIE_SOFT=1` is the game's own way, `RALERT_WORKERS=N` uses no more than N workers,
   and `RALERT_MOVIE_CHECK=1` decodes every shared frame on core 0 as well and compares: 0 of
   156 differ. Each movie prints a line (`ralert: movie ...`).

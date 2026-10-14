@@ -22,8 +22,9 @@
 #include <osd.h>
 #include <nes_ppu.h>
 #include <nes_rom.h>
+#include <setjmp.h>
 #include <GLES/segl.h>
-#include "mcw.h"
+#include "mcwx.h"
 #define MWINCLUDECOLORS
 #include "nano-X.h"
 
@@ -33,6 +34,7 @@
 
 static const char *rom_path;
 static char *rom_data;
+static unsigned rom_bytes;
 static GR_WINDOW_ID window;
 static unsigned char *picture;		/* WIDTH x HEIGHT bytes of GPU memory */
 static GLuint texture;
@@ -42,21 +44,37 @@ static int frames_most, frames_hold, frames_drawn, frames_emulated;
 static int swap_waits;			/* NES_SWAP=wait: every list waited for, as it was */
 static int hold_late;			/* NES_HOLD_LATE=1: NES_HOLD's frame stays while the next is made ready */
 static int frames_mark;			/* NES_MARK=N: "nesmark" at frame N, for a profile to begin at */
-static unsigned gd_spent[3];		/* instructions: following the game's writes, (unused), the swap */
+static unsigned gd_spent[3];		/* instructions following the game's writes (the rest unused) */
 /* what whoever makes the lists counts: their instructions, quads and runs of lines */
 static unsigned gd_made[4] __attribute__((aligned(16)));
 static int gd_missed;			/* frames not shown: the worker was at the one before */
 static int gd_worker;			/* a worker core makes the GPU's lists (docs/nes.md) */
+/* The frames on a worker core (docs/nes.md, "The emulation on a worker core"): what each side
+ * says to the other, in 16 bytes or more that only it writes. */
+static int emu_worker;			/* set on the worker that emulates */
+static struct { volatile uint32_t seq, slot, written, frames; } emu_said __attribute__((aligned(16)));
+static struct {
+	volatile uint32_t held, quit, swapped, pad;	/* the keys down; the lists' worker to end; the list it made last is shown */
+	volatile uint32_t downs[8];	/* key presses so far, a count a button */
+	volatile uint32_t done;		/* the frame given out whose list is drawn, or needs none */
+	volatile uint32_t drawn, swap_spent, pad2;	/* lists shown; the swaps' instructions */
+} first_said __attribute__((aligned(16)));
+
 static int gpu_every = 1;		/* the GPU draws a frame in so many: more than one when the game is late */
 static const char *script;		/* NES_PRESS: frames and the buttons to press at them */
 static unsigned cycles_then, ms_then;
 extern void nes6502_recompile(uint8 *prg, int bytes, int fixed);
 extern void nes6502_recompiled(unsigned *instructions, unsigned *bytes, unsigned *runs, unsigned *entries);
+extern void nes6502_recompile_touch(void (*touch)(void *at, unsigned bytes), unsigned code);
 extern void (*nes_frame_elsewhere)(int after);
+extern int (*nes_run_elsewhere)(void (*frames)(void));
+static int run_elsewhere(void (*frames)(void));
 extern int nes_sum_on;			/* ours, in nofrendo's frame: NES_SUM, for tests */
+static int cells_check, cells_checked, cells_wrong;	/* NES_CELLS_CHECK: frames checked, and with a difference */
 extern uint32 nes_sum;	/* ours, in nofrendo's loop: see frame_elsewhere */
 extern char __DATA_BEGIN__[], _end[];
 static void window_draw(GLuint of, int wait);
+static void emu_end(int how) __attribute__((noreturn));
 static void frame_counted(int emulated, int step, const unsigned char *shown);
 static void elsewhere_start(void);
 static void frame_paced(void);
@@ -79,6 +97,8 @@ milliseconds(void)
 {
 	struct timeval now;
 
+	if (picture)		/* (the machine's clock: a load, and no system call on a worker) */
+		return *(const volatile unsigned *)((char *)seglPalette() - 0x400 + 0x34);
 	gettimeofday(&now, NULL);
 	return (unsigned)(now.tv_sec * 1000 + now.tv_usec / 1000);
 }
@@ -100,8 +120,10 @@ osd_getromdata(void)
 		void *at = fstat(fd, &is) ? MAP_FAILED : mmap(NULL, is.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 
 		close(fd);
-		if (at != MAP_FAILED)
+		if (at != MAP_FAILED) {
+			rom_bytes = (unsigned)is.st_size;
 			return rom_data = at;
+		}
 	}
 	if (!(file = fopen(rom_path, "rb"))) {
 		fprintf(stderr, "nes: cannot open %s\n", rom_path);
@@ -116,6 +138,7 @@ osd_getromdata(void)
 		exit(1);
 	}
 	fclose(file);
+	rom_bytes = (unsigned)size;
 	return rom_data;
 }
 
@@ -130,8 +153,9 @@ osd_installtimer(int frequency, void *func, int funcsize, void *counter, int cou
 
 /* ---- sound: the card's voices, not nofrendo's samples (apu_shaderemu.c) ---- */
 
-extern void se_apu_init(int a_worker);
-static int apu_worker;	/* the worker that decodes recordings, if there is one */
+extern void se_apu_init(int workers);
+extern void se_apu_look(void);
+static int apu_worker;	/* recordings are decoded by a worker, if there is one */
 
 /* (also where nofrendo says the cartridge is in and its loop about to start) */
 void
@@ -254,39 +278,51 @@ static void
 frame_counted(int emulated, int step, const unsigned char *shown)
 {
 	static int since, drawn_then;
-	static unsigned made_then[3];
+	static unsigned made_then[3], swaps_then;
 
+	/* (lines by mcw_print: on the worker that emulates, written when it ends, or now) */
 	if (frames_mark && emulated >= frames_mark) {
 		frames_mark = 0;
-		fprintf(stderr, "nesmark\n");
+		mcw_print("nesmark\n");
+		mcw_print_now();
 	}
 	since += step;
 	if (since >= 60) {
-		unsigned now = cycles(), ms = milliseconds();
+		unsigned now = cycles(), ms = milliseconds(), drawn = frames_drawn + first_said.drawn, swaps = first_said.swap_spent;
 
-		fprintf(stderr, "nesstat: %d frames of the NES in %u ms (%d drawn): %u thousand instructions each, %u%% of its speed\n",
-			since, ms - ms_then, frames_drawn - drawn_then, (now - cycles_then) / 1000 / since,
+		mcw_print("nesstat: %d frames of the NES in %u ms (%d drawn): %u thousand instructions each, %u%% of its speed\n",
+			since, ms - ms_then, drawn - drawn_then, (now - cycles_then) / 1000 / since,
 			ms > ms_then ? since * 100000 / 60 / (ms - ms_then) : 0);
 		if (gd_made[0] != made_then[0])
-			fprintf(stderr, "nesgpu: a frame's %u instructions to follow the game's writes, %u for %u quads in %u runs of lines%s, %u for the swap\n",
+			mcw_print("nesgpu: a frame's %u instructions to follow the game's writes, %u for %u quads in %u runs of lines%s, %u for the swap\n",
 				gd_spent[0] / since, (gd_made[0] - made_then[0]) / since, (gd_made[1] - made_then[1]) / since,
-				(gd_made[2] - made_then[2]) / since, gd_worker ? " (a worker core's)" : "", gd_spent[2] / since);
+				(gd_made[2] - made_then[2]) / since, gd_worker ? " (a worker core's)" : "", (swaps - swaps_then) / since);
 		if (gd_missed)
-			fprintf(stderr, "nesgpu: %d frames not shown, the worker being at the one before\n", gd_missed);
+			mcw_print("nesgpu: %d frames not shown, the worker being at the one before\n", gd_missed);
+		/* (a few lines at a time: the console takes some 60 characters a pass, and a worker
+		 * waits for its write) */
+		mcw_print_now();
 		gd_missed = 0;
-		gd_spent[0] = gd_spent[2] = 0;
+		gd_spent[0] = 0;
 		made_then[0] = gd_made[0], made_then[1] = gd_made[1], made_then[2] = gd_made[2];
+		swaps_then = swaps;
 		cycles_then = now;
 		ms_then = ms;
-		drawn_then = frames_drawn;
+		drawn_then = drawn;
 		since = 0;
 	}
 	if (frames_hold && emulated >= frames_hold + hold_late) {
 		GR_EVENT event;
 
 		/* (for a test: the picture stays, and a snapshot has it in GPU memory) */
-		seglSettle();
-		fprintf(stderr, "nes: holding, picture %d bytes past the palette\n", (int)(shown - (unsigned char *)seglPalette()));
+		if (emu_worker)
+			while (first_said.done != emu_said.seq)
+				mc_end_pass();
+		else
+			seglSettle();
+		mcw_print("nes: holding, picture %d bytes past the palette\n", (int)(shown - (unsigned char *)seglPalette()));
+		if (emu_worker)
+			emu_end(2);
 		do
 			GrGetNextEvent(&event);
 		while (event.type != GR_EVENT_TYPE_CLOSE_REQ);
@@ -296,19 +332,23 @@ frame_counted(int emulated, int step, const unsigned char *shown)
 		unsigned sum = 0;
 		int i;
 
-		/* (a sum of the last picture: what a change to the emulator must leave) */
-		for (i = 0; i < WIDTH * HEIGHT; i++)
-			sum = sum * 31 + shown[i];
+		/* (a sum of the last picture: what a change to the emulator must leave; four bytes a step) */
+		for (i = 0; i < WIDTH * HEIGHT; i += 4)
+			sum = sum * 923521 + shown[i] * 29791 + shown[i + 1] * 961 + shown[i + 2] * 31 + shown[i + 3];
 		{
 			unsigned instructions, bytes, runs, entries;
 
 			nes6502_recompiled(&instructions, &bytes, &runs, &entries);
-			fprintf(stderr, "nes: %u instructions of the 6502 translated in %u goes, into %u bytes; entered %u times\n",
+			mcw_print("nes: %u instructions of the 6502 translated in %u goes, into %u bytes; entered %u times\n",
 				instructions, runs, bytes, entries);
 		}
 		if (nes_sum_on)
-			fprintf(stderr, "nes: every frame's RAM %08x\n", nes_sum);
-		fprintf(stderr, "nes: done, picture %08x\n", sum);
+			mcw_print("nes: every frame's RAM %08x\n", nes_sum);
+		if (cells_check)
+			mcw_print("nes: cells and patterns as the PPU's memory: %d of %d frames differ\n", cells_wrong, cells_checked);
+		mcw_print("nes: done, picture %08x\n", sum);
+		if (emu_worker)
+			emu_end(1);
 		exit(0);
 	}
 }
@@ -496,7 +536,10 @@ frame_paced(void)
 	}
 	if ((int)(now - due) > 50 || (int)(due - now) > 200)
 		due = now;
-	else {
+	else if (emu_worker) {
+		while ((int)(due - *clock) > 0)
+			mc_end_pass();
+	} else {
 		/* (the kernel's sleeps are whole hundredths of a second: the last of the wait is passes
 		 * of the machine ended early, which the clock word counts) */
 		if ((int)(due - now) > 20)
@@ -542,13 +585,13 @@ static struct {
 	uint8 *was_pages[8][16];
 } __attribute__((aligned(16))) gd;
 
-/* A tile of the cartridge's (16 bytes, two planes) as 64, a pixel each. */
+/* A tile of the cartridge's (16 bytes, two planes) as 64, a pixel each, into `atlas`. */
 static void
-gd_tile(unsigned tile)
+gd_tile(unsigned char *atlas, unsigned tile)
 {
 	static unsigned spread[256][2];	/* a byte's bits, a byte each, the leftmost pixel first: four and four */
 	const unsigned char *from = gd.chr + tile * 16;
-	unsigned int *to = (unsigned int *)(gd.atlas + tile * 64);
+	unsigned int *to = (unsigned int *)(atlas + tile * 64);
 	int row, n;
 
 	if (!spread[1][1])
@@ -567,11 +610,18 @@ gd_tile(unsigned tile)
 /* The cells of the PPU's own four kilobytes of name tables, by where a byte is in that memory:
  * a cartridge moves the picture's four tables between them (some at every write to their
  * register), and a table that moves is copied from here, not worked out again. Kept by the
- * first core: not in gd, which is the list maker's. */
+ * core that emulates: not in gd. The layer's cells and pattern RAM's patterns are COPIES. */
+#define COPIES 3		/* a list made with one, another drawn, one made up (docs/nes.md) */
 static struct {
 	unsigned short cells[4][1024];
 	int made;
-	int of[4];		/* which of them each of the picture's tables is; -1 other memory, -2 not known yet */
+	int of[COPIES][4];	/* which of them each of the picture's tables is; -1 other memory, -2 not known yet */
+	unsigned short *layer[COPIES];	/* the copies */
+	unsigned char *atlas[COPIES];
+	unsigned int bits[COPIES][128];	/* name table bytes written since */
+	unsigned int tiles[COPIES][16];	/* tiles of pattern RAM written since */
+	unsigned int rows[COPIES][4];	/* the words of bits that are not zero, a bit each */
+	int other[COPIES];		/* name tables that are other memory written since */
 } gd_tables;
 
 /* A row of a table's cells from its bytes: each its tile, and its palette from the attribute
@@ -594,18 +644,18 @@ gd_row_of(const unsigned char *bytes, int cy, unsigned short *to)
  * 30 rows each, and under them two rows a pair for a table's rows 30 and 31: its attribute
  * bytes, which the PPU shows as tiles when a game scrolls into them. */
 static unsigned short *
-gd_row_at(int table, int cy)
+gd_row_at(unsigned short *cells, int table, int cy)
 {
 	int row = cy < 30 ? (table >> 1) * 30 + cy : 60 + (table >> 1) * 2 + cy - 30;
 
-	return &gd.cells[row * 64 + (table & 1) * 32];
+	return &cells[row * 64 + (table & 1) * 32];
 }
 
 /* Bytes of name table memory `memory` were written, a bit each in `written` (a word a row of
  * 32): their cells, and the sixteen an attribute byte colours, in the memory's own copy and
  * in every table of the picture that is that memory. A row with many is worked out whole. */
 static void
-gd_cells_written(int memory, const unsigned int *written)
+gd_cells_written(int copy, int memory, const unsigned int *written)
 {
 	static const unsigned char bit_of[32] = {
 		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
@@ -617,7 +667,7 @@ gd_cells_written(int memory, const unsigned int *written)
 	int tables[4], count = 0, cy, k;
 
 	for (k = 0; k < 4; k++)
-		if (gd_tables.of[k] == memory)
+		if (gd_tables.of[copy][k] == memory)
 			tables[count++] = k;
 	for (cy = 0; cy < 32; cy++)
 		rows[cy] = written[cy];
@@ -641,7 +691,7 @@ gd_cells_written(int memory, const unsigned int *written)
 		if (!set)
 			continue;
 		for (k = 0; k < count; k++)
-			to[k] = gd_row_at(tables[k], cy);
+			to[k] = gd_row_at(gd_tables.layer[copy], tables[k], cy);
 		while (set && done++ < 8) {
 			unsigned int low = set & -set;
 			int cx = bit_of[low * 0x077CB531u >> 27];
@@ -661,52 +711,101 @@ gd_cells_written(int memory, const unsigned int *written)
 	}
 }
 
-/* What the game wrote since the last frame: the cells of those name table bytes, the tables
- * it moved, and the tiles of pattern RAM. */
+/* What the game wrote since copy `copy` was last made up: the cells of those name table bytes,
+ * the tables it moved, and the tiles of pattern RAM. Whether the copy changed. */
 static int
-gd_follow(void)
+gd_follow(int copy)
 {
-	static unsigned int bits[128];
-	unsigned char tiles[64];
+	unsigned int *bits = gd_tables.bits[copy], *rows = gd_tables.rows[copy], *tiles = gd_tables.tiles[copy];
+	unsigned short *layer = gd_tables.layer[copy];
+	unsigned int fresh[128], fresh_rows[4], fresh_tiles[16], set;
 	const unsigned char *own = ppu_nametables();
-	int any = ppu_written_cells(bits), n, table, cy, changed = any != 0, bit;
+	int any = ppu_written_rows(fresh, fresh_rows), n, table, cy, changed, k;
 
 	if (!gd_tables.made) {
 		gd_tables.made = 1;
 		for (table = 0; table < 4; table++) {
-			gd_tables.of[table] = -2;
+			for (k = 0; k < COPIES; k++)
+				gd_tables.of[k][table] = -2;
 			for (cy = 0; cy < 32; cy++)
 				gd_row_of(own + table * 0x400, cy, gd_tables.cells[table] + cy * 32);
 		}
 		any = 0;
 	}
 	for (table = 0; table < 4 && any; table++)
-		gd_cells_written(table, bits + table * 32);
+		for (set = fresh_rows[table]; set; set &= set - 1)
+			for (n = table * 32 + __builtin_ctz(set), k = 0; k < COPIES; k++) {
+				gd_tables.bits[k][n] |= fresh[n];
+				gd_tables.rows[k][table] |= 1u << (n & 31);
+			}
+	/* (a write to name tables that are other memory: those are worked out again, in every copy) */
+	for (k = 0; k < COPIES && any < 0; k++)
+		gd_tables.other[k] = 1;
+	changed = any = (rows[0] | rows[1] | rows[2] | rows[3]) != 0 || gd_tables.other[copy];
+	gd_tables.other[copy] = 0;
+	for (table = 0; table < 4; table++) {
+		if (!rows[table])
+			continue;
+		gd_cells_written(copy, table, bits + table * 32);
+		for (; rows[table]; rows[table] &= rows[table] - 1)
+			bits[table * 32 + __builtin_ctz(rows[table])] = 0;
+	}
 	for (table = 0; table < 4; table++) {
 		const unsigned char *bytes = ppu_getpage(8 + table) + 0x2000 + table * 0x400;
 		unsigned from = (unsigned)(bytes - own);
 		int memory = from < 0x1000 && !(from & 0x3FF) ? (int)(from >> 10) : -1;
 
 		/* (a table that is other memory, a cartridge's own: worked out whenever anything was written) */
-		if (memory == gd_tables.of[table] && !(memory < 0 && any))
+		if (memory == gd_tables.of[copy][table] && !(memory < 0 && any))
 			continue;
-		gd_tables.of[table] = memory;
+		gd_tables.of[copy][table] = memory;
 		changed = 1;
 		for (cy = 0; cy < 32; cy++) {
 			if (memory < 0)
-				gd_row_of(bytes, cy, gd_row_at(table, cy));
+				gd_row_of(bytes, cy, gd_row_at(layer, table, cy));
 			else
-				memcpy(gd_row_at(table, cy), gd_tables.cells[memory] + cy * 32, 64);
+				memcpy(gd_row_at(layer, table, cy), gd_tables.cells[memory] + cy * 32, 64);
 		}
 	}
-	if (gd.chr_ram && ppu_written_tiles(tiles)) {
-		changed = 1;
-		for (n = 0; n < 64 && n * 8 < (int)(gd.chr_bytes / 16); n++)
-			for (bit = 0; tiles[n] >> bit; bit++)
-				if (tiles[n] >> bit & 1)
-					gd_tile(n * 8 + bit);
+	/* (tiles a bit each, 32 to a word: tile 32 n + b is word n's bit b) */
+	if (gd.chr_ram) {
+		if (ppu_written_tiles((unsigned char *)fresh_tiles))
+			for (n = 0; n < 16; n++)
+				for (k = 0; k < COPIES && fresh_tiles[n]; k++)
+					gd_tables.tiles[k][n] |= fresh_tiles[n];
+		for (n = 0; n < 16 && n * 32 < (int)(gd.chr_bytes / 16); n++) {
+			if (!tiles[n])
+				continue;
+			changed = 1;
+			for (set = tiles[n]; set; set &= set - 1)
+				gd_tile(gd_tables.atlas[copy], n * 32 + __builtin_ctz(set));
+			tiles[n] = 0;
+		}
 	}
 	return changed;
+}
+
+/* NES_CELLS_CHECK=1: a copy just made up against the name tables and pattern RAM worked out
+ * whole (cells_check, at the top). */
+
+static void
+gd_check(int copy)
+{
+	static unsigned char tile[64] __attribute__((aligned(16)));
+	unsigned short row[32];
+	int table, cy, n, wrong = 0;
+
+	for (table = 0; table < 4; table++)
+		for (cy = 0; cy < 32; cy++) {
+			gd_row_of(ppu_getpage(8 + table) + 0x2000 + table * 0x400, cy, row);
+			wrong |= memcmp(row, gd_row_at(gd_tables.layer[copy], table, cy), 64) != 0;
+		}
+	for (n = 0; gd.chr_ram && n < (int)(gd.chr_bytes / 16); n++) {
+		gd_tile(tile - n * 64, (unsigned)n);
+		wrong |= memcmp(tile, gd_tables.atlas[copy] + n * 64, 64) != 0;
+	}
+	cells_checked++;
+	cells_wrong += wrong;
 }
 
 /* The set for a line's pages and colours: its palette (a bank of 16 a palette of the NES's
@@ -784,11 +883,13 @@ gd_sprites(unsigned int *set, const ppu_lineinfo_t *line, int y0, int y1, int be
 {
 	/* a pixel's place as the library's number (a worker core's to write: whole 16 bytes, docs/multicore.md) */
 	static unsigned across[WIDTH + 4] __attribute__((aligned(16))), down[HEIGHT + 4] __attribute__((aligned(16)));
-	const unsigned char *oam = ppu_frame_oam(gd.record);
+	const unsigned char *restrict oam = ppu_frame_oam(gd.record), *restrict shown = gd.shown[behind];
+	const unsigned short *restrict all_lines = gd.lines;
 	int height = line->flags & PPU_LINE_TALL ? 16 : 8, left = line->flags & PPU_LINE_OBJMASK ? 8 : 0, k, room, quads = 0;
-	unsigned int *to = seglSpriteSpace(&room);
+	int count = gd.shown_count[behind];
+	unsigned int *restrict to = seglSpriteSpace(&room);
 
-	if (!gd.shown_count[behind] || !to)
+	if (!count || !to)
 		return;
 	if (!down[HEIGHT]) {
 		for (k = 0; k <= WIDTH; k++)
@@ -796,11 +897,12 @@ gd_sprites(unsigned int *set, const ppu_lineinfo_t *line, int y0, int y1, int be
 		for (k = 0; k <= HEIGHT; k++)
 			down[k] = seglNumber((k * ONE + HEIGHT / 2) / HEIGHT);
 	}
-	for (k = 0; k < gd.shown_count[behind]; k++) {
-		int n = gd.shown[behind][k], top = oam[4 * n] + 1, x = oam[4 * n + 3];
+	/* (the counts and tables in registers: through gd each store of a quad was taken to change them) */
+	for (k = 0; k < count; k++) {
+		int n = shown[k], top = oam[4 * n] + 1, x = oam[4 * n + 3];
 		int from = top > y0 ? top : y0, end = top + height < y1 ? top + height : y1;
 		int x0 = x > left ? x : left, x1 = x + 8 < WIDTH ? x + 8 : WIDTH;
-		unsigned u0 = (unsigned)(n * 8 + x0 - x) * 2, u1 = u0 + (unsigned)(x1 - x0) * 2, lines = gd.lines[n];
+		unsigned u0 = (unsigned)(n * 8 + x0 - x) * 2, u1 = u0 + (unsigned)(x1 - x0) * 2, lines = all_lines[n];
 
 		/* (a quad for each stretch of its lines that are drawn: one, but where it is a ninth on a line) */
 		while (from < end && x0 < x1 && quads < room) {
@@ -873,13 +975,13 @@ gd_same(const ppu_lineinfo_t *runs, const uint8 *ends, int count)
 	return 0;
 }
 
-/* The frame the record is of, as quads: whether there is a list to show (none for a frame
+/* The frame `record` is of, as quads: whether there is a list to show (none for a frame
  * like the last). `written`: the game wrote cells or tiles. No system call: a worker's job. */
 static uint32_t
-gd_draw(uint32_t written, uint32_t unused)
+gd_draw(uint32_t written, uint32_t record)
 {
 	static const GLfixed whole[16] = {2 * ONE, 0, 0, 0, 0, -2 * ONE, 0, 0, 0, 0, -ONE, 0, -ONE, ONE, 0, ONE};
-	const unsigned char *oam = ppu_frame_oam(gd.record);
+	const unsigned char *oam = ppu_frame_oam(gd.record = (ppu_frame_t *)record);
 	const ppu_lineinfo_t *runs;
 	const uint8 *ends;
 	int width, height, count = ppu_frame_runs(gd.record, &runs, &ends), run, start = 0, n, tall = 0, high = 0, crowded = 0;
@@ -890,7 +992,6 @@ gd_draw(uint32_t written, uint32_t unused)
 	 * same: the window may have been made, or uncovered, since) */
 	unsigned began = cycles();
 
-	(void)unused;
 	if (gd_same(runs, ends, count) && !written && ++gd.alike < 30)
 		return 0;
 	gd.alike = 0;
@@ -908,19 +1009,28 @@ gd_draw(uint32_t written, uint32_t unused)
 	/* the sprites' cells: a tile each, or two for a tall one, mirrored as the sprite is */
 	memset(rows, 0, sizeof rows);
 	memset(busy, 0, sizeof busy);
-	gd.shown_count[0] = gd.shown_count[1] = 0;
-	for (n = 63; n >= 0; n--) {
-		unsigned tile = oam[4 * n + 1], how = oam[4 * n + 2];
-		unsigned cell = (4 + (how & 3)) << 12 | (how & 0x40 ? 0x400 : 0) | (how & 0x80 ? 0x800 : 0);
-		unsigned upper = tall ? (tile & 1) << 8 | (tile & 0xFE) : tile + (high ? 256 : 0);
+	{
+		/* (counts and tables in registers: through gd each store was taken to change the others) */
+		unsigned short *restrict cells = gd.sprite_cells, *restrict lines = gd.lines;
+		unsigned char *restrict shown[2] = {gd.shown[0], gd.shown[1]};
+		int counts[2] = {0, 0};
 
-		if (oam[4 * n] >= 239)
-			continue;	/* (below the picture: where a game puts the ones it does not use) */
-		gd.shown[how >> 5 & 1][gd.shown_count[how >> 5 & 1]++] = (unsigned char)n;
-		gd.sprite_cells[n] = (unsigned short)(cell | (tall && (how & 0x80) ? upper + 1 : upper));
-		gd.sprite_cells[64 + n] = (unsigned short)(cell | (how & 0x80 ? upper : upper + 1));
-		gd.lines[n] = 0xFFFF;
-		rows[(oam[4 * n] + 1) >> 3]++;
+		for (n = 63; n >= 0; n--) {
+			unsigned y = oam[4 * n], tile = oam[4 * n + 1], how = oam[4 * n + 2], upper, cell, side;
+
+			if (y >= 239)
+				continue;	/* (below the picture: where a game puts the ones it does not use) */
+			cell = (4 + (how & 3)) << 12 | (how & 0x40 ? 0x400 : 0) | (how & 0x80 ? 0x800 : 0);
+			upper = tall ? (tile & 1) << 8 | (tile & 0xFE) : tile + (high ? 256 : 0);
+			side = how >> 5 & 1;
+			shown[side][counts[side]++] = (unsigned char)n;
+			cells[n] = (unsigned short)(cell | (tall && (how & 0x80) ? upper + 1 : upper));
+			cells[64 + n] = (unsigned short)(cell | (how & 0x80 ? upper : upper + 1));
+			lines[n] = 0xFFFF;
+			rows[(y + 1) >> 3]++;
+		}
+		gd.shown_count[0] = counts[0];
+		gd.shown_count[1] = counts[1];
 	}
 	/* the PPU draws eight sprites a line, the first eight of them that are on it: looked for
 	 * only where more than eight begin within a sprite's height of each other */
@@ -929,19 +1039,33 @@ gd_draw(uint32_t written, uint32_t unused)
 		crowded |= busy[n];
 	}
 	if (crowded) {
-		static unsigned char on_line[HEIGHT + 16] __attribute__((aligned(16)));	/* (a worker core's, as across) */
-		int tall_by = tall ? 16 : 8, y;
+		/* (the sprites in a band that may have more than eight counted a line at a time as they
+		 * begin and end; only a line with more is walked in their order, and the ninth on loses it) */
+		signed char change[HEIGHT + 20];
+		int tall_by = tall ? 16 : 8, y, on = 0, lowest = HEIGHT + 20, highest = 0;
 
-		memset(on_line, 0, sizeof on_line);
+		memset(change, 0, sizeof change);
 		for (n = 0; n < 64; n++) {
-			int band = (oam[4 * n] + 1) >> 3;
+			int top = oam[4 * n] + 1, band = top >> 3;
 
-			/* (only the sprites in a band of eight lines that may have more than eight) */
 			if (oam[4 * n] >= 239 || !(busy[band] | busy[band + 1] | (tall ? busy[band + 2] : 0)))
 				continue;
-			for (y = 0; y < tall_by; y++)
-				if (on_line[oam[4 * n] + 1 + y]++ >= 8)
-					gd.lines[n] &= ~(1u << y);
+			change[top]++;
+			change[top + tall_by]--;
+			lowest = top < lowest ? top : lowest;
+			highest = top + tall_by > highest ? top + tall_by : highest;
+		}
+		for (y = lowest; y < highest; y++) {
+			int seen = 0;
+
+			if ((on += change[y]) <= 8)
+				continue;
+			for (n = 0; n < 64; n++) {
+				int top = oam[4 * n] + 1;
+
+				if (oam[4 * n] < 239 && y >= top && y < top + tall_by && seen++ >= 8)
+					gd.lines[n] &= ~(1u << (y - top));
+			}
 		}
 	}
 
@@ -994,9 +1118,10 @@ gd_draw(uint32_t written, uint32_t unused)
 
 /* The lists are a worker core's to make when there is one: this core goes on with the next
  * frame, and shows a list when it finds it made (in the middle of the next frame, mostly).
- * Two records, the worker's and the one the PPU writes. */
-static ppu_frame_t *gd_records[2];
-static int gd_out, gd_with, gd_taking, gd_written;
+ * Two records, the worker's and the one the PPU writes (COPIES while a worker emulates). */
+static ppu_frame_t *gd_records[COPIES];
+static int gd_with, gd_taking, gd_written;
+static mcw_handle gd_call;		/* the list being made (mcw_call) */
 
 static void
 gd_swap(void)
@@ -1009,21 +1134,79 @@ gd_swap(void)
 		seglSwap();
 	else
 		seglSwapEarly();
-	gd_spent[2] += cycles() - t;
-	frames_drawn++;
+	first_said.swap_spent += cycles() - t;
+	first_said.drawn++;
 }
 
-/* The list the worker was given, shown if it is made (with `wait`, once it is). */
+/* The list being made, shown if it is made (with `wait`, once it is). */
 static void
 gd_show(int wait)
 {
-	if (!gd_out || (!wait && !mcw_done(1)))
+	if (!gd_call || (!wait && !mcw_ready(gd_call)))
 		return;
-	if (wait)
-		mcw_wait(1);
-	gd_out = 0;
-	if (mcw_result(1))
+	if (mcw_join(gd_call))
 		gd_swap();
+	gd_call = 0;
+}
+
+static void pad_away(void);
+static uint32_t given[COPIES];	/* the frame last given out with each copy (emulating worker's) */
+static int gives;
+
+/* Before a frame on the worker that emulates: it is recorded when the copy it would have is
+ * free, that is when the list made with it last is drawn (the last frame waits for that). */
+static void
+frame_before_away(int last, int *drawn)
+{
+	int c = gives % COPIES;
+
+	while (last && (int)(first_said.done - given[c]) < 0)
+		mc_end_pass();
+	if (!*drawn || (int)(first_said.done - given[c]) < 0) {
+		gd_missed += *drawn;
+		*drawn = 0;
+		return;
+	}
+	gd_taking = c;
+	ppu_capture(gd_records[c]);
+}
+
+/* After it: the copy made up to the frame and the frame given out (lists_job, lists_step). */
+static void
+frame_after_away(int last, int drawn)
+{
+	if (drawn) {
+		unsigned t0 = cycles();
+
+		ppu_capture_end();
+		gd_written += gd_follow(gd_taking);
+		if (cells_check)
+			gd_check(gd_taking);
+		if (hold_late && frames_hold && frames_emulated > frames_hold)
+			frame_counted(frames_emulated, 0, picture);
+		gd_with = gd_taking;
+		given[gd_with] = (uint32_t)frames_emulated;
+		gives++;
+		emu_said.slot = (uint32_t)gd_with;
+		emu_said.written = (uint32_t)gd_written;
+		emu_said.seq = (uint32_t)frames_emulated;
+		gd_spent[0] += cycles() - t0;
+	}
+	emu_said.frames = (uint32_t)frames_emulated;
+	if (last) {
+		ppu_drawjob_t job = {gd_records[gd_with], gd.context, picture, 0, HEIGHT};
+
+		while (first_said.done != emu_said.seq)
+			mc_end_pass();
+		ppu_draw((uint32)&job, 0);
+	}
+	if (!(frames_emulated & 3))
+		pad_away();
+	frame_counted(frames_emulated, 1, picture);
+	frame_paced();
+	/* (the kernel wants this core: the frames go on in another job, run_elsewhere) */
+	if (mcw_recalled(mcw_self()))
+		emu_end(3);
 }
 
 /* Before and after each frame: every frame is recorded and drawn. */
@@ -1035,44 +1218,52 @@ frame_gpu(int after)
 	static int drawn;
 
 	if (2 == after) {
-		gd_show(0);
+		if (!emu_worker)
+			gd_show(0);
 		return;
 	}
 	if (!after) {
 		/* (a test's last frame is drawn by this core too, which wants the record's copies of memory) */
 		ppu_capture_copies = last;
 		drawn = last || frames_emulated % gpu_every == 0;
-		if (drawn) {
+		if (emu_worker)
+			frame_before_away(last, &drawn);
+		else if (drawn) {
 			gd_taking = 1 - gd_with;
 			ppu_capture(gd_records[gd_taking]);
 		}
 		return;
 	}
 	frames_emulated++;
+	if (emu_worker) {
+		frame_after_away(last, drawn);
+		return;
+	}
 	if (drawn) {
 		unsigned t0 = cycles();
 
 		ppu_capture_end();
 		seglSettle();
-		gd_written |= gd_follow();
+		gd_written |= gd_follow(0);
+		if (cells_check)
+			gd_check(0);
 		gd_spent[0] += cycles() - t0;
 		gd_show(last || !gd_worker);
 		/* (a frame whose turn comes while the worker is at the one before is not shown) */
-		gd_missed += gd_out;
-		if (!gd_out) {
+		gd_missed += gd_call != 0;
+		if (!gd_call) {
 			if (hold_late && frames_hold && frames_emulated > frames_hold)
 				frame_counted(frames_emulated, 0, picture);
-			gd.record = gd_records[gd_with = gd_taking];
-			if (gd_worker && !last) {
-				mcw_post(1, gd_draw, (uint32_t)gd_written, 0);
-				gd_out = 1;
-			} else if (gd_draw((uint32_t)gd_written, 0))
+			gd_with = gd_taking;
+			if (gd_worker && !last)
+				gd_call = mcw_call(gd_draw, (uint32_t)gd_written, (uint32_t)gd_records[gd_with]);
+			else if (gd_draw((uint32_t)gd_written, (uint32_t)gd_records[gd_with]))
 				gd_swap();
 			gd_written = 0;
 		}
 	}
 	if (last) {
-		ppu_drawjob_t job = {gd.record, gd.context, picture, 0, HEIGHT};
+		ppu_drawjob_t job = {gd_records[gd_with], gd.context, picture, 0, HEIGHT};
 
 		ppu_draw((uint32)&job, 0);
 	}
@@ -1080,6 +1271,192 @@ frame_gpu(int after)
 		osd_getinput();
 	frame_counted(frames_emulated, 1, picture);
 	frame_paced();
+}
+
+/* ---- the emulation on a worker core (docs/nes.md): another makes the lists of the frames it
+ * gives out, this core shows them, reads the window's events for the pad, and helps the two on
+ * (pages, system calls) ---- */
+
+static jmp_buf emu_jump;
+static int emu_how;		/* how the frames ended: 1 done, 2 holding, 3 the core asked back */
+extern unsigned mcw_faults, mcw_calls;
+
+static void
+emu_end(int how)
+{
+	emu_how = how;
+	longjmp(emu_jump, 1);
+}
+
+/* The job: the frames, on a worker. */
+static uint32_t
+emulate(uint32_t frames, uint32_t unused)
+{
+	(void)unused;
+	emu_worker = 1;
+	if (!setjmp(emu_jump))
+		((void (*)(void))frames)();
+	return 0;
+}
+
+/* The lists of the frames given out: made by another worker (lists_job) or, without one, by
+ * this core (lists_step); shown by this core, which alone uses the window system, and the frame
+ * said done when its list is drawn (or it needs none). */
+static struct { uint32_t made, written, showing, shown, waits, swapped, pad[2]; } listing __attribute__((aligned(16)));
+/* what the lists' worker says, its own 16 bytes: the frame whose list it made last, whether
+ * there is one to show, the count of written frames it was made at; passes it waited */
+static struct { volatile uint32_t made, result, written, waits; } lists_said __attribute__((aligned(16)));
+
+static uint32_t
+lists_job(uint32_t unused0, uint32_t unused1)
+{
+	(void)unused0, (void)unused1;
+	for (;;) {
+		uint32_t seq = emu_said.seq, copy = emu_said.slot, now = emu_said.written;
+
+		/* (a list made is shown by the first core before the library makes the next) */
+		if (lists_said.made == first_said.swapped && seq != lists_said.made) {
+			gd.cells = gd_tables.layer[copy];
+			gd.atlas = gd_tables.atlas[copy];
+			lists_said.result = gd_draw(now != lists_said.written, (uint32_t)gd_records[copy]);
+			lists_said.written = now;
+			lists_said.made = seq;
+		} else if (lists_said.made == first_said.swapped) {
+			if (first_said.quit)
+				return 0;
+			if (mcw_recalled(mcw_self()))
+				return 1;
+		}
+		lists_said.waits++;
+		mc_end_pass();
+	}
+}
+
+/* At every look of this core: the list on show said drawn, a list the worker made shown, or
+ * (`here`, without one) a list made here. */
+static void
+lists_step(int here)
+{
+	const volatile unsigned *regs = (const volatile unsigned *)((char *)seglPalette() - 0x400);
+	uint32_t seq = emu_said.seq, copy = emu_said.slot, now = emu_said.written;
+
+	if (listing.showing) {
+		if (regs[0x10 / 4])
+			return;
+		listing.showing = 0;
+		first_said.done = listing.shown;
+	}
+	if (!here) {
+		if (lists_said.made == listing.swapped)
+			return;
+		listing.swapped = lists_said.made;
+		if (lists_said.result) {
+			gd_swap();
+			listing.showing = 1;
+			listing.shown = listing.swapped;
+		} else
+			first_said.done = listing.swapped;
+		first_said.swapped = listing.swapped;
+		return;
+	}
+	if (seq == listing.swapped)
+		return;
+	listing.swapped = first_said.swapped = seq;
+	gd.cells = gd_tables.layer[copy];
+	gd.atlas = gd_tables.atlas[copy];
+	if (gd_draw(now != lists_said.written, (uint32_t)gd_records[copy])) {
+		gd_swap();
+		listing.showing = 1;
+		listing.shown = seq;
+	} else
+		first_said.done = seq;
+	lists_said.written = now;
+}
+
+static void pad_here(void);
+
+/* The frames on this core after all (no worker for them), as without workers. */
+static void
+emulate_here(mcw_handle lists, void (*frames)(void))
+{
+	const volatile unsigned *regs = (const volatile unsigned *)((char *)seglPalette() - 0x400);
+
+	if (lists) {
+		first_said.quit = 1;
+		mcw_join(lists);
+		lists_step(0);
+	}
+	while (regs[0x10 / 4])
+		mcw_rest();
+	gd_worker = 0;
+	emu_worker = 0;
+	gd_with = 0;
+	gd.cells = gd_tables.layer[0];
+	gd.atlas = gd_tables.atlas[0];
+	gd_written = 1;
+	frames();
+	exit(0);
+}
+
+static int
+run_elsewhere(void (*frames)(void))
+{
+	const char *where = getenv("NES_EMU");
+	mcw_handle emu, lists;
+	uint32_t pads = 0;
+
+	if (!gd_worker || nes_frame_elsewhere != frame_gpu || (where && !strcmp(where, "here")))
+		return 0;
+	/* (the cartridge read here first, and the translator's memory written: a worker stops at a
+	 * page nobody has had) */
+	mcw_touch_code(rom_data, rom_bytes);
+	nes6502_recompile_touch(mcw_touch, 0x40000);
+	if (!(emu = mcw_try_call(emulate, (uint32_t)frames, 0)))
+		return 0;
+	lists = where && !strcmp(where, "lists-here") ? 0 : mcw_try_call(lists_job, 0, 0);
+	for (;;) {
+		if (mcw_ready(emu)) {
+			mcw_join(emu);
+			if (3 != emu_how)
+				break;
+			/* (the kernel wanted its core back: the frames go on on another, or here) */
+			emu_how = 0;
+			emu = mcw_try_call(emulate, (uint32_t)frames, 0);
+			mcw_print("nes: the kernel asked for the core that emulates: %s\n", emu ? "on another" : "on this one from here");
+			if (!emu)
+				emulate_here(lists, frames);
+			continue;
+		}
+		/* (the lists' worker, helped on at a page; its job ends when the kernel wants its core) */
+		if (lists && mcw_ready(lists)) {
+			mcw_join(lists);
+			lists_step(0);
+			lists = mcw_try_call(lists_job, 0, 0);
+			mcw_print("nes: the kernel asked for the core that makes the lists: %s\n", lists ? "on another" : "made here");
+		}
+		lists_step(!lists);
+		/* (the window's events as often as the emulation asked for them) */
+		if (emu_said.frames >> 2 != pads) {
+			pads = emu_said.frames >> 2;
+			pad_here();
+		}
+		se_apu_look();
+		mcw_rest();
+		listing.waits++;
+	}
+	first_said.quit = 1;
+	if (lists)
+		mcw_join(lists);
+	fprintf(stderr, "nes: the frames on a worker core%s: %u pages brought for workers, %u system calls made for them; this core looked on in %u passes, the lists' worker waited in %u\n",
+		lists ? ", the lists on another" : "", mcw_faults, mcw_calls, listing.waits, lists_said.waits);
+	if (2 == emu_how) {
+		GR_EVENT event;
+
+		do
+			GrGetNextEvent(&event);
+		while (event.type != GR_EVENT_TYPE_CLOSE_REQ);
+	}
+	exit(0);
 }
 
 /* Whether the GPU draws: the memory it takes (four bytes a byte of patterns), and a cartridge that can be recorded. */
@@ -1092,27 +1469,39 @@ gpu_start(void)
 	gd.chr_ram = rom->vram != NULL && rom->vrom_banks == 0;
 	gd.chr = gd.chr_ram ? rom->vram : rom->vrom;
 	gd.chr_bytes = gd.chr_ram ? 0x2000u * rom->vram_banks : 0x2000u * rom->vrom_banks;
-	if (!gd.chr || !gd.chr_bytes || seglMemoryLeft() < gd.chr_bytes * 4 + 0x10000)
+	if (!gd.chr || !gd.chr_bytes || seglMemoryLeft() < gd.chr_bytes * (gd.chr_ram ? 4 * COPIES : 4) + 0x10000)
 		return 0;
 	gd.record = gd_records[0] = ppu_frame_create(rom->vram, rom->vram ? 0x2000 * rom->vram_banks : 0);
-	gd_records[1] = ppu_frame_create(rom->vram, rom->vram ? 0x2000 * rom->vram_banks : 0);
 	gd.context = calloc(1, sizeof(ppu_t));
-	gd.atlas = seglMemory(gd.chr_bytes * 4);
-	gd.cells = seglMemory(64 * 64 * 2);
+	/* (copies of the cells, and of pattern RAM's patterns: gd_tables) */
+	for (n = 0; n < COPIES; n++) {
+		if (n)
+			gd_records[n] = ppu_frame_create(rom->vram, rom->vram ? 0x2000 * rom->vram_banks : 0);
+		gd_tables.atlas[n] = n && !gd.chr_ram ? gd_tables.atlas[0] : seglMemory(gd.chr_bytes * 4);
+		gd_tables.layer[n] = seglMemory(64 * 64 * 2);
+		if (!gd_records[n] || !gd_tables.atlas[n] || !gd_tables.layer[n])
+			return 0;
+		memset(gd_tables.layer[n], 0, 64 * 64 * 2);
+	}
+	gd.atlas = gd_tables.atlas[0];
+	gd.cells = gd_tables.layer[0];
 	gd.sprite_cells = gd.sprite_cells_of[0] = seglMemory(64 * 2 * 2 + 16);
 	gd.sprite_cells_of[1] = seglMemory(64 * 2 * 2);
 	gd.plain_tile = seglMemory(64 * 64);
 	gd.sets = gd.sets_of[0] = seglMemory(SETS_MOST * SET_WORDS * 4);
 	gd.sets_of[1] = seglMemory(SETS_MOST * SET_WORDS * 4);
-	if (!gd.record || !gd_records[1] || !gd.context || !gd.sets_of[1] || !gd.sprite_cells_of[1] || !ppu_capture(gd.record))
+	if (!gd.context || !gd.sets_of[1] || !gd.sprite_cells_of[1] || !ppu_capture(gd.record))
 		return 0;
 	ppu_capture_end();
 	gd.plain_cell = gd.sprite_cells + 128;
 	gd.plain_cell[0] = 8 << 12 | 512;	/* the ninth piece's first tile, in the ninth bank */
 	memset(gd.plain_tile, 1, 64 * 64);
-	memset(gd.cells, 0, 64 * 64 * 2);
-	for (n = 0; n < gd.chr_bytes / 16; n++)
-		gd_tile(n);
+	for (n = 0; n < gd.chr_bytes / 16; n++) {
+		int k;
+
+		for (k = 0; k < (gd.chr_ram ? COPIES : 1); k++)
+			gd_tile(gd_tables.atlas[k], n);
+	}
 	glGenTextures(1, &gd.name);
 	gd.was_runs = -1;
 	if (getenv("NES_EVERY"))
@@ -1123,9 +1512,9 @@ gpu_start(void)
 		const char *list = getenv("NES_LIST");
 
 		if (list ? !strcmp(list, "worker") : !unlimited) {
-			/* one for the lists, one for the sound's recordings (apu_shaderemu.c) */
-			gd_worker = mcw_open(2) > 0;
-			apu_worker = mcw_count() >= 2 ? 2 : 0;
+			/* the emulation, the lists and the sound's recordings (apu_shaderemu.c), as calls */
+			gd_worker = mcw_open(3) > 0;
+			apu_worker = gd_worker;
 			if (gd_worker) {
 				atexit(mcw_close);
 				mcw_touch(__DATA_BEGIN__, _end - __DATA_BEGIN__);
@@ -1133,6 +1522,7 @@ gpu_start(void)
 		}
 	}
 	nes_frame_elsewhere = frame_gpu;
+	nes_run_elsewhere = run_elsewhere;
 	fprintf(stderr, "nes: the picture is drawn by the GPU%s\n", gd_worker ? ", from lists a worker core makes" : "");
 	return 1;
 }
@@ -1262,26 +1652,54 @@ button_of(int key)
  * own input words (docs/input.md: pointer, buttons, key events so far) say when there can be
  * any: it is asked when they have moved, a few times after, and twice a second.
  */
+static struct { unsigned seen[4]; int ask, quiet, pad[2]; } inputs __attribute__((aligned(16))) = {{0}, 8, 0, {0}};
+
 static int
 input_due(void)
 {
-	static unsigned seen[4];
-	static int ask = 8, quiet;
 	const volatile unsigned *input = (const volatile unsigned *)((char *)seglPalette() - 0x400 + 0x20);
 	int i;
 
 	for (i = 0; i < 4; i++)
-		if (seen[i] != input[i]) {
-			seen[i] = input[i];
-			ask = 8;
+		if (inputs.seen[i] != input[i]) {
+			inputs.seen[i] = input[i];
+			inputs.ask = 8;
 		}
-	if (++quiet >= 8)
-		ask = ask ? ask : 1;
-	if (!ask)
+	if (++inputs.quiet >= 8)
+		inputs.ask = inputs.ask ? inputs.ask : 1;
+	if (!inputs.ask)
 		return 0;
-	ask--;
-	quiet = 0;
+	inputs.ask--;
+	inputs.quiet = 0;
 	return 1;
+}
+
+/* A test's presses (NES_PRESS="300 start 420 a"): each at its frame, until the next look. */
+static void
+pad_script(unsigned *let_go)
+{
+	static const char *const names[8] = {"up", "down", "left", "right", "a", "b", "start", "select"};
+	static char name[8];
+	static int frame = -1, used;	/* the next press, read once */
+	int button;
+
+	while (script && *script) {
+		if (frame < 0 && sscanf(script, "%d %7s%n", &frame, name, &used) < 2) {
+			script = NULL;
+			break;
+		}
+		if (frame > frames_emulated)
+			break;
+		script += used;
+		frame = -1;
+		/* ("+right" holds it down from there, "-right" lets it go) */
+		for (button = 0; button < 8; button++)
+			if (!strcmp(name + ('+' == *name || '-' == *name), names[button])) {
+				press(button, '-' != *name);
+				if ('+' != *name && '-' != *name)
+					*let_go |= 1u << button;
+			}
+	}
 }
 
 /* Asked once a drawn frame. A key let go in the call it went down in stays down until the
@@ -1298,23 +1716,7 @@ osd_getinput(void)
 		if (let_go & 1u << button)
 			press(button, 0);
 	let_go = 0;
-	/* a test's presses (NES_PRESS="300 start 420 a"): each at its frame, until the next call */
-	while (script && *script) {
-		static const char *const names[8] = {"up", "down", "left", "right", "a", "b", "start", "select"};
-		char name[8];
-		int frame, used = 0;
-
-		if (sscanf(script, "%d %7s%n", &frame, name, &used) < 2 || frame > frames_emulated)
-			break;
-		script += used;
-		/* ("+right" holds it down from there, "-right" lets it go) */
-		for (button = 0; button < 8; button++)
-			if (!strcmp(name + ('+' == *name || '-' == *name), names[button])) {
-				press(button, '-' != *name);
-				if ('+' != *name && '-' != *name)
-					let_go |= 1u << button;
-			}
-	}
+	pad_script(&let_go);
 	if (!input_due())
 		return;
 	for (;;) {
@@ -1340,6 +1742,68 @@ osd_getinput(void)
 			let_go |= 1u << button;
 		else
 			press(button, 0);
+	}
+}
+
+/* The window's events while a worker emulates: the keys down, and the presses counted, for it. */
+static void
+pad_here(void)
+{
+	GR_EVENT event;
+	int button;
+
+	if (!input_due())
+		return;
+	for (;;) {
+		GrCheckNextEvent(&event);
+		if (event.type == GR_EVENT_TYPE_NONE)
+			return;
+		if (event.type == GR_EVENT_TYPE_CLOSE_REQ)
+			exit(0);
+		/* (a window resized has another buffer: the swap asks the window system then) */
+		if (event.type != GR_EVENT_TYPE_KEY_DOWN && event.type != GR_EVENT_TYPE_KEY_UP)
+			continue;
+		if (event.keystroke.ch == MWKEY_ESCAPE)
+			exit(0);
+		if ((button = button_of(event.keystroke.ch)) < 0)
+			continue;
+		if (event.type == GR_EVENT_TYPE_KEY_DOWN) {
+			first_said.downs[button]++;
+			first_said.held |= 1u << button;
+		} else
+			first_said.held &= ~(1u << button);
+	}
+}
+
+/* osd_getinput on the worker that emulates, from what pad_here saw: a key pressed and let go
+ * since the last look is down until the next. */
+static void
+pad_away(void)
+{
+	static unsigned let_go, down, downs[8];
+	unsigned held = first_said.held;
+	int button;
+
+	for (button = 0; button < 8; button++)
+		if (let_go & 1u << button) {
+			press(button, 0);
+			down &= ~(1u << button);
+		}
+	let_go = 0;
+	pad_script(&let_go);
+	for (button = 0; button < 8; button++) {
+		unsigned bit = 1u << button;
+
+		if (first_said.downs[button] != downs[button]) {
+			downs[button] = first_said.downs[button];
+			press(button, 1);
+			down |= bit;
+			if (!(held & bit))
+				let_go |= bit;
+		} else if ((down & bit) && !(held & bit)) {
+			press(button, 0);
+			down &= ~bit;
+		}
 	}
 }
 
@@ -1440,6 +1904,7 @@ main(int argc, char **argv)
 	hold_late = getenv("NES_HOLD_LATE") != NULL;
 	unlimited = getenv("NES_FAST") != NULL || getenv("NES_FRAMES") != NULL;
 	nes_sum_on = getenv("NES_SUM") != NULL;
+	cells_check = getenv("NES_CELLS_CHECK") != NULL;
 	if (getenv("NES_PLAIN"))
 		nes6502_plain = atoi(getenv("NES_PLAIN"));
 	/* NES_RC=plain: translated code with every instruction's own test of the cycles (rc6502.h) */

@@ -164,6 +164,32 @@ unsigned* gpuKept(int set, int index, const gpu_state* s, unsigned vertices, int
 
 unsigned* gpuKeptCommand(int index) { return kept_command(set_at != SETS_AT, index); }
 
+// A sum over the list being built, its matrix blocks and vertices; places in its set and in the
+// file at `rom` as offsets, which differ from one image to the next (QUAKE3_SUM).
+static uint32_t sum_rom;
+static uint32_t list_sum(uint32_t sum, const uint32_t* w, uint32_t words) {
+    uint32_t low = GPU_PHYS + set_at, high = low + SET_SIZE;
+    for (; words; words--, w++)
+        sum = (sum ^ (*w - low < high - low ? *w - low + 0x40000000u : *w - sum_rom < 0x1000000u ? *w - sum_rom + 0x50000000u : *w)) * 0x01000193u;
+    return sum;
+}
+unsigned gpuListSum(unsigned rom) {
+    if (!gpu) return 0;
+    sum_rom = rom;
+    uint32_t sum = passes_used;
+    // (only the words written: a clear's first two and its fourth, a block's 28)
+    for (uint32_t i = 0; i < commands; i++) {
+        const uint32_t* c = (const uint32_t*)(gpu + set_at) + 16 * i;
+        sum = c[0] == CMD_DRAW ? list_sum(sum, c, 16) : list_sum(list_sum(sum, c, 2), c + 3, 1);
+    }
+    for (uint32_t i = 0; i < blocks; i++) sum = list_sum(sum, (const uint32_t*)(gpu + set_at + UNIFORMS_IN) + 32 * i, 28);
+    return list_sum(sum, (const uint32_t*)(gpu + set_at + VERTICES_IN), (vertex_top - set_at - VERTICES_IN) / 4);
+}
+
+void gpuTouchSets(void (*touch)(void*, unsigned)) {
+    if (gpu) touch(gpu + SETS_AT, 2 * SET_SIZE);
+}
+
 void gpuSwap(int wait) {
     joined_command = 0;
     swap(wait);

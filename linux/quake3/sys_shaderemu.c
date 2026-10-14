@@ -21,8 +21,25 @@
 #include "sys/sys_local.h"
 #include "se_data.h"
 #include "se_q3.h"
+#include "mcw.h"
 
 unsigned	se_started;
+
+/* The C library's rand() as it is, but a core its own state (SE_OnWorker): the game and the server's both draw */
+static struct { uint64_t seed; unsigned unused[2]; } rand_of[SE_CORES] __attribute__ ((aligned (16)));
+
+void srand (unsigned s)
+{
+	rand_of[SE_OnWorker ()].seed = s - 1;
+}
+
+int rand (void)
+{
+	uint64_t	*seed = &rand_of[SE_OnWorker ()].seed;
+
+	*seed = 6364136223846793005ULL * *seed + 1;
+	return (int)(*seed >> 33);
+}
 
 unsigned SE_Cycles (void)
 {
@@ -102,13 +119,25 @@ void SE_FrameDone (void)
 		frames, n, now - since_ms, (SE_Cycles () - since_cycles) / n, c[1] / n / 1000, c[2] / n / 1000, c[3] / n / 1000,
 		c[4] / n / 1000, c[5] / n / 1000, c[0] / n / 1000);
 	{
-		extern unsigned se_counts[6];	/* tr_shaderemu.c */
-		unsigned *k = se_counts;
+		extern unsigned se_counts[6];	/* tr_shaderemu.c: the drawing core's to write, read here and never cleared */
+		static unsigned was[6];
+		unsigned k[6], i;
 
+		for (i = 0; i < 6; i++)
+			k[i] = se_counts[i] - was[i], was[i] = se_counts[i];
 		printf ("q3stat: a frame drew %u.%u models in %u.%u draws, %u.%u of them lit, %u.%u sprites and beams, %u.%u polygons, %u flat pictures\n",
 			k[0] / n, k[0] * 10 / n % 10, k[1] / n, k[1] * 10 / n % 10, k[2] / n, k[2] * 10 / n % 10, k[3] / n, k[3] * 10 / n % 10,
 			k[4] / n, k[4] * 10 / n % 10, k[5] / n);
-		memset (se_counts, 0, sizeof se_counts);
+	}
+	if (se_scene_jobs) {
+		printf ("q3stat: the scene on a worker core: %u frames of it to these %u, %u thousand instructions each, %u.%u passes waited for one\n",
+			se_scene_jobs, n, se_scene_cycles / se_scene_jobs / 1000, se_scene_passes / se_scene_jobs, se_scene_passes * 10 / se_scene_jobs % 10);
+		se_scene_jobs = se_scene_cycles = se_scene_passes = 0;
+	}
+	if (mcw_count ()) {
+		extern unsigned mcw_faults, mcw_calls;	/* mcw.c */
+
+		printf ("q3stat: for the worker cores so far: %u pages brought, %u system calls made\n", mcw_faults, mcw_calls);
 	}
 	if (se_server_jobs) {
 		printf ("q3stat: the server on a worker core: %u frames of its own to these %u, %u thousand instructions each, %u.%u passes waited for one\n",

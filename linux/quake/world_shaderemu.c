@@ -5,7 +5,8 @@
  */
 #include <stdlib.h>
 #include "quakedef.h"
-#include "mcw.h"
+#include "mcwx.h"
+#include "se_scene.h"	/* (what the frame's drawing reads: scene_shaderemu.c) */
 
 void qglFan (const unsigned *vertices, int count);
 void qglModel (const void *model, int pose, const unsigned char *vertices, const unsigned *coords, const unsigned *light,
@@ -125,6 +126,7 @@ static unsigned *put_quads (unsigned *to, const unsigned *v, int n)
 #define MAX_WARP	64		/* corners of one of water's polygons (they are cut into small ones) */
 #define MAX_STYLED	4096		/* surfaces whose light flickers or switches */
 #define LIGHT_ROW	128		/* a light map's row, in words (gl_rsurf.c) */
+#define LIGHT_CALLS	1		/* the light maps' shares, a worker's call each */
 enum { HOW_FRAME, HOW_WAIT, HOW_APART };
 
 extern float	turbsin[];
@@ -138,12 +140,7 @@ int		se_lights_changed;	/* a style's brightness is another (R_AnimateLight) */
  * until this core next asks after it. */
 static void text_here (const void *function)
 {
-	const volatile unsigned char	*at = (const volatile unsigned char *)((unsigned)function & ~4095u);
-	unsigned			sum = 0, i;
-
-	for (i = 0; i < 2 * 4096; i += 1024)
-		sum += at[i];
-	(void)sum;
+	mcw_touch_code ((const void *)((unsigned)function & ~4095u), 2 * 4096);
 }
 
 static int how_of (const char *variable, int first, int workers)
@@ -163,6 +160,8 @@ static inline float floor_of (float f)
 	return whole > f ? whole - 1 : whole;
 }
 
+#include "se_real.h"	/* (the light maps', the water's and the frame's jobs: the first core's) */
+
 /* -- light maps that flicker: made again by workers when a style's brightness changes -- */
 
 typedef struct { const byte *samples; unsigned *to; unsigned char wide, high, page, maps; byte styles[MAXLIGHTMAPS]; } styled_t;
@@ -170,7 +169,8 @@ static styled_t	styled_surfs[MAX_STYLED] __attribute__ ((aligned (16)));
 /* the brightness of its styles each one's light map was made with: its worker's to write */
 static int	styled_cached[MAX_STYLED][MAXLIGHTMAPS] __attribute__ ((aligned (16)));
 static struct { int values[MAX_LIGHTSTYLES]; int count, unused[3]; } light_job __attribute__ ((aligned (16)));
-static int	light_how = -1, light_on, light_out, light_was;
+static int	light_how = -1, light_on, light_was;
+static se_group_t	light_out;	/* the workers' calls, while they are out */
 
 /* A worker's share: the light maps of every `step`th page of them, so that no two workers
  * store to the same 16 bytes. GLQuake's sum of a surface's maps by their styles (R_BuildLightMap). */
@@ -256,11 +256,7 @@ static void light_build (model_t *world)
 
 static void light_settle (void)
 {
-	int k;
-
-	for (k = 0; light_out && k < SE_LIGHT_WORKERS; k++)
-		mcw_wait (SE_WORKER_LIGHT + k);
-	light_out = 0;
+	SE_GroupJoin (&light_out);
 }
 
 /* Whether the workers have the flickering light maps this frame (and R_RenderBrushPoly leaves them be). */
@@ -283,23 +279,35 @@ static void light_frame (void)
 	}
 	if (!se_lights_changed || !light_job.count)
 		return;
-	if (light_out) {
-		for (k = 0, i = 0; k < SE_LIGHT_WORKERS; k++)
-			i |= !mcw_done (SE_WORKER_LIGHT + k);
-		if (i)
+	if (light_out.n) {
+		if (!SE_GroupReady (&light_out))
 			return;
-		light_out = 0;
+		SE_GroupJoin (&light_out);
 	}
 	se_lights_changed = 0;
 	memcpy (light_job.values, d_lightstylevalue, sizeof light_job.values);
 	if (light_how == HOW_WAIT)
 		seglSettle ();	/* (the list being drawn reads the light maps as they are) */
-	for (k = 0; k < SE_LIGHT_WORKERS; k++)
-		mcw_post (SE_WORKER_LIGHT + k, light_share, k, SE_LIGHT_WORKERS);
-	light_out = 1;
+	/* (two calls: in a demo the styles change nearly every frame, and a call is a cost of its own here) */
+	for (k = 0; k < LIGHT_CALLS; k++)
+		SE_GroupAdd (&light_out, light_share, k, LIGHT_CALLS);
 	if (light_how == HOW_WAIT)
 		light_settle ();
 }
+
+/* The light maps' job for the frame, if the styles have changed (on this core: it is a call). */
+void SE_LightFrame (void)
+{
+	if (kept_on && SE_LightsApart ())
+		light_frame ();
+	else
+		light_was = 0;
+}
+
+int SE_LightWait (void) { return light_how == HOW_WAIT; }
+
+/* Whether the level is made for the GPU already (the first frame of a level makes it). */
+int SE_WorldMade (void) { return made_for && made_for == cl.worldmodel; }
 
 /* -- water: kept in GPU memory, and its ripple written there by workers -- */
 
@@ -307,7 +315,8 @@ typedef struct { msurface_t *surf; unsigned *quads; } water_t;
 static water_t	*water_surfs;
 static int	*water_of;		/* by surface: which of water_surfs, or -1 */
 static int	*water_seen[2], water_seen_count[2], water_seen_quads[2], water_now;	/* those the viewer's leaf sees */
-static int	water_how = -1, water_on, water_out, water_count, water_first_run, water_runs, water_shown;
+static int	water_busy, water_apart_last, water_workers;	/* the frame's jobs ripple it (SE_FrameJobs) */
+static int	water_how = -1, water_on, water_count, water_first_run, water_runs, water_shown;
 static unsigned	*water_stamp, water_serial;
 static struct { const int *list; int count; float clock; int unused; } water_job __attribute__ ((aligned (16)));
 
@@ -361,44 +370,113 @@ static int water_quads_of (const msurface_t *s)
 	return quads;
 }
 
-static void water_settle (void)
+/* A frame: the workers ripple the water the viewer's leaf saw last frame, as often as they get
+ * round. How many shares of it there are (0: none this frame). */
+static int water_due (void)
 {
-	int k;
-
-	for (k = 0; k < water_out; k++)
-		mcw_wait (SE_WORKER_WATER + k);
-	water_out = 0;
-}
-
-/* A frame: the workers ripple the water the viewer's leaf sees, as often as they get round. */
-static void water_frame (void)
-{
-	int k, busy = 0, workers;
-
-	if (water_out) {
-		for (k = 0; k < water_out; k++)
-			busy |= !mcw_done (SE_WORKER_WATER + k);
-		if (busy)
-			return;
-		water_out = 0;
-	}
-	if (!water_seen_count[water_now])
-		return;
+	if (!water_apart_last || !water_seen_count[water_now])
+		return 0;
 	water_job.list = water_seen[water_now];
 	water_job.count = water_seen_count[water_now];
 	water_job.clock = cl.time;
 	/* (a worker keeps some 190 vertices a pass, and a frame is four passes or more) */
-	workers = 1 + water_seen_quads[water_now] / 160;
-	if (workers > SE_WATER_WORKERS)
-		workers = SE_WATER_WORKERS;
+	water_workers = 1 + water_seen_quads[water_now] / 160;
+	if (water_workers > SE_WATER_WORKERS)
+		water_workers = SE_WATER_WORKERS;
 	if (water_how == HOW_WAIT)
 		seglSettle ();
-	for (k = 0; k < workers; k++)
-		mcw_post (SE_WORKER_WATER + k, water_share, k, workers);
-	water_out = workers;
-	if (water_how == HOW_WAIT)
-		water_settle ();
+	water_busy = 1;
+	return water_workers;
 }
+
+/*
+ * The frame's jobs, given out once a frame when the entities are placed (cl_main.c): one call has
+ * the light under the models that moved (gl_rlight.c), the water's ripple and the particles
+ * (r_part.c), and a fight's particles or much water take more calls. Each call is a cost of its
+ * own to this core, which was most of what a job a piece cost.
+ */
+#define FRAME_MORE	8
+static mcw_handle	frame_first, frame_more[FRAME_MORE];
+static int		frame_out, frame_first_joined, frame_more_count;
+
+static uint32_t frame_job (uint32_t parts, uint32_t particles)
+{
+	if (parts & 1)
+		SE_LightAheadJob ();
+	if (parts & 2)
+		water_share (0, water_workers);
+	if (particles)
+		SE_ParticlesJob (particles, 0);
+	return 0;
+}
+
+/* Whether the first call has ended (it is joined then): the light it found may be used. */
+int SE_FrameFirst (void)
+{
+	if (frame_out && !frame_first_joined && mcw_ready (frame_first)) {
+		mcw_join (frame_first);
+		frame_first_joined = 1;
+	}
+	return !frame_out || frame_first_joined;
+}
+
+/* 1 when none of the frame's jobs is out: what they made is taken. */
+int SE_FramePoll (void)
+{
+	int i;
+
+	if (!frame_out)
+		return 1;
+	if (!SE_FrameFirst ())
+		return 0;
+	for (i = 0; i < frame_more_count; i++)
+		if (!mcw_ready (frame_more[i]))
+			return 0;
+	for (i = 0; i < frame_more_count; i++)
+		mcw_join (frame_more[i]);
+	frame_more_count = frame_out = water_busy = 0;
+	SE_ParticlesTaken ();
+	return 1;
+}
+
+void SE_FrameSettle (void)
+{
+	while (!SE_FramePoll ())
+		mcw_rest ();
+	SE_GunSettle ();
+}
+
+void SE_FrameJobs (void)
+{
+	static int	frame = -1;
+	unsigned	particles[SE_PARTICLE_WORKERS] = {0};
+	int		parts = 0, calls, k;
+
+	if (frame == host_framecount)
+		return;		/* (once a frame: when the entities are placed, or when the frame is given out) */
+	frame = host_framecount;
+	SE_ParticlesClock ();
+	if (!SE_FramePoll ())
+		return;
+	if (SE_LightAheadPrepare ())
+		parts |= 1;
+	if (water_how != HOW_FRAME && water_due ())
+		parts |= 2;
+	calls = SE_ParticlesGive (particles);
+	if (!parts && !calls)
+		return;
+	frame_first = mcw_call (frame_job, parts, particles[0]);
+	frame_out = 1;
+	frame_first_joined = 0;
+	for (k = 1; (parts & 2) && k < water_workers; k++)
+		frame_more[frame_more_count++] = mcw_call (water_share, k, water_workers);
+	for (k = 1; k < calls; k++)
+		frame_more[frame_more_count++] = mcw_call (SE_ParticlesJob, particles[k], 0);
+	if (((parts & 2) && water_how == HOW_WAIT) || SE_ParticlesWait ())	/* (all of them: the next frame gives none while any is out) */
+		SE_FrameSettle ();
+}
+
+#include "se_scene.h"
 
 /* -- brush models (doors, boxes of ammunition): their triangles kept as the level's quads are -- */
 
@@ -409,6 +487,7 @@ static brush_t		brushes[MAX_BRUSH];
 static brush_run_t	*brush_runs;
 static int		brush_count, brush_how = -1;
 void qglTrianglesAt (const unsigned *vertices, int count, unsigned *kept);
+void seglKeptLaidHere (int index, int u, int v, int du, int dv);	/* gles.c */
 
 /* How many vertices a brush model's triangles are, twice over (0: it is drawn a polygon at a time). */
 static int brush_vertices (const model_t *m)
@@ -509,8 +588,9 @@ int SE_SamePlace (int number, const float *origin)
 void SE_ClearMap (void)
 {
 	/* (the workers read the level that is going) */
+	SE_SceneOwn ();
 	light_settle ();
-	water_settle ();
+	SE_FrameSettle ();
 	light_on = water_on = 0;
 	light_job.count = 0;
 	water_seen_count[0] = water_seen_count[1] = 0;
@@ -830,8 +910,9 @@ static void kept_frame (void)
 		float	v = r_refdef.viewangles[0] * (1.0f / 74) * glheight * (4.0f / 1024);
 		float	slow = cl.time * (1.0f / 16), fast = cl.time * (1.0f / 8);
 
-		seglKeptLaid (sky_run, fixed_part (u + slow), fixed_part (v + slow), 4 << 16, 4 << 16);
-		seglKeptLaid (sky_run + 1, fixed_part (u + fast), fixed_part (v + fast), 4 << 16, 4 << 16);
+		/* (in the set being built: a list being drawn reads the other, which waited for it) */
+		seglKeptLaidHere (sky_run, fixed_part (u + slow), fixed_part (v + slow), 4 << 16, 4 << 16);
+		seglKeptLaidHere (sky_run + 1, fixed_part (u + fast), fixed_part (v + fast), 4 << 16, 4 << 16);
 	}
 	/* light maps a moving light came to or left (those that flicker: SE_MarkWorld, when in view) */
 	for (i = 0; i < lit_count[lit_now]; i++)
@@ -996,10 +1077,8 @@ void SE_MarkWorld (void)
 		SE_SbarHead ();		/* (gl_screen.c: the status bar, when it can be the frame's first draws) */
 	}
 	lights_apart = kept_on && SE_LightsApart ();
-	if (lights_apart)
-		light_frame ();
-	else
-		light_was = 0;
+	if (!se_scene_split)
+		SE_LightFrame ();	/* (else this core did, when it gave the frame out) */
 	/* with the light maps and the water the workers', and the sky kept, a frame has nothing to
 	 * ask of a leaf: what stands in the leaves in sight is a list of its own */
 	free_of_leaves = lights_apart && (water_apart || !level_water) && (sky_run >= 0 || !level_sky) && !mark_leaves && !r_novis.value;
@@ -1011,7 +1090,7 @@ void SE_MarkWorld (void)
 		int	all = r_novis.value != 0, count = 0, bits, into = !water_now;
 
 		/* (the list a worker still reads is left as it is) */
-		if (water_out && water_job.list == water_seen[into])
+		if (water_busy && water_job.list == water_seen[into])
 			into = water_now;
 		if (water_apart) {
 			water_seen_count[into] = water_seen_quads[into] = 0;
@@ -1045,8 +1124,7 @@ void SE_MarkWorld (void)
 		seen_kept = kept_on;
 		seen_free = free_of_leaves;
 	}
-	if (water_apart)
-		water_frame ();
+	water_apart_last = water_apart;	/* (the frame's jobs ripple it from the next frame on) */
 	for (i = 0; i < 4; i++) {
 		for (j = 0; j < 3; j++) {
 			view[i].normal[j] = (int)(frustum[i].normal[j] * 16384.0f);

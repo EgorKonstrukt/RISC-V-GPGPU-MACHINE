@@ -16,6 +16,7 @@
 #include <GLES/segl.h>
 #include "nano-X.h"
 #include "gpu_shaderemu.h"
+#include "mcwx.h"
 #include "se_data.h"
 #include "se_q3.h"
 
@@ -132,6 +133,7 @@ unsigned SE_WindowClock (void)
 
 void SE_Settle (void)
 {
+	SE_SceneFlush ();
 	if (opened)
 		seglSettle ();
 }
@@ -238,6 +240,7 @@ void SE_Input (void)
 			break;
 		case GR_EVENT_TYPE_UPDATE:
 			if (e.update.utype == GR_UPDATE_SIZE) {
+				SE_SceneFlush ();
 				seglWindowChanged ();
 				seglSize (&window_w, &window_h);
 				if (window_w < 1 || window_h < 1)
@@ -450,6 +453,7 @@ static float wave (const se_wave_t *w, float time)
 /* ---- a stage: what the GPU is told of it ---- */
 
 static float		scene_time;	/* the scene's clock, in seconds */
+static int		scene_mode = -1;	/* 1: a frame is drawn by a job on a worker core ("The scene on a worker core") */
 
 /* Its texture now (one of several, by the clock), how its texels are read, and its pass. */
 static void stage_state (gpu_state *s, const se_stage_t *st, int flat)
@@ -784,6 +788,7 @@ static void *gpu_copy (unsigned at, unsigned bytes)
 
 static void world_free (void)
 {
+	SE_SceneFlush ();
 	if (!world_loaded)
 		return;
 	gpuKeep (0, 0);
@@ -799,7 +804,7 @@ static void RE_LoadWorld (const char *name)
 	const unsigned	*vertices;
 	int		i, set, mesh = 0;
 
-	world_free ();
+	world_free ();	/* (and the frame out on the scene's worker shown) */
 	memset (light_kept, 0, sizeof light_kept);
 	world_mark = gpuMemoryMark ();
 	world_count = (int)world->runs;
@@ -1246,10 +1251,12 @@ static void draw_beam (const refEntity_t *e, float half, int crossed)
 typedef struct { const se_shader_t *shader; int first, count; } scene_poly_t;
 #define LIST_WORDS	8192
 #define VIEW_WORDS	22		/* of a refdef_t: where its picture is, the eye, the clock, its flags */
-enum { REC_PICTURE = 1, REC_SCENE };
-/* What a frame adds and draws. The first is this core's and drawn as it comes. The other two
-   are the client's game's on its worker core (client_shaderemu.c), written there in turn and
-   drawn here a frame later: `words` has the scenes and flat pictures in their order. */
+enum { REC_PICTURE = 1, REC_SCENE, REC_LIST, REC_CLEAR, REC_SUM };
+#define CORE_LIST	(1 + SE_LISTS)	/* this core's frames when the scene is a worker's: two in turn */
+/* What a frame adds and draws. The first is this core's and drawn as it comes. Then the
+   client's game's on its worker core (client_shaderemu.c), written there in turn and drawn a
+   frame later, and this core's own in turn when the scene's worker draws a frame (CORE_LIST):
+   `words` has the scenes, flat pictures, clears and other lists in their order. */
 typedef struct {
 	refEntity_t	entities[MAX_SCENE];
 	scene_poly_t	polys[MAX_POLYS];
@@ -1259,12 +1266,20 @@ typedef struct {
 	int		scene_entity, scene_poly, scene_vert;	/* where the scene being added to begins */
 	unsigned	colour;				/* of the flat pictures that follow */
 } frame_list_t;
-static frame_list_t	lists[3] __attribute__ ((aligned (16)));
+static frame_list_t	lists[CORE_LIST + 2] __attribute__ ((aligned (16)));
 static int		recording;	/* which of them the client's game on its worker writes */
+static int		core_list = CORE_LIST;	/* which this core writes, when the scene is a worker's */
 
 static inline frame_list_t *list_now (void)
 {
-	return &lists[SE_OnWorker () == 2 ? recording : 0];
+	return &lists[SE_OnWorker () == 2 ? recording : scene_mode > 0 ? core_list : 0];
+}
+
+/* Two words of a recorded list's own: a clear, another list, the client's game's sum on or off. */
+static void list_word (frame_list_t *l, unsigned kind, unsigned value)
+{
+	if (l->word_count + 2 <= LIST_WORDS)
+		l->words[l->word_count] = kind, l->words[l->word_count + 1] = value, l->word_count += 2;
 }
 
 static void draw_poly (const scene_poly_t *p, const polyVert_t *pv)
@@ -1344,7 +1359,8 @@ static void RE_AddPolyToScene (qhandle_t hShader, int numVerts, const polyVert_t
 
 static int RE_LightForPoint (vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir)
 {
-	return light_at (point, ambientLight, directedLight, lightDir, !SE_OnWorker ());	/* (what is kept is this core's) */
+	/* (what is kept is the drawing core's: this one's unless the scene is a worker's) */
+	return light_at (point, ambientLight, directedLight, lightDir, !SE_OnWorker () && scene_mode <= 0);
 }
 
 static void RE_AddLightToScene (const vec3_t org, float intensity, float r, float g, float b) {}
@@ -1370,13 +1386,18 @@ void SE_SceneSum (int on)
 
 	if (!asked)
 		asked = 1, sums = getenv ("QUAKE3_SUM") != NULL;
+	if (scene_mode > 0) {
+		if (sums)
+			list_word (list_now (), REC_SUM, (unsigned)on);
+		return;
+	}
 	summing = sums && on;
 }
 
 /* A scene drawn: `fd` may be only a refdef_t's first VIEW_WORDS words. */
 static void scene_draw (const refdef_t *fd, const frame_list_t *l, int entity, int entities, int poly, int polys)
 {
-	int	i, was = SE_Phase (3);
+	int	i, was = scene_mode > 0 ? 0 : SE_Phase (3);
 
 	if (summing) {
 		sum_words (fd, VIEW_WORDS);
@@ -1413,7 +1434,8 @@ static void scene_draw (const refdef_t *fd, const frame_list_t *l, int entity, i
 	view_matrix_again ();
 	for (i = poly; i < polys; i++)
 		draw_poly (&l->polys[i], &l->verts[l->polys[i].first]);
-	SE_Phase (was);
+	if (scene_mode <= 0)
+		SE_Phase (was);
 }
 
 static void RE_RenderScene (const refdef_t *fd)
@@ -1501,40 +1523,129 @@ static void RE_StretchPic (float x, float y, float w, float h, float s1, float t
 	}
 }
 
-/* The client's game on its worker core begins a frame: its scenes and pictures go to list `which` (1 or 2). */
-void SE_SceneRecord (int which)
+static void list_clear (frame_list_t *l, unsigned colour)
 {
-	frame_list_t	*l = &lists[which];
-
-	recording = which;
 	l->entity_count = l->poly_count = l->vert_count = l->word_count = 0;
 	l->scene_entity = l->scene_poly = l->scene_vert = 0;
-	l->colour = 0x00ffffff;
+	l->colour = colour;
 }
 
-/* That frame drawn, by this core. */
-void SE_SceneReplay (int which)
+/* The client's game on its worker core begins a frame: its scenes and pictures go to list `which` (1 to SE_LISTS). */
+void SE_SceneRecord (int which)
 {
-	const frame_list_t	*l = &lists[which];
-	int			at = 0;
+	recording = which;
+	list_clear (&lists[which], 0x00ffffff);
+}
+
+/* A list drawn, by the core that draws. */
+static void list_draw (const frame_list_t *l)
+{
+	int	at = 0;
 
 	while (at < l->word_count) {
 		const unsigned *w = &l->words[at];
 
-		if ((w[0] & 0xff) == REC_PICTURE) {
+		switch (w[0] & 0xff) {
+		case REC_PICTURE:
 			picture_draw (w);
 			at += PICTURE_WORDS;
-		} else {
+			break;
+		case REC_SCENE:
 			scene_draw ((const refdef_t *)(w + 5), l, (int)w[1], (int)w[2], (int)w[3], (int)w[4]);
 			at += 5 + VIEW_WORDS;
+			break;
+		case REC_LIST:
+			list_draw (&lists[w[1]]);
+			at += 2;
+			break;
+		case REC_CLEAR:
+			glClear (GL_COLOR_BUFFER_BIT);
+			at += 2;
+			break;
+		default:
+			summing = sums && w[1];
+			at += 2;
+			break;
 		}
 	}
+}
+
+/* That frame drawn: by this core, or by the scene's worker with the rest of this core's frame. */
+void SE_SceneReplay (int which)
+{
+	if (scene_mode > 0)
+		list_word (list_now (), REC_LIST, (unsigned)which);
+	else
+		list_draw (&lists[which]);
 }
 
 /* The lists' pages are there before a worker writes them (docs/multicore.md). */
 void SE_SceneTouch (void (*touch) (void *, unsigned))
 {
 	touch (lists, sizeof lists);
+}
+
+/* ---- the scene on a worker core ---- */
+
+static mcw_handle	scene_out;	/* the job drawing the frame before, while it is out */
+unsigned		se_scene_jobs, se_scene_cycles, se_scene_passes;	/* for the q3stat: lines */
+
+/* A frame this core recorded, made the GPU's list: all the frame draws, but for the swap. */
+static uint32_t scene_job (uint32_t which, uint32_t unused)
+{
+	unsigned	began = SE_Cycles ();
+
+	world_seen = 0;
+	matrix_is = 0;
+	list_draw (&lists[which]);
+	if (!world_seen)
+		world_hide ();
+	if (summed)
+		mcw_print ("q3sum: %u %08x list %08x\n", sum_time, sum, gpuListSum (dat_rom));
+	sum = 0, summed = 0, summing = 0;
+	frame_number++;
+	return SE_Cycles () - began;
+}
+
+static void scene_setup (void)
+{
+	const char	*how = getenv ("QUAKE3_SCENE");
+
+	scene_mode = !(how && !strcmp (how, "inline")) && SE_Workers () >= 3;
+	if (scene_mode) {
+		extern const char __executable_start[], etext[];
+
+		/* (what the job runs and writes is there before it does: the program's code, the lists,
+		   the GPU's two sets, the renderer's own) */
+		mcw_touch_code (__executable_start, (unsigned)(etext - __executable_start));
+		mcw_touch (lists, sizeof lists);
+		gpuTouchSets (mcw_touch);
+		mcw_touch (moved_kept, stage_count * sizeof *moved_kept);
+		mcw_touch (light_kept, sizeof light_kept);
+		mcw_touch (way_draws, sizeof way_draws);
+		mcw_touch (ways, sizeof ways);
+		mcw_touch (se_counts, sizeof se_counts);
+	}
+	printf ("quake3: the scene is drawn by %s\n", scene_mode ? "a worker core, while this core goes on" : "this core");
+}
+
+void SE_SceneFlush (void)
+{
+	int	was;
+
+	if (!scene_out)
+		return;
+	while (!mcw_ready (scene_out)) {
+		mcw_rest ();
+		se_scene_passes++;
+		SE_ServerPoll ();
+	}
+	se_scene_cycles += mcw_join (scene_out);
+	se_scene_jobs++;
+	scene_out = 0;
+	was = SE_Phase (4);
+	gpuSwap (0);
+	SE_Phase (was);
 }
 
 static void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {}
@@ -1544,6 +1655,14 @@ static void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *da
 
 static void RE_BeginFrame (stereoFrame_t stereoFrame)
 {
+	if (scene_mode < 0)
+		scene_setup ();
+	if (scene_mode > 0) {
+		/* (recorded here, and drawn by a job at its end while this core goes on to the next) */
+		list_clear (&lists[core_list], lists[core_list ^ CORE_LIST ^ (CORE_LIST + 1)].colour);
+		list_word (&lists[core_list], REC_CLEAR, 0);
+		return;
+	}
 	world_seen = 0;
 	matrix_is = 0;
 	glClear (GL_COLOR_BUFFER_BIT);
@@ -1557,10 +1676,17 @@ static void RE_EndFrame (int *frontEndMsec, int *backEndMsec)
 		*frontEndMsec = 0;
 	if (backEndMsec)
 		*backEndMsec = 0;
+	if (scene_mode > 0) {
+		SE_SceneFlush ();	/* (the frame before: shown now) */
+		scene_out = mcw_call (scene_job, (uint32_t)core_list, 0);
+		core_list ^= CORE_LIST ^ (CORE_LIST + 1);
+		SE_FrameDone ();
+		return;
+	}
 	if (!world_seen)
 		world_hide ();
 	if (summed)
-		printf ("q3sum: %u %08x\n", sum_time, sum);
+		printf ("q3sum: %u %08x list %08x\n", sum_time, sum, gpuListSum (dat_rom));
 	sum = 0, summed = 0;
 	was = SE_Phase (4);
 	SE_Part (12);
@@ -1658,6 +1784,7 @@ static void RE_BeginRegistration (glconfig_t *out)
 {
 	int	i;
 
+	SE_SceneFlush ();
 	if (!opened) {
 		window_open ();
 		data_open ();
@@ -1689,6 +1816,7 @@ static void RE_BeginRegistration (glconfig_t *out)
 
 static void RE_Shutdown (qboolean destroyWindow)
 {
+	SE_SceneFlush ();
 	if (opened && destroyWindow)
 		world_free ();
 }

@@ -11,7 +11,7 @@ source "$HERE/../userland/toolchain.sh"
 MW=$WORK/src/microwindows
 VC=$WORK/src/vanilla-conquer
 BUILD=$WORK/src/ralert-build
-OUT=$REPO/build/images/linux/root
+OUT=${RALERT_OUT:-$REPO/build/images/linux/root}	# (another image's folder for an experiment)
 COMMIT=ce83b59
 DEMO=${RALERT_DEMO:-https://archive.org/download/CommandConquerRedAlert_1020/ra95demo.zip}
 # Tiberian Dawn's build makes the C++ driver and the toolchain file, and fetches the source
@@ -23,11 +23,11 @@ git -C "$VC" checkout -q -f "$COMMIT" && git -C "$VC" clean -q -fd
 git -C "$VC" apply "$TD/vanilla-conquer.patch"
 [ ! -s "$HERE/vanilla-conquer.patch" ] || git -C "$VC" apply "$HERE/vanilla-conquer.patch"
 cp "$TD/cxxrt.cpp" "$TD/shaderemu.cpp" "$TD/soundio_shaderemu.cpp" "$TD/host.c" "$TD/host.h" "$VC/common/"
-cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$VC/common/"
+cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mcwx.c" "$VC/common/"
 cp "$HERE/gl.cpp" "$VC/redalert/"
 # The worker cores' side (docs/multicore.md): mcw.c is the library every program has for them,
 # workers.c the game's jobs over it.
-cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$VC/redalert/"
+cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$VC/redalert/"
 
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
 # (the flags are Tiberian Dawn's: docs/tdawn.md)

@@ -50,8 +50,8 @@ int workers_unvq(uint8_t *codebook, uint8_t *pointers, uint8_t *buffer, unsigned
  */
 int workers_lcw(const uint8_t *source, uint8_t *dest, unsigned length);
 void workers_lcw_wait(void);
-/* For the game's figures: frames shared so far, and the machine's passes they waited. */
-extern unsigned workers_frames, workers_passes;
+/* For the game's figures: frames shared so far. */
+extern unsigned workers_frames;
 
 #ifdef __cplusplus
 }

@@ -37,7 +37,7 @@ SOURCES="cl_demo cl_input cl_main cl_parse cl_tent chase cmd common console crc 
     gl_draw gl_model gl_refrag gl_rlight gl_rmain gl_rmisc gl_rsurf gl_screen gl_warp
     host host_cmd keys menu mathlib net_loop net_main net_vcr net_bsd net_dgrm net_udp pr_cmds pr_edict pr_exec r_part sbar
     sv_main sv_phys sv_move sv_user zone view wad world cd_null"
-OURS="vid_shaderemu sys_shaderemu mesh_shaderemu world_shaderemu fmath_shaderemu snd_shaderemu server_shaderemu"
+OURS="scene_shaderemu vid_shaderemu sys_shaderemu mesh_shaderemu world_shaderemu fmath_shaderemu snd_shaderemu server_shaderemu"
 # gles.c in its float build. (Texture names from 3,072 up are qgl.c's own, for models' poses.)
 GLES="-DSEGL_FLOAT -DMAX_TEXTURES=4096"
 GLINC="-I$HERE/include -idirafter $PROGRAMS/linux/include -I$MW/src/include"
@@ -67,14 +67,15 @@ rm -f net_none.o   # (of a build before the network: the link takes every object
 rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLINC "$HERE/qgl.c" -o qgl.o
 # gles.c with what a thing drawn again asks of it (gpu_shaderemu.c includes it)
 rv32-cc $OPT -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC -I"$PROGRAMS/linux" "$HERE/gpu_shaderemu.c" -o gles.o
-# the worker cores' library, the same for every program (programs/mc)
+# the worker cores' library and its second layer, the same for every program (programs/mc)
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcw.c" -o mcw.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcwx.c" -o mcwx.o
 # and 16 bytes of nothing after our variables in each kind of section: the libraries' follow
 printf 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));\n' > zz_pad.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
-for o in qgl.o gles.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
+for o in qgl.o gles.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
 rv32-cc -O2 $FPU -w $(ls *.o | grep -v '^zz_') zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/quake.bin" quake
@@ -105,7 +106,8 @@ cat > "$OUT/usr/bin/quake" <<'EOF'
 mkdir -p /persistence/quake /tmp/quake && cd /tmp/quake || exit 1
 ln -sfn /persistence/quake id1
 ln -sf /usr/share/quake-pak0.pak id1/pak0.pak
-exec quake.bin "$@"
+# (the player's name, the desktop's: docs/persist.md)
+exec quake.bin +name "${USER:-player}" "$@"
 EOF
 chmod +x "$OUT/usr/bin/quake"
 # (from the menu Quake opens with its own menu up, over the demos it plays)

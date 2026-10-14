@@ -21,6 +21,7 @@
 #include "z_zone.h"
 #include "r_state.h"
 #include "w_wad.h"
+#include "mcwx.h"
 
 boolean P_CheckSight_port(mobj_t *t1, mobj_t *t2);
 fixed_t P_InterceptVector2(divline_t *v2, divline_t *v1);
@@ -33,7 +34,7 @@ extern int rndindex, prndindex;
  * bytes apart, and stores that far apart share a few sets of the write cache.
  */
 int doom_line_mark[65536];
-static int sight_mark[65536], sight_pass;
+static int sight_mark[65536];
 
 static int use_port_sight = -1, use_port_look, use_port_think, use_port_find, use_port_names, use_port_lines, use_port_group, use_port_rest;
 
@@ -61,6 +62,9 @@ which_port(void)
 }
 
 struct trace { fixed_t x, y, dx, dy, x2, y2; };
+/* A walk's marks of the lines it has seen (one number a walk) and its slopes: a core's own. */
+struct sight { int *mark, pass; fixed_t zstart, top, bottom; short *heights, count; };
+#define HEIGHTS 7		/* the sectors a walk ahead notes: more, and any move makes it stale */
 
 /* Which side of a line a point is on: 0 front, 1 back, 2 on it. As the port's P_DivlineSide. */
 static inline int
@@ -91,17 +95,34 @@ side_of(fixed_t x, fixed_t y, fixed_t nx, fixed_t ny, fixed_t ndx, fixed_t ndy)
 	return 1;
 }
 
+/* A walk ahead notes the sectors whose heights decided it (HEIGHTS + 1: too many to note). */
+static void
+sight_heights(struct sight *c, int front, int back)
+{
+	int i, f = 0, b = front == back;
+
+	for (i = 0; i < c->count && i < HEIGHTS; i++)
+		f |= c->heights[i] == front, b |= c->heights[i] == back;
+	if (!f && c->count <= HEIGHTS)
+		c->count < HEIGHTS ? (c->heights[c->count++] = front) : c->count++;
+	if (!b && c->count <= HEIGHTS)
+		c->count < HEIGHTS ? (c->heights[c->count++] = back) : c->count++;
+}
+
 /*
  * Whether the line from t1 to t2 crosses nothing that blocks sight. The port's walk over the
  * BSP tree, nearer side first, without its calls: the far sides wait on a stack of their own.
  */
 static int
-sight_walk(const struct trace *trace)
+sight_walk(const struct trace *trace, struct sight *c)
 {
 	const fixed_t tx = trace->x, ty = trace->y, tdx = trace->dx, tdy = trace->dy, x2 = trace->x2, y2 = trace->y2;
+	const fixed_t sightzstart = c->zstart;
 	const node_t *const all = nodes;
-	const int pass = sight_pass;
+	const int pass = c->pass;
+	int *const sight_mark = c->mark;
 	int waiting[128], depth = 0, bspnum = numnodes - 1;
+	fixed_t topslope = c->top, bottomslope = c->bottom;
 
 	for (;;) {
 		const subsector_t *sub;
@@ -142,15 +163,17 @@ sight_walk(const struct trace *trace)
 			if (side_of(tx, ty, x1, y1, ldx, ldy) == side_of(x2, y2, x1, y1, ldx, ldy))
 				continue;
 			if (!(line->flags & ML_TWOSIDED))
-				return 0;
+				break;
 			front = seg->frontsector;
 			back = seg->backsector;
+			if (c->heights)
+				sight_heights(c, front - sectors, back - sectors);
 			if (front->floorheight == back->floorheight && front->ceilingheight == back->ceilingheight)
 				continue;
 			opentop = front->ceilingheight < back->ceilingheight ? front->ceilingheight : back->ceilingheight;
 			openbottom = front->floorheight > back->floorheight ? front->floorheight : back->floorheight;
 			if (openbottom >= opentop)
-				return 0;	/* a closed door */
+				break;	/* a closed door */
 			divl.x = x1;
 			divl.y = y1;
 			divl.dx = ldx;
@@ -171,18 +194,136 @@ sight_walk(const struct trace *trace)
 					topslope = slope;
 			}
 			if (topslope <= bottomslope)
-				return 0;
+				break;
 		}
-		if (!depth)
+		if (count) {
+			c->top = topslope;
+			c->bottom = bottomslope;
+			return 0;
+		}
+		if (!depth) {
+			c->top = topslope;
+			c->bottom = bottomslope;
 			return 1;
+		}
 		bspnum = waiting[--depth];
 	}
+}
+
+/* ---- sight checks made ahead (docs/doom.md, "Sight checks made ahead") ---- */
+
+/*
+ * A worker core walks, during a tic, the checks the next tic will likely ask for: the
+ * monsters that next look or chase, against the player where his next move takes him if
+ * nothing is in the way. A check finds its answer here when its eight numbers are the same.
+ */
+struct ahead {
+	const mobj_t *t1, *t2;
+	fixed_t k[8];
+	int gen, tic;
+	angle_t angle;			/* t1's, for `front` */
+	short heights[HEIGHTS];
+	char seen, count, front;	/* front: t2 in front of a monster that looks, or 2 behind its back (no walk) */
+};
+/* The player between two tics, and his next two commands: taken by the first core for the worker. */
+struct player_then {
+	const mobj_t *mo;
+	int loads;			/* doom_level_loads then */
+	fixed_t x, y, z, height, momx, momy;
+	angle_t angle;
+	int rest, attacked, known, next;
+	signed char forward[2], side[2];
+	short turn[2];
+};
+#define AHEAD 128			/* a power of two */
+static struct ahead *ahead_of[2];	/* by the tic's parity: the worker writes one while this core reads the other */
+static const struct ahead *ahead_now;	/* this tic's, once the call that made it is joined */
+static int ahead_tic, ahead_on;
+static int ahead_counter = -1;		/* the counter of the worker's walks */
+/*
+ * The monsters whose state ends two tics on, by that tic's parity (the first core lists them as
+ * it counts their states down); the player as he was when the worker was given them; the
+ * worker's marks (one walk ahead is out at a time).
+ */
+#define DUE 256
+static struct scout { struct sight sight; struct player_then player; const mobj_t *due[2][DUE]; int due_count[2]; } *scout;
+int doom_plane_gen;			/* goes up whenever a floor or ceiling moves, or a level is loaded */
+extern int doom_level_loads;
+static int *moved_at, moved_loads = -1;	/* per sector: doom_plane_gen when it last moved */
+unsigned doom_ahead_count[2];		/* checks walked or answered, and of those answered from here */
+
+static inline unsigned
+ahead_hash(const mobj_t *t1, const mobj_t *t2)
+{
+	return (((unsigned)(size_t)t1 >> 4) * 2654435761u ^ ((unsigned)(size_t)t2 >> 4)) >> 25;
+}
+
+static inline void
+ahead_key(fixed_t *k, const mobj_t *t1, const mobj_t *t2)
+{
+	k[0] = t1->x, k[1] = t1->y, k[2] = t1->z, k[3] = t1->height;
+	k[4] = t2->x, k[5] = t2->y, k[6] = t2->z, k[7] = t2->height;
+}
+
+/* The walk for those eight numbers (t1's place and height, t2's): 1 seen, 0 not, -1 the port's. */
+static int
+sight_of(const fixed_t *k, struct sight *c)
+{
+	struct trace t;
+
+	c->pass++;
+	c->zstart = k[2] + k[3] - (k[3] >> 2);
+	c->top = k[6] + k[7] - c->zstart;
+	c->bottom = k[6] - c->zstart;
+	t.x = k[0];
+	t.y = k[1];
+	t.x2 = k[4];
+	t.y2 = k[5];
+	t.dx = k[4] - k[0];
+	t.dy = k[5] - k[1];
+	return sight_walk(&t, c);
+}
+
+/* No floor or ceiling the walk went by has moved since it was made. */
+static inline int
+heights_same(const struct ahead *a)
+{
+	int i;
+
+	if (a->gen == doom_plane_gen)
+		return 1;
+	if (a->count > HEIGHTS)
+		return 0;
+	for (i = 0; i < a->count && moved_at && moved_loads == doom_level_loads; i++)
+		if (moved_at[a->heights[i]] > a->gen)
+			return 0;
+	return 1;
+}
+
+/* What the worker walked for t1 and t2 at these eight numbers, if it did. */
+static const struct ahead *
+ahead_find(const mobj_t *t1, const mobj_t *t2, const fixed_t *k)
+{
+	unsigned h = ahead_hash(t1, t2), probe;
+
+	for (probe = 0; probe < 4; probe++, h = (h + 1) & (AHEAD - 1)) {
+		const struct ahead *a = &ahead_now[h];
+
+		if (a->tic != ahead_tic)
+			break;
+		if (a->t1 == t1 && a->t2 == t2)
+			return (a->k[0] ^ k[0]) | (a->k[1] ^ k[1]) | (a->k[2] ^ k[2]) | (a->k[3] ^ k[3]) | (a->k[4] ^ k[4]) |
+			       (a->k[5] ^ k[5]) | (a->k[6] ^ k[6]) | (a->k[7] ^ k[7]) ? NULL : a;
+	}
+	return NULL;
 }
 
 boolean
 P_CheckSight(mobj_t *t1, mobj_t *t2)
 {
-	struct trace t;
+	static struct sight here = { sight_mark };
+	const struct ahead *a;
+	fixed_t k[8];
 	int pnum, seen;
 
 	if (use_port_sight < 0)
@@ -195,19 +336,329 @@ P_CheckSight(mobj_t *t1, mobj_t *t2)
 		return false;
 	}
 	sightcounts[1]++;
+	doom_ahead_count[0]++;
+	ahead_key(k, t1, t2);
+	if (ahead_now && (a = ahead_find(t1, t2, k)) && a->front != 2 && heights_same(a)) {
+		doom_ahead_count[1]++;
+		return a->seen;
+	}
 	validcount++;
-	sight_pass++;
-	sightzstart = t1->z + t1->height - (t1->height >> 2);
-	topslope = (t2->z + t2->height) - sightzstart;
-	bottomslope = t2->z - sightzstart;
-	t.x = t1->x;
-	t.y = t1->y;
-	t.x2 = t2->x;
-	t.y2 = t2->y;
-	t.dx = t2->x - t1->x;
-	t.dy = t2->y - t1->y;
-	seen = sight_walk(&t);
+	seen = sight_of(k, &here);
+	sightzstart = here.zstart;
+	topslope = here.top;
+	bottomslope = here.bottom;
 	return seen < 0 ? P_CheckSight_port(t1, t2) : seen;
+}
+
+extern byte *demo_p;
+extern boolean demoplayback;
+extern ticcmd_t netcmds[MAXPLAYERS][BACKUPTICS];
+extern int maketic;
+extern void *mainzone;			/* z_zone.c's: its first word is its size */
+void A_Look(mobj_t *actor);
+void A_Chase(mobj_t *actor);
+
+/* A pointer into the zone, where the game's things are: the worker reads them while they change. */
+static inline int
+in_zone(const void *p)
+{
+	const char *zone = mainzone;
+
+	return zone && (const char *)p > zone && (const char *)p < zone + *(const int *)zone && !((size_t)p & 3);
+}
+
+/* The command of the player's for tic next + ahead (`next` the next to run): from the demo, or as made. */
+static int
+command_ahead(const player_t *player, int next, int ahead, struct player_then *then)
+{
+	const int tic = next + ahead;
+
+	if (demoplayback) {
+		const byte *at = demo_p + 4 * ahead;
+
+		if (!demo_p || demo_p[0] == 0x80 || (ahead && *at == 0x80))
+			return 0;	/* (DEMOMARKER: the demo ends) */
+		then->forward[ahead] = (signed char)at[0];
+		then->side[ahead] = (signed char)at[1];
+		then->turn[ahead] = (short)((unsigned char)at[2] << 8);
+	} else if (maketic > tic) {
+		const ticcmd_t *cmd = &netcmds[player - players][tic % BACKUPTICS];
+
+		then->forward[ahead] = cmd->forwardmove;
+		then->side[ahead] = cmd->sidemove;
+		then->turn[ahead] = cmd->angleturn;
+	} else {
+		return 0;
+	}
+	return 1;
+}
+
+/* What the worker needs of the player, between two tics (`next` the next to run). */
+static void
+player_take(struct player_then *then, int next)
+{
+	const mobj_t *mo = players[consoleplayer].mo;
+	const player_t *player = mo ? mo->player : NULL;
+
+	then->next = next;
+	then->mo = mo;
+	then->loads = doom_level_loads;
+	then->known = player && player->playerstate == PST_LIVE && player->health > 0 && !(player->cheats & (CF_NOCLIP | CF_NOMOMENTUM)) &&
+		      mo->z <= mo->floorz && command_ahead(player, next, 0, then) && command_ahead(player, next, 1, then);
+	if (!then->known)
+		return;
+	then->x = mo->x, then->y = mo->y, then->z = mo->z, then->height = mo->height;
+	then->momx = mo->momx, then->momy = mo->momy, then->angle = mo->angle;
+	then->rest = mo->reactiontime;
+	then->attacked = (mo->flags & MF_JUSTATTACKED) != 0;
+}
+
+#define STOPSPEED	0x1000		/* as p_mobj.c has them */
+#define FRICTION	0xe800
+
+/*
+ * Where the player's thing will be after the next two tics if nothing is in the way: for each
+ * tic P_MovePlayer's turn and thrust from its command, P_XYMovement's steps and friction.
+ */
+static void
+player_ahead(const struct player_then *then, fixed_t *k)
+{
+	fixed_t momx = then->momx, momy = then->momy, x = then->x, y = then->y, xmove, ymove;
+	angle_t angle = then->angle;
+	int rest = then->rest, attacked = then->attacked, ahead;
+
+	for (ahead = 0; ahead < 2; ahead++) {
+		int forward = then->forward[ahead], side = then->side[ahead], turn = then->turn[ahead];
+
+		if (attacked)
+			forward = 0xc800 / 512, side = turn = attacked = 0;
+		if (rest) {
+			rest--;
+		} else {
+			angle += (unsigned)turn << 16;
+			if (forward) {
+				momx += FixedMul(forward * 2048, finecosine[angle >> ANGLETOFINESHIFT]);
+				momy += FixedMul(forward * 2048, finesine[angle >> ANGLETOFINESHIFT]);
+			}
+			if (side) {
+				momx += FixedMul(side * 2048, finecosine[(angle - ANG90) >> ANGLETOFINESHIFT]);
+				momy += FixedMul(side * 2048, finesine[(angle - ANG90) >> ANGLETOFINESHIFT]);
+			}
+		}
+		if (!momx && !momy)
+			continue;
+		momx = momx > MAXMOVE ? MAXMOVE : momx < -MAXMOVE ? -MAXMOVE : momx;
+		momy = momy > MAXMOVE ? MAXMOVE : momy < -MAXMOVE ? -MAXMOVE : momy;
+		for (xmove = momx, ymove = momy; xmove || ymove;)
+			if (xmove > MAXMOVE / 2 || ymove > MAXMOVE / 2) {
+				x += xmove / 2;
+				y += ymove / 2;
+				xmove >>= 1;
+				ymove >>= 1;
+			} else {
+				x += xmove;
+				y += ymove;
+				xmove = ymove = 0;
+			}
+		if (momx > -STOPSPEED && momx < STOPSPEED && momy > -STOPSPEED && momy < STOPSPEED && !forward && !side)
+			momx = momy = 0;
+		else
+			momx = FixedMul(momx, FRICTION), momy = FixedMul(momy, FRICTION);
+	}
+	k[4] = x, k[5] = y, k[6] = then->z, k[7] = then->height;
+}
+
+/* R_PointToAngle2(0, 0, x, y), which writes viewx and viewy: this writes nothing. */
+static angle_t
+angle_of(fixed_t x, fixed_t y)
+{
+#define SLOPE(num, den) ((unsigned)(den) < 512 ? SLOPERANGE : ((unsigned)(num) << 3) / ((unsigned)(den) >> 8) <= SLOPERANGE ? \
+			 ((unsigned)(num) << 3) / ((unsigned)(den) >> 8) : SLOPERANGE)
+	if (!x && !y)
+		return 0;
+	if (x >= 0) {
+		if (y >= 0)
+			return x > y ? tantoangle[SLOPE(y, x)] : ANG90 - 1 - tantoangle[SLOPE(x, y)];
+		y = -y;
+		return x > y ? -tantoangle[SLOPE(y, x)] : ANG270 + tantoangle[SLOPE(x, y)];
+	}
+	x = -x;
+	if (y >= 0)
+		return x > y ? ANG180 - 1 - tantoangle[SLOPE(y, x)] : ANG90 + tantoangle[SLOPE(x, y)];
+	y = -y;
+	return x > y ? ANG180 + tantoangle[SLOPE(y, x)] : ANG270 - 1 - tantoangle[SLOPE(x, y)];
+#undef SLOPE
+}
+
+/*
+ * The other end of a monster's check two tics on, if it will make one then: its state ends
+ * then in A_Look or A_Chase, and the check is not passed by (as p_enemy.c has them). `next`
+ * is the player's place then; t2's place goes into k; `front` as struct ahead has it.
+ */
+static const mobj_t *
+check_ahead(const mobj_t *m, const mobj_t *player, const fixed_t *next, fixed_t *k, int *front)
+{
+	const state_t *now = m->state;
+	const mobj_t *t2 = player;
+	actionf_p1 action;
+
+	*front = 0;
+	if (now < states || now >= states + NUMSTATES || (unsigned)now->nextstate >= NUMSTATES)
+		return NULL;
+	action = states[now->nextstate].action.acp1;
+	if (action == (actionf_p1)A_Look) {
+		const mobj_t *heard = m->subsector->sector->soundtarget;
+
+		if (heard && in_zone(heard) && (heard->flags & MF_SHOOTABLE)) {
+			if (!(m->flags & MF_AMBUSH))
+				return NULL;	/* it wakes without looking */
+			t2 = heard;
+		} else if (next) {
+			const angle_t an = angle_of(next[4] - m->x, next[5] - m->y) - m->angle;
+
+			*front = an > ANG90 && an < ANG270 && P_AproxDistance(next[4] - m->x, next[5] - m->y) > MELEERANGE ? 2 : 1;
+		}
+	} else if (action == (actionf_p1)A_Chase) {
+		const mobjinfo_t *info = m->info;
+
+		if (info < mobjinfo || info >= mobjinfo + NUMMOBJTYPES)
+			return NULL;
+		if (m->target && in_zone(m->target) && (m->target->flags & MF_SHOOTABLE)) {
+			fixed_t x, y;
+
+			if (m->flags & MF_JUSTATTACKED)
+				return NULL;
+			t2 = m->target;
+			x = t2 == player && next ? next[4] : t2->x;
+			y = t2 == player && next ? next[5] : t2->y;
+			/* close enough to bite, or free to shoot */
+			if (!(info->meleestate && t2->info >= mobjinfo && t2->info < mobjinfo + NUMMOBJTYPES &&
+			      P_AproxDistance(x - m->x, y - m->y) < MELEERANGE - 20 * FRACUNIT + t2->info->radius) &&
+			    !(info->missilestate && (!m->movecount || gameskill == sk_nightmare || fastparm)))
+				return NULL;
+		}
+	} else {
+		return NULL;
+	}
+	if (t2 == player) {
+		if (!next || player->health <= 0)
+			return NULL;
+		k[4] = next[4], k[5] = next[5], k[6] = next[6], k[7] = next[7];
+	} else {
+		k[4] = t2->x, k[5] = t2->y, k[6] = t2->z, k[7] = t2->height;
+	}
+	return t2;
+}
+
+/* A worker's, beside the view: the checks of the tic after the next walked into the table of its
+ * parity. Things are read while the first core changes them: what is kept is what was walked,
+ * under the numbers it was walked for. */
+void
+doom_ahead(void)
+{
+	const struct player_then *then = &scout->player;
+	const int tic = then->next + 1, count = scout->due_count[tic & 1];
+	const mobj_t *const *due = scout->due[tic & 1];
+	struct ahead *table = ahead_of[tic & 1];
+	struct sight *c = &scout->sight;
+	const mobj_t *player = then->mo;
+	fixed_t at[8];
+	int i;
+
+	if (!in_zone(player) || !in_zone(player->subsector) || !in_zone(player->subsector->sector))
+		return;
+	if (then->known)
+		player_ahead(then, at);
+	for (i = 0; i < count && i < DUE; i++) {
+		const mobj_t *m = due[i], *t2;
+		short heights[HEIGHTS];
+		fixed_t k[8];
+		unsigned h;
+		int pnum, seen, probe, gen, front;
+
+		if (!in_zone(m) || m->thinker.function.acp1 != (actionf_p1)P_MobjThinker || m->health <= 0 ||
+		    !in_zone(m->subsector) || !in_zone(m->subsector->sector))
+			continue;
+		if (!(t2 = check_ahead(m, player, then->known ? at : NULL, k, &front)) || !in_zone(t2->subsector) || !in_zone(t2->subsector->sector))
+			continue;
+		pnum = (m->subsector->sector - sectors) * numsectors + (t2->subsector->sector - sectors);
+		if (front != 2 && ((unsigned)pnum >= (unsigned)(numsectors * numsectors) || rejectmatrix[pnum >> 3] & (1 << (pnum & 7))))
+			continue;
+		k[0] = m->x, k[1] = m->y, k[2] = m->z, k[3] = m->height;
+		h = ahead_hash(m, t2);
+		for (probe = 0; probe < 4 && table[h].tic == tic; probe++)
+			h = (h + 1) & (AHEAD - 1);
+		if (probe == 4)
+			continue;
+		gen = *(volatile int *)&doom_plane_gen;
+		c->heights = heights;
+		c->count = 0;
+		if ((seen = front == 2 ? 0 : sight_of(k, c)) < 0)
+			continue;
+		table[h].t1 = m;
+		table[h].t2 = t2;
+		memcpy(table[h].k, k, sizeof k);
+		memcpy(table[h].heights, heights, sizeof heights);
+		table[h].count = c->count;
+		table[h].gen = gen;
+		table[h].seen = seen;
+		table[h].angle = m->angle;
+		table[h].front = front;
+		table[h].tic = tic;
+		if (front != 2)
+			mcw_add(ahead_counter, 1);
+	}
+}
+
+/* Workers there are: the tables, the worker's marks (every line's), and its code made present. */
+void
+doom_ahead_init(void)
+{
+	const char *on = getenv("DOOM_AHEAD");
+	int i;
+
+	if (on && *on == '0')
+		return;
+	for (i = 0; i < 2; i++)
+		if (!(ahead_of[i] = mcw_alloc(AHEAD * sizeof(struct ahead))))
+			return;
+	scout = mcw_alloc(sizeof *scout);
+	if (!scout || !(scout->sight.mark = mcw_alloc(sizeof sight_mark)))
+		return;
+	mcw_touch(ahead_of[0], AHEAD * sizeof(struct ahead));
+	mcw_touch(ahead_of[1], AHEAD * sizeof(struct ahead));
+	mcw_touch(scout, sizeof *scout);
+	mcw_touch(scout->sight.mark, sizeof sight_mark);
+	mcw_touch_code((const void *)doom_ahead, 2048);
+	mcw_touch_code((const void *)check_ahead, 1024);
+	mcw_touch_code((const void *)sight_heights, 256);
+	ahead_counter = mcw_counters() > 1 ? 1 : -1;
+	ahead_on = 1;
+}
+
+/* The worker's walks so far. */
+unsigned
+doom_ahead_walked(void)
+{
+	return ahead_on > 0 && ahead_counter > 0 ? mcw_get(ahead_counter) : 0;
+}
+
+/* Between two tics (`next` the next to run): whether a worker is to walk the checks ahead, and
+ * what it needs of the player; and when it has, which tic's they are. */
+int
+doom_ahead_wanted(int next)
+{
+	if (ahead_on <= 0)
+		return 0;
+	player_take(&scout->player, next);
+	return 1;
+}
+
+void
+doom_ahead_made(void)
+{
+	if (scout->player.loads == doom_level_loads)
+		ahead_tic = scout->player.next + 1;
 }
 
 /*
@@ -238,11 +689,23 @@ P_LookForPlayers(mobj_t *actor, boolean allaround)
 		if (player->health <= 0)
 			continue;
 		if (!allaround) {
-			angle_t an = R_PointToAngle2(actor->x, actor->y, player->mo->x, player->mo->y) - actor->angle;
+			const struct ahead *a = NULL;
+			fixed_t k[8];
 
-			if (an > ANG90 && an < ANG270 &&
-			    P_AproxDistance(player->mo->x - actor->x, player->mo->y - actor->y) > MELEERANGE)
-				continue;	/* behind its back */
+			if (ahead_now) {
+				ahead_key(k, actor, player->mo);
+				a = ahead_find(actor, player->mo, k);
+			}
+			if (a && a->front && a->angle == actor->angle) {
+				if (a->front == 2)
+					continue;	/* behind its back, as the worker found */
+			} else {
+				angle_t an = R_PointToAngle2(actor->x, actor->y, player->mo->x, player->mo->y) - actor->angle;
+
+				if (an > ANG90 && an < ANG270 &&
+				    P_AproxDistance(player->mo->x - actor->x, player->mo->y - actor->y) > MELEERANGE)
+					continue;	/* behind its back */
+			}
 		}
 		if (!P_CheckSight(actor, player->mo))
 			continue;
@@ -261,6 +724,8 @@ P_RunThinkers(void)
 {
 	thinker_t *th = thinkercap.next;
 	const int stale = stamps_stale;
+	const mobj_t **due = NULL;
+#define AHEAD_DUE(m) do { int *n_ = &scout->due_count[gametic & 1]; if (*n_ < DUE) due[(*n_)++] = (m); } while (0)
 
 	if (use_port_sight < 0)
 		which_port();
@@ -269,6 +734,11 @@ P_RunThinkers(void)
 		return;
 	}
 	stamps_stale = 0;
+	ahead_now = ahead_on > 0 && ahead_tic == gametic ? ahead_of[gametic & 1] : NULL;
+	if (ahead_on > 0) {
+		due = scout->due[gametic & 1];	/* (the parity of gametic + 2) */
+		scout->due_count[gametic & 1] = 0;
+	}
 	while (th != &thinkercap) {
 		if (th->function.acv == (actionf_v)(-1)) {
 			th->next->prev = th->prev;
@@ -282,6 +752,8 @@ P_RunThinkers(void)
 			if (m->validcount < 0) {
 				if (m->tics != -1 && !--m->tics)
 					P_SetMobjState(m, m->state->nextstate);
+				else if (m->tics == 2 && due && (m->flags & MF_COUNTKILL))
+					AHEAD_DUE(m);
 			} else if (m->momx | m->momy | m->momz | (m->z ^ m->floorz) | (m->flags & MF_SKULLFLY)) {
 				P_MobjThinker(m);
 			} else if (m->tics != -1) {
@@ -290,6 +762,8 @@ P_RunThinkers(void)
 					P_SetMobjState(m, m->state->nextstate);
 				else if (!m->player && !use_port_rest)
 					m->validcount |= ASLEEP;
+				if (m->tics == 2 && due && (m->flags & MF_COUNTKILL))
+					AHEAD_DUE(m);
 			} else if ((m->flags & MF_COUNTKILL) && respawnmonsters) {
 				P_MobjThinker(m);
 			} else if (!m->player && !use_port_rest) {
@@ -447,6 +921,14 @@ result_e
 T_MovePlane(sector_t *sector, fixed_t speed, fixed_t dest, boolean crush, int floorOrCeiling, int direction)
 {
 	doom_sector_changed(sector);
+	doom_plane_gen++;
+	if (moved_loads != doom_level_loads) {
+		free(moved_at);
+		moved_at = calloc(numsectors + 1, sizeof *moved_at);
+		moved_loads = doom_level_loads;
+	}
+	if (moved_at)
+		moved_at[sector - sectors] = doom_plane_gen;
 	return T_MovePlane_port(sector, speed, dest, crush, floorOrCeiling, direction);
 }
 
@@ -457,6 +939,8 @@ P_InitThinkers(void)
 {
 	P_InitThinkers_port();
 	doom_level_loads++;
+	doom_plane_gen++;
+	ahead_tic = -1;
 	doom_told_all = stamps_stale = 1;
 	sectors_told = NULL;
 	sectors_told_count = 0;
@@ -952,3 +1436,4 @@ P_GroupLines(void)
 	}
 	free(box);
 }
+

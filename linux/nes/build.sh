@@ -10,7 +10,7 @@ MW=$WORK/src/microwindows
 SRC=$WORK/src/esp32-nesemu
 ROMS=$WORK/src/nes-roms
 BUILD=$WORK/src/nes-build
-OUT=$REPO/build/images/linux/root
+OUT=${NES_OUT:-$REPO/build/images/linux/root}   # (NES_OUT: a private image's overlay)
 COMMIT=693e378
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 
@@ -35,7 +35,7 @@ OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
 CFLAGS="$OPT -flto -fno-pie -std=gnu99 -fgnu89-inline -fcommon -w -Dasm(x)=abort() -DNES_VISIBLE_HEIGHT=240 -DHOST_LITTLE_ENDIAN -DNES6502_JUMPTABLE $INC"
 export CFLAGS BUILD HERE
 mkdir -p "$BUILD" && cd "$BUILD"
-{ find "$N" -name '*.c'; ls "$HERE"/*.c "$REPO/programs/mc/mcw.c"; } |
+{ find "$N" -name '*.c'; ls "$HERE"/*.c "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.c"; } |
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/nofrendo.patch" ] && [ "$o" -nt "$HERE/rc6502.h" ] || rv32-cc $CFLAGS -c {} -o "$o"'
 # The GPU's library apart, a section a variable and each on 16 bytes (as linux/tdawn/build.sh
 # has it): a worker core makes the lists with it while this one emulates, and two cores must

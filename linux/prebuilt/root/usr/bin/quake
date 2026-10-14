@@ -3,4 +3,5 @@
 mkdir -p /persistence/quake /tmp/quake && cd /tmp/quake || exit 1
 ln -sfn /persistence/quake id1
 ln -sf /usr/share/quake-pak0.pak id1/pak0.pak
-exec quake.bin "$@"
+# (the player's name, the desktop's: docs/persist.md)
+exec quake.bin +name "${USER:-player}" "$@"

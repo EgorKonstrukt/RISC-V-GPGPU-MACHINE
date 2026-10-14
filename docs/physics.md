@@ -47,6 +47,11 @@ one.
   body. The points and the normal are the same bits in both, because the pair is always
   worked out with the lower-numbered body first.
 - **The grid** is cells of 2 m with room for 39 bodies each.
+- **What a look asks of every body round one** (`struct body_near`, two texels in each
+  buffer): its place, its reach and whether it moves fast enough to wake a body, left by its
+  owner with the state (`phys_nears()` for a state the program wrote itself).
+- **Whether it sleeps** is the state's `quiet`: the substeps it has been still, up to
+  `PHYS_SLEEP_AFTER` ("Bodies that sleep", below).
 
 ## A substep
 
@@ -68,8 +73,11 @@ every body's cell number and keeps the bodies of its own cells. That is a counti
 as a gather. A radix sort is three stages (histogram, prefix, scatter).
 
 A share begins substep p when every share has published p-1: it reads the others' counters
-and spins until they are there (a worker's `pause` is a sleep on its job word). One pass of
-waiting, and no core is the conductor.
+and ends its pass until they are there. One pass of waiting, and no core is the conductor.
+Since 14 October 2026 that holds for a substep with a look and for the shares of the grid and
+the pictures when they make one; the substep after a look waits only for the shares of the
+bodies its own have contacts with (unless one of its bodies sleeps), and a share of the grid
+with nothing to make waits for none ("Waiting for fewer", below).
 
 ## What a body does about its contacts, and why
 
@@ -102,6 +110,13 @@ Tried and not kept:
   the still wall's fastest brick at 3 mm a second where it was 2.
 - **One job a substep a worker.** Giving 255 jobs out and waiting for them is some six passes
   of core 0; the workers have one job each for as long as the boxes move.
+
+- **A body that has been still for a third of a second sleeps** (`quiet`): under 5 cm a
+  second and 0.1 radians a second for 20 substeps, its velocity is made nothing and it is
+  left where it is, its state copied on, until a body faster than 20 cm a second (or turning
+  faster than a radian a second, or held) comes within its reach. Its neighbours take it as
+  they take any body. Taken by a neighbour to weigh all there is, a brick the heavy box
+  pressed between sleeping ones went 42 cm into the floor, twice as deep as without sleep.
 
 What it is not: a solver that converges. A load takes a substep a layer to arrive, so a tall
 stack sinks a few millimetres before it holds, and a body resting on another does not press
@@ -284,9 +299,10 @@ points (more, for the keeping). Still there: the workers spin for the other shar
 counters (5% of their instructions with seven, most of them with 255).
 
 More sums a change must leave, `PHYS_WORKERS=0`: `PHYS_SCENE=4 PHYS_BODIES=13 PHYS_STEPS=300`
-`e373ce02`, `PHYS_SCENE=3 PHYS_BODIES=150 PHYS_STEPS=90` `a1b597fa`, `PHYS_SCENE=2
-PHYS_STEPS=60` `d15836d6`, the still wall `3a16b24c`; and `PHYS_QSUM=1` (with `PHYS_STEPS`)
-prints a sum of the last picture's quads, `bc7f3663` for the wall.
+`3d3402c2`, `PHYS_SCENE=3 PHYS_BODIES=150 PHYS_STEPS=90` `ed123738`, `PHYS_SCENE=2
+PHYS_STEPS=60` `51fae5a5`, the still wall `52ecfca9`; and `PHYS_QSUM=1` (with `PHYS_STEPS`)
+prints a sum of the last picture's quads, `f53c3f0c` for the wall. (Before bodies slept, 14
+October 2026: `e373ce02`, `a1b597fa`, `d15836d6`, `3a16b24c`, `bc7f3663`.)
 
 ## Switches, for tests
 
@@ -310,11 +326,11 @@ turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHY
 
 - **Whoever computes it, the same.** `PHYS_SCENE=1 PHYS_STEPS=120 nxphys` prints one sum
   with `PHYS_WORKERS=0`, with `PHYS_WORKERS=7` and with `PHYS_WORKERS=0 PHYS_SHARES=255`
-  (`e444ba29` on `rvc_cpu`; the shader machine's differs, its divisions being the card's,
+  (`b28b77b4` on `rvc_cpu`, `e444ba29` before bodies slept; the shader machine's differs, its divisions being the card's,
   and is one sum there too).
 - **What stands, stands.** `PHYS_SCENE=1 PHYS_STILL=1 PHYS_STEPS=120 PHYS_PRINT=1 nxphys`:
   no brick more than a centimetre from where the first substep left it, none over a
-  millimetre a second. `PHYS_SCENE=4 PHYS_BODIES=13 PHYS_STEPS=300 nxphys`: highest 6900 mm.
+  millimetre a second. `PHYS_SCENE=4 PHYS_BODIES=13 PHYS_STEPS=300 nxphys`: highest 6899 mm.
 - **What is thrown, hits.** `PHYS_SCENE=1 PHYS_STEPS=180 PHYS_PRINT=1 nxphys`: several bricks
   over a metre out of the wall's plane (z), none in the floor (`deepest` a few millimetres).
 - **The workers afterwards.** `nxphys & sleep 5; killall -9 nxphys; sleep 1; mctest 15 2000`
@@ -334,13 +350,13 @@ turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHY
   PHYS_HANDS="10:1,-240,4760,0,1 50:1,-240,6500,3000,1 70:1,-240,6500,7000,0
   10:0,-4244,4760,0,1 60:0,-4244,-500,3000,1 100:0,-4244,-500,3000,0" nxphys` (hand 1 lifts a
   brick off the wall's top and throws it at 12 m a second; hand 0 takes another and presses
-  it at the floor) prints one sum with `PHYS_WORKERS=0`, 7 and 255 (`4ca48d6c` on `rvc_cpu`),
+  it at the floor) prints one sum with `PHYS_WORKERS=0`, 7 and 255 (`0af17cf6` on `rvc_cpu`; `4ca48d6c` before bodies slept),
   and for each hand a line: the held point at most 146 mm (hand 1, as it swings) and 79 mm
   from where the hand wanted it, from 20 substeps after it was taken; box 194 let go at
   12,428 mm/s where the hand went 12,000; and the deepest corner in the floor or a wall at
   any substep, 98 mm (the thrown brick meeting the room's wall; the pressed one alone 34).
   Hands that take nothing (`PHYS_HANDS="0:0,0,5000,11000,0 150:0,0,5000,11000,0"`) leave the
-  thrown wall's sum `e444ba29`, and its deepest corner at any substep is 206 mm: no hand
+  thrown wall's sum `b28b77b4`, and its deepest corner at any substep is 216 mm (206 before bodies slept): no hand
   put a box deeper than a throw does. On the shader machine the hands' run is one sum too
   (`28d9b9c1` with 255 workers, twice, and with 15), the same three lines, 0 pages.
 - **The pointer's throw, its click, the view.** With `PHYS_SAY=1 PHYS_STILL=1 nxphys` under
@@ -459,3 +475,88 @@ against 6.1, the towers 3.7 against 3.8, the heap 7.4 against 7.6; 191 is slower
 cores are not turning in place. All cores a substep, the morning's build against this one:
 the wall 6.35 million to 4.22, the towers 4.12 to 2.46, the heap 8.72 to 5.09; the start
 59.3 million to 38.9, 50.7 to 37.9, 50.3 to 39.9.
+
+### Waiting for fewer (14 October 2026)
+
+Of the wall's instructions on all cores (`python tools\game_par.py nxphys`, 255 workers, 120
+substeps from the first), a tenth was waiting: every share read all 255 other shares' counters
+at every substep, 2.25 instructions each, and a share with nothing to do ran some 150
+instructions before it ended its pass. The work itself is the same instructions whoever does it
+(277.8 million with `PHYS_WORKERS=0`). Now:
+
+- **The substep after a look waits only for the bodies it needs** (`partners_ready`): it
+  reads no body but those its own have contacts with, and every share began the look before
+  it once all had made the substep before that, so no buffer it writes is still being read.
+  The substep with a look, and a share's grid or picture, still wait for every share.
+- **A share of the grid and the pictures with neither to make waits for nobody**: it reads
+  nothing.
+- **A share that waits asks a short function** (`share_advance`); the substep is out of
+  line (`share_work`).
+- **A look reads one texel of each body in the cells round its own** (`struct body_near`:
+  the place and the reach, left with the state), where it read the state's key and the
+  pose's reach.
+
+All cores a substep, mean of three, the build before and this one (on `rvc_cpu`):
+
+| | all cores a substep | core 0 | passes for 120 substeps |
+|---|---|---|---|
+| the wall (`game_par.py`) | 2,443k to 2,321k (-5.0%) | 15.1k, the same | 463 to 455 |
+| the towers | 830k to 718k (-13.4%) | | 319 to 310 |
+| the heap | 3,607k to 3,447k (-4.4%) | | 588 to 579 |
+
+Waiting is now some 6% of the wall's instructions (the full look at the substep with a look
+3%, shares with nothing to do 2%, the jobs' loop 1%). The sums are the same: all those of
+"Checking it" and above with 0, 7 and 255 workers, `PHYS_ORDER=ahead`'s, the hands', the
+still wall's and `PHYS_QSUM=1`'s; `PHYS_COUNT=1` says 0 pages, and `RVC_RACES` 0 undone (its
+reads as they were are the counters). Not measured on the shader machine.
+
+- `PHYS_COUNT=1`'s sums of grids and substeps are counters of `mcwx.h` (`mcw_add`), and the
+  program's code is read with `mcw_touch_code()`.
+- Tried and not kept: every sixteenth share saying its sixteen have made a substep, read
+  where it is there and the sixteen otherwise (no fewer: the last shares finish in the
+  pass before everyone looks); the shares' jobs made by `mcw_call()` (each worker's call
+  record is 3 KB that the first core makes and touches: 83 more passes before the first
+  substep); a body's pushes summed as its points are made rather than in `settle_points`
+  (0.5% more: the floats leave their registers).
+- Asked for 223 workers the wall is 2,274k a substep and 448 passes, the towers 685k and 301,
+  the heap 3,395k and 586: it still asks for 255 (on the shader machine on 13 October the heap
+  was 4% slower with 223, the wall the same).
+
+### Bodies that sleep (14 October 2026, later)
+
+A body that has been still for 20 substeps sleeps ("What a body does about its contacts"):
+its substep is a copy of its state, its pose and its `body_near` into the next buffer, and a
+look round it for a fast body (`woken`: the cells of the pair's grid, the reach of each).
+Its share then waits for every share at the substep after a look too, since that look reads
+bodies that are not its pairs. Every sum changed (the state's last word is `quiet`, and the
+boxes go otherwise); each is one sum with 0, 7, 15, 63, 207 and 255 workers and with
+`PHYS_SHARES=255` ("Checking it" has them). `PHYS_COUNT=1` says 0 pages, and `RVC_RACES` 0
+undone on the wall, the towers and the heap.
+
+All cores a substep on `rvc_cpu`, 255 workers, from the first substep (the program before
+both changes of the day, then this one):
+
+| | all cores a substep | passes |
+|---|---|---|
+| the wall, 120 substeps (`game_par.py`) | 2,443k to 1,427k (-41.6%); core 0 15.1k to 15.6k | 463 to 453 |
+| the towers, 120 | 830k to 640k (-22.8%) | 319 to 311 |
+| the heap, 120 (it is falling) | 3,607k to 3,460k (-4.1%) | 588 to 578 |
+| the heap, 300 | 3,514k to 3,094k (-12.0%) | 1,230 to 1,191 |
+
+The heap never quite rests: after 300 substeps 217 of its 400 boxes sleep, and the rest creep
+at a few centimetres a second, which is the solver's (it does not converge). What is thrown
+still hits: 180 substeps of the wall leave 7 bricks over a metre out of its plane (10 before),
+none in the floor, and its deepest corner at any substep is 216 mm (206); the still wall has
+no brick moving. Held frames of the three scenes before and after, by `rvc_harness --cpu
+--warp`, look alike but for where the loose boxes lie.
+
+Tried and not kept:
+
+- **A sleeping body taken by its neighbours to weigh all there is** (they undo all of a
+  contact with it): the bricks the heavy box pressed between sleeping ones went 42 cm into
+  the floor, the wall's instructions 150.0 million where they are 171.2.
+- **Twenty substeps made ten**: the wall 146.4 million, a tower's top a millimetre lower.
+- **A pair's contact worked out by one body of it**: the other would have it a substep
+  later. The pairs that are worked out again are those with a fast body (two slow ones keep
+  their contact seven looks of eight), and for those a substep late is the heavy box 23 cm
+  further into what it hits. Not made.

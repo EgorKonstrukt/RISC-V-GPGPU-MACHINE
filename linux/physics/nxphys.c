@@ -9,7 +9,7 @@
 #include <string.h>
 #include <GLES/segl.h>
 #include "ui.h"
-#include "mcw.h"
+#include "mcwx.h"
 #include "physics.h"
 
 #define MAX_BODIES 2048
@@ -21,8 +21,10 @@
 #define COLOURS 16
 
 /* A share's own two texels: the substep it is to make next, the picture it last made, what had
- * no room, and (PHYS_COUNT) the instructions of its grids, its substeps with a look and without. */
-struct share { volatile uint32_t phase, shown; uint32_t trouble, pad; uint32_t spent[3], most; };
+ * no room, and (PHYS_COUNT) its dearest substep without a look. */
+struct share { volatile uint32_t phase, shown; uint32_t trouble, pad; uint32_t most, pad2[3]; };
+/* PHYS_COUNT's counters (mcwx.h): the instructions of all grids, substeps with a look and without */
+enum { COUNT_GRID, COUNT_LOOK, COUNT_PLAIN };
 
 /* Core 0's: the workers only read it. */
 static struct {
@@ -84,26 +86,39 @@ behind(int at, int n, uint32_t phase)
 	return at;
 }
 
-/* What share s can do now, done, once every share has made the substep before (`seen` is how
- * far that was found so, the number of shares when it is): its part of the picture asked for,
- * or its next substep. A share of the grid and the pictures has no bodies. */
+/* Whether the shares of every body share s's bodies have a contact with have made the substep
+ * before `phase`: a substep without a look reads no other body. */
 static int
-share_advance(int s, int *seen)
+partners_ready(int s, uint32_t phase)
+{
+	const struct share *shares = sim.shares;
+	uint32_t n = (uint32_t)sim.nbody, m, pairs;
+	int i;
+
+	for (i = s; i < sim.w.bodies; i += (int)n) {
+		const struct manifold *list = &sim.w.manifolds[i * PHYS_MANIFOLDS];
+
+		for (pairs = sim.w.info[i].manifolds, m = 0; m < pairs; m++)
+			if (shares[list[m].partner % n].phase < phase)
+				return 0;
+	}
+	return 1;
+}
+
+/* Share s's part of the picture asked for, or its next substep, now that it may. (Out of line:
+ * a share that waits only asks share_advance(), and that is short.) */
+static __attribute__((noinline)) int
+share_work(int s, int *seen, uint32_t phase, int wanted, uint32_t show)
 {
 	struct share *st = &sim.shares[s];
-	uint32_t phase = st->phase, show = sim.show, kind = phase % PHYS_EVERY;
-	int from = (int)((sim.base + phase) % PHYS_BUFFERS), trouble = 0, n = sim.nshares, bodied = s < sim.nbody, serves = !sim.nservice || !bodied;
-	int wanted = serves && st->shown != show && phase >= sim.show_step;
+	uint32_t kind = phase % PHYS_EVERY;
+	int from = (int)((sim.base + phase) % PHYS_BUFFERS), trouble = 0, bodied = s < sim.nbody, serves = !sim.nservice || !bodied;
 	/* (a look's number is that of the pair of substeps it is for. Every PHYS_EVERY-th substep
 	 * looks for contacts first; or, looking ahead, the substep before does when it has said
 	 * its boxes are made: the longest look then holds no share up. docs/physics.md) */
 	int turn = (int)((sim.base + phase) / PHYS_EVERY) + 1, ahead = sim.ahead;
 	uint32_t began = 0, took = 0;
 
-	if (!wanted && phase >= sim.limit)
-		return 0;
-	if (*seen < n && (*seen = behind(*seen, n, phase)) < n)
-		return 0;
 	if (wanted) {
 		/* (the bodies are all at this substep, and none goes on until this share does) */
 		show_share(s, from, (int)(show & 1));
@@ -116,10 +131,10 @@ share_advance(int s, int *seen)
 		began = cycles();
 	/* (looking ahead, the first substep of all has its look first too: there was none before it) */
 	if (bodied)
-		trouble = phys_step(&sim.w, s, sim.nbody, from, (ahead ? phase == 0 : kind == 0) ? turn : 0);
+		trouble = phys_step(&sim.w, s, sim.nbody, from, (ahead ? phase == 0 : kind == 0) ? turn : 0, turn);
 	if (sim.count) {
 		took = cycles() - began;
-		st->spent[kind == 0 && !ahead ? 1 : 2] += took;
+		mcw_add(kind == 0 && !ahead ? COUNT_LOOK : COUNT_PLAIN, took);
 		if ((kind || ahead) && took > st->most)
 			st->most = took;
 		began = cycles();
@@ -128,7 +143,7 @@ share_advance(int s, int *seen)
 	if (kind == (ahead ? 0 : PHYS_EVERY - 1) && serves)
 		trouble += phys_grid(&sim.w, s, from, ahead ? turn + 1 : (int)((sim.base + phase + 1) / PHYS_EVERY) + 1);
 	if (sim.count) {
-		st->spent[0] += cycles() - began;
+		mcw_add(COUNT_GRID, cycles() - began);
 		took += cycles() - began;
 	}
 	*seen = 0;
@@ -139,7 +154,7 @@ share_advance(int s, int *seen)
 			began = cycles();
 		trouble += phys_look(&sim.w, s, sim.nbody, from, (int)((sim.base + phase + 1) / PHYS_EVERY) + 1);
 		if (sim.count) {
-			st->spent[1] += cycles() - began;
+			mcw_add(COUNT_LOOK, cycles() - began);
 			took += cycles() - began;
 		}
 	}
@@ -148,6 +163,43 @@ share_advance(int s, int *seen)
 	if (trouble)
 		st->trouble += (uint32_t)trouble;
 	return 1;
+}
+
+/* Whether a body of share s sleeps at `phase`: it looks round itself for fast bodies, and
+ * needs every share to have made the substep before. */
+static int
+share_sleeps(int s, uint32_t phase)
+{
+	const struct body_state *st = sim.w.states[(sim.base + phase) % PHYS_BUFFERS];
+	int i;
+
+	for (i = s; i < sim.w.bodies; i += sim.nbody)
+		if (st[i].quiet >= PHYS_SLEEP_AFTER)
+			return 1;
+	return 0;
+}
+
+/* What share s can do now, done, once every share has made the substep before (`seen` is how
+ * far that was found so, the number of shares when it is): its part of the picture asked for,
+ * or its next substep. A share of the grid and the pictures has no bodies. */
+static inline int
+share_advance(int s, int *seen)
+{
+	uint32_t phase = sim.shares[s].phase, show = sim.show;
+	int n = sim.nshares, serves = !sim.nservice || s >= sim.nbody;
+	int wanted = serves && sim.shares[s].shown != show && phase >= sim.show_step;
+
+	if (!wanted && phase >= sim.limit)
+		return 0;
+	if (phase % PHYS_EVERY == 1 && !sim.ahead && !wanted && !serves && !share_sleeps(s, phase)) {
+		/* (the substep after a look, which every share began once all had made the one before) */
+		if (!partners_ready(s, phase))
+			return 0;
+	} else if (sim.nservice && serves && !wanted && phase % PHYS_EVERY != PHYS_EVERY - 1 && !sim.ahead) {
+		/* (a share of the grid and the pictures with neither to make reads nothing) */
+	} else if (*seen < n && (*seen = behind(*seen, n, phase)) < n)
+		return 0;
+	return share_work(s, seen, phase, wanted, show);
 }
 
 /* A worker's job: its share, for as long as the boxes move. (Run by core 0, it does nothing:
@@ -326,6 +378,8 @@ bodies_there(int n)
 		return;
 	for (k = 0; k < PHYS_BUFFERS; k++)
 		there(&sim.w.poses[k][so_far], (unsigned)(n - so_far) * sizeof(struct body_pose));
+	for (k = 0; k < PHYS_BUFFERS; k++)
+		there(&sim.w.nears[k][so_far], (unsigned)(n - so_far) * sizeof(struct body_near));
 	for (k = 1; k < PHYS_BUFFERS; k++)
 		there(&sim.w.states[k][so_far], (unsigned)(n - so_far) * sizeof(struct body_state));
 	there(&sim.w.info[so_far], (unsigned)(n - so_far) * sizeof(struct body_info));
@@ -420,7 +474,8 @@ set_shares(int n)
 	/* (a body's key names its cell's share: other shares, other keys) */
 	for (i = 0; i < sim.w.bodies; i++)
 		sim.w.states[buffer][i].key = phys_key(&sim.w, sim.w.states[buffer][i].pos);
-	/* (and the grid the first look needs: the shares make every one after) */
+	/* (and what the first look needs: the shares make every one after) */
+	phys_nears(&sim.w, buffer);
 	phys_grid_all(&sim.w, buffer, (int)(sim.base / PHYS_EVERY) + 1);
 }
 
@@ -549,14 +604,14 @@ take_workers(void)
 
 	mcw_close();
 	workers = wanted > 0 ? mcw_open(wanted) : 0;
+	if (sim.count)
+		mcw_counters();
 	if (workers) {
 		extern char __executable_start[], etext[];
-		const volatile char *code;
 
 		mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 		/* and the program's code: a page of it that no core has run yet stops every worker that comes to it */
-		for (code = __executable_start; code < etext; code += 4096)
-			(void)*code;
+		mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
 	}
 	/* (a share a worker, and with few of them one for this core, which would only wait:
 	 * with many, every share waiting for this core's as well costs more passes than it saves) */
@@ -1415,9 +1470,9 @@ say_done(unsigned took, int print)
 	if (sim.count) {
 		uint32_t spent[3] = {0, 0, 0}, most = 0, looks = (sim.limit + PHYS_EVERY - 1) / PHYS_EVERY, plain = sim.limit - looks;
 
-		for (s = 0; s < sim.nshares; s++)
-			for (k = 0; k < 3; k++)
-				spent[k] += sim.shares[s].spent[k];
+		mcw_counters_settle();
+		for (k = 0; k < 3; k++)
+			spent[k] = mcw_get(k);
 		for (s = 0; s < sim.nshares; s++)
 			if (sim.shares[s].most > most)
 				most = sim.shares[s].most;
@@ -1509,6 +1564,7 @@ main(void)
 	for (k = 0; k < PHYS_BUFFERS; k++) {
 		sim.w.states[k] = mcw_alloc(MAX_BODIES * sizeof(struct body_state));
 		sim.w.poses[k] = mcw_alloc(MAX_BODIES * sizeof(struct body_pose));
+		sim.w.nears[k] = mcw_alloc(MAX_BODIES * sizeof(struct body_near));
 	}
 	sim.w.shapes = mcw_alloc(MAX_BODIES * sizeof(struct body_shape));
 	sim.w.info = mcw_alloc(MAX_BODIES * sizeof(struct body_info));
@@ -1520,7 +1576,7 @@ main(void)
 	sim.quads[0] = seglMemory((unsigned)total_quads * 64);
 	sim.quads[1] = seglMemory((unsigned)total_quads * 64);
 	table = seglMemory(COLOURS * SHADES * 4);
-	if (!sim.w.states[0] || !sim.w.states[1] || !sim.w.states[2] || !sim.w.poses[0] || !sim.w.poses[1] || !sim.w.poses[2] || !sim.w.shapes || !sim.w.info || !sim.w.manifolds ||
+	if (!sim.w.states[0] || !sim.w.states[1] || !sim.w.states[2] || !sim.w.poses[0] || !sim.w.poses[1] || !sim.w.poses[2] || !sim.w.nears[0] || !sim.w.nears[1] || !sim.w.nears[2] || !sim.w.shapes || !sim.w.info || !sim.w.manifolds ||
 	    !sim.w.grids[0] || !sim.w.grids[1] || !sim.shares || !sim.colours ||
 	    !sim.quads[0] || !sim.quads[1] || !table || seglKeep(1, total_quads) < 0) {
 		fprintf(stderr, "nxphys: no memory\n");

@@ -172,6 +172,12 @@ static __attribute__((noinline)) void rest(void) {
         if (ioctl(gpu_fd, SEGL_REST, 0) == 0) return;
         none = 1;
     }
+    // (a worker core's pause is a sleep until its job changes, which a job that draws frame after
+    // frame never does: off the first core's stack the pass is ended instead)
+    if ((uintptr_t)&here - first_stack + 0x400000u >= 0x800000u) {
+        __asm__ volatile(".word 0x0000100f" ::: "memory");   // fence.i
+        return;
+    }
     next_frame();
 }
 
@@ -1006,6 +1012,59 @@ static __attribute__((noinline)) void sprite_command(const GLfixed* box, const i
     vertex_top += 64;
 }
 
+// seglSprite for many (segl.h): the same commands and vertices, with the state kept in registers.
+void seglSprites(const SEGLsprite* s, int count) {
+    if (!gpu || count <= 0) return;
+    const uint32_t vertex = VERTEX_CLIP | VERTEX_MODELVIEW | VERTEX_COMPACT | VERTEX_QUADS | NUM_FORMAT;
+    uint32_t block = matrices_dirty || !blocks ? matrix_block() : GPU_PHYS + set_at + UNIFORMS_IN + 128 * (blocks - 1);
+    uint32_t top = vertex_top, mesh = mesh_vertices, made = commands, end = set_at + SET_SIZE;
+    uint32_t *first = (uint32_t*)(gpu + set_at), *draw = last_draw;
+    int joins = draw && draw == first + 16 * (made - 1) && last_state[0] == vertex && last_state[2] == block &&
+                last_state[5] == (uint32_t)key_index;
+    uint32_t fragment_was = last_state[1], address_was = last_state[3], colour_was = last_state[4], name_was = ~0u;
+    uint32_t base = 0, address = 0, width = 0, height = 0;
+    int any = 0;
+    for (; count > 0; count--, s++) {
+        if (top + 64 > end || mesh + 6 > MAX_MESH) break;   // (no sprite fits after this one)
+        if (s->name != name_was) {
+            const texture* x = &textures[s->name < MAX_TEXTURES ? s->name : 0];
+            base = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) | 5u << 16;
+            address = x->address, width = x->width, height = x->height, name_was = s->name;
+        }
+        uint32_t fragment = base | (s->keyed ? FRAGMENT_KEYED : 0);
+        if (joins && fragment == fragment_was && address == address_was && s->colour == colour_was) {
+            draw[2] += 6;
+            mesh += 6;
+        } else {
+            if (made == MAX_COMMANDS) continue;   // (as command() fails: this one is left out)
+            uint32_t* c = first + 16 * made++;
+            c[0] = CMD_DRAW;
+            c[1] = GPU_PHYS + top;
+            c[2] = 6;
+            c[3] = mesh;
+            c[4] = vertex;
+            c[5] = fragment;
+            c[6] = block;
+            c[7] = GPU_PHYS + address;
+            c[8] = width;
+            c[9] = height;
+            c[10] = (uint32_t)key_index;
+            c[11] = s->colour;
+            mesh += 6;
+            draw = c, joins = 1, any = 1;
+            fragment_was = fragment, address_was = address, colour_was = s->colour;
+        }
+        sprite_corners((uint32_t*)(gpu + top), s->box, s->texels);
+        top += 64;
+    }
+    vertex_top = top, mesh_vertices = mesh, commands = made, last_draw = draw;
+    if (any) {
+        last_state[0] = vertex, last_state[1] = fragment_was, last_state[2] = block;
+        last_state[3] = address_was, last_state[4] = colour_was, last_state[5] = (uint32_t)key_index;
+        passes_used |= 1u << 5;
+    }
+}
+
 // Sprites a program writes itself (segl.h): the room for them, and the command for those written.
 unsigned int* seglSpriteSpace(GLsizei* room) {
     uint32_t fit = gpu ? (set_at + SET_SIZE - vertex_top) / 64 : 0, mesh = (MAX_MESH - mesh_vertices) / 6;
@@ -1013,6 +1072,28 @@ unsigned int* seglSpriteSpace(GLsizei* room) {
     return gpu ? (unsigned int*)(gpu + vertex_top) : 0;
 }
 unsigned int seglNumber(GLfixed value) { return bits_of(FROM_FIXED(value)); }
+// Sprites whose vertices (what seglSpriteSpace's room holds) lie elsewhere in GPU memory, made
+// there by another core: a command of their own, as seglSpritesUsed's.
+void seglSpritesAt(const void* vertices, GLsizei quads, GLuint name, unsigned colour, int keyed) {
+    const texture* x = &textures[name < MAX_TEXTURES ? name : 0];
+    if (!gpu || quads <= 0) return;
+    uint32_t block = matrices_dirty || !blocks ? matrix_block() : GPU_PHYS + set_at + UNIFORMS_IN + 128 * (blocks - 1);
+    uint32_t* c = command(CMD_DRAW, 6 * (uint32_t)quads);
+    if (!c) return;
+    c[1] = GPU_PHYS + (uint32_t)((const uint8_t*)vertices - gpu);
+    c[2] = 6 * (uint32_t)quads;
+    c[4] = VERTEX_CLIP | VERTEX_MODELVIEW | VERTEX_COMPACT | VERTEX_QUADS | NUM_FORMAT;
+    c[5] = (x->indexed == 2 ? 3u : x->indexed == 3 ? 5u : (x->indexed == 4 ? 6u : x->indexed ? FRAGMENT_INDEXED : FRAGMENT_TEXTURE) | x->smooth) |
+           (keyed ? FRAGMENT_KEYED : 0) | 5u << 16;
+    c[6] = block;
+    c[7] = GPU_PHYS + x->address;
+    c[8] = x->width;
+    c[9] = x->height;
+    c[10] = key_index;
+    c[11] = colour;
+    last_draw = 0;   // (nothing joins a command whose vertices are elsewhere)
+    passes_used |= 1u << 5;
+}
 void seglSpritesUsed(GLsizei quads, GLuint name, unsigned colour, int keyed) {
     static const GLfixed box[4];
     static const int texels[4];
@@ -1240,6 +1321,14 @@ void seglKeptLaid(int index, GLfixed u, GLfixed v, GLfixed du, GLfixed dv) {
         c[12] = bits_of(FROM_FIXED(u)), c[13] = bits_of(FROM_FIXED(v));
         c[14] = bits_of(FROM_FIXED(du)), c[15] = bits_of(FROM_FIXED(dv));
     }
+}
+// The same in the set being built only, which no list being drawn reads: for what a program sets
+// again every frame (the other set has it when it is next built).
+void seglKeptLaidHere(int index, GLfixed u, GLfixed v, GLfixed du, GLfixed dv) {
+    uint32_t* c = kept_command(set_at == SETS_AT ? 0 : 1, index);
+    c[5] |= FRAGMENT_LAID;
+    c[12] = bits_of(FROM_FIXED(u)), c[13] = bits_of(FROM_FIXED(v));
+    c[14] = bits_of(FROM_FIXED(du)), c[15] = bits_of(FROM_FIXED(dv));
 }
 void seglKeptMatrices(void) {
     if (!gpu || !kept) return;

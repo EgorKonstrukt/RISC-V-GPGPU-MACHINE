@@ -67,10 +67,6 @@ static GLfixed quad_xyz[12], quad_uv[8], fan_xyz[MAX_CORNERS * 3], fan_uv[MAX_CO
 /* For the figures doom_video.c prints: the first core's instructions in the view, and (in [3])
  * the things drawn; what making the list cost whoever made it, and how many things it drew. */
 unsigned doom_view[4];
-/* The views the first core has told the worker cores to make, and those each has made; and
- * that the program is leaving (doom_video.c). Here, where each has 16 bytes of its own. */
-volatile unsigned doom_view_wanted, doom_view_leave;
-volatile struct { unsigned views; } __attribute__((aligned(16))) doom_view_made[4];
 
 /* Memory a worker core writes: it begins and ends on 16 bytes that are nobody else's. */
 static void *
@@ -207,7 +203,8 @@ column_posts(byte *to, int height, const column_t *post)
  * next view. */
 enum { ASK_WALL, ASK_FLAT, ASK_SPRITE, ASK_SKY };
 #define ASKS 64
-static int asked[ASKS], asked_count, on_worker;
+static int asked[ASKS], asked_count;
+#define on_worker mcw_on_worker()	/* (a share's call may run on any core) */
 static int *wall_now, *flat_now;	/* texturetranslation and flattranslation as the view was told */
 
 static GLuint
@@ -349,7 +346,6 @@ asked_make(void)
 {
 	int i;
 
-	on_worker = 0;
 	for (i = 0; i < asked_count; i++) {
 		const int number = asked[i] & 0xffffff;
 
@@ -2477,13 +2473,21 @@ things_asked(void)
 }
 
 /* A worker core's pass ends until the GPU has drawn the list before this one: nothing the
- * list reads is written before (fence.i: a worker's pause would be its sleep). */
+ * list reads is written before (fence.i: a worker's pause would be its sleep). The library's
+ * word that says so is the first share's to clear, and the others wait for it (two cores
+ * storing to it in one pass is a race on the GPU): every kept command's change settles first. */
+static volatile unsigned settled_frame;
+
 static void
-drawn_wait(void)
+drawn_wait(int share)
 {
-	while (on_worker && *(const volatile unsigned *)((const char *)seglPalette() - 0x400 + 0x10))
-		__asm__ volatile(".word 0x0000100f");
-	seglSettle();
+	while (on_worker && (*(const volatile unsigned *)((const char *)seglPalette() - 0x400 + 0x10) ||
+			     (share && settled_frame != (unsigned)told.frame)))
+		mc_end_pass();
+	if (!share) {
+		seglSettle();
+		settled_frame = told.frame;
+	}
 }
 
 /*
@@ -2499,11 +2503,10 @@ doom_view_draw(int share)
 	int width, height, y, held;
 
 	__asm__ volatile("rdcycle %0" : "=r"(began));
-	on_worker = mcw_on_worker();
 	if (share) {
 		if (world_on) {
 			things_told(me);
-			drawn_wait();
+			drawn_wait(share);
 			world_things(me);
 		}
 		__asm__ volatile("rdcycle %0" : "=r"(now));
@@ -2532,7 +2535,7 @@ doom_view_draw(int share)
 			things_told(me);
 		sectors_told();
 		/* the level is there already: its matrices, what has changed, and the things */
-		drawn_wait();
+		drawn_wait(0);
 		seglKeptMatrices();
 		for (y = sector_group[numsectors]; y < sector_group[numsectors + 1]; y++) {
 			/* the sky's runs: its picture where sky() below would put it, by the pixel */

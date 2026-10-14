@@ -17,15 +17,20 @@
 
 /* A body as a substep leaves it: four texels. `key` is its cell, from bit 20 the cell's share
  * and PHYS_POSED when its body_pose is this state's; `held` is how many of its contact points
- * pushed it. */
+ * pushed it; `quiet` how many substeps it has been still, PHYS_SLEEP_AFTER when it sleeps. */
+#define PHYS_SLEEP_AFTER 20
 #define PHYS_POSED 0x80000000u
 #define PHYS_KEY_SHARE 0x7ff00000u
-struct body_state { float pos[3]; uint32_t key; float q[4]; float vel[3]; uint32_t held; float spin[3]; uint32_t pad; };
+struct body_state { float pos[3]; uint32_t key; float q[4]; float vel[3]; uint32_t held; float spin[3]; uint32_t quiet; };
 /* What every neighbour would work out from a state, left with it by the body's owner: its
  * axes, where it is taken to be a substep on and its axes there, how far round itself it
  * looks for others, that with its radius, and how large its numbers are. Eight texels, two
  * of them nothing: a neighbour is found by a shift. */
 struct body_pose { float r[9], next_at[3], next_r[9], margin, reach, about, pad[8]; };
+/* What a look asks of every body in the cells round one: where it is and how far round itself
+ * it looks, as body_pose has them, and whether it moves fast enough to wake a body it comes to.
+ * Two texels, left with the state. */
+struct body_near { float pos[3], reach; uint32_t moving, pad[3]; };
 /* What a body is, which nothing changes: two texels. */
 struct body_shape { float half[3], inv_mass, inv_inertia[3], radius; };
 /* How many pairs it has contacts with, whether a corner may have a push from the floor, and
@@ -50,6 +55,7 @@ struct phys_hold { int body; float at[3]; float to[3]; uint32_t pad; } __attribu
 struct phys {
 	struct body_state *states[PHYS_BUFFERS];	/* a substep reads one and writes the next, round and round */
 	struct body_pose *poses[PHYS_BUFFERS];	/* as the states */
+	struct body_near *nears[PHYS_BUFFERS];	/* as the states */
 	struct body_shape *shapes;
 	struct body_info *info;
 	struct manifold *manifolds;	/* PHYS_MANIFOLDS a body */
@@ -65,12 +71,13 @@ struct phys {
 
 /* A share's cells of the grid of what is where, for look number `turn` (a share of those
  * that make it); and for one share of the `shares` that have the bodies: a look for contacts
- * (its number, from 1), and a substep, with that look first when `looking` is its number.
- * Each returns what it had no room for. */
+ * (its number, from 1), and a substep, with that look first when `looking` is its number
+ * (`turn` the number of the pair of substeps). Each returns what it had no room for. */
 int phys_grid(const struct phys *w, int share, int from, int turn);
 void phys_grid_all(const struct phys *w, int from, int turn);	/* every share's grid, by one core */
+void phys_nears(const struct phys *w, int from);	/* every body's body_near, by one core */
 int phys_look(const struct phys *w, int share, int shares, int from, int turn);
-int phys_step(const struct phys *w, int share, int shares, int from, int looking);
+int phys_step(const struct phys *w, int share, int shares, int from, int looking, int turn);
 
 uint32_t phys_key(const struct phys *w, const float *pos);
 void phys_box(struct phys *w, int body, float hx, float hy, float hz, float density);

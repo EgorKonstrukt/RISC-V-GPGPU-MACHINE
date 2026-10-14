@@ -26,6 +26,11 @@ console has said TEXT. For samples fine enough, `--ticks 256 --pass-ms 0.0078`: 
 milliseconds must go down with its instructions, or the guest's clock runs four times as
 fast for each instruction and the kernel's timer is a quarter of the profile.
 
+`--count-from TEXT` prints every core's instructions from when the console said TEXT to the
+end (`COUNT from ...`), and `--until-times N` stops at the Nth `--until` after it:
+`tools\game_par.py` measures the games' frames with them (`docs/multicore.md`, "Every core's
+share of a game's frame").
+
 ## With the window: `rvc_harness --cpu`
 
 The same interpreter inside the harness, for using the machine by hand at that speed:

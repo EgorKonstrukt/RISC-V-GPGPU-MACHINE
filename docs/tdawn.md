@@ -289,6 +289,11 @@ Each run prints these figures (`tdstat:` lines, every five seconds):
     TDAWN_MESSAGE_GONE=redraw  a message that expires clears the page and has everything drawn again, as it was
     TDAWN_FRAMES_CORE=N  no more than N cores unpack shape files (6; 0: the game builds every frame)
     TDAWN_READY_DRAW=0  the game's own drawing unpacks its shapes itself
+    TDAWN_SPRITES=one   the scene's rectangles go to the GPU's library one call each (seglSprite), as before
+    TDAWN_CHECK_LIST=1  at the end, a sum of every scene's vertices and draw commands (the same both ways)
+    TDAWN_CHECK_SORT=1  the ground layer's pass made by a worker is made here too and compared (RALERT_CHECK_SORT)
+    TDAWN_THREAT=here   the houses' threat is added on this core, as before; TDAWN_CHECK_THREAT=1 sums it where read
+    TDAWN_DRAW=here     the objects are drawn by this core, not a frame behind by a worker (RALERT_DRAW)
 
 ## At two million instructions a second
 
@@ -569,6 +574,124 @@ Mission 10, drawing: 51 to 43 thousand instructions a frame (Red Alert's first S
 mission: 91 to 67 thousand, 16.4 to 17.8 frames a second). The state sums are the same and
 so is a held frame's picture but for the pointer, which is drawn by the clock.
 `TDAWN_SCENE=inline` is the way it was.
+
+## The workers on the second layer (14 October 2026)
+
+All of the game's worker cores are now taken through `programs/mc/mcwx.h` ("The second
+layer", `docs/multicore.md`), and any worker does any job: the scene's (`mcw_call`, asked with
+`mcw_ready` and joined), the files of frames, a unit's other path searches and the 32 that ask
+about cells (`mcw_try_call`, added to `mcwx` for this: on a worker with nothing to do, or not
+at all, so that a search or a file is never made on the first core by mistake). There are no
+fixed numbers of workers any more: 42 are opened and whichever is free takes the next job.
+Red Alert's movie shares a frame's rows with `mcw_for` and unpacks the next frame's pointers
+with `mcw_try_call` (`linux/ralert/workers.c`). With `TDAWN_MARK` (`RALERT_MARK`) the game
+counts what each kind of job ran in `mcwx`'s counters and says it before the second mark
+(`tdworkers:`): the jobs' own instructions are all but some 5% of what the workers ran, so the
+workers are not waiting in any number to speak of.
+
+New work on the workers, each exact (the state sums are the same):
+
+- **The ground layer's sort** (`LayerClass::Sort` in `layer.cpp`, both games): a worker makes
+  the pass from where the objects are while the first core draws the frame (`Map.Render`,
+  which moves nothing), into a list of its own, and `Sort()` takes that list. 3.6% of
+  mission 3's first core. `TDAWN_CHECK_SORT=1`: `1300 passes made by a worker core, 0 of them
+  wrong` in both games.
+- **The houses' threat** (`cell.cpp`, Tiberian Dawn): a unit that steps changes nine regions of
+  every enemy house; the first core only notes the region, the houses and the value, and at the
+  frame's end a worker adds them (sums: their order is no matter). Whoever reads threat
+  (`Cell_Threat`) settles first, and so does a long path search before its helpers begin; a
+  search on a worker reads threat as it is. 1.4% of mission 3's first core (`TDAWN_THREAT=here`
+  against it in one build). `TDAWN_CHECK_THREAT=1` sums every house's regions wherever they
+  are read: the same 3,974 reads and sum both ways.
+- **The scene's rectangles** go to the GPU's library in batches of 128 (`seglSprites`, added to
+  `programs/linux/gles.c`): the same commands and vertices as `seglSprite` one by one
+  (`TDAWN_CHECK_LIST=1`: the same sum of 1,333,424 words both ways), with the state kept in
+  registers. The scene's job is 20.0 to 13.6 thousand instructions a frame in mission 3 and 42
+  to 28 in Red Alert's Allied mission: the workers', not the first core's.
+
+And on the first core: a target scan's cell is asked without asking again whether it is on
+the map, which the box was already kept to (`SHADEREMU_THREAT_AT` in `techno.cpp`): 1.2%.
+
+`python tools/game_par.py`, three runs each, before and after (the same shared root):
+
+| | Core 0 a frame | All cores | Factor | Guest seconds |
+|---|---|---|---|---|
+| Mission 3 | 84.1k to 82.2k | 122.4k to 121.1k | 1.45 to 1.47 | 22.89 to 22.35 |
+| Red Alert, Soviet | 52.8k to 52.5k | 85.1k to 80.1k | 1.61 to 1.53 | 14.38 to 14.29 |
+| Red Alert, Allied | 80.7k to 79.2k | 133.9k to 122.8k | 1.66 to 1.55 | 21.92 to 21.50 |
+
+The workers' jobs a frame after (`tdworkers:`): mission 3 the scene 13.6k, frames 9.0k, path
+searches 7.4k, cells 3.5k; Red Alert the scene 13.3k and 28.1k, frames 13.2k and 13.6k. The
+factor falls in Red Alert because the scene costs the workers less, not because they do less.
+
+What was tried and not kept: a scan's box read whole first, to pass over rings with nobody in
+them (2.5% slower: most scans end at a quarter of their range); the scene's vertices written by
+the game itself into the list (no better than the batches); the compiler's counts made again
+from the missions (the old counts were better by a half to one percent, though they miss the
+functions changed since). Why the first core is not half: its frame is the logic (`docs/tdawn.md`,
+"why a frame is not half"), every object's turn reading what the turn before it stored, and
+what a worker can make exactly is what reads a state that holds still for two passes: the
+drawing's time (the sort) or the next frame (the threat). A target scan or a unit's search
+made ahead would need every store that could change its answer told of, which is the next step.
+
+## The objects a frame behind
+
+The objects' part of a frame's scene is drawn by a worker while the first core makes the next
+frame's logic (`Behind_Note` and `Behind_Draw` in both games' `gl.cpp`, `host_scene_behind` in
+`host.c`). The first core, where `Render` was, does what a frame's drawing does to the game:
+for each object of the layers it decides as before whether it is passed over, shown from its
+kept rectangles or drawn anew; one drawn anew in the view is copied as it is (its whole object,
+by its kind's size), and the first core does to the live object what `Render(true)` would have
+(its mark, the animation's, a door's redraw flag, a line's frame count in Tiberian Dawn, where
+the object drew nothing). The cells and the shroud stay the first core's. After `Map.Render`
+(the sidebar drawn), the worker draws the copies, notes the objects' rectangles and makes the
+scene's commands; the frame is shown when it has. The next frame joins it before its input.
+A frame is shown a frame later than it was; the held pictures are the same.
+
+What the worker stores outside its own memory is in texels of its own (`drawing` in `gl.cpp`,
+`own` and `scene_noted` in `host.c`), a frame's shape it needs that no core has made is asked
+for by the first core at the join (`frame_seen`), it waits for the GPU by ending passes, and it
+never allocates: Red Alert's turned shapes have their buffer kept (`turned()`), and a type's
+dimensions are not made on a worker (`techno.cpp`). `TDAWN_DRAW=here` (`RALERT_DRAW=here`) is
+the way it was; the `tdworkers:` line says the worker's part ("objects behind").
+
+`python tools/game_par.py`, three runs each, the same build with `TDAWN_DRAW=here`/`RALERT_DRAW=here` and without:
+
+| | Core 0 a frame | All cores | Factor | Guest seconds |
+|---|---|---|---|---|
+| Mission 3 | 83.1k to 79.6k | 121.5k to 123.9k | 1.46 to 1.56 | 22.60 to 21.70 |
+| Red Alert, Soviet | 53.1k to 51.9k | 80.4k to 77.7k | 1.52 to 1.50 | 14.46 to 14.14 |
+| Red Alert, Allied | 80.9k to 76.5k | 124.4k to 127.9k | 1.54 to 1.67 | 21.96 to 20.98 |
+
+Against the binaries before 14 October 2026 (84.1k, 52.8k and 80.7k): 5.4%, 1.7% and 5.2% of
+the first core. It is not the half: copying an object costs about what drawing it did (a
+word copy loop was slower than `memcpy`), and the walk through the layers that says what to
+copy is the first core's (the decisions need its marks); what went is the drawing of the
+objects in the view. Checked: the state sums at frames 300 and 1,300, `TDAWN_CHECK_PATHS=1`,
+`RVC_RACES` 0 undone in the three workloads, the movie check, and held frames of mission 3
+(300, 600, 750) and the Allied mission (262, 500, 800) by `rvc_harness --cpu --warp` before
+and after: the same pixels but for Red Alert's palette cycling by the clock, which two runs
+of one build show too.
+
+## Target scans kept, tried
+
+A target scan's answer was kept with everything it read, as Doom's sight checks are
+(`docs/doom.md`): the scanner's place, house, allies, range and cell, every object of the cells
+it asked about as it was (place, house, allies, limbo, down, discovered, owned, cloak, kind),
+and a generation for each block of 8 x 8 cells its box covered, bumped at every store to a
+cell's occupiers. A later scan of the same object and method used the answer when all of that
+was as it had been; `TDAWN_CHECK_SCANS=1` made each such scan again: 742 answers used in mission
+3's 1,300 frames, 0 of them wrong, and the state sums the same. It was not kept: a quarter of
+the area scans could use their answer (mission 3's units are rarely all still), and noting what
+a scan read cost more than the answers saved, 83.8 thousand instructions of the first core a
+frame against 81.1 without it in one build. A worker making the scans ahead would have raised
+the share and not the cost of the notes and the checks. What a profile of scans said (1,300
+frames): area scans 77% of their instructions (soldiers 2,247 at 2.1 thousand each, buildings
+744 at 4.5 thousand), scans of what is in range the rest; none of the whole map in mission 3.
+
+Kept instead, on the first core: `Evaluate_Object` measures the distance after the tests that
+only say no (`techno.cpp`), which most objects of a scan fail first: 79.6 to 79.2 thousand
+instructions a frame, the state sums the same.
 
 ## The start
 

@@ -239,6 +239,49 @@ Tried and not kept, or not done:
   same tic, so the places are not known a pass earlier.
 - Not looked at by hand: the menu, a saved game loaded, a window resized while workers draw.
 
+### Sight checks made ahead, and the second layer (14 October 2026)
+
+The view's shares are a round of `mcw_for_begin()` (`programs/mc/mcwx.h`, "The second
+layer"): a piece a worker, none on the first core, begun after a frame's drawing and taken
+(`mcw_for_ready()`, `mcw_for_wait()`) when all are made, where `view_loop` and its words were.
+A worker no longer stores to the library's "unsettled" word beside another: the first share
+clears it and the others wait for that (`drawn_wait`), and the one variable every share wrote
+(`on_worker`) is gone. `RVC_RACES` said 29,685 undone before; it says 0 now.
+
+A fifth piece of the round walks the sight checks of the tic after the next (`doom_ahead` in
+`doom_fast.c`). The first core lists, as it counts states down, the monsters whose state ends
+two tics on; the piece takes those whose next action is `A_Look` or `A_Chase` and would ask
+(as `p_enemy.c` decides it: in front, close enough to bite, free to shoot), and walks each
+against the player where his next two commands take him if nothing is in the way (from the
+demo, or as made; `P_MovePlayer`'s thrust, `P_XYMovement`'s steps and friction). A check
+finds its answer there when t1 and t2 and their eight numbers (places and heights) are the
+same and no floor or ceiling the walk went by has moved since (`moved_at`, by sector); a
+look behind a monster's back is kept too and saves `P_LookForPlayers` its angle. The worker
+reads things while the first core changes them; what is kept is what was walked, under the
+numbers it was walked for, and a level loaded makes every walk of the old one stale. 81% of
+the first demo's checks are answered so (15,800 of 19,400; under `RVC_RACES` 81% too); the
+rest are a player who hit a wall or a step.
+
+`python tools/game_par.py doom --runs 3` (`-timedemo demo1`, passes of 8,192):
+
+| | Core 0 a frame | All cores a frame | Factor | Guest seconds (passes) |
+|---|---|---|---|---|
+| before | 27.2k | 56.9k | 2.09 | 38.6 (16,715) |
+| now | 25.4k | 61.4k | 2.42 | 36.6 (16,200) |
+
+The workers' extra is the walks moved and those not used (about 5k a frame), and the team's
+waiting for its next round (a few hundred). `DOOM_AHEAD=0` leaves the checks to the first core.
+Checked: the state sums of the three demos as before, with and without `DOOM_PORT=rest` and
+under `RVC_RACES` (0 undone); `DOOM_VIEW=told DOOM_VIEW_CHECK=1` 0 of 10,500 views not as told;
+`DOOM_SUM`'s order-free sum at nine held tics of the three demos as before.
+
+Tried and not kept: a monster's next move checked against the lines ahead the same way
+(`P_CheckPosition`'s lines on the worker, its things on the first core): 27% of moves
+answered and no fewer instructions on the first core. Each share going through only the
+sectors with its own things: no fewer instructions in the order of the sectors' numbers, and
+in another order a held frame's thing turned another way. A call a share (`mcw_call`):
+2 thousand more of the first core's instructions a frame than the round.
+
 ## What the build changes
 
 The Microwindows tree is left as it is; `doom.sh` compiles a few files differently:

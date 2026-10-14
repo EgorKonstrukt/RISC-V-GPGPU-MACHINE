@@ -44,6 +44,7 @@ int SE_WorkerKept (int w);		/* what a worker kept is done by this core (0 the se
 void SE_WorkerRaise (int w);		/* that error, raised here */
 
 /* client_shaderemu.c: the client's game on a worker core, a frame ahead (qcommon.h has the rest) */
+#define SE_LISTS	3		/* the lists it writes frames into in turn (1 to 3): one being written, one taken, one drawn */
 extern unsigned se_client_jobs, se_client_cycles, se_client_passes;
 extern int se_client_list;		/* which of its two lists the frame the worker is at writes */
 void SE_ClientPoll (void);
@@ -58,6 +59,8 @@ void SE_SceneRecord (int which);
 void SE_SceneReplay (int which);
 void SE_SceneTouch (void (*touch) (void *, unsigned));
 void SE_SceneSum (int on);		/* what is drawn from here on is, or is not, of the client's game (QUAKE3_SUM) */
+void SE_SceneFlush (void);		/* the frame whose drawing is out on the scene's worker: waited for and shown */
+extern unsigned se_scene_jobs, se_scene_cycles, se_scene_passes;
 
 /* snd_shaderemu.c: the same of what that frame asks of the sound */
 void SE_SoundRecord (int which);

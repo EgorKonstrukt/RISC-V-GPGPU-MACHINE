@@ -919,11 +919,11 @@ instructions in the harness (8,192 in the world).
 
 | Program | A frame | What a worker has, or why none |
 |---|---|---|
-| Quake (e1m5) | 515 thousand instructions, 4.85 frames a second | the server: 13.3 frames a second (`docs/quake.md`) |
-| Red Alert | 220 to 240 thousand: logic 110 to 127, drawing 88 | its movies (three workers, given back when the movie ends), and in a mission the scene: the frame's rectangles are made GPU commands by a worker while the game goes on to its next frame's logic (`docs/tdawn.md`, "The scene on a worker core"). Drawing 91 to 67 thousand, 16.4 to 17.8 frames a second. The logic and the game's own drawing stay one core's: the drawing clears the marks the logic sets, object by object |
+| Quake (e1m5) | 515 thousand instructions, 4.85 frames a second | the server: 13.3 frames a second (`docs/quake.md`); since 14 and 15 October 2026 also the frame's drawing, by a worker that stays and draws a frame late, the 2D screen recorded by another, and the frame's jobs (particles, light under models, light maps, water) |
+| Red Alert | 220 to 240 thousand: logic 110 to 127, drawing 88 | its movies (three workers, given back when the movie ends), and in a mission the scene: the frame's rectangles are made GPU commands by a worker while the game goes on to its next frame's logic (`docs/tdawn.md`, "The scene on a worker core"). Drawing 91 to 67 thousand, 16.4 to 17.8 frames a second. The logic stays one core's; since 14 October 2026 the objects are drawn a frame behind by a worker from copies, the first core keeping the marks the drawing sets (`docs/tdawn.md`, "The objects a frame behind") |
 | Tiberian Dawn | 170 to 230 thousand: logic 100 to 145, drawing 45 to 70 | the scene, as Red Alert (the same file): drawing 51 to 43 thousand. Its start was looked at for a long job and had a slow one instead: a table sorted whole for every entry read from a file, 27% of the start, mended on one core (159 to 114 million instructions to a mission's first frame, Red Alert's too) |
-| Doom | a tic 33 to 39 thousand, 35 a second; a frame 45 to 55 thousand | none, and it is at the 35 frames a second the game draws at most as it is (its demo, drawn as fast as it goes: 31 to 52). The view is the one large piece (46 thousand a frame), and it walks the things the tics make and free: on a worker beside the next tic it would read a thing while its picture and frame number change, which the game ends on. The status bar's patches (6%) and the GPU's copy of the sectors (9.5%) are calls into the one state of the GPU's library, in among the view's own. Its start is 52 million instructions with the machine's own, and no piece of it over 5% |
-| ClassiCube | 60 thousand, 48 frames a second | the meshes of chunks that have none yet: a second copy of the builder on a worker, beside the first core's, and the world's height map and strata made by every core, rows each (`docs/classicube.md`). From the command to the whole world drawn: 38 s on four cores where it was 52 |
+| Doom | a tic 33 to 39 thousand, 35 a second; a frame 45 to 55 thousand | the view, made by up to four workers from what the first core tells them between tics (`docs/doom.md`, "The view on worker cores"), and since 14 October 2026 the sight checks of the tic after next, walked by a fifth (81% of the first demo's answered so). The tics stay the first core's. Its start is 52 million instructions with the machine's own, and no piece of it over 5% |
+| ClassiCube | 60 thousand, 48 frames a second | the meshes of chunks that have none yet: a second copy of the builder on a worker, beside the first core's, and the world's height map and strata made by every core, rows each (`docs/classicube.md`). From the command to the whole world drawn: 38 s on four cores where it was 52. Since 14 October 2026 also the rest of a frame's list (the sky, the map, the outline, the held block, the 2D screen), a worker's beside the next frame's ticks |
 | The window system | | none for its drawing: see below. One lent core for the pointer (`docs/nanox.md`, "The pointer on a core of its own") |
 
 Loading is where the long jobs are. Quake's start to a level's first frame is 160 million
@@ -983,6 +983,102 @@ are taken back; it sees that (`mcw_asked()`), closes them and shades on core 0, 
 workers again when some have been nobody's for five seconds. So a path tracer started
 beside the monitor has all 63. The harness adds them up from the rows it reads back anyway: its
 `STATS` and closing lines say what the workers ran and the rate of all cores together.
+
+## Every core's share of a game's frame
+
+`python tools\game_par.py GAME` (or `all`) runs a fixed workload of a game from power-on on
+`rvc_cpu` (no card, a few seconds each) and says its instructions a frame on core 0 and on
+all cores together; the factor is the second over the first. `rvc_cpu --count-from TEXT`
+takes every core's count when the console says TEXT and prints what each ran from there
+(`COUNT from ...`); `--until-times N` stops at the Nth `--until` after it. `--show` prints
+the command line, `--runs 3` takes the mean over three timings (`--salt`: the command typed
+after `: N;`), `--profile PC.LOG` samples core 0 every 256 instructions for
+`tools\pc_profile.py`, and `--calls FILE` is `RVC_CALLS`. On 14 October 2026, the mean of
+three runs (passes of 8,192):
+
+| Game | Workload | Frames | Core 0 a frame | All cores a frame | Factor | Workers that ran |
+|---|---|---|---|---|---|---|
+| Doom | `-timedemo demo1`, from its first rate line to the end | 4,574 | 27.2k | 56.9k | 2.09 | 4 |
+| Quake | `+timedemo demo1`, from the level's first frame | 969 | 68.8k | 99.9k | 1.45 | 9 |
+| Quake III | q3dm17, `addbot sarge 3`, `fixedtime 33`, put at 488 -968 378 at frame 100; frames 300 to 700 | 400 | 56.6k | 168.0k | 2.97 | 2 |
+| ClassiCube | seed 7, block physics off, walking and jumping into a hill; five 2 s windows from `steady` | 1,049 | 31.8k | 31.8k | 1.00 | 0 |
+| Tiberian Dawn | mission 3, seed 7, frames 301 to 1,200 | 900 | 84.1k | 122.4k | 1.45 | 24 |
+| Red Alert | Soviet mission, seed 7, frames 301 to 1,200 | 900 | 52.8k | 85.1k | 1.61 | 4 |
+| Red Alert | Allied mission, the same | 900 | 80.7k | 133.9k | 1.66 | 4 |
+| NES | Thwaite, `docs/nes.md`'s 1,000 frames, `NES_LIST=worker`; frames 100 to 1,000 | 900 | 24.6k | 31.0k | 1.26 | 2 |
+| nxphys | the wall, 120 substeps (a frame here is a substep) | 120 | 15.1k | 2,443k | 161 | 255 |
+
+Three timings agree within 0.5% but for Quake III (3%) and nxphys (1%). Quake III left to
+where it starts is two games: with the same build, one more word in the command line took
+core 0 from 36k to 59k a frame (the player and the bot elsewhere); put at one place it is
+steady. A worker that waits for its next job counts the instructions it waits in, so the
+factor depends on the pass: Doom's is 2.42 with passes of 256.
+
+Where core 0's instructions go in those windows (`--profile`, the program's symbols; LTO
+puts what is inlined under its caller):
+
+- **Doom**: the tic: `sight_walk` 16%, `P_CheckPosition` 14%, `P_RunThinkers` 10%,
+  `R_PointInSubsector` 6%, `P_LookForPlayers` 3%; the view's part is 5%. The kernel 6.5%.
+- **Quake**: the client: `RecursiveLightPoint` 7%, `CL_ParseUpdate` 6%, `CL_RelinkEntities`
+  5%, the GL calls into the list (`qglText`, `qglEntity`, `qglRect`, `qgpuReplay`) 12%,
+  `R_DrawAliasModel` 4%, particles 5%. The kernel 6%.
+- **Quake III**: the scene into the GPU's list: `scene_draw` 17%, `stage_moved` 7%,
+  `entity_matrix` 7%, `gpuDrawAt` and `gpuDrawRoom` 13.5%, `light_at` 6%; the server and the
+  client's game are on their workers already. The kernel 7.6%.
+- **ClassiCube**: no worker runs once the world is built: `BuildMeshIn` 11% (chunks meshed
+  on core 0 while walking), the selection outline 7%, `MapRenderer_Update` 6%, `Matrix_Mul`
+  5%, `DrawUnready` 4%, `SineFrom` 4%.
+- **Tiberian Dawn**: the logic: `InfantryClass::AI` 14%, `LogicClass::AI` 13%,
+  `Per_Cell_Process` 11%, `FootClass::Mark` 8%; `PowerClass::Draw_It` 11.5% (the sidebar).
+- **Red Alert** (Allied): `BuildingClass::AI` 13.5%, `LogicClass::AI` 12%, `InfantryClass::AI`
+  10%, the radar 8%, `TechnoClass::AI` 6%.
+- **NES**: the 6502's translated code 32%, `nes_renderframe` 7%, the interpreter 5%,
+  translating 4%. The kernel 7.5%.
+- **nxphys**: core 0 hands out the substeps and rests (`shaderemu_gpu_rest` 23.5%); the work
+  is the workers'. Its factor can only go down; what is left is the instructions.
+
+### After (15 October 2026)
+
+Every game was then given more work for its workers, through the second layer (each game's
+document has a section of 14 or 15 October 2026 saying what). All the games built from the one
+tree into one private image, `game_par.py all --runs 3 --image` it, the mean of three runs
+(the figure before each arrow is the table above's):
+
+| Game | Frames | Core 0 a frame | All cores a frame | Factor | Workers that ran | Guest seconds |
+|---|---|---|---|---|---|---|
+| Doom | 4,526 | 27.2k to 25.4k (-6.6%) | 56.9k to 61.4k (+7.9%) | 2.09 to 2.42 | 5 | 38.6 to 36.5 |
+| Quake | 969 | 68.8k to 29.3k (-57%) | 99.9k to 102.2k (+2.3%) | 1.45 to 3.49 | 13 | 20.1 to 10.6 |
+| Quake III | 400 | 56.6k to 18.4k (-67%) | 168.0k to 149.6k (-11%) | 2.97 to 8.12 | 3 | 5.7 |
+| ClassiCube | 2,132 | 31.8k to 11.0k (-65%) | 31.8k to 25.7k (-19%) | 1.00 to 2.33 | 15 | 10.0 (five 2 s windows) |
+| Tiberian Dawn | 900 | 84.1k to 79.2k (-5.8%) | 122.4k to 124.0k (+1.3%) | 1.45 to 1.56 | 42 | 22.9 to 21.6 |
+| Red Alert, Soviet | 900 | 52.8k to 51.9k (-1.7%) | 85.1k to 78.2k (-8.1%) | 1.61 to 1.51 | 10 | 14.4 to 14.2 |
+| Red Alert, Allied | 900 | 80.7k to 76.5k (-5.2%) | 133.9k to 129.5k (-3.3%) | 1.66 to 1.69 | 10 | 21.9 to 21.0 |
+| NES | 900 | 24.6k to 3.3k (-87%) | 31.0k to 31.0k | 1.26 to 9.31 | 3 | 6.7 to 5.9 |
+| nxphys | 120 | 15.1k to 15.4k | 2,443k to 1,427k (-42%) | 161 to 92.5 | 255 | 1.1 |
+
+ClassiCube's frames are those of its fixed ten seconds: 1,049 before. Three runs agree within
+0.2% but for Quake III (1.9%: the first run differs from the others, as above) and nxphys
+(1.0%). Each figure is within 1.3% of the one its game's own image gave just before (Quake III
+149.6k all cores where its image says 147.9k, Red Alert's Allied mission 129.5k where 127.9k);
+a Quake III built with `rest()` in `gles.c` as it was before (a worker waiting for the GPU
+sleeps, not ending its pass) is 154.9k, so it is not that.
+
+Checked on the same image, under `rvc_cpu`: `RVC_RACES` 0 undone in Doom's first demo, Quake's
+demo and e1m5, Quake III's 1,000 frames, Tiberian Dawn's and both Red Alert workloads, both
+1,000-frame NES runs, the wall and `mctest` 3 and 255 (both PASS); ClassiCube's walk has 3
+undone with the command as `game_par.py` types it and 0 with one word more, its own image the
+same: the frame's worker in `DrawUnready` and `Gfx_SetVertexFormat` and the first core in
+`Gfx_EndFrame` store to `draw` in one pass, between the 16th and 20th second. Doom's state
+sums of the three demos as its image's, told and with `DOOM_PORT=rest`, 0 views not as told;
+Quake's particle sums at 969 frames as its image's, e1m5's server sums the same `inline`,
+`late` and `wait`, `QUAKE_LIGHTPOINT=check` 0; Quake III's scene and list sums 572 of 572
+with `QUAKE3_SCENE=inline`; ClassiCube's 52 meshes as its image's, in order inline and as a
+set with workers, `CLASSICUBE_CHECK_KEPT` 0 wrong; Tiberian Dawn's and Red Alert's state at
+frames 300 and 1,300 as the shared image's (before), `TDAWN_CHECK_PATHS` 0 wrong, the movie 0
+of 156 frames different; the NES's sums of "Testing" with the emulation and lists on workers,
+on the first core and the lists there, and its 1,000-frame RAM sums, `NES_CELLS_CHECK` 0 of
+1,000; nxphys `b28b77b4` with 0, 7 and 255 workers and 255 shares on none, its four other
+sums, 0 pages brought for workers.
 
 ## In Unity
 
@@ -1157,3 +1253,5 @@ loop and was not measured again.)
     RVC_RACES=FILE     rvc_cpu: memory as the GPU has it, and where that mattered ("Races")
     RVC_CALLS=FILE     rvc_cpu: core 0's calls by their instructions ("Finding the work")
     RVC_COUNT_MERGE=0  rvc_cpu: no merge of the counters, as the world's machine
+    --count-from T     rvc_cpu: every core's instructions from when the console said T
+    --until-times N    rvc_cpu: stop at the Nth --until after that ("Every core's share")

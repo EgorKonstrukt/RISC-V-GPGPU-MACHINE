@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "shaderemu_sound.h"
-#include "mcw.h"
+#include "mcwx.h"
 
 extern uint8_t nes6502_getbyte(uint32_t address);
 
@@ -61,7 +61,10 @@ static const uint16_t dmc_periods[16] = { 428, 380, 340, 320, 286, 254, 226, 214
 
 int se_apu_due = 65;		/* the scanline the next quarter of a frame is at (nes.c asks) */
 static int quarter, five_step, sequence;
-static int on, worker, working, print, test;	/* working: the worker has a job out */
+static int on, worker, print, test;	/* worker: calls may go to workers (mcwx.h) */
+/* the call out: the long noise, or a recording (the first core's: 16 bytes of its own) */
+static struct { mcw_handle call; int pad[3]; } job __attribute__((aligned(16)));
+void se_apu_look(void);
 static int voices[CHANNELS];
 static uint32_t base;		/* CPU cycles an output sample, 16.16 */
 static uint32_t wave_at[4], triangle_at, noise_at[2];
@@ -155,6 +158,8 @@ show_noise(void)
 static void
 show(int c)
 {
+	if (!on)
+		return;		/* (no card: nothing to tell it; the channels are followed all the same) */
 	if (c <= P2)
 		show_pulse(c);
 	else if (c == TRI)
@@ -235,9 +240,9 @@ dmc_start(void)
 	memcpy(s->head, head, 8);
 	for (i = 0; i < bytes; i++)
 		s->source[i] = nes6502_getbyte(0x8000 | ((address + i) & 0x7fff));
-	if (worker && !working) {
-		mcw_post(worker, dmc_decode, (uint32_t)k, 0);
-		working = 1;
+	/* (on the worker that emulates it is decoded there and then) */
+	if (worker && !job.call && !mcw_on_worker()) {
+		job.call = mcw_call(dmc_decode, (uint32_t)k, 0);
 		dmc.waiting = k;
 	} else {
 		dmc_decode((uint32_t)k, 0);
@@ -310,15 +315,24 @@ step(void)
 		half_frame();
 	for (c = P1; c <= NOISE; c++)
 		show(c);
-	/* (asked while a job is out, also so that a worker stopped at a page is helped on) */
-	if (working && mcw_done(worker))
-		working = 0;
-	if (dmc.waiting >= 0 && !working) {
+	se_apu_look();
+	if (dmc.waiting >= 0 && !job.call) {
 		c = dmc.waiting;
 		dmc.waiting = -1;
 		dmc_play(c);
 	} else if (dmc.playing && --dmc.left <= 0)
 		dmc.playing = 0;
+}
+
+/* The call out joined when it is made (asked also so that a worker stopped at a page is
+ * helped on); by the first core only. */
+void
+se_apu_look(void)
+{
+	if (job.call && !mcw_on_worker() && mcw_ready(job.call)) {
+		mcw_join(job.call);
+		job.call = 0;
+	}
 }
 
 /* nes.c calls this when the picture's line has reached se_apu_due. */
@@ -445,9 +459,9 @@ noise_fill(uint32_t to, uint32_t brief)
 	return 0;
 }
 
-/* `a_worker`: the worker of the library's that is this file's to post to, or 0 for none. */
+/* `workers`: the program has workers to give calls to. */
 void
-se_apu_init(int a_worker)
+se_apu_init(int workers)
 {
 	static const uint8_t duty[4] = { 0x40, 0x60, 0x78, 0x9f };	/* a turn in eight parts, the first bit first */
 	const char *sound = getenv("NES_SOUND");
@@ -458,7 +472,7 @@ se_apu_init(int a_worker)
 	print = getenv("NES_APU_PRINT") != NULL;
 	test = getenv("NES_APU_TEST") != NULL;
 	slots = calloc(DMC_SLOTS, sizeof *slots);
-	worker = a_worker;
+	worker = workers;
 	if ((sound && !strcmp(sound, "0")) || snd_open())
 		goto none;
 	for (i = 0; i < 50 && !SND_RATE; i++)
@@ -484,10 +498,9 @@ se_apu_init(int a_worker)
 	noise_at[0] = noise_at[1] + 256;
 	noise_fill((uint32_t)(memory + 4 * WAVE + 32), 1);
 	/* 32,767 samples of the long noise: a worker's, while the cartridge starts */
-	if (worker) {
-		mcw_post(worker, noise_fill, (uint32_t)(memory + 4 * WAVE + 32 + 128), 0);
-		working = 1;
-	} else
+	if (worker)
+		job.call = mcw_call(noise_fill, (uint32_t)(memory + 4 * WAVE + 32 + 128), 0);
+	else
 		noise_fill((uint32_t)(memory + 4 * WAVE + 32 + 128), 0);
 	for (i = 0; i < DMC_SLOTS; i++) {
 		slots[i].samples = (uint8_t *)memory + 4 * WAVE * 2 + 64 + 256 + (NOISE_LONG + 1) * 2 + i * 32768;

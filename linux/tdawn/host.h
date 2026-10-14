@@ -90,13 +90,13 @@ host_frame_spans(const struct host_frame *r)
 void host_frames_ahead(const void *file, int frame);
 /* What was put off for the scene's core is done by the time this returns (it looks at shapes). */
 void host_frames_settle(void);
-/* A unit's path searches on other cores: how many can be made now, one begun on core k (1 up), waited for. */
+/* A unit's path searches on other cores: how many can be made now, one begun on core k (1 up; 0 where no worker is free), waited for. */
 int host_path_cores(void);
-void host_path_post(int k, unsigned int (*search)(unsigned int, unsigned int), unsigned int object, unsigned int what);
+int host_path_post(int k, unsigned int (*search)(unsigned int, unsigned int), unsigned int object, unsigned int what);
 void host_path_wait(int k);
 /* And cores that ask about the map's cells ahead of a search, k from 0. */
 int host_pre_cores(void);
-void host_pre_post(int k, unsigned int (*ask)(unsigned int, unsigned int), unsigned int object, unsigned int what);
+int host_pre_post(int k, unsigned int (*ask)(unsigned int, unsigned int), unsigned int object, unsigned int what);
 void host_pre_wait(int k);
 void host_frames_forget(void);	/* the files are not what they were: before they go */
 extern unsigned int host_frames_bytes;	/* of the frames made ready so far */
@@ -108,12 +108,18 @@ typedef void (*host_fill_fn)(void *what, const void *from);
 void host_fill(host_fill_fn fn, void *what, const void *from);
 /* The page goes over the scene, with holes of the key index inside this rectangle. */
 void host_scene_end(int x, int y, int width, int height, int key);
+/* The same, after draw() has noted the objects' part, both on a worker (the objects drawn a
+ * frame behind: gl.cpp); whether a worker would take it now. */
+void host_scene_behind(void (*draw)(void), int x, int y, int width, int height, int key);
+int host_scene_behind_ready(void);
 /* No scene any more: the page is all there is to show. */
 void host_scene_drop(void);
 /* The scene's rectangles are made by a worker core when the machine has one (host.c). This
  * gives the cores back, for another use of them in the program; and how many scenes one made. */
 void host_workers_close(void);
 extern unsigned int host_scene_jobs;
+/* TDAWN_MARK's line of what the workers' jobs ran a frame, said before the second mark (ends 1). */
+void host_workers_mark(int ends, int frames);
 /* The next event, or 0 when there is none. Asks the server only when input has moved. */
 int host_event(struct host_event *event);
 void host_pointer(int *x, int *y);

@@ -10,7 +10,7 @@ source "$HERE/../userland/toolchain.sh"
 MW=$WORK/src/microwindows
 VC=$WORK/src/vanilla-conquer
 BUILD=$WORK/src/tdawn-build
-OUT=$REPO/build/images/linux/root
+OUT=${TDAWN_OUT:-$REPO/build/images/linux/root}	# (another image's folder for an experiment)
 COMMIT=ce83b59
 DEMO=${TDAWN_DEMO:-https://archive.org/download/CommandConquerDemo/cc1demo1.zip}
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
@@ -41,7 +41,7 @@ git -C "$VC" checkout -q -f "$COMMIT" && git -C "$VC" clean -q -fd
 git -C "$VC" apply "$HERE/vanilla-conquer.patch"
 cp "$HERE/cxxrt.cpp" "$HERE/shaderemu.cpp" "$HERE/soundio_shaderemu.cpp" "$HERE/host.c" "$HERE/host.h" "$VC/common/"
 # the worker cores' library, the same for every program (programs/mc): host.c gives a core the scene
-cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$VC/common/"
+cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mcwx.c" "$VC/common/"
 cp "$HERE/gl.cpp" "$VC/tiberiandawn/"
 
 cat > "$WORK/src/tdawn-toolchain.cmake" <<EOF

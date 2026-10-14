@@ -24,7 +24,9 @@ if [ ! -d "$Q/.git" ]; then
 fi
 # the tree is ioquake3's commit plus our patch, put there again on every build
 # (QUAKE3_TREE=keep: the tree as it stands, for writing that patch)
-if [ "${QUAKE3_TREE:-}" != keep ]; then
+if [ "${QUAKE3_TREE:-}" != keep ] && ! { [ "$(git -C "$Q" rev-parse HEAD)" = "$(git -C "$Q" rev-parse "$COMMIT^{commit}")" ] &&
+        [ -z "$(git -C "$Q" status --porcelain --untracked-files=all | grep '^??')" ] && git -C "$Q" diff -- code | cmp -s - "$HERE/quake3.patch"; }; then
+    # (a tree that is that already is left alone: its files keep their times, and only what changed is compiled)
     git -C "$Q" checkout -q -f "$COMMIT" && git -C "$Q" clean -q -fd
     git -C "$Q" apply "$HERE/quake3.patch"
 fi
@@ -102,12 +104,13 @@ done
 # gles.c in its float build, with what the renderer adds to it (gpu_shaderemu.c includes it)
 rv32-cc $OPT $FPU -fno-pie -fno-common -fdata-sections -Wall -c $GLES $GLINC -I"$PROGRAMS/linux" "$HERE/gpu_shaderemu.c" -o gpu.o
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcw.c" -o mcw.o
+rv32-cc -O2 -fno-pie -fno-common -fdata-sections -Wall -c -I"$PROGRAMS/mc" "$PROGRAMS/mc/mcwx.c" -o mcwx.o
 printf 'char se_pad_d[16] __attribute__((aligned(16))) = {1}; char se_pad_b[16] __attribute__((aligned(16)));\n' > zz_pad.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.c -o zz_pad_large.o
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
-for o in gpu.o mcw.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
-rv32-cc -O2 $FPU -w ${QUAKE3_LINK:-} engine/*.o game.o cgame.o ui.o gpu.o mcw.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake3
+for o in gpu.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
+rv32-cc -O2 $FPU -w ${QUAKE3_LINK:-} engine/*.o game.o cgame.o ui.o gpu.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake3
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/quake3.bin" quake3
 riscv32-linux-nm -n quake3 > "${QUAKE3_NM:-$WORK/src/quake3.nm}"
@@ -139,7 +142,7 @@ cat > "$OUT/usr/bin/quake3" <<'EOF'
 # what it writes (its settings) goes to the folder the host keeps (docs/persist.md)
 mkdir -p /tmp/quake3/baseq3 /persistence/quake3 && cd /tmp/quake3 || exit 1
 ln -sf /usr/share/quake3-pak0.pk3 baseq3/pak0.pk3
-exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /persistence/quake3 +set sv_pure 0 "$@"
+exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /persistence/quake3 +set sv_pure 0 +set name "${USER:-player}" "$@"
 EOF
 chmod +x "$OUT/usr/bin/quake3"
 # (from the menu: the level, and the one bot the worker core keeps up with: docs/quake3.md)

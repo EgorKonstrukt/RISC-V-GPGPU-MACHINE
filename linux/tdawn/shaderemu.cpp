@@ -11,7 +11,7 @@
 #include <cstring>
 
 extern WWKeyboardClass* Keyboard;
-extern bool ShaderEmu_GL_Emitting, ShaderEmu_GL_Touched; // gl.cpp: the map is the GPU's
+extern bool &ShaderEmu_GL_Emitting, &ShaderEmu_GL_Touched; // gl.cpp: the map is the GPU's
 extern bool InMainLoop;
 
 class SurfaceMonitorClassDummy : public SurfaceMonitorClass

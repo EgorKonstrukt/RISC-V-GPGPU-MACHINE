@@ -135,6 +135,9 @@ void seglQuad(const GLfixed* xyz, const GLfixed* uv, GLuint name, unsigned grey,
 // (texels, for one 1,024 wide). The colour is 0xTTRRGGBB, T being transparency; it tints an
 // 8-bit or RGBA texture and is what a SEGL_BITS texture draws.
 void seglSprite(const GLfixed* box, const int* texels, GLuint name, unsigned colour, int keyed);
+// Many sprites as seglSprite draws them one by one, in one call (a box, texels, texture, colour, key each).
+typedef struct { GLfixed box[4]; int texels[4]; GLuint name; unsigned colour; int keyed; } SEGLsprite;
+void seglSprites(const SEGLsprite* sprites, int count);
 // Many sprites of one texture at once: the program writes them at seglSpriteSpace() (`room` of
 // them fit), 16 words each: four corners of x, y, 0 and texels (u | v << 16), x and y being
 // seglNumber() of a corner; seglSpritesUsed() then draws so many as seglSprite would have.

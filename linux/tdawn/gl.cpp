@@ -57,9 +57,7 @@ struct Icon
     short icon, index;
 };
 
-bool ShaderEmu_GL_Emitting;       // the map's shapes and stamps go to the GPU
 bool ShaderEmu_GL_Live;           // the GPU draws the map: a changed cell does not have its objects drawn again
-bool ShaderEmu_GL_Touched = true; // the game drew over the map itself: the page has more than holes there
 static int box[4] = {1, 1, 0, 0}; // or only inside this rectangle of the page (x0, y0, x1, y1)
 
 // An object's rectangles as it drew them last, by their place on the map: drawn again as they
@@ -75,20 +73,39 @@ struct Kept
     Quad quad[6];
 };
 enum { KEPT = 1024 };
-static Kept kept[KEPT];
+alignas(16) static Kept kept[KEPT];
 static int kept_count;
-static Kept* recording;
+// What the core that draws the objects stores outside its own memory (a worker, while the logic
+// goes on: "behind" below), in texels of its own: two cores must not store to one 16 bytes.
+static struct alignas(16) Drawing
+{
+    Kept* recording;
+    unsigned quads, shroud, shadows, objects[3], put[2], refused;
+    int shelf_x[33], shelf_y[33], shelf_top; // a row of the atlas for each height, in 16s
+    unsigned frames_taken, frames_differ;
+    int check_frames;
+    bool emitting, touched;
+} drawing = {NULL, 0, 0, 0, {0, 0, 0}, {0, 0}, 0, {0}, {0}, 0, 0, 0, -1, false, true};
+#define recording drawing.recording
+#define shelf_x drawing.shelf_x
+#define shelf_y drawing.shelf_y
+#define shelf_top drawing.shelf_top
+#define frames_taken drawing.frames_taken
+#define frames_differ drawing.frames_differ
+#define check_frames drawing.check_frames
+bool& ShaderEmu_GL_Emitting = drawing.emitting; // the map's shapes and stamps go to the GPU
+bool& ShaderEmu_GL_Touched = drawing.touched;   // the game drew over the map itself: the page has more than holes there
+unsigned& ShaderEmu_GL_Quads = drawing.quads;   // all of them, and of those the shroud's and the shadows'
+unsigned& ShaderEmu_GL_Shroud = drawing.shroud;
+unsigned& ShaderEmu_GL_Shadows = drawing.shadows;
+unsigned (&ShaderEmu_GL_Objects)[3] = drawing.objects; // shown as they were, found out of the view again, drawn anew
+unsigned (&ShaderEmu_GL_Put)[2] = drawing.put;         // shapes put into an atlas, and the pixels of their frames
 static int origin_x, origin_y, view_w, view_h; // where the map's corner is on the screen, and the view's size
-unsigned ShaderEmu_GL_Quads;      // all of them, and of those the shroud's and the shadows'
-unsigned ShaderEmu_GL_Shroud, ShaderEmu_GL_Shadows;
 unsigned ShaderEmu_GL_Parts[3]; // instructions in the cells, the objects and the shroud
-unsigned ShaderEmu_GL_Objects[3]; // objects shown as they were, found out of the view again, and drawn anew
-unsigned ShaderEmu_GL_Put[2];     // shapes put into an atlas, and the pixels of their frames
 
-static Shape shapes[SLOTS];
+alignas(16) static Shape shapes[SLOTS];
 static Icon icons[SLOTS];
 static int icon_count, shade_count;
-static int shelf_x[33], shelf_y[33], shelf_top; // a row of the atlas for each height, in 16s
 static unsigned char tile_done[TILES / 8];
 static signed char edge_of[TILES]; // the shroud's shape over a cell, as last worked out (-2: not yet)
 static Shape* edge_shape[64];      // and where each of those shapes is in the shades
@@ -606,8 +623,6 @@ static Shape* shape_of(const void* file, int frame, const void* fade, const void
 
 // TDAWN_CHECK_FRAMES=1: a frame a worker core made ready is built by the game too, and compared
 // (0: only the count is printed when the game ends).
-static int check_frames = -1;
-static unsigned frames_taken, frames_differ;
 static void check_report(void)
 {
     fprintf(stderr, "tdawn: %u frames from a worker core (%u KB of them made ready)", frames_taken, host_frames_bytes >> 10);
@@ -808,6 +823,173 @@ bool ShaderEmu_GL_Stamp(void const* set, int icon, int x, int y, void const* rem
 }
 
 // Whether the GPU draws the map: it does when it has room, and a quad for each of its cells.
+/*
+** The objects drawn by a worker core, a frame behind (docs/tdawn.md, "The objects a frame
+** behind"): as Render comes, this core notes each object's part of the scene, copies those
+** to be drawn anew as they are now, and does to the objects what Render would (their marks),
+** and the worker draws the copies while the logic goes on. TDAWN_DRAW=here: as before.
+*/
+struct Behind
+{
+    ObjectClass* copy; // drawn anew from this; NULL: its kept quads as they are, or (away) none
+    Kept* k;
+    bool away;
+};
+enum { BEHIND_MOST = 1024, BEHIND_BYTES = 128 << 10 };
+alignas(16) static Behind behind[BEHIND_MOST];
+static int behind_count, behind_most = -1;
+alignas(16) static unsigned char behind_arena[BEHIND_BYTES];
+static bool behind_pending;
+static int behind_rect[4];
+static unsigned behind_drawn, behind_frames, behind_here;
+bool ShaderEmu_GL_Behind; // (Main_Loop's Render: the objects may be drawn behind)
+
+static int Behind_Size(ObjectClass* object)
+{
+    switch (object->What_Am_I()) {
+    case RTTI_INFANTRY:
+        return sizeof(InfantryClass);
+    case RTTI_UNIT:
+        return sizeof(UnitClass);
+    case RTTI_BUILDING:
+        return sizeof(BuildingClass);
+    case RTTI_AIRCRAFT:
+        return sizeof(AircraftClass);
+    case RTTI_ANIM:
+        return sizeof(AnimClass);
+    case RTTI_BULLET:
+        return sizeof(BulletClass);
+    case RTTI_TERRAIN:
+        return sizeof(TerrainClass);
+    default:
+        return 0;
+    }
+}
+
+/*
+** The objects' part of the scene noted, and what Render(true) does to an object done to it, in
+** one pass; an object drawn anew in the view is copied (false: this frame's objects are drawn
+** here, as before: what was done to the objects is what Render does again).
+*/
+static bool Behind_Note(int refresh, unsigned scenes, unsigned& away)
+{
+    if (behind_most < 0) {
+        behind_most = !(getenv("TDAWN_DRAW") && !strcmp(getenv("TDAWN_DRAW"), "here"));
+        atexit([]() {
+            if (getenv("TDAWN_FRAME_LOG") || getenv("TDAWN_MARK"))
+                fprintf(stderr, "tdawn: %u scenes' objects drawn a frame behind (%u objects), %u here\n", behind_frames, behind_drawn, behind_here);
+        });
+    }
+    if (!behind_most || !ShaderEmu_GL_Behind || !host_scene_behind_ready()) {
+        return false;
+    }
+    int n = 0;
+    unsigned used = 0, passed = 0;
+    COORDINATE view = Map.TacticalCoord;
+    for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+        int count = Map.Layer[layer].Count();
+        int turn = refresh == 256 && count ? (int)(scenes % (unsigned)count) : -1;
+        for (int index = 0; index < count; index++) {
+            ObjectClass* object = Map.Layer[layer][index];
+            bool anew = index == turn;
+            if (object->ShaderEmu_Away == view && !object->IsToDisplay && !anew) {
+                passed++;
+                continue;
+            }
+            if (n == BEHIND_MOST) {
+                return false;
+            }
+            Kept* k = kept_of(object);
+            if (k && !anew && !object->IsToDisplay && (k->whole || (k->away && k->view == view))) {
+                ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
+                if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {
+                    behind[n].copy = NULL, behind[n].away = false, behind[n++].k = k;
+                }
+                continue;
+            }
+            int size = Behind_Size(object);
+            if (!size || used + size > BEHIND_BYTES) {
+                return false;
+            }
+            // whether Render(true) draws it (in the view), then a copy as it is, then what Render does to it
+            bool drew = false, shown = object->What_Am_I() != RTTI_ANIM || !((AnimClass*)object)->ShaderEmu_Delay();
+            if (shown && object->IsDown && !object->IsInLimbo) {
+                int x, y;
+                drew = Map.Coord_To_Pixel(object->Render_Coord(), x, y);
+            }
+            behind[n].copy = NULL, behind[n].away = true, behind[n].k = k;
+            if (drew) {
+                behind[n].copy = (ObjectClass*)(behind_arena + used);
+                memcpy((void*)behind[n].copy, (const void*)object, size);
+                used += (size + 15) & ~15;
+                behind_drawn++;
+            }
+            if (shown) {
+                object->IsToDisplay = !(object->IsDown && !object->IsInLimbo) && (object->What_Am_I() == RTTI_ANIM || object->IsToDisplay);
+            }
+            if (drew && object->Is_Techno()) {
+                TechnoClass* techno = (TechnoClass*)object;
+                techno->Clear_Redraw_Flag();
+                if (techno->LineFrame < techno->LineMaxFrames) {
+                    techno->LineFrame++; // (TechnoClass::Draw_It counts a line's frames: the logic reads that)
+                }
+            }
+            object->ShaderEmu_Away = drew ? ~(COORDINATE)0 : view;
+            n++;
+        }
+    }
+    behind_count = n;
+    away += passed;
+    behind_frames++;
+    return true;
+}
+
+/* On the worker: the noted objects into the scene's objects' part, the copies drawn. */
+static void Behind_Draw(void)
+{
+    COORDINATE view = Map.TacticalCoord;
+
+    ShaderEmu_GL_Emitting = true;
+    for (int i = 0; i < behind_count; i++) {
+        Kept* k = behind[i].k;
+        if (!behind[i].copy) {
+            if (!behind[i].away) {
+                host_quads(k->quad, k->count);
+                ShaderEmu_GL_Quads += k->count;
+            } else if (k) {
+                k->count = 0, k->whole = false, k->away = true, k->view = view; // (as Render left it, drawing nothing)
+            }
+            continue;
+        }
+        bool touched = ShaderEmu_GL_Touched;
+        ShaderEmu_GL_Touched = false;
+        ShaderEmu_GL_Objects[2]++;
+        recording = k;
+        if (k) {
+            k->count = 0;
+            k->whole = true;
+        }
+        bool drew = behind[i].copy->Render(true);
+        recording = NULL;
+        if (k) {
+            k->whole = k->whole && drew && !ShaderEmu_GL_Touched;
+            k->away = !drew;
+            k->view = view;
+        }
+        ShaderEmu_GL_Touched |= touched;
+    }
+    ShaderEmu_GL_Emitting = false;
+}
+
+/* After Main_Loop's Render (the sidebar drawn): the objects to a worker, if they were noted. */
+void ShaderEmu_GL_Post(void)
+{
+    if (behind_pending) {
+        behind_pending = false;
+        host_scene_behind(Behind_Draw, behind_rect[0], behind_rect[1], behind_rect[2], behind_rect[3], KEY);
+    }
+}
+
 bool ShaderEmu_GL_On(int cells)
 {
     ShaderEmu_GL_Live = cells <= TILES && available();
@@ -968,7 +1150,9 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     mark = host_cycles();
     host_scene_part(1, 0);
     unsigned away = 0;
-    for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
+    bool drawn_behind = !all && Behind_Note(refresh, scenes, away);
+    behind_here += !drawn_behind;
+    for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT && !drawn_behind; layer++) {
         int turn = refresh == 256 && Layer[layer].Count() ? (int)(scenes % (unsigned)Layer[layer].Count()) : -1;
         for (int index = 0; index < Layer[layer].Count(); index++) {
             ObjectClass* object = Layer[layer][index];
@@ -1040,6 +1224,12 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     if (IsRubberBand) {
         ShaderEmu_GL_Mark(TacPixelX + MIN(BandX, NewX) - 1, TacPixelY + MIN(BandY, NewY) - 1,
                           TacPixelX + MAX(BandX, NewX) + 1, TacPixelY + MAX(BandY, NewY) + 1);
+    }
+    if (drawn_behind) {
+        host_scene_part(1, 1); // (the worker's notes are the objects')
+        behind_pending = true;
+        behind_rect[0] = TacPixelX, behind_rect[1] = TacPixelY, behind_rect[2] = wide, behind_rect[3] = high;
+        return;
     }
     host_scene_end(TacPixelX, TacPixelY, wide, high, KEY);
 }

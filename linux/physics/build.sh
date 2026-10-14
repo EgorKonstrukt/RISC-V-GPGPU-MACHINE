@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
 MW=$WORK/src/microwindows
-OUT=$REPO/build/images/linux/root
+OUT=${PHYS_OUT:-$REPO/build/images/linux/root}   # (PHYS_OUT: a private image's overlay)
 BUILD=$WORK/src/physics-build
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
 mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share"
@@ -21,7 +21,8 @@ rv32-cc $OPT -fno-pie -Wall -Wno-unused-function $FLOATS $INC -c "$HERE/nxphys.c
 # the OpenGL library with floats: a box's corners are vertices as they are
 rv32-cc -O2 -fno-pie -w -DSEGL_FLOAT $INC -c "$REPO/programs/linux/gles.c" -o "$BUILD/gles.o"
 rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/mc/mcw.c" -o "$BUILD/mcw.o"
-rv32-cc -O2 -no-pie "$BUILD/nxphys.o" "$BUILD/physics.o" "$BUILD/gles.o" "$BUILD/mcw.o" "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxphys"
+rv32-cc -O2 -fno-pie -w $INC -c "$REPO/programs/mc/mcwx.c" -o "$BUILD/mcwx.o"
+rv32-cc -O2 -no-pie "$BUILD/nxphys.o" "$BUILD/physics.o" "$BUILD/gles.o" "$BUILD/mcwx.o" "$BUILD/mcw.o" "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxphys"
 riscv32-linux-nm -n "$BUILD/nxphys" > "$WORK/src/nxphys.nm"
 riscv32-linux-strip -o "$OUT/usr/bin/nxphys" "$BUILD/nxphys"
 echo "Other/Physics (every core)=nxphys" > "$OUT/usr/share/nxapps.87-physics"

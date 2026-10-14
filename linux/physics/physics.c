@@ -1,5 +1,7 @@
 /* Rigid boxes: physics.h, docs/physics.md. Positions are corrected, not velocities, and each
  * body corrects only itself: both bodies of a pair work the pair out, each for its own part. */
+#include <stddef.h>
+#include <string.h>
 #include "physics.h"
 
 #define MARGIN 0.03f			/* contacts are kept from this far apart, and further for fast bodies */
@@ -14,6 +16,13 @@
  * hundred-thousandth of the bodies' places and sizes: some ten times what rounding can come to. */
 #define SURE 1e-4f
 #define SURE_OF 1e-5f
+/* A body slower than SLEEP_SPEED and turning slower than SLEEP_SPIN for PHYS_SLEEP_AFTER
+ * substeps sleeps: it stays where it is until a body faster than WAKE (or turning faster
+ * than WAKE_SPIN, or held) comes within its reach. */
+#define SLEEP_SPEED 0.05f
+#define SLEEP_SPIN 0.1f
+#define WAKE 0.2f
+#define WAKE_SPIN 1.0f
 
 typedef struct { float x, y, z; } v3;
 typedef struct { v3 c[3]; } m3;		/* a rotation's columns: the body's axes in the room */
@@ -412,6 +421,73 @@ margin_of(const struct phys *w, const struct body_state *s)
 	return MARGIN + __builtin_sqrtf(dot(vel, vel)) * w->look_ahead;
 }
 
+static inline uint32_t
+moving(v3 vel, v3 spin)
+{
+	return dot(vel, vel) > WAKE * WAKE || dot(spin, spin) > WAKE_SPIN * WAKE_SPIN;
+}
+
+static inline int
+asleep(const struct body_state *s)
+{
+	return s->quiet >= PHYS_SLEEP_AFTER && (s->key & PHYS_POSED);
+}
+
+void
+phys_nears(const struct phys *w, int from)
+{
+	int i;
+
+	for (i = 0; i < w->bodies; i++) {
+		const struct body_state *s = &w->states[from][i];
+		struct body_near *n = &w->nears[from][i];
+
+		n->pos[0] = s->pos[0], n->pos[1] = s->pos[1], n->pos[2] = s->pos[2];
+		n->reach = w->shapes[i].radius + margin_of(w, s);
+		n->moving = moving(of(s->vel), of(s->spin));
+	}
+}
+
+/* Whether sleeping body i wakes: held, or a fast body is within reach of it, in the cells
+ * round it of grid `turn` (whose cells are those of a substep or two ago). */
+static __attribute__((noinline)) int
+woken(const struct phys *w, const struct body_state *st, const struct body_pose *kept, const struct body_near *nb, int i, int turn)
+{
+	const struct phys_hold *hold;
+	uint32_t k;
+
+	const struct gcell *grid = w->grids[turn & 1];
+	uint32_t cell = st[i].key & 0xfffff;
+	int cx = (int)cell % w->gx, cz = (int)cell / w->gx % w->gz, cy = (int)cell / (w->gx * w->gz), x, y, z;
+	float mine = kept[i].reach;
+	v3 here = of(st[i].pos);
+
+	if (w->held)
+		for (hold = w->holds; hold < w->holds + PHYS_HOLDS; hold++)
+			if (hold->body == i)
+				return 1;
+	{
+		for (y = cy > 0 ? cy - 1 : 0; y <= cy + 1 && y < w->gy; y++)
+			for (z = cz > 0 ? cz - 1 : 0; z <= cz + 1 && z < w->gz; z++)
+				for (x = cx > 0 ? cx - 1 : 0; x <= cx + 1 && x < w->gx; x++) {
+					const struct gcell *c = &grid[(y * w->gz + z) * w->gx + x];
+
+					for (k = 0; k < c->n; k++) {
+						const struct body_near *t = &nb[c->body[k]];
+						float reach = mine + t->reach;
+						v3 d;
+
+						if (!t->moving)
+							continue;
+						d = sub(of(t->pos), here);
+						if (dot(d, d) < reach * reach)
+							return 1;
+					}
+				}
+		return 0;
+	}
+}
+
 /* (not in line: it is the rare way, and its floats would be in the common one's) */
 static __attribute__((noinline)) void
 poses_made(const struct body_state *s, float gravity, struct pose *mine)
@@ -456,7 +532,7 @@ poses_kept(const struct phys *w, const struct body_state *s, const struct body_s
  * that was there at the last look keeps the push it had (the nearest old point's, of the
  * same pair). How many pairs had no room. */
 static int
-look(const struct phys *w, const struct body_state *st, const struct body_pose *kept, int i, int turn)
+look(const struct phys *w, const struct body_state *st, const struct body_pose *kept, const struct body_near *nb, int i, int turn)
 {
 	const struct body_state *s = &st[i];
 	const struct body_shape *shape = &w->shapes[i];
@@ -490,14 +566,10 @@ look(const struct phys *w, const struct body_state *st, const struct body_pose *
 
 				for (k = 0; k < in_cell; k++) {
 					int j = (int)c->body[k];
-					const struct body_state *t = &st[j];
-					float reach, along;
+					const struct body_near *t = &nb[j];
+					float reach = mine + t->reach, along;
 					v3 d;
 
-					if (__builtin_expect((t->key & PHYS_POSED) != 0, 1))
-						reach = mine + kept[j].reach;
-					else
-						reach = mine + (w->shapes[j].radius + margin_of(w, t));
 					/* (too far along x alone is too far: most of a cell's are) */
 					along = t->pos[0] - here.x;
 					if (size(along) >= reach)
@@ -672,6 +744,12 @@ settle_points(struct pose *cur, struct pose *speed, struct point *points, int n_
 	shifted(cur, scale(move, all - new), scale(spun, all - new));
 }
 
+static int
+held_now(const struct phys *w, int i)
+{
+	return w->holds[0].body == i || w->holds[1].body == i || w->holds[2].body == i;
+}
+
 /* A held body: its point a quarter of the way to where each hold wants it, 30 cm at most.
  * (Not in line: the rare way.) */
 static __attribute__((noinline)) void
@@ -701,7 +779,7 @@ phys_look(const struct phys *w, int share, int shares, int from, int turn)
 	int i, dropped = 0;
 
 	for (i = share; i < w->bodies; i += shares)
-		dropped += look(w, st, kept, i, turn);
+		dropped += look(w, st, kept, w->nears[from], i, turn);
 	return dropped;
 }
 
@@ -710,7 +788,7 @@ phys_look(const struct phys *w, int share, int shares, int from, int turn)
  * the others where pose_guess() says; then it takes its mass's part of every contact, and
  * the other body of each pair takes the rest for itself, from the same numbers. */
 int
-phys_step(const struct phys *w, int share, int shares, int from, int looking)
+phys_step(const struct phys *w, int share, int shares, int from, int looking, int turn)
 {
 	const struct body_state *st = w->states[from];
 	int next = from + 1 == PHYS_BUFFERS ? 0 : from + 1;
@@ -729,10 +807,16 @@ phys_step(const struct phys *w, int share, int shares, int from, int looking)
 		v3 inv_inertia = of(shape->inv_inertia), vel, spin;
 		float inv_mass = shape->inv_mass, fast, spin2, sx, sy, sz, w0, about;
 		int n_points = 0, plane, corner = 0;
-		uint32_t held = 0;
+		uint32_t held = 0, quiet;
 
+		if (asleep(s) && !woken(w, st, kept, w->nears[from], i, turn)) {
+			to[i] = *s;
+			memcpy(&w->poses[next][i], &kept[i], offsetof(struct body_pose, pad));
+			w->nears[next][i] = w->nears[from][i];
+			continue;
+		}
 		if (looking)
-			dropped += look(w, st, kept, i, looking);
+			dropped += look(w, st, kept, w->nears[from], i, looking);
 		pairs = w->info[i].manifolds;
 		if (s->key & PHYS_POSED) {
 			now.x = of(s->pos), now.r = *(const m3 *)kept[i].r;
@@ -852,14 +936,22 @@ phys_step(const struct phys *w, int share, int shares, int from, int looking)
 		spin2 = dot(spin, spin);
 		if (spin2 > MAX_SPIN * MAX_SPIN)
 			spin = scale(spin, MAX_SPIN / __builtin_sqrtf(spin2));
+		quiet = fast < SLEEP_SPEED * SLEEP_SPEED && spin2 < SLEEP_SPIN * SLEEP_SPIN && !(w->held && held_now(w, i)) ? s->quiet + 1 : 0;
+		if (quiet >= PHYS_SLEEP_AFTER)
+			quiet = PHYS_SLEEP_AFTER, vel = spin = v(0, 0, 0);
 		out->pos[0] = cur.x.x, out->pos[1] = cur.x.y, out->pos[2] = cur.x.z;
 		out->key = phys_key(w, out->pos);
 		out->held = held;
 		out->q[0] = cur.q[0], out->q[1] = cur.q[1], out->q[2] = cur.q[2], out->q[3] = cur.q[3];
 		out->vel[0] = vel.x, out->vel[1] = vel.y, out->vel[2] = vel.z;
 		out->spin[0] = spin.x, out->spin[1] = spin.y, out->spin[2] = spin.z;
+		out->quiet = quiet;
 		poses_kept(w, out, shape, &cur.r, w->gravity, &w->poses[next][i]);
 		out->key |= PHYS_POSED;
+		w->nears[next][i].pos[0] = cur.x.x, w->nears[next][i].pos[1] = cur.x.y, w->nears[next][i].pos[2] = cur.x.z;
+		w->nears[next][i].reach = w->poses[next][i].reach;
+		/* (a held box wakes what it is carried into, however slowly) */
+		w->nears[next][i].moving = moving(vel, spin) || (w->held && held_now(w, i));
 	}
 	return dropped;
 }

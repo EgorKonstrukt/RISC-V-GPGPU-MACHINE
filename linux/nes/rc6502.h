@@ -846,15 +846,9 @@ static int rc_laters, rc_later_room, rc_lazy;
 
 static int rc_later_add(uint32 *site, uint32 where, uint32 page)
 {
+   /* (room for RC_WORK, mapped with the tables: no malloc, which another core may be in) */
    if (rc_laters == rc_later_room)
-   {
-      rc_later_t *more = realloc(rc_later, (rc_later_room + 256) * sizeof(rc_later_t));
-
-      if (NULL == more)
-         return 0;
-      rc_later = more;
-      rc_later_room += 256;
-   }
+      return 0;
    rc_later[rc_laters].site = site;
    rc_later[rc_laters].where = where;
    rc_later[rc_laters++].page = page;
@@ -1630,7 +1624,7 @@ void nes6502_recompile(uint8 *prg, int bytes, int fixed)
    rc_end = rc_code + RC_CODE_BYTES / 4;
    {
       /* the tables by byte of the program and the translator's lists: mapped, so zero and untouched */
-      uint32 all = (uint32) bytes * 6 + RC_WORK * (2 * sizeof(uint32) + sizeof(rc_fix_t));
+      uint32 all = (uint32) bytes * 6 + RC_WORK * (2 * sizeof(uint32) + sizeof(rc_fix_t) + sizeof(rc_later_t));
       uint8 *tables = mmap(NULL, all, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
       if (MAP_FAILED == (void *) tables)
@@ -1640,6 +1634,8 @@ void nes6502_recompile(uint8 *prg, int bytes, int fixed)
       rc_fix = (rc_fix_t *) (rc_stack + RC_WORK);
       rc.at = (uint8 *) (rc_fix + RC_WORK);
       rc_lead = rc.at + bytes;
+      rc_later = (rc_later_t *) (rc_lead + bytes);
+      rc_later_room = RC_WORK;
       rc.table = (uint32 *) tables;
    }
    rc.prg = prg;
@@ -1674,4 +1670,18 @@ void nes6502_recompiled(unsigned *instructions, unsigned *bytes, unsigned *runs,
    *bytes = (unsigned) ((char *) rc_p - (char *) rc_code);
    *runs = rc_runs;
    *entries = rc_entries;
+}
+
+/* The translator's memory a worker that runs the 6502 will write, for the first core to touch
+** first: its tables, and `code` bytes of its code from where it has got to. */
+void nes6502_recompile_touch(void (*touch)(void *at, unsigned bytes), unsigned code)
+{
+   uint32 left = (uint32) ((char *) rc_end - (char *) rc_p);
+
+   if (!rc.table)
+      return;
+   touch(rc.table, (uint32) ((uint8 *) (rc_later + RC_WORK) - (uint8 *) rc.table));
+   if (rc.direct)
+      touch(rc.direct, 0x10004 * sizeof(uint32));
+   touch(rc_p, code < left ? code : left);
 }

@@ -25,7 +25,7 @@
 
 #include "server/server.h"
 #include "botlib/be_aas.h"
-#include "mcw.h"
+#include "mcwx.h"
 #include "se_q3.h"
 
 enum { MODE_UNSET = -1, MODE_INLINE, MODE_WORKER };
@@ -48,10 +48,12 @@ static struct {
 	int		code;
 	char		error[1024];
 	char		kept[8192];	/* a kind, then text ending in 0 (a cvar: its name, 0, its value, 0) */
-} works[3] __attribute__ ((aligned (16)));
+} works[1 + SE_LISTS] __attribute__ ((aligned (16)));
 static char	job_stack[STACK_BYTES] __attribute__ ((aligned (16)));
 se_abort_t	se_worker_abort[2];
-static int	mode = MODE_UNSET, out, pending, workers = -1;
+static int	mode = MODE_UNSET, pending, workers = -1;
+static mcw_handle	out;		/* the worker's call (mcwx.h), while it is out */
+static unsigned	out_result;	/* what the last one answered: its instructions */
 static int	pace_frame, routes_late, warming;	/* QUAKE3_SERVER=frame, QUAKE3_ROUTES=late; the job out is the routes' */
 static struct { int bytes, items, unused[2]; } warmed __attribute__ ((aligned (16)));	/* the worker's */
 int BotWarmLevelItemRoutes (int travelflags, int *items);	/* be_ai_goal.c (quake3.patch) */
@@ -68,11 +70,13 @@ __asm__ (".text\n.globl se_call_on_stack\n.type se_call_on_stack, @function\nse_
 	"	addi a2, a2, -16\n	sw ra, 12(a2)\n	sw sp, 8(a2)\n	mv sp, a2\n	mv t0, a0\n	mv a0, a1\n	jalr t0\n"
 	"	lw ra, 12(sp)\n	lw sp, 8(sp)\n	ret\n");
 
-/* The program's worker cores: 1 is the server's, 2 the client's game's. How many there are. */
+/* The program's worker cores: one for the server, one for the client's game, one for the scene. How many there are. */
 int SE_Workers (void)
 {
 	if (workers < 0) {
-		workers = mcw_open (2);
+		const char	*scene = getenv ("QUAKE3_SCENE");
+
+		workers = mcw_open (scene && !strcmp (scene, "inline") ? 2 : 3);
 		if (workers > 0)
 			atexit (mcw_close);
 	}
@@ -267,20 +271,21 @@ static void finish (void)
 	unsigned	at;
 	int		failed;
 
+	out_result = mcw_join (out);
 	out = 0;
 	if (warming) {
 		warming = 0;
 		Com_Printf ("quake3: the bots' routes to %d items made ahead: %d KB, %u thousand instructions of the worker core\n",
-			warmed.items, warmed.bytes / 1024, (unsigned)mcw_result (1) / 1000);
+			warmed.items, warmed.bytes / 1024, out_result / 1000);
 		if (SE_WorkerKept (0))
 			SE_WorkerRaise (0);
 		return;
 	}
-	se_server_cycles += mcw_result (1);
+	se_server_cycles += out_result;
 	se_server_jobs++;
 	if (log_on)
 		printf ("q3srv: job %u: posted %u began %u ended %u taken %u ms; %d ms of the game in %u frames, %u instructions: the bots %u, the game %u, telling %u, the moves %u in %u\n",
-			++log_jobs, log_posted, job_log.began, job_log.ended, SE_WindowClock (), log_msec, job_log.frames, (unsigned)mcw_result (1),
+			++log_jobs, log_posted, job_log.began, job_log.ended, SE_WindowClock (), log_msec, job_log.frames, out_result,
 			job_log.bots, job_log.game, job_log.tell, job_log.moves, job_log.packets);
 	failed = SE_WorkerKept (0);
 	for (at = 0; at < outbox.used; ) {
@@ -299,7 +304,10 @@ void SE_ServerSettle (void)
 {
 	if (!out)
 		return;
-	se_server_passes += mcw_wait (1);
+	while (!mcw_ready (out)) {
+		mcw_rest ();
+		se_server_passes++;
+	}
 	finish ();
 }
 
@@ -339,10 +347,9 @@ static void give (void)
 	memcpy (job_in.data, inbox.data, inbox.used);
 	job_in.used = inbox.used;
 	inbox.used = 0;
-	mcw_post (1, server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
+	out = mcw_call (server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
 	log_posted = SE_WindowClock (), log_msec = pending;
 	pending = 0;
-	out = 1;
 }
 
 /*
@@ -352,7 +359,7 @@ static void give (void)
  */
 void SE_ServerPoll (void)
 {
-	if (out && mcw_done (1) && !warming && !pace_frame && !works[0].used && !works[0].lost && !works[0].failed) {
+	if (out && mcw_ready (out) && !warming && !pace_frame && !works[0].used && !works[0].lost && !works[0].failed) {
 		finish ();
 		if (com_sv_running->integer && !sv_killserver->integer)
 			give ();
@@ -391,8 +398,8 @@ void SE_ServerWarm (void)
 	if (i == sv_maxclients->integer)
 		return;
 	SE_ServerZoneTouch (mcw_touch, WARM_BYTES);
-	mcw_post (1, warm_job, 0, 0);
-	out = warming = 1;
+	warming = 1;
+	out = mcw_call (warm_job, 0, 0);
 }
 
 /* In place of SV_Frame(): so much time has passed. */
@@ -418,7 +425,7 @@ void SE_ServerFrame (int msec)
 	}
 	pending += msec;
 	if (out) {
-		if (!mcw_done (1))
+		if (!mcw_ready (out))
 			return;
 		finish ();
 		if (!com_sv_running->integer)
