@@ -477,6 +477,91 @@ program's still, and the kernel takes back no core whose answer the program has 
 (`MC_TAKEN_AT`). And a worker still on its way when the first job was posted was never served
 its first page: `look()` serves it.
 
+## Packing the small workers (`geotune`)
+
+(14 October 2026; with `MC_HYBRID`, a local experiment of the tick.) The geometry is hybrid:
+workers 1 to 16 big (caches of 2^5 buckets), which keeps a game's few workers at full speed
+(small caches cost Doom 15 to 38%), and the rest small (2^3). How the small ones' blocks lie
+in the tick's targets depends on the card, and `geotune` measures it at boot.
+
+**The field.** The geometry's texel (`0x870003d0`) is the same four words, and `.a` says the
+rest:
+
+| Bits of `.a` | What |
+|---|---|
+| 0-7 | how many big workers (0: the uniform geometry, every worker as `.b` says) |
+| 8-15 | the big ones' bits (3 to 6) |
+| 16-23 | the small ones' blocks' width in columns (0: `TICK_BLOCK` with `TICK_PAD`, as compiled) |
+| 24-31 | the big ones' (0: `TICK_BLOCK_BIG` with `TICK_PAD_BIG`) |
+
+A width the field gives is the worker's tiles rounded up to a multiple of it, with no column
+more: a small worker (2 tiles) is 2 columns at width 2, 4 at width 4, 8 at width 8. The big
+workers have the first band of the state strip and of the targets; the small ones the bands
+after, and those the targets' later bands do not hold go after the big ones' blocks in the
+first band (with eight columns a worker the second band holds 128 of 239). `mc_geo_read()` in
+`src/types.h` reads it for the tick and the commit, and `mc_geo_count()` in `src/gpu.h` the same
+for the control pass (`gpu.shader` has no `types.h`), whose count of cores (`0x870003c0`) is
+what the kernel shares out: a worker the targets have no block for is no worker. With
+`MC_HYBRID` undefined the shader is the tree's, preprocessed text for text.
+
+**Who sets it.** `geotune` (`linux/userland/geotune.c`), which the init runs before any
+program asks for workers (the layout may only change while every worker is parked, and the
+kernel keeps a layout it finds set). It first lays out a geometry that only a tick with
+`MC_HYBRID` gives 47 cores (small blocks 64 columns wide); one that gives every core is a tick
+without it, and `geotune` leaves the layout to the kernel. Then:
+
+1. **Capacity, not a race.** Every worker small and in eight columns of its own, the same job
+   (a loop whose branches go by the worker's number, so no two run the same instructions) on
+   an eighth of them and on all of them, in turn, three times each; the medians are compared.
+   A card that runs every block side by side takes as long for all as for the eighth; one that
+   does not takes longer, and all over the time is roughly how many it runs at once. The job is
+   sized to some 200 ms for the eighth.
+2. Under 1.5 times: eight-column blocks. Otherwise two columns. If either set of three times is
+   more than 30% apart the card is too unsteady to say and it is two.
+3. The registry keeps the choice (`geotune.width`, `.workers`, `.iterations`, `.us`, `.ratio`;
+   `geotune.force` 2, 4 or 8 is a width with nothing measured: `docs/persist.md`). So that a
+   kept registry is there to be read, `geotune` loads the kept folder itself when the desktop
+   is to start (`nxpersist load`, and `/tmp/nxpersist.early` tells the `nx` script it is done).
+   On a later boot only the eighth's job is timed again (three times, the median): within 25%
+   of the kept time it is the same card and the kept width is laid out; otherwise it measures
+   again. The host does not say which GPU it has, so another card is told by its speed.
+
+`geotune again` measures though a choice is kept (before the desktop, when no program has
+workers).
+
+What it found here (RTX 2060 Mobile, harness under Wine and DXVK, 255 workers), and what the
+width is worth:
+
+| | |
+|---|---|
+| first boot | 255 workers took 3.22 times as long as 31 (188 ms, the threes 2% and 0% apart): about 79 side by side; 2 columns (and 3.13, 81, on a second cold boot) |
+| later boot, the registry kept (`--persist`) | 173 ms against 190: 2 columns as before |
+| a tick without `MC_HYBRID` | "all alike": the kernel's layout, `nxray` on 255 workers |
+| `nxray` 640 x 480, 2 columns (as chosen) | best of six 643 ms, sum `fd92a71e` (the hybrid by hand: 611 to 722; the uniform L1: 940) |
+| `nxray`, 8 columns (`geotune.force` 8) | best 758 ms, sum `fd92a71e`, 255 workers (128 in the second band, 111 after the big ones) |
+| `nxphys` scene 1, 720 substeps | 33,670 to 33,839 ms (L1 33,731), the end state the same: highest 5030 mm, deepest 1, fastest 395 mm/s, 10 without room, sum `d8f2fca2` |
+| Doom `-timedemo demo1` | 3,274 realtics (L1 3,175 to 3,301) |
+
+About 79 at once agrees with "Up to 256 cores" (60 to 90 blocks on this card). On an RTX 5090
+(not run with `geotune`) a pass with 256 cores each at its own work is 1.17 times one with 64,
+which is under the 1.5. The first boot spends about three seconds measuring (a warm-up, the
+sizing run, 3 x (190 + 600) ms and four layouts of 0.2 s); a later boot about one.
+
+The three widths forced in turn, round after round (medians; `nxray` best of six, sums
+`fd92a71e` and `d8f2fca2` in every run):
+
+| | 2 columns | 4 | 8 |
+|---|---|---|---|
+| RTX 2060 Mobile, `nxray` 640 x 480 | 616 ms | 594 | 742 |
+| RTX 2060 Mobile, `nxphys` 720 substeps | 33.8 s | 36.5 | 47.3 |
+| RTX 5070 Laptop (D3D11, `geotune`: 3.80 and 3.83 times, about 66 at once), `nxray` | 177 ms | 251 | 315 |
+| RTX 5070 Laptop, `nxphys` | 10.1 s | 12.2 | 14.7 |
+
+Doom, Tiberian Dawn: the same at every width within the cards' drift (their work is on the big
+workers and the first core). Four columns win 3.6% of `nxray` on the 2060 and lose 8% of
+`nxphys`; two is the dense width on both laptops. The 5090, which wants eight, is what the
+threshold of 1.5 is there for, and has not been run with `geotune`.
+
 ## More than sixteen cores
 
 The machine has 64 (the D3D11 harness with the eight targets, `rvc_cpu`, Unity). What is
