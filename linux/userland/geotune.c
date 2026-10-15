@@ -7,7 +7,8 @@
  * The geometry is always the hybrid one: workers 1 to 16 big (caches of 2^5 buckets), which is
  * what keeps a game's few workers as fast as before, and the rest small (2^3). What depends on
  * the card is how the small ones' blocks lie in the tick's pixels: a card that runs every one of
- * them side by side wants each in a block of eight columns of its own, a card that does not
+ * them side by side wants each in a block of eight columns of its own, and a cache as big as the
+ * big ones' (small caches only cost it: nxphys 1.7 times on an RTX 5090), a card that does not
  * wants them packed two columns apart, so that fewer warps carry them. Which it is, is measured:
  * every small worker in a block of eight, the same job on an eighth of them and on all of them,
  * in turn, three times. A card that runs them all at once takes as long for all as for the
@@ -46,7 +47,7 @@
 #define BIG_BITS 5
 #define SMALL_BITS 3
 #define DENSE 2				/* columns of a small worker's block on a card that cannot run them all */
-#define WIDE 8				/* and on one that can: a block of eight to itself */
+#define WIDE 8				/* and on one that can: a block of eight to itself, and the big ones' cache */
 #define ALL_AT_ONCE 150			/* all the small workers' job against an eighth's, in hundredths: less on a card that runs them all */
 #define DRIFT 25			/* a later boot's time against the kept one, in hundredths, that is the same card still */
 #define EARLY "/tmp/nxpersist.early"	/* the kept folder was loaded here (the nx script then does not) */
@@ -257,6 +258,7 @@ done:
 	usleep(60000);	/* (the kernel parks the cores of a program that closes the device) */
 	if (!width)
 		width = DENSE;
-	lay_out(most - 1, SMALL_BITS, hybrid(1, width, WIDE));
+	/* a card that runs them all at once loses nothing to larger caches: every worker a big one */
+	lay_out(most - 1, width == WIDE ? BIG_BITS : SMALL_BITS, hybrid(1, width, WIDE));
 	return 0;
 }

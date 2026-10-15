@@ -516,8 +516,10 @@ without it, and `geotune` leaves the layout to the kernel. Then:
    A card that runs every block side by side takes as long for all as for the eighth; one that
    does not takes longer, and all over the time is roughly how many it runs at once. The job is
    sized to some 200 ms for the eighth.
-2. Under 1.5 times: eight-column blocks. Otherwise two columns. If either set of three times is
-   more than 30% apart the card is too unsteady to say and it is two.
+2. Under 1.5 times: eight-column blocks, and the small workers get the big ones' caches (2^5),
+   so every worker is as the uniform geometry has it: a card that runs them all at once gains
+   nothing from small caches and loses `nxphys` to them. Otherwise two columns at 2^3. If
+   either set of three times is more than 30% apart the card is too unsteady to say and it is two.
 3. The registry keeps the choice (`geotune.width`, `.workers`, `.iterations`, `.us`, `.ratio`;
    `geotune.force` 2, 4 or 8 is a width with nothing measured: `docs/persist.md`). So that a
    kept registry is there to be read, `geotune` loads the kept folder itself when the desktop
@@ -542,9 +544,9 @@ width is worth:
 | `nxphys` scene 1, 720 substeps | 33,670 to 33,839 ms (L1 33,731), the end state the same: highest 5030 mm, deepest 1, fastest 395 mm/s, 10 without room, sum `d8f2fca2` |
 | Doom `-timedemo demo1` | 3,274 realtics (L1 3,175 to 3,301) |
 
-About 79 at once agrees with "Up to 256 cores" (60 to 90 blocks on this card). On an RTX 5090
-(not run with `geotune`) a pass with 256 cores each at its own work is 1.17 times one with 64,
-which is under the 1.5. The first boot spends about three seconds measuring (a warm-up, the
+About 79 at once agrees with "Up to 256 cores" (60 to 90 blocks on this card). An RTX 5090
+(D3D11) measured 1.08 to 1.10 times, about 231 to 236 at once, on every one of eight runs, and
+lays out eight columns with every worker big. The first boot spends about three seconds measuring (a warm-up, the
 sizing run, 3 x (190 + 600) ms and four layouts of 0.2 s); a later boot about one.
 
 The three widths forced in turn, round after round (medians; `nxray` best of six, sums
@@ -556,11 +558,17 @@ The three widths forced in turn, round after round (medians; `nxray` best of six
 | RTX 2060 Mobile, `nxphys` 720 substeps | 33.8 s | 36.5 | 47.3 |
 | RTX 5070 Laptop (D3D11, `geotune`: 3.80 and 3.83 times, about 66 at once), `nxray` | 177 ms | 251 | 315 |
 | RTX 5070 Laptop, `nxphys` | 10.1 s | 12.2 | 14.7 |
+| RTX 5090 (small workers 2^3), `nxray` | 150 ms | 106 | 108 |
+| RTX 5090 (small workers 2^3), `nxphys` | 8.5 s | 6.9 | 7.9 |
+| RTX 5090, `geotune`'s pick (8 columns, every worker 2^5), `nxray` / `nxphys` | | | 118 ms / 4.42 s |
 
 Doom, Tiberian Dawn: the same at every width within the cards' drift (their work is on the big
 workers and the first core). Four columns win 3.6% of `nxray` on the 2060 and lose 8% of
-`nxphys`; two is the dense width on both laptops. The 5090, which wants eight, is what the
-threshold of 1.5 is there for, and has not been run with `geotune`.
+`nxphys`; two is the dense width on both laptops. On the 5090 eight columns and four are level
+within its drift, and what costs is the small caches: with every worker at 2^5 `nxphys` is 4.42
+to 4.60 s against 7.49 to 7.66 at four columns of 2^3, `nxray` the same (112 to 120 ms against
+105 to 119), as the uniform L1 (114 ms, 4.75 s). `nxphys`'s quads (`PHYS_QSUM`) were `8f79c97a`
+at every width there.
 
 ## More than sixteen cores
 
