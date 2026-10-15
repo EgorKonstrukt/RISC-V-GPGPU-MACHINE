@@ -122,6 +122,9 @@ struct pt_picture {
 	int bounces;		/* how many times a path may turn */
 	int owners;		/* each tile framed in its core's colour */
 	uint32_t seed;
+	const uint32_t *glowing;	/* the world's triangles that glow, */
+	const float *glow_upto;	/* and the area of them up to and with each: pt_glowing() */
+	int glowing_count;
 	float *sums;		/* three floats a pixel: the light of the samples so far */
 	uint32_t *pixels;	/* the picture, 0x00RRGGBB */
 };
@@ -134,6 +137,9 @@ uint32_t pt_tile(uint32_t tile, uint32_t how);
  * which: the worker's place w (from 0) among n, n from bit 16. how: its number from bit 24,
  * below that how many samples at most (0: all). Ends early when its core is wanted back. */
 uint32_t pt_share(uint32_t which, uint32_t how);
+/* The world's glowing triangles, which a matt surface asks for their light as it does a
+ * light's: after sc_world_build() and after any glow changed. False when there is no memory. */
+int pt_glowing(void);
 /* Before the shares are handed out: the tracer's code and the world read, so that no worker
  * stops at a page of them. */
 void pt_read_all(void);

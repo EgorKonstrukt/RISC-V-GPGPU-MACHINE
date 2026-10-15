@@ -32,7 +32,7 @@
 #define LIST_Y 122
 #define LIST_ROWS 8
 #define H (LIST_Y + LIST_ROWS * UI_ROW + 4 + 8)
-#define KINDS ".wav .mp3 .flac .mod .ogg"
+#define KINDS ".wav .mp3 .flac .mod .ogg .oga"
 #define TUNES 256
 
 enum { K_NONE, K_WAV, K_MOD, K_FLAC, K_MP3, K_OGG };

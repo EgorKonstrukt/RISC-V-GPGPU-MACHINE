@@ -425,6 +425,8 @@ bool ShaderEmu_Drag(int* dx, int* dy)
     return Drag_Script(dx, dy) || Drag_State == 2 || *dx || *dy;
 }
 
+bool ShaderEmu_Auto_Press; // a won mission's screens: TDAWN_AUTO presses Return through them too
+
 void WWKeyboardClassShaderEmu::Fill_Buffer_From_System(void)
 {
     static const char* automatic = getenv("TDAWN_AUTO");
@@ -432,7 +434,7 @@ void WWKeyboardClassShaderEmu::Fill_Buffer_From_System(void)
     struct host_event event;
 
     // TDAWN_AUTO=1 presses Return through the menus, for runs nobody is at
-    if (automatic && !InMainLoop && (++calls & 63) == 0) {
+    if (automatic && (!InMainLoop || ShaderEmu_Auto_Press) && (++calls & 63) == 0) {
         Put_Key_Message(VK_RETURN, false);
         Put_Key_Message(VK_RETURN, true);
     }

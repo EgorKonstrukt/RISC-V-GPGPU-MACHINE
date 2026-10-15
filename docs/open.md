@@ -51,18 +51,18 @@ program registered for what it is. The file manager opens a file the same way.
 ## The kinds
 
 Every file `/usr/share/nxopen.*`, a line a kind: its name, its endings, its first bytes, its
-command. `-` is none, `\xNN` a byte, `%s` the file. A program's build adds a file of its own,
+command. `-` is none, `\xNN` a byte, `\x..` any byte, `%s` the file. Endings are compared in either case. A program's build adds a file of its own,
 as it adds its line to the Start menu (`nxapps.*`).
 
 | File | Kinds |
 |---|---|
 | `nxopen.15-ide` (`linux/ide/build.sh`) | source: a `.c` or `.h` file is the IDE's (`docs/ide.md`). Files are read in their names' order and the first kind that fits is the file's, so this comes before text's |
-| `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture, archive, program, text, shortcut (a desktop's `NAME.app`: `docs/nanox.md`) |
+| `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture (PNG, JPEG, GIF, BMP, TGA, PNM, XPM), archive, program, text, shortcut (a desktop's `NAME.app`: `docs/nanox.md`) |
 | `nxopen.50-doom` (`linux/nanox/doom.sh`) | a whole game's WAD (`doom -iwad`), a patch WAD (`doom -file`) |
-| `nxopen.83-pathtrace` (`linux/pathtrace/build.sh`) | a mesh: `.obj`, `.ply` (`nxpath`, `docs/raytrace.md`) |
-| `nxopen.84-play` (`linux/play/build.sh`) | sound: WAV, MP3, FLAC, MOD (`docs/play.md`) |
+| `nxopen.83-pathtrace` (`linux/pathtrace/build.sh`) | a mesh: `.obj`, `.ply`; a scene: `.scene` (`nxpath`, `docs/raytrace.md`) |
+| `nxopen.84-play` (`linux/play/build.sh`) | sound: WAV, MP3, FLAC, Ogg Vorbis (`.ogg`, `.oga`), MOD (`docs/play.md`) |
 | `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |
-| `nxopen.86-video` (`linux/video/build.sh`) | video: MPEG-1 (`docs/video.md`) |
+| `nxopen.86-video` (`linux/video/build.sh`) | video: MPEG-1, VQA, MJPEG in AVI; a GIF is a picture's, animated or not (`docs/video.md`) |
 
 - **A program** (`\x7fELF`, `#!`): made executable and run in a terminal window of its own
   (`nxopen-run`), which stays until Enter when the program has ended. A program for another
@@ -74,15 +74,20 @@ as it adds its line to the Start menu (`nxapps.*`).
   nothing), a tar, a `.tar.gz` or a `.gz` by the bytes it has been fed through a pipe. A `.gz` of one file is unpacked and opened
   as what it holds.
 - **Nobody's kind**: a small window that says so, with "Open as text" and "Save to /root".
-- The file manager starts a file with its execute bit itself, as before, and `open` for
-  everything else; its own list of endings is only for the icons.
+- The file manager starts a file with its execute bit itself only when it also begins as a
+  program does (`is_program` in `nxfiles.c`: every file of the image has that bit, and the
+  Ogg tunes and the AVI were run as programs, with a program's icon), and `open` for
+  everything else; its own list of endings is only for the icons. `nxfiles --kinds FOLDER`
+  prints each entry's kind and icon.
 
 Nothing of this outlasts power-off: `/tmp` and `/root` are the overlay's.
 
 ## Checking it
 
 - What it decides, in the interpreter (0.7 s): `open --dry` over one file of each kind and
-  some with wrong endings or none.
+  some with wrong endings or none. `python tools/test_all.py open-kinds nxfiles-kinds
+  nxview-unnamed` does it for every kind libmedia reads (`docs/media.md`), and the viewer
+  given a picture under a name with no ending.
 
       bin\rvc_cpu.exe --quiet --uart-log logs\ucpu_open.log --expect "/ # " --send "open --dry /usr/share/doom1.wad; cp /usr/share/nes-thwaite.nes /tmp/game; open --dry /tmp/game; echo LX-''DONE\n" --until "LX-DONE"
 

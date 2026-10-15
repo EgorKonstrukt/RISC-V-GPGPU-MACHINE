@@ -1,6 +1,7 @@
 using TMPro;
 using UdonSharp;
 using UnityEngine;
+using UnityEngine.UI;
 using VRC.SDKBase;
 using VRC.Udon.Common;
 
@@ -33,6 +34,9 @@ public class EmuHolodeck : UdonSharpBehaviour
     public TextMeshProUGUI[] doorLabels;   // whose a room is, by its door
     public TextMeshProUGUI[] plateLabels;  // and on its stand: what is held, what a key does
     public TextMeshProUGUI[] scaleLabels;
+    // A console's two sliders, a room: the world's size and the large screen's (WorldSlid, ScreenSlid)
+    public Slider[] worldSliders, screenSliders;
+    public TextMeshProUGUI[] screenLabels;
     public Collider[] plateColliders;      // a console's own, which VRChat's laser presses: off for a sitter in a headset
     // The console can be put away (HideConsole): its model and the mark of it, one for all the
     // rooms, and a room's own plate, keys and screen; a small button in its place brings it back.
@@ -73,13 +77,15 @@ public class EmuHolodeck : UdonSharpBehaviour
     private float mouseGone;           // a desktop sitter's mouse: how far right it has gone, in counts
     private bool firing;               // and its left button, which is the games' Ctrl
     private int played;                // the program whose world is round them: kept while another window has the keyboard
-    private float inUse = -1f;         // the plane in use: Natural's, moved by World + and -
-    private float shift;               // what World + and - moved it by, for the game played now
+    private float inUse = -1f;         // the plane in use: Natural's, moved by the World slider
+    private float shift;               // what the World slider moved it by, for the game played now
+    private float screenScale = 1f;    // the large screen's size, by the Screen slider: half to twice
+    private float[] placedScale;
     private int shiftFor;
     private const int Ctrl = 29, Pressed = 65536;
     // The programs that are played with both hands, by their numbers in linux/apps/gameid.h:
     // each hand has a beam there. Any other program's aim is the right hand's.
-    private int[] twoHanded = { 8 };   // nxphys
+    private int[] twoHanded = { 8, 3 };   // nxphys; ClassiCube (the right hand breaks, the left places)
 
     void Start()
     {
@@ -88,6 +94,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         holds = new int[count];
         showing = new Texture[count];
         placed = new int[count];
+        placedScale = new float[count];
         content.gameObject.SetActive(false);
         scene.gameObject.SetActive(false);
         sceneMaterial.SetFloat("_Plane", plane);
@@ -315,13 +322,26 @@ public class EmuHolodeck : UdonSharpBehaviour
         nextAt = 0f;
     }
 
-    public void Larger() { Scale(-0.05f); }
-    public void Smaller() { Scale(0.05f); }
+    // The sliders, by VRChat's laser or a desktop's click (WorldSlid, ScreenSlid), or by a
+    // sitter's beam (WorldSlide, ScreenSlide: EmuPointer.holoSlide, 0 to 1 across the slot).
+    public void WorldSlid() { if (own >= 0 && Has(worldSliders)) World(worldSliders[own].value); }
+    public void ScreenSlid() { if (own >= 0 && Has(screenSliders)) ScreenSize(screenSliders[own].value); }
+    public void WorldSlide() { if (own >= 0 && pointer != null) World(pointer.holoSlide); }
+    public void ScreenSlide() { if (own >= 0 && pointer != null) ScreenSize(pointer.holoSlide); }
 
-    private void Scale(float by)
+    private bool Has(Slider[] sliders) { return sliders != null && own < sliders.Length && sliders[own] != null; }
+
+    // The world's size, 0 to 1 (1 - the plane in use), as the slider shows it
+    private void World(float size)
     {
-        if (own < 0) return;
-        shift = Mathf.Clamp(shift + by, -1f, 1f);
+        if (inUse >= 0f && Mathf.Abs(size - (1f - inUse)) < 0.002f) return;
+        shift = Mathf.Clamp(1f - size - Natural(), -1f, 1f);
+        nextAt = 0f;
+    }
+
+    private void ScreenSize(float at)
+    {
+        screenScale = 0.5f * Mathf.Pow(4f, Mathf.Clamp01(at));
         nextAt = 0f;
     }
 
@@ -418,13 +438,15 @@ public class EmuHolodeck : UdonSharpBehaviour
             // this visitor's own screen is the console's small one or a large one before the seat,
             // as its key says; anybody else's is the console's. Its mark goes with it.
             int large = me && (screenMode == 1 || flat) ? 1 : 0;
-            if (placed[k] != large)
+            float scale = large == 1 ? screenScale : 1f;
+            if (placed[k] != large || placedScale[k] != scale)
             {
                 placed[k] = large;
+                placedScale[k] = scale;
                 Transform screen = screens[k];
                 screen.localPosition = large == 1 ? largeAt : screenAt;
                 screen.localEulerAngles = large == 1 ? Vector3.zero : screenTurn;
-                screen.localScale = large == 1 ? largeSize : screenSize;
+                screen.localScale = large == 1 ? new Vector3(largeSize.x * scale, largeSize.y * scale, largeSize.z) : screenSize;
                 if (screenGuards != null && k < screenGuards.Length && screenGuards[k] != null)
                 {
                     screenGuards[k].SetPositionAndRotation(screen.position, screen.rotation);
@@ -442,7 +464,15 @@ public class EmuHolodeck : UdonSharpBehaviour
                             : "Space or End: stand up. Sit again for the keys";
                 if (plateLabels[k].text != says) plateLabels[k].text = says;
             }
-            if (scaleLabels[k] != null && me) scaleLabels[k].text = "World " + Mathf.RoundToInt((1f - inUse) * 100f);
+            if (scaleLabels[k] != null && me) scaleLabels[k].text = Mathf.RoundToInt((1f - inUse) * 100f).ToString();
+            if (screenLabels != null && k < screenLabels.Length && screenLabels[k] != null && me)
+                screenLabels[k].text = Mathf.RoundToInt(screenScale * 100f) + "%";
+            // (the sliders show what is in use: a game's own size, or another's slider moved)
+            if (worldSliders != null && k < worldSliders.Length && worldSliders[k] != null && me && Mathf.Abs(worldSliders[k].value - (1f - inUse)) > 0.002f)
+                worldSliders[k].value = 1f - inUse;
+            float screenPos = Mathf.Log(screenScale / 0.5f) / Mathf.Log(4f);
+            if (screenSliders != null && k < screenSliders.Length && screenSliders[k] != null && me && Mathf.Abs(screenSliders[k].value - screenPos) > 0.002f)
+                screenSliders[k].value = screenPos;
         }
     }
 
@@ -545,8 +575,10 @@ public class EmuHolodeck : UdonSharpBehaviour
             // (a click with the view on the console or the room's screen is theirs, not the game's)
             bool fires = (Input.GetMouseButton(0) && (pointer == null || !pointer.Landed(1))) || Input.GetKey(KeyCode.LeftControl)
                       || Input.GetKey(KeyCode.RightControl);
+            // (the right button is the left trigger: ClassiCube places by it, Doom uses)
+            bool other = Input.GetMouseButton(1) && (pointer == null || !pointer.Landed(1));
             now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
-            now[9] &= 0x3fff;
+            now[9] = (now[9] & 0x3fff) | (play && other ? 1 << 14 : 0);
             if (play && Input.GetKey(KeyCode.Space)) now[0] |= 64;
             now[10] = play ? (x & 255) | ((y & 255) << 8) : 0;
             now[11] = 0;
@@ -554,6 +586,9 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         else if (gamepad != null)
         {
+            // (the left hand's way, its word being the sticks: in place of the head's roll, a byte each)
+            int yaw = now[10] >= 32768 ? now[10] - 65536 : now[10], rise = now[11] >= 32768 ? now[11] - 65536 : now[11];
+            now[7] = (Mathf.RoundToInt(yaw / 256f) & 255) | ((Mathf.Clamp(Mathf.RoundToInt(rise / 128f), -127, 127) & 255) << 8);
             now[10] = gamepad.StickLow();
             now[11] = gamepad.StickHigh();
             if (gamepad.Jumping()) now[0] |= 64;   // (bit 6: the jump button; no trigger jumps)

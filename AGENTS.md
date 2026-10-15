@@ -206,7 +206,7 @@
   set at once, read at start. A test that must have the defaults does not read it (`RAY_FRAMES`).
 - A holodeck's sitter on a desktop plays by the host's words, not by the window's keys
   (`docs/holodeck.md`, "Played from the seat"; `EmuHolodeck.ByWords`): W, A, S, D and the arrows
-  are the left stick, Ctrl or the left button the right trigger, Space the left one. A game
+  are the left stick, Ctrl or the left button the right trigger, the right button the left one, Space the jump bit. A game
   played from the seat reads the stick and the two triggers while seated (`seated` 1 and 2), and
   its number is in `ByWords`; `rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` with its `_SEAT`
   switch must walk it. ClassiCube started in the background there wants `</dev/null`.

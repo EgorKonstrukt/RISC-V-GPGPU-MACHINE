@@ -274,7 +274,7 @@ static const struct { const char *endings, *icon; } types[] = {
 	{ ".nes", "nes" }, { ".wad .dsg", "doom" }, { ".pak .bsp .mdl", "quake" }, { ".pk3", "quake3" }, { ".cw", "classicube" },
 	{ ".c", "c-source" }, { ".h", "c-header" }, { ".cpp .cc .cxx .hpp", "cpp-source" }, { ".py .js .json .mk", "code" },
 	{ ".css .xml .svg", "page" }, { ".ttf .otf .bdf .pcf .fnt", "font" }, { ".png", "png" }, { ".jpg .jpeg", "jpeg" },
-	{ ".gif", "gif" }, { ".bmp .ppm .pgm", "bitmap" }, { ".flac .mp3 .wav", "tune" }, { ".so", "library" },
+	{ ".gif", "gif" }, { ".bmp .ppm .pgm .pbm .pnm", "bitmap" }, { ".flac .mp3 .wav .ogg .oga", "tune" }, { ".so", "library" },
 	{ ".o .a .dat .rom .mix .aud .idx", "data" }, { ".iso .img", "disk" },
 };
 
@@ -290,6 +290,24 @@ type_icon(const char *lower)
 			return types[k].icon;
 	return NULL;
 }
+
+/* Whether a file with its execute bit is a program: the image's files all have it, so it
+ * must also begin as a program does. */
+static int
+is_program(const char *name)
+{
+	char head[4] = "";
+	int fd;
+
+	if ((fd = open(name, O_RDONLY)) >= 0) {
+		if (read(fd, head, sizeof head) < 4)
+			head[0] = 0;
+		close(fd);
+	}
+	return !memcmp(head, "\177ELF", 4) || !memcmp(head, "#!", 2);
+}
+
+static const char *kind_icon;	/* the icon's name kind_of() last chose (for --kinds) */
 
 /* What an entry is, asked of the file system the first time it matters: in a folder of
  * hundreds of names, asking for all of them takes seconds. */
@@ -314,17 +332,17 @@ kind_of(int i)
 				e->kind = K_FOLDER;
 			else if (ends_with(e->name, ".app"))
 				e->kind = K_SHORTCUT;
-			else if (ends_in(e->name, ".ppm .pgm .bmp .gif .xpm .png .jpg .jpeg"))
+			else if (ends_in(e->name, ".ppm .pgm .pbm .pnm .bmp .gif .xpm .png .jpg .jpeg .tga"))
 				e->kind = K_PICTURE;
 			else if (ends_in(e->name, ".html .htm"))
 				e->kind = K_PAGE;
-			else if (ends_in(e->name, ".wav .mp3 .flac .mod"))
+			else if (ends_in(e->name, ".wav .mp3 .flac .mod .ogg .oga"))
 				e->kind = K_SOUND;
-			else if (ends_in(e->name, ".mpg .mpeg"))
+			else if (ends_in(e->name, ".mpg .mpeg .avi .vqa"))
 				e->kind = K_VIDEO;
 			else if (ends_in(e->name, ".zip .tar .gz .tgz"))
 				e->kind = K_ARCHIVE;
-			else if (info.st_mode & 0111)
+			else if ((info.st_mode & 0111) && is_program(e->name))
 				e->kind = K_PROGRAM;
 		}
 	}
@@ -350,6 +368,7 @@ kind_of(int i)
 			e->kind = K_OTHER;
 	}
 	e->icon = ui_icon_of(icon);
+	kind_icon = icon;
 	e->icon_file[0] = 0;
 	if (e->kind == K_PROGRAM) {
 		/* its own icon, when its file ends in one: the window system looks, by its whole path,
@@ -2035,6 +2054,24 @@ run_shortcut(const char *path)
 	return 0;
 }
 
+/* --kinds FOLDER: each entry's kind and icon, with no window (a test's) */
+static int
+print_kinds(const char *folder)
+{
+	int i;
+
+	if (chdir(folder) != 0)
+		return 1;
+	read_folder();
+	for (i = 0; i < count; i++) {
+		kind_icon = NULL;
+		kind_of(i);
+		printf("nxfiles: %s: %s, icon %s\n", entries[i].name, kind_names[entries[i].kind],
+		       entries[i].kind == K_SHORTCUT ? "its own" : kind_icon ? kind_icon : "?");
+	}
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2046,6 +2083,8 @@ main(int argc, char **argv)
 		return run_shortcut(argv[2]);
 	if (argc > 2 && !strcmp(argv[1], "--properties"))
 		return properties_window(argv[2]);
+	if (argc > 2 && !strcmp(argv[1], "--kinds"))
+		return print_kinds(argv[2]);
 	if (GrOpen() < 0)
 		return 1;
 	signal(SIGCHLD, SIG_IGN);

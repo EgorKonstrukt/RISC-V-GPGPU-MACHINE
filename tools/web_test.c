@@ -5,7 +5,10 @@
  * web_layout.h is tried here first.
  *
  *   gcc -O1 -g -fsanitize=address,undefined -Ilinux/apps tools/web_test.c -o web_test
- *   web_test DIR ADDRESS|FILE [--width 572] [--ppm OUT.ppm] [--items] [--sheets no] [--why X Y]
+ *   web_test DIR ADDRESS|FILE [--width 572] [--ppm OUT.ppm] [--items] [--sheets no] [--why X Y] [--failed]
+ *
+ * --failed: a picture not in the cache is laid out as the browser lays out one it could not have,
+ * a box with a line that says why (web_broken_size), not as its description.
  *
  * DIR has the fonts (font-*.sef) and the cache (web-cache.idx, webc-*). The cache's JPEGs and
  * PNGs are drawn grey unless libmedia is in: -DWEB_TEST_MEDIA -Ilinux/libmedia -Iprograms/mc,
@@ -52,17 +55,27 @@ web_file(const char *name, int *size)
 	return slurp(path, size);
 }
 
-static char pictures[512][300];
-static int picture_count;
+static char pictures[512][300];	/* the cache's file, or "" for a box that says why it is not */
+static int picture_count, failed_boxes;
 
 static int
 web_picture(int node, const char *address, int *w, int *h)
 {
-	char file[400];
+	char file[400], alt[160], label[240];
 
-	(void)node;
-	if (!web_cache_find(address, 'I', file, sizeof file, w, h) || picture_count == 512)
+	if (picture_count == 512)
 		return -1;
+	if (!web_cache_find(address, 'I', file, sizeof file, w, h)) {
+		if (!failed_boxes)
+			return -1;
+		/* (as nxweb.c's broken_label says it) */
+		if (web_attr_text(node, "alt", alt, sizeof alt) && alt[0])
+			snprintf(label, sizeof label, "%s: not in the cache", alt);
+		else
+			snprintf(label, sizeof label, "Picture not loaded: not in the cache");
+		web_broken_size(label, w, h);
+		file[0] = 0;
+	}
 	strcpy(pictures[picture_count], file);
 	return picture_count++;
 }
@@ -134,7 +147,7 @@ static void
 draw_image(const struct web_item *it)
 {
 	int size, w, h, start = 0, stride, i, j;
-	char *data = slurp(pictures[it->a], &size);
+	char *data = pictures[it->a][0] ? slurp(pictures[it->a], &size) : NULL;
 	const unsigned char *src;
 #ifdef WEB_TEST_MEDIA
 	struct media_image out = { 0 };
@@ -151,6 +164,14 @@ draw_image(const struct web_item *it)
 		media_image_free(&out);
 	} else
 #endif
+	if (!pictures[it->a][0]) {
+		/* a box that says why: its frame and its sign (the text is the browser's) */
+		fill(it->x, it->y, it->w, it->h, 0xa0a0a0);
+		fill(it->x + 1, it->y + 1, it->w - 2, it->h - 2, 0xf0f0f0);
+		if (it->w >= 18 && it->h >= 18)
+			fill(it->x + 4, it->y + 4, 12, 12, 0xd02020);
+		return;
+	}
 	if (!data || sscanf(data, "P6 %d %d 255%n", &w, &h, &start) != 2) {
 		fill(it->x, it->y, it->w, it->h, 0xe0e0e0);
 		free(data);
@@ -230,6 +251,8 @@ main(int argc, char **argv)
 			why_x = atoi(argv[i + 1]), why_y = atoi(argv[i + 2]), i += 2;
 		else if (!strcmp(argv[i], "--items"))
 			list = 1;
+		else if (!strcmp(argv[i], "--failed"))
+			failed_boxes = 1;
 		else if (!strcmp(argv[i], "--sheets") && i + 1 < argc)
 			sheets = strcmp(argv[++i], "no") != 0;
 	}

@@ -1,1 +1,1 @@
-video mpg,mpeg,vqa,avi - nxvideo %s
+video mpg,mpeg,vqa,avi RIFF\x..\x..\x..\x..AVI\x20,FORM\x..\x..\x..\x..WVQA,\x00\x00\x01\xba,\x00\x00\x01\xb3 nxvideo %s

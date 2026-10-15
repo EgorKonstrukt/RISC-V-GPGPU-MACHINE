@@ -118,6 +118,9 @@ void host_scene_drop(void);
 /* The scene's rectangles are made by a worker core when the machine has one (host.c). This
  * gives the cores back, for another use of them in the program; and how many scenes one made. */
 void host_workers_close(void);
+/* fn over items 0..n-1 in pieces on the worker cores and this one, each item writing out_bytes in a row of `out`. */
+void host_for(unsigned int n, void (*fn)(void *ctx, unsigned int from, unsigned int to), void *ctx, void *out,
+	      unsigned int out_bytes);
 extern unsigned int host_scene_jobs;
 /* TDAWN_MARK's line of what the workers' jobs ran a frame, said before the second mark (ends 1). */
 void host_workers_mark(int ends, int frames);

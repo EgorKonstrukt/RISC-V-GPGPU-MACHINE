@@ -455,7 +455,7 @@ public static partial class ShaderEmuBuilder
         material.SetFloat("_Cutoff", holes ? 0.5f : 0f);
         // print shines a little on a matt plate; on paper it is as dull as the paper
         // a panel is to be read, not admired: nearly all of it shown as drawn, a little left to the room's light
-        bool paper = name == "About";
+        bool paper = name == "About" || name == SheetName;
         material.SetFloat("_Glossiness", 0.08f);
         material.SetFloat("_InkGlossiness", 0.08f);
         material.SetFloat("_InkMetallic", 0f);
@@ -676,6 +676,14 @@ public static partial class ShaderEmuBuilder
         Image back = canvas.transform.Find("Back").GetComponent<Image>();
         Picture(back, paper, Color.white);
         back.type = Image.Type.Simple;
+        List<Graphic> print = PaperPrint(canvas, mono, bold);
+        Plate(canvas, canvas.name, WillShow(canvas), print);
+        back.enabled = false;
+    }
+
+    // Paper's print: headings bold in red, the rest typed in ink.
+    static List<Graphic> PaperPrint(Canvas canvas, TMP_FontAsset mono, TMP_FontAsset bold)
+    {
         List<Graphic> print = new List<Graphic>();
         foreach (TextMeshProUGUI label in canvas.GetComponentsInChildren<TextMeshProUGUI>(true))
         {
@@ -689,8 +697,7 @@ public static partial class ShaderEmuBuilder
             Fit(label);
             print.Add(label);
         }
-        Plate(canvas, canvas.name, WillShow(canvas), print);
-        back.enabled = false;
+        return print;
     }
 
     static void TapeLook(Canvas canvas, TMP_FontAsset bold, HashSet<Object> changing)
@@ -725,7 +732,7 @@ public static partial class ShaderEmuBuilder
     // the probes' light until the next bake.
     static void Retro(Transform world, bool onlyNew = false)
     {
-        Sprite raised = UiSprite("Raised", 6), sunken = UiSprite("Sunken", 6), cap = UiSprite("Keycap", 16, true), paper = UiSprite("Paper", 0);
+        Sprite raised = UiSprite("Raised", 6), sunken = UiSprite("Sunken", 6), cap = UiSprite("Keycap", 16, true), paperSprite = UiSprite("Paper", 0);
         TMP_FontAsset sans = RetroFont("IBMPlexSansCondensed-Medium"), bold = RetroFont("IBMPlexSansCondensed-Bold");
         TMP_FontAsset mono = RetroFont("IBMPlexMono-Regular"), monoBold = RetroFont("IBMPlexMono-Bold");
         HashSet<Object> changing = new HashSet<Object>(), painted = new HashSet<Object>();
@@ -735,15 +742,16 @@ public static partial class ShaderEmuBuilder
         {
             if (canvas.transform.parent != null && canvas.transform.parent.GetComponentInParent<Canvas>() != null) continue;   // a slider's own
             if (canvas.name.EndsWith(" hot") || canvas.name == "Controller notice") continue;   // keys with nothing to show over a model's own; a notice that moves
-            bool shown = canvas.gameObject.activeSelf, plain = canvas.GetComponent<EmuKeyboard>() == null && canvas.name != "About" &&
+            bool shown = canvas.gameObject.activeSelf, paper = canvas.name == "About" || canvas.name == SheetName,
+                 plain = canvas.GetComponent<EmuKeyboard>() == null && !paper &&
                  canvas.name != "Signs" && !canvas.name.EndsWith(" name") && canvas.name != "Memory legend" && canvas.name != "CPU sign" &&
                  canvas.name != "Speed sign";
-            if (onlyNew && (!plain || canvas.transform.Find(canvas.name + " plate") != null)) continue;
+            if (onlyNew && ((!plain && canvas.name != SheetName) || canvas.transform.Find(canvas.name + " plate") != null)) continue;
             Hidden[canvas] = onlyNew || !shown;
             canvas.gameObject.SetActive(true);   // one that opens later is drawn as it will be
             EmuKeyboard keyboard = canvas.GetComponent<EmuKeyboard>();
             if (keyboard != null) KeyboardLook(keyboard, bold, monoBold);
-            else if (canvas.name == "About") PaperLook(canvas, paper, mono, monoBold);
+            else if (paper) PaperLook(canvas, paperSprite, mono, monoBold);
             else if (canvas.name == "Signs" || canvas.name.EndsWith(" name")) TapeLook(canvas, monoBold, changing);
             else if (canvas.name == "Memory legend" || canvas.name == "CPU sign" || canvas.name == "Speed sign")   // drawn over a screen: part of a display
                 foreach (TextMeshProUGUI label in canvas.GetComponentsInChildren<TextMeshProUGUI>(true)) { label.font = monoBold; label.fontSharedMaterial = monoBold.material; EditorUtility.SetDirty(label); }

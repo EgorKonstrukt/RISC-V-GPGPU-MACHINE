@@ -28,5 +28,5 @@ riscv32-linux-strip -o "$OUT/usr/bin/nxvideo" "$BUILD/nxvideo"
 # (the sample in /root/Videos is tools/make_video.py's, run on the host)
 echo "Other/Video player=nxvideo" > "$OUT/usr/share/nxapps.86-video"
 # what `open` starts for a film (linux/apps/nxopen.conf has the columns; a GIF is a picture's, by its first bytes)
-printf '%s\n' 'video mpg,mpeg,vqa,avi - nxvideo %s' > "$OUT/usr/share/nxopen.86-video"
+printf '%s\n' 'video mpg,mpeg,vqa,avi RIFF\x..\x..\x..\x..AVI\x20,FORM\x..\x..\x..\x..WVQA,\x00\x00\x01\xba,\x00\x00\x01\xb3 nxvideo %s' > "$OUT/usr/share/nxopen.86-video"
 ls -l "$OUT/usr/bin/nxvideo"

@@ -1121,6 +1121,7 @@ public static partial class ShaderEmuBuilder
         Label(signs, "Memory", "MEMORY (writes glow)", 3500 + memAt.x * 1000 - 850, 20, 1700, 80, 54, TextAnchor.MiddleCenter, dim);
         Scope(world, computer, panel, machine);   // after the signs: it renames the memory screen's
         Remodel(world);   // last: the boxes above are where Blender's models go (ShaderEmuModels.cs)
+        SystemSheet(world);   // the system sheet on the back wall, in the board's frame (ShaderEmuSheet.cs)
         Retro(world);     // and the panels in the manner of the room's decade (ShaderEmuRetro.cs)
 
         AssetDatabase.SaveAssets();

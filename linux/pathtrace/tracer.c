@@ -2,6 +2,7 @@
  * sky (scene.h), and one sample of every pixel of a tile as a job for a worker core. A job
  * writes its tile's sums and pixels and its stack: a tile is 32 across and the width a
  * multiple of four, so no two cores store to the same 16 bytes. The scene is only read. */
+#include <stdlib.h>
 #include "scene.h"
 #include "mcw.h"
 
@@ -291,18 +292,70 @@ roughened(struct vec way, float rough, uint32_t *state)
 	return rough > 0.0f ? unit(add(way, scale(in_ball(state), rough * rough))) : way;
 }
 
+/* Light through glass is less by its colour, and by a twelfth a surface. */
+static inline struct vec
+through_glass(struct vec comes, struct vec through, int crossed)
+{
+	return crossed ? scale(mul(comes, v(fade(through.x), fade(through.y), fade(through.z))), power_of(0.92f, crossed)) : comes;
+}
+
+/* The glowing things' light at a point: a point of a glowing triangle, picked by its area, and
+ * a ray to it. `picks`: how many lights the one stands for. */
+static struct vec
+glow_at(struct vec at, uint32_t *state, uint32_t *rays, struct vec *to, float picks)
+{
+	const float *upto = pt.glow_upto;
+	int low = 0, high = pt.glowing_count - 1;
+	float r = chance(state) * upto[high], a = chance(state), b = chance(state), d2, d, facing;
+	const struct sc_triangle *tri;
+	const struct sc_object *object;
+	struct vec flat, through = v(0, 0, 0);
+	int crossed = 0;
+
+	while (low < high) {
+		int mid = (low + high) >> 1;
+
+		if (upto[mid] > r)
+			high = mid;
+		else
+			low = mid + 1;
+	}
+	tri = &sc_world.triangles[pt.glowing[low]];
+	object = &sc.objects[tri->object];
+	if (a + b > 1.0f)
+		a = 1.0f - a, b = 1.0f - b;
+	*to = sub(add(of(tri->corner), add(scale(of(tri->edge1), a), scale(of(tri->edge2), b))), at);
+	d2 = dot(*to, *to);
+	if (d2 < 1e-10f)
+		return *to = v(0, 0, 0);
+	d = __builtin_sqrtf(d2);
+	*to = scale(*to, 1.0f / d);
+	flat = cross(of(tri->edge1), of(tri->edge2));
+	facing = __builtin_fabsf(dot(flat, *to)) / __builtin_sqrtf(dot(flat, flat));
+	(*rays)++;
+	if (world_between(at, *to, v(1.0f / to->x, 1.0f / to->y, 1.0f / to->z), d - 0.002f, &through, &crossed))
+		return v(0, 0, 0);
+	/* (one over the chance of that way: the area of them all, turned, over the distance squared) */
+	return through_glass(scale(of(object->colour), object->glow * facing * upto[pt.glowing_count - 1] / d2 * picks), through, crossed);
+}
+
 /* One light's light at a point (next event estimation): a ray into the cone its ball fills
- * from there, evenly by solid angle. *to: the way taken. Nothing when something is between. */
+ * from there, evenly by solid angle, or to a glowing thing. *to: the way taken. Nothing when
+ * something is between. */
 static inline struct vec
 light_at(struct vec at, uint32_t *state, uint32_t *rays, struct vec *to)
 {
-	int lights = sc.light_count;
-	const struct sc_light *light = &sc.lights[(int)(chance(state) * (float)lights)];
-	struct vec axis = sub(of(light->place), at), ta, tb;
+	int lights = sc.light_count + (pt.glowing_count > 0), pick = (int)(chance(state) * (float)lights);
+	const struct sc_light *light = &sc.lights[pick];
+	struct vec axis, ta, tb;
 	struct vec through = v(0, 0, 0), comes;
-	float d2 = dot(axis, axis), r2 = light->radius * light->radius, d, top, less, c, s, a, b, q, reach;
+	float d2, r2, d, top, less, c, s, a, b, q, reach;
 	int crossed = 0;
 
+	if (pick >= sc.light_count)
+		return glow_at(at, state, rays, to, (float)lights);
+	axis = sub(of(light->place), at);
+	d2 = dot(axis, axis), r2 = light->radius * light->radius;
 	*to = v(0, 0, 0);
 	if (d2 <= r2)
 		return v(0, 0, 0);
@@ -325,9 +378,7 @@ light_at(struct vec at, uint32_t *state, uint32_t *rays, struct vec *to)
 		return v(0, 0, 0);
 	/* (the cone's solid angle, and the one light stands for them all) */
 	comes = scale(of(light->colour), shine(light) * 6.2831853f * less * (float)lights);
-	if (crossed)	/* through glass: less by its colour, and by a twelfth a surface */
-		comes = scale(mul(comes, v(fade(through.x), fade(through.y), fade(through.z))), power_of(0.92f, crossed));
-	return comes;
+	return through_glass(comes, through, crossed);
 }
 
 /* The light one path brings back; *rays counts its rays. */
@@ -337,7 +388,7 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 	struct vec seen = v(0, 0, 0), weight = v(1, 1, 1);
 	int bounce, straight = 1;	/* the last turn asked no light for its light: one met now is seen */
 	int matt = 0;			/* but not after a matt surface: such a path is one in thousands, and a speck */
-	int lights = sc.light_count;
+	int lights = sc.light_count + (pt.glowing_count > 0);
 
 	for (bounce = 0; bounce < pt.bounces; bounce++) {
 		const struct sc_object *object;
@@ -361,7 +412,9 @@ path(struct vec from, struct vec way, uint32_t *state, uint32_t *rays)
 		object = &sc.objects[met.triangle->object];
 		colour = of(object->colour);
 		if (object->glow > 0.0f) {
-			seen = add(seen, mul(weight, scale(colour, object->glow)));
+			/* (after a matt surface its light was asked for: light_at) */
+			if (straight && !matt)
+				seen = add(seen, mul(weight, scale(colour, object->glow)));
 			break;
 		}
 		/* the surface there: towards the mean of the triangle's corners' normals; which side the
@@ -551,8 +604,9 @@ pt_read_all(void)
 {
 	extern char __executable_start[], etext[];
 	uintptr_t at[3] = {(uintptr_t)pt_tile, (uintptr_t)pt_share, (uintptr_t)world_between}, low = at[0], high = at[0], page;
-	const volatile char *part[2] = {(const char *)sc_world.nodes, (const char *)sc_world.triangles};
-	uint32_t bytes[2] = {(uint32_t)sc_world.node_count * sizeof(struct sc_node), (uint32_t)sc_world.triangle_count * sizeof(struct sc_triangle)}, i;
+	const volatile char *part[4] = {(const char *)sc_world.nodes, (const char *)sc_world.triangles, (const char *)pt.glowing, (const char *)pt.glow_upto};
+	uint32_t bytes[4] = {(uint32_t)sc_world.node_count * sizeof(struct sc_node), (uint32_t)sc_world.triangle_count * sizeof(struct sc_triangle),
+			     (uint32_t)pt.glowing_count * 4, (uint32_t)pt.glowing_count * 4}, i;
 	int k;
 
 	for (k = 1; k < 3; k++) {
@@ -565,12 +619,45 @@ pt_read_all(void)
 		high = (uintptr_t)etext;
 	for (page = low; page < high; page += 4096)
 		(void)*(const volatile char *)page;
-	for (k = 0; k < 2; k++) {
+	for (k = 0; k < 4; k++) {
 		for (i = 0; i < bytes[k]; i += 4096)
 			(void)part[k][i];
 		if (bytes[k])
 			(void)part[k][bytes[k] - 1];
 	}
+}
+
+int
+pt_glowing(void)
+{
+	static uint32_t *triangles;
+	static float *upto;
+	static int room;
+	float area = 0.0f;
+	int i, n = 0;
+
+	pt.glowing_count = 0;
+	if (room < sc_world.triangle_count) {
+		free(triangles), free(upto);
+		room = sc_world.triangle_count;
+		triangles = malloc((size_t)room * 4), upto = malloc((size_t)room * 4);
+		if (!triangles || !upto) {
+			free(triangles), free(upto);
+			triangles = 0, upto = 0, room = 0;
+			return 0;
+		}
+	}
+	for (i = 0; i < sc_world.triangle_count; i++) {
+		const struct sc_triangle *tri = &sc_world.triangles[i];
+		struct vec flat = cross(of(tri->edge1), of(tri->edge2));
+
+		if (sc.objects[tri->object].glow > 0.0f && dot(flat, flat) > 0.0f) {
+			area += 0.5f * __builtin_sqrtf(dot(flat, flat));
+			triangles[n] = (uint32_t)i, upto[n++] = area;
+		}
+	}
+	pt.glowing = triangles, pt.glow_upto = upto, pt.glowing_count = n;
+	return 1;
 }
 
 /* A worker's share of the picture (scene.h): it is never without work while the picture is

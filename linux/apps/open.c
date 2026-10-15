@@ -113,7 +113,7 @@ read_kinds(void)
 	}
 }
 
-/* True if the bytes begin with one of a kind's marks: a list with commas, \xNN for a byte.
+/* True if the bytes begin with one of a kind's marks: a list with commas, \xNN for a byte, \x.. any.
  * A mark that begins with '<' is a page's tag, compared in either case; any other is bytes. */
 static int
 has_magic(const struct kind *k, const unsigned char *head, int n)
@@ -134,6 +134,10 @@ has_magic(const struct kind *k, const unsigned char *head, int n)
 				c = (int)strtol(hex, NULL, 16);
 				m += 3;
 				if (at >= n || head[at] != c)
+					same = 0;
+			} else if (c == '\\' && !strncmp(m, "x..", 3)) {
+				m += 3;
+				if (at >= n)
 					same = 0;
 			} else if (at >= n || (tag ? tolower(head[at]) != tolower(c) : head[at] != c))
 				same = 0;

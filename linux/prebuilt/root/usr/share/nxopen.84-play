@@ -1,1 +1,1 @@
-sound wav,mp3,flac,mod,ogg ID3,fLaC,OggS,\xff\xfb nxplay %s
+sound wav,mp3,flac,mod,ogg,oga ID3,fLaC,OggS,RIFF\x..\x..\x..\x..WAVE,\xff\xfb,\xff\xfa,\xff\xf3,\xff\xf2,\xff\xe3 nxplay %s

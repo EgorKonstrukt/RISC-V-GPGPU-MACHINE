@@ -136,6 +136,7 @@ static void multiply(const matrix* m) {
 // kernel says whose it is. 0 when it is ours now; -1 when another program has it, which is
 // then named on the standard error. (A kernel from before this answers nothing: ours.)
 #include <errno.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -144,7 +145,7 @@ static void multiply(const matrix* m) {
 static int draw_claim(int fd) {
     unsigned other = 0;
     if (ioctl(fd, SEGL_DRAW_CLAIM, &other) == 0 || errno != EBUSY) return 0;
-    char path[40], name[64] = "another program";
+    char path[40], name[64] = "another program", text[200];
     snprintf(path, sizeof path, "/proc/%u/comm", other);
     FILE* f = fopen(path, "r");
     if (f) {
@@ -152,6 +153,12 @@ static int draw_claim(int fd) {
         fclose(f);
     }
     fprintf(stderr, "the GPU is drawing for %s (process %u): one such program at a time, close it first\n", name, other);
+    // and on the desktop, where nobody reads the console (nxask outlives this program)
+    snprintf(text, sizeof text, "The GPU is drawing for %s (process %u).\nOne program at a time draws with it: close %s first.", name, other, name);
+    char* args[] = {"nxask", text, 0};
+    extern char** environ;
+    pid_t pid;
+    posix_spawnp(&pid, "nxask", 0, 0, args, environ);
     return -1;
 }
 
@@ -183,7 +190,8 @@ static __attribute__((noinline)) void rest(void) {
 
 int seglInit(unsigned int nano_x_window) {
     uint8_t here;
-    int fd = open("/dev/gpu", O_RDWR);
+    // (closed by exec: a program that runs itself again with another file must not hold the GPU against itself)
+    int fd = open("/dev/gpu", O_RDWR | O_CLOEXEC);
     if (fd < 0) return -1;
     // (not "no GPU", which a program may get by without: two programs' drawings in one memory)
     if (draw_claim(fd) < 0) exit(1);

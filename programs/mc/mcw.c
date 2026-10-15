@@ -357,7 +357,8 @@ int mcw_open(int limit)
 
 	if (page) return count;
 	if (limit > MC_MAX_CORES - 1) limit = MC_MAX_CORES - 1;
-	if (limit <= 0 || (fd = (int)call6(56, -100, (long)"/dev/gpu", 2, 0, 0, 0)) < 0) return 0;
+	/* (O_RDWR | O_CLOEXEC: a program that runs another in its place gives its workers back) */
+	if (limit <= 0 || (fd = (int)call6(56, -100, (long)"/dev/gpu", 2 | 0x80000, 0, 0, 0)) < 0) return 0;
 	device = fd;
 	for (k = 0; k < MC_MAX_CORES; k++) {
 		core_of[k] = starting[k] = 0;

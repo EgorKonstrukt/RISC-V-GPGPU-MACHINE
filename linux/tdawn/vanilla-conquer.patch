@@ -351,6 +351,235 @@ index 1dda825..c77c3fc 100644
      if (Lock()) {
          Buffer_Draw_Stamp_Clip(this,
                                 icondata,
+diff --git a/common/interpal.cpp b/common/interpal.cpp
+index 6091774..7b558fc 100644
+--- a/common/interpal.cpp
++++ b/common/interpal.cpp
+@@ -118,11 +118,196 @@ void Write_Interpolation_Palette(char const* palette_file_name)
+  * HISTORY:                                                                *
+  *   12/06/1995  MG : Created.                                             *
+  *=========================================================================*/
++#ifdef SHADEREMU
++#include "host.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++/*
++** The same table (docs/ralert.md, "A mission won"): the nearest colour is looked for outward from the
++** midpoint's r + g + b in the palette sorted by it ((dr + dg + db)^2 <= 3 d), a row's half from its
++** diagonal on, the rows on the worker cores, and the other half copied (the table is symmetric).
++*/
++struct ShaderEmu_Interpolation
++{
++    const unsigned char* palette;
++    unsigned char order[256];
++    short sum[256];
++    short first[766]; /* the first place in `order` of each sum or more */
++};
++
++static int ShaderEmu_Nearest(const ShaderEmu_Interpolation* s, int r, int g, int b)
++{
++    const unsigned char* pal = s->palette;
++    int t = r + g + b, best = 1 << 24, index = 256;
++
++    /* (the lowest index of the nearest, as the search through all of them finds) */
++    for (int k = s->first[t]; k < SIZE_OF_PALETTE; k++) {
++        int ds = s->sum[k] - t;
++        if (ds * ds > 3 * best) {
++            break;
++        }
++        const unsigned char* c = pal + s->order[k] * 3;
++        int d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
++        if (d < best || (d == best && s->order[k] < index)) {
++            best = d, index = s->order[k];
++        }
++    }
++    for (int k = s->first[t] - 1; k >= 0; k--) {
++        int ds = t - s->sum[k];
++        if (ds * ds > 3 * best) {
++            break;
++        }
++        const unsigned char* c = pal + s->order[k] * 3;
++        int d = (c[0] - r) * (c[0] - r) + (c[1] - g) * (c[1] - g) + (c[2] - b) * (c[2] - b);
++        if (d < best || (d == best && s->order[k] < index)) {
++            best = d, index = s->order[k];
++        }
++    }
++    return index;
++}
++
++static void ShaderEmu_Interpolation_Rows(void* context, unsigned from, unsigned to)
++{
++    const ShaderEmu_Interpolation* s = (const ShaderEmu_Interpolation*)context;
++    const unsigned char* pal = s->palette;
++
++    for (unsigned i = from; i < to; i++) {
++        unsigned char* row = InterpolationTable->PaletteInterpolationTable[i];
++        for (unsigned j = i; j < SIZE_OF_PALETTE; j++) {
++            row[j] = (unsigned char)ShaderEmu_Nearest(s,
++                                                      (pal[i * 3] + pal[j * 3]) >> 1,
++                                                      (pal[i * 3 + 1] + pal[j * 3 + 1]) >> 1,
++                                                      (pal[i * 3 + 2] + pal[j * 3 + 2]) >> 1);
++        }
++    }
++}
++
++/* TDAWN_INTERPOLATION=game: the game's own table and rows; =check: both, compared */
++static int ShaderEmu_Interpolation_How(void)
++{
++    static int how = -1;
++    if (how < 0) {
++        const char* text = getenv("TDAWN_INTERPOLATION");
++        how = !text ? 0 : !strcmp(text, "game") ? 1 : 2;
++    }
++    return how;
++}
++
++/* Asm_Interpolate_Line_Interpolate's rows, a source row's two at a time on the worker cores. */
++struct ShaderEmu_Lines
++{
++    const unsigned char* src;
++    unsigned char* dst;
++    int height, width, pitch;
++};
++
++static void ShaderEmu_Line_X(const unsigned char* s, unsigned char* d, int width)
++{
++    for (int i = 0; i < width - 1; i++) {
++        d[2 * i] = s[i];
++        d[2 * i + 1] = InterpolationTable->PaletteInterpolationTable[s[i]][s[i + 1]];
++    }
++    d[2 * width - 2] = s[width - 1];
++    d[2 * width - 1] = 0;
++}
++
++static void ShaderEmu_Lines_Rows(void* context, unsigned from, unsigned to)
++{
++    const ShaderEmu_Lines* l = (const ShaderEmu_Lines*)context;
++    unsigned char top[800], bottom[800];
++
++    for (unsigned y = from; y < to; y++) {
++        unsigned char* out = l->dst + 2 * y * l->pitch;
++        ShaderEmu_Line_X(l->src + y * l->width, top, l->width);
++        memcpy(out, top, 2 * l->width);
++        if ((int)y + 1 < l->height) {
++            ShaderEmu_Line_X(l->src + (y + 1) * l->width, bottom, l->width);
++            out += l->pitch;
++            for (int i = 0; i < 2 * l->width; i++) {
++                out[i] = InterpolationTable->PaletteInterpolationTable[top[i]][bottom[i]];
++            }
++        }
++    }
++}
++
++static bool ShaderEmu_Interpolate_Lines(const unsigned char* src, unsigned char* dst, int height, int width, int dst_pitch)
++{
++    static ShaderEmu_Lines l;
++    int how = ShaderEmu_Interpolation_How();
++    if (how == 1 || width > 400 || height < 2 || ((dst_pitch / 2) & 15) || ((uintptr_t)dst & 15)) {
++        return false;
++    }
++    l.src = src, l.dst = dst, l.height = height, l.width = width, l.pitch = dst_pitch / 2;
++    host_for(height, ShaderEmu_Lines_Rows, &l, dst, dst_pitch);
++    if (how == 2) {
++        int size = (2 * height - 1) * (dst_pitch / 2), differ = 0;
++        unsigned char* game = (unsigned char*)malloc(size + dst_pitch);
++        Asm_Interpolate_Line_Interpolate((void*)src, game, height, width, dst_pitch);
++        for (int y = 0; y < 2 * height - 1; y++) {
++            differ += memcmp(game + y * (dst_pitch / 2), dst + y * (dst_pitch / 2), 2 * width) != 0;
++        }
++        free(game);
++        fprintf(stderr, "interpolation: %d of %d rows differ from the game's own\n", differ, 2 * height - 1);
++    }
++    return true;
++}
++
++static void ShaderEmu_Interpolation_Table(void)
++{
++    static ShaderEmu_Interpolation s;
++    const unsigned char* pal = (const unsigned char*)InterpolationPalette;
++    int count[767] = {0};
++
++    s.palette = pal;
++    for (int p = 0; p < 256; p++) {
++        count[pal[p * 3] + pal[p * 3 + 1] + pal[p * 3 + 2] + 1]++;
++    }
++    for (int v = 0; v < 766; v++) {
++        count[v + 1] += count[v];
++    }
++    for (int v = 0; v < 766; v++) {
++        s.first[v] = (short)count[v];
++    }
++    for (int p = 0; p < 256; p++) {
++        int v = pal[p * 3] + pal[p * 3 + 1] + pal[p * 3 + 2], at = count[v]++;
++        s.order[at] = (unsigned char)p, s.sum[at] = (short)v;
++    }
++    unsigned char(*table)[256] = InterpolationTable->PaletteInterpolationTable;
++    if (((uintptr_t)table & 15) == 0) {
++        host_for(256, ShaderEmu_Interpolation_Rows, &s, table, 256);
++    } else {
++        ShaderEmu_Interpolation_Rows(&s, 0, 256);
++    }
++    for (int i = 1; i < 256; i++) {
++        for (int j = 0; j < i; j++) {
++            table[i][j] = table[j][i];
++        }
++    }
++}
++#endif
++
+ void Create_Palette_Interpolation_Table(void)
+ {
+     // Don't think we need this. ST - 12/20/2018 2:25PM
+     // Asm_Create_Palette_Interpolation_Table();
+ 
++#ifdef SHADEREMU
++    int how = ShaderEmu_Interpolation_How();
++    if (how != 1) {
++        ShaderEmu_Interpolation_Table();
++        if (how == 0) {
++            InterpolationPaletteChanged = false;
++            return;
++        }
++    }
++    static unsigned char* made;
++    if (how == 2) {
++        made = made ? made : (unsigned char*)malloc(65536);
++        memcpy(made, InterpolationTable->PaletteInterpolationTable, 65536);
++    }
++#endif
+ #ifndef REMASTER_BUILD
+ 
+     int i;
+@@ -208,6 +393,15 @@ void Create_Palette_Interpolation_Table(void)
+         }
+     }
+ 
++#endif
++#ifdef SHADEREMU
++    if (how == 2) {
++        int differ = 0;
++        for (int k = 0; k < 65536; k++) {
++            differ += made[k] != (&InterpolationTable->PaletteInterpolationTable[0][0])[k];
++        }
++        fprintf(stderr, "interpolation: %d of 65536 entries differ from the game's own\n", differ);
++    }
+ #endif
+     InterpolationPaletteChanged = false;
+     return;
+@@ -383,6 +577,11 @@ void Interpolate_2X_Scale(GraphicBufferClass* source,
+         break;
+ 
+     case 2:
++#ifdef SHADEREMU
++        if (ShaderEmu_Interpolate_Lines(src_ptr, dest_ptr, source->Get_Height(), src_width, dest_width)) {
++            break;
++        }
++#endif
+         Asm_Interpolate_Line_Interpolate(src_ptr, dest_ptr, source->Get_Height(), src_width, dest_width);
+         break;
+     }
 diff --git a/common/keybuff.cpp b/common/keybuff.cpp
 index 1f9575d..371bee9 100644
 --- a/common/keybuff.cpp
@@ -1270,14 +1499,20 @@ index 1360f92..755ba67 100644
  
      /*
 diff --git a/tiberiandawn/anim.h b/tiberiandawn/anim.h
-index ae48da8..3e5b899 100644
+index ae48da8..7a7f19f 100644
 --- a/tiberiandawn/anim.h
 +++ b/tiberiandawn/anim.h
-@@ -109,6 +109,12 @@ public:
+@@ -109,6 +109,18 @@ public:
      {
          return (Delay == 0) ? VisibleFlags : 0;
      }
 +#ifdef SHADEREMU
++    /* (a copy drawn by a worker while the logic goes on: its place now, attached to nothing) */
++    void ShaderEmu_Detach(void)
++    {
++        Coord = Center_Coord();
++        Object = NULL;
++    }
 +    unsigned char ShaderEmu_Delay(void) const
 +    {
 +        return Delay;
@@ -1286,6 +1521,25 @@ index ae48da8..3e5b899 100644
  
      virtual void Set_Owner(HousesType owner);
      virtual bool Can_Place_Here(COORDINATE) const
+diff --git a/tiberiandawn/building.cpp b/tiberiandawn/building.cpp
+index 91f1bec..26fcf88 100644
+--- a/tiberiandawn/building.cpp
++++ b/tiberiandawn/building.cpp
+@@ -638,9 +638,12 @@ void BuildingClass::Draw_It(int x, int y, WindowNumberType window)
+     /*
+     **	Actually draw the building shape.
+     */
+-    IsTheaterShape = Class->IsTheater;
++    bool shape_flags = ShaderEmu_Shape_Flags();
++    if (shape_flags)
++        IsTheaterShape = Class->IsTheater;
+     Techno_Draw_Object(shapefile, shapenum, x, y, window);
+-    IsTheaterShape = false;
++    if (shape_flags)
++        IsTheaterShape = false;
+ 
+     /*
+     ** Patch for adding overlay onto weapon factory.  Only add the overlay if
 diff --git a/tiberiandawn/cell.cpp b/tiberiandawn/cell.cpp
 index c7ad7f4..17f0d9f 100644
 --- a/tiberiandawn/cell.cpp
@@ -1666,10 +1920,10 @@ index f9c20ea..307e158 100644
  #endif
 \ No newline at end of file
 diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
-index a8aebd8..08d8760 100644
+index a8aebd8..b666023 100644
 --- a/tiberiandawn/conquer.cpp
 +++ b/tiberiandawn/conquer.cpp
-@@ -98,6 +98,621 @@ extern void Send_Statistics_Packet(void);
+@@ -98,6 +98,657 @@ extern void Send_Statistics_Packet(void);
  extern char* __nheapbeg;
  bool InMainLoop = false;
  
@@ -1707,6 +1961,24 @@ index a8aebd8..08d8760 100644
 +        ShaderEmu_Occupy_Wrong += ShaderEmu_Occupied_Check();
 +        ShaderEmu_Occupy_Checks++;
 +    }
++}
++
++/* A step from a won mission to the next (TDAWN_WIN; docs/tdawn.md, "A mission won"): its time, instructions, memory. */
++void ShaderEmu_Stage(const char* what)
++{
++    static const bool on = getenv("TDAWN_WIN") != NULL;
++    unsigned size = 0, rss = 0;
++    if (!on) {
++        return;
++    }
++    if (FILE* f = fopen("/proc/self/statm", "r")) {
++        if (fscanf(f, "%u %u", &size, &rss) != 2) {
++            size = rss = 0;
++        }
++        fclose(f);
++    }
++    fprintf(stderr, "tdawn: %s at %u ms, %u instructions, %u KB mapped, %u KB in use\n", what, host_ms(),
++            host_cycles(), size * 4, rss * 4);
 +}
 +
 +/* A sum of the game's state, to see two runs (or two builds) play the same. */
@@ -1888,6 +2160,24 @@ index a8aebd8..08d8760 100644
 +        }
 +    }
 +    ShaderEmu_Move();
++    {
++        /* TDAWN_WIN=N: the player wins the mission at frame N (once) */
++        static int win = -1, said = -1;
++        if (win < 0) {
++            win = getenv("TDAWN_WIN") ? atoi(getenv("TDAWN_WIN")) : 0;
++        }
++        if (said != (int)Scen.Scenario) {
++            char name[64];
++            said = (int)Scen.Scenario;
++            snprintf(name, sizeof(name), "mission %d's frame %d", said, (int)Frame);
++            ShaderEmu_Stage(name); /* (its memory: a mission after another must not have more) */
++        }
++        if (win && (int)Frame == win) {
++            win = 0;
++            PlayerPtr->Flag_To_Win();
++            ShaderEmu_Stage("the mission won");
++        }
++    }
 +    if (build && Frame == build) {
 +        CELL corner = Coord_Cell(Map.TacticalCoord);
 +        int before = Buildings.Count();
@@ -2291,7 +2581,7 @@ index a8aebd8..08d8760 100644
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
  #endif
-@@ -1126,12 +1741,31 @@ bool Color_Cycle(void)
+@@ -1126,12 +1777,31 @@ bool Color_Cycle(void)
      static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
      static bool _up = false;
      bool changed = false;
@@ -2324,7 +2614,7 @@ index a8aebd8..08d8760 100644
          _ftimer.Set(TIMER_SECOND / 8);
  
  /*
-@@ -1165,7 +1799,7 @@ bool Color_Cycle(void)
+@@ -1165,7 +1835,7 @@ bool Color_Cycle(void)
      /*
      **	Process the color cycling effects -- water.
      */
@@ -2333,7 +2623,7 @@ index a8aebd8..08d8760 100644
          unsigned char colors[3];
  
          _timer.Set(TIMER_SECOND / 4);
-@@ -1222,6 +1856,20 @@ void Call_Back(void)
+@@ -1222,6 +1892,20 @@ void Call_Back(void)
      if (SampleType) {
          Theme.AI();
          Speak_AI();
@@ -2354,7 +2644,7 @@ index a8aebd8..08d8760 100644
      }
  
  #ifdef NETWORKING
-@@ -1516,7 +2164,7 @@ static void Sync_Delay(void)
+@@ -1516,7 +2200,7 @@ static void Sync_Delay(void)
              if (input) {
                  Keyboard_Process(input);
              }
@@ -2363,7 +2653,7 @@ index a8aebd8..08d8760 100644
          }
  
          Frame_Limiter(FL_NONE);
-@@ -1611,12 +2259,18 @@ bool Main_Loop()
+@@ -1611,12 +2295,18 @@ bool Main_Loop()
      } else {
          FrameTimer.Set(Options.GameSpeed);
      }
@@ -2382,7 +2672,7 @@ index a8aebd8..08d8760 100644
  
              WWMouse->Erase_Mouse(&HidPage, true);
              Map.Input(input, x, y);
-@@ -1624,7 +2278,24 @@ bool Main_Loop()
+@@ -1624,7 +2314,24 @@ bool Main_Loop()
                  Keyboard_Process(input);
              }
              //			HidPage.Lock();
@@ -2408,7 +2698,7 @@ index a8aebd8..08d8760 100644
              //			HidPage.Unlock();
          }
      }
-@@ -1650,7 +2321,17 @@ bool Main_Loop()
+@@ -1650,7 +2357,17 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -2427,7 +2717,7 @@ index a8aebd8..08d8760 100644
  
      //	Heap_Dump_Check( "After Logic.AI" );
  
-@@ -1659,8 +2340,24 @@ bool Main_Loop()
+@@ -1659,8 +2376,24 @@ bool Main_Loop()
      **	a message has expired & been removed, and the entire map must be updated.
      */
      if (Messages.Manage()) {
@@ -2454,7 +2744,7 @@ index a8aebd8..08d8760 100644
      }
  
      //
-@@ -1710,6 +2407,9 @@ bool Main_Loop()
+@@ -1710,6 +2443,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2464,7 +2754,7 @@ index a8aebd8..08d8760 100644
          Do_Win();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1726,6 +2426,9 @@ bool Main_Loop()
+@@ -1726,6 +2462,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2474,7 +2764,7 @@ index a8aebd8..08d8760 100644
          Do_Lose();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1736,6 +2439,9 @@ bool Main_Loop()
+@@ -1736,6 +2475,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2484,7 +2774,7 @@ index a8aebd8..08d8760 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
      }
-@@ -2242,6 +2948,10 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn)
+@@ -2242,6 +2984,10 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn)
                  InMovie = true;
                  VQA_Play(vqa, VQAMODE_RUN);
                  VQA_Close(vqa);
@@ -2495,7 +2785,7 @@ index a8aebd8..08d8760 100644
                  // Resume_Audio_Thread();
                  InMovie = false;
                  Free_Interpolated_Palettes();
-@@ -2642,6 +3352,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
+@@ -2642,6 +3388,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
   *   02/21/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
  //#pragma off(unreferenced)
@@ -2566,13 +2856,17 @@ index a8aebd8..08d8760 100644
  void CC_Draw_Shape(void const* shapefile,
                     int shapenum,
                     int x,
-@@ -2656,6 +3430,15 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2656,6 +3466,19 @@ void CC_Draw_Shape(void const* shapefile,
      char* shape_pointer;
      uintptr_t shape_size;
  
 +#ifdef SHADEREMU
 +    if (ShaderEmu_GL_Shape(shapefile, shapenum, x, y, window, flags, fadingdata, ghostdata)) {
 +        return;
++    }
++    bool ShaderEmu_GL_Not_Behind(void);
++    if (ShaderEmu_GL_Not_Behind()) {
++        return; /* (nothing of the game's own drawing on the worker that draws the objects: gl.cpp) */
 +    }
 +    if (shapefile && shapenum != -1 && !(flags & ~(SHAPE_CENTER | SHAPE_WIN_REL | SHAPE_TRANS))
 +        && ShaderEmu_Ready_Shape(shapefile, shapenum, x, y, window, flags)) {
@@ -2582,6 +2876,28 @@ index a8aebd8..08d8760 100644
      if (shapefile && shapenum != -1) {
  
          /*
+@@ -3976,6 +4799,21 @@ void Shake_The_Screen(int shakes, HousesType house)
+     }
+ #else
+     shakes += shakes;
++#ifdef SHADEREMU
++    /* Copies of the page, hundreds of KB each, shook only the page over the GPU's map: the same
++    ** random picks and frames without them (docs/tdawn.md, "A long battle"). TDAWN_SHAKE=copy: as it
++    ** was. */
++    static const bool copies = getenv("TDAWN_SHAKE") && !strcmp(getenv("TDAWN_SHAKE"), "copy");
++    for (int newyoff = 0; !copies && shakes--;) {
++        do {
++            newyoff = Sim_Random_Pick(0, 2) - 1;
++        } while (newyoff == 0);
++        Frame_Limiter();
++    }
++    if (!copies) {
++        return;
++    }
++#endif
+ 
+     Hide_Mouse();
+     SeenBuff.Blit(HidPage);
 diff --git a/tiberiandawn/display.cpp b/tiberiandawn/display.cpp
 index 20ff4f6..719e623 100644
 --- a/tiberiandawn/display.cpp
@@ -2690,6 +3006,24 @@ index 42d052d..48bb75e 100644
          Flag_To_Redraw(false);
          IsToRedraw = true;
          CellRedraw[cell] = true;
+diff --git a/tiberiandawn/externs.h b/tiberiandawn/externs.h
+index ff588bf..db7de79 100644
+--- a/tiberiandawn/externs.h
++++ b/tiberiandawn/externs.h
+@@ -418,6 +418,13 @@ extern int ShowCommand;
+ extern void* PacketLater;
+ 
+ extern unsigned int IsTheaterShape;
++#ifdef SHADEREMU
++extern "C" int mcw_self(void);
++// (the shape flags are the first core's, not the worker's that draws the objects a frame behind: gl.cpp)
++#define ShaderEmu_Shape_Flags() (!mcw_self())
++#else
++#define ShaderEmu_Shape_Flags() true
++#endif
+ 
+ extern void Reset_Theater_Shapes(void);
+ extern TheaterType LastTheater;
 diff --git a/tiberiandawn/findpath.cpp b/tiberiandawn/findpath.cpp
 index 029c3fc..e588424 100644
 --- a/tiberiandawn/findpath.cpp
@@ -4205,6 +4539,65 @@ index 425890b..0463678 100644
  
      /*
      **	Open the file
+diff --git a/tiberiandawn/scenario.cpp b/tiberiandawn/scenario.cpp
+index 47f8b42..b24ae3e 100644
+--- a/tiberiandawn/scenario.cpp
++++ b/tiberiandawn/scenario.cpp
+@@ -403,6 +403,16 @@ void Clear_Scenario(void)
+  *=============================================================================================*/
+ void Do_Win(void)
+ {
++#ifdef SHADEREMU
++    void ShaderEmu_Stage(const char* what);
++    extern bool ShaderEmu_Auto_Press;
++    ShaderEmu_Stage("Do_Win begins");
++    struct Auto /* TDAWN_AUTO presses Return on these screens too */
++    {
++        Auto() { ShaderEmu_Auto_Press = true; }
++        ~Auto() { ShaderEmu_Auto_Press = false; }
++    } pressed;
++#endif
+     Map.Set_Default_Mouse(MOUSE_NORMAL);
+     Hide_Mouse();
+ 
+@@ -435,6 +445,9 @@ void Do_Win(void)
+         Call_Back();
+         Frame_Limiter();
+     }
++#ifdef SHADEREMU
++    ShaderEmu_Stage("announced");
++#endif
+ 
+     /*
+     ** Stop here if this is a multiplayer game.
+diff --git a/tiberiandawn/score.cpp b/tiberiandawn/score.cpp
+index d6caaea..6545e4d 100644
+--- a/tiberiandawn/score.cpp
++++ b/tiberiandawn/score.cpp
+@@ -580,8 +580,15 @@ void Enable_Uncompressed_Shapes(void);
+  * HISTORY:                                                                                    *
+  *   05/02/1994     : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++void ShaderEmu_Stage(const char* what); /* (conquer.cpp: TDAWN_WIN) */
++#define SHADEREMU_STAGE(what) ShaderEmu_Stage(what)
++#else
++#define SHADEREMU_STAGE(what)
++#endif
+ void ScoreClass::Presentation(void)
+ {
++    SHADEREMU_STAGE("score: begins");
+     // static char const _redpal[]={0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28,0x29,0x2A,0x2B,0x2C,0x2D,0x21,0x2F};
+     static char const _redpal[] = {
+         0x20, 0x22, 0x24, 0x26, 0x28, 0x28, 0x28, 0x28, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x21, 0x2F};
+@@ -1021,6 +1028,7 @@ void ScoreClass::Presentation(void)
+     TextPrintBuffer = NULL;
+     BlitList.Clear();
+     Enable_Uncompressed_Shapes();
++    SHADEREMU_STAGE("score: ends");
+ }
+ 
+ // ST = 12/17/2018 5:44PM
 diff --git a/tiberiandawn/scroll.cpp b/tiberiandawn/scroll.cpp
 index 596a8f7..cb485b6 100644
 --- a/tiberiandawn/scroll.cpp

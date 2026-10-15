@@ -1,0 +1,7 @@
+# The Cornell box's red part, in millimetres (www.graphics.cornell.edu/online/box/data.html): a normal a face
+v 552.8 0 0
+v 549.6 0 559.2
+v 556 548.8 559.2
+v 556 548.8 0
+vn -0.999916 0.0116608 -0.00572198
+f 1//1 2//1 3//1 4//1

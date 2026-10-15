@@ -657,7 +657,11 @@ What the worker stores outside its own memory is in texels of its own (`drawing`
 `own` and `scene_noted` in `host.c`), a frame's shape it needs that no core has made is asked
 for by the first core at the join (`frame_seen`), it waits for the GPU by ending passes, and it
 never allocates: Red Alert's turned shapes have their buffer kept (`turned()`), and a type's
-dimensions are not made on a worker (`techno.cpp`). `TDAWN_DRAW=here` (`RALERT_DRAW=here`) is
+dimensions are not made on a worker (`techno.cpp`). The game's shape flags (`IsTheaterShape`,
+`UseBigShapeBuffer`, set around a building's, an animation's and a turned object's drawing) are
+the first core's and left alone on the worker (`ShaderEmu_Shape_Flags()` in `externs.h`): its
+stores undid the first core's beside them and showed it a wrong flag (`RVC_RACES` in
+`RALERT_ATTACK`, 15 October 2026). `TDAWN_DRAW=here` (`RALERT_DRAW=here`) is
 the way it was; the `tdworkers:` line says the worker's part ("objects behind").
 
 `python tools/game_par.py`, three runs each, the same build with `TDAWN_DRAW=here`/`RALERT_DRAW=here` and without:
@@ -729,6 +733,21 @@ hidden page as the program's picture.
 Found on the way and not changed: in the Allied mission's drag (`RALERT_REFRESH=1` against
 without, nobody selected) a soldier is drawn a pixel high for 71 frames (418 to 488): a shape
 that changes without the object marked, as kept; HEAD has it too.
+
+## A long battle (15 October 2026)
+
+Red Alert's base destroyed (`docs/ralert.md`, "A base destroyed") found three things in the
+code both games share, mended in both: the atlas, once full, left every new shape to the game
+for good (now its shapes are forgotten before a scene that may not fit and put again as they
+are drawn: `shapes_forget`, `TDAWN_ATLAS=N` every N scenes for a test); a shaken screen copied
+the page 2 x shakes + 2 times (now the same random picks and frames without the copies;
+`TDAWN_SHAKE=copy` is the old way); and the worker that draws the objects a frame behind read
+the object an animation is attached to while the logic could destroy it, and built a frame no
+core had ready with the game's `Build_Frame`, whose buffers and heap are the first core's (now
+the copy is detached as it is copied and the frame made into the worker's own buffer:
+`ShaderEmu_Frame_Into`; the game's own drawing is not made on the worker). Mission 3's 600
+frames of `TDAWN_MOVE=100,8,0` have the same picture sums as before, with and without
+`TDAWN_REFRESH=1`, and the state sums are the same.
 
 ## Target scans kept, tried
 
@@ -849,6 +868,9 @@ reinforcements land, and most of a mission's first frames. Both are other cores'
   frames' table (1.9 to 2.4 million instructions of the start, about a second at two
   million a second: 128 KB brought in a mission's frame was 32 page faults, 70 thousand
   instructions). More comes two pages a frame when less than 256 KB is left.
+- A frame asked for that is not ready hands the cores that are done their next files
+  (`frames_pump` from `host_frame`): a score screen has no scene's frame to do it, and a file
+  begun there was never finished, its frames built by the game at every drawing.
 - `Reset_Theater_Shapes` and a new scenario stop the workers and forget everything
   (`host_frames_forget()`): a file may go then.
 
@@ -964,6 +986,19 @@ compiled out of Red Alert's, `SHADEREMU_RA`), and `build.sh` links `libmedia.a`
   first) zeroed `gl.cpp`'s counters on the first core while the worker drawing the objects a
   frame behind (`Behind_Draw`) added to them and wrote beside them. The profile now settles the
   scene first (`host_scene_settle()`), in both games' `conquer.cpp`.
+
+## A mission won (15 October 2026)
+
+`TDAWN_WIN=N` wins the mission at frame N (once) and prints a line at each step, as Red Alert's
+`RALERT_WIN` (`docs/ralert.md`, "A mission won", where a won mission waited 140 s for the score
+screen's table of colours and the demo then asked for "out of memory"). Tiberian Dawn's demo
+goes from mission 1 to 10 by its own code, and its score screen makes no such table: from the
+win at frame 100 of mission 1 (`TDAWN_SCEN=1`) its score screen is 36 s at two million a
+second (11.5 s at forty million), and mission 10 is then played with its state at frame 300
+`325b1830` (`tdawn-won` in `tools/test_all.py`). Half of that screen's instructions are
+`Linear_Blit_To_Linear`, the page copied whole at each of its steps; not changed. The table
+and the doubled rows (`common/interpal.cpp`, `host_for`) are shared, for the screens that use
+them.
 
 ## Not done
 

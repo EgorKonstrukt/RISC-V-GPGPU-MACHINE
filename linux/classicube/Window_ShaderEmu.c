@@ -16,6 +16,7 @@
 #include "ExtMath.h"
 #include "World.h"
 #include "Graphics.h"
+#include "Event.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -278,6 +279,8 @@ static void HandleEvent(GR_EVENT* e) {
 	case GR_EVENT_TYPE_BUTTON_DOWN:
 	case GR_EVENT_TYPE_BUTTON_UP:
 		down = e->type == GR_EVENT_TYPE_BUTTON_DOWN;
+		/* (a sitter breaks and places by the host's triggers, not the pointer's buttons: Seat) */
+		if (seated && Input.RawMode) e->button.changebuttons &= ~(GR_BUTTON_L | GR_BUTTON_R);
 		/* In the game the left button drags the view round, as a finger on glass does; let go
 		   where it was pressed, it is the left button's click. A sitter's buttons are the game's. */
 		if ((e->button.changebuttons & GR_BUTTON_L) && Input.RawMode && !seated) {
@@ -398,13 +401,23 @@ static void TurnTo(struct Entity* e, float yaw, float pitch) {
 /* (segl.h's, for seglWorldEye: this game has no gles.c) */
 const volatile unsigned int* seglHostState(void) { return gpu ? (const volatile unsigned int*)(gpu + HOST_STATE) : NULL; }
 
-/* The player's eye over its floor, for the holodeck's default scale (game 3, linux/apps/gameid.h) */
+/* The player's eye over its floor, for the holodeck's default scale (game 3, linux/apps/gameid.h).
+   With tracked hands a block is small, a sixteenth of the sitter's eye height (docs/holodeck.md). */
+#define SMALL_EYE 16.0f
 static void WorldEye(struct Entity* e) {
 	static float said[4];	/* (said again only when it changes: two logarithms) */
-	float now[4] = { Entity_GetEyeHeight(e), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
+	float now[4] = { seated == 1 ? SMALL_EYE : Entity_GetEyeHeight(e), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
 	if (now[2] <= 0.0f || !memcmp(now, said, sizeof(now))) return;
 	memcpy(said, now, sizeof(now));
 	seglWorldEye(3, now[0], 0.1f, now[1], now[2], now[3]);
+}
+
+static float Metre(const volatile uint32_t* host);
+float SE_SeatLift(void);
+
+/* CLASSICUBE_SEAT's line of each block the player changes: where, and from what to what */
+static void SaidBlock(void* obj, IVec3 at, BlockID was, BlockID now) {
+	fprintf(stderr, "ccblock: %d %d %d %d -> %d\n", at.x, at.y, at.z, was, now);
 }
 
 /* From a holodeck's seat with tracked hands the right hand aims, and the walk and the room's
@@ -417,10 +430,12 @@ static void Seat(float delta) {
 
 	if (World.Loaded) WorldEye(e);
 	if (said < 0) said = getenv("CLASSICUBE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
+	if (said == 1) Event_Register_(&UserEvents.BlockChanged, NULL, SaidBlock);
 	if (said && ++said % 20 == 0)
-		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f %.1f eye %08x picked %d %d %d %d\n", seated, e->next.yaw, e->next.pitch,
+		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f %.1f eye %08x picked %d %d %d %d block %.3f m lift %.1f\n", seated, e->next.yaw, e->next.pitch,
 			body, dragging, e->Position.x, e->Position.y, e->Position.z, ((volatile uint32_t*)(gpu + 0x6c))[0],
-			Game_SelectedPos.valid, Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z);
+			Game_SelectedPos.valid, Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z,
+			0.004f / Metre(host), SE_SeatLift());
 	if (now != seated) {
 		seated = now;
 		dragging = false;
@@ -434,6 +449,15 @@ static void Seat(float delta) {
 			jump = now;
 			if (now) Input_SetPressed(CCKEY_SPACE);
 			else Input_SetReleased(CCKEY_SPACE);
+		}
+	}
+	{	/* its triggers: the right one (a desktop's left button or Ctrl) breaks, the left one
+		   (a desktop's right button) places, each where its hand's beam is (Camera.c) */
+		static int held[2];
+		int h;
+		for (h = 0; h < 2; h++) {
+			int now = seated && Input.RawMode && SEGL_HOST_HAND_TRIGGER(host, h);
+			if (now != held[h]) { held[h] = now; Input_Set(h ? CCMOUSE_L : CCMOUSE_R, now); }
 		}
 	}
 	if (!Input.RawMode) return;
@@ -488,26 +512,53 @@ int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving) {
 	return 1;
 }
 
-/* For the pick and the held block (Camera.c, Game.c's SEFrame), on core 0: then also where the
-   right hand is from the eye, in blocks: right, up, forward. */
-int SE_SeatHand(float* at) {
-	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+/* Blocks in 4 mm of the room, at the room's scale. */
+static float Metre(const volatile uint32_t* host) {
 	static float metre, said[4];	/* (worked out again only when it changes: a power) */
 	float now[4] = { (float)(host[0] >> 24), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
-	uint32_t word;
-
-	if (seated != 1) return 0;
 	if (memcmp(now, said, sizeof(now))) {
 		/* blocks a metre: the room's plane, 1.28 by 0.8 m, is so far from the camera (GpuVolumePass.cginc) */
 		float x = 1.28f * now[2], y = 0.8f * now[3], plane = 0.1f * powf(now[1] / 0.1f, now[0] / 255.0f);
 		memcpy(said, now, sizeof(now));
 		metre = 2.0f * plane / (x < y ? x : y) * 0.004f;
 	}
-	word  = host[6];
-	at[0] = ((int)(word << 22) >> 22) * metre;
-	at[1] = ((int)(word << 12) >> 22) * metre;
-	at[2] = ((int)(word << 2) >> 22) * metre;
+	return metre;
+}
+
+static int HandAt(int word, float* at) {
+	float metre = Metre((const volatile uint32_t*)(gpu + HOST_STATE));
+	at[0] = ((int)((uint32_t)word << 22) >> 22) * metre;
+	at[1] = ((int)((uint32_t)word << 12) >> 22) * metre;
+	at[2] = ((int)((uint32_t)word << 2) >> 22) * metre;
 	return 1;
+}
+
+/* For the pick and the held block (Camera.c, Game.c's SEFrame), on core 0: then also where the
+   right hand is from the eye, in blocks: right, up, forward. */
+int SE_SeatHand(float* at) {
+	if (seated != 1) return 0;
+	return HandAt(((const volatile uint32_t*)(gpu + HOST_STATE))[6], at);
+}
+
+/* For the place (Camera.c): then where the left hand is, as SE_SeatHand, and its aim in the
+   game's degrees (yaw, pitch down) from word 3's high half (GLES/segl.h). */
+int SE_SeatLeft(float* at, float* yaw, float* pitch) {
+	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+	if (seated != 1) return 0;
+	*yaw   = body + SEGL_HOST_LEFT_YAW(host) * (360.0f / 65536.0f);
+	*pitch = -SEGL_HOST_LEFT_PITCH(host) * (360.0f / 65536.0f);
+	return HandAt(host[4], at);
+}
+
+/* For the camera (Camera.c): how far over the player's eye the room's view is, in blocks. With
+   small blocks the ground is LAP metres under the seat's eye, round the sitter's hands. */
+#define LAP 0.6f
+float SE_SeatLift(void) {
+	float m, lift;
+	if (seated != 1) return 0.0f;
+	m = Metre((const volatile uint32_t*)(gpu + HOST_STATE)) * 250.0f;
+	lift = LAP * m - Entity_GetEyeHeight(&Entities.CurPlayer->Base);
+	return lift > 0.0f ? lift : 0.0f;
 }
 
 /* Asking the server costs two system calls and two task switches. The machine's own input

@@ -1,1 +1,2 @@
 mesh obj,ply - nxpath %s
+scene scene - nxpath %s

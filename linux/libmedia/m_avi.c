@@ -1,6 +1,7 @@
 /* Motion JPEG in AVI (docs/media.md, "MJPEG in AVI"): every picture is a JPEG by itself, decoded
  * ahead into its place a few at a time, their restart intervals over every core, and made the
  * GPU's opaque words there. PCM sound is copied out of the file's chunks as it is asked for. */
+#include <stdio.h>
 #include <stdlib.h>
 #include "m_video.h"
 
@@ -25,6 +26,7 @@ struct avi {
 	int first, out, phase;		/* the round's first picture, how many, which half is out (1, 2) */
 	uint32_t part_first[ROUND + 1];	/* each picture's first job of the second half */
 	int own_want;			/* places of its own when the program gives none */
+	char other[5];			/* the pictures' codec when it is not MJPEG */
 };
 
 static int
@@ -407,8 +409,11 @@ stream(struct avi *a, const uint8_t *p, uint32_t bytes, int number, uint32_t *sc
 			a->video = number;
 		else if (four(c, "JPEG") || four(c, "jpeg") || four(c, "AVRn") || four(c, "dmb1"))
 			a->video = number;
-		else
+		else {
+			if (!a->other[0])
+				memcpy(a->other, c, 4);
 			return;
+		}
 		a->w = (int)m_le32(strf + 4);
 		a->h = (int)m_le32(strf + 8);
 		if (a->h < 0)
@@ -460,6 +465,28 @@ movi(struct avi *a, const uint8_t *p, const uint8_t *end)
 	return 1;
 }
 
+/* Why a film's pictures are not played: their codec by its four letters. */
+static const char *
+not_mjpeg(const struct avi *a)
+{
+	static const char *const kinds[][2] = { { "FMP4 XVID DIVX DX50 MP4V M4S2 3IV2 XVIX", "MPEG-4 Part 2" },
+						{ "H264 X264 AVC1 DAVC", "H.264" }, { "HEVC H265 HVC1 HEV1", "H.265" } };
+	static char why[96];
+	char up[5] = { 0 };
+	const char *kind = NULL;
+	int i;
+
+	if (!a->other[0])
+		return "an AVI film without MJPEG pictures (this plays MJPEG with PCM sound)";
+	for (i = 0; i < 4; i++)
+		up[i] = a->other[i] >= 'a' && a->other[i] <= 'z' ? (char)(a->other[i] - 32) : a->other[i] < ' ' ? '?' : a->other[i];
+	for (i = 0; i < 3 && !kind; i++)
+		if (strstr(kinds[i][0], up))
+			kind = kinds[i][1];
+	snprintf(why, sizeof why, "%s (%s) pictures: not played (this plays MJPEG in AVI)", kind ? kind : "a codec this does not know", up);
+	return why;
+}
+
 /* Every RIFF of the file (an OpenDML file goes on in RIFF AVIX): its headers, its LIST movi. */
 static const char *
 scan(struct avi *a, uint32_t *scale, uint32_t *rate)
@@ -492,7 +519,7 @@ scan(struct avi *a, uint32_t *scale, uint32_t *rate)
 					q += 8 + ((m + 1) & ~1u);
 				}
 				if (a->video < 0)
-					return "an AVI film without MJPEG pictures (this plays MJPEG with PCM sound)";
+					return not_mjpeg(a);
 			} else if (four(p, "LIST") && four(p + 8, "movi")) {
 				if (!movi(a, p + 12, p + 8 + n))
 					return "not enough memory for the film";

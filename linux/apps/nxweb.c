@@ -21,6 +21,7 @@
 #include "ui_icons.h"
 #include "ui_menu.h"
 #include "ui_glyph.h"
+#include "ui_launch.h"
 #include "web_layout.h"
 #include "mcw.h"
 #include "media.h"
@@ -69,7 +70,9 @@ static char sought[64];		/* what Find looks for */
 static int finding;		/* it is being typed, in the status line */
 static int found = -1, found_from;	/* the text it was found in (an item), and from which character */
 static int menu_at = -1;	/* the menu of the bar that is open, or -1 */
-static int shown_busy, shown_open;	/* as the Stop key and the status line were drawn last */
+static int shown_busy, shown_done, shown_total, shown_failed;	/* what is to come as last shown (loading_shown) */
+static char shown_text[200], shown_cell[24];	/* and what the status line says of it */
+static char page_note[200];	/* the status line as the page was shown: replaced by what is loading */
 static int print;		/* NXWEB_PRINT: says what a key, a click or a menu's row left */
 static char link_asked[256];	/* the link the right button's menu is about */
 static int top, goal;		/* the page's row at the view's top, and where it is scrolling to */
@@ -94,9 +97,13 @@ static int part_have;
 /* The page's pictures. A PPM file the image keeps is drawn where it lies in the ROM. One kept as
  * a JPEG or PNG, and one the host fetches (its pixels arrive and are written as a PPM file, docs/
  * fetch.md), is decoded on the worker cores to the size it is drawn at, into the GPU's memory. */
-enum { PICTURE_WANTED, PICTURE_HERE, PICTURE_FAILED, PICTURE_BY_HAND };
+/* FAILED: a box that says why (`why`); SKIPPED: not fetched by choice (a spacer), not shown. */
+enum { PICTURE_WANTED, PICTURE_HERE, PICTURE_FAILED, PICTURE_BY_HAND, PICTURE_SKIPPED };
 static struct picture {
 	char address[256];
+	char why[64];		/* why it is not here, when FAILED */
+	int tracked;		/* it was fetched or decoded for this page: counted by the loading bar */
+	int boxed;		/* FAILED, and laid out as such */
 	char file[64];		/* the PPM the window system draws at any size ("": none), ours to remove if `ours` */
 	char source[64];	/* the file decoded to the size drawn ("": none) */
 	char kept[64];		/* the decoded pixels as a PPM, when the window system draws them (`kept_there`) */
@@ -115,6 +122,12 @@ static unsigned pictures_decoding;	/* (NXWEB_TIME) the first core's instructions
 static int pictures_now;	/* a picture is decoded when asked for, not after the view is shown (NXWEB_CHECK) */
 static int pictures_later;	/* decodings asked for so far: the next `later` */
 #define SHEET 1000		/* `asking` for sheet 0 */
+static char sheet_why[WEB_SHEETS][64];	/* why a sheet is FAILED */
+static int sheet_tracked[WEB_SHEETS];	/* it was asked of the host */
+static int failed_due;		/* a picture failed: its box drawn, or the page laid out again (failures_show) */
+static int failed_told;		/* failures the status line has said */
+static int part_total;		/* bytes of the page that comes in parts */
+static int spin;		/* the loading bar's step while nothing can be counted */
 
 /* The page as drawn, in a pixmap `tile_h` rows high: strips of it (tile_make). */
 static GR_WINDOW_ID tile;
@@ -135,6 +148,7 @@ static uint32_t pixmap_address(GR_WINDOW_ID p, int w);
 static void say_time(const char *what, unsigned began);
 static int wanted_open(void);
 static int bookmark_of(const char *where);
+static void others(GR_EVENT *event);
 
 /* Instructions the first core has run (the low word of its count): what a step cost. */
 static unsigned
@@ -177,6 +191,87 @@ web_file(const char *name, int *size)
 	return bytes == MAP_FAILED ? NULL : bytes;
 }
 
+/* What the host's status for an address says, in a few words (docs/fetch.md). */
+static void
+why_of(char *why, int room, int code)
+{
+	if (code == 404 || code == 410)
+		snprintf(why, room, "not found (%d)", code);
+	else if (code == 401 || code == 403)
+		snprintf(why, room, "refused (%d)", code);
+	else if (code == 415)
+		snprintf(why, room, "unsupported format");
+	else if (code == 3)
+		snprintf(why, room, "an address the host may not open");
+	else if (code == 0 || code == 2)
+		snprintf(why, room, "no answer");
+	else if (code >= 500)
+		snprintf(why, room, "the server's error (%d)", code);
+	else
+		snprintf(why, room, "the host said %d", code);
+}
+
+static void
+picture_fail(struct picture *p, const char *why)
+{
+	p->state = PICTURE_FAILED;
+	p->later = 0;
+	snprintf(p->why, sizeof p->why, "%.63s", why);
+	failed_due = 1;
+}
+
+static void
+sheet_fail(int i, const char *why)
+{
+	web_sheets[i].state = SHEET_FAILED;
+	snprintf(sheet_why[i], sizeof sheet_why[0], "%.63s", why);
+}
+
+/* A picture of the image that is not a PPM: decoded as the cache's are, its size from its header. */
+static void
+picture_local(struct picture *p, const char *where)
+{
+	struct media_info info;
+	struct stat st;
+	const char *why = "not found";
+	void *data = MAP_FAILED;
+	int fd = strlen(where) < 60 ? open(where, O_RDONLY) : -1;
+	size_t size = 0;
+
+	if (fd >= 0 && !fstat(fd, &st) && st.st_size > 0)
+		data = mmap(NULL, size = (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (fd >= 0)
+		close(fd);
+	if (data == MAP_FAILED)
+		data = NULL;
+	if (strlen(where) >= 60)
+		why = "an address too long";
+	else if (fd >= 0 && !data)
+		why = "cannot be read";
+	else if (data && !(why = media_probe(data, (uint32_t)size, &info)) && info.width > 0 && info.height > 0) {
+		snprintf(p->source, sizeof p->source, "%s", where);
+		p->file[0] = 0;
+		p->w = info.width, p->h = info.height;
+		p->state = PICTURE_HERE;
+	}
+	if (data)
+		munmap(data, size);
+	if (p->state != PICTURE_HERE)
+		picture_fail(p, data ? "unsupported format" : why);	/* (what libmedia does not read) */
+}
+
+/* What a picture that is not here says in its box: its description and why, on one line. */
+static void
+broken_label(int node, const struct picture *p, char *label, int room)
+{
+	char alt[160];
+
+	if (web_attr_text(node, "alt", alt, sizeof alt) && alt[0])
+		snprintf(label, room, "%s: %s", alt, p->why);
+	else
+		snprintf(label, room, "Picture not loaded: %s", p->why);
+}
+
 static int
 web_picture(int node, const char *where, int *w, int *h)
 {
@@ -195,9 +290,13 @@ web_picture(int node, const char *where, int *w, int *h)
 		snprintf(p->address, sizeof p->address, "%s", where);
 		snprintf(p->kept, sizeof p->kept, "/tmp/nxweb-%d-%d-drawn.ppm", (int)getpid(), i);
 		if (where[0] == '/') {
-			/* a picture in the image: drawn by the GPU from the file where it lies */
+			/* a picture in the image: a PPM drawn by the GPU from the file where it lies */
 			snprintf(p->file, sizeof p->file, "%.60s", where);
-			p->state = strlen(where) < 60 && ui_picture_size(where, &p->w, &p->h) ? PICTURE_HERE : PICTURE_FAILED;
+			p->state = PICTURE_WANTED;
+			if (strlen(where) < 60 && ui_picture_size(where, &p->w, &p->h))
+				p->state = PICTURE_HERE;
+			else
+				picture_local(p, where);
 		} else if (web_cache_find(where, 'I', p->file, sizeof p->file, &p->w, &p->h)) {
 			const char *dot = strrchr(p->file, '.');
 
@@ -211,12 +310,24 @@ web_picture(int node, const char *where, int *w, int *h)
 			snprintf(p->file, sizeof p->file, "/tmp/nxweb-%d-%d.ppm", (int)getpid(), i);
 			p->ours = 1;
 			/* (one the page says is a dot or nothing is a spacer or counts visitors: not fetched) */
-			p->state = regs && !(said_w >= 0 && said_w <= 2) && !(said_h >= 0 && said_h <= 2) ? PICTURE_WANTED : PICTURE_FAILED;
+			p->state = (said_w >= 0 && said_w <= 2) || (said_h >= 0 && said_h <= 2) ? PICTURE_SKIPPED : PICTURE_WANTED;
+			p->tracked = p->state == PICTURE_WANTED;
+			if (!regs && p->state == PICTURE_WANTED)
+				picture_fail(p, "no network");
 		}
 	}
 	p = &pictures[i];
-	if (p->state == PICTURE_FAILED)
+	if (p->state == PICTURE_SKIPPED)
 		return -1;
+	if (p->state == PICTURE_FAILED) {
+		/* a box that says why, the page's size for it or one for its line */
+		char label[240];
+
+		broken_label(node, p, label, sizeof label);
+		web_broken_size(label, w, h);
+		p->boxed = 1;
+		return i;
+	}
 	*w = p->state == PICTURE_HERE ? p->w : 0;
 	*h = p->state == PICTURE_HERE ? p->h : 0;
 	if (p->state != PICTURE_HERE && (said_w < 0 || said_h < 0))
@@ -408,6 +519,56 @@ item_width(const struct web_item *it, int from, int n)
 	return w;
 }
 
+/* As much of `text` (UTF-8) as `room` pixels hold, in the plain face, its top left at x, y. */
+static void
+fit_text(GR_DRAW_ID to, int x, int y, int room, const char *text, int colour)
+{
+	const unsigned char *at = (const unsigned char *)text;
+	unsigned short u[160];
+	int face = plain_face(), n = 0, w = 0, used, left = (int)strlen(text), a;
+
+	for (; left > 0 && n < 160; at += used, left -= used, n++) {
+		u[n] = web_char(at, left, &used);
+		if ((a = web_most(0, web_advance(face, u[n]))) + w > room)
+			break;
+		w += a;
+	}
+	page_text(to, x, y, u, n, face, 0, colour);
+}
+
+/* A picture that could not be had: a grey box, a sign, its description and why, as they fit. */
+static void
+draw_broken(GR_DRAW_ID to, const struct web_item *it, int y)
+{
+	const struct picture *p = &pictures[it->a];
+	char alt[160], line[240];
+	int lh = web_faces[plain_face()].height, x = it->x, room = it->w - WEB_BROKEN_TEXT - 4;
+
+	ui_fill(to, x, y, it->w, it->h, mw(0xf0f0f0));
+	GrSetGCForeground(ui_gc, mw(0xa0a0a0));
+	GrRect(to, ui_gc, x, y, it->w, it->h);
+	if (it->w < 18 || it->h < 18)
+		return;
+	/* the sign: a picture crossed out in red */
+	ui_fill(to, x + 4, y + 4, 12, 12, WHITE);
+	GrSetGCForeground(ui_gc, mw(0x808080));
+	GrRect(to, ui_gc, x + 4, y + 4, 12, 12);
+	GrSetGCForeground(ui_gc, mw(0xd02020));
+	GrLine(to, ui_gc, x + 6, y + 6, x + 13, y + 13);
+	GrLine(to, ui_gc, x + 13, y + 6, x + 6, y + 13);
+	if (room < 8)
+		return;
+	if (it->h >= 2 * lh + 8) {
+		if (!web_attr_text(it->node, "alt", alt, sizeof alt) || !alt[0])
+			strcpy(alt, "Picture not loaded");
+		fit_text(to, x + WEB_BROKEN_TEXT, y + 3, room, alt, 0x303030);
+		fit_text(to, x + WEB_BROKEN_TEXT, y + 3 + lh, room, p->why, 0xa00000);
+	} else {
+		broken_label(it->node, p, line, sizeof line);
+		fit_text(to, x + WEB_BROKEN_TEXT, y + (it->h - lh) / 2, room, line, 0x802020);
+	}
+}
+
 /* One thing of the page, `dy` above where the page has it. */
 static void
 draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
@@ -443,7 +604,9 @@ draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
 		}
 		break;
 	case I_IMAGE:
-		if (pictures[it->a].state != PICTURE_HERE || !(file = picture_file(&pictures[it->a], it->w, it->h)))
+		if (pictures[it->a].state == PICTURE_FAILED)
+			draw_broken(to, it, y);
+		else if (pictures[it->a].state != PICTURE_HERE || !(file = picture_file(&pictures[it->a], it->w, it->h)))
 			ui_fill(to, it->x, y, it->w, it->h, MWRGB(232, 232, 232));	/* not here yet */
 		else
 			GrDrawImageFromFile(to, ui_gc, it->x, y, it->w, it->h, (char *)file, 0);
@@ -707,6 +870,7 @@ picture_decode(struct picture *p, int w, int h)
 	struct media_image in, out;
 	struct stat st;
 	const char *why = "it could not be read";
+	char note[96];
 	unsigned began = now();
 	struct timespec t0, t1;
 	uint8_t *data, *spare = NULL;
@@ -717,17 +881,19 @@ picture_decode(struct picture *p, int w, int h)
 	if (!pictures_now) {
 		/* (the page is shown first, the picture a placeholder until pictures_meanwhile() decodes it) */
 		if (!p->later)
-			p->later = ++pictures_later, p->later_w = w, p->later_h = h;
+			p->later = ++pictures_later, p->later_w = w, p->later_h = h, p->tracked = 1;
 		return 0;
 	}
 	p->later = 0;
 	clock_gettime(CLOCK_MONOTONIC, &t0);
-	if ((fd = open(p->source, O_RDONLY)) < 0)
-		return 0;
-	data = fstat(fd, &st) || st.st_size < 16 ? MAP_FAILED : mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
-	close(fd);
+	fd = open(p->source, O_RDONLY);
+	data = fd < 0 || fstat(fd, &st) || st.st_size < 16 ? MAP_FAILED : mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+	if (fd >= 0)
+		close(fd);
 	if (data == MAP_FAILED) {
 		p->source[0] = 0;
+		if (!p->file[0])
+			picture_fail(p, "cannot be read");
 		return 0;
 	}
 	strips_open();	/* (the library decodes on the workers this program has open) */
@@ -780,6 +946,10 @@ picture_decode(struct picture *p, int w, int h)
 	}
 	if (!p->dw)
 		p->source[0] = 0;	/* (not tried again) */
+	if (!p->dw && !p->file[0]) {
+		snprintf(note, sizeof note, "cannot be decoded: %s", why ? why : "no room");
+		picture_fail(p, note);
+	}	/* (a fetched one is drawn from its PPM) */
 	return p->dw == w && p->dh == h;
 }
 
@@ -1082,7 +1252,8 @@ strip_by_list(int k)
 	for (i = strip_at[k]; i < strip_at[k + 1]; i++) {
 		const struct web_item *it = &web_items[strip_items[i]];
 
-		if (it->kind == I_FIELD || (it->kind == I_IMAGE && pictures[it->a].state == PICTURE_HERE &&
+		if (it->kind == I_FIELD || (it->kind == I_IMAGE && pictures[it->a].state == PICTURE_FAILED) ||
+		    (it->kind == I_IMAGE && pictures[it->a].state == PICTURE_HERE &&
 		    !strip_picture_ready(&pictures[it->a], it->w, it->h) && !pictures[it->a].later) ||
 		    (it->kind == I_TEXT && !strip_face_ready(it->face)))
 			return 0;
@@ -1293,8 +1464,8 @@ strips_work(int now)
 			waiting = 1;
 			continue;
 		}
-		if (w > strip_workers) {
-			waiting = 1;	/* every worker has one */
+		if (w > 0) {
+			waiting = 1;	/* every worker has one (w 0: none looked for, as for the view's) */
 			continue;
 		}
 		sl->strip = k;
@@ -1586,7 +1757,23 @@ draw_tool(int i)
 	ui_tool(window, 3 + i * (TOOL_W + 3), MENU_H + 3, TOOL_W, BAR - 6, i == 2 && shown_busy ? UI_G_STOP : signs[i], how);
 }
 
-/* The address, or the one being typed: its end, when the field does not hold it all. */
+/* While something is to come, the part of it here as a bar inside a field, or a block that
+ * moves while that cannot be counted. */
+static void
+draw_meter(int x, int y, int w, int h, int colour)
+{
+	int b = w / 4, at = (spin * 24) % (w + b) - b;
+
+	if (!shown_busy || w <= 0)
+		return;
+	if (shown_total > 0)
+		ui_fill(window, x, y, (int)((long long)w * shown_done / shown_total), h, mw(colour));
+	else
+		ui_fill(window, x + (at < 0 ? 0 : at), y, (at + b > w ? w : at + b) - (at < 0 ? 0 : at), h, mw(colour));
+}
+
+/* The address, or the one being typed: its end, when the field does not hold it all. Behind
+ * the address shown, what is loading (draw_meter). */
 static void
 draw_address(void)
 {
@@ -1595,6 +1782,11 @@ draw_address(void)
 
 	ui_fill(window, x, y, w, BAR - 6, WHITE);
 	ui_bevel(window, x, y, w, BAR - 6, 1);
+	if (!editing)
+		draw_meter(x + 2, y + 2, w - 4, BAR - 10, 0xc4dcfa);
+	/* and the same in a line across the window under the bar */
+	ui_fill(window, 0, MENU_H + BAR - 3, width, 3, UI_FACE);
+	draw_meter(0, MENU_H + BAR - 3, width, 3, 0x2f6fd8);
 	while (editing && text[0] && ui_width(&ui_var_widths, ui_var, text, -1) > room)
 		text++;
 	tw = ui_width(&ui_var_widths, ui_var, text, -1);
@@ -1616,27 +1808,32 @@ draw_bar(void)
 	draw_address();
 }
 
-/* What the browser has to say, or what Find is being told, and in the right part what is
- * still to come of the page, or how much of it there was. */
+/* What the browser has to say, or what Find is being told, or what is loading; in the right
+ * part how much of that is here, how much did not come, or how much of the page there was. */
 static void
 draw_status(void)
 {
 	char text[240], cell[40];
-	int y = height - STATUS, w = width - STATUS_CELL - 4;
+	int y = height - STATUS, w = width - STATUS_CELL - 4, colour = 0;
 
 	if (finding)
 		snprintf(text, sizeof text, "Find: %s_   (Enter finds, Escape leaves it)", sought);
+	else if (shown_busy && (!status[0] || !strcmp(status, page_note) || !strncmp(status, "asking the host", 15)))
+		snprintf(text, sizeof text, "%s", shown_text);
 	else
 		snprintf(text, sizeof text, "%s", status[0] ? status : "Done");
 	if (shown_busy)
-		snprintf(cell, sizeof cell, shown_open ? "%d to come" : "Loading...", shown_open);
+		snprintf(cell, sizeof cell, "%s", shown_cell);
+	else if (shown_failed)
+		snprintf(cell, sizeof cell, "%d not loaded", shown_failed), colour = 0xa00000;
 	else
 		snprintf(cell, sizeof cell, page_length < 10000 ? "%d bytes" : "%d KB", page_length < 10000 ? page_length : page_length / 1000);
 	ui_fill(window, 0, y, width, STATUS, UI_FACE);
 	ui_bevel(window, 1, y + 1, w, STATUS - 2, 1);
 	ui_bevel(window, w + 2, y + 1, STATUS_CELL, STATUS - 2, 1);
+	draw_meter(w + 4, y + 3, STATUS_CELL - 4, STATUS - 6, 0x80b4f0);
 	ui_text_fit(window, 6, y + 3, w - 10, text, BLACK);
-	ui_text_fit(window, w + 7, y + 3, STATUS_CELL - 10, cell, BLACK);
+	ui_text_fit(window, w + 7, y + 3, STATUS_CELL - 10, cell, mw(colour));
 }
 
 /* Says something in the status line. */
@@ -1878,7 +2075,7 @@ set_title(void)
 
 	if (!window)
 		return;
-	snprintf(caption, sizeof caption, "%s - Web", web_title[0] ? web_title : address);
+	snprintf(caption, sizeof caption, "%s%s - Web", shown_busy == 1 ? "Loading: " : "", web_title[0] ? web_title : address);
 	GrSetWindowTitle(window, caption);
 }
 
@@ -1919,6 +2116,8 @@ show_kept(char *html, int n, const char *note)
 	asking = -1;
 	snprintf(web_address, sizeof web_address, "%s", address);
 	web_find_sheets(page, page_length, view_width());
+	memset(sheet_tracked, 0, sizeof sheet_tracked);
+	failed_told = failed_due = 0;
 	for (i = 0; i < web_sheet_count; i++) {
 		struct web_sheet *sh = &web_sheets[i];
 		char file[80];
@@ -1926,6 +2125,7 @@ show_kept(char *html, int n, const char *note)
 
 		if (sh->state != SHEET_WANTED)
 			continue;
+		snprintf(sheet_why[i], sizeof sheet_why[0], "%s", sh->address[0] == '/' ? "not found" : "no network");
 		/* one in the image, or one the image keeps a copy of, is read at once */
 		if (sh->address[0] == '/')
 			snprintf(file, sizeof file, "%.79s", sh->address);
@@ -1940,12 +2140,14 @@ show_kept(char *html, int n, const char *note)
 			}
 			fclose(f);
 		}
+		sheet_tracked[i] = sh->state == SHEET_WANTED;
 	}
 	say_time("finding the sheets", began);
 	lay_out(1, 1);
 	if (getenv("NXWEB_AGAIN"))
 		lay_out(1, 1);	/* (what a page costs once the program's own pages are in memory) */
 	snprintf(status, sizeof status, "%s", note);
+	snprintf(page_note, sizeof page_note, "%s", status);
 	snprintf(history[history_at].title, sizeof history[0].title, "%.59s", web_title);
 	set_title();
 	if (hash && (i = anchor(hash + 1)) >= 0)
@@ -1997,7 +2199,7 @@ ask_part(const char *what, int kind, uint32_t offset)
 static void
 ask(const char *what, int kind)
 {
-	part_have = 0;
+	part_have = part_total = 0;
 	ask_part(what, kind, 0);
 }
 
@@ -2102,6 +2304,7 @@ part_text(const char *what, int kind, int total, int most)
 
 	if (total > most)
 		total = most;
+	part_total = total;
 	here = total - part_have < FETCH_MOST ? total - part_have : FETCH_MOST;
 	if (!part_have)
 		part = malloc(total + 1);
@@ -2136,15 +2339,15 @@ check_reply(void)
 		if ((waited += ticked) > 300) {	/* (tenths of a second: other events are not time) */
 			loading = 0;
 			if (asking >= SHEET)
-				web_sheets[asking - SHEET].state = SHEET_FAILED;
+				sheet_fail(asking - SHEET, "no answer in 30 s");
 			else if (asking >= 0)
-				pictures[asking].state = PICTURE_FAILED;
+				picture_fail(&pictures[asking], "no answer in 30 s");
 			else if (!by_hand)
 				say("No answer", "The host did not answer in 30 seconds.");
 			if (part_file)
 				fclose(part_file);
 			part_file = NULL;
-					asking = -1;
+			asking = -1;
 		}
 		return;
 	}
@@ -2154,16 +2357,18 @@ check_reply(void)
 	if (asking >= SHEET) {
 		struct web_sheet *sh = &web_sheets[asking - SHEET];
 
-		sh->state = code == 1 ? SHEET_BY_HAND : SHEET_FAILED;
+		sh->state = code == 1 ? SHEET_BY_HAND : SHEET_WANTED;
 		sh->asked = time(NULL);
 		if (code == 1)
 			by_hand_note();
+		else if (code != 200 || n <= 0) {
+			why_of(note, sizeof note, code == 200 ? 204 : code);
+			sheet_fail(asking - SHEET, code == 200 ? "empty" : note);
+		}
 		if (code != 200 || n <= 0 || !part_text(sh->address, 2, n, SHEET_MOST)) {
 			if (code != 200 || n <= 0)
 				asking = -1;
-			else
-				sh->state = SHEET_WANTED;	/* (more of it to come) */
-			return;
+			return;	/* (or more of it to come) */
 		}
 		asking = -1;
 		if (!part)
@@ -2183,12 +2388,18 @@ check_reply(void)
 		FILE *file = part_file;
 
 		part_file = NULL;
-		p->state = code == 1 ? PICTURE_BY_HAND : PICTURE_FAILED;
+		p->state = code == 1 ? PICTURE_BY_HAND : PICTURE_WANTED;
 		p->asked = time(NULL);
 		if (code == 1)
 			by_hand_note();
 		if (code != 200 || w <= 0 || h <= 0 || (file && (w != part_w || h != part_h)) ||
 		    (!file && (file = fopen(p->file, "wb")) == NULL)) {
+			if (code == 200)
+				snprintf(note, sizeof note, w <= 0 || h <= 0 ? "no pixels came" : file ? "it changed while it came" : "cannot be written to /tmp");
+			else
+				why_of(note, sizeof note, code);
+			if (code != 1)
+				picture_fail(p, note);
 			if (file)
 				fclose(file);
 			asking = -1;
@@ -2212,7 +2423,6 @@ check_reply(void)
 		part_done += here;
 		if (part_done < w * h) {
 			part_file = file;
-			p->state = PICTURE_FAILED;	/* (until its last part is here) */
 			ask_part(p->address, 1, (uint32_t)part_done * 4);
 			return;
 		}
@@ -2312,6 +2522,242 @@ wanted_open(void)
 	for (i = 0; i < web_sheet_count; i++)
 		open += web_sheets[i].state == SHEET_WANTED || web_sheets[i].state == SHEET_BY_HAND;
 	return open;
+}
+
+/* The page's pictures and sheets that could not be had; `sheets`: how many of them are sheets. */
+static int
+failures(int *sheets)
+{
+	int i, n = 0, s = 0;
+
+	for (i = 0; i < picture_count; i++)
+		n += pictures[i].state == PICTURE_FAILED;
+	for (i = 0; i < web_sheet_count; i++)
+		s += web_sheets[i].state == SHEET_FAILED && web_sheets[i].address[0];
+	if (sheets)
+		*sheets = s;
+	return n + s;
+}
+
+/* What is still to come, in words for the status line and for its right part, and how much of
+ * it is here (`total` 0: not known). 0: nothing is; 2: only what waits for a visitor's paste. */
+static int
+progress(char *text, int room, char *cell, int cell_room, int *done, int *total)
+{
+	const char *at = strstr(address, "://");
+	char host[64];
+	int i, sheets = 0, sheets_done = 0, pics = 0, pics_done = 0, hand = 0, failed = failures(NULL), n;
+
+	*done = *total = 0;
+	at = at ? at + 3 : strrchr(address, '/') ? strrchr(address, '/') + 1 : address;
+	snprintf(host, sizeof host, "%.*s", (int)strcspn(at, "/?#"), at);
+	snprintf(cell, cell_room, "Loading...");
+	if ((loading || by_hand) && asking == -1) {
+		if (by_hand)
+			snprintf(text, room, "Waiting for %s: its address is to be pasted (the button by the screen)", host);
+		else if (part_total) {
+			*done = part_have / 1000, *total = part_total / 1000 + 1;
+			snprintf(text, room, "Loading %s: %d of %d KB", host, *done, *total);
+			snprintf(cell, cell_room, "%d of %d KB", *done, *total);
+		} else
+			snprintf(text, room, "Loading %s ...", host);
+		return by_hand ? 2 : 1;
+	}
+	for (i = 0; i < web_sheet_count; i++) {
+		sheets += sheet_tracked[i];
+		sheets_done += sheet_tracked[i] && (web_sheets[i].state == SHEET_HERE || web_sheets[i].state == SHEET_FAILED);
+		hand += web_sheets[i].state == SHEET_BY_HAND;
+	}
+	for (i = 0; i < picture_count; i++) {
+		pics += pictures[i].tracked;
+		pics_done += pictures[i].tracked && (pictures[i].state == PICTURE_FAILED || (pictures[i].state == PICTURE_HERE && !pictures[i].later));
+		hand += pictures[i].state == PICTURE_BY_HAND;
+	}
+	if (sheets_done == sheets && pics_done == pics)
+		return 0;
+	n = snprintf(text, room, "Loading %s:", host);
+	if (sheets)
+		n += snprintf(text + n, room - n, " %d of %d style sheet%s%s", sheets_done, sheets, sheets > 1 ? "s" : "", pics ? "," : "");
+	if (pics && n < room)
+		n += snprintf(text + n, room - n, " %d of %d picture%s", pics_done, pics, pics > 1 ? "s" : "");
+	if (failed && n < room)
+		n += snprintf(text + n, room - n, " (%d not loaded)", failed);
+	if (hand && n < room)
+		snprintf(text + n, room - n, "; %d to paste: the button by the screen", hand);
+	*done = sheets_done + pics_done, *total = sheets + pics;
+	snprintf(cell, cell_room, "%d of %d", *done, *total);
+	return hand == *total - *done ? 2 : 1;
+}
+
+/* "2 pictures and 1 style sheet could not be loaded", and what a click does. */
+static void
+failures_say(char *text, int room)
+{
+	int sheets, all = failures(&sheets), pics = all - sheets, n = 0;
+
+	if (pics)
+		n = snprintf(text, room, "%d picture%s%s", pics, pics > 1 ? "s" : "", sheets ? " and " : "");
+	if (sheets)
+		n += snprintf(text + n, room - n, "%d style sheet%s", sheets, sheets > 1 ? "s" : "");
+	snprintf(text + n, room - n, " could not be loaded: click here to see why");
+}
+
+/* Pictures that failed since the last look: their boxes drawn where the page gives their size,
+ * the page laid out again for one whose size it does not say. */
+static void
+failures_show(void)
+{
+	int i, k, again = 0;
+
+	failed_due = 0;
+	for (k = 0; k < picture_count; k++) {
+		struct picture *p = &pictures[k];
+
+		if (p->state != PICTURE_FAILED || p->boxed)
+			continue;
+		if (!p->sized) {
+			again = 1;
+			continue;
+		}
+		p->boxed = 1;
+		for (i = 0; i < web_item_count; i++)
+			if (web_items[i].kind == I_IMAGE && web_items[i].a == k)
+				strips_forget_rows(web_items[i].y, web_items[i].y + web_items[i].h);
+	}
+	if (again)
+		lay_out(0, 0);
+	show_view();
+}
+
+/* Says what is still to come, after anything that may have changed it: the Stop key, the bar in
+ * the address field, the status line, the window's caption and the pointer; and when all has
+ * come, what could not be. `tick`: the wait ran out (the bar's block moves). */
+static void
+loading_shown(int tick)
+{
+	static GR_CURSOR_ID hourglass;
+	char text[200], cell[24];
+	int done, total, now = progress(text, sizeof text, cell, sizeof cell, &done, &total), failed = failures(NULL), was = shown_busy, i;
+
+	if (now && !total && tick)
+		spin++;
+	else if (now == shown_busy && done == shown_done && total == shown_total && failed == shown_failed && !strcmp(text, shown_text))
+		return;
+	if (dump && now && strcmp(text, shown_text))
+		printf("nxweb: loading: %s\n", text);
+	shown_busy = now, shown_done = done, shown_total = total, shown_failed = failed;
+	snprintf(shown_text, sizeof shown_text, "%s", now ? text : "");
+	snprintf(shown_cell, sizeof shown_cell, "%s", cell);
+	if (!now && failed != failed_told) {
+		failed_told = failed;
+		if (failed)
+			failures_say(status, sizeof status);
+		for (i = 0; dump && i < web_sheet_count; i++)
+			if (web_sheets[i].state == SHEET_FAILED && web_sheets[i].address[0])
+				printf("nxweb: not loaded: style sheet %s: %s\n", web_sheets[i].address, sheet_why[i]);
+		for (i = 0; dump && i < picture_count; i++)
+			if (pictures[i].state == PICTURE_FAILED)
+				printf("nxweb: not loaded: picture %s: %s\n", pictures[i].address, pictures[i].why);
+		if (dump)
+			printf("nxweb: %s: all here, %d not loaded\n", address, failed);
+	}
+	if (dump || print)
+		fflush(stdout);
+	if (!window)
+		return;
+	if ((now == 1) != (was == 1)) {
+		/* (not while it is only a visitor's paste that is waited for) */
+		if (!hourglass)
+			hourglass = ui_launch_cursor();
+		GrSetWindowCursor(window, now == 1 ? hourglass : 0);
+		set_title();
+	}
+	draw_tool(2);
+	draw_address();
+	draw_status();
+}
+
+/* ---- what did not come ---- */
+
+#define WHY_W 560
+#define WHY_ROWS 16
+
+/* Each picture and sheet of the page that could not be had and why, in a window of its own
+ * until Close, Enter or Escape. */
+static void
+failures_list(void)
+{
+	GR_WINDOW_ID w;
+	GR_EVENT event;
+	char line[400];
+	int i, n = 0, all = failures(NULL), h = 64 + (all < WHY_ROWS ? all : WHY_ROWS + 1) * 2 * line_h, y, x, done = 0;
+
+	if (!all) {
+		note("everything of this page was loaded");
+		return;
+	}
+	w = GrNewWindowEx(UI_FIXED, "Not loaded", GR_ROOT_WINDOW_ID, -1, -1, WHY_W, h, UI_FACE);
+	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+	GrMapWindow(w);
+	GrRaiseWindow(w);
+	GrSetFocus(w);
+	if (print) {
+		for (i = 0; i < web_sheet_count; i++)
+			if (web_sheets[i].state == SHEET_FAILED && web_sheets[i].address[0])
+				printf("nxweb: list: style sheet %s: %s\n", web_sheets[i].address, sheet_why[i]);
+		for (i = 0; i < picture_count; i++)
+			if (pictures[i].state == PICTURE_FAILED)
+				printf("nxweb: list: picture %s: %s\n", pictures[i].address, pictures[i].why);
+		fflush(stdout);
+	}
+	while (!done) {
+		GrGetNextEvent(&event);
+		if (event.general.wid != w) {
+			if (event.type != GR_EVENT_TYPE_NONE)
+				others(&event);
+			continue;
+		}
+		switch (event.type) {
+		case GR_EVENT_TYPE_EXPOSURE:
+			ui_fill(w, 0, 0, WHY_W, h, UI_FACE);
+			snprintf(line, sizeof line, "Not loaded for %.200s:", address);
+			ui_text_fit(w, 10, 10, WHY_W - 20, line, BLACK);
+			/* a row each, sheets first: what and why, then its address under it */
+			for (i = 0, n = 0, y = 10 + line_h + 6; i < web_sheet_count + picture_count && n < WHY_ROWS; i++) {
+				int sheet = i < web_sheet_count;
+				const char *where = sheet ? web_sheets[i].address : pictures[i - web_sheet_count].address;
+
+				if (sheet ? web_sheets[i].state != SHEET_FAILED || !where[0] : pictures[i - web_sheet_count].state != PICTURE_FAILED)
+					continue;
+				snprintf(line, sizeof line, "%s: %.63s", sheet ? "Style sheet" : "Picture", sheet ? sheet_why[i] : pictures[i - web_sheet_count].why);
+				ui_text_fit(w, 10, y, WHY_W - 20, line, mw(0xa00000));
+				ui_text_fit(w, 26, y + line_h, WHY_W - 36, where, mw(0x404040));
+				y += 2 * line_h, n++;
+			}
+			if (all > n) {
+				snprintf(line, sizeof line, "and %d more", all - n);
+				ui_text(w, 10, y, line, -1, BLACK, 0);
+			}
+			ui_button(w, WHY_W - 86, h - 32, 76, 22, "Close", 0);
+			ui_focus(w, WHY_W - 82, h - 28, 68, 14);
+			if (print) {
+				ui_window_origin(w, &x, &y);
+				printf("nxweb: the list at %d,%d\n", x, y);
+				fflush(stdout);
+			}
+			break;
+		case GR_EVENT_TYPE_CLOSE_REQ:
+			done = 1;
+			break;
+		case GR_EVENT_TYPE_BUTTON_DOWN:
+			done = ui_inside(event.button.x, event.button.y, WHY_W - 86, h - 32, 76, 22);
+			break;
+		case GR_EVENT_TYPE_KEY_DOWN:
+			done = event.keystroke.ch == MWKEY_ESCAPE || event.keystroke.ch == MWKEY_ENTER || event.keystroke.ch == ' ';
+			break;
+		}
+	}
+	GrDestroyWindow(w);
 }
 
 /* ---- forms ---- */
@@ -2544,10 +2990,11 @@ bookmark(const char *where, const char *title, int toggle)
 static int
 busy(void)
 {
-	return loading || by_hand || (regs && wanted_open());
+	return loading || by_hand || (regs && wanted_open()) || pictures_waiting();
 }
 
-/* Gives up what the host has not sent yet: the page, or its sheets and pictures. */
+/* Gives up what the host has not sent yet, the page or its sheets and pictures, and the
+ * pictures still to be decoded. */
 static void
 stop(void)
 {
@@ -2555,11 +3002,12 @@ stop(void)
 
 	loading = by_hand = 0;
 	for (i = 0; i < picture_count; i++)
-		if (pictures[i].state == PICTURE_WANTED || pictures[i].state == PICTURE_BY_HAND)
-			pictures[i].state = PICTURE_FAILED;
+		if (pictures[i].state == PICTURE_WANTED || pictures[i].state == PICTURE_BY_HAND ||
+		    (pictures[i].state == PICTURE_HERE && pictures[i].later))
+			picture_fail(&pictures[i], "stopped");
 	for (i = 0; i < web_sheet_count; i++)
 		if (web_sheets[i].state == SHEET_WANTED || web_sheets[i].state == SHEET_BY_HAND)
-			web_sheets[i].state = SHEET_FAILED;
+			sheet_fail(i, "stopped");
 	if (part_file)
 		fclose(part_file);
 	part_file = NULL;
@@ -2839,7 +3287,7 @@ options(void)
 
 /* ---- the menus ---- */
 
-enum { C_ADDRESS = 1, C_OPEN, C_SAVE, C_CLOSE, C_COPY, C_PASTE, C_FIND, C_NEXT, C_STOP, C_RELOAD, C_PICTURES, C_SOURCE, C_OPTIONS,
+enum { C_ADDRESS = 1, C_OPEN, C_SAVE, C_CLOSE, C_COPY, C_PASTE, C_FIND, C_NEXT, C_STOP, C_RELOAD, C_PICTURES, C_SOURCE, C_OPTIONS, C_FAILED,
        C_BACK, C_FORWARD, C_HOME, C_MARK, C_KEYS, C_ABOUT, C_LINK, C_LINK_COPY, C_LINK_MARK,
        C_VISIT = 100, C_BOOKMARK = 200, C_REMOVE = 300 };	/* and from each of these three, a row a page */
 
@@ -2894,6 +3342,7 @@ menu_make(int which)
 		row("Stop   Escape", C_STOP, busy() ? 0 : grey);
 		row("Reload   F5", C_RELOAD, 0);
 		row("Pictures", C_PICTURES, UI_MENU_LINE | (load_pictures ? UI_MENU_CHECK : 0));
+		row("What was not loaded...", C_FAILED, failures(NULL) ? 0 : grey);
 		row("Page source   Ctrl+U", C_SOURCE, page_length ? 0 : grey);
 		row("Options...", C_OPTIONS, UI_MENU_LINE);
 		break;
@@ -3031,6 +3480,9 @@ command(int id)
 	case C_OPTIONS:
 		options();
 		break;
+	case C_FAILED:
+		failures_list();
+		break;
 	case C_BACK:
 		if (history_at > 0)
 			travel(history_at - 1);
@@ -3153,8 +3605,11 @@ click(int x, int y)
 		scroll_to(ui_scroll_to(y, TOP, view_height(), web_page_h, view_height()), 1);
 		return;
 	}
-	if (y >= height - STATUS)
+	if (y >= height - STATUS) {
+		if (failures(NULL) && !shown_busy)
+			failures_list();
 		return;
+	}
 	focus = -1;
 	/* the thing drawn last at that place is the one on top */
 	for (i = web_item_count - 1; i >= 0; i--) {
@@ -3422,6 +3877,7 @@ main(int argc, char **argv)
 	}
 	/* (the elements' styles on workers too; NXWEB_STYLES=here: on this core alone) */
 	web_style_elsewhere = getenv("NXWEB_STYLES") && !strcmp(getenv("NXWEB_STYLES"), "here") ? NULL : styles_elsewhere;
+	web_page_bg = 0xffffff;	/* (a view before the first page comes) */
 	go(argc > 1 ? argv[1] : home, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
 	set_title();
@@ -3429,7 +3885,7 @@ main(int argc, char **argv)
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
-		int menu, open, wait = top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000;
+		int menu, wait = top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000;
 
 		/* (the pictures waited for are decoded, not in a scroll or with an event there, then the
 		 * strips ahead of the view made, while the wait lasts) */
@@ -3543,13 +3999,9 @@ main(int argc, char **argv)
 			ask(web_sheets[asking - SHEET].address, 2);
 		else if (!by_hand && regs && asking >= 0)
 			ask(pictures[asking].address, 1);
-		/* the Stop key and the status line's right part say what is still to come */
-		open = regs ? wanted_open() : 0;
-		if ((loading || by_hand || open) != shown_busy || open != shown_open) {
-			shown_busy = loading || by_hand || open;
-			shown_open = open;
-			draw_tool(2);
-			draw_status();
-		}
+		if (failed_due && window)
+			failures_show();
+		if (top == goal)
+			loading_shown(event.type == GR_EVENT_TYPE_TIMEOUT);	/* (not a scroll's steps: they are counted) */
 	}
 }

@@ -521,13 +521,28 @@ static int shaderemu_gpu_mmap(struct file *file, struct vm_area_struct *vma)
 					((vma->vm_flags & VM_WRITE) ? _PAGE_DIRTY : 0)));
 }
 
+/* Which of the keyboard, the cursor and the volume list were nobody's when this file was
+ * opened: only those can be its program's, and only those it gives back. */
+static int shaderemu_gpu_open(struct inode *inode, struct file *file)
+{
+	file->private_data = (void *)(uintptr_t)((readl(gpu_regs + KEYBOARD_OWNER) ? 0 : 1) | (readl(gpu_regs + DISPLAY_CURSOR) ? 0 : 2) |
+						 (readl(gpu_regs + VOLUME_LIST) ? 0 : 4));
+	return 0;
+}
+
 /* A program that dies leaves the keyboard and the cursor behind: give them back. */
 static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 {
-	writel(0, gpu_regs + KEYBOARD_OWNER);
-	writel(0, gpu_regs + DISPLAY_CURSOR);
-	writel(0, gpu_regs + VOLUME_LIST + 4);
-	writel(0, gpu_regs + VOLUME_LIST);
+	uintptr_t free_at_open = (uintptr_t)file->private_data;
+
+	if (free_at_open & 1)
+		writel(0, gpu_regs + KEYBOARD_OWNER);
+	if (free_at_open & 2)
+		writel(0, gpu_regs + DISPLAY_CURSOR);
+	if (free_at_open & 4) {
+		writel(0, gpu_regs + VOLUME_LIST + 4);
+		writel(0, gpu_regs + VOLUME_LIST);
+	}
 	/* and its worker cores run in memory that is going away: park them */
 	{
 		mutex_lock(&workers_lock);
@@ -551,6 +566,7 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 
 static const struct file_operations shaderemu_gpu_fops = {
 	.owner		= THIS_MODULE,
+	.open		= shaderemu_gpu_open,
 	.release	= shaderemu_gpu_release,
 	.unlocked_ioctl	= shaderemu_gpu_ioctl,
 	.mmap		= shaderemu_gpu_mmap,

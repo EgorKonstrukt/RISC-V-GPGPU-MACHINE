@@ -100,7 +100,10 @@ hand.
 
 Under Linux the owner word is written by the program through `/dev/gpu` (Nano-X's screen
 driver does), and the kernel clears it, and the cursor, when that file is closed, so a
-program that dies does not keep the keyboard.
+program that dies does not keep the keyboard. Only a file opened while the word was 0 clears
+it (15 October 2026): every other program's close of `/dev/gpu` (a worker program, a game
+refused the GPU, Files' pictures) cleared Nano-X's, and keys typed into windows reached the
+console as well.
 
 In a VRChat world the same uniforms (`_InputPointer`, `_InputButtons`, `_InputKeySeq`,
 `_InputKeyCount` on the machine's material, and the keys as `_InputKeyCode0`..`_InputKeyCode3`,

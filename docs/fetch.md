@@ -109,7 +109,8 @@ host:
 - A picture's pixels are written as a PPM file in `/tmp`; when it is first drawn it is decoded
   from that file to the size the page draws it at, into the GPU's memory, as the image's
   pictures are (`docs/web.md`, "Pictures"). Its place is kept from the `width` and `height`
-  the page gives; until it arrives, and when it fails, its description stands there.
+  the page gives; until it arrives its description stands there, and when it fails a box that
+  says why (the status, `docs/web.md`, "Loading, and what did not come").
 
 ## What the image keeps of the network
 

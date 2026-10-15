@@ -28,6 +28,10 @@ NES_RUNS = (('thwaite-120', 'NES_FRAMES=120 nes thwaite', '31a18295', 'afcb4a98'
             ('thwaite-180', 'NES_FRAMES=180 NES_PRESS="20 start 50 start 80 a 100 left 110 a" nes thwaite', '2f58587d', '39c90e07'),
             ('nova-120', 'NES_FRAMES=120 nes nova', '3a2e5c47', 'd8a04406'))
 STATE = r'(tic \d+ state [0-9a-f]+)'
+# media files with no ending, an ending in capitals, or only an ending, all with the execute bit (docs/open.md)
+KINDS_T = ('mkdir -p /tmp/t; cd /tmp/t; cp "/root/Music/Grieg - Hall of the Mountain King.ogg" song; cp /usr/share/play-test.wav tone; '
+           'cp "/root/Videos/Big Buck Bunny.avi" film; cp /root/Pictures/Fox.png fox; cp /usr/share/play-test.flac A.FLAC; '
+           'for e in tga pnm pbm oga vqa xyz; do echo x > a.$e; done; chmod +x *; cd /; ')
 
 
 def case(name, tags, cmd, workers=False, until='LX-DONE', more=(), wall=240, image=None, env=None, **checks):
@@ -48,7 +52,7 @@ CASES = [
     # cc's outputs, the same bytes (docs/cc.md): cc, cc -g and tcc -c of the four examples
     case('cc-bytes', 'machine', 'cd /tmp; for e in hello cube home shader; do cc /usr/share/example-$e.c -o $e.x; '
          'cc -g /usr/share/example-$e.c -o $e.g; tcc -c /usr/share/example-$e.c -o $e.o; done; md5sum *.x *.g *.o', wall=300,
-         digest=[(r'^([0-9a-f]{32}  \S+)', 'd0b2e220')]),
+         digest=[(r'^([0-9a-f]{32}  \S+)', '6c8d7a0c')]),   # gles.c and mcw.c of 15 October: the .o files as before
     case('libmedia-installed', 'machine media', 'ls -1 /usr/lib/libmedia.a /usr/include/media.h /usr/bin/media_test | cat',   # docs/media.md
          has=[r'^/usr/lib/libmedia\.a', r'^/usr/include/media\.h'], never=[r'No such file']),
     # Doom (docs/doom.md, "Checking it"): the demos' state sums, the view told and checked, the port at rest
@@ -92,6 +96,14 @@ CASES = [
     case('classicube-kept', 'games classicube', CC + 'CLASSICUBE_CHECK_KEPT=1 CLASSICUBE_SEED=7 CLASSICUBE_STATS_MS=2000 classicube', True,
          until='cccheck:', more=['--expect', 'classicube: steady', '--send', 'turn 1200 0\\ndown W\\ndown Space\\n'],
          has=[r'cccheck: the outline kept \d+ times, 0 of them wrong; the held block kept \d+ times, 0 wrong']),
+    # docs/holodeck.md, "Played from the seat": a desktop sitter breaks by the right trigger and places by
+    # the left one, at the view's middle; in a headset each hand's beam picks its own block (small blocks)
+    *[case(f'classicube-seat-{n}', 'games classicube', CC + 'CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True, until='ccblock:',
+           more=['--host', w], has=[h]) for n, w, h in (
+        ('desk-break', '00000112,e0000000,0,0,0,0,40000000,0', r'ccblock: 32 40 31 2 -> 0'),
+        ('desk-place', '00000112,e0000000,0,0,40000000,0,0,0', r'ccblock: 32 41 31 0 -> 1'),
+        ('vr-break', '90000133,0,0,c0000000,04bea3da,0,44bea026,e0000000', r'ccblock: 34 40 28 2 -> 0'),
+        ('vr-place', '90000133,0,0,c0000000,44bea3da,0,04bea026,e0000000', r'ccblock: 30 41 28 0 -> 1'))],
     # Tiberian Dawn and Red Alert (docs/tdawn.md, docs/ralert.md)
     case('tdawn-300', 'games tdawn', X + TD + 'TDAWN_SCEN=10 TDAWN_FRAMES=300 tdawn FROMINSTALL', True, has=[r'done at frame 300: SCG10EA, .* state f7650705']),
     case('tdawn-1300', 'games tdawn', X + TD + 'TDAWN_SCEN=3 TDAWN_FRAMES=1300 tdawn FROMINSTALL', True, has=[r'done at frame 1300: SCG03EA, .* state 1a9a814b']),
@@ -100,6 +112,9 @@ CASES = [
     case('tdawn-move', 'games tdawn long', X + TD + 'TDAWN_SCEN=3 TDAWN_MOVE=100,8,0 TDAWN_SUMS=1 TDAWN_FRAMES=600 tdawn FROMINSTALL', True, count=[(r'^tdsum: ', 600)]),
     case('tdawn-move-refresh', 'games tdawn long', X + TD + 'TDAWN_SCEN=3 TDAWN_MOVE=100,8,0 TDAWN_SUMS=1 TDAWN_REFRESH=1 TDAWN_FRAMES=600 tdawn FROMINSTALL', True,
          same=[(r'^(tdsum: .*)', 'tdawn-move')]),
+    # docs/tdawn.md, "A mission won": the demo's first mission won, its score screen, the next mission played
+    case('tdawn-won', 'games tdawn', X + TD + 'TDAWN_SCEN=1 TDAWN_WIN=100 TDAWN_FRAMES=300 tdawn FROMINSTALL', True, wall=400,
+         has=[r'^tdawn: score: ends', r'done at frame 300: SCG10EA, .* state 325b1830'], never=[r'Segmentation fault', r'out of memory']),
     *[case(f'ralert-{side}-{f}', 'games ralert', X + f'TDAWN_AUTO=1 RALERT_SIDE={side} RALERT_SEED=7 RALERT_FRAMES={f} ralert', True,
            has=[rf'done at frame {f}: .* state {s}']) for side, f, s in (('soviet', 300, '01e0dd60'), ('allies', 300, 'ea72a5d1'),
                                                                         ('soviet', 1300, 'eb6c2265'), ('allies', 1300, 'dadd663d'))],
@@ -107,6 +122,21 @@ CASES = [
          has=[r'scan bits kept in \d+ frames of 1280, 0 of them wrongly'], never=[r'[1-9]\d* of them wrongly']),
     case('ralert-movie', 'games ralert', X + 'RALERT_MOVIE_CHECK=1 TDAWN_AUTO=1 RALERT_SIDE=soviet RALERT_SEED=7 RALERT_FRAMES=20 ralert', True,
          wall=400, has=[r'movie check: 0 of 156 shared frames differ']),
+    # docs/ralert.md, "A base destroyed": a base attacked to the atlas's filling (the build before crashed in it), and
+    # the atlas's shapes forgotten every 50 scenes giving the same pictures
+    case('ralert-attack', 'games ralert', X + 'TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 '
+         'RALERT_FRAMES=3000 ralert', True, wall=400, has=[r'done at frame 3000: .* state dbb267c0']),
+    *[case(f'ralert-atlas{tag}', 'games ralert', X + pre + 'RALERT_DRAW=here RALERT_REFRESH=1 TDAWN_SUMS=1 TDAWN_AUTO=1 RALERT_SIDE=allies '
+           'RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 RALERT_FRAMES=300 ralert', True, **checks)
+      for tag, pre, checks in (('', '', dict(count=[(r'^rasum: ', 300)])),
+                               ('-forgotten', 'RALERT_ATLAS=50 ', dict(same=[(r'^(rasum: .*)', 'ralert-atlas')])))],
+    # docs/ralert.md, "A mission won": won twice, the score screen's table and rows against the game's own, the
+    # demo's menu again (it has no next mission: the build before asked for "out of memory"), then 300 frames
+    case('ralert-won', 'games ralert', X + 'TDAWN_INTERPOLATION=check TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_WIN=100,2 '
+         'RALERT_FRAMES=300 ralert', True, wall=400,
+         has=[r'done at frame 300: SCG02EA\.INI, .* state ea72a5d1'],
+         count=[(r"^ralert: the demo's menu again", 2), (r'^interpolation: 0 of 65536 entries differ', 2), (r'^interpolation: 0 of 399 rows differ', 22)],
+         never=[r'^interpolation: [1-9]', r'Segmentation fault', r'out of memory']),
     # NES (docs/nes.md, "Testing"): RAM and picture with the lists on the first core and on a worker
     *[case(f'nes-{n}{tag}', 'games nes', NES + pre + c, True, sums=[(r"every frame's RAM ([0-9a-f]+)", [ram]), (r'done, picture ([0-9a-f]+)', [pic])])
       for n, c, ram, pic in NES_RUNS for tag, pre in (('', ''), ('-lists', 'NES_LIST=worker '))],
@@ -134,6 +164,20 @@ CASES = [
     case('nxpath-none', 'workers long', X + 'NXPATH_CORES=0 NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE=160x120 NXPATH_SAMPLES=2 nxpath', wall=600, has=[r'02f213e9']),
     case('nxpath-check', 'workers', X + 'NXPATH_CHECK=500 nxpath', True, until='thousandths of a pixel',
          has=[r'nxpath: 0 of 500 rays met another object']),
+    # nxpath's example scenes (docs/raytrace.md, "Example scenes"): the same sum with every worker and with none
+    *[case(f'nxpath-{n}{tag}', 'workers pathtrace', X + f'{pre}NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE={size} NXPATH_SAMPLES=2 nxpath {n}',
+           not pre, has=[rf'pathstat: {size.replace("x", " x ")}, 2 samples.* sum {s}'])
+      for n, size, s in (('cornell', '120x120', '78c07525'), ('cornell-balls', '120x120', 'b962c063'), ('balls', '160x120', 'b85eb16e'),
+                         ('materials', '160x120', '5ecc7a24'), ('beer', '160x120', '3c29787e'), ('mirrors', '160x120', '2f211b98'),
+                         ('glow', '160x120', '2858a999'))
+      for tag, pre in (('', ''), ('-none', 'NXPATH_CORES=0 '))],
+    # a scene saved and opened again is the same scene: the start's and two examples' sums
+    *[case(f'nxpath-saved-{n or "start"}', 'workers pathtrace', X + f'NXPATH_WRITE=/tmp/s.scene NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE=8x8 NXPATH_SAMPLES=1 nxpath {n}'
+           f' && NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE={size} NXPATH_SAMPLES=2 nxpath /tmp/s.scene', True,
+           has=[r'nxpath: /tmp/s\.scene written', rf'pathstat: {size.replace("x", " x ")}, 2 samples.* sum {s}'])
+      for n, size, s in (('', '160x120', '02f213e9'), ('cornell', '120x120', '78c07525'), ('materials', '160x120', '5ecc7a24'))],
+    case('nxpath-cornell-check', 'workers pathtrace', X + 'NXPATH_CHECK=500 nxpath cornell', True, until='thousandths of a pixel',
+         has=[r'nxpath: 0 of 500 rays met another object', r'at most 0 thousandths of a pixel']),
     # libmedia and the players (docs/media.md, docs/play.md, docs/video.md)
     case('media-sound', 'media', '; '.join(f'media_test audio /usr/share/play-test.{e} /tmp/o.raw {w}' for e in ('flac', 'mp3', 'mod') for w in (0, 63)),
          True, wall=400, sums=[(r'audio /usr/share/play-test\.\w+: .* sum ([0-9a-f]+)', ['518c5ac8'] * 2 + ['aa07a2e5'] * 2 + ['c714a845'] * 2)]),
@@ -151,6 +195,20 @@ CASES = [
          True, wall=400, sums=[(r'nxvideo: sum ([0-9a-f]+ of \d+) pictures', ['d124dc14 of 480', '3129e37f of 96'])]),
     case('nxvideo-quit', 'media', X + 'nxvideo & sleep 9; nxkey q; sleep 4; pidof nxvideo; echo PIDOF=$?; mctest 255 20000', True,
          has=[r'^PIDOF=1', r'mctest: PASS']),
+    # docs/video.md, "The window": a second start and Open... while a film plays, a smaller desktop, a codec not played,
+    # a GL program while a film plays (refused in a window, the film on)
+    case('nxvideo-second', 'media', X + 'nxvideo & sleep 10; nxvideo "/root/Videos/Big Buck Bunny.avi"; echo SECOND=$?; sleep 8; pidof nxvideo; echo PIDOF=$?',
+         True, has=[r'^nxvideo: given to the player that is playing', r'^SECOND=0', r'^nxvideo: Big Buck Bunny\.avi, AVI 320 x 176', r'^PIDOF=0'],
+         never=[r'the GPU is drawing for']),
+    case('nxvideo-open', 'media', X + 'nxvideo & sleep 10; nxkey o; sleep 3; nxkey b enter; sleep 8; pidof nxvideo; echo PIDOF=$?', True,
+         count=[(r'^nxvideo: Big Buck Bunny\.\w+, ', 2)], has=[r'^PIDOF=0'], never=[r'the GPU is drawing for']),
+    case('nxvideo-fit', 'media', X + 'NXVIDEO_SCREEN=300x260 NXVIDEO_PRINT=1 NXVIDEO_SUM=1 NXVIDEO_ONCE=1 nxvideo', True, wall=400,
+         has=[r'^nxvideo: 320 x 176 shown at 280 x 154, the window 280 x 194', r'nxvideo: sum d124dc14 of 480 pictures']),
+    case('nxvideo-codec', 'media', X + 'cp "/root/Videos/Big Buck Bunny.avi" /tmp/x.avi; printf FMP4 | dd of=/tmp/x.avi bs=1 seek=188 conv=notrunc 2>/dev/null; '
+         'UI_ASK_PRINT=1 nxvideo /tmp/x.avi & sleep 6; killall nxvideo',
+         has=[r'^ask: Video: x\.avi MPEG-4 Part 2 \(FMP4\) pictures: not played \(this plays MJPEG in AVI\)']),
+    case('nxvideo-gpu-taken', 'media', X + 'nxvideo & sleep 10; UI_ASK_PRINT=1 RAY_FRAMES=2 nxray; echo RAY=$?; sleep 4; pidof nxvideo; echo PIDOF=$?; killall nxask',
+         True, has=[r'^RAY=1', r'^ask: Notice: The GPU is drawing for nxvideo ', r'^PIDOF=0']),
     # the desktop's programs (docs/nanox.md, docs/multicore.md, docs/web.md)
     case('nxmon', 'desktop', X + 'NXMON_CHECK=1 nxmon & sleep 20; killall nxmon', True, has=[r'nxmon: 0 of 51840 pixels differ'],
          never=[r'nxmon: [1-9]\d* of 51840']),
@@ -163,8 +221,36 @@ CASES = [
     case('nxask', 'desktop', X + "(nxkey 2500 n) & nxask 'Sure?' Yes No; echo ASK=$?", has=[r'^ASK=1']),
     case('nxfiles', 'desktop', X + 'NXFILES_PRINT=1 nxfiles /usr/share & sleep 6; nxkey drag:643,86:343,196; sleep 4',
          has=[r'nxfiles: the box selected 8 ']),
+    # what opens a file and its icon (docs/open.md, "Checking it"): by first bytes, else by ending in any case
+    case('open-kinds', 'desktop media', KINDS_T + 'for f in /root/Music/* /root/Videos/* /root/Pictures/* /tmp/t/*; do open --dry "$f"; done',
+         count=[(r'^open: /root/Music/.* is sound: nxplay ', 6), (r'^open: /root/Videos/.* is video: nxvideo ', 2),
+                (r'^open: /root/Pictures/.* is picture: nxview ', 7)],
+         has=[rf'^open: /tmp/t/{n} is {k}: {p} ' for n, k, p in (
+             ('song', 'sound', 'nxplay'), ('tone', 'sound', 'nxplay'), ('A.FLAC', 'sound', 'nxplay'), ('a.oga', 'sound', 'nxplay'),
+             ('film', 'video', 'nxvideo'), ('a.vqa', 'video', 'nxvideo'), ('fox', 'picture', 'nxview'), ('a.tga', 'picture', 'nxview'),
+             ('a.pnm', 'picture', 'nxview'), ('a.pbm', 'picture', 'nxview'))] + [r'^open: /tmp/t/a\.xyz: unknown kind']),
+    case('nxfiles-kinds', 'desktop media', KINDS_T + 'for d in /root/Music /root/Videos /root/Models /tmp/t /usr/bin; do nxfiles --kinds $d; done',
+         has=[r'^nxfiles: Beethoven - Moonlight Sonata\.ogg: Sound, icon tune', r'^nxfiles: Big Buck Bunny\.avi: Video, icon video',
+              r'^nxfiles: teapot\.obj: File, icon file', r'^nxfiles: a\.tga: Picture, icon picture', r'^nxfiles: a\.vqa: Video, icon video',
+              r'^nxfiles: song: File, icon file', r'^nxfiles: nxplay: Program, icon nxplay', r'^nxfiles: nxgame: Program, icon nxgame'],
+         count=[(r'^nxfiles: .*: Sound, ', 8)], never=[r'^nxfiles: (song|tone|film|fox|[^:]*\.(ogg|oga|flac|mp3|mod|wav|avi|mpg|vqa|tga|pnm|pbm|obj|ply|xyz|FLAC)): Program']),
+    case('nxview-unnamed', 'desktop media', X + 'cp /root/Pictures/Earthrise.jpg /tmp/pic; NXVIEW_PRINT=1 nxview /tmp/pic & sleep 8; killall nxview',
+         has=[r'^nxview: /tmp/pic, 480 x 480$']),
     case('nxweb', 'desktop', X + 'NXWEB_DUMP=1 nxweb & sleep 30; killall nxweb',   # tools/web_test.c gives the same
          has=[r'nxweb: /usr/share/web-index\.html: 122 nodes, 4 rules, 586 x 872; 77 texts \(1836 characters\), 2 boxes, 0 pictures, 0 fields']),
+    # docs/web.md, "Loading, and what did not come": each failure and why, a box for each picture
+    case('nxweb-missing', 'desktop', X + 'NXWEB_DUMP=1 nxweb /usr/share/web-missing.html & sleep 20; killall nxweb', True,
+         has=[r'nxweb: /usr/share/web-missing\.html: 36 nodes, 0 rules, 586 x 480; 10 texts \(520 characters\), 0 boxes, 5 pictures',
+              r'nxweb: loading: Loading web-missing\.html: 0 of 1 picture \(5 not loaded\)',
+              r'nxweb: not loaded: style sheet /usr/share/web-gone\.css: not found$',
+              r'nxweb: not loaded: picture /usr/share/web-gone\.png: not found$', r'nxweb: not loaded: picture /usr/share/web-gone\.gif: not found$',
+              r'nxweb: not loaded: picture /usr/share/web-test\.html: unsupported format', r'nxweb: /usr/share/web-missing\.html: all here, 5 not loaded']),
+    # (no host answers rvc_cpu's fetches: the picture is given up after 30 s, its box laid out)
+    case('nxweb-no-answer', 'desktop', X + 'NXWEB_DUMP=1 nxweb /usr/share/web-test.html & sleep 45; killall nxweb',
+         has=[r'nxweb: loading: Loading web-test\.html: 0 of 1 picture$', r'nxweb: not loaded: picture https://example\.com/x\.png: no answer in 30 s',
+              r'nxweb: /usr/share/web-test\.html: 88 nodes, 1 rules, 586 x 636; 40 texts \(520 characters\), 1 boxes, 1 pictures']),
+    # a short first page ("No such page"): its strips were never made, nothing was shown
+    case('nxweb-short', 'desktop', X + 'NXWEB_TIME=1 nxweb /usr/share/web-nowhere.html & sleep 10; killall nxweb', has=[r'nxweb: the first picture \d+ ms after']),
     case('launch-note', 'desktop', 'export UI_LAUNCH=print; nx; sleep 4; nxkey 266,94 266,94; sleep 4', wall=120,
          has=[r'^launch: Calculator', r'^launch: a window shown after \d+ ms']),   # docs/nanox.md, "A program starting"
 ]

@@ -946,7 +946,7 @@ index dd3f3f2..fc37ada 100644
 +}
 +#endif
 diff --git a/src/Camera.c b/src/Camera.c
-index a82a0d8..9bf1ff0 100644
+index a82a0d8..bce602c 100644
 --- a/src/Camera.c
 +++ b/src/Camera.c
 @@ -56,9 +56,13 @@ static void PerspectiveCamera_GetProjection(struct Matrix* proj) {
@@ -964,23 +964,59 @@ index a82a0d8..9bf1ff0 100644
  }
  
  static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
-@@ -67,6 +71,16 @@ static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
+@@ -67,9 +71,40 @@ static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
  
  	Vec3 dir    = Vec3_GetDirVector(e->Yaw * MATH_DEG2RAD, e->Pitch * MATH_DEG2RAD + Camera.TiltPitch);
  	Vec3 eyePos = Entity_GetEyePosition(e);
 +	{	/* shaderemu: from a holodeck's seat the ray is the right hand's beam, from the hand (Window_ShaderEmu.c) */
 +		extern int SE_SeatBody(float* yaw);
 +		extern int SE_SeatHand(float* at);
++		extern float SE_SeatLift(void);
 +		float body, at[3];
 +		if (SE_SeatBody(&body) && SE_SeatHand(at)) {
 +			Vec3 from = Vec3_RotateY3(at[0], at[1], -at[2], body * MATH_DEG2RAD);
 +			dir = Vec3_GetDirVector(e->Yaw * MATH_DEG2RAD, e->Pitch * MATH_DEG2RAD);
 +			Vec3_AddBy(&eyePos, &from);
++			eyePos.y += SE_SeatLift();
 +		}
 +	}
  	Picking_CalcPickedBlock(&eyePos, &dir, p->ReachDistance, t);
  }
  
++/* shaderemu: from a holodeck's seat with tracked hands, the block the left hand's beam is on,
++   where a block is placed (InputHandler.c); 0 without hands */
++int SE_LeftPick(struct RayTracer* t) {
++	extern int SE_SeatBody(float* yaw);
++	extern int SE_SeatLeft(float* at, float* yaw, float* pitch);
++	extern float SE_SeatLift(void);
++	struct LocalPlayer* p = Entities.CurPlayer;
++	float body, at[3], yaw, pitch;
++	Vec3 eyePos, from, dir;
++	if (!SE_SeatBody(&body) || !SE_SeatLeft(at, &yaw, &pitch)) return 0;
++	eyePos = Entity_GetEyePosition(&p->Base);
++	from   = Vec3_RotateY3(at[0], at[1], -at[2], body * MATH_DEG2RAD);
++	Vec3_AddBy(&eyePos, &from);
++	eyePos.y += SE_SeatLift();
++	dir = Vec3_GetDirVector(yaw * MATH_DEG2RAD, pitch * MATH_DEG2RAD);
++	Picking_CalcPickedBlock(&eyePos, &dir, p->ReachDistance, t);
++	return 1;
++}
++
+ #define CAMERA_SENSI_FACTOR (0.0002f / 3.0f * MATH_RAD2DEG)
+ 
+ static Vec2 PerspectiveCamera_GetMouseDelta(float delta) {
+@@ -195,6 +230,11 @@ static Vec3 FirstPersonCamera_GetPosition(float t) {
+ 	float yaw     = e->Yaw * MATH_DEG2RAD;
+ 	PerspectiveCamera_CalcViewBobbing(p, t, 1);
+ 	
++	{	/* shaderemu: small blocks round a holodeck's sitter are seen from over the eye (Window_ShaderEmu.c) */
++		extern float SE_SeatLift(void);
++		camPos.y += SE_SeatLift();
++	}
++
+ 	camPos.y += Camera.BobbingVer;
+ 	camPos.x += Camera.BobbingHor * Math_CosF(yaw);
+ 	camPos.z += Camera.BobbingHor * Math_SinF(yaw);
 diff --git a/src/Core.h b/src/Core.h
 index 95be4ac..4eb41c2 100644
 --- a/src/Core.h
@@ -2213,6 +2249,28 @@ index 46fc17e..8fc6aef 100644
  	Mutex_Lock(curRequestMutex);
  	{
  		*reqID    = http_curRequest.id;
+diff --git a/src/InputHandler.c b/src/InputHandler.c
+index 780e8d3..1d6aec8 100644
+--- a/src/InputHandler.c
++++ b/src/InputHandler.c
+@@ -418,7 +418,17 @@ static void InputHandler_DeleteBlock(void) {
+ 	Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, BLOCK_AIR);
+ }
+ 
++static void InputHandler_PlaceAt(void);
++/* shaderemu: a holodeck's sitter with tracked hands places where the left hand's beam is (Camera.c) */
+ static void InputHandler_PlaceBlock(void) {
++	extern int SE_LeftPick(struct RayTracer* t);
++	struct RayTracer right = Game_SelectedPos;
++	if (!SE_LeftPick(&Game_SelectedPos)) { InputHandler_PlaceAt(); return; }
++	InputHandler_PlaceAt();
++	Game_SelectedPos = right;
++}
++
++static void InputHandler_PlaceAt(void) {
+ 	IVec3 pos;
+ 	BlockID old, block;
+ 	pos = Game_SelectedPos.translatedPos;
 diff --git a/src/Launcher.c b/src/Launcher.c
 index 084b974..b1d404a 100644
 --- a/src/Launcher.c

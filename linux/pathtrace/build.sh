@@ -11,9 +11,9 @@ MW=$WORK/src/microwindows
 IMGUI=$WORK/src/imgui
 LIB=$WORK/src/imgui-build        # Dear ImGui and its backend, as linux/imgui built them: for the handles only
 BUILD=$WORK/src/pathtrace-build
-OUT=$REPO/build/images/linux/root
+OUT=${PATHTRACE_OUT:-$REPO/build/images/linux/root}   # (PATHTRACE_OUT: a private image's overlay)
 [ -f "$LIB/imgui.o" ] || { echo "run linux/imgui/build.sh first"; exit 1; }
-mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share" "$OUT/root/Models"
+mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share/pathtrace" "$OUT/root/Models"
 # the example meshes: the Utah teapot as Stanford's course has it, the Stanford rabbit at its
 # third size (fetched once), and a knot made here
 DATA=$WORK/src/pathtrace-data
@@ -26,6 +26,8 @@ if [ ! -f "$DATA/bunny.ply" ]; then
 fi
 python3 "$HERE/make_knot.py" "$DATA/knot.obj"
 cp "$DATA/teapot.obj" "$DATA/bunny.ply" "$DATA/knot.obj" "$OUT/root/Models/"
+# the example scenes and the Cornell box's parts (docs/raytrace.md, "Example scenes")
+cp "$HERE"/scenes/*.scene "$HERE"/scenes/*.obj "$OUT/usr/share/pathtrace/"
 # ImGuizmo, at the commit of Dear ImGui 1.91.5's time
 GIZMO=$WORK/src/ImGuizmo
 GIZMO_AT=e552f632bbb17a0ebf5a91a22900f6f68bac6545
@@ -61,5 +63,5 @@ rv32-c++ $TUNE --param=max-inline-insns-auto=60 --param=inline-unit-growth=80 -f
 riscv32-linux-strip -o "$OUT/usr/bin/nxpath" "$BUILD/nxpath"
 echo "Other/Path tracer (every core)=nxpath" > "$OUT/usr/share/nxapps.83-pathtrace"
 # a mesh anybody opens is shown (docs/open.md)
-printf '%s\n' 'mesh obj,ply - nxpath %s' > "$OUT/usr/share/nxopen.83-pathtrace"
-ls -l "$OUT/usr/bin/nxpath" "$OUT/root/Models"
+printf '%s\n' 'mesh obj,ply - nxpath %s' 'scene scene - nxpath %s' > "$OUT/usr/share/nxopen.83-pathtrace"
+ls -l "$OUT/usr/bin/nxpath" "$OUT/root/Models" "$OUT/usr/share/pathtrace"

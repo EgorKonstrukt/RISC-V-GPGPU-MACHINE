@@ -1,5 +1,5 @@
 /*
- * nxpath [MESH]: a mesh viewer with a path tracer (docs/raytrace.md, with its switches for
+ * nxpath [MESH | SCENE]: a mesh viewer with a path tracer (docs/raytrace.md, with its switches for
  * tests). The view is OpenGL's while it changes and the path tracer's when it is still; the
  * panel and the menus are the window system's own, Dear ImGui draws only the handles.
  */
@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <GLES/segl.h>
 #include "ui.h"
@@ -36,6 +37,14 @@ static const char *const detail_names[DETAILS] = {" Full view", " Half", " A thi
 static const char *const kind_names[SC_KINDS] = {" Matt", " Plastic", " Metal", " Mirror", " Glass", " Glow"};
 enum { TAB_OBJECT, TAB_MATERIAL, TAB_RENDER };
 #define TURNS 16		/* the most turns a path may be given */
+/* The example scenes: files of EXAMPLES, `nxpath NAME` or File, Examples (docs/raytrace.md). */
+#define EXAMPLES "/usr/share/pathtrace"
+static const struct { const char *file, *label; } examples[] = {
+	{"cornell", "The Cornell box"}, {"cornell-balls", "The Cornell box with balls"}, {"balls", "Glass and metal balls"},
+	{"materials", "Matt, plastic, metal, glass"}, {"beer", "Coloured glass, thin and thick"}, {"mirrors", "Two mirrors face to face"},
+	{"glow", "Lit by a glowing thing"},
+};
+#define EXAMPLE_COUNT (int)(sizeof examples / sizeof examples[0])
 static const char *const what_names[3] = {" Move", " Turn", " Size"};
 
 static GR_WINDOW_ID window, picture;
@@ -444,6 +453,8 @@ begin_trace(void)
 		}
 		world_built = 1, world_of = of;
 	}
+	if (!pt_glowing())
+		say("No memory for the glowing triangles: they light nothing.");
 	sc.camera.aspect = fixed_w ? 0.0f : (float)view_w / (float)view_h;
 	sc_camera_set(&sc.camera);
 	pt.bounces = bounces;
@@ -625,23 +636,14 @@ name_free(char *name, const char *wanted)
 	}
 }
 
-/* An object of a mesh, standing on the ground at the middle; `across`: how large its longest side is made. */
-static int
-add_object(int mesh, float across, int kind, float r, float g, float b)
+/* An object sized so that its longest side is `across`, standing on the ground at the middle. */
+static void
+fit_object(struct sc_object *o, float across)
 {
-	struct sc_object *o;
-	const struct sc_mesh *m;
-	float longest;
+	const struct sc_mesh *m = &sc.meshes[o->mesh];
+	float longest = m->high[0] - m->low[0];
 	int k;
 
-	if (mesh < 0 || sc.object_count == SC_OBJECTS || !show_mesh(mesh))
-		return -1;
-	m = &sc.meshes[mesh];
-	o = &sc.objects[sc.object_count];
-	memset(o, 0, sizeof *o);
-	name_free(o->name, m->name);
-	o->mesh = mesh;
-	longest = m->high[0] - m->low[0];
 	for (k = 1; k < 3; k++)
 		if (m->high[k] - m->low[k] > longest)
 			longest = m->high[k] - m->low[k];
@@ -650,6 +652,21 @@ add_object(int mesh, float across, int kind, float r, float g, float b)
 		o->place[k] = -(m->low[k] + m->high[k]) * 0.5f * o->size[k];
 	}
 	o->place[1] = -m->low[1] * o->size[1];
+}
+
+/* An object of a mesh, standing on the ground at the middle; `across`: how large its longest side is made. */
+static int
+add_object(int mesh, float across, int kind, float r, float g, float b)
+{
+	struct sc_object *o;
+
+	if (mesh < 0 || sc.object_count == SC_OBJECTS || !show_mesh(mesh))
+		return -1;
+	o = &sc.objects[sc.object_count];
+	memset(o, 0, sizeof *o);
+	name_free(o->name, sc.meshes[mesh].name);
+	o->mesh = mesh;
+	fit_object(o, across);
 	sc_material(o, kind);
 	o->colour[0] = r, o->colour[1] = g, o->colour[2] = b;
 	sc_object_matrix(o);
@@ -672,6 +689,8 @@ add_light(float x, float y, float z, float radius, float power)
 	return sc.light_count++;
 }
 
+static char mesh_files[SC_MESHES][256];	/* the file each mesh was read from; "" for plane, box, ball */
+
 /* A mesh from a file, or the one of that file read before; -1 with the status line saying why not. */
 static int
 import_mesh(const char *path)
@@ -691,6 +710,7 @@ import_mesh(const char *path)
 		return -1;
 	}
 	snprintf(sc.meshes[m].name, SC_NAME, "%s", name);
+	snprintf(mesh_files[m], sizeof mesh_files[m], "%s", path);
 	return m;
 }
 
@@ -821,7 +841,8 @@ slider_value(int n, int set, int value)
 /* What a control of the panel or a row of a menu does. */
 enum {
 	A_NONE, A_IMPORT, A_EXPORT, A_CLOSE, A_PLANE, A_BOX, A_BALL, A_LIGHT, A_DUPLICATE, A_DELETE, A_SCENE, A_PICTURE, A_WHOLE, A_RENDER,
-	A_STOP, A_LIVE, A_TAB, A_DETAIL = A_TAB + 3, A_WHAT, A_MATERIAL = A_WHAT + 3, A_LESS = A_MATERIAL + SC_KINDS, A_MORE = A_LESS + 9, A_SLIDER = A_MORE + 9
+	A_STOP, A_LIVE, A_TAB, A_DETAIL = A_TAB + 3, A_WHAT, A_MATERIAL = A_WHAT + 3, A_LESS = A_MATERIAL + SC_KINDS, A_MORE = A_LESS + 9, A_SLIDER = A_MORE + 9,
+	A_OPEN = A_SLIDER + SLIDERS, A_SAVE, A_EXAMPLES, A_EXAMPLE
 };
 
 /* The panel is a list of things laid out once for what is shown: what is drawn and what a
@@ -1154,10 +1175,10 @@ export_dialog(void)
 static void
 open_menu(int which)
 {
-	static struct ui_menu_item menu[6];
+	static struct ui_menu_item menu[6], scenes[EXAMPLE_COUNT];
 	int most = sample_steps[samples_at] ? sample_steps[samples_at] : ENDLESS;
 	static const struct { const char *label; int id; } rows[4][6] = {
-		{{"Import a mesh...", A_IMPORT}, {"Export the picture...", A_EXPORT}, {"Close", A_CLOSE}},
+		{{"Open a scene...", A_OPEN}, {"Save the scene...", A_SAVE}, {"Examples", A_EXAMPLES}, {"Import a mesh...", A_IMPORT}, {"Export the picture...", A_EXPORT}, {"Close", A_CLOSE}},
 		{{"Plane", A_PLANE}, {"Box", A_BOX}, {"Ball", A_BALL}, {"Light", A_LIGHT}, {"Duplicate    Ctrl+D", A_DUPLICATE}, {"Delete    Del", A_DELETE}},
 		{{"The scene", A_SCENE}, {"The picture", A_PICTURE}, {"The whole scene in view    Home", A_WHOLE}},
 		{{"Render    F5", A_RENDER}, {"Stop    Esc", A_STOP}, {"Traced when the view is still    L", A_LIVE}},
@@ -1170,11 +1191,15 @@ open_menu(int which)
 		menu[i].label = rows[which][i].label, menu[i].id = id, menu[i].icon = -1, menu[i].sub = NULL;
 		menu[i].flags = (id == A_EXPORT && !traced) || (id == A_PICTURE && (!traced || stale)) || ((id == A_DUPLICATE || id == A_DELETE) && !any) ||
 				(id == A_STOP && !tracing) || (id == A_RENDER && !stale && (tracing || sample >= most)) ? UI_MENU_GREY : 0;
-		if (id == A_CLOSE || id == A_DUPLICATE || id == A_WHOLE || id == A_LIVE)
+		if (id == A_IMPORT || id == A_CLOSE || id == A_DUPLICATE || id == A_WHOLE || id == A_LIVE)
 			menu[i].flags |= UI_MENU_LINE;
+		if (id == A_EXAMPLES)
+			menu[i].sub = scenes, menu[i].sub_count = EXAMPLE_COUNT;
 		if (id == A_LIVE && live)
 			menu[i].flags |= UI_MENU_CHECK;
 	}
+	for (i = 0; i < EXAMPLE_COUNT; i++)
+		scenes[i].label = examples[i].label, scenes[i].id = A_EXAMPLE + i, scenes[i].icon = -1;
 	ui_window_origin(window, &x, &y);
 	ui_menu_open(menu, n, x + bar_menus[which].x, y + BAR, 0, 0);
 }
@@ -1261,6 +1286,298 @@ add_thing(int id)
 	changed();
 }
 
+/* ---- scenes in files (docs/raytrace.md, "Example scenes") ---- */
+
+/* The next word of a line, one in quotes with its spaces; NULL at the end or at a '#'. */
+static char *
+next_word(char **at)
+{
+	char *p = *at, *word;
+
+	while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+		p++;
+	if (!*p || *p == '#')
+		return *at = p, NULL;
+	if (*p == '"')
+		for (word = ++p; *p && *p != '"'; p++)
+			continue;
+	else
+		for (word = p; *p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n'; p++)
+			continue;
+	if (*p)
+		*p++ = 0;
+	*at = p;
+	return word;
+}
+
+/* `count` numbers of the line: false when they are not there. */
+static int
+numbers(char **at, float *out, int count)
+{
+	char *word, *end;
+	int i;
+
+	for (i = 0; i < count; i++) {
+		if (!(word = next_word(at)))
+			return 0;
+		out[i] = strtof(word, &end);
+		if (end == word || *end)
+			return 0;
+	}
+	return 1;
+}
+
+/* object NAME MESH, then what it is: MESH is plane, box, ball or a file (from the scene's folder). */
+static const char *
+scene_object(char **at, const char *folder)
+{
+	static const char *const made[6] = {"rough", "metal", "glass", "index", "density", "glow"};
+	char *name = next_word(at), *mesh = next_word(at), *key, path[300];
+	struct sc_object *o;
+	float f[3];
+	int m = -1, i, k;
+
+	if (!name || !mesh)
+		return "an object wants a name and a mesh";
+	if (!strcmp(mesh, "plane") || !strcmp(mesh, "box") || !strcmp(mesh, "ball")) {
+		for (i = 0; i < sc.mesh_count && m < 0; i++)
+			if (!strcmp(sc.meshes[i].name, mesh))
+				m = i;
+		if (m < 0)
+			m = mesh[1] == 'l' ? sc_mesh_plane() : mesh[1] == 'o' ? sc_mesh_box() : sc_mesh_ball(16);
+	} else {
+		snprintf(path, sizeof path, "%s%s", mesh[0] == '/' ? "" : folder, mesh);
+		m = import_mesh(path);
+	}
+	if (m < 0 || (i = add_object(m, 1.0f, SC_MATT, 0.8f, 0.8f, 0.8f)) < 0)
+		return "its mesh could not be read, or there is no room for it";
+	o = &sc.objects[i];
+	sc.object_count--;	/* (its own name is not another's) */
+	name_free(o->name, name);
+	sc.object_count++;
+	for (k = 0; k < 3; k++)
+		o->size[k] = 1.0f, o->place[k] = 0.0f;
+	while ((key = next_word(at))) {
+		for (i = 0; i < 6 && strcmp(key, made[i]); i++)
+			continue;
+		if (i < 6) {
+			if (!numbers(at, f, 1))
+				return "a number is missing";
+			*(i == 0 ? &o->rough : i == 1 ? &o->metal : i == 2 ? &o->glass : i == 3 ? &o->ior : i == 4 ? &o->density : &o->glow) = f[0];
+		} else if (!strcmp(key, "kind")) {
+			key = next_word(at);
+			for (i = 0; key && i < SC_KINDS && strcasecmp(key, kind_names[i] + 1); i++)
+				continue;
+			if (!key || i == SC_KINDS)
+				return "kind is matt, plastic, metal, mirror, glass or glow";
+			sc_material(o, i);
+		} else if (!strcmp(key, "fit") || !strcmp(key, "scale")) {
+			if (!numbers(at, f, 1))
+				return "a number is missing";
+			if (key[0] == 'f')
+				fit_object(o, f[0]);
+			else
+				o->size[0] = o->size[1] = o->size[2] = f[0];
+		} else if (!strcmp(key, "colour") || !strcmp(key, "place") || !strcmp(key, "move") || !strcmp(key, "turn") || !strcmp(key, "size")) {
+			float *to = key[0] == 'c' ? o->colour : key[0] == 't' ? o->turn : key[0] == 's' ? o->size : o->place;
+
+			if (!numbers(at, f, 3))
+				return "three numbers are missing";
+			for (k = 0; k < 3; k++)
+				to[k] = key[0] == 'm' ? to[k] + f[k] : f[k];
+		} else
+			return "an object has no such thing";
+	}
+	sc_object_matrix(o);
+	return NULL;
+}
+
+/* light NAME place X Y Z radius R power P colour R G B */
+static const char *
+scene_light(char **at)
+{
+	char *name = next_word(at), *key;
+	struct sc_light *l;
+	int made;
+
+	if (!name || (made = add_light(0.0f, 2.0f, 0.0f, 0.1f, 30.0f)) < 0)
+		return "a light wants a name, and room";
+	l = &sc.lights[made];
+	sc.light_count--;
+	name_free(l->name, name);
+	sc.light_count++;
+	while ((key = next_word(at)))
+		if (!strcmp(key, "place") || !strcmp(key, "colour")) {
+			if (!numbers(at, key[0] == 'p' ? l->place : l->colour, 3))
+				return "three numbers are missing";
+		} else if (!strcmp(key, "radius") || !strcmp(key, "power")) {
+			if (!numbers(at, key[0] == 'r' ? &l->radius : &l->power, 1))
+				return "a number is missing";
+		} else
+			return "a light has no such thing";
+	return NULL;
+}
+
+/* camera target X Y Z turn T tilt T far F lens L; background colour R G B power P */
+static const char *
+scene_view(char **at, int camera)
+{
+	struct sc_camera *c = &sc.camera;
+	char *key;
+
+	while ((key = next_word(at))) {
+		float *to = NULL;
+		int count = 1;
+
+		if (camera)
+			to = !strcmp(key, "target") ? (count = 3, c->target) : !strcmp(key, "turn") ? &c->turn : !strcmp(key, "tilt") ? &c->tilt :
+			     !strcmp(key, "far") ? &c->far : !strcmp(key, "lens") ? &c->lens : NULL;
+		else
+			to = !strcmp(key, "colour") ? (count = 3, sc.sky) : !strcmp(key, "power") ? &sc.sky_power : NULL;
+		if (!to)
+			return camera ? "a camera has no such thing" : "a background has no such thing";
+		if (!numbers(at, to, count))
+			return "a number is missing";
+	}
+	return NULL;
+}
+
+static char scene_name[100] = "my.scene", scene_folder[256] = "/root/Models";
+
+/* A scene file in place of the scene there is: false (and the status line says why) when a
+ * line of it is wrong, with what was before that line kept. */
+static int
+load_scene(const char *path)
+{
+	const char *leaf = strrchr(path, '/') ? strrchr(path, '/') + 1 : path, *wrong = NULL;
+	char line[400], folder[256], text[160], *at, *word;
+	FILE *file = fopen(path, "r");
+	int number = 0;
+
+	if (!file) {
+		snprintf(text, sizeof text, "%.100s could not be read.", leaf);
+		say(text);
+		return 0;
+	}
+	snprintf(folder, sizeof folder, "%.*s", (int)(leaf - path), path);
+	snprintf(scene_name, sizeof scene_name, "%.99s", leaf);
+	sc.object_count = sc.light_count = 0;
+	sc.sky[0] = 0.6f, sc.sky[1] = 0.75f, sc.sky[2] = 1.0f, sc.sky_power = 0.0f;
+	memset(&sc.camera, 0, sizeof sc.camera);
+	sc.camera.target[1] = 0.45f, sc.camera.turn = 35.0f, sc.camera.tilt = 22.0f, sc.camera.far = 4.2f, sc.camera.lens = 0.6f;
+	while (!wrong && fgets(line, sizeof line, file)) {
+		number++;
+		at = line;
+		if (!(word = next_word(&at)))
+			continue;
+		wrong = !strcmp(word, "object") ? scene_object(&at, folder) : !strcmp(word, "light") ? scene_light(&at) :
+			!strcmp(word, "camera") ? scene_view(&at, 1) : !strcmp(word, "background") ? scene_view(&at, 0) : "what is that?";
+	}
+	fclose(file);
+	if (wrong) {
+		snprintf(text, sizeof text, "%.60s, line %d: %s", leaf, number, wrong);
+		fprintf(stderr, "nxpath: %s\n", text);
+	} else
+		snprintf(text, sizeof text, "%.100s", leaf);
+	say(text);
+	return !wrong;
+}
+
+/* The scene file a word of the command line names: a .scene file, or an example's name. */
+static const char *
+scene_named(const char *word)
+{
+	static char path[300];
+	size_t length = strlen(word);
+
+	if (length > 6 && !strcmp(word + length - 6, ".scene"))
+		return word;
+	snprintf(path, sizeof path, EXAMPLES "/%.200s.scene", word);
+	return !strchr(word, '/') && !strchr(word, '.') && access(path, R_OK) == 0 ? path : NULL;
+}
+
+static void
+open_scene(const char *path)
+{
+	load_scene(path);
+	tab = TAB_OBJECT;
+	choose(-1);
+	changed();
+}
+
+static void
+open_dialog(void)
+{
+	char path[512];
+
+	if (ui_choose_file("Open a scene", strcmp(scene_folder, "/root/Models") ? scene_folder : EXAMPLES, ".scene", path, sizeof path, others))
+		open_scene(path);
+}
+
+static void
+write_numbers(FILE *file, const char *key, const float *v, int count)
+{
+	fprintf(file, " %s", key);
+	while (count--)
+		fprintf(file, " %.9g", *v++);
+}
+
+/* The scene as a file load_scene reads back the same; false when it could not be written. */
+static int
+save_scene(const char *path)
+{
+	FILE *file = fopen(path, "w");
+	int i;
+
+	if (!file)
+		return 0;
+	fprintf(file, "# A scene of nxpath (docs/raytrace.md, \"Example scenes\")\ncamera");
+	write_numbers(file, "target", sc.camera.target, 3), write_numbers(file, "turn", &sc.camera.turn, 1);
+	write_numbers(file, "tilt", &sc.camera.tilt, 1), write_numbers(file, "far", &sc.camera.far, 1);
+	write_numbers(file, "lens", &sc.camera.lens, 1);
+	fprintf(file, "\nbackground");
+	write_numbers(file, "colour", sc.sky, 3), write_numbers(file, "power", &sc.sky_power, 1);
+	for (i = 0; i < sc.object_count; i++) {
+		const struct sc_object *o = &sc.objects[i];
+
+		fprintf(file, "\nobject \"%s\" \"%s\"", o->name, mesh_files[o->mesh][0] ? mesh_files[o->mesh] : sc.meshes[o->mesh].name);
+		write_numbers(file, "size", o->size, 3), write_numbers(file, "place", o->place, 3), write_numbers(file, "turn", o->turn, 3);
+		write_numbers(file, "colour", o->colour, 3), write_numbers(file, "rough", &o->rough, 1), write_numbers(file, "metal", &o->metal, 1);
+		write_numbers(file, "glass", &o->glass, 1), write_numbers(file, "index", &o->ior, 1);
+		write_numbers(file, "density", &o->density, 1), write_numbers(file, "glow", &o->glow, 1);
+	}
+	for (i = 0; i < sc.light_count; i++) {
+		const struct sc_light *l = &sc.lights[i];
+
+		fprintf(file, "\nlight \"%s\"", l->name);
+		write_numbers(file, "place", l->place, 3), write_numbers(file, "radius", &l->radius, 1);
+		write_numbers(file, "power", &l->power, 1), write_numbers(file, "colour", l->colour, 3);
+	}
+	fprintf(file, "\n");
+	return fclose(file) == 0;
+}
+
+static void
+save_dialog(void)
+{
+	char path[512], text[160];
+	const char *leaf;
+
+	if (!ui_save_file("Save the scene", scene_folder, ".scene", scene_name, path, sizeof path, others))
+		return;
+	ui_files_ending(path, sizeof path, ".scene");
+	leaf = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+	if (!save_scene(path)) {
+		snprintf(text, sizeof text, "%.100s could not be written.", leaf);
+		say(text);
+		return;
+	}
+	snprintf(scene_folder, sizeof scene_folder, "%.*s", (int)(leaf - path - (leaf > path + 1)), path);
+	snprintf(scene_name, sizeof scene_name, "%.99s", leaf);
+	snprintf(text, sizeof text, "The scene is written to %.100s.", leaf);
+	say(text);
+}
+
 /* What a control or a menu's row asks for. */
 static void
 act(int id)
@@ -1281,6 +1598,8 @@ act(int id)
 		return;
 	}
 	switch (id) {
+	case A_OPEN: open_dialog(); break;
+	case A_SAVE: save_dialog(); break;
 	case A_IMPORT: import_dialog(); break;
 	case A_EXPORT: export_dialog(); break;
 	case A_CLOSE: pt.stop = 2; exit(0);
@@ -1309,6 +1628,14 @@ act(int id)
 	case A_TAB: case A_TAB + 1: case A_TAB + 2: tab = id - A_TAB, tell(), draw_panel(); break;
 	case A_DETAIL: detail_at = (detail_at + 1) % DETAILS, keep_settings(), invalidate(), tell(), draw_panel(); break;
 	case A_WHAT: case A_WHAT + 1: case A_WHAT + 2: what = id - A_WHAT, view_dirty = 1, draw_panel(); break;
+	default:
+		if (id >= A_EXAMPLE && id < A_EXAMPLE + EXAMPLE_COUNT) {
+			char path[200];
+
+			snprintf(path, sizeof path, EXAMPLES "/%s.scene", examples[id - A_EXAMPLE].file);
+			open_scene(path);
+		}
+		break;
 	case A_MATERIAL: case A_MATERIAL + 1: case A_MATERIAL + 2: case A_MATERIAL + 3: case A_MATERIAL + 4: case A_MATERIAL + 5:
 		if (o >= 0)
 			sc_material(&sc.objects[o], id - A_MATERIAL), changed();
@@ -1653,11 +1980,21 @@ events(void)
 }
 
 /* What the program starts with: a ground, the teapot (or a box, without its file), a mirror
- * ball and a light under a background that gives no light; and beside them the mesh it was started with. */
-static void
+ * ball and a light under a background that gives no light; and beside them the mesh it was
+ * started with. Or the scene file it was started with: true then. */
+static int
 first_scene(const char *more)
 {
-	int teapot = access("/root/Models/teapot.obj", R_OK) == 0 ? import_mesh("/root/Models/teapot.obj") : -1, made;
+	const char *scene = more ? scene_named(more) : NULL;
+	int teapot, made;
+
+	if (scene) {
+		ball_mesh = sc_mesh_ball(16);
+		show_mesh(ball_mesh);
+		load_scene(scene);
+		return 1;
+	}
+	teapot = access("/root/Models/teapot.obj", R_OK) == 0 ? import_mesh("/root/Models/teapot.obj") : -1;
 
 	add_object(sc_mesh_plane(), 6.0f, SC_MATT, 0.62f, 0.6f, 0.56f);
 	snprintf(sc.objects[0].name, SC_NAME, "Ground");
@@ -1677,6 +2014,7 @@ first_scene(const char *more)
 	say("");
 	if (more && (made = import_mesh(more)) >= 0 && (made = add_object(made, 1.0f, SC_MATT, 0.8f, 0.8f, 0.8f)) >= 0)
 		sc.objects[made].place[0] = -1.2f;
+	return 0;
 }
 
 int
@@ -1738,9 +2076,13 @@ main(int argc, char **argv)
 				samples_at = i;
 	leave_when_done = getenv("NXPATH_EXIT") != NULL;
 	take_workers((text = getenv("NXPATH_CORES")) != NULL ? atoi(text) : MC_MAX_CORES);
-	first_scene(argc > 1 ? argv[1] : NULL);
-	choose(argc > 1 && sc.object_count > 3 ? sc.object_count - 1 : 1);
+	if (first_scene(argc > 1 ? argv[1] : NULL))
+		choose(-1);
+	else
+		choose(argc > 1 && sc.object_count > 3 ? sc.object_count - 1 : 1);
 	changed();
+	if ((text = getenv("NXPATH_WRITE")) != NULL)
+		printf("nxpath: %s %s\n", text, save_scene(text) ? "written" : "not written");
 	if (getenv("NXPATH_AUTO"))
 		begin_trace();
 	for (;;) {

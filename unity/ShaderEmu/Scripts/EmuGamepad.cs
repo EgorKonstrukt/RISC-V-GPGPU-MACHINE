@@ -268,8 +268,8 @@ public class EmuGamepad : UdonSharpBehaviour
         {
             Set(Jump, jump);
             Set(Accept, rightGrip);
-            // the right trigger digs and the left one builds: the buttons, where the pointer was left
-            if (!InMenu()) Point(false, fire, other);   // (a menu's pointer is the beam on the room's screen)
+            // (the right trigger digs and the left one builds, each by its own hand's beam: the
+            // game reads the triggers in the host's words, EmuHolodeck.Tell; a menu's pointer is the beam)
         }
         else if (scheme == ForPad)
         {

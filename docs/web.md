@@ -15,8 +15,8 @@ opens and closes what it folds away.
 
 - **Menus** (`ui_menu.h`, made when they open: `menu_make`). File: Open address, Open file,
   Save page as, Close. Edit: Copy the address, Paste an address, Find in page, Find next.
-  View: Stop, Reload, Pictures (a tick), Page source (the page's bytes in the editor),
-  Options. Go: Back, Forward, Home, then the session's pages (16 at most, the newest first, a
+  View: Stop, Reload, Pictures (a tick), What was not loaded, Page source (the page's bytes in
+  the editor), Options. Go: Back, Forward, Home, then the session's pages (16 at most, the newest first, a
   tick at the one shown). Bookmarks: Add this page or Remove this page, Remove (a menu of
   them all), then the bookmarks. Help: Keys (`about:keys`), About this machine. A row that
   cannot apply is grey. F10 opens File; Left and Right go to the menu beside.
@@ -26,7 +26,8 @@ opens and closes what it folds away.
   second click or Backspace edits it; a long one shows its end. A bare name is a site.
 - **The status line**: what the browser has to say (where the page came from, a link picked
   with Tab, what a command did, what Find is told), and in its right part what is still to
-  come ("Loading...", "3 to come") or the page's size. It does not follow the pointer: that
+  come ("3 of 8", "Loading...", "Loading" below), how many of the page's pictures and sheets
+  did not come ("5 not loaded") or the page's size. It does not follow the pointer: that
   would be the pointer's moves all the time (`ui_moves` in `ui.h`). The right button on a
   link shows its address there, with a menu: Open the link, Copy the link's address,
   Bookmark the link, and the page's Back, Forward, Reload, Bookmark, Page source.
@@ -41,6 +42,51 @@ opens and closes what it folds away.
   each `ADDRESS TITLE`. 24 bookmarks at most (a menu of them fits the screen), no address
   with a space or over 180 characters. Where `/persistence` cannot be written the status
   line says so and the browser goes on with what it has until it closes.
+
+### Loading, and what did not come
+
+While the page, a sheet or a picture is fetched, or a picture is decoded (`progress`,
+`loading_shown` in `nxweb.c`):
+
+- **A bar** fills the address field from the left in light blue and a line of three rows under
+  the bar in dark blue, as much as has come (a sheet or a picture each; a page in parts by its
+  kilobytes); while that cannot be counted (the page's text not here yet) a block moves along
+  them, a step every 100 ms.
+- **The status line** says what: "Loading example.com: 1 of 1 style sheet, 3 of 7 pictures (2
+  not loaded)", and its right part "4 of 8". A message of a command after the page came stays
+  instead (the bar still says it).
+- **The window's caption** begins "Loading:", **the pointer** over the window is the
+  hourglass of a program starting (`ui_launch_cursor` in `ui_launch.h`; it changes when the
+  pointer next moves), the Stop key is in the bar, and Escape gives up what is still to come.
+  Only what waits for a visitor's paste in the VRChat world (`docs/fetch.md`) is not that: the
+  status line says how many are to be pasted, the pointer and the caption stay as they are.
+
+What did not come is said, never left blank:
+
+- **A picture** that could not be had is a grey box with a sign (a picture crossed out in red)
+  and why, as `why_of` and libmedia say it: "not found (404)", "refused (403)", "the server's
+  error (503)", "unsupported format" (the host could not decode it, 415, or it is not a picture
+  libmedia reads), "cannot be decoded: ...", "no answer" (the host gave up), "no answer in 30
+  s", "an address the host may not open", "stopped", "no network". Where the page gives its size
+  the box is that size, its description on the first line and why on the second; where it does
+  not, the box is one line, "description: why", as wide as that (`web_broken_size` in
+  `web_layout.h`, at most 300 pixels), and the page is laid out again for it. A strip with such
+  a box is drawn by requests.
+- **The status line**, once all has come: "4 pictures and 1 style sheet could not be loaded:
+  click here to see why", and its right part "5 not loaded" in red. A click on the status line,
+  or View, What was not loaded, opens a window that lists each, sheets first, with why and its
+  address (16 rows, then "and N more"); Close, Enter or Escape closes it.
+- A picture of the image itself (`/usr/share/...`) that is not a PPM is decoded as the cache's
+  are (`picture_local`); before, it was missing. `web-about.html` shows the fox's JPEG so.
+- `NXWEB_DUMP=1` prints what is loading as it changes ("nxweb: loading: ..."), each failure and
+  why ("nxweb: not loaded: picture ADDRESS: WHY") and "all here, N not loaded";
+  `NXWEB_PRINT=1` the list window's rows and where it is. `web-missing.html` is the test page
+  (a sheet and three pictures not there, a file that is not a picture, one that decodes);
+  `tools/web_test.c --failed` lays a page out with a box for each picture not in the cache.
+- **A short first page** (15 October 2026): a page shorter than the view shown before any
+  worker had been asked for, as "No such page" or the empty view while the first page is
+  fetched, was never drawn and the browser spun: its strips waited for a worker that
+  `strips_work` never looked for (`w` 0 taken for "every worker has one").
 
 | Key | |
 |---|---|

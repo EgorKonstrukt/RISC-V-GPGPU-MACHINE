@@ -80,9 +80,21 @@ decode(const char *from, const char *to, int *pw, int *ph)
 static int
 is_coded(const char *name)
 {
-	int pw, ph;
+	int pw, ph, fd;
+	unsigned char head[4] = "";
 
-	return media_kind_of_name(name) != MEDIA_UNKNOWN && !ui_picture_size(name, &pw, &ph);
+	if (ui_picture_size(name, &pw, &ph))
+		return 0;
+	if (media_kind_of_name(name) != MEDIA_UNKNOWN)
+		return 1;
+	/* (a name with no ending of a picture's, as `open` may give: its first bytes) */
+	if ((fd = open(name, O_RDONLY)) >= 0) {
+		if (read(fd, head, sizeof head) < 4)
+			head[0] = 0;
+		close(fd);
+	}
+	return !memcmp(head, "\x89PNG", 4) || (head[0] == 0xff && head[1] == 0xd8) || !memcmp(head, "GIF8", 4) ||
+	       (head[0] == 'B' && head[1] == 'M') || (head[0] == 'P' && head[1] >= '1' && head[1] <= '5');
 }
 
 /* The PPM a picture is zoomed or turned from: decoded when first wanted. */
@@ -359,7 +371,7 @@ take(const char *file)
 static int
 is_picture(const char *name)
 {
-	static const char *const ends[] = { ".ppm", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".pgm", ".pbm", ".tga", ".xpm" };
+	static const char *const ends[] = { ".ppm", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".pgm", ".pbm", ".pnm", ".tga", ".xpm" };
 	size_t n = strlen(name), i;
 
 	for (i = 0; i < sizeof ends / sizeof ends[0]; i++)
@@ -484,7 +496,7 @@ key(int ch)
 	case 'q': case MWKEY_ESCAPE:
 		return 0;
 	case 'o':
-		if (ui_choose_file("Open a picture", "/root/Pictures", ".jpg .jpeg .png .gif .bmp .tga .ppm .pgm", chosen, sizeof chosen, others))
+		if (ui_choose_file("Open a picture", "/root/Pictures", ".jpg .jpeg .png .gif .bmp .tga .ppm .pgm .pbm .pnm", chosen, sizeof chosen, others))
 			take(chosen);
 		if (closing)
 			return 0;

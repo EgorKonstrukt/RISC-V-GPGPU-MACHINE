@@ -50,6 +50,11 @@ public class EmuPointer : UdonSharpBehaviour
     public UdonSharpBehaviour holodeck;
     public Transform holoMark;         // over the key a beam is on
     [HideInInspector] public bool holoKeys;
+    // A key whose event ends in "Slide" is a slider: held, it is sent again as the beam moves,
+    // with holoSlide where the beam is across it, 0 to 1.
+    [HideInInspector] public float holoSlide;
+    private int[] sliding = new int[2];
+    private float[] keyU = new float[2];
     // The small button that brings a console back, a room: the last of holoKeyEvents is its event.
     public Collider[] holoShow;
     // The sitter's program shows a flat screen (a menu): their beams are its pointer on the room's screen.
@@ -107,6 +112,7 @@ public class EmuPointer : UdonSharpBehaviour
             target[h] = Nothing;
             key[h] = -1;
             pressedOn[h] = -1;
+            sliding[h] = -1;
         }
         if (machine.linksPanel != null) linksPlate = machine.linksPanel.GetComponent<Collider>();
         ShowPitch();
@@ -288,7 +294,11 @@ public class EmuPointer : UdonSharpBehaviour
             for (int k = 0; k < holoKeyEvents.Length; k++)
             {
                 float kx = holoKeyRects[k * 4], ky = holoKeyRects[k * 4 + 1];
-                if (x >= kx && y >= ky && x < kx + holoKeyRects[k * 4 + 2] && y < ky + holoKeyRects[k * 4 + 3]) foundKey = k;
+                if (x >= kx && y >= ky && x < kx + holoKeyRects[k * 4 + 2] && y < ky + holoKeyRects[k * 4 + 3])
+                {
+                    foundKey = k;
+                    keyU[h] = Mathf.Clamp01((x - kx) / holoKeyRects[k * 4 + 2]);
+                }
             }
         }
         if (holoKeys && ownHolo >= 0 && holoShow != null && ownHolo < holoShow.Length && holoShow[ownHolo] != null
@@ -328,6 +338,11 @@ public class EmuPointer : UdonSharpBehaviour
         if (found >= 1) keyboards[found - 1].SetHover(h, foundKey);
         target[h] = found;
         key[h] = foundKey;
+        if (sliding[h] >= 0 && found == Console && foundKey == sliding[h] && holodeck != null)
+        {
+            holoSlide = keyU[h];
+            holodeck.SendCustomEvent(holoKeyEvents[foundKey]);
+        }
         onTube[h] = tube && found == Display;
         if (holoMark != null && (found == Console || was == Console))
         {
@@ -506,7 +521,11 @@ public class EmuPointer : UdonSharpBehaviour
         int h = Hand(args);
         if (value && target[h] == Console)
         {
-            if (key[h] >= 0 && holodeck != null) holodeck.SendCustomEvent(holoKeyEvents[key[h]]);
+            if (key[h] >= 0 && holodeck != null)
+            {
+                if (holoKeyEvents[key[h]].EndsWith("Slide")) { sliding[h] = key[h]; holoSlide = keyU[h]; }
+                holodeck.SendCustomEvent(holoKeyEvents[key[h]]);
+            }
             return;
         }
         if (away && value && !holoFlat && target[h] != Display && target[h] < 1) return;
@@ -531,6 +550,7 @@ public class EmuPointer : UdonSharpBehaviour
         {
             trigger[h] = false;
             burning[h] = false;
+            sliding[h] = -1;
             if (pressedOn[h] >= 0) keyboards[pressedOn[h]].Release(h);
             pressedOn[h] = -1;
         }

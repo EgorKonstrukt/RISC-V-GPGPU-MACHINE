@@ -218,6 +218,23 @@ listing at VRChat" reads the entry, and "Update the world's picture and descript
 VRChat" sends those two and nothing else (`ShaderEmuListing.cs`: the SDK's
 `UpdateWorldInfo` and `UpdateWorldImage`, which need its panel logged in and no build).
 
+## The system sheet
+
+On the den's back wall over the television, from the corner to the posters: a sheet of fanfold
+paper (2.3 x 1.54 m) in the board's own frame, which lists every program a visitor would use
+with its command (from `ls` of the machine's `/bin`, `/usr/bin`, `/sbin`, `/usr/sbin` and
+`/usr/local/bin` under `rvc_cpu`: the base image has MicroPython, QuickJS, nano, mc, ssh and
+more besides ours), which files each opens, the NES mappers, the samples and how to start things.
+Its words are `unity/ShaderEmu/Editor/ShaderEmuSheet.txt` (columns, headings, `NAME | TEXT`
+lines; ASCII only), laid out by `ShaderEmuSheet.cs` in mono type at the largest size at which
+every column fits (21 on 15 October 2026). "ShaderEmu/Write the system sheet into the open
+scene" puts it there styled as the board's paper, or, when it has its plate, letters that plate
+again from the file: no build, no bake. The frame is the board's mesh ("Board" of `Computer.fbx`)
+turned and stretched, not static, on copies of its materials without the light volume
+(`Generated/* by probes.mat`): with it the wood was black this close to the wall. The plate and
+the frame take the probes' light. After a change to `linux/apps/nxopen.conf`, a program's
+`nxopen.*` or `nxapps.*` line, or a program added to the image, edit the file and run the command.
+
 ## The danger zone
 
 On the den's right wall, between the room's switches and the rack: a panel whose keys harm

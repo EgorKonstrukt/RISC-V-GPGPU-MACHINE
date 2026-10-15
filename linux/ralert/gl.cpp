@@ -105,7 +105,10 @@ static struct alignas(16) Drawing
     unsigned frames_taken, frames_differ;
     int check_frames;
     bool emitting, touched;
-} drawing = {NULL, 0, 0, 0, {0, 0, 0}, {0, 0}, 0, {0}, {0}, 0, 0, 0, -1, false, true};
+    bool missed, not_here; // (the worker: a shape it could not draw, and of those one the game would have)
+    bool full;             // no room in the atlas for a shape: its shapes are forgotten at the next scene
+    unsigned misses;
+} drawing = {NULL, 0, 0, 0, {0, 0, 0}, {0, 0}, 0, {0}, {0}, 0, 0, 0, -1, false, true, false, false, false, 0};
 #define recording drawing.recording
 #define shelf_x drawing.shelf_x
 #define shelf_y drawing.shelf_y
@@ -309,6 +312,32 @@ static void forget(void)
     told_count = 0;
     kept_count = 0;
     solid_x = -1;
+}
+
+// The atlas full: its shapes are forgotten and put again as they are next drawn (docs/ralert.md,
+// "A base destroyed"). In a long battle every new shape was the game's own drawing once it had filled.
+static unsigned shapes_forgotten, forget_every;
+static void shapes_forget(void)
+{
+    host_frames_settle(); // (work put off for the scene's core still looks at the shapes)
+    host_settle();        // (and the list the GPU may still draw)
+    memset(shapes, 0, sizeof(shapes));
+    memset(shelf_x, 0, sizeof(shelf_x));
+    memset(shelf_y, 0, sizeof(shelf_y));
+    shade_count = 0;
+    shelf_top = ICON_ROWS;
+    memset(host_masks() + ICON_ROWS * (ATLAS_W / 8), 0, (ATLAS_ROWS - ICON_ROWS) * (ATLAS_W / 8));
+    memset(kept, 0, sizeof(kept));
+    memset(cell_kept, 0, sizeof(cell_kept));
+    memset(overlaid, 0, sizeof(overlaid));
+    memset(edged, 0, sizeof(edged));
+    memset(edge_of, -2, sizeof(edge_of));
+    memset(edge_shape, 0, sizeof(edge_shape));
+    kept_count = 0;
+    solid_x = -1;
+    under_stale = true;
+    drawing.full = false;
+    shapes_forgotten++;
 }
 
 // Something of this cell changed (CellClass::Redraw_Objects): its edge of the shroud is worked
@@ -597,6 +626,7 @@ static bool room(int w, int h, int& x, int& y)
     }
     if (!shelf_y[tall] || shelf_x[tall] + w > ATLAS_W) {
         if (shelf_top + tall * 16 > ATLAS_ROWS) {
+            drawing.full = true;
             return false;
         }
         shelf_y[tall] = shelf_top;
@@ -950,6 +980,20 @@ static void check_frame(const Shape* s, const struct host_frame* ready, uintptr_
 }
 
 // A shape of the map, as CC_Draw_Shape was asked for it. False: the game is to draw it.
+// A frame no core has ready, made by the worker that draws the objects as the workers that make
+// frames ready make them (keyframe.cpp), into a buffer of its own; NULL: larger than that.
+extern "C" int ShaderEmu_Frame_Into(const void* file, int frame, void* buffer);
+alignas(16) static unsigned char behind_buffer[4096 + 65536]; // (4 KB before the frame: keyframe.cpp)
+static const unsigned char* behind_frame(const void* file, int frame)
+{
+    drawing.misses++;
+    if (Get_Build_Frame_Width(file) * Get_Build_Frame_Height(file) > 65536
+        || !ShaderEmu_Frame_Into(file, frame, behind_buffer + 4096)) {
+        return NULL;
+    }
+    return behind_buffer + 4096;
+}
+
 bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, int flags, void const* fade, void const* ghost, int turn)
 {
     if (!ShaderEmu_GL_Emitting || window != WINDOW_TACTICAL || !file || frame == -1) {
@@ -977,7 +1021,13 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
                 atexit(check_report);
             }
         }
-        uintptr_t built = ready && check_frames < 2 ? 1 : Build_Frame(file, (unsigned short)frame, _ShapeBuffer);
+        // (on the worker that draws the objects: Build_Frame's buffers and the heap are the first core's)
+        const unsigned char* own = !ready && mcw_self() ? behind_frame(file, frame) : NULL;
+        if (!ready && mcw_self() && !own) {
+            drawing.missed = true; // (the object is drawn anew next frame)
+            return true;
+        }
+        uintptr_t built = (ready && check_frames < 2) || own ? 1 : Build_Frame(file, (unsigned short)frame, _ShapeBuffer);
         s->w = s->full_w = Get_Build_Frame_Width(file);
         s->h = s->full_h = Get_Build_Frame_Height(file);
         s->left = s->top = 0;
@@ -1002,6 +1052,18 @@ bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, i
             }
         } else if (!built) {
             s->kind = EMPTY;
+        } else if (own) {
+            const struct host_frame whole = {own, 0, 0, s->w, s->h, HOST_FRAME_READY};
+            unsigned char* pixels = s->turn ? turned(NULL, s->w, s->h, s->turn, &whole) : (unsigned char*)own;
+            if (s->turn) {
+                s->w = s->full_w = (short)(2 * s->w);
+                s->h = s->full_h = (short)(2 * s->h);
+            }
+            if (pixels) {
+                put(s, pixels);
+            } else {
+                s->kind = EMPTY;
+            }
         } else if (s->turn) {
             unsigned char* pixels = turned((void*)built, s->w, s->h, s->turn);
             s->w = s->full_w = (short)(2 * s->w);
@@ -1137,6 +1199,7 @@ alignas(16) static Behind behind[BEHIND_MOST];
 static int behind_count, behind_most = -1;
 alignas(16) static unsigned char behind_arena[BEHIND_BYTES];
 static bool behind_pending;
+static int behind_not; // scenes whose objects are drawn here: the worker met a shape only the game draws
 static int behind_rect[4];
 static unsigned behind_drawn, behind_frames, behind_here;
 bool ShaderEmu_GL_Behind; // (Main_Loop's Render: the objects may be drawn behind)
@@ -1174,12 +1237,18 @@ static bool Behind_Note(int refresh, unsigned scenes, unsigned& away)
 {
     if (behind_most < 0) {
         behind_most = !(getenv("RALERT_DRAW") && !strcmp(getenv("RALERT_DRAW"), "here"));
+        memset(behind_buffer, 0, sizeof(behind_buffer)); // (its pages there before the worker stores to them)
         atexit([]() {
             if (getenv("RALERT_FRAME_LOG") || getenv("RALERT_MARK"))
-                fprintf(stderr, "ralert: %u scenes' objects drawn a frame behind (%u objects), %u here\n", behind_frames, behind_drawn, behind_here);
+                fprintf(stderr, "ralert: %u scenes' objects drawn a frame behind (%u objects, %u frames made there), %u here\n",
+                        behind_frames, behind_drawn, drawing.misses, behind_here);
         });
     }
     if (!behind_most || !ShaderEmu_GL_Behind || !host_scene_behind_ready()) {
+        return false;
+    }
+    if (behind_not) {
+        behind_not--;
         return false;
     }
     int n = 0;
@@ -1220,6 +1289,9 @@ static bool Behind_Note(int refresh, unsigned scenes, unsigned& away)
             if (drew) {
                 behind[n].copy = (ObjectClass*)(behind_arena + used);
                 memcpy((void*)behind[n].copy, (const void*)object, size);
+                if (object->What_Am_I() == RTTI_ANIM) {
+                    ((AnimClass*)behind[n].copy)->ShaderEmu_Detach(); // (what it is on may be gone before it is drawn)
+                }
                 used += (size + 15) & ~15;
                 behind_drawn++;
             }
@@ -1273,10 +1345,11 @@ static void Behind_Draw(void)
             k->whole = true;
             k->barred = false;
         }
+        drawing.missed = false;
         bool drew = behind[i].copy->Render(true);
         recording = NULL;
         if (k) {
-            k->whole = k->whole && drew && !ShaderEmu_GL_Touched;
+            k->whole = k->whole && drew && !ShaderEmu_GL_Touched && !drawing.missed;
             k->away = !drew;
             k->view = view;
         }
@@ -1291,6 +1364,21 @@ static GraphicViewPortClass* behind_page;
 static void Behind_Joined(void)
 {
     Set_Logic_Page(behind_page);
+    if (drawing.not_here) {
+        drawing.not_here = false;
+        behind_not = 256;
+    }
+}
+
+// The game's own drawing of a shape, asked on the worker: not there (its buffers and heap are this
+// core's), and the objects of the scenes after are drawn here.
+bool ShaderEmu_GL_Not_Behind(void)
+{
+    if (!mcw_self()) {
+        return false;
+    }
+    drawing.missed = drawing.not_here = true;
+    return true;
 }
 
 /* After Main_Loop's Render (the sidebar drawn): the objects to a worker, if they were noted. */
@@ -1340,6 +1428,18 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
         tile_y = MapCellY - 1;
         tile_w = MapCellWidth + 2;
         tile_h = MapCellHeight + 2;
+        forced = true;
+        static bool asked;
+        if (!asked && getenv("RALERT_ATLAS")) {
+            forget_every = atoi(getenv("RALERT_ATLAS"));
+            atexit([]() { fprintf(stderr, "ralert: the atlas's shapes forgotten %u times\n", shapes_forgotten); });
+        }
+        asked = true;
+    }
+    // (before a scene, with fewer rows left than one may want; RALERT_ATLAS=N: every N scenes too, for a test)
+    static unsigned scenes_now;
+    if (drawing.full || shelf_top > ATLAS_ROWS - 256 || (forget_every && ++scenes_now % forget_every == 0)) {
+        shapes_forget();
         forced = true;
     }
     last_frame = Frame;

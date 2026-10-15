@@ -81,7 +81,7 @@ static int draw_claim(int fd) {
 
 static void gpu_open(void) {
     if (gpu_fd >= 0) return;
-    gpu_fd = open("/dev/gpu", O_RDWR);
+    gpu_fd = open("/dev/gpu", O_RDWR | O_CLOEXEC);   // (not held across exec)
     if (gpu_fd >= 0) {
         if (draw_claim(gpu_fd) < 0) exit(1);
         void* map = mmap(0, GPU_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, gpu_fd, 0x01000000);   // the device maps from 0x86000000

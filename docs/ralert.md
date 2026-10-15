@@ -359,6 +359,129 @@ several cores.
   11 to 18 thousand each. The turning itself is still this core's.
 - A message that expires, the scene's refresh in turns: `docs/tdawn.md`.
 
+## A base destroyed (15 October 2026)
+
+Reported from the world: 5 frames a second halfway through destroying the enemy's base, a
+third of the mission's start (the picture was the Allied mission, on snow, the player's units
+selected near the Soviet base). `RALERT_ATTACK=N[,E]` plays that: from frame N, every E
+frames, the player's units and soldiers are selected, sent at the enemy's building nearest
+them (one that costs something: no barrels or civilians) and the view centred on them. With
+`RALERT_SIDE=allies RALERT_ATTACK=100,250` the base falls from frame 600 on. Three causes:
+
+- **The atlas filled.** Every frame of every shape, each remap and shadow, each turn of an
+  aircraft keeps its place in the atlas (`linux/ralert/gl.cpp`), and nothing gave a place
+  back: at frame 2,110 the shapes' 1,040 rows were full (1,673 shapes, 65% of the rows'
+  pixels, the rest the shelves' ends), and every new shape was left to the game from then on,
+  for good: its own drawing over the map, the page's part of the view filled and every object
+  drawn anew each frame. The map went from 25 to 45 thousand instructions a frame to 140 to
+  210 (`rastat:` "314 left to the game"). Now a scene that begins with fewer than 256 rows
+  left, or after a shape found no room, forgets the shapes (`shapes_forget`: the shapes, the
+  shades, the masks of their rows and every rectangle kept with an object or a cell) and puts
+  each again as it is next drawn: one frame of some 800 thousand instructions every two
+  thousand or so of a battle. `RALERT_ATLAS=N` forgets them every N scenes too, for a test.
+- **The screen shaken by copies of the page.** A building that costs 400 or more shakes the
+  screen when it is destroyed, cost / 400 times, and twice (for its owner and for whoever
+  destroyed it); so do bridges and some triggers. Each shake copied the 640 x 400 page into
+  the other and back, row by row, 2 x shakes + 2 times: 1.2 to 2.2 million instructions and
+  2 to 4 MB of stores, which moved only the page (the sidebar and the map's holes) over the map
+  the GPU draws, which stayed. The same random picks and frames are made without the copies
+  now (`Shake_The_Screen`, 6 thousand instructions); `RALERT_SHAKE=copy` is the old way.
+- **The objects' worker drew from a copy that pointed at the living.** An animation attached
+  to an object (a building's fire) found that object through its target value when the copy
+  was drawn, while the first core's logic went on and destroyed it: the heap no longer had it,
+  the worker read address 0, and the first core, bringing the page for it, ended the program
+  (`Segmentation fault` in `serve`, `mcw.c`). The build before crashed so in that run at frames
+  600 to 850 under `rvc_cpu`, under `rvc_harness --cpu --warp` and on the card (not every
+  time: it is a race). A copy's place is worked out as it is copied now and it is attached to
+  nothing (`AnimClass::ShaderEmu_Detach`). And a frame no core had ready was built on the
+  worker by the game's `Build_Frame`, whose buffers and heap (it allocates) are the first
+  core's: the worker makes it into a buffer of its own as the workers that make frames ready
+  do (`ShaderEmu_Frame_Into`, 70 frames in 3,000 of the battle), and the game's own drawing,
+  asked on the worker, is not made there: the scenes after are drawn by the first core
+  (`ShaderEmu_GL_Not_Behind`).
+
+`rvc_cpu --ips 2000000` with the card model, `RALERT_SIDE=allies RALERT_ATTACK=100,250`, the
+build before (with only `RALERT_ATTACK` added) and after:
+
+| | Before | After |
+|---|---|---|
+| Frames 2,001 to 3,000 (`RALERT_MARK`) | 137.3 s, 7.3 frames a second | 65.2 s, 15.3 |
+| Core 0 a frame, passes a frame | 237 thousand, 33.4 | 111 thousand, 16.4 |
+| Frames 100 to 3,999, by instructions | 203 thousand a frame, 9.2 a second | 133 thousand, 14.1 |
+
+On the card (D3D11 with fxc2, frames 2,001 to 3,000; the build before with `RALERT_DRAW=here`,
+since it crashed at frame 600 otherwise): 64.5 s, 15.5 frames a second, to 29.0 s (34.5) with
+`RALERT_DRAW=here` and 29.8 s (33.6) as it plays. The Soviet mission's base does not fill the
+atlas in that run (3,200 frames); its bridges blown at frame 652 were 12.4 million
+instructions and are 7.1 (their `Zone_Reset`s are left: below), and its longest frame after them
+4.8 million and 1.1.
+
+Checked: the state sums as before (and the attack's at 4,000 frames, `13d389ea`, the same with
+and without the copies of the shake); the pictures (`TDAWN_SUMS`) of 1,500 frames of the attack
+and of 600 frames of `TDAWN_MOVE=100,8,0` in both missions the same as the build before's in
+every frame; the shapes forgotten 29 times (`RALERT_ATLAS=50`, objects drawn here, scenes from
+nothing) against never: 0 of 1,500 frames differ; the held frame 2,500 of the attack the same
+pixels before and after (`rvc_harness --cpu --warp`); `RVC_RACES`: 0 undone. Not done: a wall or
+bridge that falls makes the map's zones again (`MapClass::Zone_Reset`, 2.1 million instructions
+each, cell by cell); Red Alert's path searches have only the kept answers of Tiberian Dawn's
+five helps ("A unit's path searches"), and the shake moves nothing on the screen now (it moved
+only the page before).
+
+## A mission won (15 October 2026)
+
+Reported from the world: from "Mission accomplished" to the results the game sat for minutes,
+and going on from the results gave the game's own "Error - out of memory." with an Abort
+button over the snow map (the taskbar's "0.6 / 0.6 M" there is `nxbar`'s millions of
+instructions a second of the first core and of all cores: the game idling in its dialog).
+`RALERT_WIN=N[,K]` plays that: the player wins at frame N (`Flag_To_Win`), in K missions in a
+row, and each step prints a line (`ralert: score: loaded at ... ms, ... instructions, ... KB
+mapped, ... KB in use`); `TDAWN_AUTO` presses Return through the score screen too.
+
+- **The score screen's table of colours.** Its first picture is the 320 x 200 animation
+  doubled with a colour between every two pixels (`Interpolate_2X_Scale`), and the table of
+  those colours was made by looking through all 256 colours for each of the 65,536 pairs: 263
+  million instructions, 140 s at two million a second, with "Mission accomplished" on the
+  screen all that time. The nearest colour is now looked for outward from the midpoint's r + g
+  + b in the palette sorted by it (no colour further in that sum than sqrt(3) times the best
+  distance can be nearer), half the table is made (it is symmetric) and its rows are shared
+  between the worker cores (`host_for` in `host.c`; `common/interpal.cpp`). The table is the
+  same (`TDAWN_INTERPOLATION=check`: `0 of 65536 entries differ`; `=game` is the old search).
+- **The doubled pictures** (12 of them, 1.7 million instructions each) are made two rows of a
+  source row at a time on the worker cores: `0 of 399 rows differ` from the game's own.
+- **The score's clocks** (`ScoreTimeClass`, `ScoreCredsClass`) drew each frame twice, the
+  second time into a copy that is read only when DirectDraw gives the screen back: once now.
+  A frame of a shape file the workers had begun was never finished on the score screen, since
+  nothing there pumps the files (a mission's frame does): a frame asked for that is not ready
+  pumps them now (`host_frame`; `docs/tdawn.md`, "Frames made ready").
+- **The map showed through** the score's first animation (its black is the page's key): the
+  scene is dropped as the announcement ends.
+- **"Out of memory" was the map of the next mission.** The full game shows the campaign map
+  (`Map_Selection`: `MSAC.WSA` after the Allied mission); the demo has no such file and no next
+  mission. `Open_Animation` does not look at whether the file opened: it read a header from
+  nowhere, and the sizes in that garbage were asked of `Alloc`, which said "out of memory" (in
+  `rvc_cpu` the garbage was other and `LCW_Uncompress` ended the program at an address of
+  nothing). Linux and the game's heap were not short. The demo goes to its menu after the
+  score screen now (`Is_Demo()` in `Do_Win`); from there a new game
+  is the same mission again.
+
+`rvc_cpu --ips 2000000` with the card model, the Allied mission won at frame 100 (the build
+before had only the switch and the lines), seconds from `Do_Win`:
+
+| | Before | After | At 40 million a second |
+|---|---|---|---|
+| The announcement ends | 3.2 | 3.2 | 2.9 |
+| The score's first picture | 142.9 (266.7M on core 0) | 6.0 (5.4M; the table 28M over 11 cores) | 3.5 |
+| The animation ends | 156.8 | 10.3 | 5.1 |
+| The counting ends | 167.4 | 15.0 | 7.5 |
+| Everything shown (the hall of fame) | 180.5 (336.7M) | 23.0 (32.4M) | 14.5 |
+| Then | `Segmentation fault` | the menu at 24.1, the mission's first frame at 54.9 | |
+
+Three wins in a row (`RALERT_WIN=100,3`) start the mission four times, with 61,236 KB mapped
+the first time and 61,164 each time after; the state at frame 300 of the last is the mission's own (`ea72a5d1`). What is left:
+the score screen is a second-or-so behind its own pace at each step (its busy waits draw its
+shapes and count as busy), the next mission's start from the menu (31 s, of which 4.5 at 40
+million a second) was not looked at, and a lost mission's screens were not tried.
+
 ## Speed
 
 On D3D11 with fxc2 (3.5M to 4.1M instructions a second), no delay between frames, nobody
@@ -384,7 +507,7 @@ own start), and as long again to a mission's first frame.
   Tiberian Dawn's switches (a scene from nothing every 256th time). `rastat:` lines say
   where a frame went. `RALERT_HUNT=N` sends everything after the enemy at frame N (the sums at
   frame 800 with `RALERT_HUNT=50`: `f5b3dbae` Soviet, `dd61e2fd` Allied), and
-  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_FRAME_LOG`, `RALERT_MARK`,
+  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_ATTACK`, `RALERT_ATLAS` and `RALERT_SHAKE`: "A base destroyed". `RALERT_WIN` and `TDAWN_INTERPOLATION`: "A mission won". `RALERT_FRAME_LOG`, `RALERT_MARK`,
   `RALERT_MESSAGE_GONE`, `RALERT_READY_DRAW`, `RALERT_CHECK_READY` and `RALERT_CHECK_TRIGGERS`
   are as Tiberian Dawn's of those names (`docs/tdawn.md`); the 1,200-frame sums are
   `9b84ad73` and `709e53d6`.

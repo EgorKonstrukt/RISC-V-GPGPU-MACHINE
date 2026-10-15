@@ -270,6 +270,23 @@ web_image_size(int node, int room, int *w, int *h)
 	return handle;
 }
 
+/* A picture that could not be had is drawn as a box with a sign and one line of text: its size
+ * for that line, as a picture's natural size (web_image_size makes that 13/16), at most 300 wide. */
+#define WEB_BROKEN_TEXT 20	/* where the text begins, after the sign */
+static void
+web_broken_size(const char *label, int *w, int *h)
+{
+	const unsigned char *at = (const unsigned char *)label;
+	int face = web_face_for(0, 0, CSS_EM), left = (int)strlen(label), used, x = 0;
+
+	web_face(face);
+	for (; left > 0; at += used, left -= used)
+		x += web_most(0, web_advance(face, web_char(at, left, &used)));
+	x = web_least(x + WEB_BROKEN_TEXT + 6, 300);
+	*w = (x * 16 + 12) / CSS_EM;
+	*h = ((web_faces[face].height + 8) * 16 + 12) / CSS_EM;
+}
+
 /* An input's, a select's or a text area's size. */
 static void
 web_field_size(int node, int room, int *w, int *h)

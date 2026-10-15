@@ -506,6 +506,12 @@ seen from both sides.
   hand, the chunks are those round the head, a box round the eye stands for the clear colour,
   the view does not tilt with the walk's bobbing, and the game says its eye's height for the room's scale
   (`seglWorldEye`). The held block's hand is the frame's (`SEFrame.hand`), worked out on core 0.
+  In a headset the blocks are small and the view is lifted over them, the right trigger breaks
+  by the right hand's beam and the left one places by the left hand's; a desktop's sitter breaks
+  by the left button and places by the right one at the view's middle (`docs/holodeck.md`, "The
+  world's size" and "Played from the seat"). `CLASSICUBE_SEAT=1` prints a `ccblock:` line for
+  each block changed, and the seat's line has the block's size in metres and the lift; the
+  four `classicube-seat-*` cases of `tools/test_all.py` break and place by the host's words.
 - A light height asked for on core 0 while the workers still make the rows (`SE_Rows`) waits
   for them (`ClassicLighting_GetLightHeight`): `RVC_RACES` had found the held block's light
   storing a column into the rows' 16 bytes, 2 changes undone, with seated words.

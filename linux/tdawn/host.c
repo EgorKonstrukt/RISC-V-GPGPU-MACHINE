@@ -865,6 +865,8 @@ host_frame(const void *file, int frame)
 			frames_pump(-1);	/* (a core now: the frames after this one are wanted in the next frame) */
 		}
 	}
+	if (r->state <= 0)
+		frames_pump(0);	/* (a score screen has no scene to give the files their turns) */
 	return r->state > 0 ? r : NULL;
 }
 
@@ -1452,6 +1454,22 @@ host_workers_mark(int ends, int frames)
 			ran[6] / frames, ran[0] / frames, ran[4] / frames, ran[5] / frames, ran[1] / frames, ran[2] / frames, ran[3] / frames);
 }
 
+void
+host_for(unsigned int n, void (*fn)(void *ctx, unsigned int from, unsigned int to), void *ctx, void *out,
+	 unsigned int out_bytes)
+{
+	mcw_for_opts o = {0};
+
+	workers_open();
+	scene_finish();
+	frames_halt();	/* (their files go on after) */
+	o.out_bytes = out_bytes;
+	o.first_idle = 1;	/* (shares are fixed: this core waits on the last one either way) */
+	o.touch = out, o.touch_bytes = n * out_bytes;	/* (stored to here first, or a worker stops at its pages) */
+	mcw_for_opt(n, (mcw_body)fn, ctx, &o);
+	mcw_for_end();	/* (the scene's and the frames' calls come after) */
+}
+
 /* Gives the worker cores back (another use of them in this program: Red Alert's movies). */
 void
 host_workers_close(void)
@@ -1469,17 +1487,20 @@ host_workers_close(void)
 void
 host_scene_end(int x, int y, int width, int height, int key)
 {
+	uint32_t also;
+
 	scene_rect[0] = x, scene_rect[1] = y, scene_rect[2] = width, scene_rect[3] = height;
 	scene_key = key;
+	also = (uint32_t)(scene_noted[2] | fill_count << 16);
+	fill_count = 0;	/* (before the job: its worker stores this texel, `own`) */
 	if (scene_cores > 0 && scene_noted[0] + scene_noted[1] + scene_noted[2] >= 20) {
-		scene_handle = mcw_call(scene_job, (uint32_t)(scene_noted[0] | scene_noted[1] << 16), (uint32_t)(scene_noted[2] | fill_count << 16));
+		scene_handle = mcw_call(scene_job, (uint32_t)(scene_noted[0] | scene_noted[1] << 16), also);
 		scene_out = 1;
 		host_scene_jobs++;
 	} else {
 		/* (few of them are not worth a pass or two of waiting) */
-		scene_job((uint32_t)(scene_noted[0] | scene_noted[1] << 16), (uint32_t)(scene_noted[2] | fill_count << 16));
+		scene_job((uint32_t)(scene_noted[0] | scene_noted[1] << 16), also);
 	}
-	fill_count = 0;
 }
 
 /* Whether host_scene_behind() would give its drawing to a worker now. */

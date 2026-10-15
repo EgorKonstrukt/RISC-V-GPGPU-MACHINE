@@ -29,5 +29,5 @@ riscv32-linux-strip -o "$OUT/usr/bin/nxplay" "$BUILD/nxplay"
 cp "$HERE"/test/play-test.* "$OUT/usr/share/"
 echo "Other/Music player=nxplay" > "$OUT/usr/share/nxapps.84-play"
 # what `open` starts for a sound file (linux/apps/nxopen.conf has the columns)
-printf '%s\n' 'sound wav,mp3,flac,mod,ogg ID3,fLaC,OggS,\xff\xfb nxplay %s' > "$OUT/usr/share/nxopen.84-play"
+printf '%s\n' 'sound wav,mp3,flac,mod,ogg,oga ID3,fLaC,OggS,RIFF\x..\x..\x..\x..WAVE,\xff\xfb,\xff\xfa,\xff\xf3,\xff\xf2,\xff\xe3 nxplay %s' > "$OUT/usr/share/nxopen.84-play"
 ls -l "$OUT/usr/bin/nxplay"

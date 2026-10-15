@@ -168,7 +168,35 @@ what the GPU draws into; frames a second are in the caption. Made larger (the ca
 Ctrl+F10) the film is as large as fits above the strip, in the middle with black round it
 (`fit` in `nxvideo.c`: the picture's window is moved and resized, and the GL library asked
 where it is now); it stayed at its size in a corner of a grey window. A file that is not
-played is said to be so in a window (`refuse`).
+played is said to be so in a window (`refuse`): an AVI film's pictures by their codec
+("MPEG-4 Part 2 (FMP4) pictures: not played (this plays MJPEG in AVI)", `not_mjpeg` in
+`m_avi.c`), in the strip and in a question window over the player's.
+
+- **The window fits the desktop** (15 October 2026). The film is shown three times, twice or
+  once as large, and a film larger than the desktop as large as fits, its shape kept: a 960 x
+  540 AVI came up at 960 x 580 on the 800 x 600 desktop, its strip and its message under the
+  screen's edge, and is 780 x 478 now. `NXVIDEO_SCREEN=WxH` stands for a smaller desktop and
+  `NXVIDEO_PRINT=1` prints the sizes (`NXVIDEO_SCREEN=300x260`: the sample at 280 x 154).
+- **One player draws at a time; a second start gives it the file** (15 October 2026). The
+  GPU's memory for programs is one program's (`docs/gpu.md`). Open... ran the player again
+  with the new file (an exec) while the old self still held `/dev/gpu`: the new one was
+  refused the GPU by itself ("the GPU is drawing for nxvideo (process N): one such program
+  at a time") and the film was gone. `gles.c` and `mcw.c` open the device close-on-exec now.
+  A second `nxvideo FILE` while a film plays writes the file to `/tmp/nxvideo.fifo`, which
+  the player reads when it asks the window system for events, and goes ("nxvideo: given to
+  the player that is playing"); the player plays it as Open... does, and with no file comes
+  to the front. A start while another program draws (a game) is refused in a window before
+  any worker is taken from that program (`gpu_taken`), and a game started while a film plays
+  says so in a window (`nxask`, from `gles.c`'s `draw_claim`) and leaves the film playing.
+- **What larger films cost.** A 960 x 540 film in MPEG-4 Part 2 (Xvid's kind, `FMP4`, I and P
+  pictures, a key picture every 12) would want a decoder of its own: some 2,000 lines (the
+  headers, intra AC/DC prediction, the codes' tables, half-pel motion with one or four
+  vectors a macroblock, vectors past the edge) where pl_mpeg is MPEG-1's; and the machine for it:
+  2,040 macroblocks a picture, nine times the sample's, some 9 to 10 million instructions a
+  picture at MPEG-1's cost a block, 300 million a second at 30, 100 to 150 workers; and 778 KB
+  a picture of GPU memory, four in what a program has, where a group in place wants twelve.
+  Not done. MPEG-1 at 864 x 480 (`ffmpeg ... -g 6 -bf 0`) is killed for memory by the kernel
+  before its first picture (its decoders' groups): also not done.
 
 - The window is there before the file is taken apart (`ui_framed`, `nanox.md`): two seconds
   after the program is started, with "opening it..." in the strip.

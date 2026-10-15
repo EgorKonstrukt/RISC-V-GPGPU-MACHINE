@@ -125,7 +125,7 @@ index ba5543f..1d29b2d 100644
              char digest2[20];
              sha.Result(digest2);
 diff --git a/common/vqadrawer.cpp b/common/vqadrawer.cpp
-index cd3b404..d589282 100644
+index 68dc9f1..1f42e2e 100644
 --- a/common/vqadrawer.cpp
 +++ b/common/vqadrawer.cpp
 @@ -9,6 +9,12 @@
@@ -198,7 +198,7 @@ index cd3b404..d589282 100644
  
      vqabuf->Drawer.LastFrameNum = curframe->FrameNum;
      vqabuf->Flipper.CurFrame = curframe;
-@@ -342,4 +386,10 @@ void VQA_PrepareFrame(VQAData* vqabuf)
+@@ -414,4 +458,10 @@ void VQA_PrepareFrame(VQAData* vqabuf)
          LCW_Uncompress(&curframe->Pointers[curframe->PtrOffset], curframe->Pointers, vqabuf->MaxPtrSize);
          curframe->Flags &= ~0x10;
      }
@@ -409,7 +409,7 @@ index ca4eb46..48b879d 100644
      }
      return (false);
 diff --git a/redalert/anim.cpp b/redalert/anim.cpp
-index 46bc70f..058ee1c 100644
+index 46bc70f..123a86d 100644
 --- a/redalert/anim.cpp
 +++ b/redalert/anim.cpp
 @@ -53,6 +53,21 @@
@@ -434,7 +434,28 @@ index 46bc70f..058ee1c 100644
  #include "keyframe.h"
  #define VIC 1
  
-@@ -365,7 +380,7 @@ bool AnimClass::Mark(MarkType mark)
+@@ -251,7 +266,9 @@ void AnimClass::Draw_It(int x, int y, WindowNumberType window) const
+     if (render_legacy) {
+         BStart(BENCH_ANIMS);
+ 
+-        IsTheaterShape = Class->IsTheater;
++        bool shape_flags = ShaderEmu_Shape_Flags();
++        if (shape_flags)
++            IsTheaterShape = Class->IsTheater;
+ 
+         void const* shapefile = Get_Image_Data();
+         if (shapefile != NULL) {
+@@ -331,7 +348,8 @@ void AnimClass::Draw_It(int x, int y, WindowNumberType window) const
+                               height);
+             }
+         }
+-        IsTheaterShape = false;
++        if (shape_flags)
++            IsTheaterShape = false;
+         BEnd(BENCH_ANIMS);
+     }
+     if (render_virtual) {
+@@ -365,7 +383,7 @@ bool AnimClass::Mark(MarkType mark)
      assert(IsActive);
  
      if (ObjectClass::Mark(mark)) {
@@ -443,7 +464,7 @@ index 46bc70f..058ee1c 100644
          //		ObjectClass::Mark(mark);
          return (true);
      }
-@@ -743,10 +758,10 @@ void AnimClass::AI(void)
+@@ -743,10 +761,10 @@ void AnimClass::AI(void)
      */
  #ifdef PARTIAL
      if (!Delay && Class->IsGroundLayer) {
@@ -457,14 +478,20 @@ index 46bc70f..058ee1c 100644
  
      /*
 diff --git a/redalert/anim.h b/redalert/anim.h
-index 1a8e317..53c4137 100644
+index 1a8e317..e704d28 100644
 --- a/redalert/anim.h
 +++ b/redalert/anim.h
-@@ -102,6 +102,12 @@ public:
+@@ -102,6 +102,18 @@ public:
      {
          return (Delay == 0) ? VisibleFlags : 0;
      }
 +#ifdef SHADEREMU
++    /* (a copy drawn by a worker while the logic goes on: its place now, attached to nothing) */
++    void ShaderEmu_Detach(void)
++    {
++        Coord = Center_Coord();
++        xObject = TARGET_NONE;
++    }
 +    int ShaderEmu_Delay(void) const
 +    {
 +        return Delay;
@@ -474,10 +501,25 @@ index 1a8e317..53c4137 100644
      virtual void Set_Owner(HousesType owner);
      virtual HousesType Owner(void) const
 diff --git a/redalert/building.cpp b/redalert/building.cpp
-index 0d42667..d89a229 100644
+index 0d42667..665a779 100644
 --- a/redalert/building.cpp
 +++ b/redalert/building.cpp
-@@ -2003,6 +2003,9 @@ int BuildingClass::Exit_Object(TechnoClass* base)
+@@ -472,9 +472,12 @@ void BuildingClass::Draw_It(int x, int y, WindowNumberType window) const
+     /*
+     **	Actually draw the building shape.
+     */
+-    IsTheaterShape = Class->IsTheater; // Let Build_Frame know if this is a theater specific shape
++    bool shape_flags = ShaderEmu_Shape_Flags();
++    if (shape_flags)
++        IsTheaterShape = Class->IsTheater; // Let Build_Frame know if this is a theater specific shape
+     Techno_Draw_Object(shapefile, Shape_Number(), x, y, window);
+-    IsTheaterShape = false;
++    if (shape_flags)
++        IsTheaterShape = false;
+ 
+     /*
+     ** Patch for adding overlay onto weapon factory.  Only add the overlay if
+@@ -2003,6 +2006,9 @@ int BuildingClass::Exit_Object(TechnoClass* base)
      **	A unit exiting a building is always considered to be "locked". That means, it
      **	will be considered as to have legally entered the visible map domain.
      */
@@ -803,10 +845,10 @@ index a29eb2b..a3a94a5 100644
  #endif
 \ No newline at end of file
 diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
-index 4825ba4..0d405c3 100644
+index 4825ba4..bd5df61 100644
 --- a/redalert/conquer.cpp
 +++ b/redalert/conquer.cpp
-@@ -125,6 +125,481 @@ bool Map_Edit_Loop(void);
+@@ -125,6 +125,569 @@ bool Map_Edit_Loop(void);
  
  bool UseOldShapeDraw = false;
  
@@ -847,6 +889,24 @@ index 4825ba4..0d405c3 100644
 +        ShaderEmu_Occupy_Wrong += ShaderEmu_Occupied_Check();
 +        ShaderEmu_Occupy_Checks++;
 +    }
++}
++
++/* A step from a won mission to the next (docs/ralert.md, "A mission won"): its time, instructions and memory. */
++void ShaderEmu_Stage(const char* what)
++{
++    static const bool on = getenv("RALERT_WIN") != NULL;
++    unsigned size = 0, rss = 0;
++    if (!on) {
++        return;
++    }
++    if (FILE* f = fopen("/proc/self/statm", "r")) {
++        if (fscanf(f, "%u %u", &size, &rss) != 2) {
++            size = rss = 0;
++        }
++        fclose(f);
++    }
++    fprintf(stderr, "ralert: %s at %u ms, %u instructions, %u KB mapped, %u KB in use\n", what, host_ms(),
++            host_cycles(), size * 4, rss * 4);
 +}
 +
 +/* A sum of the game's state, to see two runs (or two builds) play the same. */
@@ -1128,6 +1188,57 @@ index 4825ba4..0d405c3 100644
 +    fprintf(stderr, "ralert: %d sent to cell %d,%d at frame %d\n", count, cx, cy, (int)Frame);
 +}
 +
++/*
++** RALERT_ATTACK=N[,E]: from frame N, every E frames (50), the player's units and soldiers are
++** selected, sent at the enemy building nearest them and the view centred on them.
++*/
++static void ShaderEmu_Attack(void)
++{
++    static int from = -1, every = 50;
++    if (from < 0) {
++        from = 0;
++        if (getenv("RALERT_ATTACK")) {
++            sscanf(getenv("RALERT_ATTACK"), "%d,%d", &from, &every);
++        }
++    }
++    if (!from || (int)Frame < from || ((int)Frame - from) % every) {
++        return;
++    }
++    Unselect_All();
++    for (int i = 0; i < Units.Count(); i++) {
++        if (Units.Ptr(i)->Is_Owned_By_Player() && !Units.Ptr(i)->IsInLimbo) {
++            Units.Ptr(i)->Select(true);
++        }
++    }
++    for (int i = 0; i < Infantry.Count(); i++) {
++        if (Infantry.Ptr(i)->Is_Owned_By_Player() && !Infantry.Ptr(i)->IsInLimbo) {
++            Infantry.Ptr(i)->Select(true);
++        }
++    }
++    if (!CurrentObject.Count()) {
++        return;
++    }
++    COORDINATE center = Map.Center_Map();
++    BuildingClass* best = NULL;
++    int nearest = 0, left = 0;
++    for (int i = 0; i < Buildings.Count(); i++) {
++        BuildingClass* b = Buildings.Ptr(i);
++        if (b->IsInLimbo || !b->Strength || b->House->Is_Ally(PlayerPtr) || !b->Class->Cost_Of()) {
++            continue;
++        }
++        left++;
++        int d = Distance(center, b->Center_Coord());
++        if (!best || d < nearest) {
++            best = b, nearest = d;
++        }
++    }
++    for (int i = 0; best && i < CurrentObject.Count(); i++) {
++        CurrentObject[i]->Active_Click_With(ACTION_ATTACK, best);
++    }
++    fprintf(stderr, "ralert: %d sent at %s at frame %d, %d enemy buildings left\n", CurrentObject.Count(),
++            best ? best->Class->IniName : "nothing", (int)Frame, left);
++}
++
 +/* TDAWN_SELECT=N, for a test: every N frames the player's units and soldiers are selected. */
 +static void ShaderEmu_Select(void)
 +{
@@ -1137,6 +1248,25 @@ index 4825ba4..0d405c3 100644
 +        select = getenv("TDAWN_SELECT") ? atoi(getenv("TDAWN_SELECT")) : 0;
 +    }
 +    ShaderEmu_Move();
++    ShaderEmu_Attack();
++    {
++        /* RALERT_WIN=N[,K]: the player wins the mission at frame N, in K missions in a row (1) */
++        static int win = -1, wins = 1;
++        if (win < 0) {
++            win = 0;
++            if (getenv("RALERT_WIN")) {
++                sscanf(getenv("RALERT_WIN"), "%d,%d", &win, &wins);
++            }
++        }
++        if (getenv("RALERT_WIN") && Frame == 1) {
++            ShaderEmu_Stage(Scen.ScenarioName); /* (its memory: a mission after another must not have more) */
++        }
++        if (win && (int)Frame == win && !PlayerPtr->IsToWin) {
++            win = --wins > 0 ? win : 0; /* (then the next mission is played) */
++            PlayerPtr->Flag_To_Win();
++            ShaderEmu_Stage("the mission won");
++        }
++    }
 +    if (select && (int)Frame % select == 0) {
 +        for (int i = 0; i < Units.Count(); i++) {
 +            if (Units.Ptr(i)->Is_Owned_By_Player()) {
@@ -1288,7 +1418,7 @@ index 4825ba4..0d405c3 100644
  #ifdef CHEAT_KEYS
  void Dump_Heap_Pointers(void);
  void Error_In_Heap_Pointers(char* string);
-@@ -1759,7 +2234,12 @@ bool Main_Loop()
+@@ -1759,7 +2322,12 @@ bool Main_Loop()
      **	If there is no theme playing, but it looks like one is required, then start one
      **	playing. This is usually the symptom of there being no transition score.
      */
@@ -1301,7 +1431,7 @@ index 4825ba4..0d405c3 100644
          Theme.Queue_Song(THEME_PICK_ANOTHER);
      }
  
-@@ -1790,18 +2270,42 @@ bool Main_Loop()
+@@ -1790,18 +2358,42 @@ bool Main_Loop()
              FrameTimer = Options.GameSpeed + (PlayerPtr->Difficulty == DIFF_EASY ? 1 : 0);
          }
      }
@@ -1335,7 +1465,7 @@ index 4825ba4..0d405c3 100644
 +#ifdef SHADEREMU
 +            ShaderEmu_GL_Behind = false;
 +            ShaderEmu_GL_Post();
-+            static const bool checks = getenv("TDAWN_SUMS") || getenv("TDAWN_CHECK_GPU") || getenv("TDAWN_SELECT") || getenv("TDAWN_MOVE");
++            static const bool checks = getenv("TDAWN_SUMS") || getenv("TDAWN_CHECK_GPU") || getenv("TDAWN_SELECT") || getenv("TDAWN_MOVE") || getenv("RALERT_ATTACK") || getenv("RALERT_WIN");
 +            if (checks) {
 +                ShaderEmu_Sums();
 +                ShaderEmu_Check_GPU();
@@ -1345,7 +1475,7 @@ index 4825ba4..0d405c3 100644
          }
      }
  
-@@ -1826,7 +2330,19 @@ bool Main_Loop()
+@@ -1826,7 +2418,19 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -1366,7 +1496,7 @@ index 4825ba4..0d405c3 100644
      TimeQuake = false;
  #ifdef FIXIT_CSII //	checked - ajw 9/28/98
      if (!PendingTimeQuake) {
-@@ -1839,8 +2355,24 @@ bool Main_Loop()
+@@ -1839,8 +2443,24 @@ bool Main_Loop()
      **	a message has expired & been removed, and the entire map must be updated.
      */
      if (Session.Messages.Manage()) {
@@ -1393,7 +1523,7 @@ index 4825ba4..0d405c3 100644
      }
  
      //
-@@ -1893,6 +2425,9 @@ bool Main_Loop()
+@@ -1893,6 +2513,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1403,7 +1533,7 @@ index 4825ba4..0d405c3 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
          return (!GameActive);
-@@ -2442,6 +2977,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2442,6 +3065,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
              AnimControl.ImageBuf = (unsigned char*)SysMemPage.Get_Offset();
          }
  #endif
@@ -1429,7 +1559,7 @@ index 4825ba4..0d405c3 100644
  
          if (!Debug_Quiet && Get_Digi_Handle() != -1) {
              AnimControl.OptionFlags |= VQAOPTF_AUDIO;
-@@ -2465,8 +3019,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2465,8 +3107,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
                  // Set_Palette(BlackPalette);
                  SysMemPage.Clear();
                  InMovie = true;
@@ -1460,7 +1590,7 @@ index 4825ba4..0d405c3 100644
                  // Resume_Audio_Thread();
                  InMovie = false;
  #ifdef MOVIE640
-@@ -2863,6 +3439,70 @@ void CC_Draw_Pip(const ObjectClass* object,
+@@ -2863,6 +3527,70 @@ void CC_Draw_Pip(const ObjectClass* object,
   * HISTORY:                                                                                    *
   *   02/21/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
@@ -1531,7 +1661,7 @@ index 4825ba4..0d405c3 100644
  void CC_Draw_Shape(void const* shapefile,
                     int shapenum,
                     int x,
-@@ -2885,6 +3525,18 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2885,6 +3613,22 @@ void CC_Draw_Shape(void const* shapefile,
      if ((flags & SHAPE_FADING) && (!fadingdata)) {
          fadingdata = DisplayClass::FadingShade;
      }
@@ -1540,6 +1670,10 @@ index 4825ba4..0d405c3 100644
 +        bool ShaderEmu_GL_Shape(void const* file, int frame, int x, int y, int window, int flags, void const* fade, void const* ghost, int turn);
 +        if (ShaderEmu_GL_Shape(shapefile, shapenum, x, y, window, flags, fadingdata, ghostdata, (int)rotation)) {
 +            return;
++        }
++        bool ShaderEmu_GL_Not_Behind(void);
++        if (ShaderEmu_GL_Not_Behind()) {
++            return; /* (nothing of the game's own drawing on the worker that draws the objects: gl.cpp) */
 +        }
 +        if (shapefile != NULL && shapenum != -1 && rotation == DIR_N && !(flags & ~(SHAPE_CENTER | SHAPE_WIN_REL | SHAPE_TRANS))
 +            && ShaderEmu_Ready_Shape(shapefile, shapenum, x, y, window, flags)) {
@@ -1550,7 +1684,7 @@ index 4825ba4..0d405c3 100644
  
      static unsigned char* _xbuffer = 0;
  
-@@ -3044,6 +3696,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
+@@ -3044,6 +3788,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
      int width = Get_Build_Frame_Width(shapedata);
      int height = Get_Build_Frame_Height(shapedata);
  
@@ -1589,7 +1723,7 @@ index 4825ba4..0d405c3 100644
      rect.X = 0;
      rect.Y = 0;
      int xlimit = width - 1;
-@@ -3185,6 +3869,9 @@ extern GraphicBufferClass VQ640;
+@@ -3185,6 +3961,9 @@ extern GraphicBufferClass VQ640;
  extern bool IsVQ640;
  int VQ_Call_Back(unsigned char*, int)
  {
@@ -1599,7 +1733,7 @@ index 4825ba4..0d405c3 100644
  #ifdef REMASTER_BUILD
      return 0;
  #else
-@@ -3194,6 +3881,11 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3194,6 +3973,11 @@ int VQ_Call_Back(unsigned char*, int)
          Keyboard->Clear();
      }
      Check_VQ_Palette_Set();
@@ -1611,7 +1745,7 @@ index 4825ba4..0d405c3 100644
  #ifdef MOVIE640
      if (IsVQ640) {
          VQ640.Blit(SeenBuff);
-@@ -3204,6 +3896,9 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3204,6 +3988,9 @@ int VQ_Call_Back(unsigned char*, int)
      Interpolate_2X_Scale(&SysMemPage, &SeenBuff, NULL);
  #endif
      Frame_Limiter();
@@ -1621,6 +1755,28 @@ index 4825ba4..0d405c3 100644
  
      if ((BreakoutAllowed || Debug_Flag) && key == KN_ESC) {
          Keyboard->Clear();
+@@ -4501,6 +5288,21 @@ void Shake_The_Screen(int shakes, HousesType house)
+     }
+ #else
+     shakes += shakes;
++#ifdef SHADEREMU
++    /* Copies of the page, hundreds of KB each, shook only the page over the GPU's map: the same
++    ** random picks and frames without them (docs/ralert.md, "A base destroyed"). RALERT_SHAKE=copy: as it
++    ** was. */
++    static const bool copies = getenv("RALERT_SHAKE") && !strcmp(getenv("RALERT_SHAKE"), "copy");
++    for (int newyoff = 0; !copies && shakes--;) {
++        do {
++            newyoff = Sim_Random_Pick(0, 2) - 1;
++        } while (newyoff == 0);
++        Frame_Limiter();
++    }
++    if (!copies) {
++        return;
++    }
++#endif
+ 
+     Hide_Mouse();
+     SeenPage.Blit(HidPage);
 diff --git a/redalert/display.cpp b/redalert/display.cpp
 index d328d82..dfd21c8 100644
 --- a/redalert/display.cpp
@@ -1784,6 +1940,24 @@ index c8ed7a3..1b668e5 100644
  
      /*
      **	Added functionality.
+diff --git a/redalert/externs.h b/redalert/externs.h
+index 7ca9684..a8a299b 100644
+--- a/redalert/externs.h
++++ b/redalert/externs.h
+@@ -422,6 +422,13 @@ extern class DynamicVectorClass<ActionChoiceClass> test3;
+ extern bool LogDump_Print;
+ 
+ extern unsigned int IsTheaterShape;
++#ifdef SHADEREMU
++extern "C" int mcw_self(void);
++// (the shape flags are the first core's, not the worker's that draws the objects a frame behind: gl.cpp)
++#define ShaderEmu_Shape_Flags() (!mcw_self())
++#else
++#define ShaderEmu_Shape_Flags() true
++#endif
+ 
+ extern void Reset_Theater_Shapes(void);
+ extern TheaterType LastTheater;
 diff --git a/redalert/findpath.cpp b/redalert/findpath.cpp
 index 7692f1c..d719e66 100644
 --- a/redalert/findpath.cpp
@@ -3416,6 +3590,169 @@ index 36a2e3c..962ee56 100644
      /*
      **	The Map.
      */
+diff --git a/redalert/scenario.cpp b/redalert/scenario.cpp
+index 3738c61..bc554f6 100644
+--- a/redalert/scenario.cpp
++++ b/redalert/scenario.cpp
+@@ -862,8 +862,24 @@ void Clear_Scenario(void)
+  *   08/05/1992 JLB : Created.                                                                 *
+  *   01/01/1995 JLB : Carries money forward into next scenario.                                *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++#include "common/host.h"
++void ShaderEmu_Stage(const char* what);
++extern bool ShaderEmu_Auto_Press;
++#define SHADEREMU_STAGE(what) ShaderEmu_Stage(what)
++#else
++#define SHADEREMU_STAGE(what)
++#endif
+ void Do_Win(void)
+ {
++#ifdef SHADEREMU
++    SHADEREMU_STAGE("Do_Win begins");
++    struct Auto /* TDAWN_AUTO presses Return on these screens too */
++    {
++        Auto() { ShaderEmu_Auto_Press = true; }
++        ~Auto() { ShaderEmu_Auto_Press = false; }
++    } pressed;
++#endif
+     Map.Set_Default_Mouse(MOUSE_NORMAL);
+     Hide_Mouse();
+     Theme.Queue_Song(THEME_QUIET);
+@@ -912,6 +928,7 @@ void Do_Win(void)
+             Call_Back();
+             Frame_Limiter();
+         }
++        SHADEREMU_STAGE("announced");
+     }
+ 
+     /*
+@@ -931,6 +948,9 @@ void Do_Win(void)
+         return;
+     }
+ 
++#ifdef SHADEREMU
++    host_scene_drop(); /* the map is not under the screens that follow (it showed through the score's) */
++#endif
+     Hide_Mouse();
+     VisiblePage.Clear();
+     Show_Mouse();
+@@ -938,6 +958,7 @@ void Do_Win(void)
+     Play_Movie(Scen.WinMovie2);
+     Play_Movie(Scen.WinMovie3);
+     Play_Movie(Scen.WinMovie4);
++    SHADEREMU_STAGE("movies played");
+ 
+     Keyboard->Clear();
+ 
+@@ -957,7 +978,18 @@ void Do_Win(void)
+         if (!Scen.IsSkipScore) {
+             Score.Presentation();
+         }
++        SHADEREMU_STAGE("the score screen ended");
+ 
++#ifdef SHADEREMU
++        /* the demo has no next mission, nor the map it is chosen on (a missing animation's
++        ** garbage header asked for "out of memory"): its menu again (docs/ralert.md, "A mission won") */
++        if (Is_Demo()) {
++            SHADEREMU_STAGE("the demo's menu again");
++            GameActive = false;
++            Show_Mouse();
++            return;
++        }
++#endif
+         if (Scen.IsOneTimeOnly) {
+             GameActive = false;
+             Show_Mouse();
+@@ -1108,7 +1140,9 @@ void Do_Win(void)
+     ** Generate a new scenario filename
+     */
+     //	Scen.Set_Scenario_Name(Scen.Scenario, Scen.ScenPlayer, Scen.ScenDir, Scen.ScenVar);
++    SHADEREMU_STAGE(Scen.ScenarioName);
+     Start_Scenario(Scen.ScenarioName);
++    SHADEREMU_STAGE("the next mission started");
+ 
+     /*
+     **	If the mission timer is to be inheriteded from the previous scenario then do it now.
+diff --git a/redalert/score.cpp b/redalert/score.cpp
+index 6357462..adec18b 100644
+--- a/redalert/score.cpp
++++ b/redalert/score.cpp
+@@ -140,8 +140,10 @@ void ScoreTimeClass::Update(void)
+         oldpage = LogicPage;
+         Set_Logic_Page(SeenBuff);
+         CC_Draw_Shape(DataPtr, Stage, XPos, YPos, WINDOW_MAIN, SHAPE_WIN_REL, 0, 0);
++#ifndef SHADEREMU /* (the copy is read only when DirectDraw gives the screen back: never here) */
+         Set_Logic_Page(*PseudoSeenBuff);
+         CC_Draw_Shape(DataPtr, Stage, XPos, YPos, WINDOW_MAIN, SHAPE_WIN_REL, 0, 0);
++#endif
+         Set_Logic_Page(oldpage);
+     }
+ }
+@@ -167,8 +169,10 @@ void ScoreCredsClass::Update(void)
+         Set_Logic_Page(SeenBuff);
+         Play_Sample(Clock1, 255, Options.Normalize_Volume(130));
+         CC_Draw_Shape(DataPtr, Stage, XPos, YPos, WINDOW_MAIN, SHAPE_WIN_REL, 0, 0);
++#ifndef SHADEREMU
+         Set_Logic_Page(*PseudoSeenBuff);
+         CC_Draw_Shape(DataPtr, Stage, XPos, YPos, WINDOW_MAIN, SHAPE_WIN_REL, 0, 0);
++#endif
+         Set_Logic_Page(oldpage);
+     }
+ }
+@@ -330,6 +334,12 @@ static unsigned char const _redpal[] =
+     {0xD0, 0xD1, 0xD7, 0xD3, 0xD9, 0xD5, 0xDA, 0xD7, 0xDB, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xD6, 0xDF};
+ static unsigned char const _yellowpal[] =
+     {0x0, 0x0, 0xEC, 0x0, 0xEB, 0x0, 0xEA, 0x0, 0xE9, 0x0, 0x0, 0x0, 0x0, 0x0, 0xED, 0x0};
++#ifdef SHADEREMU
++void ShaderEmu_Stage(const char* what); /* (conquer.cpp: RALERT_WIN) */
++#define SHADEREMU_STAGE(what) ShaderEmu_Stage(what)
++#else
++#define SHADEREMU_STAGE(what)
++#endif
+ void ScoreClass::Presentation(void)
+ {
+ #ifndef REMASTER_BUILD
+@@ -406,6 +416,7 @@ void ScoreClass::Presentation(void)
+     InterpolationPalette = (unsigned char*)ScorePalette.Get_Data();
+     InterpolationPaletteChanged = true;
+     Interpolate_2X_Scale(PseudoSeenBuff, &SeenBuff, NULL, 2);
++    SHADEREMU_STAGE("score: loaded");
+     ScorePalette.Set(FADE_PALETTE_FAST, Call_Back);
+     Play_Sample(country4, 255, Options.Normalize_Volume(150));
+ 
+@@ -417,6 +428,7 @@ void ScoreClass::Presentation(void)
+         Call_Back_Delay(2);
+     }
+     StreamLowImpact = false;
++    SHADEREMU_STAGE("score: animated");
+     Call_Back();
+     Close_Animation(anim);
+ 
+@@ -543,6 +555,7 @@ void ScoreClass::Presentation(void)
+             break;
+         // BG		if (Keyboard->Check()) break;
+     }
++    SHADEREMU_STAGE("score: counted");
+     Count_Up_Print("%3d%%", leadership, leadership, 244, 26);
+     Count_Up_Print("%3d%%", economy, economy, 244, 38);
+ 
+@@ -698,6 +711,7 @@ void ScoreClass::Presentation(void)
+     */
+     Keyboard->Clear();
+ 
++    SHADEREMU_STAGE("score: hall of fame");
+     if (index < NUMFAMENAMES) {
+         pal = hallfame[index].side ? _redpal : _bluepal;
+         Input_Name(hallfame[index].name, HALLFAME_X, HALLFAME_Y + (index * 8), (const char*)pal);
+@@ -721,6 +735,7 @@ void ScoreClass::Presentation(void)
+             delete ScoreObjs[i];
+             ScoreObjs[i] = 0;
+         }
++    SHADEREMU_STAGE("score: clicked");
+     BlackPalette.Set(FADE_PALETTE_FAST, NULL);
+     VisiblePage.Clear();
+     Show_Mouse();
 diff --git a/redalert/scroll.cpp b/redalert/scroll.cpp
 index 5c063b8..0dc3396 100644
 --- a/redalert/scroll.cpp
@@ -3626,7 +3963,7 @@ index 110368b..9976989 100644
          Target.Sub.Mantissa = ptr->ID;
      } else {
 diff --git a/redalert/techno.cpp b/redalert/techno.cpp
-index 682741b..25d7e1f 100644
+index 682741b..2d068dc 100644
 --- a/redalert/techno.cpp
 +++ b/redalert/techno.cpp
 @@ -131,6 +131,9 @@
@@ -3989,7 +4326,17 @@ index 682741b..25d7e1f 100644
              House = newowner;
              IsOwnedByPlayer = (House == PlayerPtr);
  
-@@ -4567,10 +4757,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -4546,7 +4736,8 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+     {
+         assert(IsActive);
+ 
+-        if (rotation != DIR_N || scale != 0x0100) {
++        bool shape_flags = ShaderEmu_Shape_Flags();
++        if ((rotation != DIR_N || scale != 0x0100) && shape_flags) {
+             Disable_Uncompressed_Shapes();
+         }
+ 
+@@ -4567,10 +4758,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              */
              TechnoTypeClass* ttype = Techno_Type_Class();
              if (shapefile == ttype->Get_Image_Data() && shapenum < Get_Build_Frame_Count(shapefile) - 1) {
@@ -4010,7 +4357,18 @@ index 682741b..25d7e1f 100644
                      ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
                  }
              }
-@@ -4795,10 +4995,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -4732,7 +4933,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+             }
+         }
+ 
+-        Enable_Uncompressed_Shapes();
++        if (shape_flags) {
++            Enable_Uncompressed_Shapes();
++        }
+     }
+ 
+     /***********************************************************************************************
+@@ -4795,10 +4998,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              */
              TechnoTypeClass* ttype = Techno_Type_Class();
              if (shapefile == ttype->Get_Image_Data() && shapenum < Get_Build_Frame_Count(shapefile) - 1) {
@@ -4031,7 +4389,7 @@ index 682741b..25d7e1f 100644
                      ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
                  }
              }
-@@ -7183,6 +7393,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -7183,6 +7396,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          IsDiscoveredByPlayerMask |= (1 << shift);
  
          if (Session.Type != GAME_GLYPHX_MULTIPLAYER && player == PlayerPtr) {
@@ -4041,7 +4399,7 @@ index 682741b..25d7e1f 100644
              IsDiscoveredByPlayer = true;
          }
      }
-@@ -7202,6 +7415,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -7202,6 +7418,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
      void TechnoClass::Clear_Discovered_By_Players()
      {
          IsDiscoveredByPlayerMask = 0;

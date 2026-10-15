@@ -1,13 +1,17 @@
 /* nxvideo [FILE | --decode FILE]: plays an MPEG-1 film, a VQA, MJPEG in AVI or a GIF animation,
  * decoded ahead on the workers by libmedia into the GPU memory it is shown from; the picture
  * shown is the one the sound card has got to. Keys and switches: docs/video.md. */
+#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
 #include "media.h"
 #include "mcw.h"
 
@@ -145,7 +149,7 @@ static int running, paused, ended, opened;
 static GR_WINDOW_ID window, picture;	/* the program's window, and the part of it the GPU draws the film in */
 static GLuint texture;
 static int win_w, pic_x, pic_y, pic_w, pic_h;	/* the window's width; where in it the film is */
-static int scale, bar_y, held = -1;	/* held: the seek bar's knob is, at this picture */
+static int bar_y, held = -1;	/* held: the seek bar's knob is, at this picture */
 static const char *name;
 static char saying[80];
 
@@ -435,7 +439,19 @@ while_choosing(GR_EVENT *event)
 		ui_files_stop = closing = 1;
 }
 
-/* Another file: this program again with it (its places are of this film's size). */
+/* Another file: this program again with it (its places are of this film's size). The GPU's
+ * file is closed by the exec: the new one is not refused it by its own old self. */
+static void
+play_file(const char *path)
+{
+	if (sound_on)
+		snd_stop(voice);
+	media_video_close(film);
+	GrClose();
+	execlp("nxvideo", "nxvideo", path, (char *)NULL);
+	exit(1);
+}
+
 static void
 open_another(void)
 {
@@ -451,12 +467,72 @@ open_another(void)
 			run(1);
 		return;
 	}
-	if (sound_on)
-		snd_stop(voice);
-	media_video_close(film);
-	GrClose();
-	execlp("nxvideo", "nxvideo", path, (char *)NULL);
-	exit(1);
+	play_file(path);
+}
+
+/* A second start while a film plays gives this player its file (or, with none, has it come to
+ * the front) through a pipe with a name: one player draws with the GPU at a time. */
+#define HANDED "/tmp/nxvideo.fifo"
+static int handed_fd = -1;
+
+static int
+hand_off(const char *path)
+{
+	char whole[PATH_MAX], line[PATH_MAX + 2];
+	int fd = open(HANDED, O_WRONLY | O_NONBLOCK | O_CLOEXEC), n, ok;
+
+	if (fd < 0)
+		return 0;	/* (none, or nobody reading it: ENXIO) */
+	if (path && !realpath(path, whole))
+		snprintf(whole, sizeof whole, "%s", path);
+	n = snprintf(line, sizeof line, "%s\n", path ? whole : "");
+	ok = write(fd, line, (size_t)n) == n;
+	close(fd);
+	if (ok)
+		printf("nxvideo: given to the player that is playing\n");
+	return ok;
+}
+
+static void
+take_handed(void)
+{
+	char line[PATH_MAX + 2];
+	ssize_t n;
+
+	if (handed_fd < 0 || (n = read(handed_fd, line, sizeof line - 1)) <= 0)
+		return;
+	line[n] = 0;
+	line[strcspn(line, "\n")] = 0;
+	if (line[0])
+		play_file(line);
+	GrRaiseWindow(window);
+	GrSetFocus(window);
+}
+
+/* The GPU drawing for another program, said before any worker is taken from that one. */
+static const char *
+gpu_taken(void)
+{
+	static char why[160];
+	char where[40], name[64] = "another program";
+	unsigned other = 0;
+	int fd = open("/dev/gpu", O_RDWR | O_CLOEXEC), busy;
+	FILE *f;
+
+	if (fd < 0)
+		return NULL;
+	busy = ioctl(fd, 0x80044705u, &other) < 0 && errno == EBUSY;	/* SEGL_DRAW_CLAIM, given back at the close */
+	close(fd);
+	if (!busy)
+		return NULL;
+	snprintf(where, sizeof where, "/proc/%u/comm", other);
+	if ((f = fopen(where, "r")) != NULL) {
+		if (fgets(name, sizeof name, f))
+			name[strcspn(name, "\n")] = 0;
+		fclose(f);
+	}
+	snprintf(why, sizeof why, "The GPU is drawing for %s (process %u).\nOne program at a time draws with it: close %s first.", name, other, name);
+	return why;
 }
 
 /* Black round the film, where the window is larger than it. */
@@ -530,6 +606,7 @@ events(void)
 	GR_EVENT e;
 	int x, w, step;
 
+	take_handed();
 	for (;;) {
 		GrCheckNextEvent(&e);
 		if (e.type == GR_EVENT_TYPE_NONE)
@@ -677,12 +754,17 @@ main(int argc, char **argv)
 	const char *path = argc > 1 ? argv[1] : SAMPLE, *text, *wrong;
 	GR_SCREEN_INFO screen;
 	char title[160];
+	int most_w, most_h;
 	unsigned bytes, spare = 0, left, stat_at = 0, bar_at = 0, now, input = 0, hot_at = 0, asked_at = 0;
 	uint8_t *file;
 	int wanted, k, hold = -1, was_shown = -2, ahead, once = getenv("NXVIDEO_ONCE") != NULL;
 
 	if (argc > 2 && !strcmp(argv[1], "--decode"))
 		return decode_all(argv[2]);
+	if (hand_off(argc > 1 ? argv[1] : NULL))
+		return 0;
+	if ((wrong = gpu_taken()) != NULL)
+		return refuse(path, wrong, 0);
 	if ((file = load(path, &bytes)) == NULL)
 		return refuse(path, "cannot be read", 0);
 	/* the pictures' size by a look at the file's start, and the window at once: taking the file
@@ -701,16 +783,26 @@ main(int argc, char **argv)
 	}
 	ui_init();
 	GrGetScreenInfo(&screen);
-	for (scale = 3; scale > 1 && (info.width * scale > screen.cols - 20 || info.height * scale + BAR > screen.rows - 60); scale--)
+	most_w = screen.cols - 20, most_h = screen.rows - 60 - BAR;
+	if ((text = getenv("NXVIDEO_SCREEN")) != NULL)	/* for a test: a smaller desktop, WIDTHxHEIGHT */
+		sscanf(text, "%dx%d", &most_w, &most_h), most_w -= 20, most_h -= 60 + BAR;
+	/* three times, twice or once as large; a film larger than the desktop as large as fits */
+	for (k = 3; k > 1 && (info.width * k > most_w || info.height * k > most_h); k--)
 		;
-	bar_y = info.height * scale;
-	win_w = pic_w = info.width * scale, pic_h = bar_y;
+	pic_w = info.width * k, pic_h = info.height * k;
+	if (pic_w > most_w)
+		pic_h = pic_h * most_w / pic_w, pic_w = most_w;
+	if (pic_h > most_h)
+		pic_w = pic_w * most_h / pic_h, pic_h = most_h;
+	win_w = pic_w, bar_y = pic_h;
+	if (getenv("NXVIDEO_PRINT"))
+		printf("nxvideo: %d x %d shown at %d x %d, the window %d x %d\n", info.width, info.height, pic_w, pic_h, win_w, bar_y + BAR);
 	name = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
 	snprintf(title, sizeof title, "%.120s - Video", name);
-	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, title, GR_ROOT_WINDOW_ID, -1, -1, info.width * scale, bar_y + BAR, UI_FACE);
+	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE, title, GR_ROOT_WINDOW_ID, -1, -1, win_w, bar_y + BAR, UI_FACE);
 	GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_MOUSE_MOTION |
 			       GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_UPDATE);
-	picture = GrNewWindow(window, 0, 0, info.width * scale, bar_y, 0, BLACK, BLACK);
+	picture = GrNewWindow(window, 0, 0, pic_w, pic_h, 0, BLACK, BLACK);
 	GrMapWindow(picture);
 	GrMapWindow(window);
 	GrSetFocus(window);
@@ -721,17 +813,8 @@ main(int argc, char **argv)
 	 * sample's size, more for larger pictures, and 8 for the sound), a VQA's frame rows 16 */
 	wanted = (text = getenv("NXVIDEO_WORKERS")) != NULL ? atoi(text) : file[0] == 'F' ? 16 : file[0] == 'G' ? 8 : 64;
 	if ((film = media_video_open(file, bytes, wanted, &wrong)) == NULL) {
-		fprintf(stderr, "nxvideo: %s: %s\n", path, wrong);
 		say(wrong);
-		for (;;) {	/* (the window says so until it is closed) */
-			GR_EVENT e;
-
-			GrGetNextEvent(&e);
-			if (e.type == GR_EVENT_TYPE_CLOSE_REQ || e.type == GR_EVENT_TYPE_KEY_DOWN)
-				return 1;
-			if (e.type == GR_EVENT_TYPE_EXPOSURE)
-				draw_bar();
-		}
+		return refuse(path, wrong, 1);	/* (and in a window over the player's, until OK) */
 	}
 	media_video_get_info(film, &info);
 	if (seglInit(picture) < 0) {
@@ -758,7 +841,7 @@ main(int argc, char **argv)
 			return refuse(path, "no GPU memory for pictures of this size", 1);
 	}
 	glGenTextures(1, &texture);
-	glViewport(0, 0, info.width * scale, bar_y);
+	glViewport(0, 0, pic_w, pic_h);
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixx(whole);
 	glMatrixMode(GL_MODELVIEW);
@@ -775,6 +858,8 @@ main(int argc, char **argv)
 	/* (pictures in hand before it plays: as many as there are places for, and a group's worth) */
 	ahead = AHEAD < slots - 1 ? AHEAD : slots - 1;
 	opened = 1;
+	mkfifo(HANDED, 0600);
+	handed_fd = open(HANDED, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	play_from(0);
 	say("getting the first pictures ready...");
 

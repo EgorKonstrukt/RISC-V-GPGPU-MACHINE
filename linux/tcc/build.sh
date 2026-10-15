@@ -54,7 +54,7 @@ cp "$MW/include/nano-X.h" "$MW/include/mwtypes.h" "$MW/include/mwconfig.h" "$STA
 mkdir -p "$STAGE/usr/include/GLES"
 cp "$GL"/include/GLES/*.h "$STAGE/usr/include/GLES/"
 # (the library's float build: what a program here hands it is floats)
-rv32-cc -O2 -Wall -c -DSEGL_FLOAT -I"$GL/include" -I"$MW/include" "$GL/gles.c" -o "$WORK/build/gles.o"
+rv32-cc -O2 -Wall -c -DSEGL_FLOAT -idirafter "$GL/include" -I"$MW/include" "$GL/gles.c" -o "$WORK/build/gles.o"
 rm -f "$STAGE/usr/lib/libgles.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libgles.a" "$WORK/build/gles.o"
 # the worker cores' library (docs/multicore.md), for a program that shares its work out

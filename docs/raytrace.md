@@ -274,7 +274,63 @@ glowing mesh, a glass mesh that is not closed, more than one light, the shader m
 rough shine's light is weighed by a rule (Phong's) that is not the one its next way is drawn
 by, and nothing compared it with a tracer known to be right.
 
-Not done: scenes kept in files, textures, a mesh's own materials (`.mtl`), undo, more than
+### Example scenes (15 October 2026)
+
+A scene is a text file (`.scene`), opened by File, "Open a scene...", by File, Examples, by
+`nxpath FILE.scene` or `nxpath NAME` (an example's name), and by Files (`docs/open.md`). The
+examples are `linux/pathtrace/scenes`, in the image at `/usr/share/pathtrace`:
+
+| Name | What it is |
+|---|---|
+| `cornell` | The Cornell box: the walls, the two blocks, the light and the camera as the Cornell Program of Computer Graphics measured them (`cornell-*.obj`, millimetres, at a hundredth; the light half a millimetre under the ceiling it lies in in the data), white 0.725 0.71 0.68, red 0.63 0.065 0.05, green 0.14 0.45 0.091, the light 17 12 4, a lens of 35 mm over 25 mm of film |
+| `cornell-balls` | The same room with a mirror ball and a glass ball |
+| `balls` | Clear and green glass, gold, copper, a mirror and red plastic balls on a plane, a light and the sky |
+| `materials` | The example meshes: a matt teapot, a plastic rabbit, a metal teapot, a glass knot |
+| `beer` | Panes of one blue glass 5, 15 and 45 hundredths thick, and balls of an amber one of densities 0.5, 2 and 8 (Beer and Lambert), lit from behind: coloured shadows |
+| `mirrors` | Two mirrors face to face, a teapot and a ball between them seen again and again until a path's turns end |
+| `glow` | No light and no sky: a ball that glows, and things round it lit by it |
+
+A line is a word and what follows it; `#` to the end of a line is not read; a name with
+spaces is in quotes:
+
+    camera target X Y Z turn DEG tilt DEG far F lens L
+    background colour R G B power P
+    object NAME MESH [kind matt|plastic|metal|mirror|glass|glow] [colour R G B] [rough|metal|glass|index|density|glow N]
+                     [size X Y Z | scale S | fit A] [place X Y Z | move X Y Z] [turn X Y Z]
+    light NAME place X Y Z radius R power P colour R G B
+
+MESH is `plane`, `box`, `ball` or a mesh file, from the scene's folder unless it begins with
+`/`. What follows an object is done in its order: `kind` sets the six numbers as the panel's
+buttons do (a number after it changes one), `fit A` makes the longest side A and stands the
+thing on the ground at the middle, `move` goes from there. A line that is wrong stops the
+reading; the status line and the console say which and why, and what was read is kept.
+
+File, "Save the scene..." writes the scene there is in this form, every number of every thing
+written out (`size`, `place`, `turn` and the six of the material), a mesh by the file it was
+read from: opened again it is the same scene, to the sum. It offers `/root/Models` and the
+name of the scene last opened; Open then starts in the folder last saved to.
+`NXPATH_WRITE=FILE` writes the scene the program starts with and prints `nxpath: FILE
+written`: `test_all.py`'s `nxpath-saved-*` save the start and two examples and trace the file
+to their sums.
+
+- **A glowing thing is a light now** (`pt_glowing`, `glow_at` in `tracer.c`): its triangles
+  are listed by area at every picture's start, and a matt or rough surface asks one of them
+  for its light as it asks a light's ball (a point of a triangle picked by area, and a ray to
+  it); light_at picks the glowing things as one more light. A glowing thing met after a matt
+  surface then adds nothing, as a lamp does, where it was the only way its light came, a
+  speck at a time. With no glowing thing nothing a path draws changes: the scene the program
+  starts with is still `02f213e9`. The Cornell box's light is a glowing quad. There are no
+  caustics: light by way of glass or a mirror onto a matt surface is not found (above).
+- The sums (`rvc_cpu`, 2 samples, with 255 workers and with none; `tools/test_all.py`'s
+  `pathtrace` tag): `cornell` `78c07525` and `cornell-balls` `b962c063` at 120 x 120, at
+  160 x 120 `balls` `b85eb16e`, `materials` `5ecc7a24`, `beer` `3c29787e`, `mirrors`
+  `2f211b98`, `glow` `2858a999`; `NXPATH_CHECK=500 nxpath cornell` 0 rays wrong and 0
+  thousandths apart. Looked at: each at 32 samples (the Cornell box at 64, 240 x 240), and
+  the menu and an example chosen from it under `rvc_harness --cpu --warp`. Not done: the
+  shader machine; a glowing ball's far side is picked as often as its near one, so half of
+  its rays are lost (`glow` is grainy at 32 samples); scenes are not written, only read.
+
+Not done: textures, a mesh's own materials (`.mtl`), undo, more than
 one camera. A click picks by each thing's ball, not its triangles. The handles follow the
 machine's own pointer words, which `nxkey` does not move: a drag is tested with `rvc_cpu
 --pointer-circle` and `--pointer-button`, and was, in a test of `gizmo.cpp` alone, not in
