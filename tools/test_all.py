@@ -104,6 +104,11 @@ CASES = [
         ('desk-place', '00000112,e0000000,0,0,40000000,0,0,0', r'ccblock: 32 41 31 0 -> 1'),
         ('vr-break', '90000133,0,0,c0000000,04bea3da,0,44bea026,e0000000', r'ccblock: 34 40 28 2 -> 0'),
         ('vr-place', '90000133,0,0,c0000000,44bea3da,0,04bea026,e0000000', r'ccblock: 30 41 28 0 -> 1'))],
+    # docs/classicube.md, "Sound": a dig sound on the card, and the tune decoded on workers into its stream
+    case('classicube-sound', 'games classicube sound', CC + 'CLASSICUBE_SOUND_LOG=1 CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True,
+         until='ccmusic: 16 of', more=['--host', '00000112,e0000000,0,0,0,0,40000000,0'], env={'RVC_SOUND': '1'},
+         has=[r'ccsound: 59 sounds at', r'ccsound: dig_grass\d on voice \d+, volume 100, rate 80',
+              r'ccmusic: /usr/share/classicube-music.mp3, 22050 Hz 2 ch']),
     # Tiberian Dawn and Red Alert (docs/tdawn.md, docs/ralert.md)
     case('tdawn-300', 'games tdawn', X + TD + 'TDAWN_SCEN=10 TDAWN_FRAMES=300 tdawn FROMINSTALL', True, has=[r'done at frame 300: SCG10EA, .* state f7650705']),
     case('tdawn-1300', 'games tdawn', X + TD + 'TDAWN_SCEN=3 TDAWN_FRAMES=1300 tdawn FROMINSTALL', True, has=[r'done at frame 1300: SCG03EA, .* state 1a9a814b']),

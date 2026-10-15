@@ -22,7 +22,7 @@ started and everything on its desktop run without building anything.
 | `root/usr/bin/doom.bin`, `root/usr/share/nxopen.50-doom` | `linux/nanox/doom.sh` | the Doom in Microwindows' `contrib`, with the files in `linux/nanox` |
 | `root/usr/bin/tcc`, `cc`, `example`, `root/usr/include`, `root/usr/lib` (the C library's, Nano-X's, OpenGL ES's and the worker cores' headers and libraries), `root/usr/share/example-*.c` | `linux/tcc/build.sh` | TinyCC, with musl's headers and libraries for it |
 | `root/usr/bin/nxide`, `root/usr/share/nxapps.28-ide`, `nxopen.15-ide` | `linux/ide/build.sh` | this repository (the IDE, `docs/ide.md`) |
-| `root/usr/bin/classicube.bin`, `root/usr/share/classicube-default.zip` | `linux/classicube/build.sh` | ClassiCube, with `linux/classicube/classicube.patch` |
+| `root/usr/bin/classicube.bin`, `root/usr/share/classicube-default.zip`, `classicube-sound.pak`, `classicube-music.mp3` | `linux/classicube/build.sh` | ClassiCube, with `linux/classicube/classicube.patch` |
 | `root/usr/bin/imdemo` | `linux/imgui/build.sh` | Dear ImGui 1.91.5 |
 | `root/usr/bin/nes.bin`, `nes`, `root/usr/share/nxopen.85-nes` | `linux/nes/build.sh` | Nofrendo, with `linux/nes/nofrendo.patch` and `osd_shaderemu.c` |
 | `root/usr/share/nes-thwaite.nes`, `nes-nova.nes` | `linux/nes/build.sh` | two NES games (release files) |
@@ -88,6 +88,7 @@ Command & Conquer demos, their sounds decoded into a pack beside them).
 | `tdawn-*.MIX`, `tdawn-sound.pak` | Electronic Arts (Westwood): the Command & Conquer demo | https://archive.org/download/CommandConquerDemo/cc1demo1.zip |
 | `ralert-*.MIX`, `ralert-sound.pak` | Electronic Arts (Westwood): the Red Alert demo | https://archive.org/download/CommandConquerRedAlert_1020/ra95demo.zip |
 | `classicube-default.zip` | ClassiCube's default texture pack | the game's own site, fetched by `linux/classicube/build.sh` |
+| `classicube-sound.pak`, `classicube-music.mp3` | Mojang: Minecraft's dig and step sounds and the tune `calm3`, as ClassiCube fetches them | `resources.download.minecraft.net` by the SHA-1s in ClassiCube's `Resources.c`, `linux/classicube/sound/make_sound.py` |
 | `wallpaper-*.ppm` | their photographers, under the Unsplash licence | `tools/make_wallpaper.py` names each |
 | `icons32.ppm`, `icons16.ppm`, `icons.idx` | the Chicago95 icon theme (GPL-3.0+/MIT), the cells `linux/apps/icons.txt` names; and five games' own icons: Chocolate Doom's (GPL-2.0), Quake's (GPL-2.0), ClassiCube's (BSD-3-Clause), Vanilla Conquer's two (GPL-3.0) | https://github.com/grassmunk/Chicago95 at the commit in `tools/make_icons.py`; `linux/apps/icons/README.md` |
 | `caption-on.ppm`, `caption-off.ppm` | ours: a window caption's colours | `tools/make_icons.py` |

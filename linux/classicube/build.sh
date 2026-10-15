@@ -69,6 +69,14 @@ riscv32-linux-nm -n classicube > "$WORK/src/classicube.nm"
 # Its zip's entries are stored, and its pictures one pack of PNGs that libmedia decodes on the worker
 # cores while the game starts (store_zip.py, png_shaderemu.c).
 python3 "$HERE/store_zip.py" "$C/misc/cc_textures.zip" "$OUT/usr/share/classicube-default.zip"
+# its dig and step sounds and one tune, Mojang's, fetched once (sound/make_sound.py, docs/classicube.md "Sound")
+SND=$WORK/src/classicube-sound
+mkdir -p "$SND"
+[ "$SND/adpcm_encode" -nt "$HERE/sound/adpcm_encode.c" ] || gcc -O2 -o "$SND/adpcm_encode" "$HERE/sound/adpcm_encode.c"
+if [ ! "$OUT/usr/share/classicube-sound.pak" -nt "$HERE/sound/make_sound.py" ] || [ ! "$OUT/usr/share/classicube-sound.pak" -nt "$SND/adpcm_encode" ] ||
+   [ ! -f "$OUT/usr/share/classicube-music.mp3" ]; then
+    python3 "$HERE/sound/make_sound.py" "$OUT/usr/share" "$C/src/Resources.c" "$WORK/src/libmedia/media_test-host" "$SND/adpcm_encode" "$SND/cache"
+fi
 cat > "$OUT/usr/bin/classicube" <<'EOF'
 #!/bin/sh
 mkdir -p /tmp/classicube/texpacks /persistence/classicube && cd /tmp/classicube || exit 1

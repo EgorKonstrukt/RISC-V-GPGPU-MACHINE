@@ -39,7 +39,7 @@ through the machine's serial console:
   PNGs, its first entry, which `png_shaderemu.c` decodes on the worker cores through libmedia
   while the game starts ("The texture pack's pictures", below).
 - `classicube.patch` (`git diff` of the tree at `build.sh`'s commit): the platform in `Core.h`
-  (low-memory build, no launcher, no FreeType, no sound), a vertex colour as the device has
+  (low-memory build, no launcher, no FreeType, the sound card as its audio backend), a vertex colour as the device has
   them, the map generator's noise in floats, one chunk built a frame, the chunk builder's
   short cuts (below), water's and lava's animation at 5 and 2.5 pictures a second, random
   block ticks at a quarter of the rate, the map's borders in quads of 16 blocks, a view
@@ -521,6 +521,30 @@ instructions a call standing, and 12,808 and 12,703 seated with the head turned 
 the frame's worker 15.2 and 13.2 thousand seated (the hand's place was a power a frame there),
 as it was standing. Seated, 104 commands where 88: the head's frustum is wider.
 
+## Sound (16 October 2026)
+
+`Audio_ShaderEmu.c` is the game's audio backend for the sound card (`docs/sound.md`). Its
+sounds are Mojang's, as the game's own builds fetch them: `sound/make_sound.py` (run by
+`build.sh` once) takes the dig and step WAVs that `Resources.c` names from Mojang's server,
+checks their SHA-1s, and writes `classicube-sound.pak`: 59 sounds, mono, ADPCM with a
+checkpoint every 32 samples (`sound/adpcm_encode.c`), 385 KB. A dig or a step is a voice
+pointed at its sound in the ROM; nothing is decoded while the game runs.
+
+The music is one tune, `calm3`, made an MP3 at the image's build (ffmpeg, 128 kbit/s, 3.7 MB,
+`classicube-music.mp3`). libmedia decodes it at half its rate in pieces of a second (115) on
+up to 6 worker jobs, each into its own staging buffer and then into a 1 MB ring of sound
+memory (11.9 s at 22,050 Hz) that a stream voice plays; core 0 only joins finished jobs and
+moves the voice's written count. Pieces are handed out while the ring has room, and the
+tune plays again after the options' delay. The options' music volume works: 0 opens nothing.
+
+- `CLASSICUBE_SOUND_LOG=1` prints each sound played (`ccsound:`) and every eighth piece of
+  the tune with the frames written and heard and how often the voice ran dry (`ccmusic:`).
+- On the card (D3D11, fxc2): 40 pieces with the voice never dry, about 6.7 s ahead. Under
+  `rvc_cpu` as the card, a frame of core 0 is 9,252 instructions with the music and 9,254
+  without it.
+- The test set's `classicube-sound`: the pack is found, a dig plays, and the tune is decoded
+  to 16 pieces.
+
 ## Checking it
 
 - The GPU against its model: hold a frame, pass `--save-state` and `--gpu-capture`, and run
@@ -553,7 +577,7 @@ as it was standing. Seated, 104 commands where 88: the head's frustum is wider.
 - Playing it by hand: the window's keys and pointer were written as Quake's are and never
   pressed; only the terminal's lines were tried. The world's beams are a pointer, not a
   mouse that is held: turning by them wants a look.
-- Sound (the game's WAVs are in its repository; the sound card could play them from the ROM).
+- Music: one tune of Mojang's, not the game's whole list.
 - Fog, and clouds that move.
 - A world larger than 64 x 64 x 64 (the low-memory build's), and one kept from run to run:
   a saved map goes to `/tmp`.

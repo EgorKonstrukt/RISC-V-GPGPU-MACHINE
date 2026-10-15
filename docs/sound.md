@@ -83,6 +83,9 @@ so its samples can be played where they lie.
 - **Quake** (`linux/quake/snd_shaderemu.c`, `docs/quake.md`): a sound is a voice pointed at its
   WAV in the pak file in the ROM, looped where the WAV says; 28 voices (8 for things, 2 for
   water and sky, 18 for the loudest of a level's own).
+- **ClassiCube** (`linux/classicube/Audio_ShaderEmu.c`, `docs/classicube.md` "Sound"): its dig
+  and step sounds as ADPCM in a pack of the ROM (385 KB), and one tune, an MP3 that libmedia
+  decodes on the worker cores into a stream voice's ring.
 - **Red Alert** (`docs/ralert.md`): Tiberian Dawn's driver and tool, with a pack of its own
   (`ralert-sound.pak`: 294 sounds, among them the demo's two tunes, 12.8 MB).
 - **Tiberian Dawn** (`linux/tdawn/soundio_shaderemu.cpp`): `tools/make_tdawn_sound.py` turns the

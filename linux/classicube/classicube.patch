@@ -56,6 +56,40 @@ index f64e11e..9626b97 100644
  
  
  /*########################################################################################################################*
+diff --git a/src/Audio.c b/src/Audio.c
+index a216c7a..a844b72 100644
+--- a/src/Audio.c
++++ b/src/Audio.c
+@@ -280,7 +280,15 @@ void Audio_PlayStepSound(cc_uint8 type) { Sounds_Play(type, &stepBoard); }
+ /*########################################################################################################################*
+ *--------------------------------------------------------Music------------------------------------------------------------*
+ *#########################################################################################################################*/
+-#ifdef CC_BUILD_NOMUSIC
++#if defined CC_BUILD_NOMUSIC && defined CC_BUILD_SHADEREMU
++/* One tune, decoded on the worker cores (linux/classicube/Audio_ShaderEmu.c) */
++void SE_Music(int volume);
++void SE_Music_Free(void);
++static void Music_Init(void) { Audio_SetMusic(Options_GetInt(OPT_MUSIC_VOLUME, 0, 100, DEFAULT_MUSIC_VOLUME)); }
++static void Music_Free(void) { SE_Music_Free(); }
++static void Music_Stop(void) { SE_Music(0); }
++static void Music_Start(void) { SE_Music(Audio_MusicVolume); }
++#elif defined CC_BUILD_NOMUSIC
+ /* Can't use mojang's music assets, so just stub everything out */
+ static void Music_Init(void) { }
+ static void Music_Free(void) { }
+diff --git a/src/Audio.h b/src/Audio.h
+index f2f9829..ce3a29a 100644
+--- a/src/Audio.h
++++ b/src/Audio.h
+@@ -16,7 +16,7 @@ struct AudioContext;
+ 	#define DEFAULT_SOUNDS_VOLUME 100
+ #endif
+ 
+-#if defined CC_BUILD_NOMUSIC || defined CC_BUILD_SYMBIAN
++#if (defined CC_BUILD_NOMUSIC && !defined CC_BUILD_SHADEREMU) || defined CC_BUILD_SYMBIAN
+ 	#define DEFAULT_MUSIC_VOLUME   0
+ #else
+ 	#define DEFAULT_MUSIC_VOLUME 100
 diff --git a/src/Bitmap.c b/src/Bitmap.c
 index 43e79ac..55b2ee4 100644
 --- a/src/Bitmap.c
@@ -1018,10 +1052,18 @@ index a82a0d8..bce602c 100644
  	camPos.x += Camera.BobbingHor * Math_CosF(yaw);
  	camPos.z += Camera.BobbingHor * Math_SinF(yaw);
 diff --git a/src/Core.h b/src/Core.h
-index 95be4ac..4eb41c2 100644
+index 95be4ac..0def2f7 100644
 --- a/src/Core.h
 +++ b/src/Core.h
-@@ -189,7 +189,25 @@ typedef cc_uint8  cc_bool;
+@@ -173,6 +173,7 @@ typedef cc_uint8  cc_bool;
+ #define CC_AUD_BACKEND_OPENSLES 3
+ #define CC_AUD_BACKEND_NULL     4
+ #define CC_AUD_BACKEND_OS2      5
++#define CC_AUD_BACKEND_SHADEREMU 6
+ 
+ #define CC_FPU_MODE_MINIMAL 1 /* Integer math funcs, no animations, no held block, flat inventory */
+ #define CC_FPU_MODE_LIMITED 2 /* Integer math funcs, no animations, no held block */
+@@ -189,7 +190,24 @@ typedef cc_uint8  cc_bool;
  /*#define CC_BUILD_GL11*/
  
  #ifndef CC_BUILD_MANUAL
@@ -1033,15 +1075,14 @@ index 95be4ac..4eb41c2 100644
 +	#define CC_BUILD_POSIX
 +	#define CC_BUILD_COOPTHREADED
 +	#define CC_BUILD_LOWMEM
-+	#define CC_BUILD_NOMUSIC
-+	#define CC_BUILD_NOSOUNDS
++	#define CC_BUILD_NOMUSIC /* the machine's own tune instead (Audio_ShaderEmu.c) */
 +	#undef  CC_BUILD_FREETYPE
 +	#undef  CC_BUILD_RESOURCES
 +	#undef  CC_BUILD_PLUGINS
 +	#define CC_DISABLE_LAUNCHER
 +	#define CC_BACKTRACE_BUILTIN
 +	#define CC_WEAKFUNC __attribute__((weak))
-+	#define DEFAULT_AUD_BACKEND CC_AUD_BACKEND_NULL
++	#define DEFAULT_AUD_BACKEND CC_AUD_BACKEND_SHADEREMU
 +	#define DEFAULT_NET_BACKEND CC_NET_BACKEND_BUILTIN
 +	#define DEFAULT_SSL_BACKEND CC_SSL_BACKEND_NONE
 +#elif defined NXDK
