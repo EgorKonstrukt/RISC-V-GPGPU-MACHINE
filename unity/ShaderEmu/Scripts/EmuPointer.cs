@@ -91,6 +91,12 @@ public class EmuPointer : UdonSharpBehaviour
     private bool aimShown;                  // an aim's beam is on
     private bool[] landedOn = new bool[2];  // a hand's beam is on something of the room's
     private Collider linksPlate;            // the links panel, in front of the display while open
+    // The avatar's bones are read only once this visitor has come into the den and their avatar
+    // has been still for a while: a read while VRChat replaces it crashed the client.
+    public Vector2 denMin = new Vector2(-4.5f, -5.5f), denMax = new Vector2(4.5f, 5.5f);   // x, z
+    public float avatarSettle = 2f;
+    private bool inDen, avatarSeen;
+    private float avatarAt;
 
     private void Init()
     {
@@ -144,6 +150,23 @@ public class EmuPointer : UdonSharpBehaviour
             if (across.sqrMagnitude > 1e-9f) direction = Quaternion.AngleAxis(pitch, across.normalized) * direction;
         }
         return true;
+    }
+
+    public override void OnAvatarChanged(VRCPlayerApi player)
+    {
+        if (!Utilities.IsValid(player) || !player.isLocal) return;
+        avatarSeen = true;
+        avatarAt = Time.time;
+    }
+
+    private bool BonesReady(VRCPlayerApi player)
+    {
+        if (!inDen)
+        {
+            Vector3 at = player.GetPosition();
+            inDen = at.x > denMin.x && at.x < denMax.x && at.z > denMin.y && at.z < denMax.y;
+        }
+        return inDen && avatarSeen && Time.time - avatarAt > avatarSettle;
     }
 
     // What the ray meets first of the display and the keyboards.
@@ -387,10 +410,11 @@ public class EmuPointer : UdonSharpBehaviour
         }
         if (player.IsUserInVR())
         {
+            bool bones = BonesReady(player);
             for (int h = 0; h < 2; h++)
             {
-                Vector3 origin, direction;
-                if (!BoneRay(player, h == 0, out origin, out direction))
+                Vector3 origin = Vector3.zero, direction = Vector3.forward;
+                if (!bones || !BoneRay(player, h == 0, out origin, out direction))
                 {
                     // no arm bones: the tracked hand, whose fingers lie along its x axis
                     VRCPlayerApi.TrackingData hand = player.GetTrackingData(
