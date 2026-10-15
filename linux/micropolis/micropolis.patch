@@ -1,0 +1,96 @@
+diff --git a/packages/micropolis-engine/src/data_types.h b/packages/micropolis-engine/src/data_types.h
+index efd8bb8..a0bb6dd 100644
+--- a/packages/micropolis-engine/src/data_types.h
++++ b/packages/micropolis-engine/src/data_types.h
+@@ -82,9 +82,9 @@ typedef unsigned char Byte;
+ 
+ typedef Byte *Ptr;
+ 
+-typedef long Quad;
++typedef int Quad; // 32 bits, as the long of 1989 (and of this machine): a 64-bit host agrees then
+ 
+-typedef unsigned long UQuad;
++typedef unsigned int UQuad;
+ 
+ 
+ #endif
+diff --git a/packages/micropolis-engine/src/evaluate.cpp b/packages/micropolis-engine/src/evaluate.cpp
+index 6d41d5e..099d951 100644
+--- a/packages/micropolis-engine/src/evaluate.cpp
++++ b/packages/micropolis-engine/src/evaluate.cpp
+@@ -300,7 +300,7 @@ void Micropolis::voteProblems(const short problemTable[PROBNUM])
+             voteCount++;
+         }
+         problem++;
+-        if (problem > PROBNUM) {
++        if (problem >= PROBNUM) {
+             problem = 0;
+         }
+         loopCount++;
+diff --git a/packages/micropolis-engine/src/fileio.cpp b/packages/micropolis-engine/src/fileio.cpp
+index 30e91a0..1dab045 100644
+--- a/packages/micropolis-engine/src/fileio.cpp
++++ b/packages/micropolis-engine/src/fileio.cpp
+@@ -471,8 +471,8 @@ bool Micropolis::saveFile(const std::string &filename)
+  */
+ void Micropolis::loadScenario(Scenario s)
+ {
+-    std::string name = NULL;
+-    std::string fname = NULL;
++    std::string name;
++    std::string fname;
+ 
+     cityFileName = "";
+ 
+diff --git a/packages/micropolis-engine/src/micropolis.cpp b/packages/micropolis-engine/src/micropolis.cpp
+index 5230c74..98a465d 100644
+--- a/packages/micropolis-engine/src/micropolis.cpp
++++ b/packages/micropolis-engine/src/micropolis.cpp
+@@ -103,6 +103,7 @@ Micropolis::Micropolis() :
+         policeStationEffectMap(0),
+         comRateMap(0)
+ {
++    callback = NULL;
+     initMapArrays();
+ }
+ 
+@@ -128,7 +129,6 @@ void Micropolis::setCallback(Callback *callback0, emscripten::val callbackVal0)
+ /** Initialize simulator variables to a sane default. */
+ void Micropolis::init()
+ {
+-    printf("init");
+     
+     ////////////////////////////////////////////////////////////////////////
+     // allocate.cpp
+diff --git a/packages/micropolis-engine/src/random.cpp b/packages/micropolis-engine/src/random.cpp
+index e701cf5..7d60df6 100644
+--- a/packages/micropolis-engine/src/random.cpp
++++ b/packages/micropolis-engine/src/random.cpp
+@@ -162,8 +162,14 @@ short Micropolis::getERandom(short limit)
+ 
+ 
+ /** Initialize the random number generator with a 'random' seed. */
++extern "C" int mp_fixed_seed; // linux/micropolis/engine.cpp: a test's seed, in place of the clock's
++
+ void Micropolis::randomlySeedRandom()
+ {
++    if (mp_fixed_seed) {
++        seedRandom(mp_fixed_seed);
++        return;
++    }
+     struct timeval time;
+     gettimeofday(&time, NULL);
+     seedRandom(time.tv_usec ^ time.tv_sec);
+diff --git a/packages/micropolis-engine/src/sprite.cpp b/packages/micropolis-engine/src/sprite.cpp
+index 5cab2c8..411a062 100644
+--- a/packages/micropolis-engine/src/sprite.cpp
++++ b/packages/micropolis-engine/src/sprite.cpp
+@@ -111,7 +111,7 @@ SimSprite *Micropolis::newSprite(const std::string &name, int type, int x, int y
+         sprite = freeSprites;
+         freeSprites = sprite->next;
+     } else {
+-        sprite = (SimSprite *)newPtr(sizeof (SimSprite));
++        sprite = new SimSprite();
+     }
+ 
+     sprite->name = name;

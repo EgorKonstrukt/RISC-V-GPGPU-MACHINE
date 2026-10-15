@@ -155,6 +155,10 @@ CASES = [
         ('throw', 'PHYS_SCENE=1 PHYS_LAUNCH=40:1 PHYS_STEPS=120 ', '8cccf9ba', []))],
     case('nxphys-kill', 'games nxphys', X + 'nxphys & sleep 5; killall -9 nxphys; sleep 1; mctest 15 2000', True, has=[r'mctest: PASS']),
     case('nxphys-none', 'games nxphys long', X + 'PHYS_WORKERS=0 PHYS_SCENE=1 PHYS_STEPS=120 nxphys', has=[r'sum b28b77b4']),
+    # Micropolis (docs/micropolis.md): a city and two scenarios with a fixed seed, the sums of the build computer's run
+    case('micropolis', 'games', 'MICROPOLIS_SUM=/usr/share/micropolis/cities/haight.cty,1000 nxmicropolis; '
+         'MICROPOLIS_SUM=1,500 nxmicropolis; MICROPOLIS_SUM=8,1500 nxmicropolis',
+         sums=[(r'micropolis: .* ticks: .* sum ([0-9a-f]+)', ['909517ac', 'e14d1a50', '75e86f73'])]),
     # nxray and nxpath (docs/raytrace.md)
     case('nxray', 'workers', X + 'RAY_FRAMES=4 nxray', True, sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['9383472e', '226b5e92', 'c69f022b', '337a52f6'])],
          has=[r'with 255 workers']),
