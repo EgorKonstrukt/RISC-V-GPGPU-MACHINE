@@ -25,6 +25,7 @@ the folder and not saved is lost with the rest.
 | `quake3/` | the settings | the starter's `fs_homepath` |
 | `vanilla-conquer/` | Tiberian Dawn's and Red Alert's settings and saved games | the starters' `XDG_CONFIG_HOME` |
 | `classicube/` | `options.txt` | a link from the game's folder |
+| `micropolis/` | saved cities, `*.cty` | Micropolis's Save and Save as (`docs/micropolis.md`) |
 
 The desktop has an icon for the folder, and anything else put there is kept as well. Not in
 it: ClassiCube's maps (262 KB each before packing), the NES's settings, and a wallpaper
@@ -52,6 +53,7 @@ the session only when the folder is saved.
 | `files.details`, `files.order` | Files | the list or the icons; the list's order |
 | `rays.width`, `rays.height`, `rays.turns`, `rays.shadows` | `nxray` | its bar's settings (a test with `RAY_FRAMES` takes none of them) |
 | `pathtrace.detail`, `.samples`, `.turns`, `.background`, `.background.colour`, `.live` | `nxpath` | the picture's settings |
+| `micropolis.speed`, `.autobudget`, `.disasters` | `nxmicropolis` | the speed (1 to 3), "Budget by itself", disasters on |
 | `web.home`, `web.pictures`, `web.bookmarks`, `web.bookmark.N` | the browser | its home page, whether pictures are loaded, and up to 24 bookmarks, `ADDRESS TITLE` each (`docs/web.md`) |
 | `geotune.width`, `.workers`, `.iterations`, `.us`, `.ratio`, `.force` | `geotune`, at boot | the small workers' blocks' width, and what it was chosen by (`docs/multicore.md`, "Packing the small workers"); `.force` 2, 4 or 8 is a width with nothing measured |
 

@@ -11,7 +11,9 @@ the other windows are drawn by Nano-X.
 
     wsl -- bash /mnt/c/.../linux/micropolis/build.sh    # 6 s; after Nano-X's, Tiberian Dawn's and libmedia's builds
 
-The Start menu has it under Games, and a `.cty` file opens in it (`docs/open.md`).
+The Start menu has it under Games, the desktop has its icon (the X11 release's map,
+`linux/apps/icons/micropolis.png`), and a `.cty` file opens in it and has that icon in Files
+(`docs/open.md`). The system sheet in the world lists it.
 
 ## Where it comes from
 

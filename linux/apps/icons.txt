@@ -30,6 +30,7 @@ quake3,quake3.bin       quake3
 classicube,classicube.bin classicube
 tdawn,tdawn.bin         tdawn
 ralert,ralert.bin       ralert
+nxmicropolis            micropolis
 nes,nes.bin             devices/input-gaming
 imdemo                  apps/desktop-effects apps/glade
 nxray                   apps/multimedia-photo-manager

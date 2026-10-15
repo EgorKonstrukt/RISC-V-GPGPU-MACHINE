@@ -271,7 +271,7 @@ draw_icon(GR_DRAW_ID to, int x, int y, const struct entry *e, int size)
 /* A file's icon by its name's ending (icons.txt has the pictures), where the kind's own says
  * less: a game's data has the game's, a source file its language's. */
 static const struct { const char *endings, *icon; } types[] = {
-	{ ".nes", "nes" }, { ".wad .dsg", "doom" }, { ".pak .bsp .mdl", "quake" }, { ".pk3", "quake3" }, { ".cw", "classicube" },
+	{ ".nes", "nes" }, { ".wad .dsg", "doom" }, { ".pak .bsp .mdl", "quake" }, { ".pk3", "quake3" }, { ".cw", "classicube" }, { ".cty", "nxmicropolis" },
 	{ ".c", "c-source" }, { ".h", "c-header" }, { ".cpp .cc .cxx .hpp", "cpp-source" }, { ".py .js .json .mk", "code" },
 	{ ".css .xml .svg", "page" }, { ".ttf .otf .bdf .pcf .fnt", "font" }, { ".png", "png" }, { ".jpg .jpeg", "jpeg" },
 	{ ".gif", "gif" }, { ".bmp .ppm .pgm .pbm .pnm", "bitmap" }, { ".flac .mp3 .wav .ogg .oga", "tune" }, { ".so", "library" },

@@ -86,6 +86,8 @@ so its samples can be played where they lie.
 - **ClassiCube** (`linux/classicube/Audio_ShaderEmu.c`, `docs/classicube.md` "Sound"): its dig
   and step sounds as ADPCM in a pack of the ROM (385 KB), and one tune, an MP3 that libmedia
   decodes on the worker cores into a stream voice's ring.
+- **Micropolis** (`linux/micropolis/nxmicropolis.c`, `docs/micropolis.md` "Sound"): 13 sounds
+  as unsigned bytes in `sounds.bin` (330 KB), each a voice pointed at the ROM, on four voices.
 - **Red Alert** (`docs/ralert.md`): Tiberian Dawn's driver and tool, with a pack of its own
   (`ralert-sound.pak`: 294 sounds, among them the demo's two tunes, 12.8 MB).
 - **Tiberian Dawn** (`linux/tdawn/soundio_shaderemu.cpp`): `tools/make_tdawn_sound.py` turns the

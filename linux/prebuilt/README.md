@@ -22,6 +22,7 @@ started and everything on its desktop run without building anything.
 | `root/usr/bin/doom.bin`, `root/usr/share/nxopen.50-doom` | `linux/nanox/doom.sh` | the Doom in Microwindows' `contrib`, with the files in `linux/nanox` |
 | `root/usr/bin/tcc`, `cc`, `example`, `root/usr/include`, `root/usr/lib` (the C library's, Nano-X's, OpenGL ES's and the worker cores' headers and libraries), `root/usr/share/example-*.c` | `linux/tcc/build.sh` | TinyCC, with musl's headers and libraries for it |
 | `root/usr/bin/nxide`, `root/usr/share/nxapps.28-ide`, `nxopen.15-ide` | `linux/ide/build.sh` | this repository (the IDE, `docs/ide.md`) |
+| `root/usr/bin/nxmicropolis`, `root/usr/share/micropolis/` (its pictures, sounds, cities and texts, and its licences), `nxapps.72-micropolis`, `nxopen.72-micropolis` | `linux/micropolis/build.sh` | Micropolis (MicropolisCore's engine), with `linux/micropolis/micropolis.patch` and the front end in `linux/micropolis` |
 | `root/usr/bin/classicube.bin`, `root/usr/share/classicube-default.zip`, `classicube-sound.pak`, `classicube-music.mp3` | `linux/classicube/build.sh` | ClassiCube, with `linux/classicube/classicube.patch` |
 | `root/usr/bin/imdemo` | `linux/imgui/build.sh` | Dear ImGui 1.91.5 |
 | `root/usr/bin/nes.bin`, `nes`, `root/usr/share/nxopen.85-nes` | `linux/nes/build.sh` | Nofrendo, with `linux/nes/nofrendo.patch` and `osd_shaderemu.c` |
@@ -51,6 +52,7 @@ compiler runtime it uses.
 | BusyBox 1.36.1 | GPL-2.0 | https://busybox.net/downloads/busybox-1.36.1.tar.bz2; configuration: `linux/userland` |
 | Doom | GPL-2.0 | Microwindows' `src/contrib/doom` at the commit above; our changes: `linux/nanox` |
 | TinyCC | LGPL-2.1 | https://github.com/jrrk2/tinycc, branch `riscv32`; our changes: `linux/tcc` |
+| Micropolis (MicropolisCore's engine and its cities, pictures, texts and sounds) | GPL-3.0 with EA's additional terms; "Micropolis" under the Micropolis Public Name License | https://github.com/SimHacker/MicropolisCore, the commit `linux/micropolis/build.sh` names; our changes: `linux/micropolis/micropolis.patch` |
 | ClassiCube | BSD-3-Clause | https://github.com/ClassiCube/ClassiCube, commit `d41c3f7`; our changes: `linux/classicube/classicube.patch` |
 | Dear ImGui 1.91.5 | MIT | https://github.com/ocornut/imgui, tag `v1.91.5` |
 | Nofrendo | LGPL-2.0 | https://github.com/espressif/esp32-nesemu, commit `693e378`; our changes: `linux/nes/nofrendo.patch` |
@@ -90,7 +92,7 @@ Command & Conquer demos, their sounds decoded into a pack beside them).
 | `classicube-default.zip` | ClassiCube's default texture pack | the game's own site, fetched by `linux/classicube/build.sh` |
 | `classicube-sound.pak`, `classicube-music.mp3` | Mojang: Minecraft's dig and step sounds and the tune `calm3`, as ClassiCube fetches them | `resources.download.minecraft.net` by the SHA-1s in ClassiCube's `Resources.c`, `linux/classicube/sound/make_sound.py` |
 | `wallpaper-*.ppm` | their photographers, under the Unsplash licence | `tools/make_wallpaper.py` names each |
-| `icons32.ppm`, `icons16.ppm`, `icons.idx` | the Chicago95 icon theme (GPL-3.0+/MIT), the cells `linux/apps/icons.txt` names; and five games' own icons: Chocolate Doom's (GPL-2.0), Quake's (GPL-2.0), ClassiCube's (BSD-3-Clause), Vanilla Conquer's two (GPL-3.0) | https://github.com/grassmunk/Chicago95 at the commit in `tools/make_icons.py`; `linux/apps/icons/README.md` |
+| `icons32.ppm`, `icons16.ppm`, `icons.idx` | the Chicago95 icon theme (GPL-3.0+/MIT), the cells `linux/apps/icons.txt` names; and the games' own icons: Chocolate Doom's (GPL-2.0), Quake's and Quake III's (GPL-2.0), ClassiCube's (BSD-3-Clause), Vanilla Conquer's two (GPL-3.0), Micropolis's (GPL-3.0) | https://github.com/grassmunk/Chicago95 at the commit in `tools/make_icons.py`; `linux/apps/icons/README.md` |
 | `caption-on.ppm`, `caption-off.ppm` | ours: a window caption's colours | `tools/make_icons.py` |
 | `root/Pictures/*.jpg` | public domain: NASA (Earthrise, Blue Marble, Deep Field), Hokusai, van Gogh | Wikimedia Commons, each named with its SHA-1 in `linux/media/media.txt` |
 | `root/Music/Grieg - *.mp3` | public domain: Musopen Symphony Orchestra's recordings, 50 s each | Wikimedia Commons (`linux/media/media.txt`) |

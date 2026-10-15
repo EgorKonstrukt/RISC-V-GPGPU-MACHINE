@@ -42,6 +42,9 @@ and it is the only way this computer becomes usable.
   missions, drawn in software and shown by the GPU: it plays, at a half to two thirds of its speed.
 - **Quake** (`docs/quake.md`): id's GLQuake with the shareware episode, everything drawn by the
   GPU, on float instructions the machine gained for it (`docs/fpu.md`): 2 to 8 frames a second.
+- **Micropolis** (`docs/micropolis.md`): the city simulator of 1989 (MicropolisCore's engine) with
+  its cities and scenarios, the map drawn by the GPU, the budget, evaluation, graphs and overview
+  map in windows of their own, and its sounds.
 - **ClassiCube** (`docs/classicube.md`): the Minecraft Classic client, a world of blocks to dig and
   build in, drawn by the GPU from chunks kept in its memory: 50 to 70 frames a second walking.
 - **A C compiler in the machine** (`docs/cc.md`): TinyCC, with the C library, Nano-X,
