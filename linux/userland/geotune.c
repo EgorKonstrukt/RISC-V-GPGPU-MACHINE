@@ -43,6 +43,7 @@
 #define CORES_NOW (0x3c0 / 4)		/* how many cores the geometry has now */
 #define CORES_MOST (0x3cc / 4)		/* how many the machine could have */
 #define SHAPE (0x3d0 / 4)		/* the geometry: bit 0 while laid out anew, workers, bits, the hybrid's word */
+#define HOST_PRESET(f) (((f) >> 2) & 3)	/* host flags bits 2-3: 0 geotune's own pick, 1-3 blocks of 2, 4 or 8 columns */
 #define BIG_COUNT 16
 #define BIG_BITS 5
 #define SMALL_BITS 3
@@ -127,24 +128,29 @@ static uint32_t run(int k, uint32_t n)
 	return now_us() - start;
 }
 
-static uint32_t median3(const uint32_t *t)
+/* the middle one of n (up to 6), or the mean of the middle two */
+static uint32_t median(const uint32_t *t, int n)
 {
-	uint32_t a = t[0], b = t[1], c = t[2];
+	uint32_t s[6], x;
+	int i, j;
 
-	return a > b ? (b > c ? b : a > c ? c : a) : (a > c ? a : b > c ? c : b);
+	for (i = 0; i < n; i++)
+		for (s[i] = t[i], j = i; j > 0 && s[j - 1] > s[j]; j--)
+			x = s[j], s[j] = s[j - 1], s[j - 1] = x;
+	return n & 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
 }
 
 /* how far apart they are, in hundredths of the middle one */
-static uint32_t spread3(const uint32_t *t)
+static uint32_t spread(const uint32_t *t, int n)
 {
 	uint32_t low = t[0], high = t[0];
 	int i;
 
-	for (i = 1; i < 3; i++) {
+	for (i = 1; i < n; i++) {
 		low = t[i] < low ? t[i] : low;
 		high = t[i] > high ? t[i] : high;
 	}
-	return (high - low) * 100u / (median3(t) | 1);
+	return (high - low) * 100u / (median(t, n) | 1);
 }
 
 /* The kept folder, from the host, before the registry is read: what the nx script does when the
@@ -168,7 +174,8 @@ static void load_kept(void)
 int main(int argc, char **argv)
 {
 	int again = argc > 1 && !strcmp(argv[1], "again"), fd = open("/dev/gpu", O_RDWR), forced, i, lo, workers;
-	uint32_t most, width, n, kept_n, cores, t_lo[3], t_all[3], ratio, us, kept_us;
+	uint32_t most, width, n, kept_n, cores, t_lo[6], t_all[6], ratio = 0, us, kept_us, picked, asked;
+	int rounds = 3;
 	char text[64];
 
 	if (fd < 0 || (control = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, CONTROL_OFFSET)) == MAP_FAILED ||
@@ -190,6 +197,8 @@ int main(int argc, char **argv)
 		printf("geotune: this machine's workers are all alike: laid out by the kernel\n");
 		return 0;
 	}
+	printf("geotune: finding how many worker cores this card runs side by side\n");
+	fflush(stdout);
 	load_kept();
 	forced = reg_int("geotune.force", 0);
 	width = (uint32_t)reg_int("geotune.width", 0);
@@ -215,13 +224,16 @@ int main(int argc, char **argv)
 		goto done;
 	}
 	run(bound_count, 2000);	/* (the workers' stacks and pages, the first time) */
+	printf("geotune: %d workers, each in eight columns of its own\n", bound_count);
+	fflush(stdout);
 	/* a later boot: the eighth's time again, and the kept choice if it is the same */
 	if (width && workers == bound_count && kept_n && kept_us && !again) {
 		for (i = 0; i < 3; i++)
 			t_lo[i] = run(lo, kept_n);
-		us = median3(t_lo);
+		us = median(t_lo, 3);
 		if (us > kept_us / 100u * (100u - DRIFT) && us < kept_us / 100u * (100u + DRIFT)) {
 			mcw_close();
+			ratio = (uint32_t)reg_int("geotune.ratio", 0);
 			printf("geotune: %u-column blocks, as before (%u ms against %u)\n", width, us / 1000u, kept_us / 1000u);
 			goto done;
 		}
@@ -232,18 +244,26 @@ int main(int argc, char **argv)
 	us = run(lo, n);
 	n = us > 1000 ? n / 100u * 200000u / us * 100u : 400000;
 	n = n < 5000 ? 5000 : n > 400000 ? 400000 : n;
-	for (i = 0; i < 3; i++) {
+	printf("geotune: the same job on %d workers and on all %d, three times each\n", lo, bound_count);
+	fflush(stdout);
+	for (i = 0; i < rounds; i++) {
 		t_lo[i] = run(lo, n);
 		t_all[i] = run(bound_count, n);
+		printf("geotune:   round %d: %d workers %u ms, %d workers %u ms\n", i + 1, lo, t_lo[i] / 1000u, bound_count, t_all[i] / 1000u);
+		fflush(stdout);
+		/* a host whose frames come unevenly (the VRChat world): three more, and the middle of six */
+		if (i == 2 && rounds == 3 && (spread(t_lo, 3) > 30 || spread(t_all, 3) > 30)) {
+			rounds = 6;
+			printf("geotune: the three are far apart: three more\n");
+		}
 	}
 	mcw_close();
-	us = median3(t_lo);
-	ratio = median3(t_all) * 100u / (us | 1);
+	us = median(t_lo, rounds);
+	ratio = median(t_all, rounds) * 100u / (us | 1);
 	width = ratio < ALL_AT_ONCE ? WIDE : DENSE;
-	if (spread3(t_lo) > 30 || spread3(t_all) > 30)
-		width = DENSE;	/* (too unsteady to say) */
 	printf("geotune: %d workers took %u.%02u times as long as %d (%u ms, spread %u%% and %u%%): about %u side by side; %u-column blocks\n",
-	       bound_count, ratio / 100, ratio % 100, lo, us / 1000u, spread3(t_lo), spread3(t_all), bound_count * 100u / (ratio > 100 ? ratio : 100), width);
+	       bound_count, ratio / 100, ratio % 100, lo, us / 1000u, spread(t_lo, rounds), spread(t_all, rounds),
+	       bound_count * 100u / (ratio > 100 ? ratio : 100), width);
 	snprintf(text, sizeof text, "%u", width);
 	reg_set("geotune.width", text);
 	snprintf(text, sizeof text, "%d", bound_count);
@@ -258,7 +278,20 @@ done:
 	usleep(60000);	/* (the kernel parks the cores of a program that closes the device) */
 	if (!width)
 		width = DENSE;
+	/* the world's panel may ask for a width; what geotune picked is shown beside it */
+	picked = width;
+	asked = HOST_PRESET(control[HOST_FLAGS]);
+	if (asked) {
+		width = 1u << asked;
+		printf("geotune: the host asks for %u-column blocks (geotune's pick: %u)\n", width, picked);
+	}
 	/* a card that runs them all at once loses nothing to larger caches: every worker a big one */
-	lay_out(most - 1, width == WIDE ? BIG_BITS : SMALL_BITS, hybrid(1, width, WIDE));
+	cores = lay_out(most - 1, width == WIDE ? BIG_BITS : SMALL_BITS, hybrid(1, width, WIDE));
+	control[SHAPE] = picked << 8 | (ratio < 0xffff ? ratio : 0xffff) << 16;	/* (bit 0 clear: laid out) */
+	if (width == WIDE)
+		printf("geotune: laid out %u workers, every one with a cache of 2^%d in %d columns\n", cores - 1, BIG_BITS, WIDE);
+	else
+		printf("geotune: laid out %u workers: %d with caches of 2^%d in %d columns, %u of 2^%d in %u\n", cores - 1, BIG_COUNT,
+		       BIG_BITS, WIDE, cores - 1 - BIG_COUNT, SMALL_BITS, width);
 	return 0;
 }

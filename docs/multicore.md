@@ -483,7 +483,8 @@ its first page: `look()` serves it.
 
 ## Packing the small workers (`geotune`)
 
-(14 October 2026; with `MC_HYBRID`, a local experiment of the tick.) The geometry is hybrid:
+(14 October 2026; the tick's own since 15 October, `--define MC_UNIFORM` for the geometry of
+before.) The geometry is hybrid:
 workers 1 to 16 big (caches of 2^5 buckets), which keeps a game's few workers at full speed
 (small caches cost Doom 15 to 38%), and the rest small (2^3). How the small ones' blocks lie
 in the tick's targets depends on the card, and `geotune` measures it at boot.
@@ -506,7 +507,7 @@ first band (with eight columns a worker the second band holds 128 of 239). `mc_g
 `src/types.h` reads it for the tick and the commit, and `mc_geo_count()` in `src/gpu.h` the same
 for the control pass (`gpu.shader` has no `types.h`), whose count of cores (`0x870003c0`) is
 what the kernel shares out: a worker the targets have no block for is no worker. With
-`MC_HYBRID` undefined the shader is the tree's, preprocessed text for text.
+`MC_UNIFORM` defined the shader is that of before, preprocessed text for text.
 
 **Who sets it.** `geotune` (`linux/userland/geotune.c`), which the init runs before any
 program asks for workers (the layout may only change while every worker is parked, and the
@@ -523,7 +524,9 @@ without it, and `geotune` leaves the layout to the kernel. Then:
 2. Under 1.5 times: eight-column blocks, and the small workers get the big ones' caches (2^5),
    so every worker is as the uniform geometry has it: a card that runs them all at once gains
    nothing from small caches and loses `nxphys` to them. Otherwise two columns at 2^3. If
-   either set of three times is more than 30% apart the card is too unsteady to say and it is two.
+   either set of three times is more than 30% apart, three rounds more are run and the middle of
+   six decides: in the VRChat world, whose frames come unevenly, a 5090's three were 233 to 346 ms
+   and 244 to 340, and "too unsteady, two columns" chose the layout that costs it `nxphys`.
 3. The registry keeps the choice (`geotune.width`, `.workers`, `.iterations`, `.us`, `.ratio`;
    `geotune.force` 2, 4 or 8 is a width with nothing measured: `docs/persist.md`). So that a
    kept registry is there to be read, `geotune` loads the kept folder itself when the desktop
@@ -534,6 +537,18 @@ without it, and `geotune` leaves the layout to the kernel. Then:
 
 `geotune again` measures though a choice is kept (before the desktop, when no program has
 workers).
+
+**What it says and who may choose.** At boot it prints each step on the console: what it
+measures, each of the three rounds' times, the ratio and its pick, and the layout it made. The
+host may ask for a layout in bits 2-3 of the host flags (`0x8700003c`: 0 the pick, 1, 2, 3 the
+small workers in 2, 4 or 8 columns; the harness's `--workers auto|2|4|8`); `geotune` still
+measures, lays out what was asked and says both. Its pick and ratio are then in the geometry
+texel's first word, which the tick reads only bit 0 of: bits 8-15 the width it picked, 16-31
+the ratio in hundredths. The world's "Worker cores" strip under the control panel has the four
+choices (Auto, Dense, Medium, Wide), takes effect at the next Reset, and shows what Auto picked
+and what runs. As the tick's own on the 5090 it costs nothing that shows: a shell loop 3.96 and
+3.92 M a second against 3.69 and 4.30 with `MC_UNIFORM`, Doom's timedemo 1,569 and 1,476
+realtics against 1,675 and 1,417, in turn.
 
 What it found here (RTX 2060 Mobile, harness under Wine and DXVK, 255 workers), and what the
 width is worth:

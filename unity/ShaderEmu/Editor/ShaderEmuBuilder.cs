@@ -1105,6 +1105,7 @@ public static partial class ShaderEmuBuilder
         OnClick(beamDown, pointer, "PitchDown");
         Sharing(world, computer, panel, machine, new Vector3(1.28f, 1.82f, screenZ));
         Sound(world, panel, machine);
+        WorkersPanel(computer, machine);
         UnityEventTools.AddStringPersistentListener(slider.onValueChanged,
             UdonSharpEditorUtility.GetBackingUdonBehaviour(machine).SendCustomEvent, "SpeedChanged");
 

@@ -175,7 +175,7 @@ Shader "ShaderEmu/MachineTick"
                     hart = k;
                     if (mc_idle()) continue;
                     uint2 at = mc_block_of(k);
-                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols, 8);
+                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols_now, 8);
                 }
                 mc_select(0);
                 hart = 0;
@@ -210,7 +210,7 @@ Shader "ShaderEmu/MachineTick"
                     if (_Init) TICK_ZERO
                     uint tile;
                     hart = mc_core_in(pixel, tile);
-                    if (hart == 0 || tile >= mc_rows) TICK_ZERO
+                    if (hart == 0 || tile >= mc_rows_now) TICK_ZERO
                     own = mc_tile_at(mc_tile0 + tile) + uint2(0, pixel.y & 7);
                     // which texel of the worker's state this pixel begins at, as a place in its rows of 64
                     uint w = (tile << 6) + ((pixel.y & 7) << 3);

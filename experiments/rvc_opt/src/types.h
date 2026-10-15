@@ -140,6 +140,10 @@
 #define TICK_MRT_W 1040   // (core 0, the gap and 128 blocks of eight columns)
 #endif
 #define TICK_BANDS ((CORES + 126) / 128)
+// The hybrid geometry is the machine's (geotune lays it out); MC_UNIFORM compiles the old one.
+#if !defined(MC_HYBRID) && !defined(MC_UNIFORM)
+#define MC_HYBRID
+#endif
 #ifdef MC_HYBRID
 static uint mc_count = 0;   // workers the geometry has, a worker's tiles, and its block's columns
 static uint mc_rows = 0;

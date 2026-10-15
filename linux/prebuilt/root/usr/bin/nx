@@ -53,7 +53,8 @@ sleep 2
 # what the host keeps of /persistence, once a session and before the desktop shows it (docs/persist.md)
 if [ ! -f /tmp/nxpersist.loaded ]; then
     : > /tmp/nxpersist.loaded
-    nxpersist load
+    # (geotune loads it at boot, before the workers are laid out: linux/userland/geotune.c)
+    [ -f /tmp/nxpersist.early ] || nxpersist load
     kept=$(nxreg get sound.volume) && nxsettings volume "$kept"
     # the desktop's icons stand where they were left
     [ -f /persistence/desktop/places ] || cp /root/Desktop/.places /persistence/desktop/places 2>/dev/null

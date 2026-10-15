@@ -98,6 +98,7 @@ struct Options {
     int uartBurst = 0;        // input characters per handshake; 0 = what the shader declares
     bool resume = false;      // with no other arguments: resume the shell snapshot instead of booting
     bool tabs = false;        // ask the guest for its console as several terminals (docs/console.md)
+    int workers = 0;          // --workers: the small workers' blocks geotune lays out (0 its own pick; 1-3: 2, 4, 8 columns)
     bool desktop = false;     // ask the guest to start its desktop: the terminal mode, unless --no-desktop
     std::string vizCapture;   // BMP of the memory view, written at exit
     std::string gpuCapture;   // BMP of the GPU device's colour target, written at exit
@@ -235,6 +236,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --no-desktop         terminal mode: boot to the shell only (by default the guest starts its desktop);
                        --desktop asks for it in a run with other arguments
   --tabs               the console as four terminals: 0x1e and a digit, either way, says whose bytes follow
+  --workers auto|2|4|8 how geotune lays out the workers at boot (docs/multicore.md, "Packing the small workers")
   --dxc / --d3d11      backend: D3D12 with DXC-compiled DXIL, or D3D11 with FXC bytecode (what VRChat
                        runs). rvc_harness_dxc.exe defaults to --dxc. DXC implies NO_DOUBLES and, unless
                        --rvc is given, the experiments/rvc_opt shader (upstream does not compile with DXC).
@@ -358,6 +360,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--no-desktop") o.desktop = false;
         else if (a == "--desktop") o.desktop = true;
         else if (a == "--tabs") o.tabs = true;
+        else if (a == "--workers") { std::string w = next("--workers"); o.workers = w == "2" ? 1 : w == "4" ? 2 : w == "8" ? 3 : 0; }
         else if (a == "--open") o.open.push_back(next("--open"));
         else if (a == "--open-after") o.openAfter = unescape(next("--open-after"));
         else if (a == "--persist") o.persist = next("--persist");
@@ -1380,7 +1383,7 @@ int main(int argc, char** argv) {
                 mat.setInt("_ZapZones", z[7]);
             }
             // bit 0: start the desktop at boot; then the largest screen this host shows, in 16s of pixels
-            mat.setInt("_HostFlags", (opt.desktop ? 1 : 0) | (opt.tabs ? 2 : 0) | (kGpuTarget / 16) << 8 | (kGpuTarget / 16) << 16);
+            mat.setInt("_HostFlags", (opt.desktop ? 1 : 0) | (opt.tabs ? 2 : 0) | opt.workers << 2 | (kGpuTarget / 16) << 8 | (kGpuTarget / 16) << 16);
             // the host's words: the harness, one visitor (number 1); a head that looks straight on from the seat's eye point
             mat.setInt("_HostState0", 1 | (opt.holodeck ? 16 : 0) | (opt.holodeckHands ? 32 : 0) | 1 << 8 | 1 << 16);
             mat.setInt("_HostState1", 0);

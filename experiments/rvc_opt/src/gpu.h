@@ -721,6 +721,10 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 uint mc_rows_of_bits(uint bits) {
     return bits == 0 ? 0 : (44 + 8 + (2u << bits) * 4 + 63) / 64;
 }
+// The hybrid geometry is the machine's (geotune lays it out); MC_UNIFORM compiles the old one.
+#if !defined(MC_HYBRID) && !defined(MC_UNIFORM)
+#define MC_HYBRID
+#endif
 #ifdef MC_HYBRID
 // The hybrid geometry as src/types.h reads it (mc_geo_read: big workers first, the blocks'
 // widths in .a), here again since not every pass that has this file has types.h: how many
