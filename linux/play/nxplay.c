@@ -1,7 +1,8 @@
 /*
- * nxplay: an audio player (docs/play.md). nxplay FILE plays a WAV, MOD, FLAC or MP3 file
- * through the sound card's stream voice. A tune is decoded in pieces, ahead of what is heard;
- * an MP3 file's pieces go to every worker core. The NXPLAY_* variables are in docs/play.md.
+ * nxplay: an audio player (docs/play.md). nxplay FILE plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis
+ * file through the sound card's stream voice, decoded by libmedia (docs/media.md). A tune is
+ * decoded in pieces, ahead of what is heard; an MP3, Vorbis or FLAC file's pieces go to the
+ * worker cores. The NXPLAY_* variables are in docs/play.md.
  */
 #define _GNU_SOURCE
 #include <signal.h>
@@ -14,16 +15,12 @@
 #include <dirent.h>
 #include "shaderemu_sound.h"
 #include "mcw.h"
-#include "minimp3.h"
-#include "flac.h"
-#include "mod.h"
+#include "media.h"
 
 #define RING ring_frames	/* the stream's ring, in frames: a power of two */
 #define RING_LONG 262144u	/* six seconds of 44.1 kHz: room for every piece that is being decoded */
 #define RING_SHORT 65536u	/* when sound memory has no megabyte left */
 #define SLICE 2048	/* frames this core decodes between two looks at everything else */
-#define MP3_BACK 12	/* frames before a piece that fill its bit reservoir */
-#define MP3_WARM 2	/* as it was (NXPLAY_WARM=2): the last of them are decoded whole */
 #define OWN_UNDER 8	/* with fewer workers than this the first core takes pieces too */
 #define FLAC_WORKERS 24	/* a FLAC file's: a block is a tenth of a second, a worker's for half a second */
 #define SLOTS 2048
@@ -35,23 +32,25 @@
 #define LIST_Y 122
 #define LIST_ROWS 8
 #define H (LIST_Y + LIST_ROWS * UI_ROW + 4 + 8)
-#define KINDS ".wav .mp3 .flac .mod"
+#define KINDS ".wav .mp3 .flac .mod .ogg"
 #define TUNES 256
 
-enum { K_NONE, K_WAV, K_MOD, K_FLAC, K_MP3 };
+enum { K_NONE, K_WAV, K_MOD, K_FLAC, K_MP3, K_OGG };
 enum { STOPPED, BUFFERING, PLAYING, ENDED };
 enum { SLOT_FREE, SLOT_MINE, SLOT_WORKER, SLOT_READY, SLOT_DROPPED };
 
-/* Frames are counted at the file's rate; at half rate a frame of sound is two of them. */
+/* Frames are the library's: at half rate a frame is two of the file's. */
 static struct {
 	char path[512];
 	const char *name;
 	uint8_t *file;
 	uint32_t size;
+	struct media_audio *audio;
 	int kind, rate, channels, half;
+	int pieced;		/* the library's pieces, on the workers (else read in order on this core) */
 	uint32_t total;		/* ~0u while not known */
-	uint32_t piece;		/* frames a piece */
-	uint32_t origin;	/* the frame piece 0 begins at */
+	uint32_t piece;		/* frames a piece (the library's first, when pieced) */
+	uint32_t origin;	/* the frame piece 0 begins at, in order */
 } tune;
 
 /* A piece's memory: 16 bytes its worker writes (frames done), 16 this core writes (give up),
@@ -85,7 +84,7 @@ static int was_working, decided, half_wanted = -1, underruns;
 static uint64_t own_cycles, worker_cycles, all_decoded;
 static uint32_t began_ms, began_cycles, limit_seconds, memory_mb;
 static int want_sum, exit_at_end, mod_rate = 22050, piece_frames_asked;
-static int warm_asked, own_under = OWN_UNDER;
+static int own_under = OWN_UNDER;
 static uint32_t sum = 2166136261u, sum_count;
 static char note[160];
 
@@ -127,249 +126,51 @@ say(const char *text)
 }
 
 static uint32_t
-word_at(const uint8_t *p)
+pieces(void)
 {
-	return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;
+	if (tune.pieced)
+		return media_audio_piece_of(tune.audio, tune.total - 1) + 1;
+	return tune.total == ~0u ? ~0u : (tune.total - tune.origin + tune.piece - 1) / tune.piece;
+}
+
+/* The frame a piece begins at, and its frames as decoded (`whole`) or as played (up to the tune's end). */
+static uint32_t
+piece_start(uint32_t piece)
+{
+	return tune.pieced ? media_audio_piece_first(tune.audio, piece) : tune.origin + piece * tune.piece;
 }
 
 static uint32_t
-pieces(void)
+piece_size(uint32_t piece, int whole)
 {
-	return tune.total == ~0u ? ~0u : (tune.total - tune.origin + tune.piece - 1) / tune.piece;
+	uint32_t from = piece_start(piece), n = tune.pieced ? media_audio_piece_frames(tune.audio, piece) : tune.piece;
+
+	return whole || tune.total - from >= n ? n : tune.total - from;
 }
 
 static uint32_t
 piece_frames(uint32_t piece)
 {
-	uint32_t from = tune.origin + piece * tune.piece;
-
-	return tune.total - from < tune.piece ? tune.total - from : tune.piece;
+	return piece_size(piece, 0);
 }
 
-/* ---- WAV: PCM of 8 to 32 bits; the first two channels ---- */
+/* ---- a piece on a worker ---- */
 
-static struct {
-	const uint8_t *data;
-	uint32_t frames, at;
-	int width, channels;
-} wav;
-
-static int
-wav_open(void)
-{
-	const uint8_t *f = tune.file;
-	uint32_t at = 12, size, bytes = 0;
-	int format = 0;
-
-	wav.data = NULL;
-	while (at + 8 <= tune.size) {
-		const uint8_t *c = f + at;
-
-		size = word_at(c + 4);
-		if (size > tune.size - at - 8)
-			size = tune.size - at - 8;
-		if (!memcmp(c, "fmt ", 4) && size >= 16) {
-			format = c[8] | c[9] << 8;
-			wav.channels = c[10] | c[11] << 8;
-			tune.rate = (int)word_at(c + 12);
-			wav.width = (c[22] | c[23] << 8) / 8;
-			if (format == 0xfffe && size >= 26)
-				format = c[32] | c[33] << 8;	/* what an extensible header says it is */
-		} else if (!memcmp(c, "data", 4)) {
-			wav.data = c + 8;
-			bytes = size;
-			break;
-		}
-		at += 8 + ((size + 1) & ~1u);
-	}
-	if (format != 1 || !wav.data || wav.width < 1 || wav.width > 4 || wav.channels < 1 || tune.rate <= 0)
-		return 0;
-	tune.channels = wav.channels > 2 ? 2 : wav.channels;
-	wav.frames = bytes / (uint32_t)(wav.width * wav.channels);
-	wav.at = 0;
-	tune.total = wav.frames;
-	return 1;
-}
-
-static int
-wav_read(int16_t *to, int frames)
-{
-	const uint8_t *from = wav.data + wav.at * (uint32_t)(wav.width * wav.channels);
-	int i, c;
-
-	if ((uint32_t)frames > wav.frames - wav.at)
-		frames = (int)(wav.frames - wav.at);
-	if (wav.width == 2 && wav.channels == tune.channels) {
-		memcpy(to, from, (size_t)frames * 2 * tune.channels);
-	} else {
-		for (i = 0; i < frames; i++, from += wav.width * wav.channels)
-			for (c = 0; c < tune.channels; c++) {
-				const uint8_t *s = from + c * wav.width + wav.width - 1;
-
-				/* the top 16 bits; bytes are unsigned */
-				*to++ = wav.width == 1 ? (int16_t)((s[0] - 128) << 8) : (int16_t)(s[-1] | s[0] << 8);
-			}
-	}
-	wav.at += (uint32_t)frames;
-	return frames;
-}
-
-/* ---- MP3: a table of its frames, so that any piece can be decoded by itself ---- */
-
-int mp3full_frame(mp3dec_t *dec, const uint8_t *mp3, int bytes, mp3d_sample_t *pcm, mp3dec_frame_info_t *info);
-int mp3half_frame(mp3dec_t *dec, const uint8_t *mp3, int bytes, mp3d_sample_t *pcm, mp3dec_frame_info_t *info);
-
-static struct {
-	uint32_t *at;		/* where each frame begins in the file */
-	int count, samples;	/* frames, and the samples of one channel in each */
-	int per_piece, layer;
-	int warm;		/* frames before a piece that are decoded for what they leave, and how */
-	mp3d_sample_t *warm_as;
-	mp3dec_t dec;		/* this core's decoder */
-	int next, half;		/* the frame it would decode next, -1 for none; its rate */
-} mp3;
-
-static int
-mp3_index(void)
-{
-	const uint8_t *f = tune.file;
-	mp3dec_frame_info_t info;
-	mp3dec_t dec;
-	uint32_t pos = 0, room = 0;
-	int n, layer = 0;
-
-	if (tune.size > 10 && !memcmp(f, "ID3", 3))
-		pos = 10 + ((f[6] & 127u) << 21 | (f[7] & 127u) << 14 | (f[8] & 127u) << 7 | (f[9] & 127u));
-	memset(&dec, 0, sizeof dec);
-	mp3.count = 0;
-	while (pos < tune.size) {
-		info.frame_bytes = 0;
-		n = mp3full_frame(&dec, f + pos, (int)(tune.size - pos), NULL, &info);
-		if (info.frame_bytes <= 0)
-			break;
-		if (n > 0 && !mp3.count) {
-			tune.rate = info.hz;
-			tune.channels = info.channels;
-			layer = info.layer;
-			mp3.samples = n;
-		}
-		/* a frame of another kind than the first is left out: every frame is as long */
-		if (n > 0 && info.hz == tune.rate && info.channels == tune.channels && info.layer == layer && n == mp3.samples) {
-			if ((uint32_t)mp3.count == room) {
-				room = room ? room * 2 : 4096;
-				mp3.at = realloc(mp3.at, room * sizeof mp3.at[0]);
-			}
-			mp3.at[mp3.count++] = pos + (uint32_t)info.frame_offset;
-		}
-		pos += (uint32_t)info.frame_bytes;
-	}
-	/* A layer III granule's overlap comes of its own coefficients and the filter's past of the
-	 * granule before: two granules decoded without their samples are all a piece needs. */
-	mp3.layer = layer;
-	mp3.warm = warm_asked ? warm_asked : layer == 3 && mp3.samples == 1152 ? 1 : 2;
-	mp3.warm_as = layer == 3 && !warm_asked ? MP3D_WARM : NULL;
-	return mp3.count >= 4;
-}
-
-/* A frame into `pcm` (MP3D_SKIP: only its bits kept); its samples a channel, 0 for none. */
-static int
-mp3_one(mp3dec_t *dec, int half, int frame, int16_t *pcm)
-{
-	mp3dec_frame_info_t info;
-	uint32_t at = mp3.at[frame];
-	int n = (half ? mp3half_frame : mp3full_frame)(dec, tune.file + at, (int)(tune.size - at), pcm, &info);
-
-	return n > 0 && info.channels == tune.channels && info.hz == tune.rate ? n : 0;
-}
-
-/* Makes a decoder ready for `frame` as if it had decoded every frame before it. */
-static void
-mp3_warm(mp3dec_t *dec, int half, int frame)
-{
-	int16_t drop[MINIMP3_MAX_SAMPLES_PER_FRAME];
-	int f = frame > MP3_BACK ? frame - MP3_BACK : 0;
-
-	memset(dec, 0, sizeof *dec);
-	for (; f < frame; f++)
-		mp3_one(dec, half, f, f < frame - mp3.warm ? MP3D_SKIP : mp3.warm_as ? mp3.warm_as : drop);
-}
-
-static void
-mp3_decode(mp3dec_t *dec, int half, int frame, int16_t *to)
-{
-	int want = mp3.samples >> half;
-
-	if (mp3_one(dec, half, frame, to) != want)
-		memset(to, 0, (size_t)want * tune.channels * 2);
-}
-
-/* A worker's job: piece `what` (bit 31: at half rate) into the slot at `at`, or into the
- * place the slot's head names. */
+/* A worker's job: piece `piece` into the slot at `at` (or the place its head names) with its
+ * own decoder, a step at a time: it says how far it is, and stops when told to. */
 static uint32_t
-mp3_job(uint32_t what, uint32_t at)
-{
-	mp3dec_t dec;
-	volatile uint32_t *head = (volatile uint32_t *)at;
-	int16_t *to = head[5] ? (int16_t *)head[5] : (int16_t *)(at + 32);
-	uint32_t before = cycles();
-	int half = (int)(what >> 31), from = (int)(what & 0x7fffffffu) * mp3.per_piece, end = from + mp3.per_piece, f;
-
-	if (end > mp3.count)
-		end = mp3.count;
-	mp3_warm(&dec, half, from);
-	/* how far it is, for the speed: the frames decoded to begin with count as work too */
-	head[0] = 1;
-	for (f = from; f < end && !head[4]; f++) {
-		mp3_decode(&dec, half, f, to);
-		to += (mp3.samples >> half) * tune.channels;
-		head[0] = (uint32_t)(f + 1 - from + 1);
-	}
-	return cycles() - before;
-}
-
-/* ---- FLAC: its blocks are decoded each by itself, so a piece is some blocks and any core's ---- */
-
-static struct {
-	int pieces;		/* decoded so: the file's blocks are all as long, and there are workers */
-	uint32_t block;		/* frames a block */
-} flacs;
-
-/* A worker's job: piece `piece` into the slot at `at` (or the place its head names) with the
- * decoder and from the byte the head names. */
-static uint32_t
-flac_job(uint32_t piece, uint32_t at)
+piece_job(uint32_t piece, uint32_t at)
 {
 	volatile uint32_t *head = (volatile uint32_t *)at;
 	int16_t *to = head[5] ? (int16_t *)head[5] : (int16_t *)(at + 32);
-	uint32_t before = cycles(), want = tune.total - piece * tune.piece, done = 0;
-	int decoder = (int)head[7], got = 1;
+	uint32_t before = cycles(), want = media_audio_piece_frames(tune.audio, piece), done = 0;
+	int d = (int)head[7];
 
-	if (want > tune.piece)
-		want = tune.piece;
-	flac_from(decoder, head[6]);
-	for (; done < want && got > 0 && !head[4]; done += (uint32_t)got) {
-		got = flac_next(decoder, to + done * (uint32_t)tune.channels, (int)(want - done < flacs.block ? want - done : flacs.block));
-		head[0] = done + (uint32_t)got;
+	while (done < want && !head[4]) {
+		done = media_audio_piece_step(tune.audio, d, piece, to, done);
+		head[0] = done;
 	}
-	if (done < want && !head[4])
-		memset(to + done * (uint32_t)tune.channels, 0, (want - done) * (uint32_t)tune.channels * 2);
 	return cycles() - before;
-}
-
-/* ---- the tune's samples in order, for the kinds one core decodes ---- */
-
-static int
-source_read(int16_t *to, int frames)
-{
-	return tune.kind == K_WAV ? wav_read(to, frames) : tune.kind == K_MOD ? mod_read(to, frames) : flac_read(to, frames);
-}
-
-static uint32_t
-source_seek(uint32_t frame)
-{
-	if (tune.kind == K_WAV)
-		return wav.at = frame > wav.frames ? wav.frames : frame;
-	return tune.kind == K_MOD ? mod_seek(frame) : flac_seek(frame);
 }
 
 /* ---- the card ---- */
@@ -387,14 +188,14 @@ voice_run(int on)
 {
 	out.running = on;
 	if (out.on)
-		SND_VOICE[out.voice].step = on ? snd_step((uint32_t)(tune.rate >> tune.half)) : 0;
+		SND_VOICE[out.voice].step = on ? snd_step((uint32_t)tune.rate) : 0;
 }
 
 /* The tune's frame that is heard now. */
 static uint32_t
 position(void)
 {
-	uint32_t at = out.base + ((out.on ? card_at() : consumed) << tune.half);
+	uint32_t at = out.base + (out.on ? card_at() : consumed);
 
 	return state == ENDED || at > tune.total ? tune.total : at;
 }
@@ -452,7 +253,7 @@ slot_of(uint32_t piece)
 static int16_t *
 piece_place(uint32_t piece, int *far)
 {
-	uint32_t first = (piece - out.first) * (tune.piece >> tune.half), n = piece_frames(piece) >> tune.half;
+	uint32_t first = piece_start(piece) - out.base, n = piece_size(piece, 1);
 	uint32_t at = first & (RING - 1);
 
 	*far = out.on && first + n > card_at() + RING;
@@ -499,7 +300,7 @@ progress(void)
 
 	for (k = 1; k <= workers; k++)
 		if (job[k] && job[k]->state == SLOT_WORKER)
-			frames += flacs.pieces ? job[k]->head[0] : job[k]->head[0] * tune.piece / (uint32_t)(mp3.per_piece + 1);
+			frames += job[k]->head[0];
 	return frames;
 }
 
@@ -518,12 +319,11 @@ seek_to(uint32_t frame)
 	drop_all();
 	if (tune.total != ~0u && frame >= tune.total)
 		frame = tune.total ? tune.total - 1 : 0;
-	if (tune.kind == K_MP3 || flacs.pieces) {
-		play_piece = next_piece = frame / tune.piece;
-		out.base = play_piece * tune.piece;
-		mp3.next = -1;
+	if (tune.pieced) {
+		play_piece = next_piece = media_audio_piece_of(tune.audio, frame);
+		out.base = piece_start(play_piece);
 	} else {
-		tune.origin = out.base = source_seek(frame);
+		tune.origin = out.base = media_audio_seek(tune.audio, frame);
 		play_piece = next_piece = 0;
 	}
 	out.first = play_piece;
@@ -538,51 +338,32 @@ seek_to(uint32_t frame)
 	state = BUFFERING;
 }
 
-/* One step of this core's own piece: an MP3 frame, or a slice of the other kinds. */
+/* One step of this core's own piece: a step of the library's piece (an MP3 frame, a FLAC
+ * block...), or a slice of a tune read in order. */
 static void
 own_step(void)
 {
 	struct slot *s = mine;
-	uint32_t want = piece_frames(s->piece), before = cycles();
+	uint32_t want = piece_frames(s->piece), before = cycles(), was = s->done;
 
-	if (tune.kind == K_MP3) {
-		int frame = (int)s->piece * mp3.per_piece + (int)(s->done / (uint32_t)mp3.samples);
-
-		if (mp3.next != frame || mp3.half != tune.half)
-			mp3_warm(&mp3.dec, tune.half, frame);
-		mp3_decode(&mp3.dec, tune.half, frame, s->pcm + (s->done >> tune.half) * (uint32_t)tune.channels);
-		mp3.next = frame + 1;
-		mp3.half = tune.half;
-		s->done += (uint32_t)mp3.samples;
-		decoded += (uint32_t)mp3.samples;
-		all_decoded += (uint32_t)mp3.samples;
-	} else if (flacs.pieces) {
-		int ask = want - s->done > SLICE ? SLICE : (int)(want - s->done), got;
-
-		if (!s->done)
-			flac_from(0, flac_block_at(s->piece * (tune.piece / flacs.block), ~0u));
-		got = flac_next(0, s->pcm + s->done * (uint32_t)tune.channels, ask);
-		if (got < ask)	/* (a block that is not there: silence, as a worker's) */
-			memset(s->pcm + (s->done + (uint32_t)got) * (uint32_t)tune.channels, 0, (size_t)(ask - got) * tune.channels * 2);
-		s->done += (uint32_t)ask;
-		decoded += (uint32_t)ask;
-		all_decoded += (uint32_t)ask;
+	if (tune.pieced) {
+		s->done = media_audio_piece_step(tune.audio, 0, s->piece, s->pcm, s->done);
 	} else {
 		int ask = want - s->done > SLICE ? SLICE : (int)(want - s->done);
-		int got = ask > 0 ? source_read(s->pcm + s->done * (uint32_t)tune.channels, ask) : 0;
+		int got = ask > 0 ? media_audio_read(tune.audio, s->pcm + s->done * (uint32_t)tune.channels, ask) : 0;
 
 		s->done += (uint32_t)got;
-		decoded += (uint32_t)got;
-		all_decoded += (uint32_t)got;
 		if (got < ask) {
 			/* the tune's end, sooner than it said or where it did not say */
 			tune.total = tune.origin + s->piece * tune.piece + s->done;
 			want = s->done;
 		}
 	}
+	decoded += s->done - was;
+	all_decoded += s->done - was;
 	own_cycles += cycles() - before;
 	if (s->done >= want) {
-		s->frames = want >> tune.half;
+		s->frames = want;
 		s->state = SLOT_READY;
 		mine = NULL;
 	}
@@ -636,7 +417,7 @@ stats(void)
 {
 	uint32_t ms = now_ms() - began_ms, all = cycles() - began_cycles;
 	uint64_t per = all_decoded ? (own_cycles + worker_cycles) * (uint32_t)tune.rate / all_decoded : 0;
-	static const char *kinds[] = { "", "wav", "mod", "flac", "mp3" };
+	static const char *kinds[] = { "", "wav", "mod", "flac", "mp3", "ogg" };
 
 	if (!all_decoded)
 		return;
@@ -662,6 +443,52 @@ finish(void)
 		quit = 1;
 	else
 		want_next = 1;
+}
+
+/* What the library says of the tune now (its rate and frames are halved at half rate). */
+static void
+tune_info(void)
+{
+	struct media_audio_info info;
+
+	media_audio_get_info(tune.audio, &info);
+	tune.rate = info.rate;
+	tune.channels = info.channels;
+	tune.half = info.half;
+	tune.total = info.frames ? info.frames : ~0u;
+	if (limit_seconds && tune.total > limit_seconds * (uint32_t)tune.rate)
+		tune.total = limit_seconds * (uint32_t)tune.rate;
+	if (tune.pieced)
+		tune.piece = media_audio_piece_frames(tune.audio, 0);
+}
+
+/* Drops every piece and waits for the workers to leave theirs (at their next step). */
+static void
+settle(void)
+{
+	int k;
+
+	drop_all();
+	for (k = 1; k <= workers; k++)
+		if (job[k]) {
+			mcw_wait(k);
+			worker_cycles += mcw_result(k);
+			job[k]->state = SLOT_FREE;
+			job[k] = NULL;
+		}
+}
+
+/* An MP3 file from where it is on at half the rate. */
+static void
+go_half(const char *why)
+{
+	uint32_t at = position();
+
+	settle();
+	media_audio_half(tune.audio, 1);
+	tune_info();
+	say(why);
+	seek_to(at / 2);
 }
 
 /* Whether to play, wait for more, or change how it is decoded. */
@@ -693,9 +520,7 @@ decide(int stuck)
 			 * being started, and it was taken for slowness: half the rate and 13 s of waiting
 			 * for a tune that was decoded 1.8 times as fast as it plays.) */
 			if (workers && tune.kind == K_MP3 && half_wanted < 0 && !tune.half && underruns >= 2) {
-				tune.half = 1;
-				say("it ran dry twice: decoding it at half the rate");
-				seek_to(position());
+				go_half("it ran dry twice: decoding it at half the rate");
 			} else {
 				say("it ran dry: waiting for more to be decoded");
 			}
@@ -710,17 +535,15 @@ decide(int stuck)
 		/* too slow: an MP3 file at half the rate first, and if that is too slow too, or for
 		 * the other kinds, as much decoded before it plays as it takes to play without a gap */
 		if (s < 1050 && tune.kind == K_MP3 && half_wanted < 0 && !tune.half) {
-			tune.half = 1;
 			decided = 0;
-			say("cannot decode this as fast as it plays: decoding it at half the rate");
-			seek_to(position());
+			go_half("cannot decode this as fast as it plays: decoding it at half the rate");
 			return;
 		}
 		if (s < 1050)
 			say("cannot decode this as fast as it plays: decoding ahead before it plays");
 	}
-	rate = (uint32_t)(tune.rate >> tune.half);
-	left = tune.total == ~0u ? 0 : (tune.total - position()) >> tune.half;
+	rate = (uint32_t)tune.rate;
+	left = tune.total == ~0u ? 0 : tune.total - position();
 	/* at that speed the rest is decoded while this much plays */
 	need = s >= 1100 ? rate / 2 : left - (uint32_t)((uint64_t)left * s / 1100) + rate;
 	if (workers)
@@ -744,7 +567,6 @@ pump(void)
 	uint32_t count = pieces(), now = now_ms(), s;
 	struct slot *slot;
 	int16_t *place;
-	uint32_t from = 0;
 	int k, most, far, held, working = 0, active = state == BUFFERING || state == PLAYING;
 
 	if (was_working)
@@ -759,7 +581,7 @@ pump(void)
 			slot->state = SLOT_FREE;
 			continue;
 		}
-		slot->frames = piece_frames(slot->piece) >> tune.half;
+		slot->frames = piece_frames(slot->piece);
 		slot->state = SLOT_READY;
 		decoded += piece_frames(slot->piece);
 		all_decoded += piece_frames(slot->piece);
@@ -772,31 +594,23 @@ pump(void)
 		if (job[k]) {
 			working = 1;
 		} else if (!held && next_piece < count && ((place = piece_place(next_piece, &far)) != NULL || !far) &&
-			   (!flacs.pieces || (flac_decoder(k) && (from = flac_block_at(next_piece * (tune.piece / flacs.block), 65536u)) != 0)) &&
 			   (slot = slot_get(most, 0)) != NULL) {
 			/* (with workers a piece the ring has no room for yet waits: there are seconds in hand) */
 			slot->piece = next_piece++;
 			slot->state = SLOT_WORKER;
 			slot->head[0] = slot->head[4] = 0;
 			slot->head[5] = (uint32_t)place;
-			slot->head[6] = from;
 			slot->head[7] = (uint32_t)k;
 			slot->direct = place != NULL;
 			slot->pcm = place ? place : slot->own;
 			job[k] = slot;
-			if (flacs.pieces)
-				mcw_post(k, flac_job, slot->piece, (uint32_t)slot->head);
-			else
-				mcw_post(k, mp3_job, slot->piece | (uint32_t)tune.half << 31, (uint32_t)slot->head);
+			mcw_post(k, piece_job, slot->piece, (uint32_t)slot->head);
 			working = 1;
-		} else if (flacs.pieces && next_piece < count) {
-			working = 1;	/* (a block being looked for, or a piece waiting for room: not stuck) */
 		}
 	}
 	/* with workers enough the first core decodes nothing: it gives pieces out sooner for it */
 	if (!mine && !held && active && next_piece < count && (workers < own_under || !workers) &&
 	    ((place = piece_place(next_piece, &far)) != NULL || !far || !workers) &&
-	    (!flacs.pieces || (flac_decoder(0) && flac_block_at(next_piece * (tune.piece / flacs.block), 65536u))) &&
 	    (mine = slot_get(most, 0)) != NULL) {
 		mine->piece = next_piece++;
 		mine->state = SLOT_MINE;
@@ -817,30 +631,22 @@ pump(void)
 static void
 unload(void)
 {
-	int i, k;
+	int i;
 
-	drop_all();
-	for (k = 1; k <= workers; k++)
-		if (job[k]) {
-			mcw_wait(k);
-			job[k] = NULL;
-		}
+	settle();
 	if (out.on && tune.kind)
 		snd_stop(out.voice);
 	stats();
 	for (i = 0; i < slot_count; i++)
 		munmap(slots[i].head, slot_bytes);
 	slot_count = 0;
-	if (tune.kind == K_FLAC)
-		flac_close();
-	if (flacs.pieces) {	/* (a FLAC file's workers are fewer than another kind's) */
+	if (tune.pieced && tune.kind == K_FLAC) {	/* (a FLAC file's workers are fewer than another kind's) */
 		mcw_close();
 		workers = 0;
 	}
-	flacs.pieces = 0;
+	if (tune.audio)
+		media_audio_close(tune.audio);
 	free(tune.file);
-	free(mp3.at);
-	mp3.at = NULL;
 	memset(&tune, 0, sizeof tune);
 	state = STOPPED;
 }
@@ -871,7 +677,8 @@ load(const char *path)
 {
 	FILE *file = fopen(path, "rb");
 	struct sysinfo memory;
-	uint32_t frames = 0;
+	struct media_audio_info info;
+	const char *why;
 	uint64_t room;
 	long size;
 
@@ -891,61 +698,45 @@ load(const char *path)
 	tune.size = (uint32_t)size;
 	snprintf(tune.path, sizeof tune.path, "%s", path);
 	tune.name = strrchr(tune.path, '/') ? strrchr(tune.path, '/') + 1 : tune.path;
-	if (!memcmp(tune.file, "RIFF", 4) && !memcmp(tune.file + 8, "WAVE", 4)) {
-		if (!wav_open())
-			return "a WAV file, but not of plain samples";
-		tune.kind = K_WAV;
-	} else if (!memcmp(tune.file, "fLaC", 4)) {
-		if (!flac_open(tune.file, tune.size, &tune.rate, &tune.channels, &frames) || tune.channels > 2) {
-			flac_close();
-			return "a FLAC file this cannot play (more than two channels?)";
-		}
-		tune.total = frames ? frames : ~0u;
-		tune.kind = K_FLAC;
-	} else if (mod_open(tune.file, tune.size, mod_rate)) {
-		tune.rate = mod_rate;
-		tune.channels = 2;
-		tune.total = mod_seek(~0u);	/* its length: the sequencer run to its end */
-		tune.kind = K_MOD;
-	} else if (mp3_index()) {
-		tune.total = (uint32_t)mp3.count * (uint32_t)mp3.samples;
-		tune.kind = K_MP3;
-		tune.half = half_wanted > 0;
-		/* a piece is half a second; with many workers (63 make 8 s of sound in 2.5 s) a tenth,
-		 * which is heard a piece sooner for more early frames decoded */
-		workers_open(MC_MAX_CORES);
-		mp3.per_piece = piece_frames_asked > 0 ? piece_frames_asked : workers >= 24 ? 4 : (tune.rate / 2 + mp3.samples - 1) / mp3.samples;
-		tune.piece = (uint32_t)(mp3.per_piece * mp3.samples);
-	} else {
-		return "not a WAV, MOD, FLAC or MP3 file";
+	if (!(tune.audio = media_audio_open(tune.file, tune.size, &why))) {
+		free(tune.file);
+		tune.file = NULL;
+		return why;
 	}
-	/* (a piece is half a second of it, and a slot's size comes of that) */
-	if (tune.rate < 1000 || tune.rate > 192000) {
-		unload();	/* (half a tune would be played for ever) */
-		return "a sample rate this player does not take";
-	}
-	if (tune.kind == K_MP3) {
-		workers_open(MC_MAX_CORES);
-	} else if (tune.kind == K_FLAC && tune.total != ~0u && workers_wanted > 0 && flac_blocks(tune.file, tune.size, &flacs.block)) {
-		uint32_t blocks;
+	media_audio_get_info(tune.audio, &info);
+	tune.kind = info.kind == MEDIA_WAV ? K_WAV : info.kind == MEDIA_MOD ? K_MOD : info.kind == MEDIA_FLAC ? K_FLAC :
+		    info.kind == MEDIA_MP3 ? K_MP3 : K_OGG;
+	if (tune.kind == K_MOD)
+		media_audio_mix_rate(tune.audio, mod_rate);
+	if (tune.kind == K_MP3 && half_wanted > 0)
+		media_audio_half(tune.audio, 1);
+	tune_info();
+	/* An MP3, Vorbis or FLAC file's pieces go to the workers (a FLAC file's to fewer: a block is
+	 * a tenth of a second); WAV and MOD are one core's work, and so is any kind without workers. */
+	if (info.pieces && workers_wanted > 0 && (tune.kind == K_MP3 || tune.kind == K_OGG || tune.kind == K_FLAC))
+		workers_open(tune.kind == K_FLAC ? FLAC_WORKERS : MC_MAX_CORES);
+	tune.pieced = info.pieces && workers > 0 && tune.kind != K_WAV && tune.kind != K_MOD &&
+		      media_audio_decoders(tune.audio, workers + 1) == workers + 1;
+	if (tune.pieced) {
+		uint32_t unit = (media_audio_set_piece(tune.audio, 1), media_audio_piece_frames(tune.audio, 0));
 
-		/* a piece is blocks of about a tenth of a second (half a second with few workers), and
-		 * whole 16 bytes, for two cores never to store to the same */
-		workers_open(FLAC_WORKERS);
-		blocks = ((uint32_t)tune.rate / (workers >= 12 ? 16 : 2) + flacs.block - 1) / flacs.block;
-		while ((blocks * flacs.block * (uint32_t)tune.channels * 2) & 15)
-			blocks++;
-		tune.piece = blocks * flacs.block;
-		flacs.pieces = workers > 0;
-	}
-	if (tune.kind != K_MP3 && !flacs.pieces) {
-		/* the other kinds are one core's work: the workers are someone else's meanwhile */
+		/* MP3: half a second; with many workers (63 make 8 s of sound in 2.5 s) four frames, heard
+		 * a piece sooner. FLAC: blocks of a sixteenth of a second (half a second with few
+		 * workers). Vorbis: a second, half with many (a piece begins with a seek). */
+		if (tune.kind == K_MP3)
+			media_audio_set_piece(tune.audio, piece_frames_asked > 0 ? (uint32_t)piece_frames_asked * unit :
+					      workers >= 24 ? 4 * unit : (uint32_t)tune.rate / 2);
+		else if (tune.kind == K_FLAC)
+			media_audio_set_piece(tune.audio, (uint32_t)tune.rate / (workers >= 12 ? 16 : 2));
+		else
+			media_audio_set_piece(tune.audio, (uint32_t)tune.rate / (workers >= 24 ? 2 : 1));
+		tune_info();
+	} else {
+		/* the workers are someone else's meanwhile */
 		mcw_close();
 		workers = 0;
 		tune.piece = (uint32_t)tune.rate / 2 > 4096 ? (uint32_t)tune.rate / 2 : 4096;
 	}
-	if (limit_seconds && tune.total > limit_seconds * (uint32_t)tune.rate)
-		tune.total = limit_seconds * (uint32_t)tune.rate;
 	/* a frame more than a piece: a frame that is not what the table says is caught after it is written */
 	slot_bytes = (32 + (tune.piece + 1152) * (uint32_t)tune.channels * 2 + 4095) & ~4095u;
 	sysinfo(&memory);
@@ -969,7 +760,7 @@ load(const char *path)
 static void
 draw_status(void)
 {
-	static const char *kinds[] = { "", "WAV", "MOD", "FLAC", "MP3" };
+	static const char *kinds[] = { "", "WAV", "MOD", "FLAC", "MP3", "Ogg Vorbis" };
 	uint32_t at = drag == 1 && tune.total != ~0u ? (uint32_t)((uint64_t)tune.total * (uint32_t)drag_value / 1000) : position();
 	uint32_t seconds = tune.kind ? at / (uint32_t)tune.rate : 0, all = tune.kind && tune.total != ~0u ? tune.total / (uint32_t)tune.rate : 0;
 	char line[160], more[40] = "";
@@ -1331,8 +1122,6 @@ main(int argc, char **argv)
 	memory_mb = (uint32_t)number("NXPLAY_MEMORY", 0);
 	mod_rate = number("NXPLAY_MODRATE", mod_rate);
 	piece_frames_asked = number("NXPLAY_PIECE", 0);
-	warm_asked = number("NXPLAY_WARM", 0);	/* 2: a piece's early frames as they were, decoded whole */
-	mod_by_channel = number("NXPLAY_MODMIX", 0);
 	if (number("NXPLAY_OWN", 0))		/* the first core takes pieces whatever the workers */
 		own_under = MC_MAX_CORES;
 	out.volume = number("NXPLAY_VOLUME", 200);
@@ -1368,7 +1157,7 @@ main(int argc, char **argv)
 		read_list(access("/root/Music", R_OK) == 0 ? "/root/Music" : "/usr/share");
 	if (!window_on && (argc < 2 || why)) {
 		if (argc < 2)
-			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC or MP3 file (docs/play.md)\n");
+			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis file (docs/play.md)\n");
 		return 1;
 	}
 	while (!quit) {

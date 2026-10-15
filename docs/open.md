@@ -35,7 +35,9 @@ program registered for what it is. The file manager opens a file the same way.
 1. A file in the machine is opened as it is; a folder in the file manager.
 2. An address is asked of the host as a file (`docs/fetch.md`, kind 3) and written to
    `/tmp/open/NAME`, part by part when it is over 256 KB. A window says how far
-   (`ui_progress.h`, from 0.7 s on): the seconds waited for the host, then the megabytes come.
+   (`ui_progress.h`, from 0.7 s on): the seconds the host has been downloading it (VRChat
+   gives a world the whole file or nothing, and says nothing meanwhile), then the megabytes
+   handed over, a part of 256 KB at a time.
    A picture given as pixels is written a part at a time from a buffer: a byte a `fputc` was
    76 instructions a pixel and this is 12 (`rvc_cpu`, a million pixels), some 80 s against
    13 for a picture of three megapixels at three million instructions a second. A file that came inside a picture
@@ -57,8 +59,9 @@ as it adds its line to the Start menu (`nxapps.*`).
 | `nxopen.15-ide` (`linux/ide/build.sh`) | source: a `.c` or `.h` file is the IDE's (`docs/ide.md`). Files are read in their names' order and the first kind that fits is the file's, so this comes before text's |
 | `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture, archive, program, text, shortcut (a desktop's `NAME.app`: `docs/nanox.md`) |
 | `nxopen.50-doom` (`linux/nanox/doom.sh`) | a whole game's WAD (`doom -iwad`), a patch WAD (`doom -file`) |
-| `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |
+| `nxopen.83-pathtrace` (`linux/pathtrace/build.sh`) | a mesh: `.obj`, `.ply` (`nxpath`, `docs/raytrace.md`) |
 | `nxopen.84-play` (`linux/play/build.sh`) | sound: WAV, MP3, FLAC, MOD (`docs/play.md`) |
+| `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |
 | `nxopen.86-video` (`linux/video/build.sh`) | video: MPEG-1 (`docs/video.md`) |
 
 - **A program** (`\x7fELF`, `#!`): made executable and run in a terminal window of its own
@@ -66,8 +69,9 @@ as it adds its line to the Start menu (`nxapps.*`).
   processor is said to be that and is not run.
 - **An archive**: unpacked into `/tmp/open/NAME.d` by the image's own `unzip` and `tar`, and
   the file manager opens on it (`nxopen-archive`). `open --unpack` runs them with a window
-  that says how far: a zip by its files (`unzip -l` counts them, a line of the unpacking a
-  file), a tar, a `.tar.gz` or a `.gz` by the bytes it has been fed through a pipe. A `.gz` of one file is unpacked and opened
+  that says how far: a zip by the bytes in its folder against its listing's total, counted
+  twice a second (by its lines it was a file a step, and a zip of a few large files showed
+  nothing), a tar, a `.tar.gz` or a `.gz` by the bytes it has been fed through a pipe. A `.gz` of one file is unpacked and opened
   as what it holds.
 - **Nobody's kind**: a small window that says so, with "Open as text" and "Save to /root".
 - The file manager starts a file with its execute bit itself, as before, and `open` for

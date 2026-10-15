@@ -8,6 +8,7 @@
  */
 #define _GNU_SOURCE
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <strings.h>
@@ -21,6 +22,8 @@
 #include "ui_menu.h"
 #include "ui_glyph.h"
 #include "web_layout.h"
+#include "mcw.h"
+#include "media.h"
 
 #define MENU_H 20
 #define BAR 26
@@ -73,6 +76,10 @@ static int top, goal;		/* the page's row at the view's top, and where it is scro
 static int dragging;
 static int sent_on;		/* pages in a row that sent their reader on to another */
 static int verbose, dump;
+static int check_due;		/* NXWEB_CHECK: the page's strips are checked once it is shown */
+static unsigned page_began;	/* (NXWEB_TIME) the first core's count when the page's text was here */
+static struct timespec page_began_at;	/* and the machine's clock */
+static int page_shown;
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN | \
 	GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ)
 
@@ -84,19 +91,34 @@ static int by_hand;		/* the host may not open this address itself: asked again u
 static char *part;		/* a page or a sheet that comes in parts: what is here of it */
 static int part_have;
 
-/* The page's pictures. One the image keeps is drawn from there; one the host fetches and
- * decodes arrives as pixels (docs/fetch.md), kept as a file the GPU then draws from. */
+/* The page's pictures. A PPM file the image keeps is drawn where it lies in the ROM. One kept as
+ * a JPEG or PNG, and one the host fetches (its pixels arrive and are written as a PPM file, docs/
+ * fetch.md), is decoded on the worker cores to the size it is drawn at, into the GPU's memory. */
 enum { PICTURE_WANTED, PICTURE_HERE, PICTURE_FAILED, PICTURE_BY_HAND };
-static struct picture { char address[256], file[64]; int w, h, state, sized, ours; time_t asked; } *pictures;
+static struct picture {
+	char address[256];
+	char file[64];		/* the PPM the window system draws at any size ("": none), ours to remove if `ours` */
+	char source[64];	/* the file decoded to the size drawn ("": none) */
+	char kept[64];		/* the decoded pixels as a PPM, when the window system draws them (`kept_there`) */
+	int w, h, state, sized, ours, kept_there;
+	int dw, dh;		/* the size it is decoded at (or a PPM's of the ROM); 0: not yet */
+	int later, later_w, later_h;	/* its decoding is waited for (the order asked in), at that size */
+	time_t asked;
+	uint32_t rom;		/* where those pixels lie, ROM or GPU memory, for a strip's list (0: not looked for, 1: not there) */
+	uint8_t *pixels;	/* in the GPU's memory, 3 bytes a pixel (fragment mode 4's), or NULL */
+} *pictures;
 static int picture_count;
 static int asking = -1;		/* the picture the request that is out is for, or -1: the page */
 static FILE *part_file;		/* a picture that comes in parts: its file, its size, pixels so far */
 static int part_w, part_h, part_done;
+static unsigned pictures_decoding;	/* (NXWEB_TIME) the first core's instructions decoding the page's pictures */
+static int pictures_now;	/* a picture is decoded when asked for, not after the view is shown (NXWEB_CHECK) */
+static int pictures_later;	/* decodings asked for so far: the next `later` */
 #define SHEET 1000		/* `asking` for sheet 0 */
 
-/* The page as drawn: `tile_h` rows of it from `tile_top`, in a pixmap. */
+/* The page as drawn, in a pixmap `tile_h` rows high: strips of it (tile_make). */
 static GR_WINDOW_ID tile;
-static int tile_w, tile_h, tile_top, tile_drawn, tile_gpu;
+static int tile_w, tile_h, tile_gpu;
 static GR_FONT_ID fonts[WEB_FACES][2];
 
 /* What a visitor has typed into the page's fields. */
@@ -104,6 +126,13 @@ static struct field { int node, n, checked, option; unsigned short text[128]; } 
 static int field_count, focus = -1;
 
 static void show_view(void);
+static const char *picture_file(struct picture *p, int w, int h);
+static void strips_wait(void);
+static int strips_open(void);
+static void strips_forget_rows(int y0, int y1);
+static GR_WINDOW_ID gpu_pixmap(int w, int h);
+static uint32_t pixmap_address(GR_WINDOW_ID p, int w);
+static void say_time(const char *what, unsigned began);
 static int wanted_open(void);
 static int bookmark_of(const char *where);
 
@@ -164,12 +193,20 @@ web_picture(int node, const char *where, int *w, int *h)
 		p = &pictures[picture_count++];
 		memset(p, 0, sizeof *p);
 		snprintf(p->address, sizeof p->address, "%s", where);
+		snprintf(p->kept, sizeof p->kept, "/tmp/nxweb-%d-%d-drawn.ppm", (int)getpid(), i);
 		if (where[0] == '/') {
 			/* a picture in the image: drawn by the GPU from the file where it lies */
 			snprintf(p->file, sizeof p->file, "%.60s", where);
 			p->state = strlen(where) < 60 && ui_picture_size(where, &p->w, &p->h) ? PICTURE_HERE : PICTURE_FAILED;
 		} else if (web_cache_find(where, 'I', p->file, sizeof p->file, &p->w, &p->h)) {
+			const char *dot = strrchr(p->file, '.');
+
 			p->state = PICTURE_HERE;
+			if (dot && strcmp(dot, ".ppm")) {
+				/* (a JPEG or PNG: decoded when it is first drawn) */
+				memcpy(p->source, p->file, sizeof p->source);
+				p->file[0] = 0;
+			}
 		} else {
 			snprintf(p->file, sizeof p->file, "/tmp/nxweb-%d-%d.ppm", (int)getpid(), i);
 			p->ours = 1;
@@ -375,6 +412,7 @@ item_width(const struct web_item *it, int from, int n)
 static void
 draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
 {
+	const char *file;
 	int y = it->y - dy;
 
 	switch (it->kind) {
@@ -405,10 +443,10 @@ draw_item(GR_DRAW_ID to, const struct web_item *it, int dy)
 		}
 		break;
 	case I_IMAGE:
-		if (pictures[it->a].state != PICTURE_HERE)
+		if (pictures[it->a].state != PICTURE_HERE || !(file = picture_file(&pictures[it->a], it->w, it->h)))
 			ui_fill(to, it->x, y, it->w, it->h, MWRGB(232, 232, 232));	/* not here yet */
 		else
-			GrDrawImageFromFile(to, ui_gc, it->x, y, it->w, it->h, pictures[it->a].file, 0);
+			GrDrawImageFromFile(to, ui_gc, it->x, y, it->w, it->h, (char *)file, 0);
 		break;
 	case I_FIELD:
 		draw_field(to, it, y);
@@ -437,36 +475,1087 @@ draw_rows(GR_DRAW_ID to, int dy, int y0, int y1)
 		       (now() - began) / 1000);
 }
 
+/* ---- the pixmap as a ring of strips (docs/web.md, "Strips") ---- */
+
+/* Strip k of the page (rows from k * STRIP) is in slot k % slot_count: a scroll keeps every row
+ * drawn, and the view is one copy, two where the ring wraps. A strip is a GPU list of its own made
+ * in its slot's memory by a worker (or this core); one with a field or a picture not in the ROM is
+ * drawn by requests on `scratch` and copied in (docs/web.md, "Strips"). */
+#define STRIP 64
+#define SLOTS_MOST 32
+#define STRIP_COMMANDS 256
+#define STRIP_CHARS 2048
+#define STRIP_BYTES (STRIP_COMMANDS * 64 + STRIP_CHARS * 4)	/* a slot's list and its strings */
+#define STRIP_WORKERS 4
+#define PICTURE_WORKERS 16	/* opened, for the pictures' decoding: a 250 x 180 JPEG 646 ms with 4, 275 with 16 or more */
+#define REG_SUBMIT 4		/* the GPU's words (docs/gpu.md): submit, list, count, lists drawn */
+#define REG_LIST 5
+#define REG_COUNT 6
+#define REG_DRAWN 7
+#define REG_CLOCK 13
+#define REG_COPIES 14
+#define REG_INTO 20		/* where the picture is copied: address, width, height, row */
+#define REG_LOCK 24
+#define REG_COPY 28		/* nonzero: the list drawn last has its copy still to be made */
+#define GPU_PHYS 0x86000000u
+#define PASS_OVER (5u << 16)	/* blends by alpha, as the window system draws text of coverage */
+
+enum { SLOT_EMPTY, SLOT_OUT, SLOT_MADE, SLOT_THERE };	/* nothing; a job makes its list; made; drawn or submitted */
+static struct slot {
+	int strip, state, worker;
+	uint32_t made;		/* the job's answer: commands | 1 << 16 when it blends; 0: drawn by requests */
+	int listed, requested;	/* a list of it the GPU may not have drawn (since `drawn`); requests on its rows */
+	uint32_t drawn, landed;	/* the GPU's count of lists drawn when it was submitted; of copies once it is in */
+} slots[SLOTS_MOST];
+static int slot_count;
+static GR_WINDOW_ID scratch, lists;
+static uint8_t *list_memory;	/* the slots' lists, mapped; NULL: every strip by requests */
+static uint32_t list_phys, tile_phys;
+static size_t list_mapped;
+static int gpu_fd = -1;
+static int strip_workers = -1, worker_strip[STRIP_WORKERS + 1];	/* (-1: none opened yet) the slot each works on, or -1 */
+static int *strip_items, *strip_at, strip_total;	/* strip k's items: strip_items[strip_at[k] .. strip_at[k + 1] - 1] */
+/* What a job draws besides the items, as the first core last had it with no job out. */
+static struct { int stale, found, found_x, found_w, found_from, found_n, picked; } strip_shown = { 1 };
+static struct { unsigned requests, here, workers, syncs, waits; } strip_counts;
+
+/* A face's first 256 glyphs and advances, and where its file lies in the ROM (1: not there). */
+static struct strip_face { uint16_t glyph[256]; uint8_t advance[256]; uint32_t rom, scale; } strip_faces[WEB_FACES];
+
+/* Strips by requests only (NXWEB_STRIPS=requests); by the first core alone (=here). */
+static int
+strips_by(const char *how)
+{
+	const char *by = getenv("NXWEB_STRIPS");
+
+	return by && !strcmp(by, how);
+}
+
+/* For each strip, the items that touch its rows, in the order they are drawn. */
+static void
+strips_index(void)
+{
+	int i, k, last, *fill;
+
+	free(strip_items);
+	free(strip_at);
+	strip_total = (web_page_h + 2048) / STRIP + 1;	/* (a view below a short page is strips too) */
+	strip_at = calloc(strip_total + 1, sizeof *strip_at);
+	fill = calloc(strip_total + 1, sizeof *fill);
+	for (i = 0; i < web_item_count; i++) {
+		/* (a link's frame is a row above the item, a line under it two below) */
+		k = web_items[i].y - 2 < 0 ? 0 : (web_items[i].y - 2) / STRIP;
+		last = (web_items[i].y + web_items[i].h + 1) / STRIP;
+		for (last = last < strip_total ? last : strip_total - 1; k <= last; k++)
+			strip_at[k + 1]++;
+	}
+	for (k = 0; k < strip_total; k++)
+		strip_at[k + 1] += strip_at[k];
+	strip_items = malloc((strip_at[strip_total] + 1) * sizeof *strip_items);
+	for (i = 0; i < web_item_count; i++) {
+		k = web_items[i].y - 2 < 0 ? 0 : (web_items[i].y - 2) / STRIP;
+		last = (web_items[i].y + web_items[i].h + 1) / STRIP;
+		for (last = last < strip_total ? last : strip_total - 1; k <= last; k++)
+			strip_items[strip_at[k] + fill[k]++] = i;
+	}
+	free(fill);
+}
+
+static int
+strip_glyph(const unsigned char *file, unsigned code)
+{
+	const struct sef_head *h = (const struct sef_head *)file;
+	int g = sef_glyph(file, code < 32 ? 32 : code);
+
+	return g >= 0 ? g : h->missing < h->glyphs ? (int)h->missing : 0;
+}
+
+/* Where a file lies in the ROM, as the window system finds a font (rom_address in
+ * scr_shaderemu.c): romfs numbers a file by its header's place, the data after its name. */
+static uint32_t
+rom_of(int fd, const unsigned char *begins)
+{
+	static int mtd = -2;
+	unsigned char head[16 + 256], data[64];
+	struct stat st;
+	int n, at;
+
+	if (mtd == -2)
+		mtd = open("/dev/mtd0", O_RDONLY | O_CLOEXEC);
+	if (mtd < 0 || fstat(fd, &st) || (n = pread(mtd, head, sizeof head, st.st_ino)) < 32)
+		return 0;
+	for (at = 16; at < n && head[at]; at++)
+		continue;
+	if (at >= n || ((uint32_t)head[8] << 24 | head[9] << 16 | head[10] << 8 | head[11]) != (uint32_t)st.st_size ||
+	    pread(mtd, data, 64, st.st_ino + 16 + (at & ~15)) != 64 || memcmp(data, begins, 64))
+		return 0;
+	return 0x40000000u + (uint32_t)st.st_ino + 16 + (at & ~15u);
+}
+
+/* Whether a face can be drawn by a strip's list: its tables made here, once. */
+static int
+strip_face_ready(int face)
+{
+	struct strip_face *f = &strip_faces[face];
+	const struct web_face *w = web_face(face);
+	char path[80];
+	int fd, c, g;
+
+	if (!f->rom) {
+		f->rom = 1;
+		snprintf(path, sizeof path, "/usr/share/%s", w->name);
+		if (w->file && (fd = open(path, O_RDONLY)) >= 0) {
+			uint32_t rom = rom_of(fd, w->file);
+
+			f->rom = rom ? rom : 1;
+			close(fd);
+		}
+		for (c = 0; f->rom > 1 && c < 256; c++) {
+			g = strip_glyph(w->file, c);
+			f->glyph[c] = (uint16_t)g;
+			f->advance[c] = (uint8_t)sef_advance(w->file, g);
+		}
+		f->scale = w->twice ? 2u << 16 : 0;
+	}
+	return f->rom > 1;
+}
+
+/* ---- the page's pictures in the GPU's memory ---- */
+
+/* One pixmap used as memory, taken from in turn and given back whole with the page's pictures:
+ * the window system has eight pixmaps of the GPU's for every program. */
+#define PICTURE_BYTES (2048 * 1024)
+#define PICTURE_ROW 1024	/* the pixmap's width */
+static GR_WINDOW_ID picture_pixmap;
+static uint8_t *picture_memory;
+static uint32_t picture_phys, picture_room, picture_used;
+
+/* Room for `bytes` of pixels on 16 bytes, written by this core first; NULL where there is none. */
+static uint8_t *
+picture_take(uint32_t bytes)
+{
+	GR_PIXELVAL pixel;
+	uint8_t *at;
+	int rows;
+
+	if (!picture_pixmap && !picture_room && regs && gpu_fd >= 0) {
+		/* (the most, else less: the pool is every window's) */
+		for (rows = PICTURE_BYTES / (4 * PICTURE_ROW); !picture_pixmap && rows >= 64; rows /= 2)
+			picture_pixmap = gpu_pixmap(PICTURE_ROW, rows);
+		rows *= 2;
+		picture_phys = picture_pixmap ? pixmap_address(picture_pixmap, PICTURE_ROW) : 0;
+		picture_memory = picture_phys ? mmap(NULL, (size_t)rows * PICTURE_ROW * 4, PROT_READ | PROT_WRITE, MAP_SHARED, gpu_fd,
+						     picture_phys - GPU_PHYS) : MAP_FAILED;
+		if (picture_memory == MAP_FAILED) {
+			picture_memory = NULL;
+			if (picture_pixmap)
+				GrDestroyWindow(picture_pixmap);
+			picture_pixmap = 0;
+			picture_room = 1;	/* (not tried again) */
+			if (verbose)
+				printf("nxweb: no memory of the GPU's for pictures (%s): they are files\n", picture_phys ? "not mapped" :
+				       "no pixmap with an address");
+		} else {
+			GrReadArea(picture_pixmap, 0, 0, 1, 1, &pixel);	/* (the GPU has made the new pixmap black by now) */
+			picture_room = (uint32_t)rows * PICTURE_ROW * 4;
+		}
+	}
+	if (!picture_memory || bytes > picture_room - picture_used)
+		return NULL;
+	at = picture_memory + picture_used;
+	picture_used = (picture_used + bytes + 15) & ~15u;
+	mcw_touch(at, bytes);
+	return at;
+}
+
+/* A picture's pixels as a PPM file. */
+static int
+picture_write(const char *path, const uint8_t *pixels, int w, int h, int stride)
+{
+	FILE *f = fopen(path, "wb");
+	int y, ok;
+
+	if (!f)
+		return 0;
+	fprintf(f, "P6\n%d %d\n255\n", w, h);
+	for (y = 0, ok = 1; y < h && ok; y++)
+		ok = fwrite(pixels + (size_t)y * stride, 3 * w, 1, f) == 1;
+	return !fclose(f) && ok;
+}
+
+/* `in` stretched over `out` from the nearest pixels, for a page that draws a picture in another shape. */
+static void
+picture_stretch(const struct media_image *in, struct media_image *out)
+{
+	int x, y;
+
+	for (y = 0; y < out->height; y++) {
+		const uint8_t *row = in->pixels + (size_t)((2 * y + 1) * in->height / (2 * out->height)) * in->stride;
+		uint8_t *to = out->pixels + (size_t)y * out->stride;
+
+		for (x = 0; x < out->width; x++)
+			memcpy(to + 3 * x, row + 3 * ((2 * x + 1) * in->width / (2 * out->width)), 3);
+	}
+}
+
+/* A picture decoded on the worker cores to the size it is drawn at, w x h, into the GPU's memory,
+ * where a strip's list copies it and the window system draws its PPM (`kept`) pixel for pixel; where
+ * the GPU's memory has no room, into that file alone. Whether it is there at that size. */
+static int
+picture_decode(struct picture *p, int w, int h)
+{
+	struct media_image in, out;
+	struct stat st;
+	const char *why = "it could not be read";
+	unsigned began = now();
+	struct timespec t0, t1;
+	uint8_t *data, *spare = NULL;
+	int fd, workers = mcw_most();
+
+	if (p->dw || !p->source[0] || w <= 0 || h <= 0)
+		return p->dw == w && p->dh == h;	/* (one size a picture: another is drawn from its file, scaled) */
+	if (!pictures_now) {
+		/* (the page is shown first, the picture a placeholder until pictures_meanwhile() decodes it) */
+		if (!p->later)
+			p->later = ++pictures_later, p->later_w = w, p->later_h = h;
+		return 0;
+	}
+	p->later = 0;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if ((fd = open(p->source, O_RDONLY)) < 0)
+		return 0;
+	data = fstat(fd, &st) || st.st_size < 16 ? MAP_FAILED : mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+	close(fd);
+	if (data == MAP_FAILED) {
+		p->source[0] = 0;
+		return 0;
+	}
+	strips_open();	/* (the library decodes on the workers this program has open) */
+	strips_wait();
+	memset(&in, 0, sizeof in);
+	memset(&out, 0, sizeof out);
+	out.width = w, out.height = h, out.channels = 3, out.stride = 3 * w;
+	if ((out.pixels = picture_take((uint32_t)(3 * w * h))) == NULL)
+		out.pixels = spare = malloc((size_t)3 * w * h);
+	if (!out.pixels)
+		why = "no memory";
+	else if (p->w == w && p->h == h)
+		why = media_image_decode(data, (uint32_t)st.st_size, &out, workers);
+	else {
+		/* (its own size first, in the GPU's memory after the picture while there is room: no pages to clear) */
+		uint32_t mark = picture_used;
+
+		in.width = p->w, in.height = p->h, in.channels = 3, in.stride = (3 * p->w + 15) & ~15;
+		in.pixels = spare ? NULL : picture_take((uint32_t)in.stride * (uint32_t)p->h);
+		if (!in.pixels)
+			in.width = in.height = in.stride = 0;
+		if (!(why = media_image_decode(data, (uint32_t)st.st_size, &in, workers))) {
+			/* (smaller: the mean of the pixels under each; a shape within 2% is covered, another stretched) */
+			if (abs(in.width * h - in.height * w) * 50 <= in.width * h)
+				media_image_fit(&in, &out, 1, workers);
+			else
+				picture_stretch(&in, &out);
+		}
+		if (in.owned)
+			media_image_free(&in);
+		else if (in.pixels)
+			picture_used = mark;
+	}
+	munmap(data, (size_t)st.st_size);
+	if (!why && spare)
+		p->kept_there = picture_write(p->kept, spare, w, h, 3 * w);
+	else if (!why) {
+		p->pixels = out.pixels;
+		p->rom = picture_phys + (uint32_t)(out.pixels - picture_memory);
+	}
+	free(spare);
+	if (!why && (p->pixels || p->kept_there))
+		p->dw = w, p->dh = h;
+	pictures_decoding += now() - began;
+	if (verbose) {
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		printf("nxweb: %s, %d x %d drawn %d x %d: %s, %u thousand instructions, %ld ms\n", p->source, p->w, p->h, w, h,
+		       why ? why : p->pixels ? "decoded into the GPU's memory" : "decoded into a file", (now() - began) / 1000,
+		       (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+	}
+	if (!p->dw)
+		p->source[0] = 0;	/* (not tried again) */
+	return p->dw == w && p->dh == h;
+}
+
+/* The PPM file the window system draws a picture from at w x h: its decoded pixels' pixel for pixel
+ * when they are that size (written when first asked for), else the file it came as; NULL while its
+ * decoding is waited for (a placeholder, as a strip's list draws it). */
+static const char *
+picture_file(struct picture *p, int w, int h)
+{
+	if (picture_decode(p, w, h) || (!p->file[0] && p->dw)) {
+		if (!p->kept_there && p->pixels)
+			p->kept_there = picture_write(p->kept, p->pixels, p->dw, p->dh, 3 * p->dw);
+		if (p->kept_there)
+			return p->kept;
+	}
+	return p->file[0] && !p->later ? p->file : NULL;
+}
+
+/* The page's pictures go: their files, their room in the GPU's memory. */
+static void
+pictures_drop(void)
+{
+	int i;
+
+	strips_wait();
+	for (i = 0; i < picture_count; i++) {
+		if (pictures[i].ours)
+			unlink(pictures[i].file);
+		if (pictures[i].kept_there)
+			unlink(pictures[i].kept);
+	}
+	picture_count = 0;
+	picture_used = 0;
+	pictures_decoding = 0;
+	pictures_later = 0;
+}
+
+static int
+pictures_waiting(void)
+{
+	int i;
+
+	for (i = 0; i < picture_count; i++)
+		if (pictures[i].later && pictures[i].state == PICTURE_HERE)
+			return 1;
+	return 0;
+}
+
+/* The picture waited for longest decoded, and its rows drawn again: whether there was one. */
+static int
+pictures_meanwhile(void)
+{
+	struct picture *p = NULL;
+	int i;
+
+	for (i = 0; i < picture_count; i++)
+		if (pictures[i].later && pictures[i].state == PICTURE_HERE && (!p || pictures[i].later < p->later))
+			p = &pictures[i];
+	if (!p)
+		return 0;
+	pictures_now = 1;
+	picture_decode(p, p->later_w, p->later_h);
+	pictures_now = 0;
+	p->later = 0;
+	for (i = 0; i < web_item_count; i++)
+		if (web_items[i].kind == I_IMAGE && web_items[i].a == (int)(p - pictures))
+			strips_forget_rows(web_items[i].y, web_items[i].y + web_items[i].h);
+	return 1;
+}
+
+/* After a layout: a picture decoded to a size no item has any more is decoded again when drawn
+ * (its old pixels stay in the GPU's memory until the page goes); one waited for is asked for again. */
+static void
+pictures_relaid(void)
+{
+	int i, k;
+
+	for (k = 0; k < picture_count; k++) {
+		struct picture *p = &pictures[k];
+
+		p->later = 0;
+		for (i = 0; p->source[0] && p->dw && i < web_item_count; i++)
+			if (web_items[i].kind == I_IMAGE && web_items[i].a == k && web_items[i].w == p->dw && web_items[i].h == p->dh)
+				break;
+		if (!p->source[0] || !p->dw || i < web_item_count)
+			continue;
+		if (p->kept_there)
+			unlink(p->kept);
+		p->kept_there = p->dw = p->dh = 0;
+		p->pixels = NULL;
+		p->rom = 0;
+	}
+}
+
+/* Whether a strip's list can draw a picture at w x h: its pixels decoded to that size in the GPU's
+ * memory, or a PPM file in the ROM sampled where it lies at any size, as the window system draws
+ * one (gpu_picture in scr_shaderemu.c). */
+static int
+strip_picture_ready(struct picture *p, int w, int h)
+{
+	unsigned char head[65];
+	int fd, pw, ph, most, start;
+	uint32_t rom;
+
+	if (p->source[0] || p->pixels || p->kept_there)
+		return picture_decode(p, w, h) && p->pixels;
+	if (!p->rom) {
+		p->rom = 1;
+		if ((fd = open(p->file, O_RDONLY)) < 0)
+			return 0;
+		head[64] = 0;
+		if (read(fd, head, 64) == 64 && sscanf((const char *)head, "P6 %d %d %d%n", &pw, &ph, &most, &start) == 3 && most == 255 &&
+		    pw == p->w && ph == p->h && (rom = rom_of(fd, head)) != 0) {
+			p->rom = rom + (uint32_t)start + 1;	/* (one white space ends the header) */
+			p->dw = pw, p->dh = ph;
+		}
+		close(fd);
+	}
+	return p->rom > 1;
+}
+
+/* A list being made in a slot's memory: its commands, its strings, the GPU's vertices. */
+struct strip_list { uint32_t *c, *end, *words, *word, *words_end, phys_words, mesh; int blended, first, full; };
+
+/* A rectangle, x1 and y1 exclusive, cut to the strip as the window system cuts to a pixmap. */
+static void
+list_rect(struct strip_list *l, int x, int y, int w, int h, int colour)
+{
+	int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y, x1 = x + w > tile_w ? tile_w : x + w, y1 = y + h > STRIP ? STRIP : y + h;
+	uint32_t *c = l->c;
+
+	if (w <= 0 || h <= 0 || x0 >= x1 || y0 >= y1)
+		return;
+	if (c == l->end) {
+		l->full = 1;
+		return;
+	}
+	c[0] = 2;
+	c[1] = (uint32_t)colour & 0xffffff;
+	c[2] = 0;
+	c[3] = l->mesh;
+	c[4] = x0, c[5] = y0, c[6] = x1, c[7] = y1;
+	c[8] = l->blended && !l->first ? PASS_OVER : 0;
+	l->mesh += 6;
+	l->c += 16;
+	l->first = 0;
+}
+
+/* A picture of the ROM stretched over a rectangle, its part in the strip sampled as the window
+ * system samples it (PICTURE_U and PICTURE_V in scr_shaderemu.c). */
+static void
+list_picture(struct strip_list *l, int x, int y, int w, int h, const struct picture *p)
+{
+	int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y, x1 = x + w > tile_w ? tile_w : x + w, y1 = y + h > STRIP ? STRIP : y + h;
+	uint32_t *c = l->c;
+
+	if (w <= 0 || h <= 0 || x0 >= x1 || y0 >= y1)
+		return;
+	if (c == l->end) {
+		l->full = 1;
+		return;
+	}
+	c[0] = 2;
+	c[1] = 0xffffff;
+	c[2] = 0xff00ff;
+	c[3] = l->mesh;
+	c[4] = x0, c[5] = y0, c[6] = x1, c[7] = y1;
+	c[8] = 4 | (l->blended && !l->first ? PASS_OVER : 0);
+	c[9] = p->rom;
+	c[10] = p->dw;
+	c[11] = p->dh;
+	c[12] = (uint32_t)((((long long)(x0 - x) * p->dw) << 16) / ((long long)w * p->dw));
+	c[13] = (uint32_t)((((long long)(y0 - y) * p->dh) << 16) / ((long long)h * p->dh));
+	c[14] = (uint32_t)((((long long)(x1 - x) * p->dw) << 16) / ((long long)w * p->dw));
+	c[15] = (uint32_t)((((long long)(y1 - y) * p->dh) << 16) / ((long long)h * p->dh));
+	l->mesh += 6;
+	l->c += 16;
+	l->first = 0;
+}
+
+/* GrRect's lines (GdRect in the engine). */
+static void
+list_frame(struct strip_list *l, int x, int y, int w, int h, int colour)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	list_rect(l, x, y, w, 1, colour);
+	if (h > 1)
+		list_rect(l, x, y + h - 1, w, 1, colour);
+	if (h < 3)
+		return;
+	list_rect(l, x, y + 1, 1, h - 2, colour);
+	if (w > 1)
+		list_rect(l, x + w - 1, y + 1, 1, h - 2, colour);
+}
+
+/* A text as one command and a word a character, as romfont_draw in scr_shaderemu.c makes it. */
+static void
+list_text(struct strip_list *l, int x, int y, const unsigned short *text, int n, int face, int italic, int colour)
+{
+	const struct strip_face *f = &strip_faces[face];
+	const unsigned char *file = web_faces[face].file;
+	const struct sef_head *h = (const struct sef_head *)file;
+	uint32_t *c = l->c, *word = l->word, scale = f->scale;
+	int at = 0, i, g, w, height;
+
+	if (n <= 0)
+		return;
+	if (c == l->end || word + n > l->words_end) {
+		l->full = 1;
+		return;
+	}
+	for (i = 0; i < n; i++) {
+		unsigned code = text[i];
+
+		g = code < 256 ? f->glyph[code] : strip_glyph(file, code);
+		word[i] = (uint32_t)g | (uint32_t)(scale ? (at * (int)scale + 0x8000) >> 16 : at) << 16;
+		at += code < 256 ? f->advance[code] : sef_advance(file, g);
+	}
+	w = scale ? (at * (int)scale + 0x8000) >> 16 : at;
+	height = scale ? (h->height * (int)scale + 0x8000) >> 16 : h->height;
+	if (x + w - 1 < 0 || x >= tile_w || y + height - 1 < 0 || y >= STRIP)
+		return;
+	if (h->bpp == 4)
+		l->blended = 1;
+	c[0] = 4;
+	c[1] = (uint32_t)colour & 0xffffff;
+	c[2] = f->rom + h->table_at;
+	c[3] = l->mesh;
+	c[4] = (uint32_t)x;
+	c[5] = (uint32_t)y;
+	c[6] = (uint32_t)n;
+	c[7] = l->phys_words + 4 * (uint32_t)(word - l->words);
+	c[8] = (h->bpp == 4 ? 7 : 3) | 0x100 | (l->blended ? PASS_OVER : 0);
+	c[9] = scale;
+	c[10] = (italic ? 51u : 0) | (uint32_t)h->ascent << 16;
+	c[11] = f->rom;
+	l->mesh += 6 * (uint32_t)n;
+	l->c += 16;
+	l->word += (n + 3) & ~3;
+	l->first = 0;
+}
+
+/* A worker's job (or this core's): strip k's list in slot s's memory, as draw_item would draw
+ * it. Reads the page and writes nothing but the slot's memory. Its answer as `made` says. */
+static uint32_t
+strip_job(uint32_t k, uint32_t s)
+{
+	uint32_t *memory = (uint32_t *)(list_memory + s * STRIP_BYTES), *words = memory + 16 * STRIP_COMMANDS;
+	struct strip_list l = { .c = memory, .end = words, .words = words, .word = words, .words_end = words + STRIP_CHARS,
+				.phys_words = list_phys + s * STRIP_BYTES + 64 * STRIP_COMMANDS, .first = 1 };
+	int i, y0 = (int)k * STRIP;
+
+	list_rect(&l, 0, 0, tile_w, STRIP, web_page_bg);
+	for (i = strip_at[k]; i < strip_at[k + 1] && !l.full; i++) {
+		const struct web_item *it = &web_items[strip_items[i]];
+		int y = it->y - y0, italic = (it->flags & IF_ITALIC) != 0;
+
+		switch (it->kind) {
+		case I_BOX:
+			if (it->colour >= 0 && it->w > 0 && it->h > 0)
+				list_rect(&l, it->x, y, it->w, it->h, it->colour);
+			if (it->flags && it->w > 0)
+				list_frame(&l, it->x, y, it->w, it->h, it->b);
+			break;
+		case I_TEXT:
+			list_text(&l, it->x, y, web_u + it->a, it->b, it->face, italic, it->colour);
+			if (it->flags & IF_UNDER)
+				list_rect(&l, it->x, y + web_faces[it->face].ascent + 1, it->w, 1, it->colour);
+			if (it->flags & IF_THROUGH)
+				list_rect(&l, it->x, y + web_faces[it->face].ascent * 2 / 3, it->w, 1, it->colour);
+			if (strip_items[i] == strip_shown.found) {
+				list_rect(&l, strip_shown.found_x, y, strip_shown.found_w, it->h, 0x000080);
+				list_text(&l, strip_shown.found_x, y, web_u + it->a + strip_shown.found_from, strip_shown.found_n, it->face, italic, 0xffffff);
+			}
+			if (strip_shown.picked >= 0 && web_link_of(it->node) == strip_shown.picked)
+				list_frame(&l, it->x - 2, y - 1, it->w + 4, it->h + 2, it->colour);
+			break;
+		case I_IMAGE:
+			if (pictures[it->a].rom > 1)
+				list_picture(&l, it->x, y, it->w, it->h, &pictures[it->a]);
+			else
+				list_rect(&l, it->x, y, it->w, it->h, 0xe8e8e8);	/* not here yet */
+			break;
+		default:
+			l.full = 1;
+		}
+	}
+	return l.full ? 0 : (uint32_t)(l.c - memory) / 16 | (uint32_t)l.blended << 16;
+}
+
+/* Whether strip k may be a list: nothing in it that only the window system draws. */
+static int
+strip_by_list(int k)
+{
+	int i;
+
+	if (!list_memory)
+		return 0;
+	for (i = strip_at[k]; i < strip_at[k + 1]; i++) {
+		const struct web_item *it = &web_items[strip_items[i]];
+
+		if (it->kind == I_FIELD || (it->kind == I_IMAGE && pictures[it->a].state == PICTURE_HERE &&
+		    !strip_picture_ready(&pictures[it->a], it->w, it->h) && !pictures[it->a].later) ||
+		    (it->kind == I_TEXT && !strip_face_ready(it->face)))
+			return 0;
+	}
+	return 1;
+}
+
+/* Strip k drawn by requests: on the scratch pixmap, then copied into slot s. */
+static void
+strip_requests(int k, int s)
+{
+	int i;
+
+	ui_fill(scratch, 0, 0, tile_w, STRIP, mw(web_page_bg));
+	for (i = strip_at[k]; i < strip_at[k + 1]; i++)
+		draw_item(scratch, &web_items[strip_items[i]], k * STRIP);
+	GrCopyArea(tile, ui_gc, 0, s * STRIP, tile_w, STRIP, scratch, 0, 0, MWROP_COPY);
+	slots[s].strip = k;
+	slots[s].state = SLOT_THERE;
+	slots[s].requested = 1;
+	strip_counts.requests++;
+}
+
+/* Slot s's list to the GPU, copied into its rows of the pixmap; 0 while the GPU has another. */
+static int
+strip_submit(int s)
+{
+	struct slot *sl = &slots[s];
+	GR_PIXELVAL pixel;
+	int i;
+
+	if (sl->requested) {
+		/* the window system's drawing there must reach the GPU first: a read waits for it */
+		GrReadArea(tile, 0, s * STRIP, 1, 1, &pixel);
+		for (i = 0; i < slot_count; i++)
+			slots[i].requested = 0;
+		strip_counts.syncs++;
+	}
+	if (__atomic_exchange_n(&regs[REG_LOCK], 1, __ATOMIC_ACQUIRE))
+		return 0;
+	if (regs[REG_SUBMIT]) {
+		__atomic_store_n(&regs[REG_LOCK], 0, __ATOMIC_RELEASE);
+		return 0;
+	}
+	sl->drawn = regs[REG_DRAWN];
+	sl->landed = regs[REG_COPIES] + (regs[REG_COPY] != 0) + 1;
+	regs[REG_INTO] = tile_phys + (uint32_t)(s * STRIP * tile_w * 4);
+	regs[REG_INTO + 1] = tile_w;
+	regs[REG_INTO + 2] = STRIP;
+	regs[REG_INTO + 3] = tile_w;
+	regs[REG_LIST] = list_phys + s * STRIP_BYTES;
+	regs[REG_COUNT] = sl->made & 0xffff;
+	regs[REG_SUBMIT] = 1 | 4 | (sl->made >> 16 ? 1u << 13 : 0);
+	__atomic_store_n(&regs[REG_LOCK], 0, __ATOMIC_RELEASE);
+	sl->listed = 1;
+	sl->state = SLOT_THERE;
+	return 1;
+}
+
+/* The workers, borrowed: a program that keeps its own has them, and this core makes the strips. */
+static int
+strips_open(void)
+{
+	extern char __DATA_BEGIN__[], _end[], __executable_start[], etext[];
+	int k;
+
+	if (strip_workers < 0) {
+		strip_workers = 0;
+		if (strips_by("here"))
+			return 0;
+		mcw_lend();
+		/* (more for the pictures' decoding, which the library does on every one open) */
+		strip_workers = mcw_open(PICTURE_WORKERS);
+		strip_workers = strip_workers < STRIP_WORKERS ? strip_workers : STRIP_WORKERS;
+		if (strip_workers > 0) {
+			mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
+			mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+			atexit(mcw_close);
+		} else
+			strip_workers = 0;
+		for (k = 0; k <= STRIP_WORKERS; k++)
+			worker_strip[k] = -1;
+	}
+	return strip_workers;
+}
+
+/* A job out to a worker: its answer taken when it is there. */
+static void
+strip_collect(int s, int wait)
+{
+	struct slot *sl = &slots[s];
+
+	if (sl->state != SLOT_OUT || (!wait && !mcw_done(sl->worker)))
+		return;
+	if (wait)
+		mcw_wait(sl->worker);
+	sl->made = mcw_result(sl->worker);
+	sl->state = SLOT_MADE;
+	worker_strip[sl->worker] = -1;
+}
+
+/* What the jobs are to draw besides the items, taken again after it changed (no job is out
+ * then: they were waited for when it went stale). */
+static void
+strips_shown(void)
+{
+	const struct web_item *it = found >= 0 ? &web_items[found] : NULL;
+
+	if (!strip_shown.stale)
+		return;
+	strip_shown.found = found;
+	strip_shown.found_from = found_from;
+	strip_shown.found_n = it ? web_least((int)strlen(sought), it->b - found_from) : 0;
+	strip_shown.found_x = it ? it->x + item_width(it, 0, found_from) : 0;
+	strip_shown.found_w = it ? item_width(it, found_from, strip_shown.found_n) : 0;
+	strip_shown.picked = picked;
+	strip_shown.stale = 0;
+}
+
+/* The strips the ring is to hold now, the view's first, then the way the scroll goes. */
+static int
+strips_wanted(int *order)
+{
+	int first = top / STRIP, last = (top + view_height() - 1) / STRIP, end = (web_page_h - 1) / STRIP;
+	int spare = slot_count - (last - first + 1), behind, from, n = 0, k;
+
+	end = end > last ? end : last;
+	behind = goal > top ? (spare > 0) : goal < top ? spare - (spare > 0) : spare / 2;
+	from = first - behind;
+	from = from > end + 1 - slot_count ? end + 1 - slot_count : from;
+	from = from < 0 ? 0 : from;
+	for (k = first; k <= last && k <= end; k++)
+		order[n++] = k;
+	if (goal >= top)
+		for (k = last + 1; k < from + slot_count && k <= end; k++)
+			order[n++] = k;
+	for (k = first - 1; k >= from; k--)
+		order[n++] = k;
+	if (goal < top)
+		for (k = last + 1; k < from + slot_count && k <= end; k++)
+			order[n++] = k;
+	return n;
+}
+
+/* Some of the ring's work, in the order the strips are wanted: a list submitted, a strip given to a
+ * worker, or one made here (`now`: the view's, not waited for). 0: the ring holds what is wanted;
+ * 1: more can be done at once; 2: a worker or the GPU is waited for. */
+static int
+strips_work(int now)
+{
+	int order[SLOTS_MOST], n, i, k, s, waiting = 0, view = (top + view_height() - 1) / STRIP - top / STRIP + 1;
+
+	if (!slot_count)
+		return 0;
+	strips_shown();
+	for (s = 0; s < slot_count; s++)
+		strip_collect(s, 0);
+	n = strips_wanted(order);
+	for (i = 0; i < n; i++) {
+		struct slot *sl;
+		int w = 0;
+
+		k = order[i];
+		sl = &slots[s = k % slot_count];
+		if (sl->strip == k && sl->state == SLOT_THERE)
+			continue;
+		if (sl->strip == k && sl->state == SLOT_MADE) {
+			if (!sl->made) {
+				strip_requests(k, s);	/* (too much for its list) */
+				return 1;
+			}
+			if (strip_submit(s))
+				return 1;
+			waiting = 1;
+			continue;
+		}
+		if (sl->state == SLOT_OUT) {
+			if (sl->strip == k && now && i < view) {
+				strip_collect(s, 1);	/* (the view's: waited for) */
+				return 1;
+			}
+			waiting = 1;
+			continue;
+		}
+		if (sl->listed && regs[REG_DRAWN] == sl->drawn) {
+			waiting = 1;	/* its last list is still to be drawn */
+			continue;
+		}
+		sl->listed = 0;
+		if (!strip_by_list(k)) {
+			strip_requests(k, s);
+			return 1;
+		}
+		if (!(now && i < view) && strips_open())
+			for (w = 1; w <= strip_workers && worker_strip[w] >= 0; w++)
+				;
+		if (w >= 1 && w <= strip_workers) {
+			sl->strip = k;
+			sl->state = SLOT_OUT;
+			sl->worker = w;
+			worker_strip[w] = s;
+			/* (one whose core another program has back is run here, at once) */
+			if (mcw_bound(w))
+				strip_counts.workers++;
+			else
+				strip_counts.here++;
+			mcw_post(w, strip_job, (uint32_t)k, (uint32_t)s);
+			waiting = 1;
+			continue;
+		}
+		if (w > strip_workers) {
+			waiting = 1;	/* every worker has one */
+			continue;
+		}
+		sl->strip = k;
+		sl->made = strip_job((uint32_t)k, (uint32_t)s);
+		sl->state = SLOT_MADE;
+		strip_counts.here++;
+		return 1;
+	}
+	return waiting ? 2 : 0;
+}
+
+/* Every job out finished and its answer taken. */
+static void
+strips_wait(void)
+{
+	int s;
+
+	for (s = 0; s < slot_count; s++)
+		strip_collect(s, 1);
+}
+
+/* No strip is there any more (the page, or what is shown of it, changed). */
+static void
+strips_forget(void)
+{
+	int s;
+
+	strips_wait();
+	for (s = 0; s < slot_count; s++) {
+		slots[s].strip = -1;
+		slots[s].state = SLOT_EMPTY;
+	}
+	strip_shown.stale = 1;
+}
+
+/* The strips that hold page rows y0 to y1 are not there any more. */
+static void
+strips_forget_rows(int y0, int y1)
+{
+	int k, s;
+
+	for (k = (y0 - 2 < 0 ? 0 : y0 - 2) / STRIP; slot_count && k <= (y1 + 1) / STRIP; k++)
+		if (slots[s = k % slot_count].strip == k) {
+			strip_collect(s, 1);
+			slots[s].state = SLOT_EMPTY;
+			slots[s].strip = -1;
+		}
+}
+
+/* The view's strips are all there: made now where they are not. */
+static void
+strips_view(void)
+{
+	int k, missing;
+
+	for (;;) {
+		for (k = top / STRIP, missing = 0; k <= (top + view_height() - 1) / STRIP; k++)
+			missing += !(slots[k % slot_count].strip == k && slots[k % slot_count].state == SLOT_THERE);
+		if (!missing)
+			return;
+		if (strips_work(1) == 2) {
+			strip_counts.waits++;
+			mcw_rest();
+		}
+	}
+}
+
+/* Strips made ahead while nothing else is to be done, a pass at a time: until an event is
+ * there, or `ms` have gone. The milliseconds left. */
+static int
+strips_meanwhile(int ms)
+{
+	GR_EVENT event;
+	uint32_t from = regs ? regs[REG_CLOCK] : 0;
+	int r;
+
+	if (!slot_count || !window)
+		return ms;
+	GrFlush();
+	while ((r = strips_work(0)) && !GrPeekEvent(&event)) {
+		if ((int)(regs[REG_CLOCK] - from) >= ms)
+			return 0;
+		if (r == 2)
+			mcw_rest();
+		GrFlush();
+	}
+	ms -= (int)(regs[REG_CLOCK] - from);
+	return ms > 0 ? ms : 0;
+}
+
+static void
+tile_free(void)
+{
+	strips_forget();
+	if (tile)
+		GrDestroyWindow(tile);
+	if (scratch)
+		GrDestroyWindow(scratch);
+	if (lists)
+		GrDestroyWindow(lists);
+	if (list_memory)
+		munmap(list_memory - (list_phys & 4095), list_mapped);
+	tile = scratch = lists = 0;
+	list_memory = NULL;
+	slot_count = 0;
+}
+
+/* A pixmap the GPU keeps, or 0 (the driver counts them). */
+static GR_WINDOW_ID
+gpu_pixmap(int w, int h)
+{
+	GR_FONT_INFO info;
+	uint32_t before = regs[REG_PIXMAPS];
+	GR_WINDOW_ID p = GrNewPixmap(w, h, NULL);
+
+	GrGetFontInfo(ui_var, &info);	/* (an answer: the pixmap is made by now) */
+	if (regs[REG_PIXMAPS] != before)
+		return p;
+	GrDestroyWindow(p);
+	return 0;
+}
+
+/* Where a pixmap the GPU keeps has its pixels, or 0. A server from before says nothing for a
+ * pixmap (the words are left as they were): a buffer of the pool is whole pages, a row its width. */
+static uint32_t
+pixmap_address(GR_WINDOW_ID p, int w)
+{
+	GR_WINDOW_INFO info;
+
+	GrGetWindowInfo(p, &info);
+	return info.surface_address >= GPU_PHYS && info.surface_address < GPU_PHYS + 0xc00000u && !(info.surface_address & 4095) &&
+	       info.surface_row == (uint32_t)w ? info.surface_address : 0;
+}
+
 /* The pixmap the page is drawn in, for the window as it is now: as high as TILE_BYTES allow
- * and no higher than the GPU's target, whose rows are all it draws (720 in the Unity world).
- * The driver counts the pixmaps the GPU keeps; one it does not keep is no use (0). */
+ * and no higher than the GPU's target, whose rows are all the window system draws on it (720
+ * in the Unity world), in whole strips; the scratch strip, and the lists' memory where the
+ * window system says where a pixmap's pixels are. 0: none, the page is drawn on the window. */
 static int
 tile_make(void)
 {
-	GR_FONT_INFO info;
-	uint32_t before = regs ? regs[REG_PIXMAPS] : 0;
-	int w = view_width(), h = TILE_BYTES / (4 * w);
+	GR_PIXELVAL pixel;
+	int w = view_width(), h = TILE_BYTES / (4 * w), s;
 	int most = regs && (regs[REG_HOST] >> 16 & 255) ? (regs[REG_HOST] >> 16 & 255) * 16 : 2048;
+	int need = (view_height() + STRIP - 1) / STRIP + 1;
+	const char *rows = getenv("NXWEB_ROWS");	/* (a test: no more rows, as under the world's target) */
 
-	if (tile_w == w)
+	most = rows && atoi(rows) > 0 && atoi(rows) < most ? atoi(rows) : most;
+	h = h > most ? most : h;
+	if (tile_w == w && (slot_count >= need || !tile_gpu))
 		return tile_gpu;	/* (made, or tried in vain, for this width already) */
-	if (tile)
-		GrDestroyWindow(tile);
-	tile = 0;
-	tile_drawn = 0;
+	tile_free();
 	tile_gpu = 0;
 	tile_w = w;
-	tile_h = h > most ? most : h;
-	if (!regs || tile_h < view_height() + 64 || getenv("NXWEB_DIRECT"))
+	slot_count = h / STRIP < SLOTS_MOST ? h / STRIP : SLOTS_MOST;
+	if (!regs || slot_count < need || getenv("NXWEB_DIRECT") || !(tile = gpu_pixmap(w, slot_count * STRIP)) ||
+	    !(scratch = gpu_pixmap(w, STRIP))) {
+		tile_free();
 		return 0;
-	tile = GrNewPixmap(w, tile_h, NULL);
-	GrGetFontInfo(ui_var, &info);	/* (an answer: the pixmap is made by now) */
-	tile_gpu = regs[REG_PIXMAPS] != before;
-	if (!tile_gpu) {
-		GrDestroyWindow(tile);
-		tile = 0;
 	}
-	return tile_gpu;
+	tile_h = slot_count * STRIP;
+	for (s = 0; s < slot_count; s++)
+		slots[s].strip = -1, slots[s].state = SLOT_EMPTY, slots[s].listed = slots[s].requested = 0;
+	tile_phys = pixmap_address(tile, w);
+	if (tile_phys && gpu_fd >= 0 && !web_plain && !strips_by("requests") && (lists = gpu_pixmap(256, (slot_count * STRIP_BYTES + 1023) / 1024))) {
+		list_phys = pixmap_address(lists, 256);
+		list_mapped = (list_phys & 4095) + slot_count * STRIP_BYTES;
+		list_memory = list_phys ? mmap(NULL, list_mapped, PROT_READ | PROT_WRITE, MAP_SHARED, gpu_fd, (list_phys - GPU_PHYS) & ~4095u) : MAP_FAILED;
+		if (list_memory == MAP_FAILED)
+			list_memory = NULL;
+		else {
+			list_memory += list_phys & 4095;
+			mcw_touch(list_memory, slot_count * STRIP_BYTES);
+		}
+	}
+	/* (a new pixmap is made black by a list of the window system's: that is drawn before ours) */
+	GrReadArea(lists ? lists : scratch, 0, 0, 1, 1, &pixel);
+	tile_gpu = 1;
+	strip_shown.stale = 1;
+	if (!strip_at)
+		strips_index();
+	return 1;
+}
+
+/* NXWEB_CHECK (a test): every strip of the page that may be a list made both ways, by its
+ * list into the ring and by requests on the scratch pixmap, and the two read back and compared. */
+static void
+strips_check(void)
+{
+	GR_WINDOW_INFO info;
+	GR_PIXELVAL pixel;
+	const uint32_t *ring, *drawn;
+	void *a, *b;
+	size_t ring_bytes, scratch_bytes;
+	int k, s, i, end = (web_page_h - 1) / STRIP, made = 0, not_lists = 0, strips_differ = 0;
+	unsigned long differ = 0, far = 0;
+
+	if (!tile_make() || !list_memory) {
+		printf("nxweb: check of %s: no strips as lists here (pixmap %d, its address %08x, %d slots, the lists %s)\n", address, tile_gpu,
+		       (unsigned)tile_phys, slot_count, lists ? "made, not mapped" : "not made");
+		return;
+	}
+	GrGetWindowInfo(scratch, &info);
+	ring_bytes = (tile_phys & 4095) + (size_t)tile_h * tile_w * 4;
+	scratch_bytes = (info.surface_address & 4095) + (size_t)STRIP * tile_w * 4;
+	a = mmap(NULL, ring_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu_fd, (tile_phys - GPU_PHYS) & ~4095u);
+	b = mmap(NULL, scratch_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu_fd, (info.surface_address - GPU_PHYS) & ~4095u);
+	if (a == MAP_FAILED || b == MAP_FAILED) {
+		printf("nxweb: check: the pixmaps could not be mapped (%s; %08x %u %p, %08x %u %p)\n", strerror(errno), (unsigned)tile_phys,
+		       (unsigned)ring_bytes, a, (unsigned)info.surface_address, (unsigned)scratch_bytes, b);
+		return;
+	}
+	ring = (const uint32_t *)((char *)a + (tile_phys & 4095));
+	drawn = (const uint32_t *)((char *)b + (info.surface_address & 4095));
+	strips_forget();
+	strips_shown();
+	pictures_now = 1;	/* (every picture decoded as its strip is made) */
+	for (k = 0; k <= end; k++) {
+		unsigned long here = 0;
+
+		s = k % slot_count;
+		while (slots[s].listed && regs[REG_DRAWN] == slots[s].drawn)
+			mcw_rest();
+		slots[s].strip = k;
+		if (!strip_by_list(k) || !(slots[s].made = strip_job((uint32_t)k, (uint32_t)s))) {
+			not_lists++;
+			continue;
+		}
+		while (!strip_submit(s))
+			mcw_rest();
+		while ((int32_t)(regs[REG_COPIES] - slots[s].landed) < 0)
+			mcw_rest();
+		ui_fill(scratch, 0, 0, tile_w, STRIP, mw(web_page_bg));
+		for (i = strip_at[k]; i < strip_at[k + 1]; i++)
+			draw_item(scratch, &web_items[strip_items[i]], k * STRIP);
+		GrReadArea(scratch, 0, 0, 1, 1, &pixel);	/* (answered once that is drawn) */
+		for (i = 0; i < STRIP * tile_w; i++) {
+			uint32_t p = ring[s * STRIP * tile_w + i], q = drawn[i];
+			int most = 0, c;
+
+			if (((p ^ q) & 0xffffff) == 0)
+				continue;
+			for (c = 0; c < 24; c += 8)
+				most = abs((int)(p >> c & 255) - (int)(q >> c & 255)) > most ? abs((int)(p >> c & 255) - (int)(q >> c & 255)) : most;
+			here++;
+			far += most > 8;
+		}
+		made++;
+		differ += here;
+		if (here) {
+			strips_differ++;
+			if (strips_differ <= 8)
+				printf("nxweb: check: strip %d (rows %d to %d): %lu pixels differ\n", k, k * STRIP, k * STRIP + STRIP, here);
+		}
+	}
+	munmap(a, ring_bytes);
+	munmap(b, scratch_bytes);
+	pictures_now = 0;
+	strips_forget();
+	printf("nxweb: check of %s: %d strips as lists against requests, %d strips not lists; %d strips differ, %lu pixels, %lu by more than 8 levels\n",
+	       address, made, not_lists, strips_differ, differ, far);
 }
 
 static const char *const menu_names[] = { "File", "Edit", "View", "Go", "Bookmarks", "Help" };
@@ -559,12 +1648,12 @@ note(const char *text)
 		draw_status();
 }
 
-/* The view shows rows `top` on: the pixmap is drawn anew when they are not all in it, and
- * the view is a copy of a part of it. With no pixmap the rows are drawn on the window. */
+/* The view shows rows `top` on: its strips are made where they are not there yet, and the
+ * view is a copy of the ring, two where it wraps. With no pixmap the rows are drawn on the window. */
 static void
 show_view(void)
 {
-	int view = view_height(), most = web_page_h - view;
+	int view = view_height(), most = web_page_h - view, at, first;
 
 	if (!window)
 		return;
@@ -576,19 +1665,23 @@ show_view(void)
 		draw_bar();
 		draw_status();
 	} else {
-		if (!tile_drawn || top < tile_top || top + view > tile_top + tile_h) {
-			/* the view in its middle, or nearer the way it is going: never out of a low pixmap */
-			int spare = tile_h - view, lead = view / 2 < spare / 4 ? view / 2 : spare / 4;
-
-			tile_top = top - spare / 2 + (goal > top ? lead : goal < top ? -lead : 0);
-			tile_top = tile_top > web_page_h - tile_h ? web_page_h - tile_h : tile_top;
-			tile_top = tile_top < 0 ? 0 : tile_top;
-			draw_rows(tile, tile_top, tile_top, tile_top + tile_h);
-			tile_drawn = 1;
-		}
-		GrCopyArea(window, ui_gc, 0, TOP, view_width(), view, tile, 0, top - tile_top, MWROP_COPY);
+		strips_view();
+		at = top % tile_h;
+		first = tile_h - at < view ? tile_h - at : view;
+		GrCopyArea(window, ui_gc, 0, TOP, view_width(), first, tile, 0, at, MWROP_COPY);
+		if (first < view)
+			GrCopyArea(window, ui_gc, 0, TOP + first, view_width(), view - first, tile, 0, 0, MWROP_COPY);
 	}
 	ui_scrollbar(window, width - UI_SCROLL_W, TOP, view, web_page_h, view, top);
+	if (verbose && !page_shown) {
+		struct timespec t;
+
+		page_shown = 1;
+		clock_gettime(CLOCK_MONOTONIC, &t);
+		say_time("the page's first picture", page_began);
+		printf("nxweb: the first picture %ld ms after the page's text; its pictures decoded in %u thousand instructions\n",
+		       (long)((t.tv_sec - page_began_at.tv_sec) * 1000 + (t.tv_nsec - page_began_at.tv_nsec) / 1000000), pictures_decoding / 1000);
+	}
 }
 
 static void
@@ -614,15 +1707,16 @@ scroll_to(int y, int at_once)
 	}
 }
 
-/* A step of a scroll that is under way: a third of what is left, eight rows at least. With
- * NXWEB_TIME a scroll says when it ends how its steps went: the host's clock (word 13 of the
- * control block) at each, and whether the GPU's copy of the step before had been made by then
- * (word 14 counts the copies: a step whose picture never got to the window was not seen). */
+/* A step of a scroll that is under way: a third of what is left, eight rows at least. NXWEB_TIME:
+ * at its end a scroll says the longest gap between two steps by the host's clock (word 13) and in
+ * the first core's instructions, a step's own most, and how many steps' copies were made before
+ * the next (word 14 counts them: a step whose picture never got to the window was not seen). */
 static void
 scroll_step(void)
 {
-	static unsigned first_ms, last_ms, longest, copies, shown, steps;
+	static unsigned first_ms, last_ms, longest, copies, shown, steps, last_n, gap_most, own_most;
 	int left = goal - top, step = left / 3;
+	unsigned began = now();
 
 	if (!left)
 		return;
@@ -631,18 +1725,24 @@ scroll_step(void)
 	top += step;
 	show_view();
 	if (verbose && regs) {
-		unsigned ms = regs[13], made = regs[14];
+		unsigned ms = regs[13], made = regs[14], own = now() - began;
 
 		if (!steps)
-			first_ms = ms, longest = shown = 0;
+			first_ms = ms, longest = shown = gap_most = 0, own_most = own;
 		else {
 			longest = ms - last_ms > longest ? ms - last_ms : longest;
+			gap_most = began - last_n > gap_most ? began - last_n : gap_most;
+			own_most = own > own_most ? own : own_most;
 			shown += made != copies;
 		}
-		last_ms = ms, copies = made, steps++;
+		last_ms = ms, copies = made, last_n = began, steps++;
 		if (top == goal) {
-			printf("nxweb: a scroll of %u steps in %u ms, %u ms the longest between two; %u of the %u before the last were on the screen by the next\n",
-			       steps, ms - first_ms, longest, shown, steps - 1);
+			printf("nxweb: a scroll of %u steps in %u ms, %u ms the longest between two; %u of the %u before the last were on the screen by the next; "
+			       "%u thousand instructions the longest between two, %u thousand the most a step of its own\n",
+			       steps, ms - first_ms, longest, shown, steps - 1, gap_most / 1000, own_most / 1000);
+			printf("nxweb: strips since the last scroll: %u by requests, %u lists made here, %u by workers; %u waits for the view's, %u for the window system\n",
+			       strip_counts.requests, strip_counts.here, strip_counts.workers, strip_counts.waits, strip_counts.syncs);
+			memset(&strip_counts, 0, sizeof strip_counts);
 			steps = 0;
 		}
 	}
@@ -657,6 +1757,74 @@ say_time(const char *what, unsigned began)
 		printf("nxweb: %s %u thousand instructions\n", what, (now() - began) / 1000);
 }
 
+/* ---- styles on the worker cores ---- */
+
+/* A worker's count of the names round the element it styles (css_inside is the first core's). */
+static unsigned short style_inside[STRIP_WORKERS + 1][CSS_ATOMS] __attribute__((aligned(16)));
+static int style_out[STRIP_WORKERS + 1], styles_touched;
+static unsigned styles_away;
+
+static uint32_t
+style_job(uint32_t root, uint32_t end)
+{
+	web_style_range(style_inside[mcw_self()], (int)root, (int)end);
+	return 0;
+}
+
+/* web_style_elsewhere: an element's inside to a worker that has nothing to do, or no. */
+static int
+styles_elsewhere(int root, int end)
+{
+	int k;
+
+	if (root < 0) {
+		for (k = 1; k <= strip_workers; k++)
+			if (style_out[k])
+				mcw_wait(k), style_out[k] = 0;
+		styles_touched = 0;
+		return 1;
+	}
+	if (strips_open() <= 0)
+		return 0;
+	for (k = 1; k <= strip_workers && style_out[k] && !mcw_done(k); k++)
+		;
+	if (k > strip_workers)
+		return 0;
+	if (!styles_touched) {
+		/* (the styles are stored to by the workers: their pages here first) */
+		mcw_touch(web_styles, (unsigned)(web_style_count * sizeof *web_styles));
+		styles_touched = 1;
+	}
+	style_out[k] = 1;
+	styles_away += end - root - 1;
+	mcw_post(k, style_job, (uint32_t)root, (uint32_t)end);
+	return 1;
+}
+
+/* NXWEB_CHECK: the styles as the workers had a part in them, against all made on this core. */
+static void
+styles_check(void)
+{
+	struct css_style *had = malloc(web_style_count * sizeof *had);
+	struct web_node *nodes = malloc(web_node_count * sizeof *nodes);
+	int i, differ = 0;
+
+	if (!had || !nodes)
+		return;
+	memcpy(had, web_styles, web_style_count * sizeof *had);
+	memcpy(nodes, web_nodes, web_node_count * sizeof *nodes);
+	web_style_elsewhere = NULL;
+	web_style_all();
+	web_style_elsewhere = styles_elsewhere;
+	for (i = 0; i < web_node_count; i++)
+		differ += web_nodes[i].c.tag != T_TEXT && (memcmp(&had[web_nodes[i].style], &web_styles[web_nodes[i].style], sizeof *had) ||
+							   nodes[i].flags != web_nodes[i].flags);
+	printf("nxweb: check of %s: %d elements styled (%u of the tree's %d nodes on workers); %d differ from this core's\n", address,
+	       web_style_count, styles_away, web_node_count, differ);
+	free(had);
+	free(nodes);
+}
+
 /* Lays the page out again: its sheets read (0: they are as they were), its tree made, its
  * styles worked out, each only when something it comes from changed. */
 static void
@@ -665,6 +1833,7 @@ lay_out(int sheets, int tree)
 	unsigned began = now();
 	int i, texts = 0, chars = 0, boxes = 0, images = 0, items = 0;
 
+	strips_forget();	/* (the jobs out read the tree and the items) */
 	if (sheets) {
 		web_read_sheets(view_width(), view_height());
 		say_time("sheets", began);
@@ -674,16 +1843,22 @@ lay_out(int sheets, int tree)
 		web_parse(page, page_length);
 		say_time("tree", began);
 		began = now();
+		styles_away = 0;
 		web_style_all();
 		say_time("styles", began);
+		if (verbose)
+			printf("nxweb: %u of the tree's %d nodes styled on workers\n", styles_away, web_node_count);
+		if (getenv("NXWEB_CHECK"))
+			styles_check();
 	}
 	began = now();
 	for (i = 0; i < picture_count; i++)
 		pictures[i].sized = 1;
 	web_layout(view_width());
 	say_time("layout", began);
-	tile_drawn = 0;
 	found = -1;
+	strips_index();
+	pictures_relaid();
 	if (dump) {
 		for (i = 0; i < web_item_count; i++) {
 			const struct web_item *it = &web_items[i];
@@ -730,16 +1905,17 @@ show_kept(char *html, int n, const char *note)
 
 	unsigned began = now();
 
+	page_began = began;
+	clock_gettime(CLOCK_MONOTONIC, &page_began_at);
+	page_shown = 0;
 	free(page);
 	page = html;
 	page_length = n;
 	top = goal = 0;
 	picked = focus = -1;
 	/* another page: the last one's pictures and what was typed go */
-	for (i = 0; i < picture_count; i++)
-		if (pictures[i].state == PICTURE_HERE && pictures[i].ours)
-			unlink(pictures[i].file);
-	picture_count = field_count = 0;
+	pictures_drop();
+	field_count = 0;
 	asking = -1;
 	snprintf(web_address, sizeof web_address, "%s", address);
 	web_find_sheets(page, page_length, view_width());
@@ -774,6 +1950,7 @@ show_kept(char *html, int n, const char *note)
 	set_title();
 	if (hash && (i = anchor(hash + 1)) >= 0)
 		top = goal = i;
+	check_due = getenv("NXWEB_CHECK") != NULL;
 	if (window)
 		draw_all();
 }
@@ -967,7 +2144,7 @@ check_reply(void)
 			if (part_file)
 				fclose(part_file);
 			part_file = NULL;
-			asking = -1;
+					asking = -1;
 		}
 		return;
 	}
@@ -1041,12 +2218,17 @@ check_reply(void)
 		}
 		fclose(file);
 		asking = -1;
+		/* (decoded to the size it is drawn when it is first drawn, as the image's are) */
+		memcpy(p->source, p->file, sizeof p->source);
 		p->w = w;
 		p->h = h;
 		p->state = PICTURE_HERE;
 		if (!p->sized)
 			lay_out(0, 0);
-		tile_drawn = 0;
+		else
+			for (i = 0; i < web_item_count; i++)
+				if (web_items[i].kind == I_IMAGE && web_items[i].a == (int)(p - pictures))
+					strips_forget_rows(web_items[i].y, web_items[i].y + web_items[i].h);
 		show_view();
 		return;
 	}
@@ -1253,17 +2435,15 @@ submit(int node, int pressed)
 	}
 }
 
-/* A field drawn again where it is: in the pixmap and in the view. */
+/* A field drawn again where it is: its strips made again, and the view. */
 static void
 field_again(int node)
 {
 	int i;
 
 	for (i = 0; i < web_item_count; i++)
-		if (web_items[i].kind == I_FIELD && web_items[i].node == node && tile_gpu && tile_drawn)
-			draw_item(tile, &web_items[i], tile_top);
-	if (!tile_gpu)
-		tile_drawn = 0;
+		if (web_items[i].kind == I_FIELD && web_items[i].node == node)
+			strips_forget_rows(web_items[i].y, web_items[i].y + web_items[i].h);
 	show_view();
 }
 
@@ -1391,11 +2571,6 @@ stop(void)
 static void
 pictures_again(void)
 {
-	int i;
-
-	for (i = 0; i < picture_count; i++)
-		if (pictures[i].state == PICTURE_HERE && pictures[i].ours)
-			unlink(pictures[i].file);
 	if (loading && asking >= 0 && asking < SHEET) {
 		loading = 0;
 		if (part_file)
@@ -1403,7 +2578,7 @@ pictures_again(void)
 		part_file = NULL;
 		asking = -1;
 	}
-	picture_count = 0;
+	pictures_drop();
 	lay_out(0, 0);
 	top = goal = top > web_page_h - view_height() ? web_page_h - view_height() : top;
 	show_view();
@@ -1433,7 +2608,7 @@ find_next(void)
 			if (it->y < top || it->y + it->h > top + view_height())
 				top = goal = it->y - view_height() / 3;
 			snprintf(status, sizeof status, "found \"%s\" (F3: the next place)", sought);
-			tile_drawn = 0;
+			strips_forget();
 			show_view();
 			draw_status();
 			return;
@@ -1442,7 +2617,7 @@ find_next(void)
 	snprintf(status, sizeof status, "\"%s\" is not in the page's text", sought);
 	if (found >= 0) {
 		found = -1;
-		tile_drawn = 0;
+		strips_forget();
 		show_view();
 	}
 	draw_status();
@@ -1521,7 +2696,6 @@ resized(int w, int h)
 	height = h;
 	if (wider)
 		lay_out(1, 1);	/* (the sheets' media queries ask about the width) */
-	tile_drawn = 0;
 	draw_all();
 }
 
@@ -2059,7 +3233,7 @@ pick_link(int back)
 		last = link;
 	}
 	picked = found_link;
-	tile_drawn = 0;
+	strips_forget();
 	if (picked >= 0) {
 		if (web_attr_text(picked, "href", href, sizeof href))
 			snprintf(status, sizeof status, "%.190s", href);
@@ -2160,7 +3334,7 @@ key(int ch, int modifiers)
 				stop();
 			else if (found >= 0) {
 				found = -1;
-				tile_drawn = 0;
+				strips_forget();
 				show_view();
 			}
 			break;
@@ -2220,6 +3394,7 @@ main(int argc, char **argv)
 		if (words != MAP_FAILED && data != MAP_FAILED) {
 			regs = words;
 			fetched = data;
+			gpu_fd = fd;	/* (kept: the strips' lists are mapped through it) */
 		}
 	}
 	{
@@ -2245,6 +3420,8 @@ main(int argc, char **argv)
 		} else if (!strcmp(web_faces[plain].name, "font-sans-13.sef"))
 			fonts[plain][0] = test;	/* (the page's plain face is this file: not made a second time) */
 	}
+	/* (the elements' styles on workers too; NXWEB_STYLES=here: on this core alone) */
+	web_style_elsewhere = getenv("NXWEB_STYLES") && !strcmp(getenv("NXWEB_STYLES"), "here") ? NULL : styles_elsewhere;
 	go(argc > 1 ? argv[1] : home, 0);
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Web", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, WHITE);
 	set_title();
@@ -2252,9 +3429,24 @@ main(int argc, char **argv)
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {
-		int menu, open;
+		int menu, open, wait = top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000;
 
-		GrGetNextEventTimeout(&event, top != goal ? 15 : loading ? 100 : by_hand ? 3000 : regs && wanted_open() ? 400 : 60000);
+		/* (the pictures waited for are decoded, not in a scroll or with an event there, then the
+		 * strips ahead of the view made, while the wait lasts) */
+		if (window && top == goal && !GrPeekEvent(&event) && pictures_meanwhile()) {
+			show_view();
+			if (verbose && !pictures_waiting()) {
+				struct timespec t;
+
+				clock_gettime(CLOCK_MONOTONIC, &t);
+				printf("nxweb: the pictures waited for %ld ms after the page's text; decoded in %u thousand instructions\n",
+				       (long)((t.tv_sec - page_began_at.tv_sec) * 1000 + (t.tv_nsec - page_began_at.tv_nsec) / 1000000),
+				       pictures_decoding / 1000);
+			}
+			wait = 0;
+		}
+		wait = strips_meanwhile(wait);
+		GrGetNextEventTimeout(&event, wait ? wait : GR_TIMEOUT_POLL);
 		ui_origin_note(&event);
 		if (menu_at >= 0 && ui_menu_depth == 1 && event.type == GR_EVENT_TYPE_KEY_DOWN &&
 		    (event.keystroke.ch == MWKEY_LEFT || (event.keystroke.ch == MWKEY_RIGHT &&
@@ -2325,6 +3517,11 @@ main(int argc, char **argv)
 					break;
 				}
 			fflush(stdout);
+		}
+		if (check_due && window) {
+			check_due = 0;
+			strips_check();
+			show_view();
 		}
 		ticked = event.type == GR_EVENT_TYPE_TIMEOUT && top == goal;
 		if (top != goal)

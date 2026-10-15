@@ -83,6 +83,18 @@ void SE_ParticlesView (int *view);
 extern int	*se_particles_now;
 extern cvar_t	lcd_x, r_mirroralpha;
 
+/* the drawing worker's clock ticks (rdtime), written there only: its frames, its swaps, its waits for a frame */
+unsigned se_draw_ticks[3];
+unsigned se_scene_wait_ticks;	/* this core's, waiting for the drawing worker */
+
+static unsigned ticks (void)
+{
+	unsigned v;
+
+	__asm__ volatile ("rdtime %0" : "=r"(v));
+	return v;
+}
+
 static unsigned instructions (void)
 {
 	unsigned v;
@@ -155,13 +167,14 @@ void SE_SceneRecorded (const unsigned **vertices, const void **runs, int *count)
 /* The worker's call: the frames given, each from its copy, until it is told no more. */
 static uint32_t scene_job (uint32_t unused0, uint32_t unused1)
 {
-	unsigned next = ended + 1;
+	unsigned next = ended + 1, idle = ticks ();
 
 	for (;;) {
 		if (published >= next) {
 			slot_t		*s = &slots[next & 1];
-			unsigned	began = instructions ();
+			unsigned	began = instructions (), at = ticks ();
 
+			se_draw_ticks[2] += at - idle;
 			se_cl_now = &s->cl;
 			se_ents_now = ents[next & 1];
 			se_vis_now = s->vis;
@@ -181,6 +194,7 @@ static uint32_t scene_job (uint32_t unused0, uint32_t unused1)
 			drawing = next;
 			SE_ScreenWorker ();
 			s->instructions = instructions () - began;
+			se_draw_ticks[0] += (idle = ticks ()) - at;
 			ended = next++;
 			continue;
 		}
@@ -211,6 +225,7 @@ static void wait_for (unsigned frame)
 		return;
 	began = instructions ();
 	se_scene_waits++;
+	se_scene_wait_ticks -= ticks ();
 	while ((int)(ended - frame) < 0 && (++passes & 3 || !mcw_ready (job) || (int)(ended - frame) < 0)) {
 		if (!(passes & 3) && record_job[0])
 			mcw_ready (record_job[0]);	/* (the 2D worker's pages too) */
@@ -219,6 +234,7 @@ static void wait_for (unsigned frame)
 		mcw_rest ();
 	}
 	se_scene_waited += instructions () - began;
+	se_scene_wait_ticks += ticks ();
 }
 
 /* Before this core changes what drawing reads: the worker draws what it was given and stops. */

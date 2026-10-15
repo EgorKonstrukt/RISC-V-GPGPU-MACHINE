@@ -70,8 +70,9 @@ The float registers are 32 more entries of the array the integer registers are i
 f0 at `XR_F`), kept as bits, so `flw`, `fsw` and the moves never go through a float. An
 instruction's two source indices get `XR_F` added when they name float registers, and its
 result goes to one indexed store as before: the fast loop carries nothing more than it did.
-`fp_exec` in `emu.h` works every result out and chooses one, for the fast step and the
-general path alike. Between passes the registers are eight texels of the state zone, from
+`fp_exec` in `emu.h` works every result out and chooses one, for the general path and for
+the fast step's rarer float instructions; the fast step does a sum, a difference, a product
+and `fp_light`'s moves, signs and comparisons each by itself (`tick-costs.md`). Between passes the registers are eight texels of the state zone, from
 `FP_STATE_AT`, after the TLBs' texels.
 
 An integer-only guest costs 1.1% more with them (D3D11, fxc2: 3,556k to 3,518k instructions a

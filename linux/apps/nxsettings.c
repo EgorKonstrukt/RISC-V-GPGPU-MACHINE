@@ -4,6 +4,7 @@
  * what the host keeps (docs/persist.md). System: what the machine is. Devices: each device and how it runs.
  * From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system | devices.
  */
+#define _GNU_SOURCE
 #include <dirent.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -15,6 +16,7 @@
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
+#define UI_PICTURES	/* pictures of any kind decoded (media.h) */
 #include "ui.h"
 #include "ui_files.h"
 #include "ui_ask.h"
@@ -67,7 +69,8 @@ find_choices(void)
 		const char *name = names[i]->d_name;
 		char *dot;
 
-		if (strncmp(name, "wallpaper-", 10) != 0)
+		/* (NAME@WxH is NAME made for a screen of that size: not a choice of its own) */
+		if (strncmp(name, "wallpaper-", 10) != 0 || strchr(name, '@'))
 			continue;
 		snprintf(label, sizeof label, "Picture: %s", name + 10);
 		if ((dot = strrchr(label, '.')) != NULL)
@@ -614,7 +617,7 @@ draw(void)
 			ui_focus(window, pictures.x, pictures.y, pictures.width, pictures.height);
 		else if (focus == 2)
 			ui_focus(window, 8 + 4, TOP + 204 + 4, 180 - 8, 22 - 8);
-		ui_text(window, 8, HEIGHT - 26, "A picture file is a PPM, PNG or JPEG (the last two are decoded first).", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 26, "A picture file is a JPEG, PNG, GIF, BMP or PPM, decoded on the worker cores.", -1, UI_SHADOW, 0);
 		break;
 	case TAB_SCREEN:
 		snprintf(text, sizeof text, "The screen is %d x %d now.", screen.cols, screen.rows);
@@ -698,12 +701,11 @@ choose_picture(void)
 	const char *name;
 
 	if (!ui_choose_file("Choose a picture", access("/root/Pictures", R_OK) == 0 ? "/root/Pictures" : "/usr/share",
-			    ".ppm .png .jpg .jpeg", path, sizeof path, while_choosing))
+			    ".jpg .jpeg .png .gif .bmp .ppm .tga", path, sizeof path, while_choosing))
 		return;
 	name = strrchr(path, '/') + 1;
 	snprintf(label, sizeof label, "File: %s", name);
-	/* (the file itself is kept as the choice; a PNG or JPEG is decoded now, into its copy in /tmp) */
-	ui_wallpaper_decode(path, 1);
+	/* (the file itself is kept as the choice, and decoded where it is shown) */
 	add(label, path);
 	pictures.selected = pictures.count - 1;
 	ui_list_show(&pictures);

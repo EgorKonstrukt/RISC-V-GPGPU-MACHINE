@@ -803,10 +803,10 @@ index a29eb2b..a3a94a5 100644
  #endif
 \ No newline at end of file
 diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
-index 4825ba4..7f4f223 100644
+index 4825ba4..0d405c3 100644
 --- a/redalert/conquer.cpp
 +++ b/redalert/conquer.cpp
-@@ -125,6 +125,439 @@ bool Map_Edit_Loop(void);
+@@ -125,6 +125,481 @@ bool Map_Edit_Loop(void);
  
  bool UseOldShapeDraw = false;
  
@@ -1088,6 +1088,46 @@ index 4825ba4..7f4f223 100644
 +    }
 +}
 +
++/*
++** TDAWN_MOVE=N,DX,DY: at frame N the player's units and soldiers are selected and sent, as by a
++** click, to the cell DX,DY from the view's middle (TDAWN_MOVE_UNSELECT=1: unselected after).
++*/
++static void ShaderEmu_Move(void)
++{
++    static int move = -1, dx, dy;
++    if (move < 0) {
++        move = 0;
++        if (getenv("TDAWN_MOVE")) {
++            sscanf(getenv("TDAWN_MOVE"), "%d,%d,%d", &move, &dx, &dy);
++        }
++    }
++    if (!move || (int)Frame != move) {
++        return;
++    }
++    int cx = Coord_XCell(Map.TacticalCoord) + Lepton_To_Cell(Map.TacLeptonWidth) / 2 + dx;
++    int cy = Coord_YCell(Map.TacticalCoord) + Lepton_To_Cell(Map.TacLeptonHeight) / 2 + dy;
++    CELL cell = XY_Cell(cx, cy);
++    int count = 0;
++    for (int i = 0; i < Units.Count(); i++) {
++        if (Units.Ptr(i)->Is_Owned_By_Player() && !Units.Ptr(i)->IsInLimbo) {
++            Units.Ptr(i)->Select(true);
++        }
++    }
++    for (int i = 0; i < Infantry.Count(); i++) {
++        if (Infantry.Ptr(i)->Is_Owned_By_Player() && !Infantry.Ptr(i)->IsInLimbo) {
++            Infantry.Ptr(i)->Select(true);
++        }
++    }
++    for (int i = 0; i < CurrentObject.Count(); i++) {
++        CurrentObject[i]->Active_Click_With(ACTION_MOVE, cell);
++        count++;
++    }
++    if (getenv("TDAWN_MOVE_UNSELECT")) {
++        Unselect_All();
++    }
++    fprintf(stderr, "ralert: %d sent to cell %d,%d at frame %d\n", count, cx, cy, (int)Frame);
++}
++
 +/* TDAWN_SELECT=N, for a test: every N frames the player's units and soldiers are selected. */
 +static void ShaderEmu_Select(void)
 +{
@@ -1096,6 +1136,7 @@ index 4825ba4..7f4f223 100644
 +    if (select < 0) {
 +        select = getenv("TDAWN_SELECT") ? atoi(getenv("TDAWN_SELECT")) : 0;
 +    }
++    ShaderEmu_Move();
 +    if (select && (int)Frame % select == 0) {
 +        for (int i = 0; i < Units.Count(); i++) {
 +            if (Units.Ptr(i)->Is_Owned_By_Player()) {
@@ -1213,6 +1254,7 @@ index 4825ba4..7f4f223 100644
 +                ShaderEmu_GL_Objects[1] / frames, ShaderEmu_GL_Objects[2] / frames, ShaderEmu_GL_Parts[2] / frames / 1000,
 +                ShaderEmu_GL_Quads / frames, ShaderEmu_GL_Shroud / frames, ShaderEmu_GL_Shadows / frames, ShaderEmu_GL_Put[0],
 +                ShaderEmu_GL_Refused);
++        host_scene_settle(); /* (the objects' worker adds to these: not while it draws) */
 +        ShaderEmu_Page_Copies = ShaderEmu_Page_Flips = 0;
 +        ShaderEmu_GL_Quads = ShaderEmu_GL_Shroud = ShaderEmu_GL_Shadows = ShaderEmu_GL_Cycles = ShaderEmu_GL_Refused = 0;
 +        ShaderEmu_GL_Parts[0] = ShaderEmu_GL_Parts[1] = ShaderEmu_GL_Parts[2] = ShaderEmu_GL_Put[0] = 0;
@@ -1246,7 +1288,7 @@ index 4825ba4..7f4f223 100644
  #ifdef CHEAT_KEYS
  void Dump_Heap_Pointers(void);
  void Error_In_Heap_Pointers(char* string);
-@@ -1759,7 +2192,12 @@ bool Main_Loop()
+@@ -1759,7 +2234,12 @@ bool Main_Loop()
      **	If there is no theme playing, but it looks like one is required, then start one
      **	playing. This is usually the symptom of there being no transition score.
      */
@@ -1259,7 +1301,7 @@ index 4825ba4..7f4f223 100644
          Theme.Queue_Song(THEME_PICK_ANOTHER);
      }
  
-@@ -1790,18 +2228,42 @@ bool Main_Loop()
+@@ -1790,18 +2270,42 @@ bool Main_Loop()
              FrameTimer = Options.GameSpeed + (PlayerPtr->Difficulty == DIFF_EASY ? 1 : 0);
          }
      }
@@ -1293,7 +1335,7 @@ index 4825ba4..7f4f223 100644
 +#ifdef SHADEREMU
 +            ShaderEmu_GL_Behind = false;
 +            ShaderEmu_GL_Post();
-+            static const bool checks = getenv("TDAWN_SUMS") || getenv("TDAWN_CHECK_GPU") || getenv("TDAWN_SELECT");
++            static const bool checks = getenv("TDAWN_SUMS") || getenv("TDAWN_CHECK_GPU") || getenv("TDAWN_SELECT") || getenv("TDAWN_MOVE");
 +            if (checks) {
 +                ShaderEmu_Sums();
 +                ShaderEmu_Check_GPU();
@@ -1303,7 +1345,7 @@ index 4825ba4..7f4f223 100644
          }
      }
  
-@@ -1826,7 +2288,19 @@ bool Main_Loop()
+@@ -1826,7 +2330,19 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -1324,7 +1366,7 @@ index 4825ba4..7f4f223 100644
      TimeQuake = false;
  #ifdef FIXIT_CSII //	checked - ajw 9/28/98
      if (!PendingTimeQuake) {
-@@ -1839,8 +2313,24 @@ bool Main_Loop()
+@@ -1839,8 +2355,24 @@ bool Main_Loop()
      **	a message has expired & been removed, and the entire map must be updated.
      */
      if (Session.Messages.Manage()) {
@@ -1351,7 +1393,7 @@ index 4825ba4..7f4f223 100644
      }
  
      //
-@@ -1893,6 +2383,9 @@ bool Main_Loop()
+@@ -1893,6 +2425,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -1361,7 +1403,7 @@ index 4825ba4..7f4f223 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
          return (!GameActive);
-@@ -2442,6 +2935,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2442,6 +2977,25 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
              AnimControl.ImageBuf = (unsigned char*)SysMemPage.Get_Offset();
          }
  #endif
@@ -1387,7 +1429,7 @@ index 4825ba4..7f4f223 100644
  
          if (!Debug_Quiet && Get_Digi_Handle() != -1) {
              AnimControl.OptionFlags |= VQAOPTF_AUDIO;
-@@ -2465,8 +2977,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+@@ -2465,8 +3019,30 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
                  // Set_Palette(BlackPalette);
                  SysMemPage.Clear();
                  InMovie = true;
@@ -1418,7 +1460,7 @@ index 4825ba4..7f4f223 100644
                  // Resume_Audio_Thread();
                  InMovie = false;
  #ifdef MOVIE640
-@@ -2863,6 +3397,70 @@ void CC_Draw_Pip(const ObjectClass* object,
+@@ -2863,6 +3439,70 @@ void CC_Draw_Pip(const ObjectClass* object,
   * HISTORY:                                                                                    *
   *   02/21/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
@@ -1489,7 +1531,7 @@ index 4825ba4..7f4f223 100644
  void CC_Draw_Shape(void const* shapefile,
                     int shapenum,
                     int x,
-@@ -2885,6 +3483,18 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2885,6 +3525,18 @@ void CC_Draw_Shape(void const* shapefile,
      if ((flags & SHAPE_FADING) && (!fadingdata)) {
          fadingdata = DisplayClass::FadingShade;
      }
@@ -1508,7 +1550,7 @@ index 4825ba4..7f4f223 100644
  
      static unsigned char* _xbuffer = 0;
  
-@@ -3044,6 +3654,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
+@@ -3044,6 +3696,38 @@ Rect const Shape_Dimensions(void const* shapedata, int shapenum)
      int width = Get_Build_Frame_Width(shapedata);
      int height = Get_Build_Frame_Height(shapedata);
  
@@ -1547,7 +1589,7 @@ index 4825ba4..7f4f223 100644
      rect.X = 0;
      rect.Y = 0;
      int xlimit = width - 1;
-@@ -3185,6 +3827,9 @@ extern GraphicBufferClass VQ640;
+@@ -3185,6 +3869,9 @@ extern GraphicBufferClass VQ640;
  extern bool IsVQ640;
  int VQ_Call_Back(unsigned char*, int)
  {
@@ -1557,7 +1599,7 @@ index 4825ba4..7f4f223 100644
  #ifdef REMASTER_BUILD
      return 0;
  #else
-@@ -3194,6 +3839,11 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3194,6 +3881,11 @@ int VQ_Call_Back(unsigned char*, int)
          Keyboard->Clear();
      }
      Check_VQ_Palette_Set();
@@ -1569,7 +1611,7 @@ index 4825ba4..7f4f223 100644
  #ifdef MOVIE640
      if (IsVQ640) {
          VQ640.Blit(SeenBuff);
-@@ -3204,6 +3854,9 @@ int VQ_Call_Back(unsigned char*, int)
+@@ -3204,6 +3896,9 @@ int VQ_Call_Back(unsigned char*, int)
      Interpolate_2X_Scale(&SysMemPage, &SeenBuff, NULL);
  #endif
      Frame_Limiter();
@@ -3584,7 +3626,7 @@ index 110368b..9976989 100644
          Target.Sub.Mantissa = ptr->ID;
      } else {
 diff --git a/redalert/techno.cpp b/redalert/techno.cpp
-index 682741b..a3d12a5 100644
+index 682741b..25d7e1f 100644
 --- a/redalert/techno.cpp
 +++ b/redalert/techno.cpp
 @@ -131,6 +131,9 @@
@@ -3633,7 +3675,44 @@ index 682741b..a3d12a5 100644
              IsLocked = true;
          }
  
-@@ -1278,6 +1296,9 @@ bool TechnoClass::Unlimbo(COORDINATE coord, DirType dir)
+@@ -1165,7 +1183,36 @@ void TechnoClass::Draw_It(int x, int y, WindowNumberType window) const
+     }
+ 
+     // if (IsSelected) {
++#ifdef SHADEREMU
++    /* (over the GPU's map the bars and box are put into the page by gl.cpp, and kept) */
++    bool shaderemu_bars = false;
++    if ((Is_Selected_By_Player() || show_health_bar) && window == WINDOW_TACTICAL) {
++        bool ShaderEmu_GL_Bars(int x, int y, int lx, int ly, int dx, int dy, int fudge, int width, int height,
++                               int pwidth, int color, bool selected, const void* shade);
++        int by = y - (What_Am_I() == RTTI_INFANTRY ? 6 : 0);
++        if (What_Am_I() == RTTI_BUILDING && ((BuildingTypeClass const&)Class_Of()).Type == STRUCT_BARRACKS) {
++            by -= 5;
++        }
++        int pwidth = -1, color = 0;
++        if (show_health_bar) {
++            fixed ratio = Health_Ratio();
++            pwidth = (width - 2) * ratio;
++            pwidth = Bound(pwidth, 1, width - 2);
++            color = LTGREEN;
++            if (ratio <= Rule.ConditionYellow) {
++                color = YELLOW;
++            }
++            if (ratio <= Rule.ConditionRed) {
++                color = RED;
++            }
++        }
++        shaderemu_bars =
++            ShaderEmu_GL_Bars(x, by, lx, ly, dx, dy, fudge, width, height, pwidth, color, Is_Selected_By_Player(), Map.FadingShade);
++    }
++    if (!shaderemu_bars && (Is_Selected_By_Player() || show_health_bar)) {
++#else
+     if (Is_Selected_By_Player() || show_health_bar) {
++#endif
+         GraphicViewPortClass draw_window(LogicPage->Get_Graphic_Buffer(),
+                                          WindowList[window][WINDOWX] + LogicPage->Get_XPos(),
+                                          WindowList[window][WINDOWY] + LogicPage->Get_YPos(),
+@@ -1278,6 +1325,9 @@ bool TechnoClass::Unlimbo(COORDINATE coord, DirType dir)
          Enter_Idle_Mode(true);
          Commence();
  
@@ -3643,7 +3722,7 @@ index 682741b..a3d12a5 100644
          IsLocked = Map.In_Radar(Coord_Cell(coord));
          return (true);
      }
-@@ -1563,6 +1584,22 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -1563,6 +1613,22 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
      BStart(BENCH_EVAL_OBJECT);
  
@@ -3666,7 +3745,7 @@ index 682741b..a3d12a5 100644
      /*
      **	An object in limbo can never be a valid target.
      */
-@@ -2123,6 +2160,44 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2123,6 +2189,44 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
       *   09/22/1995 JLB : Takes into account the zone (if necessary).                              *
       *   05/30/1996 JLB : Tighter elimination mask checking.                                       *
       *=============================================================================================*/
@@ -3711,7 +3790,7 @@ index 682741b..a3d12a5 100644
      TARGET TechnoClass::Greatest_Threat(ThreatType method) const
      {
          assert(IsActive);
-@@ -2246,6 +2321,23 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2246,6 +2350,23 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              int bestcellvalue = 0;
              TechnoClass const* object;
              int value;
@@ -3735,7 +3814,7 @@ index 682741b..a3d12a5 100644
              //		int rad = 1;
  
              // BG: Medics need to be able to look in their own cell too.
-@@ -2254,6 +2346,60 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2254,6 +2375,60 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              //		}
  
              for (int radius = 0; radius < crange; radius++) {
@@ -3796,7 +3875,7 @@ index 682741b..a3d12a5 100644
  
                  /*
                  **	Scan the top and bottom rows of the "box".
-@@ -2268,12 +2414,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2268,12 +2443,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_Y(cell) - radius) >= Map.MapCellY) {
                          newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) - radius);
@@ -3811,7 +3890,7 @@ index 682741b..a3d12a5 100644
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2284,12 +2430,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2284,12 +2459,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_Y(cell) + radius) < (Map.MapCellY + Map.MapCellHeight)) {
                          newcell = XY_Cell(Cell_X(cell) + x, Cell_Y(cell) + radius);
@@ -3826,7 +3905,7 @@ index 682741b..a3d12a5 100644
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2312,12 +2458,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2312,12 +2487,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_X(cell) - radius) >= Map.MapCellX) {
                          newcell = XY_Cell(Cell_X(cell) - radius, Cell_Y(cell) + y);
@@ -3841,7 +3920,7 @@ index 682741b..a3d12a5 100644
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2328,12 +2474,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2328,12 +2503,12 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
  
                      if ((Cell_X(cell) + radius) < (Map.MapCellX + Map.MapCellWidth)) {
                          newcell = XY_Cell(Cell_X(cell) + radius, Cell_Y(cell) + y);
@@ -3856,7 +3935,7 @@ index 682741b..a3d12a5 100644
                              value = Evaluate_Just_Cell(newcell);
                              if (bestcellvalue < value) {
                                  bestcellvalue = value;
-@@ -2347,6 +2493,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2347,6 +2522,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
                  **	Bail early if a target has already been found and the range is at
                  **	one of the breaking points (i.e., normal range or range * 2).
                  */
@@ -3864,7 +3943,7 @@ index 682741b..a3d12a5 100644
                  if (bestobject != NULL) {
                      if (radius == crange / 4) {
                          return (bestobject->As_Target());
-@@ -2461,6 +2608,16 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2461,6 +2637,16 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          assert(IsActive);
  
          FlashCount = count;
@@ -3881,7 +3960,7 @@ index 682741b..a3d12a5 100644
  
          // 2019/09/20 JAS - Flashing info needs to exist per player
          if (house < HOUSE_COUNT) {
-@@ -2504,7 +2661,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2504,7 +2690,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          ** If this building is being spied on by the player, need to redraw if selected
          ** since the money amount is rendering.
          */
@@ -3890,7 +3969,7 @@ index 682741b..a3d12a5 100644
              if (What_Am_I() == RTTI_BUILDING) {
                  int spiedby = Spied_By() & (1 << (PlayerPtr->Class->House));
                  if (spiedby) {
-@@ -2542,7 +2699,8 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -2542,7 +2728,8 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          **	If for some strange reason, the computer is firing upon itself, then
          **	tell it not to.
          */
@@ -3900,7 +3979,7 @@ index 682741b..a3d12a5 100644
              //#ifdef FIXIT_CSII	//	checked - ajw 9/28/98 (commented out)
              // if(What_Am_I() == RTTI_INFANTRY && *(InfantryClass *)this==INFANTRY_GENERAL && Session.Type==GAME_NORMAL
              // && House->Class->House==HOUSE_UKRAINE) { } else #endif
-@@ -4060,6 +4218,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -4060,6 +4247,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              /*
              **	Change ownership now.
              */
@@ -3910,7 +3989,7 @@ index 682741b..a3d12a5 100644
              House = newowner;
              IsOwnedByPlayer = (House == PlayerPtr);
  
-@@ -4567,10 +4728,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -4567,10 +4757,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              */
              TechnoTypeClass* ttype = Techno_Type_Class();
              if (shapefile == ttype->Get_Image_Data() && shapenum < Get_Build_Frame_Count(shapefile) - 1) {
@@ -3931,7 +4010,7 @@ index 682741b..a3d12a5 100644
                      ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
                  }
              }
-@@ -4795,10 +4966,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -4795,10 +4995,20 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
              */
              TechnoTypeClass* ttype = Techno_Type_Class();
              if (shapefile == ttype->Get_Image_Data() && shapenum < Get_Build_Frame_Count(shapefile) - 1) {
@@ -3952,7 +4031,7 @@ index 682741b..a3d12a5 100644
                      ttype->DimensionData[shapenum] = Shape_Dimensions(shapefile, shapenum);
                  }
              }
-@@ -7183,6 +7364,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -7183,6 +7393,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
          IsDiscoveredByPlayerMask |= (1 << shift);
  
          if (Session.Type != GAME_GLYPHX_MULTIPLAYER && player == PlayerPtr) {
@@ -3962,7 +4041,7 @@ index 682741b..a3d12a5 100644
              IsDiscoveredByPlayer = true;
          }
      }
-@@ -7202,6 +7386,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
+@@ -7202,6 +7415,9 @@ bool TechnoClass::Evaluate_Object(ThreatType method,
      void TechnoClass::Clear_Discovered_By_Players()
      {
          IsDiscoveredByPlayerMask = 0;

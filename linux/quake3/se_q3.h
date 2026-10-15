@@ -37,15 +37,18 @@ void SE_Wanted (const char *kind, const char *name);
 extern unsigned se_main_stack, se_server_jobs, se_server_cycles, se_server_passes;
 void SE_ServerPoll (void);
 int SE_Workers (void);			/* how many worker cores the program has: 1 is the server's, 2 the client's game's */
+extern int se_game_workers;
+extern struct se_think_counts { unsigned n[4]; } se_think_counts;	/* thinks, and those on helpers (q3stat:) */		/* of them the game's own; the rest decode pictures (tr_shaderemu.c) */
 /* where each one's job goes back to at an error (each its own 16 bytes: two cores write them) */
 typedef struct { jmp_buf at; } __attribute__ ((aligned (16))) se_abort_t;
-extern se_abort_t se_worker_abort[2];
+extern se_abort_t se_worker_abort[2 + SE_THINKERS];	/* 0 the server, 1 the client's game, 2 on a bot's think */
 int SE_WorkerKept (int w);		/* what a worker kept is done by this core (0 the server's; 1, 2 the client's game's lists); 1: it ended in an error */
 void SE_WorkerRaise (int w);		/* that error, raised here */
 
 /* client_shaderemu.c: the client's game on a worker core, a frame ahead (qcommon.h has the rest) */
-#define SE_LISTS	3		/* the lists it writes frames into in turn (1 to 3): one being written, one taken, one drawn */
+#define SE_LISTS	4		/* the lists it writes frames into in turn (1 to 4): one being written, one taken, two drawn */
 extern unsigned se_client_jobs, se_client_cycles, se_client_passes;
+extern struct se_side_counts { unsigned n[4]; } se_side_worker, se_side_helper;	/* the items on the client's helper core */
 extern int se_client_list;		/* which of its two lists the frame the worker is at writes */
 void SE_ClientPoll (void);
 
@@ -59,11 +62,19 @@ void SE_SceneRecord (int which);
 void SE_SceneReplay (int which);
 void SE_SceneTouch (void (*touch) (void *, unsigned));
 void SE_SceneSum (int on);		/* what is drawn from here on is, or is not, of the client's game (QUAKE3_SUM) */
-void SE_SceneFlush (void);		/* the frame whose drawing is out on the scene's worker: waited for and shown */
+void SE_SceneFlush (void);		/* the frames whose drawing is out on the scene's worker: waited for and shown */
+void SE_ScenePoll (void);		/* that job given out again if it ended before the last frame came, frames drawn shown */
 extern unsigned se_scene_jobs, se_scene_cycles, se_scene_passes;
 
 /* snd_shaderemu.c: the same of what that frame asks of the sound */
 void SE_SoundRecord (int which);
 void SE_SoundReplay (int which);
+void SE_SoundSideReplay (void);		/* the places of things the client's game's helper core found, as this core's */
+void SE_SoundSideTouch (void (*touch) (void *, unsigned));
+
+/* tr_shaderemu.c: what the client's game's helper core adds for the level's items, kept apart */
+void SE_SceneSideBegin (int list);	/* (the helper) a frame's items for list `list` */
+void SE_SceneSideItem (int item);	/* (the helper) item `item` begins, the one before ends */
+void SE_SceneSidePlace (int item);	/* (the client's worker) that item's place in the frame's scene */
 
 #endif

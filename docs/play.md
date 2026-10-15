@@ -1,16 +1,17 @@
 # An audio player: `nxplay`
 
-A program of the desktop that plays WAV, MOD, FLAC and MP3 files through the sound card's
-stream voice (`sound.md`). WAV and tracker tunes play as they are decoded. FLAC and MP3 at
-44.1 kHz stereo cost more than the machine has, with every core at work: the player decodes
-them ahead, an MP3 file's pieces on every worker core (`multicore.md`), and plays when what
-is left can be decoded while it plays.
+A program of the desktop that plays WAV, MOD, FLAC, MP3 and Ogg Vorbis files through the
+sound card's stream voice (`sound.md`), decoded by libmedia (`media.md`, "Sound"). WAV and
+tracker tunes play as they are decoded. FLAC, MP3 and Vorbis at 44.1 kHz stereo cost more than
+the machine has, with every core at work: the player decodes them ahead, a file's pieces on
+worker cores (`multicore.md`), and plays when what is left can be decoded while it plays.
 
     wsl -- bash /mnt/c/Development/ShaderX86/linux/nanox/build.sh     (once)
-    wsl -- bash /mnt/c/Development/ShaderX86/linux/play/build.sh      (8 s; the first time it also fetches)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/libmedia/build.sh  (the decoders; the first time it also fetches)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/play/build.sh      (3 s)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
-In the guest: `nxplay FILE` plays at once; the Start menu's Other has it as "Music", and
+In the guest: `nxplay FILE` plays at once; the Start menu's Other has it as "Music player", and
 `open` starts it for a sound file (`nxopen.84-play`). The window has the file's name, the
 place in the tune (a bar that can be dragged), keys with signs for Previous, Play or Pause,
 Stop and Next (`ui_glyph.h`), Repeat, Shuffle, Open..., a loudspeaker key that mutes and the
@@ -25,20 +26,19 @@ Repeat and Shuffle, `o` opens a file, `q` or Escape leaves. Without a window sys
 
 ## What the build is made of (`linux/play`)
 
-- `nxplay.c`: the window, the pieces, the card, WAV, and the MP3 file cut into pieces.
-- `mod.h`: a ProTracker player in integers (31 samples; 4 channels, or the tags `6CHN`,
-  `8CHN`, `nnCH`): the sequencer a tick at a time and a mixer of the nearest sample, at
-  22,050 Hz, which the card brings to its own rate. XM is not played.
-- `flac.c` over [dr_flac](https://github.com/mackron/dr_libs) (public domain or MIT No
-  Attribution), one or two channels.
-- `mp3.c` over [minimp3](https://github.com/lieff/minimp3) (CC0), compiled twice: as it is,
-  and at half rate. `minimp3.patch` adds the half rate (the lower 16 of the 32 bands through
-  the transform, every second sample out of the filter) and a way to give a frame for its
-  bits only (`MP3D_SKIP`), which fills the bit reservoir without decoding.
-- `build.sh` fetches the two headers at one commit each (checked by their sums) into
-  `~/shaderemu-linux/src/play`; they are not in the repository. Everything that has floats
-  is built with `-fsingle-precision-constant`: minimp3 compares each sample with `32766.5`,
-  a double otherwise, and the machine has no doubles.
+- `nxplay.c`: the window, the pieces and the ring, the card. It links
+  `~/shaderemu-linux/src/libmedia/libmedia.a` (`-Wl,--gc-sections`: the pictures' decoders
+  are left out).
+- The decoders were here until 15 October 2026 and are libmedia's now (`linux/libmedia`,
+  `media.md`): the tracker (`m_audio_mod.c`: 31 samples; 4 channels, or the tags `6CHN`,
+  `8CHN`, `nnCH`; mixed at 22,050 Hz, which the card brings to its own rate; XM is not
+  played), [dr_flac](https://github.com/mackron/dr_libs) with `flac_bound.py`,
+  [minimp3](https://github.com/lieff/minimp3) compiled twice, as it is and at half rate
+  (`minimp3.patch`: the lower 16 of the 32 bands through the transform, every second sample
+  out of the filter, and frames given for their bits only, `MP3D_SKIP`), and
+  [stb_vorbis](https://github.com/nothings/stb). Everything that has floats is built with
+  `-fsingle-precision-constant`: minimp3 compares each sample with `32766.5`, a double
+  otherwise, and the machine has no doubles.
 - `make_test.py` (on the host, with ffmpeg) makes `test/play-test.*`, which the build puts
   in `/usr/share`: a sweep with noise as WAV (1.6 s), FLAC (2 s) and MP3 (18 s, 128 kbit/s),
   all 44.1 kHz stereo, and a four-channel MOD of 31 s written by the script.
@@ -92,17 +92,18 @@ is decoded).
   decoded whole for that: with pieces of 4 frames a piece was six frames' work, and is 4.6.
 - With eight workers or more the first core takes no piece: it gives them out, and is back at
   the window in a turn (`OWN_UNDER`; `NXPLAY_OWN=1` has it decode as before).
-- With 24 workers or more (it asks for all 63, and has its share of them) a piece is 4
+- With 24 workers or more (it asks for 48, `NXPLAY_WORKERS`) a piece is 4
   frames, not 20: 63 workers make
   8 s of the test file's sound in 2.5 s, so 44.1 kHz stereo plays at its full rate with no
   gap, heard 3.2 s after the file is opened (the kernel's fifteen workers made 0.6 s of
   sound a second: decoded ahead, heard after 4.2 s, and run dry once). What sets the time
   to the first sound is how long one piece takes a worker, not how many there are.
-- The player asks for every worker that is free (`mcw_open(MC_MAX_CORES - 1)`) when an MP3 file is opened
+- The player asks for its workers (48: with all 255 a tune was heard 5.4 s after it was
+  opened, with 48 after 2.9 s) when an MP3 file is opened
   and gives them back with the tune. A job is one piece (`mp3_job`): its decoder is on the
   worker's stack, its samples go into the piece's own pages, and it says how far it is in 16
-  bytes of its own, which is how the speed is known before a piece is finished. The first
-  core takes pieces as well. No workers is the common case; the first core then decodes in
+  bytes of its own, which is how the speed is known before a piece is finished. With fewer
+  than eight workers the first core takes pieces as well. No workers is the common case; the first core then decodes in
   order, with one decoder and no early frames.
 - It measures how much sound a second of decoding makes. Fast enough: it plays with half a
   second in hand and decodes a few pieces ahead. With workers it says nothing about speed
@@ -129,9 +130,7 @@ is decoded).
 | `NXPLAY_MODRATE=N` | the rate a tracker tune is mixed at (22050) |
 | `NXPLAY_MEMORY=N` | megabytes of decoded sound it may keep |
 | `NXPLAY_VOLUME=N` | 0 to 256 (200) |
-| `NXPLAY_WARM=2` | an MP3 piece's two early frames decoded whole, as before |
 | `NXPLAY_OWN=1` | the first core takes pieces too, whatever the workers |
-| `NXPLAY_MODMIX=1` | a tracker tune mixed a channel at a time into sums, as before |
 
 It prints when it starts to play (`nxplay: plays from ...`), and at a tune's end a
 `playstat:` line: the sound decoded, the time, and the instructions a second of sound cost
@@ -231,6 +230,8 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
 | `play-test.mod` | `98e66905` of 1,354,752 |
 | `play-test.mp3` | `809816e7` of 1,594,368, with any number of workers and with none |
 | the same with `NXPLAY_HALF=1` | `9efedb8f` of 797,184 |
+| `v44.ogg` of `media.md` (25 s, 44.1 kHz stereo) | `4bc10ffb` of 2,205,000, with 48 workers and with none |
+| `v22m.ogg` (22,050 Hz mono) | `303b2940` of 551,250, the same |
 
 - The MP3 sums are also what the same two files compiled on the host give (x86-64, gcc):
   the machine's float instructions under `rvc_cpu` decode as the host does.
@@ -260,7 +261,7 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
 
 ## Not done
 
-XM. A list of tunes. Playing a WAV file where it lies in the ROM (the
+XM. Playing a WAV file where it lies in the ROM (the
 card can; a stream keeps one way for every kind). While "Open..." has its window the tune
 is held: `ui_choose_file` has the program's events until it is done.
 
@@ -269,3 +270,25 @@ A FLAC subframe is predicted with 32-bit sums whenever its own coefficients allo
 coefficients' sizes times the largest sample bounds every partial sum, and under 2^31 the
 samples are the same. A second of the sample tune went from 3.0 million instructions to 2.2,
 its start from 4.9 to 3.5, and the sum of all its samples is `d1c7bfb4` as before.
+
+## 15 October 2026: the decoders are libmedia's
+
+The player asks libmedia for a tune (`media_audio_open`) and decodes it either in order on
+the first core (`media_audio_read`, a slice between two looks at the window: WAV, MOD, and any
+kind without workers) or in the library's pieces: an MP3, Ogg Vorbis or FLAC file's, given to
+the workers as before, each into its place in the ring. A job (`piece_job`) is
+`media_audio_piece_step` until the piece is done or the player drops it: one step is an MP3
+frame, a FLAC block or 4,096 frames of Vorbis, and how far it is goes in the slot's head, which
+is the speed's measure (an MP3 piece's early frames no longer count as progress). The
+decoders are made when the tune is opened, one a worker and one for the first core, which
+takes pieces with fewer than eight workers. A Vorbis piece is half a second with 24 workers or
+more, else a second: each begins with a seek.
+
+At half rate the library's frames are the half rate's: the rate on the window and in
+`playstat` is the one played (22,050 Hz for a 44.1 kHz file). Gone with the move:
+`NXPLAY_WARM` and `NXPLAY_MODMIX` (the old ways they chose, kept for measuring). Every sum of
+"Checking it" is as it was, with workers and with `NXPLAY_WORKERS=0`, under `rvc_cpu`;
+`RVC_RACES` over the Vorbis file and the FLAC and MP3 test files: nothing undone and nothing
+read as it was. With no workers an MP3 file is read in order now, not in pieces on the first
+core: 12.9 million instructions a second of sound. Not checked: the window's keys and seeks
+with a sound card (`rvc_cpu` has none, so a tune ends at once there), and anything on the card.

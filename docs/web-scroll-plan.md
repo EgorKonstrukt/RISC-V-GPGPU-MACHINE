@@ -1,6 +1,9 @@
 # Plan: the browser's scroll without stutters
 
-Written 13 October 2026. Nothing here is built or measured; it is a plan from reading
+Since built, the ring of strips made by worker cores (`strips_work` in `nxweb.c`; `docs/web.md`,
+"Strips"). What follows is the plan as it was written.
+
+Written 13 October 2026. Nothing here was built or measured then; it was a plan from reading
 `nxweb.c`, `scr_shaderemu.c`, `docs/gpu.md`, `docs/nanox.md` and `docs/multicore.md`. What
 the reading did not settle is under "To find out first".
 
@@ -142,3 +145,31 @@ takes to appear and does nothing for scrolling.
   window system; nxray still gets 255 workers when it asks.
 - **By eye**: the developer, in the world. The page with the captured frames comes with the
   report.
+
+## What was built (15 October 2026)
+
+| # | | What came of it |
+|---|---|---|
+| 0 | measured | `NXWEB_TIME=1` says, for each scroll, the longest gap between two steps in the guest's ms and in the first core's instructions, and how much a step was the browser's own; `NXWEB_ROWS=720` holds the pixmap to the world's rows. A redraw was 112 to 364 thousand instructions between two steps (`docs/web.md`, "Strips") |
+| 1 | built | the ring of strips, drawn by requests on a pixmap of 64 rows and copied into a slot, so a strip's text reaches no other slot; `NXWEB_STRIPS=requests` |
+| 2 | built | a strip's own list, submitted by the browser; `NXWEB_STRIPS=here`. Pictures the image keeps are in it too (mode 4 from the ROM), which this plan had for later: Wikipedia's main page needed it |
+| 3 | built | the lists made by up to four lent workers. Every list strip the same pixels as by requests (`NXWEB_CHECK=1`, on four pages), races and workers' faults 0, `nxray` beside it still has 255 workers |
+| 4 | not built | its condition is not met: a step's own work is a thousand instructions, and what is left between two steps is the window system's copy. And a worker cannot submit a list: the lock word does not keep a worker and the first core apart in one pass (an atomic swap is no exclusion between cores, `docs/multicore.md`, "Races"); it would want a submit word of its own |
+| 5 | half built | styles by subtrees on workers (`docs/web.md`, "Styles on the worker cores"): a page's first picture 14 to 21% fewer instructions of the first core. The sheets beside the tree are not: both write one table of atoms |
+
+What "To find out first" found:
+
+- **The lists' memory** is a second pixmap of the server's, used as plain memory (24 KB a slot).
+- **`GrGetWindowInfo` on a pixmap** answered no address: the server has that addition now
+  (`microwindows.patch`, `surface_locate` answers 0 for a pixmap in the server's memory).
+- **A second program's lists beside the server's**: any order is right, since every list reads
+  the pixmap when it is drawn, after the copies of those before it, and the copies are made in
+  the order the lists were. The one wrong order is the server's drawing on a slot still in its
+  queue when the browser submits a list for the same slot: before that, the browser reads a
+  pixel of the pixmap, which the server answers once its drawing is in.
+- **A copy past the target's rows**: a strip's list is drawn into the target's top 64 rows and
+  may be copied anywhere, but the server still draws on the pixmap whole (a strip by requests,
+  a new pixmap's black), so the pixmap stays under the target.
+- **Strip height** stayed 64: 11 slots in the world, the view's six or seven and four ahead
+  (256 rows). A page key moves 360, and the rest are made between the scroll's first steps:
+  after a page's first view no measured scroll but a jump waited for a strip of the view.

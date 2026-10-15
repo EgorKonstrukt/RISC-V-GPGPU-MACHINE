@@ -133,7 +133,8 @@ same for both ways of copying, every frame of 40, in `IMDEMO_HOLD=1` alone, with
 
 ## What it costs
 
-On the harness (D3D11, about 2.7 million instructions a second with the desktop running):
+On the harness (D3D11, about 2.7 million instructions a second with the desktop running), before
+the sections above (12 and 13 October 2026) cut a frame and its copy:
 
 | | instructions a frame | of them copying triangles | vertices |
 |---|---|---|---|

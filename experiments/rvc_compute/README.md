@@ -1,6 +1,6 @@
 # The tick as a compute shader (an experiment)
 
-A copy of `experiments/rvc_opt` whose `CPUTick` pass has a second entry, `tick_cs`: the same
+A copy of `experiments/rvc_opt` as it was in early October 2026 (one core, not kept up with it) whose `CPUTick` pass has a second entry, `tick_cs`: the same
 emulation as one thread of a compute shader instead of the pixels of the CPU's zone. It is
 here to answer one question, how much the fragment shader costs the emulator, and is not
 what the machine runs: the D3D11 harness only, and a VRChat world cannot dispatch a compute

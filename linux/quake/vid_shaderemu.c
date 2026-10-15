@@ -90,6 +90,8 @@ void GL_Init (void)
 /* the host shows the world round a seat: what is beside and behind the camera is drawn too (docs/holodeck.md) */
 int se_all_round;
 
+extern qboolean scr_drawloading;	/* gl_screen.c */
+
 extern int se_scene_split;	/* scene_shaderemu.c */
 
 void GL_BeginRendering (int *x, int *y, int *width, int *height)
@@ -100,8 +102,10 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	*x = *y = 0;
 	seglSize (width, height);
 	se_all_round = host && SEGL_HOST_HOLODECK (host);
-	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
-	seglWorldFlat (key_dest != key_game || cls.state != ca_connected || cls.signon != SIGNONS);
+	/* a menu, the console, a level loading: a picture for a screen, not a world for a room
+	 * (the loading plaque's frame too: it stays while the next level replaces what it drew) */
+	seglWorldFlat (key_dest != key_game || cls.state != ca_connected || cls.signon != SIGNONS || scr_drawloading ||
+		scr_disabled_for_loading);
 	if (!se_scene_split)	/* (a frame drawn on a worker: the first core drew its bar, SE_ScreenRecord) */
 		sb_updates = 0;		/* every frame is drawn whole: the status bar too */
 }
@@ -122,7 +126,7 @@ static unsigned cycles (void)
  */
 static unsigned phase, phase_since, phase_cycles[7];
 extern unsigned se_drawn[2];	/* gl_rmain.c */
-extern unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind;	/* server_shaderemu.c */
+extern unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind, se_server_ticks[4];	/* server_shaderemu.c */
 extern unsigned se_ahead_used, se_ahead_late, se_ahead_own, se_ahead_wrong;	/* gl_rlight.c */
 extern unsigned se_scene_frames, se_scene_waits, se_scene_instructions, se_scene_window, se_scene_waited, se_scene_unrecorded;
 extern int se_scene_split;	/* scene_shaderemu.c */
@@ -168,8 +172,15 @@ void GL_EndRendering (void)
  * it, holds it and says what the frames cost when it has joined it. */
 void SE_SceneSwap (void)
 {
+	extern unsigned se_draw_ticks[3];
+	unsigned at;
+
 	SE_FrameEnd ();
+	__asm__ volatile ("rdtime %0" : "=r"(at));
 	qglSwap ();
+	se_draw_ticks[1] -= at;
+	__asm__ volatile ("rdtime %0" : "=r"(at));
+	se_draw_ticks[1] += at;
 }
 
 void SE_AfterSwap (void)
@@ -213,29 +224,66 @@ static void after_swap (void)
 			n, now - since_ms, n ? (cycles () - since_cycles) / n : 0, vertices, kept >> 10, in_gpu >> 10, gpu_size >> 10, evicted);
 		if (n) {
 			unsigned *c = phase_cycles;
+			static unsigned drawn_was[2];	/* (the drawing worker counts on: read here, never written) */
+			unsigned drawn[2] = {se_drawn[0] - drawn_was[0], se_drawn[1] - drawn_was[1]};
 
 			printf ("quakestat: a frame in thousands: server %u, in view %u, level %u, models %u, particles and weapon %u, 2D and swap %u, rest %u; %u.%u models and %u.%u brush models drawn\n",
 				c[1] / n / 1000, c[2] / n / 1000, c[3] / n / 1000, c[4] / n / 1000, c[5] / n / 1000, c[6] / n / 1000, c[0] / n / 1000,
-				se_drawn[0] / n, se_drawn[0] * 10 / n % 10, se_drawn[1] / n, se_drawn[1] * 10 / n % 10);
+				drawn[0] / n, drawn[0] * 10 / n % 10, drawn[1] / n, drawn[1] * 10 / n % 10);
 			memset (phase_cycles, 0, sizeof phase_cycles);
-			se_drawn[0] = se_drawn[1] = 0;
+			drawn_was[0] += drawn[0], drawn_was[1] += drawn[1];
 			if (se_server_frames) {
 				printf ("quakestat: the server on a worker core: %u frames of its own to these %u (%u drawn between two of them, %u standing at the newer, %u behind the older), %u thousand instructions each, %u.%u passes waited for one\n",
 					se_server_frames, n, se_server_between, se_server_held, se_server_behind, se_server_cycles / se_server_frames / 1000, se_server_passes / se_server_frames, se_server_passes * 10 / se_server_frames % 10);
+				printf ("quakestat: the server's frame in ms of the clock: %u.%u to begin, %u.%u running, %u.%u until taken, %u.%u until the next\n",
+					se_server_ticks[0] / 5 / se_server_frames, se_server_ticks[0] * 2 / se_server_frames % 10,
+					se_server_ticks[1] / 5 / se_server_frames, se_server_ticks[1] * 2 / se_server_frames % 10,
+					se_server_ticks[2] / 5 / se_server_frames, se_server_ticks[2] * 2 / se_server_frames % 10,
+					se_server_ticks[3] / 5 / se_server_frames, se_server_ticks[3] * 2 / se_server_frames % 10);
+				memset (se_server_ticks, 0, sizeof se_server_ticks);
+				{	/* (the server's own counts: read, never written here) */
+					extern unsigned se_kept_hits, se_kept_asked;	/* world.c */
+					static unsigned hits, asked;
+
+					printf ("quakestat: the server's moves through a model's hull: %u of %u kept from before\n",
+						se_kept_hits - hits, se_kept_asked - asked);
+					hits = se_kept_hits, asked = se_kept_asked;
+				}
 				se_server_cycles = se_server_frames = se_server_passes = se_server_between = se_server_held = se_server_behind = 0;
 			}
 			if (se_scene_frames) {
 				printf ("quakestat: %u of these frames drawn by a worker core, %u instructions each, %u waited for; here %u between two frames and %u waiting, a frame\n",
 					se_scene_frames, se_scene_instructions / se_scene_frames, se_scene_waits, se_scene_window / se_scene_frames,
 					se_scene_waited / se_scene_frames);
-				if (se_scene_unrecorded)
-					printf ("quakestat: %u frames without their 2D screen (not recorded)\n", se_scene_unrecorded), se_scene_unrecorded = 0;
+				{	/* (the drawing worker's clock: read, never written here) */
+					extern unsigned se_draw_ticks[3], se_scene_wait_ticks, mcw_faults;
+					static unsigned was[3], faults;
+					unsigned d[3], k;
+
+					for (k = 0; k < 3; k++)
+						d[k] = (se_draw_ticks[k] - was[k]) * 2 / se_scene_frames, was[k] = se_draw_ticks[k];
+					printf ("quakestat: a frame in tenths of a ms of the clock: drawn in %u, of them %u in the swap; the drawing worker idle %u, this core waiting for it %u; %u pages brought for workers\n",
+						d[0], d[1], d[2], se_scene_wait_ticks * 2 / se_scene_frames, mcw_faults - faults);
+					se_scene_wait_ticks = 0;
+					faults = mcw_faults;
+				}
+				{	/* (the recording worker's count: read, never written here) */
+					static unsigned was;
+
+					if (se_scene_unrecorded != was)
+						printf ("quakestat: %u frames without their 2D screen (not recorded)\n", se_scene_unrecorded - was);
+					was = se_scene_unrecorded;
+				}
 				se_scene_frames = se_scene_waits = se_scene_instructions = se_scene_window = se_scene_waited = 0;
 			}
-			if (se_ahead_used || se_ahead_late || se_ahead_own) {
-				printf ("quakestat: the light under models that moved: %u walks a worker made, %u made here while it had not, %u made here and not given out; %u not as made here (QUAKE_LIGHTPOINT=check)\n",
-					se_ahead_used, se_ahead_late, se_ahead_own, se_ahead_wrong);
-				se_ahead_used = se_ahead_late = se_ahead_own = se_ahead_wrong = 0;
+			{	/* (counted where the models are drawn, a worker too: read, never written here) */
+				static unsigned was[4];
+				unsigned d[4] = {se_ahead_used - was[0], se_ahead_late - was[1], se_ahead_own - was[2], se_ahead_wrong - was[3]};
+
+				if (d[0] || d[1] || d[2])
+					printf ("quakestat: the light under models that moved: %u walks a worker made, %u made here while it had not, %u made here and not given out; %u not as made here (QUAKE_LIGHTPOINT=check)\n",
+						d[0], d[1], d[2], d[3]);
+				was[0] += d[0], was[1] += d[1], was[2] += d[2], was[3] += d[3];
 			}
 #ifdef SE_COUNT
 			printf ("quakestat: a frame's server: %u point tests of %u nodes, %u moves, %u point contents, %u links, %u QuakeC calls of %u statements; %u water and %u sky vertices\n",
@@ -520,13 +568,16 @@ void IN_Move (usercmd_t *cmd)
 		body = aimed = cl.viewangles[YAW];
 		mouse_count = host ? SEGL_HOST_MOUSE_X (host) : 0;
 	}
-	{	/* a sitter's fire and jump: the right trigger and the left, or a desktop's keys for them */
+	/* the eye 46 units over the floor (22 over a player's origin, 24 over its feet); near 4, far 4096 */
+	if (host && r_refdef.fov_x > 0 && r_refdef.fov_y > 0)
+		seglWorldEye (2, 46, 4, 4096, 1 / tan (r_refdef.fov_x * (M_PI / 360)), 1 / tan (r_refdef.fov_y * (M_PI / 360)));
+	{	/* a sitter's fire and jump: the right trigger and the jump button, or a desktop's keys for them */
 		extern kbutton_t in_attack, in_jump;
 		static int fire, jump;
 		int play = seated && key_dest == key_game;
 
 		word_button (&in_attack, &fire, play && SEGL_HOST_HAND_TRIGGER (host, 1));
-		word_button (&in_jump, &jump, play && SEGL_HOST_HAND_TRIGGER (host, 0));
+		word_button (&in_jump, &jump, play && SEGL_HOST_JUMP (host));
 	}
 	if (seated == 1) {
 		float turn = SEGL_HOST_HAND_YAW (host, 1) * (360.0f / 65536.0f), forward, s, c;
@@ -739,8 +790,8 @@ void SE_View (void)
 	if (said < 0)
 		said = getenv ("QUAKE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
 	if (said && ++said % 20 == 0)
-		Sys_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f\n", seated, cl.viewangles[YAW], cl.viewangles[PITCH], body, dragging,
-			cl_entities[cl.viewentity].origin[0], cl_entities[cl.viewentity].origin[1]);
+		Sys_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f %.0f eye %08x\n", seated, cl.viewangles[YAW], cl.viewangles[PITCH], body, dragging,
+			cl_entities[cl.viewentity].origin[0], cl_entities[cl.viewentity].origin[1], cl_entities[cl.viewentity].origin[2], host ? host[(0x6c - 0x360) / 4] : 0);
 	if (seated != 1 || !host)
 		return;
 	VectorCopy (level, r_refdef.viewangles);

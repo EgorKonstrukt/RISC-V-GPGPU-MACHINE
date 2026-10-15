@@ -14,7 +14,8 @@ desktop's 1280x720, which costs the game nothing (the GPU does the stretching).
 In the guest: `nano-X -p & tdawn` at the console (it is also listed for the desktop's Start
 menu, which was not tried). The data is the 1995 demo's (GDI missions 1, 3, 5, 6 and 10; the
 menu starts the first), which the build fetches and the repository does not keep. Effects and
-speech play on the sound card (`docs/sound.md`); there is no music.
+speech play on the sound card (`docs/sound.md`); there is no music in the missions (the demo
+has none), only the map screen's and the score screen's tunes (`MAP1.AUD`, `WIN1.AUD`).
 
 ## What the build is made of (`linux/tdawn`)
 
@@ -154,7 +155,8 @@ thirds of a frame. Now the map is a scene of rectangles the GPU draws, and the g
 goes over it with holes where the map is (index 0, which the game never draws).
 
 - **Terrain stays.** Each cell of the map is a quad that is written once, when the cell is
-  first seen, and kept (`seglKeep`): its picture is one of 42 x 42 icons in an atlas. Scrolling
+  first seen, and kept (`seglKeep`): its picture is one of 1,482 icons in an atlas (each in 26
+  x 26 with a gutter: "It was the window's size" below). Scrolling
   is a matrix: the same quads somewhere else, and nothing of the terrain is touched.
 - **Everything else is rectangles of each frame**, in the order the game draws: overlays and
   smudges (the cell's own `Draw_It`, without its terrain), then every object of every layer
@@ -234,7 +236,8 @@ second, where these frames would be 20 to 23, 15 to 17 and 11 to 16 a second (no
 Where a frame of mission 1 goes now (`tdstat:` says): the scene 60k to 68k, of which the
 cells 13k, the shroud 8k and the objects 40k (53 written again as they were, 12 drawn anew).
 A rectangle that joins the command before it is written by a function that calls nothing
-(`seglSprite`). In missions 3 and 10 logic is the larger part: in mission 10 looking for
+(`seglSprite`; in batches by `seglSprites` since 14 October 2026, "The workers on the second
+layer" below). In missions 3 and 10 logic is the larger part: in mission 10 looking for
 targets is 6% of a frame (it was 8% to 10% before the scan read bits) and path finding 12%.
 
 The figures below are the game's own drawing (`TDAWN_RENDER=soft`), from before:
@@ -268,6 +271,7 @@ Each run prints these figures (`tdstat:` lines, every five seconds):
     TDAWN_RESIZE=WxH    give the window that size after its 60th frame, as a drag would
     TDAWN_SCROLL=N      scroll the map for N frames from frame 20, twelve each way: east, south, west, north, then the four diagonals
     TDAWN_SELECT=N      every N frames the player's units and soldiers are selected (their bars and corners are drawn into the page)
+    TDAWN_MOVE=N,DX,DY  at frame N the player's units and soldiers are selected and sent, as by a click, to the cell DX,DY from the view's middle (TDAWN_MOVE_UNSELECT=1: unselected after; Red Alert too)
     TDAWN_DRAG=N[,S]    from the Nth frame the map is dragged a pixel a frame, every place of a cell and the map's edges (from step S)
     TDAWN_SUMS=1        after every frame, a sum of the map's part of the picture as the program has it ("Checking it")
     TDAWN_CHECK_GPU=1   after every frame, the GPU's picture in the window's buffer against the program's ("Checking it")
@@ -568,7 +572,7 @@ is a worker's (`linux/tdawn/host.c`, which Red Alert shares):
   It is compiled with a section a variable, each starting on 16 bytes (`build.sh`), because
   two cores must not store to the same 16.
 - A waited-for job would cost more than it saves (a pass or two at each end): the putting
-  off is what makes it pay. A scene of fewer than 32 rectangles is made here as before.
+  off is what makes it pay. A scene of fewer than 20 notes is made here as before.
 
 Mission 10, drawing: 51 to 43 thousand instructions a frame (Red Alert's first Soviet
 mission: 91 to 67 thousand, 16.4 to 17.8 frames a second). The state sums are the same and
@@ -582,7 +586,8 @@ layer", `docs/multicore.md`), and any worker does any job: the scene's (`mcw_cal
 `mcw_ready` and joined), the files of frames, a unit's other path searches and the 32 that ask
 about cells (`mcw_try_call`, added to `mcwx` for this: on a worker with nothing to do, or not
 at all, so that a search or a file is never made on the first core by mistake). There are no
-fixed numbers of workers any more: 42 are opened and whichever is free takes the next job.
+fixed numbers of workers any more: 42 are opened (10 in Red Alert, which has no workers that
+ask about cells) and whichever is free takes the next job.
 Red Alert's movie shares a frame's rows with `mcw_for` and unpacks the next frame's pointers
 with `mcw_try_call` (`linux/ralert/workers.c`). With `TDAWN_MARK` (`RALERT_MARK`) the game
 counts what each kind of job ran in `mcwx`'s counters and says it before the second mark
@@ -672,6 +677,58 @@ objects in the view. Checked: the state sums at frames 300 and 1,300, `TDAWN_CHE
 (300, 600, 750) and the Allied mission (262, 500, 800) by `rvc_harness --cpu --warp` before
 and after: the same pixels but for Red Alert's palette cycling by the clock, which two runs
 of one build show too.
+
+## Selected units: their bars (15 October 2026)
+
+Reported from the world: the health bars of selected units blinked, and while selected units
+moved on the screen a game ran at about half its speed, back to full when they left it. Two
+causes, both games:
+
+- **The bars went into the wrong page.** Between frames the game's page is the seen one
+  (`Render` sets the hidden one and gives the old one back), and the worker that draws the
+  objects a frame behind drew a selected unit's bars and box there: each one copied the whole
+  hidden page into the seen one first (`Catch_Up`, the whole page, on the worker while the first
+  core waited at the join), and the frame was shown from the hidden page without them,
+  the next showing of the same scene from the seen page with them. `page copies` in the stat
+  line was 1 a frame with units selected (0 before). The worker now draws into the hidden page
+  (`ShaderEmu_GL_Post`), and the first core has its own page back at the join (`Behind_Joined`,
+  called by `host.c` on the first core).
+- **A bar made the whole page holes.** Anything the game draws over the map itself marks the
+  page touched, and the next scene filled all of the view's part of the page and drew the
+  object anew: this was so before 14 October too (mission 1, six units selected and moving:
+  124 thousand instructions a frame against 65). The bars and box are now `gl.cpp`'s
+  (`ShaderEmu_GL_Bars`, called from `TechnoClass::Draw_It`): the same pixels as the game's
+  calls (`Remap`, `Draw_Rect`, `Fill_Rect`, `Draw_Line`, clipped to the window), written into the
+  hidden page without its lock (whose count is the first core's), kept with the object by the
+  map's pixels and put again every frame it is shown as it was, and made holes again by their
+  own pixels before the next scene. An object with bars stays as it was drawn.
+
+`TDAWN_MOVE=100,8,0`, `rvc_cpu --ips 2000000`, the stat windows ending in frames 121 to 330
+(core 0's thousands of instructions a frame; HEAD is the build of 5680284):
+
+| | Before 14 Oct | HEAD | Now | Nothing selected, now |
+|---|---|---|---|---|
+| Mission 1, 6 sent | 15.1 fps, 124k | 18.2 fps, 74k | 27.0 fps, 66k | 30.6 fps, 59k |
+| Mission 3, 12 sent | 9.9 fps, 188k | 14.4 fps, 110k | 17.1 fps, 108k | 18.6 fps, 99k |
+| Mission 10, 15 sent | 9.2 fps, 204k | 13.7 fps, 112k | 16.5 fps, 112k | 18.7 fps, 99k |
+| Red Alert, Soviet, 12 sent | 8.1 fps, 230k | 8.1 fps, 115k | 18.5 fps, 99k | 21.4 fps, 86k |
+| Red Alert, Allied, 15 sent | 6.8 fps, 274k | 9.0 fps, 109k | 16.0 fps, 102k | 18.4 fps, 89k |
+
+(HEAD's first core ran fewer instructions a second: it waited for the worker.) Checked: held
+frames 150 to 153 of mission 1 and of the Soviet mission (`rvc_harness --cpu --warp`) the same
+pixels as before 14 October but for Red Alert's water by the clock, where HEAD's had no bars
+or boxes at all (mission 1: 1,164 white pixels of 1,912); `TDAWN_SUMS` with
+`TDAWN_REFRESH=1` against without: 0 frames differ with `TDAWN_MOVE` in mission 3 and the
+Soviet mission and in the drag of mission 1 (`TDAWN_DRAG=20 TDAWN_SELECT=10`), the page the
+same as a build that drew the bars anew every frame; the state sums at 300 and 1,300 frames
+of missions 1, 3 and 10 and both Red Alert missions as before; `TDAWN_CHECK_PATHS=1` 0 wrong;
+`RVC_RACES` 0 undone with units selected and moving (a worker's `Lock` of the page was undone
+by the first core's: hence no lock). `TDAWN_CHECK_GPU` cannot see the fault: it reads the
+hidden page as the program's picture.
+
+Found on the way and not changed: in the Allied mission's drag (`RALERT_REFRESH=1` against
+without, nobody selected) a soldier is drawn a pixel high for 71 frames (418 to 488): a shape
+that changes without the object marked, as kept; HEAD has it too.
 
 ## Target scans kept, tried
 
@@ -822,8 +879,8 @@ doing it in one frame. Three things, all in `findpath.cpp` (`ShaderEmu_Find_Path
   moves and its list of cells are put back as the search would have left them.
 - A search whose edge walks have come by 48 cells is a long one, and the unit's other
   searches begin then on worker cores, each with its own threshold, while the first core
-  goes on with its own (`ShaderEmu_Path_Help`; workers 3 to 5, `host_path_cores()` in
-  `host.c`). A search stores only into its core's own memory (its path, its lists, its kept
+  goes on with its own (`ShaderEmu_Path_Help`; up to 3, on whichever workers are free since
+  "The workers on the second layer", `host_path_cores()` in `host.c`). A search stores only into its core's own memory (its path, its lists, its kept
   answers: `ShaderEmu_Core`, 16 bytes apart); which core is in the threshold's upper bits
   all the way down. Searches nobody asks the result of are stopped and waited for before
   the unit is put back. (Until 13 October 2026 the help was for the unit after one whose
@@ -872,16 +929,55 @@ worker from the shorter walk's end while the first core finishes the longer (thr
 of mission 3's 23, 480 thousand each); the two walks of one obstacle on two cores gain
 nothing, since it is the long one that is waited for.
 
+## Movies
+
+Tiberian Dawn's movies are 320 x 200 in 4x2 blocks (`UnVQ_4x2`; Red Alert's are 4x4, `docs/ralert.md`,
+"Movies, and the worker cores"). Since 15 October 2026 a frame's block rows are libmedia's
+`media_vq2_rows` (`docs/media.md`, "VQA"), shared between worker cores: the drawer is given
+`ShaderEmu_UnVQ_4x2` in place of the game's (`common/vqadrawer.cpp`, Tiberian Dawn's patch,
+compiled out of Red Alert's, `SHADEREMU_RA`), and `build.sh` links `libmedia.a`
+(`TDAWN_MEDIA=FILE` for another build of it).
+
+- The movie has the workers as Red Alert's has them: the first frame closes the scene's
+  (`host_workers_close()`, which the next mission opens again) and opens fifteen, and
+  `Play_Movie` gives them back when the movie is closed (`ShaderEmu_Movie_End`).
+- `TDAWN_MOVIE_WORKERS=N` uses no more than N (0: this core alone); `TDAWN_MOVIE_CHECK=1`
+  decodes every frame with the game's own `UnVQ_4x2` as well, compares the two, and says at
+  the movie's end how many differ (`tdawn: movie NAME.VQA: ...`; also with `TDAWN_FRAMES`).
+- The demo has no movies. The decoder was checked on the build computer against the game's
+  own C (`UnVQ_4x2` and `UnVQ_4x4` of the fetched tree, `media_vq2_rows` and `media_vq4_rows`
+  with threads for workers): random codebooks and pointers, solid blocks among them, frames
+  of 320 x 200, 640 x 400, 320 x 156 and 640 x 200, alone, inside a wider page and at an
+  offset of 4 bytes, with 0, 1, 3 and 8 workers: 1,152 frames, 172.8 million bytes, 0 differ.
+- And in the game, under `rvc_cpu`, with a synthetic VQA (version 2, 320 x 200, 4x2 blocks, a
+  whole codebook every frame, a quarter of the blocks solid; no sound) linked under every movie
+  name into `/tmp/tdawn`: `TDAWN_AUTO=1 TDAWN_MOVIE_CHECK=1` played the demo's briefing and
+  action movies (`GDI1.VQA`, `LANDING.VQA`), 26 frames each before the Return, with 15 workers,
+  0 of 26 differ; `RVC_RACES`: 0 undone. (The demo looks for those two; the intro's `LOGO` and
+  `INTRO2` it does not play with its default settings.)
+- With the full game's own movies (`DINO.VQA` and `NOD1PRE.VQA` of the multimedia samples at
+  samples.mplayerhq.hu, their checksums the archive's; not kept in the repository): `DINO.VQA`
+  under those names, 112 frames of 320 x 156 each time, 0 of 112 differ, and `RVC_RACES` 0 undone.
+  Every picture of both files is ffmpeg's to the byte and the sound the game's own decoder's
+  (`linux/libmedia/test/check_vqa.py`, `docs/media.md`, "VQA").
+- That run first showed 2 stores undone: the profile line (every `TDAWN_STATS_MS`, 5 s at
+  first) zeroed `gl.cpp`'s counters on the first core while the worker drawing the objects a
+  frame behind (`Behind_Draw`) added to them and wrote beside them. The profile now settles the
+  scene first (`host_scene_settle()`), in both games' `conquer.cpp`.
+
 ## Not done
 
+- The movies on the GPU, as Red Alert's (`host_picture`): the frame is still the game's page.
 - The cloak effect on the GPU (the game draws such a shape itself, over everything), and the
   sidebar, radar and text, which are still pixels.
 - Path finding in one piece: a search's two edge walks could be two cores' (a worker cannot
-  post a job, so a worker's search would need a third core told by hand).
+  post a job, so a worker's search would need a third core told by hand; "A unit's path
+  searches" found the two walks of one obstacle on two cores gain nothing).
 - Text that stays: a tooltip is printed again every frame it is up, 13k (a message is not).
 - A soldier that walks is drawn anew every step, some 2,000 instructions through the game's
-  own `Draw_It`: the larger part of a scene with many of them moving.
-- Music. The full game's data (the demo's is 6 MB; the CDs' movies and music are not wanted).
-- Red Alert is the same tree (`BUILD_VANILLARA`) and is not built.
+  own `Draw_It`: the larger part of a scene with many of them moving (on a worker now, "The
+  objects a frame behind").
+- Music in the missions. The full game's data (the demo's is 6 MB; the CDs' movies and music are not wanted).
+- Red Alert is the same tree (`BUILD_VANILLARA`), built by `linux/ralert/build.sh` (`docs/ralert.md`).
 - With `NANOX_SIZE=640x480` the window has no frame (640x400 leaves no room for one) and is
   left through the game's own menu (Escape).

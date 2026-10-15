@@ -8,24 +8,27 @@ there, both about how the GPU runs pixels: the state as full tiles of pixels, an
 keep no more than they need ("What a pass costs" and the sections after it).
 
     bin\rvc_harness.exe --rvc experiments\rvc_opt --image linux-net
-    / # mctest            (3 workers; "mctest N LIMIT" for other numbers, "mctest N LIMIT bench" for the cost of a pass)
+    / # mctest            (every worker; "mctest N LIMIT" for other numbers, "mctest N LIMIT bench" for the cost of a pass)
 
-The machine has 64 cores wherever it can have workers: the D3D11 harness with its eight
-targets, `rvc_cpu` and Unity compile `CORES=64`, and there is no switch for fewer (there was
-`--cores N`). The one-core machine is what is left where there are no workers: D3D12,
-`--no-mrt`, `--profile` (the code is under `#if CORES > 1`). The 64 cost core 0 about 12%
-while no worker runs: a shell loop is 3.6M instructions a second, 4.1M on one core.
+The machine has 256 cores wherever it can have workers: the D3D11 harness with its eight
+targets, `rvc_cpu` and Unity compile `CORES=256` ("Up to 256 cores"), and there is no switch
+for fewer but the harness's `RVC_CORES=N`, a measurement (there was `--cores N`). The one-core
+machine is what is left where there are no workers: D3D12,
+`--no-mrt`, `--profile` (the code is under `#if CORES > 1`). The 64 of before cost core 0 about 12%
+while no worker ran: a shell loop was 3.6M instructions a second, 4.1M on one core (parked
+cores cost nothing now: "Up to 256 cores").
 
 ## How it is made
 
-- **A block of state a core.** Core 0's state is the 64 texels wide block it always was. Core k's is
-  a block `CORE_PITCH` (256) texels further right in the state rows, which were empty there.
-  `STATE_TEX` adds the block's place (`state_off`); RAM is read with `RAM_TEX`, which nothing
-  moves. The tick pass draws core 0's rectangle and two small zones a worker (below), all
-  before any is copied back.
+- **A block of state a core.** Core 0's state is the 64 texels wide block it always was. The
+  workers' is a strip of whole 8 x 8 tiles in bands beside it, in the state rows, which were
+  empty there ("The geometry", "Up to 256 cores"; it was once a block `CORE_PITCH` (256)
+  texels further right a core). `STATE_TEX` adds the core's place (`state_off`); RAM is read
+  with `RAM_TEX`, which nothing moves. The tick pass draws core 0's rectangle and a quad for
+  each worker with something to run, all before any is copied back.
 - **The same RAM.** Every core reads RAM as the last commit left it, plus its own writes (its
-  write cache). The commit pass looks a RAM texel up in every core's cache, the highest core
-  last. So a core sees another's stores one pass later.
+  write cache). The commit draws every core's stores, the highest core's last ("The commit as
+  points"). So a core sees another's stores one pass later.
 - **Sixteen bytes, one writer.** The write cache holds whole texels: a core that stores one word
   carries the texel's other three as it read them, and would undo another core's store to them
   in the same pass. What changes hands is therefore 16 bytes with one writer a pass. There are
@@ -50,9 +53,10 @@ while no worker runs: a shell loop is 3.6M instructions a second, 4.1M on one co
   calls that are about which thread is calling (a new thread, a new program).
 - **No TLB kept.** A worker starts every pass with empty TLBs and walks the page table for
   each page it uses in the pass ("What paging costs a worker", below).
-- **The mailboxes** are one page of the GPU device's memory at `0x86C00000`, which `/dev/gpu`
-  maps: the start words, and 64 bytes a core (its job, its answer, its fault and the word
-  that lets it go on). `programs/mc/mc.h` is the layout.
+- **The mailboxes** are eight pages of the GPU device's memory at `0x86C00000`, which `/dev/gpu`
+  maps: the start words, the kernel's words, a system call's words, and from `0x4000` 64 bytes
+  a core (its job, its answer, its fault and the word that lets it go on). `programs/mc/mc.h`
+  is the layout ("Up to 256 cores").
 - **A program that ends** has its workers parked by the kernel (the driver's release writes
   "MCST" into the start words of the cores it had): a worker must not go on in memory that is
   being given away.
@@ -189,10 +193,10 @@ without the TLBs' 409 texels and with a smaller write cache would be half the si
 
 A worker keeps no TLBs from one pass to the next, so the 409 texels of the TLBs were 42% of
 its pixels running the whole tick to write back what it does not need. It keeps the CPU's 44
-texels, the write cache's 512 and the float registers' 8 and nothing else, and they are
+texels, the write cache's 512 and the float registers' 8 and nothing else, and they were
 laid out as whole tiles, which is how the GPU runs pixels: the first 512 where they are
 (64 x 8), and the cache's last 44 and the float registers in a block of 13 x 4 under those, four to a column
-(`MC_ROWS`, `mc_state_at()` in `src/types.h`). The pass draws two zones for a worker, 64 x 8
+(`MC_ROWS` in `src/types.h` then; "The geometry", below, replaced it). The pass draws two zones for a worker, 64 x 8
 and 16 x 4: 576 pixels for 556 texels. (As a row of their own the 44 would be a line one
 pixel high, which the shape sweep above says costs twice its pixels.)
 
@@ -219,13 +223,15 @@ And `mctest N 480000` in real time, the primes below 480,000 on core 0 alone and
 
 So three workers come almost free and are the place to be; more still gain, less and less,
 and the parked ones cost core 0 a little (31 to 35 s alone: the commit pass looks a RAM texel
-up in every core's write cache). With more than eight cores the blocks have to be closer
-than 256 texels: `--core-pitch 128`.
+up in every core's write cache). With more than eight cores the blocks had to be closer
+than 256 texels: `--core-pitch 128` (the harness ignores it now: the workers are one strip,
+"The geometry").
 
 ## The geometry
 
 (Since 11 October 2026 the kernel sets one geometry, once: as many workers as the machine has
-cores for, 63 of 64, each with 1.5 KB of stores a pass. Programs share them ("Shared between
+cores for, 63 of 64 then, each with 1.5 KB of stores a pass; now 255 of 256 with 3 KB, or the
+hybrid one `geotune` lays out at boot ("Up to 256 cores", "Packing the small workers"). Programs share them ("Shared between
 programs") and none lays them out: `mcw_shape`, `mctest ... shape` and the programs' own
 variables for it are gone. What follows is how the machine takes a geometry, which it
 still does, and what the sizes were found to be worth.)
@@ -251,14 +257,15 @@ worker whose cache is full ends its pass there, as any core does, and goes on in
 The geometry is a texel of the control words (`0x870003d0`): a word with bit 0 set while the
 square is laid out anew, then four bits a worker for workers 1 to 8 and for 9 to 15 (its
 bits; 0 ends the list). **It is set while every worker is parked, and at no other time**: a
-worker's registers and cache are those pixels. The kernel does it (`SHADEREMU_GPU_SHAPE`,
-`workers_shape()` in `linux/kernel/shaderemu_gpu.c`; `mcw_shape()` in the library): it
+worker's registers and cache are those pixels. The kernel did it (`SHADEREMU_GPU_SHAPE`,
+`workers_shape()` in `linux/kernel/shaderemu_gpu.c`; `mcw_shape()` in the library; the calls
+do nothing now, and `workers_layout()` writes the kernel's one geometry the same way): it
 refuses with EBUSY while any program has a worker, parks every core, sets the bit, during
 which every pixel of the band is zero and the commit takes no worker's stores (a worker
 with no state is a parked one), writes the two words and clears the bit. The control pass
 says in `0x870003c0` how many cores there are now, and in the word at `0x870003cc` how many
-there could be (64). Until a program asks, the kernel
-lays out three workers of the full size and twelve of size 4 the first time workers are
+there could be (256). Until a program asked, the kernel
+laid out three workers of the full size and twelve of size 4 the first time workers were
 asked for. `mctest N LIMIT shape 6,6,5,4,4` sets a geometry and runs the tests on it.
 A geometry a program asked for lasts while anybody has workers: when the last one is given
 back the kernel forgets it, and the next program to ask has the usual one again. (A ray
@@ -300,7 +307,8 @@ numbers first, which are the first in the geometry. The VRChat world has the sam
 A pixel of the tick need not be one texel of state: with eight render targets it is eight,
 and the pass runs an eighth of the pixels. The D3D11 harness does that (`TICK_MRT`;
 `--no-mrt` for one target, which D3D12 still has; Unity's is below, "In Unity"): the tick draws into eight
-targets 264 wide and as high as core 0's rows. Core 0's pixel (x, y) keeps texels 8x to
+targets 264 wide and as high as core 0's rows (1,040 wide and 16 rows for every 128 workers
+since "Up to 256 cores"). Core 0's pixel (x, y) keeps texels 8x to
 8x + 7 of row y. A worker's tile of 8 x 8 is a column of eight pixels, in a block of columns
 that is the worker's own; the quads are the geometry shader's as before. The same pass
 compiled with `TICK_UNPACK` then draws the state's quads into the state texture and copies
@@ -348,9 +356,9 @@ Power (an RTX 5070 laptop card, `nvidia-smi`'s reading, 18 W with nothing runnin
 loop on one core is 46 W with one target and 37 W with eight, a third of what the machine
 itself draws; fifteen of the smallest workers busy, 55 W and 41 W.
 
-Longer passes with a larger write cache, which are the harness's defaults now (`--ticks`
+Longer passes with a larger write cache, which were the harness's defaults then (`--ticks`
 32,768; `L1_TABLE_BITS=7`, 1,485 texels of state, which with one target is over what the
-card runs for nothing). A pass ends early when the cache is full, so passes of 32,768
+card runs for nothing; now 8,192 and the shader's own cache, as in the world: "In Unity"). A pass ends early when the cache is full, so passes of 32,768
 gained little before (Doom's were 14.4k long); with the cache twice the size they are 24k
 long. One core, instructions a second:
 
@@ -385,9 +393,10 @@ And with work of its own on every core, each worker in its block (`nxray`, 15 wo
 60, 1.40 s for 90, 2.21 s for 120.
 
 So this card runs some 2,000 to 3,000 pixels of the tick in the time of one, which is 60 to
-90 blocks of 4 x 8. The tick is not what stands in the way of that many workers: the commit is (it looks
-into every core's cache for every texel it writes: 0.06 ms a pass with one core busy,
-1.1 ms with sixteen), and the geometry's texel, which has room for fifteen.
+90 blocks of 4 x 8. The tick was not what stood in the way of that many workers: the commit was (it looked
+into every core's cache for every texel it wrote: 0.06 ms a pass with one core busy,
+1.1 ms with sixteen), and the geometry's texel, which had room for fifteen (both since mended:
+"The commit as points", "Up to 256 cores").
 
 In Unity the tick is a camera's pass, which is how a pass with several targets is drawn in
 VRChat ("In Unity", below).
@@ -404,7 +413,8 @@ The machine has 256 cores: the harness and `rvc_cpu` (`kCores`), and the world (
   how many workers (`.g`) and the size of their write caches (`.b`, 3 to 6); bit 0 of `.r` is
   still "being laid out". Where a worker's state and its pixels are is arithmetic from its
   number, with no loop over the workers before it (`mc_tile_of`, `mc_block_of`, `mc_core_at`,
-  `mc_core_in` in `src/types.h`). The kernel writes it once: every core but the first, size 5.
+  `mc_core_in` in `src/types.h`). The kernel writes it once: every core but the first, size 5
+  (unless `geotune` has laid out its hybrid one at boot: "Packing the small workers").
 - **A worker is five tiles** (3 KB of stores a pass; it was three, 1.5 KB). Its block in the
   tick's targets is eight columns either way, and up to six of them may run before it costs:
 
@@ -591,8 +601,8 @@ at every width there.
 
 ## More than sixteen cores
 
-The machine has 64 (the D3D11 harness with the eight targets, `rvc_cpu`, Unity). What is
-different above 16:
+The machine had 64 then (the D3D11 harness with the eight targets, `rvc_cpu`, Unity; 256
+since "Up to 256 cores"). What is different above 16:
 
 - the workers' band is the state rows to their end, 248 tiles of 8 x 8 in place of 64;
 - the geometry is eight words, four bits a worker: the geometry texel's second to fourth
@@ -602,7 +612,8 @@ different above 16:
   pages now), so a program built before knows the first fifteen workers and is not disturbed;
 - the kernel has two more calls on `/dev/gpu` for them (`SHADEREMU_GPU_SHAPE_ALL`, eight
   words; `SHADEREMU_GPU_WORKERS_ALL`, the cores it gives as two words of bits). The older
-  calls give out the first fifteen. The library (`mcw.c`) uses whichever the kernel has;
+  calls give out the first fifteen. The library (`mcw.c`) uses whichever the kernel has (the
+  two `SHAPE` calls do nothing now: the layout is the kernel's);
 - the tick's geometry shader draws sixteen cores' quads a primitive (a primitive is 64
   vertices at most), and the pass is given a primitive for every sixteen cores.
 
@@ -640,9 +651,10 @@ rectangle it stands for:
 - a copy or a fill, which is megabytes at a time: the rows of its destination, three
   rectangles at most (a first row from where it begins, whole rows, a last row to where it ends).
 
-Point n is core 0's entry n (768 of them, then its last store and its copy), and from 770 on
+Point n was core 0's entry n (768 of them, then its last store and its copy), and from 770 on
 386 a worker: 770 points for one core, 6,560 for 16, 25,088 for 64, most of which are no
-entry and come to nothing. Where the stores are is read from the tick's targets. The pixel
+entry and come to nothing (a point is a bucket now: 258 for core 0 and 130 a worker, 33,408
+for 256, "Up to 256 cores"). Where the stores are is read from the tick's targets. The pixel
 shader is the commit's own, so a texel is what it always was, whichever cores stored to it
 and in what order. The state rows and the bands that something else wrote (the GPU's
 control words and its picture copied back) are still drawn whole, in the draw before.
@@ -661,7 +673,7 @@ In Unity this is a mesh of points, so a camera's pass, as the tick in eight targ
 
 ## Workers with nothing to do
 
-A worker's `wfi` is a sleep until the first word of its job changes, and the machine does not
+A worker's `pause` is a sleep until the first word of its job changes, and the machine does not
 run a worker that is asleep or parked: each of its pixels reads its state word and its
 mailbox and returns what it holds, before anything of the CPU is decoded (`mc_idle()` in
 `src/mc.h`), and the commit pass passes over a core that stored nothing. Three parked workers
@@ -729,7 +741,8 @@ What a program has to keep to:
   sleep until its job changes, so it used to turn in place: 8,192 instructions a pass for
   nothing, and a pass in which some worker runs to the end is 3.2 to 3.4 ms where one in
   which none does is 2.0 to 2.3 (`physics.md`, `raytrace.md`).
-- **A worker keeps 6 KB of stores a pass**, as core 0 does, and runs on until its job is done
+- **A worker keeps 3 KB of stores a pass** (a small one of the hybrid geometry 0.75 KB, core 0
+  6 KB: "Packing the small workers"), and runs on until its job is done
   however many passes that takes. For work that is all stores, the cores' number is the gain.
 - **Ask for what is needed, not for all.** `mcw_open(n)` gives up to n of the cores no other
   program has, and they are that program's until it closes them: a program that takes every
@@ -759,7 +772,7 @@ What it is good for, and what not:
   5% slower on 255 workers (`raytrace.md`).
 
 What it costs: nothing to speak of while the workers sleep; 5% of a pass for the first busy
-one and 17% for three; and the commit pass looks a RAM texel up in each busy core's cache.
+one and 17% for three; and the commit draws each busy core's stores ("The commit as points").
 
 ## The second layer (`mcwx.h`)
 
@@ -931,7 +944,7 @@ library above): the opening movie's frames are decoded by
 core 0 and three workers into a picture the GPU shows, and played in 18.6 s where they took
 41.4. It is the kind of work the workers are for: every pixel stored once, and a core keeps
 only 6 KB of stores a pass. The window system's pool of window buffers ends below the
-mailbox page (`POOL_SIZE` in `linux/nanox/scr_shaderemu.c`).
+mailbox pages (`POOL_SIZE` in `linux/nanox/scr_shaderemu.c`).
 
 ## A use: Quake's server
 
@@ -977,10 +990,11 @@ program links (`programs/mc/mcw.c`) does its part, and no program had to change.
   a worker is posted to or asked about; the core is started, and is the worker's some passes
   later. `mcw_bound(k)` says whether worker k has a core, for a program that would rather not
   have its own core do the job (the monitor shades nothing itself: `mcw_asked()`).
-- **One layout, the kernel's.** A machine of 64 cores has 63 workers, each with 1.5 KB of
-  stores a pass, laid out the first time a program asks for any (`workers_layout`; a worker
-  nobody has costs a pass 0.04 ms of commit). Two layouts cannot be at once, and one
-  program's would be every other's too, so no program has one: all 63 are anybody's.
+- **One layout, the kernel's.** A machine of 256 cores has 255 workers, each with 3 KB of
+  stores a pass, laid out the first time a program asks for any if `geotune` has not laid
+  out its own at boot (`workers_layout`; "Packing the small workers"; a worker nobody has
+  cost a pass 0.04 ms of commit at 64). Two layouts cannot be at once, and one
+  program's would be every other's too, so no program has one: all 255 are anybody's.
 - **What the sizes were worth, with passes of 8,192** (the kernel built with three workers of
   6 KB, twelve of 3 KB and 48 of 1.5 KB, and with 63 all of 1.5 KB; fixed timestep): Quake's server on its worker makes 25
   frames in five seconds on a 6 KB worker and 23 on a 1.5 KB one; a Red Alert mission, whose
@@ -1005,8 +1019,8 @@ where no program sees them), or give a program more workers than it had when it 
 ## Where workers pay, and where they do not
 
 Every program of the image was looked at for work a worker could take (October 2026). What
-decides it is the pass: a core sees another's stores one pass later, and a pass is 16,384
-instructions in the harness (8,192 in the world).
+decides it is the pass: a core sees another's stores one pass later, and a pass is 8,192
+instructions in the harness and in the world (it was 16,384 in the harness).
 
 - **A job given out and waited for costs about a pass at each end.** The worker begins in
   the pass after the one the job was posted in, and the core that waits sees the answer in
@@ -1069,7 +1083,7 @@ other:
 | `0x876ba000 + 4 k` | core k's instructions so far, every core (`MC_STATS_ALL`: the network's row, after its ring) |
 | `0x876ba400 + 16 n`, `+ 4` | cores 32 n to 32 n + 31, a bit a core: runs, asleep |
 
-`nxmon` reads them: the workers' instructions a second, all 63 of them, are stacked on the
+`nxmon` reads them: the workers' instructions a second, all 255 of them, are stacked on the
 processor's plot, and the line under the busiest programs says how many work, sleep, are
 idle and are parked, and what the busiest runs (`NXMON_PRINT=1 nxmon` prints that line at
 every sample, for a test). Its plots are the workers' own work, as a graphics card's pixel
@@ -1089,7 +1103,7 @@ columns once a second). The monitor's workers are only lent to it (`mcw_lend()`:
 between programs" below): when a program that keeps its workers wants them, the monitor's
 are taken back; it sees that (`mcw_asked()`), closes them and shades on core 0, and takes
 workers again when some have been nobody's for five seconds. So a path tracer started
-beside the monitor has all 63. The harness adds them up from the rows it reads back anyway: its
+beside the monitor has all 255. The harness adds them up from the rows it reads back anyway: its
 `STATS` and closing lines say what the workers ran and the rate of all cores together.
 
 ## Every core's share of a game's frame
@@ -1188,31 +1202,127 @@ on the first core and the lists there, and its 1,000-frame RAM sums, `NES_CELLS_
 1,000; nxphys `b28b77b4` with 0, 7 and 255 workers and 255 shares on none, its four other
 sums, 0 pages brought for workers.
 
+**What that table did not say.** Its core-0 figures and guest seconds were not the games' speed
+on the shader machine, and in the world (the image of that commit, uploaded and played at
+01:49 on 15 October 2026) neither the frame rates nor the machine's total instructions a second
+rose. Three things were missing from `rvc_cpu` as it was run (now `game_par.py`'s default,
+`--plain` for the old way; "A game's speed" below): the sound card (no `/dev/sound`, so a
+game's mixing code never ran: Quake's `S_Update` and `heard`, some 9 thousand instructions of
+core 0 a frame), the write caches and memory a pass old (`RVC_WCACHE`, `RVC_RACES`). And the
+Quake row is the timedemo, which has no server: the game played is a client at its frame limit
+and a server on one worker that the round did not touch (its frames a second fell, 10.7 to
+10.0 on the card). Core 0's instructions a frame are not the measure; passes a frame are.
+
+## A game's speed: passes a frame (`game_par.py --card`)
+
+A pass is the machine's step: every core runs in it at once, and what one core stores another
+sees in the next. So a game's frames a second are the passes a second over its passes a frame.
+How long a pass is depends little on the cores (1.9 to 2.6 ms on an RTX 5090, by the game: the
+busiest core's 8,192 instructions, floats and loads costing more; 255 busy workers of nxphys
+add a fifth); and in the world the passes a second are its rounds a frame times Unity's frames
+a second, whatever the guest does. What a change can move is the passes a frame: the longest
+chain of work in a frame on any one core, and the passes spent waiting between cores (a job
+posted is begun in the next pass, its answer seen in the pass after it ends).
+
+`python tools\game_par.py GAME --image A --image B --card` runs the workload of `rvc_cpu` (below)
+on the card in real time through `gpu_queue.ps1` and the harness lock, for each image in turn
+from a folder of junctions (`build/game_par/card_NAME`; the guest's `md5sum` of the game says
+which image ran), and prints the game's own frames a second, passes a second and a frame, and
+core 0's, the workers' and all cores' millions a second. It will not run while VRChat or
+SteamVR does. Plain `game_par.py GAME` is `rvc_cpu` with `RVC_SOUND=1 RVC_WCACHE=1 RVC_ADFAULT=1
+RVC_RACES` and prints passes a frame beside the counts, and how often the workers stopped from
+the mark (on a page's written bit, and core 0's faults on one: both must be 0).
+
+The workloads before the round (`5680284^`'s `linux/prebuilt`) and after it (`5680284`'s), each
+as an overlay on the same root (`build/images/perf_before`, `perf_after`), 15 October 2026, RTX
+5090, D3D11 + fxc2; passes a frame on the card against `rvc_cpu` as it is now:
+
+| Game | Card fps before | after | Passes a frame, card | `rvc_cpu` | All cores M/s, card | Core 0 M/s |
+|---|---|---|---|---|---|---|
+| Quake e1m5, client | 85.5 | 92.8 | 5.50 to 5.13 | 5.02 to 4.86 | 9.1 to 10.4 | 3.06 to 1.89 |
+| Quake e1m5, server | 10.7 | 10.0 | | 10.0 to 9.4 a second | | |
+| Quake `timedemo demo1` | 45.3 | 60.3 | 9.87 to 7.04 | 9.83 to 5.69 | 5.0 to 6.7 | 3.55 to 2.41 |
+| Quake III, frames 300 to 700 | 40.5 | 55.5 | 9.86 to 7.19 | 9.66 to 6.83 | 7.6 to 8.8 | 2.64 to 1.33 |
+| ClassiCube, walking | 109 | 152 | 3.83 to 3.33 | 3.93 to 3.72 | 3.4 to 4.0 | 3.37 to 1.92 |
+| NES, Thwaite | 173 | 190 | 3.03 to 2.72 | 3.03 to 2.72 | 5.3 to 5.8 | 4.23 to 0.60 |
+| nxphys, the wall (substeps) | 140 | 163 | 4.03 to 3.98 | 4.08 to 4.04 | 259 to 168 | 1.65 to 1.86 |
+| Tiberian Dawn, mission 3 | 44.8 | 44.6 | 10.58 to 10.44 | 10.61 to 10.39 | 5.5 to 5.6 | 3.78 to 3.60 |
+
+So `rvc_cpu`'s passes a frame are the card's within 5% in every row but Quake's after the round
+(the timedemo 19% under, e1m5's client 6%), and its core 0's instructions are the card's (the
+timedemo: 37.5 and 75.7 million against 38.2 and 76.0). Quake's after are short because core 0
+waits for its workers more on the card (2,498 of 6,818 passes rested, 771 of them with no core
+at work, mostly in the demo's first third; `rvc_cpu` 2,073 of 5,103). The card's page walk
+faults on a clear accessed or written bit (`src/mmu.h`) where `rvc_cpu` set it, and a worker
+stops there until core 0 serves the page: Quake's drawing worker stopped 344 times at pages of
+GPU memory, mapped clean. With `RVC_ADFAULT=1` `rvc_cpu` says 7,067 passes to the card's 7,072;
+Quake now writes its GPU memory once at the start (`docs/quake.md`, "The server's frame made
+shorter"). A program whose workers first write memory core 0 only read meets the same.
+
+Every port met it, at GPU memory: `/dev/gpu` mapped its pages with the written bit clear, and
+`seglSprites`, `glDrawArrays`, `seglCompact` and the C&C games' shape decoding on workers
+stopped at each page they wrote first; core 0 took the same fault for the pages it wrote first.
+Since 15 October 2026 the driver maps them accessed and written (`shaderemu_gpu_mmap`), so no
+program has to touch its GPU memory first (writing all 11 MB of `gles.c`'s mapping at
+`seglInit` was the alternative: 2,816 faults on core 0 at every start, about a second at an estimated 1,300 instructions each, and not
+for programs that map `/dev/gpu` themselves). `game_par.py` (`rvc_cpu`, card model, mean of 3,
+stops from the mark: the workers' on a written bit / core 0's on one):
+
+| Game | Stops before | after | Passes a frame before | after | fps before | after |
+|---|---|---|---|---|---|---|
+| Quake `timedemo demo1` (no `qglOpen` touch) | 344 / 378 | 0 / 0 | 7.06 | 5.66 | 68.0 | 75.6 |
+| Quake e1m5, client | 26 / 47 | 0 / 0 | 4.86 | 4.87 | 93.7 | 93.8 |
+| Red Alert, Allies | 59 / 60 | 0 / 0 | 10.51 | 10.33 | 40.6 | 41.1 |
+| Red Alert, Soviet | 10 / 11 | 0 / 0 | 7.35 | 7.32 | 59.9 | 60.1 |
+| Tiberian Dawn | 23 / 29 | 0 / 0 | 10.47 | 10.40 | 39.8 | 40.0 |
+| NES, Thwaite | 1 / 1 | 0 / 0 | 2.76 | 2.76 | 149.0 | 149.1 |
+| Doom | 0 / 54 | 0 / 0 | 4.04 | 4.09 | 111.0 | 110.0 |
+| nxphys | 0 / 12 | 0 / 0 | 4.06 | 4.06 | 151.2 | 152.0 |
+| Quake III, ClassiCube | 0 / 0 | 0 / 0 | 6.98, 3.71 | 6.82, 3.72 | 57.9, 129.8 | 60.1, 129.8 |
+
+On the card (RTX 5090, D3D11 + fxc2, `game_par.py --card`, once each): the timedemo 7.07 to
+5.70 passes a frame, 77.5 to 83.0 frames a second, all cores 8.65 to 9.07 million a second;
+Red Alert's Allies 10.48 to 10.25 passes a frame (52.3 and 51.8 frames a second, the card's
+passes a second 548 and 532). Doom's 1% more passes holds at every salt; it had no worker stop before either (its cause not found). Elsewhere a change is judged on
+`rvc_cpu` by its passes a frame (and the game's own fps, as guest seconds it is within 15%
+of real ones), the card being the check of a round's end. The total instructions a second
+rise only as far as workers run beside a core 0 that stays busy: 10 to 20% here.
+
+Where the critical path is now, on the card: Quake III's server, 342 thousand instructions a
+frame on one worker, makes 16 frames to the client's 100 (`q3stat:`); Quake's server 300
+thousand on one worker, 10 a second; nxphys goes no faster than the boxes' time (60 substeps a
+second, `PHYS_HZ`) and drew at most 25 pictures a second (now one a substep: `physics.md`, "A
+picture every substep"), while unpaced a substep is its dearest share's one body, 3.08 passes
+to `physstat: done` (2.4 in its steady run; `game_par.py`'s 4.04 has the jobs' start and the
+program's exit in it), the shares waiting for each other and not for core 0; the NES's emulation is one job of 21 thousand instructions
+a frame on one worker (2.7 passes); Tiberian Dawn's frame is core 0's logic, 79 thousand.
+
 ## In Unity
 
-The VRChat machine has the harness's 64 cores, the guest's geometry, the tick in eight
+The VRChat machine has the harness's 256 cores, the guest's geometry, the tick in eight
 targets, the commit as points, the shader's own write cache (384 texels) and passes of 8,192
 (`CORES`, `L1_TABLE_BITS` and the sizes in `MachineBlit.cginc`; the tick and the commit are
 `experiments/rvc_opt/main.shader`'s, line for line where they deal with cores).
 
-- **The tick is a camera's pass.** `MachineTick.shader` is on a mesh of four triangles (one for every
+- **The tick is a camera's pass.** `MachineTick.shader` is on a mesh of sixteen triangles (one for every
   sixteen cores) that only the tick's camera sees (a layer of its own); `EmuMachine` gives the
-  camera eight targets of 1024 x 16 once (`Camera.SetTargetBuffers`, which Udon has) and renders it once a round.
+  camera eight targets of 1040 x 32 once (`Camera.SetTargetBuffers`, which Udon has) and renders it once a round.
   `tick_geom` draws core 0's pixels and a block of columns for each worker with something to
   run, as the harness's does, and draws nothing for any other camera (it looks at the target's
   size).
-- **The unpack** (`Machine.shader`'s third pass, a Blit into the 2048 x 16 texture the commit
+- **The unpack** (`Machine.shader`'s third pass, a Blit into the 2048 x 48 texture the commit
   reads) puts the targets' texels where the state has its rows, and takes the state as it
   was for whatever the tick did not draw: a worker with nothing to run, the band at start.
 - **The commit** is three draws: a Blit of the state rows and the bands something else wrote
   (the control pass, the GPU's picture copied back); then `MachineCommitPoints.shader` on a
-  mesh of 25,088 points that a second camera draws into the same texture, each point the
+  mesh of 33,408 points that a second camera draws into the same texture, each point the
   rectangle it stands for and each texel the commit's own (`MachineCommit.cginc`, which both
   share); and, before the control pass, the same points once more into the other state
   texture as copies. A copy out of the ROM is a point too: the points' material needs the
   ROM's textures (without them Linux started and could not read `/emuinit`).
-- **The readback** has the first 64 control texels and 64 of the network's row, where the
-  counts are: the panel's statistics have a line for the workers and for all cores together.
+- **The readback** has state row 0, the first 64 control texels and 112 texels of the
+  network's row, its window then what the cores ran and which sleep (`Readback.shader`, 960
+  words), where the counts are: the panel's statistics have a line for the workers and for all cores together.
 
 - **The host's clock moves every round** (`HostClock` in `EmuMachine.cs`): a frame's length
   spread over its rounds, as the harness's moves every pass. It moved once a Unity frame, and a
@@ -1259,7 +1369,8 @@ next by a third: compare only windows taken in turn.
 Quake's e1m1 is 3.1M either way (lists come all the time, the frame is the card's).
 
 All the cores together, 8 rounds of 8,192: `nxphys` 660 to 680 million instructions a second
-on 207 workers (every worker a full pass every round: 400 rounds a second), `nxray` 295 to
+on 207 workers (every worker a full pass every round: 400 rounds a second; it asks for 255
+now), `nxray` 295 to
 318 million on 255. A round with the workers busy is 2.5 ms where core 0's alone is 2.1, so
 what limits the workers in the world is how many rounds a second there are, nothing of their
 own.
@@ -1328,7 +1439,7 @@ drawn small.
 "ShaderEmu/Add the tick's and the commit's cameras to the open scene" puts the cameras, their
 meshes and the targets into a scene without building the world again.
 
-`mctest 15 60000 shape 6,6,6,5,5,4,4,4` passes there, and `mctest 63 20000 shape 3,3,...`. `RAY_FRAMES=1 RAY_STILL=1 nxray` gives the
+`mctest 15 60000 shape 6,6,6,5,5,4,4,4` passed there, and `mctest 63 20000 shape 3,3,...` (`mctest` has no `shape` now: "The geometry"). `RAY_FRAMES=1 RAY_STILL=1 nxray` gives the
 sum `69ee69f8` on core 0 alone (18.9 s) and with the kernel's fifteen workers (1.46 s; with
 the tick in one target and the commit in bands, 20.0 s and 2.0 s).
 
@@ -1357,9 +1468,9 @@ loop and was not measured again.)
 
 ## Switches
 
-    RVC_MC_FULL=1      draw a worker's whole 64 x 16, as before (to compare)
     RVC_RACES=FILE     rvc_cpu: memory as the GPU has it, and where that mattered ("Races")
     RVC_CALLS=FILE     rvc_cpu: core 0's calls by their instructions ("Finding the work")
     RVC_COUNT_MERGE=0  rvc_cpu: no merge of the counters, as the world's machine
+    RVC_SOUND=1        rvc_cpu: the sound card's clock and voices move, so games' sound code runs ("A game's speed")
     --count-from T     rvc_cpu: every core's instructions from when the console said T
     --until-times N    rvc_cpu: stop at the Nth --until after that ("Every core's share")

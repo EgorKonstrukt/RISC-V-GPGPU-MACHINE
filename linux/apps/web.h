@@ -27,7 +27,7 @@ struct web_node {
 	int minw, maxw;			/* its content's narrowest and widest, once measured (-1: not yet) */
 	int last_element;		/* its last child that is an element, while the tree is made */
 	unsigned char flags;
-};
+} __attribute__((aligned(16)));		/* (whole texels: two cores style neighbours) */
 
 static struct web_node *web_nodes;
 static int web_node_count, web_node_room;
@@ -830,11 +830,18 @@ web_attr_colour(int node, const char *name)
 	return CSS_NONE;
 }
 
-static int web_table_seen = -2, web_table_padding, web_table_border;
+/* What a walk over the tree keeps while it styles: the elements the one being styled is inside
+ * and their names counted (css_inside, or an array of another core's), and the table whose
+ * cells it styled last. */
+struct web_walk {
+	unsigned short *inside;
+	int stack[WEB_DEPTH], depth;
+	int table_seen, table_padding, table_border;
+};
 
 /* How a tag looks before any style sheet has its say. */
 static void
-web_plain_style(int node, struct css_style *s, const struct css_style *parent)
+web_plain_style(struct web_walk *w, int node, struct css_style *s, const struct css_style *parent)
 {
 	const struct web_node *e = &web_nodes[node];
 	const char *value;
@@ -935,15 +942,15 @@ web_plain_style(int node, struct css_style *s, const struct css_style *parent)
 		for (up = e->c.parent; up >= 0 && web_nodes[up].c.tag != T_table; up = web_nodes[up].c.parent)
 			if (web_nodes[up].c.tag == T_tr && web_attr(up, "valign", &value, &n))
 				s->valign = n && tolower((unsigned char)*value) == 't' ? 1 : n && tolower((unsigned char)*value) == 'b' ? 3 : 2;
-		if (up != web_table_seen) {
+		if (up != w->table_seen) {
 			/* (a table's cells ask the same of it one after another) */
-			web_table_seen = up;
-			web_table_padding = up >= 0 ? web_attr_int(up, "cellpadding", 1) : 1;
-			web_table_border = up >= 0 && web_attr_int(up, "border", 0) > 0;
+			w->table_seen = up;
+			w->table_padding = up >= 0 ? web_attr_int(up, "cellpadding", 1) : 1;
+			w->table_border = up >= 0 && web_attr_int(up, "border", 0) > 0;
 		}
-		c = web_table_padding;
+		c = w->table_padding;
 		s->p[0] = s->p[1] = s->p[2] = s->p[3] = c > 1 ? web_scaled(c) : c;
-		if (web_table_border) {
+		if (w->table_border) {
 			s->border_w[0] = s->border_w[1] = s->border_w[2] = s->border_w[3] = 1;
 			s->border_c[0] = s->border_c[1] = s->border_c[2] = s->border_c[3] = 0x808080;
 		}
@@ -1073,129 +1080,209 @@ web_style_of(int node)
 
 /* An element is, or is no longer, one that the element being styled is inside. */
 static void
-web_inside(int node, int by)
+web_inside(struct web_walk *w, int node, int by)
 {
 	const struct web_node *e = &web_nodes[node];
 	int k;
 
-	css_inside[e->c.tag] += by;
+	w->inside[e->c.tag] += by;
 	if (e->c.id)
-		css_inside[e->c.id] += by;
+		w->inside[e->c.id] += by;
 	for (k = 0; k < e->c.classes; k++)
-		css_inside[css_classes[e->c.cls + k]] += by;
+		w->inside[css_classes[e->c.cls + k]] += by;
 }
+
+/* The walk at element i: of the elements it was inside, those that are not i's go. */
+static void
+web_walk_to(struct web_walk *w, int i)
+{
+	const struct web_node *e = &web_nodes[i];
+	int k;
+
+	for (k = w->depth - 1; k >= 0 && w->stack[k] != e->c.parent; k--)
+		;
+	if (k < 0 && e->c.parent >= 0) {
+		/* its parent is the element before it, not counted yet: that one's parent is */
+		for (k = w->depth - 1; k >= 0 && w->stack[k] != web_nodes[e->c.parent].c.parent; k--)
+			;
+		while (w->depth > k + 1)
+			web_inside(w, w->stack[--w->depth], -1);
+		if (w->depth < WEB_DEPTH)
+			web_inside(w, w->stack[w->depth++] = e->c.parent, 1);
+	} else {
+		while (w->depth > k + 1)
+			web_inside(w, w->stack[--w->depth], -1);
+	}
+}
+
+/* Element i's style, its parent's made (its slot numbered: web_style_all). It writes the node
+ * and its style, and reads the rest. */
+static void
+web_style_one(struct web_walk *w, int i)
+{
+	struct web_node *e = &web_nodes[i];
+	struct css_style *s = &web_styles[e->style];
+	struct css_decl own[64];
+	const struct css_style *parent;
+	const char *value;
+	uint64_t locked = 0;
+	int found[64], n, k, count, parent_px, t = e->c.tag, plain_size, plain_margin, plain_align;
+
+	e->minw = e->maxw = -1;
+	e->flags &= N_OPEN;
+	if (e->c.parent >= 0) {
+		parent = &web_styles[web_nodes[e->c.parent].style];
+		*s = *parent;
+	} else {
+		memset(s, 0, sizeof *s);
+		s->font_size = CSS_EM;
+		s->family = 1;		/* a page that names no face is in the one with serifs */
+		parent = NULL;
+	}
+	/* what is inside passes some on; the tag says some; then the sheets; then itself */
+	s->display = D_INLINE;
+	s->position = s->clipped = s->floated = s->clear = s->column = s->wrap = s->justify = s->items = s->valign = s->border_box = 0;
+	s->bg = CSS_NONE;
+	s->grid = -1;
+	s->grow = 0;
+	s->basis = CSS_AUTO;
+	s->gap = s->row_gap = 0;
+	s->width = s->height = s->maxw = CSS_UNSET;
+	s->minw = s->minh = 0;
+	for (k = 0; k < 4; k++) {
+		s->m[k] = s->p[k] = 0;
+		s->border_w[k] = 0;
+		s->border_c[k] = CSS_CURRENT;
+	}
+	if (parent && (parent->decor & DECOR_UNDER) && t != T_a)
+		;	/* (an underline goes through what is inside) */
+	parent_px = s->font_size;
+	web_plain_style(w, i, s, parent);
+	plain_size = s->font_size;
+	plain_margin = s->m[0];
+	plain_align = s->align;
+	count = css_rule_count ? css_find(&web_nodes[0].c, i, found, 64, w->inside) : 0;
+	n = web_attr(i, "style", &value, &k) ? css_body(value, k, own, 64, 0, 0) : 0;
+	/* (css_find walks the tree as an array of css_node: web_node begins with one) */
+	for (k = 0; k < count; k++)
+		css_apply(s, css_decls + css_rules[found[k]].decl, css_rules[found[k]].decls, 1, parent_px, &locked);
+	css_apply(s, own, n, 1, parent_px, &locked);
+	if (s->font_size != plain_size && (t >= T_h1 && t <= T_h6) && plain_margin == s->m[0])
+		s->m[0] = s->m[2] = s->font_size * 2 / 3;
+	for (k = 0; k < count; k++)
+		css_apply(s, css_decls + css_rules[found[k]].decl, css_rules[found[k]].decls, 0, parent_px, &locked);
+	css_apply(s, own, n, 0, parent_px, &locked);
+	if (i == 0)
+		css_root_px = s->font_size;
+	if (web_attr(i, "hidden", &value, &k) || (s->position && s->clipped) || s->hidden)
+		s->display = D_NONE;
+	if (t == T_input && web_attr(i, "type", &value, &k) && k == 6 && !strncasecmp(value, "hidden", 6))
+		s->display = D_NONE;
+	if (t == T_dialog && !web_attr(i, "open", &value, &k))
+		s->display = D_NONE;
+	if (t == T_noscript && e->c.parent >= 0 && web_nodes[e->c.parent].c.tag == T_head)
+		s->display = D_NONE;
+	if (s->floated && (s->display == D_INLINE || s->display == D_INLINE_BLOCK))
+		s->display = D_BLOCK;
+	if (t == T_center || (t == T_div && s->align == 1 && web_attr(i, "align", &value, &k)) || (t == T_td && plain_align == 1))
+		e->flags |= N_CENTER;
+	if (t == T_br || t == T_img || t == T_wbr)
+		s->display = s->display == D_NONE ? D_NONE : D_INLINE;
+	/* margins that pull a box over its neighbours are none here, and a float that is
+	 * placed by one (a side column) is a box under what is before it */
+	for (k = 0; k < 4; k++)
+		if (s->m[k] < 0 && s->m[k] != CSS_AUTO) {
+			s->m[k] = 0;
+			if (k & 1)
+				s->floated = 0;
+		}
+	s->face = web_face_for(s->family, s->bold, s->font_size);
+}
+
+/* The elements inside `root` after it, styled by a walk of their own (`inside` all zeros, and so
+ * again at the end; root's style made). Another core may run it meanwhile: it writes those alone. */
+static void
+web_style_range(unsigned short *inside, int root, int end)
+{
+	struct web_walk w;
+	int chain[WEB_DEPTH], n = 0, i;
+
+	w.inside = inside;
+	w.depth = 0;
+	w.table_seen = -2;
+	for (i = root; i >= 0 && n < WEB_DEPTH; i = web_nodes[i].c.parent)
+		chain[n++] = i;
+	while (n > 0)
+		web_inside(&w, w.stack[w.depth++] = chain[--n], 1);
+	for (i = root + 1; i < end; i++)
+		if (web_nodes[i].c.tag != T_TEXT) {
+			web_walk_to(&w, i);
+			web_style_one(&w, i);
+		}
+	while (w.depth > 0)
+		web_inside(&w, w.stack[--w.depth], -1);
+}
+
+/* Whether an element inside root names a grid in its style attribute (its columns are kept in
+ * css_text, which grows). */
+static int
+web_grid_inside(int root, int end)
+{
+	const char *value;
+	int i, n;
+
+	for (i = root + 1; i < end; i++)
+		if (web_nodes[i].c.tag != T_TEXT && web_attr(i, "style", &value, &n) && memmem(value, n, "grid", 4))
+			return 1;
+	return 0;
+}
+
+/* A program with worker cores may style an element's inside elsewhere: given an element whose
+ * style is made and where its inside ends, 1 when web_style_range(root, end) is, or will be,
+ * run on another core; (-1, -1) when all of that must be done. NULL: all here. */
+static int (*web_style_elsewhere)(int root, int end);
+#define WEB_STYLE_LEAST 48	/* elements inside: fewer are styled here */
 
 /* Works out every element's style, parents before what is inside them. */
 static void
 web_style_all(void)
 {
-	struct css_decl own[64];
-	int found[64], inside[WEB_DEPTH], depth = 0, i, k, count;
+	struct web_walk w;
+	int *end = NULL, i, p;
 
 	web_styles = web_grow(web_styles, &web_style_room, web_node_count + 1, sizeof *web_styles);
 	css_node_size = sizeof(struct web_node);
-	web_style_count = 0;
 	css_root_px = CSS_EM;
-	web_table_seen = -2;
-	for (i = 0; i < web_node_count; i++) {
-		struct web_node *e = &web_nodes[i];
-		struct css_style *s;
-		const struct css_style *parent;
-		const char *value;
-		uint64_t locked = 0;
-		int n, parent_px, t = e->c.tag, plain_size, plain_margin, plain_align;
-
-		if (t == T_TEXT)
-			continue;
-		/* the elements this one is inside: those of the last one that are not its own go */
-		for (k = depth - 1; k >= 0 && inside[k] != e->c.parent; k--)
-			;
-		if (k < 0 && e->c.parent >= 0) {
-			/* its parent is the element before it, not counted yet: that one's parent is */
-			for (k = depth - 1; k >= 0 && inside[k] != web_nodes[e->c.parent].c.parent; k--)
-				;
-			while (depth > k + 1)
-				web_inside(inside[--depth], -1);
-			if (depth < WEB_DEPTH)
-				web_inside(inside[depth++] = e->c.parent, 1);
-		} else {
-			while (depth > k + 1)
-				web_inside(inside[--depth], -1);
-		}
-		e->minw = e->maxw = -1;
-		e->flags &= N_OPEN;
-		e->style = web_style_count++;
-		s = &web_styles[e->style];
-		if (e->c.parent >= 0) {
-			parent = &web_styles[web_nodes[e->c.parent].style];
-			*s = *parent;
-		} else {
-			memset(s, 0, sizeof *s);
-			s->font_size = CSS_EM;
-			s->family = 1;		/* a page that names no face is in the one with serifs */
-			parent = NULL;
-		}
-		/* what is inside passes some on; the tag says some; then the sheets; then itself */
-		s->display = D_INLINE;
-		s->position = s->clipped = s->floated = s->clear = s->column = s->wrap = s->justify = s->items = s->valign = s->border_box = 0;
-		s->bg = CSS_NONE;
-		s->grid = -1;
-		s->grow = 0;
-		s->basis = CSS_AUTO;
-		s->gap = s->row_gap = 0;
-		s->width = s->height = s->maxw = CSS_UNSET;
-		s->minw = s->minh = 0;
-		for (k = 0; k < 4; k++) {
-			s->m[k] = s->p[k] = 0;
-			s->border_w[k] = 0;
-			s->border_c[k] = CSS_CURRENT;
-		}
-		if (parent && (parent->decor & DECOR_UNDER) && t != T_a)
-			;	/* (an underline goes through what is inside) */
-		parent_px = s->font_size;
-		web_plain_style(i, s, parent);
-		plain_size = s->font_size;
-		plain_margin = s->m[0];
-		plain_align = s->align;
-		count = css_rule_count ? css_find(&web_nodes[0].c, i, found, 64) : 0;
-		n = web_attr(i, "style", &value, &k) ? css_body(value, k, own, 64, 0, 0) : 0;
-		/* (css_find walks the tree as an array of css_node: web_node begins with one) */
-		for (k = 0; k < count; k++)
-			css_apply(s, css_decls + css_rules[found[k]].decl, css_rules[found[k]].decls, 1, parent_px, &locked);
-		css_apply(s, own, n, 1, parent_px, &locked);
-		if (s->font_size != plain_size && (t >= T_h1 && t <= T_h6) && plain_margin == s->m[0])
-			s->m[0] = s->m[2] = s->font_size * 2 / 3;
-		for (k = 0; k < count; k++)
-			css_apply(s, css_decls + css_rules[found[k]].decl, css_rules[found[k]].decls, 0, parent_px, &locked);
-		css_apply(s, own, n, 0, parent_px, &locked);
-		if (i == 0)
-			css_root_px = s->font_size;
-		if (web_attr(i, "hidden", &value, &k) || (s->position && s->clipped) || s->hidden)
-			s->display = D_NONE;
-		if (t == T_input && web_attr(i, "type", &value, &k) && k == 6 && !strncasecmp(value, "hidden", 6))
-			s->display = D_NONE;
-		if (t == T_dialog && !web_attr(i, "open", &value, &k))
-			s->display = D_NONE;
-		if (t == T_noscript && e->c.parent >= 0 && web_nodes[e->c.parent].c.tag == T_head)
-			s->display = D_NONE;
-		if (s->floated && (s->display == D_INLINE || s->display == D_INLINE_BLOCK))
-			s->display = D_BLOCK;
-		if (t == T_center || (t == T_div && s->align == 1 && web_attr(i, "align", &value, &k)) || (t == T_td && plain_align == 1))
-			e->flags |= N_CENTER;
-		if (t == T_br || t == T_img || t == T_wbr)
-			s->display = s->display == D_NONE ? D_NONE : D_INLINE;
-		/* margins that pull a box over its neighbours are none here, and a float that is
-		 * placed by one (a side column) is a box under what is before it */
-		for (k = 0; k < 4; k++)
-			if (s->m[k] < 0 && s->m[k] != CSS_AUTO) {
-				s->m[k] = 0;
-				if (k & 1)
-					s->floated = 0;
-			}
-		s->face = web_face_for(s->family, s->bold, s->font_size);
+	/* every element's slot first, in the tree's order: the walks on other cores need them */
+	for (i = 0, web_style_count = 0; i < web_node_count; i++)
+		if (web_nodes[i].c.tag != T_TEXT)
+			web_nodes[i].style = web_style_count++;
+	if (web_style_elsewhere && (end = malloc(web_node_count * sizeof *end)) != NULL) {
+		/* where each element's inside ends (its last descendant's next) */
+		for (i = 0; i < web_node_count; i++)
+			end[i] = i + 1;
+		for (i = web_node_count - 1; i > 0; i--)
+			if ((p = web_nodes[i].c.parent) >= 0 && end[i] > end[p])
+				end[p] = end[i];
 	}
-	while (depth > 0)
-		web_inside(inside[--depth], -1);
+	w.inside = css_inside;
+	w.depth = 0;
+	w.table_seen = -2;
+	for (i = 0; i < web_node_count; i++) {
+		if (web_nodes[i].c.tag == T_TEXT)
+			continue;
+		web_walk_to(&w, i);
+		web_style_one(&w, i);
+		/* (an inside with a grid of its own written in a style attribute grows css_text: here) */
+		if (end && i > 0 && end[i] - i > WEB_STYLE_LEAST && w.depth < WEB_DEPTH - 8 && !web_grid_inside(i, end[i]) &&
+		    web_style_elsewhere(i, end[i]))
+			i = end[i] - 1;
+	}
+	if (end)
+		web_style_elsewhere(-1, -1);
+	free(end);
+	while (w.depth > 0)
+		web_inside(&w, w.stack[--w.depth], -1);
 }
 
 static int

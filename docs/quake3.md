@@ -3,16 +3,18 @@
 One level of Quake III Arena's free demo (q3dm17, The Longest Yard) runs in the Linux image
 with a bot: ioquake3's source with the game, the client's game and the menus linked in, and a
 renderer and a sound layer of our own. Everything on the screen is drawn by the machine's
-GPU, and most of what it draws it reads where a file lies in the ROM.
+GPU: its pictures from GPU memory, where they are decoded when a level or the menu loads, and
+the rest where a file lies in the ROM.
 
     wsl -- bash /mnt/c/Development/ShaderX86/linux/nanox/build.sh     (once)
-    wsl -- bash /mnt/c/Development/ShaderX86/linux/quake3/build.sh    (17 s; the first time it also fetches)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/libmedia/build.sh  (once: docs/media.md)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/quake3/build.sh    (17 s; 25 s when it bakes; the first time it also fetches)
     python tools\make_linux_image.py
 
 In the guest: `nano-X -p & quake3 +map q3dm17 +addbot sarge 3`, or Quake III Arena in the
 Start menu's Games, which opens the main menu. Lines typed at the terminal it was started
 from are console commands. The demo's 47 MB pak is fetched by the build and not kept; what
-goes into the image is 15.8 MB.
+goes into the image is 10.6 MB (15.8 before its pictures were JPEG and PNG files again).
 
 The main menu is cut down to what works here (`q3_ui/ui_menu.c` in the patch): the level
 against Sarge at three skills (I CAN WIN, HURT ME PLENTY, HARDCORE: `addbot sarge` 1, 3, 4)
@@ -35,7 +37,9 @@ it was run by typed commands only, and its pictures were compared with the GPU's
   The modules are not libraries: each is linked to one object whose names stay inside it, and
   its variables are put back as they began each time it is "loaded" (`sys_shaderemu.c`).
 - `bake.py` makes the two files the game runs from (below); `jpgraw.c` reads the demo's JPEG
-  pictures for it; `wanted.txt` is what the game asked for in a run with `QUAKE3_WANTED=1`.
+  pictures for it, and `q3pack.c` (libmedia for the build computer) writes them as the game's
+  JPEG and PNG files and reads them back; `wanted.txt` is what the game asked for in a run with
+  `QUAKE3_WANTED=1`.
 - `tr_shaderemu.c` is the renderer, `gpu_shaderemu.c` the GPU library (`programs/linux/gles.c`
   as it is, and draws whose every word the renderer says), `snd_shaderemu.c` the sound,
   `server_shaderemu.c` the server's frame on a worker core, `client_shaderemu.c` the client's
@@ -52,10 +56,12 @@ it was run by typed commands only, and its pictures were compared with the GPU's
 | | |
 |---|---|
 | `quake3-pak0.pk3` | 2.5 MB, stored and not compressed: what the game reads itself (the level for collision without its light maps, the bots' navigation, their scripts) |
-| `quake3-se.dat` | 13.3 MB: pictures 6.5 (0.2 of it the menu's banner), sounds 3.0 (halved to 11 kHz: `--sound-rate`), models 1.6, the level 1.4 (1 MB of it the light grid), light maps 0.4 |
+| `quake3-se.dat` | 8.0 MB: sounds 3.0 (halved to 11 kHz: `--sound-rate`), models 1.6, the level 1.4 (1 MB of it the light grid), pictures 1.3 (6.5 as texels; 13.3 MB the file when they were), light maps 0.4 |
 
 - **Pictures** are decoded and halved to 128 texels a side (256 for the flat screen's) when
-  baked: three bytes a texel, or words where a picture's alpha is used.
+  baked: three bytes a texel, or words where a picture's alpha is used. Then they are files
+  again ("Pictures decoded when a level loads"): JPEG, and PNG for the 87 with alpha. Light
+  maps stay as texels.
 - **Shaders** are the scripts' stages reduced to what the GPU has: one of four passes, a
   colour that may be a wave, a texture that may move. A reflection (`tcGen environment`) is
   left out, and what is blended over one is laid on its mean colour.
@@ -74,8 +80,8 @@ it was run by typed commands only, and its pictures were compared with the GPU's
   frame's list). A frame gives them its matrices and says what changed: a wave's colour, a
   texture's turn. Nothing of the level is looked for or sorted in a frame; the card's depth
   buffer hides what is behind.
-- **Textures, light maps and models stay in the ROM.** The GPU reads them where the file
-  lies; nothing is loaded into RAM or GPU memory, at a level's start or after.
+- **Textures are decoded into GPU memory** when what draws with them is registered (below);
+  **light maps and models stay in the ROM**, where the GPU reads them.
 - **A model is lit by the GPU**: three texels a thing (where the light comes from, its
   colour, the light from everywhere), from the level's light grid, kept by where the thing is.
 - **Sprites, beams and the game's polygons** are quads written into the frame; the flat
@@ -126,19 +132,34 @@ build with two bots: 13 to 16.5 frames a second, passes 99.9% used, the worker's
     QUAKE3_SERVER=inline  the server on the first core
     QUAKE3_SERVER=frame   on its worker, taken and given out only where the first core's frame calls it,
                           and every frame of the game told to the clients (as until 13 October 2026)
+    QUAKE3_SERVER=paced   the worker's jobs made by the first core where they are given out, as the worker's
+                          (its stack, its random numbers): RVC_CALLS, which counts the first core, sees them
     QUAKE3_ROUTES=late    the bots' routes made when a bot first asks, not while the level loads
+    QUAKE3_ROUTES=all     the routes to every area made ahead (426 million instructions, 1,984 KB)
+    QUAKE3_SEED=N         the first core's random numbers from N, not the kernel's (two builds compared)
+    QUAKE3_BOTS=serial    bots that think in the same frame think one after another on the server's core
     QUAKE3_TRACES=all     the server asks the level every trace again
     QUAKE3_SERVER_LOG=1   a q3srv: line for every job of the server's worker ("The server's pace")
     QUAKE3_CLIENT=inline  the client's game on the first core, drawn as it is made
     QUAKE3_SCENE=inline   a frame drawn by the first core, as until 14 October 2026 ("The scene on a worker core")
+    QUAKE3_SIDE=inline    the level's items made by the client's game itself, not on a helper core ("The client's frame on three cores")
     QUAKE3_BODIES=1       a body that is not drawn is made as one that is (the player's own, one out of view)
     QUAKE3_SUM=1          a sum over what each frame of the client's game asked to have drawn, with its time,
-                          and one over the GPU's list of the frame ("list"; places in the ROM as offsets)
+                          and one over the GPU's list of the frame ("list"; places in the ROM as offsets);
+                          with the server on the first core a q3srvsum: line a frame of the game ("The
+                          server's frame made shorter"), QUAKE3_SUM=2 every word of it too
     QUAKE3_SIZE=WxH       the window (640x480)
     QUAKE3_WANTED=1       a line for every file, model, picture and sound asked for; nothing is "missing"
     QUAKE3_DEFINES=-DSE_MEMPROF QUAKE3_LINK=-Wl,--wrap=memset,--wrap=memcpy   (to build.sh) who fills and copies how much
     QUAKE3_DEFINES=-DSE_PARTS            (to build.sh) a q3parts: line: the first core's frame by part (with QUAKE3_CLIENT=inline)
     QUAKE3_DEFINES=-DSE_CHECK_VERSIONS   (to build.sh) a state left where it is is compared with what would have been copied
+    QUAKE3_SRC=DIR QUAKE3_BUILD=DIR QUAKE3_OUT=DIR   (to build.sh) a tree, objects and image of one's own (QUAKE3_TREE=keep: the tree as it stands)
+    QUAKE3_DATA=DIR QUAKE3_MEDIA=DIR     (to build.sh) the baked files' folder; where libmedia.a is ($WORK/src/libmedia)
+    QUAKE3_BAKE="--pictures png"         (to build.sh) every picture a PNG: the same texels as before (`raw`: as texels, as
+                                         until 15 October 2026); --quality N the JPEGs' (95), --sheet N a sheet's texels' bytes
+    QUAKE3_DECODERS=N     worker cores opened for decoding pictures besides the game's (24)
+    QUAKE3_PICTURE_WORKERS=N   the most a sheet is decoded on (0: this core alone)
+    QUAKE3_PICTURES_LOG=1      a q3pic: line for every sheet decoded: its size, kind, workers and this core's instructions
 
 ## In a holodeck
 
@@ -181,7 +202,8 @@ commands of the list one frame later, while the worker is at the next.
 - **A frame is asked for before the last is taken.** The first core asks for frame n + 1 with
   the time, the latest move and the latest word of the server's as they are then, waits for
   frame n and draws it; the worker goes from n to n + 1 without being told. Two lists in
-  turn: a frame's list was last drawn from two frames before.
+  turn: a frame's list was last drawn from two frames before (three since the scene went to a
+  worker: `SE_LISTS`, "The scene on a worker core").
 - **What it reads of the first core's is as it was when the frame was asked for** (which move
   and which snapshot are the latest: `SE_ClientPinned`). **What it would write there is
   kept** and done when the frame is taken: sounds (`snd_shaderemu.c`), console lines,
@@ -243,7 +265,8 @@ it was, and the server's pace since: "The server's pace" below.
 On `rvc_cpu` a worker sees a store at once, and a worker that goes to sleep in the pass a job
 is posted in has not seen it and sleeps on (the shader machine's sleeps on the job word of
 the pass before, and wakes): `client_shaderemu.c` posts again after eight passes of nothing.
-The server's worker has the same there, rarely: its jobs are not posted at once.
+The server's worker has the same there, rarely: its jobs are not posted at once. (Not posted
+again any more: `rvc_cpu` wakes such a worker, "The scene on a worker core".)
 
 **Checking it.** `QUAKE3_SUM=1 QUAKE3_SERVER=inline quake3 +set fixedtime 33 +devmap ...`
 prints a sum of what every frame asked to have drawn, with the frame's time; run once with
@@ -267,7 +290,8 @@ passes of every frame for the first core to see and to post: 200 frames in 4.37 
 `rvc_cpu`, which has one of the two passes, against 4.32 asked for ahead; on the card that
 build, without the numbered states, made 100 frames in 2.41 to 2.57 s). The first core
 still waits 2.3 passes a frame on the card: not looked into. Not tried: the picture's part on a worker too (a worker keeps
-half the first core's stores a pass, and the commands are all stores), the server's
+half the first core's stores a pass, and the commands are all stores; done since: "The scene on
+a worker core"), the server's
 snapshot handed over without the packet, the bot's part on a worker of its own.
 
 ## The server's pace
@@ -370,7 +394,9 @@ of the client's lists comes where), and at the frame's end gives the record out 
 but the swap: the level's kept draws, the models, the pictures, the sum. At the next frame's
 end the first core joins it (`mcw_join`, in `SE_SceneFlush`) and swaps, then gives out the next.
 A frame is so shown one frame of the first core's later than it was made, and the first core
-waits 0.2 to 0.5 passes a frame for the job (3.6 to 4.1 for the client's worker).
+waits 0.2 to 0.5 passes a frame for the job (3.6 to 4.1 for the client's worker). (Since 15
+October 2026 the job goes from frame to frame and a frame is shown when it is drawn: "The
+client's frame on three cores".)
 
 - **The client's game writes three lists in turn**, not two (`SE_LISTS`): one being written,
   one taken, one being drawn. The first core has two of its own in turn.
@@ -440,6 +466,330 @@ timing, and the game's of them (a spawn point). `RVC_RACES` over 1,000 frames: n
 (602 undone before this, the engine's counts and `rand()`), only the client's worker reading
 the moves and the frame asked for as they were. The menu draws and quits; `QUAKE3_HOLD` holds.
 No picture was captured: the pictures' check is the list's sum.
+
+## The server's frame made shorter
+
+After the scene went to a worker the server's worker was the slowest of the four: on the card
+it made 16 frames of the game to the client's 100 at `fixedtime 33`, where the game asks for
+33, so the level moved at half the clock. A job was 342 thousand instructions, and where a frame
+of the game went (`QUAKE3_SERVER_LOG=1`, `rvc_cpu`, frames 300 to 700): the bots 123 thousand,
+the game 33, telling the clients 34, the player's moves 38 (4.5 of them a frame of the game).
+What was cut (15 October 2026, `quake3.patch`, `server_shaderemu.c`):
+
+- **A bot's snapshot is the numbers of what it sees.** The bot asks which entities its snapshot
+  has and reads their states from the game (`SV_BotGetSnapshotEntity`, `BotAI_GetEntityState`),
+  so their 208 bytes are not copied into the ring for it (`SV_BuildClientSnapshot`). The
+  entities' order finds a word's lowest bit by a table: the machine has no instruction for it,
+  and the compiler called `__ctzsi2` for every entity. Telling: 39 thousand instructions a time
+  to 27.
+- **A bot's look at its snapshot copies only what it reads** (`BotCheckSnapshot`): an entity
+  whose event the bot has seen and that is no missile is passed over without copying its state.
+  23 thousand instructions a think to 3.5.
+- **The game calls the engine directly** for what it asks by the dozen, as the client's game
+  does (`g_syscalls.c`: traces, contents, links, the bots' library's entities, clock, inputs and
+  characters): 77 questions a frame of the first core's through `SV_GameSystemCalls` became 8.
+- A snapshot's walk over the level's entities steps a pointer, not two calls and a product.
+- `MSG_ReadString` and its two kin keep a string for each core: the server's worker and the
+  first core read messages at once (`RVC_RACES` found one undone).
+
+| `game_par.py quake3`, five typings (salts 0, 1, 10, 100, 1000) | Server's frames of the game a second | Passes each | Client's frames a second | Passes a client frame |
+|---|---|---|---|---|
+| before, `rvc_cpu` | 15.1 (15.0 to 15.2) | 28.4 | 56.9 | 7.42 |
+| after, `rvc_cpu` | 17.0 (15.8 to 18.4) | 24.1 | 59.3 | 6.92 |
+| before, the card (one run, salt 0) | 16.0 | 27.1 | 56.1 | 7.73 |
+| after, the card (one run, salt 0) | 17.8 | 26.0 | 59.1 | 7.84 |
+
+On the card (an RTX 5090, D3D11, `game_par.py --card`, 15 October 2026) all cores ran 10.22
+million instructions a second where they ran 9.83, the first core 1.65 where 1.53.
+
+Before, every typing gave the bot the same fight; after, it fights in two or three ways by the
+typing, and the frames of the game a second go with the fight (a think of the bot is 80 to 200
+thousand instructions by what it does).
+
+Nothing of the frame was split over more workers, for nothing of it is independent with one
+bot: the bot thinks on what the player's moves and the game's frame wrote, and they on its
+command; the player's snapshot reads what the frame wrote and the next moves write the
+client's record it is made from; the bot's snapshot is 6 thousand instructions now. Each bot's
+think on a worker of its own pays from two bots on (not done: the bots' library's routes and
+its scratch are shared).
+
+**Checking it.** The server's state can be compared between two builds now: with the server on
+the first core, `QUAKE3_SUM=1` prints a `q3srvsum:` line after each frame of the game, a sum
+over every linked entity's state and every player's (its ping, which is the clock's, left out),
+on standard output and not the console (its lines are drawn and would be in the lists' sums).
+`QUAKE3_SEED=7 QUAKE3_SERVER=inline QUAKE3_CLIENT=inline QUAKE3_SCENE=inline quake3 +set
+fixedtime 33 +devmap q3dm17 +addbot sarge 3 +wait 100 +setviewpos 488 -968 378 90` to frame
+700: the build before and this one, 223 of 223 frames the same (and with the client's game on
+its worker), and this one's first core 8.8 million instructions fewer in frames 300 to 700.
+The server inline draws its random numbers as on its worker, from a state of its own
+(`se_rand_core` in `sys_shaderemu.c`): before, the client's game drew from the same one and a
+spawn point went by the client's frames. The checks above: the scene's sums the same with the
+scene on its worker and inline and with the client's game inline (572 of 572), the lists' 572
+and 571 of 572. `RVC_RACES` in the five runs: nothing undone (the client's worker reading the
+moves and the frame asked for as they were).
+
+Tried and not kept:
+
+- **Jobs chained**: the next round given out while the worker makes the last frame of one, so
+  that it goes on to it with no pass between (a job ended, was seen, and the next began 3.2
+  passes later on average). Rounds became a frame each, and every frame told the clients: 16.2
+  to 17.3 frames of the game a second against 18.3 and 18.6 without.
+- **The routes to every area made ahead** (`QUAKE3_ROUTES=all`, 426 million instructions of the
+  worker while the level loads, 1,984 KB): with the player standing the bot asks no route in
+  frames 300 to 700 already, and with him running in circles it asked none either; the bots'
+  part was the same.
+- `QUAKE3_SERVER=paced` makes a job a frame of the game long (it is never behind), so its
+  instructions a frame are not the worker's. Two builds' first state in it, and inline too, went
+  by the machine's speed: `addbot` drew the bot's spawn point from the first core's numbers,
+  which the client's code draws from as many times as it has frames while the level loads. With
+  the server on the first core a command of the game's now draws from the server's
+  (`SE_ServerCommandDraws`, below).
+
+Found and not explained: `QUAKE3_SERVER=inline` with the client's game and the scene on their
+workers, two builds of this work (not the last) stopped at the same frame in every run with
+`CG_ProcessSnapshots: n < cg.latestSnapshotNum`; not with the server on its worker or the scene
+inline, and not after a print was added to look at it.
+
+## Bots that think at once
+
+Players fill the level with bots, and with three (`game_par.py quake3-3bots`: `+addbot sarge 3`
+three times) the server made 6.4 frames of the game a second, 64 passes each, its bots' part 220
+thousand instructions a frame. The bots now think at once (15 October 2026, `quake3.patch`,
+`server_shaderemu.c`):
+
+- **All bots think in the same frame** (`BotScheduleBotThink`: every one's residual 0, where they
+  were spread over the 200 ms), and `BotAIStartFrame` hands the list to `SE_BotThinks`: the
+  server's core makes the first, and up to `SE_THINKERS` (3, `q_shared.h`) helpers one each.
+  From the server's worker the helpers are jobs the first core gave out with its job, waiting a
+  pass at a time from job to job (a job's end does not wait for them); from the first core
+  (`QUAKE3_SERVER=inline`, `paced`) they are calls (`mcwx.h`). A think beside the server's runs on
+  a stack of its own, and `SE_OnWorker()` says 3 to 5 there: whatever the engine keeps one of for
+  each core (a trace's marks, the box a thing is clipped as, `va()`, a command's words, the
+  strings read from a message, lines kept for the first core) has one for these too.
+- **What one think wrote and another read is each bot's or each core's now**: a bot draws its own
+  random numbers and what it says or asks as a client (`say`, `use`) is done after all the thinks,
+  in client order (`SE_BotCommandKept`); the server's commands are made into console messages
+  before the thinks (`BotAIServerCommands`) and a message a think frees goes back after them
+  (`SE_BotFreesDone`); the last teleport a bot saw, its inputs (16 bytes each), the AI's node
+  switches and the routing scratch are each bot's or core's; a route found is only read (it is
+  not moved to the front of the oldest-first list, which only says what to free when memory runs
+  short, and never did here), and a route a helper makes is its own, in chunks the server's core
+  gives it before the thinks (`AAS_SE_ThinkPools`). A bot that thinks alone draws and says as it
+  always did.
+- **What a think saw is kept for the think** (`BotEntityVisible`): a bot asks whether it sees its
+  enemy from the same eye several times in one, and nothing moves while it thinks.
+
+| `game_par.py`, five typings each, `rvc_cpu` (the card model with `RVC_ADFAULT=1`) | Server's frames of the game a second | Passes each | Client's frames a second | Passes a client frame |
+|---|---|---|---|---|
+| one bot, before this day | 15.2 | 27.2 | 57.1 | 7.19 |
+| one bot, "The server's frame made shorter" | 17.4 | 23.4 | 59.0 | 6.85 |
+| one bot, now | 17.3 | 23.3 | 56.0 | 7.33 |
+| three bots, before this day | 6.4 | 64.5 | 46.7 | 8.53 |
+| three bots, "The server's frame made shorter" | 6.7 | 61.7 | 47.9 | 8.09 |
+| three bots, now | 10.5 | 38.9 | 45.8 | 8.92 |
+| three bots, now, `QUAKE3_BOTS=serial` (two runs) | 8.1, 9.0 | 49.4, 44.3 | | |
+| three bots, before this day, the card (one run) | 6.8 | 65.9 | 49.0 | 9.17 |
+| three bots, now, the card (one run) | 11.2 | 39.5 | 51.1 | 8.64 |
+| one bot, before this day, the card (one run) | 16.9 | 26.3 | 60.4 | 7.35 |
+| one bot, now, the card (one run) | 18.8 | 24.0 | 59.9 | 7.52 |
+
+On the card (an RTX 5090, D3D11, `game_par.py --card`, 15 October 2026) all cores ran 11.28 million
+instructions a second with three bots where they ran 10.57.
+
+**Checking it.** `QUAKE3_SUM=1 QUAKE3_SEED=7 QUAKE3_SERVER=inline quake3 +set fixedtime 33 +devmap
+q3dm17 +addbot sarge 3 +addbot sarge 3 +addbot sarge 3 +wait 100 +setviewpos 488 -968 378 90` to
+frame 700: the server's sums the same with `QUAKE3_BOTS=serial` and without (223 of 223), and
+with the command typed longer (223 of 223). `RVC_RACES` in the ten runs above: nothing undone. On
+the way it found what is listed above, and a fault (a helper's trace through a box the arrays
+had no room for: `BOX_BRUSHES` and its kin are `SE_CORES`'s now). A fault in the program now
+says where (`fault` in `sys_shaderemu.c`). The scene's sums and the lists' as before (572 and 571
+of 572).
+
+Not done: the bots' moves are made one after another in the game's frame (30 thousand
+instructions a bot a frame of the game; they meet in each other's traces); the hand-off between
+jobs (3.2 passes a job) was left as it is: chaining jobs lost more to telling the clients every
+frame than it gained ("The server's frame made shorter"), and telling while the next job begins
+meets its moves in the client's record. The routes a helper makes are not shared with the
+others, and their chunks are freed only with the level.
+
+## The client's frame on three cores
+
+With the server's frame made shorter a client's frame was 7.4 passes with one bot and 8.3 with
+three (`game_par.py`, below), its game 45 and 57 thousand instructions on its worker (5.5 and
+7.0 passes) and the scene 39 and 45 (4.8 and 5.5). An empty loop of a pass added to the one or
+the other (a build of its own) made a frame with one bot 0.7 to 1.3 passes longer in the scene
+and 0.3 to 0.6 in the client's game: the scene was the frame's length, 2 passes more than its
+instructions. Its job ended a pass before the first core saw it, the next began a pass after it
+was given out, and the first core gave it out only at the frame's end, after the client's game
+and the frame before had both been waited for. What was changed (15 October 2026,
+`tr_shaderemu.c`, `client_shaderemu.c`, `gpu_shaderemu.c`, `cg_ents.c` in `quake3.patch`):
+
+- **The scene's job goes from frame to frame** (`scene_job`): it draws every frame the first core
+  has recorded, one after another, and waits up to 8 passes for the next before it ends
+  (`SCENE_LINGER`); the first core gives it out again where it waits (`SE_ScenePoll`) when it
+  ended with frames left. The swap is in two halves (`gpu_shaderemu.c`): `gpuEnd` on the scene's
+  core keeps the frame's set, commands and passes and turns to the other set, `gpuShow` on the
+  first core submits it. A frame is written to a set once the frame two before, drawn from it,
+  is shown and the GPU has no list waiting (`gpuIdle`).
+- **A frame is shown once it is drawn**, from wherever the first core waits, and the first core
+  waits only for the frame before last, whose list it records the next frame into: it has three
+  lists in turn (`CORE_LISTS`), and the client's game four (`SE_LISTS`).
+- **The level's items are made on a helper core** (`SE_SideItems` in `cg_ents.c`): the client's
+  game asks for the frame's items once the view is known, a helper core makes them while it goes
+  on with the players, the effects and the flat pictures, and it waits for the helper at the
+  frame's end (`side_join`). In an item's place the scene has a placeholder (`SIDE_PLACE`), and
+  the renderer draws and sums the helper's entities there (`side_of`), so the lists and the sums
+  are as they were. An item reads only its own entity and what the frame set before it (the time,
+  the view, the items' turn), and writes only its own entity and what it adds; the places it
+  gives its sounds are done by the client's game when it joins (`SE_SoundSideReplay`). Items with
+  a sound or a light of their own stay the client's game's. The helper is a job the first core
+  gives out with the client's game's first and keeps out (`side_job`, joined at `SE_ClientReset`);
+  `SE_OnWorker()` says `SE_SIDE` there (6, `SE_CORES` is 7), and a `q3stat:` line says how many
+  items it made, its instructions and the passes the client's game waited for it: 25 to 27 items,
+  12 to 14 thousand instructions, 0 to 0.2 passes.
+
+`game_par.py quake3` and `quake3-3bots` on `rvc_cpu` (the card model), private images, the mean of
+seven typings (salts 0, 1, 10, 100, 1,000, 10,000 and 100,000: a build's runs fall into two or
+three fights by the typing, and two builds' into other ones, so one typing can be 10% off):
+
+| | One bot: passes a client frame | Its frames a second | Three bots: passes | Frames a second | Server's frames of the game a second (three bots) |
+|---|---|---|---|---|---|
+| before | 7.39 | 56.4 | 8.32 | 48.8 | 10.6 |
+| the scene's job from frame to frame, a frame shown once drawn | 6.30 | 65.0 | 7.62 | 53.4 | 10.3 |
+| and the items on a helper core | 5.62 | 73.4 | 7.02 | 59.0 | 8.9 |
+| before, the card (RTX 5090, D3D11 + fxc2, `--card`, one run, salt 0) | 6.82 | 68.3 | 8.08 | 56.6 | 12.6 |
+| after, the card | 5.56 | 81.9 | 6.47 | 72.5 | 11.7 |
+
+On the card all cores ran 13.1 million instructions a second with one bot where they ran 11.0,
+and 13.8 with three where 11.9; the first core 1.98 and 1.91 where 1.67 and 1.63.
+Instructions a frame (`q3stat:`): the client's game 45 thousand to 39 with one bot, 57 to 50 with
+three; the scene's 40 and 48, as before; the first core's 27 to 25 and 30 to 29. The client's game
+and the scene are now about as long, and each is the frame's length in turn.
+
+The server makes 4% fewer frames of the game a second with three bots (10.4 to 10.0, 21 typings;
+with one bot 16.7 to 17.5): its worker runs as many instructions a second as before (2.88 and
+2.90 million), and a frame of the game has 4% more in it, the player's moves the most of it. A
+frame of the client's sends one move, and the server makes each (7.1 thousand instructions for
+the player standing): more client frames, more moves a frame of the game. The bots' thinks are
+on their helpers all the while (`q3stat:` says how many thinks a window had, and how many of them
+were on helpers: two thirds with three bots, in every window); a window with the bots' part twice
+as long (180 thousand where it is 85) is the fight the typing gives, which comes more often as
+the client's frames come faster (22 of 140 windows against 5 of 140 before).
+
+**Checking it.** `QUAKE3_SUM=1 QUAKE3_SERVER=inline quake3 +set fixedtime 33 +devmap q3dm17` to
+frame 600, typed the same length (`QUAKE3_CLIENT=worker QUAKE3_SCENE=worker QUAKE3_SIDE=worker` and
+each with `inline`): the scene's sums and the lists' the same with the items on the helper and
+without (570 of 570, and 570 of 570 with the bot, `+addbot sarge 3 +wait 100 +setviewpos 488 -968
+378 90`), with the scene on the first core (570 of 570), and as the build before made them (570 of
+570; everything on the first core 574 of 574). The client's game on its worker against on the first
+core differs in 17 frames early in the run with the bot, in the build before as well. Held frames
+(`QUAKE3_HOLD` 400 and 700 with the bot, `rvc_cpu --save-ram`, drawn by `tools/gpu_reference.py`'s
+model): every pixel the same as the build before's, and with `QUAKE3_SIDE=inline`. `RVC_RACES`:
+nothing undone in any run of the table or of the sums. The menu draws and quits; `map
+q3dm17` typed at frame 400 with two bots loads the level again and the game goes on.
+
+Found on the way:
+
+- **The game stopped with three bots** in two typings of five (`game_par.py quake3-3bots --salt
+  10`, the tree as it was): `SE_ServerSettle` waited for the server's job without helping on a
+  helper of its stopped at a page (two helpers stood in `BotEntityVisible`), and
+  the job waited for the helper. It polls the helpers now (`helpers_poll`).
+- **A bot thought on two cores at once** in a frame of the server's made on the first core (a
+  level loading again, somebody joining): there its thinks are calls of the first core's, and a
+  helper left waiting by the server's worker took the same task (`RVC_RACES`: 65 changes undone
+  after `map q3dm17` with two bots). The helpers are joined before such a frame: 0.
+- Two thinks of bots on two cores both counted the routing caches they made
+  (`numareacacheupdates` in `be_aas_route.c`: `RVC_RACES` found one change undone in 77 runs); the
+  counts were only printed, and are not kept now.
+- With three bots and the server on the first core, `QUAKE3_BOTS=serial` and the thinks at once
+  part from the game's third frame on in some builds (the build before this work too, `QUAKE3_SEED=7`
+  to frame 700: 2 of 223 the same; in others 222 of 222): not looked into.
+- With three bots two builds' `q3srvsum:` lines part from the game's second frame on, also this
+  build's and the same with two prints added: the game's random numbers are seeded from the clock
+  as the level starts (`GAME_INIT`'s `Com_Milliseconds`). Builds are compared with one bot.
+
+Tried and not kept: the client's frames asked two ahead (`SE_LISTS` 5): 5.62 to 5.48 passes with
+one bot and 6.73 to 6.92 with three, within the typings' spread, and a frame more before a move is
+seen; the flat pictures joined without copying their state: the scene's instructions as they were.
+Not done: the models made ready a frame ahead on a core of their own (their matrices, light and
+culling, about 10 thousand of the scene's 40 to 48), which pays only with the client's game
+shorter too; the players on the helper (they draw random numbers, make local entities and sounds
+in their order, which a core beside would change).
+
+## Pictures decoded when a level loads
+
+Until 15 October 2026 the 237 pictures lay in `quake3-se.dat` as the GPU reads them, 6.5 MB of
+the file's 13.3. They are files again, decoded with libmedia (`docs/media.md`) on the worker
+cores into GPU memory when the game registers what draws with them, and drawn from there.
+
+- **In sheets.** `bake.py` lays the textures of one kind and width one under another (rows of
+  a texture are then rows of the sheet, as the GPU reads them) in sheets of 512 KB of texels
+  at most, and writes each sheet as one file with libmedia's encoder (`q3pack`): 13 JPEGs of
+  the 150 opaque pictures (quality 95, colours at full size, restart markers) and 6 PNGs of the
+  87 with alpha (in segments; each texel's red, green, blue and transparency, so that the GPU's
+  words come out as they were). A JPEG texture's rows begin on its 8 x 8 blocks. 1,291 KB: JPEG
+  792 of 4,451 KB of texels, PNG 499 of 2,042. `bake.py` reads every sheet back with the same
+  library: a PNG that does not come back texel for texel is left as texels, and it says so.
+  The light maps (432 KB) stay as texels in the ROM, where the lit draws read them.
+- **One file a picture was tried first**: 247 decodings, each a few rounds of libmedia's workers
+  and a few mappings, made the level's loading 30,411 passes where it was 15,260 (one core alone:
+  55,384). A sheet is decoded in one call on every core.
+- **When.** A shader, model or skin registered on the first core has its sheets decoded then;
+  one registered on the client's game's worker is asked for and decoded by the first core at
+  its next frame's end (`pictures_take`). The level's own runs are decoded in `RE_LoadWorld`
+  before their kept commands are made. `stage_kept` is made again for the stages of a sheet
+  decoded, or whole at the frame's end when the scene's job was out. The main menu decodes 9
+  sheets, the level the other 10; they are kept until the window closes (the file has one level).
+- **Where.** The display's own framebuffer first (`seglMemorySpare`, 4,032 KB while the desktop
+  is layers), then `seglMemory` (2,625 KB left after the level's 442, which has a room of its own
+  now). All 19 sheets are 6,492 KB: a sheet with no room is not decoded and its stages are drawn
+  in their colours, and the line `quake3: pictures decoded so far` says how many were not.
+- **On which cores.** The program opens 24 more worker cores than the game's six
+  (`QUAKE3_DECODERS`), and a sheet is decoded on all that have no job out (`mcw_for`'s teams).
+  In a game they are parked: each has a call that is not joined until the next sheet
+  (`pictures_park`), because `mcw_call` goes round every worker with no call out, and round 30
+  it woke a cold one for each of the game's jobs: 7.46 passes a client frame against 7.01.
+- **The game's workers are lent to libmedia**, and the server's may be making the bots' routes:
+  the library steps round a busy worker on lent ones and never posts to one by number
+  (`media.md`, at the top), which once hung the game here. Every sheet is shared out over the
+  workers that are free; a sheet under 32 rows is the first core's alone.
+
+Measured on `rvc_cpu` (private images, the build before and this one):
+
+| | Before | After |
+|---|---|---|
+| `quake3-se.dat` | 13,372,812 bytes | 8,048,183 (all PNG: 9.3 MB, the pictures 2,543 KB) |
+| `quake3.bin` | 2,392,184 bytes | 2,609,272 (libmedia's pictures) |
+| `+devmap q3dm17 +addbot sarge 3`, the command to the level's first frame: the first core | 124.5 million instructions | 130.2 (21.7 of them in decoding, while it waits too) |
+| the same: passes, guest seconds | 15,260, 37.7 s | 16,293, 40.2 s |
+| the same, every sheet shared out (libmedia steps round busy workers, 15 October) | | 15,759, 38.9 s; first core 126.5 million, 17.0 of them decoding |
+| `devmap q3dm17` typed at the menu (no bot, 10 sheets): the first core, passes | 75.0 million, 9,185 | 87.1 million, 10,785 |
+| `game_par.py quake3`, five typings: passes a client frame | 7.50, 6.84, 6.93, 6.84, 6.93 | 6.85, 6.94, 6.94, 7.49, 7.00 |
+| the same: the first core's instructions a frame | 27.8k, 25.2k, 24.9k, 25.2k, 24.9k | 25.4k, 25.3k, 25.3k, 27.6k, 25.2k |
+
+The level's sheets cost less with the bot: they are decoded while the server's worker makes its
+routes, which the first core waits for after. Decoding on six workers was 21,165 passes, on 16
+17,742, on 30 16,289, on 62 16,267. Quality 90 saved 172 passes of 10,785 and doubled the texels'
+error (1.99 levels on the mean, 43 at most): not taken.
+
+**Checking it.** Held frames (`QUAKE3_SEED=7`, the server, the client's game and the scene on the
+first core, `QUAKE3_SUM=1`, `QUAKE3_HOLD`), saved with `rvc_cpu --save-ram` and drawn by
+`tools/gpu_reference.py`'s model from the RAM and the image's ROM: frame 400 at 488 -968 378,
+frame 250 where the player begins, and the menu at frame 60. The scenes' sums are the same in
+every frame before and after (373 of 373, 223 of 223). With `--pictures png` every pixel is the
+same as before in all three; with the JPEGs 63 to 89% are, 98.1 to 99.6% within 2 levels, none
+more than 10 away (a texel 0.86 levels off on the mean, 22 at most). `RVC_RACES` from the command
+to frame 300: nothing undone, the waits on libmedia's team words and the client's moves "as it
+was". `RVC_ADFAULT=1`: no stop on a written bit (5 of the workers' page stops, 1 before).
+
+Not done: anything on the card (how fast the GPU reads a texture from GPU memory against the
+ROM was not measured), in the world or in a holodeck (`GpuVolumePass.cginc` reads GPU memory as
+for Quake's textures, not tried with these). Without the display's spare memory (a display that
+is not layers) 2.6 MB are left and most sheets would not fit. libmedia: one picture at a time in
+a program (its decoders keep their state in statics, and map their memory with system calls, so
+a worker cannot decode a picture of its own beside another); a JPEG whose markers are unevenly
+spread posts to busy workers (above); its PNG encoder wrote a 128 x 1312 sheet of three bytes a
+texel that neither it nor Pillow reads back (the all-PNG bake leaves it as texels).
 
 ## Checking it
 

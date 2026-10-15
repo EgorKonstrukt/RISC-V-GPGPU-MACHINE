@@ -8,7 +8,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
 MW=${SE_MW:-$WORK/src/microwindows}
-Q=$WORK/src/quake
+Q=${QUAKE_SRC:-$WORK/src/quake}	# (QUAKE_SRC: a tree of ones own, for a build beside another session's)
 BUILD=${QUAKE_BUILD:-$WORK/src/quake-build}
 DATA=$WORK/src/quake-data
 OUT=${QUAKE_OUT:-$REPO/build/images/linux/root}

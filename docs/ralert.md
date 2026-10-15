@@ -141,7 +141,8 @@ a pass (its write cache: `docs/multicore.md`).
   compares pictures, and both decodings were right.)
 - The workers are the game's while a movie plays and no longer: it asks for them when a
   movie's buffers are made and gives them back when it ends, so that another program (Quake,
-  whose server is on one) has them during a mission, where this game has no use for them.
+  whose server is on one) has them between movies. (A mission now opens its own for the scene,
+  the frames and the objects: `host.c`, and the last item below.)
 - More workers do not make a movie faster. On the machine of 64 cores it has the kernel's
   fifteen: 156 frames in 14.2 s (its own pace is 10.4 s). Laid out for it (47 workers of 3 KB
   a pass for the rows and a large one to unpack) it was 13.7 s, with the same pictures, and
@@ -151,7 +152,14 @@ a pass (its write cache: `docs/multicore.md`).
   one too) and the next frame's pointers unpacked by `mcw_try_call` (`docs/tdawn.md`, "The
   workers on the second layer"): 156 frames in 16.2 s where they were 16.8, 0 of them differ.
   The mission's ground layer is sorted by a worker while the frame is drawn, and the objects
-  are drawn a frame behind by a worker (`docs/tdawn.md`, "The objects a frame behind").
+  are drawn a frame behind by a worker (`docs/tdawn.md`, "The objects a frame behind"); a
+  selected unit's bars and box are `gl.cpp`'s, kept with it (`docs/tdawn.md`, "Selected units:
+  their bars": they blinked, and twelve selected units took the Soviet mission from 21 to 8
+  frames a second, 18.5 now).
+- Since 15 October 2026 a frame's rows and the next frame's pointers are libmedia's
+  (`media_vq4_rows`, `media_lcw`: `docs/media.md`, "VQA"), which `workers.c` calls; the same
+  156 frames (`RALERT_MOVIE_CHECK=1`: 0 differ) and the same state sum at frame 300. The
+  library also plays a VQA file whole (`nxvideo ENGLISH.VQA`).
 - `RALERT_MOVIE_SOFT=1` is the game's own way, `RALERT_WORKERS=N` uses no more than N workers,
   and `RALERT_MOVIE_CHECK=1` decodes every shared frame on core 0 as well and compares: 0 of
   156 differ. Each movie prints a line (`ralert: movie ...`).
@@ -166,8 +174,9 @@ a pass (its write cache: `docs/multicore.md`).
 From the command to the mission's first frame: 101.9 s, 87.8 s with the picture, 80 s with
 the workers; the whole 300-frame check 123 s to 106 s, with the same state sum. What limits
 a frame now is stores, not instructions: 16,000 texels of picture and 2,000 of pointers a
-frame, 384 a pass a core. In the mission itself the workers do nothing yet, and their being
-there costs it 4 to 8% (14.1 game frames a second where one core has 14.5).
+frame, 384 a pass a core. In the mission itself the workers did nothing then, and their being
+there cost it 4 to 8% (14.1 game frames a second where one core has 14.5); they have its work
+since (`docs/tdawn.md`, "The scene on a worker core" and the sections after it).
 
 ## The mission's frame
 
@@ -250,7 +259,7 @@ to 30.9 over 1,200), the Allied one from 9.0 to 20.6 (8.7 to 21.7). Red Alert's 
   places now, entry 0 empty for the ID that is none (`ShaderEmu_Heap_Table` in `heap.cpp`,
   made again when the heap's buffer is another): 3% of every frame.
 - **A unit's path searches** keep what `Can_Enter_Cell` said, as Tiberian Dawn's do
-  (`docs/tdawn.md`, "Not done"; `RALERT_CHECK_ENTER=1`).
+  (`docs/tdawn.md`, "A unit's path searches"; `RALERT_CHECK_ENTER=1`).
 - **A scan for targets turns most objects away first for the least**
   (`TechnoClass::Evaluate_Object`): whether the object's kind is asked for and whose side it
   is on are tested before its cloak, its zone and its health. Every test only says no, so
@@ -281,7 +290,8 @@ buildings 12, the houses 9, scans for targets 7, the scene 20, the kernel's tick
 in it is waste of the kinds above, and a battle is the same at one and a half times the
 size: 15.2 frames a second with everything sent to hunt, where it was 5.6, and 9.1 while
 reinforcements land (`docs/tdawn.md` lists what is still under 15). Not done: Tiberian
-Dawn's occupancy bits for Red Alert's scan (2 thousand), a unit's scan or path on a worker
+Dawn's occupancy bits for Red Alert's scan (2 thousand; done since, "The scan passes empty
+cells a word at a time" above), a unit's scan or path on a worker
 core while this one waits (a waited job is two passes: a paired path search was built for
 Tiberian Dawn and gained 1%), a soldier that only moved shown from its kept rectangles
 (what its `Draw_It` would draw is not known without calling it), and the logic itself on
@@ -406,4 +416,5 @@ own start), and as long again to a mission's first frame.
 - The vortex in the GPU's scene; ground units sorted among walls as the game sorts them
   (the scene draws overlays first, then every object).
 - Scroll steps sized by time, and frames left undrawn when late (`docs/tdawn.md` has both).
-- Movies. The start: a minute to the menu.
+- The start: a minute to the menu (the movies are the GPU's and the workers', "Movies, and the
+  worker cores").

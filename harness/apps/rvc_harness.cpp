@@ -50,6 +50,7 @@ namespace fs = std::filesystem;
 
 // The machine as an interpreter (rvc_cpu.cpp, docs/cpu-harness.md), for --cpu: the same file
 // that is bin\\rvc_cpu.exe, without its main().
+#include "run_lock.h"
 #define RVC_CPU_LIBRARY
 #include "rvc_persist.h"
 namespace cpuemu {
@@ -120,7 +121,7 @@ struct Options {
     double netLoss = 0, netDelay = 0;   // --net-loss percent, --net-delay milliseconds: of every packet sent
     int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/multicore.md)
     bool lazy = false;        // --lazy: a fill or copy is left to the commit and the pass goes on (LAZY_MEMOP)
-    bool noBands = false;     // --no-bands: the commit rewrites all of RAM, as a CustomRenderTexture does
+    bool noBands = false;     // --no-bands: the commit rewrites all of RAM, not only the bands written to (COMMIT_BANDS off)
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
     bool ourKernel = false;   // the RAM image is this project's (kernel at +4 MiB, device tree at +34 MiB)
@@ -601,6 +602,8 @@ int main(int argc, char** argv) {
             printf("%-12s %s%s\n", im.name, im.title, imageAvailable(im) ? "" : "  (files missing)");
         return 0;
     }
+    if (!run_lock_take(!opt.cpu, opt.cpu ? (opt.gpu.warp ? "rvc_harness --cpu --warp" : "rvc_harness --cpu") : "rvc_harness"))
+        return kRunLockRefused;
 
     // Opened with no arguments (or only --resume / --no-viz): act as a terminal on the emulated
     // machine. Fastest shader, a cold boot you can watch, memory view on.

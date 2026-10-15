@@ -46,7 +46,7 @@ input and the control words stay the shader's passes, which is where they are ch
   picture to copy back) or a sixtieth of a second is over.
 - What it wrote of RAM since the last time goes into the state texture, in 4 MB bands: the
   GPU's memory and the control words every time they changed, Linux's own RAM (which only
-  the memory view shows) four times a second. The commit pass is told those bands (state
+  the memory view shows) four times a second while the view is open. The commit pass is told those bands (state
   texel (41, 0), where the tick pass says which it wrote) and carries them into the buffer it
   draws, as it does the tick's.
 - The frame is then the harness's own without the tick: the commit (which copies a drawn
@@ -70,6 +70,22 @@ Not there yet in this mode: sound (not tried), pages from the host for the brows
 The shader's own cores are not used (the cores are the interpreter's), so nothing here says
 anything about the shader machine's passes.
 
+## One card, many processors
+
+Every harness takes one lock as it starts, after its options: any number of CPU harnesses run
+together (`bin\rvc_cpu.exe`, `rvc_harness --cpu` with or without `--warp`, although without
+`--warp` it makes a device on the card for its display), or one GPU harness alone (`rvc_harness`
+and `rvc_harness_dxc` without `--cpu`, the bare double-click one too). A harness that would
+break that does nothing, prints one line naming who holds the lock (`[lock] rvc_harness refused
+(GPU mode): held by CPU harness rvc_cpu pid 32856`) and exits with 75. It is a `LockFileEx` on
+`%LOCALAPPDATA%\ShaderX86\harness.lock`, shared or exclusive, and each holder keeps
+`holders\PID.txt` open beside it: both go when the process ends, killed or crashed, so no lock
+is ever stale. It is for every checkout on the computer. It does not wait: `tools\gpu_queue.ps1`
+still gives the card's runs their turns one at a time, and says `REFUSED` under a run the lock
+turned away. `RVC_LOCK_HOLD=S` takes the lock in the mode the options say, holds it S seconds
+and exits, touching nothing else; a test of the rule in a lock of its own sets `LOCALAPPDATA`
+to a folder of its own.
+
 ## What it is
 
 - **The processor**: RV32IMA with the float instructions (the host's own floats, which are
@@ -81,7 +97,7 @@ anything about the shader machine's passes.
 - **Memory**: 128 MB from `0x80000000` (Linux's RAM, then the GPU's and the control words, which
   are RAM), the ROM at `0x40000000`, the parallel copy and fill (CSRs `0x0b0` to `0x0b3`, whose
   source may be the ROM), the clock chip and a UART that prints.
-- **A pass** is `--ticks` instructions (16,384), or fewer when the core waits (`wfi`, `pause`) or
+- **A pass** is `--ticks` instructions (8,192), or fewer when the core waits (`wfi`, `pause`) or
   asks for a copy, as on the shader machine, and the host's part of the machine runs between
   passes: the clock word, the host flags, the pointer, what each core ran, and the GPU's
   submit word.
@@ -101,7 +117,12 @@ anything about the shader machine's passes.
 - **`rvc_cpu.exe` has no GPU, no display, no sound card.** A submitted list is taken as drawn
   (the submit word cleared, the counters counted), and a picture a program asked to have
   copied back into its window is not there. Those devices are cheap on the graphics card and
-  stay there: `rvc_harness --cpu` (above) runs them as the shader's passes.
+  stay there: `rvc_harness --cpu` (above) runs them as the shader's passes. Without a sound
+  card `/dev/sound` does not open and a game's own sound code never runs: `RVC_SOUND=1` moves
+  the card's clock and voices as its control pass does (nothing is mixed), so a game counts
+  what it counts on the card (Quake: 9 thousand instructions of core 0 a frame more).
+  `tools\game_par.py` sets it, with `RVC_WCACHE`, `RVC_ADFAULT` and `RVC_RACES`
+  (`docs/multicore.md`, "A game's speed"; `--plain` drops all four, `RVC_ADFAULT=0` that one).
 - No keys yet. The pointer goes round (`--pointer-sweep N`, from pass N; `--pointer-circle
   X,Y,R` for a circle of its own on the display) and its buttons word is set for a while
   (`--pointer-button B,S,T`: B from second S to T of the guest's). No pages from the host
@@ -110,10 +131,47 @@ anything about the shader machine's passes.
   -bytes rule for workers. It answers "how many instructions", not "does it run there";
   `RVC_RACES=FILE` gives the cores memory as the card has it, and says where that mattered
   (`docs/multicore.md`, "Races"); `RVC_CALLS=FILE` what core 0's calls cost ("Finding the
-  work").
+  work"). `RVC_WCACHE=1` gives every core the shader machine's write cache (three tables of
+  buckets of three texels, 6 bits for core 0 and the geometry's for a worker,
+  `experiments/rvc_opt/src/mem.h`): a store that changes a texel no bucket has room for ends that
+  core's pass before it, and the end says how many passes ended so. `RVC_ADFAULT=1` makes a
+  clear accessed or written bit in a page table entry fault, as the shader machine's walk does
+  (`src/mmu.h`): the kernel sets it, and a worker stops there until core 0 serves the page
+  (without it `rvc_cpu` sets the bit itself; `docs/multicore.md`, "A game's speed"). Every run
+  ends with a `[cpu] stops:` line: the workers' faults, those on such a bit, and core 0's on
+  one, from the mark too; `RVC_ADFAULT=2` prints each (`[adfault]`: core, cause, address, pc).
+- `--save-ram FILE` writes the 128 MB of RAM as the run ends: a picture in GPU memory at a
+  hold can be read from it (the NES's at `0x87000400` plus what `nes: holding` prints).
+- A world's rounds in time: `--ticks 8192 --ips 1e12 --pass-ms 2.7307` makes every pass a
+  round of 8,192 instructions at 3 MIPS a core, whatever it ran, so a program's own clock (the
+  NES's `nesstat` percentages) counts as on cores of that speed (`docs/nes.md`).
 
 ## Checking it
 
 `fptest` in the guest (every float instruction against the runtime's integer routines), the
 games' state sums (`docs/ralert.md`, `docs/tdawn.md`), and the workers' instruction counts,
 which for Red Alert's movie agree with the shader machine's to five digits.
+
+## The test set
+
+`python tools/test_all.py` runs every program's own checks on the image under `rvc_cpu`, half
+the computer's threads at once: the machine (`mctest`, `fptest`, `lazy`, `cc`'s bytes,
+libmedia in the image), the games' state and picture sums (Doom, Quake, Quake III, ClassiCube,
+Tiberian Dawn, Red Alert, the NES, nxphys), nxray and nxpath, libmedia and the players, and the
+desktop's programs (Paint's undo, the viewer's sums, Files' box, a question, the browser's
+counts, the monitor, the launch note). One PASS or FAIL line a case with why and its seconds,
+a summary, and exit 1 on any failure; the consoles are in `build/test_all`. On 15 October 2026
+the default set was 65 cases in 55 to 70 s.
+
+    python tools/test_all.py                 # the default set
+    python tools/test_all.py games nes-cells # tags (machine, games, doom, quake, ..., workers, media, desktop) or names
+    python tools/test_all.py --long          # and the long cases: no workers, zerotest and tailtest, three bots
+    python tools/test_all.py --races         # RVC_RACES on every case with workers: 0 changes undone
+    python tools/test_all.py --card-model    # RVC_SOUND, RVC_WCACHE, RVC_ADFAULT as game_par.py has them
+    python tools/test_all.py --image build/images/NAME --list
+
+A case's expected values are in the script, each with the doc it comes from; where a doc says
+only "as before" (Doom's, Quake's and Quake III's server sums, Quake's particles, ClassiCube's
+meshes and pack, `cc`'s outputs) a case keeps the md5 of every such line, as the image of 15
+October 2026 and, but for ClassiCube's leaves, the last commit's printed them. A change that
+moves one on purpose sets the new value with the reason. Captures and the card are not in it.

@@ -17,15 +17,16 @@ does not keep.
 
 Lines typed at the terminal it was started from are console commands (`map e1m2`,
 `timedemo demo1`, `hold`), which is also how a test drives it through the machine's serial
-console. The window's keys and buttons go to the game as Quake's own (`vid_shaderemu.c`), and
-`in_mouse 1` has the pointer's travel over the window turn the view; neither has been tried
+console. The window's keys go to the game as Quake's own (`vid_shaderemu.c`); in the game the
+left button held drags the view round and the right one fires (`docs/input.md`), and
+`in_mouse 1` has the pointer's travel over the window turn the view too; neither has been tried
 by hand yet, only the terminal's commands.
 
 ## What the build is made of (`linux/quake`)
 
 - `build.sh` fetches the source at a fixed commit, applies `quake.patch`, adds the files
-  below and compiles GLQuake's file list without its x86 assembly, with the null sound, CD
-  and network drivers. Floats are the machine's instructions, constants are single precision.
+  below and compiles GLQuake's file list without its x86 assembly, with the null CD driver and
+  the game's own network drivers (the loopback and UDP: `docs/lan.md`). Floats are the machine's instructions, constants are single precision.
 - `qgl.c` is the OpenGL GLQuake calls (`include/GL/gl.h` renames each call to `qgl...`): the
   1.1 calls it uses, glBegin and floats, turned into what `programs/linux/gles.c` (its float
   build) draws. It also keeps the textures' pool, the models' poses and their light tables.
@@ -34,7 +35,9 @@ by hand yet, only the terminal's commands.
   searched each model for long strips.
 - `fmath.h`, `fmath_shaderemu.c`: sine, cosine, tangent and arctangent in floats. The source
   calls C's double functions, and the C library's float ones work in doubles inside.
-- `vid_shaderemu.c` is the window, the frame and the input; `sys_shaderemu.c` the system.
+- `vid_shaderemu.c` is the window, the frame and the input; `sys_shaderemu.c` the system;
+  `server_shaderemu.c` the server's frame and the workers' calls, `scene_shaderemu.c` the
+  picture on a worker, `gpu_shaderemu.c` gles.c with what a draw made again asks of it (below).
 - `snd_shaderemu.c` is the sound (below), in place of the game's mixer.
 
 ## Sound
@@ -66,8 +69,11 @@ how loud it is in each ear by distance and side, worked out once a frame.
 - **What is in view** comes from the level's own table of which leaves see which (its PVS):
   the leaves the viewer's leaf sees are listed when the viewer enters a leaf and tested
   against the view's four planes in integers. GLQuake walked the whole BSP tree every frame.
+  (With the light maps and water the workers', only the things standing in those leaves are
+  listed and tested: "The other workers, and draws made again".)
 - **The sky** is two kept commands over the same vertices, their texture laid on the picture
-  (`FRAGMENT_LAID`), and water is drawn a polygon at a time with the game's clock.
+  (`FRAGMENT_LAID`). Water is kept too, its ripple written by workers (the same section); water
+  one can see through is drawn a polygon at a time with the game's clock.
 - **A model's pose is the file's own bytes.** A vertex of a model is four bytes (x, y, z and
   which of 162 normals); a pose's are copied into GPU memory as they are and drawn as packed
   vertices, with the model's texture coordinates in a buffer beside them. Its shading is the
@@ -355,6 +361,7 @@ instructions a second of the 4.1 a core has at 2.0 ms a pass.
     QUAKE_NET=1           what a packet costs, every 200 sent (the game has its UDP driver: docs/lan.md)
     QUAKE_TRACK=N         where the player is and how fast, each N frames of the server
     QUAKE_TEST_EXIT=F     (with QUAKE_TRACK) at frame F the player is put into the level's exit
+    QUAKE_TEST_PLACE=F,x,y,z,pitch,yaw   (with QUAKE_TRACK) from frame F the player stands there, still
 
 `late` and `wait` do the same things in the same order, one on a core and one on two. With
 `+host_framerate 0.05` (a frame's length is then not the machine's speed) and `--fixed-dt
@@ -379,7 +386,8 @@ last move only, and a tap between two of its frames (a jump, a shot) was lost.
 The first core's frame was gone through once more, this time for what workers could have
 of it a frame behind and for what a frame draws that it drew before. The program asks for
 thirteen workers (`SE_Workers` in `server_shaderemu.c`; `QUAKE_WORKERS=N`): the server's, and
-four each for the light maps, the water and the particles.
+four each for the light maps, the water and the particles (since 14 October each job goes to
+whichever is idle: "Calls of the second layer").
 
 | `rvc_cpu`, passes of 8,192, 3 million instructions a second | A frame before | now | Frames a second before | now |
 |---|---|---|---|---|
@@ -413,7 +421,7 @@ level's first frame is 1.5 to 2 million instructions more (2%): the kept brush m
   memory, sorted by texture and again by light map, and a frame is its matrix and a draw a
   run. All of its faces are drawn, not those that face the viewer: the others are behind them.
   A brush model was 5 thousand instructions, and is 2.
-- **A draw made again is its command copied** (`gpu_shaderemu.c`, which is `gles.c` and three
+- **A draw made again is its command copied** (`gpu_shaderemu.c`, which is `gles.c` and a few
   calls after it; `qglModel`, `qglTrianglesAt`). A model's pose drawn with the skin and the
   pose where they were in GPU memory is the sixteen words it was drawn with before, with the
   frame's matrices and the light's table. An entity's matrix is written as rows where the
@@ -428,7 +436,8 @@ level's first frame is 1.5 to 2 million instructions more (2%): the kept brush m
   the array, moves its particles and writes a vertex each into a buffer of its own; the first
   core gives a new particle a free place, and copies the vertices the workers last made into
   the frame, 16 bytes a particle where moving one was 70 instructions and two or three texels
-  of the write cache. A particle is seen a frame after it is made.
+  of the write cache. A particle is seen a frame after it is made. (The vertices are drawn
+  where the workers wrote them since 14 October: the next section.)
 - Smaller: the view's matrix in one go (`qglView`: the same sums as the five calls), the
   projections kept while the view's size is the same, `R_AnimateLight` when the tenth of a
   second or a style changes, and the terminal asked for a typed line four times a second and
@@ -501,9 +510,10 @@ as they can be:
   share at a time. An explosion was 170 thousand instructions of this core; a particle is still
   seen a frame after it is made.
 - **The particles' vertices are in GPU memory** (`qglParticleMemory`, 64 KB taken from the pool,
-  `qgpuPointsAt` in `gpu_shaderemu.c`), and each share is a draw from where its worker wrote them:
-  they were copied into the frame, 16 bytes a particle. A share's buffer is written again only when
-  the list that may still read it has been drawn (`seglSettle` when the frame before drew it).
+  128 KB since the four buffers of the next section; `qgpuPointsAt` in `gpu_shaderemu.c`), and each
+  share is a draw from where its worker wrote them: they were copied into the frame, 16 bytes a
+  particle. A share's buffer is written again only when the list that may still read it has been
+  drawn (`seglSettle` when the frame before drew it; no wait since the four buffers).
 - **The light maps are one call** a change of the styles (four calls before, each going through
   every surface for its pages).
 - **The server's end is a word.** Its frame writes its number when it has ended, and
@@ -582,11 +592,13 @@ later than it was.
   (`SE_SceneOwn`): a line printed or centred, a key, a command, a setting, a skin made for a player,
   a window resized, a level loaded, cleared or left, an error, and every message of the server's but
   a frame's everyday ones (`cl_parse.c`). A line the worker prints is written when it is joined
-  (`mcw_print`); an error there ends the program (`mcw_fail`). The server's own lines and errors
-  go where they went: `SE_ServerOnWorker` is now true on the server's worker only.
+  (`mcw_print`); an error there ends the program (`mcw_fail`), and so does a setting or a command
+  made there. The server's own lines, settings, commands and errors go where they went:
+  `SE_ServerOnWorker` is now true on the server's worker only.
 - **A frame is drawn here**, as before, in a menu, the console, a level's first frame, an
   intermission, a pause, a holodeck's seat, with mirrors or `lcd_x`, a held frame drawn late, a
-  setting of the view's size changed, and with `QUAKE_SCENE=inline` or without workers.
+  setting of the view's size changed, and with `QUAKE_SCENE=inline`, without workers, or with
+  the particles on this core (`QUAKE_PARTICLES=frame`, or fewer than thirteen workers).
 - The first core waits for the frame by the word its call writes last, and asks the library only
   every fourth pass: `mcw_join`'s wait looks at every worker each pass, which was 2 to 3 thousand
   instructions a frame.
@@ -696,6 +708,31 @@ held, `+host_framerate 0.05`, against the tree's build): with the particles, lig
 waited for and with everything at its own pace, all six are the tree's to the pixel, the 2D screen
 recorded and the frames drawn by the staying worker; frame 300 with `+con_notifytime 0` too.
 
+## Water's two faces, and the frame a level loads under (15 October 2026)
+
+- **Water was drawn twice, and the two fought.** A level's water, slime, lava and teleporters are
+  two faces on one plane, one for each side (in e1m1 all 304 are 152 such pairs; in every level of
+  the episode every pair but a teleporter's box in e1m3, which is a brush model). GLQuake drew the
+  one facing the viewer; the kept water (13 October) drew both, and the GPU culls nothing, so each
+  face's own cuts into triangles and its ripple between their corners won here and there. Now one
+  face of a pair is kept (`water_twins` in `world_shaderemu.c`, found by plane, side, texture and
+  the sum of its corners), and the other's leaves ripple it: e1m1's water is 426 quads, not 852;
+  the load line says how many faces were left out. Seen from either side it is the same face.
+- **The frame a level loads under is flat.** The loading plaque's frame stays while the next level
+  loads (no frame is drawn until it has), and it was drawn over the level being left, as a world:
+  a holodeck went on showing that level, its kept runs and textures being replaced under it. The
+  plaque is now drawn on black (`SCR_UpdateScreen` leaves the view out under `scr_drawloading`)
+  and the frame says it is a flat screen (`seglWorldFlat`, `vid_shaderemu.c`), as a menu does.
+
+Held frames of a live e1m1 (`QUAKE_SERVER=inline`, `+host_framerate 0.05`, the player placed by
+`QUAKE_TEST_PLACE`) under `rvc_harness --cpu --warp`, before and after: the water's seams and
+streaks are gone and the teleporter's speckle (1,452 pixels); a sloped floor and a view with no
+water are the same pixels. With the ripple waited for (`QUAKE_WATER=wait`), the kept water against
+the water drawn in the frame, which draws the face toward the viewer (`QUAKE_WATER=frame`): 52% of
+the pixels differed before, 1.4% now. The checks of the sections above pass as they did. The level change of the exit test, captured while e1m2 loads: before, the
+plaque over e1m1 in a world frame of 105 commands; now 74, the kept runs empty, the plaque and
+the disc on black, and the flat bit set.
+
 ## The server's frame, and what could be taken from it
 
 Not done: what was measured on 13 October 2026, and what it suggests. e1m5 standing where
@@ -762,6 +799,65 @@ goes at 0.59 of the clock's, a frame being 0.1 s of the game at most; at 200 tho
 would make about 11.5 and the game go at the clock's rate. Above ten a second a monster
 no longer thinks in every frame, which is less again.
 
+## The server's frame made shorter (15 October 2026)
+
+Measured on the game played, never the timedemo: `python tools/game_par.py quake` (e1m5 from
+where it starts, the server on its worker, the card's model). The server's frame was 310
+thousand instructions, 38 passes, and 43 passes from one frame's start to the next: the
+`quakestat:` line "the server's frame in ms of the clock" (new) said 2.4 ms to begin, 91.5
+running, 8.8 until this core took it and 2.5 until the next began. Now, every change with the
+same sums of e1m5 in all three modes:
+
+- **A frame that has ended is followed at once** (`SE_ServerIdle`, from `Host_FilterTime`'s
+  refused frames): it was taken at the client's next frame's polls, 3.5 passes later, since the
+  client's frame waits for its 10 ms floor without polling. Until taken: 8.8 to 3.0 ms.
+- **QuakeC's statements are decoded once** (`PR_ExecuteProgram (-1)` from `PR_LoadProgs`): the
+  code of each op and its operands as byte offsets, a `goto` to the op's code (16 instructions a
+  statement where the switch was 29), the same operations on the same values. In `malloc`'s
+  memory, not the hunk's: anything moved there moves QuakeC's strings, and the sums with them.
+- **A hull's clip nodes and planes as one** (`se_node_t` in `gl_model.h`, `SE_NodeContents`,
+  `SE_NodeCheck` in `world.c`): a node is one 32-byte record, its child chosen without a branch.
+  The box hull, made again for every entity, walks as before.
+- **A variable QuakeC asks for by name** is found by where the name lies first (`PF_cvar`): the
+  list's search of every name was 1.3 thousand instructions, four times a frame.
+- **A move through a BSP model's hull is kept** (`se_traced` in `world.c`, 512 places): the same
+  start, end and offset in the same hull are the same answer while the level lasts. 27% are
+  found standing still, nearly all `SV_SetIdealPitch`'s six a frame; 5 to 9% in a fight. Kept
+  points and the leafs an edict's box touches were tried and found 3.5% and 11%: not kept.
+- Smaller: `SV_Move`'s memset of a clip whose every field is set, a pusher's loop over every
+  entity testing the box first (the same tests), `PR_EnterFunction` and `PR_LeaveFunction`
+  copying through pointers of their own (every store could have been `f`'s to the compiler).
+
+| e1m5, `game_par.py quake --runs 3`, `rvc_cpu` | before | after |
+|---|---|---|
+| the server's frames to the client's (3,615 in 39 s) | 371 | 590 |
+| the server's frames a second | 9.6 | 15.3 |
+| a server frame, thousand instructions | 310 | 191 to 200 |
+| the same work: `QUAKE_SERVER=wait +host_framerate 0.1`, frames 100 to 400 | 281 | 242 |
+| the client: passes a frame, frames a second, core 0 a frame | 4.86, 93.8, 24.8k | 4.85, 93.6, 25.2k |
+
+A frame of the server's is shorter, so fewer monsters think in it: the same work is 14% fewer
+instructions, the frames as played 37%. The client is at its 10 ms floor in both.
+
+On the card (RTX 5090, D3D11 + fxc2, `game_par.py quake,quake-timedemo --card`, once each, in
+turn): e1m5's server 551 to 896 frames in 48 s, 11.5 to 19.0 a second, 39.2 to 23.5 passes a
+frame of its own; the client 93.3 and 92.6 frames a second, 4.85 and 4.82 passes a frame. The
+timedemo 7.22 to 5.87 passes a frame, 73.2 to 83.7 frames a second, all cores 8.3 to 9.3
+million instructions a second (`rvc_cpu`: 5.81 and 5.83 passes, within 1% of the card now).
+
+**The pages the card makes a worker wait for.** On the card the timedemo's core 0 rested in far
+more passes than `rvc_cpu` said (2,498 of 6,818 against 2,073 of 5,103), most of them in its
+first third. The shader machine's page walk faults on a clear accessed or written bit and the
+kernel sets it (`src/mmu.h`); `rvc_cpu` set the bit itself. GPU memory is mapped clean, so every
+page of the textures' pool that a worker wrote first stopped it until this core served it:
+344 stops in demo1, while this core waited for the drawing worker (`RVC_ADFAULT=1` in
+`rvc_cpu`: 7,067 passes against the card's 7,072, where it said 5,707). `qglOpen` now writes
+every page of Quake's GPU memory once (`amoor` of nothing): 6 stops are left (the lists' sets),
+5,718 passes. The new `quakestat:` line of the drawing worker says how many pages were brought
+for workers, and how long a frame was drawn, swapped and waited for.
+
+    QUAKE_KEEP=0          no move through a hull kept
+
 ## Checking it
 
 - The GPU against its model: hold a frame, pass `--save-state` and `--gpu-capture`, and run
@@ -780,6 +876,7 @@ no longer thinks in every frame, which is less again.
 
 - Music, and hearing the sound by ear: it was checked against the card's model only.
 - Playing it: keys and the pointer by hand, in the harness's window and in the VRChat world.
-- The server: a busy level is 350k instructions a frame before anything is drawn ("The
-  server's frame, and what could be taken from it").
+- The server: a busy level is 200 to 360 thousand instructions a frame on one worker ("The
+  server's frame made shorter"); the level's answers ahead on workers and QuakeC as machine
+  code are not tried ("The server's frame, and what could be taken from it").
 - Loading: the light maps' placement is a search of every block for every surface.

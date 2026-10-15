@@ -14,6 +14,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <ftw.h>
+#include <poll.h>
 #include <unistd.h>
 #include "nano-X.h"
 #include "ui.h"
@@ -210,10 +212,11 @@ ask(const char *address, uint32_t offset, int seconds)
 	for (waited = 0; regs[REG_REPLY] != mine; waited++) {
 		if (waited > seconds * 20)
 			return 0;
-		if (!fetch_total && waited % 10 == 0) {
-			char line[48];
+		if (!fetch_total) {
+			/* (the host has nothing to say until it has all of it: VRChat tells a world no more) */
+			char line[64];
 
-			snprintf(line, sizeof line, "Waiting for the host: %d s", waited / 20);
+			snprintf(line, sizeof line, "The host is downloading it: %u s", (progress_ms() - progress_began) / 1000);
 			progress_show(0, 0, line);
 		}
 		usleep(50000);
@@ -261,6 +264,7 @@ fetch(const char *address, char *path, size_t room)
 	for (tries = 0; (status = ask(address, 0, 40)) == 1 && tries < 20; tries++) {
 		if (!by_hand++)
 			printf("open: the host has to be handed this address first\n");
+		progress_show(0, 0, "Hand the world this address: the links panel by the display");
 		sleep(3);
 	}
 	if (status != 200 && status != 201) {
@@ -379,8 +383,20 @@ reading(char *const argv[], pid_t *pid)
 	return fdopen(out[0], "r");
 }
 
+static unsigned long long unpacked;	/* the bytes of the files in the folder an archive goes to */
+
+static int
+count_bytes(const char *name, const struct stat *info, int kind, struct FTW *where)
+{
+	(void)name, (void)where;
+	if (kind == FTW_F)
+		unpacked += (unsigned long long)info->st_size;
+	return 0;
+}
+
 /* An archive unpacked into `to` (a .gz of one file: into the file `to`), with a window that
- * says how far: a zip by its files done of all, anything else by the bytes it has been fed. */
+ * says how far: a zip by the bytes in the folder against its listing's, anything else by the bytes
+ * it has been fed. */
 static int
 unpack(const char *kind, const char *path, const char *to)
 {
@@ -394,33 +410,32 @@ unpack(const char *kind, const char *path, const char *to)
 	snprintf(title, sizeof title, "Unpacking %s", name);
 	progress_begin(title);
 	if (!strcmp(kind, "zip")) {
-		unsigned files = 0, done = 0;
+		unsigned long long total = 0;
 		char *const list_args[] = { "unzip", "-l", (char *)path, NULL };
 		char *const unzip_args[] = { "unzip", "-o", (char *)path, "-d", (char *)to, NULL };
 		FILE *list;
 
-		/* (the listing's last line counts the files: "  12345   3 files") */
+		/* (the listing's last line has the bytes of every file: "  12345   3 files") */
 		if ((list = reading(list_args, &pid)) != NULL) {
-			char *at;
-
 			while (fgets(line, sizeof line, list))
-				if ((at = strstr(line, " file")) != NULL) {
-					while (at > line && at[-1] >= '0' && at[-1] <= '9')
-						at--;
-					files = (unsigned)atoi(at);
-				}
+				if (strstr(line, " file"))
+					total = strtoull(line, NULL, 10);
 			fclose(list);
 			waitpid(pid, &status, 0);
 		}
 		if ((list = reading(unzip_args, &pid)) == NULL)
 			return 0;
-		while (fgets(line, sizeof line, list)) {
-			char said[48];
+		/* its lines are read as they come, and the folder's bytes counted twice a second, whether
+		 * a line came or not: one large file is one line, and a long wait */
+		for (;;) {
+			struct pollfd wait = { fileno(list), POLLIN, 0 };
+			int ready = poll(&wait, 1, 500);
 
-			if (strstr(line, "inflating:") || strstr(line, "extracting:") || strstr(line, "creating:"))
-				done++;
-			snprintf(said, sizeof said, "%u of %u files", done, files);
-			progress_show(done, files, said);
+			if (ready > 0 && read(fileno(list), line, sizeof line) <= 0)
+				break;
+			unpacked = 0;
+			nftw(to, count_bytes, 16, FTW_PHYS);
+			progress_show(unpacked, total, progress_megabytes(unpacked, total));
 		}
 		fclose(list);
 		waitpid(pid, &status, 0);

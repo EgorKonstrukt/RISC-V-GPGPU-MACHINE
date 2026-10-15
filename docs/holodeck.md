@@ -38,7 +38,8 @@ eyes. Games and their controllers are here and nowhere else in the world.
   sitter up, whatever they hold: `StandUp`, as the End key), Screen (the console's small one,
   or a large one before the seat), World + and World - (the scale: at its largest the
   picture's rectangle on the program's near plane is 1.28 by 0.8 m, and the keys move that
-  plane out towards the far one). There is no key for the controls: they are the game's
+  plane out towards the far one; it starts where the game's player's eye is the sitter's: "The
+  world's size"). There is no key for the controls: they are the game's
   (`docs/gamepad.md`).
 - **A sitter in a headset presses those keys with their own beams** (`EmuPointer`, `holoPlates`:
   a plate a hair before the console's face, the keys' rectangles, a mark on the key a beam is
@@ -61,6 +62,25 @@ eyes. Games and their controllers are here and nowhere else in the world.
   room sees a room of grid and the console.
 - The seat, the console, its keys and its screen are before the program's world however near
   that world reaches, and behind everything else of the room and its visitors as any thing is.
+
+## The world's size
+
+A game says how high its player's eye is over its floor (`seglWorldEye` in `GLES/segl.h`: the eye
+in its units, its near and far planes and its projection's scales), in the control word
+`0x8700006c`: bits 0-15 the plane (in 4,096ths, signed) at which that eye is 1 m high, bits 16-27
+how far the plane moves for e times higher (4,096ths), bits 28-31 the game's number
+(`linux/apps/gameid.h`). The word is written only when it changes, and the host takes it only
+while that game is the one played (`EmuHolodeck.Natural`): the room's scale is then the plane
+that puts the player's eye at the sitting visitor's avatar's eye height
+(`GetAvatarEyeHeightAsMeters`), and World + and - move it from there (back to it when another
+game is played). A program that says nothing has `plane` (0.35). Doom says 41 units (near 4,
+far 8192), Quake 46 (4, 4096), Quake III 50 (4, 16384); for a 1.6 m eye the planes are 0.185,
+0.220 and 0.172, where 0.35 had put the eye 0.45, 0.65 and 0.36 m high. ClassiCube says its
+player's eye height (1.625 blocks; near 0.1, far its view distance, 128), from its own window
+code (`Window_ShaderEmu.c`, written again only when the eye, the view distance or the
+projection changes): 0.246 for a 1.6 m eye. On `rvc_cpu` the four words read back as
+`121903f2`, `224e049b`, `71ec03a6`, `323c04fb` (`DOOM_SEAT`, `QUAKE_SEAT`, `QUAKE3_SEAT`,
+`CLASSICUBE_SEAT` print it as `eye`).
 
 ## Voices
 
@@ -95,8 +115,10 @@ side (400 m both, or 0 and 25 m); nothing is synced.
   depth test and only where it is inside the room's box.
 - Seen from outside the room, what of the program's world is nearer than the room is left out
   (the way from the eye to it has not entered the room's box yet): it would hang in the doorway.
-- A sky that a program lays on its picture (`FRAGMENT_LAID`: Doom's) is a panorama here, four of
-  its picture to a turn round the visitor.
+- A sky that a program lays on its picture (`FRAGMENT_LAID`: Doom's, Quake's) is a panorama here,
+  four of its picture to a turn, fixed in the program's world (its way turned back by the camera's
+  turn about up), as Doom lays it on its flat picture. Until 15 October 2026 it was fixed in the
+  room: it turned with the game's view, and with a desktop sitter's head.
 - A program sends only what its own camera sees. Behind the seat there is usually nothing.
 - A program's textures, light maps and vertices may be files in the ROM (Quake III Arena's all
   are, `docs/quake3.md`): the pass reads the ROM's four textures as the GPU's does, and the
@@ -135,7 +157,7 @@ at `0x87000360` (`HOST_STATE` in `src/gpu.h`; the control pass, from `EmuHolodec
 
 | Word | Contents |
 |---|---|
-| 0 | bits 0-3: the host (1 the harness, 2 the world on a desktop, 3 in a headset; 0: a host that says nothing). Bit 4: the machine's owner sits in a holodeck's seat. Bit 5: the hands are tracked. Bits 8-15: visitors in the instance. Bits 16-23: this visitor's number. Bits 24-31: the room's scale in 255ths (`plane`: the plane that is 1.28 by 0.8 m of the room is near x (far / near) ^ this from the camera) |
+| 0 | bits 0-3: the host (1 the harness, 2 the world on a desktop, 3 in a headset; 0: a host that says nothing). Bit 4: the machine's owner sits in a holodeck's seat. Bit 5: the hands are tracked. Bit 6: the jump button is held (`SEGL_HOST_JUMP`). Bits 8-15: visitors in the instance. Bits 16-23: this visitor's number. Bits 24-31: the room's scale in 255ths (`plane`: the plane that is 1.28 by 0.8 m of the room is near x (far / near) ^ this from the camera) |
 | 1 | the head's turn to the right, and from bit 16 its tilt upwards: 65,536 to a turn, signed |
 | 2 | the head's place, millimetres, signed: to the right, and from bit 16 up |
 | 3 | the head's place forward, and from bit 16 its roll |
@@ -160,7 +182,15 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   the sticks and the game itself turn and by which the room is turned, and the aim's, which
   is the body's and the hand's turn and rise from it. The picture the room draws is level and
   the body's; shots, and ClassiCube's picked block, go the aim's way. A hand's turn does not
-  turn the room.
+  turn the room. ClassiCube's pick starts where the beam does, at the hand at the room's
+  scale (`PerspectiveCamera_GetPickedBlock`): from the eye along the hand's way it was a ray
+  beside the beam, which went past the block the beam was on (15 October 2026).
+- **ClassiCube's chunks are the head's** while seated with tracked hands: its frustum is 120
+  degrees from where the head looks (`SE_SeatCull` in `Game.c`), where the body's camera's
+  left out what the head turned to. And since a holodeck shows no clear colour (the far
+  background was black), it draws a box round the eye twice its far plane away, its sky's
+  colour above the horizon fading to the fog's (`EnvRenderer_SE_RenderHorizon`), past the
+  far plane on a flat screen.
 - **The sticks are sticks** (word 5), not keys: the left one walks, as fast as it is pushed,
   the way the head looks (the move is turned from the aim's way to the head's); the right
   one turns the body, 140 degrees a second pushed home, slower near the middle.
@@ -177,14 +207,17 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
 - **Without a headset the keys played by are told in the words too**, the same in Doom,
   Quake, Quake III and ClassiCube whatever each game's own keys are: W, A, S, D or the arrows
   are the left stick (word 5: they walk and step aside), the left button or Ctrl is the right
-  hand's trigger (fire) and Space the left one's (jump; use in Doom). While the sitter's
+  hand's trigger (fire) and Space the jump button (word 0's bit 6: jump; use in Doom). While the sitter's
   world is one of those games' (`EmuHolodeck.ByWords`, `played`: the program's number, kept
   while another window has the guest's keyboard) these keys are no key events
   (`EmuKeyboard.playAway`): before 14 October 2026 they were the window's keys, and a click
   that landed beside the game's window, the same click that fired, left the game with none.
   Every other key (the numbers, Esc, Enter) is still the window's. In a menu or with the
-  keyboard given back (Insert) all keys are as they were. A headset's triggers fire and jump
-  by the same two bits, beside the keys its controller sends.
+  keyboard given back (Insert) all keys are as they were. In a headset the right trigger fires
+  by the same bit, beside the key its controller sends, and VRChat's jump button jumps by bit 6
+  (Enter only in a menu). No trigger jumps: until 15 October 2026 the left one was the jump
+  (and in ClassiCube it built too), and the developer saw triggers jump in every game. Doom's
+  use is the left trigger or the jump button.
 - **The room's screen is a pointer's all the time**, the console's small one or the large
   one, with a world drawn round the seat or not: the view's middle and the left button on a
   desktop, each hand's beam and its trigger and grip in a headset (`EmuPointer`: the screen
@@ -337,9 +370,10 @@ and then 0.38 sat them too high in a headset) and the program's camera 0.7 m ove
 "ShaderEmu/Make the holodecks' seats rise under their sitters in the open scene" puts a
 changed height into a scene, the eye points with it.
 
-In play mode: seated, `_UdonHoloMax` is the room's far corner and the console says "Take a
-controller, or jump to stand up"; `RunInputEvent("_inputJump", ...)` on "Holodeck" stands
-the player up at the seat's exit and empties the box. In a headset the lock, the jump, the
+In play mode: seated, `_UdonHoloMax` is the room's far corner and the console says "Your keys
+play. End: stand up" on a desktop (`plateLabels` in `EmuHolodeck`); with the keys given
+back (Insert) `RunInputEvent("_inputJump", ...)` on "Holodeck" stands the player up at the
+seat's exit and empties the box. In a headset the lock, the jump, the
 guards, the said up and the seat's height are untried.
 
 # The corridor

@@ -153,18 +153,19 @@ pass defines `GPU_NET`).
 
 - A machine's number is its visitor's VRChat player number, so its address is `10.0.H.L` of
   that: the first visitor of an instance is `10.0.0.1`. A machine that is off has no link.
-- The readback's row is 768 words: 64 texels of the network's row (the window's 160 words, then
-  what cores 16 and up ran) after state row 0 and the control texels (`Readback.shader`). `NetWindow` walks it at every round's row and acks; `NetFrame` puts up
+- The readback's row is 960 words: 112 texels of the network's row (the window's 160 words, then
+  what the cores ran and which of them are asleep) after state row 0 and the control texels (`Readback.shader`). `NetWindow` walks it at every round's row and acks; `NetFrame` puts up
   to four waiting packets into `_NetData` before a frame's rounds, which all draw the same
   delivery. The ring's row is in band 29, which the control pass draws anyway.
 - Between visitors a packet travels in its sender's own synced object (`EmuShare.net`): the
-  packets taken since the last sending, each after two bytes of its length, up to 600 bytes a
-  sending (one full packet, or several small ones), and a count (`netSeq`) that tells a new
+  packets taken since the last sending, each after two bytes of its length, up to 1,000 bytes a
+  sending (`NetBatchMost`) (one full packet, or several small ones), and a count (`netSeq`) that tells a new
   batch from one seen. Every other client's hub hands each packet to its own machine, which
   keeps it if its address is the machine's or everybody's. Nothing is repeated: TCP repeats
   what it loses, and the games' UDP expects loss.
 - A sending with packets goes out whether or not anybody watches the display, and while
-  packets flow the display's tiles go with every other sending only.
+  packets flow the display goes with one sending in six only (below, "A game has most of the
+  world's link").
 - Checked in play mode with one visitor: `ifconfig lan0` says `10.0.0.1`; `ping -c 3 10.0.0.2`
   leaves three packets of 84 bytes in the machine's queue (`netSent`), acked, and three
   batches in the visitor's object; an echo request written into a spawned player's `net` (with
@@ -215,7 +216,7 @@ pass defines `GPU_NET`).
   Home listed four entries, and a picture of 14 KB fetched from it was the same bytes as the
   machine's own copy, some five seconds after the listing; 84 and 88 packets each way. The
   hub's `lanDoom` asks for the game of Doom instead, as the test was before. A link that carries 600 bytes a
-  sending (the world's) is some 4 KB a second: a picture of 300 KB is over a minute.
+  sending (the world's then; 1,000 now, below) is some 4 KB a second: a picture of 300 KB is over a minute.
 - **Games over the network** (`linux/apps/nxgame`; the Start menu's Games has a folder
   Network, and the desktop its shortcuts). A computer that hosts a game says so to whoever
   asks who is there: the word in `/tmp/nxhosting` follows its name in the answer (`NXNET!
@@ -343,8 +344,8 @@ Measured on 10 October 2026 (`rvc_cpu` for instructions; RTX 5090, D3D11 and fxc
   the harness; in the world the number is the VRChat player's.
 - Limited broadcast and the network's broadcast leave on `lan0`; Linux does not answer
   `ping` to either (its default).
-- `linux/prebuilt` has the kernel, `emuinit`, Nano-X and Quake from before this: save it
-  after the next build worth keeping.
+- `linux/prebuilt` has had the network's kernel (`shaderemu_net`), `nc`, `telnetd`, `nxnet`
+  and `nxgame` since it was saved again.
 
 ## The panel on the wall
 

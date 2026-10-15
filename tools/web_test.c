@@ -7,7 +7,9 @@
  *   gcc -O1 -g -fsanitize=address,undefined -Ilinux/apps tools/web_test.c -o web_test
  *   web_test DIR ADDRESS|FILE [--width 572] [--ppm OUT.ppm] [--items] [--sheets no] [--why X Y]
  *
- * DIR has the fonts (font-*.sef) and the cache (web-cache.idx, webc-*).
+ * DIR has the fonts (font-*.sef) and the cache (web-cache.idx, webc-*). The cache's JPEGs and
+ * PNGs are drawn grey unless libmedia is in: -DWEB_TEST_MEDIA -Ilinux/libmedia -Iprograms/mc,
+ * linux/libmedia/m_{core,simple,png,png_enc,jpeg,jpeg_enc,gif}.c, linux/libmedia/test/mcw_host.c, -lpthread -lm.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -18,6 +20,9 @@
 static char cache_dir[400];
 #define WEB_CACHE_DIR cache_dir
 #include "web_layout.h"
+#ifdef WEB_TEST_MEDIA
+#include "media.h"
+#endif
 
 static char *
 slurp(const char *path, int *size)
@@ -128,18 +133,35 @@ draw_text(const struct web_item *it)
 static void
 draw_image(const struct web_item *it)
 {
-	int size, w, h, start = 0, i, j;
+	int size, w, h, start = 0, stride, i, j;
 	char *data = slurp(pictures[it->a], &size);
+	const unsigned char *src;
+#ifdef WEB_TEST_MEDIA
+	struct media_image out = { 0 };
 
+	/* the cache's JPEGs and PNGs, decoded as the browser decodes them */
+	out.channels = 3;
+	if (data && size > 2 && strncmp(data, "P6", 2) && !media_image_decode(data, (uint32_t)size, &out, 0)) {
+		free(data);
+		data = malloc((size_t)out.stride * out.height + 32);
+		w = out.width, h = out.height;
+		start = sprintf(data, "P6 %d %d 255", w, h);
+		memcpy(data + start + 1, out.pixels, (size_t)out.stride * h);
+		stride = out.stride;
+		media_image_free(&out);
+	} else
+#endif
 	if (!data || sscanf(data, "P6 %d %d 255%n", &w, &h, &start) != 2) {
 		fill(it->x, it->y, it->w, it->h, 0xe0e0e0);
 		free(data);
 		return;
-	}
+	} else
+		stride = 3 * w;
 	start++;
+	src = (const unsigned char *)data + start;
 	for (j = 0; j < it->h; j++)
 		for (i = 0; i < it->w; i++) {
-			const unsigned char *from = (unsigned char *)data + start + 3 * ((j * h / it->h) * w + i * w / it->w);
+			const unsigned char *from = src + (j * h / it->h) * stride + 3 * (i * w / it->w);
 			int x = it->x + i, y = it->y + j;
 
 			if (x >= 0 && y >= 0 && x < pw && y < ph)

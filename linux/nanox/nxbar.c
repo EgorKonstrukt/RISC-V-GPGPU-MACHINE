@@ -25,6 +25,7 @@
 #include "../apps/gameid.h"
 #include "../apps/ui_icons.h"
 #include "../apps/ui_menu.h"
+#include "../apps/ui_launch.h"
 
 #define BAR_HEIGHT 26
 #define START_WIDTH 64
@@ -481,12 +482,14 @@ task_front(int task)
 	GrSetFocus(tasks[task].client);
 }
 
-/* Starts a command: words separated by spaces, no shell (which would cost half a second). */
-static void
+/* Starts a command: words separated by spaces, no shell (which would cost half a second). The
+ * child's number, or 0. */
+static pid_t
 launch(const char *command)
 {
 	char text[64], *words[8];
 	int n = 0;
+	pid_t child;
 
 	/* the words first: the child of a vfork has the bar's memory until its exec (no page of it
 	 * copied), and may do nothing there but become the program */
@@ -494,8 +497,8 @@ launch(const char *command)
 	for (words[n] = strtok(text, " "); words[n] && n < 6; words[n] = strtok(NULL, " "))
 		n++;
 	words[n] = NULL;
-	if (!n || real_vfork() != 0)
-		return;
+	if (!n || (child = real_vfork()) != 0)
+		return n ? child : 0;
 	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
 	execvp(words[0], words);
 	_exit(127);
@@ -601,9 +604,15 @@ chosen(int id)
 	int task = task_asked;
 
 	task_asked = -1;
-	if (id >= 1 && id <= item_count)
-		launch(items[id - 1].command);
-	else if (task >= 0 && task < task_count && id == TASK_RESTORE)
+	if (id >= 1 && id <= item_count) {
+		struct ui_icon_ref icon;
+		const char *label = strrchr(items[id - 1].path, '/');
+
+		/* the Start menu's row says it is starting, first, until a window comes (ui_launch.h) */
+		ui_icon_of_command(items[id - 1].command, &icon);
+		ui_launch_begin(label ? label + 1 : items[id - 1].path, &icon, GR_EVENT_MASK_CHLD_UPDATE);
+		ui_launch_started(launch(items[id - 1].command));
+	} else if (task >= 0 && task < task_count && id == TASK_RESTORE)
 		task_front(task);
 	else if (task >= 0 && task < task_count && id == TASK_MINIMISE)
 		GrUnmapWindow(tasks[task].frame);
@@ -661,7 +670,10 @@ main(void)
 		time_t now;
 		int i;
 
-		GrGetNextEventTimeout(&event, 1000);
+		GrGetNextEventTimeout(&event, ui_launch_wait(1000));
+		ui_launch_tick();
+		if (ui_launch_event(&event))
+			continue;
 		switch (event.type == GR_EVENT_TYPE_KEY_DOWN && event.keystroke.hotkey ? UI_MENU_NOT : ui_menu_event(&event, &id)) {
 		case UI_MENU_CHOSEN:
 			chosen(id);

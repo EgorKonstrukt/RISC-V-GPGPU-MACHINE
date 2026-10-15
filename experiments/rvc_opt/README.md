@@ -1,15 +1,19 @@
 # rvc_opt
 
 A patched copy of the shader from [pimaker/rvc](https://github.com/pimaker/rvc) (`_Nix/rvc`,
-MIT License, Copyright (c) 2021 PiMaker). The state layout and the Commit pass are untouched,
-so it runs upstream snapshots and payloads, and its emulation is bit-identical to upstream.
+MIT License, Copyright (c) 2021 PiMaker). It still runs upstream's payloads, but its state
+layout and Commit pass are its own now (a write cache of texels, below; the commit as points,
+`docs/multicore.md`), so upstream's snapshots and state hashes no longer apply: the
+bit-identical results below were measured before those changes, and guest output is what is
+compared since.
 
     tools\perf_test.ps1 -Rvc experiments\rvc_opt
     bin\rvc_harness.exe --rvc experiments\rvc_opt --payload rvc\_Nix\rvc\data-net --load-state build\snapshots\rvc_shell.snap
 
 ## Build switches
 
-Only these remain in the source:
+The CPU's own; the machine around it has more (`CORES`, `MC_UNIFORM`, `TICK_MRT` and the
+commit's in `docs/multicore.md`; `SBI_HLE` and `LAZY_MEMOP` in `docs/boot.md`):
 
 | Define | Effect |
 |---|---|
@@ -28,8 +32,9 @@ below as labels for what was measured. Removing them left the compiled shader by
 
 ## Changes (all in the CPUTick pass)
 
-Each one removes work that upstream repeats on every emulated instruction. All added state is
-pass-local (`static`), never stored in the texture.
+Each one removes work that upstream repeats on every emulated instruction. Added state is
+pass-local (`static`) but for the bloom word of 13 and the second-level TLB's texels (15, 23),
+which are kept in the state texture.
 
 1. **Timer hoisted** (`emu.h`, `main.shader`): `mtime` depends only on `_Time`, so the
    double-precision math runs once per pass instead of once per instruction.
@@ -82,7 +87,8 @@ pass-local (`static`), never stored in the texture.
     are dropped only on `satp` writes and `sfence.vma`. Fast-step coverage 89.5% -> 94.6%.
 16. **Integer MULH** (`emu.h`): exact 16-bit partial products instead of upstream's doubles,
     which round once a product needs more than 53 bits. Results can therefore differ from
-    upstream on very large products; none did in any test. `MULH_DOUBLES` restores upstream's.
+    upstream on very large products; none did in any test. `MULH_DOUBLES` restored upstream's
+(removed since).
 17. **Redundant fast-step writes removed** (`emu.h`): the timer value and the single-step
     marker are already set by the first tick of each pass, which always takes the general path.
 
@@ -142,8 +148,8 @@ With 22 and 23, D3D11, bytecode from fxc2, same machine and the same state hash 
 | local arrays (default with fxc2) | 1,951k IPS | 0.39 ms | 22.6 s |
 
 6 to 21 were once switchable (`OPT_BASELINE` built without them); they are now unconditional. `OPT_ALU_SELECT`
-replaces the inner funct3 switch of 6 with a branch-free select; it measured within noise of
-the switch, so it is off.
+replaced the inner funct3 switch of 6 with a branch-free select; it measured within noise of
+the switch, so it was left out.
 
 ## `M_MODE_ONLY`: machine mode only
 
@@ -229,7 +235,8 @@ texel window (`OPT_DATA_WINDOW`), `OPT_ADDI_FIRST`, folding the page and alignme
 one compare, an innermost per-texel instruction loop, a 2048-entry write cache, and a single
 array TLB (`OPT_TLB_ARRAY`). What helped was hiding latency, not removing branches.
 
-18 to 21 have not been built or measured with FXC.
+18 to 21 were not built or measured with FXC in that round; the D3D11 numbers from 22 on
+(fxc2) include them.
 
 With 1 - 13 the scripted shell session runs at 1,566k IPS with upstream's final state and
 output, and a deterministic cold boot (21,000 frames, 42.2 M instructions) ends in the same
@@ -289,7 +296,7 @@ it would no longer be bit-identical.
     pwsh tools\gpu_trace.ps1 -Filter warps_issue_stalled,latency
 
 Nsight does not attach to the D3D11 harness, so `bin\rvc_trace12.exe` runs the same FXC bytecode
-on D3D12. Two build switches exist for it:
+on D3D12. Two build switches existed for it (`NO_DOUBLES` still does):
 
 - `NO_DOUBLES` (`--no-doubles`): NVIDIA's D3D12 path miscomputes double math in this shader (a
   double divide converted to uint returns 0xffffffff), which breaks the timer and MULH. With
@@ -298,7 +305,8 @@ on D3D12. Two build switches exist for it:
   benchmark; MULH results can differ from upstream once a product needs more than 53 bits.
 - `XREG_ARRAY` (`--define XREG_ARRAY`): guest registers in an indexable array instead of 31
   conditional moves per instruction. Bit-identical, bytecode 358 KB -> 236 KB and FXC time
-  down about 30%, but 2.6% slower (773k vs 793k IPS), so it is off by default.
+  down about 30%, but 2.6% slower (773k vs 793k IPS), so it was off by default then; it is
+  change 10 now, with no switch.
 
 What the trace says about one frame (RTX 5090, 2048 ticks, mean of 20 frames):
 
@@ -404,8 +412,8 @@ Both of those hashes are of a cache of words, and both are replaced: the cache n
 texels, four words to an entry. Stores come in runs (a register save, a structure, a copy),
 and a run that took four entries, in four sets, takes one. A bucket is a texel of tags and
 the RAM texels they name: 128 buckets of three by default, 384 texels (1,536 words) in 512
-state texels, where the word cache took 1,024 (why not more is at the end of this section). The buckets are two
-tables of 64 with different hashes (the texel number's low bits; those bits shifted and
+state texels, where the word cache took 1,024 (why not more is at the end of this section). The buckets were two
+tables of 64 with different hashes (three tables since, "Three tables" below) (the texel number's low bits; those bits shifted and
 xor-ed with higher ones), and a texel goes to the second table only when its bucket in the
 first is full, so most lookups read one bucket. An entry is made from the texel as RAM has
 it: a store that changes nothing costs no entry, a partial store needs no second read, and
@@ -423,7 +431,7 @@ full cache ended:
 | words, any 2,048 (no hash can do better) | 12,820, 13% | 10,738, 8% | |
 | texels, two tables of 128 x 3 | 12,257, 18% | 10,573, 18% | 9,677, 8% |
 | texels, two tables of 64 x 4 | 11,276, 32% | 9,411, 39% | 9,311, 17% |
-| texels, two tables of 64 x 3 (the default) | 9,486, 50% | 7,184, 62% | 8,028, 42% |
+| texels, two tables of 64 x 3 (the default then) | 9,486, 50% | 7,184, 62% | 8,028, 42% |
 | texels, any 819 | 12,967, 7% | 11,035, 5% | 9,913, 0% |
 
 **Three tables.** The two tables of 64 stalled on collisions, not on a full cache: at a stall

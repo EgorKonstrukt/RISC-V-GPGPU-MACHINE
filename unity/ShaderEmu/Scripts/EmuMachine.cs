@@ -109,6 +109,7 @@ public class EmuMachine : UdonSharpBehaviour
     // program says it is a flat screen (a menu, a level loading) and no world.
     [HideInInspector] public bool worldFrame, flatFrame;
     [HideInInspector] public int gameId;                 // the program whose window has the keyboard (linux/apps/gameid.h)
+    [HideInInspector] public uint worldEye;              // its player's eye for the holodeck's scale (seglWorldEye in GLES/segl.h)
 
     private const int Words = 960;      // state row 0's 64 texels, the first 64 control texels, 112 of the network's row
     private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
@@ -1620,6 +1621,7 @@ public class EmuMachine : UdonSharpBehaviour
         soundEnabled = Word(64 + 0x22, 0) != 0;
         soundClock = Word(64 + 0x23, 0);
         gameId = Small(Word(64 + 6, 2)) & 0xff;
+        worldEye = Word(64 + 6, 3);
         worldFrame = Word(64 + 0x30, 0) != 0;
         flatFrame = (Word(64 + 0x30, 3) >> 31) != 0;
         NetWindow();

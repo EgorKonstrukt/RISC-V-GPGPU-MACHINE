@@ -5,22 +5,23 @@ above all: a pixel of a traced picture is a few thousand instructions of float a
 and a handful of bytes stored, so a core needs next to no write cache for it, and the
 machine's geometry lets a program have fifteen such cores in place of three large ones.
 
-Both work the same way. Core 0 traces nothing: it lays the cores out (`mcw_shape`), as many
-workers of a size as the machine has room for (`mcw_fit`: 15 of the smaller sizes and 7 of
-the largest on a machine of 16 cores, 63 and 27 on one of 64), hands a tile to every worker
-that has none (`mcw_post`, `mcw_done`), and shows the picture as it fills. A tile is 32 x 32
-pixels, or 16 x 16 when that would leave a worker fewer than four tiles of the picture: with
+Both work the same way. Core 0 traces nothing: it opens the workers there are (`mcw_open`;
+it once laid the cores out by size, `mcw_shape` and `mcw_fit`, which are gone: 15 of the
+smaller sizes and 7 of the largest on a machine of 16 cores, 63 and 27 on one of 64), gives
+every worker that has none its share (`mcw_post`, `mcw_done`), and shows the picture as it
+fills. A tile is 32 x 32 pixels, halved until every worker has two dozen tiles of the picture
+and never narrower than 8 (it was 16 x 16 when 32 would leave a worker fewer than four): with
 63 workers a picture of 320 x 240 in tiles of 32 is 80 tiles, hardly more than one each
 (0.57 s; 0.48 s in tiles of 16), and in tiles of 16 where 32 would do, the handing out
 costs (640 x 480: 1.76 s against 1.40 s). The sum is the same either way. The picture is words in GPU memory that the display draws where they
-lie (`seglTexturePointer`), and a tile's rows begin and end on 16 bytes of it (a tile is 32
-pixels of four bytes across, the picture's width a multiple of four), so no two cores store
+lie (`seglTexturePointer`), and a tile's rows begin and end on 16 bytes of it (a tile is a
+multiple of eight pixels of four bytes across, the picture's width a multiple of four), so no two cores store
 to the same 16 bytes. Everything else a job writes is its own stack; the scene is only read.
 
 ## `nxray`: a ray tracer
 
 `linux/raytrace` (`build.sh` after Nano-X's; Start menu: Other, "Rays (every core)"). Six
-balls over a chequered ground, one light, shadows and three mirrorings, turning; 320 x 240.
+balls over a chequered ground, one light, shadows and two mirrorings, turning; 320 x 240.
 
 A bar under the picture has a button for each of these keys but the last, saying how each
 stands, and a line of figures (pictures and rays a second), as `nxphys` has:
@@ -70,7 +71,7 @@ On the machine's 64 cores, the program's own choices:
 | `nxpath`, 320 x 240, 4 samples | 18.7 s, 109 thousand | 9.4 s, 217 thousand |
 
 The path tracer gains less: core 0 draws its panel seven times a second and hands the tiles
-out in between.
+out in between (the `nxpath` of before, a Cornell box with a Dear ImGui panel: below).
 
 ### A ray tries only what it can meet (12 October 2026)
 
@@ -132,19 +133,20 @@ by OpenGL, and path traced by the worker cores under a tree of boxes that they b
 
 - **The scene** (`scene.h`): meshes as read (`mesh.c`: Wavefront `.obj`, Stanford `.ply` as
   text or little-endian bytes, faces of any size, normals made where the file has none; a
-  plane, a box and a ball made here), objects that place a mesh (place, turn, size; matt,
-  mirror or glass; a colour), up to eight lights (balls that shine), one camera that goes
+  plane, a box and a ball made here), objects that place a mesh (place, turn, size; a
+  material, six numbers since 14 October: "What a thing is made of", below; a colour), up to
+  64 objects and eight lights (balls that shine), one camera that goes
   round a point, and the sky's light. It starts with a ground, the teapot, a mirror ball and
   a light. The example meshes are `/root/Models/teapot.obj` (6,320 triangles), `bunny.ply`
   (3,851) and `knot.obj` (5,040, `make_knot.py`).
 - **The window** (`nxpath.c`): menus along the top (File, Add, View, Render), the view on the
   left, a panel of the window system's own on the right (`ui.h`), and along the bottom a line
-  of figures with the picture's bar. The panel is the scene's list and two tabs, laid out as
-  one table of rectangles that is both what is drawn and what a click is on. "Object" (or
-  "Light"): what the handles do (move, turn, size), the three numbers of each with a button
-  down and up, the material, the colour with its three sliders and their values (a light: its
-  place, radius, power, colour), Duplicate, Delete. "Render": Detail, samples a pixel (1 to
-  512, or no end), turns of a path, the sky's light, "Traced when the view is still", Render
+  of figures with the picture's bar. The panel is the scene's list and three tabs (Material
+  since 14 October, below), laid out as one table of rectangles that is both what is drawn
+  and what a click is on. "Object" (or "Light"): what the handles do (move, turn, size), the
+  three numbers of each with a button down and up (a light: its place, radius, power,
+  colour), Duplicate, Delete. "Render": Detail, samples a pixel (1 to 512, or no end), turns
+  of a path, the background's light, "Traced when the view is still", Render
   or Stop, the scene or the picture, Export (a PPM file). In the view the left button picks
   what is clicked and turns the view while held, the right one moves it, the wheel goes
   nearer. Keys: g, r, s the handles, Delete, Ctrl+D a copy, Home the whole scene in view, L
@@ -172,8 +174,9 @@ by OpenGL, and path traced by the worker cores under a tree of boxes that they b
 - **The tracer** (`tracer.c`) is the one of before with another scene: the tree and the
   lights' balls, a light picked by chance at every matt surface and a ray to a point of it,
   the sky for a ray that meets nothing, glass that casts no shadow, and no lamp seen after a
-  matt surface by way of a mirror or glass. Tiles, shares, the numbers a path draws and the
-  picture made as the samples come in are as below.
+  matt surface by way of a mirror or glass (materials, glass's shadow, a light's cone and the
+  background since 14 October: "What a thing is made of, and the light", below). Tiles,
+  shares, the numbers a path draws and the picture made as the samples come in are as below.
 - **Settings are the registry's** (`pathtrace.detail`, `.samples`, `.turns`, `.background`, `.live`:
   `docs/persist.md`).
 
@@ -188,7 +191,8 @@ matrices: 0 thousandths of a pixel apart). A picture of `NXPATH_SIZE` is a test'
 own shape, is shown as large as fits and has no small picture before it. The picture's line
 has the tree's time, the picture's, its rays and its sum. On `rvc_cpu`, 160 x 120 with 2
 samples of the scene it starts with (7,282 triangles): sum `f38bbd71` with 255 workers and
-with none; the tree 483 ms against 3,632, the picture 134 ms against 12,359.
+with none (`02f213e9` since 14 October, below); the tree 483 ms against 3,632, the picture
+134 ms against 12,359.
 
 ### The view is the picture (13 October 2026, later)
 
@@ -279,8 +283,9 @@ this program. Nothing of it has run on the shader machine.
 ## The path tracer of before (to 13 October 2026)
 
 What follows is the Cornell box that `nxpath` was: one baked mesh, analytic balls, a Dear
-ImGui panel. Its sums and switches (`NXPATH_OLD`, `NXPATH_SCENE`, `NXPATH_DEPTH`) went with
-it; the tracer's arithmetic, tiles and shares are still the program's.
+ImGui panel. Its sums and switches (`NXPATH_OLD`, `NXPATH_SCENE`, `NXPATH_DEPTH`,
+`NXPATH_BOUNCES`, `NXPATH_FIRST`, `NXPATH_COUNT`, and `NXPATH_CORES` as the panel's four
+layouts) went with it; the tracer's arithmetic, tiles and shares are still the program's.
 
 `linux/pathtrace` (`build.sh` after Dear ImGui's, `linux/imgui`; Start menu: Other, "Path
 tracer (every core)"). A Cornell box: a red and a green wall, a lamp in the ceiling, a block
@@ -458,6 +463,6 @@ or glass; `NXPATH_FIRST=N`), the ball's the second.
 ## Checking them
 
 A picture's sum does not depend on which cores traced it, or how many: run one with
-`RAY_WORKERS=0` (or `NXPATH_CORES=3`) and one with all of them. `rvc_harness --cpu` runs both
+`RAY_WORKERS=0` (or `NXPATH_CORES=0`) and one with all of them. `rvc_harness --cpu` runs both
 at once the speed for looking at them (`cpu-harness.md`); the times above are the shader
 machine's (`rvc_harness`).

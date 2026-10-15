@@ -73,6 +73,7 @@ static void frames_room(void);
 static void workers_open(void);
 unsigned int host_scene_jobs;	/* scenes a worker made, for the games' figures */
 static void scene_finish(void);
+static void behind_joined_now(void);
 static mcw_handle scene_handle;
 static int run_single = -1, list_check;	/* TDAWN_SPRITES=one, TDAWN_CHECK_LIST: put_sprite() */
 static void list_report(void);
@@ -1425,6 +1426,7 @@ scene_finish(void)
 		return;
 	mcw_join(scene_handle);
 	scene_out = 0;
+	behind_joined_now();
 	frames_missed();
 	if (scene_owed) {
 		scene_owed = 0;
@@ -1487,7 +1489,17 @@ host_scene_behind_ready(void)
 	return scene_cores > 0 && mcw_count() > 0;
 }
 
-static void (*behind_draw)(void);
+static void (*behind_draw)(void), (*behind_joined)(void);
+
+static void
+behind_joined_now(void)
+{
+	void (*joined)(void) = behind_joined;
+
+	behind_joined = NULL;
+	if (joined)
+		joined();
+}
 
 static uint32_t
 behind_job(uint32_t unused, uint32_t also)
@@ -1504,16 +1516,19 @@ behind_job(uint32_t unused, uint32_t also)
 
 /* host_scene_end() after draw(), which notes the objects' part, both on a worker (gl.cpp). */
 void
-host_scene_behind(void (*draw)(void), int x, int y, int width, int height, int key)
+host_scene_behind(void (*draw)(void), int x, int y, int width, int height, int key, void (*joined)(void))
 {
 	if (!host_scene_behind_ready()) {
 		draw();
 		host_scene_end(x, y, width, height, key);
+		if (joined)
+			joined();
 		return;
 	}
 	scene_rect[0] = x, scene_rect[1] = y, scene_rect[2] = width, scene_rect[3] = height;
 	scene_key = key;
 	behind_draw = draw;
+	behind_joined = joined;
 	scene_handle = mcw_call(behind_job, 0, 0);
 	scene_out = 1;
 	host_scene_jobs++;
@@ -1673,6 +1688,7 @@ host_present(int page, int with_cursor)
 		} else {
 			mcw_join(scene_handle);
 			scene_out = 0;
+			behind_joined_now();
 		}
 	}
 	if (scene_built) {

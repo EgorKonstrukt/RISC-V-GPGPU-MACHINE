@@ -34,8 +34,10 @@ through the machine's serial console:
   its own.
 - `Window_ShaderEmu.c` is the Nano-X window, the keys and the pointer, and the terminal's lines.
 - `Math_ShaderEmu.c` is sine and cosine in floats: the game's own work in doubles.
-- `store_zip.py` rewrites the texture pack with nothing compressed, at build time: inflating
-  the zip and its PNGs was 7 seconds of every start.
+- `store_zip.py` rewrites the texture pack with its entries stored (inflating the zip was most
+  of 7 seconds of every start) and the pictures the game reads at its start in one pack of
+  PNGs, its first entry, which `png_shaderemu.c` decodes on the worker cores through libmedia
+  while the game starts ("The texture pack's pictures", below).
 - `classicube.patch` (`git diff` of the tree at `build.sh`'s commit): the platform in `Core.h`
   (low-memory build, no launcher, no FreeType, no sound), a vertex colour as the device has
   them, the map generator's noise in floats, one chunk built a frame, the chunk builder's
@@ -54,7 +56,8 @@ the meshes are all theirs, and the first core builds none:
 - `Builder.c` is compiled again for each of seven workers (`build.sh`: `-DSE_SECOND`, its
   four public names renamed; `SE_COPIES` in `MapRenderer.h`). A copy has every buffer of the
   first as its own, takes up to two chunks at a time and builds them into memory of its
-  own; it makes no vertex buffer and writes nothing of the chunks'.
+  own; it makes no vertex buffer and writes nothing of the chunks'. (A copy is a call's now,
+  on whichever worker is idle: "What stays the same is not made again", below.)
 - Each frame the first core gives the nearest chunks that wait for a mesh to the workers
   that have none (`SE_Mesh_Post` in `MapRenderer.c`), and makes what a worker has finished
   the chunks' own (`SE_Mesh_Take`): the parts' counts, and the vertices into GPU memory as
@@ -245,10 +248,55 @@ workers to 28.7.
   in use, and the terminal is asked for a line 20 times a second, not every frame.
 - **Particles are removed in one pass** (`Terrain_Tick`, `Terrain_RemoveFirst`): one
   `memmove` a particle was 18% of digging.
-- **The texture pack's pictures are decoded at build time** (`store_zip.py` writes
-  `SEPIXELS`, width, height, then the game's own pixel words on a word of the file;
-  `Png_Decode` reads them in one piece): decoding was a fifth of the start. An older
-  `classicube.bin` cannot read the new pack; `build.sh` writes both each time.
+- **The texture pack's pictures were decoded at build time** (`store_zip.py` wrote
+  `SEPIXELS`, width, height, then the game's own pixel words; `Png_Decode` read them in one
+  piece): the game's own decoder was a fifth of the start. **Since 15 October 2026 they are
+  PNGs again**, decoded by libmedia (`docs/media.md`): `Png_Decode` hands a PNG to
+  `SE_PngDecode` (`png_shaderemu.c`), which reads it whole and decodes it on the worker cores
+  (it opens the game's 15 before the world's generator would) into the game's pixel words.
+  The pack's PNGs were each in segments of 16 rows, and the start was 2.0 s slower than with
+  the raw pack; it is now quicker (below). An older `classicube.bin` cannot read the new pack;
+  `build.sh` writes both each time.
+- **The texture pack's pictures, one pack decoded beside the game's start** (15 October
+  2026). Measured from the command to the 30th texture (`rvc_cpu --ticks 8192 --ips 1e12
+  --pass-ms 2.7307`, `CLASSICUBE_SEED=7`, the 30 `cctex:` sums the raw pack's in all three):
+
+  | | the raw pixels (2.99 MB) | a PNG a picture (104 KB) | the pack (91 KB) |
+  |---|---|---|---|
+  | command to the 30th texture | 6.01 s | 7.98 s | 5.75 s |
+
+  Where a PNG a picture lost its 2 s: the raw pack's reads of the 19 pictures were 0.79 s
+  (the kernel's copies), their decodes 2.46 s and the pages for them 0.25 s. The nine 64 x 32
+  skins, small enough for the first core alone, were 90 to 104 ms each (300 thousand
+  instructions: two segments, each with its three code tables, for 8 KB of pixels) where
+  the raw ones were read in 2; `animations.png`, 512 x 48, had three segments and so three
+  cores (308 ms against 30). Of libmedia's work on the pack's pixels, undoing the filters is
+  half (7 instructions a byte for Sub and Up, 5 for None, which is a `memmove` of the row a
+  byte to the left), inflating 5 a byte and the copy to the pixels 1.3.
+
+  So `store_zip.py` puts the 19 pictures the start reads (not `touch.png`) into one picture,
+  rows of 256 of the game's own pixel words (blue, green, red, alpha: libmedia's copy, no
+  conversion), each picture's words from a page of their own, and writes it as 8 PNGs one
+  after another, every row filtered with None (smaller here than with Sub or Up, 68 KB
+  against 89, and quicker to undo). Each PNG has 16 segments: the first one stored row, which
+  mcwx gives the first core, and 15 alike for the game's 15 workers. The pack is the zip's
+  first entry; each picture's own entry is a stub (`SEPACKED`, the pack's name, where its
+  words begin, its width and height). At `Game_Setup`'s start `SE_PackEarly` opens the
+  workers (as the world's generator would, later), reads the pack from `texpacks/default.zip`,
+  maps its pages, decodes the first PNG itself and leaves the other seven to a thread at
+  nice 8 (at the game's own priority each look of its wait for the workers ended a pass the
+  game could have had); the zip's first entry joins it (`SE_PackEntry`), and a stub's
+  picture is its own pages of the pack (`SE_PackPicture`), unmapped when the game frees it
+  (`Mem_Free` asks `SE_PackFree`). Another zip with a pack is decoded where its entry is read.
+  No other code of the game's asks the workers for anything before that join.
+
+  The game's own thread now pays for the workers' opening (0.27 s, which the generator paid
+  before), the pack's pages (0.14 s, which the raw pack paid as page faults), the first PNG
+  (0.27 s, 0.10 s of it libmedia reading the program's whole text the first time it has
+  workers) and the thread's looks; the reads of the raw pack are gone and the decoding is
+  beside the game's start. With `CLASSICUBE_MESH=inline` (no workers) the first core decodes
+  the pack where its entry is read, 22 million instructions. `RVC_RACES`: 0 undone (73 reads
+  as they were: `team_job`'s look at the round word).
 - **The world's generator**: `NotchyGen_FillOblateSpheroid` in whole numbers by rows, the
   random numbers inline (the same numbers), one cosine of phi a cave step, the surface
   layer shared out by rows like the height map (`SE_SurfaceRows`). The same world.
@@ -441,6 +489,32 @@ the start and two blocks dug the old build's, line for line with `CLASSICUBE_MES
 as a set with the workers (57); `CLASSICUBE_CHECK_KEPT=1` 0 wrong in both. Held frames of the
 three builds standing, digging and walking, by `rvc_harness --cpu --warp`.
 
+## Faces the device drew twice, and the holodeck (15 October 2026)
+
+The device has no culling (`docs/gpu.md`): `Gfx_SetFaceCulling` does nothing, and every face is
+seen from both sides.
+
+- **Leaves** do not hide each other's faces (the game draws both with culling on, each seen
+  from its own side). Here both of two leaves' shared faces were drawn in one plane, mirrored,
+  and fought for the pixels. Of two whole transparent-thick blocks of one kind only the face of
+  the one on the greater side is made (`Block_CalcCulling`). The start's 52 meshes are 68,964
+  vertices where they were 69,828, and 78,836 with two blocks dug where they were 80,276.
+- **A sprite** (a flower, a sapling) is two crossed planes of two quads each, the second the
+  first mirrored, and both were drawn: of each plane the walk draws one quad, by the chunk's
+  sides towards the camera as the game chose (`RenderNormalBatch`). The meshes are as they were.
+- From a holodeck's seat (`docs/holodeck.md`, "Played from the seat"): the pick starts at the
+  hand, the chunks are those round the head, a box round the eye stands for the clear colour,
+  the view does not tilt with the walk's bobbing, and the game says its eye's height for the room's scale
+  (`seglWorldEye`). The held block's hand is the frame's (`SEFrame.hand`), worked out on core 0.
+- A light height asked for on core 0 while the workers still make the rows (`SE_Rows`) waits
+  for them (`ClassicLighting_GetLightHeight`): `RVC_RACES` had found the held block's light
+  storing a column into the rows' 16 bytes, 2 changes undone, with seated words.
+
+Under `rvc_cpu` (seed 7, block physics off, `RVC_CALLS`): `Game_RenderFrame` 11,518 and 11,530
+instructions a call standing, and 12,808 and 12,703 seated with the head turned 90 degrees;
+the frame's worker 15.2 and 13.2 thousand seated (the hand's place was a power a frame there),
+as it was standing. Seated, 104 commands where 88: the head's frustum is wider.
+
 ## Checking it
 
 - The GPU against its model: hold a frame, pass `--save-state` and `--gpu-capture`, and run
@@ -454,7 +528,8 @@ three builds standing, digging and walking, by `rvc_harness --cpu --warp`.
   by `down LeftMouse` and `up LeftMouse` typed together, which makes two or three chunks
   again: the turn must have had a frame), with the workers as a set by the second sum,
   which has each vertex's colour for its tag (the tags go by the order chunks are made
-  in). On 13 October 2026: 57 meshes with two blocks dug, the same lines and the same set. Switch block physics off for it (`echo singleplayerphysics=false >>
+  in). On 13 October 2026: 57 meshes with two blocks dug, the same lines and the same set.
+  Since 15 October (leaves, above) the start is 68,964 vertices and two blocks dug 78,836. Switch block physics off for it (`echo singleplayerphysics=false >>
   /tmp/classicube/options.txt` before the game): dirt turns to grass by the clock, and two
   builds' worlds part after a dig.
 - A change to how it draws: hold the same frame of the same seed before and after and compare
@@ -477,4 +552,3 @@ three builds standing, digging and walking, by `rvc_harness --cpu --warp`.
 - A world larger than 64 x 64 x 64 (the low-memory build's), and one kept from run to run:
   a saved map goes to `/tmp`.
 - The VRChat world: "Import boot images" after this image, and the board's list of programs.
-- `linux\prebuilt` does not have it.

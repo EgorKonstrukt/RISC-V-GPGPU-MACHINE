@@ -16,6 +16,9 @@ COMMIT=ce83b59
 DEMO=${RALERT_DEMO:-https://archive.org/download/CommandConquerRedAlert_1020/ra95demo.zip}
 # Tiberian Dawn's build makes the C++ driver and the toolchain file, and fetches the source
 [ -x "$WORK/bin/rv32-c++" ] && [ -f "$WORK/src/tdawn-toolchain.cmake" ] || { echo "run linux/tdawn/build.sh first"; exit 1; }
+# a movie's rows and pointers are libmedia's (docs/media.md, "Films")
+MEDIA=${RALERT_MEDIA:-$WORK/src/libmedia/libmedia.a}
+[ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
 # the tree is upstream's commit plus Tiberian Dawn's patch (the machine's side is shared), ours
 # on top of it, and the files of both, put there again on every build
@@ -27,7 +30,7 @@ cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" 
 cp "$HERE/gl.cpp" "$VC/redalert/"
 # The worker cores' side (docs/multicore.md): mcw.c is the library every program has for them,
 # workers.c the game's jobs over it.
-cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$VC/redalert/"
+cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/linux/libmedia/media.h" "$VC/redalert/"
 
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
 # (the flags are Tiberian Dawn's: docs/tdawn.md)
@@ -47,7 +50,8 @@ cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cma
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLATD=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
     -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU -DSHADEREMU_RA $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
-    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU -DSHADEREMU_RA $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/ralert-configure.log" 2>&1 \
+    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU -DSHADEREMU_RA $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="$MEDIA" > "$WORK/src/ralert-configure.log" 2>&1 \
     || { tail -20 "$WORK/src/ralert-configure.log"; exit 1; }
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/ralert-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/ralert-build.log" | head -40; exit 1; }

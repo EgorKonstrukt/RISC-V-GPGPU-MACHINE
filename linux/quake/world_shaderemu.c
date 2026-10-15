@@ -78,7 +78,8 @@ void SE_BuildPoly (glpoly_t *poly)
 /*
  * The level's polygons are written into GPU memory once, as quads sorted by texture and again
  * by light map; each run is a command that stays in every frame's list (docs/quake.md).
- * A frame then sends the level's matrices and what changed. Water and sky are not kept.
+ * A frame then sends the level's matrices and what changed. The sky (two commands) and water (one
+ * a texture, one face of two twins, its ripple written by workers) are kept after those runs.
  */
 #define KEPT_SPECIAL	(SURF_DRAWSKY | SURF_DRAWTURB)
 #define MAX_LIT		512
@@ -360,6 +361,53 @@ static uint32_t water_share (uint32_t first, uint32_t step)
 	return 0;
 }
 
+/*
+ * Water is two faces on one plane, one a side (the BSP's), and the GPU draws both: by its own
+ * cuts each, which fight. By surface, the earlier face it is the other side of, or -1.
+ */
+static int *water_twins (model_t *world)
+{
+	int		n = world->nummodelsurfaces, size = 64, i, e, k, *twin, *table;
+	unsigned	*key;
+	msurface_t	*s, *o;
+
+	while (size < 2 * n)
+		size *= 2;
+	key = malloc ((n + size) * sizeof (int));
+	if (!key)
+		return NULL;
+	twin = Hunk_AllocName (n * sizeof (int), "water"), table = (int *)key + n;
+	for (i = 0; i < size; i++)
+		table[i] = -1;
+	for (i = 0, s = world->surfaces; i < n; i++, s++) {
+		unsigned sum = 0;
+
+		twin[i] = -1;
+		if (!(s->flags & SURF_DRAWTURB))
+			continue;
+		/* the corners' sum, which either side's winding has */
+		for (e = 0; e < s->numedges; e++) {
+			int		edge = world->surfedges[s->firstedge + e];
+			const float	*v = world->vertexes[edge >= 0 ? world->edges[edge].v[0] : world->edges[-edge].v[1]].position;
+
+			sum += (unsigned)(int)(v[0] * 8) * 3 + (unsigned)(int)(v[1] * 8) * 5 + (unsigned)(int)(v[2] * 8) * 7;
+		}
+		key[i] = sum = sum * 2654435761u ^ (unsigned)s->numedges;
+		for (k = sum & (size - 1); table[k] >= 0; k = (k + 1) & (size - 1)) {
+			o = world->surfaces + table[k];
+			if (key[table[k]] == sum && o->plane == s->plane && ((o->flags ^ s->flags) & SURF_PLANEBACK) &&
+			    o->texinfo->texture == s->texinfo->texture && o->numedges == s->numedges && twin[table[k]] < 0)
+				break;
+		}
+		if (table[k] >= 0)
+			twin[i] = table[k];
+		else
+			table[k] = i;
+	}
+	free (key);
+	return twin;
+}
+
 static int water_quads_of (const msurface_t *s)
 {
 	const glpoly_t	*p;
@@ -614,7 +662,7 @@ static void kept_build (model_t *world)
 	texture_t	*frame;
 	glpoly_t	*p;
 	int		slots = world->numtextures + 64, *first_of, *next_of, *slot_of_info;
-	int		water = 0, sky_put, r, brush = 0, brush_most = 0;
+	int		water = 0, sky_put, r, brush = 0, brush_most = 0, *twin = NULL, twins = 0;
 	struct { texture_t *texture; int first, quads; } *water_run = NULL;
 
 	kept_on = water_on = 0;
@@ -627,13 +675,17 @@ static void kept_build (model_t *world)
 		text_here (water_share);
 		mcw_touch (&water_job, sizeof water_job);
 	}
+	if (water_how != HOW_FRAME && r_wateralpha.value == 1.0f)
+		twin = water_twins (world);
 	for (i = 0, s = world->surfaces; i < surfaces; i++, s++) {
 		if (kept_surface (s))
 			quads += (s->polys->numverts - 1) / 2;
 		level_sky |= (s->flags & SURF_DRAWSKY) != 0;
 		if (s->flags & SURF_DRAWTURB) {
 			level_water = 1;
-			if (water_how != HOW_FRAME && r_wateralpha.value == 1.0f)
+			if (twin && twin[i] >= 0)
+				twins++;
+			else if (water_how != HOW_FRAME && r_wateralpha.value == 1.0f)
 				water += water_quads_of (s);
 		}
 		if (s->flags & SURF_DRAWSKY)
@@ -757,6 +809,10 @@ static void kept_build (model_t *world)
 			for (i = 0, s = world->surfaces; i < surfaces; i++, s++) {
 				if (!(s->flags & SURF_DRAWTURB) || s->texinfo->texture != texture || !(m = water_quads_of (s)))
 					continue;
+				if (twin && twin[i] >= 0) {
+					water_of[i] = water_of[twin[i]];	/* (its leaves ripple the other side) */
+					continue;
+				}
 				water_of[i] = water_count;
 				water_surfs[water_count].surf = s, water_surfs[water_count].quads = to;
 				for (p = s->polys; p; p = p->next) {
@@ -860,8 +916,8 @@ static void kept_build (model_t *world)
 	kept_on = 1;
 	light_build (world);
 	/* (one line, said once: a line said while a level loads is a frame drawn) */
-	Con_Printf ("the level is kept in GPU memory: %i quads in %i runs, %i KB; %i surfaces flicker; the workers have %i quads of water and %i light maps; %i brush models kept, %i KB\n",
-		quads * 2 + water, count, (quads * 2 + water) * 64 >> 10, styled_count, water_on ? water : 0, light_on ? light_job.count : 0,
+	Con_Printf ("the level is kept in GPU memory: %i quads in %i runs, %i KB; %i surfaces flicker; the workers have %i quads of water (%i faces the other side's) and %i light maps; %i brush models kept, %i KB\n",
+		quads * 2 + water, count, (quads * 2 + water) * 64 >> 10, styled_count, water_on ? water : 0, twins, light_on ? light_job.count : 0,
 		brush_count, brush * 16 >> 10);
 }
 

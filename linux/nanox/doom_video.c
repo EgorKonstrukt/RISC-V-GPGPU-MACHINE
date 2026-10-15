@@ -405,10 +405,10 @@ G_BuildTiccmd_seat(doom_cmd *cmd)
 	if (seated) {
 		extern int menuactive;
 
-		/* a sitter's fire and use: the right trigger and the left, or a desktop's keys for them */
+		/* a sitter's fire: the right trigger; use: the left one or the jump button (Space) */
 		if (!menuactive && SEGL_HOST_HAND_TRIGGER(host, 1))
 			cmd->buttons |= 1;
-		if (!menuactive && SEGL_HOST_HAND_TRIGGER(host, 0))
+		if (!menuactive && (SEGL_HOST_HAND_TRIGGER(host, 0) || SEGL_HOST_JUMP(host)))
 			cmd->buttons |= 2;
 	}
 	if (seated == 2) {
@@ -447,8 +447,8 @@ seat_tic(void)
 	if (said < 0)
 		said = getenv("DOOM_SEAT") != NULL;	/* a line every 20 tics: how it is seated, the aim, the room's view */
 	if (said && ++said % 20 == 0)
-		fprintf(stderr, "seat: %d aim %.1f body %.1f drag %d at %d %d\n", seated, (viewangle - (unsigned)viewangleoffset) * (360.0 / 4294967296.0),
-			viewangle * (360.0 / 4294967296.0), dragging, viewx >> 16, viewy >> 16);
+		fprintf(stderr, "seat: %d aim %.1f body %.1f drag %d at %d %d eye %08x\n", seated, (viewangle - (unsigned)viewangleoffset) * (360.0 / 4294967296.0),
+			viewangle * (360.0 / 4294967296.0), dragging, viewx >> 16, viewy >> 16, gpu ? seglHostState()[(0x6c - 0x360) / 4] : 0);
 	viewangleoffset = (int)((unsigned)(unsigned short)turn_of[gametic % BACKUP_TICS] << 16);
 }
 
@@ -534,6 +534,8 @@ D_Display(void)
 			seglSettle();
 		/* a menu, a screen between levels: a picture for a screen, not a world for a room */
 		seglWorldFlat(gamestate != 0 || menuactive);
+		/* the eye 41 units over the floor; near 4, far 8192, a quarter turn wide (doom_gl.c) */
+		seglWorldEye(1, 41, 4, 8192, 1, 1.6f);
 	}
 	began = all_from ? cycles() : 0;
 	D_Display_game();

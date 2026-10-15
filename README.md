@@ -84,9 +84,9 @@ upstream rvc cloned next to the sources for its boot images:
     build.bat                          # the harness: bin\rvc_harness.exe, bin\rvc_harness_dxc.exe
     python tools\make_linux_image.py   # our Linux image, from linux\prebuilt (no compiler needed)
 
-Then double-click `bin\rvc_harness_dxc.exe` (D3D12 + DXC: starts in seconds) or
-`bin\rvc_harness.exe` (D3D11 + FXC: the first start compiles the shader for several minutes;
-with fxc2's `d3dcompiler_47.dll` next to it, seconds: `docs/fxc2.md`).
+Then double-click `bin\rvc_harness.exe` (D3D11, as VRChat runs it, with the worker cores; the
+build puts fxc2's `d3dcompiler_47.dll` next to it, so the shader compiles in seconds, where FXC
+takes minutes: `docs/fxc2.md`) or `bin\rvc_harness_dxc.exe` (D3D12 + DXC, one core only).
 A menu asks what to boot; `linux-net` is Linux with the desktop.
 
 Two windows appear. The console is the machine's serial terminal: every key goes to the guest,
@@ -102,10 +102,13 @@ mouse, and all of its memory on the right, with what is being written glowing.
 | `blend`, `rects` | GPU test cards: passes and blending; 3,600 rectangles copied back to RAM |
 | `raycast` | our Wolfenstein-style raycaster: w/a/s/d or the arrows, `x` walks on its own |
 | `raytrace` | our C raytracer: asks for resolution, bounces and shadows on the console |
+| `sound`, `classes`, `fpcheck` | a sound test card; loops of one kind of instruction; float instructions' sum |
 | `linux`, `micropython`, `rust`, `rvc-raytrace`, `bare` | upstream rvc's images |
 
 The bare-metal images run on smaller machines compiled without paging, or with machine mode
 only, which are faster and end in the same state; `--machine` overrides the choice.
+One harness on the card runs alone: it refuses to start beside another or beside any
+`--cpu` one, which run together (`docs/cpu-harness.md`, "One card, many processors").
 `rvc_harness --help` lists every option, and `AGENTS.md` holds the working notes: how to script
 runs, measure speed, and what has been tried.
 
@@ -127,7 +130,8 @@ To rebuild the guest software (WSL, no root; everything goes to `~/shaderemu-lin
   `src/`) and the GPU device (`gpu.shader`). A patched copy of rvc's shader (MIT, see its
   `LICENSE`).
 - `harness/` – runs the shaders outside Unity. `apps/rvc_harness.cpp` is the frontend over two
-  backends: D3D11 with FXC bytecode, as VRChat runs it, and D3D12 with DXC. `core/` is the
+  backends: D3D11 with FXC bytecode, as VRChat runs it, and D3D12 with DXC; `apps/rvc_cpu.cpp`
+  is the machine as an interpreter on the processor (`docs/cpu-harness.md`). `core/` is the
   ShaderLab parser, compiler cache, materials by reflection, readback and the memory view.
 - `linux/kernel/` – build script for the kernel and our drivers: the GPU (`/dev/gpu`), the
   display (`/dev/fb0`), keyboard and pointer, and hooks that send large copies and fills to
@@ -136,15 +140,17 @@ To rebuild the guest software (WSL, no root; everything goes to `~/shaderemu-lin
 - `linux/nanox/` – Nano-X: its screen, keyboard and pointer drivers for this machine, our
   patch to Microwindows, the bar, and Doom's video and OpenGL renderer.
 - `linux/apps/` – the desktop's programs: editor, files, browser, paint, viewer, settings, monitor.
+- `linux/quake/`, `linux/quake3/`, `linux/tdawn/`, `linux/ralert/`, `linux/classicube/`,
+  `linux/nes/`, `linux/physics/` and the rest – the ports and programs that have a folder of their own.
 - `linux/prebuilt/` – the kernel and programs already built (sources and licences in its
   README).
-- `programs/` – bare-metal programs in C, and `programs/linux`: the OpenGL library and
-  `glxgears`.
+- `programs/` – bare-metal programs in C, `programs/linux`: the OpenGL library and
+  `glxgears`, and `programs/mc`: the worker cores' library (`mcw.c`, `mcwx.h`) and its test.
 - `unity/ShaderEmu/` – the VRChat world: UdonSharp scripts, shaders and the editor scripts
   that build the scene.
 - `tools/` – the image builder, a software model of the GPU (`gpu_reference.py`), profilers
   (`pc_profile.py`, `boot_profile.py`, `dxil_path.py`), the speed test and the console viewer.
-- `docs/` – one file per subject: `boot`, `gpu`, `display`, `input`, `fetch`, `volume`, `nanox`, `cc`, `doom`, `tdawn`, `ralert`, `console`, `gamepad`.
+- `docs/` – one file per subject, among them `boot`, `multicore`, `gpu`, `display`, `input`, `fetch`, `volume`, `nanox`, `cc`, `doom`, `tdawn`, `ralert`, `console`, `gamepad`.
 - `rvc/` – a clone of upstream rvc (not part of this repository): its boot images and the
   reference shader.
 

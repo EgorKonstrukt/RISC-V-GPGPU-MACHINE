@@ -9,14 +9,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 source "$HERE/../userland/toolchain.sh"
 MW=${SE_MW:-$WORK/src/microwindows}
-Q=$WORK/src/ioq3
+Q=${QUAKE3_SRC:-$WORK/src/ioq3}
 BUILD=${QUAKE3_BUILD:-$WORK/src/quake3-build}
-DATA=$WORK/src/quake3-data
+DATA=${QUAKE3_DATA:-$WORK/src/quake3-data}
 OUT=${QUAKE3_OUT:-$REPO/build/images/linux/root}
 PROGRAMS=${SE_PROGRAMS:-$REPO/programs}
+MEDIA=${QUAKE3_MEDIA:-$WORK/src/libmedia}    # libmedia.a (linux/libmedia/build.sh)
 COMMIT=87a99d18
 DEMO=${QUAKE3_DEMO:-https://ftp.gwdg.de/pub/misc/ftp.idsoftware.com/idstuff/quake3/linux/linuxq3ademo-1.11-6.x86.gz.sh}
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
+[ -f "$MEDIA/libmedia.a" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
 if [ ! -d "$Q/.git" ]; then
     echo "== ioquake3 $COMMIT"
@@ -69,7 +71,7 @@ GLINC="-idirafter $PROGRAMS/linux/include -I$MW/src/include"
 FPU="-fno-math-errno -fsingle-precision-constant"
 OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"
 DEFS="-DSTANDALONE -DBOTLIB -DNO_VM_COMPILED -DNDEBUG -DSHADEREMU -DPRODUCT_VERSION=\"1.36-shaderemu\" ${QUAKE3_DEFINES:-}"
-CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w $DEFS -include $HERE/fmath.h $GLINC -I$C/thirdparty/zlib-1.3.1 -I$PROGRAMS/mc -I$HERE -I$C"
+CFLAGS="$OPT $FPU -fno-pie -fno-common -fdata-sections -fsigned-char -fno-strict-aliasing -w $DEFS -include $HERE/fmath.h $GLINC -I$C/thirdparty/zlib-1.3.1 -I$PROGRAMS/mc -I$REPO/linux/libmedia -I$HERE -I$C"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
 export CFLAGS C HERE BUILD ALIGN16
 mkdir -p "$BUILD/engine" "$BUILD/game" "$BUILD/cgame" "$BUILD/ui" && cd "$BUILD"
@@ -110,7 +112,7 @@ rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
 for o in gpu.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
-rv32-cc -O2 $FPU -w ${QUAKE3_LINK:-} engine/*.o game.o cgame.o ui.o gpu.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o quake3
+rv32-cc -O2 $FPU -w ${QUAKE3_LINK:-} engine/*.o game.o cgame.o ui.o gpu.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" "$MEDIA/libmedia.a" -lm -o quake3
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/quake3.bin" quake3
 riscv32-linux-nm -n quake3 > "${QUAKE3_NM:-$WORK/src/quake3.nm}"
@@ -125,13 +127,21 @@ fi
 [ "$(md5sum < "$DATA/demo/demoq3/pak0.pk3" | cut -d' ' -f1)" = 0613b3d4ef05e613a2b470571498690f ] || { echo "pak0.pk3 is not the 1.11 demo's"; exit 1; }
 
 # One level of it, baked (bake.py): what the game asked for in a run with QUAKE3_WANTED=1 is
-# wanted.txt, and jpgraw reads the demo's JPEG pictures (the build computer's own program).
+# wanted.txt, and jpgraw reads the demo's JPEG pictures (the build computer's own programs);
+# q3pack writes them as the files the game decodes, with libmedia's encoders.
 J=$C/thirdparty/jpeg-9f
 if [ ! -x "$DATA/jpgraw" ] || [ "$HERE/jpgraw.c" -nt "$DATA/jpgraw" ]; then
     gcc -O2 -w -I"$J" -o "$DATA/jpgraw" "$HERE/jpgraw.c" $(ls "$J"/j*.c | grep -v 'jmemansi\|jmemname\|jmemdos\|jmemmac') -lm
 fi
-if [ ! -f "$DATA/se.dat" ] || [ "$HERE/bake.py" -nt "$DATA/se.dat" ] || [ "$HERE/wanted.txt" -nt "$DATA/se.dat" ] || [ "$HERE/build.sh" -nt "$DATA/se.dat" ]; then
-    python3 "$HERE/bake.py" "$DATA/demo/demoq3/pak0.pk3" "$HERE/wanted.txt" "$DATA/pak0.pk3" "$DATA/se.dat" --jpgraw "$DATA/jpgraw" ${QUAKE3_BAKE:-}
+L=$REPO/linux/libmedia
+if [ ! -x "$DATA/q3pack" ] || [ -n "$(find "$HERE/q3pack.c" "$L" -maxdepth 1 -name '*.[ch]' -newer "$DATA/q3pack")" ]; then
+    gcc -O2 -w -I"$L" -I"$PROGRAMS/mc" -o "$DATA/q3pack" "$HERE/q3pack.c" \
+        $(for f in m_core m_simple m_png m_png_enc m_jpeg m_jpeg_enc m_gif m_gif_enc; do echo "$L/$f.c"; done) "$L/test/mcw_host.c" -lpthread -lm
+fi
+if [ ! -f "$DATA/se.dat" ] || [ "$HERE/bake.py" -nt "$DATA/se.dat" ] || [ "$HERE/wanted.txt" -nt "$DATA/se.dat" ] || [ "$HERE/build.sh" -nt "$DATA/se.dat" ] ||
+        [ "$DATA/q3pack" -nt "$DATA/se.dat" ]; then
+    python3 "$HERE/bake.py" "$DATA/demo/demoq3/pak0.pk3" "$HERE/wanted.txt" "$DATA/pak0.pk3" "$DATA/se.dat" --jpgraw "$DATA/jpgraw" \
+        --q3pack "$DATA/q3pack" ${QUAKE3_BAKE:-}
 fi
 # all in /usr/share: the image builder adds files to folders the ROM has, and makes none.
 # The game wants its data in a folder baseq3 and writes its settings beside it: the starter makes one.

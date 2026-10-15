@@ -1,16 +1,20 @@
 # The video player
 
-`nxvideo` plays an MPEG-1 file (video, with layer II sound) on the worker cores. The decoder is
-[pl_mpeg](https://github.com/phoboslab/pl_mpeg) (Dominic Szablewski, MIT), fetched by the build
-at one commit; `linux/video/mpeg.c` arranges it for the workers and `linux/video/nxvideo.c` is
-the player.
+`nxvideo` plays an MPEG-1 file (video, with layer II sound), a Westwood VQA (Red Alert's
+movies), Motion JPEG in AVI (with PCM sound) or a GIF animation on the worker cores. The films are libmedia's (`docs/media.md`,
+"Films"; since 15 October 2026): MPEG-1's decoder is
+[pl_mpeg](https://github.com/phoboslab/pl_mpeg) (Dominic Szablewski, MIT), fetched by
+`linux/libmedia/build.sh` at one commit, and `linux/libmedia/m_video_mpeg.c` is what was
+`linux/video/mpeg.c`, which arranges it for the workers; `linux/video/nxvideo.c` is the player.
+What follows of MPEG-1 was written of `mpeg.c` and holds of the library's copy.
 
     / # nxvideo                 # the image's sample, again and again
-    / # nxvideo FILE.mpg
+    / # nxvideo FILE.mpg        # or FILE.vqa, FILE.avi, FILE.gif
     / # nxvideo --decode FILE   # no window: every picture decoded on this core, with sums
 
     wsl -- bash /mnt/c/.../linux/video/build.sh     # 7 s, after Nano-X's; then the image
     python tools\make_video.py [WIDTHxHEIGHT [SECONDS [KBITS]]]   # the sample, on the host
+    python tools\make_avi.py --sample [SECONDS]                   # its MJPEG twin, from the same trailer
 
 ## How a film is shared out
 
@@ -22,9 +26,9 @@ which is 43 million a second at 24 pictures, and a second of its sound is 17 mil
   core takes the file apart once (the two streams, where each group begins, where each sound
   frame begins); after that a worker decodes a whole group into memory of its own.
 - **A decoder is used again.** pl_mpeg's decoder is put back as it was made (a copy of its
-  struct, its frames' memory kept) and pointed at the next group's bytes. The one change to
+  struct, its frames' memory kept) and pointed at the next group's bytes. The first change to
   pl_mpeg is a `sed` in the build: it moved a stream's bytes down as it read them, and here
-  the stream is every core's to read.
+  the stream is every core's to read (the others are `plm_window.py` and `plm_fast.py`, below).
 - **A frame is three planes of bytes**, and the GPU makes the colours (fragment mode 6,
   `gpu.md`): a worker stores a byte and a half a pixel, not four, and nothing converts.
 - **Two stages.** A texture has a physical address, so frames to show are in GPU memory, and
@@ -75,8 +79,8 @@ window: the first groups are being decoded.
 - **The workers run 84% of their passes** (78% of them whole; the others run 2,200
   instructions): those are passes that end on a full write cache, 3 KB of stores. A group
   copied into GPU memory is nothing but stores (507 KB, some 170 passes of a worker), and
-  so is a block copied from the picture before. It costs the film nothing: 20 decoders
-  where 14 keep up. The first core taking a decoder's place would add a fifteenth of the
+  so is a block copied from the picture before. It costs the film nothing: 20 decoders (16
+  now) where 14 keep up. The first core taking a decoder's place would add a fifteenth of the
   decoding and answer the window a picture's 166 passes late; taking the copies (6 KB a
   pass) would need 340 of its 500 passes a second and leave pictures out when passes are
   long. Neither is done.
@@ -179,12 +183,13 @@ played is said to be so in a window (`refuse`).
 leaves most pictures out, whatever the build. Look at "left out" in a run without it.)
 
 - `nxvideo --decode FILE` under `rvc_cpu` prints a sum of all pictures and of all sound, and
-  what each costs. The build also makes the same program for the host
-  (`~/shaderemu-linux/src/video/nxvideo-host --decode FILE`): the sums must be equal. The
-  sample's: pictures `d124dc14`, sound `96a296a2`. `NXVIDEO_WHOLE=1` adds the sound decoded
-  in one piece, which must be the chunks' sum.
+  what each costs. libmedia's build makes `media_test-host`, whose `video FILE` must print the
+  same sums. The sample's: pictures `d124dc14`, sound `96a296a2`; Red Alert's ENGLISH.VQA:
+  `55d71396`, `a5e19ed4`; `Big Buck Bunny.avi`: `3129e37f`, `6dd01fde`.
 - `NXVIDEO_SUM=1 NXVIDEO_ONCE=1 nxvideo` prints one sum of the pictures as they reached GPU
-  memory: `034e8a1b` for the sample, with `NXVIDEO_WORKERS=0`, `3` and unset.
+  memory, the same as `--decode`'s: `d124dc14` for the sample, with `NXVIDEO_WORKERS=0`, `3`
+  and unset (it was a sum of groups' sums, `034e8a1b`, while the player knew the groups);
+  `3129e37f` for `Big Buck Bunny.avi` with 64 workers.
 - `NXVIDEO_HOLD=100 nxvideo` stops at a picture (`nxvideo: holding`): with `--save-state`
   and `--gpu-capture`, `tools\gpu_reference.py SNAP BMP --size 640x352` must find every pixel
   within 2 levels.
@@ -202,11 +207,17 @@ leaves most pictures out, whatever the build. Look at "left out" in a run withou
 3.0; 320 x 176, 24 pictures a second, 895 KB. `tools/make_video.py` fetches the trailer from
 Wikimedia Commons and encodes it; the original is not kept in the repository.
 
+`/root/Videos/Big Buck Bunny.avi`: its first 4 seconds as Motion JPEG (`tools/make_avi.py
+--sample`): 96 JPEGs of Pillow's at quality 70 in some 128 restart intervals each, and the
+sound as 22,050 Hz mono PCM; 614 KB. A picture is shown as the GPU's words (`GL_RGBA`) where
+libmedia decoded it. It does not play at 24 pictures a second on the machine: a picture is
+156 ms of the machine's time on 16 workers or 63 (`docs/media.md`, "MJPEG in AVI"), and
+`nxvideo` left 73 of the 96 out.
+
 ## Not done
 
-- Seeking, and a bar to show where the film is.
-- Pictures larger than the sample at full rate: 640 x 352 is four times the work, some 56
-  workers' worth, and 22 frames of GPU memory.
+- Pictures larger than the sample at full rate: 640 x 352 is four times the work, some 40
+  workers' worth (above), and 22 frames of GPU memory.
 - B pictures, and groups that are not closed.
 
 The sound's synthesis window adds four blocks of products a turn with the sum in a register

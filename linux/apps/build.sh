@@ -11,6 +11,11 @@ source "$HERE/../userland/toolchain.sh"
 MW=$WORK/src/microwindows
 OUT=$REPO/build/images/linux/root/usr
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
+MEDIA=$WORK/src/libmedia/libmedia.a
+[ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
+# (the workers' library, compiled once for the programs that link libmedia)
+rv32-cc -O2 -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcw.c" -o "$WORK/src/libmedia/mcw.o"
+rv32-cc -O2 -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcwx.c" -o "$WORK/src/libmedia/mcwx.o"
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
 # nxpersist packs with zlib (docs/persist.md): its source is fetched once
 Z=$WORK/src/zlib-1.3.1
@@ -19,9 +24,13 @@ ZLIB="-w -I$Z $Z/deflate.c $Z/trees.c $Z/inflate.c $Z/inftrees.c $Z/inffast.c $Z
 for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg; do
     more=""
     [ $p = nxpersist ] && more=$ZLIB
-    # the viewer decodes on the worker cores (ui_image.h) and Paint moves pictures with them
-    # (ui_bulk.h): the library every program has for them
-    [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
+    # the monitor and Paint move pictures with the worker cores (ui_bulk.h) and the browser
+    # makes its strips there: the library every program has for them
+    [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] || [ $p = nxweb ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
+    # pictures of every kind, decoded and encoded on the worker cores (linux/libmedia, docs/media.md)
+    case $p in nxview|nxpaint|nxfiles|nxsettings|nxicon|nxweb)
+        more="-I$REPO/linux/libmedia -I$REPO/programs/mc $MEDIA $WORK/src/libmedia/mcw.o $WORK/src/libmedia/mcwx.o -lm -Wl,--gc-sections" ;;
+    esac
     rv32-cc -O2 -Wall -Wno-unused-function -I"$MW/src/include" -I"$HERE/../userland" "$HERE/$p.c" $more "$MW/src/lib/libnano-X.a" -o "$WORK/src/apps/$p"
     riscv32-linux-strip -o "$OUT/bin/$p" "$WORK/src/apps/$p"
 done

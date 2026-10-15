@@ -36,12 +36,15 @@ def original(name, sha1):
 def picture(source, to):
     image = Image.open(source).convert('RGB')
     image.thumbnail((640, 480), Image.LANCZOS)
-    image.save(to, 'JPEG', quality=82, progressive=False, optimize=False, subsampling=2)
+    # (in restart intervals, some 512 of them: every core decodes some by itself, docs/media.md)
+    mcus = -(-image.size[0] // 16) * -(-image.size[1] // 16)
+    image.save(to, 'JPEG', quality=82, progressive=False, optimize=False, subsampling=2, restart_marker_blocks=max(1, -(-mcus // 512)))
 
 
 def tune(source, to, how):
     options = dict(word.split('=') for word in how.split())
     kind = ['-c:a', 'flac', '-ar', '22050', '-ac', '1', '-sample_fmt', 's16'] if to.endswith('.flac') else \
+           ['-c:a', 'libvorbis', '-q:a', '4', '-ar', '44100', '-ac', '2'] if to.endswith('.ogg') else \
            ['-c:a', 'libmp3lame', '-b:a', '96k', '-ar', '44100', '-ac', '2', '-write_xing', '0', '-id3v2_version', '0']
     # no tags and no encoder's date: the same bytes from every build
     subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', options.get('from', '0'), '-t', options.get('seconds', '30'), '-i', source,
@@ -67,6 +70,13 @@ def main():
         else:
             tune(source, to, fields[3])
         made.append((fields[0], os.path.getsize(to)))
+    # what an earlier list made and this one does not (a tune made another kind) goes
+    for folder in sorted({name.split('/')[0] for name, _ in made}):
+        listed = {name.split('/', 1)[1] for name, size in made if name.startswith(folder + '/')}
+        for name in os.listdir(os.path.join(OUT, folder)):
+            if name.replace('.romlink', '') not in listed:
+                os.remove(os.path.join(OUT, folder, name))
+                print('removed %s/%s' % (folder, name))
     for name, size in made:
         print('%8d  %s' % (size, name))
     print('%8d bytes in all' % sum(size for _, size in made))

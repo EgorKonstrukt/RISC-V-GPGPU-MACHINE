@@ -325,10 +325,10 @@ index 7c59ee9..1f465d0 100644
  //
  // information that is static for the entire time connected to a server
 diff --git a/WinQuake/cmd.c b/WinQuake/cmd.c
-index 0778c5e..cdb0a06 100644
+index 0778c5e..cb0de89 100644
 --- a/WinQuake/cmd.c
 +++ b/WinQuake/cmd.c
-@@ -86,7 +86,13 @@ Adds command text at the end of the buffer
+@@ -86,7 +86,15 @@ Adds command text at the end of the buffer
  void Cbuf_AddText (char *text)
  {
  	int		l;
@@ -339,11 +339,13 @@ index 0778c5e..cdb0a06 100644
 +		SE_ServerKeepCommand (text);
 +		return;
 +	}
++	if (mcw_on_worker ())	// (only the server's worker keeps its commands for the first core)
++		Sys_Error ("Cbuf_AddText on a worker core: %s", text);
 +
  	l = Q_strlen (text);
  
  	if (cmd_text.cursize + l >= cmd_text.maxsize)
-@@ -146,7 +152,11 @@ void Cbuf_Execute (void)
+@@ -146,7 +154,11 @@ void Cbuf_Execute (void)
  	char	*text;
  	char	line[1024];
  	int		quotes;
@@ -356,7 +358,7 @@ index 0778c5e..cdb0a06 100644
  	while (cmd_text.cursize)
  	{
  // find a \n or ; line break
-@@ -628,6 +638,7 @@ void	Cmd_ExecuteString (char *text, cmd_source_t src)
+@@ -628,6 +640,7 @@ void	Cmd_ExecuteString (char *text, cmd_source_t src)
  	{
  		if (!Q_strcasecmp (cmd_argv[0],cmd->name))
  		{
@@ -755,7 +757,7 @@ index cad9772..1e9094f 100644
 +void CRC_ProcessBlock(unsigned short *crcvalue, byte *data, int count);
  unsigned short CRC_Value(unsigned short crcvalue);
 diff --git a/WinQuake/cvar.c b/WinQuake/cvar.c
-index 07a761a..2dd83f7 100644
+index 07a761a..49928c5 100644
 --- a/WinQuake/cvar.c
 +++ b/WinQuake/cvar.c
 @@ -52,7 +52,7 @@ float	Cvar_VariableValue (char *var_name)
@@ -767,7 +769,7 @@ index 07a761a..2dd83f7 100644
  }
  
  
-@@ -105,7 +105,16 @@ void Cvar_Set (char *var_name, char *value)
+@@ -105,7 +105,15 @@ void Cvar_Set (char *var_name, char *value)
  {
  	cvar_t	*var;
  	qboolean changed;
@@ -778,10 +780,9 @@ index 07a761a..2dd83f7 100644
 +		SE_ServerKeepCvar (var_name, value);
 +		return;
 +	}
-+	if (!mcw_on_worker ())
-+	{
-+		SE_SceneOwn ();	// (a setting a worker's frame reads)
-+	}
++	if (mcw_on_worker ())	// (only the server's worker keeps its settings for the first core)
++		Sys_Error ("Cvar_Set %s on a worker core", var_name);
++	SE_SceneOwn ();	// (a setting a worker's frame reads)
  	var = Cvar_FindVar (var_name);
  	if (!var)
  	{	// there is an error in C code if this happens
@@ -974,7 +975,7 @@ index 25a8007..1d07424 100644
  	strcpy (glt->identifier, identifier);
  	glt->texnum = texture_extension_number;
 diff --git a/WinQuake/gl_model.c b/WinQuake/gl_model.c
-index 21ef130..6163189 100644
+index 21ef130..d7f9cb5 100644
 --- a/WinQuake/gl_model.c
 +++ b/WinQuake/gl_model.c
 @@ -38,7 +38,10 @@ byte	mod_novis[MAX_MAP_LEAFS/8];
@@ -997,7 +998,61 @@ index 21ef130..6163189 100644
  	for (i=0 , mod=mod_known ; i<mod_numknown ; i++, mod++)
  		if (mod->type != mod_alias)
  			mod->needload = true;
-@@ -1408,6 +1412,18 @@ void Mod_FloodFillSkin( byte *skin, int skinwidth, int skinheight )
+@@ -998,6 +1002,45 @@ Mod_MakeHull0
+ Deplicate the drawing hull structure as a clipping hull
+ =================
+ */
++/*
++=================
++SE_HullNodes
++
++The model's clip nodes with their planes, for the server's walks (world.c): its own memory,
++not the hunk's, where what is allocated after would lie elsewhere (the strings of QuakeC too)
++=================
++*/
++static se_node_t *SE_NodesOf (hull_t *hull, int count)
++{
++	se_node_t	*nodes = malloc (count * sizeof *nodes);
++	int			i;
++
++	if (!nodes && count)
++		Sys_Error ("SE_HullNodes: no memory for %i nodes", count);
++	for (i = 0; i < count; i++)
++	{
++		mplane_t	*plane = hull->planes + hull->clipnodes[i].planenum;
++
++		VectorCopy (plane->normal, nodes[i].normal);
++		nodes[i].dist = plane->dist;
++		nodes[i].type = plane->type;
++		nodes[i].children[0] = hull->clipnodes[i].children[0];
++		nodes[i].children[1] = hull->clipnodes[i].children[1];
++		nodes[i].pad = 0;
++	}
++	return nodes;
++}
++
++void SE_HullNodes (model_t *mod)
++{
++	free (mod->hulls[0].se_nodes);
++	if (mod->hulls[1].se_nodes != mod->hulls[0].se_nodes)
++		free (mod->hulls[1].se_nodes);
++	mod->hulls[0].se_nodes = SE_NodesOf (&mod->hulls[0], mod->numnodes);
++	mod->hulls[1].se_nodes = mod->hulls[2].se_nodes = SE_NodesOf (&mod->hulls[1], mod->numclipnodes);
++	mod->hulls[3].se_nodes = NULL;
++}
++
+ void Mod_MakeHull0 (void)
+ {
+ 	mnode_t		*in, *child;
+@@ -1183,6 +1226,7 @@ void Mod_LoadBrushModel (model_t *mod, void *buffer)
+ 	Mod_LoadSubmodels (&header->lumps[LUMP_MODELS]);
+ 
+ 	Mod_MakeHull0 ();
++	SE_HullNodes (mod);
+ 	
+ 	mod->numframes = 2;		// regular and alternate animation
+ 	
+@@ -1408,6 +1452,18 @@ void Mod_FloodFillSkin( byte *skin, int skinwidth, int skinheight )
  Mod_LoadAllSkins
  ===============
  */
@@ -1016,7 +1071,7 @@ index 21ef130..6163189 100644
  void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
  {
  	int		i, j, k;
-@@ -1430,7 +1446,12 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
+@@ -1430,7 +1486,12 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
  	for (i=0 ; i<numskins ; i++)
  	{
  		if (pskintype->type == ALIAS_SKIN_SINGLE) {
@@ -1030,7 +1085,7 @@ index 21ef130..6163189 100644
  
  			// save 8 bit texels for the player model to remap
  	//		if (!strcmp(loadmodel->name,"progs/player.mdl")) {
-@@ -1455,9 +1476,14 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
+@@ -1455,9 +1516,14 @@ void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
  
  			pskintype = (void *)(pinskinintervals + groupskins);
  
@@ -1046,7 +1101,7 @@ index 21ef130..6163189 100644
  					if (j == 0) {
  						texels = Hunk_AllocName(s, loadname);
  						pheader->texels[i] = texels - (byte *)pheader;
-@@ -1564,7 +1590,24 @@ void Mod_LoadAliasModel (model_t *mod, void *buffer)
+@@ -1564,7 +1630,24 @@ void Mod_LoadAliasModel (model_t *mod, void *buffer)
  // load the skins
  //
  	pskintype = (daliasskintype_t *)&pinmodel[1];
@@ -1072,7 +1127,7 @@ index 21ef130..6163189 100644
  
  //
  // load base s and t vertices
-@@ -1631,9 +1674,18 @@ void Mod_LoadAliasModel (model_t *mod, void *buffer)
+@@ -1631,9 +1714,18 @@ void Mod_LoadAliasModel (model_t *mod, void *buffer)
  	//
  	GL_MakeAliasModelDisplayLists (mod, pheader);
  
@@ -1093,7 +1148,7 @@ index 21ef130..6163189 100644
  	total = end - start;
  	
 diff --git a/WinQuake/gl_model.h b/WinQuake/gl_model.h
-index ae576b8..444a890 100644
+index ae576b8..fa171e3 100644
 --- a/WinQuake/gl_model.h
 +++ b/WinQuake/gl_model.h
 @@ -118,6 +118,7 @@ typedef struct glpoly_s
@@ -1104,7 +1159,27 @@ index ae576b8..444a890 100644
  	float	verts[4][VERTEXSIZE];	// variable sized (xyz s1t1 s2t2)
  } glpoly_t;
  
-@@ -414,6 +415,7 @@ typedef struct model_s
+@@ -201,8 +202,19 @@ typedef struct
+ 	int			lastclipnode;
+ 	vec3_t		clip_mins;
+ 	vec3_t		clip_maxs;
++	struct se_node_s	*se_nodes;	// (the clip nodes with their planes, as the server walks them)
+ } hull_t;
+ 
++// A clip node and its plane as one (world.c), the children as the clip node has them
++typedef struct se_node_s
++{
++	vec3_t		normal;
++	float		dist;
++	int			type;
++	int			children[2];
++	int			pad;
++} se_node_t;
++
+ /*
+ ==============================================================================
+ 
+@@ -414,6 +426,7 @@ typedef struct model_s
  //
  	cache_user_t	cache;		// only access through Mod_Extradata
  
@@ -2476,7 +2551,7 @@ index 11b5a01..14133c6 100644
  }
  
 diff --git a/WinQuake/gl_screen.c b/WinQuake/gl_screen.c
-index 8a0c096..fa257d5 100644
+index 8a0c096..c6cc8f2 100644
 --- a/WinQuake/gl_screen.c
 +++ b/WinQuake/gl_screen.c
 @@ -21,6 +21,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -2616,12 +2691,15 @@ index 8a0c096..fa257d5 100644
  		{
  			scr_disabled_for_loading = false;
  			Con_Printf ("load failed.\n");
-@@ -871,8 +937,12 @@ void SCR_UpdateScreen (void)
+@@ -871,8 +937,15 @@ void SCR_UpdateScreen (void)
  //
  	SCR_SetUpToDrawConsole ();
  	
 +#ifdef SHADEREMU
 +	se_sbar_done = 0;
++	if (scr_drawloading)	// (the plaque on black: the level being left is not drawn, docs/quake.md)
++		glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++	else
 +#endif
  	V_RenderView ();
  
@@ -2629,7 +2707,7 @@ index 8a0c096..fa257d5 100644
  	GL_Set2D ();
  
  	//
-@@ -911,6 +981,9 @@ void SCR_UpdateScreen (void)
+@@ -911,6 +984,9 @@ void SCR_UpdateScreen (void)
  		SCR_DrawTurtle ();
  		SCR_DrawPause ();
  		SCR_CheckDrawCenterString ();
@@ -2639,7 +2717,7 @@ index 8a0c096..fa257d5 100644
  		Sbar_Draw ();
  		SCR_DrawConsole ();	
  		M_Draw ();
-@@ -921,3 +994,61 @@ void SCR_UpdateScreen (void)
+@@ -921,3 +997,61 @@ void SCR_UpdateScreen (void)
  	GL_EndRendering ();
  }
  
@@ -2854,7 +2932,7 @@ index f3c253c..5470fa7 100644
  #define    TEXTURE0_SGIS				0x835E
  #define    TEXTURE1_SGIS				0x835F
 diff --git a/WinQuake/host.c b/WinQuake/host.c
-index 603f6b3..e3c8236 100644
+index 603f6b3..69bb32b 100644
 --- a/WinQuake/host.c
 +++ b/WinQuake/host.c
 @@ -37,10 +37,10 @@ quakeparms_t host_parms;
@@ -3005,16 +3083,20 @@ index 603f6b3..e3c8236 100644
  {
  	static double		time1 = 0;
  	static double		time2 = 0;
-@@ -644,7 +682,7 @@ void _Host_Frame (float time)
+@@ -644,8 +682,11 @@ void _Host_Frame (float time)
  	rand ();
  	
  // decide the simulation time
 -	if (!Host_FilterTime (time))
 +	if (!Host_FilterTime (ms))
++	{
++		SE_ServerIdle ();	// (a server's frame that has ended is followed at once)
  		return;			// don't run too fast, or packets will flood out
++	}
  		
  // get new key events
-@@ -671,8 +709,13 @@ void _Host_Frame (float time)
+ 	Sys_SendKeyEvents ();
+@@ -671,8 +712,13 @@ void _Host_Frame (float time)
  // check for commands typed to the host
  	Host_GetConsoleCommands ();
  	
@@ -3028,7 +3110,7 @@ index 603f6b3..e3c8236 100644
  
  //-------------------
  //
-@@ -697,7 +740,11 @@ void _Host_Frame (float time)
+@@ -697,7 +743,11 @@ void _Host_Frame (float time)
  	if (host_speeds.value)
  		time1 = Sys_FloatTime ();
  		
@@ -3040,7 +3122,7 @@ index 603f6b3..e3c8236 100644
  
  	if (host_speeds.value)
  		time2 = Sys_FloatTime ();
-@@ -713,9 +760,13 @@ void _Host_Frame (float time)
+@@ -713,9 +763,13 @@ void _Host_Frame (float time)
  	
  	CDAudio_Update();
  
@@ -3055,7 +3137,7 @@ index 603f6b3..e3c8236 100644
  		time3 = Sys_FloatTime ();
  		pass2 = (time2 - time1)*1000;
  		pass3 = (time3 - time2)*1000;
-@@ -726,7 +777,7 @@ void _Host_Frame (float time)
+@@ -726,7 +780,7 @@ void _Host_Frame (float time)
  	host_framecount++;
  }
  
@@ -3064,7 +3146,7 @@ index 603f6b3..e3c8236 100644
  {
  	double	time1, time2;
  	static double	timetotal;
-@@ -735,12 +786,12 @@ void Host_Frame (float time)
+@@ -735,12 +789,12 @@ void Host_Frame (float time)
  
  	if (!serverprofile.value)
  	{
@@ -3473,7 +3555,7 @@ index 3eded99..3bf66d2 100644
  		return 0;
  	return ret;
 diff --git a/WinQuake/pr_cmds.c b/WinQuake/pr_cmds.c
-index 3593bb9..e914c14 100644
+index 3593bb9..e3f5f2c 100644
 --- a/WinQuake/pr_cmds.c
 +++ b/WinQuake/pr_cmds.c
 @@ -19,6 +19,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -3509,8 +3591,39 @@ index 3593bb9..e914c14 100644
  	l = (leaf - sv.worldmodel->leafs) - 1;
  	if ( (l<0) || !(checkpvs[l>>3] & (1<<(l&7)) ) )
  	{
+@@ -845,10 +863,27 @@ float cvar (string)
+ void PF_cvar (void)
+ {
+ 	char	*str;
+-	
++	// (the variables last asked for, by where their names lie: a list's search of every name was 1.3k)
++	static struct { char *str; cvar_t *var; } asked[8];
++	static int next;
++	int		i;
++	cvar_t	*var;
++
+ 	str = G_STRING(OFS_PARM0);
+-	
+-	G_FLOAT(OFS_RETURN) = Cvar_VariableValue (str);
++
++	for (i = 0; i < 8; i++)
++		if (asked[i].str == str && !Q_strcmp (str, asked[i].var->name))
++		{
++			G_FLOAT(OFS_RETURN) = asked[i].var->value;
++			return;
++		}
++	var = Cvar_FindVar (str);
++	if (var)
++	{
++		asked[next].str = str, asked[next].var = var;
++		next = (next + 1) & 7;
++	}
++	G_FLOAT(OFS_RETURN) = var ? var->value : 0;
+ }
+ 
+ /*
 diff --git a/WinQuake/pr_edict.c b/WinQuake/pr_edict.c
-index 544e01a..93c2fef 100644
+index 544e01a..7944cb4 100644
 --- a/WinQuake/pr_edict.c
 +++ b/WinQuake/pr_edict.c
 @@ -997,8 +997,7 @@ void PR_LoadProgs (void)
@@ -3523,7 +3636,7 @@ index 544e01a..93c2fef 100644
  
  // byte swap the header
  	for (i=0 ; i<sizeof(*progs)/4 ; i++)
-@@ -1020,6 +1019,13 @@ void PR_LoadProgs (void)
+@@ -1020,6 +1019,14 @@ void PR_LoadProgs (void)
  	
  	pr_edict_size = progs->entityfields * 4 + sizeof (edict_t) - sizeof(entvars_t);
  	
@@ -3532,51 +3645,677 @@ index 544e01a..93c2fef 100644
 +	for (i=0 ; i<progs->numfielddefs ; i++)
 +		if (pr_fielddefs[i].type & DEF_SAVEGLOBAL)
 +			Sys_Error ("PR_LoadProgs: pr_fielddefs[i].type & DEF_SAVEGLOBAL");
++	PR_ExecuteProgram (-1);	// (its statements as the loop takes them)
 +	return;
 +#endif
  // byte swap the lumps
  	for (i=0 ; i<progs->numstatements ; i++)
  	{
+@@ -1057,6 +1064,7 @@ void PR_LoadProgs (void)
+ 
+ 	for (i=0 ; i<progs->numglobals ; i++)
+ 		((int *)pr_globals)[i] = LittleLong (((int *)pr_globals)[i]);
++	PR_ExecuteProgram (-1);	// (its statements as the loop takes them)
+ }
+ 
+ 
 diff --git a/WinQuake/pr_exec.c b/WinQuake/pr_exec.c
-index 4f2aa36..9111320 100644
+index 4f2aa36..1549d3a 100644
 --- a/WinQuake/pr_exec.c
 +++ b/WinQuake/pr_exec.c
-@@ -380,6 +380,7 @@ void PR_ExecuteProgram (func_t fnum)
+@@ -293,32 +293,37 @@ Returns the new program statement counter
+ */
+ int PR_EnterFunction (dfunction_t *f)
+ {
+-	int		i, j, c, o;
++	int		i, j, c, n;
++	int		*g = (int *)pr_globals, *to;
++	const int	*from;
+ 
+ 	pr_stack[pr_depth].s = pr_xstatement;
+-	pr_stack[pr_depth].f = pr_xfunction;	
++	pr_stack[pr_depth].f = pr_xfunction;
+ 	pr_depth++;
+ 	if (pr_depth >= MAX_STACK_DEPTH)
+ 		PR_RunError ("stack overflow");
+ 
+ // save off any locals that the new function steps on
++// (through pointers of its own: every store could be the function's own fields to the compiler)
+ 	c = f->locals;
+ 	if (localstack_used + c > LOCALSTACK_SIZE)
+ 		PR_RunError ("PR_ExecuteProgram: locals stack overflow\n");
+ 
++	to = localstack + localstack_used;
++	from = g + f->parm_start;
+ 	for (i=0 ; i < c ; i++)
+-		localstack[localstack_used+i] = ((int *)pr_globals)[f->parm_start + i];
++		to[i] = from[i];
+ 	localstack_used += c;
+ 
+ // copy parameters
+-	o = f->parm_start;
+-	for (i=0 ; i<f->numparms ; i++)
++	to = g + f->parm_start;
++	n = f->numparms;
++	for (i=0 ; i<n ; i++)
+ 	{
+-		for (j=0 ; j<f->parm_size[i] ; j++)
+-		{
+-			((int *)pr_globals)[o] = ((int *)pr_globals)[OFS_PARM0+i*3+j];
+-			o++;
+-		}
++		from = g + OFS_PARM0 + i*3;
++		c = f->parm_size[i];
++		for (j=0 ; j<c ; j++)
++			*to++ = from[j];
+ 	}
+ 
+ 	pr_xfunction = f;
+@@ -333,6 +338,8 @@ PR_LeaveFunction
+ int PR_LeaveFunction (void)
+ {
+ 	int		i, c;
++	int		*to;
++	const int	*from;
+ 
+ 	if (pr_depth <= 0)
+ 		Sys_Error ("prog stack underflow");
+@@ -343,8 +350,10 @@ int PR_LeaveFunction (void)
+ 	if (localstack_used < 0)
+ 		PR_RunError ("PR_ExecuteProgram: locals stack underflow\n");
+ 
++	to = (int *)pr_globals + pr_xfunction->parm_start;
++	from = localstack + localstack_used;
+ 	for (i=0 ; i < c ; i++)
+-		((int *)pr_globals)[pr_xfunction->parm_start + i] = localstack[localstack_used+i];
++		to[i] = from[i];
+ 
+ // up stack
+ 	pr_depth--;
+@@ -356,13 +365,40 @@ int PR_LeaveFunction (void)
+ /*
+ ====================
+ PR_ExecuteProgram
++
++A statement as the loop takes it (docs/quake.md, "The server's frame"): where its code is and
++its operands as byte offsets into the globals, made once a progs is loaded (PR_ExecuteProgram
++(-1) from PR_LoadProgs). The same operations on the same values as the switch of id's.
+ ====================
+ */
++typedef struct { const void *code; int a, b, c; } se_statement_t;
++static se_statement_t	*se_statements;
++
+ void PR_ExecuteProgram (func_t fnum)
+ {
++	static const void *const ops[] = {
++		[OP_DONE] = &&op_return, [OP_MUL_F] = &&op_mul_f, [OP_MUL_V] = &&op_mul_v, [OP_MUL_FV] = &&op_mul_fv,
++		[OP_MUL_VF] = &&op_mul_vf, [OP_DIV_F] = &&op_div_f, [OP_ADD_F] = &&op_add_f, [OP_ADD_V] = &&op_add_v,
++		[OP_SUB_F] = &&op_sub_f, [OP_SUB_V] = &&op_sub_v, [OP_EQ_F] = &&op_eq_f, [OP_EQ_V] = &&op_eq_v,
++		[OP_EQ_S] = &&op_eq_s, [OP_EQ_E] = &&op_eq_e, [OP_EQ_FNC] = &&op_eq_e, [OP_NE_F] = &&op_ne_f,
++		[OP_NE_V] = &&op_ne_v, [OP_NE_S] = &&op_ne_s, [OP_NE_E] = &&op_ne_e, [OP_NE_FNC] = &&op_ne_e,
++		[OP_LE] = &&op_le, [OP_GE] = &&op_ge, [OP_LT] = &&op_lt, [OP_GT] = &&op_gt,
++		[OP_LOAD_F] = &&op_load, [OP_LOAD_V] = &&op_load_v, [OP_LOAD_S] = &&op_load, [OP_LOAD_ENT] = &&op_load,
++		[OP_LOAD_FLD] = &&op_load, [OP_LOAD_FNC] = &&op_load, [OP_ADDRESS] = &&op_address,
++		[OP_STORE_F] = &&op_store, [OP_STORE_V] = &&op_store_v, [OP_STORE_S] = &&op_store, [OP_STORE_ENT] = &&op_store,
++		[OP_STORE_FLD] = &&op_store, [OP_STORE_FNC] = &&op_store,
++		[OP_STOREP_F] = &&op_storep, [OP_STOREP_V] = &&op_storep_v, [OP_STOREP_S] = &&op_storep,
++		[OP_STOREP_ENT] = &&op_storep, [OP_STOREP_FLD] = &&op_storep, [OP_STOREP_FNC] = &&op_storep,
++		[OP_RETURN] = &&op_return, [OP_NOT_F] = &&op_not_f, [OP_NOT_V] = &&op_not_v, [OP_NOT_S] = &&op_not_s,
++		[OP_NOT_ENT] = &&op_not_ent, [OP_NOT_FNC] = &&op_not_fnc, [OP_IF] = &&op_if, [OP_IFNOT] = &&op_ifnot,
++		[OP_CALL0] = &&op_call, [OP_CALL1] = &&op_call, [OP_CALL2] = &&op_call, [OP_CALL3] = &&op_call,
++		[OP_CALL4] = &&op_call, [OP_CALL5] = &&op_call, [OP_CALL6] = &&op_call, [OP_CALL7] = &&op_call,
++		[OP_CALL8] = &&op_call, [OP_STATE] = &&op_state, [OP_GOTO] = &&op_goto, [OP_AND] = &&op_and,
++		[OP_OR] = &&op_or, [OP_BITAND] = &&op_bitand, [OP_BITOR] = &&op_bitor,
++	};
+ 	eval_t	*a, *b, *c;
+-	int			s;
+-	dstatement_t	*st;
++	const se_statement_t	*st;
++	byte	*globals;
+ 	dfunction_t	*f, *newf;
+ 	int		runaway;
+ 	int		i;
+@@ -370,299 +406,269 @@ void PR_ExecuteProgram (func_t fnum)
+ 	int		exitdepth;
+ 	eval_t	*ptr;
+ 
++	if (fnum == -1)
++	{	// (the progs just loaded)
++		// (not of the hunk: what is allocated there after it would lie elsewhere, the strings too)
++		free (se_statements);
++		se_statements = malloc (progs->numstatements * sizeof *se_statements);
++		if (!se_statements)
++			Sys_Error ("PR_ExecuteProgram: no memory for %i statements", progs->numstatements);
++		for (i = 0; i < progs->numstatements; i++)
++		{
++			dstatement_t	*d = &pr_statements[i];
++
++			se_statements[i].code = d->op < sizeof ops / sizeof *ops && ops[d->op] ? ops[d->op] : &&op_bad;
++			se_statements[i].a = d->a * 4;
++			se_statements[i].b = d->b * 4;
++			se_statements[i].c = d->c * 4;
++			if (d->op == OP_IF || d->op == OP_IFNOT)
++				se_statements[i].b = d->b;	// (statements to go on by)
++			else if (d->op == OP_GOTO)
++				se_statements[i].a = d->a;
++		}
++		return;
++	}
+ 	if (!fnum || fnum >= progs->numfunctions)
+ 	{
+ 		if (pr_global_struct->self)
+ 			ED_Print (PROG_TO_EDICT(pr_global_struct->self));
+ 		Host_Error ("PR_ExecuteProgram: NULL function");
+ 	}
+-	
++
  	f = &pr_functions[fnum];
  
  	runaway = 100000;
 +	SE_COUNTED (5);
  	pr_trace = false;
++	globals = (byte *)pr_globals;
  
  // make a stack frame
-@@ -396,11 +397,14 @@ while (1)
- 	b = (eval_t *)&pr_globals[st->b];
- 	c = (eval_t *)&pr_globals[st->c];
- 	
+ 	exitdepth = pr_depth;
+ 
+-	s = PR_EnterFunction (f);
+-	
+-while (1)
+-{
+-	s++;	// next statement
++	st = se_statements + PR_EnterFunction (f);
+ 
+-	st = &pr_statements[s];
+-	a = (eval_t *)&pr_globals[st->a];
+-	b = (eval_t *)&pr_globals[st->b];
+-	c = (eval_t *)&pr_globals[st->c];
+-	
++#define NEXT	goto next
++next:
++	st++;	// next statement
++	a = (eval_t *)(globals + st->a);
++	b = (eval_t *)(globals + st->b);
++	c = (eval_t *)(globals + st->c);
 +	SE_COUNTED (6);
  	if (!--runaway)
++	{
++		pr_xstatement = st - se_statements;
  		PR_RunError ("runaway loop error");
- 		
-+#ifndef SHADEREMU
- 	pr_xfunction->profile++;
- 	pr_xstatement = s;
-+#endif
- 	
+-		
+-	pr_xfunction->profile++;
+-	pr_xstatement = s;
+-	
++	}
  	if (pr_trace)
- 		PR_PrintStatement (st);
-@@ -617,6 +621,7 @@ while (1)
- 	case OP_CALL6:
- 	case OP_CALL7:
- 	case OP_CALL8:
-+		pr_xstatement = s;
- 		pr_argc = st->op - OP_CALL0;
- 		if (!a->function)
- 			PR_RunError ("NULL function");
+-		PR_PrintStatement (st);
+-		
+-	switch (st->op)
+-	{
+-	case OP_ADD_F:
+-		c->_float = a->_float + b->_float;
+-		break;
+-	case OP_ADD_V:
+-		c->vector[0] = a->vector[0] + b->vector[0];
+-		c->vector[1] = a->vector[1] + b->vector[1];
+-		c->vector[2] = a->vector[2] + b->vector[2];
+-		break;
+-		
+-	case OP_SUB_F:
+-		c->_float = a->_float - b->_float;
+-		break;
+-	case OP_SUB_V:
+-		c->vector[0] = a->vector[0] - b->vector[0];
+-		c->vector[1] = a->vector[1] - b->vector[1];
+-		c->vector[2] = a->vector[2] - b->vector[2];
+-		break;
+-
+-	case OP_MUL_F:
+-		c->_float = a->_float * b->_float;
+-		break;
+-	case OP_MUL_V:
+-		c->_float = a->vector[0]*b->vector[0]
+-				+ a->vector[1]*b->vector[1]
+-				+ a->vector[2]*b->vector[2];
+-		break;
+-	case OP_MUL_FV:
+-		c->vector[0] = a->_float * b->vector[0];
+-		c->vector[1] = a->_float * b->vector[1];
+-		c->vector[2] = a->_float * b->vector[2];
+-		break;
+-	case OP_MUL_VF:
+-		c->vector[0] = b->_float * a->vector[0];
+-		c->vector[1] = b->_float * a->vector[1];
+-		c->vector[2] = b->_float * a->vector[2];
+-		break;
+-
+-	case OP_DIV_F:
+-		c->_float = a->_float / b->_float;
+-		break;
+-	
+-	case OP_BITAND:
+-		c->_float = (int)a->_float & (int)b->_float;
+-		break;
+-	
+-	case OP_BITOR:
+-		c->_float = (int)a->_float | (int)b->_float;
+-		break;
+-	
+-		
+-	case OP_GE:
+-		c->_float = a->_float >= b->_float;
+-		break;
+-	case OP_LE:
+-		c->_float = a->_float <= b->_float;
+-		break;
+-	case OP_GT:
+-		c->_float = a->_float > b->_float;
+-		break;
+-	case OP_LT:
+-		c->_float = a->_float < b->_float;
+-		break;
+-	case OP_AND:
+-		c->_float = a->_float && b->_float;
+-		break;
+-	case OP_OR:
+-		c->_float = a->_float || b->_float;
+-		break;
+-		
+-	case OP_NOT_F:
+-		c->_float = !a->_float;
+-		break;
+-	case OP_NOT_V:
+-		c->_float = !a->vector[0] && !a->vector[1] && !a->vector[2];
+-		break;
+-	case OP_NOT_S:
+-		c->_float = !a->string || !pr_strings[a->string];
+-		break;
+-	case OP_NOT_FNC:
+-		c->_float = !a->function;
+-		break;
+-	case OP_NOT_ENT:
+-		c->_float = (PROG_TO_EDICT(a->edict) == sv.edicts);
+-		break;
+-
+-	case OP_EQ_F:
+-		c->_float = a->_float == b->_float;
+-		break;
+-	case OP_EQ_V:
+-		c->_float = (a->vector[0] == b->vector[0]) &&
+-					(a->vector[1] == b->vector[1]) &&
+-					(a->vector[2] == b->vector[2]);
+-		break;
+-	case OP_EQ_S:
+-		c->_float = !strcmp(pr_strings+a->string,pr_strings+b->string);
+-		break;
+-	case OP_EQ_E:
+-		c->_float = a->_int == b->_int;
+-		break;
+-	case OP_EQ_FNC:
+-		c->_float = a->function == b->function;
+-		break;
+-
+-
+-	case OP_NE_F:
+-		c->_float = a->_float != b->_float;
+-		break;
+-	case OP_NE_V:
+-		c->_float = (a->vector[0] != b->vector[0]) ||
+-					(a->vector[1] != b->vector[1]) ||
+-					(a->vector[2] != b->vector[2]);
+-		break;
+-	case OP_NE_S:
+-		c->_float = strcmp(pr_strings+a->string,pr_strings+b->string);
+-		break;
+-	case OP_NE_E:
+-		c->_float = a->_int != b->_int;
+-		break;
+-	case OP_NE_FNC:
+-		c->_float = a->function != b->function;
+-		break;
++		PR_PrintStatement (pr_statements + (st - se_statements));
++	goto *st->code;
++
++op_add_f:
++	c->_float = a->_float + b->_float;
++	NEXT;
++op_add_v:
++	c->vector[0] = a->vector[0] + b->vector[0];
++	c->vector[1] = a->vector[1] + b->vector[1];
++	c->vector[2] = a->vector[2] + b->vector[2];
++	NEXT;
++op_sub_f:
++	c->_float = a->_float - b->_float;
++	NEXT;
++op_sub_v:
++	c->vector[0] = a->vector[0] - b->vector[0];
++	c->vector[1] = a->vector[1] - b->vector[1];
++	c->vector[2] = a->vector[2] - b->vector[2];
++	NEXT;
++op_mul_f:
++	c->_float = a->_float * b->_float;
++	NEXT;
++op_mul_v:
++	c->_float = a->vector[0]*b->vector[0]
++			+ a->vector[1]*b->vector[1]
++			+ a->vector[2]*b->vector[2];
++	NEXT;
++op_mul_fv:
++	c->vector[0] = a->_float * b->vector[0];
++	c->vector[1] = a->_float * b->vector[1];
++	c->vector[2] = a->_float * b->vector[2];
++	NEXT;
++op_mul_vf:
++	c->vector[0] = b->_float * a->vector[0];
++	c->vector[1] = b->_float * a->vector[1];
++	c->vector[2] = b->_float * a->vector[2];
++	NEXT;
++op_div_f:
++	c->_float = a->_float / b->_float;
++	NEXT;
++op_bitand:
++	c->_float = (int)a->_float & (int)b->_float;
++	NEXT;
++op_bitor:
++	c->_float = (int)a->_float | (int)b->_float;
++	NEXT;
++op_ge:
++	c->_float = a->_float >= b->_float;
++	NEXT;
++op_le:
++	c->_float = a->_float <= b->_float;
++	NEXT;
++op_gt:
++	c->_float = a->_float > b->_float;
++	NEXT;
++op_lt:
++	c->_float = a->_float < b->_float;
++	NEXT;
++op_and:
++	c->_float = a->_float && b->_float;
++	NEXT;
++op_or:
++	c->_float = a->_float || b->_float;
++	NEXT;
++op_not_f:
++	c->_float = !a->_float;
++	NEXT;
++op_not_v:
++	c->_float = !a->vector[0] && !a->vector[1] && !a->vector[2];
++	NEXT;
++op_not_s:
++	c->_float = !a->string || !pr_strings[a->string];
++	NEXT;
++op_not_fnc:
++	c->_float = !a->function;
++	NEXT;
++op_not_ent:
++	c->_float = (PROG_TO_EDICT(a->edict) == sv.edicts);
++	NEXT;
++op_eq_f:
++	c->_float = a->_float == b->_float;
++	NEXT;
++op_eq_v:
++	c->_float = (a->vector[0] == b->vector[0]) &&
++				(a->vector[1] == b->vector[1]) &&
++				(a->vector[2] == b->vector[2]);
++	NEXT;
++op_eq_s:
++	c->_float = !strcmp(pr_strings+a->string,pr_strings+b->string);
++	NEXT;
++op_eq_e:	// (and OP_EQ_FNC: the same word compared)
++	c->_float = a->_int == b->_int;
++	NEXT;
++op_ne_f:
++	c->_float = a->_float != b->_float;
++	NEXT;
++op_ne_v:
++	c->_float = (a->vector[0] != b->vector[0]) ||
++				(a->vector[1] != b->vector[1]) ||
++				(a->vector[2] != b->vector[2]);
++	NEXT;
++op_ne_s:
++	c->_float = strcmp(pr_strings+a->string,pr_strings+b->string);
++	NEXT;
++op_ne_e:
++	c->_float = a->_int != b->_int;
++	NEXT;
+ 
+ //==================
+-	case OP_STORE_F:
+-	case OP_STORE_ENT:
+-	case OP_STORE_FLD:		// integers
+-	case OP_STORE_S:
+-	case OP_STORE_FNC:		// pointers
+-		b->_int = a->_int;
+-		break;
+-	case OP_STORE_V:
+-		b->vector[0] = a->vector[0];
+-		b->vector[1] = a->vector[1];
+-		b->vector[2] = a->vector[2];
+-		break;
+-		
+-	case OP_STOREP_F:
+-	case OP_STOREP_ENT:
+-	case OP_STOREP_FLD:		// integers
+-	case OP_STOREP_S:
+-	case OP_STOREP_FNC:		// pointers
+-		ptr = (eval_t *)((byte *)sv.edicts + b->_int);
+-		ptr->_int = a->_int;
+-		break;
+-	case OP_STOREP_V:
+-		ptr = (eval_t *)((byte *)sv.edicts + b->_int);
+-		ptr->vector[0] = a->vector[0];
+-		ptr->vector[1] = a->vector[1];
+-		ptr->vector[2] = a->vector[2];
+-		break;
+-		
+-	case OP_ADDRESS:
+-		ed = PROG_TO_EDICT(a->edict);
+-#ifdef PARANOID
+-		NUM_FOR_EDICT(ed);		// make sure it's in range
+-#endif
+-		if (ed == (edict_t *)sv.edicts && sv.state == ss_active)
+-			PR_RunError ("assignment to world entity");
+-		c->_int = (byte *)((int *)&ed->v + b->_int) - (byte *)sv.edicts;
+-		break;
+-		
+-	case OP_LOAD_F:
+-	case OP_LOAD_FLD:
+-	case OP_LOAD_ENT:
+-	case OP_LOAD_S:
+-	case OP_LOAD_FNC:
+-		ed = PROG_TO_EDICT(a->edict);
+-#ifdef PARANOID
+-		NUM_FOR_EDICT(ed);		// make sure it's in range
+-#endif
+-		a = (eval_t *)((int *)&ed->v + b->_int);
+-		c->_int = a->_int;
+-		break;
+-
+-	case OP_LOAD_V:
+-		ed = PROG_TO_EDICT(a->edict);
+-#ifdef PARANOID
+-		NUM_FOR_EDICT(ed);		// make sure it's in range
+-#endif
+-		a = (eval_t *)((int *)&ed->v + b->_int);
+-		c->vector[0] = a->vector[0];
+-		c->vector[1] = a->vector[1];
+-		c->vector[2] = a->vector[2];
+-		break;
+-		
++op_store:	// integers and pointers
++	b->_int = a->_int;
++	NEXT;
++op_store_v:
++	b->vector[0] = a->vector[0];
++	b->vector[1] = a->vector[1];
++	b->vector[2] = a->vector[2];
++	NEXT;
++op_storep:
++	ptr = (eval_t *)((byte *)sv.edicts + b->_int);
++	ptr->_int = a->_int;
++	NEXT;
++op_storep_v:
++	ptr = (eval_t *)((byte *)sv.edicts + b->_int);
++	ptr->vector[0] = a->vector[0];
++	ptr->vector[1] = a->vector[1];
++	ptr->vector[2] = a->vector[2];
++	NEXT;
++op_address:
++	ed = PROG_TO_EDICT(a->edict);
++	if (ed == (edict_t *)sv.edicts && sv.state == ss_active)
++	{
++		pr_xstatement = st - se_statements;
++		PR_RunError ("assignment to world entity");
++	}
++	c->_int = (byte *)((int *)&ed->v + b->_int) - (byte *)sv.edicts;
++	NEXT;
++op_load:
++	ed = PROG_TO_EDICT(a->edict);
++	a = (eval_t *)((int *)&ed->v + b->_int);
++	c->_int = a->_int;
++	NEXT;
++op_load_v:
++	ed = PROG_TO_EDICT(a->edict);
++	a = (eval_t *)((int *)&ed->v + b->_int);
++	c->vector[0] = a->vector[0];
++	c->vector[1] = a->vector[1];
++	c->vector[2] = a->vector[2];
++	NEXT;
++
+ //==================
++op_ifnot:
++	if (!a->_int)
++		st += st->b - 1;	// offset the st++
++	NEXT;
++op_if:
++	if (a->_int)
++		st += st->b - 1;	// offset the st++
++	NEXT;
++op_goto:
++	st += st->a - 1;	// offset the st++
++	NEXT;
++
++op_call:
++	i = st - se_statements;
++	pr_xstatement = i;
++	pr_argc = pr_statements[i].op - OP_CALL0;
++	if (!a->function)
++		PR_RunError ("NULL function");
++
++	newf = &pr_functions[a->function];
++
++	if (newf->first_statement < 0)
++	{	// negative statements are built in functions
++		i = -newf->first_statement;
++		if (i >= pr_numbuiltins)
++			PR_RunError ("Bad builtin call number");
++		pr_builtins[i] ();
++		NEXT;
++	}
+ 
+-	case OP_IFNOT:
+-		if (!a->_int)
+-			s += st->b - 1;	// offset the s++
+-		break;
+-		
+-	case OP_IF:
+-		if (a->_int)
+-			s += st->b - 1;	// offset the s++
+-		break;
+-		
+-	case OP_GOTO:
+-		s += st->a - 1;	// offset the s++
+-		break;
+-		
+-	case OP_CALL0:
+-	case OP_CALL1:
+-	case OP_CALL2:
+-	case OP_CALL3:
+-	case OP_CALL4:
+-	case OP_CALL5:
+-	case OP_CALL6:
+-	case OP_CALL7:
+-	case OP_CALL8:
+-		pr_argc = st->op - OP_CALL0;
+-		if (!a->function)
+-			PR_RunError ("NULL function");
+-
+-		newf = &pr_functions[a->function];
+-
+-		if (newf->first_statement < 0)
+-		{	// negative statements are built in functions
+-			i = -newf->first_statement;
+-			if (i >= pr_numbuiltins)
+-				PR_RunError ("Bad builtin call number");
+-			pr_builtins[i] ();
+-			break;
+-		}
++	st = se_statements + PR_EnterFunction (newf);
++	NEXT;
+ 
+-		s = PR_EnterFunction (newf);
+-		break;
++op_return:	// (and OP_DONE)
++	((int *)pr_globals)[OFS_RETURN] = ((int *)a)[0];
++	((int *)pr_globals)[OFS_RETURN+1] = ((int *)a)[1];
++	((int *)pr_globals)[OFS_RETURN+2] = ((int *)a)[2];
+ 
+-	case OP_DONE:
+-	case OP_RETURN:
+-		pr_globals[OFS_RETURN] = pr_globals[st->a];
+-		pr_globals[OFS_RETURN+1] = pr_globals[st->a+1];
+-		pr_globals[OFS_RETURN+2] = pr_globals[st->a+2];
+-	
+-		s = PR_LeaveFunction ();
+-		if (pr_depth == exitdepth)
+-			return;		// all done
+-		break;
+-		
+-	case OP_STATE:
+-		ed = PROG_TO_EDICT(pr_global_struct->self);
++	st = se_statements + PR_LeaveFunction ();
++	if (pr_depth == exitdepth)
++		return;		// all done
++	NEXT;
++
++op_state:
++	ed = PROG_TO_EDICT(pr_global_struct->self);
+ #ifdef FPS_20
+-		ed->v.nextthink = pr_global_struct->time + 0.05;
++	ed->v.nextthink = pr_global_struct->time + 0.05;
+ #else
+-		ed->v.nextthink = pr_global_struct->time + 0.1;
++	ed->v.nextthink = pr_global_struct->time + 0.1;
+ #endif
+-		if (a->_float != ed->v.frame)
+-		{
+-			ed->v.frame = a->_float;
+-		}
+-		ed->v.think = b->function;
+-		break;
+-		
+-	default:
+-		PR_RunError ("Bad opcode %i", st->op);
++	if (a->_float != ed->v.frame)
++	{
++		ed->v.frame = a->_float;
+ 	}
+-}
++	ed->v.think = b->function;
++	NEXT;
+ 
++op_bad:
++	pr_xstatement = st - se_statements;
++	PR_RunError ("Bad opcode %i", pr_statements[st - se_statements].op);
++#undef NEXT
+ }
 diff --git a/WinQuake/quakedef.h b/WinQuake/quakedef.h
-index e451827..e87da3f 100644
+index e451827..ce4e587 100644
 --- a/WinQuake/quakedef.h
 +++ b/WinQuake/quakedef.h
-@@ -285,6 +285,70 @@ typedef struct
+@@ -285,6 +285,73 @@ typedef struct
  
  extern qboolean noclip_anglehack;
  
@@ -3599,6 +4338,9 @@ index e451827..e87da3f 100644
 +void SE_JobEnd (void);
 +extern float sv_frametime;
 +void SE_ServerPoll (void);
++void SE_ServerIdle (void);
++struct model_s;
++void SE_HullNodes (struct model_s *mod);
 +int SE_ServerOnWorker (void);
 +int SE_ServerRand (void);
 +void SE_ServerKeepPrint (const char *text);
@@ -3647,7 +4389,7 @@ index e451827..e87da3f 100644
  
  //
  // host
-@@ -296,11 +360,13 @@ extern	cvar_t		sys_nostdout;
+@@ -296,11 +363,13 @@ extern	cvar_t		sys_nostdout;
  extern	cvar_t		developer;
  
  extern	qboolean	host_initialized;		// true if into command execution
@@ -3663,7 +4405,7 @@ index e451827..e87da3f 100644
  										// start of every frame, never reset
  
  void Host_ClearMemory (void);
-@@ -310,7 +376,9 @@ void Host_Init (quakeparms_t *parms);
+@@ -310,7 +379,9 @@ void Host_Init (quakeparms_t *parms);
  void Host_Shutdown(void);
  void Host_Error (char *error, ...);
  void Host_EndGame (char *message, ...);
@@ -4673,7 +5415,7 @@ index a0078b9..75a4363 100644
  #define	STEPSIZE	18
  
 diff --git a/WinQuake/sv_phys.c b/WinQuake/sv_phys.c
-index e13c0e4..c0acf63 100644
+index e13c0e4..de47f96 100644
 --- a/WinQuake/sv_phys.c
 +++ b/WinQuake/sv_phys.c
 @@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -4684,7 +5426,44 @@ index e13c0e4..c0acf63 100644
  
  /*
  
-@@ -1198,6 +1199,9 @@ SV_CheckWaterTransition
+@@ -473,6 +474,17 @@ void SV_PushMove (edict_t *pusher, float movetime)
+ 	check = NEXT_EDICT(sv.edicts);
+ 	for (e=1 ; e<sv.num_edicts ; e++, check = NEXT_EDICT(check))
+ 	{
++		qboolean	on, apart;
++
++		apart = check->v.absmin[0] >= maxs[0]
++			|| check->v.absmin[1] >= maxs[1]
++			|| check->v.absmin[2] >= maxs[2]
++			|| check->v.absmax[0] <= mins[0]
++			|| check->v.absmax[1] <= mins[1]
++			|| check->v.absmax[2] <= mins[2];
++		on = ((int)check->v.flags & FL_ONGROUND) && PROG_TO_EDICT(check->v.groundentity) == pusher;
++		if (apart && !on)
++			continue;
+ 		if (check->free)
+ 			continue;
+ 		if (check->v.movetype == MOVETYPE_PUSH
+@@ -484,17 +496,8 @@ void SV_PushMove (edict_t *pusher, float movetime)
+ 			continue;
+ 
+ 	// if the entity is standing on the pusher, it will definately be moved
+-		if ( ! ( ((int)check->v.flags & FL_ONGROUND)
+-		&& PROG_TO_EDICT(check->v.groundentity) == pusher) )
++		if (!on)
+ 		{
+-			if ( check->v.absmin[0] >= maxs[0]
+-			|| check->v.absmin[1] >= maxs[1]
+-			|| check->v.absmin[2] >= maxs[2]
+-			|| check->v.absmax[0] <= mins[0]
+-			|| check->v.absmax[1] <= mins[1]
+-			|| check->v.absmax[2] <= mins[2] )
+-				continue;
+-
+ 		// see if the ent's bbox is inside the pusher's final position
+ 			if (!SV_TestEntityPosition (check))
+ 				continue;
+@@ -1198,6 +1201,9 @@ SV_CheckWaterTransition
  void SV_CheckWaterTransition (edict_t *ent)
  {
  	int		cont;
@@ -4799,10 +5578,50 @@ index ececf8c..9aa5eb6 100644
  
  	R_PushDlights ();
 diff --git a/WinQuake/world.c b/WinQuake/world.c
-index e1acfea..f755b41 100644
+index e1acfea..27b3ada 100644
 --- a/WinQuake/world.c
 +++ b/WinQuake/world.c
-@@ -373,6 +373,8 @@ void SV_LinkEdict (edict_t *ent, qboolean touch_triggers)
+@@ -244,9 +244,39 @@ SV_ClearWorld
+ 
+ ===============
+ */
++
++/*
++ * The level's answers kept (docs/quake.md, "The server's frame"): a move through a BSP model's
++ * hull is the same bits for the same question while the level lasts. The box hull is made again
++ * for every entity, and is not kept.
++ */
++#define SE_TRACES	512
++typedef struct { hull_t *hull; unsigned key[9]; trace_t trace; unsigned pad[2]; } se_traced_t;
++static se_traced_t se_traced[SE_TRACES] __attribute__ ((aligned (16)));
++static int se_keep = -1;
++unsigned se_kept_hits, se_kept_asked;	/* (for the quakestat: lines) */
++
++static unsigned se_hash (const unsigned *k, int n)
++{
++	unsigned h = 0;
++	int i;
++
++	for (i = 0; i < n; i++)
++		h = (h ^ k[i]) * 0x9e3779b1u;
++	return h ^ (h >> 15);
++}
++
++static void se_kept_clear (void)
++{
++	if (se_keep < 0)
++		se_keep = !getenv ("QUAKE_KEEP") || strcmp (getenv ("QUAKE_KEEP"), "0");
++	memset (se_traced, 0, sizeof se_traced);
++}
++
+ void SV_ClearWorld (void)
+ {
+ 	SV_InitBoxHull ();
++	se_kept_clear ();
+ 	
+ 	memset (sv_areanodes, 0, sizeof(sv_areanodes));
+ 	sv_numareanodes = 0;
+@@ -373,6 +403,8 @@ void SV_LinkEdict (edict_t *ent, qboolean touch_triggers)
  {
  	areanode_t	*node;
  
@@ -4811,11 +5630,36 @@ index e1acfea..f755b41 100644
  	if (ent->area.prev)
  		SV_UnlinkEdict (ent);	// unlink from old position
  		
-@@ -494,10 +496,14 @@ int SV_HullPointContents (hull_t *hull, int num, vec3_t p)
+@@ -488,16 +520,39 @@ SV_HullPointContents
+ 
+ ==================
+ */
++static int SE_NodeContents (const se_node_t *nodes, int num, const float *p)
++{
++	while (num >= 0)
++	{
++		const se_node_t	*node = nodes + num;
++		float			d;
++
++		SE_COUNTED (1);
++		if (node->type < 3)
++			d = p[node->type] - node->dist;
++		else
++			d = DotProduct (node->normal, p) - node->dist;
++		num = node->children[d < 0];
++	}
++	return num;
++}
++
+ int SV_HullPointContents (hull_t *hull, int num, vec3_t p)
+ {
+ 	float		d;
  	dclipnode_t	*node;
  	mplane_t	*plane;
  
 +	SE_COUNTED (0);
++	if (hull->se_nodes)
++		return SE_NodeContents (hull->se_nodes, num, p);
  	while (num >= 0)
  	{
 +		SE_COUNTED (1);
@@ -4826,7 +5670,7 @@ index e1acfea..f755b41 100644
  	
  		node = hull->clipnodes + num;
  		plane = hull->planes + node->planenum;
-@@ -526,6 +532,7 @@ SV_PointContents
+@@ -526,6 +581,7 @@ SV_PointContents
  */
  int SV_PointContents (vec3_t p)
  {
@@ -4834,15 +5678,208 @@ index e1acfea..f755b41 100644
  	int		cont;
  
  	cont = SV_HullPointContents (&sv.worldmodel->hulls[0], 0, p);
-@@ -925,6 +932,8 @@ trace_t SV_Move (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int type, e
+@@ -578,6 +634,136 @@ SV_RecursiveHullCheck
+ 
+ ==================
+ */
++static qboolean SE_NodeCheck (const se_node_t *nodes, hull_t *hull, int num, float p1f, float p2f, vec3_t p1, vec3_t p2, trace_t *trace)
++{
++	const se_node_t	*node, *plane;
++	float		t1, t2;
++	float		frac;
++	int			i;
++	vec3_t		mid;
++	int			side;
++	float		midf;
++
++// check for empty
++	if (num < 0)
++	{
++		if (num != CONTENTS_SOLID)
++		{
++			trace->allsolid = false;
++			if (num == CONTENTS_EMPTY)
++				trace->inopen = true;
++			else
++				trace->inwater = true;
++		}
++		else
++			trace->startsolid = true;
++		return true;		// empty
++	}
++
++	if (num < hull->firstclipnode || num > hull->lastclipnode)
++		Sys_Error ("SV_RecursiveHullCheck: bad node number");
++
++//
++// find the point distances
++//
++	plane = node = nodes + num;
++
++	if (plane->type < 3)
++	{
++		t1 = p1[plane->type] - plane->dist;
++		t2 = p2[plane->type] - plane->dist;
++	}
++	else
++	{
++		t1 = DotProduct (plane->normal, p1) - plane->dist;
++		t2 = DotProduct (plane->normal, p2) - plane->dist;
++	}
++	
++#if 1
++	if (t1 >= 0 && t2 >= 0)
++		return SE_NodeCheck (nodes, hull, node->children[0], p1f, p2f, p1, p2, trace);
++	if (t1 < 0 && t2 < 0)
++		return SE_NodeCheck (nodes, hull, node->children[1], p1f, p2f, p1, p2, trace);
++#else
++	if ( (t1 >= DIST_EPSILON && t2 >= DIST_EPSILON) || (t2 > t1 && t1 >= 0) )
++		return SE_NodeCheck (nodes, hull, node->children[0], p1f, p2f, p1, p2, trace);
++	if ( (t1 <= -DIST_EPSILON && t2 <= -DIST_EPSILON) || (t2 < t1 && t1 <= 0) )
++		return SE_NodeCheck (nodes, hull, node->children[1], p1f, p2f, p1, p2, trace);
++#endif
++
++// put the crosspoint DIST_EPSILON pixels on the near side
++	if (t1 < 0)
++		frac = (t1 + DIST_EPSILON)/(t1-t2);
++	else
++		frac = (t1 - DIST_EPSILON)/(t1-t2);
++	if (frac < 0)
++		frac = 0;
++	if (frac > 1)
++		frac = 1;
++		
++	midf = p1f + (p2f - p1f)*frac;
++	for (i=0 ; i<3 ; i++)
++		mid[i] = p1[i] + frac*(p2[i] - p1[i]);
++
++	side = (t1 < 0);
++
++// move up to the node
++	if (!SE_NodeCheck (nodes, hull, node->children[side], p1f, midf, p1, mid, trace) )
++		return false;
++
++#ifdef PARANOID
++	if (SV_HullPointContents (sv_hullmodel, mid, node->children[side])
++	== CONTENTS_SOLID)
++	{
++		Con_Printf ("mid PointInHullSolid\n");
++		return false;
++	}
++#endif
++	
++	if (SE_NodeContents (nodes, node->children[side^1], mid)
++	!= CONTENTS_SOLID)
++// go past the node
++		return SE_NodeCheck (nodes, hull, node->children[side^1], midf, p2f, mid, p2, trace);
++	
++	if (trace->allsolid)
++		return false;		// never got out of the solid area
++		
++//==================
++// the other side of the node is solid, this is the impact point
++//==================
++	if (!side)
++	{
++		VectorCopy (plane->normal, trace->plane.normal);
++		trace->plane.dist = plane->dist;
++	}
++	else
++	{
++		VectorSubtract (vec3_origin, plane->normal, trace->plane.normal);
++		trace->plane.dist = -plane->dist;
++	}
++
++	while (SE_NodeContents (nodes, hull->firstclipnode, mid)
++	== CONTENTS_SOLID)
++	{ // shouldn't really happen, but does occasionally
++		frac -= 0.1;
++		if (frac < 0)
++		{
++			trace->fraction = midf;
++			VectorCopy (mid, trace->endpos);
++			Con_DPrintf ("backup past 0\n");
++			return false;
++		}
++		midf = p1f + (p2f - p1f)*frac;
++		for (i=0 ; i<3 ; i++)
++			mid[i] = p1[i] + frac*(p2[i] - p1[i]);
++	}
++
++	trace->fraction = midf;
++	VectorCopy (mid, trace->endpos);
++
++	return false;
++}
++
+ qboolean SV_RecursiveHullCheck (hull_t *hull, int num, float p1f, float p2f, vec3_t p1, vec3_t p2, trace_t *trace)
+ {
+ 	dclipnode_t	*node;
+@@ -590,6 +776,8 @@ qboolean SV_RecursiveHullCheck (hull_t *hull, int num, float p1f, float p2f, vec
+ 	float		midf;
+ 
+ // check for empty
++	if (hull->se_nodes)
++		return SE_NodeCheck (hull->se_nodes, hull, num, p1f, p2f, p1, p2, trace);
+ 	if (num < 0)
+ 	{
+ 		if (num != CONTENTS_SOLID)
+@@ -727,14 +915,40 @@ trace_t SV_ClipMoveToEntity (edict_t *ent, vec3_t start, vec3_t mins, vec3_t max
+ 	hull_t		*hull;
+ 
+ // fill in a default trace
+-	memset (&trace, 0, sizeof(trace_t));
+-	trace.fraction = 1;
+-	trace.allsolid = true;
++	trace = (trace_t){.allsolid = true, .fraction = 1};
+ 	VectorCopy (end, trace.endpos);
+ 
+ // get the clipping hull
+ 	hull = SV_HullForEntity (ent, mins, maxs, offset);
+ 
++	if (hull != &box_hull && se_keep) {
++		unsigned	k[9];
++		se_traced_t	*kept;
++
++		memcpy (k, start, 12), memcpy (k + 3, end, 12), memcpy (k + 6, offset, 12);
++		kept = &se_traced[se_hash (k, 9) % SE_TRACES];
++		se_kept_asked++;
++		if (kept->hull == hull && kept->key[0] == k[0] && kept->key[1] == k[1] && kept->key[2] == k[2] && kept->key[3] == k[3]
++		&& kept->key[4] == k[4] && kept->key[5] == k[5] && kept->key[6] == k[6] && kept->key[7] == k[7] && kept->key[8] == k[8]) {
++			se_kept_hits++;
++			trace = kept->trace;
++			if (trace.fraction < 1 || trace.startsolid)
++				trace.ent = ent;
++			return trace;
++		}
++		VectorSubtract (start, offset, start_l);
++		VectorSubtract (end, offset, end_l);
++		SV_RecursiveHullCheck (hull, hull->firstclipnode, 0, 1, start_l, end_l, &trace);
++		if (trace.fraction != 1)
++			VectorAdd (trace.endpos, offset, trace.endpos);
++		kept->hull = hull;
++		memcpy (kept->key, k, sizeof k);
++		kept->trace = trace;
++		if (trace.fraction < 1 || trace.startsolid)
++			trace.ent = ent;
++		return trace;
++	}
++
+ 	VectorSubtract (start, offset, start_l);
+ 	VectorSubtract (end, offset, end_l);
+ 
+@@ -925,9 +1139,9 @@ trace_t SV_Move (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int type, e
  	moveclip_t	clip;
  	int			i;
  
+-	memset ( &clip, 0, sizeof ( moveclip_t ) );
 +	SE_COUNTED (2);
-+
- 	memset ( &clip, 0, sizeof ( moveclip_t ) );
  
- // clip to world
+-// clip to world
++// clip to world (every field of clip is set below)
+ 	clip.trace = SV_ClipMoveToEntity ( sv.edicts, start, mins, maxs, end );
+ 
+ 	clip.start = start;
 diff --git a/WinQuake/zone.c b/WinQuake/zone.c
 index e30d7f8..e4bbf38 100644
 --- a/WinQuake/zone.c

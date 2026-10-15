@@ -52,10 +52,10 @@ and got the pointer's controls.
 | right stick, sideways | (the stick itself) | turn the body |
 | left stick, in a menu | the arrow keys | the menu |
 | right trigger | Ctrl | fire |
-| left trigger | Space | jump (Quake), open (Doom) |
+| left trigger | (its bit in the host's words) | open (Doom) |
 | right grip | `/` | next weapon (Quake) |
 | left grip | Esc | menu |
-| jump button | Enter | accept |
+| jump button | (word 0's bit 6); Enter in a menu | jump, open (Doom); accept in a menu |
 
 The sticks go to the game as sticks (`docs/holodeck.md`, word 5). Quake's own mouse look
 is not used: the guest's pointer is a place on the display, not a movement, and would stop at

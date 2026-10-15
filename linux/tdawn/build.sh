@@ -14,6 +14,9 @@ OUT=${TDAWN_OUT:-$REPO/build/images/linux/root}	# (another image's folder for an
 COMMIT=ce83b59
 DEMO=${TDAWN_DEMO:-https://archive.org/download/CommandConquerDemo/cc1demo1.zip}
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
+# a movie's block rows are libmedia's (docs/media.md, "VQA"; another build's with TDAWN_MEDIA=FILE)
+MEDIA=${TDAWN_MEDIA:-$WORK/src/libmedia/libmedia.a}
+[ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
 # The C++ driver: g++ with libstdc++'s headers only (templates), over musl. The library itself
 # is cxxrt.cpp; the code uses neither exceptions nor run-time type information.
@@ -43,6 +46,7 @@ cp "$HERE/cxxrt.cpp" "$HERE/shaderemu.cpp" "$HERE/soundio_shaderemu.cpp" "$HERE/
 # the worker cores' library, the same for every program (programs/mc): host.c gives a core the scene
 cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mcwx.c" "$VC/common/"
 cp "$HERE/gl.cpp" "$VC/tiberiandawn/"
+cp "$REPO/linux/libmedia/media.h" "$VC/common/"
 
 cat > "$WORK/src/tdawn-toolchain.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
@@ -79,7 +83,8 @@ cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cma
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLARA=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
     -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \
-    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" > "$WORK/src/tdawn-configure.log" 2>&1 \
+    -DCMAKE_C_FLAGS="-O2 -fno-pie -w -DSHADEREMU $COUNTS $GLINC" -DCMAKE_C_FLAGS_RELEASE="-DNDEBUG" \
+    -DCMAKE_CXX_STANDARD_LIBRARIES="$MEDIA" > "$WORK/src/tdawn-configure.log" 2>&1 \
     || { tail -20 "$WORK/src/tdawn-configure.log"; exit 1; }
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/tdawn-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/tdawn-build.log" | head -40; exit 1; }

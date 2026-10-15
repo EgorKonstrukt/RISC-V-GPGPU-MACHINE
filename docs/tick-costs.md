@@ -203,7 +203,8 @@ own cost (below) taken off:
 | a jump or a branch taken to another texel | about 235 |
 
 Under Linux a load costs more than that: nine in ten pass the stored-addresses filter and
-search the cache's tags (`--profile`: `ram_read_bloom_pass`).
+search the cache's tags (`--profile`: `ram_read_bloom_pass`; `L1_HAS` now stops most of
+those, "Where the time was").
 
 ## A pass besides its instructions
 

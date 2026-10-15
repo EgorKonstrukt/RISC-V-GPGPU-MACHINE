@@ -69,13 +69,34 @@ void seglWorldFlat(int flat);
 #define SEGL_HOST_HAND_GRIP(s, h)    (((s)[4 + 2 * (h)] >> 31) & 1)
 /* The left hand's second word is the sitter's sticks instead, a signed byte each, 127 pushed
    home: 0 the left one to the right, 1 forward, 2 the right one to the right, 3 up. A desktop's
-   sitter has the keys they walk by as the left one, and fire and jump as the triggers, right and left */
+   sitter has the keys they walk by as the left one, and fire as the right trigger */
 #define SEGL_HOST_STICK(s, n)  ((signed char)((s)[5] >> (8 * (n))))
 /* the room's scale, 255ths: the plane 1.28 by 0.8 m of the room is near * (far / near) ^ this */
 #define SEGL_HOST_PLANE(s)     ((s)[0] >> 24)
 /* with no hands (a desktop's sitter): how far their mouse has gone to the right, a counter of
    16 bits that wraps; the head's pitch is the aim's rise */
 #define SEGL_HOST_MOUSE_X(s)   ((s)[4] & 0xffff)
+/* the jump button is held (a headset's, or a desktop sitter's Space): no trigger jumps */
+#define SEGL_HOST_JUMP(s)      (((s)[0] >> 6) & 1)
+/* For the holodeck's default scale (docs/holodeck.md, "The world's size"): the player's eye over
+   its floor in the program's units, its near and far planes and its projection's x and y scales.
+   `game` is linux/apps/gameid.h's number: the host takes the word only while that game is played. */
+static inline void seglWorldEye(int game, float eye, float znear, float zfar, float fx, float fy)
+{
+	volatile unsigned int* word = (volatile unsigned int*)seglHostState();
+	float x = 1.28f * fx, y = 0.8f * fy, unit = 2 * znear / (x < y ? x : y), spread = __builtin_logf(zfar / znear);
+	int a = (int)(__builtin_logf(eye / unit) / spread * 4096), b = (int)(4096 / spread);
+	unsigned int said;
+
+	if (!word || spread <= 0)
+		return;
+	a = a < -32768 ? -32768 : a > 32767 ? 32767 : a;
+	b = b > 4095 ? 4095 : b;
+	said = (unsigned)(a & 0xffff) | (unsigned)b << 16 | (unsigned)(game & 15) << 28;
+	word += (0x6c - 0x360) / 4;	/* the control word 0x8700006c, written only when it changes */
+	if (*word != said)
+		*word = said;
+}
 
 // Vertices the program has made compact itself (docs/gpu.md: x, y, z, then u | v << 16 in
 // 1,024ths), drawn as glDrawArrays draws: GL_TRIANGLES, a strip, a fan or GL_QUADS. x, y and z

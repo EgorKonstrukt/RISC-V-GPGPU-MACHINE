@@ -62,10 +62,266 @@ index fea46411..23d6cfb3 100644
  		AAS_Error("aas file %s is out of date\n", filename);
  		botimport.FS_FCloseFile(fp);
 diff --git a/code/botlib/be_aas_route.c b/code/botlib/be_aas_route.c
-index 7bdc9f22..0620b027 100644
+index 7bdc9f22..b24097d8 100644
 --- a/code/botlib/be_aas_route.c
 +++ b/code/botlib/be_aas_route.c
-@@ -1782,6 +1782,31 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
+@@ -83,6 +83,27 @@ int numportalcacheupdates;
+ 
+ int routingcachesize;
+ int max_routingcachesize;
++#ifdef SHADEREMU
++/*
++ * A bot's think on a core beside the server's (SE_OnWorker() 3 and up) has scratch of its own,
++ * and the routes it makes are its own: kept in chunks the server's core gives it between
++ * thinks (AAS_SE_ThinkPools), read by it alone. A route is the same whoever makes it.
++ */
++#define SE_CHUNK	0x40000
++typedef struct {
++	aas_routingupdate_t *area, *portal;
++	unsigned short *hide;
++	aas_routingcache_t *own, *temp[2];
++	byte *pool, *chunks;
++	int left, unused[3];
++} se_route_t;
++static se_route_t se_route[SE_CORES];
++#define SE_AREAUPDATE	(SE_OnWorker() >= 3 ? se_route[SE_OnWorker()].area : aasworld.areaupdate)
++#define SE_PORTALUPDATE	(SE_OnWorker() >= 3 ? se_route[SE_OnWorker()].portal : aasworld.portalupdate)
++#else
++#define SE_AREAUPDATE	aasworld.areaupdate
++#define SE_PORTALUPDATE	aasworld.portalupdate
++#endif
+ 
+ //===========================================================================
+ //
+@@ -856,6 +877,85 @@ void AAS_InitPortalCache(void)
+ // Returns:					-
+ // Changes Globals:		-
+ //===========================================================================
++#ifdef SHADEREMU
++void AAS_UpdateAreaRoutingCache(aas_routingcache_t *areacache);
++void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache);
++void AAS_SE_FreeCores(void)
++{
++	int c;
++	byte *chunk, *next;
++
++	for (c = 3; c < SE_CORES; c++)
++	{
++		if (se_route[c].area) FreeMemory(se_route[c].area);
++		if (se_route[c].portal) FreeMemory(se_route[c].portal);
++		if (se_route[c].hide) FreeMemory(se_route[c].hide);
++		if (se_route[c].temp[0]) FreeMemory(se_route[c].temp[0]);
++		if (se_route[c].temp[1]) FreeMemory(se_route[c].temp[1]);
++		for (chunk = se_route[c].chunks; chunk; chunk = next)
++		{
++			next = *(byte **) chunk;
++			FreeMemory(chunk);
++		}
++		Com_Memset(&se_route[c], 0, sizeof(se_route[c]));
++	}
++}
++/* Before bots think at once: each core beside the server's has room for the routes it may make. */
++void AAS_SE_ThinkPools(void)
++{
++	int c;
++	byte *chunk;
++
++	for (c = 3; c < SE_CORES; c++)
++	{
++		if (!se_route[c].area || se_route[c].left >= SE_CHUNK / 4) continue;
++		chunk = (byte *) GetMemory(SE_CHUNK + 16);
++		*(byte **) chunk = se_route[c].chunks;
++		se_route[c].chunks = chunk;
++		se_route[c].pool = chunk + 16;
++		se_route[c].left = SE_CHUNK;
++	}
++}
++/* A route this core makes for itself (it is not in the level's lists): found, or made now. */
++static aas_routingcache_t *AAS_SE_OwnCache(int type, int clusternum, int areanum, int travelflags, int numtraveltimes)
++{
++	se_route_t *r = &se_route[SE_OnWorker()];
++	aas_routingcache_t *cache;
++	int size = (sizeof(aas_routingcache_t) + numtraveltimes * 3 + 15) & ~15;
++
++	for (cache = r->own; cache; cache = cache->next)
++	{
++		if (cache->type == type && cache->areanum == areanum && cache->travelflags == travelflags &&
++			(type == CACHETYPE_PORTAL || cache->cluster == clusternum)) return cache;
++	}
++	if (r->left >= size)
++	{
++		cache = (aas_routingcache_t *) r->pool;
++		r->pool += size;
++		r->left -= size;
++		Com_Memset(cache, 0, size);
++		cache->next = r->own;
++		r->own = cache;
++	}
++	else
++	{
++		/* (no room: made in the core's one spare of the kind, for the one who asked) */
++		cache = r->temp[type == CACHETYPE_PORTAL];
++		Com_Memset(cache, 0, sizeof(aas_routingcache_t) + numtraveltimes * 3);
++	}
++	cache->reachabilities = (unsigned char *) cache + sizeof(aas_routingcache_t) + numtraveltimes * sizeof(unsigned short int);
++	cache->size = size;
++	cache->type = type;
++	cache->cluster = clusternum;
++	cache->areanum = areanum;
++	VectorCopy(aasworld.areas[areanum].center, cache->origin);
++	cache->starttraveltime = 1;
++	cache->travelflags = travelflags;
++	if (type == CACHETYPE_PORTAL) AAS_UpdatePortalRoutingCache(cache);
++	else AAS_UpdateAreaRoutingCache(cache);
++	return cache;
++}
++#endif
+ void AAS_InitRoutingUpdate(void)
+ {
+ 	int i, maxreachabilityareas;
+@@ -879,6 +979,21 @@ void AAS_InitRoutingUpdate(void)
+ 	//allocate memory for the portal update fields
+ 	aasworld.portalupdate = (aas_routingupdate_t *) GetClearedMemory(
+ 									(aasworld.numportals+1) * sizeof(aas_routingupdate_t));
++#ifdef SHADEREMU
++	{
++		int c, n = aasworld.numareas > maxreachabilityareas ? aasworld.numareas : maxreachabilityareas;
++
++		AAS_SE_FreeCores();
++		for (c = 3; c < SE_CORES; c++)
++		{
++			se_route[c].area = (aas_routingupdate_t *) GetClearedMemory(n * sizeof(aas_routingupdate_t));
++			se_route[c].portal = (aas_routingupdate_t *) GetClearedMemory((aasworld.numportals+1) * sizeof(aas_routingupdate_t));
++			se_route[c].hide = (unsigned short *) GetClearedMemory(aasworld.numareas * sizeof(unsigned short));
++			se_route[c].temp[0] = (aas_routingcache_t *) GetClearedMemory(sizeof(aas_routingcache_t) + maxreachabilityareas * 3);
++			se_route[c].temp[1] = (aas_routingcache_t *) GetClearedMemory(sizeof(aas_routingcache_t) + (aasworld.numportals + 1) * 3);
++		}
++	}
++#endif
+ } //end of the function AAS_InitRoutingUpdate
+ //===========================================================================
+ //
+@@ -1272,6 +1387,9 @@ void AAS_FreeRoutingCaches(void)
+ 	aasworld.areaupdate = NULL;
+ 	if (aasworld.portalupdate) FreeMemory(aasworld.portalupdate);
+ 	aasworld.portalupdate = NULL;
++#ifdef SHADEREMU
++	AAS_SE_FreeCores();
++#endif
+ 	// free lists with areas the reachabilities go through
+ 	if (aasworld.reachabilityareas) FreeMemory(aasworld.reachabilityareas);
+ 	aasworld.reachabilityareas = NULL;
+@@ -1300,12 +1418,16 @@ void AAS_UpdateAreaRoutingCache(aas_routingcache_t *areacache)
+ 	aas_reversedlink_t *revlink;
+ 
+ #ifdef ROUTING_DEBUG
++#ifndef SHADEREMU	// (bots think on several cores at once: a count they all add to is not kept)
+ 	numareacacheupdates++;
++#endif
+ #endif //ROUTING_DEBUG
+ 	//number of reachability areas within this cluster
+ 	numreachabilityareas = aasworld.clusters[areacache->cluster].numreachabilityareas;
+ 	//
++#ifndef SHADEREMU	/* (a count nobody reads, which cores would add to at once) */
+ 	aasworld.frameroutingupdates++;
++#endif
+ 	//clear the routing update fields
+ //	Com_Memset(aasworld.areaupdate, 0, aasworld.numareas * sizeof(aas_routingupdate_t));
+ 	//
+@@ -1316,7 +1438,7 @@ void AAS_UpdateAreaRoutingCache(aas_routingcache_t *areacache)
+ 	//
+ 	Com_Memset(startareatraveltimes, 0, sizeof(startareatraveltimes));
+ 	//
+-	curupdate = &aasworld.areaupdate[clusterareanum];
++	curupdate = &SE_AREAUPDATE[clusterareanum];
+ 	curupdate->areanum = areacache->areanum;
+ 	//VectorCopy(areacache->origin, curupdate->start);
+ 	curupdate->areatraveltimes = startareatraveltimes;
+@@ -1372,7 +1494,7 @@ void AAS_UpdateAreaRoutingCache(aas_routingcache_t *areacache)
+ 			{
+ 				areacache->traveltimes[clusterareanum] = t;
+ 				areacache->reachabilities[clusterareanum] = linknum - aasworld.areasettings[nextareanum].firstreachablearea;
+-				nextupdate = &aasworld.areaupdate[clusterareanum];
++				nextupdate = &SE_AREAUPDATE[clusterareanum];
+ 				nextupdate->areanum = nextareanum;
+ 				nextupdate->tmptraveltime = t;
+ 				//VectorCopy(reach->start, nextupdate->start);
+@@ -1415,6 +1537,9 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
+ 		//if there aren't used any undesired travel types for the cache
+ 		if (cache->travelflags == travelflags) break;
+ 	} //end for
++#ifdef SHADEREMU
++	if (!cache && SE_OnWorker() >= 3) return AAS_SE_OwnCache(CACHETYPE_AREA, clusternum, areanum, travelflags, aasworld.clusters[clusternum].numreachabilityareas);
++#endif
+ 	//if there was no cache
+ 	if (!cache)
+ 	{
+@@ -1432,6 +1557,10 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
+ 	} //end if
+ 	else
+ 	{
++#ifdef SHADEREMU
++		/* (a route found is only read: bots thinking at once on several cores ask for the same; the oldest made goes first) */
++		return cache;
++#endif
+ 		AAS_UnlinkCache(cache);
+ 	} //end else
+ 	//the cache has been accessed
+@@ -1456,12 +1585,14 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
+ 	aas_routingupdate_t *updateliststart, *updatelistend, *curupdate, *nextupdate;
+ 
+ #ifdef ROUTING_DEBUG
++#ifndef SHADEREMU	// (bots think on several cores at once: a count they all add to is not kept)
+ 	numportalcacheupdates++;
++#endif
+ #endif //ROUTING_DEBUG
+ 	//clear the routing update fields
+ //	Com_Memset(aasworld.portalupdate, 0, (aasworld.numportals+1) * sizeof(aas_routingupdate_t));
+ 	//
+-	curupdate = &aasworld.portalupdate[aasworld.numportals];
++	curupdate = &SE_PORTALUPDATE[aasworld.numportals];
+ 	curupdate->cluster = portalcache->cluster;
+ 	curupdate->areanum = portalcache->areanum;
+ 	curupdate->tmptraveltime = portalcache->starttraveltime;
+@@ -1510,7 +1641,7 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
+ 					portalcache->traveltimes[portalnum] > t)
+ 			{
+ 				portalcache->traveltimes[portalnum] = t;
+-				nextupdate = &aasworld.portalupdate[portalnum];
++				nextupdate = &SE_PORTALUPDATE[portalnum];
+ 				if (portal->frontcluster == curupdate->cluster)
+ 				{
+ 					nextupdate->cluster = portal->backcluster;
+@@ -1553,6 +1684,9 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
+ 	{
+ 		if (cache->travelflags == travelflags) break;
+ 	} //end for
++#ifdef SHADEREMU
++	if (!cache && SE_OnWorker() >= 3) return AAS_SE_OwnCache(CACHETYPE_PORTAL, clusternum, areanum, travelflags, aasworld.numportals);
++#endif
+ 	//if the portal routing isn't cached
+ 	if (!cache)
+ 	{
+@@ -1572,6 +1706,9 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
+ 	} //end if
+ 	else
+ 	{
++#ifdef SHADEREMU
++		return cache;	/* (only read, as in AAS_GetAreaRoutingCache) */
++#endif
+ 		AAS_UnlinkCache(cache);
+ 	} //end else
+ 	//the cache has been accessed
+@@ -1625,7 +1762,7 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
+ 		return qfalse;
+ 	} //end if
+ 	// make sure the routing cache doesn't grow to large
+-	while(AvailableMemory() < 1 * 1024 * 1024) {
++	while(SE_OnWorker() < 3 && AvailableMemory() < 1 * 1024 * 1024) {	/* (SHADEREMU: not on a think beside the server) */
+ 		if (!AAS_FreeOldestCache()) break;
+ 	}
+ 	//
+@@ -1782,6 +1919,44 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
  	}
  	return 0;
  } //end of the function AAS_AreaTravelTimeToGoalArea
@@ -93,15 +349,108 @@ index 7bdc9f22..0620b027 100644
 +	} //end for
 +	return routingcachesize - before;
 +} //end of the function AAS_WarmRoutes
++/* The routes to every area that can be reached; the bytes they took. */
++int AAS_WarmAllRoutes(int travelflags)
++{
++	int areas[64], count = 0, area, bytes = 0;
++
++	for (area = 1; area < aasworld.numareas; area++)
++	{
++		if (!AAS_AreaReachability(area)) continue;
++		areas[count++] = area;
++		if (count == 64) bytes += AAS_WarmRoutes(areas, count, travelflags), count = 0;
++	} //end for
++	return bytes + AAS_WarmRoutes(areas, count, travelflags);
++} //end of the function AAS_WarmAllRoutes
 +#endif
  //===========================================================================
  //
  // Parameter:			-
+@@ -2089,7 +2264,12 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+ {
+ 	int i, j, nextareanum, badtravelflags, numreach, bestarea;
+ 	unsigned short int t, besttraveltime;
+-	static unsigned short int *hidetraveltimes;
++	static unsigned short int *hidetraveltimes_shared;
++#ifdef SHADEREMU
++	unsigned short int *hidetraveltimes = SE_OnWorker() >= 3 ? se_route[SE_OnWorker()].hide : hidetraveltimes_shared;
++#else
++#define hidetraveltimes hidetraveltimes_shared
++#endif
+ 	aas_routingupdate_t *updateliststart, *updatelistend, *curupdate, *nextupdate;
+ 	aas_reachability_t *reach;
+ 	float dist1, dist2;
+@@ -2099,7 +2279,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+ 	//
+ 	if (!hidetraveltimes)
+ 	{
+-		hidetraveltimes = (unsigned short int *) GetClearedMemory(aasworld.numareas * sizeof(unsigned short int));
++		hidetraveltimes = hidetraveltimes_shared = (unsigned short int *) GetClearedMemory(aasworld.numareas * sizeof(unsigned short int));
+ 	} //end if
+ 	else
+ 	{
+@@ -2112,7 +2292,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+ 	//
+ 	badtravelflags = ~travelflags;
+ 	//
+-	curupdate = &aasworld.areaupdate[areanum];
++	curupdate = &SE_AREAUPDATE[areanum];
+ 	curupdate->areanum = areanum;
+ 	VectorCopy(origin, curupdate->start);
+ 	curupdate->areatraveltimes = aasworld.areatraveltimes[areanum][0];
+@@ -2194,7 +2374,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+ 					bestarea = nextareanum;
+ 				} //end if
+ 				hidetraveltimes[nextareanum] = t;
+-				nextupdate = &aasworld.areaupdate[nextareanum];
++				nextupdate = &SE_AREAUPDATE[nextareanum];
+ 				nextupdate->areanum = nextareanum;
+ 				nextupdate->tmptraveltime = t;
+ 				//remember where we entered this area
 diff --git a/code/botlib/be_ai_chat.c b/code/botlib/be_ai_chat.c
-index 591ca378..636a96c6 100644
+index 591ca378..1dfe3a8c 100644
 --- a/code/botlib/be_ai_chat.c
 +++ b/code/botlib/be_ai_chat.c
-@@ -2977,11 +2977,16 @@ int BotSetupChatAI(void)
+@@ -280,7 +280,38 @@ bot_consolemessage_t *AllocConsoleMessage(void)
+ // Returns:					-
+ // Changes Globals:		-
+ //===========================================================================
++#ifdef SHADEREMU
++/* a bot's think on a core beside the server's frees its messages here, into the heap after the thinks (SE_BotFreesDone) */
++static struct { bot_consolemessage_t *first; unsigned unused[3]; } se_freed[SE_CORES] __attribute__ ((aligned (16)));
++void FreeConsoleMessageNow(bot_consolemessage_t *message);
+ void FreeConsoleMessage(bot_consolemessage_t *message)
++{
++	int core = SE_OnWorker();
++
++	if (core >= 3) {
++		message->next = se_freed[core].first;
++		se_freed[core].first = message;
++		return;
++	}
++	FreeConsoleMessageNow(message);
++}
++void SE_BotFreesDone(void)
++{
++	int core;
++	bot_consolemessage_t *m, *next;
++
++	for (core = 3; core < SE_CORES; core++) {
++		for (m = se_freed[core].first; m; m = next) {
++			next = m->next;
++			FreeConsoleMessageNow(m);
++		}
++		se_freed[core].first = NULL;
++	}
++}
++void FreeConsoleMessageNow(bot_consolemessage_t *message)
++#else
++void FreeConsoleMessage(bot_consolemessage_t *message)
++#endif
+ {
+ 	if (freeconsolemessages) freeconsolemessages->prev = message;
+ 	message->prev = NULL;
+@@ -2977,11 +3008,16 @@ int BotSetupChatAI(void)
  	file = LibVarString("matchfile", "match.c");
  	matchtemplates = BotLoadMatchTemplates(file);
  	//
@@ -145,6 +494,239 @@ index 82885bd4..eec7a377 100644
  void BotInitLevelItems(void)
  {
  	int i, spawnflags, value;
+diff --git a/code/botlib/be_ea.c b/code/botlib/be_ea.c
+index efecd28d..aea98741 100644
+--- a/code/botlib/be_ea.c
++++ b/code/botlib/be_ea.c
+@@ -41,6 +41,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ #define MAX_USERMOVE				400
+ 
+ bot_input_t *botinputs;
++#ifdef SHADEREMU
++/* each client's on 16 bytes of its own: bots think at once on several cores */
++#define SE_INPUT_BYTES ((sizeof(bot_input_t) + 15) & ~15)
++#define SE_BOTINPUT(c) ((bot_input_t *)((byte *)botinputs + (c) * SE_INPUT_BYTES))
++static void *se_botinputs;
++#else
++#define SE_BOTINPUT(c) (&botinputs[c])
++#endif
+ 
+ //===========================================================================
+ //
+@@ -122,7 +130,7 @@ void EA_Gesture(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_GESTURE;
+ } //end of the function EA_Gesture
+@@ -146,7 +154,7 @@ void EA_SelectWeapon(int client, int weapon)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->weapon = weapon;
+ } //end of the function EA_SelectWeapon
+@@ -160,7 +168,7 @@ void EA_Attack(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_ATTACK;
+ } //end of the function EA_Attack
+@@ -174,7 +182,7 @@ void EA_Talk(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_TALK;
+ } //end of the function EA_Talk
+@@ -188,7 +196,7 @@ void EA_Use(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_USE;
+ } //end of the function EA_Use
+@@ -202,7 +210,7 @@ void EA_Respawn(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_RESPAWN;
+ } //end of the function EA_Respawn
+@@ -216,7 +224,7 @@ void EA_Jump(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	if (bi->actionflags & ACTION_JUMPEDLASTFRAME)
+ 	{
+@@ -237,7 +245,7 @@ void EA_DelayedJump(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	if (bi->actionflags & ACTION_JUMPEDLASTFRAME)
+ 	{
+@@ -258,7 +266,7 @@ void EA_Crouch(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_CROUCH;
+ } //end of the function EA_Crouch
+@@ -272,7 +280,7 @@ void EA_Walk(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_WALK;
+ } //end of the function EA_Walk
+@@ -286,7 +294,7 @@ void EA_Action(int client, int action)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= action;
+ } //end of function EA_Action
+@@ -300,7 +308,7 @@ void EA_MoveUp(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVEUP;
+ } //end of the function EA_MoveUp
+@@ -314,7 +322,7 @@ void EA_MoveDown(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVEDOWN;
+ } //end of the function EA_MoveDown
+@@ -328,7 +336,7 @@ void EA_MoveForward(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVEFORWARD;
+ } //end of the function EA_MoveForward
+@@ -342,7 +350,7 @@ void EA_MoveBack(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVEBACK;
+ } //end of the function EA_MoveBack
+@@ -356,7 +364,7 @@ void EA_MoveLeft(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVELEFT;
+ } //end of the function EA_MoveLeft
+@@ -370,7 +378,7 @@ void EA_MoveRight(int client)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->actionflags |= ACTION_MOVERIGHT;
+ } //end of the function EA_MoveRight
+@@ -384,7 +392,7 @@ void EA_Move(int client, vec3_t dir, float speed)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	VectorCopy(dir, bi->dir);
+ 	//cap speed
+@@ -402,7 +410,7 @@ void EA_View(int client, vec3_t viewangles)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	VectorCopy(viewangles, bi->viewangles);
+ } //end of the function EA_View
+@@ -425,7 +433,7 @@ void EA_GetInput(int client, float thinktime, bot_input_t *input)
+ {
+ 	bot_input_t *bi;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 	bi->thinktime = thinktime;
+ 	Com_Memcpy(input, bi, sizeof(bot_input_t));
+ } //end of the function EA_GetInput
+@@ -440,7 +448,7 @@ void EA_ResetInput(int client)
+ 	bot_input_t *bi;
+ 	int jumped = qfalse;
+ 
+-	bi = &botinputs[client];
++	bi = SE_BOTINPUT(client);
+ 
+ 	bi->thinktime = 0;
+ 	VectorClear(bi->dir);
+@@ -458,8 +466,13 @@ void EA_ResetInput(int client)
+ int EA_Setup(void)
+ {
+ 	//initialize the bot inputs
++#ifdef SHADEREMU
++	se_botinputs = GetClearedHunkMemory(botlibglobals.maxclients * SE_INPUT_BYTES + 16);
++	botinputs = (bot_input_t *) (((size_t) se_botinputs + 15) & ~(size_t) 15);
++#else
+ 	botinputs = (bot_input_t *) GetClearedHunkMemory(
+ 									botlibglobals.maxclients * sizeof(bot_input_t));
++#endif
+ 	return BLERR_NOERROR;
+ } //end of the function EA_Setup
+ //===========================================================================
+@@ -470,6 +483,10 @@ int EA_Setup(void)
+ //===========================================================================
+ void EA_Shutdown(void)
+ {
++#ifdef SHADEREMU
++	FreeMemory(se_botinputs);
++#else
+ 	FreeMemory(botinputs);
++#endif
+ 	botinputs = NULL;
+ } //end of the function EA_Shutdown
 diff --git a/code/botlib/be_interface.c b/code/botlib/be_interface.c
 index ffff7628..07716260 100644
 --- a/code/botlib/be_interface.c
@@ -463,7 +1045,7 @@ index afe09412..98f72ea7 100644
  
  
 diff --git a/code/cgame/cg_ents.c b/code/cgame/cg_ents.c
-index ec8b02ff..3560f7b6 100644
+index ec8b02ff..6f2efc0d 100644
 --- a/code/cgame/cg_ents.c
 +++ b/code/cgame/cg_ents.c
 @@ -224,6 +224,49 @@ static void CG_Speaker( centity_t *cent ) {
@@ -553,18 +1135,86 @@ index ec8b02ff..3560f7b6 100644
  
  	// adjust for riding a mover if it wasn't rolled into the predicted
  	// player state
-@@ -1078,6 +1142,9 @@ void CG_AddPacketEntities( void ) {
+@@ -1041,6 +1105,37 @@ static void CG_AddCEntity( centity_t *cent ) {
+ 	}
+ }
+ 
++#ifdef SHADEREMU
++/*
++ * The level's items of a frame are made on a core beside the client's game's (client_shaderemu.c):
++ * an item reads only its own entity and what the frame set before, and writes its own and what
++ * it adds to the scene, which the renderer keeps apart and draws in the item's place.
++ */
++int SE_SideOpen( void );
++void SE_SideAsk( int number );
++void SE_SideGo( void );
++int SE_ScenePlaceSide( void );
++const int *SE_SideTask( int *count );
++void SE_SceneSideItem( int item );
++
++static qboolean SE_SideFits( const centity_t *cent ) {
++	const entityState_t *s = &cent->currentState;
++
++	return s->eType == ET_ITEM && !s->loopSound && !s->constantLight && s->modelindex >= 0 && s->modelindex < bg_numItems;
++}
++
++void SE_SideItems( void ) {
++	int			i, count;
++	const int	*numbers = SE_SideTask( &count );
++
++	for ( i = 0 ; i < count ; i++ ) {
++		SE_SceneSideItem( i );
++		CG_AddCEntity( &cg_entities[ numbers[i] ] );
++	}
++	SE_SceneSideItem( count );
++}
++#endif
++
+ /*
+ ===============
+ CG_AddPacketEntities
+@@ -1051,6 +1146,9 @@ void CG_AddPacketEntities( void ) {
+ 	int					num;
+ 	centity_t			*cent;
+ 	playerState_t		*ps;
++#ifdef SHADEREMU
++	int					side = SE_SideOpen();
++#endif
+ 
+ 	// set cg.frameInterpolation
+ 	if ( cg.nextSnap ) {
+@@ -1078,6 +1176,17 @@ void CG_AddPacketEntities( void ) {
  
  	AnglesToAxis( cg.autoAngles, cg.autoAxis );
  	AnglesToAxis( cg.autoAnglesFast, cg.autoAxisFast );
 +#ifdef SHADEREMU
 +	SE_ViewSides();
++	if ( side ) {
++		for ( num = 0 ; num < cg.snap->numEntities ; num++ ) {
++			if ( SE_SideFits( &cg_entities[ cg.snap->entities[ num ].number ] ) ) {
++				SE_SideAsk( cg.snap->entities[ num ].number );
++			}
++		}
++		SE_SideGo();
++	}
 +#endif
  
  	// generate and add the entity from the playerstate
  	ps = &cg.predictedPlayerState;
+@@ -1090,6 +1199,11 @@ void CG_AddPacketEntities( void ) {
+ 	// add each entity sent over by the server
+ 	for ( num = 0 ; num < cg.snap->numEntities ; num++ ) {
+ 		cent = &cg_entities[ cg.snap->entities[ num ].number ];
++#ifdef SHADEREMU
++		if ( side && SE_SideFits( cent ) && SE_ScenePlaceSide() ) {
++			continue;
++		}
++#endif
+ 		CG_AddCEntity( cent );
+ 	}
+ }
 diff --git a/code/cgame/cg_local.h b/code/cgame/cg_local.h
-index 6546d4d5..c4b5bee0 100644
+index 6546d4d5..2fa2834b 100644
 --- a/code/cgame/cg_local.h
 +++ b/code/cgame/cg_local.h
 @@ -192,6 +192,9 @@ typedef struct centity_s {
@@ -577,22 +1227,35 @@ index 6546d4d5..c4b5bee0 100644
  } centity_t;
  
  
-@@ -1370,6 +1373,10 @@ void CG_RailTrail( clientInfo_t *ci, vec3_t start, vec3_t end );
+@@ -1370,6 +1373,11 @@ void CG_RailTrail( clientInfo_t *ci, vec3_t start, vec3_t end );
  void CG_GrappleTrail( centity_t *ent, const weaponInfo_t *wi );
  void CG_AddViewWeapon (playerState_t *ps);
  void CG_AddPlayerWeapon( refEntity_t *parent, playerState_t *ps, centity_t *cent, int team );
 +#ifdef SHADEREMU
 +void SE_PlayerWeaponUnseen( centity_t *cent );
 +qboolean SE_OutOfView( const vec3_t at, float reach );
++void SE_SideItems( void );
 +#endif
  void CG_DrawWeaponSelect( void );
  
  void CG_OutOfAmmoChange( void );	// should this be in pmove?
 diff --git a/code/cgame/cg_main.c b/code/cgame/cg_main.c
-index 1269e1b6..41645fbe 100644
+index 1269e1b6..d85a8233 100644
 --- a/code/cgame/cg_main.c
 +++ b/code/cgame/cg_main.c
-@@ -214,14 +214,22 @@ static cvarTable_t cvarTable[] = {
+@@ -74,6 +74,11 @@ Q_EXPORT intptr_t vmMain( int command, int arg0, int arg1, int arg2, int arg3, i
+ 	case CG_EVENT_HANDLING:
+ 		CG_EventHandling(arg0);
+ 		return 0;
++#ifdef SHADEREMU
++	case CG_SE_SIDE:
++		SE_SideItems();
++		return 0;
++#endif
+ 	default:
+ 		CG_Error( "vmMain: unknown command %i", command );
+ 		break;
+@@ -214,14 +219,22 @@ static cvarTable_t cvarTable[] = {
  	{ &cg_zoomFov, "cg_zoomfov", "22.5", CVAR_ARCHIVE },
  	{ &cg_fov, "cg_fov", "90", CVAR_ARCHIVE },
  	{ &cg_viewsize, "cg_viewsize", "100", CVAR_ARCHIVE },
@@ -615,7 +1278,7 @@ index 1269e1b6..41645fbe 100644
  	{ &cg_drawIcons, "cg_drawIcons", "1", CVAR_ARCHIVE  },
  	{ &cg_drawAmmoWarning, "cg_drawAmmoWarning", "1", CVAR_ARCHIVE  },
  	{ &cg_drawAttacker, "cg_drawAttacker", "1", CVAR_ARCHIVE  },
-@@ -381,6 +389,19 @@ void CG_UpdateCvars( void ) {
+@@ -381,6 +394,19 @@ void CG_UpdateCvars( void ) {
  	int			i;
  	cvarTable_t	*cv;
  
@@ -1028,6 +1691,21 @@ index 6ec837c8..9f6aa42a 100644
  	if ( cg_showmiss.integer > 1 ) {
  		CG_Printf( "[%i : %i] ", cg_pmove.cmd.serverTime, cg.time );
  	}
+diff --git a/code/cgame/cg_public.h b/code/cgame/cg_public.h
+index 8cf4ac57..dea23df1 100644
+--- a/code/cgame/cg_public.h
++++ b/code/cgame/cg_public.h
+@@ -233,6 +233,10 @@ typedef enum {
+ //	void	(*CG_MouseEvent)( int dx, int dy );
+ 	CG_EVENT_HANDLING
+ //	void (*CG_EventHandling)(int type);
++#ifdef SHADEREMU
++	, CG_SE_SIDE
++//	void (*SE_SideItems)( void ): the items the client's game gave its helper core (cg_ents.c)
++#endif
+ } cgameExport_t;
+ 
+ //----------------------------------------------
 diff --git a/code/cgame/cg_snapshot.c b/code/cgame/cg_snapshot.c
 index 11b9a067..4158e063 100644
 --- a/code/cgame/cg_snapshot.c
@@ -1662,11 +2340,223 @@ index d8b5e2a5..cf42abf0 100644
  
  	if ( state->number == (MAX_GENTITIES-1) ) {
  		return;		// entity was delta removed
+diff --git a/code/game/ai_dmnet.c b/code/game/ai_dmnet.c
+index b107895d..3f5e1305 100644
+--- a/code/game/ai_dmnet.c
++++ b/code/game/ai_dmnet.c
+@@ -59,8 +59,15 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ //goal flag, see ../botlib/be_ai_goal.h for the other GFL_*
+ #define GFL_AIR			128
+ 
++#ifdef SHADEREMU
++/* (a core's own: bots think at once on several) */
++static struct { int count, unused[3]; char text[MAX_NODESWITCHES+1][144]; } se_nodes[SE_CORES];
++#define numnodeswitches (se_nodes[SE_OnWorker()].count)
++#define nodeswitch (se_nodes[SE_OnWorker()].text)
++#else
+ int numnodeswitches;
+ char nodeswitch[MAX_NODESWITCHES+1][144];
++#endif
+ 
+ #define LOOKAHEAD_DISTANCE			300
+ 
+diff --git a/code/game/ai_dmq3.c b/code/game/ai_dmq3.c
+index eb9b5850..a7a6dfd8 100644
+--- a/code/game/ai_dmq3.c
++++ b/code/game/ai_dmq3.c
+@@ -86,6 +86,12 @@ extern vmCvar_t bot_developer;
+ 
+ vec3_t lastteleport_origin;		//last teleport event origin
+ float lastteleport_time;		//last teleport event time
++#ifdef SHADEREMU
++/* each bot's own: bots think at once on several cores (server_shaderemu.c) */
++static struct { vec3_t origin; float time; } se_lastteleport[MAX_CLIENTS];
++#define lastteleport_origin	se_lastteleport[bs->client].origin
++#define lastteleport_time	se_lastteleport[bs->client].time
++#endif
+ int max_bspmodelindex;			//maximum BSP model index
+ 
+ //CTF flag goals
+@@ -2820,7 +2826,41 @@ BotEntityVisible
+ returns visibility in the range [0, 1] taking fog and water surfaces into account
+ ==================
+ */
++#ifdef SHADEREMU
++/*
++ * A think asks whether it sees its enemy several times over from the same eye, and nothing
++ * moves while it thinks: what the traces found is kept for the rest of the think (BotAI
++ * counts a bot's thinks). Each bot's own, as bots think at once on several cores.
++ */
++struct se_bot_thinks_s { int n, unused[3]; } se_bot_thinks[MAX_CLIENTS];
++static struct { int think, ent; vec3_t eye; float vis; int unused[2]; } se_seen[MAX_CLIENTS][8];
++static struct { unsigned next, unused[3]; } se_seen_next[MAX_CLIENTS];
++float BotEntityVisibleNow(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent);
++float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent) {
++	int k;
++	float vis;
++
++	if (fov < 360 || viewer < 0 || viewer >= MAX_CLIENTS) {
++		return BotEntityVisibleNow(viewer, eye, viewangles, fov, ent);
++	}
++	for (k = 0; k < 8; k++) {
++		if (se_seen[viewer][k].think == se_bot_thinks[viewer].n && se_seen[viewer][k].ent == ent &&
++			se_seen[viewer][k].eye[0] == eye[0] && se_seen[viewer][k].eye[1] == eye[1] && se_seen[viewer][k].eye[2] == eye[2]) {
++			return se_seen[viewer][k].vis;
++		}
++	}
++	vis = BotEntityVisibleNow(viewer, eye, viewangles, fov, ent);
++	k = se_seen_next[viewer].next++ & 7;
++	se_seen[viewer][k].think = se_bot_thinks[viewer].n;
++	se_seen[viewer][k].ent = ent;
++	VectorCopy(eye, se_seen[viewer][k].eye);
++	se_seen[viewer][k].vis = vis;
++	return vis;
++}
++float BotEntityVisibleNow(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent) {
++#else
+ float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent) {
++#endif
+ 	int i, contents_mask, passent, hitent, infog, inwater, otherinfog, pc;
+ 	float squaredfogdist, waterfactor, vis, bestvis;
+ 	bsp_trace_t trace;
+@@ -5028,8 +5068,24 @@ void BotCheckSnapshot(bot_state_t *bs) {
+ 	//reset number of proxmines
+ 	bs->numproxmines = 0;
+ 	//
++#ifdef SHADEREMU
++	/* an entity whose event the bot has seen and that is no missile changes nothing here: its 208 bytes are not
++	   copied (one that is not sent stands as entity 0, as BotAI_GetEntityState leaves it) */
++	for ( ent = 0; ; ent++ ) {
++		int n = trap_BotGetSnapshotEntity( bs->client, ent ), sent;
++
++		if ( n == -1 ) {
++			break;
++		}
++		sent = g_entities[n].inuse && g_entities[n].r.linked && !( g_entities[n].r.svFlags & SVF_NOCLIENT );
++		if ( bs->entityeventTime[sent ? n : 0] == g_entities[sent ? n : 0].eventTime && !( sent && g_entities[n].s.eType == ET_MISSILE ) ) {
++			continue;
++		}
++		BotAI_GetEntityState( n, &state );
++#else
+ 	ent = 0;
+ 	while( ( ent = BotAI_GetSnapshotEntity( bs->client, ent, &state ) ) != -1 ) {
++#endif
+ 		//check the entity state for events
+ 		BotCheckEvents(bs, &state);
+ 		//check for grenades the bot should avoid
 diff --git a/code/game/ai_main.c b/code/game/ai_main.c
-index ed5653d7..02bcfba1 100644
+index ed5653d7..fb698e02 100644
 --- a/code/game/ai_main.c
 +++ b/code/game/ai_main.c
-@@ -1482,7 +1482,12 @@ int BotAIStartFrame(int time) {
+@@ -972,11 +972,78 @@ void RemoveColorEscapeSequences( char *text ) {
+ BotAI
+ ==============
+ */
++#ifdef SHADEREMU
++/* What the server told a bot, into its console messages: before the bots think, one after another (the messages are one heap) */
++void BotSetupAlternativeRouteGoals(void);
++void BotAIServerCommands(int client) {
++	bot_state_t *bs = botstates[client];
++	char buf[1024], *args;
++
++	if (!bs || !bs->inuse) return;
++	BotSetupAlternativeRouteGoals();	/* (once, here and not in the thinks) */
++	//retrieve any waiting server commands
++	while( trap_BotGetServerCommand(client, buf, sizeof(buf)) ) {
++		//have buf point to the command and args to the command arguments
++		args = strchr( buf, ' ');
++		if (!args) continue;
++		*args++ = '\0';
++
++		//remove color espace sequences from the arguments
++		RemoveColorEscapeSequences( args );
++
++		if (!Q_stricmp(buf, "cp "))
++			{ /*CenterPrintf*/ }
++		else if (!Q_stricmp(buf, "cs"))
++			{ /*ConfigStringModified*/ }
++		else if (!Q_stricmp(buf, "print")) {
++			//remove first and last quote from the chat message
++			memmove(args, args+1, strlen(args));
++			args[strlen(args)-1] = '\0';
++			trap_BotQueueConsoleMessage(bs->cs, CMS_NORMAL, args);
++		}
++		else if (!Q_stricmp(buf, "chat")) {
++			//remove first and last quote from the chat message
++			memmove(args, args+1, strlen(args));
++			args[strlen(args)-1] = '\0';
++			trap_BotQueueConsoleMessage(bs->cs, CMS_CHAT, args);
++		}
++		else if (!Q_stricmp(buf, "tchat")) {
++			//remove first and last quote from the chat message
++			memmove(args, args+1, strlen(args));
++			args[strlen(args)-1] = '\0';
++			trap_BotQueueConsoleMessage(bs->cs, CMS_CHAT, args);
++		}
++#ifdef MISSIONPACK
++		else if (!Q_stricmp(buf, "vchat")) {
++			BotVoiceChatCommand(bs, SAY_ALL, args);
++		}
++		else if (!Q_stricmp(buf, "vtchat")) {
++			BotVoiceChatCommand(bs, SAY_TEAM, args);
++		}
++		else if (!Q_stricmp(buf, "vtell")) {
++			BotVoiceChatCommand(bs, SAY_TELL, args);
++		}
++#endif
++		else if (!Q_stricmp(buf, "scores"))
++			{ /*FIXME: parse scores?*/ }
++		else if (!Q_stricmp(buf, "clientLevelShot"))
++			{ /*ignore*/ }
++	}
++}
++#endif
++
+ int BotAI(int client, float thinktime) {
+ 	bot_state_t *bs;
+ 	char buf[1024], *args;
+ 	int j;
+ 
++#ifdef SHADEREMU
++	{
++		extern struct se_bot_thinks_s { int n, unused[3]; } se_bot_thinks[MAX_CLIENTS];	/* (what a think saw is kept for that think: ai_dmq3.c) */
++
++		se_bot_thinks[client].n++;
++	}
++#endif
+ 	trap_EA_ResetInput(client);
+ 	//
+ 	bs = botstates[client];
+@@ -990,6 +1057,7 @@ int BotAI(int client, float thinktime) {
+ 		BotAI_Print(PRT_FATAL, "BotAI: failed to get player state for player %d\n", client);
+ 		return qfalse;
+ 	}
++#ifndef SHADEREMU	/* (BotAIServerCommands, before the thinks that are made at once) */
+ 	//retrieve any waiting server commands
+ 	while( trap_BotGetServerCommand(client, buf, sizeof(buf)) ) {
+ 		//have buf point to the command and args to the command arguments
+@@ -1038,6 +1106,7 @@ int BotAI(int client, float thinktime) {
+ 		else if (!Q_stricmp(buf, "clientLevelShot"))
+ 			{ /*ignore*/ }
+ 	}
++#endif
+ 	//add the delta angles to the bot's current view angles
+ 	for (j = 0; j < 3; j++) {
+ 		bs->viewangles[j] = AngleMod(bs->viewangles[j] + SHORT2ANGLE(bs->cur_ps.delta_angles[j]));
+@@ -1080,7 +1149,12 @@ void BotScheduleBotThink(void) {
+ 			continue;
+ 		}
+ 		//initialize the bot think residual time
++#ifdef SHADEREMU
++		/* (all in the same frame: they think at once, on cores of their own) */
++		botstates[i]->botthink_residual = 0;
++#else
+ 		botstates[i]->botthink_residual = bot_thinktime.integer * botnum / numbots;
++#endif
+ 		botnum++;
+ 	}
+ }
+@@ -1482,7 +1556,12 @@ int BotAIStartFrame(int time) {
  		if (!trap_AAS_Initialized()) return qfalse;
  
  		//update entities in the botlib
@@ -1679,7 +2569,47 @@ index ed5653d7..02bcfba1 100644
  			ent = &g_entities[i];
  			if (!ent->inuse) {
  				trap_BotLibUpdateEntity(i, NULL);
-@@ -1663,7 +1668,12 @@ BotAISetup
+@@ -1551,6 +1630,31 @@ int BotAIStartFrame(int time) {
+ 	floattime = trap_AAS_Time();
+ 
+ 	// execute scheduled bot AI
++#ifdef SHADEREMU
++	{
++		/* the bots that think now think at once, each on a core of the server's (server_shaderemu.c) */
++		void SE_BotThinks( int (*think)( int, float ), const int *clients, int n, float thinktime );
++		int thinking[MAX_CLIENTS], n = 0;
++
++		for( i = 0; i < MAX_CLIENTS; i++ ) {
++			if( !botstates[i] || !botstates[i]->inuse ) {
++				continue;
++			}
++			botstates[i]->botthink_residual += elapsed_time;
++			if ( botstates[i]->botthink_residual >= thinktime ) {
++				botstates[i]->botthink_residual -= thinktime;
++				if (!trap_AAS_Initialized()) return qfalse;
++				if (g_entities[i].client->pers.connected == CON_CONNECTED) {
++					thinking[n++] = i;
++				}
++			}
++		}
++		for( i = 0; i < n; i++ ) {
++			BotAIServerCommands( thinking[i] );
++		}
++		SE_BotThinks( BotAI, thinking, n, (float) thinktime / 1000 );
++	}
++#else
+ 	for( i = 0; i < MAX_CLIENTS; i++ ) {
+ 		if( !botstates[i] || !botstates[i]->inuse ) {
+ 			continue;
+@@ -1568,6 +1672,7 @@ int BotAIStartFrame(int time) {
+ 			}
+ 		}
+ 	}
++#endif
+ 
+ 
+ 	// execute bot user commands every frame
+@@ -1663,7 +1768,12 @@ BotAISetup
  int BotAISetup( int restart ) {
  	int			errnum;
  
@@ -1732,6 +2662,161 @@ index ed5d4ead..e3467dad 100644
  	for ( i = 0, cv = gameCvarTable ; i < gameCvarTableSize ; i++, cv++ ) {
  		if ( cv->vmCvar ) {
  			trap_Cvar_Update( cv->vmCvar );
+diff --git a/code/game/g_syscalls.c b/code/game/g_syscalls.c
+index c12aa06b..124c8fd9 100644
+--- a/code/game/g_syscalls.c
++++ b/code/game/g_syscalls.c
+@@ -41,6 +41,30 @@ int PASSFLOAT( float x ) {
+ 	return fi.i;
+ }
+ 
++#ifdef SHADEREMU
++/*
++ * The engine is the same program (linux/quake3/build.sh): what a frame of the game asks of it
++ * by the dozen is called, not asked through the door all the modules' questions take.
++ */
++void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask, int capsule );
++int SV_PointContents( const vec3_t p, int passEntityNum );
++void SV_LinkEntity( sharedEntity_t *ent );
++void SV_UnlinkEntity( sharedEntity_t *ent );
++int SV_AreaEntities( const vec3_t mins, const vec3_t maxs, int *entityList, int maxcount );
++void SV_GetUsercmd( int clientNum, usercmd_t *cmd );
++void Cvar_Update( vmCvar_t *vmCvar );
++int SV_BotGetSnapshotEntity( int client, int sequence );
++int SE_GameBotLibUpdateEntity( int ent, void *bue );
++void SE_GameBotUserCommand( int clientNum, usercmd_t *ucmd );
++float SE_GameAASTime( void );
++int SE_GameAASPointContents( vec3_t point );
++void SE_GameEAGetInput( int client, float thinktime, void *input );
++float SE_GameCharacteristicBFloat( int character, int index, float min, float max );
++#define SE_DIRECT( call, through ) call
++#else
++#define SE_DIRECT( call, through ) through
++#endif
++
+ void	trap_Print( const char *text ) {
+ 	syscall( G_PRINT, text );
+ }
+@@ -96,7 +120,7 @@ void	trap_Cvar_Register( vmCvar_t *cvar, const char *var_name, const char *value
+ }
+ 
+ void	trap_Cvar_Update( vmCvar_t *cvar ) {
+-	syscall( G_CVAR_UPDATE, cvar );
++	SE_DIRECT( Cvar_Update( cvar ), syscall( G_CVAR_UPDATE, cvar ) );
+ }
+ 
+ void trap_Cvar_Set( const char *var_name, const char *value ) {
+@@ -150,7 +174,7 @@ void trap_SetBrushModel( gentity_t *ent, const char *name ) {
+ }
+ 
+ void trap_Trace( trace_t *results, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask ) {
+-	syscall( G_TRACE, results, start, mins, maxs, end, passEntityNum, contentmask );
++	SE_DIRECT( SV_Trace( results, start, (float *)mins, (float *)maxs, end, passEntityNum, contentmask, qfalse ), syscall( G_TRACE, results, start, mins, maxs, end, passEntityNum, contentmask ) );
+ }
+ 
+ void trap_TraceCapsule( trace_t *results, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask ) {
+@@ -158,7 +182,7 @@ void trap_TraceCapsule( trace_t *results, const vec3_t start, const vec3_t mins,
+ }
+ 
+ int trap_PointContents( const vec3_t point, int passEntityNum ) {
+-	return syscall( G_POINT_CONTENTS, point, passEntityNum );
++	return SE_DIRECT( SV_PointContents( point, passEntityNum ), syscall( G_POINT_CONTENTS, point, passEntityNum ) );
+ }
+ 
+ 
+@@ -179,15 +203,15 @@ qboolean trap_AreasConnected( int area1, int area2 ) {
+ }
+ 
+ void trap_LinkEntity( gentity_t *ent ) {
+-	syscall( G_LINKENTITY, ent );
++	SE_DIRECT( SV_LinkEntity( (sharedEntity_t *)ent ), syscall( G_LINKENTITY, ent ) );
+ }
+ 
+ void trap_UnlinkEntity( gentity_t *ent ) {
+-	syscall( G_UNLINKENTITY, ent );
++	SE_DIRECT( SV_UnlinkEntity( (sharedEntity_t *)ent ), syscall( G_UNLINKENTITY, ent ) );
+ }
+ 
+ int trap_EntitiesInBox( const vec3_t mins, const vec3_t maxs, int *list, int maxcount ) {
+-	return syscall( G_ENTITIES_IN_BOX, mins, maxs, list, maxcount );
++	return SE_DIRECT( SV_AreaEntities( mins, maxs, list, maxcount ), syscall( G_ENTITIES_IN_BOX, mins, maxs, list, maxcount ) );
+ }
+ 
+ qboolean trap_EntityContact( const vec3_t mins, const vec3_t maxs, const gentity_t *ent ) {
+@@ -207,7 +231,7 @@ void trap_BotFreeClient( int clientNum ) {
+ }
+ 
+ void trap_GetUsercmd( int clientNum, usercmd_t *cmd ) {
+-	syscall( G_GET_USERCMD, clientNum, cmd );
++	SE_DIRECT( SV_GetUsercmd( clientNum, cmd ), syscall( G_GET_USERCMD, clientNum, cmd ) );
+ }
+ 
+ qboolean trap_GetEntityToken( char *buffer, int bufferSize ) {
+@@ -260,7 +284,7 @@ int trap_BotLibLoadMap(const char *mapname) {
+ }
+ 
+ int trap_BotLibUpdateEntity(int ent, void /* struct bot_updateentity_s */ *bue) {
+-	return syscall( BOTLIB_UPDATENTITY, ent, bue );
++	return SE_DIRECT( SE_GameBotLibUpdateEntity( ent, bue ), syscall( BOTLIB_UPDATENTITY, ent, bue ) );
+ }
+ 
+ int trap_BotLibTest(int parm0, char *parm1, vec3_t parm2, vec3_t parm3) {
+@@ -268,7 +292,7 @@ int trap_BotLibTest(int parm0, char *parm1, vec3_t parm2, vec3_t parm3) {
+ }
+ 
+ int trap_BotGetSnapshotEntity( int clientNum, int sequence ) {
+-	return syscall( BOTLIB_GET_SNAPSHOT_ENTITY, clientNum, sequence );
++	return SE_DIRECT( SV_BotGetSnapshotEntity( clientNum, sequence ), syscall( BOTLIB_GET_SNAPSHOT_ENTITY, clientNum, sequence ) );
+ }
+ 
+ int trap_BotGetServerCommand(int clientNum, char *message, int size) {
+@@ -276,7 +300,7 @@ int trap_BotGetServerCommand(int clientNum, char *message, int size) {
+ }
+ 
+ void trap_BotUserCommand(int clientNum, usercmd_t *ucmd) {
+-	syscall( BOTLIB_USER_COMMAND, clientNum, ucmd );
++	SE_DIRECT( SE_GameBotUserCommand( clientNum, ucmd ), syscall( BOTLIB_USER_COMMAND, clientNum, ucmd ) );
+ }
+ 
+ void trap_AAS_EntityInfo(int entnum, void /* struct aas_entityinfo_s */ *info) {
+@@ -293,6 +317,9 @@ void trap_AAS_PresenceTypeBoundingBox(int presencetype, vec3_t mins, vec3_t maxs
+ 
+ float trap_AAS_Time(void) {
+ 	floatint_t fi;
++#ifdef SHADEREMU
++	return SE_GameAASTime();
++#endif
+ 	fi.i = syscall( BOTLIB_AAS_TIME );
+ 	return fi.f;
+ }
+@@ -318,7 +345,7 @@ int trap_AAS_AreaInfo( int areanum, void /* struct aas_areainfo_s */ *info ) {
+ }
+ 
+ int trap_AAS_PointContents(vec3_t point) {
+-	return syscall( BOTLIB_AAS_POINT_CONTENTS, point );
++	return SE_DIRECT( SE_GameAASPointContents( point ), syscall( BOTLIB_AAS_POINT_CONTENTS, point ) );
+ }
+ 
+ int trap_AAS_NextBSPEntity(int ent) {
+@@ -462,7 +489,7 @@ void trap_EA_EndRegular(int client, float thinktime) {
+ }
+ 
+ void trap_EA_GetInput(int client, float thinktime, void /* struct bot_input_s */ *input) {
+-	syscall( BOTLIB_EA_GET_INPUT, client, PASSFLOAT(thinktime), input );
++	SE_DIRECT( SE_GameEAGetInput( client, thinktime, input ), syscall( BOTLIB_EA_GET_INPUT, client, PASSFLOAT(thinktime), input ) );
+ }
+ 
+ void trap_EA_ResetInput(int client) {
+@@ -485,6 +512,9 @@ float trap_Characteristic_Float(int character, int index) {
+ 
+ float trap_Characteristic_BFloat(int character, int index, float min, float max) {
+ 	floatint_t fi;
++#ifdef SHADEREMU
++	return SE_GameCharacteristicBFloat( character, index, min, max );
++#endif
+ 	fi.i = syscall( BOTLIB_AI_CHARACTERISTIC_BFLOAT, character, index, PASSFLOAT(min), PASSFLOAT(max) );
+ 	return fi.f;
+ }
 diff --git a/code/q3_ui/ui_atoms.c b/code/q3_ui/ui_atoms.c
 index ac17814f..e8b0a081 100644
 --- a/code/q3_ui/ui_atoms.c
@@ -1927,7 +3012,7 @@ index 6afacbac..2069944b 100644
  
  	trap_Key_SetCatcher( KEYCATCH_UI );
 diff --git a/code/qcommon/cm_load.c b/code/qcommon/cm_load.c
-index 1aa0fbe8..678319d8 100644
+index 1aa0fbe8..404e19f7 100644
 --- a/code/qcommon/cm_load.c
 +++ b/code/qcommon/cm_load.c
 @@ -43,10 +43,10 @@ void SetPlaneSignbits (cplane_t *out) {
@@ -1936,11 +3021,11 @@ index 1aa0fbe8..678319d8 100644
  // some extra indexes along with those needed by the map
 -#define	BOX_BRUSHES		1
 -#define	BOX_SIDES		6
-+#define	BOX_BRUSHES		5	// (SHADEREMU: a box for each of three cores, and one between two: 16 bytes have one writer)
-+#define	BOX_SIDES		18
++#define	BOX_BRUSHES		( 2 * SE_CORES - 1 )	// (SHADEREMU: a box for each core, and one between two: 16 bytes have one writer)
++#define	BOX_SIDES		( 6 * SE_CORES )
  #define	BOX_LEAFS		2
 -#define	BOX_PLANES		12
-+#define	BOX_PLANES		36
++#define	BOX_PLANES		( 12 * SE_CORES )
  
  #define	LL(x) x=LittleLong(x)
  
@@ -1955,8 +3040,8 @@ index 1aa0fbe8..678319d8 100644
 +cmodel_t	box_models[SE_CORES];
 +cplane_t	*box_planes_of[SE_CORES];
 +cbrush_t	*box_brushes[SE_CORES];
-+int			*se_brush_marks[2], *se_patch_marks[2];
-+struct se_check_s	se_worker_checks[2] __attribute__ ((aligned (16)));
++int			*se_brush_marks[SE_CORES - 1], *se_patch_marks[SE_CORES - 1];
++struct se_check_s	se_worker_checks[SE_CORES - 1] __attribute__ ((aligned (16)));
  
  
  
@@ -2062,7 +3147,7 @@ index 1aa0fbe8..678319d8 100644
 +		}
 +	}
 +	/* the worker's marks of what a trace of its has tested (cm_local.h) */
-+	for (w=0 ; w<2 ; w++)
++	for (w=0 ; w<SE_CORES - 1 ; w++)
  	{
 -		side = i&1;
 -
@@ -2118,7 +3203,7 @@ index 1aa0fbe8..678319d8 100644
  	return BOX_MODEL_HANDLE;
  }
 diff --git a/code/qcommon/cm_local.h b/code/qcommon/cm_local.h
-index 5848fdc2..e8a7d1b9 100644
+index 5848fdc2..ee818251 100644
 --- a/code/qcommon/cm_local.h
 +++ b/code/qcommon/cm_local.h
 @@ -25,6 +25,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
@@ -2131,22 +3216,21 @@ index 5848fdc2..e8a7d1b9 100644
 + * that one in several leaves is tested once. The server's traces and the client's game's may
 + * each run on a worker core: a worker has marks and a count of its own (at this file's end).
 + */
-+extern int	*se_brush_marks[2], *se_patch_marks[2];
-+extern struct se_check_s { int count, unused[3]; } se_worker_checks[2];
-+#define CM_Checked( own, number, marks ) SE_Checked( own, number, marks )
++extern int	*se_brush_marks[SE_CORES - 1], *se_patch_marks[SE_CORES - 1];
++extern struct se_check_s { int count, unused[3]; } se_worker_checks[SE_CORES - 1];
++#define CM_Checked( own, number, marks ) SE_Checked( se_w, own, number, marks )
 +#define CM_NextCheck() SE_NextCheck()
 +#endif
 +
  #define	BOX_MODEL_HANDLE		255
  #define CAPSULE_MODEL_HANDLE	254
  
-@@ -134,6 +146,34 @@ typedef struct {
+@@ -134,6 +146,33 @@ typedef struct {
  #define	SURFACE_CLIP_EPSILON	(0.125)
  
  extern	clipMap_t	cm;
 +#ifdef SHADEREMU
-+static inline int SE_Checked( int *own, int number, int **marks ) {
-+	int		w = SE_OnWorker();
++static inline int SE_Checked( int w, int *own, int number, int **marks ) {
 +
 +	if ( !w ) {
 +		if ( *own == cm.checkcount ) {
@@ -2176,7 +3260,7 @@ index 5848fdc2..e8a7d1b9 100644
  extern	int			c_traces, c_brush_traces, c_patch_traces;
  extern	cvar_t		*cm_noAreas;
 diff --git a/code/qcommon/cm_test.c b/code/qcommon/cm_test.c
-index 9fd1ec58..327889d7 100644
+index 9fd1ec58..d9b21f05 100644
 --- a/code/qcommon/cm_test.c
 +++ b/code/qcommon/cm_test.c
 @@ -48,7 +48,9 @@ int CM_PointLeafnum_r( const vec3_t p, int num ) {
@@ -2189,7 +3273,17 @@ index 9fd1ec58..327889d7 100644
  
  	return -1 - num;
  }
-@@ -101,10 +103,9 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
+@@ -88,6 +90,9 @@ void CM_StoreLeafs( leafList_t *ll, int nodenum ) {
+ }
+ 
+ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
++#ifdef SHADEREMU
++	int		se_w = SE_OnWorker();	/* (which core: asked once, not at every brush) */
++#endif
+ 	int			i, k;
+ 	int			leafnum;
+ 	int			brushnum;
+@@ -101,10 +106,9 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
  	for ( k = 0 ; k < leaf->numLeafBrushes ; k++ ) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  		b = &cm.brushes[brushnum];
@@ -2201,7 +3295,7 @@ index 9fd1ec58..327889d7 100644
  		for ( i = 0 ; i < 3 ; i++ ) {
  			if ( b->bounds[0][i] >= ll->bounds[1][i] || b->bounds[1][i] <= ll->bounds[0][i] ) {
  				break;
-@@ -172,7 +173,7 @@ CM_BoxLeafnums
+@@ -172,7 +176,7 @@ CM_BoxLeafnums
  int	CM_BoxLeafnums( const vec3_t mins, const vec3_t maxs, int *list, int listsize, int *lastLeaf) {
  	leafList_t	ll;
  
@@ -2210,7 +3304,7 @@ index 9fd1ec58..327889d7 100644
  
  	VectorCopy( mins, ll.bounds[0] );
  	VectorCopy( maxs, ll.bounds[1] );
-@@ -197,7 +198,7 @@ CM_BoxBrushes
+@@ -197,7 +201,7 @@ CM_BoxBrushes
  int CM_BoxBrushes( const vec3_t mins, const vec3_t maxs, cbrush_t **list, int listsize ) {
  	leafList_t	ll;
  
@@ -2220,10 +3314,20 @@ index 9fd1ec58..327889d7 100644
  	VectorCopy( mins, ll.bounds[0] );
  	VectorCopy( maxs, ll.bounds[1] );
 diff --git a/code/qcommon/cm_trace.c b/code/qcommon/cm_trace.c
-index ec9fd0a0..1ab2fc28 100644
+index ec9fd0a0..f9b5dd01 100644
 --- a/code/qcommon/cm_trace.c
 +++ b/code/qcommon/cm_trace.c
-@@ -249,10 +249,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -240,6 +240,9 @@ CM_TestInLeaf
+ ================
+ */
+ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
++#ifdef SHADEREMU
++	int		se_w = SE_OnWorker();	/* (which core: asked once, not at every brush) */
++#endif
+ 	int			k;
+ 	int			brushnum;
+ 	cbrush_t	*b;
+@@ -249,10 +252,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  	for (k=0 ; k<leaf->numLeafBrushes ; k++) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  		b = &cm.brushes[brushnum];
@@ -2235,7 +3339,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  		if ( !(b->contents & tw->contents)) {
  			continue;
-@@ -275,10 +274,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -275,10 +277,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  			if ( !patch ) {
  				continue;
  			}
@@ -2248,7 +3352,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  			if ( !(patch->contents & tw->contents)) {
  				continue;
-@@ -428,12 +426,12 @@ void CM_PositionTest( traceWork_t *tw ) {
+@@ -428,12 +429,12 @@ void CM_PositionTest( traceWork_t *tw ) {
  	ll.lastLeaf = 0;
  	ll.overflowed = qfalse;
  
@@ -2263,7 +3367,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  	// test the contents of the leafs
  	for (i=0 ; i < ll.count ; i++) {
-@@ -462,7 +460,9 @@ CM_TraceThroughPatch
+@@ -462,7 +463,9 @@ CM_TraceThroughPatch
  void CM_TraceThroughPatch( traceWork_t *tw, cPatch_t *patch ) {
  	float		oldFrac;
  
@@ -2273,7 +3377,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  	oldFrac = tw->trace.fraction;
  
-@@ -500,7 +500,9 @@ void CM_TraceThroughBrush( traceWork_t *tw, cbrush_t *brush ) {
+@@ -500,7 +503,9 @@ void CM_TraceThroughBrush( traceWork_t *tw, cbrush_t *brush ) {
  		return;
  	}
  
@@ -2283,7 +3387,17 @@ index ec9fd0a0..1ab2fc28 100644
  
  	getout = qfalse;
  	startout = qfalse;
-@@ -677,10 +679,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -667,6 +672,9 @@ CM_TraceThroughLeaf
+ ================
+ */
+ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
++#ifdef SHADEREMU
++	int		se_w = SE_OnWorker();	/* (which core: asked once, not at every brush) */
++#endif
+ 	int			k;
+ 	int			brushnum;
+ 	cbrush_t	*b;
+@@ -677,10 +685,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  
  		b = &cm.brushes[brushnum];
@@ -2295,7 +3409,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  		if ( !(b->contents & tw->contents) ) {
  			continue;
-@@ -708,10 +709,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -708,10 +715,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  			if ( !patch ) {
  				continue;
  			}
@@ -2307,7 +3421,7 @@ index ec9fd0a0..1ab2fc28 100644
  
  			if ( !(patch->contents & tw->contents) ) {
  				continue;
-@@ -1154,9 +1154,11 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
+@@ -1154,9 +1160,11 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
  
  	cmod = CM_ClipHandleToModel( model );
  
@@ -2418,7 +3532,7 @@ index ed94517f..65b4f696 100644
  			}
  			return;
 diff --git a/code/qcommon/common.c b/code/qcommon/common.c
-index d97312c4..8dd8a3c8 100644
+index d97312c4..c2558b8c 100644
 --- a/code/qcommon/common.c
 +++ b/code/qcommon/common.c
 @@ -37,12 +37,22 @@ int demo_protocols[] =
@@ -2676,7 +3790,19 @@ index d97312c4..8dd8a3c8 100644
  			}
  
  			while ( NET_GetLoopPacket( NS_SERVER, &evFrom, &buf ) ) {
-@@ -3146,7 +3291,11 @@ void Com_Frame( void ) {
+@@ -2651,6 +2796,11 @@ static void Com_InitRand(void)
+ {
+ 	unsigned int seed;
+ 
++#ifdef SHADEREMU
++	if(getenv("QUAKE3_SEED"))	/* (two builds' runs compared: docs/quake3.md, "Checking it") */
++		srand(atoi(getenv("QUAKE3_SEED")));
++	else
++#endif
+ 	if(Sys_RandomBytes((byte *) &seed, sizeof(seed)))
+ 		srand(seed);
+ 	else
+@@ -3146,7 +3296,11 @@ void Com_Frame( void ) {
  
  	do
  	{
@@ -2688,7 +3814,7 @@ index d97312c4..8dd8a3c8 100644
  		{
  			timeValSV = SV_SendQueuedPackets();
  			
-@@ -3189,7 +3338,15 @@ void Com_Frame( void ) {
+@@ -3189,7 +3343,15 @@ void Com_Frame( void ) {
  		timeBeforeServer = Sys_Milliseconds ();
  	}
  
@@ -2704,7 +3830,7 @@ index d97312c4..8dd8a3c8 100644
  
  	// if "dedicated" has been modified, start up
  	// or shut down the client system.
-@@ -3227,7 +3384,13 @@ void Com_Frame( void ) {
+@@ -3227,7 +3389,13 @@ void Com_Frame( void ) {
  		timeBeforeClient = Sys_Milliseconds ();
  	}
  
@@ -2876,7 +4002,7 @@ index 0283fb70..8063d2e9 100644
  	send(huff->loc[ch], NULL, fout, maxoffset);
  	*offset = bloc;
 diff --git a/code/qcommon/msg.c b/code/qcommon/msg.c
-index 00c1f65b..86b0bb5f 100644
+index 00c1f65b..c08d7e6e 100644
 --- a/code/qcommon/msg.c
 +++ b/code/qcommon/msg.c
 @@ -105,7 +105,9 @@ bit functions
@@ -2889,7 +4015,73 @@ index 00c1f65b..86b0bb5f 100644
  
  	if ( msg->overflowed ) {
  		return;
-@@ -653,7 +655,9 @@ void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *
+@@ -445,7 +447,12 @@ float MSG_ReadFloat( msg_t *msg ) {
+ }
+ 
+ char *MSG_ReadString( msg_t *msg ) {
++#ifdef SHADEREMU
++	static char	strings[SE_CORES][MAX_STRING_CHARS];	/* (a core its own: two cores read messages at once) */
++	char		*string = strings[SE_OnWorker()];
++#else
+ 	static char	string[MAX_STRING_CHARS];
++#endif
+ 	int		l,c;
+ 	
+ 	l = 0;
+@@ -463,7 +470,7 @@ char *MSG_ReadString( msg_t *msg ) {
+ 			c = '.';
+ 		}
+ 		// break only after reading all expected data from bitstream
+-		if ( l >= sizeof(string)-1 ) {
++		if ( l >= MAX_STRING_CHARS-1 ) {
+ 			break;
+ 		}
+ 		string[l++] = c;
+@@ -475,7 +482,12 @@ char *MSG_ReadString( msg_t *msg ) {
+ }
+ 
+ char *MSG_ReadBigString( msg_t *msg ) {
++#ifdef SHADEREMU
++	static char	strings[SE_CORES][BIG_INFO_STRING];	/* (a core its own: two cores read messages at once) */
++	char		*string = strings[SE_OnWorker()];
++#else
+ 	static char	string[BIG_INFO_STRING];
++#endif
+ 	int		l,c;
+ 	
+ 	l = 0;
+@@ -493,7 +505,7 @@ char *MSG_ReadBigString( msg_t *msg ) {
+ 			c = '.';
+ 		}
+ 		// break only after reading all expected data from bitstream
+-		if ( l >= sizeof(string)-1 ) {
++		if ( l >= BIG_INFO_STRING-1 ) {
+ 			break;
+ 		}
+ 		string[l++] = c;
+@@ -505,7 +517,12 @@ char *MSG_ReadBigString( msg_t *msg ) {
+ }
+ 
+ char *MSG_ReadStringLine( msg_t *msg ) {
++#ifdef SHADEREMU
++	static char	strings[SE_CORES][MAX_STRING_CHARS];	/* (a core its own: two cores read messages at once) */
++	char		*string = strings[SE_OnWorker()];
++#else
+ 	static char	string[MAX_STRING_CHARS];
++#endif
+ 	int		l,c;
+ 
+ 	l = 0;
+@@ -523,7 +540,7 @@ char *MSG_ReadStringLine( msg_t *msg ) {
+ 			c = '.';
+ 		}
+ 		// break only after reading all expected data from bitstream
+-		if ( l >= sizeof(string)-1 ) {
++		if ( l >= MAX_STRING_CHARS-1 ) {
+ 			break;
+ 		}
+ 		string[l++] = c;
+@@ -653,7 +670,9 @@ void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *
  		from->buttons == to->buttons &&
  		from->weapon == to->weapon) {
  			MSG_WriteBits( msg, 0, 1 );				// no change
@@ -2899,7 +4091,7 @@ index 00c1f65b..86b0bb5f 100644
  			return;
  	}
  	key ^= to->serverTime;
-@@ -845,6 +849,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -845,6 +864,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  	}
  
  	lc = 0;
@@ -2923,7 +4115,7 @@ index 00c1f65b..86b0bb5f 100644
  	// build the change vector as bytes so it is endien independent
  	for ( i = 0, field = entityStateFields ; i < numFields ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -853,6 +874,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -853,6 +889,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  			lc = i+1;
  		}
  	}
@@ -2933,7 +4125,7 @@ index 00c1f65b..86b0bb5f 100644
  
  	if ( lc == 0 ) {
  		// nothing at all changed
-@@ -872,7 +896,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -872,7 +911,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  
  	MSG_WriteByte( msg, lc );	// # of changes
  
@@ -2943,7 +4135,7 @@ index 00c1f65b..86b0bb5f 100644
  
  	for ( i = 0, field = entityStateFields ; i < lc ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -892,7 +918,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -892,7 +933,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  
  			if (fullFloat == 0.0f) {
  					MSG_WriteBits( msg, 0, 1 );
@@ -2953,7 +4145,7 @@ index 00c1f65b..86b0bb5f 100644
  			} else {
  				MSG_WriteBits( msg, 1, 1 );
  				if ( trunc == fullFloat && trunc + FLOAT_INT_BIAS >= 0 && 
-@@ -1147,7 +1175,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+@@ -1147,7 +1190,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
  
  	MSG_WriteByte( msg, lc );	// # of changes
  
@@ -2963,7 +4155,7 @@ index 00c1f65b..86b0bb5f 100644
  
  	for ( i = 0, field = playerStateFields ; i < lc ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -1213,7 +1243,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+@@ -1213,7 +1258,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
  
  	if (!statsbits && !persistantbits && !ammobits && !powerupbits) {
  		MSG_WriteBits( msg, 0, 1 );	// no change
@@ -2973,7 +4165,7 @@ index 00c1f65b..86b0bb5f 100644
  		return;
  	}
  	MSG_WriteBits( msg, 1, 1 );	// changed
-@@ -1667,6 +1699,15 @@ int msg_hData[256] = {
+@@ -1667,6 +1714,15 @@ int msg_hData[256] = {
  };
  
  void MSG_initHuffman( void ) {
@@ -3168,10 +4360,10 @@ index be72dc70..1cfa9cfa 100644
  	
  	if ( !s || !key ) {
 diff --git a/code/qcommon/q_shared.h b/code/qcommon/q_shared.h
-index 1877a42c..1407690b 100644
+index 1877a42c..e0665b99 100644
 --- a/code/qcommon/q_shared.h
 +++ b/code/qcommon/q_shared.h
-@@ -23,13 +23,47 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+@@ -23,13 +23,58 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  #ifndef __Q_SHARED_H
  #define __Q_SHARED_H
  
@@ -3179,18 +4371,29 @@ index 1877a42c..1407690b 100644
 +/*
 + * The server's frame may run on a worker core (linux/quake3/server_shaderemu.c) and the
 + * client's game on another (client_shaderemu.c): which the code that asks is running on, by
-+ * where its stack is: 0 the first core, 1 the server's, 2 the client's game's. What two
-+ * cores would both write has one of itself for each.
++ * where its stack is: 0 the first core, 1 the server's, 2 the client's game's, 3 on a bot's
++ * think beside the server's (SE_THINKERS of them). What two cores would both write has one of
++ * itself for each.
 + */
-+extern unsigned se_main_stack, se_client_stack;
-+#define SE_CORES	3
++extern unsigned se_main_stack, se_client_stack, se_think_stacks, se_side_stack;
++#define SE_THINKERS		3
++#define SE_THINK_STACK	0x40000u
++#define SE_SIDE			( 3 + SE_THINKERS )	// the client's game's helper: the level's items of a frame
++#define SE_CORES		( 4 + SE_THINKERS )
 +static inline int SE_OnWorker( void ) {
 +	char here;
++	unsigned at = (unsigned)(__UINTPTR_TYPE__)&here;
 +
-+	if ( se_main_stack - (unsigned)(__UINTPTR_TYPE__)&here < 0x400000u ) {
++	if ( se_main_stack - at < 0x400000u ) {
 +		return 0;
 +	}
-+	return se_client_stack - (unsigned)(__UINTPTR_TYPE__)&here < 0x80000u ? 2 : 1;
++	if ( se_client_stack - at < 0x80000u ) {
++		return 2;
++	}
++	if ( se_side_stack - at < SE_THINK_STACK ) {
++		return SE_SIDE;
++	}
++	return at - se_think_stacks < SE_THINKERS * SE_THINK_STACK ? 3 + ( at - se_think_stacks ) / SE_THINK_STACK : 1;
 +}
 +#ifdef SE_PARTS
 +/* QUAKE3_DEFINES=-DSE_PARTS: the first core's instructions by part of a frame (the q3parts: line) */
@@ -3423,10 +4626,24 @@ index 9526d4ab..66aa0434 100644
 +#define Cmd_AddCommand(name, fn)	SE_ServerAddCommand(name, fn)
 +#endif
 diff --git a/code/server/sv_bot.c b/code/server/sv_bot.c
-index 44d283d2..5a57e37d 100644
+index 44d283d2..6d28bbf0 100644
 --- a/code/server/sv_bot.c
 +++ b/code/server/sv_bot.c
-@@ -494,7 +494,11 @@ void SV_BotInitCvars(void) {
+@@ -423,6 +423,13 @@ SV_BotClientCommand
+ ==================
+ */
+ static void BotClientCommand( int client, char *command ) {
++#ifdef SHADEREMU
++	int SE_BotCommandKept( int client, const char *command );
++
++	if ( SE_BotCommandKept( client, command ) ) {
++		return;		/* (said in a think: done after all the bots' thinks, in their order) */
++	}
++#endif
+ 	SV_ExecuteClientCommand( &svs.clients[client], command, qtrue );
+ }
+ 
+@@ -494,7 +501,11 @@ void SV_BotInitCvars(void) {
  	Cvar_Get("bot_forcewrite", "0", 0);					//force writing aas file
  	Cvar_Get("bot_aasoptimize", "0", 0);				//no aas file optimisation
  	Cvar_Get("bot_saveroutingcache", "0", 0);			//save routing cache
@@ -3440,7 +4657,7 @@ index 44d283d2..5a57e37d 100644
  	Cvar_Get("bot_testichat", "0", 0);					//test ichats
  	Cvar_Get("bot_testrchat", "0", 0);					//test rchats
 diff --git a/code/server/sv_game.c b/code/server/sv_game.c
-index 161d975e..d8a4c85f 100644
+index 161d975e..6680c62e 100644
 --- a/code/server/sv_game.c
 +++ b/code/server/sv_game.c
 @@ -63,6 +63,11 @@ svEntity_t	*SV_SvEntityForGentity( sharedEntity_t *gEnt ) {
@@ -3484,12 +4701,19 @@ index 161d975e..d8a4c85f 100644
  	sv.num_entities = numGEntities;
  
  	sv.gameClients = clients;
-@@ -957,6 +977,9 @@ qboolean SV_GameCommand( void ) {
+@@ -957,6 +977,16 @@ qboolean SV_GameCommand( void ) {
  	if ( sv.state != SS_GAME ) {
  		return qfalse;
  	}
 +#ifdef SHADEREMU
 +	SE_ServerSettle();
++	{
++		int SE_ServerCommandDraws( int on );	/* (a command of the server's draws from its numbers) */
++		int was = SE_ServerCommandDraws( 1 ), made = VM_Call( gvm, GAME_CONSOLE_COMMAND );
++
++		SE_ServerCommandDraws( was );
++		return made;
++	}
 +#endif
  
  	return VM_Call( gvm, GAME_CONSOLE_COMMAND );
@@ -3521,10 +4745,10 @@ index 063b87c7..4e36420d 100644
  	Com_Printf( "----- Server Shutdown (%s) -----\n", finalmsg );
  
 diff --git a/code/server/sv_main.c b/code/server/sv_main.c
-index 88435bff..23817a94 100644
+index 88435bff..e8742f5f 100644
 --- a/code/server/sv_main.c
 +++ b/code/server/sv_main.c
-@@ -1052,9 +1052,19 @@ Player movement occurs as a result of packet events, which
+@@ -1052,9 +1052,20 @@ Player movement occurs as a result of packet events, which
  happen before SV_Frame is called
  ==================
  */
@@ -3533,6 +4757,7 @@ index 88435bff..23817a94 100644
 +unsigned se_server_frames;
 +int se_server_quiet;
 +unsigned se_server_parts[3];	/* instructions of the server's frames: the bots, the game, what the clients are told (the q3stat: lines) */
++void SE_ServerSum( void );		/* server_shaderemu.c */
 +#endif
 +
  void SV_Frame( int msec ) {
@@ -3544,7 +4769,7 @@ index 88435bff..23817a94 100644
  
  	// the menu kills the server with this cvar
  	if ( sv_killserver->integer ) {
-@@ -1094,7 +1104,13 @@ void SV_Frame( int msec ) {
+@@ -1094,7 +1105,13 @@ void SV_Frame( int msec ) {
  
  	sv.timeResidual += msec;
  
@@ -3558,7 +4783,7 @@ index 88435bff..23817a94 100644
  
  	// if time is about to hit the 32nd bit, kick all clients
  	// and clear sv.time, rather
-@@ -1119,10 +1135,19 @@ void SV_Frame( int msec ) {
+@@ -1119,10 +1136,19 @@ void SV_Frame( int msec ) {
  	}
  
  	// update infostrings if anything has been changed
@@ -3578,7 +4803,7 @@ index 88435bff..23817a94 100644
  	if ( cvar_modifiedFlags & CVAR_SYSTEMINFO ) {
  		SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
  		cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
-@@ -1139,6 +1164,9 @@ void SV_Frame( int msec ) {
+@@ -1139,6 +1165,9 @@ void SV_Frame( int msec ) {
  
  	if (com_dedicated->integer) SV_BotFrame (sv.time);
  
@@ -3588,17 +4813,18 @@ index 88435bff..23817a94 100644
  	// run the game simulation in chunks
  	while ( sv.timeResidual >= frameMsec ) {
  		sv.timeResidual -= frameMsec;
-@@ -1147,6 +1175,9 @@ void SV_Frame( int msec ) {
+@@ -1147,6 +1176,10 @@ void SV_Frame( int msec ) {
  
  		// let everything in the world think and move
  		VM_Call (gvm, GAME_RUN_FRAME, sv.time);
 +#ifdef SHADEREMU
 +		se_server_frames++;
++		SE_ServerSum();
 +#endif
  	}
  
  	if ( com_speeds->integer ) {
-@@ -1156,8 +1187,21 @@ void SV_Frame( int msec ) {
+@@ -1156,8 +1189,21 @@ void SV_Frame( int msec ) {
  	// check timeouts
  	SV_CheckTimeouts();
  
@@ -3621,10 +4847,36 @@ index 88435bff..23817a94 100644
  	// send a heartbeat to the master if needed
  	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);
 diff --git a/code/server/sv_snapshot.c b/code/server/sv_snapshot.c
-index ec760713..60a53199 100644
+index ec760713..9073099d 100644
 --- a/code/server/sv_snapshot.c
 +++ b/code/server/sv_snapshot.c
-@@ -495,8 +495,27 @@ static void SV_BuildClientSnapshot( client_t *client ) {
+@@ -316,8 +316,13 @@ static void SV_AddEntitiesVisibleFromPoint( vec3_t origin, clientSnapshot_t *fra
+ 
+ 	clientpvs = CM_ClusterPVS (clientcluster);
+ 
++#ifdef SHADEREMU
++	/* (each entity found by stepping, not by two calls and a multiplication) */
++	for ( e = 0, ent = SV_GentityNum( 0 ) ; e < sv.num_entities ; e++, ent = (sharedEntity_t *)( (byte *)ent + sv.gentitySize ) ) {
++#else
+ 	for ( e = 0 ; e < sv.num_entities ; e++ ) {
+ 		ent = SV_GentityNum(e);
++#endif
+ 
+ 		// never send entities that aren't linked in
+ 		if ( !ent->r.linked ) {
+@@ -354,7 +359,11 @@ static void SV_AddEntitiesVisibleFromPoint( vec3_t origin, clientSnapshot_t *fra
+ 				continue;
+ 		}
+ 
++#ifdef SHADEREMU
++		svEnt = &sv.svEntities[e];	/* (its number is e, made so above) */
++#else
+ 		svEnt = SV_SvEntityForGentity( ent );
++#endif
+ 
+ 		// don't double add an entity through portals
+ 		if ( svEnt->snapshotCounter == sv.snapshotCounter ) {
+@@ -495,8 +504,29 @@ static void SV_BuildClientSnapshot( client_t *client ) {
  	// in the list which will need to be resorted for the delta compression
  	// to work correctly.  This also catches the error condition
  	// of an entity being included twice.
@@ -3639,8 +4891,10 @@ index ec760713..60a53199 100644
 +			bits[entityNumbers.snapshotEntities[i] >> 5] |= 1u << ( entityNumbers.snapshotEntities[i] & 31 );
 +		}
 +		for ( i = 0 ; i < MAX_GENTITIES / 32 ; i++ ) {
-+			for ( b = bits[i] ; b ; b &= b - 1 ) {
-+				entityNumbers.snapshotEntities[n++] = i * 32 + __builtin_ctz( b );
++			for ( b = bits[i] ; b ; b &= b - 1 ) {	/* (the lowest bit's place by a de Bruijn sequence: the machine has no ctz) */
++				static const unsigned char place[32] = { 0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
++					31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9 };
++				entityNumbers.snapshotEntities[n++] = i * 32 + place[( ( b & -b ) * 0x077CB531u ) >> 27];
 +			}
 +		}
 +		entityNumbers.numSnapshotEntities = n;
@@ -3652,8 +4906,28 @@ index ec760713..60a53199 100644
  
  	// now that all viewpoint's areabits have been OR'd together, invert
  	// all of them to make it a mask vector, which is what the renderer wants
+@@ -507,6 +537,19 @@ static void SV_BuildClientSnapshot( client_t *client ) {
+ 	// copy the entity states out
+ 	frame->num_entities = 0;
+ 	frame->first_entity = svs.nextSnapshotEntities;
++#ifdef SHADEREMU
++	/* a bot reads only which entities it sees (SV_BotGetSnapshotEntity), never their states */
++	if ( clent->r.svFlags & SVF_BOT ) {
++		for ( i = 0 ; i < entityNumbers.numSnapshotEntities ; i++ ) {
++			svs.snapshotEntities[svs.nextSnapshotEntities++ % svs.numSnapshotEntities].number = entityNumbers.snapshotEntities[i];
++		}
++		frame->num_entities = entityNumbers.numSnapshotEntities;
++		if ( svs.nextSnapshotEntities >= 0x7FFFFFFE ) {
++			Com_Error(ERR_FATAL, "svs.nextSnapshotEntities wrapped");
++		}
++		return;
++	}
++#endif
+ 	for ( i = 0 ; i < entityNumbers.numSnapshotEntities ; i++ ) {
+ 		ent = SV_GentityNum(entityNumbers.snapshotEntities[i]);
+ 		state = &svs.snapshotEntities[svs.nextSnapshotEntities % svs.numSnapshotEntities];
 diff --git a/code/server/sv_world.c b/code/server/sv_world.c
-index 94868142..16476b07 100644
+index 94868142..e4f8c803 100644
 --- a/code/server/sv_world.c
 +++ b/code/server/sv_world.c
 @@ -145,6 +145,9 @@ SV_ClearWorld
@@ -3692,7 +4966,7 @@ index 94868142..16476b07 100644
  
  	// clip to world
 +#ifdef SHADEREMU
-+	if ( se_trace_keep && start[0] == end[0] && start[1] == end[1] ) {
++	if ( se_trace_keep && start[0] == end[0] && start[1] == end[1] && SE_OnWorker() < 3 ) {	/* (the table is the server core's) */
 +		se_kept_trace_t	*kept;
 +		int				key[14];
 +

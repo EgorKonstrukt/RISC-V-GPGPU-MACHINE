@@ -63,6 +63,10 @@ rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcwx.c" -o "$WORK/
 rm -f "$STAGE/usr/lib/libmcw.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libmcw.a" "$WORK/build/mcw.o" "$WORK/build/mcwx.o"
 cp "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mc.h" "$STAGE/usr/include/"
+# libmedia's (linux/libmedia/build.sh, run before): kept, since usr/lib and usr/include are replaced below
+if [ -f "$WORK/src/libmedia/libmedia.a" ]; then
+    cp "$WORK/src/libmedia/libmedia.a" "$STAGE/usr/lib/" && cp "$REPO/linux/libmedia/media.h" "$STAGE/usr/include/"
+fi
 riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || true
 # what the examples take of each archive goes first in it, for the ROM (pack.py, docs/cc.md);
 # the compiler is told where that is (mapped.c), so it is built after

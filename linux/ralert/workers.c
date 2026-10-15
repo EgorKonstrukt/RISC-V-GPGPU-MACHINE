@@ -1,21 +1,21 @@
 /*
  * Red Alert's side of the machine's worker cores (workers.h): its jobs, which are functions
  * here that a worker calls in the game's own memory, over the library every program that
- * uses the workers has and its second layer (programs/mc/mcwx.h: a frame's rows by mcw_for,
- * the next frame's pointers by mcw_try_call).
+ * uses the workers has and its second layer (programs/mc/mcwx.h: the next frame's pointers by
+ * mcw_try_call), and libmedia's Westwood pieces (a frame's rows over every core, LCW).
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "mcwx.h"
+#include "media.h"	/* linux/libmedia: a movie's rows and pointers */
 #include "workers.h"
 #include "host.h"	/* linux/tdawn: the scene has a worker core between movies */
 
 unsigned workers_frames;
 
 static int count = -1, at_exit;
-static struct workers_unvq shared __attribute__((aligned(16)));
 static struct workers_lcw unpacking __attribute__((aligned(16)));
 static mcw_handle unpacker;
 /* the memory the workers are to write a frame into */
@@ -28,93 +28,13 @@ static uint32_t held_bytes[HELD_MOST];
 
 /* ---- the jobs ---- */
 
-/* UnVQ_4x4 (common/unvqbuff.cpp) for the block rows from `first` up to `end`. */
-static void unvq_rows(const struct workers_unvq *job, uint32_t first, uint32_t end)
-{
-	const uint32_t *codebook = (const uint32_t *)job->codebook;
-	const uint8_t *low = job->pointers + first * job->blocks_per_row;
-	const uint8_t *high = low + job->blocks_per_row * job->num_rows;
-	uint32_t width = job->buff_width;
-	uint8_t *row = job->buffer + first * 4 * width;
-
-	for (uint32_t r = first; r < end; r++, row += 4 * width) {
-		uint8_t *out = row;
-		for (uint32_t b = 0; b < job->blocks_per_row; b++, out += 4) {
-			uint32_t p1 = *low++, p2 = *high++;
-			if (p2 == 255) {
-				uint32_t colour = p1 * 0x01010101u;
-				*(uint32_t *)out = colour;
-				*(uint32_t *)(out + width) = colour;
-				*(uint32_t *)(out + 2 * width) = colour;
-				*(uint32_t *)(out + 3 * width) = colour;
-			} else {
-				const uint32_t *block = codebook + 4 * ((p2 << 8) | p1);
-				*(uint32_t *)out = block[0];
-				*(uint32_t *)(out + width) = block[1];
-				*(uint32_t *)(out + 2 * width) = block[2];
-				*(uint32_t *)(out + 3 * width) = block[3];
-			}
-		}
-	}
-}
-
-/* LCW_Uncompress (common/lcw.cpp), which may unpack into the front of the buffer it reads the back of. */
-static void lcw(const struct workers_lcw *job)
-{
-	const uint8_t *source = job->source;
-	uint8_t *dest = job->dest, *to = dest, *end = dest + job->length;
-	const uint8_t *from;
-	uint32_t count, op;
-
-	while (to < end) {
-		op = *source++;
-		if (!(op & 0x80)) {
-			count = (op >> 4) + 3;
-			from = to - (*source++ + ((op & 0x0f) << 8));
-		} else if (!(op & 0x40)) {
-			if (op == 0x80)
-				return;
-			count = op & 0x3f;
-			if (count > (uint32_t)(end - to))
-				count = end - to;
-			while (count--)
-				*to++ = *source++;
-			continue;
-		} else if (op == 0xfe) {
-			uint8_t value;
-			count = source[0] + (source[1] << 8);
-			value = source[2];
-			source += 3;
-			if (count > (uint32_t)(end - to))
-				count = end - to;
-			while (count--)
-				*to++ = value;
-			continue;
-		} else if (op == 0xff) {
-			count = source[0] + (source[1] << 8);
-			from = dest + source[2] + (source[3] << 8);
-			source += 4;
-		} else {
-			count = (op & 0x3f) + 3;
-			from = dest + source[0] + (source[1] << 8);
-			source += 2;
-		}
-		if (count > (uint32_t)(end - to))
-			count = end - to;
-		while (count--)
-			*to++ = *from++;
-	}
-}
-
-static void unvq_piece(void *job, uint32_t from, uint32_t to)
-{
-	unvq_rows((const struct workers_unvq *)job, from, to);
-}
-
+/* LCW_Uncompress (common/lcw.cpp) as libmedia has it, which may unpack into the front of the buffer it reads the back of. */
 static uint32_t lcw_job(uint32_t job, uint32_t unused)
 {
+	const struct workers_lcw *j = (const struct workers_lcw *)job;
+
 	(void)unused;
-	lcw((const struct workers_lcw *)job);
+	media_lcw(j->source, j->dest, j->length);
 	return 0;
 }
 
@@ -211,22 +131,13 @@ int workers_unvq(uint8_t *codebook, uint8_t *pointers, uint8_t *buffer, unsigned
 		 unsigned buff_width)
 {
 	unsigned bytes = num_rows * 4 * buff_width;
-	mcw_for_opts rows = {0};
 
 	/* rows of whole texels, or two cores would store to one */
 	if (workers_count() == 0 || (buff_width & 15) != 0 || blocks_per_row * 4 > buff_width || num_rows < 2 || !target
 	    || buffer < target || buffer + bytes > target + target_bytes || ((uintptr_t)buffer & 15) != 0)
 		return 0;
-	shared.codebook = codebook;
-	shared.pointers = pointers;
-	shared.buffer = buffer;
-	shared.blocks_per_row = blocks_per_row;
-	shared.num_rows = num_rows;
-	shared.buff_width = buff_width;
-
 	/* every core rows of it, this one too (the worker that unpacks the next frame is left to it) */
-	rows.out_bytes = 4 * buff_width;
-	mcw_for_opt(num_rows, unvq_piece, &shared, &rows);
+	media_vq4_rows(codebook, pointers, buffer, blocks_per_row, num_rows, buff_width, workers_count());
 	workers_frames++;
 	return 1;
 }

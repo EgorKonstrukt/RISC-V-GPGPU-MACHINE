@@ -514,8 +514,11 @@ static int shaderemu_gpu_mmap(struct file *file, struct vm_area_struct *vma)
 	if (offset > GPU_SIZE || size > GPU_SIZE - offset)
 		return -EINVAL;
 	vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
+	/* accessed and written from the start: the machine's walk faults on a clear bit, and a
+	 * worker's first store to a page stopped it until the first core served it */
 	return remap_pfn_range(vma, vma->vm_start, (GPU_PHYS + offset) >> PAGE_SHIFT, size,
-			       vma->vm_page_prot);
+			       __pgprot(pgprot_val(vma->vm_page_prot) | _PAGE_ACCESSED |
+					((vma->vm_flags & VM_WRITE) ? _PAGE_DIRTY : 0)));
 }
 
 /* A program that dies leaves the keyboard and the cursor behind: give them back. */

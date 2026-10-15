@@ -24,9 +24,10 @@
   second idle became 125, an idle desktop 222 to 144, and a desktop under a moving pointer is
   as it was (577). Polling every other tick always was a third fewer samples of a moving
   pointer: not taken.
-- nxphys asks for 207 workers (`WORKERS_ASKED`): a substep is as long as with 255 in its three
-  scenes on `rvc_cpu` and on the shader machine (120 substeps of the wall 1,439 ms against
-  1,442), and 48 cores are not turning in place. After a change to how bodies are shared
+- nxphys asked for 207 workers (`WORKERS_ASKED`, 255 now: see the later note on its shares with no
+  bodies) when a substep was as long as with 255 in its three scenes on `rvc_cpu` and on the
+  shader machine (120 substeps of the wall 1,439 ms against 1,442), and 48 cores were not
+  turning in place. After a change to how bodies are shared
   out, measure 191 to 255 again (`PHYS_WORKERS`).
 
 - Tick utilization is instructions run over busy passes times 8,192 (`pwsh tools\tick_util.ps1
@@ -61,7 +62,7 @@
 - `rvc_harness --lazy` (`LAZY_MEMOP`): a fill or a copy, from the ROM too, is left to the
   commit and the pass goes on; its destination's pages are in no TLB until then. Off by
   default: it costs 1% of a shell loop and 3% of Doom though the fast loop is instruction for
-  instruction the same (`tools\cso_loops.py`; README, "The same loop, compiled slower"). With
+  instruction the same (`tools\cso_loops.py`; `experiments/rvc_opt/README.md`, "The same loop, compiled slower"). With
   it undefined the tick is the same blob. Its test: `programs\lazy`, 20 lines ok, sum
   `1a4a1226`, on `rvc_cpu` and on the shader machine off and on.
 - A change to the tick is measured whole, alternating with the tree, on the shell loop AND on
@@ -78,8 +79,8 @@
   program's bytes change; `cc`'s outputs must stay the same bytes.
 - `rvc_cpu` flushes a worker's TLB when it wakes for a new job: before, a program that freed
   memory its workers wrote gave wrong sums there and right ones on the shader machine.
-- Every run on the card whose seconds or passes are measured goes through
-  `tools\gpu_queue.ps1` (one at a time for every session); the shared image is made through
+- Every `rvc_harness` run goes through `tools\gpu_queue.ps1` (one at a time for every session),
+  `--cpu --warp` captures too, which beside other runs gave garbage; the shared image is made through
   `tools\make_image.ps1` (one writer at a time).
 - Whether the window system lets other programs run is measured by another program's frames:
   glxgears on the desktop under `rvc_cpu`, its 5 s lines while a load runs (menus in Files by
@@ -128,13 +129,18 @@
   255 workers. A run's instructions shift half a percent with its timing: compare means of
   several timings (`sleep 0.3; ...`), never one run. What changes the window tree must raise
   `gd_scene_gen`, or the layer table and that rectangle are stale.
-- Quake III Arena (`docs/quake3.md`) draws from the ROM: its textures, light maps and models'
-  poses are read by the GPU where `quake3-se.dat` lies, so that file must be a file of the ROM
+- Quake III Arena (`docs/quake3.md`) draws from the ROM: its light maps and models' poses are
+  read by the GPU where `quake3-se.dat` lies (its textures are decoded from that file into GPU
+  memory, "Pictures decoded when a level loads"), so that file must be a file of the ROM
   and the GPU shader must have the draws of 13 October 2026 (`0x800` lit, `0x10000` moved,
   `0x20000` facing). Its server's frame is on a worker core: anything of the engine that the
   server and the client both write needs one for each core (`SE_OnWorker()`), and an
   allocation the server makes goes to its own zone (`server.h`). After a change to what the
   game asks for, run it with `QUAKE3_WANTED=1` on the whole demo pak and write `wanted.txt` anew.
+  Wherever the first core waits for a job, it polls that job's helpers too (`helpers_poll`,
+  `SE_ClientPoll`): a helper stopped at a page otherwise stops the game. The level's items are
+  made on a helper of the client's game (`SE_SideFits` in `cg_ents.c`): what it makes there
+  touches its own entity only, and `QUAKE3_SUM=1` with `QUAKE3_SIDE=inline` must say the same.
 - The world's speed is measured in the editor with the Game view in front (play mode started by a
   script leaves the Scene view there and the room is drawn small), by `totalInstructions` over
   several seconds, a change and the tree in turn (`docs/multicore.md`, "In Unity"). A frame of 8
@@ -147,8 +153,8 @@
   machine. Real pages for it come from `python linux/apps/web/preload.py --pages --cache DIR`
   into a private image's overlay. The fonts are `python tools\make_fonts.py`, before the image
   is made (`docs/fonts.md`); without them, or under a window system from before them, `nxweb`
-  says so and draws in the built-in font. A capture that is not a timing needs no turn on
-  the card: `rvc_harness --cpu --warp`.
+  says so and draws in the built-in font. A capture that is not a timing needs no card:
+  `rvc_harness --cpu --warp`, still through `tools\gpu_queue.ps1`.
 
 - The fast step tells an instruction's kind by a tree of tests and a load has one way out
   (`fast_exec_l1` in `emu.h`, `mem_get_cached_or_tex_l1` in `mem.h`; `docs/tick-costs.md`, the
@@ -204,3 +210,21 @@
   played from the seat reads the stick and the two triggers while seated (`seated` 1 and 2), and
   its number is in `ByWords`; `rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` with its `_SEAT`
   switch must walk it. ClassiCube started in the background there wants `</dev/null`.
+- The harnesses lock each other out (`harness/apps/run_lock.cpp`; `docs/cpu-harness.md`, "One card, many
+  processors"): CPU ones (`rvc_cpu`, `rvc_harness --cpu`) together, a GPU one alone; a refused one prints
+  `[lock] ... refused` and exits 75 having done nothing. A GPU timing waits until no CPU run is left.
+- `game_par.py`'s card model has `RVC_ADFAULT=1`: the card's walk faults on a clear accessed or
+  written bit, and a worker stops there until core 0 serves it. `/dev/gpu` maps its pages with
+  both set (`shaderemu_gpu_mmap`): its `[cpu] stops:` line must say 0 on a written bit.
+- The browser draws a page in strips of 64 rows, each a GPU list of its own made by lent
+  workers (`strip_job` in `nxweb.c`, `docs/web.md`, "Strips"), and styles subtrees on them
+  (`web_style_range`). `strip_job` draws what `draw_item` draws: a change to one is a change to
+  both, and `NXWEB_CHECK=1` in the harness with `--cpu --warp` must say 0 pixels and 0 elements
+  differ. The first core submits the lists; a worker never takes the GPU's lock word.
+- Every program decodes and encodes pictures, sound and films with libmedia (`linux/libmedia`,
+  `docs/media.md`), on the worker cores. A change to it keeps `python linux/libmedia/test/check_pictures.py
+  MEDIA_TEST --wsl` at 0 bad and the sums of `docs/media.md` (sound, films) and of `nxplay` and `nxvideo`.
+  The image's pictures are JPEG in restart intervals or PNG in segments (`png_segments.py`), which every
+  core decodes by itself: a tool that writes one asks for that (`restart_marker_blocks`), not a PPM.
+- After a change, `python tools/test_all.py` (`docs/cpu-harness.md`, "The test set"; about a minute): every
+  case must pass, and `--races` too for a change to work on the workers. A value moved on purpose is set anew there.

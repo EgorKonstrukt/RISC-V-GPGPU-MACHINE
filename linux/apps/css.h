@@ -1294,7 +1294,8 @@ css_name_bit(const char *name, int n)
 }
 
 /* How many of the elements the one being styled is inside have each name (as tag, id or
- * class): a rule that wants one it is inside of that none has is not looked at further. */
+ * class): a rule that wants one it is inside of that none has is not looked at further. A walk
+ * over the tree on another core counts in an array of its own. */
 static unsigned short css_inside[CSS_ATOMS];
 
 /* Reads a sheet. With `vars`, only what custom properties it sets; call that for every sheet
@@ -1501,7 +1502,7 @@ css_steps_ok(const struct css_rule *r, int j, int how, const struct css_node *no
 }
 
 static int
-css_rule_ok(const struct css_rule *r, const struct css_node *nodes, int at)
+css_rule_ok(const struct css_rule *r, const struct css_node *nodes, int at, const unsigned short *inside)
 {
 	const struct css_part *p = css_parts + r->part + r->parts - 1, *q;
 	int how, k;
@@ -1514,18 +1515,18 @@ css_rule_ok(const struct css_rule *r, const struct css_node *nodes, int at)
 	for (q = p - 1, how = p->how; q >= css_parts + r->part; how = q->how, q--) {
 		if (how == '+' || how == '~')
 			continue;
-		if ((q->tag && !css_inside[q->tag]) || (q->id && !css_inside[q->id]))
+		if ((q->tag && !inside[q->tag]) || (q->id && !inside[q->id]))
 			return 0;
 		for (k = 0; k < q->classes; k++)
-			if (!css_inside[q->cls[k]])
+			if (!inside[q->cls[k]])
 				return 0;
 	}
 	return css_steps_ok(r, r->parts - 2, p->how, nodes, at);
 }
 
-/* The rules for element `at` of the tree, the weakest first. */
+/* The rules for element `at` of the tree, the weakest first; `inside` as css_inside. */
 static int
-css_find(const struct css_node *nodes, int at, int *found, int room)
+css_find(const struct css_node *nodes, int at, int *found, int room, const unsigned short *inside)
 {
 	const struct css_node *e = CSS_AT(nodes, at);
 	int count = 0, list, r, i, j;
@@ -1536,7 +1537,7 @@ css_find(const struct css_node *nodes, int at, int *found, int room)
 		if ((list == 0 && !e->tag) || (list == 1 && !e->id))
 			continue;
 		for (; r >= 0 && count < room; r = css_rules[r].next)
-			if (css_rule_ok(&css_rules[r], nodes, at))
+			if (css_rule_ok(&css_rules[r], nodes, at, inside))
 				found[count++] = r;
 	}
 	for (i = 1; i < count; i++) {

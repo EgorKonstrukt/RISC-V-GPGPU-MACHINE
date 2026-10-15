@@ -86,9 +86,13 @@ void geom(point volume_point i[1], inout TriangleStream<volume_out> stream) {
         // and turned about the room's up until the camera's right is the seat's
         if (placed) local.xz = float2(local.x * level.x + local.z * level.y, local.z * level.x - local.x * level.y);
         // a sky is laid on the program's picture: here it is a panorama round the visitor, and
-        // its colour carries the way from the eye to this place
-        if (o.v.texture_info.r & FRAGMENT_LAID)
-            o.v.colour = float4(local - mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1.0)).xyz, 1.0);
+        // its colour carries the way from the eye to this place, turned back into the program's
+        // world so that the sky turns with it (the seat's room does not)
+        if (o.v.texture_info.r & FRAGMENT_LAID) {
+            float3 way = local - mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1.0)).xyz;
+            if (placed) way.xz = float2(way.x * level.x - way.z * level.y, way.z * level.x + way.x * level.y);
+            o.v.colour = float4(way, 1.0);
+        }
         o.v.position = UnityObjectToClipPos(float4(local, 1.0));
         o.world = mul(unity_ObjectToWorld, float4(local, 1.0)).xyz;
         o.behind = 1.0;
@@ -123,9 +127,10 @@ float4 frag(volume_out i) : SV_Target {
     if (any(i.world < _RoomMin.xyz - 0.001) || any(i.world > _RoomMax.xyz + 0.001)) discard;
 #endif
     if (i.v.texture_info.r & FRAGMENT_LAID) {
-        // four of the picture to a turn, its horizon three quarters down (as Doom's sky is hung)
+        // four of the picture to a turn counterclockwise from the world's x (as Doom lays it), its
+        // horizon three quarters down (as Doom's sky is hung)
         float3 sky = i.v.colour.xyz;
-        i.v.uv = float2(atan2(sky.x, sky.z) * 0.6366198, clamp(0.78 - 1.04 * sky.y / max(length(sky.xz), 1e-4), 0.01, 0.99));
+        i.v.uv = float2(atan2(sky.z, sky.x) * 0.6366198, clamp(0.78 - 1.04 * sky.y / max(length(sky.xz), 1e-4), 0.01, 0.99));
         i.v.colour = 1.0;
         i.v.texture_info.r &= ~FRAGMENT_LAID;
     }

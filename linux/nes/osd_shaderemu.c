@@ -273,6 +273,35 @@ window_draw(GLuint of, int wait)
 		seglSwapEarly();
 }
 
+/* The window's caption says the emulation's speed, a NES's 60 frames a second as 100%, about
+ * once a second by the machine's clock. The first core's alone (its own 16 bytes): it is the
+ * window system's. */
+static struct { unsigned at_ms, at_frames, shown, pad; } caption __attribute__((aligned(16))) = {0, 0, ~0u, 0};
+
+static void
+speed_caption(unsigned frames)
+{
+	unsigned ms = milliseconds(), pct;
+	char text[24];
+
+	if (!caption.at_ms || frames < caption.at_frames) {
+		caption.at_ms = ms | 1;
+		caption.at_frames = frames;
+		return;
+	}
+	if (ms - caption.at_ms < 1000)
+		return;
+	pct = (frames - caption.at_frames) * 100000u / 60 / (ms - caption.at_ms);
+	caption.at_ms = ms | 1;
+	caption.at_frames = frames;
+	if (pct == caption.shown)
+		return;
+	caption.shown = pct;
+	snprintf(text, sizeof text, "NES  %u%%", pct);
+	GrSetWindowTitle(window, text);
+	GrFlush();
+}
+
 /* After `step` more frames, `emulated` in all: the figures, and a test's end at `shown`. */
 static void
 frame_counted(int emulated, int step, const unsigned char *shown)
@@ -286,6 +315,8 @@ frame_counted(int emulated, int step, const unsigned char *shown)
 		mcw_print("nesmark\n");
 		mcw_print_now();
 	}
+	if (!emu_worker)
+		speed_caption(emulated);
 	since += step;
 	if (since >= 60) {
 		unsigned now = cycles(), ms = milliseconds(), drawn = frames_drawn + first_said.drawn, swaps = first_said.swap_spent;
@@ -1441,6 +1472,7 @@ run_elsewhere(void (*frames)(void))
 			pad_here();
 		}
 		se_apu_look();
+		speed_caption(emu_said.frames);
 		mcw_rest();
 		listing.waits++;
 	}

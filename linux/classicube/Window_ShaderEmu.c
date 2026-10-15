@@ -15,6 +15,7 @@
 #include "Game.h"
 #include "ExtMath.h"
 #include "World.h"
+#include "Graphics.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #define MWINCLUDECOLORS
 #include <nano-X.h>
 #include "../../programs/linux/fps_caption.h"
+#include <GLES/segl.h>	/* (seglWorldEye, the host words) */
 
 #define CAPTION 22      /* the window manager's caption and frame (nanowm.h) */
 #define FRAME   4
@@ -393,6 +395,18 @@ static void TurnTo(struct Entity* e, float yaw, float pitch) {
 	e->VTABLE->SetLocation(e, &update);
 }
 
+/* (segl.h's, for seglWorldEye: this game has no gles.c) */
+const volatile unsigned int* seglHostState(void) { return gpu ? (const volatile unsigned int*)(gpu + HOST_STATE) : NULL; }
+
+/* The player's eye over its floor, for the holodeck's default scale (game 3, linux/apps/gameid.h) */
+static void WorldEye(struct Entity* e) {
+	static float said[4];	/* (said again only when it changes: two logarithms) */
+	float now[4] = { Entity_GetEyeHeight(e), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
+	if (now[2] <= 0.0f || !memcmp(now, said, sizeof(now))) return;
+	memcpy(said, now, sizeof(now));
+	seglWorldEye(3, now[0], 0.1f, now[1], now[2], now[3]);
+}
+
 /* From a holodeck's seat with tracked hands the right hand aims, and the walk and the room's
    view stay the body's; with a mouse its travel turns, and the head's tilt is the aim's rise. */
 static void Seat(float delta) {
@@ -401,18 +415,21 @@ static void Seat(float delta) {
 	int now = !(host[0] & 16) ? 0 : (host[0] & 32) ? 1 : (host[0] & 15) == 2 ? 2 : 0;
 	static int said = -1;
 
+	if (World.Loaded) WorldEye(e);
 	if (said < 0) said = getenv("CLASSICUBE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
 	if (said && ++said % 20 == 0)
-		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f\n", seated, e->next.yaw, e->next.pitch, body, dragging, e->Position.x, e->Position.z);
+		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f %.1f eye %08x picked %d %d %d %d\n", seated, e->next.yaw, e->next.pitch,
+			body, dragging, e->Position.x, e->Position.y, e->Position.z, ((volatile uint32_t*)(gpu + 0x6c))[0],
+			Game_SelectedPos.valid, Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z);
 	if (now != seated) {
 		seated = now;
 		dragging = false;
 		body = aimed = e->next.yaw;
 		mouse_count = host[4] & 0xffff;
 	}
-	{	/* a sitter's jump: the left trigger, or a desktop's key for it, as the game's own key */
+	{	/* a sitter's jump: the jump button, or a desktop's Space, as the game's own key */
 		static int jump;
-		int now = seated && Input.RawMode && (host[4] >> 30 & 1);
+		int now = seated && Input.RawMode && SEGL_HOST_JUMP(host);
 		if (now != jump) {
 			jump = now;
 			if (now) Input_SetPressed(CCKEY_SPACE);
@@ -446,6 +463,18 @@ int SE_SeatBody(float* yaw) {
 	return 1;
 }
 
+/* For the frame (Game.c): whether it is drawn round a holodeck's seat. */
+int SE_Seated(void) { return gpu && SEGL_HOST_HOLODECK((const volatile uint32_t*)(gpu + HOST_STATE)); }
+
+/* For the chunks in view (Game.c): then the way the head looks, yaw and pitch as the game's. */
+int SE_SeatHead(float* yaw, float* pitch) {
+	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
+	if (seated != 1) return 0;
+	*yaw   = body + (short)(host[1] & 0xffff) * (360.0f / 65536.0f);
+	*pitch = -(short)(host[1] >> 16) * (360.0f / 65536.0f);
+	return 1;
+}
+
 /* For the walk (Entity.c): then the way the head looks, and the left stick added to the keys. */
 int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving) {
 	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
@@ -459,18 +488,21 @@ int SE_SeatWalk(float* yaw, float* xMoving, float* zMoving) {
 	return 1;
 }
 
-/* For the held block (HeldBlockRenderer.c): then also where the right hand is from the eye, in
-   blocks: right, up, forward. */
+/* For the pick and the held block (Camera.c, Game.c's SEFrame), on core 0: then also where the
+   right hand is from the eye, in blocks: right, up, forward. */
 int SE_SeatHand(float* at) {
 	const volatile uint32_t* host = (const volatile uint32_t*)(gpu + HOST_STATE);
-	float c = Math_CosF(Camera.Fov * MATH_DEG2RAD * 0.5f) / Math_SinF(Camera.Fov * MATH_DEG2RAD * 0.5f);
-	float x = 1.28f * c * Game.Height / Game.Width, y = 0.8f * c, plane, metre;
+	static float metre, said[4];	/* (worked out again only when it changes: a power) */
+	float now[4] = { (float)(host[0] >> 24), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
 	uint32_t word;
 
 	if (seated != 1) return 0;
-	/* blocks a metre: the room's plane, 1.28 by 0.8 m, is so far from the camera (GpuVolumePass.cginc) */
-	plane = 0.1f * powf(Game_ViewDistance / 0.1f, (host[0] >> 24) / 255.0f);
-	metre = 2.0f * plane / (x < y ? x : y) * 0.004f;
+	if (memcmp(now, said, sizeof(now))) {
+		/* blocks a metre: the room's plane, 1.28 by 0.8 m, is so far from the camera (GpuVolumePass.cginc) */
+		float x = 1.28f * now[2], y = 0.8f * now[3], plane = 0.1f * powf(now[1] / 0.1f, now[0] / 255.0f);
+		memcpy(said, now, sizeof(now));
+		metre = 2.0f * plane / (x < y ? x : y) * 0.004f;
+	}
 	word  = host[6];
 	at[0] = ((int)(word << 22) >> 22) * metre;
 	at[1] = ((int)(word << 12) >> 22) * metre;

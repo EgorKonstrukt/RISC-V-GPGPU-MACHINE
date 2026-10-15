@@ -73,6 +73,14 @@ static int box[4] = {1, 1, 0, 0}; // or only inside this rectangle of the page (
 // An object's rectangles as it drew them last, by their place on the map: drawn again as they
 // are while the game has not marked the object as changed.
 typedef struct host_quad Quad; // (the scene takes an object's kept ones as they lie: host_quads)
+// TechnoClass::Draw_It's bars and box, its place by the map's pixels (ShaderEmu_GL_Bars)
+struct BarsDraw
+{
+    const unsigned char* shade;
+    short x, y, pwidth;
+    unsigned char lx, ly, dx, dy, fudge, width, height, color;
+    bool selected;
+};
 struct Kept
 {
     const ObjectClass* who;
@@ -81,6 +89,8 @@ struct Kept
     bool away;  // or it drew nothing, being out of the view when the view was at...
     COORDINATE view;
     Quad quad[6];
+    bool barred; // with bars, put into the page every frame it is shown
+    BarsDraw bars;
 };
 enum { KEPT = 1024 };
 alignas(16) static Kept kept[KEPT];
@@ -127,6 +137,15 @@ static unsigned char overlaid[TILES / 8]; // a cell in full view whose rectangle
 static Kept cell_recording;
 static int origin_x, origin_y, view_w, view_h; // where the map's corner is on the screen, and the view's size
 unsigned ShaderEmu_GL_Parts[3]; // instructions in the cells, the objects and the shroud
+// The bars and boxes put into the page (the drawing core's, by the page's pixels): made holes
+// again before the next scene. Any other drawing over the map makes the whole page holes.
+enum { BARS = 96 };
+static struct alignas(16) Bars
+{
+    int count;
+    BarsDraw drawn[BARS];
+} bars;
+static int message_rows; // the rows of the view's top the messages take
 
 alignas(16) static Shape shapes[SLOTS];
 static Icon icons[SLOTS];
@@ -395,6 +414,126 @@ bool ShaderEmu_GL_Messages(unsigned signature, int count)
     last_signature = signature;
     last_fills = fills;
     last_count = count;
+    message_rows = count > 0 ? 10 * count + 10 : 0;
+    return true;
+}
+
+// The page's pixels inside a rectangle (x0, y0, x1, y1), its far edges in it, as the game's own
+// drawing clips them to a window.
+struct Pen
+{
+    unsigned char* base;
+    int stride, x0, y0, x1, y1;
+};
+
+static void pen_row(const Pen& p, int xa, int xb, int y, int colour)
+{
+    if (xa > xb) {
+        int t = xa;
+        xa = xb, xb = t;
+    }
+    xa = MAX(xa, p.x0), xb = MIN(xb, p.x1);
+    if (y >= p.y0 && y <= p.y1 && xa <= xb) {
+        memset(p.base + y * p.stride + xa, colour, xb - xa + 1);
+    }
+}
+
+static void pen_column(const Pen& p, int x, int ya, int yb, int colour)
+{
+    if (ya > yb) {
+        int t = ya;
+        ya = yb, yb = t;
+    }
+    ya = MAX(ya, p.y0), yb = MIN(yb, p.y1);
+    for (int y = ya; x >= p.x0 && x <= p.x1 && y <= yb; y++) {
+        p.base[y * p.stride + x] = (unsigned char)colour;
+    }
+}
+
+// Bars and box at (x, y) of the page as Draw_It's calls draw them (Remap, Draw_Rect, Fill_Rect,
+// Draw_Line), or, with a key, those pixels made that.
+static void bars_pen(const Pen& p, const BarsDraw& b, int x, int y, int key)
+{
+    int lx = b.lx, ly = b.ly, dx = b.dx, dy = b.dy, white = key < 0 ? WHITE : key;
+    if (b.pwidth >= 0) {
+        int xx = x - b.width / 2, yy = y - b.height / 2, w = b.width;
+        if (key >= 0) {
+            for (int row = yy; row <= yy + 3; row++) {
+                pen_row(p, xx, xx + w - 1, row, key);
+            }
+        } else {
+            for (int row = MAX(yy + 1, p.y0); row <= MIN(yy + 2, p.y1); row++) {
+                unsigned char* at = p.base + row * p.stride;
+                for (int col = MAX(xx + 1, p.x0); col <= MIN(xx + w - 1, p.x1); col++) {
+                    at[col] = b.shade[at[col]];
+                }
+            }
+            pen_row(p, xx, xx + w - 1, yy, BLACK);
+            pen_row(p, xx, xx + w - 1, yy + 3, BLACK);
+            pen_column(p, xx, yy, yy + 3, BLACK);
+            pen_column(p, xx + w - 1, yy, yy + 3, BLACK);
+            for (int row = yy + 1; b.pwidth >= 1 && row <= yy + 2; row++) {
+                pen_row(p, xx + 1, xx + b.pwidth, row, b.color);
+            }
+        }
+    }
+    if (b.selected) {
+        int top = b.fudge + y - ly;
+        pen_row(p, x - lx, x - lx + dx, top, white);
+        pen_column(p, x - lx, top, top + dy, white);
+        pen_row(p, x + lx, x + lx - dx, top, white);
+        pen_column(p, x + lx, top, top + dy, white);
+        pen_row(p, x + lx, x + lx - dx, y + ly, white);
+        pen_column(p, x + lx, y + ly, y + ly - dy, white);
+        pen_row(p, x - lx, x - lx + dx, y + ly, white);
+        pen_column(p, x - lx, y + ly, y + ly - dy, white);
+    }
+}
+
+// An object's bars and box from the map's pixels to the page, noted for the next scene.
+static void bars_put(const BarsDraw& b)
+{
+    int wx = WindowList[WINDOW_TACTICAL][WINDOWX], wy = WindowList[WINDOW_TACTICAL][WINDOWY];
+    // (the hidden page's pixels, not its Lock: the lock's count is the first core's to store to)
+    unsigned char* page = host_page(1);
+    if (!page || LogicPage != &HidPage) {
+        ShaderEmu_GL_Touched = true; // (not the page the scene is under: all of it holes next time)
+        return;
+    }
+    host_settle();
+    Pen p = {page, LogicPage->Get_Width() + LogicPage->Get_XAdd() + LogicPage->Get_Pitch(),
+             wx, wy, wx + WindowList[WINDOW_TACTICAL][WINDOWWIDTH] - 1, wy + WindowList[WINDOW_TACTICAL][WINDOWHEIGHT] - 1};
+    bars_pen(p, b, origin_x + b.x, origin_y + b.y, -1);
+    if (bars.count == BARS) {
+        ShaderEmu_GL_Touched = true; // (more than there is room for: the page is made all holes)
+        return;
+    }
+    BarsDraw& to = bars.drawn[bars.count++];
+    to = b;
+    to.x = (short)(origin_x + b.x), to.y = (short)(origin_y + b.y);
+}
+
+// TechnoClass::Draw_It's bars and box (x, y in the tactical window), drawn and kept with the
+// object being drawn. False: the game is to draw them itself.
+bool ShaderEmu_GL_Bars(int x, int y, int lx, int ly, int dx, int dy, int fudge, int width, int height, int pwidth,
+                       int color, bool selected, const void* shade)
+{
+    Kept* k = recording;
+    if (!ShaderEmu_GL_Emitting || !k || LogicPage != &HidPage || !host_page(1) || lx < 0 || ly < 0 || dx < 0
+        || dy < 0 || fudge < 0 || lx > 255 || ly > 255 || dx > 255 || dy > 255 || width < 2 || width > 255
+        || height > 255) {
+        return false;
+    }
+    BarsDraw& b = k->bars;
+    b.shade = (const unsigned char*)shade;
+    b.x = (short)(WindowList[WINDOW_TACTICAL][WINDOWX] + x - origin_x);
+    b.y = (short)(WindowList[WINDOW_TACTICAL][WINDOWY] + y - origin_y);
+    b.pwidth = (short)pwidth;
+    b.lx = (unsigned char)lx, b.ly = (unsigned char)ly, b.dx = (unsigned char)dx, b.dy = (unsigned char)dy;
+    b.fudge = (unsigned char)fudge, b.width = (unsigned char)width, b.height = (unsigned char)height;
+    b.color = (unsigned char)color, b.selected = selected;
+    k->barred = true;
+    bars_put(b);
     return true;
 }
 
@@ -1062,7 +1201,7 @@ static bool Behind_Note(int refresh, unsigned scenes, unsigned& away)
             Kept* k = kept_of(object);
             if (k && !anew && !object->IsToDisplay && (k->whole || (k->away && k->view == view))) {
                 ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
-                if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {
+                if (k->whole && (k->count || k->barred) && object->IsDown && !object->IsInLimbo) {
                     behind[n].copy = NULL, behind[n].away = false, behind[n++].k = k;
                 }
                 continue;
@@ -1117,6 +1256,9 @@ static void Behind_Draw(void)
             if (!behind[i].away) {
                 host_quads(k->quad, k->count);
                 ShaderEmu_GL_Quads += k->count;
+                if (k->barred) {
+                    bars_put(k->bars);
+                }
             } else if (k) {
                 k->count = 0, k->whole = false, k->away = true, k->view = view; // (as Render left it, drawing nothing)
             }
@@ -1129,6 +1271,7 @@ static void Behind_Draw(void)
         if (k) {
             k->count = 0;
             k->whole = true;
+            k->barred = false;
         }
         bool drew = behind[i].copy->Render(true);
         recording = NULL;
@@ -1142,12 +1285,21 @@ static void Behind_Draw(void)
     ShaderEmu_GL_Emitting = false;
 }
 
+// The game's page between frames is the seen one: the copies draw into the hidden one, as Render
+// does, and the game has its own back at the join (into the seen one their bars were lost).
+static GraphicViewPortClass* behind_page;
+static void Behind_Joined(void)
+{
+    Set_Logic_Page(behind_page);
+}
+
 /* After Main_Loop's Render (the sidebar drawn): the objects to a worker, if they were noted. */
 void ShaderEmu_GL_Post(void)
 {
     if (behind_pending) {
         behind_pending = false;
-        host_scene_behind(Behind_Draw, behind_rect[0], behind_rect[1], behind_rect[2], behind_rect[3], KEY);
+        behind_page = Set_Logic_Page(HidPage);
+        host_scene_behind(Behind_Draw, behind_rect[0], behind_rect[1], behind_rect[2], behind_rect[3], KEY, Behind_Joined);
     }
 }
 
@@ -1178,7 +1330,9 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
     bool again; // nothing is taken from the frame before: now and then, in case a change went unmarked
     int wide = Lepton_To_Pixel(TacLeptonWidth), high = Lepton_To_Pixel(TacLeptonHeight);
 
+    GraphicViewPortClass* page = LogicPage;
     host_scene_settle(); // (the scene before is made from the rectangles kept here)
+    Set_Logic_Page(page); // (Render's: a join here gives back the page of between frames)
     if (strncmp(scenario, Scen.ScenarioName, sizeof(scenario) - 1) || (int)Frame < last_frame) {
         strncpy(scenario, Scen.ScenarioName, sizeof(scenario) - 1);
         forget();
@@ -1248,6 +1402,17 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
             LogicPage->Fill_Rect(fx0, fy0, fx1, fy1, KEY);
         }
     }
+    if (bars.count && !all && !ShaderEmu_GL_Touched && LogicPage->Lock()) {
+        Pen p = {(unsigned char*)LogicPage->Get_Offset(), LogicPage->Get_Width() + LogicPage->Get_XAdd() + LogicPage->Get_Pitch(),
+                 TacPixelX, TacPixelY, TacPixelX + wide - 1, TacPixelY + high - 1};
+        for (int i = 0; i < bars.count; i++) {
+            const BarsDraw& b = bars.drawn[i];
+            fills += MIN(b.y - b.height / 2, b.y - b.ly) <= TacPixelY + message_rows; // (the messages are printed again over it)
+            bars_pen(p, b, b.x, b.y, KEY);
+        }
+        LogicPage->Unlock();
+    }
+    bars.count = 0;
     ShaderEmu_GL_Touched = false;
     stale = false;
     told_forget();
@@ -1446,9 +1611,12 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
             if (k && !anew && !object->IsToDisplay && (k->whole || (k->away && k->view == TacticalCoord))) {
                 // as it was: its rectangles where they are on the map now, or still nothing
                 ShaderEmu_GL_Objects[k->whole ? 0 : 1]++;
-                if (k->whole && k->count && object->IsDown && !object->IsInLimbo) {
+                if (k->whole && (k->count || k->barred) && object->IsDown && !object->IsInLimbo) {
                     host_quads(k->quad, k->count); // (those of them in the view, where they are on the map now)
                     ShaderEmu_GL_Quads += k->count;
+                    if (k->barred) {
+                        bars_put(k->bars);
+                    }
                 }
                 continue;
             }
@@ -1459,6 +1627,7 @@ void DisplayClass::ShaderEmu_GL_Draw(bool forced)
             if (k) {
                 k->count = 0;
                 k->whole = true;
+                k->barred = false;
             }
             bool drew = object->Render(true);
             recording = NULL;

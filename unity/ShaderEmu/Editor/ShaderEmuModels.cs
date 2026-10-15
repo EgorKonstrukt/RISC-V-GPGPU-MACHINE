@@ -481,6 +481,9 @@ public static partial class ShaderEmuBuilder
         RenderSettings.ambientLight = new Color(0.012f, 0.014f, 0.02f);
         foreach (ReflectionProbe probe in decor.GetComponentsInChildren<ReflectionProbe>(true))
         {
+            // (the panes' own is a picture of the city from outside the window: box-projected to its
+            // 30 cm box it was a still picture of the room on the glass; ShaderEmuWeather.cs)
+            if (probe.name == "Reflection probe window") continue;
             probe.resolution = 512;   // box-projected to the room's walls: sharp enough for the floor's varnish
             probe.hdr = true;
             probe.boxProjection = true;

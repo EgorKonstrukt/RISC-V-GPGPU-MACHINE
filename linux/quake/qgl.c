@@ -641,6 +641,11 @@ void qglEntity(const float* base, const float* place, float yaw, float pitch, fl
         }
         m[4 * i] = a, m[4 * i + 1] = b, m[4 * i + 2] = c, m[4 * i + 3] = d;
     }
+    // A brush model (no move) is pulled toward the eye by 1/16384 of its distance: where it lies
+    // on a world face (a lift down, a door shut) it wins the depth test instead of fighting.
+    // A point keeps its place on the picture: x/w and y/w do not change.
+    if (!move)
+        for (int k = 0; k < 12; k++) m[k] *= 1.0f - 1.0f / 16384;
     qgpuRows(m);
     entity_base = base;
 }
@@ -1219,6 +1224,12 @@ int qglOpen(unsigned int nano_x_window, const unsigned char* palette) {
     }
     blocks[block_count].at = (uint32_t)(main_part - pool), blocks[block_count].size = main_size, blocks[block_count].owner = -1;
     block_count++;
+    // Every page of ours written once here: the device maps them clean, and a worker that first
+    // writes one stops until this core has served it (the written bit, src/mmu.h): 344 in demo1.
+    for (uint8_t* at = (uint8_t*)ramp; at < main_part + main_size; at += 4096)
+        __asm__ volatile("amoor.w zero, zero, (%0)" : : "r"(at) : "memory");
+    for (unsigned int at = 0; spare && at < spare_size; at += 4096)
+        __asm__ volatile("amoor.w zero, zero, (%0)" : : "r"(spare + at) : "memory");
     for (int i = 0; i < 256; i++) byte_bits[i] = bits((float)i);
     for (uint32_t i = 0; i < 256; i++) qgl_particle_colour[i] = ((i & 15) * 64 + 32) | ((i >> 4) * 64 + 32) << 16;
     return 0;

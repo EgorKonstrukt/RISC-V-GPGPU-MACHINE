@@ -11,6 +11,8 @@ runs at a NES's speed or near it; on one core at a third.
 In the guest: `nano-X -p & nes thwaite` or `nes nova` (the Start menu's Games has both), or
 `nes FILE.nes` for any other cartridge of a mapper Nofrendo has. Arrows are the pad, X is A,
 Z is B, Enter is Start, Tab is Select and Escape ends. Its sound is the sound card's (below).
+The window's caption is the emulation's speed, a NES's 60 frames a second as 100% (`NES  97%`),
+made again about once a second by the machine's clock ("A NES's speed in the world", below).
 
 The games are Thwaite by Damian Yerrick (mapper 0) and Nova the Squirrel by NovaSquirrel
 (mapper 1), both GPL-3; the build fetches their release files.
@@ -106,7 +108,8 @@ What each step is:
   and a game that scrolls every line is 240 short runs. The cells follow what the game
   writes to the name tables (a log of the addresses), the tiles what it writes to pattern
   RAM. Every frame is drawn, but one like the last is not (twice a second all the same),
-  and one in two to four when the game is behind its time. Eight sprites a line are kept to,
+  and one in two to four when the game is behind its time (with the list this core's: below).
+  Eight sprites a line are kept to,
   as the PPU does. What differs from nofrendo's own drawing: a sprite in front is not hidden
   by an earlier sprite that is behind the background (8 pixels of a Thwaite game frame),
   and a write to the name tables in mid-frame shows in the whole frame.
@@ -116,7 +119,8 @@ What each step is:
   Thwaite's 3,950 instructions in one go, 140 KB of code), with the 6502's registers and
   flags in registers of the machine, and nofrendo's interpreter runs only what is not
   translated (the flags i and d, `php`, `plp`, `brk`, `rti`, the undocumented, and `jmp ()`
-  through a pointer outside RAM).
+  through a pointer outside RAM; `rti`, `php`, `plp`, `sei` and `cli` are translated since:
+  "Lines ahead" and "A NES's speed in the world" below).
   A translated instruction does what the interpreter's macro for it does and takes the same
   cycles, and after each the cycles left are tested, so a slice ends at the instruction the
   interpreter's would. A read or write of a device goes to nofrendo's own handler at the
@@ -135,15 +139,16 @@ What each step is:
   a register of the PPU, the sound or the pads no longer leaves translated code.
   `NES_RC=plain` is without the copies and the next step, to compare.
 - **A slice that ends in translated code goes on into the next line from there**
-  (`rc_line`, and `nes_between_lines` in `nes.c`): what the frame's loop does between two
-  ordinary lines (the PPU's end of one line and start of the next, `ppu_line_turn`, and the
+  (`rc_line`, and `ppu_line_between` in `nes_ppu.c`): what the frame's loop does between two
+  ordinary lines (the PPU's end of one line and start of the next, and the
   cycles' book-keeping) is done from inside, and the code never leaves. Not at the line the
   picture ends, the two the blanking begins and ends at, when an interrupt waits that the
   6502 would take, or for a cartridge that counts lines. An awake line was 350 instructions
   round its slice and is about 110.
 - **The GPU's list is a worker core's to make** (`gd_draw` as a job, `gd_show`): turning a
   frame's record into quads was 13 thousand instructions of a frame that is shown, on the
-  core that has none to spare. The first core now only follows the game's writes and swaps:
+  core that has none to spare. The first core now only follows the game's writes and swaps
+  (and since then it does not emulate either: "The emulation on a worker core" below):
   it gives the record to one worker (two records, the worker's and the one the PPU writes),
   goes on with the next frame, and shows the list when it finds it made, which it asks in
   the middle of the next frame and at its end. A frame whose turn comes while the worker
@@ -416,7 +421,8 @@ ended 5%, the rest in pieces of 1 to 3%.
 Not done, and why: the emulation on a worker core (done since, below);
 translation on a worker (a level made ready is a fifth translation, 300 instructions for
 one of the 6502's: two cores would write one table and one block of code); `php`, `plp`,
-`sei` and `cli` as routines like `rti`'s (neither game uses them in a frame); the kernel's
+`sei` and `cli` as routines like `rti`'s (neither game uses them in a frame; done since,
+"A NES's speed in the world"); the kernel's
 tick at a lower rate (`AGENTS.md`).
 
 Checking it: every sum of "Testing" in every mode, `NES_LINES=each` among them; and since
@@ -525,6 +531,68 @@ them), sound on a card. What would take the instructions down from here: the fir
 1,100 a pass of looking on (it can neither sleep longer nor end its pass without the kernel),
 and the list's 6.3k a frame, of which the sprites' cells and quads are some 3k.
 
+### A NES's speed in the world (15 October 2026)
+
+The emulation on a worker made the first core idle, not the game faster: the frames are as
+many instructions on the worker as they were on the first core (less the kernel's), and a
+worker runs no more of them a second. What the world shows is the emulating core's
+instructions a frame against the instructions a core runs a second. Measured so under
+`rvc_cpu`: every pass a round of 8,192 at 3 MIPS a core, whatever it ran (`--ticks 8192 --ips
+1e12 --pass-ms 2.7307`, `docs/cpu-harness.md`), `NES_LIST=worker NES_FRAMES=N` as fast as it
+goes, and `nesstat`'s percentage, which is frames over the machine's clock, over the frames of
+play (a visitor's own cartridges, in a private image; none is in the image):
+
+| | thousand instructions a frame, the emulating core, before | now | % of a NES's speed, before | now | now, `NES_EMU=here` |
+|---|---|---|---|---|---|
+| Super Mario Bros., 1-1 (frames 240 to 1,200) | 39.3 | 37.1 | 125 | 131 | 122 |
+| Super Mario Bros. 2 (USA), 1-1 (720 to 1,500) | 105.8 | 45.6 | 47 | 107 | 99 |
+| Super Mario USA (Japan), the same | 105.7 | 45.5 | 47 | 107 | 99 |
+| Super Mario Bros. 3, 1-1 (1,080 to 2,000) | 113.3 | 54.7 | 44 | 90 | 85 |
+| Thwaite, a game (120 to 1,000) | 22.8 | 20.1 | 213 | 237 | 212 |
+| Nova (300 to 1,000) | 22.8 | 20.7 | 210 | 227 | 215 |
+
+"Before" is the build of 12 October (`NES_EMU` came after it). With the shader machine's write
+cache modelled (`RVC_WCACHE=1`) every figure is the same: the emulating worker's passes are not
+cut by its stores. The two MMC3 cartridges were at half a NES; what took them there:
+
+- **A cartridge that counts lines has lines ahead too** (`hblank_quiet`, `hblank_skip` in the
+  mapper's interface; `map4_quiet` and `map4_skip` for MMC3). Its count is known: the lines
+  before the one it asks for an interrupt in only count. So they are given at once as other
+  cartridges' are, asleep (`ppu_quiet_lines`, `ppu_quiet_counted`) or awake (`lines_ahead`), and
+  counted when they are settled; the line it asks in goes the old way. Before, every line of
+  an MMC3 cartridge was a slice of its own.
+- **A mapper's write goes on in translated code** when it turned no page of the program and
+  asked nothing of the slice (`nes6502_turns` counts the times pages are set to others;
+  `rc_mapper_write` from `sta $8000` and up, the handler kept between writes, `rc_mapper`).
+  It left translated code at every write, some fifty a frame of SMB3. `mmc_bankrom` sets its
+  pages one by one (`nes6502_setpage`) where it copied the 6502's whole context twice.
+- **`php`, `plp`, `sei` and `cli` are translated** (`rc_flag_op`): i, d and b are `cpu.p_reg`'s
+  while translated code runs, the interpreter's too (`RC_RUN` puts its own there and takes
+  them back). A `cli` that lets a waiting interrupt in leaves after itself; one in the
+  interpreter's slice leaves before itself, and the interpreter's `cli` takes it. A `plp` that
+  lets one in cuts lines ahead at its line, as the interpreter's slice of one line would: a
+  cartridge of our own (form 2, `plp` of data) found that (the interrupt was taken lines late).
+  An instruction of these is never entered from the interpreter (as `rti`).
+- Smaller: the cartridge's memory at 0x6000 read and written in place by `lda`, `sta` and their
+  kind at an address (and indexed within a page), with no routine; a write's cut of a slice no
+  longer makes the next four lines one by one (that is for a game that reads the PPU every
+  line); `memcmp` is not used where a frame goes (the library's is a byte at a time).
+
+The first core's readout: `speed_caption` in `osd_shaderemu.c`, from the frames the emulating
+core says it has made (`emu_said.frames`) and the machine's clock; its variables are 16 bytes
+of their own (with them among the emulating worker's, `RVC_RACES` found 8 stores undone).
+
+Checked: every RAM and picture sum of the six cartridges and the five forms of our own, in
+`NES_LIST=worker`, `NES_CPU=interp`, `NES_EMU=here`, `NES_LINES=each`, `NES_RC=plain`,
+`NES_RC=eager`, `NES_PLAIN=1`, 2 and 3: one sum each, and the build before's; the sums of
+"Testing" below; `NES_CELLS_CHECK=1` 0 frames different in Thwaite, Nova and SMB3; `RVC_RACES`
+0 undone in SMB, SMB2, SMB3, Thwaite and Nova. Pictures at holds (`--save-ram`) of the four
+Mario cartridges in play look right, the status bar of SMB3 split at its line. SMB2 (USA) 1-1
+is black behind: the game writes `$0F` to `$3F00` there, the same in every mode and in the build
+before. Not done: anything on the card or in the world; SMB3 is short of a NES at 3 MIPS a core
+(its frame: translated code a fifth, writes to devices a fifth, lines a tenth, and new code
+being translated near a tenth over its first 2,000 frames).
+
 ## Sound
 
 No sample is computed. The NES's five channels are five voices of the sound card
@@ -594,7 +662,8 @@ To check it:
   300 right 400 a"`: RAM `b8a863d7`, picture `208ec03b`. In `NES_PRESS`, `+right` holds a
   button down from its frame and `-right` lets it go.
 - `NES_MARK=N` prints `nesmark` at frame N: `rvc_cpu --pc-log FILE --pc-from nesmark --ticks 256
-  --pass-ms 0.0078` then samples the first core from there, for `tools\pc_profile.py` with
+  --pass-ms 0.0078` then samples the first core from there (which emulates only with
+  `NES_EMU=here`: "The emulation on a worker core"), for `tools\pc_profile.py` with
   `nes.nm` (a profile of a cartridge in seconds; the pass's milliseconds go down with its
   instructions, or the kernel's timer is a quarter of the profile).
 - Each of these must give the same: `NES_RC=plain`, `NES_LINES=each` (a slice of the 6502 is one line), `NES_LIST=worker`, `NES_CPU=interp` (no recompiler), `NES_PLAIN=1` (every

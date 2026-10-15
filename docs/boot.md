@@ -39,7 +39,8 @@ Upstream's own images still boot their OpenSBI: they are compiled without `SBI_H
   and a command starts in 75 ms instead of 175.
 - `linux/kernel/phram_hook.py`: the ROM driver reads through the machine's parallel copy
   (CSRs `0x0b0`-`0x0b3`, whose source may be the ROM), and a commit with a copy now draws only
-  the bands of RAM the copy writes. It changed little: 0.99 s to 0.89 s for a 5 MB cold read,
+  the bands of RAM the copy writes (since then the rows of its destination: `multicore.md`,
+  "The commit as points"). It changed little: 0.99 s to 0.89 s for a 5 MB cold read,
   boot the same. A page read costs about 2,000 instructions of page-cache work besides the copy.
 
 ## Passes that end early
@@ -131,8 +132,8 @@ run with a `fence.i`, a pass each. The `fence.i` ends the pass and so commits ev
 is: the sixteen pages of the file round that one are marked clean with it. `cc` on the hello
 example: 7 to 2.
 
-`romwindow_hook.py` and `poke_hook.py` (12 October 2026; not in `build.sh` yet, so in no
-kernel but a private one: checked on `rvc_cpu`, and their parts on the shader machine):
+`romwindow_hook.py` and `poke_hook.py` (12 October 2026; in `build.sh` since, first checked
+in a private kernel on `rvc_cpu`, and their parts on the shader machine):
 
 - **A file's reads of the ROM are whole stretches.** The kernel's windows began at four pages
   and lay round the page wanted: the editor's 31 pages came in five copies (0-3, 4-11, 13-29,
@@ -299,5 +300,5 @@ the UART is polled for input only when the host has a character waiting.
   see); why is not known yet.
 - Frames that end early (write cache full, memory copies) make the per-frame cost (commit,
   readback: about 0.24 ms) a sixth of the boot.
-- The harness compiles the tick shader with DXC on every start (2.3 s); there is no cache
-  for it as there is for FXC.
+- With `--dxc` the harness compiles the tick shader with DXC on every start (2.3 s); there
+  is no cache for it as there is for the D3D11 build's compiler (`fxc2.md`).

@@ -64,7 +64,7 @@ It is feasible, and it is line by line. Two things make it so:
   traps (a word of zeros: below, why not `ebreak`) written over a line's first instruction
   and taken out again when the program is held. To
   go on from a line, the instruction there is looked at (`dbg_one`): it can go to the next
-  one or, a branch or a jump, to one other place, and an `ebreak` at each is one
+  one or, a branch or a jump, to one other place, and a stop at each is one
   instruction's step.
 
 What it does: F9 or a click before a line's number marks the line; F5 builds and runs to

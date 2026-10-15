@@ -1,7 +1,13 @@
-"""Makes the desktop's pictures for the Linux image, as PPM files named wallpaper-NAME.ppm under
-build/images/linux/root/usr/share (tools/make_linux_image.py then puts them in the image).
+"""Makes the desktop's pictures for the Linux image, as JPEG files named wallpaper-NAME.jpg under
+build/images/linux/root/usr/share (tools/make_linux_image.py then puts them in the image). The
+desktop decodes them on the worker cores when it starts (docs/media.md): each is written in
+restart intervals, some 512 of them, which every core decodes by itself, and beside each are its
+twins cut to the common screens, wallpaper-NAME@800x600.jpg (the machine's own screen),
+@1280x720 and @1920x1080, decoded as they are.
 
     python tools/make_wallpaper.py [FOLDER ...]
+    python tools/make_wallpaper.py --from-ppm     (the PPM pictures of an older build as JPEG)
+    python tools/make_wallpaper.py --twins        (the twins missing, from the pictures there)
 
 - Every line of linux/apps/wallpapers.txt is a photograph on Unsplash: a name and the photo's
   id (the end of its address). They are fetched here and not kept in this repository; the
@@ -36,20 +42,84 @@ def fetch(photo):
     return Image.open(cached)
 
 
-def keep(name, picture):
+SCREENS = ((800, 600), (1280, 720), (1920, 1080))   # twins for these (the machine's, the world's, the largest)
+QUALITY = 88
+
+
+def save_jpeg(picture, path):
+    """A baseline JPEG in restart intervals of about a 512th of the picture (colours at half size)."""
+    mcus = -(-picture.size[0] // 16) * -(-picture.size[1] // 16)
+    picture.save(path, 'JPEG', quality=QUALITY, subsampling=2, restart_marker_blocks=max(1, -(-mcus // 512)))
+
+
+def covered(picture, w, h):
+    """The picture scaled to cover w x h and its middle kept, as the desktop shows it on such a screen."""
+    pw, ph = picture.size
+    if pw * h > ph * w:
+        cw, ch = ph * w // h, ph
+    else:
+        cw, ch = pw, pw * h // w
+    left, top = (pw - cw) // 2, (ph - ch) // 2
+    return picture.crop((left, top, left + cw, top + ch)).resize((w, h), Image.LANCZOS)
+
+
+def twin(name, picture, sw, sh):
+    """Its twin for a screen of sw x sh, where the desktop would cover it: a shape within a third of its."""
+    pw, ph = picture.size
+    if pw * sh * 10 <= ph * sw * 13 and ph * sw * 10 <= pw * sh * 13 and pw * 2 >= sw:
+        save_jpeg(covered(picture, sw, sh), os.path.join(OUT, 'wallpaper-%s@%dx%d.jpg' % (name, sw, sh)))
+        return True
+    return False
+
+
+def keep(name, picture, shrink=True):
     if getattr(picture, 'is_animated', False):
         picture.seek(0)   # an animation's first frame
     picture = picture.convert('RGB')
     w, h = picture.size
     box = (1920, 1080) if w >= 1920 else (1280, 720) if w >= 1280 else None
-    if box:
+    if box and shrink:
         picture.thumbnail(box, Image.LANCZOS)
-    picture.save(os.path.join(OUT, 'wallpaper-%s.ppm' % name), 'PPM')
-    print('wallpaper-%s.ppm: %dx%d from %dx%d' % (name, picture.size[0], picture.size[1], w, h))
+    save_jpeg(picture, os.path.join(OUT, 'wallpaper-%s.jpg' % name))
+    made = []
+    pw, ph = picture.size
+    for sw, sh in SCREENS:
+        if twin(name, picture, sw, sh):
+            made.append('%dx%d' % (sw, sh))
+    print('wallpaper-%s.jpg: %dx%d from %dx%d, %d KB; for %s' % (name, pw, ph, w, h,
+          os.path.getsize(os.path.join(OUT, 'wallpaper-%s.jpg' % name)) // 1024, ', '.join(made) or 'no screen'))
+
+
+def from_ppm():
+    """The PPM pictures an older build made (beside OUT, or in linux/prebuilt) as JPEG, names kept."""
+    for folder in (OUT, os.path.join(ROOT, 'linux', 'prebuilt', 'root', 'usr', 'share')):
+        for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+            m = re.fullmatch(r'wallpaper-(.+)\.ppm', name)
+            if m and not os.path.exists(os.path.join(OUT, 'wallpaper-%s.jpg' % m.group(1))):
+                keep(m.group(1), Image.open(os.path.join(folder, name)), shrink=False)   # (sized already)
+    for name in os.listdir(OUT):
+        if re.fullmatch(r'wallpaper-.+\.ppm', name):
+            os.remove(os.path.join(OUT, name))
+
+
+def twins():
+    """The twins of SCREENS that a picture there has not, made from the picture."""
+    for name in sorted(os.listdir(OUT)):
+        m = re.fullmatch(r'wallpaper-([^@]+)\.jpg', name)
+        if not m:
+            continue
+        picture = Image.open(os.path.join(OUT, name)).convert('RGB')
+        for sw, sh in SCREENS:
+            if not os.path.exists(os.path.join(OUT, 'wallpaper-%s@%dx%d.jpg' % (m.group(1), sw, sh))) and                     twin(m.group(1), picture, sw, sh):
+                print('wallpaper-%s@%dx%d.jpg made' % (m.group(1), sw, sh))
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    if sys.argv[1:] == ['--from-ppm']:
+        return from_ppm()
+    if sys.argv[1:] == ['--twins']:
+        return twins()
     for old in os.listdir(OUT):
         if old.startswith('wallpaper-'):
             os.remove(os.path.join(OUT, old))
@@ -60,7 +130,7 @@ def main():
         try:
             keep(words[0], fetch(words[1]))
         except Exception as error:   # the network, mostly: the image has the other pictures
-            print('wallpaper-%s.ppm not made: %s' % (words[0], error), file=sys.stderr)
+            print('wallpaper-%s.jpg not made: %s' % (words[0], error), file=sys.stderr)
     for folder in sys.argv[1:]:
         for n, name in enumerate(sorted(os.listdir(folder))):
             try:

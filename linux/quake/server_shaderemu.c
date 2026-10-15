@@ -36,6 +36,7 @@ enum { SENDS_ONE = (NET_MAXMESSAGE + MAX_DATAGRAM + 64) / 4, SENDS_WORDS = 4 * S
 /* what the worker writes of ours while it has the job */
 static struct {
 	unsigned used, lost, failed, seed;
+	unsigned began, ended;	/* the clock (rdtime) at the job's start and end */
 	char error[240];
 	char kept[4096];	/* a kind, then text ending in 0 (a cvar: its name, 0, its value, 0) */
 	unsigned sent;		/* the frame's messages were made there too: they are in `sends` */
@@ -53,6 +54,8 @@ static float since;		/* time the client's frames have taken since the server's l
 float sv_frametime;		/* the server's host_frametime */
 unsigned se_load_jobs;
 unsigned se_server_cycles, se_server_frames, se_server_passes, se_server_between, se_server_held, se_server_behind;	/* for the quakestat: lines */
+unsigned se_server_ticks[4];	/* clock ticks: call to start, start to end, end to seen, seen to the next call */
+static unsigned called_at, seen_at;
 
 /*
  * The program's workers, opened once: the server's frame has the first, the light maps, the
@@ -94,7 +97,10 @@ static void setup (void)
 	Sys_Printf ("quake: the server's frame is on %s\n", mode >= MODE_WAIT ? "a worker core" : "this core");
 }
 
-int SE_ServerOnWorker (void) { return mode >= MODE_WAIT && mcw_on_worker (); }
+/* The core running the server's frame, -1 between frames: written only by that worker, on 16 bytes of its own. */
+static struct { volatile int core; int pad[3]; } server_on __attribute__ ((aligned (16))) = { -1 };
+
+int SE_ServerOnWorker (void) { return mode >= MODE_WAIT && mcw_on_worker () && server_on.core == mcw_self (); }
 
 /* Whether the client draws between the server's frames (and so moves things between them). */
 int SE_ServerApart (void)
@@ -217,10 +223,21 @@ static unsigned cycles (void)
 	return v;
 }
 
+static unsigned ticks (void)
+{
+	unsigned v;
+
+	__asm__ volatile ("rdtime %0" : "=r"(v));
+	return v;
+}
+
 static uint32_t physics_job (uint32_t and_send, uint32_t serial)
 {
 	unsigned began = cycles ();
 
+	if (mcw_on_worker ())
+		server_on.core = mcw_self ();
+	work.began = ticks ();
 	if (!setjmp (job_abort)) {
 		SV_Physics ();
 		/* and what the client is told of it, when that is the everyday kind */
@@ -229,6 +246,9 @@ static uint32_t physics_job (uint32_t and_send, uint32_t serial)
 			work.sent = 1;
 		}
 	}
+	work.ended = ticks ();
+	if (mcw_on_worker ())
+		server_on.core = -1;
 	server_ended = serial;
 	return cycles () - began;
 }
@@ -264,6 +284,23 @@ static void sum_frame (void)
 					PR_ExecuteProgram (t->v.touch);
 					break;
 				}
+			}
+		}
+		/* QUAKE_TEST_PLACE=F,x,y,z,pitch,yaw: from frame F of the server the player stands there, still */
+		if (track && getenv ("QUAKE_TEST_PLACE") && sv.num_edicts > 1) {
+			int	at[6] = {0}, k;
+			edict_t	*p = EDICT_NUM (1);
+
+			sscanf (getenv ("QUAKE_TEST_PLACE"), "%d,%d,%d,%d,%d,%d", &at[0], &at[1], &at[2], &at[3], &at[4], &at[5]);
+			if (tracked + 1 >= (unsigned)at[0]) {
+				for (k = 0; k < 3; k++)
+					p->v.origin[k] = at[k + 1];
+				p->v.velocity[0] = p->v.velocity[1] = p->v.velocity[2] = 0;
+				p->v.angles[0] = p->v.v_angle[0] = at[4], p->v.angles[1] = p->v.v_angle[1] = at[5];
+				p->v.angles[2] = p->v.v_angle[2] = 0;
+				p->v.fixangle = tracked + 1 == (unsigned)at[0];
+				p->v.movetype = MOVETYPE_NONE;
+				SV_LinkEdict (p, false);
 			}
 		}
 		if (track && ++tracked % track == 0 && sv.num_edicts > 1) {
@@ -315,6 +352,14 @@ void SE_ServerPoll (void)
 		Host_ServerFrame ();
 		inside = 0;
 	}
+}
+
+/* Between the client's frames (one refused for the clock): a frame that has ended is followed
+ * now, not at the client's next frame, which was 3.5 passes later on e1m5. */
+void SE_ServerIdle (void)
+{
+	if (out == OUT_RUNNING && server_ended == server_serial)
+		SE_ServerPoll ();
 }
 
 /* The client's frame took this long. */
@@ -372,6 +417,10 @@ static void settle (int raise)
 		mcw_rest ();
 	se_server_cycles += mcw_join (server_call);
 	server_call = 0;
+	seen_at = ticks ();
+	se_server_ticks[0] += work.began - called_at;
+	se_server_ticks[1] += work.ended - work.began;
+	se_server_ticks[2] += seen_at - work.ended;
 	se_server_frames++;
 	out = OUT_DONE;
 	sum_frame ();
@@ -435,6 +484,9 @@ int SE_ServerPhysics (void)
 		sum_frame ();
 		out = OUT_DONE;
 	} else {
+		called_at = ticks ();
+		if (seen_at)
+			se_server_ticks[3] += called_at - seen_at;
 		server_call = mcw_call (physics_job, mode == MODE_APART, ++server_serial);
 		out = OUT_RUNNING;
 	}

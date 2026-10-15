@@ -194,3 +194,53 @@ void gpuSwap(int wait) {
     joined_command = 0;
     swap(wait);
 }
+
+// The swap in two halves for a frame drawn on a worker core: gpuEnd by the core that drew it (the
+// next frame goes to the other set), gpuShow by the first core later. e: set, commands, passes.
+void gpuEnd(unsigned* e) {
+    joined_command = 0;
+    e[0] = set_at, e[1] = commands, e[2] = passes_used;
+    set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
+    commands = kept;
+    mesh_vertices = kept_mesh;
+    blocks = 0;
+    passes_used = kept_passes;
+    last_draw = 0;
+    vertex_top = set_at + VERTICES_IN;
+    matrices_dirty = 1;
+}
+
+void gpuShow(const unsigned* e) {
+    volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    if (regs[REG_BUFFERS / 4] != buffers_seen || swaps++ == 0) {
+        buffers_seen = regs[REG_BUFFERS / 4];
+        GrGetWindowInfo(window, &window_info);
+    }
+    if (!e[1] || !window_info.realized || !window_info.surface_address) return;
+    for (;;) {
+        while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) sched_yield();
+        if (regs[REG_SUBMIT / 4] == 0) break;
+        __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
+        rest();
+    }
+    regs[REG_INTO / 4] = window_info.surface_address;
+    regs[REG_INTO / 4 + 1] = window_info.width;
+    regs[REG_INTO / 4 + 2] = window_info.height;
+    regs[REG_INTO / 4 + 3] = window_info.surface_row;
+    regs[REG_SUBMIT / 4 + 1] = GPU_PHYS + e[0];
+    regs[REG_SUBMIT / 4 + 2] = e[1];
+    regs[REG_SUBMIT / 4] = 1 | 4 | e[2] << 8;
+    shown_set = e[0];
+    shown_commands = e[1] | e[2] << 16;
+    __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
+    unsettled = 1;
+    unsettled_set = e[0];
+    regs[REG_VOLUME / 4 + 1] = e[1];
+    regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28 | world_flat;
+    regs[REG_VOLUME / 4] = GPU_PHYS + e[0];
+    regs[REG_VOLUME / 4 + 2]++;
+    fps_caption(&window_info, regs[0x34 / 4]);
+}
+
+// Whether the GPU has no list waiting to be drawn (on any core: a word it clears).
+int gpuIdle(void) { return gpu && ((volatile uint32_t*)gpu)[REG_SUBMIT / 4] == 0; }

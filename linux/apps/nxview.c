@@ -1,22 +1,32 @@
-/* nxview: a picture viewer (docs/nanox.md): a PPM, PNG, JPEG, PGM, BMP, GIF or XPM picture as
- * large as fits, under a row of keys (Open, the folder's one before and after, a turn either
- * way, smaller, larger, Fit, Edit). A PNG or JPEG is decoded on the worker cores into a PPM
- * in memory (ui_image.h). nxview --decode FILE OUT.ppm decodes with no window. */
+/* nxview: a picture viewer (docs/nanox.md): any picture libmedia reads (JPEG, PNG, GIF and its
+ * animations, BMP, TGA, PNM) or XPM, as large as fits, under a row of keys (Open, the folder's
+ * one before and after, a turn either way, smaller, larger, Fit, Edit). Fitted, a picture is
+ * decoded on the worker cores into a pixmap the GPU keeps; zoomed or turned, into a PPM in memory. */
+#define _GNU_SOURCE
+#define UI_PICTURES
 #include <dirent.h>
 #include <sys/time.h>
 #include "ui.h"
 #include "ui_files.h"
 #include "ui_ask.h"
 #include "ui_glyph.h"
-#include "ui_image.h"
 
 static GR_WINDOW_ID window;
 static GR_IMAGE_ID image;
 static GR_IMAGE_INFO info;
 static const char *ppm;		/* the file, when the display draws it itself */
-static const char *wrong;	/* why a PNG or JPEG picture cannot be shown */
-static char decoded[64];	/* the PPM file made of one */
+static const char *wrong;	/* why a picture cannot be shown */
+static char decoded[64];	/* the PPM file made of one, when it is zoomed or turned */
+static int coded;		/* the picture is decoded to be shown (not a PPM, not XPM) */
+static char path[512], turned[64], notice[120];
 static int width, height;
+/* an animation: its file, its pictures and the one shown */
+static struct media_anim *anim;
+static uint8_t *anim_file;
+static uint32_t anim_size;
+static int anim_frame, anim_delay;
+static GR_WINDOW_ID anim_pixmap;	/* the size the animation is shown at, kept: a copy reads it later */
+static int anim_w, anim_h;
 
 static void
 forget(void)
@@ -25,21 +35,26 @@ forget(void)
 		unlink(decoded);
 }
 
-/* Decodes a PNG or JPEG file into a PPM file and says what that took. */
+static int
+workers_asked(void)
+{
+	const char *asked = getenv("NXVIEW_WORKERS");
+
+	return asked ? atoi(asked) : mcw_most();	/* as many as the machine has (and the picture has work for) */
+}
+
+/* Decodes a picture file into a PPM file and says what that took. */
 static const char *
 decode(const char *from, const char *to, int *pw, int *ph)
 {
-	const char *asked = getenv("NXVIEW_WORKERS"), *why;
-	int workers = asked ? atoi(asked) : mcw_most() > 3 ? mcw_most() : 3;	/* as many as the machine has (and the picture has work for) */
+	const char *why;
+	int workers = workers_asked();
 	struct timeval then, now;
 	unsigned then_n, now_n;
 
 	gettimeofday(&then, NULL);
 	__asm__ volatile("rdcycle %0" : "=r"(then_n));
-	img_codes_worker = getenv("NXVIEW_CODES") != NULL;	/* a JPEG's codes on a worker, as before */
-	if (getenv("NXVIEW_BANDS") && atoi(getenv("NXVIEW_BANDS")) >= 1 && atoi(getenv("NXVIEW_BANDS")) <= IMG_BANDS)
-		img_bands = atoi(getenv("NXVIEW_BANDS"));
-	why = ui_image_to_ppm(from, to, pw, ph, workers);
+	why = media_image_to_ppm(from, to, pw, ph, workers);
 	__asm__ volatile("rdcycle %0" : "=r"(now_n));
 	gettimeofday(&now, NULL);
 	if (!why) {
@@ -61,12 +76,30 @@ decode(const char *from, const char *to, int *pw, int *ph)
 	return why;
 }
 
+/* Whether a file is decoded to be shown: every kind libmedia reads but a PPM the GPU draws as it lies. */
 static int
 is_coded(const char *name)
 {
-	size_t n = strlen(name);
+	int pw, ph;
 
-	return (n > 4 && (!strcasecmp(name + n - 4, ".png") || !strcasecmp(name + n - 4, ".jpg"))) || (n > 5 && !strcasecmp(name + n - 5, ".jpeg"));
+	return media_kind_of_name(name) != MEDIA_UNKNOWN && !ui_picture_size(name, &pw, &ph);
+}
+
+/* The PPM a picture is zoomed or turned from: decoded when first wanted. */
+static int
+need_ppm(void)
+{
+	int pw, ph;
+
+	if (ppm || !coded)
+		return ppm != NULL;
+	snprintf(decoded, sizeof decoded, "/tmp/nxview-%d.ppm", (int)getpid());
+	if ((wrong = decode(path, decoded, &pw, &ph)) != NULL) {
+		decoded[0] = 0;
+		return 0;
+	}
+	ppm = decoded;
+	return 1;
 }
 
 /* ---- the window: a row of keys, the picture under it, a line of what it is ---- */
@@ -85,7 +118,6 @@ static const struct { const char *label; int key, sign; } keys[] = {
 };
 #define KEYS ((int)(sizeof keys / sizeof keys[0]))
 static int key_x[KEYS + 1], key_w[KEYS];
-static char path[512], turned[64], notice[120];
 static int zoom = 100;		/* percent of the size that fits; 0: the picture's own size, a pixel a pixel */
 static int pan_x, pan_y, held, held_x, held_y;
 static int turns;		/* quarter turns to the right the picture is shown with */
@@ -98,6 +130,50 @@ shown(void)
 	return turns ? turned : ppm;
 }
 
+/* The animation's picture `anim_frame`, fitted into its room, through a pixmap the GPU keeps. */
+static void
+draw_anim(int room_h)
+{
+	struct media_image in, out;
+	int w, h, x, y;
+
+	/* as large as fits, but a small one no more than four times its size */
+	w = info.width * room_h > info.height * width ? width : info.width * room_h / info.height;
+	if (w > info.width * 4)
+		w = info.width * 4;
+	h = w * info.height / info.width;
+	if (w < 1 || h < 1)
+		return;
+	if (anim_pixmap && (anim_w != w || anim_h != h)) {
+		GrDestroyWindow(anim_pixmap);
+		anim_pixmap = 0;
+	}
+	if (!anim_pixmap) {
+		if (!(anim_pixmap = ui_gpu_pixmap(w, h, &out)))
+			return;
+		anim_w = w, anim_h = h;
+	} else if (!ui_gpu_map(anim_pixmap, w, h, &out)) {
+		return;
+	}
+	memset(&in, 0, sizeof in);
+	in.width = info.width, in.height = info.height, in.channels = 4, in.stride = info.width * 4;
+	in.pixels = (uint8_t *)media_anim_frame(anim, anim_frame, &anim_delay);
+	if (in.pixels) {
+		out.background = 0x282828;
+		media_image_fit(&in, &out, 0, workers_asked());
+	}
+	ui_gpu_unmap(&out);
+	fit_percent = w * 100 / info.width;
+	/* the room round the picture, and the picture: nothing under it is drawn first (the wait for
+	 * the GPU above would show that while the next picture is made) */
+	x = (width - w) / 2, y = BAR + (room_h - h) / 2;
+	ui_fill(window, 0, BAR, width, y - BAR, DARK);
+	ui_fill(window, 0, y + h, width, BAR + room_h - y - h, DARK);
+	ui_fill(window, 0, y, x, h, DARK);
+	ui_fill(window, x + w, y, width - x - w, h, DARK);
+	GrCopyArea(window, ui_gc, x, y, w, h, anim_pixmap, 0, 0, MWROP_COPY);
+}
+
 static void
 draw(void)
 {
@@ -106,8 +182,15 @@ draw(void)
 
 	if (turns & 1)
 		pw = info.height, ph = info.width;
-	ui_fill(window, 0, BAR, width, room_h, DARK);
-	if (ppm) {
+	if (!anim)
+		ui_fill(window, 0, BAR, width, room_h, DARK);
+	if (anim) {
+		draw_anim(room_h);
+	} else if (coded && zoom == 100 && !turns && ui_picture_decoded_at(window, path, 0, BAR, width, room_h, DARK, 0)) {
+		/* (fitted: decoded into a pixmap of the room's size, which a redraw copies) */
+		w = pw * room_h > ph * width ? width : pw * room_h / ph;
+		fit_percent = w * 100 / pw;
+	} else if (ppm || (coded && need_ppm())) {
 		/* whole, as large as fits, times the zoom; a drag moves it */
 		w = pw * room_h > ph * width ? width : pw * room_h / ph;
 		h = w * ph / pw;
@@ -137,7 +220,9 @@ draw(void)
 			ui_tool(window, key_x[i], 3, key_w[i], 22, keys[i].sign, 0);
 	ui_fill(window, 0, height - STATUS, width, STATUS, UI_FACE);
 	ui_bevel(window, 0, height - STATUS, width, STATUS, 1);
-	if (ppm || image)
+	if (anim)
+		snprintf(text, sizeof text, "%.300s   %d x %d   %d of %d   %s", path, pw, ph, anim_frame + 1, media_anim_frames(anim), notice);
+	else if (ppm || image || coded)
 		snprintf(text, sizeof text, "%.300s   %d x %d   %d%%   %s", path, pw, ph, zoom ? fit_percent * zoom / 100 : 100, notice);
 	else
 		snprintf(text, sizeof text, "%.300s   %s", path, notice);
@@ -152,8 +237,8 @@ turn(int by)
 	unsigned char *from, *to;
 	int w, h, most, x, y, nw, nh;
 
-	if (!ppm) {
-		snprintf(notice, sizeof notice, "only a PPM, PNG or JPEG picture is turned");
+	if (anim || !need_ppm()) {
+		snprintf(notice, sizeof notice, "this picture is not turned");
 		return;
 	}
 	turns = (turns + by) & 3;
@@ -202,17 +287,34 @@ forget_all(void)
 		unlink(turned);
 }
 
+static void
+anim_forget(void)
+{
+	if (anim)
+		media_anim_close(anim);
+	if (anim_file)
+		munmap(anim_file, anim_size);
+	if (anim_pixmap)
+		GrDestroyWindow(anim_pixmap);
+	if (anim)
+		mcw_close();
+	anim = NULL, anim_file = NULL, anim_frame = 0, anim_pixmap = 0;
+}
+
 /* Takes a file as the picture to show; `first` is before there is a window to say so in. */
 static void
 take(const char *file)
 {
 	char title[600];
-	int pw, ph;
+	int pw, ph, fd;
+	struct stat st;
+	struct media_info about;
 
 	forget();
+	anim_forget();
 	if (image)
 		GrFreeImage(image);
-	image = 0, ppm = NULL, wrong = NULL, decoded[0] = 0;
+	image = 0, ppm = NULL, wrong = NULL, decoded[0] = 0, coded = 0;
 	turns = pan_x = pan_y = 0, zoom = 100, notice[0] = 0;
 	memset(&info, 0, sizeof info);
 	snprintf(path, sizeof path, "%s", file);
@@ -222,18 +324,31 @@ take(const char *file)
 	if (!path[0])
 		return;		/* (no picture: the last one was deleted) */
 	if (is_coded(path)) {
-		/* what it is doing, first: decoding is seconds, and a window with nothing new looks stuck */
-		if (window) {
-			ui_fill(window, 0, BAR, width, height - BAR - STATUS, DARK);
-			ui_text(window, 10, BAR + 10, "decoding it...", -1, WHITE, 0);
-			GrFlush();
+		/* its size from its headers; it is decoded where it is drawn */
+		uint8_t *f = MAP_FAILED;
+
+		if ((fd = open(path, O_RDONLY)) >= 0 && !fstat(fd, &st) && st.st_size > 16)
+			f = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+		if (fd >= 0)
+			close(fd);
+		if (f == MAP_FAILED) {
+			wrong = "the file cannot be read";
+			return;
 		}
-		snprintf(decoded, sizeof decoded, "/tmp/nxview-%d.ppm", (int)getpid());
-		wrong = decode(path, decoded, &pw, &ph);
-		if (wrong)
-			decoded[0] = 0;
-		else
-			ppm = decoded, info.width = pw, info.height = ph;
+		if ((wrong = media_probe(f, (uint32_t)st.st_size, &about)) == NULL && !about.width)
+			wrong = "not a picture";
+		if (!wrong && about.frames > 1) {
+			/* an animation: every picture of it decoded ahead, on the worker cores, which are kept
+			 * while it plays (opening them again was most of a picture's time) */
+			if (!mcw_count())
+				mcw_open(workers_asked());
+			anim = media_anim_open(f, (uint32_t)st.st_size, workers_asked(), &wrong);
+			anim_file = f, anim_size = (uint32_t)st.st_size;
+		} else {
+			munmap(f, (size_t)st.st_size);
+		}
+		if (!wrong)
+			coded = 1, info.width = about.width, info.height = about.height;
 	} else if (ui_picture_size(path, &pw, &ph)) {
 		ppm = path, info.width = pw, info.height = ph;
 	} else if ((image = GrLoadImageFromFile(path, 0)) != 0) {
@@ -244,7 +359,7 @@ take(const char *file)
 static int
 is_picture(const char *name)
 {
-	static const char *const ends[] = { ".ppm", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".pgm", ".xpm" };
+	static const char *const ends[] = { ".ppm", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".pgm", ".pbm", ".tga", ".xpm" };
 	size_t n = strlen(name), i;
 
 	for (i = 0; i < sizeof ends / sizeof ends[0]; i++)
@@ -305,8 +420,8 @@ others(GR_EVENT *event)
 		ui_files_stop = closing = 1;
 }
 
-/* The picture shown is the desktop's from now on: the file itself, kept in the registry (its
- * decoded copy is the desktop's to make); one turned is a copy, which lasts until a restart. */
+/* The picture shown is the desktop's from now on: the file itself, kept in the registry (the
+ * desktop decodes it); one turned is a copy, which lasts until a restart. */
 static void
 as_desktop(void)
 {
@@ -315,30 +430,17 @@ as_desktop(void)
 	FILE *in, *out;
 	size_t n;
 
-	if (!ppm || !(in = fopen(shown(), "rb"))) {
-		snprintf(notice, sizeof notice, "only a PPM, PNG or JPEG picture can be the desktop's");
-		return;
-	}
 	if (!turns) {
-		char copy[64];
-		int pw, ph;
-
-		fclose(in);
-		/* (the decoded picture this has is that copy already: no second decoding) */
-		if (decoded[0] && !ui_picture_size(path, &pw, &ph)) {
-			ui_wallpaper_copy(path, copy, sizeof copy);
-			if ((in = fopen(decoded, "rb")) != NULL && (out = fopen(copy, "wb")) != NULL) {
-				while ((n = fread(block, 1, sizeof block, in)) > 0)
-					fwrite(block, 1, n, out);
-				fclose(out);
-			}
-			if (in)
-				fclose(in);
+		if (!ppm && !coded) {
+			snprintf(notice, sizeof notice, "this picture cannot be the desktop's");
+			return;
 		}
 		ui_wallpaper(path, 1);
 		snprintf(notice, sizeof notice, "it is the desktop's picture now");
 		return;
 	}
+	if (!(in = fopen(shown(), "rb")))
+		return;
 	if ((out = fopen(to, "wb")) != NULL) {
 		while ((n = fread(block, 1, sizeof block, in)) > 0)
 			fwrite(block, 1, n, out);
@@ -382,7 +484,7 @@ key(int ch)
 	case 'q': case MWKEY_ESCAPE:
 		return 0;
 	case 'o':
-		if (ui_choose_file("Open a picture", "/root/Pictures", ".ppm .png .jpg .jpeg .gif .bmp", chosen, sizeof chosen, others))
+		if (ui_choose_file("Open a picture", "/root/Pictures", ".jpg .jpeg .png .gif .bmp .tga .ppm .pgm", chosen, sizeof chosen, others))
 			take(chosen);
 		if (closing)
 			return 0;
@@ -401,7 +503,7 @@ key(int ch)
 	case 'w': as_desktop(); break;
 	case MWKEY_DELETE: delete_shown(); break;
 	case 'e':
-		/* the paint program with this file: what it saves is a PPM beside it */
+		/* the paint program with this file */
 		if (path[0] && real_vfork() == 0) {
 			signal(SIGCHLD, SIG_DFL);	/* (paint waits for the decoder it starts) */
 			execlp("nxpaint", "nxpaint", path, (char *)NULL);
@@ -452,7 +554,7 @@ main(int argc, char **argv)
 	GrMapWindow(window);
 	GrSetFocus(window);
 	if (argc > 1 && is_coded(argv[1])) {
-		/* seconds of decoding: the window framed and saying so first (docs/nanox.md) */
+		/* decoding: the window framed and saying so first (docs/nanox.md) */
 		ui_framed();
 		draw();
 		take(argv[1]);
@@ -463,11 +565,21 @@ main(int argc, char **argv)
 	if (getenv("NXVIEW_PRINT")) {
 		for (i = 0; i < KEYS; i++)
 			printf("nxview: key %s at %d\n", keys[i].label ? keys[i].label : "(a sign)", key_x[i] + key_w[i] / 2);
-		printf("nxview: %s, %d x %d%s\n", path, info.width, info.height, ppm ? "" : image ? " (not a PPM)" : " (not shown)");
+		printf("nxview: %s, %d x %d%s\n", path, info.width, info.height, ppm || coded ? "" : image ? " (not a PPM)" : " (not shown)");
 		fflush(stdout);
 	}
 	for (;;) {
-		GrGetNextEvent(&event);
+		if (anim) {
+			/* the animation's next picture when its time is up */
+			GrGetNextEventTimeout(&event, anim_delay > 10 ? anim_delay : 100);
+			if (event.type == GR_EVENT_TYPE_TIMEOUT) {
+				anim_frame = (anim_frame + 1) % media_anim_frames(anim);
+				draw();
+				continue;
+			}
+		} else {
+			GrGetNextEvent(&event);
+		}
 		switch (event.type) {
 		case GR_EVENT_TYPE_EXPOSURE:
 			draw();

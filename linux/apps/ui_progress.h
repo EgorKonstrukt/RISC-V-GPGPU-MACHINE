@@ -16,7 +16,7 @@
 
 static GR_WINDOW_ID progress_window;
 static int progress_state;	/* 0 not begun, 1 waiting to show, 2 shown, -1 no window system */
-static unsigned progress_began, progress_drawn = ~0u;
+static unsigned progress_began, progress_drawn = ~0u, progress_mapped;
 static char progress_title[120], progress_line[80];
 
 static unsigned
@@ -56,6 +56,7 @@ progress_show(unsigned long long done, unsigned long long total, const char *lin
 			(screen->rows - PROGRESS_H) / 3, PROGRESS_W, PROGRESS_H, UI_FACE);
 		GrSelectEvents(progress_window, GR_EVENT_MASK_EXPOSURE);
 		GrMapWindow(progress_window);
+		progress_mapped = progress_ms();
 		progress_state = 2;
 		progress_drawn = ~0u;
 	}
@@ -70,6 +71,9 @@ progress_show(unsigned long long done, unsigned long long total, const char *lin
 		if (event.type == GR_EVENT_TYPE_EXPOSURE)
 			progress_drawn = ~0u;
 	}
+	/* (drawn again for its first moments: the frame put round it after it was drawn cleared it) */
+	if (progress_ms() - progress_mapped < 1500)
+		progress_drawn = ~0u;
 	if (share == progress_drawn && !strcmp(line, progress_line))
 		return;
 	snprintf(progress_line, sizeof progress_line, "%s", line);

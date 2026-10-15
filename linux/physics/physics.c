@@ -434,18 +434,23 @@ asleep(const struct body_state *s)
 }
 
 void
+phys_near_of(const struct phys *w, int from, int i)
+{
+	const struct body_state *s = &w->states[from][i];
+	struct body_near *n = &w->nears[from][i];
+
+	n->pos[0] = s->pos[0], n->pos[1] = s->pos[1], n->pos[2] = s->pos[2];
+	n->reach = w->shapes[i].radius + margin_of(w, s);
+	n->moving = moving(of(s->vel), of(s->spin));
+}
+
+void
 phys_nears(const struct phys *w, int from)
 {
 	int i;
 
-	for (i = 0; i < w->bodies; i++) {
-		const struct body_state *s = &w->states[from][i];
-		struct body_near *n = &w->nears[from][i];
-
-		n->pos[0] = s->pos[0], n->pos[1] = s->pos[1], n->pos[2] = s->pos[2];
-		n->reach = w->shapes[i].radius + margin_of(w, s);
-		n->moving = moving(of(s->vel), of(s->spin));
-	}
+	for (i = 0; i < w->bodies; i++)
+		phys_near_of(w, from, i);
 }
 
 /* Whether sleeping body i wakes: held, or a fast body is within reach of it, in the cells

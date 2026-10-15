@@ -16,8 +16,8 @@ Nano-X's build.
   world, where every page copied is a round.
 - What a program gets: musl's headers and `libc.a`, `libnano-X.a` with `nano-X.h`,
   `libgles.a` with `GLES/gl.h` and `GLES/segl.h` (`programs/linux/gles.c` in its float build:
-  OpenGL ES 1 on the machine's GPU, `docs/gpu.md`), and `libmcw.a` with `mcw.h`: the worker
-  cores (`docs/multicore.md`, "Using the workers from a program"), for a program that shares
+  OpenGL ES 1 on the machine's GPU, `docs/gpu.md`), and `libmcw.a` with `mcw.h` and `mcwx.h`: the worker
+  cores (`docs/multicore.md`, "Using the workers from a program", and "The second layer"), for a program that shares
   its work out as `example shader` does.
 - `cc -g` writes stabs, which the IDE's debugger reads (`docs/ide.md`).
 - The C library's `sinf`, `cosf` and their like work in doubles, which are library calls

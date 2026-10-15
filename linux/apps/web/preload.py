@@ -11,6 +11,7 @@ import datetime
 import io
 import os
 import re
+import struct
 import sys
 import threading
 import time
@@ -23,6 +24,10 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
+try:
+    import numpy
+except ImportError:
+    numpy = None
 try:
     import cairosvg
 except Exception:
@@ -40,7 +45,12 @@ WEB_DEPTH = 200             # web.h: elements open inside one another
 CSS_EM = 13                 # css.h: our pixels to a page's 16
 PROBE = 32768               # bytes of a picture read to learn its kind and size
 PICTURE_READ = 8000000
-PPM_MOST = 4000000
+PIXELS_MOST = 4000000       # bytes of a picture's pixels, 3 a pixel, as nxweb decodes it
+SMALL_PIXELS = 4096         # a picture of so many pixels or fewer stays a PPM: decoded, a 40 x 40 one
+                            # cost nxweb's first core 500 thousand instructions
+JPEG_QUALITY = 80           # colours at full size: libmedia stretches half-size ones from the nearest sample
+JPEG_INTERVALS = 512        # restart intervals a photograph: every one is a worker's job (docs/media.md)
+GUESS_BYTES = 0.3           # a JPEG's or PNG's bytes a pixel, for choosing what to fetch (measured 0.28)
 WIDEST = 800
 WORKERS = 16
 PER_HOST = 2
@@ -790,8 +800,67 @@ def stored(size):
     return (WIDEST, max(1, round(h * WIDEST / w))) if w > WIDEST else (w, h)
 
 
-def as_ppm(address):
-    """Fetches a picture whole and makes the PPM of it: (bytes, w, h), or why not."""
+def _chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
+
+
+def png_segments(picture):
+    """A PNG in segments, as libmedia's encoder writes them (docs/media.md, linux/libmedia/
+    png_segments.py), each decoded by a core of its own; a palette for 256 colours or fewer."""
+    w, h = picture.size
+    colours = picture.getcolors(256)
+    if colours is not None:
+        indexed = picture.quantize(colors=len(colours), method=Image.Quantize.MAXCOVERAGE, dither=Image.Dither.NONE)
+        if len(indexed.getcolors(256) or []) != len(colours):
+            colours = None
+    if colours is not None:
+        bpp, kind, palette = 1, 3, bytes(indexed.getpalette()[:3 * len(colours)])
+        rows = numpy.frombuffer(indexed.tobytes(), numpy.uint8).reshape(h, w)
+    else:
+        bpp, kind = 3, 2
+        rows = numpy.frombuffer(picture.tobytes(), numpy.uint8).reshape(h, w * 3)
+    # each row's filter the one of the least sum of magnitudes; a segment's first row None or Sub
+    r = rows.astype(numpy.int16)
+    left, up, corner = numpy.zeros_like(r), numpy.zeros_like(r), numpy.zeros_like(r)
+    left[:, bpp:], up[1:], corner[1:, bpp:] = r[:, :-bpp], r[:-1], r[:-1, :-bpp]
+    p = left + up - corner
+    pa, pb, pc = abs(p - left), abs(p - up), abs(p - corner)
+    paeth = numpy.where((pa <= pb) & (pa <= pc), left, numpy.where(pb <= pc, up, corner))
+    tries = [((r - by) & 255).astype(numpy.uint8) for by in (0, left, up, (left + up) >> 1, paeth)]
+    cost = numpy.stack([numpy.minimum(t, 256 - t.astype(numpy.int16)).sum(axis=1) for t in tries])
+    step = max(16, -(-h // 256))        # (libmedia reads 256 segments at most)
+    starts = list(range(0, h, step))
+    cost[2:, starts] = 1 << 30
+    choice = cost.argmin(axis=0)
+    idats, adler = [], 1
+    for k, y0 in enumerate(starts):
+        raw = b"".join(bytes([choice[y]]) + tries[choice[y]][y].tobytes() for y in range(y0, min(h, y0 + step)))
+        adler = zlib.adler32(raw, adler)
+        z = zlib.compressobj(9, zlib.DEFLATED, -15)
+        last = k == len(starts) - 1
+        data = z.compress(raw) + z.flush(zlib.Z_FINISH if last else zlib.Z_FULL_FLUSH)
+        data = (b"\x78\xda" if k == 0 else b"") + data + (struct.pack(">I", adler & 0xffffffff) if last else b"")
+        idats.append(_chunk(b"IDAT", data))
+    out = b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, kind, 0, 0, 0))
+    out += _chunk(b"PLTE", palette) if kind == 3 else b""
+    out += _chunk(b"mdPR", struct.pack(">I", len(starts)) + b"".join(struct.pack(">I", y) for y in starts))
+    return out + b"".join(idats) + _chunk(b"IEND", b"")
+
+
+def jpeg_intervals(picture):
+    """A JPEG in restart intervals, its colours at full size (4:4:4): JPEG_INTERVALS, or one a few
+    MCUs for a small picture."""
+    w, h = picture.size
+    mcus = -(-w // 8) * -(-h // 8)
+    intervals = max(1, min(JPEG_INTERVALS, mcus // 4))
+    out = io.BytesIO()
+    picture.save(out, "JPEG", quality=JPEG_QUALITY, subsampling=0, restart_marker_blocks=-(-mcus // intervals))
+    return out.getvalue()
+
+
+def as_kept(address):
+    """Fetches a picture whole and makes the file the ROM keeps of it (kept_file): (bytes, suffix,
+    w, h), or why not."""
     reply = fetch(address, PICTURE_READ, accept="image/png,image/jpeg,*/*;q=0.5")
     if not reply.ok or reply.cut:
         return reply.error or ("HTTP %d" % reply.status if not reply.ok else "over 8 MB")
@@ -817,8 +886,21 @@ def as_ppm(address):
     w, h = picture.size
     if w < 2 or h < 2:
         return "under 2 x 2"
-    data = b"P6\n%d %d\n255\n" % (w, h) + picture.tobytes()
-    return "over 4 MB as a PPM" if len(data) > PPM_MOST else (data, w, h)
+    if w * h * 3 > PIXELS_MOST:
+        return "over 4 MB of pixels"
+    return kept_file(picture) + (w, h)
+
+
+def kept_file(picture):
+    """(bytes, suffix) of the file the ROM keeps of an RGB picture: a PPM when it is small, a PNG
+    for a graphic (256 colours or fewer, or no larger than 1.25 JPEGs), the rest JPEG."""
+    w, h = picture.size
+    if w * h <= SMALL_PIXELS:
+        return b"P6\n%d %d\n255\n" % (w, h) + picture.tobytes(), "ppm"
+    if picture.getcolors(256) is not None:
+        return png_segments(picture), "png"
+    jpeg, png = jpeg_intervals(picture), png_segments(picture)
+    return (png, "png") if len(png) <= len(jpeg) * 5 // 4 else (jpeg, "jpg")
 
 
 # ---- the crawl ----
@@ -989,10 +1071,10 @@ def build_cache(args, own, linked):
     """Writes the cache's files and index; returns what it says of itself."""
     os.makedirs(args.cache, exist_ok=True)
     for name in os.listdir(args.cache):
-        if re.fullmatch(r"webc-\d+\.(css|ppm|html)", name) or name == "web-cache.idx":
+        if re.fullmatch(r"webc-\d+\.(css|ppm|png|jpg|html)", name) or name == "web-cache.idx":
             os.remove(os.path.join(args.cache, name))
     files, entries, notes = {}, {}, collections.Counter()
-    state = {"next": 1, "spent": 0, "pages": 0}
+    state = {"next": 1, "spent": 0, "pages": 0, "pixels": 0}
 
     def keep(kind, address, data, suffix, w=0, h=0, counted=True):
         """One file for what an address holds; another address of the same file is a line more."""
@@ -1024,7 +1106,7 @@ def build_cache(args, own, linked):
                     keep("S", address, reply.body, "css")
 
     def pictures(pages):
-        if Image is None:
+        if Image is None or numpy is None:
             return
         wanted, sized, blind = [], [], []
         for p in pages:
@@ -1042,10 +1124,11 @@ def build_cache(args, own, linked):
                 notes["SVG pictures skipped (no rasteriser)"] += 1
             elif reply.size:
                 w, h = stored(reply.size)
-                sized.append((w * h * 3 + 20, address))
+                sized.append((w * h * 3 + 15 if w * h <= SMALL_PIXELS else int(w * h * GUESS_BYTES) + 600, address))
             else:
                 blind.append(address)
-        # the smallest first, as many as the budget could hold; then some whose size is not known
+        # the smallest first, as many as the budget could hold by a guess of their kept size, then
+        # some whose size is not known; what is kept is chosen again by the files' own sizes
         room, chosen = args.budget - state["spent"], []
         for size, address in sorted(sized):
             if size > room:
@@ -1054,17 +1137,19 @@ def build_cache(args, own, linked):
             room -= size
             chosen.append(address)
         chosen += blind[:60] if room > 0 else []
-        fetch_all(chosen, "ppm", as_ppm)
+        fetch_all(chosen, "kept", as_kept)
         made = []
         for address in chosen:
-            result = memo.get(("ppm", wire(address)))
+            result = memo.get(("kept", wire(address)))
             if isinstance(result, tuple):
                 made.append((len(result[0]), address, result))
             else:
                 why = result.error if isinstance(result, Reply) else str(result)
                 notes["SVG pictures skipped (no rasteriser)" if why == "SVG" else "pictures skipped: " + why.split(":")[0]] += 1
-        for _, address, (data, w, h) in sorted(made, key=lambda m: m[:2]):
-            keep("I", address, data, "ppm", w, h)
+        for _, address, (data, suffix, w, h) in sorted(made, key=lambda m: m[:2]):
+            if keep("I", address, data, suffix, w, h):
+                notes["pictures kept as " + suffix.upper()] += 1
+                state["pixels"] += w * h * 3
 
     every = own + [p for mine in linked for p in mine]
     drawn = {a for p in every for a in p.pictures if a not in p.small}
@@ -1122,7 +1207,7 @@ def main():
             address, _, name = line.rstrip("\r\n").partition("\t")
             if address and not address.startswith("#"):
                 sites.append((address, name))
-    print("%d sites; Pillow %s, SVG %s" % (len(sites), "yes" if Image else "NO (no sizes, no PPM)",
+    print("%d sites; Pillow %s, SVG %s" % (len(sites), "yes" if Image and numpy else "NO (no sizes, no pictures kept)",
                                            "yes" if cairosvg else "no rasteriser"), flush=True)
     own, linked = crawl(args, sites)
     lines, rows, lost, failures = list_links(sites, own, linked)
@@ -1167,7 +1252,8 @@ def main():
         state, kinds, count, notes = build_cache(args, own, linked)
         print("\ncache %s: %d files, %d index lines (P %d, S %d, I %d)" %
               (args.cache, count, sum(kinds.values()), kinds["P"], kinds["S"], kinds["I"]))
-        print("  sheets and pictures %d bytes of %d, pages %d bytes" % (state["spent"], args.budget, state["pages"]))
+        print("  sheets and pictures %d bytes of %d, pages %d bytes; the pictures' pixels %d bytes as PPM" %
+              (state["spent"], args.budget, state["pages"], state["pixels"]))
         print("  web_cache_find()'s search finds %d of the index's %d lines" % (state["found"], sum(kinds.values())))
         for why, n in (notes - collections.Counter()).most_common():
             print("  %d %s" % (n, why))

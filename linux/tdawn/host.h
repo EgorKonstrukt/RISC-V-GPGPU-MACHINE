@@ -109,8 +109,9 @@ void host_fill(host_fill_fn fn, void *what, const void *from);
 /* The page goes over the scene, with holes of the key index inside this rectangle. */
 void host_scene_end(int x, int y, int width, int height, int key);
 /* The same, after draw() has noted the objects' part, both on a worker (the objects drawn a
- * frame behind: gl.cpp); whether a worker would take it now. */
-void host_scene_behind(void (*draw)(void), int x, int y, int width, int height, int key);
+ * frame behind: gl.cpp); whether a worker would take it now. joined() is called on this core
+ * once draw() has run, at the join or at once. */
+void host_scene_behind(void (*draw)(void), int x, int y, int width, int height, int key, void (*joined)(void));
 int host_scene_behind_ready(void);
 /* No scene any more: the page is all there is to show. */
 void host_scene_drop(void);

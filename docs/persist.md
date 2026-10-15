@@ -90,7 +90,8 @@ wrote. The host's SAVE button reaches the guest as an address to open (`docs/ope
 `open persist:save` runs `nxpersist save`, so it needs the desktop's bar.
 
 The `nx` script runs `nxpersist load` after the window system and before the desktop and the
-bar, once a session (`/tmp/nxpersist.loaded`); a kept screen size other than the running one
+bar, once a session (`/tmp/nxpersist.loaded`), unless `geotune` loaded it at boot
+(`/tmp/nxpersist.early`); a kept screen size other than the running one
 starts the desktop over once. With a window system `nxpersist` shows a window with what it is
 doing and a bar; without one it prints lines.
 
@@ -103,7 +104,8 @@ doing and a bar; without one it prints lines.
   sign over the power button; after "Build world" it is run again. A world without the sign
   answers 404 at once.
 - `rvc_cpu --persist FILE` and `rvc_harness --persist FILE` (`rvc_persist.h`): the bytes are
-  the file, `FILE.auto` holds the switch. These are the only addresses `rvc_cpu` answers.
+  the file, `FILE.auto` holds the switch. These and `host:name` (below) are the only addresses
+`rvc_cpu` answers.
   Without the option both say 404. (`rvc_harness --cpu` now puts every fetch's answer into the
   processor's own memory: before, only its words came back, and a load there read old bytes.)
 

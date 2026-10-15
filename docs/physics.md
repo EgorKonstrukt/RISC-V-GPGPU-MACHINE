@@ -12,7 +12,7 @@ machine has none to give.
     arrows  turn the view          space  throw the heavy box      1 2 3  a wall, towers, a heap
     w a s d  walk the view about   Enter  the next scene           r  the scene again
     c  each box in its core's colour     p  stop and go            q, Escape  leave
-    9  all the workers             0  core 0 alone
+    9  all the workers             0  core 0 alone           W  the workers asked for, or none
 
 The bar under the picture has a button for some of those, and a line of figures. In the
 picture the pointer takes a box by where it is pressed, carries it and throws it; from a
@@ -35,10 +35,11 @@ one.
 ## Who owns what
 
 - **Body i is share `i mod n`'s**, and grid cell c is share `c mod n`'s, n being the number
-  of shares (one a worker). Every record is whole 16 bytes (`physics.h`).
-- **A body's state** (place, turn, velocity, spin: four texels) is in two buffers: a substep
-  reads one and writes the other.
-- **What its neighbours need of it** (`struct body_pose`, six texels in each buffer): its axes,
+  of shares (one a worker; with shares of no bodies, n is those with bodies, and the grid is
+  the others': "Shares with no bodies", below). Every record is whole 16 bytes (`physics.h`).
+- **A body's state** (place, turn, velocity, spin: four texels) is in three buffers
+  (`PHYS_BUFFERS`): a substep reads one and writes the next, and a look may still read the third.
+- **What its neighbours need of it** (`struct body_pose`, eight texels in each buffer): its axes,
   and where `pose_guess` takes it to be next. Its owner leaves them with the state and sets
   `PHYS_POSED` in the state's key; a neighbour reads them there, where it worked them out
   again for every contact (a tenth of a substep). A state the program writes itself has the
@@ -183,13 +184,12 @@ GPU's picture never meets it. A button does what its key does (`act`).
   with nothing sideways, fires and begins again.
 - **Without a headset** the mouse's counter (word 4) turns the view, 0.066 degrees a count,
   and the head's tilt is the aim's rise; the keys are the window's, and Ctrl takes.
-- **Until the world knows the program** (`GAME_PHYS`, 8, in `gameid.h`; `EmuGamepad.cs` has
-  no such number yet) a headset's controls are the pointer's: word 5 is nothing, the left
-  stick is the arrow keys, which is why a sitter's arrows walk and turn; the left grip is
-  Esc, which a sitter with hands does not leave by; the triggers are the pointer's buttons,
-  which do nothing in a sitter's picture. What the world needs: the number, the sticks sent
-  as sticks for it and no keys from the grips and triggers, and a trigger left out of the
-  host's words while its beam is on the console.
+- **Until the world knew the program** (`GAME_PHYS`, 8, in `gameid.h`) a headset's controls
+  were the pointer's: word 5 was nothing, the left stick the arrow keys, which is why a
+  sitter's arrows walk and turn; the left grip was Esc, which a sitter with hands does not
+  leave by; the triggers were the pointer's buttons. The world has it now: `EmuGamepad.cs`'s
+  `GamePhysics` (8) is the HANDS scheme, the sticks sent as sticks and no key but Enter, and a
+  hand whose beam is on the console takes nothing (`EmuHolodeck.cs`).
 - **A window's keys that are held** (`w` `a` `s` `d`, Ctrl, a sitter's arrows) go by the
   key's release, which the window now asks for; a window that loses the keyboard lets all go.
 
@@ -207,9 +207,11 @@ of the picture differs.
 
 ## The picture
 
-When core 0 asks (25 times a second at most) each share writes its boxes as quads straight
-into GPU memory, 24 compact float vertices a box, at the first substep at or after the one
-named: the picture is of one state. A face's colour is a texel of a table of 16 colours by
+When core 0 asks (once a substep of the boxes' time at most; 25 times a second with fewer than
+64 shares) each share writes its boxes (with 64 shares or more, the shares of the pictures
+write them all: "A picture every substep", below) as quads straight into GPU memory, 24 compact float
+vertices a box, of the substep named: the picture is of one state ("A picture every substep",
+below). A face's colour is a texel of a table of 16 colours by
 64 shades, and the worker picks the shade from the face's normal. Two buffers alternate, one
 drawn while the other is made. Core 0 draws them with one command that stays (`seglKeptQuads`,
 `docs/gpu.md`) and never touches a vertex. It is 3D with `seglWorldUp(2)`, so a holodeck
@@ -295,8 +297,9 @@ million instructions became 1.4 with 7 workers (2.3 with 255, of which 0.9 is `m
 
 Tried and not kept: `settle_points` out of line (3% more); the points built in two loops,
 one for each pair of matrices (no fewer); the cuts' distances carried into the choice of
-points (more, for the keeping). Still there: the workers spin for the other shares'
-counters (5% of their instructions with seven, most of them with 255).
+points (more, for the keeping). Still there then: the workers spin for the other shares'
+counters (5% of their instructions with seven, most of them with 255; since 13 October a share
+that waits ends its pass, and since 14 October it waits for fewer: below).
 
 More sums a change must leave, `PHYS_WORKERS=0`: `PHYS_SCENE=4 PHYS_BODIES=13 PHYS_STEPS=300`
 `3d3402c2`, `PHYS_SCENE=3 PHYS_BODIES=150 PHYS_STEPS=90` `ed123738`, `PHYS_SCENE=2
@@ -320,7 +323,8 @@ has told them the hands, so a run is the same whoever computes it), `PHYS_SEAT=1
 second of a sitter's place, turn and hands), `PHYS_PRINT=1` (every box's place and velocity),
 `PHYS_COUNT=1` (instructions a box; with `PHYS_WORKERS=0`), `PHYS_SPIN=1` (a share that waits
 turns in place), `PHYS_SERVICE=N` (so many shares with no bodies; 0: none), `PHYS_ORDER=ahead`
-(the look a substep earlier: other sums).
+(the look a substep earlier: other sums), `PHYS_LAUNCH=N:K` and `PHYS_LAUNCH_OLD=1` ("A throw
+without stopping the shares").
 
 ## Checking it
 
@@ -389,8 +393,8 @@ the jobs go out and the library has three stack pages there for a worker (`STACK
 substep went from 92 ms to 41, a substep from 7.5 ms to 6.2, 120 substeps from 1,061 ms to
 843; the sums are the same.
 
-A worker whose share is waiting for the others cannot end its pass (the pause hint is a sleep
-until its job word changes), so the instructions of all cores are the cores times the passes
+A worker whose share is waiting for the others could not end its pass then (the pause hint is
+a sleep until its job word changes; it ends it with `mc_end_pass()` since the next section), so the instructions of all cores are the cores times the passes
 whatever the work: 6.35 million a substep before, 5.26 now, of which 2.2 are work
 (`PHYS_WORKERS=0`: 2.83 to 2.18). Fewer shares than workers with the same fullest share were
 tried and are slower (9.1 ms a substep against 6.1 on the wall).
@@ -426,7 +430,8 @@ stores to go through: three boxes on 207 shares took 1,985 ms for 600 substeps a
 1,436. And float constants from integer registers (`raytrace.md`): the same within 0.3%.
 
 With this, 240 substeps of the wall by workers asked for (`PHYS_WORKERS`): 2,453 ms with 191,
-2,192 and 2,198 with 207, 2,194 with 223, 2,198 with 239, 2,211 with 255. It still asks for 207.
+2,192 and 2,198 with 207, 2,194 with 223, 2,198 with 239, 2,211 with 255. It still asked for
+207 (255 since the next section).
 
 ### Shares with no bodies, and what a substep's time is (13 October 2026, later)
 
@@ -458,8 +463,9 @@ contact is found a substep later, and where the heavy box lands on the wall a br
 in the floor for some substeps where it is 19 cm (`PHYS_PRINT=1` now has every box's turn and
 size; the deepest pair of boxes over substeps 44 to 56: 22 cm, and 33). At rest the two are
 the same within 3 mm, and the towers' fall as deep either way (13 to 26 cm). Its sums on
-`rvc_cpu`: the wall `094d8d9a`, its quads `044ab11c`, the same with 0, 7 and 255 workers.
-For it a state is kept in three buffers and the grid in two.
+`rvc_cpu`: the wall `094d8d9a`, its quads `044ab11c`, the same with 0, 7 and 255 workers
+(now `bb5193e1` and `20a3ca2c`: "A picture every substep"). For it a state is
+kept in three buffers and the grid in two (every run has three since).
 
 Tried and not kept: every sixteenth share saying how far its sixteen are, for the last share
 to read sixteen words and not 255 (the wall the same, the heap and the towers 2 to 3%
@@ -560,3 +566,84 @@ Tried and not kept:
   later. The pairs that are worked out again are those with a fast body (two slow ones keep
   their contact seven looks of eight), and for those a substep late is the heavy box 23 cm
   further into what it hits. Not made.
+
+### A picture every substep (15 October 2026)
+
+In the world the boxes went at 62 substeps a second and 21 pictures a second, whatever the
+workers: a substep is the boxes' sixtieth of a second and core 0 lets the shares go no faster
+than time (`PHYS_HZ`), and a picture was asked for at most every 40 ms. Run unpaced
+(`PHYS_STEPS`), the wall's 120 substeps take about 2.4 passes a substep (`PHYS_COUNT=1`: with a
+look mostly 3 and 4, without 2), and each is as long as its dearest share's one body: the
+substeps are work, not waits for core 0, which only asks for pictures and sets the limit.
+`game_par.py nxphys`'s 4.04 passes a frame has the start of 255 jobs and the program's exit in
+it (3.08 to the `physstat: done` line), and on the card passes a second over substeps a second
+counts the short passes of that exit with the long ones of the substeps.
+
+Now, with shares of the pictures (64 shares or more), a picture is asked for whenever the last
+has been shown and the shares are at a newer substep, at most one a sixtieth of a second, and is
+made beside the substeps: a picture's share waits until every body has made the substep named
+(`ready`) and holds only at the substep before the look that would write that state's buffer
+again, so no body waits for it. Core 0 names a substep three past the phases it sees (a share
+may have made that many since), or the limit, which no share passes. Fewer than 64 shares make
+their own bodies' pictures as before, 25 a second.
+
+| | before | after |
+|---|---|---|
+| the wall, in real time, `rvc_cpu` (card model) | 62 substeps, 21 to 23 pictures a second | 62, 58 to 60 |
+| the towers | 62, 20 to 21 | 62, 59 to 60 |
+| the heap | 62, 21 to 23 | 62, 57 to 60 |
+| the wall on the card (RTX 5090, D3D11 + fxc2) | 62, 20 to 21 | 62, 60 to 62 |
+| the heap on the card | 61 to 63, 20 to 21 | 61 to 63, 59 to 62 |
+| the wall's 120 substeps unpaced, `rvc_cpu` | 789 ms, 4.05 passes a frame | 794 ms, 4.05, 25 pictures |
+| the heap's 120 unpaced, `rvc_cpu` | 1,040 ms, 5.06 | 1,052 ms, 5.10, 26 pictures |
+| the wall's 120 unpaced, card | 711 ms, 168.8 a second | 738 ms, 162.6 (one run each; 25 pictures where there were some 18) |
+
+All cores' instructions a second in real time go up with the pictures (the wall's 76 million
+to 88), core 0's do not (1.57 to 1.52 million). Every sum of "Checking it" and above is the
+same with 0, 7, 15, 63 and 255 workers, `PHYS_QSUM=1`'s quads `f53c3f0c`, the hands' lines,
+`PHYS_COUNT=1` 0 pages, `RVC_RACES` 0 undone (its reads as they were are the counters and core
+0's words, none of a picture's share reading a state). `PHYS_ORDER=ahead`'s sums are now
+`bb5193e1`, its quads `20a3ca2c`, with 0 and 255 workers. The done line ends with the pictures
+shown.
+
+Not done: more pictures than substeps (90 a second in a headset would need a substep shorter
+than the boxes' sixtieth: other sums); waiting only for the cells round a body at a look (the
+substeps are within a seventh of each body's own chain, and the grid is made from every body).
+
+### A throw without stopping the shares (15 October 2026, later)
+
+A throw, a box fired by a click or a hand, and the scene again (`r`, the scene's keys and
+buttons, Enter) stopped every share's job, waited for 255 of them, and gave them out again: 65
+to 85 ms from the key to the next picture, 88 to 122 for `r`, the pictures standing still
+meanwhile. Now it is a launch (`launch_ask`, `launch`): core 0 lowers the limit to a substep
+none of the shares can have passed (three past the phases it sees, or the limit), and when every
+share waits there with its job kept and no picture is being made, writes the boxes into that
+substep's buffer and lets them go on; the picture of that substep is asked for at once. A box
+is launched at a substep without a look, and needs nothing but its own `body_near`
+(`phys_near_of`): the grid the next look reads is made from it. The scene again is launched at
+a look's, with every key, `body_near` and the grid made anew (`written_at`), from a copy of the
+boxes as the scene put them (`starts`); another scene is put there and shared out again. A launch
+does not draw the bar. Changing the workers, `PHYS_ORDER=ahead` and a stopped room still stop
+and start the jobs; `PHYS_LAUNCH_OLD=1` does everything the old way.
+
+From the key to the next picture, `rvc_cpu` (card model), the old way and the new in turn on
+one build, a throw at 4 s and 6 s and `r` at 8 s:
+
+| | throws | `r` |
+|---|---|---|
+| the wall, old | 77, 65 ms | 91 ms |
+| the wall, new | 22, 22 ms | 32 ms |
+| the heap, old | 79, 73 ms | 113 ms |
+| the heap, new | 18, 28 ms | 40 ms |
+
+`PHYS_LAUNCH=N:K` (with `PHYS_STEPS`) launches act()'s K at substep N (1 the scene again, at
+the look's substep at or after N; 3 the heavy box thrown), so that a launch is the same
+whoever computes it: `PHYS_SCENE=1 PHYS_STILL=1 PHYS_LAUNCH=20:3 PHYS_STEPS=120` gives
+`dd5fe852` with 0, 7 and 255 workers, and the same the old way (`PHYS_LAUNCH_OLD=1`, which
+makes the 100 substeps after it); `PHYS_LAUNCH=21:3` gives `22e9ab16`; `PHYS_SCENE=1
+PHYS_LAUNCH=40:1 PHYS_STEPS=120` `8cccf9ba`; `PHYS_SCENE=3 PHYS_BODIES=150 PHYS_LAUNCH=30:1
+PHYS_STEPS=90` `496c8792`. Every sum without a launch is as before, `PHYS_COUNT=1` 0 pages,
+`RVC_RACES` 0 undone. Driven through its window (the Towers button, Enter, space, a click
+fired, `p` twice, `r`, `1`, `q`): each launch says `launched at substep N`, the boxes are 109,
+400 and 206 as they should be, the click says `a box fired from 10643 3199 3152`, `pidof`
+finds no nxphys after `q`, and `mctest 15 2000` says PASS. Not measured on the card.

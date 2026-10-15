@@ -114,6 +114,7 @@ public static partial class ShaderEmuBuilder
         EditorUtility.SetDirty(picture);
         probe.mode = ReflectionProbeMode.Custom;
         probe.customBakedTexture = picture;
+        probe.boxProjection = false;   // (a direction's colour: the city is far)
 
         foreach (MeshRenderer renderer in world.GetComponentsInChildren<MeshRenderer>(true))
         {

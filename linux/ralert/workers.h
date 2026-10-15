@@ -13,12 +13,6 @@
 extern "C" {
 #endif
 
-/* A movie frame for UnVQ_4x4; a job is rows of it. */
-struct workers_unvq {
-	uint8_t *codebook, *pointers, *buffer;
-	uint32_t blocks_per_row, num_rows, buff_width;
-};
-
 /* A block for LCW_Uncompress. */
 struct workers_lcw {
 	const uint8_t *source;

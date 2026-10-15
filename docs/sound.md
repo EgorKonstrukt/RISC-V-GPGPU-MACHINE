@@ -89,8 +89,10 @@ so its samples can be played where they lie.
   game's AUD files into ADPCM with checkpoints when the image is built (3.8 MB). The game's
   sounds are found in that pack by a hash of how their AUD file begins. A sound out of view
   is played at a tenth of the volume, so a game left to itself is quiet; `TDAWN_SAY=1` makes
-  EVA speak. No music: the demo's data has none for its missions, only the map screen's and
-  the score screen's tunes (`MAP1.AUD`, `WIN1.AUD`), which the build does not install.
+  EVA speak. No music in the missions: the demo's data has none, only the map screen's and
+  the score screen's tunes (`MAP1.AUD`, `WIN1.AUD`), which are in the pack too and play on a
+  voice of their own (`File_Stream_Sample_Vol`; the build installs only each file's first 64
+  bytes, by which the tune is found).
 
 ## The host
 
@@ -122,5 +124,5 @@ mix, the cursor and the control words; the model mixes them again from the snaps
 
 ## Not done
 
-Sound for players watching someone else's machine. Tiberian Dawn's music and movies. Doom's
+Sound for players watching someone else's machine. Tiberian Dawn's movies (its missions have no music in the demo). Doom's
 pitch wheel, and the second voice of its two-voice instruments.

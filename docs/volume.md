@@ -18,12 +18,13 @@ Nothing new is drawn by the guest. A program's last whole frame is a command lis
 | `0x87000300` | address of the frame's command list (0: none) |
 | `0x87000304` | commands in it |
 | `0x87000308` | frames so far |
-| `0x8700030c` | the picture's size: width, and height from bit 16; from bit 28, which axis is up (1 x, 2 y, 3 z; 0: not said) |
+| `0x8700030c` | the picture's size: width, and height from bit 16; from bit 28, which axis is up (1 x, 2 y, 3 z; 0: not said); bit 31, a flat screen (`seglWorldFlat`) |
 
 - Both OpenGL libraries write them after each swap (`programs/linux/gl.c`, `gles.c`) and build
   the next frame somewhere else: frames alternate between two places, so the one named here
   stays whole until the frame after it is complete. `gles.c` has two sets of list, matrix
-  blocks and vertices of half the old size each (1,536 commands, 16,384 compact vertices).
+  blocks and vertices (`SET_SIZE`, 384 KB each by default: 3,072 commands and 10,240 compact
+  vertices; a program may build it with its own split, as Quake does).
 - The kernel clears the words when `/dev/gpu` is closed, so a program that ends leaves nothing.
 
 ## What the host draws

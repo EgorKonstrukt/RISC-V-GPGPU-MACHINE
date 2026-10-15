@@ -8,7 +8,6 @@
 // RAM_TILE_BITS = 0: upstream's row-major order, 2048 texels (32 KB) per row.
 // RAM_TILE_BITS = b: square tiles of 2^b x 2^b texels laid out row by row, so nearby addresses
 // are near each other in both directions (b = 4: one 4 KB page per 16x16 tile).
-// RAM_TILE_ZORDER additionally walks each tile in Z-order (Morton order).
 #ifndef RAM_TILE_BITS
 #define RAM_TILE_BITS 0
 #endif
@@ -659,7 +658,6 @@ static uint mc_word = 0;
 #endif
 #endif
 
-// Guest registers in an indexable array (one store per write) unless OPT_BASELINE.
 #ifdef PASS_TICK
 // Guest registers in an indexable array for the tick loop: one indexed store per instruction
 // instead of a conditional move over every register.

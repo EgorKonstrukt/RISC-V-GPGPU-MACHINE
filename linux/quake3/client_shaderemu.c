@@ -36,6 +36,19 @@ static mcw_handle	job;		/* the worker's call (mcwx.h), while it is out */
 intptr_t cgame_vmMain (int, int, int, int, int, int, int, int, int, int, int, int, int);
 uint32_t se_call_on_stack (uint32_t (*fn) (uint32_t), uint32_t arg, void *stack_top);
 
+/* The level's items of a frame, made on a helper core beside the worker's (cg_ents.c, SE_SideItems):
+   asked for by the worker (their numbers), done by the helper, kept up by this core. */
+#define SIDE_MOST	256
+unsigned	se_side_stack;		/* its stack's top (q_shared.h, SE_OnWorker) */
+static char	side_stack[SE_THINK_STACK] __attribute__ ((aligned (16)));
+static struct { unsigned seq, count, list, unused; int numbers[SIDE_MOST]; } side_task __attribute__ ((aligned (16)));
+static struct { unsigned seq, unused[3]; } side_done __attribute__ ((aligned (16)));
+static struct { unsigned quit, up, unused[2]; } side_life __attribute__ ((aligned (16)));
+static mcw_handle	side_out;
+static int		side_wanted, side_open, side_placed;	/* this core's; the worker's two, in a frame */
+/* for the q3stat: lines, read and never cleared there: the worker's (frames, items, passes waited) and the helper's */
+struct se_side_counts	se_side_worker __attribute__ ((aligned (16))), se_side_helper __attribute__ ((aligned (16)));
+
 static void setup (void)
 {
 	const char	*how;
@@ -51,11 +64,19 @@ static void setup (void)
 		for (i = 4096; i <= 0x20000; i += 4096)
 			stack[STACK_BYTES - i] = 0;
 		SE_SceneTouch (mcw_touch);
+		side_wanted = !(getenv ("QUAKE3_SIDE") && !strcmp (getenv ("QUAKE3_SIDE"), "inline"));
+		se_side_stack = (unsigned)(uintptr_t)(side_stack + SE_THINK_STACK);
+		mcw_touch (side_stack + SE_THINK_STACK - 0x10000, 0x10000);
+		SE_SoundSideTouch (mcw_touch);
+		mcw_touch (&se_side_worker, sizeof se_side_worker);
+		mcw_touch (&se_side_helper, sizeof se_side_helper);
 	}
 	printf ("quake3: the client's game is on %s\n", mode == MODE_WORKER ? "a worker core, a frame ahead" : "this core");
 }
 
 /* ---- on the worker ---- */
+
+static void side_join (void);
 
 static uint32_t frame_body (uint32_t list)
 {
@@ -66,7 +87,85 @@ static uint32_t frame_body (uint32_t list)
 		SE_SoundRecord ((int)list);
 		cgame_vmMain (CG_DRAW_ACTIVE_FRAME, given[list - 1].serverTime, given[list - 1].stereo, given[list - 1].demo, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 	}
+	side_join ();
 	return 0;
+}
+
+/* The frame's items asked of the helper (1), or the worker makes them as they come (0). */
+int SE_SideOpen (void)
+{
+	side_open = SE_OnWorker () == 2 && side_life.up;
+	side_placed = 0;
+	if (side_open)
+		side_task.count = 0;
+	return side_open;
+}
+
+void SE_SideAsk (int number)
+{
+	if (side_task.count < SIDE_MOST)
+		side_task.numbers[side_task.count++] = number;
+}
+
+void SE_SideGo (void)
+{
+	side_task.list = (unsigned)se_client_list;
+	side_task.seq++;
+}
+
+/* The next item's place in the frame's scene, if the helper has it. */
+int SE_ScenePlaceSide (void)
+{
+	if (side_placed >= (int)side_task.count)
+		return 0;
+	SE_SceneSidePlace (side_placed++);
+	return 1;
+}
+
+/* On the helper: what it was asked */
+const int *SE_SideTask (int *count)
+{
+	*count = (int)side_task.count;
+	return side_task.numbers;
+}
+
+/* At the frame's end: the helper is done with it, and its sounds' places are this core's. */
+static void side_join (void)
+{
+	if (!side_open)
+		return;
+	se_side_worker.n[0]++, se_side_worker.n[1] += side_task.count;
+	while (side_done.seq != side_task.seq) {
+		mc_end_pass ();
+		se_side_worker.n[2]++;
+	}
+	SE_SoundSideReplay ();
+	side_open = 0;
+}
+
+static uint32_t side_body (uint32_t unused)
+{
+	SE_SceneSideBegin ((int)side_task.list);
+	cgame_vmMain (CG_SE_SIDE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+	return 0;
+}
+
+/* The helper's job: the frames' items as they are asked for, until this core says to stop. */
+static uint32_t side_job (uint32_t unused0, uint32_t unused1)
+{
+	unsigned	seen = side_done.seq, began;
+
+	for (;;) {
+		while (side_task.seq == seen && !side_life.quit)
+			mc_end_pass ();
+		if (side_task.seq == seen)
+			return 0;
+		seen = side_task.seq;
+		began = SE_Cycles ();
+		se_call_on_stack (side_body, 0, side_stack + SE_THINK_STACK);
+		se_side_helper.n[0] += SE_Cycles () - began;
+		side_done.seq = seen;
+	}
 }
 
 /* The frames asked for, one after another: the next may have been asked for while the last was made. */
@@ -109,10 +208,19 @@ int SE_ClientUserCmdValue (int value, float scale)
 /* The worker is given the frames asked for, if it is not at them already. */
 static void start (void)
 {
+	if (side_out)
+		mcw_ready (side_out);	/* (a page it stopped at is brought) */
 	if (job && mcw_ready (job))
 		mcw_join (job), job = 0;
-	if (!job && made.frames < asked.frames)
+	if (!job && made.frames < asked.frames) {
+		/* (the helper first: the job sees it is there) */
+		if (!side_out && side_wanted) {
+			side_life.quit = 0;
+			side_out = mcw_try_call (side_job, 0, 0);
+			side_life.up = side_out != 0;
+		}
 		job = mcw_call (client_job, 0, 0);
+	}
 }
 
 /* One more frame is asked for: its list was last drawn from two frames ago. */
@@ -136,6 +244,7 @@ static void wait (unsigned frames)
 		mcw_rest ();
 		se_client_passes++;
 		SE_ServerPoll ();	/* (the server's frame is not kept waiting for this core's) */
+		SE_ScenePoll ();
 	}
 }
 
@@ -164,6 +273,8 @@ void SE_ClientPoll (void)
 {
 	if (job)
 		mcw_ready (job);	/* (a page it stopped at is brought) */
+	if (side_out)
+		mcw_ready (side_out);
 }
 
 void SE_ClientReset (void)
@@ -171,6 +282,11 @@ void SE_ClientReset (void)
 	while (taken < asked.frames)
 		take ();
 	first_frames = 0;
+	if (side_out) {
+		side_life.quit = 1, side_life.up = 0;
+		mcw_join (side_out);
+		side_out = 0;
+	}
 }
 
 /* Whether the next frame of the client's game may be the worker's. */

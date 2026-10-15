@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,15 +28,32 @@ unsigned	se_started;
 
 /* The C library's rand() as it is, but a core its own state (SE_OnWorker): the game and the server's both draw */
 static struct { uint64_t seed; unsigned unused[2]; } rand_of[SE_CORES] __attribute__ ((aligned (16)));
+int	se_rand_core = -1;	/* the server's frame on this core draws as on its worker (server_shaderemu.c) */
+
+static struct { uint64_t *seed; unsigned unused[3]; } use_of[SE_CORES] __attribute__ ((aligned (16)));	/* a thinking bot's */
+
+static int rand_core (void)
+{
+	int	core = SE_OnWorker ();
+
+	return core == 0 && se_rand_core >= 0 ? se_rand_core : core;
+}
+
+/* This core draws from that state until it is told 0 (a bot's think: server_shaderemu.c) */
+void SE_RandUse (uint64_t *seed)
+{
+	use_of[SE_OnWorker ()].seed = seed;
+}
 
 void srand (unsigned s)
 {
-	rand_of[SE_OnWorker ()].seed = s - 1;
+	rand_of[rand_core ()].seed = s - 1;
 }
 
 int rand (void)
 {
-	uint64_t	*seed = &rand_of[SE_OnWorker ()].seed;
+	int		core = rand_core ();
+	uint64_t	*seed = use_of[SE_OnWorker ()].seed ? use_of[SE_OnWorker ()].seed : &rand_of[core].seed;
 
 	*seed = 6364136223846793005ULL * *seed + 1;
 	return (int)(*seed >> 33);
@@ -150,14 +168,27 @@ void SE_FrameDone (void)
 		se_client_jobs = se_client_cycles = se_client_passes = 0;
 	}
 	{
+		static unsigned	was[4];
+		unsigned	f = se_side_worker.n[0] - was[0];
+
+		if (f)
+			printf ("q3stat: the level's items on the client's helper core: %u frames, %u items each, %u thousand instructions each, "
+				"%u.%u passes waited for one\n", f, (se_side_worker.n[1] - was[1]) / f, (se_side_helper.n[0] - was[3]) / f / 1000,
+				(se_side_worker.n[2] - was[2]) / f, (se_side_worker.n[2] - was[2]) * 10 / f % 10);
+		was[0] = se_side_worker.n[0], was[1] = se_side_worker.n[1], was[2] = se_side_worker.n[2], was[3] = se_side_helper.n[0];
+	}
+	{
 		extern unsigned se_server_parts[3], se_server_frames;	/* sv_main.c (quake3.patch) */
 		static unsigned	was[4];		/* (the counts are the server's core's to write: read here, never cleared) */
+		static unsigned	thinks[2];
 		unsigned	now[4] = {se_server_parts[0], se_server_parts[1], se_server_parts[2], se_server_frames};
 		unsigned	made = now[3] - was[3], f = made ? made : 1;
 
-		printf ("q3stat: the server made %u frames of the game, in thousands each: the bots %u, the game %u, telling the clients %u\n",
-			made, (now[0] - was[0]) / f / 1000, (now[1] - was[1]) / f / 1000, (now[2] - was[2]) / f / 1000);
+		printf ("q3stat: the server made %u frames of the game, in thousands each: the bots %u, the game %u, telling the clients %u; "
+			"%u bots' thinks, %u of them on helpers\n", made, (now[0] - was[0]) / f / 1000, (now[1] - was[1]) / f / 1000,
+			(now[2] - was[2]) / f / 1000, se_think_counts.n[0] - thinks[0], se_think_counts.n[1] - thinks[1]);
 		memcpy (was, now, sizeof was);
+		thinks[0] = se_think_counts.n[0], thinks[1] = se_think_counts.n[1];
 	}
 #ifdef SE_PARTS
 	{
@@ -404,6 +435,13 @@ void Sys_SigHandler (int signal)
 	leave (signal == SIGTERM || signal == SIGINT ? 1 : 2);
 }
 
+/* A fault says where it was: the address and the instruction (riscv's first register of the context is the pc) */
+static void fault (int signal, siginfo_t *info, void *context)
+{
+	fprintf (stderr, "quake3: fault at %p, pc %08lx\n", info->si_addr, (unsigned long)((ucontext_t *)context)->uc_mcontext.__gregs[0]);
+	Sys_SigHandler (signal);
+}
+
 /*
  * Lines typed at the terminal the game was started from are console commands: the way to
  * drive it without its window's keyboard (a test does, through the machine's serial console).
@@ -471,7 +509,14 @@ int main (int argc, char **argv)
 	NET_Init ();
 	signal (SIGILL, Sys_SigHandler);
 	signal (SIGFPE, Sys_SigHandler);
-	signal (SIGSEGV, Sys_SigHandler);
+	{
+		struct sigaction	act;
+
+		memset (&act, 0, sizeof act);
+		act.sa_sigaction = fault;
+		act.sa_flags = SA_SIGINFO;
+		sigaction (SIGSEGV, &act, NULL);
+	}
 	signal (SIGTERM, Sys_SigHandler);
 	signal (SIGINT, Sys_SigHandler);
 	for (;;) {

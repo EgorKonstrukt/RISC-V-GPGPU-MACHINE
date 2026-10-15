@@ -167,7 +167,8 @@ and the slowest tenth from 26.9 to 33.7; at 3M it was at 35 before and is.
 - **One job for the game's life** (`view_loop` in `doom_video.c`), its pass ended by
   `fence.i` while there is no view to make: a worker's pause is its sleep until the next job,
   and under `rvc_cpu` a job posted in the very pass the last one ends in is never begun (a
-  job a view stopped after some 1,950 frames).
+  job a view stopped after some 1,950 frames). (Replaced by a round of `mcw_for_begin()`:
+  "Sight checks made ahead, and the second layer" below.)
 - **The first core shows the list when it finds it made**: at a tic's start and end, while
   it waits for the next tic's time, and before the next frame's drawing, where it waits. A
   frame is on the window some passes later than it was. What the first core then adds to
@@ -305,7 +306,7 @@ The Microwindows tree is left as it is; `doom.sh` compiles a few files different
   (`doom_thing_changed`, `doom_thing_linked`, `doom_thing_gone` in `doom_fast.c`: a line put
   into `P_SetMobjState`, `P_ZMovement`, `P_RemoveMobj`, `P_SetThingPosition`,
   `P_ThingHeightClip` and `P_DamageMobj`), and the wait for a tic's time calls `doom_idle()`.
-- `doom_gl.c`, the GPU's library and the workers' (`programs/mc/mcw.c`) are compiled apart
+- `doom_gl.c`, the GPU's library and the workers' (`programs/mc/mcw.c`, `mcwx.c`) are compiled apart
   from the rest, a variable a section on 16 bytes of its own (`APART` in `doom.sh`).
 
 ## The screen (`doom_video.c`)

@@ -43,6 +43,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     public GameObject[] plates, plateGuards, keyPlates, showButtons;
     public Texture2D blackTexture;
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
+                                       // (for a program that does not say its player's eye: Natural)
     public float mouseCounts = 20f;    // a desktop sitter's mouse: counts told the game for one of Unity's "Mouse X"
     public bool beam = true;           // a sitter in a headset sees where their hand points (the console's Beam key)
 
@@ -67,6 +68,9 @@ public class EmuHolodeck : UdonSharpBehaviour
     private float mouseGone;           // a desktop sitter's mouse: how far right it has gone, in counts
     private bool firing;               // and its left button, which is the games' Ctrl
     private int played;                // the program whose world is round them: kept while another window has the keyboard
+    private float inUse = -1f;         // the plane in use: Natural's, moved by World + and -
+    private float shift;               // what World + and - moved it by, for the game played now
+    private int shiftFor;
     private const int Ctrl = 29, Pressed = 65536;
     // The programs that are played with both hands, by their numbers in linux/apps/gameid.h:
     // each hand has a beam there. Any other program's aim is the right hand's.
@@ -310,9 +314,30 @@ public class EmuHolodeck : UdonSharpBehaviour
     private void Scale(float by)
     {
         if (own < 0) return;
-        plane = Mathf.Clamp01(plane + by);
-        sceneMaterial.SetFloat("_Plane", plane);
+        shift = Mathf.Clamp(shift + by, -1f, 1f);
         nextAt = 0f;
+    }
+
+    // The plane at which the program's player's eye is the sitter's avatar's eye height, where the
+    // game played says it (docs/holodeck.md, "The world's size"); else `plane`.
+    private float Natural()
+    {
+        uint w = machine.worldEye;
+        VRCPlayerApi player = Networking.LocalPlayer;
+        if (played == 0 || (int)(w >> 28) != played || !Utilities.IsValid(player)) return plane;
+        int a = (int)(w & 0xffff);
+        if (a >= 32768) a -= 65536;
+        float b = (int)((w >> 16) & 0xfff) / 4096f, eye = Mathf.Clamp(player.GetAvatarEyeHeightAsMeters(), 0.2f, 5f);
+        return b <= 0f ? plane : a / 4096f - b * Mathf.Log(eye);
+    }
+
+    private void Plane()
+    {
+        if (shiftFor != played) { shiftFor = played; shift = 0f; }
+        float want = Mathf.Clamp01(Natural() + shift);
+        if (Mathf.Abs(want - inUse) < 0.001f) return;
+        inUse = want;
+        sceneMaterial.SetFloat("_Plane", inUse);
     }
 
     // ---- who sits where, and what each room shows ----
@@ -328,6 +353,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         bool byWords = ByWords();
         if (gamepad != null && gamepad.keys != null && gamepad.keys.playAway != byWords) gamepad.keys.playAway = byWords;
         Mouse();
+        Plane();
         Tell();
         if (Time.time < nextAt) return;
         nextAt = Time.time + 0.25f;
@@ -390,7 +416,7 @@ public class EmuHolodeck : UdonSharpBehaviour
                             : "Space or End: stand up. Sit again for the keys";
                 if (plateLabels[k].text != says) plateLabels[k].text = says;
             }
-            if (scaleLabels[k] != null && me) scaleLabels[k].text = "World " + Mathf.RoundToInt((1f - plane) * 100f);
+            if (scaleLabels[k] != null && me) scaleLabels[k].text = "World " + Mathf.RoundToInt((1f - inUse) * 100f);
         }
     }
 
@@ -456,7 +482,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         bool headset = player.IsUserInVR() || (pointer != null && pointer.debugBeam);
         // (bit 5: the hands are tracked, and a program may aim by one)
         now[0] = (headset ? 3 | 32 : 2) | (own >= 0 ? 16 : 0) | (Mathf.Min(VRCPlayerApi.GetPlayerCount(), 255) << 8);
-        now[1] = (player.playerId & 255) | (Mathf.RoundToInt(plane * 255f) << 8);   // (and the room's scale)
+        now[1] = (player.playerId & 255) | (Mathf.RoundToInt(Mathf.Clamp01(inUse) * 255f) << 8);   // (and the room's scale)
         now[2] = Turn(turn.y);    // to the right
         now[3] = Turn(-turn.x);   // upwards
         now[4] = Half(at.x);
@@ -486,7 +512,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         // with hands, the left one's second word is the sticks)
         if (!headset)
         {
-            // (and the keys played by: the left stick, the left trigger jumps, the right one fires)
+            // (and the keys played by: the left stick, Space the jump button, the right trigger fires)
             bool play = ByWords();
             int x = Mathf.Clamp(Key(KeyCode.D) + Key(KeyCode.RightArrow) - Key(KeyCode.A) - Key(KeyCode.LeftArrow), -127, 127);
             int y = Mathf.Clamp(Key(KeyCode.W) + Key(KeyCode.UpArrow) - Key(KeyCode.S) - Key(KeyCode.DownArrow), -127, 127);
@@ -494,12 +520,18 @@ public class EmuHolodeck : UdonSharpBehaviour
             bool fires = (Input.GetMouseButton(0) && (pointer == null || !pointer.Landed(1))) || Input.GetKey(KeyCode.LeftControl)
                       || Input.GetKey(KeyCode.RightControl);
             now[8] = Mathf.RoundToInt(mouseGone) & 0xffff;
-            now[9] = (now[9] & 0x3fff) | (play && Input.GetKey(KeyCode.Space) ? 1 << 14 : 0);
+            now[9] &= 0x3fff;
+            if (play && Input.GetKey(KeyCode.Space)) now[0] |= 64;
             now[10] = play ? (x & 255) | ((y & 255) << 8) : 0;
             now[11] = 0;
             now[13] = (now[13] & 0x3fff) | (play && fires ? 1 << 14 : 0);
         }
-        else if (gamepad != null) { now[10] = gamepad.StickLow(); now[11] = gamepad.StickHigh(); }
+        else if (gamepad != null)
+        {
+            now[10] = gamepad.StickLow();
+            now[11] = gamepad.StickHigh();
+            if (gamepad.Jumping()) now[0] |= 64;   // (bit 6: the jump button; no trigger jumps)
+        }
         for (int i = 0; i < 16; i++)
         {
             if (now[i] == told[i]) continue;

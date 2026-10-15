@@ -9,8 +9,8 @@
  *   r   the next size of picture     m   how often a ray is mirrored (0 to 2)     h   shadows
  *   space  stop and go     w   each tile framed in its core's colour
  *   W   all the workers, one, none (a, 1, 0: each by itself)     q, Escape  leave
- * For tests: RAY_FRAMES=N leaves after N pictures, RAY_WORKERS=N and RAY_SHAPE=4,4,... set
- * the start, RAY_SIZE=WxH the picture (320x240), RAY_STILL=1 keeps the scene where it is.
+ * For tests: RAY_FRAMES=N leaves after N pictures, RAY_WORKERS=N sets the start,
+ * RAY_SIZE=WxH the picture (320x240), RAY_STILL=1 keeps the scene where it is.
  * Each picture's line (raystat:) has its time, its rays and a sum of its pixels, which is the
  * same whichever cores traced it.
  */

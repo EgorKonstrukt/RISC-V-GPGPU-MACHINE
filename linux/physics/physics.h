@@ -76,6 +76,7 @@ struct phys {
 int phys_grid(const struct phys *w, int share, int from, int turn);
 void phys_grid_all(const struct phys *w, int from, int turn);	/* every share's grid, by one core */
 void phys_nears(const struct phys *w, int from);	/* every body's body_near, by one core */
+void phys_near_of(const struct phys *w, int from, int body);	/* one body's */
 int phys_look(const struct phys *w, int share, int shares, int from, int turn);
 int phys_step(const struct phys *w, int share, int shares, int from, int looking, int turn);
 

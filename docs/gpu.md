@@ -246,7 +246,7 @@ float build, about an axis of the coordinate system in the other.
   or without; `seglPoints()` gives room for points (`docs/quake.md`: models and particles).
 - `seglMemorySpare()` is 3.9 MB more for one program: the display's own framebuffer
   (`docs/display.md`), which nothing reads while the desktop is layers.
-- `seglSwap()` waits until the list is drawn, with `pause`, which ends the machine's pass:
+- `seglSwap()` waits until the list is drawn, with `pause` (now the rest call, below), which ends the machine's pass:
   what was left of that pass is not run (4,100 instructions a frame on average, 6% of Doom).
   `seglSwapEarly()` submits and returns at once, for a program that does other work next.
   The list, and every texture, kept vertex and palette entry it reads, must stay as they are
@@ -292,7 +292,9 @@ frames a second with this project's kernel (about 80 on upstream's):
   exist, so such a program fails to link rather than misbehave.
 - This project's kernel (`linux/kernel`: pimaker's 5.17.11 fork plus our drivers) has
   `/dev/gpu`. It maps GPU memory, `0x86000000` to `0x87b00000` (the control words are 16 MiB
-  in), so buffers are written with plain stores. One ioctl draws a list, copies the picture
+  in), so buffers are written with plain stores. Its pages are mapped accessed and written:
+  the machine's walk faults on a clear bit (`src/mmu.h`), and a worker's first store to a
+  page stopped it until core 0 served it (`docs/multicore.md`, "A game's speed"). One ioctl draws a list, copies the picture
   where asked and returns when that is done; it holds a lock, so several programs can use
   the GPU without stepping on each other's lists. An older ioctl only waits for a frame.
   Either way the kernel waits with `wfi`, which ends the emulator's frame.

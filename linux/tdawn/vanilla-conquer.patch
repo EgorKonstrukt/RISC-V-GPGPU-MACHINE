@@ -1082,6 +1082,97 @@ index ea6a5c0..31c6e4b 100644
      return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
  }
  
+diff --git a/common/vqadrawer.cpp b/common/vqadrawer.cpp
+index cd3b404..68dc9f1 100644
+--- a/common/vqadrawer.cpp
++++ b/common/vqadrawer.cpp
+@@ -184,6 +184,74 @@ void VQA_SetDrawBuffer(VQAHandle* handle, uint8_t* buffer, unsigned width, unsig
+     drawer->ScreenOffset = drawer->X1 + drawer->Y1 * width;
+ }
+ 
++#if defined(SHADEREMU) && !defined(SHADEREMU_RA)
++/* Tiberian Dawn's 4x2 frames: the block rows over the worker cores by libmedia (docs/tdawn.md,
++ * "Movies"). TDAWN_MOVIE_WORKERS=N: no more than N (0: this core alone); TDAWN_MOVIE_CHECK=1:
++ * every frame decoded by the game's own UnVQ_4x2 as well, and the two compared. */
++#include "host.h"
++#include "mcwx.h"
++#include "media.h"
++#include <stdio.h>
++#include <stdlib.h>
++
++static int movie_workers = -1;
++static unsigned movie_frames, movie_checked, movie_wrong;
++
++static void ShaderEmu_UnVQ_4x2(uint8_t* codebook,
++                               uint8_t* pointers,
++                               uint8_t* buffer,
++                               unsigned blocks_per_row,
++                               unsigned num_rows,
++                               unsigned buff_width)
++{
++    static const char* check = getenv("TDAWN_MOVIE_CHECK");
++    if (movie_workers < 0) {
++        const char* limit = getenv("TDAWN_MOVIE_WORKERS");
++        /* the mission's scene had some: a movie has them all, as Red Alert's (fifteen) */
++        host_workers_close();
++        movie_workers = mcw_open(limit ? atoi(limit) : 15);
++    }
++    media_vq2_rows(codebook, pointers, buffer, blocks_per_row, num_rows, buff_width, movie_workers);
++    movie_frames++;
++    if (check) {
++        unsigned bytes = num_rows * 2 * buff_width, wrong = 0;
++        static uint8_t* own;
++        static unsigned own_bytes;
++        if (own_bytes < bytes) {
++            own = (uint8_t*)realloc(own, bytes);
++            own_bytes = bytes;
++        }
++        UnVQ_4x2(codebook, pointers, own, blocks_per_row, num_rows, buff_width);
++        for (unsigned i = 0; i < bytes; i++) {
++            wrong += own[i] != buffer[i];
++        }
++        movie_checked++;
++        if (wrong) {
++            movie_wrong++;
++            fprintf(stderr, "tdawn: movie frame %u: %u of %u bytes differ from the game's own decoding\n", movie_frames, wrong, bytes);
++        }
++    }
++}
++
++/* At a movie's end: the workers given back (the scene opens its own again), and what was made. */
++void ShaderEmu_Movie_End(const char* name)
++{
++    if (movie_frames && (getenv("TDAWN_MOVIE_CHECK") || getenv("TDAWN_FRAMES"))) {
++        fprintf(stderr, "tdawn: movie %s: %u frames by libmedia with %d worker cores", name, movie_frames, movie_workers);
++        if (movie_checked) {
++            fprintf(stderr, ", %u of %u checked differ", movie_wrong, movie_checked);
++        }
++        fprintf(stderr, "\n");
++    }
++    if (movie_workers >= 0) {
++        mcw_for_end();
++        mcw_close();
++    }
++    movie_workers = -1;
++    movie_frames = movie_checked = movie_wrong = 0;
++}
++#endif
++
+ void VQA_ConfigureDrawer(VQAHandle* handle)
+ {
+     VQAData* data = handle->VQABuf;
+@@ -229,7 +297,11 @@ void VQA_ConfigureDrawer(VQAHandle* handle)
+     if (handle->Config.DrawFlags & VQACFGF_BUFFER) {
+         switch (blocksize) {
+         case 0x402:
++#if defined(SHADEREMU) && !defined(SHADEREMU_RA)
++            data->UnVQ = ShaderEmu_UnVQ_4x2;
++#else
+             data->UnVQ = UnVQ_4x2;
++#endif
+             break;
+         case 0x404:
+             data->UnVQ = UnVQ_4x4;
 diff --git a/common/winstub.cpp b/common/winstub.cpp
 index ca9dd27..3eaab0f 100644
 --- a/common/winstub.cpp
@@ -1575,10 +1666,10 @@ index f9c20ea..307e158 100644
  #endif
 \ No newline at end of file
 diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
-index a8aebd8..e0d962f 100644
+index a8aebd8..08d8760 100644
 --- a/tiberiandawn/conquer.cpp
 +++ b/tiberiandawn/conquer.cpp
-@@ -98,6 +98,579 @@ extern void Send_Statistics_Packet(void);
+@@ -98,6 +98,621 @@ extern void Send_Statistics_Packet(void);
  extern char* __nheapbeg;
  bool InMainLoop = false;
  
@@ -1720,6 +1811,46 @@ index a8aebd8..e0d962f 100644
 +    return distance > 0x170 ? 0x170 : distance;
 +}
 +
++/*
++** TDAWN_MOVE=N,DX,DY: at frame N the player's units and soldiers are selected and sent, as by a
++** click, to the cell DX,DY from the view's middle (TDAWN_MOVE_UNSELECT=1: unselected after).
++*/
++static void ShaderEmu_Move(void)
++{
++    static int move = -1, dx, dy;
++    if (move < 0) {
++        move = 0;
++        if (getenv("TDAWN_MOVE")) {
++            sscanf(getenv("TDAWN_MOVE"), "%d,%d,%d", &move, &dx, &dy);
++        }
++    }
++    if (!move || (int)Frame != move) {
++        return;
++    }
++    int cx = Coord_XCell(Map.TacticalCoord) + Lepton_To_Cell(Map.TacLeptonWidth) / 2 + dx;
++    int cy = Coord_YCell(Map.TacticalCoord) + Lepton_To_Cell(Map.TacLeptonHeight) / 2 + dy;
++    CELL cell = XY_Cell(cx, cy);
++    int count = 0;
++    for (int i = 0; i < Units.Count(); i++) {
++        if (Units.Ptr(i)->Is_Owned_By_Player() && !Units.Ptr(i)->IsInLimbo) {
++            Units.Ptr(i)->Select(true);
++        }
++    }
++    for (int i = 0; i < Infantry.Count(); i++) {
++        if (Infantry.Ptr(i)->Is_Owned_By_Player() && !Infantry.Ptr(i)->IsInLimbo) {
++            Infantry.Ptr(i)->Select(true);
++        }
++    }
++    for (int i = 0; i < CurrentObject.Count(); i++) {
++        CurrentObject[i]->Active_Click_With(ACTION_MOVE, cell);
++        count++;
++    }
++    if (getenv("TDAWN_MOVE_UNSELECT")) {
++        Unselect_All();
++    }
++    fprintf(stderr, "tdawn: %d sent to cell %d,%d at frame %d\n", count, cx, cy, (int)Frame);
++}
++
 +/* Things a player would do, for runs nobody is at. TDAWN_BUILD=N: a refinery in view at frame N. */
 +
 +/*
@@ -1756,6 +1887,7 @@ index a8aebd8..e0d962f 100644
 +            fprintf(stderr, "tdawn: %d selected at frame %d\n", count, (int)Frame);
 +        }
 +    }
++    ShaderEmu_Move();
 +    if (build && Frame == build) {
 +        CELL corner = Coord_Cell(Map.TacticalCoord);
 +        int before = Buildings.Count();
@@ -2123,6 +2255,7 @@ index a8aebd8..e0d962f 100644
 +                ShaderEmu_GL_Quads / frames,
 +                ShaderEmu_GL_Shroud / frames,
 +                ShaderEmu_GL_Shadows / frames);
++        host_scene_settle(); /* (the objects' worker adds to these: not while it draws) */
 +        ShaderEmu_Page_Copies = ShaderEmu_Page_Flips = ShaderEmu_Skipped = ShaderEmu_GL_Quads = 0;
 +        ShaderEmu_GL_Shroud = ShaderEmu_GL_Shadows = ShaderEmu_GL_Cycles = 0;
 +        ShaderEmu_GL_Parts[0] = ShaderEmu_GL_Parts[1] = ShaderEmu_GL_Parts[2] = 0;
@@ -2158,7 +2291,7 @@ index a8aebd8..e0d962f 100644
  #ifndef ARRAY_SIZE
  #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
  #endif
-@@ -1126,12 +1699,31 @@ bool Color_Cycle(void)
+@@ -1126,12 +1741,31 @@ bool Color_Cycle(void)
      static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
      static bool _up = false;
      bool changed = false;
@@ -2191,7 +2324,7 @@ index a8aebd8..e0d962f 100644
          _ftimer.Set(TIMER_SECOND / 8);
  
  /*
-@@ -1165,7 +1757,7 @@ bool Color_Cycle(void)
+@@ -1165,7 +1799,7 @@ bool Color_Cycle(void)
      /*
      **	Process the color cycling effects -- water.
      */
@@ -2200,7 +2333,7 @@ index a8aebd8..e0d962f 100644
          unsigned char colors[3];
  
          _timer.Set(TIMER_SECOND / 4);
-@@ -1222,6 +1814,20 @@ void Call_Back(void)
+@@ -1222,6 +1856,20 @@ void Call_Back(void)
      if (SampleType) {
          Theme.AI();
          Speak_AI();
@@ -2221,7 +2354,7 @@ index a8aebd8..e0d962f 100644
      }
  
  #ifdef NETWORKING
-@@ -1516,7 +2122,7 @@ static void Sync_Delay(void)
+@@ -1516,7 +2164,7 @@ static void Sync_Delay(void)
              if (input) {
                  Keyboard_Process(input);
              }
@@ -2230,7 +2363,7 @@ index a8aebd8..e0d962f 100644
          }
  
          Frame_Limiter(FL_NONE);
-@@ -1611,12 +2217,18 @@ bool Main_Loop()
+@@ -1611,12 +2259,18 @@ bool Main_Loop()
      } else {
          FrameTimer.Set(Options.GameSpeed);
      }
@@ -2249,7 +2382,7 @@ index a8aebd8..e0d962f 100644
  
              WWMouse->Erase_Mouse(&HidPage, true);
              Map.Input(input, x, y);
-@@ -1624,7 +2236,24 @@ bool Main_Loop()
+@@ -1624,7 +2278,24 @@ bool Main_Loop()
                  Keyboard_Process(input);
              }
              //			HidPage.Lock();
@@ -2275,7 +2408,7 @@ index a8aebd8..e0d962f 100644
              //			HidPage.Unlock();
          }
      }
-@@ -1650,7 +2279,17 @@ bool Main_Loop()
+@@ -1650,7 +2321,17 @@ bool Main_Loop()
      /*
      **	AI logic operations are performed here.
      */
@@ -2294,7 +2427,7 @@ index a8aebd8..e0d962f 100644
  
      //	Heap_Dump_Check( "After Logic.AI" );
  
-@@ -1659,8 +2298,24 @@ bool Main_Loop()
+@@ -1659,8 +2340,24 @@ bool Main_Loop()
      **	a message has expired & been removed, and the entire map must be updated.
      */
      if (Messages.Manage()) {
@@ -2321,7 +2454,7 @@ index a8aebd8..e0d962f 100644
      }
  
      //
-@@ -1710,6 +2365,9 @@ bool Main_Loop()
+@@ -1710,6 +2407,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2331,7 +2464,7 @@ index a8aebd8..e0d962f 100644
          Do_Win();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1726,6 +2384,9 @@ bool Main_Loop()
+@@ -1726,6 +2426,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2341,7 +2474,7 @@ index a8aebd8..e0d962f 100644
          Do_Lose();
          Set_Video_Cursor_Clip(true);
      }
-@@ -1736,6 +2397,9 @@ bool Main_Loop()
+@@ -1736,6 +2439,9 @@ bool Main_Loop()
          PlayerRestarts = false;
          Map.Help_Text(TXT_NONE);
          Set_Video_Cursor_Clip(false);
@@ -2351,7 +2484,18 @@ index a8aebd8..e0d962f 100644
          Do_Restart();
          Set_Video_Cursor_Clip(true);
      }
-@@ -2642,6 +3306,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
+@@ -2242,6 +2948,10 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn)
+                 InMovie = true;
+                 VQA_Play(vqa, VQAMODE_RUN);
+                 VQA_Close(vqa);
++#ifdef SHADEREMU
++                extern void ShaderEmu_Movie_End(const char* name);
++                ShaderEmu_Movie_End(fullname);
++#endif
+                 // Resume_Audio_Thread();
+                 InMovie = false;
+                 Free_Interpolated_Palettes();
+@@ -2642,6 +3352,70 @@ void CC_Draw_Line(int x, int y, int x1, int y1, unsigned char color, int frame,
   *   02/21/1995 JLB : Created.                                                                 *
   *=============================================================================================*/
  //#pragma off(unreferenced)
@@ -2422,7 +2566,7 @@ index a8aebd8..e0d962f 100644
  void CC_Draw_Shape(void const* shapefile,
                     int shapenum,
                     int x,
-@@ -2656,6 +3384,15 @@ void CC_Draw_Shape(void const* shapefile,
+@@ -2656,6 +3430,15 @@ void CC_Draw_Shape(void const* shapefile,
      char* shape_pointer;
      uintptr_t shape_size;
  
@@ -4140,10 +4284,47 @@ index 596a8f7..cb485b6 100644
  
              /*
 diff --git a/tiberiandawn/techno.cpp b/tiberiandawn/techno.cpp
-index 07b96eb..224f9ba 100644
+index 07b96eb..d3ec50d 100644
 --- a/tiberiandawn/techno.cpp
 +++ b/tiberiandawn/techno.cpp
-@@ -1338,6 +1338,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
+@@ -1048,7 +1048,36 @@ void TechnoClass::Draw_It(int x, int y, WindowNumberType window)
+         }
+     }
+ 
++#ifdef SHADEREMU
++    /* (over the GPU's map the bars and box are put into the page by gl.cpp, and kept) */
++    bool shaderemu_bars = false;
++    if ((Is_Selected_By_Player() || show_health_bar) && window == WINDOW_TACTICAL) {
++        bool ShaderEmu_GL_Bars(int x, int y, int lx, int ly, int dx, int dy, int fudge, int width, int height,
++                               int pwidth, int color, bool selected, const void* shade);
++        int by = y - (What_Am_I() == RTTI_INFANTRY ? 6 : 0);
++        if (What_Am_I() == RTTI_BUILDING && ((BuildingTypeClass const&)Class_Of()).Type == STRUCT_BARRACKS) {
++            by -= 5;
++        }
++        int pwidth = -1, color = 0;
++        if (show_health_bar) {
++            unsigned ratio = Health_Ratio();
++            pwidth = Fixed_To_Cardinal(width - 2, ratio);
++            pwidth = Bound(pwidth, 1, width - 2);
++            color = LTGREEN;
++            if (ratio < 0x7F) {
++                color = YELLOW;
++            }
++            if (ratio < 0x3F) {
++                color = RED;
++            }
++        }
++        shaderemu_bars =
++            ShaderEmu_GL_Bars(x, by, lx, ly, dx, dy, fudge, width, height, pwidth, color, Is_Selected_By_Player(), Map.FadingShade);
++    }
++    if (!shaderemu_bars && (Is_Selected_By_Player() || show_health_bar)) {
++#else
+     if (Is_Selected_By_Player() || show_health_bar) {
++#endif
+         GraphicViewPortClass draw_window(LogicPage->Get_Graphic_Buffer(),
+                                          WindowList[window][WINDOWX] + LogicPage->Get_XPos(),
+                                          WindowList[window][WINDOWY] + LogicPage->Get_YPos(),
+@@ -1338,6 +1367,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
      if (House->Is_Ally(object))
          return (false);
  
@@ -4151,7 +4332,7 @@ index 07b96eb..224f9ba 100644
      /*
      **	If the object is farther away than allowed, bail.
      */
-@@ -1346,6 +1347,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
+@@ -1346,6 +1376,7 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
          return (false);
      if (range == 0 && !In_Range(object, 0) && !In_Range(object, 1))
          return (false);
@@ -4159,7 +4340,7 @@ index 07b96eb..224f9ba 100644
  
      /*
      **	If the object is not visible, then bail. Human controled units
-@@ -1450,6 +1452,17 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
+@@ -1450,6 +1481,17 @@ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, Techno
      **	target value then record this target for possible return as the
      **	best target available.
      */
@@ -4177,7 +4358,7 @@ index 07b96eb..224f9ba 100644
      int rawval = object->Value();
      value = rawval + object->Kills;
  
-@@ -1598,6 +1611,48 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
+@@ -1598,6 +1640,48 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
   *   11/14/1994 JLB : Created.                                                                 *
   *   06/20/1995 JLB : Greatly optimized scan method.                                           *
   *=============================================================================================*/
@@ -4226,7 +4407,7 @@ index 07b96eb..224f9ba 100644
  TARGET TechnoClass::Greatest_Threat(ThreatType method) const
  {
      ObjectClass const* bestobject = NULL;
-@@ -1681,7 +1736,61 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+@@ -1681,7 +1765,61 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
          */
          TechnoClass const* object;
          int value;
@@ -4288,7 +4469,7 @@ index 07b96eb..224f9ba 100644
  
              /*
              **	Scan the top and bottom rows of the "box".
-@@ -1742,6 +1851,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+@@ -1742,6 +1880,7 @@ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
                      }
                  }
              }
@@ -4296,7 +4477,7 @@ index 07b96eb..224f9ba 100644
  
              /*
              **	Bail early if a target has already been found and the range is at
-@@ -1872,6 +1982,11 @@ void TechnoClass::Clicked_As_Target(HousesType house,
+@@ -1872,6 +2011,11 @@ void TechnoClass::Clicked_As_Target(HousesType house,
                                      int count) // 2019/09/20 JAS - Added record of who clicked on the object
  {
      FlashCount = count;

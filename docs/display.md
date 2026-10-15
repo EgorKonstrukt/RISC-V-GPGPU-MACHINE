@@ -2,7 +2,7 @@
 
 The machine's display is plain RAM at fixed physical addresses. The CPU shader knows nothing
 about it: a program draws with ordinary stores, and whatever shows the picture (the harness
-window today, a material in a VRChat world later) reads the RAM texture and decodes it.
+window, or the display's material in the VRChat world, `Display.shader`) reads the RAM texture and decodes it.
 
 | Address | Contents |
 |---|---|
@@ -31,10 +31,11 @@ window today, a material in a VRChat world later) reads the RAM texture and deco
   under it needs saving. The image may be anywhere in RAM.
 - Width and height may each be 1 to 2048. Write them first and the mode last, so a
   half-initialised display is never shown.
-- The control words share one RAM texel (16 bytes), so a reader gets all three with one fetch.
+- The control words share one RAM texel (16 bytes), so a reader gets all four with one fetch.
 
 `programs/common/platform.h` has the definitions for C programs. The harness shows the display
-to the right of the memory image, scaled by the largest whole factor that fits.
+to the left of the memory image, scaled by the largest whole factor that fits (shrunk, when it
+does not fit at 1).
 
 Under Linux with this project's kernel the display is also `/dev/fb0`
 (`linux/kernel/shaderemu_fb.c`): 32 bits per pixel, 640x480 until a program sets another mode,

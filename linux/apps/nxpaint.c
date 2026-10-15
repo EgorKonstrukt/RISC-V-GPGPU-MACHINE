@@ -1,7 +1,7 @@
 /* nxpaint: a paint program (docs/nanox.md, "Paint"). The picture is the program's own memory,
  * shown by writing the part in view into the window's buffer; every change is kept as the
- * pixels it replaced, to be taken back. nxpaint FILE opens a PPM (a PNG or JPEG through the
- * viewer's decoder) and saves to it as a PPM. */
+ * pixels it replaced, to be taken back. nxpaint FILE opens any picture libmedia reads and
+ * saves as the name asks: PNG, JPEG, GIF, BMP or PPM, encoded on the worker cores (media.h). */
 #define _GNU_SOURCE
 #include "ui.h"
 #include "ui_bulk.h"
@@ -9,6 +9,7 @@
 #include "ui_icons.h"
 #include "ui_menu.h"
 #include "ui_ask.h"
+#include "media.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -27,7 +28,8 @@
 #define FIELD_H 44
 #define GREY 0xff808080u
 #define PICTURES "/root/Pictures"
-#define KINDS ".ppm .png .jpg .jpeg .gif .bmp"	/* a PPM is what is written, whichever of these is asked for */
+#define KINDS ".png .jpg .jpeg .gif .bmp .ppm"	/* what is written, by the name's ending (another: .png added) */
+#define OPENED ".jpg .jpeg .png .gif .bmp .tga .ppm .pgm .pbm"
 
 enum { T_SELECT, T_PENCIL, T_BRUSH, T_ERASER, T_FILL, T_PICK, T_LINE, T_RECT, T_OVAL, T_SPRAY, TOOL_COUNT };
 static const char *const tool_names[TOOL_COUNT] = { "Select", "Pencil", "Brush", "Eraser", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
@@ -762,47 +764,66 @@ read_ppm(const char *file_path, int *w, int *h)
 }
 
 /* Written beside the file and then put in its place: a write that fails (errno says why)
- * leaves the file that was there. */
+ * leaves the file that was there. The kind is the name's: PNG, JPEG, GIF, BMP or PPM. */
 static int
-write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
+write_picture(const char *file_path, const uint32_t *pixels, int w, int h)
 {
+	struct media_image image;
 	char beside[320];
-	FILE *file = NULL;
-	unsigned char *row = malloc((size_t)w * 3);
 	const char *failed = NULL;	/* the step that did not go, for the log */
-	int x, y = 0, why;
+	uint32_t size = 0, done = 0;
+	uint8_t *data = NULL;
+	int fd = -1, why;
 
+	memset(&image, 0, sizeof image);
+	image.width = w, image.height = h, image.channels = 4, image.bgr = 1, image.stride = w * 4;
+	image.pixels = (uint8_t *)pixels;
 	snprintf(beside, sizeof beside, "%.300s.new", file_path);
-	if (!row) {
-		failed = "no memory for a row of", errno = ENOMEM;
-	} else if (!(file = fopen(beside, "wb"))) {
+	bulk_wait();	/* (the workers are the encoder's now) */
+	switch (media_kind_of_name(file_path)) {
+	case MEDIA_JPEG: data = media_jpeg_encode(&image, 92, &size, mcw_most()); break;
+	case MEDIA_GIF: data = media_gif_encode(&image, &size, mcw_most()); break;
+	case MEDIA_BMP: data = media_bmp_encode(&image, &size); break;
+	case MEDIA_PNM: data = media_ppm_encode(&image, &size); break;
+	default: data = media_png_encode(&image, 1, &size, mcw_most()); break;
+	}
+	if (!data) {
+		failed = "no memory to encode", errno = ENOMEM;
+	} else if ((fd = open(beside, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) {
 		failed = "cannot make";
 	} else {
-		if (fprintf(file, "P6\n%d %d\n255\n", w, h) <= 0)
-			failed = "cannot write the first lines of";
-		for (y = 0; y < h && !failed; y++) {
-			for (x = 0; x < w; x++)
-				row[3 * x] = (unsigned char)(pixels[y * w + x] >> 16), row[3 * x + 1] = (unsigned char)(pixels[y * w + x] >> 8),
-				row[3 * x + 2] = (unsigned char)pixels[y * w + x];
-			if (fwrite(row, 3, (size_t)w, file) != (size_t)w)
-				failed = "cannot write the rows of";
+		while (done < size && !failed) {
+			ssize_t n = write(fd, data + done, size - done);
+
+			if (n <= 0)
+				failed = "cannot write";
+			else
+				done += (uint32_t)n;
 		}
 		why = errno;
-		if (fclose(file) != 0 && !failed)
+		if (close(fd) != 0 && !failed)
 			failed = "cannot finish", why = errno;
 		errno = why;
 		if (!failed && rename(beside, file_path) != 0)
 			failed = "cannot put in the file's place";
 	}
-	free(row);
+	if (data)
+		media_free(data, size);
 	if (failed) {
 		why = errno;
-		fprintf(stderr, "nxpaint: save: %s %s (row %d of %d): %s\n", failed, beside, file ? y : 0, h, strerror(why));
-		if (file)
+		fprintf(stderr, "nxpaint: save: %s %s (%u of %u bytes): %s\n", failed, beside, done, size, strerror(why));
+		if (fd >= 0)
 			unlink(beside);
 		errno = why;
 	}
 	return !failed;
+}
+
+/* The clipboard between paint windows: a PPM. */
+static int
+write_ppm(const char *file_path, const uint32_t *pixels, int w, int h)
+{
+	return write_picture(file_path, pixels, w, h);
 }
 
 /* A new picture in place of this one, its history forgotten; `white`: its pixels are still to
@@ -856,36 +877,59 @@ folder(void)
 static void
 unnamed(void)
 {
-	snprintf(path, sizeof path, "%s/picture.ppm", folder());
+	snprintf(path, sizeof path, "%s/picture.png", folder());
 	named = 0;
 	titled();
 }
 
-/* Opens a picture: a PPM as it is, anything else through the viewer's decoder. */
+/* Opens a picture of any kind libmedia reads, on the worker cores; one larger than Paint's most
+ * is made smaller to fit. See-through pixels are laid on white. */
 static int
 open_file(const char *file_path)
 {
-	char made[64];
+	struct media_image image;
+	struct media_info info;
+	struct stat st;
+	uint8_t *data;
 	uint32_t *pixels;
-	int w, h, status = -1;
-	pid_t child;
+	const char *why;
+	int fd = open(file_path, O_RDONLY), w, h;
 
-	pixels = read_ppm(file_path, &w, &h);
-	if (!pixels) {
-		snprintf(made, sizeof made, "/tmp/nxpaint-%d.ppm", (int)getpid());
-		/* no shell: a name may have anything in it */
-		if ((child = fork()) == 0) {
-			if (!freopen("/dev/null", "w", stderr))
-				_exit(126);
-			execlp("nxview", "nxview", "--decode", file_path, made, (char *)NULL);
-			_exit(127);
-		}
-		if (child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0)
-			pixels = read_ppm(made, &w, &h);
-		unlink(made);
-	}
-	if (!pixels)
+	if (fd < 0)
 		return 0;
+	if (fstat(fd, &st) || st.st_size < 8 || (data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0)) == MAP_FAILED) {
+		close(fd);
+		return 0;
+	}
+	close(fd);
+	if (media_probe(data, (uint32_t)st.st_size, &info) || info.width < 1 || info.height < 1) {
+		munmap(data, (size_t)st.st_size);
+		return 0;
+	}
+	w = info.width, h = info.height;
+	if (w > MOST_W || h > MOST_H) {
+		if ((int64_t)w * MOST_H > (int64_t)h * MOST_W)
+			h = (int)((int64_t)h * MOST_W / w), w = MOST_W;
+		else
+			w = (int)((int64_t)w * MOST_H / h), h = MOST_H;
+	}
+	bulk_wait();
+	if (!(pixels = malloc((size_t)w * (size_t)h * 4))) {
+		munmap(data, (size_t)st.st_size);
+		return 0;
+	}
+	/* (its pages there before a worker writes them) */
+	mcw_touch(pixels, (unsigned)w * (unsigned)h * 4);
+	memset(&image, 0, sizeof image);
+	image.width = w, image.height = h, image.channels = 4, image.bgr = 1, image.opaque = 1, image.stride = w * 4;
+	image.pixels = (uint8_t *)pixels, image.background = 0xffffff;
+	why = media_image_decode_fit(data, (uint32_t)st.st_size, &image, 0, mcw_most());
+	munmap(data, (size_t)st.st_size);
+	if (why) {
+		fprintf(stderr, "nxpaint: %s: %s\n", file_path, why);
+		free(pixels);
+		return 0;
+	}
 	begin(pixels, w, h, 0);
 	snprintf(path, sizeof path, "%s", file_path);
 	named = 1;
@@ -893,14 +937,13 @@ open_file(const char *file_path)
 	return 1;
 }
 
-/* Saves to `wanted` as a PPM, the only kind this writes: a name that asks for another kind
- * gets a PPM's ending, and the notice says so. */
+/* Saves to `wanted`, of the kind its ending asks for; a name with none of them gets ".png". */
 static void
 save_to(const char *wanted)
 {
 	const char *base = strrchr(wanted, '/') ? strrchr(wanted, '/') + 1 : wanted;
 	char to[300];
-	int fitted = 0;
+	int added = 0;
 
 	/* (what was asked for, what it became and how it went are said on the console too) */
 	fprintf(stderr, "nxpaint: save: asked for \"%s\", %d x %d\n", wanted, pw, ph);
@@ -911,14 +954,17 @@ save_to(const char *wanted)
 		snprintf(notice, sizeof notice, "NOT saved: \"%.60s\" is not a name (it starts with a dot or is empty)", base);
 	} else {
 		snprintf(to, sizeof to, "%s", wanted);
-		fitted = ui_files_ending(to, sizeof to, KINDS) && ui_files_wanted(base, KINDS);
-		if (!write_ppm(to, pix, pw, ph)) {
+		if (!ui_files_wanted(base, KINDS)) {
+			strcat(to, ".png");
+			added = 1;
+		}
+		if (!write_picture(to, pix, pw, ph)) {
 			snprintf(notice, sizeof notice, "NOT saved: cannot write %.90s (%s)", to, strerror(errno));
 		} else {
 			snprintf(path, sizeof path, "%s", to);
 			named = 1, modified = 0;
 			titled();
-			snprintf(notice, sizeof notice, fitted ? "saved as %.90s (a PPM: Paint writes no other kind)" : "saved as %.120s", path);
+			snprintf(notice, sizeof notice, added ? "saved as %.90s (a PNG: the name asked for no kind Paint writes)" : "saved as %.120s", path);
 		}
 	}
 	fprintf(stderr, "nxpaint: save: %s\n", notice);
@@ -1287,13 +1333,13 @@ command(int id)
 	case C_OPEN:
 		if (!may_drop())
 			break;
-		if (ui_choose_file("Open a picture", folder(), ".ppm .png .jpg .jpeg", chosen, sizeof chosen, others) && !open_file(chosen))
+		if (ui_choose_file("Open a picture", folder(), OPENED, chosen, sizeof chosen, others) && !open_file(chosen))
 			snprintf(notice, sizeof notice, "that is not a picture this can open");
 		draw_all();
 		return;
 	case C_SAVE:
-		/* (a picture opened from a PNG or JPEG is asked too: its PPM would replace one beside it unasked) */
-		if (named && !ui_files_ending(strcpy(where, path), sizeof where, KINDS)) {
+		/* (a picture opened from a kind Paint does not write is asked what to be saved as) */
+		if (named && ui_files_wanted(path, KINDS)) {
 			save_to(path);
 			break;
 		}

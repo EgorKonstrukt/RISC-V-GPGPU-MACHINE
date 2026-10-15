@@ -6,9 +6,14 @@ take it: textures as words or bytes they read where the file lies in the ROM, th
 triangles sorted by what they are drawn with, the models' poses as packed vertices.
 
     python3 bake.py PAK0.PK3 WANTED.TXT OUT.PK3 OUT.DAT [--map q3dm17] [--texture 128] [--jpgraw PROGRAM]
+        [--q3pack PROGRAM] [--quality 95] [--pictures packed|png|raw]
 
 WANTED.TXT is what a run with QUAKE3_WANTED=1 printed: every file, model, picture and sound
 the game asked for. Nothing else of the demo's 47 MB goes in.
+
+A picture is rows of a sheet the game decodes into GPU memory when a level or the menu needs
+it: a JPEG, or a PNG where its alpha is used (`png`: every one a PNG, the same texels as `raw`,
+which writes them as the GPU reads them). Light maps stay raw.
 """
 import io, math, os, re, struct, subprocess, sys, tempfile, zipfile, zlib
 import numpy as np
@@ -29,6 +34,9 @@ PICTURE_MAX = int(option('--picture', '256'))
 JPGRAW = option('--jpgraw', 'jpgraw')
 BOTS = option('--bots', 'sarge').split(',')
 SOUND_RATE = int(option('--sound-rate', '11025'))   # a sound of twice this or more is halved to it
+Q3PACK = option('--q3pack', 'q3pack')
+QUALITY = int(option('--quality', '95'))
+PICTURES = option('--pictures', 'packed')
 LIST = '--list' in args      # (also: the largest pictures and sounds, by name)
 if LIST: args.remove('--list')
 PAK, WANTED, OUT_PAK, OUT_DAT = args
@@ -117,16 +125,45 @@ def place(data, align=16):
     return at            # (from the blob's start: made a file offset when the file is written)
 
 RGB24, WORDS = 0, 1
+RAW, JPEG, PNG = 0, 1, 2      # how a texture or a sheet lies in the file
 KEY = 0xff000000         # a texel that is a hole, in a texture of words
 textures, texture_of = [], {}
+packed_report = {'jpeg': [0, 0, 0, 0.0, 0], 'png': [0, 0, 0]}   # sheets, texels' bytes, files' bytes (and JPEG's error, worst)
 
-def texture(px, kind, key=None):
+def q3pack(*a):
+    subprocess.run([Q3PACK] + [str(x) for x in a], check=True)
+
+def packed_file(raw, w, h, channels, as_jpeg):
+    """Texels (rows of `channels` bytes, as the GPU reads them) as a file of q3pack's; None when
+    libmedia does not read it back (a PNG: not the same texels)."""
+    with tempfile.TemporaryDirectory() as d:
+        open(d + '/in.raw', 'wb').write(raw)
+        if as_jpeg: q3pack('jpeg', QUALITY, w, h, d + '/in.raw', d + '/out')
+        else: q3pack('png', w, h, channels, d + '/in.raw', d + '/out')
+        if subprocess.run([Q3PACK, 'decode', str(channels), d + '/out', d + '/back.raw'], stderr=subprocess.DEVNULL).returncode:
+            return None
+        error = np.abs(np.frombuffer(open(d + '/back.raw', 'rb').read(), np.uint8).astype(np.int16) - np.frombuffer(raw, np.uint8))
+        if not as_jpeg and error.any(): return None
+        data = open(d + '/out', 'rb').read()
+    r = packed_report['jpeg' if as_jpeg else 'png']
+    r[0] += 1; r[1] += len(raw); r[2] += len(data)
+    if as_jpeg: r[3] += float(error.sum()); r[4] = max(r[4], int(error.max()))
+    return data
+
+# Packed textures of one width and kind are laid one under another in sheets: a sheet is one
+# file the game decodes on every core at once, and each texture is rows of it (sheets()).
+SHEET_MOST = int(option('--sheet', str(512 << 10)))   # a sheet's texels' bytes at most
+sheet_wanted = []         # (texture, texel rows, width, height, channels, as JPEG)
+
+def texture(px, kind, key=None, packed=True):
     """A picture as a texture of the file: 'rgb' three bytes a texel; 'words' with its alpha as
-    transparency; 'keyed' words where alpha under a half is a hole. Returns its number."""
+    transparency; 'keyed' words where alpha under a half is a hole. Returns its number.
+    Packed, it is rows of a JPEG (rgb) or a PNG (words) that decodes to those texels (words:
+    blue, green, red, transparency, a PNG's RGBA with T for alpha)."""
     if key and key in texture_of: return texture_of[key]
     h, w = px.shape[:2]
     if kind == 'rgb':
-        at, fmt, flags = place(px[..., :3].tobytes(), 4), RGB24, 0
+        raw, fmt, flags, channels = px[..., :3].tobytes(), RGB24, 0, 3
     else:
         p = px.astype(np.uint32)
         words = (255 - p[..., 3]) << 24 | p[..., 0] << 16 | p[..., 1] << 8 | p[..., 2]
@@ -134,10 +171,51 @@ def texture(px, kind, key=None):
         if kind == 'keyed':
             words = np.where(p[..., 3] < 128, KEY, words & 0xffffff)
             flags = 2
-        at, fmt = place(words.astype('<u4').tobytes(), 16), WORDS
-    textures.append((at, w, h, fmt, flags, KEY if kind == 'keyed' else 0))
+        raw, fmt, channels = words.astype('<u4').view(np.uint8).reshape(h, w, 4)[..., [2, 1, 0, 3]].tobytes(), WORDS, 4
+        if not packed or PICTURES == 'raw':
+            raw = words.astype('<u4').tobytes()
+    if not packed or PICTURES == 'raw':
+        textures.append([place(raw, 4 if fmt == RGB24 else 16), w, h, fmt, flags, 0xffff, KEY if kind == 'keyed' else 0])
+    else:
+        textures.append([0, w, h, fmt, flags, 0xffff, KEY if kind == 'keyed' else 0])
+        sheet_wanted.append((len(textures) - 1, raw, w, h, channels, kind == 'rgb' and PICTURES == 'packed'))
     if key: texture_of[key] = len(textures) - 1
     return len(textures) - 1
+
+sheets = []               # (at, bytes, width, height, channels, packing, 0)
+
+def make_sheets():
+    """The packed textures' sheets: by kind and width, at most SHEET_MOST texels' bytes each. A
+    JPEG's textures begin on its blocks (a texture's last row is repeated to the next)."""
+    block = 8 if QUALITY >= 90 else 16     # (q3pack's: colours at half size under 90)
+    was, kind_now[0] = kind_now[0], 'pictures'
+    groups = {}
+    for t in sheet_wanted: groups.setdefault((t[5], t[4], t[2]), []).append(t)
+    for (as_jpeg, channels, w), items in sorted(groups.items()):
+        while items:
+            rows, take = 0, []
+            for t in items:
+                tall = -(-t[3] // block) * block if as_jpeg else t[3]
+                if take and (rows + tall) * w * channels > SHEET_MOST: break
+                take.append((t, rows))
+                rows += tall
+            items = items[len(take):]
+            px = np.zeros((rows, w * channels), np.uint8)
+            for t, y in take:
+                px[y:y + t[3]] = np.frombuffer(t[1], np.uint8).reshape(t[3], w * channels)
+                px[y + t[3]:y + -(-t[3] // block) * block if as_jpeg else y + t[3]] = px[y + t[3] - 1]
+                textures[t[0]][0], textures[t[0]][5] = y * w * channels, len(sheets)
+            data = packed_file(px.tobytes(), w, rows, channels, as_jpeg)
+            if data is None:
+                # (as libmedia wrote it, it does not read it back: its textures stay as the GPU reads them)
+                print('%s: a sheet of %d x %d is not read back by libmedia: %d textures left as texels' % (os.path.basename(OUT_DAT), w, rows, len(take)))
+                for t, y in take:
+                    raw = np.frombuffer(t[1], np.uint8).reshape(-1, channels)
+                    textures[t[0]][0] = place((raw[:, [2, 1, 0, 3]] if channels == 4 else raw).tobytes(), 16)
+                    textures[t[0]][5] = 0xffff
+                continue
+            sheets.append((place(data, 16), len(data), w, rows, channels, JPEG if as_jpeg else PNG, 0))
+    kind_now[0] = was
 
 # ---- shader scripts ----
 
@@ -458,7 +536,7 @@ pages = np.frombuffer(lump(L_LIGHTMAPS), np.uint8).reshape(-1, 128, 128, 3)
 for p in pages:
     px = np.full((128, 128, 4), 255, np.uint8)
     px[..., :3] = brighter(p)
-    light_pages.append(texture(px, 'rgb'))
+    light_pages.append(texture(px, 'rgb', packed=False))    # (read where the file lies: AGENTS.md)
 
 bsp_shaders = [lump(L_SHADERS)[i:i + 64].split(b'\0')[0].decode('latin1') for i in range(0, lumps[L_SHADERS][1], 72)]
 verts = np.frombuffer(lump(L_VERTS), np.dtype([('xyz', '<f4', 3), ('st', '<f4', 2), ('lm', '<f4', 2), ('normal', '<f4', 3), ('colour', 'u1', 4)]))
@@ -641,7 +719,10 @@ def name64(s): return s.encode('latin1')[:63].ljust(64, b'\0')
 def tables(base):
     """The sections, with what they point at `base` bytes into the file."""
     out = {}
-    out['TEXS'] = b''.join(struct.pack('<IHHBBHI', base + at, w, h, fmt, flags, 0, key) for at, w, h, fmt, flags, key in textures)
+    out['TEXS'] = b''.join(struct.pack('<IHHBBHI', at + (base if sheet == 0xffff else 0), w, h, fmt, flags, sheet, key)
+                           for at, w, h, fmt, flags, sheet, key in textures)
+    out['SHET'] = b''.join(struct.pack('<IIHHBBHI', base + at, n, w, h, channels, packing, 0, unused)
+                           for at, n, w, h, channels, packing, unused in sheets)
     order = sorted(range(len(shaders)), key=lambda i: shaders[i][0])
     out['SHAD'] = b''.join(struct.pack('<64sIHBB', name64(shaders[i][0]), shaders[i][1], shaders[i][2], shaders[i][3], 0) + struct.pack('<i', i) for i in order)
     stage_bytes = []
@@ -675,12 +756,13 @@ def tables(base):
     out['NRML'] = normal_table.astype('<f4').tobytes()
     return out
 
+make_sheets()
 HEADER = 16 + 32 * 12
 sizes = tables(0)
 base = HEADER + sum(len(v) + (-len(v) % 16) for v in sizes.values())
 base += -base % 4096       # the blob begins on a page: what the GPU reads never shares one with a table
 out = tables(base)
-head = struct.pack('<4sIII', b'SEQ3', 1, len(out), base)
+head = struct.pack('<4sIII', b'SEQ3', 2, len(out), base)
 body, at = b'', HEADER
 for tag, data in out.items():
     head += struct.pack('<4sII', tag.encode(), at, len(data))
@@ -737,7 +819,7 @@ with zipfile.ZipFile(OUT_PAK, 'w', zipfile.ZIP_STORED) as z:
 if LIST:
     by_name = {}
     for key, i in texture_of.items():
-        at, w, h, fmt, flags, k = textures[i]
+        at, w, h, fmt, flags, sheet, k = textures[i]
         by_name[key[0]] = by_name.get(key[0], 0) + w * h * (4 if fmt == WORDS else 3)
     for n, b in sorted(by_name.items(), key=lambda kv: -kv[1])[:40]: print('  %7d  %s' % (b, n))
     by_folder = {}
@@ -748,4 +830,8 @@ print('%s: %d textures, %d shaders of %d stages, %d models of %d surfaces, %d sk
     os.path.basename(OUT_DAT), len(textures), len(shaders), len(stages_out), len(models), len(surfaces_out), len(skins), len(runs_out), len(world_vertices) // 16, len(sounds)))
 print('%s: %d bytes (tables %d; %s); %s: %d bytes in %d files' % (os.path.basename(OUT_DAT), base + len(blob), base,
       ', '.join('%s %d KB' % (k, v >> 10) for k, v in sizes_by_kind.items()), os.path.basename(OUT_PAK), os.path.getsize(OUT_PAK), len(stored)))
+j, g = packed_report['jpeg'], packed_report['png']
+if j[0] or g[0]:
+    print('%s: %d pictures in %d JPEG sheets (quality %d) of %d KB, %d KB as texels, a texel %.2f levels off on the mean and %d at most; %d PNG sheets of %d KB, %d KB as texels' % (
+        os.path.basename(OUT_DAT), len(sheet_wanted), j[0], QUALITY, j[2] >> 10, j[1] >> 10, j[3] / max(j[1], 1), j[4], g[0], g[2] >> 10, g[1] >> 10))
 print('%s: %s' % (os.path.basename(OUT_PAK), ', '.join('%s %d KB' % (n, len(v) >> 10) for n, v in sorted(stored.items(), key=lambda kv: -len(kv[1]))[:6])))

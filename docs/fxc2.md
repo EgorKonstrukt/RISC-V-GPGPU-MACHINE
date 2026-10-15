@@ -6,9 +6,10 @@ For this project it changes two things:
 
 - The `CPUTick` pass compiles in about 9 seconds instead of about 9 minutes, so the shader can be
   tuned on D3D11, the backend VRChat runs, and not only under DXC on D3D12.
-- It compiles two things FXC cannot, and `experiments/rvc_opt` uses both when it sees that
-  compiler (`__FXC2__` is predefined by it): the big arrays as locals of the pass, and MULH as one
-  instruction. Under FXC the shader builds exactly as before.
+- It compiles two things FXC cannot: the big arrays as locals of the pass, which
+  `experiments/rvc_opt` uses when it sees that compiler (`__FXC2__` is predefined by it), and
+  MULH as one instruction, which it no longer uses (`linux.md`). Under FXC the shader builds
+  exactly as before.
 
 ## Using it with the harness
 
@@ -66,7 +67,9 @@ Four things did it:
 
 - The D3D11 harness commits in bands, as D3D12 did (`COMMIT_BANDS`, one quad per 4 MiB band
   something wrote to). Rewriting all of RAM was 0.28 ms of every frame. `--no-bands` turns it
-  off on either backend; hashes taken without bands need it.
+  off on either backend; hashes taken without bands need it. (Since then what the cores
+  stored is drawn as points, a texel each, and only what something else wrote is drawn as
+  whole bands: `multicore.md`, "The commit as points".)
 - The fast loop leaves from where a thing is found out (item 25 in
   `experiments/rvc_opt/README.md`): 0.444 ms to 0.365 ms for the raytracer's tick pass.
 - fxc2 puts the code behind a test of a flag where the flag was set, when both sides of the

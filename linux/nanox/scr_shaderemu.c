@@ -1696,6 +1696,10 @@ surface_locate(PSD psd, MWCOORD x, MWCOORD y, uint32_t *address, uint32_t *row)
 {
 	struct surface *s = surface_of(psd);
 
+	if (!is_surface(psd)) {
+		*address = *row = 0;	/* (a pixmap in the server's memory) */
+		return;
+	}
 	/* (no wait for what was drawn: a program that writes the pixels itself reads one first) */
 	*address = GPU_PHYS + s->at + ((y - s->y) * s->w + (x - s->x)) * 4;
 	*row = s->w;

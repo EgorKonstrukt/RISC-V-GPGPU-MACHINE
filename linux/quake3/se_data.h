@@ -15,9 +15,15 @@
 typedef struct { char tag[4]; uint32_t at, bytes; } se_section_t;
 typedef struct { uint32_t magic, version, sections, blob; se_section_t section[SE_SECTIONS]; } se_header_t;
 
-/* TEXS */
+/* TEXS: a texture's texels where the file has them, or `at` bytes into a sheet's (SHET) */
+#define SE_VERSION	2
+#define SE_NO_SHEET	0xffff
 enum { SE_BYTES, SE_WORDS };		/* three bytes a texel; a word, 0xTTRRGGBB */
-typedef struct { uint32_t at; uint16_t width, height; uint8_t format, flags; uint16_t unused; uint32_t key; } se_texture_t;
+typedef struct { uint32_t at; uint16_t width, height; uint8_t format, flags; uint16_t sheet; uint32_t key; } se_texture_t;
+
+/* SHET: a file of textures one under another, decoded to `channels` bytes a texel in GPU memory */
+enum { SE_JPEG = 1, SE_PNG };
+typedef struct { uint32_t at, bytes; uint16_t width, height; uint8_t channels, packing; uint16_t unused; uint32_t unused2; } se_sheet_t;
 
 /* SHAD, in the order of their names; `number` is what stages, surfaces and runs call them by */
 enum { SE_SKY = 1, SE_OFFSET = 2, SE_AUTOSPRITE = 4, SE_NODRAW = 8, SE_2D = 16 };

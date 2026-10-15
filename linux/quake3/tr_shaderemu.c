@@ -17,6 +17,7 @@
 #include "nano-X.h"
 #include "gpu_shaderemu.h"
 #include "mcwx.h"
+#include "media.h"
 #include "se_data.h"
 #include "se_q3.h"
 
@@ -47,9 +48,10 @@ static const se_world_t	*world;
 static const se_run_t	*runs;
 static const se_bmodel_t *bmodels;
 static const float	*normals;
-static int		shader_count, model_count, skin_count, stage_count;
+static int		shader_count, model_count, skin_count, stage_count, texture_count;
 
 static void stages_open (void);
+static void pictures_open (void);
 
 static const void *section (const char *tag, unsigned each, int *count)
 {
@@ -69,7 +71,9 @@ static void data_open (void)
 		ri.Error (ERR_FATAL, "no %s of bake.py's", SE_DATA_FILE);
 	if (!dat_rom)
 		ri.Error (ERR_FATAL, "%s is not a file of the ROM: the GPU reads it there", SE_DATA_FILE);
-	textures = section ("TEXS", sizeof (se_texture_t), NULL);
+	if (((const se_header_t *)dat)->version != SE_VERSION)
+		ri.Error (ERR_FATAL, "%s is not of this build's bake.py", SE_DATA_FILE);
+	textures = section ("TEXS", sizeof (se_texture_t), &texture_count);
 	shaders = section ("SHAD", sizeof (se_shader_t), &shader_count);
 	stages = section ("STAG", sizeof (se_stage_t), &stage_count);
 	models = section ("MODL", sizeof (se_model_t), &model_count);
@@ -83,6 +87,7 @@ static void data_open (void)
 	shader_of = malloc (shader_count * sizeof *shader_of);
 	for (i = 0; i < shader_count; i++)
 		shader_of[shaders[i].number] = &shaders[i];
+	pictures_open ();
 	stages_open ();
 }
 
@@ -203,6 +208,8 @@ void SE_Input (void)
 	host = seglHostState ();
 	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
 	seglWorldFlat (Key_GetCatcher () != 0 || clc.state != CA_ACTIVE);
+	/* the eye 50 units over the floor (26 over a player's origin, 24 over its feet) */
+	seglWorldEye (7, 50, Z_NEAR, Z_FAR, 1 / tan (seat_fov_x * (M_PI / 360)), 1 / tan (seat_fov_y * (M_PI / 360)));
 	if (mouse_inside || dragging) {		/* (a drag goes on outside the window) */
 		int x = (int)input[0], y = (int)input[1];
 
@@ -304,9 +311,9 @@ void SE_SeatMove (usercmd_t *cmd)
 	if (said < 0)
 		said = getenv ("QUAKE3_SEAT") != NULL;	/* a line every 20 moves: how it is seated, the aim, the body */
 	if (said && ++said % 20 == 0)
-		Com_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f\n", seated, cl.viewangles[YAW] + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]),
+		Com_Printf ("seat: %d aim %.1f %.1f body %.1f drag %d at %.0f %.0f %.0f eye %08x\n", seated, cl.viewangles[YAW] + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]),
 			cl.viewangles[PITCH] + SHORT2ANGLE (cl.snap.ps.delta_angles[PITCH]), body + SHORT2ANGLE (cl.snap.ps.delta_angles[YAW]), dragging,
-			cl.snap.ps.origin[0], cl.snap.ps.origin[1]);
+			cl.snap.ps.origin[0], cl.snap.ps.origin[1], cl.snap.ps.origin[2], host ? host[(0x6c - 0x360) / 4] : 0);
 	if (now != seated) {
 		seated = now;
 		dragging = 0;
@@ -341,11 +348,11 @@ void SE_SeatMove (usercmd_t *cmd)
 		mouse_count = count;
 		pitch_to (-SEGL_HOST_HEAD_PITCH (host) * (360.0f / 65536.0f));
 	}
-	/* a sitter's fire and jump: the right trigger and the left, or a desktop's keys for them */
+	/* a sitter's fire and jump: the right trigger and the jump button, or a desktop's keys for them */
 	if (seated && !Key_GetCatcher ()) {
 		if (SEGL_HOST_HAND_TRIGGER (host, 1))
 			cmd->buttons |= BUTTON_ATTACK;
-		if (SEGL_HOST_HAND_TRIGGER (host, 0))
+		if (SEGL_HOST_JUMP (host))
 			cmd->upmove = 127;
 	}
 }
@@ -452,6 +459,7 @@ static float wave (const se_wave_t *w, float time)
 
 /* ---- a stage: what the GPU is told of it ---- */
 
+static unsigned	*picture_at;	/* each texture's address as the GPU reads it: GPU memory, the ROM; 0 not decoded */
 static float		scene_time;	/* the scene's clock, in seconds */
 static int		scene_mode = -1;	/* 1: a frame is drawn by a job on a worker core ("The scene on a worker core") */
 
@@ -469,7 +477,9 @@ static void stage_state (gpu_state *s, const se_stage_t *st, int flat)
 	if (st->frames > 1)
 		which = (int)(scene_time * st->fps) % st->frames;
 	t = &textures[st->texture + which];
-	s->texture = dat_rom + t->at;
+	s->texture = picture_at[st->texture + which];
+	if (!s->texture)
+		return;		/* (its sheet is not decoded: drawn in its colour) */
 	s->width = t->width, s->height = t->height;
 	s->fragment |= (t->format == SE_WORDS ? GPU_WORDS : GPU_BYTES) | GPU_SMOOTH;
 	if (st->flags & SE_CLAMP)
@@ -525,6 +535,18 @@ typedef struct { unsigned frame, at; float time, m[6]; } moved_t;
 static moved_t		*moved_kept;	/* how each one's texture is moved in the frame being made */
 static unsigned		frame_number = 2;
 
+/* Their states again, with the pictures decoded since (no frame being drawn reads them). */
+static void stages_refresh (void)
+{
+	int	i;
+
+	for (i = 0; i < stage_count; i++) {
+		stage_state (&stage_kept[0][i], &stages[i], 0);
+		stage_state (&stage_kept[1][i], &stages[i], 1);
+		stage_kept[1][i].vertex = GPU_QUADS;
+	}
+}
+
 static void stages_open (void)
 {
 	int	i;
@@ -534,12 +556,10 @@ static void stages_open (void)
 	stage_colours = malloc (stage_count * sizeof *stage_colours);
 	stage_fixed = malloc (stage_count);
 	moved_kept = calloc (stage_count, sizeof *moved_kept);
+	stages_refresh ();
 	for (i = 0; i < stage_count; i++) {
 		const se_stage_t *st = &stages[i];
 
-		stage_state (&stage_kept[0][i], st, 0);
-		stage_state (&stage_kept[1][i], st, 1);
-		stage_kept[1][i].vertex = GPU_QUADS;
 		stage_colours[i] = stage_colour (st, NULL, NULL);
 		stage_fixed[i] = (st->rgb == SE_RGB_IDENTITY || st->rgb == SE_RGB_CONST || st->rgb == SE_RGB_VERTEX || st->rgb == SE_RGB_DIFFUSE) &&
 			(st->alpha == SE_A_IDENTITY || st->alpha == SE_A_CONST || st->alpha == SE_A_VERTEX);
@@ -758,6 +778,209 @@ static void view_matrix_again (void)
 	}
 }
 
+/* ---- pictures: decoded into GPU memory when what draws with them is registered ---- */
+
+/* Textures lie in sheets (bake.py), a sheet decoded whole on every core the game is not using.
+   A sheet asked for on a worker core (the client's game) is decoded by this core at its next
+   frame's end: each core's row of wants and its count are its own to write. */
+#define WANT_ROW	((sheet_count + 15) & ~15)
+static const se_sheet_t	*sheets;
+static int		sheet_count;
+static unsigned		*sheet_at;		/* where each sheet was decoded to; 0: not yet */
+static unsigned char	*wanted;		/* SE_CORES rows of a byte a sheet */
+static struct { unsigned asked, unused[3]; } wants[SE_CORES] __attribute__ ((aligned (16)));
+static unsigned		wants_seen[SE_CORES];
+static unsigned char	*spare;			/* the display's own memory (seglMemorySpare), given out first */
+static unsigned		spare_bytes, spare_used, pictures_mark, picture_workers, picture_log;
+static int		pictures_stale;		/* stage_kept was made before the latest sheets */
+static mcw_handle	scene_out;		/* the job drawing the frame before, while it is out */
+unsigned		se_pictures[5];		/* sheets decoded, their KB, not for want of memory, this core's instructions, JPEG checks failed */
+
+static void pictures_open (void)
+{
+	int	i;
+
+	sheets = section ("SHET", sizeof (se_sheet_t), &sheet_count);
+	sheet_at = calloc (sheet_count + 1, sizeof *sheet_at);
+	picture_at = calloc (texture_count + 1, sizeof *picture_at);
+	wanted = aligned_alloc (16, SE_CORES * WANT_ROW + 16);
+	memset (wanted, 0, SE_CORES * WANT_ROW);
+	for (i = 0; i < texture_count; i++)
+		if (textures[i].sheet == SE_NO_SHEET)
+			picture_at[i] = dat_rom + textures[i].at;
+}
+
+static void *picture_room (unsigned bytes)
+{
+	void	*to;
+
+	bytes = (bytes + 15) & ~15u;
+	if (spare && spare_used + bytes <= spare_bytes)
+		to = spare + spare_used, spare_used += bytes;
+	else
+		to = seglMemory (bytes);
+	if (to)
+		mcw_touch (to, bytes);	/* (the workers store there) */
+	return to;
+}
+
+/* The room picture_room() gave last, given back. */
+static void picture_room_back (void *to, unsigned bytes)
+{
+	bytes = (bytes + 15) & ~15u;
+	if ((unsigned char *)to == spare + spare_used - bytes)
+		spare_used -= bytes;
+	else
+		gpuMemoryRelease (gpuMemoryMark () - bytes);
+}
+
+/* The decoding workers parked in a game: a call each, not joined until the next sheet, so that
+   the game's calls (which go round the workers with none out) keep to as many as it asked for.
+   A parked worker sleeps; going round all of them woke a cold one for every job. */
+#define PARKED_MOST	64
+static mcw_handle	parked[PARKED_MOST];
+static int		parked_count;
+
+static uint32_t park_job (uint32_t unused0, uint32_t unused1)
+{
+	return 0;
+}
+
+static void pictures_park (void)
+{
+	int	extra = mcw_count () - se_game_workers;
+
+	while (parked_count < extra && parked_count < PARKED_MOST && (parked[parked_count] = mcw_try_call (park_job, 0, 0)) != 0)
+		parked_count++;
+}
+
+static void pictures_unpark (void)
+{
+	while (parked_count > 0)
+		mcw_join (parked[--parked_count]);
+}
+
+/* Sheet s decoded where the GPU reads it, and its textures' states made again. */
+static void sheet_decode (int s)
+{
+	const se_sheet_t	*x = &sheets[s];
+	struct media_image	out;
+	unsigned		i, got, began = SE_Cycles ();
+	volatile unsigned char	sum = 0;
+	const char		*why;
+
+	if (sheet_at[s])
+		return;
+	memset (&out, 0, sizeof out);
+	out.width = x->width, out.height = x->height, out.channels = x->channels, out.stride = x->width * x->channels, out.bgr = 1;
+	if ((out.pixels = picture_room ((unsigned)out.stride * x->height)) == NULL) {
+		se_pictures[2]++, sheet_at[s] = ~0u;	/* (not tried again) */
+		ri.Printf (PRINT_WARNING, "no GPU memory for sheet %d of the pictures (%u KB)\n", s, ((unsigned)out.stride * x->height) >> 10);
+		return;
+	}
+	for (i = x->at & ~4095u; i < x->at + x->bytes; i += 4096)
+		sum += dat[i];		/* (the file's pages there before a worker reads them) */
+	pictures_unpark ();
+	/* (a small one is this core's: two strips of 16 rows at least) */
+	got = x->height < 32 ? 0 : (x->height + 15) / 16u < picture_workers ? (x->height + 15) / 16u : picture_workers;
+	why = media_image_decode (dat + x->at, x->bytes, &out, (int)got);
+	if (why) {
+		ri.Printf (PRINT_WARNING, "sheet %d of the pictures of %s: %s\n", s, SE_DATA_FILE, why);
+		picture_room_back (out.pixels, (unsigned)out.stride * x->height);
+		sheet_at[s] = ~0u;
+		return;
+	}
+	sheet_at[s] = gpuAddress (out.pixels);
+	for (i = 0; (int)i < texture_count; i++)
+		if (textures[i].sheet == s)
+			picture_at[i] = sheet_at[s] + textures[i].at;
+	if (picture_log)
+		printf ("q3pic: sheet %d %ux%u %s of %u bytes, %u workers, %u instructions\n", s, x->width, x->height,
+			x->packing == SE_JPEG ? "JPEG" : "PNG", x->bytes, got, SE_Cycles () - began);
+	se_pictures[0]++, se_pictures[1] += ((unsigned)out.stride * x->height) >> 10, se_pictures[3] += SE_Cycles () - began;
+	if (scene_out) {
+		pictures_stale = 1;
+		return;
+	}
+	for (i = 0; (int)i < stage_count; i++)
+		if (stages[i].texture != 0xffff && textures[stages[i].texture].sheet == s) {
+			stage_state (&stage_kept[0][i], &stages[i], 0);
+			stage_state (&stage_kept[1][i], &stages[i], 1);
+			stage_kept[1][i].vertex = GPU_QUADS;
+		}
+}
+
+/* A stage's pictures: their sheets decoded now on this core, asked for on a worker. */
+static void want_stage (const se_stage_t *st)
+{
+	int	core = SE_OnWorker (), f, s;
+
+	if (st->texture == 0xffff)
+		return;
+	for (f = 0; f < st->frames; f++)
+		if (!picture_at[st->texture + f] && (s = textures[st->texture + f].sheet) != SE_NO_SHEET) {
+			if (!core)
+				sheet_decode (s);
+			else if (core < SE_CORES)
+				wanted[core * WANT_ROW + s] = 1, wants[core].asked++;
+		}
+}
+
+static void want_shader (const se_shader_t *sh)
+{
+	int	k;
+
+	for (k = 0; sh && k < sh->stages; k++)
+		want_stage (&stages[sh->first_stage + k]);
+}
+
+/* Whether the workers asked for any, or stages are to be made again. */
+static int pictures_pending (void)
+{
+	int	core;
+
+	for (core = 1; core < SE_CORES; core++)
+		if (wants[core].asked != wants_seen[core])
+			return 1;
+	return pictures_stale;
+}
+
+/* What the workers asked for, decoded (with no frame out on the scene's worker). */
+static void pictures_take (void)
+{
+	int	core, s;
+
+	for (core = 1; core < SE_CORES; core++)
+		if (wants[core].asked != wants_seen[core]) {
+			wants_seen[core] = wants[core].asked;
+			for (s = 0; s < sheet_count; s++)
+				if (wanted[core * WANT_ROW + s])
+					sheet_decode (s);
+		}
+	if (pictures_stale && !scene_out)
+		pictures_stale = 0, stages_refresh ();
+}
+
+/* All of them given back (the window is closed). */
+static void pictures_free (void)
+{
+	int	i;
+
+	if (!picture_at)
+		return;
+	seglSettle ();		/* (the list being drawn may read them) */
+	spare_used = 0;
+	gpuMemoryRelease (pictures_mark);
+	memset (sheet_at, 0, sheet_count * sizeof *sheet_at);
+	for (i = 0; i < texture_count; i++)
+		if (textures[i].sheet != SE_NO_SHEET)
+			picture_at[i] = 0;
+	memset (wanted, 0, SE_CORES * WANT_ROW);
+	for (i = 0; i < SE_CORES; i++)
+		wants_seen[i] = wants[i].asked;
+	stages_refresh ();
+}
+
 /* ---- the level ---- */
 
 /* the light on things, as it was last asked for (light_at) */
@@ -773,17 +996,39 @@ typedef struct {
 static run_t		*world_runs;
 static int		*world_changing, world_changes;	/* the kept ones a frame says something of */
 static int		world_count, world_kept, world_hidden[2], world_loaded;
-static unsigned		world_mark;
+static unsigned char	*world_room;	/* GPU memory the level is copied into, as much as it needs */
+static unsigned		world_room_bytes, world_used;
 static int		world_seen;	/* this frame drew a scene with the level in it */
 
 static void *gpu_copy (unsigned at, unsigned bytes)
 {
-	void	*to = seglMemory (bytes);
+	void	*to = world_room + world_used;
 
-	if (!to)
+	if (!world_room || world_used + bytes > world_room_bytes)
 		ri.Error (ERR_DROP, "no GPU memory for the level (%u bytes more)", bytes);
+	world_used += (bytes + 15) & ~15u;
 	memcpy (to, dat + at, bytes);
 	return to;
+}
+
+/* The level's room and the pictures' place in GPU memory, after what stays (the facings). */
+static void gpu_rooms (void)
+{
+	unsigned	bytes = (world->vertices * 16 + 15) & ~15u;
+	int		i;
+
+	for (i = 0; i < (int)world->runs; i++)
+		bytes += (runs[i].flags & SE_RUN_LIT ? (runs[i].count * 4 + 15) & ~15u : 0) + (runs[i].flags & SE_RUN_TAGGED ? 1024 : 0);
+	world_room = seglMemory (bytes);
+	world_room_bytes = world_room ? bytes : 0;
+	pictures_mark = gpuMemoryMark ();
+	spare = seglMemorySpare (&spare_bytes);
+	picture_workers = SE_Workers () > 0 ? mcw_count () : 0;
+	if (getenv ("QUAKE3_PICTURE_WORKERS"))
+		picture_workers = (unsigned)atoi (getenv ("QUAKE3_PICTURE_WORKERS"));
+	picture_log = getenv ("QUAKE3_PICTURES_LOG") != NULL;
+	printf ("quake3: pictures are decoded on %u worker cores into %u KB of GPU memory and %u KB of the display's\n",
+		picture_workers, seglMemoryLeft () >> 10, spare ? spare_bytes >> 10 : 0);
 }
 
 static void world_free (void)
@@ -792,7 +1037,8 @@ static void world_free (void)
 	if (!world_loaded)
 		return;
 	gpuKeep (0, 0);
-	gpuMemoryRelease (world_mark);
+	seglSettle ();		/* (the list being drawn may read it) */
+	world_used = 0;
 	free (world_runs);
 	free (world_changing);
 	world_runs = NULL, world_changing = NULL, world_changes = 0;
@@ -806,8 +1052,9 @@ static void RE_LoadWorld (const char *name)
 
 	world_free ();	/* (and the frame out on the scene's worker shown) */
 	memset (light_kept, 0, sizeof light_kept);
-	world_mark = gpuMemoryMark ();
 	world_count = (int)world->runs;
+	for (i = 0; i < world_count; i++)
+		want_stage (&stages[runs[i].stage]);
 	world_runs = calloc (world_count ? world_count : 1, sizeof (run_t));
 	vertices = gpu_copy (world->vertices_at, world->vertices * 16);
 	for (i = 0; i < world_count; i++) {
@@ -852,7 +1099,7 @@ static void RE_LoadWorld (const char *name)
 	world_hidden[0] = world_hidden[1] = 0;
 	world_loaded = 1;
 	ri.Printf (PRINT_ALL, "the level is kept in GPU memory: %i vertices in %i draws, %u KB\n", mesh, world_kept,
-		(gpuMemoryMark () - world_mark) >> 10);
+		world_used >> 10);
 }
 
 /* What a frame says of a run that changes, in the words of a command of it. */
@@ -1252,7 +1499,8 @@ typedef struct { const se_shader_t *shader; int first, count; } scene_poly_t;
 #define LIST_WORDS	8192
 #define VIEW_WORDS	22		/* of a refdef_t: where its picture is, the eye, the clock, its flags */
 enum { REC_PICTURE = 1, REC_SCENE, REC_LIST, REC_CLEAR, REC_SUM };
-#define CORE_LIST	(1 + SE_LISTS)	/* this core's frames when the scene is a worker's: two in turn */
+#define CORE_LIST	(1 + SE_LISTS)	/* this core's frames when the scene is a worker's: three in turn */
+#define CORE_LISTS	3
 /* What a frame adds and draws. The first is this core's and drawn as it comes. Then the
    client's game's on its worker core (client_shaderemu.c), written there in turn and drawn a
    frame later, and this core's own in turn when the scene's worker draws a frame (CORE_LIST):
@@ -1266,9 +1514,22 @@ typedef struct {
 	int		scene_entity, scene_poly, scene_vert;	/* where the scene being added to begins */
 	unsigned	colour;				/* of the flat pictures that follow */
 } frame_list_t;
-static frame_list_t	lists[CORE_LIST + 2] __attribute__ ((aligned (16)));
+static frame_list_t	lists[CORE_LIST + CORE_LISTS] __attribute__ ((aligned (16)));
 static int		recording;	/* which of them the client's game on its worker writes */
 static int		core_list = CORE_LIST;	/* which this core writes, when the scene is a worker's */
+
+/* What the client's game's helper core adds for the level's items (client_shaderemu.c), apart for
+   each of the client's lists: a placeholder in the list says whose come in its place. */
+#define SIDE_ENTITIES	512
+#define SIDE_ITEMS	256
+#define SIDE_PLACE	0x5e		/* a placeholder's reType; its frame is the item's */
+typedef struct {
+	refEntity_t	entities[SIDE_ENTITIES];
+	struct { int first, count; } items[SIDE_ITEMS];
+	int		count, unused[3];
+} side_list_t;
+static side_list_t	sides[1 + SE_LISTS] __attribute__ ((aligned (16)));
+static int		side_list;	/* the helper's */
 
 static inline frame_list_t *list_now (void)
 {
@@ -1332,7 +1593,16 @@ static void RE_ClearScene (void)
 
 static void RE_AddRefEntityToScene (const refEntity_t *e)
 {
-	frame_list_t	*l = list_now ();
+	frame_list_t	*l;
+
+	if (SE_OnWorker () == SE_SIDE) {
+		side_list_t *s = &sides[side_list];
+
+		if (s->count < SIDE_ENTITIES && e->reType >= 0 && e->reType < RT_MAX_REF_ENTITY_TYPE)
+			s->entities[s->count++] = *e;
+		return;
+	}
+	l = list_now ();
 
 	if (l->entity_count < MAX_SCENE && e->reType >= 0 && e->reType < RT_MAX_REF_ENTITY_TYPE)
 		l->entities[l->entity_count++] = *e;
@@ -1365,6 +1635,42 @@ static int RE_LightForPoint (vec3_t point, vec3_t ambientLight, vec3_t directedL
 
 static void RE_AddLightToScene (const vec3_t org, float intensity, float r, float g, float b) {}
 
+void SE_SceneSideBegin (int list)
+{
+	side_list = list;
+	sides[list].count = 0;
+}
+
+void SE_SceneSideItem (int item)
+{
+	side_list_t	*s = &sides[side_list];
+
+	if (item > 0 && item <= SIDE_ITEMS)
+		s->items[item - 1].count = s->count - s->items[item - 1].first;
+	if (item < SIDE_ITEMS)
+		s->items[item].first = s->count;
+}
+
+void SE_SceneSidePlace (int item)
+{
+	frame_list_t	*l = list_now ();
+
+	if (l->entity_count < MAX_SCENE)
+		l->entities[l->entity_count].reType = SIDE_PLACE, l->entities[l->entity_count].frame = item, l->entity_count++;
+}
+
+/* A placeholder's entities: n of them, or NULL when it is none. */
+static const refEntity_t *side_of (const frame_list_t *l, const refEntity_t *e, int *n)
+{
+	int			i = (int)(l - lists);
+	const side_list_t	*s = &sides[i];
+
+	if (e->reType != SIDE_PLACE || i < 1 || i > SE_LISTS || e->frame < 0 || e->frame >= SIDE_ITEMS)
+		return NULL;
+	*n = s->items[e->frame].count;
+	return &s->entities[s->items[e->frame].first];
+}
+
 /* QUAKE3_SUM=1: a sum over what each frame of the client's game asked to have drawn (its
    scenes' views, entities and polygons, its flat pictures), printed with the frame's time.
    The same game gives the same sums whichever core made the frame. */
@@ -1394,14 +1700,42 @@ void SE_SceneSum (int on)
 	summing = sums && on;
 }
 
+static void entity_draw (const refEntity_t *e)
+{
+	switch (e->reType) {
+	case RT_MODEL:
+		if (!(e->renderfx & RF_THIRD_PERSON))
+			draw_model (e);
+		break;
+	case RT_SPRITE:
+		draw_sprite (e);
+		break;
+	case RT_RAIL_CORE:
+		draw_beam (e, 3, 0);
+		break;
+	case RT_LIGHTNING:
+		draw_beam (e, 8, 1);
+		break;
+	default:
+		break;
+	}
+}
+
 /* A scene drawn: `fd` may be only a refdef_t's first VIEW_WORDS words. */
 static void scene_draw (const refdef_t *fd, const frame_list_t *l, int entity, int entities, int poly, int polys)
 {
-	int	i, was = scene_mode > 0 ? 0 : SE_Phase (3);
+	int	i, k, n, was = scene_mode > 0 ? 0 : SE_Phase (3);
 
 	if (summing) {
 		sum_words (fd, VIEW_WORDS);
-		sum_words (&l->entities[entity], (entities - entity) * (int)(sizeof (refEntity_t) / 4));
+		for (i = entity; i < entities; i++) {
+			const refEntity_t	*e = &l->entities[i], *side = side_of (l, e, &n);
+
+			if (side)
+				sum_words (side, n * (int)(sizeof (refEntity_t) / 4));
+			else
+				sum_words (e, (int)(sizeof (refEntity_t) / 4));
+		}
 		for (i = poly; i < polys; i++)
 			sum_words (&l->verts[l->polys[i].first], l->polys[i].count * (int)(sizeof (polyVert_t) / 4));
 		if (!(fd->rdflags & RDF_NOWORLDMODEL))
@@ -1411,25 +1745,13 @@ static void scene_draw (const refdef_t *fd, const frame_list_t *l, int entity, i
 	if (!(fd->rdflags & RDF_NOWORLDMODEL) && world_loaded)
 		world_frame ();
 	for (i = entity; i < entities; i++) {
-		const refEntity_t *e = &l->entities[i];
+		const refEntity_t	*e = &l->entities[i], *side = side_of (l, e, &n);
 
-		switch (e->reType) {
-		case RT_MODEL:
-			if (!(e->renderfx & RF_THIRD_PERSON))
-				draw_model (e);
-			break;
-		case RT_SPRITE:
-			draw_sprite (e);
-			break;
-		case RT_RAIL_CORE:
-			draw_beam (e, 3, 0);
-			break;
-		case RT_LIGHTNING:
-			draw_beam (e, 8, 1);
-			break;
-		default:
-			break;
-		}
+		if (side)
+			for (k = 0; k < n; k++)
+				entity_draw (&side[k]);
+		else
+			entity_draw (e);
 	}
 	view_matrix_again ();
 	for (i = poly; i < polys; i++)
@@ -1583,28 +1905,90 @@ void SE_SceneReplay (int which)
 void SE_SceneTouch (void (*touch) (void *, unsigned))
 {
 	touch (lists, sizeof lists);
+	touch (sides, sizeof sides);
 }
 
 /* ---- the scene on a worker core ---- */
 
-static mcw_handle	scene_out;	/* the job drawing the frame before, while it is out */
 unsigned		se_scene_jobs, se_scene_cycles, se_scene_passes;	/* for the q3stat: lines */
 
-/* A frame this core recorded, made the GPU's list: all the frame draws, but for the swap. */
-static uint32_t scene_job (uint32_t which, uint32_t unused)
-{
-	unsigned	began = SE_Cycles ();
+/* Frames this core recorded (frame n in list CORE_LIST + (n - 1) % 3) and showed: this core's.
+   Drawn, and how each ended (gpuEnd, and its instructions): the job's. */
+static struct { unsigned recorded, shown, unused[2]; } scene_asked __attribute__ ((aligned (16)));
+static struct { unsigned drawn, unused[3]; } scene_made __attribute__ ((aligned (16)));
+static struct { unsigned ended[4]; } scene_ended[2] __attribute__ ((aligned (16)));
 
-	world_seen = 0;
-	matrix_is = 0;
-	list_draw (&lists[which]);
-	if (!world_seen)
-		world_hide ();
-	if (summed)
-		mcw_print ("q3sum: %u %08x list %08x\n", sum_time, sum, gpuListSum (dat_rom));
-	sum = 0, summed = 0, summing = 0;
-	frame_number++;
-	return SE_Cycles () - began;
+#define SCENE_LINGER	8	/* passes the job waits for the next frame before it ends */
+
+/* The frames recorded made the GPU's lists, one after another: all a frame draws, but the showing. */
+static uint32_t scene_job (uint32_t unused0, uint32_t unused1)
+{
+	for (;;) {
+		unsigned	n = scene_made.drawn + 1, began, idle = 0;
+
+		while (scene_made.drawn >= scene_asked.recorded) {
+			if (++idle > SCENE_LINGER)
+				return 0;
+			mc_end_pass ();
+		}
+		/* (its set is free once frame n - 2, drawn from it, is shown and drawn: showing n - 1 waits for that) */
+		while (scene_asked.shown + 2 < n || (scene_asked.shown + 1 < n && !gpuIdle ()))
+			mc_end_pass ();
+		began = SE_Cycles ();
+		world_seen = 0;
+		matrix_is = 0;
+		list_draw (&lists[CORE_LIST + (n - 1) % CORE_LISTS]);
+		if (!world_seen)
+			world_hide ();
+		if (summed)
+			mcw_print ("q3sum: %u %08x list %08x\n", sum_time, sum, gpuListSum (dat_rom));
+		sum = 0, summed = 0, summing = 0;
+		frame_number++;
+		gpuEnd (scene_ended[n & 1].ended);
+		scene_ended[n & 1].ended[3] = SE_Cycles () - began;
+		scene_made.drawn = n;
+	}
+}
+
+/* The job given out again when it ended with frames left to draw. */
+static void scene_start (void)
+{
+	if (scene_out && mcw_ready (scene_out))
+		mcw_join (scene_out), scene_out = 0;
+	if (!scene_out && scene_made.drawn < scene_asked.recorded)
+		scene_out = mcw_call (scene_job, 0, 0);
+}
+
+/* The frames recorded up to `upto` shown, each when it has been drawn; or those drawn so far. */
+static void scene_show (unsigned upto, int wait)
+{
+	while (scene_asked.shown < upto) {
+		unsigned	n = scene_asked.shown + 1;
+		int		was;
+
+		while (scene_made.drawn < n) {
+			scene_start ();
+			if (scene_made.drawn >= n)
+				break;
+			if (!wait)
+				return;
+			mcw_rest ();
+			se_scene_passes++;
+			SE_ServerPoll ();
+		}
+		was = SE_Phase (4);
+		gpuShow (scene_ended[n & 1].ended);
+		SE_Phase (was);
+		se_scene_cycles += scene_ended[n & 1].ended[3];
+		se_scene_jobs++;
+		scene_asked.shown = n;
+	}
+}
+
+void SE_ScenePoll (void)
+{
+	if (scene_mode > 0)
+		scene_show (scene_asked.recorded, 0);
 }
 
 static void scene_setup (void)
@@ -1619,33 +2003,28 @@ static void scene_setup (void)
 		   the GPU's two sets, the renderer's own) */
 		mcw_touch_code (__executable_start, (unsigned)(etext - __executable_start));
 		mcw_touch (lists, sizeof lists);
+		mcw_touch (sides, sizeof sides);
 		gpuTouchSets (mcw_touch);
 		mcw_touch (moved_kept, stage_count * sizeof *moved_kept);
 		mcw_touch (light_kept, sizeof light_kept);
 		mcw_touch (way_draws, sizeof way_draws);
 		mcw_touch (ways, sizeof ways);
 		mcw_touch (se_counts, sizeof se_counts);
+		mcw_touch (scene_ended, sizeof scene_ended);
+		mcw_touch (&scene_made, sizeof scene_made);
 	}
 	printf ("quake3: the scene is drawn by %s\n", scene_mode ? "a worker core, while this core goes on" : "this core");
 }
 
 void SE_SceneFlush (void)
 {
-	int	was;
-
-	if (!scene_out)
-		return;
-	while (!mcw_ready (scene_out)) {
+	scene_show (scene_asked.recorded, 1);
+	while (scene_out && !mcw_ready (scene_out)) {
 		mcw_rest ();
-		se_scene_passes++;
 		SE_ServerPoll ();
 	}
-	se_scene_cycles += mcw_join (scene_out);
-	se_scene_jobs++;
-	scene_out = 0;
-	was = SE_Phase (4);
-	gpuSwap (0);
-	SE_Phase (was);
+	if (scene_out)
+		mcw_join (scene_out), scene_out = 0;
 }
 
 static void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {}
@@ -1659,10 +2038,13 @@ static void RE_BeginFrame (stereoFrame_t stereoFrame)
 		scene_setup ();
 	if (scene_mode > 0) {
 		/* (recorded here, and drawn by a job at its end while this core goes on to the next) */
-		list_clear (&lists[core_list], lists[core_list ^ CORE_LIST ^ (CORE_LIST + 1)].colour);
+		SE_ScenePoll ();
+		core_list = CORE_LIST + (int)(scene_asked.recorded % CORE_LISTS);
+		list_clear (&lists[core_list], lists[CORE_LIST + (scene_asked.recorded + CORE_LISTS - 1) % CORE_LISTS].colour);
 		list_word (&lists[core_list], REC_CLEAR, 0);
 		return;
 	}
+	pictures_take ();
 	world_seen = 0;
 	matrix_is = 0;
 	glClear (GL_COLOR_BUFFER_BIT);
@@ -1676,10 +2058,27 @@ static void RE_EndFrame (int *frontEndMsec, int *backEndMsec)
 		*frontEndMsec = 0;
 	if (backEndMsec)
 		*backEndMsec = 0;
+	if (world_loaded == 1 && clc.state == CA_ACTIVE) {	/* (where a level's loading is measured to) */
+		world_loaded = 2;
+		printf ("quake3: pictures decoded so far %u (%u KB), not for want of GPU memory %u, this core's instructions in them "
+			"%u thousand\nquake3: the level's first frame\n", se_pictures[0], se_pictures[1], se_pictures[2],
+			se_pictures[3] / 1000);
+		fflush (stdout);
+	}
+	if (!parked_count && clc.state == CA_ACTIVE)
+		pictures_park ();
 	if (scene_mode > 0) {
-		SE_SceneFlush ();	/* (the frame before: shown now) */
-		scene_out = mcw_call (scene_job, (uint32_t)core_list, 0);
-		core_list ^= CORE_LIST ^ (CORE_LIST + 1);
+		if (pictures_pending ()) {
+			SE_SceneFlush ();
+			pictures_take ();
+		}
+		/* (drawn by the job after the frame before, or when it is next given out; each shown once drawn,
+		   the one before last waited for here: the next frame is recorded into its list) */
+		scene_asked.recorded++;
+		scene_start ();
+		if (scene_asked.recorded > 2)
+			scene_show (scene_asked.recorded - 2, 1);
+		scene_show (scene_asked.recorded, 0);
 		SE_FrameDone ();
 		return;
 	}
@@ -1707,6 +2106,8 @@ static qhandle_t register_shader (const char *name, const char *kind)
 	SE_Wanted (kind, name);
 	clean_name (clean, name, 1);
 	i = find (shaders, shader_count, sizeof (se_shader_t), clean);
+	if (i >= 0)
+		want_shader (&shaders[i]);
 	/* (a run that lists what the game asks for has it go on asking: nothing is missing) */
 	return i < 0 ? se_wanted : shaders[i].number + 1;
 }
@@ -1724,6 +2125,14 @@ static qhandle_t RE_RegisterModel (const char *name)
 		return INLINE_MODEL + atoi (name + 1);
 	clean_name (clean, name, 0);
 	i = find (models, model_count, sizeof (se_model_t), clean) + 1;
+	if (i) {
+		const se_surface_t	*surf = &surfaces[models[i - 1].first_surface];
+		int			k;
+
+		for (k = 0; k < models[i - 1].surfaces; k++)
+			if (surf[k].shader >= 0)
+				want_shader (shader_of[surf[k].shader]);
+	}
 	return i ? i : se_wanted;
 }
 
@@ -1735,6 +2144,14 @@ static qhandle_t RE_RegisterSkin (const char *name)
 	SE_Wanted ("skin", name);
 	clean_name (clean, name, 0);
 	i = find (skins, skin_count, sizeof (se_skin_t), clean) + 1;
+	if (i) {
+		const se_skin_t	*skin = &skins[i - 1];
+		int		k;
+
+		for (k = 0; k < skin->count; k++)
+			if (skin_entries[skin->first + k].shader >= 0)
+				want_shader (shader_of[skin_entries[skin->first + k].shader]);
+	}
 	return i ? i : se_wanted;
 }
 
@@ -1798,6 +2215,7 @@ static void RE_BeginRegistration (glconfig_t *out)
 			facings[4 * i + 3] = 0;
 		}
 		facings_at = gpuAddress (facings);
+		gpu_rooms ();
 		glClearColor (0, 0, 0, 0);
 	}
 	memset (&config, 0, sizeof config);
@@ -1817,8 +2235,10 @@ static void RE_BeginRegistration (glconfig_t *out)
 static void RE_Shutdown (qboolean destroyWindow)
 {
 	SE_SceneFlush ();
-	if (opened && destroyWindow)
+	if (opened && destroyWindow) {
 		world_free ();
+		pictures_free ();
+	}
 }
 
 static void RE_SetWorldVisData (const byte *vis) {}

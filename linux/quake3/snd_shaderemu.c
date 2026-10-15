@@ -48,12 +48,17 @@ enum { KEPT_START, KEPT_CLEAR, KEPT_LOOP, KEPT_STOP_LOOP, KEPT_EARS };
 typedef struct { int kind, a, b, c; float v[12]; } kept_t;
 static struct { kept_t sound[MAX_KEPT]; int count, unused[3]; } kept[1 + SE_LISTS] __attribute__ ((aligned (16)));
 static int	recording;
+/* the places the client's game's helper core gave things, done by the worker when it is done */
+static struct { int count, unused[3]; struct { int entity; vec3_t at; } place[256]; } side_at __attribute__ ((aligned (16)));
+static kept_t	side_lost;
 
 /* Room for one more of the worker's askings, or NULL on the first core (which does it at once). */
 static kept_t *keep (int kind, int a, int b, int c)
 {
 	kept_t	*k;
 
+	if (SE_OnWorker () == SE_SIDE)
+		return &side_lost;	/* (it asks for nothing of the kind: the items it makes have no sounds) */
 	if (SE_OnWorker () != 2)
 		return NULL;
 	k = &kept[recording].sound[kept[recording].count < MAX_KEPT - 1 ? kept[recording].count++ : MAX_KEPT - 1];
@@ -211,8 +216,27 @@ void S_Respatialize (int entityNum, const vec3_t origin, vec3_t axis[3], int inw
 
 void S_UpdateEntityPosition (int entityNum, const vec3_t origin)
 {
+	if (SE_OnWorker () == SE_SIDE) {
+		if (side_at.count < 256)
+			side_at.place[side_at.count].entity = entityNum, VectorCopy (origin, side_at.place[side_at.count].at), side_at.count++;
+		return;
+	}
 	if (entityNum >= 0 && entityNum < MAX_GENTITIES)
 		VectorCopy (origin, entity_at[entityNum]);
+}
+
+void SE_SoundSideReplay (void)
+{
+	int	i;
+
+	for (i = 0; i < side_at.count; i++)
+		S_UpdateEntityPosition (side_at.place[i].entity, side_at.place[i].at);
+	side_at.count = 0;
+}
+
+void SE_SoundSideTouch (void (*touch) (void *, unsigned))
+{
+	touch (&side_at, sizeof side_at);
 }
 
 /* The client's game on its worker begins a frame: what it asks for goes to list `which` (1 or 2). */

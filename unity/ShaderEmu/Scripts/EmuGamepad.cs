@@ -179,6 +179,7 @@ public class EmuGamepad : UdonSharpBehaviour
     private bool Sticks() { return held && (scheme == ForShooter || scheme == ForBlocks || scheme == ForHands) && !InMenu(); }
     public int StickLow() { return Sticks() ? Axis(moveX) | (Axis(moveY) << 8) : 0; }
     public int StickHigh() { return Sticks() ? Axis(lookX) | (Axis(lookY) << 8) : 0; }
+    public bool Jumping() { return held && jump; }
 
     // ---- the guest's keys ----
 
@@ -258,10 +259,10 @@ public class EmuGamepad : UdonSharpBehaviour
             Set(Back, menu && moveY < -0.5f);
             Set(TurnLeft, menu && moveX < -0.5f);
             Set(TurnRight, menu && moveX > 0.5f);
+            // (no trigger jumps: the jump button does, as the host's words say: Jumping)
             Set(Fire, fire);
-            Set(Jump, other);
             Set(Next, rightGrip);
-            Set(Accept, jump);
+            Set(Accept, menu && jump);
         }
         else if (scheme == ForBlocks)
         {

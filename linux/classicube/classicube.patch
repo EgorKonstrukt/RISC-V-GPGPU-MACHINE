@@ -57,38 +57,46 @@ index f64e11e..9626b97 100644
  
  /*########################################################################################################################*
 diff --git a/src/Bitmap.c b/src/Bitmap.c
-index 43e79ac..4ed44f6 100644
+index 43e79ac..55b2ee4 100644
 --- a/src/Bitmap.c
 +++ b/src/Bitmap.c
-@@ -415,6 +415,23 @@ cc_result Png_Decode(struct Bitmap* bmp, struct Stream* stream) {
+@@ -415,6 +415,14 @@ cc_result Png_Decode(struct Bitmap* bmp, struct Stream* stream) {
  
  	res = Stream_Read(stream, tmp, PNG_SIG_SIZE);
  	if (res) return DecodeFailure(bmp, res);
 +#ifdef CC_BUILD_SHADEREMU
-+	/* A picture the build decoded (linux/classicube/store_zip.py): its size, then its pixels as */
-+	/*  they are kept here, read in one piece. Decoding the pack's PNGs was a fifth of the start. */
-+	if (Mem_ReadU32_BE(tmp) == PNG_FourCC('S','E','P','I') && Mem_ReadU32_BE(tmp + 4) == PNG_FourCC('X','E','L','S')) {
-+		res = Stream_Read(stream, tmp, 8);
-+		if (res) return DecodeFailure(bmp, res);
-+		bmp->width  = (int)(tmp[0] | tmp[1] << 8 | tmp[2] << 16 | (cc_uint32)tmp[3] << 24);
-+		bmp->height = (int)(tmp[4] | tmp[5] << 8 | tmp[6] << 16 | (cc_uint32)tmp[7] << 24);
-+		if (bmp->width  < 0 || bmp->width  > PNG_MAX_DIMS) return DecodeFailure(bmp, PNG_ERR_TOO_WIDE);
-+		if (bmp->height < 0 || bmp->height > PNG_MAX_DIMS) return DecodeFailure(bmp, PNG_ERR_TOO_TALL);
-+
-+		bmp->scan0 = (BitmapCol*)Mem_TryAlloc(bmp->height, bmp->width * 4);
-+		if (!bmp->scan0) return DecodeFailure(bmp, ERR_OUT_OF_MEMORY);
-+		res = Stream_Read(stream, (cc_uint8*)bmp->scan0, (cc_uint32)bmp->width * bmp->height * 4);
-+		return res ? DecodeFailure(bmp, res) : 0;
-+	}
++	/* PNGs are decoded on the worker cores by libmedia, and a picture of the pack is its pages of */
++	/*  the pack decoded (png_shaderemu.c, linux/classicube/store_zip.py) */
++	{ extern cc_result SE_PngDecode(struct Bitmap* bmp, struct Stream* stream, const cc_uint8* signature);
++	  extern cc_result SE_PackPicture(struct Bitmap* bmp, struct Stream* stream);
++	  if (Png_Detect(tmp, PNG_SIG_SIZE)) return SE_PngDecode(bmp, stream, tmp);
++	  if (Mem_Equal(tmp, "SEPACKED", PNG_SIG_SIZE)) return SE_PackPicture(bmp, stream); }
 +#endif
  	if (!Png_Detect(tmp, PNG_SIG_SIZE)) return DecodeFailure(bmp, PNG_ERR_INVALID_SIG);
  
  	colorspace = 0xFF; /* Unknown colour space */
 diff --git a/src/Block.c b/src/Block.c
-index a7e91f4..5c184ed 100644
+index a7e91f4..327d82c 100644
 --- a/src/Block.c
 +++ b/src/Block.c
-@@ -398,6 +398,13 @@ static void Block_UpdateAllCulling(void) {
+@@ -358,6 +358,16 @@ static void Block_CalcCulling(BlockID block, BlockID other) {
+ 		Blocks.Hidden[(block * BLOCK_COUNT) + other] = 0x3F;
+ 		return;
+ 	}
++#ifdef CC_BUILD_SHADEREMU
++	/* The device draws both sides of a face: of two whole leaves' shared faces, which lie in
++	   one plane, only the one of the leaf on the greater side is drawn (two fought for the pixels) */
++	if (block == other && Blocks.Draw[block] == DRAW_TRANSPARENT_THICK && Blocks.MinBB[block].x == 0.0f &&
++		Blocks.MinBB[block].y == 0.0f && Blocks.MinBB[block].z == 0.0f && Blocks.MaxBB[block].x == 1.0f &&
++		Blocks.MaxBB[block].y == 1.0f && Blocks.MaxBB[block].z == 1.0f) {
++		Blocks.Hidden[(block * BLOCK_COUNT) + other] = FACE_BIT_XMAX | FACE_BIT_ZMAX | FACE_BIT_YMAX;
++		return;
++	}
++#endif
+ 
+ 	/* Some blocks may not cull 'other' block, in which case just skip detailed check */
+ 	/* e.g. sprite blocks, default leaves, will not cull any other blocks */
+@@ -398,6 +408,13 @@ static void Block_UpdateAllCulling(void) {
  	for (block = BLOCK_AIR; block < BLOCK_COUNT; block++) {
  		Block_CalcStretch((BlockID)block);
  		for (neighbour = BLOCK_AIR; neighbour < BLOCK_COUNT; neighbour++) {
@@ -938,10 +946,10 @@ index dd3f3f2..fc37ada 100644
 +}
 +#endif
 diff --git a/src/Camera.c b/src/Camera.c
-index a82a0d8..b563526 100644
+index a82a0d8..9bf1ff0 100644
 --- a/src/Camera.c
 +++ b/src/Camera.c
-@@ -56,6 +56,10 @@ static void PerspectiveCamera_GetProjection(struct Matrix* proj) {
+@@ -56,9 +56,13 @@ static void PerspectiveCamera_GetProjection(struct Matrix* proj) {
  static void PerspectiveCamera_GetView(struct Matrix* mat) {
  	Vec3 pos = Camera.CurrentPos;
  	Vec2 rot = Camera.Active->GetOrientation();
@@ -951,7 +959,28 @@ index a82a0d8..b563526 100644
 +	if (SE_SeatBody(&seatYaw)) { rot.x = seatYaw * MATH_DEG2RAD; rot.y = 0.0f; }
  
  	Matrix_LookRot(mat, pos, rot);
- 	if (Game_ViewBobbing) Matrix_MulBy(mat, &Camera.TiltM);
+-	if (Game_ViewBobbing) Matrix_MulBy(mat, &Camera.TiltM);
++	if (Game_ViewBobbing && !SE_SeatBody(&seatYaw)) Matrix_MulBy(mat, &Camera.TiltM);
+ }
+ 
+ static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
+@@ -67,6 +71,16 @@ static void PerspectiveCamera_GetPickedBlock(struct RayTracer* t) {
+ 
+ 	Vec3 dir    = Vec3_GetDirVector(e->Yaw * MATH_DEG2RAD, e->Pitch * MATH_DEG2RAD + Camera.TiltPitch);
+ 	Vec3 eyePos = Entity_GetEyePosition(e);
++	{	/* shaderemu: from a holodeck's seat the ray is the right hand's beam, from the hand (Window_ShaderEmu.c) */
++		extern int SE_SeatBody(float* yaw);
++		extern int SE_SeatHand(float* at);
++		float body, at[3];
++		if (SE_SeatBody(&body) && SE_SeatHand(at)) {
++			Vec3 from = Vec3_RotateY3(at[0], at[1], -at[2], body * MATH_DEG2RAD);
++			dir = Vec3_GetDirVector(e->Yaw * MATH_DEG2RAD, e->Pitch * MATH_DEG2RAD);
++			Vec3_AddBy(&eyePos, &from);
++		}
++	}
+ 	Picking_CalcPickedBlock(&eyePos, &dir, p->ReachDistance, t);
+ }
+ 
 diff --git a/src/Core.h b/src/Core.h
 index 95be4ac..4eb41c2 100644
 --- a/src/Core.h
@@ -1283,10 +1312,10 @@ index b9ab2a3..ff0259c 100644
  		e = Entities.List[i];
  		if (!e || e == &p->Base) continue;
 diff --git a/src/EnvRenderer.c b/src/EnvRenderer.c
-index 5e7cf6a..1b766ad 100644
+index 5e7cf6a..df34fe1 100644
 --- a/src/EnvRenderer.c
 +++ b/src/EnvRenderer.c
-@@ -16,13 +16,24 @@
+@@ -16,13 +16,27 @@
  #include "TexturePack.h"
  #include "Platform.h"
  #include "Camera.h"
@@ -1303,6 +1332,9 @@ index 5e7cf6a..1b766ad 100644
  
 +/* Set while the map's borders are built: a ShaderEmu vertex has room for 32 repeats of a texture */
 +static cc_bool env_borders;
++#ifdef CC_BUILD_SHADEREMU
++PackedCol EnvRenderer_SE_Fog; /* the clear colour, for EnvRenderer_SE_RenderHorizon */
++#endif
 +
  static CC_INLINE int EnvRenderer_AxisSize(void) {
 +#ifdef CC_BUILD_SHADEREMU
@@ -1311,7 +1343,17 @@ index 5e7cf6a..1b766ad 100644
  	if (Gfx.Limitations & GFX_LIMIT_MAX_VERTEX_SIZE) return 8;
  
  	return EnvRenderer_Legacy ? 128 : 2048;
-@@ -202,7 +213,11 @@ void EnvRenderer_RenderClouds(void) {
+@@ -129,6 +143,9 @@ void EnvRenderer_UpdateFog(void) {
+ 
+ 	fogColor = CalcFog(&fogDensity);
+ 	Gfx_ClearColor(fogColor);
++#ifdef CC_BUILD_SHADEREMU
++	EnvRenderer_SE_Fog = fogColor;
++#endif
+ 
+ 	if (EnvRenderer_Minimal) {
+ 		UpdateFogMinimal(fogDensity);
+@@ -202,7 +219,11 @@ void EnvRenderer_RenderClouds(void) {
  		if (!clouds_vb) return;
  	}
  	
@@ -1323,7 +1365,7 @@ index 5e7cf6a..1b766ad 100644
  
  	Gfx_EnableTextureOffset(offset, 0);
  	Gfx_SetAlphaTest(true);
-@@ -275,7 +290,11 @@ void EnvRenderer_RenderSky(void) {
+@@ -275,7 +296,11 @@ void EnvRenderer_RenderSky(void) {
  	}
  
  	normY = (float)World.Height + 8.0f;
@@ -1335,7 +1377,55 @@ index 5e7cf6a..1b766ad 100644
  	Gfx_SetVertexFormat(VERTEX_FORMAT_COLOURED);
  	Gfx_BindVb(sky_vb);
  
-@@ -490,7 +509,7 @@ void EnvRenderer_RenderWeather(float delta) {
+@@ -294,6 +319,47 @@ void EnvRenderer_RenderSky(void) {
+ 	}
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++/* A holodeck shows no clear colour: from its seat a box round the eye, twice the far plane away
++   (past it on a flat screen), sky above the horizon fading to the fog's colour at and below it. */
++void EnvRenderer_SE_RenderHorizon(void) {
++	static GfxResourceID vb;
++	static const signed char quads[10][4][3] = {
++		{ {-1,0,-1}, { 1,0,-1}, { 1,1,-1}, {-1,1,-1} }, { { 1,0,-1}, { 1,0, 1}, { 1,1, 1}, { 1,1,-1} },
++		{ { 1,0, 1}, {-1,0, 1}, {-1,1, 1}, { 1,1, 1} }, { {-1,0, 1}, {-1,0,-1}, {-1,1,-1}, {-1,1, 1} },
++		{ {-1,-1,-1}, { 1,-1,-1}, { 1,0,-1}, {-1,0,-1} }, { { 1,-1,-1}, { 1,-1, 1}, { 1,0, 1}, { 1,0,-1} },
++		{ { 1,-1, 1}, {-1,-1, 1}, {-1,0, 1}, { 1,0, 1} }, { {-1,-1, 1}, {-1,-1,-1}, {-1,0,-1}, {-1,0, 1} },
++		{ {-1,1,-1}, { 1,1,-1}, { 1,1, 1}, {-1,1, 1} }, { {-1,-1,-1}, { 1,-1,-1}, { 1,-1, 1}, {-1,-1, 1} },
++	};
++	static struct VertexColoured v[40];
++	static PackedCol sky, fog;
++	static float made;
++	struct Matrix m;
++	float d = 2.0f * (float)Game_ViewDistance;
++	int i, k;
++
++	if (!vb) vb = Gfx_CreateDynamicVb(VERTEX_FORMAT_COLOURED, 40);
++	if (!vb) return;
++	Gfx_SetVertexFormat(VERTEX_FORMAT_COLOURED);
++	if (made != d || sky != Env.SkyCol || fog != EnvRenderer_SE_Fog) {
++		made = d; sky = Env.SkyCol; fog = EnvRenderer_SE_Fog;
++		for (i = 0; i < 10; i++) {
++			for (k = 0; k < 4; k++) {
++				struct VertexColoured* p = &v[i * 4 + k];
++				p->x = quads[i][k][0] * d; p->y = quads[i][k][1] * d; p->z = quads[i][k][2] * d;
++				p->Col = quads[i][k][1] > 0 ? sky : fog;
++			}
++		}
++	}
++	Gfx_SetDynamicVbData(vb, v, 40);	/* (the same fill keeps its mesh) */
++	m = Gfx.View;
++	m.row4.x = 0.0f; m.row4.y = 0.0f; m.row4.z = 0.0f;
++	Gfx_LoadMatrix(MATRIX_VIEW, &m);
++	Gfx_DrawVb_IndexedTris(40);
++	Gfx_LoadMatrix(MATRIX_VIEW, &Gfx.View);
++}
++#endif
++
+ /*########################################################################################################################*
+ *----------------------------------------------------------Skybox---------------------------------------------------------*
+ *#########################################################################################################################*/
+@@ -490,7 +556,7 @@ void EnvRenderer_RenderWeather(float delta) {
  	if (!weather_vb)
  		weather_vb = Gfx_CreateScratchVb(VERTEX_FORMAT_TEXTURED, WEATHER_VERTS_COUNT);
  
@@ -1344,7 +1434,7 @@ index 5e7cf6a..1b766ad 100644
  	moved   = pos.x != lastPos.x || pos.y != lastPos.y || pos.z != lastPos.z;
  	lastPos = pos;
  
-@@ -531,7 +550,11 @@ void EnvRenderer_RenderWeather(float delta) {
+@@ -531,7 +597,11 @@ void EnvRenderer_RenderWeather(float delta) {
  	color = Env.SunCol;
  	speed = (weather == WEATHER_RAINY ? 1.0f : 0.2f) * Env.WeatherSpeed;
  
@@ -1356,7 +1446,7 @@ index 5e7cf6a..1b766ad 100644
  	vPlane1Offset = weather == WEATHER_RAINY  ? 0 : 0.25f; /* Offset v on 1 plane while snowing to avoid the unnatural mirrored texture effect */
  
  	for (i = 0; i < numCoords; i++)
-@@ -556,7 +579,11 @@ void EnvRenderer_RenderWeather(float delta) {
+@@ -556,7 +626,11 @@ void EnvRenderer_RenderWeather(float delta) {
  			Random_Seed(&snowDirRng, (x + 1217 * z) & 0x7fffffff);
  
  			/* Multiply horizontal speed by a random float from -1 to 1 */
@@ -1369,7 +1459,7 @@ index 5e7cf6a..1b766ad 100644
  			uOffset1 = uSpeed * (Random_Float(&snowDirRng) * 2 + -1);
  			uOffset2 = uSpeed * (Random_Float(&snowDirRng) * 2 + -1);
  
-@@ -714,6 +741,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -714,6 +788,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	block = Env.SidesBlock;
  
  	if (Blocks.Draw[block] == DRAW_GAS) return;
@@ -1377,7 +1467,7 @@ index 5e7cf6a..1b766ad 100644
  	CalcBorderRects(rects);
  
  	sides_vertices = 0;
-@@ -728,7 +756,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -728,7 +803,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	sides_vertices += 2 * CalcNumVertices(World.Length, Math_AbsI(y)); /* XQuads */
  
  	sides_vb = Gfx_TryCreateStaticVb(VERTEX_FORMAT_TEXTURED, sides_vertices);
@@ -1386,7 +1476,7 @@ index 5e7cf6a..1b766ad 100644
  
  	data = (struct VertexTextured*)Gfx_LockVb(sides_vb,
  										VERTEX_FORMAT_TEXTURED, sides_vertices);
-@@ -754,6 +782,7 @@ static CC_NOINLINE void BuildMapSides(void) {
+@@ -754,6 +829,7 @@ static CC_NOINLINE void BuildMapSides(void) {
  	DrawBorderX(World.Width, 0, World.Length, y1, y2, color, &data);
  
  	Gfx_UnlockVb(sides_vb);
@@ -1394,7 +1484,7 @@ index 5e7cf6a..1b766ad 100644
  }
  
  static CC_NOINLINE void BuildMapEdges(void) {
-@@ -769,6 +798,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -769,6 +845,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  	block = Env.EdgeBlock;
  
  	if (Blocks.Draw[block] == DRAW_GAS) return;
@@ -1402,7 +1492,7 @@ index 5e7cf6a..1b766ad 100644
  	CalcBorderRects(rects);
  
  	edges_vertices = 0;
-@@ -778,7 +808,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -778,7 +855,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  	}
  
  	edges_vb = Gfx_TryCreateStaticVb(VERTEX_FORMAT_TEXTURED, edges_vertices);
@@ -1411,7 +1501,7 @@ index 5e7cf6a..1b766ad 100644
  
  	data = (struct VertexTextured*)Gfx_LockVb(edges_vb,
  										VERTEX_FORMAT_TEXTURED, edges_vertices);
-@@ -794,6 +824,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
+@@ -794,6 +871,7 @@ static CC_NOINLINE void BuildMapEdges(void) {
  			Borders_HorOffset(block), Borders_YOffset(block), &data);
  	}
  	Gfx_UnlockVb(edges_vb);
@@ -1419,7 +1509,7 @@ index 5e7cf6a..1b766ad 100644
  }
  
  static void RenderBorders(BlockID block, GfxResourceID vb, GfxResourceID tex, int count) {
-@@ -822,7 +853,11 @@ void EnvRenderer_RenderMapEdges(void) {
+@@ -822,7 +900,11 @@ void EnvRenderer_RenderMapEdges(void) {
  	/* Do not draw water when player cannot see it */
  	/* Fixes some 'depth bleeding through' issues with 16 bit depth buffers on large maps */
  	int yVisible = min(0, Env_SidesHeight);
@@ -1432,7 +1522,7 @@ index 5e7cf6a..1b766ad 100644
  	if (!edges_vb) {
  		BuildMapEdges();
 diff --git a/src/Game.c b/src/Game.c
-index acf9554..b22a12a 100644
+index acf9554..d6ea57f 100644
 --- a/src/Game.c
 +++ b/src/Game.c
 @@ -219,7 +219,11 @@ void Game_Reset(void) {
@@ -1459,7 +1549,7 @@ index acf9554..b22a12a 100644
  	Game_AddComponent(&MapRenderer_Component);
  	Game_AddComponent(&EnvRenderer_Component);
  	Game_AddComponent(&Server_Component);
-@@ -720,17 +728,196 @@ int Game_MapState(int deviceIndex) {
+@@ -720,17 +728,228 @@ int Game_MapState(int deviceIndex) {
  }
  #endif
  
@@ -1482,6 +1572,9 @@ index acf9554..b22a12a 100644
 +void MapRenderer_SE_Between(void);
 +void Animations_SE_Catchup(void);
 +PackedCol HeldBlockRenderer_SE_Col(void);
++void EnvRenderer_SE_RenderHorizon(void);
++int SE_Seated(void);
++int SE_SeatHand(float* at);
 +
 +/* The world after the particles, the block in the hand and the 2D screen: what the worker makes */
 +static void SE_FrameRest(void) {
@@ -1493,6 +1586,7 @@ index acf9554..b22a12a 100644
 +	Animations_SE_Catchup();
 +	if (f->world) {
 +		EnvRenderer_RenderSky();
++		if (f->seated) EnvRenderer_SE_RenderHorizon();
 +		EnvRenderer_RenderClouds();
 +		MapRenderer_Update(delta);
 +		MapRenderer_RenderNormal(delta);
@@ -1522,6 +1616,31 @@ index acf9554..b22a12a 100644
 +	Gfx_End2D();
 +	Gfx_SE_FrameLater();
 +}
++/* From a holodeck's seat with tracked hands the chunks in view are the head's, which looks
++   round the body the camera stands for: a frustum of 120 degrees from the head's way. */
++static void SE_SeatCull(struct Matrix* mvp, const struct SEFrame* f) {
++	extern int SE_SeatHead(float* yaw, float* pitch);
++	static struct Matrix proj, last;
++	static float lastYaw, lastPitch, lastFar;
++	static Vec3 lastPos;
++	struct Matrix view;
++	Vec2 rot;
++	float yaw, pitch;
++	if (!SE_SeatHead(&yaw, &pitch)) return;
++	if (lastFar != (float)Game_ViewDistance) {
++		lastFar = (float)Game_ViewDistance;
++		Gfx_CalcPerspectiveMatrix(&proj, 120.0f * MATH_DEG2RAD, 1.0f, lastFar);
++		lastYaw = -1000.0f;
++	}
++	if (yaw != lastYaw || pitch != lastPitch || !Vec3_Equals(&f->camPos, &lastPos)) {
++		lastYaw = yaw; lastPitch = pitch; lastPos = f->camPos;
++		rot.x = yaw * MATH_DEG2RAD; rot.y = pitch * MATH_DEG2RAD;
++		Matrix_LookRot(&view, f->camPos, rot);
++		Matrix_Mul(&last, &view, &proj);
++	}
++	*mvp = last;
++}
++
 +cc_uint32 cycles(void);
 +void Gfx_SE_JobCycles(cc_uint32 n);
 +static cc_uint32 SE_FrameJob(cc_uint32 a, cc_uint32 b) {
@@ -1588,6 +1707,8 @@ index acf9554..b22a12a 100644
 +		f->yaw        = p->Base.Yaw;
 +		f->selected   = Game_SelectedPos;
 +		f->heldCol    = HeldBlockRenderer_SE_Col();
++		f->seated     = SE_Seated();
++		f->handOn     = SE_SeatHand(f->hand);
 +	} else {
 +		RayTracer_SetInvalid(&Game_SelectedPos);
 +	}
@@ -1610,6 +1731,7 @@ index acf9554..b22a12a 100644
 +	if (f->world) {
 +		Gfx.View = f->view;
 +		Gfx_LoadMVP(&Gfx.View, &Gfx.Projection, &mvp);
++		SE_SeatCull(&mvp, f);
 +		Frustum_CalcPlanes(&mvp);
 +		Gfx_SetDepthTest(true);
 +		Gfx_SetDepthWrite(true);
@@ -1656,11 +1778,22 @@ index acf9554..b22a12a 100644
  	Window_ProcessEvents(delta);
  
  	if (delta <= 0.0f) return;
+@@ -861,6 +1080,10 @@ void Game_Setup(void) {
+ 	cc_string title; char titleBuffer[STRING_SIZE];
+ 	int width  = Options_GetInt(OPT_WINDOW_WIDTH,  0, DisplayInfo.Width,  0);
+ 	int height = Options_GetInt(OPT_WINDOW_HEIGHT, 0, DisplayInfo.Height, 0);
++#ifdef CC_BUILD_SHADEREMU
++	/* the texture pack's pictures decoded on the worker cores while the game starts (png_shaderemu.c) */
++	{ extern void SE_PackEarly(void); SE_PackEarly(); }
++#endif
+ 
+ 	/* No custom resolution has been set */
+ 	if (width == 0 || height == 0) {
 diff --git a/src/Game.h b/src/Game.h
-index ccfee09..464e1e5 100644
+index ccfee09..67da7fb 100644
 --- a/src/Game.h
 +++ b/src/Game.h
-@@ -24,6 +24,24 @@ CC_VAR extern struct _GameData {
+@@ -24,6 +24,25 @@ CC_VAR extern struct _GameData {
  } Game;
  
  extern struct RayTracer Game_SelectedPos;
@@ -1676,7 +1809,8 @@ index ccfee09..464e1e5 100644
 +	float bobbingHor, bobbingVer, pitch, yaw, delta, t;
 +	double time;
 +	PackedCol heldCol;
-+	cc_bool world;
++	float hand[3];	/* from a seat, the right hand from the eye (SE_SeatHand) */
++	cc_bool world, seated, handOn;
 +};
 +extern const struct SEFrame* SE_Frame;
 +/* Core 0 waits for the worker's list before it changes what the list is made of */
@@ -1685,7 +1819,7 @@ index ccfee09..464e1e5 100644
  extern cc_bool Game_UseCPEBlocks, Game_Running;
  
  extern cc_string Game_Username;
-@@ -41,6 +59,8 @@ extern cc_string Game_Mppass;
+@@ -41,6 +60,8 @@ extern cc_string Game_Mppass;
      #define DEFAULT_VIEWDIST 20
  #elif defined CC_BUILD_SYMBIAN
  	#define DEFAULT_VIEWDIST 64
@@ -1971,7 +2105,7 @@ index d033191..e965cc8 100644
  		Gen_CurrentProgress = (float)z / World.Length;
  
 diff --git a/src/HeldBlockRenderer.c b/src/HeldBlockRenderer.c
-index 80327e7..8bf7154 100644
+index 80327e7..518d597 100644
 --- a/src/HeldBlockRenderer.c
 +++ b/src/HeldBlockRenderer.c
 @@ -69,7 +69,11 @@ static void SetMatrix(void) {
@@ -2037,15 +2171,14 @@ index 80327e7..8bf7154 100644
  	if (held_swinging) {
  		/* Like graph -sin(x) : x=0.5 and x=2.5 have same y values,
  		   but increasing x causes y to change in opposite directions */
-@@ -234,7 +257,21 @@ void HeldBlockRenderer_Render(float delta) {
+@@ -234,7 +257,20 @@ void HeldBlockRenderer_Render(float delta) {
  
  	ResetHeldState();
  	DoAnimation(delta, lastSwingY);
 -	SetBaseOffset();
 +	{	/* shaderemu: a holodeck's sitter holds the block in the right hand, and has no arm but their own */
-+		extern int SE_SeatHand(float* at);
-+		float at[3];
-+		if (!SE_SeatHand(at)) {
++		const float* at = SE_Frame->hand;
++		if (!SE_Frame->handOn) {
 +			SetBaseOffset();
 +		} else if (held_block == BLOCK_AIR) {
 +			Gfx.View = view;
@@ -2092,10 +2225,27 @@ index 084b974..b1d404a 100644
  #include "LScreens.h"
  #include "LWidgets.h"
 diff --git a/src/Lighting.c b/src/Lighting.c
-index dc4055b..74bb53f 100644
+index dc4055b..74f5844 100644
 --- a/src/Lighting.c
 +++ b/src/Lighting.c
-@@ -255,10 +255,16 @@ static void ClassicLighting_RefreshAffected(int x, int y, int z, BlockID block,
+@@ -66,9 +66,16 @@ static int ClassicLighting_CalcHeightAt(int x, int maxY, int z, int hIndex) {
+ 	return -10;
+ }
+ 
++#ifdef CC_BUILD_SHADEREMU
++void MapRenderer_SE_LightSettle(void);
++#endif
+ int ClassicLighting_GetLightHeight(int x, int z) {
+ 	int hIndex = Lighting_Pack(x, z);
+ 	int lightH = classic_heightmap[hIndex];
++#ifdef CC_BUILD_SHADEREMU
++	/* (core 0, while workers may still be storing the rows: the held block's light) */
++	if (lightH == HEIGHT_UNCALCULATED) { MapRenderer_SE_LightSettle(); lightH = classic_heightmap[hIndex]; }
++#endif
+ 	return lightH == HEIGHT_UNCALCULATED ? ClassicLighting_CalcHeightAt(x, World.Height - 1, z, hIndex) : lightH;
+ }
+ 
+@@ -255,10 +262,16 @@ static void ClassicLighting_RefreshAffected(int x, int y, int z, BlockID block,
  	}
  }
  
@@ -2114,7 +2264,7 @@ index dc4055b..74bb53f 100644
  
  	/* Since light wasn't checked to begin with, means column never had meshes for any of its chunks built. */
  	/* So we don't need to do anything. */
-@@ -379,13 +385,46 @@ void ClassicLighting_LightHint(int startX, int startY, int startZ) {
+@@ -379,13 +392,46 @@ void ClassicLighting_LightHint(int startX, int startY, int startZ) {
  	int z1 = max(startZ, 0), z2 = min(World.Length, startZ + EXTCHUNK_SIZE);
  	int xCount = x2 - x1, zCount = z2 - z1;
  	int skip[EXTCHUNK_SIZE * EXTCHUNK_SIZE];
@@ -2164,7 +2314,7 @@ index dc4055b..74bb53f 100644
  	Mem_Free(classic_heightmap);
  	classic_heightmap = NULL;
 diff --git a/src/MapRenderer.c b/src/MapRenderer.c
-index fbe36dd..7a97444 100644
+index fbe36dd..d242d45 100644
 --- a/src/MapRenderer.c
 +++ b/src/MapRenderer.c
 @@ -14,6 +14,9 @@
@@ -2237,7 +2387,22 @@ index fbe36dd..7a97444 100644
  	inTranslucent = Blocks.Draw[block] == DRAW_TRANSLUCENT || (pos.y < Env.EdgeHeight && outside);
  
  	/* If we are under water, render weather before to blend properly */
-@@ -209,15 +246,31 @@ void MapRenderer_RenderNormal(float delta) {
+@@ -181,6 +218,14 @@ static void RenderNormalBatch(int batch) {
+ 		Game_Vertices += count * 4;
+ 		Gfx_SetFaceCulling(false);
+ 		continue;
++#endif
++#ifdef CC_BUILD_SHADEREMU
++		/* The device draws both sides of a quad: of each of the two crossed planes one of its
++		   two quads (the second mirrors the first, and the two fought for the pixels) */
++		DrawBatch(count, info->drawXMax || info->drawZMin ? offset : offset + count);
++		DrawBatch(count, info->drawXMin || info->drawZMin ? offset + 2 * count : offset + 3 * count);
++		Game_Vertices += 2 * count;
++		continue;
+ #endif
+ 		if (info->drawXMax || info->drawZMin) {
+ 			DrawBatch(count, offset); Game_Vertices += count;
+@@ -209,15 +254,31 @@ void MapRenderer_RenderNormal(float delta) {
  	Gfx_SetAlphaTest(true);
  	
  	Gfx_EnableMipmaps();
@@ -2270,7 +2435,7 @@ index fbe36dd..7a97444 100644
  	Gfx_DisableMipmaps();
  
  	CheckWeather(delta);
-@@ -279,13 +332,36 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -279,13 +340,36 @@ void MapRenderer_RenderTranslucent(float delta) {
  	int vertices, batch;
  	if (!mapChunks) return;
  
@@ -2308,7 +2473,7 @@ index fbe36dd..7a97444 100644
  	{
  		if (tranPartsCount[batch] <= 0) continue;
  		if (hasTranParts[batch] || checkTranParts[batch]) {
-@@ -301,7 +377,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -301,7 +385,7 @@ void MapRenderer_RenderTranslucent(float delta) {
  	Gfx_SetDepthWrite(false); /* already calculated depth values in depth pass */
  
  	Gfx_EnableMipmaps();
@@ -2317,7 +2482,7 @@ index fbe36dd..7a97444 100644
  	{
  		if (tranPartsCount[batch] <= 0) continue;
  		if (!hasTranParts[batch]) continue;
-@@ -309,6 +385,7 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -309,6 +393,7 @@ void MapRenderer_RenderTranslucent(float delta) {
  		Atlas1D_Bind(batch);
  		RenderTranslucentBatch(batch);
  	}
@@ -2325,7 +2490,7 @@ index fbe36dd..7a97444 100644
  	Gfx_DisableMipmaps();
  
  	Gfx_SetDepthWrite(true);
-@@ -329,6 +406,9 @@ void MapRenderer_RenderTranslucent(float delta) {
+@@ -329,6 +414,9 @@ void MapRenderer_RenderTranslucent(float delta) {
  static void DeleteChunk(struct ChunkInfo* chunk) {
  	struct ChunkPartInfo* ptr;
  	int i;
@@ -2335,7 +2500,7 @@ index fbe36dd..7a97444 100644
  #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
  	int j;
  #else
-@@ -377,6 +457,9 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
+@@ -377,6 +465,9 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
  
  	Game.ChunkUpdates++;
  	(*chunkUpdates)++;
@@ -2345,7 +2510,7 @@ index fbe36dd..7a97444 100644
  	if (!Builder_MakeChunk(chunk)) return;
  
  	chunk->dirty  = false;
-@@ -404,12 +487,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
+@@ -404,12 +495,14 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
  *----------------------------------------------------Chunks mangagement---------------------------------------------------*
  *#########################################################################################################################*/
  static void FreeParts(void) {
@@ -2360,7 +2525,7 @@ index fbe36dd..7a97444 100644
  	Mem_Free(mapChunks);
  	Mem_Free(sortedChunks);
  	Mem_Free(renderChunks);
-@@ -439,6 +524,21 @@ static void AllocateChunks(void) {
+@@ -439,6 +532,21 @@ static void AllocateChunks(void) {
  
  static void ResetPartFlags(void) {
  	int i;
@@ -2382,7 +2547,7 @@ index fbe36dd..7a97444 100644
  	for (i = 0; i < ATLAS1D_MAX_ATLASES; i++) {
  		checkNormParts[i] = true;
  		hasNormParts[i]   = false;
-@@ -457,6 +557,11 @@ static void ResetPartCounts(void) {
+@@ -457,6 +565,11 @@ static void ResetPartCounts(void) {
  
  static void InitChunks(void) {
  	int x, y, z, index = 0;
@@ -2394,7 +2559,7 @@ index fbe36dd..7a97444 100644
  	for (z = 0; z < World.Length; z += CHUNK_SIZE) {
  		for (y = 0; y < World.Height; y += CHUNK_SIZE) {
  			for (x = 0; x < World.Width; x += CHUNK_SIZE) {
-@@ -482,6 +587,7 @@ static void RefreshChunks(void) {
+@@ -482,6 +595,7 @@ static void RefreshChunks(void) {
  
  static void DeleteChunks(void) {
  	int i;
@@ -2402,7 +2567,7 @@ index fbe36dd..7a97444 100644
  	if (!mapChunks) return;
  
  	for (i = 0; i < chunksCount; i++) 
-@@ -535,7 +641,15 @@ static void RefreshBorderChunks(int maxHeight) {
+@@ -535,7 +649,15 @@ static void RefreshBorderChunks(int maxHeight) {
  *--------------------------------------------------Chunks updating/sorting------------------------------------------------*
  *#########################################################################################################################*/
  #define CHUNK_TARGET_TIME ((1.0f/30) + 0.01f)
@@ -2419,7 +2584,7 @@ index fbe36dd..7a97444 100644
  static Vec3 lastCamPos;
  static float lastYaw, lastPitch;
  /* Max distance from camera that chunks are rendered within */
-@@ -556,12 +670,323 @@ static void CalcViewDists(void) {
+@@ -556,12 +678,323 @@ static void CalcViewDists(void) {
  	renderDistSquared = AdjustDist(Game_ViewDistance);
  }
  
@@ -2743,7 +2908,7 @@ index fbe36dd..7a97444 100644
  
  	for (i = 0; i < chunksCount; i++) 
  	{
-@@ -574,20 +999,32 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+@@ -574,20 +1007,32 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -2778,7 +2943,7 @@ index fbe36dd..7a97444 100644
  	}
  	return j;
  }
-@@ -610,7 +1047,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
+@@ -610,7 +1055,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
  			DeleteChunk(chunk); continue;
  		}
  
@@ -2787,7 +2952,7 @@ index fbe36dd..7a97444 100644
  			DeleteChunk(chunk);
  			BuildChunk(chunk, chunkUpdates);
  
-@@ -638,19 +1075,48 @@ static void UpdateChunks(float delta) {
+@@ -638,19 +1083,48 @@ static void UpdateChunks(float delta) {
  
  	/* Build more chunks if 30 FPS or over, otherwise slowdown */
  	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1; 
@@ -2837,7 +3002,7 @@ index fbe36dd..7a97444 100644
  
  	if (!samePos || chunkUpdates) ResetPartFlags();
  }
-@@ -680,7 +1146,11 @@ static void UpdateSortOrder(void) {
+@@ -680,7 +1154,11 @@ static void UpdateSortOrder(void) {
  	int i, dx, dy, dz;
  
  	/* pos is centre coordinate of chunk camera is in */
@@ -2849,7 +3014,7 @@ index fbe36dd..7a97444 100644
  	pos.x = (pos.x & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
  	pos.y = (pos.y & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
  	pos.z = (pos.z & ~CHUNK_MASK) + HALF_CHUNK_SIZE;
-@@ -688,6 +1158,10 @@ static void UpdateSortOrder(void) {
+@@ -688,6 +1166,10 @@ static void UpdateSortOrder(void) {
  	/* If in same chunk, don't need to recalculate sort order */
  	if (pos.x == chunkPos.x && pos.y == chunkPos.y && pos.z == chunkPos.z) return;
  	chunkPos = pos;
@@ -2860,7 +3025,7 @@ index fbe36dd..7a97444 100644
  	if (!chunksCount) return;
  
  	for (i = 0; i < chunksCount; i++) {
-@@ -756,6 +1230,9 @@ static void OnEnvVariableChanged(void* obj, int envVar) {
+@@ -756,6 +1238,9 @@ static void OnEnvVariableChanged(void* obj, int envVar) {
  }
  
  static void OnTerrainAtlasChanged(void* obj) {
@@ -2870,7 +3035,7 @@ index fbe36dd..7a97444 100644
  	static int tilesPerAtlas;
  	/* e.g. If old atlas was 256x256 and new is 256x256, don't need to refresh */
  	if (MapRenderer_1DUsedCount && tilesPerAtlas != Atlas1D.TilesPerAtlas) {
-@@ -764,16 +1241,31 @@ static void OnTerrainAtlasChanged(void* obj) {
+@@ -764,16 +1249,31 @@ static void OnTerrainAtlasChanged(void* obj) {
  
  	MapRenderer_1DUsedCount = MapRenderer_UsedAtlases();
  	tilesPerAtlas = Atlas1D.TilesPerAtlas;
@@ -2902,7 +3067,7 @@ index fbe36dd..7a97444 100644
  	lastCamPos = Vec3_BigPos();
  	CalcViewDists();
  }
-@@ -818,7 +1310,7 @@ static void OnInit(void) {
+@@ -818,7 +1318,7 @@ static void OnInit(void) {
  	/* This = 87 fixes map being invisible when no textures */
  	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */
  	chunkPos   = IVec3_MaxValue();
@@ -3293,6 +3458,22 @@ index 761927b..85e8ec1 100644
  
  	Gen_Start(gen, seed, horSize, verSize, horSize);
  }
+diff --git a/src/TexturePack.c b/src/TexturePack.c
+index 495c6ea..e8cb2c8 100644
+--- a/src/TexturePack.c
++++ b/src/TexturePack.c
+@@ -526,6 +526,11 @@ static cc_bool SelectZipEntry(const cc_string* path) { return true; }
+ static cc_result ProcessZipEntry(const cc_string* path, struct Stream* stream, struct ZipEntry* source) {
+ 	cc_string name = *path;
+ 	Utils_UNSAFE_GetFilename(&name);
++#ifdef CC_BUILD_SHADEREMU
++	/* the pack's pictures in one, decoded at once (png_shaderemu.c) */
++	{ extern cc_bool SE_PackEntry(const cc_string* name, struct Stream* stream);
++	  if (SE_PackEntry(&name, stream)) return 0; }
++#endif
+ 	Event_RaiseEntry(&TextureEvents.FileChanged, stream, &name);
+ 	return 0;
+ }
 diff --git a/src/Vectors.c b/src/Vectors.c
 index cfe05f5..200216d 100644
 --- a/src/Vectors.c
@@ -3326,10 +3507,10 @@ index e9b3334..6a6b99a 100644
  	if (World.Blocks != World.Blocks2) Mem_Free(World.Blocks2);
  	World.Blocks2 = NULL;
 diff --git a/src/_PlatformBase.h b/src/_PlatformBase.h
-index 6e050f9..4fdcbca 100644
+index 6e050f9..975b1bb 100644
 --- a/src/_PlatformBase.h
 +++ b/src/_PlatformBase.h
-@@ -113,22 +113,44 @@ static CC_NOINLINE cc_uint32 CalcMemSize(cc_uint32 numElems, cc_uint32 elemsSize
+@@ -113,22 +113,48 @@ static CC_NOINLINE cc_uint32 CalcMemSize(cc_uint32 numElems, cc_uint32 elemsSize
  }
  
  #ifndef OVERRIDE_MEM_FUNCTIONS
@@ -3371,6 +3552,10 @@ index 6e050f9..4fdcbca 100644
  }
  
  void Mem_Free(void* mem) {
++#ifdef CC_BUILD_SHADEREMU
++	/* (a picture of the texture pack is pages of its own: png_shaderemu.c) */
++	{ extern int SE_PackFree(void* mem); if (SE_PackFree(mem)) return; }
++#endif
 +	Gfx_SE_HeapEnter();
  	if (mem) free(mem);
 +	Gfx_SE_HeapLeave();

@@ -34,9 +34,10 @@ To check it in the harness (a cold boot, 5 s):
 - Picking a terminal types `0x1e` and its digit on the console's keyboard, so what is typed
   after it goes there.
 - The field above the console's keyboard (`EmuPaste`) takes text typed or pasted into it
-  (Ctrl+V on a desktop; VRChat's own keyboard in a headset). "Type it" sends it to the
-  console's keyboard as if typed, a little at a time: the guest takes about 27 characters a
-  second, so a page of text takes a while; "Clear" drops what is left.
+  (Ctrl+V on a desktop; VRChat's own keyboard in a headset). "Type as Text" sends it to the
+  console's keyboard as if typed, a little at a time, and "+Enter" with Return after it: the
+  guest takes about 27 characters a second, so a page of text takes a while. "Open Link" has
+  the machine open the field's text as an address (`docs/open.md`).
 - What other players see of the console (`docs/share.md`) is the terminal shown, at its end.
 - "ShaderEmu/Add the console's tabs and paste field to the open scene" puts both into a
   scene without building the world again (run it twice the first time: the new behaviour's

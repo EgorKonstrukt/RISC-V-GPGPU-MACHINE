@@ -21,8 +21,9 @@
 #define COLOURS 16
 
 /* A share's own two texels: the substep it is to make next, the picture it last made, what had
- * no room, and (PHYS_COUNT) its dearest substep without a look. */
-struct share { volatile uint32_t phase, shown; uint32_t trouble, pad; uint32_t most, pad2[3]; };
+ * no room, how many shares a picture's share has found at its substep, and (PHYS_COUNT) its
+ * dearest substep without a look. */
+struct share { volatile uint32_t phase, shown; uint32_t trouble, ready; uint32_t most, pad2[3]; };
 /* PHYS_COUNT's counters (mcwx.h): the instructions of all grids, substeps with a look and without */
 enum { COUNT_GRID, COUNT_LOOK, COUNT_PLAIN };
 
@@ -189,6 +190,22 @@ share_advance(int s, int *seen)
 	int n = sim.nshares, serves = !sim.nservice || s >= sim.nbody;
 	int wanted = serves && sim.shares[s].shown != show && phase >= sim.show_step;
 
+	if (sim.nservice && serves && sim.shares[s].shown != show) {
+		/* a picture's share makes substep show_step's once every body is there, beside the
+		 * substeps: it holds at the one before the look that would write that state again */
+		struct share *st = &sim.shares[s];
+		uint32_t at = sim.show_step;
+
+		wanted = 0;
+		if ((int)st->ready < sim.nbody && (st->ready = (uint32_t)behind((int)st->ready, sim.nbody, at)) < (uint32_t)sim.nbody) {
+			if (phase >= (sim.ahead ? at + 1 : at | 1))
+				return 0;
+		} else {
+			show_share(s, (int)((sim.base + at) % PHYS_BUFFERS), (int)(show & 1));
+			st->shown = show, st->ready = 0;
+			return 1;
+		}
+	}
 	if (!wanted && phase >= sim.limit)
 		return 0;
 	if (phase % PHYS_EVERY == 1 && !sim.ahead && !wanted && !serves && !share_sleeps(s, phase)) {
@@ -253,6 +270,11 @@ static float hand_far[PHYS_HOLDS];	/* how far along its hand's way a hold's box 
 static int wanted_again;		/* what a hand or a click asks of the main loop: act()'s numbers, 4 a box fired */
 static float fire_from[3], fire_way[3];
 static int view_moved, shown_buffer = -1;	/* the view is not the shown picture's; which buffer that picture is */
+static unsigned pictures;	/* pictures shown since the shares began */
+/* A launch (act()'s 1, 3 or 4) is made when every share waits at substep launch_at, their jobs
+ * kept; launch_old (PHYS_LAUNCH_OLD): by stopping and starting them, as it was. */
+static int launch_kind, launch_old;
+static uint32_t launch_at, launch_then;
 static GLuint texture;
 /* The workers asked for: all of them. With more than the bodies need, some have the grid and
  * the pictures (service_of); the wall's 240 substeps took 1,740 ms with 207 and 1,704 to 1,718
@@ -326,11 +348,15 @@ random_unit(void)
 	return (float)(chance >> 8 & 0xffff) * (1.0f / 65536.0f);
 }
 
+static int scene_into;	/* the buffer set_scene() puts the boxes in */
+static struct body_state *starts;	/* the scene's boxes as set_scene() put them, for the scene again */
+static int starts_of;	/* which scene those are, 0 none */
+
 /* A box put in the room at rest, upright; where the next goes. */
 static int
 put(int at, float hx, float hy, float hz, float density, float x, float y, float z, int colour)
 {
-	struct body_state *s = &sim.w.states[0][at];
+	struct body_state *s = &sim.w.states[scene_into][at];
 
 	if (at >= MAX_BODIES)
 		return at;
@@ -390,13 +416,13 @@ bodies_there(int n)
 	so_far = n;
 }
 
-/* A scene's boxes, into states[0]: a wall of bricks, towers of cubes, or boxes let fall. */
+/* A scene's boxes, into states[buffer]: a wall of bricks, towers of cubes, or boxes let fall. */
 static void
-set_scene(void)
+set_scene(int buffer)
 {
 	int n = 0, i, j, k;
 
-	chance = 12345;
+	chance = 12345, scene_into = buffer;
 	if (scene == 1) {
 		/* every other row half a brick along, with a half brick at each end: nothing hangs over */
 		for (j = 0; j < (getenv("PHYS_ROWS") ? atoi(getenv("PHYS_ROWS")) : 10); j++)
@@ -416,7 +442,7 @@ set_scene(void)
 			n = put(n, 0.3f, 0.3f, 0.3f, 1.0f, 0.0f, 0.3f + 0.601f * (float)j, 0.0f, j % 8);
 	} else {
 		for (i = 0; i < bodies_wanted - 1; i++) {
-			struct body_state *s = &sim.w.states[0][n];
+			struct body_state *s = &sim.w.states[buffer][n];
 			float q[4] = {random_unit() - 0.5f, random_unit() - 0.5f, random_unit() - 0.5f, random_unit() + 0.2f}, len;
 
 			n = put(n, 0.25f + 0.25f * random_unit(), 0.2f + 0.15f * random_unit(), 0.25f + 0.2f * random_unit(), 1.0f,
@@ -429,11 +455,14 @@ set_scene(void)
 	n = put(n, 0.4f, 0.4f, 0.4f, 6.0f, 0, 0, 0, 10);
 	sim.w.bodies = n;
 	bodies_there(n);
-	sim.base = 0;
 	if (scene < 3 && !getenv("PHYS_STILL"))
-		throw_box(0);
+		throw_box(buffer);
 	else
-		sim.w.states[0][n - 1].pos[1] = 0.4f, sim.w.states[0][n - 1].pos[0] = ROOM - 1.0f;
+		sim.w.states[buffer][n - 1].pos[1] = 0.4f, sim.w.states[buffer][n - 1].pos[0] = ROOM - 1.0f;
+	if (!starts)
+		starts = malloc(MAX_BODIES * sizeof *starts);
+	if (starts)
+		memcpy(starts, sim.w.states[buffer], (size_t)n * sizeof *starts), starts_of = scene;
 }
 
 /* How many of n shares have no bodies, but the grid and the pictures: none of a few, three
@@ -455,28 +484,43 @@ service_of(int n)
 	return most >= SERVICE_LEAST ? most : 0;
 }
 
-/* The bodies shared out among `n` shares, all to begin a round of phases. */
+/* The bodies of the scene shared out among the `n` shares there are. */
 static void
-set_shares(int n)
+share_bodies(int n)
 {
-	int s, i, buffer = (int)(sim.base % PHYS_BUFFERS);
-
 	sim.nshares = n;
 	sim.nservice = service_of(n);
 	sim.nbody = n - sim.nservice;
 	sim.w.cell_shares = sim.nservice ? sim.nservice : n, sim.w.cell_first = sim.nservice ? sim.nbody : 0;
+}
+
+/* What the look at substep `step` needs of states the program wrote there: every body's key,
+ * which names its cell's share, its body_near and the grid. The shares make every one after. */
+static void
+written_at(uint32_t step)
+{
+	int i, buffer = (int)((sim.base + step) % PHYS_BUFFERS);
+
+	for (i = 0; i < sim.w.bodies; i++)
+		sim.w.states[buffer][i].key = phys_key(&sim.w, sim.w.states[buffer][i].pos);
+	phys_nears(&sim.w, buffer);
+	phys_grid_all(&sim.w, buffer, (int)((sim.base + step) / PHYS_EVERY) + 1);
+}
+
+/* The bodies shared out among `n` shares, all to begin a round of phases. */
+static void
+set_shares(int n)
+{
+	int s;
+
+	share_bodies(n);
 	jobs_changed = 1, shown_so_far = 0;
 	for (s = 0; s < n; s++) {
 		memset(&sim.shares[s], 0, sizeof sim.shares[s]);
 		sim.shares[s].shown = sim.show;
 		seen_by[s] = 0;
 	}
-	/* (a body's key names its cell's share: other shares, other keys) */
-	for (i = 0; i < sim.w.bodies; i++)
-		sim.w.states[buffer][i].key = phys_key(&sim.w, sim.w.states[buffer][i].pos);
-	/* (and what the first look needs: the shares make every one after) */
-	phys_nears(&sim.w, buffer);
-	phys_grid_all(&sim.w, buffer, (int)(sim.base / PHYS_EVERY) + 1);
+	written_at(0);
 }
 
 static uint32_t
@@ -594,6 +638,63 @@ begin_again(void)
 }
 
 static void share_out(void);
+static void hold_drop(int slot);
+static void throw_box(int buffer);
+static void fire_box(int buffer);
+
+/* A launch asked for: the shares stop at the first substep none can have passed, three past what
+ * this core sees or the limit, which none passes. */
+static void
+launch_ask(int kind)
+{
+	if (!launch_kind) {
+		uint32_t seen = phase_most() + 3;
+
+		launch_then = sim.limit;
+		launch_at = sim.limit < seen ? sim.limit : seen;
+	}
+	if (!launch_kind || kind == 1)
+		launch_kind = kind;
+	/* (a box at a substep without a look, which needs only the box's own: the scene at a look's) */
+	if ((launch_kind == 1) == (launch_at & 1) && ++launch_at > sim.limit)
+		sim.limit = launch_at;
+	if (kind == 4 && talk)
+		fprintf(stderr, "nxphys: a box fired from %d %d %d\n", (int)(fire_from[0] * 1000.0f), (int)(fire_from[1] * 1000.0f),
+			(int)(fire_from[2] * 1000.0f));
+	if (sim.limit > launch_at)
+		sim.limit = launch_at;
+}
+
+/* Every share is at launch_at and waits: the boxes written there, and the shares let go on. */
+static void
+launch(void)
+{
+	int buffer = (int)((sim.base + launch_at) % PHYS_BUFFERS), k;
+
+	for (k = 0; k < PHYS_HOLDS; k++)
+		hold_drop(k);
+	if (launch_kind == 1 && starts_of == scene) {
+		/* (the same scene again: its boxes as they were put, a copy) */
+		memcpy(sim.w.states[buffer], starts, (size_t)sim.w.bodies * sizeof *starts);
+	} else if (launch_kind == 1) {
+		shown_buffer = -1;
+		set_scene(buffer);
+		share_bodies(sim.nshares);
+		jobs_changed = 1, shown_so_far = 0;
+	} else if (launch_kind == 3)
+		throw_box(buffer);
+	else
+		fire_box(buffer);
+	/* (before a look, all a look needs; else the box's own: the grid the next look reads is made from it) */
+	if (launch_at % PHYS_EVERY == 0)
+		written_at(launch_at);
+	else
+		phys_near_of(&sim.w, buffer, sim.w.bodies - 1);
+	/* (in real time the pace goes on from there; and that substep is the next picture's) */
+	sim.limit = launch_then == ~0u || launch_then < launch_at ? launch_at : launch_then;
+	sim.show_step = ~0u;
+	launch_kind = 0, launch_at = 0;
+}
 
 /* The workers given back and as many taken as wanted, and a share for each. */
 static void
@@ -635,7 +736,7 @@ static void
 show_picture(int again)
 {
 	if (!again)
-		shown_buffer = (int)(sim.show & 1);
+		shown_buffer = (int)(sim.show & 1), pictures++;
 	if (shown_buffer < 0)
 		return;
 	view_moved = 0;
@@ -647,14 +748,22 @@ show_picture(int again)
 	seglSwapEarly();	/* (no waiting for it: ask_picture() settles before that buffer is written again) */
 }
 
+/* The substep the next picture is of. A picture's share may have made three since the phases
+ * this core sees; none goes past the limit. */
+static uint32_t
+picture_step(void)
+{
+	uint32_t at = phase_most() + (sim.nservice ? 3 : 1), last = sim.limit;
+
+	return at < last ? at : last;
+}
+
 static void
 ask_picture(void)
 {
-	uint32_t at = phase_most() + 1, last = sim.limit;
-
 	/* (the list being drawn may read the buffer the shares are about to write) */
 	seglSettle();
-	sim.show_step = at < last ? at : last;
+	sim.show_step = picture_step();
 	sim.show++;
 	shown_so_far = 0;
 }
@@ -1481,8 +1590,8 @@ say_done(unsigned took, int print)
 			spent[2] / (plain ? plain : 1) / (uint32_t)sim.w.bodies, most);
 	}
 	fprintf(stderr, "physstat: done: %d boxes, %u substeps in %u ms, %d shares on %d workers: highest %d mm, deepest %d mm, fastest %d mm/s, "
-		"%d without room, sum %08x\n", sim.w.bodies, (unsigned)sim.limit, took, sim.nshares, workers, (int)(top * 1000.0f),
-		(int)(deepest * 1000.0f), (int)(fastest * 1000.0f), trouble, (unsigned)sum);
+		"%d without room, sum %08x; %u pictures\n", sim.w.bodies, (unsigned)sim.limit, took, sim.nshares, workers, (int)(top * 1000.0f),
+		(int)(deepest * 1000.0f), (int)(fastest * 1000.0f), trouble, (unsigned)sum, pictures);
 }
 
 int
@@ -1493,7 +1602,8 @@ main(void)
 	uint32_t *table, steps = 0;
 	int width = 640, height = 400, hold, print, frames = 0, asked = 0, cells, k;
 	int pick_x = -1, pick_y = -1;
-	uint32_t input = 0;
+	uint32_t input = 0, test_at = 0;
+	int test_kind = 0;
 	unsigned hot_at = 0, drawn_at = 0;
 	unsigned began, said_at, keys_at = 0, jobs_at = 0, asked_at = 0, retry_at = 0, made_said = 0, paced_at = 0;
 
@@ -1527,6 +1637,14 @@ main(void)
 		script_read(text);
 	if (script_on && script_first < steps)
 		sim.limit = script_first;
+	launch_old = getenv("PHYS_LAUNCH_OLD") != NULL;
+	/* PHYS_LAUNCH=N:K (with PHYS_STEPS): act()'s K at substep N (the scene again at a look's) */
+	if ((text = getenv("PHYS_LAUNCH")) != NULL && steps && sscanf(text, "%u:%d", &test_at, &test_kind) == 2 && test_at > 0 && test_at < steps) {
+		if (test_kind == 1)
+			test_at = (test_at + 1) & ~1u;
+		launch_kind = launch_old ? 0 : test_kind, launch_at = test_at, launch_then = sim.limit;
+		sim.limit = test_at;
+	}
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxphys: no Nano-X server (start one: nano-X -p &)\n");
 		return 1;
@@ -1602,11 +1720,12 @@ main(void)
 	set_view();
 
 	atexit(mcw_close);
-	set_scene();
+	set_scene(0);
 	take_workers();
 	fprintf(stderr, "nxphys: %d boxes, %d shares on %d workers\n", sim.w.bodies, sim.nshares, workers);
 	start_jobs();
 	began = said_at = now_ms();
+	pictures = 0;
 	waited_before = noted_at = waited;
 	if (pick_x >= 0) {
 		/* a test: the box at that pixel held from the start, its point wanted three metres up */
@@ -1639,14 +1758,25 @@ main(void)
 				sim.limit = limit > least + 4 ? least + 4 : limit;
 				paced_at += due * 1000u / PHYS_HZ;
 			}
+			if (launch_kind && sim.limit > launch_at)
+				sim.limit = launch_at;
+		}
+		/* a launch once every share waits at its substep and no picture is being made */
+		if (launch_kind && !asked && phase_least() >= launch_at) {
+			if (talk)
+				fprintf(stderr, "nxphys: launched at substep %u\n", (unsigned)launch_at);
+			launch();
+			asked_at = now - 1000;	/* (its picture at once) */
 		}
 		if (asked && picture_made()) {
 			show_picture(0);
 			frames++;
 			asked = 0;
 		}
-		/* a picture is asked for when the last has been shown, and no more than 25 a second */
-		if (!asked && !stopped && now - asked_at >= 40 && phase_least() < sim.limit) {
+		/* a picture is asked for when the last has been shown, of a newer substep: with shares
+		 * of the pictures as often as the boxes' time goes, else 25 a second */
+		if (!asked && !stopped && (sim.nservice ? now - asked_at >= 1000u / PHYS_HZ && picture_step() != sim.show_step :
+		    now - asked_at >= 40 && phase_least() < sim.limit)) {
 			ask_picture();
 			asked = 1;
 			asked_at = now;
@@ -1668,7 +1798,7 @@ main(void)
 				else
 					start_jobs(), paced_at = now;
 			}
-			if (stopped != was || again)
+			if (stopped != was || again == 2)	/* (a launch changes nothing of the bar) */
 				draw_bar();
 		}
 		pointer();
@@ -1691,15 +1821,23 @@ main(void)
 			retry_at = now;
 			start_jobs();
 		}
+		if (test_kind && launch_old && !asked && phase_least() >= test_at)
+			again = test_kind, test_kind = 0;
+		if (again && again != 2 && !stopped && !launch_old && !sim.ahead) {
+			/* (the shares keep their jobs: a box thrown, fired or the scene again at a substep) */
+			launch_ask(again);
+			again = 0;
+		}
 		if (again) {
 			settle();
 			begin_again();
+			launch_kind = 0, launch_at = 0;
 			for (k = 0; k < PHYS_HOLDS; k++)
 				hold_drop(k);
 			if (again == 1)
 				shown_buffer = -1;
 			if (again == 1)
-				set_scene();
+				sim.base = 0, set_scene(0);
 			if (again == 3)
 				throw_box((int)(sim.base % PHYS_BUFFERS));
 			if (again == 4) {
@@ -1717,15 +1855,14 @@ main(void)
 			draw_bar();
 			asked = 0;
 			stopped = 0;
-			if (!steps)
-				sim.limit = ~0u;
+			sim.limit = !steps ? ~0u : steps > sim.base ? steps - sim.base : 1;
 			start_jobs();
 			began = said_at = now_ms();
 			made_said = 0;
 			frames = 0;
 			continue;
 		}
-		if (steps && !asked && sim.limit >= steps && sim.shares[0].phase >= sim.limit && phase_least() >= sim.limit) {
+		if (steps && !asked && sim.base + sim.limit >= steps && sim.shares[0].phase >= sim.limit && phase_least() >= sim.limit) {
 			/* a test: so many substeps, the last picture, and what the boxes come to */
 			unsigned took = now_ms() - began;
 

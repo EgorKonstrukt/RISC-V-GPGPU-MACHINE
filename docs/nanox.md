@@ -119,9 +119,12 @@ made one can tell. A new one is black, by a fill of the GPU's.
 
 A program can also fill its window itself: `GrGetWindowInfo` returns the physical address of
 the window's first pixel and the row length of its buffer, and `GrFlushWindow` tells the
-server the pixels changed. The OpenGL driver does this.
+server the pixels changed. The OpenGL driver does this. For a pixmap the GPU keeps it says
+the same (0 for one in the server's memory): the browser submits lists of its own that are
+copied into its pixmap, and keeps them in another (`docs/web.md`, "Strips").
 
-GPU memory under Nano-X: window buffers in the first 16 MiB (`0x86000000`), then the control
+GPU memory under Nano-X: window buffers in the first 12 MiB (`0x86000000`; the worker cores'
+mailbox pages above them, `0x86c00000`), then the control
 words and the display's framebuffer, the server's command list, cursor, glyph cache and
 scratch textures up to `0x87700000`; the last 4 MiB are left to one OpenGL program.
 
@@ -158,10 +161,11 @@ seconds between a sleep of 30 and one of 90: 147.2 thousand instructions a secon
 
 The bar looks for the windows (five questions to the window system each) when one came,
 went or was put away: it selects the root's `GR_EVENT_MASK_CHLD_UPDATE` and looks within a
-second of such an event, and every fifth second besides, for a title that changed. Asked
+second of such an event, and every 60 s besides; a title is asked again when its window is
+activated ("One program's windows are not every program's news"). Asked
 every second, as it was, every open window cost the machine some 45 thousand instructions a
-second while nothing happened. Whose window has the keyboard is one question a second, and
-the program's name is read only when another window has it.
+second while nothing happened. Whose window has the keyboard is asked after an update and
+every 15 s otherwise, and the program's name is read only when another window has it.
 
 ## Menus
 
@@ -197,11 +201,13 @@ they take no window and no buffer).
   Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, letters for the entry that starts with them, and Shift+F10
   (or the Menu key) for the menu.
 - It is in the overlay's memory, as everything a program writes is: what was moved or made
-  is as the image has it again after power-off.
+  is as the image has it again after power-off (but the icons' places: `nx` links `.places`
+  to `/persistence/desktop/places`, which a host may keep, `docs/persist.md`).
 - Settings draws a chosen picture on the root itself; the desktop sees the choice change
-  within a second and draws picture and icons again. The first choice of a session too:
-  it makes `/tmp/nxwallpaper`, and until 13 October 2026 the desktop took a file it had not
-  seen before for no change and left the icons painted over.
+  within a second and draws picture and icons again. The first choice of a session too
+  (the choice is the registry's `desktop.wallpaper` now; it was the file `/tmp/nxwallpaper`,
+  and until 13 October 2026 the desktop took a file it had not seen before for no change and
+  left the icons painted over).
 
 A drag between windows: where the button is let go, the explorer asks the window system
 which window is in front there (`GrQueryTree`, the one in front first). A Files window says
@@ -215,7 +221,7 @@ the list from side to side; not the whole place an icon stands in); Ctrl keeps w
 selected before. The window system has no XOR drawing: the outline is four lines, taken away by
 drawing what was under them again, clipped to the lines (`band_draw` in `nxfiles.c`). The
 pointer's moves are asked for only while the box is held. A window's view (icons or list)
-and the list's order are kept in `/persistence/desktop/files-view` for the next window.
+and the list's order are kept in the registry (`files.details`, `files.order`) for the next window.
 Test: `NXFILES_PRINT=1 nxfiles /usr/share`, `nxkey drag:643,86:343,196` must say 8.
 
 ## Icons
@@ -242,12 +248,12 @@ from the overlay's sheets when it has them).
   `GR_IMAGE_CELL(size, cell)` as its flags, which the screen driver takes as "this cell, and
   not its magenta" (fragment mode 4 with the key flag, `gpu.md`). One request and one
   rectangle an icon, as text is. `ui_icons.h` has `ui_icon_of(name)` and `ui_icon`.
-- The driver keeps the last eight files it found in the ROM: an icon costs no file calls.
+- The driver keeps the last 64 files it found in the ROM (`PICTURES`): an icon costs no file calls.
 - A program carries its own icon, at its file's end: 32 x 32 and 16 x 16 pixels of RGB (magenta
   for what is not the picture) and the eight bytes `NXICON1` and a zero, which change nothing
   for the loader. The image builder puts the sheets' cell there for every program of
   `icons.idx`, so the sheets are only where the build's icons come from; a program made or
-  copied in the guest gets one with `nxicon PROGRAM PICTURE.ppm` (any size: it is scaled),
+  copied in the guest gets one with `nxicon PROGRAM PICTURE` (any kind `docs/media.md` reads, any size: it is scaled; what is see-through becomes the clear magenta),
   loses it with `--none`, and `nxicon PROGRAM` says whether it has one. Drawn with
   `GR_IMAGE_ICON(size)` as the flags: the same rectangle of the GPU's, read from the file's
   end. A program in memory (`/tmp`) is not in the ROM, and its icon is drawn by the first core.
@@ -348,12 +354,16 @@ a brush stroke costs the pixels it touches and nothing else.
   go (Save, Don't save, Cancel: `ui_ask.h`); a test's script is asked nothing, and its second
   `quit` leaves as before. Save on a picture opened from a PNG or JPEG opens the Save window:
   its PPM would have replaced one of that name unasked.
-- Save writes a PPM and nothing else. A picture with no file yet is asked what to be saved
-  as, in a window with a name field (`ui_save_file` in `ui_files.h`) that starts in
-  `/root/Pictures`, where Open starts: a name is taken in the folder shown, a file that is
-  there is asked about once, and a name ending in another picture's kind gets `.ppm` in its
-  place, which the notice says. A file is written beside itself and renamed, and a write
-  that fails says why.
+- Open reads every kind libmedia reads (`docs/media.md`), decoded on the worker cores; a
+  picture larger than 1,600 x 1,200 is made smaller to fit, and what is see-through is laid on
+  white. Save writes the kind its name ends in, encoded on the worker cores: PNG (in
+  segments, which libmedia decodes on every core), JPEG (quality 92, in restart intervals),
+  BMP or PPM; a name with none of those endings gets `.png`, which the notice says. Save on a
+  picture opened from another kind (GIF, TGA) opens the Save window. A picture with no file
+  yet is asked what to be saved as, in a window with a name field (`ui_save_file` in
+  `ui_files.h`) that starts in `/root/Pictures`, where Open starts, as `picture.png`: a name is
+  taken in the folder shown, and a file that is there is asked about once. A file is written
+  beside itself and renamed, and a write that fails says why.
 - The window made larger (the caption's box, Ctrl+F10) has another buffer: the program maps
   it again when the driver's count at `0x87000064` moves, and draws everything when its
   size changed (`locate`).
@@ -384,8 +394,9 @@ a brush stroke costs the pixels it touches and nothing else.
   `68 + (N % 14) * 18, 418 + (N / 14) * 20`, the tools from `3,24` (33 x 26 apart, two a
   row), the field at `324,409` (120 x 44) and the slider at `454,406`.
 - Saving: `saveas:NAME` (a name with no folder goes to `/root/Pictures`), then `open:` of
-  what the printed notice names and `sum`, which must be the sum from before; `saveas:x.png`
-  must say it wrote `x.ppm`, and `saveas:/nowhere/x` that it did not save. `saveas` alone
+  what the printed notice names and `sum`, which must be the sum from before (a PNG, a BMP and
+  a PPM keep every pixel; a JPEG does not); `saveas:x` must say it wrote `x.png`, and
+  `saveas:/nowhere/x` that it did not save. `saveas` alone
   and `save` on a new picture open the window, which a test types into from a shell job:
   `(nxkey 4000 t e s t enter) & NXPAINT_SCRIPT="new:40x30 saveas sum quit" nxpaint`.
 - `events:MS` hands the window to the pointer and the keys for that long, and `where`
@@ -440,6 +451,11 @@ made while the server was drawing was never seen).
 A window's frame has, left of its close box, a maximise box (the window fills the screen above
 the bar, and goes back on the second click) and a minimise box (the window goes away; its
 button on the bar, greyed meanwhile, brings it back).
+A window that fills the screen above the bar, maximised or made that large, is not moved by a
+drag of its caption, nor resized from its corner while maximised (`wm_fills_screen` in
+`wmaction.c`; `GsDragWindow` refuses such a surface too): it went with the pointer and showed
+the desktop behind it. Test: `nxterm`, `nxkey ctrl+f10`, a drag of its caption, and the frame
+is at 0,0 still.
 
 A window that changes size gets another buffer, which starts as a copy of the old one: what
 was drawn stays, and only the area the window gained is cleared and its program asked to
@@ -451,6 +467,29 @@ The window manager's record of a window (`nanowm.h`) has our fields at its end. 
 does not recompile files for a changed header, so a field added in the middle leaves the
 files the patch does not touch using the old layout: delete `obj/nanox/wm*.o` after such a
 change.
+
+## A program starting (15 October 2026)
+
+A click that starts a program (two on a desktop icon or in Files, one in the Start menu) shows
+at once that it did: the pointer gets an hourglass beside its arrow, and a note by it says
+"Starting NAME" with the program's icon and, after a second, the seconds waited
+(`linux/apps/ui_launch.h`). Both go when a window of the program, or of one it started, is
+made active (a framed window's map is not told the root's listeners, its activation is) or,
+for a window without a frame (Eyes, a game that fills the screen), found among the root's
+mapped children by its number four times a second (a program's own numbers carry its
+process: `nx_new_id`), when the program is gone, or after 30 s. Until 15 October Eyes's note
+stayed the whole 30 s. They are made before the program is started, so
+its first requests come after them. The pointer is the root window's: a top-level window shows
+the root's pointer as it is, where it took a copy of it when it was made (`GsNewWindow`).
+`UI_LAUNCH=0` shows nothing (the same binaries), `UI_LAUNCH=print` prints when it ends and why.
+
+Its cost on `rvc_cpu`, the first core's instructions from the double click on Calculator to 3 s
+after (four runs each): the first program of a session 1,496 thousand without it and 1,672
+with it, a later one 1,390 and 1,512; most of it is the questions asked (the note's text's
+width, the pointer's place) and the window updates the desktop hears meanwhile, not the
+drawing (the pointer alone some 15 thousand, the note alone 10). On `rvc_cpu` Calculator's and
+the terminal's windows came 0.27 to 0.36 s of the guest's time after the note, Eyes's 0.34 s,
+Doom's 2.3 s: a game's take seconds, which is where the note matters.
 
 ## The desktop's programs
 
@@ -464,27 +503,30 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 |---|---|
 | `nxedit [FILE]` | a text editor with a File and an Edit menu (F10 opens them for the keyboard; the right button brings Cut, Copy, Paste, Delete, Select all): arrows, Home, End (with Ctrl the text's start and end), Page Up and Down move and with Shift select, a click places the cursor, two select the word and the pointer held down selects, the wheel and a scroll bar move through the text. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste through the desktop's clipboard, Ctrl+A selects everything, Ctrl+Z undoes and Ctrl+Y redoes (512 changes; letters typed one after another are one), Ctrl+F asks in the status line what to find and F3 finds the next, Ctrl+G asks for a line. Ctrl+N is a new text and Ctrl+O opens one in the file window; Ctrl+S saves, and a text with no file yet (or Save as) is asked what to be called in the Save window (`ui_save_file`). A text with changes is asked about before it is let go by New, Open, Exit or the caption's box: Save, Don't save, Cancel ("A question in a window" below). A line may be of any length; a write that fails says why and the text stays changed |
 | `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry (a name too long for one line goes on in a second, broken at a space when one is near, and only then is cut with two dots), or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on a folder also Paste into it and Terminal in it; on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Terminal here (`nxterm` with its shell in the folder shown; on the desktop too), Properties. In the list a click on a column's heading puts the entries in that order (Name, Size largest first, Kind). Entries dragged to a folder that has one of the same name stay where they are: nothing is replaced unasked. Back, Forward, Up, Home, View, New folder and Terminal (a terminal in the folder shown) are keys with signs (`ui_glyph.h`; greyed when there is nowhere to go), with the folder's path beside them: a click on the path, or Ctrl+L, and another is typed there (Enter goes, Escape leaves). Down the left side are the places (Home, Desktop, Pictures, Music, Videos, Computer, and Network, which starts `nxnet`), the one shown picked out. The status line says how much can still be written. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (asked about first: "Delete these 3 entries?"; a folder goes with everything in it), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it. A name may have 127 letters and a folder 512 entries: what is over is counted in the status line ("3 more are not shown"), not shown cut short as an entry that cannot be opened |
-| `nxweb [ADDRESS]` | the browser (`docs/web.md`): pages with their style sheets, in the ROM's fonts and any script, tables and boxes side by side, forms that search; the page is drawn once into a pixmap and scrolled as a copy. Menus (File, Edit, View, Go with the session's pages, Bookmarks, Help), a bar with Back, Forward, Reload or Stop, Home, Bookmark and the address, a status line, wheel and scroll bar; options and bookmarks in the registry. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace or Alt+Left goes back, Alt+Right forward, Alt+Home home, F5 reloads, Escape stops, Ctrl+L or F6 opens the address, Ctrl+D bookmarks, Ctrl+F finds and F3 again, Ctrl+O, Ctrl+S, Ctrl+U open a file, save the page, show its source, F10 opens the menus |
-| `nxpaint [FILE]` | the paint program (below, "Paint"): ten tools, a flood fill, a selection that is moved, copied and cropped to, pictures of any size up to 1,600 x 1,200, zoom, every change taken back and made again. Opens a PPM, or a PNG or JPEG through the viewer's decoder; saves a PPM |
-| `nxview [FILE]` | shows a picture as large as fits its window: PPM through the GPU; PNG and JPEG decoded on the worker cores into a PPM file in memory, which is then shown the same way (below); PGM, BMP, GIF and XPM through the engine's decoders. A row of keys above it, each also a key of the keyboard: Open (`o`), the folder's picture before and after (Left, Right), a quarter turn either way (`l`, `r`: a turned copy of the PPM is made in `/tmp`), smaller and larger (`-`, `+`, the wheel; a picture larger than its room is moved by a drag), Fit (`f`), 1:1 (`1`: a pixel of the picture a pixel of the screen), Edit (`e`: the paint program with the file), Desktop (`w`: the picture as it is shown becomes the desktop's, a copy in `/tmp`), and Delete (the Delete key: asked first, then the folder's next). Escape or q closes it. `NXVIEW_PRINT=1` prints where the keys are and what is shown. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (3), `NXVIEW_SUM=1` prints a sum of the result |
-| `nxsettings` | the settings, a tab each: the desktop's picture (the image's, any PPM file through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, what the host keeps of `/persistence` (Storage: save now, load at start, clear; `docs/persist.md`), and what the machine is, every line of it asked of the machine as it is: the kernel, the cores (the geometry's words), float instructions (one is run, with a handler for the trap), the first core's speed since the last look (`rdcycle`), memory, the ROM's size, the screen, the sound card, the network's address, the time since power-on. The desktop's picture may be a PNG or a JPEG too (decoded by `nxview --decode`). From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path), `system` (the System tab's lines, printed; no desktop needed). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
+| `nxweb [ADDRESS]` | the browser (`docs/web.md`): pages with their style sheets, in the ROM's fonts and any script, tables and boxes side by side, forms that search; the page is drawn into a pixmap in strips ahead of the view, by worker cores, and scrolled as a copy. Menus (File, Edit, View, Go with the session's pages, Bookmarks, Help), a bar with Back, Forward, Reload or Stop, Home, Bookmark and the address, a status line, wheel and scroll bar; options and bookmarks in the registry. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace or Alt+Left goes back, Alt+Right forward, Alt+Home home, F5 reloads, Escape stops, Ctrl+L or F6 opens the address, Ctrl+D bookmarks, Ctrl+F finds and F3 again, Ctrl+O, Ctrl+S, Ctrl+U open a file, save the page, show its source, F10 opens the menus |
+| `nxpaint [FILE]` | the paint program (below, "Paint"): ten tools, a flood fill, a selection that is moved, copied and cropped to, pictures of any size up to 1,600 x 1,200, zoom, every change taken back and made again. Opens every kind libmedia reads (`docs/media.md`); saves PNG, JPEG, BMP or PPM by the name's ending, encoded on the worker cores |
+| `nxview [FILE]` | shows a picture as large as fits its window: a PPM through the GPU where it lies; every other kind libmedia reads (JPEG, PNG, GIF, BMP, TGA, PNM: `docs/media.md`) decoded on the worker cores, fitted, into a pixmap the GPU keeps of its room's size (a redraw is one copy), or zoomed and turned from a PPM file in memory decoded when first wanted; an animated GIF plays (every picture decoded ahead on the workers, each fitted into a pixmap as it is shown); XPM through the engine's decoder. A row of keys above it, each also a key of the keyboard: Open (`o`), the folder's picture before and after (Left, Right), a quarter turn either way (`l`, `r`: a turned copy of the PPM is made in `/tmp`), smaller and larger (`-`, `+`, the wheel; a picture larger than its room is moved by a drag), Fit (`f`), 1:1 (`1`: a pixel of the picture a pixel of the screen), Edit (`e`: the paint program with the file), Desktop (`w`: the picture as it is shown becomes the desktop's, a copy in `/tmp`), and Delete (the Delete key: asked first, then the folder's next). Escape or q closes it. `NXVIEW_PRINT=1` prints where the keys are and what is shown. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (as many as the machine has), `NXVIEW_SUM=1` prints a sum of the result |
+| `nxsettings` | the settings, a tab each: the desktop's picture (the image's, a picture file of any kind through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, what the host keeps of `/persistence` (Storage: save now, load at start, clear; `docs/persist.md`), and what the machine is, every line of it asked of the machine as it is: the kernel, the cores (the geometry's words), float instructions (one is run, with a handler for the trap), the first core's speed since the last look (`rdcycle`), memory, the ROM's size, the screen, the sound card, the network's address, the time since power-on. A picture that is not a PPM is decoded on the worker cores where it is shown (below, "Pictures for the desktop"). From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path), `system` (the System tab's lines, printed; no desktop needed). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
 | `nxmon` | three plots of the last two minutes, a sample a second: instructions a second (from `rdcycle`; the plot's top doubles as needed), how busy Linux is (kernel and programs stacked), memory in use (with the files written since the start, which live in memory). On a machine with worker cores (`docs/multicore.md`) what they run is stacked on the first plot, and a line says how many of them work, sleep, are idle and are parked. Under them: time running, load, processes, files kept in memory, task switches and interrupts a second, and the three busiest programs (looked at every third second). The plots are pixels the worker cores write into the window's buffer, some sixteen times a second (`docs/multicore.md`): they slide between samples, and the window system draws nothing of them. Under that a list of the programs, busiest first (it was painted over a second after every drawing: the statistics above it cleared the window to its bottom): a click or the arrows choose one, and End program (or Delete) asks it to go; pressed again for the same program it is made to (`SIGTERM`, then `SIGKILL`). The first program and the monitor itself are not in the list. Escape or q closes it |
 | `nxnet` | the other computers of the network, and what their owners share (`docs/lan.md`, "The Network program") |
 | `nxterm` | Microwindows' terminal, patched: a character in the last column leaves the cursor on it and the next one begins the next line, as a VT100 does (it wrapped at once, and the shell's line editor, which sends a new line itself there, left a blank row in every command typed past the edge); it follows its window's size, and Shift+Page Up and Down or the wheel look back through the last 400 lines, with a mark at the right edge for how far. The pointer held down selects text, from the cell it went down on to the cell it is over, and letting go copies it to the clipboard; the right button, Shift+Insert and Ctrl+Shift+V type the clipboard's text |
 
-**PNG and JPEG pictures** (`linux/apps/ui_image.h`) are decoded by the program that shows
+**PNG and JPEG pictures** have been libmedia's since 15 October 2026 (`docs/media.md`):
+its decoders began as these, and every other program decodes with it too. What follows is how
+`linux/apps/ui_image.h`, now gone, did it. They were decoded by the program that shows
 them, on the machine's worker cores (`docs/multicore.md`), into a PPM file the display then
 draws. What costs is not the arithmetic but the writing: a core keeps about 6 KB of new
 stores a pass and a picture is megabytes, so each stage writes memory of its own and the
 pixels are written once, into the file's own pages, by as many cores as there are. For a
 PNG, three cores follow each other: the first core inflates the stream (the longest step,
 so it waits for nobody: with all three steps on workers it sat out two passes in three),
-a worker takes the filters off the rows that are there, another writes those rows as
-pixels. The inflate loop keeps its bit reader in local variables (a store to the output
+a worker takes the filters off the rows that are there (up to four now, a band each: "13
+October 2026" below), another writes those rows as pixels. The inflate loop keeps its bit reader in local variables (a store to the output
 could be a store to the reader's struct, for all the compiler knows) and takes two bytes at
 a time: 31.9 to 20.8 million instructions for a 640 x 480 photograph. For a JPEG the first worker reads
 the Huffman codes into a list of the coefficients that are not zero (three bytes each, where
-a block would be 128 written), and the others take strips of 16 rows, do the transform and
+a block would be 128 written; the codes are the first core's now and a coefficient a word,
+"13 October 2026" below), and the others take strips of 16 rows, do the transform and
 the colours on their stacks and write only pixels; a strip begins and ends on 16 bytes of
 the picture whatever its width, so two cores never write the same 16. The first core is one
 of those that take strips (the first ones, whose codes are there first) and rests while the
@@ -579,14 +621,34 @@ When Linux has stopped, `nxoff` asks the host to switch the machine off (`nxpers
 address `power:off` of a fetch): the world does (`EmuMachine.FetchAsked`, as its Power key);
 the harness and `rvc_cpu` do not, and there the machine stands still as before.
 
-**Pictures for the desktop** are `/usr/share/wallpaper-NAME.ppm`, made on the host by
+**Pictures for the desktop** are `/usr/share/wallpaper-NAME.jpg`, made on the host by
 `python tools\make_wallpaper.py [FOLDER ...]`: the Unsplash photographs listed in
 `linux/apps/wallpapers.txt` (a name and the photo's id a line; fetched, never kept in this
 repository) and every picture in the folders given. One 1920 or more across is brought down to
-fit 1920x1080, one 1280 or more to fit 1280x720. Run it before `make_linux_image.py`. The
-choice is kept in `/tmp/nxwallpaper`; a new image shows `wallpaper-fox.ppm`.
+fit 1920x1080, one 1280 or more to fit 1280x720. Each is a JPEG in some 512 restart intervals,
+and beside it are its twins cut to the common screens, `wallpaper-NAME@800x600.jpg` (the
+machine's own), `@1280x720` and `@1920x1080` (Settings does not list them). `--from-ppm` makes
+the JPEGs of an older build's PPM pictures; `--twins` makes the twins missing from the pictures
+there. Run it before `make_linux_image.py`. The choice is the registry's
+`desktop.wallpaper` (`ui_wallpaper` in `ui.h`); a new image shows `wallpaper-fox.jpg`, and a
+choice of an image's PPM that is now a JPEG is that JPEG.
 
-A picture is not decoded or copied by anyone. A PPM file is already three bytes a pixel, and
+**Decoded when the desktop starts** (15 October 2026, `docs/media.md`): the desktop asks the
+window system for a pixmap of the screen's size, which the GPU keeps (its pixels in the pool
+the windows' buffers come from; `GrGetWindowInfo` says where a GPU pixmap's pixels are), and
+libmedia decodes the picture into it on every worker core: its twin for the screen's size
+as it is, another cropped or fitted as below. The pixmap stays the desktop's: drawing the
+picture, or the part behind an icon that changed, is one copy of the GPU's. The fox at
+1280 x 720 was decoded in 1.17 s under `rvc_cpu`'s own clock, which counts the workers'
+instructions one after another (63 workers; the 22 MB of PPM pictures are 3.9 MB of JPEG with
+the twins). At the machine's 800 x 600, with no twin, it was the whole picture decoded and
+scaled down: 4.76 s under `rvc_cpu`'s rounds; with its twin 763 ms, and 424 ms on the card (an
+RTX 5090; `docs/media.md`, "On the card"). The 800 x 600 twins add 0.55 MB. Where the pool has
+no room for the pixmap, the picture is
+decoded into a PPM in `/tmp` and drawn from there, as below. `UI_PICTURES_PRINT=1` says
+what was decoded and how long it took.
+
+Before that, a picture was not decoded or copied by anyone. A PPM file is already three bytes a pixel, and
 the root file system is romfs, which keeps every file in one piece in the ROM: the GPU samples
 the file there. The screen driver finds it from the file's number, which romfs makes the
 offset of the file's header (the overlay mounted over the ROM passes it on), and checks the
@@ -766,8 +828,8 @@ programs; they cost 0.54 and 1.6 million.
 - A frame is painted again for an activation only when what it shows changed
   (`wm_activating`, `painted` in `nanowm.h`): its size, title, properties, icon, active or not.
 - `nxbar` looks for its buttons when an update names a window it has no button for, asks one
-  window's title when that window is activated, and the focus when any update came
-  (`linux/nanox/nxbar.c`); every 60 s it looks anyway. A frame's program window is asked once.
+  window's title when that window is activated, and the focus when any update came or 15 s
+  went by (`linux/nanox/nxbar.c`); every 60 s it looks anyway. A frame's program window is asked once.
 - `ui_window_origin` keeps a window's place from its last click (`ui_origin_note`, which sees
   every event of a program that opens menus by its window's place) until an update.
 

@@ -21,11 +21,13 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <time.h>
+#define UI_PICTURES	/* the desktop's picture of any kind decoded (media.h) */
 #include "ui.h"
 #include "ui_icons.h"
 #include "ui_menu.h"
 #include "ui_ask.h"
 #include "ui_glyph.h"
+#include "ui_launch.h"
 
 #define CARRIED "/tmp/clipboard.files"	/* "copy" or "cut", then a path a line */
 #define DROPPED "/tmp/nxdrop"		/* "x y": where on the desktop a drag from a window ended */
@@ -643,6 +645,8 @@ draw_desktop_icon(int i)
 }
 
 /* The desktop's picture, all of it or (the drawing clipped) what is behind one icon. */
+static int wall_waiting;	/* the chosen picture's decoded copy is being made */
+
 static void
 draw_wall(void)
 {
@@ -652,34 +656,25 @@ draw_wall(void)
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255));
 		return;
 	}
-	/* (its size is read when the choice is: this is drawn behind every icon that changes) */
+	/* (a PPM's size is read when the choice is: this is drawn behind every icon that changes) */
 	if (!wall_w && !ui_picture_size(wall, &wall_w, &wall_h))
 		wall_w = -1;
 	if (wall_w > 0)
 		ui_picture_sized(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK, wall_w, wall_h);
+	else if (!ui_picture_any(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK)) {
+		/* (no room in the GPU's memory: its copy in /tmp is made, shown when there) */
+		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(0, 128, 128));
+		wall_waiting = 1;
+	}
 }
 
 /* What the desktop shows (Settings writes it): a picture's path, or a colour. */
-static int wall_waiting;	/* the chosen picture's decoded copy is being made */
-
 static void
 read_wall(void)
 {
-	char file[sizeof wall];
-
 	wall_w = wall_h = 0;
 	wall_waiting = 0;
-	snprintf(wall, sizeof wall, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
-	if (wall[0] != '#' && access(wall, R_OK) != 0)
-		strcpy(wall, "#008080");	/* the picture is not in this image */
-	else if (wall[0] != '#' && ui_wallpaper_file(wall, file, sizeof file))
-		snprintf(wall, sizeof wall, "%s", file);
-	else if (wall[0] != '#') {
-		/* (a PNG or JPEG: its copy is made after a restart, shown when there) */
-		ui_wallpaper_decode(wall, 0);
-		strcpy(wall, "#008080");
-		wall_waiting = 1;
-	}
+	ui_wallpaper_choice(wall, sizeof wall);
 }
 
 static void
@@ -1005,22 +1000,24 @@ scroll_to(int row)
 	}
 }
 
-/* Starts a command: words separated by spaces, no shell (which would cost half a second). */
-static void
+/* Starts a command: words separated by spaces, no shell (which would cost half a second). The
+ * child's number, or 0. */
+static pid_t
 run_command(const char *command)
 {
 	char text[64], *words[8];
 	int n = 0;
+	pid_t child;
 
 	if (!command[0])
-		return;
+		return 0;
 	/* the words first: the child (vfork, as ui_run's) has this program's memory until its exec */
 	snprintf(text, sizeof text, "%s", command);
 	for (words[n] = strtok(text, " "); words[n] && n < 7; words[n] = strtok(NULL, " "))
 		n++;
 	words[n] = NULL;
-	if (!n || real_vfork() != 0)
-		return;
+	if (!n || (child = real_vfork()) != 0)
+		return n ? child : 0;
 	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
 	execvp(words[0], words);
 	_exit(127);
@@ -1056,31 +1053,38 @@ static void
 open_entry(int i, int edit)
 {
 	struct entry *e = &entries[i];
+	struct ui_icon_ref icon;
 	char path[600];
+	pid_t child;
 
 	if (i < 0 || i >= count)
 		return;
 	entry_path(i, path, sizeof path);
+	if (kind_of(i) == K_FOLDER && !desktop) {
+		go(e->name, 1);
+		draw_all();
+		return;
+	}
+	/* what was clicked says it is starting, first, until a window comes (ui_launch.h) */
+	icon.cell = e->icon;
+	snprintf(icon.file, sizeof icon.file, "%s", e->icon_file);
+	ui_launch_begin(e->label[0] ? e->label : e->name, &icon, desktop ? DESK_EVENTS : 0);
 	if (kind_of(i) == K_FOLDER) {
-		if (desktop)
-			ui_run("nxfiles", path);
-		else {
-			go(e->name, 1);
-			draw_all();
-		}
+		child = ui_run("nxfiles", path);
 	} else if (edit) {
 		/* C is the IDE's, as it is when it is opened (nxopen.15-ide) */
 		const char *dot = strrchr(path, '.');
 
-		ui_run(dot && (!strcmp(dot, ".c") || !strcmp(dot, ".h")) ? "nxide" : "nxedit", path);
+		child = ui_run(dot && (!strcmp(dot, ".c") || !strcmp(dot, ".h")) ? "nxide" : "nxedit", path);
 	} else if (e->kind == K_SHORTCUT) {
-		run_command(e->run);
+		child = run_command(e->run);
 	} else if (e->kind == K_PROGRAM) {
-		ui_run(path, NULL);
+		child = ui_run(path, NULL);
 	} else {
 		/* whatever is registered for it (docs/open.md); the kinds here are only its icon */
-		ui_run("open", path);
+		child = ui_run("open", path);
 	}
+	ui_launch_started(child);
 }
 
 /* Makes entry i the one the keys work on, in view; `extend` selects from the anchor to it. */
@@ -1999,7 +2003,7 @@ watch(void)
 		if (reg_changed() && strcmp(chosen, reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT))) {
 			snprintf(chosen, sizeof chosen, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
 			draw_all();
-		} else if (wall_waiting && ui_wallpaper_file(reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT), file, sizeof file)) {
+		} else if (wall_waiting && ui_wallpaper_file(wall, file, sizeof file)) {
 			read_wall();	/* the decoded copy is there now */
 			draw_all();
 		}
@@ -2075,12 +2079,15 @@ main(int argc, char **argv)
 	for (;;) {
 		int i, area;
 
-		GrGetNextEventTimeout(&event, 1000);
+		GrGetNextEventTimeout(&event, ui_launch_wait(1000));
 		ui_origin_note(&event);
 		if (time(NULL) != looked) {
 			looked = time(NULL);
 			watch();
 		}
+		ui_launch_tick();
+		if (ui_launch_event(&event))
+			continue;
 		switch (ui_menu_event(&event, &id)) {
 		case UI_MENU_CHOSEN:
 			act(id);

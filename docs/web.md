@@ -81,7 +81,8 @@ natively (`gcc -fsanitize=address -Ilinux/apps tools/web_test.c`) against the im
 fonts and the cache of `web/preload.py`: it lays a page out in milliseconds, says how many
 texts, boxes and pictures came of it, how many texts lie past the right edge or over another
 text (both are mistakes of the layout's), lists every item (`--items`), says what an item is
-inside and with what style (`--why X Y`), and draws the page into a PPM file. A change to the
+inside and with what style (`--why X Y`), and draws the page into a PPM file (the cache's
+JPEGs and PNGs in it with libmedia compiled in, `-DWEB_TEST_MEDIA`: the line is at its head). A change to the
 engine is tried there on every cached page first: the machine then gives the same numbers.
 
 ## The tree and the styles
@@ -103,6 +104,23 @@ engine is tried there on every cached page first: the machine then gives the sam
   up (`css_inside`), and a rule with an ancestor step that names none of them ends there.
   Hacker News' sheet has a dozen rules that end in `a`: each was tried on each of 230 links,
   climbing to the root.
+- **Styles on the worker cores** (`web_style_elsewhere`, `styles_elsewhere` in `nxweb.c`): the
+  first core styles the tree in its order, and an element with more than 48 nodes inside
+  (`WEB_STYLE_LEAST`) has its inside styled by a worker that has nothing to do
+  (`web_style_range`), with a count of the names round it of its own, while the first core
+  goes on after it. Each element's slot is numbered first, a node is whole 16 bytes (96) so
+  that two cores never store to one texel, and an inside with a grid in a style attribute
+  stays on the first core (its columns are kept in `css_text`, which grows). The first core's
+  styles, in thousands of instructions (15 October 2026, `rvc_cpu`): Hacker News 1,664 to 533,
+  Lobsters 2,225 to 673, Wikipedia's main page 1,446 to 582, Gutenberg's top 100 4,971 to 900,
+  BBC News 4,061 to 1,041; a page's text to its first picture 7,264 to 5,804, 12,169 to 9,819,
+  9,450 to 8,163, 21,559 to 17,109 and 21,398 to 18,024 (`NXWEB_STYLES=here` the old way, in
+  the same binary). The tree costs 3% more for the larger nodes. `NXWEB_CHECK=1` styles the
+  page again on the first core alone and compares: 0 elements differ on those five pages, also
+  with `RVC_RACES` (nothing read as the pass began, nothing undone).
+- **The sheets are not read beside the tree**: both put names into one table of atoms
+  (`css_atom`), and nothing keeps two cores out of it in one pass. That would want the tree's
+  names gathered apart and joined to the sheets' afterwards.
 
 | Understood | |
 |---|---|
@@ -160,32 +178,158 @@ framed box, a picture, a form's field. Their order is the order to draw them in.
 - A page that sends its reader on at once (`<meta http-equiv=refresh>`, often inside
   `<noscript>`) is followed, three times in a row at most.
 
-## Drawn once, scrolled as a copy
+## Strips, scrolled as a copy
 
 The page is not drawn into the window. `nxweb` asks for a pixmap as wide as its view and as
-high as 3.2 MB of GPU memory allow (1,365 rows at the usual width, three and a half views)
-and no higher than the GPU's target on this host (`tile_make`: 2,048 rows in the harness,
-720 in the Unity world, under two views), draws the page's rows into it once, and the view
-is a copy of a part of it (`show_view`): one textured rectangle of the GPU's, whatever is on
-the page.
+high as 3.2 MB of GPU memory allow and no higher than the GPU's target on this host
+(`tile_make`: 2,048 rows in the harness, 720 in the Unity world), in whole strips of 64 rows
+(21 strips, 1,344 rows, at the usual width; 11, 704 rows, in the world), and the view is a
+copy of a part of it (`show_view`): one textured rectangle of the GPU's, two where the ring of
+strips wraps, whatever is on the page.
 
 - **The GPU draws no row past its target's.** The host says the target's size in its flags
   (`0x8700003c`, `docs/gpu.md`). A pixmap of 1,365 rows in the world had its rows from 720 on
   never drawn, black as a new pixmap is: the home page scrolled to its end showed 152 black
   rows of its 376 (13 October 2026). The driver gives no pixmap larger than the target the
-  GPU's memory any more, and the browser asks for none.
-
+  GPU's memory any more, and the browser asks for none. (A strip's own list is drawn into the
+  target's top 64 rows and copied to its slot, so it could land lower; a strip drawn by
+  requests and the window system's other drawing on the pixmap still draw it whole.)
 - **A pixmap in the GPU's memory** (`pixmap_map` in `scr_shaderemu.c`, `docs/nanox.md`): a
   pixmap of the screen's kind gets its pixels from the pool the windows' buffers come from,
   and is drawn on by the GPU as a window is; a copy from it to a window is a rectangle with
   it as its texture. The driver counts such pixmaps in a word a program can read (`REG_PIXMAPS`):
-  if the pool had no room the browser draws into its window as before.
+  if the pool had no room the browser draws into its window as before (so does `NXWEB_DIRECT=1`).
 - **A scroll is steps**, a third of what is left each 15 ms (`scroll_step`): a notch of the
   wheel or a page key moves the page smoothly, and a step asks the window system for a copy
   and the scroll bar, nothing else.
-- When the view leaves the rows the pixmap holds, the pixmap is drawn again round the view,
-  further the way the scroll is going.
-- A field typed into is drawn again where it stands in the pixmap, and the view copied.
+
+### Strips
+
+The pixmap is a ring (`strips_work` in `nxweb.c`; the plan was `docs/web-scroll-plan.md`):
+strip k of the page is in slot k modulo the slots, so a scroll keeps every row already drawn,
+and the strips coming into reach are made ahead of the view while the browser waits for its
+next event (`strips_meanwhile`), the view's first, then the way the scroll goes. Only a jump
+(End, Home, the bar's thumb) makes the view's strips at once, on the first core.
+
+- **A strip is a GPU list of its own** (`strip_job`): the page's colour, then its items as
+  `draw_item` draws them, at their rows less the strip's: a rectangle a box, four for a frame,
+  one text command and a word a character for a text (its glyphs from a table of each face's
+  first 256, made once: `strip_face_ready`), and a picture as a rectangle of fragment mode 4:
+  a PPM file of the ROM sampled where it lies, any other decoded to its drawn size into the
+  GPU's memory and copied pixel for pixel (`strip_picture_ready`, "Pictures" below; the texture's
+  coordinates are those the window system would give it). Commands before the first text of coverage are
+  in the opaque pass and the rest in pass 5, as `romfont_draw` has them. A slot's list and its
+  strings are 24 KB of a second pixmap used as memory (256 commands, 2,048 characters).
+- **Worker cores make them**: up to four, lent (`mcw_lend`): a program that keeps its workers
+  has them back at once and the first core makes the strips. Sixteen are opened, the other
+  twelve for the pictures' decoding (`PICTURE_WORKERS`). A job reads the items and the
+  page's text and writes nothing but its slot's memory; what it draws besides the items (what
+  Find found, the link picked) is copied for it while no job is out (`strips_shown`).
+- **The first core submits them**, as `gles.c` does: the lock word, the list, the copy into
+  the strip's 64 rows of the pixmap (`strip_submit`). A worker may not take the lock: an atomic
+  swap does not keep two cores out of it in the same pass (`docs/multicore.md`, "Races").
+  Once submitted, a strip is there for the window system's copy of the view, which is drawn
+  after it. A slot's memory is written again only after its last list was drawn.
+- **A strip with a field, a picture neither in the ROM nor decoded to its size in the GPU's
+  memory, or more than its list holds is drawn by requests** (`strip_requests`): on a pixmap of 64 rows, then copied into its slot, so that
+  nothing of it reaches the strips beside. Before the next list into a slot drawn so, a pixel of
+  the pixmap is read: the window system's drawing there must reach the GPU before the list.
+- A field typed into, a picture that came and a page laid out anew make their strips again
+  (`strips_forget_rows`, `strips_forget`); every change waits for the jobs out first.
+- **The window system says where a pixmap's pixels are**: `GrGetWindowInfo` on a pixmap the
+  GPU keeps gives its address as for a window (`docs/nanox.md`). On a server from before, every
+  strip is drawn by requests.
+- `NXWEB_STRIPS=requests` draws every strip by requests, `=here` makes their lists on the first
+  core alone: the earlier steps, in the same binary. `NXWEB_ROWS=N` holds the pixmap to N rows
+  (720: as in the world). `NXWEB_CHECK=1` makes every strip of the page both ways, its list and
+  by requests, reads both back from GPU memory and says how many pixels differ.
+
+The longest time between two steps of a scroll, before and after (15 October 2026, `rvc_cpu`
+with the world's clock, `--pass-ms 2.7`, and the world's pixmap, `NXWEB_ROWS=720`; four notches
+of the wheel and three page keys down, then End and Home; ms of the guest's clock, and the
+first core's instructions between the two steps, the window system's included):
+
+| | before: the pixmap drawn again | strips by requests | strips as lists, by workers |
+|---|---|---|---|
+| `web-long.html` (8,718 rows of plain text), notches and page keys | 35 to 59 ms, 112 to 123 thousand at a redraw | 34 to 45 ms, 40 to 69 thousand | 34 to 39 ms, 28 to 35 thousand |
+| the same, End and Home | 104 and 84 ms | 67 and 66 ms | 56 and 59 ms |
+| Hacker News (1,115 rows: six of the nine scrolls move) | 34 to 197 ms, up to 364 thousand | 34 to 73 ms, up to 118 thousand | 34 to 35 ms, 28 to 44 thousand |
+| Wikipedia's main page (16 pictures), notches and page keys | 35 to 83 ms, up to 191 thousand | 37 to 62 ms | 34 to 54 ms, one page key 113 |
+| the same, End and Home | 146 and 177 ms | 59 and 142 ms | 35 and 67 ms |
+
+A step's own work is 1 thousand instructions however the strips are made; what is left between
+two steps is the window system's copy of the view and the scroll bar (26 to 28 thousand before
+as after) and the submits of strips made meanwhile. On `rvc_cpu`'s own clock (a pass 0.25 ms)
+the first core makes many more strips between two steps, and the same scrolls measure 31 to 43
+thousand a notch and 37 to 43 a page key on the long page against 136 to 149 at a redraw before.
+
+- **On the card** (15 October 2026, RTX 5090, D3D11 and fxc2, through the queue, the world's
+  pixmap; the same scrolls): on the long page the longest gap between two steps was 23 to 43
+  ms before and 25 to 40 after, but before, one to three of a notch's nine steps never reached
+  the screen (the GPU's copy of the step was not made before the next) and half of End's and
+  Home's; after, every step's picture was there before the next but one, in the first scroll
+  after the page came. Hacker News: 26 to 82 ms
+  before, a redraw leaving one or two of eight steps seen, and 21 to 37 ms after, all seen.
+  The first core's instructions between two steps there: 196 to 402 thousand at a redraw
+  before, 41 to 120 thousand after.
+- **Pixels** (`NXWEB_CHECK=1`, the harness with `--cpu --warp`): every strip that is a list is
+  the same, pixel for pixel, as the strip drawn by requests: `web-long.html` 137 strips,
+  Hacker News 17 (its 18th has the search field), `web-layout.html` 15 (its 16th has a field),
+  Wikipedia's main page 40 with its pictures. With the pictures decoded (15 October 2026, the
+  desktop's image): Wikipedia's main page 40, xkcd.com 19, BBC's front page 358, 0 pixels differ.
+- **Races**: a scroll of the long page with `RVC_RACES` read nothing as the pass began and undid
+  nothing; workers' faults 0.
+- **Beside a program that takes every worker**: `nxray` started while the browser scrolled had
+  all 255; the browser's next strips were made on the first core.
+- **Beside another program**: glxgears' 5 s lines while the browser scrolls the long page for
+  half a minute (`rvc_cpu`, the world's clock) were 285 to 298 frames a second before and 321
+  to 339 after, of 370 to 387 alone.
+
+### Pictures
+
+The image keeps a page's pictures as `web/preload.py` makes them (`docs/fetch.md`): one of 4,096
+pixels or fewer as a PPM, a graphic as a PNG in segments, a photograph as a JPEG in restart
+intervals. A PPM of the ROM is sampled where it lies, at any size, as before. Every other
+picture, the image's JPEGs and PNGs and what the host fetched (its PPM in `/tmp`), is decoded
+with libmedia (`docs/media.md`) on the worker cores **to the size the page draws it at**
+(`picture_decode`): the mean of the pixels under each when smaller (`media_image_fit`), a shape
+more than 2% off stretched from the nearest pixels. Its pixels go into the GPU's memory in
+fragment mode 4's layout, and both a strip's list and the window system copy them pixel for
+pixel, the window system from a PPM of them written when it first draws one
+(`/tmp/nxweb-PID-N-drawn.ppm`). Drawn scaled, the two did not agree: the list's rows come from
+the GPU's interpolation and the window system's from a band of the file the processor chose,
+and `NXWEB_CHECK=1` under WARP found 821 pixels of 9 strips differing on Wikipedia's main page.
+
+- **The memory** is one pixmap of the GPU's used as memory, 2 MB (or half, down to 256 KB, as
+  the pool allows), taken from in turn and given back whole with the page: the window system
+  has eight such pixmaps for all programs, and the browser holds three. A picture that finds no
+  room is decoded into its PPM alone, and its strips are drawn by requests.
+- **The page first**: a picture not decoded yet is a grey placeholder, in a list as by requests.
+  While the browser waits for events, the pictures asked for are decoded one at a time in the
+  order they were asked for, the view's first, and their strips made again
+  (`pictures_meanwhile`). `NXWEB_CHECK=1` decodes them as their strips are made.
+- **One size a picture**: another item drawing it at another size is drawn by requests, scaled
+  from the PPM. A layout that leaves no item at that size has it decoded again.
+- The library decodes on the workers the browser has open: sixteen. A 250 x 180 JPEG took
+  2,366 ms on the first core alone, 646 ms with four workers and 275 with sixteen; 32 and 63
+  were no faster (`rvc_cpu`).
+
+From the image's copy of the page (15 October 2026, `rvc_cpu`, `NXWEB_TIME=1`; ms of the guest
+after the page's text, the first core's instructions decoding): the cache of 13 October's 201
+pictures as PPM before, and the same pictures as `preload.py` keeps them now after.
+
+| | Wikipedia's main page | xkcd.com | BBC's front page |
+|---|---|---|---|
+| the first picture of the page, before / after | 3,070 / 3,059 ms | 1,104 / 1,056 ms | 12,046 / 12,022 ms |
+| the view's pictures there, before / after | 3,070 / 4,062 ms | 1,104 / 3,277 ms | 12,046 / 13,044 ms |
+| pictures decoded for the view, instructions | 4, 3.0 million | 4, 7.1 million | 2, 3.0 million |
+
+A picture: a 120 x 163 JPEG drawn 98 x 132 672 thousand instructions and 209 ms, a 540 x 100
+JPEG drawn 439 x 81 1,850 thousand and 576 ms (1,150 thousand of it the decoding, the rest the
+mean), a 185 x 83 PNG drawn 150 x 67 1,590 thousand and 479 ms, a 480 x 270 JPEG drawn 58 x 32
+1,431 thousand and 527 ms. What libmedia lacks that would cut these: a JPEG decoded at a half,
+a quarter or an eighth of its size, and a small picture's fixed cost (a 40 x 40 JPEG was 500
+thousand instructions of the first core, which is why the small ones stay PPMs).
 
 ## What a page costs
 
@@ -222,7 +366,8 @@ cache in the ROM, the window 600 x 420:
   system the texts' glyphs looked up (`rom_glyph`, 130 instructions a character) 240. Taken
   off: the font tried at the start is the plain face's (not made twice), and the window
   system's widths are asked once (1,866 to 1,859). Not done: the home page laid out at the
-  build, the pixmap's rows below the view drawn when the browser is idle.
+  build. (The pixmap's rows below the view are now drawn while the browser is idle:
+  `strips_meanwhile` in `nxweb.c`.)
 - **Scrolling** (`build/web/cost.sh`'s way: the same `nxkey` line, less the same waits with no
   events): a notch of the wheel 251 thousand instructions in five steps where the browser of
   before drew the view again once for 336; a page key 182 thousand in ten steps where it was

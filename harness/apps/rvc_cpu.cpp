@@ -72,6 +72,7 @@ struct Options {
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
     double netLoss = 0, netDelay = 0;
     std::string persist;                 // --persist FILE: the guest's kept folder (docs/persist.md)
+    std::string saveRam;                 // --save-ram FILE: the 128 MB of RAM as the run ends
 };
 static Options opt;
 
@@ -146,6 +147,8 @@ struct Core {
     // a worker core (docs/multicore.md): bit 0 running, see mc_* below
     u32 mc_word = 0;
     bool started = false;
+    bool ad_miss = false;     // the last walk failed on a clear accessed or written bit (RVC_ADFAULT)
+    bool wc_full = false;     // RVC_WCACHE: a store found its write cache full, the pass ends before it
     Core() { memset(tlb, 0, sizeof tlb); }
     void flush() { memset(tlb, 0, sizeof tlb); }
 };
@@ -167,6 +170,7 @@ static u32 rom_word(u32 offset) {
 
 static bool walk(Core& c, u32 va, int access, u32& phys, Trap& t) {
     u32 fault = access == FETCH ? 12 : access == READ ? 13 : 15;
+    c.ad_miss = false;
     if (!(c.satp >> 31)) { phys = va; return true; }
     bool sum = (c.mstatus >> 18) & 1, mxr = (c.mstatus >> 19) & 1;
     u32 table = (c.satp & 0x3fffff) << 12;
@@ -181,7 +185,13 @@ static bool walk(Core& c, u32 va, int access, u32& phys, Trap& t) {
             if (c.priv == PRIV_U ? !user : (user && (access == FETCH || !sum))) break;
             if (access == FETCH ? !(pte & 8) : access == READ ? !((pte & 2) || (mxr && (pte & 8))) : !(pte & 4)) break;
             u32 want = 0x40 | (access == WRITE ? 0x80 : 0);
-            if ((pte & want) != want) { word(at) = pte | want; dirty(at); }
+            // (RVC_ADFAULT=1: a clear accessed or written bit faults, as on the shader machine (mmu.h),
+            // and the kernel sets it; a worker stops there until core 0 serves the page)
+            static const bool ad_fault = getenv("RVC_ADFAULT") && atoi(getenv("RVC_ADFAULT")) != 0;
+            if ((pte & want) != want) {
+                if (ad_fault) { c.ad_miss = true; break; }
+                word(at) = pte | want; dirty(at);
+            }
             u32 ppn = pte >> 10;
             phys = level == 1 ? ((ppn << 12) | (va & 0x3fffff)) : ((ppn << 12) | (va & 0xfff));
             return true;
@@ -330,6 +340,30 @@ static inline bool load(Core& c, u32 va, int size, u32& value, Trap& t) {
     return true;
 }
 
+// RVC_WCACHE=1: each core's write cache as the shader machine's (experiments/rvc_opt/src/mem.h):
+// three tables of buckets of three texels, by the core's bits; a store that changes a texel no
+// bucket has room for ends the core's pass before it, and the instruction runs in the next.
+static bool wc_on = false;
+static u64 wc_pass = 1, wc_full_passes[2];   // passes ended so: core 0's, the workers'
+struct WCache { u64 stamp[128]; u32 tag[128][3]; };
+static std::vector<WCache> wcache;
+static u32 wc_bits_of(int hart);
+static bool wc_take(int hart, u32 phys) {
+    u32 bits = wc_bits_of(hart), t = (phys - RAM_BASE) >> 4, n = bits - 1, table = 1u << bits;
+    if (!bits) return true;
+    u32 b[3] = {t & (table - 1), table + (((t >> 3) ^ (t << (n - 3)) ^ (t >> n)) & ((1u << n) - 1)),
+                table + (table >> 1) + (((t >> 2) ^ (t << (n - 2)) ^ (t >> (n + 3))) & ((1u << n) - 1))};
+    WCache& w = wcache[hart];
+    for (u32 k : b) {
+        if (w.stamp[k] != wc_pass) w.stamp[k] = wc_pass, w.tag[k][0] = w.tag[k][1] = w.tag[k][2] = 0;
+        for (u32& e : w.tag[k]) {
+            if (e == t + 1) return true;
+            if (!e) { e = t + 1; return true; }
+        }
+    }
+    return false;
+}
+
 static inline bool store(Core& c, u32 va, int size, u32 value, Trap& t) {
     u32 phys;
     if (((va & 0xfff) + size) > 0x1000) {
@@ -340,6 +374,12 @@ static inline bool store(Core& c, u32 va, int size, u32 value, Trap& t) {
     if (!page_of(c, va, WRITE, phys, t)) return false;
     if (phys - RAM_BASE < RAM_SIZE) {
         uint8_t* p = &ram[phys - RAM_BASE];
+        if (wc_on && memcmp(p, &value, (size_t)size) &&
+            (!wc_take(c.hart, phys) || ((phys & 15) + (u32)size > 16 && !wc_take(c.hart, phys + (u32)size - 1)))) {
+            c.wc_full = c.end_pass = true;
+            wc_full_passes[c.hart != 0]++;
+            return false;
+        }
         dirty(phys);
         if (races_on && race_watched(phys)) {
             race_store(c, phys, value, size);
@@ -535,6 +575,15 @@ static u32 fclass(u32 b) {
 }
 
 bool mc_fault(Core& c, const Trap& t);
+static u64 stops[3], stops_at[3];   // workers' faults, those on an accessed or written bit; core 0's such faults
+static void note_stop(Core& c, const Trap& t) {
+    static const bool say = getenv("RVC_ADFAULT") && atoi(getenv("RVC_ADFAULT")) == 2;   // (2: says each)
+    if (c.hart) stops[0]++, stops[1] += c.ad_miss;
+    else stops[2] += t.cause >= 12 && c.ad_miss;
+    if (say && (c.hart || c.ad_miss))
+        fprintf(stderr, "[adfault] core %d, cause %u at %08x, pc %08x, its instruction %llu%s\n", c.hart, t.cause, t.value, c.pc,
+                (unsigned long long)c.clock, c.ad_miss ? "" : " (not the bit)");
+}
 static u32 last_pc[32], last_ins[32];   // core 0's last instructions, for the summary of a run that stopped oddly
 
 // ---- RVC_CALLS=FILE: what core 0's calls cost, its own instructions in each (tools/mc_candidates.py) ----
@@ -628,6 +677,7 @@ static u64 run(Core& c, u64 budget) {
             t.on = false;
             if (!page_of(c, pc, FETCH, phys, t)) {
                 // (a worker stops at code its program has not touched yet, as at any other page)
+                if (c.hart == 0) note_stop(c, t);
                 if (c.hart == 0 || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
                 done++; c.clock++; break;
             }
@@ -846,9 +896,11 @@ static u64 run(Core& c, u64 budget) {
             }
             default: illegal = true;
             }
+            if (c.wc_full) { done--; c.clock--; break; }   // (the instruction is the next pass's)
             if (illegal) t.on = true, t.cause = 2, t.value = ins;
             if (t.on) {
                 // a worker core in user mode does not trap: it stops where it is (mc_fault)
+                if (c.hart == 0) note_stop(c, t);
                 if (c.hart == 0 || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
                 break;
             }
@@ -881,6 +933,7 @@ enum { MC_PARKED, MC_RUNNING, MC_ASLEEP, MC_FAULTED, MC_CALLING };
 struct Worker { int state = MC_PARKED; u32 seen = 0, start_seen = 0, job_seen = 0, job_was = 0; };
 static std::vector<Worker> workers;
 static u32 geometry[256];   // each worker's cache bits as the machine's geometry has them; 0: no such worker
+static u32 wc_bits_of(int hart) { return hart ? geometry[hart] : 6; }
 
 bool mc_fault(Core& c, const Trap& t) {
     Worker& w = workers[c.hart];
@@ -890,6 +943,7 @@ bool mc_fault(Core& c, const Trap& t) {
         word(mc_call_at(c.hart)) = c.x[17];
         for (int i = 0; i < 6; i++) word(mc_call_at(c.hart) + 4 + 4 * i) = c.x[10 + i];
     }
+    if (!call) note_stop(c, t);
     word(mc_fault_at(c.hart) + 4) = t.cause;
     word(mc_fault_at(c.hart) + 8) = t.value;
     word(mc_fault_at(c.hart) + 12) = c.pc;
@@ -976,6 +1030,7 @@ static u64 run_worker(Core& c, u64 budget) {
             break;
         }
         done += run(c, 1);
+        if (c.wc_full) { c.wc_full = false; break; }
     }
     (void)before;
     return done;
@@ -1025,7 +1080,40 @@ static void persist_pass() {
     word(CTRL + 0x11c) = 0;
 }
 
+// RVC_SOUND=1: the sound card's clock and voices move as sound_control (src/sound.h) moves them,
+// so that a game's sound code runs as on the shader machine; nothing is mixed.
+static void sound_pass() {
+    static const bool on = getenv("RVC_SOUND") && atoi(getenv("RVC_SOUND")) != 0;
+    const u32 GUEST = CTRL + 0x220, DEVICE = CTRL + 0x230, RATE = 48000;
+    if (!on || external_devices || !word(GUEST)) return;
+    u32 cursor = (u32)(guest_seconds * RATE), moved = cursor - word(DEVICE);
+    if (word(DEVICE + 4) && moved < 240) return;   // (the harness mixes every 5 ms)
+    if (!word(DEVICE + 4)) moved = 0;
+    for (u32 n = 0, voices = word(GUEST + 8) < 32 ? word(GUEST + 8) : 32; n < voices; n++) {
+        u32 *a = &word(CTRL + 0x800 + 32 * n), *b = a + 4, *c = &word(CTRL + 0xc00 + 32 * n), *d = c + 4;
+        u32 on_ = c[1] & 1, kind = c[1] >> 8, address = d[0], length = d[1], restart = d[2], aux = d[3], pos = c[2], frac = c[3], k = moved;
+        if (a[0] != c[0]) on_ = a[0] & 1, kind = a[1], address = a[2], length = a[3], restart = b[0], aux = b[3], pos = frac = 0, k = 0;
+        if ((kind & 0xff) == 3) restart = b[0];
+        if (on_) {
+            u32 kl = k & 0xffff, kh = k >> 16, pl = b[1] & 0xffff, ph = b[1] >> 16, low = kl * pl + frac;
+            pos += (low >> 16) + kl * ph + kh * pl + ((kh * ph) << 16);
+            frac = low & 0xffff;
+            if ((kind & 0xff) == 3) {
+                if ((i32)(restart - pos) <= 0) pos = restart, frac = 0;
+            } else if (pos >= length) {
+                if ((kind & 0x100) && restart < length) pos = restart + (pos - restart) % (length - restart);
+                else on_ = 0;
+            }
+        }
+        c[0] = a[0], c[1] = (kind << 8) | on_, c[2] = pos, c[3] = frac;
+        d[0] = address, d[1] = length, d[2] = restart, d[3] = aux;
+    }
+    word(DEVICE) = cursor;
+    word(DEVICE + 4) = RATE;
+}
+
 static void control_pass() {
+    sound_pass();
     dirty(CTRL);
     // what each core ran, how many workers the geometry has (docs/multicore.md: the cores have
     // no write cache here, so their sizes are only counted) and how many there could be
@@ -1145,6 +1233,8 @@ static u64 machine_pass(u32 ticks) {
     }
     atom_merge();
     if (races_on) texel_marks.clear(), race_pass++;
+    cores[0].wc_full = false;
+    wc_pass++;
     frame_no++;
     return most;
 }
@@ -1153,12 +1243,15 @@ static void count_mark() {
     count_marked = true;
     count_at.resize(cores.size());
     for (size_t i = 0; i < cores.size(); i++) count_at[i] = cores[i].clock;
+    memcpy(stops_at, stops, sizeof stops);
     count_pass = frame_no;
     count_seconds = guest_seconds;
     if (opt.untilTimes > 1 && script_at >= opt.script.size()) expect_from = console_text.size();
 }
 
 #ifndef RVC_CPU_LIBRARY
+#include "run_lock.h"
+
 // What RVC_RACES and RVC_CALLS found, into their files and a few lines here.
 static void races_report(const char* file) {
     std::vector<std::pair<u64, RaceStat>> all(race_stats[0].begin(), race_stats[0].end());
@@ -1233,6 +1326,7 @@ int main(int argc, char** argv) {
         else if (a == "--until-times") opt.untilTimes = atoi(next("--until-times").c_str());
         else if (a == "--ticks") opt.ticks = (u32)atoi(next("--ticks").c_str());
         else if (a == "--ips") opt.ips = atof(next("--ips").c_str());
+        else if (a == "--save-ram") opt.saveRam = next("--save-ram");
         else if (a == "--pass-ms") opt.passMs = atof(next("--pass-ms").c_str());
         else if (a == "--pointer-sweep") opt.sweep = atoll(next("--pointer-sweep").c_str());
         else if (a == "--pointer-circle") sscanf(next("--pointer-circle").c_str(), "%d,%d,%d", &opt.circleX, &opt.circleY, &opt.circleR);
@@ -1267,6 +1361,7 @@ int main(int argc, char** argv) {
                    "  --pc-log FILE          core 0's pc at the end of each pass, for tools/pc_profile.py (a small --ticks\n"
                    "  --pc-from T            for finer samples); from when the console has said T\n"
                    "  --ips N --pass-ms M    the guest's clock: a pass takes M ms and its instructions 1/N s each\n"
+                   "  --save-ram FILE        the RAM (128 MB from 0x80000000) as the run ends\n"
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
                    "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
@@ -1282,6 +1377,7 @@ int main(int argc, char** argv) {
             return 0;
         } else { fprintf(stderr, "rvc_cpu: unknown option %s\n", a.c_str()); return 2; }
     }
+    if (!run_lock_take(false, "rvc_cpu")) return kRunLockRefused;
     if (!machine_boot(opt.image, opt.cores)) {
         fprintf(stderr, "rvc_cpu: no image in %s (python tools\\make_linux_image.py)\n", opt.image.c_str());
         return 2;
@@ -1296,6 +1392,8 @@ int main(int argc, char** argv) {
     races_on = races_file && *races_file;
     atom_merging = !getenv("RVC_COUNT_MERGE") || atoi(getenv("RVC_COUNT_MERGE")) != 0;
     calls_on = calls_file && *calls_file;
+    wc_on = getenv("RVC_WCACHE") && atoi(getenv("RVC_WCACHE")) != 0;
+    if (wc_on) wcache.resize(cores.size());
     if (opt.netPort) {
         std::string why = "--net-id is 1 to 16";
         if (opt.netId < 1 || opt.netId > (int)NetLink::kBroadcastTo || !net.open(opt.netPort, (unsigned)opt.netId, opt.netLoss, opt.netDelay, why)) {
@@ -1369,7 +1467,19 @@ int main(int argc, char** argv) {
                 opt.countFrom.c_str(), (unsigned long long)c0n, (unsigned long long)all, ran, (unsigned long long)most,
                 (unsigned long long)(frame_no - count_pass), guest_seconds - count_seconds);
     } else if (!opt.countFrom.empty()) fprintf(stderr, "COUNT never: the console did not say \"%s\"\n", opt.countFrom.c_str());
+    fprintf(stderr, "[cpu] stops: workers' faults %llu, %llu of them on a clear accessed or written bit; core 0's on such a bit %llu%s",
+            (unsigned long long)stops[0], (unsigned long long)stops[1], (unsigned long long)stops[2], count_marked ? "" : "\n");
+    if (count_marked)
+        fprintf(stderr, "; from the mark %llu, %llu, %llu\n", (unsigned long long)(stops[0] - stops_at[0]),
+                (unsigned long long)(stops[1] - stops_at[1]), (unsigned long long)(stops[2] - stops_at[2]));
     if (races_on) races_report(races_file);
+    if (!opt.saveRam.empty()) {
+        FILE* f = fopen(opt.saveRam.c_str(), "wb");
+        if (f) { fwrite(ram.data(), 1, ram.size(), f); fclose(f); }
+    }
+    if (wc_on)
+        fprintf(stderr, "[cpu] write cache: %llu passes of core 0 and %llu of workers ended full (RVC_WCACHE)\n",
+                (unsigned long long)wc_full_passes[0], (unsigned long long)wc_full_passes[1]);
     if (calls_on) calls_report(calls_file);
     if (uart_log) fclose(uart_log);
     if (!opt.pcLog.empty()) {

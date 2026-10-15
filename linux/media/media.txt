@@ -3,8 +3,8 @@
 # A line: where it goes | what it is made from | the original's SHA-1 | how | licence | whose
 #   commons:NAME   a file of Wikimedia Commons, fetched once into build/fetch/media
 #   link:PATH      another name for a file the image has already (no bytes of its own)
-# A picture is brought down to fit 640 x 480 as a baseline JPEG, which nxview reads; a tune is
-# cut (from, seconds) and made an MP3 or a FLAC, which nxplay plays.
+# A picture is brought down to fit 640 x 480 as a baseline JPEG in restart intervals; a tune is
+# cut (from, seconds) and made an MP3, a FLAC or an Ogg Vorbis file, which nxplay plays.
 
 Pictures/Earthrise.jpg       | commons:NASA-Apollo8-Dec24-Earthrise.jpg      | 92da62a94a30ee77a36261ca31df40d0342cf0ec | | Public domain | NASA / Bill Anders, Apollo 8, 1968
 Pictures/Blue Marble.jpg     | commons:The Earth seen from Apollo 17.jpg     | 229ec1e5d613a8c328a1d5955a7abc407e6968b1 | | Public domain | NASA / the crew of Apollo 17, 1972
@@ -12,11 +12,11 @@ Pictures/Deep Field.jpg      | commons:Hubble ultra deep field.jpg           | 0
 Pictures/Great Wave.jpg      | commons:Tsunami by hokusai 19th century.jpg   | e476be87b15afe8b9ae0060a4886305528f2eba5 | | Public domain | Katsushika Hokusai, about 1831
 Pictures/Starry Night.jpg    | commons:VanGogh-starry night ballance1.jpg    | fba7f4540f028088af3698a20242018635484a8e | | Public domain | Vincent van Gogh, 1889
 Pictures/Fox.png             | link:/usr/share/picture-fox.png
-Pictures/Fox (desktop).ppm   | link:/usr/share/wallpaper-fox.ppm
+Pictures/Fox (desktop).jpg   | link:/usr/share/wallpaper-fox.jpg
 
 Music/Grieg - Morning Mood.mp3                   | commons:Musopen - Morning.ogg                                  | 84b855cba2c412c9697895beedfc44d48046931c | from=0 seconds=50   | Public domain | Edvard Grieg; Musopen Symphony Orchestra
-Music/Grieg - Hall of the Mountain King.mp3      | commons:Musopen - In the Hall Of The Mountain King.ogg         | e40c1fc81eef25cdc58e2807c2569e3b915f4bd3 | from=98 seconds=50  | Public domain | Edvard Grieg; Musopen Symphony Orchestra
+Music/Grieg - Hall of the Mountain King.ogg      | commons:Musopen - In the Hall Of The Mountain King.ogg         | e40c1fc81eef25cdc58e2807c2569e3b915f4bd3 | from=98 seconds=50  | Public domain | Edvard Grieg; Musopen Symphony Orchestra
 Music/Bach - Goldberg Aria.flac                  | commons:Bach, Goldberg Variations, Aria (Musopen version).ogg  | a1c48089f8b54f056ab0aa69abe7fd119e95405a | from=0 seconds=20   | CC0           | Johann Sebastian Bach; Kimiko Ishizaka (Musopen)
-Music/Beethoven - Moonlight Sonata.mp3            | commons:Moonlight Sonata 2.ogg                                 | 35a2d5ba50c0f2ea08d5ef604aed68a4b2903c81 | from=0 seconds=50   | Public domain | Ludwig van Beethoven, Sonata No. 14, first movement (Wikimedia Commons)
+Music/Beethoven - Moonlight Sonata.ogg            | commons:Moonlight Sonata 2.ogg                                 | 35a2d5ba50c0f2ea08d5ef604aed68a4b2903c81 | from=0 seconds=50   | Public domain | Ludwig van Beethoven, Sonata No. 14, first movement (Wikimedia Commons)
 Music/Beethoven - Symphony No. 5.mp3              | commons:Ludwig van Beethoven - Symphonie 5 c-moll - 1. Allegro con brio.ogg | b0568783141c397cd4fada53bc868279bd2e4a2a | from=0 seconds=50 | Public domain | Ludwig van Beethoven; Fulda Symphonic Orchestra, Simon Schindler
 Music/Test tones.mod                             | link:/usr/share/play-test.mod

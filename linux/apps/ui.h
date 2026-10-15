@@ -30,7 +30,7 @@
 #define UI_SELECTED MWRGB(0, 0, 128)
 #define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/persist.md) */
 #define UI_WALLPAPER_CHOICE "desktop.wallpaper"	/* the registry's key for what the desktop shows: a picture's path, or #RRGGBB */
-#define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.ppm"
+#define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.jpg"
 
 static GR_GC_ID ui_gc;
 static GR_FONT_ID ui_fixed, ui_var;
@@ -449,15 +449,19 @@ ui_clip_get(int *length)
 
 /* Starts a program with one argument (or none), without a shell. vfork: the child runs in
  * this program's memory until it is another program, and no page is copied for it. It may do
- * nothing there but what is below: no variable of ours written, nothing allocated. */
-static void
+ * nothing there but what is below: no variable of ours written, nothing allocated. The child's
+ * number, or -1. */
+static pid_t
 ui_run(const char *program, const char *argument)
 {
-	if (real_vfork() == 0) {
+	pid_t child = real_vfork();
+
+	if (child == 0) {
 		signal(SIGCHLD, SIG_DFL);	/* (a program that ignores it must not hand that on: the started one's children would go unseen) */
 		execlp(program, program, argument, (char *)NULL);
 		_exit(127);
 	}
+	return child;
 }
 
 /* The size a PPM file says it has; 0 when it is not one. */
@@ -511,8 +515,148 @@ ui_picture_sized(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR
 	GrDrawImageFromFile(w, ui_gc, (width - dw) / 2, (height - dh) / 2, dw, dh, (char *)path, 0);
 }
 
-/* The registry keeps the picture file chosen, wherever it is; one that is no PPM is shown from a
- * copy decoded into /tmp, named by its path, and made again after a restart (nxview --decode). */
+#ifdef UI_PICTURES
+/* Any other picture (media.h) decoded once on the worker cores into a pixmap the GPU keeps, at
+ * the size it is drawn, cropped or fitted as above: drawing it, or a part behind an icon, is one
+ * copy. A twin made for that size ("NAME@WxH.jpg") is decoded as it is. 0: it could not be. */
+#include <fcntl.h>
+#include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include "media.h"
+#include "mcw.h"
+
+static struct { char path[200]; int w, h, cover; GR_COLOR around; GR_WINDOW_ID pixmap; } ui_decoded;
+
+/* The file a picture is decoded from for a size: its twin made for the size, when there is one. */
+static void
+ui_picture_for(const char *path, int width, int height, char *to, int room)
+{
+	const char *dot = strrchr(path, '.');
+
+	if (dot && strchr(dot, '/') == NULL) {
+		snprintf(to, room, "%.*s@%dx%d%s", (int)(dot - path), path, width, height, dot);
+		if (access(to, R_OK) == 0)
+			return;
+	}
+	snprintf(to, room, "%s", path);
+}
+
+/* A pixmap the GPU keeps (of width x height), its pixels mapped here as `out` (0x00RRGGBB
+ * words) once the GPU has done what it was asked of it: 0 where they are not the GPU's. */
+static int
+ui_gpu_map(GR_WINDOW_ID pixmap, int width, int height, struct media_image *out)
+{
+	GR_WINDOW_INFO info;
+	GR_PIXELVAL pixel;
+	uint32_t offset, bytes;
+	uint8_t *mapped;
+	int gpu;
+
+	GrGetWindowInfo(pixmap, &info);
+	if (!info.surface_address || (gpu = open("/dev/gpu", O_RDWR)) < 0) {
+		if (getenv("UI_PICTURES_PRINT"))
+			fprintf(stderr, "ui: no pixmap of the GPU's for %d x %d (address %08x)\n", width, height, (unsigned)info.surface_address);
+		return 0;
+	}
+	/* (a pixel read first: the GPU has drawn what it was asked, a copy from it among them) */
+	GrReadArea(pixmap, 0, 0, 1, 1, &pixel);
+	offset = info.surface_address - 0x86000000u;
+	bytes = (offset & 4095) + info.surface_row * (uint32_t)height * 4;
+	mapped = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, gpu, offset & ~4095u);
+	close(gpu);
+	if (mapped == MAP_FAILED)
+		return 0;
+	memset(out, 0, sizeof *out);
+	out->width = width, out->height = height, out->channels = 4, out->bgr = 1;
+	out->stride = (int)info.surface_row * 4;
+	out->pixels = mapped + (offset & 4095);
+	return 1;
+}
+
+/* A new such pixmap, mapped; 0 where the GPU has no room for it. ui_gpu_unmap() when written. */
+static GR_WINDOW_ID
+ui_gpu_pixmap(int width, int height, struct media_image *out)
+{
+	GR_WINDOW_ID pixmap = GrNewPixmap(width, height, NULL);
+
+	if (!ui_gpu_map(pixmap, width, height, out)) {
+		GrDestroyWindow(pixmap);
+		return 0;
+	}
+	return pixmap;
+}
+
+static void
+ui_gpu_unmap(struct media_image *out)
+{
+	uintptr_t at = (uintptr_t)out->pixels;
+
+	munmap((void *)(at & ~(uintptr_t)4095), (at & 4095) + (uint32_t)out->stride * (uint32_t)out->height);
+	out->pixels = NULL;
+}
+
+/* A picture file decoded into a pixmap of width x height, drawn at x, y: `cover` as the desktop's. */
+static int
+ui_picture_decoded_at(GR_DRAW_ID w, const char *path, int x, int y, int width, int height, GR_COLOR around, int cover)
+{
+	struct media_image out;
+	struct stat st;
+	char file[220];
+	const char *why = "no memory of the GPU's for it";
+	uint8_t *data;
+	int fd;
+
+	if (ui_decoded.pixmap && ui_decoded.w == width && ui_decoded.h == height && ui_decoded.around == around &&
+	    ui_decoded.cover == cover && !strcmp(ui_decoded.path, path)) {
+		GrCopyArea(w, ui_gc, x, y, width, height, ui_decoded.pixmap, 0, 0, MWROP_COPY);
+		return 1;
+	}
+	if (ui_decoded.pixmap)
+		GrDestroyWindow(ui_decoded.pixmap);
+	ui_decoded.pixmap = 0;
+	ui_picture_for(path, width, height, file, sizeof file);
+	if ((fd = open(file, O_RDONLY)) < 0)
+		return 0;
+	if (fstat(fd, &st) || st.st_size < 16 || (data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0)) == MAP_FAILED) {
+		close(fd);
+		return 0;
+	}
+	close(fd);
+	if ((ui_decoded.pixmap = ui_gpu_pixmap(width, height, &out)) != 0) {
+		struct timespec t0, t1;
+
+		out.background = (uint32_t)(around & 255) << 16 | (around & 0xff00) | (around >> 16 & 255);
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		why = media_image_decode_fit(data, (uint32_t)st.st_size, &out, cover, mcw_most());
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		ui_gpu_unmap(&out);
+		if (getenv("UI_PICTURES_PRINT"))
+			fprintf(stderr, "ui: %s at %d x %d: %s in %ld ms\n", file, width, height, why ? why : "decoded",
+				(long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+	}
+	munmap(data, (size_t)st.st_size);
+	if (why) {
+		if (ui_decoded.pixmap)
+			GrDestroyWindow(ui_decoded.pixmap);
+		ui_decoded.pixmap = 0;
+		return 0;
+	}
+	snprintf(ui_decoded.path, sizeof ui_decoded.path, "%s", path);
+	ui_decoded.w = width, ui_decoded.h = height, ui_decoded.around = around, ui_decoded.cover = cover;
+	GrCopyArea(w, ui_gc, x, y, width, height, ui_decoded.pixmap, 0, 0, MWROP_COPY);
+	return 1;
+}
+
+static int
+ui_picture_decoded(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR around)
+{
+	return ui_picture_decoded_at(w, path, 0, 0, width, height, around, 1);
+}
+#endif
+
+/* The registry keeps the picture file chosen, wherever it is; one that is no PPM is decoded
+ * (above), or where the GPU has no room shown from a copy decoded into /tmp, named by its path. */
 static void
 ui_wallpaper_copy(const char *choice, char *to, int room)
 {
@@ -559,36 +703,65 @@ ui_wallpaper_decode(const char *choice, int wait)
 		waitpid(child, &status, 0);
 }
 
+/* A picture file of any kind over a whole window: a PPM as it lies, another decoded (above). */
+static int
+ui_picture_any(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR around)
+{
+	char file[200];
+
+	if (ui_picture(w, path, width, height, around))
+		return 1;
+#ifdef UI_PICTURES
+	if (ui_picture_decoded(w, path, width, height, around))
+		return 1;
+#endif
+	if (ui_wallpaper_file(path, file, sizeof file))
+		return ui_picture(w, file, width, height, around);
+	ui_wallpaper_decode(path, 0);
+	return 0;
+}
+
 /* Shows a picture file, or a colour written #RRGGBB, as the desktop, and remembers the choice. */
 static void
 ui_wallpaper(const char *choice, int remember)
 {
 	GR_SCREEN_INFO screen = *ui_screen();
-	char file[200];
 
 	if (choice[0] == '#') {
 		unsigned long rgb = strtoul(choice + 1, NULL, 16);
 
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255));
-	} else if (ui_wallpaper_file(choice, file, sizeof file)) {
-		ui_picture(GR_ROOT_WINDOW_ID, file, screen.cols, screen.rows, BLACK);
-	} else {
+	} else if (!ui_picture_any(GR_ROOT_WINDOW_ID, choice, screen.cols, screen.rows, BLACK)) {
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(0, 128, 128));
-		ui_wallpaper_decode(choice, 0);
 	}
 	if (remember)
 		reg_set(UI_WALLPAPER_CHOICE, choice);
 }
 
-/* The desktop as last chosen, or the default picture. */
+/* What the desktop shows as last chosen, or the default picture: a picture of the image's that
+ * was a PPM is its JPEG now; one this image does not have is a colour. */
+static void
+ui_wallpaper_choice(char *choice, int room)
+{
+	size_t n;
+
+	snprintf(choice, room, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
+	n = strlen(choice);
+	if (choice[0] != '#' && access(choice, R_OK) != 0 && n > 4 && !strcmp(choice + n - 4, ".ppm") && (int)n < room) {
+		strcpy(choice + n - 4, ".jpg");
+		if (access(choice, R_OK) != 0)
+			choice[n - 4] = 0, strcat(choice, ".ppm");
+	}
+	if (choice[0] != '#' && access(choice, R_OK) != 0)
+		snprintf(choice, room, "#008080");
+}
+
 static void
 ui_wallpaper_restore(void)
 {
 	char choice[200];
 
-	snprintf(choice, sizeof choice, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
-	if (choice[0] != '#' && access(choice, R_OK) != 0)
-		strcpy(choice, "#008080");	/* the picture is not in this image */
+	ui_wallpaper_choice(choice, sizeof choice);
 	ui_wallpaper(choice, 0);
 }
 

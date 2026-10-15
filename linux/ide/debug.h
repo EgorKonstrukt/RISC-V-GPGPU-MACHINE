@@ -1,6 +1,6 @@
 /* debug.h: a program run a line at a time (docs/ide.md, "The debugger"). What the lines,
  * functions and variables are comes from the stabs TinyCC writes with -g; the program is held
- * with ptrace, a line's first instruction changed for ebreak where it should stop. */
+ * with ptrace, a line's first instruction changed for a stop (DBG_STOP) where it should stop. */
 #ifndef IDE_DEBUG_H
 #define IDE_DEBUG_H
 #include <elf.h>
@@ -45,11 +45,11 @@ static int dbg_state = DBG_GONE, dbg_mode;
 static uint32_t dbg_regs[32];		/* pc, then x1 to x31 */
 static uint32_t dbg_from_sp;		/* the stack where a step began */
 static int dbg_line_now, dbg_function_now, dbg_signal, dbg_exit;
-static int dbg_on_break;		/* it stands on a line whose ebreak was lifted: that instruction is still to run */
+static int dbg_on_break;		/* it stands on a line whose stop was lifted: that instruction is still to run */
 static int dbg_moving;			/* it has been let run since it was started (it is not at its very start) */
 static int dbg_shared;			/* the program posts work to the worker cores (it has the library's mcw_post) */
 static int dbg_fresh;			/* a step ended without the program being let run: dbg_poll() says so once */
-static struct dbg_stop *dbg_stops;	/* the lines' ebreaks while it runs */
+static struct dbg_stop *dbg_stops;	/* the lines' stops while it runs */
 static int dbg_stop_count;
 static int dbg_marks[256], dbg_mark_count;	/* the user's breakpoints: lines */
 
@@ -406,7 +406,7 @@ dbg_lift(void)
 	}
 }
 
-/* One instruction on, from a stop: there is no single step here, so an ebreak is put
+/* One instruction on, from a stop: there is no single step here, so a stop is put
  * wherever the instruction at pc can go next. False if the program ended instead. */
 static int
 dbg_one(void)

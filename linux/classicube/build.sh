@@ -13,6 +13,9 @@ BUILD=$WORK/src/classicube-build
 OUT=${CLASSICUBE_OUT:-$REPO/build/images/linux/root}
 COMMIT=d41c3f7eef2038f59702b58bdb373483fb0d28f9
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
+# (the texture pack's PNGs are decoded by libmedia: png_shaderemu.c, docs/media.md)
+MEDIA=${MEDIA_LIB:-$WORK/src/libmedia/libmedia.a}
+[ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
 if [ ! -d "$C/.git" ]; then
     echo "== ClassiCube $COMMIT"
@@ -28,7 +31,7 @@ FPU="-fno-math-errno -fsingle-precision-constant"
 # -fno-common -fdata-sections, and ALIGN16 below: a variable is a section of its own that starts
 # on 16 bytes. A worker core builds chunk meshes (MapRenderer.h, docs/multicore.md), and two
 # cores must not store to the same 16 bytes.
-CFLAGS="-O2 $FPU -fno-pie -fno-common -fdata-sections -fno-strict-aliasing -w -DPLAT_SHADEREMU -I$C/src -I$MW/src/include -I$REPO/programs/mc ${CLASSICUBE_DEFINES:-}"
+CFLAGS="-O2 $FPU -fno-pie -fno-common -fdata-sections -fno-strict-aliasing -w -DPLAT_SHADEREMU -I$C/src -I$MW/src/include -I$REPO/programs/mc -I$REPO/linux/libmedia -idirafter $REPO/programs/linux/include ${CLASSICUBE_DEFINES:-}"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
 # The files a profile is full of get more of the compiler (no vectors: the machine has none).
 # With it a frame is 3% fewer instructions, a chunk's mesh 14% and digging 20%; the meshes are the same.
@@ -56,14 +59,15 @@ rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=0 -c zz_pad.
 sed 's/se_pad_/se_pad_s/g' zz_pad.c > zz_pads.c
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -msmall-data-limit=64 -c zz_pads.c -o zz_pad_small.o
 for o in Builder_w[1-7].o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o; do riscv32-linux-objcopy $ALIGN16 "$o"; done
-rv32-cc -O2 $FPU -w $(ls *.o | grep -v '^zz_') zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o classicube
+rv32-cc -O2 $FPU -w $(ls *.o | grep -v '^zz_') zz_pad_large.o zz_pad_small.o "$MEDIA" "$MW/src/lib/libnano-X.a" -lm -o classicube
 mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
 riscv32-linux-strip -o "$OUT/usr/bin/classicube.bin" classicube
 riscv32-linux-nm -n classicube > "$WORK/src/classicube.nm"
 
 # all in /usr/share: the image builder adds files to folders the ROM has, and makes none.
 # The game looks for texpacks/default.zip where it runs and writes its settings and maps there.
-# Its textures go in uncompressed (store_zip.py): inflating them was 7 seconds of every start.
+# Its zip's entries are stored, and its pictures one pack of PNGs that libmedia decodes on the worker
+# cores while the game starts (store_zip.py, png_shaderemu.c).
 python3 "$HERE/store_zip.py" "$C/misc/cc_textures.zip" "$OUT/usr/share/classicube-default.zip"
 cat > "$OUT/usr/bin/classicube" <<'EOF'
 #!/bin/sh

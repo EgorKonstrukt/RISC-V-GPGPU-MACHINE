@@ -7,7 +7,8 @@ small blitter that programs can use, and the measurements that say what to build
 
 The commit pass can already do one memory operation a frame instead of applying the write
 cache: a copy or a fill (`CSR_MEMOP_*`, CSRs `0x0b0`-`0x0b3`: operation, source or fill word,
-destination, length; writing 1 or 2 to `0x0b0` runs it and ends the CPU's frame). Its limits:
+destination, length; writing 1 or 2 to `0x0b0` runs it and ends the CPU's frame, unless the shader is built with
+`LAZY_MEMOP`: `boot.md`). Its limits:
 
 - kernel mode only, and addresses in the kernel's linear map;
 - source, destination and length multiples of 16 bytes (a texel), at least 1 KB;
@@ -46,8 +47,9 @@ One fragment runs for each destination word, so the pass gathers:
 
 That is a blitter in the old sense: two sources, a mask, a few ways to combine them, and a
 row length for each operand. It is not a program a texel: an interpreter would run for every
-texel of every band the commit draws (the whole state texture each round in the VRChat
-world), and a `switch` costs about 4 ns a case in these shaders. A range test and a handful
+texel the commit draws (a point for each texel a core stored to, the rows of a copy's or a
+fill's destination, and the bands something else wrote; `multicore.md`, "The commit as
+points"), and a `switch` costs about 4 ns a case in these shaders. A range test and a handful
 of fixed operations stay cheap.
 
 The GPU device already gathers into any rectangle of RAM, but it writes colours: 8 bits a
@@ -117,6 +119,6 @@ worth building at all. Expect step 1 to be most of the value.
 
 - Whether an operation should see the same frame's write-cache stores. Today the operation
   replaces the cache's commit for that frame; a queue makes the order matter.
-- How the commit's band list (the 4 MiB bands it draws on D3D12) takes ranges that the CPU
-  never wrote to.
+- Whether an operation's destination can be drawn as a copy's is (a point that makes the rows
+  of its range, `multicore.md`, "The commit as points"), or needs points of its own.
 - What the threshold is in the VRChat world, where a round costs more than a harness frame.

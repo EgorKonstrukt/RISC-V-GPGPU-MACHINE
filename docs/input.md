@@ -33,12 +33,15 @@ separate and unchanged.
 ## From Linux
 
 This project's kernel (`linux/kernel/shaderemu_input.c`) presents the block as two evdev
-devices, polled every timer tick (100 Hz). A key or a button is reported in its tick. A
+devices, polled every timer tick (100 Hz; every fourth tick on an idle machine nobody has
+touched for a second, `IDLE_POLL`). A key or a button is reported in its tick. A
 pointer that only moves is reported 50 times a second while the machine is idle and 10 times
 a second while a program is running: every report wakes the window system, and with a game
 running that was 17 thousand instructions a report of a machine that has three million a
-second. The cursor does not wait for it where the display is drawn under the host's own
-pointer (below), and a program that wants every move reads the words above itself:
+second, and not at all inside the window system's quiet rectangle (`pointer_hushed`;
+`nanox.md`, "The pointer on a core of its own"). The cursor does not wait for it where the
+display is drawn under the host's own pointer (below), and a program that wants every move
+reads the words above itself:
 
 | Device | Events |
 |---|---|
@@ -100,7 +103,9 @@ driver does), and the kernel clears it, and the cursor, when that file is closed
 program that dies does not keep the keyboard.
 
 In a VRChat world the same uniforms (`_InputPointer`, `_InputButtons`, `_InputKeySeq`,
-`_InputKeyCount`, `_InputKey0`..`_InputKey3` on the GPU device's material) are set by a script.
+`_InputKeyCount` on the machine's material, and the keys as `_InputKeyCode0`..`_InputKeyCode3`,
+a code plus 65536 while pressed, which `Machine.shader` turns into `_InputKey0`..`_InputKey3`)
+are set by a script (`EmuMachine.cs`).
 
 Input there is the world's own beams (`EmuPointer.cs`), one per hand in VR and the middle of
 the view on desktop. VRChat's laser cannot serve: it works on one hand at a time, and a world

@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "server/server.h"
+#include "botlib/botlib.h"
 #include "botlib/be_aas.h"
 #include "mcwx.h"
 #include "se_q3.h"
@@ -48,15 +49,20 @@ static struct {
 	int		code;
 	char		error[1024];
 	char		kept[8192];	/* a kind, then text ending in 0 (a cvar: its name, 0, its value, 0) */
-} works[1 + SE_LISTS] __attribute__ ((aligned (16)));
+} works[1 + SE_LISTS + SE_THINKERS + 1] __attribute__ ((aligned (16)));	/* then each core of a bot's think, the client's helper */
 static char	job_stack[STACK_BYTES] __attribute__ ((aligned (16)));
-se_abort_t	se_worker_abort[2];
+static char	think_stack[SE_THINKERS][SE_THINK_STACK] __attribute__ ((aligned (16)));
+static struct { int (*think) (int, float); float thinktime; int serial, unused; } think_now __attribute__ ((aligned (16)));	/* the server's */
+se_abort_t	se_worker_abort[2 + SE_THINKERS];
 static int	mode = MODE_UNSET, pending, workers = -1;
 static mcw_handle	out;		/* the worker's call (mcwx.h), while it is out */
 static unsigned	out_result;	/* what the last one answered: its instructions */
-static int	pace_frame, routes_late, warming;	/* QUAKE3_SERVER=frame, QUAKE3_ROUTES=late; the job out is the routes' */
+static int	pace_frame, routes_late, routes_all, warming;	/* QUAKE3_SERVER=frame, QUAKE3_ROUTES=late or all; the job out is the routes' */
+static int	paced;		/* QUAKE3_SERVER=paced: the worker's jobs, made by this core where they are given out */
 static struct { int bytes, items, unused[2]; } warmed __attribute__ ((aligned (16)));	/* the worker's */
 int BotWarmLevelItemRoutes (int travelflags, int *items);	/* be_ai_goal.c (quake3.patch) */
+extern int se_rand_core;					/* sys_shaderemu.c */
+int AAS_WarmAllRoutes (int travelflags);		/* be_aas_route.c */
 /* QUAKE3_SERVER_LOG=1: a q3srv: line for every job. The worker's part of it, and this core's */
 static struct { unsigned began, ended, frames, bots, game, tell, moves, packets; } job_log __attribute__ ((aligned (16)));
 static unsigned	log_on, log_posted, log_msec, log_jobs;
@@ -70,13 +76,17 @@ __asm__ (".text\n.globl se_call_on_stack\n.type se_call_on_stack, @function\nse_
 	"	addi a2, a2, -16\n	sw ra, 12(a2)\n	sw sp, 8(a2)\n	mv sp, a2\n	mv t0, a0\n	mv a0, a1\n	jalr t0\n"
 	"	lw ra, 12(sp)\n	lw sp, 8(sp)\n	ret\n");
 
-/* The program's worker cores: one for the server, one for the client's game, one for the scene. How many there are. */
+/* The program's worker cores: the server's, the client's game's, the scene's, the bots' thinks', and
+   QUAKE3_DECODERS more (24) for the pictures a level loads (tr_shaderemu.c). How many there are. */
+int	se_game_workers;	/* of them the game's own */
+
 int SE_Workers (void)
 {
 	if (workers < 0) {
-		const char	*scene = getenv ("QUAKE3_SCENE");
+		const char	*scene = getenv ("QUAKE3_SCENE"), *decoders = getenv ("QUAKE3_DECODERS");
 
-		workers = mcw_open (scene && !strcmp (scene, "inline") ? 2 : 3);
+		se_game_workers = (scene && !strcmp (scene, "inline") ? 3 : 4) + SE_THINKERS;
+		workers = mcw_open (se_game_workers + (decoders ? atoi (decoders) : 24));
 		if (workers > 0)
 			atexit (mcw_close);
 	}
@@ -95,23 +105,34 @@ static void setup (void)
 	mode = MODE_INLINE;
 	pace_frame = how && !strcmp (how, "frame");
 	routes_late = getenv ("QUAKE3_ROUTES") && !strcmp (getenv ("QUAKE3_ROUTES"), "late");
+	routes_all = getenv ("QUAKE3_ROUTES") && !strcmp (getenv ("QUAKE3_ROUTES"), "all");
 	if (getenv ("QUAKE3_TRACES") && !strcmp (getenv ("QUAKE3_TRACES"), "all"))
 		se_trace_keep = 0;
-	if (!(how && !strcmp (how, "inline")) && SE_Workers () > 0) {
+	paced = how && !strcmp (how, "paced");
+	if (paced || (!(how && !strcmp (how, "inline")) && SE_Workers () > 0)) {
 		mode = MODE_WORKER;
 		/* (the stack's top is there before the worker steps on it) */
 		for (i = 4096; i <= 0x20000; i += 4096)
 			job_stack[STACK_BYTES - i] = 0;
+		for (i = 0; i < SE_THINKERS; i++)
+			mcw_touch (think_stack[i] + SE_THINK_STACK - 0x10000, 0x10000);
 	}
-	printf ("quake3: the server's frame is on %s\n", mode == MODE_WORKER ? "a worker core" : "this core");
+	think_now.serial = getenv ("QUAKE3_BOTS") && !strcmp (getenv ("QUAKE3_BOTS"), "serial");
+	printf ("quake3: the server's frame is on %s\n", paced ? "this core, as the worker's" : mode == MODE_WORKER ? "a worker core" : "this core");
 }
 
 /* ---- what the worker keeps for this core ---- */
 
+/* Whose kept lines a core's are: the server's, a list of the client's game's, a bot's think's */
+static int kept_by (int core)
+{
+	return core == 2 ? se_client_list : core >= 3 ? 1 + SE_LISTS + core - 3 : 0;
+}
+
 static void keep (int kind, const char *a, const char *b)
 {
 	unsigned	la = strlen (a) + 1, lb = b ? strlen (b) + 1 : 0;
-	int		w = SE_OnWorker () == 2 ? se_client_list : 0;
+	int		w = kept_by (SE_OnWorker ());
 
 	if (works[w].used + 1 + la + lb > sizeof works[w].kept) {
 		works[w].lost++;
@@ -133,12 +154,12 @@ void SE_ClientKeepReliable (const char *text) { keep (KEPT_RELIABLE, text, NULL)
 
 void SE_ServerWorkerError (int code, const char *text)
 {
-	int	w = SE_OnWorker () == 2 ? se_client_list : 0;
+	int	core = SE_OnWorker (), w = kept_by (core);
 
 	Q_strncpyz (works[w].error, text, sizeof works[w].error);
 	works[w].code = code;
 	works[w].failed = 1;
-	longjmp (se_worker_abort[w != 0].at, 1);
+	longjmp (se_worker_abort[core >= 3 ? core - 1 : w != 0].at, 1);
 }
 
 /* What a worker kept (0: the server's; 1, 2: the client's game's, by its list) is done by this core; 1 when it ended in an error (SE_WorkerRaise). */
@@ -177,6 +198,270 @@ void SE_WorkerRaise (int w)
 	Com_Error (works[w].code, "%s", works[w].error);
 }
 
+/*
+ * QUAKE3_SUM=1 with the server on this core (inline, paced): a q3srvsum: line a frame of the game,
+ * over every linked entity's state and every player's, to compare two builds (=2: every word too).
+ * On standard output, not the console: its lines are drawn, and the lists' sums would have them.
+ */
+void SE_ServerSum (void)
+{
+	static int	on = -1;
+	unsigned	h = 2166136261u, i, k;
+	playerState_t	ps;
+
+	if (on < 0)
+		on = getenv ("QUAKE3_SUM") ? atoi (getenv ("QUAKE3_SUM")) : 0;
+	if (!on || (SE_OnWorker () && !paced))
+		return;
+	for (i = 0; i < (unsigned)sv.num_entities + sv_maxclients->integer; i++) {
+		const unsigned char	*p;
+		unsigned		bytes;
+
+		if (i < (unsigned)sv.num_entities) {
+			sharedEntity_t	*e = SV_GentityNum (i);
+
+			if (!e->r.linked)
+				continue;
+			p = (const unsigned char *)&e->s, bytes = sizeof e->s;
+		} else if (svs.clients[i - sv.num_entities].state == CS_ACTIVE) {
+			ps = *SV_GameClientNum (i - sv.num_entities);
+			ps.ping = 0;	/* (the clock's: SV_CalcPings) */
+			p = (const unsigned char *)&ps, bytes = sizeof ps;
+		} else
+			continue;
+		for (k = 0; k < bytes; k++)
+			h = (h ^ p[k]) * 16777619u;
+		if (on == 2) {
+			printf ("q3srvpart: %d %u:", sv.time, i);
+			for (k = 0; k < bytes / 4; k++)
+				printf (" %x", ((const unsigned *)p)[k]);
+			printf ("\n");
+		}
+	}
+	printf ("q3srvsum: %d %08x\n", sv.time, h);
+}
+
+/* The bots' library as the game calls it directly (g_syscalls.c in quake3.patch), as SV_GameSystemCalls would */
+extern botlib_export_t	*botlib_export;
+int SE_GameBotLibUpdateEntity (int ent, void *bue) { return botlib_export->BotLibUpdateEntity (ent, bue); }
+float SE_GameAASTime (void) { return botlib_export->aas.AAS_Time (); }
+int SE_GameAASPointContents (vec3_t point) { return botlib_export->aas.AAS_PointContents (point); }
+void SE_GameEAGetInput (int client, float thinktime, void *input) { botlib_export->ea.EA_GetInput (client, thinktime, input); }
+float SE_GameCharacteristicBFloat (int character, int index, float min, float max)
+{
+	return botlib_export->ai.Characteristic_BFloat (character, index, min, max);
+}
+void SE_GameBotUserCommand (int clientNum, usercmd_t *ucmd)
+{
+	if (clientNum >= 0 && clientNum < sv_maxclients->integer)
+		SV_ClientThink (&svs.clients[clientNum], ucmd);
+}
+
+/* With the server on this core (inline, paced) a command of the game's (addbot) draws from the server's numbers, not the client's; was it so */
+int SE_ServerCommandDraws (int on)
+{
+	int	was = se_rand_core >= 0;
+
+	setup ();
+	if (mode != MODE_WORKER || paced)
+		se_rand_core = on ? 1 : -1;
+	return was;
+}
+
+/* ---- the bots' thinks ---- */
+
+/*
+ * The bots that think in a frame think at once (ai_main.c): each draws its own random numbers,
+ * and what it says or asks as a client is kept and done after all of them, in their order, so
+ * that one think does not see another's: the same whether they are made one after another or
+ * on several cores.
+ */
+#define SAID_BYTES	4096
+static struct { uint64_t seed; unsigned made, unused; } bot_rand[MAX_CLIENTS] __attribute__ ((aligned (16)));
+static struct { int thinking, used, unused[2]; char text[SAID_BYTES]; } said[SE_CORES] __attribute__ ((aligned (16)));
+void SE_RandUse (uint64_t *seed);	/* sys_shaderemu.c */
+void SE_BotFreesDone (void);		/* be_ai_chat.c (quake3.patch) */
+void AAS_SE_ThinkPools (void);		/* be_aas_route.c */
+
+static void think_one (int (*think) (int, float), int client, float thinktime, int together)
+{
+	int	core = SE_OnWorker ();
+
+	if (!together) {	/* (a bot that thinks alone draws and says as it always did) */
+		think (client, thinktime);
+		return;
+	}
+	if (!bot_rand[client].made)
+		bot_rand[client].seed = 0x9e3779b97f4a7c15ull * (unsigned)(client + 1), bot_rand[client].made = 1;
+	SE_RandUse (&bot_rand[client].seed);
+	said[core].thinking = client + 1;
+	think (client, thinktime);
+	said[core].thinking = 0;
+	SE_RandUse (NULL);
+}
+
+/* A command a bot gives as a client: kept when it is said in a think (1). */
+int SE_BotCommandKept (int client, const char *command)
+{
+	int		core = SE_OnWorker ();
+	unsigned	bytes = strlen (command) + 2;
+
+	if (!said[core].thinking)
+		return 0;
+	if (said[core].used + bytes <= SAID_BYTES) {
+		said[core].text[said[core].used] = (char)client;
+		memcpy (said[core].text + said[core].used + 1, command, bytes - 1);
+		said[core].used += bytes;
+	}
+	return 1;
+}
+
+/*
+ * Where the bots think: one after another here, and the rest on cores of their own, each on a
+ * stack of SE_THINK_STACK (SE_OnWorker says 3 and up there). From the first core they are calls
+ * (mcwx.h); from the server's worker they are its helpers, jobs the first core gave out with it.
+ */
+unsigned	se_think_stacks = (unsigned)(uintptr_t)think_stack;
+struct se_think_counts	se_think_counts __attribute__ ((aligned (16)));	/* bots thought, of them on helpers: the server's */
+static struct { unsigned seq, count; int clients[MAX_CLIENTS]; } think_task[SE_THINKERS] __attribute__ ((aligned (16)));	/* the server's */
+static struct { unsigned seq, unused[3]; } think_done[SE_THINKERS] __attribute__ ((aligned (16)));	/* each helper's */
+static struct { unsigned quit, count, unused[2]; } helpers __attribute__ ((aligned (16)));	/* this core's */
+static mcw_handle	helper_out[SE_THINKERS];
+
+static uint32_t think_body (uint32_t k)
+{
+	unsigned	i;
+
+	if (!setjmp (se_worker_abort[2 + k].at))
+		for (i = 0; i < think_task[k].count; i++)
+			think_one (think_now.think, think_task[k].clients[i], think_now.thinktime, 1);
+	said[3 + k].thinking = 0;
+	SE_RandUse (NULL);
+	return 0;
+}
+
+static uint32_t think_job (uint32_t k, uint32_t unused)
+{
+	return se_call_on_stack (think_body, k, think_stack[k] + SE_THINK_STACK);
+}
+
+/* A helper of the server's job: the thinks it is given, until the job has ended. */
+static uint32_t helper_job (uint32_t k, uint32_t unused)
+{
+	unsigned	seen = think_done[k].seq;
+
+	for (;;) {
+		while (think_task[k].seq == seen && !helpers.quit)
+			mc_end_pass ();
+		if (think_task[k].seq == seen)
+			return 0;
+		seen = think_task[k].seq;
+		think_job (k, 0);
+		think_done[k].seq = seen;
+	}
+}
+
+/* The first core gives the server's job helpers when bots are there to think at once. */
+static void helpers_give (void)
+{
+	int	i, bots = 0;
+
+	/* (they stay from job to job, waiting a pass at a time: a job's end does not wait for them) */
+	if (!helpers.count)
+		helpers.quit = 0;
+	if (think_now.serial || paced)
+		return;
+	for (i = 0; i < sv_maxclients->integer; i++)
+		bots += svs.clients[i].state == CS_ACTIVE && svs.clients[i].netchan.remoteAddress.type == NA_BOT;
+	for (i = helpers.count; i < bots - 1 && i < SE_THINKERS; i++) {
+		if (!(helper_out[i] = mcw_try_call (helper_job, i, 0)))
+			break;
+		helpers.count++;
+	}
+}
+
+static void helpers_join (void)
+{
+	unsigned	i;
+
+	helpers.quit = 1;
+	for (i = 0; i < helpers.count; i++)
+		mcw_join (helper_out[i]);
+	helpers.count = 0;
+}
+
+static void helpers_poll (void)
+{
+	unsigned	i;
+
+	for (i = 0; i < helpers.count; i++)
+		mcw_ready (helper_out[i]);	/* (a page a helper stopped at is brought) */
+}
+
+void SE_BotThinks (int (*think) (int, float), const int *clients, int n, float thinktime)
+{
+	/* (calls from the first core, the server's own or a job of it made there: QUAKE3_SERVER=paced) */
+	int		i, core, k, h, first = mode != MODE_WORKER || paced || SE_OnWorker () == 0, failed = -1;
+	unsigned	at;
+	mcw_handle	call[SE_THINKERS];
+
+	h = think_now.serial ? 0 : first ? SE_THINKERS : (int)helpers.count;
+	if (h > n - 1)
+		h = n - 1;
+	se_think_counts.n[0] += (unsigned)n, se_think_counts.n[1] += (unsigned)(h > 0 ? h : 0);
+	if (h > 0) {
+		AAS_SE_ThinkPools ();	/* (room for the routes a core beside makes for itself) */
+		think_now.think = think, think_now.thinktime = thinktime;
+		for (k = 0; k < h; k++)
+			think_task[k].count = 0;
+		for (i = 0; i < n; i++)		/* (the server's core takes the first, the others one each in turn) */
+			if (i % (h + 1))
+				k = i % (h + 1) - 1, think_task[k].clients[think_task[k].count++] = clients[i];
+		for (k = 0; k < h; k++) {
+			think_task[k].seq++;
+			if (first)
+				call[k] = mcw_call (think_job, k, 0);
+		}
+	}
+	for (i = 0; i < n; i += h + 1)
+		think_one (think, clients[i], thinktime, n > 1);
+	for (k = 0; k < h; k++) {
+		if (first)
+			mcw_join (call[k]);
+		else
+			while (think_done[k].seq != think_task[k].seq)
+				mc_end_pass ();
+		/* what the think kept, as this core's own; an error raised here */
+		if (SE_OnWorker () == 0)
+			failed = SE_WorkerKept (1 + SE_LISTS + k) ? 1 + SE_LISTS + k : failed;
+		else {
+			int		w = 1 + SE_LISTS + k;
+			unsigned	at2;
+
+			for (at2 = 0; at2 < works[w].used; ) {
+				int		kind = works[w].kept[at2];
+				const char	*a = works[w].kept + at2 + 1, *b = a + strlen (a) + 1;
+
+				keep (kind, a, kind == KEPT_CVAR || kind == KEPT_CVAR_FORCED ? b : NULL);
+				at2 += 1 + strlen (a) + 1 + (kind == KEPT_CVAR || kind == KEPT_CVAR_FORCED ? strlen (b) + 1 : 0);
+			}
+			works[w].used = 0, works[w].lost = 0;
+			if (works[w].failed)
+				failed = w, works[w].failed = 0;
+		}
+	}
+	SE_BotFreesDone ();
+	if (failed >= 0)
+		Com_Error (works[failed].code, "%s", works[failed].error);
+	for (i = 0; i < n; i++)
+		for (core = 0; core < SE_CORES; core++)
+			for (at = 0; at < (unsigned)said[core].used; at += strlen (said[core].text + at + 1) + 2)
+				if (said[core].text[at] == clients[i])
+					SV_ExecuteClientCommand (&svs.clients[clients[i]], said[core].text + at + 1, qtrue);
+	for (core = 0; core < SE_CORES; core++)
+		said[core].used = 0;
+}
+
 /* ---- packets ---- */
 
 typedef struct { netadr_t adr; int length, unused; } packet_t;
@@ -195,12 +480,16 @@ static int box_add (box_t *box, netadr_t adr, int length, const void *data)
 	return 1;
 }
 
-/* A packet for the server: kept for its next frame (1), unless the server is always this core's (0). */
+/* A packet for the server: kept for its next frame, or read now when the server is this core's. */
 int SE_ServerInbox (netadr_t from, msg_t *msg)
 {
 	setup ();
-	if (mode != MODE_WORKER)
-		return 0;
+	if (mode != MODE_WORKER) {
+		se_rand_core = 1;
+		SV_PacketEvent (from, msg);
+		se_rand_core = -1;
+		return 1;
+	}
 	box_add (&inbox, from, msg->cursize, msg->data);	/* (one there is no room for is lost, as on a network) */
 	return 1;
 }
@@ -265,14 +554,12 @@ static uint32_t server_job (uint32_t msec, uint32_t unused)
 	return SE_Cycles () - began;
 }
 
-/* A frame the worker had has ended: what it kept and sent is done here. */
-static void finish (void)
+/* A frame the worker had has ended (out_result its answer): what it kept and sent is done here. */
+static void done (void)
 {
 	unsigned	at;
 	int		failed;
 
-	out_result = mcw_join (out);
-	out = 0;
 	if (warming) {
 		warming = 0;
 		Com_Printf ("quake3: the bots' routes to %d items made ahead: %d KB, %u thousand instructions of the worker core\n",
@@ -299,6 +586,13 @@ static void finish (void)
 		SE_WorkerRaise (0);
 }
 
+static void finish (void)
+{
+	out_result = mcw_join (out);
+	out = 0;
+	done ();
+}
+
 /* Before anything on this core that reads or changes the server's data. */
 void SE_ServerSettle (void)
 {
@@ -307,6 +601,7 @@ void SE_ServerSettle (void)
 	while (!mcw_ready (out)) {
 		mcw_rest ();
 		se_server_passes++;
+		helpers_poll ();	/* (the job may wait for a helper stopped at a page) */
 	}
 	finish ();
 }
@@ -347,8 +642,15 @@ static void give (void)
 	memcpy (job_in.data, inbox.data, inbox.used);
 	job_in.used = inbox.used;
 	inbox.used = 0;
-	out = mcw_call (server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
 	log_posted = SE_WindowClock (), log_msec = pending;
+	if (paced) {
+		pending = 0;
+		out_result = server_job ((uint32_t)(log_msec > MOST_MSEC ? MOST_MSEC : log_msec), 0);
+		done ();
+		return;
+	}
+	helpers_give ();
+	out = mcw_call (server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
 	pending = 0;
 }
 
@@ -364,13 +666,18 @@ void SE_ServerPoll (void)
 		if (com_sv_running->integer && !sv_killserver->integer)
 			give ();
 	}
+	helpers_poll ();
 	SE_ClientPoll ();
 }
 
 static uint32_t warm_body (uint32_t unused)
 {
 	/* (a bot that has the rocket launcher asks for the routes a rocket jump opens: another set) */
-	if (!setjmp (se_worker_abort[0].at))
+	if (setjmp (se_worker_abort[0].at))
+		return 0;
+	if (routes_all)
+		warmed.bytes = AAS_WarmAllRoutes (TFL_DEFAULT) + AAS_WarmAllRoutes (TFL_DEFAULT | TFL_ROCKETJUMP), warmed.items = -1;
+	else
 		warmed.bytes = BotWarmLevelItemRoutes (TFL_DEFAULT, &warmed.items) + BotWarmLevelItemRoutes (TFL_DEFAULT | TFL_ROCKETJUMP, &warmed.items);
 	return 0;
 }
@@ -389,7 +696,7 @@ void SE_ServerWarm (void)
 	int	i;
 
 	setup ();
-	if (mode != MODE_WORKER || routes_late || out || !com_sv_running->integer || sv.state != SS_GAME)
+	if (routes_late || out || !com_sv_running->integer || sv.state != SS_GAME)
 		return;
 	/* (only when a bot is there to ask for them: one added later makes its own, in its first frames) */
 	for (i = 0; i < sv_maxclients->integer; i++)
@@ -397,8 +704,18 @@ void SE_ServerWarm (void)
 			break;
 	if (i == sv_maxclients->integer)
 		return;
-	SE_ServerZoneTouch (mcw_touch, WARM_BYTES);
+	if (mode != MODE_WORKER) {	/* (here too, so that a frame is the same work as on the worker) */
+		warm_body (0);
+		Com_Printf ("quake3: the bots' routes to %d items made ahead: %d KB\n", warmed.items, warmed.bytes / 1024);
+		return;
+	}
 	warming = 1;
+	if (paced) {
+		out_result = warm_job (0, 0);
+		done ();
+		return;
+	}
+	SE_ServerZoneTouch (mcw_touch, WARM_BYTES);
 	out = mcw_call (warm_job, 0, 0);
 }
 
@@ -408,6 +725,7 @@ void SE_ServerFrame (int msec)
 	setup ();
 	if (!com_sv_running->integer || sv_killserver->integer) {
 		SE_ServerSettle ();
+		helpers_join ();
 		SV_Frame (msec);
 		return;
 	}
@@ -417,10 +735,12 @@ void SE_ServerFrame (int msec)
 
 		if (msec > MOST_MSEC)
 			msec = MOST_MSEC;
+		se_rand_core = 1;
 		do {
 			SV_Frame (msec < step ? msec : step);
 			msec -= step;
 		} while (msec > 0 && com_sv_running->integer);
+		se_rand_core = -1;
 		return;
 	}
 	pending += msec;
@@ -434,6 +754,8 @@ void SE_ServerFrame (int msec)
 	if (slow () || (sv_paused->integer && cl_paused->integer)) {
 		int	step = sv_fps->integer > 0 ? 1000 / sv_fps->integer : 100;
 
+		se_rand_core = paced ? 1 : -1;	/* (paced: the server's draws are its own all along, for two builds to compare) */
+		helpers_join ();	/* (the thinks here are this core's calls: a helper left waiting would make them too) */
 		box_read (&inbox);
 		if (pending > MOST_MSEC)
 			pending = MOST_MSEC;
@@ -442,6 +764,7 @@ void SE_ServerFrame (int msec)
 			pending -= step;
 		} while (pending > 0 && com_sv_running->integer);
 		pending = 0;
+		se_rand_core = -1;
 		return;
 	}
 	give ();

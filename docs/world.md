@@ -13,7 +13,7 @@ in Blender by scripts in `world/`; furniture, plants and the main surfaces come 
     python world\sounds.py
     & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" -b --python world\build.py
 
-- `install_packages.py` puts three shader packages into the Unity project (once): LTCGI, VRC
+- `install_packages.py` puts four shader packages into the Unity project (once): LTCGI, VRC
   Light Volumes 2.1.3, Mochie's shaders and Silent's Fake Glass. The builder's code needs them to compile.
 - `fetch.py` downloads Poly Haven's models and textures to `build/polyhaven` (kept out of the
   repository; 15 s the first time) and writes what Unity needs of them:
@@ -161,8 +161,10 @@ What it does to the baked seams has not been measured: that needs a bake before 
 - "ShaderEmu/Bake lighting" uses Unity's own lightmapper on the graphics card (close VR first):
   about two minutes, where the processor was at 49% after most of half an hour. Rendering the
   lightmap in Blender's Cycles instead was tried (Unity's layout exported, 7 s to render) and
-  dropped: its light did not match the room's, and it looked worse. Bakery was also suggested: it is a
-  paid asset and is not in the project; with it there, `BakeLighting` is the one place to change.
+  dropped: its light did not match the room's, and it looked worse. Bakery is a paid asset and is
+  not in the repository; when the project has it (`BAKERY_INCLUDED`), `BakeLighting` bakes with it
+  instead (`ShaderEmuBakery.cs`: lightmaps, light probes and the light volumes in one render,
+  then the reflection probes by Unity's bake into files of their own).
 - "ShaderEmu/Look at the room without a bake" is for working on the room: no lightmap, the
   lamps real-time, flat light under them, and no static batches (in play mode a batched model
   was dark under real-time lamps: the walls had a fifth of their light in the editor). The
