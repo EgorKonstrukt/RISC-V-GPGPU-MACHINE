@@ -46,6 +46,11 @@ public class EmuHolodeck : UdonSharpBehaviour
                                        // (for a program that does not say its player's eye: Natural)
     public float mouseCounts = 20f;    // a desktop sitter's mouse: counts told the game for one of Unity's "Mouse X"
     public bool beam = true;           // a sitter in a headset sees where their hand points (the console's Beam key)
+    // A test of a join while someone sits (a crash on join): the master sits in room 0 by
+    // itself, and every client logs the seats and the players as [SitTest] lines.
+    public bool sitTest;
+    private float sitTestAt;
+    private bool sitTestSat;
 
     private const int FirstSurface = 13;  // of EmuStreams' surfaces: the holodecks' are 13 to 20
 
@@ -97,6 +102,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     public void Entered(int room, VRCPlayerApi player)
     {
         nextAt = 0f;
+        if (sitTest) Debug.Log("[SitTest] entered room " + room + ": player " + player.playerId + (player.isLocal ? " (me)" : ""));
         if (!player.isLocal) return;
         own = room;
         EmuShare mine = hub.Mine();
@@ -143,6 +149,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     public void Exited(int room, VRCPlayerApi player)
     {
         nextAt = 0f;
+        if (sitTest) Debug.Log("[SitTest] exited room " + room + ": player " + player.playerId + (player.isLocal ? " (me)" : ""));
         if (!player.isLocal) return;
         // A stick stood the sitter up in a headset whatever the station was told: unless they
         // asked (a jump) or were sent back to the start, they are sat down again.
@@ -342,8 +349,27 @@ public class EmuHolodeck : UdonSharpBehaviour
 
     // ---- who sits where, and what each room shows ----
 
+    private void SitTest()
+    {
+        if (Time.time < sitTestAt) return;
+        sitTestAt = Time.time + 5f;
+        VRCPlayerApi me = Networking.LocalPlayer;
+        if (!Utilities.IsValid(me)) return;
+        string seats = "";
+        for (int k = 0; k < count; k++) seats += occupant[k] + " ";
+        Debug.Log("[SitTest] t=" + Time.time.ToString("F0") + " me=" + me.playerId + " master=" + Networking.IsMaster
+                  + " vr=" + me.IsUserInVR() + " players=" + VRCPlayerApi.GetPlayerCount() + " own=" + own + " seats=" + seats);
+        if (Networking.IsMaster && !sitTestSat && own < 0 && Time.time > 15f)
+        {
+            sitTestSat = true;
+            Debug.Log("[SitTest] the master sits in room 0");
+            stations[0].UseStation(me);
+        }
+    }
+
     void Update()
     {
+        if (sitTest) SitTest();
         if (own >= 0 && Input.GetKeyDown(KeyCode.End)) StandUp();
         if (own >= 0 && Input.GetKeyDown(KeyCode.Home)) { consoleHidden = !consoleHidden; Arrange(); }
         // a menu, a level loading, or a program that draws no world: its picture on the large screen
