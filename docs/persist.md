@@ -8,8 +8,9 @@ world, so the folder is for settings and small saved games.
 
 Saving is asked for, never done by itself: with the SAVE button of the sign on the computer,
 with Settings' Storage tab, or with `nxpersist save`. Loading is done once a session, when
-the desktop starts, and can be switched off. What is in the folder and not saved is lost
-with the rest.
+the desktop starts (on a machine whose worker cores `geotune` lays out, at boot, just before
+that: `docs/multicore.md`, "Packing the small workers"), and can be switched off. What is in
+the folder and not saved is lost with the rest.
 
     nxpersist load | save | clear | auto 0|1 | state        (load!: though loading at start is off)
 
@@ -52,6 +53,7 @@ the session only when the folder is saved.
 | `rays.width`, `rays.height`, `rays.turns`, `rays.shadows` | `nxray` | its bar's settings (a test with `RAY_FRAMES` takes none of them) |
 | `pathtrace.detail`, `.samples`, `.turns`, `.background`, `.background.colour`, `.live` | `nxpath` | the picture's settings |
 | `web.home`, `web.pictures`, `web.bookmarks`, `web.bookmark.N` | the browser | its home page, whether pictures are loaded, and up to 24 bookmarks, `ADDRESS TITLE` each (`docs/web.md`) |
+| `geotune.width`, `.workers`, `.iterations`, `.us`, `.ratio`, `.force` | `geotune`, at boot | the small workers' blocks' width, and what it was chosen by (`docs/multicore.md`, "Packing the small workers"); `.force` 2, 4 or 8 is a width with nothing measured |
 
 Not in it: the games' own settings and saved games (their files, in their folders above),
 where the desktop's icons stand (a file of lines), and whether the folder is loaded at start

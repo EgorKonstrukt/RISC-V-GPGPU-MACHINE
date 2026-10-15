@@ -215,10 +215,10 @@
                     if (mc_idle()) continue;
             #if defined(TICK_MRT) && !defined(TICK_UNPACK)
                     uint2 at = mc_block_of(k);
-                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols, 8);
+                    tick_rect(stream, 8 * at.x, at.y, 8 * mc_cols_now, 8);
             #else
                     uint2 at = mc_tile_at(mc_tile0);
-                    tick_rect(stream, at.x, at.y, 8 * mc_rows, 8);
+                    tick_rect(stream, at.x, at.y, 8 * mc_rows_now, 8);
             #endif
                 }
                 mc_select(0);
@@ -293,7 +293,7 @@
                     if (_Init) TICK_ZERO
                     uint tile;
                     hart = mc_core_in(pixel, tile);
-                    if (hart == 0 || tile >= mc_rows) TICK_ZERO
+                    if (hart == 0 || tile >= mc_rows_now) TICK_ZERO
                     own = mc_tile_at(mc_tile0 + tile) + uint2(0, pixel.y & 7);
                     // which texel of the worker's state this pixel is, as a place in its rows of 64
                     uint w = (tile << 6) + ((pixel.y & 7) << 3);

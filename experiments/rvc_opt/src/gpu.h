@@ -721,14 +721,72 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 uint mc_rows_of_bits(uint bits) {
     return bits == 0 ? 0 : (44 + 8 + (2u << bits) * 4 + 63) / 64;
 }
+#ifdef MC_HYBRID
+// The hybrid geometry as src/types.h reads it (mc_geo_read: big workers first, the blocks'
+// widths in .a), here again since not every pass that has this file has types.h: how many
+// workers it has, and how many of them are big and how many tiles a big and a small one has.
+#ifndef TICK_BLOCK
+#define TICK_BLOCK 4
+#endif
+#ifndef TICK_PAD
+#define TICK_PAD 2
+#endif
+#ifndef TICK_BLOCK_BIG
+#define TICK_BLOCK_BIG 8
+#endif
+#ifndef TICK_PAD_BIG
+#define TICK_PAD_BIG 0
+#endif
+#ifndef TICK_GAP
+#define TICK_GAP 8
+#endif
+#ifndef TICK_MRT_W
+#define TICK_MRT_W 1040
+#endif
+uint mc_geo_cols(uint rows, uint width, uint block, uint pad) {
+    if (width != 0 && width <= 64) { block = width; pad = 0; }
+    return (rows + pad + block - 1) / block * block;
+}
+uint mc_geo_count(uint4 geo, out uint nb, out uint rb, out uint rows) {
+#ifdef MC_FORCE_BITS
+    if (geo.b != 0) geo.b = MC_FORCE_BITS;
+#endif
+    uint avail = TICK_MRT_W - 8 - TICK_GAP, bb = (geo.a >> 8) & 0xff, per0 = 0, sb0;
+    rows = geo.b < 3 || geo.b > 6 ? 0 : mc_rows_of_bits(geo.b);
+    nb = 0;
+    rb = 0;
+    if (rows == 0 || (geo.r & 1) != 0) return 0;
+    uint cols = mc_geo_cols(rows, (geo.a >> 16) & 0xff, TICK_BLOCK, TICK_PAD);
+    if ((geo.a & 0xff) != 0 && bb >= 3 && bb <= 6) {
+        rb = mc_rows_of_bits(bb);
+        uint cb = mc_geo_cols(rb, geo.a >> 24, TICK_BLOCK_BIG, TICK_PAD_BIG);
+        nb = min(min(min(geo.a & 0xff, 248 / rb), avail / cb), min(geo.g, (uint)CORES - 1));
+        if (nb != 0) per0 = (avail - nb * cb) / cols;
+    }
+    sb0 = nb != 0 ? 1 : 0;
+    return nb + min(min(geo.g, (uint)CORES - 1) - nb, min(((CORES + 47) / 49 - sb0) * (248 / rows), ((CORES + 126) / 128 - sb0) * (avail / cols) + per0));
+}
+uint2 mc_place(uint core) {
+    if (core == 0) return uint2(0, 0);
+    uint nb, rb, rows, count = mc_geo_count(ram(0x70003du), nb, rb, rows);   // MC_GEOMETRY
+    if (core > count || core >= CORES) return uint2(64, 0xffff);
+    if (core <= nb) return uint2(64, (core - 1) * rb);
+    uint j = core - 1 - nb, per = 248 / rows, sb0 = nb != 0 ? 1 : 0;
+    return uint2(64, (sb0 + j / per) * 248 + (j % per) * rows);
+}
+#else
 uint2 mc_place(uint core) {
     if (core == 0) return uint2(0, 0);
     uint4 geo = ram(0x70003du);   // MC_GEOMETRY: how many workers, and their size
+#ifdef MC_FORCE_BITS
+    if (geo.b != 0) geo.b = MC_FORCE_BITS;
+#endif
     uint rows = geo.b < 3 || geo.b > 6 ? 0 : mc_rows_of_bits(geo.b);
     uint j = core - 1, per = 248 / max(rows, 1);
     if (rows == 0 || (geo.r & 1) != 0 || core > geo.g || core >= CORES || j / per >= (CORES + 47) / 49) return uint2(64, 0xffff);
     return uint2(64, (j / per) * 248 + (j % per) * rows);
 }
+#endif
 // Texel w (below 64) of a core's state: a worker's is in the first of its tiles, eight to a row.
 uint4 mc_state_texel(uint2 at, uint w) {
     if (at.x == 0) return GPU_STATE[uint2(w, 0)];
@@ -754,10 +812,15 @@ uint2 mc_stat_bits(uint from) {
 }
 // How many cores there are as the geometry has them now.
 uint mc_stat_cores() {
+#ifdef MC_HYBRID
+    uint nb, rb, rows;
+    return 1 + mc_geo_count(ram(0x70003du), nb, rb, rows);
+#else
     uint4 geo = ram(0x70003du);
     uint rows = geo.b < 3 || geo.b > 6 ? 0 : mc_rows_of_bits(geo.b);
     if (rows == 0 || (geo.r & 1) != 0) return 1;
     return 1 + min(min(geo.g, (uint)CORES - 1), (248 / rows) * ((CORES + 47) / 49));
+#endif
 }
 #endif
 
