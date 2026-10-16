@@ -7,6 +7,7 @@
 #include "Window.h"
 #include "World.h"
 #include "MapRenderer.h"
+#include "Game.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +223,14 @@ void Gfx_EndFrame(void);
 static pthread_mutex_t se_heap = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t se_main;
 static cc_bool se_main_known;
+
+float SE_SeatSheet(void);
+static float sheet_at;	/* how far before a sitter's camera the 2D screen is drawn, in blocks; 0: flat */
+/* a seated player's menu: its sheet stays before the camera it opened under, whose inverse this is */
+int SE_SeatMenuView(struct Matrix* view);
+void SE_RigidInverse(struct Matrix* out, const struct Matrix* m);
+static cc_bool sheet_fixed;
+static struct Matrix sheet_back;
 
 void Gfx_SE_Post(mcw_fn job) {
 	pthread_mutex_lock(&se_heap);
@@ -594,9 +603,29 @@ static void MatricesLoaded(cc_bool camera) {
 	main_epoch = matrix_epoch; main_valid = true;
 }
 
+/* From a holodeck's seat the 2D screen is a sheet sheet_at ahead, 22 degrees up and down at the
+   game's aspect (a desktop's view is 60 high), drawn in the camera's space: the room shows no flat draws. */
+static struct Matrix sheet_ortho;
+static void SheetMatrix(MatrixType type, const struct Matrix* matrix) {
+	const struct Matrix* o = &sheet_ortho;
+	float d = sheet_at, sy = 0.4f * d, sx = sy * main_proj.row2.y / main_proj.row1.x;
+	struct Matrix to = Matrix_Identity;
+	if (type == MATRIX_PROJ) { sheet_ortho = *matrix; se_proj = main_proj; return; }
+	to.row1.x = o->row1.x * sx; to.row2.y = o->row2.y * sy; to.row3.z = 0.0f;
+	to.row4.x = o->row4.x * sx; to.row4.y = o->row4.y * sy; to.row4.z = -d;
+	if (!sheet_fixed) { Matrix_Mul(&se_view, matrix, &to); return; }
+	{	/* a menu's sheet: before the camera it opened under, into the world, then this camera's */
+		struct Matrix a, b;
+		Matrix_Mul(&a, matrix, &to);
+		Matrix_Mul(&b, &a, &sheet_back);
+		Matrix_Mul(&se_view, &b, &main_view);
+	}
+}
+
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
-	if (type == MATRIX_VIEW) se_view = *matrix;
-	if (type == MATRIX_PROJ) se_proj = *matrix;
+	if (gfx_rendering2D && sheet_at > 0.0f && main_valid) SheetMatrix(type, matrix);
+	else if (type == MATRIX_VIEW) se_view = *matrix;
+	else if (type == MATRIX_PROJ) se_proj = *matrix;
 	MatricesLoaded(false);
 }
 
@@ -1328,7 +1357,23 @@ void Gfx_ClearBuffers(GfxBuffers buffers) {
 	last_draw = NULL;
 }
 
-void Gfx_BeginFrame(void) { }
+/* A seated player's menu pointer: a dot on the sheet, from where core 0 had it when the frame began */
+int SE_SeatCursor(int* x, int* y);
+static int cursor_on, cursor_x, cursor_y;
+static void SheetCursor(float delta) {
+	if (!cursor_on) return;
+	Gfx_Draw2DFlat(cursor_x - 4, cursor_y - 4, 9, 9, PackedCol_Make(0, 0, 0, 255));
+	Gfx_Draw2DFlat(cursor_x - 2, cursor_y - 2, 5, 5, PackedCol_Make(255, 255, 255, 255));
+}
+
+void Gfx_BeginFrame(void) {
+	struct Matrix opened;
+	sheet_at  = SE_SeatSheet();
+	cursor_on = sheet_at > 0.0f && SE_SeatCursor(&cursor_x, &cursor_y);
+	sheet_fixed = sheet_at > 0.0f && SE_SeatMenuView(&opened);
+	if (sheet_fixed) SE_RigidInverse(&sheet_back, &opened);
+	Game.Draw2DHooks[2] = SheetCursor;
+}
 
 /* The frame after next stays on the screen, as with CLASSICUBE_HOLD. */
 void SE_Hold(void) { hold_frame = frame_number + 2; }

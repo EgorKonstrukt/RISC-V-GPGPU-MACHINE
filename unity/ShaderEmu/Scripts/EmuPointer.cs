@@ -95,6 +95,9 @@ public class EmuPointer : UdonSharpBehaviour
     private bool started;
     private bool aimShown;                  // an aim's beam is on
     private bool[] landedOn = new bool[2];  // a hand's beam is on something of the room's
+    // a press that began with the beam on the room's: no program's until it is let go
+    private bool[] caught = new bool[2], wasPressing = new bool[2], useDown = new bool[2], gripDown = new bool[2];
+    private bool drove;   // a sitter's beam had the machine's pointer last frame
     private Collider linksPlate;            // the links panel, in front of the display while open
     // The avatar's bones are read only once this visitor has come into the den and their avatar
     // has been still for a while: a read while VRChat replaces it crashed the client.
@@ -248,7 +251,7 @@ public class EmuPointer : UdonSharpBehaviour
                 }
             }
         }
-        if ((!away || holoFlat || holoKeys) && !holoHidden && ownHolo >= 0 && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
+        if (HoloScreenShown() && holoScreens != null && ownHolo < holoScreens.Length && holoScreens[ownHolo].Raycast(ray, out hit, best))
         {
             landed = true;
             best = hit.distance;
@@ -282,7 +285,8 @@ public class EmuPointer : UdonSharpBehaviour
             memoryU[h] = Mathf.Clamp01(local.x + 0.5f);
             memoryV[h] = Mathf.Clamp01(local.y + 0.5f);
         }
-        if (holoKeys && ownHolo >= 0 && holoPlates != null && ownHolo < holoPlates.Length && holoPlates[ownHolo].Raycast(ray, out hit, best))
+        bool holoAim = holoKeys || (!drawBeam && away);
+        if (holoAim && ownHolo >= 0 && holoPlates != null && ownHolo < holoPlates.Length && holoPlates[ownHolo].Raycast(ray, out hit, best))
         {
             landed = true;
             best = hit.distance;
@@ -301,7 +305,7 @@ public class EmuPointer : UdonSharpBehaviour
                 }
             }
         }
-        if (holoKeys && ownHolo >= 0 && holoShow != null && ownHolo < holoShow.Length && holoShow[ownHolo] != null
+        if (holoAim && ownHolo >= 0 && holoShow != null && ownHolo < holoShow.Length && holoShow[ownHolo] != null
             && holoShow[ownHolo].Raycast(ray, out hit, best))
         {
             landed = true;
@@ -310,6 +314,7 @@ public class EmuPointer : UdonSharpBehaviour
             found = Console;
             foundKey = holoKeyEvents.Length - 1;
         }
+        if (found == Console && !holoKeys) { found = Nothing; foundKey = -1; }   // (pressed by VRChat's interact)
         for (int k = 0; k < keyboardPlates.Length; k++)
         {
             bool holo = k == holoKeyboard;
@@ -364,6 +369,7 @@ public class EmuPointer : UdonSharpBehaviour
 
         // nothing is drawn for a hand that points at neither
         landedOn[h] = landed;
+        Catch(h, landed);
         beams[h].enabled = drawBeam && landed;
         if (drawBeam && landed)
         {
@@ -386,8 +392,33 @@ public class EmuPointer : UdonSharpBehaviour
         target[h] = Nothing;
         key[h] = -1;
         landedOn[h] = false;
+        Catch(h, false);
         beams[h].enabled = false;
         dots[h].gameObject.SetActive(false);
+    }
+
+    private bool Pressing(int h)
+    {
+        VRCPlayerApi player = Networking.LocalPlayer;
+        if (player != null && player.IsUserInVR()) return useDown[h] || gripDown[h];
+        return h == 1 && (Input.GetMouseButton(0) || Input.GetMouseButton(1));
+    }
+
+    private void Catch(int h, bool landed)
+    {
+        bool now = Pressing(h);
+        if (!now) caught[h] = false;
+        else if (!wasPressing[h] && landed) caught[h] = true;
+        wasPressing[h] = now;
+    }
+
+    // A sitter's beam let go of the machine's pointer: its button comes up (the sticks' pointer is the gamepad's).
+    private void LetGo()
+    {
+        if (!drove) return;
+        drove = false;
+        machine.SetPointerButtons(0);
+        machine.pointerOwn = false;
     }
 
     // A hand's aim: on while its program's world is drawn and the hand points at nothing of the room's.
@@ -416,8 +447,9 @@ public class EmuPointer : UdonSharpBehaviour
         VRCPlayerApi player = Networking.LocalPlayer;
         if (player == null) return;
         handsKnown = false;
-        if (away && !holoKeys)
+        if (away && ownHolo < 0)
         {
+            LetGo();
             Idle(0);
             Idle(1);
             NoAims();
@@ -473,7 +505,7 @@ public class EmuPointer : UdonSharpBehaviour
         }
 
         // (the pointer is the controller's, but where a beam is on the room's screen: the only display it reaches then)
-        if (away && !holoFlat && target[0] != Display && target[1] != Display) return;
+        if (away && !holoFlat && target[0] != Display && target[1] != Display) { LetGo(); return; }
         // The machine has one pointer: a hand holding a button on the display keeps it, then
         // the hand that had it, then whichever points there.
         int other = 1 - owner;
@@ -484,6 +516,7 @@ public class EmuPointer : UdonSharpBehaviour
         {
             machine.SetPointer(px[owner], py[owner], (trigger[owner] ? 1 : 0) | (grip[owner] ? 2 : 0));
             machine.pointerOwn = onTube[owner];
+            drove = away;
             // the wheel: the mouse's on desktop, the right stick in VR at up to 12 notches a second
             if (player.IsUserInVR()) turned += away ? 0f : stick * 12f * Time.deltaTime;   // (a sitter's stick turns them)
             else turned += Input.GetAxis("Mouse ScrollWheel") * 10f;
@@ -496,6 +529,7 @@ public class EmuPointer : UdonSharpBehaviour
         }
         else if (!away)   // (with a controller held the pointer and its buttons are still the sticks')
         {
+            drove = false;
             machine.SetPointerButtons(0);
             turned = 0f;
         }
@@ -519,6 +553,7 @@ public class EmuPointer : UdonSharpBehaviour
     {
         Init();
         int h = Hand(args);
+        useDown[h] = value;
         if (value && target[h] == Console)
         {
             if (key[h] >= 0 && holodeck != null)
@@ -562,13 +597,19 @@ public class EmuPointer : UdonSharpBehaviour
         VRCPlayerApi player = Networking.LocalPlayer;
         if (player == null || !player.IsUserInVR()) return;
         int h = Hand(args);
+        gripDown[h] = value;
         grip[h] = value && target[h] == Display;
     }
+
+    // The sitter's room's screen shows: the console is out, or the program is flat (EmuHolodeck.Exited).
+    private bool HoloScreenShown() { return ownHolo >= 0 && (!holoHidden || holoFlat); }
 
     // A hand's beam is on the holodeck's console: its trigger is that console's.
     public bool OnConsole(int h) { return target[h] == Console; }
     // A hand's beam is on the console or a screen: its trigger and grip are no program's hand's.
-    public bool Landed(int h) { return landedOn[h]; }
+    public bool Landed(int h) { return landedOn[h] || caught[h]; }
+    // A hand's beam is on the room's screen: the machine's pointer is the beam's.
+    public bool OnScreen(int h) { return target[h] == Display; }
 
     // ---- the beam's angle (buttons on the control panel) ----
 

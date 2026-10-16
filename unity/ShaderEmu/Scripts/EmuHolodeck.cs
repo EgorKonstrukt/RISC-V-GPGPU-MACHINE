@@ -49,6 +49,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     public float plane = 0.35f;        // the world's scale: the plane of the program's view that is 1.28 m wide
                                        // (for a program that does not say its player's eye: Natural)
     public float mouseCounts = 20f;    // a desktop sitter's mouse: counts told the game for one of Unity's "Mouse X"
+    private float wheelGone;           // and the notches their wheel has turned up
     public bool beam = true;           // a sitter in a headset sees where their hand points (the console's Beam key)
     // A test of a join while someone sits (a crash on join): the master sits in room 0 by
     // itself, and every client logs the seats and the players as [SitTest] lines.
@@ -135,6 +136,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         }
         Arrange();
         if (pointer != null) pointer.ownHolo = room;
+        machine.keysOwn = true;   // (a sitter plays their own machine, whatever their wall shows)
         // without a headset the visitor's own keyboard is the game's (Insert gives it back);
         // with one their controllers are, and their beams press the console's keys
         if (!player.IsUserInVR())
@@ -190,11 +192,14 @@ public class EmuHolodeck : UdonSharpBehaviour
         leaving = false;
         respawned = false;
         if (own < 0) return;
+        if (firing && gamepad != null && gamepad.keys != null) gamepad.keys.PushEvent(Ctrl);
+        firing = false;
         if (gamepad != null)
         {
             gamepad.PutBack();
             if (gamepad.keys != null) gamepad.keys.SetCapture(false);
         }
+        machine.keysOwn = false;
         BeamKeys(own, false);
         own = -1;
         played = 0;
@@ -391,7 +396,8 @@ public class EmuHolodeck : UdonSharpBehaviour
     {
         if (sitTest) SitTest();
         if (own >= 0 && Input.GetKeyDown(KeyCode.End)) StandUp();
-        if (own >= 0 && Input.GetKeyDown(KeyCode.Home)) { consoleHidden = !consoleHidden; Arrange(); }
+        // (Home is the guest's too: in a game's world only, not where it moves a cursor)
+        if (own >= 0 && !flat && Input.GetKeyDown(KeyCode.Home)) { consoleHidden = !consoleHidden; Arrange(); }
         // a menu, a level loading, or a program that draws no world: its picture on the large screen
         bool flatNow = own >= 0 && (machine.flatFrame || !machine.worldFrame);
         if (flatNow != flat) { flat = flatNow; Arrange(); }
@@ -497,12 +503,12 @@ public class EmuHolodeck : UdonSharpBehaviour
         bool playing = own >= 0 && Utilities.IsValid(player) && !player.IsUserInVR()
                     && gamepad != null && gamepad.keys != null && gamepad.keys.Capturing();
         if (playing) mouseGone = Mathf.Repeat(mouseGone + Input.GetAxis("Mouse X") * mouseCounts, 65536f);
-        bool fire = playing && !ByWords() && Input.GetMouseButton(0);   // (by words it is the right trigger)
+        // (by words it is the right trigger; on a flat screen, or with the view on the screen, the pointer's button)
+        bool fire = playing && !flat && !ByWords() && Input.GetMouseButton(0) && (pointer == null || !pointer.Landed(1));
         if (fire == firing) return;
         firing = fire;
         if (gamepad == null || gamepad.keys == null) return;
-        if (machine.inputAway) machine.RemoteKey(fire ? Ctrl | Pressed : Ctrl);
-        else gamepad.keys.PushEvent(fire ? Ctrl | Pressed : Ctrl);
+        gamepad.keys.PushEvent(fire ? Ctrl | Pressed : Ctrl);   // (this machine's: keysOwn)
     }
 
     // The program's world goes round with a desktop sitter's head: what turns the game is their
@@ -581,7 +587,10 @@ public class EmuHolodeck : UdonSharpBehaviour
             now[9] = (now[9] & 0x3fff) | (play && other ? 1 << 14 : 0);
             if (play && Input.GetKey(KeyCode.Space)) now[0] |= 64;
             now[10] = play ? (x & 255) | ((y & 255) << 8) : 0;
-            now[11] = 0;
+            // (and the wheel's notches up, a counter: SEGL_HOST_WHEEL)
+            // (with the view on the console or the screen the wheel is the pointer's: EmuPointer)
+            if (play && (pointer == null || !pointer.Landed(1))) wheelGone = Mathf.Repeat(wheelGone + Input.GetAxis("Mouse ScrollWheel") * 10f, 256f);
+            now[11] = Mathf.FloorToInt(wheelGone) & 255;
             now[13] = (now[13] & 0x3fff) | (play && fires ? 1 << 14 : 0);
         }
         else if (gamepad != null)

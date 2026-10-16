@@ -43,7 +43,8 @@ through the machine's serial console:
   them, the map generator's noise in floats, one chunk built a frame, the chunk builder's
   short cuts (below), water's and lava's animation at 5 and 2.5 pictures a second, random
   block ticks at a quarter of the rate, the map's borders in quads of 16 blocks, a view
-  distance of 128 and a seed from `CLASSICUBE_SEED`.
+  distance of 128, a seed from `CLASSICUBE_SEED`, and the speed key (Shift) at twice the walk
+  where the game's default is eleven times (`hacks-speedmultiplier` 1, not 10).
 
 
 ## Meshes from worker cores

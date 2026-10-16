@@ -97,16 +97,31 @@ CASES = [
          until='cccheck:', more=['--expect', 'classicube: steady', '--send', 'turn 1200 0\\ndown W\\ndown Space\\n'],
          has=[r'cccheck: the outline kept \d+ times, 0 of them wrong; the held block kept \d+ times, 0 wrong']),
     # docs/holodeck.md, "Played from the seat": a desktop sitter breaks by the right trigger and places by
-    # the left one, at the view's middle; in a headset each hand's beam picks its own block (small blocks)
-    *[case(f'classicube-seat-{n}', 'games classicube', CC + 'CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True, until='ccblock:',
-           more=['--host', w], has=[h]) for n, w, h in (
-        ('desk-break', '00000112,e0000000,0,0,0,0,40000000,0', r'ccblock: 32 40 31 2 -> 0'),
-        ('desk-place', '00000112,e0000000,0,0,40000000,0,0,0', r'ccblock: 32 41 31 0 -> 1'),
-        ('vr-break', '90000133,0,0,c0000000,04bea3da,0,44bea026,e0000000', r'ccblock: 34 40 28 2 -> 0'),
-        ('vr-place', '90000133,0,0,c0000000,44bea3da,0,04bea026,e0000000', r'ccblock: 30 41 28 0 -> 1'))],
+    # the left one, at the view's middle; in a headset each hand's beam picks its own block (small blocks).
+    # A button held as play starts is no press until let go: each is pressed once the world is loaded (16 s)
+    *[case(f'classicube-seat-{n}', 'games classicube', CC + 'CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True, until=' -> ', wall=60,
+           more=['--host', b, '--host-from', '16', w], has=[h]) for n, b, w, h in (
+        ('desk-break', '00000112,e0000000,0,0,0,0,0,0', '00000112,e0000000,0,0,0,0,40000000,0', r'ccblock: 32 40 31 2 -> 0'),
+        ('desk-place', '00000112,e0000000,0,0,0,0,0,0', '00000112,e0000000,0,0,40000000,0,0,0', r'ccblock: 32 41 31 0 -> 1'),
+        ('vr-break', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', '90000133,0,0,c0000000,04bea3da,0,44bea026,e0000000',
+         r'ccblock: 34 40 28 2 -> 0'),
+        ('vr-place', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', '90000133,0,0,c0000000,44bea3da,0,04bea026,e0000000',
+         r'ccblock: 30 41 28 0 -> 1'))],
+    # and the block in hand: a desktop's wheel, the right stick held up, the left grip opens the inventory
+    *[case(f'classicube-seat-{n}', 'games classicube', CC + 'CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True, until=u, wall=60,
+           more=['--host', w] + m, has=[h]) for n, w, m, u, h in (
+        ('desk-wheel', '00000112,e0000000,0,0,0,0,0,0', ['--host-wheel', '3'], 'slot 4', r'seat: 2 .* slot [5-8] holds \d+ raw 1'),
+        ('vr-stick', '90000133,0,0,c0000000,04bea3da,7f000000,04bea026,e0000000', [], 'slot 3', r'seat: 1 .* slot 7 holds \d+ raw 1'),
+        ('vr-grip', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', ['--host-from', '16', '90000133,0,0,c0000000,84bea3da,0,04bea026,e0000000'],
+         'raw 0', r'seat: 1 .* slot 0 holds 1 raw 0 menu 1'),
+        # the inventory on the sheet: the grip opens it, then the right hand's beam moves onto row 6 and its trigger picks a block
+        ('vr-pick', '90000133,0,0,c0000000,04bea3da,0,04bea026,2400fc72',
+         ['--host-from', '16', '90000133,0,0,c0000000,84bea3da,0,04bea026,2400fc72',
+          '--host-from', '20', '90000133,0,0,c0000000,84bea3da,0,44bea026,2600f8e4'], 'holds 58', r'seat: 1 .* holds 58 raw 1 menu 0'))],
     # docs/classicube.md, "Sound": a dig sound on the card, and the tune decoded on workers into its stream
     case('classicube-sound', 'games classicube sound', CC + 'CLASSICUBE_SOUND_LOG=1 CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True,
-         until='ccmusic: 16 of', more=['--host', '00000112,e0000000,0,0,0,0,40000000,0'], env={'RVC_SOUND': '1'},
+         until='ccmusic: 16 of', more=['--host', '00000112,e0000000,0,0,0,0,0,0', '--host-from', '16', '00000112,e0000000,0,0,0,0,40000000,0'],
+         env={'RVC_SOUND': '1'},
          has=[r'ccsound: 59 sounds at', r'ccsound: dig_grass\d on voice \d+, volume 100, rate 80',
               r'ccmusic: /usr/share/classicube-music.mp3, 22050 Hz 2 ch']),
     # Tiberian Dawn and Red Alert (docs/tdawn.md, docs/ralert.md)

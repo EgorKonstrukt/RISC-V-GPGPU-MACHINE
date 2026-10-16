@@ -47,6 +47,8 @@ public class EmuGamepad : UdonSharpBehaviour
     private float turned;                   // notches of the wheel not sent yet
     private float phase;                    // where in a pulse a slight turn is
     private float bothGrips;                // seconds both grips have been held
+    private float[] alone = new float[2];   // seconds a grip has been held without the other; -1: it was with it
+    private const float GripWait = 0.15f;
     private float saidAt;
 
     void Start()
@@ -63,8 +65,10 @@ public class EmuGamepad : UdonSharpBehaviour
         if (held && (scheme == ForPointer || scheme == ForBlocks)) machine.SetPointerButtons(0);
         scheme = to;
         for (int i = 0; i < Held; i++) code[i] = 0;
-        code[Menu] = to == ForHands ? 0 : Esc;   // (the hands' grips take things: none of them is a key)
-        code[Accept] = Enter;
+        // (the hands' grips take things: none of them is a key; ClassiCube's left grip is its
+        // inventory, by the words, and its right grip is Esc, its pause menu: Enter was chat)
+        code[Menu] = to == ForHands || to == ForBlocks ? 0 : Esc;
+        code[Accept] = to == ForBlocks ? Esc : Enter;
         if (to == ForShooter)
         {
             code[Forward] = Up;
@@ -206,6 +210,20 @@ public class EmuGamepad : UdonSharpBehaviour
         return phase < (amount - 0.1f) / 0.65f;
     }
 
+    // A grip's key: held alone a moment, or tapped alone (the first of both grips, standing up, is neither).
+    private bool Alone(int h)
+    {
+        if (grip[h] && grip[1 - h]) { alone[h] = -1f; return false; }
+        if (grip[h])
+        {
+            if (alone[h] >= 0f) alone[h] += Time.deltaTime;
+            return alone[h] > GripWait;
+        }
+        bool tap = alone[h] > 0f && alone[h] <= GripWait;
+        alone[h] = 0f;
+        return tap;
+    }
+
     // The pointer where the right stick has moved it, with the triggers as its buttons.
     private void Point(bool move, bool left, bool right)
     {
@@ -247,7 +265,7 @@ public class EmuGamepad : UdonSharpBehaviour
 
         // a hand whose beam is on the seat's console or screen presses that, not the game
         bool fire = trigger[1] && !pointer.Landed(1), other = trigger[0] && !pointer.Landed(0);
-        bool leftGrip = grip[0] && !grip[1] && !pointer.Landed(0), rightGrip = grip[1] && !grip[0] && !pointer.Landed(1);
+        bool leftGrip = Alone(0) && !pointer.Landed(0), rightGrip = Alone(1) && !pointer.Landed(1);
         phase = (phase + Time.deltaTime * 10f) % 1f;
         Set(Menu, leftGrip);
         if (scheme == ForShooter)
@@ -289,7 +307,9 @@ public class EmuGamepad : UdonSharpBehaviour
         }
         else
         {
-            Point(!rightGrip, fire, other);
+            // (a beam on the room's screen has the pointer: EmuPointer)
+            if (pointer.OnScreen(0) || pointer.OnScreen(1)) { px = machine.pointerX; py = machine.pointerY; }
+            else Point(!rightGrip, fire, other);
             // the right grip held: the right stick is the wheel
             turned = rightGrip && Mathf.Abs(lookY) > 0.25f ? turned + lookY * 12f * Time.deltaTime : 0f;
             int notches = (int)turned;

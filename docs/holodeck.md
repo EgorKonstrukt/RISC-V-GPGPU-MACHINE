@@ -175,7 +175,7 @@ at `0x87000360` (`HOST_STATE` in `src/gpu.h`; the control pass, from `EmuHolodec
 | 2 | the head's place, millimetres, signed: to the right, and from bit 16 up |
 | 3 | the head's place forward, and from bit 16 its roll; with hands, from bit 16 the left hand's way instead, a signed byte each: its turn to the right in 256ths of a turn, and from bit 24 its rise in 512ths (`SEGL_HOST_LEFT_YAW`, `SEGL_HOST_LEFT_PITCH`; word 5 has the sticks) |
 | 4 | the left hand's place in units of 4 mm, ten signed bits each: right, up (from bit 10), forward (from bit 20); its trigger (bit 30) and grip (bit 31) |
-| 5 | in a headset the sitter's sticks, a signed byte each, 127 pushed home: the left one to the right, forward, the right one to the right, up (zero while a menu has them as keys). Before 13 October 2026: where the left hand points |
+| 5 | in a headset the sitter's sticks, a signed byte each, 127 pushed home: the left one to the right, forward, the right one to the right, up (zero while a menu has them as keys). Without a headset the left one is the keys walked by, and bits 16-23 count the notches the wheel has turned up while a game is played (`SEGL_HOST_WHEEL`, wrapping). Before 13 October 2026: where the left hand points |
 | 6, 7 | the right hand, the same |
 
 A hand's place and way are its beam's (`EmuPointer`: from the knuckles, along the back of the
@@ -234,7 +234,7 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   while another window has the guest's keyboard) these keys are no key events
   (`EmuKeyboard.playAway`): before 14 October 2026 they were the window's keys, and a click
   that landed beside the game's window, the same click that fired, left the game with none.
-  Every other key (the numbers, Esc, Enter) is still the window's. In a menu or with the
+  The wheel is counted in word 5 (ClassiCube: the block in hand). Every other key (the numbers, B, Esc, Enter) is still the window's. In a menu or with the
   keyboard given back (Insert) all keys are as they were. In a headset the right trigger fires
   by the same bit, beside the key its controller sends, and VRChat's jump button jumps by bit 6
   (Enter only in a menu). No trigger jumps: until 15 October 2026 the left one was the jump
@@ -246,7 +246,14 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   answers `holoKeys`, a sitter's beams, and the pointer is the beam's while one is on it). A
   click or a trigger on the screen or the console is theirs and fires nothing in the game
   (`Landed`: in `Tell`, and in `EmuGamepad` for the keys its controls send), and a sitter's
-  right stick turns them, not the screen's wheel. Before this the screen answered a headset's
+  right stick turns them, not the screen's wheel. A press that began there stays theirs until
+  it is let go, wherever the beam goes (a Hide press, a slider dragged past its end), and a
+  desktop's view on the console or its small button lands too (they press it by VRChat's own
+  interact). A beam that leaves the screen lets go of its button. The games drop a seated
+  click on their window while a level is played (Doom, Quake, Quake III): a sitter fires by the
+  trigger. A sitter's keys go to their own machine whatever the den's wall shows
+  (`EmuMachine.keysOwn`). A single grip's key waits 0.15 s, or is a tap when let go sooner, so
+  the first of both grips (standing up) sends nothing. Before this the screen answered a headset's
   beams only while the program showed a flat screen, and a desktop's mouse not at all while
   it played by the words. While the console is put away the screen answers no beam and no
   click (`EmuPointer.holoHidden`); it is still shown when the program's picture is flat.
@@ -317,21 +324,57 @@ the view model), facing the sitter: the ammunition over the weapon in the right 
 at 10 and under; none for the axe), health over the left hand (red at 25 and under) with
 armour above it, and the lines the game says and prints mid-screen 1.2 m ahead, a little
 under the eyes. In a held frame in the harness each stood where it should on the picture
-(13 October 2026). Not done: Quake III, Doom and ClassiCube; items, keys, the face.
+(13 October 2026). Not done: Quake III and Doom; items, keys, the face.
+
+ClassiCube draws its whole 2D screen (the hotbar, the chat, the crosshair) on a sheet half a
+metre before the camera, and no nearer than twice its near plane, 22 degrees up and down at the
+game's aspect (`SheetMatrix` in `Graphics_ShaderEmu.c`, `SE_SeatSheet`): a 2D draw's modelview puts
+its pixels there and its projection is the camera's, so the room draws it in space. Filling the
+game's view (70 degrees high) it was cut off under the edge of a desktop sitter's (60). In a headset
+the sheet stays with the body, not the head. A seated ClassiCube changes the block in hand by the
+wheel (word 5) or the right stick held up or down (a step, then one every 0.3 s), also in the
+inventory; the left grip opens and closes the inventory, and the right grip is Esc, the pause menu
+(a headset's left grip is no Esc in ClassiCube, and the right one no Enter: it opened chat). A
+button held as play starts or resumes (the triggers, the jump, the grip) is no press until let go.
+
+Its menus (the inventory, the pause menu and its options) are on that sheet too, in the world,
+and not flat (`SE_Flat`): only a world not loaded yet and text being typed are (chat, a text
+field, a key being bound: `Menus_SE_Typing` in the patch), for while a desktop sitter plays by
+words W, A, S and D are the stick. A menu stays where it opened in the
+game's world, turned as it opened and carried with the camera's place (a fall takes it along), and
+the camera goes on turning, by the mouse and the head or by the body: the sheet's
+2D draws go before the camera the menu opened under (`menu_view`), into the world, and into this
+frame's camera. Its pointer is where the right hand's beam, or a desktop sitter's view, meets the
+sheet (`SheetAim`, the ray taken from this camera into that one); the right trigger (a desktop's left
+button) is the left button, and a dot on the sheet is the pointer (`SheetCursor`, a hook of the 2D
+pass). An aim off the sheet clicks nothing and shows no dot. The camera is core 0's
+(`SE_Frame->view`): `Gfx.View` is the worker's, the held block's for part of its frame. A trigger
+held as a menu opens waits for its next press, and a menu opened before the world's
+first frame waits for that frame's camera. A menu picks what the pointer last moved onto: a pointer
+that has not moved since the menu opened picks the block in hand. On `rvc_cpu` (16 October 2026):
+the beam moved onto the sixth row and the trigger picked block 58 and closed the inventory
+(`classicube-seat-vr-pick`), and with the body turning right under an open inventory the pointer of
+a still beam went right across it to its edge.
 
 ## A flat screen in place of the world
 
 A program says that its frames are a flat screen and no world (`seglWorldFlat()`, bit 31 of
 the frame's size word at `0x8700030c`): a menu, the console, a level loading, the screen
-between levels. `EmuMachine` reads it back (`flatFrame`, and `worldFrame`: there is a list
+between levels (Quake's totals and an episode's text, `cl.intermission`; Quake III's scoreboard at
+a level's end, `pm_type` 5 or 6). `EmuMachine` reads it back (`flatFrame`, and `worldFrame`: there is a list
 at all), and while it is so, or the sitter's program draws no world (the desktop, a 2D
 game), the room shows no world: the sitter's display is on the large screen before the seat,
-their beams are its pointer, and the left stick is the arrow keys (`EmuHolodeck.Flat`).
+their beams are its pointer, and the left stick is the arrow keys (`EmuHolodeck.Flat`). The screen
+takes the sitter's pointer whenever it shows, by the rule that shows it (`HoloScreenShown`: the
+console out, or the program flat); a desktop sitter's is the view's middle and their left button
+its button, and with the view on it neither the click nor the wheel is the game's. Until 16 October
+2026 a desktop sitter aimed at nothing, and a sitter whose console was put away could not reach
+the screen a flat program brought back.
 On `rvc_cpu` (its closing line says the bit): Quake III's menu 1, its level 0.
 
 ## The console put away
 
-Its Hide key, or Home, takes the console away for its sitter: the stand's model and the chair's
+Its Hide key, or Home while a world is drawn (on a flat screen Home is the program's), takes the console away for its sitter: the stand's model and the chair's
 and the marks of both (one mesh each for all eight rooms, so the other rooms' go too, for this
 visitor alone; the chair's baked shadow stays on the floor), the room's plate, keys and screen. A small translucent button stands where the plate
 was and brings it back (`HideConsole`, `ShowConsole`, `Arrange`; a beam presses it by
@@ -343,7 +386,7 @@ their own that the room does not light (`OwnCap`): lit by the room's light volum
 keys were black in the client. Seen in play mode from the seat's eye point on 14 October
 2026, shown and hidden; a beam's press of the button is unseen.
 
-On `rvc_cpu` (`--host W0,...,W7` gives the eight words, `--host-mouse N` a mouse going right;
+On `rvc_cpu` (`--host W0,...,W7` gives the eight words, `--host-mouse N` a mouse going right, `--host-wheel N` the wheel turning up, `--host-from S W0,...,W7` other words from guest second S, up to four times;
 `QUAKE_SEAT`, `QUAKE3_SEAT`, `DOOM_SEAT`, `CLASSICUBE_SEAT=1` print the turns): a right hand
 30 degrees to the right and 10 up gave each game that aim with the body where it was, and
 100 counts a second turned each about 6.6 degrees a second; the left stick pushed forward

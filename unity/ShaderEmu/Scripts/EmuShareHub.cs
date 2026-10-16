@@ -1023,7 +1023,7 @@ public class EmuShareHub : UdonSharpBehaviour
             int c = consoleKeyboard.Pop() & 0xff;
             if (drive) Queue(1 << 24 | c);
         }
-        while (gpuKeyboard.Count() > 0)
+        while (!machine.keysOwn && gpuKeyboard.Count() > 0)
         {
             int e = gpuKeyboard.Pop() & 0xffffff;
             if (drive) Queue(2 << 24 | e);

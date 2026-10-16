@@ -105,7 +105,7 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	/* a menu, the console, a level loading: a picture for a screen, not a world for a room
 	 * (the loading plaque's frame too: it stays while the next level replaces what it drew) */
 	seglWorldFlat (key_dest != key_game || cls.state != ca_connected || cls.signon != SIGNONS || scr_drawloading ||
-		scr_disabled_for_loading);
+		scr_disabled_for_loading || cl.intermission);	/* (a level's end: its totals, or the episode's text) */
 	if (!se_scene_split)	/* (a frame drawn on a worker: the first core drew its bar, SE_ScreenRecord) */
 		sb_updates = 0;		/* every frame is drawn whole: the status bar too */
 }
@@ -509,6 +509,9 @@ void Sys_SendKeyEvents (void)
 					Key_Event (K_MOUSE1, e.type == GR_EVENT_TYPE_BUTTON_DOWN);
 				break;
 			}
+			/* a sitter fires by the trigger: a click on the room's screen is no shot (their release still counts) */
+			if (key_dest == key_game && seated && !cl.intermission && e.type == GR_EVENT_TYPE_BUTTON_DOWN)
+				break;
 			dragging = 0;
 			if (e.button.changebuttons & GR_BUTTON_L)
 				Key_Event (K_MOUSE1, e.type == GR_EVENT_TYPE_BUTTON_DOWN);

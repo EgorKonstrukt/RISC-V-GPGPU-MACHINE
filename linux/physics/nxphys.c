@@ -1246,11 +1246,11 @@ act(int key)
 
 	switch (key) {
 	case MWKEY_ESCAPE:
-		/* (a sitter's left grip is Esc under the pointer's controls: it takes a box here) */
-		if (seated == 1)
+	case 'q':
+		/* (a sitter's left grip is Esc, and a desktop's Q is beside W and A: they stand up by End) */
+		if (seated)
 			break;
-		/* fall through */
-	case 'q': sim.stop = 1; exit(0);
+		sim.stop = 1; exit(0);
 	case 'p': stopped = !stopped; break;
 	case 'c': sim.owners = !sim.owners; break;
 	case 'r': return 1;

@@ -95,6 +95,7 @@ public class EmuMachine : UdonSharpBehaviour
     // Another player's machine is on the screens (EmuShareHub): the wall is not this one's to
     // size, and the keyboards and pointer are not this one's to read.
     [HideInInspector] public bool showRemote, inputAway;
+    [HideInInspector] public bool keysOwn;   // the display keyboard is this machine's whatever the wall shows (a sitter's)
     [HideInInspector] public int shownWidth, shownHeight;   // the display the pointer is mapped to
     [HideInInspector] public int pointerX, pointerY, pointerButtons;
     [HideInInspector] public bool pointerOn;            // a beam is on the display
@@ -1273,7 +1274,7 @@ public class EmuMachine : UdonSharpBehaviour
                     e = remoteKeys[keyHead];
                     keyHead = (keyHead + 1) & 255;
                 }
-                else if (!inputAway && gpuKeyboard.Count() > 0) e = gpuKeyboard.Pop();
+                else if ((!inputAway || keysOwn) && gpuKeyboard.Count() > 0) e = gpuKeyboard.Pop();
                 else break;
                 if (keys == 0) k0 = e;
                 else if (keys == 1) k1 = e;

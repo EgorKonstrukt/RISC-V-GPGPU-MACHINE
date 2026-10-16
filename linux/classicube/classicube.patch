@@ -1285,7 +1285,7 @@ index 95be4ac..0def2f7 100644
  	#undef  CC_BUILD_FILESYSTEM
  	#undef  CC_BUILD_COMPRESSION
 diff --git a/src/Entity.c b/src/Entity.c
-index 47bb81e..24aae13 100644
+index 47bb81e..0197652 100644
 --- a/src/Entity.c
 +++ b/src/Entity.c
 @@ -496,11 +496,14 @@ void Entity_LerpAngles(struct Entity* e, float t) {
@@ -1336,6 +1336,19 @@ index 47bb81e..24aae13 100644
  	PhysicsComp_PhysicsTick(&p->Physics, headingVelocity);
  
  	/* Fixes high jump, when holding down a movement key, jump, fly, then let go of fly key */
+@@ -803,7 +811,12 @@ static void LocalPlayer_Init(struct LocalPlayer* p, int index) {
+ 	hacks->Enabled = !Game_PureClassic && Options_GetBool(OPT_HACKS_ENABLED, true);
+ 	if (Game_ClassicMode) return;
+ 
++#ifdef CC_BUILD_SHADEREMU
++	/* the speed key runs at twice the walk, as Doom's: ten times was a blur in a holodeck */
++	hacks->SpeedMultiplier = Options_GetFloat(OPT_SPEED_FACTOR,  0.1f, 50.0f, 1.0f);
++#else
+ 	hacks->SpeedMultiplier = Options_GetFloat(OPT_SPEED_FACTOR,  0.1f, 50.0f, 10.0f);
++#endif
+ 	hacks->PushbackPlacing = Options_GetBool(OPT_PUSHBACK_PLACING, false);
+ 	hacks->NoclipSlide     = Options_GetBool(OPT_NOCLIP_SLIDE,     false);
+ 	hacks->WOMStyleHacks   = Options_GetBool(OPT_WOM_STYLE_HACKS,  false);
 diff --git a/src/Entity.h b/src/Entity.h
 index 510f96b..7143730 100644
 --- a/src/Entity.h
@@ -3251,6 +3264,24 @@ index cf715b9..5fbe5e6 100644
  /* Renders the meshes of non-translucent blocks in visible chunks. */
  void MapRenderer_RenderNormal(float delta);
  /* Renders the meshes of translucent blocks in visible chunks. */
+diff --git a/src/Menus.c b/src/Menus.c
+index 9dd17d1..985dacf 100644
+--- a/src/Menus.c
++++ b/src/Menus.c
+@@ -2996,3 +2996,13 @@ void NostalgiaMenuScreen_Show(void) {
+ void TexIdsOverlay_Show(void) { }
+ void UrlWarningOverlay_Show(const cc_string* url) { }
+ #endif
++
++#ifdef CC_BUILD_SHADEREMU
++/* For a seat (Window_ShaderEmu.c): the screen with the input wants typed keys, not a stick */
++cc_bool Menus_SE_Typing(void) {
++	struct Screen* s = Gui.InputGrab;
++	return s == (struct Screen*)&EditHotkeyScreen || s == (struct Screen*)&GenLevelScreen ||
++		s == (struct Screen*)&SaveLevelScreen || s == (struct Screen*)&MenuInputOverlay ||
++		(s == (struct Screen*)&KeyBindsScreen && KeyBindsScreen.curI >= 0);
++}
++#endif
 diff --git a/src/Model.c b/src/Model.c
 index 5b13319..d2f7027 100644
 --- a/src/Model.c

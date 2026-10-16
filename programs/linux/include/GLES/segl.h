@@ -78,6 +78,8 @@ void seglWorldFlat(int flat);
 /* with no hands (a desktop's sitter): how far their mouse has gone to the right, a counter of
    16 bits that wraps; the head's pitch is the aim's rise */
 #define SEGL_HOST_MOUSE_X(s)   ((s)[4] & 0xffff)
+/* with no hands, while a game is played from the seat: the wheel's notches up, 8 bits that wrap */
+#define SEGL_HOST_WHEEL(s)     (((s)[5] >> 16) & 255)
 /* the jump button is held (a headset's, or a desktop sitter's Space): no trigger jumps */
 #define SEGL_HOST_JUMP(s)      (((s)[0] >> 6) & 1)
 /* For the holodeck's default scale (docs/holodeck.md, "The world's size"): the player's eye over

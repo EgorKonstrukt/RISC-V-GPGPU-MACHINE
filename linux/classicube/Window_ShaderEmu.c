@@ -17,6 +17,8 @@
 #include "World.h"
 #include "Graphics.h"
 #include "Event.h"
+#include "Inventory.h"
+#include "Gui.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +53,7 @@ static uint32_t drag_ms;
 /* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
    hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
 static int seated;
+static int menu_on, menu_aim, menu_x, menu_y;	/* a seated player's menu: its pointer on the sheet (when aimed there), in the window's pixels */
 static float body, aimed;
 static uint32_t mouse_count;
 #define HOST_STATE 0x360	/* the host's eight words (GLES/segl.h has their fields) */
@@ -280,7 +283,7 @@ static void HandleEvent(GR_EVENT* e) {
 	case GR_EVENT_TYPE_BUTTON_UP:
 		down = e->type == GR_EVENT_TYPE_BUTTON_DOWN;
 		/* (a sitter breaks and places by the host's triggers, not the pointer's buttons: Seat) */
-		if (seated && Input.RawMode) e->button.changebuttons &= ~(GR_BUTTON_L | GR_BUTTON_R);
+		if (seated && (Input.RawMode || menu_on)) e->button.changebuttons &= ~(GR_BUTTON_L | GR_BUTTON_R);
 		/* In the game the left button drags the view round, as a finger on glass does; let go
 		   where it was pressed, it is the left button's click. A sitter's buttons are the game's. */
 		if ((e->button.changebuttons & GR_BUTTON_L) && Input.RawMode && !seated) {
@@ -413,11 +416,24 @@ static void WorldEye(struct Entity* e) {
 }
 
 static float Metre(const volatile uint32_t* host);
+static int SheetAim(const volatile uint32_t* host, float* tx, float* ty);
+static struct Matrix menu_view;		/* and the camera it opened under: the sheet stays there in the world */
+#define SHEET_HALF 0.4f			/* the sheet's half height over its distance (Graphics_ShaderEmu.c) */
+
+/* Chat or a text field being typed in: shown flat even from a seat, where W, A, S and D are the stick */
+cc_bool Menus_SE_Typing(void);
+static cc_bool Typing(void) { return Gui.InputGrab && (Gui.InputGrab == Gui_GetScreen(GUI_PRIORITY_CHAT) || Menus_SE_Typing()); }
 float SE_SeatLift(void);
 
 /* CLASSICUBE_SEAT's line of each block the player changes: where, and from what to what */
 static void SaidBlock(void* obj, IVec3 at, BlockID was, BlockID now) {
 	fprintf(stderr, "ccblock: %d %d %d %d -> %d\n", at.x, at.y, at.z, was, now);
+}
+
+/* A button held as play resumes is no press until it is let go */
+static int Fresh(int* armed, int play, int down) {
+	if (!play) *armed = 0; else if (!down) *armed = 1;
+	return play && *armed && down;
 }
 
 /* From a holodeck's seat with tracked hands the right hand aims, and the walk and the room's
@@ -427,15 +443,16 @@ static void Seat(float delta) {
 	struct Entity* e = &Entities.CurPlayer->Base;
 	int now = !(host[0] & 16) ? 0 : (host[0] & 32) ? 1 : (host[0] & 15) == 2 ? 2 : 0;
 	static int said = -1;
+	int breaking, clicking;
 
 	if (World.Loaded) WorldEye(e);
 	if (said < 0) said = getenv("CLASSICUBE_SEAT") != NULL;	/* a line every 20 frames: how it is seated, the aim, the body */
 	if (said == 1) Event_Register_(&UserEvents.BlockChanged, NULL, SaidBlock);
 	if (said && ++said % 20 == 0)
-		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f %.1f eye %08x picked %d %d %d %d block %.3f m lift %.1f\n", seated, e->next.yaw, e->next.pitch,
+		fprintf(stderr, "seat: %d aim %.1f %.1f body %.1f drag %d at %.1f %.1f %.1f eye %08x picked %d %d %d %d block %.3f m lift %.1f slot %d holds %d raw %d menu %d at %d %d\n", seated, e->next.yaw, e->next.pitch,
 			body, dragging, e->Position.x, e->Position.y, e->Position.z, ((volatile uint32_t*)(gpu + 0x6c))[0],
 			Game_SelectedPos.valid, Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z,
-			0.004f / Metre(host), SE_SeatLift());
+			0.004f / Metre(host), SE_SeatLift(), Inventory.SelectedIndex, Inventory_SelectedBlock, Input.RawMode, menu_on, menu_x, menu_y);
 	if (now != seated) {
 		seated = now;
 		dragging = false;
@@ -443,24 +460,73 @@ static void Seat(float delta) {
 		mouse_count = host[4] & 0xffff;
 	}
 	{	/* a sitter's jump: the jump button, or a desktop's Space, as the game's own key */
-		static int jump;
-		int now = seated && Input.RawMode && SEGL_HOST_JUMP(host);
+		static int jump, armed;
+		int now = Fresh(&armed, seated && Input.RawMode, SEGL_HOST_JUMP(host));
 		if (now != jump) {
 			jump = now;
+			Gfx_SE_Own();
 			if (now) Input_SetPressed(CCKEY_SPACE);
 			else Input_SetReleased(CCKEY_SPACE);
 		}
 	}
 	{	/* its triggers: the right one (a desktop's left button or Ctrl) breaks, the left one
 		   (a desktop's right button) places, each where its hand's beam is (Camera.c) */
-		static int held[2];
-		int h;
-		for (h = 0; h < 2; h++) {
-			int now = seated && Input.RawMode && SEGL_HOST_HAND_TRIGGER(host, h);
-			if (now != held[h]) { held[h] = now; Input_Set(h ? CCMOUSE_L : CCMOUSE_R, now); }
-		}
+		static int armed[2], right;
+		int play = seated && Input.RawMode, now = Fresh(&armed[0], play, SEGL_HOST_HAND_TRIGGER(host, 0));
+		breaking = Fresh(&armed[1], play, SEGL_HOST_HAND_TRIGGER(host, 1));
+		if (now != right) { right = now; Gfx_SE_Own(); Input_Set(CCMOUSE_R, now); }
 	}
-	if (!Input.RawMode) return;
+	{	/* the block in hand: a desktop's wheel (its notches counted in the words), or the right
+		   stick pushed up or down, a step and then one every 0.3 s; the left grip is the inventory */
+		static int wheel = -1, grip, gripWas, key;
+		static float pushed;
+		int notches = SEGL_HOST_WHEEL(host), push = (signed char)(host[5] >> 24), g;
+		int scrolls = Input.RawMode || menu_on;
+		if (seated == 2 && wheel >= 0 && scrolls && notches != wheel) { Gfx_SE_Own(); Mouse_ScrollVWheel((float)(signed char)(notches - wheel)); }
+		wheel = seated == 2 ? notches : -1;
+		if (seated == 1 && scrolls && (push > 90 || push < -90)) {
+			if (pushed <= 0.0f) { Gfx_SE_Own(); Mouse_ScrollVWheel(push > 0 ? 1.0f : -1.0f); pushed = 0.3f; }
+			pushed -= delta;
+		} else pushed = 0.0f;
+		/* (by the grip's own press: one held as a menu closes opens nothing) */
+		g = seated == 1 && SEGL_HOST_HAND_GRIP(host, 0);
+		if (g && !gripWas && !grip && (Input.RawMode || Gui.InputGrab == Gui_GetScreen(GUI_PRIORITY_INVENTORY))) {
+			key = KeyBind_Mappings[BIND_INVENTORY].button1 ? KeyBind_Mappings[BIND_INVENTORY].button1 : 'B';
+			Gfx_SE_Own();
+			Input_SetPressed(key);
+			grip = 1;
+		} else if (grip && !g) { Gfx_SE_Own(); Input_SetReleased(key); grip = 0; }
+		gripWas = g;
+	}
+	{	/* a menu from the seat stays where it opened in the game's world, and the camera goes on
+		   turning: its pointer is where the right hand's beam, or a desktop's view, meets the sheet
+		   it is on (SheetAim); the right trigger clicks there, and nowhere off the sheet */
+		static int was, ignore;
+		int now = seated && !Input.RawMode && World.Loaded && !Typing(), trig = SEGL_HOST_HAND_TRIGGER(host, 1);
+		menu_aim = 0;
+		if (now) {
+			float tx, ty, aspect = (float)Game.Width / Game.Height;
+			/* (a trigger held as it opens is no click: it waits for the next press) */
+			if (!was) ignore = trig;
+			/* (core 0's camera: Gfx.View is the worker's, and the held block's for a while) */
+			if (!was || menu_view.row4.w == 0.0f) menu_view = SE_Frame->view;
+			if (SheetAim(host, &tx, &ty) && Math_AbsF(tx) < SHEET_HALF * aspect && Math_AbsF(ty) < SHEET_HALF) {
+				int x = (int)((tx / (SHEET_HALF * aspect) + 1.0f) * 0.5f * Game.Width);
+				int y = (int)((1.0f - ty / SHEET_HALF) * 0.5f * Game.Height);
+				menu_aim = 1;
+				if (x != menu_x || y != menu_y) { menu_x = x; menu_y = y; Gfx_SE_Own(); Pointer_SetPosition(0, x, y); }
+			}
+		}
+		if (!trig) ignore = 0;
+		clicking = now && menu_aim && trig && !ignore;
+		was = menu_on = now;
+	}
+	{	/* the left button has one owner: the right trigger in play, its click on a menu */
+		static int left;
+		int want = breaking || clicking;
+		if (want != left) { left = want; Gfx_SE_Own(); Input_Set(CCMOUSE_L, want); }
+	}
+	if (!Input.RawMode && !menu_on) return;
 	if (seated == 1) {
 		/* (what the keys turned the aim by since, the body turned) */
 		float look = (signed char)(host[5] >> 16) / 127.0f;
@@ -477,7 +543,10 @@ static void Seat(float delta) {
 
 /* For the frame's words (Graphics_ShaderEmu.c): a menu, or a world not loaded yet, is a
    picture for a screen and not a world for a room. */
-int SE_Flat(void) { return !Input.RawMode || !World.Loaded; }
+int SE_Flat(void) { return !World.Loaded || (!Input.RawMode && (!seated || Typing())); }
+
+/* For the sheet's cursor (Graphics_ShaderEmu.c), on core 0: where a seated player's menu pointer is */
+int SE_SeatCursor(int* x, int* y) { *x = menu_x; *y = menu_y; return menu_on && menu_aim; }
 
 /* For the camera (Camera.c): whether the player sits with tracked hands, and then the yaw of
    the room's view. */
@@ -525,6 +594,14 @@ static float Metre(const volatile uint32_t* host) {
 	return metre;
 }
 
+/* For the 2D screen (Graphics_ShaderEmu.c), on core 0: how far before a sitter's camera it is
+   drawn, in blocks (half a metre of the room, and twice the near plane); 0 when the room shows it flat. */
+float SE_SeatSheet(void) {
+	if (!seated || SE_Flat()) return 0.0f;
+	float at = Metre((const volatile uint32_t*)(gpu + HOST_STATE)) * 125.0f;
+	return at > 0.2f ? at : 0.2f;
+}
+
 static int HandAt(int word, float* at) {
 	float metre = Metre((const volatile uint32_t*)(gpu + HOST_STATE));
 	at[0] = ((int)((uint32_t)word << 22) >> 22) * metre;
@@ -538,6 +615,60 @@ static int HandAt(int word, float* at) {
 int SE_SeatHand(float* at) {
 	if (seated != 1) return 0;
 	return HandAt(((const volatile uint32_t*)(gpu + HOST_STATE))[6], at);
+}
+
+/* A view matrix's inverse: its turn transposed, its move undone (row vectors, as ClassiCube's) */
+void SE_RigidInverse(struct Matrix* out, const struct Matrix* m) {
+	*out = Matrix_Identity;
+	out->row1.x = m->row1.x; out->row1.y = m->row2.x; out->row1.z = m->row3.x;
+	out->row2.x = m->row1.y; out->row2.y = m->row2.y; out->row2.z = m->row3.y;
+	out->row3.x = m->row1.z; out->row3.y = m->row2.z; out->row3.z = m->row3.z;
+	out->row4.x = -(m->row4.x * out->row1.x + m->row4.y * out->row2.x + m->row4.z * out->row3.x);
+	out->row4.y = -(m->row4.x * out->row1.y + m->row4.y * out->row2.y + m->row4.z * out->row3.y);
+	out->row4.z = -(m->row4.x * out->row1.z + m->row4.y * out->row2.z + m->row4.z * out->row3.z);
+}
+
+/* For the sheet (Graphics_ShaderEmu.c), on core 0: the camera a seated player's menu opened under */
+static int MenuView(struct Matrix* view) {
+	struct Matrix back;
+	const struct Matrix* now = &SE_Frame->view;
+	if (menu_view.row4.w == 0.0f || now->row4.w == 0.0f) return 0;
+	/* turned as it opened, but where the camera is now: a fall or a teleport takes the sheet along */
+	SE_RigidInverse(&back, now);
+	*view = menu_view;
+	view->row4.x = -(back.row4.x * view->row1.x + back.row4.y * view->row2.x + back.row4.z * view->row3.x);
+	view->row4.y = -(back.row4.x * view->row1.y + back.row4.y * view->row2.y + back.row4.z * view->row3.y);
+	view->row4.z = -(back.row4.x * view->row1.z + back.row4.y * view->row2.z + back.row4.z * view->row3.z);
+	return 1;
+}
+int SE_SeatMenuView(struct Matrix* view) { return menu_on && MenuView(view); }
+
+/* Where the aim meets the sheet, over its distance: the right hand's beam (the camera is the
+   seat's eye, level and the seat's way), or a desktop's view, taken from the camera now through
+   the world to the one the menu opened under, before which the sheet stands */
+static int SheetAim(const volatile uint32_t* host, float* tx, float* ty) {
+	struct Matrix back, to, opened;
+	Vec3 o = Vec3_Create3(0.0f, 0.0f, 0.0f), w, d = Vec3_Create3(0.0f, 0.0f, -1.0f);
+	float dist = SE_SeatSheet(), t;
+	if (dist <= 0.0f || !MenuView(&opened)) return 0;
+	if (seated == 1) {
+		float at[3], yaw = (short)(host[7] & 0xffff) * (2.0f * MATH_PI / 65536.0f), pitch = (short)(host[7] >> 16) * (2.0f * MATH_PI / 65536.0f);
+		HandAt(host[6], at);
+		o = Vec3_Create3(at[0], at[1], -at[2]);
+		d = Vec3_Create3(Math_SinF(yaw) * Math_CosF(pitch), Math_SinF(pitch), -Math_CosF(yaw) * Math_CosF(pitch));
+	}
+	SE_RigidInverse(&back, &SE_Frame->view);
+	Matrix_Mul(&to, &back, &opened);
+	Vec3_Transform(&w, &o, &to);
+	o = w;
+	w.x = d.x * to.row1.x + d.y * to.row2.x + d.z * to.row3.x;
+	w.y = d.x * to.row1.y + d.y * to.row2.y + d.z * to.row3.y;
+	w.z = d.x * to.row1.z + d.y * to.row2.z + d.z * to.row3.z;
+	if (w.z > -0.05f) return 0;
+	t = (-dist - o.z) / w.z;
+	*tx = (o.x + t * w.x) / dist;
+	*ty = (o.y + t * w.y) / dist;
+	return 1;
 }
 
 /* For the place (Camera.c): then where the left hand is, as SE_SeatHand, and its aim in the

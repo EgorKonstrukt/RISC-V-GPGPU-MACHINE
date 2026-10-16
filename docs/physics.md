@@ -184,6 +184,7 @@ GPU's picture never meets it. A button does what its key does (`act`).
   with nothing sideways, fires and begins again.
 - **Without a headset** the mouse's counter (word 4) turns the view, 0.066 degrees a count,
   and the head's tilt is the aim's rise; the keys are the window's, and Ctrl takes.
+  A sitter leaves by standing up (End): Escape and Q, beside W and A, quit nothing while seated.
 - **Until the world knew the program** (`GAME_PHYS`, 8, in `gameid.h`) a headset's controls
   were the pointer's: word 5 was nothing, the left stick the arrow keys, which is why a
   sitter's arrows walk and turn; the left grip was Esc, which a sitter with hands does not

@@ -360,16 +360,19 @@ turn_by(int buttons, int by)
 static void
 events(void)
 {
+	extern int gamestate, menuactive;
 	static int last_x, fire;
 	const volatile unsigned *host = sitter();
+	int playing = gamestate == 0 && !menuactive;
 	GR_EVENT e;
 
 	if (seated == 2) {
 		unsigned count = SEGL_HOST_MOUSE_X(host);
 		int gone = (short)(count - mouse_count);
 
+		/* (a menu's would take a look round for its arrows: only a level is turned) */
 		mouse_count = count;
-		if (gone)
+		if (gone && playing)
 			turn_by(fire, gone * 3 / 2);
 	}
 	for (;;) {
@@ -385,9 +388,12 @@ events(void)
 			fire = (e.button.buttons & GR_BUTTON_R) != 0;
 			last_x = e.button.x;
 			turn_by(fire, 0);
+		} else if (e.type == GR_EVENT_TYPE_BUTTON_DOWN || e.type == GR_EVENT_TYPE_BUTTON_UP) {
+			/* a sitter's click on the room's screen is a menu's, never a shot: they fire by the trigger */
+			fire = 0;
+			if (!playing || e.type == GR_EVENT_TYPE_BUTTON_UP)
+				I_GetEvent(&e);
 		} else {
-			if (e.type == GR_EVENT_TYPE_BUTTON_DOWN || e.type == GR_EVENT_TYPE_BUTTON_UP)
-				fire = (e.button.buttons & GR_BUTTON_L) != 0;
 			I_GetEvent(&e);
 		}
 	}

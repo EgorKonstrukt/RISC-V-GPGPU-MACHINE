@@ -207,7 +207,8 @@ void SE_Input (void)
 	input = gpuControl (REG_INPUT);
 	host = seglHostState ();
 	/* a menu, the console, a level loading: a picture for a screen, not a world for a room */
-	seglWorldFlat (Key_GetCatcher () != 0 || clc.state != CA_ACTIVE);
+	/* (and a level's end, its scoreboard: PM_INTERMISSION and PM_SPINTERMISSION are 5 and 6) */
+	seglWorldFlat (Key_GetCatcher () != 0 || clc.state != CA_ACTIVE || (cl.snap.valid && cl.snap.ps.pm_type >= 5));
 	/* the eye 50 units over the floor (26 over a player's origin, 24 over its feet) */
 	seglWorldEye (7, 50, Z_NEAR, Z_FAR, 1 / tan (seat_fov_x * (M_PI / 360)), 1 / tan (seat_fov_y * (M_PI / 360)));
 	if (mouse_inside || dragging) {		/* (a drag goes on outside the window) */
@@ -268,6 +269,9 @@ void SE_Input (void)
 					Com_QueueEvent (0, SE_KEY, K_MOUSE1, down, 0, NULL);
 				break;
 			}
+			/* a sitter fires by the trigger: a click on the room's screen is no shot (their release still counts) */
+			if (!Key_GetCatcher () && seated && down && !(cl.snap.valid && cl.snap.ps.pm_type >= 5))
+				break;
 			dragging = 0;
 			if (e.button.changebuttons & GR_BUTTON_L)
 				Com_QueueEvent (0, SE_KEY, K_MOUSE1, down, 0, NULL);

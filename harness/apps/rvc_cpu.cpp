@@ -67,7 +67,11 @@ struct Options {
     int button = 0;                                // --pointer-button: the buttons word,
     double buttonFrom = 0, buttonTo = 0;           // between these seconds of the guest's
     unsigned host[8] = {};                         // --host: the host's eight words, hex (docs/holodeck.md)
+    unsigned hostLater[4][8] = {};                 // --host-from S W0,...: the words from guest second S on
+    double hostFrom[4] = {};                       // (given again, up to four steps, each later than the last)
+    int hostSteps = 0;
     double hostMouse = 0;                          // --host-mouse: counts a second a sitter's mouse goes right
+    double hostWheel = 0;                          // --host-wheel: notches a second their wheel turns up
     bool desktop = false, tabs = false, quiet = false;
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
     double netLoss = 0, netDelay = 0;
@@ -652,6 +656,55 @@ static void atom_merge() {
     dirty(CTRL);
 }
 
+// RVC_ZB=1: Zba and Zbb (RV32), which neither the tick nor the default machine has; a count only.
+static bool zb_on = false;
+static u64 zb_run = 0;
+static bool zb(u32 ins, u32 op, u32 f3, u32 f7, u32 rs2, u32 a, u32 b, u32& result) {
+    u32 sh = rs2;
+    if (op == 0x13) {
+        if (f3 == 1 && f7 == 0x30) {
+            switch (rs2) {
+            case 0: result = a ? __lzcnt(a) : 32; return true;
+            case 1: { unsigned long i; result = _BitScanForward(&i, a) ? i : 32; return true; }
+            case 2: result = __popcnt(a); return true;
+            case 4: result = (u32)(i32)(int8_t)a; return true;
+            case 5: result = (u32)(i32)(int16_t)a; return true;
+            }
+            return false;
+        }
+        if (f3 == 5 && f7 == 0x30) { result = _rotr(a, sh); return true; }
+        if (f3 == 5 && (ins >> 20) == 0x287) {
+            result = 0;
+            for (int k = 0; k < 32; k += 8) if ((a >> k) & 0xff) result |= 0xffu << k;
+            return true;
+        }
+        if (f3 == 5 && (ins >> 20) == 0x698) { result = _byteswap_ulong(a); return true; }
+        return false;
+    }
+    switch (f7) {
+    case 0x10: if (f3 == 2 || f3 == 4 || f3 == 6) { result = (a << (f3 >> 1)) + b; return true; } return false;
+    case 0x20:
+        if (f3 == 7) { result = a & ~b; return true; }
+        if (f3 == 6) { result = a | ~b; return true; }
+        if (f3 == 4) { result = ~(a ^ b); return true; }
+        return false;
+    case 0x05:
+        switch (f3) {
+        case 4: result = (i32)a < (i32)b ? a : b; return true;
+        case 5: result = a < b ? a : b; return true;
+        case 6: result = (i32)a > (i32)b ? a : b; return true;
+        case 7: result = a > b ? a : b; return true;
+        }
+        return false;
+    case 0x30:
+        if (f3 == 1) { result = _rotl(a, b & 31); return true; }
+        if (f3 == 5) { result = _rotr(a, b & 31); return true; }
+        return false;
+    case 0x04: if (f3 == 4 && rs2 == 0) { result = a & 0xffff; return true; } return false;
+    }
+    return false;
+}
+
 // ---- one pass of a core: up to `budget` instructions ----
 
 static u64 run(Core& c, u64 budget) {
@@ -689,7 +742,9 @@ static u64 run(Core& c, u64 budget) {
             u32 op = ins & 0x7f, rd = (ins >> 7) & 31, f3 = (ins >> 12) & 7, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31, f7 = ins >> 25;
             u32 a = c.x[rs1], b = c.x[rs2], next = pc + 4, result = 0;
             bool write = true, illegal = false;
+            if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { zb_run++; op = 0; }
             switch (op) {
+            case 0: break;
             case 0x37: result = ins & 0xfffff000; break;
             case 0x17: result = pc + (ins & 0xfffff000); break;
             case 0x6f: {
@@ -1176,8 +1231,11 @@ static void control_pass() {
     }
     if (opt.host[0]) {
         // (docs/holodeck.md, "What the machine is told": as the world's control pass writes them)
-        for (int i = 0; i < 8; i++) word(CTRL + 0x360 + 4 * i) = opt.host[i];
+        const unsigned* now = opt.host;
+        for (int k = 0; k < opt.hostSteps; k++) if (guest_seconds >= opt.hostFrom[k]) now = opt.hostLater[k];
+        for (int i = 0; i < 8; i++) word(CTRL + 0x360 + 4 * i) = now[i];
         if (opt.hostMouse != 0) word(CTRL + 0x370) = (u32)(long long)(guest_seconds * opt.hostMouse) & 0xffffu;
+        if (opt.hostWheel != 0) word(CTRL + 0x374) = (opt.host[5] & 0xff00ffffu) | ((u32)(long long)(guest_seconds * opt.hostWheel) & 255u) << 16;
     }
     if (opt.button) word(CTRL + 0x28) = guest_seconds >= opt.buttonFrom && guest_seconds < opt.buttonTo ? opt.button : 0;
     word(CTRL + 0x2c) = key_seq;
@@ -1334,7 +1392,15 @@ int main(int argc, char** argv) {
             std::string v = next("--host");
             sscanf(v.c_str(), "%x,%x,%x,%x,%x,%x,%x,%x", &opt.host[0], &opt.host[1], &opt.host[2], &opt.host[3], &opt.host[4], &opt.host[5], &opt.host[6], &opt.host[7]);
         }
+        else if (a == "--host-from") {
+            int k = opt.hostSteps < 4 ? opt.hostSteps++ : 3;
+            opt.hostFrom[k] = atof(next("--host-from").c_str());
+            std::string v = next("--host-from");
+            unsigned* w = opt.hostLater[k];
+            sscanf(v.c_str(), "%x,%x,%x,%x,%x,%x,%x,%x", &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], &w[6], &w[7]);
+        }
         else if (a == "--host-mouse") opt.hostMouse = atof(next("--host-mouse").c_str());
+        else if (a == "--host-wheel") opt.hostWheel = atof(next("--host-wheel").c_str());
         else if (a == "--pointer-button") sscanf(next("--pointer-button").c_str(), "%d,%lf,%lf", &opt.button, &opt.buttonFrom, &opt.buttonTo);
         else if (a == "--desktop") opt.desktop = true;
         else if (a == "--tabs") opt.tabs = true;
@@ -1367,6 +1433,8 @@ int main(int argc, char** argv) {
                    "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
                    "  --host W0,...,W7        the host's eight words in hex (docs/holodeck.md)\n"
                    "  --host-mouse N          and a sitter's mouse going right N counts a second\n"
+                   "  --host-wheel N          and their wheel turning up N notches a second\n"
+                   "  --host-from S W0,...,W7 the host's words from second S of the guest's on (up to four)\n"
                    "  --pointer-button B,S,T the buttons word is B (2: the right one) from second S to T of the guest's\n"
                    "  --desktop --tabs       the host flags of those names\n"
                    "  --quiet                do not print the console\n"

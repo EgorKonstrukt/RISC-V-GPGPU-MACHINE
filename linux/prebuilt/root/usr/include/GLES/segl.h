@@ -56,7 +56,9 @@ void seglWorldFlat(int flat);
 #define SEGL_HOST_HEAD_X(s)     ((short)((s)[2] & 0xffff))   /* millimetres from the seat's eye point: right, */
 #define SEGL_HOST_HEAD_Y(s)     ((short)((s)[2] >> 16))      /* up, */
 #define SEGL_HOST_HEAD_Z(s)     ((short)((s)[3] & 0xffff))   /* forward */
-#define SEGL_HOST_HEAD_ROLL(s)  ((short)((s)[3] >> 16))
+#define SEGL_HOST_HEAD_ROLL(s)  ((short)((s)[3] >> 16))   /* without hands; with them, the left hand's way: */
+#define SEGL_HOST_LEFT_YAW(s)   ((signed char)((s)[3] >> 16) * 256)   /* in the head's units, 256 at a step */
+#define SEGL_HOST_LEFT_PITCH(s) ((signed char)((s)[3] >> 24) * 128)   /* (its second word is the sticks) */
 #define SEGL_HOST_HANDS(s)     (((s)[0] >> 5) & 1)      /* the hands are tracked: a program may aim by one */
 /* a hand (0 left, 1 right): its place in units of 4 mm (right, up, forward), its buttons, and
    where it points: its turn to the right and its rise, 65,536 to a turn as the head's */
@@ -76,6 +78,8 @@ void seglWorldFlat(int flat);
 /* with no hands (a desktop's sitter): how far their mouse has gone to the right, a counter of
    16 bits that wraps; the head's pitch is the aim's rise */
 #define SEGL_HOST_MOUSE_X(s)   ((s)[4] & 0xffff)
+/* with no hands, while a game is played from the seat: the wheel's notches up, 8 bits that wrap */
+#define SEGL_HOST_WHEEL(s)     (((s)[5] >> 16) & 255)
 /* the jump button is held (a headset's, or a desktop sitter's Space): no trigger jumps */
 #define SEGL_HOST_JUMP(s)      (((s)[0] >> 6) & 1)
 /* For the holodeck's default scale (docs/holodeck.md, "The world's size"): the player's eye over
