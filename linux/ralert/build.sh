@@ -31,6 +31,11 @@ cp "$HERE/gl.cpp" "$VC/redalert/"
 # The worker cores' side (docs/multicore.md): mcw.c is the library every program has for them,
 # workers.c the game's jobs over it.
 cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/linux/libmedia/media.h" "$VC/redalert/"
+# (the reset above renews every file's time, and the two games reset the same tree: each builds
+# from a copy of its own, where a file keeps its time unless its bytes change)
+SRC=$WORK/src/vanilla-conquer-ra
+rsync -rc --delete --exclude .git "$VC/" "$SRC/"
+grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$BUILD/CMakeCache.txt" 2>/dev/null || rm -rf "$BUILD/CMakeCache.txt" "$BUILD/CMakeFiles"
 
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
 # (the flags are Tiberian Dawn's: docs/tdawn.md)
@@ -46,7 +51,7 @@ elif [ -f "$HERE/ralert.profile" ]; then
     python3 "$TD/profile.py" put "$HERE/ralert.profile" "$BUILD"
     PGO="-fprofile-use -fprofile-partial-training -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch"
 fi
-cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
+cmake -S "$SRC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLATD=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
     -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU -DSHADEREMU_RA $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \

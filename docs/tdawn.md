@@ -8,7 +8,7 @@ The window is the largest whole multiple of that the display has room for: 960x6
 desktop's 1280x720, which costs the game nothing (the GPU does the stretching).
 
     wsl -- bash /mnt/c/Development/ShaderX86/linux/nanox/build.sh     (once)
-    wsl -- bash /mnt/c/Development/ShaderX86/linux/tdawn/build.sh     (a minute; the first time it also fetches)
+    wsl -- bash /mnt/c/Development/ShaderX86/linux/tdawn/build.sh     (a minute when a file changed; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
 In the guest: `nano-X -p & tdawn` at the console (it is also listed for the desktop's Start
@@ -20,7 +20,11 @@ has none), only the map screen's and the score screen's tunes (`MAP1.AUD`, `WIN1
 ## What the build is made of (`linux/tdawn`)
 
 - `build.sh` fetches Vanilla Conquer at a fixed commit, applies `vanilla-conquer.patch`, adds
-  the files below and builds with CMake and the image's toolchain.
+  the files below and builds with CMake and the image's toolchain. The tree is put back on every
+  build and Red Alert's build shares it: each game builds from a copy of its own
+  (`vanilla-conquer-td`, `-ra`, by `rsync -c`), where a file keeps its time unless its bytes
+  change, and the GPU library's object is replaced only when it differs. A build with nothing
+  changed is 2 to 3 s; before, every build compiled and linked the whole game again (62 and 72 s).
 - **No C++ library.** The toolchain's libstdc++ is for glibc and an FPU. The game uses neither
   exceptions nor run-time type information, and little of the library: g++ is given
   libstdc++'s headers only, over musl, and `cxxrt.cpp` is the rest (allocation, the string

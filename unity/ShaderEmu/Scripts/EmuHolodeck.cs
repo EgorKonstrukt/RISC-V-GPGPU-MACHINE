@@ -36,7 +36,12 @@ public class EmuHolodeck : UdonSharpBehaviour
     public TextMeshProUGUI[] scaleLabels;
     // A console's two sliders, a room: the world's size and the large screen's (WorldSlid, ScreenSlid)
     public Slider[] worldSliders, screenSliders;
+    // and two more: the machine's sound (the sound panel's slider, EmuSound) and the other players' voices, for this visitor
+    public Slider[] volumeSliders, voiceSliders;
+    public TextMeshProUGUI[] volumeLabels, voiceLabels;
+    public EmuSound sound;
     public TextMeshProUGUI[] screenLabels;
+    public TextMeshProUGUI[] worldLabels;   // each console's 3D key: games only, or every program
     public Collider[] plateColliders;      // a console's own, which VRChat's laser presses: off for a sitter in a headset
     // The console can be put away (HideConsole): its model and the mark of it, one for all the
     // rooms, and a room's own plate, keys and screen; a small button in its place brings it back.
@@ -74,6 +79,8 @@ public class EmuHolodeck : UdonSharpBehaviour
     private bool respawned;
     private int putOut = -1;           // the room whose seat let go of them unasked
     private bool consoleHidden;        // this sitter put the console away
+    private bool worldsForAll;         // this visitor's 3D key: any program's world round the seat, not the games' alone
+    private float voices = 1f;         // the other players' voices and avatars while seated, of VRChat's own gains
     private bool flat;                 // their program shows a flat screen now, or draws no world: the large screen, no world
     private float mouseGone;           // a desktop sitter's mouse: how far right it has gone, in counts
     private bool firing;               // and its left button, which is the games' Ctrl
@@ -137,6 +144,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         Arrange();
         if (pointer != null) pointer.ownHolo = room;
         machine.keysOwn = true;   // (a sitter plays their own machine, whatever their wall shows)
+        Hear(voices);
         // without a headset the visitor's own keyboard is the game's (Insert gives it back);
         // with one their controllers are, and their beams press the console's keys
         if (!player.IsUserInVR())
@@ -200,6 +208,7 @@ public class EmuHolodeck : UdonSharpBehaviour
             if (gamepad.keys != null) gamepad.keys.SetCapture(false);
         }
         machine.keysOwn = false;
+        Hear(1f);
         BeamKeys(own, false);
         own = -1;
         played = 0;
@@ -320,6 +329,18 @@ public class EmuHolodeck : UdonSharpBehaviour
 
     // ---- a stand's keys: they are the sitter's ----
 
+    // The games made for a world round the seat (linux/apps/gameid.h): Doom, Quake, ClassiCube, Quake III, nxphys.
+    private bool Registered(int id) { return id == 1 || id == 2 || id == 3 || id == 7 || id == 8; }
+
+    // The console's 3D key: every program's world round the seat, or the registered games' alone.
+    public void ToggleWorld()
+    {
+        worldsForAll = !worldsForAll;
+        if (worldLabels == null) return;
+        for (int k = 0; k < worldLabels.Length; k++)
+            if (worldLabels[k] != null) worldLabels[k].text = worldsForAll ? "3D: every program" : "3D: games only";
+    }
+
     public void NextScreen()
     {
         if (own < 0) return;
@@ -333,6 +354,41 @@ public class EmuHolodeck : UdonSharpBehaviour
     public void ScreenSlid() { if (own >= 0 && Has(screenSliders)) ScreenSize(screenSliders[own].value); }
     public void WorldSlide() { if (own >= 0 && pointer != null) World(pointer.holoSlide); }
     public void ScreenSlide() { if (own >= 0 && pointer != null) ScreenSize(pointer.holoSlide); }
+    public void VolumeSlid() { if (own >= 0 && Has(volumeSliders)) Volume(volumeSliders[own].value); }
+    public void VoiceSlid() { if (own >= 0 && Has(voiceSliders)) Voices(voiceSliders[own].value); }
+    public void VolumeSlide() { if (own >= 0 && pointer != null) Volume(pointer.holoSlide); }
+    public void VoiceSlide() { if (own >= 0 && pointer != null) Voices(pointer.holoSlide); }
+
+    private void Volume(float level)
+    {
+        if (sound != null && sound.volumeSlider != null) sound.volumeSlider.value = Mathf.Round(Mathf.Clamp01(level) * 100f);
+    }
+
+    private void Voices(float level)
+    {
+        voices = Mathf.Clamp01(level);
+        Hear(voices);
+    }
+
+    // VRChat's defaults are 15 dB a voice and 10 an avatar's sounds; a seat's slider scales both
+    private void Hear(float level)
+    {
+        VRCPlayerApi[] players = new VRCPlayerApi[VRCPlayerApi.GetPlayerCount()];
+        VRCPlayerApi.GetPlayers(players);
+        for (int i = 0; i < players.Length; i++)
+        {
+            if (!Utilities.IsValid(players[i]) || players[i].isLocal) continue;
+            players[i].SetVoiceGain(15f * level);
+            players[i].SetAvatarAudioGain(10f * level);
+        }
+    }
+
+    public override void OnPlayerJoined(VRCPlayerApi player)
+    {
+        if (own < 0 || !Utilities.IsValid(player) || player.isLocal) return;
+        player.SetVoiceGain(15f * voices);
+        player.SetAvatarAudioGain(10f * voices);
+    }
 
     private bool Has(Slider[] sliders) { return sliders != null && own < sliders.Length && sliders[own] != null; }
 
@@ -398,8 +454,9 @@ public class EmuHolodeck : UdonSharpBehaviour
         if (own >= 0 && Input.GetKeyDown(KeyCode.End)) StandUp();
         // (Home is the guest's too: in a game's world only, not where it moves a cursor)
         if (own >= 0 && !flat && Input.GetKeyDown(KeyCode.Home)) { consoleHidden = !consoleHidden; Arrange(); }
-        // a menu, a level loading, or a program that draws no world: its picture on the large screen
-        bool flatNow = own >= 0 && (machine.flatFrame || !machine.worldFrame);
+        // a menu, a level loading, a program that draws no world, or one that is no registered game
+        // (an RTS's list is no world to stand in): its picture on the large screen
+        bool flatNow = own >= 0 && (machine.flatFrame || !machine.worldFrame || (!worldsForAll && !Registered(machine.gameId)));
         if (flatNow != flat) { flat = flatNow; Arrange(); }
         if (own >= 0 && machine.gameId != 0) played = machine.gameId;
         bool byWords = ByWords();
@@ -476,6 +533,11 @@ public class EmuHolodeck : UdonSharpBehaviour
             // (the sliders show what is in use: a game's own size, or another's slider moved)
             if (worldSliders != null && k < worldSliders.Length && worldSliders[k] != null && me && Mathf.Abs(worldSliders[k].value - (1f - inUse)) > 0.002f)
                 worldSliders[k].value = 1f - inUse;
+            float level = sound != null && sound.volumeSlider != null ? sound.volumeSlider.value / 100f : 0f;
+            if (volumeLabels != null && k < volumeLabels.Length && volumeLabels[k] != null && me) volumeLabels[k].text = Mathf.RoundToInt(level * 100f) + "%";
+            if (volumeSliders != null && k < volumeSliders.Length && volumeSliders[k] != null && me && Mathf.Abs(volumeSliders[k].value - level) > 0.002f)
+                volumeSliders[k].value = level;
+            if (voiceLabels != null && k < voiceLabels.Length && voiceLabels[k] != null && me) voiceLabels[k].text = Mathf.RoundToInt(voices * 100f) + "%";
             float screenPos = Mathf.Log(screenScale / 0.5f) / Mathf.Log(4f);
             if (screenSliders != null && k < screenSliders.Length && screenSliders[k] != null && me && Mathf.Abs(screenSliders[k].value - screenPos) > 0.002f)
                 screenSliders[k].value = screenPos;

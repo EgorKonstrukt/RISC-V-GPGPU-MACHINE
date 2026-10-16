@@ -162,16 +162,18 @@ public static partial class ShaderEmuBuilder
     // event of EmuHolodeck each sends. A sitter's controls are picked by the game (EmuGamepad).
     const float ConsoleWide = 380, ConsoleHigh = 280;
     // An event ending in "Slide" is a slider's slot: its name to its left, its value to its right.
-    static readonly float[] ConsoleKeys = { 12, 72, 174, 92, 194, 72, 174, 92, 96, 176, 192, 42, 96, 226, 192, 42, 268, 6, 100, 30, 162, 6, 100, 30 };
-    static readonly string[] ConsoleEvents = { "NextScreen", "StandUp", "WorldSlide", "ScreenSlide", "HideConsole", "ToggleBeam" };
-    static readonly string[] ConsoleNames = { "Screen", "Exit", "World", "Screen size", "Hide", "Beam" };
+    static readonly float[] ConsoleKeys = { 12, 72, 174, 40, 194, 72, 174, 84, 96, 162, 192, 26, 96, 190, 192, 26, 268, 6, 100, 30, 162, 6, 100, 30,
+                                            12, 116, 174, 40, 96, 218, 192, 26, 96, 246, 192, 26 };
+    static readonly string[] ConsoleEvents = { "NextScreen", "StandUp", "WorldSlide", "ScreenSlide", "HideConsole", "ToggleBeam", "ToggleWorld",
+                                               "VolumeSlide", "VoiceSlide" };
+    static readonly string[] ConsoleNames = { "Screen", "Exit", "World", "Screen size", "Hide", "Beam", "3D: games only", "Volume", "Voices" };
     const float ShowWide = 120, ShowHigh = 46;   // the small button that brings a console back
 
     // The console's face: the room's keys, in the screen's plane under it. Exit stands the sitter
     // up whatever they hold (EmuHolodeck.StandUp): the one key for it, a headset's or a desktop's.
     static void ConsolePanel(Transform frame, int k, Vector3 at, Vector3 turn, EmuHolodeck deck, List<KeyValuePair<Button, string>> keys)
     {
-        Color back = new Color(0.05f, 0.055f, 0.07f), dim = new Color(0.62f, 0.68f, 0.76f);
+        Color back = new Color(0.05f, 0.055f, 0.07f);
         TextMeshProUGUI unused;
         RectTransform panel = Panel(frame, "Holodeck " + (k + 1) + " plate", at, turn, ConsoleWide, ConsoleHigh, back);
         Label(panel, "Title", "HOLODECK " + (k + 1), 12, 6, 356, 32, 24, TextAnchor.MiddleLeft, Color.white);
@@ -180,22 +182,48 @@ public static partial class ShaderEmuBuilder
         if (deck.worldSliders == null || deck.worldSliders.Length != rooms) deck.worldSliders = new Slider[rooms];
         if (deck.screenSliders == null || deck.screenSliders.Length != rooms) deck.screenSliders = new Slider[rooms];
         if (deck.screenLabels == null || deck.screenLabels.Length != rooms) deck.screenLabels = new TextMeshProUGUI[rooms];
+        if (deck.worldLabels == null || deck.worldLabels.Length != rooms) deck.worldLabels = new TextMeshProUGUI[rooms];
+        ConsoleArrays(deck);
         for (int i = 0; i < ConsoleEvents.Length; i++)
         {
             float x = ConsoleKeys[i * 4], y = ConsoleKeys[i * 4 + 1], w = ConsoleKeys[i * 4 + 2], h = ConsoleKeys[i * 4 + 3];
             if (ConsoleEvents[i].EndsWith("Slide"))
             {
-                bool world = ConsoleEvents[i] == "WorldSlide";
-                Label(panel, ConsoleEvents[i] + " name", ConsoleNames[i], 12, y, x - 18, h, 18, TextAnchor.MiddleLeft, dim);
-                TextMeshProUGUI shows = Label(panel, ConsoleEvents[i] + " value", world ? "65" : "100%", x + w + 6, y, ConsoleWide - x - w - 18, h, 20,
-                                              TextAnchor.MiddleCenter, dim);
-                Slider slider = HoloSlider(panel, ConsoleEvents[i], x, y, w, h, world ? 0.65f : 0.5f, deck, world ? "WorldSlid" : "ScreenSlid");
-                if (world) { deck.worldSliders[k] = slider; deck.scaleLabels[k] = shows; }
-                else { deck.screenSliders[k] = slider; deck.screenLabels[k] = shows; }
+                ConsoleSlider(panel, deck, k, i);
                 continue;
             }
-            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, ConsoleEvents[i], ConsoleNames[i], x, y, w, h, i >= 4 ? 18 : 26, out unused), ConsoleEvents[i]));
+            keys.Add(new KeyValuePair<Button, string>(MakeButton(panel, ConsoleEvents[i], ConsoleNames[i], x, y, w, h, i >= 4 || i == 0 ? 18 : 26, out unused), ConsoleEvents[i]));
+            if (ConsoleEvents[i] == "ToggleWorld") deck.worldLabels[k] = unused;
         }
+    }
+
+    // The arrays of the console's later sliders, a room each
+    static void ConsoleArrays(EmuHolodeck deck)
+    {
+        int rooms = deck.frames.Length;
+        if (deck.volumeSliders == null || deck.volumeSliders.Length != rooms) deck.volumeSliders = new Slider[rooms];
+        if (deck.voiceSliders == null || deck.voiceSliders.Length != rooms) deck.voiceSliders = new Slider[rooms];
+        if (deck.volumeLabels == null || deck.volumeLabels.Length != rooms) deck.volumeLabels = new TextMeshProUGUI[rooms];
+        if (deck.voiceLabels == null || deck.voiceLabels.Length != rooms) deck.voiceLabels = new TextMeshProUGUI[rooms];
+        if (deck.sound == null) deck.sound = Object.FindObjectOfType<EmuSound>(true);
+    }
+
+    // Console slider I (ConsoleEvents): its name to the left of the slot, its value to the right
+    static void ConsoleSlider(RectTransform panel, EmuHolodeck deck, int k, int i)
+    {
+        Color dim = new Color(0.62f, 0.68f, 0.76f);
+        float x = ConsoleKeys[i * 4], y = ConsoleKeys[i * 4 + 1], w = ConsoleKeys[i * 4 + 2], h = ConsoleKeys[i * 4 + 3];
+        string what = ConsoleEvents[i].Substring(0, ConsoleEvents[i].Length - 5);
+        bool world = what == "World";
+        Label(panel, ConsoleEvents[i] + " name", ConsoleNames[i], 12, y, x - 18, h, 18, TextAnchor.MiddleLeft, dim);
+        TextMeshProUGUI shows = Label(panel, ConsoleEvents[i] + " value", world ? "65" : what == "Volume" ? "10%" : "100%", x + w + 6, y, ConsoleWide - x - w - 18, h, 20,
+                                      TextAnchor.MiddleCenter, dim);
+        float start = world ? 0.65f : what == "Screen" ? 0.5f : what == "Volume" ? 0.1f : 1f;
+        Slider slider = HoloSlider(panel, ConsoleEvents[i], x, y, w, h, start, deck, what + "Slid");
+        if (world) { deck.worldSliders[k] = slider; deck.scaleLabels[k] = shows; }
+        else if (what == "Screen") { deck.screenSliders[k] = slider; deck.screenLabels[k] = shows; }
+        else if (what == "Volume") { deck.volumeSliders[k] = slider; deck.volumeLabels[k] = shows; }
+        else { deck.voiceSliders[k] = slider; deck.voiceLabels[k] = shows; }
     }
 
     // A console's slider, 0 to 1, whose moves send EVENT to the holodeck (VRChat's laser, a desktop's click)
@@ -392,6 +420,76 @@ public static partial class ShaderEmuBuilder
         UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
         AssetDatabase.SaveAssets();
         Debug.Log("[ShaderEmu] the holodecks have their hand beams, and " + keys + " consoles a Beam key (the scene is not saved)");
+    }
+
+    // The consoles laid out again where they stand (ConsoleKeys): the 3D key under Screen, the
+    // Volume and Voices sliders under the others, and each plate drawn again onto itself, keeping
+    // its place in the lightmap. Nothing here wants a bake.
+    [MenuItem("ShaderEmu/Lay out the holodecks' consoles again in the open scene")]
+    public static void ConsolesInPlace()
+    {
+        Transform world = GameObject.Find("ShaderEmu").transform;
+        int count = 0;
+        List<Canvas> redraw = new List<Canvas>();
+        foreach (EmuHolodeck deck in world.GetComponentsInChildren<EmuHolodeck>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(deck);
+            int rooms = deck.frames.Length;
+            if (deck.worldLabels == null || deck.worldLabels.Length != rooms) deck.worldLabels = new TextMeshProUGUI[rooms];
+            ConsoleArrays(deck);
+            for (int k = 0; k < rooms; k++)
+            {
+                RectTransform plate = (RectTransform)deck.frames[k].Find("Holodeck " + (k + 1) + " plate");
+                if (plate == null) continue;
+                for (int i = 0; i < ConsoleEvents.Length; i++)
+                {
+                    float x = ConsoleKeys[i * 4], y = ConsoleKeys[i * 4 + 1], w = ConsoleKeys[i * 4 + 2], h = ConsoleKeys[i * 4 + 3];
+                    RectTransform thing = (RectTransform)plate.Find(ConsoleEvents[i]);
+                    if (ConsoleEvents[i].EndsWith("Slide"))
+                    {
+                        if (thing == null) { ConsoleSlider(plate, deck, k, i); continue; }
+                        Place(thing, x, y, w, h);
+                        Place((RectTransform)plate.Find(ConsoleEvents[i] + " name"), 12, y, x - 18, h);
+                        Place((RectTransform)plate.Find(ConsoleEvents[i] + " value"), x + w + 6, y, ConsoleWide - x - w - 18, h);
+                        continue;
+                    }
+                    if (thing == null)
+                    {
+                        TextMeshProUGUI label;
+                        Button key = MakeButton(plate, ConsoleEvents[i], ConsoleNames[i], x, y, w, h, 18, out label);
+                        OnClick(key, deck, ConsoleEvents[i]);
+                        if (ConsoleEvents[i] == "ToggleWorld") deck.worldLabels[k] = label;
+                        continue;
+                    }
+                    Place(thing, x, y, w, h);
+                    foreach (TextMeshProUGUI text in thing.GetComponentsInChildren<TextMeshProUGUI>(true))
+                    {
+                        Place(text.rectTransform, 0, 0, w, h);
+                        if (i == 0) text.fontSize = 18;
+                    }
+                }
+                redraw.Add(plate.GetComponent<Canvas>());
+                count++;
+            }
+            Apply(deck);
+        }
+        foreach (EmuPointer pointer in world.GetComponentsInChildren<EmuPointer>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+            ConsoleKeyTable(pointer);
+            Apply(pointer);
+        }
+        RetroInPlace(world, redraw);
+        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+        Debug.Log("[ShaderEmu] " + count + " consoles laid out again and drawn onto their plates (the scene is not saved)");
+    }
+
+    static void Place(RectTransform rect, float x, float y, float w, float h)
+    {
+        if (rect == null) return;
+        rect.anchoredPosition = new Vector2(x, -y);
+        rect.sizeDelta = new Vector2(w, h);
+        EditorUtility.SetDirty(rect);
     }
 
     // A console can be put away: a Hide key on each plate, and in the console's place a small

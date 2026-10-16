@@ -47,6 +47,11 @@ cp "$HERE/cxxrt.cpp" "$HERE/shaderemu.cpp" "$HERE/soundio_shaderemu.cpp" "$HERE/
 cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mcwx.c" "$VC/common/"
 cp "$HERE/gl.cpp" "$VC/tiberiandawn/"
 cp "$REPO/linux/libmedia/media.h" "$VC/common/"
+# (the reset above renews every file's time, and the two games reset the same tree: each builds
+# from a copy of its own, where a file keeps its time unless its bytes change)
+SRC=$WORK/src/vanilla-conquer-td
+rsync -rc --delete --exclude .git "$VC/" "$SRC/"
+grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$BUILD/CMakeCache.txt" 2>/dev/null || rm -rf "$BUILD/CMakeCache.txt" "$BUILD/CMakeFiles"
 
 cat > "$WORK/src/tdawn-toolchain.cmake" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
@@ -60,8 +65,10 @@ EOF
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
 # The GPU's library with a section a variable, each starting on 16 bytes: a worker core makes
 # the scene's commands with it (host.c), and two cores must not store to the same 16 bytes.
-rv32-cc -O2 -fno-pie -w -DNDEBUG -DSHADEREMU $GLINC -fno-common -fdata-sections -fno-toplevel-reorder -msmall-data-limit=0     -c "$REPO/programs/linux/gles.c" -o "$WORK/src/tdawn-gles.o"
-riscv32-linux-objcopy --set-section-alignment '.data*=16' --set-section-alignment '.bss*=16' "$WORK/src/tdawn-gles.o"
+rv32-cc -O2 -fno-pie -w -DNDEBUG -DSHADEREMU $GLINC -fno-common -fdata-sections -fno-toplevel-reorder -msmall-data-limit=0     -c "$REPO/programs/linux/gles.c" -o "$WORK/src/tdawn-gles.new.o"
+riscv32-linux-objcopy --set-section-alignment '.data*=16' --set-section-alignment '.bss*=16' "$WORK/src/tdawn-gles.new.o"
+# (kept with its time when its bytes are the same: a newer one links both games again, a minute)
+cmp -s "$WORK/src/tdawn-gles.new.o" "$WORK/src/tdawn-gles.o" && rm "$WORK/src/tdawn-gles.new.o" || mv "$WORK/src/tdawn-gles.new.o" "$WORK/src/tdawn-gles.o"
 # -fno-pie: a use of a global costs a load from a table otherwise (docs/doom.md)
 # -fno-lifetime-dse: the game's operator new marks an object active before its constructor
 # runs, a store the compiler may otherwise drop (a native -O3 build then has no overlays)
@@ -79,7 +86,7 @@ elif [ -f "$HERE/tdawn.profile" ]; then
     python3 "$HERE/profile.py" put "$HERE/tdawn.profile" "$BUILD"
     PGO="-fprofile-use -fprofile-partial-training -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch"
 fi
-cmake -S "$VC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
+cmake -S "$SRC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cmake" -DCMAKE_BUILD_TYPE=Release \
     -DSDL2=OFF -DOPENAL=OFF -DNETWORKING=OFF -DBUILD_VANILLARA=OFF -DSHADEREMU=ON \
     -DSHADEREMU_GLES="$WORK/src/tdawn-gles.o" -DSHADEREMU_NANOX="$MW/src/lib/libnano-X.a" \
     -DCMAKE_CXX_FLAGS="-O2 -fno-pie -fno-lifetime-dse -w -DSHADEREMU $GLINC $LTO $PGO" -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG" \

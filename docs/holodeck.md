@@ -372,6 +372,24 @@ its button, and with the view on it neither the click nor the wheel is the game'
 the screen a flat program brought back.
 On `rvc_cpu` (its closing line says the bit): Quake III's menu 1, its level 0.
 
+Only the registered games have a world round the seat (`EmuHolodeck.Registered`: Doom, Quake,
+ClassiCube, Quake III and nxphys, by the number of the program whose window has the keyboard,
+`linux/apps/gameid.h`); any other program is on the large screen however it draws, as on a
+desktop. Tiberian Dawn and Red Alert draw their pages by a GPU list, which the room took for a
+world: the screen went with the console, and there was no playing them with the console away. The
+console's 3D key, under Screen, gives every program's list a world for this visitor ("3D: every
+program") and back ("3D: games only", `ToggleWorld`). "ShaderEmu/Add the holodecks' 3D key to the
+open scene" (now "Lay out the holodecks' consoles again in the open scene") puts it on consoles made
+already, Screen half as tall, without a bake.
+
+Under the World and Screen size sliders are Volume, the machine's sound (the sound panel's own
+slider, `EmuSound`, which the console's follows), and Voices, how loud the other players are to
+a sitter: their voices and their avatars' sounds, scaled from VRChat's own gains (15 and 10 dB),
+for this visitor alone, while seated and set back when they stand up (`Hear`). The console
+is laid out again where it stands and drawn again onto the plate it has
+(`ConsolesInPlace`, `RetroInPlace`, `PlateInPlace` in `ShaderEmuRetro.cs`): a plate made anew
+loses its place in the lightmap, and these had none since the size sliders (lit by probes).
+
 ## The console put away
 
 Its Hide key, or Home while a world is drawn (on a flat screen Home is the program's), takes the console away for its sitter: the stand's model and the chair's

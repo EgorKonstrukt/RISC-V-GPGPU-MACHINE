@@ -431,12 +431,17 @@ public static partial class ShaderEmuBuilder
 
     // The canvas as it stands, without its print, drawn into a picture and hung on a plate with a
     // lightmap just behind it; the print is the plate's lettering, and leaves the canvas.
+    // A plate drawn again onto the one it has, which keeps its place in the lightmap (no bake)
+    static bool PlateInPlace;
+
     static void Plate(Canvas canvas, string name, bool shown = true, List<Graphic> print = null)
     {
         RectTransform rect = (RectTransform)canvas.transform;
         string plateName = canvas.name + " plate";
         Transform old = canvas.transform.Find(plateName);
-        if (old != null) Object.DestroyImmediate(old.gameObject);
+        bool inPlace = PlateInPlace && old != null;
+        if (inPlace) old.gameObject.SetActive(false);   // (out of its own picture)
+        else if (old != null) Object.DestroyImmediate(old.gameObject);
         Vector2 size = rect.sizeDelta;
         float scale = Mathf.Min(2f, (size.x > 3000f ? 4096f : 2048f) / Mathf.Max(size.x, size.y));   // the strip of names is seven metres
         int wide = Mathf.CeilToInt(size.x * scale), high = Mathf.CeilToInt(size.y * scale);
@@ -464,6 +469,12 @@ public static partial class ShaderEmuBuilder
         material.SetFloat("_Bold", paper ? 0.07f : 0.05f);   // thin strokes were hard to read across the room
         Lettering(canvas, name, print, material);
         if (print != null) foreach (Graphic graphic in print) graphic.enabled = false;
+        if (inPlace)
+        {
+            old.gameObject.SetActive(true);
+            old.GetComponent<MeshRenderer>().sharedMaterial = material;
+            return;
+        }
 
         GameObject plate = GameObject.CreatePrimitive(PrimitiveType.Quad);   // it faces -z, as a canvas does
         plate.name = plateName;
@@ -784,6 +795,32 @@ public static partial class ShaderEmuBuilder
             terminal.tabNewsColour = new Color(0.45f, 1f, 0.45f, 0.40f);
             Apply(terminal);
         }
+    }
+
+    // Panels restyled after a change to their keys, each drawn onto the plate it has (no bake).
+    static void RetroInPlace(Transform world, List<Canvas> canvases)
+    {
+        Sprite raised = UiSprite("Raised", 6), sunken = UiSprite("Sunken", 6), cap = UiSprite("Keycap", 16, true);
+        TMP_FontAsset sans = RetroFont("IBMPlexSansCondensed-Medium"), bold = RetroFont("IBMPlexSansCondensed-Bold");
+        TMP_FontAsset mono = RetroFont("IBMPlexMono-Regular"), monoBold = RetroFont("IBMPlexMono-Bold");
+        HashSet<Object> changing = new HashSet<Object>(), painted = new HashSet<Object>();
+        Changing(world, changing, painted);
+        FontSheet(sans, bold, mono, monoBold);
+        PlateInPlace = true;
+        try
+        {
+            foreach (Canvas canvas in canvases)
+            {
+                if (canvas == null) continue;
+                bool shown = canvas.gameObject.activeSelf;
+                Hidden[canvas] = !shown;
+                canvas.gameObject.SetActive(true);
+                PanelLook(canvas, raised, sunken, cap, sans, bold, mono, changing, painted);
+                canvas.gameObject.SetActive(shown);
+            }
+        }
+        finally { PlateInPlace = false; }
+        AssetDatabase.SaveAssets();
     }
 
     // For whatever adds a panel to a scene that is baked: the room's look for it, at once.
