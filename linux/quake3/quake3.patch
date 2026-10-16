@@ -3532,10 +3532,10 @@ index ed94517f..65b4f696 100644
  			}
  			return;
 diff --git a/code/qcommon/common.c b/code/qcommon/common.c
-index d97312c4..c2558b8c 100644
+index d97312c4..5674d050 100644
 --- a/code/qcommon/common.c
 +++ b/code/qcommon/common.c
-@@ -37,12 +37,22 @@ int demo_protocols[] =
+@@ -37,12 +37,30 @@ int demo_protocols[] =
  #define MAX_NUM_ARGVS	50
  
  #define MIN_DEDICATED_COMHUNKMEGS 1
@@ -3553,12 +3553,20 @@ index d97312c4..c2558b8c 100644
  
 +#ifdef SHADEREMU
 +int SE_Phase( int next );
++#include <sys/mman.h>
++/* a pool of whole pages, cleared: calloc's header past 16 MB is a block of 32 without an MMU */
++static void *SE_Pool( int bytes ) {
++	void *p = mmap( NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
++	return p == MAP_FAILED ? NULL : p;
++}
++#else
++#define SE_Pool( bytes ) calloc( ( bytes ), 1 )
 +#endif
 +
  int		com_argc;
  char	*com_argv[MAX_NUM_ARGVS+1];
  
-@@ -173,6 +183,13 @@ void QDECL Com_Printf( const char *fmt, ... ) {
+@@ -173,6 +191,13 @@ void QDECL Com_Printf( const char *fmt, ... ) {
  	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
  	va_end (argptr);
  
@@ -3572,7 +3580,7 @@ index d97312c4..c2558b8c 100644
  	if ( rd_buffer ) {
  		if ((strlen (msg) + strlen(rd_buffer)) > (rd_buffersize - 1)) {
  			rd_flush(rd_buffer);
-@@ -270,6 +287,17 @@ void QDECL Com_Error( int code, const char *fmt, ... ) {
+@@ -270,6 +295,17 @@ void QDECL Com_Error( int code, const char *fmt, ... ) {
  	int			currentTime;
  	qboolean	restartClient;
  
@@ -3590,7 +3598,7 @@ index d97312c4..c2558b8c 100644
  	if(com_errorEntered)
  		Sys_Error("recursive error after: %s", com_errorMessage);
  
-@@ -798,6 +826,16 @@ static memzone_t	*mainzone;
+@@ -798,6 +834,16 @@ static memzone_t	*mainzone;
  // we also have a small zone for small allocations that would only
  // fragment the main zone (think of cvar and cmd strings)
  static memzone_t	*smallzone;
@@ -3607,7 +3615,7 @@ index d97312c4..c2558b8c 100644
  
  static void Z_CheckHeap( void );
  
-@@ -868,12 +906,23 @@ void Z_Free( void *ptr ) {
+@@ -868,12 +914,23 @@ void Z_Free( void *ptr ) {
  	if (block->tag == TAG_STATIC) {
  		return;
  	}
@@ -3631,7 +3639,7 @@ index d97312c4..c2558b8c 100644
  	if (block->tag == TAG_SMALL) {
  		zone = smallzone;
  	}
-@@ -884,7 +933,9 @@ void Z_Free( void *ptr ) {
+@@ -884,7 +941,9 @@ void Z_Free( void *ptr ) {
  	zone->used -= block->size;
  	// set the block to something that should cause problems
  	// if it is referenced...
@@ -3641,7 +3649,7 @@ index d97312c4..c2558b8c 100644
  
  	block->tag = 0;		// mark as free
  	
-@@ -917,7 +968,25 @@ void Z_Free( void *ptr ) {
+@@ -917,7 +976,25 @@ void Z_Free( void *ptr ) {
  Z_FreeTags
  ================
  */
@@ -3667,7 +3675,7 @@ index d97312c4..c2558b8c 100644
  	memzone_t	*zone;
  
  	if ( tag == TAG_SMALL ) {
-@@ -958,6 +1027,15 @@ void *Z_TagMalloc( int size, int tag ) {
+@@ -958,6 +1035,15 @@ void *Z_TagMalloc( int size, int tag ) {
  		Com_Error( ERR_FATAL, "Z_TagMalloc: tried to use a 0 tag" );
  	}
  
@@ -3683,7 +3691,7 @@ index d97312c4..c2558b8c 100644
  	if ( tag == TAG_SMALL ) {
  		zone = smallzone;
  	}
-@@ -1200,11 +1278,54 @@ char *CopyString( const char *in ) {
+@@ -1200,11 +1286,54 @@ char *CopyString( const char *in ) {
  			return ((char *)&numberstring[in[0]-'0']) + sizeof(memblock_t);
  		}
  	}
@@ -3738,32 +3746,59 @@ index d97312c4..c2558b8c 100644
  /*
  ==============================================================================
  
-@@ -1454,9 +1575,24 @@ void Com_InitZoneMemory( void ) {
+@@ -1364,6 +1493,9 @@ void Com_Meminfo_f( void ) {
+ 	Com_Printf( "        %8i bytes in dynamic renderer\n", rendererBytes );
+ 	Com_Printf( "        %8i bytes in dynamic other\n", zoneBytes - ( botlibBytes + rendererBytes ) );
+ 	Com_Printf( "        %8i bytes in small Zone memory\n", smallZoneBytes );
++#ifdef SHADEREMU
++	Com_Printf( "%8i bytes in the server's zone of %i\n", serverzone->used, SERVER_ZONE_BYTES );
++#endif
+ }
+ 
+ /*
+@@ -1449,13 +1581,28 @@ void Com_InitZoneMemory( void ) {
+ 		s_zoneTotal = cv->integer * 1024 * 1024;
+ 	}
+ 
+-	mainzone = calloc( s_zoneTotal, 1 );
++	mainzone = SE_Pool( s_zoneTotal );
+ 	if ( !mainzone ) {
  		Com_Error( ERR_FATAL, "Zone data failed to allocate %i megs", s_zoneTotal / (1024*1024) );
  	}
  	Z_ClearZone( mainzone, s_zoneTotal );
 +#ifdef SHADEREMU
-+	serverzone = calloc( SERVER_ZONE_BYTES, 1 );
++	serverzone = SE_Pool( SERVER_ZONE_BYTES );
 +	if ( !serverzone ) {
 +		Com_Error( ERR_FATAL, "Zone data failed to allocate the server's %i megs", SERVER_ZONE_BYTES / (1024*1024) );
 +	}
 +	Z_ClearZone( serverzone, SERVER_ZONE_BYTES );
 +#endif
- 
- }
- 
++
++}
++
 +#ifdef SHADEREMU
 +void SE_ServerZoneTouch( void (*touch)( void *, unsigned ), unsigned bytes ) {
 +	byte	*at = (byte *)serverzone->rover, *end = (byte *)serverzone + SERVER_ZONE_BYTES;
-+
+ 
 +	touch( at, at + bytes > end ? (unsigned)( end - at ) : bytes );
-+}
+ }
 +#endif
-+
+ 
  /*
  =================
- Hunk_Log
-@@ -2171,6 +2307,10 @@ void Com_RunAndTimeServerPacket( netadr_t *evFrom, msg_t *buf ) {
+@@ -1578,7 +1725,11 @@ void Com_InitHunkMemory( void ) {
+ 		s_hunkTotal = cv->integer * 1024 * 1024;
+ 	}
+ 
++#ifdef SHADEREMU
++	s_hunkData = SE_Pool( s_hunkTotal );	/* (on a page already) */
++#else
+ 	s_hunkData = calloc( s_hunkTotal + 31, 1 );
++#endif
+ 	if ( !s_hunkData ) {
+ 		Com_Error( ERR_FATAL, "Hunk data failed to allocate %i megs", s_hunkTotal / (1024*1024) );
+ 	}
+@@ -2171,6 +2322,10 @@ void Com_RunAndTimeServerPacket( netadr_t *evFrom, msg_t *buf ) {
  		t1 = Sys_Milliseconds ();
  	}
  
@@ -3774,7 +3809,7 @@ index d97312c4..c2558b8c 100644
  	SV_PacketEvent( *evFrom, buf );
  
  	if ( com_speeds->integer ) {
-@@ -2203,8 +2343,13 @@ int Com_EventLoop( void ) {
+@@ -2203,8 +2358,13 @@ int Com_EventLoop( void ) {
  		// if no more events are available
  		if ( ev.evType == SE_NONE ) {
  			// manually send packet events for the loopback channel
@@ -3790,7 +3825,7 @@ index d97312c4..c2558b8c 100644
  			}
  
  			while ( NET_GetLoopPacket( NS_SERVER, &evFrom, &buf ) ) {
-@@ -2651,6 +2796,11 @@ static void Com_InitRand(void)
+@@ -2651,6 +2811,11 @@ static void Com_InitRand(void)
  {
  	unsigned int seed;
  
@@ -3802,7 +3837,7 @@ index d97312c4..c2558b8c 100644
  	if(Sys_RandomBytes((byte *) &seed, sizeof(seed)))
  		srand(seed);
  	else
-@@ -3146,7 +3296,11 @@ void Com_Frame( void ) {
+@@ -3146,7 +3311,11 @@ void Com_Frame( void ) {
  
  	do
  	{
@@ -3814,7 +3849,7 @@ index d97312c4..c2558b8c 100644
  		{
  			timeValSV = SV_SendQueuedPackets();
  			
-@@ -3189,7 +3343,15 @@ void Com_Frame( void ) {
+@@ -3189,7 +3358,15 @@ void Com_Frame( void ) {
  		timeBeforeServer = Sys_Milliseconds ();
  	}
  
@@ -3830,7 +3865,7 @@ index d97312c4..c2558b8c 100644
  
  	// if "dedicated" has been modified, start up
  	// or shut down the client system.
-@@ -3227,7 +3389,13 @@ void Com_Frame( void ) {
+@@ -3227,7 +3404,13 @@ void Com_Frame( void ) {
  		timeBeforeClient = Sys_Milliseconds ();
  	}
  

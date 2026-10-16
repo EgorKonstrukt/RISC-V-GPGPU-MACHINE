@@ -52,7 +52,7 @@ CASES = [
     # cc's outputs, the same bytes (docs/cc.md): cc, cc -g and tcc -c of the four examples
     case('cc-bytes', 'machine', 'cd /tmp; for e in hello cube home shader; do cc /usr/share/example-$e.c -o $e.x; '
          'cc -g /usr/share/example-$e.c -o $e.g; tcc -c /usr/share/example-$e.c -o $e.o; done; md5sum *.x *.g *.o', wall=300,
-         digest=[(r'^([0-9a-f]{32}  \S+)', '6c8d7a0c')]),   # gles.c and mcw.c of 15 October: the .o files as before
+         digest=[(r'^([0-9a-f]{32}  \S+)', '0527d60e')]),   # mcw.c with mcw_mmu_root: the linked programs
     case('libmedia-installed', 'machine media', 'ls -1 /usr/lib/libmedia.a /usr/include/media.h /usr/bin/media_test | cat',   # docs/media.md
          has=[r'^/usr/lib/libmedia\.a', r'^/usr/include/media\.h'], never=[r'No such file']),
     # Doom (docs/doom.md, "Checking it"): the demos' state sums, the view told and checked, the port at rest

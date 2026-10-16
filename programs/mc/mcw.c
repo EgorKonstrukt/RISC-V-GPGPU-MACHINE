@@ -9,7 +9,7 @@
 #define CHUNK_BYTES 0x40000u
 
 static uint8_t *page;		/* the mailboxes */
-static uint8_t *stacks;
+static uint8_t *stacks;		/* stack_count of them: worker k's is the k-th */
 static int device = -1;		/* kept open: the kernel parks the workers when it closes */
 static int count, stack_count;
 /* Worker k of this program (1 to count) is that core; 0: it has none now (the kernel shares
@@ -271,6 +271,24 @@ static int arrived(int k)
 	return 1;
 }
 
+/* Stacks for workers 1 to n, made at an open (no worker is on them): those of an earlier
+ * open serve again when they are enough. 0 where there is no memory for them. */
+static int stacks_for(int n)
+{
+	uint32_t i;
+	int k;
+
+	if (n <= stack_count) return 1;
+	if (stacks) call6(215, (long)stacks, (long)stack_count * STACK_BYTES, 0, 0, 0, 0);
+	stack_count = 0;
+	if (!(stacks = map((long)n * STACK_BYTES, -1, 0))) return 0;
+	stack_count = n;
+	/* the top of each stack there before its worker steps on it */
+	for (k = 1; k <= n; k++)
+		for (i = 4096; i <= STACK_TOUCHED; i += 4096) stacks[(uint32_t)k * STACK_BYTES - i] = 0;
+	return 1;
+}
+
 /* The kernel is asked for this program's share again: the cores that are new to it are
  * started for the workers that have none. How many it has or is starting. */
 static int claim(int want)
@@ -284,6 +302,7 @@ static int claim(int want)
 	root = answer[1];
 	share = (int)(answer[0] & 0xfff);
 	my_tag = answer[0] >> 12;
+	if (!stacks_for(want < share ? want : share)) return 0;
 	for (k = 1; k < MC_MAX_CORES; k++) has[core_of[k]] = has[starting[k]] = 1;
 	for (core = 1; core < MC_MAX_CORES; core++) {
 		if (!(answer[2 + core / 32] >> (core % 32) & 1)) continue;
@@ -292,7 +311,7 @@ static int claim(int want)
 		/* the first worker without a core: none before it loses one in here */
 		for (; free_k <= want && (core_of[free_k] || starting[free_k]); free_k++) {}
 		k = free_k;
-		if (k > want) {
+		if (k > want || k > stack_count) {
 			/* (more than it has workers for: back it goes) */
 			uint32_t back[MC_MASK_WORDS] = {0};
 
@@ -352,7 +371,6 @@ static void look(int k)
 
 int mcw_open(int limit)
 {
-	uint32_t i;
 	int fd, k, pass;
 
 	if (page) return count;
@@ -371,14 +389,6 @@ int mcw_open(int limit)
 	/* (the mailboxes' pages here now, and this program's to write: a worker's first store to its
 	 * own, which is its first step, would stop it until this core had stored there) */
 	mcw_touch(page, MC_PAGE_SIZE);
-	/* (the stacks of an earlier open serve again when they are enough) */
-	if (stack_count < limit) {
-		if (!(stacks = map((long)(limit + 1) * STACK_BYTES, -1, 0))) goto none;
-		stack_count = limit + 1;
-	}
-	/* the top of each stack there before its worker steps on it */
-	for (k = 1; k < stack_count; k++)
-		for (i = 4096; i <= STACK_TOUCHED; i += 4096) stacks[(uint32_t)k * STACK_BYTES - i] = 0;
 	__asm__ volatile("mv %0, tp" : "=r"(own_tp));
 	/* the code a worker starts in, read here: a page of it no core has run stops it (cause 12) */
 	mcw_touch_code((const void *)mcw_entry, 64);
@@ -389,6 +399,7 @@ int mcw_open(int limit)
 	/* as many workers as its share, whether or not their cores are here yet: one whose core
 	 * is another program's until that one's job ends has it some passes later (look()) */
 	count = share < limit ? share : limit;
+	if (count > stack_count) count = stack_count;	/* (no memory for more stacks) */
 	if (count <= 0) goto none;
 	/* a core that is there says so within a few passes; its first steps may want pages */
 	for (pass = 0; pass < 48; pass++) {
@@ -453,7 +464,13 @@ void mcw_close(void)
 	device = -1;
 	page = 0;
 	count = 0;
-	/* (the stacks stay: a worker is on one until the machine has parked it) */
+	/* (the stacks stay, a worker being on one until the machine has parked it; without an MMU,
+	 * where they are memory taken whole, they are given back, every worker parked now) */
+	if (!root && stacks) {
+		call6(215, (long)stacks, (long)stack_count * STACK_BYTES, 0, 0, 0, 0);
+		stacks = 0;
+		stack_count = 0;
+	}
 }
 
 void mcw_touch_code(const void *code, unsigned bytes)

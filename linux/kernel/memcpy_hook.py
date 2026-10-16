@@ -34,3 +34,11 @@ if 'ShaderEmu' not in s:
     s = s.replace(mark, mark + hook)
     open(path, 'w').write(s)
     print('memcpy hook added')
+# the fork's page-sized path takes any 4096 bytes: the machine's copy wants both ends at one place
+# in a texel (a no-MMU read() copies a page to wherever the buffer lies, and the card lost bytes)
+page = '\tli t2, 4096\n\tbne a2, t2, 11f\n'
+if 'ShaderEmu: both ends on a texel' not in s:
+    assert s.count(page) == 1
+    s = s.replace(page, page + '\t/* ShaderEmu: both ends on a texel */\n\tor t2, a1, t6\n\tandi t2, t2, 15\n\tbnez t2, 11f\n')
+    open(path, 'w').write(s)
+    print('memcpy page path aligned')

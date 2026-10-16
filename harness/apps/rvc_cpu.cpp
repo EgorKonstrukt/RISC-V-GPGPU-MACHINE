@@ -499,6 +499,10 @@ static void memop(Core& c, u32 what, Trap& t) {
     u32 dst = 0, src = 0;
     if (what != 2 && !walk(c, c.memop_src, READ, src, t)) return;
     if (!walk(c, c.memop_dst, WRITE, dst, t)) return;
+    // the card's copy is of texels: a part texel at either end can differ there (it lost bytes)
+    static int told_unaligned = 0;
+    if (((dst | c.memop_n | (what != 2 ? src : 0)) & 15) && told_unaligned < 8 && ++told_unaligned)
+        fprintf(stderr, "[memop] %s off a texel at pc %08x: %08x <- %08x, %u bytes\n", what == 2 ? "fill" : "copy", c.pc, dst, src, c.memop_n);
     // whole words, as the machine's commit makes them: a word is written when its address is in the range
     u32 words = (c.memop_n + 3) / 4, fill = c.memop_src;
     dst &= ~3u;

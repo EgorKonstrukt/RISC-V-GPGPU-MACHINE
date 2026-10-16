@@ -61,8 +61,10 @@ cmake -S "$SRC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cm
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/ralert-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/ralert-build.log" | head -40; exit 1; }
 
-mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
-riscv32-linux-strip -o "$OUT/usr/bin/ralert.bin" "$BUILD/vanillara"
+# the game lists its program's folder for every file it looks for: a folder of its own in the ROM
+mkdir -p "$OUT/usr/bin" "$OUT/usr/share" "$OUT/usr/lib/ralert"
+rm -f "$OUT/usr/bin/ralert.bin"
+riscv32-linux-strip -o "$OUT/usr/lib/ralert/game" "$BUILD/vanillara"
 riscv32-linux-nm -n "$BUILD/vanillara" > "$WORK/src/ralert.nm"
 
 if [ ! -f "$WORK/src/ralert-demo/MAIN.MIX" ]; then
@@ -113,10 +115,8 @@ for f in CRUS226M HELL226M; do ln -sf /usr/share/ralert-$f.AUD $f.AUD; done
 # (its settings and saved games are of the folder the host keeps: docs/persist.md)
 ini=/persistence/vanilla-conquer/vanillara/redalert.ini
 [ -f $ini ] || { mkdir -p ${ini%/*} && printf '[Intro]\nPlayIntro=no\n' > $ini; }
-# the game reads the whole of its program's folder for every file it looks for: not /usr/bin
-[ -x game ] || cp /usr/bin/ralert.bin game
-HOME=/tmp/ralert XDG_CONFIG_HOME=/persistence exec ./game "$@"
+HOME=/tmp/ralert XDG_CONFIG_HOME=/persistence exec /usr/lib/ralert/game "$@"
 EOF
 chmod +x "$OUT/usr/bin/ralert"
 echo "Games/Red Alert=ralert" > "$OUT/usr/share/nxapps.65-ralert"
-ls -l "$OUT/usr/bin/ralert.bin" "$OUT/usr/share"/ralert-*.MIX
+ls -l "$OUT/usr/lib/ralert/game" "$OUT/usr/share"/ralert-*.MIX

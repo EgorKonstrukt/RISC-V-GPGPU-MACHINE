@@ -96,8 +96,10 @@ cmake -S "$SRC" -B "$BUILD" -DCMAKE_TOOLCHAIN_FILE="$WORK/src/tdawn-toolchain.cm
 cmake --build "$BUILD" -j"$(nproc)" > "$WORK/src/tdawn-build.log" 2>&1 \
     || { grep -E "error|undefined reference" "$WORK/src/tdawn-build.log" | head -40; exit 1; }
 
-mkdir -p "$OUT/usr/bin" "$OUT/usr/share"
-riscv32-linux-strip -o "$OUT/usr/bin/tdawn.bin" "$BUILD/vanillatd"
+# the game lists its program's folder for every file it looks for: a folder of its own in the ROM
+mkdir -p "$OUT/usr/bin" "$OUT/usr/share" "$OUT/usr/lib/tdawn"
+rm -f "$OUT/usr/bin/tdawn.bin"
+riscv32-linux-strip -o "$OUT/usr/lib/tdawn/game" "$BUILD/vanillatd"
 riscv32-linux-nm -n "$BUILD/vanillatd" > "$WORK/src/tdawn.nm"
 
 if [ ! -f "$WORK/src/tdawn-demo/DEMO.MIX" ] || [ ! -f "$WORK/src/tdawn-demo/MAP1.AUD" ]; then
@@ -129,11 +131,9 @@ cat > "$OUT/usr/bin/tdawn" <<'EOF'
 mkdir -p /tmp/tdawn && cd /tmp/tdawn || exit 1
 for f in DEMO DEMOL SOUNDS SPEECH; do ln -sf /usr/share/tdawn-$f.MIX $f.MIX; done
 for f in MAP1 WIN1; do ln -sf /usr/share/tdawn-$f.AUD $f.AUD; done
-# the game reads the whole of its program's folder for every file it looks for: not /usr/bin
-[ -x game ] || cp /usr/bin/tdawn.bin game
 # its settings and saved games go to the folder the host keeps (docs/persist.md)
-HOME=/tmp/tdawn XDG_CONFIG_HOME=/persistence exec ./game "$@"
+HOME=/tmp/tdawn XDG_CONFIG_HOME=/persistence exec /usr/lib/tdawn/game "$@"
 EOF
 chmod +x "$OUT/usr/bin/tdawn"
 echo "Games/Tiberian Dawn=tdawn" > "$OUT/usr/share/nxapps.60-tdawn"
-ls -l "$OUT/usr/bin/tdawn.bin" "$OUT/usr/share"/tdawn-*.MIX
+ls -l "$OUT/usr/lib/tdawn/game" "$OUT/usr/share"/tdawn-*.MIX

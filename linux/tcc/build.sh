@@ -73,8 +73,10 @@ riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || 
 mkdir -p "$WORK/build/tcc-guest"
 python3 "$HERE/pack.py" "$WORK/build/tcc-cross/tcc" "$STAGE" "$HERE/examples" "$WORK/build/tcc-guest/packed.h"
 mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share"
-rm -rf "$ROOT/usr/include" "$ROOT/usr/lib" "$ROOT/usr/share/cc-sysroot.tar"
-cp -rL "$STAGE/usr/include" "$STAGE/usr/lib" "$ROOT/usr/"
+# (only what the stage has: other folders of usr/lib are other programs')
+rm -rf "$ROOT/usr/include" "$ROOT/usr/share/cc-sysroot.tar"
+(cd "$STAGE/usr/lib" && for f in *; do rm -rf "$ROOT/usr/lib/$f"; done)
+mkdir -p "$ROOT/usr/lib" && cp -rL "$STAGE/usr/include" "$ROOT/usr/" && cp -rL "$STAGE/usr/lib/." "$ROOT/usr/lib/"
 
 # 3. the same compiler, compiled for the machine
 echo "== the guest's compiler"

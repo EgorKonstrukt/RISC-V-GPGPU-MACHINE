@@ -32,7 +32,7 @@ started and everything on its desktop run without building anything.
 | `root/usr/share/tdawn-*.MIX`, `tdawn-sound.pak` | `linux/tdawn/build.sh` | the Command & Conquer demo; the pack is its sounds decoded (`tools/make_tdawn_sound.py`) |
 | `root/usr/share/ralert-*.MIX`, `ralert-sound.pak` | `linux/ralert/build.sh` | the Red Alert demo; the pack is its sounds decoded |
 | `root/usr/bin/quake.bin` | `linux/quake/build.sh` | id Software's Quake (GLQuake), with `linux/quake/quake.patch` and the files in `linux/quake` |
-| `root/usr/bin/tdawn.bin`, `ralert.bin` | `linux/tdawn/build.sh`, `linux/ralert/build.sh` | Vanilla Conquer, with the `vanilla-conquer.patch` of each and the files in `linux/tdawn` and `linux/ralert` |
+| `root/usr/lib/tdawn/game`, `root/usr/lib/ralert/game` | `linux/tdawn/build.sh`, `linux/ralert/build.sh` | Vanilla Conquer, with the `vanilla-conquer.patch` of each and the files in `linux/tdawn` and `linux/ralert` |
 
 Every program is statically linked, so each also contains the parts of the C library and
 compiler runtime it uses.
