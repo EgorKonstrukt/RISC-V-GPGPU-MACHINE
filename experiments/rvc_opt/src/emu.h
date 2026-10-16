@@ -582,6 +582,44 @@ uint fp_light(uint w, uint ra, uint rb, out bool to_float, out bool ok) {
 }
 #endif
 
+#ifdef ZB
+// Zba and Zbb (RV32) on op and op-imm: true with the result in r for one of them.
+bool zb_exec(uint w, uint a, uint b, inout uint r) {
+    uint f7 = w >> 25, f3 = (w >> 12) & 7, s = (w >> 20) & 0x1f;
+    bool ok = true;
+    [branch]
+    if ((w & 0x20) != 0) {
+        if (f7 == 0x10 && f3 != 0 && (f3 & 1) == 0) r = (a << (f3 >> 1)) + b;
+        else if (f7 == 0x20 && f3 == 7) r = a & ~b;
+        else if (f7 == 0x20 && f3 == 6) r = a | ~b;
+        else if (f7 == 0x20 && f3 == 4) r = ~(a ^ b);
+        else if (f7 == 0x05 && (f3 & 4) != 0) {
+            uint t = (f3 & 1) ? 0 : 0x80000000;
+            bool lt = (a ^ t) < (b ^ t);
+            r = (((f3 & 2) != 0) != lt) ? a : b;
+        }
+        else if (f7 == 0x30 && f3 == 1) r = (a << (b & 31)) | (a >> ((32 - (b & 31)) & 31));
+        else if (f7 == 0x30 && f3 == 5) r = (a >> (b & 31)) | (a << ((32 - (b & 31)) & 31));
+        else if (f7 == 0x04 && f3 == 4 && s == 0) r = a & 0xffff;
+        else ok = false;
+    } else if (f7 == 0x30 && f3 == 1) {
+        uint m = a | (a >> 1); m |= m >> 2; m |= m >> 4; m |= m >> 8; m |= m >> 16;
+        if (s == 0) r = 32 - countbits(m);
+        else if (s == 1) r = countbits((a & (0 - a)) - 1);
+        else if (s == 2) r = countbits(a);
+        else if (s == 4) r = AS_UNSIGNED(AS_SIGNED(a << 24) >> 24);
+        else if (s == 5) r = AS_UNSIGNED(AS_SIGNED(a << 16) >> 16);
+        else ok = false;
+    } else if (f7 == 0x30 && f3 == 5) r = (a >> s) | (a << ((32 - s) & 31));
+    else if ((w >> 20) == 0x287 && f3 == 5) {
+        r = ((a & 0xff) ? 0xff : 0) | ((a & 0xff00) ? 0xff00 : 0) | ((a & 0xff0000) ? 0xff0000 : 0) | ((a & 0xff000000) ? 0xff000000 : 0);
+    }
+    else if ((w >> 20) == 0x698 && f3 == 5) r = (a >> 24) | ((a >> 8) & 0xff00) | ((a << 8) & 0xff0000) | (a << 24);
+    else ok = false;
+    return ok;
+}
+#endif
+
 #define RUN(name, data, insf) case data : { \
     PROF(PROF_ins_##name) \
     emu_##name(ins_word, ret, insf); \
@@ -917,6 +955,16 @@ ins_ret ins_select_l1(L1P uint ins_word, inout ins_ret ret) {
         RUN(wfi, 0x10500073, ins_FormatEmpty)
     }
 
+#ifdef ZB
+    if ((ins_word & 0x5f) == 0x13) {
+        uint zr = 0;
+        if (zb_exec(ins_word, xreg((ins_word >> 15) & 0x1f), xreg((ins_word >> 20) & 0x1f), zr)) {
+            ret.write_reg = (ins_word >> 7) & 0x1f;
+            ret.write_val = zr;
+            return ret;
+        }
+    }
+#endif
     PROF(PROF_illegal_ins)
     ret.trap.en = true;
     ret.trap.type = trap_IllegalInstruction;
@@ -1056,6 +1104,9 @@ bool fast_exec_l1(L1P uint w) {
                 uint f7 = w >> 25;
                 uint exist = f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu;
                 ok = ((exist >> (((w >> 2) & 8) | f3)) & 1) != 0;
+#ifdef ZB
+                [branch] if (!ok) ok = zb_exec(w, rs1v, rs2v, val);
+#endif
             } else {                                                    // loads from RAM, translation available
                 PROF(PROF_x_load)
                 FormatI i = parse_FormatI(w);
@@ -1181,6 +1232,7 @@ bool fast_exec_l1(L1P uint w) {
         npc = jump ? (jal ? pc + j.imm : rs1v + i.imm) : npc;
         // of opcode bits 6..3 only 0110 (lui), 0010 (auipc), 1101 (jal) and 1100 (jalr) exist
         ok = (w & 3) == 3 && ((0x3044u >> ((w >> 3) & 15)) & 1) != 0 && (jal || !jump || f3 == 0);
+#ifndef X_NO_FAST_AMO
     } else if (opc == 0x2f) {
         // atomics on a word of RAM the write TLB knows (a writable page is readable too):
         // amoadd, amoswap, lr, sc, amoxor, amoor, amoand. The rest take the general path.
@@ -1214,6 +1266,7 @@ bool fast_exec_l1(L1P uint w) {
             val = is_sc ? (sc_ok ? 0 : 1) : old;
             ok = true;
         }
+#endif
     } else {
         [forcecase]
         switch (opc) {

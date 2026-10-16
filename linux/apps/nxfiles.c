@@ -304,7 +304,7 @@ is_program(const char *name)
 			head[0] = 0;
 		close(fd);
 	}
-	return !memcmp(head, "\177ELF", 4) || !memcmp(head, "#!", 2);
+	return !memcmp(head, "\177ELF", 4) || !memcmp(head, "bFLT", 4) || !memcmp(head, "#!", 2);
 }
 
 static const char *kind_icon;	/* the icon's name kind_of() last chose (for --kinds) */

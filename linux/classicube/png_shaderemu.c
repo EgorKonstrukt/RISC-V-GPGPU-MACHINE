@@ -14,7 +14,7 @@
 #include "Stream.h"
 #include "Errors.h"
 #include "Platform.h"
-#include "String.h"
+#include "String_.h"
 #include "Utils.h"
 #include "media.h"
 #include "mcw.h"

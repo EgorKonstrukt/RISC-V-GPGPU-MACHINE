@@ -561,3 +561,6 @@ int mcw_on_worker(void)
 
 	return stacks && &here >= stacks && &here < stacks + (uint32_t)stack_count * STACK_BYTES;
 }
+
+/* The first page of the table workers run on: 0 on a kernel without an MMU. */
+uint32_t mcw_mmu_root(void) { return root; }

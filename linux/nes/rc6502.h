@@ -379,7 +379,7 @@ __asm__(
    "   bgtz s8, 1f\n"
    "   addi sp, sp, -16\n   sw a0, 12(sp)\n      mv a0, s8\n        call rc_line\n"
    "   mv t0, a0\n          lw a0, 12(sp)\n      addi sp, sp, 16\n  beqz t0, 1f\n"
-   "   mv s8, t0\n          lui t1, %hi(rc_leave)\n   lw t1, %lo(rc_leave)(t1)\n   bnez t1, 1f\n   jr 4(a0)\n"
+   "   mv s8, t0\n          lla t1, rc_leave\n   lw t1, 0(t1)\n   bnez t1, 1f\n   jr 4(a0)\n"
    "1: lw a0, 0(a0)\n"
    "rc_rt_out_pc:\n"
    "   sw s0, 0(s10)\n   sw s1, 4(s10)\n   sw s2, 8(s10)\n   sw s3, 12(s10)\n"

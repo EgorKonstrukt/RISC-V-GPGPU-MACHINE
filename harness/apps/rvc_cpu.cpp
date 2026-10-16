@@ -21,6 +21,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <intrin.h>
 
 #include "rvc_net.h"
 #include "rvc_persist.h"
@@ -742,9 +743,9 @@ static u64 run(Core& c, u64 budget) {
             u32 op = ins & 0x7f, rd = (ins >> 7) & 31, f3 = (ins >> 12) & 7, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31, f7 = ins >> 25;
             u32 a = c.x[rs1], b = c.x[rs2], next = pc + 4, result = 0;
             bool write = true, illegal = false;
-            if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { zb_run++; op = 0; }
+            if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { zb_run++; op = 0x80; }   // (no opcode is 0x80)
             switch (op) {
-            case 0: break;
+            case 0x80: break;
             case 0x37: result = ins & 0xfffff000; break;
             case 0x17: result = pc + (ins & 0xfffff000); break;
             case 0x6f: {
@@ -1022,6 +1023,7 @@ static void mbox_keep() {
         mbox_was[i][6] = word(mc_resume_at(k) + 4);
     }
 }
+static bool bare_workers = getenv("RVC_BARE_WORKERS") && atoi(getenv("RVC_BARE_WORKERS")) != 0;   // (read here: rvc_harness --cpu has no main of this file)
 static inline u32 mbox(int hart, int j, u32 now) { return races_on ? mbox_was[hart][j] : now; }
 
 static u64 run_worker(Core& c, u64 budget) {
@@ -1037,7 +1039,8 @@ static u64 run_worker(Core& c, u64 budget) {
         memset(c.x, 0, sizeof c.x);
         c.pc = pc;
         c.x[2] = mbox(c.hart, 2, word(mc_start_at(c.hart) + 8));
-        c.satp = 0x80000000u | mbox(c.hart, 3, word(mc_start_at(c.hart) + 12));
+        u32 root = mbox(c.hart, 3, word(mc_start_at(c.hart) + 12));
+        c.satp = root || !bare_workers ? 0x80000000u | root : 0;   // root 0 (RVC_BARE_WORKERS): no MMU
         c.x[10] = (u32)c.hart;
         c.priv = PRIV_U;
         c.mstatus = 0x6000;   // floats on
@@ -1167,6 +1170,31 @@ static void sound_pass() {
     word(DEVICE + 4) = RATE;
 }
 
+// RVC_GPU_COPY=1: a drawn list's copy of its picture into RAM is made, as the card's commit makes
+// it (gpu_writeback in src/gpu.h), with a marker word for every pixel; each new target is named.
+static bool gpu_copy_on = false;
+static void gpu_copy(u32 submit) {
+    static u32 told[64][4], told_n = 0;
+    u32 first = 0x87001000u, width = word(CTRL + 4), height = word(CTRL + 8), row = width;
+    if (submit & 4) {
+        first = word(CTRL + 0x50) | 0x80000000u, width = word(CTRL + 0x54), height = word(CTRL + 0x58);
+        row = std::max(word(CTRL + 0x5c), width);
+    }
+    bool seen = false;
+    for (u32 k = 0; k < told_n; k++) seen = seen || (told[k][0] == first && told[k][1] == width && told[k][2] == height && told[k][3] == row);
+    if (!seen && told_n < 64) {
+        told[told_n][0] = first, told[told_n][1] = width, told[told_n][2] = height, told[told_n][3] = row, told_n++;
+        fprintf(stderr, "[gpu-copy] %s at %08x, %u x %u, rows of %u\n", submit & 4 ? "into" : "writeback", first, width, height, row);
+    }
+    for (u32 y = 0; y < height; y++)
+        for (u32 x = 0; x < width; x++) {
+            u32 at = first + 4 * (y * row + x);
+            if (at < 0x86000000u || at - RAM_BASE >= RAM_SIZE) continue;   // (below anything a GPU program may own)
+            word(at) = 0x00c0ffeeu;
+            dirty(at);
+        }
+}
+
 static void control_pass() {
     sound_pass();
     dirty(CTRL);
@@ -1212,6 +1240,7 @@ static void control_pass() {
     // a submitted list has been drawn: the GPU is free, and the copy it asked for is counted
     u32 submit = word(CTRL + 0x10);
     if (submit) {
+        if ((submit & 1) && (submit & 6) && gpu_copy_on) gpu_copy(submit);
         word(CTRL + 0x10) = 0;
         word(CTRL + 0x1c)++;
         if ((submit & 1) && (submit & 6)) word(CTRL + 0x38)++;
@@ -1462,6 +1491,8 @@ int main(int argc, char** argv) {
     calls_on = calls_file && *calls_file;
     wc_on = getenv("RVC_WCACHE") && atoi(getenv("RVC_WCACHE")) != 0;
     if (wc_on) wcache.resize(cores.size());
+    zb_on = getenv("RVC_ZB") && atoi(getenv("RVC_ZB")) != 0;
+    gpu_copy_on = getenv("RVC_GPU_COPY") && atoi(getenv("RVC_GPU_COPY")) != 0;
     if (opt.netPort) {
         std::string why = "--net-id is 1 to 16";
         if (opt.netId < 1 || opt.netId > (int)NetLink::kBroadcastTo || !net.open(opt.netPort, (unsigned)opt.netId, opt.netLoss, opt.netDelay, why)) {
@@ -1548,6 +1579,7 @@ int main(int argc, char** argv) {
     if (wc_on)
         fprintf(stderr, "[cpu] write cache: %llu passes of core 0 and %llu of workers ended full (RVC_WCACHE)\n",
                 (unsigned long long)wc_full_passes[0], (unsigned long long)wc_full_passes[1]);
+    if (zb_on) fprintf(stderr, "[cpu] Zba and Zbb instructions run (RVC_ZB): %llu\n", (unsigned long long)zb_run);
     if (calls_on) calls_report(calls_file);
     if (uart_log) fclose(uart_log);
     if (!opt.pcLog.empty()) {

@@ -83,6 +83,7 @@ static uint32_t stripe(uint32_t span_at, uint32_t which) {
 }
 
 // Writes a word into every page of memory nobody has touched, then reads them all back.
+uint32_t mcw_mmu_root(void);
 static uint32_t pages(uint32_t bytes_at, uint32_t bytes) {
     volatile uint32_t* p = (volatile uint32_t*)bytes_at;
     uint32_t total = 0;
@@ -375,7 +376,7 @@ int main(int argc, char** argv) {
         mcw_post(1, pages, (uint32_t)fresh, bytes);
         int passes = mcw_wait(1);
         printf("mctest: pages: %u of them brought for the worker in %d passes\n", mcw_faults - before, passes);
-        check("pages", fresh != MAP_FAILED && mcw_result(1) == expect && mcw_faults - before >= 64);
+        check("pages", fresh != MAP_FAILED && mcw_result(1) == expect && (mcw_faults - before >= 64 || !mcw_mmu_root()));
     }
 
     // ---- calls: a worker's system calls are made by core 0 ----

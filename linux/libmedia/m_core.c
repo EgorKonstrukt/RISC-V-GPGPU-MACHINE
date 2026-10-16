@@ -309,7 +309,7 @@ media_image_to_ppm(const char *path, const char *ppm_path, int *width, int *heig
 	const uint8_t *f = map_file(path, &size);
 	const char *why;
 	char header[64];
-	int head, fd = -1;
+	int head, fd = -1, in_memory = 0;
 	uint8_t *map = MAP_FAILED;
 
 	if (!f)
@@ -329,8 +329,11 @@ media_image_to_ppm(const char *path, const char *ppm_path, int *width, int *heig
 	pixels = (uint32_t)info.width * (uint32_t)info.height * 3;
 	mapped = (uint32_t)head + pixels;
 	fd = open(ppm_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0 || ftruncate(fd, mapped) != 0 ||
-	    (map = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0)) == MAP_FAILED) {
+	if (fd >= 0 && ftruncate(fd, mapped) == 0 &&
+	    (map = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, 0)) == MAP_FAILED)
+		/* no MMU: a file is not mapped to be written; the picture is made in memory and written after */
+		in_memory = (map = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)) != MAP_FAILED;
+	if (map == MAP_FAILED) {
 		why = "the picture cannot be written";
 		goto done;
 	}
@@ -341,6 +344,8 @@ media_image_to_ppm(const char *path, const char *ppm_path, int *width, int *heig
 	out.pixels = map + head;
 	out.background = 0xffffff;
 	why = media_image_decode(f, size, &out, workers);
+	if (!why && in_memory && pwrite(fd, map, mapped, 0) != (ssize_t)mapped)
+		why = "the picture cannot be written";
 	*width = info.width;
 	*height = info.height;
 done:

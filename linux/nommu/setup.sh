@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# A build folder and a copy of the repository for no-MMU Linux: the same build scripts, with compiler
+# drivers that make every program position-independent and link it to be loaded as a flat program.
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$HERE/../.." && pwd)
+NM=$HOME/nm
+SH=$HOME/shaderemu-linux
+W=$NM/work
+mkdir -p "$NM" "$W/bin" "$W/src"
+T0=$(date +%s); step() { echo "== [$(( $(date +%s) - T0 )) s] $*"; }
+
+step "repository copy"
+rsync -a --delete --exclude /build --exclude /.git --exclude /experiments "$REPO/" "$NM/repo/"
+mkdir -p "$NM/repo/build/images/linux"
+rsync -a --delete "$REPO/build/images/linux/root/" "$NM/repo/build/images/linux/root/"
+# the toolchain's own drivers are written under other names: ours below are the ones on the path
+sed -i 's|cat > "\$WORK/bin/rv32-cc" <<EOF|cat > "$WORK/bin/rv32-cc.mmu" <<EOF|; s|chmod +x "\$WORK/bin/rv32-cc"$|chmod +x "$WORK/bin/rv32-cc.mmu"|' "$NM/repo/linux/userland/toolchain.sh"
+sed -i 's|cat > "\$WORK/bin/rv32-c++" <<EOF|cat > "$WORK/bin/rv32-c++.mmu" <<EOF|; s|chmod +x "\$WORK/bin/rv32-c++"$|chmod +x "$WORK/bin/rv32-c++.mmu"|' "$NM/repo/linux/tdawn/build.sh"
+grep -c 'rv32-cc.mmu' "$NM/repo/linux/userland/toolchain.sh"; grep -c 'rv32-c++.mmu' "$NM/repo/linux/tdawn/build.sh"
+
+step "build folder"
+for d in toolchain tools linux; do ln -sfn "$SH/$d" "$W/$d"; done
+[ -d "$W/sysroot" ] || cp -a "$SH/sysroot" "$W/sysroot"
+for d in busybox microwindows ioq3 micropolis micropolis-build ClassiCube classicube-sound imgui ImGuizmo esp32-nesemu nes-roms tinycc \
+         vanilla-conquer vanilla-conquer-td vanilla-conquer-ra tdawn-demo ralert-demo zlib-1.3.1 soft-fp compiler-rt musl libmedia quake quake-data \
+         quake3-data pathtrace-data tinybvh bvhc play video ide apps emuinit emumux fptest sndtest InfoNES; do
+    [ -e "$SH/src/$d" ] && [ ! -e "$W/src/$d" ] && cp -a "$SH/src/$d" "$W/src/$d"
+done
+for f in doom-shareware.zip doom1.wad tdawn-demo.zip ralert-demo.zip zlib-1.3.1.tar.gz; do
+    [ -e "$SH/src/$f" ] && [ ! -e "$W/src/$f" ] && cp -a "$SH/src/$f" "$W/src/$f"
+done
+# nothing compiled for the MMU machine is reused
+find "$W/src" \( -name '*.o' -o -name '*.lo' -o -name '*.obj' \) -delete
+find "$W/src" -name '*.a' ! -path '*/musl/*' -delete
+du -sh "$W/src"
+
+step "start file, the fork header and the drivers"
+S=$W/sysroot
+GCCINC=$("$SH/toolchain/bin/riscv32-linux-gcc" -print-file-name=include)
+BASE="-mabi=ilp32 -fno-stack-protector -ffp-contract=off"
+ARCH="-march=\${RV32_MARCH:-rv32imaf} $BASE"   # (RV32_MARCH: rv32imaf_zba_zbb for a Zb build)
+cp "$HERE/flatcrt.c" "$W/flatcrt.c"
+"$SH/toolchain/bin/riscv32-linux-gcc" -march=rv32imaf $BASE -O2 -fPIC -nostdinc -isystem "$S/include" -isystem "$GCCINC" -c "$W/flatcrt.c" -o "$S/lib/flatcrt.o" || exit 1
+cat > "$S/include/nommu_fork.h" <<'EOF'
+/* No MMU: a fork is a vfork, whose child runs on its parent's memory until it execs or exits. */
+#ifndef __ASSEMBLER__
+#include <sys/types.h>
+pid_t vfork(void) __attribute__((returns_twice));
+#define fork vfork
+#endif
+EOF
+FILTER='args=(); link=1
+for a in "$@"; do
+    case "$a" in -c|-S|-E|-M|-MM) link=0 ;; esac
+    case "$a" in -fno-pie|-fno-PIE|-no-pie|-fno-pic|-fno-PIC|-Wl,-Ttext-segment=*) ;; *) args+=("$a") ;; esac
+done'
+LINK="-static -Wl,-pie,--no-dynamic-linker,-z,text -nostdlib -L$S/lib $S/lib/flatcrt.o $S/lib/crti.o"
+LIBS="-Wl,--start-group -lc -lcompiler_rt -Wl,--end-group $S/lib/crtn.o"
+cat > "$W/bin/rv32-cc" <<EOF
+#!/usr/bin/env bash
+$FILTER
+inc="-nostdinc -isystem $S/include -isystem $GCCINC -include nommu_fork.h"
+[ \$link = 1 ] && exec riscv32-linux-gcc $ARCH -fPIE \$inc $LINK "\${args[@]}" $LIBS
+exec riscv32-linux-gcc $ARCH -fPIE \$inc "\${args[@]}"
+EOF
+CXXINC="-nostdinc -nostdinc++ -isystem $REPO/linux/tdawn/cxx -isystem $SH/toolchain/riscv32-buildroot-linux-gnu/include/c++/13.3.0 -isystem $SH/toolchain/riscv32-buildroot-linux-gnu/include/c++/13.3.0/riscv32-buildroot-linux-gnu -isystem $S/include -isystem $GCCINC"
+CXXF="-fno-exceptions -fno-rtti -fno-threadsafe-statics '-D__GLIBC_PREREQ(a,b)=0'"
+cat > "$W/bin/rv32-c++" <<EOF
+#!/usr/bin/env bash
+$FILTER
+[ \$link = 1 ] && exec riscv32-linux-g++ $ARCH $CXXF -fPIE $CXXINC $LINK "\${args[@]}" $LIBS
+exec riscv32-linux-g++ $ARCH $CXXF -fPIE $CXXINC "\${args[@]}"
+EOF
+chmod +x "$W/bin/rv32-cc" "$W/bin/rv32-c++"
+printf 'int main(void) { return fork() == 0 ? 0 : 0; }\n' > "$W/t.c"
+PATH="$SH/toolchain/bin:$PATH" "$W/bin/rv32-cc" -O2 -no-pie "$W/t.c" -o "$W/t" && "$SH/toolchain/bin/riscv32-linux-readelf" -h "$W/t" | grep Type
+step done

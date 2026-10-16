@@ -111,12 +111,19 @@ ST_FUNC void free_section(Section *s)
 #ifdef SECTION_PAGES
     if (size >= SECTION_PAGES) {
         if (sec->data_allocated >= SECTION_PAGES) {
+            unsigned long wanted = size;
+
             /* (four times: the pages are there only as far as they are written) */
             while (size < sec->data_allocated * 4)
                 size = size * 2;
             data = mremap(sec->data, sec->data_allocated, size, MREMAP_MAYMOVE);
-            if (data == MAP_FAILED)
-                section_full();
+            if (data == MAP_FAILED) {
+                /* no MMU: a mapping does not grow, and every page of it is memory */
+                size = wanted;
+                data = section_room(&size);
+                memcpy(data, sec->data, sec->data_allocated);
+                munmap(sec->data, sec->data_allocated);
+            }
         } else {
             data = section_room(&size);
             if (sec->data_allocated)
