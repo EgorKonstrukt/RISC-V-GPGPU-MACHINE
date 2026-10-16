@@ -11,7 +11,7 @@ mkdir -p "$NM" "$W/bin" "$W/src"
 T0=$(date +%s); step() { echo "== [$(( $(date +%s) - T0 )) s] $*"; }
 
 step "repository copy"
-rsync -a --delete --exclude /build --exclude /.git --exclude /experiments "$REPO/" "$NM/repo/"
+rsync -a --delete --exclude /build --exclude /.git --exclude /experiments --exclude /logs --exclude /unity --exclude /rvc "$REPO/" "$NM/repo/"
 mkdir -p "$NM/repo/build/images/linux"
 rsync -a --delete "$REPO/build/images/linux/root/" "$NM/repo/build/images/linux/root/"
 # the toolchain's own drivers are written under other names: ours below are the ones on the path
@@ -30,6 +30,8 @@ done
 for f in doom-shareware.zip doom1.wad tdawn-demo.zip ralert-demo.zip zlib-1.3.1.tar.gz; do
     [ -e "$SH/src/$f" ] && [ ! -e "$W/src/$f" ] && cp -a "$SH/src/$f" "$W/src/$f"
 done
+# (tcc's hooks skip a file with their mark: the copy's source is upstream's, for these hooks to patch)
+git -C "$W/src/tinycc" checkout -q -- . 2>/dev/null
 # nothing compiled for the MMU machine is reused
 find "$W/src" \( -name '*.o' -o -name '*.lo' -o -name '*.obj' \) -delete
 find "$W/src" -name '*.a' ! -path '*/musl/*' -delete

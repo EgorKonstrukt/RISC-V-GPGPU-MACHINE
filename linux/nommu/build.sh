@@ -8,7 +8,7 @@ export WORK=$NM/work
 L=$NM/logs; mkdir -p "$L"
 # the sources as they are here (the built root stays: setup.sh made it), the toolchain's drivers renamed as setup.sh does
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-rsync -a --delete --exclude /build --exclude /.git --exclude /experiments "$REPO/" "$R/"
+rsync -a --delete --exclude /build --exclude /.git --exclude /experiments --exclude /logs --exclude /unity --exclude /rvc "$REPO/" "$R/"
 sed -i 's|cat > "\$WORK/bin/rv32-cc" <<EOF|cat > "$WORK/bin/rv32-cc.mmu" <<EOF|; s|chmod +x "\$WORK/bin/rv32-cc"$|chmod +x "$WORK/bin/rv32-cc.mmu"|' "$R/linux/userland/toolchain.sh"
 sed -i 's|cat > "\$WORK/bin/rv32-c++" <<EOF|cat > "$WORK/bin/rv32-c++.mmu" <<EOF|; s|chmod +x "\$WORK/bin/rv32-c++"$|chmod +x "$WORK/bin/rv32-c++.mmu"|' "$R/linux/tdawn/build.sh"
 # the copy's changes for no MMU: Quake III's pools are all memory there, so they are what q3dm17 takes
@@ -19,7 +19,7 @@ sed -i -e 's/^+#define DEF_COMHUNKMEGS \t32$/+#define DEF_COMHUNKMEGS \t8/' -e '
 # busybox for a machine without an MMU
 grep -q 'set_option NOMMU y' "$R/linux/userland/busybox.sh" || sed -i 's/^set_option STATIC y$/set_option STATIC y\nset_option NOMMU y/' "$R/linux/userland/busybox.sh"
 ALL="userland/build.sh userland/busybox.sh nanox/build.sh libmedia/build.sh apps/build.sh play/build.sh video/build.sh raytrace/build.sh
-     pathtrace/build.sh physics/build.sh imgui/build.sh ide/build.sh quake/build.sh quake3/build.sh tdawn/build.sh ralert/build.sh
+     imgui/build.sh pathtrace/build.sh physics/build.sh ide/build.sh quake/build.sh quake3/build.sh tdawn/build.sh ralert/build.sh
      classicube/build.sh nes/build.sh micropolis/build.sh nanox/doom.sh tcc/build.sh"
 for s in ${*:-$ALL}; do
     t=$(date +%s)

@@ -13,9 +13,10 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
   `rv32-c++`) that compile every program position-independent and link it as a flat program
   (`flatcrt.c` is its start). `fork` is `vfork` there (`nommu_fork.h`, included in every file).
   `RV32_MARCH=rv32imaf_zba_zbb` builds with Zba and Zbb.
-- `bash linux/nommu/kernel.sh`: the MMU kernel's tree copied with its hooks, three patches
-  (`patch_signal.py`, `patch_drivers.py`, `patch_ovl.py`) and its configuration without the MMU,
-  into `build/nommu/Image`.
+- `bash linux/nommu/kernel.sh`: the MMU kernel's tree copied with its hooks, four patches
+  (`patch_kconfig.py`: RV32 without the MMU, still in supervisor mode under the machine's SBI and
+  linked at 0x80400000; `patch_signal.py`, `patch_drivers.py`, `patch_ovl.py`) and its
+  configuration without the MMU, into `build/nommu/Image`.
 - `bash linux/nommu/build.sh [script ...]`: the sources copied to `~/nm/repo` again and the
   repository's build scripts run there with the flat drivers, a line each.
 - `bash linux/nommu/root.sh`: mctest and the machine's `elf2flt`, then every program of the root
@@ -57,7 +58,7 @@ and a program's memory is taken whole and in runs of pages: a mapping wants one 
 itself. Quake III is the largest, 46 MB in four runs (its data and bss 22, the hunk 8, the
 server's zone 6, the zone 4). `python linux/nommu/memory.py` runs each large program and then
 Quake III, and all of them one after another in order and reversed, a machine each under
-`rvc_cpu`, in about two and a half minutes: on 16 October 2026 all twelve fit, Quake III with 15.6
+`rvc_cpu`, in about two and a half minutes: on 16 October 2026 all twelve fit, Quake III with 21.4
 MB free at the least. Over 26 programs one after another the shell grew 25 KB, Nano-X 29 KB and
 the slab 156 KB. What a program leaves in a tmpfs file stays where it lies until the file goes:
 Red Alert and Tiberian Dawn run from a folder of their own in the ROM, no copy in `/tmp`.
