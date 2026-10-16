@@ -436,6 +436,8 @@ The machine has 256 cores: the harness and `rvc_cpu` (`kCores`), and the world (
   from 0, the kernel's words from `0x1000` (cores asked back, the offer count, a word a
   program that posts) and `0x1400` (a core's owner), a system call's words from `0x2000` and
   the mailboxes from `0x4000`. A bit a core is eight words, in the calls and in memory.
+  `/proc/gpu` says whose a tag is: a line an open of `/dev/gpu` (`pid workers wanted lent tag
+  draws lists`), which `nxmon` matches to the owner words to give each program its cores.
 - **What the cores ran** is at `0x876ba000` (`MC_STATS_ALL`, the network's row after its ring):
   a word a core, then from `+0x400` a texel for every 32 cores: a word of which of them run
   and a word of which sleep.
@@ -812,7 +814,8 @@ A counter is a word every core may add to in the same pass, with no lock: 1024 o
 each program that has workers (its slot, the low four bits of its tag). Worker k adds to its
 own region of the counters (`MC_COUNT_REGION_AT(k)` at `0x86C10000`, core 0 the first) with
 `amoadd.w`, which is one instruction on one core, and sets the word "added" of the counters'
-head, a control word at `0x87000320` (`{ added, "ERGM", merges, 0 }`). Regions only grow. The
+head, a control word at `0x87000320` (`{ added, "ERGM", merges, passes }`: the last, the
+commits so far, is what a monitor measures a core's 8,192 instructions a pass by). Regions only grow. The
 host reads the control words back every frame; when it sees "added" it draws the 256 texels of
 the totals after the commit, each the sum of its word over the 256 regions, and the control
 pass clears "added" and counts the merge (`count_total` in `src/gpu.h`, `kCountZone`). A merge

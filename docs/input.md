@@ -26,9 +26,9 @@ separate and unchanged.
 - A notch of the pointer's wheel travels in the same ring, as a "press" of a code that is no
   key: `0x3fe` up, `0x3ff` down. It needs no release.
 - The four state words share one RAM texel, so a reader sees one consistent set.
-- A host that also feeds typed keys to the console (the harness window does) stops doing so
-  while the keyboard has an owner. Otherwise a key typed into a terminal window would also
-  be typed at the console's shell.
+- A host that also feeds typed keys to the console (the harness window does) does so only
+  while no display is up (control word 0, the display's mode, is 0) and the keyboard has no
+  owner. Otherwise a key typed into a window would also be typed at the console's shell.
 
 ## From Linux
 
@@ -90,9 +90,11 @@ it began, within 0.4 s, is the left click. A menu has both buttons as they were.
 The window's keys and pointer feed the device (`memoryViewTakeInput()` in
 `harness/core/memview.cpp`): scan codes are translated to Linux key codes, and the pointer is
 given in window pixels with the size of the display panel; the control pass maps it to display
-pixels with the same scale and centring the view draws with. Keys typed into the window also
-reach the console as characters, unless the keyboard has an owner; the bar under the display
-says which. The harness reads the control words back with row 0 of the state every frame.
+pixels with the same scale and centring the view draws with. Keys typed into the window
+reach the console as characters only while nothing is on the display (the text console's
+boot) and the keyboard has no owner; the bar under the display says which. The window takes
+every key and system key itself, Alt+F4 apart, so a held key repeats in the guest only, and
+losing the focus lets go of every key held. The harness reads the control words back with row 0 of the state every frame.
 
 `--pointer-sweep N` moves the pointer round the middle of the display from frame N on,
 without a window: what a program pays for a pointer that moves is otherwise only seen by

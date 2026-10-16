@@ -24,6 +24,7 @@ cbuffer C : register(b0) {
     float2 TextSize;   // used size of the text texture; 0 = no text
     float Bar;         // height of the info bar under the memory image
     float Split;       // the display is left of this x, the memory image right of it
+    float Ui;          // window pixels a 96 dpi pixel: the bar's text and margins
 };
 
 float4 vs(uint id : SV_VertexID) : SV_Position {
@@ -63,29 +64,22 @@ float3 rgb(uint v) {
 static const uint DispCtrl = 0x700000, DispPalette = 0x700040, DispPixels = 0x700100;
 static const uint DispCursor = 0x700004;   // x, y, on, address of a 32x32 image
 
-float3 display(float2 p, float2 size) {
-    float3 c = float3(0.035, 0.038, 0.047);
-    uint4 ctrl = ram(DispCtrl);
-    uint mode = ctrl.r, w = ctrl.g, h = ctrl.b;
-    if (mode < 1 || mode > 4 || w == 0 || h == 0 || w > 2048 || h > 2048) return c;
-    float scale = min((size.x - 16) / w, (size.y - 16) / h);
-    if (scale >= 1) scale = floor(scale);   // whole multiples keep pixels square and sharp
-    float2 q = (p - (size - float2(w, h) * scale) * 0.5) / scale;
-    if (q.x < 0 || q.y < 0 || q.x >= w || q.y >= h) return c;
+// One pixel of the display as the guest made it, the cursor over it; `c` where no layer is.
+float3 pixelAt(int2 at, uint4 ctrl, float3 c) {
+    uint mode = ctrl.r, w = ctrl.g;
     uint4 cursor = ram(DispCursor);
     if (cursor.b & 1) {   // the bits above are its hot spot, for a host that draws it itself
         // drawn over whatever the display shows; image words with a zero top byte are clear
-        int2 d = int2(floor(q)) - int2(asint(cursor.r), asint(cursor.g));
+        int2 d = at - int2(asint(cursor.r), asint(cursor.g));
         if (d.x >= 0 && d.y >= 0 && d.x < 32 && d.y < 32) {
-            uint at = (cursor.a & 0x7fffffff) + 4 * (uint)(d.y * 32 + d.x);
-            uint v = word(ram(at >> 4), (at >> 2) & 3);
+            uint a = (cursor.a & 0x7fffffff) + 4 * (uint)(d.y * 32 + d.x);
+            uint v = word(ram(a >> 4), (a >> 2) & 3);
             if ((v >> 24) != 0) return rgb(v);
         }
     }
     if (mode == 4) {
         // layers: a table of rectangles of RAM, the last one on top (docs/display.md)
         uint table = (ctrl.a & 0x7fffffff) >> 4, count = min(ram(table).r, 16u);
-        int2 at = int2(floor(q));
         for (uint n = count; n > 0; n--) {
             uint4 box = ram(table + 2 * n - 1);
             int2 d = at - int2(asint(box.r), asint(box.g));
@@ -96,29 +90,33 @@ float3 display(float2 p, float2 size) {
         }
         return c;
     }
-    if (mode == 3) {
-        // the GPU's picture; shrunk to fit, a 2x2 block of taps keeps thin lines
-        if (scale >= 1) return Gpu.Load(int3(q, 0)).rgb;
-        float3 sum = 0;
-        for (uint g = 0; g < 4; g++) {
-            sum += Gpu.Load(int3(clamp(q + (float2(g & 1, g >> 1) - 0.5) * 0.5 / scale, 0, float2(w, h) - 1), 0)).rgb;
-        }
-        return sum * 0.25;
-    }
-    uint i = (uint)q.y * w + (uint)q.x;
-    if (mode == 1 && scale < 1) {
-        // shrunk to fit: average a 2x2 block of taps so thin lines do not drop out
-        float3 sum = 0;
-        for (uint k = 0; k < 4; k++) {
-            float2 t = clamp(q + (float2(k & 1, k >> 1) - 0.5) * 0.5 / scale, 0, float2(w, h) - 1);
-            uint j = (uint)t.y * w + (uint)t.x;
-            sum += rgb(word(ram(DispPixels + j / 4), j & 3));
-        }
-        return sum * 0.25;
-    }
+    if (mode == 3) return Gpu.Load(int3(at, 0)).rgb;                         // the GPU's picture
+    uint i = (uint)at.y * w + (uint)at.x;
     if (mode == 1) return rgb(word(ram(DispPixels + i / 4), i & 3));          // 0x00RRGGBB
     uint b = (word(ram(DispPixels + i / 16), (i / 4) & 3) >> (8 * (i & 3))) & 0xff;
     return rgb(word(ram(DispPalette + b / 4), b & 3));                        // palette index
+}
+
+float3 display(float2 p, float2 size) {
+    float3 c = float3(0.035, 0.038, 0.047);
+    uint4 ctrl = ram(DispCtrl);
+    uint mode = ctrl.r, w = ctrl.g, h = ctrl.b;
+    if (mode < 1 || mode > 4 || w == 0 || h == 0 || w > 2048 || h > 2048) return c;
+    // (the tick's pointer, gpu.h, places the picture by the same rule)
+    float scale = min((size.x - 16) / w, (size.y - 16) / h);
+    if (scale >= 1) scale = floor(scale);   // whole multiples keep pixels square and sharp
+    float2 q = (p - (size - float2(w, h) * scale) * 0.5) / scale;
+    if (q.x < 0 || q.y < 0 || q.x >= w || q.y >= h) return c;
+    if (scale >= 1) return pixelAt(int2(floor(q)), ctrl, c);
+    // shrunk: the mean of n x n taps spread over the display pixels this one covers
+    float foot = 1 / scale;
+    uint n = foot <= 1.5 ? 2 : foot <= 2.5 ? 3 : 4;
+    float3 sum = 0;
+    for (uint k = 0; k < n * n; k++) {
+        float2 t = q + ((float2(k % n, k / n) + 0.5) / n - 0.5) * foot;
+        sum += pixelAt(int2(clamp(t, 0, float2(w, h) - 1)), ctrl, c);
+    }
+    return sum / (n * n);
 }
 
 struct Out {
@@ -136,11 +134,11 @@ Out ps(float4 pos : SV_Position) {
         o.heat = 0;
         float3 c = float3(0.055, 0.062, 0.075);
         if (pos.y < memHeight + 1) c = float3(0.22, 0.24, 0.28);   // separator line
-        float2 t = pos.xy - float2(12, memHeight + 10);
+        float2 t = pos.xy - float2(12 * Ui, memHeight + 10 * Ui);
         if (TextSize.x > 0 && t.x >= 0 && t.y >= 0 && t.x < TextSize.x && t.y < TextSize.y) {
             c = lerp(c, float3(0.93, 0.95, 0.98), Text.Load(int3(t, 0)).g);
         }
-        float2 inset = pos.xy - float2(WinSize.x - Inset - 12, memHeight + (Bar - Inset) * 0.5);
+        float2 inset = pos.xy - float2(WinSize.x - Inset - 12 * Ui, memHeight + (Bar - Inset) * 0.5);
         if (inset.x >= -1 && inset.y >= -1 && inset.x <= Inset && inset.y <= Inset) {
             if (inset.x < 0 || inset.y < 0 || inset.x >= Inset || inset.y >= Inset) {
                 c = float3(0.75, 0.78, 0.85);                         // frame
@@ -208,6 +206,9 @@ std::vector<uint32_t> g_keyEvents;
 int g_pointerX = 0, g_pointerY = 0;
 unsigned g_buttons = 0;
 HWND g_window = nullptr;
+bool g_held[128];             // keys down now, by Linux key code
+float g_ui = 1;               // the window's dpi over 96
+float g_dispShare = (float)kMemoryViewDispW / (kMemoryViewDispW + kMemoryViewMemW);   // the display's part of the width
 
 // Windows scan code (set 1, plus the extended flag) to Linux key code. The main block of the
 // keyboard has the same numbers in both; the extended keys do not.
@@ -249,6 +250,27 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         bool down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN, repeat = down && (l & (1 << 30)) != 0;
         unsigned code = linuxKey((unsigned)(l >> 16) & 0xff, (l & (1 << 24)) != 0);
         if (code && !repeat) g_keyEvents.push_back(code | (down ? 0x80000000u : 0));   // the guest repeats keys itself
+        if (code && code < 128) g_held[code] = down;
+        if (m == WM_KEYDOWN) {
+            const char* seq = w == VK_UP ? "\x1b[A" : w == VK_DOWN ? "\x1b[B" : w == VK_RIGHT ? "\x1b[C" : w == VK_LEFT ? "\x1b[D" :
+                              w == VK_HOME ? "\x1b[H" : w == VK_END ? "\x1b[F" : w == VK_DELETE ? "\x1b[3~" : nullptr;
+            if (seq) g_typed += seq;
+        }
+        // Alt and F10 are the guest's keys, not Windows' menu (which beeps and takes the next ones); Alt+F4 closes
+        if (m == WM_SYSKEYDOWN && w == VK_F4) return DefWindowProcW(h, m, w, l);
+        return 0;
+    }
+    if (m == WM_SYSCHAR) return 0;
+    if (m == WM_KILLFOCUS) {
+        // keys held when the window lost the keyboard are let go, or the guest would hold them
+        for (unsigned k = 0; k < 128; ++k)
+            if (g_held[k]) g_keyEvents.push_back(k), g_held[k] = false;
+    }
+    if (m == WM_DPICHANGED) {
+        g_ui = HIWORD(w) / 96.0f;
+        const RECT* r = (const RECT*)l;
+        SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
     }
     if (m == WM_MOUSEMOVE || (m >= WM_LBUTTONDOWN && m <= WM_MBUTTONDBLCLK)) {
         g_pointerX = (short)LOWORD(l);
@@ -266,14 +288,6 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         for (; turned <= -WHEEL_DELTA; turned += WHEEL_DELTA) g_keyEvents.push_back(0x800003ffu);
         return 0;
     }
-    if (m == WM_KEYDOWN) {
-        const char* seq = w == VK_UP ? "[A" : w == VK_DOWN ? "[B" : w == VK_RIGHT ? "[C" : w == VK_LEFT ? "[D" :
-                          w == VK_HOME ? "[H" : w == VK_END ? "[F" : w == VK_DELETE ? "[3~" : nullptr;
-        if (seq) {
-            g_typed += seq;
-            return 0;
-        }
-    }
     if (m == WM_CLOSE) {
         // Flag it for render(); the emulator keeps running without the view.
         SetPropW(h, L"closed", (HANDLE)1);
@@ -282,13 +296,17 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-const UINT kBarHeight = kMemoryViewBar;  // info bar: five text lines, and the CPU state area at 100 px
-
 using Constants = MemoryViewConstants;
 
 }  // namespace
 
 const char* memoryViewShader() { return kShader; }
+
+float memoryViewUi() { return g_ui; }
+
+UINT memoryViewBar() { return (UINT)(kMemoryViewBar * g_ui + 0.5f); }
+
+float memoryViewSplit(UINT width) { return floorf(width * g_dispShare); }
 
 std::string memoryViewTakeHostKeys() {
     std::string keys;
@@ -306,32 +324,45 @@ MemoryViewInput memoryViewTakeInput() {
     MemoryViewInput in;
     in.keys.swap(g_keyEvents);
     RECT rc{};
-    if (!g_window || !IsWindow(g_window) || !GetClientRect(g_window, &rc) || rc.bottom <= (LONG)kBarHeight) return in;
+    if (!g_window || !IsWindow(g_window) || !GetClientRect(g_window, &rc) || rc.bottom <= (LONG)memoryViewBar()) return in;
     in.x = (float)g_pointerX;
     in.y = (float)g_pointerY;
     in.buttons = g_buttons;
-    in.panelW = (float)rc.right * kMemoryViewDispW / (kMemoryViewDispW + kMemoryViewMemW);   // as the views' `split`
-    in.panelH = (float)(rc.bottom - (LONG)kBarHeight);
+    in.panelW = memoryViewSplit((UINT)rc.right);   // as the views' `split`
+    in.panelH = (float)(rc.bottom - (LONG)memoryViewBar());
     return in;
 }
 
 HWND memoryViewCreateWindow() {
+    // the window's pixels are the screen's: Windows stretched a window of a process that does
+    // not say so, and the display came out blurred
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    g_ui = GetDpiForSystem() / 96.0f;
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
     wc.lpszClassName = L"ShaderEmuMemoryView";
     RegisterClassW(&wc);
-    // the display at 1280x720, the memory strips beside it, the info bar below; smaller if
-    // the desktop is
-    RECT r{0, 0, (LONG)(kMemoryViewDispW + kMemoryViewMemW), (LONG)(kMemoryViewHeight + kBarHeight)};
-    RECT work{};
-    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0) && work.right - work.left - 40 < r.right) {
-        r.right = work.right - work.left - 40;
-        r.bottom = r.right * (LONG)kMemoryViewHeight / (LONG)(kMemoryViewDispW + kMemoryViewMemW) + (LONG)kBarHeight;
+    // the display panel as large as a whole multiple of an 800x600 desktop fits, the memory
+    // strips beside it, the info bar below (gpu.h places the picture in it the same way)
+    RECT work{0, 0, 1920, 1080};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    LONG bar = (LONG)memoryViewBar(), frame = (LONG)(48 * g_ui), side = (LONG)(24 * g_ui), memLeast = (LONG)(320 * g_ui);
+    LONG roomW = work.right - work.left - side, roomH = work.bottom - work.top - frame - bar;
+    LONG panelW = 0, panelH = 0;
+    for (LONG k = 4; k >= 1 && !panelW; --k)
+        if (800 * k + 16 + memLeast <= roomW && 600 * k + 16 <= roomH) panelW = 800 * k + 16, panelH = 600 * k + 16;
+    if (!panelW) {   // smaller than 1:1: the display shrunk, filtered
+        panelH = roomH;
+        panelW = (std::min)(roomW - memLeast, panelH * 4 / 3);
     }
-    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    return g_window = CreateWindowExW(0, wc.lpszClassName, L"memory", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+    LONG memW = (std::max)(memLeast, (std::min)(roomW - panelW, panelH * 3 / 4));
+    g_dispShare = (float)panelW / (panelW + memW) + 0.5f / (panelW + memW);
+    RECT r{0, 0, panelW + memW, panelH + bar};
+    AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
+    LONG x = work.left + ((work.right - work.left) - (r.right - r.left)) / 2, y = work.top;
+    return g_window = CreateWindowExW(0, wc.lpszClassName, L"memory", WS_OVERLAPPEDWINDOW, (std::max)(work.left, x), y,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
 }
 
@@ -360,7 +391,7 @@ bool memoryViewWriteBmp(const std::string& path, UINT width, UINT height, const 
 }
 
 bool memoryViewText(const MemoryViewText& columns, std::vector<uint8_t>& out, UINT& usedW, UINT& usedH) {
-    const UINT kW = kMemoryViewTextW, kH = kMemoryViewTextH, kLine = 19;
+    const UINT kW = kMemoryViewTextW, kH = kMemoryViewTextH, kLine = (UINT)(19 * g_ui + 0.5f);
     bool ok = false;
     // White text on black in a memory bitmap; the shader uses one channel as coverage.
     BITMAPINFO bi{};
@@ -372,20 +403,23 @@ bool memoryViewText(const MemoryViewText& columns, std::vector<uint8_t>& out, UI
     void* bits = nullptr;
     HDC dc = CreateCompatibleDC(nullptr);
     HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HFONT font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+    HFONT font = CreateFontW(-(int)(15 * g_ui + 0.5f), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
     if (dc && bmp && font && bits) {
         HGDIOBJ oldBmp = SelectObject(dc, bmp), oldFont = SelectObject(dc, font);
         memset(bits, 0, (size_t)kW * kH * 4);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(255, 255, 255));
+        SIZE m{};
+        GetTextExtentPoint32W(dc, L"M", 1, &m);
+        int charW = m.cx > 0 ? m.cx : 8;
         UINT rows = 0;
         for (size_t col = 0; col < columns.size() && col < 3; ++col) {
             UINT n = 0;
             for (auto& line : columns[col]) {
                 if ((n + 1) * kLine > kH) break;
                 std::wstring w = widen(line);
-                TextOutW(dc, (int)kMemoryViewColumnX[col], (int)(n * kLine), w.c_str(), (int)w.size());
+                TextOutW(dc, (int)(kMemoryViewColumnX[col] * charW), (int)(n * kLine), w.c_str(), (int)w.size());
                 ++n;
             }
             if (n > rows) rows = n;
@@ -537,9 +571,10 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     c.texWidth = texWidth_;
     c.ramRows = texHeight_ - stateRows_;
     c.stateRows = stateRows_;
-    c.bar = (float)kBarHeight;
-    c.inset = (float)(kBarHeight - 16);
-    c.split = (float)width_ * kMemoryViewDispW / (kMemoryViewDispW + kMemoryViewMemW);
+    c.bar = (float)memoryViewBar();
+    c.inset = c.bar - 16 * g_ui;
+    c.split = memoryViewSplit(width_);
+    c.ui = g_ui;
     c.textSize[0] = (float)textW_;
     c.textSize[1] = (float)textH_;
     ctx->UpdateSubresource(cb_.Get(), 0, nullptr, &c, 0, 0);

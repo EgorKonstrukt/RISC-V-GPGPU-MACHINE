@@ -748,6 +748,9 @@ static u64 run(Core& c, u64 budget) {
             u32 a = c.x[rs1], b = c.x[rs2], next = pc + 4, result = 0;
             bool write = true, illegal = false;
             if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { zb_run++; op = 0x80; }   // (no opcode is 0x80)
+            // which funct7 each op and op-imm has, as the tick's general path (emu.h): the rest are illegal
+            if ((op == 0x13 || (op == 0x33 && f7 != 1)) &&
+                !(((f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu) >> (((ins >> 2) & 8) | f3)) & 1)) op = 0x81;
             switch (op) {
             case 0x80: break;
             case 0x37: result = ins & 0xfffff000; break;
@@ -1236,6 +1239,7 @@ static void control_pass() {
         }
     }
     if (more) dirty(STATS_ALL);
+    word(CTRL + 0x32c) = (u32)frame_no;   // passes so far, as the shader's control pass gives them
     if (external_devices) {
         // the shader's control pass keeps the rest; between two of its runs only the clock moves
         word(CTRL + 0x34) = (u32)(guest_seconds * 1000.0);

@@ -234,8 +234,8 @@ CASES = [
     case('nxvideo-gpu-taken', 'media', X + 'nxvideo & sleep 10; UI_ASK_PRINT=1 RAY_FRAMES=2 nxray; echo RAY=$?; sleep 4; pidof nxvideo; echo PIDOF=$?; killall nxask',
          True, has=[r'^RAY=1', r'^ask: Notice: The GPU is drawing for nxvideo ', r'^PIDOF=0']),
     # the desktop's programs (docs/nanox.md, docs/multicore.md, docs/web.md)
-    case('nxmon', 'desktop', X + 'NXMON_CHECK=1 nxmon & sleep 20; killall nxmon', True, has=[r'nxmon: 0 of 51840 pixels differ'],
-         never=[r'nxmon: [1-9]\d* of 51840']),
+    case('nxmon', 'desktop', X + 'NXMON_CHECK=1 nxmon & sleep 20; killall nxmon', True, has=[r'nxmon: 0 of 67200 pixels differ'],
+         never=[r'nxmon: [1-9]\d* of 67200']),
     case('nxview', 'desktop media', 'NXVIEW_SUM=1 nxview --decode /usr/share/picture-fox.png /tmp/a.ppm; '
          'NXVIEW_SUM=1 nxview --decode /usr/share/picture-fox.jpg /tmp/b.ppm', True,
          sums=[(r'nxview: .* sum ([0-9a-f]+) of', ['72ae6c0d', '95b8fd40'])]),

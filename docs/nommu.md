@@ -15,7 +15,8 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
   `RV32_MARCH=rv32imaf_zba_zbb` builds with Zba and Zbb.
 - `bash linux/nommu/kernel.sh`: the MMU kernel's tree copied with its hooks, four patches
   (`patch_kconfig.py`: RV32 without the MMU, still in supervisor mode under the machine's SBI and
-  linked at 0x80400000; `patch_signal.py`, `patch_drivers.py`, `patch_ovl.py`) and its
+  linked at 0x80400000; `patch_signal.py`, `patch_drivers.py`, which also keeps `/proc/cpuinfo`'s
+  "mmu" line out, `patch_ovl.py`) and its
   configuration without the MMU, into `build/nommu/Image`.
 - `bash linux/nommu/build.sh [script ...]`: the sources copied to `~/nm/repo` again and the
   repository's build scripts run there with the flat drivers, a line each.
@@ -24,6 +25,11 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
 - `python linux/nommu/image.py`: `build/images/nommu`, the shared image with that root as its
   overlay, the kernel, and RAM in the device tree from the kernel's address (0x80400000) on.
 - `python linux/nommu/test.py`: `tools/test_all.py` on that image, its workers bare.
+
+`rvc_harness` with no arguments boots this image once it has been made, on the machine without
+paging (`NO_PAGING`), with its window, desktop and sound. `--kernel mmu|nommu` and `--isa base|zb`
+choose the kernel and the instruction set (`zb` takes `build/images/nommu-zb` and the shader's
+`ZB`), as `k` and `i` do in the start menu; `--image linux-net` alone is Linux with the MMU.
 
 `pwsh linux/nommu/all.ps1 [-Kernel]` is the whole round. The machine's own `cc` links a flat
 program as a library and makes it flat with `elf2flt` (`linux/nommu/cc`). `linux/nommu/card.ps1`

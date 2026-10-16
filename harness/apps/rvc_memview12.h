@@ -138,9 +138,10 @@ public:
         c.texWidth = texWidth_;
         c.ramRows = texHeight_ - stateRows_;
         c.stateRows = stateRows_;
-        c.bar = (float)kMemoryViewBar;
-        c.inset = (float)(kMemoryViewBar - 16);
-        c.split = (float)width_ * kMemoryViewDispW / (kMemoryViewDispW + kMemoryViewMemW);
+        c.bar = (float)memoryViewBar();
+        c.inset = c.bar - 16 * memoryViewUi();
+        c.split = memoryViewSplit(width_);
+        c.ui = memoryViewUi();
         c.textSize[0] = (float)textW_;
         c.textSize[1] = (float)textH_;
         memcpy(cbMapped_, &c, sizeof c);

@@ -17,12 +17,13 @@
 #include <sys/wait.h>
 #include <time.h>
 #define UI_PICTURES	/* pictures of any kind decoded (media.h) */
+#include "machine.h"
 #include "ui.h"
 #include "ui_files.h"
 #include "ui_ask.h"
 #include "shaderemu_sound.h"
 
-#define WIDTH 470
+#define WIDTH 600
 #define HEIGHT 300
 #define TAB_W 72
 #define TOP 36			/* where a tab's own part begins */
@@ -241,9 +242,8 @@ system_lines(char lines[][160], int screen_w, int screen_h)
 	if (have_sound < 0)
 		have_sound = snd_open() == 0;
 	measure_speed();
-	snprintf(lines[n++], 160, "%s %s", system.sysname, system.release);
-	snprintf(lines[n++], 160, "Processor: %s (RV32IMA%s), %d core%s", system.machine,
-		 has_float ? "F: with float instructions" : ": no float instructions", cores, cores == 1 ? "" : "s");
+	snprintf(lines[n++], 160, "%s %s, %s", system.sysname, system.release, machine_mmu() ? "with an MMU (Sv32 paging)" : "without an MMU");
+	snprintf(lines[n++], 160, "Processor: %s (%s), %d core%s", system.machine, machine_isa(), cores, cores == 1 ? "" : "s");
 	if (cores > 1)
 		snprintf(lines[n++], 160, "Linux runs on the first; the other %d are programs' workers", cores - 1);
 	else
@@ -434,10 +434,17 @@ device_lines(int which, char lines[][96])
 			has_float = float_unit();
 		snprintf(lines[n++], 96, "Architecture: RISC-V, 32 bits (RV32I)");
 		snprintf(lines[n++], 96, "Extensions: M (multiply), A (atomics)%s, Zicsr, Zifencei", has_float ? ", F (float)" : "");
+		if (machine_zb())
+			snprintf(lines[n++], 96, "And Zba, Zbb: address and bit instructions");
 		snprintf(lines[n++], 96, "No compressed (C) instructions: every one is 32 bits");
 		snprintf(lines[n++], 96, "Linux says: %s", isa[0] ? strchr(isa, ':') ? strchr(isa, ':') + 2 : isa : "-");
 		snprintf(lines[n++], 96, "Modes: machine (the firmware, in the GPU), supervisor, user");
-		snprintf(lines[n++], 96, "Memory translation: %s, 4 KB pages", file_line("/proc/cpuinfo", "mmu")[0] ? "Sv32" : "none");
+		if (machine_mmu())
+			snprintf(lines[n++], 96, "Memory translation: Sv32, 4 KB pages");
+		else {
+			snprintf(lines[n++], 96, "Memory translation: none (no MMU; satp is always 0)");
+			snprintf(lines[n++], 96, "Programs: flat (bFLT), each where it was loaded");
+		}
 		snprintf(lines[n++], 96, "Cores: %u laid out now, %u at most", now ? now : 1, most ? most : 1);
 		snprintf(lines[n++], 96, "Core 0 runs Linux; the others are workers lent to programs");
 		if (dev_words && now > 1) {
@@ -459,7 +466,12 @@ device_lines(int which, char lines[][96])
 		long total = atol(file_line("/proc/meminfo", "MemTotal:") + 9), free = atol(file_line("/proc/meminfo", "MemAvailable:") + 13);
 
 		snprintf(lines[n++], 96, "RAM: %ld MB, %ld MB free", total / 1024, free / 1024);
-		snprintf(lines[n++], 96, "Where: 0x80000000 up (Linux from 0x80400000)");
+		if (machine_mmu())
+			snprintf(lines[n++], 96, "Where: 0x80000000 up (Linux from 0x80400000)");
+		else {
+			snprintf(lines[n++], 96, "Where: 0x80400000 to 0x86000000, Linux's from its start");
+			snprintf(lines[n++], 96, "No MMU: a program's memory is taken whole as it starts");
+		}
 		snprintf(lines[n++], 96, "Kept in: the GPU's state texture, 16 bytes a texel");
 		snprintf(lines[n++], 96, "Page cache: %ld MB", atol(file_line("/proc/meminfo", "Cached:") + 7) / 1024);
 		snprintf(lines[n++], 96, "GPU memory: 0x86000000 to 0x87000000, 16 MB (the GPU's)");
@@ -928,6 +940,8 @@ main(int argc, char **argv)
 		if (tab == TAB_STORAGE)
 			read_kept();
 	}
+	if (getenv("NXSETTINGS_DEVICE"))	/* and the device shown there */
+		devices.selected = atoi(getenv("NXSETTINGS_DEVICE")) % DEVICES;
 	window = GrNewWindowEx(UI_FIXED, "Settings", GR_ROOT_WINDOW_ID, -1, -1, WIDTH, HEIGHT, UI_FACE);
 	GrSelectEvents(window, EVENTS);
 	GrMapWindow(window);

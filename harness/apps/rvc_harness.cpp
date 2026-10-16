@@ -101,6 +101,8 @@ struct Options {
     bool tabs = false;        // ask the guest for its console as several terminals (docs/console.md)
     int workers = 0;          // --workers: the small workers' blocks geotune lays out (0 its own pick; 1-3: 2, 4, 8 columns)
     bool desktop = false;     // ask the guest to start its desktop: the terminal mode, unless --no-desktop
+    std::string kernel;       // Linux's: "mmu" or "nommu" (docs/nommu.md); unset, nommu once its image is made
+    std::string isa = "base"; // "base" RV32IMAF, or "zb" with Zba and Zbb (the shader's ZB)
     std::string vizCapture;   // BMP of the memory view, written at exit
     std::string gpuCapture;   // BMP of the GPU device's colour target, written at exit
     std::string raLog;        // per frame: pc, the return address register (who called a leaf function) and instructions
@@ -236,6 +238,10 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                        (and start the pc log there)
   --no-desktop         terminal mode: boot to the shell only (by default the guest starts its desktop);
                        --desktop asks for it in a run with other arguments
+  --kernel mmu|nommu   Linux with the MMU (build\\images\\linux) or without one (build\\images\\nommu, the machine
+                       without paging; docs/nommu.md); the default is nommu once that image has been made
+  --isa base|zb        RV32IMAF, or with Zba and Zbb (the shader's ZB; without an MMU build\\images\\nommu-zb,
+                       whose programs use them)
   --tabs               the console as four terminals: 0x1e and a digit, either way, says whose bytes follow
   --workers auto|2|4|8 how geotune lays out the workers at boot (docs/multicore.md, "Packing the small workers")
   --dxc / --d3d11      backend: D3D12 with DXC-compiled DXIL, or D3D11 with FXC bytecode (what VRChat
@@ -359,6 +365,14 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--no-viz") o.viz = false;
         else if (a == "--resume") o.resume = true;
         else if (a == "--no-desktop") o.desktop = false;
+        else if (a == "--kernel") {
+            o.kernel = next("--kernel");
+            if (o.kernel != "mmu" && o.kernel != "nommu") { fprintf(stderr, "--kernel takes mmu or nommu\n"); return false; }
+        }
+        else if (a == "--isa") {
+            o.isa = next("--isa");
+            if (o.isa != "base" && o.isa != "zb") { fprintf(stderr, "--isa takes base or zb\n"); return false; }
+        }
         else if (a == "--desktop") o.desktop = true;
         else if (a == "--tabs") o.tabs = true;
         else if (a == "--workers") { std::string w = next("--workers"); o.workers = w == "2" ? 1 : w == "4" ? 2 : w == "8" ? 3 : 0; }
@@ -533,6 +547,18 @@ const BootImage* findImage(const std::string& name) {
     return nullptr;
 }
 
+// Our Linux's folder for the kernel and instruction set asked for (linux/nommu/image.py makes the
+// no-MMU ones; with the MMU the programs are RV32IMAF whatever the shader runs).
+std::string linuxDir(const Options& o) {
+    if (o.kernel != "nommu") return "build/images/linux";
+    return o.isa == "zb" ? "build/images/nommu-zb" : "build/images/nommu";
+}
+
+bool linuxBuilt(const Options& o) {
+    std::error_code ec;
+    return fs::exists(fs::u8path(linuxDir(o)) / "linux_payload.bin", ec);
+}
+
 void applyImage(Options& o, const BootImage& im) {
     o.image = im.name;
     o.payloadDir = imageDir(im);
@@ -542,31 +568,44 @@ void applyImage(Options& o, const BootImage& im) {
     // Our build of the Linux image (tools/make_linux_image.py): upstream's root filesystem with
     // our programs added, and a device tree that keeps the kernel out of the GPU's memory.
     std::error_code ec;
-    if (o.image == "linux-net" && fs::exists("build/images/linux/rootfs.bin", ec) && fs::exists("build/images/linux/dts.bin", ec)) {
-        o.mtdPrefix = "build/images/linux/rootfs";
-        o.dtbPrefix = "build/images/linux/dts";
+    std::string dir = linuxDir(o);
+    if (o.image == "linux-net" && fs::exists(dir + "/rootfs.bin", ec) && fs::exists(dir + "/dts.bin", ec)) {
+        o.mtdPrefix = dir + "/rootfs";
+        o.dtbPrefix = dir + "/dts";
         // and our kernel, if it has been built (linux/kernel/build.sh)
-        if (fs::exists("build/images/linux/linux_payload.bin", ec)) {
-            o.ramPrefix = "build/images/linux/linux_payload";
+        if (fs::exists(dir + "/linux_payload.bin", ec)) {
+            o.ramPrefix = dir + "/linux_payload";
             o.ourKernel = true;
         }
     }
 }
 
 // Start menu, shown when the command line does not say what to boot. False = the user backed out.
+// What the menu's k and i say of Linux: the kernel, the instructions, and the folder they boot.
+void printLinuxChoice(const Options& o) {
+    fprintf(stderr, "    k  kernel: %s\n", o.kernel == "nommu" ? "Linux without an MMU (bFLT programs, the machine without paging)" : "Linux with the MMU (Sv32 paging)");
+    fprintf(stderr, "    i  instructions: %s\n", o.isa == "zb" ? "RV32IMAF + Zba, Zbb" : "RV32IMAF");
+    fprintf(stderr, "       Linux boots %s%s\n", linuxDir(o).c_str(),
+            !linuxBuilt(o) ? "  (not made: docs/nommu.md)" : o.isa == "zb" && o.kernel != "nommu" ? "  (its programs are RV32IMAF)" : "");
+}
+
 bool chooseImage(Options& o, bool canResume) {
     std::vector<const BootImage*> list;
     for (auto& im : kImages)
         if (imageAvailable(im)) list.push_back(&im);
     fprintf(stderr, "\n  rvc: a RISC-V machine in a pixel shader    [%s]\n\n  Boot which image?\n\n",
             o.dxc ? "D3D12 + DXC" : "D3D11 + FXC");
-    for (size_t i = 0; i < list.size(); ++i)
+    for (size_t i = 0; i < list.size(); ++i) {
+        int machine = strcmp(list[i]->name, "linux-net") == 0 && o.kernel == "nommu" ? 1 : list[i]->machine;
         fprintf(stderr, "    %zu  %-13s %s%s\n", i + 1, list[i]->name, list[i]->title,
-                list[i]->machine == 0 ? "  [full machine]" : list[i]->machine == 1 ? "  [no paging]" : "  [machine mode only]");
-    if (canResume) fprintf(stderr, "    r  %-13s %s\n", "resume", "Linux at the shell prompt, from the saved snapshot");
+                machine == 0 ? "  [full machine]" : machine == 1 ? "  [no paging]" : "  [machine mode only]");
+    }
+    if (canResume) fprintf(stderr, "    r  %-13s %s\n", "resume", "Linux at the shell prompt, from the saved snapshot (with the MMU)");
     const char* kMachine[4] = {"auto: the smallest the image runs on (shown in brackets)", "full",
-                               "no paging (Linux will not boot)", "machine mode only (OpenSBI images will not boot)"};
-    fprintf(stderr, "\n    m  machine: %s\n", kMachine[o.machine + 1]);
+                               "no paging (only Linux without an MMU boots)", "machine mode only (OpenSBI images will not boot)"};
+    fprintf(stderr, "\n");
+    printLinuxChoice(o);
+    fprintf(stderr, "    m  machine: %s\n", kMachine[o.machine + 1]);
     fprintf(stderr, "\n  Press a key (Enter = 1, Esc = quit): ");
     for (;;) {
         int c = _getch();
@@ -574,6 +613,14 @@ bool chooseImage(Options& o, bool canResume) {
         if (c == 'm' || c == 'M') {
             o.machine = o.machine == 2 ? -1 : o.machine + 1;
             fprintf(stderr, "\n    m  machine: %s\n\n  Press a key (Enter = 1, Esc = quit): ", kMachine[o.machine + 1]);
+            continue;
+        }
+        if (c == 'k' || c == 'K' || c == 'i' || c == 'I') {
+            if (c == 'k' || c == 'K') o.kernel = o.kernel == "nommu" ? "mmu" : "nommu";
+            else o.isa = o.isa == "zb" ? "base" : "zb";
+            fprintf(stderr, "\n\n");
+            printLinuxChoice(o);
+            fprintf(stderr, "\n  Press a key (Enter = 1, Esc = quit): ");
             continue;
         }
         if (c == 27 || c == 3 || c == kQuitKey) { fprintf(stderr, "\n"); return false; }
@@ -610,7 +657,7 @@ int main(int argc, char** argv) {
     bool terminalMode = true;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--image" || a == "--cpu-ips") ++i;
+        if (a == "--image" || a == "--cpu-ips" || a == "--kernel" || a == "--isa") ++i;
         // (--cpu is the same terminal on the interpreter: its desktop and view come up too)
         else if (a != "--resume" && a != "--no-viz" && a != "--dxc" && a != "--d3d11" && a != "--no-desktop" && a != "--cpu") terminalMode = false;
     }
@@ -624,6 +671,13 @@ int main(int argc, char** argv) {
     DWORD conMode = 0;
     bool interactive = opt.readStdin && GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &conMode) != 0;
     if (opt.cpu && opt.image.empty()) opt.image = "linux-net";   // (the interpreter boots that one: nothing to ask)
+    // the terminal's Linux is the no-MMU build once it has been made; a run with other arguments
+    // keeps the MMU unless it says otherwise (--kernel)
+    if (opt.kernel.empty()) {
+        opt.kernel = "nommu";
+        if (!terminalMode || !linuxBuilt(opt)) opt.kernel = "mmu";
+    }
+    if (terminalMode && opt.image.empty() && !opt.resume && !interactive) opt.image = "linux-net";
     bool chosen = !opt.image.empty() || opt.payloadSet || !opt.loadState.empty() || opt.resume;
     if (!chosen && interactive && !chooseImage(opt, canResume)) return 0;
     if (terminalMode) {
@@ -652,22 +706,33 @@ int main(int argc, char** argv) {
         applyImage(opt, *im);
     }
     // The full machine unless a named image is known to need less, or the user said so.
+    bool nommuLinux = opt.kernel == "nommu" && opt.image == "linux-net" && opt.loadState.empty();
     if (opt.machine < 0) {
         const BootImage* im = opt.loadState.empty() ? findImage(opt.image) : nullptr;
-        opt.machine = im && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") ? im->machine : 0;
+        opt.machine = im && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") ? (nommuLinux ? 1 : im->machine) : 0;
     }
+    if (nommuLinux && !linuxBuilt(opt)) {
+        fprintf(stderr, "[harness] %s has not been made (docs/nommu.md)\n", linuxDir(opt).c_str());
+        return 1;
+    }
+    if (opt.isa == "zb" && isOpt(opt.rvcDir)) opt.defines.push_back("ZB");
     // Our Linux image, and snapshots (which are of it), have no firmware: the machine answers
     // the kernel's calls to it (docs/boot.md).
-    opt.sbi = opt.machine == 0 && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") && (opt.ourKernel || !opt.loadState.empty());
+    // (Linux without an MMU is our kernel on the machine without paging, its SBI and float unit kept)
+    bool linuxMachine = opt.machine == 0 || (opt.machine == 1 && opt.ourKernel);
+    opt.sbi = linuxMachine && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") && (opt.ourKernel || !opt.loadState.empty());
     if (opt.machine == 1) opt.defines.push_back("NO_PAGING");
     if (opt.machine == 2) opt.defines.push_back("M_MODE_ONLY");
     // The full machine has single-precision float instructions (docs/fpu.md).
-    if (opt.machine == 0 && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") &&
+    if (linuxMachine && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") &&
         std::find(opt.defines.begin(), opt.defines.end(), "FPU") == opt.defines.end())
         opt.defines.push_back("FPU");
     if (opt.lazy && opt.machine == 0 && isOpt(opt.rvcDir)) opt.defines.push_back("LAZY_MEMOP");
     if (opt.machine > 0)
         fprintf(stderr, "[harness] machine: %s\n", opt.machine == 1 ? "no paging (NO_PAGING)" : "machine mode only (M_MODE_ONLY)");
+    if (opt.image == "linux-net" && opt.loadState.empty())
+        fprintf(stderr, "[harness] Linux %s, %s: %s\n", opt.kernel == "nommu" ? "without an MMU" : "with the MMU",
+                opt.isa == "zb" ? "RV32IMAF + Zba, Zbb" : "RV32IMAF", linuxDir(opt).c_str());
     // Payloads live with upstream rvc; a patched shader folder usually has none of its own.
     if (opt.payloadDir.empty()) {
         opt.payloadDir = (fs::u8path(opt.rvcDir) / "data-net").u8string();
@@ -848,7 +913,7 @@ int main(int argc, char** argv) {
     // Counters for the memory view's text box, refreshed four times a second.
     double ovLast = 0;
     std::vector<std::string> overlayLines;
-    uint64_t ovInstr = 0, ovFrames = 0;
+    uint64_t ovInstr = 0, ovFrames = 0, ovWorkers = 0;
     double gpuTickMs = -1, gpuCommitMs = -1, gpuDeviceMs = 0;
     unsigned lastKey = 0;   // last character handed to the guest
     std::deque<uint32_t> keyEvents;   // raw key events from the window, waiting for the input device
@@ -875,7 +940,7 @@ int main(int argc, char** argv) {
 
     auto t0 = std::chrono::steady_clock::now();
     double lastStats = 0;
-    uint64_t statsInstr = 0, statsFrames = 0;
+    uint64_t statsInstr = 0, statsFrames = 0, statsWorkers = 0;
     uint64_t frame = 0;
     double guestTime = timeBase;
 
@@ -889,6 +954,7 @@ int main(int argc, char** argv) {
     uint64_t statsInstr0 = 0, statsFrame0 = 0;
     auto statsT0 = t0;
     bool keyboardOwned = false;   // a guest program reads the keyboard device (docs/input.md)
+    uint32_t displayMode = 0;     // the guest's display (docs/display.md): 0 while it shows nothing
     // --cpu: when the interpreter started, its passes, the bands of Linux's RAM still to show,
     // the bands sent with the last frame, and the copy the commit of this frame makes
     double cpuT0 = 0, cpuLowAt = 0;
@@ -969,6 +1035,7 @@ int main(int argc, char** argv) {
         auto texel = [&](int x, int c) { return t[x * 4 + c]; };
         uint32_t clock = texel(28, 1);
         keyboardOwned = raw.size() >= (64 + 4) * 16 && texel(64 + 3, 0) == 0x6b657973u;
+        displayMode = raw.size() >= (64 + 1) * 16 ? texel(64, 0) : 0;
         bool soundOn = bo.soundShader && raw.size() >= (64 + 0x24) * 16 && texel(64 + 0x22, 0) != 0;
         if (soundOn && !soundEnabled) {
             // carry on from the device's own clock (a snapshot's is not zero), or from the last
@@ -1252,8 +1319,10 @@ int main(int argc, char** argv) {
         if (opt.cpu && frame >= (uint64_t)opt.initFrames) {
             using namespace cpuemu;
             if (!cpuRunning) {
-                if (!machine_boot("build/images/linux", opt.cores)) {
-                    fprintf(stderr, "[harness] --cpu: no image in build\\images\\linux\n");
+                bare_workers = bare_workers || opt.kernel == "nommu";   // (a worker of root 0 runs untranslated)
+                zb_on = opt.isa == "zb";
+                if (!machine_boot(linuxDir(opt), opt.cores)) {
+                    fprintf(stderr, "[harness] --cpu: no image in %s\n", linuxDir(opt).c_str());
                     exitCode = 1;
                     break;
                 }
@@ -1617,10 +1686,11 @@ int main(int argc, char** argv) {
         if (wall - lastStats >= 1.0) {
             double dt = wall - lastStats;
             double ips = (double)(guestInstructions - statsInstr) / dt;
+            double all = ips + (double)(workerInstructions - statsWorkers) / dt;
             double fps = (double)(frame - statsFrames) / dt;
             char title[256];
-            snprintf(title, sizeof title, "rvc_harness | %.1fk IPS | %.1f frames/s | frame %llu | commits %u", ips / 1000.0,
-                     fps, (unsigned long long)frame, commits);
+            snprintf(title, sizeof title, "rvc_harness | all cores %.2fM IPS | core 0 %.2fM | %.1f frames/s | frame %llu | commits %u",
+                     all / 1e6, ips / 1e6, fps, (unsigned long long)frame, commits);
             SetConsoleTitleA(title);
             backend.viewTitle(std::string("memory | ") + (title + 14));
             if (opt.statsInterval > 0 && wall - lastStats >= opt.statsInterval)
@@ -1628,6 +1698,7 @@ int main(int argc, char** argv) {
             if (opt.statsInterval <= 0 || wall - lastStats >= opt.statsInterval) {
                 lastStats = wall;
                 statsInstr = guestInstructions;
+                statsWorkers = workerInstructions;
                 statsFrames = frame;
             }
         }
@@ -1636,8 +1707,10 @@ int main(int argc, char** argv) {
             backend.gpuTimes(gpuTickMs, gpuCommitMs, gpuDeviceMs);
             double dt = wall - ovLast;
             double ips = (double)(guestInstructions - ovInstr) / dt, fps = (double)(frame - ovFrames) / dt;
-            char l1[96], l2[96], l3[96], l4[96], l5[96];
-            snprintf(l1, sizeof l1, "%s IPS    %.0f frames/s", withCommas((uint64_t)ips).c_str(), fps);
+            double workerIps = (double)(workerInstructions - ovWorkers) / dt;
+            char l1[96], l2[96], l3[96], l4[96], l5[96], l0[96];
+            snprintf(l0, sizeof l0, "all cores %s IPS    %.0f frames/s", withCommas((uint64_t)(ips + workerIps)).c_str(), fps);
+            snprintf(l1, sizeof l1, "core 0 %s    workers %s", withCommas((uint64_t)ips).c_str(), withCommas((uint64_t)workerIps).c_str());
             snprintf(l2, sizeof l2, "frame %.3f ms    %.0f instr/frame", fps > 0 ? 1000.0 / fps : 0.0, fps > 0 ? ips / fps : 0.0);
             char l6[96];
             if (!bo.soundShader) snprintf(l6, sizeof l6, "gpu device %.3f ms", gpuDeviceMs);
@@ -1648,8 +1721,8 @@ int main(int argc, char** argv) {
             else snprintf(l3, sizeof l3, "tick -    commit -");
             unsigned up = (unsigned)wall;
             snprintf(l4, sizeof l4, "up %02u:%02u:%02u    guest clock %.1f s", up / 3600, up / 60 % 60, up % 60, guestTime);
-            snprintf(l5, sizeof l5, "%s instructions    %s commits", withCommas(guestInstructions).c_str(), withCommas(commits).c_str());
-            overlayLines = {l1, l2, l3, l6, l4, l5};
+            snprintf(l5, sizeof l5, "%s instructions    %s commits", withCommas(guestInstructions + workerInstructions).c_str(), withCommas(commits).c_str());
+            overlayLines = {l0, l1, l2, l3, l6, l4, l5};
             // The console column: the last lines the guest printed, without escape sequences.
             std::vector<std::string> console(1);
             size_t from = transcript.size() > 2000 ? transcript.size() - 2000 : 0;
@@ -1668,14 +1741,14 @@ int main(int argc, char** argv) {
             }
             if (console.size() > 8) console.erase(console.begin(), console.end() - 8);
             for (auto& l : console)
-                if (l.size() > 72) l = l.substr(l.size() - 72);
+                if (l.size() > 62) l = l.substr(l.size() - 62);
             char i1[64], i2[64], i3[64], i4[64];
             size_t queued;
             {
                 std::lock_guard<std::mutex> lock(g_inputMutex);
                 queued = scriptQueue.size() + g_stdinQueue.size();
             }
-            snprintf(i1, sizeof i1, "input: window%s, %s", keyboardOwned ? " (keys to the keyboard device only)" : "",
+            snprintf(i1, sizeof i1, "input: window%s, %s", keyboardOwned || displayMode ? " (keys to the keyboard device only)" : "",
                      g_rawConsole ? "console" : (opt.readStdin ? "stdin" : "script"));
             snprintf(i2, sizeof i2, "queued %zu   sent %u", queued, sentTag);
             snprintf(i3, sizeof i3, "taken by guest %u", consumedTag);
@@ -1685,6 +1758,7 @@ int main(int argc, char** argv) {
             backend.viewText({overlayLines, console, {i1, i2, i3, i4}});
             ovLast = wall;
             ovInstr = guestInstructions;
+            ovWorkers = workerInstructions;
             ovFrames = frame;
         }
         // The memory view samples the state at about 60 Hz, however fast the emulator runs.
@@ -1694,8 +1768,8 @@ int main(int argc, char** argv) {
             pointer = memoryViewTakeInput();
             keyEvents.insert(keyEvents.end(), pointer.keys.begin(), pointer.keys.end());
             pointer.keys.clear();
-            // keys typed into the window go to the guest's console too, unless a program there
-            // has the keyboard device open; Ctrl+] quits
+            // keys typed into the window go to the guest's console too while it shows no display
+            // and no program there has the keyboard device open; Ctrl+] quits
             for (char c : memoryViewTakeHostKeys()) {
                 if (c == 's') soundSwitch = !soundSwitch;
                 else opt.volume = (std::max)(0, (std::min)(100, opt.volume + (c == '+' ? 5 : -5)));
@@ -1707,7 +1781,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lock(g_inputMutex);
                 for (char c : typed) {
                     if (c == kQuitKey) g_quit = true;
-                    else if (!keyboardOwned) g_stdinQueue.push_back(c);
+                    else if (!keyboardOwned && displayMode == 0) g_stdinQueue.push_back(c);
                 }
             }
         }

@@ -18,10 +18,10 @@
 
 // Pieces shared with the D3D12 view (rvc_memview12.h): shader source (entry points vs/ps,
 // textures t0..t3 = current, previous, heat, text; cbuffer b0), window, text and BMP output.
-const UINT kMemoryViewBar = 176;  // info bar: eight text lines, and the CPU state area at 160 px
-const UINT kMemoryViewTextW = 1536, kMemoryViewTextH = 160;
+const UINT kMemoryViewBar = 176;  // info bar at 96 dpi: eight text lines, and the CPU state area at 160 px
+const UINT kMemoryViewTextW = 3584, kMemoryViewTextH = 384;   // room for the bar's text at up to 2.33 times that
 // Columns of text in the bar under the picture: speed, console, input. The CPU state sits right of them.
-const UINT kMemoryViewColumnX[3] = {0, 408, 1016};   // 48 and 72 characters wide
+const UINT kMemoryViewColumnX[3] = {0, 52, 116};   // in characters: 52 and 64 wide
 typedef std::vector<std::vector<std::string>> MemoryViewText;
 const UINT kMemoryViewDispW = 1280, kMemoryViewMemW = 640, kMemoryViewHeight = 720;  // initial layout above the bar
 struct MemoryViewConstants {
@@ -31,7 +31,13 @@ struct MemoryViewConstants {
     float textSize[2];
     float bar;
     float split;   // x where the display ends and the memory image begins
+    float ui;      // window pixels a 96 dpi pixel
+    float pad[3];
 };
+// The window's dpi over 96, the bar's height in window pixels, and the x where the display panel ends.
+float memoryViewUi();
+UINT memoryViewBar();
+float memoryViewSplit(UINT width);
 const char* memoryViewShader();
 // What was typed into the window since the last call, as terminal bytes (arrows as escape
 // sequences). Keys arrive when the window's messages are pumped, which render() does.

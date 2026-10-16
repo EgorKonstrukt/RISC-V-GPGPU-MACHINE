@@ -13,6 +13,8 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/sched.h>
@@ -123,6 +125,13 @@ static u32 worker_tags;		/* tags given so far: no two programs ever have the sam
 static DEFINE_MUTEX(workers_lock);
 static struct file *draw_owner;
 static pid_t draw_pid;
+/* who has /dev/gpu open and how many lists each has had drawn: /proc/gpu, for a monitor */
+#define GPU_USERS	32
+static struct gpu_user {
+	struct file *file;
+	pid_t pid;
+	u32 lists;
+} gpu_users[GPU_USERS];
 static DEFINE_MUTEX(gpu_lock);
 
 /*
@@ -475,6 +484,7 @@ static long shaderemu_gpu_ioctl(struct file *file, unsigned int cmd, unsigned lo
 	if (cmd == SHADEREMU_GPU_SUBMIT) {
 		struct shaderemu_gpu_submit s;
 		u32 frames;
+		int u;
 
 		if (copy_from_user(&s, (void __user *)arg, sizeof(s)))
 			return -EFAULT;
@@ -488,6 +498,9 @@ static long shaderemu_gpu_ioctl(struct file *file, unsigned int cmd, unsigned lo
 		writel(s.list, gpu_regs + GPU_LIST);
 		writel(s.count, gpu_regs + GPU_COUNT);
 		writel(s.how, gpu_regs + GPU_SUBMIT);
+		for (u = 0; u < GPU_USERS; u++)
+			if (gpu_users[u].file == file)
+				gpu_users[u].lists++;
 		while (readl(gpu_regs + GPU_FRAMES) == frames) {
 			wait_for_interrupt();
 			cond_resched();
@@ -525,6 +538,17 @@ static int shaderemu_gpu_mmap(struct file *file, struct vm_area_struct *vma)
  * opened: only those can be its program's, and only those it gives back. */
 static int shaderemu_gpu_open(struct inode *inode, struct file *file)
 {
+	int i;
+
+	mutex_lock(&workers_lock);
+	for (i = 0; i < GPU_USERS; i++)
+		if (!gpu_users[i].file) {
+			gpu_users[i].file = file;
+			gpu_users[i].pid = task_tgid_vnr(current);
+			gpu_users[i].lists = 0;
+			break;
+		}
+	mutex_unlock(&workers_lock);
 	file->private_data = (void *)(uintptr_t)((readl(gpu_regs + KEYBOARD_OWNER) ? 0 : 1) | (readl(gpu_regs + DISPLAY_CURSOR) ? 0 : 2) |
 						 (readl(gpu_regs + VOLUME_LIST) ? 0 : 4));
 	return 0;
@@ -545,7 +569,12 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 	}
 	/* and its worker cores run in memory that is going away: park them */
 	{
+		int i;
+
 		mutex_lock(&workers_lock);
+		for (i = 0; i < GPU_USERS; i++)
+			if (gpu_users[i].file == file)
+				gpu_users[i].file = NULL;
 		if (draw_owner == file)
 			draw_owner = NULL;
 		{
@@ -561,6 +590,29 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 		}
 		mutex_unlock(&workers_lock);
 	}
+	return 0;
+}
+
+/* A line an open of /dev/gpu: its process, worker cores held and wanted, whether it only
+ * borrows them, its tag (a core's word at WORKERS_OWNER), whether it has the GPU's memory
+ * for programs, and lists drawn so far. */
+static int shaderemu_gpu_show(struct seq_file *m, void *v)
+{
+	int i;
+
+	seq_puts(m, "pid workers wanted lent tag draws lists\n");
+	mutex_lock(&workers_lock);
+	for (i = 0; i < GPU_USERS; i++) {
+		struct gpu_user *u = &gpu_users[i];
+		struct worker_client *c;
+
+		if (!u->file)
+			continue;
+		c = workers_client(u->file, false);
+		seq_printf(m, "%d %u %u %d %u %d %u\n", u->pid, workers_of(u->file), c ? c->want : 0, c ? c->lent : 0, c ? c->tag : 0,
+			   draw_owner == u->file, u->lists);
+	}
+	mutex_unlock(&workers_lock);
 	return 0;
 }
 
@@ -592,6 +644,7 @@ static int __init shaderemu_gpu_init(void)
 		return -ENOMEM;
 	shaderemu_gpu_wm = workers + WORKERS_WM;
 	pr_info("shaderemu_gpu: /dev/gpu at 0x%lx, %lu KiB\n", GPU_PHYS, GPU_SIZE >> 10);
+	proc_create_single("gpu", 0444, NULL, shaderemu_gpu_show);
 	return misc_register(&shaderemu_gpu_dev);
 }
 device_initcall(shaderemu_gpu_init);

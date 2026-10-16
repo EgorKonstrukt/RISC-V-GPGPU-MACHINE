@@ -911,7 +911,7 @@ bool net_arrives(uint slot, uint k, out uint4 texel) {
 // each total is the sum of that word in all 256 regions (which only grow).
 #define COUNT_TOTAL 0x6c1000u
 #define COUNT_REGIONS (COUNT_TOTAL + 0x100u)
-#define COUNT_HEAD 0x700032u   // { added, COUNT_MERGED, merges, 0 }: the control pass's
+#define COUNT_HEAD 0x700032u   // { added, COUNT_MERGED, merges, passes so far }: the control pass's
 #define COUNT_MERGED 0x4d475245u
 uint4 count_total(uint index) {
     uint4 sum = uint4(0, 0, 0, 0);
@@ -966,10 +966,15 @@ uint4 gpu_control(uint2 pos) {
 #endif
 #ifdef GPU_INPUT
     if (index == GPU_CLOCK) return uint4(keep.r, _HostMs, keep.b, _HostFlags);
+    if (index == COUNT_HEAD) {
+        // word 3: the commits so far, a pass each (a monitor's measure of what a core can run)
+        uint passes = GPU_STATE[uint2(28, 0)].b;
 #ifdef GPU_COUNT_MERGE
-    if (index == COUNT_HEAD && _CountMerged != 0)
-        return _CountMerged == 2 ? uint4(0, COUNT_MERGED, keep.b + 1, 0) : uint4(keep.r, COUNT_MERGED, keep.b, 0);
+        if (_CountMerged != 0)
+            return _CountMerged == 2 ? uint4(0, COUNT_MERGED, keep.b + 1, passes) : uint4(keep.r, COUNT_MERGED, keep.b, passes);
 #endif
+        return uint4(keep.rgb, passes);
+    }
 #ifdef HOST_STATE_WORDS
     if (index == HOST_STATE) return uint4(HOST_STATE_WORDS(0), HOST_STATE_WORDS(1), HOST_STATE_WORDS(2), HOST_STATE_WORDS(3));
     if (index == HOST_STATE + 1) return uint4(HOST_STATE_WORDS(4), HOST_STATE_WORDS(5), HOST_STATE_WORDS(6), HOST_STATE_WORDS(7));

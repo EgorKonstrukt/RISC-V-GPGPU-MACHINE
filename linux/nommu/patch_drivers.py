@@ -110,4 +110,12 @@ if 'alloc_pages_run' not in s:
     s = s.replace(old, '\tbase = total >= 16 ? alloc_pages_run(total) : NULL;\n\tif (!base)\n\t\tbase = alloc_pages_exact(total << PAGE_SHIFT, GFP_KERNEL);\n')
     s = s.replace('static int do_mmap_private(', 'void *alloc_pages_run(unsigned long nr);\n\nstatic int do_mmap_private(', 1)
     open(p, 'w').write(s)
+# /proc/cpuinfo names Sv32 only with an MMU (5.17 prints it whatever the kernel was built with)
+p = f'{K}/arch/riscv/kernel/cpu.c'
+s = open(p).read()
+old = '\tprint_mmu(m);\n'
+if 'IS_ENABLED(CONFIG_MMU))\n\t\tprint_mmu' not in s:
+    assert s.count(old) == 1
+    s = s.replace(old, '\tif (IS_ENABLED(CONFIG_MMU))\n\t\tprint_mmu(m);\n')
+    open(p, 'w').write(s)
 print('drivers and MAX_ORDER patched')
