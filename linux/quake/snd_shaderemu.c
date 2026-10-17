@@ -1,5 +1,5 @@
 /*
- * Quake's sound on the machine's sound card (docs/sound.md), in place of the game's mixer.
+ * Quake's sound on the machine's sound card (docs/machine/sound.md), in place of the game's mixer.
  * A sound is a voice pointed at its WAV where the pak file lies in the ROM: nothing is loaded
  * or mixed here. What stays the game's is which channel a sound takes and how loud it is in
  * each ear, worked out once a frame.

@@ -1,4 +1,4 @@
-// The machine's GPU for Quake (docs/quake.md): programs/linux/gles.c as it is, and after it
+// The machine's GPU for Quake (docs/games/quake.md): programs/linux/gles.c as it is, and after it
 // what a thing drawn again frame after frame asks of it: its matrices as rows, and a draw made
 // from the words of the command that drew it before (qgl.c keeps those).
 

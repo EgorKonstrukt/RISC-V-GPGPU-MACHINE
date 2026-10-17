@@ -3,11 +3,11 @@ using UdonSharp;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The "Danger zone" panel: the visitor's hand in their own machine's memory (docs/danger.md).
+// The "Danger zone" panel: the visitor's hand in their own machine's memory (docs/world/danger.md).
 // Radiation flips single bits at random places, so many a second; the laser scrambles a
 // square of memory where a beam points on the memory screen while its trigger is held. Both
 // touch only the kinds of memory whose keys are lit. A machine is its visitor's own
-// (docs/share.md), so nobody else's is harmed: theirs shows the damage only as a picture.
+// (docs/world/share.md), so nobody else's is harmed: theirs shows the damage only as a picture.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuDanger : UdonSharpBehaviour
 {

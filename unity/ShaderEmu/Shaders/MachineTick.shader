@@ -3,7 +3,7 @@ Shader "ShaderEmu/MachineTick"
     // The machine's CPUTick pass (experiments/rvc_opt/main.shader's with TICK_MRT), drawn by a
     // camera of its own that EmuMachine.cs renders once a round: a pass with several targets
     // is a camera's in VRChat. A pixel is eight texels of state, one in each of eight targets
-    // (docs/multicore.md, "Eight texels a pixel"). It includes none of the GPU device's sources.
+    // (docs/machine/multicore.md, "Eight texels a pixel"). It includes none of the GPU device's sources.
     Properties
     {
         _SelfTexture2D ("State before the pass", 2D) = "black" {}
@@ -71,14 +71,14 @@ Shader "ShaderEmu/MachineTick"
             #pragma fragment frag
             #pragma editor_sync_compilation
             // One permutation only: Linux's machine, started in the kernel with no firmware
-            // (docs/boot.md). Images that need machine-mode start-up do not boot on it.
+            // (docs/machine/boot.md). Images that need machine-mode start-up do not boot on it.
             #define SBI_HLE
-            // Built by fxc2 (docs/fxc2.md): the write cache and the TLB as locals. Unity
+            // Built by fxc2 (docs/machine/fxc2.md): the write cache and the TLB as locals. Unity
             // preprocesses the source itself, so the compiler cannot say what it is; a stock editor (FXC) needs this line taken out.
             #define __FXC2__
-            // Single-precision float instructions (docs/fpu.md), as the harness's full machine has.
+            // Single-precision float instructions (docs/machine/fpu.md), as the harness's full machine has.
             #define FPU
-            // satp hardwired to 0: the world runs Linux without an MMU (docs/nommu.md).
+            // satp hardwired to 0: the world runs Linux without an MMU (docs/system/nommu.md).
             #define NO_PAGING
             // The tick says which 4 MB bands of RAM it wrote: Machine.shader draws only those.
             #define COMMIT_BANDS
@@ -111,7 +111,7 @@ Shader "ShaderEmu/MachineTick"
 
             // Core 0's state is the block at the left of the state rows and the workers' is the
             // band beside it, each worker a strip of whole 8 x 8 tiles of it, as the geometry
-            // says (src/types.cginc, docs/multicore.md); mc_core is the core looked at. RAM is
+            // says (src/types.cginc, docs/machine/multicore.md); mc_core is the core looked at. RAM is
             // read with RAM_TEX, which no core's block moves. As experiments/rvc_opt/main.shader.
             static uint2 state_off = uint2(0, 0);
             static uint mc_core = 0;

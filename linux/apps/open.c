@@ -1,6 +1,6 @@
 /*
  * open [--dry] ADDRESS-OR-FILE: opens a file, or what an address holds, with the program
- * registered for its kind (docs/open.md). --dry prints the kind and the command only.
+ * registered for its kind (docs/system/open.md). --dry prints the kind and the command only.
  * open --unpack zip|tar|tgz|gz FILE TO: an archive unpacked, with its progress (nxopen-archive).
  */
 #include <signal.h>
@@ -21,7 +21,7 @@
 #include "ui.h"
 #include "ui_progress.h"
 
-#define FETCH_MOST 0x40000	/* bytes the host hands over at a time (docs/fetch.md) */
+#define FETCH_MOST 0x40000	/* bytes the host hands over at a time (docs/system/fetch.md) */
 #define REG_ASKED 64		/* requests made, the address's length, the kind, the offset */
 #define REG_REPLY 68		/* requests answered, bytes in all, status, a picture's size */
 #define REG_ADDRESS 72
@@ -592,7 +592,7 @@ main(int argc, char **argv)
 		return 2;
 	}
 	what = argv[1 + dry];
-	/* the host's button for the kept folder comes as an address (docs/persist.md) */
+	/* the host's button for the kept folder comes as an address (docs/system/persist.md) */
 	if (!strcmp(what, "persist:save") && !dry) {
 		execlp("nxpersist", "nxpersist", "save", (char *)NULL);
 		return 1;

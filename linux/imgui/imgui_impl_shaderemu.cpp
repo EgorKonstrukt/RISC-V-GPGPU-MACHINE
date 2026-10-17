@@ -1,4 +1,4 @@
-// Dear ImGui's platform and renderer for this machine (docs/imgui.md).
+// Dear ImGui's platform and renderer for this machine (docs/apps/imgui.md).
 #include "imgui_impl_shaderemu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +46,7 @@ int ImFormatString(char* buf, size_t buf_size, const char* fmt, ...)
 
 // ---- input ----
 
-// The machine's own words (docs/input.md): from 0x20 the pointer's place, its buttons and the
+// The machine's own words (docs/machine/input.md): from 0x20 the pointer's place, its buttons and the
 // count of keys, and at 0x34 the clock in milliseconds.
 static const volatile unsigned* control(int offset) { return (const volatile unsigned*)((const char*)seglPalette() - 0x400 + offset); }
 static unsigned seen[4], asked_at;
@@ -251,7 +251,7 @@ bool ImGui_ImplShaderEmu_NewFrame()
             case GR_EVENT_TYPE_BUTTON_DOWN:
             case GR_EVENT_TYPE_BUTTON_UP: {
                 bool down = event.type == GR_EVENT_TYPE_BUTTON_DOWN;
-                // a notch of the wheel is a button going down (docs/input.md)
+                // a notch of the wheel is a button going down (docs/machine/input.md)
                 if (event.button.buttons & GR_BUTTON_SCROLLUP) io.AddMouseWheelEvent(0, 1);
                 if (event.button.buttons & GR_BUTTON_SCROLLDN) io.AddMouseWheelEvent(0, -1);
                 io.AddMousePosEvent((float)event.button.x, (float)event.button.y);
@@ -351,8 +351,8 @@ static inline bool inside(const ImU32* corner, ImU32 left, ImU32 top, ImU32 wide
     return corner[0] - left < wide && corner[1] - top < high;
 }
 
-// The copy and all it keeps, so that several cores can each make one (docs/imgui.md, "The copy
-// on worker cores"). A vertex goes to the GPU as four words (docs/gpu.md, a tagged vertex):
+// The copy and all it keeps, so that several cores can each make one (docs/apps/imgui.md, "The copy
+// on worker cores"). A vertex goes to the GPU as four words (docs/machine/gpu.md, a tagged vertex):
 // ImGui's x and y as the floats they are, 0, and the texture coordinates in 1,024ths with a
 // tag, the number of the vertex's colour in a table of the colours the copy has used.
 struct alignas(16) copier {
@@ -360,7 +360,7 @@ struct alignas(16) copier {
     int colours;                            // how many it has
     ImU32 slot_colour[256];                 // the table's colours by a hash of them
     unsigned char slot_tag[256], slot_used[256];
-    // The copy's own state, kept here between its pieces (docs/imgui.md, "The copy").
+    // The copy's own state, kept here between its pieces (docs/apps/imgui.md, "The copy").
     struct {
         ImU32 *to, *first, *last;   // the next corner's place, the run's first, the last place a cut triangle may begin
         int quads;                  // the run being written: four corners a quad (1), or three a triangle (0)
@@ -739,7 +739,7 @@ void ImGui_ImplShaderEmu_RenderDrawData(ImDrawData* draw_data)
     }
 }
 
-// ---- the copy on worker cores (docs/imgui.md) ----
+// ---- the copy on worker cores (docs/apps/imgui.md) ----
 
 #define MOST_AHEAD 4        // workers asked for
 #define MOST_PIECES 512

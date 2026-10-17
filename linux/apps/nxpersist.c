@@ -1,6 +1,6 @@
 /*
  * nxpersist load | save | clear | auto 0|1 | state: the folder /persistence, which the host
- * keeps between sessions (docs/persist.md). "load!" loads though loading at start is off.
+ * keeps between sessions (docs/system/persist.md). "load!" loads though loading at start is off.
  */
 #include <fcntl.h>
 #include <ftw.h>
@@ -17,7 +17,7 @@
 #define LOCK "/tmp/nxpersist.lock"
 #define MOST 96000		/* bytes handed to the host: a player's data is 100,000 */
 #define RAW_MOST 0x800000	/* and what they may unpack to */
-#define FETCH_MOST 0x40000	/* the host's answer, and what it reads of ours (docs/fetch.md) */
+#define FETCH_MOST 0x40000	/* the host's answer, and what it reads of ours (docs/system/fetch.md) */
 #define REG_ASKED 64
 #define REG_REPLY 68
 #define REG_ADDRESS 72
@@ -330,7 +330,7 @@ main(int argc, char **argv)
 		if (!status && regs[REG_REPLY + 1] < 200)
 			fwrite(fetched, 1, regs[REG_REPLY + 1], stdout);
 	} else if (!strcmp(what, "name")) {
-		/* the player's name, as the host gives it: a line (docs/persist.md, "The player's name") */
+		/* the player's name, as the host gives it: a line (docs/system/persist.md, "The player's name") */
 		status = ask("host:name", 0, 2) != 200;
 		if (!status && regs[REG_REPLY + 1] > 0 && regs[REG_REPLY + 1] < 200)
 			printf("%.*s\n", (int)regs[REG_REPLY + 1], (const char *)fetched);

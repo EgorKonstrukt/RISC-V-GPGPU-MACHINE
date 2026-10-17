@@ -1,5 +1,5 @@
 /*
- * The browser's page (docs/web.md): HTML read into a tree, each element's style worked out
+ * The browser's page (docs/apps/web.md): HTML read into a tree, each element's style worked out
  * from the sheets (css.h), and the fonts text is measured with (../nanox/sef.h). web_layout.h
  * lays the tree out. No part of the window system is in here: a test on the host builds it too.
  * The program that includes this gives it web_file(), a font file's bytes by name.

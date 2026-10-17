@@ -175,7 +175,7 @@ DEF(ebreak, FormatEmpty, { // system
 })
 #ifdef SBI_HLE
 // The supervisor's calls to firmware (SBI), answered by the machine itself: with SBI_HLE it
-// starts the kernel in supervisor mode and runs no machine-mode firmware (docs/boot.md).
+// starts the kernel in supervisor mode and runs no machine-mode firmware (docs/machine/boot.md).
 void sbi_call() {
     uint ext = xr[17], a0 = xr[10];
     uint error = 0, value = 0;
@@ -315,7 +315,7 @@ DEF(mul, FormatR, { // rv32m
 //
 // The GPU has had the instruction for this all along (umul and imul return both halves of the
 // product), HLSL just cannot ask for it. fxc2 can: mulhi() there is that one instruction.
-// (Not used any more: docs/linux.md.)
+// (Not used any more: docs/world/linux.md.)
 uint mulhu32(uint a, uint b) {
     uint al = a & 0xffff, ah = a >> 16, bl = b & 0xffff, bh = b >> 16;
     uint lh = al * bh, hl = ah * bl;
@@ -492,7 +492,7 @@ DEF(xori, FormatI, { // rv32i
 
 
 #ifdef FPU
-// The F extension (docs/fpu.md): an instruction of opcode 0x53 on two register values, for the
+// The F extension (docs/machine/fpu.md): an instruction of opcode 0x53 on two register values, for the
 // fast step and the general path alike. Every result is worked out and one is chosen.
 // to_float says which register file the result is for; ok is false for an encoding that
 // does not exist.

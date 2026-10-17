@@ -1,4 +1,4 @@
-/* The texture pack's pictures through libmedia (docs/classicube.md): the pack, all of them in PNGs
+/* The texture pack's pictures through libmedia (docs/games/classicube.md): the pack, all of them in PNGs
    (store_zip.py), decoded on the worker cores beside the game's start, and each picture's stub
    given its pages of it. Another PNG is read whole and decoded on the workers. */
 #include <stdlib.h>

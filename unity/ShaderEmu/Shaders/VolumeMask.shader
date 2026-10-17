@@ -1,6 +1,6 @@
 Shader "ShaderEmu/VolumeMask"
 {
-    // The volume display's box (docs/volume.md). Where its faces are in view it marks the
+    // The volume display's box (docs/world/volume.md). Where its faces are in view it marks the
     // stencil and empties colour and depth, so that GpuVolume.shader's scene shows through it
     // however far that reaches behind the box.
     Properties

@@ -1,8 +1,8 @@
 /*
- * nxplay: an audio player (docs/play.md). nxplay FILE plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis
- * file through the sound card's stream voice, decoded by libmedia (docs/media.md). A tune is
+ * nxplay: an audio player (docs/apps/play.md). nxplay FILE plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis
+ * file through the sound card's stream voice, decoded by libmedia (docs/system/media.md). A tune is
  * decoded in pieces, ahead of what is heard; an MP3, Vorbis or FLAC file's pieces go to the
- * worker cores. The NXPLAY_* variables are in docs/play.md.
+ * worker cores. The NXPLAY_* variables are in docs/apps/play.md.
  */
 #define _GNU_SOURCE
 #include <signal.h>
@@ -1157,7 +1157,7 @@ main(int argc, char **argv)
 		read_list(access("/root/Music", R_OK) == 0 ? "/root/Music" : "/usr/share");
 	if (!window_on && (argc < 2 || why)) {
 		if (argc < 2)
-			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis file (docs/play.md)\n");
+			fprintf(stderr, "nxplay FILE: plays a WAV, MOD, FLAC, MP3 or Ogg Vorbis file (docs/apps/play.md)\n");
 		return 1;
 	}
 	while (!quit) {

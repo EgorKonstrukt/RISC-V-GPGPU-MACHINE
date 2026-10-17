@@ -1,6 +1,6 @@
 /*
- * The server's frame on a worker core (docs/quake.md, docs/multicore.md), in a game for one
- * and in one this machine serves to others (docs/lan.md). A frame of the game is the server's physics and QuakeC, then the client's picture of it. Here
+ * The server's frame on a worker core (docs/games/quake.md, docs/machine/multicore.md), in a game for one
+ * and in one this machine serves to others (docs/system/lan.md). A frame of the game is the server's physics and QuakeC, then the client's picture of it. Here
  * the physics runs on a worker while this core draws, and the two go at their own pace: the
  * client draws frames from the server's last two answers, moving things between them as it
  * does in a network game, and the server begins its next frame when its last one is done.

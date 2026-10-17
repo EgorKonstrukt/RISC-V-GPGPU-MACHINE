@@ -1,4 +1,4 @@
-"""Makes the kernel's FPU support fit the machine's float instructions (docs/fpu.md). Idempotent.
+"""Makes the kernel's FPU support fit the machine's float instructions (docs/machine/fpu.md). Idempotent.
 
 Linux 5.17 saves a task's float registers as doubles and refuses a CPU with single precision
 only: here they are saved as single words, and the feature is taken as present.

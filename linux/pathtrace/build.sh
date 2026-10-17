@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds nxpath, the mesh viewer whose scenes the worker cores path trace (docs/raytrace.md),
+# Builds nxpath, the mesh viewer whose scenes the worker cores path trace (docs/apps/raytrace.md),
 # and puts its example meshes into /root/Models of the image.
 #   wsl -- bash /mnt/c/.../linux/pathtrace/build.sh        (after linux/imgui/build.sh)
 # In the guest: nano-X -p & nxpath
@@ -26,7 +26,7 @@ if [ ! -f "$DATA/bunny.ply" ]; then
 fi
 python3 "$HERE/make_knot.py" "$DATA/knot.obj"
 cp "$DATA/teapot.obj" "$DATA/bunny.ply" "$DATA/knot.obj" "$OUT/root/Models/"
-# the example scenes and the Cornell box's parts (docs/raytrace.md, "Example scenes")
+# the example scenes and the Cornell box's parts (docs/apps/raytrace.md, "Example scenes")
 cp "$HERE"/scenes/*.scene "$HERE"/scenes/*.obj "$OUT/usr/share/pathtrace/"
 # ImGuizmo, at the commit of Dear ImGui 1.91.5's time
 GIZMO=$WORK/src/ImGuizmo
@@ -62,6 +62,6 @@ rv32-c++ $TUNE --param=max-inline-insns-auto=60 --param=inline-unit-growth=80 -f
     "$LIB/imgui_impl_shaderemu.o" "$LIB/cxxrt.o" "$BUILD/gles.o" "$MW/src/lib/libnano-X.a" -lm -o "$BUILD/nxpath"
 riscv32-linux-strip -o "$OUT/usr/bin/nxpath" "$BUILD/nxpath"
 echo "Other/Path tracer (every core)=nxpath" > "$OUT/usr/share/nxapps.83-pathtrace"
-# a mesh anybody opens is shown (docs/open.md)
+# a mesh anybody opens is shown (docs/system/open.md)
 printf '%s\n' 'mesh obj,ply - nxpath %s' 'scene scene - nxpath %s' > "$OUT/usr/share/nxopen.83-pathtrace"
 ls -l "$OUT/usr/bin/nxpath" "$OUT/root/Models" "$OUT/usr/share/pathtrace"

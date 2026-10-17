@@ -1,4 +1,4 @@
-/* syntax.h: what each character of a line of C is, for its colour (docs/ide.md). A lexer, not
+/* syntax.h: what each character of a line of C is, for its colour (docs/apps/ide.md). A lexer, not
  * a compiler: it knows words, numbers, strings, comments and lines for the preprocessor, and
  * the one thing a line needs from the lines before it, whether it begins inside a comment. */
 #ifndef IDE_SYNTAX_H

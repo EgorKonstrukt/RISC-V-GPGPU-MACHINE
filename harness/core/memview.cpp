@@ -59,7 +59,7 @@ float3 rgb(uint v) {
     return float3((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff) / 255.0;
 }
 
-// The guest's display (docs/display.md): control words at 0x87000000 (mode, width, height),
+// The guest's display (docs/machine/display.md): control words at 0x87000000 (mode, width, height),
 // palette at 0x87000400, pixels from 0x87001000.
 static const uint DispCtrl = 0x700000, DispPalette = 0x700040, DispPixels = 0x700100;
 static const uint DispCursor = 0x700004;   // x, y, on, address of a 32x32 image
@@ -78,7 +78,7 @@ float3 pixelAt(int2 at, uint4 ctrl, float3 c) {
         }
     }
     if (mode == 4) {
-        // layers: a table of rectangles of RAM, the last one on top (docs/display.md)
+        // layers: a table of rectangles of RAM, the last one on top (docs/machine/display.md)
         uint table = (ctrl.a & 0x7fffffff) >> 4, count = min(ram(table).r, 16u);
         for (uint n = count; n > 0; n--) {
             uint4 box = ram(table + 2 * n - 1);
@@ -281,7 +281,7 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     if (m == WM_MOUSEWHEEL) {
-        // a notch is an event of its own in the key ring (docs/input.md): 0x3fe up, 0x3ff down
+        // a notch is an event of its own in the key ring (docs/machine/input.md): 0x3fe up, 0x3ff down
         static int turned = 0;
         turned += GET_WHEEL_DELTA_WPARAM(w);
         for (; turned >= WHEEL_DELTA; turned -= WHEEL_DELTA) g_keyEvents.push_back(0x800003feu);

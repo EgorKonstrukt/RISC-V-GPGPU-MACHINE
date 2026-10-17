@@ -1,4 +1,4 @@
-"""The display stream that the GPU makes by itself (docs/share.md, "Units"), as a model in numpy.
+"""The display stream that the GPU makes by itself (docs/world/share.md, "Units"), as a model in numpy.
 
   python tools/share_units.py FIRST.png NEXT.png ... [--room 1131] [--out FOLDER] [--against FOLDER]
 

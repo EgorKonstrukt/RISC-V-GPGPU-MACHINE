@@ -1,4 +1,4 @@
-// The host's part of the guest's kept folder (docs/persist.md): the addresses "persist:..."
+// The host's part of the guest's kept folder (docs/system/persist.md): the addresses "persist:..."
 // of a fetch are answered from a file, which is to a harness what PlayerData is to the world.
 #pragma once
 #include <cstdint>
@@ -13,7 +13,7 @@ struct PersistHost {
 
     static bool is(const std::string& address) { return address.rfind("persist:", 0) == 0 || address == "host:name"; }
 
-    // The player's name for "host:name" (docs/persist.md, "The player's name"): SHADEREMU_PLAYER,
+    // The player's name for "host:name" (docs/system/persist.md, "The player's name"): SHADEREMU_PLAYER,
     // else this computer's user, else "player".
     static std::string player() {
         const char* name = getenv("SHADEREMU_PLAYER");

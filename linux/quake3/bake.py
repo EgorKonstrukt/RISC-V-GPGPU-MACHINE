@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bakes one level of Quake III Arena's demo into the two files the game runs from here
-(docs/quake3.md): a pak of the files the game itself reads, stored and not compressed, and a
+(docs/games/quake3.md): a pak of the files the game itself reads, stored and not compressed, and a
 file of what the renderer and the sound draw and play, as the machine's GPU and sound card
 take it: textures as words or bytes they read where the file lies in the ROM, the level's
 triangles sorted by what they are drawn with, the models' poses as packed vertices.
@@ -444,7 +444,7 @@ shader('white', '2d')
 # ---- models ----
 
 # The directions a vertex's normal is one of: a vertex is tagged with the nearest, and a model
-# is lit by a table of the light at each (docs/gpu.md, tagged vertices).
+# is lit by a table of the light at each (docs/machine/gpu.md, tagged vertices).
 NORMALS = 256
 k = np.arange(NORMALS) + 0.5
 phi, z = k * math.pi * (3 - math.sqrt(5)), 1 - 2 * k / NORMALS
@@ -580,7 +580,7 @@ def surface_triangles(s):
 
 def stage_runs(sh):
     """How a shader's stages are drawn on the level: (stage, with the light map, pass) for each
-    draw. A light map and the texture it lights are one draw (docs/gpu.md, a lit draw)."""
+    draw. A light map and the texture it lights are one draw (docs/machine/gpu.md, a lit draw)."""
     name, flags, first, count = shaders[sh]
     st = stages_out[first:first + count]
     light = [i for i, s in enumerate(st) if s['flags'] & S_LIGHTMAP]

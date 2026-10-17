@@ -17,7 +17,7 @@ Texture2D<float4> _Data_MTD_G;
 Texture2D<float4> _Data_MTD_B;
 Texture2D<float4> _Data_MTD_A;
 
-// A core's state as the tick left it (docs/multicore.md): core 0's block, or a
+// A core's state as the tick left it (docs/machine/multicore.md): core 0's block, or a
 // worker's strip of tiles in the band, as the geometry says. Everything else as it
 // was: the tick does not write RAM. As experiments/rvc_opt/main.shader's commit.
 static uint2 state_off = uint2(0, 0);
@@ -43,12 +43,12 @@ static uint2 m_dim;
 #include "helpers.cginc"
 #include "src/types.cginc" // includes fb.h
 
-// The GPU device's picture, for copying into RAM (docs/gpu.md).
+// The GPU device's picture, for copying into RAM (docs/machine/gpu.md).
 Texture2D<float4> _GpuTarget;
 #define GPU_STATE _SelfTexture2D
 #define GPU_WRITEBACK
 #include "src/gpu.cginc"
-#include "src/zap.cginc"   // the host's hand in RAM, for one commit (docs/danger.md)
+#include "src/zap.cginc"   // the host's hand in RAM, for one commit (docs/world/danger.md)
 
 // The bands this commit draws whole: what the GPU's picture copied back wrote. What the
 // cores stored is drawn as points (MachineCommitPoints.shader), not as bands.

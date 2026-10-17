@@ -1,4 +1,4 @@
-"""Fewer reads of the ROM for a file (docs/boot.md, "Passes that end early"): each is a parallel
+"""Fewer reads of the ROM for a file (docs/machine/boot.md, "Passes that end early"): each is a parallel
 copy, which ends the machine's pass whatever its length.
 
 A page wanted of a mapped file, or of a program being started, brings the stretch of 32 pages

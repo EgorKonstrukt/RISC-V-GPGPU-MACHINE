@@ -1,5 +1,5 @@
 /*
- * The server's frame on a worker core (docs/quake3.md, docs/multicore.md). A frame of the game
+ * The server's frame on a worker core (docs/games/quake3.md, docs/machine/multicore.md). A frame of the game
  * is the server's (the players' moves, the bots, what everything in the level does, and what
  * each client is told of it) and then the client's (the picture). With bots the first is most
  * of a core by itself. Here it runs on a worker while this core draws, and the two go at

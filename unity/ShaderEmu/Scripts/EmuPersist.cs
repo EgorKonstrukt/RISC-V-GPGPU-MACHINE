@@ -6,7 +6,7 @@ using VRC.SDK3.Rendering;
 using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
-// The guest's folder /persistence between sessions (docs/persist.md): its packed bytes are this
+// The guest's folder /persistence between sessions (docs/system/persist.md): its packed bytes are this
 // player's PlayerData in this world. EmuMachine answers the guest's "persist:" addresses from
 // here; the sign on the computer has Save, the switch for loading at start, and Clear.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
@@ -16,7 +16,7 @@ public class EmuPersist : UdonSharpBehaviour
     public Material readMaterial;         // ShaderEmu/PersistRead
     public RenderTexture readTexture;     // 256 x 100: a pixel a word of what the guest hands over
     public TextMeshProUGUI saysLabel, autoLabel, clearLabel;
-    public bool persistTest;              // a client tests itself and logs (docs/persist.md, "In a real client")
+    public bool persistTest;              // a client tests itself and logs (docs/system/persist.md, "In a real client")
 
     public const int Limit = 100000;      // VRChat keeps 100 KB a player and world
     private const string BlobKey = "persist.blob", AutoKey = "persist.auto";

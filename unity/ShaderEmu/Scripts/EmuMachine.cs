@@ -23,7 +23,7 @@ public class EmuMachine : UdonSharpBehaviour
     public RenderTexture tickState;         // 2048 x 48: core 0's state rectangle and the workers' bands, after a tick
     public Material tickMaterial;           // MachineTick.shader: CPUTick, on the tick camera's mesh
     // The tick is a camera's pass into eight targets, eight state texels a pixel, and what the
-    // cores stored is committed as points by another camera (docs/multicore.md, "In Unity").
+    // cores stored is committed as points by another camera (docs/machine/multicore.md, "In Unity").
     public Camera tickCamera;               // disabled: rendered from here, once a round
     public RenderTexture[] tickTargets;     // eight of 1040 x 32
     public RenderTexture tickDepth;         // the depth buffer a camera with several targets must be given
@@ -53,7 +53,7 @@ public class EmuMachine : UdonSharpBehaviour
     public Texture2D[] imageTextures;
     public Texture2D blackTexture;
 
-    // Pages for the guest's browser (docs/fetch.md). A world can only load the addresses it
+    // Pages for the guest's browser (docs/system/fetch.md). A world can only load the addresses it
     // was built with, and the one a visitor types into the field on the panel.
     public string[] siteAddresses;
     public VRCUrl[] siteUrls;
@@ -61,16 +61,16 @@ public class EmuMachine : UdonSharpBehaviour
     public VRCUrlInputField[] typedUrls;   // and four fields to paste them into
     public GameObject linksButton;         // by the display, while something is wanted
     public GameObject linksPanel;          // the eight fields, in front of the display
-    public VRCUrlInputField openField;     // an address for the machine to open (docs/open.md)
+    public VRCUrlInputField openField;     // an address for the machine to open (docs/system/open.md)
     public TextMeshProUGUI openLabel;
     public VRCUrlInputField placeField;    // the same at this visitor's classroom place (EmuStations)
     public TextMeshProUGUI placeLabel;
     public VRCUrlInputField consoleField;  // and the console's strip, whose text is typed at the console or opened
     public TextMeshProUGUI consoleLabel;     // that strip's own line: the link's and the fetch's news
     public Texture2D hostData;         // 256 x 256: an answer's bytes, four a texel
-    public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/lan.md)
+    public Texture2D netData;          // 160 x 4: the network's packets for the guest, a row each (docs/system/lan.md)
     public TextMeshProUGUI fetchLabel;
-    public EmuPersist persist;         // the guest's kept folder, as this player's PlayerData (docs/persist.md)
+    public EmuPersist persist;         // the guest's kept folder, as this player's PlayerData (docs/system/persist.md)
 
     public TextMeshProUGUI statsText;
     public TextMeshProUGUI speedLabel;
@@ -83,7 +83,7 @@ public class EmuMachine : UdonSharpBehaviour
     public TextMeshProUGUI modeLabel;  // on the button that picks how the slider is read
     public Slider tickSlider;          // instructions a tick (a round's pass): 1,024 doubled per step
     public TextMeshProUGUI tickLabel;  // and how much of it core 0 really runs, lately
-    // The workers' layout geotune makes at boot (docs/multicore.md, "Packing the small workers"):
+    // The workers' layout geotune makes at boot (docs/machine/multicore.md, "Packing the small workers"):
     // its own pick, or 2, 4 or 8 columns a small worker; the keys, and what it picked and runs.
     public Image[] workerPlates;
     public Color workerPlain, workerPicked;
@@ -108,7 +108,7 @@ public class EmuMachine : UdonSharpBehaviour
     [HideInInspector] public uint[] registers = new uint[32];
     [HideInInspector] public int activity;
     [HideInInspector] public string statsLine = "off";   // the panel's text of this machine, without the registers
-    // The frame a 3D program drew last (docs/holodeck.md): whether there is one, and whether the
+    // The frame a 3D program drew last (docs/world/holodeck.md): whether there is one, and whether the
     // program says it is a flat screen (a menu, a level loading) and no world.
     [HideInInspector] public bool worldFrame, flatFrame;
     [HideInInspector] public int gameId;                 // the program whose window has the keyboard (linux/apps/gameid.h)
@@ -117,7 +117,7 @@ public class EmuMachine : UdonSharpBehaviour
     private const int Words = 1032;     // state row 0's 64 texels, the first 64 control texels, 130 of the network's row
     private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
     private const int MostCores = 256;
-    // The network (docs/lan.md): the guest's packets out of its window, and packets for it into its ring.
+    // The network (docs/system/lan.md): the guest's packets out of its window, and packets for it into its ring.
     private const int NetSlot = 640, NetMost = 576, NetQueue = 64;
     private byte[] netOut = new byte[NetQueue * NetMost], netIn = new byte[NetQueue * NetMost];
     private int[] netOutLength = new int[NetQueue], netInLength = new int[NetQueue];
@@ -136,7 +136,7 @@ public class EmuMachine : UdonSharpBehaviour
     private const int MaxRounds = 32;
     private const int PassCommit = 0, PassControl = 1, PassUnpack = 2;
     private bool targetsSet;
-    // To compare (docs/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
+    // To compare (docs/machine/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
     // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round;
     // bit 4, a test: that camera in a frame's last round only, whatever comes.
     [HideInInspector] public int oldPaths;
@@ -167,8 +167,8 @@ public class EmuMachine : UdonSharpBehaviour
     private int[] roundsOf = new int[64];   // how many rounds each readback on its way has
 
     private uint sentTag, consumedTag;
-    // The console is words of the control page (docs/console.md): its ring of output bytes and what was taken of it.
-    private const int ConTexel = 241;   // the console's words (docs/console.md), then its ring
+    // The console is words of the control page (docs/machine/console.md): its ring of output bytes and what was taken of it.
+    private const int ConTexel = 241;   // the console's words (docs/machine/console.md), then its ring
     private const uint ConRing = 256;
     private uint conWritten;
     private bool conSeen;
@@ -210,7 +210,7 @@ public class EmuMachine : UdonSharpBehaviour
     private bool haveClock;
     private uint lastClock, lastCommits, pc, lastStall, gpuFrames;
     private float instructions;        // since the last stats line
-    // the worker cores (docs/multicore.md): how many cores, which run, and what the workers ran
+    // the worker cores (docs/machine/multicore.md): how many cores, which run, and what the workers ran
     private int cores = 1;
     private uint[] coresRunning = new uint[MostCores / 32];   // a bit a core that is at work
     private uint[] workerClock = new uint[MostCores];
@@ -560,7 +560,7 @@ public class EmuMachine : UdonSharpBehaviour
         return powered;
     }
 
-    // ---- the danger zone: the host's hand in RAM, one commit each (src/zap.h, docs/danger.md) ----
+    // ---- the danger zone: the host's hand in RAM, one commit each (src/zap.h, docs/world/danger.md) ----
     private int[] zaps = new int[16 * 9];
     private int zapHead, zapTail;
 
@@ -676,7 +676,7 @@ public class EmuMachine : UdonSharpBehaviour
         }
     }
 
-    // ---- pages for the guest (docs/fetch.md) ----
+    // ---- pages for the guest (docs/system/fetch.md) ----
 
     // The guest asked for an address: words 16 and 17 of the control block are the request
     // and the answer, the address itself follows from texel 18. Kind 1 is a picture.
@@ -706,7 +706,7 @@ public class EmuMachine : UdonSharpBehaviour
         }
         if (address == "host:name")
         {
-            // the player's name, for the guest's programs (docs/persist.md, "The player's name"):
+            // the player's name, for the guest's programs (docs/system/persist.md, "The player's name"):
             // what of it a shell and a game can carry, printable ASCII, the rest '_'
             VRCPlayerApi player = Networking.LocalPlayer;
             string name = Utilities.IsValid(player) ? player.displayName : "player";
@@ -790,7 +790,7 @@ public class EmuMachine : UdonSharpBehaviour
         {
             // a picture: VRChat fetches and decodes it into a texture, whose pixels the control
             // pass copies into the guest's memory as they are, 65,536 a part. Asked for as a file
-            // it may carry one in its pixels (docs/fetch.md).
+            // it may carry one in its pixels (docs/system/fetch.md).
             if (imageLoader == null) imageLoader = new VRCImageDownloader();
             TextureInfo info = new TextureInfo();
             info.GenerateMipMaps = false;
@@ -841,7 +841,7 @@ public class EmuMachine : UdonSharpBehaviour
         }
         if (displayWidth == 0)
         {
-            // the desktop's bar is what takes the address (docs/open.md): nobody would
+            // the desktop's bar is what takes the address (docs/system/open.md): nobody would
             if (label != null) label.text = "start the desktop first";
             return;
         }
@@ -1077,7 +1077,7 @@ public class EmuMachine : UdonSharpBehaviour
         }
     }
 
-    // The guest's kept folder (docs/persist.md): what it asks is answered as a fetch is, its
+    // The guest's kept folder (docs/system/persist.md): what it asks is answered as a fetch is, its
     // bytes into the answer's texture as they are. A save waits for the readback of what the
     // guest left in the fetch's memory, whose length is the request's offset word.
     private void PersistStep()
@@ -1370,7 +1370,7 @@ public class EmuMachine : UdonSharpBehaviour
         return w > 0x7fffffffu ? 0 : (int)w;
     }
 
-    // ---- the network (docs/lan.md) ----
+    // ---- the network (docs/system/lan.md) ----
 
     private void NetUniforms()
     {
@@ -1521,7 +1521,7 @@ public class EmuMachine : UdonSharpBehaviour
         netInTail = next;
     }
 
-    // ---- what the network did, in VRChat's log ([Lan] lines, docs/lan.md) ----
+    // ---- what the network did, in VRChat's log ([Lan] lines, docs/system/lan.md) ----
 
     private const int LanDetailMost = 40;   // packets described one by one after power-on; then only the counts
     private int lanOut, lanMine, lanOthers, lanOff, lanFull, lanGiven, lanDetail, lanSaid;

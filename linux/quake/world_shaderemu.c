@@ -1,5 +1,5 @@
 /*
- * The level and the models as this machine's GPU takes them (docs/quake.md): vertices made
+ * The level and the models as this machine's GPU takes them (docs/games/quake.md): vertices made
  * once, when a level or a model loads; the level kept in GPU memory; and what is in view found
  * from the leaves the viewer's leaf can see, not by a walk of the BSP tree.
  */
@@ -46,7 +46,7 @@ static unsigned coord_bits (float s, float t)
 	return ((unsigned)(int)(s * 1024.0f) & 0xffff) | (unsigned)(int)(t * 1024.0f) << 16;
 }
 
-/* A polygon's vertices as compact ones (docs/gpu.md): with its texture, then with its light map. */
+/* A polygon's vertices as compact ones (docs/machine/gpu.md): with its texture, then with its light map. */
 void SE_BuildPoly (glpoly_t *poly)
 {
 	int	i, n = poly->numverts;
@@ -77,7 +77,7 @@ void SE_BuildPoly (glpoly_t *poly)
 
 /*
  * The level's polygons are written into GPU memory once, as quads sorted by texture and again
- * by light map; each run is a command that stays in every frame's list (docs/quake.md).
+ * by light map; each run is a command that stays in every frame's list (docs/games/quake.md).
  * A frame then sends the level's matrices and what changed. The sky (two commands) and water (one
  * a texture, one face of two twins, its ripple written by workers) are kept after those runs.
  */
@@ -122,7 +122,7 @@ static unsigned *put_quads (unsigned *to, const unsigned *v, int n)
 	return to;
 }
 
-/* ---- what workers do of a frame (docs/quake.md, "The other workers") ---- */
+/* ---- what workers do of a frame (docs/games/quake.md, "The other workers") ---- */
 
 #define MAX_WARP	64		/* corners of one of water's polygons (they are cut into small ones) */
 #define MAX_STYLED	4096		/* surfaces whose light flickers or switches */
@@ -959,7 +959,7 @@ static void kept_frame (void)
 	world_drawn = 1;
 	if (sky_run >= 0) {
 		/*
-		 * The sky lies on the picture, not on its polygons (docs/quake.md): four repeats of it in
+		 * The sky lies on the picture, not on its polygons (docs/games/quake.md): four repeats of it in
 		 * 1,024 pixels, moved by where the viewer looks and by time, the clouds twice as fast.
 		 */
 		float	u = -r_refdef.viewangles[1] * (1.0f / 90) * glwidth * (4.0f / 1024);

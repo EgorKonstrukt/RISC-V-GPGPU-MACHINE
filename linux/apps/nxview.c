@@ -1,4 +1,4 @@
-/* nxview: a picture viewer (docs/nanox.md): any picture libmedia reads (JPEG, PNG, GIF and its
+/* nxview: a picture viewer (docs/system/nanox.md): any picture libmedia reads (JPEG, PNG, GIF and its
  * animations, BMP, TGA, PNM) or XPM, as large as fits, under a row of keys (Open, the folder's
  * one before and after, a turn either way, smaller, larger, Fit, Edit). Fitted, a picture is
  * decoded on the worker cores into a pixmap the GPU keeps; zoomed or turned, into a PPM in memory. */
@@ -566,7 +566,7 @@ main(int argc, char **argv)
 	GrMapWindow(window);
 	GrSetFocus(window);
 	if (argc > 1 && is_coded(argv[1])) {
-		/* decoding: the window framed and saying so first (docs/nanox.md) */
+		/* decoding: the window framed and saying so first (docs/system/nanox.md) */
 		ui_framed();
 		draw();
 		take(argv[1]);

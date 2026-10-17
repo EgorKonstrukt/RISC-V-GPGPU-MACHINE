@@ -7,7 +7,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The sound card's host side (docs/sound.md): the texture its mix is drawn into, the audio
+// The sound card's host side (docs/machine/sound.md): the texture its mix is drawn into, the audio
 // source the mix leaves by, and the panel's switch and volume.
 public static partial class ShaderEmuBuilder
 {

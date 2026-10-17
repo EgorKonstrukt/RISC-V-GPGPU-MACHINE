@@ -1,4 +1,4 @@
-// warpbench: what long, different work in the pixels of one pass costs (docs/multicore.md).
+// warpbench: what long, different work in the pixels of one pass costs (docs/machine/multicore.md).
 //
 // One pixel shader with two unrelated loops: an interpreter of sorts on integers (a hashed
 // "program", sixteen registers, a local array, a branch every step) and an iteration on floats.

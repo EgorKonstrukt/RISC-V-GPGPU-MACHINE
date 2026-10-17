@@ -1,5 +1,5 @@
 /* The world the path tracer traces (scene.h): every object's triangles where they stand, and
- * one tree of boxes over them, made by the worker cores (docs/multicore.md). A job writes its
+ * one tree of boxes over them, made by the worker cores (docs/machine/multicore.md). A job writes its
  * own triangles, boxes, numbers and nodes, each on 16 bytes of its own, and its stack. */
 #include <stdlib.h>
 #include <string.h>

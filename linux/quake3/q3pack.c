@@ -1,5 +1,5 @@
 /* bake.py's pictures into the files the game decodes and back, with the guest's libmedia built
-   for the build computer (docs/media.md); its usage line says how it is called. */
+   for the build computer (docs/system/media.md); its usage line says how it is called. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

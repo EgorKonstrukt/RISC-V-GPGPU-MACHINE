@@ -39,7 +39,7 @@ machine_runs(int which)
 static int machine_float(void) { return machine_runs(1); }
 static int machine_zb(void) { return machine_runs(2); }
 
-/* Sv32 paging: Linux's cpuinfo has an "mmu" line only when it was built with one (docs/nommu.md). */
+/* Sv32 paging: Linux's cpuinfo has an "mmu" line only when it was built with one (docs/system/nommu.md). */
 static int
 machine_mmu(void)
 {

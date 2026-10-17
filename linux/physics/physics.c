@@ -1,4 +1,4 @@
-/* Rigid boxes: physics.h, docs/physics.md. Positions are corrected, not velocities, and each
+/* Rigid boxes: physics.h, docs/apps/physics.md. Positions are corrected, not velocities, and each
  * body corrects only itself: both bodies of a pair work the pair out, each for its own part. */
 #include <stddef.h>
 #include <string.h>
@@ -650,7 +650,7 @@ over_at(const struct pose *p, const struct point *pt, float *new)
 /* The body moved for its points, from where the pushes they had last substep leave it: all at
  * once, each as if alone, then as much of the sum as serves them best, so their order is
  * nothing. `speed` is it out of what the substep brought and held against sliding (its
- * velocity is taken from that), `cur` out of what it was in before as well. docs/physics.md. */
+ * velocity is taken from that), `cur` out of what it was in before as well. docs/apps/physics.md. */
 static void
 settle_points(struct pose *cur, struct pose *speed, struct point *points, int n_points, v3 inv_inertia, float inv_mass)
 {

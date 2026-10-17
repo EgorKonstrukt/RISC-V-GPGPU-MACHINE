@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds ClassiCube (BSD-3, a Nano-X client here) for the image (docs/classicube.md).
+# Builds ClassiCube (BSD-3, a Nano-X client here) for the image (docs/games/classicube.md).
 #   wsl -- bash /mnt/c/.../linux/classicube/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & classicube
 set -euo pipefail
@@ -13,7 +13,7 @@ BUILD=$WORK/src/classicube-build
 OUT=${CLASSICUBE_OUT:-$REPO/build/images/linux/root}
 COMMIT=d41c3f7eef2038f59702b58bdb373483fb0d28f9
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
-# (the texture pack's PNGs are decoded by libmedia: png_shaderemu.c, docs/media.md)
+# (the texture pack's PNGs are decoded by libmedia: png_shaderemu.c, docs/system/media.md)
 MEDIA=${MEDIA_LIB:-$WORK/src/libmedia/libmedia.a}
 [ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
@@ -29,7 +29,7 @@ git -C "$C" apply "$HERE/classicube.patch"
 # the graphics. Floats are the machine's instructions; a constant without an f is a float too.
 FPU="-fno-math-errno -fsingle-precision-constant"
 # -fno-common -fdata-sections, and ALIGN16 below: a variable is a section of its own that starts
-# on 16 bytes. A worker core builds chunk meshes (MapRenderer.h, docs/multicore.md), and two
+# on 16 bytes. A worker core builds chunk meshes (MapRenderer.h, docs/machine/multicore.md), and two
 # cores must not store to the same 16 bytes.
 CFLAGS="-O2 $FPU -fno-pie -fno-common -fdata-sections -fno-strict-aliasing -w -DPLAT_SHADEREMU -I$C/src -I$MW/src/include -I$REPO/programs/mc -I$REPO/linux/libmedia -idirafter $REPO/programs/linux/include ${CLASSICUBE_DEFINES:-}"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
@@ -69,7 +69,7 @@ riscv32-linux-nm -n classicube > "$WORK/src/classicube.nm"
 # Its zip's entries are stored, and its pictures one pack of PNGs that libmedia decodes on the worker
 # cores while the game starts (store_zip.py, png_shaderemu.c).
 python3 "$HERE/store_zip.py" "$C/misc/cc_textures.zip" "$OUT/usr/share/classicube-default.zip"
-# its dig and step sounds and one tune, Mojang's, fetched once (sound/make_sound.py, docs/classicube.md "Sound")
+# its dig and step sounds and one tune, Mojang's, fetched once (sound/make_sound.py, docs/games/classicube.md "Sound")
 SND=$WORK/src/classicube-sound
 mkdir -p "$SND"
 [ "$SND/adpcm_encode" -nt "$HERE/sound/adpcm_encode.c" ] || gcc -O2 -o "$SND/adpcm_encode" "$HERE/sound/adpcm_encode.c"
@@ -81,11 +81,11 @@ cat > "$OUT/usr/bin/classicube" <<'EOF'
 #!/bin/sh
 mkdir -p /tmp/classicube/texpacks /persistence/classicube && cd /tmp/classicube || exit 1
 ln -sf /usr/share/classicube-default.zip texpacks/default.zip
-# its settings are of the folder the host keeps (docs/persist.md); its maps are too large for it
+# its settings are of the folder the host keeps (docs/system/persist.md); its maps are too large for it
 # (the frame rate in the corner is a line of text drawn again every second: 7% of the machine)
 [ -f /persistence/classicube/options.txt ] || echo "gui-showfps=false" > /persistence/classicube/options.txt
 ln -sf /persistence/classicube/options.txt options.txt
-# the player's name, the desktop's (docs/persist.md), as the launcher's would be
+# the player's name, the desktop's (docs/system/persist.md), as the launcher's would be
 if [ -n "$USER" ]; then
     grep -v '^launcher-cc-username=' options.txt > /tmp/classicube/options.new
     echo "launcher-cc-username=$USER" >> /tmp/classicube/options.new

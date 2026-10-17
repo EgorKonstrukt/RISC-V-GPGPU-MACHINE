@@ -1,6 +1,6 @@
 Shader "ShaderEmu/GpuHolodeck"
 {
-    // The holodeck (docs/holodeck.md): the guest's 3D frame as a world round the visitor, drawn
+    // The holodeck (docs/world/holodeck.md): the guest's 3D frame as a world round the visitor, drawn
     // wherever HolodeckMask.shader has marked the faces of the room in use. This renderer's object
     // is at the seat's eye point: the frame's camera stands there, its horizon the room's.
     // One pass for each way the GPU blends, in the GPU's order, twice: through the room's faces

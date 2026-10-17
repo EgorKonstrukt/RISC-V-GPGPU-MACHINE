@@ -1,5 +1,5 @@
 /*
- * nxreg: the registry (registry.h, docs/persist.md) for a script.
+ * nxreg: the registry (registry.h, docs/system/persist.md) for a script.
  *
  *	nxreg get KEY [OTHERWISE]	prints the key's value (or OTHERWISE; exit 1 with neither)
  *	nxreg set KEY VALUE		nxreg unset KEY		nxreg list [PREFIX]

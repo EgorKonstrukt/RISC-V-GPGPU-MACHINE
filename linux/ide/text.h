@@ -1,5 +1,5 @@
 /* text.h: the IDE's text: lines, a cursor and a selection, and every change kept so that it
- * can be taken back and made again (docs/ide.md). Nothing here draws. */
+ * can be taken back and made again (docs/apps/ide.md). Nothing here draws. */
 #ifndef IDE_TEXT_H
 #define IDE_TEXT_H
 #include <stdio.h>

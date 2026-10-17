@@ -1,6 +1,6 @@
 /*
  * sndtest FILE [SAMPLES]: the sound card from Linux, for tools/sound_reference.py to check
- * (docs/sound.md). A tone from sound memory on the left and FILE's bytes, played from the ROM
+ * (docs/machine/sound.md). A tone from sound memory on the left and FILE's bytes, played from the ROM
  * where they lie, on the right, for SAMPLES of the device's clock (default 24000).
  */
 #include <stdio.h>

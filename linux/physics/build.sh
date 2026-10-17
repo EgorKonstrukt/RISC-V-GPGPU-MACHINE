@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds nxphys, the rigid boxes that every worker core moves its share of (docs/physics.md),
+# Builds nxphys, the rigid boxes that every worker core moves its share of (docs/apps/physics.md),
 # for the image.   wsl -- bash /mnt/c/.../linux/physics/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & nxphys
 set -euo pipefail

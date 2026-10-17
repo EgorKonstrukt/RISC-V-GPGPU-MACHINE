@@ -1,5 +1,5 @@
 /*
- * The PNG encoder (docs/media.md): the rows are cut into segments, and every core filters and
+ * The PNG encoder (docs/system/media.md): the rows are cut into segments, and every core filters and
  * deflates segments of its own. Each segment is an IDAT of its own whose stream refers to
  * nothing before it, ends on a byte, and whose first row is filtered without the row above;
  * the mdPR chunk lists where they begin, so this library decodes them on every core too. The

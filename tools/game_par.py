@@ -1,5 +1,5 @@
 """A game's instructions a frame on core 0 and on all cores, under rvc_cpu, and its real speed on
-the shader machine (docs/multicore.md, "Every core's share of a game's frame", "A game's speed").
+the shader machine (docs/machine/multicore.md, "Every core's share of a game's frame", "A game's speed").
 
     python tools/game_par.py GAME [--image DIR] [--log FILE] [--calls FILE]
     python tools/game_par.py all [--runs 3]     (a mean over three timings: --salt)
@@ -112,7 +112,7 @@ GAMES = {
         cmd='nano-X -p & sleep 2; TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_FRAMES=1300 RALERT_MARK=301,1201 ralert',
         mark=': mark begins', until=': mark ends', frames=lambda log: 900),
     'nes': dict(
-        what='Thwaite, the 1,000-frame run of docs/nes.md, the list by a worker, NES frames 100 to 1000',
+        what='Thwaite, the 1,000-frame run of docs/games/nes.md, the list by a worker, NES frames 100 to 1000',
         cmd='nano-X -p & sleep 2; NES_LIST=worker NES_SOUND=0 NES_MARK=100 NES_FRAMES=1000 NES_PRESS="20 start 50 start '
             '80 a 100 left 110 a 200 a 210 +right 300 a 400 a 420 +up 500 a 800 a 900 -right 1000 a 1100 +left 1300 a" nes thwaite',
         mark='nesmark', frames=lambda log: 900),

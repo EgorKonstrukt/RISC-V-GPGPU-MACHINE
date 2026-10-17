@@ -1,5 +1,5 @@
 /*
- * PNG pictures on the worker cores (docs/media.md).
+ * PNG pictures on the worker cores (docs/system/media.md).
  *
  *   segments   a file this library wrote (its mdPR chunk): each IDAT is rows of their own, a
  *              deflate stream that refers to nothing before it and a first row filtered without

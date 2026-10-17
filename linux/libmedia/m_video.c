@@ -1,4 +1,4 @@
-/* libmedia's films (docs/media.md, "Films"): what every kind shares, and a GIF animation as a
+/* libmedia's films (docs/system/media.md, "Films"): what every kind shares, and a GIF animation as a
  * film. The kinds are m_video_mpeg.c (MPEG-1, a group of pictures a worker) and m_video_vqa.c
  * (Westwood's VQA, a frame's rows over every core), m_avi.c (MJPEG, a picture over every core). */
 #include <stdlib.h>

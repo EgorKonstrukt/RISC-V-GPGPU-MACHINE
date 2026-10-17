@@ -1,5 +1,5 @@
 /*
- * What the port's own files say to each other (docs/quake3.md): the system layer, the
+ * What the port's own files say to each other (docs/games/quake3.md): the system layer, the
  * renderer, the sound and the GPU library.
  */
 #ifndef SHADEREMU_QUAKE3_H
@@ -10,7 +10,7 @@
 
 /* gpu_shaderemu.c: gles.c and what the renderer needs beside it */
 const volatile unsigned *gpuControl (int offset);	/* the machine's control words; NULL before the window */
-#define REG_INPUT	0x20		/* the machine's input counters (docs/input.md) */
+#define REG_INPUT	0x20		/* the machine's input counters (docs/machine/input.md) */
 #define REG_CLOCK	0x34		/* its clock, in milliseconds */
 
 /* sys_shaderemu.c */

@@ -49,7 +49,7 @@ PIXELS_MOST = 4000000       # bytes of a picture's pixels, 3 a pixel, as nxweb d
 SMALL_PIXELS = 4096         # a picture of so many pixels or fewer stays a PPM: decoded, a 40 x 40 one
                             # cost nxweb's first core 500 thousand instructions
 JPEG_QUALITY = 80           # colours at full size: libmedia stretches half-size ones from the nearest sample
-JPEG_INTERVALS = 512        # restart intervals a photograph: every one is a worker's job (docs/media.md)
+JPEG_INTERVALS = 512        # restart intervals a photograph: every one is a worker's job (docs/system/media.md)
 GUESS_BYTES = 0.3           # a JPEG's or PNG's bytes a pixel, for choosing what to fetch (measured 0.28)
 WIDEST = 800
 WORKERS = 16
@@ -805,7 +805,7 @@ def _chunk(kind, body):
 
 
 def png_segments(picture):
-    """A PNG in segments, as libmedia's encoder writes them (docs/media.md, linux/libmedia/
+    """A PNG in segments, as libmedia's encoder writes them (docs/system/media.md, linux/libmedia/
     png_segments.py), each decoded by a core of its own; a palette for 256 colours or fewer."""
     w, h = picture.size
     colours = picture.getcolors(256)

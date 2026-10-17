@@ -1,4 +1,4 @@
-// Red Alert's map drawn by the machine's GPU, as Tiberian Dawn's is (docs/tdawn.md, of whose
+// Red Alert's map drawn by the machine's GPU, as Tiberian Dawn's is (docs/games/tdawn.md, of whose
 // gl.cpp this is a copy with Red Alert's names): terrain quads that stay, one a cell; overlays,
 // objects and the shroud quads of each frame, from atlases; the game's own page on top.
 #include "function.h"
@@ -314,7 +314,7 @@ static void forget(void)
     solid_x = -1;
 }
 
-// The atlas full: its shapes are forgotten and put again as they are next drawn (docs/ralert.md,
+// The atlas full: its shapes are forgotten and put again as they are next drawn (docs/games/ralert.md,
 // "A base destroyed"). In a long battle every new shape was the game's own drawing once it had filled.
 static unsigned shapes_forgotten, forget_every;
 static void shapes_forget(void)
@@ -1183,7 +1183,7 @@ bool ShaderEmu_GL_Stamp(void const* set, int icon, int x, int y, void const* rem
 
 // Whether the GPU draws the map: it does when it has room, and a quad for each of its cells.
 /*
-** The objects drawn by a worker core, a frame behind (docs/tdawn.md, "The objects a frame
+** The objects drawn by a worker core, a frame behind (docs/games/tdawn.md, "The objects a frame
 ** behind"): as Render comes, this core notes each object's part of the scene, copies those
 ** to be drawn anew as they are now, and does to the objects what Render would (their marks),
 ** and the worker draws the copies while the logic goes on. RALERT_DRAW=here: as before.

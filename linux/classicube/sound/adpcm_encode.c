@@ -1,4 +1,4 @@
-/* 16-bit mono samples on stdin to the sound card's IMA ADPCM on stdout (docs/sound.md): the
+/* 16-bit mono samples on stdin to the sound card's IMA ADPCM on stdout (docs/machine/sound.md): the
  * codes, low half of a byte first, padded to 4 bytes, then a checkpoint word every 32 samples.
  * Each code is the best of the 16 for the next sample, decoded as the card decodes it. */
 #include <stdint.h>

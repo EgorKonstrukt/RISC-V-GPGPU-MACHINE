@@ -1,5 +1,5 @@
 /*
- * libmedia: pictures, sound and films for every program of the machine (docs/media.md),
+ * libmedia: pictures, sound and films for every program of the machine (docs/system/media.md),
  * decoded and encoded on the worker cores (mcw.h). Link with -lmedia (and mcw.c's workers).
  *
  * `workers` everywhere is the most worker cores a call may use: it opens them when the program
@@ -137,8 +137,8 @@ void media_audio_close(struct media_audio *audio);
 /* ---------------------------------------------------------------- films */
 
 /*
- * MPEG-1 (closed groups of pictures, no B pictures: docs/video.md), Westwood's VQA, MJPEG in
- * AVI and GIF animations (docs/media.md, "Films"). One MPEG-1 film is open at a time. While a film is open
+ * MPEG-1 (closed groups of pictures, no B pictures: docs/apps/video.md), Westwood's VQA, MJPEG in
+ * AVI and GIF animations (docs/system/media.md, "Films"). One MPEG-1 film is open at a time. While a film is open
  * its workers are its own: the program posts nothing to them.
  */
 struct media_video;

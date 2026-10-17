@@ -1,4 +1,4 @@
-/* MPEG-1 films (docs/media.md "Films", docs/video.md): pl_mpeg (MIT; fetched and patched by
+/* MPEG-1 films (docs/system/media.md "Films", docs/apps/video.md): pl_mpeg (MIT; fetched and patched by
  * build.sh) arranged for the workers. A closed group of pictures is one worker's job, copied
  * into its places a picture a job; the sound is chunks of frames, a job each. One MPEG-1 film
  * is open at a time: the jobs find it in M. */

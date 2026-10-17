@@ -1,5 +1,5 @@
 /*
- * libmedia's test program (docs/media.md), for the build computer (with mcw_host.c) and the guest:
+ * libmedia's test program (docs/system/media.md), for the build computer (with mcw_host.c) and the guest:
  *   media_test decode FILE OUT.ppm [WORKERS [CHANNELS]]   a picture, its sum and its time
  *   media_test fit FILE W H OUT.ppm [WORKERS]             to a size, covered
  *   media_test encode IN OUT.(png|jpg|gif|bmp|ppm) [QUALITY [WORKERS]]

@@ -1,5 +1,5 @@
 /* The registry: what every program of the desktop wants kept between sessions, a line a key
- * ("files.details=1") in one file of the folder the host keeps (docs/persist.md). A key is
+ * ("files.details=1") in one file of the folder the host keeps (docs/system/persist.md). A key is
  * the program's word, a dot, and its own name; a value is text without a line's end.
  * Any program may read any key; nxreg is the same for a script. */
 #ifndef SHADEREMU_APPS_REGISTRY_H

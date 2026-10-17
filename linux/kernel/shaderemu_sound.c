@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ShaderEmu sound card (docs/sound.md in the ShaderEmu repository). Programs map the voices'
+ * ShaderEmu sound card (docs/machine/sound.md in the ShaderEmu repository). Programs map the voices'
  * registers and write them themselves; this hands out voices and sample memory, takes both
  * back when a program goes, and plays PCM written to the device through a stream voice.
  */

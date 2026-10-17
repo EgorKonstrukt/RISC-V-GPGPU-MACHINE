@@ -7,14 +7,14 @@ CONFIG_INPUT=y
 CONFIG_INPUT_EVDEV=y
 CONFIG_INPUT_MISC=y
 CONFIG_INPUT_SHADEREMU=y
-# The network between machines (docs/lan.md); the fork's config has the stack already.
+# The network between machines (docs/system/lan.md); the fork's config has the stack already.
 CONFIG_SHADEREMU_NET=y
-# The machine's float registers are a task's own (docs/fpu.md, fpu_hook.py).
+# The machine's float registers are a task's own (docs/machine/fpu.md, fpu_hook.py).
 CONFIG_FPU=y
 # Upstream ticks at 20 Hz; the polled input device and short sleeps want more.
 CONFIG_HZ_20=n
 CONFIG_HZ_100=y
-# Boot time (docs/boot.md): no self-test of the hash behind /dev/random (1 s of a 10 s boot),
+# Boot time (docs/machine/boot.md): no self-test of the hash behind /dev/random (1 s of a 10 s boot),
 # no sysfs entry per slab cache, no virtual terminals, no zeroing of every stack frame.
 CONFIG_EXPERT=y
 CONFIG_CRYPTO=y

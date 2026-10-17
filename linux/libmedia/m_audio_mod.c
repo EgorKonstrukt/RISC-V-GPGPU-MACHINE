@@ -1,5 +1,5 @@
 /*
- * MOD (docs/media.md): a ProTracker tune (31 samples, 4 channels, or more with the tags 6CHN,
+ * MOD (docs/system/media.md): a ProTracker tune (31 samples, 4 channels, or more with the tags 6CHN,
  * 8CHN, nnCH) played in integers, in order on one core: the sequencer a tick at a time, and a
  * mixer of the nearest sample. XM is not played.
  */

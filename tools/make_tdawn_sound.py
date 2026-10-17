@@ -1,4 +1,4 @@
-"""Tiberian Dawn's sounds in a form the sound card plays where they lie in the ROM (docs/sound.md).
+"""Tiberian Dawn's sounds in a form the sound card plays where they lie in the ROM (docs/machine/sound.md).
 
   python3 tools/make_tdawn_sound.py OUT.pak SOUNDS.MIX SPEECH.MIX ... [TUNE.AUD ...] [FOLDER ...]
 

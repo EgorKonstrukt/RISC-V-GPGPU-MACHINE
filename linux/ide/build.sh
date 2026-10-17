@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds nxide, the place to write C in (docs/ide.md), into build/images/linux/root. After
+# Builds nxide, the place to write C in (docs/apps/ide.md), into build/images/linux/root. After
 # linux/nanox/build.sh; what it compiles with in the guest is linux/tcc/build.sh's.
 #   wsl -- bash /mnt/c/.../linux/ide/build.sh
 set -euo pipefail
@@ -21,7 +21,7 @@ if [ -x "$WORK/build/tcc-cross/tcc" ] && [ -d "$WORK/build/tcc-sysroot/usr/inclu
 else
     rm -f "$OUT/share/ide-clean"
 fi
-# the Start menu, and whose a C file is (docs/open.md: before the editor's line for text)
+# the Start menu, and whose a C file is (docs/system/open.md: before the editor's line for text)
 printf '%s\n' "Programming/IDE=nxide" > "$OUT/share/nxapps.28-ide"
 printf '%s\n' "source   c,h   -   nxide %s" > "$OUT/share/nxopen.15-ide"
 ls -l "$OUT/bin/nxide"

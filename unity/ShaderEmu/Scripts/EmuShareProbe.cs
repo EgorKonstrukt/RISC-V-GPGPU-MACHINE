@@ -4,7 +4,7 @@ using VRC.SDK3.Rendering;
 using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
-// For the test with two real clients (docs/share.md, "Judged while it moves"): three times a
+// For the test with two real clients (docs/world/share.md, "Judged while it moves"): three times a
 // second, 24 x 18 pixels of the screen, with the instance's clock: of the display of a client
 // whose machine is on, and of the picture a client that watches one has of it. Each writes
 // "[ShareSig]" lines to its own log; tools/share_clients.py holds the two logs together.

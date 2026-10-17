@@ -8,7 +8,7 @@ using VRC.SDKBase;
 // hand, both at once, a key down for as long as the trigger is), and the player's real
 // keyboard while captured.
 // rawKeys = false: the console's keyboard, a queue of characters for the UART.
-// rawKeys = true: the keyboard device (docs/input.md), a queue of key events: a Linux key
+// rawKeys = true: the keyboard device (docs/machine/input.md), a queue of key events: a Linux key
 // code, plus 65536 while pressed. Its keys stay down for as long as they are held.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuKeyboard : UdonSharpBehaviour
@@ -113,7 +113,7 @@ public class EmuKeyboard : UdonSharpBehaviour
         tail = next;
     }
 
-    // An event that is not a key of this keyboard: a notch of the wheel (docs/input.md).
+    // An event that is not a key of this keyboard: a notch of the wheel (docs/machine/input.md).
     public void PushEvent(int e)
     {
         Push(e);

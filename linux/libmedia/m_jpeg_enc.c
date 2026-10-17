@@ -1,5 +1,5 @@
 /*
- * The JPEG encoder (docs/media.md): baseline, the standard tables scaled to the quality asked,
+ * The JPEG encoder (docs/system/media.md): baseline, the standard tables scaled to the quality asked,
  * colours at half size each way under quality 90. Every MCU row is a restart interval, encoded
  * by whichever core takes it into memory of its own; this core then puts them one after another
  * with their markers. A file written so is decoded by every core (m_jpeg.c, "restart markers").

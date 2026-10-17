@@ -1,4 +1,4 @@
-/* The mesh viewer's scene (docs/raytrace.md, "nxpath"): meshes as they were read, objects that
+/* The mesh viewer's scene (docs/apps/raytrace.md, "nxpath"): meshes as they were read, objects that
  * place a mesh in the world, lights, one camera, and the world the path tracer traces, which is
  * every object's triangles where they stand under one tree of boxes. */
 #ifndef PATHTRACE_SCENE_H

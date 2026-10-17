@@ -13,7 +13,7 @@ extern "C" {
 
 static unsigned last_ms;
 
-// The machine's clock in milliseconds (docs/input.md).
+// The machine's clock in milliseconds (docs/machine/input.md).
 static unsigned now_ms() { return *(const volatile unsigned*)((const char*)seglPalette() - 0x400 + 0x34); }
 
 // ImGuizmo's sines and cosines (build.sh names them for it): the C library's are worked out

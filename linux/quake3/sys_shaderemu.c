@@ -1,5 +1,5 @@
 /*
- * Quake III Arena's system layer on the ShaderEmu machine's Linux (docs/quake3.md): in place
+ * Quake III Arena's system layer on the ShaderEmu machine's Linux (docs/games/quake3.md): in place
  * of ioquake3's sys_main.c and its terminal console. The game, the client's game and the
  * menus are not libraries found at run time but part of the program.
  */

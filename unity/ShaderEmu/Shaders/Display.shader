@@ -1,6 +1,6 @@
 Shader "ShaderEmu/Display"
 {
-    // The machine's display (docs/display.md), decoded from the state texture: modes 1-4 and
+    // The machine's display (docs/machine/display.md), decoded from the state texture: modes 1-4 and
     // the cursor. With _Raw it writes the picture one pixel a texel from the target's top left
     // corner (EmuMachine draws that for DisplayShow.shader); without, it fits it into a quad.
     Properties

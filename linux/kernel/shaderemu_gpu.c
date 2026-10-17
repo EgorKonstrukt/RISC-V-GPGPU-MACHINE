@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ShaderEmu GPU device (docs/gpu.md in the ShaderEmu repository): mmap of the GPU's memory,
+ * ShaderEmu GPU device (docs/machine/gpu.md in the ShaderEmu repository): mmap of the GPU's memory,
  * and an ioctl that sleeps with wfi until the submitted list has been drawn.
  */
 #include <linux/cpu.h>
@@ -30,9 +30,9 @@
 #define GPU_COUNT	0x18
 #define GPU_FRAMES	0x1c	/* lists drawn so far */
 #define GPU_INTO	0x50	/* where a copy goes: address, width, height, row length */
-#define KEYBOARD_OWNER	0x30	/* set by a program that takes the keyboard (docs/input.md) */
-#define DISPLAY_CURSOR	0x48	/* 1 while the display shows a cursor (docs/display.md) */
-#define VOLUME_LIST	0x300	/* the frame the volume display shows (docs/volume.md) */
+#define KEYBOARD_OWNER	0x30	/* set by a program that takes the keyboard (docs/machine/input.md) */
+#define DISPLAY_CURSOR	0x48	/* 1 while the display shows a cursor (docs/machine/display.md) */
+#define VOLUME_LIST	0x300	/* the frame the volume display shows (docs/world/volume.md) */
 
 /* arg: the frame counter's value before submitting */
 #define SHADEREMU_GPU_WAIT	_IO('G', 1)
@@ -45,7 +45,7 @@ struct shaderemu_gpu_submit {
 #define SHADEREMU_GPU_SUBMIT	_IOW('G', 2, struct shaderemu_gpu_submit)
 
 /*
- * A program asks for worker cores (docs/multicore.md): up to `want` of those nobody has are
+ * A program asks for worker cores (docs/machine/multicore.md): up to `want` of those nobody has are
  * its own from here on, a bit each in `mask`, and `root` is the number of the first page of
  * its page table, which it hands them to run in its memory. They are parked and free again
  * when the program closes this file, or ends.
@@ -76,7 +76,7 @@ struct shaderemu_gpu_workers {
 #define SHADEREMU_GPU_DRAW	_IOR('G', 5, __u32)
 
 /*
- * The worker cores are shared out between the programs that ask (docs/multicore.md, "Shared
+ * The worker cores are shared out between the programs that ask (docs/machine/multicore.md, "Shared
  * between programs"). A program says how many it wants with a WORKERS call, as often as it
  * likes, and has its share: the cores divided evenly among the programs that ask, nobody
  * more than it wants, the small wants filled first; a program that only borrows (LENT, said
@@ -390,7 +390,7 @@ static bool workers_give(struct file *file, const u32 *mask)
 }
 
 /*
- * The core is given away for what is left of this pass (docs/multicore.md, "A core that
+ * The core is given away for what is left of this pass (docs/machine/multicore.md, "A core that
  * rests"): to anything else that can run, and with nothing to run the pass ends here, as it
  * would in the idle loop, whose work is done here too. It returns in a later pass.
  */

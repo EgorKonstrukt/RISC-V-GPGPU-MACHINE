@@ -1,4 +1,4 @@
-/* nxphys: rigid boxes, every worker core moving its share of them (docs/physics.md).
+/* nxphys: rigid boxes, every worker core moving its share of them (docs/apps/physics.md).
  * Keys, and the bar's buttons: 1 2 3 a wall, towers, a heap; space the heavy box thrown; p stop;
  * c each box in its core's colour; 9 / 0 all the workers, none; r again; w a s d walk; q leave.
  * The pointer and a holodeck sitter's hands carry boxes and throw them ("The controls" there). */
@@ -116,7 +116,7 @@ share_work(int s, int *seen, uint32_t phase, int wanted, uint32_t show)
 	int from = (int)((sim.base + phase) % PHYS_BUFFERS), trouble = 0, bodied = s < sim.nbody, serves = !sim.nservice || !bodied;
 	/* (a look's number is that of the pair of substeps it is for. Every PHYS_EVERY-th substep
 	 * looks for contacts first; or, looking ahead, the substep before does when it has said
-	 * its boxes are made: the longest look then holds no share up. docs/physics.md) */
+	 * its boxes are made: the longest look then holds no share up. docs/apps/physics.md) */
 	int turn = (int)((sim.base + phase) / PHYS_EVERY) + 1, ahead = sim.ahead;
 	uint32_t began = 0, took = 0;
 
@@ -258,7 +258,7 @@ static float held_far;
 static int press_x, press_y, dragged;	/* a left press on no box, let go at once where it was: a box is fired */
 static unsigned press_at;
 static float centre[3] = {0.0f, 2.5f, 0.0f};	/* what the view looks at: the keys walk it about */
-/* A holodeck's sitter (docs/holodeck.md): 1 with tracked hands, 2 with a mouse. The view is
+/* A holodeck's sitter (docs/world/holodeck.md): 1 with tracked hands, 2 with a mouse. The view is
  * then theirs, level, from `body_at`; `metre` is a metre of their room in the scene's units. */
 static int seated, seat_say;
 static float body_at[3], metre = 1.0f;
@@ -278,7 +278,7 @@ static uint32_t launch_at, launch_then;
 static GLuint texture;
 /* The workers asked for: all of them. With more than the bodies need, some have the grid and
  * the pictures (service_of); the wall's 240 substeps took 1,740 ms with 207 and 1,704 to 1,718
- * with 223 to 255, the heap's 120 took 1,181 and 1,133 (docs/physics.md). */
+ * with 223 to 255, the heap's 120 took 1,181 and 1,133 (docs/apps/physics.md). */
 #define WORKERS_ASKED 255
 static int workers, wanted = WORKERS_ASKED, stopped, scene = 1, bodies_wanted = 400, total_quads;
 #define OWN_UP_TO 7		/* this core has a share of its own with so many workers or fewer: with more it costs passes */
@@ -1074,7 +1074,7 @@ walked(float *place, const float *f, float along, float aside, float most)
 	if (place[2] < -most) place[2] = -most;
 }
 
-/* A holodeck's sitter (docs/holodeck.md, "Played from the seat"; docs/physics.md, "The
+/* A holodeck's sitter (docs/world/holodeck.md, "Played from the seat"; docs/apps/physics.md, "The
  * controls"): the view is theirs, their hands take boxes, their sticks or keys walk and turn. */
 static void
 seat(float dt)
@@ -1302,7 +1302,7 @@ press(int px, int py, int button)
 }
 
 /* While the button is down: the held box's point goes where the pointer is, as far from the
- * eye as it was taken; or the view turns. The pointer is the machine's words (docs/input.md).
+ * eye as it was taken; or the view turns. The pointer is the machine's words (docs/machine/input.md).
  * A left press on no box that comes up at once where it went down fires a box that way. */
 static void
 pointer(void)
@@ -1782,7 +1782,7 @@ main(void)
 			asked_at = now;
 		}
 		/* (the window system is asked when the button or key words change and for a while
-		 * after, the event being on its way; else a few times a second: docs/input.md) */
+		 * after, the event being on its way; else a few times a second: docs/machine/input.md) */
 		if (input != (*control(0x28) ^ *control(0x2c) << 8)) {
 			input = *control(0x28) ^ *control(0x2c) << 8;
 			hot_at = now;

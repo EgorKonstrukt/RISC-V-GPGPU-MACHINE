@@ -1,4 +1,4 @@
-"""Whether any program fits after any other on the no-MMU desktop (docs/nommu.md, "Memory"), under
+"""Whether any program fits after any other on the no-MMU desktop (docs/system/nommu.md, "Memory"), under
 rvc_cpu, a machine each and all at once: each large program and then Quake III, the largest; and
 all of them one after another, Quake III among them, in order and reversed. Prints free memory and
 page cache at each step and any allocation that failed.   python linux/nommu/memory.py [IMAGE]"""

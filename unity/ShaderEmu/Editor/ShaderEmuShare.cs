@@ -4,7 +4,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// Players see each other's machines (docs/share.md): the textures the stream is packed and
+// Players see each other's machines (docs/world/share.md): the textures the stream is packed and
 // unpacked in, the hub, the object VRChat copies for every player, and the panel's buttons.
 public static partial class ShaderEmuBuilder
 {
@@ -106,7 +106,7 @@ public static partial class ShaderEmuBuilder
         ShareUsers(hub, streams);
     }
 
-    // The display as units the GPU picks (docs/share.md, "Display"): the captures and the
+    // The display as units the GPU picks (docs/world/share.md, "Display"): the captures and the
     // textures of ShareUnits.shader's passes, and of the receiver's two.
     static void UnitsSender(EmuShareHub hub)
     {

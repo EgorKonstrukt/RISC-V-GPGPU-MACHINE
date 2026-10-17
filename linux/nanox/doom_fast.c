@@ -1,5 +1,5 @@
 /*
- * Parts of Doom's game code written again for this machine (docs/doom.md): the same answers
+ * Parts of Doom's game code written again for this machine (docs/games/doom.md): the same answers
  * in fewer instructions, and without stores that fill the machine's write cache. A demo must
  * play the same: DOOM_HASH_TICS=N prints a sum of the game's state every N tics.
  *
@@ -210,7 +210,7 @@ sight_walk(const struct trace *trace, struct sight *c)
 	}
 }
 
-/* ---- sight checks made ahead (docs/doom.md, "Sight checks made ahead") ---- */
+/* ---- sight checks made ahead (docs/games/doom.md, "Sight checks made ahead") ---- */
 
 /*
  * A worker core walks, during a tic, the checks the next tic will likely ask for: the
@@ -799,7 +799,7 @@ doom_state_hash(void)
 	return h;
 }
 
-/* ---- what the view is told (doom_gl.c; docs/doom.md, "The view on worker cores") ---- */
+/* ---- what the view is told (doom_gl.c; docs/games/doom.md, "The view on worker cores") ---- */
 
 /*
  * The game says which things it changed (doom.sh puts the calls in), took out or put into a

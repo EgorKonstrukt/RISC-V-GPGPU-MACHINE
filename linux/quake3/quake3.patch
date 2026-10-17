@@ -326,7 +326,7 @@ index 7bdc9f22..b24097d8 100644
  	return 0;
  } //end of the function AAS_AreaTravelTimeToGoalArea
 +#ifdef SHADEREMU
-+/* The routes to these areas from an area of every cluster, made now (docs/quake3.md, "The server's pace"); the bytes they took. */
++/* The routes to these areas from an area of every cluster, made now (docs/games/quake3.md, "The server's pace"); the bytes they took. */
 +int AAS_WarmRoutes(const int *goalareas, int count, int travelflags)
 +{
 +	int first[256], cluster, area, i, clusters, before = routingcachesize;
@@ -3830,7 +3830,7 @@ index d97312c4..5674d050 100644
  	unsigned int seed;
  
 +#ifdef SHADEREMU
-+	if(getenv("QUAKE3_SEED"))	/* (two builds' runs compared: docs/quake3.md, "Checking it") */
++	if(getenv("QUAKE3_SEED"))	/* (two builds' runs compared: docs/games/quake3.md, "Checking it") */
 +		srand(atoi(getenv("QUAKE3_SEED")));
 +	else
 +#endif

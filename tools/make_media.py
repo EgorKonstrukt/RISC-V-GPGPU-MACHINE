@@ -36,7 +36,7 @@ def original(name, sha1):
 def picture(source, to):
     image = Image.open(source).convert('RGB')
     image.thumbnail((640, 480), Image.LANCZOS)
-    # (in restart intervals, some 512 of them: every core decodes some by itself, docs/media.md)
+    # (in restart intervals, some 512 of them: every core decodes some by itself, docs/system/media.md)
     mcus = -(-image.size[0] // 16) * -(-image.size[1] // 16)
     image.save(to, 'JPEG', quality=82, progressive=False, optimize=False, subsampling=2, restart_marker_blocks=max(1, -(-mcus // 512)))
 

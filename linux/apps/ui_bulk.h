@@ -1,4 +1,4 @@
-/* ui_bulk.h: megabytes copied or filled by the worker cores (docs/nanox.md, "Paint"): a core
+/* ui_bulk.h: megabytes copied or filled by the worker cores (docs/system/nanox.md, "Paint"): a core
  * keeps a few kilobytes of new stores a pass, so a picture moved by one core is a hundred
  * passes that end early. The workers are borrowed (mcw_lend): with another program at work
  * on them this core does it alone. The program links programs/mc/mcw.c. */

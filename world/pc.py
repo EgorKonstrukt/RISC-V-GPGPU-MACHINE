@@ -17,7 +17,7 @@ import lib
 
 FRONT = -0.150                            # the tower's front face, in its own frame
 TOWER_HIGH, TOWER_DEEP = 0.36, 0.42
-# Sizes looked up (docs/stations.md has where): a 29 inch tube with 27 inches seen (549 x 411 mm,
+# Sizes looked up (docs/world/stations.md has where): a 29 inch tube with 27 inches seen (549 x 411 mm,
 # NEC's XM29 Plus: an A68 tube of 108 degrees, stripes 0.60 mm apart at its middle); drive bays
 # 146.1 x 41.3 and 101.6 x 26.1 mm; a PS/2 power supply's 150 x 86 mm back. The monitor's case is
 # that monitor's own, 645 x 533 x 518 mm; the tower a mini tower's 180 x 360 x 420.

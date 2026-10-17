@@ -1,4 +1,4 @@
-// The "Danger zone" panel (docs/danger.md): on the right wall by the rack, the keys that let a
+// The "Danger zone" panel (docs/world/danger.md): on the right wall by the rack, the keys that let a
 // visitor harm their own machine's memory and watch what it does. A canvas: no bake.
 using TMPro;
 using UdonSharp;

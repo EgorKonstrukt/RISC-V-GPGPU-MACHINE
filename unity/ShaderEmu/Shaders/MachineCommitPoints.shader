@@ -1,6 +1,6 @@
 Shader "ShaderEmu/MachineCommitPoints"
 {
-    // What the cores stored in a pass, drawn as points by a camera of its own (docs/multicore.md,
+    // What the cores stored in a pass, drawn as points by a camera of its own (docs/machine/multicore.md,
     // "The commit as points"; main.shader's COMMIT_POINTS): a geometry shader makes each point the
     // rectangle it stands for, and the pixel shader is the commit's own. With _Copy the same
     // points only copy their texels from the state given, for the buffer the commit did not draw.

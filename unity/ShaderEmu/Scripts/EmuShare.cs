@@ -3,7 +3,7 @@ using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon.Common;
 
-// What one player sends the others about their machine (docs/share.md). A player object:
+// What one player sends the others about their machine (docs/world/share.md). A player object:
 // VRChat makes one a player, owned by that player. EmuShareHub fills the owner's and reads
 // everyone else's; this only carries.
 [UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
@@ -18,16 +18,16 @@ public class EmuShare : UdonSharpBehaviour
     [UdonSynced] public int inputSeq;    // events typed at the watched machine so far
     [UdonSynced] public int[] input = new int[16];     // the last 16 of them
     [UdonSynced] public int pointer;     // x, y (12 bits each), buttons << 24, on the display << 28
-    [UdonSynced] public int station = -1;   // the classroom's computer this player has (docs/stations.md); -1: none
+    [UdonSynced] public int station = -1;   // the classroom's computer this player has (docs/world/stations.md); -1: none
     [UdonSynced] public int stationMode; // what that computer's tube shows: 0 the display, 1 the console
     // The senders this player shows on some screen (EmuStreams), one a slot: the sender's number
     // (16 bits) and a count << 16 that goes up with each asking; and what is asked for again:
     // a packet number's low 16 bits and how many from it << 16 (none: everything).
     [UdonSynced] public int[] ask = new int[16];
     [UdonSynced] public int[] lost = new int[16];
-    [UdonSynced] public int holo = -1;   // the holodeck whose seat this player sits in (docs/holodeck.md); -1: none
+    [UdonSynced] public int holo = -1;   // the holodeck whose seat this player sits in (docs/world/holodeck.md); -1: none
     [UdonSynced] public int holding;     // the game controller is in their hands (EmuGamepad): 0 no, else yes
-    // The network (docs/lan.md): this player's machine's packets since the last sending, each
+    // The network (docs/system/lan.md): this player's machine's packets since the last sending, each
     // after two bytes of its length; netSeq goes up with every such batch.
     [UdonSynced] public int netSeq;
     [UdonSynced] public byte[] net = new byte[0];

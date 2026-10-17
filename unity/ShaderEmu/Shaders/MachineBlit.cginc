@@ -5,7 +5,7 @@ Texture2D<uint4> _TickState;       // what the tick keeps of the CPU's state are
 // the tick keeps 16 (STATE_ROWS of src/types.cginc).
 #define L1_TABLE_BITS 6
 #define TICK_STATE_ROWS 16
-// Core 0 and up to 255 workers (docs/multicore.md). The tick's texture is the state rows'
+// Core 0 and up to 255 workers (docs/machine/multicore.md). The tick's texture is the state rows'
 // own places: core 0's 64 x 16, and beside it the workers' bands, 248 tiles of 8 x 8 each, of
 // which each worker has a strip as the guest's geometry says (src/types.cginc).
 #define CORES 256

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds Command & Conquer: Red Alert (Vanilla Conquer, a Nano-X client here) for the image, and
-# fetches the demo's game data, which is not kept in this repository (docs/ralert.md).
+# fetches the demo's game data, which is not kept in this repository (docs/games/ralert.md).
 #   wsl -- bash /mnt/c/.../linux/ralert/build.sh        (after linux/tdawn/build.sh)
 # In the guest: nano-X -p & ralert
 set -euo pipefail
@@ -16,7 +16,7 @@ COMMIT=ce83b59
 DEMO=${RALERT_DEMO:-https://archive.org/download/CommandConquerRedAlert_1020/ra95demo.zip}
 # Tiberian Dawn's build makes the C++ driver and the toolchain file, and fetches the source
 [ -x "$WORK/bin/rv32-c++" ] && [ -f "$WORK/src/tdawn-toolchain.cmake" ] || { echo "run linux/tdawn/build.sh first"; exit 1; }
-# a movie's rows and pointers are libmedia's (docs/media.md, "Films")
+# a movie's rows and pointers are libmedia's (docs/system/media.md, "Films")
 MEDIA=${RALERT_MEDIA:-$WORK/src/libmedia/libmedia.a}
 [ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
@@ -28,7 +28,7 @@ git -C "$VC" apply "$TD/vanilla-conquer.patch"
 cp "$TD/cxxrt.cpp" "$TD/shaderemu.cpp" "$TD/soundio_shaderemu.cpp" "$TD/host.c" "$TD/host.h" "$VC/common/"
 cp "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/programs/mc/mcwx.c" "$VC/common/"
 cp "$HERE/gl.cpp" "$VC/redalert/"
-# The worker cores' side (docs/multicore.md): mcw.c is the library every program has for them,
+# The worker cores' side (docs/machine/multicore.md): mcw.c is the library every program has for them,
 # workers.c the game's jobs over it.
 cp "$HERE/workers.c" "$HERE/workers.h" "$REPO/programs/mc/mc.h" "$REPO/programs/mc/mcw.h" "$REPO/programs/mc/mcw.c" "$REPO/programs/mc/mcwx.h" "$REPO/linux/libmedia/media.h" "$VC/redalert/"
 # (the reset above renews every file's time, and the two games reset the same tree: each builds
@@ -38,9 +38,9 @@ rsync -rc --delete --exclude .git "$VC/" "$SRC/"
 grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$BUILD/CMakeCache.txt" 2>/dev/null || rm -rf "$BUILD/CMakeCache.txt" "$BUILD/CMakeFiles"
 
 GLINC="-idirafter $REPO/programs/linux/include -I$MW/src/include -I$REPO/linux/userland"
-# (the flags are Tiberian Dawn's: docs/tdawn.md)
+# (the flags are Tiberian Dawn's: docs/games/tdawn.md)
 LTO="-O3 -flto=$(nproc) -ffat-lto-objects -flto-partition=1to1 -fno-toplevel-reorder --param inline-unit-growth=2000 --param max-inline-insns-auto=400 --param max-inline-insns-single=1500 --param large-function-growth=1000 --param inline-min-speedup=5"
-# What a played game ran, for the compiler (docs/tdawn.md, "What the compiler is told"):
+# What a played game ran, for the compiler (docs/games/tdawn.md, "What the compiler is told"):
 # TDAWN_PROFILE=count builds the program that counts; otherwise the counts kept here are used.
 PGO=""; COUNTS=""
 if [ "${TDAWN_PROFILE:-}" = count ]; then
@@ -78,7 +78,7 @@ for name in ('REDALERT.MIX', 'MAIN.MIX'):
     open(sys.argv[2] + '/' + name, 'wb').write(z.read('ra95demo/INSTALL/' + name))
 PY
 fi
-# The sounds as the sound card plays them from the ROM (docs/sound.md), by Tiberian Dawn's tool.
+# The sounds as the sound card plays them from the ROM (docs/machine/sound.md), by Tiberian Dawn's tool.
 # They are in MIX files inside the two MIX files, behind an encrypted index: the source's own
 # tool, built for this computer, takes them out.
 PAK="$WORK/src/ralert-demo/ralert-sound.pak"
@@ -112,7 +112,7 @@ mkdir -p /tmp/ralert && cd /tmp/ralert || exit 1
 for f in REDALERT MAIN; do ln -sf /usr/share/ralert-$f.MIX $f.MIX; done
 for f in CRUS226M HELL226M; do ln -sf /usr/share/ralert-$f.AUD $f.AUD; done
 # a first run "from the install" goes past the menu into the Soviet mission: say it has been run
-# (its settings and saved games are of the folder the host keeps: docs/persist.md)
+# (its settings and saved games are of the folder the host keeps: docs/system/persist.md)
 ini=/persistence/vanilla-conquer/vanillara/redalert.ini
 [ -f $ini ] || { mkdir -p ${ini%/*} && printf '[Intro]\nPlayIntro=no\n' > $ini; }
 HOME=/tmp/ralert XDG_CONFIG_HOME=/persistence exec /usr/lib/ralert/game "$@"

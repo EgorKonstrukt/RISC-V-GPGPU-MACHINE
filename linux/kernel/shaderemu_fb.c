@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ShaderEmu display as a framebuffer device (docs/display.md in the ShaderEmu repository).
+ * ShaderEmu display as a framebuffer device (docs/machine/display.md in the ShaderEmu repository).
  * Opening the device or setting a mode switches the display to 32-bit pixels in RAM.
  */
 #include <linux/fb.h>

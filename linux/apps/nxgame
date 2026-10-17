@@ -1,6 +1,6 @@
 #!/bin/sh
 # nxgame quake host|join, nxgame quake3 host|join, nxgame doom host|now: a game over the network with the other
-# computers (docs/lan.md, "Games over the network"). A computer that hosts says so to whoever
+# computers (docs/system/lan.md, "Games over the network"). A computer that hosts says so to whoever
 # asks who is there (/tmp/nxhosting, which nxnet --serve reads); a join looks for it.
 game="$1"
 how="${2:-host}"

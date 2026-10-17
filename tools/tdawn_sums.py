@@ -1,4 +1,4 @@
-"""Two runs of one game of Tiberian Dawn or Red Alert drawn two ways, frame for frame (docs/tdawn.md, "A scrolled picture").
+"""Two runs of one game of Tiberian Dawn or Red Alert drawn two ways, frame for frame (docs/games/tdawn.md, "A scrolled picture").
 
     python tools/tdawn_sums.py A.log B.log
 

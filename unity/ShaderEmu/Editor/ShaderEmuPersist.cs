@@ -5,7 +5,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The guest's kept folder (docs/persist.md): EmuPersist, its readback's target and material, and
+// The guest's kept folder (docs/system/persist.md): EmuPersist, its readback's target and material, and
 // its sign on the computer's tower, over the power button's and as wide.
 public static partial class ShaderEmuBuilder
 {

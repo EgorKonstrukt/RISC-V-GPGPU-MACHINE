@@ -1,4 +1,4 @@
-"""A file as a PNG picture, for a host that can only be handed pictures (docs/fetch.md).
+"""A file as a PNG picture, for a host that can only be handed pictures (docs/system/fetch.md).
 
     python tools/file_to_png.py FILE [OUT.png]     the file's bytes as a picture's pixels
     python tools/file_to_png.py --back IN.png [OUT] the file out of such a picture

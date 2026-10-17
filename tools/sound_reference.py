@@ -1,4 +1,4 @@
-"""Reference model of the sound card (docs/sound.md): mixes what the harness captured.
+"""Reference model of the sound card (docs/machine/sound.md): mixes what the harness captured.
 
   rvc_harness ... --fixed-dt 0.004 --sound-capture out.wav --save-state out.snap
   python tools/sound_reference.py out.wav out.snap [--rom rootfs.bin] [--stream-test]

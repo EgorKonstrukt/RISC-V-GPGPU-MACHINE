@@ -1,4 +1,4 @@
-"""libmedia's MJPEG in AVI against Pillow (docs/media.md, "MJPEG in AVI"): writes films with
+"""libmedia's MJPEG in AVI against Pillow (docs/system/media.md, "MJPEG in AVI"): writes films with
 tools/make_avi.py, has media_test decode every picture (MEDIA_TEST_FRAMES) and compares each
 with Pillow's decoding of the same JPEG, within what two decoders' colour stretching differs
 by (a mean under 1.5 levels, under 0.5% of the values off by more than 24),

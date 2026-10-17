@@ -48,7 +48,7 @@
 
 namespace fs = std::filesystem;
 
-// The machine as an interpreter (rvc_cpu.cpp, docs/cpu-harness.md), for --cpu: the same file
+// The machine as an interpreter (rvc_cpu.cpp, docs/machine/cpu-harness.md), for --cpu: the same file
 // that is bin\\rvc_cpu.exe, without its main().
 #include "run_lock.h"
 #define RVC_CPU_LIBRARY
@@ -78,9 +78,9 @@ struct Options {
     std::vector<std::pair<std::string, std::string>> expectSend;
     std::string initialInput;
     std::string until;
-    std::vector<std::string> open;   // --open: addresses or files the guest is told to open (docs/open.md)
+    std::vector<std::string> open;   // --open: addresses or files the guest is told to open (docs/system/open.md)
     std::string openAfter;           // --open-after: not before the console has shown this
-    std::string persist;             // --persist: the file the guest's /persistence is kept in (docs/persist.md)
+    std::string persist;             // --persist: the file the guest's /persistence is kept in (docs/system/persist.md)
     int ticks = 8192;
     int initFrames = 2;
     uint64_t maxFrames = 0;
@@ -98,10 +98,10 @@ struct Options {
     bool viz = false;         // memory view window
     int uartBurst = 0;        // input characters per handshake; 0 = what the shader declares
     bool resume = false;      // with no other arguments: resume the shell snapshot instead of booting
-    bool tabs = false;        // ask the guest for its console as several terminals (docs/console.md)
+    bool tabs = false;        // ask the guest for its console as several terminals (docs/machine/console.md)
     int workers = 0;          // --workers: the small workers' blocks geotune lays out (0 its own pick; 1-3: 2, 4, 8 columns)
     bool desktop = false;     // ask the guest to start its desktop: the terminal mode, unless --no-desktop
-    std::string kernel;       // Linux's: "mmu" or "nommu" (docs/nommu.md); unset, nommu once its image is made
+    std::string kernel;       // Linux's: "mmu" or "nommu" (docs/system/nommu.md); unset, nommu once its image is made
     std::string isa = "base"; // "base" RV32IMAF, or "zb" with Zba and Zbb (the shader's ZB)
     std::string vizCapture;   // BMP of the memory view, written at exit
     std::string gpuCapture;   // BMP of the GPU device's colour target, written at exit
@@ -112,16 +112,16 @@ struct Options {
     std::string statsFrom;    // --stats-from TEXT: the STATS line is for the run from where the console says TEXT (no GPU timing)
     double statsAfter = -1;   // >= 0: print a STATS line for the part of the run after this many seconds
     bool noDoubles = false;
-    bool holodeck = false;    // --holodeck: tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
+    bool holodeck = false;    // --holodeck: tell the guest its owner sits in a holodeck's seat (docs/world/holodeck.md)
     double holodeckAim = 0;   // --holodeck-aim DEGREES: with it, a tracked right hand that points up by so much
     bool holodeckHands = false;
     unsigned host[8] = {};    // --host: the host's eight words as they are (hex), in place of those
-    std::string zap;          // --zap KIND,X,Y,REACH,WORD,MASK,SEED,ZONES: the host's hand in RAM (src/zap.h, docs/danger.md)
+    std::string zap;          // --zap KIND,X,Y,REACH,WORD,MASK,SEED,ZONES: the host's hand in RAM (src/zap.h, docs/world/danger.md)
     long long zapFrame = -1;  // --zap-frame N: in the commit of that frame, and no other
-    int netPort = 0;          // --net PORT: the network device's link to other machines here (docs/lan.md)
+    int netPort = 0;          // --net PORT: the network device's link to other machines here (docs/system/lan.md)
     int netId = 1;            // --net-id N: this machine's number, its address 10.0.0.N
     double netLoss = 0, netDelay = 0;   // --net-loss percent, --net-delay milliseconds: of every packet sent
-    int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/multicore.md)
+    int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/machine/multicore.md)
     bool lazy = false;        // --lazy: a fill or copy is left to the commit and the pass goes on (LAZY_MEMOP)
     bool noBands = false;     // --no-bands: the commit rewrites all of RAM, not only the bands written to (COMMIT_BANDS off)
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
@@ -199,14 +199,14 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                          nopaging  NO_PAGING: satp hardwired to 0, no translation or TLBs
                          mmode     M_MODE_ONLY: also no supervisor/user mode or trap delegation
                          auto      (default) the smallest one the chosen image runs on
-  --no-gpu             leave out the GPU device (the passes in <rvc>/gpu.shader, docs/gpu.md)
+  --no-gpu             leave out the GPU device (the passes in <rvc>/gpu.shader, docs/machine/gpu.md)
   --no-bands           have the commit rewrite all of RAM instead of only the bands written to
-  --lazy               leave a parallel fill or copy to the commit and run on (LAZY_MEMOP, docs/boot.md):
+  --lazy               leave a parallel fill or copy to the commit and run on (LAZY_MEMOP, docs/machine/boot.md):
                        fewer passes end early, every instruction is some 1.5 percent slower
   --readback-batch N   D3D11: read the rows of N frames back with one Map (1); the console's
                        output and typed input then come N frames later
   --gpu-capture FILE   save the GPU device's whole colour target as a BMP at exit
-  --no-sound           leave out the sound card (<rvc>/sound.shader, docs/sound.md)
+  --no-sound           leave out the sound card (<rvc>/sound.shader, docs/machine/sound.md)
   --sound              play what the sound card mixes (the terminal mode does; other runs are silent)
   --volume P           how loud the host plays it, 0 to 100 (default 10). In the window Ctrl+F11 and
                        Ctrl+F12 change it and Ctrl+F9 turns the sound card off and on
@@ -215,21 +215,21 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --pc-log FILE        sample the guest's pc once a frame, for tools/pc_profile.py
   --frame-log FILE     per frame: pc, instructions, last stall and time, for tools/boot_profile.py
                        (with --stats-from TEXT: from where the console says TEXT)
-  --cpu                run the instructions on the processor (docs/cpu-harness.md): some thirty times
+  --cpu                run the instructions on the processor (docs/machine/cpu-harness.md): some thirty times
                        faster; the display, the GPU, the keys and the pointer are the shader's as before
                        (D3D11, the Linux image in build\\images\\linux)
   --cpu-ips N          the same, at no more than N instructions a second (3000000: the world's speed)
   --open ADDRESS       tell the guest to open an address, or a file of this computer (file:// and its path);
-                       several are told ten seconds apart (docs/open.md)
+                       several are told ten seconds apart (docs/system/open.md)
   --open-after TEXT    not before the console has shown TEXT
-  --persist FILE       the file the guest's /persistence is kept in (docs/persist.md)
-  --holodeck           tell the guest its owner sits in a holodeck's seat (docs/holodeck.md)
-  --zap K,X,Y,R,W,M,S,Z  flip bits of RAM in one commit (docs/danger.md): kind 1 (word W of texel X,Y) or 2
+  --persist FILE       the file the guest's /persistence is kept in (docs/system/persist.md)
+  --holodeck           tell the guest its owner sits in a holodeck's seat (docs/world/holodeck.md)
+  --zap K,X,Y,R,W,M,S,Z  flip bits of RAM in one commit (docs/world/danger.md): kind 1 (word W of texel X,Y) or 2
                        (a square reaching R texels each way), mask M and seed S (hex), zones Z (a bit each)
   --zap-frame N        the frame whose commit does it
-  --host W0,...,W7     the host's eight words in hex, as rvc_cpu's (docs/holodeck.md)
+  --host W0,...,W7     the host's eight words in hex, as rvc_cpu's (docs/world/holodeck.md)
   --holodeck-aim D     and has tracked hands, the right one pointing up by D degrees
-  --net PORT           the network (docs/lan.md): this machine is 10.0.0.N and hears UDP port PORT + N of
+  --net PORT           the network (docs/system/lan.md): this machine is 10.0.0.N and hears UDP port PORT + N of
                        this computer, where the other machines started with the same PORT send (D3D11)
   --net-id N           its number N, 1 to 16 (default 1)
   --net-loss P         lose P percent of the packets it sends   --net-delay MS   and hold the rest back MS ms
@@ -239,11 +239,11 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --no-desktop         terminal mode: boot to the shell only (by default the guest starts its desktop);
                        --desktop asks for it in a run with other arguments
   --kernel mmu|nommu   Linux with the MMU (build\\images\\linux) or without one (build\\images\\nommu, the machine
-                       without paging; docs/nommu.md); the default is nommu once that image has been made
+                       without paging; docs/system/nommu.md); the default is nommu once that image has been made
   --isa base|zb        RV32IMAF, or with Zba and Zbb (the shader's ZB; without an MMU build\\images\\nommu-zb,
                        whose programs use them)
   --tabs               the console as four terminals: 0x1e and a digit, either way, says whose bytes follow
-  --workers auto|2|4|8 how geotune lays out the workers at boot (docs/multicore.md, "Packing the small workers")
+  --workers auto|2|4|8 how geotune lays out the workers at boot (docs/machine/multicore.md, "Packing the small workers")
   --dxc / --d3d11      backend: D3D12 with DXC-compiled DXIL, or D3D11 with FXC bytecode (what VRChat
                        runs). rvc_harness_dxc.exe defaults to --dxc. DXC implies NO_DOUBLES and, unless
                        --rvc is given, the experiments/rvc_opt shader (upstream does not compile with DXC).
@@ -586,7 +586,7 @@ void printLinuxChoice(const Options& o) {
     fprintf(stderr, "    k  kernel: %s\n", o.kernel == "nommu" ? "Linux without an MMU (bFLT programs, the machine without paging)" : "Linux with the MMU (Sv32 paging)");
     fprintf(stderr, "    i  instructions: %s\n", o.isa == "zb" ? "RV32IMAF + Zba, Zbb" : "RV32IMAF");
     fprintf(stderr, "       Linux boots %s%s\n", linuxDir(o).c_str(),
-            !linuxBuilt(o) ? "  (not made: docs/nommu.md)" : o.isa == "zb" && o.kernel != "nommu" ? "  (its programs are RV32IMAF)" : "");
+            !linuxBuilt(o) ? "  (not made: docs/system/nommu.md)" : o.isa == "zb" && o.kernel != "nommu" ? "  (its programs are RV32IMAF)" : "");
 }
 
 bool chooseImage(Options& o, bool canResume) {
@@ -711,18 +711,18 @@ int main(int argc, char** argv) {
         opt.machine = im && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") ? (nommuLinux ? 1 : im->machine) : 0;
     }
     if (nommuLinux && !linuxBuilt(opt)) {
-        fprintf(stderr, "[harness] %s has not been made (docs/nommu.md)\n", linuxDir(opt).c_str());
+        fprintf(stderr, "[harness] %s has not been made (docs/system/nommu.md)\n", linuxDir(opt).c_str());
         return 1;
     }
     if (opt.isa == "zb" && isOpt(opt.rvcDir)) opt.defines.push_back("ZB");
     // Our Linux image, and snapshots (which are of it), have no firmware: the machine answers
-    // the kernel's calls to it (docs/boot.md).
+    // the kernel's calls to it (docs/machine/boot.md).
     // (Linux without an MMU is our kernel on the machine without paging, its SBI and float unit kept)
     bool linuxMachine = opt.machine == 0 || (opt.machine == 1 && opt.ourKernel);
     opt.sbi = linuxMachine && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") && (opt.ourKernel || !opt.loadState.empty());
     if (opt.machine == 1) opt.defines.push_back("NO_PAGING");
     if (opt.machine == 2) opt.defines.push_back("M_MODE_ONLY");
-    // The full machine has single-precision float instructions (docs/fpu.md).
+    // The full machine has single-precision float instructions (docs/machine/fpu.md).
     if (linuxMachine && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") &&
         std::find(opt.defines.begin(), opt.defines.end(), "FPU") == opt.defines.end())
         opt.defines.push_back("FPU");
@@ -768,7 +768,7 @@ int main(int argc, char** argv) {
     if (isOpt(opt.rvcDir)) {
         // its tick keeps one rectangle from the top of the state block (STATE_ROWS in src/types.h)
         // The harness's machine: the shader's own write cache (384 texels), and on D3D11 the
-        // tick in eight targets, a pixel for every eight texels of state (docs/multicore.md).
+        // tick in eight targets, a pixel for every eight texels of state (docs/machine/multicore.md).
         // With the eight targets the machine has all its cores, and so has the interpreter.
         if (!opt.dxc && !opt.noMrt && !opt.cpu && !opt.profile && !getenv("RVC11_COMPUTE")) {
             opt.defines.push_back("TICK_MRT");
@@ -863,7 +863,7 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> profBase(kProfCount, 0);
     double timeBase = 0;
     uint32_t sentTag = 0, consumedTag = 0, sentChar = 0;
-    uint32_t conWritten = 0;   // the console's bytes taken so far (docs/console.md)
+    uint32_t conWritten = 0;   // the console's bytes taken so far (docs/machine/console.md)
     bool conSeen = false;
     if (!opt.loadState.empty()) {
         std::string snap;
@@ -954,15 +954,15 @@ int main(int argc, char** argv) {
     int timeSamples = 0;
     uint64_t statsInstr0 = 0, statsFrame0 = 0;
     auto statsT0 = t0;
-    bool keyboardOwned = false;   // a guest program reads the keyboard device (docs/input.md)
-    uint32_t displayMode = 0;     // the guest's display (docs/display.md): 0 while it shows nothing
+    bool keyboardOwned = false;   // a guest program reads the keyboard device (docs/machine/input.md)
+    uint32_t displayMode = 0;     // the guest's display (docs/machine/display.md): 0 while it shows nothing
     // --cpu: when the interpreter started, its passes, the bands of Linux's RAM still to show,
     // the bands sent with the last frame, and the copy the commit of this frame makes
     double cpuT0 = 0, cpuLowAt = 0;
     uint64_t cpuPasses = 0;
     uint32_t cpuLow = 0, cpuUploaded = 0, cpuCopy[4] = {}, cpuDisplay[2] = {};
     bool cpuFirst = true;
-    // A page the guest asked for (docs/fetch.md): fetched on a thread, handed over in one frame.
+    // A page the guest asked for (docs/system/fetch.md): fetched on a thread, handed over in one frame.
     // The whole answer is kept: one larger than the 256 KB handed over at a time is asked for
     // again part by part, with an offset.
     struct Fetch {
@@ -978,7 +978,7 @@ int main(int argc, char** argv) {
     uint32_t openCount = 0;
     double openDue = 0;       // the guest's bar looks once a second and takes one at a time
     uint32_t openWord = 0;    // the guest's count as the control row has it (a snapshot's may not be 0)
-    // The network device (docs/lan.md): the guest's packets come back with the row, the others'
+    // The network device (docs/system/lan.md): the guest's packets come back with the row, the others'
     // go into its ring in the control pass.
     NetLink net;
     if (opt.netPort) {
@@ -991,7 +991,7 @@ int main(int argc, char** argv) {
     }
     bool netDelivered = false;
     int gpuPassLife[8] = {};      // frames each of the GPU's passes 1-7 is still drawn for
-    // The sound card (docs/sound.md). While the guest has it enabled the host mixes: it names a
+    // The sound card (docs/machine/sound.md). While the guest has it enabled the host mixes: it names a
     // cursor, the device draws the samples from there on and moves its voices up to it.
     SoundOut audio;
     bool audioOpen = false;
@@ -1069,7 +1069,7 @@ int main(int argc, char** argv) {
                 bool kept = PersistHost::is(url);
                 bool held = !kept && offset != 0 && url == fetch.url;   // a further part of what is held
                 if (kept) {
-                    // the guest's kept folder (docs/persist.md): answered here, from the file; what
+                    // the guest's kept folder (docs/system/persist.md): answered here, from the file; what
                     // it hands over lies in the fetch's own 256 KB (four rows are the 100,000 bytes)
                     PersistHost keeper;
                     std::vector<uint8_t> data(PersistHost::kLimit + 32768, 0), rows, reply;
@@ -1096,7 +1096,7 @@ int main(int argc, char** argv) {
                     const size_t most = 16u << 20;
                     std::string body;
                     uint32_t status = 0, info = 0;
-                    if (url.rfind("http", 0) != 0 && !own) status = 3;   // never: docs/fetch.md
+                    if (url.rfind("http", 0) != 0 && !own) status = 3;   // never: docs/system/fetch.md
                     else if (url.rfind("http", 0) != 0) {
                         // a file of the host's own (--open): its path, or file:// and its path
                         std::string path = url.rfind("file://", 0) == 0 ? url.substr(7) : url;
@@ -1123,7 +1123,7 @@ int main(int argc, char** argv) {
                     if ((picture || (file && body.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0)) && status == 200) {
                         // A picture: the guest gets pixels, a word each, scaled to fit the 256 KB
                         // it can be handed. Or, asked for as a file, a PNG may carry one in its
-                        // pixels (docs/fetch.md): then the guest gets that file, header first.
+                        // pixels (docs/system/fetch.md): then the guest gets that file, header first.
                         std::string pixels;
                         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
                         ComPtr<IWICImagingFactory> wic;
@@ -1196,7 +1196,7 @@ int main(int argc, char** argv) {
         }
         if (cpuRunning) return;   // (the rest is the shader's processor, which is not running)
         commits = texel(28, 2);
-        // what the guest has taken of the input: the UART's tag, or the console's word (docs/console.md)
+        // what the guest has taken of the input: the UART's tag, or the console's word (docs/machine/console.md)
         const unsigned con = 64 + kControlTexels + kConHost + 1;   // the guest's words, then the ring
         bool hasCon = raw.size() >= (con + 1 + kConRing / 16) * 16;
         consumedTag = texel(9, 3) + (hasCon ? texel(con, 0) : 0);        if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer

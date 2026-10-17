@@ -1,5 +1,5 @@
 /*
- * Quake III Arena's sound on the machine's sound card (docs/quake3.md, docs/sound.md), in place
+ * Quake III Arena's sound on the machine's sound card (docs/games/quake3.md, docs/machine/sound.md), in place
  * of the game's mixer. A sound is a voice of the card pointed at its samples where bake.py's
  * file lies in the ROM: nothing is loaded or mixed here. What stays the game's is which of a
  * few channels a sound takes and how loud it is in each ear, worked out once a frame.

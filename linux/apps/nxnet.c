@@ -1,4 +1,4 @@
-/* nxnet: the other computers of the network and what their owners share (docs/lan.md,
+/* nxnet: the other computers of the network and what their owners share (docs/system/lan.md,
  * "The Network program"). nxnet is the window; nxnet --serve answers the others and gives them
  * this computer's /root to read (nx starts it); --find, --ls ADDRESS PATH and --get ADDRESS
  * PATH FILE are the same from a script. */

@@ -101,7 +101,7 @@ void tlb_state_load() {
     uint k;
 #if CORES > 1
     if (hart != 0) {
-        // a worker core keeps none: it starts a pass with every TLB empty (docs/multicore.md)
+        // a worker core keeps none: it starts a pass with every TLB empty (docs/machine/multicore.md)
         for (k = 0; k < 3 * TLBM_N; k++) { tlbm_tag[k] = 0; tlbm_pg[k] = 0; }
         tlb_wiped = true;
         tlb2_gen = 1;

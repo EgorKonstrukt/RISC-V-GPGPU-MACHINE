@@ -1,7 +1,7 @@
 /*
  * nxsettings: the desktop's settings, a tab each. Desktop: what the desktop shows (a picture
  * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. Storage:
- * what the host keeps (docs/persist.md). System: what the machine is. Devices: each device and how it runs.
+ * what the host keeps (docs/system/persist.md). System: what the machine is. Devices: each device and how it runs.
  * From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system | devices.
  */
 #define _GNU_SOURCE
@@ -90,7 +90,7 @@ picture_label(int row)
 	return choices[row].label;
 }
 
-/* The host's largest screen is in its flags, among the machine's control words (docs/gpu.md):
+/* The host's largest screen is in its flags, among the machine's control words (docs/machine/gpu.md):
  * width and height in 16s of pixels. A host that does not say shows 1280 x 720. */
 static void
 find_sizes(void)
@@ -98,7 +98,7 @@ find_sizes(void)
 	int gpu = open("/dev/gpu", O_RDWR), i;
 	const unsigned *words = gpu < 0 ? MAP_FAILED : mmap(NULL, 4096, PROT_READ, MAP_SHARED, gpu, 0x01000000);
 
-	/* how many cores the machine has, or could have (docs/multicore.md: the geometry's words) */
+	/* how many cores the machine has, or could have (docs/machine/multicore.md: the geometry's words) */
 	if (words != MAP_FAILED && (words[0x3cc / 4] || words[0x3c0 / 4]))
 		cores = (int)(words[0x3cc / 4] ? words[0x3cc / 4] : words[0x3c0 / 4]);
 	if (words != MAP_FAILED && (words[0x3c / 4] >> 8 & 255)) {
@@ -358,7 +358,7 @@ beep(void)
 	close(file);	/* returns once it has been played */
 }
 
-/* ---- the Devices tab: the machine's devices and what each is now (docs/nanox.md, "Settings") ---- */
+/* ---- the Devices tab: the machine's devices and what each is now (docs/system/nanox.md, "Settings") ---- */
 
 enum { DEV_CPU, DEV_MEMORY, DEV_STORAGE, DEV_GPU, DEV_SOUND, DEV_NETWORK, DEV_INPUT, DEV_CLOCK, DEV_CONSOLE, DEV_HOST, DEVICES };
 static const char *device_names[DEVICES] = { "Processor", "Memory", "Storage", "GPU and display", "Sound card", "Network",

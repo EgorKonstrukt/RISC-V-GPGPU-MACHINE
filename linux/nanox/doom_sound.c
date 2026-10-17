@@ -1,5 +1,5 @@
 /*
- * Doom's sound on the machine's sound card (docs/sound.md), in place of the port's i_sound.c.
+ * Doom's sound on the machine's sound card (docs/machine/sound.md), in place of the port's i_sound.c.
  * An effect is a voice pointed at its lump where the WAD lies in the ROM: nothing is loaded
  * or mixed here. A start costs a few stores, and the game's own channel logic stays as it is.
  */

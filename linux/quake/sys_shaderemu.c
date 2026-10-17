@@ -1,5 +1,5 @@
 /*
- * Quake's system layer on the ShaderEmu machine's Linux (docs/quake.md): sys_linux.c without
+ * Quake's system layer on the ShaderEmu machine's Linux (docs/games/quake.md): sys_linux.c without
  * the terminal handling, and with the machine's clock.
  */
 #include <errno.h>

@@ -1,6 +1,6 @@
 // An OpenGL in the manner of OpenGL ES 1.x (include/GLES/gl.h) on the machine's GPU device, for
 // Nano-X programs: vertex arrays become compact vertices in GPU memory, one draw command per
-// run of calls with the same state (docs/gpu.md). Numbers inside are 16.16 fixed point, or
+// run of calls with the same state (docs/machine/gpu.md). Numbers inside are 16.16 fixed point, or
 // floats when built with SEGL_FLOAT; either build takes both kinds of call and array.
 
 #include <GLES/segl.h>
@@ -19,7 +19,7 @@
 #define GPU_SIZE 0x00b00000u
 // A frame's commands, matrix blocks and vertices are a set; frames alternate between two sets,
 // so the frame shown last stays whole while the next is built (the volume display draws it
-// again and again from its own point of view, docs/volume.md).
+// again and again from its own point of view, docs/world/volume.md).
 #define SETS_AT 0x00700000u
 // A program with larger frames builds this file with its own split (linux/quake/build.sh).
 #ifndef SET_SIZE
@@ -162,7 +162,7 @@ static int draw_claim(int fd) {
     return -1;
 }
 
-// Nothing to do until the GPU has drawn: the kernel is told (docs/multicore.md, "A core that
+// Nothing to do until the GPU has drawn: the kernel is told (docs/machine/multicore.md, "A core that
 // rests"), which runs another program or ends the pass as its idle loop does. The pause hint
 // as it was on a kernel from before the call, off the first core's stack (a worker core's
 // job, another thread), and with GL_REST=pause.
@@ -236,7 +236,7 @@ void* seglMemory(unsigned int bytes) {
 
 unsigned int seglMemoryLeft(void) { return gpu ? GPU_SIZE - texture_top : 0; }
 
-// While the desktop is layers (display mode 4, docs/display.md) nothing uses the display's own
+// While the desktop is layers (display mode 4, docs/machine/display.md) nothing uses the display's own
 // framebuffer: 3.9 MB from just above the layer table to the window system's command list.
 #define SPARE_AT 0x00010000u
 #define SPARE_END 0x00400000u
@@ -1351,7 +1351,7 @@ GLenum glGetError(void) { return GL_NO_ERROR; }
 
 // A program that has a worker core call this library (linux/tdawn/host.c) compiles it with a
 // section a variable, each starting on 16 bytes: two cores must not store to the same 16
-// (docs/multicore.md). These are the last, so that no other file's variable follows ours in
+// (docs/machine/multicore.md). These are the last, so that no other file's variable follows ours in
 // the same 16 bytes.
 char segl_end_data[16] __attribute__((aligned(16), used)) = {1};
 char segl_end_bss[16] __attribute__((aligned(16), used));

@@ -1,7 +1,7 @@
 // Frames a second, written into the caption of the window a program's frames are drawn in.
 // The caption is rows of the same buffer as the window's own pixels, just above them, so this
 // is a few hundred stores a second and asks the window system for nothing. Include after
-// nano-X.h and call fps_caption() once a frame (docs/nanox.md, "Frames a second").
+// nano-X.h and call fps_caption() once a frame (docs/system/nanox.md, "Frames a second").
 #ifndef FPS_CAPTION_H
 #define FPS_CAPTION_H
 #include <fcntl.h>

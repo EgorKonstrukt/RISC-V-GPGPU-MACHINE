@@ -1,6 +1,6 @@
 Shader "ShaderEmu/HolodeckMask"
 {
-    // The holodeck's own faces (docs/holodeck.md). Where they are in view, and while a program
+    // The holodeck's own faces (docs/world/holodeck.md). Where they are in view, and while a program
     // has a frame to show, it marks the stencil and empties colour and depth, so that
     // GpuHolodeck.shader's world shows through them however far it reaches. Without a frame it
     // draws nothing, and the room is its grid.

@@ -1,4 +1,4 @@
-// Worker cores (docs/multicore.md): the mailboxes, which are what the machine, the library
+// Worker cores (docs/machine/multicore.md): the mailboxes, which are what the machine, the library
 // (mcw.h) and a worker agree on. They are one page of the GPU device's memory, which /dev/gpu
 // maps, at a physical address the machine knows; everything else a worker touches is the
 // program's own memory, which it has as the program has it.
@@ -25,7 +25,7 @@
 #define MC_WORKERS 0xc00c4704u   // _IOWR('G', 4, three words)
 // { how many, root, a bit a core in eight words } for the workers of any machine
 #define MC_WORKERS_ALL 0xc0284708u   // _IOWR('G', 8, ten words)
-// The kernel shares the cores out between the programs that ask (docs/multicore.md, "Shared
+// The kernel shares the cores out between the programs that ask (docs/machine/multicore.md, "Shared
 // between programs"). MC_WORKERS_ALL may be called again and again: it answers with the
 // program's share in place of the number asked for. A program whose workers are only lent
 // (MC_LENT, before it asks) has what the others leave. Three things in the mailbox page are

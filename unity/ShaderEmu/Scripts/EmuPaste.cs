@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using VRC.SDKBase;
 
-// Text from a field a visitor types or pastes into (docs/console.md): it goes to a keyboard as
+// Text from a field a visitor types or pastes into (docs/machine/console.md): it goes to a keyboard as
 // if typed there, a little at a time, as the guest takes it. At the console's as characters,
 // at the display's as key events, where a character no key gives is left out and counted.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]

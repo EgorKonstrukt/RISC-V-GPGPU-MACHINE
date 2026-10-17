@@ -1,12 +1,12 @@
-// A small OpenGL 1.x driver for the machine's GPU device (docs/gpu.md), with the GLX and Xlib
+// A small OpenGL 1.x driver for the machine's GPU device (docs/machine/gpu.md), with the GLX and Xlib
 // calls a program needs to open its window. Display lists become vertex buffers in GPU memory;
 // calling one becomes a lit draw command with the current matrices as uniforms; swapping
 // buffers submits the frame's command list.
 //
 // Built with GL_NANOX and run under the Nano-X server, the window is a Nano-X window and frames
-// are drawn into its buffer (docs/nanox.md); otherwise the window is the whole display.
+// are drawn into its buffer (docs/system/nanox.md); otherwise the window is the whole display.
 // Everything inside works in 16.16 fixed point, which is also what the GPU reads; floats are
-// converted at the API boundary, because the CPU has no FPU. docs/gpu.md has the rest.
+// converted at the API boundary, because the CPU has no FPU. docs/machine/gpu.md has the rest.
 
 #include <GL/glx.h>
 #include <fcntl.h>
@@ -601,7 +601,7 @@ static XVisualInfo the_visual_info = {&the_visual, 0, 0, 24};
 // The pause hint: this machine ends its frame there, which is when the GPU does its work.
 #define next_frame() __asm__ volatile(".word 0x0100000f")
 // Nothing to do until the GPU has drawn another program's list: the kernel is told, which runs
-// that program or ends the pass (docs/multicore.md, "A core that rests"). The pause hint on a
+// that program or ends the pass (docs/machine/multicore.md, "A core that rests"). The pause hint on a
 // kernel from before the call, and with GL_REST=pause.
 #define GPU_REST 0x470b   // _IO('G', 11)
 static __attribute__((noinline)) void rest(void) {
@@ -766,7 +766,7 @@ int XPending(Display* dpy) {
     if (!nano_x || nano_pending) return nano_pending;
     if (++skipped < 6) return 0;
     skipped = 0;
-    // (the machine's own words, docs/input.md: the buttons and the count of keys. An event comes
+    // (the machine's own words, docs/machine/input.md: the buttons and the count of keys. An event comes
     //  of one of them changing; while a button is held, and four times a second, it is asked anyway)
     const volatile uint32_t* input = (const volatile uint32_t*)(gpu_map + REG_INPUT);
     uint32_t clock = *(volatile uint32_t*)(gpu_map + REG_CLOCK);
@@ -932,7 +932,7 @@ void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
             regs[REG_SUBMIT / 4 + 2] = command_count;
             regs[REG_SUBMIT / 4] = 1 | 4;
             __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
-            // the last whole frame, for the volume display (docs/volume.md): the other of the
+            // the last whole frame, for the volume display (docs/world/volume.md): the other of the
             // two places is written next, so this one stays as it is until the frame after
             regs[REG_VOLUME / 4 + 1] = command_count;
             regs[REG_VOLUME / 4 + 3] = nano_info.width | nano_info.height << 16;

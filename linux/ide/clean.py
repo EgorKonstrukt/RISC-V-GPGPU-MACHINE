@@ -1,6 +1,6 @@
 """clean.py TCC STAGE EXAMPLE.c ...: the sums (nxide.c's text_sums) of the examples the
 compiler says nothing of, each read as the IDE reads it and compiled as its check compiles
-it, by the compiler built for the host with the image's headers (docs/ide.md)."""
+it, by the compiler built for the host with the image's headers (docs/apps/ide.md)."""
 import os, subprocess, sys, tempfile
 
 

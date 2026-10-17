@@ -1,6 +1,6 @@
 Shader "ShaderEmu/PersistRead"
 {
-    // Blit target for EmuPersist's readback (docs/persist.md): what the guest left in the
+    // Blit target for EmuPersist's readback (docs/system/persist.md): what the guest left in the
     // fetch's memory at 0x876c0000, one output pixel per 32-bit word, its bytes in r, g, b, a,
     // 256 words a row. Drawn only when the guest hands its kept folder over.
     Properties

@@ -1,6 +1,6 @@
 /*
  * Microwindows keyboard driver for the ShaderEmu keyboard: an evdev device that reports Linux
- * key codes (docs/input.md in the ShaderEmu repository). US layout.
+ * key codes (docs/machine/input.md in the ShaderEmu repository). US layout.
  */
 #include <errno.h>
 #include <fcntl.h>

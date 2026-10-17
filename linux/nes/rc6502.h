@@ -1,5 +1,5 @@
 /*
- * The 6502 recompiled on the machine (docs/nes.md): the cartridge's code is translated to
+ * The 6502 recompiled on the machine (docs/games/nes.md): the cartridge's code is translated to
  * RISC-V instructions as it is first reached, and nofrendo's interpreter runs only what is
  * not translated. Included by nofrendo's nes6502.c (nofrendo.patch), whose statics it uses.
  *

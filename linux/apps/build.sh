@@ -17,7 +17,7 @@ MEDIA=$WORK/src/libmedia/libmedia.a
 rv32-cc -O2 -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcw.c" -o "$WORK/src/libmedia/mcw.o"
 rv32-cc -O2 -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcwx.c" -o "$WORK/src/libmedia/mcwx.o"
 mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
-# nxpersist packs with zlib (docs/persist.md): its source is fetched once
+# nxpersist packs with zlib (docs/system/persist.md): its source is fetched once
 Z=$WORK/src/zlib-1.3.1
 [ -f "$Z/deflate.c" ] || (cd "$WORK/src" && curl -fsSL -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz && tar -xzf zlib-1.3.1.tar.gz)
 ZLIB="-w -I$Z $Z/deflate.c $Z/trees.c $Z/inflate.c $Z/inftrees.c $Z/inffast.c $Z/adler32.c $Z/crc32.c $Z/zutil.c"
@@ -27,7 +27,7 @@ for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask
     # the monitor and Paint move pictures with the worker cores (ui_bulk.h) and the browser
     # makes its strips there: the library every program has for them
     [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] || [ $p = nxweb ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"
-    # pictures of every kind, decoded and encoded on the worker cores (linux/libmedia, docs/media.md)
+    # pictures of every kind, decoded and encoded on the worker cores (linux/libmedia, docs/system/media.md)
     case $p in nxview|nxpaint|nxfiles|nxsettings|nxicon|nxweb)
         more="-I$REPO/linux/libmedia -I$REPO/programs/mc $MEDIA $WORK/src/libmedia/mcw.o $WORK/src/libmedia/mcwx.o -lm -Wl,--gc-sections" ;;
     esac
@@ -42,12 +42,12 @@ cp "$HERE"/pictures/picture-*.png "$HERE"/pictures/picture-*.jpg "$OUT/share/" 2
 printf '%s\n' "System/Restart the desktop=setsid nx restart ask" "System/Save and shut down=setsid nxoff save" "System/Shut down=setsid nxoff" > "$OUT/share/nxapps.90-system"
 cp "$HERE/nxoff" "$OUT/bin/nxoff"
 chmod +x "$OUT/bin/nxoff"
-# what opens what (open.c, docs/open.md): a kind a line, its endings, its first bytes, its program;
+# what opens what (open.c, docs/system/open.md): a kind a line, its endings, its first bytes, its program;
 # another program's build adds its own nxopen.* file, as it adds its line to the Start menu
 cp "$HERE/nxopen.conf" "$OUT/share/nxopen.20-apps"
 cp "$HERE/nxopen-archive" "$HERE/nxopen-run" "$OUT/bin/"
 chmod +x "$OUT/bin/nxopen-archive" "$OUT/bin/nxopen-run"
-# games with the other computers (nxgame, docs/lan.md): a folder of the menu's Games
+# games with the other computers (nxgame, docs/system/lan.md): a folder of the menu's Games
 tr -d '\r' < "$HERE/nxgame" > "$OUT/bin/nxgame"
 chmod +x "$OUT/bin/nxgame"
 printf '%s\n' "Games/Network/Quake: host a game=nxgame quake host" "Games/Network/Quake: join a game=nxgame quake join" \

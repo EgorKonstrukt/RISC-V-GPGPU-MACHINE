@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ShaderEmu network device (docs/lan.md in the ShaderEmu repository): bare IP packets between
+ * ShaderEmu network device (docs/system/lan.md in the ShaderEmu repository): bare IP packets between
  * machines. Packets leave through a window of plain memory that the host reads, and arrive in
  * a ring the host fills; both are polled in the timer tick. There is no hardware address and
  * no ARP: the host gives the machine a number, and the address is 10.0.H.L of it.

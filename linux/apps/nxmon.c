@@ -1,7 +1,7 @@
-/* nxmon: the monitor, a task manager (docs/nanox.md). Processes: each program's share of the first
+/* nxmon: the monitor, a task manager (docs/system/nanox.md). Processes: each program's share of the first
  * core, its workers, GPU lists and memory. Performance: CPU (overall, or a 16 x 16 grid of every
  * core's load), memory and GPU over the last minute; the plots are shaded by worker cores straight
- * into the window's buffer (docs/multicore.md), or by this core once a second without them. */
+ * into the window's buffer (docs/machine/multicore.md), or by this core once a second without them. */
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -63,7 +63,7 @@ static GR_WINDOW_ID window;
 static int tab = PERFORMANCE, pane = CPU, per_core;	/* what is shown */
 static int showing = -1;	/* what the workers shade: a pane, or PANES for the grid; -1 nothing */
 
-/* The plots are in the window's own buffer (docs/nanox.md: every window has one in GPU memory,
+/* The plots are in the window's own buffer (docs/system/nanox.md: every window has one in GPU memory,
  * which GrGetWindowInfo locates). Workers given different rows of it never store to the same
  * 16 bytes: a row is far longer than that. */
 #define SHADERS 8
@@ -79,7 +79,7 @@ static int whole = 1;		/* without workers: the plot has to be shaded whole */
 static int no_workers, check, print;
 static unsigned frames_shaded;
 
-/* The machine's control words (docs/multicore.md, "Counters"): what each core ran, cores 16 on in
+/* The machine's control words (docs/machine/multicore.md, "Counters"): what each core ran, cores 16 on in
  * the network's row (0x876ba000); and a word a core with its program's tag (WORKERS_OWNER). */
 static const volatile unsigned *core_words, *core_more, *owners;
 static unsigned core_count = 1, core_before[MAX_CORES], core_rate[MAX_CORES];
@@ -647,7 +647,7 @@ check_frame(void)
 }
 
 /* The window system draws by taking the window's buffer to the GPU and copying it back whole
- * (docs/nanox.md), which would undo what the workers wrote meanwhile: after asking it to draw,
+ * (docs/system/nanox.md), which would undo what the workers wrote meanwhile: after asking it to draw,
  * a pixel is read, which is answered when all of that is done. */
 static void
 settle(void)

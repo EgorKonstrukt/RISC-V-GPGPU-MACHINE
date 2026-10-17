@@ -1,4 +1,4 @@
-"""Two things TinyCC spent a compile on here (docs/cc.md). Idempotent.
+"""Two things TinyCC spent a compile on here (docs/system/cc.md). Idempotent.
 
 A number with a point went through the C library's strtof, whose long doubles are library
 calls on this machine: literal.h reads the short ones itself. And an archive's symbols were

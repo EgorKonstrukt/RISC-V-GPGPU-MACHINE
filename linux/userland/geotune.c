@@ -1,5 +1,5 @@
 /*
- * geotune: how the worker cores are laid out on the card this machine runs on (docs/multicore.md,
+ * geotune: how the worker cores are laid out on the card this machine runs on (docs/machine/multicore.md,
  * "Packing the small workers"). Run by the init (emuinit.c) before any program asks for workers,
  * since the layout may only change while every worker is parked; the kernel keeps a layout that
  * is set when the first program asks (workers_take() in shaderemu_gpu.c).
@@ -38,7 +38,7 @@
 #include "mcw.h"
 #include "registry.h"
 
-#define CONTROL_OFFSET 0x01000000	/* the control words in /dev/gpu (docs/gpu.md) */
+#define CONTROL_OFFSET 0x01000000	/* the control words in /dev/gpu (docs/machine/gpu.md) */
 #define HOST_FLAGS (0x3c / 4)		/* bit 0: the host starts the desktop at boot */
 #define CORES_NOW (0x3c0 / 4)		/* how many cores the geometry has now */
 #define CORES_MOST (0x3cc / 4)		/* how many the machine could have */

@@ -29,13 +29,13 @@ void host_present(int page, int with_cursor);
 void host_settle(void);
 /*
  * A picture of bytes smaller than the screen, which the GPU stretches over the window: a
- * movie's frames (docs/ralert.md). The memory is the GPU's, and *physical is its address for
- * a worker core (docs/multicore.md). NULL when there is no room.
+ * movie's frames (docs/games/ralert.md). The memory is the GPU's, and *physical is its address for
+ * a worker core (docs/machine/multicore.md). NULL when there is no room.
  */
 unsigned char *host_picture(int width, int height, unsigned int *physical);
 void host_show_picture(void);
 /*
- * The map drawn by the GPU (docs/tdawn.md). host_scene_open() makes room for so many cells, or
+ * The map drawn by the GPU (docs/games/tdawn.md). host_scene_open() makes room for so many cells, or
  * returns -1 and the game draws the map itself. The atlas is 1,024 x 2,048 bytes and the masks
  * a bit for each of them; the shades are 256 x 256 words of 0xTTRRGGBB.
  */

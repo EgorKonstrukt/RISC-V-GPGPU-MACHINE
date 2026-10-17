@@ -1,7 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 
-// One classroom place's own keys (docs/stations.md): the keys modelled on its monitor and its
+// One classroom place's own keys (docs/world/stations.md): the keys modelled on its monitor and its
 // tower. A key's press comes here, and goes to EmuStations with the place's number: only the
 // place's owner's presses do anything.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]

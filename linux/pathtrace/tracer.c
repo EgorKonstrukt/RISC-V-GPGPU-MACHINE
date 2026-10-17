@@ -1,4 +1,4 @@
-/* The path tracer's own part (docs/raytrace.md): the scene's world under its lights and its
+/* The path tracer's own part (docs/apps/raytrace.md): the scene's world under its lights and its
  * sky (scene.h), and one sample of every pixel of a tile as a job for a worker core. A job
  * writes its tile's sums and pixels and its stack: a tile is 32 across and the width a
  * multiple of four, so no two cores store to the same 16 bytes. The scene is only read. */

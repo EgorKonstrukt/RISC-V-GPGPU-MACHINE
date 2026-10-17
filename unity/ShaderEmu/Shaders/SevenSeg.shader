@@ -1,6 +1,6 @@
 Shader "ShaderEmu/SevenSeg"
 {
-    // The speed's window on a computer's tower (docs/stations.md): two rows of four digits of
+    // The speed's window on a computer's tower (docs/world/stations.md): two rows of four digits of
     // seven bars each. The upper row is every core's millions of instructions a second, the
     // lower core 0's. A row's number is in tenths (with its fraction); below zero it is dark.
     // All four digits are the number's: the point is where the number puts it (3.752, 37.52,

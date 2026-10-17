@@ -1,5 +1,5 @@
 /*
- * Quake III Arena's renderer on the machine's GPU (docs/quake3.md), in place of the game's own:
+ * Quake III Arena's renderer on the machine's GPU (docs/games/quake3.md), in place of the game's own:
  * nothing of a frame is worked out here that the GPU can read for itself. The level's
  * triangles are in GPU memory from when it loads, sorted by what they are drawn with, and
  * are commands that stay in every frame's list; a texture, a light map and a model's pose
@@ -151,7 +151,7 @@ int SE_ClientPlaying (void)
 static int		mouse_x, mouse_y, mouse_known, mouse_inside = 1;
 static int		origin_x, origin_y, origin_known, mouse_menu;	/* the window's place on the display */
 static int		dragging;	/* the left button is held on the game: the pointer's travel turns the view */
-/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+/* A sitter in a holodeck's seat (docs/world/holodeck.md, "Played from the seat"): 1 with tracked
    hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
 static int		seated;
 static float		body, aimed, seat_fov_x = 90, seat_fov_y = 73.74f;
@@ -1271,7 +1271,7 @@ static int light_at (const float *place, float *ambient, float *directed, float 
 }
 
 /*
- * The light on a thing, for the GPU to light its vertices by (docs/gpu.md, vertices that face):
+ * The light on a thing, for the GPU to light its vertices by (docs/machine/gpu.md, vertices that face):
  * from where in the thing's own space, its colour, and the colour of the light from
  * everywhere, three texels in the frame's memory. 0 when the frame has no room.
  */
@@ -1905,7 +1905,7 @@ void SE_SceneReplay (int which)
 		list_draw (&lists[which]);
 }
 
-/* The lists' pages are there before a worker writes them (docs/multicore.md). */
+/* The lists' pages are there before a worker writes them (docs/machine/multicore.md). */
 void SE_SceneTouch (void (*touch) (void *, unsigned))
 {
 	touch (lists, sizeof lists);

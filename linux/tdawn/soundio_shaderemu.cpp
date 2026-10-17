@@ -1,4 +1,4 @@
-// Tiberian Dawn's sound on the machine's sound card (docs/sound.md), in place of the game's
+// Tiberian Dawn's sound on the machine's sound card (docs/machine/sound.md), in place of the game's
 // mixer. Nothing is decoded here: a sound the game plays is looked up, by how its AUD file
 // begins, in the index tools/make_tdawn_sound.py made, and a voice is pointed at its samples
 // where they lie in the ROM.

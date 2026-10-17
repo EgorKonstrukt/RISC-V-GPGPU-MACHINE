@@ -1,5 +1,5 @@
 /*
- * GLQuake's window, frame and input on the ShaderEmu machine (docs/quake.md): a Nano-X
+ * GLQuake's window, frame and input on the ShaderEmu machine (docs/games/quake.md): a Nano-X
  * window the GPU draws into, in place of gl_vidlinuxglx.c.
  */
 #include <stdio.h>
@@ -10,7 +10,7 @@
 
 #define CAPTION		22		/* the window manager's caption and frame (nanowm.h) */
 #define FRAME		4
-#define REG_INPUT	0x20		/* the machine's input counters (docs/input.md) */
+#define REG_INPUT	0x20		/* the machine's input counters (docs/machine/input.md) */
 #define REG_CLOCK	0x34
 #define WARP_WIDTH	320
 #define WARP_HEIGHT	200
@@ -31,7 +31,7 @@ static GR_WINDOW_ID window;
 static int	opened;
 static int	mouse_x, mouse_y, mouse_dx, mouse_dy, mouse_known, mouse_inside = 1;
 static int	dragging;	/* the left button is held on the game: the pointer's travel turns the view */
-/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+/* A sitter in a holodeck's seat (docs/world/holodeck.md, "Played from the seat"): 1 with tracked
    hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
 static int	seated;
 static float	body, aimed;
@@ -87,7 +87,7 @@ void GL_Init (void)
 	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-/* the host shows the world round a seat: what is beside and behind the camera is drawn too (docs/holodeck.md) */
+/* the host shows the world round a seat: what is beside and behind the camera is drawn too (docs/world/holodeck.md) */
 int se_all_round;
 
 extern qboolean scr_drawloading;	/* gl_screen.c */
@@ -446,7 +446,7 @@ static int quake_key (int ch)
  * Asking the server costs two system calls and two task switches. The machine's own input
  * counters say when there can be anything: ask when they have moved, for a few calls after,
  * and a few times a second. The pointer's travel is read from the machine's input words
- * themselves (docs/input.md): the server's word of every move was a question and an answer
+ * themselves (docs/machine/input.md): the server's word of every move was a question and an answer
  * each, in every frame the view was turned in. The server says when the pointer comes over
  * the window and leaves it.
  */
@@ -661,7 +661,7 @@ static void seat_hand (const volatile unsigned *host, int h, vec3_t hand)
 			+ up[i] * SEGL_HOST_HAND_Y (host, h)) * unit;
 }
 
-/* ---- the status in the room (docs/holodeck.md, "The status in the room") ---- */
+/* ---- the status in the room (docs/world/holodeck.md, "The status in the room") ---- */
 
 typedef struct { int texnum; float sl, tl, sh, th; } hud_pic;	/* gl_draw.c's glpic_t */
 extern qpic_t	*sb_nums[2][11];

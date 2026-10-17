@@ -1,4 +1,4 @@
-/* nxide: a small place to write C in, build it and run it (docs/ide.md): the text coloured
+/* nxide: a small place to write C in, build it and run it (docs/apps/ide.md): the text coloured
  * by a lexer (syntax.h), every change kept (text.h), the machine's own compiler with its
  * complaints marked at their lines, and the program run below or under the debugger (debug.h). */
 #define _GNU_SOURCE

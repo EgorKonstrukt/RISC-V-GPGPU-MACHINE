@@ -28,7 +28,7 @@
 #define UI_FACE MWRGB(192, 192, 192)
 #define UI_SHADOW MWRGB(128, 128, 128)
 #define UI_SELECTED MWRGB(0, 0, 128)
-#define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/persist.md) */
+#define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/system/persist.md) */
 #define UI_WALLPAPER_CHOICE "desktop.wallpaper"	/* the registry's key for what the desktop shows: a picture's path, or #RRGGBB */
 #define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.jpg"
 

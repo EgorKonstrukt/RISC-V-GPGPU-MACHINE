@@ -1,4 +1,4 @@
-// Dear ImGui on this machine (docs/imgui.md): a Nano-X window for its input, and the GPU
+// Dear ImGui on this machine (docs/apps/imgui.md): a Nano-X window for its input, and the GPU
 // device, through programs/linux/gles.c, for its triangles. An OpenGL program opens its
 // window and calls seglInit() as usual, then these around its own drawing.
 #pragma once
@@ -9,7 +9,7 @@ bool ImGui_ImplShaderEmu_Init(unsigned int nano_x_window);
 bool ImGui_ImplShaderEmu_NewFrame();
 // Adds the frame's triangles to what OpenGL drew; seglSwap() then shows both.
 void ImGui_ImplShaderEmu_RenderDrawData(ImDrawData* draw_data);
-// The same by worker cores, while the program goes on to its next frame (docs/imgui.md, "The
+// The same by worker cores, while the program goes on to its next frame (docs/apps/imgui.md, "The
 // copy on worker cores"): call it where RenderDrawData() would be called, after what OpenGL
 // draws under the interface. True: the frame is not whole yet, and RenderFinish() makes it so
 // (the program calls it, then seglSwap(), before it draws its next frame, and ImGui may make

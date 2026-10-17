@@ -1,4 +1,4 @@
-// Text from numbers for Dear ImGui (docs/imgui.md): what the C library's vsnprintf would
+// Text from numbers for Dear ImGui (docs/apps/imgui.md): what the C library's vsnprintf would
 // write, for the formats an interface is full of, without its two passes and its long doubles.
 // -1 for anything else, which the library then does. Included by imgui_impl_shaderemu.cpp.
 #pragma once

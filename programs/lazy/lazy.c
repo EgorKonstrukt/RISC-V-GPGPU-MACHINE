@@ -2,7 +2,7 @@
 // that runs in place of the kernel: supervisor mode at 0x80400000, console through the SBI
 // call, as rvc_cpu and the harness start our Linux image (tools\make_lazy_image.py makes the
 // image's folder). The shader machine may leave a fill or a copy to its commit pass and run on
-// (LAZY_MEMOP, docs/boot.md); every case here is one where that could show. It prints a line a
+// (LAZY_MEMOP, docs/machine/boot.md); every case here is one where that could show. It prints a line a
 // case and a sum, which must be the same on rvc_cpu and on the shader machine.
 #include <stdint.h>
 

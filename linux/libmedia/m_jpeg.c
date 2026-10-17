@@ -1,5 +1,5 @@
 /*
- * JPEG pictures on the worker cores (docs/media.md). Three ways, by what the file allows:
+ * JPEG pictures on the worker cores (docs/system/media.md). Three ways, by what the file allows:
  *
  *   restart markers   every core takes strips of 16 rows and reads their codes itself, from
  *                     the interval each begins in: the whole picture in parallel. The markers

@@ -1,4 +1,4 @@
-/* Westwood's VQA pieces (docs/media.md, "Films"): a frame's 4x4 or 4x2 blocks from a codebook and
+/* Westwood's VQA pieces (docs/system/media.md, "Films"): a frame's 4x4 or 4x2 blocks from a codebook and
  * two bytes of pointer a block, and LCW ("format 80"). Red Alert's player and libmedia's share
  * them; this file needs nothing of the library but the workers. */
 #include <string.h>

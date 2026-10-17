@@ -1,8 +1,8 @@
 /*
- * nxweb: a browser (docs/web.md). The page is HTML laid out by web.h and web_layout.h with
+ * nxweb: a browser (docs/apps/web.md). The page is HTML laid out by web.h and web_layout.h with
  * the sheets css.h reads, in the fonts of the ROM; no scripts. It is drawn once into a pixmap
  * the GPU keeps, and scrolling copies from that. A page in the image is read as a file; any
- * other address is asked of the host (docs/fetch.md), which is the only part of this machine
+ * other address is asked of the host (docs/system/fetch.md), which is the only part of this machine
  * that has a network, unless the image keeps a copy (web/preload.py).
  *   nxweb [ADDRESS or FILE]
  */
@@ -191,7 +191,7 @@ web_file(const char *name, int *size)
 	return bytes == MAP_FAILED ? NULL : bytes;
 }
 
-/* What the host's status for an address says, in a few words (docs/fetch.md). */
+/* What the host's status for an address says, in a few words (docs/system/fetch.md). */
 static void
 why_of(char *why, int room, int code)
 {
@@ -638,12 +638,12 @@ draw_rows(GR_DRAW_ID to, int dy, int y0, int y1)
 		       (now() - began) / 1000);
 }
 
-/* ---- the pixmap as a ring of strips (docs/web.md, "Strips") ---- */
+/* ---- the pixmap as a ring of strips (docs/apps/web.md, "Strips") ---- */
 
 /* Strip k of the page (rows from k * STRIP) is in slot k % slot_count: a scroll keeps every row
  * drawn, and the view is one copy, two where the ring wraps. A strip is a GPU list of its own made
  * in its slot's memory by a worker (or this core); one with a field or a picture not in the ROM is
- * drawn by requests on `scratch` and copied in (docs/web.md, "Strips"). */
+ * drawn by requests on `scratch` and copied in (docs/apps/web.md, "Strips"). */
 #define STRIP 64
 #define SLOTS_MOST 32
 #define STRIP_COMMANDS 256
@@ -651,7 +651,7 @@ draw_rows(GR_DRAW_ID to, int dy, int y0, int y1)
 #define STRIP_BYTES (STRIP_COMMANDS * 64 + STRIP_CHARS * 4)	/* a slot's list and its strings */
 #define STRIP_WORKERS 4
 #define PICTURE_WORKERS 16	/* opened, for the pictures' decoding: a 250 x 180 JPEG 646 ms with 4, 275 with 16 or more */
-#define REG_SUBMIT 4		/* the GPU's words (docs/gpu.md): submit, list, count, lists drawn */
+#define REG_SUBMIT 4		/* the GPU's words (docs/machine/gpu.md): submit, list, count, lists drawn */
 #define REG_LIST 5
 #define REG_COUNT 6
 #define REG_DRAWN 7
@@ -3866,7 +3866,7 @@ main(int argc, char **argv)
 		if (test)
 			GrGetFontInfo(test, &sef);
 		if (!test || sef.lastchar != 0xffff || getenv("NXWEB_PLAIN")) {
-			fprintf(stderr, "nxweb: the window system's own font (no fonts of the ROM: tools/make_fonts.py, docs/fonts.md)\n");
+			fprintf(stderr, "nxweb: the window system's own font (no fonts of the ROM: tools/make_fonts.py, docs/system/fonts.md)\n");
 			memcpy(widths, info.widths, sizeof widths);
 			memset(web_faces, 0, sizeof web_faces);
 			web_plain = widths;

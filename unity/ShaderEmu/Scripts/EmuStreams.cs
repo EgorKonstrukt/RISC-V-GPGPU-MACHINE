@@ -2,7 +2,7 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 
-// Other players' consoles and displays as they arrive (docs/share.md), for every screen that
+// Other players' consoles and displays as they arrive (docs/world/share.md), for every screen that
 // shows one: the wall, a classroom tube, a holodeck's screen. Every player whose machine is on
 // has a slot (a picture, a console) and is drawn as packets come, shown or not, so a screen
 // that turns to them has their picture at once. A surface says whose it
@@ -17,7 +17,7 @@ public class EmuStreams : UdonSharpBehaviour
     public RenderTexture[] consoles;   // and drawn (640 x 480)
     public Material consoleMaterial;   // Terminal.shader, this behaviour's own
     public Texture2D blackTexture;
-    // A packet's units (docs/share.md, "Display"): its bytes as a texture, where each unit's
+    // A packet's units (docs/world/share.md, "Display"): its bytes as a texture, where each unit's
     // record is in it, and the shader that draws them into a slot's picture.
     public Material unitsMaterial;     // ShareUnitsDecode.shader
     public Texture2D unitsPacket;      // 288 x 1

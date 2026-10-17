@@ -1,4 +1,4 @@
-// One pass of the GPU device's draw (docs/gpu.md). The including pass defines _GpuPass (0-7)
+// One pass of the GPU device's draw (docs/machine/gpu.md). The including pass defines _GpuPass (0-7)
 // and sets that pass's blending and depth use.
 // The mesh is 65,536 points, one per triangle of the device's mesh. The geometry shader finds
 // the command that claims the point's three vertices and emits them; for a triangle no

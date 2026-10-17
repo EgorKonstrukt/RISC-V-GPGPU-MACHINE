@@ -1,4 +1,4 @@
-"""Makes nxplay's test files in linux/play/test (docs/play.md): a sweep with noise as WAV, MP3
+"""Makes nxplay's test files in linux/play/test (docs/apps/play.md): a sweep with noise as WAV, MP3
 and FLAC (ffmpeg does those), and a small four-channel MOD written here. Run on the host:
     python linux\\play\\make_test.py
 """

@@ -1,5 +1,5 @@
 // Vanilla Conquer's video, pointer and keyboard on the ShaderEmu machine: what video_sdl2.cpp
-// and wwkeyboard_sdl2.cpp are for SDL, on top of host.c (docs/tdawn.md).
+// and wwkeyboard_sdl2.cpp are for SDL, on top of host.c (docs/games/tdawn.md).
 #include "gbuffer.h"
 #include "palette.h"
 #include "video.h"
@@ -355,7 +355,7 @@ public:
 };
 
 /*
-** The right button held over the map and moved drags it (docs/tdawn.md, "Scrolling"). The
+** The right button held over the map and moved drags it (docs/games/tdawn.md, "Scrolling"). The
 ** game gets that button's press at its release, and only if the pointer stayed in place.
 */
 int ShaderEmu_Drag_Slack(int x, int y); // the game's: how far is in place there, 0 where no drag begins

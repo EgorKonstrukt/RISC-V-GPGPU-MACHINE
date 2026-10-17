@@ -1,5 +1,5 @@
 /*
- * Over mcw.h (docs/multicore.md, "The second layer"): a parallel loop, calls collected later,
+ * Over mcw.h (docs/machine/multicore.md, "The second layer"): a parallel loop, calls collected later,
  * what a job may do that only the first core may (print, defer, allocate, fail), and counters
  * every core adds to. With no workers the first core does all of it.
  */

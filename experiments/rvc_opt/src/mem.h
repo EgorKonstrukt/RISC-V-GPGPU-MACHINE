@@ -35,7 +35,7 @@
 #define L1_H1(t, n) ((((t) >> 3) ^ ((t) << ((n) - 3)) ^ ((t) >> (n))) & ((1u << (n)) - 1))
 #define L1_H2(t, n) ((((t) >> 2) ^ ((t) << ((n) - 2)) ^ ((t) >> ((n) + 3))) & ((1u << (n)) - 1))
 #if defined(CORES) && CORES > 1
-// A worker core's write cache is as large as the machine's geometry says (docs/multicore.md,
+// A worker core's write cache is as large as the machine's geometry says (docs/machine/multicore.md,
 // "The geometry"): tables of 2^mc_bits_now buckets, in the first buckets of the same arrays.
 // mc_bits_now is the size of the core whose cache is being looked at, in the tick and in
 // the commit.
@@ -157,7 +157,7 @@ uint mem_get_cached_or_tex_l1(L1P uint addr) {
     PROF(PROF_ram_read)
     // The texture is asked for the texel before the write cache is searched for it: a read is
     // not waited for until its texel is used, and the search goes on meanwhile
-    // (docs/tick-costs.md). The texel read last is the texture's own whether or not it is used.
+    // (docs/machine/tick-costs.md). The texel read last is the texture's own whether or not it is used.
     [branch]
     if ((addr >> 4) != dr_addr) {
         PROF(PROF_ram_read_tex)

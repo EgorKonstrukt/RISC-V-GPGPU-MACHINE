@@ -1,4 +1,4 @@
-"""A cartridge of our own for checking the 6502 (docs/nes.md, "Testing"): mapper 0, 16 KB,
+"""A cartridge of our own for checking the 6502 (docs/games/nes.md, "Testing"): mapper 0, 16 KB,
 pattern RAM. Its program never waits for long: every turn it reads the PPU's status through
 a pointer and across a page, pushes the flags, and folds what it read into RAM; now and then
 it writes the scroll, counts a delay down and waits for the interrupt. So its RAM sums are

@@ -1,6 +1,6 @@
 /*
  * Microwindows mouse driver for the ShaderEmu pointer: an evdev device that reports absolute
- * position in display pixels and three buttons (docs/input.md in the ShaderEmu repository).
+ * position in display pixels and three buttons (docs/machine/input.md in the ShaderEmu repository).
  */
 #include <fcntl.h>
 #include <stdint.h>

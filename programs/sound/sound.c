@@ -1,6 +1,6 @@
 // Sound test card: every kind of voice, started, changed and stopped at fixed samples of the
 // device's clock, for half a second. It is checked against tools/sound_reference.py, which
-// mixes the same voices from the harness's capture (docs/sound.md).
+// mixes the same voices from the harness's capture (docs/machine/sound.md).
 
 #include "../common/sound.h"
 

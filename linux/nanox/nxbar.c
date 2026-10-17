@@ -153,7 +153,7 @@ bevel(GR_WINDOW_ID w, int x, int y, int width, int height, int pressed)
 	GrLine(w, gc, x + width - 1, y, x + width - 1, y + height - 1);
 }
 
-/* The player's name ($USER, which the desktop's starter sets: docs/persist.md) and its box's width, 0 for none. */
+/* The player's name ($USER, which the desktop's starter sets: docs/system/persist.md) and its box's width, 0 for none. */
 static const char *
 player_name(void)
 {
@@ -195,7 +195,7 @@ task_x(int i)
 
 /* The machine's speed in millions of instructions a second: the first core's (its cycle
  * counter counts them), then all cores' (the workers' counts are the machine's control words,
- * as nxmon reads them: docs/multicore.md). True when the text is another than it was. */
+ * as nxmon reads them: docs/machine/multicore.md). True when the text is another than it was. */
 static char speed_text[24] = "";
 
 static int
@@ -504,7 +504,7 @@ launch(const char *command)
 	_exit(127);
 }
 
-/* "Open this" from the host (docs/open.md): a count among the machine's control words, and an
+/* "Open this" from the host (docs/system/open.md): a count among the machine's control words, and an
  * address in two runs of them. The last count acted on is kept in a file, for a bar started
  * again, and each new one starts `open` with the address. */
 #define OPEN_COUNT 144		/* word indices: 0x87000240 */

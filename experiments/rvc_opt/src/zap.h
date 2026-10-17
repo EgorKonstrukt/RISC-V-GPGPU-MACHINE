@@ -1,4 +1,4 @@
-// zap.h: the host's hand in the machine's RAM (docs/danger.md). For one commit the host may
+// zap.h: the host's hand in the machine's RAM (docs/world/danger.md). For one commit the host may
 // flip bits of one word, or of a square of texels with a different pattern in each: what a
 // stray particle does to a memory chip, and what the world's "Danger zone" panel does on
 // purpose. The commit includes this, the tick does not: it costs an instruction nothing.

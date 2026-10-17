@@ -1,4 +1,4 @@
-/* debug.h: a program run a line at a time (docs/ide.md, "The debugger"). What the lines,
+/* debug.h: a program run a line at a time (docs/apps/ide.md, "The debugger"). What the lines,
  * functions and variables are comes from the stabs TinyCC writes with -g; the program is held
  * with ptrace, a line's first instruction changed for a stop (DBG_STOP) where it should stop. */
 #ifndef IDE_DEBUG_H

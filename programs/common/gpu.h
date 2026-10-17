@@ -1,4 +1,4 @@
-// The GPU device (docs/gpu.md): real triangles, rasterised by the graphics card into the GPU's
+// The GPU device (docs/machine/gpu.md): real triangles, rasterised by the graphics card into the GPU's
 // own colour and depth target. A program builds a list of commands in RAM and submits it.
 // Depth test and blending are fixed; per draw the program picks how vertices are projected and
 // how fragments are coloured. Select DISP_MODE_GPU to show the result.

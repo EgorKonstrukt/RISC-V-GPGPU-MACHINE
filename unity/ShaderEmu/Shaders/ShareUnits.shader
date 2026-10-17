@@ -1,7 +1,7 @@
 Shader "ShaderEmu/ShareUnits"
 {
     // What a player sends of their display, made here whole: Udon copies one row of bytes
-    // (docs/share.md, "Units"; tools/share_units.py is the same in numpy, pass for pass).
+    // (docs/world/share.md, "Units"; tools/share_units.py is the same in numpy, pass for pass).
     // The picture is cut into blocks of four sizes, 4x4 samples of 1, 2, 4 or 8 pixels (levels
     // 0 to 3); a unit is 4x4 blocks of one level. _State keeps for each 8x8 cell the level the
     // receiver has it at (4: stale) and the packet that carried it.

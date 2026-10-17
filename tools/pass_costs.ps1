@@ -1,6 +1,6 @@
 param([string[]]$work = @("loop", "doom", "gzip", "sha", "find", "dd", "grep"), [int[]]$at = @(20, 60, 211),
       [string]$out = "logs\pass_costs.csv", [string[]]$extra = @(), [int]$frames = 2600, [switch]$make)
-# What a pass's time is made of (docs/tick-costs.md, "What a pass is made of").
+# What a pass's time is made of (docs/machine/tick-costs.md, "What a pass is made of").
 #
 #   tools\pass_costs.ps1 [-make]          then          python tools\pass_regress.py logs\pass_costs.csv
 #

@@ -1,7 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 
-// The sound card's way out (docs/sound.md): Unity's audio thread asks this for samples and
+// The sound card's way out (docs/machine/sound.md): Unity's audio thread asks this for samples and
 // gets them from the ring EmuSound keeps filled, as lox9973's ShaderAudio does. How far it
 // has read is the sound card's clock. It sits on the AudioSource's object and must have no
 // Update: the audio thread runs it while the main thread runs everything else.

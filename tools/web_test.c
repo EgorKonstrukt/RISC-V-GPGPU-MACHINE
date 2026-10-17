@@ -1,5 +1,5 @@
 /*
- * The browser's page engine on the host (docs/web.md): lays a page out with the image's own
+ * The browser's page engine on the host (docs/apps/web.md): lays a page out with the image's own
  * fonts and what tools of linux/apps/web/preload.py cached, says what came of it, and draws
  * it into a PPM file. No window system and no machine: a change to css.h, web.h or
  * web_layout.h is tried here first.

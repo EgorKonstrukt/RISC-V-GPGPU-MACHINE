@@ -37,7 +37,7 @@
 #define CAPTION 22      /* the window manager's caption and frame (nanowm.h) */
 #define FRAME   4
 #define GPU_SIZE  0x00b00000u
-#define REG_INPUT 0x20  /* the machine's input counters (docs/input.md) */
+#define REG_INPUT 0x20  /* the machine's input counters (docs/machine/input.md) */
 #define REG_CLOCK 0x34
 
 static uint8_t* gpu;
@@ -50,7 +50,7 @@ static int origin_x, origin_y;	/* the window's corner on the display */
 static cc_bool dragging;	/* the left button is held on the game: the pointer's travel turns the view */
 static int drag_far, tapped;	/* how far it has gone; a press let go where it began digs once */
 static uint32_t drag_ms;
-/* A sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat"): 1 with tracked
+/* A sitter in a holodeck's seat (docs/world/holodeck.md, "Played from the seat"): 1 with tracked
    hands, 2 with a mouse. The room is turned by `body`; the aim is the hand's from there. */
 static int seated;
 static int menu_on, menu_aim, menu_x, menu_y;	/* a seated player's menu: its pointer on the sheet (when aimed there), in the window's pixels */
@@ -246,7 +246,7 @@ static void WindowOrigin(void) {
 	origin_x = x; origin_y = y;
 }
 
-/* The pointer, from the machine's input words themselves (docs/input.md) and not from the
+/* The pointer, from the machine's input words themselves (docs/machine/input.md) and not from the
    server, whose word of every move was a question and an answer each. The server says when
    the pointer comes over the window and leaves it. */
 void Gfx_SE_Own(void);

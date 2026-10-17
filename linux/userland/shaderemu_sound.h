@@ -1,5 +1,5 @@
 /*
- * The sound card from a Linux program (docs/sound.md): /dev/sound hands out voices and sample
+ * The sound card from a Linux program (docs/machine/sound.md): /dev/sound hands out voices and sample
  * memory, and maps the registers that programs/common/sound.h describes. The device plays
  * what is at a physical address: sound memory (snd_memory) or a file in the ROM (snd_rom).
  */

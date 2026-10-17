@@ -1,5 +1,5 @@
 // Runs the display stream's shaders (unity/ShaderEmu/Shaders/ShareUnits.shader and
-// ShareUnitsDecode.shader, docs/share.md "Units") outside Unity, on pictures of a display:
+// ShareUnitsDecode.shader, docs/world/share.md "Units") outside Unity, on pictures of a display:
 //
 //   share_test FIRST.png NEXT.png ... [--room 1131] [--most 400] [--out FOLDER] [--no-pictures] [--lost-at N]
 //

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the C toolchain for programs in the Linux image: musl, static, for RV32IMAF (the
-# machine's float instructions, docs/fpu.md), with floats passed in integer registers. Sourced
-# by the build scripts next to it, after linux/kernel/build.sh (docs/nanox.md).
+# machine's float instructions, docs/machine/fpu.md), with floats passed in integer registers. Sourced
+# by the build scripts next to it, after linux/kernel/build.sh (docs/system/nanox.md).
 # Leaves headers and libraries in $SYSROOT and the compiler driver $WORK/bin/rv32-cc.
 set -euo pipefail
 WORK=${WORK:-$HOME/shaderemu-linux}

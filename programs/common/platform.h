@@ -1,5 +1,5 @@
 // The machine as a bare-metal program sees it: RAM from 0x80000000, a 16550 UART, and a display
-// that is nothing but RAM at fixed addresses (docs/display.md).
+// that is nothing but RAM at fixed addresses (docs/machine/display.md).
 #pragma once
 
 #include <stdint.h>

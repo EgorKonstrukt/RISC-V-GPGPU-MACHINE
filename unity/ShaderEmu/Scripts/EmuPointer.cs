@@ -7,7 +7,7 @@ using VRC.Udon.Common;
 
 // The players' beams: one per hand in VR, each drawn as a line with a dot where it lands, and
 // the middle of the view on desktop. A beam on the display is the machine's pointer
-// (docs/input.md): trigger or click is the left button, grip or right click the right one.
+// (docs/machine/input.md): trigger or click is the left button, grip or right click the right one.
 // A beam on a keyboard holds the key under it while the trigger is held; both hands type.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuPointer : UdonSharpBehaviour

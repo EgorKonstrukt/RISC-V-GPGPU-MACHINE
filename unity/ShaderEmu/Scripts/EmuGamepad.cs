@@ -4,7 +4,7 @@ using UnityEngine;
 using VRC.SDKBase;
 using VRC.Udon.Common;
 
-// The game controller (docs/gamepad.md): one behaviour a client. A visitor in a headset has it
+// The game controller (docs/world/gamepad.md): one behaviour a client. A visitor in a headset has it
 // from sitting down in a holodeck's seat until they stand up; their sticks, triggers and grips
 // are then the guest's keys and pointer, mapped for the program whose window has the guest's
 // keyboard (EmuMachine.gameId). There is no model of it: a notice over the hand says what the
@@ -22,7 +22,7 @@ public class EmuGamepad : UdonSharpBehaviour
     public Transform noticeBar;        // fills while both grips are held
     public float pointerSpeed = 700f;  // the pointer's: display pixels a second at full stick
 
-    // Linux key codes (docs/input.md)
+    // Linux key codes (docs/machine/input.md)
     private const int Esc = 1, Tab = 15, W = 17, Enter = 28, Ctrl = 29, A = 30, S = 31, D = 32, Z = 44, X = 45, Comma = 51, Dot = 52,
                       Slash = 53, Space = 57, Up = 103, Left = 105, Right = 106, Down = 108;
     private const int Pressed = 65536;
@@ -77,7 +77,7 @@ public class EmuGamepad : UdonSharpBehaviour
             code[StrafeRight] = Dot;
             code[TurnLeft] = Left;
             code[TurnRight] = Right;
-            // (no keys to look up and down: the aim's rise is the hand's, docs/holodeck.md)
+            // (no keys to look up and down: the aim's rise is the hand's, docs/world/holodeck.md)
             code[Fire] = Ctrl;
             code[Jump] = Space;
             code[Next] = Slash;
@@ -176,7 +176,7 @@ public class EmuGamepad : UdonSharpBehaviour
 
     public int Holding() { return held ? 1 : 0; }
 
-    // The sticks as the 3D games read them (docs/holodeck.md, "Played from the seat"): a signed
+    // The sticks as the 3D games read them (docs/world/holodeck.md, "Played from the seat"): a signed
     // byte an axis, 127 pushed home. Low: the left stick, right and forward; high: the right one.
     private int Axis(float v) { return Mathf.Clamp(Mathf.RoundToInt(v * 127f), -127, 127) & 255; }
     private bool InMenu() { return holodeck != null && holodeck.Flat(); }

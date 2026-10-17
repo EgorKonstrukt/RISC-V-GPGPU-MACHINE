@@ -1,4 +1,4 @@
-# Card timings of docs/nommu.md, one run a configuration, IMAGE:DEFINE,DEFINE (build/images/IMAGE):
+# Card timings of docs/system/nommu.md, one run a configuration, IMAGE:DEFINE,DEFINE (build/images/IMAGE):
 #   pwsh linux/nommu/card.ps1 -App doom|quake|q3|ray|ra -Configs linux:,nommu:NO_PAGING,nommu-zb:NO_PAGING,ZB
 param([string]$App = 'doom', [string[]]$Configs = @('linux:', 'nommu:NO_PAGING'))
 $repo = Split-Path (Split-Path $PSScriptRoot)

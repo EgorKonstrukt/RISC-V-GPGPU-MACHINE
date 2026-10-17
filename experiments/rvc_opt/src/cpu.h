@@ -48,7 +48,7 @@ uint fast_run_l1(L1P uint room) {
     pre_valid = false;
     fast_same = false;
 #ifdef CSR_FIELDS
-    // (no UART to poll and no single-stepping: the console is memory, docs/console.md)
+    // (no UART to poll and no single-stepping: the console is memory, docs/machine/console.md)
     if (!irq_quiet) {
         return 0;
     }
@@ -105,7 +105,7 @@ uint fast_run_l1(L1P uint room) {
             // texel number, so a wrong guess is simply not used.
             uint f_t = (f_pa & 0x7FFFFFFF) >> 4;
             // (no test of "this texel is the window's": a jump within the texel reads it again,
-            // 3 in 1,000, and every other entry passes a block less: docs/tick-costs.md)
+            // 3 in 1,000, and every other entry passes a block less: docs/machine/tick-costs.md)
             {
                 [branch]
                 if (f_t == fw_addr1) {

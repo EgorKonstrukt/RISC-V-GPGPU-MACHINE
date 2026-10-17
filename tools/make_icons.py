@@ -1,7 +1,7 @@
 """Makes the desktop's icons and the window captions' colours for the Linux image:
 
   icons32.ppm, icons16.ppm   sheets of icons, 16 cells a row; a pixel of the key colour
-                             (magenta) is not drawn (GR_IMAGE_CELL, docs/nanox.md)
+                             (magenta) is not drawn (GR_IMAGE_CELL, docs/system/nanox.md)
   icons.idx                  "name cell" lines: which cell is whose (linux/apps/icons.txt)
   caption-on.ppm, caption-off.ppm
                              256 x 1: a caption's colours from its left end to its right

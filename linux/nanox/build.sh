@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds Nano-X (Microwindows) with this directory's drivers for the Linux image, after
-# linux/kernel/build.sh. Output: build/images/linux/root (docs/nanox.md).
+# linux/kernel/build.sh. Output: build/images/linux/root (docs/system/nanox.md).
 #   wsl -- bash /mnt/c/.../linux/nanox/build.sh
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -15,7 +15,7 @@ if [ ! -d "$MW" ]; then
     git -C "$MW" checkout -q $MW_COMMIT
 fi
 
-# our change to the server (docs/nanox.md), on a clean copy of its sources
+# our change to the server (docs/system/nanox.md), on a clean copy of its sources
 git -C "$MW" checkout -q -- src/nanox src/engine src/demos src/include
 git -C "$MW" apply "$HERE/microwindows.patch"
 
@@ -23,7 +23,7 @@ git -C "$MW" apply "$HERE/microwindows.patch"
 cp "$HERE"/*_shaderemu.c "$MW/src/drivers/"
 # (the worker cores' mailboxes, for the pointer's worker: scr_shaderemu.c)
 cp "$REPO/programs/mc/mc.h" "$MW/src/drivers/"
-# (a font file of the ROM, for the screen driver and for programs that measure text: docs/fonts.md)
+# (a font file of the ROM, for the screen driver and for programs that measure text: docs/system/fonts.md)
 cp "$HERE/sef.h" "$MW/src/drivers/"
 if ! grep -q SHADEREMU "$MW/src/drivers/Objects.rules"; then
     cat >> "$MW/src/drivers/Objects.rules" <<'EOF'
@@ -50,7 +50,7 @@ mkdir -p "$OUT"
 # our own clients; nxbench is linked elsewhere so a profile can tell it from the server
 rv32-cc -O2 -w -Wl,-Ttext-segment=0x1000000 -I"$MW/src/include" "$HERE/nxbench.c" "$MW/src/lib/libnano-X.a" -o "$MW/src/bin/nxbench"
 rv32-cc -O2 -w -I"$MW/src/include" "$HERE/nxbar.c" "$MW/src/lib/libnano-X.a" -o "$MW/src/bin/nxbar"
-# the stock glxgears on our OpenGL driver, as a Nano-X client (programs/linux, docs/gpu.md)
+# the stock glxgears on our OpenGL driver, as a Nano-X client (programs/linux, docs/machine/gpu.md)
 GL=$REPO/programs
 [ -f "$GL/build/fetch/glxgears.c" ] || python3 "$GL/linux/fetch.py"
 # (its time arithmetic a frame out of doubles: programs/linux/gears_time.py)

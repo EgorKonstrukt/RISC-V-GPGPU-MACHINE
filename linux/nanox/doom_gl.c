@@ -80,7 +80,7 @@ room(size_t bytes)
 }
 
 /*
- * What a view is made from (docs/doom.md, "The view on worker cores"): the first core writes
+ * What a view is made from (docs/games/doom.md, "The view on worker cores"): the first core writes
  * it between two tics, a worker core makes the GPU's list from it while the next tic runs,
  * and reads nothing of the game that a tic writes.
  */
@@ -464,7 +464,7 @@ root(unsigned long long v)
 /*
  * Walls and floors do not move, but for doors and lifts: the whole level is written once, as
  * quads in GPU memory and a command for each run of them with one texture and one light, and
- * the depth buffer decides what is seen. A frame then sends what changed (docs/doom.md).
+ * the depth buffer decides what is seen. A frame then sends what changed (docs/games/doom.md).
  */
 enum { WALL_MID, WALL_TOP, WALL_BOTTOM, WALL_HOLES, WALL_SKY, FLOOR, CEILING, SKY };
 
@@ -2321,7 +2321,7 @@ weapon(void)
 	}
 }
 
-/* A holodeck's sitter with tracked hands holds the weapon (docs/holodeck.md, "Played from the
+/* A holodeck's sitter with tracked hands holds the weapon (docs/world/holodeck.md, "Played from the
  * seat"): its pictures stand in the world at the right hand, facing the viewer, 4 mm a pixel
  * of Doom's 320-wide screen, the hand at that screen's (160, 150). 1 if they were drawn. */
 static int

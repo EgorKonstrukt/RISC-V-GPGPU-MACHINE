@@ -28,18 +28,18 @@ struct BackendOptions {
     bool stateLog = false;        // D3D12 only: read the CPU's 64 x 64 state texels back every frame (--l1-log)
 };
 
-// The GPU device (docs/gpu.md): a mesh of kGpuTriangles triangles drawn into a square colour and
+// The GPU device (docs/machine/gpu.md): a mesh of kGpuTriangles triangles drawn into a square colour and
 // depth target of kGpuTarget pixels, then one small update zone on the state texture (Unity
 // pixel space, y up) holding the control words: RAM 0x87000000 to 0x87000fff.
 const UINT kGpuTriangles = 65536;
 const UINT kGpuTarget = 2048;
 const float kGpuControlZone[4] = {128, 447.5f, 256, 1};
-// The sound card's mix target (docs/sound.md): kSoundSide squared samples, two floats each.
+// The sound card's mix target (docs/machine/sound.md): kSoundSide squared samples, two floats each.
 const UINT kSoundSide = 128;
-// The rows of RAM an answer to the guest's request is written to (docs/fetch.md), as a zone.
+// The rows of RAM an answer to the guest's request is written to (docs/system/fetch.md), as a zone.
 const float kFetchZone[4] = {1024, 4096 - (64 + 0x76c000 / 2048) - 4, 2048, 8};
 const UINT kFetchSide = 256;   // the answer's texture: one word a texel, 256 KB
-// The network device (docs/lan.md): a row of RAM at 0x876b8000. Its first kNetSlot texels are the
+// The network device (docs/system/lan.md): a row of RAM at 0x876b8000. Its first kNetSlot texels are the
 // packet the guest sends, which popRow() returns after the control words; from kNetRing on is
 // the ring of kNetSlots packets for the guest, written as a zone when deliverNet() was called.
 const unsigned kNetRow = 64 + 0x76b800 / 2048, kNetSlot = 40, kNetRing = 64, kNetSlots = 8, kNetMost = 4;
@@ -56,17 +56,17 @@ const unsigned kCommitQuads = 33;
 // The machine's control words (display, GPU, input, sound: RAM from 0x87000000) as a row of the
 // state texture. popRow() returns them after the 64 texels of row 0.
 const unsigned kControlRow = 64 + 0x700000 / 2048, kControlTexels = 256;
-// The console (docs/console.md): texel kConHost of the network's row is the host's words, the
+// The console (docs/machine/console.md): texel kConHost of the network's row is the host's words, the
 // next the guest's, then the ring of kConRing bytes; the control pass writes the first.
 const unsigned kConHost = 40, kConRing = 256;
 const float kConZone[4] = {kConHost + 0.5f, 4096 - kNetRow - 0.5f, 1, 1};
 const int kCoresMost = 256;   // what the shader, the kernel and the library have room for
-const int kCores = 256;       // core 0 and 255 workers: the only machine there is (docs/multicore.md)
+const int kCores = 256;       // core 0 and 255 workers: the only machine there is (docs/machine/multicore.md)
 // The display's RAM framebuffer (RAM 0x87000000, 128 texture rows), for writing the picture back.
 
 class RvcBackend {
 public:
-    // The GPU device's passes to draw in the next frame, one bit each (docs/gpu.md); pass 0 always.
+    // The GPU device's passes to draw in the next frame, one bit each (docs/machine/gpu.md); pass 0 always.
     uint32_t gpuPasses = 1;
     // Whether the machine's geometry has any worker (the harness reads its texel back with the
     // control words): while it has none, and is not being laid out, nothing of the workers'
@@ -80,7 +80,7 @@ public:
     static const UINT kWidth = 2048, kHeight = 4096;   // rvc's vm_state_crt.asset
     static const UINT kProfCount = 256;
 
-    // --cpu (docs/cpu-harness.md): the instructions run on the processor. The tick pass is not
+    // --cpu (docs/machine/cpu-harness.md): the instructions run on the processor. The tick pass is not
     // drawn; RAM comes from the host before a frame and the devices' part of it goes back after.
     bool cpuMode = false;
     virtual bool uploadRows(UINT row, UINT rows, const void* texels) { (void)row; (void)rows; (void)texels; return false; }

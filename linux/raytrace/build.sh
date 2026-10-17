@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds nxray, the ray tracer that shares its tiles between the worker cores (docs/raytrace.md),
+# Builds nxray, the ray tracer that shares its tiles between the worker cores (docs/apps/raytrace.md),
 # for the image.   wsl -- bash /mnt/c/.../linux/raytrace/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & nxray
 set -euo pipefail

@@ -1,4 +1,4 @@
-# The whole no-MMU round (docs/nommu.md): the build scripts, the flat root, the image, the test set.
+# The whole no-MMU round (docs/system/nommu.md): the build scripts, the flat root, the image, the test set.
 #   pwsh linux/nommu/all.ps1 [-Builds userland/build.sh,...] [-NoBuild] [-Kernel] [-Cases "doom-1 nxray"]
 param([string[]]$Builds = @(), [switch]$NoBuild, [switch]$Kernel, [string]$Cases = '')
 $repo = Split-Path (Split-Path $PSScriptRoot)

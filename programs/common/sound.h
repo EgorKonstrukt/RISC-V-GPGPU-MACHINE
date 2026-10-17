@@ -1,4 +1,4 @@
-// The sound card (docs/sound.md): up to 32 voices, each playing samples from memory at its own
+// The sound card (docs/machine/sound.md): up to 32 voices, each playing samples from memory at its own
 // pitch and volume, mixed by the device. A program fills in a voice and changes its key; the
 // device answers in words of its own, a frame later at the earliest.
 #pragma once

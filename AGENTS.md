@@ -3,7 +3,7 @@
   `linux/prebuilt/nommu`), and with `--save-prebuilt` keeps that build too: Linux without the MMU
   is what the harness, `rvc_cpu` and `tools/test_all.py` run by default; with the MMU is legacy.
 - Tiberian Dawn makes a unit's second path search on a worker core while the first core makes
-  the first, and does not run a search that must come out as one already made (`docs/tdawn.md`,
+  the first, and does not run a search that must come out as one already made (`docs/games/tdawn.md`,
   "A unit's path searches"). Code a search reaches (`Can_Enter_Cell` of units and infantry,
   `Find_Path` and what it calls) must store nothing outside `ShaderEmu_Core[who]`, and a new
   use of the threshold other than `Passable_Cell`'s comparison breaks the reuse:
@@ -34,7 +34,7 @@
   out, measure 191 to 255 again (`PHYS_WORKERS`).
 
 - Tick utilization is instructions run over busy passes times 8,192 (`pwsh tools\tick_util.ps1
-  -Name N -Cmd "..." [-From TEXT]`, `docs/boot.md` "Passes that end early"): it prints what
+  -Name N -Cmd "..." [-From TEXT]`, `docs/machine/boot.md` "Passes that end early"): it prints what
   ended passes early by reason and place, the kernel's idle loop apart, and a WORKERS line.
   In the harness an early end costs 0.2 ms, not the rest of the pass (a pass is 0.2 ms + 0.24
   us an instruction); in the world's fixed mode it costs the instructions.
@@ -44,7 +44,7 @@
   simulation, another bucket to try did (Doom 1,840 full-cache passes to 93). Four tables
   measured 0.6% slower.
 - A port ends its frame with `seglSwapEarly()` and calls `seglSettle()` before it next writes,
-  through a pointer, memory the list in flight reads (`docs/gpu.md`); each keeps a switch for
+  through a pointer, memory the list in flight reads (`docs/machine/gpu.md`); each keeps a switch for
   the old wait (`QUAKE_SWAP`, `NES_SWAP`, `CLASSICUBE_SWAP`, `IMDEMO_SWAP`, `GL_SWAP` `=wait`),
   which gives before and after from one binary. A plain hold cannot show a store made too
   early: hold late (`QUAKE_HOLD_LATE=1` and the like) and compare the two pictures.
@@ -76,7 +76,7 @@
 - The kernel tick at 20 Hz with high-resolution timers is worth 5.5% of a game's frame at 2
   MIPS and was not installed: input is polled from the tick, so a key or the pointer would
   wait up to 50 ms; with the input poll kept on a timer of its own about 1% is left.
-- The compiler's libraries are laid out for the ROM by `linux/tcc/pack.py` (`docs/cc.md`):
+- The compiler's libraries are laid out for the ROM by `linux/tcc/pack.py` (`docs/system/cc.md`):
   what the examples take comes first in each archive and `mapped.c` asks for it in windows.
   After a change to an example, `gles.c`, `mcw.c`, Nano-X's library or musl run
   `linux/tcc/build.sh`. Reorder an archive's members, never its index, or every linked
@@ -93,7 +93,7 @@
   (menus 52 to 89, three programs starting 56 to 86).
 
 - A program's first core with nothing to do until the next pass calls `mcw_rest()`
-  (`docs/multicore.md`, "A core that rests"), not the pause hint: it is the `REST` ioctl of
+  (`docs/machine/multicore.md`, "A core that rests"), not the pause hint: it is the `REST` ioctl of
   `/dev/gpu` (`_IO('G', 11)`, `shaderemu_gpu_rest`): the kernel yields, or does the idle
   loop's work and ends the pass. 322 instructions a call. Never from a job on a worker; with
   no workers open or on an older kernel it is the pause hint. `tools\tick_util.py` counts a
@@ -117,14 +117,14 @@
 - In WSL `$NAME` is the computer's name: a build script must not take an image's name from a
   variable called `NAME`.
 - The display stream between players is judged while the picture changes, not by bytes or by
-  the time to a settled picture (`docs/share.md`, "Judged while it moves"): record 300 frames
+  the time to a settled picture (`docs/world/share.md`, "Judged while it moves"): record 300 frames
   with `rvc_harness --cpu --screen-log`, play them with `python tools/share_motion.py`, and
   hold two real clients' logs together with `python tools/share_clients.py` (`netTest`)
   (the tiles of before against the units, a packet every 0.15 s and every second), and a change to
   `ShareUnits.shader` must still give `tools/share_units.py`'s bytes (`bin\share_test.exe`,
   then `--against`), under fxc2 and under Windows' FXC: a `continue` in a loop, or a vector's
   component written by index in one, compiled under one and not the other.
-- The pointer has a worker core of the window system's (`docs/nanox.md`, "The pointer on a core of its
+- The pointer has a worker core of the window system's (`docs/system/nanox.md`, "The pointer on a core of its
   own"): the cursor and a dragged window follow it every pass, and the kernel reports no move
   inside the server's quiet rectangle. The core is lent (job, answer and "taken" words kept
   equal: the kernel takes it at once for a program that keeps workers). The test is a drag
@@ -133,7 +133,7 @@
   255 workers. A run's instructions shift half a percent with its timing: compare means of
   several timings (`sleep 0.3; ...`), never one run. What changes the window tree must raise
   `gd_scene_gen`, or the layer table and that rectangle are stale.
-- Quake III Arena (`docs/quake3.md`) draws from the ROM: its light maps and models' poses are
+- Quake III Arena (`docs/games/quake3.md`) draws from the ROM: its light maps and models' poses are
   read by the GPU where `quake3-se.dat` lies (its textures are decoded from that file into GPU
   memory, "Pictures decoded when a level loads"), so that file must be a file of the ROM
   and the GPU shader must have the draws of 13 October 2026 (`0x800` lit, `0x10000` moved,
@@ -147,21 +147,21 @@
   touches its own entity only, and `QUAKE3_SUM=1` with `QUAKE3_SIDE=inline` must say the same.
 - The world's speed is measured in the editor with the Game view in front (play mode started by a
   script leaves the Scene view there and the room is drawn small), by `totalInstructions` over
-  several seconds, a change and the tree in turn (`docs/multicore.md`, "In Unity"). A frame of 8
+  several seconds, a change and the tree in turn (`docs/machine/multicore.md`, "In Unity"). A frame of 8
   rounds is the card's: the room is 3% of it and a round's other draws 5%, the ticks the rest. A guest's wait for
   something the host gives once a Unity frame shows as rounds of 52 instructions to the frame's end.
-- The browser's engine (`linux/apps/css.h`, `web.h`, `web_layout.h`; `docs/web.md`) has no part of
+- The browser's engine (`linux/apps/css.h`, `web.h`, `web_layout.h`; `docs/apps/web.md`) has no part of
   the window system in it and is tried on the host first: `tools/web_test.c` lays a page out
   with the image's own fonts, counts texts past the edge and over each other (both must be 0
   but for a listing), and `nxweb` with `NXWEB_DUMP=1` must print the same counts in the
   machine. Real pages for it come from `python linux/apps/web/preload.py --pages --cache DIR`
   into a private image's overlay. The fonts are `python tools\make_fonts.py`, before the image
-  is made (`docs/fonts.md`); without them, or under a window system from before them, `nxweb`
+  is made (`docs/system/fonts.md`); without them, or under a window system from before them, `nxweb`
   says so and draws in the built-in font. A capture that is not a timing needs no card:
   `rvc_harness --cpu --warp`, still through `tools\gpu_queue.ps1`.
 
 - The fast step tells an instruction's kind by a tree of tests and a load has one way out
-  (`fast_exec_l1` in `emu.h`, `mem_get_cached_or_tex_l1` in `mem.h`; `docs/tick-costs.md`, the
+  (`fast_exec_l1` in `emu.h`, `mem_get_cached_or_tex_l1` in `mem.h`; `docs/machine/tick-costs.md`, the
   sections of 13 October 2026). The text's form is the gain: the same tests as bools computed
   first were 4% slower, and operations counted do not say which way a shape goes. After any
   change to the fast loop's control flow run the three loads in turn from one snapshot (a
@@ -169,7 +169,7 @@
 - A round in Unity costs what a pass costs in the harness (the same fxc2 bytecode); what is
   left between them is 1.4 ms of every frame that is no round's (the room's cameras 0.65).
 - Doom's view is made by up to four worker cores from what the first core tells it between
-  tics (`docs/doom.md`, "The view on worker cores"). A new place the game writes a thing's
+  tics (`docs/games/doom.md`, "The view on worker cores"). A new place the game writes a thing's
   state, place, height or speed needs `doom_thing_changed`, or a sleeping thing never wakes:
   `DOOM_VIEW=told DOOM_VIEW_CHECK=1` must say 0 not as told, and the three demos' state sums
   must hold with and without `DOOM_PORT=rest`. Compare held frames by `DOOM_SUM`'s order-free
@@ -184,51 +184,51 @@
   "pages brought for their start" must say 0. A job that waits ends its pass with
   `mc_end_pass()`, never with the pause hint, which is a worker's sleep.
 - A program that uses workers is run once with `RVC_RACES=FILE` on `rvc_cpu`: 0 undone, and
-  its own checks as without it, or it is wrong on the card now and then (`docs/multicore.md`,
+  its own checks as without it, or it is wrong on the card now and then (`docs/machine/multicore.md`,
   "Races"; reads "as it was" are a core waiting on another's word, and are no fault).
   Its loops, calls, prints and counters go through `mcwx.h` ("The second layer"), not code of
   its own; `RVC_CALLS=FILE` and `tools/mc_candidates.py` say what of core 0's is worth a job.
 - Events are pushed to a program (`GrNumPushEvents`) and a window's, GC's and font's ids are
-  the program's own (requests 127 to 129; `docs/nanox.md`). A program with its own `select()`
+  the program's own (requests 127 to 129; `docs/system/nanox.md`). A program with its own `select()`
   on the socket still gets one event a `GrServiceSelect`. A program's start is measured as the
   first window of a session and as a later one: the first pays for the icon list and the font.
 - nxphys asks for 255 workers and gives the grid and the pictures to shares with no bodies
   (`PHYS_SERVICE=0` is the old sharing; this replaces the 207 above). nxpath is a mesh viewer
-  since 13 October 2026 (`docs/raytrace.md`): its sum is `02f213e9` (160 x 120, 2 samples, with
+  since 13 October 2026 (`docs/apps/raytrace.md`): its sum is `02f213e9` (160 x 120, 2 samples, with
   workers and with `NXPATH_CORES=0`), and `NXPATH_CHECK=500` must say 0.
 - `tools/private_image.py` reads the shared root each time: a "before" image made again after
   the root was rebuilt is no longer before. `linux/prebuilt/root` of the last commit is.
 - A `Con_Printf` while a Quake level loads draws a frame: prints added there move the numbers
   of held frames.
 - `/persistence` is the one folder a host keeps between sessions, and only when asked
-  (`docs/persist.md`): `nxpersist`, the fetch's `persist:` addresses, `--persist FILE` on
+  (`docs/system/persist.md`): `nxpersist`, the fetch's `persist:` addresses, `--persist FILE` on
   `rvc_cpu` and `rvc_harness`. The `nx` script runs `nxpersist load` before the desktop: a
   desktop's start has that program's start in it. A program that should keep a file writes it
   under that folder (its starter's `cd`, `HOME` or a link), and 96,000 packed bytes are all.
 - A setting a program wants kept is a key of the registry all programs share (`registry.h`,
-  `nxreg`; `/persistence/registry`, `docs/persist.md`), not a file of its own: `program.name`,
+  `nxreg`; `/persistence/registry`, `docs/system/persist.md`), not a file of its own: `program.name`,
   set at once, read at start. A test that must have the defaults does not read it (`RAY_FRAMES`).
 - A holodeck's sitter on a desktop plays by the host's words, not by the window's keys
-  (`docs/holodeck.md`, "Played from the seat"; `EmuHolodeck.ByWords`): W, A, S, D and the arrows
+  (`docs/world/holodeck.md`, "Played from the seat"; `EmuHolodeck.ByWords`): W, A, S, D and the arrows
   are the left stick, Ctrl or the left button the right trigger, the right button the left one, Space the jump bit. A game
   played from the seat reads the stick and the two triggers while seated (`seated` 1 and 2), and
   its number is in `ByWords`; `rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` with its `_SEAT`
   switch must walk it. ClassiCube started in the background there wants `</dev/null`.
-- The harnesses lock each other out (`harness/apps/run_lock.cpp`; `docs/cpu-harness.md`, "One card, many
+- The harnesses lock each other out (`harness/apps/run_lock.cpp`; `docs/machine/cpu-harness.md`, "One card, many
   processors"): CPU ones (`rvc_cpu`, `rvc_harness --cpu`) together, a GPU one alone; a refused one prints
   `[lock] ... refused` and exits 75 having done nothing. A GPU timing waits until no CPU run is left.
 - `game_par.py`'s card model has `RVC_ADFAULT=1`: the card's walk faults on a clear accessed or
   written bit, and a worker stops there until core 0 serves it. `/dev/gpu` maps its pages with
   both set (`shaderemu_gpu_mmap`): its `[cpu] stops:` line must say 0 on a written bit.
 - The browser draws a page in strips of 64 rows, each a GPU list of its own made by lent
-  workers (`strip_job` in `nxweb.c`, `docs/web.md`, "Strips"), and styles subtrees on them
+  workers (`strip_job` in `nxweb.c`, `docs/apps/web.md`, "Strips"), and styles subtrees on them
   (`web_style_range`). `strip_job` draws what `draw_item` draws: a change to one is a change to
   both, and `NXWEB_CHECK=1` in the harness with `--cpu --warp` must say 0 pixels and 0 elements
   differ. The first core submits the lists; a worker never takes the GPU's lock word.
 - Every program decodes and encodes pictures, sound and films with libmedia (`linux/libmedia`,
-  `docs/media.md`), on the worker cores. A change to it keeps `python linux/libmedia/test/check_pictures.py
-  MEDIA_TEST --wsl` at 0 bad and the sums of `docs/media.md` (sound, films) and of `nxplay` and `nxvideo`.
+  `docs/system/media.md`), on the worker cores. A change to it keeps `python linux/libmedia/test/check_pictures.py
+  MEDIA_TEST --wsl` at 0 bad and the sums of `docs/system/media.md` (sound, films) and of `nxplay` and `nxvideo`.
   The image's pictures are JPEG in restart intervals or PNG in segments (`png_segments.py`), which every
   core decodes by itself: a tool that writes one asks for that (`restart_marker_blocks`), not a PPM.
-- After a change, `python tools/test_all.py` (`docs/cpu-harness.md`, "The test set"; two minutes): every
+- After a change, `python tools/test_all.py` (`docs/machine/cpu-harness.md`, "The test set"; two minutes): every
   case must pass, and `--races` too for a change to work on the workers. A value moved on purpose is set anew there.

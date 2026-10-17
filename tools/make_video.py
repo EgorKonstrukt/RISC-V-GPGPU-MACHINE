@@ -5,7 +5,7 @@ build/images/linux/root (tools/make_linux_image.py then puts it in the image).
 
 It is the first seconds of the trailer of Big Buck Bunny, (c) copyright 2008, Blender
 Foundation / www.bigbuckbunny.org, licensed Creative Commons Attribution 3.0, fetched once from
-Wikimedia Commons into build/fetch/media. MPEG-1 as nxvideo wants it (docs/video.md): closed
+Wikimedia Commons into build/fetch/media. MPEG-1 as nxvideo wants it (docs/apps/video.md): closed
 groups of six pictures with no B pictures, so that every group is a worker's job by itself,
 and layer II sound. Needs ffmpeg and, the first time, the network.
 """

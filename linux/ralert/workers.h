@@ -1,5 +1,5 @@
 /*
- * The machine's worker cores, for Red Alert (docs/ralert.md, docs/multicore.md). The game is
+ * The machine's worker cores, for Red Alert (docs/games/ralert.md, docs/machine/multicore.md). The game is
  * core 0's; a worker runs functions of workers.c in the game's own memory. What a worker is
  * to write must be nobody else's to the 16 bytes, which workers_alloc() sees to, and a core
  * sees another's stores one pass of the machine later.

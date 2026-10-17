@@ -1,6 +1,6 @@
 Shader "ShaderEmu/sound"
 {
-    // The machine's sound card (docs/sound.md). SoundMix draws the host's ring of samples: 128 by
+    // The machine's sound card (docs/machine/sound.md). SoundMix draws the host's ring of samples: 128 by
     // 128 pixels, left and right in red and green, each the mix of the guest's voices at that
     // sample. The voices' own words are moved on by GPUControl (gpu.shader).
     Properties

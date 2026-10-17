@@ -1,4 +1,4 @@
-/* The GIF encoder (docs/media.md, "GIF encoding"): a picture's own 256 colours or fewer, else
+/* The GIF encoder (docs/system/media.md, "GIF encoding"): a picture's own 256 colours or fewer, else
  * 6 x 7 x 6 fixed ones dithered, rows on every core. The LZW codes are pieces of rows, each begun
  * after a clear code and ended on a byte by a core of its own, then put one after another in
  * sub-blocks: a decoder sees one stream that clears now and then. */

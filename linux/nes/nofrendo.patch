@@ -852,7 +852,7 @@ index a8f6a10..4a97a3e 100644
     map_memwrite *mem_write;
     apuext_t *sound_ext;
 +   /* ours: the lines from now whose hblank(0) only counts (no interrupt; hblank(1) does nothing),
-+   ** and so many such lines passed at once (docs/nes.md, "A cartridge that counts lines") */
++   ** and so many such lines passed at once (docs/games/nes.md, "A cartridge that counts lines") */
 +   int (*hblank_quiet)(void);
 +   void (*hblank_skip)(int lines);
  } mapintf_t;
@@ -1626,7 +1626,7 @@ index 9a6875b..ef3cec5 100644
 +** slice's cycles, or 0 with nothing done when the line after is not an ordinary one. */
 +ppu_lines_t ppu_lines;
 +
-+/* A slice given several lines at once (docs/nes.md, "Lines ahead"): the lines after its first
++/* A slice given several lines at once (docs/games/nes.md, "Lines ahead"): the lines after its first
 +** are counted only when something looks (ppu_lines_settle), or at its end. x is the first
 +** line's cycles and step a line's, in 131072ths; granted the cycles of them all. */
 +int ppu_lines_ahead;

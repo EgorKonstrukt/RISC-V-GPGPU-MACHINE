@@ -1,4 +1,4 @@
-"""The console writes without ending the machine's pass (docs/boot.md, "Passes that end early").
+"""The console writes without ending the machine's pass (docs/machine/boot.md, "Passes that end early").
 
 The machine's buffer holds 64 characters a pass and the character that fills it ends the pass.
 The driver (drivers/tty/hvc/hvc_riscv_sbi.c) counts what it has put in this pass (the timer's

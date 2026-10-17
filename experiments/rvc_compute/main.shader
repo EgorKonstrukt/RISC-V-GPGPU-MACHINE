@@ -361,7 +361,7 @@
             #include "src/types.h" // includes fb.h
 
 #ifdef GPU_DEVICE
-            // The GPU device's picture, for copying into the RAM framebuffer (docs/gpu.md).
+            // The GPU device's picture, for copying into the RAM framebuffer (docs/machine/gpu.md).
             Texture2D<float4> _GpuTarget;
             #define GPU_STATE _SelfTexture2D
             #define GPU_WRITEBACK

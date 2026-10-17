@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds nxplay, the audio player (docs/play.md), and puts it and its test files in the image.
+# Builds nxplay, the audio player (docs/apps/play.md), and puts it and its test files in the image.
 #   wsl -- bash /mnt/c/.../linux/play/build.sh        (after linux/nanox/build.sh and linux/libmedia/build.sh)
 # In the guest: nxplay /usr/share/play-test.mp3
 set -euo pipefail
@@ -14,7 +14,7 @@ LIB=$WORK/src/libmedia
 [ -f "$LIB/libmedia.a" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share"
 
-# The decoders are libmedia's (docs/media.md); what is left here is the player.
+# The decoders are libmedia's (docs/system/media.md); what is left here is the player.
 INC="-I$REPO/linux/libmedia -I$REPO/linux/apps -I$MW/src/include -I$REPO/linux/userland -I$REPO/programs/mc"
 # (-O3 with loops unrolled: the ring's copies and the window a little fewer instructions)
 DECODE="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"

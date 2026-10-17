@@ -1,4 +1,4 @@
-"""libmedia's Westwood VQA against ffmpeg's (docs/media.md, "VQA"): every picture of real files
+"""libmedia's Westwood VQA against ffmpeg's (docs/system/media.md, "VQA"): every picture of real files
 (Tiberian Dawn's 4x2 blocks, Red Alert's 4x4) decoded by media_test, made colours by its own
 palette, against ffmpeg's decoding to RGB. The sound against the games' own decoder
 (vqa_sound_ref.cpp, its FILE.VQA.game.raw beside the file: --game), not ffmpeg's, whose IMA steps

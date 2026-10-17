@@ -1,4 +1,4 @@
-# The system sheet on the den's back wall (docs/world.md, "The system sheet"):
+# The system sheet on the den's back wall (docs/world/world.md, "The system sheet"):
 # "ShaderEmu/Write the system sheet into the open scene" sets it from this file.
 # title: the line at its top. column: the next column begins. head: a heading.
 # NAME | TEXT: a line whose text wraps under itself, NAME padded to the column's widest.

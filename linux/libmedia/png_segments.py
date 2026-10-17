@@ -1,4 +1,4 @@
-"""PNG files in segments, as libmedia's encoder writes them (docs/media.md), for the build's tools:
+"""PNG files in segments, as libmedia's encoder writes them (docs/system/media.md), for the build's tools:
 each IDAT is rows of its own in a deflate stream that refers to nothing before it and ends on a
 byte, its first row filtered without the row above, every row with a filter quick to undo, and the
 mdPR chunk lists the segments' first rows. Any PNG reader reads them; libmedia's decodes every segment on a core of its own.

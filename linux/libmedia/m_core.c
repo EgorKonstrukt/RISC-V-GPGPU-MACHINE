@@ -1,4 +1,4 @@
-/* libmedia's core: workers, memory, what a file is, pictures to a size, the simple encoders (docs/media.md). */
+/* libmedia's core: workers, memory, what a file is, pictures to a size, the simple encoders (docs/system/media.md). */
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>

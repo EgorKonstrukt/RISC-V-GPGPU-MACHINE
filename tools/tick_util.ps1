@@ -12,7 +12,7 @@ $out = 'build\tick_util'
 New-Item -ItemType Directory -Force $out, logs | Out-Null
 $log = "logs\tick_$Name.log"
 if (Test-Path $log) { throw "log $log exists: pick a new name" }
-# the harness boots Linux without the MMU once its image is made (docs/nommu.md), and its kernel's names
+# the harness boots Linux without the MMU once its image is made (docs/system/nommu.md), and its kernel's names
 $nommu = Test-Path build\images\nommu\linux_payload.bin
 $kernel = if ($nommu) { "$out\vmlinux-nommu.nm" } else { "$out\vmlinux.nm" }
 $image = if ($nommu) { 'build\images\nommu\Image' } else { 'build\images\linux\Image' }

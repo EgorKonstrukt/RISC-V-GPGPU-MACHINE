@@ -1,10 +1,10 @@
-"""No-MMU kernel: the console is words and a ring in RAM that the host reads after every pass (docs/console.md)."""
+"""No-MMU kernel: the console is words and a ring in RAM that the host reads after every pass (docs/machine/console.md)."""
 import sys
 K = sys.argv[1]
 
 CON = r'''
 /*
- * ShaderEmu's console without the MMU (docs/console.md): the host's words at 0x876b8280
+ * ShaderEmu's console without the MMU (docs/machine/console.md): the host's words at 0x876b8280
  * (characters delivered, the last of them), the guest's at 0x876b8290 (taken, written), and
  * the output ring after them, which the host reads after every pass.
  */

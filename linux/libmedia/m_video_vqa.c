@@ -1,4 +1,4 @@
-/* Westwood's VQA films (docs/media.md, "Films"): version 2, 4x4 or 4x2 blocks, SND0/1/2 sound.
+/* Westwood's VQA films (docs/system/media.md, "Films"): version 2, 4x4 or 4x2 blocks, SND0/1/2 sound.
  * Every codebook's pieces are found at the open, so any frame can be made once its codebook
  * and pointers are unpacked; a frame's block rows go to every core but those that unpack the
  * next frames' pointers and codebooks ahead. */

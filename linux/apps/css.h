@@ -1,5 +1,5 @@
 /*
- * Style sheets for nxweb (docs/fetch.md): rules read from text, kept by the last part of their
+ * Style sheets for nxweb (docs/system/fetch.md): rules read from text, kept by the last part of their
  * selector, and found again for an element of the page's tree. Lengths come out in this
  * machine's pixels; what is not understood is left out, never guessed. No part of the window
  * system is in here: web.h and a test on the host include it too.

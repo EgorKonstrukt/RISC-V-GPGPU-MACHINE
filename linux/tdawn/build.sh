@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds Command & Conquer: Tiberian Dawn (Vanilla Conquer, a Nano-X client here) for the image,
-# and fetches the 1995 demo's game data, which is not kept in this repository (docs/tdawn.md).
+# and fetches the 1995 demo's game data, which is not kept in this repository (docs/games/tdawn.md).
 #   wsl -- bash /mnt/c/.../linux/tdawn/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & tdawn
 set -euo pipefail
@@ -14,7 +14,7 @@ OUT=${TDAWN_OUT:-$REPO/build/images/linux/root}	# (another image's folder for an
 COMMIT=ce83b59
 DEMO=${TDAWN_DEMO:-https://archive.org/download/CommandConquerDemo/cc1demo1.zip}
 [ -f "$MW/src/lib/libnano-X.a" ] || { echo "run linux/nanox/build.sh first"; exit 1; }
-# a movie's block rows are libmedia's (docs/media.md, "VQA"; another build's with TDAWN_MEDIA=FILE)
+# a movie's block rows are libmedia's (docs/system/media.md, "VQA"; another build's with TDAWN_MEDIA=FILE)
 MEDIA=${TDAWN_MEDIA:-$WORK/src/libmedia/libmedia.a}
 [ -f "$MEDIA" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
 
@@ -69,13 +69,13 @@ rv32-cc -O2 -fno-pie -w -DNDEBUG -DSHADEREMU $GLINC -fno-common -fdata-sections 
 riscv32-linux-objcopy --set-section-alignment '.data*=16' --set-section-alignment '.bss*=16' "$WORK/src/tdawn-gles.new.o"
 # (kept with its time when its bytes are the same: a newer one links both games again, a minute)
 cmp -s "$WORK/src/tdawn-gles.new.o" "$WORK/src/tdawn-gles.o" && rm "$WORK/src/tdawn-gles.new.o" || mv "$WORK/src/tdawn-gles.new.o" "$WORK/src/tdawn-gles.o"
-# -fno-pie: a use of a global costs a load from a table otherwise (docs/doom.md)
+# -fno-pie: a use of a global costs a load from a table otherwise (docs/games/doom.md)
 # -fno-lifetime-dse: the game's operator new marks an object active before its constructor
 # runs, a store the compiler may otherwise drop (a native -O3 build then has no overlays)
-# The C++ is optimised as one program (docs/tdawn.md, "The whole program at once"): a partition
+# The C++ is optimised as one program (docs/games/tdawn.md, "The whole program at once"): a partition
 # a source file and nothing reordered, because the game's globals are made in the files' order.
 LTO="-O3 -flto=$(nproc) -ffat-lto-objects -flto-partition=1to1 -fno-toplevel-reorder --param inline-unit-growth=2000 --param max-inline-insns-auto=400 --param max-inline-insns-single=1500 --param large-function-growth=1000 --param inline-min-speedup=5"
-# What a played game ran, for the compiler (docs/tdawn.md, "What the compiler is told"):
+# What a played game ran, for the compiler (docs/games/tdawn.md, "What the compiler is told"):
 # TDAWN_PROFILE=count builds the program that counts; otherwise the counts kept here are used.
 PGO=""; COUNTS=""
 if [ "${TDAWN_PROFILE:-}" = count ]; then
@@ -116,7 +116,7 @@ fi
 # all in /usr/share: the image builder adds files to folders the ROM has, and makes none.
 # The game looks for its files by name in one folder, which the starter makes of links.
 for f in DEMO DEMOL SOUNDS SPEECH; do cp "$WORK/src/tdawn-demo/$f.MIX" "$OUT/usr/share/tdawn-$f.MIX"; done
-# the sounds as the sound card plays them from the ROM (docs/sound.md); made again when stale
+# the sounds as the sound card plays them from the ROM (docs/machine/sound.md); made again when stale
 PAK="$WORK/src/tdawn-demo/tdawn-sound.pak"
 if [ ! "$PAK" -nt "$WORK/src/tdawn-demo/SOUNDS.MIX" ] || [ ! "$PAK" -nt "$REPO/tools/make_tdawn_sound.py" ]; then
     python3 "$REPO/tools/make_tdawn_sound.py" "$PAK" "$WORK/src/tdawn-demo"/{SOUNDS,SPEECH,DEMO,DEMOL}.MIX \
@@ -131,7 +131,7 @@ cat > "$OUT/usr/bin/tdawn" <<'EOF'
 mkdir -p /tmp/tdawn && cd /tmp/tdawn || exit 1
 for f in DEMO DEMOL SOUNDS SPEECH; do ln -sf /usr/share/tdawn-$f.MIX $f.MIX; done
 for f in MAP1 WIN1; do ln -sf /usr/share/tdawn-$f.AUD $f.AUD; done
-# its settings and saved games go to the folder the host keeps (docs/persist.md)
+# its settings and saved games go to the folder the host keeps (docs/system/persist.md)
 HOME=/tmp/tdawn XDG_CONFIG_HOME=/persistence exec /usr/lib/tdawn/game "$@"
 EOF
 chmod +x "$OUT/usr/bin/tdawn"

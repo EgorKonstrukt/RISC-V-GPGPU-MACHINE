@@ -1,5 +1,5 @@
 /*
- * Doom's picture on the ShaderEmu GPU (docs/gpu.md), through OpenGL (programs/linux/gles.c).
+ * Doom's picture on the ShaderEmu GPU (docs/machine/gpu.md), through OpenGL (programs/linux/gles.c).
  * The 8-bit screen Doom draws on is a texture in GPU memory, shown as one rectangle looked up
  * in the palette. With the GPU also drawing the 3D view (doom_gl.c) that rectangle goes on top
  * of it, with the view's area keyed out.
@@ -185,7 +185,7 @@ I_InitGraphics(void)
 	gpu = 1;
 	doom_gl = !(render && !strcmp(render, "soft"));
 	/* DOOM_VIEW=N: so many worker cores for the view's list (4); inline: none; told: none, and
-	 * the list made from what they would be told (docs/doom.md) */
+	 * the list made from what they would be told (docs/games/doom.md) */
 	render = getenv("DOOM_VIEW");
 	if (doom_gl && !(render && atoi(render) <= 0) && (crew = mcw_open((render ? atoi(render) : 4) + 1)) > 0) {
 		atexit(mcw_close);
@@ -202,7 +202,7 @@ I_InitGraphics(void)
 		crew = doom_view_crew(0, render && !strcmp(render, "told"));
 }
 
-/* ---- the view's list on worker cores (docs/doom.md, "The view on worker cores") ---- */
+/* ---- the view's list on worker cores (docs/games/doom.md, "The view on worker cores") ---- */
 
 static void show_list(int scene);
 
@@ -287,7 +287,7 @@ doom_idle(void)
 
 int I_GetTime_port(void);
 
-/* The machine's clock word (docs/gpu.md): the time without asking the kernel. */
+/* The machine's clock word (docs/machine/gpu.md): the time without asking the kernel. */
 static uint32_t
 clock_ms(void)
 {
@@ -315,7 +315,7 @@ I_GetTime(void)
 	return tics_then + (int)((clock_ms() - from) * 35 / 1000);
 }
 
-/* ---- the pointer, and a sitter in a holodeck's seat (docs/holodeck.md, "Played from the seat") ---- */
+/* ---- the pointer, and a sitter in a holodeck's seat (docs/world/holodeck.md, "Played from the seat") ---- */
 
 /* (Doom's own, which this file does not include) */
 typedef struct { int type, data1, data2, data3; } doom_event;
@@ -460,7 +460,7 @@ seat_tic(void)
 
 /*
  * Asking the server for events costs two system calls and two task switches, every tic. The
- * machine's own input words (pointer, buttons, key events so far; docs/input.md) say when
+ * machine's own input words (pointer, buttons, key events so far; docs/machine/input.md) say when
  * there can be any: ask when they have moved, for a few tics after, and twice a second.
  */
 void

@@ -5,7 +5,7 @@
 Utilization is the instructions busy passes ran over what they could have run. A pass that
 ended early is listed by why; a wfi or pause by where the guest was: the kernel's idle loop
 (nothing to run: counted apart, not a loss), a rest the program asked the kernel for (the GPU
-driver's rest call, docs/multicore.md: it had nothing to do; counted apart as the idle passes
+driver's rest call, docs/machine/multicore.md: it had nothing to do; counted apart as the idle passes
 are, on a line of its own), a wait in the GPU driver, elsewhere in the kernel, or a program's
 own pause, which stays a busy pass. Symbol files are `nm -n` output.
 """
@@ -67,7 +67,7 @@ for pc, n, stall, us in d:
         else:
             reason = 'pause: program'
     elif kind == 'kernel' and sym == 'zeroed_idle':
-        reason = 'wfi: kernel idle'    # (the idle loop clearing memory ahead: docs/boot.md)
+        reason = 'wfi: kernel idle'    # (the idle loop clearing memory ahead: docs/machine/boot.md)
     r = rows.setdefault(reason, [0, 0]); r[0] += 1; r[1] += ticks - n
     if reason not in APART:
         busy_i += n

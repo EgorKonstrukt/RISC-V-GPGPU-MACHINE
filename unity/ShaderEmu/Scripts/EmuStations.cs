@@ -3,7 +3,7 @@ using UnityEngine;
 using TMPro;
 using VRC.SDKBase;
 
-// The classroom's computers (docs/stations.md): twelve tubes, one a visitor whose machine is on.
+// The classroom's computers (docs/world/stations.md): twelve tubes, one a visitor whose machine is on.
 // A visitor's place is a number in their own EmuShare, so nobody can move anybody else; whoever
 // holds a place sends their display (EmuShareHub does, as it does anyway), EmuStreams receives
 // it and this puts it on that place's tube. A visitor's own tube shows their machine itself.

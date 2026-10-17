@@ -1,4 +1,4 @@
-"""Has the boot count its pages free from the start (mm/page_alloc.c; docs/boot.md, "Passes that
+"""Has the boot count its pages free from the start (mm/page_alloc.c; docs/machine/boot.md, "Passes that
 end early"). Every page was set up as used once and then, to be freed, written again: a store
 to each page's own 16 bytes, which filled the machine's write cache sixty times in a boot. A
 page of the boot's memory map now starts with the count the freeing wants; the pages that

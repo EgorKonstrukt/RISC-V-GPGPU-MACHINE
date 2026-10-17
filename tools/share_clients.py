@@ -1,4 +1,4 @@
-"""Two real clients' logs of the display stream, held together (docs/share.md, "Judged while it moves").
+"""Two real clients' logs of the display stream, held together (docs/world/share.md, "Judged while it moves").
 
   python tools/share_clients.py LOG_A.txt LOG_B.txt
 

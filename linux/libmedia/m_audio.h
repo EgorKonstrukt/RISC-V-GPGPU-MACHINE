@@ -1,4 +1,4 @@
-/* libmedia's sound (docs/media.md): what m_audio.c shares with each kind's decoder. */
+/* libmedia's sound (docs/system/media.md): what m_audio.c shares with each kind's decoder. */
 #ifndef SHADEREMU_MEDIA_AUDIO_H
 #define SHADEREMU_MEDIA_AUDIO_H
 

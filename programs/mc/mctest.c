@@ -1,4 +1,4 @@
-// mctest: the worker cores' test (docs/multicore.md). A Linux program on core 0 that starts
+// mctest: the worker cores' test (docs/machine/multicore.md). A Linux program on core 0 that starts
 // every worker the machine has and gives them functions of its own to run:
 //
 //   primes   counting primes, nothing stored: core 0 alone, then split with the workers
@@ -18,7 +18,7 @@
 // Prints one line a test and "mctest: PASS" or "mctest: FAIL".
 //   mctest [WORKERS [LIMIT [bench [LINE]]]]
 //   mctest WORKERS SECONDS share [lend]     (the kernel's sharing: how many of them have cores, second by second)
-//   mctest WORKERS 0 race                   (two workers store to one 16 bytes: for RVC_RACES, docs/multicore.md)
+//   mctest WORKERS 0 race                   (two workers store to one 16 bytes: for RVC_RACES, docs/machine/multicore.md)
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     if (workers == 0) { printf("mctest: FAIL (run the machine with --cores N; or other programs have the workers)\n"); return 1; }
 
     // "mctest N SECONDS share": the kernel shares the cores out between programs
-    // (docs/multicore.md). Every worker is kept at short jobs for so many seconds, and a line
+    // (docs/machine/multicore.md). Every worker is kept at short jobs for so many seconds, and a line
     // a second says how many of them have cores and where the jobs were run. The primes'
     // number must come out the same wherever they were counted.
     if (argc > 3 && !strcmp(argv[3], "share")) {

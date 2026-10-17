@@ -1,4 +1,4 @@
-"""Writes Motion JPEG in AVI (docs/media.md, "MJPEG in AVI"): every picture a baseline JPEG of
+"""Writes Motion JPEG in AVI (docs/system/media.md, "MJPEG in AVI"): every picture a baseline JPEG of
 Pillow's in restart intervals, as libmedia decodes on every core, and PCM sound if given.
 
     python tools/make_avi.py OUT.avi PICTURE... [--fps N] [--quality Q] [--wav FILE] [--no-tables]

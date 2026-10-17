@@ -1,6 +1,6 @@
 """Makes the desktop's pictures for the Linux image, as JPEG files named wallpaper-NAME.jpg under
 build/images/linux/root/usr/share (tools/make_linux_image.py then puts them in the image). The
-desktop decodes them on the worker cores when it starts (docs/media.md): each is written in
+desktop decodes them on the worker cores when it starts (docs/system/media.md): each is written in
 restart intervals, some 512 of them, which every core decodes by itself, and beside each are its
 twins cut to the common screens, wallpaper-NAME@800x600.jpg (the machine's own screen),
 @1280x720 and @1920x1080, decoded as they are.

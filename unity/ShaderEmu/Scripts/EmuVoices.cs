@@ -2,7 +2,7 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 
-// Voices between the holodecks (docs/holodeck.md): whoever is in a holodeck hears everybody who
+// Voices between the holodecks (docs/world/holodeck.md): whoever is in a holodeck hears everybody who
 // is in one, the same or another, at full strength whatever the distance. Between inside and
 // outside a voice travels as VRChat's does. Each client decides for itself, from where the
 // players are; nothing is synced.

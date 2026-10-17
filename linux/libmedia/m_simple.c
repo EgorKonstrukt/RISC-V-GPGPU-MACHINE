@@ -1,4 +1,4 @@
-/* PNM (P1-P6), BMP and TGA: headers here, rows converted over every core (docs/media.md). */
+/* PNM (P1-P6), BMP and TGA: headers here, rows converted over every core (docs/system/media.md). */
 #include <stdlib.h>
 #include "m_int.h"
 

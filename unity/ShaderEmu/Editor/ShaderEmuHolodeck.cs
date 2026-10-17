@@ -9,7 +9,7 @@ using UnityEngine.Rendering;
 using UnityEngine.UI;
 using VRC.Udon;
 
-// Beyond the den's two doors (world/annex.py, docs/holodeck.md): the holodecks, eight rooms off a
+// Beyond the den's two doors (world/annex.py, docs/world/holodeck.md): the holodecks, eight rooms off a
 // corridor where a 3D program's frame is a world round whoever sits there, and the corridor a
 // visitor arrives in. The models are the annex's and the shell's; this gives them their
 // colliders, lights, seats, screens and controls.

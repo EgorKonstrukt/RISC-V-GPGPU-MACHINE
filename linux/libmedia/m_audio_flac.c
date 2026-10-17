@@ -1,5 +1,5 @@
 /*
- * FLAC (docs/media.md) over dr_flac (https://github.com/mackron/dr_libs, public domain or MIT
+ * FLAC (docs/system/media.md) over dr_flac (https://github.com/mackron/dr_libs, public domain or MIT
  * No Attribution; build.sh fetches it and applies flac_bound.py). A stream of blocks all as long
  * numbers them, and each stands by itself: a piece is whole blocks, any core's. A block's place
  * in the file is not written anywhere: a decoder finds it by itself by its header (below).

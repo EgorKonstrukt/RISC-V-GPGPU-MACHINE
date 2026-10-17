@@ -1,4 +1,4 @@
-/* nxpaint: a paint program (docs/nanox.md, "Paint"). The picture is the program's own memory,
+/* nxpaint: a paint program (docs/system/nanox.md, "Paint"). The picture is the program's own memory,
  * shown by writing the part in view into the window's buffer; every change is kept as the
  * pixels it replaced, to be taken back. nxpaint FILE opens any picture libmedia reads and
  * saves as the name asks: PNG, JPEG, GIF, BMP or PPM, encoded on the worker cores (media.h). */

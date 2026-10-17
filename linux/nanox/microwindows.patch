@@ -973,7 +973,7 @@ index f074087..5c5e377 100644
  				fontname, height);
    	}
  
-+	/* a font the screen driver draws itself (a file of the ROM: docs/fonts.md) */
++	/* a font the screen driver draws itself (a file of the ROM: docs/system/fonts.md) */
 +	if (gd_createfont && (pfont = gd_createfont(fontname, height, width, fontattr)) != NULL)
 +		return pfont;
 +
@@ -3347,7 +3347,7 @@ index fae5bfa..0c09764 100644
 +
 +/*
 + * The rectangle round the pointer in which a move of it is nobody's news: the same window
-+ * stays under it, and nobody who would hear of a move there has asked to (docs/nanox.md,
++ * stays under it, and nobody who would hear of a move there has asked to (docs/system/nanox.md,
 + * "The pointer on a core of its own"). 0 if there is none.
 + */
 +int

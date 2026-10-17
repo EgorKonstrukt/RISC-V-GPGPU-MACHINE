@@ -1,4 +1,4 @@
-// The host's side of the machine's network device (docs/lan.md), and the link between two
+// The host's side of the machine's network device (docs/system/lan.md), and the link between two
 // hosts on this computer: a UDP socket each, at 127.0.0.1 and the port --net names plus the
 // machine's number. rvc_harness and rvc_cpu share it; winsock stays in rvc_net.cpp.
 #pragma once

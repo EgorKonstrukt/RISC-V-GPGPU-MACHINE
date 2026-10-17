@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds imdemo: Dear ImGui (MIT) over OpenGL on the machine's GPU, a Nano-X client (docs/imgui.md).
+# Builds imdemo: Dear ImGui (MIT) over OpenGL on the machine's GPU, a Nano-X client (docs/apps/imgui.md).
 #   wsl -- bash /mnt/c/.../linux/imgui/build.sh     (after linux/nanox/build.sh and linux/tdawn/build.sh,
 #                                                    which makes the C++ driver)
 set -euo pipefail
@@ -20,7 +20,7 @@ if [ ! -d "$IMGUI/.git" ]; then
 fi
 
 # Floats are the machine's instructions. The library is as it comes: no file of its own is changed.
-# What cut the instructions of a frame, each measured (docs/imgui.md): more inlining, and across
+# What cut the instructions of a frame, each measured (docs/apps/imgui.md): more inlining, and across
 # files at the link (-flto; the objects keep ordinary code too, for a link without it).
 TUNE="--param=max-inline-insns-auto=60 --param=inline-unit-growth=80 -fsched-pressure -fno-tree-vectorize -funroll-loops"
 FLAGS="-O3 $TUNE -flto -ffat-lto-objects -DNDEBUG -fno-pie -fno-math-errno -fno-strict-aliasing -w -DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_DEFAULT_FORMAT_FUNCTIONS"
@@ -48,7 +48,7 @@ export FLAGS INC BUILD HERE
 rv32-cc -O2 -fno-pie -w -DSEGL_FLOAT -DSET_SIZE=0x100000u -DUNIFORMS_IN=0x30000u -DVERTICES_IN=0x38000u -DMAX_COMMANDS=3072 \
     $INC -c "$REPO/programs/linux/gles.c" -o gles.o
 # the worker cores' library, the same for every program (programs/mc): the backend's copy on worker
-# cores (docs/imgui.md). nxpath links the backend with its own.
+# cores (docs/apps/imgui.md). nxpath links the backend with its own.
 rv32-cc -O2 -fno-pie -fno-common -fdata-sections -w -I"$REPO/programs/mc" -c "$REPO/programs/mc/mcw.c" -o mcw.o
 # (linked away from the window system, so that a profile can tell the two apart: tools/pc_profile.py)
 rv32-c++ -O3 $TUNE -flto=auto -w -Wl,-Ttext-segment=0x2000000 *.o "$MW/src/lib/libnano-X.a" -o imdemo

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ShaderEmu keyboard and pointer (docs/input.md in the ShaderEmu repository): the machine
+ * ShaderEmu keyboard and pointer (docs/machine/input.md in the ShaderEmu repository): the machine
  * writes them into plain memory, which is polled here every timer tick into two evdev devices.
  * The tick itself calls the poll (tick_input_hook.py); a kernel timer does only while the
  * machine is idle and its tick may be stopped: one that expired every tick cost 900 instructions.
@@ -46,7 +46,7 @@ static bool pointer_owed;	/* it is not where it was last reported: a move too so
 static unsigned long pointer_at;
 
 /*
- * A move inside the window system's rectangle is nobody's news there (docs/nanox.md, "The
+ * A move inside the window system's rectangle is nobody's news there (docs/system/nanox.md, "The
  * pointer on a core of its own"): no report, and the window system sleeps on.
  */
 static noinline bool pointer_hushed(u32 x, u32 y)

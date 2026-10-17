@@ -1,7 +1,7 @@
-// The machine's GPU for Quake III Arena (docs/quake3.md): programs/linux/gles.c as it is (its
+// The machine's GPU for Quake III Arena (docs/games/quake3.md): programs/linux/gles.c as it is (its
 // window, its frames' two sets, its matrices, its swap), and after it draws whose every word
 // the renderer says itself: its textures are in the ROM, which the library's own have no way
-// to say, and a draw may be lit by a light map (docs/gpu.md).
+// to say, and a draw may be lit by a light map (docs/machine/gpu.md).
 
 // A frame of this game is more vertices than the library's default has room for.
 #define SET_SIZE 0x00080000u

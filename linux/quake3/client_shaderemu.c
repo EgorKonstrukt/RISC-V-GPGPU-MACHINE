@@ -1,5 +1,5 @@
 /*
- * The client's game on a worker core (docs/quake3.md, "The client's game a frame ahead"): it
+ * The client's game on a worker core (docs/games/quake3.md, "The client's game a frame ahead"): it
  * writes what it would have drawn into a list, and this core makes the GPU's commands of the
  * list a frame later. QUAKE3_CLIENT=inline, or no second worker: this core's, as it was.
  */

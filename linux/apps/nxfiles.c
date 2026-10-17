@@ -4,14 +4,14 @@
  *
  *	nxfiles [FOLDER]	a window on a folder, as tiles or as a list (View)
  *	nxfiles --desktop	the desktop: started once, by nx
- *	nxfiles --run FILE.app	starts what a shortcut names (open does this: docs/open.md)
+ *	nxfiles --run FILE.app	starts what a shortcut names (open does this: docs/system/open.md)
  *	nxfiles --properties X	a window that says what X is (the menu's Properties)
  *
  * Two clicks open an entry: a folder is entered, a shortcut's program started, anything else
  * goes to `open`. Ctrl and Shift with a click, or Shift with the arrows, select several. The
  * right button (or the Menu key, or Shift+F10) brings a menu of what can be done. Entries are
  * dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied),
- * and on the desktop to another place. docs/nanox.md has the keys.
+ * and on the desktop to another place. docs/system/nanox.md has the keys.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -1100,7 +1100,7 @@ open_entry(int i, int edit)
 	} else if (e->kind == K_PROGRAM) {
 		child = ui_run(path, NULL);
 	} else {
-		/* whatever is registered for it (docs/open.md); the kinds here are only its icon */
+		/* whatever is registered for it (docs/system/open.md); the kinds here are only its icon */
 		child = ui_run("open", path);
 	}
 	ui_launch_started(child);

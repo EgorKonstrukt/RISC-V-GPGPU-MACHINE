@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds Quake (id Software's GPL source, GLQuake, a Nano-X client here) for the image, and
-# fetches the shareware episode's data, which is not kept in this repository (docs/quake.md).
+# fetches the shareware episode's data, which is not kept in this repository (docs/games/quake.md).
 #   wsl -- bash /mnt/c/.../linux/quake/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & quake
 set -euo pipefail
@@ -31,7 +31,7 @@ if [ "${QUAKE_TREE:-}" != keep ]; then
 fi
 
 # GLQuake without the x86 assembly, with the null CD driver, the game's own network drivers
-# (the loopback and UDP: docs/lan.md), and ours for
+# (the loopback and UDP: docs/system/lan.md), and ours for
 # the window, the system and the models' triangles.
 SOURCES="cl_demo cl_input cl_main cl_parse cl_tent chase cmd common console crc cvar
     gl_draw gl_model gl_refrag gl_rlight gl_rmain gl_rmisc gl_rsurf gl_screen gl_warp
@@ -41,7 +41,7 @@ OURS="scene_shaderemu vid_shaderemu sys_shaderemu mesh_shaderemu world_shaderemu
 # gles.c in its float build. (Texture names from 3,072 up are qgl.c's own, for models' poses.)
 GLES="-DSEGL_FLOAT -DMAX_TEXTURES=4096"
 GLINC="-I$HERE/include -idirafter $PROGRAMS/linux/include -I$MW/src/include"
-# On top of the toolchain's flags (the machine's float instructions, docs/fpu.md): no errno
+# On top of the toolchain's flags (the machine's float instructions, docs/machine/fpu.md): no errno
 # from sqrt, which is then one instruction, and a constant written without an f is a float
 # too. As a double, as C has it, every "x * 0.5" in the source was a library call for a double
 # multiply and two conversions.
@@ -49,7 +49,7 @@ FPU="-fno-math-errno -fsingle-precision-constant"
 # -fsigned-char: it was written for x86, and reads floats as integers where it pleases
 # (-fno-strict-aliasing).
 # -fno-common -fdata-sections: a variable is a section of its own, which ALIGN16 below starts on
-# 16 bytes. The server's frame runs on a worker core (server_shaderemu.c, docs/multicore.md),
+# 16 bytes. The server's frame runs on a worker core (server_shaderemu.c, docs/machine/multicore.md),
 # and two cores must not store to the same 16 bytes: no variable of the server's shares them
 # with one of the client's then. -fno-pie: a use of a global costs a load from a table otherwise.
 # fmath.h before every file: the game's sin, cos, tan and atan in floats
@@ -102,11 +102,11 @@ fi
 cp "$DATA/id1/pak0.pak" "$OUT/usr/share/quake-pak0.pak"
 cat > "$OUT/usr/bin/quake" <<'EOF'
 #!/bin/sh
-# id1, with the settings and saved games, is of the folder the host keeps (docs/persist.md)
+# id1, with the settings and saved games, is of the folder the host keeps (docs/system/persist.md)
 mkdir -p /persistence/quake /tmp/quake && cd /tmp/quake || exit 1
 ln -sfn /persistence/quake id1
 ln -sf /usr/share/quake-pak0.pak id1/pak0.pak
-# (the player's name, the desktop's: docs/persist.md)
+# (the player's name, the desktop's: docs/system/persist.md)
 exec quake.bin +name "${USER:-player}" "$@"
 EOF
 chmod +x "$OUT/usr/bin/quake"

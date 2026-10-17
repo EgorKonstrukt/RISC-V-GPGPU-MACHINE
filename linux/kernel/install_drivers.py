@@ -30,7 +30,7 @@ for source, directory, symbol, prompt, extra in DRIVERS:
         else:
             text = body + '\n\n' + entry
         open(kconfig, 'w').write(text)
-# The fork's own network card is registers this machine lacks: ours takes its place (docs/lan.md).
+# The fork's own network card is registers this machine lacks: ours takes its place (docs/system/lan.md).
 makefile = os.path.join(tree, 'drivers/net/Makefile')
 lines = open(makefile).read().splitlines(True)
 if any('rvcnet.o' in line for line in lines):

@@ -1,6 +1,6 @@
 /*
  * nxray: a ray tracer in tiles, every worker core tracing its share of them
- * (docs/raytrace.md, docs/multicore.md). The work this machine's small cores are for: a pixel
+ * (docs/apps/raytrace.md, docs/machine/multicore.md). The work this machine's small cores are for: a pixel
  * is a few thousand instructions of float arithmetic and four bytes stored.
  *
  * Core 0 traces nothing. It makes each picture's scene and shares it out; every worker has a

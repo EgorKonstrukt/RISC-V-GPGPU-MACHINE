@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a NES for the image (docs/nes.md): Nofrendo (LGPL-2), as Espressif keep it for a small
+# Builds a NES for the image (docs/games/nes.md): Nofrendo (LGPL-2), as Espressif keep it for a small
 # machine, with this directory's side of it, and two free games. In the guest: nes thwaite
 #   wsl -- bash /mnt/c/.../linux/nes/build.sh        (after linux/nanox/build.sh)
 set -euo pipefail
@@ -39,7 +39,7 @@ mkdir -p "$BUILD" && cd "$BUILD"
     xargs -P "$(nproc)" -I{} sh -c 'o=$(basename {} .c).o; [ "$o" -nt {} ] && [ "$o" -nt "$HERE/build.sh" ] && [ "$o" -nt "$HERE/nofrendo.patch" ] && [ "$o" -nt "$HERE/rc6502.h" ] || rv32-cc $CFLAGS -c {} -o "$o"'
 # The GPU's library apart, a section a variable and each on 16 bytes (as linux/tdawn/build.sh
 # has it): a worker core makes the lists with it while this one emulates, and two cores must
-# not store to the same 16 bytes (docs/multicore.md). Optimised with the rest, its variables
+# not store to the same 16 bytes (docs/machine/multicore.md). Optimised with the rest, its variables
 # lay among the emulator's, by chance of the build.
 [ gles.o -nt "$REPO/programs/linux/gles.c" ] && [ gles.o -nt "$HERE/build.sh" ] || {
     rv32-cc $OPT -fno-pie -w $INC -fno-common -fdata-sections -fno-toplevel-reorder -msmall-data-limit=0 -c "$REPO/programs/linux/gles.c" -o gles.o
@@ -59,7 +59,7 @@ cat > "$OUT/usr/bin/nes" <<'EOF'
 exec nes.bin "$@"
 EOF
 chmod +x "$OUT/usr/bin/nes"
-# a .nes file anybody opens is this program's (docs/open.md)
+# a .nes file anybody opens is this program's (docs/system/open.md)
 printf '%s\n' 'nes nes NES\x1a nes %s' > "$OUT/usr/share/nxopen.85-nes"
 printf '%s\n' "Games/Thwaite (NES)=nes thwaite" "Games/Nova the Squirrel (NES)=nes nova" > "$OUT/usr/share/nxapps.85-nes"
 ls -l "$OUT/usr/bin/nes.bin" "$OUT/usr/share"/nes-*.nes

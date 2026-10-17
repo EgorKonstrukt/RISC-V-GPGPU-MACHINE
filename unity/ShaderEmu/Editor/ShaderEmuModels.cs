@@ -6,7 +6,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.PostProcessing;
 
-// The room as modelled in Blender (docs/world.md: world/build.py writes Models/*.fbx, textures.py
+// The room as modelled in Blender (docs/world/world.md: world/build.py writes Models/*.fbx, textures.py
 // and fetch.py the textures). The builder's own boxes stay as colliders only. Surfaces are on
 // Mochie's Standard shader, which takes the screens' light (LTCGI) and light volumes; the
 // camera is HDR, so lamps, LEDs and the city's lights are brighter than white and bloom shows it.

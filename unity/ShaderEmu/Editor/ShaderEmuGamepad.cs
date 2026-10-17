@@ -4,7 +4,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 
-// The game controller (docs/gamepad.md) is a holodeck sitter's own, from sitting down
+// The game controller (docs/world/gamepad.md) is a holodeck sitter's own, from sitting down
 // (ShaderEmuHolodeck.cs). Here: what the board on the wall says of it,
 // and the clearing away of the two that lay on the den's desk.
 public static partial class ShaderEmuBuilder

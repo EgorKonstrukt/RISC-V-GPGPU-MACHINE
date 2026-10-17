@@ -17,7 +17,7 @@
 static void say(const char* text) { write(1, text, strlen(text)); }
 
 /* What the host asks for at boot: bits 0 and 1 of the machine's host flags (the word at
- * 0x8700003c, docs/gpu.md), the desktop and the console as tabs. A machine without the GPU
+ * 0x8700003c, docs/machine/gpu.md), the desktop and the console as tabs. A machine without the GPU
  * device has no such word and neither. */
 static int host_wants(void) {
     int fd = open("/dev/gpu", O_RDWR), wanted = 0;
@@ -87,7 +87,7 @@ int main(void) {
     say("> Entered overlay chroot, mounting /proc & /sys\n");
     must(mount("proc", "/proc", "proc", 0, NULL), "mount /proc");
     must(mount("sys", "/sys", "sysfs", 0, NULL), "mount /sys");
-    /* pseudo-terminals by name, for telnetd (docs/lan.md) */
+    /* pseudo-terminals by name, for telnetd (docs/system/lan.md) */
     mkdir("/dev/pts", 0755);
     must(mount("devpts", "/dev/pts", "devpts", 0, NULL), "mount /dev/pts");
 

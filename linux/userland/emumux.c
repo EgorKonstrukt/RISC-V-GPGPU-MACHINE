@@ -1,5 +1,5 @@
 /*
- * The console as several terminals (docs/console.md): a shell each on a pseudo-terminal, all
+ * The console as several terminals (docs/machine/console.md): a shell each on a pseudo-terminal, all
  * carried by the one serial console. Both ways, a byte 0x1e and a digit say which terminal
  * what follows belongs to. emuinit starts this when the host shows tabs (host flags, bit 1).
  */

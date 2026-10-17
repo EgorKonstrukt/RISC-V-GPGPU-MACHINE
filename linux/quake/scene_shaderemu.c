@@ -1,5 +1,5 @@
 /*
- * The picture on a worker core (docs/quake.md, "The picture on a worker core", "Drawn without a
+ * The picture on a worker core (docs/games/quake.md, "The picture on a worker core", "Drawn without a
  * gap"). A frame's drawing, everything that writes the GPU's list and swaps it, is a worker's:
  * one call that stays, drawing frame after frame as this core gives them (SE_SceneFrame), from
  * one of two copies of what a frame reads in turn. While it draws frame N this core reads the

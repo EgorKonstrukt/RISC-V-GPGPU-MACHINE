@@ -1,4 +1,4 @@
-/* ClassiCube's graphics on the ShaderEmu machine's GPU device (docs/gpu.md, docs/classicube.md). */
+/* ClassiCube's graphics on the ShaderEmu machine's GPU device (docs/machine/gpu.md, docs/games/classicube.md). */
 #include "Core.h"
 #ifdef CC_BUILD_SHADEREMU
 #define CC_SCRATCH_VBS_ARE_DYNAMIC
@@ -27,7 +27,7 @@ int SE_Flat(void);
 *#########################################################################################################################*/
 #define GPU_PHYS 0x87000000u
 #define GPU_END  0x00b00000u
-/* Two sets: a frame is built in one while the other is still shown (docs/volume.md). */
+/* Two sets: a frame is built in one while the other is still shown (docs/world/volume.md). */
 #define SETS_AT 0x00700000u
 #define MAX_COMMANDS 2048
 #define MAX_BLOCKS 512
@@ -199,7 +199,7 @@ static cc_bool Drawing(void) {
 	return unsettled;
 }
 
-/* (the first core with nothing to do until the next pass says so: docs/multicore.md, "A core
+/* (the first core with nothing to do until the next pass says so: docs/machine/multicore.md, "A core
    that rests"; the frame's worker ends its pass) */
 static uint32_t stat_job, stat_job_wait, stat_join;   /* the frame's worker's instructions, and waits */
 uint32_t cycles(void);
@@ -1182,7 +1182,7 @@ static CC_NOINLINE void DeriveState(int packed) {
 /* A walk of the map's chunks is noted as it is made: the buffers it drew, where its commands
    are in the set and what they come to. While the map's renderer says the walk would be the
    same (`serial`) and nothing it drew was made again, the commands stay as they are in the
-   set and only the blocks of a camera that moved are written (docs/classicube.md). */
+   set and only the blocks of a camera that moved are written (docs/games/classicube.md). */
 #define SEG_BUFFERS 512
 struct SESeg { uint32_t serial, kept, frame, first, first_mesh, count, mesh, passes, buffers, dropped; cc_bool valid, bad; };
 static struct SESeg segs[2][2];
@@ -1451,7 +1451,7 @@ void Gfx_EndFrame(void) {
 		if (swap_waits) Settle();
 
 		regs[REG_VOLUME / 4 + 1] = commands;
-		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28 | (SE_Flat() ? 1u << 31 : 0);	/* (y is up: docs/holodeck.md) */
+		regs[REG_VOLUME / 4 + 3] = width | height << 16 | 2u << 28 | (SE_Flat() ? 1u << 31 : 0);	/* (y is up: docs/world/holodeck.md) */
 		regs[REG_VOLUME / 4]     = GPU_PHYS + set_at;
 		regs[REG_VOLUME / 4 + 2]++;
 		/* (a walk this frame did not make is not in this set any more) */

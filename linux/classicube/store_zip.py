@@ -1,4 +1,4 @@
-"""The texture pack for the machine (docs/classicube.md, "The texture pack's pictures"): entries
+"""The texture pack for the machine (docs/games/classicube.md, "The texture pack's pictures"): entries
 stored, and the pictures the start reads in one pack of PNGs, the first entry, each picture's own
 entry a stub naming its place in it. A PNG not packed is a PNG in segments (png_segments.py).
 

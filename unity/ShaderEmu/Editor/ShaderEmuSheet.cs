@@ -7,7 +7,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The system sheet (docs/world.md): fanfold paper on the den's back wall over the television, what
+// The system sheet (docs/world/world.md): fanfold paper on the den's back wall over the television, what
 // the machine has installed and what opens what. Its words are ShaderEmuSheet.txt, laid out here.
 public static partial class ShaderEmuBuilder
 {

@@ -5,7 +5,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The console's extras (docs/console.md): buttons above its screen for the four terminals and
+// The console's extras (docs/machine/console.md): buttons above its screen for the four terminals and
 // for scrolling back, and above its keyboard a field whose text is typed at the console.
 // And the red power button on the computer's tower.
 public static partial class ShaderEmuBuilder
@@ -43,7 +43,7 @@ public static partial class ShaderEmuBuilder
     }
 
     // Along the console keyboard's far edge, in its plane: one field, whose text is typed at the
-    // console or is an address the machine is told to open (docs/open.md).
+    // console or is an address the machine is told to open (docs/system/open.md).
     static void ConsolePaste(Transform computer, EmuKeyboard keys, EmuMachine machine)
     {
         if (computer.Find("Console paste") != null) Object.DestroyImmediate(computer.Find("Console paste").gameObject);
@@ -112,7 +112,7 @@ public static partial class ShaderEmuBuilder
 
     // Along the display keyboard's far edge, the size of the console's strip there (the desk's
     // model has room for that and no more): one field, whose text is an address the machine is
-    // told to open (docs/open.md) or is typed at the display as key events.
+    // told to open (docs/system/open.md) or is typed at the display as key events.
     static void DisplayFields(Transform computer, EmuMachine machine, EmuKeyboard keys)
     {
         if (computer.Find("Display paste") != null) Object.DestroyImmediate(computer.Find("Display paste").gameObject);

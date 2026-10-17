@@ -1,7 +1,7 @@
 #ifndef GPU_H
 #define GPU_H
 
-// The GPU device. See docs/gpu.md for the guest's view; programs/common/gpu.h has the same
+// The GPU device. See docs/machine/gpu.md for the guest's view; programs/common/gpu.h has the same
 // numbers for C. GPU_STATE is the machine's state texture (RAM from row 64 on).
 //
 // Addresses below are RAM texel indices: (physical address - 0x80000000) / 16.
@@ -56,7 +56,7 @@
 #define FRAGMENT_INDEXED 2    // 8-bit texture through the display palette, times colour
 #define FRAGMENT_MASK 3       // 1-bit texture, rows of whole bytes, leftmost bit highest: set bits take the colour
 #define FRAGMENT_RGB24 4      // texture of three bytes a pixel (red, green, blue), rows with no padding, at any byte address, in RAM or ROM; times colour
-#define FRAGMENT_TILES 5      // a layer of tiles: the address is a texel of four words (cells, tiles, palette, sizes; docs/gpu.md)
+#define FRAGMENT_TILES 5      // a layer of tiles: the address is a texel of four words (cells, tiles, palette, sizes; docs/machine/gpu.md)
 #define FRAGMENT_YUV 6        // a picture as three planes of bytes one after another: luma, then the two of chroma at half the size each way (a video's frame)
 #define FRAGMENT_COVER 7      // (text) four bits a pixel of how much of it the glyph covers, rows of whole bytes, the left pixel in the high half
 #define TEXT_MORE 0x100       // flag (text): words 9-11 are a scale, a slant and what a glyph's bitmap address is from
@@ -250,7 +250,7 @@ gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
             // fragment word. A character is a word: its glyph, and in the high half where it
             // starts along the line. The table has a texel a glyph: bitmap, width, height, and
             // where its corner is from the character's (a signed byte each way). The table and
-            // the bitmaps may be a file's where it lies in the ROM (a font: docs/fonts.md).
+            // the bitmaps may be a file's where it lies in the ROM (a font: docs/system/fonts.md).
             // With TEXT_MORE: a scale (16.16), a slant (256ths of a pixel a row, and from bit 16
             // the row that stays), and what the table's bitmap addresses are counted from.
             uint4 at = ram(base + 1), how = ram(base + 2);
@@ -516,7 +516,7 @@ float4 gpu_fragment(gpu_varyings i) {
 }
 
 #ifdef GPU_VOLUME
-// The volume display (docs/volume.md): a host that shows a 3D program's last whole frame from
+// The volume display (docs/world/volume.md): a host that shows a 3D program's last whole frame from
 // a point of view of its own, instead of the picture the GPU drew of it.
 #define VOLUME_LIST 0x700030u   // that frame's list address, command count, frames so far, picture size
 // Which of the program's axes is up, where the program says (the top four bits of the size
@@ -698,18 +698,18 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 
 #define INPUT_STATE 0x700002u   // pointer x, y (display pixels), buttons, key events so far
 #define INPUT_KEYS  0x700008u   // ring of the last 32 key events, one word each
-#define FETCH_REPLY 0x700011u   // requests the host has answered, bytes, status (docs/fetch.md)
-#define CON_HOST    0x76b828u   // the console (docs/console.md): characters delivered, the last of them
+#define FETCH_REPLY 0x700011u   // requests the host has answered, bytes, status (docs/system/fetch.md)
+#define CON_HOST    0x76b828u   // the console (docs/machine/console.md): characters delivered, the last of them
 #ifndef CON_IN_TAG
 #define CON_IN_TAG _UdonUARTInTag
 #define CON_IN_CHARS _UdonUARTInChar
 #endif
 #define FETCH_DATA  0x76c000u   // what the host fetched: 0x4000 texels
-// "Open this" from the host (docs/open.md): requests so far and the address's length, then the
+// "Open this" from the host (docs/system/open.md): requests so far and the address's length, then the
 // address, 176 bytes of it in the eleven texels after and 80 more from HOST_OPEN_MORE.
 #define HOST_OPEN      0x700024u
 #define HOST_OPEN_MORE 0x700031u
-// What the cores did, for a guest to show (docs/multicore.md): 16 words, core k's count of
+// What the cores did, for a guest to show (docs/machine/multicore.md): 16 words, core k's count of
 // instructions in word k; then a texel of how many cores, which run and which are asleep (a bit each).
 // With more than 16 cores: every core's count again in 64 texels at MC_STATS_ALL (the
 // network's row, after its ring: 0x876ba000), then eight texels, one for every 32 cores: a
@@ -717,7 +717,7 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 // over every core takes as long as hundreds of instructions of the tick: none does.)
 #define MC_STATS    0x700038u
 #define MC_STATS_ALL 0x76ba00u
-// What the host says of where the machine is shown (docs/holodeck.md): two texels.
+// What the host says of where the machine is shown (docs/world/holodeck.md): two texels.
 #define HOST_STATE  0x700036u
 
 #if defined(CORES) && CORES > 1
@@ -839,7 +839,7 @@ uint mc_stat_cores() {
 // any size, sRGB, rows bottom up): _FetchW by _FetchH pixels of it, a word each, rows from the
 // top, of which this part begins at byte _FetchOffset (a host that hands over the picture's
 // own size hands over its pixels as they are).
-// A file carried by a picture (docs/fetch.md): its bytes are the pixels' red, green and blue,
+// A file carried by a picture (docs/system/fetch.md): its bytes are the pixels' red, green and blue,
 // rows from the top (the texture's are bottom up). The first 256 are a header: a mark, the
 // file's length, its CRC-32, its name.
 uint3 packed_pixel(uint p, uint2 size) {
@@ -884,7 +884,7 @@ uint fetch_word(uint n) {
 #endif
 
 #ifdef GPU_NET
-// The network device (docs/lan.md). The guest sends one packet at a time through a slot the
+// The network device (docs/system/lan.md). The guest sends one packet at a time through a slot the
 // host reads back, and takes packets from a ring this pass fills from the host's texture.
 #define NET_GUEST 0x70003eu   // the guest's: packets sent, packets taken from the ring
 #define NET_HOST  0x70003fu   // the host's: packets it took, packets delivered, the machine's number
@@ -911,7 +911,7 @@ bool net_arrives(uint slot, uint k, out uint4 texel) {
 #endif
 
 // GPUControl: the machine's control words. Once a submitted list has been drawn, take the
-// submit word back and count it; and deliver the host's keyboard and pointer (docs/input.md).
+// submit word back and count it; and deliver the host's keyboard and pointer (docs/machine/input.md).
 // The counters (programs/mc/mc.h, MC_COUNT_*): drawn when the host has read "added" in the head,
 // each total is the sum of that word in all 256 regions (which only grow).
 #define COUNT_TOTAL 0x6c1000u

@@ -1,6 +1,6 @@
 Shader "ShaderEmu/GpuDraw"
 {
-    // The machine's GPU (docs/gpu.md): a mesh of points, one per triangle, drawn by a camera of
+    // The machine's GPU (docs/machine/gpu.md): a mesh of points, one per triangle, drawn by a camera of
     // its own into the GPU's colour and depth target. One pass per GPU pass, in order.
     Properties
     {

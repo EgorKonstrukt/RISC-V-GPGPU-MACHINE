@@ -1,5 +1,5 @@
 /*
- * A font file of ours (docs/fonts.md, tools/make_fonts.py): glyphs the GPU draws from where the
+ * A font file of ours (docs/system/fonts.md, tools/make_fonts.py): glyphs the GPU draws from where the
  * file lies in the ROM. The window system's driver and the programs that measure text read it.
  */
 #ifndef SHADEREMU_SEF_H

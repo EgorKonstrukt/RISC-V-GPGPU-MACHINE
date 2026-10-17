@@ -1,0 +1,69 @@
+# The docs
+
+One file per subject. A doc names another by its file name, which is unique across the folders.
+
+## machine
+
+- [boot.md](machine/boot.md) – Booting Linux
+- [console.md](machine/console.md) – The console
+- [cpu-harness.md](machine/cpu-harness.md) – The machine on the processor
+- [display.md](machine/display.md) – Display
+- [fpu.md](machine/fpu.md) – Float instructions
+- [fxc2.md](machine/fxc2.md) – fxc2: the D3D11 build without FXC
+- [gpu.md](machine/gpu.md) – GPU
+- [input.md](machine/input.md) – Input
+- [multicore.md](machine/multicore.md) – More than one core
+- [sound.md](machine/sound.md) – The sound card
+- [tick-costs.md](machine/tick-costs.md) – What an instruction costs (October 2026)
+
+## system
+
+- [nommu.md](system/nommu.md) – Linux without an MMU
+- [nanox.md](system/nanox.md) – Nano-X
+- [fonts.md](system/fonts.md) – Fonts
+- [cc.md](system/cc.md) – A C compiler in the machine
+- [media.md](system/media.md) – libmedia: pictures, sound and films on the worker cores
+- [lan.md](system/lan.md) – The network: TCP/IP between machines
+- [fetch.md](system/fetch.md) – Fetch: pages from the host
+- [persist.md](system/persist.md) – Persist: a folder the host keeps between sessions
+- [open.md](system/open.md) – Open: a link or a file, with the program for its kind
+
+## apps
+
+- [ide.md](apps/ide.md) – The IDE
+- [imgui.md](apps/imgui.md) – Dear ImGui
+- [play.md](apps/play.md) – An audio player: `nxplay`
+- [video.md](apps/video.md) – The video player
+- [web.md](apps/web.md) – The browser
+- [physics.md](apps/physics.md) – Rigid boxes on every core
+- [raytrace.md](apps/raytrace.md) – Rays on every core
+
+## games
+
+- [classicube.md](games/classicube.md) – ClassiCube
+- [doom.md](games/doom.md) – Doom
+- [micropolis.md](games/micropolis.md) – Micropolis
+- [nes.md](games/nes.md) – A NES
+- [quake.md](games/quake.md) – Quake
+- [quake3.md](games/quake3.md) – Quake III Arena
+- [ralert.md](games/ralert.md) – Red Alert
+- [tdawn.md](games/tdawn.md) – Tiberian Dawn
+
+## world
+
+- [world.md](world/world.md) – The room's models
+- [holodeck.md](world/holodeck.md) – The holodecks
+- [stations.md](world/stations.md) – The classroom's computers
+- [danger.md](world/danger.md) – The danger zone
+- [share.md](world/share.md) – Seeing each other's machines
+- [gamepad.md](world/gamepad.md) – The game controllers
+- [volume.md](world/volume.md) – The volume display
+- [linux.md](world/linux.md) – The world on Linux
+
+## plans
+
+- [aoe-plan.md](plans/aoe-plan.md) – Plan: Age of Empires, the 1997 trial
+- [blitter-plan.md](plans/blitter-plan.md) – Plan: a blitter in the commit pass
+- [micropolis-halflife-plan.md](plans/micropolis-halflife-plan.md) – Plan: Micropolis, and Half-Life: Uplink on Xash3D FWGS
+- [original-x86-plan.md](plans/original-x86-plan.md) – Windows in a VRChat Shader — Project Handoff
+- [web-scroll-plan.md](plans/web-scroll-plan.md) – Plan: the browser's scroll without stutters

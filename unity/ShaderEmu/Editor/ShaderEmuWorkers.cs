@@ -5,7 +5,7 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UI;
 
-// The workers' layout, on the wall under the control panel's keys (docs/multicore.md, "Packing
+// The workers' layout, on the wall under the control panel's keys (docs/machine/multicore.md, "Packing
 // the small workers"): geotune's own pick or a preset, and what it picked and runs.
 public static partial class ShaderEmuBuilder
 {

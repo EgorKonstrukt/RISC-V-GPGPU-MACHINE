@@ -3,7 +3,7 @@
 A patched copy of the shader from [pimaker/rvc](https://github.com/pimaker/rvc) (`_Nix/rvc`,
 MIT License, Copyright (c) 2021 PiMaker). It still runs upstream's payloads, but its state
 layout and Commit pass are its own now (a write cache of texels, below; the commit as points,
-`docs/multicore.md`), so upstream's snapshots and state hashes no longer apply: the
+`docs/machine/multicore.md`), so upstream's snapshots and state hashes no longer apply: the
 bit-identical results below were measured before those changes, and guest output is what is
 compared since.
 
@@ -13,14 +13,14 @@ compared since.
 ## Build switches
 
 The CPU's own; the machine around it has more (`CORES`, `MC_UNIFORM`, `TICK_MRT` and the
-commit's in `docs/multicore.md`; `SBI_HLE` and `LAZY_MEMOP` in `docs/boot.md`):
+commit's in `docs/machine/multicore.md`; `SBI_HLE` and `LAZY_MEMOP` in `docs/machine/boot.md`):
 
 | Define | Effect |
 |---|---|
 | `NO_PAGING` | machine without an MMU (below) |
 | `M_MODE_ONLY` | machine mode only, includes `NO_PAGING` (below) |
 | `NO_DOUBLES` | timer value from the host instead of double math (needed on D3D12) |
-| `FPU` | single-precision float instructions, the F extension (`docs/fpu.md`): the harness sets it for the full machine |
+| `FPU` | single-precision float instructions, the F extension (`docs/machine/fpu.md`): the harness sets it for the full machine |
 | `PROFILE` | `PROF()` event counters through a UAV |
 | `L1_TABLE_BITS`, `L1_WAYS`, `TLB2_N`, `RAM_TILE_BITS` | cache, TLB and layout sizes |
 | `L1_LOCAL`, `L1_STATIC` | the big arrays as locals of the pass (23 below): on with fxc2, off with FXC |
@@ -119,7 +119,7 @@ which are kept in the state texture.
     with loop attribute"), so under FXC the arrays stay static. `L1_STATIC` keeps them static
     under fxc2 too.
 
-24. **MULH in one instruction** (`emu.h`; taken out again in October 2026, `docs/linux.md`: VRChat
+24. **MULH in one instruction** (`emu.h`; taken out again in October 2026, `docs/world/linux.md`: VRChat
     crashed on Linux, where the layer under Direct3D makes an invalid SPIR-V module of the
     instruction): the GPU's `umul` and `imul` return both halves of a
     32 x 32 bit product, which HLSL cannot ask for. fxc2 adds `mulhi()` (and `umulExtended()`,
@@ -543,7 +543,7 @@ as it is, instruction for instruction (`python tools\cso_loops.py` on the blobs 
 
 | change | against the tree |
 | --- | --- |
-| a fill or copy left to the commit (`LAZY_MEMOP`, `docs/boot.md`), nothing of it in the loop | -1.1 to -1.5% (Doom's timedemo -3%) |
+| a fill or copy left to the commit (`LAZY_MEMOP`, `docs/machine/boot.md`), nothing of it in the loop | -1.1 to -1.5% (Doom's timedemo -3%) |
 | the same without its TLB purge, its cache scan, or all of its reading side | -0.8 to -1.2% |
 | three state words written in one rare branch of the general path, nothing else | -2.0% |
 | the registers decoded straight into `xr[]` (no `cpu.xreg`, an array of 32 fewer) | -1.2% |

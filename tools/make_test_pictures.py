@@ -4,7 +4,7 @@
 
 The pictures are cut from the desktop's own picture (linux/prebuilt's wallpaper): a PNG of
 8-bit colours and a baseline JPEG with its colours at half size, the common kinds. The JPEG is
-in restart intervals, as the image's own pictures are (docs/media.md). The decoder that reads
+in restart intervals, as the image's own pictures are (docs/system/media.md). The decoder that reads
 them is libmedia's, checked against Pillow by linux/libmedia/test/check_pictures.py.
 """
 import os, sys

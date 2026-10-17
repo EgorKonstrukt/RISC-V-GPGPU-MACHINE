@@ -1,4 +1,4 @@
-// Sound out for rvc_harness (docs/sound.md). The sound card draws a ring of samples from a
+// Sound out for rvc_harness (docs/machine/sound.md). The sound card draws a ring of samples from a
 // cursor on; SoundOut keeps the newest of them and an XAudio2 voice pulls from it, so the
 // audio thread's position is the clock. SoundCapture writes the same samples to a WAV file.
 #pragma once

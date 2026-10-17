@@ -1,7 +1,7 @@
 #ifndef GPU_H
 #define GPU_H
 
-// The GPU device. See docs/gpu.md for the guest's view; programs/common/gpu.h has the same
+// The GPU device. See docs/machine/gpu.md for the guest's view; programs/common/gpu.h has the same
 // numbers for C. GPU_STATE is the machine's state texture (RAM from row 64 on).
 //
 // Addresses below are RAM texel indices: (physical address - 0x80000000) / 16.
@@ -353,7 +353,7 @@ float4 gpu_fragment(gpu_varyings i) {
 }
 
 #ifdef GPU_VOLUME
-// The volume display (docs/volume.md): a host that shows a 3D program's last whole frame from
+// The volume display (docs/world/volume.md): a host that shows a 3D program's last whole frame from
 // a point of view of its own, instead of the picture the GPU drew of it.
 #define VOLUME_LIST 0x700030u   // that frame's list address, command count, frames so far
 
@@ -493,7 +493,7 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 
 #define INPUT_STATE 0x700002u   // pointer x, y (display pixels), buttons, key events so far
 #define INPUT_KEYS  0x700008u   // ring of the last 32 key events, one word each
-#define FETCH_REPLY 0x700011u   // requests the host has answered, bytes, status (docs/fetch.md)
+#define FETCH_REPLY 0x700011u   // requests the host has answered, bytes, status (docs/system/fetch.md)
 #define FETCH_DATA  0x76c000u   // what the host fetched: 0x4000 texels
 
 #ifdef GPU_INPUT
@@ -526,7 +526,7 @@ uint fetch_word(uint n) {
 #endif
 
 // GPUControl: the machine's control words. Once a submitted list has been drawn, take the
-// submit word back and count it; and deliver the host's keyboard and pointer (docs/input.md).
+// submit word back and count it; and deliver the host's keyboard and pointer (docs/machine/input.md).
 uint4 gpu_control(uint2 pos) {
     uint4 keep = GPU_STATE[pos];
     if (pos.y < 64) return keep;

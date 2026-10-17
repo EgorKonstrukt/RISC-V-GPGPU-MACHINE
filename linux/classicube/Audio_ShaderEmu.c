@@ -1,4 +1,4 @@
-/* ClassiCube's sound on the machine's card (docs/classicube.md, "Sound"): a dig or step sound
+/* ClassiCube's sound on the machine's card (docs/games/classicube.md, "Sound"): a dig or step sound
  * is a voice playing ADPCM where it lies in the ROM; the tune is an MP3 that worker cores
  * decode at half its rate, piece by piece, into a stream voice's ring in sound memory. */
 #include "Core.h"

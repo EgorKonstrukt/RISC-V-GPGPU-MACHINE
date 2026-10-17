@@ -1,6 +1,6 @@
 /* nxvideo [FILE | --decode FILE]: plays an MPEG-1 film, a VQA, MJPEG in AVI or a GIF animation,
  * decoded ahead on the workers by libmedia into the GPU memory it is shown from; the picture
- * shown is the one the sound card has got to. Keys and switches: docs/video.md. */
+ * shown is the one the sound card has got to. Keys and switches: docs/apps/video.md. */
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -770,7 +770,7 @@ main(int argc, char **argv)
 	/* the pictures' size by a look at the file's start, and the window at once: taking the file
 	 * apart and starting the workers is seconds, and a desktop with nothing new on it looks stuck */
 	if (!peek(file, bytes, &info.width, &info.height))
-		return refuse(path, "is not a film this plays: MPEG-1, VQA, MJPEG in AVI or GIF (docs/video.md)", 0);
+		return refuse(path, "is not a film this plays: MPEG-1, VQA, MJPEG in AVI or GIF (docs/apps/video.md)", 0);
 	info.frames = 1;
 	info.fps_milli = 24000;
 	summing = getenv("NXVIDEO_SUM") != NULL;
@@ -948,7 +948,7 @@ main(int argc, char **argv)
 			fflush(stdout);
 			stat_at = now;
 		}
-		/* nothing to show: the kernel has the core until the next pass (docs/multicore.md) */
+		/* nothing to show: the kernel has the core until the next pass (docs/machine/multicore.md) */
 		if (!drew)
 			mcw_rest();
 	}

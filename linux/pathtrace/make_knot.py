@@ -1,5 +1,5 @@
 """Writes a torus knot as a Wavefront .obj file: one of the example meshes of /root/Models
-(docs/raytrace.md), the one that is made and not fetched.
+(docs/apps/raytrace.md), the one that is made and not fetched.
 
     python3 make_knot.py OUT.obj
 """

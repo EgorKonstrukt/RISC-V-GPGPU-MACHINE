@@ -1,4 +1,4 @@
-"""One fence.i for a debugger's pokes, not one each (docs/boot.md, "Passes that end early").
+"""One fence.i for a debugger's pokes, not one each (docs/machine/boot.md, "Passes that end early").
 
 A word written into another program's code (ptrace's POKETEXT: a debugger's stops, placed and
 lifted several at a time) was a fence.i, which ends the machine's pass. The write is noted

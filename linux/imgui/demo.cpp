@@ -1,4 +1,4 @@
-// imdemo: a cube drawn with OpenGL and, over it, windows of Dear ImGui (docs/imgui.md).
+// imdemo: a cube drawn with OpenGL and, over it, windows of Dear ImGui (docs/apps/imgui.md).
 // IMDEMO_FRAMES=N ends after N frames, IMDEMO_SHOW=1 starts with ImGui's own demo window open,
 // IMDEMO_SWAP=wait waits for each frame to be drawn before the next is begun. IMDEMO_HOLD=1
 // draws a picture that the clock and the counts have no part in, for comparing two builds,
@@ -94,7 +94,7 @@ int main()
     int frames = 0, clicks = 0, most = getenv("IMDEMO_FRAMES") ? atoi(getenv("IMDEMO_FRAMES")) : 0;
     unsigned frame_start = instructions(), whole = 0, interface = 0, drawing = 0;
 
-    // The frame before, when worker cores copy its triangles while this one is made (docs/imgui.md,
+    // The frame before, when worker cores copy its triangles while this one is made (docs/apps/imgui.md,
     // "The copy on worker cores"): its commands, and it is shown, as soon as they have finished.
     unsigned finishing = 0;
     auto show = [&](bool wait) {

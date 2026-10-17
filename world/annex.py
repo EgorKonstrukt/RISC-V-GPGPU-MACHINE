@@ -10,7 +10,7 @@ from room import (DOOR_HIGH, DOOR_WIDE, DOOR_X, HALF_D, HALF_W, HOLO_HIGH, HOLO_
 from furniture import pot
 import pc
 
-# The holodecks (docs/holodeck.md): a corridor from the den's left doorway, and eight rooms of
+# The holodecks (docs/world/holodeck.md): a corridor from the den's left doorway, and eight rooms of
 # grid off it, four a side, a seat in each. Room k is on the north side (towards +z) when k is
 # even; a room's own frame has its door behind it and the room towards +z.
 ROOMS = 8

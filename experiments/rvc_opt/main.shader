@@ -91,7 +91,7 @@
             static uint hart = 0;
             static uint2 hart_offset = uint2(0, 0);
 
-            // CORES > 1 (docs/multicore.md): core 0's state is the block at the left of the state
+            // CORES > 1 (docs/machine/multicore.md): core 0's state is the block at the left of the state
             // rows and the workers' is the strip beside it, each worker some rows of it, as the
             // geometry says (types.h); state_off is where the state of the core looked at begins
             // (mc_core is the core). RAM is read with RAM_TEX, which no core's block moves.
@@ -164,7 +164,7 @@
             #endif
             static uint tick_copy = 0;
             // (TICK_GAP columns are empty between core 0's pixels and the first worker's block: with
-            // four, a busy core 0 and busy workers took a third longer a pass: docs/multicore.md)
+            // four, a busy core 0 and busy workers took a third longer a pass: docs/machine/multicore.md)
             void tick_rect(inout TriangleStream<v2f_customrendertexture> stream, float x, float y, float w, float h) {
                 for (uint corner = 0; corner < 4; corner++) {
             #if defined(TICK_MRT) && !defined(TICK_UNPACK)
@@ -447,7 +447,7 @@
             Texture2D<float4> _Data_MTD_B;
             Texture2D<float4> _Data_MTD_A;
 
-            // CORES > 1 (docs/multicore.md): core 0's state is the block at the left of the state
+            // CORES > 1 (docs/machine/multicore.md): core 0's state is the block at the left of the state
             // rows and the workers' is the strip beside it, each worker some rows of it, as the
             // geometry says (types.h); state_off is where the state of the core looked at begins
             // (mc_core is the core). RAM is read with RAM_TEX, which no core's block moves.
@@ -488,7 +488,7 @@
             #include "src/types.h" // includes fb.h
 
 #ifdef GPU_DEVICE
-            // The GPU device's picture, for copying into the RAM framebuffer (docs/gpu.md).
+            // The GPU device's picture, for copying into the RAM framebuffer (docs/machine/gpu.md).
             Texture2D<float4> _GpuTarget;
             #define GPU_STATE _SelfTexture2D
             #define GPU_WRITEBACK
@@ -565,7 +565,7 @@
 
             // One quad for the whole texture, or with COMMIT_BANDS (33 quads) the state rows and
             // each band of RAM that has to be drawn.
-            // COMMIT_POINTS (the D3D11 harness with the tick in eight targets, docs/multicore.md):
+            // COMMIT_POINTS (the D3D11 harness with the tick in eight targets, docs/machine/multicore.md):
             // what the cores stored is drawn as points, each made the rectangle it stands for
             // by commit_geom: a texel for each entry of a bucket of a write cache and for the store
             // a full cache had no room for, the rows of its destination for a copy or a fill. Point

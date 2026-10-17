@@ -1,4 +1,4 @@
-"""A program waiting for an answer on a socket is not woken for room to write (docs/nanox.md).
+"""A program waiting for an answer on a socket is not woken for room to write (docs/system/nanox.md).
 
 A program writes a question to a Unix socket and sleeps reading the answer. When the other
 side takes the question, the socket has room again, and that woke everyone asleep on it: the

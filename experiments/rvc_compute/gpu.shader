@@ -1,6 +1,6 @@
 Shader "ShaderEmu/gpu"
 {
-    // The machine's GPU (docs/gpu.md). GPUDraw is a mesh drawn into the GPU's own colour and
+    // The machine's GPU (docs/machine/gpu.md). GPUDraw is a mesh drawn into the GPU's own colour and
     // depth target, its vertex shader reading the guest's command list from the state texture.
     // GPUControl is an update zone on the state texture: list drawn, input delivered.
     Properties
@@ -87,12 +87,12 @@ Shader "ShaderEmu/gpu"
             uniform uint _HostFlags;
             uniform uint _GpuPasses;   // the passes the GPU draw made this frame, one bit each
             uniform uint _InputKey0, _InputKey1, _InputKey2, _InputKey3;
-            // An answer to the guest's request (docs/fetch.md): its bytes, in the frame _FetchDeliver is set.
+            // An answer to the guest's request (docs/system/fetch.md): its bytes, in the frame _FetchDeliver is set.
             uniform uint _FetchDeliver, _FetchSeq, _FetchLength, _FetchStatus;
             uniform uint _FetchInfo, _FetchW, _FetchH;   // a picture's size: one word, or its halves
             Texture2D<float4> _HostData;
             Texture2D<float4> _HostImage;
-            // The sound card (docs/sound.md): the sample the host's ring starts at this frame,
+            // The sound card (docs/machine/sound.md): the sample the host's ring starts at this frame,
             // whether it mixed (the device's words move only then), and its output rate.
             uniform uint _SoundCursor, _SoundMixed, _SoundRate;
             #define GPU_SOUND

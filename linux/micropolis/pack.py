@@ -1,4 +1,4 @@
-"""Micropolis's pictures as the GPU reads them (docs/micropolis.md, "The pictures"):
+"""Micropolis's pictures as the GPU reads them (docs/games/micropolis.md, "The pictures"):
 
   tiles.bin    16 palette words, then the 960 map tiles of 16 x 16 bytes, a tile after another
   sprites.bin  256 palette words, 64 x 16 cells, a tile count in 16 bytes, then the tiles (byte 0: a hole)

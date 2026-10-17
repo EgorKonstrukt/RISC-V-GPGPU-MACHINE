@@ -1,5 +1,5 @@
 /*
- * nxpath [MESH | SCENE]: a mesh viewer with a path tracer (docs/raytrace.md, with its switches for
+ * nxpath [MESH | SCENE]: a mesh viewer with a path tracer (docs/apps/raytrace.md, with its switches for
  * tests). The view is OpenGL's while it changes and the path tracer's when it is still; the
  * panel and the menus are the window system's own, Dear ImGui draws only the handles.
  */
@@ -37,7 +37,7 @@ static const char *const detail_names[DETAILS] = {" Full view", " Half", " A thi
 static const char *const kind_names[SC_KINDS] = {" Matt", " Plastic", " Metal", " Mirror", " Glass", " Glow"};
 enum { TAB_OBJECT, TAB_MATERIAL, TAB_RENDER };
 #define TURNS 16		/* the most turns a path may be given */
-/* The example scenes: files of EXAMPLES, `nxpath NAME` or File, Examples (docs/raytrace.md). */
+/* The example scenes: files of EXAMPLES, `nxpath NAME` or File, Examples (docs/apps/raytrace.md). */
 #define EXAMPLES "/usr/share/pathtrace"
 static const struct { const char *file, *label; } examples[] = {
 	{"cornell", "The Cornell box"}, {"cornell-balls", "The Cornell box with balls"}, {"balls", "Glass and metal balls"},
@@ -1286,7 +1286,7 @@ add_thing(int id)
 	changed();
 }
 
-/* ---- scenes in files (docs/raytrace.md, "Example scenes") ---- */
+/* ---- scenes in files (docs/apps/raytrace.md, "Example scenes") ---- */
 
 /* The next word of a line, one in quotes with its spaces; NULL at the end or at a '#'. */
 static char *
@@ -1531,7 +1531,7 @@ save_scene(const char *path)
 
 	if (!file)
 		return 0;
-	fprintf(file, "# A scene of nxpath (docs/raytrace.md, \"Example scenes\")\ncamera");
+	fprintf(file, "# A scene of nxpath (docs/apps/raytrace.md, \"Example scenes\")\ncamera");
 	write_numbers(file, "target", sc.camera.target, 3), write_numbers(file, "turn", &sc.camera.turn, 1);
 	write_numbers(file, "tilt", &sc.camera.tilt, 1), write_numbers(file, "far", &sc.camera.far, 1);
 	write_numbers(file, "lens", &sc.camera.lens, 1);

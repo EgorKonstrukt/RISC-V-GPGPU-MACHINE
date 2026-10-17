@@ -1,7 +1,7 @@
-// The machine's window. Left two thirds: the guest's display (docs/display.md), decoded from
+// The machine's window. Left two thirds: the guest's display (docs/machine/display.md), decoded from
 // its framebuffer in RAM or taken from the GPU device. Right third: memory live, the RAM part of the state texture
 // drawn as colour (the largest byte of each texel's words), with texels written since
-// the view's previous frame glowing and fading. Beside it, the guest's display (docs/display.md),
+// the view's previous frame glowing and fading. Beside it, the guest's display (docs/machine/display.md),
 // decoded from the framebuffer it keeps in RAM. A bar underneath, clear of the memory image,
 // holds the speed counters and the 64x64 CPU state area magnified. It keeps its own copy of
 // the texture to compare against.

@@ -258,7 +258,7 @@ public static partial class ShaderEmuBuilder
         return rt;
     }
 
-    // The tick and the commit's points are cameras' passes (docs/multicore.md, "In Unity"): a
+    // The tick and the commit's points are cameras' passes (docs/machine/multicore.md, "In Unity"): a
     // pass with several targets, or one of a mesh of points, is a camera's in VRChat. Each
     // camera sees one mesh on a layer of its own, and EmuMachine renders it.
     static void MachineCameras(Transform world, EmuMachine machine)
@@ -703,7 +703,7 @@ public static partial class ShaderEmuBuilder
         return rt;
     }
 
-    // The volume display's material (docs/volume.md): the guest's 3D frame as geometry. Its wall
+    // The volume display's material (docs/world/volume.md): the guest's 3D frame as geometry. Its wall
     // screen is gone; the holodecks draw the same lists (ShaderEmuHolodeck.cs takes the state from here).
     static Material Volume(RenderTexture state)
     {
@@ -713,7 +713,7 @@ public static partial class ShaderEmuBuilder
         return sceneMat;
     }
 
-    // What the guest's browser may not open by itself (docs/fetch.md): a button by the display
+    // What the guest's browser may not open by itself (docs/system/fetch.md): a button by the display
     // while something waits, and a panel in front of the display with four addresses to copy
     // and four fields to paste them into. A page opens only on a visitor's own say-so.
     public static void WebLinks(Transform computer, EmuMachine machine, Vector3 dispAt, float dispW, float dispH)
@@ -835,10 +835,10 @@ public static partial class ShaderEmuBuilder
         Texture2D grid = LoadOrCreate(Generated + "/TerminalGrid.asset", () => new Texture2D(cols, rows, TextureFormat.RGBA32, false, true));
         grid.filterMode = FilterMode.Point;
         grid.wrapMode = TextureWrapMode.Clamp;
-        // an answer to the guest's browser: 256 KB, four bytes a texel (docs/fetch.md)
+        // an answer to the guest's browser: 256 KB, four bytes a texel (docs/system/fetch.md)
         Texture2D hostData = LoadOrCreate(Generated + "/HostData.asset", () => new Texture2D(256, 256, TextureFormat.RGBA32, false, true));
         hostData.filterMode = FilterMode.Point;
-        // the network's packets for the guest: a row a packet, four bytes a texel (docs/lan.md)
+        // the network's packets for the guest: a row a packet, four bytes a texel (docs/system/lan.md)
         Texture2D netData = LoadOrCreate(Generated + "/NetData.asset", () => new Texture2D(160, 4, TextureFormat.RGBA32, false, true));
         netData.filterMode = FilterMode.Point;
         netData.wrapMode = TextureWrapMode.Clamp;

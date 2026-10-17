@@ -1,4 +1,4 @@
-/* The NES's sound on the machine's sound card (docs/nes.md, "Sound"): each of its five
+/* The NES's sound on the machine's sound card (docs/games/nes.md, "Sound"): each of its five
  * channels is a voice playing a wave that is in sound memory already, and this file only
  * says how fast and how loud; a worker decodes a DMC recording the first time it is played.
  */

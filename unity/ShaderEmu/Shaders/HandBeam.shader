@@ -1,6 +1,6 @@
 Shader "ShaderEmu/HandBeam"
 {
-    // Where a holodeck's sitter's hand points in their program's world (docs/holodeck.md): a thin
+    // Where a holodeck's sitter's hand points in their program's world (docs/world/holodeck.md): a thin
     // ribbon from the object's place along its +z, turned to the eye, added to what is behind it.
     // It is drawn after the program's world and before the room's seal, so that world's depth cuts it.
     Properties

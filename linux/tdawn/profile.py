@@ -1,4 +1,4 @@
-"""What a played game ran, for the compiler (docs/tdawn.md, "What the compiler is told").
+"""What a played game ran, for the compiler (docs/games/tdawn.md, "What the compiler is told").
     profile.py make OUT.profile LOG ...   counting runs' 'GC' lines (host.c), summed, as one text file
     profile.py put IN.profile BUILD       that file as GCC 13's .gcda files where a build in BUILD looks
 """

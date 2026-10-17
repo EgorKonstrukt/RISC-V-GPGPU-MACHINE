@@ -1,4 +1,4 @@
-"""ClassiCube's sounds and its music for the machine (docs/classicube.md, "Sound").
+"""ClassiCube's sounds and its music for the machine (docs/games/classicube.md, "Sound").
 
   python3 make_sound.py OUT_DIR RESOURCES.C MEDIA_TEST ENCODER CACHE
 

@@ -854,7 +854,7 @@ index 4825ba4..bd5df61 100644
  
 +#ifdef SHADEREMU
 +/*
-+** What the game costs on the ShaderEmu machine, in instructions (docs/ralert.md):
++** What the game costs on the ShaderEmu machine, in instructions (docs/games/ralert.md):
 +**   RALERT_STATS_MS=N   print the figures every N milliseconds (5000; 0 for never)
 +**   RALERT_FRAMES=N     run N game frames with no delay between them, print, and leave
 +**   RALERT_STOP_FRAME=N hold the picture of game frame N (RALERT_NO_DELAY=1: get there at once)
@@ -891,7 +891,7 @@ index 4825ba4..bd5df61 100644
 +    }
 +}
 +
-+/* A step from a won mission to the next (docs/ralert.md, "A mission won"): its time, instructions and memory. */
++/* A step from a won mission to the next (docs/games/ralert.md, "A mission won"): its time, instructions and memory. */
 +void ShaderEmu_Stage(const char* what)
 +{
 +    static const bool on = getenv("RALERT_WIN") != NULL;
@@ -1761,7 +1761,7 @@ index 4825ba4..bd5df61 100644
      shakes += shakes;
 +#ifdef SHADEREMU
 +    /* Copies of the page, hundreds of KB each, shook only the page over the GPU's map: the same
-+    ** random picks and frames without them (docs/ralert.md, "A base destroyed"). RALERT_SHAKE=copy: as it
++    ** random picks and frames without them (docs/games/ralert.md, "A base destroyed"). RALERT_SHAKE=copy: as it
 +    ** was. */
 +    static const bool copies = getenv("RALERT_SHAKE") && !strcmp(getenv("RALERT_SHAKE"), "copy");
 +    for (int newyoff = 0; !copies && shakes--;) {
@@ -3653,7 +3653,7 @@ index 3738c61..bc554f6 100644
  
 +#ifdef SHADEREMU
 +        /* the demo has no next mission, nor the map it is chosen on (a missing animation's
-+        ** garbage header asked for "out of memory"): its menu again (docs/ralert.md, "A mission won") */
++        ** garbage header asked for "out of memory"): its menu again (docs/games/ralert.md, "A mission won") */
 +        if (Is_Demo()) {
 +            SHADEREMU_STAGE("the demo's menu again");
 +            GameActive = false;

@@ -1,4 +1,4 @@
-/* Rigid boxes for many cores with no locks (docs/physics.md). Each phase reads what the phase
+/* Rigid boxes for many cores with no locks (docs/apps/physics.md). Each phase reads what the phase
  * before left and writes only what its share owns: body i and cell c are share i mod n's and
  * c mod n's, and everything a share writes is whole texels of its own. */
 #ifndef PHYSICS_H

@@ -1,4 +1,4 @@
-/* libmedia's own: what its parts share (docs/media.md). */
+/* libmedia's own: what its parts share (docs/system/media.md). */
 #ifndef SHADEREMU_MEDIA_INT_H
 #define SHADEREMU_MEDIA_INT_H
 

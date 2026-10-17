@@ -3,7 +3,7 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 
-// The network's panel on the right wall (docs/lan.md): every visitor's machine with its address
+// The network's panel on the right wall (docs/system/lan.md): every visitor's machine with its address
 // and what it has sent, and this visitor's own machine's counts of packets.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuLan : UdonSharpBehaviour

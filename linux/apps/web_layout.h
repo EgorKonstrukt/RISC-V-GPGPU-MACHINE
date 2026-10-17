@@ -1,7 +1,7 @@
 /*
  * Lays the page's tree (web.h) out for a width: boxes one under the other, text and pictures
  * in lines, tables, rows of boxes side by side (flex, grid), floats. What comes out is a list
- * of things to draw at places of the page (docs/web.md). The program that includes this gives
+ * of things to draw at places of the page (docs/apps/web.md). The program that includes this gives
  * it web_picture(): a picture's number and size by its address.
  */
 #ifndef NXWEB_WEB_LAYOUT_H

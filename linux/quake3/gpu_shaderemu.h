@@ -5,7 +5,7 @@
 #ifndef SHADEREMU_QUAKE3_GPU_H
 #define SHADEREMU_QUAKE3_GPU_H
 
-/* more of a draw's vertex word (docs/gpu.md) */
+/* more of a draw's vertex word (docs/machine/gpu.md) */
 #define GPU_QUADS	0x200		/* four corners a quad, drawn as six vertices */
 #define GPU_TAGGED	0x1000		/* the fourth word is u | v << 12 | tag << 24 */
 #define GPU_TABLE	0x2000		/* a vertex's colour is the table's word for its tag */

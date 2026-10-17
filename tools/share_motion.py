@@ -1,4 +1,4 @@
-"""The display stream while the picture keeps changing (docs/share.md, "Judged while it moves").
+"""The display stream while the picture keeps changing (docs/world/share.md, "Judged while it moves").
 
   rvc_harness --cpu --cpu-ips 3000000 --desktop ... --screen-log SCENE.scr --screen-every 33 --screen-frames 300
   python tools/share_motion.py SCENE.scr ... [--rates 0.15,1.0] [--only tiles,units] [--video FOLDER]

@@ -1,5 +1,5 @@
 /* ui_launch.h: what a click that starts a program shows until the program's first window is
- * there: the pointer with an hourglass and a note by it, "Starting NAME" (docs/nanox.md, "A
+ * there: the pointer with an hourglass and a note by it, "Starting NAME" (docs/system/nanox.md, "A
  * program starting"). Ends at another program's window shown, the program gone, or 30 s.
  * Needs nano-X.h and ui_icons.h; UI_LAUNCH=0 shows nothing, UI_LAUNCH=print says when it ends. */
 #ifndef UI_LAUNCH_H

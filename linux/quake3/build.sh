@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Quake III Arena (ioquake3's source; the game, the client's game and the menus linked
 # in, a renderer and a sound layer of our own) for the image, and bakes one level of the
-# game's free demo into the two files it runs from (docs/quake3.md).
+# game's free demo into the two files it runs from (docs/games/quake3.md).
 #   wsl -- bash /mnt/c/.../linux/quake3/build.sh        (after linux/nanox/build.sh)
 # In the guest: nano-X -p & quake3
 set -euo pipefail
@@ -149,12 +149,12 @@ cp "$DATA/pak0.pk3" "$OUT/usr/share/quake3-pak0.pk3"
 cp "$DATA/se.dat" "$OUT/usr/share/quake3-se.dat"
 cat > "$OUT/usr/bin/quake3" <<'EOF'
 #!/bin/sh
-# what it writes (its settings) goes to the folder the host keeps (docs/persist.md)
+# what it writes (its settings) goes to the folder the host keeps (docs/system/persist.md)
 mkdir -p /tmp/quake3/baseq3 /persistence/quake3 && cd /tmp/quake3 || exit 1
 ln -sf /usr/share/quake3-pak0.pk3 baseq3/pak0.pk3
 exec quake3.bin +set fs_basepath /tmp/quake3 +set fs_homepath /persistence/quake3 +set sv_pure 0 +set name "${USER:-player}" "$@"
 EOF
 chmod +x "$OUT/usr/bin/quake3"
-# (from the menu: the level, and the one bot the worker core keeps up with: docs/quake3.md)
+# (from the menu: the level, and the one bot the worker core keeps up with: docs/games/quake3.md)
 echo "Games/Quake III Arena=quake3" > "$OUT/usr/share/nxapps.71-quake3"
 ls -l "$OUT/usr/bin/quake3.bin" "$OUT/usr/share/quake3-pak0.pk3" "$OUT/usr/share/quake3-se.dat"

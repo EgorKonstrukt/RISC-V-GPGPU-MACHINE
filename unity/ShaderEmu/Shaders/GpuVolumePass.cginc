@@ -1,4 +1,4 @@
-// One pass of the volume display (docs/volume.md). The including pass defines _VolumePass (0-3)
+// One pass of the volume display (docs/world/volume.md). The including pass defines _VolumePass (0-3)
 // and sets that pass's blending: the GPU's own passes 0-3, and 4-7 with them (with depth here).
 // The same point mesh as the GPU device's, one point a triangle, seen by the visitor's camera.
 #include "UnityCG.cginc"

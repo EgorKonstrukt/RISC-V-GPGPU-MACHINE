@@ -1,7 +1,7 @@
 /*
  * A model's triangles for the GPU, in place of gl_mesh.c: three vertices a triangle in the
  * model's own order, and beside them each one's texture coordinates as a tagged compact
- * vertex holds them (docs/gpu.md). GLQuake looked for long strips and fans here, a search per model.
+ * vertex holds them (docs/machine/gpu.md). GLQuake looked for long strips and fans here, a search per model.
  */
 #include <stdlib.h>
 #include "quakedef.h"

@@ -2,7 +2,7 @@
 
     python tools/snapshot_screen.py SNAPSHOT OUT.png
 
-Composes the display's layers (docs/display.md, mode 4: the table at the address in
+Composes the display's layers (docs/machine/display.md, mode 4: the table at the address in
 0x8700000c is a count, three unused words, then eight words a layer: x, y, width, height,
 address) or shows the RAM framebuffer of the other modes that have one.
 """

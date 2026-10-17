@@ -1,6 +1,6 @@
 Shader "ShaderEmu/CRT"
 {
-    // A station's tube (docs/stations.md). The surface is glass: dark, lit and reflecting as
+    // A station's tube (docs/world/stations.md). The surface is glass: dark, lit and reflecting as
     // anything in the room is (the room's probe, blurred; lamps' highlights), duller where it is
     // smudged. Behind
     // it the picture of DisplayShow.shader glows, drawn by a beam in lines on stripes of three

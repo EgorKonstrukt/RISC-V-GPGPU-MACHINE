@@ -35,7 +35,7 @@
 #define L1_H1(t, n) ((((t) >> 3) ^ ((t) << ((n) - 3)) ^ ((t) >> (n))) & ((1u << (n)) - 1))
 #define L1_H2(t, n) ((((t) >> 2) ^ ((t) << ((n) - 2)) ^ ((t) >> ((n) + 3))) & ((1u << (n)) - 1))
 #if defined(CORES) && CORES > 1
-// A worker core's write cache is as large as the machine's geometry says (docs/multicore.md,
+// A worker core's write cache is as large as the machine's geometry says (docs/machine/multicore.md,
 // "The geometry"): tables of 2^mc_bits_now buckets, in the first buckets of the same arrays.
 // mc_bits_now is the size of the core whose cache is being looked at, in the tick and in
 // the commit.

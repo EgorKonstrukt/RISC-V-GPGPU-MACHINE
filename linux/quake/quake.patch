@@ -160,7 +160,7 @@ index 5812143..d437e2a 100644
  }
  
 +/* What is sent a second to another machine, each way: a move and an update a frame were
-+ * more than the link between machines carries (docs/lan.md), and most of them were lost. */
++ * more than the link between machines carries (docs/system/lan.md), and most of them were lost. */
 +cvar_t	net_rate = {"net_rate", "8"};
 +
 +/* Whether a packet to a machine is due: `last` is when the one before went. */
@@ -1721,7 +1721,7 @@ index d9bf41e..5ceac29 100644
  {
  	int		i;
  
-+	if (se_all_round)	// shaderemu: the host shows the world all round a seat (docs/holodeck.md)
++	if (se_all_round)	// shaderemu: the host shows the world all round a seat (docs/world/holodeck.md)
 +		return false;
 +#ifdef SHADEREMU
 +	// Behind a plane when its corner furthest along the plane is: BoxOnPlaneSide's first sum,
@@ -2697,7 +2697,7 @@ index 8a0c096..c6cc8f2 100644
  	
 +#ifdef SHADEREMU
 +	se_sbar_done = 0;
-+	if (scr_drawloading)	// (the plaque on black: the level being left is not drawn, docs/quake.md)
++	if (scr_drawloading)	// (the plaque on black: the level being left is not drawn, docs/games/quake.md)
 +		glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 +	else
 +#endif
@@ -3024,7 +3024,7 @@ index 603f6b3..69bb32b 100644
 +	realtime_ms += ms;
  
 -	if (!cls.timedemo && realtime - oldrealtime < 1.0/72.0)
-+	if (!cls.timedemo && (realtime_ms - oldrealtime_ms) * 100 < 1000)	/* (72 was two passes of waiting a frame: docs/quake.md) */
++	if (!cls.timedemo && (realtime_ms - oldrealtime_ms) * 100 < 1000)	/* (72 was two passes of waiting a frame: docs/games/quake.md) */
  		return false;		// framerate is too high
  
 -	host_frametime = realtime - oldrealtime;
@@ -3489,7 +3489,7 @@ index 3eded99..3bf66d2 100644
  
  	// determine my name & address
 +#ifdef SHADEREMU
-+	// The machine's address and everybody's are the link's own (docs/lan.md): there are no
++	// The machine's address and everybody's are the link's own (docs/system/lan.md): there are no
 +	// names to look up. Without a link the address is the loopback's, and the name stays.
 +	struct ifreq link;
 +	unsigned everybody = INADDR_BROADCAST;
@@ -3737,7 +3737,7 @@ index 4f2aa36..1549d3a 100644
  ====================
  PR_ExecuteProgram
 +
-+A statement as the loop takes it (docs/quake.md, "The server's frame"): where its code is and
++A statement as the loop takes it (docs/games/quake.md, "The server's frame"): where its code is and
 +its operands as byte offsets into the globals, made once a progs is loaded (PR_ExecuteProgram
 +(-1) from PR_LoadProgs). The same operations on the same values as the switch of id's.
  ====================
@@ -4446,7 +4446,7 @@ index 3db22ab..6af0f10 100644
  
 +#ifdef SHADEREMU
 +/*
-+The particles on workers (docs/quake.md, "The other workers", "Calls of the second layer"): the
++The particles on workers (docs/games/quake.md, "The other workers", "Calls of the second layer"): the
 +array is four shares, each moved by a worker that writes a vertex each into a buffer of its own in
 +GPU memory, which the frame draws from there, and lists those that died; this core gives a new one
 +a free place, and an explosion's particles are made by their share's worker from its random
@@ -5587,7 +5587,7 @@ index e1acfea..27b3ada 100644
  */
 +
 +/*
-+ * The level's answers kept (docs/quake.md, "The server's frame"): a move through a BSP model's
++ * The level's answers kept (docs/games/quake.md, "The server's frame"): a move through a BSP model's
 + * hull is the same bits for the same question while the level lasts. The box hull is made again
 + * for every entity, and is not kept.
 + */

@@ -1893,7 +1893,7 @@ index ccfee09..08ce48c 100644
 +#include "Picking.h"
 +#include "PackedCol.h"
 +/* What a frame is seen from, kept by core 0 for the worker that makes the frame's list while
-+   core 0 goes on to the next (Game.c, docs/classicube.md) */
++   core 0 goes on to the next (Game.c, docs/games/classicube.md) */
 +struct SEFrame {
 +	struct Matrix view, tiltM;
 +	struct RayTracer selected;
@@ -2028,7 +2028,7 @@ index d033191..e965cc8 100644
  
 +#ifdef CC_BUILD_SHADEREMU
 +/* The two steps that are noise by the column, a third of the world's making, are shared out
-+   between the machine's cores when it has more than one (docs/multicore.md): rows of z to each,
++   between the machine's cores when it has more than one (docs/machine/multicore.md): rows of z to each,
 +   which are whole 16 bytes of the height map and of every layer of blocks when the world's
 +   width is a multiple of 16. The noise tables are only read; the lowest height comes back
 +   as the job's answer. */
@@ -2472,7 +2472,7 @@ index fbe36dd..d242d45 100644
 +#ifdef CC_BUILD_SHADEREMU
 +/* Goes up when the two walks below may come to other draws than they last did: the chunks
 +   drawn or their order, the faces towards the camera, a mesh, the atlases. The backend keeps
-+   a walk's commands while it stands (Gfx_SE_SegmentBegin, docs/classicube.md). */
++   a walk's commands while it stands (Gfx_SE_SegmentBegin, docs/games/classicube.md). */
 +static cc_uint32 se_walk_serial = 1;
 +static int se_walk_vertices[2], se_walk_batch[2];
 +/* Chunks may be waiting for a mesh: the workers are looked at for one to give them */
@@ -2726,7 +2726,7 @@ index fbe36dd..d242d45 100644
 +cc_bool Gfx_SE_UnlockFrom(GfxResourceID vb, void* vertices, VertexFormat fmt, int count);
 +
 +/* What a worker has: its job, and for each chunk of it what the chunk's `made` was when it
-+   was given out. (Whole 16s: the worker stores into the job, docs/multicore.md.) */
++   was given out. (Whole 16s: the worker stores into the job, docs/machine/multicore.md.) */
 +struct SEWork {
 +	struct SEMeshJob job;
 +	struct ChunkInfo* chunks[SE_MESH_MOST];
@@ -3238,7 +3238,7 @@ index cf715b9..5fbe5e6 100644
  };
  
 +#ifdef CC_BUILD_SHADEREMU
-+/* Chunk meshes built on worker cores (docs/classicube.md, docs/multicore.md): Builder.c is
++/* Chunk meshes built on worker cores (docs/games/classicube.md, docs/machine/multicore.md): Builder.c is
 +   compiled again for each of SE_COPIES workers (SE_SECOND) with buffers of its own, and a copy
 +   builds a few chunks at a time into them, while the first core draws. What a chunk came to is
 +   in SEMeshOut, which the first core makes the chunk's own when the job has ended. */

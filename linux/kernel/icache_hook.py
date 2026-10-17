@@ -1,4 +1,4 @@
-"""One fence.i for a program's pages, not one each (arch/riscv/mm/cacheflush.c; docs/boot.md,
+"""One fence.i for a program's pages, not one each (arch/riscv/mm/cacheflush.c; docs/machine/boot.md,
 "Passes that end early"). A page written by the kernel (a program just compiled into /tmp) is
 mapped to run with a fence.i, which ends the machine's pass and with it commits every store
 there is. So the file's pages round it in the page cache (sixteen) are as clean as it is, and

@@ -1,6 +1,6 @@
 Shader "ShaderEmu/gpu"
 {
-    // The machine's GPU (docs/gpu.md). GPUDraw is a mesh drawn into the GPU's own colour and
+    // The machine's GPU (docs/machine/gpu.md). GPUDraw is a mesh drawn into the GPU's own colour and
     // depth target, its vertex shader reading the guest's command list from the state texture.
     // GPUControl is an update zone on the state texture: list drawn, input delivered.
     Properties
@@ -83,10 +83,10 @@ Shader "ShaderEmu/gpu"
             uniform float4 _InputPointer;
             uniform uint _InputButtons, _InputKeySeq, _InputKeyCount;
             uniform uint _HostMs;   // the host's clock, in milliseconds
-            uniform uint _UdonUARTInChar, _UdonUARTInTag;   // the console's input (docs/console.md)
+            uniform uint _UdonUARTInChar, _UdonUARTInTag;   // the console's input (docs/machine/console.md)
             // bit 0: the guest should start its desktop when it boots; bits 8-15 and 16-23: the
             // largest screen this host shows, width and height in 16s of pixels (0: it does not say)
-            // What the host says of where the machine is shown (docs/holodeck.md): word 0, the head's three, and where the right hand points.
+            // What the host says of where the machine is shown (docs/world/holodeck.md): word 0, the head's three, and where the right hand points.
             uniform uint _HostState0, _HostState1, _HostState2, _HostState3, _HostState4, _HostState5, _HostState6, _HostState7;
             #define HOST_STATE_WORDS(n) ((n) == 0 ? _HostState0 : (n) == 1 ? _HostState1 : (n) == 2 ? _HostState2 : (n) == 3 ? _HostState3 : (n) == 4 ? _HostState4 : (n) == 5 ? _HostState5 : (n) == 6 ? _HostState6 : (n) == 7 ? _HostState7 : 0u)
             uniform uint _HostFlags;
@@ -94,16 +94,16 @@ Shader "ShaderEmu/gpu"
             uniform uint _CountMerged;   // the counters (src/gpu.h): 0 a host that never merges, 2 merged this frame
             #define GPU_COUNT_MERGE
             uniform uint _InputKey0, _InputKey1, _InputKey2, _InputKey3;
-            // An answer to the guest's request (docs/fetch.md): its bytes, in the frame _FetchDeliver is set.
+            // An answer to the guest's request (docs/system/fetch.md): its bytes, in the frame _FetchDeliver is set.
             uniform uint _FetchDeliver, _FetchSeq, _FetchLength, _FetchStatus;
             uniform uint _FetchInfo, _FetchW, _FetchH;   // a picture's size: one word, or its halves
             uniform uint _FetchOffset;   // _FetchDeliver 3: where in the file a picture carries this part begins
             Texture2D<float4> _HostData;
             Texture2D<float4> _HostImage;
-            // The sound card (docs/sound.md): the sample the host's ring starts at this frame,
+            // The sound card (docs/machine/sound.md): the sample the host's ring starts at this frame,
             // whether it mixed (the device's words move only then), and its output rate.
             uniform uint _SoundCursor, _SoundMixed, _SoundRate;
-            // The network (docs/lan.md): the guest's packets the host has taken, the packets it
+            // The network (docs/system/lan.md): the guest's packets the host has taken, the packets it
             // delivered before this frame and how many arrive in it (rows of _NetData, 160 x 4,
             // four bytes a texel), and the machine's number (0: no link).
             uniform uint _NetTxAck, _NetRxSeq, _NetRxCount, _NetId;

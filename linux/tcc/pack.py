@@ -1,5 +1,5 @@
 """Puts what the examples take of each archive first in it, and lists those pages for the
-guest's compiler, mapped.c (docs/cc.md, "Fewer pages of the ROM"). The index keeps its order,
+guest's compiler, mapped.c (docs/system/cc.md, "Fewer pages of the ROM"). The index keeps its order,
 so the linker writes the same file.
     python3 pack.py TCC STAGE EXAMPLES OUT.h      (TCC: the compiler built for this computer)"""
 import os, re, subprocess, sys, tempfile

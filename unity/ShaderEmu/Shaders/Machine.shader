@@ -136,7 +136,7 @@ Shader "ShaderEmu/Machine"
             uniform uint _HostFlags;   // bit 0: the guest should start its desktop when it boots
             uniform uint _GpuDrawn;    // 0: a submitted list stays submitted, its camera did not draw this round
             static uint _InputKey0, _InputKey1, _InputKey2, _InputKey3, _HostMs;
-            // Where the machine is shown (docs/holodeck.md): eight words, each in two halves.
+            // Where the machine is shown (docs/world/holodeck.md): eight words, each in two halves.
             uniform uint _HostS0, _HostS1, _HostS2, _HostS3, _HostS4, _HostS5, _HostS6, _HostS7;
             uniform uint _HostS8, _HostS9, _HostS10, _HostS11, _HostS12, _HostS13, _HostS14, _HostS15;
             uint host_state_word(uint n) {
@@ -145,19 +145,19 @@ Shader "ShaderEmu/Machine"
                 return (lo & 0xffff) | (hi << 16);
             }
             #define HOST_STATE_WORDS(n) host_state_word(n)
-            // The network (docs/lan.md): what the guest's packets were taken up to, what this pass
+            // The network (docs/system/lan.md): what the guest's packets were taken up to, what this pass
             // delivers (rows of _NetData), and the machine's number. Counts come in two halves.
             uniform uint _NetId, _NetTxAckLo, _NetTxAckHi, _NetRxSeqLo, _NetRxSeqHi, _NetRxCount;
             static uint _NetTxAck, _NetRxSeq;
             Texture2D<float4> _NetData;
             #define GPU_NET
-            // An answer to the guest's request (docs/fetch.md): its bytes, in the frame _FetchDeliver is set.
+            // An answer to the guest's request (docs/system/fetch.md): its bytes, in the frame _FetchDeliver is set.
             uniform uint _FetchDeliver, _FetchSeq, _FetchLength, _FetchStatus;
             uniform uint _FetchInfo, _FetchW, _FetchH;   // a picture's size: one word, or its halves
             uniform uint _FetchOffset;   // _FetchDeliver 3: where in the file a picture carries this part begins
             Texture2D<float4> _HostData;
             Texture2D<float4> _HostImage;
-            // The sound card (docs/sound.md): its words move on in a pass that follows a mix.
+            // The sound card (docs/machine/sound.md): its words move on in a pass that follows a mix.
             uniform uint _SoundCursorLo, _SoundCursorHi, _SoundMixed, _SoundRate;
             #define SOUND_CURSOR (_SoundCursorLo | (_SoundCursorHi << 16))
             #define SOUND_MIXED _SoundMixed
@@ -165,7 +165,7 @@ Shader "ShaderEmu/Machine"
             #define GPU_SOUND
             // The GPU's camera draws all eight passes every frame.
             #define _GpuPasses 0xffu
-            // the console's input (docs/console.md): up to four characters, in two halves
+            // the console's input (docs/machine/console.md): up to four characters, in two halves
             uniform uint _UartInLo, _UartInHi, _UdonUARTInTag;
             #define CON_IN_TAG _UdonUARTInTag
             #define CON_IN_CHARS (_UartInLo | (_UartInHi << 16))

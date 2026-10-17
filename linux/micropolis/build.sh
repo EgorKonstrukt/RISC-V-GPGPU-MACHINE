@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds Micropolis, the city simulator of 1989 (MicropolisCore's engine, GPLv3 with EA's terms;
-# a Nano-X front end here), with its tiles, sprites, tools and cities (docs/micropolis.md).
+# a Nano-X front end here), with its tiles, sprites, tools and cities (docs/games/micropolis.md).
 #   wsl -- bash /mnt/c/.../linux/micropolis/build.sh   (after linux/nanox, linux/tdawn and linux/libmedia's build.sh)
 # In the guest: nano-X -p & nxmicropolis
 set -euo pipefail
@@ -78,7 +78,7 @@ cp "$CONTENT"/data/stri.*.txt "$OUT/usr/share/micropolis/data/"
 cp "$MP/MicropolisGPLLicenseNotice.md" "$MP/MicropolisPublicNameLicense.md" "$MP/gpl-3.0.txt" "$OUT/usr/share/micropolis/"
 cat "$MP/MicropolisGPLLicenseNotice.md" > "$OUT/usr/share/micropolis/COPYING"
 echo "Games/Micropolis=nxmicropolis" > "$OUT/usr/share/nxapps.72-micropolis"
-# a city anybody opens is played (docs/open.md)
+# a city anybody opens is played (docs/system/open.md)
 echo "city cty - nxmicropolis %s" > "$OUT/usr/share/nxopen.72-micropolis"
 "$BUILD/micropolis-sum" "$CONTENT/cities/haight.cty,1000"
 ls -l "$OUT/usr/bin/nxmicropolis"; du -sh "$OUT/usr/share/micropolis"

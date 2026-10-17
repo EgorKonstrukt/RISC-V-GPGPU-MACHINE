@@ -726,7 +726,7 @@ private:
     double tickMs_ = -1, commitMs_ = -1, deviceMs_ = 0;
     bool bands_ = false;   // the commit draws only the bands of RAM that changed
     float tickRows_ = 64;  // BackendOptions::tickRows
-    float cores_ = 1;      // CORES: more than one, and the tick draws the workers' strip too (docs/multicore.md)
+    float cores_ = 1;      // CORES: more than one, and the tick draws the workers' strip too (docs/machine/multicore.md)
     MemoryView view_;
 };
 

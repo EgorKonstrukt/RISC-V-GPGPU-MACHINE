@@ -1,7 +1,7 @@
 #ifndef SOUND_H
 #define SOUND_H
 
-// The sound card (docs/sound.md): voices the guest sets up, mixed here one pixel an output
+// The sound card (docs/machine/sound.md): voices the guest sets up, mixed here one pixel an output
 // sample. Included by gpu.h, whose ram() and texture_word() it uses; programs/common/sound.h
 // has the same numbers for C. Addresses below are RAM texel indices.
 #define SND_GUEST  0x700022u   // the guest's: enable, master volume (0..256), voices in use
@@ -144,7 +144,7 @@ int2 snd_adpcm(snd_voice v, uint p) {
 }
 
 // FM (SND_FM): a voice plays a track of notes, each two sine operators, the first bending the
-// second's phase, with envelopes worked out from how long the note has been on (docs/sound.md).
+// second's phase, with envelopes worked out from how long the note has been on (docs/machine/sound.md).
 // Levels are in steps of 1/32 of a halving, 512 of them being silence.
 static const int snd_sine[256] = {
     13, 38, 63, 88, 113, 138, 163, 188, 213, 239, 264, 289, 314, 339, 364, 389,

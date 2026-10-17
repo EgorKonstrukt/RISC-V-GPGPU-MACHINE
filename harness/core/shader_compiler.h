@@ -1,5 +1,5 @@
 // d3dcompiler_47 wrapper with Unity-like settings and an on-disk bytecode cache. The DLL beside
-// the executable is fxc2 (tools/fxc2, docs/fxc2.md); without it Windows' own FXC is loaded.
+// the executable is fxc2 (tools/fxc2, docs/machine/fxc2.md); without it Windows' own FXC is loaded.
 //
 // The cache key is a hash of the *preprocessed* source (cheap to produce) plus entry point,
 // profile, flags and which compiler it is. Editing an included file invalidates exactly the

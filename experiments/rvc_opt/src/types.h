@@ -2,7 +2,7 @@
 #define TYPES_H
 
 // Linux without an MMU, entered in supervisor mode: its CSRs are fields of the CPU's texels 0
-// to 2, with no CSR table and no CSR cache (docs/nommu.md, "The state").
+// to 2, with no CSR table and no CSR cache (docs/system/nommu.md, "The state").
 #if defined(NO_PAGING) && defined(SBI_HLE) && !defined(CSR_TABLE)
 #define CSR_FIELDS
 #endif
@@ -65,7 +65,7 @@
 #define L1_H1(t, n) ((((t) >> 3) ^ ((t) << ((n) - 3)) ^ ((t) >> (n))) & ((1u << (n)) - 1))
 #define L1_H2(t, n) ((((t) >> 2) ^ ((t) << ((n) - 2)) ^ ((t) >> ((n) + 3))) & ((1u << (n)) - 1))
 #if defined(CORES) && CORES > 1
-// A worker core's write cache is as large as the machine's geometry says (docs/multicore.md,
+// A worker core's write cache is as large as the machine's geometry says (docs/machine/multicore.md,
 // "The geometry"): tables of 2^mc_bits_now buckets, in the first buckets of the same arrays.
 // mc_bits_now is the size of the core whose cache is being looked at, in the tick and in
 // the commit.
@@ -84,7 +84,7 @@
 // Where the state texels are in the 64 texels wide state block (texel lin is at x = lin % 64,
 // y = lin / 64). What the tick pass keeps is one rectangle of STATE_ROWS rows from the top:
 // the CPU's 44 texels, the write cache, the TLBs, the float registers. The pass draws that
-// rectangle and nothing else, so the warps it runs in are full (docs/multicore.md: with the
+// rectangle and nothing else, so the warps it runs in are full (docs/machine/multicore.md: with the
 // same texels in four bands of a 64 x 64 zone the pass was 5 to 9% slower, and a second core
 // cost a second pass). The CSR area, which only the commit pass writes, is under it.
 #define L1_STATE_AT 44
@@ -110,12 +110,12 @@
 #define CSR_STATE_TEXELS 1024
 
 #if CORES > 1
-// A worker core (docs/multicore.md) keeps the CPU's texels, the write cache and the float
+// A worker core (docs/machine/multicore.md) keeps the CPU's texels, the write cache and the float
 // registers, and no TLBs: one that runs with paging starts every pass with none, which costs
 // nothing that can be measured. That is 500 texels with a cache of 2^6, eight whole tiles of
 // 8 x 8, as core 0's 64 x 8: the GPU runs pixels in tiles. In a row of their own they were a
 // line a pixel high, which costs the warps of two rows.
-// The geometry (docs/multicore.md): the workers are all alike. Their state is tiles of 8 x 8
+// The geometry (docs/machine/multicore.md): the workers are all alike. Their state is tiles of 8 x 8
 // texels in the state rows beside core 0's block: MC_STRIP_TILES of them to a band of eight
 // rows, one band under another, a worker's tiles side by side in one band. How many workers
 // there are and how large their write caches are is a texel of the control words that core 0
@@ -133,7 +133,7 @@
 // With the tick in eight targets (TICK_MRT, main.shader) a tile is a column of eight pixels
 // there, and a worker's columns are a block of its own, TICK_BLOCK columns wide or a multiple,
 // with TICK_PAD or more columns of it empty: pixels of two cores that the card runs together
-// cost what both cost (measured: docs/multicore.md; six columns of eight may be used). The
+// cost what both cost (measured: docs/machine/multicore.md; six columns of eight may be used). The
 // blocks are side by side in bands of STATE_ROWS rows, TICK_BANDS of them, the first with
 // core 0's eight columns and TICK_GAP empty ones before the workers'.
 #ifndef TICK_BLOCK
@@ -651,7 +651,7 @@ static uint fast_budget = 0;
 #if defined(X_P_ALU) || defined(X_P_READ) || defined(X_P_TEX)
 #define X_PROBE
 #endif
-static uint probe = 0;   // X_P_*: work added to every fast instruction, to time it (docs/tick-costs.md)
+static uint probe = 0;   // X_P_*: work added to every fast instruction, to time it (docs/machine/tick-costs.md)
 static uint l1_last_t = 0xffffffff, l1_last_at = 0, l1_last_t2 = 0xffffffff, l1_last_at2 = 0;
 static uint l1_absent_t = 0xffffffff;
 #define L1_KNOWN(t) ((t) == l1_last_t || (t) == l1_last_t2)

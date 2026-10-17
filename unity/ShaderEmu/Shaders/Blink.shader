@@ -1,6 +1,6 @@
 Shader "ShaderEmu/Blink"
 {
-    // A small lamp that flickers (docs/stations.md): a computer's disk lamp, a network socket's.
+    // A small lamp that flickers (docs/world/stations.md): a computer's disk lamp, a network socket's.
     // Its sixteen bits are an eighth of a second each, the oldest the highest, played over and
     // over; a behaviour writes them now and then, so the lamp needs nothing every frame.
     Properties

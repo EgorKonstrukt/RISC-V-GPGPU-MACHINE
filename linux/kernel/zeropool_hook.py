@@ -1,4 +1,4 @@
-"""Keeps a pool of cleared memory that the idle loop fills (docs/boot.md, "Passes that end early").
+"""Keeps a pool of cleared memory that the idle loop fills (docs/machine/boot.md, "Passes that end early").
 
 A parallel fill ends the machine's pass. stall_hook.py cleared sixty-four pages in one; here a
 megabyte is cleared at a time, by the idle loop when it can (a pass that would end there

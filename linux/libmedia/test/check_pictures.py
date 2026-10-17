@@ -1,4 +1,4 @@
-"""libmedia's pictures against Pillow's (docs/media.md): makes a set of pictures of every kind
+"""libmedia's pictures against Pillow's (docs/system/media.md): makes a set of pictures of every kind
 the library reads, decodes each with media_test (built for this computer, or run under WSL), and
 compares. PNG, GIF, BMP, PNM and TGA must be the same pixels; JPEG within what two decoders'
 rounding and colour stretching differ by. Then the encoders: written, read back by Pillow.

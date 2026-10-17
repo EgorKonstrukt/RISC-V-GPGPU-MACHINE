@@ -1,5 +1,5 @@
 /*
- * GIF pictures and animations (docs/media.md). A frame's codes stand by themselves, so every
+ * GIF pictures and animations (docs/system/media.md). A frame's codes stand by themselves, so every
  * frame is unpacked (LZW, into a byte a pixel) by a core of its own, all of them ahead; a frame
  * is then laid on the canvas by every core, rows each, in order (a frame lies on the one before).
  */

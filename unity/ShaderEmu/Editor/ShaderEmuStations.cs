@@ -7,7 +7,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
 
-// The classroom in the den (world/furniture.py, docs/stations.md): twelve computers on six wooden
+// The classroom in the den (world/furniture.py, docs/world/stations.md): twelve computers on six wooden
 // tables, one a visitor whose machine is on. The models are the furniture's; this gives each
 // one's glass its tube, its keyboard and tube their beams' plates, the keys modelled on its
 // monitor and tower their work, its tower's window the speed of its owner's machine, and its

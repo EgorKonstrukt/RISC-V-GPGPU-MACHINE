@@ -1,4 +1,4 @@
-// The network's panel (docs/lan.md): on the right wall between the danger zone and the rack, every visitor's
+// The network's panel (docs/system/lan.md): on the right wall between the danger zone and the rack, every visitor's
 // machine with its address and this visitor's own machine's counts. A canvas: no bake.
 using TMPro;
 using UdonSharpEditor;

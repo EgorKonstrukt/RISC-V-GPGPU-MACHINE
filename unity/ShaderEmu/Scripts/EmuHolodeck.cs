@@ -5,7 +5,7 @@ using UnityEngine.UI;
 using VRC.SDKBase;
 using VRC.Udon.Common;
 
-// The holodecks (docs/holodeck.md): eight rooms, a seat each. Whoever sits in a seat has the
+// The holodecks (docs/world/holodeck.md): eight rooms, a seat each. Whoever sits in a seat has the
 // room. This is local, one a client: it draws this visitor's own program's world round the seat
 // they sit in, puts each occupant's display on their room's screen (their own machine's, or
 // what EmuStreams receives of another's), and says on each stand what its sitter's controls are.
@@ -407,7 +407,7 @@ public class EmuHolodeck : UdonSharpBehaviour
     }
 
     // The plane at which the program's player's eye is the sitter's avatar's eye height, where the
-    // game played says it (docs/holodeck.md, "The world's size"); else `plane`.
+    // game played says it (docs/world/holodeck.md, "The world's size"); else `plane`.
     private float Natural()
     {
         uint w = machine.worldEye;
@@ -557,7 +557,7 @@ public class EmuHolodeck : UdonSharpBehaviour
 
     private int Key(KeyCode key) { return Input.GetKey(key) ? 127 : 0; }
 
-    // A sitter without a headset plays as at a desk (docs/holodeck.md, "Played from the seat"):
+    // A sitter without a headset plays as at a desk (docs/world/holodeck.md, "Played from the seat"):
     // while their keys are the game's, their mouse turns it and its left button is Ctrl.
     private void Mouse()
     {
@@ -583,7 +583,7 @@ public class EmuHolodeck : UdonSharpBehaviour
         scene.SetPositionAndRotation(head.position, Quaternion.Euler(0f, head.rotation.eulerAngles.y, 0f));
     }
 
-    // ---- what the machine is told of where it is shown (docs/holodeck.md, "What the machine is told")
+    // ---- what the machine is told of where it is shown (docs/world/holodeck.md, "What the machine is told")
 
     public override void InputUse(bool value, UdonInputEventArgs args) { trigger[args.handType == HandType.LEFT ? 0 : 1] = value; }
     public override void InputGrab(bool value, UdonInputEventArgs args) { grip[args.handType == HandType.LEFT ? 0 : 1] = value; }

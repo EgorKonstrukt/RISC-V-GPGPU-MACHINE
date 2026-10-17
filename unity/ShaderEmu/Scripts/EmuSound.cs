@@ -6,7 +6,7 @@ using VRC.SDK3.Rendering;
 using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
-// The sound card's host side (docs/sound.md). Once a Unity frame, while the guest has the card
+// The sound card's host side (docs/machine/sound.md). Once a Unity frame, while the guest has the card
 // enabled, EmuMachine has it mix: the card draws its ring of samples from a cursor on, a little
 // ahead of where the audio thread is, and the ring is read back into what EmuSoundOut plays.
 // Switched off, nothing is drawn or read and the audio thread is left alone.

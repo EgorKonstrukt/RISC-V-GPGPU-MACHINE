@@ -1,8 +1,8 @@
 /*
- * MP3 (docs/media.md): a table of the file's frames, made when it is opened, so that any core
+ * MP3 (docs/system/media.md): a table of the file's frames, made when it is opened, so that any core
  * decodes any piece. A piece's decoder starts 12 frames early: the first eleven only fill the
  * bit reservoir (MP3D_SKIP), the last leaves what the next granule needs (MP3D_WARM), and its
- * samples are then those of a decoder that began at the file's start (docs/play.md).
+ * samples are then those of a decoder that began at the file's start (docs/apps/play.md).
  */
 #include <stdlib.h>
 #include "m_audio.h"

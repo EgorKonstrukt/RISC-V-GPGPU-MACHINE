@@ -187,7 +187,7 @@ bool timer_due() {
 #endif
 #ifdef SBI_HLE
 // The supervisor's calls to firmware (SBI), answered by the machine itself: with SBI_HLE it
-// starts the kernel in supervisor mode and runs no machine-mode firmware (docs/boot.md).
+// starts the kernel in supervisor mode and runs no machine-mode firmware (docs/machine/boot.md).
 void sbi_call() {
     uint ext = xr[17], a0 = xr[10];
     uint error = 0, value = 0;
@@ -196,7 +196,7 @@ void sbi_call() {
         cpu.clint.mtimecmp_lo = a0;
         cpu.clint.mtimecmp_hi = xr[11];
         cpu.mip = timer_due() ? cpu.mip | MIP_STIP : cpu.mip & ~MIP_STIP;
-    }   // (the console is memory the kernel writes itself: docs/console.md)
+    }   // (the console is memory the kernel writes itself: docs/machine/console.md)
 #else
     if (ext == 0x54494D45 || ext == 0) {
         // set_timer: the timer interrupt stays pending until the next deadline is set
@@ -339,7 +339,7 @@ DEF(mul, FormatR, { // rv32m
 // fxc2 can be asked for it (mulhi()). It is not used: Microsoft's compiler never writes it
 // with a high result alone, and what turns the bytecode into SPIR-V on Linux (dxbc-spirv, in
 // DXVK and vkd3d-proton) made an invalid module of it, which crashed VRChat there
-// (docs/linux.md). It was worth nothing that could be measured.
+// (docs/world/linux.md). It was worth nothing that could be measured.
 uint mulhu32(uint a, uint b) {
     uint al = a & 0xffff, ah = a >> 16, bl = b & 0xffff, bh = b >> 16;
     uint lh = al * bh, hl = ah * bl;
@@ -516,7 +516,7 @@ DEF(xori, FormatI, { // rv32i
 
 
 #ifdef FPU
-// The F extension (docs/fpu.md): an instruction of opcode 0x53 on two register values, for the
+// The F extension (docs/machine/fpu.md): an instruction of opcode 0x53 on two register values, for the
 // fast step and the general path alike. Every result is worked out and one is chosen.
 // to_float says which register file the result is for; ok is false for an encoding that
 // does not exist.
@@ -1091,7 +1091,7 @@ bool fast_exec_l1(L1P uint w) {
     // A switch is the costly thing here, and a test whose block is large the next: arithmetic
     // computes every result and selects one, and the kinds are told apart by a tree of tests
     // (arithmetic, loads, stores and floats a group, in it arithmetic and loads one). One after
-    // another they cost each kind after the first two more (docs/tick-costs.md).
+    // another they cost each kind after the first two more (docs/machine/tick-costs.md).
     [branch]
 #ifdef FPU
     if (K_ALU || opc == 0x03 || opc == 0x23 || K_FP) {
@@ -1319,7 +1319,7 @@ bool fast_exec_l1(L1P uint w) {
     if (!ok) {
         return false;
     }
-    // Work added to every instruction, to see what it costs (docs/tick-costs.md, "What things
+    // Work added to every instruction, to see what it costs (docs/machine/tick-costs.md, "What things
     // cost"): X_P_ALU=n is 3n operations each on the last one's result; X_P_READ=b four reads
     // of an array's elements chosen at random among its first 2^b; X_P_TEX=n so many texels
     // of RAM read and used at once.
@@ -1379,7 +1379,7 @@ void pend_unmap_l1(L1P uint lo, uint hi) {
 }
 
 // A fill or copy was asked for: of cpu.memop_n bytes to `dst` (an offset in RAM) from `src_p`
-// (physical, RAM or ROM). True: it is left to the commit and the pass goes on (docs/boot.md).
+// (physical, RAM or ROM). True: it is left to the commit and the pass goes on (docs/machine/boot.md).
 // Only whole texels, apart from each other and from a pending destination, none in the write
 // cache (the texture is then the source as it is now), paging on, not the page being run.
 bool memop_lazy_l1(L1P bool fill, uint src_p, uint dst) {

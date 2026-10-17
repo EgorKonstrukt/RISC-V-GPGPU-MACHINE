@@ -1,5 +1,5 @@
 /*
- * Micropolis, the city simulator of 1989 (docs/micropolis.md): MicropolisCore's engine
+ * Micropolis, the city simulator of 1989 (docs/games/micropolis.md): MicropolisCore's engine
  * (engine.cpp, mp.h) in a Nano-X window. The map, its sprites and the tools are drawn by the
  * GPU in a child window: the map is a layer of tiles whose cells are the engine's own tile
  * numbers, kept in a ring of 64 x 64 cells that the view scrolls through.
@@ -23,7 +23,7 @@
 #include "mp.h"
 
 #define DATA "/usr/share/micropolis"
-#define SAVED "/persistence/micropolis"	/* kept by the host when asked (docs/persist.md) */
+#define SAVED "/persistence/micropolis"	/* kept by the host when asked (docs/system/persist.md) */
 #define BAR 22			/* the menus along the top */
 #define STATUS 40		/* two lines at the bottom: the city's numbers and the last message */
 #define PANEL 80		/* the tools, left of the map */
@@ -162,7 +162,7 @@ load_pictures(void)
 	return 0;
 }
 
-/* ---- the sounds: samples played by the card where they lie in the ROM (docs/sound.md) ---- */
+/* ---- the sounds: samples played by the card where they lie in the ROM (docs/machine/sound.md) ---- */
 
 #define VOICES 4
 static struct { char name[24]; unsigned address, length; } sounds[24];

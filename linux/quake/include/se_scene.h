@@ -1,5 +1,5 @@
 /*
- * For the files whose code draws the frame (docs/quake.md, "The picture on a worker core"): the
+ * For the files whose code draws the frame (docs/games/quake.md, "The picture on a worker core"): the
  * client's state and the view they read are the copy a frame was given while a worker draws it,
  * and the first core's own otherwise (scene_shaderemu.c). Included after quakedef.h and after
  * the definitions of what it renames; se_real.h undoes it round code of the first core's.

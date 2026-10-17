@@ -1,4 +1,4 @@
-// GLQuake's OpenGL on the machine's GPU (docs/quake.md): glBegin and its vertices turned into
+// GLQuake's OpenGL on the machine's GPU (docs/games/quake.md): glBegin and its vertices turned into
 // the compact vertices programs/linux/gles.c draws (its float build: nothing is converted).
 // Textures stay palette indices, a light map is a second draw that multiplies, and so is a
 // model's shading.
@@ -203,7 +203,7 @@ static int resident(int name) {
 
 // The game's filter for the bound texture: GL_LINEAR for the level, its light, the models and
 // the pictures, GL_NEAREST for the letters. The GPU weighs four texels for the first
-// (docs/gpu.md). QUAKE_FILTER=nearest has every texture as it was before the GPU could.
+// (docs/machine/gpu.md). QUAKE_FILTER=nearest has every texture as it was before the GPU could.
 void qglTexParameterf(GLenum target, GLenum name, GLfloat value) {
     if (recording()) {
         rec_fail();

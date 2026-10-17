@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds libmedia (docs/media.md): pictures, sound and films on the worker cores, for every
+# Builds libmedia (docs/system/media.md): pictures, sound and films on the worker cores, for every
 # program of the image. Leaves $WORK/src/libmedia/libmedia.a and puts it in the image as
 # /usr/lib/libmedia.a with /usr/include/media.h; a program links it with mcw.c and mcwx.c.
 #   wsl -- bash /mnt/c/.../linux/libmedia/build.sh        (after linux/kernel/build.sh)
@@ -33,7 +33,7 @@ cp "$BUILD/fetch/minimp3.h" "$BUILD/fetch/dr_flac.h" "$BUILD/fetch/stb_vorbis.c"
 tr -d '\r' < "$HERE/minimp3.patch" | patch -s "$BUILD/minimp3.h"
 python3 "$HERE/flac_bound.py" "$BUILD/dr_flac.h"
 # ---- films (m_video*.c)
-# pl_mpeg (Dominic Szablewski, MIT), changed as linux/video/build.sh had it (docs/video.md): a
+# pl_mpeg (Dominic Szablewski, MIT), changed as linux/video/build.sh had it (docs/apps/video.md): a
 # stream's bytes are not moved down as they are read (they are every core's), the sound's
 # window four blocks a turn, bits and codes from a word, the transform only where a block has
 # coefficients. The same sums as before each change.
@@ -45,7 +45,7 @@ sed 's/^\t\tplm_buffer_discard_read_bytes(self->buffer);$/\t\tif (self->buffer->
 python3 "$REPO/linux/video/plm_window.py" "$BUILD/pl_mpeg.h"
 python3 "$REPO/linux/video/plm_fast.py" "$BUILD/pl_mpeg.h"
 
-# What each part is built from; the decoders at -O3 with loops unrolled (docs/play.md).
+# What each part is built from; the decoders at -O3 with loops unrolled (docs/apps/play.md).
 PICTURES="m_core m_simple m_png m_png_enc m_jpeg m_jpeg_enc m_gif m_gif_enc"
 AUDIO="m_audio m_audio_mod m_audio_mp3 m_audio_mp3dec m_audio_mp3half m_audio_flac m_audio_vorbis"
 VIDEO="m_vq m_video m_video_mpeg m_video_vqa m_avi"

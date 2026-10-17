@@ -1,4 +1,4 @@
-"""What of a program's own work on core 0 would pay on a worker (docs/multicore.md, "Finding the work").
+"""What of a program's own work on core 0 would pay on a worker (docs/machine/multicore.md, "Finding the work").
 
     RVC_CALLS=calls.txt bin/rvc_cpu.exe ...        then
     python tools/mc_candidates.py calls.txt PROGRAM_ELF [--min 20000] [--races races.txt]

@@ -1,4 +1,4 @@
-// What ShareEncode.shader and ShareDecode.shader agree on (docs/share.md): the rows of bytes,
+// What ShareEncode.shader and ShareDecode.shader agree on (docs/world/share.md): the rows of bytes,
 // the kinds a quarter comes in, and the transform's tables. tools/share_reference.py is the
 // same in numpy.
 #ifndef SHARE_CODEC_INCLUDED

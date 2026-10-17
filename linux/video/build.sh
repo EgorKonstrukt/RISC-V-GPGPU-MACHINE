@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds nxvideo, the video player on the worker cores (docs/video.md), for the image. Its
-# decoders are libmedia's (docs/media.md, "Films"), whose media_test-host gives the sums a
+# Builds nxvideo, the video player on the worker cores (docs/apps/video.md), for the image. Its
+# decoders are libmedia's (docs/system/media.md, "Films"), whose media_test-host gives the sums a
 # guest's must equal.
 #   wsl -- bash /mnt/c/.../linux/video/build.sh   (after linux/nanox/build.sh and linux/libmedia/build.sh)
 # In the guest: nano-X -p & nxvideo

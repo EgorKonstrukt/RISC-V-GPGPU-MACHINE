@@ -1,4 +1,4 @@
-"""TinyCC's stores in bursts, which ended the machine's passes early (docs/cc.md). Idempotent.
+"""TinyCC's stores in bursts, which ended the machine's passes early (docs/system/cc.md). Idempotent.
 
 A pass keeps about 6 KB of new stores: a buffer cleared whole, a section copied to grow it
 and a table copied back after sorting each ended several. After speed_hook.py.

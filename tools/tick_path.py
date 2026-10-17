@@ -2,7 +2,7 @@
 
     python3 tools/tick_path.py TICK.asm [TICK2.asm]
 
-TICK.asm is the tick's pixel shader disassembled (dxbc-spirv's dxbc_disasm, docs/linux.md, on
+TICK.asm is the tick's pixel shader disassembled (dxbc-spirv's dxbc_disasm, docs/world/linux.md, on
 the largest .cso of a shader cache folder). The fast loop is found (the largest loop inside the
 pass's outer one) and walked once for each kind of instruction along the path that kind takes,
 which is given below as the turn taken at every `if` it meets, in order: t into the if, e

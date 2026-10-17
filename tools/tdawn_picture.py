@@ -1,4 +1,4 @@
-"""Tiberian Dawn's picture as the program has it against what the GPU drew (docs/tdawn.md, "Checking it").
+"""Tiberian Dawn's picture as the program has it against what the GPU drew (docs/games/tdawn.md, "Checking it").
 
     python tools/tdawn_picture.py UART.log CAPTURE.bmp [OUT.png]
 

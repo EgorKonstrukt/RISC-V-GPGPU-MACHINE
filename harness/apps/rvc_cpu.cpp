@@ -2,7 +2,7 @@
 //
 // The shader machine runs three million instructions a second; a program's cost on it is a
 // number of instructions, and that number does not depend on what runs them. This is the same
-// machine as an ordinary interpreter (docs/cpu-harness.md): RV32IMAF with a supervisor and
+// machine as an ordinary interpreter (docs/machine/cpu-harness.md): RV32IMAF with a supervisor and
 // Sv32, the firmware's calls answered in place (SBI_HLE), the ROM, the parallel copy, the
 // control words (clock, keys and pointer, the GPU's submit word) and the worker cores. It
 // boots the same image, takes the same --expect/--send/--until script and prints the same
@@ -34,7 +34,7 @@ typedef int64_t i64;
 
 static const u32 RAM_BASE = 0x80000000u, RAM_SIZE = 0x08000000u;   // to 0x88000000: Linux's RAM, then the GPU's
 static const u32 ROM_BASE = 0x40000000u;
-static const u32 CTRL = 0x87000000u;   // the control words (docs/gpu.md, docs/input.md)
+static const u32 CTRL = 0x87000000u;   // the control words (docs/machine/gpu.md, docs/machine/input.md)
 
 static std::vector<uint8_t> ram, rom;
 static u32* ramw;   // the same bytes as words
@@ -68,16 +68,16 @@ struct Options {
     int circleX = -1, circleY = 0, circleR = 0;    // --pointer-circle: the sweep's own circle
     int button = 0;                                // --pointer-button: the buttons word,
     double buttonFrom = 0, buttonTo = 0;           // between these seconds of the guest's
-    unsigned host[8] = {};                         // --host: the host's eight words, hex (docs/holodeck.md)
+    unsigned host[8] = {};                         // --host: the host's eight words, hex (docs/world/holodeck.md)
     unsigned hostLater[4][8] = {};                 // --host-from S W0,...: the words from guest second S on
     double hostFrom[4] = {};                       // (given again, up to four steps, each later than the last)
     int hostSteps = 0;
     double hostMouse = 0;                          // --host-mouse: counts a second a sitter's mouse goes right
     double hostWheel = 0;                          // --host-wheel: notches a second their wheel turns up
     bool desktop = false, tabs = false, quiet = false;
-    int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/lan.md)
+    int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/system/lan.md)
     double netLoss = 0, netDelay = 0;
-    std::string persist;                 // --persist FILE: the guest's kept folder (docs/persist.md)
+    std::string persist;                 // --persist FILE: the guest's kept folder (docs/system/persist.md)
     std::string saveRam;                 // --save-ram FILE: the 128 MB of RAM as the run ends
 };
 static Options opt;
@@ -150,7 +150,7 @@ struct Core {
     bool recheck = false;     // interrupts may have been let in: look before the next instruction
     TlbEntry tlb[2][3][TLB_N];
     int hart = 0;
-    // a worker core (docs/multicore.md): bit 0 running, see mc_* below
+    // a worker core (docs/machine/multicore.md): bit 0 running, see mc_* below
     u32 mc_word = 0;
     bool started = false;
     bool ad_miss = false;     // the last walk failed on a clear accessed or written bit (RVC_ADFAULT)
@@ -250,7 +250,7 @@ static void device_write(Core& c, u32 phys, u32 value, int size) {
     }
 }
 
-// ---- RVC_RACES=FILE: memory as the shader machine has it (docs/multicore.md, "Races") ----
+// ---- RVC_RACES=FILE: memory as the shader machine has it (docs/machine/multicore.md, "Races") ----
 //
 // Every core reads what the last pass left, its own stores apart, and at the commit the highest
 // core's 16 bytes win. Here the cores run one after another, lowest first, so a core that reads
@@ -546,7 +546,7 @@ static inline u32 pending_interrupt(Core& c) {
     return ready & 0x200 ? 0x80000009u : ready & 0x002 ? 0x80000001u : 0x80000005u;
 }
 
-// ---- floats (docs/fpu.md): the host's own, which are IEEE single precision too ----
+// ---- floats (docs/machine/fpu.md): the host's own, which are IEEE single precision too ----
 
 static inline float fl(u32 bits) { float v; memcpy(&v, &bits, 4); return v; }
 static inline u32 bits(float v) { u32 b; memcpy(&b, &v, 4); return b; }
@@ -837,7 +837,7 @@ static u64 run(Core& c, u64 budget) {
                 break;
             case 0x0f:
                 write = false;
-                if (ins == 0x0100000f) c.end_pass = true;   // pause: the pass ends (docs/gpu.md)
+                if (ins == 0x0100000f) c.end_pass = true;   // pause: the pass ends (docs/machine/gpu.md)
                 break;
             case 0x2f: {   // atomics, on words
                 u32 kind = f7 >> 2, v;
@@ -984,7 +984,7 @@ static u64 run(Core& c, u64 budget) {
     return done;
 }
 
-// ---- the worker cores (experiments/rvc_opt/src/mc.h, docs/multicore.md) ----
+// ---- the worker cores (experiments/rvc_opt/src/mc.h, docs/machine/multicore.md) ----
 //
 // A worker is parked until core 0 writes a start texel in the mailbox page: "MCSU", a pc, a
 // stack and a page table. It then runs in user mode on that page table; `pause` puts it to
@@ -1112,7 +1112,7 @@ static u64 run_worker(Core& c, u64 budget) {
 static u32 key_seq = 0;
 static u64 frame_no = 0;
 
-// The network device (docs/lan.md), as the shader's control pass keeps it: the guest's slot
+// The network device (docs/system/lan.md), as the shader's control pass keeps it: the guest's slot
 // goes out, and what came for it goes into its ring with the host's three words.
 static NetLink net;
 static void net_pass() {
@@ -1129,7 +1129,7 @@ static void net_pass() {
     dirty(NET);
 }
 
-// The addresses "persist:..." of a fetch (docs/fetch.md, docs/persist.md): the only ones this
+// The addresses "persist:..." of a fetch (docs/system/fetch.md, docs/system/persist.md): the only ones this
 // host answers, and at once.
 static void persist_pass() {
     const u32 DATA = 0x876c0000u;
@@ -1208,7 +1208,7 @@ static void gpu_copy(u32 submit) {
         }
 }
 
-// The console (docs/console.md): the ring the guest wrote, and up to four waiting characters
+// The console (docs/machine/console.md): the ring the guest wrote, and up to four waiting characters
 // delivered once it has taken the last.
 static void console_pass() {
     const u32 HOST = 0x876b8280u, GUEST = 0x876b8290u, RING = 0x876b82a0u, SIZE = 256;
@@ -1233,7 +1233,7 @@ static void control_pass() {
     sound_pass();
     console_pass();
     dirty(CTRL);
-    // what each core ran, how many workers the geometry has (docs/multicore.md: the cores have
+    // what each core ran, how many workers the geometry has (docs/machine/multicore.md: the cores have
     // no write cache here, so their sizes are only counted) and how many there could be
     // (every core again at MC_STATS_ALL of src/gpu.h: counts, then a texel for every 32 cores of bits)
     const u32 STATS_ALL = 0x876ba000u;
@@ -1295,7 +1295,7 @@ static void control_pass() {
         }
     }
     if (opt.host[0]) {
-        // (docs/holodeck.md, "What the machine is told": as the world's control pass writes them)
+        // (docs/world/holodeck.md, "What the machine is told": as the world's control pass writes them)
         const unsigned* now = opt.host;
         for (int k = 0; k < opt.hostSteps; k++) if (guest_seconds >= opt.hostFrom[k]) now = opt.hostLater[k];
         for (int i = 0; i < 8; i++) word(CTRL + 0x360 + 4 * i) = now[i];
@@ -1481,7 +1481,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-stdin" || a == "--d3d11" || a == "--dxc") {}
         else if (a == "--rvc" || a == "--fixed-dt") next(a.c_str());   // (the shader machine's: taken and ignored)
         else if (a == "--help" || a == "-h") {
-            printf("rvc_cpu: the machine as an interpreter, for counting instructions (docs/cpu-harness.md)\n"
+            printf("rvc_cpu: the machine as an interpreter, for counting instructions (docs/machine/cpu-harness.md)\n"
                    "  --image DIR|linux-net  the image's folder (default build/images/nommu once made)\n"
                    "  --kernel mmu|nommu     build/images/linux (Linux with the MMU, legacy) or build/images/nommu\n"
                    "  --expect T --send T    type the second text when the console has said the first\n"
@@ -1500,7 +1500,7 @@ int main(int argc, char** argv) {
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
                    "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
-                   "  --host W0,...,W7        the host's eight words in hex (docs/holodeck.md)\n"
+                   "  --host W0,...,W7        the host's eight words in hex (docs/world/holodeck.md)\n"
                    "  --host-mouse N          and a sitter's mouse going right N counts a second\n"
                    "  --host-wheel N          and their wheel turning up N notches a second\n"
                    "  --host-from S W0,...,W7 the host's words from second S of the guest's on (up to four)\n"
@@ -1508,9 +1508,9 @@ int main(int argc, char** argv) {
                    "  --desktop --tabs       the host flags of those names\n"
                    "  --quiet                do not print the console\n"
                    "  --net PORT --net-id N  the network: this machine is 10.0.0.N (1 to 16) and hears UDP port\n"
-                   "                         PORT + N; its clock then keeps to this computer's (docs/lan.md)\n"
+                   "                         PORT + N; its clock then keeps to this computer's (docs/system/lan.md)\n"
                    "  --net-loss P --net-delay MS   lose P percent of what it sends, hold the rest back MS ms\n"
-                   "  --persist FILE         the file the guest's /persistence is kept in (docs/persist.md)\n");
+                   "  --persist FILE         the file the guest's /persistence is kept in (docs/system/persist.md)\n");
             return 0;
         } else { fprintf(stderr, "rvc_cpu: unknown option %s\n", a.c_str()); return 2; }
     }

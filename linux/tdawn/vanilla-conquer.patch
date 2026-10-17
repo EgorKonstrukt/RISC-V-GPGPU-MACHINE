@@ -366,7 +366,7 @@ index 6091774..7b558fc 100644
 +#include <stdlib.h>
 +#include <string.h>
 +/*
-+** The same table (docs/ralert.md, "A mission won"): the nearest colour is looked for outward from the
++** The same table (docs/games/ralert.md, "A mission won"): the nearest colour is looked for outward from the
 +** midpoint's r + g + b in the palette sorted by it ((dr + dg + db)^2 <= 3 d), a row's half from its
 +** diagonal on, the rows on the worker cores, and the other half copied (the table is symmetric).
 +*/
@@ -1320,7 +1320,7 @@ index cd3b404..68dc9f1 100644
  }
  
 +#if defined(SHADEREMU) && !defined(SHADEREMU_RA)
-+/* Tiberian Dawn's 4x2 frames: the block rows over the worker cores by libmedia (docs/tdawn.md,
++/* Tiberian Dawn's 4x2 frames: the block rows over the worker cores by libmedia (docs/games/tdawn.md,
 + * "Movies"). TDAWN_MOVIE_WORKERS=N: no more than N (0: this core alone); TDAWN_MOVIE_CHECK=1:
 + * every frame decoded by the game's own UnVQ_4x2 as well, and the two compared. */
 +#include "host.h"
@@ -1929,7 +1929,7 @@ index a8aebd8..b666023 100644
  
 +#ifdef SHADEREMU
 +/*
-+** What the game costs on the ShaderEmu machine, in instructions (docs/tdawn.md):
++** What the game costs on the ShaderEmu machine, in instructions (docs/games/tdawn.md):
 +**   TDAWN_STATS_MS=N   print the figures every N milliseconds (5000; 0 for never)
 +**   TDAWN_FRAMES=N     run N game frames with no delay between them, print, and leave
 +**   TDAWN_STOP_FRAME=N hold the picture of game frame N (for comparing pictures)
@@ -1963,7 +1963,7 @@ index a8aebd8..b666023 100644
 +    }
 +}
 +
-+/* A step from a won mission to the next (TDAWN_WIN; docs/tdawn.md, "A mission won"): its time, instructions, memory. */
++/* A step from a won mission to the next (TDAWN_WIN; docs/games/tdawn.md, "A mission won"): its time, instructions, memory. */
 +void ShaderEmu_Stage(const char* what)
 +{
 +    static const bool on = getenv("TDAWN_WIN") != NULL;
@@ -2882,7 +2882,7 @@ index a8aebd8..b666023 100644
      shakes += shakes;
 +#ifdef SHADEREMU
 +    /* Copies of the page, hundreds of KB each, shook only the page over the GPU's map: the same
-+    ** random picks and frames without them (docs/tdawn.md, "A long battle"). TDAWN_SHAKE=copy: as it
++    ** random picks and frames without them (docs/games/tdawn.md, "A long battle"). TDAWN_SHAKE=copy: as it
 +    ** was. */
 +    static const bool copies = getenv("TDAWN_SHAKE") && !strcmp(getenv("TDAWN_SHAKE"), "copy");
 +    for (int newyoff = 0; !copies && shakes--;) {

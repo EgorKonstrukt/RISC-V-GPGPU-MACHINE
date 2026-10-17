@@ -1,6 +1,6 @@
 Shader "ShaderEmu/GpuVolume"
 {
-    // The volume display (docs/volume.md): a flat screen that is a window onto the guest's 3D
+    // The volume display (docs/world/volume.md): a flat screen that is a window onto the guest's 3D
     // frame. The screen is a plane of the guest camera's view, the near plane unless _Plane
     // moves it out, with the picture's rectangle there fitted to it; the scene behind it is
     // drawn as the visitor's own eyes see it, wherever VolumeMask.shader has marked the stencil.

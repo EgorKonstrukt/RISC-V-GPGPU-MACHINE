@@ -1,4 +1,4 @@
-"""The display stream players send each other (docs/share.md), as a model in numpy.
+"""The display stream players send each other (docs/world/share.md), as a model in numpy.
 
   python tools/share_reference.py PICTURE.png [--out FOLDER]
   python tools/share_reference.py PICTURE.png --atlas ATLAS.bin [--cells MIP3.raw]   # against Unity's encoder

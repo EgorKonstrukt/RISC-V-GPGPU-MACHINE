@@ -1,5 +1,5 @@
 /*
- * Ogg Vorbis (docs/media.md) over stb_vorbis (https://github.com/nothings/stb, public domain or
+ * Ogg Vorbis (docs/system/media.md) over stb_vorbis (https://github.com/nothings/stb, public domain or
  * MIT; build.sh fetches it). A packet's samples are of it and of the packet before, so a decoder
  * that seeks to a piece's first sample (the page before it, a packet decoded for its overlap)
  * gives what one that began at the start gives: a piece is any core's.

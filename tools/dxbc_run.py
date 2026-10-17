@@ -2,7 +2,7 @@
 
     python3 tools/dxbc_run.py TICK.asm SNAPSHOT CONSTANTS [PIXEL_X PIXEL_Y]
 
-TICK.asm is the tick's pixel shader as dxbc-spirv's dxbc_disasm prints it (docs/linux.md),
+TICK.asm is the tick's pixel shader as dxbc-spirv's dxbc_disasm prints it (docs/world/linux.md),
 SNAPSHOT a machine snapshot (rvc_harness --save-state) taken before the pass, CONSTANTS the
 pass's constant buffer (RVC_DUMP_CB=FILE while the harness runs that pass). The pixel is one
 of the eight-target tick's: (3, 0) by default, whose texels 24 to 31 of core 0's state have

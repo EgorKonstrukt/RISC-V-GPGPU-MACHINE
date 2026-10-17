@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.UI;
 
 // The console's screen: character grids kept here and shown by Terminal.shader. Four
-// terminals (docs/console.md), one of them shown, each with the lines that scrolled off it.
+// terminals (docs/machine/console.md), one of them shown, each with the lines that scrolled off it.
 // Understands the control characters and the few ANSI sequences a Linux console uses.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuTerminal : UdonSharpBehaviour

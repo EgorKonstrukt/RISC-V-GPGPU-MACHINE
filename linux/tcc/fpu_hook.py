@@ -1,4 +1,4 @@
-"""Fits TinyCC's -mfpu to the machine's float instructions (docs/fpu.md, docs/cc.md). Idempotent.
+"""Fits TinyCC's -mfpu to the machine's float instructions (docs/machine/fpu.md, docs/system/cc.md). Idempotent.
 
 The machine has single precision only: with the hook a float is instructions and a double
 stays the library call it was, slow and not illegal.

@@ -17,7 +17,7 @@ WAD=${DOOM_WAD:-https://archive.org/download/DoomsharewareEpisode/doom.ZIP}   # 
 mkdir -p "$BUILD" "$OUT/usr/bin" "$OUT/usr/share"
 # Optimised as one program: the small functions Doom calls everywhere (FixedMul) end up inline.
 # No position-independent code: every use of a global would go through a table.
-# -O3 with these two is 3% fewer instructions a tic and 11% fewer a frame than -O2 (docs/doom.md).
+# -O3 with these two is 3% fewer instructions a tic and 11% fewer a frame than -O2 (docs/games/doom.md).
 export OPT="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops -flto -fno-pie"
 cd "$BUILD"
 # objects made with other flags are made again (the loop below only looks at dates)
@@ -177,7 +177,7 @@ rv32-cc $OPT -Wall -c -fsigned-char -I"$DOOM" -I"$REPO/programs/mc" "$HERE/doom_
 rv32-cc $OPT -Wall -Wno-unused -c -fsigned-char -I"$DOOM" -I"$REPO/linux/userland" "$HERE/doom_sound.c" -o doom_sound.o
 # What a worker core writes while the first runs a tic is compiled apart, a variable a section
 # and each on 16 bytes of its own: the view (doom_gl.c), the GPU's library and the workers' (mcw, mcwx)
-# (docs/multicore.md: two cores must not store to the same 16 bytes). They come last in the
+# (docs/machine/multicore.md: two cores must not store to the same 16 bytes). They come last in the
 # link, with 16 bytes of nothing after them in each kind of section: the libraries' follow.
 APART="${OPT/-flto /} -fno-common -fdata-sections"
 ALIGN16="--set-section-alignment .data*=16 --set-section-alignment .sdata*=16 --set-section-alignment .bss*=16 --set-section-alignment .sbss*=16"
@@ -196,7 +196,7 @@ rm -f doom_fps.o
 rv32-cc $OPT -w $(ls *.o | grep -vx -e 'zz_pad_.*' -e doom_gl.o -e gles.o -e mcw.o -e mcwx.o) doom_gl.o gles.o mcw.o mcwx.o zz_pad_large.o zz_pad_small.o "$MW/src/lib/libnano-X.a" -lm -o doom
 riscv32-linux-strip -o "$OUT/usr/bin/doom.bin" doom
 # the image builder adds files to directories the image has, so the data sits in /usr/share
-# its settings and saved games go to the folder the host keeps (docs/persist.md)
+# its settings and saved games go to the folder the host keeps (docs/system/persist.md)
 printf '#!/bin/sh
 mkdir -p /persistence/doom && cd /persistence/doom || exit 1
 HOME=/persistence/doom DOOMWADDIR=/usr/share exec doom.bin "$@"
@@ -217,7 +217,7 @@ else:
 PY
 fi
 cp "$WORK/src/doom1.wad" "$OUT/usr/share/doom1.wad"
-# a WAD anybody opens is played (docs/open.md): a whole game by itself, a patch over the shareware one
+# a WAD anybody opens is played (docs/system/open.md): a whole game by itself, a patch over the shareware one
 printf '%s\n' 'doom-game - IWAD doom -iwad %s' 'doom-patch wad PWAD doom -file %s' > "$OUT/usr/share/nxopen.50-doom"
 # the Start menu lists what the nxapps.* files name (nxbar.c)
 echo "Games/Doom=doom" > "$OUT/usr/share/nxapps.50-doom"

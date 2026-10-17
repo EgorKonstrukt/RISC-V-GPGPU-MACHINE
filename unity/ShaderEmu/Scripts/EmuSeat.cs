@@ -2,7 +2,7 @@ using UdonSharp;
 using UnityEngine;
 using VRC.SDKBase;
 
-// A holodeck's seat (docs/holodeck.md): a station of the scene, which VRChat syncs by itself,
+// A holodeck's seat (docs/world/holodeck.md): a station of the scene, which VRChat syncs by itself,
 // one visitor at a time. It says who sat down and who got up, and it rises under its sitter:
 // VRChat puts them on a station standing and their pose sinks into sitting over half a second,
 // so a seat at its height had them stand on it first. It waits on the floor and comes up as they sink.

@@ -1,4 +1,4 @@
-/* libmedia's films (docs/media.md, "Films"): what the kinds of film share. */
+/* libmedia's films (docs/system/media.md, "Films"): what the kinds of film share. */
 #ifndef SHADEREMU_MEDIA_VIDEO_H
 #define SHADEREMU_MEDIA_VIDEO_H
 

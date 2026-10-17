@@ -2,7 +2,7 @@
 
     python tools/make_world_icon.py CAPTURE.png [OUT.png]
 
-CAPTURE is 4:3 (a camera rendered in play mode with the machine running: docs/world.md, "The
+CAPTURE is 4:3 (a camera rendered in play mode with the machine running: docs/world/world.md, "The
 world's picture"). The lettering is the room's own typeface, from the Unity project's fonts.
 """
 import os, sys

@@ -1,7 +1,7 @@
 #ifndef MC_H
 #define MC_H
 
-// More than one core (CORES > 1, docs/multicore.md). Core 0 is the machine as it always was.
+// More than one core (CORES > 1, docs/machine/multicore.md). Core 0 is the machine as it always was.
 // The others are workers: a block of state each (the CPU's texels, the write cache and the
 // float registers; no TLBs kept from one pass to the next), no devices, the same RAM. A worker
 // reads RAM as the last commit left it and its own writes; the commit pass merges every core's

@@ -6,7 +6,7 @@ using VRC.SDK3.Rendering;
 using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
-// Players see each other's machines (docs/share.md). This is local, one a client: it fills
+// Players see each other's machines (docs/world/share.md). This is local, one a client: it fills
 // this player's EmuShare with the console's changed rows and the display's changed parts
 // while the machine is on and anybody is there, and puts the watched player's console,
 // display and panel on the wall here (EmuStreams receives them). A watcher's keys and
@@ -30,12 +30,12 @@ public class EmuShareHub : UdonSharpBehaviour
     public GameObject moreButton;
     public Color rowColour, pickedColour;
     public bool selfTest;                   // watch this machine through the stream
-    // The display goes as units the GPU picks and packs by itself (docs/share.md, "Display"):
+    // The display goes as units the GPU picks and packs by itself (docs/world/share.md, "Display"):
     // Udon copies one row of bytes.
     public Material unitsMaterial;          // ShareUnits.shader
     public RenderTexture unitsBlocks, unitsExact, unitsNeed, unitsStats, unitsPlan, unitsTable, unitsPrefix, unitsCut, unitsPacket;
     public RenderTexture[] unitsState;      // three of 160 x 120: what the receivers have, with this capture's changes, and after the packet
-    public bool netTest;                    // two clients test themselves and log (docs/share.md)
+    public bool netTest;                    // two clients test themselves and log (docs/world/share.md)
 
     // Two ticks of three carry a packet: 7.7 KB/s with the fields beside it, of the 8 to 10 a
     // client gets out in practice for everything it sends (VRChat's limit is a client's).
@@ -701,7 +701,7 @@ public class EmuShareHub : UdonSharpBehaviour
                   + displayShowMaterial.GetVector("_Size").x + " lines=[" + found + "]");
     }
 
-    // Two real clients test the network (docs/lan.md): each switches its machine on, pings the
+    // Two real clients test the network (docs/system/lan.md): each switches its machine on, pings the
     // other's a while after both are there, then asks the Network program for it (who is there,
     // its Home, a picture fetched and compared), or with lanDoom or lanQuake starts that game
     // with it as the desktop's shortcuts do (nxgame); and logs what its machine sent, got and printed.
@@ -1054,7 +1054,7 @@ public class EmuShareHub : UdonSharpBehaviour
         return any;
     }
 
-    // The machine's packets for the others (docs/lan.md): as many as fit a sending's share.
+    // The machine's packets for the others (docs/system/lan.md): as many as fit a sending's share.
     private bool MoveNet()
     {
         int at = 0;

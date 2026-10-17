@@ -1,6 +1,6 @@
 // Runs on the host, at build time: Dear ImGui builds its default font's atlas here, and this
 // writes it down as font_baked.h for imgui_impl_shaderemu.cpp, so that no program rasterises
-// the font when it starts (docs/imgui.md). Floats are written as their bits.
+// the font when it starts (docs/apps/imgui.md). Floats are written as their bits.
 #include <stdio.h>
 #include <string.h>
 #include "imgui.h"

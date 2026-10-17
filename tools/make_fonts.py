@@ -1,4 +1,4 @@
-"""Makes the image's fonts (docs/fonts.md): files the GPU draws glyphs from where they lie in the ROM.
+"""Makes the image's fonts (docs/system/fonts.md): files the GPU draws glyphs from where they lie in the ROM.
 
     python tools\\make_fonts.py [OUT]     (OUT: build/images/linux/root/usr/share)
 

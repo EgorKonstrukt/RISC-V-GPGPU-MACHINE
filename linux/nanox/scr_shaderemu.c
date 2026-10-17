@@ -1,7 +1,7 @@
 /*
  * Microwindows screen driver for the ShaderEmu display and GPU: every top-level window is
  * drawn into a buffer of its own and the GPU composes the screen from those
- * (docs/nanox.md in the ShaderEmu repository).
+ * (docs/system/nanox.md in the ShaderEmu repository).
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -32,7 +32,7 @@
 #define FONTS_OFFSET	0x01441000u	/* the built-in fonts' glyph tables and bitmaps, kept for good */
 #define CACHE_OFFSET	0x01481000u	/* single glyphs the engine asked for one at a time, kept between lists */
 #define DATA_OFFSET	0x01541000u	/* other textures for the commands in the list */
-#define DATA_END	0x016b8000u	/* beyond: the network's packets (docs/lan.md), what the host fetched (docs/fetch.md), then an OpenGL program's */
+#define DATA_END	0x016b8000u	/* beyond: the network's packets (docs/system/lan.md), what the host fetched (docs/system/fetch.md), then an OpenGL program's */
 #define REG_MODE	0		/* word indices from REGS_OFFSET */
 #define REG_WIDTH	1
 #define REG_HEIGHT	2
@@ -50,9 +50,9 @@
 #define REG_KEYBOARD	12		/* KEYBOARD_OWNED while a program reads the keyboard device */
 #define REG_COPIES	14		/* copies of a drawn picture into RAM made so far */
 #define REG_CURSOR	16		/* x, y, on, address of a 32x32 image */
-#define REG_POINTER	8		/* the pointer: x, y, buttons (docs/input.md) */
+#define REG_POINTER	8		/* the pointer: x, y, buttons (docs/machine/input.md) */
 #define REG_CLOCK	13		/* the host's clock, in milliseconds */
-/* The pointer's worker core (docs/nanox.md, "The pointer on a core of its own"): what it is
+/* The pointer's worker core (docs/system/nanox.md, "The pointer on a core of its own"): what it is
  * told and what it answers, a texel each, in the layer table's page. Words from WM_OFFSET. */
 #define WM_OFFSET	(LAYERS_OFFSET + 0x800)
 /* for the kernel, in the mailbox pages' free part (it has those mapped): left | top << 16,
@@ -987,7 +987,7 @@ gpu_measurestring(PMWCFONT font, const unsigned char *text, int count)
 }
 
 /*
- * A whole string of a built-in font as one command (docs/gpu.md): the GPU makes a rectangle
+ * A whole string of a built-in font as one command (docs/machine/gpu.md): the GPU makes a rectangle
  * of each character from the font's table. The processor's part is a word a character, the
  * glyph's number and where it starts, which for a proportional font only it can add up.
  */
@@ -1350,7 +1350,7 @@ soft_blitfallback(PSD psd, MWCOORD x, MWCOORD y, MWCOORD w, MWCOORD h, PSD src, 
 	soft.BlitFallback(psd, x, y, w, h, src, sx, sy, op);
 }
 
-/* ---------------- fonts in the ROM (docs/fonts.md) */
+/* ---------------- fonts in the ROM (docs/system/fonts.md) */
 
 /* A font file of ours: the GPU draws its glyphs from where the file lies. */
 struct romfont {

@@ -1,9 +1,9 @@
 Shader "ShaderEmu/Readback"
 {
     // The script's readback, a pixel a word (bytes in r, g, b, a), a row a round: state row 0, 64
-    // control texels, then of the row at 0x876b8000 the network's window (40, docs/lan.md), what
+    // control texels, then of the row at 0x876b8000 the network's window (40, docs/system/lan.md), what
     // the cores ran and which run or sleep (72 from 0x876ba000), and the console's 18 from
-    // 0x876b8280 (docs/console.md).
+    // 0x876b8280 (docs/machine/console.md).
     Properties
     {
         _State ("Machine state texture", 2D) = "black" {}

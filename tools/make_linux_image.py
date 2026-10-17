@@ -4,11 +4,11 @@ build/images/linux, which the harness's linux-net entry uses when present:
   rootfs.bin  upstream's romfs with our programs added: programs/bin/glxgears in /usr/bin, and
               everything under build/images/linux/root at the same path in the image
   dts.bin     upstream's device tree with RAM ending at 0x86000000, so the kernel leaves the
-              GPU device's memory alone (docs/gpu.md)
+              GPU device's memory alone (docs/machine/gpu.md)
   linux_payload.bin
               only if our kernel has been built (linux/kernel/build.sh leaves it in
               build/images/linux/Image): that kernel and the device tree where the machine
-              expects them. There is no firmware in it (docs/boot.md)
+              expects them. There is no firmware in it (docs/machine/boot.md)
 
     python tools/make_linux_image.py
     python tools/make_linux_image.py --save-prebuilt    # then keep this build in linux/prebuilt
@@ -28,7 +28,7 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'rvc', '_Nix', 'rvc', 'data-net')
 OUT = os.path.join(ROOT, 'build', 'images', 'linux')
-PROGRAMS = [('glxgears', '/usr/bin'), ('mctest', '/usr/bin')]   # mctest: programs/mc (docs/multicore.md)
+PROGRAMS = [('glxgears', '/usr/bin'), ('mctest', '/usr/bin')]   # mctest: programs/mc (docs/machine/multicore.md)
 PREBUILT = os.path.join(ROOT, 'linux', 'prebuilt')   # checked-in copies of Image and root/
 
 
@@ -186,7 +186,7 @@ DESKTOP = '/root/Desktop'
 WITH_PLACES = ('nxnet', 'nxsettings')
 PLACES = [('Home', 'home', 'nxfiles /root'), ('Pictures', 'pictures', 'nxfiles /root/Pictures'),
           ('Music', 'music', 'nxfiles /root/Music'), ('Videos', 'videos', 'nxfiles /root/Videos'),
-          ('Persistence', 'persistence', 'nxfiles /persistence')]   # (the nx script makes the folder: docs/persist.md)
+          ('Persistence', 'persistence', 'nxfiles /persistence')]   # (the nx script makes the folder: docs/system/persist.md)
 
 
 def desktop_shortcuts(extra):

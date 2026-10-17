@@ -1,4 +1,4 @@
-"""libmedia's animated GIF encoder against Pillow (docs/media.md, "GIF encoding"): animations made
+"""libmedia's animated GIF encoder against Pillow (docs/system/media.md, "GIF encoding"): animations made
 with Pillow are decoded by media_test and written again as one (media_gif_anim_encode); Pillow
 reads both, and every frame must be the same pixels, with the same delays and loop count.
 

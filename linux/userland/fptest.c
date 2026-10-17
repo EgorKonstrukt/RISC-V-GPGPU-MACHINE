@@ -1,5 +1,5 @@
 /*
- * The machine's float instructions (docs/fpu.md) against the compiler runtime's integer
+ * The machine's float instructions (docs/machine/fpu.md) against the compiler runtime's integer
  * routines for the same operations, on random operands and on operands near each other.
  *   fptest [PAIRS]        (200,000 by default; "fptest: done" at the end)
  */
@@ -75,7 +75,7 @@ static const char *names[KINDS] = {"fadd", "fsub", "fmul", "fdiv", "fsqrt", "fne
 	"fcvt.w.s", "fcvt.wu.s", "fcvt.s.w", "fcvt.s.wu", "floor"};
 static long wrong[KINDS], last_place[KINDS], tiny[KINDS], tried[KINDS];
 
-/* docs/fpu.md allows two things: a denormal taken for zero, and a result one or two off in its last place */
+/* docs/machine/fpu.md allows two things: a denormal taken for zero, and a result one or two off in its last place */
 static void check (int kind, uint32_t a, uint32_t b, uint32_t got, uint32_t want)
 {
 	tried[kind]++;

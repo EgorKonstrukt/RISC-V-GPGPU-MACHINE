@@ -1,4 +1,4 @@
-"""Software model of the GPU device (docs/gpu.md), for checking the shader and the harness.
+"""Software model of the GPU device (docs/machine/gpu.md), for checking the shader and the harness.
 
 Reads a harness snapshot taken while the guest is paused (so the command list in RAM is the
 one last drawn) and the GPU's colour target saved by --gpu-capture, redraws the list in
@@ -317,7 +317,7 @@ def shade(m, colour, uv, tex, key, light=None):
 
 
 def pass_of(cmd):
-    """The pass a command is drawn in: bits 16-18 of its fragment mode word (docs/gpu.md)."""
+    """The pass a command is drawn in: bits 16-18 of its fragment mode word (docs/machine/gpu.md)."""
     return (cmd['tex'][0] >> 16) & 7 if cmd['op'] != 1 else 0
 
 

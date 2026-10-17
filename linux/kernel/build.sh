@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the project's Linux kernel (pimaker's linux-rvc 5.17.11 plus our drivers and hooks) in
-# WSL or any Linux, without root, into build/images/linux/Image. See docs/gpu.md.
+# WSL or any Linux, without root, into build/images/linux/Image. See docs/machine/gpu.md.
 #   wsl -- bash /mnt/c/.../linux/kernel/build.sh
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

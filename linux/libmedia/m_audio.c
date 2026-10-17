@@ -1,5 +1,5 @@
 /*
- * Sound (docs/media.md): every kind as 16-bit frames, in order on one core, or in pieces that
+ * Sound (docs/system/media.md): every kind as 16-bit frames, in order on one core, or in pieces that
  * any core decodes by itself (an MP3 file's frames, a FLAC file's blocks, a Vorbis file from
  * any sample, a WAV file anywhere). media_audio_decode_all gives the pieces to every worker.
  */

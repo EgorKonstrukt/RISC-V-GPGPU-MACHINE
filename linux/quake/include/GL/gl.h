@@ -1,6 +1,6 @@
 // The OpenGL 1.1 that GLQuake calls, for linux/quake/qgl.c: floats and glBegin over the
 // fixed-point library (programs/linux/gles.c), which is what draws. Every call Quake makes
-// is renamed to qgl..., so the two libraries' names never meet. docs/quake.md.
+// is renamed to qgl..., so the two libraries' names never meet. docs/games/quake.md.
 #ifndef SHADEREMU_QUAKE_GL_H
 #define SHADEREMU_QUAKE_GL_H
 
@@ -114,7 +114,7 @@ const GLubyte* qglGetString(GLenum what);
 // The window the frames go to, and the end of a frame.
 int qglOpen(unsigned int nano_x_window, const unsigned char* palette);
 void qglSwap(void);
-// The machine's control words (docs/gpu.md), for the clock and the input counters.
+// The machine's control words (docs/machine/gpu.md), for the clock and the input counters.
 const volatile unsigned int* qglControl(int offset);
 // Bytes of textures kept, how many of them are in GPU memory and how many that holds, textures
 // that have had to leave it so far, and the vertices the last frame gave the GPU.

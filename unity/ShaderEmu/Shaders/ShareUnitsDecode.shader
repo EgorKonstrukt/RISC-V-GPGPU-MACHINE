@@ -1,6 +1,6 @@
 Shader "ShaderEmu/ShareUnitsDecode"
 {
-    // Another player's display from the units of one packet (docs/share.md, "Units";
+    // Another player's display from the units of one packet (docs/world/share.md, "Units";
     // ShareUnits.shader makes them). Pass 0 finds each unit's record in the packet; pass 1
     // draws the pixels those units cover into the picture, which keeps the rest.
     Properties

@@ -1,5 +1,5 @@
 /*
- * Tiberian Dawn's window on the ShaderEmu GPU (docs/tdawn.md): the game's 8-bit screen is a
+ * Tiberian Dawn's window on the ShaderEmu GPU (docs/games/tdawn.md): the game's 8-bit screen is a
  * texture in GPU memory, shown as one rectangle looked up in the palette, with the pointer as
  * a second one. Input comes from the Nano-X server.
  */
@@ -13,13 +13,13 @@
 #include <GLES/segl.h>
 #include "nano-X.h"
 #include "host.h"
-#include "mcwx.h"	/* programs/mc: the machine's worker cores, over the second layer (docs/multicore.md) */
+#include "mcwx.h"	/* programs/mc: the machine's worker cores, over the second layer (docs/machine/multicore.md) */
 
 #define ONE		65536
 #define CURSOR_MAX	128		/* the largest pointer picture, a side */
 #define CAPTION		22		/* the window manager's caption and frame (nanowm.h) */
 #define FRAME		4
-#define REG_PALETTE	0x400		/* offsets in the machine's control words (docs/gpu.md) */
+#define REG_PALETTE	0x400		/* offsets in the machine's control words (docs/machine/gpu.md) */
 #define REG_INPUT	0x20
 #define REG_CLOCK	0x34
 #define REG_SUBMIT	0x10
@@ -40,7 +40,7 @@ static int hw_on, hw_stale;
 static int page_rows;			/* a page's texture is this high: a row is a whole number of 1,024ths */
 
 /*
- * A scene's rectangles on a worker core (docs/tdawn.md, docs/multicore.md). Making a frame's
+ * A scene's rectangles on a worker core (docs/games/tdawn.md, docs/machine/multicore.md). Making a frame's
  * two hundred rectangles into GPU commands is an eighth of a mission's frame, and nothing of
  * it is needed before the frame is shown. So host_sprite() and host_block() only note what
  * was asked, host_scene_end() gives the notes to a worker, and host_present() of that scene
@@ -97,7 +97,7 @@ control(int offset)
 }
 
 /*
- * A frame is handed to the GPU and not waited for (docs/gpu.md): host_settle() comes before
+ * A frame is handed to the GPU and not waited for (docs/machine/gpu.md): host_settle() comes before
  * every store to memory that list reads. TDAWN_SWAP=wait waits at the swap, as it was.
  */
 static int flight;	/* a list was handed over and may not be drawn yet */
@@ -273,7 +273,7 @@ host_palette(void)
 }
 
 /*
- * The pointer is the display's cursor where it can be (docs/display.md, docs/tdawn.md): a
+ * The pointer is the display's cursor where it can be (docs/machine/display.md, docs/games/tdawn.md): a
  * picture of 32 x 32 colours that whatever shows the display draws at the pointer, at the
  * display's own rate and not at the game's. The window system owns that cursor, so the
  * picture is given to it as a window's cursor is: one of 32 x 1 whose mask is a mark the
@@ -443,7 +443,7 @@ whole_window(int origin_x, int origin_y)
 	glDisable(GL_DEPTH_TEST);
 }
 
-/* ---- the map drawn by the GPU (docs/tdawn.md) ---- */
+/* ---- the map drawn by the GPU (docs/games/tdawn.md) ---- */
 
 #define ATLAS_W		1024		/* texels across: a texture coordinate is a 1,024th */
 #define ATLAS_ROWS	2048
@@ -552,7 +552,7 @@ host_tiles_clear(void)
 }
 
 /*
- * Shape files' frames on worker cores (docs/tdawn.md, "Frames made ready"): a file a frame
+ * Shape files' frames on worker cores (docs/games/tdawn.md, "Frames made ready"): a file a frame
  * was asked of is unpacked from that frame on, a run of frames a turn, into memory that is
  * the worker's to write. TDAWN_FRAMES_CORE=0 leaves every frame to the game, =N has N cores.
  */
@@ -1335,7 +1335,7 @@ host_scene_picture(unsigned char *index, unsigned int *dark)
 
 /*
  * For a test (TDAWN_CHECK_GPU): the window's picture as the GPU left it in the window's own
- * buffer (docs/gpu.md), a word a pixel in rows of *row. NULL where the window has no buffer.
+ * buffer (docs/machine/gpu.md), a word a pixel in rows of *row. NULL where the window has no buffer.
  */
 const unsigned int *
 host_window_picture(int *width, int *height, int *row)
@@ -1736,7 +1736,7 @@ host_present(int page, int with_cursor)
 }
 
 /*
- * Where the pointer is comes from the machine's own input words (docs/input.md), not from
+ * Where the pointer is comes from the machine's own input words (docs/machine/input.md), not from
  * the window system: a move it tells of is a message to read and, before that, a question to
  * ask it, two system calls and two task switches, at every place the game looks for input.
  * With a pointer that never rests that was a third of a mission's frame and more. The window
@@ -1824,7 +1824,7 @@ virtual_key(int ch)
 
 /*
  * Asking the server costs two system calls and two task switches. The machine's own input
- * words (pointer, buttons, key events so far; docs/input.md) say when there can be anything:
+ * words (pointer, buttons, key events so far; docs/machine/input.md) say when there can be anything:
  * ask when they have moved, for a few calls after, and every 10 ms while an event they told of
  * is owed (a tenth of a second at most: the kernel's tick is later). Otherwise once a second,
  * or four times while the pointer moves outside the picture (it may be coming in or going out).

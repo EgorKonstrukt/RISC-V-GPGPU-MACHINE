@@ -17,7 +17,7 @@ int __real_close(int fd);
 #define MOST 32
 #define WINDOWS 8
 /* An archive as pack.py left it, what programs take of it first: its length, and the page
- * each window of that part ends at (docs/cc.md, "Fewer pages of the ROM"). */
+ * each window of that part ends at (docs/system/cc.md, "Fewer pages of the ROM"). */
 static const struct packed { const char *name; size_t size; unsigned short ends[WINDOWS]; } packed[] = {
 #include "packed.h"
 };

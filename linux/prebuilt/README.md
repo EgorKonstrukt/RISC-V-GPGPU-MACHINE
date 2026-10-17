@@ -14,14 +14,14 @@ started and everything on its desktop run without building anything.
 | `root/usr/bin/nx` | | the script `linux/nanox/nx` |
 | `root/emuinit`, `root/usr/bin/emumux`, `fptest`, `sndtest` | `linux/userland/build.sh` | this repository |
 | `root/bin/busybox` | `linux/userland/busybox.sh` | BusyBox 1.36.1 |
-| `root/usr/bin/nc`, `telnetd` | `linux/userland/build.sh` | two-line scripts that start BusyBox's applets of those names (`docs/lan.md`) |
-| `root/usr/bin/nxfiles`, `nxweb`, `nxedit`, `nxpaint`, `nxview`, `nxmon`, `nxsettings`, `nxkey`, `nxicon` (a program's own icon, `docs/nanox.md`), `nxoff`, `root/usr/share/web-*`, `nxapps.90-system`, `open`, `nxopen-archive`, `nxopen-run`, `nxopen.20-apps` (what opens which kind of file, `docs/open.md`), `picture-fox.png`, `picture-fox.jpg` (cut from the desktop's picture by `tools/make_test_pictures.py`) | `linux/apps/build.sh` | this repository |
+| `root/usr/bin/nc`, `telnetd` | `linux/userland/build.sh` | two-line scripts that start BusyBox's applets of those names (`docs/system/lan.md`) |
+| `root/usr/bin/nxfiles`, `nxweb`, `nxedit`, `nxpaint`, `nxview`, `nxmon`, `nxsettings`, `nxkey`, `nxicon` (a program's own icon, `docs/system/nanox.md`), `nxoff`, `root/usr/share/web-*`, `nxapps.90-system`, `open`, `nxopen-archive`, `nxopen-run`, `nxopen.20-apps` (what opens which kind of file, `docs/system/open.md`), `picture-fox.png`, `picture-fox.jpg` (cut from the desktop's picture by `tools/make_test_pictures.py`) | `linux/apps/build.sh` | this repository |
 | `root/usr/bin/nxray`, `nxpath`, `root/usr/share/nxapps.82-raytrace`, `nxapps.83-pathtrace` | `linux/raytrace/build.sh`, `linux/pathtrace/build.sh` | this repo; in `nxpath`, the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory)sitory; `nxpath` with Dear ImGui (below) |
 | `root/usr/bin/nxplay`, `root/usr/share/play-test.wav`, `.mp3`, `.flac`, `.mod` (made by `linux/play/make_test.py`), `nxapps.84-play`, `nxopen.84-play` | `linux/play/build.sh` | this repository, with minimp3 and dr_flac (below) |
 | `root/usr/share/wallpaper-*.ppm` | `tools/make_wallpaper.py` | photographs from Unsplash |
 | `root/usr/bin/doom.bin`, `root/usr/share/nxopen.50-doom` | `linux/nanox/doom.sh` | the Doom in Microwindows' `contrib`, with the files in `linux/nanox` |
 | `root/usr/bin/tcc`, `cc`, `example`, `root/usr/include`, `root/usr/lib` (the C library's, Nano-X's, OpenGL ES's and the worker cores' headers and libraries), `root/usr/share/example-*.c` | `linux/tcc/build.sh` | TinyCC, with musl's headers and libraries for it |
-| `root/usr/bin/nxide`, `root/usr/share/nxapps.28-ide`, `nxopen.15-ide` | `linux/ide/build.sh` | this repository (the IDE, `docs/ide.md`) |
+| `root/usr/bin/nxide`, `root/usr/share/nxapps.28-ide`, `nxopen.15-ide` | `linux/ide/build.sh` | this repository (the IDE, `docs/apps/ide.md`) |
 | `root/usr/bin/nxmicropolis`, `root/usr/share/micropolis/` (its pictures, sounds, cities and texts, and its licences), `nxapps.72-micropolis`, `nxopen.72-micropolis` | `linux/micropolis/build.sh` | Micropolis (MicropolisCore's engine), with `linux/micropolis/micropolis.patch` and the front end in `linux/micropolis` |
 | `root/usr/bin/classicube.bin`, `root/usr/share/classicube-default.zip`, `classicube-sound.pak`, `classicube-music.mp3` | `linux/classicube/build.sh` | ClassiCube, with `linux/classicube/classicube.patch` |
 | `root/usr/bin/imdemo` | `linux/imgui/build.sh` | Dear ImGui 1.91.5 |
@@ -39,7 +39,7 @@ compiler runtime it uses.
 
 ## Linux without the MMU (`nommu/`)
 
-The machine the harness and the world run (`docs/nommu.md`). `nommu/Image` is the kernel of
+The machine the harness and the world run (`docs/system/nommu.md`). `nommu/Image` is the kernel of
 `linux/nommu/kernel.sh`: the same Linux and drivers, built without `CONFIG_MMU`, with
 `linux/nommu`'s patches. `nommu/root` holds only the files that differ from `root`: every
 program built by `linux/nommu/build.sh` and made flat by `linux/nommu/root.sh` (the same sources

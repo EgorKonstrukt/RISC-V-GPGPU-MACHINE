@@ -1,7 +1,7 @@
 Shader "ShaderEmu/HoloGuard"
 {
     // A holodeck's own things (the seat, the stand, its panel, its screen) are before the
-    // program's world however near that reaches (docs/holodeck.md): a copy of each draws
+    // program's world however near that reaches (docs/world/holodeck.md): a copy of each draws
     // nothing but a mark in the stencil where the thing itself is seen, after the room's mask
     // and before the program's world, and no pass of that world draws on a pixel so marked.
     // One copy has every room's things: only those in the room this visitor sits in mark

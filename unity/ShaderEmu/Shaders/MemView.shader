@@ -25,7 +25,7 @@ Shader "ShaderEmu/MemView"
 
             // Whose a megabyte of RAM is, as a colour for the strip's left edge: Linux's own
             // (the kernel brighter), window buffers, the display and the GPU's lists and
-            // textures, a 3D program's, the sound card's (docs/gpu.md, docs/sound.md).
+            // textures, a 3D program's, the sound card's (docs/machine/gpu.md, docs/machine/sound.md).
             float3 owner(float megabyte) {
                 if (megabyte < 4.0) return float3(0.10, 0.11, 0.14);
                 if (megabyte < 9.0) return float3(0.35, 0.60, 1.00);

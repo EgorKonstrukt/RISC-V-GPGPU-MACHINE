@@ -1,5 +1,5 @@
 /*
- * The worker cores for a Linux program (docs/multicore.md): threads of the program that the
+ * The worker cores for a Linux program (docs/machine/multicore.md): threads of the program that the
  * kernel does not know of. A job is a function of the program and two words for it; a worker
  * runs it on a stack of its own, in the program's memory as the program has it.
  *
@@ -39,7 +39,7 @@ typedef uint32_t (*mcw_fn)(uint32_t a0, uint32_t a1);
 int mcw_recalled(int k);
 
 /* How many workers the machine has (63 of 64 cores): all alike, each with a write cache of
- * 1.5 KB of new stores a pass (docs/multicore.md). */
+ * 1.5 KB of new stores a pass (docs/machine/multicore.md). */
 int mcw_most(void);
 /* Starts up to `limit` workers; how many there are. */
 int mcw_open(int limit);

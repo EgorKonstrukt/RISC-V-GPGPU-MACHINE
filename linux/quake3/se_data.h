@@ -1,6 +1,6 @@
 /*
  * The file bake.py makes of a level, its models, its pictures and its sounds
- * (/usr/share/quake3-se.dat, docs/quake3.md), as the renderer and the sound read it: tables,
+ * (/usr/share/quake3-se.dat, docs/games/quake3.md), as the renderer and the sound read it: tables,
  * and after them what they point at, by its place in the file. The GPU and the sound card read
  * textures and samples where the file lies in the ROM.
  */

@@ -1,4 +1,4 @@
-/* Motion JPEG in AVI (docs/media.md, "MJPEG in AVI"): every picture is a JPEG by itself, decoded
+/* Motion JPEG in AVI (docs/system/media.md, "MJPEG in AVI"): every picture is a JPEG by itself, decoded
  * ahead into its place a few at a time, their restart intervals over every core, and made the
  * GPU's opaque words there. PCM sound is copied out of the file's chunks as it is asked for. */
 #include <stdio.h>

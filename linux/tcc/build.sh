@@ -18,12 +18,12 @@ if [ ! -d "$SRC" ]; then
     git clone -q -b riscv32 https://github.com/jrrk2/tinycc "$SRC"
 fi
 git -C "$SRC" log --oneline -1
-# its float instructions as this machine has them: single precision only (docs/fpu.md)
+# its float instructions as this machine has them: single precision only (docs/machine/fpu.md)
 python3 "$HERE/fpu_hook.py" "$SRC"
 # numbers with a point read without the C library's long doubles, and an archive's symbols
-# hashed once (docs/cc.md)
+# hashed once (docs/system/cc.md)
 python3 "$HERE/speed_hook.py" "$SRC"
-# and its stores in bursts, which ended the machine's passes early (docs/cc.md)
+# and its stores in bursts, which ended the machine's passes early (docs/system/cc.md)
 python3 "$HERE/pass_hook.py" "$SRC"
 
 # 1. a compiler that runs here and makes code for the machine: it builds TinyCC's own runtime
@@ -57,7 +57,7 @@ cp "$GL"/include/GLES/*.h "$STAGE/usr/include/GLES/"
 rv32-cc -O2 -Wall -c -DSEGL_FLOAT -idirafter "$GL/include" -I"$MW/include" "$GL/gles.c" -o "$WORK/build/gles.o"
 rm -f "$STAGE/usr/lib/libgles.a"
 riscv32-linux-ar rcs "$STAGE/usr/lib/libgles.a" "$WORK/build/gles.o"
-# the worker cores' library (docs/multicore.md), for a program that shares its work out
+# the worker cores' library (docs/machine/multicore.md), for a program that shares its work out
 rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcw.c" -o "$WORK/build/mcw.o"
 rv32-cc -O2 -Wall -c -I"$REPO/programs/mc" "$REPO/programs/mc/mcwx.c" -o "$WORK/build/mcwx.o"
 rm -f "$STAGE/usr/lib/libmcw.a"
@@ -68,7 +68,7 @@ if [ -f "$WORK/src/libmedia/libmedia.a" ]; then
     cp "$WORK/src/libmedia/libmedia.a" "$STAGE/usr/lib/" && cp "$REPO/linux/libmedia/media.h" "$STAGE/usr/include/"
 fi
 riscv32-linux-strip -g "$STAGE"/usr/lib/*.a "$STAGE"/usr/lib/*.o 2>/dev/null || true
-# what the examples take of each archive goes first in it, for the ROM (pack.py, docs/cc.md);
+# what the examples take of each archive goes first in it, for the ROM (pack.py, docs/system/cc.md);
 # the compiler is told where that is (mapped.c), so it is built after
 mkdir -p "$WORK/build/tcc-guest"
 python3 "$HERE/pack.py" "$WORK/build/tcc-cross/tcc" "$STAGE" "$HERE/examples" "$WORK/build/tcc-guest/packed.h"

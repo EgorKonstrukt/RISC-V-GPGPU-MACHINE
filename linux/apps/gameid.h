@@ -19,7 +19,7 @@ game_of(const char *comm)
 	static const struct { const char *name; int id; } games[] = {
 		{ "doom", GAME_DOOM }, { "quake", GAME_QUAKE }, { "classicube", GAME_CLASSICUBE },
 		{ "tdawn", GAME_TDAWN }, { "ralert", GAME_RALERT }, { "nes", GAME_NES }, { "quake3", GAME_QUAKE3 },
-		{ "nxphys", GAME_PHYS },	/* both hands take boxes: docs/physics.md, "The controls" */
+		{ "nxphys", GAME_PHYS },	/* both hands take boxes: docs/apps/physics.md, "The controls" */
 	};
 	unsigned i;
 

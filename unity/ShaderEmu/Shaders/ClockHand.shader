@@ -1,6 +1,6 @@
 Shader "ShaderEmu/ClockHand"
 {
-    // A clock's hand (docs/world.md): a mesh that points at twelve, turned about its own z by the
+    // A clock's hand (docs/world/world.md): a mesh that points at twelve, turned about its own z by the
     // time of day. _UdonClockDay is the visitor's own clock in seconds when the world began
     // (EmuWeather sets it); with _Time it is now.
     Properties

@@ -1,4 +1,4 @@
-"""Takes passes the kernel ended out of three common paths (docs/boot.md, "Passes that end early").
+"""Takes passes the kernel ended out of three common paths (docs/machine/boot.md, "Passes that end early").
 
 Pages wanted zeroed are cleared sixty-four at a time: a block in one parallel fill, handed out a
 page at a time (mm/page_alloc.c), and a fault's zeroed page is asked for as one (asm/page.h).

@@ -1,5 +1,5 @@
 /*
- * Nofrendo's machine side on ShaderEmu (docs/nes.md): the NES's picture is bytes in GPU memory
+ * Nofrendo's machine side on ShaderEmu (docs/games/nes.md): the NES's picture is bytes in GPU memory
  * that the GPU stretches over a Nano-X window through the display's palette, the pad is the
  * keyboard, and a frame is drawn for every few emulated (NES_SKIP), the machine being slow.
  */
@@ -48,8 +48,8 @@ static unsigned gd_spent[3];		/* instructions following the game's writes (the r
 /* what whoever makes the lists counts: their instructions, quads and runs of lines */
 static unsigned gd_made[4] __attribute__((aligned(16)));
 static int gd_missed;			/* frames not shown: the worker was at the one before */
-static int gd_worker;			/* a worker core makes the GPU's lists (docs/nes.md) */
-/* The frames on a worker core (docs/nes.md, "The emulation on a worker core"): what each side
+static int gd_worker;			/* a worker core makes the GPU's lists (docs/games/nes.md) */
+/* The frames on a worker core (docs/games/nes.md, "The emulation on a worker core"): what each side
  * says to the other, in 16 bytes or more that only it writes. */
 static int emu_worker;			/* set on the worker that emulates */
 static struct { volatile uint32_t seq, slot, written, frames; } emu_said __attribute__((aligned(16)));
@@ -384,7 +384,7 @@ frame_counted(int emulated, int step, const unsigned char *shown)
 	}
 }
 
-/* ---- the picture drawn elsewhere (docs/nes.md): no frame is drawn by this core; of the
+/* ---- the picture drawn elsewhere (docs/games/nes.md): no frame is drawn by this core; of the
  * frames it can, the PPU keeps a record, and worker cores draw the picture from it into a
  * texture not shown, while this core goes on with the next frames. The workers are in
  * teams, a frame a team: giving a frame out and hearing it is done cost two passes of the
@@ -580,8 +580,8 @@ frame_paced(void)
 	}
 }
 
-/* ---- the picture drawn by the GPU (docs/nes.md): the background is a layer of tiles
- * (docs/gpu.md), the four name tables two by two as its cells; the sprites are another, a
+/* ---- the picture drawn by the GPU (docs/games/nes.md): the background is a layer of tiles
+ * (docs/machine/gpu.md), the four name tables two by two as its cells; the sprites are another, a
  * cell or two a sprite; and a frame is a few quads of them for every run of lines the PPU's
  * registers stayed the same in. The pattern tables are kept as a byte a pixel in GPU
  * memory, and the cells follow what the game writes ---- */
@@ -642,7 +642,7 @@ gd_tile(unsigned char *atlas, unsigned tile)
  * a cartridge moves the picture's four tables between them (some at every write to their
  * register), and a table that moves is copied from here, not worked out again. Kept by the
  * core that emulates: not in gd. The layer's cells and pattern RAM's patterns are COPIES. */
-#define COPIES 3		/* a list made with one, another drawn, one made up (docs/nes.md) */
+#define COPIES 3		/* a list made with one, another drawn, one made up (docs/games/nes.md) */
 static struct {
 	unsigned short cells[4][1024];
 	int made;
@@ -912,7 +912,7 @@ gd_quad(unsigned int *layer, int layer_w, int layer_h, int x0, int y0, int x1, i
 static void
 gd_sprites(unsigned int *set, const ppu_lineinfo_t *line, int y0, int y1, int behind)
 {
-	/* a pixel's place as the library's number (a worker core's to write: whole 16 bytes, docs/multicore.md) */
+	/* a pixel's place as the library's number (a worker core's to write: whole 16 bytes, docs/machine/multicore.md) */
 	static unsigned across[WIDTH + 4] __attribute__((aligned(16))), down[HEIGHT + 4] __attribute__((aligned(16)));
 	const unsigned char *restrict oam = ppu_frame_oam(gd.record), *restrict shown = gd.shown[behind];
 	const unsigned short *restrict all_lines = gd.lines;
@@ -1304,7 +1304,7 @@ frame_gpu(int after)
 	frame_paced();
 }
 
-/* ---- the emulation on a worker core (docs/nes.md): another makes the lists of the frames it
+/* ---- the emulation on a worker core (docs/games/nes.md): another makes the lists of the frames it
  * gives out, this core shows them, reads the window's events for the pad, and helps the two on
  * (pages, system calls) ---- */
 
@@ -1681,7 +1681,7 @@ button_of(int key)
 
 /*
  * Asking the window system for events is two system calls and two task switches. The machine's
- * own input words (docs/input.md: pointer, buttons, key events so far) say when there can be
+ * own input words (docs/machine/input.md: pointer, buttons, key events so far) say when there can be
  * any: it is asked when they have moved, a few times after, and twice a second.
  */
 static struct { unsigned seen[4]; int ask, quiet, pad[2]; } inputs __attribute__((aligned(16))) = {{0}, 8, 0, {0}};
