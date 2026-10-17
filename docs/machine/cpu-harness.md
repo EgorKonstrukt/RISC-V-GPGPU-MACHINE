@@ -67,7 +67,10 @@ is shown (its layers, the cursor over them) every frame: 16 bytes (width, height
 guest's milliseconds), then red, green, blue a pixel; `--screen-from TEXT` not before the
 console has shown TEXT, `--screen-every MS` one not sooner than that after the last,
 `--screen-frames N` stops after N. It reads the layers back from the state texture, where the
-GPU draws them: `tools/share_motion.py` plays such a recording (`docs/world/share.md`).
+GPU draws them: `tools/share_motion.py` plays such a recording (`docs/world/share.md`). On 17
+October 2026 it showed a desktop with no windows where the layer table had a calculator at
+40,20 and a snapshot of the same run showed it drawn: a capture of what programs look like is
+taken with `--save-state` at the run's end and `snapshot_screen.py`, never from the log.
 
 Not there yet in this mode: sound (not tried), pages from the host for the browser, D3D12.
 The shader's own cores are not used (the cores are the interpreter's), so nothing here says

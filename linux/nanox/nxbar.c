@@ -1,12 +1,16 @@
 /*
  * nxbar: a bar along the bottom of the screen with a Start button and its menu of programs,
- * a button for every open window, and a clock.
+ * the programs pinned to it, a button for every open window, a volume control, the clock (a
+ * click shows the month) and, at its right end, a strip that shows the desktop.
  *
  * The menu is whatever the files /usr/share/nxapps.* list, one "Label=command" a line, or
  * "Folder/Label=command" for a program in a folder (a folder may be in a folder): a program's
  * build adds itself by putting such a file in the image. A folder's programs open to its side
- * (../apps/ui_menu.h). Clicking a window's button brings the window to the front; the right
- * button there offers to minimise or close it.
+ * (../apps/ui_menu.h). Clicking a window's button brings the window to the front, or puts it
+ * away when it is in front already; the right button there offers to minimise, close or pin
+ * it, the middle one closes it, and the wheel goes from window to window. The bar is drawn
+ * in the desktop's look, classic or Windows 7 (../apps/ui_look.h), and follows a change of it.
+ * nxbar --look sets the look from the registry and exits (the nx script, before the desktop).
  */
 #include <ctype.h>
 #include "../userland/real_vfork.h"
@@ -26,21 +30,34 @@
 #include "../apps/ui_icons.h"
 #include "../apps/ui_menu.h"
 #include "../apps/ui_launch.h"
+#include "../userland/shaderemu_sound.h"
 
 #define BAR_HEIGHT 26
-#define START_WIDTH 64
+#define START_WIDTH (ui_seven ? 28 : 64)
+#define QUICK_W 24	/* a pinned program's button */
+#define MAX_PINNED 8
 #define CLOCK_WIDTH 52
 #define SPEED_WIDTH 96	/* the machine's speed, before the clock */
+#define VOLUME_W 22	/* the volume's button, before the speed */
+#define DESK_W (ui_seven ? 12 : 10)	/* the strip that shows the desktop, at the right end */
 #define NAME_MOST 120	/* the player's name before that, at most so wide */
-#define TASK_WIDTH 110
+#define TASK_WIDTH (ui_seven ? 140 : 110)
 #define MAX_ITEMS 96
 #define MAX_TASKS 12
 #define REGISTRY "/usr/share"
 #define FACE MWRGB(192, 192, 192)
 #define SHADOW MWRGB(128, 128, 128)
+#define TEXT_Y (ui_smooth ? 6 : 7)	/* a line's top in the bar (Selawik's ascent is a pixel more) */
+#define INK (ui_seven ? MWRGB(255, 255, 255) : BLACK)
+#define LOOK7_SHEET_BAR "/usr/share/look7.ppm"	/* cells of 24: 8 the Start orb, 9 it pressed */
+#define PINNED_KEY "bar.pinned"	/* the registry's: commands, parted by commas */
+#define PINNED_DEFAULT "nxfiles,nxterm,nxweb"
 #define TASK_RESTORE 1000	/* ids of a window's own menu; a program's is its line's number plus one */
 #define TASK_MINIMISE 1001
 #define TASK_CLOSE 1002
+#define TASK_PIN 1003
+#define PIN_REMOVE 1100		/* a pinned program's menu: + which */
+#define PIN_START 1200
 
 static struct { char path[64], command[64]; } items[MAX_ITEMS];	/* path: Folder/Folder/Label */
 static int item_count;
@@ -51,10 +68,15 @@ static struct ui_icon_ref row_icons[MAX_ITEMS + 32];
 static int row_count;
 static const struct ui_menu_item *top;
 static int top_count;
-static struct { GR_WINDOW_ID frame, client; char title[20]; int hidden; struct ui_icon_ref icon; } tasks[MAX_TASKS];
-static int task_count, task_asked = -1;
+static struct { GR_WINDOW_ID frame, client; char title[20]; int hidden, process; struct ui_icon_ref icon; } tasks[MAX_TASKS];
+static int task_count, task_asked = -1, pin_asked = -1;
+static GR_WINDOW_ID active_frame;	/* the window with the keyboard's frame, when it has a button */
+static struct { char command[64]; struct ui_icon_ref icon; } pinned[MAX_PINNED];
+static int pinned_count;
+static GR_WINDOW_ID desk_hidden[MAX_TASKS];	/* windows the strip put away, to bring back */
+static int desk_hidden_count;
 
-static GR_WINDOW_ID bar;
+static GR_WINDOW_ID bar, calendar, volume;	/* calendar, volume: the popups, while they are open */
 static GR_GC_ID gc;
 static GR_SCREEN_INFO screen;
 
@@ -141,6 +163,55 @@ load_items(void)
 	top_count = build("", &top);
 }
 
+/* The programs pinned to the bar, from the registry. */
+static void
+load_pinned(void)
+{
+	char list[MAX_PINNED * 64], *word, *rest;
+
+	snprintf(list, sizeof list, "%s", reg_get(PINNED_KEY, PINNED_DEFAULT));
+	pinned_count = 0;
+	for (word = strtok_r(list, ",", &rest); word && pinned_count < MAX_PINNED; word = strtok_r(NULL, ",", &rest)) {
+		while (*word == ' ')
+			word++;
+		if (!*word)
+			continue;
+		snprintf(pinned[pinned_count].command, sizeof pinned[0].command, "%s", word);
+		ui_icon_of_command(word, &pinned[pinned_count].icon);
+		pinned_count++;
+	}
+}
+
+static void
+save_pinned(void)
+{
+	char list[MAX_PINNED * 64] = "";
+	int i;
+
+	for (i = 0; i < pinned_count; i++) {
+		if (i)
+			strcat(list, ",");
+		strcat(list, pinned[i].command);
+	}
+	reg_set(PINNED_KEY, list);
+}
+
+/* A command's label: the Start menu's for it, else its first word. */
+static void
+label_of(const char *command, char *out, int room)
+{
+	const char *slash;
+	int i;
+
+	for (i = 0; i < item_count; i++)
+		if (!strcmp(items[i].command, command)) {
+			slash = strrchr(items[i].path, '/');
+			snprintf(out, room, "%s", slash ? slash + 1 : items[i].path);
+			return;
+		}
+	snprintf(out, room, "%.*s", (int)strcspn(command, " "), command);
+}
+
 /* A rectangle with a lit top-left and a shaded bottom-right edge, or the reverse. */
 static void
 bevel(GR_WINDOW_ID w, int x, int y, int width, int height, int pressed)
@@ -151,6 +222,27 @@ bevel(GR_WINDOW_ID w, int x, int y, int width, int height, int pressed)
 	GrSetGCForeground(gc, pressed ? WHITE : SHADOW);
 	GrLine(w, gc, x, y + height - 1, x + width - 1, y + height - 1);
 	GrLine(w, gc, x + width - 1, y, x + width - 1, y + height - 1);
+}
+
+/* Windows 7's button on the bar: a lighter glass box with rounded corners; brighter for the
+ * window in front, none for one put away. */
+static void
+glass(int x, int y, int width, int height, int how)
+{
+	static const GR_COLOR top[] = { MWRGB(86, 106, 136), MWRGB(118, 150, 192) },
+		bottom[] = { MWRGB(60, 78, 106), MWRGB(82, 112, 156) }, edge[] = { MWRGB(118, 138, 166), MWRGB(170, 198, 236) };
+
+	if (how < 0)
+		return;
+	GrSetGCForeground(gc, top[how]);
+	GrFillRect(bar, gc, x + 1, y + 1, width - 2, height / 2 - 1);
+	GrSetGCForeground(gc, bottom[how]);
+	GrFillRect(bar, gc, x + 1, y + height / 2, width - 2, height - height / 2 - 1);
+	GrSetGCForeground(gc, edge[how]);
+	GrLine(bar, gc, x + 1, y, x + width - 2, y);
+	GrLine(bar, gc, x + 1, y + height - 1, x + width - 2, y + height - 1);
+	GrLine(bar, gc, x, y + 1, x, y + height - 2);
+	GrLine(bar, gc, x + width - 1, y + 1, x + width - 1, y + height - 2);
 }
 
 /* The player's name ($USER, which the desktop's starter sets: docs/system/persist.md) and its box's width, 0 for none. */
@@ -170,18 +262,37 @@ name_width(void)
 	if (width < 0) {
 		const char *name = player_name();
 
-		width = name ? ui_width(&ui_menu_widths, 0, name, strlen(name)) + 16 : 0;
+		width = name ? ui_width(&ui_menu_widths, ui_menu_font, name, strlen(name)) + 16 : 0;
 		if (width > NAME_MOST)
 			width = NAME_MOST;
 	}
 	return width ? width + 3 : 0;
 }
 
-/* A task button's width: TASK_WIDTH, or less when that many would not fit before the clock. */
+/* Where the parts stand, from the right end: the strip, the clock, the speed, the volume. */
+#define DESK_X (screen.cols - DESK_W)
+#define CLOCK_X (DESK_X - 3 - CLOCK_WIDTH)
+#define SPEED_X (CLOCK_X - 3 - SPEED_WIDTH)
+#define VOLUME_X (SPEED_X - 2 - VOLUME_W)
+#define NAME_X (VOLUME_X - 1 - name_width())
+
+static int
+quick_x(int i)
+{
+	return 3 + START_WIDTH + 6 + i * QUICK_W;
+}
+
+static int
+tasks_x(void)
+{
+	return quick_x(pinned_count) + (pinned_count ? 6 : 0);
+}
+
+/* A task button's width: TASK_WIDTH, or less when that many would not fit before the tray. */
 static int
 task_width(void)
 {
-	int room = screen.cols - CLOCK_WIDTH - SPEED_WIDTH - name_width() - 9 - (START_WIDTH + 12);
+	int room = NAME_X - 6 - tasks_x();
 	int width = task_count ? room / task_count - 4 : TASK_WIDTH;
 
 	return width > TASK_WIDTH ? TASK_WIDTH : width < 8 ? 8 : width;
@@ -190,7 +301,7 @@ task_width(void)
 static int
 task_x(int i)
 {
-	return START_WIDTH + 12 + i * (task_width() + 4);
+	return tasks_x() + i * (task_width() + 4);
 }
 
 /* The machine's speed in millions of instructions a second: the first core's (its cycle
@@ -247,14 +358,30 @@ speed_sample(unsigned ms)
 static void
 draw_speed(void)
 {
-	int x = screen.cols - CLOCK_WIDTH - 6 - SPEED_WIDTH;
+	int x = SPEED_X;
 
-	GrSetGCForeground(gc, FACE);
-	GrFillRect(bar, gc, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6);
-	bevel(bar, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6, 1);
-	GrSetGCForeground(gc, BLACK);
-	GrText(bar, gc, x + (SPEED_WIDTH - ui_width(&ui_menu_widths, 0, speed_text, strlen(speed_text))) / 2, 7, speed_text,
-		strlen(speed_text), GR_TFASCII | GR_TFTOP);
+	if (ui_seven) {
+		/* (the bar's own strip behind it again, this part of it) */
+		GrDrawImageFromFile(bar, gc, x, 0, SPEED_WIDTH, BAR_HEIGHT, "/usr/share/bar7.ppm", 0);
+	} else {
+		GrSetGCForeground(gc, FACE);
+		GrFillRect(bar, gc, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6);
+		bevel(bar, x, 3, SPEED_WIDTH, BAR_HEIGHT - 6, 1);
+	}
+	GrSetGCForeground(gc, ui_seven ? MWRGB(206, 218, 232) : BLACK);
+	GrText(bar, gc, x + (SPEED_WIDTH - ui_width(&ui_menu_widths, ui_menu_font, speed_text, strlen(speed_text))) / 2, TEXT_Y,
+		speed_text, strlen(speed_text), GR_TFASCII | GR_TFTOP);
+}
+
+static int
+active_task(void)
+{
+	int i;
+
+	for (i = 0; i < task_count; i++)
+		if (tasks[i].frame == active_frame && !tasks[i].hidden)
+			return i;
+	return -1;
 }
 
 static void
@@ -263,44 +390,80 @@ draw_bar(void)
 	char text[16];
 	time_t now = time(NULL);
 	struct tm *tm = localtime(&now);
-	int i, width = task_width();
+	int i, width = task_width(), active = active_task(), open = ui_menu_is_open() && task_asked < 0 && pin_asked < 0;
 
-	GrSetGCForeground(gc, FACE);
+	GrSetGCForeground(gc, ui_seven ? MWRGB(36, 52, 74) : FACE);
 	GrFillRect(bar, gc, 0, 0, screen.cols, BAR_HEIGHT);
-	GrSetGCForeground(gc, WHITE);
-	GrLine(bar, gc, 0, 0, screen.cols - 1, 0);
-	bevel(bar, 3, 3, START_WIDTH, BAR_HEIGHT - 6, ui_menu_is_open() && task_asked < 0);
-	ui_icon(bar, gc, 8, 5, ui_icon_of("start"), 16);
-	GrSetGCForeground(gc, BLACK);
-	GrText(bar, gc, 28, 7, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);
-	GrText(bar, gc, 29, 7, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);	/* twice: bold */
+	if (ui_seven) {
+		GrDrawImageFromFile(bar, gc, 0, 0, screen.cols, BAR_HEIGHT, "/usr/share/bar7.ppm", 0);
+		GrDrawImageFromFile(bar, gc, 3, 1, 24, 24, LOOK7_SHEET_BAR, GR_IMAGE_CELL(24, open ? 9 : 8));
+	} else {
+		GrSetGCForeground(gc, WHITE);
+		GrLine(bar, gc, 0, 0, screen.cols - 1, 0);
+		bevel(bar, 3, 3, START_WIDTH, BAR_HEIGHT - 6, open);
+		ui_icon(bar, gc, 8, 5, ui_icon_of("start"), 16);
+		GrSetGCForeground(gc, BLACK);
+		GrText(bar, gc, 28, TEXT_Y, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);
+		GrText(bar, gc, 29, TEXT_Y, (void *)"Start", 5, GR_TFASCII | GR_TFTOP);	/* twice: bold */
+	}
+	/* the pinned programs, an icon each, and a line after them */
+	for (i = 0; i < pinned_count; i++)
+		ui_icon_draw(bar, gc, quick_x(i) + (QUICK_W - 16) / 2, 5, &pinned[i].icon, 16);
+	if (pinned_count) {
+		GrSetGCForeground(gc, ui_seven ? MWRGB(20, 28, 40) : SHADOW);
+		GrLine(bar, gc, quick_x(pinned_count) + 2, 4, quick_x(pinned_count) + 2, BAR_HEIGHT - 5);
+		GrSetGCForeground(gc, ui_seven ? MWRGB(90, 110, 140) : WHITE);
+		GrLine(bar, gc, quick_x(pinned_count) + 3, 4, quick_x(pinned_count) + 3, BAR_HEIGHT - 5);
+	}
 	for (i = 0; i < task_count; i++) {
 		int count = strlen(tasks[i].title);
 
 		/* as much of the title as the button has room for */
-		while (count > 0 && ui_width(&ui_menu_widths, 0, tasks[i].title, count) > width - 28)
+		while (count > 0 && ui_width(&ui_menu_widths, ui_menu_font, tasks[i].title, count) > width - 28)
 			count--;
-		bevel(bar, task_x(i), 3, width, BAR_HEIGHT - 6, 0);
+		if (ui_seven)
+			glass(task_x(i), 2, width, BAR_HEIGHT - 4, tasks[i].hidden ? -1 : i == active);
+		else {
+			if (i == active) {	/* the window in front: its button stays pressed */
+				GrSetGCForeground(gc, MWRGB(224, 224, 224));
+				GrFillRect(bar, gc, task_x(i) + 1, 4, width - 2, BAR_HEIGHT - 8);
+			}
+			bevel(bar, task_x(i), 3, width, BAR_HEIGHT - 6, i == active);
+		}
 		if (width >= 28)
-			ui_icon_draw(bar, gc, task_x(i) + 4, 5, &tasks[i].icon, 16);
-		GrSetGCForeground(gc, tasks[i].hidden ? SHADOW : BLACK);	/* minimised: greyed */
-		GrText(bar, gc, task_x(i) + 24, 7, tasks[i].title, count, GR_TFASCII | GR_TFTOP);
+			ui_icon_draw(bar, gc, task_x(i) + 4 + (i == active && !ui_seven), 5 + (i == active && !ui_seven), &tasks[i].icon, 16);
+		/* minimised: greyed */
+		GrSetGCForeground(gc, tasks[i].hidden ? (ui_seven ? MWRGB(150, 162, 178) : SHADOW) : INK);
+		GrText(bar, gc, task_x(i) + 24, TEXT_Y, tasks[i].title, count, GR_TFASCII | GR_TFTOP);
 	}
-	bevel(bar, screen.cols - CLOCK_WIDTH - 3, 3, CLOCK_WIDTH, BAR_HEIGHT - 6, 1);
+	/* the volume's button: its icon, muted when the card is silent */
+	ui_icon(bar, gc, VOLUME_X + (VOLUME_W - 16) / 2, 5, ui_icon_of(snd_page && SND_MASTER == 0 ? "volume-muted" : "volume"), 16);
+	if (!ui_seven)
+		bevel(bar, CLOCK_X, 3, CLOCK_WIDTH, BAR_HEIGHT - 6, 1);
 	snprintf(text, sizeof(text), "%02d:%02d", tm->tm_hour, tm->tm_min);
-	GrSetGCForeground(gc, BLACK);
-	GrText(bar, gc, screen.cols - CLOCK_WIDTH + 8, 7, text, strlen(text), GR_TFASCII | GR_TFTOP);
+	GrSetGCForeground(gc, INK);
+	GrText(bar, gc, CLOCK_X + (CLOCK_WIDTH - ui_width(&ui_menu_widths, ui_menu_font, text, strlen(text))) / 2, TEXT_Y,
+		text, strlen(text), GR_TFASCII | GR_TFTOP);
 	draw_speed();
 	if (name_width()) {
 		const char *name = player_name();
-		int x = screen.cols - CLOCK_WIDTH - 6 - SPEED_WIDTH - name_width(), count = strlen(name);
+		int x = NAME_X, count = strlen(name);
 
-		bevel(bar, x, 3, name_width() - 3, BAR_HEIGHT - 6, 1);
-		while (count > 0 && ui_width(&ui_menu_widths, 0, name, count) > name_width() - 19)
+		if (!ui_seven)
+			bevel(bar, x, 3, name_width() - 3, BAR_HEIGHT - 6, 1);
+		while (count > 0 && ui_width(&ui_menu_widths, ui_menu_font, name, count) > name_width() - 19)
 			count--;
-		GrSetGCForeground(gc, BLACK);
-		GrText(bar, gc, x + 8, 7, (void *)name, count, GR_TFASCII | GR_TFTOP);
+		GrSetGCForeground(gc, ui_seven ? MWRGB(206, 218, 232) : BLACK);
+		GrText(bar, gc, x + 8, TEXT_Y, (void *)name, count, GR_TFASCII | GR_TFTOP);
 	}
+	/* the strip that shows the desktop */
+	if (ui_seven) {
+		GrSetGCForeground(gc, MWRGB(20, 28, 40));
+		GrLine(bar, gc, DESK_X, 0, DESK_X, BAR_HEIGHT - 1);
+		GrSetGCForeground(gc, MWRGB(104, 124, 152));
+		GrLine(bar, gc, DESK_X + 1, 0, DESK_X + 1, BAR_HEIGHT - 1);
+	} else
+		bevel(bar, DESK_X, 3, DESK_W - 2, BAR_HEIGHT - 6, desk_hidden_count > 0);
 }
 
 /* The icon of the program a window is of: its file's own, or its name's in the sheets. It is
@@ -309,10 +472,13 @@ static const struct ui_icon_ref *
 icon_of_frame(GR_WINDOW_ID frame, int process)
 {
 	static struct { GR_WINDOW_ID frame; struct ui_icon_ref icon; } known[MAX_TASKS];
-	static int next;
+	static int next, seven = -1;
 	char path[40], program[96];
 	int i, n;
 
+	if (seven != ui_seven)	/* (another look: other sheets, other cells) */
+		memset(known, 0, sizeof known);
+	seven = ui_seven;
 	for (i = 0; i < MAX_TASKS; i++)
 		if (known[i].frame == frame)
 			return &known[i].icon;
@@ -332,10 +498,10 @@ by_frame(const void *a, const void *b)
 }
 
 /*
- * The open windows: the root's children but our own two, once they have been seen on the
- * screen (one that is not shown now is minimised). A decorated window is a frame the window
- * manager made around the program's window, which is the one with the title. Kept in the
- * order the windows were made, so buttons stay where they are. True if anything changed.
+ * The open windows: the root's children but our own, once they have been seen on the screen
+ * (one that is not shown now is minimised). A decorated window is a frame the window manager
+ * made around the program's window, which is the one with the title. Kept in the order the
+ * windows were made, so buttons stay where they are. True if anything changed.
  * (Three questions a window: asked when it is new or an update named it, or of all when `all`.)
  */
 static GR_WINDOW_ID noted[8];
@@ -375,7 +541,7 @@ find_tasks(int all)
 		GR_WM_PROPERTIES props;
 		int at, ask = all, j;
 
-		if (children[i] == bar)
+		if (children[i] == bar || children[i] == calendar || children[i] == volume)
 			continue;
 		for (at = 0; at < known_count && known[at].frame != children[i]; at++)
 			;
@@ -421,6 +587,7 @@ find_tasks(int all)
 		tasks[task_count].frame = children[i];
 		tasks[task_count].client = known[at].client ? known[at].client : children[i];
 		tasks[task_count].hidden = !known[at].mapped;
+		tasks[task_count].process = known[at].process;
 		tasks[task_count].icon = *icon_of_frame(children[i], known[at].process);
 		strcpy(tasks[task_count].title, known[at].title);
 		task_count++;
@@ -441,12 +608,31 @@ find_tasks(int all)
 	return changed;
 }
 
+/* The frame of the window with the keyboard, which an activation may have changed. */
+static void
+find_active(void)
+{
+	GR_WINDOW_ID focus = GrGetFocus();
+	GR_WINDOW_INFO info;
+	int i;
+
+	for (i = 0; i < task_count; i++)
+		if (tasks[i].client == focus || tasks[i].frame == focus)
+			break;
+	if (i == task_count && focus) {	/* (a window inside a program's: its frame is its top) */
+		GrGetWindowInfo(focus, &info);
+		for (i = 0; i < task_count && tasks[i].process != info.processid; i++)
+			;
+	}
+	active_frame = i < task_count ? tasks[i].frame : 0;
+}
+
 /* Opens the Start menu, its first row picked out when a key opened it, or closes whatever
  * menu is open. Open, it has the keyboard; closed, the window system hands that back. */
 static void
 show_menu(int open, int keyboard)
 {
-	task_asked = -1;
+	task_asked = pin_asked = -1;
 	if (open)
 		ui_menu_open(top, top_count, 0, screen.rows - BAR_HEIGHT, 1, keyboard);
 	else
@@ -454,23 +640,78 @@ show_menu(int open, int keyboard)
 	draw_bar();
 }
 
+/* The program a window is of, as a command to pin: its file's name. */
+static int
+task_command(int task, char *out, int room)
+{
+	char path[40], program[96];
+	const char *slash;
+	int n;
+
+	snprintf(path, sizeof path, "/proc/%d/exe", tasks[task].process);
+	n = (int)readlink(path, program, sizeof program - 1);
+	if (n <= 0)
+		return 0;
+	program[n] = 0;
+	slash = strrchr(program, '/');
+	snprintf(out, room, "%s", slash ? slash + 1 : program);
+	return 1;
+}
+
+static int
+pinned_index(const char *command)
+{
+	int i;
+
+	for (i = 0; i < pinned_count && strcmp(pinned[i].command, command); i++)
+		;
+	return i < pinned_count ? i : -1;
+}
+
 /* A window's own menu, above its button. */
 static void
 show_task_menu(int task, int x)
 {
-	static struct ui_menu_item menu[3];
+	static struct ui_menu_item menu[4];
+	char command[64];
+	int can_pin = task_command(task, command, sizeof command);
 
+	memset(menu, 0, sizeof menu);
 	menu[0].label = tasks[task].hidden ? "Restore" : "Bring to front";
 	menu[0].id = TASK_RESTORE;
 	menu[1].label = "Minimise";
 	menu[1].id = TASK_MINIMISE;
 	menu[1].flags = tasks[task].hidden ? UI_MENU_GREY : 0;
-	menu[2].label = "Close";
-	menu[2].id = TASK_CLOSE;
-	menu[2].flags = UI_MENU_LINE;
-	menu[0].icon = menu[1].icon = menu[2].icon = -1;
-	ui_menu_open(menu, 3, x, screen.rows - BAR_HEIGHT, 1, 0);
+	menu[2].label = can_pin && pinned_index(command) >= 0 ? "Unpin from the bar" : "Pin to the bar";
+	menu[2].id = TASK_PIN;
+	menu[2].flags = UI_MENU_LINE | (can_pin && (pinned_index(command) >= 0 || pinned_count < MAX_PINNED) ? 0 : UI_MENU_GREY);
+	menu[3].label = "Close";
+	menu[3].id = TASK_CLOSE;
+	menu[3].flags = UI_MENU_LINE;
+	menu[0].icon = menu[1].icon = menu[2].icon = menu[3].icon = -1;
+	ui_menu_open(menu, 4, x, screen.rows - BAR_HEIGHT, 1, 0);
 	task_asked = task;
+}
+
+/* A pinned program's menu: start it, or take it off the bar. */
+static void
+show_pin_menu(int pin)
+{
+	static struct ui_menu_item menu[2];
+	static char start[48];
+
+	memset(menu, 0, sizeof menu);
+	label_of(pinned[pin].command, start, sizeof start);
+	menu[0].label = start;
+	menu[0].id = PIN_START;
+	menu[0].icon = pinned[pin].icon.cell;
+	menu[0].icon_file = pinned[pin].icon.file;
+	menu[1].label = "Unpin from the bar";
+	menu[1].id = PIN_REMOVE;
+	menu[1].icon = -1;
+	menu[1].flags = UI_MENU_LINE;
+	ui_menu_open(menu, 2, quick_x(pin), screen.rows - BAR_HEIGHT, 1, 0);
+	pin_asked = pin;
 }
 
 static void
@@ -480,6 +721,29 @@ task_front(int task)
 		GrMapWindow(tasks[task].frame);
 	GrRaiseWindow(tasks[task].frame);
 	GrSetFocus(tasks[task].client);
+	active_frame = tasks[task].frame;
+	desk_hidden_count = 0;	/* (a window brought back: the strip starts over) */
+}
+
+/* The strip at the right end: every window put away, or those it put away brought back. */
+static void
+show_desktop(void)
+{
+	int i;
+
+	if (desk_hidden_count) {
+		for (i = 0; i < desk_hidden_count; i++) {
+			GrMapWindow(desk_hidden[i]);
+			GrRaiseWindow(desk_hidden[i]);
+		}
+		desk_hidden_count = 0;
+		return;
+	}
+	for (i = 0; i < task_count; i++)
+		if (!tasks[i].hidden) {
+			GrUnmapWindow(tasks[i].frame);
+			desk_hidden[desk_hidden_count++] = tasks[i].frame;
+		}
 }
 
 /* Starts a command: words separated by spaces, no shell (which would cost half a second). The
@@ -499,9 +763,21 @@ launch(const char *command)
 	words[n] = NULL;
 	if (!n || (child = real_vfork()) != 0)
 		return n ? child : 0;
-	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
+	signal(SIGCHLD, SIG_DFL);	/* (the bar's handler is not the started program's) */
 	execvp(words[0], words);
-	_exit(127);
+	ui_exec_failed();
+}
+
+/* Starts a command for a click: the note says so until a window comes (ui_launch.h), and a
+ * failure is reported. */
+static void
+start(const char *label, const char *command)
+{
+	struct ui_icon_ref icon;
+
+	ui_icon_of_command(command, &icon);
+	ui_launch_begin(label, &icon, GR_EVENT_MASK_CHLD_UPDATE);
+	ui_launch_started(launch(command));
 }
 
 /* "Open this" from the host (docs/system/open.md): a count among the machine's control words, and an
@@ -597,27 +873,307 @@ watch_focus(void)
 		regs[GAME_WORD] = game;
 }
 
-/* What a menu's row does: a program is started, a window brought forward, put away or closed. */
+/* ---- the popups: the month, the volume */
+
+#define CAL_W 196
+#define CAL_H 180
+#define VOL_POP_W 64
+#define VOL_POP_H 168
+static int cal_month, cal_year;		/* the month the calendar shows */
+static int volume_held;			/* the volume's slider held */
+
+static GR_WINDOW_ID
+popup(int x, int width, int height)
+{
+	GR_WINDOW_ID w;
+
+	x = x + width > screen.cols ? screen.cols - width : x;
+	w = GrNewWindowEx(GR_WM_PROPS_NODECORATE | GR_WM_PROPS_NOMOVE | GR_WM_PROPS_NOAUTOMOVE | GR_WM_PROPS_POPUP,
+		"popup", GR_ROOT_WINDOW_ID, x, screen.rows - BAR_HEIGHT - height, width, height, WHITE);
+	GrSelectEvents(w, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+	GrMapWindow(w);
+	GrRaiseWindow(w);
+	GrSetFocus(w);
+	return w;
+}
+
+static void
+popup_edge(GR_WINDOW_ID w, int width, int height)
+{
+	GrSetGCForeground(gc, ui_seven ? MWRGB(118, 138, 166) : BLACK);
+	GrRect(w, gc, 0, 0, width, height);
+}
+
+static void
+text_centred(GR_WINDOW_ID w, int x, int y, int width, const char *text)
+{
+	GrText(w, gc, x + (width - ui_width(&ui_menu_widths, ui_menu_font, text, strlen(text))) / 2, y, (void *)text, strlen(text),
+		GR_TFASCII | GR_TFTOP);
+}
+
+static void
+draw_calendar(void)
+{
+	static const char *const months[] = { "January", "February", "March", "April", "May", "June", "July", "August",
+		"September", "October", "November", "December" };
+	static const char *const days[] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+	static const char *const long_days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+	time_t now = time(NULL);
+	struct tm today = *localtime(&now), first;
+	char text[48];
+	int day, length, lead, i;
+
+	GrSetGCForeground(gc, WHITE);
+	GrFillRect(calendar, gc, 0, 0, CAL_W, CAL_H);
+	popup_edge(calendar, CAL_W, CAL_H);
+	GrSetGCForeground(gc, ui_seven ? MWRGB(240, 244, 250) : FACE);
+	GrFillRect(calendar, gc, 1, 1, CAL_W - 2, 24);
+	GrSetGCForeground(gc, BLACK);
+	snprintf(text, sizeof text, "%s %d", months[cal_month], cal_year);
+	text_centred(calendar, 0, 6, CAL_W, text);
+	text_centred(calendar, 4, 6, 20, "<");
+	text_centred(calendar, CAL_W - 24, 6, 20, ">");
+	memset(&first, 0, sizeof first);
+	first.tm_year = cal_year - 1900, first.tm_mon = cal_month, first.tm_mday = 1, first.tm_hour = 12;
+	mktime(&first);
+	lead = (first.tm_wday + 6) % 7;		/* (the week begins on Monday) */
+	first.tm_mon++, first.tm_mday = 0;
+	mktime(&first);
+	length = first.tm_mday;
+	GrSetGCForeground(gc, MWRGB(96, 96, 96));
+	for (i = 0; i < 7; i++)
+		text_centred(calendar, 8 + i * 26, 30, 26, days[i]);
+	for (day = 1; day <= length; day++) {
+		int cell = lead + day - 1, x = 8 + cell % 7 * 26, y = 48 + cell / 7 * 18;
+
+		if (day == today.tm_mday && cal_month == today.tm_mon && cal_year == today.tm_year + 1900) {
+			GrSetGCForeground(gc, ui_seven ? MWRGB(204, 232, 255) : MWRGB(10, 36, 106));
+			GrFillRect(calendar, gc, x + 1, y - 1, 24, 17);
+			GrSetGCForeground(gc, ui_seven ? MWRGB(51, 153, 255) : MWRGB(10, 36, 106));
+			GrRect(calendar, gc, x + 1, y - 1, 24, 17);
+			GrSetGCForeground(gc, ui_seven ? BLACK : WHITE);
+		} else
+			GrSetGCForeground(gc, BLACK);
+		snprintf(text, sizeof text, "%d", day);
+		text_centred(calendar, x, y + 1, 26, text);
+	}
+	GrSetGCForeground(gc, MWRGB(208, 208, 208));
+	GrLine(calendar, gc, 6, CAL_H - 24, CAL_W - 7, CAL_H - 24);
+	GrSetGCForeground(gc, BLACK);
+	snprintf(text, sizeof text, "%s, %d %s %d", long_days[today.tm_wday], today.tm_mday, months[today.tm_mon], today.tm_year + 1900);
+	text_centred(calendar, 0, CAL_H - 19, CAL_W, text);
+}
+
+static void
+calendar_month(int step)
+{
+	cal_month += step;
+	if (cal_month < 0)
+		cal_month = 11, cal_year--;
+	if (cal_month > 11)
+		cal_month = 0, cal_year++;
+	draw_calendar();
+}
+
+static void
+close_popups(void)
+{
+	if (calendar)
+		GrDestroyWindow(calendar);
+	if (volume)
+		GrDestroyWindow(volume);
+	if (volume && snd_fd >= 0) {	/* (the card is let go: an open device keeps it on) */
+		munmap(snd_page, 4096);
+		close(snd_fd);
+		snd_fd = -1;
+		snd_page = NULL;
+	}
+	calendar = volume = 0;
+	volume_held = 0;
+}
+
+static void
+show_calendar(void)
+{
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+
+	close_popups();
+	cal_month = tm->tm_mon, cal_year = tm->tm_year + 1900;
+	calendar = popup(CLOCK_X + CLOCK_WIDTH - CAL_W, CAL_W, CAL_H);
+	draw_calendar();
+}
+
+/* The volume as a share, 0 to 100. */
+static int
+volume_now(void)
+{
+	return snd_page ? (int)(SND_MASTER * 100 / 256) : 0;
+}
+
+static void
+draw_volume(void)
+{
+	char text[8];
+	int level = volume_now(), track = VOL_POP_H - 64, at = 28 + track - track * level / 100;
+
+	GrSetGCForeground(gc, ui_seven ? MWRGB(240, 244, 250) : FACE);
+	GrFillRect(volume, gc, 0, 0, VOL_POP_W, VOL_POP_H);
+	popup_edge(volume, VOL_POP_W, VOL_POP_H);
+	GrSetGCForeground(gc, BLACK);
+	snprintf(text, sizeof text, "%d%%", level);
+	text_centred(volume, 0, 6, VOL_POP_W, text);
+	/* the track, and its knob */
+	GrSetGCForeground(gc, MWRGB(176, 176, 176));
+	GrRect(volume, gc, VOL_POP_W / 2 - 2, 28, 5, track);
+	GrSetGCForeground(gc, ui_seven ? MWRGB(51, 153, 255) : MWRGB(10, 36, 106));
+	GrFillRect(volume, gc, VOL_POP_W / 2 - 1, at, 3, 28 + track - at);
+	GrSetGCForeground(gc, ui_seven ? MWRGB(230, 236, 244) : FACE);
+	GrFillRect(volume, gc, VOL_POP_W / 2 - 10, at - 4, 21, 9);
+	GrSetGCForeground(gc, ui_seven ? MWRGB(44, 98, 139) : BLACK);
+	GrRect(volume, gc, VOL_POP_W / 2 - 10, at - 4, 21, 9);
+	/* the mute button: the icon, under the track */
+	ui_icon(volume, gc, (VOL_POP_W - 16) / 2, VOL_POP_H - 26, ui_icon_of(level ? "volume" : "volume-muted"), 16);
+}
+
+static void
+volume_set(int level)
+{
+	static int before_mute = 70;
+
+	if (!snd_page)
+		return;
+	if (level < 0) {	/* the mute button: off, or back to what it was */
+		level = volume_now() ? 0 : before_mute;
+		if (volume_now())
+			before_mute = volume_now();
+	}
+	level = level < 0 ? 0 : level > 100 ? 100 : level;
+	SND_MASTER = (uint32_t)level * 256 / 100;
+	reg_set_int("sound.volume", level);
+	draw_volume();
+	draw_bar();
+}
+
+static void
+show_volume(void)
+{
+	close_popups();
+	if (snd_open() != 0) {
+		ui_launch_report("Volume", "This machine has no sound card.");
+		return;
+	}
+	volume = popup(VOLUME_X + VOLUME_W / 2 - VOL_POP_W / 2, VOL_POP_W, VOL_POP_H);
+	draw_volume();
+}
+
+/* A click or a drag at y in the volume's popup. */
+static void
+volume_at(int y)
+{
+	int track = VOL_POP_H - 64;
+
+	if (y >= VOL_POP_H - 30) {
+		volume_set(-1);
+		return;
+	}
+	volume_set((28 + track - y) * 100 / track);
+}
+
+/* What a popup's event does; true if it was one's. */
+static int
+popup_event(GR_EVENT *event)
+{
+	GR_WINDOW_ID wid = event->general.wid;
+
+	if (!wid || (wid != calendar && wid != volume))
+		return 0;
+	switch (event->type) {
+	case GR_EVENT_TYPE_EXPOSURE:
+		if (wid == calendar)
+			draw_calendar();
+		else
+			draw_volume();
+		break;
+	case GR_EVENT_TYPE_CLOSE_REQ:
+		close_popups();
+		break;
+	case GR_EVENT_TYPE_KEY_DOWN:
+		if (event->keystroke.ch == MWKEY_ESCAPE)
+			close_popups();
+		else if (wid == calendar && (event->keystroke.ch == MWKEY_LEFT || event->keystroke.ch == MWKEY_RIGHT))
+			calendar_month(event->keystroke.ch == MWKEY_LEFT ? -1 : 1);
+		else if (wid == volume && (event->keystroke.ch == MWKEY_UP || event->keystroke.ch == MWKEY_DOWN))
+			volume_set(volume_now() + (event->keystroke.ch == MWKEY_UP ? 5 : -5));
+		break;
+	case GR_EVENT_TYPE_BUTTON_DOWN:
+		if (event->button.buttons & (GR_BUTTON_SCROLLUP | GR_BUTTON_SCROLLDN)) {
+			if (wid == volume)
+				volume_set(volume_now() + (event->button.buttons & GR_BUTTON_SCROLLUP ? 5 : -5));
+			else
+				calendar_month(event->button.buttons & GR_BUTTON_SCROLLUP ? -1 : 1);
+		} else if (wid == calendar && event->button.y < 26)
+			calendar_month(event->button.x < 40 ? -1 : event->button.x >= CAL_W - 40 ? 1 : 0);
+		else if (wid == volume) {
+			volume_held = 1;
+			GrSelectEvents(volume, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN |
+				GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_MOUSE_MOTION | GR_EVENT_MASK_BUTTON_UP);
+			volume_at(event->button.y);
+		}
+		break;
+	case GR_EVENT_TYPE_MOUSE_MOTION:
+		if (volume_held && event->mouse.y < VOL_POP_H - 30)
+			volume_at(event->mouse.y);
+		break;
+	case GR_EVENT_TYPE_BUTTON_UP:
+		/* (the moves are asked for while the knob is held: docs/system/nanox.md, ui_moves) */
+		volume_held = 0;
+		GrSelectEvents(volume, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+		break;
+	}
+	return 1;
+}
+
+/* What a menu's row does: a program is started, a window brought forward, put away, pinned or closed. */
 static void
 chosen(int id)
 {
-	int task = task_asked;
+	int task = task_asked, pin = pin_asked;
+	char command[64];
 
-	task_asked = -1;
+	task_asked = pin_asked = -1;
 	if (id >= 1 && id <= item_count) {
-		struct ui_icon_ref icon;
 		const char *label = strrchr(items[id - 1].path, '/');
 
-		/* the Start menu's row says it is starting, first, until a window comes (ui_launch.h) */
-		ui_icon_of_command(items[id - 1].command, &icon);
-		ui_launch_begin(label ? label + 1 : items[id - 1].path, &icon, GR_EVENT_MASK_CHLD_UPDATE);
-		ui_launch_started(launch(items[id - 1].command));
+		start(label ? label + 1 : items[id - 1].path, items[id - 1].command);
 	} else if (task >= 0 && task < task_count && id == TASK_RESTORE)
 		task_front(task);
 	else if (task >= 0 && task < task_count && id == TASK_MINIMISE)
 		GrUnmapWindow(tasks[task].frame);
 	else if (task >= 0 && task < task_count && id == TASK_CLOSE)
 		GrCloseWindow(tasks[task].client);
+	else if (task >= 0 && task < task_count && id == TASK_PIN && task_command(task, command, sizeof command)) {
+		int at = pinned_index(command);
+
+		if (at >= 0) {
+			memmove(&pinned[at], &pinned[at + 1], (pinned_count - at - 1) * sizeof pinned[0]);
+			pinned_count--;
+		} else if (pinned_count < MAX_PINNED) {
+			snprintf(pinned[pinned_count].command, sizeof pinned[0].command, "%s", command);
+			ui_icon_of_command(command, &pinned[pinned_count].icon);
+			pinned_count++;
+		}
+		save_pinned();
+	} else if (pin >= 0 && pin < pinned_count && id == PIN_REMOVE) {
+		memmove(&pinned[pin], &pinned[pin + 1], (pinned_count - pin - 1) * sizeof pinned[0]);
+		pinned_count--;
+		save_pinned();
+	} else if (pin >= 0 && pin < pinned_count && id == PIN_START) {
+		char label[48];
+
+		label_of(pinned[pin].command, label, sizeof label);
+		start(label, pinned[pin].command);
+	}
 }
 
 static unsigned
@@ -629,22 +1185,100 @@ milliseconds(void)
 	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
 }
 
+/* A press on the bar itself. */
+static void
+bar_pressed(GR_EVENT_BUTTON *b, unsigned closed_at)
+{
+	int i, wheel = b->buttons & (GR_BUTTON_SCROLLUP | GR_BUTTON_SCROLLDN);
+
+	if (b->x < 3 + START_WIDTH + 3) {
+		/* the press that closed the menu a moment ago was this one: it stays closed */
+		if (!wheel && (ui_menu_is_open() || milliseconds() - closed_at > 300))
+			show_menu(!ui_menu_is_open(), 0);
+		return;
+	}
+	for (i = 0; i < pinned_count && !wheel; i++)
+		if (b->x >= quick_x(i) && b->x < quick_x(i) + QUICK_W) {
+			char label[48];
+
+			if (b->buttons & GR_BUTTON_R)
+				show_pin_menu(i);
+			else {
+				label_of(pinned[i].command, label, sizeof label);
+				start(label, pinned[i].command);
+			}
+			return;
+		}
+	if (b->x >= tasks_x() && b->x < NAME_X && wheel && task_count) {
+		/* the wheel: the window after (or before) the one in front */
+		int at = active_task(), step = b->buttons & GR_BUTTON_SCROLLUP ? task_count - 1 : 1;
+
+		task_front(at < 0 ? 0 : (at + step) % task_count);
+		draw_bar();
+		return;
+	}
+	for (i = 0; i < task_count && !wheel; i++)
+		if (b->x >= task_x(i) && b->x < task_x(i) + task_width()) {
+			if (b->buttons & GR_BUTTON_R)
+				show_task_menu(i, task_x(i));
+			else if (b->buttons & GR_BUTTON_M)
+				GrCloseWindow(tasks[i].client);
+			else if (i == active_task()) {	/* the window in front: put away, as Windows does */
+				GrUnmapWindow(tasks[i].frame);
+				active_frame = 0;
+			} else
+				task_front(i);
+			draw_bar();
+			return;
+		}
+	if (b->x >= VOLUME_X && b->x < VOLUME_X + VOLUME_W) {
+		if (!wheel)
+			volume ? close_popups() : show_volume();
+		return;
+	}
+	if (b->x >= CLOCK_X && b->x < CLOCK_X + CLOCK_WIDTH && !wheel) {
+		calendar ? close_popups() : show_calendar();
+		return;
+	}
+	if (b->x >= DESK_X && !wheel) {
+		show_desktop();
+		draw_bar();
+	}
+}
+
+/* The look Settings chose (ui_look.h), when it is another than the bar draws in. */
+static int
+restyle(void)
+{
+	if (!ui_look_read() && ui_menu_gc)
+		return 0;
+	ui_menu_restyle();
+	GrSetGCFont(gc, ui_menu_font);
+	return 1;
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
 	GR_EVENT event;
 	int minute = -1, id;
 	unsigned closed_at = 0;
 
+	if (argc > 1 && !strcmp(argv[1], "--look")) {	/* the registry's look into the window system's word */
+		ui_look_from_registry();
+		return 0;
+	}
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxbar: cannot reach the Nano-X server\n");
 		return 1;
 	}
-	signal(SIGCHLD, SIG_IGN);	/* started programs are not ours to wait for */
+	ui_launch_watch();	/* started programs are reaped as they end, and a failure is reported */
 	GrGetScreenInfo(&screen);
 	gc = GrNewGC();
 	GrSetGCUseBackground(gc, GR_FALSE);
+	restyle();
 	load_items();
+	load_pinned();
 
 	bar = GrNewWindowEx(GR_WM_PROPS_NODECORATE | GR_WM_PROPS_NOMOVE | GR_WM_PROPS_NOAUTOMOVE | GR_WM_PROPS_NOFOCUS,
 		"nxbar", GR_ROOT_WINDOW_ID, 0, screen.rows - BAR_HEIGHT, screen.cols, BAR_HEIGHT, FACE);
@@ -674,12 +1308,15 @@ main(void)
 		ui_launch_tick();
 		if (ui_launch_event(&event))
 			continue;
+		if (popup_event(&event))
+			continue;
 		switch (event.type == GR_EVENT_TYPE_KEY_DOWN && event.keystroke.hotkey ? UI_MENU_NOT : ui_menu_event(&event, &id)) {
 		case UI_MENU_CHOSEN:
 			chosen(id);
 			/* fall through */
 		case UI_MENU_CLOSED:
 			closed_at = milliseconds();
+			task_asked = pin_asked = -1;
 			draw_bar();
 			/* fall through */
 		case UI_MENU_TOOK:
@@ -691,25 +1328,14 @@ main(void)
 				draw_bar();
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
-			if (event.keystroke.hotkey)
+			if (event.keystroke.hotkey) {
+				close_popups();
 				show_menu(!ui_menu_is_open(), 1);	/* opened by a key: the first row is picked out */
+			}
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
-			if ((event.button.buttons & (GR_BUTTON_SCROLLUP | GR_BUTTON_SCROLLDN)) || event.button.wid != bar)
-				break;
-			if (event.button.x < START_WIDTH + 6) {
-				/* the press that closed the menu a moment ago was this one: it stays closed */
-				if (ui_menu_is_open() || milliseconds() - closed_at > 300)
-					show_menu(!ui_menu_is_open(), 0);
-				break;
-			}
-			for (i = 0; i < task_count; i++)
-				if (event.button.x >= task_x(i) && event.button.x < task_x(i) + task_width()) {
-					if (event.button.buttons & GR_BUTTON_R)
-						show_task_menu(i, task_x(i));
-					else
-						task_front(i);
-				}
+			if (event.button.wid == bar)
+				bar_pressed(&event.button, closed_at);
 			break;
 		case GR_EVENT_TYPE_CHLD_UPDATE:
 			if (event.update.utype == GR_UPDATE_MOVE || event.update.utype == GR_UPDATE_SIZE)
@@ -717,11 +1343,17 @@ main(void)
 			moved = 1;
 			for (i = 0; i < task_count && tasks[i].frame != event.update.subwid; i++)
 				;
-			/* a button's window activated may have a new title; a window with no button that
-			 * goes (a menu) changes nothing here; anything else, the buttons are looked for */
-			if (i < task_count && event.update.utype == GR_UPDATE_ACTIVATE)
+			/* a button's window activated may have a new title, and its button is pressed now; a
+			 * window with no button that goes (a menu) changes nothing here; anything else, the
+			 * buttons are looked for */
+			if (i < task_count && event.update.utype == GR_UPDATE_ACTIVATE) {
+				GR_WINDOW_ID was = active_frame;
+
 				retitle |= 1u << (i & 31);
-			else if (i < task_count || (event.update.utype != GR_UPDATE_DESTROY && event.update.utype != GR_UPDATE_UNMAP &&
+				find_active();
+				if (active_frame != was)
+					draw_bar();
+			} else if (i < task_count || (event.update.utype != GR_UPDATE_DESTROY && event.update.utype != GR_UPDATE_UNMAP &&
 			    event.update.utype != GR_UPDATE_UNMAPTEMP)) {
 				stale = 1;
 				note_window(event.update.subwid);
@@ -744,13 +1376,20 @@ main(void)
 			asked = now;
 			watch_focus();
 		}
-		i = 0;
+		i = restyle();	/* (a word of memory: Settings may have changed the look) */
+		if (i) {	/* its icons: the menu's, the pinned programs', the windows' */
+			row_count = 0;
+			top_count = build("", &top);
+			load_pinned();
+			stale = 1;
+		}
 		if (stale || now - listed >= 60) {
-			i = find_tasks(now - listed >= 60);
+			i |= find_tasks(now - listed >= 60 || i);
 			if (now - listed >= 60)
 				listed = now;
 			stale = 0;
 			retitle = 0;
+			find_active();
 		}
 		for (id = 0; retitle && id < task_count; id++)
 			if (retitle & (1u << (id & 31))) {

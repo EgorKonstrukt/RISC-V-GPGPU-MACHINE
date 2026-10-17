@@ -5,7 +5,7 @@ the server with its window manager built in, and a handful of its clients. It dr
 the machine's GPU and takes the machine's keyboard and pointer.
 
     / # nx                      # server, the desktop with its icons, the bar
-    / # nxcalc &                # more clients: nxeyes (the right button closes it), nxtetris, nxmine, nxev, demo-*
+    / # nxcalc &                # more clients: nxeyes, nxtetris, nxmine, nxclock, nxev, demo-*
     / # NANOX_SIZE=640x480 nx   # another screen size (800x600 by default)
 
 The machine starts `nx` by itself when it boots, unless the host says not to (bit 0 of the host
@@ -16,7 +16,24 @@ for the shell prompt (`--desktop` asks for it there); a resumed shell gets `nx` 
 The harness window's pointer and keys are the machine's (`input.md`). The bar along the
 bottom (`linux/nanox/nxbar.c`) has a Start menu with the programs in the image and a clock;
 the machine's clock chip is fed the host's local time. `glxgears` runs in a window. The
-desktop has a small set of programs of its own, listed under "The desktop's programs".
+desktop has a small set of programs of its own, listed under "The desktop's programs". It has
+two looks, Windows 7 (the default) and classic, chosen in Settings ("Looks").
+
+### Where things are
+
+| What | Where |
+|---|---|
+| The server's own changes: window manager, frames, events | `linux/nanox/microwindows.patch` (regenerate with `git diff -- src/nanox src/engine src/demos src/include` in a patched tree) |
+| Frames and captions, both looks | `src/nanox/nxpaintnc.c` (in the patch): `nxPaintNCArea`, `paint_seven`, `caption_title`, `caption_icon` |
+| A window's icon in its caption | `src/nanox/wmclients.c` `icon_of` (both indexes), `wmaction.c` hands it to the painter |
+| Screen driver: GPU lists, pictures, ROM fonts, the look word | `linux/nanox/scr_shaderemu.c` (`gpu_picture`, `picture_alpha`, `romfont_*`, `nx_look`) |
+| The bar | `linux/nanox/nxbar.c` |
+| The desktop and Files | `linux/apps/nxfiles.c` |
+| Settings | `linux/apps/nxsettings.c` (Look tab: `set_look`, `frames_again`) |
+| Shared UI: widgets, looks, menus, icons, questions, starting programs | `linux/apps/ui.h`, `ui_look.h`, `ui_menu.h`, `ui_icons.h`, `ui_ask.h`, `ui_launch.h`, `ui_exec.h` |
+| The desktop's start | `linux/nanox/nx` (a shell script) |
+| Icons, look pictures, fonts | `tools/make_icons.py` (`linux/apps/icons.txt`, `icons7.txt`), `tools/make_fonts.py` |
+| Programs of the Start menu | `/usr/share/nxapps.*`, written by each build script |
 
 ## Building it
 
@@ -131,9 +148,27 @@ scratch textures up to `0x87700000`; the last 4 MiB are left to one OpenGL progr
 
 ## The bar, and what a program adds to it
 
-`nxbar` has the Start menu, a button for every open window (with its program's icon; a click
-brings the window to the front, the right button offers to minimise or close it) and the
-clock. The Windows key opens and closes the menu from anywhere (a key the bar grabs with
+`nxbar` has, from the left: the Start button and menu; the programs pinned to it (an icon each,
+the registry's `bar.pinned`, commands parted by commas, `nxfiles,nxterm,nxweb` by default; the
+right button there unpins); a button for every open window; then the player's name, the
+volume, the machine's speed, the clock and, at the right end, a strip that shows the desktop.
+
+- A window's button: a click brings the window to the front, or puts it away when it is in
+  front already (that button is drawn pressed: the window with the keyboard, from the
+  activations the bar hears); the right button offers Restore, Minimise, Pin / Unpin and
+  Close; the middle button closes it; the wheel over the buttons goes from window to window.
+- The volume's button opens a slider (`/dev/sound` is opened only while it is up, so the card
+  is not kept on), with a mute button under it; the wheel and Up/Down step by 5. It writes
+  `sound.volume` as Settings does.
+- The clock opens the month: arrows (or the wheel, or Left/Right) go from month to month,
+  today is marked, the long date under it.
+- The strip puts every window away, and a second click brings back those it put away.
+- What the bar starts is watched (`ui_launch.h`): a program that fails is reported ("When a
+  program fails to start").
+- `nxbar --look` writes the registry's look into the window system's word and exits: `nx`
+  runs it before the desktop starts.
+
+The Windows key opens and closes the menu from anywhere (a key the bar grabs with
 `GrGrabKey`). The menu is whatever the files `/usr/share/nxapps.*` list, one `Label=command` a
 line, or `Folder/Label=command` for a program in a folder (a folder may be in a folder:
 `A/B/Label=command`), so a program gets into it by having its build put such a file in the
@@ -229,6 +264,19 @@ Test: `NXFILES_PRINT=1 nxfiles /usr/share`, `nxkey drag:643,86:343,196` must say
 
 ## Icons
 
+Each look has its own set (17 October 2026). The classic look's is as it always was: below.
+The Windows 7 look's are [Oxygen](https://github.com/KDE/oxygen-icons)'s (KDE, LGPL-3.0, fetched
+at v6.30.0 into `build/fetch/Oxygen`), 16, 32 and 48 pixels, listed in `linux/apps/icons7.txt`
+(the same names as `icons.txt`) and made into `icons7-16.ppm`, `icons7-32.ppm`, `icons7-48.ppm`
+and `icons7.idx`. Each of those sheets has an `.rgba` twin (a word a pixel with its alpha: the
+format is at the top of `tools/make_icons.py`): the screen driver finds the twin in the ROM
+(`picture_alpha`) and draws a cell of it blended (fragment mode 1, the key flag on the clear
+word), so the edges and shadows are smooth; the keyed `.ppm` is what software drawing uses.
+In that look a program's icon is its sheet's cell when the list names it, its file's own only
+when it does not. `ui_icons.h` and the window manager (`icon_of`, which keeps both cells of a
+window) pick the index and the sheets by the look; a program that follows a change of look
+reads its icons again (the bar, the desktop).
+
 Two sheets in the ROM, 32 and 16 pixels a cell and 16 cells a row, and a list of which cell is
 whose (`/usr/share/icons32.ppm`, `icons16.ppm`, `icons.idx`): `python tools\make_icons.py`
 makes them from `linux/apps/icons.txt`, whose names are programs (as the kernel calls them),
@@ -268,7 +316,46 @@ from the overlay's sheets when it has them).
 
 A caption is a strip of colours stretched over it (`caption-on.ppm`, navy to light blue, and
 `caption-off.ppm`, greys, both 256 x 1 and made by `tools/make_icons.py`): one more rectangle
-of the GPU's, drawn from the ROM.
+of the GPU's, drawn from the ROM. The Windows 7 look's are 1 x 22 strips from top to bottom
+(`caption7-on.ppm`, `caption7-off.ppm`; `bar7.ppm`, 1 x 26, is the bar's), and its caption
+buttons and Start button are cells of 24 pixels of `look7.ppm` with an `.rgba` twin (`LOOK7` in
+`make_icons.py`: minimise, maximise, restore, close, the same four for a window without the
+keyboard, the Start button and the same pressed).
+
+## Looks (17 October 2026)
+
+Settings' Look tab chooses the windows' style, Windows 7 or classic, and the text, Selawik
+("smooth", `docs/system/fonts.md`) or the window system's bitmap font. Choosing a style brings its own
+text (classic is the old look whole: Chicago95's icons, grey frames, the bitmap font); the text
+buttons then change only that. `nxsettings look seven|classic [smooth|classic]` does the same
+from a script. The choice is the registry's `desktop.style` and `desktop.font` and, for the
+running session, one word of the window manager's page of GPU memory (word 24 of `WM_OFFSET`,
+`0x87001860`; `/dev/gpu` at offset `0x01001000` + `0x860`): `0x4c4b0000 | smooth << 8 | style`,
+style 1 for Windows 7. 0 there (nobody set it) is the classic look, as a bare `nano-X` for a
+test has it; `nx` writes the registry's look (Windows 7 unless it says otherwise) before the
+desktop starts (`nxbar --look`). `linux/apps/ui_look.h` reads and writes it.
+
+- **Frames** are painted in the look when they are painted (`nxPaintNCArea`): the geometry is
+  the same in both (`CYCAPTION` 22, the buttons where the window manager's clicks look for
+  them), so nothing but paint changes. Settings repaints every frame at once (`frames_again`:
+  `GrClearWindow` with exposures on each decorated window).
+- **The bar, the desktop and Files** read the word once a second and draw themselves again
+  when it changed (`ui_restyle` in `ui.h`, `ui_menu_restyle` in `ui_menu.h`): the font, the
+  icons of the other set, the bar's pinned programs and menu.
+- **Other programs** read the look at their start (`ui_init`), and keep it until they are
+  opened again; one that wants to follow calls `ui_restyle()` now and then and redraws.
+- **The widgets** of `ui.h` (buttons, bevels, the focus box, scroll bars, sliders), menus and
+  questions have a Windows 7 drawing: `UI_FACE`, `UI_SHADOW` and `UI_SELECTED` are its colours
+  then (240 grey, 160 grey, 51/153/255 blue), so a program that uses them follows.
+- With the smooth font, text is drawn a pixel higher (`ui_text`): Selawik 12's ascent is 12
+  where the bitmap font's is 11, and the baseline stays where layouts expect it.
+- After a change of look the desktop decodes its picture again: copying the decoded picture
+  it keeps back over the screen did not cover the old names in two of three tries, and the
+  names of both fonts stood one on the other. Not understood.
+- The root window's client hears a press in any window it has none of its own in, the bar's
+  among them (each client is told at the lowest window it selected): the desktop now ignores
+  a press whose `subwid` is not the root, which until 17 October opened its menu over the
+  bar's on a right click.
 
 ## A window before the work
 
@@ -494,6 +581,31 @@ drawing (the pointer alone some 15 thousand, the note alone 10). On `rvc_cpu` Ca
 the terminal's windows came 0.27 to 0.36 s of the guest's time after the note, Eyes's 0.34 s,
 Doom's 2.3 s: a game's take seconds, which is where the note matters.
 
+## When a program fails to start (17 October 2026)
+
+What the bar, the desktop and Files start is watched, and a window of `nxask` says what went
+wrong (`--icon error --title "Could not start" TEXT OK`):
+
+- **The exec failed** (no such program, not allowed, not a program, no memory): the child of
+  the vfork writes `errno` into the launcher's memory before `_exit(127)` (`ui_exec_failed`
+  in `ui_exec.h`; a vfork child shares that memory until its exec), and `ui_launch_started`
+  reads it.
+- **It ended before its window came** with a status other than 0, or by a signal: "stopped
+  before its window opened", with the status (127 and 126 are said in words: a script's
+  program not found or not runnable).
+- **It crashed later** (SEGV, BUS, ILL, FPE, ABRT, SYS): "stopped working".
+
+The launcher catches `SIGCHLD` (`ui_launch_watch`, in place of ignoring it): the handler reaps
+into a ring and `ui_launch_tick` reads it in the program's loop; the client library turns an
+interrupted wait into an event of type none, so the handler costs nothing while nothing ends. A
+program that waits for a child of its own holds the handler off around the wait
+(`ui_children_hold`, as `run_wait` in `nxfiles.c` does). `UI_LAUNCH=print` prints each report,
+`UI_ASK_PRINT=1` the question window. Test: `nxreg set bar.pinned nosuch,false`, then click the
+two pinned icons (`nxkey 49,587` and `73,587` on an 800 x 600 screen in the Windows 7 look).
+
+`nxask [--icon NAME] [--title TITLE] TEXT [ANSWER ...]` shows an icon of the sheets (`error`,
+`warning`, `information`) beside the text.
+
 ## The desktop's programs
 
 Scrolling is shared: `ui.h` has the scroll bar (`ui_scrollbar`, `ui_scroll_to` for a click or
@@ -504,15 +616,20 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 
 | Program | What it does |
 |---|---|
-| `nxedit [FILE]` | a text editor with a File and an Edit menu (F10 opens them for the keyboard; the right button brings Cut, Copy, Paste, Delete, Select all): arrows, Home, End (with Ctrl the text's start and end), Page Up and Down move and with Shift select, a click places the cursor, two select the word and the pointer held down selects, the wheel and a scroll bar move through the text. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste through the desktop's clipboard, Ctrl+A selects everything, Ctrl+Z undoes and Ctrl+Y redoes (512 changes; letters typed one after another are one), Ctrl+F asks in the status line what to find and F3 finds the next, Ctrl+G asks for a line. Ctrl+N is a new text and Ctrl+O opens one in the file window; Ctrl+S saves, and a text with no file yet (or Save as) is asked what to be called in the Save window (`ui_save_file`). A text with changes is asked about before it is let go by New, Open, Exit or the caption's box: Save, Don't save, Cancel ("A question in a window" below). A line may be of any length; a write that fails says why and the text stays changed |
+| `nxedit [FILE...]` | a text editor, a file a tab (up to 16; Ctrl+Page Up and Down go between them, since Ctrl+Tab is the window manager's; the tab's cross or the middle button closes one), with File, Edit, Search and View menus (Alt+letter or F10; the right button brings Undo to Select all). Tabs and bytes are kept as they are, and so are CR LF and a missing last newline; a file is read in 256 KB blocks and its lines stay there until edited. Undo keeps 40,000 changes, a command's changes undone together. Find and Replace is a window that stays open (match case, whole word, wrap around, previous, replace all as one change, count); Ctrl+G goes to a line, Ctrl+B to the matching brace; Edit's Lines duplicate, move, indent, sort and trim. View has word wrap, line numbers, spaces and tabs shown, the cursor's line lit, colours for C (off for a file over 1 MB) and the tab width, kept in the registry (`nxedit.*`, with six recent files). Ctrl+Insert copies, Shift+Insert pastes, Shift+Delete cuts; a file is saved to a new file beside it and renamed over it. A text with changes is asked about before it is let go |
 | `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry (a name too long for one line goes on in a second, broken at a space when one is near, and only then is cut with two dots), or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on a folder also Paste into it and Terminal in it; on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Terminal here (`nxterm` with its shell in the folder shown; on the desktop too), Properties. In the list a click on a column's heading puts the entries in that order (Name, Size largest first, Kind). Entries dragged to a folder that has one of the same name stay where they are: nothing is replaced unasked. Back, Forward, Up, Home, View, New folder and Terminal (a terminal in the folder shown) are keys with signs (`ui_glyph.h`; greyed when there is nowhere to go), with the folder's path beside them: a click on the path, or Ctrl+L, and another is typed there (Enter goes, Escape leaves). Down the left side are the places (Home, Desktop, Pictures, Music, Videos, Computer, and Network, which starts `nxnet`), the one shown picked out. The status line says how much can still be written. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (asked about first: "Delete these 3 entries?"; a folder goes with everything in it), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it. A name may have 127 letters and a folder 512 entries: what is over is counted in the status line ("3 more are not shown"), not shown cut short as an entry that cannot be opened |
 | `nxweb [ADDRESS]` | the browser (`docs/apps/web.md`): pages with their style sheets, in the ROM's fonts and any script, tables and boxes side by side, forms that search; the page is drawn into a pixmap in strips ahead of the view, by worker cores, and scrolled as a copy. Menus (File, Edit, View, Go with the session's pages, Bookmarks, Help), a bar with Back, Forward, Reload or Stop, Home, Bookmark and the address, a status line, wheel and scroll bar; options and bookmarks in the registry. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace or Alt+Left goes back, Alt+Right forward, Alt+Home home, F5 reloads, Escape stops, Ctrl+L or F6 opens the address, Ctrl+D bookmarks, Ctrl+F finds and F3 again, Ctrl+O, Ctrl+S, Ctrl+U open a file, save the page, show its source, F10 opens the menus |
 | `nxpaint [FILE]` | the paint program (below, "Paint"): ten tools, a flood fill, a selection that is moved, copied and cropped to, pictures of any size up to 1,600 x 1,200, zoom, every change taken back and made again. Opens every kind libmedia reads (`docs/system/media.md`); saves PNG, JPEG, BMP or PPM by the name's ending, encoded on the worker cores |
-| `nxview [FILE]` | shows a picture as large as fits its window: a PPM through the GPU where it lies; every other kind libmedia reads (JPEG, PNG, GIF, BMP, TGA, PNM: `docs/system/media.md`) decoded on the worker cores, fitted, into a pixmap the GPU keeps of its room's size (a redraw is one copy), or zoomed and turned from a PPM file in memory decoded when first wanted; an animated GIF plays (every picture decoded ahead on the workers, each fitted into a pixmap as it is shown); XPM through the engine's decoder. A row of keys above it, each also a key of the keyboard: Open (`o`), the folder's picture before and after (Left, Right), a quarter turn either way (`l`, `r`: a turned copy of the PPM is made in `/tmp`), smaller and larger (`-`, `+`, the wheel; a picture larger than its room is moved by a drag), Fit (`f`), 1:1 (`1`: a pixel of the picture a pixel of the screen), Edit (`e`: the paint program with the file), Desktop (`w`: the picture as it is shown becomes the desktop's, a copy in `/tmp`), and Delete (the Delete key: asked first, then the folder's next). Escape or q closes it. `NXVIEW_PRINT=1` prints where the keys are and what is shown. `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers (as many as the machine has), `NXVIEW_SUM=1` prints a sum of the result |
+| `nxview [FILE]` | shows a picture as Windows Photo Viewer does: Open, Edit and Set as desktop above it; zoom out and in, actual size or fit, the folder's picture before and after, a slide show, a quarter turn either way and Delete (asked first) on a row below; and a line saying its name, size, zoom and place in the folder. The wheel zooms round the pointer (fit to 1,600%, stopping at 100%), and a drag moves a picture larger than its room; zoomed or turned, only the part in view is made from its pixels, on the worker cores, into a pixmap the GPU keeps. Fit does not enlarge a small picture. Arrows, Page Up and Down, Home and End go through the folder; F11, Enter or two clicks show it over the whole screen; F5 starts a slide show (`NXVIEW_SLIDE=ms`, Space pauses). A file it cannot open is said in a question (`UI_ASK_PRINT`). `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers, `NXVIEW_SUM=1` prints a sum of the result |
 | `nxsettings` | the settings, a tab each: the desktop's picture (the image's, a picture file of any kind through the file chooser, or a colour), the screen's size (only those the host says it can show, in its flags word; the desktop is taken down whole and started again with it: `nx restart`), the sound card's volume, what the host keeps of `/persistence` (Storage: save now, load at start, clear; `docs/system/persist.md`), and what the machine is, every line of it asked of the machine as it is: the kernel, the cores (the geometry's words), float instructions (one is run, with a handler for the trap), the first core's speed since the last look (`rdcycle`), memory, the ROM's size, the screen, the sound card, the network's address, the time since power-on. A picture that is not a PPM is decoded on the worker cores where it is shown (below, "Pictures for the desktop"). From a script: `nxsettings apply` (the chosen desktop, as the `nx` script runs it), `size WxH`, `volume 0-100`, `choose [FOLDER]` (the file chooser alone; prints the path), `system` (the System tab's lines, printed; no desktop needed). Keys: Tab goes round the row of tabs and the tab's controls, arrows change the tab, the list's row or the slider; in the file chooser arrows, a letter, Enter, Backspace for the folder above, Escape |
-| `nxmon` | the monitor, laid out as a task manager, in two tabs. Processes: every program with its share of the first core, its worker cores and how busy they keep them (`/proc/gpu` says which tags are a program's, `docs/machine/multicore.md`), the GPU lists it has drawn a second (`*` for the one that draws the display) and its memory; a click on a column's title sorts by it, and End task (or Delete) asks the chosen program to go, made to the second time (`SIGTERM`, then `SIGKILL`). Performance: CPU, memory and GPU on the left, the chosen one's last minute on the right, a sample a second, and its numbers under it. The CPU is instructions a second of the first core with the workers' stacked on it, or (Per core) a 16 x 16 grid of every core's own load, a core's whole being 8,192 instructions a pass of the machine (`0x87000320`'s last word); memory is in use and files kept in memory; the GPU is lists and copies a second, the display's mode and size. The plots are pixels the worker cores write into the window's buffer some fifteen times a second; the window system draws nothing of them. The tab, pane and view are kept in the registry (`nxmon.tab`, `nxmon.pane`, `nxmon.cores`); `NXMON_SHOW=processes\|cpu\|cores\|memory\|gpu` starts on one. Escape or q closes it |
+| `nxmon` | the monitor, laid out as Windows 7's Task Manager. Applications: the desktop's windows (End Task closes, Switch To brings one forward, New Task runs a line through the shell). Processes: each program's share of the first core, its workers (`/proc/gpu`, `docs/machine/multicore.md`), GPU lists and memory, sorted by any column; End Process asks, then `SIGTERM`, and `SIGKILL` two seconds later; the right button for the process tree and the priority. Performance: core 0's and memory's meters, and their last 60 samples: the instructions of core 0 with all workers' stacked on them (or a cell a core of a 16 x 16 grid), memory in use. Networking (when there is `lan0`): its traffic. View sets the speed (0.5, 1 or 4 s, or paused); the graphs are pixels the worker cores write into the window's buffer once a sample, and a tab reads only what it shows (`/proc/PID` only on Processes). Kept in the registry: `nxmon.page`, `nxmon.cores`, `nxmon.speed`, `nxmon.kernel`. `NXMON_SHOW=applications\|processes\|performance\|cores\|networking` starts on one |
 | `nxnet` | the other computers of the network, and what their owners share (`docs/system/lan.md`, "The Network program") |
-| `nxterm` | Microwindows' terminal, patched: a character in the last column leaves the cursor on it and the next one begins the next line, as a VT100 does (it wrapped at once, and the shell's line editor, which sends a new line itself there, left a blank row in every command typed past the edge); it follows its window's size, and Shift+Page Up and Down or the wheel look back through the last 400 lines, with a mark at the right edge for how far. The pointer held down selects text, from the cell it went down on to the cell it is over, and letting go copies it to the clipboard; the right button, Shift+Insert and Ctrl+Shift+V type the clipboard's text |
+| `nxterm [COMMAND \| -e PROGRAM ...]` | the terminal: an xterm-like screen (`TERM=xterm-256color`: scroll regions, insert and delete, 16, 256 and direct colours, bold, italic, underline, the alternate screen for vi and less, bracketed paste, the mouse for programs that ask) over a pseudo-terminal running the user's shell, started by vfork; a command given runs instead, and the window closes when it ends. 1,000 lines to look back through by the scroll bar, the wheel or Shift+Page Up and Down. The pointer selects (two clicks a word, three a line) and what is selected is on the clipboard; Ctrl+Shift+C and V, Shift+Insert and the middle button paste. The right button's menu: Copy, Paste, Select all, Clear, Reset, Text size (the ROM's Liberation Mono or the window system's font; Ctrl+= and Ctrl+-), Colours, New terminal; size and colours are the registry's `terminal.size` and `terminal.colours`. Only changed cells are drawn, a scroll is one copy, and box-drawing characters are drawn to fill their cells. SIGUSR1 prints the screen, a row a line after `nxterm\|`, for a test |
+| `nxcalc` | the calculator, as Windows 7's: Standard (memory, percent, square root, left to right), Scientific (degrees, radians or grads, Inv, powers and roots, logarithms, factorials, brackets, with the operators' precedence) and Programmer (hex to binary in a word of 8 to 64 bits, the bitwise operators and shifts, a bit flipped by a click) from the View menu; a history of results (Ctrl+H) that a click recalls; the Windows calculator's keys; Ctrl+C copies the display and Ctrl+V types the clipboard's text as keys. Numbers are doubles, the compiler's software arithmetic, shown to 15 digits; the mode and options are the registry's (`nxcalc.*`). `nxcalc -e KEYS` types the keys without a window and prints the display |
+| `nxclock` | the clock, a tab each: an analogue face as large as the window (drawn once a minute into a pixmap the GPU keeps; a second is a copy and the hand), the time in large figures with the date, a stopwatch with laps, a timer and an alarm that ring (a notice, and a beep through the sound card for up to a minute). It draws once a second, ten times while the stopwatch runs and is shown. Settings are the registry's (`nxclock.*`). `nxclock timer N` starts a timer of N seconds, `nxclock alarm HH:MM` sets the alarm; `NXCLOCK_PRINT=1` prints where its buttons are and when it rings |
+| `nxtetris` | Tetris by the guideline: 7-bag, SRS turns with wall kicks, hold, five next, ghost, soft and hard drop, lock delay, levels 1 to 20, T-spins, combos, back-to-back. Only cells that change are drawn, a block four rectangles. The best five scores, the start level and the ghost are kept in the registry (`nxtetris.*`). Keys: arrows, Up or X and Z or Ctrl turn, Space drops, C or Shift holds, P or Escape pauses, F2 a new game, F10 the menus. `NXTETRIS_AUTO=N` plays N pieces itself and prints what it took (`NXTETRIS_SEED`) |
+| `nxmine` | Minesweeper as Windows has it: the Game menu's three levels and a board of one's own, a first square that is never a mine and opens an area, the right button's flag and question mark, both buttons or the middle one on a number to open round it, and the face that starts a game again and shows what the pointer is doing. The squares, the counters' digits and the faces are drawn once into a pixmap and copied from it: a square is one copy, a row of covered ones one copy. The fastest time of each level is kept with a name (`nxmine.time.LEVEL`, `nxmine.name.LEVEL`). `NXMINE_SEED` lays the same mines each time and `NXMINE_PRINT=2` prints them, for a test played with `nxkey`'s arrows, Space and F |
+| `nxeyes` | the eyes: they read the pointer from the machine's input words (`docs/machine/input.md`) and do not select its moves, so the quiet rectangle stays (below): a look every 66 ms while the pointer moves and every 250 to 500 ms while it is still, from a `select()` on the socket, and only the pupils are drawn. 23 thousand instructions a second idle with blinking on, 410 thousand under a pointer going round (the Microwindows demo it replaces: 1.8 million). The right button gives its menu; blinking is the registry's `nxeyes.blink` |
 
 **PNG and JPEG pictures** have been libmedia's since 15 October 2026 (`docs/system/media.md`):
 its decoders began as these, and every other program decodes with it too. What follows is how
@@ -872,7 +989,7 @@ pointer, and the first core hears of a move only where somebody wants to.
   window stays under it and nobody who would hear of a move has asked to. The kernel reports
   no move inside it (`pointer_hushed` in `shaderemu_input.c`); buttons and keys are reported
   as before, a button with the pointer's place. No rectangle while a button is held, over a
-  window that selects the pointer's moves, or under `nxeyes`, which selects them on the root.
+  window that selects the pointer's moves.
 - **A drag** (`GsDragWindow`, from `wm_container_buttondown`): the worker moves the layer
   with the pointer until the button is let go, and the window manager moves the window once,
   to where the worker left it. Meanwhile the rectangle is the whole screen. While a window

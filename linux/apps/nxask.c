@@ -1,7 +1,9 @@
 /*
  * nxask: a question for a script, in a window (ui_ask.h).
  *
- *	nxask TEXT [ANSWER ...]	exits with the answer's number, the first 0; 255 for none
+ *	nxask [--icon NAME] [--title TITLE] TEXT [ANSWER ...]
+ *				exits with the answer's number, the first 0; 255 for none. NAME is an
+ *				icon's (error, warning, information: linux/apps/icons.txt)
  *	nxask --closing		asks every program's windows to close, and waits for them
  */
 #include "ui.h"
@@ -74,10 +76,18 @@ int
 main(int argc, char **argv)
 {
 	char text[400];
+	const char *title = NULL;
 	int i, o = 0, answer;
 
+	while (argc > 3 && (!strcmp(argv[1], "--icon") || !strcmp(argv[1], "--title"))) {
+		if (argv[1][2] == 'i')
+			ui_ask_icon = argv[2];
+		else
+			title = argv[2];
+		argc -= 2, argv += 2;
+	}
 	if (argc < 2) {
-		fprintf(stderr, "usage: nxask TEXT [ANSWER ...] | nxask --closing\n");
+		fprintf(stderr, "usage: nxask [--icon NAME] [--title TITLE] TEXT [ANSWER ...] | nxask --closing\n");
 		return 2;
 	}
 	if (GrOpen() < 0)
@@ -96,11 +106,11 @@ main(int argc, char **argv)
 			text[o++] = argv[1][i];
 	text[o] = 0;
 	if (argc > 2)
-		answer = ui_ask("Question", text, (const char *const *)argv + 2, argc - 2, NULL);
+		answer = ui_ask(title ? title : "Question", text, (const char *const *)argv + 2, argc - 2, NULL);
 	else {
 		static const char *const ok[] = { "OK" };
 
-		answer = ui_ask("Notice", text, ok, 1, NULL);
+		answer = ui_ask(title ? title : "Notice", text, ok, 1, NULL);
 	}
 	GrClose();
 	return answer < 0 ? 255 : answer;

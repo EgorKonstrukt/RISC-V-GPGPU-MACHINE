@@ -152,13 +152,24 @@ and now), on the host too.
 
 ## The window
 
+Since 17 October 2026: the strip has Play, Stop, Previous, Next, a seek bar showing what has
+played, the time (a click shows the time left), mute, the volume, Open... and a menu key; the
+right button or Shift+F10 opens the same menu (Open, Recent, Close, Repeat, Full window, Time
+left). F or two clicks on the film fill the screen with it and Escape goes back; Page Up and
+Down go a minute, 0 to 9 a tenth of the film, `.` a picture while paused, `n` and `p` the next
+or previous film of the files given or of the film's folder, Ctrl+W closes it. The window is
+resized by its corner and keeps the film's shape. Recent films, the volume, mute and repeat
+are registry keys (`video.recent.N`, `video.volume`, `video.muted`, `video.repeat`). A file
+that cannot be played is said so in a window and the player stays, empty (`nxvideo --none`),
+with its recent films to click. What follows is the strip as it was before, where it still holds.
+
 The picture, and under it a strip: Play or Pause, a bar that shows where the film is and is
 clicked or dragged to go elsewhere, the time, and Open (the file chooser, in `/root/Videos`).
 Left of Open are a loudspeaker key that mutes and, in a window 520 wide or more, the volume;
 Stop (the second key) waits at the film's start. A click on the film pauses and plays on,
 the wheel and the arrows up and down are the volume, `m` mutes, `s` stops, End goes to the
 last picture, and going elsewhere while paused shows the picture there once it is decoded.
-`NXVIDEO_PRINT=1` prints the volume at every change, for a test: `nxkey drag:565,426:600,426`
+`NXVIDEO_PRINT=1` prints the volume at every change, for a test: `nxkey drag:535,426:570,426`
 on the first window's slider prints it rising to 249, `wheel:300,200:1` 256; after `s` the
 second-a-line `nxvideostat` says `picture -1` for two seconds and then `picture 0` at
 `film at 0 ms` until Space.

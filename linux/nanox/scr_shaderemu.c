@@ -63,6 +63,7 @@
 #define WM_AT		12		/* the worker's: where it has it (x, y), of which drag, the drag let go */
 #define WM_RUN		16		/* which start of the worker this is; 0: it parks */
 #define WM_HERE		20		/* the worker's: the start it runs from */
+#define WM_LOOK		24		/* the desktop's look, written by Settings (linux/apps/ui_look.h) */
 #define WM_PIXMAPS	28		/* pixmaps given the GPU's memory so far: a program sees whether its own was */
 #define WM_MAGIC	0x31514d57u
 #define KEYBOARD_OWNED	0x6b657973u
@@ -79,6 +80,7 @@
 #define FRAG_MASK	3
 #define FRAG_RGB24	4
 #define FRAG_COVER	7		/* text: four bits of coverage a pixel */
+#define FRAG_MSDF	8		/* text: distance fields in a face's atlas */
 #define TEXT_MORE	0x100		/* a text command with words 9 to 11 */
 #define PASS_OVER	(5u << 16)	/* the pass that blends by alpha and uses no depth */
 #define MAX_PIXMAPS	8
@@ -1133,11 +1135,56 @@ picture_keep(const char *path, uint32_t sum, uint32_t at, int pw, int ph, int ow
 	pictures[j].own = own;
 }
 
-/* The sheet of icons of a size, for a file that was to show its own and has none. */
+unsigned nx_look(void);
+
+/* The sheet of icons of a size, for a file that was to show its own and has none: the look's. */
 static const char *
 picture_sheet(int size)
 {
+	if ((nx_look() & 0xffff00ffu) == 0x4c4b0001u)
+		return size == 16 ? "/usr/share/icons7-16.ppm" : "/usr/share/icons7-32.ppm";
 	return size == 16 ? "/usr/share/icons16.ppm" : "/usr/share/icons32.ppm";
+}
+
+#define PICTURE_ALPHA	(-1)		/* (for `own`) the table's entry is a sheet's .rgba twin */
+#define ALPHA_CLEAR	0xff000000u	/* a clear pixel of such a twin, the key it is drawn with */
+
+/* The twin NAME.rgba of a sheet NAME.ppm (tools/make_icons.py): its words' address in the ROM
+ * and the sheet's size, or 0 when there is none there. Looked for once a sheet. */
+static uint32_t
+picture_alpha(const char *path, uint32_t sum, int *pw, int *ph)
+{
+	char twin[80], head[16];
+	size_t n = strlen(path);
+	uint32_t rom = 0, size[2] = { 0, 0 };
+	int j, fd;
+
+	for (j = 0; j < PICTURES; j++)
+		if (pictures[j].sum == sum && pictures[j].own == PICTURE_ALPHA && !strcmp(pictures[j].path, path)) {
+			*pw = pictures[j].pw, *ph = pictures[j].ph;
+			return pictures[j].at == PICTURE_NONE ? 0 : pictures[j].at;
+		}
+	if (n < 5 || n + 2 > sizeof twin || strcmp(path + n - 4, ".ppm") != 0)
+		return 0;
+	memcpy(twin, path, n - 4);
+	strcpy(twin + n - 4, ".rgba");
+	if ((fd = open(twin, O_RDONLY)) >= 0) {
+		if (read(fd, head, 16) == 16 && !memcmp(head, "SEI1", 4) && (rom = rom_address(fd, head, 16)) != 0) {
+			memcpy(size, head + 4, 8);
+			rom += 16;
+		}
+		close(fd);
+	}
+	*pw = (int)size[0], *ph = (int)size[1];
+	picture_keep(path, sum, rom ? rom : PICTURE_NONE, *pw, *ph, PICTURE_ALPHA);
+	return rom;
+}
+
+/* The desktop's look for the window manager (nxpaintnc.c): 0 until Settings has said one. */
+unsigned
+nx_look(void)
+{
+	return gpu ? ((volatile uint32_t *)(gpu + WM_OFFSET))[WM_LOOK] : 0;
 }
 
 /*
@@ -1187,7 +1234,7 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 	struct surface *s;
 	int pw = 0, ph = 0, most = 0, start = 0, x0, x1, y0, y1, band, rows = 1, j, fd = -1;
 	int sx = 0, sy = 0, sw, sh, keyed = ((uint32_t)flags & (PICTURE_CELL | PICTURE_OWN)) != 0;
-	int own = (uint32_t)flags & PICTURE_OWN ? (flags >> 16) & 0xff : 0;
+	int own = (uint32_t)flags & PICTURE_OWN ? (flags >> 16) & 0xff : 0, alpha = 0;
 	char head[64];
 	volatile uint32_t *c;
 	uint32_t rom = 0, sum;
@@ -1195,7 +1242,10 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 	if (!is_surface(psd))
 		return 0;
 	sum = accelerate ? picture_sum(path) : 0;
-	for (j = 0; accelerate && j < PICTURES; j++)
+	/* a cell of a sheet with an .rgba twin: that twin's, blended */
+	if (keyed && !own && accelerate && (rom = picture_alpha(path, sum, &pw, &ph)) != 0)
+		alpha = 1;
+	for (j = 0; accelerate && !alpha && j < PICTURES; j++)
 		if (pictures[j].sum == sum && pictures[j].at && pictures[j].own == own && !strcmp(pictures[j].path, path)) {
 			rom = pictures[j].at;
 			pw = pictures[j].pw;
@@ -1283,9 +1333,11 @@ gpu_picture(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD height, const 
 		/* a file in the ROM is the texture where it lies: one rectangle, nothing read */
 		if (fd >= 0)
 			close(fd);
-		queue(x0, y0, x1, y1, 0xffffff, FRAG_RGB24 | (keyed ? 0x100 : 0), 0, pw, ph, 0, 0);
+		if (alpha)
+			blended = 1;	/* (this and what follows it in the list: the pass that blends) */
+		queue(x0, y0, x1, y1, 0xffffff, alpha ? FRAG_TEXTURE | 0x100 : FRAG_RGB24 | (keyed ? 0x100 : 0), 0, pw, ph, 0, 0);
 		c = (volatile uint32_t *)(gpu + LIST_OFFSET) + 16 * (commands - 1);
-		c[2] = PICTURE_KEY;
+		c[2] = alpha ? ALPHA_CLEAR : PICTURE_KEY;
 		c[9] = rom;
 		c[12] = PICTURE_U(x0);
 		c[13] = PICTURE_V(y0);
@@ -1362,7 +1414,12 @@ struct romfont {
 	uint32_t slant;			/* 256ths of a pixel a row */
 };
 
-static struct romfile { char path[64]; const unsigned char *bytes; uint32_t size, rom; } romfiles[64];
+static struct romfile {
+	char path[64];
+	const unsigned char *bytes;
+	uint32_t size, rom, atlas;	/* atlas: SEF_MSDF's, in the ROM, with its header in `sizes` */
+	struct sef_atlas sizes;
+} romfiles[64];
 
 extern PMWFONT (*gd_createfont)(const char *name, MWCOORD height, MWCOORD width, int attr) __attribute__((weak));
 static MWFONTPROCS romfont_procs;
@@ -1383,8 +1440,42 @@ rom_glyph(const struct romfile *file, unsigned code)
 	return g >= 0 ? g : h->missing < h->glyphs ? (int)h->missing : 0;
 }
 
+/* For a font of distance fields: its atlas (font-NAME.msdf beside font-NAME-N.sef) found in the
+ * ROM once, and the name of the face's file whose line is nearest `height`, when not this one's. */
+static const char *
+msdf_nearest(struct romfile *file, int height)
+{
+	static char other[64];
+	const struct sef_head *h = (const struct sef_head *)file->bytes;
+	const struct sef_atlas *a = &file->sizes;
+	char *dash, path[64];
+	unsigned i, best = 0;
+	int fd;
+
+	strcpy(path, file->path);
+	if ((dash = strrchr(path, '-')) == NULL)
+		return NULL;
+	strcpy(dash, ".msdf");
+	if (!file->atlas && (fd = open(path, O_RDONLY)) >= 0) {
+		if (read(fd, &file->sizes, sizeof *a) == sizeof *a && !memcmp(a->magic, "SEM1", 4) && a->sizes <= 11)
+			file->atlas = rom_address(fd, (const char *)a, sizeof *a);
+		close(fd);
+	}
+	if (!file->atlas || height <= 0 || height == h->height)
+		return NULL;
+	for (i = 1; i < a->sizes; i++)
+		if (abs(a->size[i].height - height) <= abs(a->size[best].height - height))
+			best = i;
+	if (a->sizes == 0 || a->size[best].em == h->em)
+		return NULL;
+	*dash = 0;
+	snprintf(other, sizeof other, "%s-%u.sef", path, a->size[best].em);
+	return other;
+}
+
 /* A font by its file's name (it ends in .sef), `height` pixels high (0: as the file is) and
- * leaning `width` 256ths of a pixel a row. NULL for a file that is not such a font in the ROM. */
+ * leaning `width` 256ths of a pixel a row; a face of distance fields takes its nearest size.
+ * NULL for a file that is not such a font in the ROM. */
 static PMWFONT
 romfont_create(const char *name, MWCOORD height, MWCOORD width, int attr)
 {
@@ -1418,6 +1509,14 @@ romfont_create(const char *name, MWCOORD height, MWCOORD width, int attr)
 		file->bytes = bytes;
 		file->size = st.st_size;
 		file->rom = rom;
+	}
+	if (((const struct sef_head *)file->bytes)->bpp == SEF_MSDF) {
+		const char *other = msdf_nearest(file, height);
+
+		if (!file->atlas)
+			return NULL;
+		if (other)
+			return romfont_create(other, height, width, attr);
 	}
 	if ((f = calloc(1, sizeof *f)) == NULL)
 		return NULL;
@@ -1487,7 +1586,7 @@ romfont_draw(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y, const void *text, int
 	const struct sef_head *h = (const struct sef_head *)f->file->bytes;
 	const unsigned short *code = text;
 	volatile uint32_t *c, *word;
-	int at = 0, height = rom_scaled(f, h->height), i;
+	int at = 0, height = rom_scaled(f, h->height), i, n = 0, clip;
 
 	if (!is_surface(psd) || !queued(psd) || cc <= 0 || cc > 4096)
 		return;
@@ -1495,25 +1594,42 @@ romfont_draw(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y, const void *text, int
 		y -= rom_scaled(f, h->ascent);
 	else if (flags & MWTF_BOTTOM)
 		y -= height - 1;
+	if (gr_usebg) {
+		MWPIXELVAL fg = gr_foreground;
+		MWCOORD w, hh, base;
+
+		romfont_size(pfont, text, cc, flags, &w, &hh, &base);
+		gr_foreground = gr_background;
+		GdFillRect(psd, x, y, w, height);
+		gr_foreground = fg;
+	}
 	draw_on(psd);
 	if (commands + 3 > MAX_COMMANDS || mesh_top + 6 * cc + 12 > MAX_MESH || data_top + 4 * cc > DATA_END)
 		flush();
 	measured.text = NULL;
 	word = (volatile uint32_t *)(gpu + data_top);
-	for (i = 0; i < cc; i++) {
-		int g = rom_glyph(f->file, code[i]);
+	for (i = 0; i < cc; i++)
+		at += sef_advance(f->file->bytes, rom_glyph(f->file, code[i]));
+	if ((clip = GdClipArea(psd, x, y, x + rom_scaled(f, at) - 1, y + height - 1)) == CLIP_INVISIBLE)
+		return;
+	/* a string partly out of view keeps the characters wholly in it: the GPU's text has no clip */
+	for (i = 0, at = 0; i < cc; i++) {
+		int g = rom_glyph(f->file, code[i]), left = rom_scaled(f, at);
 
-		word[i] = (uint32_t)g | (uint32_t)rom_scaled(f, at) << 16;
 		at += sef_advance(f->file->bytes, g);
+		if (clip == CLIP_VISIBLE ||
+		    GdClipArea(psd, x + left, y, x + rom_scaled(f, at) - 1, y + height - 1) == CLIP_VISIBLE)
+			word[n++] = (uint32_t)g | (uint32_t)left << 16;
 	}
 	at = rom_scaled(f, at);
-	if (GdClipArea(psd, x, y, x + at - 1, y + height - 1) == CLIP_INVISIBLE)
+	if (n == 0)
 		return;
+	cc = n;
 	/* (through queue(): it starts a list with the surface's picture and keeps the area covered) */
 	queue(x, y, x + at, y + height, 0, FRAG_COLOUR, 0, 0, 0, 0, 0);
 	commands--;
 	mesh_top -= 6;
-	if (h->bpp == 4)
+	if (h->bpp == 4 || h->bpp == SEF_MSDF)
 		blended = 1;
 	c = (volatile uint32_t *)(gpu + LIST_OFFSET) + 16 * commands++;
 	c[0] = CMD_TEXT;
@@ -1524,10 +1640,11 @@ romfont_draw(PMWFONT pfont, PSD psd, MWCOORD x, MWCOORD y, const void *text, int
 	c[5] = y - target->y;
 	c[6] = cc;
 	c[7] = GPU_PHYS + data_top;
-	c[8] = (h->bpp == 4 ? FRAG_COVER : FRAG_MASK) | TEXT_MORE | (blended ? PASS_OVER : 0);
+	c[8] = (h->bpp == SEF_MSDF ? FRAG_MSDF : h->bpp == 4 ? FRAG_COVER : FRAG_MASK) | TEXT_MORE | (blended ? PASS_OVER : 0);
 	c[9] = f->scale;
 	c[10] = f->slant | (uint32_t)h->ascent << 16;
-	c[11] = f->file->rom;
+	c[11] = h->bpp == SEF_MSDF ? f->file->atlas : f->file->rom;
+	c[12] = h->range;
 	mesh_top += 6 * cc;
 	data_top += (4 * cc + 15) & ~15u;
 }

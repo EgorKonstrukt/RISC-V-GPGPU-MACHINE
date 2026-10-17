@@ -127,6 +127,7 @@ struct Options {
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
     bool ourKernel = false;   // the RAM image is this project's (kernel at +4 MiB, device tree at +34 MiB)
+    std::string linuxFolder;  // --image DIR: a folder of our Linux (a private image) instead of build/images/...
     bool sbi = false;         // compile with SBI_HLE
     bool cpu = false;         // --cpu: the instructions run on the processor, the devices on the graphics card
     double cpuIps = 0;        // --cpu-ips N: no more than N instructions a second (0: as fast as it goes)
@@ -191,7 +192,8 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --viz                open a window showing memory live (writes glow); --no-viz turns it off
   --viz-capture FILE   save the memory view as a BMP at exit
   --resume             when started without other arguments: resume the shell snapshot instead of booting
-  --image NAME         boot a named image instead of --payload/--ram/--mtd/--dtb; --image list shows them.
+  --image NAME|DIR     boot a named image instead of --payload/--ram/--mtd/--dtb; --image list shows them.
+                       DIR: a folder of our Linux without an MMU (a private image, build\\images\\NAME)
                        Without it (and without --payload, --ram or --load-state) a menu asks at start
                        when run from a console; scripts with redirected input or --no-stdin get linux-net.
   --machine M          how much machine the shader is compiled with (experiments/rvc_opt only):
@@ -550,6 +552,7 @@ const BootImage* findImage(const std::string& name) {
 // Our Linux's folder for the kernel and instruction set asked for (linux/nommu/image.py makes the
 // no-MMU ones; with the MMU the programs are RV32IMAF whatever the shader runs).
 std::string linuxDir(const Options& o) {
+    if (!o.linuxFolder.empty()) return o.linuxFolder;
     if (o.kernel != "nommu") return "build/images/linux";
     return o.isa == "zb" ? "build/images/nommu-zb" : "build/images/nommu";
 }
@@ -696,6 +699,13 @@ int main(int argc, char** argv) {
         // a resumed shell is past the point where the guest decides: type the command instead
         if (opt.desktop && !opt.loadState.empty()) opt.initialInput += "nx\n";
     }
+    // a folder with our Linux in it (tools/private_image.py's): booted as linux-net without the MMU
+    if (!opt.image.empty() && !findImage(opt.image) && fs::exists(fs::u8path(opt.image) / "linux_payload.bin", ec)) {
+        opt.linuxFolder = opt.image, opt.image = "linux-net", opt.kernel = "nommu";
+        std::replace(opt.linuxFolder.begin(), opt.linuxFolder.end(), '\\', '/');
+    }
+    // (Linux without an MMU runs on the patched shader only)
+    if (opt.kernel == "nommu" && opt.image == "linux-net" && !opt.rvcDirSet && haveOpt) opt.rvcDir = "experiments/rvc_opt";
     if (!opt.image.empty() && !opt.payloadSet) {
         const BootImage* im = findImage(opt.image);
         if (!im) {

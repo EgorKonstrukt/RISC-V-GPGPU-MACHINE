@@ -34,11 +34,15 @@ and it is the only way this computer becomes usable.
   card, in up to eight passes with depth and blending. A small fixed-point OpenGL ES 1.x
   library sits on it (`programs/linux/gles.c`).
 - **A desktop** (`docs/system/nanox.md`): Nano-X, with every window in a buffer of its own and the
-  screen composed by the GPU. A bar with a Start menu and task buttons, a terminal with
-  scroll-back, an editor, a file manager, a browser with CSS (`docs/apps/web.md`), paint, a picture
-  viewer, an audio player (`docs/apps/play.md`), a video player (`docs/apps/video.md`), settings kept in a
-  registry, a task manager with every core's load, photographs for a desktop, and `glxgears`.
-  The machine starts it by itself at boot.
+  screen composed by the GPU. A bar with a Start menu, pinned programs, task buttons, a
+  calendar and the volume; an xterm-like terminal, a tabbed editor, a file manager, a browser
+  with CSS (`docs/apps/web.md`), paint, a photo viewer, a music player with a playlist
+  (`docs/apps/play.md`), a video player (`docs/apps/video.md`), an IDE with a debugger (`docs/apps/ide.md`),
+  Windows 7's calculator, Task Manager and clock, Tetris, Mines, settings kept in a registry,
+  photographs for a desktop, and `glxgears`.
+  The machine starts it by itself at boot. Two looks, chosen in Settings: Windows 7 (Oxygen
+  icons, glass frames, the Selawik font) and classic; a program that fails to start is reported
+  in a window. Where each part of the desktop is: the table at the top of `docs/system/nanox.md`.
 - **Pictures, sound and films** (`docs/system/media.md`): one library, libmedia, decodes and encodes
   them on the worker cores for every program.
 - **Pages from the web** (`docs/system/fetch.md`): the machine has no way out of its own, so the
@@ -159,6 +163,8 @@ To rebuild the guest software (WSL, no root; everything goes to `~/shaderemu-lin
     wsl -- bash /mnt/c/.../linux/nanox/doom.sh         # Doom
     wsl -- bash /mnt/c/.../linux/tcc/build.sh          # the C compiler for the guest, its examples
     python tools\make_wallpaper.py                     # desktop pictures (fetched, not kept here)
+    python tools\make_icons.py                         # both looks' icons and frame pictures (fetched)
+    python tools\make_fonts.py                         # the ROM fonts, the desktop's Selawik among them (fetched)
     python tools\make_linux_image.py
 
 The games and programs with a folder of their own have a `build.sh` each, and their docs say
@@ -227,7 +233,7 @@ by Greg Haerr and contributors, with its port of Doom; TinyCC and jrrk2's riscv3
 and Command & Conquer by Westwood Studios (source released by Electronic Arts);
 [ClassiCube](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200 and contributors; [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut and contributors; [Nofrendo](https://github.com/espressif/esp32-nesemu) by Matthew Conte, with [Thwaite](https://github.com/pinobatch/thwaite-nes) by Damian Yerrick and [Nova the Squirrel](https://github.com/NovaSquirrel/NovaTheSquirrel) by NovaSquirrel; [minimp3](https://github.com/lieff/minimp3) by lieff and [dr_flac](https://github.com/mackron/dr_libs) by David Reid in the music player; glxgears from the
 Mesa demos; [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski; the
-[Chicago95](https://github.com/grassmunk/Chicago95) icons; Big Buck Bunny's trailer ((c) copyright 2008, Blender
+[Chicago95](https://github.com/grassmunk/Chicago95) and [Oxygen](https://github.com/KDE/oxygen-icons) (KDE) icons; the [Selawik](https://github.com/microsoft/Selawik) font by Microsoft; the fonts' distance fields made by [msdf-atlas-gen](https://github.com/Chlumsky/msdf-atlas-gen) 1.4 by Viktor Chlumsky (MIT); Big Buck Bunny's trailer ((c) copyright 2008, Blender
 Foundation, CC BY 3.0); Musopen's public-domain recordings; photographs from Unsplash, NASA's and two old
 paintings from Wikimedia Commons; furniture, plants and surfaces of the VRChat room from
 [Poly Haven](https://polyhaven.com) (CC0); [LTCGI](https://github.com/PiMaker/ltcgi) by pimaker,

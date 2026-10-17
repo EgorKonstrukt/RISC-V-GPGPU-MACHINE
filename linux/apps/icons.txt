@@ -80,3 +80,12 @@ games                   categories/applications-games
 utilities               categories/applications-utilities
 system                  categories/applications-system
 other                   categories/applications-other
+
+# for the bar and the questions (nxbar.c, ui_ask.h)
+error                   status/dialog-error
+warning                 status/dialog-warning
+information             status/dialog-information
+show-desktop            places/user-desktop
+volume                  status/audio-volume-high
+volume-muted            status/audio-volume-muted
+calendar                apps/office-calendar

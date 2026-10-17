@@ -63,6 +63,7 @@ if [ ! -f /tmp/nxpersist.loaded ]; then
     kept=$(nxreg get desktop.size)
     [ -z "$named" ] && [ -n "$kept" ] && [ "$kept" != "${NANOX_SIZE:-800x600}" ] && exec "$0" restart
 fi
+nxbar --look          # the look Settings chose (Windows 7 by default), before anything is drawn in it
 nxnet --serve 2>/dev/null &   # answers the other computers' Network program (one a machine: a second finds the port taken)
 nxfiles --desktop &   # the desktop: its picture, and the icons of /root/Desktop on it
 nxbar &

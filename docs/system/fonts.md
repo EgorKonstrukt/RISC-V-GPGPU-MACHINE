@@ -14,6 +14,18 @@ from where they lie; the processor's part of a string is still a word a characte
 | `font-serif-N.sef`, `font-serif-b-N.sef` | Liberation Serif |
 | `font-mono-N.sef`, `font-mono-b-N.sef` | Liberation Mono |
 | `font-uni-16.sef` | GNU Unifont: every character of the basic plane, 8 or 16 pixels wide |
+| `font-ui-N.sef`, `font-ui-b-N.sef` | Selawik, regular and bold: the desktop's text in its smooth look (`docs/system/nanox.md`, "Looks") |
+| `font-NAME.msdf` | the face's distance fields, for every size of it ("Distance fields") |
+
+- **The desktop's faces** are [Selawik](https://github.com/microsoft/Selawik) 1.01 (Microsoft's
+  open stand-in for Segoe UI, SIL Open Font License), at 11, 12, 13, 15 and 17 pixels
+  (`UI_SIZES`); `python tools\make_fonts.py --ui [FOLDER]` makes only these. Each glyph has at
+  least a pixel after its ink (`gap=1` in `outline_font`): at 12 pixels the colon's advance was
+  2 and the clock read "2054". `font-ui-12.sef` is the programs' and the captions' text
+  (`UI_LOOK_FONT` in `linux/apps/ui_look.h`): height 15, ascent 12.
+- The window manager's caption draws in it when the look is smooth (`caption_title` in the
+  patch's `nxpaintnc.c`); the screen driver's `romfont_draw` fills a background when the GC
+  asks for one and drops the glyphs a clip would cut through, as the bitmap fonts do.
 
 - N is the size in pixels: 10, 11, 13, 15, 17, 20, 24, 28, 32. A text takes the nearest.
   The outline faces have Latin (with its extensions and Vietnamese), Greek, Cyrillic,
@@ -25,7 +37,7 @@ from where they lie; the processor's part of a string is still a word a characte
   License; Unifont 16.0.04, GPL 2+ with the font exception and OFL) and are not kept in this
   repository, like the desktop's pictures.
 - Italic is the upright face slanted by the GPU (a fifth of a pixel a row), not a face of its
-  own. A size that is not in the list is not scaled: the nearest is used. Unifont alone is
+  own. A size that is not in the list is the nearest scaled ("Distance fields"). Unifont alone is
   drawn at twice its size, for text of 26 pixels and more.
 
 ## The file
@@ -36,7 +48,7 @@ of 16):
 
 | Part | Contents |
 |---|---|
-| header, 64 bytes | `SEF1`; a line's height and ascent; bits a pixel (1 or 4); glyphs; where the parts are; the glyph for a character the font lacks |
+| header, 64 bytes | `SEF1`; a line's height and ascent; bits a pixel (1, 4, or 24 for distance fields); glyphs; where the parts are; the glyph for a character the font lacks; the fields' range |
 | ranges | runs of code points, rising: first, count, first glyph (12 bytes each) |
 | advances | a byte a glyph |
 | table | a 16-byte texel a glyph: where its bitmap is in the file, its width, its height, and how far its corner is from the character's (a signed byte each way) |
@@ -68,6 +80,55 @@ fragment shader as textures and models are.
   it where it is all its own (the browser draws into a pixmap).
 - **A program measures by itself** (`web_advance` in `linux/apps/web.h`): it maps the same
   file and adds the advances up; asking the server would be a question a word.
+
+## Distance fields
+
+The outline faces are also made as multi-channel signed distance fields: one atlas a face
+that draws at any size, sharp, instead of a bitmap a size that a scale makes blocky.
+
+    python tools\make_fonts.py [OUT]               # distance fields for every size (the default)
+    python tools\make_fonts.py [OUT] --bitmap      # the bitmaps of before, for A/B
+    python tools\make_fonts.py [OUT] --msdf-from 15   # bitmaps below 15 pixels, fields from there
+
+- `font-NAME.msdf` is the face's atlas: a 64-byte header (`SEM1`, its pixels an em and its
+  distance range in those pixels, glyphs, and the sizes made of it with their lines' heights:
+  `struct sef_atlas`), then each glyph's box of three bytes a pixel, rows not padded, from a
+  multiple of 4. Made by [msdf-atlas-gen](https://github.com/Chlumsky/msdf-atlas-gen) 1.4 by
+  Viktor Chlumsky (MIT licence; the Windows build is fetched once into `build\fetch\msdf`),
+  `-type msdf -size 24 -pxrange 4` (`ATLAS_EM`, `ATLAS_RANGE`).
+- `font-NAME-N.sef` keeps everything a program reads, the same as the bitmap file: header,
+  ranges, the hinted advances FreeType gives at N, a table a glyph. Its bits a pixel is
+  `SEF_MSDF` (24), word 11 of the header (`range`) the atlas's range in pixels at N (16.16),
+  and its table is into the atlas: where the glyph's pixels are, their width | height << 16,
+  and the quad's width | height << 16 and corner x | y << 16 (signed) in 64ths of a pixel at N.
+  A quad's corners are the centres of the box's corner pixels, and the outline is put in the
+  middle of its hinted advance (half the rounding each side: else small text's gaps are
+  uneven). Lines, widths and layout are those of the bitmaps: `web_advance`,
+  `tools/web_test.c` and the browser's counts are unchanged.
+- The desktop's faces have 20, 24 and 32 pixels too (`UI_LARGE`, 6 KB a size), so that large
+  text is scaled from hinted advances near its own size: 96 pixels from 17 spaced its letters
+  by the 17's rounding times 5.6.
+- The GPU draws such a glyph in fragment mode 8 (`docs/machine/gpu.md`): a pixel's coverage is the
+  mean of four samples, one a quarter of its box (2 x 2), each the four atlas pixels round it,
+  weighed, the median of their channels the distance, and the quarter's coverage that distance
+  times twice the range in the screen's pixels, which the vertex stage works out a command
+  (word 12 times the scale, times `MSDF_SHARP`, 1.2): no derivatives. A pixel's pair is two or
+  three words of the ROM.
+- **Small sizes are fitted to the hinted bitmaps.** At up to 17 pixels (`FIT_UP_TO`) each
+  glyph's quad is shifted and stretched across and down, by up to half a pixel and 12%, until
+  the outline's coverage of each pixel is nearest the bitmap FreeType hints at that size
+  (`fit_quads` in `tools/make_fonts.py`): stems and the baseline land where the hinting puts
+  them, as one pixel and not two half-covered ones. The outline is not thickened. Against the
+  bitmaps, a line of Selawik at 11 to 17 pixels, regular and bold, and Liberation Mono at 13
+  differ pixel by pixel by 0.089 of the bitmaps' ink, summed, where the plain outline
+  differed by 0.56, with the same ink (0.99 of it) and as many half-covered pixels as the
+  bitmaps (0.54 of the inked ones; 0.71 before). Sizes from 20 are the outline as it is. The fit is 15 of the 23 s `make_fonts.py` takes (8 processes).
+- **The window system** finds the atlas beside the file (`msdf_nearest` in `scr_shaderemu.c`);
+  without it the font is none and the program gets the built-in one. A height asked of
+  `GrCreateFontEx` takes the face's size whose line is nearest and scales it: sizes are not
+  snapped, and 48 pixels of the desktop's face is the 32's fields at 1.5 times. The browser builds its own lists
+  (`list_text` in `nxweb.c`) and needs the same three words: mode 8, the atlas, the range.
+- `tools/web_test.c` draws such glyphs as the GPU does, on the host, four samples a pixel too.
 
 Not done: kerning, ligatures, the joining of Arabic letters and the reordering of text
 written from the right (such text is shown, each letter in its own form, from the left),

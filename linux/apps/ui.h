@@ -1,7 +1,8 @@
 /*
- * What the desktop's small programs share: the grey button look, the two fonts, a list and a
- * slider and their keys, starting another program, and putting a picture or a colour on the
- * desktop. ui_files.h adds a window to choose a file in.
+ * What the desktop's small programs share: the button look (classic grey, or Windows 7's as
+ * the look says: ui_look.h), the two fonts, a list and a slider and their keys, starting
+ * another program, and putting a picture or a colour on the desktop. ui_files.h adds a window
+ * to choose a file in.
  */
 #ifndef SHADEREMU_APPS_UI_H
 #define SHADEREMU_APPS_UI_H
@@ -19,15 +20,18 @@
 #include "nano-X.h"
 #include "ui_width.h"
 #include "ui_state.h"
+#include "ui_look.h"
+#include "ui_exec.h"
 
 #ifndef GR_WM_PROPS_NOMAXIMIZE
 #define GR_WM_PROPS_NOMAXIMIZE 0x00004000L
 #endif
 /* A window whose size is its layout's: not resized by its corner, and no maximise box. */
 #define UI_FIXED (GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_NORESIZE | GR_WM_PROPS_NOMAXIMIZE)
-#define UI_FACE MWRGB(192, 192, 192)
-#define UI_SHADOW MWRGB(128, 128, 128)
-#define UI_SELECTED MWRGB(0, 0, 128)
+/* the look's colours: read once, at ui_init */
+#define UI_FACE (ui_seven ? MWRGB(240, 240, 240) : MWRGB(192, 192, 192))
+#define UI_SHADOW (ui_seven ? MWRGB(160, 160, 160) : MWRGB(128, 128, 128))
+#define UI_SELECTED (ui_seven ? MWRGB(51, 153, 255) : MWRGB(0, 0, 128))
 #define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/system/persist.md) */
 #define UI_WALLPAPER_CHOICE "desktop.wallpaper"	/* the registry's key for what the desktop shows: a picture's path, or #RRGGBB */
 #define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.jpg"
@@ -42,13 +46,30 @@ ui_init(void)
 {
 	GR_FONT_INFO info;
 
+	ui_look_read();
 	ui_gc = GrNewGC();
 	GrSetGCUseBackground(ui_gc, GR_FALSE);
-	ui_var = GrCreateFontEx(GR_FONT_SYSTEM_VAR, 0, 0, NULL);
+	ui_var = GrCreateFontEx(ui_smooth ? UI_LOOK_FONT : GR_FONT_SYSTEM_VAR, 0, 0, NULL);
 	ui_fixed = GrCreateFontEx(GR_FONT_SYSTEM_FIXED, 0, 0, NULL);
 	GrGetFontInfo(ui_fixed, &info);
 	ui_fw = info.maxwidth;
 	ui_fh = info.height;
+}
+
+/* The look as Settings has it now; true when it changed, and the caller draws again. */
+static int
+ui_restyle(void)
+{
+	int smooth = ui_smooth;
+
+	if (!ui_look_read())
+		return 0;
+	if (smooth != ui_smooth) {
+		GrDestroyFont(ui_var);
+		ui_var = GrCreateFontEx(ui_smooth ? UI_LOOK_FONT : GR_FONT_SYSTEM_VAR, 0, 0, NULL);
+		ui_var_widths.known = 0;
+	}
+	return 1;
 }
 
 /* The screen, asked about once: its size does not change under a running program (another
@@ -72,32 +93,66 @@ ui_fill(GR_DRAW_ID w, int x, int y, int width, int height, GR_COLOR colour)
 	GrFillRect(w, ui_gc, x, y, width, height);
 }
 
-/* Text with its top left corner at x, y; `fixed` picks the font. */
+/* Text with its top left corner at x, y; `fixed` picks the font. (Selawik's ascent is a pixel
+ * more than the bitmap font's: its text is a pixel higher, on the same baseline.) */
 static void
 ui_text(GR_DRAW_ID w, int x, int y, const char *text, int count, GR_COLOR colour, int fixed)
 {
 	GrSetGCFont(ui_gc, fixed ? ui_fixed : ui_var);
 	GrSetGCForeground(ui_gc, colour);
-	GrText(w, ui_gc, x, y, (void *)text, count < 0 ? (int)strlen(text) : count, GR_TFASCII | GR_TFTOP);
+	GrText(w, ui_gc, x, y - (ui_smooth && !fixed), (void *)text, count < 0 ? (int)strlen(text) : count, GR_TFASCII | GR_TFTOP);
 }
 
-/* A rectangle with a lit top-left and a shaded bottom-right edge, or the reverse. */
+/* The four sides of a rectangle, in two colours: top and left, bottom and right. */
+static void
+ui_edges(GR_DRAW_ID w, int x, int y, int width, int height, GR_COLOR lit, GR_COLOR shaded)
+{
+	GrSetGCForeground(ui_gc, lit);
+	GrLine(w, ui_gc, x, y, x + width - 1, y);
+	GrLine(w, ui_gc, x, y, x, y + height - 1);
+	GrSetGCForeground(ui_gc, shaded);
+	GrLine(w, ui_gc, x, y + height - 1, x + width - 1, y + height - 1);
+	GrLine(w, ui_gc, x + width - 1, y, x + width - 1, y + height - 1);
+}
+
+/* A rectangle with a lit top-left and a shaded bottom-right edge, or the reverse; in the
+ * Windows 7 look a raised one is a soft edge and a sunk one (a field, a list) a grey line. */
 static void
 ui_bevel(GR_DRAW_ID w, int x, int y, int width, int height, int pressed)
 {
-	GrSetGCForeground(ui_gc, pressed ? UI_SHADOW : WHITE);
-	GrLine(w, ui_gc, x, y, x + width - 1, y);
-	GrLine(w, ui_gc, x, y, x, y + height - 1);
-	GrSetGCForeground(ui_gc, pressed ? WHITE : UI_SHADOW);
-	GrLine(w, ui_gc, x, y + height - 1, x + width - 1, y + height - 1);
-	GrLine(w, ui_gc, x + width - 1, y, x + width - 1, y + height - 1);
+	if (ui_seven)
+		ui_edges(w, x, y, width, height, pressed ? MWRGB(171, 173, 179) : WHITE, pressed ? MWRGB(171, 173, 179) : MWRGB(190, 190, 190));
+	else
+		ui_edges(w, x, y, width, height, pressed ? UI_SHADOW : WHITE, pressed ? WHITE : UI_SHADOW);
+}
+
+/* Windows 7's button: two halves of a pale gradient in a dark edge with its corners cut, blue
+ * while pressed (or chosen, as a tab). */
+static void
+ui_button_seven(GR_DRAW_ID w, int x, int y, int width, int height, int pressed)
+{
+	int half = height / 2;
+
+	ui_fill(w, x + 1, y + 1, width - 2, half - 1, pressed ? MWRGB(229, 244, 252) : MWRGB(242, 242, 242));
+	ui_fill(w, x + 1, y + half, width - 2, height - half - 1, pressed ? MWRGB(196, 229, 246) : MWRGB(221, 221, 221));
+	ui_edges(w, x + 1, y + 1, width - 2, height - 2, pressed ? MWRGB(240, 250, 255) : WHITE,
+		pressed ? MWRGB(158, 202, 228) : MWRGB(205, 205, 205));
+	GrSetGCForeground(ui_gc, pressed ? MWRGB(44, 98, 139) : MWRGB(112, 112, 112));
+	GrLine(w, ui_gc, x + 1, y, x + width - 2, y);
+	GrLine(w, ui_gc, x + 1, y + height - 1, x + width - 2, y + height - 1);
+	GrLine(w, ui_gc, x, y + 1, x, y + height - 2);
+	GrLine(w, ui_gc, x + width - 1, y + 1, x + width - 1, y + height - 2);
 }
 
 static void
 ui_button(GR_DRAW_ID w, int x, int y, int width, int height, const char *label, int pressed)
 {
-	ui_fill(w, x, y, width, height, UI_FACE);
-	ui_bevel(w, x, y, width, height, pressed);
+	if (ui_seven)
+		ui_button_seven(w, x, y, width, height, pressed);
+	else {
+		ui_fill(w, x, y, width, height, UI_FACE);
+		ui_bevel(w, x, y, width, height, pressed);
+	}
 	ui_text(w, x + 6, y + (height - 12) / 2, label, -1, BLACK, 0);
 }
 
@@ -105,7 +160,7 @@ ui_button(GR_DRAW_ID w, int x, int y, int width, int height, const char *label, 
 static void
 ui_focus(GR_DRAW_ID w, int x, int y, int width, int height)
 {
-	GrSetGCForeground(ui_gc, BLACK);
+	GrSetGCForeground(ui_gc, ui_seven ? MWRGB(51, 153, 255) : BLACK);
 	GrRect(w, ui_gc, x - 2, y - 2, width + 4, height + 4);
 }
 
@@ -251,7 +306,12 @@ ui_scrollbar(GR_DRAW_ID w, int x, int y, int height, int total, int shown, int t
 	int thumb = ui_scroll_thumb(height, total, shown);
 	int at = total > shown ? (height - thumb) * top / (total - shown) : 0;
 
-	ui_fill(w, x, y, UI_SCROLL_W, height, MWRGB(226, 226, 226));
+	ui_fill(w, x, y, UI_SCROLL_W, height, ui_seven ? MWRGB(234, 234, 236) : MWRGB(226, 226, 226));
+	if (ui_seven) {
+		ui_fill(w, x + 2, y + at + 1, UI_SCROLL_W - 4, thumb - 2, MWRGB(222, 223, 226));
+		ui_edges(w, x + 1, y + at, UI_SCROLL_W - 2, thumb, MWRGB(150, 150, 155), MWRGB(150, 150, 155));
+		return;
+	}
 	ui_fill(w, x + 1, y + at, UI_SCROLL_W - 2, thumb, UI_FACE);
 	ui_bevel(w, x + 1, y + at, UI_SCROLL_W - 2, thumb, 0);
 }
@@ -388,6 +448,12 @@ ui_slider(GR_DRAW_ID w, int x, int y, int width, int value, int most)
 	int at = x + 4 + (width - 16) * value / (most > 0 ? most : 1);
 
 	ui_fill(w, x, y, width, 18, UI_FACE);
+	if (ui_seven) {
+		ui_fill(w, x + 4, y + 7, width - 8, 4, MWRGB(231, 234, 234));
+		ui_edges(w, x + 4, y + 7, width - 8, 4, MWRGB(176, 176, 176), MWRGB(214, 214, 214));
+		ui_button_seven(w, at, y + 1, 8, 16, 0);
+		return;
+	}
 	ui_fill(w, x + 4, y + 7, width - 8, 4, UI_SHADOW);
 	ui_bevel(w, x + 4, y + 7, width - 8, 4, 1);
 	ui_fill(w, at, y + 1, 8, 16, UI_FACE);
@@ -459,7 +525,7 @@ ui_run(const char *program, const char *argument)
 	if (child == 0) {
 		signal(SIGCHLD, SIG_DFL);	/* (a program that ignores it must not hand that on: the started one's children would go unseen) */
 		execlp(program, program, argument, (char *)NULL);
-		_exit(127);
+		ui_exec_failed();
 	}
 	return child;
 }

@@ -10,13 +10,26 @@
 struct sef_head {
 	char magic[4];			/* "SEF1" */
 	uint16_t height, ascent;	/* of a line, in pixels */
-	uint16_t bpp, em;		/* 1: a bit a pixel; 4: sixteen levels of coverage */
+	uint16_t bpp, em;		/* 1: a bit a pixel; 4: sixteen levels of coverage; SEF_MSDF */
 	uint32_t glyphs;
 	uint32_t ranges, ranges_at;	/* runs of code points, rising: struct sef_range */
 	uint32_t advances_at;		/* a byte a glyph */
 	uint32_t table_at;		/* a 16-byte texel a glyph: bitmap, width, height, dx | dy << 8 */
 	uint32_t bits_at, size;
 	uint32_t missing;		/* the glyph for a code point the font lacks, or ~0 */
+	uint32_t range;			/* SEF_MSDF: the atlas's distance range in pixels at this size, 16.16 */
+};
+
+/* Glyphs that are distance fields in the face's atlas (font-NAME.msdf beside font-NAME-N.sef):
+ * a table texel is where in the atlas, its width | height << 16, and the quad's width | height
+ * << 16 and corner x | y << 16 (signed) in 64ths of a pixel at size `em`. */
+#define SEF_MSDF 24
+
+struct sef_atlas {
+	char magic[4];			/* "SEM1" */
+	uint16_t em, range;		/* its pixels an em; its distance range in those pixels */
+	uint32_t glyphs, sizes;
+	struct { uint16_t em, height; } size[11];	/* the .sef files made of it */
 };
 
 struct sef_range { uint32_t first, count, glyph; };

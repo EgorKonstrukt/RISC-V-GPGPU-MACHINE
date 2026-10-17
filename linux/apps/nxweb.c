@@ -683,7 +683,7 @@ static struct { int stale, found, found_x, found_w, found_from, found_n, picked;
 static struct { unsigned requests, here, workers, syncs, waits; } strip_counts;
 
 /* A face's first 256 glyphs and advances, and where its file lies in the ROM (1: not there). */
-static struct strip_face { uint16_t glyph[256]; uint8_t advance[256]; uint32_t rom, scale; } strip_faces[WEB_FACES];
+static struct strip_face { uint16_t glyph[256]; uint8_t advance[256]; uint32_t rom, scale, atlas; } strip_faces[WEB_FACES];
 
 /* Strips by requests only (NXWEB_STRIPS=requests); by the first core alone (=here). */
 static int
@@ -763,6 +763,7 @@ strip_face_ready(int face)
 	const struct web_face *w = web_face(face);
 	char path[80];
 	int fd, c, g;
+	uint32_t rom_of_sef = 0;
 
 	if (!f->rom) {
 		f->rom = 1;
@@ -771,7 +772,20 @@ strip_face_ready(int face)
 			uint32_t rom = rom_of(fd, w->file);
 
 			f->rom = rom ? rom : 1;
+			rom_of_sef = f->rom;
 			close(fd);
+		}
+		if (f->rom > 1 && ((const struct sef_head *)w->file)->bpp == SEF_MSDF) {
+			/* its atlas: font-NAME.msdf beside font-NAME-N.sef */
+			unsigned char head[64];
+			char *dash = strrchr(path, '-');
+
+			f->rom = 1;
+			if (dash && (strcpy(dash, ".msdf"), fd = open(path, O_RDONLY)) >= 0) {
+				if (read(fd, head, 64) == 64 && (f->atlas = rom_of(fd, head)) != 0)
+					f->rom = rom_of_sef;
+				close(fd);
+			}
 		}
 		for (c = 0; f->rom > 1 && c < 256; c++) {
 			g = strip_glyph(w->file, c);
@@ -1173,7 +1187,7 @@ list_text(struct strip_list *l, int x, int y, const unsigned short *text, int n,
 	height = scale ? (h->height * (int)scale + 0x8000) >> 16 : h->height;
 	if (x + w - 1 < 0 || x >= tile_w || y + height - 1 < 0 || y >= STRIP)
 		return;
-	if (h->bpp == 4)
+	if (h->bpp == 4 || h->bpp == SEF_MSDF)
 		l->blended = 1;
 	c[0] = 4;
 	c[1] = (uint32_t)colour & 0xffffff;
@@ -1183,10 +1197,11 @@ list_text(struct strip_list *l, int x, int y, const unsigned short *text, int n,
 	c[5] = (uint32_t)y;
 	c[6] = (uint32_t)n;
 	c[7] = l->phys_words + 4 * (uint32_t)(word - l->words);
-	c[8] = (h->bpp == 4 ? 7 : 3) | 0x100 | (l->blended ? PASS_OVER : 0);
+	c[8] = (h->bpp == SEF_MSDF ? 8 : h->bpp == 4 ? 7 : 3) | 0x100 | (l->blended ? PASS_OVER : 0);
 	c[9] = scale;
 	c[10] = (italic ? 51u : 0) | (uint32_t)h->ascent << 16;
-	c[11] = f->rom;
+	c[11] = h->bpp == SEF_MSDF ? f->atlas : f->rom;
+	c[12] = h->bpp == SEF_MSDF ? h->range : 0;
 	l->mesh += 6 * (uint32_t)n;
 	l->c += 16;
 	l->word += (n + 3) & ~3;

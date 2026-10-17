@@ -13,6 +13,7 @@
 #include <string.h>
 #include "ui_width.h"
 #include "ui_state.h"
+#include "ui_look.h"
 
 struct ui_menu_item {
 	const char *label;
@@ -35,7 +36,7 @@ struct ui_menu_item {
 #define UI_MENU_LEVELS 4
 #define UI_MENU_ROW 20
 #define UI_MENU_BAR 26		/* the bar along the screen's bottom (nxbar.c): a menu stays above it */
-#define UI_MENU_FACE MWRGB(192, 192, 192)
+#define UI_MENU_FACE (ui_seven ? MWRGB(240, 240, 240) : MWRGB(192, 192, 192))
 
 static struct {
 	GR_WINDOW_ID window;
@@ -44,7 +45,24 @@ static struct {
 } ui_menu_level[UI_MENU_LEVELS];
 static int ui_menu_depth;
 static GR_GC_ID ui_menu_gc;
-static struct ui_widths ui_menu_widths;	/* of the font a new GC has, which the menu and the bar draw in */
+static GR_FONT_ID ui_menu_font;		/* the look's (0: the one a new GC has), which the menu and the bar draw in */
+static struct ui_widths ui_menu_widths;	/* its widths */
+
+/* The menu's context and font for the look as ui_look_read() last read it: at its first use,
+ * and again by a program that follows a change of the look (the bar). */
+static void
+ui_menu_restyle(void)
+{
+	if (!ui_menu_gc) {
+		ui_menu_gc = GrNewGC();
+		GrSetGCUseBackground(ui_menu_gc, GR_FALSE);
+	}
+	if (ui_menu_font)
+		GrDestroyFont(ui_menu_font);
+	ui_menu_font = ui_smooth ? GrCreateFontEx(UI_LOOK_FONT, 0, 0, NULL) : 0;
+	GrSetGCFont(ui_menu_gc, ui_menu_font);
+	ui_menu_widths.known = 0;
+}
 
 static int
 ui_menu_is_open(void)
@@ -60,21 +78,42 @@ ui_menu_draw(int k)
 
 	GrSetGCForeground(ui_menu_gc, UI_MENU_FACE);
 	GrFillRect(w, ui_menu_gc, 0, 0, width, height);
-	GrSetGCForeground(ui_menu_gc, MWRGB(255, 255, 255));
-	GrLine(w, ui_menu_gc, 0, 0, width - 1, 0);
-	GrLine(w, ui_menu_gc, 0, 0, 0, height - 1);
-	GrSetGCForeground(ui_menu_gc, MWRGB(64, 64, 64));
-	GrLine(w, ui_menu_gc, 0, height - 1, width - 1, height - 1);
-	GrLine(w, ui_menu_gc, width - 1, 0, width - 1, height - 1);
+	if (ui_seven) {
+		/* a pale panel with an edge, the icons in a column of their own */
+		GrSetGCForeground(ui_menu_gc, MWRGB(151, 151, 151));
+		GrRect(w, ui_menu_gc, 0, 0, width, height);
+		GrSetGCForeground(ui_menu_gc, MWRGB(226, 227, 227));
+		GrLine(w, ui_menu_gc, 25, 2, 25, height - 3);
+		GrSetGCForeground(ui_menu_gc, MWRGB(255, 255, 255));
+		GrLine(w, ui_menu_gc, 26, 2, 26, height - 3);
+	} else {
+		GrSetGCForeground(ui_menu_gc, MWRGB(255, 255, 255));
+		GrLine(w, ui_menu_gc, 0, 0, width - 1, 0);
+		GrLine(w, ui_menu_gc, 0, 0, 0, height - 1);
+		GrSetGCForeground(ui_menu_gc, MWRGB(64, 64, 64));
+		GrLine(w, ui_menu_gc, 0, height - 1, width - 1, height - 1);
+		GrLine(w, ui_menu_gc, width - 1, 0, width - 1, height - 1);
+	}
 	for (i = 0; i < ui_menu_level[k].count; i++) {
 		const struct ui_menu_item *item = &ui_menu_level[k].items[i];
 		int y = 2 + i * UI_MENU_ROW, lit = i == ui_menu_level[k].hover && !(item->flags & UI_MENU_GREY);
 
 		if (item->flags & UI_MENU_LINE) {
-			GrSetGCForeground(ui_menu_gc, MWRGB(128, 128, 128));
-			GrLine(w, ui_menu_gc, 3, y, width - 4, y);
+			GrSetGCForeground(ui_menu_gc, ui_seven ? MWRGB(224, 224, 224) : MWRGB(128, 128, 128));
+			GrLine(w, ui_menu_gc, ui_seven ? 28 : 3, y, width - 4, y);
 		}
-		if (lit) {
+		if (lit && ui_seven) {
+			/* a light blue box with rounded corners round the row */
+			GrSetGCForeground(ui_menu_gc, MWRGB(232, 240, 251));
+			GrFillRect(w, ui_menu_gc, 3, y + 2, width - 6, UI_MENU_ROW / 2 - 1);
+			GrSetGCForeground(ui_menu_gc, MWRGB(219, 232, 249));
+			GrFillRect(w, ui_menu_gc, 3, y + 1 + UI_MENU_ROW / 2, width - 6, UI_MENU_ROW / 2 - 2);
+			GrSetGCForeground(ui_menu_gc, MWRGB(168, 202, 240));
+			GrLine(w, ui_menu_gc, 3, y + 1, width - 4, y + 1);
+			GrLine(w, ui_menu_gc, 3, y + UI_MENU_ROW - 1, width - 4, y + UI_MENU_ROW - 1);
+			GrLine(w, ui_menu_gc, 2, y + 2, 2, y + UI_MENU_ROW - 2);
+			GrLine(w, ui_menu_gc, width - 3, y + 2, width - 3, y + UI_MENU_ROW - 2);
+		} else if (lit) {
 			GrSetGCForeground(ui_menu_gc, MWRGB(10, 36, 106));
 			GrFillRect(w, ui_menu_gc, 2, y + 1, width - 4, UI_MENU_ROW - 1);
 		}
@@ -83,8 +122,9 @@ ui_menu_draw(int k)
 				item->icon >= 0 ? GR_IMAGE_ICON_OR(16, item->icon) : GR_IMAGE_ICON(16));
 		else
 			ui_icon(w, ui_menu_gc, 5, y + 2, item->icon, 16);
-		GrSetGCForeground(ui_menu_gc, lit ? MWRGB(255, 255, 255) : item->flags & UI_MENU_GREY ? MWRGB(128, 128, 128) : MWRGB(0, 0, 0));
-		GrText(w, ui_menu_gc, 27, y + 3, (void *)item->label, strlen(item->label), GR_TFASCII | GR_TFTOP);
+		GrSetGCForeground(ui_menu_gc, lit && !ui_seven ? MWRGB(255, 255, 255) : item->flags & UI_MENU_GREY ?
+			(ui_seven ? MWRGB(109, 109, 109) : MWRGB(128, 128, 128)) : MWRGB(0, 0, 0));
+		GrText(w, ui_menu_gc, ui_seven ? 32 : 27, y + (ui_smooth ? 2 : 3), (void *)item->label, strlen(item->label), GR_TFASCII | GR_TFTOP);
 		for (j = 0; (item->flags & UI_MENU_CHECK) && j < 7; j++)
 			GrLine(w, ui_menu_gc, 9 + j, y + (j < 3 ? 8 + j : 12 - j), 9 + j, y + (j < 3 ? 10 + j : 14 - j));
 		for (j = 0; item->sub && j < 4; j++)	/* an arrow: its own menu opens to the side */
@@ -119,14 +159,14 @@ ui_menu_show(int k, const struct ui_menu_item *items, int count, int x, int y, i
 	if (k >= UI_MENU_LEVELS || count < 1)
 		return;
 	if (!ui_menu_gc) {
-		ui_menu_gc = GrNewGC();
-		GrSetGCUseBackground(ui_menu_gc, GR_FALSE);
+		ui_look_read();
+		ui_menu_restyle();
 	}
 	ui_menu_close_from(k);
 	for (i = 0; i < count; i++) {
-		w = ui_width(&ui_menu_widths, 0, items[i].label, -1);
-		if (w + 27 + 20 > width)
-			width = w + 27 + 20;
+		w = ui_width(&ui_menu_widths, ui_menu_font, items[i].label, -1);
+		if (w + (ui_seven ? 32 : 27) + 20 > width)
+			width = w + (ui_seven ? 32 : 27) + 20;
 	}
 	if (!screen.cols)
 		GrGetScreenInfo(&screen);

@@ -74,7 +74,7 @@ mesh order.
 | 1 | clear | 3 | 1: colour. Fills the picture, at the far plane |
 | 2 | rectangle | 6 | 1: colour, 2: key, 4-7: x0, y0, x1, y1 (exclusive), 8: fragment mode, 9-11: texture address, width, height, 12-15: u0, v0, u1, v1. Drawn at the near plane |
 | 3 | draw | count | 1: vertex buffer, 2: count, 4: vertex mode, 5: fragment mode, 6: uniforms address, 7-9: texture address, width, height, 10: key, 11: colour (compact vertices), 12-15: where a laid texture lies |
-| 4 | text | 6 a character | 1: colour, 2: font table, 4-5: x, y of the string's top left, 6: characters, 7: address of the string, 8: fragment word (its pass; mode 7 for glyphs of coverage; `0x100`: words 9-11 are there), 9: a scale (16.16; 0: none), 10: a slant in 256ths of a pixel a row, and from bit 16 the row that stays where it is, 11: what the table's bitmap addresses are counted from. Drawn at the near plane |
+| 4 | text | 6 a character | 1: colour, 2: font table, 4-5: x, y of the string's top left, 6: characters, 7: address of the string, 8: fragment word (its pass; mode 7 for glyphs of coverage, 8 for distance fields; `0x100`: words 9-11 are there), 9: a scale (16.16; 0: none), 10: a slant in 256ths of a pixel a row, and from bit 16 the row that stays where it is, 11: what the table's bitmap addresses are counted from, 12 (mode 8): the distance range in pixels before the scale (16.16). Drawn at the near plane |
 
 A string for command 4 is a word a character: the glyph's number in its low half and, in the
 high half, how many pixels right of x the character starts (the program adds the widths up;
@@ -87,6 +87,17 @@ bytes where it lies in the ROM (addresses from `0x40000000`): a font of `docs/sy
 drawn with nothing copied. Its glyphs are fragment mode 7: four bits a pixel of how much of
 the pixel the glyph covers, rows of whole bytes, the left pixel in the high half; the
 coverage is the colour's alpha, so such a command names a pass that blends.
+
+Fragment mode 8 is a glyph of three distance fields (multi-channel, `docs/system/fonts.md`, "Distance
+fields"): its table texel is where its pixels are in the face's atlas, their width and height
+(16 bits each), and its quad's width and height and corner (16 bits each, signed, in 64ths of a
+pixel). A pixel is three bytes, rows not padded. The fragment samples the field at four points,
+the centres of its pixel's quarters: at each the four atlas pixels round it, weighed, and the
+median of their channels is the distance from the edge, 0.5 on it. Word 12 times the scale is
+how many of the screen's pixels the atlas's range is (times 1.2, `MSDF_SHARP`), worked out a
+command in the vertex stage with how far a screen pixel is in the quad: a quarter's coverage is
+twice that times (median - 0.5) + 0.5, clamped, and the colour's alpha is times the mean of the
+four, so the same quad is sharp at any scale. Mode 7 is as it was.
 
 A vertex is 64 bytes: position, normal, texture coordinates, colour, four numbers each.
 Numbers are 16.16 fixed point, or floats when the draw says so (the float flag below). A colour given as one word is `0xTTRRGGBB`, T being
@@ -132,6 +143,7 @@ A textured quad is then 16 words of vertices instead of 96.
 | 5 | a layer of tiles (below): the texture's address is four words that say where its cells, its tiles and its palette are |
 | 6 | a picture as three planes of bytes one after another: width x height of luma, then the blue and the red chroma planes, each half the size each way (both sizes even). The colour is BT.601's, luma 16 to 235; times the colour. A video's frame as its decoder leaves it (`docs/apps/video.md`; `SEGL_YUV420` in the OpenGL library) |
 | 7 | (text) four bits of coverage a pixel: the colour, its alpha times the coverage |
+| 8 | (text) three distance fields a pixel, sampled bilinearly: the colour, its alpha times the coverage their median gives |
 | +0x100 | texels equal to the key (a colour in modes 1 and 4, an index in mode 2) are not drawn |
 | +0x200 | (draws) the texture is laid on the picture, not on the surface: a pixel at (x, y) of the picture takes the texel at words 12-13 plus (x, y) / 1024 times words 14-15 (16.16), and the colour is not applied. The surface still writes depth: a sky that hides what is behind it |
 | +0x400 | smooth (modes 1, 2 and 4): the four texels round the point are weighed by how near their centres are (bilinear), the texture repeating. A texel of the key counts for nothing, and where such are most of the four nothing is drawn. `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)` asks for it of the bound texture; a texture starts as `GL_NEAREST` |

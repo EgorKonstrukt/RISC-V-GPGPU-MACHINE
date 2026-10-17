@@ -7,6 +7,7 @@
 #include "ui_icons.h"
 #include "ui_menu.h"
 #include "ui_ask.h"
+#include "ui_glyph.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -19,7 +20,11 @@
 #define TOOL_H 28
 #define STATUS 18
 #define TAB_H 18
-#define PANEL_H 150
+#define PANEL_H 140
+#define DOC_TAB_H 22		/* the row of the open files' tabs */
+#define TREE_W 168		/* the folder's tree at the left */
+#define DOCS 12
+#define ED_GUTTER (ui_seven ? MWRGB(244, 244, 244) : MWRGB(232, 232, 232))
 #define OUT_MOST 600
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_BUTTON_DOWN | \
 	GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_TIMEOUT)
@@ -27,17 +32,19 @@
 enum {
 	C_NONE, C_NEW, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_FIND, C_FIND_NEXT, C_GOTO,
 	C_ALL, C_LINE, C_WORD, C_INDENT, C_UNINDENT, C_COMMENT, C_PANEL, C_NUMBERS, C_CHECKING, C_BUILD, C_RUN, C_DEBUG, C_STOP,
-	C_OVER, C_INTO, C_OUT, C_MARK, C_UNMARK_ALL, C_KEYS, C_ABOUT, C_EXAMPLE	/* C_EXAMPLE + n: the nth example */
+	C_OVER, C_INTO, C_OUT, C_MARK, C_UNMARK_ALL, C_KEYS, C_ABOUT, C_CLOSE, C_NEXT_TAB, C_PREV_TAB, C_TREE, C_TREE_HERE,
+	C_REPLACE, C_FIND_PREV, C_SAVE_ALL, C_EXAMPLE	/* C_EXAMPLE + n: the nth example */
 };
 enum { P_OUTPUT, P_PROBLEMS, P_VARIABLES, P_STACK, PANELS };
-enum { J_NONE, J_BUILD, J_RUN, J_CHECK };
-enum { ASK_NONE, ASK_FIND, ASK_GOTO, ASK_SAVE };
+enum { J_NONE, J_BUILD, J_RUN, J_CHECK, J_FLAT };	/* J_FLAT: the ELF a build linked made a flat program */
+enum { ASK_NONE, ASK_FIND, ASK_GOTO, ASK_SAVE, ASK_REPLACE, ASK_WITH };
 
 static GR_WINDOW_ID window;
 static GR_GC_ID text_gc, ground_gc, bar_gc;	/* the editor's text, its white ground, the cursor's bar */
-static int width = 720, height = 500;
+static int width = 780, height = 520;
 static char path[300], program[320], notice[160];
-static int top, left, rows, columns, gutter;
+static int top, left, rows, columns, gutter;	/* gutter: where the gutter ends, from the window's left */
+static int ex, tree_on = 1;	/* ex: where the editor begins, right of the tree */
 static int numbers_on = 1, panel_on = 1, panel = P_OUTPUT, checking_on = 1;
 static int dragging, selecting, leaving;
 static unsigned click_at;
@@ -53,7 +60,7 @@ static const GR_COLOR sx_colours[SX_KINDS] = { MWRGB(0, 0, 0), MWRGB(0, 0, 200),
 
 /* the status line when it asks for something */
 static int asking;
-static char answer[200], sought[64];
+static char answer[200], sought[64], replacement[64];
 
 /* what runs beside: a build, the program, or a quiet check of what is being typed */
 static struct { pid_t pid; int fd, kind, heard; } job;	/* heard: its output wakes the loop (GrRegisterInput) */
@@ -77,6 +84,21 @@ static int out_count, out_top, out_fresh, worker_marked;
 static char out_part[200];
 static struct problem { int line, error; char text[150]; } problems[64];
 static int problem_count, problem_top;
+/* The open files: the one shown lives in the globals (text.h's, path, the problems, the
+ * marks), the others here until they are shown again (doc_keep, doc_take). */
+struct doc {
+	char path[300];
+	char **lines;
+	int count, room, x, y, ax, ay, marked, modified, top, left;
+	struct tx_change *done, *undone;
+	int done_count, undone_count, done_room, undone_room;
+	struct problem *problems;
+	int problem_count, marks[256], mark_count;
+};
+static struct doc docs[DOCS];
+static int doc_count, doc_now = -1, run_doc = -1;	/* run_doc: the file whose build, run or debugging it is */
+static int flat_machine;	/* no MMU: a program is a flat file, made from an ELF the debugger reads */
+static void doc_show(int i);
 static char variables[48][160], stack[16][160];
 static int variable_count, variable_top, stack_count;
 
@@ -84,6 +106,7 @@ static char examples[12][40];
 static int example_count;
 static int print_on;		/* NXIDE_PRINT: what happens, on the console, for a test */
 static char script[2000];	/* NXIDE_SCRIPT: commands done one after another, when nothing runs */
+static int scripted_run;	/* there was a script: nothing asks in a window, even after its last word */
 
 static void command(int id);
 static void draw_all(void);
@@ -110,9 +133,22 @@ say(const char *text)
 /* ---- the layout ---- */
 
 static int
-editor_y(void)
+side_y(void)
 {
 	return MENU_H + TOOL_H;
+}
+
+static int
+editor_y(void)
+{
+	return MENU_H + TOOL_H + DOC_TAB_H;
+}
+
+/* The program's stop is on this line of the file shown. */
+static int
+stop_on(int line)
+{
+	return dbg_state == DBG_STOPPED && doc_now == run_doc && dbg_line_now == line + 1;
 }
 
 static int
@@ -125,7 +161,8 @@ static void
 resized(int w, int h)
 {
 	width = w, height = h;
-	gutter = numbers_on ? 5 * ui_fw + 16 : 16;
+	ex = tree_on ? TREE_W + 3 : 0;
+	gutter = ex + (numbers_on ? 5 * ui_fw + 16 : 16);
 	rows = (panel_y() - editor_y()) / ui_fh;
 	columns = (width - UI_SCROLL_W - gutter - 4) / ui_fw;
 	if (rows < 1)
@@ -378,7 +415,7 @@ draw_number(int line, int y)
 	while (at > (int)sizeof number - 5)
 		number[--at] = ' ';
 	ink(UI_SHADOW);
-	write_at(14, y, number + at, (int)sizeof number - 1 - at);
+	write_at(ex + 14, y, number + at, (int)sizeof number - 1 - at);
 }
 
 /* A line's pieces of one kind (all of them: -1), from column `from` of the view on. */
@@ -413,6 +450,110 @@ draw_bar(int line, int y)
 	bar_line = line, bar_x = tx_x - left;
 }
 
+/* ---- the bracket at the cursor and its pair, boxed ---- */
+
+static int match_line[2] = { -1, -1 }, match_col[2];
+
+static int
+in_words(int column)
+{
+	return sx_kinds[column] != SX_STRING && sx_kinds[column] != SX_COMMENT;
+}
+
+/* The bracket just after the cursor (or else just before it) and the one that pairs with it,
+ * strings and comments left out; lines -1 when there is none. */
+static void
+match_find(int lines[2], int cols[2])
+{
+	static const char opens[] = "([{", closes[] = ")]}";
+	const char *text = tx_lines[tx_y], *o;
+	int x = tx_x, dir, depth = 1, y, c, steps = 0;
+	char mine, want, ch;
+
+	lines[0] = lines[1] = -1;
+	if (!text[x] || !strchr("()[]{}", text[x])) {
+		if (x > 0 && strchr("()[]{}", text[x - 1]))
+			x--;
+		else
+			return;
+	}
+	mine = text[x];
+	if ((o = strchr(opens, mine)) != NULL)
+		dir = 1, want = closes[o - opens];
+	else
+		dir = -1, want = opens[strchr(closes, mine) - closes];
+	starts_upto(tx_y);
+	kinds_of(tx_y, sx_starts[tx_y]);
+	if (!in_words(x))
+		return;
+	for (y = tx_y, c = x; ; ) {
+		c += dir;
+		while (c < 0 || c >= (int)strlen(tx_lines[y])) {
+			y += dir;
+			if (y < 0 || y >= tx_count || abs(y - tx_y) > 400)
+				return;
+			starts_upto(y);
+			kinds_of(y, sx_starts[y]);
+			c = dir > 0 ? 0 : (int)strlen(tx_lines[y]) - 1;
+		}
+		ch = tx_lines[y][c];
+		if (++steps > 20000)
+			return;
+		if (!in_words(c))
+			continue;
+		if (ch == mine)
+			depth++;
+		else if (ch == want && !--depth)
+			break;
+	}
+	lines[0] = tx_y, cols[0] = x, lines[1] = y, cols[1] = c;
+}
+
+static void
+match_box(int k)
+{
+	int line = match_line[k], c = match_col[k];
+
+	if (line < top || line >= top + rows || c < left || c >= left + columns)
+		return;
+	GrSetGCForeground(ui_gc, MWRGB(140, 140, 140));
+	GrRect(window, ui_gc, gutter + 2 + (c - left) * ui_fw, editor_y() + (line - top) * ui_fh, ui_fw + 2, ui_fh);
+}
+
+static void
+match_boxes_on(int line)
+{
+	int k;
+
+	for (k = 0; k < 2; k++)
+		if (match_line[k] == line && line >= 0)
+			match_box(k);
+}
+
+static void draw_line(int line);
+
+/* After the cursor moved or the text changed: the old boxes taken away, the new ones drawn. */
+static void
+match_update(void)
+{
+	int lines[2], cols[2] = { 0, 0 }, old_lines[2] = { match_line[0], match_line[1] }, old_cols[2] = { match_col[0], match_col[1] }, k, j, kept;
+
+	match_find(lines, cols);
+	for (k = 0; k < 2; k++)
+		match_line[k] = lines[k], match_col[k] = cols[k];
+	for (k = 0; k < 2; k++) {
+		if (old_lines[k] < 0 || old_lines[k] >= tx_count)
+			continue;
+		for (j = kept = 0; j < 2; j++)
+			kept |= lines[j] == old_lines[k] && cols[j] == old_cols[k];
+		if (!kept)
+			draw_line(old_lines[k]);
+	}
+	for (k = 0; k < 2; k++)
+		if (match_line[k] >= 0)
+			match_box(k);
+}
+
 /* True, with the view's columns, if a line has selected columns in view. */
 static int
 selected_in(int line, int *from, int *to)
@@ -437,11 +578,11 @@ draw_signs(int line, int y, int here)
 
 	if (dbg_marked(line + 1)) {
 		GrSetGCForeground(ui_gc, MWRGB(200, 20, 20));
-		GrFillEllipse(window, ui_gc, 7, y + ui_fh / 2, 4, 4);
+		GrFillEllipse(window, ui_gc, ex + 7, y + ui_fh / 2, 4, 4);
 	}
 	if (here) {
 		ink(BLACK);
-		write_at(2, y, ">", 1);
+		write_at(ex + 2, y, ">", 1);
 	}
 	if ((wrong = problem_at(line)) != 0)
 		ui_fill(window, gutter - 3, y, 3, ui_fh, wrong & 2 ? MWRGB(220, 0, 0) : MWRGB(230, 150, 0));
@@ -452,7 +593,7 @@ static void
 draw_line_on(int line, int cleared)
 {
 	int y = editor_y() + (line - top) * ui_fh, from = 0, to = 0, picking;
-	int here = dbg_state == DBG_STOPPED && dbg_line_now == line + 1;
+	int here = stop_on(line);
 	struct shown *e;
 
 	if (line < top || line >= top + rows)
@@ -460,7 +601,7 @@ draw_line_on(int line, int cleared)
 	if (line - top < ROWS_KEPT)
 		row_line[line - top] = -1;
 	if (!cleared)
-		ui_fill(window, 0, y, gutter, ui_fh, MWRGB(232, 232, 232));
+		ui_fill(window, ex, y, gutter - ex, ui_fh, ED_GUTTER);
 	if (!cleared || here)
 		ui_fill(window, gutter, y, width - UI_SCROLL_W - gutter, ui_fh, here ? MWRGB(255, 255, 150) : WHITE);
 	if (line >= tx_count) {
@@ -479,6 +620,7 @@ draw_line_on(int line, int cleared)
 	} else
 		e = shown_of(line);
 	draw_pieces(e, y, -1, 0);
+	match_boxes_on(line);
 	draw_bar(line, y);
 	if (!picking && !here && line - top < ROWS_KEPT)
 		row_line[line - top] = line;
@@ -502,7 +644,7 @@ draw_line_tail(int line, int from)
 	if (line < tx_count)
 		starts_upto(line);
 	if (line >= tx_count || line - top >= ROWS_KEPT || row_line[line - top] != line || !shown_kept(line) ||
-	    selected_in(line, &a, &b) || (dbg_state == DBG_STOPPED && dbg_line_now == line + 1)) {
+	    selected_in(line, &a, &b) || stop_on(line)) {
 		draw_line(line);
 		return;
 	}
@@ -513,6 +655,7 @@ draw_line_tail(int line, int from)
 		GrFillRect(window, ground_gc, x, y, width - UI_SCROLL_W - x, ui_fh);
 		draw_pieces(shown_kept(line), y, -1, from);
 	}
+	match_boxes_on(line);
 	draw_bar(line, y);
 }
 
@@ -537,14 +680,14 @@ draw_editor_from(int line)
 	first = line = line < top ? top : line;
 	y = editor_y() + (line - top) * ui_fh;
 	if (line < top + rows) {
-		ui_fill(window, 0, y, gutter, (top + rows - line) * ui_fh, MWRGB(232, 232, 232));
+		ui_fill(window, ex, y, gutter - ex, (top + rows - line) * ui_fh, ED_GUTTER);
 		ui_fill(window, gutter, y, width - UI_SCROLL_W - gutter, (top + rows - line) * ui_fh, WHITE);
 	}
 	/* a line with something selected or the stop on it is drawn by itself; the others together,
 	 * a colour after a colour: a colour changed is a request too, and was three a line */
 	for (; line < top + rows; line++) {
 		i = line - top;
-		if (i >= ROWS_KEPT || line >= tx_count || selected_in(line, &a, &b) || (dbg_state == DBG_STOPPED && dbg_line_now == line + 1)) {
+		if (i >= ROWS_KEPT || line >= tx_count || selected_in(line, &a, &b) || stop_on(line)) {
 			draw_line_on(line, 1);
 			continue;
 		}
@@ -564,9 +707,11 @@ draw_editor_from(int line)
 		EACH_PLAIN
 			draw_pieces(plain[line - top], y, order[k], 0);
 	EACH_PLAIN
+		match_boxes_on(line);
+	EACH_PLAIN
 		draw_bar(line, y);
 #undef EACH_PLAIN
-	ui_fill(window, 0, editor_y() + rows * ui_fh, width - UI_SCROLL_W, panel_y() - editor_y() - rows * ui_fh, WHITE);
+	ui_fill(window, ex, editor_y() + rows * ui_fh, width - UI_SCROLL_W - ex, panel_y() - editor_y() - rows * ui_fh, WHITE);
 	draw_scroll_bar();
 }
 
@@ -597,17 +742,17 @@ static int tools_shown = -1;	/* tools_now() as the row was last drawn */
 static int
 can(int id)
 {
-	int idle = job.kind != J_BUILD && job.kind != J_RUN && dbg_state == DBG_GONE;
+	int idle = job.kind != J_BUILD && job.kind != J_RUN && job.kind != J_FLAT && dbg_state == DBG_GONE;
 
 	switch (id) {
 	case C_UNDO: return tx_done_count > 0;
 	case C_REDO: return tx_undone_count > 0;
-	case C_BUILD: case C_RUN: case C_NEW: case C_OPEN: return idle;	/* (a build or a run is of the file shown) */
+	case C_BUILD: case C_RUN: return idle;
 	case C_DEBUG: return idle || dbg_state == DBG_STOPPED;
 	case C_STOP: return !idle;
 	case C_OVER: case C_INTO: case C_OUT: return dbg_state == DBG_STOPPED;
 	}
-	return id < C_EXAMPLE || idle;
+	return 1;
 }
 
 /* The keys' looks as bits: which can be pressed, and whether Debug reads "Go on". */
@@ -619,6 +764,93 @@ tools_now(void)
 	for (i = 0; i < TOOLS; i++)
 		bits = bits << 1 | can(tools[i].id);
 	return bits;
+}
+
+/* A triangle pointing down, its widest row at y. */
+static void
+point_down(int cx, int y, int size)
+{
+	int k;
+
+	for (k = 0; k <= size; k++)
+		GrLine(window, ui_gc, cx - (size - k), y + k, cx + (size - k), y + k);
+}
+
+/* A key's sign, its middle at cx, cy: in colour, or grey when it cannot be pressed. */
+static void
+tool_sign(int id, int cx, int cy, int on)
+{
+	int k;
+
+#define INK(colour) GrSetGCForeground(ui_gc, on ? (colour) : UI_SHADOW)
+	switch (id) {
+	case C_NEW:	/* a page with lines on it */
+		ui_fill(window, cx - 4, cy - 6, 9, 13, on ? WHITE : UI_FACE);
+		INK(MWRGB(90, 90, 90));
+		GrRect(window, ui_gc, cx - 4, cy - 6, 9, 13);
+		for (k = -2; k <= 4; k += 3)
+			GrLine(window, ui_gc, cx - 2, cy + k, cx + 2, cy + k);
+		break;
+	case C_OPEN:
+		ui_glyph(window, cx, cy, UI_G_FOLDER, on ? MWRGB(214, 160, 40) : UI_SHADOW);
+		break;
+	case C_SAVE:	/* a disk: its label and its shutter */
+		INK(MWRGB(40, 80, 170));
+		GrFillRect(window, ui_gc, cx - 5, cy - 5, 11, 11);
+		GrSetGCForeground(ui_gc, on ? WHITE : UI_FACE);
+		GrFillRect(window, ui_gc, cx - 3, cy - 5, 7, 4);
+		GrFillRect(window, ui_gc, cx - 2, cy + 2, 5, 3);
+		break;
+	case C_UNDO:
+	case C_REDO:
+		ui_glyph(window, cx, cy, id == C_UNDO ? UI_G_TURN_LEFT : UI_G_TURN_RIGHT, on ? MWRGB(30, 90, 200) : UI_SHADOW);
+		break;
+	case C_BUILD:	/* bricks */
+		INK(MWRGB(180, 80, 30));
+		for (k = 0; k < 3; k++) {
+			GrFillRect(window, ui_gc, cx - 6 + (k & 1) * 3, cy - 5 + k * 4, 5, 3);
+			GrFillRect(window, ui_gc, cx + (k & 1) * 3, cy - 5 + k * 4, 5 - (k & 1) * 3, 3);
+		}
+		break;
+	case C_RUN:
+		ui_glyph(window, cx, cy, UI_G_PLAY, on ? MWRGB(0, 150, 40) : UI_SHADOW);
+		break;
+	case C_DEBUG:	/* a play sign with a bug at its foot, or a bar before it: go on */
+		if (dbg_state == DBG_STOPPED) {
+			INK(MWRGB(0, 150, 40));
+			GrFillRect(window, ui_gc, cx - 6, cy - 5, 2, 11);
+			ui_glyph_point(window, cx - 2, cy, 5, 1);
+			break;
+		}
+		ui_glyph(window, cx - 1, cy, UI_G_PLAY, on ? MWRGB(0, 150, 40) : UI_SHADOW);
+		INK(MWRGB(200, 30, 30));
+		GrFillEllipse(window, ui_gc, cx + 4, cy + 3, 2, 2);
+		break;
+	case C_STOP:
+		ui_glyph(window, cx, cy, UI_G_STOP, on ? MWRGB(200, 30, 30) : UI_SHADOW);
+		break;
+	case C_OVER:	/* an arch over a dot */
+		INK(MWRGB(30, 90, 200));
+		GrLine(window, ui_gc, cx - 5, cy + 1, cx - 5, cy - 4);
+		GrLine(window, ui_gc, cx - 5, cy - 4, cx + 4, cy - 4);
+		GrLine(window, ui_gc, cx + 4, cy - 4, cx + 4, cy - 2);
+		point_down(cx + 4, cy - 1, 3);
+		GrFillRect(window, ui_gc, cx - 1, cy + 4, 3, 3);
+		break;
+	case C_INTO:	/* down onto a dot */
+		INK(MWRGB(30, 90, 200));
+		GrFillRect(window, ui_gc, cx - 1, cy - 6, 3, 4);
+		point_down(cx, cy - 2, 3);
+		GrFillRect(window, ui_gc, cx - 1, cy + 4, 3, 3);
+		break;
+	case C_OUT:	/* up from a dot */
+		INK(MWRGB(30, 90, 200));
+		ui_glyph_point_up(window, cx, cy - 2, 3);
+		GrFillRect(window, ui_gc, cx - 1, cy - 2, 3, 4);
+		GrFillRect(window, ui_gc, cx - 1, cy + 4, 3, 3);
+		break;
+	}
+#undef INK
 }
 
 /* The row of keys; `all`: with its ground, else only the keys that look different now. */
@@ -641,7 +873,8 @@ draw_tools_some(int all)
 		if (!all)
 			ui_fill(window, tool_x[i], MENU_H + 3, tool_w[i], 22, UI_FACE);
 		ui_bevel(window, tool_x[i], MENU_H + 3, tool_w[i], 22, 0);
-		ui_text(window, tool_x[i] + 7, MENU_H + 7, label, -1, can(tools[i].id) ? BLACK : UI_SHADOW, 0);
+		tool_sign(tools[i].id, tool_x[i] + 12, MENU_H + 14, can(tools[i].id));
+		ui_text(window, tool_x[i] + 22, MENU_H + 7, label, -1, can(tools[i].id) ? BLACK : UI_SHADOW, 0);
 	}
 	if (all)
 		ui_fill(window, 0, MENU_H + TOOL_H - 1, width, 1, UI_SHADOW);
@@ -651,6 +884,208 @@ static void
 draw_tools(void)
 {
 	draw_tools_some(1);
+}
+
+/* ---- the open files' tabs ---- */
+
+static int doc_tab_x[DOCS], doc_tab_w[DOCS];
+static int tabs_drawn = -1;	/* doc_now, doc_count and tx_modified as the row was last drawn */
+
+static const char *
+leaf_of(const char *file)
+{
+	const char *slash = strrchr(file, '/');
+
+	return slash ? slash + 1 : file;
+}
+
+/* A tab: the chosen one white and joined to what is under it. */
+static void
+draw_tab(int x, int y, int w, int h, int chosen)
+{
+	if (chosen) {
+		ui_fill(window, x, y, w, h, WHITE);
+		GrSetGCForeground(ui_gc, UI_SHADOW);
+		GrLine(window, ui_gc, x, y, x + w - 1, y);
+		GrLine(window, ui_gc, x, y, x, y + h - 1);
+		GrLine(window, ui_gc, x + w - 1, y, x + w - 1, y + h - 1);
+	} else if (ui_seven)
+		ui_button_seven(window, x, y, w, h, 0);
+	else {
+		ui_fill(window, x, y, w, h, UI_FACE);
+		ui_bevel(window, x, y, w, h, 0);
+	}
+}
+
+static void
+draw_doc_tabs(void)
+{
+	int y = side_y(), x = ex + 2, i, w, most = doc_count ? (width - ex - 6) / doc_count - 2 : 0, chosen_x = 0, chosen_w = 0;
+	char label[80];
+
+	tabs_drawn = doc_now | doc_count << 8 | tx_modified << 16;
+	ui_fill(window, ex, y, width - ex, DOC_TAB_H, UI_FACE);
+	for (i = 0; i < doc_count; i++) {
+		int chosen = i == doc_now, ty = y + (chosen ? 2 : 4), th = DOC_TAB_H - (chosen ? 2 : 5);
+
+		snprintf(label, sizeof label, "%.60s%s", leaf_of(chosen ? path : docs[i].path), (chosen ? tx_modified : docs[i].modified) ? " *" : "");
+		w = ui_width(&ui_var_widths, ui_var, label, -1) + 32;
+		w = w > most ? most : w;
+		doc_tab_x[i] = x, doc_tab_w[i] = w;
+		draw_tab(x, ty, w, th, chosen);
+		ui_text_fit(window, x + 8, ty + (th - 12) / 2, w - 26, label, BLACK);
+		/* its close box */
+		GrSetGCForeground(ui_gc, chosen ? MWRGB(80, 80, 80) : UI_SHADOW);
+		GrLine(window, ui_gc, x + w - 14, ty + th / 2 - 3, x + w - 8, ty + th / 2 + 3);
+		GrLine(window, ui_gc, x + w - 14, ty + th / 2 + 3, x + w - 8, ty + th / 2 - 3);
+		if (chosen)
+			chosen_x = x, chosen_w = w;
+		x += w + 2;
+	}
+	GrSetGCForeground(ui_gc, UI_SHADOW);
+	if (chosen_w) {
+		GrLine(window, ui_gc, ex, y + DOC_TAB_H - 1, chosen_x, y + DOC_TAB_H - 1);
+		GrLine(window, ui_gc, chosen_x + chosen_w - 1, y + DOC_TAB_H - 1, width - 1, y + DOC_TAB_H - 1);
+	} else
+		GrLine(window, ui_gc, ex, y + DOC_TAB_H - 1, width - 1, y + DOC_TAB_H - 1);
+}
+
+/* The tab at x, or -1; *closing when x is on its close box. */
+static int
+doc_tab_at(int x, int *closing)
+{
+	int i;
+
+	for (i = 0; i < doc_count; i++)
+		if (x >= doc_tab_x[i] && x < doc_tab_x[i] + doc_tab_w[i]) {
+			*closing = x >= doc_tab_x[i] + doc_tab_w[i] - 18;
+			return i;
+		}
+	return -1;
+}
+
+/* ---- the folder's tree ---- */
+
+#define TREE_ROWS 240
+#define TREE_ROW 18
+#define TREE_HEAD 22
+static struct { char path[128]; unsigned char depth, folder, open; } tree[TREE_ROWS];
+static int tree_count, tree_top;
+static char tree_root[128] = "/root", tree_opened[24][128];
+static int tree_opened_count;
+
+static int
+tree_is_open(const char *dir)
+{
+	int i;
+
+	for (i = 0; i < tree_opened_count; i++)
+		if (!strcmp(tree_opened[i], dir))
+			return 1;
+	return 0;
+}
+
+struct tree_entry { char name[64]; int folder; };
+
+static int
+tree_order(const void *a, const void *b)
+{
+	const struct tree_entry *p = a, *q = b;
+
+	return p->folder != q->folder ? q->folder - p->folder : strcmp(p->name, q->name);
+}
+
+/* A folder's names in the tree, folders first, and an open folder's own under it. */
+static void
+tree_add(const char *dir, int depth)
+{
+	DIR *folder = opendir(dir);
+	struct tree_entry *list = folder ? malloc(160 * sizeof *list) : NULL;
+	struct dirent *entry;
+	struct stat is;
+	char full[300];
+	int n = 0, i;
+
+	while (list && n < 160 && (entry = readdir(folder)) != NULL) {
+		if (entry->d_name[0] == '.' || strlen(entry->d_name) >= sizeof list[0].name)
+			continue;
+		snprintf(full, sizeof full, "%s/%s", dir, entry->d_name);
+		list[n].folder = entry->d_type == DT_DIR ||
+				 ((entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK) && !stat(full, &is) && S_ISDIR(is.st_mode));
+		strcpy(list[n++].name, entry->d_name);
+	}
+	if (folder)
+		closedir(folder);
+	if (list)
+		qsort(list, (size_t)n, sizeof *list, tree_order);
+	for (i = 0; i < n && tree_count < TREE_ROWS; i++) {
+		/* (a path too long for the tree is left out, not cut to another file's) */
+		if (snprintf(tree[tree_count].path, sizeof tree[0].path, "%s%s%s", dir, dir[1] ? "/" : "", list[i].name) >= (int)sizeof tree[0].path)
+			continue;
+		tree[tree_count].depth = (unsigned char)depth;
+		tree[tree_count].folder = (unsigned char)list[i].folder;
+		tree[tree_count].open = list[i].folder && depth < 6 && tree_is_open(tree[tree_count].path);
+		if (tree[tree_count++].open)
+			tree_add(tree[tree_count - 1].path, depth + 1);
+	}
+	free(list);
+}
+
+static int
+tree_shown(void)
+{
+	return (panel_y() - side_y() - TREE_HEAD - 6) / TREE_ROW;
+}
+
+static void
+tree_read(void)
+{
+	tree_count = 0;
+	tree_add(tree_root, 0);
+	if (tree_top > tree_count - tree_shown())
+		tree_top = tree_count - tree_shown();
+	if (tree_top < 0)
+		tree_top = 0;
+}
+
+static void
+draw_tree(void)
+{
+	static int cells[5] = { -2 }, cells_seven = -1;	/* (each look's sheets have an index of their own) */
+	int y0 = side_y(), ly = y0 + TREE_HEAD, lh = panel_y() - ly - 2, shown = tree_shown(), bar = tree_count > shown ? UI_SCROLL_W : 0, i;
+
+	if (!tree_on)
+		return;
+	if (cells[0] == -2 || cells_seven != ui_seven) {
+		cells_seven = ui_seven;
+		static const char *const names[5] = { "folder", "folder-open", "c-source", "c-header", "file" };
+
+		for (i = 0; i < 5; i++)
+			cells[i] = ui_icon_of(names[i]);
+	}
+	ui_fill(window, 0, y0, TREE_W + 3, panel_y() - y0, UI_FACE);
+	ui_icon(window, ui_gc, 4, y0 + 3, cells[1], 16);
+	ui_text_fit(window, 24, y0 + 5, TREE_W - 50, tree_root[1] ? leaf_of(tree_root) : "/", BLACK);
+	ui_tool(window, TREE_W - 22, y0 + 2, 20, 18, UI_G_UP, tree_root[1] ? 0 : 2);
+	ui_fill(window, 2, ly, TREE_W - 2, lh, WHITE);
+	for (i = 0; i < shown && tree_top + i < tree_count; i++) {
+		int k = tree_top + i, ry = ly + 2 + i * TREE_ROW, x = 6 + tree[k].depth * 12, chosen = !strcmp(tree[k].path, path), cell;
+		const char *name = leaf_of(tree[k].path), *dot = strrchr(name, '.');
+
+		if (chosen)
+			ui_fill(window, 4, ry, TREE_W - 6 - bar, TREE_ROW, UI_SELECTED);
+		GrSetGCForeground(ui_gc, chosen ? WHITE : MWRGB(100, 100, 100));
+		if (tree[k].folder && tree[k].open)
+			point_down(x + 3, ry + 7, 3);
+		else if (tree[k].folder)
+			ui_glyph_point(window, x + 1, ry + 9, 3, 1);
+		cell = tree[k].folder ? cells[tree[k].open] : dot && !strcmp(dot, ".c") ? cells[2] : dot && !strcmp(dot, ".h") ? cells[3] : cells[4];
+		ui_icon(window, ui_gc, x + 9, ry + 1, cell, 16);
+		ui_text_fit(window, x + 28, ry + 3, TREE_W - 8 - bar - x - 28, name, chosen ? WHITE : BLACK);
+	}
+	if (bar)
+		ui_scrollbar(window, TREE_W - 2 - UI_SCROLL_W, ly + 2, lh - 4, tree_count, shown, tree_top);
+	ui_bevel(window, 2, ly, TREE_W - 2, lh, 1);
 }
 
 /* Puts a text, or a number, at the end of another; where that ends is returned. */
@@ -680,17 +1115,25 @@ static int status_whole = 1;	/* its ground and edge are to be drawn too (draw_al
 static void
 draw_status(void)
 {
-	static const char *const asks[] = { "", "Find: ", "Go to line: ", "Save as: " };
+	static const char *const asks[] = { "", "Find: ", "Go to line: ", "Save as: ", "Replace: ", "Replace it with: " };
 	static char left_shown[400], right_shown[48];
 	static int left_wide;
 	char text[400], where[48];
-	int y = height - STATUS, n, both;
+	int y = height - STATUS, n, both, k;
 
+	if ((doc_now | doc_count << 8 | tx_modified << 16) != tabs_drawn)
+		draw_doc_tabs();
 	if (asking)
 		snprintf(text, sizeof text, "%s%s_   (Enter, or Escape to leave)", asks[asking], answer);
 	else {
 		n = (int)(put(put(put(text, path), tx_modified ? " *" : ""), "   ") - text);
 		strncat(text, notice, sizeof text - 1 - (size_t)n);
+		/* nothing to say: what the compiler said of the cursor's line, if anything */
+		for (k = 0; !notice[0] && k < problem_count; k++)
+			if (problems[k].line == tx_y + 1) {
+				snprintf(text + n, sizeof text - (size_t)n, "%s", problems[k].text);
+				break;
+			}
 	}
 	put_number(put(put_number(put(where, "line "), tx_y + 1), ", column "), tx_x + 1);
 	/* (a text too long for its room runs under the other, which is then drawn over it again) */
@@ -730,8 +1173,7 @@ draw_panel(void)
 
 		if (i == P_PROBLEMS && problem_count)
 			put(put_number(put(end, " ("), problem_count), ")");
-		if (i == panel)
-			ui_fill(window, 4 + i * 96, y + 2, 92, TAB_H - 2, WHITE);
+		draw_tab(4 + i * 96, y + (i == panel ? 1 : 2), 94, TAB_H - (i == panel ? 1 : 2), i == panel);
 		ui_text(window, 10 + i * 96, y + 3, label, -1, BLACK, 0);
 	}
 	ui_fill(window, 0, y + TAB_H, width, PANEL_H - TAB_H, WHITE);
@@ -740,10 +1182,14 @@ draw_panel(void)
 	for (i = 0; i < shown && first + i < count; i++) {
 		int k = first + i, py = y + TAB_H + 2 + i * 15;
 
-		if (panel == P_OUTPUT)
-			ui_text_fit(window, 6, py, width - 12, out_lines[k], BLACK);
+		if (panel == P_OUTPUT)	/* the compiler's errors red, its warnings orange: a click goes there */
+			ui_text_fit(window, 6, py, width - 12, out_lines[k], strstr(out_lines[k], ": error") ? MWRGB(200, 0, 0) :
+				    strstr(out_lines[k], ": warning") ? MWRGB(170, 100, 0) : BLACK);
 		else if (panel == P_PROBLEMS) {
-			put_number(put(label, "line "), problems[k].line);
+			if (problems[k].line)
+				put_number(put(label, "line "), problems[k].line);
+			else
+				put(label, "elsewhere");
 			ui_text(window, 6, py, label, -1, problems[k].error ? MWRGB(200, 0, 0) : MWRGB(170, 100, 0), 0);
 			ui_text_fit(window, 76, py, width - 82, problems[k].text, BLACK);
 		} else
@@ -752,11 +1198,22 @@ draw_panel(void)
 	out_fresh = 0;
 }
 
+static void layout(void);
+
 static void
 draw_all(void)
 {
+	if (ui_restyle()) {	/* (Settings changed the look: a word of memory read) */
+		ui_menu_restyle();
+		layout();
+	}
 	draw_menu_bar();
 	draw_tools();
+	draw_doc_tabs();
+	draw_tree();
+	if (tree_on)
+		ui_fill(window, TREE_W, editor_y(), 3, panel_y() - editor_y(), UI_FACE);
+	match_find(match_line, match_col);	/* (the cursor may have been put elsewhere) */
 	draw_editor_from(top);
 	draw_panel();
 	status_whole = 1;
@@ -810,7 +1267,7 @@ view_moved(int was)
 		draw_editor_from(top);
 		return;
 	}
-	GrCopyArea(window, ui_gc, 0, y + (by < 0 ? -by * ui_fh : 0), width - UI_SCROLL_W, stay * ui_fh, window, 0, y + (by > 0 ? by * ui_fh : 0),
+	GrCopyArea(window, ui_gc, ex, y + (by < 0 ? -by * ui_fh : 0), width - UI_SCROLL_W - ex, stay * ui_fh, window, ex, y + (by > 0 ? by * ui_fh : 0),
 		   MWROP_COPY);
 	memmove(row_line + (by < 0 ? -by : 0), row_line + (by > 0 ? by : 0), (size_t)stay * sizeof row_line[0]);
 	/* (the bar the cursor left behind goes first: a line drawn with the cursor on it forgets it) */
@@ -847,6 +1304,7 @@ go_to_line(int line)
 	if (tx_y < top || tx_y >= top + rows)
 		top = tx_y > rows / 3 ? tx_y - rows / 3 : 0;
 	left = 0;
+	match_find(match_line, match_col);
 	draw_editor_from(top);
 	draw_status();
 }
@@ -967,6 +1425,7 @@ problems_from(const char *text)
 			if (at[0] == ':' && isdigit((unsigned char)at[1]) && at > text) {
 				struct problem *p = &problems[problem_count];
 				const char *what = at + 1;
+				int name = (int)(at - text);
 
 				p->line = (int)strtol(at + 1, (char **)&what, 10);
 				if (*what != ':')
@@ -975,6 +1434,9 @@ problems_from(const char *text)
 				p->error = !!memmem(what, (size_t)(text + length - what), "error", 5);
 				if (!p->error && !memmem(what, (size_t)(text + length - what), "warning", 7))
 					break;
+				/* another file's (a header's): at no line of this one, its whole line said */
+				if (!((name == (int)strlen(path) && !strncmp(text, path, (size_t)name)) || (name == 16 && !strncmp(text, "/tmp/ide-check.c", 16))))
+					p->line = 0, what = text;
 				n = (int)(text + length - what) < (int)sizeof p->text - 1 ? (int)(text + length - what) : (int)sizeof p->text - 1;
 				memcpy(p->text, what, (size_t)n);
 				memset(p->text + n, 0, sizeof p->text - (size_t)n);	/* (whole: two lists of them are compared) */
@@ -1158,6 +1620,8 @@ debug_changed(void)
 		draw_all();
 		return;
 	}
+	if (run_doc >= 0 && run_doc != doc_now)
+		doc_show(run_doc);	/* (the stop is in the file being debugged) */
 	if (dbg_signal)
 		snprintf(text, sizeof text, "signal %d (%s) at line %d: Go on passes it to the program", dbg_signal, strsignal(dbg_signal), dbg_line_now);
 	else
@@ -1174,12 +1638,22 @@ debug_changed(void)
 	draw_all();
 }
 
+/* The file the debugger reads: the program, or with no MMU the ELF it was made from. */
+static const char *
+program_elf(void)
+{
+	static char elf[340];
+
+	snprintf(elf, sizeof elf, "%s%s", program, flat_machine ? ".elf" : "");
+	return elf;
+}
+
 static void
 debug_begin(void)
 {
 	int ends[2];
 
-	if (!dbg_load(program)) {
+	if (!dbg_load(program_elf())) {
 		say("this program has nothing for a debugger in it");
 		return;
 	}
@@ -1208,12 +1682,41 @@ debug_begin(void)
 	draw_status();
 }
 
+/* A build that worked, and what it goes on to. */
+static void
+built_ok(void)
+{
+	char text[160];
+
+	snprintf(text, sizeof text, "built: %.100s%s", program, problem_count ? ", with warnings" : "");
+	say(text);
+	if (then_do == C_RUN) {
+		char *const words[] = { program, NULL };
+
+		job_start(J_RUN, words);
+		say("running");
+		panel = P_OUTPUT;
+	} else if (then_do == C_DEBUG)
+		debug_begin();
+	then_do = 0;
+	draw_all();
+}
+
 static void
 job_ended(int kind, int status)
 {
 	char text[160];
 	int errors = 0, i;
 
+	if (kind == J_FLAT) {
+		if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+			say("not built: elf2flt did not make the program");
+			then_do = 0;
+			draw_all();
+		} else
+			built_ok();
+		return;
+	}
 	if (kind == J_RUN) {
 		if (WIFSIGNALED(status))
 			snprintf(text, sizeof text, "the program was ended by signal %d (%s)", WTERMSIG(status), strsignal(WTERMSIG(status)));
@@ -1231,6 +1734,8 @@ job_ended(int kind, int status)
 			clean_add(check_sum);
 		return;
 	}
+	if (run_doc >= 0 && run_doc != doc_now)
+		doc_show(run_doc);	/* (its problems are that file's) */
 	problems_from(job_text);
 	for (i = 0; i < problem_count; i++)
 		errors += problems[i].error;
@@ -1238,22 +1743,16 @@ job_ended(int kind, int status)
 		snprintf(text, sizeof text, "not built: %d error%s", errors, errors == 1 ? "" : "s");
 		say(text);
 		panel = problem_count ? P_PROBLEMS : P_OUTPUT;
-		if (problem_count)
+		if (problem_count && problems[0].line)
 			go_to_line(problems[0].line);
-	} else {
-		snprintf(text, sizeof text, "built: %s%s", program, problem_count ? ", with warnings" : "");
-		say(text);
-		if (then_do == C_RUN) {
-			char *const words[] = { program, NULL };
+		then_do = 0;
+		draw_all();
+	} else if (flat_machine) {
+		char *const words[] = { "elf2flt", (char *)program_elf(), program, NULL };
 
-			job_start(J_RUN, words);
-			say("running");
-			panel = P_OUTPUT;
-		} else if (then_do == C_DEBUG)
-			debug_begin();
-	}
-	then_do = 0;
-	draw_all();
+		job_start(J_FLAT, words);
+	} else
+		built_ok();
 }
 
 /* Looks at what runs beside; true when something was drawn. */
@@ -1307,13 +1806,15 @@ poll_all(void)
 		draw_panel();
 	/* nothing typed for a while: the compiler looks at the text as it is, quietly */
 	if (checking_on && unchecked && !edited_now && job.kind == J_NONE && dbg_state == DBG_GONE && milliseconds() - edited_at > 1500) {
-		static char *const check[] = { "tcc", "-static", "-mfpu", "-c", "/tmp/ide-check.c", "-o", "/tmp/ide-check.o", NULL };
+		static char folder[300];	/* (a file it includes by "..." is beside the text's own) */
+		static char *const check[] = { "tcc", "-static", "-mfpu", "-I", folder, "-c", "/tmp/ide-check.c", "-o", "/tmp/ide-check.o", NULL };
 		static int file = -1, room;
 		static char *text;
 		struct stat is;
 		int i, n = 0;
 
 		unchecked = 0;
+		snprintf(folder, sizeof folder, "%.*s", strrchr(path, '/') ? (int)(strrchr(path, '/') - path) + 1 : 1, strrchr(path, '/') ? path : ".");
 		check_closed = text_sums(check_sum);
 		if (check_closed && clean_has(check_sum)) {
 			problems_set("");	/* (it said nothing of this text before) */
@@ -1353,7 +1854,7 @@ named(const char *file)
 	char title[340];
 	int n;
 
-	snprintf(path, sizeof path, "%s", file);
+	snprintf(path, sizeof path, "%.299s", file);
 	leaf = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
 	n = (int)strcspn(leaf, ".");
 	snprintf(program, sizeof program, "/tmp/ide-%.*s", n, leaf);
@@ -1375,14 +1876,158 @@ opened(void)
 	unchecked = edited_now = 1;
 }
 
+/* ---- the open files: the one shown is in the globals ---- */
+
 static void
+doc_keep(void)
+{
+	struct doc *d;
+
+	if (doc_now < 0)
+		return;
+	d = &docs[doc_now];
+	snprintf(d->path, sizeof d->path, "%s", path);
+	d->lines = tx_lines, d->count = tx_count, d->room = tx_room;
+	d->x = tx_x, d->y = tx_y, d->ax = tx_ax, d->ay = tx_ay, d->marked = tx_marked, d->modified = tx_modified;
+	d->top = top, d->left = left;
+	d->done = tx_done, d->undone = tx_undone, d->done_count = tx_done_count, d->undone_count = tx_undone_count;
+	d->done_room = tx_done_room, d->undone_room = tx_undone_room;
+	if (!d->problems)
+		d->problems = malloc(sizeof problems);
+	if (d->problems)
+		memcpy(d->problems, problems, sizeof problems);
+	d->problem_count = d->problems ? problem_count : 0;
+	memcpy(d->marks, dbg_marks, sizeof d->marks);
+	d->mark_count = dbg_mark_count;
+}
+
+static void
+doc_take(int i)
+{
+	struct doc *d = &docs[i];
+
+	if (job.kind == J_CHECK)
+		job_stop();
+	doc_now = i;
+	tx_lines = d->lines, tx_count = d->count, tx_room = d->room;
+	tx_x = d->x, tx_y = d->y, tx_ax = d->ax, tx_ay = d->ay, tx_marked = d->marked, tx_modified = d->modified;
+	top = d->top, left = d->left;
+	tx_done = d->done, tx_undone = d->undone, tx_done_count = d->done_count, tx_undone_count = d->undone_count;
+	tx_done_room = d->done_room, tx_undone_room = d->undone_room;
+	problem_count = d->problems ? d->problem_count : 0, problem_top = 0;
+	if (d->problems)
+		memcpy(problems, d->problems, sizeof problems);
+	memcpy(dbg_marks, d->marks, sizeof dbg_marks);
+	dbg_mark_count = d->mark_count;
+	named(d->path);
+	sx_known = 0, shown_upto = 0;
+	tx_touched = 1 << 30, tx_shifted = 0, tx_touched_last = -1;
+	unchecked = edited_now = 1;
+	match_line[0] = match_line[1] = -1;
+	leaving = 0;
+}
+
+/* Shows another open file; the caller draws. */
+static void
+doc_show(int i)
+{
+	if (i == doc_now || i < 0 || i >= doc_count)
+		return;
+	doc_keep();
+	doc_take(i);
+}
+
+/* A new empty file in the globals, as the last tab. */
+static void
+doc_add(void)
+{
+	doc_keep();
+	memset(&docs[doc_count], 0, sizeof docs[0]);
+	tx_lines = NULL, tx_count = tx_room = 0;
+	tx_done = tx_undone = NULL;
+	tx_done_count = tx_undone_count = tx_done_room = tx_undone_room = 0;
+	tx_x = tx_y = tx_marked = tx_modified = 0;
+	problem_count = dbg_mark_count = 0;
+	match_line[0] = match_line[1] = -1;
+	doc_now = doc_count++;
+}
+
+static int
+doc_find(const char *file)
+{
+	int i;
+
+	for (i = 0; i < doc_count; i++)
+		if (!strcmp(i == doc_now ? path : docs[i].path, file))
+			return i;
+	return -1;
+}
+
+static int may_drop(void);
+
+/* A file in a tab of its own, or the tab it is in already; with every tab taken, in the shown
+ * one's place if it may go. False if it was not opened. */
+static int
 open_file(const char *file)
 {
+	int i = doc_find(file);
+
+	if (i >= 0) {
+		doc_show(i);
+		return 1;
+	}
+	if (doc_count < DOCS)
+		doc_add();
+	else if ((doc_now == run_doc && !can(C_BUILD)) || !may_drop()) {
+		say("every tab is taken: close one first");
+		return 0;
+	} else if (doc_now == run_doc)
+		run_doc = -1;
 	if (job.kind == J_CHECK)
 		job_stop();
 	named(file);
 	say(tx_load(path) ? "" : "a new file");
 	opened();
+	return 1;
+}
+
+/* A new file to write in: untitled.c, or untitled2.c and on when that is taken. */
+static void
+fresh_doc(void)
+{
+	static const char *const fresh = "#include <stdio.h>\n\nint main(void)\n{\n    printf(\"hello\\n\");\n    return 0;\n}\n";
+	char name[64];
+	int n;
+
+	for (n = 1; n < 100; n++) {
+		snprintf(name, sizeof name, n == 1 ? "/root/untitled.c" : "/root/untitled%d.c", n);
+		if (access(name, F_OK) != 0 && doc_find(name) < 0)
+			break;
+	}
+	if (!open_file(name))
+		return;
+	if (tx_count == 1 && !tx_lines[0][0]) {
+		tx_insert(0, 0, fresh, (int)strlen(fresh));
+		tx_x = tx_y = 0;
+	}
+	opened();
+}
+
+/* Takes an open file away (the caller asked about its changes); the last gives way to a new one. */
+static void
+doc_close(int i)
+{
+	doc_show(i);
+	tx_forget();
+	free(tx_lines), free(tx_done), free(tx_undone), free(docs[i].problems);
+	memmove(docs + i, docs + i + 1, (size_t)(doc_count - i - 1) * sizeof docs[0]);
+	doc_count--;
+	run_doc = run_doc == i ? -1 : run_doc > i ? run_doc - 1 : run_doc;
+	doc_now = -1;
+	if (doc_count)
+		doc_take(i < doc_count ? i : doc_count - 1);
+	else
+		fresh_doc();
 }
 
 /* An example is the user's copy of it once there is one: /root/NAME.c. */
@@ -1393,11 +2038,12 @@ open_example(int n)
 
 	snprintf(own, sizeof own, "/root/%s.c", examples[n]);
 	snprintf(source, sizeof source, "/usr/share/example-%s.c", examples[n]);
-	if (access(own, R_OK) == 0) {
+	if (access(own, R_OK) == 0 || doc_find(own) >= 0) {
 		open_file(own);
 		return;
 	}
-	open_file(source);
+	if (!open_file(source))
+		return;
 	named(own);
 	tx_modified = 1;
 	say("an example: Save keeps your copy of it");
@@ -1407,6 +2053,7 @@ static void
 save(void)
 {
 	say(tx_save(path) ? "saved" : "cannot write the file");
+	tree_read();	/* (it may be a new file of the tree's) */
 }
 
 static void
@@ -1419,43 +2066,61 @@ others(GR_EVENT *event)
 /* ---- the menus ---- */
 
 static struct ui_menu_item example_items[12];
+#define EXAMPLES_ITEM 6
 static const struct ui_menu_item file_items[] = {
-	{ "New", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
-	{ "Examples", -1, 0, example_items, 0, UI_MENU_LINE }, { "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
+	{ "New   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
+	{ "Save all   Ctrl+Shift+S", -1, C_SAVE_ALL }, { "Close the tab   Ctrl+W", -1, C_CLOSE },
+	{ "Examples", -1, 0, example_items, 0, UI_MENU_LINE }, { "Show its folder in the tree", -1, C_TREE_HERE },
+	{ "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
 };
 static const struct ui_menu_item edit_items[] = {
 	{ "Undo   Ctrl+Z", -1, C_UNDO }, { "Redo   Ctrl+Y", -1, C_REDO }, { "Cut   Ctrl+X", -1, C_CUT, NULL, 0, UI_MENU_LINE },
 	{ "Copy   Ctrl+C", -1, C_COPY }, { "Paste   Ctrl+V", -1, C_PASTE }, { "Delete", -1, C_DELETE },
-	{ "Find...   Ctrl+F", -1, C_FIND, NULL, 0, UI_MENU_LINE }, { "Find next   F3", -1, C_FIND_NEXT }, { "Go to line...   Ctrl+G", -1, C_GOTO },
+	{ "Find...   Ctrl+F", -1, C_FIND, NULL, 0, UI_MENU_LINE }, { "Find next   F3", -1, C_FIND_NEXT },
+	{ "Find the one before   Shift+F3", -1, C_FIND_PREV }, { "Replace...   Ctrl+H", -1, C_REPLACE },
+	{ "Go to line...   Ctrl+G", -1, C_GOTO, NULL, 0, UI_MENU_LINE },
 };
 static const struct ui_menu_item selection_items[] = {
-	{ "Select all   Ctrl+A", -1, C_ALL }, { "Select the line   Ctrl+L", -1, C_LINE }, { "Select the word   Ctrl+W", -1, C_WORD },
+	{ "Select all   Ctrl+A", -1, C_ALL }, { "Select the line   Ctrl+L", -1, C_LINE }, { "Select the word   Ctrl+D", -1, C_WORD },
 	{ "Indent   Tab", -1, C_INDENT, NULL, 0, UI_MENU_LINE }, { "Unindent   Shift+Tab", -1, C_UNINDENT }, { "Comment or uncomment   Ctrl+/", -1, C_COMMENT },
 };
-static const struct ui_menu_item view_items[] = {
-	{ "The panel below", -1, C_PANEL }, { "Line numbers", -1, C_NUMBERS }, { "Check while typing", -1, C_CHECKING },
+#define VIEW_ITEMS 6
+static const struct ui_menu_item view_items[VIEW_ITEMS] = {
+	{ "The folder's tree   Ctrl+B", -1, C_TREE }, { "The panel below", -1, C_PANEL }, { "Line numbers", -1, C_NUMBERS },
+	{ "Check while typing", -1, C_CHECKING }, { "Next tab   Ctrl+Tab", -1, C_NEXT_TAB, NULL, 0, UI_MENU_LINE },
+	{ "Tab before   Ctrl+Shift+Tab", -1, C_PREV_TAB },
 };
 static const struct ui_menu_item run_items[] = {
-	{ "Build   F7", -1, C_BUILD }, { "Run   F6", -1, C_RUN }, { "Debug, or go on   F5", -1, C_DEBUG }, { "Stop   Shift+F5", -1, C_STOP },
-	{ "Step over   F10", -1, C_OVER, NULL, 0, UI_MENU_LINE }, { "Step into   F11", -1, C_INTO }, { "Step out   F12", -1, C_OUT },
+	{ "Build   F7", -1, C_BUILD }, { "Run   Ctrl+F5 or F6", -1, C_RUN }, { "Debug, or go on   F5", -1, C_DEBUG }, { "Stop   Shift+F5", -1, C_STOP },
+	{ "Step over   F10", -1, C_OVER, NULL, 0, UI_MENU_LINE }, { "Step into   F11", -1, C_INTO }, { "Step out   Shift+F11", -1, C_OUT },
 	{ "Mark or unmark the line   F9", -1, C_MARK, NULL, 0, UI_MENU_LINE }, { "Unmark every line", -1, C_UNMARK_ALL },
 };
 static const struct ui_menu_item help_items[] = { { "Keys", -1, C_KEYS }, { "About", -1, C_ABOUT } };
+#define FILE_ITEMS ((int)(sizeof file_items / sizeof file_items[0]))
 static struct { const struct ui_menu_item *items; int count; } menus[6] = {
-	{ file_items, 6 }, { edit_items, 9 }, { selection_items, 6 }, { view_items, 3 }, { run_items, 9 }, { help_items, 2 },
+	{ file_items, FILE_ITEMS }, { edit_items, 11 }, { selection_items, 6 }, { view_items, VIEW_ITEMS }, { run_items, 9 }, { help_items, 2 },
 };
 
 static void
 menu_open(int which, int keyboard)
 {
-	static struct ui_menu_item files[6];
+	static struct ui_menu_item files[FILE_ITEMS], views[VIEW_ITEMS];
 	struct { int x, y; } info;
+	int i;
 
 	ui_window_origin(window, &info.x, &info.y);
 	if (which == 0) {	/* (the examples are found when the program starts: their count is not constant) */
 		memcpy(files, file_items, sizeof files);
-		files[4].sub_count = example_count;
-		ui_menu_open(files, 6, info.x + menu_x[0], info.y + MENU_H, 0, keyboard);
+		files[EXAMPLES_ITEM].sub_count = example_count;
+		ui_menu_open(files, FILE_ITEMS, info.x + menu_x[0], info.y + MENU_H, 0, keyboard);
+		return;
+	}
+	if (which == 3) {	/* (a tick by each choice that is on) */
+		memcpy(views, view_items, sizeof views);
+		for (i = 0; i < 4; i++)
+			if (i == 0 ? tree_on : i == 1 ? panel_on : i == 2 ? numbers_on : checking_on)
+				views[i].flags |= UI_MENU_CHECK;
+		ui_menu_open(views, VIEW_ITEMS, info.x + menu_x[3], info.y + MENU_H, 0, keyboard);
 		return;
 	}
 	ui_menu_open(menus[which].items, menus[which].count, info.x + menu_x[which], info.y + MENU_H, 0, keyboard);
@@ -1544,7 +2209,7 @@ select_word(void)
 static int
 save_as(void)
 {
-	char where[300], chosen[300], *slash;
+	char where[300], chosen[600], *slash;
 
 	snprintf(where, sizeof where, "%s", path);
 	if ((slash = strrchr(where, '/')) != NULL)
@@ -1571,7 +2236,7 @@ may_drop(void)
 
 	if (!tx_modified)
 		return 1;
-	if (script[0]) {
+	if (scripted_run) {
 		if (leaving)
 			return 1;
 		leaving = 1;
@@ -1586,6 +2251,72 @@ may_drop(void)
 	return answer == 1 || (answer == 0 && !tx_modified);
 }
 
+/* The same of every open file, each shown while it is asked about. */
+static int
+may_drop_all(void)
+{
+	int i, any = 0;
+
+	for (i = 0; i < doc_count; i++)
+		any |= i == doc_now ? tx_modified : docs[i].modified;
+	if (!any)
+		return 1;
+	if (scripted_run)
+		return may_drop();
+	for (i = 0; i < doc_count; i++)
+		if (i == doc_now ? tx_modified : docs[i].modified) {
+			doc_show(i);
+			draw_all();
+			if (!may_drop())
+				return 0;
+		}
+	return 1;
+}
+
+/* Closes a tab, once its changes are saved or let go. */
+static void
+close_tab(int i)
+{
+	if (i == run_doc && !can(C_BUILD)) {
+		say("its program is being built or run: Stop it first");
+		draw_status();
+		return;
+	}
+	doc_show(i);
+	if (!may_drop()) {
+		draw_all();
+		return;
+	}
+	doc_close(i);
+	draw_all();
+}
+
+/* A text file, as far as its first bytes say: no zeros, and not too large to edit. */
+static int
+looks_like_text(const char *file)
+{
+	char head[512];
+	struct stat is;
+	int fd = open(file, O_RDONLY), n;
+
+	if (fd < 0)
+		return 1;
+	n = (int)read(fd, head, sizeof head);
+	n = fstat(fd, &is) == 0 && is.st_size > (1 << 20) ? -2 : n;
+	close(fd);
+	return n != -2 && (n <= 0 || !memchr(head, 0, (size_t)n));
+}
+
+/* The folder of the file shown, as the tree's. */
+static void
+tree_here(void)
+{
+	snprintf(tree_root, sizeof tree_root, "%.*s", strrchr(path, '/') && strrchr(path, '/') != path ? (int)(strrchr(path, '/') - path) : 1,
+		 strrchr(path, '/') ? path : "/");
+	tree_top = 0;
+	tree_read();
+}
+
 static void
 build(int then)
 {
@@ -1594,16 +2325,23 @@ build(int then)
 
 	if (job.kind == J_CHECK)
 		job_stop();
+	static char elf[340];
+	char *const linked[] = { "tcc", "-shared", "-nostdlib", "-mfpu", "/usr/lib/flatcrt.o", "/usr/lib/crti.o", "-g", path, "-lgles", "-lnano-X",
+				 "-lmcw", "-lc", "/usr/lib/tcc/libtcc1.a", "/usr/lib/crtn.o", "-o", elf, NULL };
+
 	if (tx_modified && !tx_save(path)) {	/* (a file as it was opened is not written again) */
 		say("cannot write the file");
 		return;
 	}
+	/* no MMU: linked as cc links it, and its ELF kept for the debugger (J_FLAT makes the program) */
+	snprintf(elf, sizeof elf, "%s", program_elf());
+	run_doc = doc_now;
 	then_do = then;
 	problem_count = 0;
 	out_line("");
 	snprintf(shell, sizeof shell, "cc -g '%s' -o '%s' 2>&1", path, program);
 	out_line(shell);
-	job_start(J_BUILD, words);
+	job_start(J_BUILD, flat_machine ? linked : words);
 	say("building...");
 	panel = P_OUTPUT;
 	unchecked = 0;
@@ -1613,11 +2351,12 @@ static void
 help(int about)
 {
 	static const char *const keys[] = {
-		"F7 builds, F6 builds and runs, F5 builds and runs under the debugger (and goes on from a stop), Shift+F5 stops.",
-		"F9 marks the line to stop at (or click before its number). F10 steps over a line, F11 into a call, F12 out of the function.",
-		"Ctrl+Z and Ctrl+Y take a change back and make it again. Ctrl+F finds, F3 finds the next, Ctrl+G goes to a line.",
-		"Tab and Shift+Tab indent the selected lines, Ctrl+/ comments them. Ctrl+L selects the line, Ctrl+W the word.",
-		"A red bar before a line is the compiler's error there, an orange one its warning: Problems below says what.",
+		"F7 builds, F6 or Ctrl+F5 builds and runs, F5 builds and runs under the debugger (and goes on from a stop), Shift+F5 stops.",
+		"F9 marks the line to stop at (or click before its number). F10 steps over a line, F11 into a call, Shift+F11 out of the function.",
+		"Ctrl+Z and Ctrl+Y take a change back and make it again. Ctrl+F finds, F3 and Shift+F3 the next and the one before, Ctrl+H replaces.",
+		"Tab and Shift+Tab indent the selected lines, Ctrl+/ comments them. Ctrl+L selects the line, Ctrl+D the word, Ctrl+G goes to a line.",
+		"Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+W: a new file, open, save, close the tab. Ctrl+Tab goes round the tabs, Ctrl+B shows the tree.",
+		"A red bar before a line is the compiler's error there, an orange one its warning: Problems below says what, a click goes there.",
 	};
 	static const char *const what[] = {
 		"nxide: an editor, the machine's own C compiler (TinyCC) and a debugger, all running in the machine.",
@@ -1626,7 +2365,7 @@ help(int about)
 	int i;
 
 	out_line("");
-	for (i = 0; i < (about ? 2 : 5); i++)
+	for (i = 0; i < (about ? 2 : 6); i++)
 		out_line(about ? what[i] : keys[i]);
 	show_panel(P_OUTPUT);
 }
@@ -1635,16 +2374,15 @@ static void
 ask(int what, const char *start)
 {
 	asking = what;
-	snprintf(answer, sizeof answer, "%s", start);
+	snprintf(answer, sizeof answer, "%.199s", start);
 	draw_status();
 }
 
 static void
 command_done(int id)
 {
-	static const char *const fresh = "#include <stdio.h>\n\nint main(void)\n{\n    printf(\"hello\\n\");\n    return 0;\n}\n";
-	char chosen[300], *text;
-	int was = tx_y, length, i;
+	char chosen[600], where[300], *text;
+	int was = tx_y, length, i, x0, y0, x1, y1;
 
 	if (!can(id)) {
 		say("not now");
@@ -1657,25 +2395,55 @@ command_done(int id)
 		leaving = 0;
 	switch (id) {
 	case C_NEW:
-		if (!may_drop()) {
-			draw_status();
-			return;
-		}
-		open_file("/root/untitled.c");
-		if (tx_count == 1 && !tx_lines[0][0]) {
-			tx_insert(0, 0, fresh, (int)strlen(fresh));
-			tx_x = tx_y = 0;
-		}
-		opened();
+		fresh_doc();
 		draw_all();
 		return;
 	case C_OPEN:
-		if (may_drop() && ui_choose_file("Open", "/root", ".c .h .txt", chosen, sizeof chosen, others))
+		snprintf(where, sizeof where, "%s", tree_root);
+		if (ui_choose_file("Open", where, ".c .h .txt", chosen, sizeof chosen, others))
 			open_file(chosen);
 		draw_all();
 		return;
 	case C_SAVE:
 		save();
+		draw_tree();
+		break;
+	case C_SAVE_ALL:
+		for (i = 0, x0 = doc_now; i < doc_count; i++)
+			if (i == doc_now ? tx_modified : docs[i].modified) {
+				doc_show(i);
+				save();
+			}
+		doc_show(x0);
+		say("every file saved");
+		draw_all();
+		return;
+	case C_CLOSE:
+		close_tab(doc_now);
+		return;
+	case C_NEXT_TAB:
+	case C_PREV_TAB:
+		doc_show((doc_now + (id == C_NEXT_TAB ? 1 : doc_count - 1)) % doc_count);
+		draw_all();
+		return;
+	case C_TREE:
+		tree_on = !tree_on;
+		resized(width, height);
+		draw_all();
+		return;
+	case C_TREE_HERE:
+		tree_on = 1;
+		tree_here();
+		resized(width, height);
+		draw_all();
+		return;
+	case C_REPLACE:
+		if (tx_selection(&x0, &y0, &x1, &y1) && y0 == y1 && x1 - x0 < (int)sizeof sought)
+			snprintf(sought, sizeof sought, "%.*s", x1 - x0, tx_lines[y0] + x0);
+		ask(ASK_REPLACE, sought);
+		return;
+	case C_FIND_PREV:
+		say(tx_find_back(sought) ? "found" : sought[0] ? "not found" : "Ctrl+F says what to find");
 		break;
 	case C_SAVE_AS:
 		if (script[0]) {	/* (a test's script types the path in the status line) */
@@ -1686,7 +2454,7 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_EXIT:
-		if (!may_drop()) {
+		if (!may_drop_all()) {
 			draw_status();
 			return;
 		}
@@ -1717,6 +2485,8 @@ command_done(int id)
 		tx_delete_selection();
 		break;
 	case C_FIND:
+		if (tx_selection(&x0, &y0, &x1, &y1) && y0 == y1 && x1 - x0 < (int)sizeof sought)
+			snprintf(sought, sizeof sought, "%.*s", x1 - x0, tx_lines[y0] + x0);
 		ask(ASK_FIND, sought);
 		return;
 	case C_FIND_NEXT:
@@ -1771,6 +2541,7 @@ command_done(int id)
 		return;
 	case C_DEBUG:
 		if (dbg_state == DBG_STOPPED) {
+			doc_show(run_doc);	/* (the marks it goes to are that file's) */
 			dbg_go(DBG_RUN);
 			say("running");
 		} else
@@ -1778,7 +2549,7 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_STOP:
-		if (job.kind == J_BUILD || job.kind == J_RUN)
+		if (job.kind == J_BUILD || job.kind == J_RUN || job.kind == J_FLAT)
 			job_stop();
 		dbg_end();
 		then_do = 0;
@@ -1789,6 +2560,10 @@ command_done(int id)
 	case C_OVER:
 	case C_INTO:
 	case C_OUT:
+		if (run_doc != doc_now) {
+			doc_show(run_doc);
+			draw_all();
+		}
 		dbg_step(id == C_OVER ? DBG_OVER : id == C_INTO ? DBG_INTO : DBG_OUT);
 		draw_tools();
 		return;
@@ -1810,13 +2585,14 @@ command_done(int id)
 		help(id == C_ABOUT);
 		return;
 	default:
-		if (id >= C_EXAMPLE && id < C_EXAMPLE + example_count && may_drop()) {
+		if (id >= C_EXAMPLE && id < C_EXAMPLE + example_count) {
 			open_example(id - C_EXAMPLE);
 			draw_all();
 		}
 		return;
 	}
 	changed(was, follow() || tx_marked || id == C_UNDO || id == C_REDO);
+	match_update();
 	if (tools_now() != tools_shown)
 		draw_tools_some(0);
 	draw_status();
@@ -1847,9 +2623,26 @@ ask_key(int ch)
 	} else if (ch == MWKEY_ENTER || ch == '\r' || ch == '\n') {
 		asking = ASK_NONE;
 		if (what == ASK_FIND) {
-			snprintf(sought, sizeof sought, "%s", answer);
+			snprintf(sought, sizeof sought, "%.63s", answer);
 			command(C_FIND_NEXT);
 			return;
+		}
+		if (what == ASK_REPLACE) {
+			snprintf(sought, sizeof sought, "%.63s", answer);
+			ask(ASK_WITH, replacement);
+			return;
+		}
+		if (what == ASK_WITH) {
+			char text[160];
+			int was = tx_y, count;
+
+			snprintf(replacement, sizeof replacement, "%.63s", answer);
+			tx_step++;
+			count = tx_replace_all(sought, replacement);
+			snprintf(text, sizeof text, "%d replaced", count);
+			say(text);
+			changed(was, follow() || 1);
+			match_update();
 		}
 		if (what == ASK_GOTO)
 			go_to_line(atoi(answer));
@@ -1877,32 +2670,43 @@ key(int ch, int modifiers)
 		ask_key(ch);
 		return;
 	}
+	/* (Ctrl+H's control code is Backspace's) */
+	if ((modifiers & MWKMOD_CTRL) && (ch == 'h' || ch == 'H')) {
+		command(C_REPLACE);
+		return;
+	}
+	if ((modifiers & MWKMOD_CTRL) && (ch == MWKEY_TAB || ch == MWKEY_PAGEUP || ch == MWKEY_PAGEDOWN)) {
+		command(ch == MWKEY_PAGEUP || (ch == MWKEY_TAB && shift) ? C_PREV_TAB : C_NEXT_TAB);
+		return;
+	}
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
 	if ((modifiers & MWKMOD_CTRL) && ch < 128 && (isalpha(ch) || ch == '/'))
 		ch = ch == '/' ? 31 : tolower(ch) - 'a' + 1;
 	switch (ch) {
 	case 1: id = C_ALL; break;
+	case 2: id = C_TREE; break;
 	case 3: id = C_COPY; break;
+	case 4: id = C_WORD; break;
 	case 6: id = C_FIND; break;
 	case 7: id = C_GOTO; break;
 	case 12: id = C_LINE; break;
 	case 14: id = C_NEW; break;
 	case 15: id = C_OPEN; break;
 	case 17: id = C_EXIT; break;
-	case 19: id = C_SAVE; break;
+	case 19: id = shift ? C_SAVE_ALL : C_SAVE; break;
 	case 22: id = C_PASTE; break;
-	case 23: id = C_WORD; break;
+	case 23: id = C_CLOSE; break;
 	case 24: id = C_CUT; break;
 	case 25: id = C_REDO; break;
 	case 26: id = C_UNDO; break;
 	case 31: id = C_COMMENT; break;
-	case MWKEY_F3: id = C_FIND_NEXT; break;
-	case MWKEY_F5: id = shift ? C_STOP : C_DEBUG; break;
+	case MWKEY_F3: id = shift ? C_FIND_PREV : C_FIND_NEXT; break;
+	case MWKEY_F5: id = shift ? C_STOP : (modifiers & MWKMOD_CTRL) ? C_RUN : C_DEBUG; break;
 	case MWKEY_F6: id = C_RUN; break;
 	case MWKEY_F7: id = C_BUILD; break;
 	case MWKEY_F9: id = C_MARK; break;
 	case MWKEY_F10: id = C_OVER; break;
-	case MWKEY_F11: id = C_INTO; break;
+	case MWKEY_F11: id = shift ? C_OUT : C_INTO; break;
 	case MWKEY_F12: id = C_OUT; break;
 	}
 	if (id) {
@@ -1947,15 +2751,27 @@ key(int ch, int modifiers)
 		break;
 	case MWKEY_ENTER: case '\n': {
 		/* the new line begins where this one does, and a step further in after a brace */
-		char lead[200] = "\n";
+		char lead[320] = "\n";
 
 		tx_delete_selection();
 		n = (int)strspn(tx_lines[tx_y], " ");
 		n = n > tx_x ? tx_x : n;
 		n = n > 150 ? 150 : n;
 		memset(lead + 1, ' ', (size_t)n);
-		if (tx_x > 0 && tx_lines[tx_y][tx_x - 1] == '{')
-			memset(lead + 1 + n, ' ', TX_TAB), n += TX_TAB;
+		if (tx_x > 0 && tx_lines[tx_y][tx_x - 1] == '{') {
+			memset(lead + 1 + n, ' ', TX_TAB);
+			/* between a pair of braces: the closing one goes to a line of its own under the opening one's */
+			if (tx_lines[tx_y][tx_x] == '}') {
+				int y = tx_y;
+
+				lead[1 + n + TX_TAB] = '\n';
+				memset(lead + 2 + n + TX_TAB, ' ', (size_t)n);
+				tx_insert(tx_x, tx_y, lead, 2 * n + TX_TAB + 2);
+				tx_x = n + TX_TAB, tx_y = y + 1;
+				break;
+			}
+			n += TX_TAB;
+		}
 		tx_insert(tx_x, tx_y, lead, n + 1);
 		break;
 	}
@@ -2015,6 +2831,7 @@ key(int ch, int modifiers)
 			draw_line(n);
 	} else
 		changed(was, n || had || tx_selection(&x0, &y0, &x1, &y1));
+	match_update();
 	if (tools_now() != tools_shown)
 		draw_tools_some(0);
 	draw_status();
@@ -2032,15 +2849,82 @@ place(int px, int py, int *x, int *y)
 	*x = column, *y = line;
 }
 
+/* A line of the output the compiler wrote ("FILE.c:LINE: ..."): that file, at that line. */
+static void
+output_clicked(const char *text)
+{
+	const char *at;
+	char file[300];
+
+	for (at = text; *at; at++)
+		if (at[0] == ':' && isdigit((unsigned char)at[1]) && at - text > 2 && at[-2] == '.' && (at[-1] == 'c' || at[-1] == 'h')) {
+			snprintf(file, sizeof file, "%.*s", (int)(at - text), text);
+			if (strcmp(file, path) && access(file, R_OK) == 0 && !open_file(file))
+				return;
+			draw_all();
+			go_to_line(atoi(at + 1));
+			return;
+		}
+}
+
+/* A click in the tree: a folder opens or closes, a file opens in its tab. */
+static void
+tree_clicked(int x, int y)
+{
+	int ly = side_y() + TREE_HEAD, shown = tree_shown(), k, i;
+	char *slash;
+
+	if (y < ly) {
+		if (x >= TREE_W - 22 && tree_root[1] && (slash = strrchr(tree_root, '/')) != NULL) {
+			slash[slash == tree_root] = 0;	/* (up to the folder above: "/" at the top) */
+			tree_top = 0;
+			tree_read();
+			draw_tree();
+		}
+		return;
+	}
+	if (tree_count > shown && x >= TREE_W - 2 - UI_SCROLL_W) {
+		tree_top = ui_scroll_to(y, ly + 2, panel_y() - ly - 6, tree_count, shown);
+		draw_tree();
+		return;
+	}
+	k = tree_top + (y - ly - 2) / TREE_ROW;
+	if (k < 0 || k >= tree_count || y < ly + 2 || (y - ly - 2) / TREE_ROW >= shown)
+		return;
+	if (tree[k].folder) {
+		for (i = 0; i < tree_opened_count && strcmp(tree_opened[i], tree[k].path); i++)
+			continue;
+		if (i < tree_opened_count)
+			memmove(tree_opened[i], tree_opened[i + 1], (size_t)(--tree_opened_count - i) * sizeof tree_opened[0]);
+		else if (tree_opened_count < (int)(sizeof tree_opened / sizeof tree_opened[0]))
+			strcpy(tree_opened[tree_opened_count++], tree[k].path);
+		tree_read();
+		draw_tree();
+		return;
+	}
+	if (!looks_like_text(tree[k].path)) {
+		say("not a text file");
+		draw_status();
+		return;
+	}
+	open_file(tree[k].path);
+	draw_all();
+}
+
 static void
 pressed(GR_EVENT *event)
 {
-	int x = event->button.x, y = event->button.y, i, shown = (PANEL_H - TAB_H - 2) / 15;
+	int x = event->button.x, y = event->button.y, i, shown = (PANEL_H - TAB_H - 2) / 15, closing;
 
 	if (ui_wheel(event)) {
 		int by = 3 * ui_wheel_sum(event);
 
-		if (panel_on && y >= panel_y()) {
+		if (tree_on && x < TREE_W && y >= side_y() && y < panel_y()) {
+			tree_top += by;
+			tree_top = tree_top > tree_count - tree_shown() ? tree_count - tree_shown() : tree_top;
+			tree_top = tree_top < 0 ? 0 : tree_top;
+			draw_tree();
+		} else if (panel_on && y >= panel_y()) {
 			int *first = panel == P_OUTPUT ? &out_top : panel == P_PROBLEMS ? &problem_top : &variable_top;
 			int count = panel == P_OUTPUT ? out_count : panel == P_PROBLEMS ? problem_count : variable_count;
 
@@ -2052,13 +2936,18 @@ pressed(GR_EVENT *event)
 			scroll_to(top + by);
 		return;
 	}
+	/* the middle button closes the tab it is pressed on */
+	if ((event->button.changebuttons & GR_BUTTON_M) && y >= side_y() && y < editor_y() && x >= ex && (i = doc_tab_at(x, &closing)) >= 0) {
+		close_tab(i);
+		return;
+	}
 	if (!(event->button.changebuttons & GR_BUTTON_L))
 		return;
 	if (y < MENU_H) {
 		for (i = 0; i < 6; i++)
 			if (x >= menu_x[i] && x < menu_x[i + 1])
 				menu_open(i, 0);
-	} else if (y < editor_y()) {
+	} else if (y < side_y()) {
 		for (i = 0; i < TOOLS; i++)
 			if (x >= tool_x[i] && x < tool_x[i] + tool_w[i])
 				command(tools[i].id);
@@ -2068,10 +2957,30 @@ pressed(GR_EVENT *event)
 		if (y < panel_y() + TAB_H) {
 			if (x < 4 + PANELS * 96)
 				show_panel((x - 4) / 96);
-		} else if (panel == P_PROBLEMS) {
-			i = problem_top + (y - panel_y() - TAB_H - 2) / 15;
-			if (i >= 0 && i < problem_count)
-				go_to_line(problems[i].line);
+			return;
+		}
+		i = (y - panel_y() - TAB_H - 2) / 15;
+		if (panel == P_PROBLEMS && problem_top + i >= 0 && problem_top + i < problem_count) {
+			if (problems[problem_top + i].line)
+				go_to_line(problems[problem_top + i].line);
+			else
+				output_clicked(problems[problem_top + i].text);	/* (the header, at its line) */
+		}
+		else if (panel == P_OUTPUT && out_top + i >= 0 && out_top + i < out_count)
+			output_clicked(out_lines[out_top + i]);
+		else if (panel == P_STACK && i >= 0 && i < stack_count && doc_now == run_doc && strstr(stack[i], ", line "))
+			go_to_line(atoi(strstr(stack[i], ", line ") + 7));
+	} else if (tree_on && x < TREE_W + 3) {
+		if (x < TREE_W)
+			tree_clicked(x, y);
+	} else if (y < editor_y()) {
+		if ((i = doc_tab_at(x, &closing)) < 0)
+			return;
+		if (closing)
+			close_tab(i);
+		else {
+			doc_show(i);
+			draw_all();
 		}
 	} else if (x >= width - UI_SCROLL_W) {
 		dragging = 1;
@@ -2098,6 +3007,7 @@ pressed(GR_EVENT *event)
 			draw_editor_from(top);
 		else
 			draw_line(was), draw_line(tx_y);
+		match_update();
 		draw_status();
 	}
 }
@@ -2190,6 +3100,7 @@ named_key(const char *name)
 		{ "end", MWKEY_END }, { "pageup", MWKEY_PAGEUP }, { "pagedown", MWKEY_PAGEDOWN }, { "delete", MWKEY_DELETE },
 		{ "backspace", MWKEY_BACKSPACE }, { "tab", MWKEY_TAB }, { "enter", MWKEY_ENTER }, { "escape", MWKEY_ESCAPE },
 		{ "f3", MWKEY_F3 }, { "f5", MWKEY_F5 }, { "f6", MWKEY_F6 }, { "f7", MWKEY_F7 }, { "f9", MWKEY_F9 }, { "f10", MWKEY_F10 },
+		{ "f11", MWKEY_F11 }, { "f12", MWKEY_F12 },
 	};
 	int shift = !strncmp(name, "s-", 2), control = !strncmp(name, "c-", 2), i;
 
@@ -2212,6 +3123,7 @@ scripted(void)
 		{ "comment", C_COMMENT }, { "all", C_ALL }, { "indent", C_INDENT }, { "unindent", C_UNINDENT }, { "new", C_NEW },
 		{ "cut", C_CUT }, { "copy", C_COPY }, { "paste", C_PASTE }, { "word", C_WORD }, { "panel", C_PANEL }, { "numbers", C_NUMBERS },
 		{ "checking", C_CHECKING }, { "keys", C_KEYS }, { "about", C_ABOUT }, { "unmark", C_UNMARK_ALL }, { "next", C_FIND_NEXT },
+		{ "close", C_CLOSE }, { "tab", C_NEXT_TAB }, { "tree", C_TREE }, { "saveall", C_SAVE_ALL }, { "back", C_FIND_PREV },
 	};
 	char word[64];
 	int n, i;
@@ -2249,6 +3161,16 @@ scripted(void)
 	} else if (!strncmp(word, "menu:", 5)) {
 		menu_open(atoi(word + 5), 1);
 		ui_menu_close();
+	} else if (!strncmp(word, "replace:", 8) && strchr(word + 8, '=')) {
+		/* replace:OLD=NEW, as Ctrl+H asks it */
+		snprintf(sought, sizeof sought, "%.*s", (int)(strchr(word + 8, '=') - word - 8), word + 8);
+		snprintf(answer, sizeof answer, "%s", strchr(word + 8, '=') + 1);
+		asking = ASK_WITH;
+		ask_key(MWKEY_ENTER);
+		printf("nxide: %s\n", notice);
+	} else if (!strcmp(word, "tabs")) {
+		for (i = 0; i < doc_count; i++)
+			printf("nxide: tab %d: %s%s\n", i, i == doc_now ? path : docs[i].path, i == doc_now ? " (shown)" : "");
 	} else if (!strncmp(word, "storm:", 6)) {
 		storm(atoi(word + 6));
 	} else if (!strcmp(word, "where")) {
@@ -2305,6 +3227,25 @@ by_name(const void *a, const void *b)
 	return strcmp(a, b);
 }
 
+/* Where the menus' names and the keys are along their rows, in the look's font. */
+static void
+layout(void)
+{
+	int i, x;
+
+	for (i = 0, x = 4; i < 6; i++) {
+		menu_x[i] = x;
+		x += ui_width(&ui_var_widths, ui_var, menu_names[i], -1) + 16;
+	}
+	menu_x[6] = x;
+	for (i = 0, x = 4; i < TOOLS; i++) {
+		x += tools[i].gap;
+		tool_x[i] = x, tool_w[i] = ui_width(&ui_var_widths, ui_var, tools[i].id == C_DEBUG ? "Go on" : tools[i].label, -1) + 29;
+		x += tool_w[i] + 2;
+	}
+	tools_shown = -1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2312,7 +3253,7 @@ main(int argc, char **argv)
 	DIR *share = opendir("/usr/share");
 	struct dirent *entry;
 	struct sigaction signal_child = { 0 };
-	int i, x, chosen;
+	int i, chosen;
 
 	if (GrOpen() < 0)
 		return 1;
@@ -2333,6 +3274,7 @@ main(int argc, char **argv)
 	scroll_drawn = getenv("NXIDE_SCROLL") && !strcmp(getenv("NXIDE_SCROLL"), "draw");
 	if (getenv("NXIDE_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXIDE_SCRIPT"));
+	scripted_run = script[0] != 0;
 	while (share && (entry = readdir(share)) != NULL && example_count < 12)
 		if (!strncmp(entry->d_name, "example-", 8) && strlen(entry->d_name) < 40 && strstr(entry->d_name, ".c"))
 			snprintf(examples[example_count++], sizeof examples[0], "%.*s", (int)strcspn(entry->d_name + 8, "."), entry->d_name + 8);
@@ -2344,16 +3286,12 @@ main(int argc, char **argv)
 		example_items[i].icon = -1;
 		example_items[i].id = C_EXAMPLE + i;
 	}
-	for (i = 0, x = 4; i < 6; i++) {
-		menu_x[i] = x;
-		x += ui_width(&ui_var_widths, ui_var, menu_names[i], -1) + 16;
-	}
-	menu_x[6] = x;
-	for (i = 0, x = 4; i < TOOLS; i++) {
-		x += tools[i].gap;
-		tool_x[i] = x, tool_w[i] = ui_width(&ui_var_widths, ui_var, tools[i].id == C_DEBUG ? "Go on" : tools[i].label, -1) + 14;
-		x += tool_w[i] + 2;
-	}
+	layout();
+	flat_machine = access("/usr/bin/elf2flt", X_OK) == 0;
+	if (width > ui_screen()->cols - 16)
+		width = ui_screen()->cols - 16;
+	if (height > ui_screen()->rows - UI_MENU_BAR - 40)
+		height = ui_screen()->rows - UI_MENU_BAR - 40;
 	for (i = 0; i < TOOLS && print_on; i++)
 		printf("nxide: key %s at %d\n", tools[i].label, tool_x[i] + tool_w[i] / 2);
 	for (i = 0; i < 6 && print_on; i++)
@@ -2369,8 +3307,12 @@ main(int argc, char **argv)
 		if (i < example_count)
 			open_example(i);
 		else
-			command(C_NEW);
+			fresh_doc();
 	}
+	if (argc > 1 && argv[1][0] == '/')
+		tree_here();	/* (the tree shows the file's folder; else /root, where the examples' copies go) */
+	else
+		tree_read();
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {

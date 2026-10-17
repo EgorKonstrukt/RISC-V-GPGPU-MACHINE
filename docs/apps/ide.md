@@ -44,6 +44,13 @@ it the OpenGL and Nano-X headers). So the two halves are apart:
   warning, and the lines in Problems (a click goes there). View, "Check while typing" turns
   it off; a build always does it.
 
+Since 17 October 2026 the files open in tabs (up to 12), each with its own text, history,
+marks and problems. A tree of the file's folder sits at the left (Ctrl+B). Clicking an error
+line in Output, or a function in Call stack, goes to that line, and the bracket at the cursor
+is boxed with its pair. Ctrl+H replaces, as one change. Ctrl+W closes a tab, Ctrl+D selects
+the word, Ctrl+Shift+S saves all. Script words: `close`, `tab`, `tree`, `saveall`, `back`,
+`tabs`, `replace:OLD=NEW`.
+
 ## Build and run
 
 Build (F7) saves the file and runs `cc -g FILE -o /tmp/ide-NAME`: always with `-g`, since
@@ -53,6 +60,11 @@ comes to Output as it is written (a program with a window opens it as any does).
 (Shift+F5) ends whatever runs.
 
 ## The debugger
+
+Without an MMU (the default machine) `cc` makes a flat program and deletes the ELF that has
+the stabs: the IDE links as `cc` does and runs `elf2flt` itself, keeping `/tmp/ide-NAME.elf`.
+It starts the program with the kernel's vfork, and moves every address by where the flat
+program was loaded (the pc at the exec stop against `_start`; `dbg_relocate` in `debug.h`).
 
 It is feasible, and it is line by line. Two things make it so:
 
@@ -182,7 +194,7 @@ out stop undo redo save quit comment all indent`, `mark:LINE`, `line:LINE`, `typ
 
     NXIDE_PRINT=1 NXIDE_SCRIPT="mark:9 debug over over out into go quit quit" nxide
 
-must stop at line 9 in `square` with `n = 1`, then line 11 with `result = 1`, then line 21
+must stop at line 9 in `square` with `n = 1`, then line 11 with `result = 1`, then line 20
 in `main`; and `NXIDE_SCRIPT="line:16 type:int_broken_=_; build problems undo text run quit
 quit" nxide /root/hello.c` must name an error at line 16, give the text back as it was, and
 print the program's six lines. Two seconds for both.

@@ -1424,7 +1424,7 @@ index 409290c..e1ac1d1 100644
  
  /**
 diff --git a/src/include/nanowm.h b/src/include/nanowm.h
-index 5f31f08..d49fae3 100644
+index 5f31f08..7ac5f39 100644
 --- a/src/include/nanowm.h
 +++ b/src/include/nanowm.h
 @@ -44,9 +44,9 @@
@@ -1450,7 +1450,7 @@ index 5f31f08..d49fae3 100644
  /* GrGetSystemColor color scheme definitions*/
  extern const GR_COLOR nxSysColors[MAXSYSCOLORS];
  
-@@ -103,9 +106,22 @@ struct windowlist {
+@@ -103,9 +106,24 @@ struct windowlist {
  	int active;			/* Whether this window is active or not */
  	void *data;			/* Data associated with this window */
  	struct windowlist *next; /* The next window in the list */
@@ -1464,16 +1464,18 @@ index 5f31f08..d49fae3 100644
 +	int painted, painted_w, painted_h;	/* the frame as last painted: 1 + active, its size */
 +	unsigned painted_key;		/* and a sum of its title, properties and icon */
 +	int fresh;			/* painted when made, and its first exposure not come yet */
++	int icon7;			/* its cell in the Windows 7 look's sheet, or -1 */
  };
  typedef struct windowlist win;
  
 +extern int nx_caption_icon;	/* nxpaintnc.c */
++extern int nx_caption_icon7;
 +extern const char *nx_caption_icon_file;
 +
  /*
   * Used to record the offset position when performing a move.
   */
-@@ -139,6 +155,8 @@ void wm_client_window_destroy(win *window);
+@@ -139,6 +157,8 @@ void wm_client_window_destroy(win *window);
  void wm_client_window_remap(win *window);
  void wm_client_window_unmap(win *window);
  void wm_redraw_ncarea(win *window);
@@ -1952,10 +1954,10 @@ index de5d02a..7a4e40b 100644
  		req->height = height;
  		req->width = width;
 diff --git a/src/nanox/nxpaintnc.c b/src/nanox/nxpaintnc.c
-index 9e40afe..f0e14ea 100644
+index 9e40afe..8ddf562 100644
 --- a/src/nanox/nxpaintnc.c
 +++ b/src/nanox/nxpaintnc.c
-@@ -16,8 +16,14 @@
+@@ -16,14 +16,136 @@
  #endif
  #include "nano-X.h"
  #include "nanowm.h"
@@ -1966,11 +1968,133 @@ index 9e40afe..f0e14ea 100644
 +int nx_caption_icon = -1;
 +/* or the file whose own icon it gets (its program's), which comes first */
 +const char *nx_caption_icon_file;
++/* the Windows 7 look's cell (its own sheet), or -1: then the file's icon, else that sheet's "default" */
++int nx_caption_icon7 = -1;
++extern struct icon_index { const char *path; int count, fallback; } nx_icons7;
++
++/* The desktop's look (linux/apps/ui_look.h), the word Settings writes: the screen driver's. */
++extern unsigned nx_look(void) __attribute__((weak));
++#define LOOK_OK(w)	(((w) >> 16) == 0x4c4b)
++#define LOOK_SEVEN(w)	(LOOK_OK(w) && ((w) & 0xff) == 1)
++#define LOOK_SMOOTH(w)	(LOOK_OK(w) && (((w) >> 8) & 0xff) == 1)
++/* the Windows 7 look's caption buttons, cells of 24 pixels (tools/make_icons.py) */
++#define LOOK7_SHEET	"/usr/share/look7.ppm"
++enum { LOOK7_MIN, LOOK7_MAX, LOOK7_RESTORE, LOOK7_CLOSE, LOOK7_OFF };
++
++/* The caption's text in the look's font, from x on, cut with "..." to end before `room` does. */
++static void
++caption_title(GR_DRAW_ID id, GR_GC_ID gc, int x, int y, int room, const char *title, unsigned look)
++{
++	static GR_FONT_ID smooth;
++	char cut[256];
++	int n = strlen(title), tw, th, tb;
++
++	if (LOOK_SMOOTH(look)) {
++		if (!smooth)
++			smooth = GrCreateFontEx("/usr/share/font-ui-12.sef", 0, 0, NULL);
++		GrSetGCFont(gc, smooth);
++	}
++	GrSetGCUseBackground(gc, GR_FALSE);
++	GrGetGCTextSize(gc, (void *)title, n, GR_TFASCII, &tw, &th, &tb);
++	y += LOOK_SMOOTH(look) ? (CYCAPTION - th) / 2 : (CYCAPTION - 14) / 2;
++	if (tw > room && n < (int)sizeof cut - 4) {
++		do {
++			memcpy(cut, title, --n);
++			strcpy(cut + n, "...");
++			GrGetGCTextSize(gc, cut, n + 3, GR_TFASCII, &tw, &th, &tb);
++		} while (n > 0 && tw > room);
++		title = cut;
++	}
++	GrText(id, gc, x, y, (void *)title, -1, GR_TFASCII|GR_TFTOP);
++}
++
++/* The program's icon at the caption's left: its file's own, or a cell of the small sheet. */
++static void
++caption_icon(GR_DRAW_ID id, GR_GC_ID gc, int x, int y)
++{
++	if (nx_look && LOOK_SEVEN(nx_look())) {
++		int fallback = nx_icons7.fallback;
++
++		if (nx_caption_icon7 >= 0)
++			GrDrawImageFromFile(id, gc, x, y, 16, 16, "/usr/share/icons7-16.ppm", GR_IMAGE_CELL(16, nx_caption_icon7));
++		else if (nx_caption_icon_file && nx_caption_icon_file[0])
++			GrDrawImageFromFile(id, gc, x, y, 16, 16, (char *)nx_caption_icon_file,
++				fallback >= 0 ? GR_IMAGE_ICON_OR(16, fallback) : GR_IMAGE_ICON(16));
++		return;
++	}
++	if (nx_caption_icon_file && nx_caption_icon_file[0])
++		GrDrawImageFromFile(id, gc, x, y, 16, 16, (char *)nx_caption_icon_file,
++			nx_caption_icon >= 0 ? GR_IMAGE_ICON_OR(16, nx_caption_icon) : GR_IMAGE_ICON(16));
++	else if (nx_caption_icon >= 0)
++		GrDrawImageFromFile(id, gc, x, y, 16, 16, "/usr/share/icons16.ppm", GR_IMAGE_CELL(16, nx_caption_icon));
++}
++
++/* The Windows 7 look: a pale glass frame, a dark title, rounded buttons (the close one red).
++ * The same places as the classic frame's, which the window manager's clicks are tested by. */
++static void
++paint_seven(GR_DRAW_ID id, GR_GC_ID gc, int w, int h, char *title, GR_BOOL active, GR_WM_PROPS props, unsigned look)
++{
++	int x = 0, y = 0, frame_w = w, off = active ? 0 : LOOK7_OFF, bx;
++	GR_SCREEN_INFO si;
++
++	if (props & GR_WM_PROPS_APPFRAME) {
++		GrSetGCForeground(gc, active ? GR_RGB(62, 86, 124) : GR_RGB(132, 146, 168));
++		GrRect(id, gc, 0, 0, w, h);
++		GrSetGCForeground(gc, active ? GR_RGB(208, 224, 244) : GR_RGB(232, 237, 243));
++		GrRect(id, gc, 1, 1, w - 2, h - 2);
++		GrSetGCForeground(gc, active ? GR_RGB(150, 176, 210) : GR_RGB(200, 208, 220));
++		GrRect(id, gc, 2, 2, w - 4, h - 4);
++		x = y = 3; w -= 6; h -= 6;
++	} else if (props & GR_WM_PROPS_BORDER) {
++		GrSetGCForeground(gc, active ? GR_RGB(62, 86, 124) : GR_RGB(132, 146, 168));
++		GrRect(id, gc, 0, 0, w, h);
++		x = y = 1; w -= 2; h -= 2;
++	}
++	if (!(props & GR_WM_PROPS_CAPTION))
++		return;
++	GrSetGCForeground(gc, active ? GR_RGB(200, 218, 241) : GR_RGB(230, 235, 242));
++	GrFillRect(id, gc, x, y, w, CYCAPTION);
++	GrDrawImageFromFile(id, gc, x, y, w, CYCAPTION, active ? "/usr/share/caption7-on.ppm" : "/usr/share/caption7-off.ppm", 0);
++	caption_icon(id, gc, x + 4, y + (CYCAPTION - 16) / 2);
++	if (title) {
++		GrSetGCForeground(gc, active ? GR_RGB(0, 0, 0) : GR_RGB(112, 122, 138));
++		caption_title(id, gc, x + (nx_caption_icon >= 0 ? 24 : 6), y,
++			w - 10 - (nx_caption_icon >= 0 ? 18 : 0) - ((props & GR_WM_PROPS_CLOSEBOX) ? 3 * CXCLOSEBOX + 10 : 0), title, look);
++	}
++	if (props & GR_WM_PROPS_APPFRAME) {
++		GrSetGCForeground(gc, active ? GR_RGB(150, 176, 210) : GR_RGB(200, 208, 220));
++		GrLine(id, gc, x, y + CYCAPTION, x + w - 1, y + CYCAPTION);
++	}
++	if (!(props & GR_WM_PROPS_CLOSEBOX))
++		return;
++	/* (a cell is 24 pixels, the button its top left 18: the rest of it is clear) */
++	bx = x + w - CXCLOSEBOX - 2;
++	GrDrawImageFromFile(id, gc, bx, y + 2, 24, 24, LOOK7_SHEET, GR_IMAGE_CELL(24, LOOK7_CLOSE + off));
++	if (!(props & GR_WM_PROPS_NOMAXIMIZE)) {
++		GrGetScreenInfo(&si);
++		GrDrawImageFromFile(id, gc, bx - CXCLOSEBOX - 2, y + 2, 24, 24, LOOK7_SHEET,
++			GR_IMAGE_CELL(24, (frame_w >= si.cols ? LOOK7_RESTORE : LOOK7_MAX) + off));
++	}
++	GrDrawImageFromFile(id, gc, bx - 2 * (CXCLOSEBOX + 2), y + 2, 24, 24, LOOK7_SHEET, GR_IMAGE_CELL(24, LOOK7_MIN + off));
++}
 +
  void
  nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PROPS props)
  {
-@@ -57,24 +63,52 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+ 	int		x = 0;
+ 	int		y = 0;
+ 	GR_GC_ID	gc = GrNewGC();
++	unsigned	look = nx_look ? nx_look() : 0;
++
++	if (LOOK_SEVEN(look)) {
++		paint_seven(id, gc, w, h, title, active, props, look);
++		GrDestroyGC(gc);
++		return;
++	}
+ #if NUKLEARUI
+ 	static GR_FONT_ID fontid = 0;
+ 	if (!fontid)
+@@ -57,24 +179,33 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  	if (!(props & GR_WM_PROPS_CAPTION))
  		goto out;
  
@@ -1984,12 +2108,7 @@ index 9e40afe..f0e14ea 100644
 +		active? "/usr/share/caption-on.ppm": "/usr/share/caption-off.ppm", 0);
 +
 +	/* the program's icon, a cell of the sheet of small ones, and the title after it */
-+	if (nx_caption_icon_file && nx_caption_icon_file[0])
-+		GrDrawImageFromFile(id, gc, x+3, y+(CYCAPTION-16)/2, 16, 16, (char *)nx_caption_icon_file,
-+			nx_caption_icon >= 0 ? GR_IMAGE_ICON_OR(16, nx_caption_icon) : GR_IMAGE_ICON(16));
-+	else if (nx_caption_icon >= 0)
-+		GrDrawImageFromFile(id, gc, x+3, y+(CYCAPTION-16)/2, 16, 16,
-+			"/usr/share/icons16.ppm", GR_IMAGE_CELL(16, nx_caption_icon));
++	caption_icon(id, gc, x+3, y+(CYCAPTION-16)/2);
 +	if (nx_caption_icon >= 0)
 +		x += 18;
  
@@ -2005,23 +2124,9 @@ index 9e40afe..f0e14ea 100644
  		GrText(id, gc, x+2*4, y+2*4+CYTEXTBASE, title, -1, GR_TFASCII|GR_TFBASELINE);
  #else
 -		GrText(id, gc, x+4, y-1, title, -1, GR_TFASCII|GR_TFTOP);
-+		{
-+			/* only as much as ends before the caption's buttons, with "..." where it is cut */
-+			char cut[256];
-+			int room = w - 8 - (nx_caption_icon >= 0 ? 18 : 0) - ((props & GR_WM_PROPS_CLOSEBOX) ? 3 * CXCLOSEBOX + 10 : 0);
-+			int n = strlen(title), tw, th, tb;
-+
-+			GrGetGCTextSize(gc, title, n, GR_TFASCII, &tw, &th, &tb);
-+			if (tw > room && n < (int)sizeof cut - 4) {
-+				do {
-+					memcpy(cut, title, --n);
-+					strcpy(cut + n, "...");
-+					GrGetGCTextSize(gc, cut, n + 3, GR_TFASCII, &tw, &th, &tb);
-+				} while (n > 0 && tw > room);
-+				GrText(id, gc, x+4, y+(CYCAPTION-14)/2, cut, -1, GR_TFASCII|GR_TFTOP);
-+			} else
-+				GrText(id, gc, x+4, y+(CYCAPTION-14)/2, title, -1, GR_TFASCII|GR_TFTOP);
-+		}
++		/* only as much as ends before the caption's buttons, with "..." where it is cut */
++		caption_title(id, gc, x+4, y, w - 8 - (nx_caption_icon >= 0 ? 18 : 0) -
++			((props & GR_WM_PROPS_CLOSEBOX) ? 3 * CXCLOSEBOX + 10 : 0), title, look);
  #endif
  	}
 +	if (nx_caption_icon >= 0)
@@ -2029,7 +2134,7 @@ index 9e40afe..f0e14ea 100644
  	y += CYCAPTION;
  
  	/* draw one line under caption*/
-@@ -111,6 +145,38 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
+@@ -111,6 +242,38 @@ nxPaintNCArea(GR_DRAW_ID id, int w, int h, char *title, GR_BOOL active, GR_WM_PR
  		GrSetGCForeground(gc, GrGetSysColor(GR_COLOR_BTNTEXT));
  		GrLine(id, gc, r.x, r.y, r.x+r.width-1, r.y+r.height-1);
  		GrLine(id, gc, r.x, r.y+r.height-1, r.x+r.width-1, r.y);
@@ -2371,7 +2476,7 @@ index bc31c08..2dc9f2a 100644
  		if ((ecp->eventmask & cmask) == 0)
  			continue;
 diff --git a/src/nanox/srvfunc.c b/src/nanox/srvfunc.c
-index 3455994..23f6778 100644
+index 3455994..a55d4be 100644
 --- a/src/nanox/srvfunc.c
 +++ b/src/nanox/srvfunc.c
 @@ -9,11 +9,24 @@
@@ -2449,7 +2554,7 @@ index 3455994..23f6778 100644
  		SERVER_UNLOCK();
  		return;
  	}
-@@ -242,6 +284,7 @@ GrDestroyWindow(GR_WINDOW_ID wid)
+@@ -242,6 +280,7 @@ GrDestroyWindow(GR_WINDOW_ID wid)
  void
  GrRaiseWindow(GR_WINDOW_ID wid)
  {
@@ -2457,7 +2562,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_WINDOW	*prevwp;	/* previous window pointer */
  	GR_BOOL		overlap;	/* TRUE if there was overlap */
-@@ -286,7 +329,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
+@@ -286,7 +325,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
  	/*
  	 * Finally redraw the window if necessary.
  	 */
@@ -2466,7 +2571,7 @@ index 3455994..23f6778 100644
  		GsDrawBorder(wp);
  		GsExposeArea(wp, wp->x, wp->y, wp->width, wp->height, NULL);
  	}
-@@ -300,6 +343,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
+@@ -300,6 +339,7 @@ GrRaiseWindow(GR_WINDOW_ID wid)
  void
  GrLowerWindow(GR_WINDOW_ID wid)
  {
@@ -2474,7 +2579,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_WINDOW	*prevwp;	/* previous window pointer */
  	GR_WINDOW	*sibwp;		/* sibling window */
-@@ -352,7 +396,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
+@@ -352,7 +392,7 @@ GrLowerWindow(GR_WINDOW_ID wid)
  	 * Finally redraw the sibling windows which this window covered
  	 * if they overlapped our window.
  	 */
@@ -2483,7 +2588,7 @@ index 3455994..23f6778 100644
  		if (GsCheckOverlap(wp, expwp)) {
  			GsExposeArea(expwp, wp->x - wp->bordersize,
  				wp->y - wp->bordersize,
-@@ -373,6 +417,7 @@ OffsetWindow(GR_WINDOW *wp, GR_COORD offx, GR_COORD offy)
+@@ -373,6 +413,7 @@ OffsetWindow(GR_WINDOW *wp, GR_COORD offx, GR_COORD offy)
  
  	wp->x += offx;
  	wp->y += offy;
@@ -2491,7 +2596,7 @@ index 3455994..23f6778 100644
  	for(cp=wp->children; cp; cp=cp->siblings)
  		OffsetWindow(cp, offx, offy);
  }
-@@ -417,6 +462,7 @@ IsUnobscuredBySiblings(GR_WINDOW *wp)
+@@ -417,6 +458,7 @@ IsUnobscuredBySiblings(GR_WINDOW *wp)
  void
  GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
  {
@@ -2499,7 +2604,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_WINDOW	*parent;
  	GR_COORD	offx, offy;
-@@ -445,6 +491,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
+@@ -445,6 +487,23 @@ GrMoveWindow(GR_WINDOW_ID wid, GR_COORD x, GR_COORD y)
  		return;
  	}
  
@@ -2523,7 +2628,7 @@ index 3455994..23f6778 100644
  	/*
  	 * move algorithms not requiring unmap/map
  	 */
-@@ -640,6 +703,7 @@ drawBackgroundAndExpose(GR_WINDOW *wp)
+@@ -640,6 +699,7 @@ drawBackgroundAndExpose(GR_WINDOW *wp)
  void
  GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  {
@@ -2531,7 +2636,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_COORD	oldw, oldh;
  
-@@ -696,13 +760,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -696,13 +756,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  	wp->width = width;
  	wp->height = height;
  
@@ -2557,7 +2662,7 @@ index 3455994..23f6778 100644
  		int bs = wp->bordersize;
  		int x = wp->x - bs;
  		int y = wp->y - bs;
-@@ -725,6 +799,7 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -725,6 +795,7 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  void
  GrReparentWindow(GR_WINDOW_ID wid, GR_WINDOW_ID pwid, GR_COORD x, GR_COORD y)
  {
@@ -2565,7 +2670,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_WINDOW	*pwp;		/* parent window structure */
  	GR_WINDOW	**mysibptr;	/* handle to my sibling ptr */
-@@ -792,6 +867,7 @@ static int nextgcid = 1000;
+@@ -792,6 +863,7 @@ static int nextgcid = 1000;
  GR_GC_ID 
  GrNewGC(void)
  {
@@ -2573,7 +2678,7 @@ index 3455994..23f6778 100644
  	GR_GC	*gcp;
  
  	SERVER_LOCK();
-@@ -803,7 +879,7 @@ GrNewGC(void)
+@@ -803,7 +875,7 @@ GrNewGC(void)
  		return 0;
  	}
  
@@ -2582,7 +2687,7 @@ index 3455994..23f6778 100644
  	gcp->mode = GR_MODE_COPY;
  	gcp->regionid = 0;	/* no region*/
  	gcp->xoff = 0;		/* no offset*/
-@@ -1442,6 +1518,7 @@ static int nextfontid = 1000;
+@@ -1442,6 +1514,7 @@ static int nextfontid = 1000;
  GR_FONT_ID
  GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *plogfont)
  {
@@ -2590,7 +2695,7 @@ index 3455994..23f6778 100644
  	GR_FONT	*fontp;
  
  	SERVER_LOCK();
-@@ -1464,7 +1541,7 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
+@@ -1464,7 +1537,7 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
  		return 0;
  	}
  
@@ -2599,7 +2704,7 @@ index 3455994..23f6778 100644
  	fontp->owner = curclient;
  	fontp->next = listfontp;
  
-@@ -1664,6 +1741,7 @@ GrGetFontInfo(GR_FONT_ID font, GR_FONT_INFO *fip)
+@@ -1664,6 +1737,7 @@ GrGetFontInfo(GR_FONT_ID font, GR_FONT_INFO *fip)
  void 
  GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  {
@@ -2607,7 +2712,7 @@ index 3455994..23f6778 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_EVENT_CLIENT	*evp;		/* event-client structure */
  
-@@ -1675,6 +1753,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+@@ -1675,6 +1749,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  		return;
  	}
  
@@ -2618,7 +2723,7 @@ index 3455994..23f6778 100644
  	/*
  	 * See if this client is already in the event client list.
  	 * If so, then just replace the events he is selecting for.
-@@ -1765,7 +1847,9 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
+@@ -1765,7 +1843,9 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
          nexty += wp->psd->yvirtres / 8;
      }
  
@@ -2629,7 +2734,7 @@ index 3455994..23f6778 100644
  	wp->parent = pwp;
  	wp->children = NULL;
  	wp->siblings = pwp->children;
-@@ -1782,7 +1866,8 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
+@@ -1782,7 +1862,8 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
  	wp->nopropmask = 0;
  	wp->eventclients = NULL;
  	wp->owner = curclient;
@@ -2639,7 +2744,7 @@ index 3455994..23f6778 100644
  	wp->mapped = GR_FALSE;
  	wp->realized = GR_FALSE;
  	wp->output = GR_TRUE;
-@@ -2228,9 +2313,13 @@ GrSetGCForeground(GR_GC_ID gc, GR_COLOR foreground)
+@@ -2228,9 +2309,13 @@ GrSetGCForeground(GR_GC_ID gc, GR_COLOR foreground)
  
  	gcp = GsFindGC(gc);
  	if (gcp && ((gcp->foreground != foreground) || gcp->fgispixelval)) {
@@ -2654,7 +2759,7 @@ index 3455994..23f6778 100644
  	}
  
  	SERVER_UNLOCK();
-@@ -3493,6 +3582,7 @@ GrSetWMProperties(GR_WINDOW_ID wid, GR_WM_PROPERTIES *props)
+@@ -3493,6 +3578,7 @@ GrSetWMProperties(GR_WINDOW_ID wid, GR_WM_PROPERTIES *props)
  			/* FIXME: check if this works if not already realized*/
  			GsUnrealizeWindow(wp, GR_TRUE);
  			wp->bordersize = props->bordersize;
@@ -2662,7 +2767,7 @@ index 3455994..23f6778 100644
  			GsRealizeWindow(wp, GR_TRUE);
  		}
  	}
-@@ -3607,6 +3697,7 @@ GrGetSysColor(int index)
+@@ -3607,6 +3693,7 @@ GrGetSysColor(int index)
  void
  GrSetScreenSaverTimeout(GR_TIMEOUT timeout)
  {
@@ -2670,7 +2775,7 @@ index 3455994..23f6778 100644
  #if MW_FEATURE_TIMERS
  	MWTIMER *timer;
  
-@@ -4074,6 +4165,7 @@ GrNewBitmapRegion(GR_BITMAP *bitmap, GR_SIZE width, GR_SIZE height)
+@@ -4074,6 +4161,7 @@ GrNewBitmapRegion(GR_BITMAP *bitmap, GR_SIZE width, GR_SIZE height)
  void
  GrSetWindowRegion(GR_WINDOW_ID wid, GR_REGION_ID rid, int type)
  {
@@ -3779,7 +3884,7 @@ index fae5bfa..0c09764 100644
  
  /*
 diff --git a/src/nanox/wmaction.c b/src/nanox/wmaction.c
-index 27dcbe8..3edd6e2 100644
+index 27dcbe8..2f4f19e 100644
 --- a/src/nanox/wmaction.c
 +++ b/src/nanox/wmaction.c
 @@ -11,6 +11,11 @@
@@ -3794,7 +3899,7 @@ index 27dcbe8..3edd6e2 100644
  
  /*
   * This function performs a depth first search on window 
-@@ -67,14 +72,32 @@ void wm_redraw_ncarea(win *window)
+@@ -67,14 +72,33 @@ void wm_redraw_ncarea(win *window)
   	 	 * A window is active even if any of its ancestors has focus
   	 	 * --Amit Kulkarni
   	 	 */	 
@@ -3807,7 +3912,7 @@ index 27dcbe8..3edd6e2 100644
   		//if(active)
   			//GrRaiseWindow(window->wid);			// FIXME
 -		nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
-+		unsigned key = (unsigned)props.props * 31u + (unsigned)window->icon;
++		unsigned key = ((unsigned)props.props * 31u + (unsigned)window->icon) * 31u + (unsigned)window->icon7;
 +		const char *t;
 +
 +		for (t = (const char *)props.title; t && *t; t++)
@@ -3818,9 +3923,10 @@ index 27dcbe8..3edd6e2 100644
 +		if (!wm_activating || window->painted != 1 + active || window->painted_w != info.width ||
 +		    window->painted_h != info.height || window->painted_key != key) {
 +			nx_caption_icon = window->icon;
++			nx_caption_icon7 = window->icon7;
 +			nx_caption_icon_file = window->icon_file;
 +			nxPaintNCArea(window->wid, info.width, info.height, props.title, active, props.props);
-+			nx_caption_icon = -1;
++			nx_caption_icon = nx_caption_icon7 = -1;
 +			window->painted = 1 + active;
 +			window->painted_w = info.width;
 +			window->painted_h = info.height;
@@ -3829,7 +3935,7 @@ index 27dcbe8..3edd6e2 100644
  	}
  
  	/* free title returned from GrGetWMProperties*/
-@@ -86,6 +109,14 @@ void wm_container_exposure(win *window, GR_EVENT_EXPOSURE *event)
+@@ -86,6 +110,14 @@ void wm_container_exposure(win *window, GR_EVENT_EXPOSURE *event)
  {
  	Dprintf("wm_container_exposure window %d\n", window->wid);
  
@@ -3844,7 +3950,7 @@ index 27dcbe8..3edd6e2 100644
  	wm_redraw_ncarea(window);
  }
  
-@@ -138,6 +169,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -138,6 +170,18 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  			window->close = GR_TRUE;
        		return;
  		}
@@ -3863,7 +3969,7 @@ index 27dcbe8..3edd6e2 100644
  	}
  
  	/* 
-@@ -149,8 +192,8 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -149,8 +193,8 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	 * the focus themself.
  	 * -- Amit Kulkarni
  	 */
@@ -3874,7 +3980,7 @@ index 27dcbe8..3edd6e2 100644
  
  	/* check for corner resize */
  	r.x = info.width - 5;
-@@ -158,7 +201,7 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -158,7 +202,7 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	r.width = 5;
  	r.height = 5;
  
@@ -3883,7 +3989,7 @@ index 27dcbe8..3edd6e2 100644
  	   && !(info.props & GR_WM_PROPS_NORESIZE) && !(cinfo.props & GR_WM_PROPS_NORESIZE)) {
  #if !NO_CORNER_RESIZE
  	  struct pos_size * pos;
-@@ -231,6 +274,9 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -231,6 +275,9 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	/* Don't allow window move if NOMOVE property set*/
  	if ((info.props & GR_WM_PROPS_NOMOVE) || (cinfo.props & GR_WM_PROPS_NOMOVE))
  		return;
@@ -3893,7 +3999,7 @@ index 27dcbe8..3edd6e2 100644
  
  	if(!window->data)
  		if(!(window->data = malloc(sizeof(struct pos_size))))
-@@ -252,9 +298,54 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
+@@ -252,9 +299,54 @@ void wm_container_buttondown(win *window, GR_EVENT_BUTTON *event)
  	GrRect(GR_ROOT_WINDOW_ID, gc,info.x, info.y, info.width, info.height);
  	GrDestroyGC(gc);
  #endif	
@@ -3948,7 +4054,7 @@ index 27dcbe8..3edd6e2 100644
  void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  {
  	GR_RECT		r;
-@@ -299,8 +390,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -299,8 +391,24 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
          		return;
        		}
  		}
@@ -3973,7 +4079,7 @@ index 27dcbe8..3edd6e2 100644
  
  	if(window->active) {
  #if OUTLINE_MOVE
-@@ -312,6 +419,16 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -312,6 +420,16 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  	  GrMoveWindow(window->wid, pos->xorig, pos->yorig);
  	  GrDestroyGC(gc);
  #endif
@@ -3990,7 +4096,7 @@ index 27dcbe8..3edd6e2 100644
  	  free(window->data);
  	  window->active = GR_FALSE;
  	  window->data = 0;
-@@ -330,6 +447,11 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
+@@ -330,6 +448,11 @@ void wm_container_buttonup(win *window, GR_EVENT_BUTTON *event)
  
  	  w = info.width + (event->x - pos->xorig);
  	  h = info.height + (event->y - pos->yorig);
@@ -4002,7 +4108,7 @@ index 27dcbe8..3edd6e2 100644
  	  GrResizeWindow(window->wid, w, h);
  	  GrResizeWindow(window->clientid, w - pos->xoff, h - pos->yoff);
  
-@@ -397,7 +519,13 @@ void wm_container_mousemoved(win *window, GR_EVENT_MOUSE *event)
+@@ -397,7 +520,13 @@ void wm_container_mousemoved(win *window, GR_EVENT_MOUSE *event)
  	
  	GrDestroyGC(gc);
  #else	
@@ -4018,10 +4124,10 @@ index 27dcbe8..3edd6e2 100644
  }
  
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
-index 9214904..5dbf87d 100644
+index 9214904..7925b4e 100644
 --- a/src/nanox/wmclients.c
 +++ b/src/nanox/wmclients.c
-@@ -9,6 +9,93 @@
+@@ -9,6 +9,102 @@
  #include "nano-X.h"
  #include "nxdraw.h"
  #include "nanowm.h"
@@ -4030,47 +4136,23 @@ index 9214904..5dbf87d 100644
 +#include <fcntl.h>
 +#include <unistd.h>
 +
-+/*
-+ * The cell of a program's icon in the sheets of icons (tools/make_icons.py), by the name the
-+ * kernel has for the process; the cell called "default" for a program with none, else -1.
-+ */
++/* An index of icons (tools/make_icons.py), kept from its first reading: names, and the cell of each. */
++struct icon_index { const char *path; int count, fallback; struct { char name[32]; int cell; } *at; };
++struct icon_index nx_icons = { "/usr/share/icons.idx", -1, -1, NULL };
++struct icon_index nx_icons7 = { "/usr/share/icons7.idx", -1, -1, NULL };
++
++/* The cell of a name in an index, or -1; `fallback` is then its "default" cell. */
 +static int
-+icon_of(int processid, char *own, int size)
++index_cell(struct icon_index *x, const char *name)
 +{
-+	/* the index, kept from its first reading: names, and the cell of each */
-+	static struct { char name[32]; int cell; } *index;
-+	static int index_count = -1, index_default = -1;
-+	char path[40], name[32] = "";
-+	const char *slash;
 +	int cell, fd, n, at, k;
 +
-+	/*
-+	 * The program's own file, which may end in its icon: the screen driver looks (it finds a
-+	 * file of the ROM without reading it) and draws the sheet's cell of the program's name
-+	 * when there is none. The name is the file's, as far as the kernel keeps a name.
-+	 */
-+	own[0] = 0;
-+	sprintf(path, "/proc/%d/exe", processid);
-+	if ((n = readlink(path, own, size - 1)) > 0) {
-+		own[n] = 0;
-+		slash = strrchr(own, '/');
-+		snprintf(name, 16, "%s", slash ? slash + 1 : own);
-+	} else {
-+		own[0] = 0;
-+		sprintf(path, "/proc/%d/comm", processid);
-+		if ((fd = open(path, O_RDONLY)) >= 0) {
-+			n = read(fd, name, sizeof name - 1);
-+			close(fd);
-+			name[n > 0 ? n : 0] = 0;
-+			name[strcspn(name, "\n")] = 0;
-+		}
-+	}
-+	if (index_count < 0) {
++	if (x->count < 0) {
 +		/* a name and a number a line, read in one piece */
 +		char *text = malloc(8192);
 +
-+		index_count = 0;
-+		fd = text ? open("/usr/share/icons.idx", O_RDONLY) : -1;
++		x->count = 0;
++		fd = text ? open(x->path, O_RDONLY) : -1;
 +		n = fd < 0 ? 0 : (int)read(fd, text, 8191);
 +		if (fd >= 0)
 +			close(fd);
@@ -4093,38 +4175,71 @@ index 9214904..5dbf87d 100644
 +			}
 +			for (cell = 0; text[at] >= '0' && text[at] <= '9'; at++)
 +				cell = cell * 10 + text[at] - '0';
-+			if (!(index_count & 63)) {
-+				void *more = realloc(index, (index_count + 64) * sizeof *index);
++			if (!(x->count & 63)) {
++				void *more = realloc(x->at, (x->count + 64) * sizeof *x->at);
 +
 +				if (!more)
 +					break;
-+				index = more;
++				x->at = more;
 +			}
-+			strcpy(index[index_count].name, known);
-+			index[index_count++].cell = cell;
-+			if (!strcmp(known, "default") && index_default < 0)
-+				index_default = cell;
++			strcpy(x->at[x->count].name, known);
++			x->at[x->count++].cell = cell;
++			if (!strcmp(known, "default") && x->fallback < 0)
++				x->fallback = cell;
 +		}
 +		free(text);
 +	}
-+	for (n = 0; n < index_count; n++)
-+		if (!strcmp(index[n].name, name))
-+			return index[n].cell;
-+	return index_default;
++	for (n = 0; n < x->count; n++)
++		if (!strcmp(x->at[n].name, name))
++			return x->at[n].cell;
++	return -1;
++}
++
++/*
++ * A program's icon by the name the kernel has for the process. The classic look's: the
++ * program's own file, which may end in its icon (the screen driver looks), then the cell of
++ * its name, then "default". The Windows 7 look's (*seven): the cell of its name, or -1.
++ */
++static int
++icon_of(int processid, char *own, int size, int *seven)
++{
++	char path[40], name[32] = "";
++	const char *slash;
++	int cell, fd, n;
++
++	own[0] = 0;
++	sprintf(path, "/proc/%d/exe", processid);
++	if ((n = readlink(path, own, size - 1)) > 0) {
++		own[n] = 0;
++		slash = strrchr(own, '/');
++		snprintf(name, 16, "%s", slash ? slash + 1 : own);
++	} else {
++		own[0] = 0;
++		sprintf(path, "/proc/%d/comm", processid);
++		if ((fd = open(path, O_RDONLY)) >= 0) {
++			n = read(fd, name, sizeof name - 1);
++			close(fd);
++			name[n > 0 ? n : 0] = 0;
++			name[strcspn(name, "\n")] = 0;
++		}
++	}
++	*seven = index_cell(&nx_icons7, name);
++	cell = index_cell(&nx_icons, name);
++	return cell >= 0 ? cell : nx_icons.fallback;
 +}
  
  /*
   * A new client window has been mapped, so we need to reparent and decorate it.
-@@ -26,6 +113,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -26,6 +122,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	/* get client window information*/
  	GrGetWindowInfo(wid, &winfo);
  	style = winfo.props;
-+	window.icon = -1;
++	window.icon = window.icon7 = -1;
 +	window.icon_file[0] = 0;
  
  	/* if not redecorating or not child of root window, return*/
  	if (winfo.parent != GR_ROOT_WINDOW_ID || (style & GR_WM_PROPS_NODECORATE))
-@@ -94,7 +183,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -94,7 +192,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  		}
  	}
  
@@ -4133,7 +4248,7 @@ index 9214904..5dbf87d 100644
  	x = MWABS(winfo.x - xoffset);
  	y = MWABS(winfo.y - yoffset);
  #else
-@@ -109,16 +198,18 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -109,16 +207,18 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  
  		/* We could proably use a more intelligent algorithm here */
  		GrGetScreenInfo(&si);
@@ -4152,11 +4267,11 @@ index 9214904..5dbf87d 100644
  		lasty = y;
  	}
  #endif
-+	window.icon = icon_of(winfo.processid, window.icon_file, sizeof window.icon_file);
++	window.icon = icon_of(winfo.processid, window.icon_file, sizeof window.icon_file, &window.icon7);
  	/* create container window*/
  	pid = GrNewWindow(GR_ROOT_WINDOW_ID, x, y, width, height,
  		0, LTGRAY, BLACK);
-@@ -162,6 +253,15 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -162,6 +262,15 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	GrMapWindow(pid);
  
  	GrSetFocus(wid);	/* force fixed focus*/
@@ -4243,7 +4358,7 @@ index 7cb683f..c14d070 100644
  	}
  
 diff --git a/src/nanox/wmutil.c b/src/nanox/wmutil.c
-index 5af65d6..e4e26ed 100644
+index 5af65d6..e8e237f 100644
 --- a/src/nanox/wmutil.c
 +++ b/src/nanox/wmutil.c
 @@ -5,6 +5,7 @@
@@ -4254,13 +4369,14 @@ index 5af65d6..e4e26ed 100644
  #include "nano-X.h"
  #include "nanowm.h"
  
-@@ -49,6 +50,10 @@ int wm_add_window (win * window)
+@@ -49,6 +50,11 @@ int wm_add_window (win * window)
  	w->wid = window->wid;
  	w->pid = window->pid;
  	w->type = window->type;
 +	w->maximize = w->maximized = w->minimize = 0;
 +	w->painted = w->fresh = 0;
 +	w->icon = window->icon;
++	w->icon7 = window->icon7;
 +	memcpy(w->icon_file, window->icon_file, sizeof w->icon_file);
  	w->sizing = GR_FALSE;	/* window->sizing*/
  	w->active = window->active;

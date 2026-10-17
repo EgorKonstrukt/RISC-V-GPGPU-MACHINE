@@ -21,9 +21,10 @@ mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
 Z=$WORK/src/zlib-1.3.1
 [ -f "$Z/deflate.c" ] || (cd "$WORK/src" && curl -fsSL -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz && tar -xzf zlib-1.3.1.tar.gz)
 ZLIB="-w -I$Z $Z/deflate.c $Z/trees.c $Z/inflate.c $Z/inftrees.c $Z/inffast.c $Z/adler32.c $Z/crc32.c $Z/zutil.c"
-for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg; do
+for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg nxtetris nxmine nxeyes nxclock nxterm nxcalc; do
     more=""
     [ $p = nxpersist ] && more=$ZLIB
+    [ $p = nxcalc ] && more="-lm"
     # the monitor and Paint move pictures with the worker cores (ui_bulk.h) and the browser
     # makes its strips there: the library every program has for them
     [ $p = nxview ] || [ $p = nxmon ] || [ $p = nxpaint ] || [ $p = nxweb ] && more="-I$REPO/programs/mc $REPO/programs/mc/mcw.c"

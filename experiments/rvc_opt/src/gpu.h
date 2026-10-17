@@ -59,6 +59,7 @@
 #define FRAGMENT_TILES 5      // a layer of tiles: the address is a texel of four words (cells, tiles, palette, sizes; docs/machine/gpu.md)
 #define FRAGMENT_YUV 6        // a picture as three planes of bytes one after another: luma, then the two of chroma at half the size each way (a video's frame)
 #define FRAGMENT_COVER 7      // (text) four bits a pixel of how much of it the glyph covers, rows of whole bytes, the left pixel in the high half
+#define FRAGMENT_MSDF 8       // (text) a glyph's three distance fields, three bytes a pixel, sampled bilinearly; their median is the edge
 #define TEXT_MORE 0x100       // flag (text): words 9-11 are a scale, a slant and what a glyph's bitmap address is from
 #define FRAGMENT_KEYED 0x100  // flag: texels equal to the key colour (or index) are not drawn
 #define FRAGMENT_LAID 0x200   // flag (draws): the texture lies on the picture, not on the surface (a sky)
@@ -214,6 +215,10 @@ bool gpu_command(uint id, uint span, out uint base, out uint4 head) {
     return true;
 }
 
+// (text, FRAGMENT_MSDF) how much steeper than a box filter's the coverage rises across an edge:
+// fitted to the hinted bitmaps at 11 to 17 pixels (docs/system/fonts.md, "Distance fields")
+#define MSDF_SHARP 1.2
+
 // Mesh vertex `id`, which the command at `base` claims, placed and coloured for a picture of
 // `size` pixels.
 gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
@@ -253,23 +258,33 @@ gpu_varyings gpu_vertex_sized(uint id, uint base, uint4 head, float2 size) {
             // the bitmaps may be a file's where it lies in the ROM (a font: docs/system/fonts.md).
             // With TEXT_MORE: a scale (16.16), a slant (256ths of a pixel a row, and from bit 16
             // the row that stays), and what the table's bitmap addresses are counted from.
+            // FRAGMENT_MSDF (docs/system/fonts.md): the table is into an atlas, its quad in 64ths of a
+            // pixel, and word 12 the distance range in pixels (16.16) before the scale; key is
+            // that range on the screen, light_uv how far in the quad a screen pixel is.
             uint4 at = ram(base + 1), how = ram(base + 2);
-            bool more = (how.r & TEXT_MORE) != 0;
+            bool more = (how.r & TEXT_MORE) != 0, msdf = (how.r & 0xff) == FRAGMENT_MSDF;
             uint part = k % 6, corner = part < 3 ? part : (part == 3 ? 2 : (part == 4 ? 1 : 3));
             uint letter = ram_word(at.a + 4 * (k / 6));
             uint4 glyph = texture_texel(head.b + 16 * (letter & 0xffff));
             bool right = (corner & 1) != 0, low = (corner & 2) != 0;
             float2 in_glyph = float2((asint(glyph.a << 24) >> 24) + (right ? (int)glyph.g : 0),
                                      (asint(glyph.a << 16) >> 24) + (low ? (int)glyph.b : 0));
+            if (msdf) in_glyph = float2((asint(glyph.a << 16) >> 16) + (right ? (int)(glyph.b & 0xffff) : 0),
+                                        (asint(glyph.a) >> 16) + (low ? (int)(glyph.b >> 16) : 0)) / 64.0;
+            float scale = more && how.g != 0 ? (float)how.g / 65536.0 : 1.0;
             if (more) {
                 in_glyph.x += ((float)(how.b >> 16) - in_glyph.y) * (float)(how.b & 0xffff) / 256.0;
-                if (how.g != 0) in_glyph *= (float)how.g / 65536.0;
+                in_glyph *= scale;
             }
             o.position = place_pixels(float2(asint(at.r) + (int)(letter >> 16), asint(at.g)) + in_glyph, 0.0);
             o.colour = colour_of(head.g);
             o.uv = float2(right ? 1.0 : 0.0, low ? 1.0 : 0.0);
-            o.texture_info = uint4(((how.r & 0xff) == FRAGMENT_COVER ? FRAGMENT_COVER : FRAGMENT_MASK) | (how.r & 0x70000),
-                                   glyph.r + (more ? how.a : 0), glyph.g, glyph.b);
+            o.texture_info = uint4((msdf ? FRAGMENT_MSDF : (how.r & 0xff) == FRAGMENT_COVER ? FRAGMENT_COVER : FRAGMENT_MASK) | (how.r & 0x70000),
+                                   glyph.r + (more ? how.a : 0), msdf ? glyph.g & 0xffff : glyph.g, msdf ? glyph.g >> 16 : glyph.b);
+            if (msdf) {
+                o.key = asuint(max((float)ram(base + 3).r / 65536.0 * scale, 1.0) * MSDF_SHARP);
+                o.light_uv = 64.0 / (scale * max(float2(glyph.b & 0xffff, glyph.b >> 16), 1.0));
+            }
         } else {
             // head.g vertex buffer, head.b count; then vertex mode, fragment mode, uniforms,
             // texture address; width, height, key
@@ -418,6 +433,18 @@ float3 gpu_light(gpu_varyings i) {
     return lerp(lerp(c00, c10, part.x), lerp(c01, c11, part.x), part.y);
 }
 
+// Pixels n and n + 1 of a glyph's distance fields, three bytes a pixel, in RAM or the ROM.
+void gpu_msdf_pair(uint address, uint n, out float3 a, out float3 b) {
+    uint first = address + 3 * n, at = first & ~3u, shift = 8 * (first & 3);
+    uint w0 = texture_word(at), w1 = texture_word(at + 4), w2 = 0;
+    [branch]
+    if (shift == 24) w2 = texture_word(at + 8);
+    uint lo = shift != 0 ? (w0 >> shift) | (w1 << (32 - shift)) : w0;
+    uint hi = shift != 0 ? (w1 >> shift) | (w2 << (32 - shift)) : w1;
+    a = float3(lo & 0xff, (lo >> 8) & 0xff, (lo >> 16) & 0xff) / 255.0;
+    b = float3(lo >> 24, hi & 0xff, (hi >> 8) & 0xff) / 255.0;
+}
+
 float4 gpu_fragment(gpu_varyings i) {
     uint mode = i.texture_info.r & 0xff, width = i.texture_info.b, height = i.texture_info.a;
     float4 c = i.colour;
@@ -428,6 +455,28 @@ float4 gpu_fragment(gpu_varyings i) {
     }
     [branch]
     if (i.texture_info.r & FRAGMENT_LIT) c.rgb *= gpu_light(i);
+    [branch]
+    if (mode == FRAGMENT_MSDF) {
+        // the pixel's coverage as four quarters' (2 x 2 samples): at each the four atlas pixels
+        // round it, weighed, their channels' median the distance (the quad's corners are the
+        // centres of the box's corner pixels). i.key: the range in screen pixels
+        if (width < 2 || height < 2) discard;
+        float range = 2.0 * asfloat(i.key), cover = 0.0;
+        [loop]
+        for (uint n = 0; n < 4; n++) {
+            float2 at = saturate(uv + float2((n & 1) ? 0.25 : -0.25, (n & 2) ? 0.25 : -0.25) * i.light_uv) * float2(width - 1, height - 1);
+            uint x0 = min((uint)at.x, width - 2), y0 = min((uint)at.y, height - 2);
+            float2 part = at - float2(x0, y0);
+            float3 s00, s10, s01, s11;
+            gpu_msdf_pair(i.texture_info.g, y0 * width + x0, s00, s10);
+            gpu_msdf_pair(i.texture_info.g, (y0 + 1) * width + x0, s01, s11);
+            float3 s = lerp(lerp(s00, s10, part.x), lerp(s01, s11, part.x), part.y);
+            cover += saturate(range * (max(min(s.r, s.g), min(max(s.r, s.g), s.b)) - 0.5) + 0.5);
+        }
+        if (cover <= 0.0) discard;
+        c.a *= 0.25 * cover;
+        return saturate(c);
+    }
     [branch]
     if ((i.texture_info.r & FRAGMENT_SMOOTH) && (mode == FRAGMENT_INDEXED || mode == FRAGMENT_TEXTURE || mode == FRAGMENT_RGB24) && width != 0 && height != 0) {
         // the four texels round the point, repeating, each by how near its centre is. A texel

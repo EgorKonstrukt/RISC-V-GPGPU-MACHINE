@@ -1,0 +1,90 @@
+# The Windows 7 look's icons (tools/make_icons.py; icons.txt is the classic look's): names, then
+# where to look, first found wins.
+# A name is a program as the kernel calls it (the window manager reads /proc/PID/comm for a
+# caption's icon), a file kind (nxfiles, nxdesk), or a place. A source is FOLDER/NAME in
+# Oxygen's icon theme (16x16/FOLDER/NAME.png and its 32 and 48), or the name of a picture in
+# linux/apps/icons (NAME.png, any size).
+
+default,program         mimetypes/application-x-executable
+nxterm                  apps/utilities-terminal
+nxcalc                  apps/accessories-calculator
+nxclock                 apps/clock
+nxtetris                actions/games-config-tiles
+nxmine                  actions/games-config-board
+nxeyes                  nxeyes
+glxgears                glxgears
+nxedit                  apps/accessories-text-editor
+nxfiles                 apps/system-file-manager
+nxpaint                 apps/kolourpaint apps/gnome-paint apps/gimp
+nxweb                   apps/internet-web-browser
+nxmon                   apps/utilities-system-monitor
+nxsettings              categories/preferences-desktop
+nxview                  apps/gwenview
+nxgame                  devices/input-gaming
+nxnet                   places/network-workgroup
+nxplay                  apps/juk
+nxvideo                 apps/kaffeine
+doom,doom.bin           doom
+quake,quake.bin         quake
+quake3,quake3.bin       quake3
+classicube,classicube.bin classicube
+tdawn,tdawn.bin         tdawn
+ralert,ralert.bin       ralert
+nxmicropolis            micropolis
+nes,nes.bin             devices/input-gaming
+imdemo                  apps/preferences-desktop-theme
+nxray                   apps/digikam
+nxpath                  devices/camera-photo
+nxphys                  devices/cpu
+nxide                   apps/kdevelop
+example                 mimetypes/text-x-csrc
+restart                 actions/system-reboot
+nxoff                   actions/system-shutdown
+
+folder                  places/folder
+folder-open             places/folder-open
+file                    mimetypes/text-x-generic
+unknown                 mimetypes/unknown
+picture                 mimetypes/image-x-generic
+sound                   mimetypes/audio-x-generic
+video                   mimetypes/video-x-generic
+page                    mimetypes/text-html
+archive                 mimetypes/application-x-tar
+script                  mimetypes/application-x-shellscript
+shortcut                mimetypes/application-x-desktop
+# a file's own kind by its ending (types[] in nxfiles.c): only pictures the kinds above have not
+# (a zip is a tar here, css and xml are html, a readme is text)
+c-source                mimetypes/text-x-csrc
+c-header                mimetypes/text-x-chdr
+cpp-source              mimetypes/text-x-c++src
+code                    mimetypes/text-x-python
+font                    mimetypes/font-ttf
+png                     mimetypes/image-png
+jpeg                    mimetypes/image-jpeg
+gif                     mimetypes/image-gif
+bitmap                  mimetypes/image-bmp
+tune                    mimetypes/audio-mpeg
+data                    mimetypes/application-x-object
+library                 mimetypes/application-x-sharedlib
+disk                    mimetypes/application-x-cd-image
+
+desktop                 places/user-desktop
+home                    places/user-home
+persistence             devices/media-floppy
+pictures                places/folder-pictures
+music                   places/folder-music
+videos                  places/folder-videos
+computer                devices/computer
+start                   places/start-here
+games                   categories/applications-games
+utilities               categories/applications-utilities
+system                  categories/applications-system
+other                   categories/applications-other
+# what the desktop itself shows: a question's kind (ui_ask.h), the bar's own buttons
+error                   status/dialog-error
+warning                 status/dialog-warning
+information             status/dialog-information
+show-desktop            places/user-desktop
+volume                  status/audio-volume-high
+volume-muted            status/audio-volume-muted
+calendar                apps/office-calendar

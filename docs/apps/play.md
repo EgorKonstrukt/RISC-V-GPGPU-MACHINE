@@ -24,6 +24,18 @@ outside the list) the volume, `m` mutes, `n` and `p` are Next and Previous, `r` 
 Repeat and Shuffle, `o` opens a file, `q` or Escape leaves. Without a window system, or with
 `NXPLAY_NOWINDOW=1`, it plays the file and leaves.
 
+Since 17 October 2026 the list is a playlist of any tunes (up to 512, Title and Length, sorted
+by a click on a heading, moved by a drag or Alt+Up and Down), kept in the registry
+(`nxplay.list.N`, at most 12 keys of 250 bytes, `nxplay.tune`, `nxplay.at`, the settings), each
+with its length, measured while the first core is idle. Files are added in a file window that
+is a process of its own (`nxplay --choose`), so the tune plays on. A second `nxplay FILE` gives
+the file to the player that is open (`/tmp/nxplay.fifo`). A seek bar, menus (File, Play, List,
+Help; F10), Shuffle (every tune once a round), Repeat (off, the list, one tune), and a level
+meter that reads the peaks of the ring where the card plays. Previous more than 3 s into a tune
+starts it again. Keys: Space, X, N, P, Left, Right, 0 to 9, `+` or `=`, `-`, M, S, R, O, A,
+Delete, Alt+Up and Alt+Down, F1, F10, Q. `NXPLAY_PRINT=1` prints where the menus, keys, sliders
+and rows are.
+
 ## What the build is made of (`linux/play`)
 
 - `nxplay.c`: the window, the pieces and the ring, the card. It links
@@ -254,16 +266,16 @@ Under `rvc_cpu`, a few seconds each (start it from PowerShell):
   back to 0. The list: two copies of the test tune in a folder, `nxplay` on one, `nxkey n`
   and `p` each print a `playstat` line (the tune left) and play the other;
   `NXPLAY_SECONDS=3` makes one end, and the other follows. The keys by the pointer, the
-  window being the server's first: `nxkey 212,128` (Repeat) and `271,128` (Shuffle) each
-  print what they turned on, `385,128` (the loudspeaker) `muted`, `438,128` (the volume's
-  middle) `volume 128 of 256`, `wheel:300,60:1` `volume 144`; the wheel over the list
+  window being the server's first, at 480 x 420: the key row is at y 114 of the window, its
+  centres Previous 23, Play 57, Stop 91, Next 125, Shuffle 183, Repeat 260, mute 346; the
+  volume runs from x 362 to 436, the seek bar from 52 to 428 at y 88, the rows from y 154
+  (`NXPLAY_PRINT=1` says where they are on the screen), `wheel:300,60:1` `volume 144`; the wheel over the list
   (`wheel:200,250:-1`) prints nothing.
 
 ## Not done
 
 XM. Playing a WAV file where it lies in the ROM (the
-card can; a stream keeps one way for every kind). While "Open..." has its window the tune
-is held: `ui_choose_file` has the program's events until it is done.
+card can; a stream keeps one way for every kind).
 
 A FLAC subframe is predicted with 32-bit sums whenever its own coefficients allow it
 (`flac_bound.py`, applied to the fetched `dr_flac.h` by the build): the sum of the

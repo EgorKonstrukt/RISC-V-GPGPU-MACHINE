@@ -52,6 +52,7 @@ static int dbg_fresh;			/* a step ended without the program being let run: dbg_p
 static struct dbg_stop *dbg_stops;	/* the lines' stops while it runs */
 static int dbg_stop_count;
 static int dbg_marks[256], dbg_mark_count;	/* the user's breakpoints: lines */
+static uint32_t dbg_elf_entry;		/* where the program's file says it starts (_start for a library's link) */
 
 /* ---- what the program is made of: its stabs ---- */
 
@@ -207,6 +208,7 @@ dbg_load(const char *path)
 			symbol_names = image + sections[i].sh_offset;
 	}
 	dbg_shared = symbols && dbg_symbol(symbols, symbol_count, symbol_names, "mcw_post") != 0;
+	dbg_elf_entry = head.e_entry ? head.e_entry : symbols ? dbg_symbol(symbols, symbol_count, symbol_names, "_start") : 0;
 	if (!stabs || !strings) {
 		free(image);
 		return 0;
@@ -353,13 +355,29 @@ dbg_registers(int write)
 	ptrace(write ? PTRACE_SETREGSET : PTRACE_GETREGSET, dbg_pid, (void *)1 /* NT_PRSTATUS */, &io);
 }
 
-/* Starts the program, held before its first instruction; its output goes to `out`. */
+/* Every address the stabs gave moved by `by`: a flat program is loaded wherever there is room. */
+static void
+dbg_relocate(uint32_t by)
+{
+	int i;
+
+	for (i = 0; by && i < dbg_function_count; i++)
+		dbg_functions[i].start += by, dbg_functions[i].end += by;
+	for (i = 0; by && i < dbg_line_count; i++)
+		dbg_lines[i].address += by;
+	for (i = 0; by && i < dbg_var_count; i++)
+		if (dbg_vars[i].where == V_FIXED && dbg_vars[i].at)
+			dbg_vars[i].at += (int32_t)by;
+}
+
+/* Starts the program, held before its first instruction; its output goes to `out`. With no
+ * MMU there is no fork: the kernel's vfork, whose child only makes system calls. */
 static int
 dbg_start(const char *path, int out)
 {
 	int status;
 
-	dbg_pid = fork();
+	dbg_pid = real_vfork();
 	if (dbg_pid == 0) {
 		ptrace(PTRACE_TRACEME, 0, NULL, NULL);
 		dup2(out, 1), dup2(out, 2);
@@ -377,6 +395,9 @@ dbg_start(const char *path, int out)
 	dbg_stops = realloc(dbg_stops, (size_t)(dbg_line_count + (int)(sizeof dbg_marks / sizeof dbg_marks[0]) + 16) * sizeof *dbg_stops);
 	dbg_stop_count = 0;
 	dbg_registers(0);
+	/* held at its entry: where it was loaded is that against the file's entry */
+	if (dbg_elf_entry)
+		dbg_relocate(dbg_regs[0] - dbg_elf_entry);
 	return 1;
 }
 

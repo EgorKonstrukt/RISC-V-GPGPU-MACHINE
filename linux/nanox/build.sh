@@ -7,7 +7,7 @@ REPO=$(cd "$HERE/../.." && pwd)
 . "$REPO/linux/userland/toolchain.sh"
 MW=$WORK/src/microwindows
 MW_COMMIT=a53c319
-PROGRAMS="nano-X nxclock nxeyes nxterm nxcalc nxtetris nxmine nxev demo-hello demo-blit demo-polygon nxbench nxbar glxgears"
+PROGRAMS="nano-X nxev demo-hello demo-blit demo-polygon nxbench nxbar glxgears"
 
 if [ ! -d "$MW" ]; then
     echo "== Microwindows source"

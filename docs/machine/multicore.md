@@ -1101,12 +1101,12 @@ instructions a second, all 255 of them, are stacked on core 0's plot (or Per cor
 grid of every core's load), and the numbers under it say how many work, sleep, are idle and
 are parked (`NXMON_PRINT=1 nxmon` prints that line at every sample, for a test); its
 Processes tab gives each program's workers from `/proc/gpu`. Its plots are the workers' own work, as a graphics card's pixel
-shader would do them: it keeps eight workers while it runs, and some sixteen times a second
-each writes some rows of the plots from the samples (`shade` in `nxmon.c`) straight into
+shader would do them: it keeps eight workers while it runs, and once a sample (since 17 October 2026;
+some sixteen times a second before) each writes some rows of the plots from the samples (`shade` in `nxmon.c`) straight into
 the window's own buffer in GPU memory, mapped through `/dev/gpu` (`GrGetWindowInfo` says
-where it is). The display shows that buffer as it is, so the plots slide between samples
-and no drawing request is made for them. A busy core 0 loses 3% to it (3.23M to 3.14M
-instructions a second). Sent through the window system instead (`GrArea`, 207 KB a second)
+where it is). The display shows that buffer as it is, and no drawing request is made for the plots.
+The workers cost about 2.3M instructions a second (17M when the plots slid between samples),
+and the Performance tab costs core 0 about 266 thousand a second over an idle desktop. Sent through the window system instead (`GrArea`, 207 KB a second)
 the same picture cost core 0 1.5M instructions a second. What stands in the way of more
 of this: the window system draws by taking the whole buffer to the GPU and copying it back
 (`docs/system/nanox.md`), which undoes what a worker wrote meanwhile; the monitor asks for

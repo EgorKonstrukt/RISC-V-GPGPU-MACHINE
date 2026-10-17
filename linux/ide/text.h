@@ -21,8 +21,8 @@ static int tx_touched_last = -1;	/* the last line changed since then, while none
 /* What was done: text put in from (x0, y0) to (x1, y1), or `text` taken out at (x0, y0).
  * Changes with one `step` were one command, and go back together. */
 struct tx_change { int inserted, x0, y0, x1, y1, length, typed, step; char *text; };
-static struct tx_change tx_done[TX_HISTORY], tx_undone[TX_HISTORY];
-static int tx_done_count, tx_undone_count, tx_step;
+static struct tx_change *tx_done, *tx_undone;	/* grown as needed, up to TX_HISTORY each */
+static int tx_done_count, tx_undone_count, tx_done_room, tx_undone_room, tx_step;
 static int tx_replaying;	/* 0: a new change; 1: one being taken back; 2: one being made again */
 
 static void
@@ -41,14 +41,18 @@ tx_line_in(int at, const char *text, int length)
 }
 
 static void
-tx_push(struct tx_change *stack, int *count, struct tx_change c)
+tx_push(struct tx_change **stack, int *count, int *room, struct tx_change c)
 {
 	if (*count == TX_HISTORY) {
-		free(stack[0].text);
-		memmove(stack, stack + 1, (TX_HISTORY - 1) * sizeof stack[0]);
+		free((*stack)[0].text);
+		memmove(*stack, *stack + 1, (TX_HISTORY - 1) * sizeof (*stack)[0]);
 		(*count)--;
 	}
-	stack[(*count)++] = c;
+	if (*count == *room) {
+		*room = *room ? *room * 2 : 32;
+		*stack = realloc(*stack, (size_t)*room * sizeof (*stack)[0]);
+	}
+	(*stack)[(*count)++] = c;
 }
 
 static void
@@ -61,7 +65,7 @@ tx_remember(int inserted, int x0, int y0, int x1, int y1, char *text, int length
 	if ((inserted ? y1 : y0) > tx_touched_last)
 		tx_touched_last = inserted ? y1 : y0;
 	if (tx_replaying == 1) {
-		tx_push(tx_undone, &tx_undone_count, c);
+		tx_push(&tx_undone, &tx_undone_count, &tx_undone_room, c);
 		return;
 	}
 	if (tx_replaying == 0) {
@@ -75,7 +79,7 @@ tx_remember(int inserted, int x0, int y0, int x1, int y1, char *text, int length
 			return;
 		}
 	}
-	tx_push(tx_done, &tx_done_count, c);
+	tx_push(&tx_done, &tx_done_count, &tx_done_room, c);
 }
 
 /* The text from (x0, y0) to (x1, y1), lines parted by a newline; the caller frees it. */
@@ -174,16 +178,16 @@ tx_delete(int x0, int y0, int x1, int y1)
 static int
 tx_replay(int again)
 {
-	struct tx_change *stack = again ? tx_undone : tx_done, c;
+	struct tx_change **stack = again ? &tx_undone : &tx_done, c;
 	int *count = again ? &tx_undone_count : &tx_done_count, step;
 
 	if (!*count)
 		return 0;
-	step = stack[*count - 1].step;
+	step = (*stack)[*count - 1].step;
 	tx_step++;
 	tx_replaying = again ? 2 : 1;
-	while (*count && stack[*count - 1].step == step) {
-		c = stack[--*count];
+	while (*count && (*stack)[*count - 1].step == step) {
+		c = (*stack)[--*count];
 		if (c.inserted)
 			tx_delete(c.x0, c.y0, c.x1, c.y1);
 		else
@@ -220,13 +224,11 @@ tx_delete_selection(void)
 	return 1;
 }
 
-/* Forgets the text and its history, and takes a file's (or one empty line). */
-static int
-tx_load(const char *path)
+/* Forgets the text and its history (the arrays stay for the next text). */
+static void
+tx_forget(void)
 {
-	FILE *file = path ? fopen(path, "r") : NULL;
-	char text[2048], *line = NULL;
-	int i, x = 0, room = 0;
+	int i;
 
 	for (i = 0; i < tx_count; i++)
 		free(tx_lines[i]);
@@ -235,6 +237,17 @@ tx_load(const char *path)
 		free(tx_done[--tx_done_count].text);
 	while (tx_undone_count)
 		free(tx_undone[--tx_undone_count].text);
+}
+
+/* Forgets the text and its history, and takes a file's (or one empty line). */
+static int
+tx_load(const char *path)
+{
+	FILE *file = path ? fopen(path, "r") : NULL;
+	char text[2048], *line = NULL;
+	int i, x = 0, room = 0;
+
+	tx_forget();
 	/* the file's lines as tx_insert would leave them, each made once (not a change to take back) */
 	while (file && fgets(text, sizeof text, file))
 		for (i = 0; text[i]; i++) {
@@ -306,5 +319,58 @@ tx_find(const char *sought)
 		}
 	}
 	return 0;
+}
+/* The same backwards, from just before the cursor or the selection, round the start to the end. */
+static int
+tx_find_back(const char *sought)
+{
+	int n = (int)strlen(sought), pass, x0, y0, x1, y1, start_x = tx_x, start_y = tx_y;
+
+	if (!n)
+		return 0;
+	if (tx_selection(&x0, &y0, &x1, &y1))
+		start_x = x0, start_y = y0;
+	for (pass = 0; pass <= tx_count; pass++) {
+		int y = ((start_y - pass) % tx_count + tx_count) % tx_count, limit = pass ? 1 << 30 : start_x;
+		const char *line = tx_lines[y], *at, *best = NULL;
+
+		for (at = strstr(line, sought); at && at - line < limit; at = strstr(at + 1, sought))
+			best = at;
+		if (best) {
+			tx_ax = (int)(best - line), tx_ay = y;
+			tx_x = tx_ax + n, tx_y = y;
+			tx_marked = 1;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Every `sought` made `with` (one line of text each), as one change; how many there were. */
+static int
+tx_replace_all(const char *sought, const char *with)
+{
+	int n = (int)strlen(sought), m = (int)strlen(with), y, count = 0, x = tx_x, cy = tx_y;
+	char *at;
+
+	if (!n)
+		return 0;
+	for (y = 0; y < tx_count; y++) {
+		int from = 0;
+
+		while ((at = strstr(tx_lines[y] + from, sought)) != NULL) {
+			int k = (int)(at - tx_lines[y]);
+
+			tx_delete(k, y, k + n, y);
+			if (m)
+				tx_insert(k, y, with, m);
+			from = k + m;
+			count++;
+		}
+	}
+	tx_y = cy < tx_count ? cy : tx_count - 1;
+	tx_x = x < (int)strlen(tx_lines[tx_y]) ? x : (int)strlen(tx_lines[tx_y]);
+	tx_marked = 0;
+	return count;
 }
 #endif

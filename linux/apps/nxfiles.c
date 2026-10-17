@@ -1039,7 +1039,7 @@ run_command(const char *command)
 		return n ? child : 0;
 	signal(SIGCHLD, SIG_DFL);	/* (ignored here, and that would be the started program's too: its children gone unseen) */
 	execvp(words[0], words);
-	_exit(127);
+	ui_exec_failed();
 }
 
 /* Shows another folder; `remember` adds it to the way back. */
@@ -1152,15 +1152,16 @@ run_wait(const char *program, const char *option, const char *from, const char *
 	pid_t child;
 	int status = 0;
 
-	signal(SIGCHLD, SIG_DFL);	/* (ignored, a child leaves nothing to wait for) */
+	ui_children_hold(1);	/* (the handler would take the child this waits for) */
 	child = real_vfork();
 	if (child == 0) {
+		ui_children_hold(0);
 		execlp(program, program, option, from, to, (char *)NULL);
 		_exit(127);
 	}
 	if (child < 0 || waitpid(child, &status, 0) < 0)
 		status = -1;
-	signal(SIGCHLD, SIG_IGN);
+	ui_children_hold(0);
 	return status == 0;
 }
 
@@ -2087,7 +2088,7 @@ main(int argc, char **argv)
 		return print_kinds(argv[2]);
 	if (GrOpen() < 0)
 		return 1;
-	signal(SIGCHLD, SIG_IGN);
+	ui_launch_watch();	/* (children reaped as they end: a program that failed is reported) */
 	ui_init();
 	GrGetScreenInfo(&screen);
 	desktop = argc > 1 && !strcmp(argv[1], "--desktop");
@@ -2123,6 +2124,15 @@ main(int argc, char **argv)
 		if (time(NULL) != looked) {
 			looked = time(NULL);
 			watch();
+			if (ui_restyle()) {	/* (Settings changed the look: a word of memory read) */
+				ui_menu_restyle();
+				read_folder();	/* (icons of the other look's sheets, names measured in its font) */
+				/* the picture decoded again: a copy from the kept one does not cover the old names */
+				if (ui_decoded.pixmap)
+					GrDestroyWindow(ui_decoded.pixmap);
+				ui_decoded.pixmap = 0;
+				draw_all();
+			}
 		}
 		ui_launch_tick();
 		if (ui_launch_event(&event))
@@ -2155,6 +2165,9 @@ main(int argc, char **argv)
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
 			if (event.button.wid != window)
+				break;
+			/* (the root's client is told of a press in any window it has no other of: the bar's, a program's) */
+			if (desktop && event.button.subwid != GR_ROOT_WINDOW_ID)
 				break;
 			if (renaming) {
 				renaming = 0;	/* a click elsewhere leaves the name as it was */

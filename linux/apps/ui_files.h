@@ -12,6 +12,8 @@
 #include <sys/stat.h>
 #include "ui.h"
 
+char *strcasestr(const char *, const char *);	/* (musl declares it only under _GNU_SOURCE) */
+
 #define UI_FILES_MOST 600
 #define UI_FILES_W 380
 #define UI_FILES_H 300

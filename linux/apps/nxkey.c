@@ -20,7 +20,7 @@ static const struct { const char *name; int code; } names[] = {
 	{ "f4", 62 }, { "f5", 63 }, { "f6", 64 }, { "f7", 65 }, { "f8", 66 }, { "f9", 67 },
 	{ "f10", 68 }, { "home", 102 }, { "up", 103 }, { "pageup", 104 }, { "left", 105 },
 	{ "right", 106 }, { "end", 107 }, { "down", 108 }, { "pagedown", 109 }, { "delete", 111 },
-	{ "meta", 125 },
+	{ "meta", 125 }, { "f11", 87 }, { "f12", 88 },
 };
 /* the characters of the keyboard's rows, in key code order from 2 ("1"), 16 ("q"), 30 and 44 */
 static const char *rows[] = { "1234567890-=", "qwertyuiop[]", "asdfghjkl;'`", "zxcvbnm,./" };

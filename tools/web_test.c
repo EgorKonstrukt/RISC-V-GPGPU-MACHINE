@@ -98,11 +98,80 @@ fill(int x, int y, int w, int h, int colour)
 		}
 }
 
+/* A face's atlas of distance fields (font-NAME.msdf for font-NAME-N.sef), read once. */
+static const unsigned char *
+atlas_of(int face)
+{
+	static const unsigned char *atlas[WEB_FACES];
+	static char tried[WEB_FACES];
+	char name[80], *dash;
+	int size;
+
+	if (!tried[face]) {
+		tried[face] = 1;
+		snprintf(name, sizeof name, "%s", web_faces[face].name);
+		if ((dash = strrchr(name, '-')) != NULL) {
+			strcpy(dash, ".msdf");
+			atlas[face] = web_file(name, &size);
+		}
+	}
+	return atlas[face];
+}
+
+/* A glyph of distance fields, as the GPU's FRAGMENT_MSDF draws it (src/gpu.h). */
+static void
+draw_msdf(const struct sef_head *h, const unsigned char *atlas, const uint32_t *entry, int x, int y, int italic, int colour)
+{
+	int w = entry[1] & 0xffff, gh = entry[1] >> 16, px, py, k;
+	double qx = x + (int16_t)(entry[3] & 0xffff) / 64.0, qy = y + (int16_t)(entry[3] >> 16) / 64.0;
+	double qw = (entry[2] & 0xffff) / 64.0, qh = (entry[2] >> 16) / 64.0, range = h->range / 65536.0;
+
+	if (w < 2 || gh < 2 || qw <= 0 || qh <= 0)
+		return;
+	range = 2 * (range < 1 ? 1 : range) * 1.2;	/* a quarter pixel's, times MSDF_SHARP */
+	for (py = (int)qy; py <= (int)(qy + qh) + 1; py++)
+		for (px = (int)qx - 4; px <= (int)(qx + qw) + 5; px++) {
+			double lean = italic ? (h->ascent - (py + 0.5 - y)) / 5.0 : 0;
+			double u = (px + 0.5 - lean - qx) / qw, v = (py + 0.5 - qy) / qh, cover = 0;
+			int n, c;
+
+			if (u < 0 || u >= 1 || v < 0 || v >= 1 || px < 0 || py < 0 || px >= pw || py >= ph)
+				continue;
+			/* four samples a pixel, as the fragment's 2 x 2 */
+			for (n = 0; n < 4; n++) {
+				double su = u + (n & 1 ? 0.25 : -0.25) / qw, sv = v + (n & 2 ? 0.25 : -0.25) / qh;
+				double ax, ay, fx, fy, s[3], d;
+				int x0, y0;
+
+				su = su < 0 ? 0 : su > 1 ? 1 : su, sv = sv < 0 ? 0 : sv > 1 ? 1 : sv;
+				ax = su * (w - 1), ay = sv * (gh - 1);
+				x0 = (int)ax < w - 2 ? (int)ax : w - 2, y0 = (int)ay < gh - 2 ? (int)ay : gh - 2;
+				fx = ax - x0, fy = ay - y0;
+				for (c = 0; c < 3; c++) {
+					const unsigned char *p = atlas + entry[0] + 3 * (y0 * w + x0) + c;
+
+					s[c] = ((p[0] * (1 - fx) + p[3] * fx) * (1 - fy) + (p[3 * w] * (1 - fx) + p[3 * w + 3] * fx) * fy) / 255;
+				}
+				d = s[0] < s[1] ? (s[1] < s[2] ? s[1] : s[0] < s[2] ? s[2] : s[0]) : (s[0] < s[2] ? s[0] : s[1] < s[2] ? s[2] : s[1]);
+				d = range * (d - 0.5) + 0.5;
+				cover += d < 0 ? 0 : d > 1 ? 1 : d;
+			}
+			if ((cover /= 4) <= 0)
+				continue;
+			for (k = 0; k < 3; k++) {
+				unsigned char *q = pixels + 3 * (py * pw + px) + k;
+
+				*q = (unsigned char)(*q * (1 - cover) + (colour >> (16 - 8 * k) & 255) * cover + 0.5);
+			}
+		}
+}
+
 static void
 draw_text(const struct web_item *it)
 {
 	const struct web_face *f = &web_faces[it->face];
 	const struct sef_head *h = (const struct sef_head *)f->file;
+	const unsigned char *atlas = h->bpp == SEF_MSDF ? atlas_of(it->face) : NULL;
 	int x = it->x, i, gx, gy;
 
 	for (i = 0; i < it->b; i++) {
@@ -114,6 +183,12 @@ draw_text(const struct web_item *it)
 		if (g < 0)
 			continue;
 		entry = (const uint32_t *)(f->file + h->table_at + 16 * g);
+		if (h->bpp == SEF_MSDF) {
+			if (atlas && entry[0])
+				draw_msdf(h, atlas, entry, x, it->y, it->flags & IF_ITALIC, it->colour);
+			x += sef_advance(f->file, g);
+			continue;
+		}
 		bits = f->file + entry[0];
 		gw = entry[1], gh = entry[2];
 		dx = (signed char)(entry[3] & 255), dy = (signed char)(entry[3] >> 8 & 255);

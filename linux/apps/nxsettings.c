@@ -1,8 +1,10 @@
 /*
  * nxsettings: the desktop's settings, a tab each. Desktop: what the desktop shows (a picture
- * of the image's, any picture file, or a colour). Screen: its size. Sound: how loud. Storage:
+ * of the image's, any picture file, or a colour). Look: windows classic or as Windows 7's, and
+ * the text's font (ui_look.h). Screen: its size. Sound: how loud. Storage:
  * what the host keeps (docs/system/persist.md). System: what the machine is. Devices: each device and how it runs.
- * From a script: nxsettings apply | size WxH | volume 0-100 | choose [DIR] | system | devices.
+ * From a script: nxsettings apply | look seven|classic [smooth|classic] | size WxH | volume 0-100 |
+ * choose [DIR] | system | devices.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -30,8 +32,8 @@
 #define MAX_CHOICES 64
 #define SIZE_CHOICE "desktop.size"	/* the registry's key for the screen size the desktop starts with: WIDTHxHEIGHT (the nx script reads it) */
 
-enum { TAB_DESKTOP, TAB_SCREEN, TAB_SOUND, TAB_STORAGE, TAB_SYSTEM, TAB_DEVICES, TABS };
-static const char *tab_names[TABS] = { "Desktop", "Screen", "Sound", "Storage", "System", "Devices" };
+enum { TAB_DESKTOP, TAB_LOOK, TAB_SCREEN, TAB_SOUND, TAB_STORAGE, TAB_SYSTEM, TAB_DEVICES, TABS };
+static const char *tab_names[TABS] = { "Desktop", "Look", "Screen", "Sound", "Storage", "System", "Devices" };
 static const char *const storage_names[3] = { "Save now", "Load at start: on", "Clear the kept data" };
 static int kept_bytes = -1, kept_most, kept_auto = 1;	/* what the host keeps of /persistence; -1: it keeps nothing */
 
@@ -609,6 +611,48 @@ draw_system_changes(void)
 	system_count = n;
 }
 
+/* The Look tab: two choices of two, a button each, the one in use pressed. */
+static const char *const look_names[4] = { "Windows 7", "Classic", "Smooth (Selawik)", "Classic (bitmap)" };
+#define LOOK_X(i) (8 + (i) % 2 * 168)
+#define LOOK_Y(i) (TOP + 20 + (i) / 2 * 64)
+
+/* Every window's frame drawn again in the look now set: the window manager paints a frame at its exposure. */
+static void
+frames_again(void)
+{
+	GR_WINDOW_ID parent, *children = NULL;
+	GR_WINDOW_INFO info;
+	GR_COUNT n = 0, i;
+
+	GrQueryTree(GR_ROOT_WINDOW_ID, &parent, &children, &n);
+	for (i = 0; i < n; i++) {
+		GrGetWindowInfo(children[i], &info);
+		if (!(info.props & GR_WM_PROPS_NODECORATE) && info.mapped)
+			GrClearWindow(children[i], GR_TRUE);
+	}
+	free(children);
+}
+
+/* Sets the look, keeps it in the registry, and draws what this program and the window manager draw in it. */
+static void
+set_look(int seven, int smooth)
+{
+	reg_set(UI_LOOK_STYLE, seven ? "seven" : "classic");
+	reg_set(UI_LOOK_TEXT, smooth ? "smooth" : "classic");
+	ui_look_set(seven ? UI_STYLE_SEVEN : UI_STYLE_CLASSIC, smooth);
+	if (window) {
+		ui_restyle();
+		frames_again();
+	}
+}
+
+/* A style brings its own text (classic is the old look whole); the text's buttons then change only that. */
+static void
+look_choose(int which)
+{
+	set_look(which < 2 ? which == 0 : ui_seven, which < 2 ? which == 0 : which == 2);
+}
+
 static void
 draw(void)
 {
@@ -630,6 +674,19 @@ draw(void)
 		else if (focus == 2)
 			ui_focus(window, 8 + 4, TOP + 204 + 4, 180 - 8, 22 - 8);
 		ui_text(window, 8, HEIGHT - 26, "A picture file is a JPEG, PNG, GIF, BMP or PPM, decoded on the worker cores.", -1, UI_SHADOW, 0);
+		break;
+	case TAB_LOOK:
+		ui_text(window, 8, TOP, "Windows", -1, BLACK, 0);
+		ui_text(window, 8, TOP + 64, "Text", -1, BLACK, 0);
+		for (i = 0; i < 4; i++) {
+			ui_button(window, LOOK_X(i), LOOK_Y(i), 160, 22, look_names[i], i < 2 ? (i == 0) == ui_seven : (i == 2) == ui_smooth);
+			if (focus == i + 1)
+				ui_focus(window, LOOK_X(i) + 4, LOOK_Y(i) + 4, 160 - 8, 22 - 8);
+		}
+		ui_text(window, 360, LOOK_Y(0) + 4, ui_seven ? "Pale glass frames, a dark bar." : "Grey frames, a blue caption.", -1, UI_SHADOW, 0);
+		ui_text(window, 360, LOOK_Y(2) + 4, ui_smooth ? "Selawik, smoothed." : "The window system's own.", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 44, "Frames, the bar and the desktop change at once; a program", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 26, "already open keeps its own look until it is opened again.", -1, UI_SHADOW, 0);
 		break;
 	case TAB_SCREEN:
 		snprintf(text, sizeof text, "The screen is %d x %d now.", screen.cols, screen.rows);
@@ -742,7 +799,8 @@ show_tab(int which)
 static int
 controls(void)
 {
-	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : tab == TAB_STORAGE ? 4 : tab == TAB_DEVICES ? 2 : 3;
+	return tab == TAB_SYSTEM || (tab == TAB_SOUND && have_sound <= 0) ? 1 : tab == TAB_STORAGE ? 4 : tab == TAB_LOOK ? 5 :
+		tab == TAB_DEVICES ? 2 : 3;
 }
 
 /* Tab goes round the row of tabs and the controls of the tab shown; arrows change the tab,
@@ -770,6 +828,12 @@ key(const GR_EVENT *event)
 		else
 			break;
 		draw();
+		break;
+	case TAB_LOOK:
+		if (ui_press_key(ch)) {
+			look_choose(focus - 1);
+			draw();
+		}
 		break;
 	case TAB_SCREEN:
 		if (ui_press_key(ch) && screens.selected >= 0)
@@ -828,6 +892,14 @@ press(GR_EVENT *event)
 			choose_picture();
 			draw();
 		}
+		break;
+	case TAB_LOOK:
+		for (how = 0; down && how < 4; how++)
+			if (ui_inside(x, y, LOOK_X(how), LOOK_Y(how), 160, 22)) {
+				focus = how + 1;
+				look_choose(how);
+				draw();
+			}
 		break;
 	case TAB_SCREEN:
 		if (ui_list_event(&screens, event)) {
@@ -912,6 +984,13 @@ main(int argc, char **argv)
 	if (GrOpen() < 0)
 		return 1;
 	ui_init();
+	/* nxsettings look seven|classic [smooth|classic]: the look, as the Look tab sets it */
+	if (argc > 2 && !strcmp(argv[1], "look")) {
+		set_look(strcmp(argv[2], "classic") != 0, argc > 3 ? strcmp(argv[3], "classic") != 0 : ui_smooth);
+		frames_again();
+		GrClose();
+		return 0;
+	}
 	signal(SIGCHLD, SIG_DFL);	/* (the decoder is waited for: see ui_run in ui.h) */
 	/* nxsettings apply: put up the desktop as last chosen, and go (the nx script does this) */
 	if (argc > 1 && !strcmp(argv[1], "apply")) {

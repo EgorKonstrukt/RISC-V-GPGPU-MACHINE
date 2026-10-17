@@ -5,6 +5,7 @@
 #define SHADEREMU_APPS_UI_ASK_H
 
 #include "ui.h"
+#include "ui_icons.h"
 
 #define UI_ASK_LINES 5
 #define UI_ASK_ANSWERS 4
@@ -15,7 +16,9 @@ static struct {
 	int length[UI_ASK_LINES], lines;
 	const char *const *answers;
 	int count, focus, width, height, x[UI_ASK_ANSWERS], w[UI_ASK_ANSWERS];
+	int icon, indent;	/* the icon's cell (-1: none), and how far the text stands right of it */
 } ui_asked;
+static const char *ui_ask_icon;	/* set: the icon of that name left of the text ("error", "warning", "information") */
 static int ui_ask_aside;	/* set: low on the screen, and it never has the keyboard (its buttons are clicked) */
 static int (*ui_ask_over)(void);	/* when set, looked at twice a second: true ends the question, which answers -2 */
 
@@ -25,12 +28,19 @@ ui_ask_draw(GR_WINDOW_ID w)
 	int i, y = ui_asked.height - UI_ASK_BUTTON_H - 10;
 
 	ui_fill(w, 0, 0, ui_asked.width, ui_asked.height, UI_FACE);
+	if (ui_seven)	/* (Windows 7 puts the answers on a strip of their own) */
+		ui_fill(w, 0, y - 10, ui_asked.width, ui_asked.height - y + 10, MWRGB(240, 240, 240)),
+		ui_fill(w, 0, 0, ui_asked.width, y - 10, WHITE);
+	ui_icon(w, ui_gc, 14, 12, ui_asked.icon, 32);
 	for (i = 0; i < ui_asked.lines; i++)
-		ui_text(w, 14, 14 + i * 16, ui_asked.line[i], ui_asked.length[i], BLACK, 0);
+		ui_text(w, 14 + ui_asked.indent, 14 + i * 16, ui_asked.line[i], ui_asked.length[i], BLACK, 0);
 	for (i = 0; i < ui_asked.count; i++) {
 		int tw = ui_width(&ui_var_widths, ui_var, ui_asked.answers[i], -1);
 
-		ui_bevel(w, ui_asked.x[i], y, ui_asked.w[i], UI_ASK_BUTTON_H, 0);
+		if (ui_seven)
+			ui_button_seven(w, ui_asked.x[i], y, ui_asked.w[i], UI_ASK_BUTTON_H, 0);
+		else
+			ui_bevel(w, ui_asked.x[i], y, ui_asked.w[i], UI_ASK_BUTTON_H, 0);
 		ui_text(w, ui_asked.x[i] + (ui_asked.w[i] - tw) / 2, y + 6, ui_asked.answers[i], -1, BLACK, 0);
 		if (i == ui_asked.focus)
 			ui_focus(w, ui_asked.x[i] + 5, y + 5, ui_asked.w[i] - 10, UI_ASK_BUTTON_H - 10);
@@ -64,9 +74,11 @@ ui_ask(const char *title, const char *text, const char *const *answers, int coun
 		row += ui_asked.w[i] + 8;
 	}
 	ui_asked.answers = answers, ui_asked.count = count, ui_asked.focus = 0;
-	ui_asked.width = (wide > row ? wide : row) + 28;
+	ui_asked.icon = ui_ask_icon ? ui_icon_of(ui_ask_icon) : -1;
+	ui_asked.indent = ui_asked.icon >= 0 ? 46 : 0;
+	ui_asked.width = (wide + ui_asked.indent > row ? wide + ui_asked.indent : row) + 28;
 	ui_asked.width = ui_asked.width < 260 ? 260 : ui_asked.width > screen->cols - 20 ? screen->cols - 20 : ui_asked.width;
-	ui_asked.height = 14 + ui_asked.lines * 16 + 14 + UI_ASK_BUTTON_H + 10;
+	ui_asked.height = 14 + (ui_asked.icon >= 0 && ui_asked.lines < 2 ? 2 : ui_asked.lines) * 16 + 14 + UI_ASK_BUTTON_H + 10;
 	for (i = 0, x = ui_asked.width - 6 - row; i < count; x += ui_asked.w[i++] + 8)
 		ui_asked.x[i] = x;
 	if (getenv("UI_ASK_PRINT")) {	/* for a test without a screen: what is asked */
