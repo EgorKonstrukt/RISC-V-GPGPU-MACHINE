@@ -4127,7 +4127,7 @@ diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
 index 9214904..7925b4e 100644
 --- a/src/nanox/wmclients.c
 +++ b/src/nanox/wmclients.c
-@@ -9,6 +9,102 @@
+@@ -9,6 +9,110 @@
  #include "nano-X.h"
  #include "nxdraw.h"
  #include "nanowm.h"
@@ -4225,12 +4225,20 @@ index 9214904..7925b4e 100644
 +	}
 +	*seven = index_cell(&nx_icons7, name);
 +	cell = index_cell(&nx_icons, name);
++	/* a program called by its folder's name (/usr/lib/ralert/game): that folder's icon */
++	if (cell < 0 && *seven < 0 && (slash = strrchr(own, '/')) && slash > own) {
++		for (n = slash - own; n > 0 && own[n - 1] != '/'; n--)
++			;
++		snprintf(name, sizeof name, "%.*s", (int)(slash - own - n), own + n);
++		*seven = index_cell(&nx_icons7, name);
++		cell = index_cell(&nx_icons, name);
++	}
 +	return cell >= 0 ? cell : nx_icons.fallback;
 +}
  
  /*
   * A new client window has been mapped, so we need to reparent and decorate it.
-@@ -26,6 +122,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -26,6 +130,8 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	/* get client window information*/
  	GrGetWindowInfo(wid, &winfo);
  	style = winfo.props;
@@ -4239,7 +4247,7 @@ index 9214904..7925b4e 100644
  
  	/* if not redecorating or not child of root window, return*/
  	if (winfo.parent != GR_ROOT_WINDOW_ID || (style & GR_WM_PROPS_NODECORATE))
-@@ -94,7 +192,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -94,7 +200,7 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  		}
  	}
  
@@ -4248,7 +4256,7 @@ index 9214904..7925b4e 100644
  	x = MWABS(winfo.x - xoffset);
  	y = MWABS(winfo.y - yoffset);
  #else
-@@ -109,16 +207,18 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -109,16 +215,18 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  
  		/* We could proably use a more intelligent algorithm here */
  		GrGetScreenInfo(&si);
@@ -4271,7 +4279,7 @@ index 9214904..7925b4e 100644
  	/* create container window*/
  	pid = GrNewWindow(GR_ROOT_WINDOW_ID, x, y, width, height,
  		0, LTGRAY, BLACK);
-@@ -162,6 +262,15 @@ int wm_new_client_window(GR_WINDOW_ID wid)
+@@ -162,6 +270,15 @@ int wm_new_client_window(GR_WINDOW_ID wid)
  	GrMapWindow(pid);
  
  	GrSetFocus(wid);	/* force fixed focus*/

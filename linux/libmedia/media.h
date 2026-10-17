@@ -80,6 +80,12 @@ uint8_t *media_gif_anim_encode(const struct media_image *frames, int count, cons
 const char *media_image_save(const char *path, const struct media_image *image, int quality, int workers);
 void media_free(void *memory, uint32_t size);
 
+/* Deflate in segments ("MDZ1", total, piece, count, count + 1 offsets, then raw deflate streams of
+ * `piece` bytes each but the last): the inflated size, 0 for another file; inflated on the workers
+ * into out (16-byte aligned: a segment a job). NULL, or what is wrong. */
+uint32_t media_inflated_size(const void *file, uint32_t size);
+const char *media_inflate(const void *file, uint32_t size, void *out, uint32_t out_size, int workers);
+
 /* ---------------------------------------------------------------- animations (GIF) */
 
 struct media_anim;

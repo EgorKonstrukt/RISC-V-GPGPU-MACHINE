@@ -53,6 +53,9 @@ and it is the only way this computer becomes usable.
   sessions when asked; in the world, as the player's PlayerData.
 - **Doom** (`docs/games/doom.md`): Microwindows' port, with the level drawn by the machine's GPU
   through OpenGL instead of by its CPU.
+- **Half-Life: Uplink** (`docs/games/halflife.md`): Xash3D FWGS with the HLSDK, the level kept in
+  GPU memory with its light maps; Valve's demo data is fetched from archive.org when an image is
+  made, never committed.
 - **Red Alert** (`docs/games/ralert.md`): the same source tree's Red Alert with the 1996 demo's data
   (a Soviet and an Allied mission), on Tiberian Dawn's layer: the map on the GPU, sound and music.
 - **Command & Conquer** (`docs/games/tdawn.md`): Vanilla Conquer's Tiberian Dawn with the 1995 demo's
@@ -193,7 +196,7 @@ tools\make_image.ps1 --save-prebuilt` keeps both builds in `linux\prebuilt`.
 - `linux/nanox/` – Nano-X: its screen, keyboard and pointer drivers for this machine, our
   patch to Microwindows, the bar, and Doom's video and OpenGL renderer.
 - `linux/apps/` – the desktop's programs: editor, files, browser, paint, viewer, settings, monitor.
-- `linux/quake/`, `linux/quake3/`, `linux/tdawn/`, `linux/ralert/`, `linux/classicube/`,
+- `linux/quake/`, `linux/quake3/`, `linux/halflife/`, `linux/tdawn/`, `linux/ralert/`, `linux/classicube/`,
   `linux/nes/`, `linux/physics/` and the rest – the ports and programs that have a folder of their own.
 - `linux/prebuilt/` – the kernels and programs already built: the root with the MMU, and in
   `nommu/` the kernel without it and the programs that differ (sources and licences in its

@@ -126,6 +126,32 @@ unsigned* gpuDrawRoom(const gpu_state* s, int stored, int mesh) {
     return to;
 }
 
+// Room for `count` draws of `mesh` vertices in all with the matrices as they are, for any core
+// to write with gpuDrawPut before the frame is shown, `passes` the passes they draw in (a bit each).
+unsigned* gpuDrawsRoom(int count, unsigned mesh, unsigned passes, unsigned* block, unsigned* first_mesh) {
+    if (count <= 0 || commands + (unsigned)count > MAX_COMMANDS || mesh_vertices + mesh > MAX_MESH) return 0;
+    *block = matrix_block();
+    uint32_t* c = (uint32_t*)(gpu + set_at) + 16 * commands;
+    for (int i = 0; i < count; i++) c[16 * i] = CMD_DRAW;   // (this core's store first: the pages are a worker's to write)
+    *first_mesh = mesh_vertices;
+    commands += (unsigned)count, mesh_vertices += mesh;
+    passes_used |= passes & 0xfe;
+    last_draw = 0;
+    joined_command = 0;
+    return c;
+}
+// The block the draws made now read (written if the matrices changed), and the matrices marked
+// changed, so that the next draw writes a block of its own after blocks taken for others to fill.
+unsigned gpuMatricesBlock(void) { return matrix_block(); }
+void gpuMatricesChanged(void) { matrices_dirty = 1; }
+void gpuDrawPut(unsigned* c, const gpu_state* s, unsigned block, unsigned vertices, unsigned first_mesh, int mesh) {
+    c[1] = vertices;
+    c[2] = (uint32_t)mesh;
+    c[3] = first_mesh;
+    c[6] = block;
+    command_state(c, s);
+}
+
 void* gpuFrameMemory(unsigned bytes) {
     bytes = (bytes + 15) & ~15u;
     if (!gpu || vertex_top + bytes > set_at + SET_SIZE) return 0;

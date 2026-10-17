@@ -507,6 +507,20 @@ steps are rounded otherwise and differ from the games' by 1 or 2. On `NOD1PRE.VQ
   GIF (4); the VQA's and the GIF's reads "as it was" are the first core waiting on a word.
   The same for the three AVI films (16 and 8 workers, the sample into places).
 
+## Deflate in segments
+
+`media_inflate` takes any file made of pieces that are each a raw deflate stream by itself:
+`MDZ1`, the inflated size, the piece's size (a multiple of 16), the count, count + 1 offsets of
+the streams, then the streams. Each piece is a job, inflated by PNG's inflate into its place.
+Half-Life's pack has its maps, models and sprites so (`linux/halflife/repack.py`, pieces of 8 KB).
+
+    total = media_inflated_size(file, size);            /* 0: not deflate in segments */
+    why = media_inflate(file, size, out, total, workers);
+
+`media_test inflate FILE OUT [WORKERS]` prints the bytes and their FNV-1a sum. On the card a
+piece of 8 KB is some 160 thousand instructions, about 40 ms of one worker, which a small file
+waits for whole: Half-Life leaves files under 32 KB as they are.
+
 ## On the card
 
 The shader machine on an RTX 5090 (`rvc_harness`, D3D11 + fxc2, through `tools\gpu_queue.ps1`;

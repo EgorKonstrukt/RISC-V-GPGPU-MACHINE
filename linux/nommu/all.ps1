@@ -8,6 +8,10 @@ function at { "$([int]((Get-Date) - $t0).TotalSeconds) s" }
 if ($Kernel) { wsl bash "$w/kernel.sh"; "kernel done at $(at)" }
 if (-not $NoBuild) { wsl bash "$w/build.sh" @Builds; "build done at $(at)" }
 wsl bash "$w/root.sh"
+# the desktop's icons and fonts on the flat root, so that --save-prebuilt keeps them
+$share = "$repo\build\nommu\flatroot\usr\share"
+$env:ICONS_OUT = $share; python "$repo\tools\make_icons.py" | Select-Object -Last 1; Remove-Item Env:ICONS_OUT
+python "$repo\tools\make_fonts.py" $share | Select-Object -Last 1
 python "$PSScriptRoot\image.py" | Select-Object -Last 1
 "image done at $(at)"
 Push-Location $repo

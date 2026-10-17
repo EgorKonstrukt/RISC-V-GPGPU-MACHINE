@@ -497,12 +497,15 @@ a brush stroke costs the pixels it touches and nothing else.
 
 ## Frames a second
 
-A window a program's frames are drawn in says how many a second, in its caption left of the
-boxes: `programs/linux/fps_caption.h`, called where a frame is handed to the GPU
+A window a program's frames are drawn in says how many a second and how many milliseconds
+its mean frame took ("84 fps 11.9 ms"), in its caption left of the boxes: `programs/linux/fps_caption.h`, called where a frame is handed to the GPU
 (`seglSwap`, `glXSwapBuffers`, ClassiCube's `Gfx_EndFrame`). The caption is rows of the
 window's own buffer, just above its pixels, so the digits are written there once a second:
 some hundreds of stores and no request (a title set through the window system cost a tenth
-of a second of the core). A caption painted again loses them until the next second. The
+of a second of the core). The text is drawn on the caption's own pixels, dark on a light
+caption and light on a dark one with a half-blended shadow, so it sits in either look; the
+pixels it covers are kept and put back at the next second, and taken anew when the caption
+was painted again in between (a window gaining or losing the keyboard). The
 frames may go to a part of the program's window at its top left corner (the video player's
 picture above its controls): the caption is looked for up to two windows above.
 

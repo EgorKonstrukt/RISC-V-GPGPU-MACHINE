@@ -246,6 +246,22 @@ main(int argc, char **argv)
 		media_anim_close(a);
 		return 0;
 	}
+	if (!strcmp(argv[1], "inflate") && argc >= 4) {	/* inflate FILE OUT [WORKERS]: deflate in segments */
+		uint32_t total = media_inflated_size(f, size);
+		uint8_t *out = total ? aligned_alloc(16, (total + 15) & ~15u) : NULL;
+		const char *why = out ? media_inflate(f, size, out, total, argc > 4 ? atoi(argv[4]) : 0) : "not deflate in segments";
+		FILE *o;
+
+		if (why) {
+			printf("inflate %s: %s\n", argv[2], why);
+			return 1;
+		}
+		o = fopen(argv[3], "wb");
+		fwrite(out, 1, total, o);
+		fclose(o);
+		printf("inflate: %u bytes, fnv %08x\n", total, media_sum(out, total, 2166136261u));
+		return 0;
+	}
 	if (!strcmp(argv[1], "audio") && argc >= 4) {
 		const char *why;
 		struct media_audio *a = media_audio_open(f, size, &why);

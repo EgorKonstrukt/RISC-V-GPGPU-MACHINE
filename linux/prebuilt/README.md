@@ -33,6 +33,7 @@ started and everything on its desktop run without building anything.
 | `root/usr/share/ralert-*.MIX`, `ralert-sound.pak` | `linux/ralert/build.sh` | the Red Alert demo; the pack is its sounds decoded |
 | `root/usr/bin/quake.bin` | `linux/quake/build.sh` | id Software's Quake (GLQuake), with `linux/quake/quake.patch` and the files in `linux/quake` |
 | `root/usr/lib/tdawn/game`, `root/usr/lib/ralert/game` | `linux/tdawn/build.sh`, `linux/ralert/build.sh` | Vanilla Conquer, with the `vanilla-conquer.patch` of each and the files in `linux/tdawn` and `linux/ralert` |
+| `nommu/root/usr/bin/halflife.bin`, `halflife`, `root/usr/share/halflife/` (its own files, the HLSDK's licence), `nxapps.72-halflife` | `linux/halflife/build.sh` | Xash3D FWGS and hlsdk-portable, with `linux/halflife/xash3d.patch`, `hlsdk.patch` and the files in `linux/halflife`; Uplink's data is not here: `linux/halflife/data.py` fetches it when an image is made (`docs/games/halflife.md`) |
 
 Every program is statically linked, so each also contains the parts of the C library and
 compiler runtime it uses.
@@ -62,6 +63,8 @@ as above, position-independent, in the bFLT format), and `elf2flt`, `mctest`, `f
 | BusyBox 1.36.1 | GPL-2.0 | https://busybox.net/downloads/busybox-1.36.1.tar.bz2; configuration: `linux/userland` |
 | Doom | GPL-2.0 | Microwindows' `src/contrib/doom` at the commit above; our changes: `linux/nanox` |
 | TinyCC | LGPL-2.1 | https://github.com/jrrk2/tinycc, branch `riscv32`; our changes: `linux/tcc` |
+| Xash3D FWGS | GPL-3.0-or-later | https://github.com/FWGS/xash3d-fwgs, the commit `linux/halflife/build.sh` names; our changes: `linux/halflife/xash3d.patch` |
+| hlsdk-portable (Half-Life's client and server) | Half-Life 1 SDK licence (free distribution only; its text at `usr/share/halflife/LICENSE-hlsdk`) | https://github.com/FWGS/hlsdk-portable, the commit `linux/halflife/build.sh` names; our changes: `linux/halflife/hlsdk.patch` |
 | Micropolis (MicropolisCore's engine and its cities, pictures, texts and sounds) | GPL-3.0 with EA's additional terms; "Micropolis" under the Micropolis Public Name License | https://github.com/SimHacker/MicropolisCore, the commit `linux/micropolis/build.sh` names; our changes: `linux/micropolis/micropolis.patch` |
 | ClassiCube | BSD-3-Clause | https://github.com/ClassiCube/ClassiCube, commit `d41c3f7`; our changes: `linux/classicube/classicube.patch` |
 | Dear ImGui 1.91.5 | MIT | https://github.com/ocornut/imgui, tag `v1.91.5` |

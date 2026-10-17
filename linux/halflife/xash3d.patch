@@ -1,0 +1,4685 @@
+diff --git a/common/backends.h b/common/backends.h
+index e0cc14bc..4f046b10 100644
+--- a/common/backends.h
++++ b/common/backends.h
+@@ -21,6 +21,7 @@ GNU General Public License for more details.
+ #define VIDEO_PSP     2
+ #define VIDEO_FBDEV   3
+ #define VIDEO_DOS     4
++#define VIDEO_SHADEREMU 5 // a Nano-X window drawn by the machine's GPU (linux/halflife)
+ 
+ // audio backends (XASH_SOUND)
+ #define SOUND_NULL     0
+@@ -33,6 +34,7 @@ GNU General Public License for more details.
+ #define INPUT_SDL     1
+ #define INPUT_PSP     2
+ #define INPUT_EVDEV   3
++#define INPUT_SHADEREMU 4
+ 
+ // timer (XASH_TIMER)
+ #define TIMER_NULL  0 // not used
+diff --git a/common/defaults.h b/common/defaults.h
+index 7cd9c1f9..c0e12a4b 100644
+--- a/common/defaults.h
++++ b/common/defaults.h
+@@ -34,6 +34,9 @@ SETUP BACKENDS DEFINITIONS
+ 		#define XASH_VIDEO     VIDEO_SDL
+ 		#define XASH_INPUT     INPUT_SDL
+ 		#define XASH_SOUND     SOUND_SDL
++	#elif XASH_SHADEREMU
++		#define XASH_VIDEO     VIDEO_SHADEREMU
++		#define XASH_INPUT     INPUT_SHADEREMU
+ 	#elif XASH_LINUX // we are building for Linux without SDL, only framebuffer is supported for now
+ 		#define XASH_VIDEO     VIDEO_FBDEV
+ 		#define XASH_INPUT     INPUT_EVDEV
+diff --git a/engine/client/cl_frame.c b/engine/client/cl_frame.c
+index aace8cff..2718aac1 100644
+--- a/engine/client/cl_frame.c
++++ b/engine/client/cl_frame.c
+@@ -359,14 +359,28 @@ static qboolean CL_FindInterpolationUpdates( cl_entity_t *ent, double targettime
+ 	uint		i0 = (imod - 0) & HISTORY_MASK;	// curpos (lerp end)
+ 	uint		i1 = (imod - 1) & HISTORY_MASK;	// oldpos (lerp start)
+ 
++#if XASH_SHADEREMU	// (the times are floats: under the target exactly when under the least float not under it)
++	float target = (float)targettime;
++	if( (double)target < targettime )
++		target = nextafterf( target, INFINITY );
++#endif
+ 	for( uint i = 1; i < HISTORY_MAX - 1; i++ )
+ 	{
++#if XASH_SHADEREMU
++		float at = ent->ph[( imod - i ) & HISTORY_MASK].animtime;
++
++		if( at == 0.0f )
++			break;
++
++		if( at < target )
++#else
+ 		double at = ent->ph[( imod - i ) & HISTORY_MASK].animtime;
+ 
+ 		if( at == 0.0f )
+ 			break;
+ 
+ 		if( targettime > at )
++#endif
+ 		{
+ 			// found it
+ 			i0 = (( imod - i ) + 1 ) & HISTORY_MASK;
+@@ -602,14 +616,68 @@ CL_ProcessPacket
+ process player states after the new packet has received
+ =================
+ */
++#if XASH_SHADEREMU
++// The entities' states shuffled and updated by two workers, the local player's apart (its state is changed
++// first); the players and the followers with no origin (they read their aiment's) are this core's after.
++int hlglWorker( void );
++void hlglPost( int k, uint32_t ( *fn )( uint32_t, uint32_t ), uint32_t a0, uint32_t a1 );
++unsigned hlglWait( int k );
++static frame_t *shuffle_frame;
++static qboolean SE_EntityApart( const entity_state_t *state )
++{
++	return CL_IsPlayerIndex( state->number ) || ( state->movetype == MOVETYPE_FOLLOW && VectorIsNull( state->origin ) && state->aiment );
++}
++static uint32_t SE_ShuffleJob( uint32_t from, uint32_t to )
++{
++	for( uint32_t pnum = from; pnum < to; pnum++ )
++	{
++		entity_state_t *state = &cls.packet_entities[( shuffle_frame->first_entity + pnum ) % cls.num_client_entities];
++		if( state->number == cl.playernum + 1 )
++			continue;
++		cl_entity_t *ent = &clgame.entities[state->number];
++		ent->prevstate = ent->curstate;
++		ent->curstate = *state;
++		if( SE_EntityApart( state ))
++			continue;
++		ent->player = false;
++		CL_ProcessEntityUpdate( ent );
++		CL_ResetLatchedState( pnum, shuffle_frame, ent );
++	}
++	return 0;
++}
++#endif
++
+ void CL_ProcessPacket( frame_t *frame )
+ {
++	float msg_time = cl.mtime[0];	// (once, not a double's conversion an entity)
++#if XASH_SHADEREMU
++	int shuffled = 0, k0, k1, half = frame->num_entities / 2;
++	if( frame->num_entities >= 8 && !clgame.drawFuncs.CL_UpdateLatchedVars && ( k0 = hlglWorker()) > 0 && ( k1 = hlglWorker()) > 0 && k0 != k1 )
++	{
++		for( int pnum = 0; pnum < frame->num_entities; pnum++ )
++		{
++			entity_state_t *state = &cls.packet_entities[(frame->first_entity+pnum) % cls.num_client_entities];
++			state->messagenum = cl.parsecount;
++			state->msg_time = msg_time;
++		}
++		shuffle_frame = frame;
++		hlglPost( k0, SE_ShuffleJob, 0, half );
++		hlglPost( k1, SE_ShuffleJob, half, frame->num_entities );
++		CL_SetSolidEntities();	// (from the packet's states alone, while the workers shuffle: the parse's call then has them)
++		hlglWait( k0 ), hlglWait( k1 );
++		shuffled = 1;
++	}
++#endif
+ 	for( int pnum = 0; pnum < frame->num_entities; pnum++ )
+ 	{
+ 		// request the entity state from circular buffer
+ 		entity_state_t *state = &cls.packet_entities[(frame->first_entity+pnum) % cls.num_client_entities];
++#if XASH_SHADEREMU
++		if( shuffled && state->number != cl.playernum + 1 && !SE_EntityApart( state ))
++			continue;	// (a worker's)
++#endif
+ 		state->messagenum = cl.parsecount;
+-		state->msg_time = cl.mtime[0];
++		state->msg_time = msg_time;
+ 
+ 		// mark all the players
+ 		cl_entity_t *ent = &clgame.entities[state->number];
+@@ -619,8 +687,13 @@ void CL_ProcessPacket( frame_t *frame )
+ 			clgame.dllFuncs.pfnTxferLocalOverrides( state, &frame->clientdata );
+ 
+ 		// shuffle states
++#if XASH_SHADEREMU
++		if( !shuffled || state->number == cl.playernum + 1 )
++#endif
++		{
+ 		ent->prevstate = ent->curstate;
+ 		ent->curstate = *state;
++		}
+ 
+ 		CL_ProcessEntityUpdate( ent );
+ 		CL_ResetLatchedState( pnum, frame, ent );
+@@ -797,6 +870,56 @@ An svc_packetentities has just been parsed, deal with the
+ rest of the data stream.
+ ==================
+ */
++#if XASH_SHADEREMU
++// The local server's states given where they lie (SV_EmitPacketEntities), not as deltas.
++qboolean SE_DirectWanted( void )
++{
++	static int off = -1;
++
++	if( off < 0 ) off = getenv( "HL_NET" ) && !Q_strcmp( getenv( "HL_NET" ), "wire" );
++	return !off && !cls.demorecording && !cls.demoplayback;
++}
++
++// The packet's entities copied in, a new one where the last frame had none of that number.
++static void CL_DirectPacket( sizebuf_t *msg, frame_t *frame, int count )
++{
++	const entity_state_t *ring = (const entity_state_t *)(uintptr_t)MSG_ReadLong( msg );
++	int size = MSG_ReadLong( msg ), first = MSG_ReadLong( msg );
++	const weapon_data_t *weapons = (const weapon_data_t *)(uintptr_t)MSG_ReadLong( msg );
++
++	if( weapons )	// (the server's frame, which its next frame does not write)
++		memcpy( frame->weapondata, weapons, sizeof( frame->weapondata ));
++	frame_t *old = &cl.frames[( cl.parsecountmod - 1 ) & CL_UPDATE_MASK];
++	entity_state_t *oldent = NULL;
++	int oldindex = 0;
++
++	if( !old->valid || old == frame || ( cls.next_client_entities - old->first_entity ) > ( cls.num_client_entities - NUM_PACKET_ENTITIES ))
++		old = NULL;
++	int oldnum = CL_UpdateOldEntNum( oldindex, old, &oldent );
++	for( int i = 0; i < count && size > 0; i++ )
++	{
++		const entity_state_t *s = &ring[( first + i ) % size];
++		int n = s->number;
++
++		while( oldnum < n )
++			oldnum = CL_UpdateOldEntNum( ++oldindex, old, &oldent );
++		if( n < 0 || n >= clgame.maxEntities )
++			continue;
++		cl_entity_t *ent = CL_EDICT_NUM( n );
++		ent->index = n;
++		cls.packet_entities[cls.next_client_entities % cls.num_client_entities] = *s;
++		if( oldnum != n )
++		{
++			SETVISBIT( frame->flags, frame->num_entities );	// interpolation reset
++			if( ent->curstate.messagenum != 0 )
++				CL_KillDeadBeams( ent );
++		}
++		cls.next_client_entities++;
++		frame->num_entities++;
++	}
++}
++#endif
++
+ int CL_ParsePacketEntities( sizebuf_t *msg, qboolean delta, connprotocol_t proto )
+ {
+ 	frame_t		*oldframe;
+@@ -851,6 +974,13 @@ int CL_ParsePacketEntities( sizebuf_t *msg, qboolean delta, connprotocol_t proto
+ 
+ 		if( MSG_CheckOverflow( msg ))
+ 			Host_Error( "%s: overflow\n", __func__ );
++#if XASH_SHADEREMU
++		if( newnum == LAST_EDICT - 1 && !delta )
++		{
++			CL_DirectPacket( msg, newframe, count );
++			continue;
++		}
++#endif
+ 
+ 		qboolean player = CL_IsPlayerIndex( newnum );
+ 
+@@ -1284,8 +1414,51 @@ add visible entities to refresh list
+ process frame interpolation etc
+ ===============
+ */
++#if XASH_SHADEREMU
++void ( *SE_LightAhead )( void );	// (set by the renderer, gl_kept.c)
++// the studio models' bones set up ahead: the client's code for it, and the renderer's copy of them
++int ( *SE_StudioBonesAhead )( cl_entity_t *e, int core, double clTime, double clOldTime, float *bones, float *lights, float *rotation, float *prevframe );
++void ( *SE_StudioAheadReady )( void );
++int se_studio_no_followers;	// no model drawn this frame follows another: their bones need not be kept (gl_kept.c)
++int ( *SE_StudioBonesTaken )( cl_entity_t *e, double clTime, float *bones, float *lights, int numbones, float *prevframe );
++#endif
++
++#if XASH_SHADEREMU
++// The light styles animated on the light worker while this core predicts (gl_shaderemu.c's workers).
++void hlglPost( int k, uint32_t ( *fn )( uint32_t, uint32_t ), uint32_t a0, uint32_t a1 );
++unsigned hlglWait( int k );
++int hlglLightWorker( void );
++static int styles_worker;
++static uint32_t SE_LightStylesJob( uint32_t unused0, uint32_t unused1 )
++{
++	ref.dllFuncs.CL_RunLightStyles( CL_GetLightStyle( 0 ));
++	return 0;
++}
++// (the worker's job waited for: true when it ran)
++static qboolean SE_LightStylesTaken( void )
++{
++	if( !styles_worker )
++		return false;
++	hlglWait( styles_worker ), styles_worker = 0;
++	return true;
++}
++void SE_LightStylesGive( void )
++{
++	SE_LightStylesTaken();
++	if( cl.paused || cls.state != ca_active || !cl.validsequence || !cl.frames[cl.parsecountmod].valid || ( styles_worker = hlglLightWorker()) <= 0 )
++	{
++		styles_worker = 0;
++		return;
++	}
++	hlglPost( styles_worker, SE_LightStylesJob, 0, 0 );
++}
++#endif
++
+ void CL_EmitEntities( void )
+ {
++#if XASH_SHADEREMU
++	qboolean styles_done = SE_LightStylesTaken();
++#endif
+ 	if( cl.paused ) return; // don't waste time
+ 
+ 	// not in server yet, no entities to redraw
+@@ -1297,6 +1470,9 @@ void CL_EmitEntities( void )
+ 		return;
+ 
+ 	// animate lightestyles
++#if XASH_SHADEREMU
++	if( !styles_done )
++#endif
+ 	ref.dllFuncs.CL_RunLightStyles( CL_GetLightStyle( 0 ));
+ 
+ 	// decay dynamic lights
+@@ -1330,6 +1506,10 @@ void CL_EmitEntities( void )
+ 
+ 	// perfomance test
+ 	CL_TestLights();
++#if XASH_SHADEREMU
++	if( SE_LightAhead )
++		SE_LightAhead();	// (the things to draw are known: the renderer finds their light on a worker)
++#endif
+ }
+ 
+ /*
+diff --git a/engine/client/cl_main.c b/engine/client/cl_main.c
+index 39e4f9c2..0a30c3ac 100644
+--- a/engine/client/cl_main.c
++++ b/engine/client/cl_main.c
+@@ -831,6 +831,9 @@ static void CL_CreateCmd( void )
+ 	if( !cls.demoplayback ) cl.cmd = pcmd->cmd;
+ 
+ 	// predict all unacknowledged movements
++#if XASH_SHADEREMU
++	if( !SV_Active( ))	// (else after the server's answer, CL_PredictSent)
++#endif
+ 	CL_PredictMovement( false );
+ }
+ 
+@@ -910,6 +913,10 @@ static void CL_WritePacket( void )
+ 	}
+ 
+ 	numbackup = bound( 0, cl_cmdbackup.value, maxbackup );
++#if XASH_SHADEREMU
++	if( SV_Active( ))
++		numbackup = 0;	// (the loopback never loses a packet)
++#endif
+ 
+ 	// allow extended usercmd limit
+ 	if( proto == PROTO_GOLDSRC && cls.build_num >= 5971 )
+@@ -3921,6 +3928,13 @@ void Host_ClientFrame( void )
+ 
+ 	// do prediction again in case we got
+ 	// a new portion updates from server
++#if XASH_SHADEREMU
++	void SE_LightStylesGive( void );
++	SE_LightStylesGive();	// (on a worker, while this core predicts)
++	void CL_PredictSent( void );
++	if( SV_Active( )) CL_PredictSent();
++	else
++#endif
+ 	CL_RedoPrediction ();
+ 
+ 	// update voice
+diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
+index 95c85f7c..3332eb99 100644
+--- a/engine/client/cl_tent.c
++++ b/engine/client/cl_tent.c
+@@ -2449,11 +2449,18 @@ CL_AllocDlight
+ 
+ ===============
+ */
++#if XASH_SHADEREMU
++int se_dlight_allocs;	// (as se_elight_allocs)
++#endif
++
+ dlight_t *CL_AllocDlight( int key )
+ {
+ 	dlight_t	*dl;
+ 	int	i;
+ 
++#if XASH_SHADEREMU
++	se_dlight_allocs++;
++#endif
+ 	// first look for an exact key match
+ 	if( key )
+ 	{
+@@ -2494,10 +2501,17 @@ CL_AllocElight
+ 
+ ===============
+ */
++#if XASH_SHADEREMU
++int se_elight_allocs;	// (the renderer's list of the lights alive is made again after one)
++#endif
++
+ dlight_t *CL_AllocElight( int key )
+ {
+ 	dlight_t	*dl;
+ 	int	i;
++#if XASH_SHADEREMU
++	se_elight_allocs++;
++#endif
+ 
+ 	// first look for an exact key match
+ 	if( key )
+diff --git a/engine/client/dll_int/cl_gameui.c b/engine/client/dll_int/cl_gameui.c
+index 993304fa..28c92a20 100644
+--- a/engine/client/dll_int/cl_gameui.c
++++ b/engine/client/dll_int/cl_gameui.c
+@@ -499,12 +499,30 @@ static HIMAGE GAME_EXPORT pfnPIC_Load( const char *szPicName, const byte *image_
+ 		return 0;
+ 	}
+ 
++#if XASH_SHADEREMU
++	// a name not found is not searched for again in the same frame (the menu's controls ask for theirs each)
++	static char missed[64][64];
++	static int missed_count, missed_frame = -1;
++	if( missed_frame != host.framecount )
++		missed_frame = host.framecount, missed_count = 0;
++	if( !image_buf )
++		for( int i = 0; i < missed_count; i++ )
++			if( !Q_stricmp( missed[i], szPicName ))
++				return 0;
++#endif
+ 	// add default parms to image
+ 	SetBits( flags, TF_IMAGE );
+ 
+ 	Image_SetForceFlags( IL_LOAD_DECAL ); // allow decal images for menu
+ 	tx = ref.dllFuncs.GL_LoadTexture( szPicName, image_buf, image_size, flags );
+ 	Image_ClearForceFlags();
++#if XASH_SHADEREMU
++	if( !tx && !image_buf && missed_count < 64 && Q_strlen( szPicName ) < 64 )
++		Q_strncpy( missed[missed_count++], szPicName, 64 );
++	void hlglSpillable( unsigned name );
++	if( tx )
++		hlglSpillable( tx );	// (the menu's: to RAM while the game is played)
++#endif
+ 
+ 	return tx;
+ }
+diff --git a/engine/client/dll_int/cl_pmove.c b/engine/client/dll_int/cl_pmove.c
+index 9ca1f797..9d97c597 100644
+--- a/engine/client/dll_int/cl_pmove.c
++++ b/engine/client/dll_int/cl_pmove.c
+@@ -108,6 +108,14 @@ void CL_SetIdealPitch( void )
+ 	if( cl.local.onground == -1 )
+ 		return;
+ 
++#if XASH_SHADEREMU
++	// (where the traces go is all it depends on: a player standing has it already)
++	static float asked[5];
++	const float now[5] = { cl.simorg[0], cl.simorg[1], cl.simorg[2], cl.viewheight[2], cl.viewangles[YAW] };
++	if( !memcmp( asked, now, sizeof( now )))
++		return;
++	memcpy( asked, now, sizeof( now ));
++#endif
+ 	angleval = cl.viewangles[YAW] * M_PI2 / 360.0f;
+ 	SinCos( angleval, &sinval, &cosval );
+ 
+@@ -319,7 +327,11 @@ static void CL_CopyEntityToPhysEnt( physent_t *pe, entity_state_t *state, qboole
+ 	else if( mod != NULL )
+ 	{
+ 		// otherwise copy the modelname
++#if XASH_SHADEREMU	// (the same string, copied whole: mod->name is the longer)
++		memcpy( pe->name, mod->name, sizeof( pe->name ) - 1 ), pe->name[sizeof( pe->name ) - 1] = 0;
++#else
+ 		Q_strncpy( pe->name, mod->name, sizeof( pe->name ));
++#endif
+ 	}
+ 	else
+ 	{
+@@ -467,6 +479,18 @@ Builds all the pmove physents for the current frame
+ void CL_SetSolidEntities( void )
+ {
+ 	physent_t	*pe = clgame.pmove->physents;
++#if XASH_SHADEREMU
++	// (built from the last frame received alone: the lists made from it, while they stand, are its)
++	static struct { int parsecount, entities, phys, vis, move; const model_t *world; } solid_built = { -1 };
++	if( solid_built.parsecount == cl.parsecount && solid_built.entities == cl.frames[cl.parsecountmod].num_entities
++		&& solid_built.world == cl.worldmodel && pe->model == cl.worldmodel && clgame.pmove->numphysent >= solid_built.phys
++		&& clgame.pmove->numvisent >= solid_built.vis && clgame.pmove->nummoveent >= solid_built.move && cl.frames[cl.parsecountmod].valid )
++	{
++		// what was added after them (the players) let go, as a new list would
++		clgame.pmove->numphysent = solid_built.phys, clgame.pmove->numvisent = solid_built.vis, clgame.pmove->nummoveent = solid_built.move;
++		return;
++	}
++#endif
+ 
+ 	// setup physents
+ 	clgame.pmove->numvisent = 1;
+@@ -486,6 +510,11 @@ void CL_SetSolidEntities( void )
+ 
+ 	// add all other entities exlucde players
+ 	CL_AddLinksToPmove( &cl.frames[cl.parsecountmod] );
++#if XASH_SHADEREMU
++	solid_built.parsecount = cl.parsecount, solid_built.entities = cl.frames[cl.parsecountmod].num_entities;
++	solid_built.world = cl.worldmodel, solid_built.phys = clgame.pmove->numphysent;
++	solid_built.vis = clgame.pmove->numvisent, solid_built.move = clgame.pmove->nummoveent;
++#endif
+ }
+ 
+ /*
+@@ -624,6 +653,24 @@ CL_VisTraceLine
+ trace by visible objects (thats can be non-solid)
+ =============
+ */
++#if XASH_SHADEREMU
++// CL_VisTraceLine's fraction on another core, through a playermove of its own and past studio
++// models (which use the box hulls of this core): own is SE_VisTraceOwn's, made on this core.
++void *SE_VisTraceOwn( void )
++{
++	return calloc( 1, sizeof( playermove_t ));
++}
++
++float SE_VisTraceFraction( void *own, vec3_t start, vec3_t end, int flags )
++{
++	playermove_t *pm = own;
++
++	pm->usehull = 2;
++	pm->server = false;
++	return PM_PlayerTraceExt( pm, start, end, flags | PM_STUDIO_IGNORE, clgame.pmove->numvisent, clgame.pmove->visents, -1, NULL ).fraction;
++}
++#endif
++
+ pmtrace_t *CL_VisTraceLine( vec3_t start, vec3_t end, int flags )
+ {
+ 	int		old_usehull;
+@@ -901,7 +948,11 @@ static void CL_RunUsercmd( local_state_t *from, local_state_t *to, usercmd_t *u,
+ {
+ 	usercmd_t		cmd;
+ 
++#if XASH_SHADEREMU	// SE_CHOP: a frame at 10 a second is one move
++	if( u->msec > 100 )
++#else
+ 	if( u->msec > 50 )
++#endif
+ 	{
+ 		local_state_t	temp;
+ 		usercmd_t		split;
+@@ -972,12 +1023,37 @@ CL_PredictMovement
+ Sets cl.predicted.origin and cl.predicted.angles
+ =================
+ */
++#if XASH_SHADEREMU
++static void CL_PredictMovementTo( qboolean repredicting, uint stoppoint );
++void CL_PredictMovement( qboolean repredicting )
++{
++	CL_PredictMovementTo( repredicting, repredicting ? 0 : 1 );
++}
++
++// With a server here the commands are sent before its answer is read: what is drawn is predicted
++// once, after it, from the last command answered to the last one sent.
++void CL_PredictSent( void )
++{
++	qboolean answered = cls.netchan.incoming_sequence != cls.lastupdate_sequence;
++
++	CL_PredictMovementTo( false, 0 );
++	if( answered )
++		CL_CheckPredictionError();
++}
++
++static void CL_PredictMovementTo( qboolean repredicting, uint stoppoint )
++#else
+ void CL_PredictMovement( qboolean repredicting )
++#endif
+ {
+ 	runcmd_t		*to_cmd = NULL, *from_cmd;
+ 	local_state_t	*from = NULL, *to = NULL;
+ 	frame_t *frame = NULL;
++#if XASH_SHADEREMU
++	uint		i;
++#else
+ 	uint		i, stoppoint;
++#endif
+ 	double		f = 1.0;
+ 	double		time;
+ 
+@@ -1025,7 +1101,9 @@ void CL_PredictMovement( qboolean repredicting )
+ 	if( !frame->valid ) return;
+ 
+ 	time = frame->time;
++#if !XASH_SHADEREMU
+ 	stoppoint = ( repredicting ) ? 0 : 1;
++#endif
+ 	cl.local.repredicting = repredicting;
+ 	cl.local.onground = -1;
+ 
+@@ -1059,7 +1137,11 @@ void CL_PredictMovement( qboolean repredicting )
+ 
+ 	CL_PopPMStates();
+ 
++#if XASH_SHADEREMU
++	if(( i == CL_UPDATE_MASK ) || ( !to && stoppoint ))	// (stoppoint: as !repredicting was)
++#else
+ 	if(( i == CL_UPDATE_MASK ) || ( !to && !repredicting ))
++#endif
+ 	{
+ 		cl.local.repredicting = false;
+ 		return; // net hasn't deliver packets in a long time...
+@@ -1099,12 +1181,17 @@ void CL_PredictMovement( qboolean repredicting )
+ 	}
+ 	else
+ 	{
+-		VectorLerp( from->playerstate.origin, f, to->playerstate.origin, cl.simorg );
+-		VectorLerp( from->client.velocity, f, to->client.velocity, cl.simvel );
+-		VectorLerp( from->client.punchangle, f, to->client.punchangle, cl.punchangle );
++#if XASH_SHADEREMU
++		const float ff = f;
++#else
++		const double ff = f;
++#endif
++		VectorLerp( from->playerstate.origin, ff, to->playerstate.origin, cl.simorg );
++		VectorLerp( from->client.velocity, ff, to->client.velocity, cl.simvel );
++		VectorLerp( from->client.punchangle, ff, to->client.punchangle, cl.punchangle );
+ 
+ 		if( from->playerstate.usehull == to->playerstate.usehull )
+-			VectorLerp( from->client.view_ofs, f, to->client.view_ofs, cl.viewheight );
++			VectorLerp( from->client.view_ofs, ff, to->client.view_ofs, cl.viewheight );
+ 		else VectorCopy( to->client.view_ofs, cl.viewheight );
+ 	}
+ 
+diff --git a/engine/client/gamma.c b/engine/client/gamma.c
+index 65d340ce..2563075e 100644
+--- a/engine/client/gamma.c
++++ b/engine/client/gamma.c
+@@ -32,6 +32,28 @@ static CVAR_DEFINE( v_lightgamma, "lightgamma", "2.5", 0, "lightgamma amount" );
+ static CVAR_DEFINE( v_brightness, "brightness", "0.0", FCVAR_ARCHIVE, "brightness factor" );
+ static CVAR_DEFINE( v_gamma, "gamma", "2.5", FCVAR_ARCHIVE, "gamma amount" );
+ 
++#if XASH_SHADEREMU
++// x to the y for 0 <= x <= 1, to float's precision.
++static float se_pow( float x, double yd )
++{
++	float y = yd, m, s, s2, l, f, e;
++	int ex, n;
++
++	if( x <= 0.0f )
++		return 0.0f;
++	m = frexpf( x, &ex );
++	if( m < 0.70710678f )
++		m *= 2.0f, ex--;
++	s = ( m - 1.0f ) / ( m + 1.0f ), s2 = s * s;
++	l = 2.0f * s * ( 1.0f + s2 * ( 1.0f / 3 + s2 * ( 1.0f / 5 + s2 * ( 1.0f / 7 + s2 * ( 1.0f / 9 )))));
++	l = y * ( l * 1.44269504f + ex );	// log2 of the result
++	n = (int)floorf( l + 0.5f ), f = ( l - n ) * 0.69314718f;
++	e = 1.0f + f * ( 1.0f + f * ( 1.0f / 2 + f * ( 1.0f / 6 + f * ( 1.0f / 24 + f * ( 1.0f / 120 + f * ( 1.0f / 720 + f * ( 1.0f / 5040 )))))));
++	return n < -126 ? 0.0f : ldexpf( e, n );
++}
++#define pow( x, y )	se_pow( x, y )
++#endif
++
+ static void BuildGammaTable( const float gamma, const float brightness, const float texgamma, const float lightgamma )
+ {
+ 	float g1, g2, g3;
+diff --git a/engine/client/parse/cl_parse.c b/engine/client/parse/cl_parse.c
+index 29acaf73..1cc58be2 100644
+--- a/engine/client/parse/cl_parse.c
++++ b/engine/client/parse/cl_parse.c
+@@ -1006,8 +1006,8 @@ void CL_ParseClientData( sizebuf_t *msg, connprotocol_t proto )
+ 	// did we drop some frames?
+ 	if( i > cl.last_incoming_sequence + 1 )
+ 	{
+-		// mark as dropped
+-		for( j = cl.last_incoming_sequence + 1; j < i; j++ )
++		// mark as dropped (each slot of the ring once: a gap can be millions long at connect)
++		for( j = Q_max( cl.last_incoming_sequence + 1, i - CL_UPDATE_BACKUP ); j < i; j++ )
+ 		{
+ 			if( cl.frames[j & CL_UPDATE_MASK].receivedtime >= 0.0 )
+ 			{
+diff --git a/engine/client/sound/s_load.c b/engine/client/sound/s_load.c
+index 25e1e885..6ead1c0e 100644
+--- a/engine/client/sound/s_load.c
++++ b/engine/client/sound/s_load.c
+@@ -119,6 +119,12 @@ wavdata_t *S_LoadSound( sfx_t *sfx )
+ 		if( s_warn_late_precache.value > 0 && cls.state == ca_active )
+ 			Con_Printf( S_WARN "%s: late precache of %s\n", __func__, sfx->name );
+ 
++#if XASH_SHADEREMU
++		wavdata_t *SE_LoadSound( const char *name );
++		sc = SE_LoadSound( sfx->name[0] == '*' ? sfx->name + 1 : sfx->name );
++		if( sc )
++			return sfx->cache = sc;
++#endif
+ 		if( sfx->name[0] == '*' )
+ 			sc = FS_LoadSound( sfx->name + 1, NULL, 0 );
+ 		else
+@@ -288,12 +294,19 @@ void S_EndRegistration( void )
+ 	}
+ 
+ 	// load everything in
++#if XASH_SHADEREMU	// (the MP3 ones decoded together after, a sound a worker)
++	void SE_QueueSounds( qboolean on ), SE_DecodeQueued( void );
++	SE_QueueSounds( true );
++#endif
+ 	for( i = 0, sfx = s_knownSfx; i < s_numSfx; i++, sfx++ )
+ 	{
+ 		if( !sfx->name[0] )
+ 			continue;
+ 		S_LoadSound( sfx );
+ 	}
++#if XASH_SHADEREMU
++	SE_DecodeQueued( );
++#endif
+ 	s_registering = false;
+ }
+ 
+diff --git a/engine/client/sound/s_main.c b/engine/client/sound/s_main.c
+index 2cd7030b..f3f68738 100644
+--- a/engine/client/sound/s_main.c
++++ b/engine/client/sound/s_main.c
+@@ -1506,6 +1506,10 @@ update global soundtime
+ */
+ static int S_GetSoundtime( void )
+ {
++#if XASH_SHADEREMU
++	int SE_CardTime( void );
++	return SE_CardTime();
++#endif
+ 	static int buffers, oldsamplepos;
+ 
+ 	int fullsamples = snd.samples / 2;
+diff --git a/engine/client/sound/s_mix.c b/engine/client/sound/s_mix.c
+index fe5ece45..53d89c4b 100644
+--- a/engine/client/sound/s_mix.c
++++ b/engine/client/sound/s_mix.c
+@@ -542,6 +542,95 @@ void S_ClearBuffers( int num_samples )
+ 	memset( paintbuffer, 0, num_bytes );
+ }
+ 
++#if XASH_SHADEREMU
++void SE_CardChannel( int i, channel_t *ch, const wavdata_t *sc, double pitch );
++void SE_CardMoved( int i, channel_t *ch, const wavdata_t *sc, mouth_t *mouth, double from );
++void SE_CardPainted( void );
++
++// A channel moved on as the mixer would have mixed it: finished at its end, or round its loop
++static void S_AdvanceChannel( channel_t *ch, const wavdata_t *sc, int num_samples, int out_rate, double pitch )
++{
++	double end = ch->sample + pitch * sc->rate / out_rate * num_samples;
++
++	if( ch->forced_end && end >= ch->forced_end )
++		SetBits( ch->flags, FL_CHAN_FINISHED );
++	else if( end < sc->samples )
++		ch->sample = end;
++	else if( FBitSet( sc->flags, SOUND_LOOPED ) && FBitSet( ch->flags, FL_CHAN_USE_LOOP ) && sc->samples > sc->loop_start )
++		ch->sample = sc->loop_start + fmod( end - sc->loop_start, sc->samples - sc->loop_start );
++	else SetBits( ch->flags, FL_CHAN_FINISHED );
++}
++
++void S_PaintChannels( int endtime )
++{
++	const qboolean sp = Host_IsSinglePlayerGame();
++	const qboolean ingame = CL_IsInGame();
++	const int num_samples = endtime - snd.paintedtime;
++	const float pitch_mult = ( sys_timescale.value + 1 ) / 2;
++
++	if( num_samples <= 0 )
++		return;
++	snd.paintedtime = endtime;
++	if( cl.background && cls.key_dest == key_console )
++	{
++		SE_CardPainted();
++		return;
++	}
++	for( int i = 0; i < snd.total_channels; i++ )
++	{
++		channel_t *ch = &snd.channels[i];
++
++		if( !ch->sfx )
++			continue;
++		if( !cl.background )
++		{
++			if( cls.key_dest == key_console && FBitSet( ch->flags, FL_CHAN_LOCAL_SOUND ))
++				;
++			else if(( cls.key_dest == key_menu || cl.paused ) && !FBitSet( ch->flags, FL_CHAN_LOCAL_SOUND ) && sp )
++				continue;
++			else if( cls.key_dest != key_menu && !ingame && !FBitSet( ch->flags, FL_CHAN_STATIC_SOUND ))
++				continue;
++		}
++		wavdata_t *sc = S_LoadSound( ch->sfx );
++		if( !sc )
++		{
++			S_FreeChannel( ch );
++			continue;
++		}
++		if( ch->leftvol < 8 && ch->rightvol < 8 )
++		{
++			if( !FBitSet( sc->flags, SOUND_LOOPED ) || !FBitSet( ch->flags, FL_CHAN_USE_LOOP ))
++			{
++				if( ch->inauduble_free_time == 0.0f )
++					ch->inauduble_free_time = host.realtime + MAX_CHANNEL_INAUDIBLE_TIME;
++				else if( host.realtime > ch->inauduble_free_time )
++					S_FreeChannel( ch );
++			}
++			continue;
++		}
++		ch->inauduble_free_time = 0.0f;
++
++		double pitch = VOX_ModifyPitch( ch, ch->basePitch * 0.01 ) * pitch_mult, from = ch->sample;
++		cl_entity_t *ent = ch->entchannel == CHAN_VOICE || ch->entchannel == CHAN_STREAM ? CL_GetEntityByIndex( ch->entnum ) : NULL;
++
++		SE_CardChannel( i, ch, sc, pitch );
++		S_AdvanceChannel( ch, sc, num_samples, snd.format.speed, pitch );
++		SE_CardMoved( i, ch, sc, ent ? &ent->mouth : NULL, from );
++		if( FBitSet( ch->flags, FL_CHAN_FINISHED ) && ch->words )
++		{
++			// the sentence's next word, from where this paint left it
++			VOX_FreeWord( ch );
++			ch->word_index++;
++			VOX_LoadWord( ch );
++			if( !FBitSet( ch->flags, FL_CHAN_SENTENCE_FINISHED ))
++				ch->sfx = ch->words[ch->word_index].sfx;
++		}
++		if( ch->words ? FBitSet( ch->flags, FL_CHAN_SENTENCE_FINISHED ) : FBitSet( ch->flags, FL_CHAN_FINISHED ))
++			S_FreeChannel( ch );
++	}
++	SE_CardPainted();
++}
++#else
+ void S_PaintChannels( int endtime )
+ {
+ 	int gain = S_GetMasterVolume() * 256;
+@@ -573,3 +662,4 @@ void S_PaintChannels( int endtime )
+ 		snd.paintedtime = end;
+ 	}
+ }
++#endif
+diff --git a/engine/common/cmd.c b/engine/common/cmd.c
+index d640a991..4a6a6d75 100644
+--- a/engine/common/cmd.c
++++ b/engine/common/cmd.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "client.h"
+ #include "server.h"
+ #include "base_cmd.h"
+@@ -26,6 +29,9 @@ typedef struct
+ {
+ 	byte data[MAX_CMD_BUFFER];
+ 	int  cursize;
++#if XASH_SHADEREMU
++	int  skip;	// bytes before the commands left, which start at data + skip
++#endif
+ } cmdbuf_t;
+ 
+ static int cmd_wait;
+@@ -64,8 +70,19 @@ void Cbuf_Clear( void )
+ Cbuf_GetSpace
+ ============
+ */
++#if XASH_SHADEREMU
++static void Cbuf_Compact( cmdbuf_t *buf )
++{
++	if( buf->skip )
++		memmove( buf->data, buf->data + buf->skip, buf->cursize ), buf->skip = 0;
++}
++#else
++#define Cbuf_Compact( buf )
++#endif
++
+ static void *Cbuf_GetSpace( cmdbuf_t *buf, int length )
+ {
++	Cbuf_Compact( buf );
+ 	if(( buf->cursize + length ) >= sizeof( buf->data ))
+ 	{
+ 		buf->cursize = 0;
+@@ -82,6 +99,7 @@ static void Cbuf_AddTextToBuffer( cmdbuf_t *buf, const char *text )
+ {
+ 	int l = Q_strlen( text );
+ 
++	Cbuf_Compact( buf );
+ 	if(( buf->cursize + l ) >= sizeof( buf->data ))
+ 	{
+ 		Con_Reportf( S_WARN "%s: overflow\n", __func__ );
+@@ -98,8 +116,20 @@ Cbuf_AddText
+ Adds command text at the end of the buffer
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { const char * text; } Cbuf_AddText_args_t;
++static uint32_t Cbuf_AddText_on_core0( void *p );
++#endif
+ void Cbuf_AddText( const char *text )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cbuf_AddText_args_t a = { text };
++		SE_ServerOnCore0( Cbuf_AddText_on_core0, &a );
++		return;
++	}
++#endif
+ 	Cbuf_AddTextToBuffer( &cmd_text, text );
+ }
+ 
+@@ -120,8 +150,20 @@ void Cbuf_AddTextf( const char *fmt, ... )
+ Cbuf_AddFilteredText
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { const char * text; } Cbuf_AddFilteredText_args_t;
++static uint32_t Cbuf_AddFilteredText_on_core0( void *p );
++#endif
+ void Cbuf_AddFilteredText( const char *text )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cbuf_AddFilteredText_args_t a = { text };
++		SE_ServerOnCore0( Cbuf_AddFilteredText_on_core0, &a );
++		return;
++	}
++#endif
+ 	Cbuf_AddTextToBuffer( &filteredcmd_text, text );
+ }
+ 
+@@ -134,6 +176,7 @@ Adds command text immediately after the current command
+ */
+ static qboolean Cbuf_InsertTextToBuffer( cmdbuf_t *buf, const char *text, size_t len, size_t requested_len )
+ {
++	Cbuf_Compact( buf );
+ 	if(( buf->cursize + requested_len ) >= sizeof( buf->data ))
+ 	{
+ 		Con_Reportf( S_WARN "%s: overflow\n", __func__ );
+@@ -153,8 +196,20 @@ static qboolean Cbuf_InsertTextLen( const char *text, size_t len, size_t request
+ 	return Cbuf_InsertTextToBuffer( &cmd_text, text, len, requested_len );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { const char * text; } Cbuf_InsertText_args_t;
++static uint32_t Cbuf_InsertText_on_core0( void *p );
++#endif
+ void Cbuf_InsertText( const char *text )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cbuf_InsertText_args_t a = { text };
++		SE_ServerOnCore0( Cbuf_InsertText_on_core0, &a );
++		return;
++	}
++#endif
+ 	size_t l = Q_strlen( text );
+ 	Cbuf_InsertTextToBuffer( &cmd_text, text, l, l );
+ }
+@@ -185,7 +240,11 @@ static void Cbuf_ExecuteCommandsFromBuffer( cmdbuf_t *buf, qboolean isPrivileged
+ 		}
+ 
+ 		// find a \n or ; line break
++#if XASH_SHADEREMU
++		char *text = (char *)buf->data + buf->skip;
++#else
+ 		char *text = (char *)buf->data;
++#endif
+ 
+ 		int quotes = false;
+ 		char *comment = NULL;
+@@ -231,12 +290,19 @@ static void Cbuf_ExecuteCommandsFromBuffer( cmdbuf_t *buf, qboolean isPrivileged
+ 		if( i == buf->cursize )
+ 		{
+ 			buf->cursize = 0;
++#if XASH_SHADEREMU
++			buf->skip = 0;
++#endif
+ 		}
+ 		else
+ 		{
+ 			i++;
+ 			buf->cursize -= i;
++#if XASH_SHADEREMU
++			buf->skip += i;
++#else
+ 			memmove( buf->data, text + i, buf->cursize );
++#endif
+ 		}
+ 
+ 		// execute the command line
+@@ -1530,3 +1596,30 @@ void Test_RunCmd( void )
+ 	Cmd_RemoveCommand( "test_privileged" );
+ }
+ #endif
++
++#if XASH_SHADEREMU
++static uint32_t Cbuf_AddText_on_core0( void *p )
++{
++	Cbuf_AddText_args_t *a = p;
++	Cbuf_AddText( a->text );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t Cbuf_AddFilteredText_on_core0( void *p )
++{
++	Cbuf_AddFilteredText_args_t *a = p;
++	Cbuf_AddFilteredText( a->text );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t Cbuf_InsertText_on_core0( void *p )
++{
++	Cbuf_InsertText_args_t *a = p;
++	Cbuf_InsertText( a->text );
++	return 0;
++}
++#endif
+diff --git a/engine/common/common.c b/engine/common/common.c
+index 50ebab64..1a18a00b 100644
+--- a/engine/common/common.c
++++ b/engine/common/common.c
+@@ -15,6 +15,9 @@ GNU General Public License for more details.
+ 
+ #if defined( ALLOCA_H )
+ #include ALLOCA_H
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #endif
+ #include "common.h"
+ #include "studio.h"
+@@ -53,7 +56,12 @@ void DBG_AssertFunction( qboolean fExpr, const char* szExpr, const char* szFile,
+ }
+ #endif	// DEBUG
+ 
++#if XASH_SHADEREMU
++static struct SE_APART { int v; } idum_of[2];	// (the server's worker draws its own)
++#define idum idum_of[SE_OnServer()].v
++#else
+ static int idum = 0;
++#endif
+ 
+ #define MAX_RANDOM_RANGE	0x7FFFFFFFUL
+ #define IA		16807
+@@ -68,8 +76,15 @@ static int idum = 0;
+ 
+ static int lran1( void )
+ {
++#if XASH_SHADEREMU
++	static struct SE_APART { int iy, iv[NTAB]; } ran_of[2];
++	int core = SE_OnServer();
++#define iy ran_of[core].iy
++#define iv ran_of[core].iv
++#else
+ 	static int iy = 0;
+ 	static int iv[NTAB];
++#endif
+ 
+ 	if( idum <= 0 || !iy )
+ 	{
+@@ -95,6 +110,8 @@ static int lran1( void )
+ 	iv[j] = idum;
+ 
+ 	return iy;
++#undef iy
++#undef iv
+ }
+ 
+ // fran1 -- return a random floating-point number on the interval [0,1]
+@@ -162,11 +179,19 @@ of all text functions.
+ */
+ char *va( const char *format, ... )
+ {
++#if XASH_SHADEREMU
++	static struct SE_APART { int index; char string[16][MAX_VA_STRING]; } va_of[2];	// (the server's worker has its own)
++	char *s, ( *string )[MAX_VA_STRING] = va_of[SE_OnServer()].string;
++	int *index = &va_of[SE_OnServer()].index;
++	s = string[*index];
++	*index = ( *index + 1 ) & 15;
++#else
+ 	static char string[16][MAX_VA_STRING], *s;
+ 	static int stringindex = 0;
+ 
+ 	s = string[stringindex];
+ 	stringindex = (stringindex + 1) & 15;
++#endif
+ 
+ 	va_list argptr;
+ 	va_start( argptr, format );
+diff --git a/engine/common/cvar.c b/engine/common/cvar.c
+index 0084a31f..26585017 100644
+--- a/engine/common/cvar.c
++++ b/engine/common/cvar.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include <math.h>	// fabs...
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "common.h"
+ #include "base_cmd.h"
+ 
+@@ -383,8 +386,19 @@ If the variable already exists, the value will not be set
+ The flags will be or'ed in if the variable exists.
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { const char * name; const char * value; uint32_t flags; const char * var_desc; } Cvar_Get_args_t;
++static uint32_t Cvar_Get_on_core0( void *p );
++#endif
+ convar_t *Cvar_Get( const char *name, const char *value, uint32_t flags, const char *var_desc )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cvar_Get_args_t a = { name, value, flags, var_desc };
++		return (convar_t *)SE_ServerOnCore0( Cvar_Get_on_core0, &a );
++	}
++#endif
+ 	convar_t *cur, *find, *var;
+ 	cmd_t *cmd;
+ 	cmdalias_t *alias;
+@@ -495,8 +509,20 @@ Cvar_RegisterVariable
+ Adds a freestanding variable to the variable list.
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { convar_t * var; } Cvar_RegisterVariable_args_t;
++static uint32_t Cvar_RegisterVariable_on_core0( void *p );
++#endif
+ void Cvar_RegisterVariable( convar_t *var )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cvar_RegisterVariable_args_t a = { var };
++		SE_ServerOnCore0( Cvar_RegisterVariable_on_core0, &a );
++		return;
++	}
++#endif
+ 	convar_t *cur, *find, *dup;
+ 	cmd_t *cmd;
+ 	cmdalias_t *alias;
+@@ -694,8 +720,20 @@ Cvar_DirectSet
+ way to change value for many cvars
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { convar_t * var; const char * value; } Cvar_DirectSet_args_t;
++static uint32_t Cvar_DirectSet_on_core0( void *p );
++#endif
+ void GAME_EXPORT Cvar_DirectSet( convar_t *var, const char *value )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cvar_DirectSet_args_t a = { var, value };
++		SE_ServerOnCore0( Cvar_DirectSet_on_core0, &a );
++		return;
++	}
++#endif
+ 	if( unlikely( !var )) return;	// ???
+ 
+ 	// lookup for registration
+@@ -757,8 +795,20 @@ Cvar_FullSet
+ can set any protected cvars
+ ============
+ */
++#if XASH_SHADEREMU
++typedef struct { const char * var_name; const char * value; uint32_t flags; } Cvar_FullSet_args_t;
++static uint32_t Cvar_FullSet_on_core0( void *p );
++#endif
+ void Cvar_FullSet( const char *var_name, const char *value, uint32_t flags )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		Cvar_FullSet_args_t a = { var_name, value, flags };
++		SE_ServerOnCore0( Cvar_FullSet_on_core0, &a );
++		return;
++	}
++#endif
+ 	convar_t *var = Cvar_FindVar( var_name );
+ 
+ 	if( !var )
+@@ -1354,3 +1404,38 @@ void Test_RunCvar( void )
+ 	TASSERT( filtered2->value         == 0.0f );
+ }
+ #endif
++
++#if XASH_SHADEREMU
++static uint32_t Cvar_Get_on_core0( void *p )
++{
++	Cvar_Get_args_t *a = p;
++	return (uint32_t)Cvar_Get( a->name, a->value, a->flags, a->var_desc );
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t Cvar_RegisterVariable_on_core0( void *p )
++{
++	Cvar_RegisterVariable_args_t *a = p;
++	Cvar_RegisterVariable( a->var );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t Cvar_DirectSet_on_core0( void *p )
++{
++	Cvar_DirectSet_args_t *a = p;
++	Cvar_DirectSet( a->var, a->value );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t Cvar_FullSet_on_core0( void *p )
++{
++	Cvar_FullSet_args_t *a = p;
++	Cvar_FullSet( a->var_name, a->value, a->flags );
++	return 0;
++}
++#endif
+diff --git a/engine/common/host.c b/engine/common/host.c
+index f04c5f9b..e396f23d 100644
+--- a/engine/common/host.c
++++ b/engine/common/host.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "build.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include <stdarg.h>  // va_args
+ #if !XASH_WIN32
+ #include <unistd.h> // fork
+@@ -657,6 +660,9 @@ Host_Frame
+ */
+ void Host_Frame( double time )
+ {
++#if XASH_SHADEREMU
++	SE_ServerSettle();	// (the server's frame of the last frame, on its worker)
++#endif
+ 	// decide the simulation time
+ 	if( !Host_FilterTime( time ))
+ 		return;
+@@ -669,6 +675,9 @@ void Host_Frame( double time )
+ 	Host_InputFrame ();  // input frame
+ 	Host_ClientBegin (); // begin client
+ 	Host_GetCommands (); // dedicated in
++#if XASH_SHADEREMU
++	if( !SE_ServerGive( ))
++#endif
+ 	Host_ServerFrame (); // server frame
+ 	Host_ClientFrame (); // client frame
+ 	HTTP_Run();			 // both server and client
+@@ -690,6 +699,16 @@ void GAME_EXPORT Host_Error( const char *error, ... )
+ 	static qboolean	recursive = false;
+ 	va_list		argptr;
+ 
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		char text[MAX_SYSPATH];
++		va_start( argptr, error );
++		Q_vsnprintf( text, sizeof( text ), error, argptr );
++		va_end( argptr );
++		SE_ServerAbort( text, 0 );
++	}
++#endif
+ 	va_start( argptr, error );
+ 	Q_vsnprintf( hosterror1, sizeof( hosterror1 ), error, argptr );
+ 	va_end( argptr );
+@@ -1217,7 +1236,8 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
+ 	Cvar_Getf( "buildnum", FCVAR_READ_ONLY, "returns a current build number", "%i", Q_buildnum_compat());
+ 	Cvar_Getf( "ver", FCVAR_READ_ONLY, "shows an engine version", "%i/%s (hw build %i)", PROTOCOL_VERSION, XASH_COMPAT_VERSION, Q_buildnum_compat());
+ 	Cvar_Getf( "host_ver", FCVAR_READ_ONLY, "detailed info about this build", "%i " XASH_VERSION " %s %s %s", Q_buildnum(), Q_buildos(), Q_buildarch(), g_buildcommit);
+-	Cvar_Getf( "host_lowmemorymode", FCVAR_READ_ONLY, "indicates if engine compiled for low RAM consumption (0 - normal, 1 - low engine limits, 2 - low protocol limits)", "%i", XASH_LOW_MEMORY );
++	// (read only by the menu: on the machine it keeps its background and picture buttons)
++	Cvar_Getf( "host_lowmemorymode", FCVAR_READ_ONLY, "indicates if engine compiled for low RAM consumption (0 - normal, 1 - low engine limits, 2 - low protocol limits)", "%i", XASH_SHADEREMU ? 0 : XASH_LOW_MEMORY );
+ 
+ 	Cvar_Get( "host_hl25_extended_structs",
+ #if SUPPORT_HL25_EXTENDED_STRUCTS
+diff --git a/engine/common/imagelib/img_bmp.c b/engine/common/imagelib/img_bmp.c
+index e7c3ec35..3f00c368 100644
+--- a/engine/common/imagelib/img_bmp.c
++++ b/engine/common/imagelib/img_bmp.c
+@@ -162,7 +162,11 @@ qboolean Image_LoadBMP( const char *name, const byte *buffer, fs_offset_t filesi
+ 		}
+ 	}
+ 
++#if XASH_SHADEREMU
++	if( Image_CheckFlag( IL_KEEP_8BIT ) && ( bhdr.bitsPerPixel == 8 || ( bhdr.bitsPerPixel == 4 && !load_qfont )))
++#else
+ 	if( Image_CheckFlag( IL_KEEP_8BIT ) && bhdr.bitsPerPixel == 8 )
++#endif
+ 	{
+ 		pixbuf = image.palette = Mem_Malloc( host.imagepool, 1024 );
+ 
+@@ -172,7 +176,12 @@ qboolean Image_LoadBMP( const char *name, const byte *buffer, fs_offset_t filesi
+ 			*pixbuf++ = palette[i][2];
+ 			*pixbuf++ = palette[i][1];
+ 			*pixbuf++ = palette[i][0];
++#if XASH_SHADEREMU
++			// (a BMP's fourth palette byte is reserved: opaque unless alpha was made above, as the RGBA path takes it)
++			*pixbuf++ = FBitSet( image.flags, IMAGE_HAS_ALPHA ) ? palette[i][3] : 255;
++#else
+ 			*pixbuf++ = palette[i][3];
++#endif
+ 		}
+ 		image.type = PF_INDEXED_32; // 32 bit palette
+ 	}
+@@ -220,6 +229,86 @@ qboolean Image_LoadBMP( const char *name, const byte *buffer, fs_offset_t filesi
+ 	image.size = image.width * image.height * bpp;
+ 	image.rgba = Mem_Malloc( host.imagepool, image.size );
+ 
++#if XASH_SHADEREMU
++	// an 8- or 4-bit picture a row at a time, its colour and reflectivity from how often each index is used
++	uint counts[256] = { 0 };
++	if( bhdr.bitsPerPixel == 8 && !load_qfont )
++	{
++		const qboolean keep = Image_CheckFlag( IL_KEEP_8BIT );
++		uint words[256];
++
++		for( int i = 0; i < 256; i++ )
++			words[i] = palette[i][2] | palette[i][1] << 8 | palette[i][0] << 16 | (uint)palette[i][3] << 24;
++		for( row = rows - 1; row >= 0; row--, buf_p += columns + padSize )
++		{
++			pixbuf = image.rgba + ( row * columns * bpp );
++			if( keep )
++				memcpy( pixbuf, buf_p, columns );
++			else for( column = 0; column < columns; column++ )
++				((uint *)pixbuf)[column] = words[buf_p[column]];
++			for( column = 0; column + 4 <= columns; column += 4 )	// (an atlas's padding: four clear ones at once)
++			{
++				const byte *p = buf_p + column;
++				if( !( p[0] | p[1] | p[2] | p[3] ))
++					counts[0] += 4;
++				else counts[p[0]]++, counts[p[1]]++, counts[p[2]]++, counts[p[3]]++;
++			}
++			for( ; column < columns; column++ )
++				counts[buf_p[column]]++;
++		}
++		rows = -1;
++	}
++	if( bhdr.bitsPerPixel == 4 && !load_qfont && image.type == PF_INDEXED_32 )	// (kept: a byte an index)
++	{
++		uint bytes[256] = { 0 };
++
++		for( row = rows - 1; row >= 0; row--, buf_p += ( columns + 1 ) / 2 + padSize )
++		{
++			byte *out = image.rgba + row * columns;
++			for( column = 0; column < columns; column++ )
++				out[column] = column & 1 ? buf_p[column >> 1] & 15 : buf_p[column >> 1] >> 4;
++			for( column = 0; column + 2 <= columns; column += 2 )
++				bytes[buf_p[column >> 1]]++;
++			if( column < columns )
++				counts[buf_p[column >> 1] >> 4]++;
++		}
++		for( int i = 0; i < 256; i++ )
++			counts[i >> 4] += bytes[i], counts[i & 15] += bytes[i];
++		rows = -1;
++	}
++	else if( bhdr.bitsPerPixel == 4 && !load_qfont )	// (two to a byte, the high half first; always RGBA)
++	{
++		uint words[16], bytes[256] = { 0 };
++
++		for( int i = 0; i < 16; i++ )
++			words[i] = palette[i][2] | palette[i][1] << 8 | palette[i][0] << 16 | (uint)palette[i][3] << 24;
++		for( row = rows - 1; row >= 0; row--, buf_p += ( columns + 1 ) / 2 + padSize )
++		{
++			uint *out = (uint *)( image.rgba + ( row * columns * bpp ));	// (whole words: rows of four bytes a pixel)
++			const byte *in = buf_p;
++			for( column = 0; column + 2 <= columns; column += 2, in++, out += 2 )
++				out[0] = words[*in >> 4], out[1] = words[*in & 15], bytes[*in]++;
++			if( column < columns )
++				out[0] = words[*in >> 4], counts[*in >> 4]++;
++		}
++		for( int i = 0; i < 256; i++ )
++			counts[i >> 4] += bytes[i], counts[i & 15] += bytes[i];
++		rows = -1;
++	}
++	if( rows < 0 )
++	{
++		for( int i = 0; i < 256; i++ )
++		{
++			if( !counts[i] )
++				continue;
++			if( palette[i][2] != palette[i][1] || palette[i][1] != palette[i][0] )
++				image.flags |= IMAGE_HAS_COLOR;
++			reflectivity[0] += palette[i][2] * counts[i];
++			reflectivity[1] += palette[i][1] * counts[i];
++			reflectivity[2] += palette[i][0] * counts[i];
++		}
++	}	// (and the loop below has nothing left to do)
++#endif
+ 	for( row = rows - 1; row >= 0; row-- )
+ 	{
+ 		pixbuf = image.rgba + (row * columns * bpp);
+diff --git a/engine/common/imagelib/img_main.c b/engine/common/imagelib/img_main.c
+index 015ceddd..b1dd639f 100644
+--- a/engine/common/imagelib/img_main.c
++++ b/engine/common/imagelib/img_main.c
+@@ -17,7 +17,7 @@ GNU General Public License for more details.
+ #include "imagelib.h"
+ 
+ #define DEBUG_LOOKUPS_COUNT 0
+-#define USE_FS_SEARCH_FOR_LOOKUPS 1
++#define USE_FS_SEARCH_FOR_LOOKUPS !XASH_SHADEREMU	// (a search lists every name.* there is)
+ 
+ // global image variables
+ imglib_t	image;
+@@ -283,6 +283,14 @@ static qboolean Image_ProbeLoadBuffer_( const loadpixformat_t *fmt, const char *
+ 		image.hint = override_hint;
+ 	else image.hint = fmt->hint;
+ 
++#if XASH_SHADEREMU
++	// a JPEG under its picture's old name (linux/halflife/repack.py)
++	if( size > 3 && buf[0] == 0xff && buf[1] == 0xd8 && buf[2] == 0xff )
++	{
++		qboolean Image_LoadJPEG( const char *name, const byte *buffer, fs_offset_t filesize );
++		return Image_LoadJPEG( name, buf, size );
++	}
++#endif
+ 	return fmt->loadfunc( name, buf, size );
+ }
+ 
+diff --git a/engine/common/imagelib/img_tga.c b/engine/common/imagelib/img_tga.c
+index 1584efc2..ebc76738 100644
+--- a/engine/common/imagelib/img_tga.c
++++ b/engine/common/imagelib/img_tga.c
+@@ -32,6 +32,7 @@ le_struct_end();
+ Image_LoadTGA
+ =============
+ */
++#if !XASH_SHADEREMU	// (linux/halflife/img_media.c)
+ qboolean Image_LoadTGA( const char *name, const byte *buffer, fs_offset_t filesize )
+ {
+ 	int	columns, rows, row_inc, row, col;
+@@ -235,6 +236,7 @@ qboolean Image_LoadTGA( const char *name, const byte *buffer, fs_offset_t filesi
+ 
+ 	return true;
+ }
++#endif
+ 
+ /*
+ =============
+diff --git a/engine/common/imagelib/img_wad.c b/engine/common/imagelib/img_wad.c
+index 7179ca46..9f3a5e6e 100644
+--- a/engine/common/imagelib/img_wad.c
++++ b/engine/common/imagelib/img_wad.c
+@@ -438,11 +438,16 @@ qboolean Image_LoadMIP( const char *name, const byte *buffer, fs_offset_t filesi
+ 	memcpy( ofs, mip.offsets, sizeof( ofs ));
+ 	int pixels = image.width * image.height;
+ 
+-	if( image.hint != IL_HINT_Q1 && filesize >= (int)sizeof(mip) + ((pixels * 85)>>6) + sizeof(short) + 768)
++#if XASH_SHADEREMU
++	const int levels = mip.offsets[1] ? (( pixels * 85 ) >> 6 ) : pixels;	// (one level and no mips: linux/halflife/repack.py's)
++#else
++	const int levels = ( pixels * 85 ) >> 6;
++#endif
++	if( image.hint != IL_HINT_Q1 && filesize >= (int)sizeof(mip) + levels + sizeof(short) + 768)
+ 	{
+ 		// half-life 1.0.0.1 mip version with palette
+ 		fin = (byte *)buffer + mip.offsets[0];
+-		pal = (byte *)buffer + mip.offsets[0] + (((image.width * image.height) * 85)>>6);
++		pal = (byte *)buffer + mip.offsets[0] + levels;
+ 		numcolors = pal[0] | (pal[1] << 8);
+ 		if( numcolors != 256 ) pal = NULL; // corrupted mip ?
+ 		else pal += sizeof( short ); // skip colorsize
+diff --git a/engine/common/mod_bmodel.c b/engine/common/mod_bmodel.c
+index d1fe48e2..7612f687 100644
+--- a/engine/common/mod_bmodel.c
++++ b/engine/common/mod_bmodel.c
+@@ -652,6 +652,9 @@ static int Mod_LoadTextureFromWadList( wadentry_t *list, int count, const char *
+ 
+ 			// tell imagelib to directly load this texture to save time
+ 			Q_snprintf( file, sizeof( file ), "#%s/%s.mip", list[i].name, name );
++#if XASH_SHADEREMU
++			Image_SetForceFlags( IL_KEEP_8BIT );	// (paletted on the GPU, as a map's own textures are)
++#endif
+ 			*pic = FS_LoadImage( file, buf, len );
+ 			Mem_Free( buf );
+ 			return i; // if file is corrupted, it's fine, we want to tell the user about it
+@@ -1589,8 +1592,25 @@ volatile forces rounding of every sum to double and result to float,
+ same as compilers did it, otherwise x87 or FMA give different extents
+ =================
+ */
+-static float Mod_PointVecsProduct( const float *point, const float *vecs )
++#if XASH_SHADEREMU
++// a + b into *s: whether the float sum is exact (two-sum's error is zero).
++static inline int __attribute__(( optimize( "fp-contract=off" ))) se_sum_exact( float a, float b, float *s )
++{
++	float t = a + b, bb = t - a;
++	*s = t;
++	return ( a - ( t - bb )) + ( b - bb ) == 0.0f;
++}
++#endif
++
++static float __attribute__(( optimize( "fp-contract=off" ))) Mod_PointVecsProduct( const float *point, const float *vecs )
+ {
++#if XASH_SHADEREMU
++	// in float when every product and sum is exact: then it is what the doubles give
++	float a = point[0] * vecs[0], b = point[1] * vecs[1], c = point[2] * vecs[2], s;
++	if( fmaf( point[0], vecs[0], -a ) == 0.0f && fmaf( point[1], vecs[1], -b ) == 0.0f && fmaf( point[2], vecs[2], -c ) == 0.0f
++		&& se_sum_exact( 0.0f, a, &s ) && se_sum_exact( s, b, &s ) && se_sum_exact( s, c, &s ) && se_sum_exact( s, vecs[3], &s ))
++		return s;
++#endif
+ 	volatile double val = 0.0;
+ 	volatile float res;
+ 
+@@ -2140,6 +2160,45 @@ duplicate the basic information
+ for embedded submodels
+ =================
+ */
++#if XASH_SHADEREMU
++// Each submodel's origin as Mod_FindModelOrigin finds it (the first entity naming it), in one pass.
++static void Mod_FindModelOrigins( const char *entities, dmodel_t *submodels, int count )
++{
++	char *pfile = (char *)entities, token[2048];
++	byte *done;
++
++	if( !entities || count <= 1 )
++		return;
++	done = Mem_Calloc( host.mempool, count );
++	while(( pfile = COM_ParseFile( pfile, token, sizeof( token ))) != NULL && token[0] == '{' )
++	{
++		vec3_t origin = { 0 };
++		int model = -1, key_origin = 0;
++
++		while(( pfile = COM_ParseFile( pfile, token, sizeof( token ))) != NULL && token[0] != '}' )
++		{
++			qboolean is_model = !Q_stricmp( token, "model" ), is_origin = !Q_stricmp( token, "origin" );
++
++			if(( pfile = COM_ParseFile( pfile, token, sizeof( token ))) == NULL || token[0] == '}' )
++				break;
++			if( is_model && token[0] == '*' )
++				model = Q_atoi( token + 1 );
++			if( is_origin )
++				Q_atov( origin, token, 3 ), key_origin = 1;
++		}
++		if( model > 0 && model < count && !done[model] )
++		{
++			done[model] = 1;
++			if( VectorIsNull( submodels[model].origin ) && key_origin )
++				VectorCopy( origin, submodels[model].origin );
++		}
++		if( !pfile )
++			break;
++	}
++	Mem_Free( done );
++}
++#endif
++
+ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
+ {
+ 	const qboolean colored = FBitSet( mod->flags, MODEL_COLORED_LIGHTING ) ? true : false;
+@@ -2148,6 +2207,9 @@ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
+ 	model_t *world = mod; // submodels might want to share hulls
+ 
+ 	mod->numframes = 2;	// regular and alternate animation
++#if XASH_SHADEREMU
++	Mod_FindModelOrigins( world->entities, mod->submodels, mod->numsubmodels );
++#endif
+ 
+ 	// set up the submodels
+ 	for( int i = 0; i < mod->numsubmodels; i++ )
+@@ -2187,7 +2249,9 @@ static void Mod_SetupSubmodels( model_t *mod, dbspmodel_t *bmod )
+ 			char temp[MAX_VA_STRING];
+ 
+ 			Q_snprintf( temp, sizeof( temp ), "*%i", i );
++#if !XASH_SHADEREMU
+ 			Mod_FindModelOrigin( world->entities, temp, bm->origin );
++#endif
+ 
+ 			// mark models that have origin brushes
+ 			if( !VectorIsNull( bm->origin ))
+diff --git a/engine/common/mod_studio.c b/engine/common/mod_studio.c
+index 520ab7f4..2d57f454 100644
+--- a/engine/common/mod_studio.c
++++ b/engine/common/mod_studio.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "server.h"
+ #include "studio.h"
+ #include "r_studioint.h"
+@@ -43,6 +46,37 @@ typedef struct mstudiocache_s
+ 
+ // trace global variables
+ static sv_blending_interface_t	*pBlendAPI = NULL;
++#if XASH_SHADEREMU
++static struct SE_APART
++{
++	studiohdr_t			*mod_studiohdr;
++	matrix3x4			studio_transform;
++	hull_t			cache_hull[MAXSTUDIOBONES];
++	hull_t			studio_hull[MAXSTUDIOBONES];
++	matrix3x4			studio_bones[MAXSTUDIOBONES];
++	uint			studio_hull_hitgroup[MAXSTUDIOBONES];
++	uint			cache_hull_hitgroup[MAXSTUDIOBONES];
++	mstudiocache_t		cache_studio[STUDIO_CACHESIZE];
++	mplane_t			studio_planes[MAXSTUDIOBONES * 6];
++	mplane_t			cache_planes[MAXSTUDIOBONES * 6];
++	int			cache_current;
++	int			cache_current_hull;
++	int			cache_current_plane;
++} studio_of[2];	// (the server's worker has its own)
++#define mod_studiohdr studio_of[SE_OnServer()].mod_studiohdr
++#define studio_transform studio_of[SE_OnServer()].studio_transform
++#define cache_hull studio_of[SE_OnServer()].cache_hull
++#define studio_hull studio_of[SE_OnServer()].studio_hull
++#define studio_bones studio_of[SE_OnServer()].studio_bones
++#define studio_hull_hitgroup studio_of[SE_OnServer()].studio_hull_hitgroup
++#define cache_hull_hitgroup studio_of[SE_OnServer()].cache_hull_hitgroup
++#define cache_studio studio_of[SE_OnServer()].cache_studio
++#define studio_planes studio_of[SE_OnServer()].studio_planes
++#define cache_planes studio_of[SE_OnServer()].cache_planes
++#define cache_current studio_of[SE_OnServer()].cache_current
++#define cache_current_hull studio_of[SE_OnServer()].cache_current_hull
++#define cache_current_plane studio_of[SE_OnServer()].cache_current_plane
++#else
+ static studiohdr_t			*mod_studiohdr;
+ static matrix3x4			studio_transform;
+ static hull_t			cache_hull[MAXSTUDIOBONES];
+@@ -58,6 +92,7 @@ static mplane_t			cache_planes[MAXSTUDIOBONES * 6];
+ static int			cache_current;
+ static int			cache_current_hull;
+ static int			cache_current_plane;
++#endif
+ 
+ le_struct_begin( studiohdr_swap )
+ 	le_struct_field( studiohdr_t, ident )
+diff --git a/engine/common/model.c b/engine/common/model.c
+index b93b896a..1691172d 100644
+--- a/engine/common/model.c
++++ b/engine/common/model.c
+@@ -243,6 +243,12 @@ Mod_FindName
+ never return NULL
+ ==================
+ */
++#if XASH_SHADEREMU
++// whether two names can be the same ignoring case, by their first two bytes (true for more than that)
++#define SE_MAY_MATCH( a, b ) ((( (a)[0] ^ (b)[0] ) & ~0x20 ) == 0 && ((( (a)[1] ^ (b)[1] ) & ~0x20 ) == 0 ))
++#else
++#define SE_MAY_MATCH( a, b ) 1
++#endif
+ model_t *Mod_FindName( const char *filename, qboolean trackCRC )
+ {
+ 	char	modname[MAX_QPATH];
+@@ -254,7 +260,7 @@ model_t *Mod_FindName( const char *filename, qboolean trackCRC )
+ 	// search the currently loaded models
+ 	for( i = 0, mod = mod_known; i < mod_numknown; i++, mod++ )
+ 	{
+-		if( !Q_stricmp( mod->name, modname ))
++		if( SE_MAY_MATCH( mod->name, modname ) && !Q_stricmp( mod->name, modname ))
+ 		{
+ 			if( mod->mempool || mod->name[0] == '*' )
+ 				mod->needload = NL_PRESENT;
+@@ -408,7 +414,7 @@ static model_t *Mod_LoadModel( model_t *mod, qboolean crash )
+ 	model_info_t *p = &mod_crcinfo[mod - mod_known];
+ 	mod->needload = NL_PRESENT;
+ 
+-	if( FBitSet( p->flags, FCRC_SHOULD_CHECKSUM ))
++	if( FBitSet( p->flags, FCRC_SHOULD_CHECKSUM ) && !XASH_SHADEREMU )
+ 	{
+ 		uint32_t currentCRC;
+ 
+diff --git a/engine/common/net_buffer.c b/engine/common/net_buffer.c
+index 287ef3b2..0e077e0c 100644
+--- a/engine/common/net_buffer.c
++++ b/engine/common/net_buffer.c
+@@ -796,9 +796,18 @@ qboolean MSG_ReadBytes( sizebuf_t *sb, void *out, size_t maxBytes, int bytes )
+ 	return MSG_ReadBits( sb, out, maxBytes, bytes << 3 );
+ }
+ 
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
++
+ static char *MSG_ReadStringExt( sizebuf_t *sb, qboolean bLine )
+ {
++#if XASH_SHADEREMU
++	static struct SE_APART { char s[4096]; } string_of[2];	// (the server's worker reads its own)
++	char *string = string_of[SE_OnServer()].s;
++#else
+ 	static char	string[4096];
++#endif
+ 	int		l = 0;
+ 
+ 	do
+@@ -816,7 +825,7 @@ static char *MSG_ReadStringExt( sizebuf_t *sb, qboolean bLine )
+ 
+ 		string[l] = c;
+ 		l++;
+-	} while( l < sizeof( string ) - 1 );
++	} while( l < 4096 - 1 );	// (the size of string)
+ 	string[l] = 0; // terminator
+ 
+ 	return string;
+diff --git a/engine/common/net_chan.c b/engine/common/net_chan.c
+index bd54e905..e4dfdc6c 100644
+--- a/engine/common/net_chan.c
++++ b/engine/common/net_chan.c
+@@ -535,13 +535,26 @@ static void Netchan_UpdateFlow( netchan_t *chan )
+ 	{
+ 		flow_t	*pflow = &chan->flow[flow];
+ 
++#if XASH_SHADEREMU	// (nextcompute is the time from which it is computed again: whole bits compared)
++		int64_t now, next;
++		memcpy( &now, &host.realtime, sizeof( now )), memcpy( &next, &pflow->nextcompute, sizeof( next ));
++		if( now < next )
++			continue;
++		pflow->nextcompute = host.realtime + 2 * FLOW_INTERVAL;
++#else
+ 		if(( host.realtime - pflow->nextcompute ) < FLOW_INTERVAL )
+ 			continue;
+ 
+ 		pflow->nextcompute = host.realtime + FLOW_INTERVAL;
++#endif
+ 		int start = pflow->current - 1;
+ 
+ 		// compute data flow rate
++#if XASH_SHADEREMU	// (the times' differences summed are the first less the last: one double sum)
++		faccumulatedtime = pflow->stats[start & MASK_LATENT].time - pflow->stats[(start - MASK_LATENT) & MASK_LATENT].time;
++		for( int i = 0; i < MASK_LATENT; i++ )
++			bytes += pflow->stats[(start - i - 1) & MASK_LATENT].size;
++#else
+ 		for( int i = 0; i < MASK_LATENT; i++ )
+ 		{
+ 			flowstats_t *pprev = &pflow->stats[(start - i) & MASK_LATENT];
+@@ -550,6 +563,7 @@ static void Netchan_UpdateFlow( netchan_t *chan )
+ 			faccumulatedtime += ( pprev->time - pstat->time );
+ 			bytes += pstat->size;
+ 		}
++#endif
+ 
+ 		pflow->kbytespersec = (faccumulatedtime == 0.0f) ? 0.0f : bytes / faccumulatedtime / 1024.0f;
+ 		pflow->avgkbytespersec = pflow->avgkbytespersec * FLOW_AVG + pflow->kbytespersec * (1.0f - FLOW_AVG);
+@@ -1126,7 +1140,11 @@ qboolean Netchan_CopyNormalFragments( netchan_t *chan, sizebuf_t *msg, size_t *l
+ 
+ 	fragbuf_t *p = chan->incomingbufs[FRAG_NORMAL_STREAM];
+ 
++#if XASH_SHADEREMU
++	MSG_Init( msg, "NetMessage", msg->pData, NET_MAX_MESSAGE );	// (the server reads into a buffer of its own)
++#else
+ 	MSG_Init( msg, "NetMessage", net_message_buffer, sizeof( net_message_buffer ));
++#endif
+ 
+ 	while( p )
+ 	{
+@@ -1212,7 +1230,11 @@ qboolean Netchan_CopyFileFragments( netchan_t *chan, sizebuf_t *msg )
+ 
+ 	fragbuf_t *p = chan->incomingbufs[FRAG_FILE_STREAM];
+ 
++#if XASH_SHADEREMU
++	MSG_Init( msg, "NetMessage", msg->pData, NET_MAX_MESSAGE );	// (the server reads into a buffer of its own)
++#else
+ 	MSG_Init( msg, "NetMessage", net_message_buffer, sizeof( net_message_buffer ));
++#endif
+ 
+ 	// copy in first chunk so we can get filename out
+ 	MSG_WriteBytes( msg, MSG_GetData( &p->frag_message ), MSG_GetNumBytesWritten( &p->frag_message ));
+@@ -1670,7 +1692,11 @@ void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
+ 		}
+ 	}
+ 
++#if XASH_SHADEREMU
++	send_buf[0] = 0;	// (the bits written mask what is there: the last byte's rest is cleared below)
++#else
+ 	memset( send_buf, 0, sizeof( send_buf ));
++#endif
+ 	MSG_Init( &send, "NetSend", send_buf, sizeof( send_buf ));
+ 
+ 	// prepare the packet header
+@@ -1766,6 +1792,10 @@ void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
+ 		}
+ 	}
+ 
++#if XASH_SHADEREMU
++	if( send.iCurBit & 7 )
++		send_buf[send.iCurBit >> 3] &= ( 1 << ( send.iCurBit & 7 )) - 1;
++#endif
+ 	uint statId = chan->flow[FLOW_OUTGOING].current & MASK_LATENT;
+ 	chan->flow[FLOW_OUTGOING].stats[statId].size = MSG_GetNumBytesWritten( &send ) + UDP_HEADER_SIZE;
+ 	chan->flow[FLOW_OUTGOING].stats[statId].time = host.realtime;
+diff --git a/engine/common/net_encode.c b/engine/common/net_encode.c
+index 64bc35e7..6798546d 100644
+--- a/engine/common/net_encode.c
++++ b/engine/common/net_encode.c
+@@ -1821,10 +1821,27 @@ Writes current client data only for local client
+ Other clients can grab the client state from entity_state_t
+ ==================
+ */
++#if XASH_SHADEREMU
++// two structures of whole words the same (musl's memcmp goes a byte at a time)
++static qboolean SE_SameWords( const void *a, const void *b, size_t bytes )
++{
++	const uint32_t *x = a, *y = b;
++
++	for( size_t i = 0; i < bytes / 4; i++ )
++		if( x[i] != y[i] )
++			return false;
++	return true;
++}
++#endif
++
+ void MSG_WriteWeaponData( sizebuf_t *msg, const weapon_data_t *from, const weapon_data_t *to, double timebase, int index )
+ {
+ 	int numChanges = 0;
+ 
++#if XASH_SHADEREMU	// SE_SAME: the same bytes write no change, so nothing
++	if( SE_SameWords( from, to, sizeof( *to )))
++		return;
++#endif
+ 	delta_info_t *dt = Delta_FindStructByIndex( DT_WEAPONDATA_T );
+ 	Assert( dt && dt->bInitialized );
+ 
+@@ -1915,6 +1932,10 @@ void MSG_WriteDeltaEntity( const entity_state_t *from, const entity_state_t *to,
+ 		return;
+ 	}
+ 
++#if XASH_SHADEREMU	// (as above)
++	if( !force && SE_SameWords( from, to, sizeof( *to )))
++		return;
++#endif
+ 	int startBit = msg->iCurBit;
+ 
+ 	if( to->number < 0 || to->number >= GI->max_edicts )
+diff --git a/engine/common/net_ws.c b/engine/common/net_ws.c
+index d139dff7..b8752644 100644
+--- a/engine/common/net_ws.c
++++ b/engine/common/net_ws.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "client.h" // ConnectionProgress
+ #include "netchan.h"
+ #include "xash3d_mathlib.h"
+@@ -1008,6 +1011,10 @@ static void NET_SendLoopPacket( netsrc_t sock, size_t length, const void *data,
+ {
+ 	net_loopback_t *loop = &net.loopbacks[sock^1];
+ 
++#if XASH_SHADEREMU
++	if( SE_ServerKeepPacket( sock, length, data, &to ))
++		return;
++#endif
+ 	int i = loop->send & MASK_LOOPBACK;
+ 	loop->send++;
+ 
+@@ -1416,6 +1423,10 @@ qboolean NET_GetPacket( netsrc_t sock, netadr_t *from, byte *data, size_t *lengt
+ 	if( !data || !length )
+ 		return false;
+ 
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))	// (the loopback's packets only, as they come)
++		return NET_GetLoopPacket( sock, from, data, length );
++#endif
+ 	NET_AdjustLag();
+ 
+ 	if( NET_GetLoopPacket( sock, from, data, length ))
+diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
+index b1e8e57b..1af00bca 100644
+--- a/engine/common/pm_trace.c
++++ b/engine/common/pm_trace.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "xash3d_mathlib.h"
+ #include "mod_local.h"
+ #include "pm_local.h"
+@@ -23,8 +26,14 @@ GNU General Public License for more details.
+ 
+ #define PM_AllowHitBoxTrace( model, hull ) ( model && model->type == mod_studio && ( FBitSet( model->flags, STUDIO_TRACE_HITBOX ) || hull == 2 ))
+ 
++#if XASH_SHADEREMU
++static struct SE_APART { mplane_t planes[6]; hull_t hull; } box_of[2];	// (the server's worker has its own)
++#define pm_boxplanes box_of[SE_OnServer()].planes
++#define pm_boxhull box_of[SE_OnServer()].hull
++#else
+ static mplane_t	pm_boxplanes[6];
+ static hull_t pm_boxhull;
++#endif
+ 
+ // default hullmins
+ static const vec3_t pm_hullmins[MAX_MAP_HULLS] =
+@@ -63,6 +72,21 @@ can just be stored out and get a proper hull_t structure.
+ */
+ void PM_InitBoxHull( void )
+ {
++#if XASH_SHADEREMU
++	for( int c = 0; c < 2; c++ )
++	{
++		box_of[c].hull.clipnodes16 = (mclipnode16_t *)box_clipnodes16;
++		box_of[c].hull.planes = box_of[c].planes;
++		box_of[c].hull.firstclipnode = 0;
++		box_of[c].hull.lastclipnode = 5;
++		for( int i = 0; i < 6; i++ )
++		{
++			box_of[c].planes[i].type = i>>1;
++			box_of[c].planes[i].normal[i>>1] = 1.0f;
++			box_of[c].planes[i].signbits = 0;
++		}
++	}
++#else
+ 	pm_boxhull.clipnodes16 = (mclipnode16_t *)box_clipnodes16;
+ 	pm_boxhull.planes = pm_boxplanes;
+ 	pm_boxhull.firstclipnode = 0;
+@@ -74,6 +98,7 @@ void PM_InitBoxHull( void )
+ 		pm_boxplanes[i].normal[i>>1] = 1.0f;
+ 		pm_boxplanes[i].signbits = 0;
+ 	}
++#endif
+ 
+ }
+ 
+@@ -225,6 +250,35 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 	if( num < hull->firstclipnode || num > hull->lastclipnode )
+ 		Host_Error( "%s: bad node number %i\n", __func__, num );
+ 
++#if XASH_SHADEREMU
++	if( world.version != QBSP2_VERSION )
++	{
++		const mclipnode16_t *nodes = hull->clipnodes16;
++		const uint first = hull->firstclipnode, span = hull->lastclipnode - hull->firstclipnode;
++		for( ;; )
++		{
++			const mclipnode16_t *node = nodes + num;
++			plane = hull->planes + node->planenum;
++			if( plane->type < 3 )
++				t1 = p1[plane->type] - plane->dist, t2 = p2[plane->type] - plane->dist;
++			else t1 = DotProduct( p1, plane->normal ) - plane->dist, t2 = DotProduct( p2, plane->normal ) - plane->dist;
++			if( t1 >= 0.0f && t2 >= 0.0f )
++				num = node->children[0];
++			else if( t1 < 0.0f && t2 < 0.0f )
++				num = node->children[1];
++			else
++			{
++				children[0] = node->children[0], children[1] = node->children[1];
++				break;
++			}
++			if( num < 0 )
++				goto loc0;
++			if( (uint)num - first > span )
++				Host_Error( "%s: bad node number %i\n", __func__, num );
++		}
++	}
++	else
++#endif
+ 	// find the point distances
+ 	if( world.version == QBSP2_VERSION )
+ 	{
+@@ -239,6 +293,10 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 		plane = hull->planes + hull->clipnodes16[num].planenum;
+ 	}
+ 
++#if XASH_SHADEREMU
++	if( world.version == QBSP2_VERSION )
++#endif
++	{
+ 	t1 = PlaneDiff( p1, plane );
+ 	t2 = PlaneDiff( p2, plane );
+ 
+@@ -253,6 +311,7 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 		num = children[1];
+ 		goto loc0;
+ 	}
++	}
+ 
+ 	// put the crosspoint DIST_EPSILON pixels on the near side
+ 	side = (t1 < 0.0f);
+@@ -320,6 +379,26 @@ qboolean PM_RecursiveHullCheck( hull_t *hull, int num, float p1f, float p2f, vec
+ 	return false;
+ }
+ 
++#if XASH_SHADEREMU
++// Whether the player's box going from a to b can touch the physent: false only when it surely does not.
++static inline qboolean PM_MayTouch( const playermove_t *pmove, const physent_t *pe, const vec3_t a, const vec3_t b )
++{
++	const float *pmins, *pmaxs, *lo = host.player_mins[pmove->usehull], *hi = host.player_maxs[pmove->usehull];
++
++	if( pe->solid == SOLID_CUSTOM || ( pe->solid == SOLID_BSP && !VectorIsNull( pe->angles )))
++		return true;
++	if( pe->model )
++		pmins = pe->model->mins, pmaxs = pe->model->maxs;
++	else if( PM_AllowHitBoxTrace( pe->studiomodel, pmove->usehull ))
++		return true;
++	else pmins = pe->mins, pmaxs = pe->maxs;
++	for( int j = 0; j < 3; j++ )
++		if( Q_min( a[j], b[j] ) + lo[j] - 1.0f > pe->origin[j] + pmaxs[j] || Q_max( a[j], b[j] ) + hi[j] + 1.0f < pe->origin[j] + pmins[j] )
++			return false;
++	return true;
++}
++#endif
++
+ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int flags, int numents, physent_t *ents, int ignore_pe, pfnIgnore pmFilter )
+ {
+ 	pmtrace_t trace_total;
+@@ -363,6 +442,10 @@ pmtrace_t PM_PlayerTraceExt( playermove_t *pmove, vec3_t start, vec3_t end, int
+ 		if(( flags & PM_CUSTOM_IGNORE ) && pe->solid == SOLID_CUSTOM )
+ 			continue;
+ 
++#if XASH_SHADEREMU
++		if( i != 0 && !PM_MayTouch( pmove, pe, start, end ))
++			continue;
++#endif
+ 		hullcount = 1;
+ 
+ 		if( pe->solid == SOLID_CUSTOM )
+@@ -552,6 +635,10 @@ int PM_TestPlayerPosition( playermove_t *pmove, vec3_t pos, pmtrace_t *ptrace, p
+ 		if( pe->model != NULL && pe->solid == SOLID_NOT && pe->skin != CONTENTS_NONE )
+ 			continue;
+ 
++#if XASH_SHADEREMU
++		if( i != 0 && !PM_MayTouch( pmove, pe, pos, pos ))
++			continue;
++#endif
+ 		hullcount = 1;
+ 
+ 		if( pe->solid == SOLID_CUSTOM )
+diff --git a/engine/common/sys_con.c b/engine/common/sys_con.c
+index b4e5bb26..3a8505cb 100644
+--- a/engine/common/sys_con.c
++++ b/engine/common/sys_con.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #if XASH_ANDROID
+ #include <android/log.h>
+ #endif
+@@ -363,8 +366,13 @@ CONSOLE PRINT
+ */
+ static void Con_Printfv( qboolean debug, const char *szFmt, va_list args )
+ {
++#if XASH_SHADEREMU
++	static struct SE_APART { char b[MAX_PRINT_MSG]; } buffers[2];	// (the server's worker has its own)
++	char *buffer = buffers[SE_OnServer()].b;
++#else
+ 	static char buffer[MAX_PRINT_MSG];
+-	qboolean add_newline = Q_vsnprintf( buffer, sizeof( buffer ), szFmt, args ) < 0;
++#endif
++	qboolean add_newline = Q_vsnprintf( buffer, MAX_PRINT_MSG, szFmt, args ) < 0;
+ 
+ 	if( debug && !Q_strcmp( buffer, "0\n" ))
+ 		return; // hlrally spam
+diff --git a/engine/common/system.c b/engine/common/system.c
+index 522ba25c..740a2a57 100644
+--- a/engine/common/system.c
++++ b/engine/common/system.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "xash3d_mathlib.h"
+ #include "platform/platform.h"
+ #include <stdlib.h>
+@@ -387,6 +390,15 @@ void Sys_Error( const char *error, ... )
+ 	va_list	argptr;
+ 	char	text[MAX_PRINT_MSG];
+ 
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		va_start( argptr, error );
++		Q_vsnprintf( text, MAX_PRINT_MSG, error, argptr );
++		va_end( argptr );
++		SE_ServerAbort( text, 1 );
++	}
++#endif
+ 	// enable cursor before debugger call
+ 	if( !Host_IsDedicated( ))
+ 		Platform_SetCursorType( dc_arrow );
+@@ -451,6 +463,13 @@ print into window console
+ */
+ void Sys_Print( const char *pMsg )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		SE_ServerKeepPrint( pMsg );
++		return;
++	}
++#endif
+ #if !XASH_DEDICATED
+ 	if( !Host_IsDedicated() )
+ 	{
+diff --git a/engine/common/world.h b/engine/common/world.h
+index 30b30bcf..7af438aa 100644
+--- a/engine/common/world.h
++++ b/engine/common/world.h
+@@ -30,8 +30,8 @@ ENTITY AREA CHECKING
+ ===============================================================================
+ */
+ #define MAX_TOTAL_ENT_LEAFS		128
+-#define AREA_NODES			32
+-#define AREA_DEPTH			4
++#define AREA_NODES			128
++#define AREA_DEPTH			6
+ 
+ #include "lightstyle.h"
+ 
+diff --git a/engine/common/zone.c b/engine/common/zone.c
+index a0d9c23d..e693c214 100644
+--- a/engine/common/zone.c
++++ b/engine/common/zone.c
+@@ -17,6 +17,14 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
++#if XASH_SHADEREMU
++static void Mem_OutOfMemory( void );
++#else
++#define Mem_OutOfMemory() ((void)0)
++#endif
+ 
+ #define MEMHEADER_SENTINEL_BIG   0xA1BAU
+ #define MEMHEADER_SENTINEL_SMALL 0xAD1EU
+@@ -236,8 +244,19 @@ static qboolean Mem_CheckAllocHeaderSmall( const char *func, const memheader_sma
+ 	return true;
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { poolhandle_t poolptr; size_t size; qboolean clear; const char * filename; int fileline; } _Mem_Alloc_args_t;
++static uint32_t _Mem_Alloc_on_core0( void *p );
++#endif
+ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_Alloc_args_t a = { poolptr, size, clear, filename, fileline };
++		return (void *)SE_ServerOnCore0( _Mem_Alloc_on_core0, &a );
++	}
++#endif
+ 	if( size <= 0 )
+ 		return NULL;
+ 
+@@ -258,6 +277,7 @@ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory();
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -278,6 +298,7 @@ void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory();
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -335,8 +356,20 @@ static void Mem_FreeBlockSmall( memheader_small_t *mem, const char *filename, in
+ 	Q_free( mem );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { void * data; const char * filename; int fileline; } _Mem_Free_args_t;
++static uint32_t _Mem_Free_on_core0( void *p );
++#endif
+ void _Mem_Free( void *data, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_Free_args_t a = { data, filename, fileline };
++		SE_ServerOnCore0( _Mem_Free_on_core0, &a );
++		return;
++	}
++#endif
+ 	if( data == NULL )
+ 		return;
+ 
+@@ -372,8 +405,19 @@ static void Mem_MigratePoolSmall( poolhandle_t newpoolptr, memheader_small_t *me
+ 	Mem_PoolAdd( newpool, mem->size, blocksize );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { poolhandle_t poolptr; void * data; size_t size; qboolean clear; const char * filename; int fileline; } _Mem_Realloc_args_t;
++static uint32_t _Mem_Realloc_on_core0( void *p );
++#endif
+ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clear, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_Realloc_args_t a = { poolptr, data, size, clear, filename, fileline };
++		return (void *)SE_ServerOnCore0( _Mem_Realloc_on_core0, &a );
++	}
++#endif
+ 	if( size <= 0 )
+ 		return data; // no need to reallocate
+ 
+@@ -424,6 +468,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory();
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -467,6 +512,7 @@ void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clea
+ 
+ 		if( mem == NULL )
+ 		{
++			Mem_OutOfMemory();
+ 			Sys_Error( "%s: out of memory (alloc size %s at %s:%i)\n", __func__, Q_memprint( size ), filename, fileline );
+ 			return NULL;
+ 		}
+@@ -506,8 +552,19 @@ static poolhandle_t Mem_InitPool( mempool_t *pool, const char *name, unsigned in
+ 	return Mem_PoolIndex( pool );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { const char * name; unsigned int flags; const char * filename; int fileline; } _Mem_AllocPool_args_t;
++static uint32_t _Mem_AllocPool_on_core0( void *p );
++#endif
+ poolhandle_t _Mem_AllocPool( const char *name, unsigned int flags, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_AllocPool_args_t a = { name, flags, filename, fileline };
++		return (poolhandle_t)SE_ServerOnCore0( _Mem_AllocPool_on_core0, &a );
++	}
++#endif
+ 	for( size_t i = 0; i < poolcount; i++ )
+ 	{
+ 		if( poolchain[i].filename == NULL )
+@@ -526,8 +583,20 @@ poolhandle_t _Mem_AllocPool( const char *name, unsigned int flags, const char *f
+ 	return Mem_InitPool( pool, name, flags, filename, fileline );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { poolhandle_t poolptr; const char * filename; int fileline; } _Mem_EmptyPool_args_t;
++static uint32_t _Mem_EmptyPool_on_core0( void *p );
++#endif
+ void _Mem_EmptyPool( poolhandle_t poolptr, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_EmptyPool_args_t a = { poolptr, filename, fileline };
++		SE_ServerOnCore0( _Mem_EmptyPool_on_core0, &a );
++		return;
++	}
++#endif
+ 	if( unlikely( !poolptr ))
+ 	{
+ 		Sys_Error( "%s: pool == NULL (emptypool at %s:%i)\n", __func__, filename, fileline );
+@@ -545,8 +614,20 @@ void _Mem_EmptyPool( poolhandle_t poolptr, const char *filename, int fileline )
+ 		Mem_FreeBlockSmall( pool->chain_small, filename, fileline );
+ }
+ 
++#if XASH_SHADEREMU
++typedef struct { poolhandle_t * poolptr; const char * filename; int fileline; } _Mem_FreePool_args_t;
++static uint32_t _Mem_FreePool_on_core0( void *p );
++#endif
+ void _Mem_FreePool( poolhandle_t *poolptr, const char *filename, int fileline )
+ {
++#if XASH_SHADEREMU
++	if( SE_OnServer( ))
++	{
++		_Mem_FreePool_args_t a = { poolptr, filename, fileline };
++		SE_ServerOnCore0( _Mem_FreePool_on_core0, &a );
++		return;
++	}
++#endif
+ 	if( !*poolptr )
+ 		return;
+ 
+@@ -724,3 +805,68 @@ void Memory_Init( void )
+ 	poolchain = NULL;
+ 	poolcount = 0;
+ }
++
++#if XASH_SHADEREMU
++// what holds the memory, printed before the error
++static void Mem_OutOfMemory( void )
++{
++	void hlglStats( unsigned *tiles, unsigned *in_gpu, unsigned *gpu_size, unsigned *left_out, unsigned *vertices );
++	unsigned tiles, in_gpu, gpu_size, left_out, vertices;
++
++	Mem_PrintList( 1 << 30 );
++	Mem_PrintStats();
++	hlglStats( &tiles, &in_gpu, &gpu_size, &left_out, &vertices );
++	Con_Printf( "textures: %u of %u bytes of GPU memory (%u as tiles), %u left out\n", in_gpu, gpu_size, tiles, left_out );
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_Alloc_on_core0( void *p )
++{
++	_Mem_Alloc_args_t *a = p;
++	return (uint32_t)_Mem_Alloc( a->poolptr, a->size, a->clear, a->filename, a->fileline );
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_Free_on_core0( void *p )
++{
++	_Mem_Free_args_t *a = p;
++	_Mem_Free( a->data, a->filename, a->fileline );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_Realloc_on_core0( void *p )
++{
++	_Mem_Realloc_args_t *a = p;
++	return (uint32_t)_Mem_Realloc( a->poolptr, a->data, a->size, a->clear, a->filename, a->fileline );
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_AllocPool_on_core0( void *p )
++{
++	_Mem_AllocPool_args_t *a = p;
++	return (uint32_t)_Mem_AllocPool( a->name, a->flags, a->filename, a->fileline );
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_EmptyPool_on_core0( void *p )
++{
++	_Mem_EmptyPool_args_t *a = p;
++	_Mem_EmptyPool( a->poolptr, a->filename, a->fileline );
++	return 0;
++}
++#endif
++
++#if XASH_SHADEREMU
++static uint32_t _Mem_FreePool_on_core0( void *p )
++{
++	_Mem_FreePool_args_t *a = p;
++	_Mem_FreePool( a->poolptr, a->filename, a->fileline );
++	return 0;
++}
++#endif
+diff --git a/engine/platform/platform.h b/engine/platform/platform.h
+index 82535560..98573e6b 100644
+--- a/engine/platform/platform.h
++++ b/engine/platform/platform.h
+@@ -275,7 +275,7 @@ static inline void Platform_Vibrate2( float time, int low_freq, int high_freq, u
+ 
+ ==============================================================================
+ */
+-#if XASH_SDL // only SDL based backends implements these functions
++#if XASH_SDL || XASH_SHADEREMU // only SDL based backends implements these functions
+ void Platform_PreCreateMove( void );
+ void GAME_EXPORT Platform_GetMousePos( int *x, int *y );
+ void GAME_EXPORT Platform_SetMousePos( int x, int y );
+@@ -299,7 +299,7 @@ static inline void GAME_EXPORT Platform_GetMousePos( int *x, int *y )
+ }
+ #endif
+ 
+-#if XASH_SDL || XASH_DOS
++#if XASH_SDL || XASH_DOS || XASH_SHADEREMU
+ void Platform_RunEvents( void );
+ void Platform_MouseMove( float *x, float *y );
+ #else
+@@ -313,7 +313,7 @@ static inline void Platform_MouseMove( float *x, float *y )
+ 
+ // rect is the area where the text is edited, in render coordinates, so the platform
+ // might keep it visible when it shows the on-screen keyboard over the game
+-#if XASH_SDL >= 2 || XASH_PSVITA || XASH_DOS || XASH_USE_EVDEV
++#if XASH_SDL >= 2 || XASH_PSVITA || XASH_DOS || XASH_USE_EVDEV || XASH_SHADEREMU
+ void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h );
+ #else
+ static inline void Platform_EnableTextInput( qboolean enable, int x, int y, int w, int h ) { }
+diff --git a/engine/platform/posix/crash_posix.c b/engine/platform/posix/crash_posix.c
+index 35556a71..cadad75c 100644
+--- a/engine/platform/posix/crash_posix.c
++++ b/engine/platform/posix/crash_posix.c
+@@ -27,6 +27,7 @@ GNU General Public License for more details.
+ #include "library.h"
+ #include "input.h"
+ #include "crash.h"
++#include <ucontext.h>
+ 
+ #if XASH_ANDROID
+ static char crashlog_path[MAX_OSPATH];
+@@ -48,6 +49,21 @@ static void Sys_Crash( int signal, siginfo_t *si, void *context )
+ 	len += Q_snprintf( crash_message + len, sizeof( crash_message ) - len, "Crash: signal %d errno %d with code %d at %p\n", signal, si->si_errno, si->si_code, si->si_addr );
+ #endif
+ 
++#if XASH_SHADEREMU
++	{
++		// pc, ra and the stack's words that point into the program's text: a backtrace by hand
++		extern char __executable_start[], etext[];
++		const unsigned long *gr = ((ucontext_t *)context)->uc_mcontext.__gregs;
++		const unsigned long *sp = (const unsigned long *)gr[2];
++		int i;
++		len += Q_snprintf( crash_message + len, sizeof( crash_message ) - len, "pc %08lx ra %08lx sp %08lx a0 %08lx\nstack:", gr[0], gr[1], gr[2], gr[10] );
++		ssize_t w = write( STDERR_FILENO, crash_message, len ); (void)w;
++		for( i = 0; i < 160; i++ )
++			if( sp[i] >= (unsigned long)__executable_start && sp[i] < (unsigned long)etext )
++				len += Q_snprintf( crash_message + len, sizeof( crash_message ) - len, " %08lx", sp[i] );
++		len += Q_snprintf( crash_message + len, sizeof( crash_message ) - len, "\n" );
++	}
++#endif
+ 	ssize_t unused = write( STDERR_FILENO, crash_message, len );
+ 
+ #if XASH_ANDROID
+diff --git a/engine/platform/posix/sys_posix.c b/engine/platform/posix/sys_posix.c
+index 7f9c7ac1..e962d6da 100644
+--- a/engine/platform/posix/sys_posix.c
++++ b/engine/platform/posix/sys_posix.c
+@@ -127,7 +127,11 @@ double Platform_DoubleTime( void )
+ 		s_ClockInit = true;
+ 	}
+ 
++#if XASH_SHADEREMU	// (int seconds and a product: the 64-bit conversion and the quotient cost twice as much)
++	return (double)(int)( ts.tv_sec - s_ClockStart ) + (double)(int)ts.tv_nsec * 1e-9;
++#else
+ 	return (double)( ts.tv_sec - s_ClockStart ) + (double) ts.tv_nsec/1000000000.0;
++#endif
+ }
+ 
+ void Platform_Sleep( int msec )
+diff --git a/engine/server/server.h b/engine/server/server.h
+index e15a9318..2414b4cf 100644
+--- a/engine/server/server.h
++++ b/engine/server/server.h
+@@ -741,4 +741,18 @@ static inline qboolean SV_CheckGroupTrace( const edict_t *e1, const edict_t *e2
+ 	return true;
+ }
+ 
++#if XASH_SHADEREMU
++// sv.time as the floats every entity is tested by, made again when it moves (sv_phys.c): a float is
++// after a time exactly when it is after the latest float not after it (`floor`).
++typedef struct { double time; float frametime, floor, ceil, near, think_until, plus1, plus12; } se_times_t;
++extern se_times_t se_times;
++void SE_TimesMake( void );
++static inline const se_times_t *SE_Times( void )
++{
++	if( memcmp( &se_times.time, &sv.time, sizeof( double )) || se_times.frametime != sv.frametime )
++		SE_TimesMake( );
++	return &se_times;
++}
++#endif
++
+ #endif//SERVER_H
+diff --git a/engine/server/sv_frame.c b/engine/server/sv_frame.c
+index 3ff8edbf..65942f80 100644
+--- a/engine/server/sv_frame.c
++++ b/engine/server/sv_frame.c
+@@ -53,6 +53,61 @@ SV_AddEntitiesToPacket
+ 
+ =============
+ */
++#if XASH_SHADEREMU
++int SV_EntityVisible( const edict_t *ent, byte *pset );	// (sv_game.c's pfnCheckVisibility)
++
++// The packet's entities from a number on looked at by a worker of the server's (sv_shaderemu.c) while
++// the server looks at those before it: posted with the server's frame, it waits for the ask.
++#define END_PASS() __asm__ volatile( ".word 0x0000100f" )	// (mc.h's mc_end_pass)
++static struct __attribute__(( aligned( 16 ))) { volatile int go, done, unused[2]; edict_t *client; byte *pvs, *phs; int hostflags, from, to; } se_pack_ask;	// go 1: the part; 2: none
++static struct __attribute__(( aligned( 16 ))) { int count, portal; short number[MAX_VISIBLE_PACKET]; entity_state_t entities[MAX_VISIBLE_PACKET]; } se_pack_out;	// the worker's
++int se_pack_helper;	// the worker, while it is out
++static int se_pack_split = 1 << 30;	// the number the worker's part starts at: the last packet's middle one
++
++// The loop's tests and AddToFullPack for entity e: 1 added, 2 turned away by AddToFullPack, 0 before it.
++static int SE_PackOne( int e, edict_t *pClient, byte *clientpvs, byte *clientphs, int hostflags, entity_state_t *state )
++{
++	edict_t *ent = SV_EdictNum( e );
++	qboolean player = e >= 1 && e <= svs.maxclients;
++
++	if( player && ( svs.clients[e - 1].state != cs_spawned || FBitSet( svs.clients[e - 1].flags, FCL_HLTV_PROXY )))
++		return 0;
++	if( !ent->v.modelindex || ( FBitSet( ent->v.effects, EF_NODRAW ) && ent != pClient ))
++		return 0;
++	byte *pset = FBitSet( ent->v.effects, EF_REQUEST_PHS ) ? clientphs : clientpvs;
++	if( ent != pClient && !player && !FBitSet( ent->v.flags, FL_SPECTATOR ) && !SV_EntityVisible( ent, pset ) && Q_strcmp( SV_GetString( ent->v.classname ), "env_sky" ))
++		return 0;
++	return svgame.dllFuncs.pfnAddToFullPack( state, e, ent, pClient, hostflags, player, pset ) ? 1 : 2;
++}
++
++void SE_WorldAhead( void );
++extern volatile int se_ahead_done;
++uint32_t SE_PackJob( uint32_t unused0, uint32_t unused1 )
++{
++	SE_WorldAhead();	// (until the server asks for the packet)
++	se_ahead_done = 1;
++	while( !se_pack_ask.go )
++		END_PASS( );
++	if( se_pack_ask.go == 1 )
++	{
++		int n = 0, portal = 0;
++		for( int e = se_pack_ask.from; e < se_pack_ask.to && n < MAX_VISIBLE_PACKET - 1; e++ )
++		{
++			int r = SE_PackOne( e, se_pack_ask.client, se_pack_ask.pvs, se_pack_ask.phs, se_pack_ask.hostflags, &se_pack_out.entities[n] );
++			if( r && FBitSet( SV_EdictNum( e )->v.effects, EF_MERGE_VISIBILITY ))
++				portal = 1;
++			if( r == 1 )
++				se_pack_out.number[n++] = e;
++		}
++		se_pack_out.count = n, se_pack_out.portal = portal;
++	}
++	se_pack_ask.done = 1;
++	return 0;
++}
++void SE_PackReset( void ) { se_pack_ask.go = se_pack_ask.done = se_ahead_done = 0; }	// (the first core's, before posting it)
++void SE_PackTouch( void ) { memset( &se_pack_out, 0, sizeof( se_pack_out )); }	// (the first core's, once)
++void SE_PackFrameEnd( void ) { if( !se_pack_ask.go ) se_pack_ask.go = 2; }	// (the server's)
++#endif
+ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_frame_t *frame, sv_ents_t *ents, qboolean from_client )
+ {
+ 	byte		*clientpvs = NULL;
+@@ -86,7 +141,20 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+ 	if( !clientpvs ) fullvis = true;
+ 
+ 	// g-cont: of course we can send world but not want to do it :-)
++#if XASH_SHADEREMU
++	int lo = 1, split = svgame.numEntities;
++	if( from_client && se_pack_helper && !se_pack_ask.go && !pClient->v.groupinfo && se_pack_split < svgame.numEntities )
++	{
++		split = Q_max( se_pack_split, svs.maxclients + 1 );
++		se_pack_ask.client = pClient, se_pack_ask.pvs = clientpvs, se_pack_ask.phs = clientphs;
++		se_pack_ask.hostflags = sv.hostflags, se_pack_ask.from = split, se_pack_ask.to = svgame.numEntities;
++		se_pack_ask.go = 1;
++	}
++again:
++	for( int e = lo; e < split; e++ )
++#else
+ 	for( int e = 1; e < svgame.numEntities; e++ )
++#endif
+ 	{
+ 		byte	*pset;
+ 		edict_t	*ent = SV_EdictNum( e );
+@@ -112,9 +180,17 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+ 				continue;
+ 		}
+ 
++#if XASH_SHADEREMU	// SE_FULLPACK: what Half-Life's AddToFullPack turns away first
++		if( !ent->v.modelindex || ( FBitSet( ent->v.effects, EF_NODRAW ) && ent != pClient ))
++			continue;
++#endif
+ 		if( FBitSet( ent->v.effects, EF_REQUEST_PHS ))
+ 			pset = clientphs;
+ 		else pset = clientpvs;
++#if XASH_SHADEREMU	// (and its test of what the client cannot see, env_sky apart)
++		if( ent != pClient && !player && !FBitSet( ent->v.flags, FL_SPECTATOR ) && !SV_EntityVisible( ent, pset ) && Q_strcmp( SV_GetString( ent->v.classname ), "env_sky" ))
++			continue;
++#endif
+ 
+ 		state = &ents->entities[ents->num_entities];
+ 
+@@ -159,6 +235,34 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+ 			ClearBits( sv.hostflags, SVF_MERGE_VISIBILITY );
+ 		}
+ 	}
++#if XASH_SHADEREMU
++	if( split < svgame.numEntities )
++	{
++		while( !se_pack_ask.done )
++			END_PASS( );
++		if( se_pack_out.portal )	// (a portal in its part: the part made here, in order, as before)
++		{
++			lo = split, split = svgame.numEntities;
++			goto again;
++		}
++		for( int i = 0; i < se_pack_out.count; i++ )
++		{
++			int e = se_pack_out.number[i];
++			edict_t *ent = SV_EdictNum( e );
++
++			if( CHECKVISBIT( ents->sended, e ))
++				continue;	// (through a portal of this part)
++			SETVISBIT( ents->sended, e );
++			if( SV_IsValidEdict( ent->v.aiment ) && FBitSet( ent->v.aiment->v.effects, EF_MERGE_VISIBILITY ) && cl->num_viewents < MAX_VIEWENTS )
++				cl->viewentity[cl->num_viewents++] = ent->v.aiment;
++			if( ents->num_entities < ( MAX_VISIBLE_PACKET - 1 ))
++				ents->entities[ents->num_entities++] = se_pack_out.entities[i], c_fullsend++;
++			else c_notsend++;
++		}
++	}
++	if( from_client && ents->num_entities )
++		se_pack_split = ents->entities[ents->num_entities / 2].number;
++#endif
+ }
+ 
+ /*
+@@ -226,8 +330,28 @@ SV_EmitPacketEntities
+ Writes a delta update of an entity_state_t list to the message->
+ =============
+ */
++#if XASH_SHADEREMU
++qboolean SE_DirectWanted( void );
++static const weapon_data_t *se_weapons;	// the weapons the local client copies (SV_WriteClientdataToMessage), or NULL
++#endif
++
+ static void SV_EmitPacketEntities( sv_client_t *cl, client_frame_t *to, sizebuf_t *msg )
+ {
++#if XASH_SHADEREMU
++	// the client in this process copies the states from where they lie (CL_DirectPacket)
++	if( NET_IsLocalAddress( cl->netchan.remote_address ) && SE_DirectWanted( ))
++	{
++		MSG_BeginServerCmd( msg, svc_packetentities );
++		MSG_WriteUBitLong( msg, to->num_entities - 1, MAX_VISIBLE_PACKET_BITS );
++		MSG_WriteUBitLong( msg, LAST_EDICT - 1, MAX_ENTITY_BITS );
++		MSG_WriteLong( msg, (int)(uintptr_t)svs.packet_entities );
++		MSG_WriteLong( msg, svs.num_client_entities );
++		MSG_WriteLong( msg, to->first_entity );
++		MSG_WriteLong( msg, (int)(uintptr_t)se_weapons );
++		MSG_WriteUBitLong( msg, LAST_EDICT, MAX_ENTITY_BITS );
++		return;
++	}
++#endif
+ 	entity_state_t	*oldent, *newent;
+ 	int		oldindex, newindex;
+ 	int		oldnum, newnum;
+@@ -578,6 +702,15 @@ static void SV_WriteClientdataToMessage( sv_client_t *cl, sizebuf_t *msg )
+ 	// write clientdata_t
+ 	MSG_WriteClientData( msg, from_cd, to_cd, sv.time );
+ 
++#if XASH_SHADEREMU
++	se_weapons = NULL;
++	if( NET_IsLocalAddress( cl->netchan.remote_address ) && SE_DirectWanted( ))
++	{
++		if( FBitSet( cl->flags, FCL_LOCAL_WEAPONS ) && svgame.dllFuncs.pfnGetWeaponData( clent, frame->weapondata ))
++			se_weapons = frame->weapondata;
++	}
++	else
++#endif
+ 	if( FBitSet( cl->flags, FCL_LOCAL_WEAPONS ) && svgame.dllFuncs.pfnGetWeaponData( clent, frame->weapondata ))
+ 	{
+ 		memset( &nullwd, 0, sizeof( nullwd ));
+@@ -632,6 +765,12 @@ static void SV_WriteEntitiesToClient( sv_client_t *cl, sizebuf_t *msg )
+ 	// in the list which will need to be resorted for the delta compression
+ 	// to work correctly.  This also catches the error condition
+ 	// of an entity being included twice.
++#if XASH_SHADEREMU	// (in order unless a portal added some: sorted only then)
++	int sorted = 1;
++	for( int i = 1; i < frame_ents.num_entities && sorted; i++ )
++		sorted = frame_ents.entities[i - 1].number < frame_ents.entities[i].number;
++	if( !sorted )
++#endif
+ 	qsort( frame_ents.entities, frame_ents.num_entities, sizeof( frame_ents.entities[0] ), SV_EntityNumbers );
+ 
+ 	// it will break all connected clients, but it takes more than one week to overflow it
+diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
+index 37e79df8..5e5c7dcc 100644
+--- a/engine/server/sv_game.c
++++ b/engine/server/sv_game.c
+@@ -1678,7 +1678,15 @@ static edict_t* GAME_EXPORT pfnFindClientInPVS( edict_t *pEdict )
+ 	if( !SV_IsValidEdict( pEdict ))
+ 		return svgame.edicts;
+ 
++#if XASH_SHADEREMU	// (sv.time and the last check's stay the same through a frame: one double difference)
++	static double kept_time = -1.0, kept_check = -1.0;
++	static float kept_delta;
++	if( memcmp( &kept_time, &sv.time, sizeof( double )) || memcmp( &kept_check, &sv.lastchecktime, sizeof( double )))
++		kept_time = sv.time, kept_check = sv.lastchecktime, kept_delta = sv.time - sv.lastchecktime;
++	delta = kept_delta;
++#else
+ 	delta = ( sv.time - sv.lastchecktime );
++#endif
+ 
+ 	// don't merge visibility for portal entity, only for monsters
+ 	bMergePVS = FBitSet( pEdict->v.flags, FL_MONSTER ) ? true : false;
+@@ -3841,6 +3849,14 @@ pfnNumberOfEntities
+ returns actual entity count
+ =============
+ */
++#if XASH_SHADEREMU
++// one past the last edict in use: those after it are free (the game's loops stop here)
++int SE_NumEdicts( void )
++{
++	return svgame.numEntities;
++}
++#endif
++
+ int GAME_EXPORT pfnNumberOfEntities( void )
+ {
+ 	int	total = 0;
+@@ -4301,6 +4317,13 @@ pfnCheckVisibility
+ 
+ =============
+ */
++#if XASH_SHADEREMU
++static int GAME_EXPORT pfnCheckVisibility( const edict_t *ent, byte *pset );
++int SV_EntityVisible( const edict_t *ent, byte *pset )
++{
++	return pfnCheckVisibility( ent, pset );
++}
++#endif
+ static int GAME_EXPORT pfnCheckVisibility( const edict_t *ent, byte *pset )
+ {
+ 	int	i;
+diff --git a/engine/server/sv_init.c b/engine/server/sv_init.c
+index 3df187a8..ee46f342 100644
+--- a/engine/server/sv_init.c
++++ b/engine/server/sv_init.c
+@@ -100,6 +100,12 @@ SV_ModelIndex
+ register unique model for a server and client
+ ================
+ */
++#if XASH_SHADEREMU
++// whether two names can be the same ignoring case, by their first two bytes (true for more than that)
++#define SE_MAY_MATCH( a, b ) ((( (a)[0] ^ (b)[0] ) & ~0x20 ) == 0 && ((( (a)[1] ^ (b)[1] ) & ~0x20 ) == 0 ))
++#else
++#define SE_MAY_MATCH( a, b ) 1
++#endif
+ int SV_ModelIndex( const char *filename )
+ {
+ 	char	name[MAX_QPATH];
+@@ -115,7 +121,7 @@ int SV_ModelIndex( const char *filename )
+ 
+ 	for( i = 1; i < MAX_MODELS && sv.model_precache[i][0]; i++ )
+ 	{
+-		if( !Q_stricmp( sv.model_precache[i], name ))
++		if( SE_MAY_MATCH( sv.model_precache[i], name ) && !Q_stricmp( sv.model_precache[i], name ))
+ 			return i;
+ 	}
+ 
+@@ -145,6 +151,39 @@ SV_SoundIndex
+ register unique sound for client
+ ================
+ */
++#if XASH_SHADEREMU
++// The sounds' indices by a hash of the name in lower case: a found one is checked by name, a missed
++// one is looked for as before (and registered).
++#define SOUND_HASH 4096
++static short sound_hash[SOUND_HASH];
++static int sound_hashed, sound_hash_for = -1;
++static uint sound_hash_of( const char *name )
++{
++	uint h = 0;
++	for( ; *name; name++ )
++		h = ( h ^ (byte)Q_tolower( *name )) * 0x01000193u;
++	return h;
++}
++static void sound_hash_add( int i )
++{
++	uint h = sound_hash_of( sv.sound_precache[i] );
++	while( sound_hash[h & ( SOUND_HASH - 1 )] )
++		h++;
++	sound_hash[h & ( SOUND_HASH - 1 )] = i;
++}
++static int sound_hash_find( const char *name )
++{
++	if( sound_hash_for != svs.spawncount || sound_hashed > SOUND_HASH / 2 )
++		memset( sound_hash, 0, sizeof( sound_hash )), sound_hashed = 0, sound_hash_for = svs.spawncount;
++	for( ; sound_hashed + 1 < MAX_SOUNDS && sv.sound_precache[sound_hashed + 1][0]; sound_hashed++ )
++		sound_hash_add( sound_hashed + 1 );
++	for( uint h = sound_hash_of( name ); sound_hash[h & ( SOUND_HASH - 1 )]; h++ )
++		if( !Q_stricmp( sv.sound_precache[sound_hash[h & ( SOUND_HASH - 1 )]], name ))
++			return sound_hash[h & ( SOUND_HASH - 1 )];
++	return 0;
++}
++#endif
++
+ int GAME_EXPORT SV_SoundIndex( const char *filename )
+ {
+ 	char	name[MAX_QPATH];
+@@ -163,10 +202,14 @@ int GAME_EXPORT SV_SoundIndex( const char *filename )
+ 		filename++;
+ 	Q_strncpy( name, filename, sizeof( name ));
+ 	COM_FixSlashes( name );
++#if XASH_SHADEREMU
++	if(( i = sound_hash_find( name )))
++		return i;
++#endif
+ 
+ 	for( i = 1; i < MAX_SOUNDS && sv.sound_precache[i][0]; i++ )
+ 	{
+-		if( !Q_stricmp( sv.sound_precache[i], name ))
++		if( SE_MAY_MATCH( sv.sound_precache[i], name ) && !Q_stricmp( sv.sound_precache[i], name ))
+ 			return i;
+ 	}
+ 
+diff --git a/engine/server/sv_main.c b/engine/server/sv_main.c
+index e6cc5054..ef3b889f 100644
+--- a/engine/server/sv_main.c
++++ b/engine/server/sv_main.c
+@@ -17,6 +17,16 @@ GNU General Public License for more details.
+ #include "server.h"
+ #include "net_encode.h"
+ #include "platform/platform.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++// the server's own: the client reads its packets into the engine's while the server's worker reads
++static sizebuf_t	sv_net_message;
++static netadr_t	sv_net_from;
++static byte	sv_net_message_buffer[NET_MAX_MESSAGE];
++#define net_message sv_net_message
++#define net_from sv_net_from
++#define net_message_buffer sv_net_message_buffer
++#endif
+ 
+ // server cvars
+ CVAR_DEFINE_AUTO( sv_lan, "0", 0, "server is a lan server ( no heartbeat, no authentication, no non-class C addresses, 9999.0 rate, etc." );
+diff --git a/engine/server/sv_move.c b/engine/server/sv_move.c
+index bb77a0d1..d907b347 100644
+--- a/engine/server/sv_move.c
++++ b/engine/server/sv_move.c
+@@ -103,6 +103,13 @@ qboolean SV_CheckBottom( edict_t *ent, int iMode )
+ 	return true;
+ }
+ 
++#if XASH_SHADEREMU
++#define SE_PLUS1 ( t->plus1 )
++#define SE_PLUS12 ( t->plus12 )
++#else
++#define SE_PLUS1 ( sv.time + 1.0f )
++#define SE_PLUS12 ( sv.time + 12.0f )
++#endif
+ void SV_WaterMove( edict_t *ent )
+ {
+ 	float	drownlevel;
+@@ -110,9 +117,16 @@ void SV_WaterMove( edict_t *ent )
+ 	int	watertype;
+ 	int	flags;
+ 
++#if XASH_SHADEREMU
++	// sv.time's floats (server.h): the same tests and values without doubles
++	const se_times_t *t = SE_Times( );
++#define SE_AFTER( x ) (( x ) > t->floor )
++#else
++#define SE_AFTER( x ) (( x ) > sv.time )
++#endif
+ 	if( ent->v.movetype == MOVETYPE_NOCLIP )
+ 	{
+-		ent->v.air_finished = sv.time + 12.0f;
++		ent->v.air_finished = SE_PLUS12;
+ 		return;
+ 	}
+ 
+@@ -129,18 +143,18 @@ void SV_WaterMove( edict_t *ent )
+ 	{
+ 		if((( flags & FL_SWIM ) && waterlevel > drownlevel ) || waterlevel <= drownlevel )
+ 		{
+-			if( ent->v.air_finished > sv.time && ent->v.pain_finished > sv.time )
++			if( SE_AFTER( ent->v.air_finished ) && SE_AFTER( ent->v.pain_finished ))
+ 			{
+ 				ent->v.dmg += 2;
+ 
+ 				if( ent->v.dmg < 15 )
+ 					ent->v.dmg = 10; // quake1 original code
+-				ent->v.pain_finished = sv.time + 1.0f;
++				ent->v.pain_finished = SE_PLUS1;
+ 			}
+ 		}
+ 		else
+ 		{
+-			ent->v.air_finished = sv.time + 12.0f;
++			ent->v.air_finished = SE_PLUS12;
+ 			ent->v.dmg = 2;
+ 		}
+ 	}
+@@ -157,7 +171,7 @@ void SV_WaterMove( edict_t *ent )
+ 			ent->v.flags = flags & ~FL_INWATER;
+ 		}
+ 
+-		ent->v.air_finished = sv.time + 12.0f;
++		ent->v.air_finished = SE_PLUS12;
+ 		return;
+ 	}
+ 
+diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
+index bfd679b9..662c8d0b 100644
+--- a/engine/server/sv_phys.c
++++ b/engine/server/sv_phys.c
+@@ -232,8 +232,43 @@ in a frame.  Not used for pushmove objects, because they must be exact.
+ Returns false if the entity removed itself.
+ =============
+ */
++#if XASH_SHADEREMU
++se_times_t se_times;
++static float SE_FloatFloor( double t )
++{
++	float f = (float)t;
++	return (double)f > t ? nextafterf( f, -1e30f ) : f;
++}
++void SE_TimesMake( void )
++{
++	se_times.time = sv.time, se_times.frametime = sv.frametime;
++	se_times.floor = SE_FloatFloor( sv.time ), se_times.near = sv.time;
++	se_times.ceil = (double)se_times.floor == sv.time ? se_times.floor : nextafterf( se_times.floor, 1e30f );
++	se_times.think_until = SE_FloatFloor( sv.time + sv.frametime );
++	se_times.plus1 = sv.time + 1.0f, se_times.plus12 = sv.time + 12.0f;
++}
++#endif
++
+ static qboolean SV_RunThink( edict_t *ent )
+ {
++#if XASH_SHADEREMU
++	// SV_TryThink without doubles: a float is before a time exactly when it is before its ceiling
++	if( !FBitSet( ent->v.flags, FL_KILLME ))
++	{
++		const se_times_t *t = SE_Times( );
++		float thinktime = ent->v.nextthink;
++		if( thinktime <= 0.0f || thinktime > t->think_until )
++			return true;
++		if( thinktime < t->ceil )
++			thinktime = t->near;
++		ent->v.nextthink = 0.0f;
++		svgame.globals->time = thinktime;
++		svgame.dllFuncs.pfnThink( ent );
++	}
++	if( FBitSet( ent->v.flags, FL_KILLME ))
++		SV_FreeEdict( ent );
++	return !ent->free;
++#endif
+ 	if( !FBitSet( ent->v.flags, FL_KILLME ))
+ 	{
+ 		if( !SV_TryThink( ent, sv.frametime, sv.time ))
+@@ -1777,6 +1812,34 @@ SV_Physics
+ 
+ ================
+ */
++#if XASH_SHADEREMU
++// The world's part of the moves the tossed things are about to make, made on another core while this one
++// runs the frame up to them (SV_Physics_Toss's, on a copy): a thing changed meanwhile only misses.
++void SE_WorldAheadPut( const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end );
++void SE_WorldAhead( void )
++{
++	if( sv_check_errors.value )	// (SV_CheckVelocity would print)
++		return;
++	for( int i = svs.maxclients + 1; i < svgame.numEntities; i++ )
++	{
++		edict_t *ent = SV_EdictNum( i ), copy;
++		if( ent->free || ( ent->v.movetype != MOVETYPE_TOSS && ent->v.movetype != MOVETYPE_BOUNCE ))
++			continue;
++		if( FBitSet( ent->v.flags, FL_ONGROUND ) && VectorIsNull( ent->v.velocity ) && VectorIsNull( ent->v.basevelocity ))
++			continue;
++		vec3_t move, end;
++		copy.v = ent->v;
++		SV_CheckVelocity( &copy );
++		SV_AddGravity( &copy );
++		VectorAdd( copy.v.velocity, copy.v.basevelocity, copy.v.velocity );
++		SV_CheckVelocity( &copy );
++		VectorScale( copy.v.velocity, sv.frametime, move );
++		VectorAdd( copy.v.origin, move, end );
++		SE_WorldAheadPut( copy.v.origin, copy.v.mins, copy.v.maxs, end );
++	}
++}
++#endif
++
+ void SV_Physics( void )
+ {
+ 	SV_CheckAllEnts ();
+@@ -1796,6 +1859,13 @@ void SV_Physics( void )
+ 
+ 		if( i > 0 && i <= svs.maxclients )
+ 			continue;
++#if XASH_SHADEREMU
++		// a thing that does not move, with no think due: SV_Physics_Entity would do nothing to it
++		if( ent->v.movetype == MOVETYPE_NONE && !FBitSet( ent->v.flags, FL_ONGROUND|FL_BASEVELOCITY|FL_KILLME )
++			&& ( ent->v.nextthink <= 0.0f || ent->v.nextthink > SE_Times( )->think_until ) && VectorIsNull( ent->v.basevelocity )
++			&& svgame.globals->force_retouch == 0.0f && !svgame.physFuncs.SV_PhysicsEntity )
++			continue;
++#endif
+ 
+ 		SV_Physics_Entity( ent );
+ 	}
+diff --git a/engine/server/sv_pmove.c b/engine/server/sv_pmove.c
+index ba1920d0..e64cebf5 100644
+--- a/engine/server/sv_pmove.c
++++ b/engine/server/sv_pmove.c
+@@ -909,7 +909,11 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
+ 	cl->ignorecmdtime_warned = false;
+ 
+ 	// chop up very long commands
++#if XASH_SHADEREMU	// SE_CHOP: a frame at 10 a second is one move
++	if( cmd.msec > 100 )
++#else
+ 	if( cmd.msec > 50 )
++#endif
+ 	{
+ 		int	oldmsec = ucmd->msec;
+ 		cmd.msec = oldmsec / 2;
+diff --git a/engine/server/sv_world.c b/engine/server/sv_world.c
+index dbbb19ad..f05a19ac 100644
+--- a/engine/server/sv_world.c
++++ b/engine/server/sv_world.c
+@@ -458,8 +458,21 @@ SV_ClearWorld
+ 
+ ===============
+ */
++#if XASH_SHADEREMU
++// The entities linked among the solid ones as SOLID_NOT (water): with none, a point's contents are the world's.
++static byte water_linked[MAX_EDICTS];
++static int water_links;
++// The world's contents at the points asked for again (things that stand still): kept for the level.
++static struct { uint32_t p[3]; int cont, kept; } contents_kept[256];
++#endif
++
+ void SV_ClearWorld( void )
+ {
++#if XASH_SHADEREMU
++	memset( water_linked, 0, sizeof( water_linked ));
++	water_links = 0;
++	memset( contents_kept, 0, sizeof( contents_kept ));
++#endif
+ 	SV_InitBoxHull(); // for box testing
+ 
+ 	// clear lightstyles
+@@ -489,6 +502,11 @@ void SV_UnlinkEdict( edict_t *ent )
+ 	RemoveLink( &ent->area );
+ 	ent->area.prev = NULL;
+ 	ent->area.next = NULL;
++#if XASH_SHADEREMU
++	int n = ent - svgame.edicts;
++	if( n >= 0 && n < MAX_EDICTS && water_linked[n] )
++		water_linked[n] = 0, water_links--;
++#endif
+ }
+ 
+ /*
+@@ -683,6 +701,11 @@ void GAME_EXPORT SV_LinkEdict( edict_t *ent, qboolean touch_triggers )
+ 	else if( ent->v.solid == SOLID_PORTAL )
+ 		InsertLinkBefore( &ent->area, &node->portal_edicts );
+ 	else InsertLinkBefore( &ent->area, &node->solid_edicts );
++#if XASH_SHADEREMU
++	int n = ent - svgame.edicts;
++	if( ent->v.solid == SOLID_NOT && n >= 0 && n < MAX_EDICTS )
++		water_linked[n] = 1, water_links++;
++#endif
+ 
+ 	if( touch_triggers && !iTouchLinkSemaphore )
+ 	{
+@@ -772,6 +795,22 @@ SV_TruePointContents
+ 
+ =============
+ */
++#if XASH_SHADEREMU
++static int SV_WorldContents( const vec3_t p )
++{
++	uint32_t x[3];
++
++	memcpy( x, p, sizeof( x ));
++	uint32_t h = ( x[0] * 0x9e3779b1u ^ x[1] * 0x85ebca77u ^ x[2] * 0xc2b2ae3du ) >> 24;
++	if( contents_kept[h].kept && contents_kept[h].p[0] == x[0] && contents_kept[h].p[1] == x[1] && contents_kept[h].p[2] == x[2] )
++		return contents_kept[h].cont;
++	int cont = PM_HullPointContents( &sv.worldmodel->hulls[0], 0, p );
++	memcpy( contents_kept[h].p, x, sizeof( x ));
++	contents_kept[h].cont = cont, contents_kept[h].kept = 1;
++	return cont;
++}
++#endif
++
+ int SV_TruePointContents( const vec3_t p )
+ {
+ 	int	cont;
+@@ -780,9 +819,16 @@ int SV_TruePointContents( const vec3_t p )
+ 	if( !p ) return CONTENTS_NONE;
+ 
+ 	// get base contents from world
++#if XASH_SHADEREMU
++	cont = SV_WorldContents( p );
++#else
+ 	cont = PM_HullPointContents( &sv.worldmodel->hulls[0], 0, p );
++#endif
+ 
+ 	// check all water entities
++#if XASH_SHADEREMU
++	if( water_links )
++#endif
+ 	SV_WaterLinks( p, &cont, sv_areanodes );
+ 
+ 	return cont;
+@@ -1198,6 +1244,11 @@ static void SV_ClipToLinks( areanode_t *node, moveclip_t *clip )
+ 		next = l->next;
+ 
+ 		touch = EDICT_FROM_AREA( l );
++#if XASH_SHADEREMU
++		// (the test SV_ClipToEntity makes of every edict that passes its filters, made first)
++		if( !BoundsIntersect( clip->boxmins, clip->boxmaxs, touch->v.absmin, touch->v.absmax ) && touch->v.solid != SOLID_TRIGGER )
++			continue;
++#endif
+ 
+ 		if( !SV_ClipToEntity( touch, clip ))
+ 			return; // trace.allsoild
+@@ -1293,11 +1344,71 @@ static void SV_ClipToWorldBrush( areanode_t *node, moveclip_t *clip )
+ SV_Move
+ ==================
+ */
++#if XASH_SHADEREMU
++// The world's part of a move, kept by its four vectors: the world never moves, so a move clips the same
++// until the next map. (Monsters standing still look along the same lines frame after frame.)
++#define WORLD_KEPT 64
++static struct { uint32_t key[12]; trace_t trace; } world_kept[WORLD_KEPT];
++static int world_kept_for = -1;
++unsigned se_world_kept_hits, se_world_kept_misses;
++static struct { uint32_t key[12]; trace_t trace; } world_ahead[WORLD_KEPT];
++static int world_ahead_for = -1;
++volatile int se_ahead_done;
++static void SE_ClipWorld( const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, trace_t *trace )
++{
++	uint32_t key[12], h = 0;
++	memcpy( key, start, 12 ), memcpy( key + 3, mins, 12 ), memcpy( key + 6, maxs, 12 ), memcpy( key + 9, end, 12 );
++	for( int i = 0; i < 12; i++ )
++		h = ( h ^ key[i] ) * 0x9e3779b1u;
++	if( world_kept_for != svs.spawncount )
++	{
++		for( int i = 0; i < WORLD_KEPT; i++ )
++			world_kept[i].key[0] = 0xffffffffu;	// (a NaN no move starts at)
++		world_kept_for = svs.spawncount;
++	}
++	h >>= 26;
++	if( !memcmp( world_kept[h].key, key, sizeof( key )))
++	{
++		*trace = world_kept[h].trace, se_world_kept_hits++;
++		return;
++	}
++	if( se_ahead_done && !memcmp( world_ahead[h].key, key, sizeof( key )))
++	{
++		*trace = world_ahead[h].trace, se_world_kept_hits++;
++		memcpy( world_kept[h].key, key, sizeof( key )), world_kept[h].trace = *trace;
++		return;
++	}
++	SV_ClipMoveToEntity( SV_EdictNum( 0 ), start, mins, maxs, end, trace );
++	memcpy( world_kept[h].key, key, sizeof( key )), world_kept[h].trace = *trace, se_world_kept_misses++;
++}
++
++// The same for moves made ahead on another core (SE_WorldAhead): read only once it is done.
++void SE_WorldAheadPut( const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end )
++{
++	uint32_t key[12], h = 0;
++	memcpy( key, start, 12 ), memcpy( key + 3, mins, 12 ), memcpy( key + 6, maxs, 12 ), memcpy( key + 9, end, 12 );
++	for( int i = 0; i < 12; i++ )
++		h = ( h ^ key[i] ) * 0x9e3779b1u;
++	if( world_ahead_for != svs.spawncount )
++	{
++		for( int i = 0; i < WORLD_KEPT; i++ )
++			world_ahead[i].key[0] = 0xffffffffu;
++		world_ahead_for = svs.spawncount;
++	}
++	h >>= 26;
++	SV_ClipMoveToEntity( SV_EdictNum( 0 ), start, mins, maxs, end, &world_ahead[h].trace );
++	memcpy( world_ahead[h].key, key, sizeof( key ));
++}
++#define SV_ClipMoveToWorld( start, mins, maxs, end, trace ) SE_ClipWorld( start, mins, maxs, end, trace )
++#else
++#define SV_ClipMoveToWorld( start, mins, maxs, end, trace ) SV_ClipMoveToEntity( SV_EdictNum( 0 ), start, mins, maxs, end, trace )
++#endif
++
+ trace_t SV_Move( const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, int type, edict_t *e, qboolean monsterclip )
+ {
+ 	moveclip_t clip = { 0 };
+ 
+-	SV_ClipMoveToEntity( SV_EdictNum( 0 ), start, mins, maxs, end, &clip.trace );
++	SV_ClipMoveToWorld( start, mins, maxs, end, &clip.trace );
+ 
+ 	if( clip.trace.fraction != 0.0f )
+ 	{
+@@ -1351,7 +1462,7 @@ trace_t GAME_EXPORT SV_MoveNoEnts( const vec3_t start, vec3_t mins, vec3_t maxs,
+ 	moveclip_t	clip;
+ 
+ 	memset( &clip, 0, sizeof( moveclip_t ));
+-	SV_ClipMoveToEntity( SV_EdictNum( 0 ), start, mins, maxs, end, &clip.trace );
++	SV_ClipMoveToWorld( start, mins, maxs, end, &clip.trace );
+ 
+ 	if( clip.trace.fraction != 0.0f )
+ 	{
+diff --git a/filesystem/dir.c b/filesystem/dir.c
+index 4541703f..81b93558 100644
+--- a/filesystem/dir.c
++++ b/filesystem/dir.c
+@@ -51,8 +51,15 @@ typedef struct dir_s
+ 	string name;
+ 	int numentries;
+ 	struct dir_s *entries; // sorted
++#if XASH_SHADEREMU
++	int listed;	// fs_writes + 1 when it was listed, or 0
++#endif
+ } dir_t;
+ 
++#if XASH_SHADEREMU
++int fs_writes;	// files and folders this program made, renamed or removed
++#endif
++
+ static qboolean Platform_GetDirectoryCaseSensitivity( const char *dir )
+ {
+ #if XASH_WIN32 || XASH_PSVITA || XASH_NSWITCH
+@@ -117,6 +124,9 @@ static void FS_InitDirEntries( dir_t *dir, const stringlist_t *list )
+ 		Q_strncpy( entry->name, list->strings[i], sizeof( entry->name ));
+ 		entry->numentries = DIRENTRY_NOT_SCANNED;
+ 		entry->entries = NULL;
++#if XASH_SHADEREMU
++		entry->listed = 0;
++#endif
+ 	}
+ 
+ 	qsort( dir->entries, dir->numentries, sizeof( dir->entries[0] ), FS_SortDirEntries );
+@@ -244,6 +254,11 @@ static int FS_MaybeUpdateDirEntries( dir_t *dir, const char *path, const char *e
+ 	stringlist_t list;
+ 	int ret;
+ 
++#if XASH_SHADEREMU
++	if( dir->numentries >= DIRENTRY_EMPTY_DIRECTORY && dir->listed == fs_writes + 1 )
++		return dir->numentries > 0 ? FS_FindDirEntry( dir, entryname, false ) : -1;
++	dir->listed = fs_writes + 1;
++#endif
+ 	stringlistinit( &list );
+ 	listdirectory( &list, path, false );
+ 
+diff --git a/filesystem/filesystem_internal.h b/filesystem/filesystem_internal.h
+index 8c839951..03b48cea 100644
+--- a/filesystem/filesystem_internal.h
++++ b/filesystem/filesystem_internal.h
+@@ -63,6 +63,9 @@ struct file_s
+ 	fs_offset_t  offset;      // offset into the package (0 if external file)
+ 	uint32_t     flags;
+ 	ztoolkit_t   *ztk; // if not NULL, all read functions must go through decompression
++#if XASH_SHADEREMU
++	byte         *memory; // a pak's file in deflate segments, inflated: reads are copies from it
++#endif
+ 
+ 	// contents buffer
+ 	fs_offset_t buff_ind; // buffer current index
+diff --git a/filesystem/io.c b/filesystem/io.c
+index d30047fc..fce4e9c4 100644
+--- a/filesystem/io.c
++++ b/filesystem/io.c
+@@ -140,6 +140,9 @@ int FS_Close( file_t *file )
+ 		inflateEnd( &file->ztk->zstream );
+ 		Mem_Free( file->ztk );
+ 	}
++#if XASH_SHADEREMU
++	free( file->memory );
++#endif
+ 
+ 	Mem_Free( file );
+ 	return 0;
+@@ -246,6 +249,17 @@ fs_offset_t FS_Read( file_t *file, void *buffer, size_t buffersize )
+ 
+ 	// NOTE: at this point, the read buffer is always empty
+ 
++#if XASH_SHADEREMU
++	if( file->memory )
++	{
++		count = file->real_length - file->position;
++		if( count > (fs_offset_t)buffersize )
++			count = (fs_offset_t)buffersize;
++		if( count > 0 )
++			memcpy( (byte *)buffer + done, file->memory + file->position, count ), file->position += count, done += count;
++		return done;
++	}
++#endif
+ 	FS_EnsureOpenFile( file ); // FIXME: broken XASH_REDUCE_FD in case of compressed files!
+ 
+ 	if( FBitSet( file->flags, FILE_DEFLATED ))
+@@ -977,6 +991,10 @@ qboolean FS_Rename( const char *oldname, const char *newname )
+ 		return false;
+ 
+ 	ret = rename( oldpath, newpath );
++#if XASH_SHADEREMU
++	extern int fs_writes;
++	fs_writes++;
++#endif
+ 	if( ret < 0 )
+ 	{
+ 		Con_Printf( "%s: failed to rename file %s (%s) to %s (%s): %s\n",
+@@ -1013,6 +1031,10 @@ qboolean GAME_EXPORT FS_Delete( const char *path )
+ 		return true;
+ 
+ 	ret = remove( real_path );
++#if XASH_SHADEREMU
++	extern int fs_writes;
++	fs_writes++;
++#endif
+ 	if( ret < 0 && errno != ENOENT )
+ 	{
+ 		Con_Printf( "%s: failed to delete file %s (%s): %s\n", __func__, real_path, path, strerror( errno ));
+diff --git a/filesystem/pak.c b/filesystem/pak.c
+index 302c3238..55a521bf 100644
+--- a/filesystem/pak.c
++++ b/filesystem/pak.c
+@@ -85,6 +85,36 @@ static int FS_SortPak( const void *_a, const void *_b )
+ 	return Q_stricmp( a->name, b->name );
+ }
+ 
++#if XASH_SHADEREMU
++// FS_SortPak's order from indices and lowercased names: strcmp, and no 64-byte entries moved about.
++static char (*sort_lower)[sizeof((( dpackfile_t *)0 )->name )];
++static int FS_SortPakLower( const void *a, const void *b )
++{
++	return strcmp( sort_lower[*(const int *)a], sort_lower[*(const int *)b] );
++}
++
++static void FS_SortPakFiles( dpackfile_t *files, int count )
++{
++	int *order = Mem_Malloc( fs_mempool, sizeof( int ) * count );
++	dpackfile_t *sorted = Mem_Malloc( fs_mempool, sizeof( dpackfile_t ) * count );
++
++	sort_lower = Mem_Malloc( fs_mempool, sizeof( *sort_lower ) * count );
++	for( int i = 0; i < count; i++ )
++	{
++		order[i] = i;
++		for( int c = 0; c < sizeof( *sort_lower ); c++ )
++			sort_lower[i][c] = Q_tolower( files[i].name[c] );
++		sort_lower[i][sizeof( *sort_lower ) - 1] = 0;
++	}
++	qsort( order, count, sizeof( int ), FS_SortPakLower );
++	for( int i = 0; i < count; i++ )
++		sorted[i] = files[order[i]];
++	memcpy( files, sorted, sizeof( dpackfile_t ) * count );
++	Mem_Free( sort_lower ), Mem_Free( sorted ), Mem_Free( order );
++	sort_lower = NULL;
++}
++#endif
++
+ /*
+ =================
+ FS_LoadPackPAK
+@@ -178,7 +208,11 @@ static pack_t *FS_LoadPackPAK( const char *packfile, int *error )
+ 
+ 	pack->handle = packhandle;
+ 	pack->numfiles = numpackfiles;
++#if XASH_SHADEREMU
++	FS_SortPakFiles( pack->files, pack->numfiles );
++#else
+ 	qsort( pack->files, pack->numfiles, sizeof( pack->files[0] ), FS_SortPak );
++#endif
+ 
+ #ifdef XASH_REDUCE_FD
+ 	// will reopen when needed
+@@ -199,9 +233,56 @@ FS_OpenPackedFile
+ Open a packed file using its package file descriptor
+ ===========
+ */
++#if XASH_SHADEREMU
++#include "media.h"
++#include "mcw.h"
++int SE_MediaWorkers( void );
++
++// A file in deflate segments (linux/halflife/repack.py) inflated on the workers when it is opened.
++static file_t *FS_OpenInflated( searchpath_t *search, const dpackfile_t *pfile )
++{
++	int fd = search->pack->handle->handle;
++	byte head[16], *packed, *out;
++	uint32_t total;
++	file_t *file;
++	const char *why = NULL;
++
++	if( pfile->filelen < 16 || pread( fd, head, 16, pfile->filepos ) != 16 || !( total = media_inflated_size( head, 16 )))
++		return NULL;
++	if( mcw_on_worker( ))
++	{
++		Con_Printf( S_ERROR "%s: %s is packed and this is a worker\n", __func__, pfile->name );
++		return NULL;
++	}
++	packed = malloc( pfile->filelen );
++	if( posix_memalign( (void **)&out, 16, ( total + 15 ) & ~15u ))
++		out = NULL;
++	if( !packed || !out || pread( fd, packed, pfile->filelen, pfile->filepos ) != pfile->filelen )
++		why = "no memory, or the pack is short";
++	for( uint32_t at = 0; !why && at < total; at += 4096 )	// (a worker's first store to a page stops it)
++		out[at] = 0;
++	if( !why )
++		why = media_inflate( packed, pfile->filelen, out, total, SE_MediaWorkers( ));
++	free( packed );
++	if( why || !( file = FS_OpenHandle( search, fd, pfile->filepos, total )))
++	{
++		Con_Printf( S_ERROR "%s: %s: %s\n", __func__, pfile->name, why ? why : "no handle" );
++		free( out );
++		return NULL;
++	}
++	file->memory = out;
++	return file;
++}
++#endif
++
+ static file_t *FS_OpenFile_PAK( searchpath_t *search, const char *filename, const char *mode, int pack_ind )
+ {
+ 	dpackfile_t *pfile = &search->pack->files[pack_ind];
++#if XASH_SHADEREMU
++	file_t *inflated = FS_OpenInflated( search, pfile );
++	if( inflated )
++		return inflated;
++#endif
+ 
+ 	return FS_OpenHandle( search, search->pack->handle->handle, pfile->filepos, pfile->filelen );
+ }
+@@ -249,9 +330,16 @@ FS_Search_PAK
+ static void FS_Search_PAK( searchpath_t *search, stringlist_t *list, const char *pattern, int caseinsensitive )
+ {
+ 	string temp;
++#if XASH_SHADEREMU
++	size_t prefix = strcspn( pattern, "*?\\" );
++#endif
+ 
+ 	for( int i = 0; i < search->pack->numfiles; i++ )
+ 	{
++#if XASH_SHADEREMU
++		if( prefix && Q_strnicmp( search->pack->files[i].name, pattern, prefix ))
++			continue;
++#endif
+ 		Q_strncpy( temp, search->pack->files[i].name, sizeof( temp ));
+ 		while( temp[0] )
+ 		{
+diff --git a/filesystem/sys.c b/filesystem/sys.c
+index 712c3e42..1e113817 100644
+--- a/filesystem/sys.c
++++ b/filesystem/sys.c
+@@ -235,6 +235,10 @@ void FS_CreatePath( char *path )
+ #else // !XASH_WIN32
+ 			mkdir( path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH );
+ #endif // !XASH_WIN32
++#if XASH_SHADEREMU
++			extern int fs_writes;
++			fs_writes++;
++#endif
+ 			*ofs = save;
+ 		}
+ 	}
+@@ -398,6 +402,11 @@ file_t *FS_SysOpen( const char *filepath, const char *mode )
+ 		fd = open( filepath, mod | opt, 0666 );
+ #endif // !XASH_WIN32
+ 	}
++#if XASH_SHADEREMU
++	extern int fs_writes;
++	if( mod != O_RDONLY || ( opt & O_CREAT ))
++		fs_writes++;
++#endif
+ 
+ 	if( fd < 0 )
+ 	{
+diff --git a/public/crtlib.c b/public/crtlib.c
+index 48bfda72..702e16e4 100644
+--- a/public/crtlib.c
++++ b/public/crtlib.c
+@@ -38,7 +38,13 @@ char *GAME_EXPORT Q_memfgets( byte *data, int data_len, int *data_offset, char *
+ 		remaining = end - start + 1;
+ 
+ 	// include null terminator
++#if XASH_SHADEREMU
++	int n = Q_min( remaining, dst_size - 1 );
++	memcpy( dst, start, n );
++	dst[n] = 0;
++#else
+ 	Q_strncpy( dst, start, Q_min( remaining + 1, dst_size ));
++#endif
+ 
+ 	*data_offset += remaining;
+ 
+diff --git a/public/xash3d_mathlib.h b/public/xash3d_mathlib.h
+index afbc183c..b7be3a36 100644
+--- a/public/xash3d_mathlib.h
++++ b/public/xash3d_mathlib.h
+@@ -42,16 +42,29 @@ CONSTANTS AND HELPER MACROS
+ #define M_PI    (double)3.14159265358979323846
+ #endif
+ 
++#if XASH_SHADEREMU	// (floats: the machine has no double unit)
++#define M_PI2   ((float)(M_PI * 2))
++#else
+ #define M_PI2   ((double)(M_PI * 2))
++#endif
+ #define M_PI_F  ((float)(M_PI))
+ #define M_PI2_F ((float)(M_PI2))
+ 
++#if XASH_SHADEREMU
++#ifndef RAD2DEG
++#define RAD2DEG( x ) ((float)(x) * (float)(180.0 / M_PI))
++#endif
++#ifndef DEG2RAD
++#define DEG2RAD( x ) ((float)(x) * (float)(M_PI / 180.0))
++#endif
++#else
+ #ifndef RAD2DEG
+ #define RAD2DEG( x ) ((double)(x) * (double)(180.0 / M_PI))
+ #endif
+ #ifndef DEG2RAD
+ #define DEG2RAD( x ) ((double)(x) * (double)(M_PI / 180.0))
+ #endif
++#endif
+ 
+ #define NUMVERTEXNORMALS 162
+ 
+diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
+index dd01c0fa..c9118378 100644
+--- a/ref/common/ref_light.c
++++ b/ref/common/ref_light.c
+@@ -27,6 +27,29 @@ CL_RunLightStyles
+ 
+ ==================
+ */
++#if XASH_SHADEREMU
++static uint light_epoch, style_stamp[64];	// when a style last changed (R_EntityDynamicLight)
++static void R_LightStylesSeen( void )
++{
++	static int seen[MAX_LIGHTSTYLES];
++	int changed = 0;
++	for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
++		if( seen[i] != g_lightstylevalue[i] )
++		{
++			if( !changed++ ) light_epoch++;
++			seen[i] = g_lightstylevalue[i], style_stamp[i & 63] = light_epoch;
++		}
++}
++// Whether no style of the mask changed after stamp.
++static qboolean R_StylesSince( uint64_t styles, uint stamp )
++{
++	for( int i = 0; styles; i++, styles >>= 1 )
++		if(( styles & 1 ) && style_stamp[i] > stamp )
++			return false;
++	return true;
++}
++#endif
++
+ void CL_RunLightStyles( lightstyle_t *ls )
+ {
+ 	const model_t *world = gp_cl->models[1];
+@@ -39,6 +62,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 	{
+ 		for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
+ 			g_lightstylevalue[i] = 256 * 256;
++#if XASH_SHADEREMU
++		R_LightStylesSeen();
++#endif
+ 		return;
+ 	}
+ 
+@@ -61,7 +87,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 			continue;
+ 		}
+ 
+-		int flight = (int)floor( ls[i].time * 10 );
++		int flight = (int)floorf( ls[i].time * 10 );
+ 
+ 		if( !ls[i].interp || !cl_lightstyle_lerping->value )
+ 		{
+@@ -69,7 +95,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 			continue;
+ 		}
+ 
+-		int clight = (int)ceil( ls[i].time * 10 );
++		int clight = (int)ceilf( ls[i].time * 10 );
+ 		float lerpfrac = ( ls[i].time * 10 ) - flight;
+ 		float backlerp = 1.0f - lerpfrac;
+ 
+@@ -84,6 +110,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 
+ 		g_lightstylevalue[i] = (int)l;
+ 	}
++#if XASH_SHADEREMU
++	R_LightStylesSeen();
++#endif
+ }
+ 
+ /*
+@@ -172,11 +201,12 @@ int R_PushDlights( model_t *model, int framecount )
+ 	if( !model )
+ 		return framecount;
+ 
++	const float now = gp_cl->time;
+ 	for( int i = 0; i < MAX_DLIGHTS; i++ )
+ 	{
+ 		const dlight_t *l = &gp_dlights[i];
+ 
+-		if( l->die < gp_cl->time || !l->radius )
++		if( !l->radius || l->die < now )
+ 			continue;
+ 
+ 		R_MarkLights( l, 1 << i, model->nodes, model, framecount );
+@@ -187,11 +217,12 @@ int R_PushDlights( model_t *model, int framecount )
+ 
+ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 object_matrix )
+ {
++	const float now = gp_cl->time;
+ 	for( int i = 0; i < MAX_DLIGHTS; i++ )
+ 	{
+ 		dlight_t *l = &gp_dlights[i];
+ 
+-		if( l->die < gp_cl->time || !l->radius )
++		if( !l->radius || l->die < now )
+ 			continue;
+ 
+ 		vec3_t oldorigin = Vec3( l->origin );
+@@ -210,16 +241,31 @@ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 obj
+ 
+ =======================================================================
+ */
++#if XASH_SHADEREMU
++int mcw_on_worker( void );
++typedef struct __attribute__(( aligned( 16 ))) { vec3_t lightspot, lightvec; float fraction; uint64_t styles; } trace_state_t;
++static trace_state_t trace_of[2];	// (a worker's own: R_LevelLightAt)
++#define TRACE_STATE trace_state_t *ts = &trace_of[mcw_on_worker()]
++#define g_trace_lightspot ( ts->lightspot )
++#define g_trace_lightvec ( ts->lightvec )
++#define g_trace_fraction ( ts->fraction )
++#define g_trace_styles ( ts->styles )	// the styles of the light found
++#else
+ static vec3_t	g_trace_lightspot;
+ static vec3_t	g_trace_lightvec;
+ static float	g_trace_fraction;
++#endif
+ 
+ /*
+ =================
+ R_RecursiveLightPoint
+ =================
+ */
++#if XASH_SHADEREMU
++static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f, float p2f, colorVec *cv, const vec3_t start, const vec3_t end, trace_state_t *ts )
++#else
+ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f, float p2f, colorVec *cv, const vec3_t start, const vec3_t end )
++#endif
+ {
+ start:
+ 	// didn't hit anything
+@@ -248,7 +294,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+ 	float midf = p1f + ( p2f - p1f ) * frac;
+ 
+ 	// co down front side
++#if XASH_SHADEREMU
++	if( R_RecursiveLightPoint( model, node_child( node, side, model ), p1f, midf, cv, start, mid, ts ))
++#else
+ 	if( R_RecursiveLightPoint( model, node_child( node, side, model ), p1f, midf, cv, start, mid ))
++#endif
+ 		return true; // hit something
+ 
+ 	if(( back < 0 ) == side )
+@@ -331,6 +381,9 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+ 		for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
+ 		{
+ 			uint	scale = g_lightstylevalue[surf->styles[map]];
++#if XASH_SHADEREMU
++			g_trace_styles |= 1ull << ( surf->styles[map] & 63 );
++#endif
+ 
+ 			cv->r += lm->r * scale;
+ 			cv->g += lm->g * scale;
+@@ -361,7 +414,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+ 	}
+ 
+ 	// go down back side
++#if XASH_SHADEREMU
++	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end, ts );
++#else
+ 	return R_RecursiveLightPoint( model, node_child( node, !side, model ), midf, p2f, cv, mid, end );
++#endif
+ }
+ 
+ /*
+@@ -373,6 +430,9 @@ check bspmodels to get light from
+ */
+ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
+ {
++#if XASH_SHADEREMU
++	TRACE_STATE;
++#endif
+ 	if( lspot )
+ 		VectorClear( lspot );
+ 
+@@ -419,7 +479,11 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+ 		g_trace_fraction = 1.0f;
+ 
+ 		colorVec cv;
++#if XASH_SHADEREMU
++		if( !R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l, ts ))
++#else
+ 		if( !R_RecursiveLightPoint( pe->model, pnodes, 0.0f, 1.0f, &cv, start_l, end_l ))
++#endif
+ 			continue;	// didn't hit anything
+ 
+ 		if( g_trace_fraction < last_fraction )
+@@ -495,6 +559,115 @@ R_EntityDynamicLight
+ 
+ ===============
+ */
++#if XASH_SHADEREMU
++uint R_LightEpoch( void )
++{
++	return light_epoch;
++}
++
++static struct { vec3_t origin, dir, spot, vec; colorVec light; const model_t *model; int effects; uint stamp; uint64_t styles; } kept[1024 + 256];
++
++// An entity's place in kept: its number, or for a temporary one (number 0) where it lies.
++int R_LightKey( const cl_entity_t *ent )
++{
++	return ent->index > 0 ? ent->index & 1023 : 1024 + ((uintptr_t)ent >> 4 & 255 );
++}
++
++// Whether the entity's light where it is is kept (for a worker: an answer may be stale).
++qboolean R_LightKept( const cl_entity_t *ent, const vec3_t origin )
++{
++	int k = R_LightKey( ent );
++	return kept[k].model == ent->model && kept[k].effects == ent->curstate.effects
++		&& VectorCompare( kept[k].origin, origin ) && R_StylesSince( kept[k].styles, kept[k].stamp );
++}
++
++// What of R_EntityDynamicLight only the level and its light styles change: the light at origin
++// from below (lightDir in: up or down), and the styles it comes from. On any core.
++void R_LevelLightAt( const cl_entity_t *ent, const vec3_t origin, vec3_t lightDir, colorVec *plight, vec3_t lightspot, vec3_t lightvec, uint64_t *styles )
++{
++	movevars_t *mv = gp_movevars;
++	vec3_t vecSrc = { origin[0], origin[1], origin[2] - lightDir[2] * 8.0f };
++	vec3_t vecEnd;
++	colorVec light = { 0 };
++	TRACE_STATE;
++
++	g_trace_styles = 0;
++	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
++	{
++		vec3_t skyvec;
++
++		if( FBitSet( gp_host->features, ENGINE_WRITE_LARGE_COORD ))
++			VectorScale( mv->skyvec, 65536.0f, skyvec );
++		else
++			VectorScale( mv->skyvec, 8192.0f, skyvec );
++
++		VectorSubtract( origin, skyvec, vecEnd );
++
++		msurface_t *psurf = gEngfuncs.EV_TraceSurface( 0, vecSrc, vecEnd );	// (the world's trace hit no entity)
++
++		if(( ent->model->type == mod_studio && FBitSet( ent->model->flags, STUDIO_FORCE_SKYLIGHT ))
++			|| ( psurf && FBitSet( psurf->flags, SURF_DRAWSKY )))
++		{
++			VectorCopy( mv->skyvec, lightDir );
++
++			light.r = mv->skycolor[0];
++			light.g = mv->skycolor[1];
++			light.b = mv->skycolor[2];
++		}
++	}
++
++	if(( light.r + light.g + light.b ) == 0 )
++	{
++		VectorScale( lightDir, 2048.0f, vecEnd );
++		VectorAdd( vecEnd, vecSrc, vecEnd );
++
++		light = R_LightVec( vecSrc, vecEnd, lightspot, lightvec );
++
++		if( VectorIsNull( lightvec ))
++		{
++			float grad[4];
++			colorVec gcolor;
++
++			vecSrc[0] -= 16.0f;
++			vecSrc[1] -= 16.0f;
++			vecEnd[0] -= 16.0f;
++			vecEnd[1] -= 16.0f;
++
++			gcolor = R_LightVec( vecSrc, vecEnd, NULL, NULL );
++			grad[0] = ( gcolor.r + gcolor.g + gcolor.b ) / 768.0f;
++
++			vecSrc[0] += 32.0f;
++			vecEnd[0] += 32.0f;
++
++			gcolor = R_LightVec( vecSrc, vecEnd, NULL, NULL );
++			grad[1] = ( gcolor.r + gcolor.g + gcolor.b ) / 768.0f;
++
++			vecSrc[1] += 32.0f;
++			vecEnd[1] += 32.0f;
++
++			gcolor = R_LightVec( vecSrc, vecEnd, NULL, NULL );
++			grad[2] = ( gcolor.r + gcolor.g + gcolor.b ) / 768.0f;
++
++			vecSrc[0] -= 32.0f;
++			vecEnd[0] -= 32.0f;
++
++			gcolor = R_LightVec( vecSrc, vecEnd, NULL, NULL );
++			grad[3] = ( gcolor.r + gcolor.g + gcolor.b ) / 768.0f;
++
++			lightDir[0] = grad[0] - grad[1] - grad[2] + grad[3];
++			lightDir[1] = grad[1] + grad[0] - grad[2] - grad[3];
++			VectorNormalize( lightDir );
++		}
++		else
++		{
++			VectorCopy( lightvec, lightDir );
++		}
++	}
++	*plight = light;
++	*styles = g_trace_styles;
++}
++#endif
++
+ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_world, double time, vec3_t lightspot, vec3_t lightvec )
+ {
+ 	if( !plight || !ent )
+@@ -526,7 +699,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 
+ 	colorVec light;
+ 	light.r = light.g = light.b = light.a = 0;
++#if XASH_SHADEREMU
++	TRACE_STATE;
++	int k = R_LightKey( ent );
++	qboolean keep = lightspot && lightvec;
++	if( keep && kept[k].model == ent->model && kept[k].effects == ent->curstate.effects
++		&& VectorCompare( kept[k].origin, origin ) && R_StylesSince( kept[k].styles, kept[k].stamp ))
++	{
++		light = kept[k].light;
++		VectorCopy( kept[k].dir, lightDir );
++		VectorCopy( kept[k].spot, lightspot );
++		VectorCopy( kept[k].vec, lightvec );
++		goto lit;
++	}
++	g_trace_styles = 0;
++	qboolean R_LightAheadOf( const cl_entity_t *ent, const vec3_t origin, colorVec *light, vec3_t dir, vec3_t spot, vec3_t vec, uint64_t *styles, uint *stamp );
++	uint ahead_stamp;
++	if( keep && R_LightAheadOf( ent, origin, &light, lightDir, lightspot, lightvec, &g_trace_styles, &ahead_stamp ) && R_StylesSince( g_trace_styles, ahead_stamp ))
++		goto found;
++	VectorSet( lightDir, 0.0f, 0.0f, FBitSet( ent->curstate.effects, EF_INVLIGHT ) ? 1.0f : -1.0f );
++#endif
+ 
++#if XASH_SHADEREMU
++	{
++		R_LevelLightAt( ent, origin, lightDir, &light, lightspot, lightvec, &g_trace_styles );
++		goto found;
++	}
++#endif
+ 	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
+ 	{
+ 		vec3_t skyvec;
+@@ -603,6 +802,21 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 			VectorCopy( lightvec, lightDir );
+ 		}
+ 	}
++#if XASH_SHADEREMU
++found:
++#endif
++#if XASH_SHADEREMU
++	if( keep )
++	{
++		kept[k].light = light, kept[k].model = ent->model, kept[k].effects = ent->curstate.effects;
++		kept[k].stamp = light_epoch, kept[k].styles = g_trace_styles;
++		VectorCopy( origin, kept[k].origin );
++		VectorCopy( lightDir, kept[k].dir );
++		VectorCopy( lightspot, kept[k].spot );
++		VectorCopy( lightvec, kept[k].vec );
++	}
++lit:
++#endif
+ 
+ 	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
+ 	{
+@@ -621,11 +835,29 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+ 	// scale lightdir by light intentsity
+ 	VectorScale( lightDir, total, lightDir );
+ 
++	const float now = time;
++#if XASH_SHADEREMU
++	// the lights alive this frame, found once a frame and after each one made
++	extern int se_dlight_allocs;
++	static uint live[MAX_DLIGHTS], numlive, live_allocs = -1;
++	static float live_now = -1.0f;
++	if( live_allocs != se_dlight_allocs || live_now != now )
++	{
++		live_allocs = se_dlight_allocs, live_now = now, numlive = 0;
++		for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
++			if( !( gp_dlights[lnum].die < now ))
++				live[numlive++] = lnum;
++	}
++	for( uint l = 0; l < numlive; l++ )
++	{
++		const dlight_t *dl = &gp_dlights[live[l]];
++#else
+ 	for( uint lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
+ 	{
+ 		const dlight_t *dl = &gp_dlights[lnum];
++#endif
+ 
+-		if( dl->die < time || !r_dynamic->value )
++		if( dl->die < now || !r_dynamic->value )
+ 			continue;
+ 
+ 		vec3_t dist;
+diff --git a/ref/gl/gl_draw.c b/ref/gl/gl_draw.c
+index f831be03..dc48f76a 100644
+--- a/ref/gl/gl_draw.c
++++ b/ref/gl/gl_draw.c
+@@ -33,9 +33,16 @@ void R_GetTextureParms( int *w, int *h, int texnum )
+ R_DrawStretchPic
+ =============
+ */
++#if XASH_SHADEREMU
++void hlglStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2 );
++#endif
+ void R_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, int texnum )
+ {
+ 	GL_Bind( XASH_TEXTURE0, texnum );
++#if XASH_SHADEREMU
++	hlglStretchPic( x, y, w, h, s1, t1, s2, t2 );	// (the quad as glBegin's draws it, without the calls)
++	return;
++#endif
+ 
+ 	pglBegin( GL_QUADS );
+ 		pglTexCoord2f( s1, t1 );
+diff --git a/ref/gl/gl_image.c b/ref/gl/gl_image.c
+index fb0af14f..7507c785 100644
+--- a/ref/gl/gl_image.c
++++ b/ref/gl/gl_image.c
+@@ -407,7 +407,7 @@ static int GL_CalcMipmapCount( gl_texture_t *tex, qboolean haveBuffer )
+ 		return 1;
+ 
+ 	// generate mip-levels by user request
+-	if( FBitSet( tex->flags, TF_NOMIPMAP ))
++	if( FBitSet( tex->flags, TF_NOMIPMAP ) || XASH_SHADEREMU )
+ 		return 1;
+ 
+ 	// mip-maps can't exceeds 16
+@@ -964,6 +964,11 @@ GL_UploadTexture
+ upload texture into video memory
+ ===============
+ */
++#if XASH_SHADEREMU
++// A paletted picture the GPU took as it is: uploaded with no pixels, which the GPU would not keep.
++static struct { rgbdata_t *pic; byte *buffer; pixformat_t type; } se_taken;
++#define GL_UploadTexture GL_UploadTexture_
++#endif
+ static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
+ {
+ 	// dedicated server
+@@ -1068,7 +1073,7 @@ static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
+ 				data = GL_ResampleTexture( buf, pic->width, pic->height, tex->width, tex->height, normalMap );
+ 			else data = buf;
+ 
+-			if( !ImageCompressed( pic->type ) && !FBitSet( tex->flags, TF_NOMIPMAP ) && FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ))
++			if( data && !ImageCompressed( pic->type ) && !FBitSet( tex->flags, TF_NOMIPMAP ) && FBitSet( pic->flags, IMAGE_ONEBIT_ALPHA ))
+ 				data = GL_ApplyFilter( data, tex->width, tex->height );
+ 
+ 			// mips will be auto-generated if desired
+@@ -1097,6 +1102,17 @@ static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
+ 
+ 	return true;
+ }
++#if XASH_SHADEREMU
++#undef GL_UploadTexture
++static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
++{
++	qboolean ok = GL_UploadTexture_( tex, pic );
++
++	if( se_taken.pic == pic )
++		pic->buffer = se_taken.buffer, pic->type = se_taken.type, se_taken.pic = NULL;
++	return ok;
++}
++#endif
+ 
+ /*
+ ===============
+@@ -1144,6 +1160,30 @@ static void GL_ProcessImage( gl_texture_t *tex, rgbdata_t *pic )
+ 		if( !FBitSet( tex->flags, TF_IMG_UPLOADED ) && FBitSet( tex->flags, TF_KEEP_SOURCE ))
+ 			tex->original = gEngfuncs.FS_CopyImage( pic ); // because current pic will be expanded to rgba
+ 
++#if XASH_SHADEREMU
++		// the machine's GPU draws a paletted texture as it is (linux/halflife/gl_shaderemu.c):
++		// the words made below for it are then not kept
++		if(( pic->type == PF_INDEXED_24 || pic->type == PF_INDEXED_32 ) && pic->buffer && pic->palette && !img_flags
++			&& pic->depth <= 1 && !FBitSet( pic->flags, IMAGE_CUBEMAP ))
++		{
++			int hlglTexIndexed( unsigned name, int width, int height, const byte *bytes, const byte *palette, int entry, int alpha );
++			int entry = pic->type == PF_INDEXED_32 ? 4 : 3;
++			byte grey[256 * 4];
++			const byte *palette = pic->palette;
++			if( FBitSet( tex->flags, TF_LUMINANCE ))	// (GL's luminance is the red of each texel)
++			{
++				for( int i = 0; i < 256; i++ )
++					grey[i * 4] = grey[i * 4 + 1] = grey[i * 4 + 2] = palette[i * entry], grey[i * 4 + 3] = entry == 4 ? palette[i * 4 + 3] : 255;
++				palette = grey, entry = 4;
++			}
++			if( hlglTexIndexed( tex->texnum, pic->width, pic->height, pic->buffer, palette, entry,
++				FBitSet( pic->flags, IMAGE_HAS_ALPHA )))
++			{
++				se_taken.pic = pic, se_taken.buffer = pic->buffer, se_taken.type = pic->type;
++				pic->buffer = NULL, pic->type = PF_RGBA_32;
++			}
++		}
++#endif
+ 		// we need to expand image into RGBA buffer
+ 		if( pic->type == PF_INDEXED_24 || pic->type == PF_INDEXED_32 )
+ 			img_flags |= IMAGE_FORCE_RGBA;
+@@ -1386,6 +1426,9 @@ int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags )
+ 
+ 	if( FBitSet( flags, TF_KEEP_SOURCE ) && !FBitSet( flags, TF_EXPAND_SOURCE ))
+ 		SetBits( picFlags, IL_KEEP_8BIT );
++#if XASH_SHADEREMU
++	SetBits( picFlags, IL_KEEP_8BIT );   // (for hlglTexIndexed: GL_ProcessImage expands it otherwise)
++#endif
+ 
+ 	// set some image flags
+ 	gEngfuncs.Image_SetForceFlags( picFlags );
+diff --git a/ref/gl/gl_opengl.c b/ref/gl/gl_opengl.c
+index f05a3ddf..dd1e205d 100644
+--- a/ref/gl/gl_opengl.c
++++ b/ref/gl/gl_opengl.c
+@@ -21,7 +21,11 @@ CVAR_DEFINE_AUTO( gl_nosort, "0", FCVAR_GLCONFIG, "disable sorting of translucen
+ CVAR_DEFINE_AUTO( gl_test, "0", 0, "engine developer cvar for quick testing new features" );
+ CVAR_DEFINE_AUTO( gl_msaa, "1", FCVAR_GLCONFIG, "enable or disable multisample anti-aliasing" );
+ CVAR_DEFINE_AUTO( gl_stencilbits, "8", FCVAR_GLCONFIG|FCVAR_READ_ONLY, "pixelformat stencil bits (0 - auto)" );
++#if XASH_SHADEREMU
++CVAR_DEFINE_AUTO( gl_overbright, "0", FCVAR_GLCONFIG, "overbrights" );   // (the GPU multiplies; no 2x)
++#else
+ CVAR_DEFINE_AUTO( gl_overbright, "1", FCVAR_GLCONFIG, "overbrights" );
++#endif
+ CVAR_DEFINE_AUTO( gl_fog, "1", FCVAR_GLCONFIG, "allow for rendering fog using built-in OpenGL fog implementation" );
+ CVAR_DEFINE_AUTO( gl_litwater_force, "0", FCVAR_GLCONFIG, "force enable lightmapped water, even if support not declared in the map" );
+ CVAR_DEFINE_AUTO( r_lighting_ambient, "0.3", FCVAR_GLCONFIG, "map ambient lighting scale" );
+diff --git a/ref/gl/gl_rmain.c b/ref/gl/gl_rmain.c
+index 97b12119..98ebe495 100644
+--- a/ref/gl/gl_rmain.c
++++ b/ref/gl/gl_rmain.c
+@@ -126,6 +126,36 @@ static int R_TransEntityCompare( const void *a, const void *b )
+ 	return 0;
+ }
+ 
++#if XASH_SHADEREMU
++// R_TransEntityCompare's order, each entity's distance and rank found once.
++static void R_SortTransEntities( cl_entity_t **ents, int count )
++{
++	static struct { cl_entity_t *e; float dist; int rank; } key[MAX_VISIBLE_PACKET];
++
++	for( int i = 0; i < count; i++ )
++	{
++		cl_entity_t *e = ents[i];
++		int mode = R_GetEntityRenderMode( e );
++		vec3_t vecLen, org;
++		float dist = 1000000000;
++
++		if( e->model->type != mod_brush || mode != kRenderTransAlpha )
++		{
++			VectorAverage( e->model->mins, e->model->maxs, org );
++			VectorAdd( e->origin, org, org );
++			VectorSubtract( RI.rvp.vieworigin, org, vecLen );
++			dist = DotProduct( vecLen, vecLen );
++		}
++		int j = i;
++		for( int rank = R_RankForRenderMode( mode ); j > 0 && ( key[j - 1].dist < dist || ( key[j - 1].dist == dist && key[j - 1].rank > rank )); j-- )
++			key[j] = key[j - 1];
++		key[j].e = e, key[j].dist = dist, key[j].rank = R_RankForRenderMode( mode );
++	}
++	for( int i = 0; i < count; i++ )
++		ents[i] = key[i].e;
++}
++#endif
++
+ /*
+ ===============
+ R_WorldToScreen
+@@ -519,7 +549,11 @@ static void R_SetupFrame( void )
+ 	if( !gl_nosort.value )
+ 	{
+ 		// sort translucents entities by rendermode and distance
++#if XASH_SHADEREMU
++		R_SortTransEntities( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities );
++#else
+ 		qsort( tr.draw_list->trans_entities, tr.draw_list->num_trans_entities, sizeof( cl_entity_t* ), R_TransEntityCompare );
++#endif
+ 	}
+ 
+ 	// current viewleaf
+@@ -800,8 +834,28 @@ void R_DrawFog( void )
+ R_DrawEntitiesOnList
+ =============
+ */
++#if XASH_SHADEREMU
++void R_KeptWorldFinish( void ), R_KeptEntsFinish( void );
++qboolean R_KeptWorldLate( void );
++#endif
++
++#if XASH_SHADEREMU
++// The view model drawn first, so that its job has the frame to run: the GPU draws the opaque pass
++// by depth (HL_VIEW_LAST: last, as before).
++static qboolean R_ViewModelFirst( void )
++{
++	static int first = -1;
++	if( first < 0 ) first = !getenv( "HL_VIEW_LAST" );
++	return first;
++}
++#else
++#define R_ViewModelFirst() false
++#endif
++
+ static void R_DrawEntitiesOnList( void )
+ {
++	if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ) && R_ViewModelFirst( ))
++		R_DrawViewModel();
+ 	tr.blend = 1.0f;
+ 	GL_CheckForErrors();
+ 
+@@ -834,7 +888,9 @@ static void R_DrawEntitiesOnList( void )
+ 	}
+ 
+ 	GL_CheckForErrors();
+-
++#if XASH_SHADEREMU
++	if( !R_KeptWorldLate( ))	// (else with the world and the brush entities, at the end)
++#endif
+ 	// quake-specific feature
+ 	R_DrawAlphaTextureChains();
+ 
+@@ -940,9 +996,17 @@ static void R_DrawEntitiesOnList( void )
+ 
+ 	pglDisable( GL_BLEND );	// Trinity Render issues
+ 
+-	if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ))
++	if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ) && !R_ViewModelFirst( ))
+ 		R_DrawViewModel();
+ 	gEngfuncs.CL_ExtraUpdate();
++#if XASH_SHADEREMU
++	// the world's opaque draws last: the GPU draws that pass before the blended ones
++	if( R_KeptWorldLate( ))
++	{
++		R_KeptWorldFinish();
++		R_DrawAlphaTextureChains();
++	}
++#endif
+ 
+ 	GL_CheckForErrors();
+ }
+diff --git a/ref/gl/gl_rpart.c b/ref/gl/gl_rpart.c
+index 96b36fd6..c6e5c0d5 100644
+--- a/ref/gl/gl_rpart.c
++++ b/ref/gl/gl_rpart.c
+@@ -179,12 +179,20 @@ void CL_DrawTracers( double frametime, particle_t *cl_active_tracers )
+ 	float gravity = frametime * gp_movevars->gravity;
+ 	float scale = 1.0 - (frametime * 0.9);
+ 	if( scale < 0.0f ) scale = 0.0f;
++#if XASH_SHADEREMU
++	const float ftime = frametime, now = gp_cl->time;	// (as floats once: no doubles a tracer)
++#define TRACER_NOW now
++#define TRACER_STEP ftime
++#else
++#define TRACER_NOW gp_cl->time
++#define TRACER_STEP frametime
++#endif
+ 
+ 	pglBegin( GL_QUADS );
+ 
+ 	for( particle_t *p = cl_active_tracers; p; p = p->next )
+ 	{
+-		float atten = (p->die - gp_cl->time);
++		float atten = (p->die - TRACER_NOW);
+ 		if( atten > 0.1f ) atten = 0.1f;
+ 
+ 		vec3_t start, end, delta;
+@@ -239,7 +247,7 @@ void CL_DrawTracers( double frametime, particle_t *cl_active_tracers )
+ 		}
+ 
+ 		// evaluate position
+-		VectorMA( p->org, frametime, p->vel, p->org );
++		VectorMA( p->org, TRACER_STEP, p->vel, p->org );
+ 
+ 		if( p->type == pt_grav )
+ 		{
+@@ -247,7 +255,7 @@ void CL_DrawTracers( double frametime, particle_t *cl_active_tracers )
+ 			p->vel[1] *= scale;
+ 			p->vel[2] -= gravity;
+ 
+-			p->unused = 255 * (p->die - gp_cl->time) * 2;
++			p->unused = 255 * (p->die - TRACER_NOW) * 2;
+ 			if( p->unused > 255 ) p->unused = 255;
+ 		}
+ 		else if( p->type == pt_slowgrav )
+diff --git a/ref/gl/gl_rsurf.c b/ref/gl/gl_rsurf.c
+index 18dea062..bec5d966 100644
+--- a/ref/gl/gl_rsurf.c
++++ b/ref/gl/gl_rsurf.c
+@@ -54,6 +54,13 @@ static msurface_t		*skychain = NULL;
+ static gllightmapstate_t	gl_lms;
+ 
+ static void LM_UploadBlock( qboolean dynamic );
++#if XASH_SHADEREMU
++static qboolean R_KeptSurface( msurface_t *fa, int cull_type );   // (gl_kept.c, at the end)
++static void R_KeptFlush( void );
++static void R_KeptBuild( void );
++static qboolean R_KeptWorldGive( uint clipflags );
++static qboolean R_KeptBrushTaken( const cl_entity_t *e );
++#endif
+ static qboolean R_AddSurfToVBO( msurface_t *surf, qboolean buildlightmaps );
+ static void R_DrawVBO( qboolean drawlightmaps, qboolean drawtextures );
+ 
+@@ -76,6 +83,15 @@ static inline qboolean R_SeparatePassActive( const separate_pass_t *sp )
+ 	return sp->last >= 0 ? true : false;
+ }
+ 
++#if XASH_SHADEREMU
++// What a pass gathered and did not draw let go (its draw clears what it draws).
++static void R_ClearSeparate( separate_pass_t *sp, mextrasurf_t **chains )
++{
++	if( R_SeparatePassActive( sp ))
++		memset( chains + sp->first, 0, sizeof( *chains ) * ( sp->last - sp->first + 1 ));
++}
++#endif
++
+ static qboolean Mod_HaveLightmappedWater( void )
+ {
+ 	// if this flag set, it's level designer's job to ensure water has been properly lit
+@@ -545,7 +561,15 @@ static texture_t *R_TextureAnimation( msurface_t *s )
+ 			speed = 10;
+ 		else speed = 20;
+ 
++#if XASH_SHADEREMU
++		static double at = -1.0;
++		static int frame10, frame20;
++		if( memcmp( &at, &gp_cl->time, sizeof( at )))	// (the bits: no double compared)
++			at = gp_cl->time, frame10 = (int)( at * 10 ), frame20 = (int)( at * 20 );
++		reletive = ( speed == 10 ? frame10 : frame20 ) % base->anim_total;
++#else
+ 		reletive = (int)(gp_cl->time * speed) % base->anim_total;
++#endif
+ 	}
+ 
+ 	int count = 0;
+@@ -566,7 +590,7 @@ static texture_t *R_TextureAnimation( msurface_t *s )
+ R_AddDynamicLights
+ ===============
+ */
+-static void R_AddDynamicLights( const msurface_t *surf, float sample_size, int smax, int tmax )
++static void R_AddDynamicLightsTo( uint *r_blocklights, const msurface_t *surf, float sample_size, int smax, int tmax )
+ {
+ 	const mextrasurf_t *info = surf->info;
+ 	int sample_frac = 1.0;
+@@ -708,6 +732,10 @@ static void LM_UploadBlock( qboolean dynamic )
+ 		r_lightmap.flags = IMAGE_HAS_COLOR;
+ 		r_lightmap.buffer = gl_lms.lightmap_buffer;
+ 		tr.lightmapTextures[i] = GL_LoadTextureInternal( lmName, &r_lightmap, TF_NOMIPMAP|TF_ATLAS_PAGE );
++#if XASH_SHADEREMU
++		void hlglSpillable( unsigned name );
++		hlglSpillable( tr.lightmapTextures[i] );	// (to RAM when the level's vertices need the room: the atlas reads it there)
++#endif
+ 
+ 		if( ++gl_lms.current_lightmap_texture == MAX_LIGHTMAPS )
+ 			gEngfuncs.Host_Error( "%s: full\n", __func__ );
+@@ -722,7 +750,7 @@ Combine and scale multiple lightmaps into the floating
+ format in r_blocklights
+ =================
+ */
+-static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int stride, qboolean dynamic )
++static void R_BuildLightMapTo( uint *r_blocklights, const msurface_t *surf, byte *restrict dest, int stride, qboolean dynamic )
+ {
+ 	const mextrasurf_t *info = surf->info;
+ 	const qboolean turb = FBitSet( surf->flags, SURF_DRAWTURB );
+@@ -740,8 +768,18 @@ static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int st
+ 
+ 	if( gl_overbright.value )
+ 		lightscale = ( R_HasEnabledVBO() && !r_vbo_overbrightmode.value) ? 171 : 256;
++#if XASH_SHADEREMU
++	else	// (a powf a light map was a third of its time)
++	{
++		static struct __attribute__(( aligned( 16 ))) { float gamma; int scale; } seen = { -1.0f };
++		if( seen.gamma != v_lightgamma->value )
++			seen.scale = ( pow( 2.0f, 1.0f / v_lightgamma->value ) * 256 ) + 0.5, seen.gamma = v_lightgamma->value;
++		lightscale = seen.scale;
++	}
++#else
+ 	else
+ 		lightscale = ( pow( 2.0f, 1.0f / v_lightgamma->value ) * 256 ) + 0.5;
++#endif
+ 
+ 	int map;
+ 	qboolean init = false;
+@@ -787,7 +825,7 @@ static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int st
+ 
+ 	// add all the dynamic lights
+ 	if( surf->dlightframe == tr.framecount && dynamic )
+-		R_AddDynamicLights( surf, sample_size, smax, tmax );
++		R_AddDynamicLightsTo( r_blocklights, surf, sample_size, smax, tmax );
+ 
+ 	for( int t = 0; t < tmax; t++ )
+ 	{
+@@ -821,6 +859,11 @@ static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int st
+ 	}
+ }
+ 
++static void R_BuildLightMap( const msurface_t *surf, byte *restrict dest, int stride, qboolean dynamic )
++{
++	R_BuildLightMapTo( r_blocklights, surf, dest, stride, dynamic );
++}
++
+ /*
+ =============
+ R_DrawTriangleOutlines
+@@ -1522,6 +1565,14 @@ static void R_RenderBrushPoly( msurface_t *fa, int cull_type )
+ 	}
+ 	else GL_Bind( XASH_TEXTURE0, t->gl_texturenum );
+ 
++#if XASH_SHADEREMU
++	if( R_KeptSurface( fa, cull_type ))
++	{
++		R_RenderFullbrightForSurface( fa, t );
++		R_RenderDetailsForSurface( fa, t );
++		return;
++	}
++#endif
+ 	R_RenderFullbrightForSurface( fa, t );
+ 	R_RenderDetailsForSurface( fa, t );
+ 	DrawGLPoly( fa->polys, 0.0f, 0.0f );
+@@ -1591,6 +1642,9 @@ static void R_DrawTextureChains( void )
+ 		for( ; s != NULL; s = s->texturechain )
+ 			R_RenderBrushPoly( s, CULL_VISIBLE );
+ 		t->texturechain = NULL;
++#if XASH_SHADEREMU
++		R_KeptFlush();
++#endif
+ 	}
+ }
+ 
+@@ -1636,6 +1690,9 @@ void R_DrawAlphaTextureChains( void )
+ 		for( ; s != NULL; s = s->texturechain )
+ 			R_RenderBrushPoly( s, CULL_VISIBLE );
+ 		t->texturechain = NULL;
++#if XASH_SHADEREMU
++		R_KeptFlush();
++#endif
+ 	}
+ 
+ 	R_ResetSeparatePass( &draw_alpha_surfaces );
+@@ -1851,6 +1908,10 @@ void R_DrawBrushModel( cl_entity_t *e )
+ 
+ 	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+ 		return;
++#if XASH_SHADEREMU
++	if( R_KeptBrushTaken( e ))
++		return;	// (drawn with the world, R_KeptWorldFinish)
++#endif
+ 
+ 	model_t *clmodel = e->model;
+ 
+@@ -1932,6 +1993,9 @@ void R_DrawBrushModel( cl_entity_t *e )
+ 			R_RenderBrushPoly( gpGlobals->draw_surfaces[i].surf, gpGlobals->draw_surfaces[i].cull );
+ 	}
+ 
++#if XASH_SHADEREMU
++	R_KeptFlush();
++#endif
+ 	R_DrawVBO( drawlightmap, true );
+ 
+ 	if( e->curstate.rendermode == kRenderTransColor )
+@@ -3699,8 +3763,13 @@ void R_DrawWorld( void )
+ 
+ 	VectorCopy( RI.cullorigin, tr.modelorg );
+ 	memset( gl_lms.lightmap_surfaces, 0, sizeof( gl_lms.lightmap_surfaces ));
++#if XASH_SHADEREMU
++	R_ClearSeparate( &draw_fullbrights, fullbright_surfaces );
++	R_ClearSeparate( &draw_details, detail_surfaces );
++#else
+ 	memset( fullbright_surfaces, 0, sizeof( fullbright_surfaces ));
+ 	memset( detail_surfaces, 0, sizeof( detail_surfaces ));
++#endif
+ 
+ 	gl_lms.dynamic_surfaces = NULL;
+ 	pglDisable( GL_ALPHA_TEST );
+@@ -3709,6 +3778,10 @@ void R_DrawWorld( void )
+ 
+ 	R_ClearSkyBox ();
+ 
++#if XASH_SHADEREMU
++	if( !FBitSet( RI.rvp.flags, RF_DRAW_OVERVIEW ) && R_KeptWorldGive( RI.frustum.clipFlags ))
++		return;	// (found by a worker, drawn after the solid entities)
++#endif
+ 	double start = gEngfuncs.pfnTime();
+ 	if( FBitSet( RI.rvp.flags, RF_DRAW_OVERVIEW ))
+ 		R_DrawWorldTopView( WORLDMODEL->nodes, RI.frustum.clipFlags );
+@@ -3821,6 +3894,71 @@ void R_MarkLeaves( void )
+ GL_CreateSurfaceLightmap
+ ========================
+ */
++#if XASH_SHADEREMU
++// A block's light maps built on workers, each surface into its own 16-byte-aligned place in scratch
++// memory (neighbours in the block share texels), then copied into the block by this core.
++int hlglWorker( void );
++void hlglPost( int k, uint32_t ( *fn )( uint32_t, uint32_t ), uint32_t a0, uint32_t a1 );
++unsigned hlglWait( int k );
++void *hlglJobMemory( unsigned bytes );
++#define LM_JOBS 8
++typedef struct { msurface_t *surf; byte *base; uint at, smax, tmax; } lm_pending_t;
++static lm_pending_t *lm_pending;
++static int lm_pending_count, lm_pending_room;
++static byte *lm_scratch;
++static uint lm_scratch_size;
++static struct { uint bl_at, bl_each; int first[LM_JOBS + 1]; } lm_job __attribute__(( aligned( 16 )));
++
++static uint32_t LM_BuildShare( uint32_t j, uint32_t unused )
++{
++	uint *bl = (uint *)( lm_scratch + lm_job.bl_at + j * lm_job.bl_each );
++	for( int i = lm_job.first[j]; i < lm_job.first[j + 1]; i++ )
++		R_BuildLightMapTo( bl, lm_pending[i].surf, lm_scratch + lm_pending[i].at, lm_pending[i].smax * 4, false );
++	return 0;
++}
++
++static void LM_FlushPending( void )
++{
++	uint at = 0, most = 0, luxels = 0;
++	int jobs = LM_JOBS, k[LM_JOBS];
++
++	if( !lm_pending_count )
++		return;
++	for( int i = 0; i < lm_pending_count; i++ )
++	{
++		uint n = lm_pending[i].smax * lm_pending[i].tmax;
++		lm_pending[i].at = at, at += ( n * 4 + 15 ) & ~15u;
++		most = Q_max( most, n ), luxels += n;
++	}
++	lm_job.bl_at = at, lm_job.bl_each = ( most * 12 + 15 ) & ~15u;
++	if( at + jobs * lm_job.bl_each > lm_scratch_size )
++	{
++		lm_scratch_size = Q_max( at + jobs * lm_job.bl_each, BLOCK_SIZE * BLOCK_SIZE * 6 + jobs * lm_job.bl_each );
++		lm_scratch = hlglJobMemory( lm_scratch_size );	// (kept for the next block and level; not given back)
++	}
++	// the first surface here: its build sets a static the workers' then only read
++	R_BuildLightMapTo( (uint *)( lm_scratch + lm_job.bl_at ), lm_pending[0].surf, lm_scratch, lm_pending[0].smax * 4, false );
++	for( int j = 0, i = 1, sum = 0; j <= jobs; j++ )
++	{
++		while( i < lm_pending_count && sum < (int)( (uint64_t)luxels * j / jobs ))
++			sum += lm_pending[i].smax * lm_pending[i].tmax, i++;
++		lm_job.first[j] = j == jobs ? lm_pending_count : i;
++	}
++	for( int j = 1; j < jobs; j++ )
++		hlglPost( k[j] = hlglWorker( ), LM_BuildShare, j, 0 );
++	LM_BuildShare( 0, 0 );
++	for( int j = 1; j < jobs; j++ )
++		hlglWait( k[j] );
++	for( int i = 0; i < lm_pending_count; i++ )
++	{
++		const lm_pending_t *p = &lm_pending[i];
++		for( uint t = 0; t < p->tmax; t++ )
++			memcpy( p->base + t * BLOCK_SIZE * 4, lm_scratch + p->at + t * p->smax * 4, p->smax * 4 );
++	}
++	lm_pending_count = 0;
++}
++#endif
++
+ static void GL_CreateSurfaceLightmap( msurface_t *surf, model_t *loadmodel )
+ {
+ 	mextrasurf_t	*info = surf->info;
+@@ -3837,6 +3975,9 @@ static void GL_CreateSurfaceLightmap( msurface_t *surf, model_t *loadmodel )
+ 
+ 	if( !LM_AllocBlock( smax, tmax, &surf->light_s, &surf->light_t ))
+ 	{
++#if XASH_SHADEREMU
++		LM_FlushPending( );
++#endif
+ 		LM_UploadBlock( false );
+ 		LM_InitBlock();
+ 
+@@ -3850,7 +3991,16 @@ static void GL_CreateSurfaceLightmap( msurface_t *surf, model_t *loadmodel )
+ 	base += ( surf->light_t * BLOCK_SIZE + surf->light_s ) * 4;
+ 
+ 	R_UpdateSurfaceCachedLight( surf );
++#if XASH_SHADEREMU
++	if( lm_pending_count == lm_pending_room )
++	{
++		lm_pending_room = lm_pending_room ? lm_pending_room * 2 : 1024;
++		lm_pending = realloc( lm_pending, sizeof( lm_pending_t ) * lm_pending_room );
++	}
++	lm_pending[lm_pending_count++] = ( lm_pending_t ){ surf, base, 0, smax, tmax };
++#else
+ 	R_BuildLightMap( surf, base, BLOCK_SIZE * 4, false );
++#endif
+ }
+ 
+ /*
+@@ -3893,7 +4043,13 @@ void GL_RebuildLightmaps( void )
+ 		for( int j = 0; j < m->numsurfaces; j++ )
+ 			GL_CreateSurfaceLightmap( m->surfaces + j, m );
+ 	}
++#if XASH_SHADEREMU
++	LM_FlushPending( );
++#endif
+ 	LM_UploadBlock( false );
++#if XASH_SHADEREMU
++	R_KeptBuild();
++#endif
+ 
+ 	if( gEngfuncs.drawFuncs->GL_BuildLightmaps )
+ 	{
+@@ -3977,7 +4133,13 @@ void GL_BuildLightmaps( void )
+ 			m->nodes[j].visframe = 0;
+ 	}
+ 
++#if XASH_SHADEREMU
++	LM_FlushPending( );
++#endif
+ 	LM_UploadBlock( false );
++#if XASH_SHADEREMU
++	R_KeptBuild();
++#endif
+ 
+ 	if( gEngfuncs.drawFuncs->GL_BuildLightmaps )
+ 	{
+@@ -3986,3 +4148,7 @@ void GL_BuildLightmaps( void )
+ 	}
+ }
+ 
++
++#if XASH_SHADEREMU
++#include "gl_kept.c"
++#endif
+diff --git a/ref/gl/gl_sprite.c b/ref/gl/gl_sprite.c
+index 5ae3bc3a..77db2f70 100644
+--- a/ref/gl/gl_sprite.c
++++ b/ref/gl/gl_sprite.c
+@@ -217,6 +217,10 @@ R_GlowSightDistance
+ Set sprite brightness factor
+ ================
+ */
++#if XASH_SHADEREMU
++qboolean R_KeptGlowFraction( const cl_entity_t *e, const vec3_t origin, float *fraction );	// (gl_kept.c)
++#endif
++
+ static float R_SpriteGlowBlend( vec3_t origin, int rendermode, int renderfx, float *pscale )
+ {
+ 	vec3_t glowDist;
+@@ -225,10 +229,18 @@ static float R_SpriteGlowBlend( vec3_t origin, int rendermode, int renderfx, flo
+ 
+ 	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+ 	{
++#if XASH_SHADEREMU
++		float fraction;
++		if( r_traceglow.value || !R_KeptGlowFraction( RI.currententity, origin, &fraction ))
++			fraction = gEngfuncs.EV_VisTraceLine( RI.rvp.vieworigin, origin, r_traceglow.value ? PM_GLASS_IGNORE : (PM_GLASS_IGNORE|PM_STUDIO_IGNORE))->fraction;
++		if(( 1.0f - fraction ) * dist > 8.0f )
++			return 0.0f;
++#else
+ 		pmtrace_t *tr = gEngfuncs.EV_VisTraceLine( RI.rvp.vieworigin, origin, r_traceglow.value ? PM_GLASS_IGNORE : (PM_GLASS_IGNORE|PM_STUDIO_IGNORE));
+ 
+ 		if(( 1.0f - tr->fraction ) * dist > 8.0f )
+ 			return 0.0f;
++#endif
+ 	}
+ 
+ 	if( renderfx == kRenderFxNoDissipation )
+diff --git a/ref/gl/gl_studio.c b/ref/gl/gl_studio.c
+index 39873fb4..e6056015 100644
+--- a/ref/gl/gl_studio.c
++++ b/ref/gl/gl_studio.c
+@@ -127,6 +127,9 @@ static cvar_t			*cl_righthand = NULL;
+ 
+ static r_studio_interface_t	*pStudioDraw;
+ static studio_draw_state_t	g_studio;		// global studio state
++#if XASH_SHADEREMU
++static qboolean R_StudioPointsOnWorker( void );   // (gl_studio_job.c, at the end)
++#endif
+ 
+ // global variables
+ static qboolean m_fDoRemap;
+@@ -172,7 +175,15 @@ static void R_StudioSetupTimings( void )
+ 	{
+ 		// synchronize with server time
+ 		g_studio.time = gp_cl->time;
++#if XASH_SHADEREMU	// (the same two times for every model of a frame: their difference made once)
++		static double kept_time = -1.0, kept_old = -1.0;
++		static double kept_frametime;
++		if( memcmp( &kept_time, &gp_cl->time, sizeof( double )) || memcmp( &kept_old, &gp_cl->oldtime, sizeof( double )))
++			kept_time = gp_cl->time, kept_old = gp_cl->oldtime, kept_frametime = gp_cl->time - gp_cl->oldtime;
++		g_studio.frametime = kept_frametime;
++#else
+ 		g_studio.frametime = gp_cl->time - gp_cl->oldtime;
++#endif
+ 	}
+ 	else
+ 	{
+@@ -237,6 +248,20 @@ static qboolean R_StudioComputeBBox( vec3_t bbox[8] )
+ 	AddPointToBounds( pseqdesc->bbmin, mins, maxs );
+ 	AddPointToBounds( pseqdesc->bbmax, mins, maxs );
+ 	vec3_t studio_mins, studio_maxs;
++#if XASH_SHADEREMU	// (the box round the turned box straight from the matrix: its centre turned, |M| times its half size)
++	if( !bbox )
++	{
++		for( int r = 0; r < 3; r++ )
++		{
++			const float *m = g_studio.rotationmatrix[r];
++			float cx = ( mins[0] + maxs[0] ) * 0.5f, cy = ( mins[1] + maxs[1] ) * 0.5f, cz = ( mins[2] + maxs[2] ) * 0.5f;
++			float centre = m[0] * cx + m[1] * cy + m[2] * cz + m[3];
++			float half = fabsf( m[0] ) * ( maxs[0] - cx ) + fabsf( m[1] ) * ( maxs[1] - cy ) + fabsf( m[2] ) * ( maxs[2] - cz );
++			studio_mins[r] = centre - half, studio_maxs[r] = centre + half;
++		}
++		return !R_CullModel( e, studio_mins, studio_maxs );
++	}
++#endif
+ 	ClearBounds( studio_mins, studio_maxs );
+ 
+ 	// compute a full bounding box
+@@ -1228,12 +1253,34 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+ 	Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, origin );
+ 	float dist2 = 1000000.0f;
+ 	int k = 0;
++#if XASH_SHADEREMU
++	const float now = g_studio.time;	// (a float compare, not a double one)
++#else
++	const double now = g_studio.time;
++#endif
+ 
++#if XASH_SHADEREMU
++	// the lights alive this frame, found once a frame and after each one made
++	extern int se_elight_allocs;
++	static int live[MAX_ELIGHTS], numlive, live_frame = -1, live_allocs = -1;
++	static float live_now;
++	if( live_frame != tr.realframecount || live_allocs != se_elight_allocs || live_now != now )
++	{
++		live_frame = tr.realframecount, live_allocs = se_elight_allocs, live_now = now, numlive = 0;
++		for( int lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
++			if( !( tr.elights[lnum].die < now || tr.elights[lnum].radius <= 0.0f ))
++				live[numlive++] = lnum;
++	}
++	for( int l = 0; l < numlive; l++ )
++	{
++		int lnum = live[l];
++#else
+ 	for( int lnum = 0; lnum < MAX_ELIGHTS; lnum++ )
+ 	{
++#endif
+ 		dlight_t *el = &tr.elights[lnum];
+ 
+-		if( el->die < g_studio.time || el->radius <= 0.0f )
++		if( el->die < now || el->radius <= 0.0f )
+ 			continue;
+ 
+ 		if(( el->key & 0xFFF ) == ent->index )
+@@ -1286,6 +1333,32 @@ static void R_StudioEntityLight( alight_t *lightinfo )
+ 	}
+ }
+ 
++#if XASH_SHADEREMU
++// The bones set up ahead for the model being drawn where they lie (the bones, then the light's), if
++// they are its; and its bones' light vectors, not made until needed when they can be made from those.
++extern const float *se_bones_source;
++extern int se_bones_source_n;
++static int se_blight_lazy;
++static float se_blight_scale;
++static const float *SE_BonesAhead( void )
++{
++	cl_entity_t *e = RI.currententity;
++	if( !se_bones_source || !m_pStudioHeader || !e || !e->model || se_bones_source_n != m_pStudioHeader->numbones
++		|| m_pStudioHeader != (studiohdr_t *)gEngfuncs.Mod_Extradata( mod_studio, e->model ))
++		return NULL;
++	return se_bones_source;
++}
++static void SE_BlightNow( void )
++{
++	se_blight_lazy = 0;
++	for( int i = 0; i < m_pStudioHeader->numbones; i++ )
++	{
++		Matrix3x4_VectorIRotate( g_studio.lighttransform[i], g_studio.lightvec, g_studio.blightvec[i] );
++		if( se_blight_scale > 1.0f ) VectorNormalize( g_studio.blightvec[i] );
++	}
++}
++#endif
++
+ /*
+ ===============
+ R_StudioSetupLighting
+@@ -1306,6 +1379,12 @@ static void R_StudioSetupLighting( alight_t *plight )
+ 	g_studio.shadelight = plight->shadelight;
+ 	VectorCopy( plight->plightvec, g_studio.lightvec );
+ 
++#if XASH_SHADEREMU
++	se_blight_lazy = 0, se_blight_scale = scale;
++	if( SE_BonesAhead( ))
++		se_blight_lazy = 1;
++	else
++#endif
+ 	for( int i = 0; i < m_pStudioHeader->numbones; i++ )
+ 	{
+ 		Matrix3x4_VectorIRotate( g_studio.lighttransform[i], plight->plightvec, g_studio.blightvec[i] );
+@@ -1330,6 +1409,10 @@ static void R_StudioLighting( float *lv, int bone, int flags, vec3_t normal )
+ 	}
+ 
+ 	float illum = g_studio.ambientlight;
++#if XASH_SHADEREMU
++	if( se_blight_lazy )
++		SE_BlightNow();
++#endif
+ 
+ 	if( FBitSet( flags, STUDIO_NF_FLATSHADE ))
+ 	{
+@@ -1952,6 +2035,10 @@ static void R_StudioDrawPoints( void )
+ 
+ 	if( !m_pStudioHeader ) return;
+ 
++#if XASH_SHADEREMU
++	if( R_StudioPointsOnWorker( ))
++		return;
++#endif
+ 
+ 	g_studio.numverts = g_studio.numelems = 0;
+ 
+@@ -3205,6 +3292,10 @@ R_StudioDrawModelInternal
+ */
+ static void R_StudioDrawModelInternal( cl_entity_t *e, int flags )
+ {
++#if XASH_SHADEREMU
++	extern const float *se_bones_source;
++	se_bones_source = NULL, se_blight_lazy = 0;	// (set again if this draw takes the bones set up ahead)
++#endif
+ 	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+ 	{
+ 		if( e->player )
+@@ -3567,3 +3658,7 @@ void R_StudioSetDrawInterface( r_studio_interface_t *pDraw )
+ {
+ 	pStudioDraw = pDraw;
+ }
++
++#if XASH_SHADEREMU
++#include "gl_studio_job.c"
++#endif

@@ -1,0 +1,400 @@
+diff --git a/cl_dll/GameStudioModelRenderer.cpp b/cl_dll/GameStudioModelRenderer.cpp
+index 3a720ff3..66cf5450 100644
+--- a/cl_dll/GameStudioModelRenderer.cpp
++++ b/cl_dll/GameStudioModelRenderer.cpp
+@@ -35,6 +35,26 @@ extern engine_studio_api_t IEngineStudio;
+ 
+ // The renderer object, created on the stack.
+ CGameStudioModelRenderer g_StudioRenderer;
++
++#if XASH_SHADEREMU
++// Renderers of their own for the workers that set bones up ahead (gl_kept.c), copies of this one.
++static struct alignas( 64 ) ahead_of { CGameStudioModelRenderer r; } ahead_renderer[4];	// (no two in one texel)
++extern "C" int ( *SE_StudioBonesAhead )( struct cl_entity_s *e, int core, double clTime, double clOldTime, float *bones, float *lights, float *rotation, float *prevframe );
++extern "C" void ( *SE_StudioAheadReady )( void );
++
++static int StudioBonesAhead( struct cl_entity_s *e, int core, double clTime, double clOldTime, float *bones, float *lights, float *rotation, float *prevframe )
++{
++	return core >= 1 && core <= 4 && ahead_renderer[core - 1].r.StudioBonesAhead( e, core, clTime, clOldTime,
++		(float (*)[3][4])bones, (float (*)[3][4])lights, (float (*)[4])rotation, prevframe );
++}
++
++// (on this core: the copies take the renderer's settings)
++static void StudioAheadReady( void )
++{
++	for( int i = 0; i < 4; i++ )
++		ahead_renderer[i].r = g_StudioRenderer;
++}
++#endif
+ /*
+ ====================
+ CGameStudioModelRenderer
+@@ -80,6 +100,11 @@ R_StudioInit
+ void R_StudioInit( void )
+ {
+ 	g_StudioRenderer.Init();
++#if XASH_SHADEREMU
++	g_StudioRenderer.m_pAheadFrame = NULL, g_StudioRenderer.m_nAheadCore = 0;
++	SE_StudioBonesAhead = StudioBonesAhead;
++	SE_StudioAheadReady = StudioAheadReady;
++#endif
+ }
+ 
+ // The simple drawing interface we'll pass back to the engine
+diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
+index 53d320a4..4724238d 100644
+--- a/cl_dll/StudioModelRenderer.cpp
++++ b/cl_dll/StudioModelRenderer.cpp
+@@ -797,6 +797,18 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 	mstudioseqdesc_t *pseqdesc;
+ 	mstudioanim_t *panim;
+ 
++#if XASH_SHADEREMU
++	// (each core its own: bones are set up ahead on workers)
++	static struct bones_scratch_s
++	{
++		float pos[MAXSTUDIOBONES][3], pos2[MAXSTUDIOBONES][3], pos3[MAXSTUDIOBONES][3], pos4[MAXSTUDIOBONES][3], pos1b[MAXSTUDIOBONES][3];
++		vec4_t q[MAXSTUDIOBONES], q2[MAXSTUDIOBONES], q3[MAXSTUDIOBONES], q4[MAXSTUDIOBONES], q1b[MAXSTUDIOBONES];
++	} __attribute__(( aligned( 16 ))) scratch[5];
++	struct bones_scratch_s *w = &scratch[m_nAheadCore];
++	float ( *pos )[3] = w->pos, ( *pos2 )[3] = w->pos2, ( *pos3 )[3] = w->pos3, ( *pos4 )[3] = w->pos4;
++	vec4_t *q = w->q, *q2 = w->q2, *q3 = w->q3, *q4 = w->q4;
++	float bonematrix[3][4];
++#else
+ 	static float pos[MAXSTUDIOBONES][3];
+ 	static vec4_t q[MAXSTUDIOBONES];
+ 	float bonematrix[3][4];
+@@ -807,6 +819,7 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 	static vec4_t q3[MAXSTUDIOBONES];
+ 	static float pos4[MAXSTUDIOBONES][3];
+ 	static vec4_t q4[MAXSTUDIOBONES];
++#endif
+ 
+ 	if( m_pCurrentEntity->curstate.sequence >=  m_pStudioHeader->numseq )
+ 	{
+@@ -859,8 +872,13 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 		( m_pCurrentEntity->latched.prevsequence < m_pStudioHeader->numseq ) )
+ 	{
+ 		// blend from last sequence
++#if XASH_SHADEREMU
++		float ( *pos1b )[3] = w->pos1b;
++		vec4_t *q1b = w->q1b;
++#else
+ 		static float pos1b[MAXSTUDIOBONES][3];
+ 		static vec4_t q1b[MAXSTUDIOBONES];
++#endif
+ 		float s;
+ 
+ 		pseqdesc = (mstudioseqdesc_t *)( (byte *)m_pStudioHeader + m_pStudioHeader->seqindex ) + m_pCurrentEntity->latched.prevsequence;
+@@ -898,6 +916,11 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 	else
+ 	{
+ 		//Con_DPrintf("prevframe = %4.2f\n", f);
++#if XASH_SHADEREMU
++		if( m_pAheadFrame )
++			*m_pAheadFrame = f;
++		else
++#endif
+ 		m_pCurrentEntity->latched.prevframe = f;
+ 	}
+ 
+@@ -968,6 +991,46 @@ void CStudioModelRenderer::StudioSetupBones( void )
+ 	}
+ }
+ 
++#if XASH_SHADEREMU
++// bones set up ahead, if any: copied in, with the frame latched (gl_kept.c)
++extern "C" int se_studio_no_followers;
++extern "C" int ( *SE_StudioBonesTaken )( struct cl_entity_s *e, double clTime, float *bones, float *lights, int numbones, float *prevframe );
++
++bool CStudioModelRenderer::StudioBonesAhead( cl_entity_t *e, int core, double clTime, double clOldTime,
++	float bones[][3][4], float lights[][3][4], float rotation[3][4], float *prevframe )
++{
++	studiohdr_t *hdr = e->model && e->model->type == mod_studio ? (studiohdr_t *)e->model->cache.data : NULL;
++
++	if( !hdr || !hdr->numbodyparts || e->curstate.sequence >= hdr->numseq || e->curstate.renderfx != kRenderFxNone
++		|| e->curstate.movetype == MOVETYPE_FOLLOW || e->player )
++		return false;
++	// the sequences it reads: their groups loaded (StudioGetAnim loads them on this core)
++	int seqs[2] = { e->curstate.sequence, e->latched.prevsequence };
++	cache_user_t *groups = (cache_user_t *)e->model->submodels;
++	for( int i = 0; i < 2; i++ )
++	{
++		if( seqs[i] >= hdr->numseq )
++			continue;
++		mstudioseqdesc_t *d = (mstudioseqdesc_t *)( (byte *)hdr + hdr->seqindex ) + seqs[i];
++		if( d->seqgroup && ( !groups || !groups[d->seqgroup].data ))
++			return false;
++	}
++	m_pCurrentEntity = e;
++	m_pRenderModel = e->model;
++	m_pStudioHeader = hdr;
++	m_pPlayerInfo = NULL;
++	m_clTime = clTime, m_clOldTime = clOldTime;
++	m_protationmatrix = (float (*)[3][4])rotation;
++	m_pbonetransform = (float (*)[MAXSTUDIOBONES][3][4])bones;
++	m_plighttransform = (float (*)[MAXSTUDIOBONES][3][4])lights;
++	m_pAheadFrame = prevframe;
++	m_nAheadCore = core;
++	StudioSetUpTransform( 0 );
++	StudioSetupBones();
++	return true;
++}
++#endif
++
+ /*
+ ====================
+ StudioSaveBones
+@@ -982,7 +1045,6 @@ void CStudioModelRenderer::StudioSaveBones( void )
+ 	pbones = (mstudiobone_t *)( (byte *)m_pStudioHeader + m_pStudioHeader->boneindex );
+ 
+ 	m_nCachedBones = m_pStudioHeader->numbones;
+-
+ 	for( i = 0; i < m_pStudioHeader->numbones; i++ )
+ 	{
+ 		strcpy( m_nCachedBoneNames[i], pbones[i].name );
+@@ -1151,8 +1213,15 @@ int CStudioModelRenderer::StudioDrawModel( int flags )
+ 	}
+ 	else
+ 	{
++#if XASH_SHADEREMU
++		if( !SE_StudioBonesTaken || !SE_StudioBonesTaken( m_pCurrentEntity, m_clTime, (float *)m_pbonetransform, (float *)m_plighttransform,
++			m_pStudioHeader->numbones, &m_pCurrentEntity->latched.prevframe ))
++#endif
+ 		StudioSetupBones();
+ 	}
++#if XASH_SHADEREMU
++	if( !se_studio_no_followers )	// (only StudioMergeBones reads them)
++#endif
+ 	StudioSaveBones();
+ 
+ 	if( flags & STUDIO_EVENTS )
+diff --git a/cl_dll/StudioModelRenderer.h b/cl_dll/StudioModelRenderer.h
+index 69d28a1e..e8825459 100644
+--- a/cl_dll/StudioModelRenderer.h
++++ b/cl_dll/StudioModelRenderer.h
+@@ -25,6 +25,15 @@ public:
+ 	// Initialization
+ 	virtual void Init( void );
+ 
++#if XASH_SHADEREMU
++	// The entity's bones set up as StudioDrawModel would, into the transforms given, with scratch
++	// of its own (core 1 to 4: a worker, gl_kept.c); false when they must be set up as it draws.
++	bool StudioBonesAhead( struct cl_entity_s *e, int core, double clTime, double clOldTime,
++		float bones[][3][4], float lights[][3][4], float rotation[3][4], float *prevframe );
++	float *m_pAheadFrame;	// where StudioSetupBones puts the frame it latches, ahead
++	int m_nAheadCore;
++#endif
++
+ public:
+ 	// Public Interfaces
+ 	virtual int StudioDrawModel( int flags );
+diff --git a/dlls/animation.cpp b/dlls/animation.cpp
+index 4b4818d2..58b4ea95 100644
+--- a/dlls/animation.cpp
++++ b/dlls/animation.cpp
+@@ -173,13 +173,40 @@ int LookupSequence( void *pmodel, const char *label )
+ 	mstudioseqdesc_t *pseqdesc;
+ 
+ 	pseqdesc = (mstudioseqdesc_t *)( (byte *)pstudiohdr + pstudiohdr->seqindex );
++#if XASH_SHADEREMU
++	// the same names asked for again and again: the last answer for the model and the name's place
++	// (two ways a slot, the older of them replaced)
++	static struct { void *model; const char *label; int seq, length; } kept[64][2];
++	static unsigned char older[64];
++	unsigned h = ( (unsigned)(size_t)pmodel * 31u ^ (unsigned)(size_t)label ) >> 2 & 63;
++	for( int w = 0; w < 2; w++ )
++	{
++		int s = kept[h][w].seq;
++		if( kept[h][w].model == pmodel && kept[h][w].label == label
++			&& ( s < 0 ? kept[h][w].length == pstudiohdr->length : s < pstudiohdr->numseq && stricmp( pseqdesc[s].label, label ) == 0 ))
++		{
++			older[h] = !w;
++			return s;
++		}
++	}
++#endif
+ 
+ 	for( int i = 0; i < pstudiohdr->numseq; i++ )
+ 	{
+ 		if( stricmp( pseqdesc[i].label, label ) == 0 )
++		{
++#if XASH_SHADEREMU
++			int w = older[h];
++			kept[h][w].model = pmodel, kept[h][w].label = label, kept[h][w].seq = i, older[h] = !w;
++#endif
+ 			return i;
++		}
+ 	}
+ 
++#if XASH_SHADEREMU
++	int w = older[h];
++	kept[h][w].model = pmodel, kept[h][w].label = label, kept[h][w].seq = -1, kept[h][w].length = pstudiohdr->length, older[h] = !w;
++#endif
+ 	return -1;
+ }
+ 
+diff --git a/dlls/util.cpp b/dlls/util.cpp
+index 27c7ffe8..93e56678 100644
+--- a/dlls/util.cpp
++++ b/dlls/util.cpp
+@@ -395,6 +395,10 @@ void UTIL_MoveToOrigin( edict_t *pent, const Vector &vecGoal, float flDist, int
+ 	MOVE_TO_ORIGIN( pent, rgfl, flDist, iMoveType ); 
+ }
+ 
++#if XASH_SHADEREMU
++extern "C" int SE_NumEdicts( void );
++#endif
++
+ int UTIL_EntitiesInBox( CBaseEntity **pList, int listMax, const Vector &mins, const Vector &maxs, int flagMask )
+ {
+ 	edict_t *pEdict = g_engfuncs.pfnPEntityOfEntIndex( 1 );
+@@ -406,7 +410,12 @@ int UTIL_EntitiesInBox( CBaseEntity **pList, int listMax, const Vector &mins, co
+ 	if( !pEdict )
+ 		return count;
+ 
+-	for( int i = 1; i < gpGlobals->maxEntities; i++, pEdict++ )
++#if XASH_SHADEREMU
++	int last = SE_NumEdicts() < gpGlobals->maxEntities ? SE_NumEdicts() : gpGlobals->maxEntities;
++#else
++	int last = gpGlobals->maxEntities;
++#endif
++	for( int i = 1; i < last; i++, pEdict++ )
+ 	{
+ 		if( pEdict->free )	// Not in use
+ 			continue;
+@@ -1911,6 +1920,10 @@ void EntvarsKeyvalue( entvars_t *pev, KeyValueData *pkvd )
+ 	for( i = 0; i < (int)ENTVARS_COUNT; i++ )
+ 	{
+ 		pField = &gEntvarsDescription[i];
++#if XASH_SHADEREMU
++		if(( pField->fieldName[0] | 32 ) != ( pkvd->szKeyName[0] | 32 ))
++			continue;
++#endif
+ 
+ 		if( !stricmp( pField->fieldName, pkvd->szKeyName ) )
+ 		{
+diff --git a/dlls/weapons.cpp b/dlls/weapons.cpp
+index 3ff1a15f..9270535f 100644
+--- a/dlls/weapons.cpp
++++ b/dlls/weapons.cpp
+@@ -248,6 +248,17 @@ void AddAmmoNameToAmmoRegistry( const char *szAmmoname )
+ }
+ 
+ // Precaches the weapon and queues the weapon info for sending to clients
++#if XASH_SHADEREMU
++// Whether the game's data has this model (Uplink has only some of the weapons).
++static bool Shipped( const char *model )
++{
++	return g_engfuncs.pfnGetFileSize( model ) > 0;
++}
++#define SHIPPED( model )	if( Shipped( model ))
++#else
++#define SHIPPED( model )
++#endif
++
+ void UTIL_PrecacheOtherWeapon( const char *szClassname )
+ {
+ 	edict_t	*pent;
+@@ -322,38 +333,54 @@ void W_Precache( void )
+ 
+ #if !OEM_BUILD && !HLDEMO_BUILD
+ 	// python
+-	UTIL_PrecacheOtherWeapon( "weapon_357" );
+-	UTIL_PrecacheOther( "ammo_357" );
++	SHIPPED( "models/w_357.mdl" )
++	{
++		UTIL_PrecacheOtherWeapon( "weapon_357" );
++		UTIL_PrecacheOther( "ammo_357" );
++	}
+ 
+ 	// gauss
+-	UTIL_PrecacheOtherWeapon( "weapon_gauss" );
+-	UTIL_PrecacheOther( "ammo_gaussclip" );
++	SHIPPED( "models/v_gauss.mdl" )
++	{
++		UTIL_PrecacheOtherWeapon( "weapon_gauss" );
++		UTIL_PrecacheOther( "ammo_gaussclip" );
++	}
+ 
+ 	// rpg
+-	UTIL_PrecacheOtherWeapon( "weapon_rpg" );
+-	UTIL_PrecacheOther( "ammo_rpgclip" );
++	SHIPPED( "models/v_rpg.mdl" )
++	{
++		UTIL_PrecacheOtherWeapon( "weapon_rpg" );
++		UTIL_PrecacheOther( "ammo_rpgclip" );
++	}
+ 
+ 	// crossbow
+-	UTIL_PrecacheOtherWeapon( "weapon_crossbow" );
+-	UTIL_PrecacheOther( "ammo_crossbow" );
++	SHIPPED( "models/v_crossbow.mdl" )
++	{
++		UTIL_PrecacheOtherWeapon( "weapon_crossbow" );
++		UTIL_PrecacheOther( "ammo_crossbow" );
++	}
+ 
+ 	// egon
+-	UTIL_PrecacheOtherWeapon( "weapon_egon" );
++	SHIPPED( "models/v_egon.mdl" )
++		UTIL_PrecacheOtherWeapon( "weapon_egon" );
+ #endif
+ 	// tripmine
+ 	UTIL_PrecacheOtherWeapon( "weapon_tripmine" );
+ #if !OEM_BUILD && !HLDEMO_BUILD
+ 	// satchel charge
+-	UTIL_PrecacheOtherWeapon( "weapon_satchel" );
++	SHIPPED( "models/v_satchel.mdl" )
++		UTIL_PrecacheOtherWeapon( "weapon_satchel" );
+ #endif
+ 	// hand grenade
+ 	UTIL_PrecacheOtherWeapon("weapon_handgrenade");
+ #if !OEM_BUILD && !HLDEMO_BUILD
+ 	// squeak grenade
+-	UTIL_PrecacheOtherWeapon( "weapon_snark" );
++	SHIPPED( "models/v_squeak.mdl" )
++		UTIL_PrecacheOtherWeapon( "weapon_snark" );
+ 
+ 	// hornetgun
+-	UTIL_PrecacheOtherWeapon( "weapon_hornetgun" );
++	SHIPPED( "models/v_hgun.mdl" )
++		UTIL_PrecacheOtherWeapon( "weapon_hornetgun" );
+ 
+ 	if( g_pGameRules->IsDeathmatch() )
+ 	{
+diff --git a/pm_shared/pm_shared.c b/pm_shared/pm_shared.c
+index 925d040c..3ca500cd 100644
+--- a/pm_shared/pm_shared.c
++++ b/pm_shared/pm_shared.c
+@@ -147,8 +147,30 @@ void PM_SwapTextures( int i, int j )
+ 	grgchTextureType[j] = chTemp;
+ }
+ 
++#if XASH_SHADEREMU
++static int PM_CompareTextures( const void *a, const void *b )
++{
++	int i = *(const short *)a, j = *(const short *)b, c = stricmp( grgszTextureName[i], grgszTextureName[j] );
++	return c ? c : i - j;
++}
++#endif
++
+ void PM_SortTextures( void )
+ {
++#if XASH_SHADEREMU
++	static char names[CTEXTURESMAX][CBTEXTURENAMEMAX], types[CTEXTURESMAX];
++	short order[CTEXTURESMAX];
++	int k;
++
++	for( k = 0; k < gcTextures; k++ )
++		order[k] = k;
++	qsort( order, gcTextures, sizeof( order[0] ), PM_CompareTextures );
++	for( k = 0; k < gcTextures; k++ )
++		memcpy( names[k], grgszTextureName[order[k]], CBTEXTURENAMEMAX ), types[k] = grgchTextureType[order[k]];
++	memcpy( grgszTextureName, names, sizeof( names[0] ) * gcTextures );
++	memcpy( grgchTextureType, types, gcTextures );
++	return;
++#endif
+ 	// Bubble sort, yuck, but this only occurs at startup and it's only 512 elements...
+ 	//
+ 	int i, j;

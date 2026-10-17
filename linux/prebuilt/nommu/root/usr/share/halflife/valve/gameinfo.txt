@@ -1,0 +1,5 @@
+game "Half-Life: Uplink"
+gamedir "valve"
+startmap "hldemo1"
+demomap "hldemo1"
+type "singleplayer_only"

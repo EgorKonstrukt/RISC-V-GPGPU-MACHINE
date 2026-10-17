@@ -20,6 +20,10 @@ if os.path.isdir(os.path.join(D, 'overlay')):
 os.makedirs(D, exist_ok=True)
 shutil.copytree(flat, os.path.join(D, 'overlay'), symlinks=True)
 shutil.copy(kernel, os.path.join(D, 'Image'))
+# Half-Life's engine wants Uplink's data, fetched into this image only (HALFLIFE_DATA=0: none)
+if os.path.exists(os.path.join(D, 'overlay', 'usr', 'bin', 'halflife.bin')) and os.environ.get('HALFLIFE_DATA') != '0':
+    if subprocess.run([sys.executable, os.path.join(ROOT, 'linux', 'halflife', 'data.py'), os.path.join(D, 'overlay')]).returncode:
+        print('Uplink\'s data could not be fetched: the image has Half-Life without it')
 r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'private_image.py'), name], cwd=ROOT, capture_output=True, text=True)
 print(r.stdout[-600:], r.stderr[-600:])
 # (the kernel lies at 0x80400000: without an MMU, memory below it is no RAM the kernel may hand out)

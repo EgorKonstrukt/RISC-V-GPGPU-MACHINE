@@ -264,7 +264,7 @@ CASES = [
          has=[r'nxweb: /usr/share/web-index\.html: 122 nodes, 4 rules, 586 x 872; 77 texts \(1836 characters\), 2 boxes, 0 pictures, 0 fields']),
     # docs/apps/web.md, "Loading, and what did not come": each failure and why, a box for each picture
     case('nxweb-missing', 'desktop', X + 'NXWEB_DUMP=1 nxweb /usr/share/web-missing.html & sleep 20; killall nxweb', True,
-         has=[r'nxweb: /usr/share/web-missing\.html: 36 nodes, 0 rules, 586 x 480; 10 texts \(520 characters\), 0 boxes, 5 pictures',
+         has=[r'nxweb: /usr/share/web-missing\.html: 36 nodes, 0 rules, 586 x 480; 10 texts \(525 characters\), 0 boxes, 5 pictures',
               r'nxweb: loading: Loading web-missing\.html: 0 of 1 picture \(5 not loaded\)',
               r'nxweb: not loaded: style sheet /usr/share/web-gone\.css: not found$',
               r'nxweb: not loaded: picture /usr/share/web-gone\.png: not found$', r'nxweb: not loaded: picture /usr/share/web-gone\.gif: not found$',
@@ -359,7 +359,7 @@ def images(a):
     return out
 
 
-CC_BYTES_NOMMU = '4f320f13'
+CC_BYTES_NOMMU = '455de86c'
 
 
 def without_mmu(image):

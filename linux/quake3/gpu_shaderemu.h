@@ -51,6 +51,10 @@ unsigned *gpuDrawAt (const gpu_state *s, unsigned vertices, int mesh);
  * four corners with GPU_QUADS): more of the draw before when nothing differs. NULL: no room.
  */
 unsigned *gpuDrawRoom (const gpu_state *s, int stored, int mesh);
+unsigned *gpuDrawsRoom (int count, unsigned mesh, unsigned passes, unsigned *block, unsigned *first_mesh);	/* draws for any core to write */
+unsigned gpuMatricesBlock (void);
+void gpuMatricesChanged (void);
+void gpuDrawPut (unsigned *c, const gpu_state *s, unsigned block, unsigned vertices, unsigned first_mesh, int mesh);
 void *gpuFrameMemory (unsigned bytes);		/* memory of this frame's own, for a draw to point at */
 
 /* Commands that stay at the head of every frame's list: so many, of so many vertices in all. */

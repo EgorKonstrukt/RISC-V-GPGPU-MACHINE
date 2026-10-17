@@ -79,8 +79,19 @@ ui_icon_of_program(const char *path, const char *other, struct ui_icon_ref *icon
 {
 	const char *slash = strrchr(path, '/');
 
+	char folder[32];
+	const char *at;
+
 	icon->file[0] = 0;
-	if ((icon->cell = ui_icon_of(slash ? slash + 1 : path)) >= 0 && ui_seven)
+	icon->cell = ui_icon_of(slash ? slash + 1 : path);
+	/* a program called by its folder's name (/usr/lib/ralert/game): that folder's icon */
+	if (icon->cell < 0 && slash && slash > path) {
+		for (at = slash; at > path && at[-1] != '/'; at--)
+			;
+		snprintf(folder, sizeof folder, "%.*s", (int)(slash - at), at);
+		icon->cell = ui_icon_of(folder);
+	}
+	if (icon->cell >= 0 && ui_seven)
 		return;
 	if (icon->cell < 0)
 		icon->cell = ui_icon_of(other);

@@ -910,3 +910,65 @@ m_png_decode(const uint8_t *f, uint32_t size, struct media_image *out, int worke
 	m_workers_end();
 	return why;
 }
+
+/* ---------------------------------------------------------------- deflate in segments (media_inflate) */
+
+struct segments { const uint8_t *file; uint32_t size, piece, count, total; uint8_t *out; struct codes *tables; volatile uint32_t *failed; };
+
+static void
+segments_job(void *ctx, uint32_t from, uint32_t to)
+{
+	struct segments *s = ctx;
+	struct codes *tables = s->tables + 3 * mcw_self();
+	uint32_t k;
+
+	for (k = from; k < to; k++) {
+		uint32_t at = m_le32(s->file + 16 + 4 * k), end = m_le32(s->file + 20 + 4 * k);
+		uint32_t want = k + 1 < s->count ? s->piece : s->total - k * s->piece;
+		struct bits b;
+
+		memset(&b, 0, sizeof b);
+		b.file_end = s->file + s->size;
+		b.at = s->file + at, b.chunk_end = s->file + end, b.one_chunk = 1;
+		if (at > end || end > s->size || inflate(&b, s->out + k * s->piece, want, NULL, tables, 0) < want || b.bad)
+			*s->failed = 1;
+	}
+}
+
+uint32_t
+media_inflated_size(const void *file, uint32_t size)
+{
+	const uint8_t *f = file;
+
+	return size >= 16 && !memcmp(f, "MDZ1", 4) ? m_le32(f + 4) : 0;
+}
+
+const char *
+media_inflate(const void *file, uint32_t size, void *out, uint32_t out_size, int workers)
+{
+	static volatile uint32_t *failed;
+	struct segments s;
+	uint32_t tables_bytes;
+	int got;
+
+	s.file = file, s.size = size, s.out = out;
+	if (!(s.total = media_inflated_size(file, size)) || s.total > out_size)
+		return "not deflate in segments, or larger than the room for it";
+	s.piece = m_le32(s.file + 8), s.count = m_le32(s.file + 12);
+	if (!s.piece || (s.piece & 15) || s.count != (s.total + s.piece - 1) / s.piece || 20 + 4 * s.count > size)
+		return "the segments' table is damaged";
+	if (!failed && !(failed = mcw_alloc(16)))
+		return "not enough memory";
+	*failed = 0;
+	got = m_workers_begin(workers < (int)s.count - 1 ? workers : (int)s.count - 1);	/* (no more than the segments want) */
+	tables_bytes = (uint32_t)(mcw_count() + 1) * 3 * sizeof(struct codes);
+	if (!(s.tables = m_scratch(M_PNG_TABLES, tables_bytes))) {
+		m_workers_end();
+		return "not enough memory";
+	}
+	s.failed = failed;
+	m_for(s.count, segments_job, &s, s.piece, got);
+	m_scratch_done(M_PNG_TABLES, s.tables, tables_bytes);
+	m_workers_end();
+	return *failed ? "a segment is damaged" : NULL;
+}

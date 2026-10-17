@@ -42,6 +42,7 @@ One file per subject. A doc names another by its file name, which is unique acro
 
 - [classicube.md](games/classicube.md) – ClassiCube
 - [doom.md](games/doom.md) – Doom
+- [halflife.md](games/halflife.md) – Half-Life: Uplink
 - [micropolis.md](games/micropolis.md) – Micropolis
 - [nes.md](games/nes.md) – A NES
 - [quake.md](games/quake.md) – Quake
