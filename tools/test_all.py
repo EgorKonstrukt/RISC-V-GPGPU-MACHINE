@@ -14,7 +14,7 @@ A case is the line typed at the guest's shell, what ends it, and what its consol
 `same` (another case's matches, which must be the same). The values are the docs' (each says
 where) or, where a doc says only "as before", what the image of 15 October 2026 printed.
 """
-import argparse, hashlib, os, re, subprocess, sys, time
+import argparse, hashlib, os, re, struct, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -359,6 +359,15 @@ def images(a):
     return out
 
 
+CC_BYTES_NOMMU = '4f320f13'
+
+
+def without_mmu(image):
+    """An image of linux/nommu/image.py: its RAM starts at the kernel's 0x80400000."""
+    dts = os.path.join(ROOT, image, 'dts.bin')
+    return os.path.exists(dts) and struct.pack('>II', 0, 0x80400000) in open(dts, 'rb').read()
+
+
 def run(c, a, image, logs):
     log = os.path.join(logs, c['name'] + '.log')
     if os.path.exists(log):
@@ -391,7 +400,9 @@ def main():
     ap.add_argument('--long', action='store_true', help='the long cases too')
     ap.add_argument('--races', action='store_true', help='RVC_RACES on the cases that use workers: 0 changes undone')
     ap.add_argument('--card-model', action='store_true', help="rvc_cpu as the card: RVC_SOUND, RVC_WCACHE, RVC_ADFAULT")
-    ap.add_argument('--image', default='build/images/linux', help='the image folder (default build/images/linux)')
+    made = os.path.exists(os.path.join(ROOT, 'build', 'images', 'nommu', 'linux_payload.bin'))
+    ap.add_argument('--image', default='build/images/nommu' if made else 'build/images/linux',
+                    help='the image folder (default build/images/nommu once made, else build/images/linux)')
     ap.add_argument('--jobs', type=int, default=max(2, (os.cpu_count() or 4) // 2), help='cases at once')
     ap.add_argument('--logs', default=os.path.join(ROOT, 'build', 'test_all'), help='where the consoles go')
     ap.add_argument('--list', action='store_true', help='list the cases and stop')
@@ -405,6 +416,10 @@ def main():
             print(f"{c['name']:28} {' '.join(sorted(c['tags']))}")
         return 0 if a.run else 1
     os.makedirs(a.logs, exist_ok=True)
+    if without_mmu(a.image):   # cc's programs there are flat ones (tcc -shared, elf2flt): other bytes
+        for c in CASES:
+            if c['name'] == 'cc-bytes':
+                c['digest'] = [(c['digest'][0][0], CC_BYTES_NOMMU)]
     where = images(a)
     done, failed, t0 = {}, [], time.time()
     # a case compared with another runs after it

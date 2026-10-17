@@ -117,15 +117,14 @@ upstream rvc cloned next to the sources for its boot images:
 
     git clone https://github.com/pimaker/rvc rvc
     build.bat                          # the harness: bin\rvc_harness.exe, bin\rvc_harness_dxc.exe
-    python tools\make_linux_image.py   # Linux with the MMU, from linux\prebuilt (no compiler needed)
+    pwsh tools\make_image.ps1          # the Linux images, from linux\prebuilt (no compiler needed)
 
 Then double-click `bin\rvc_harness.exe` (D3D11, as VRChat runs it, with the worker cores; the
 build puts fxc2's `d3dcompiler_47.dll` next to it, so the shader compiles in seconds, where FXC
 takes minutes: `docs/fxc2.md`) or `bin\rvc_harness_dxc.exe` (D3D12 + DXC, one core only).
-A menu asks what to boot; `linux-net` is Linux with the desktop, without the MMU once that
-image has been built (below) and with it until then. `k` and `i` in the menu, or
-`--kernel mmu|nommu` and `--isa base|zb`, choose; a run with other arguments keeps the MMU
-unless `--kernel` says otherwise.
+A menu asks what to boot; `linux-net` is Linux with the desktop, without the MMU
+(`build\images\nommu`). `k` and `i` in the menu, or `--kernel mmu|nommu` and `--isa base|zb`,
+choose; Linux with the MMU (`build\images\linux`) is legacy, and what the other is made on.
 
 Two windows appear. The console is the machine's serial terminal: every key goes to the guest,
 Ctrl+C and the arrows included, and **Ctrl+]** quits. The other window is the machine's screen:
@@ -163,10 +162,11 @@ To rebuild the guest software (WSL, no root; everything goes to `~/shaderemu-lin
     python tools\make_linux_image.py
 
 The games and programs with a folder of their own have a `build.sh` each, and their docs say
-when to run it. Linux without the MMU is built after that, from the same sources
-(`docs/nommu.md`): `bash linux/nommu/setup.sh` once in WSL, then `pwsh linux\nommu\all.ps1
--Kernel` makes its kernel, programs, root and image and runs its test set. `python
-tools\test_all.py` is the test set of the image with the MMU (about a minute).
+when to run it. That is Linux with the MMU, which Linux without it is made from, with the same
+sources (`docs/nommu.md`): `bash linux/nommu/setup.sh` once in WSL, then `pwsh
+linux\nommu\all.ps1 -Kernel` makes its kernel, programs, root and image and runs the test set.
+`python tools\test_all.py` is the test set (two minutes), on Linux without the MMU; `pwsh
+tools\make_image.ps1 --save-prebuilt` keeps both builds in `linux\prebuilt`.
 
 ## Layout
 
@@ -189,7 +189,8 @@ tools\test_all.py` is the test set of the image with the MMU (about a minute).
 - `linux/apps/` – the desktop's programs: editor, files, browser, paint, viewer, settings, monitor.
 - `linux/quake/`, `linux/quake3/`, `linux/tdawn/`, `linux/ralert/`, `linux/classicube/`,
   `linux/nes/`, `linux/physics/` and the rest – the ports and programs that have a folder of their own.
-- `linux/prebuilt/` – the kernel and programs already built (sources and licences in its
+- `linux/prebuilt/` – the kernels and programs already built: the root with the MMU, and in
+  `nommu/` the kernel without it and the programs that differ (sources and licences in its
   README).
 - `programs/` – bare-metal programs in C, `programs/linux`: the OpenGL library and
   `glxgears`, and `programs/mc`: the worker cores' library (`mcw.c`, `mcwx.h`) and its test.
@@ -211,8 +212,7 @@ tools\test_all.py` is the test set of the image with the MMU (about a minute).
 
 - A way out to the internet: the machines reach each other (`docs/lan.md`), and pages reach the
   browser through the host (`docs/fetch.md`); nothing else leaves.
-- `linux/prebuilt` holds the build with the MMU only, and lags behind the sources between
-  refreshes; Linux without the MMU must be built in WSL.
+- `linux/prebuilt` lags behind the sources between refreshes.
 - The Unity world runs one machine configuration (Linux without the MMU); the bare-metal
   images run only in the harness.
 

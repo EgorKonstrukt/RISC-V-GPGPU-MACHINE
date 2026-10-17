@@ -37,6 +37,16 @@ started and everything on its desktop run without building anything.
 Every program is statically linked, so each also contains the parts of the C library and
 compiler runtime it uses.
 
+## Linux without the MMU (`nommu/`)
+
+The machine the harness and the world run (`docs/nommu.md`). `nommu/Image` is the kernel of
+`linux/nommu/kernel.sh`: the same Linux and drivers, built without `CONFIG_MMU`, with
+`linux/nommu`'s patches. `nommu/root` holds only the files that differ from `root`: every
+program built by `linux/nommu/build.sh` and made flat by `linux/nommu/root.sh` (the same sources
+as above, position-independent, in the bFLT format), and `elf2flt`, `mctest`, `flatcrt.o` and
+`nommu_fork.h`, which only that build has. `linux/nommu/image.py` lays them over the image of
+`root`; `--save-prebuilt` replaces them after a build.
+
 ## Licences and sources
 
 | Component | Licence | Source |

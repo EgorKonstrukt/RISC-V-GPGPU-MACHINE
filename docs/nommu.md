@@ -2,9 +2,15 @@
 
 The same system and programs on a kernel built without the MMU (`CONFIG_MMU` not set): every
 program is a flat (bFLT) one loaded whole into RAM, and the shader machine can run with no page
-walk at all (`NO_PAGING`). `linux/nommu/` builds it beside the MMU build, which it does not change.
+walk at all (`NO_PAGING`). It is the machine everything runs by default: the harness, `rvc_cpu`,
+`tools/test_all.py` and the world. `linux/nommu/` builds it beside the MMU build, which it is
+made from and does not change; Linux with the MMU is legacy (`--kernel mmu`).
 
 ## Building it
+
+Without a compiler: `pwsh tools\make_image.ps1` makes the MMU image from `linux/prebuilt` and
+then this one from `linux/prebuilt/nommu` (its kernel and the files that differ from the MMU
+root). `pwsh tools\make_image.ps1 --save-prebuilt` keeps a build there.
 
 In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scripts):
 
@@ -22,15 +28,18 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
   repository's build scripts run there with the flat drivers, a line each.
 - `bash linux/nommu/root.sh`: mctest and the machine's `elf2flt`, then every program of the root
   made flat (`flat.py`, `elf2bflt.py`) into `build/nommu/flatroot`.
-- `python linux/nommu/image.py`: `build/images/nommu`, the shared image with that root as its
-  overlay, the kernel, and RAM in the device tree from the kernel's address (0x80400000) on.
-- `python linux/nommu/test.py`: `tools/test_all.py` on that image, its workers bare.
+- `python linux/nommu/image.py [--save-prebuilt]`: `build/images/nommu`, the shared image with
+  that root as its overlay, the kernel, and RAM in the device tree from the kernel's address
+  (0x80400000) on; without `build/nommu`, from `linux/prebuilt/nommu`.
+- `python tools/test_all.py`: the test set, on this image once it is made (`linux/nommu/test.py`
+  names it); `cc-bytes` takes the flat programs' digest on an image whose RAM starts at
+  0x80400000.
 
-`rvc_harness` with no arguments boots this image once it has been made, on the machine without
-paging (`NO_PAGING`), with its window, desktop and sound. `--kernel mmu|nommu` and `--isa base|zb`
-choose the kernel and the instruction set (`zb` takes `build/images/nommu-zb` and the shader's
-`ZB`), as `k` and `i` do in the start menu. A run with options other than `--image`, `--cpu`,
-`--resume`, `--no-desktop` and `--no-viz` is Linux with the MMU unless `--kernel` says otherwise.
+`rvc_harness` boots this image once it has been made, on the machine without paging
+(`NO_PAGING`), with its window, desktop and sound; so does `rvc_cpu`, whose workers with a page
+table root of 0 run untranslated unless `RVC_BARE_WORKERS=0`. `--kernel mmu|nommu` and
+`--isa base|zb` choose the kernel and the instruction set (`zb` takes `build/images/nommu-zb` and
+the shader's `ZB`), as `k` and `i` do in the start menu.
 
 `pwsh linux/nommu/all.ps1 [-Kernel]` is the whole round. The machine's own `cc` links a flat
 program as a library and makes it flat with `elf2flt` (`linux/nommu/cc`). `linux/nommu/card.ps1`
@@ -61,7 +70,7 @@ then "Sync shader sources from the repository" and "Import boot images from the 
 - The shader machine: `BARE_WORKERS` starts a worker whose page table root is 0 with no
   translation; `NO_PAGING` takes every address as physical. `ZB` runs Zba and Zbb;
   `X_NO_FAST_AMO` sends atomics to the general path (for measuring).
-- `rvc_cpu`: `RVC_BARE_WORKERS=1` as `BARE_WORKERS`, `RVC_ZB=1` as `ZB`, `RVC_GPU_COPY=1` marks
+- `rvc_cpu`: bare workers as `BARE_WORKERS` (`RVC_BARE_WORKERS=0` turns them off), `RVC_ZB=1` as `ZB`, `RVC_GPU_COPY=1` marks
   every pixel of a drawn list's copy into RAM and names each new target.
 - Programs: libmedia makes a picture in memory and writes it where a file cannot be mapped for
   writing; nxfiles knows a flat program; tcc copies a section that cannot grow in place; the

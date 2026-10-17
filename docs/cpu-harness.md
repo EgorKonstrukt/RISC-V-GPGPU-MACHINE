@@ -13,9 +13,9 @@ is 5 seconds here and 90 in `rvc_harness`, with the same state sum.
         --send "nano-X -p & sleep 2; TDAWN_AUTO=1 RALERT_SIDE=soviet RALERT_SEED=7 RALERT_FRAMES=300 ralert; echo LX-''DONE\n" ^
         --until "LX-DONE"
 
-It boots the image in `build\images\linux` from power-on every time (a boot is 13 million
-instructions, a tenth of a second; `--image build\images\nommu` is Linux without an MMU, which
-`linux/nommu/test.py` runs with `RVC_BARE_WORKERS=1`, `docs/nommu.md`), takes the harness's `--expect`, `--send`, `--until`,
+It boots the image in `build\images\nommu` from power-on every time, Linux without an MMU once
+that image is made (`docs/nommu.md`; `--kernel mmu` or `--image build\images\linux` is the
+legacy one, a boot of 13 million instructions, a tenth of a second), takes the harness's `--expect`, `--send`, `--until`,
 `--uart-log`, `--ticks`, `--pointer-sweep`, `--desktop` and `--tabs`, and ends with
 what each core ran, the firmware calls and the traps by cause. `--seconds` is the guest's
 time, `--wall` this computer's. Start it from PowerShell or cmd: Git Bash turns `"/ # "` into
@@ -38,8 +38,7 @@ The same interpreter inside the harness, for using the machine by hand at that s
 
     bin\rvc_harness.exe --d3d11 --rvc experiments\rvc_opt --image linux-net --cpu --desktop --viz
 
-(Linux with the MMU: a run with options beyond the terminal's keeps it unless it says
-`--kernel nommu`, `docs/nommu.md`).
+(Linux without the MMU once its image is made, `docs/nommu.md`; `--kernel mmu` is the legacy one).
 
 Everything the harness has is there: its window with the display and the memory view, the
 keys and the pointer, the console, `--expect`, `--send`, `--until`, `--save-state`,
@@ -166,7 +165,8 @@ Tiberian Dawn, Red Alert, the NES, nxphys), nxray and nxpath, libmedia and the p
 desktop's programs (Paint's undo, the viewer's sums, Files' box, a question, the browser's
 counts, the monitor, the launch note). One PASS or FAIL line a case with why and its seconds,
 a summary, and exit 1 on any failure; the consoles are in `build/test_all`. On 15 October 2026
-the default set was 65 cases in 55 to 70 s.
+the default set was 65 cases in 55 to 70 s; on 17 October 109 in 130 s, on Linux without the
+MMU, its default image once made (`--image build/images/linux` is the legacy one).
 
     python tools/test_all.py                 # the default set
     python tools/test_all.py games nes-cells # tags (machine, games, doom, quake, ..., workers, media, desktop) or names

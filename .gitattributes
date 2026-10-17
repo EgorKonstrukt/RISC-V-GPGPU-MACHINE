@@ -5,5 +5,7 @@ linux/prebuilt/Image binary
 linux/prebuilt/root/usr/bin/* binary
 linux/prebuilt/root/usr/lib/*/game binary
 linux/prebuilt/root/usr/bin/nx text eol=lf
+linux/prebuilt/nommu/Image binary
+linux/prebuilt/nommu/root/** binary
 *.sh text eol=lf
 linux/classicube/classicube.patch -text

@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -51,7 +52,7 @@ static inline void dirty(u32 phys) { dirty_bands |= 1u << (((phys - RAM_BASE) >>
 // ---- options and the console ----
 
 struct Options {
-    std::string image = "build/images/linux", uartLog, until;
+    std::string image, uartLog, until;   // image: Linux without an MMU once made, else with it
     std::string pcLog, pcFrom;   // --pc-log: core 0's pc and instructions each pass, once the console has said --pc-from
     std::string countFrom;       // --count-from: every core's instructions from when the console said this
     int untilTimes = 1;          // --until-times: --until said this many times (after --count-from's mark)
@@ -601,11 +602,12 @@ static u32 last_pc[32], last_ins[32];   // core 0's last instructions, for the s
 // what jal or jalr does into ra, ended by the return to its address. Inclusive of what it
 // calls, not of the kernel's work for it; a function that recurses counts its outermost call.
 static bool calls_on = false;
-struct CallFrame { u32 target, ret; u64 at; };
+struct CallFrame { u32 target, ret; u64 at; };   // (ret - 4: the call's own place)
 struct CallCtx { std::vector<CallFrame> stack; u64 clock = 0; std::unordered_map<u32, u32> active; };
 struct CallStat { u64 calls = 0, inclusive = 0, most = 0; };
 static std::unordered_map<u64, CallCtx> call_ctx;
 static std::unordered_map<u64, CallStat> call_stats;   // (the program's table << 32) | the function
+static std::unordered_map<u64, CallStat> call_sites;   // RVC_CALLS_SITES=1: (the function << 32) | where it was called from
 static CallCtx* call_cur = nullptr;
 static u64 call_cur_key = ~0ull;
 
@@ -629,6 +631,8 @@ static void call_step(Core& c, u32 op, u32 rd, u32 rs1, u32 ins, u32 pc, u32 nex
             x.stack.pop_back();
             CallStat& s = call_stats[(key << 32) | f.target];
             u64 spent = x.clock - f.at;
+            static const bool sites = getenv("RVC_CALLS_SITES") && atoi(getenv("RVC_CALLS_SITES")) != 0;
+            if (sites) { CallStat& t = call_sites[((u64)f.target << 32) | (f.ret - 4)]; t.calls++, t.inclusive += spent; }
             if (--x.active[f.target] == 0) {   // (a recursion is one call, its outermost)
                 s.calls++;
                 s.inclusive += spent;
@@ -1030,7 +1034,9 @@ static void mbox_keep() {
         mbox_was[i][6] = word(mc_resume_at(k) + 4);
     }
 }
-static bool bare_workers = getenv("RVC_BARE_WORKERS") && atoi(getenv("RVC_BARE_WORKERS")) != 0;   // (read here: rvc_harness --cpu has no main of this file)
+// (read here: rvc_harness --cpu has no main of this file; on unless RVC_BARE_WORKERS=0, as the MMU
+// kernel gives no program root 0)
+static bool bare_workers = !getenv("RVC_BARE_WORKERS") || atoi(getenv("RVC_BARE_WORKERS")) != 0;
 static inline u32 mbox(int hart, int j, u32 now) { return races_on ? mbox_was[hart][j] : now; }
 
 static u64 run_worker(Core& c, u64 budget) {
@@ -1405,6 +1411,8 @@ static void calls_report(const char* file) {
     for (auto& e : call_stats)
         fprintf(f, "fn %08x %08x %llu %llu %llu\n", (u32)(e.first >> 32), (u32)e.first, (unsigned long long)e.second.calls,
                 (unsigned long long)e.second.inclusive, (unsigned long long)e.second.most);
+    for (auto& e : call_sites)
+        fprintf(f, "site %08x %08x %llu %llu\n", (u32)(e.first >> 32), (u32)e.first, (unsigned long long)e.second.calls, (unsigned long long)e.second.inclusive);
     fclose(f);
     fprintf(stderr, "[calls] %zu functions in %zu contexts, in %s (python tools/mc_candidates.py %s ELF)\n", call_stats.size(), call_ctx.size(), file, file);
 }
@@ -1430,6 +1438,7 @@ int main(int argc, char** argv) {
             return argv[++i];
         };
         if (a == "--image") { std::string v = next("--image"); if (v != "linux-net") opt.image = v; }
+        else if (a == "--kernel") opt.image = next("--kernel") == "mmu" ? "build/images/linux" : "build/images/nommu";
         else if (a == "--expect") { pending = next("--expect"); have_pending = true; }
         else if (a == "--send") { std::string s = unescape(next("--send")); opt.script.push_back({have_pending ? pending : "", s}); have_pending = false; }
         else if (a == "--until") opt.until = next("--until");
@@ -1473,7 +1482,8 @@ int main(int argc, char** argv) {
         else if (a == "--rvc" || a == "--fixed-dt") next(a.c_str());   // (the shader machine's: taken and ignored)
         else if (a == "--help" || a == "-h") {
             printf("rvc_cpu: the machine as an interpreter, for counting instructions (docs/cpu-harness.md)\n"
-                   "  --image DIR|linux-net  the image's folder (default build/images/linux)\n"
+                   "  --image DIR|linux-net  the image's folder (default build/images/nommu once made)\n"
+                   "  --kernel mmu|nommu     build/images/linux (Linux with the MMU, legacy) or build/images/nommu\n"
                    "  --expect T --send T    type the second text when the console has said the first\n"
                    "  --until T              stop when the console says this (after the script)\n"
                    "  --seconds S            stop after S seconds of the guest's time\n"
@@ -1505,6 +1515,11 @@ int main(int argc, char** argv) {
         } else { fprintf(stderr, "rvc_cpu: unknown option %s\n", a.c_str()); return 2; }
     }
     if (!run_lock_take(false, "rvc_cpu")) return kRunLockRefused;
+    if (opt.image.empty()) {
+        std::error_code ec;
+        bool made = std::filesystem::exists("build/images/nommu/linux_payload.bin", ec);
+        opt.image = made ? "build/images/nommu" : "build/images/linux";
+    }
     if (!machine_boot(opt.image, opt.cores)) {
         fprintf(stderr, "rvc_cpu: no image in %s (python tools\\make_linux_image.py)\n", opt.image.c_str());
         return 2;

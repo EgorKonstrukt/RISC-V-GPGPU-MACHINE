@@ -12,9 +12,13 @@ $out = 'build\tick_util'
 New-Item -ItemType Directory -Force $out, logs | Out-Null
 $log = "logs\tick_$Name.log"
 if (Test-Path $log) { throw "log $log exists: pick a new name" }
-$kernel = "$out\vmlinux.nm"
-if (-not (Test-Path $kernel) -or (Get-Item $kernel).LastWriteTime -lt (Get-Item build\images\linux\Image).LastWriteTime) {
-    wsl -- bash -c 'cd ~/shaderemu-linux && toolchain/bin/riscv32-linux-nm -n linux/vmlinux' | Set-Content $kernel -Encoding ascii
+# the harness boots Linux without the MMU once its image is made (docs/nommu.md), and its kernel's names
+$nommu = Test-Path build\images\nommu\linux_payload.bin
+$kernel = if ($nommu) { "$out\vmlinux-nommu.nm" } else { "$out\vmlinux.nm" }
+$image = if ($nommu) { 'build\images\nommu\Image' } else { 'build\images\linux\Image' }
+$vmlinux = if ($nommu) { '~/nm/k-rom/vmlinux' } else { 'linux/vmlinux' }
+if (-not (Test-Path $kernel) -or (Get-Item $kernel).LastWriteTime -lt (Get-Item $image).LastWriteTime) {
+    wsl -- bash -c "cd ~/shaderemu-linux && toolchain/bin/riscv32-linux-nm -n $vmlinux" | Set-Content $kernel -Encoding ascii
 }
 $all = @('--rvc', $Rvc, '--image', 'linux-net', '--no-stdin', '--uart-log', $log,
          '--frame-log', "$out\$Name.frames", '--until', $Until, '--seconds', "$Seconds")

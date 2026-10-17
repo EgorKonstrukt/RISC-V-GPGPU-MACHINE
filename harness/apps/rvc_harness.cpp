@@ -671,11 +671,10 @@ int main(int argc, char** argv) {
     DWORD conMode = 0;
     bool interactive = opt.readStdin && GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &conMode) != 0;
     if (opt.cpu && opt.image.empty()) opt.image = "linux-net";   // (the interpreter boots that one: nothing to ask)
-    // the terminal's Linux is the no-MMU build once it has been made; a run with other arguments
-    // keeps the MMU unless it says otherwise (--kernel)
+    // Linux is the no-MMU build once it has been made, the MMU one (legacy) only by --kernel mmu
     if (opt.kernel.empty()) {
         opt.kernel = "nommu";
-        if (!terminalMode || !linuxBuilt(opt)) opt.kernel = "mmu";
+        if (!linuxBuilt(opt)) opt.kernel = "mmu";
     }
     if (terminalMode && opt.image.empty() && !opt.resume && !interactive) opt.image = "linux-net";
     bool chosen = !opt.image.empty() || opt.payloadSet || !opt.loadState.empty() || opt.resume;
