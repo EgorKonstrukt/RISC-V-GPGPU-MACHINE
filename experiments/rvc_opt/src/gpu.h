@@ -1040,9 +1040,8 @@ uint4 gpu_control(uint2 pos) {
         float2 size = float2(disp.g, disp.b), panel = _InputPointer.zw;
         if (panel.x > 16 && panel.y > 16 && disp.g != 0 && disp.b != 0) {
             // the host gives the pointer in window pixels over the display panel; the picture
-            // sits in it centred and scaled exactly as the display shows it
-            float scale = min((panel.x - 16) / size.x, (panel.y - 16) / size.y);
-            if (scale >= 1) scale = floor(scale);
+            // fills it centred, scaled exactly as the display shows it
+            float scale = min(panel.x / size.x, panel.y / size.y);
             float2 q = clamp((_InputPointer.xy - (panel - size * scale) * 0.5) / scale, 0, size - 1);
             state.rg = (uint2)q;
         }

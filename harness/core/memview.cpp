@@ -102,21 +102,26 @@ float3 display(float2 p, float2 size) {
     uint4 ctrl = ram(DispCtrl);
     uint mode = ctrl.r, w = ctrl.g, h = ctrl.b;
     if (mode < 1 || mode > 4 || w == 0 || h == 0 || w > 2048 || h > 2048) return c;
-    // (the tick's pointer, gpu.h, places the picture by the same rule)
-    float scale = min((size.x - 16) / w, (size.y - 16) / h);
-    if (scale >= 1) scale = floor(scale);   // whole multiples keep pixels square and sharp
-    float2 q = (p - (size - float2(w, h) * scale) * 0.5) / scale;
-    if (q.x < 0 || q.y < 0 || q.x >= w || q.y >= h) return c;
-    if (scale >= 1) return pixelAt(int2(floor(q)), ctrl, c);
-    // shrunk: the mean of n x n taps spread over the display pixels this one covers
-    float foot = 1 / scale;
-    uint n = foot <= 1.5 ? 2 : foot <= 2.5 ? 3 : 4;
+    // as large as the panel holds it, centred (the tick's pointer, gpu.h, by the same rule)
+    float scale = min(size.x / w, size.y / h);
+    float2 corner = (size - float2(w, h) * scale) * 0.5;
+    float2 lo = (floor(p) - corner) / scale, hi = lo + 1 / scale;   // this pixel's box, in display pixels
+    if (hi.x <= 0 || hi.y <= 0 || lo.x >= w || lo.y >= h) return c;
+    // the box filter: each display pixel weighted by how much of this pixel it covers
+    float2 a = max(lo, 0), b = min(hi, float2(w, h));
+    int2 first = int2(floor(a)), last = min(int2(ceil(b)) - 1, int2(first + 7));
     float3 sum = 0;
-    for (uint k = 0; k < n * n; k++) {
-        float2 t = q + ((float2(k % n, k / n) + 0.5) / n - 0.5) * foot;
-        sum += pixelAt(int2(clamp(t, 0, float2(w, h) - 1)), ctrl, c);
+    float total = 0;
+    for (int y = first.y; y <= last.y; y++) {
+        float wy = min(b.y, y + 1) - max(a.y, y);
+        for (int x = first.x; x <= last.x; x++) {
+            float wt = (min(b.x, x + 1) - max(a.x, x)) * wy;
+            sum += pixelAt(int2(x, y), ctrl, c) * wt;
+            total += wt;
+        }
     }
-    return sum / (n * n);
+    float inside = total * scale * scale;   // the share of this pixel the picture covers
+    return lerp(c, sum / max(total, 1e-6), saturate(inside));
 }
 
 struct Out {
@@ -344,19 +349,13 @@ HWND memoryViewCreateWindow() {
     wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
     wc.lpszClassName = L"ShaderEmuMemoryView";
     RegisterClassW(&wc);
-    // the display panel as large as a whole multiple of an 800x600 desktop fits, the memory
-    // strips beside it, the info bar below (gpu.h places the picture in it the same way)
+    // the display panel as large as a 4:3 desktop fits, the memory strips beside it, the info
+    // bar below (the picture fills the panel, resampled; gpu.h maps the pointer the same way)
     RECT work{0, 0, 1920, 1080};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     LONG bar = (LONG)memoryViewBar(), frame = (LONG)(48 * g_ui), side = (LONG)(24 * g_ui), memLeast = (LONG)(320 * g_ui);
     LONG roomW = work.right - work.left - side, roomH = work.bottom - work.top - frame - bar;
-    LONG panelW = 0, panelH = 0;
-    for (LONG k = 4; k >= 1 && !panelW; --k)
-        if (800 * k + 16 + memLeast <= roomW && 600 * k + 16 <= roomH) panelW = 800 * k + 16, panelH = 600 * k + 16;
-    if (!panelW) {   // smaller than 1:1: the display shrunk, filtered
-        panelH = roomH;
-        panelW = (std::min)(roomW - memLeast, panelH * 4 / 3);
-    }
+    LONG panelH = roomH, panelW = (std::min)(roomW - memLeast, panelH * 4 / 3);
     LONG memW = (std::max)(memLeast, (std::min)(roomW - panelW, panelH * 3 / 4));
     g_dispShare = (float)panelW / (panelW + memW) + 0.5f / (panelW + memW);
     RECT r{0, 0, panelW + memW, panelH + bar};
