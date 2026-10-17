@@ -35,7 +35,8 @@
   ended passes early by reason and place, the kernel's idle loop apart, and a WORKERS line.
   In the harness an early end costs 0.2 ms, not the rest of the pass (a pass is 0.2 ms + 0.24
   us an instruction); in the world's fixed mode it costs the instructions.
-- The write cache is three tables (64 + 32 + 32 buckets of three). Its stalls were collisions
+- The write cache is three tables (64 + 32 + 16 buckets of three: core 0 is 500 texels, 8 rows,
+  as a worker of 2^6; the third at 32 ended 0.02% fewer of Doom's passes). Its stalls were collisions
   at 50 to 80% full: another hash, or one that changes with a seed, did next to nothing in
   simulation, another bucket to try did (Doom 1,840 full-cache passes to 93). Four tables
   measured 0.6% slower.

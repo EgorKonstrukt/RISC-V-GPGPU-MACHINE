@@ -194,7 +194,7 @@
                 uint group = primitive;
             #endif
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
-                if (tick_copy == 0 && group == 0) tick_rect(stream, 0, 0, 64, STATE_ROWS);
+                if (tick_copy == 0 && group == 0) tick_rect(stream, 0, 0, 64, CORE0_ROWS);
 #if CORES > 1
                 if (_Init) return;
                 MC_GEO_READ
@@ -538,6 +538,9 @@
 #endif
                     // a parallel copy or fill: the bands from its destination to its end
                     uint4 op = STATE_TEX_HART(uint2(38, 0), 0);
+#ifdef CSR_FIELDS
+                    op.g = STATE_TEX_HART(uint2(37, 0), 0).a & 0x7fffffff;   // (no translation: types.h)
+#endif
                     uint lo = (op.g >> 22) & 31, hi = min((op.g + op.b - 1) >> 22, 31u);
                     if (op.b != 0 && hi >= lo) changed |= ((2u << hi) - 1) & ~((1u << lo) - 1);
                 }
@@ -566,8 +569,8 @@
             // what the cores stored is drawn as points, each made the rectangle it stands for
             // by commit_geom: a texel for each entry of a bucket of a write cache and for the store
             // a full cache had no room for, the rows of its destination for a copy or a fill. Point
-            // n is core 0's bucket n (256 of them, then its last store and its copy), and from
-            // 258 on 130 a worker (128 buckets). Where the stores are is read from the tick's
+            // n is core 0's bucket n (256 places, 112 used, then its last store and its copy), and
+            // from 258 on 130 a worker (128 places). Where the stores are is read from the tick's
             // targets, as the tick left them: a worker that did not run has its last pass's
             // there, whose texels are then written again as they are, which is harmless. The
             // bands the commit draws whole are then only those something else wrote.
@@ -636,7 +639,7 @@
                 uint last = core == 0 ? 256 : 128;
                 if (e < last) {
                     // a bucket of the cache: an entry's tag is the texel's number and one
-                    if (e >= (2u << bits)) return;
+                    if (e >= L1_BUCKETS_OF(bits)) return;
                     uint4 tags = tick_state(core, L1_STATE_AT + e * L1_STRIDE);
                     for (uint n = 0; n < 3; n++) {
                         uint tag = idx_uint4(tags, n);
@@ -652,6 +655,9 @@
                     // them, which the tick sees to; or else the one that ended it)
                     uint stalled = tick_state(core, 28).r, lazy = tick_state(core, 40).a;
                     uint4 op = tick_state(core, 38);
+#ifdef CSR_FIELDS
+                    op.g = tick_state(core, 37).a & 0x7fffffff;   // (no translation: types.h)
+#endif
                     if (lazy != 0) {
                         uint first = tick_state(core, 39).r >> 4;
                         commit_rows(stream, first, min(first + (lazy >> 2) - 1, COMMIT_RAM_TEXELS - 1));

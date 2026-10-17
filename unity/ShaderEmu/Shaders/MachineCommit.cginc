@@ -2,6 +2,9 @@
 // Commit, which draws the state rows and whole bands, and MachineCommitPoints.shader, which
 // draws what the cores stored as points. Include after UnityCG.cginc and MachineBlit.cginc.
 float _Init, _InitRaw;
+// MachineTick.shader's machine: its CSRs are fields of the state, with no table to commit
+#define SBI_HLE
+#define NO_PAGING
 
 Texture2D<float4> _Data_RAM_R;
 Texture2D<float4> _Data_RAM_G;

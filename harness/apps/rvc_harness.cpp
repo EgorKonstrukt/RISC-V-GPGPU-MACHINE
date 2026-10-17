@@ -864,6 +864,8 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> profBase(kProfCount, 0);
     double timeBase = 0;
     uint32_t sentTag = 0, consumedTag = 0, sentChar = 0;
+    uint32_t conWritten = 0;   // the console's bytes taken so far (docs/console.md)
+    bool conSeen = false;
     if (!opt.loadState.empty()) {
         std::string snap;
         SnapshotHeader hdr{};
@@ -1195,8 +1197,10 @@ int main(int argc, char** argv) {
         }
         if (cpuRunning) return;   // (the rest is the shader's processor, which is not running)
         commits = texel(28, 2);
-        consumedTag = texel(9, 3);
-        if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer
+        // what the guest has taken of the input: the UART's tag, or the console's word (docs/console.md)
+        const unsigned con = 64 + kControlTexels + kConHost + 1;   // the guest's words, then the ring
+        bool hasCon = raw.size() >= (con + 1 + kConRing / 16) * 16;
+        consumedTag = texel(9, 3) + (hasCon ? texel(con, 0) : 0);        if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer
         if (haveClock) guestInstructions += (uint32_t)(clock - lastClock);
         if (opt.cores > 1 && raw.size() >= (64 + kControlTexels + kNetRead) * 16) {
             // this pass: the workers' instructions, how many ran, how many a whole pass, how many only looked for a job
@@ -1233,6 +1237,19 @@ int main(int argc, char** argv) {
         lastClock = clock;
         haveClock = true;
 
+        if (hasCon) {
+            // the console's ring, written since the last row
+            uint32_t written = texel(con, 1);
+            if (!conSeen) conWritten = written, conSeen = true;
+            if (written - conWritten > kConRing) conWritten = written - kConRing;
+            std::string out;
+            for (; conWritten != written; ++conWritten) {
+                uint32_t at = conWritten & (kConRing - 1);
+                char c = (char)((texel(con + 1 + at / 16, (at / 4) % 4) >> (8 * (at % 4))) & 0xFF);
+                if (c) out += c;
+            }
+            if (!out.empty()) consoleOut(out);
+        }
         uint32_t ptr = texel(11, 3);
         if (ptr == 0xFFFFFFFFu) return;
         uint32_t n = (std::min)(ptr + 1, 64u);
@@ -1261,7 +1278,7 @@ int main(int argc, char** argv) {
                 if (d.rfind("L1_WAYS=", 0) == 0) ways = (unsigned)atoi(d.c_str() + 8);
                 if (d.rfind("L1_TABLE_BITS=", 0) == 0) tableBits = (unsigned)atoi(d.c_str() + 14);
             }
-            for (size_t b = 0; b < (2u << tableBits); ++b) {
+            for (size_t b = 0; b < ((7u << tableBits) >> 2); ++b) {
                 const uint32_t* w = (const uint32_t*)(zone.data() + ((bo.tickRows == 64 ? 1068 : 44) + b * (ways + 1)) * 16);
                 for (unsigned e = 0; e < ways; ++e)
                     if (w[e]) l1Samples.push_back((w[e] - 1) << 4);
@@ -1418,6 +1435,7 @@ int main(int argc, char** argv) {
                 sentChar = group;
                 mat.setInt("_UdonUARTInChar", (int64_t)group);
                 mat.setInt("_UdonUARTInTag", sentTag);
+                backend.conDelivered = true;
             }
         }
 
@@ -1895,7 +1913,7 @@ int main(int argc, char** argv) {
             const uint32_t* geo = (const uint32_t*)row.data() + (64 + 0x3d) * 4;
             // the geometry: how many workers, and their caches' size (all alike)
             unsigned workers = geo[1], bits = geo[2] >= 3 && geo[2] <= 6 ? geo[2] : 0;
-            unsigned rows = bits ? (44 + 8 + (2u << bits) * 4 + 63) / 64 : 0, per = rows ? 248 / rows : 1;
+            unsigned rows = bits ? (44 + 8 + ((7u << bits) >> 2) * 4 + 63) / 64 : 0, per = rows ? 248 / rows : 1;
             uint64_t workersRan = 0;
             for (int c = 0; c < opt.cores; ++c) {
                 if (c != 0 && (!rows || (unsigned)c > workers)) continue;

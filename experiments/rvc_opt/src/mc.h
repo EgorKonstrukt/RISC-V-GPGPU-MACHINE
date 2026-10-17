@@ -75,12 +75,14 @@ void mc_enter() {
         cpu.xreg[2] = box.z;
         cpu.xreg[10] = hart;
         cpu.csr.privilege = 0;
+#ifndef NO_PAGING
 #ifdef BARE_WORKERS
         cpu.mmu.mode = box.w != 0 ? 1 : 0;   // root 0: a program of a kernel without an MMU
 #else
         cpu.mmu.mode = 1;
 #endif
         cpu.mmu.ppn = box.w;
+#endif
         cpu.stall = 0;
         mc_word = 1;
     } else if (box.x == MC_STOP || (mc_word & 1) == 0) {

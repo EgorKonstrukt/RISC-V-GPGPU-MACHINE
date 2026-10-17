@@ -200,6 +200,11 @@ public:
             mat.setInt("_CountMerged", merge ? 2 : 1);
             const float* z = kGpuControlZone;
             crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{z[0], z[1], z[2], z[3], 1});
+            if (conDelivered) {
+                const float* c = kConZone;
+                crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{c[0], c[1], c[2], c[3], 1});
+                conDelivered = false;
+            }
             if (cores_ > 16 && activeCores_ > 1) {
                 const float* s = kCoreStatsZone;
                 crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{s[0], s[1], s[2], s[3], 1});

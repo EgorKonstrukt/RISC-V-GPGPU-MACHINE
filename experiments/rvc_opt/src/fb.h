@@ -10,12 +10,12 @@
 // The write cache holds RAM texels (four words), not words: stores come in runs (a register
 // save, a structure, a copy), and a run then takes one entry. A bucket is the tags of its
 // L1_WAYS entries in one state texel (texel number + 1; 0 is free) and then their texels.
-// There are three tables with different hashes, one of 2^L1_TABLE_BITS buckets and two of half
-// that; a texel goes to the next only when its bucket in the one before is full, so most
+// There are three tables with different hashes, of 2^L1_TABLE_BITS buckets, half and a quarter
+// of that; a texel goes to the next only when its bucket in the one before is full, so most
 // lookups read one bucket. Entries are filled in order and never freed within a pass.
-//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 384 texels, an array of 512 in the tick
-//   L1_TABLE_BITS 6, L1_WAYS 4:               512 texels, arrays of 512 and 128
-//   L1_TABLE_BITS 7, L1_WAYS 3:               768 texels, an array of 1,024
+//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 336 texels, an array of 448 in the tick
+//   L1_TABLE_BITS 6, L1_WAYS 4:               448 texels, arrays of 448 and 112
+//   L1_TABLE_BITS 7, L1_WAYS 3:               672 texels, an array of 896
 // The first is 5% more instructions a second than the second in spite of its stalls: four
 // entries a bucket cost every load and store, and more than about 1,000 state texels (each is
 // a pixel that runs the whole tick) cost every instruction.
@@ -27,7 +27,8 @@
 #define L1_WAYS 3
 #endif
 #define L1_TABLE (1 << L1_TABLE_BITS)
-#define L1_BUCKETS (2 * L1_TABLE)
+#define L1_BUCKETS (L1_TABLE + L1_TABLE / 2 + L1_TABLE / 4)
+#define L1_BUCKETS_OF(bits) ((7u << (bits)) >> 2)   // the buckets of a cache of 2^bits
 #define L1_STRIDE (L1_WAYS + 1)
 #define L1_ENTRIES (L1_BUCKETS * L1_STRIDE)
 // the half tables' hashes of texel t into n bits: its low bits moved round, xor higher ones
@@ -42,11 +43,11 @@
 #define L1_NOW_TABLE (1u << L1_NOW_BITS)
 #define L1_B0(t) ((t) & (L1_NOW_TABLE - 1))
 #define L1_B1(t) (L1_NOW_TABLE + L1_H1(t, L1_NOW_BITS - 1))
-#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + L1_H2(t, L1_NOW_BITS - 1))
+#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + (L1_H2(t, L1_NOW_BITS - 1) & ((L1_NOW_TABLE >> 2) - 1)))
 #else
 #define L1_B0(t) ((t) & (L1_TABLE - 1))
 #define L1_B1(t) (L1_TABLE + L1_H1(t, L1_TABLE_BITS - 1))
-#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + L1_H2(t, L1_TABLE_BITS - 1))
+#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + (L1_H2(t, L1_TABLE_BITS - 1) & ((L1_TABLE >> 2) - 1)))
 #endif
 #endif
 

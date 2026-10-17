@@ -70,7 +70,7 @@ Shader "ShaderEmu/MachineTick"
             #pragma geometry tick_geom
             #pragma fragment frag
             #pragma editor_sync_compilation
-            // One permutation only: the full machine, started in the kernel with no firmware
+            // One permutation only: Linux's machine, started in the kernel with no firmware
             // (docs/boot.md). Images that need machine-mode start-up do not boot on it.
             #define SBI_HLE
             // Built by fxc2 (docs/fxc2.md): the write cache and the TLB as locals. Unity
@@ -78,6 +78,8 @@ Shader "ShaderEmu/MachineTick"
             #define __FXC2__
             // Single-precision float instructions (docs/fpu.md), as the harness's full machine has.
             #define FPU
+            // satp hardwired to 0: the world runs Linux without an MMU (docs/nommu.md).
+            #define NO_PAGING
             // The tick says which 4 MB bands of RAM it wrote: Machine.shader draws only those.
             #define COMMIT_BANDS
 
@@ -164,7 +166,7 @@ Shader "ShaderEmu/MachineTick"
                 // (a primitive is 64 vertices at most: the mesh has one for every sixteen cores)
                 if (which >= (CORES + 15) / 16 || (uint)_ScreenParams.x != TICK_MRT_W || (uint)_ScreenParams.y != TICK_STATE_ROWS * TICK_MRT_BANDS) return;
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
-                if (which == 0) tick_rect(stream, 0, 0, 64, STATE_ROWS);
+                if (which == 0) tick_rect(stream, 0, 0, 64, CORE0_ROWS);
                 if (_Init) return;
                 MC_GEO_READ
                 // (being laid out anew, there are no workers: the bands are zeros meanwhile, Unpack)
@@ -223,8 +225,10 @@ Shader "ShaderEmu/MachineTick"
 #if L1_WAYS == 4
                 uint4 l1_tag[L1_BUCKETS];
 #endif
+#ifndef NO_PAGING
                 uint tlb2_tag[3 * TLB2_N];
                 uint tlb2_pg[3 * TLB2_N];
+#endif
 #endif
 
                 _UdonUARTInChar = _UartInLo | (_UartInHi << 16);

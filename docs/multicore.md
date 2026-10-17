@@ -246,10 +246,15 @@ cache, so the cache's size is the worker's size:
 
 | Tables of 2^bits buckets | New stores a pass | Texels | Tiles | Fit in the band |
 |---|---|---|---|---|
-| 6 (core 0's, and a worker's until now) | 6 KB | 564 | 9 | 7 |
-| 5 | 3 KB | 308 | 5 | 12 |
-| 4 | 1.5 KB | 180 | 3 | 21 (the machine has 15 workers at most) |
-| 3 | 0.75 KB | 116 | 2 | 32 |
+| 6 (core 0's, and a worker's until now) | 5.25 KB | 500 | 8 | 8 |
+| 5 | 2.6 KB | 276 | 5 | 12 |
+| 4 | 1.3 KB | 164 | 3 | 21 (the machine has 15 workers at most) |
+| 3 | 0.66 KB | 108 | 2 | 32 |
+
+The tables are 2^bits buckets, half and a quarter of that (17 October 2026; the third was half
+before, 564 texels and 9 tiles at 6 bits): core 0 is then 8 x 8 pixels of the tick's targets,
+as a worker. Under `RVC_WCACHE=1` it ended more passes full, Doom's timedemo 549 to 880 of
+about 1.4 million, Quake III to frame 200 1,165 to 1,465, nxray 119 to 180.
 
 So it is few workers that store much in a pass or many that store little, or any mix. A
 worker whose cache is full ends its pass there, as any core does, and goes on in the next.

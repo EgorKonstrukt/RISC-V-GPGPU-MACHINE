@@ -10,12 +10,12 @@
 // The write cache holds RAM texels (four words), not words: stores come in runs (a register
 // save, a structure, a copy), and a run then takes one entry. A bucket is the tags of its
 // L1_WAYS entries in one state texel (texel number + 1; 0 is free) and then their texels.
-// There are three tables with different hashes, one of 2^L1_TABLE_BITS buckets and two of half
-// that; a texel goes to the next only when its bucket in the one before is full, so most
+// There are three tables with different hashes, of 2^L1_TABLE_BITS buckets, half and a quarter
+// of that; a texel goes to the next only when its bucket in the one before is full, so most
 // lookups read one bucket. Entries are filled in order and never freed within a pass.
-//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 384 texels, an array of 512 in the tick
-//   L1_TABLE_BITS 6, L1_WAYS 4:               512 texels, arrays of 512 and 128
-//   L1_TABLE_BITS 7, L1_WAYS 3:               768 texels, an array of 1,024
+//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 336 texels, an array of 448 in the tick
+//   L1_TABLE_BITS 6, L1_WAYS 4:               448 texels, arrays of 448 and 112
+//   L1_TABLE_BITS 7, L1_WAYS 3:               672 texels, an array of 896
 // The first is 5% more instructions a second than the second in spite of its stalls: four
 // entries a bucket cost every load and store, and more than about 1,000 state texels (each is
 // a pixel that runs the whole tick) cost every instruction.
@@ -27,7 +27,8 @@
 #define L1_WAYS 3
 #endif
 #define L1_TABLE (1 << L1_TABLE_BITS)
-#define L1_BUCKETS (2 * L1_TABLE)
+#define L1_BUCKETS (L1_TABLE + L1_TABLE / 2 + L1_TABLE / 4)
+#define L1_BUCKETS_OF(bits) ((7u << (bits)) >> 2)   // the buckets of a cache of 2^bits
 #define L1_STRIDE (L1_WAYS + 1)
 #define L1_ENTRIES (L1_BUCKETS * L1_STRIDE)
 // the half tables' hashes of texel t into n bits: its low bits moved round, xor higher ones
@@ -42,11 +43,11 @@
 #define L1_NOW_TABLE (1u << L1_NOW_BITS)
 #define L1_B0(t) ((t) & (L1_NOW_TABLE - 1))
 #define L1_B1(t) (L1_NOW_TABLE + L1_H1(t, L1_NOW_BITS - 1))
-#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + L1_H2(t, L1_NOW_BITS - 1))
+#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + (L1_H2(t, L1_NOW_BITS - 1) & ((L1_NOW_TABLE >> 2) - 1)))
 #else
 #define L1_B0(t) ((t) & (L1_TABLE - 1))
 #define L1_B1(t) (L1_TABLE + L1_H1(t, L1_TABLE_BITS - 1))
-#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + L1_H2(t, L1_TABLE_BITS - 1))
+#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + (L1_H2(t, L1_TABLE_BITS - 1) & ((L1_TABLE >> 2) - 1)))
 #endif
 #endif
 
@@ -111,6 +112,80 @@ bool has_csr_access_privilege(uint addr) {
 #endif
 }
 
+#ifdef CSR_FIELDS
+// The CSRs Linux uses, as fields of the CPU (types.h). Nothing runs in machine mode, so the
+// machine's own CSRs read as zeros; a write to a CSR that is not kept is dropped.
+uint csr_status(uint mask) {
+    uint s = cpu.mstatus & mask;
+#ifdef FPU
+    // (FS reads dirty whenever it is on, with SD: see the table's version below)
+    if ((cpu.mstatus & 0x6000) != 0) s |= 0x80006000;
+#endif
+    return s;
+}
+uint read_mstatus() { return csr_status(0xffffffff); }
+uint read_mip() { return cpu.mip; }
+uint read_mie() { return cpu.mie; }
+
+uint read_csr_raw(uint address) {
+    PROF(PROF_csr_read)
+    [forcecase]
+    switch (address & 0x1fff) {
+        case CSR_MISA: return 0x40141101;
+        case 0x001: return cpu.fcsr & 0x1f;
+        case 0x002: return (cpu.fcsr >> 5) & 7;
+        case 0x003: return cpu.fcsr & 0xff;
+        case CSR_SSTATUS: return csr_status(0x000de162);
+        case CSR_MSTATUS: return csr_status(0xffffffff);
+        case CSR_SIE: return cpu.mie & 0x222;
+        case CSR_MIE: return cpu.mie;
+        case CSR_SIP: return cpu.mip & 0x222;
+        case CSR_MIP: return cpu.mip;
+        case CSR_STVEC: return cpu.stvec;
+        case 0x106: return cpu.scounteren;
+        case _CSR_SSCRATCH: return cpu.sscratch;
+        case CSR_SEPC: return cpu.sepc;
+        case CSR_SCAUSE: return cpu.scause;
+        case CSR_STVAL: return cpu.stval;
+        case CSR_TIME: return cpu.clint.mtime_lo;
+        case CSR_MCYCLE: return cpu.clock;
+        case CSR_CYCLE: return cpu.clock;
+#if CORES > 1
+        case CSR_MHARTID: return hart;
+#endif
+        case CSR_RNG: return xorshift(asuint(_Time.w));
+        case CSR_PLAYER_ID: return _PlayerID;
+    }
+    return 0;
+}
+
+void write_csr_raw(uint address, uint value) {
+    PROF(PROF_csr_write)
+    irq_quiet = false;
+    [forcecase]
+    switch (address & 0x1fff) {
+        case 0x001: cpu.fcsr = (cpu.fcsr & ~0x1fu) | (value & 0x1f); break;
+        case 0x002: cpu.fcsr = (cpu.fcsr & ~0xe0u) | ((value & 7) << 5); break;
+        case 0x003: cpu.fcsr = value & 0xff; break;
+        case CSR_SSTATUS: cpu.mstatus = (cpu.mstatus & ~0x000de162u) | (value & 0x000de162); hot_flush(); break;
+        case CSR_MSTATUS: cpu.mstatus = value; hot_flush(); break;
+        case CSR_SIE: cpu.mie = (cpu.mie & ~0x222u) | (value & 0x222); break;
+        case CSR_MIE: cpu.mie = value; break;
+        case CSR_SIP: cpu.mip = (cpu.mip & ~0x222u) | (value & 0x222); break;
+        case CSR_MIP: cpu.mip = value; break;
+        case CSR_STVEC: cpu.stvec = value; break;
+        case 0x106: cpu.scounteren = value; break;
+        case _CSR_SSCRATCH: cpu.sscratch = value; break;
+        case CSR_SEPC: cpu.sepc = value; break;
+        case CSR_SCAUSE: cpu.scause = value; break;
+        case CSR_STVAL: cpu.stval = value; break;
+        case CSR_MEMOP_SRC: cpu.memop_src_v = value; break;
+        case CSR_MEMOP_DST: cpu.memop_dst_v = value; break;
+        case CSR_MEMOP_N: cpu.memop_n = value; break;
+        case CSR_MEMOP_OP: cpu.stall = value == 2 ? STALL_MEMOP_FILL : STALL_MEMOP_COPY; break;   // 2: a fill
+    }
+}
+#else
 // SSTATUS, SIE, and SIP are subsets of MSTATUS, MIE, and MIP
 uint read_csr_raw(uint address) {
     PROF(PROF_csr_read)
@@ -256,6 +331,8 @@ else if (cpu.cache.csr_cache_14_addr == 0xffffffff || cpu.cache.csr_cache_14_add
     cpu.stall = STALL_CSR_CACHE;
 }
 
+
+#endif
 
 uint get_csr(uint address, inout ins_ret ret) {
     if (has_csr_access_privilege(address)) {

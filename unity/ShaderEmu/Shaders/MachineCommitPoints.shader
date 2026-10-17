@@ -79,8 +79,8 @@ Shader "ShaderEmu/MachineCommitPoints"
             }
 
             #define COMMIT_RAM_TEXELS (2048u * (4096u - 64u))
-            // Point n is core 0's bucket n (256 of them, then its last store and its copy), and
-            // from 258 on 130 a worker (128 buckets, its last store, its copy).
+            // Point n is core 0's bucket n (256 places, 112 used, then its last store and its
+            // copy), and from 258 on 130 a worker (128 places, its last store, its copy).
             [maxvertexcount(12)]
             void commit_geom(point point_id IN[1], inout TriangleStream<point_v2f> stream) {
                 _SelfTexture2D.GetDimensions(s_dim.x, s_dim.y);
@@ -99,7 +99,7 @@ Shader "ShaderEmu/MachineCommitPoints"
                 uint last = core == 0 ? 256 : 128;
                 if (e < last) {
                     // a bucket of the cache: an entry's tag is the texel's number and one
-                    if (e >= (2u << bits)) return;
+                    if (e >= L1_BUCKETS_OF(bits)) return;
                     uint4 tags = tick_state(core, L1_STATE_AT + e * L1_STRIDE);
                     for (uint n = 0; n < 3; n++) {
                         uint tag = idx_uint4(tags, n);
@@ -113,6 +113,9 @@ Shader "ShaderEmu/MachineCommitPoints"
                     // a copy or a fill: the texels from its destination to its end, row by row
                     uint stalled = tick_state(core, 28).r;
                     uint4 op = tick_state(core, 38);
+#ifdef CSR_FIELDS
+                    op.g = tick_state(core, 37).a & 0x7fffffff;   // (no translation: types.cginc)
+#endif
                     if ((stalled != STALL_MEMOP_COPY && stalled != STALL_MEMOP_FILL) || op.b == 0) return;
                     uint t0 = op.g >> 4, t1 = min((op.g + op.b - 1) >> 4, COMMIT_RAM_TEXELS - 1);
                     if (t0 > t1) return;

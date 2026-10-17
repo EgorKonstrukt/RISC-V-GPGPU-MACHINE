@@ -174,12 +174,30 @@ DEF(ebreak, FormatEmpty, { // system
     // unnecessary? (a worker core's way to park itself until its next start: mc.h)
     MC_PARK(MC_PARKED_EBREAK)
 })
+static uint pass_mtime_lo, pass_mtime_hi;
+#ifdef CSR_FIELDS
+// The supervisor's timer interrupt is pending from the pass its deadline is reached in until
+// the next deadline is set; the time is the same for a whole pass.
+bool timer_due() {
+    return (cpu.clint.mtimecmp_lo != 0 || cpu.clint.mtimecmp_hi != 0) && (pass_mtime_hi > cpu.clint.mtimecmp_hi || (pass_mtime_hi == cpu.clint.mtimecmp_hi && pass_mtime_lo >= cpu.clint.mtimecmp_lo));
+}
+#define TIMER_PREPARE { cpu.clint.mtime_lo = pass_mtime_lo; cpu.clint.mtime_hi = pass_mtime_hi; if (timer_due()) cpu.mip |= MIP_STIP; }
+#else
+#define TIMER_PREPARE
+#endif
 #ifdef SBI_HLE
 // The supervisor's calls to firmware (SBI), answered by the machine itself: with SBI_HLE it
 // starts the kernel in supervisor mode and runs no machine-mode firmware (docs/boot.md).
 void sbi_call() {
     uint ext = xr[17], a0 = xr[10];
     uint error = 0, value = 0;
+#ifdef CSR_FIELDS
+    if (ext == 0x54494D45 || ext == 0) {
+        cpu.clint.mtimecmp_lo = a0;
+        cpu.clint.mtimecmp_hi = xr[11];
+        cpu.mip = timer_due() ? cpu.mip | MIP_STIP : cpu.mip & ~MIP_STIP;
+    }   // (the console is memory the kernel writes itself: docs/console.md)
+#else
     if (ext == 0x54494D45 || ext == 0) {
         // set_timer: the timer interrupt stays pending until the next deadline is set
         cpu.clint.mtimecmp_lo = a0;
@@ -196,7 +214,9 @@ void sbi_call() {
         } else {
             value = 0xffffffff;
         }
-    } else if (ext == 0x10) {
+    }
+#endif
+    else if (ext == 0x10) {
         // base: specification 0.2, an implementation of our own, and which extensions exist
         uint fn = xr[16];
         value = fn == 0 ? 2 : fn == 1 ? 0x454d55 : fn == 2 ? 1 : (fn == 3 && (a0 == 0x54494D45 || a0 <= 2)) ? 1 : 0;
@@ -974,18 +994,19 @@ ins_ret ins_select_l1(L1P uint ins_word, inout ins_ret ret) {
 
 
 // _Time is constant for the whole pass, so the timer value is computed once.
-static uint pass_mtime_lo, pass_mtime_hi;
 #ifdef NO_DOUBLES
 uniform uint _HostMtimeLo, _HostMtimeHi;  // the same value, computed by the host
 void time_prepare() {
     pass_mtime_lo = _HostMtimeLo;
     pass_mtime_hi = _HostMtimeHi;
+    TIMER_PREPARE
 }
 #else
 void time_prepare() {
     double mtime = (double)_Time.x * 1000000.0 * 0.1;
     pass_mtime_lo = (uint)(floor(glsl_mod(mtime, 4294967296.0)));
     pass_mtime_hi = (uint)(mtime / 4294967296.0);
+    TIMER_PREPARE
 }
 #endif
 
@@ -1415,6 +1436,7 @@ bool memop_lazy_l1(L1P bool fill, uint src_p, uint dst) {
 }
 #endif
 
+
 void emulate_l1(L1P0) {
     uint ins_word = 0;
     ins_ret ret = ins_ret_noop();
@@ -1528,6 +1550,19 @@ void emulate_l1(L1P0) {
         ret.trap.value = cpu.pc;
     }
 
+#ifdef CSR_FIELDS
+    // Nothing below can have an effect while irq_quiet holds and no trap is pending.
+    if (irq_quiet && !ret.trap.en) {
+        PROF(PROF_irq_gated)
+        cpu.pc = ret.pc_val;
+        return;
+    }
+    MC_FAULT(ret)   // (a worker core in user mode stops where it is: mc.h)
+    bool e_no_trap = !ret.trap.en;
+    handle_irq_and_trap(ret, cpu.mip);
+    irq_quiet = e_no_trap && !irq_last_handled && cpu.stall == 0;
+    cpu.pc = ret.pc_val;
+#else
     // handle CLINT IRQs
     cpu.clint.mtime_lo = pass_mtime_lo;
     cpu.clint.mtime_hi = pass_mtime_hi;
@@ -1592,6 +1627,7 @@ void emulate_l1(L1P0) {
 
     // ret.pc_val should be set to pc+4 by default
     cpu.pc = ret.pc_val;
+#endif
 
 #ifndef NO_PAGING
     {

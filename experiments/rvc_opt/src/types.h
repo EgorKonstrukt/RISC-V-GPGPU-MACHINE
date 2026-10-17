@@ -1,6 +1,12 @@
 #ifndef TYPES_H
 #define TYPES_H
 
+// Linux without an MMU, entered in supervisor mode: its CSRs are fields of the CPU's texels 0
+// to 2, with no CSR table and no CSR cache (docs/nommu.md, "The state").
+#if defined(NO_PAGING) && defined(SBI_HLE) && !defined(CSR_TABLE)
+#define CSR_FIELDS
+#endif
+
 #define glsl_mod(x,y) (((x)-(y)*floor((x)/(y)))) 
 
 
@@ -34,12 +40,12 @@
 // The write cache holds RAM texels (four words), not words: stores come in runs (a register
 // save, a structure, a copy), and a run then takes one entry. A bucket is the tags of its
 // L1_WAYS entries in one state texel (texel number + 1; 0 is free) and then their texels.
-// There are three tables with different hashes, one of 2^L1_TABLE_BITS buckets and two of half
-// that; a texel goes to the next only when its bucket in the one before is full, so most
+// There are three tables with different hashes, of 2^L1_TABLE_BITS buckets, half and a quarter
+// of that; a texel goes to the next only when its bucket in the one before is full, so most
 // lookups read one bucket. Entries are filled in order and never freed within a pass.
-//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 384 texels, an array of 512 in the tick
-//   L1_TABLE_BITS 6, L1_WAYS 4:               512 texels, arrays of 512 and 128
-//   L1_TABLE_BITS 7, L1_WAYS 3:               768 texels, an array of 1,024
+//   L1_TABLE_BITS 6, L1_WAYS 3 (the default): 336 texels, an array of 448 in the tick
+//   L1_TABLE_BITS 6, L1_WAYS 4:               448 texels, arrays of 448 and 112
+//   L1_TABLE_BITS 7, L1_WAYS 3:               672 texels, an array of 896
 // The first is 5% more instructions a second than the second in spite of its stalls: four
 // entries a bucket cost every load and store, and more than about 1,000 state texels (each is
 // a pixel that runs the whole tick) cost every instruction.
@@ -51,7 +57,8 @@
 #define L1_WAYS 3
 #endif
 #define L1_TABLE (1 << L1_TABLE_BITS)
-#define L1_BUCKETS (2 * L1_TABLE)
+#define L1_BUCKETS (L1_TABLE + L1_TABLE / 2 + L1_TABLE / 4)
+#define L1_BUCKETS_OF(bits) ((7u << (bits)) >> 2)   // the buckets of a cache of 2^bits
 #define L1_STRIDE (L1_WAYS + 1)
 #define L1_ENTRIES (L1_BUCKETS * L1_STRIDE)
 // the half tables' hashes of texel t into n bits: its low bits moved round, xor higher ones
@@ -66,11 +73,11 @@
 #define L1_NOW_TABLE (1u << L1_NOW_BITS)
 #define L1_B0(t) ((t) & (L1_NOW_TABLE - 1))
 #define L1_B1(t) (L1_NOW_TABLE + L1_H1(t, L1_NOW_BITS - 1))
-#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + L1_H2(t, L1_NOW_BITS - 1))
+#define L1_B2(t) (L1_NOW_TABLE + (L1_NOW_TABLE >> 1) + (L1_H2(t, L1_NOW_BITS - 1) & ((L1_NOW_TABLE >> 2) - 1)))
 #else
 #define L1_B0(t) ((t) & (L1_TABLE - 1))
 #define L1_B1(t) (L1_TABLE + L1_H1(t, L1_TABLE_BITS - 1))
-#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + L1_H2(t, L1_TABLE_BITS - 1))
+#define L1_B2(t) (L1_TABLE + (L1_TABLE >> 1) + (L1_H2(t, L1_TABLE_BITS - 1) & ((L1_TABLE >> 2) - 1)))
 #endif
 #endif
 
@@ -86,10 +93,15 @@
 #define TLB2_N 256
 #endif
 #define TLB_STATE_TEXELS (3 * TLB2_N / 2 + 3 * 16 / 2 + 1)
+#if defined(NO_PAGING) && !defined(CORE0_TLB_ROWS)
+#define FP_STATE_AT TLB_STATE_AT   // no TLBs: core 0 keeps what a worker keeps
+#else
 #define FP_STATE_AT (TLB_STATE_AT + TLB_STATE_TEXELS)
+#endif
+#define CORE0_ROWS ((FP_STATE_AT + 8 + 63) / 64)   // the rows of core 0's state the tick draws
 #ifndef STATE_ROWS
 #if L1_TABLE_BITS == 6 && L1_WAYS == 3
-#define STATE_ROWS 16   // 44 + 512 + 409 + 8 = 973 texels
+#define STATE_ROWS 16   // 44 + 448 + 409 + 8 = 909 texels
 #else
 #define STATE_ROWS 32   // any larger write cache
 #endif
@@ -100,11 +112,9 @@
 #if CORES > 1
 // A worker core (docs/multicore.md) keeps the CPU's texels, the write cache and the float
 // registers, and no TLBs: one that runs with paging starts every pass with none, which costs
-// nothing that can be measured. That is 564 texels, and they are kept as whole tiles of
-// pixels, which is how the GPU runs them: the first 512 where they are (64 x 8), and under
-// those, four to a column, the last 44 of the cache and the eight of the float registers,
-// for which the pass draws 16 x 4. In a row of their own they were a line a pixel high,
-// which costs the warps of two rows.
+// nothing that can be measured. That is 500 texels with a cache of 2^6, eight whole tiles of
+// 8 x 8, as core 0's 64 x 8: the GPU runs pixels in tiles. In a row of their own they were a
+// line a pixel high, which costs the warps of two rows.
 // The geometry (docs/multicore.md): the workers are all alike. Their state is tiles of 8 x 8
 // texels in the state rows beside core 0's block: MC_STRIP_TILES of them to a band of eight
 // rows, one band under another, a worker's tiles side by side in one band. How many workers
@@ -167,7 +177,7 @@ static uint mc_per0 = 0;   // the small workers' blocks after the big ones' in t
 #endif
 #define TICK_COLS (TICK_MRT_W - 8 - TICK_GAP)   // a band's columns for the workers' blocks
 uint mc_rows_of(uint bits) {
-    return bits == 0 ? 0 : (L1_STATE_AT + 8 + ((2u << bits) * L1_STRIDE) + 63) / 64;
+    return bits == 0 ? 0 : (L1_STATE_AT + 8 + (L1_BUCKETS_OF(bits) * L1_STRIDE) + 63) / 64;
 }
 uint mc_cols_wide(uint rows, uint block, uint pad) {
     return (rows + pad + block - 1) / block * block;
@@ -225,7 +235,7 @@ void mc_select(uint core) {
     mc_bits_now = mc_bits_of(core);
     mc_rows_now = core != 0 && core <= mc_nb ? mc_rows_b : mc_rows;
     mc_cols_now = core != 0 && core <= mc_nb ? mc_cols_b : mc_cols;
-    mc_size_now = L1_STATE_AT + (2u << mc_bits_now) * L1_STRIDE + 8;
+    mc_size_now = L1_STATE_AT + L1_BUCKETS_OF(mc_bits_now) * L1_STRIDE + 8;
     state_off = uint2(0, 0);
 }
 // The worker whose tiles the strip's tile `tile` is one of, selected; 0 when it is nobody's.
@@ -279,7 +289,7 @@ static uint mc_count = 0;   // workers the geometry has, a worker's tiles, and i
 static uint mc_rows = 0;
 static uint mc_cols = 0;
 uint mc_rows_of(uint bits) {
-    return bits == 0 ? 0 : (L1_STATE_AT + 8 + ((2u << bits) * L1_STRIDE) + 63) / 64;
+    return bits == 0 ? 0 : (L1_STATE_AT + 8 + (L1_BUCKETS_OF(bits) * L1_STRIDE) + 63) / 64;
 }
 uint mc_cols_of(uint rows) {
     return (rows + TICK_PAD + TICK_BLOCK - 1) / TICK_BLOCK * TICK_BLOCK;
@@ -317,7 +327,7 @@ void mc_select(uint core) {
     mc_tile0 = core == 0 ? 0 : mc_tile_of(core);
     mc_core = core;
     mc_bits_now = mc_bits_of(core);
-    mc_size_now = L1_STATE_AT + (2u << mc_bits_now) * L1_STRIDE + 8;
+    mc_size_now = L1_STATE_AT + L1_BUCKETS_OF(mc_bits_now) * L1_STRIDE + 8;
     state_off = uint2(0, 0);
 }
 // The worker whose tiles the strip's tile `tile` is one of, selected; 0 when it is nobody's.
@@ -343,7 +353,7 @@ uint mc_core_in(uint2 pixel, out uint tile) {
 #define mc_rows_now mc_rows
 #define mc_cols_now mc_cols
 #endif
-#define MC_ENTRIES (mc_core == 0 ? (uint)L1_ENTRIES : (2u << mc_bits_now) * L1_STRIDE)
+#define MC_ENTRIES (mc_core == 0 ? (uint)L1_ENTRIES : L1_BUCKETS_OF(mc_bits_now) * L1_STRIDE)
 // Where texel lin (as core 0 numbers them) of this core's state is, from where its rows begin;
 // far outside the texture, which reads as zeros, for what a worker does not keep.
 uint2 mc_state_at(uint lin) {
@@ -556,6 +566,9 @@ typedef struct {
     
 
     uint debug_arb_0;
+#ifdef CSR_FIELDS
+    uint mstatus, mie, mip, stvec, sscratch, sepc, scause, stval, scounteren, fcsr;
+#endif
     /*  */
     /*  */
     /*  */
@@ -600,7 +613,7 @@ static uint4 l1_cache[L1_DATA_N];
 static uint4 l1_tag[L1_BUCKETS];
 #endif
 #endif
-static uint l1_occ[L1_BUCKETS / 32];   // buckets whose tags have been written this pass
+static uint l1_occ[(L1_BUCKETS + 31) / 32];   // buckets whose tags have been written this pass
 #define L1_OCC(b) (((l1_occ[(b) >> 5] >> ((b) & 31)) & 1) != 0)
 #define L1_OCC_SET(b) l1_occ[(b) >> 5] |= 1u << ((b) & 31);
 #endif
@@ -752,6 +765,12 @@ uint xreg(uint i) {
 void decode() {
     cpu = (cpu_t)0;
 
+#ifdef CSR_FIELDS
+    uint4 csr0 = STATE_TEX(uint2(0, 0)), csr1 = STATE_TEX(uint2(1, 0)), csr2 = STATE_TEX(uint2(2, 0));
+    cpu.mstatus = csr0.r; cpu.mie = csr0.g; cpu.mip = csr0.b; cpu.stvec = csr0.a;
+    cpu.sscratch = csr1.r; cpu.sepc = csr1.g; cpu.scause = csr1.b; cpu.stval = csr1.a;
+    cpu.scounteren = csr2.r; cpu.fcsr = csr2.g;
+#else
     cpu.cache.csr_cache_0_addr = uint(4294967295);
     cpu.cache.csr_cache_0_val = uint(3735930846);
     cpu.cache.csr_cache_1_addr = uint(4294967295);
@@ -784,17 +803,21 @@ void decode() {
     cpu.cache.csr_cache_14_val = uint(3735930846);
     cpu.cache.csr_cache_15_addr = uint(4294967295);
     cpu.cache.csr_cache_15_val = uint(3735930846);
+#endif
     cpu.cache.ram_l1_last_addr = uint(4294967295);
     cpu.cache.ram_l1_last_val = uint(3735931358);
     cpu.csr.privilege = uint(idx_uint4(STATE_TEX(uint2(8, 0)), 2));
+#ifndef CSR_FIELDS
     cpu.uart.rbr_thr_ier_iir = uint(idx_uint4(STATE_TEX(uint2(8, 0)), 3));
     cpu.uart.lcr_mcr_lsr_scr = uint(idx_uint4(STATE_TEX(uint2(9, 0)), 0));
     cpu.uart.thre_ip = bool(idx_uint4(STATE_TEX(uint2(9, 0)), 1));
     cpu.uart.interrupting = bool(idx_uint4(STATE_TEX(uint2(9, 0)), 2));
     cpu.uart.input_tag = uint(idx_uint4(STATE_TEX(uint2(9, 0)), 3));
     cpu.clint.msip = bool(idx_uint4(STATE_TEX(uint2(10, 0)), 0));
+#endif
     cpu.clint.mtimecmp_lo = uint(idx_uint4(STATE_TEX(uint2(10, 0)), 1));
     cpu.clint.mtimecmp_hi = uint(idx_uint4(STATE_TEX(uint2(10, 0)), 2));
+#ifndef CSR_FIELDS
     cpu.clint.mtime_lo = uint(idx_uint4(STATE_TEX(uint2(10, 0)), 3));
     cpu.clint.mtime_hi = uint(idx_uint4(STATE_TEX(uint2(11, 0)), 0));
     cpu.mmu.mode = uint(idx_uint4(STATE_TEX(uint2(11, 0)), 1));
@@ -864,6 +887,7 @@ void decode() {
     cpu.uart_buffer.buf61 = uint(0);
     cpu.uart_buffer.buf62 = uint(0);
     cpu.uart_buffer.buf63 = uint(0);
+#endif
     cpu.stall = uint(idx_uint4(STATE_TEX(uint2(28, 0)), 0));
     cpu.clock = uint(idx_uint4(STATE_TEX(uint2(28, 0)), 1));
     cpu.commits = uint(idx_uint4(STATE_TEX(uint2(28, 0)), 2));
@@ -904,15 +928,19 @@ void decode() {
     cpu.reservation_addr = uint(idx_uint4(STATE_TEX(uint2(37, 0)), 1));
     cpu.memop_src_v = uint(idx_uint4(STATE_TEX(uint2(37, 0)), 2));
     cpu.memop_dst_v = uint(idx_uint4(STATE_TEX(uint2(37, 0)), 3));
+#ifndef CSR_FIELDS
     cpu.memop_src_p = uint(idx_uint4(STATE_TEX(uint2(38, 0)), 0));
     cpu.memop_dst_p = uint(idx_uint4(STATE_TEX(uint2(38, 0)), 1));
+#endif
     cpu.memop_n = uint(idx_uint4(STATE_TEX(uint2(38, 0)), 2));
     cpu.stall_count = uint(idx_uint4(STATE_TEX(uint2(38, 0)), 3));
     cpu.trap_count = uint(idx_uint4(STATE_TEX(uint2(39, 0)), 0));
+#ifndef CSR_FIELDS
     cpu.rtc0 = uint(idx_uint4(STATE_TEX(uint2(39, 0)), 1));
     cpu.rtc1 = uint(idx_uint4(STATE_TEX(uint2(39, 0)), 2));
     cpu.start_time_ref = asfloat(idx_uint4(STATE_TEX(uint2(39, 0)), 3));
     cpu.debug_do_tick = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 0));
+#endif
     cpu.debug_last_ins = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 1));
     cpu.debug_last_stall = uint(idx_uint4(STATE_TEX(uint2(40, 0)), 2));
     // The fills and copies this pass leaves to the commit (LAZY_MEMOP): none yet. The first is
@@ -1100,6 +1128,11 @@ void decode_for_commit() {
     cpu.debug_last_ins = uint(idx_uint4(STATE_TEX_HART(uint2(40, 0), 0), 1));
     cpu.debug_last_stall = uint(idx_uint4(STATE_TEX_HART(uint2(40, 0), 0), 2));
     cpu.debug_arb_0 = uint(idx_uint4(STATE_TEX_HART(uint2(40, 0), 0), 3));
+#ifdef CSR_FIELDS
+    // a copy's addresses are its virtual ones (no translation); the commit's geometry reads 37 too
+    cpu.memop_src_p = cpu.memop_src_v;
+    cpu.memop_dst_p = cpu.memop_dst_v & 0x7fffffff;
+#endif
 
 }
 #endif
@@ -1159,6 +1192,20 @@ uint4 encode_l1(L1P uint2 pos) {
 
     // cpu_t serialization
     uint pos_id = pos.x | (pos.y << 16);
+#ifdef CSR_FIELDS
+    if (pos_id == 0) return uint4(cpu.mstatus, cpu.mie, cpu.mip, cpu.stvec);
+    if (pos_id == 1) return uint4(cpu.sscratch, cpu.sepc, cpu.scause, cpu.stval);
+    if (pos_id == 2) return uint4(cpu.scounteren, cpu.fcsr, 0, 0);
+    if (pos_id < 8) return (uint4)0;
+    // texel 11's last word is the old console's "nothing printed"; 12 to 27 were its buffer
+    if (pos_id == 8) return uint4(cpu.cache.ram_l1_last_addr, cpu.cache.ram_l1_last_val, cpu.csr.privilege, 0);
+    if (pos_id == 10) return uint4(0, cpu.clint.mtimecmp_lo, cpu.clint.mtimecmp_hi, 0);
+    if (pos_id == 11) return uint4(0, 0, 0, 0xffffffff);
+    if (pos_id < 28) return (uint4)0;
+    if (pos_id == 38) return uint4(0, 0, cpu.memop_n, cpu.stall_count);
+    if (pos_id == 39) return uint4(cpu.trap_count, 0, 0, 0);
+    if (pos_id == 40) return uint4(0, cpu.debug_last_ins, cpu.stall == 0 ? cpu.debug_last_stall : cpu.stall, cpu.debug_arb_0);
+#endif
     [forcecase]
     switch (pos_id) {
     case 0:
@@ -1552,6 +1599,7 @@ uint4 commit(uint2 pos, uint4 ret) {
 
     uint s_lin = pos.x + pos.y * 64;
 
+#ifndef CSR_FIELDS
     // CSR area
     if (s_lin >= CSR_STATE_AT && s_lin < CSR_STATE_AT + CSR_STATE_TEXELS) {
         uint addr = s_lin - CSR_STATE_AT;
@@ -1622,6 +1670,7 @@ uint4 commit(uint2 pos, uint4 ret) {
         else if (cpu.cache.csr_cache_15_addr == addr + 3) { ret.w = cpu.cache.csr_cache_15_val; }
 
     }
+#endif
 
     // RAM
     if (pos.y >= 64) {

@@ -83,6 +83,7 @@ Shader "ShaderEmu/gpu"
             uniform float4 _InputPointer;
             uniform uint _InputButtons, _InputKeySeq, _InputKeyCount;
             uniform uint _HostMs;   // the host's clock, in milliseconds
+            uniform uint _UdonUARTInChar, _UdonUARTInTag;   // the console's input (docs/console.md)
             // bit 0: the guest should start its desktop when it boots; bits 8-15 and 16-23: the
             // largest screen this host shows, width and height in 16s of pixels (0: it does not say)
             // What the host says of where the machine is shown (docs/holodeck.md): word 0, the head's three, and where the right hand points.

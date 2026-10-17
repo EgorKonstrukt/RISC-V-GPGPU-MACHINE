@@ -278,7 +278,7 @@ public static partial class ShaderEmuBuilder
         machine.tickTargets = new RenderTexture[8];
         for (int i = 0; i < 8; i++) machine.tickTargets[i] = StateTexture("TickOut" + i, 1040, 32);   // TICK_MRT_W x TICK_STATE_ROWS x TICK_MRT_BANDS
         machine.tickDepth = Target("TickDepth", 1040, 32, 16);
-        machine.readbackTexture = Target("Readback", 960, 32, 0);
+        machine.readbackTexture = Target("Readback", 1032, 32, 0);
         pointsMat.SetTexture("_TickState", tickState);
         pointsMat.SetTexture("_GpuTarget", AssetDatabase.LoadAssetAtPath<RenderTexture>(Generated + "/GpuTarget.renderTexture"));
         machine.machineMaterial.SetTexture("_TickState", tickState);
@@ -775,7 +775,7 @@ public static partial class ShaderEmuBuilder
         RenderTexture tickState = StateTexture("TickState", 2048, 48);   // the state rows after a tick: core 0's 64 x STATE_ROWS and the workers' six bands of 1984 x 8 beside it
         AssetDatabase.DeleteAsset(Generated + "/MachineState.asset");
         RenderTexture gpuTarget = Target("GpuTarget", 1280, 720, 32);   // the picture is 720p at most
-        RenderTexture readback = Target("Readback", 960, 32, 0);   // a row a round: EmuMachine's MaxRounds
+        RenderTexture readback = Target("Readback", 1032, 32, 0);   // a row a round: EmuMachine's MaxRounds
         RenderTexture picture = PictureTexture("DisplayPicture", 2048, 1024);
         showMat.mainTexture = picture;
         showMat.SetVector("_TexSize", new Vector4(picture.width, picture.height, 0, 0));

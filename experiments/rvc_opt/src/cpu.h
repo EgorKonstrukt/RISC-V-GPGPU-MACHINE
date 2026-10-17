@@ -20,7 +20,9 @@ cpu_t cpu_init() {
     ret.csr.privilege = 1;
 #endif
 
+#ifndef CSR_FIELDS
     ret.start_time_ref = _Time.y;
+#endif
 
     return ret;
 }
@@ -45,6 +47,13 @@ cpu_t cpu_init() {
 uint fast_run_l1(L1P uint room) {
     pre_valid = false;
     fast_same = false;
+#ifdef CSR_FIELDS
+    // (no UART to poll and no single-stepping: the console is memory, docs/console.md)
+    if (!irq_quiet) {
+        return 0;
+    }
+    fast_budget = room;
+#else
     if (_DoTick != 0 || !irq_quiet) {
         return 0;
     }
@@ -55,6 +64,7 @@ uint fast_run_l1(L1P uint room) {
         to_poll = 256;
     }
     fast_budget = UART_INPUT_WAITING ? min(room, to_poll - 1) : room;
+#endif
     uint n = 0;
     [branch]
     if (fast_budget > 0) {
@@ -140,11 +150,13 @@ uint fast_run_l1(L1P uint room) {
 }
 
 void cpu_tick_l1(L1P0) {
+#ifndef CSR_FIELDS
     // DEBUG: single stepping
     if (_DoTick && _DoTick == cpu.debug_do_tick) {
         return;
     }
     cpu.debug_do_tick = _DoTick;
+#endif
 
     cpu.clock++;
     PROF(PROF_tick)

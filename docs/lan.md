@@ -58,7 +58,7 @@ wire, from the first byte of its IP header, byte i at the address of its first b
 The two control texels (`0x3e` and `0x3f` of the control row) are among the first 64 that
 every host reads back already. The window and the ring are one row of the state texture:
 RAM texel `0x76b800`, row 3863 (64 + 3799), the window at x 0 to 39 and the ring at x 64 to
-383. That row was the top of Nano-X's scratch textures (`DATA_END` in `scr_shaderemu.c`); it
+383. The console is x 40 to 57 (`docs/console.md`). That row was the top of Nano-X's scratch textures (`DATA_END` in `scr_shaderemu.c`); it
 lies in band 29, which a control pass that draws bands 28 and 29 covers.
 
 A packet's place, in the window or in the ring, is: a word with its length in bytes, a word

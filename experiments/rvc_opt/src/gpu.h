@@ -699,6 +699,11 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 #define INPUT_STATE 0x700002u   // pointer x, y (display pixels), buttons, key events so far
 #define INPUT_KEYS  0x700008u   // ring of the last 32 key events, one word each
 #define FETCH_REPLY 0x700011u   // requests the host has answered, bytes, status (docs/fetch.md)
+#define CON_HOST    0x76b828u   // the console (docs/console.md): characters delivered, the last of them
+#ifndef CON_IN_TAG
+#define CON_IN_TAG _UdonUARTInTag
+#define CON_IN_CHARS _UdonUARTInChar
+#endif
 #define FETCH_DATA  0x76c000u   // what the host fetched: 0x4000 texels
 // "Open this" from the host (docs/open.md): requests so far and the address's length, then the
 // address, 176 bytes of it in the eleven texels after and 80 more from HOST_OPEN_MORE.
@@ -719,7 +724,7 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
 // Where worker `core`'s tiles begin in the strip (the geometry: src/types.h has the same), or
 // 0xffff when there is no such worker; core 0's state is at the left.
 uint mc_rows_of_bits(uint bits) {
-    return bits == 0 ? 0 : (44 + 8 + (2u << bits) * 4 + 63) / 64;
+    return bits == 0 ? 0 : (44 + 8 + ((7u << bits) >> 2) * 4 + 63) / 64;
 }
 // The hybrid geometry is the machine's (geotune lays it out); MC_UNIFORM compiles the old one.
 #if !defined(MC_HYBRID) && !defined(MC_UNIFORM)
@@ -965,6 +970,7 @@ uint4 gpu_control(uint2 pos) {
 #endif
 #endif
 #ifdef GPU_INPUT
+    if (index == CON_HOST) return uint4(CON_IN_TAG, CON_IN_CHARS, 0, 0);
     if (index == GPU_CLOCK) return uint4(keep.r, _HostMs, keep.b, _HostFlags);
     if (index == COUNT_HEAD) {
         // word 3: the commits so far, a pass each (a monitor's measure of what a core can run)

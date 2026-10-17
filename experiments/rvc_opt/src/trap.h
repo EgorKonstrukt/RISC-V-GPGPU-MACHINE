@@ -61,6 +61,18 @@ bool handle_trap(inout ins_ret ret, bool is_interrupt, uint c_mie) {
     }
     write_csr_raw(CSR_MSTATUS, (mstatus & ~0x1888) | (mie << 7) | (PRIV_MACHINE << 11));
     return true;
+#elif defined(CSR_FIELDS)
+    // Every trap is the supervisor's; the caller has masked interrupts by sie already.
+    uint pos = t.type & 0xFFFF, ss = cpu.mstatus;
+    if (is_interrupt && cpu.csr.privilege == PRIV_SUPERVISOR && (ss & 2) == 0) return false;
+    cpu.sepc = is_interrupt ? ret.pc_val : cpu.pc;
+    cpu.scause = t.type;
+    cpu.stval = t.value;
+    ret.pc_val = (cpu.stvec & 3) != 0 ? (cpu.stvec & ~3u) + 4 * pos : cpu.stvec;
+    cpu.mstatus = (ss & ~0x122u) | ((ss & 2) << 4) | ((cpu.csr.privilege & 1) << 8);
+    cpu.csr.privilege = PRIV_SUPERVISOR;
+    irq_quiet = false;
+    return true;
 #else
     uint current_privilege = cpu.csr.privilege;
 
@@ -164,6 +176,31 @@ bool handle_trap(inout ins_ret ret, bool is_interrupt, uint c_mie) {
 #endif
 }
 
+#ifdef CSR_FIELDS
+void handle_irq_and_trap(inout ins_ret ret, uint mip_override) {
+    irq_last_handled = false;
+    uint mip_reset = 0;
+    bool irq = !ret.trap.en;
+    if (irq) {
+        uint mirq = mip_override & cpu.mie & 0x222;
+        mip_reset = (mirq & MIP_SEIP) ? MIP_SEIP : (mirq & MIP_SSIP) ? MIP_SSIP : (mirq & MIP_STIP) ? MIP_STIP : 0;
+        if (mip_reset != 0) {
+            ret.trap.en = true;
+            ret.trap.type = interrupt_offset + firstbitlow(mip_reset);
+        }
+    }
+    if (ret.trap.en) {
+        PROF(PROF_irq_or_trap_path)
+        bool handled = handle_trap(ret, irq, 0);
+        if (handled) {
+            irq_last_handled = true;
+            PROF(PROF_trap_taken)
+        }
+        // (the timer's pending bit stays until the next deadline is set)
+        cpu.mip = handled && irq && mip_reset != MIP_STIP ? mip_override & ~mip_reset : mip_override;
+    }
+}
+#else
 void handle_irq_and_trap(inout ins_ret ret, uint mip_override) {
     bool trap = ret.trap.en;
     irq_last_handled = false;
@@ -204,5 +241,6 @@ void handle_irq_and_trap(inout ins_ret ret, uint mip_override) {
         write_csr_raw(CSR_MIP, new_mip);
     }
 }
+#endif
 
 #endif

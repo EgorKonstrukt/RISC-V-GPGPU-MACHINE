@@ -60,7 +60,7 @@ public:
 
         for (UINT s = 0; s < kSlots; ++s) {
             check(dx_.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocs_[s])), "allocator");
-            rowBuf_[s] = readbackBuffer(rowFootprint_, kControlTexels, 2, kStateFormat);   // row 0, then the control texels
+            rowBuf_[s] = readbackBuffer(rowFootprint_, kControlTexels, 3, kStateFormat);   // row 0, the control texels, the network's 64
             if (soundPso_) soundBuf_[s] = readbackBuffer(soundFootprint_, kSoundSide, kSoundSide, kSoundFormat);
             if (opt.stateLog) zoneBuf_[s] = readbackBuffer(zoneFootprint_, 64, 64, kStateFormat);
         }
@@ -299,9 +299,10 @@ public:
             }
             cl_->RSSetViewports(1, &vp);
             // then the control zone on the state texture: mark the list drawn, deliver input
-            for (int z = 0; z < (deliver_ ? 2 : 1); ++z) {
-                const float* zn = z == 0 ? kGpuControlZone : kFetchZone;
-                draw(2, zn[0], zn[1], zn[2], zn[3], z == 0 ? -1 : 3);
+            for (int z = 0; z < 3; ++z) {
+                if ((z == 1 && !conDelivered) || (z == 2 && !deliver_)) continue;
+                const float* zn = z == 0 ? kGpuControlZone : z == 1 ? kConZone : kFetchZone;
+                draw(2, zn[0], zn[1], zn[2], zn[3], z < 2 ? -1 : 3);
                 D3D12_RESOURCE_BARRIER in[2] = {
                     transition(state_[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
                     transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)};
@@ -318,6 +319,7 @@ public:
                 cl_->ResourceBarrier(2, out);
             }
             deliver_ = false;
+            conDelivered = false;
             // back to the names the rest of the frame uses: dst = the new state, in RENDER_TARGET
             D3D12_RESOURCE_BARRIER swapOut[2] = {
                 transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
@@ -338,6 +340,8 @@ public:
         cl_->CopyTextureRegion(&rdst, 0, 0, 0, &rsrc, &rowBox);
         D3D12_BOX controlBox{0, kControlRow, 0, kControlTexels, kControlRow + 1, 1};
         cl_->CopyTextureRegion(&rdst, 0, 1, 0, &rsrc, &controlBox);
+        D3D12_BOX netBox{0, kNetRow, 0, 64, kNetRow + 1, 1};
+        cl_->CopyTextureRegion(&rdst, 0, 2, 0, &rsrc, &netBox);
         if (zoneBuf_[slot]) {
             D3D12_TEXTURE_COPY_LOCATION zdst = rdst;
             zdst.pResource = zoneBuf_[slot].Get();
@@ -375,6 +379,7 @@ public:
         const uint8_t* base = p + rowFootprint_.Offset;
         out.assign(base, base + 64 * 16);
         out.insert(out.end(), base + rowFootprint_.Footprint.RowPitch, base + rowFootprint_.Footprint.RowPitch + kControlTexels * 16);
+        out.insert(out.end(), base + 2 * rowFootprint_.Footprint.RowPitch, base + 2 * rowFootprint_.Footprint.RowPitch + 64 * 16);
         rowBuf_[r.slot]->Unmap(0, nullptr);
         tag = r.tag;
         lastZone_.clear();

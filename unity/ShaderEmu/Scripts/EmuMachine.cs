@@ -41,7 +41,7 @@ public class EmuMachine : UdonSharpBehaviour
     public Material stateViewMaterial;      // Scope.shader showing the CPU's state texels
     public Material romViewMaterial;        // and the ROM
     public Material readbackMaterial;
-    public RenderTexture readbackTexture;   // 960 x 32: one pixel per word, a row for each round of a frame
+    public RenderTexture readbackTexture;   // 1032 x 32: one pixel per word, a row for each round of a frame
 
     public EmuSound sound;                  // the sound card's host side, if the world has one
     public EmuTerminal terminal;
@@ -112,7 +112,7 @@ public class EmuMachine : UdonSharpBehaviour
     [HideInInspector] public int gameId;                 // the program whose window has the keyboard (linux/apps/gameid.h)
     [HideInInspector] public uint worldEye;              // its player's eye for the holodeck's scale (seglWorldEye in GLES/segl.h)
 
-    private const int Words = 960;      // state row 0's 64 texels, the first 64 control texels, 112 of the network's row
+    private const int Words = 1032;     // state row 0's 64 texels, the first 64 control texels, 130 of the network's row
     private const int CoresMore = 168;  // what every core ran, in texels: 64 after the network's window, then eight of bits
     private const int MostCores = 256;
     // The network (docs/lan.md): the guest's packets out of its window, and packets for it into its ring.
@@ -163,6 +163,11 @@ public class EmuMachine : UdonSharpBehaviour
     private int[] roundsOf = new int[64];   // how many rounds each readback on its way has
 
     private uint sentTag, consumedTag;
+    // The console is words of the control page (docs/console.md): its ring of output bytes and what was taken of it.
+    private const int ConTexel = 241;   // the console's words (docs/console.md), then its ring
+    private const uint ConRing = 256;
+    private uint conWritten;
+    private bool conSeen;
     private uint keySeq;
     private uint lastMs;
     private float frameMs, frameLength = 11f;   // this frame's start on the host's clock, and how long frames are lately
@@ -442,6 +447,7 @@ public class EmuMachine : UdonSharpBehaviour
         ignoreUntil = int.MaxValue;
         sentTag = 0;
         consumedTag = 0;
+        conSeen = false;
         charHead = charTail = keyHead = keyTail = 0;
         zapHead = zapTail = 0;   // what waited for the machine before is not this one's: sixteen flips met a reset machine
         totalInstructions = 0;
@@ -473,9 +479,9 @@ public class EmuMachine : UdonSharpBehaviour
         tickMaterial.SetInt("_InitRaw", 0);
         tickMaterial.SetInt("_DoTick", 0);
         tickMaterial.SetInt("_Ticks", ticks);
-        tickMaterial.SetInt("_UartInLo", 0);
-        tickMaterial.SetInt("_UartInHi", 0);
-        tickMaterial.SetInt("_UdonUARTInTag", 0);
+        machineMaterial.SetInt("_UartInLo", 0);
+        machineMaterial.SetInt("_UartInHi", 0);
+        machineMaterial.SetInt("_UdonUARTInTag", 0);
         machineMaterial.SetInt("_InputKeyCount", 0);
         // the host flags: the desktop at boot, and the largest screen the GPU's target can show
         // (in 16s of pixels: the word must stay within what a material's number holds exactly)
@@ -1254,9 +1260,9 @@ public class EmuMachine : UdonSharpBehaviour
             if (count > 0)
             {
                 sentTag += (uint)count;
-                tickMaterial.SetInt("_UartInLo", lo);
-                tickMaterial.SetInt("_UartInHi", hi);
-                tickMaterial.SetInt("_UdonUARTInTag", (int)sentTag);
+                machineMaterial.SetInt("_UartInLo", lo);
+                machineMaterial.SetInt("_UartInHi", hi);
+                machineMaterial.SetInt("_UdonUARTInTag", (int)sentTag);
             }
         }
 
@@ -1602,7 +1608,7 @@ public class EmuMachine : UdonSharpBehaviour
 
         // state row 0, as rvc_harness.cpp reads it
         uint clock = Word(28, 1), commits = Word(28, 2);
-        consumedTag = Word(9, 3);
+        consumedTag = Word(ConTexel, 0);
         // the control words: display (texel 64), GPU (65), input (66, 67)
         displayMode = Small(Word(64, 0));
         displayWidth = Small(Word(64, 1));
@@ -1677,16 +1683,21 @@ public class EmuMachine : UdonSharpBehaviour
         }
     }
 
-    // What the guest printed in the round at rowAt: at most 64 characters.
+    // What the guest printed in the round at rowAt: the console ring's bytes since the last round.
     private void Printed()
     {
-        uint ptr = Word(11, 3);
-        if (ptr == 0xFFFFFFFFu || terminal == null) return;
-        int n = (int)Mathf.Min(ptr + 1, 64);
-        for (int i = 0; i < n; i++)
+        uint written = Word(ConTexel, 1);
+        if (!conSeen)
         {
-            int c = (int)(Word(12 + i / 4, i % 4) & 0xff);
-            if (c != 0) terminal.PutChar(c);
+            conWritten = written;
+            conSeen = true;
+        }
+        if (written - conWritten > ConRing) conWritten = written - ConRing;
+        for (; conWritten != written; conWritten++)
+        {
+            int at = (int)(conWritten & (ConRing - 1));
+            int c = (int)((Word(ConTexel + 1 + at / 16, (at / 4) % 4) >> (8 * (at % 4))) & 0xff);
+            if (c != 0 && terminal != null) terminal.PutChar(c);
         }
     }
 

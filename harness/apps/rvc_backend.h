@@ -56,6 +56,10 @@ const unsigned kCommitQuads = 33;
 // The machine's control words (display, GPU, input, sound: RAM from 0x87000000) as a row of the
 // state texture. popRow() returns them after the 64 texels of row 0.
 const unsigned kControlRow = 64 + 0x700000 / 2048, kControlTexels = 256;
+// The console (docs/console.md): texel kConHost of the network's row is the host's words, the
+// next the guest's, then the ring of kConRing bytes; the control pass writes the first.
+const unsigned kConHost = 40, kConRing = 256;
+const float kConZone[4] = {kConHost + 0.5f, 4096 - kNetRow - 0.5f, 1, 1};
 const int kCoresMost = 256;   // what the shader, the kernel and the library have room for
 const int kCores = 256;       // core 0 and 255 workers: the only machine there is (docs/multicore.md)
 // The display's RAM framebuffer (RAM 0x87000000, 128 texture rows), for writing the picture back.
@@ -70,6 +74,7 @@ public:
     // (Workers are started long after the geometry that has them is set: shaderemu_gpu.c.)
     bool workersNow = true;
     bool countsAdded = false;   // the counters' head read back says a core added (kCountZone)
+    bool conDelivered = false;  // the console's input changed: kConZone is drawn in the next frame
     // Draw the sound card's mix in the next frame and read it back with that frame's row.
     bool soundMix = false;
     static const UINT kWidth = 2048, kHeight = 4096;   // rvc's vm_state_crt.asset

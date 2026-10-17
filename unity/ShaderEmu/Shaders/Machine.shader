@@ -165,6 +165,10 @@ Shader "ShaderEmu/Machine"
             #define GPU_SOUND
             // The GPU's camera draws all eight passes every frame.
             #define _GpuPasses 0xffu
+            // the console's input (docs/console.md): up to four characters, in two halves
+            uniform uint _UartInLo, _UartInHi, _UdonUARTInTag;
+            #define CON_IN_TAG _UdonUARTInTag
+            #define CON_IN_CHARS (_UartInLo | (_UartInHi << 16))
             #define GPU_STATE _SelfTexture2D
             #define GPU_INPUT
             #include "src/gpu.cginc"

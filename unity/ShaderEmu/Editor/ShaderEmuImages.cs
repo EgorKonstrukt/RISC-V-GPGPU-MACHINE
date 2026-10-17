@@ -18,9 +18,10 @@ public static class ShaderEmuImages
 
     public static readonly BootImage[] Images =
     {
+        // Linux without an MMU (docs/nommu.md), for MachineTick.shader's NO_PAGING machine.
         new BootImage { name = "linux", title = "Linux: shell, Nano-X desktop (nx), Doom, glxgears",
-                        ram = "build/images/linux/linux_payload.bin", rom = "build/images/linux/rootfs.bin",
-                        tree = "build/images/linux/dts.bin" },
+                        ram = "build/images/nommu/linux_payload.bin", rom = "build/images/nommu/rootfs.bin",
+                        tree = "build/images/nommu/dts.bin" },
         // The bare-metal programs (programs/bin: gears, raycast, raytrace, blend, rects) start in
         // machine mode at 0x80000000, which the SBI_HLE build of the shader does not do.
     };

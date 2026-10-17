@@ -3,6 +3,33 @@
 The machine has one serial console (the UART; `/dev/hvc0` in Linux). In the VRChat world it
 is four terminals, with the lines that scrolled off each, and a field to paste text into.
 
+## Words in memory
+
+On the machine without an MMU (`NO_PAGING` with `SBI_HLE`, `CSR_FIELDS` in `types.h`) the
+console is memory and nothing else. The kernel reads and writes it with loads and stores, and
+the shader has no part in it. It lies in the network's row, between the window and the ring
+(`docs/lan.md`):
+
+| RAM | |
+|---|---|
+| `0x876b8280` | characters the host has delivered so far (the host's) |
+| `0x876b8284` | the last delivery, up to four characters, the first in the low byte (the host's) |
+| `0x876b8290` | characters the guest has taken so far |
+| `0x876b8294` | bytes the guest has written so far |
+| `0x876b82a0` | the output ring: 256 bytes, byte n of the output at n mod 256 |
+
+- The control pass writes the host's texel every frame (`CON_HOST` in `gpu.h`; the harness's
+  `kConZone`). The host delivers again only once the guest has taken everything.
+- Every host reads the ring back after every pass, with the network's row (`kConHost` in
+  `rvc_backend.h`, `ConTexel` in `EmuMachine.cs`); `rvc_cpu` reads it in its control pass.
+- The guest puts at most 255 bytes in a pass. The time CSR is the same for a whole pass, so
+  a new value is a new pass with room again; a full ring ends the pass with the pause hint.
+- The kernel's side is `linux/nommu/patch_console.py`: the hvc driver's `put_chars` and
+  `get_chars`, and earlycon's `putc`. The SBI console calls are not answered.
+
+The machine with the MMU keeps the UART: its receive register and the buffer of 64 characters
+in the CPU's state, which the SBI console calls use.
+
 ## Four terminals on one line
 
 Linux gives the machine no second console to open, so the terminals are made in the guest:
