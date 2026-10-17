@@ -546,6 +546,45 @@ public static partial class ShaderEmuBuilder
         EditorUtility.SetDirty(slider);
     }
 
+    // The calibration's target: a dot in the middle of the button, which the clicks are taken as on.
+    static Slider PanelSlider(RectTransform panel, float x, float y, float height, int steps, int value)
+    {
+        GameObject sliderObject = DefaultControls.CreateSlider(new DefaultControls.Resources());
+        RectTransform sliderRect = sliderObject.GetComponent<RectTransform>();
+        sliderRect.SetParent(panel, false);
+        sliderRect.anchorMin = sliderRect.anchorMax = new Vector2(0, 1);
+        sliderRect.pivot = new Vector2(0, 1);
+        sliderRect.anchoredPosition = new Vector2(x, -y);
+        sliderRect.sizeDelta = new Vector2(600, height);
+        Slider slider = sliderObject.GetComponent<Slider>();
+        slider.minValue = 0;
+        slider.maxValue = steps;
+        slider.wholeNumbers = true;
+        slider.value = value;
+        foreach (Image part in sliderObject.GetComponentsInChildren<Image>())
+        {
+            part.material = UiMaterial();
+            part.color = part.name == "Handle" ? Color.white : part.name == "Fill" ? new Color(0.3f, 0.65f, 1f) : new Color(0.2f, 0.21f, 0.25f);
+        }
+        slider.handleRect.sizeDelta = new Vector2(36, 0);
+        DeafToWalking(slider);
+        return slider;
+    }
+
+    static Transform CalibrateDot(Button button)
+    {
+        RectTransform dot = new GameObject("Dot", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image)).GetComponent<RectTransform>();
+        dot.SetParent(button.transform, false);
+        dot.anchorMin = dot.anchorMax = dot.pivot = new Vector2(0.5f, 0.5f);
+        dot.anchoredPosition = Vector2.zero;
+        dot.sizeDelta = new Vector2(10, 10);
+        Image image = dot.GetComponent<Image>();
+        image.material = UiMaterial();
+        image.color = Color.white;
+        image.raycastTarget = false;
+        return dot;
+    }
+
     static void OnClick(Button button, UdonSharpBehaviour target, string method)
     {
         UdonBehaviour udon = UdonSharpEditorUtility.GetBackingUdonBehaviour(target);
@@ -1061,27 +1100,10 @@ public static partial class ShaderEmuBuilder
         Label(panel, "Speed title", "Speed", bx, 196, 600, 36, 26, TextAnchor.MiddleLeft, dim);
         machine.speedLabel = Label(panel, "Speed", "", bx, 294, 600, 40, 26, TextAnchor.MiddleLeft, Color.white);
 
-        GameObject sliderObject = DefaultControls.CreateSlider(new DefaultControls.Resources());
-        RectTransform sliderRect = sliderObject.GetComponent<RectTransform>();
-        sliderRect.SetParent(panel, false);
-        sliderRect.anchorMin = sliderRect.anchorMax = new Vector2(0, 1);
-        sliderRect.pivot = new Vector2(0, 1);
-        sliderRect.anchoredPosition = new Vector2(bx, -238);
-        sliderRect.sizeDelta = new Vector2(600, 48);
-        Slider slider = sliderObject.GetComponent<Slider>();
-        slider.minValue = 0;
-        slider.maxValue = 7;
-        slider.wholeNumbers = true;
-        slider.value = 4;   // 32,768 instructions a frame
-        foreach (Image part in sliderObject.GetComponentsInChildren<Image>())
-        {
-            part.material = UiMaterial();
-            part.color = part.name == "Handle" ? Color.white : part.name == "Fill" ? new Color(0.3f, 0.65f, 1f) : new Color(0.2f, 0.21f, 0.25f);
-        }
-        RectTransform handle = slider.handleRect;
-        handle.sizeDelta = new Vector2(36, 0);
-        DeafToWalking(slider);
+        Slider slider = PanelSlider(panel, bx, 238, 48, 7, 4);   // 32,768 instructions a frame
         machine.speedSlider = slider;
+        machine.tickLabel = Label(panel, "Tick", "", bx, 344, 600, 34, 24, TextAnchor.MiddleLeft, dim);
+        machine.tickSlider = PanelSlider(panel, bx, 380, 40, 5, 3);   // 1,024 to 32,768 a tick, 8,192
 
         // an address of the visitor's own for the guest's browser: VRChat only loads what is
         // typed into a field of this kind
@@ -1096,18 +1118,19 @@ public static partial class ShaderEmuBuilder
         OnClick(reset, machine, "ResetMachine");
         OnClick(pause, machine, "Pause");
 
-        // the beams' angle, for hands and controllers that point elsewhere than the avatar's
-        pointer.pitchLabel = Label(panel, "Beam angle", "", bx, 360, 600, 36, 26, TextAnchor.MiddleLeft, dim);
-        Button beamUp = MakeButton(panel, "Beam up", "Beam up", bx, 404, 190, 70, 26, out unusedText);
-        Button beamDown = MakeButton(panel, "Beam down", "Beam down", bx + 205, 404, 190, 70, 26, out unusedText);
+        // the laser's calibration: VRChat's own laser clicks the dot, 5 cm square
+        pointer.laserLabel = Label(panel, "Laser", "", bx + 65, 439, 535, 36, 26, TextAnchor.MiddleLeft, dim);
+        Button calibrate = MakeButton(panel, "Calibrate laser", "", bx, 432, 50, 50, 26, out unusedText);
+        pointer.calibrateDot = CalibrateDot(calibrate);
         Apply(pointer);
-        OnClick(beamUp, pointer, "PitchUp");
-        OnClick(beamDown, pointer, "PitchDown");
+        OnClick(calibrate, pointer, "Calibrate");
         Sharing(world, computer, panel, machine, new Vector3(1.28f, 1.82f, screenZ));
         Sound(world, panel, machine);
         WorkersPanel(computer, machine);
         UnityEventTools.AddStringPersistentListener(slider.onValueChanged,
             UdonSharpEditorUtility.GetBackingUdonBehaviour(machine).SendCustomEvent, "SpeedChanged");
+        UnityEventTools.AddStringPersistentListener(machine.tickSlider.onValueChanged,
+            UdonSharpEditorUtility.GetBackingUdonBehaviour(machine).SendCustomEvent, "TickChanged");
 
         Apply(terminal);
 

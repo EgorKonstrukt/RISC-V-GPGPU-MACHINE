@@ -1612,7 +1612,7 @@ index 5e7cf6a..df34fe1 100644
  	if (!edges_vb) {
  		BuildMapEdges();
 diff --git a/src/Game.c b/src/Game.c
-index acf9554..d6ea57f 100644
+index acf9554..ceec131 100644
 --- a/src/Game.c
 +++ b/src/Game.c
 @@ -219,7 +219,11 @@ void Game_Reset(void) {
@@ -1639,7 +1639,7 @@ index acf9554..d6ea57f 100644
  	Game_AddComponent(&MapRenderer_Component);
  	Game_AddComponent(&EnvRenderer_Component);
  	Game_AddComponent(&Server_Component);
-@@ -720,17 +728,228 @@ int Game_MapState(int deviceIndex) {
+@@ -720,17 +728,230 @@ int Game_MapState(int deviceIndex) {
  }
  #endif
  
@@ -1665,6 +1665,7 @@ index acf9554..d6ea57f 100644
 +void EnvRenderer_SE_RenderHorizon(void);
 +int SE_Seated(void);
 +int SE_SeatHand(float* at);
++float SE_SeatHeld(void);
 +
 +/* The world after the particles, the block in the hand and the 2D screen: what the worker makes */
 +static void SE_FrameRest(void) {
@@ -1799,6 +1800,7 @@ index acf9554..d6ea57f 100644
 +		f->heldCol    = HeldBlockRenderer_SE_Col();
 +		f->seated     = SE_Seated();
 +		f->handOn     = SE_SeatHand(f->hand);
++		f->heldScale  = SE_SeatHeld();
 +	} else {
 +		RayTracer_SetInvalid(&Game_SelectedPos);
 +	}
@@ -1868,7 +1870,7 @@ index acf9554..d6ea57f 100644
  	Window_ProcessEvents(delta);
  
  	if (delta <= 0.0f) return;
-@@ -861,6 +1080,10 @@ void Game_Setup(void) {
+@@ -861,6 +1082,10 @@ void Game_Setup(void) {
  	cc_string title; char titleBuffer[STRING_SIZE];
  	int width  = Options_GetInt(OPT_WINDOW_WIDTH,  0, DisplayInfo.Width,  0);
  	int height = Options_GetInt(OPT_WINDOW_HEIGHT, 0, DisplayInfo.Height, 0);
@@ -1880,10 +1882,10 @@ index acf9554..d6ea57f 100644
  	/* No custom resolution has been set */
  	if (width == 0 || height == 0) {
 diff --git a/src/Game.h b/src/Game.h
-index ccfee09..67da7fb 100644
+index ccfee09..08ce48c 100644
 --- a/src/Game.h
 +++ b/src/Game.h
-@@ -24,6 +24,25 @@ CC_VAR extern struct _GameData {
+@@ -24,6 +24,26 @@ CC_VAR extern struct _GameData {
  } Game;
  
  extern struct RayTracer Game_SelectedPos;
@@ -1900,6 +1902,7 @@ index ccfee09..67da7fb 100644
 +	double time;
 +	PackedCol heldCol;
 +	float hand[3];	/* from a seat, the right hand from the eye (SE_SeatHand) */
++	float heldScale;	/* the block in that hand, its model scale (SE_SeatHeld) */
 +	cc_bool world, seated, handOn;
 +};
 +extern const struct SEFrame* SE_Frame;
@@ -1909,7 +1912,7 @@ index ccfee09..67da7fb 100644
  extern cc_bool Game_UseCPEBlocks, Game_Running;
  
  extern cc_string Game_Username;
-@@ -41,6 +60,8 @@ extern cc_string Game_Mppass;
+@@ -41,6 +61,8 @@ extern cc_string Game_Mppass;
      #define DEFAULT_VIEWDIST 20
  #elif defined CC_BUILD_SYMBIAN
  	#define DEFAULT_VIEWDIST 64
@@ -2195,10 +2198,22 @@ index d033191..e965cc8 100644
  		Gen_CurrentProgress = (float)z / World.Length;
  
 diff --git a/src/HeldBlockRenderer.c b/src/HeldBlockRenderer.c
-index 80327e7..518d597 100644
+index 80327e7..9b8a54a 100644
 --- a/src/HeldBlockRenderer.c
 +++ b/src/HeldBlockRenderer.c
-@@ -69,7 +69,11 @@ static void SetMatrix(void) {
+@@ -51,7 +51,10 @@ static void HeldBlockRenderer_RenderModel(void) {
+ 	else {
+ 		model = Models.Block;
+ 		SetHeldModel(model);
+-		Vec3_Set(held_entity.ModelScale, 0.4f, 0.4f, 0.4f);
++		{	/* shaderemu: in a sitter's hand, a block of its own size in the room */
++			float s = SE_Frame->handOn ? SE_Frame->heldScale : 0.4f;
++			Vec3_Set(held_entity.ModelScale, s, s, s);
++		}
+ 
+ 		Gfx_SetupAlphaState(Blocks.Draw[held_block]);
+ 		Model_Render(model, &held_entity);
+@@ -69,7 +72,11 @@ static void SetMatrix(void) {
  	Vec3 eye = { 0,0,0 }; eye.y = Entity_GetEyeHeight(p);
  
  	Matrix_Translate(&lookAt, -eye.x, -eye.y, -eye.z);
@@ -2210,7 +2225,7 @@ index 80327e7..518d597 100644
  }
  
  static void ResetHeldState(void) {
-@@ -78,9 +82,15 @@ static void ResetHeldState(void) {
+@@ -78,9 +85,15 @@ static void ResetHeldState(void) {
  	Vec3 eye = { 0,0,0 }; eye.y = Entity_GetEyeHeight(p);
  	held_entity.Position = eye;
  
@@ -2226,7 +2241,7 @@ index 80327e7..518d597 100644
  
  	held_entity.Yaw   = -45.0f; held_entity.RotY = -45.0f;
  	held_entity.Pitch = 0.0f;   held_entity.RotX = 0.0f;
-@@ -145,7 +155,14 @@ static void HeldBlockRenderer_ResetAnim(cc_bool setLastHeld, float period) {
+@@ -145,7 +158,14 @@ static void HeldBlockRenderer_ResetAnim(cc_bool setLastHeld, float period) {
  	if (setLastHeld) { held_lastBlock = Inventory_SelectedBlock; }
  }
  
@@ -2241,7 +2256,7 @@ index 80327e7..518d597 100644
  	struct Entity* player;
  	PackedCol col;
  	float adjPitch, t, scale;
-@@ -164,6 +181,9 @@ static PackedCol HeldBlockRenderer_GetCol(struct Entity* entity) {
+@@ -164,6 +184,9 @@ static PackedCol HeldBlockRenderer_GetCol(struct Entity* entity) {
  }
  
  void HeldBlockRenderer_ClickAnim(cc_bool digging) {
@@ -2251,7 +2266,7 @@ index 80327e7..518d597 100644
  	/* TODO: timing still not quite right, rotate2 still not quite right */
  	HeldBlockRenderer_ResetAnim(true, digging ? 0.35 : 0.25);
  	held_swinging  = false;
-@@ -174,6 +194,9 @@ void HeldBlockRenderer_ClickAnim(cc_bool digging) {
+@@ -174,6 +197,9 @@ void HeldBlockRenderer_ClickAnim(cc_bool digging) {
  }
  
  static void DoSwitchBlockAnim(void* obj) {
@@ -2261,7 +2276,7 @@ index 80327e7..518d597 100644
  	if (held_swinging) {
  		/* Like graph -sin(x) : x=0.5 and x=2.5 have same y values,
  		   but increasing x causes y to change in opposite directions */
-@@ -234,7 +257,20 @@ void HeldBlockRenderer_Render(float delta) {
+@@ -234,7 +260,20 @@ void HeldBlockRenderer_Render(float delta) {
  
  	ResetHeldState();
  	DoAnimation(delta, lastSwingY);

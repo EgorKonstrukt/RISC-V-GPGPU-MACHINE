@@ -404,12 +404,11 @@ static void TurnTo(struct Entity* e, float yaw, float pitch) {
 /* (segl.h's, for seglWorldEye: this game has no gles.c) */
 const volatile unsigned int* seglHostState(void) { return gpu ? (const volatile unsigned int*)(gpu + HOST_STATE) : NULL; }
 
-/* The player's eye over its floor, for the holodeck's default scale (game 3, linux/apps/gameid.h).
-   With tracked hands a block is small, a sixteenth of the sitter's eye height (docs/holodeck.md). */
-#define SMALL_EYE 16.0f
+/* The player's eye over its floor, for the holodeck's default scale (game 3, linux/apps/gameid.h):
+   a block is then about a metre, the sitter's own size. */
 static void WorldEye(struct Entity* e) {
 	static float said[4];	/* (said again only when it changes: two logarithms) */
-	float now[4] = { seated == 1 ? SMALL_EYE : Entity_GetEyeHeight(e), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
+	float now[4] = { Entity_GetEyeHeight(e), (float)Game_ViewDistance, Gfx.Projection.row1.x, Gfx.Projection.row2.y };
 	if (now[2] <= 0.0f || !memcmp(now, said, sizeof(now))) return;
 	memcpy(said, now, sizeof(now));
 	seglWorldEye(3, now[0], 0.1f, now[1], now[2], now[3]);
@@ -690,6 +689,14 @@ float SE_SeatLift(void) {
 	m = Metre((const volatile uint32_t*)(gpu + HOST_STATE)) * 250.0f;
 	lift = LAP * m - Entity_GetEyeHeight(&Entities.CurPlayer->Base);
 	return lift > 0.0f ? lift : 0.0f;
+}
+
+/* For the block in the right hand (HeldBlockRenderer.c): its model scale, HELD metres in the room
+   whatever size the world is. */
+#define HELD 0.04f
+float SE_SeatHeld(void) {
+	if (seated != 1) return 0.4f;
+	return HELD * Metre((const volatile uint32_t*)(gpu + HOST_STATE)) * 250.0f;
 }
 
 /* Asking the server costs two system calls and two task switches. The machine's own input

@@ -28,9 +28,17 @@ public class EmuPersist : UdonSharpBehaviour
     private int wanted;
     private float clearUntil;
 
+    public EmuGate gate;
+
+    // a restore while this was off behind the gate: the gate heard it
+    void Start()
+    {
+        if (gate != null && gate.restored && !restored) OnPlayerRestored(Networking.LocalPlayer);
+    }
+
     public override void OnPlayerRestored(VRCPlayerApi player)
     {
-        if (!player.isLocal) return;
+        if (!Utilities.IsValid(player) || !player.isLocal || restored) return;
         restored = true;
         Say("");
         if (persistTest) SendCustomEventDelayedSeconds("TestStep", 1f);

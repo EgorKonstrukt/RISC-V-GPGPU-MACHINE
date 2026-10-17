@@ -11,6 +11,21 @@ public class EmuGate : UdonSharpBehaviour
     public GameObject[] parts;
     public Vector3 corridorMin = new Vector3(-6.2f, -1f, -8.3f), corridorMax = new Vector3(4.6f, 4f, -5.6f);
     private bool arrived;   // seen in the corridor: before the spawn the position is the origin
+    // What the parts, still off, could not hear: the local avatar's last change and the restore.
+    [HideInInspector] public bool avatarSeen, restored;
+    [HideInInspector] public float avatarAt;
+
+    public override void OnAvatarChanged(VRCPlayerApi player)
+    {
+        if (!Utilities.IsValid(player) || !player.isLocal) return;
+        avatarSeen = true;
+        avatarAt = Time.time;
+    }
+
+    public override void OnPlayerRestored(VRCPlayerApi player)
+    {
+        if (Utilities.IsValid(player) && player.isLocal) restored = true;
+    }
 
     void Update()
     {

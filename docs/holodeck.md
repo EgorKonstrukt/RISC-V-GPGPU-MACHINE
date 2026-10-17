@@ -87,13 +87,13 @@ projection changes): 0.246 for a 1.6 m eye. On `rvc_cpu` the four words read bac
 `121903f2`, `224e049b`, `71ec03a6`, `323c04fb` (`DOOM_SEAT`, `QUAKE_SEAT`, `QUAKE3_SEAT`,
 `CLASSICUBE_SEAT` print it as `eye`).
 
-In a headset ClassiCube's blocks are small, round the sitter as on a table: it says an eye 16
-blocks high (`SMALL_EYE`), so a block is a sixteenth of the avatar's eye height (0.101 m for
-1.6 m, where the 1.625 blocks had made it 0.975 m: `CLASSICUBE_SEAT`'s `block` at planes 144 and
-63), and its view is lifted over the player's eye until the ground is 0.6 m under the seat's
-eye point (`SE_SeatLift`: 4.3 blocks there), where the hands are; the picks start from the
-lifted eye too. With larger blocks, by the World slider, the lift goes to nothing. A desktop's
-sitter keeps the player's own eye (1.625 blocks, 0.98 m).
+ClassiCube says the player's own eye (1.625 blocks), so a block is about a metre (0.98 m for an
+eye of 1.6 m) and the sitter is the player's size. In a headset the block in the right hand is
+4 cm in the room whatever the world's size (`SE_SeatHeld`, the held model's scale; it was a
+sixteenth-size world, 0.101 m blocks, until 17 October 2026, which made the sitter a giant).
+Made smaller by the World slider, below 0.6 m a block, the view is lifted over the player's eye
+until the ground is 0.6 m under the seat's eye point (`SE_SeatLift`), where the hands are; the
+picks start from the lifted eye too.
 
 ## Voices
 

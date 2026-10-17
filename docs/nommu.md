@@ -55,6 +55,8 @@ then "Sync shader sources from the repository" and "Import boot images from the 
   (`mcw_close`); a large pool is mapped at its size, not `calloc`'d (Quake III's zone and hunk).
   Quake III's pools are what q3dm17 takes with headroom (`build.sh`): the hunk 8 MB (5.3 at
   most), the zone 4 (42 KB), the server's 6 (3.2 with seven bots); `meminfo` says what is used.
+  The starter sets the hunk and the zone on the command line: a `q3config.cfg` the MMU world
+  kept in `/persistence` says 32 and 16 MB, and 32 in one run failed once memory was in pieces.
 - The shader machine: `BARE_WORKERS` starts a worker whose page table root is 0 with no
   translation; `NO_PAGING` takes every address as physical. `ZB` runs Zba and Zbb;
   `X_NO_FAST_AMO` sends atomics to the general path (for measuring).

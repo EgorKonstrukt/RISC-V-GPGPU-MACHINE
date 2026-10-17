@@ -1,6 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 using TMPro;
+using VRC.SDK3.Persistence;
 using VRC.SDKBase;
 using VRC.Udon.Common;
 
@@ -22,8 +23,10 @@ public class EmuPointer : UdonSharpBehaviour
     public Renderer[] dotRenderers;
     public Material faintMaterial;     // a beam that only points
     public Material solidMaterial;     // a beam whose trigger or grip is held
-    public float pitch;                // degrees the beam is tipped towards the palm
-    public TextMeshProUGUI pitchLabel;
+    // The laser's calibration: VRChat's own laser clicks this dot, and that hand's beam then
+    // points from the controller as the laser did, kept in this player's PlayerData.
+    public Transform calibrateDot;
+    public TextMeshProUGUI laserLabel;
     // The classroom (EmuStations): a keyboard and a tube a place. Only this visitor's own answer.
     public Collider[] tubes;           // a unit quad over each tube's glass
     public float tubeAspect = 1.3333334f;
@@ -103,8 +106,15 @@ public class EmuPointer : UdonSharpBehaviour
     // has been still for a while: a read while VRChat replaces it crashed the client.
     public Vector2 denMin = new Vector2(-4.5f, -5.5f), denMax = new Vector2(4.5f, 5.5f);   // x, z
     public float avatarSettle = 2f;
+    public EmuGate gate;
     private bool inDen, avatarSeen;
     private float avatarAt;
+    private int aimFrom = -1;   // what the hands' beams were last aimed by: 2 the calibration, 1 the bones, 0 the controllers
+    private Vector3[] laserWay = new Vector3[2];   // a hand's beam in its controller's frame, once calibrated
+    private int[] laserClicks = new int[2];
+    private int lastUseHand = 1;                   // the hand whose trigger moved last: the one that clicked
+    private bool laserLoaded;
+    private string[] LaserKeys = { "beam.left", "beam.right" };
 
     private void Init()
     {
@@ -118,7 +128,14 @@ public class EmuPointer : UdonSharpBehaviour
             sliding[h] = -1;
         }
         if (machine.linksPanel != null) linksPlate = machine.linksPanel.GetComponent<Collider>();
-        ShowPitch();
+        // an avatar loaded while this was off behind the gate: the gate heard it
+        if (gate != null && gate.avatarSeen && !avatarSeen)
+        {
+            avatarSeen = true;
+            avatarAt = gate.avatarAt;
+        }
+        if (gate != null && gate.restored) LoadLaser();
+        ShowLaser();
     }
 
     void Start()
@@ -134,8 +151,6 @@ public class EmuPointer : UdonSharpBehaviour
     {
         Vector3 wrist = player.GetBonePosition(leftHand ? HumanBodyBones.LeftHand : HumanBodyBones.RightHand);
         Vector3 middle = player.GetBonePosition(leftHand ? HumanBodyBones.LeftMiddleProximal : HumanBodyBones.RightMiddleProximal);
-        Vector3 index = player.GetBonePosition(leftHand ? HumanBodyBones.LeftIndexProximal : HumanBodyBones.RightIndexProximal);
-        Vector3 little = player.GetBonePosition(leftHand ? HumanBodyBones.LeftLittleProximal : HumanBodyBones.RightLittleProximal);
         origin = wrist;
         direction = Vector3.forward;
         if (wrist == Vector3.zero) return false;
@@ -149,14 +164,6 @@ public class EmuPointer : UdonSharpBehaviour
             Vector3 elbow = player.GetBonePosition(leftHand ? HumanBodyBones.LeftLowerArm : HumanBodyBones.RightLowerArm);
             if (elbow == Vector3.zero || (wrist - elbow).sqrMagnitude < 1e-6f) return false;
             direction = (wrist - elbow).normalized;
-        }
-        if (pitch != 0f && index != Vector3.zero && little != Vector3.zero)
-        {
-            // the palm faces along this; turning about the line across the knuckles tips the beam
-            Vector3 palm = Vector3.Cross(index - wrist, little - wrist);
-            if (!leftHand) palm = -palm;
-            Vector3 across = Vector3.Cross(palm, direction);
-            if (across.sqrMagnitude > 1e-9f) direction = Quaternion.AngleAxis(pitch, across.normalized) * direction;
         }
         return true;
     }
@@ -458,17 +465,27 @@ public class EmuPointer : UdonSharpBehaviour
         if (player.IsUserInVR())
         {
             bool bones = BonesReady(player);
+            int from = 0;
             for (int h = 0; h < 2; h++)
             {
                 Vector3 origin = Vector3.zero, direction = Vector3.forward;
-                if (!bones || !BoneRay(player, h == 0, out origin, out direction))
+                VRCPlayerApi.TrackingData hand = player.GetTrackingData(
+                    h == 0 ? VRCPlayerApi.TrackingDataType.LeftHand : VRCPlayerApi.TrackingDataType.RightHand);
+                int code = 1;
+                if (laserClicks[h] > 0)
+                {
+                    origin = hand.position;
+                    direction = hand.rotation * laserWay[h];
+                    code = 2;
+                }
+                else if (!bones || !BoneRay(player, h == 0, out origin, out direction))
                 {
                     // no arm bones: the tracked hand, whose fingers lie along its x axis
-                    VRCPlayerApi.TrackingData hand = player.GetTrackingData(
-                        h == 0 ? VRCPlayerApi.TrackingDataType.LeftHand : VRCPlayerApi.TrackingDataType.RightHand);
                     origin = hand.position;
                     direction = hand.rotation * (h == 0 ? Vector3.left : Vector3.right);
+                    code = 0;
                 }
+                from = from * 3 + code;
                 handAt[h] = origin;
                 handWay[h] = direction;
                 Aim(h, origin, direction, true);
@@ -476,6 +493,11 @@ public class EmuPointer : UdonSharpBehaviour
             }
             if (aimHands == 0) aimShown = false;
             handsKnown = true;
+            if (from != aimFrom)
+            {
+                aimFrom = from;
+                Debug.Log("[Beams] left aimed by the " + AimName(from / 3) + ", right by the " + AimName(from % 3) + " (in the den " + inDen + ", avatar seen " + avatarSeen + ")");
+            }
         }
         else
         {
@@ -554,6 +576,7 @@ public class EmuPointer : UdonSharpBehaviour
         Init();
         int h = Hand(args);
         useDown[h] = value;
+        lastUseHand = h;
         if (value && target[h] == Console)
         {
             if (key[h] >= 0 && holodeck != null)
@@ -611,22 +634,66 @@ public class EmuPointer : UdonSharpBehaviour
     // A hand's beam is on the room's screen: the machine's pointer is the beam's.
     public bool OnScreen(int h) { return target[h] == Display; }
 
-    // ---- the beam's angle (buttons on the control panel) ----
+    private string AimName(int code) { return code == 2 ? "laser's calibration" : code == 1 ? "avatar's bones" : "controller"; }
 
-    public void PitchUp()
+    // ---- the laser's calibration (the dot on the control panel) ----
+
+    // VRChat's laser clicked the dot: the clicking hand's beam is the way from its controller to
+    // the dot, in the controller's frame, averaged with the clicks before (the last weighs a quarter at least).
+    public void Calibrate()
     {
-        pitch = Mathf.Clamp(pitch - 5f, -60f, 60f);
-        ShowPitch();
+        Init();
+        VRCPlayerApi player = Networking.LocalPlayer;
+        if (!Utilities.IsValid(player) || !player.IsUserInVR() || calibrateDot == null) return;
+        int h = lastUseHand;
+        VRCPlayerApi.TrackingData hand = player.GetTrackingData(
+            h == 0 ? VRCPlayerApi.TrackingDataType.LeftHand : VRCPlayerApi.TrackingDataType.RightHand);
+        Vector3 to = calibrateDot.position - hand.position;
+        if (to.sqrMagnitude < 1e-4f) return;
+        Vector3 local = Quaternion.Inverse(hand.rotation) * to.normalized;
+        int n = Mathf.Min(laserClicks[h], 3);
+        laserWay[h] = (laserWay[h] * n + local).normalized;
+        laserClicks[h]++;
+        Debug.Log("[Beams] " + (h == 0 ? "left" : "right") + " laser calibrated, click " + laserClicks[h] + ": " + laserWay[h].ToString("F3"));
+        SaveLaser(h);
+        ShowLaser();
     }
 
-    public void PitchDown()
+    public override void OnPlayerRestored(VRCPlayerApi player)
     {
-        pitch = Mathf.Clamp(pitch + 5f, -60f, 60f);
-        ShowPitch();
+        if (Utilities.IsValid(player) && player.isLocal) LoadLaser();
     }
 
-    private void ShowPitch()
+    private void LoadLaser()
     {
-        if (pitchLabel != null) pitchLabel.text = "Beam angle " + (-pitch).ToString("F0");
+        if (laserLoaded) return;
+        laserLoaded = true;
+        VRCPlayerApi me = Networking.LocalPlayer;
+        for (int h = 0; h < 2; h++)
+        {
+            string k = LaserKeys[h];
+            if (laserClicks[h] > 0 || !PlayerData.HasKey(me, k + ".x")) continue;
+            Vector3 way = new Vector3(PlayerData.GetFloat(me, k + ".x"), PlayerData.GetFloat(me, k + ".y"), PlayerData.GetFloat(me, k + ".z"));
+            if (way.sqrMagnitude < 0.5f) continue;
+            laserWay[h] = way.normalized;
+            laserClicks[h] = 1;
+        }
+        ShowLaser();
+    }
+
+    private void SaveLaser(int h)
+    {
+        if (!laserLoaded) return;   // (PlayerData is the player's only once VRChat has brought it)
+        string k = LaserKeys[h];
+        PlayerData.SetFloat(k + ".x", laserWay[h].x);
+        PlayerData.SetFloat(k + ".y", laserWay[h].y);
+        PlayerData.SetFloat(k + ".z", laserWay[h].z);
+    }
+
+    private void ShowLaser()
+    {
+        if (laserLabel == null) return;
+        laserLabel.text = laserClicks[0] + laserClicks[1] == 0 ? "Laser: click the dot to calibrate"
+            : "Laser set: left " + (laserClicks[0] > 0 ? "yes" : "no") + ", right " + (laserClicks[1] > 0 ? "yes" : "no");
     }
 }

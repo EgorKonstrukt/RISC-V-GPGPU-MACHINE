@@ -81,6 +81,8 @@ public class EmuMachine : UdonSharpBehaviour
     public TextMeshProUGUI pauseLabel;
     public Slider speedSlider;         // whole steps: 2,048 instructions a frame, doubled per step
     public TextMeshProUGUI modeLabel;  // on the button that picks how the slider is read
+    public Slider tickSlider;          // instructions a tick (a round's pass): 1,024 doubled per step
+    public TextMeshProUGUI tickLabel;  // and how much of it core 0 really runs, lately
     // The workers' layout geotune makes at boot (docs/multicore.md, "Packing the small workers"):
     // its own pick, or 2, 4 or 8 columns a small worker; the keys, and what it picked and runs.
     public Image[] workerPlates;
@@ -146,6 +148,8 @@ public class EmuMachine : UdonSharpBehaviour
     private bool powered, paused;
     private int budget = 32768;        // instructions a frame
     private int rounds = 4, ticks = TicksPerRound;
+    private int tickSize = TicksPerRound;   // the tick slider's: a round's pass at most
+    private float reached = 1f;             // of a pass's instructions, what core 0 ran, lately
     // Steady: so many instructions a second, however long a frame is, as far as the frame rate allows.
     private bool steady;
     private int workerPreset, workerPresetBooted, geoBits;   // 0 geotune's pick, 1-3 blocks of 2, 4, 8 columns
@@ -231,6 +235,7 @@ public class EmuMachine : UdonSharpBehaviour
         for (int i = 0; i < 4; i++) wanted[i] = "";
         linksPanel.SetActive(false);
         linksButton.SetActive(false);
+        if (tickSlider != null) tickSize = 1024 << (int)tickSlider.value;
         if (speedSlider != null) SetBudget(2048 << (int)speedSlider.value);
         ShowLabels();
         if (powerOnAtStart) PowerOn();
@@ -271,6 +276,14 @@ public class EmuMachine : UdonSharpBehaviour
         if (steady) targetIps = 125000f * (1 << (int)speedSlider.value);
         else SetBudget(2048 << (int)speedSlider.value);
         ShowLabels();
+    }
+
+    public void TickChanged()
+    {
+        tickSize = 1024 << (int)tickSlider.value;
+        perRound = tickSize;
+        carry = 0f;
+        SpeedChanged();
     }
 
     public void WorkersAuto() { PickWorkers(0); }
@@ -332,10 +345,10 @@ public class EmuMachine : UdonSharpBehaviour
             else if (smoothDt < limit * 0.8f && roundCap < MaxRounds) roundCap++;
         }
         float owed = targetIps * dt + carry;
-        float worth = Mathf.Clamp(perRound, TicksPerRound / 4, TicksPerRound);
+        float worth = Mathf.Clamp(perRound, tickSize / 4, tickSize);
         int n = Mathf.Clamp((int)(owed / worth), 1, roundCap);
-        int each = owed < TicksPerRound / 2 ? Mathf.Clamp((int)owed, 512, TicksPerRound) : TicksPerRound;
-        carry = Mathf.Clamp(owed - n * Mathf.Min(worth, each), -TicksPerRound, TicksPerRound);
+        int each = owed < tickSize / 2 ? Mathf.Clamp((int)owed, 512, tickSize) : tickSize;
+        carry = Mathf.Clamp(owed - n * Mathf.Min(worth, each), -tickSize, tickSize);
         if (each != ticks)
         {
             ticks = each;
@@ -345,11 +358,19 @@ public class EmuMachine : UdonSharpBehaviour
         return n;
     }
 
+    // A pass ends early when the guest rests, waits on a page or fills its write cache.
+    private void ShowTick()
+    {
+        if (tickLabel == null) return;
+        tickLabel.text = tickSize.ToString("N0") + " instructions a tick"
+                       + (powered && !paused ? ": " + (reached * 100f).ToString("F0") + "% reached" : "");
+    }
+
     private void SetBudget(int instructionsPerFrame)
     {
         budget = instructionsPerFrame;
-        ticks = Mathf.Min(budget, TicksPerRound);
-        rounds = Mathf.Clamp(budget / TicksPerRound, 1, MaxRounds);
+        ticks = Mathf.Min(budget, tickSize);
+        rounds = Mathf.Clamp(budget / tickSize, 1, MaxRounds);
         tickMaterial.SetInt("_Ticks", ticks);
     }
 
@@ -359,6 +380,7 @@ public class EmuMachine : UdonSharpBehaviour
             speedLabel.text = steady ? targetIps.ToString("N0") + " a second, while frames keep to " + minFrameRate.ToString("F0") + " a second"
                                      : "up to " + (rounds * ticks).ToString("N0") + " instructions a frame";
         if (modeLabel != null) modeLabel.text = steady ? "Steady: per second" : "Fixed: per frame";
+        ShowTick();
         if (powerLabel != null) powerLabel.text = powered ? "Power off" : "Power on";
         if (powerSign != null) powerSign.text = "POWER";
         if (powerPlate != null) powerPlate.color = powered ? new Color(0.10f, 0.62f, 0.20f) : new Color(0.80f, 0.07f, 0.05f);
@@ -1560,6 +1582,7 @@ public class EmuMachine : UdonSharpBehaviour
     private void Sample()
     {
         sampleAt = Time.time + 0.125f;
+        ShowTick();
         uint sum = 0;
         for (int i = 1; i < 32; i++)
         {
@@ -1638,7 +1661,8 @@ public class EmuMachine : UdonSharpBehaviour
         if (haveClock)
         {
             uint ran = clock - lastClock;
-            if (steady && ticks == TicksPerRound) perRound += (Mathf.Min(ran, TicksPerRound) - perRound) * 0.05f;
+            if (steady && ticks == tickSize) perRound += (Mathf.Min(ran, tickSize) - perRound) * 0.05f;
+            if (!paused) reached += (Mathf.Min(ran, ticks) / (float)ticks - reached) * 0.05f;
             instructions += ran;
             totalInstructions += ran;
         }

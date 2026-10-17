@@ -38,6 +38,8 @@ public static partial class ShaderEmuBuilder
         EmuGate script = Udon<EmuGate>(gate);
         script.parts = parts.ToArray();
         Apply(script);
+        foreach (EmuPointer pointer in root.GetComponentsInChildren<EmuPointer>(true)) { pointer.gate = script; Apply(pointer); }
+        foreach (EmuPersist persist in root.GetComponentsInChildren<EmuPersist>(true)) { persist.gate = script; Apply(persist); }
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(root.scene);
         Debug.Log("[ShaderEmu] the gate holds " + parts.Count + " parts: " + string.Join(", ", parts.ConvertAll(p => p.name)));

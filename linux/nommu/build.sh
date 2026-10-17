@@ -16,6 +16,8 @@ sed -i 's|cat > "\$WORK/bin/rv32-c++" <<EOF|cat > "$WORK/bin/rv32-c++.mmu" <<EOF
 sed -i -e 's/^+#define DEF_COMHUNKMEGS \t32$/+#define DEF_COMHUNKMEGS \t8/' -e 's/^+#define MIN_COMHUNKMEGS\t\t16$/+#define MIN_COMHUNKMEGS\t\t8/' \
     -e 's/^+#define DEF_COMZONEMEGS\t\t16$/+#define DEF_COMZONEMEGS\t\t4/' \
     -e 's/^+#define SERVER_ZONE_BYTES (8 \* 1024 \* 1024)$/+#define SERVER_ZONE_BYTES (6 * 1024 * 1024)/' "$R/linux/quake3/quake3.patch"
+# and over a q3config.cfg in /persistence that the MMU world wrote (32 and 16 MB, one run each here)
+sed -i 's/^exec quake3.bin +set fs_basepath/exec quake3.bin +set com_hunkMegs 8 +set com_zoneMegs 4 +set fs_basepath/' "$R/linux/quake3/build.sh"
 # busybox for a machine without an MMU
 grep -q 'set_option NOMMU y' "$R/linux/userland/busybox.sh" || sed -i 's/^set_option STATIC y$/set_option STATIC y\nset_option NOMMU y/' "$R/linux/userland/busybox.sh"
 ALL="userland/build.sh userland/busybox.sh nanox/build.sh libmedia/build.sh apps/build.sh play/build.sh video/build.sh raytrace/build.sh
