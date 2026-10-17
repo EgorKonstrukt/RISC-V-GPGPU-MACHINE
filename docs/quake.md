@@ -8,6 +8,10 @@ in the build. The machine's float instructions (`docs/fpu.md`) were added for it
     wsl -- bash /mnt/c/Development/ShaderX86/linux/quake/build.sh     (3 s; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh quake/build.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & quake` at the console, or Quake in the Start menu's Games (not
 tried from there by hand). With no arguments it plays its three demos in turn, as Quake does,
 and Escape brings its menu up, where New Game is; the Start menu starts it with the menu up
@@ -723,6 +727,7 @@ recorded and the frames drawn by the staying worker; frame 300 with `+con_notify
   a holodeck went on showing that level, its kept runs and textures being replaced under it. The
   plaque is now drawn on black (`SCR_UpdateScreen` leaves the view out under `scr_drawloading`)
   and the frame says it is a flat screen (`seglWorldFlat`, `vid_shaderemu.c`), as a menu does.
+  So does a level's end (`cl.intermission`: its totals, or the episode's text).
 
 Held frames of a live e1m1 (`QUAKE_SERVER=inline`, `+host_framerate 0.05`, the player placed by
 `QUAKE_TEST_PLACE`) under `rvc_harness --cpu --warp`, before and after: the water's seams and
@@ -854,7 +859,8 @@ page of the textures' pool that a worker wrote first stopped it until this core 
 `rvc_cpu`: 7,067 passes against the card's 7,072, where it said 5,707). `qglOpen` now writes
 every page of Quake's GPU memory once (`amoor` of nothing): 6 stops are left (the lists' sets),
 5,718 passes. The new `quakestat:` line of the drawing worker says how many pages were brought
-for workers, and how long a frame was drawn, swapped and waited for.
+for workers, and how long a frame was drawn, swapped and waited for. Linux without an MMU
+(`NO_PAGING`, `docs/nommu.md`) has no page walk, and so no such stop.
 
     QUAKE_KEEP=0          no move through a hull kept
 

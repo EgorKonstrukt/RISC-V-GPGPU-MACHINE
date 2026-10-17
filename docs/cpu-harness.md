@@ -14,7 +14,8 @@ is 5 seconds here and 90 in `rvc_harness`, with the same state sum.
         --until "LX-DONE"
 
 It boots the image in `build\images\linux` from power-on every time (a boot is 13 million
-instructions, a tenth of a second), takes the harness's `--expect`, `--send`, `--until`,
+instructions, a tenth of a second; `--image build\images\nommu` is Linux without an MMU, which
+`linux/nommu/test.py` runs with `RVC_BARE_WORKERS=1`, `docs/nommu.md`), takes the harness's `--expect`, `--send`, `--until`,
 `--uart-log`, `--ticks`, `--pointer-sweep`, `--desktop` and `--tabs`, and ends with
 what each core ran, the firmware calls and the traps by cause. `--seconds` is the guest's
 time, `--wall` this computer's. Start it from PowerShell or cmd: Git Bash turns `"/ # "` into
@@ -36,6 +37,9 @@ share of a game's frame").
 The same interpreter inside the harness, for using the machine by hand at that speed:
 
     bin\rvc_harness.exe --d3d11 --rvc experiments\rvc_opt --image linux-net --cpu --desktop --viz
+
+(Linux with the MMU: a run with options beyond the terminal's keeps it unless it says
+`--kernel nommu`, `docs/nommu.md`).
 
 Everything the harness has is there: its window with the display and the memory view, the
 keys and the pointer, the console, `--expect`, `--send`, `--until`, `--save-state`,
@@ -96,7 +100,8 @@ to a folder of its own.
   base extension).
 - **Memory**: 128 MB from `0x80000000` (Linux's RAM, then the GPU's and the control words, which
   are RAM), the ROM at `0x40000000`, the parallel copy and fill (CSRs `0x0b0` to `0x0b3`, whose
-  source may be the ROM), the clock chip and a UART that prints.
+  source may be the ROM), the clock chip and a UART that prints; the console ring of the
+  kernel without an MMU (`docs/console.md`, "Words in memory") is read in the control pass.
 - **A pass** is `--ticks` instructions (8,192), or fewer when the core waits (`wfi`, `pause`) or
   asks for a copy, as on the shader machine, and the host's part of the machine runs between
   passes: the clock word, the host flags, the pointer, what each core ran, and the GPU's

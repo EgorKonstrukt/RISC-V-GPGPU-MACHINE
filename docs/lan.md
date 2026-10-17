@@ -153,8 +153,8 @@ pass defines `GPU_NET`).
 
 - A machine's number is its visitor's VRChat player number, so its address is `10.0.H.L` of
   that: the first visitor of an instance is `10.0.0.1`. A machine that is off has no link.
-- The readback's row is 960 words: 112 texels of the network's row (the window's 160 words, then
-  what the cores ran and which of them are asleep) after state row 0 and the control texels (`Readback.shader`). `NetWindow` walks it at every round's row and acks; `NetFrame` puts up
+- The readback's row is 1,032 words: 130 texels of the network's row (the window's 160 words,
+  what the cores ran and which of them are asleep, then the console's 18) after state row 0 and the control texels (`Readback.shader`). `NetWindow` walks it at every round's row and acks; `NetFrame` puts up
   to four waiting packets into `_NetData` before a frame's rounds, which all draw the same
   delivery. The ring's row is in band 29, which the control pass draws anyway.
 - Between visitors a packet travels in its sender's own synced object (`EmuShare.net`): the

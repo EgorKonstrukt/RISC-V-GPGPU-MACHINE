@@ -15,9 +15,12 @@ defines it for our image and for snapshots) the machine does the firmware's part
   `0x82200000`.
 - An `ecall` from supervisor mode is an SBI call answered in place (`sbi_call` in `emu.h`):
   set_timer, console putchar and getchar, and the base extension's version and probe calls.
-  Anything else returns "not supported".
+  Anything else returns "not supported". Without the MMU (`CSR_FIELDS`, `docs/nommu.md`) the
+  console calls are not answered: the console is memory the kernel writes itself
+  (`console.md`, "Words in memory").
 - The timer raises the supervisor's timer interrupt directly, and every trap is the
-  supervisor's: nothing runs in machine mode.
+  supervisor's: nothing runs in machine mode. Without the MMU there is no CLINT: the timer is
+  the host's time against set_timer's compare.
 
 Upstream's own images still boot their OpenSBI: they are compiled without `SBI_HLE`.
 
@@ -46,7 +49,8 @@ Upstream's own images still boot their OpenSBI: they are compiled without `SBI_H
 ## Passes that end early
 
 A pass runs 8,192 instructions unless something ends it: a parallel copy or fill, `fence.i`, a
-full write cache, 64 characters of console output, `wfi` or `pause`. What is left of the pass
+full write cache, 64 characters of console output (the machine with the MMU; without it the
+console is a ring in memory: `console.md`), `wfi` or `pause`. What is left of the pass
 is not run. `tools\tick_util.ps1` runs a workload and prints its utilization (instructions
 run over what the busy passes could have run) and the passes that ended early by reason; a
 pass that ended in the kernel's idle loop had nothing to run and is counted apart, and so is
@@ -265,6 +269,9 @@ for byte apart from times, on `rvc_cpu` and on the shader machine; passes the co
 before. Two calls of the machine's own for this (put a character if there is room, and say
 so) were tried first and taken out: level on a shell loop, 1.9% under on Doom's timedemo
 (`experiments/rvc_opt/README.md`, "The same loop, compiled slower").
+
+The kernel without an MMU has no such buffer: `linux/nommu/patch_console.py` makes the same
+driver write a ring in memory, at most 255 bytes a pass (`console.md`, "Words in memory").
 
 ## What an operation costs in the tick shader
 

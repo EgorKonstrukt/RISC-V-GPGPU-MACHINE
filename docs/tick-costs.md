@@ -5,6 +5,10 @@ machine as it is (eight targets, 256 cores, 384 texels of write cache, 8,192 ins
 pass) on an RTX 5070 laptop card. Most of what was tried on the way gained nothing and was not
 kept; what did gain is the first section.
 
+They are of the machine with the MMU. The one the world runs now has no paging
+(`docs/nommu.md`): no TLBs and no page walks, its CSRs fields of core 0's first texels, and a
+write cache of 336 texels (64 + 32 + 16 buckets of three).
+
 ## Where the time was
 
 Against the machine as it was before all of this, both builds on one snapshot, in turn, the

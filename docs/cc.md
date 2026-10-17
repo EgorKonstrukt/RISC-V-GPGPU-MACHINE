@@ -14,6 +14,8 @@ Nano-X's build.
   them, 4.9 MB). They were one archive unpacked over the root at the first build, which was
   half of that build: 110 million instructions against 55 for the shader example in the
   world, where every page copied is a round.
+- Without an MMU (`docs/nommu.md`) `cc` is `linux/nommu/cc`: it links the program as a library
+  (`tcc -shared`, every address relocatable) and `elf2flt` makes that a flat program.
 - What a program gets: musl's headers and `libc.a`, `libnano-X.a` with `nano-X.h`,
   `libgles.a` with `GLES/gl.h` and `GLES/segl.h` (`programs/linux/gles.c` in its float build:
   OpenGL ES 1 on the machine's GPU, `docs/gpu.md`), and `libmcw.a` with `mcw.h` and `mcwx.h`: the worker

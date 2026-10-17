@@ -178,8 +178,10 @@ at `0x87000360` (`HOST_STATE` in `src/gpu.h`; the control pass, from `EmuHolodec
 | 5 | in a headset the sitter's sticks, a signed byte each, 127 pushed home: the left one to the right, forward, the right one to the right, up (zero while a menu has them as keys). Without a headset the left one is the keys walked by, and bits 16-23 count the notches the wheel has turned up while a game is played (`SEGL_HOST_WHEEL`, wrapping). Before 13 October 2026: where the left hand points |
 | 6, 7 | the right hand, the same |
 
-A hand's place and way are its beam's (`EmuPointer`: from the knuckles, along the back of the
-hand). With no hands (a desktop's sitter) the low half of word 4 is how far their mouse has
+A hand's place and way are its beam's (`EmuPointer`): from the controller the way VRChat's laser
+went when it clicked the control panel's "Calibrate laser" dot (`Calibrate`, kept in PlayerData
+as `beam.left` and `beam.right`), else from the knuckles along the back of the hand (the avatar's
+bones), else along the controller. With no hands (a desktop's sitter) the low half of word 4 is how far their mouse has
 gone to the right, a counter that wraps (`mouseCounts` of them to one of Unity's "Mouse X").
 
 Places and turns are against the seat's eye point while seated, and against the visitor's own

@@ -9,6 +9,11 @@ the GPU, the sound card. Its screen is 640 x 400, shown one to one.
     wsl -- bash /mnt/c/Development/ShaderX86/linux/ralert/build.sh    (two minutes; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat:
+`bash linux/nommu/build.sh tdawn/build.sh ralert/build.sh`, then `root.sh` and `image.py`
+(`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & ralert` at the console, or Red Alert in the Start menu's Games (not
 tried from there). The data is the 1996 demo's: one Soviet and one Allied mission and
 skirmish games, 24 MB, which the build fetches and the repository does not keep. Effects,
@@ -19,7 +24,9 @@ speech and the demo's two tunes play on the sound card.
 - `build.sh` puts the tree at Tiberian Dawn's commit, applies Tiberian Dawn's patch (the
   shared files) and then `vanilla-conquer.patch` (Red Alert's own files, and two shared
   ones), copies `linux/tdawn`'s `host.c`, `shaderemu.cpp`, `soundio_shaderemu.cpp` and
-  `cxxrt.cpp` in, and builds `vanillara` with `-DSHADEREMU_RA`.
+  `cxxrt.cpp` in, and builds `vanillara` with `-DSHADEREMU_RA`. It is installed as
+  `/usr/lib/ralert/game`, which the starter `ralert` runs where it lies in the ROM, from
+  `/tmp/ralert` with links to the data (`docs/nommu.md`, "Memory").
 - `gl.cpp` is Tiberian Dawn's map renderer with Red Alert's names. What differs: a cell is
   "mapped" once any of it shows and "visible" when all of it does (the other way round there);
   a map may be 128 x 128 cells; a shadow has as many levels of darkness as its pixels ask for.

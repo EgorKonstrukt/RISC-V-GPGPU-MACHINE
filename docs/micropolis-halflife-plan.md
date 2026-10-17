@@ -1,5 +1,8 @@
 # Plan: Micropolis, and Half-Life: Uplink on Xash3D FWGS
 
+Micropolis has since been built (`linux/micropolis`, `nxmicropolis`; `docs/micropolis.md`);
+Half-Life has not. What follows is the plan as it was written.
+
 Written 15 October 2026. Nothing here is built. It comes from reading the upstream trees at
 the commits below, from compiling and running Micropolis's engine on the build computer (WSL,
 x86-64), from unpacking Uplink's installer there, and from reading `linux/quake`,

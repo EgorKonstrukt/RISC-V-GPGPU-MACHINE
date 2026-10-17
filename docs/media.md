@@ -53,7 +53,9 @@ Pixels are 3 bytes (a PPM's: what the GPU draws in fragment mode 4) or 4 (red fi
 first with `bgr`), rows `stride` apart. `opaque` lays see-through pixels over `background` in 4
 channels too. `media_image_fit` scales pixels in memory to another size (half or less: the mean
 of the pixels under each; else the four nearest its middle, weighed), covering it or fitting
-inside, rows on every core.
+inside, rows on every core. `media_image_to_ppm` decodes a file into a PPM file mapped for
+writing; without an MMU, where a file cannot be mapped so, the picture is made in memory and
+written after (`docs/nommu.md`).
 
 What is parallel in each:
 

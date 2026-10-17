@@ -9,6 +9,10 @@ file of it changed); this repository has its platform and renderer, some 600 lin
     wsl -- bash /mnt/c/Development/ShaderX86/linux/imgui/build.sh    (12 s the first time)
     python tools\make_linux_image.py                                 (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh imgui/build.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & imdemo`, or "Dear ImGui" in the Start menu's Other.
 `IMDEMO_SHOW=1` starts with ImGui's own demo window open and `IMDEMO_FRAMES=N` ends after N
 frames with `imdemo: done`; every 30th frame prints an `imstat:` line.

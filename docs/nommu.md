@@ -29,7 +29,8 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
 `rvc_harness` with no arguments boots this image once it has been made, on the machine without
 paging (`NO_PAGING`), with its window, desktop and sound. `--kernel mmu|nommu` and `--isa base|zb`
 choose the kernel and the instruction set (`zb` takes `build/images/nommu-zb` and the shader's
-`ZB`), as `k` and `i` do in the start menu; `--image linux-net` alone is Linux with the MMU.
+`ZB`), as `k` and `i` do in the start menu. A run with options other than `--image`, `--cpu`,
+`--resume`, `--no-desktop` and `--no-viz` is Linux with the MMU unless `--kernel` says otherwise.
 
 `pwsh linux/nommu/all.ps1 [-Kernel]` is the whole round. The machine's own `cc` links a flat
 program as a library and makes it flat with `elf2flt` (`linux/nommu/cc`). `linux/nommu/card.ps1`

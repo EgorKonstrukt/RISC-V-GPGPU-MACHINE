@@ -115,15 +115,15 @@ window: the first groups are being decoded.
   picture's slices came to (the last picture of half the sample's groups ends a row early:
   that was so before, and is not mended here).
 - **A group is copied into GPU memory a picture a job**, by its own worker and by every
-  worker whose group waits for its places (`mpeg_copy_one`; `NXVIDEO_COPY=1` is one worker
-  as before). A group must be there within the time its places are free, which is the room
-  less a group: 3.4 s for the sample's 88 places, 1.3 s for the 38 of 480 x 272.
+  worker whose group waits for its places (`copy_one` in `m_video_mpeg.c`; the switch for one
+  worker as before, `NXVIDEO_COPY`, is gone). A group must be there within the time its
+  places are free, which is the room less a group: 3.4 s for the sample's 88 places, 1.3 s for the 38 of 480 x 272.
 - **It plays on when the groups being decoded will be there in time**, each going on as fast
   as it has got to where it is (`in_time`; `NXVIDEO_START=1` is the rule before: 36 pictures
   in hand). The first groups are all begun at once and end seconds apart, and a film begun
   on the first of them ran into the last.
 - 16 decoders for pictures of the sample's size (20), and more for larger ones as far as
-  32 MB of their groups go (`MPEG_VIDEOS` 48).
+  32 MB of their groups go (`VIDEOS` 48 in `m_video_mpeg.c`).
 
 On the shader machine at 2 ms a pass (`--fixed-dt 0.002`), the build before and this one:
 
@@ -140,7 +140,7 @@ and now), on the host too.
   the sum `585cd183` both), some 40 workers' worth, and a group in memory is 2 MB: 32 MB of
   them are 16 decoders.
 - A group's pictures lie in pl_mpeg's order of planes (red chroma before blue), and
-  `as_frame` copies them in the frame's: a block at a plane's edge is predicted from the
+  `copy_one` copies them in the frame's: a block at a plane's edge is predicted from the
   bytes past it, as it was.
 
 ## Not this way

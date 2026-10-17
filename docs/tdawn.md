@@ -11,6 +11,10 @@ desktop's 1280x720, which costs the game nothing (the GPU does the stretching).
     wsl -- bash /mnt/c/Development/ShaderX86/linux/tdawn/build.sh     (a minute when a file changed; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh tdawn/build.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & tdawn` at the console (it is also listed for the desktop's Start
 menu, which was not tried). The data is the 1995 demo's (GDI missions 1, 3, 5, 6 and 10; the
 menu starts the first), which the build fetches and the repository does not keep. Effects and
@@ -62,7 +66,9 @@ has none), only the map screen's and the score screen's tunes (`MAP1.AUD`, `WIN1
 - **Finding files.** Every file was looked for in any spelling, a folder at a time from the
   root down, and reading the root folder reads the ROM: 6,282 folder listings before the first
   mission, 212M instructions. Only the file's own name is matched now, and the starter runs
-  the program from a folder of its own (the game lists its program's folder too): 70M.
+  the program from a folder of its own (the game lists its program's folder too): 70M. The
+  program is `/usr/lib/tdawn/game` in the ROM, run where it lies and not copied to `/tmp`
+  (`docs/nommu.md`, "Memory"); `/tmp/tdawn`, where it runs, has links to the data.
 - **Waiting** ends the machine's frame with `pause`; the screen is shown at most 60 times a
   second unless the game asks.
 - **Twenty steps a second.** The game's default speed is 15 steps of its logic a second, and

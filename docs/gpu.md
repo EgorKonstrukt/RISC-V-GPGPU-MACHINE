@@ -16,8 +16,8 @@ How it is drawn:
   that sees only this mesh, on a layer of its own, clearing depth only.
 - **GPUControl** is one small extra update zone on the state texture. After a submitted list
   has been drawn it takes the submit word back and counts the frame, so the next list can be
-  submitted at once. It also delivers the keyboard and pointer (`input.md`) and the host's
-  clock.
+  submitted at once. It also delivers the keyboard and pointer (`input.md`), the host's
+  clock and the console's typed characters (`console.md`, "Words in memory").
 - **Writeback** needs no pass of its own: when a submit asks for it, the machine's Commit pass
   (built with `GPU_DEVICE`) copies the picture into RAM, one `0x00RRGGBB` word per pixel, so
   the CPU can read what the GPU drew. The control pass notes the copy at `0x87000070`; the
@@ -46,7 +46,7 @@ colour fragments. The CPU shader has no GPU code.
 | `0x8700003c` | host flags, written every frame. Bit 0: the guest should start its desktop when it boots. Bit 1: the host shows the console as four terminals (`docs/console.md`). Bits 2-3: the workers' layout the host asks `geotune` for (0 its own pick; 1, 2, 3: small workers in 2, 4, 8 columns; `docs/multicore.md`, "Packing the small workers"). Bits 8-15 and 16-23: the largest screen the host shows, width and height in 16s of pixels (0: it does not say) |
 | `0x87000100` | a request for a page from the host, and its answer (`docs/fetch.md`) |
 | `0x87000300` | a 3D program's last whole frame, for a host that shows it in space (`docs/volume.md`) |
-| `0x87000320` | the counters' head: a core added, "ERGM" from a host that merges, merges so far, passes so far (`docs/multicore.md`, "Counters") |
+| `0x87000320` | the counters' head: a core added, "ERGM" from a host that merges, merges so far, commits so far, a pass each (`docs/multicore.md`, "Counters") |
 | `0x87000380` | what each core ran, and how many cores there are (`docs/multicore.md`) |
 | `0x87000060` | a lock for programs that share the GPU: take it with an atomic swap around looking at the submit word and writing a list's registers |
 | `0x87000070` | the copy still to be made for the list drawn last (0: none), then its address, width and height, row length |
@@ -297,7 +297,9 @@ frames a second with this project's kernel (about 80 on upstream's):
   page stopped it until core 0 served it (`docs/multicore.md`, "A game's speed"). One ioctl draws a list, copies the picture
   where asked and returns when that is done; it holds a lock, so several programs can use
   the GPU without stepping on each other's lists. An older ioctl only waits for a frame.
-  Either way the kernel waits with `wfi`, which ends the emulator's frame.
+  Either way the kernel waits with `wfi`, which ends the emulator's frame. `/proc/gpu` has a
+  line for each open of it (pid, workers, wanted, lent, tag, draws, lists drawn), which
+  `nxmon` reads (`docs/nanox.md`).
 - A program can also submit with no system call: it takes the lock word, writes the registers
   through its mapping and ends the frame with `pause`. The OpenGL library and Nano-X do this,
   and the library reads the time from the clock word instead of asking the kernel.
@@ -325,7 +327,7 @@ frames a second with this project's kernel (about 80 on upstream's):
   spins while it waits.
 - The GPU's memory must not be RAM the kernel uses, so the image's device tree ends RAM at
   `0x86000000` (`tools/make_linux_image.py`, which also adds the binary to the root
-  filesystem).
+  filesystem; `linux/nommu/image.py` for Linux without an MMU, from `0x80400000`).
 - The binary is static and links no C library: `programs/linux/libc.c` is a tiny runtime, and
   floating point comes from compiler-rt's soft-float routines, fetched at build time
   (`programs/linux/fetch.py`). Inside, the driver works in 16.16 fixed point.

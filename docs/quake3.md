@@ -11,6 +11,10 @@ the rest where a file lies in the ROM.
     wsl -- bash /mnt/c/Development/ShaderX86/linux/quake3/build.sh    (17 s; 25 s when it bakes; the first time it also fetches)
     python tools\make_linux_image.py
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat and its pools smaller (below):
+`bash linux/nommu/build.sh quake3/build.sh`, then `root.sh` and `image.py` (`docs/nommu.md`).
+
 In the guest: `nano-X -p & quake3 +map q3dm17 +addbot sarge 3`, or Quake III Arena in the
 Start menu's Games, which opens the main menu. Lines typed at the terminal it was started
 from are console commands. The demo's 47 MB pak is fetched by the build and not kept; what
@@ -48,6 +52,10 @@ it was run by typed commands only, and its pictures were compared with the GPU's
 - `quake3.patch` is `git diff -- code` of the tree at `build.sh`'s commit. A tree that is that
   already is left as it is, so that a build compiles only what changed (5 to 9 s; it was every
   file of the patch, 30 s while other builds ran).
+- The zone, the server's zone and the hunk are each one anonymous mapping of its size
+  (`SE_Pool` in the patch): 16, 8 and 32 MB. The no-MMU build (`linux/nommu/build.sh`) makes
+  them 4, 6 and 8 MB, and its starter adds `+set com_hunkMegs 8 +set com_zoneMegs 4` over a
+  kept `q3config.cfg` (`docs/nommu.md`, "What differs").
 
 ## The two files
 

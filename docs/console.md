@@ -1,6 +1,7 @@
 # The console
 
-The machine has one serial console (the UART; `/dev/hvc0` in Linux). In the VRChat world it
+The machine has one console (`/dev/hvc0` in Linux): words in memory on the machine without an
+MMU, which the world runs, and the UART on the one with it. In the VRChat world it
 is four terminals, with the lines that scrolled off each, and a field to paste text into.
 
 ## Words in memory

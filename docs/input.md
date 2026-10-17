@@ -2,8 +2,8 @@
 
 The machine has a keyboard and a pointer. Like the display they are plain RAM at fixed physical
 addresses: the host writes them once per frame, in the GPU device's control pass, and a program
-reads them with ordinary loads. The CPU shader has no input code. The console (UART) is
-separate and unchanged.
+reads them with ordinary loads. The CPU shader has no input code. The console (`console.md`)
+is separate.
 
 | Address | Contents |
 |---|---|
@@ -116,9 +116,10 @@ Input there is the world's own beams (`EmuPointer.cs`), one per hand in VR and t
 the view on desktop. VRChat's laser cannot serve: it works on one hand at a time, and a world
 is told that a canvas was pressed, never where.
 
-- A beam runs along the back of the hand, from the avatar's bones (wrist to knuckles, or elbow
-  to wrist), and is drawn as a line with a dot where it lands. The control panel tips it up
-  or down for controllers that point elsewhere.
+- A beam runs the way VRChat's laser went when it clicked the control panel's "Calibrate
+  laser" dot (`Calibrate`, kept in PlayerData as `beam.left` and `beam.right`), else along the
+  back of the hand from the avatar's bones (wrist to knuckles, or elbow to wrist), else along
+  the controller. It is drawn as a line with a dot where it lands.
 - A beam is faint while it only points and solid while its trigger or grip is held, and is
   not drawn at all when it points at neither the display nor a keyboard.
 - On the display it is the pointer: trigger or click is the left button, grip or the right

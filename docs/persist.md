@@ -100,7 +100,8 @@ doing and a bar; without one it prints lines.
 ## Hosts
 
 - The world: `EmuPersist` (PlayerData keys `persist.blob` and `persist.auto`, read only after
-  `OnPlayerRestored`), `EmuMachine.PersistStep`, and `PersistRead.shader`, which a save draws
+  `OnPlayerRestored`, which `EmuGate` hears for it while it is off, until the visitor leaves the
+  corridor they arrive in: `EmuGate.restored`), `EmuMachine.PersistStep`, and `PersistRead.shader`, which a save draws
   once: the guest's bytes out of the state, a pixel a word, read back into a byte array.
   "ShaderEmu/Add the storage sign to the open scene" makes the behaviour, its target and the
   sign over the power button; after "Build world" it is run again. A world without the sign

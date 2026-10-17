@@ -358,7 +358,8 @@ public class EmuMachine : UdonSharpBehaviour
         return n;
     }
 
-    // A pass ends early when the guest rests, waits on a page or fills its write cache.
+    // A pass ends early at wfi (idle passes count too), pause or a rest, a parallel copy or fill,
+    // fence.i, or a full write cache.
     private void ShowTick()
     {
         if (tickLabel == null) return;

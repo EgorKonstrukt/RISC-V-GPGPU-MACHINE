@@ -8,6 +8,10 @@ runs at a NES's speed or near it; on one core at a third.
     wsl -- bash /mnt/c/Development/ShaderX86/linux/nes/build.sh       (2 s; the first time it also fetches)
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh nes/build.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & nes thwaite` or `nes nova` (the Start menu's Games has both), or
 `nes FILE.nes` for any other cartridge of a mapper Nofrendo has. Arrows are the pad, X is A,
 Z is B, Enter is Start, Tab is Select and Escape ends. Its sound is the sound card's (below).

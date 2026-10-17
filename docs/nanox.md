@@ -25,13 +25,14 @@ desktop has a small set of programs of its own, listed under "The desktop's prog
     python tools\make_linux_image.py
 
 - `linux/userland/toolchain.sh` builds the C library the programs link: musl, static, for
-  RV32IMA without an FPU. The compiler's own runtime library assumes an FPU, so integer and
-  soft-float helpers come from compiler-rt and the 128-bit `long double` ones from libgcc's
+  RV32IMAF (`docs/fpu.md`). The integer and soft-float helpers come from compiler-rt and the 128-bit `long double` ones from libgcc's
   soft-fp sources. `rv32-cc` is the resulting compiler driver.
 - `linux/nanox/build.sh` fetches Microwindows at a fixed commit, applies
   `microwindows.patch`, adds the three drivers in that directory, builds with
   `linux/nanox/config` and leaves stripped binaries in `build/images/linux/root`, a tree the
   image builder copies into the root filesystem.
+- That is the build of Linux with the MMU. `linux/nommu/build.sh` runs the same scripts for
+  Linux without one, the world's (`docs/nommu.md`).
 - Nothing fetched is kept in this repository.
 
 ## Drivers
@@ -148,7 +149,9 @@ starter has one.
 Settings has a Devices tab (`device_lines` in `nxsettings.c`; `nxsettings devices` prints it):
 a list of the machine's devices and, for the one picked, what it is and how it runs now, drawn
 again where it changed once a second. The processor's extensions are tried, not read (Linux's
-`isa` line comes from the device tree), its cores and workers are the control words'
+`isa` line comes from the device tree): `linux/apps/machine.h` runs a float and a Zba/Zbb
+instruction and says which trapped, and takes the MMU from `/proc/cpuinfo`, which names one
+only when there is one (`docs/nommu.md`). Its cores and workers are the control words'
 (`0x870003c0` on), the network's figures `/sys/class/net/lan0`'s, the host's kind and its
 visitors the host's words (`0x87000360`).
 

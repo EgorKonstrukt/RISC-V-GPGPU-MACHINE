@@ -7,6 +7,10 @@ image with the GPU drawing its picture.
     wsl -- bash /mnt/c/Development/ShaderX86/linux/nanox/doom.sh
     python tools\make_linux_image.py                                  (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh nanox/doom.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: start it from the desktop's Start menu or a terminal, or `nano-X -p & doom` at
 the console. `-playdemo demo1` plays the first demo in real time, `-timedemo demo1` one tic a
 frame, `-warp 1 1` starts in the first level.
@@ -36,7 +40,9 @@ is 43k. Where the time went, and what was done:
   guard: a load from a table for every use of a global, and a stored and checked word in most
   functions. Doom is built `-fno-pie -flto` now, and nothing has the guard
   (`linux/userland/toolchain.sh`; libraries stay position-independent, because the guest's
-  own linker, TinyCC's, takes no other kind).
+  own linker, TinyCC's, takes no other kind). Without an MMU every program is
+  position-independent again: the flat drivers drop `-fno-pie` and compile `-fPIE`
+  (`linux/nommu/setup.sh`, `docs/nommu.md`).
 - **Sight checks** were half of a tic. A monster that has not noticed the player asks whether
   it can see him several times a second, and the port asked that before asking whether he is
   in front of it. `doom_fast.c` asks in the other order (the same answer, a third fewer walks

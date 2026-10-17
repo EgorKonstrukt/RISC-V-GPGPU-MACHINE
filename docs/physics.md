@@ -21,6 +21,10 @@ size: the picture has all of it but the bar, and the buttons share the bar's wid
 
 Until 13 October 2026 `w` was the colours and `a` all the workers.
 
+That image has the MMU. The world and `rvc_harness` with no arguments run Linux without one,
+where the program is flat: `bash linux/nommu/build.sh physics/build.sh`, then `root.sh` and
+`image.py` (`docs/nommu.md`, "Building it").
+
 ## What the workers allow
 
 A core sees another's stores one pass later, and 16 bytes have one writer a pass. So a

@@ -1,11 +1,11 @@
 # Float instructions
 
-The full machine (the one Linux runs on) has RISC-V's F extension: single-precision floats in
+The machines Linux runs on (with the MMU and without, `nommu.md`) have RISC-V's F extension: single-precision floats in
 32 registers of their own. A program built for it does a float addition in one instruction
 where the compiler's runtime took about a hundred, which is what made Quake playable
 (`docs/quake.md`). The smaller machines for bare-metal programs do not have it.
 
-In the shader it is the define `FPU`, which the harness sets for the full machine and
+In the shader it is the define `FPU`, which the harness sets for both Linux machines and
 `MachineTick.shader` has by hand.
 
 ## What is there
@@ -73,7 +73,8 @@ result goes to one indexed store as before: the fast loop carries nothing more t
 `fp_exec` in `emu.h` works every result out and chooses one, for the general path and for
 the fast step's rarer float instructions; the fast step does a sum, a difference, a product
 and `fp_light`'s moves, signs and comparisons each by itself (`tick-costs.md`). Between passes the registers are eight texels of the state zone, from
-`FP_STATE_AT`, after the TLBs' texels.
+`FP_STATE_AT`, after the TLBs' texels (with `NO_PAGING` there are none: right after the write
+cache). Without the MMU `fcsr` is a field of core 0's first three texels (`CSR_FIELDS`).
 
 An integer-only guest costs 1.1% more with them (D3D11, fxc2: 3,556k to 3,518k instructions a
 second on the shell busy loop, four runs each, alternating) and reaches the same state hash.

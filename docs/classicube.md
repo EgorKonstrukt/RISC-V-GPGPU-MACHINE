@@ -9,6 +9,10 @@ world is chunks of quads that stay in GPU memory, and the CPU works when a block
     wsl -- bash /mnt/c/Development/ShaderX86/linux/classicube/build.sh   (6 s; the first time it also fetches)
     python tools\make_linux_image.py                                     (then a new shell snapshot)
 
+That is the image with the MMU. The world and `rvc_harness` with no arguments run Linux
+without one, where the program is flat: `bash linux/nommu/build.sh classicube/build.sh`, then
+`root.sh` and `image.py` (`docs/nommu.md`, "Building it").
+
 In the guest: `nano-X -p & classicube` at the console, or ClassiCube in the Start menu's Games
 (not tried from there). It starts in single player. W, A, S and D walk, Space jumps, the left
 button digs and the right one builds; the pointer's travel over the window turns the view, and
@@ -507,8 +511,11 @@ seen from both sides.
   hand, the chunks are those round the head, a box round the eye stands for the clear colour,
   the view does not tilt with the walk's bobbing, and the game says its eye's height for the room's scale
   (`seglWorldEye`). The held block's hand is the frame's (`SEFrame.hand`), worked out on core 0.
-  In a headset the blocks are small and the view is lifted over them, the right trigger breaks
-  by the right hand's beam and the left one places by the left hand's; a desktop's sitter breaks
+  The eye said is the player's real one, so a block is about a metre, and the block in a
+  sitter's hand is 4 cm in the room whatever the world's size (`SE_SeatHeld`, `heldScale`).
+  In a headset the view is lifted over blocks only when they are small (`SE_SeatLift`); the
+  right trigger breaks by the right hand's beam and the left one places by the left hand's; a
+  desktop's sitter breaks
   by the left button and places by the right one at the view's middle (`docs/holodeck.md`, "The
   world's size" and "Played from the seat"). `CLASSICUBE_SEAT=1` prints a `ccblock:` line for
   each block changed, and the seat's line has the block's size in metres and the lift; the

@@ -82,7 +82,8 @@ button Start (Enter), right grip Select (Tab), left grip Esc.
 ## Blocks (ClassiCube)
 
 Left stick walks and right stick turns, as sticks (the shooter's way), the jump button jumps (Space), the right trigger digs and the left one
-builds (the pointer's buttons, where the pointer was left), left grip Esc, right grip Enter.
+builds (their bits in the host's words, each by its own hand's beam: `docs/holodeck.md`), the left grip
+the inventory (by the words: no key), the right grip Esc (its pause menu; Enter was chat).
 
 ## Checking it
 

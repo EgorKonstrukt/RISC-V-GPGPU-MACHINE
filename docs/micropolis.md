@@ -11,6 +11,10 @@ the other windows are drawn by Nano-X.
 
     wsl -- bash /mnt/c/.../linux/micropolis/build.sh    # 6 s; after Nano-X's, Tiberian Dawn's and libmedia's builds
 
+For Linux without an MMU, which the world runs:
+`bash linux/nommu/build.sh micropolis/build.sh`, then `root.sh` and `image.py`
+(`docs/nommu.md`, "Building it").
+
 The Start menu has it under Games, the desktop has its icon (the X11 release's map,
 `linux/apps/icons/micropolis.png`), and a `.cty` file opens in it and has that icon in Files
 (`docs/open.md`). The system sheet in the world lists it.

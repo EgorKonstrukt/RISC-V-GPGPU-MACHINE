@@ -40,6 +40,8 @@ cores cost nothing now: "Up to 256 cores").
   `{ "MCSU", pc, sp, root }`, the page table's first page being number `root` (the kernel
   tells a program its own: an ioctl of `/dev/gpu`). It starts there with its number in `a0`.
   `pause` is its sleep until the first word of its job changes, and `ebreak` parks it again.
+  On the machine without paging (`NO_PAGING`, Linux without an MMU: `docs/nommu.md`) a worker
+  runs untranslated, as core 0 does, and its root is 0.
 - **A trap stops a worker where it is.** There is no kernel on a worker to take one, so the
   machine writes `{ count, cause, address, pc }` into the worker's mailbox and the worker
   waits. A page the program has not touched yet is the usual cause: the library, on core 0,
@@ -170,7 +172,8 @@ registers in row 39), which the pass drew all 4,096 pixels of.
 
 They are now one 64 x 16 rectangle at the top of the block, with the CSR area in the rows
 under it, and the tick pass draws the rectangle only (`STATE_ROWS` and the layout at the top
-of `src/types.h`). The first 44 texels did not move. There is no other layout: a snapshot
+of `src/types.h`; without an MMU there is no CSR area and no TLBs, and the tick draws 8 rows
+of core 0's: `docs/nommu.md`, "The state"). The first 44 texels did not move. There is no other layout: a snapshot
 from before does not load, and the Unity side's tick texture has the same rows ("In Unity").
 
 | | Four bands of 64 x 64 | One rectangle |
@@ -252,8 +255,8 @@ cache, so the cache's size is the worker's size:
 | 3 | 0.66 KB | 108 | 2 | 32 |
 
 The tables are 2^bits buckets, half and a quarter of that (17 October 2026; the third was half
-before, 564 texels and 9 tiles at 6 bits): core 0 is then 8 x 8 pixels of the tick's targets,
-as a worker. Under `RVC_WCACHE=1` it ended more passes full, Doom's timedemo 549 to 880 of
+before, 564 texels and 9 tiles at 6 bits): core 0 without paging (`NO_PAGING`, no TLBs:
+`docs/nommu.md`) is then 8 x 8 pixels of the tick's targets, as a worker. Under `RVC_WCACHE=1` it ended more passes full, Doom's timedemo 549 to 880 of
 about 1.4 million, Quake III to frame 200 1,165 to 1,465, nxray 119 to 180.
 
 So it is few workers that store much in a pass or many that store little, or any mix. A
@@ -736,7 +739,8 @@ What a program has to keep to:
   picture whose width is a multiple of 16, buffers from `mcw_alloc()` or `posix_memalign(16)`
   rounded up to 16, its own stack. Globals that a job writes want `aligned(16)` and a size
   of whole 16s.
-- **Memory the program has not touched yet stops a worker** until core 0 looks
+- **Memory the program has not touched yet stops a worker** (with the MMU; without it a
+  program's memory is all there from its start, `docs/nommu.md`) until core 0 looks
   (`mcw_wait()`, `mcw_done()`): two passes a page. Touch a job's buffers first where that
   matters (`workers_alloc` in `linux/ralert/workers.c`).
   The mailboxes and GPU memory (`seglMemory`) are there from the start, but not the program's
@@ -940,10 +944,11 @@ experiment, not kept: the second level ignored and the megapage entries cleared 
 instructions a pass and 2.91 ms against 3.01 and 3.06 for 16,384, with the same instructions
 a pass. A page's first use in a pass is a walk of two table entries, and a pass touches few
 pages. So a worker keeps the CPU's texels, the write cache and the eight texels of float
-registers, 564 in the 576 pixels of its two zones, and starts every pass with empty TLBs
+registers (564 in the 576 pixels of its two zones then, 500 now: "The geometry"), and starts every pass with empty TLBs
 (`tlb_state_load` in `src/mmu.h`). There was a kind of worker without paging before this
 one, which ran bare code in an arena of its own; it is gone, and nothing was lost in speed:
-`mctest`'s figures and Red Alert's movie are the same.
+`mctest`'s figures and Red Alert's movie are the same. On the machine without paging
+(`NO_PAGING`, `docs/nommu.md`) a worker walks nothing: every address is physical.
 
 ## A use: Red Alert's movies
 
@@ -1091,10 +1096,11 @@ other:
 | `0x876ba000 + 4 k` | core k's instructions so far, every core (`MC_STATS_ALL`: the network's row, after its ring) |
 | `0x876ba400 + 16 n`, `+ 4` | cores 32 n to 32 n + 31, a bit a core: runs, asleep |
 
-`nxmon` reads them: the workers' instructions a second, all 255 of them, are stacked on the
-processor's plot, and the line under the busiest programs says how many work, sleep, are
-idle and are parked, and what the busiest runs (`NXMON_PRINT=1 nxmon` prints that line at
-every sample, for a test). Its plots are the workers' own work, as a graphics card's pixel
+`nxmon`, a task manager (`docs/nanox.md`), reads them: on its Performance tab the workers'
+instructions a second, all 255 of them, are stacked on core 0's plot (or Per core, a 16 x 16
+grid of every core's load), and the numbers under it say how many work, sleep, are idle and
+are parked (`NXMON_PRINT=1 nxmon` prints that line at every sample, for a test); its
+Processes tab gives each program's workers from `/proc/gpu`. Its plots are the workers' own work, as a graphics card's pixel
 shader would do them: it keeps eight workers while it runs, and some sixteen times a second
 each writes some rows of the plots from the samples (`shade` in `nxmon.c`) straight into
 the window's own buffer in GPU memory, mapped through `/dev/gpu` (`GrGetWindowInfo` says
@@ -1105,7 +1111,7 @@ the same picture cost core 0 1.5M instructions a second. What stands in the way 
 of this: the window system draws by taking the whole buffer to the GPU and copying it back
 (`docs/nanox.md`), which undoes what a worker wrote meanwhile; the monitor asks for
 something with an answer after each of its own drawing requests and only then posts a
-frame. `NXMON_CHECK=1` shades every frame again on core 0 and must print `0 of 51840
+frame. `NXMON_CHECK=1` shades every frame again on core 0 and must print `0 of 67200
 pixels differ`; `NXMON_WORKERS=0` leaves the workers alone (core 0 then shades the newest
 columns once a second). The monitor's workers are only lent to it (`mcw_lend()`: "Shared
 between programs" below): when a program that keeps its workers wants them, the monitor's
@@ -1307,8 +1313,9 @@ a frame on one worker (2.7 passes); Tiberian Dawn's frame is core 0's logic, 79 
 
 ## In Unity
 
-The VRChat machine has the harness's 256 cores, the guest's geometry, the tick in eight
-targets, the commit as points, the shader's own write cache (384 texels) and passes of 8,192
+The VRChat machine is the one without an MMU (`NO_PAGING`, `docs/nommu.md`) with the harness's
+256 cores, the guest's geometry, the tick in eight targets, the commit as points, the shader's
+own write cache (336 texels: 64 + 32 + 16 buckets of three) and passes of 8,192 (the control panel's `tickSlider` sets 1,024 to 32,768)
 (`CORES`, `L1_TABLE_BITS` and the sizes in `MachineBlit.cginc`; the tick and the commit are
 `experiments/rvc_opt/main.shader`'s, line for line where they deal with cores).
 
@@ -1328,9 +1335,9 @@ targets, the commit as points, the shader's own write cache (384 texels) and pas
   share); and, before the control pass, the same points once more into the other state
   texture as copies. A copy out of the ROM is a point too: the points' material needs the
   ROM's textures (without them Linux started and could not read `/emuinit`).
-- **The readback** has state row 0, the first 64 control texels and 112 texels of the
-  network's row, its window then what the cores ran and which sleep (`Readback.shader`, 960
-  words), where the counts are: the panel's statistics have a line for the workers and for all cores together.
+- **The readback** has state row 0, the first 64 control texels and 130 texels of the
+  network's row, its window, what the cores ran and which sleep, then the console's words and
+  ring (`Readback.shader`, 1032 words; `console.md`, "Words in memory"), where the counts are: the panel's statistics have a line for the workers and for all cores together.
 
 - **The host's clock moves every round** (`HostClock` in `EmuMachine.cs`): a frame's length
   spread over its rounds, as the harness's moves every pass. It moved once a Unity frame, and a
