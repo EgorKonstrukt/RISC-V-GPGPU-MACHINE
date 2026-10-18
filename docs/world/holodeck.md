@@ -233,7 +233,8 @@ Doom, Quake, Quake III, ClassiCube and Half-Life read those words, each in its o
   Quake, Quake III and ClassiCube whatever each game's own keys are: W, A, S, D or the arrows
   are the left stick (word 5: they walk and step aside), the left button or Ctrl is the right
   hand's trigger (fire), the right button the left hand's (use in Doom, place in ClassiCube) and
-  Space the jump button (word 0's bit 6: jump; use in Doom). While the sitter's
+  Space the jump button (word 0's bit 6: jump; use in Doom), E the right hand's grip (word 6's
+  bit 31: use in Half-Life, as a headset's right grip is; E stays a key too). While the sitter's
   world is one of those games' (`EmuHolodeck.ByWords`, `played`: the program's number, kept
   while another window has the guest's keyboard) these keys are no key events
   (`EmuKeyboard.playAway`): before 14 October 2026 they were the window's keys, and a click

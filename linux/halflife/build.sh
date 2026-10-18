@@ -174,8 +174,11 @@ rv32-cc -O2 -fno-pie -Wall -c "$HERE/rtti_shaderemu.c" -o rtti.o
 rv32-cc $OPT $FPU -fno-pie -Wall -c "$HERE/fastmath.c" -o fastmath.o
 MEDIA=$WORK/src/libmedia
 [ -f "$MEDIA/libmedia.a" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
+# the workers' library from this tree (another build's copy of it may be older)
+rv32-cc -O2 -fno-pie -w -I"$PROGRAMS/mc" -c "$PROGRAMS/mc/mcw.c" -o mcw.o
+rv32-cc -O2 -fno-pie -w -I"$PROGRAMS/mc" -c "$PROGRAMS/mc/mcwx.c" -o mcwx.o
 rv32-c++ -O2 $FPU "$BUILD"/engine/*.o filesystem_stdio.o ref_gl.o client.o server.o menu.o gpu.o gl.o cxxrt.o rtti.o fastmath.o \
-    "$MEDIA/libmedia.a" "$MEDIA/mcw.o" "$MEDIA/mcwx.o" "$MW/src/lib/libnano-X.a" -lm -o halflife \
+    "$MEDIA/libmedia.a" mcw.o mcwx.o "$MW/src/lib/libnano-X.a" -lm -o halflife \
     -Wl,--wrap=malloc,--wrap=free,--wrap=calloc,--wrap=realloc,--wrap=posix_memalign,--wrap=aligned_alloc,--wrap=memalign
 mkdir -p "$OUT/usr/bin"
 riscv32-linux-strip -o "$OUT/usr/bin/halflife.bin" halflife

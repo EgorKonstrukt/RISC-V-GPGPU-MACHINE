@@ -368,9 +368,11 @@ void SE_SeatMove( usercmd_t *cmd, qboolean active )
 		pitch_to( -SEGL_HOST_HEAD_PITCH( hw ) * ( 360.0f / 65536.0f ));
 	}
 	VectorCopy( cl.viewangles, cmd->viewangles );
-	// fire and the secondary fire by the triggers, jump by the jump button (a desktop's keys for them)
+	// fire and the secondary fire by the triggers, use by the right grip, jump by the jump button
+	// (a desktop's keys for them)
 	if( play && SEGL_HOST_HAND_TRIGGER( hw, 1 )) SetBits( cmd->buttons, IN_ATTACK );
 	if( play && SEGL_HOST_HAND_TRIGGER( hw, 0 )) SetBits( cmd->buttons, IN_ATTACK2 );
+	if( play && SEGL_HOST_HAND_GRIP( hw, 1 )) SetBits( cmd->buttons, IN_USE );
 	if( play && SEGL_HOST_JUMP( hw )) SetBits( cmd->buttons, IN_JUMP );
 }
 

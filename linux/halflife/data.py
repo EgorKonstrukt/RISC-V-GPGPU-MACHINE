@@ -4,7 +4,7 @@ and what the launcher had (docs/games/halflife.md, "The start"): its splash, the
 sounds, the readme and the order page. Valve's data goes only into build/: never into
 linux/prebuilt or the repository.
    python linux/halflife/data.py OVERLAY"""
-import os, shutil, struct, subprocess, sys, tempfile
+import os, re, shutil, struct, subprocess, sys, tempfile
 from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 B = os.path.join(ROOT, 'build', 'halflife')
@@ -69,6 +69,11 @@ with tempfile.TemporaryDirectory() as extra:
                     os.path.join(B, 'repack-cache'), wsl(os.path.join(B, 'adpcm_encode')), extra], check=True)
 for n in FILES:
     shutil.copy(os.path.join(V, n), G)
+# use on E, as the menu's defaults (kb_def.lst) and later Half-Life have it, not the demo's Tab
+cfg = os.path.join(G, 'default.cfg')
+text = open(cfg, 'rb').read()
+assert re.search(rb'bind\s+TAB\s+\+use', text), 'default.cfg: no TAB +use to move'
+open(cfg, 'wb').write(re.sub(rb'bind(\s+)TAB(\s+)\+use', rb'bind\1e\2+use', text))
 shutil.copy(os.path.join(U, 'delta.lst'), G)
 shutil.copy(os.path.join(U, 'readme.txt'), G)
 # the launcher's splash while the engine loads (vid_shaderemu.c), as a picture the window system draws

@@ -653,7 +653,8 @@ public class EmuHolodeck : UdonSharpBehaviour
             // (with the view on the console or the screen the wheel is the pointer's: EmuPointer)
             if (play && (pointer == null || !pointer.Landed(1))) wheelGone = Mathf.Repeat(wheelGone + Input.GetAxis("Mouse ScrollWheel") * 10f, 256f);
             now[11] = Mathf.FloorToInt(wheelGone) & 255;
-            now[13] = (now[13] & 0x3fff) | (play && fires ? 1 << 14 : 0);
+            // (E is the right grip: Half-Life's use)
+            now[13] = (now[13] & 0x3fff) | (play && fires ? 1 << 14 : 0) | (play && Input.GetKey(KeyCode.E) ? 1 << 15 : 0);
         }
         else if (gamepad != null)
         {

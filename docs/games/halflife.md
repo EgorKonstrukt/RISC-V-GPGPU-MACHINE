@@ -10,6 +10,7 @@ and the starter then says the data is missing. The download and unpacking happen
 (`build/halflife`); a made image takes 2.5 s more with the repack cached.
 
     wsl -- bash linux/nommu/build.sh halflife/build.sh
+    wsl -- bash linux/nommu/root.sh   (the built root made flat: without it the image keeps the old program)
     pwsh tools/make_image.ps1
     halflife                       (in the image; the desktop's and the start menu's Half-Life: Uplink)
     halflife -dev 1 +map hldemo1   (straight into the level, its messages on the console)
@@ -165,14 +166,15 @@ and the drawing's worker to the same words in one pass (`RI`, `r_stats`, the lig
 On a desktop the left button held drags the view round, a quarter of a degree a pixel, as
 Quake's and Quake III's; the right button fires and the middle one is the second fire. The
 pointer's travel is read from the machine's input words (`Platform_RunEvents`), and the window
-system is asked for events only when a button or a key changed and four times a second.
+system is asked for events only when a button or a key changed and four times a second. Use is
+E (the demo's `default.cfg` has Tab: `data.py` moves it).
 
 ## From the seat
 
 Played from the holodeck's seat the game reads the host's words (`docs/world/holodeck.md`,
 "Played from the seat"; `SE_SeatMove` and `SE_SeatView` in `vid_shaderemu.c`): the eye is 64
 units over the floor, the sticks walk and turn, the right trigger fires, the left is the second
-fire, Space jumps; with tracked hands the right hand aims and the view model is held in it; with
+fire, the right grip (E on a desktop) is use, Space jumps; with tracked hands the right hand aims and the view model is held in it; with
 a mouse it turns the view, 0.066 degrees a count. The picture drawn round the seat leaves no
 surface out (`r_nocull`). `HALFLIFE_SEAT=1` prints how it is seated every 20 frames, and
 `rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` walks a desktop's sitter forward.
