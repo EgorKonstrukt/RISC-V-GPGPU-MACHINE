@@ -17,7 +17,14 @@ name = sys.argv[1]
 shared = m.OUT
 m.OUT = os.path.join(m.ROOT, 'build', 'images', name)
 overlay = os.path.join(m.OUT, 'overlay')
-m.ours = lambda n: os.path.join(m.OUT, n) if n == 'Image' and os.path.exists(os.path.join(m.OUT, n)) else os.path.join(shared, n)
+def ours(n):
+    """NAME's own kernel, else the shared build's, else (a checkout that never built Linux) the checked-in copy."""
+    if n == 'Image' and os.path.exists(os.path.join(m.OUT, n)):
+        return os.path.join(m.OUT, n)
+    return os.path.join(shared, n) if os.path.exists(os.path.join(shared, n)) else os.path.join(m.PREBUILT, n)
+
+
+m.ours = ours
 shortcuts = m.desktop_shortcuts
 
 
