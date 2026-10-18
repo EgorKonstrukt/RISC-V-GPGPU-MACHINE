@@ -92,8 +92,19 @@ a frame, frames a second at 428 passes a second):
 
 | | core 0 | fps |
 |---|---|---|
+| the main menu (`FILM_LOOPS=1`, the logo's loops 4 to 8) | 185k | 19.0 |
 | the start, 3 to 25 s | 182k | 18.2 |
 | the fight at 31 to 45 s (19 studio models, 51 solid entities) | 407k | 8.1 |
+
+The menu was 2,070k a frame (1.7). The logo film (640 x 100, 110 frames, mostly deltas) is
+decoded whole once on a worker and kept (`film_give` in `avi_shaderemu.c`; a film of 8 MB
+decoded at most and no sound; `FILM=read` decodes as it plays), and a frame's tiles are copied
+into its texture on a worker (`hlglTexLater`). The menu's text is drawn again from its quads of
+the last time (`UI_DrawString` in `mainui.patch`, `CL_DrawString` in `xash3d.patch`, through
+`hlglCaptureTo` and `hlglDrawQuads`): the first character is drawn and compared, the last drawn
+to leave the engine's state as it was; `HL_MENU_TEXT=now` and `HL_TEXT=now` draw it as before.
+`HLGL_PICSUM=1` prints a sum of the frame's 2D quads every 64 frames: the menu's must be the
+same both ways (`8ffbd714`).
 
 A studio model's bones are set up ahead on four workers when the entities are emitted
 (`R_BonesAheadGive` in `gl_kept.c`), and the draw takes its rotation from there too
@@ -102,6 +113,47 @@ makes both and prints how many differ: it must say `0 of them wrong`). What is l
 on core 0 is many pieces: the studio models' draws 93k (their setup and hand-off to the jobs
 45k, light 12k, culling 8k), the player's prediction 48k, the entities' parse 40k and their
 emission 42k. A frame of 15 there needs the studio draws off core 0 whole, with their GL state.
+
+### The drawing a frame behind
+
+`HL_RENDER=worker` draws frame n's 3D on a worker core of its own (`rnd_shaderemu.c`, worker
+`workers - 8`) from copies of its entities (`R_SceneGive` in `gl_kept.c`) while core 0 makes
+frame n + 1; frame n is shown with frame n + 1's 2D. `HL_RENDER=wait` puts the drawing on the
+worker with core 0 waiting; the default draws on core 0. Every renderer function core 0 calls
+goes through a thunk (`se_ref_guard`): the scene's additions go to core 0's own list, and the
+frame's start and its 2D (`R_BeginFrame`, `R_Set2DMode`, `R_DrawStretchPic`, `FillRGBA`,
+`Color4ub` and a few more, all void with values for arguments) are recorded while the drawing
+is out and replayed in order when it is settled, at the swap (`se_ref_replay`: a0 to a7 and
+the caller's first four stack words, floats too under ilp32). Any other call settles first.
+`HL_LATER=0` draws the 2D after a settle instead. `HL_RENDER_CALLS=1` prints what core 0 calls
+of the renderer between frames, what made it settle, and the job's timeline every 32 frames.
+
+The studio models' points go to ring jobs on the other workers (`ring_post` in
+`gl_shaderemu.c`); the job takes a ring that is free before waiting on one, and its ring jobs
+are waited for at the swap by core 0, not at the job's end (`jobs_wait`; the give waits for the
+late ones, which may read the copies). A job's other parts copy it on their own worker.
+
+The server's frame is on a worker (`sv_shaderemu.c`) and paced: core 0 gives it a frame only
+when the last is done, with the time of the frames skipped, so the server runs below the
+client's frame rate when it is the longer (`HL_SERVER=every` gives every frame, `inline` runs
+it on core 0). The packet's entities are packed by four parts on three packers and the
+server's helper (`SE_PackJob` in `xash3d.patch`); the client and the server step their
+entity rings by whole blocks, and the light styles skip the time of styles not used.
+
+On 18 October 2026 (`rvc_cpu`, the card's model: `RVC_SOUND`, `RVC_WCACHE`, `RVC_ADFAULT`):
+
+| | start, 3 to 25 s | the fight, 31 to 45 s |
+|---|---|---|
+| the default | 24.35 passes a frame, 17.6 fps | 48.15, 8.9 |
+| `HL_RENDER=worker` | 23.58, 18.2 | 32.97, 13.0 |
+| `HL_RENDER=worker HL_LATER=0` | 20.41, 21.0 | 36.39, 11.8 |
+
+In the fight the drawing's worker is the bound (25 busy passes of 155k instructions, 22
+studio models at 4.8k each), then core 0 from the settle to the give (the scene's copy 18k,
+the replay 18k). At the start core 0 is: recording the HUD's text and replaying it costs 30k
+more than drawing it. `HL_RENDER=worker` is not the default: `RVC_RACES` finds stores of core 0
+and the drawing's worker to the same words in one pass (`RI`, `r_stats`, the light's
+`trace_of`), which must be 0 first.
 
 ## The controls
 

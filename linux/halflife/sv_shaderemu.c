@@ -16,9 +16,10 @@ console lines are kept. It is this core's while a level loads or a client is not
 #define BOX_BYTES 0x20000
 
 char se_server_stack[SE_SERVER_STACK] __attribute__(( aligned( 16 )));
-int hlglServerWorker( void ), hlglServerHelper( void );
-extern int se_pack_helper;
-uint32_t SE_PackJob( uint32_t unused0, uint32_t unused1 );
+int hlglServerWorker( void ), hlglServerHelper( void ), hlglServerPacker( int i );
+extern int se_pack_helpers;
+uint32_t SE_PackJob( uint32_t part, uint32_t unused );
+int SE_Packers( void );
 void SE_PackReset( void ), SE_PackTouch( void ), SE_PackFrameEnd( void );
 void hlglJobsWait( void );
 
@@ -31,7 +32,8 @@ static struct { volatile uint seq; uint32_t ( *fn )( void * ); void *args; uint 
 static struct { volatile uint seq; uint32_t result; uint unused[2]; } answer __attribute__(( aligned( 16 )));	// this core's
 static struct SE_APART { jmp_buf at; } abort_of;	// the worker's
 #define abort_at abort_of.at
-static int mode = -1, worker, helper, out;
+static int mode = -1, worker, helpers, helper[8], out;	// mode 2: a frame given only once the last is done (HL_SERVER=every: each host frame)
+static double skipped, given_frametime;	// the host's time while none was given; what the frame out covers
 
 uint32_t se_call_on_stack( uint32_t ( *fn )( uint32_t ), uint32_t arg, void *stack_top );
 __asm__( ".text\n.globl se_call_on_stack\n.type se_call_on_stack, @function\nse_call_on_stack:\n"
@@ -51,10 +53,12 @@ static void setup( void )
 	mcw_touch( &work, sizeof( work ));
 	mcw_touch( &outbox, sizeof( outbox ));
 	mcw_touch( &ask, sizeof( ask ));
-	if(( helper = hlglServerHelper( )) > 0 )
+	for( int i = 0; i < SE_Packers( ) && i < 8 && ( helper[i] = i ? hlglServerPacker( i - 1 ) : hlglServerHelper( )) > 0; i++ )
+		helpers = i + 1;
+	if( helpers )
 		SE_PackTouch();
-	mode = 1;
-	Con_Printf( "the server's frame is on worker core %d\n", worker );
+	mode = how && !Q_strcmp( how, "every" ) ? 1 : 2;
+	Con_Printf( "the server's frame is on worker core %d%s\n", worker, mode == 2 ? ", given when the last is done" : "" );
 }
 
 // ---- what the worker asks of this core ----
@@ -62,6 +66,8 @@ static void setup( void )
 uint se_asks[64], se_asks_n;	// DEBUG
 uint32_t SE_ServerOnCore0( uint32_t ( *fn )( void * ), void *args )
 {
+	if( SE_OnRender( ))
+		return SE_RenderOnCore0( fn, args );
 	if( !SE_OnServer( ))
 		return fn( args );
 	ask.fn = fn, ask.args = args;
@@ -72,25 +78,39 @@ uint32_t SE_ServerOnCore0( uint32_t ( *fn )( void * ), void *args )
 	return answer.result;
 }
 
+static int serving;
 static void serve( void )
 {
 	if( ask.seq != answer.seq )
 	{
+		serving = 1;
 		answer.result = ask.fn( ask.args );
 		answer.seq = ask.seq;
+		serving = 0;
 	}
+}
+
+int SE_ServerServing( void )
+{
+	return serving;
 }
 
 void SE_ServerServe( void )
 {
 	if( out )
 		serve();
+	SE_RenderServe();
 }
 
 void SE_ServerKeepPrint( const char *text )
 {
 	uint n = Q_strlen( text ) + 1;
 
+	if( SE_OnRender( ))
+	{
+		SE_RenderKeepPrint( text );
+		return;
+	}
 	if( work.used + n > sizeof( work.kept ))
 	{
 		work.lost++;
@@ -102,6 +122,8 @@ void SE_ServerKeepPrint( const char *text )
 
 void SE_ServerAbort( const char *text, int fatal )
 {
+	if( SE_OnRender( ))
+		SE_RenderAbort( text, fatal );
 	Q_strncpy( work.error, text, sizeof( work.error ));
 	work.failed = fatal ? 2 : 1;
 	longjmp( abort_at, 1 );
@@ -179,9 +201,10 @@ void SE_ServerSettle( void )
 		mcw_rest();
 		se_settle_passes++;
 	}
-	while( se_pack_helper && !mcw_done( se_pack_helper ))
-		mcw_rest();
-	se_pack_helper = 0;
+	for( int i = 0; i < se_pack_helpers; i++ )
+		while( !mcw_done( helper[i] ))
+			mcw_rest();
+	se_pack_helpers = 0;
 	out = 0;
 	for( uint at = 0; at < work.used; at += Q_strlen( work.kept + at ) + 1 )
 		Sys_Print( work.kept + at );
@@ -204,12 +227,24 @@ int SE_ServerGive( void )
 {
 	if( mode < 0 )
 		setup();
-	if( mode <= 0 || !svs.initialized || sv.state != ss_active || sv.paused || !CL_IsInGame( ))
-		return 0;
-	for( int i = 0; i < svs.maxclients; i++ )
+	int can = mode > 0 && svs.initialized && sv.state == ss_active && !sv.paused && CL_IsInGame( );
+	for( int i = 0; can && i < svs.maxclients; i++ )
 		if( svs.clients[i].state != cs_free && svs.clients[i].state != cs_spawned )
-			return 0;
+			can = 0;
+	if( !can )
+	{
+		SE_ServerSettle();	// (the frame made here comes after the one out)
+		skipped = 0;
+		return 0;
+	}
+	if( out && mode == 2 && !mcw_done( worker ))
+	{
+		serve();
+		skipped += host.frametime;
+		return 1;
+	}
 	SE_ServerSettle();
+	given_frametime = Q_min( host.frametime + skipped, MAX_FRAMETIME ), skipped = 0;
 	if( sv_tl0.give )
 	{
 		sv_tl0.sum[0] += sv_tl.start - sv_tl0.give, sv_tl0.sum[1] += sv_tl.end - sv_tl0.give, sv_tl0.sum[2] += sv_tl0.settle - sv_tl0.give;
@@ -229,15 +264,28 @@ int SE_ServerGive( void )
 		}
 	}
 	sv_tl0.give = sv_now();
-	if( helper > 0 )
+	if( helpers )
 	{
 		SE_PackReset();
-		mcw_post( helper, SE_PackJob, 0, 0 );
-		se_pack_helper = helper;
+		for( int i = 0; i < helpers; i++ )
+			mcw_post( helper[i], SE_PackJob, i, 0 );
+		se_pack_helpers = helpers;
 	}
 	mcw_post( worker, server_job, 0, 0 );
 	out = 1;
 	return 1;
+}
+
+double SE_ServerFrametime( void )
+{
+	return SE_OnServer( ) ? given_frametime : host.frametime;
+}
+
+void SE_ServerFrameStart( void )
+{
+	if( out && mode == 2 && !mcw_done( worker ))
+		return;
+	SE_ServerSettle();
 }
 
 // ---- the C library's allocations (the link wraps them): the first core's ----
@@ -262,36 +310,36 @@ static uint32_t memalign_0( void *p ) { alloc_args_t *a = p; return (uint32_t)__
 void *__wrap_malloc( size_t n )
 {
 	alloc_args_t a = { NULL, n, 0 };
-	return SE_OnServer() ? (void *)SE_ServerOnCore0( malloc_0, &a ) : __real_malloc( n );
+	return SE_OffCore0() ? (void *)SE_ServerOnCore0( malloc_0, &a ) : __real_malloc( n );
 }
 void __wrap_free( void *p )
 {
 	alloc_args_t a = { p, 0, 0 };
-	if( p && SE_OnServer( )) SE_ServerOnCore0( free_0, &a );
+	if( p && SE_OffCore0( )) SE_ServerOnCore0( free_0, &a );
 	else __real_free( p );
 }
 void *__wrap_calloc( size_t n, size_t size )
 {
 	alloc_args_t a = { NULL, n, size };
-	return SE_OnServer() ? (void *)SE_ServerOnCore0( calloc_0, &a ) : __real_calloc( n, size );
+	return SE_OffCore0() ? (void *)SE_ServerOnCore0( calloc_0, &a ) : __real_calloc( n, size );
 }
 void *__wrap_realloc( void *p, size_t n )
 {
 	alloc_args_t a = { p, n, 0 };
-	return SE_OnServer() ? (void *)SE_ServerOnCore0( realloc_0, &a ) : __real_realloc( p, n );
+	return SE_OffCore0() ? (void *)SE_ServerOnCore0( realloc_0, &a ) : __real_realloc( p, n );
 }
 int __wrap_posix_memalign( void **p, size_t align, size_t n )
 {
 	alloc_args_t a = { p, align, n };
-	return SE_OnServer() ? (int)SE_ServerOnCore0( posix_memalign_0, &a ) : __real_posix_memalign( p, align, n );
+	return SE_OffCore0() ? (int)SE_ServerOnCore0( posix_memalign_0, &a ) : __real_posix_memalign( p, align, n );
 }
 void *__wrap_aligned_alloc( size_t align, size_t n )
 {
 	alloc_args_t a = { NULL, align, n };
-	return SE_OnServer() ? (void *)SE_ServerOnCore0( aligned_alloc_0, &a ) : __real_aligned_alloc( align, n );
+	return SE_OffCore0() ? (void *)SE_ServerOnCore0( aligned_alloc_0, &a ) : __real_aligned_alloc( align, n );
 }
 void *__wrap_memalign( size_t align, size_t n )
 {
 	alloc_args_t a = { NULL, align, n };
-	return SE_OnServer() ? (void *)SE_ServerOnCore0( memalign_0, &a ) : __real_memalign( align, n );
+	return SE_OffCore0() ? (void *)SE_ServerOnCore0( memalign_0, &a ) : __real_memalign( align, n );
 }

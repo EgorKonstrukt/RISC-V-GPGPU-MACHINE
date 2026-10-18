@@ -38,11 +38,489 @@ index 7cd9c1f9..c0e12a4b 100644
  	#elif XASH_LINUX // we are building for Linux without SDL, only framebuffer is supported for now
  		#define XASH_VIDEO     VIDEO_FBDEV
  		#define XASH_INPUT     INPUT_EVDEV
+diff --git a/engine/client/cl_efx.c b/engine/client/cl_efx.c
+index 7352c3a5..bc735b8d 100644
+--- a/engine/client/cl_efx.c
++++ b/engine/client/cl_efx.c
+@@ -1,6 +1,9 @@
+ 
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "client.h"
+ #include "customentity.h"
+ #include "r_efx.h"
+@@ -28,6 +31,19 @@ static CVAR_DEFINE_AUTO( traceroffset, "30", 0, "tracer starting offset" );
+ static particle_t	*cl_active_particles;
+ static particle_t	*cl_active_tracers;
+ static particle_t	*cl_free_particles;
++#if XASH_SHADEREMU
++static struct __attribute__(( aligned( 16 ))) { particle_t *particles, *tracers, *freed, *free; BEAM *beams, *freed_beams; } se_efx;	// the drawing's worker's
++#define SE_FREE_PARTICLES ( *( SE_OnRender() ? &se_efx.freed : &cl_free_particles ))
++#define SE_FREE_BEAMS ( *( SE_OnRender() ? &se_efx.freed_beams : &cl_free_beams ))
++#define SE_ACTIVE( list ) ( *( SE_OnRender() ? &se_efx.list : &cl_active_##list ))
++extern double se_render_time;
++#define SE_TIME ( SE_OnRender() ? se_render_time : cl.time )
++#else
++#define SE_FREE_PARTICLES cl_free_particles
++#define SE_FREE_BEAMS cl_free_beams
++#define SE_ACTIVE( list ) cl_active_##list
++#define SE_TIME cl.time
++#endif
+ static particle_t	*cl_particles = NULL;	// particle pool
+ static vec3_t	cl_avelocities[NUMVERTEXNORMALS];
+ static float	cl_lasttimewarn = 0.0f;
+@@ -146,6 +162,14 @@ particle_t *CL_AllocParticleFast( void )
+ {
+ 	particle_t *p = NULL;
+ 
++#if XASH_SHADEREMU
++	if( SE_OnRender( ))
++	{
++		if(( p = se_efx.free ))
++			se_efx.free = p->next;
++		return p;
++	}
++#endif
+ 	if( cl_free_particles )
+ 	{
+ 		p = cl_free_particles;
+@@ -193,7 +217,7 @@ particle_t * GAME_EXPORT R_AllocParticle( void (*callback)( particle_t*, float )
+ 	VectorClear( p->vel );
+ 	VectorClear( p->org );
+ 	p->unused = 0;
+-	p->die = cl.time;
++	p->die = SE_TIME;
+ 	p->color = 0;
+ 	p->ramp = 0;
+ 
+@@ -243,7 +267,7 @@ static particle_t *R_AllocTracer( const vec3_t org, const vec3_t vel, float life
+ 	p->type = pt_static;
+ 	VectorCopy( org, p->org );
+ 	VectorCopy( vel, p->vel );
+-	p->die = cl.time + life;
++	p->die = SE_TIME + life;
+ 	p->ramp = tracerlength.value;
+ 	p->color = TRACER_COLORINDEX_DEFAULT; // select custom color
+ 	p->unused = 255; // alpha
+@@ -307,7 +331,7 @@ static BEAM *R_BeamAlloc( void )
+ 	memset( pBeam, 0, sizeof( *pBeam ));
+ 	pBeam->next = cl_active_beams;
+ 	cl_active_beams = pBeam;
+-	pBeam->die = cl.time;
++	pBeam->die = SE_TIME;
+ 
+ 	return pBeam;
+ }
+@@ -324,8 +348,8 @@ static void R_BeamFree( BEAM *pBeam )
+ 	R_FreeDeadParticles( &pBeam->particles );
+ 
+ 	// now link into free list;
+-	pBeam->next = cl_free_beams;
+-	cl_free_beams = pBeam;
++	pBeam->next = SE_FREE_BEAMS;
++	SE_FREE_BEAMS = pBeam;
+ }
+ 
+ 
+@@ -423,13 +447,13 @@ void CL_KillDeadBeams( cl_entity_t *pDeadEntity )
+ 		if( pbeam->type != TE_BEAMFOLLOW )
+ 		{
+ 			// remove beam
+-			pbeam->die = cl.time - 0.1f;
++			pbeam->die = SE_TIME - 0.1f;
+ 
+ 			// kill off particles
+ 			pHead = pbeam->particles;
+ 			while( pHead )
+ 			{
+-				pHead->die = cl.time - 0.1f;
++				pHead->die = SE_TIME - 0.1f;
+ 				pHead = pHead->next;
+ 			}
+ 
+@@ -572,8 +596,8 @@ static void R_BeamSetup( BEAM *pbeam, vec3_t start, vec3_t end, int modelIndex,
+ 	VectorCopy( end, pbeam->target );
+ 	VectorSubtract( end, start, pbeam->delta );
+ 
+-	pbeam->freq = speed * cl.time;
+-	pbeam->die = life + cl.time;
++	pbeam->freq = speed * SE_TIME;
++	pbeam->die = life + SE_TIME;
+ 	pbeam->amplitude = amplitude;
+ 	pbeam->brightness = brightness;
+ 	pbeam->width = width;
+@@ -609,7 +633,7 @@ static qboolean CL_BeamAttemptToDie( BEAM *pBeam )
+ 	}
+ 
+ 	// other beams
+-	if( pBeam->die > cl.time )
++	if( pBeam->die > SE_TIME )
+ 		return false;
+ 
+ 	return true;
+@@ -632,14 +656,14 @@ void GAME_EXPORT R_BeamKill( int deadEntity )
+ 		if( FBitSet( beam->flags, FBEAM_STARTENTITY ) && beam->startEntity == deadEntity )
+ 		{
+ 			if( beam->type != TE_BEAMFOLLOW )
+-				beam->die = cl.time;
++				beam->die = SE_TIME;
+ 
+ 			ClearBits( beam->flags, FBEAM_STARTENTITY );
+ 		}
+ 
+ 		if( FBitSet( beam->flags, FBEAM_ENDENTITY ) && beam->endEntity == deadEntity )
+ 		{
+-			beam->die = cl.time;
++			beam->die = SE_TIME;
+ 			ClearBits( beam->flags, FBEAM_ENDENTITY );
+ 		}
+ 	}
+@@ -878,7 +902,7 @@ BEAM * GAME_EXPORT R_BeamPoints( vec3_t start, vec3_t end, int modelIndex, float
+ 	pbeam = R_BeamAlloc();
+ 	if( !pbeam ) return NULL;
+ 
+-	pbeam->die = cl.time;
++	pbeam->die = SE_TIME;
+ 
+ 	if( modelIndex < 0 )
+ 		return NULL;
+@@ -935,7 +959,7 @@ BEAM *GAME_EXPORT R_BeamEntPoint( int startEnt, vec3_t end, int modelIndex, floa
+ 	pbeam = R_BeamAlloc();
+ 	if ( !pbeam ) return NULL;
+ 
+-	pbeam->die = cl.time;
++	pbeam->die = SE_TIME;
+ 	if( modelIndex < 0 )
+ 		return NULL;
+ 
+@@ -1000,7 +1024,7 @@ BEAM *GAME_EXPORT R_BeamFollow( int startEnt, int modelIndex, float life, float
+ 	BEAM	*pbeam = R_BeamAlloc();
+ 
+ 	if( !pbeam ) return NULL;
+-	pbeam->die = cl.time;
++	pbeam->die = SE_TIME;
+ 
+ 	if( modelIndex < 0 )
+ 		return NULL;
+@@ -1029,7 +1053,7 @@ BEAM *GAME_EXPORT R_BeamLightning( vec3_t start, vec3_t end, int modelIndex, flo
+ 	BEAM	*pbeam = R_BeamAlloc();
+ 
+ 	if( !pbeam ) return NULL;
+-	pbeam->die = cl.time;
++	pbeam->die = SE_TIME;
+ 
+ 	if( modelIndex < 0 )
+ 		return NULL;
+@@ -1056,16 +1080,16 @@ void GAME_EXPORT R_EntityParticles( cl_entity_t *ent )
+ 		if( !p ) return;
+ 
+ 		float sr, sp, sy, cr, cp, cy;
+-		float angle = cl.time * cl_avelocities[i][0];
++		float angle = SE_TIME * cl_avelocities[i][0];
+ 		SinCos( angle, &sy, &cy );
+-		angle = cl.time * cl_avelocities[i][1];
++		angle = SE_TIME * cl_avelocities[i][1];
+ 		SinCos( angle, &sp, &cp );
+-		angle = cl.time * cl_avelocities[i][2];
++		angle = SE_TIME * cl_avelocities[i][2];
+ 		SinCos( angle, &sr, &cr );
+ 
+ 		vec3_t forward = { cp * cy, cp * sy, -sp };
+ 
+-		p->die = cl.time + 0.001f;
++		p->die = SE_TIME + 0.001f;
+ 		p->color = 111; // yellow
+ 
+ 		VectorMAMAM( 1.0f, ent->origin, 64.0f, m_bytenormals[i], 16.0f, forward, p->org );
+@@ -1085,7 +1109,7 @@ void GAME_EXPORT R_ParticleExplosion( const vec3_t org )
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + 5.0f;
++		p->die = SE_TIME + 5.0f;
+ 		p->ramp = COM_RandomLong( 0, 3 );
+ 		p->color = ramp1[0];
+ 
+@@ -1116,7 +1140,7 @@ void GAME_EXPORT R_ParticleExplosion2( const vec3_t org, int colorStart, int col
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + 0.3f;
++		p->die = SE_TIME + 0.3f;
+ 		p->color = colorStart + ( colorMod % colorLength );
+ 		p->unused = packedColor;
+ 		colorMod++;
+@@ -1146,7 +1170,7 @@ void GAME_EXPORT R_BlobExplosion( const vec3_t org )
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + COM_RandomFloat( 1.0f, 1.4f );
++		p->die = SE_TIME + COM_RandomFloat( 1.0f, 1.4f );
+ 		p->unused = packedColor;
+ 
+ 		if( i & 1 )
+@@ -1190,7 +1214,7 @@ void GAME_EXPORT R_RunParticleEffect( const vec3_t org, const vec3_t dir, int co
+ 		if( !p ) return;
+ 
+ 		p->color = (color & ~7) + COM_RandomLong( 0, 7 );
+-		p->die = cl.time + COM_RandomFloat( 0.1f, 0.4f );
++		p->die = SE_TIME + COM_RandomFloat( 0.1f, 0.4f );
+ 		p->type = pt_slowgrav;
+ 
+ 		VectorAddScalar( org, COM_RandomFloat( -8.0f, 8.0f ), p->org );
+@@ -1222,7 +1246,7 @@ void GAME_EXPORT R_Blood( const vec3_t org, const vec3_t ndir, int pcolor, int s
+ 			particle_t *p = R_AllocParticle( NULL );
+ 			if( !p ) return;
+ 
+-			p->die = cl.time + 1.5f;
++			p->die = SE_TIME + 1.5f;
+ 			p->color = pcolor + COM_RandomLong( 0, 9 );
+ 			p->type = pt_8x_slowgrav;
+ 
+@@ -1254,7 +1278,7 @@ void GAME_EXPORT R_BloodStream( const vec3_t org, const vec3_t ndir, int pcolor,
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + 2.0f;
++		p->die = SE_TIME + 2.0f;
+ 		p->type = pt_8x_slowgrav;
+ 		p->color = pcolor + COM_RandomLong( 0, 9 );
+ 
+@@ -1273,7 +1297,7 @@ void GAME_EXPORT R_BloodStream( const vec3_t org, const vec3_t ndir, int pcolor,
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + 3.0f;
++		p->die = SE_TIME + 3.0f;
+ 		p->color = pcolor + COM_RandomLong( 0, 9 );
+ 		p->type = pt_4x_slowgrav;
+ 
+@@ -1295,7 +1319,7 @@ void GAME_EXPORT R_BloodStream( const vec3_t org, const vec3_t ndir, int pcolor,
+ 			p = R_AllocParticle( NULL );
+ 			if( !p ) return;
+ 
+-			p->die = cl.time + 3.0f;
++			p->die = SE_TIME + 3.0f;
+ 			p->color = pcolor + COM_RandomLong( 0, 9 );
+ 			p->type = pt_4x_slowgrav;
+ 
+@@ -1328,7 +1352,7 @@ void GAME_EXPORT R_LavaSplash( const vec3_t org )
+ 				particle_t *p = R_AllocParticle( NULL );
+ 				if( !p ) return;
+ 
+-				p->die = cl.time + COM_RandomFloat( 2.0f, 2.62f );
++				p->die = SE_TIME + COM_RandomFloat( 2.0f, 2.62f );
+ 				p->color = COM_RandomLong( 224, 231 );
+ 				p->type = pt_slowgrav;
+ 
+@@ -1365,7 +1389,7 @@ void GAME_EXPORT R_ParticleBurst( const vec3_t org, int size, int color, float l
+ 			particle_t *p = R_AllocParticle( NULL );
+ 			if( !p ) return;
+ 
+-			p->die = cl.time + life + COM_RandomFloat( -0.5f, 0.5f );
++			p->die = SE_TIME + life + COM_RandomFloat( -0.5f, 0.5f );
+ 			p->color = color + COM_RandomLong( 0, 10 );
+ 			p->ramp = 1.0f;
+ 
+@@ -1416,7 +1440,7 @@ void GAME_EXPORT R_LargeFunnel( const vec3_t org, int reverse )
+ 			float dist = VectorNormalizeLength( dir );
+ 			vel += COM_RandomFloat( 64.0f, 128.0f );
+ 			VectorScale( dir, vel, p->vel );
+-			p->die = cl.time + (dist / vel );
++			p->die = SE_TIME + (dist / vel );
+ 			p->color = 244; // green color
+ 		}
+ 	}
+@@ -1441,7 +1465,7 @@ void GAME_EXPORT R_TeleportSplash( const vec3_t org )
+ 				particle_t *p = R_AllocParticle( NULL );
+ 				if( !p ) return;
+ 
+-				p->die = cl.time + COM_RandomFloat( 0.2f, 0.34f );
++				p->die = SE_TIME + COM_RandomFloat( 0.2f, 0.34f );
+ 				p->color = COM_RandomLong( 7, 14 );
+ 				p->type = pt_slowgrav;
+ 
+@@ -1503,7 +1527,7 @@ void GAME_EXPORT R_RocketTrail( vec3_t start, vec3_t end, int type )
+ 			return;
+ 
+ 		len -= dec;
+-		p->die = cl.time + 2.0f;
++		p->die = SE_TIME + 2.0f;
+ 
+ 		switch( type )
+ 		{
+@@ -1523,7 +1547,7 @@ void GAME_EXPORT R_RocketTrail( vec3_t start, vec3_t end, int type )
+ 		case 5:
+ 		{
+ 			static int	tracercount;
+-			p->die = cl.time + 0.5f;
++			p->die = SE_TIME + 0.5f;
+ 			p->color = ( tracercount & 4 ) * 2;
+ 
+ 			if( type == 3 )
+@@ -1701,7 +1725,7 @@ void GAME_EXPORT R_ShowLine( const vec3_t start, const vec3_t end )
+ 		particle_t *p = R_AllocParticle( NULL );
+ 		if( !p ) return;
+ 
+-		p->die = cl.time + 30;
++		p->die = SE_TIME + 30;
+ 		p->color = 75;
+ 
+ 		VectorCopy( org, p->org );
+@@ -1741,7 +1765,7 @@ void GAME_EXPORT R_BulletImpactParticles( const vec3_t pos )
+ 		p->vel[2] = COM_RandomFloat( -1.0f, 1.0f );
+ 		VectorScale( p->vel, COM_RandomFloat( 50.0f, 100.0f ), p->vel );
+ 
+-		p->die = cl.time + 0.5;
++		p->die = SE_TIME + 0.5;
+ 		p->color = 3 - color;
+ 		p->type = pt_grav;
+ 	}
+@@ -1765,7 +1789,7 @@ void GAME_EXPORT R_FlickerParticles( const vec3_t org )
+ 		p->vel[1] = COM_RandomFloat( -32.0f, 32.0f );
+ 		p->vel[2] = COM_RandomFloat( 80.0f, 143.0f );
+ 
+-		p->die = cl.time + 2.0f;
++		p->die = SE_TIME + 2.0f;
+ 		p->type = pt_blob2;
+ 		p->color = 254;
+ 	}
+@@ -1809,7 +1833,7 @@ void CL_Particle( const vec3_t org, int color, float life, int zpos, int zvel )
+ 	if( !p ) return;
+ 
+ 	if( org ) VectorCopy( org, p->org );
+-	p->die = cl.time + life;
++	p->die = SE_TIME + life;
+ 	p->vel[2] += zvel;	// ???
+ 	p->color = color;
+ }
+@@ -1946,14 +1970,14 @@ void R_FreeDeadParticles( particle_t **ppparticles )
+ 	while( 1 )
+ 	{
+ 		kill = *ppparticles;
+-		if( kill && kill->die < cl.time )
++		if( kill && kill->die < SE_TIME )
+ 		{
+ 			if( kill->on_die )
+ 				kill->on_die( kill );
+ 			kill->on_die = NULL;
+ 			*ppparticles = kill->next;
+-			kill->next = cl_free_particles;
+-			cl_free_particles = kill;
++			kill->next = SE_FREE_PARTICLES;
++			SE_FREE_PARTICLES = kill;
+ 			continue;
+ 		}
+ 		break;
+@@ -1965,14 +1989,14 @@ void R_FreeDeadParticles( particle_t **ppparticles )
+ 		while( 1 )
+ 		{
+ 			kill = p->next;
+-			if( kill && kill->die < cl.time )
++			if( kill && kill->die < SE_TIME )
+ 			{
+ 				if( kill->on_die )
+ 					kill->on_die( kill );
+ 				kill->on_die = NULL;
+ 				p->next = kill->next;
+-				kill->next = cl_free_particles;
+-				cl_free_particles = kill;
++				kill->next = SE_FREE_PARTICLES;
++				SE_FREE_PARTICLES = kill;
+ 				continue;
+ 			}
+ 			break;
+@@ -2037,7 +2061,7 @@ void CL_ReadPointFile_f( void )
+ 
+ 		p->ramp = 0;
+ 		p->type = pt_static;
+-		p->die = cl.time + 99999;
++		p->die = SE_TIME + 99999;
+ 		p->color = (-count) & 15;
+ 		VectorCopy( org, p->org );
+ 		VectorClear( p->vel );
+@@ -2053,7 +2077,7 @@ static void CL_FreeDeadBeams( void )
+ {
+ 	BEAM *pBeam, *pNext, *pPrev = NULL;
+ 	// draw temporary entity beams
+-	for( pBeam = cl_active_beams; pBeam; pBeam = pNext )
++	for( pBeam = SE_ACTIVE( beams ); pBeam; pBeam = pNext )
+ 	{
+ 		// need to store the next one since we may delete this one
+ 		pNext = pBeam->next;
+@@ -2063,7 +2087,7 @@ static void CL_FreeDeadBeams( void )
+ 		{
+ 			// reset links
+ 			if( pPrev ) pPrev->next = pNext;
+-			else cl_active_beams = pNext;
++			else SE_ACTIVE( beams ) = pNext;
+ 
+ 			// free the beam
+ 			R_BeamFree( pBeam );
+@@ -2080,16 +2104,16 @@ void CL_DrawEFX( float time, qboolean fTrans )
+ {
+ 	CL_FreeDeadBeams();
+ 	if( cl_draw_beams.value )
+-		ref.dllFuncs.CL_DrawBeams( fTrans, cl_active_beams );
++		ref.dllFuncs.CL_DrawBeams( fTrans, SE_ACTIVE( beams ) );
+ 
+ 	if( fTrans )
+ 	{
+-		R_FreeDeadParticles( &cl_active_particles );
++		R_FreeDeadParticles( &SE_ACTIVE( particles ) );
+ 		if( cl_draw_particles.value )
+-			ref.dllFuncs.CL_DrawParticles( time, cl_active_particles, PART_SIZE );
+-		R_FreeDeadParticles( &cl_active_tracers );
++			ref.dllFuncs.CL_DrawParticles( time, SE_ACTIVE( particles ), PART_SIZE );
++		R_FreeDeadParticles( &SE_ACTIVE( tracers ) );
+ 		if( cl_draw_tracers.value )
+-			ref.dllFuncs.CL_DrawTracers( time, cl_active_tracers );
++			ref.dllFuncs.CL_DrawTracers( time, SE_ACTIVE( tracers ) );
+ 	}
+ }
+ 
+@@ -2177,3 +2201,33 @@ void CL_ThinkParticle( double frametime, particle_t *p )
+ 		break;
+ 	}
+ }
++
++#if XASH_SHADEREMU
++static particle_t **se_tail( particle_t **p ) { while( *p ) p = &( *p )->next; return p; }
++static BEAM **se_beams_tail( BEAM **b ) { while( *b ) b = &( *b )->next; return b; }
++// The effects to draw given to the drawing's worker, and 64 free particles for its beams' trails.
++void SE_EfxGive( void )
++{
++	se_efx.particles = cl_active_particles, se_efx.tracers = cl_active_tracers, se_efx.beams = cl_active_beams;
++	cl_active_particles = cl_active_tracers = NULL, cl_active_beams = NULL;
++	se_efx.freed = NULL, se_efx.freed_beams = NULL, se_efx.free = NULL;
++	for( int i = 0; i < 64 && cl_free_particles; i++ )
++	{
++		particle_t *p = cl_free_particles;
++		cl_free_particles = p->next, p->next = se_efx.free, se_efx.free = p;
++	}
++}
++// Its lists after those made since (theirs first, as one list would have them), its free ones free.
++void SE_EfxTaken( void )
++{
++	*se_tail( &cl_active_particles ) = se_efx.particles;
++	*se_tail( &cl_active_tracers ) = se_efx.tracers;
++	*se_beams_tail( &cl_active_beams ) = se_efx.beams;
++	*se_tail( &se_efx.freed ) = se_efx.free;
++	*se_tail( &se_efx.freed ) = cl_free_particles;
++	cl_free_particles = se_efx.freed;
++	*se_beams_tail( &se_efx.freed_beams ) = cl_free_beams;
++	cl_free_beams = se_efx.freed_beams;
++	memset( &se_efx, 0, sizeof( se_efx ));
++}
++#endif
 diff --git a/engine/client/cl_font.c b/engine/client/cl_font.c
-index 35c2939c..789b7d90 100644
+index 35c2939c..ab13dd80 100644
 --- a/engine/client/cl_font.c
 +++ b/engine/client/cl_font.c
-@@ -238,6 +238,10 @@ int CL_DrawCharacter( float x, float y, int number, const rgba_t color, cl_font_
+@@ -238,14 +238,105 @@ int CL_DrawCharacter( float x, float y, int number, const rgba_t color, cl_font_
  	if( !FBitSet( flags, FONT_DRAW_NOCOLOR ))
  		CL_SetFontColor( font, color );
  
@@ -53,8 +531,123 @@ index 35c2939c..789b7d90 100644
  	ref.dllFuncs.R_DrawStretchPic( x, y, w, h, s1, t1, s2, t2, font->hFontTexture );
  
  	return font->charWidths[number];
+ }
+ 
++#if XASH_SHADEREMU
++// A plain text drawn as it was the last time (its characters' quads kept): the first drawn for
++// real and compared, the last for real, as UI_DrawString's in mainui.patch
++unsigned hlglQuadBytes( void );
++int hlglCapturing( void );
++void hlglCaptureTo( void *to, int most );
++int hlglCaptured( void );
++void hlglDrawQuads( const void *quads, int count );
++#define TEXT_CHARS 96
++typedef struct
++{
++	float x, y; uint32_t color; const cl_font_t *font; int flags, texture, len, draw_len, ok, quads;
++	char s[TEXT_CHARS];
++	short quad[TEXT_CHARS], at[TEXT_CHARS];
++	uint32_t made[TEXT_CHARS][35];
++} text_t;
++static text_t texts[8];
++static int texts_next;
++static int CL_DrawStringNow( float x, float y, const char *s, const rgba_t color, cl_font_t *font, int flags, text_t *rec );
++
+ int CL_DrawString( float x, float y, const char *s, const rgba_t color, cl_font_t *font, int flags )
++{
++	static int off = -1;
++	int len = 0;
++
++	if( off < 0 ) off = ( getenv( "HL_TEXT" ) && !Q_strcmp( getenv( "HL_TEXT" ), "now" )) || hlglQuadBytes( ) != 35 * 4;
++	if( off || !font || !font->valid || !color || hlglCapturing( ))	// (inside a capture of mainui's)
++		return CL_DrawStringNow( x, y, s, color, font, flags, NULL );
++	for( ; s[len]; len++ )
++		if( len >= TEXT_CHARS - 1 || (byte)s[len] >= 0x80 || s[len] == '\n' || s[len] == '^' || s[len] == '\t' )
++			return CL_DrawStringNow( x, y, s, color, font, flags, NULL );
++	if( len < 4 )	// (nothing to gain, and it would push out the ones that gain)
++		return CL_DrawStringNow( x, y, s, color, font, flags, NULL );
++	uint32_t c = color[0] | color[1] << 8 | color[2] << 16 | (uint32_t)color[3] << 24;
++	text_t *t = NULL;
++	for( int i = 0; i < 8 && !t; i++ )
++		if( texts[i].ok && texts[i].x == x && texts[i].y == y && texts[i].color == c && texts[i].font == font && texts[i].flags == flags
++			&& texts[i].texture == font->hFontTexture && texts[i].len == len && !memcmp( texts[i].s, s, len ))
++			t = &texts[i];
++	if( !t )
++	{
++		t = &texts[texts_next++ & 7];
++		t->x = x, t->y = y, t->color = c, t->font = font, t->flags = flags, t->texture = font->hFontTexture, t->len = len;
++		memcpy( t->s, s, len );
++		t->ok = 1, t->quads = 0;
++		t->draw_len = CL_DrawStringNow( x, y, s, color, font, flags, t );
++		return t->draw_len;
++	}
++	// the prologue of CL_DrawStringNow, then the characters
++	if( FBitSet( flags, FONT_DRAW_UTF8 ))
++		Con_UtfProcessChar( 0 );
++	if( !FBitSet( flags, FONT_DRAW_NORENDERMODE ))
++		CL_SetFontRendermode( font );
++	CL_SetFontColor( font, color );
++	flags |= FONT_DRAW_NOCOLOR | FONT_DRAW_NORENDERMODE;
++	int first = -1, last = len - 1;
++	for( int i = 0; i < len && first < 0; i++ )
++		if( t->quad[i] >= 0 ) first = i;
++	for( int i = 0; i < len; i++ )
++	{
++		if( i == first && i != last )
++		{
++			uint32_t made[35];
++			hlglCaptureTo( made, 1 );
++			CL_DrawCharacter( x + t->at[i], y, (byte)s[i], NULL, font, flags );
++			if( hlglCaptured( ) != 1 || memcmp( made, t->made[t->quad[i]], sizeof( made )))
++			{
++				t->ok = 0;	// (the rest drawn as it is; recorded again next time)
++				for( int j = i + 1; j < len; j++ )
++					CL_DrawCharacter( x + t->at[j], y, (byte)s[j], NULL, font, flags );
++				return t->draw_len;
++			}
++		}
++		else if( i == last )
++			CL_DrawCharacter( x + t->at[i], y, (byte)s[i], NULL, font, flags );
++		else if( t->quad[i] >= 0 )
++			hlglDrawQuads( t->made[t->quad[i]], 1 );
++	}
++	return t->draw_len;
++}
++
++static int CL_DrawStringNow( float x, float y, const char *s, const rgba_t color, cl_font_t *font, int flags, text_t *rec )
++#else
++int CL_DrawString( float x, float y, const char *s, const rgba_t color, cl_font_t *font, int flags )
++#endif
+ {
+ 	int draw_len = 0;
++#if XASH_SHADEREMU
++	const char *s0 = s;
++#endif
+ 
+ 	if( !font || !font->valid )
+ 		return 0;
+@@ -292,7 +383,19 @@ int CL_DrawString( float x, float y, const char *s, const rgba_t color, cl_font_
+ 		}
+ 
+ 		// skip setting rendermode, it was changed for this string already
++#if XASH_SHADEREMU
++		if( rec )
++			rec->at[s - s0] = draw_len, hlglCaptureTo( rec->made[rec->quads], TEXT_CHARS - rec->quads );
++#endif
+ 		draw_len += CL_DrawCharacter( x + draw_len, y, (byte)*s, NULL, font, flags );
++#if XASH_SHADEREMU
++		if( rec )
++		{
++			int n = hlglCaptured( );
++			if( n < 0 || n > 1 ) rec->ok = 0;
++			else rec->quad[s - s0] = n ? rec->quads++ : -1;
++		}
++#endif
+ 
+ 		s++;
+ 	}
 diff --git a/engine/client/cl_frame.c b/engine/client/cl_frame.c
-index aace8cff..dfcd120d 100644
+index aace8cff..b66dfc93 100644
 --- a/engine/client/cl_frame.c
 +++ b/engine/client/cl_frame.c
 @@ -359,14 +359,28 @@ static qboolean CL_FindInterpolationUpdates( cl_entity_t *ent, double targettime
@@ -241,7 +834,18 @@ index aace8cff..dfcd120d 100644
  
  		qboolean player = CL_IsPlayerIndex( newnum );
  
-@@ -1284,8 +1414,52 @@ add visible entities to refresh list
+@@ -888,6 +1018,10 @@ int CL_ParsePacketEntities( sizebuf_t *msg, qboolean delta, connprotocol_t proto
+ 		CL_DeltaEntity( msg, newframe, oldnum, oldent, false );
+ 		oldnum = CL_UpdateOldEntNum( ++oldindex, oldframe, &oldent );
+ 	}
++#if XASH_SHADEREMU	// (each frame a whole stride on, as the server's: sv_frame.c)
++	if( cls.num_client_entities % NUM_PACKET_ENTITIES == 0 )
++		cls.next_client_entities = ( newframe->first_entity + Q_max( newframe->num_entities, 1 ) + NUM_PACKET_ENTITIES - 1 ) / NUM_PACKET_ENTITIES * NUM_PACKET_ENTITIES;
++#endif
+ 
+ 	if( newframe->num_entities != count && newframe->num_entities != 0 )
+ 		Con_Reportf( S_WARN "%s%s: (%i should be %i)\n", __func__, delta ? "Delta" : "", newframe->num_entities, count );
+@@ -1284,8 +1418,55 @@ add visible entities to refresh list
  process frame interpolation etc
  ===============
  */
@@ -276,6 +880,9 @@ index aace8cff..dfcd120d 100644
 +}
 +void SE_LightStylesGive( void )
 +{
++	int SE_RenderPiped( void ), SE_RenderWho( void );
++	if( SE_RenderPiped( ) && !SE_RenderWho( ))
++		return;	// (made by the drawing's worker: rnd_shaderemu.c)
 +	SE_LightStylesTaken();
 +	if( cl.paused || cls.state != ca_active || !cl.validsequence || !cl.frames[cl.parsecountmod].valid || ( styles_worker = hlglLightWorker()) <= 0 )
 +	{
@@ -294,7 +901,7 @@ index aace8cff..dfcd120d 100644
  	if( cl.paused ) return; // don't waste time
  
  	// not in server yet, no entities to redraw
-@@ -1297,6 +1471,9 @@ void CL_EmitEntities( void )
+@@ -1297,6 +1478,9 @@ void CL_EmitEntities( void )
  		return;
  
  	// animate lightestyles
@@ -304,19 +911,20 @@ index aace8cff..dfcd120d 100644
  	ref.dllFuncs.CL_RunLightStyles( CL_GetLightStyle( 0 ));
  
  	// decay dynamic lights
-@@ -1330,6 +1507,10 @@ void CL_EmitEntities( void )
+@@ -1330,6 +1514,11 @@ void CL_EmitEntities( void )
  
  	// perfomance test
  	CL_TestLights();
 +#if XASH_SHADEREMU
-+	if( SE_LightAhead )
++	int SE_RenderPiped( void );
++	if( SE_LightAhead && !SE_RenderPiped( ))
 +		SE_LightAhead();	// (the things to draw are known: the renderer finds their light on a worker)
 +#endif
  }
  
  /*
 diff --git a/engine/client/cl_main.c b/engine/client/cl_main.c
-index 39e4f9c2..55f361c4 100644
+index 39e4f9c2..39348b52 100644
 --- a/engine/client/cl_main.c
 +++ b/engine/client/cl_main.c
 @@ -807,6 +807,11 @@ static void CL_CreateCmd( void )
@@ -352,7 +960,18 @@ index 39e4f9c2..55f361c4 100644
  
  	// allow extended usercmd limit
  	if( proto == PROTO_GOLDSRC && cls.build_num >= 5971 )
-@@ -3921,13 +3933,28 @@ void Host_ClientFrame( void )
+@@ -1612,6 +1624,10 @@ CL_ClearState
+ */
+ void CL_ClearState( void )
+ {
++#if XASH_SHADEREMU
++	void SE_RenderStop( void );
++	SE_RenderStop();
++#endif
+ 	CL_ClearResourceLists();
+ 
+ 	for( int i = 0; i < MAX_CLIENTS; i++ )
+@@ -3921,13 +3937,28 @@ void Host_ClientFrame( void )
  
  	// do prediction again in case we got
  	// a new portion updates from server
@@ -382,10 +1001,27 @@ index 39e4f9c2..55f361c4 100644
  	// in case we lost connection
  	CL_CheckForResend ();
 diff --git a/engine/client/cl_scrn.c b/engine/client/cl_scrn.c
-index 6c550c7e..018e308d 100644
+index 6c550c7e..4cfd674b 100644
 --- a/engine/client/cl_scrn.c
 +++ b/engine/client/cl_scrn.c
-@@ -688,6 +688,9 @@ void SCR_UpdateScreen( void )
+@@ -673,6 +673,16 @@ void SCR_UpdateScreen( void )
+ {
+ 	qboolean screen_redraw = true; // assume screen has been redrawn
+ 
++#if XASH_SHADEREMU
++	void hlglRingsStop( void );
++	void SE_RenderWindow( int open );
++	if( cls.state != ca_active )
++		hlglRingsStop();	// (the workers are their own again outside a level: rnd_shaderemu.c)
++	SE_RenderWindow( 0 );
++	void SE_RenderSettle( void ), SE_RenderGive( void );
++	if( cls.state != ca_active )
++		SE_RenderSettle();	// (in a level, at the 2D: the renderer's guard settles at any call it must)
++#endif
+ 	if( !V_PreRender( )) return;
+ 
+ 	switch( cls.state )
+@@ -688,6 +698,9 @@ void SCR_UpdateScreen( void )
  	case ca_active:
  		Con_RunConsole ();
  		V_RenderView();
@@ -395,11 +1031,59 @@ index 6c550c7e..018e308d 100644
  		break;
  	case ca_cinematic:
  		SCR_DrawCinematic();
+@@ -702,6 +715,10 @@ void SCR_UpdateScreen( void )
+ 	// is ugly, specifically with Adreno and ImgTec GPUs
+ 	if( screen_redraw || !cls.changelevel || !cls.changedemo )
+ 		V_PostRender();
++#if XASH_SHADEREMU
++	SE_RenderGive();
++	SE_RenderWindow( 1 );
++#endif
+ }
+ 
+ /*
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
-index 95c85f7c..3332eb99 100644
+index 95c85f7c..5d2f1eed 100644
 --- a/engine/client/cl_tent.c
 +++ b/engine/client/cl_tent.c
-@@ -2449,11 +2449,18 @@ CL_AllocDlight
+@@ -14,6 +14,10 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++extern double se_render_time;
++#endif
+ #include "client.h"
+ #include "r_efx.h"
+ #include "entity_types.h"
+@@ -2431,6 +2435,25 @@ DLIGHT MANAGEMENT
+ */
+ static dlight_t cl_dlights[MAX_DLIGHTS];
+ static dlight_t cl_elights[MAX_ELIGHTS];
++#if XASH_SHADEREMU
++dlight_t se_render_dlights[MAX_DLIGHTS], se_render_elights[MAX_ELIGHTS];	// the drawing's worker's (rnd_shaderemu.c)
++static struct { int count; dlight_t *made[16]; int key[16]; } se_made __attribute__(( aligned( 16 )));	// the worker's
++void SE_LightsGive( void )
++{
++	memcpy( se_render_dlights, cl_dlights, sizeof( cl_dlights ));
++	memcpy( se_render_elights, cl_elights, sizeof( cl_elights ));
++	se_made.count = 0;
++}
++void SE_LightsTaken( void )
++{
++	for( int i = 0; i < se_made.count; i++ )
++	{
++		dlight_t *dl = CL_AllocElight( se_made.key[i] );
++		*dl = *se_made.made[i];
++	}
++	se_made.count = 0;
++}
++#endif
+ 
+ /*
+ ================
+@@ -2449,11 +2472,18 @@ CL_AllocDlight
  
  ===============
  */
@@ -418,7 +1102,7 @@ index 95c85f7c..3332eb99 100644
  	// first look for an exact key match
  	if( key )
  	{
-@@ -2494,10 +2501,17 @@ CL_AllocElight
+@@ -2494,10 +2524,28 @@ CL_AllocElight
  
  ===============
  */
@@ -431,13 +1115,24 @@ index 95c85f7c..3332eb99 100644
  	dlight_t	*dl;
  	int	i;
 +#if XASH_SHADEREMU
++	if( SE_OnRender( ))
++	{
++		// (in the worker's copy, kept to be made by this core when the frame is taken)
++		for( i = 0, dl = se_render_elights; i < MAX_ELIGHTS - 1 && !( dl->die < se_render_time && dl->key == 0 ); i++, dl++ )
++			;
++		memset( dl, 0, sizeof( *dl ));
++		dl->key = key;
++		if( se_made.count < 16 )
++			se_made.key[se_made.count] = key, se_made.made[se_made.count++] = dl;
++		return dl;
++	}
 +	se_elight_allocs++;
 +#endif
  
  	// first look for an exact key match
  	if( key )
 diff --git a/engine/client/cl_view.c b/engine/client/cl_view.c
-index c1b3ef13..b428d66a 100644
+index c1b3ef13..260548be 100644
 --- a/engine/client/cl_view.c
 +++ b/engine/client/cl_view.c
 @@ -414,6 +414,11 @@ void V_RenderView( void )
@@ -451,6 +1146,19 @@ index c1b3ef13..b428d66a 100644
 +#endif
  		V_RefApplyOverview( &rvp );
  		V_ApplyRefUnderwater( &rvp );
+ 
+@@ -422,7 +427,12 @@ void V_RenderView( void )
+ 			ref.dllFuncs.R_ClearScreen();
+ 		}
+ 
++#if XASH_SHADEREMU
++		void SE_RenderFrame( const ref_viewpass_t *rvp );
++		SE_RenderFrame( &rvp );	// (on a worker of its own: rnd_shaderemu.c)
++#else
+ 		GL_RenderFrame( &rvp );
++#endif
+ 		S_UpdateFrame( &rvp );
+ 		viewnum++;
  
 diff --git a/engine/client/dll_int/cl_gameui.c b/engine/client/dll_int/cl_gameui.c
 index 993304fa..28c92a20 100644
@@ -668,6 +1376,54 @@ index 9ca1f797..9d97c597 100644
  		else VectorCopy( to->client.view_ofs, cl.viewheight );
  	}
  
+diff --git a/engine/client/dll_int/ref_common.c b/engine/client/dll_int/ref_common.c
+index 8ea38dc5..f700f926 100644
+--- a/engine/client/dll_int/ref_common.c
++++ b/engine/client/dll_int/ref_common.c
+@@ -14,6 +14,9 @@ GNU General Public License for more details.
+ */
+ 
+ #include "common.h"
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ #include "client.h"
+ #include "library.h"
+ #include "cl_tent.h"
+@@ -207,6 +210,11 @@ static int Cmd_AddRefCommand( const char *cmd_name, xcommand_t function, const c
+ 
+ static void pfnStudioEvent( const mstudioevent_t *event, const cl_entity_t *e )
+ {
++#if XASH_SHADEREMU
++	int SE_RenderKeepEvent( const mstudioevent_t *event, const cl_entity_t *e );
++	if( SE_RenderKeepEvent( event, e ))
++		return;
++#endif
+ 	clgame.dllFuncs.pfnStudioEvent( event, e );
+ }
+ 
+@@ -237,6 +245,10 @@ static void *pfnMod_Extradata( int type, model_t *m )
+ 
+ static void CL_ExtraUpdate( void )
+ {
++#if XASH_SHADEREMU
++	if( SE_OffCore0( ))
++		return;
++#endif
+ 	clgame.dllFuncs.IN_Accumulate();
+ 	S_ExtraUpdate();
+ }
+@@ -578,6 +590,10 @@ static qboolean R_LoadProgs( const char *name )
+ 	}
+ 
+ 	refState.developer = host_developer.value;
++#if XASH_SHADEREMU
++	void SE_RefGuard( void *table, size_t bytes );
++	SE_RefGuard( &ref.dllFuncs, sizeof( ref.dllFuncs ));	// (what this core calls of it, seen: rnd_shaderemu.c)
++#endif
+ 
+ 	if( !ref.dllFuncs.R_Init( ))
+ 	{
 diff --git a/engine/client/gamma.c b/engine/client/gamma.c
 index 65d340ce..2563075e 100644
 --- a/engine/client/gamma.c
@@ -874,7 +1630,7 @@ index fe5ece45..53d89c4b 100644
  }
 +#endif
 diff --git a/engine/common/cmd.c b/engine/common/cmd.c
-index d640a991..4a6a6d75 100644
+index d640a991..3a8ca8a5 100644
 --- a/engine/common/cmd.c
 +++ b/engine/common/cmd.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -936,7 +1692,7 @@ index d640a991..4a6a6d75 100644
  void Cbuf_AddText( const char *text )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cbuf_AddText_args_t a = { text };
 +		SE_ServerOnCore0( Cbuf_AddText_on_core0, &a );
@@ -957,7 +1713,7 @@ index d640a991..4a6a6d75 100644
  void Cbuf_AddFilteredText( const char *text )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cbuf_AddFilteredText_args_t a = { text };
 +		SE_ServerOnCore0( Cbuf_AddFilteredText_on_core0, &a );
@@ -986,7 +1742,7 @@ index d640a991..4a6a6d75 100644
  void Cbuf_InsertText( const char *text )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cbuf_InsertText_args_t a = { text };
 +		SE_ServerOnCore0( Cbuf_InsertText_on_core0, &a );
@@ -1028,7 +1784,20 @@ index d640a991..4a6a6d75 100644
  		}
  
  		// execute the command line
-@@ -1530,3 +1596,30 @@ void Test_RunCmd( void )
+@@ -251,6 +317,12 @@ Cbuf_Execute
+ */
+ void Cbuf_Execute( void )
+ {
++#if XASH_SHADEREMU	// (a command may touch the server's data: its frame out ends first)
++	void SE_ServerSettle( void );
++	int SE_ServerServing( void );
++	if(( cmd_text.cursize || filteredcmd_text.cursize ) && !SE_ServerServing( ))
++		SE_ServerSettle( );
++#endif
+ 	Cbuf_ExecuteCommandsFromBuffer( &cmd_text, true, -1 );
+ 
+ 	// a1ba: goldsrc limits unprivileged commands per frame to 1 here
+@@ -1530,3 +1602,30 @@ void Test_RunCmd( void )
  	Cmd_RemoveCommand( "test_privileged" );
  }
  #endif
@@ -1060,7 +1829,7 @@ index d640a991..4a6a6d75 100644
 +}
 +#endif
 diff --git a/engine/common/common.c b/engine/common/common.c
-index 50ebab64..1a18a00b 100644
+index 50ebab64..4ad667e7 100644
 --- a/engine/common/common.c
 +++ b/engine/common/common.c
 @@ -15,6 +15,9 @@ GNU General Public License for more details.
@@ -1078,7 +1847,7 @@ index 50ebab64..1a18a00b 100644
  #endif	// DEBUG
  
 +#if XASH_SHADEREMU
-+static struct SE_APART { int v; } idum_of[2];	// (the server's worker draws its own)
++static struct SE_APART { int v; } idum_of[3];	// (the server's worker draws its own)
 +#define idum idum_of[SE_OnServer()].v
 +#else
  static int idum = 0;
@@ -1091,7 +1860,7 @@ index 50ebab64..1a18a00b 100644
  static int lran1( void )
  {
 +#if XASH_SHADEREMU
-+	static struct SE_APART { int iy, iv[NTAB]; } ran_of[2];
++	static struct SE_APART { int iy, iv[NTAB]; } ran_of[3];
 +	int core = SE_OnServer();
 +#define iy ran_of[core].iy
 +#define iv ran_of[core].iv
@@ -1116,9 +1885,9 @@ index 50ebab64..1a18a00b 100644
  char *va( const char *format, ... )
  {
 +#if XASH_SHADEREMU
-+	static struct SE_APART { int index; char string[16][MAX_VA_STRING]; } va_of[2];	// (the server's worker has its own)
-+	char *s, ( *string )[MAX_VA_STRING] = va_of[SE_OnServer()].string;
-+	int *index = &va_of[SE_OnServer()].index;
++	static struct SE_APART { int index; char string[16][MAX_VA_STRING]; } va_of[3];	// (the server's worker has its own)
++	char *s, ( *string )[MAX_VA_STRING] = va_of[SE_Who()].string;
++	int *index = &va_of[SE_Who()].index;
 +	s = string[*index];
 +	*index = ( *index + 1 ) & 15;
 +#else
@@ -1132,7 +1901,7 @@ index 50ebab64..1a18a00b 100644
  	va_list argptr;
  	va_start( argptr, format );
 diff --git a/engine/common/cvar.c b/engine/common/cvar.c
-index 0084a31f..26585017 100644
+index 0084a31f..5daee63e 100644
 --- a/engine/common/cvar.c
 +++ b/engine/common/cvar.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -1156,7 +1925,7 @@ index 0084a31f..26585017 100644
  convar_t *Cvar_Get( const char *name, const char *value, uint32_t flags, const char *var_desc )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cvar_Get_args_t a = { name, value, flags, var_desc };
 +		return (convar_t *)SE_ServerOnCore0( Cvar_Get_on_core0, &a );
@@ -1176,7 +1945,7 @@ index 0084a31f..26585017 100644
  void Cvar_RegisterVariable( convar_t *var )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cvar_RegisterVariable_args_t a = { var };
 +		SE_ServerOnCore0( Cvar_RegisterVariable_on_core0, &a );
@@ -1197,7 +1966,7 @@ index 0084a31f..26585017 100644
  void GAME_EXPORT Cvar_DirectSet( convar_t *var, const char *value )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cvar_DirectSet_args_t a = { var, value };
 +		SE_ServerOnCore0( Cvar_DirectSet_on_core0, &a );
@@ -1218,7 +1987,7 @@ index 0084a31f..26585017 100644
  void Cvar_FullSet( const char *var_name, const char *value, uint32_t flags )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		Cvar_FullSet_args_t a = { var_name, value, flags };
 +		SE_ServerOnCore0( Cvar_FullSet_on_core0, &a );
@@ -1268,7 +2037,7 @@ index 0084a31f..26585017 100644
 +}
 +#endif
 diff --git a/engine/common/host.c b/engine/common/host.c
-index f04c5f9b..566497ff 100644
+index f04c5f9b..a8b33408 100644
 --- a/engine/common/host.c
 +++ b/engine/common/host.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -1286,7 +2055,7 @@ index f04c5f9b..566497ff 100644
  void Host_Frame( double time )
  {
 +#if XASH_SHADEREMU
-+	SE_ServerSettle();	// (the server's frame of the last frame, on its worker)
++	SE_ServerFrameStart();	// (the server's frame out, on its worker, ended if it must be)
 +#endif
  	// decide the simulation time
  	if( !Host_FilterTime( time ))
@@ -1306,7 +2075,7 @@ index f04c5f9b..566497ff 100644
  	va_list		argptr;
  
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		char text[MAX_SYSPATH];
 +		va_start( argptr, error );
@@ -1634,7 +2403,7 @@ index d1fe48e2..7612f687 100644
  			// mark models that have origin brushes
  			if( !VectorIsNull( bm->origin ))
 diff --git a/engine/common/mod_studio.c b/engine/common/mod_studio.c
-index 520ab7f4..2d57f454 100644
+index 520ab7f4..df3ab7e8 100644
 --- a/engine/common/mod_studio.c
 +++ b/engine/common/mod_studio.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -1667,20 +2436,20 @@ index 520ab7f4..2d57f454 100644
 +	int			cache_current;
 +	int			cache_current_hull;
 +	int			cache_current_plane;
-+} studio_of[2];	// (the server's worker has its own)
-+#define mod_studiohdr studio_of[SE_OnServer()].mod_studiohdr
-+#define studio_transform studio_of[SE_OnServer()].studio_transform
-+#define cache_hull studio_of[SE_OnServer()].cache_hull
-+#define studio_hull studio_of[SE_OnServer()].studio_hull
-+#define studio_bones studio_of[SE_OnServer()].studio_bones
-+#define studio_hull_hitgroup studio_of[SE_OnServer()].studio_hull_hitgroup
-+#define cache_hull_hitgroup studio_of[SE_OnServer()].cache_hull_hitgroup
-+#define cache_studio studio_of[SE_OnServer()].cache_studio
-+#define studio_planes studio_of[SE_OnServer()].studio_planes
-+#define cache_planes studio_of[SE_OnServer()].cache_planes
-+#define cache_current studio_of[SE_OnServer()].cache_current
-+#define cache_current_hull studio_of[SE_OnServer()].cache_current_hull
-+#define cache_current_plane studio_of[SE_OnServer()].cache_current_plane
++} studio_of[3];	// (the server's worker has its own)
++#define mod_studiohdr studio_of[SE_Who()].mod_studiohdr
++#define studio_transform studio_of[SE_Who()].studio_transform
++#define cache_hull studio_of[SE_Who()].cache_hull
++#define studio_hull studio_of[SE_Who()].studio_hull
++#define studio_bones studio_of[SE_Who()].studio_bones
++#define studio_hull_hitgroup studio_of[SE_Who()].studio_hull_hitgroup
++#define cache_hull_hitgroup studio_of[SE_Who()].cache_hull_hitgroup
++#define cache_studio studio_of[SE_Who()].cache_studio
++#define studio_planes studio_of[SE_Who()].studio_planes
++#define cache_planes studio_of[SE_Who()].cache_planes
++#define cache_current studio_of[SE_Who()].cache_current
++#define cache_current_hull studio_of[SE_Who()].cache_current_hull
++#define cache_current_plane studio_of[SE_Who()].cache_current_plane
 +#else
  static studiohdr_t			*mod_studiohdr;
  static matrix3x4			studio_transform;
@@ -1729,7 +2498,7 @@ index b93b896a..1691172d 100644
  		uint32_t currentCRC;
  
 diff --git a/engine/common/net_buffer.c b/engine/common/net_buffer.c
-index 287ef3b2..0e077e0c 100644
+index 287ef3b2..534d799c 100644
 --- a/engine/common/net_buffer.c
 +++ b/engine/common/net_buffer.c
 @@ -796,9 +796,18 @@ qboolean MSG_ReadBytes( sizebuf_t *sb, void *out, size_t maxBytes, int bytes )
@@ -1743,8 +2512,8 @@ index 287ef3b2..0e077e0c 100644
  static char *MSG_ReadStringExt( sizebuf_t *sb, qboolean bLine )
  {
 +#if XASH_SHADEREMU
-+	static struct SE_APART { char s[4096]; } string_of[2];	// (the server's worker reads its own)
-+	char *string = string_of[SE_OnServer()].s;
++	static struct SE_APART { char s[4096]; } string_of[3];	// (the server's worker reads its own)
++	char *string = string_of[SE_Who()].s;
 +#else
  	static char	string[4096];
 +#endif
@@ -1926,7 +2695,7 @@ index d139dff7..b8752644 100644
  
  	if( NET_GetLoopPacket( sock, from, data, length ))
 diff --git a/engine/common/pm_trace.c b/engine/common/pm_trace.c
-index b1e8e57b..1af00bca 100644
+index b1e8e57b..aef399ca 100644
 --- a/engine/common/pm_trace.c
 +++ b/engine/common/pm_trace.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -1944,9 +2713,9 @@ index b1e8e57b..1af00bca 100644
  #define PM_AllowHitBoxTrace( model, hull ) ( model && model->type == mod_studio && ( FBitSet( model->flags, STUDIO_TRACE_HITBOX ) || hull == 2 ))
  
 +#if XASH_SHADEREMU
-+static struct SE_APART { mplane_t planes[6]; hull_t hull; } box_of[2];	// (the server's worker has its own)
-+#define pm_boxplanes box_of[SE_OnServer()].planes
-+#define pm_boxhull box_of[SE_OnServer()].hull
++static struct SE_APART { mplane_t planes[6]; hull_t hull; } box_of[3];	// (the server's worker has its own)
++#define pm_boxplanes box_of[SE_Who()].planes
++#define pm_boxhull box_of[SE_Who()].hull
 +#else
  static mplane_t	pm_boxplanes[6];
  static hull_t pm_boxhull;
@@ -2089,7 +2858,7 @@ index b1e8e57b..1af00bca 100644
  
  		if( pe->solid == SOLID_CUSTOM )
 diff --git a/engine/common/sys_con.c b/engine/common/sys_con.c
-index b4e5bb26..3a8505cb 100644
+index b4e5bb26..4205d5e2 100644
 --- a/engine/common/sys_con.c
 +++ b/engine/common/sys_con.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -2107,8 +2876,8 @@ index b4e5bb26..3a8505cb 100644
  static void Con_Printfv( qboolean debug, const char *szFmt, va_list args )
  {
 +#if XASH_SHADEREMU
-+	static struct SE_APART { char b[MAX_PRINT_MSG]; } buffers[2];	// (the server's worker has its own)
-+	char *buffer = buffers[SE_OnServer()].b;
++	static struct SE_APART { char b[MAX_PRINT_MSG]; } buffers[3];	// (the server's worker has its own)
++	char *buffer = buffers[SE_Who()].b;
 +#else
  	static char buffer[MAX_PRINT_MSG];
 -	qboolean add_newline = Q_vsnprintf( buffer, sizeof( buffer ), szFmt, args ) < 0;
@@ -2118,7 +2887,7 @@ index b4e5bb26..3a8505cb 100644
  	if( debug && !Q_strcmp( buffer, "0\n" ))
  		return; // hlrally spam
 diff --git a/engine/common/system.c b/engine/common/system.c
-index 522ba25c..740a2a57 100644
+index 522ba25c..114a9b45 100644
 --- a/engine/common/system.c
 +++ b/engine/common/system.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -2136,7 +2905,7 @@ index 522ba25c..740a2a57 100644
  	char	text[MAX_PRINT_MSG];
  
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		va_start( argptr, error );
 +		Q_vsnprintf( text, MAX_PRINT_MSG, error, argptr );
@@ -2152,7 +2921,7 @@ index 522ba25c..740a2a57 100644
  void Sys_Print( const char *pMsg )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		SE_ServerKeepPrint( pMsg );
 +		return;
@@ -2177,7 +2946,7 @@ index 30b30bcf..7af438aa 100644
  #include "lightstyle.h"
  
 diff --git a/engine/common/zone.c b/engine/common/zone.c
-index a0d9c23d..e693c214 100644
+index a0d9c23d..b120ddaf 100644
 --- a/engine/common/zone.c
 +++ b/engine/common/zone.c
 @@ -17,6 +17,14 @@ GNU General Public License for more details.
@@ -2206,7 +2975,7 @@ index a0d9c23d..e693c214 100644
  void *_Mem_Alloc( poolhandle_t poolptr, size_t size, qboolean clear, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_Alloc_args_t a = { poolptr, size, clear, filename, fileline };
 +		return (void *)SE_ServerOnCore0( _Mem_Alloc_on_core0, &a );
@@ -2242,7 +3011,7 @@ index a0d9c23d..e693c214 100644
  void _Mem_Free( void *data, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_Free_args_t a = { data, filename, fileline };
 +		SE_ServerOnCore0( _Mem_Free_on_core0, &a );
@@ -2263,7 +3032,7 @@ index a0d9c23d..e693c214 100644
  void *_Mem_Realloc( poolhandle_t poolptr, void *data, size_t size, qboolean clear, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_Realloc_args_t a = { poolptr, data, size, clear, filename, fileline };
 +		return (void *)SE_ServerOnCore0( _Mem_Realloc_on_core0, &a );
@@ -2299,7 +3068,7 @@ index a0d9c23d..e693c214 100644
  poolhandle_t _Mem_AllocPool( const char *name, unsigned int flags, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_AllocPool_args_t a = { name, flags, filename, fileline };
 +		return (poolhandle_t)SE_ServerOnCore0( _Mem_AllocPool_on_core0, &a );
@@ -2319,7 +3088,7 @@ index a0d9c23d..e693c214 100644
  void _Mem_EmptyPool( poolhandle_t poolptr, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_EmptyPool_args_t a = { poolptr, filename, fileline };
 +		SE_ServerOnCore0( _Mem_EmptyPool_on_core0, &a );
@@ -2340,7 +3109,7 @@ index a0d9c23d..e693c214 100644
  void _Mem_FreePool( poolhandle_t *poolptr, const char *filename, int fileline )
  {
 +#if XASH_SHADEREMU
-+	if( SE_OnServer( ))
++	if( SE_OffCore0( ))
 +	{
 +		_Mem_FreePool_args_t a = { poolptr, filename, fileline };
 +		SE_ServerOnCore0( _Mem_FreePool_on_core0, &a );
@@ -2555,24 +3324,52 @@ index e15a9318..2414b4cf 100644
 +#endif
 +
  #endif//SERVER_H
+diff --git a/engine/server/sv_client.c b/engine/server/sv_client.c
+index 7ddc2751..590d5f6e 100644
+--- a/engine/server/sv_client.c
++++ b/engine/server/sv_client.c
+@@ -3346,7 +3346,11 @@ static void SV_ParseClientMove( sv_client_t *cl, sizebuf_t *msg )
+ {
+ 	const usercmd_t	nullcmd = { 0 }, *from = &nullcmd; // first cmd are starting from null-compressed usercmd_t
+ 	client_frame_t  *frame = &cl->frames[cl->netchan.incoming_acknowledged & SV_UPDATE_MASK];
++#if XASH_SHADEREMU	// (each read whole from the one before: only the first, when none is read, is cleared below)
++	usercmd_t       cmds[CMD_BACKUP], *to;
++#else
+ 	usercmd_t       cmds[CMD_BACKUP] = { 0 }, *to;
++#endif
+ 	edict_t         *player = cl->edict;
+ 	model_t         *model;
+ 
+@@ -3367,6 +3371,10 @@ static void SV_ParseClientMove( sv_client_t *cl, sizebuf_t *msg )
+ 		return;
+ 	}
+ 
++#if XASH_SHADEREMU
++	if( totalcmds == 0 )
++		memset( &cmds[0], 0, sizeof( cmds[0] ));
++#endif
+ 	for( i = totalcmds - 1; i >= 0; i-- )
+ 	{
+ 		to = &cmds[i];
 diff --git a/engine/server/sv_frame.c b/engine/server/sv_frame.c
-index 3ff8edbf..11b4e652 100644
+index 3ff8edbf..72c9a6d4 100644
 --- a/engine/server/sv_frame.c
 +++ b/engine/server/sv_frame.c
-@@ -53,6 +53,61 @@ SV_AddEntitiesToPacket
+@@ -53,6 +53,66 @@ SV_AddEntitiesToPacket
  
  =============
  */
 +#if XASH_SHADEREMU
 +int SV_EntityVisible( const edict_t *ent, byte *pset );	// (sv_game.c's pfnCheckVisibility)
 +
-+// The packet's entities from a number on looked at by a worker of the server's (sv_shaderemu.c) while
-+// the server looks at those before it: posted with the server's frame, it waits for the ask.
++// The packet's entities from a number on looked at by workers of the server's (sv_shaderemu.c), a part
++// each, while the server looks at those before them: posted with the server's frame, they wait for the ask.
 +#define END_PASS() __asm__ volatile( ".word 0x0000100f" )	// (mc.h's mc_end_pass)
-+static struct __attribute__(( aligned( 16 ))) { volatile int go, done, unused[2]; edict_t *client; byte *pvs, *phs; int hostflags, from, to; } se_pack_ask;	// go 1: the part; 2: none
-+static struct __attribute__(( aligned( 16 ))) { int count, portal; short number[MAX_VISIBLE_PACKET]; entity_state_t entities[MAX_VISIBLE_PACKET]; } se_pack_out;	// the worker's
-+int se_pack_helper;	// the worker, while it is out
-+static int se_pack_share = 128;	// the worker's part of the numbers after the players', in 256ths: moved to where neither side waits
++#define SE_PACKERS 4
++static struct __attribute__(( aligned( 16 ))) { volatile int go, done, unused[2]; edict_t *client; byte *pvs, *phs; int hostflags, from, to; } se_pack_ask[SE_PACKERS];	// go 1: the part; 2: none
++static struct __attribute__(( aligned( 16 ))) { int count, portal; short number[MAX_VISIBLE_PACKET]; entity_state_t entities[MAX_VISIBLE_PACKET]; } se_pack_out[SE_PACKERS];	// each worker's
++int se_pack_helpers;	// how many workers are out
++static int se_pack_share = 192;	// the workers' part of the numbers after the players', in 256ths: moved to where neither side waits
 +
 +// The loop's tests and AddToFullPack for entity e: 1 added, 2 turned away by AddToFullPack, 0 before it.
 +static int SE_PackOne( int e, edict_t *pClient, byte *clientpvs, byte *clientphs, int hostflags, entity_state_t *state )
@@ -2592,47 +3389,55 @@ index 3ff8edbf..11b4e652 100644
 +
 +void SE_WorldAhead( void );
 +extern volatile int se_ahead_done;
-+uint32_t SE_PackJob( uint32_t unused0, uint32_t unused1 )
++uint32_t SE_PackJob( uint32_t part, uint32_t unused )
 +{
-+	SE_WorldAhead();	// (until the server asks for the packet)
-+	se_ahead_done = 1;
-+	while( !se_pack_ask.go )
++	if( !part )
++	{
++		SE_WorldAhead();	// (until the server asks for the packet)
++		se_ahead_done = 1;
++	}
++	while( !se_pack_ask[part].go )
 +		END_PASS( );
-+	if( se_pack_ask.go == 1 )
++	if( se_pack_ask[part].go == 1 )
 +	{
 +		int n = 0, portal = 0;
-+		for( int e = se_pack_ask.from; e < se_pack_ask.to && n < MAX_VISIBLE_PACKET - 1; e++ )
++		for( int e = se_pack_ask[part].from; e < se_pack_ask[part].to && n < MAX_VISIBLE_PACKET - 1; e++ )
 +		{
-+			int r = SE_PackOne( e, se_pack_ask.client, se_pack_ask.pvs, se_pack_ask.phs, se_pack_ask.hostflags, &se_pack_out.entities[n] );
++			int r = SE_PackOne( e, se_pack_ask[part].client, se_pack_ask[part].pvs, se_pack_ask[part].phs, se_pack_ask[part].hostflags, &se_pack_out[part].entities[n] );
 +			if( r && FBitSet( SV_EdictNum( e )->v.effects, EF_MERGE_VISIBILITY ))
 +				portal = 1;
 +			if( r == 1 )
-+				se_pack_out.number[n++] = e;
++				se_pack_out[part].number[n++] = e;
 +		}
-+		se_pack_out.count = n, se_pack_out.portal = portal;
++		se_pack_out[part].count = n, se_pack_out[part].portal = portal;
 +	}
-+	se_pack_ask.done = 1;
++	se_pack_ask[part].done = 1;
 +	return 0;
 +}
-+void SE_PackReset( void ) { se_pack_ask.go = se_pack_ask.done = se_ahead_done = 0; }	// (the first core's, before posting it)
-+void SE_PackTouch( void ) { memset( &se_pack_out, 0, sizeof( se_pack_out )); }	// (the first core's, once)
-+void SE_PackFrameEnd( void ) { if( !se_pack_ask.go ) se_pack_ask.go = 2; }	// (the server's)
++void SE_PackReset( void ) { for( int i = 0; i < SE_PACKERS; i++ ) se_pack_ask[i].go = se_pack_ask[i].done = 0; se_ahead_done = 0; }	// (the first core's, before posting them)
++void SE_PackTouch( void ) { memset( se_pack_out, 0, sizeof( se_pack_out )); }	// (the first core's, once)
++void SE_PackFrameEnd( void ) { for( int i = 0; i < SE_PACKERS; i++ ) if( !se_pack_ask[i].go ) se_pack_ask[i].go = 2; }	// (the server's)
++int SE_Packers( void ) { return SE_PACKERS; }
 +#endif
  static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_frame_t *frame, sv_ents_t *ents, qboolean from_client )
  {
  	byte		*clientpvs = NULL;
-@@ -86,7 +141,20 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+@@ -86,7 +146,24 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
  	if( !clientpvs ) fullvis = true;
  
  	// g-cont: of course we can send world but not want to do it :-)
 +#if XASH_SHADEREMU
-+	int lo = 1, split = svgame.numEntities;
-+	if( from_client && se_pack_helper && !se_pack_ask.go && !pClient->v.groupinfo && svgame.numEntities > svs.maxclients + 1 )
++	int lo = 1, split = svgame.numEntities, parts = 0;
++	if( from_client && se_pack_helpers && !se_pack_ask[0].go && !pClient->v.groupinfo && svgame.numEntities > svs.maxclients + 1 )
 +	{
-+		split = svgame.numEntities - ( svgame.numEntities - svs.maxclients - 1 ) * se_pack_share / 256;
-+		se_pack_ask.client = pClient, se_pack_ask.pvs = clientpvs, se_pack_ask.phs = clientphs;
-+		se_pack_ask.hostflags = sv.hostflags, se_pack_ask.from = split, se_pack_ask.to = svgame.numEntities;
-+		se_pack_ask.go = 1;
++		int rest = ( svgame.numEntities - svs.maxclients - 1 ) * se_pack_share / 256;
++		split = svgame.numEntities - rest, parts = se_pack_helpers;
++		for( int i = parts - 1; i >= 0; i-- )	// (the first part's worker comes last: it makes the world's moves first)
++		{
++			se_pack_ask[i].client = pClient, se_pack_ask[i].pvs = clientpvs, se_pack_ask[i].phs = clientphs, se_pack_ask[i].hostflags = sv.hostflags;
++			se_pack_ask[i].from = split + rest * ( parts - 1 - i ) / parts, se_pack_ask[i].to = split + rest * ( parts - i ) / parts;
++			se_pack_ask[i].go = 1;
++		}
 +	}
 +again:
 +	for( int e = lo; e < split; e++ )
@@ -2642,7 +3447,7 @@ index 3ff8edbf..11b4e652 100644
  	{
  		byte	*pset;
  		edict_t	*ent = SV_EdictNum( e );
-@@ -112,9 +180,17 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+@@ -112,9 +189,17 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
  				continue;
  		}
  
@@ -2660,25 +3465,31 @@ index 3ff8edbf..11b4e652 100644
  
  		state = &ents->entities[ents->num_entities];
  
-@@ -159,6 +235,34 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
+@@ -159,6 +244,40 @@ static void SV_AddEntitiesToPacket( edict_t *pViewEnt, edict_t *pClient, client_
  			ClearBits( sv.hostflags, SVF_MERGE_VISIBILITY );
  		}
  	}
 +#if XASH_SHADEREMU
-+	if( split < svgame.numEntities )
++	if( parts )
 +	{
-+		int waited = !se_pack_ask.done;
-+		while( !se_pack_ask.done )
-+			END_PASS( );
-+		se_pack_share = bound( 16, se_pack_share + ( waited ? -4 : 4 ), 240 );
-+		if( se_pack_out.portal )	// (a portal in its part: the part made here, in order, as before)
++		int waited = 0, portal = 0;
++		for( int k = 0; k < parts; k++ )
 +		{
-+			lo = split, split = svgame.numEntities;
++			waited |= !se_pack_ask[k].done;
++			while( !se_pack_ask[k].done )
++				END_PASS( );
++			portal |= se_pack_out[k].portal;
++		}
++		se_pack_share = bound( 16, se_pack_share + ( waited ? -4 : 4 ), 248 );
++		if( portal )	// (a portal in a part: the parts made here, in order, as before)
++		{
++			lo = split, split = svgame.numEntities, parts = 0;
 +			goto again;
 +		}
-+		for( int i = 0; i < se_pack_out.count; i++ )
++		for( int k = parts - 1; k >= 0; k-- )
++		for( int i = 0; i < se_pack_out[k].count; i++ )
 +		{
-+			int e = se_pack_out.number[i];
++			int e = se_pack_out[k].number[i];
 +			edict_t *ent = SV_EdictNum( e );
 +
 +			if( CHECKVISBIT( ents->sended, e ))
@@ -2687,7 +3498,7 @@ index 3ff8edbf..11b4e652 100644
 +			if( SV_IsValidEdict( ent->v.aiment ) && FBitSet( ent->v.aiment->v.effects, EF_MERGE_VISIBILITY ) && cl->num_viewents < MAX_VIEWENTS )
 +				cl->viewentity[cl->num_viewents++] = ent->v.aiment;
 +			if( ents->num_entities < ( MAX_VISIBLE_PACKET - 1 ))
-+				ents->entities[ents->num_entities++] = se_pack_out.entities[i], c_fullsend++;
++				ents->entities[ents->num_entities++] = se_pack_out[k].entities[i], c_fullsend++;
 +			else c_notsend++;
 +		}
 +	}
@@ -2695,7 +3506,7 @@ index 3ff8edbf..11b4e652 100644
  }
  
  /*
-@@ -226,8 +330,28 @@ SV_EmitPacketEntities
+@@ -226,8 +345,28 @@ SV_EmitPacketEntities
  Writes a delta update of an entity_state_t list to the message->
  =============
  */
@@ -2724,7 +3535,17 @@ index 3ff8edbf..11b4e652 100644
  	entity_state_t	*oldent, *newent;
  	int		oldindex, newindex;
  	int		oldnum, newnum;
-@@ -578,6 +702,15 @@ static void SV_WriteClientdataToMessage( sv_client_t *cl, sizebuf_t *msg )
+@@ -525,6 +664,9 @@ static void SV_WriteClientdataToMessage( sv_client_t *cl, sizebuf_t *msg )
+ 	client_frame_t	*frame;
+ 	edict_t		*clent;
+ 
++#if XASH_SHADEREMU	// (read only when there is no frame to delta from)
++	if( cl->delta_sequence == -1 )
++#endif
+ 	memset( &nullcd, 0, sizeof( nullcd ));
+ 	frame = &cl->frames[cl->netchan.outgoing_sequence & SV_UPDATE_MASK];
+ 	frame->senttime = host.realtime;
+@@ -578,6 +720,15 @@ static void SV_WriteClientdataToMessage( sv_client_t *cl, sizebuf_t *msg )
  	// write clientdata_t
  	MSG_WriteClientData( msg, from_cd, to_cd, sv.time );
  
@@ -2740,7 +3561,7 @@ index 3ff8edbf..11b4e652 100644
  	if( FBitSet( cl->flags, FCL_LOCAL_WEAPONS ) && svgame.dllFuncs.pfnGetWeaponData( clent, frame->weapondata ))
  	{
  		memset( &nullwd, 0, sizeof( nullwd ));
-@@ -632,6 +765,12 @@ static void SV_WriteEntitiesToClient( sv_client_t *cl, sizebuf_t *msg )
+@@ -632,6 +783,12 @@ static void SV_WriteEntitiesToClient( sv_client_t *cl, sizebuf_t *msg )
  	// in the list which will need to be resorted for the delta compression
  	// to work correctly.  This also catches the error condition
  	// of an entity being included twice.
@@ -2753,6 +3574,46 @@ index 3ff8edbf..11b4e652 100644
  	qsort( frame_ents.entities, frame_ents.num_entities, sizeof( frame_ents.entities[0] ), SV_EntityNumbers );
  
  	// it will break all connected clients, but it takes more than one week to overflow it
+@@ -655,6 +812,10 @@ static void SV_WriteEntitiesToClient( sv_client_t *cl, sizebuf_t *msg )
+ 		svs.next_client_entities++;
+ 		frame->num_entities++;
+ 	}
++#if XASH_SHADEREMU	// (each frame a whole stride on: its slots held the same entities a ring ago, most of each state the same)
++	if( svs.num_client_entities % NUM_PACKET_ENTITIES == 0 )
++		svs.next_client_entities = ( frame->first_entity + Q_max( frame->num_entities, 1 ) + NUM_PACKET_ENTITIES - 1 ) / NUM_PACKET_ENTITIES * NUM_PACKET_ENTITIES;
++#endif
+ 
+ 	SV_EmitPacketEntities( cl, frame, msg );
+ 	SV_EmitEvents( cl, frame, msg );
+@@ -675,10 +836,18 @@ SV_SendClientDatagram
+ */
+ static void SV_SendClientDatagram( sv_client_t *cl )
+ {
++#if XASH_SHADEREMU	// (kept clear: only what the last datagram wrote is cleared again)
++	static byte	msg_buf[MAX_DATAGRAM] __attribute__(( aligned( 16 )));
++	static int	msg_used = MAX_DATAGRAM;
++	sizebuf_t	msg;
++
++	memset( msg_buf, 0, msg_used );
++#else
+ 	byte	msg_buf[MAX_DATAGRAM];
+ 	sizebuf_t	msg;
+ 
+ 	memset( msg_buf, 0, sizeof( msg_buf ));
++#endif
+ 	MSG_Init( &msg, "Datagram", msg_buf, sizeof( msg_buf ));
+ 
+ 	// always send servertime at new frame
+@@ -706,6 +875,9 @@ static void SV_SendClientDatagram( sv_client_t *cl )
+ 	}
+ 
+ 	MSG_Clear( &cl->datagram );
++#if XASH_SHADEREMU
++	msg_used = Q_min( MAX_DATAGRAM, ( msg.iCurBit + 127 ) / 128 * 16 + 16 );
++#endif
+ 
+ 	if( MSG_CheckOverflow( &msg ))
+ 	{
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
 index 37e79df8..5e5c7dcc 100644
 --- a/engine/server/sv_game.c
@@ -2885,7 +3746,7 @@ index 3df187a8..ee46f342 100644
  	}
  
 diff --git a/engine/server/sv_main.c b/engine/server/sv_main.c
-index e6cc5054..ef3b889f 100644
+index e6cc5054..c0ebcc5b 100644
 --- a/engine/server/sv_main.c
 +++ b/engine/server/sv_main.c
 @@ -17,6 +17,16 @@ GNU General Public License for more details.
@@ -2905,6 +3766,25 @@ index e6cc5054..ef3b889f 100644
  
  // server cvars
  CVAR_DEFINE_AUTO( sv_lan, "0", 0, "server is a lan server ( no heartbeat, no authentication, no non-class C addresses, 9999.0 rate, etc." );
+@@ -682,11 +692,16 @@ void Host_ServerFrame( void )
+ 	// if server is not active, do nothing
+ 	if( !svs.initialized ) return;
+ 
++#if XASH_SHADEREMU
++	double frametime = SE_ServerFrametime( );	// (a frame on the worker may cover several of the host's)
++#else
++	double frametime = host.frametime;
++#endif
+ 	if( sv_fps.value != 0.0f && ( sv.simulating || sv.state != ss_active ))
+-		sv.time_residual += host.frametime;
++		sv.time_residual += frametime;
+ 
+ 	if( sv_fps.value == 0.0f )
+-		sv.frametime = host.frametime;
++		sv.frametime = frametime;
+ 	svgame.globals->frametime = sv.frametime;
+ 
+ 	// check clients timewindow
 diff --git a/engine/server/sv_move.c b/engine/server/sv_move.c
 index bb77a0d1..d907b347 100644
 --- a/engine/server/sv_move.c
@@ -2973,7 +3853,7 @@ index bb77a0d1..d907b347 100644
  	}
  
 diff --git a/engine/server/sv_phys.c b/engine/server/sv_phys.c
-index bfd679b9..662c8d0b 100644
+index bfd679b9..bba0a188 100644
 --- a/engine/server/sv_phys.c
 +++ b/engine/server/sv_phys.c
 @@ -232,8 +232,43 @@ in a frame.  Not used for pushmove objects, because they must be exact.
@@ -3020,7 +3900,21 @@ index bfd679b9..662c8d0b 100644
  	if( !FBitSet( ent->v.flags, FL_KILLME ))
  	{
  		if( !SV_TryThink( ent, sv.frametime, sv.time ))
-@@ -1777,6 +1812,34 @@ SV_Physics
+@@ -1758,6 +1793,13 @@ static void SV_RunLightStyles( void )
+ 	{
+ 		lightstyle_t *ls = &sv.lightstyles[i];
+ 		int ofs;
++#if XASH_SHADEREMU	// (an unused style's time is read by nothing, and setting it sets the time: 256 texels a frame not stored)
++		if( ls->length == 0 )
++		{
++			ls->value = 1.0f;
++			continue;
++		}
++#endif
+ 
+ 		ls->time += sv.frametime;
+ 		ofs = (ls->time * 10);
+@@ -1777,6 +1819,34 @@ SV_Physics
  
  ================
  */
@@ -3055,7 +3949,7 @@ index bfd679b9..662c8d0b 100644
  void SV_Physics( void )
  {
  	SV_CheckAllEnts ();
-@@ -1796,6 +1859,13 @@ void SV_Physics( void )
+@@ -1796,6 +1866,13 @@ void SV_Physics( void )
  
  		if( i > 0 && i <= svs.maxclients )
  			continue;
@@ -3585,11 +4479,32 @@ index afbc183c..b7be3a36 100644
  
  #define NUMVERTEXNORMALS 162
  
+diff --git a/ref/common/ref_common.h b/ref/common/ref_common.h
+index 32fa7991..59a6b8cc 100644
+--- a/ref/common/ref_common.h
++++ b/ref/common/ref_common.h
+@@ -25,6 +25,16 @@ GNU General Public License for more details.
+ extern ref_api_t      gEngfuncs;
+ extern ref_globals_t *gpGlobals;
+ extern ref_client_t  *gp_cl;
++#if XASH_SHADEREMU
++extern char se_render_stack[];
++extern double se_render_time, se_render_oldtime;	// the client's times of the frame drawn on its worker (rnd_shaderemu.c)
++static inline int SE_RefOnRender( void ) { char here; return (unsigned)( &here - se_render_stack ) < 0x40000u; }
++#define SE_CL_TIME ( *( SE_RefOnRender() ? &se_render_time : &gp_cl->time ))
++#define SE_CL_OLDTIME ( *( SE_RefOnRender() ? &se_render_oldtime : &gp_cl->oldtime ))
++#else
++#define SE_CL_TIME gp_cl->time
++#define SE_CL_OLDTIME gp_cl->oldtime
++#endif
+ extern ref_host_t    *gp_host;
+ extern struct movevars_s *gp_movevars;
+ extern const ref_interface_t gReffuncs;
 diff --git a/ref/common/ref_light.c b/ref/common/ref_light.c
-index dd01c0fa..c9118378 100644
+index dd01c0fa..c10d7099 100644
 --- a/ref/common/ref_light.c
 +++ b/ref/common/ref_light.c
-@@ -27,6 +27,29 @@ CL_RunLightStyles
+@@ -27,10 +27,33 @@ CL_RunLightStyles
  
  ==================
  */
@@ -3619,6 +4534,11 @@ index dd01c0fa..c9118378 100644
  void CL_RunLightStyles( lightstyle_t *ls )
  {
  	const model_t *world = gp_cl->models[1];
+-	float frametime = gp_cl->time - gp_cl->oldtime;
++	float frametime = SE_CL_TIME - SE_CL_OLDTIME;
+ 
+ 	if( !world )
+ 		return;
 @@ -39,6 +62,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
  	{
  		for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
@@ -3629,7 +4549,21 @@ index dd01c0fa..c9118378 100644
  		return;
  	}
  
-@@ -61,7 +87,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
+@@ -46,6 +72,13 @@ void CL_RunLightStyles( lightstyle_t *ls )
+ 	// 'm' is normal light, 'a' is no light, 'z' is double bright
+ 	for( int i = 0; i < MAX_LIGHTSTYLES; i++ )
+ 	{
++#if XASH_SHADEREMU	// (an unused style's time is read by nothing, and setting it sets the time)
++		if( !ls[i].length )
++		{
++			g_lightstylevalue[i] = 256;
++			continue;
++		}
++#endif
+ 		if( !gp_cl->paused && frametime <= 0.1f )
+ 			ls[i].time += frametime; // evaluate local time
+ 
+@@ -61,7 +94,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
  			continue;
  		}
  
@@ -3638,7 +4572,7 @@ index dd01c0fa..c9118378 100644
  
  		if( !ls[i].interp || !cl_lightstyle_lerping->value )
  		{
-@@ -69,7 +95,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
+@@ -69,7 +102,7 @@ void CL_RunLightStyles( lightstyle_t *ls )
  			continue;
  		}
  
@@ -3647,7 +4581,7 @@ index dd01c0fa..c9118378 100644
  		float lerpfrac = ( ls[i].time * 10 ) - flight;
  		float backlerp = 1.0f - lerpfrac;
  
-@@ -84,6 +110,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
+@@ -84,6 +117,9 @@ void CL_RunLightStyles( lightstyle_t *ls )
  
  		g_lightstylevalue[i] = (int)l;
  	}
@@ -3657,11 +4591,11 @@ index dd01c0fa..c9118378 100644
  }
  
  /*
-@@ -172,11 +201,12 @@ int R_PushDlights( model_t *model, int framecount )
+@@ -172,11 +208,12 @@ int R_PushDlights( model_t *model, int framecount )
  	if( !model )
  		return framecount;
  
-+	const float now = gp_cl->time;
++	const float now = SE_CL_TIME;
  	for( int i = 0; i < MAX_DLIGHTS; i++ )
  	{
  		const dlight_t *l = &gp_dlights[i];
@@ -3671,11 +4605,11 @@ index dd01c0fa..c9118378 100644
  			continue;
  
  		R_MarkLights( l, 1 << i, model->nodes, model, framecount );
-@@ -187,11 +217,12 @@ int R_PushDlights( model_t *model, int framecount )
+@@ -187,11 +224,12 @@ int R_PushDlights( model_t *model, int framecount )
  
  void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 object_matrix )
  {
-+	const float now = gp_cl->time;
++	const float now = SE_CL_TIME;
  	for( int i = 0; i < MAX_DLIGHTS; i++ )
  	{
  		dlight_t *l = &gp_dlights[i];
@@ -3685,15 +4619,15 @@ index dd01c0fa..c9118378 100644
  			continue;
  
  		vec3_t oldorigin = Vec3( l->origin );
-@@ -210,16 +241,31 @@ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 obj
+@@ -210,16 +248,31 @@ void R_PushDlightsForBmodel( model_t *model, int framecount, const matrix4x4 obj
  
  =======================================================================
  */
 +#if XASH_SHADEREMU
-+int mcw_on_worker( void );
++int mcw_on_worker( void ), SE_RenderWho( void );
 +typedef struct __attribute__(( aligned( 16 ))) { vec3_t lightspot, lightvec; float fraction; uint64_t styles; } trace_state_t;
-+static trace_state_t trace_of[2];	// (a worker's own: R_LevelLightAt)
-+#define TRACE_STATE trace_state_t *ts = &trace_of[mcw_on_worker()]
++static trace_state_t trace_of[3];	// (a worker's own: R_LevelLightAt)
++#define TRACE_STATE trace_state_t *ts = &trace_of[mcw_on_worker() + SE_RenderWho()]
 +#define g_trace_lightspot ( ts->lightspot )
 +#define g_trace_lightvec ( ts->lightvec )
 +#define g_trace_fraction ( ts->fraction )
@@ -3717,7 +4651,7 @@ index dd01c0fa..c9118378 100644
  {
  start:
  	// didn't hit anything
-@@ -248,7 +294,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -248,7 +301,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	float midf = p1f + ( p2f - p1f ) * frac;
  
  	// co down front side
@@ -3729,7 +4663,7 @@ index dd01c0fa..c9118378 100644
  		return true; // hit something
  
  	if(( back < 0 ) == side )
-@@ -331,6 +381,9 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -331,6 +388,9 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  		for( int map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
  		{
  			uint	scale = g_lightstylevalue[surf->styles[map]];
@@ -3739,7 +4673,7 @@ index dd01c0fa..c9118378 100644
  
  			cv->r += lm->r * scale;
  			cv->g += lm->g * scale;
-@@ -361,7 +414,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
+@@ -361,7 +421,11 @@ static qboolean R_RecursiveLightPoint( model_t *model, mnode_t *node, float p1f,
  	}
  
  	// go down back side
@@ -3751,7 +4685,7 @@ index dd01c0fa..c9118378 100644
  }
  
  /*
-@@ -373,6 +430,9 @@ check bspmodels to get light from
+@@ -373,6 +437,9 @@ check bspmodels to get light from
  */
  static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t lspot, vec3_t lvec )
  {
@@ -3761,7 +4695,7 @@ index dd01c0fa..c9118378 100644
  	if( lspot )
  		VectorClear( lspot );
  
-@@ -419,7 +479,11 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
+@@ -419,7 +486,11 @@ static colorVec R_LightVecInternal( const vec3_t start, const vec3_t end, vec3_t
  		g_trace_fraction = 1.0f;
  
  		colorVec cv;
@@ -3773,7 +4707,7 @@ index dd01c0fa..c9118378 100644
  			continue;	// didn't hit anything
  
  		if( g_trace_fraction < last_fraction )
-@@ -495,6 +559,115 @@ R_EntityDynamicLight
+@@ -495,6 +566,115 @@ R_EntityDynamicLight
  
  ===============
  */
@@ -3788,7 +4722,7 @@ index dd01c0fa..c9118378 100644
 +// An entity's place in kept: its number, or for a temporary one (number 0) where it lies.
 +int R_LightKey( const cl_entity_t *ent )
 +{
-+	return ent->index > 0 ? ent->index & 1023 : 1024 + ((uintptr_t)ent >> 4 & 255 );
++	return ent->index > 0 ? ent->index & 1023 : 1024 + ((uintptr_t)ent / sizeof( cl_entity_t ) & 255 );	// (copies side by side apart: rnd_shaderemu.c)
 +}
 +
 +// Whether the entity's light where it is is kept (for a worker: an answer may be stale).
@@ -3889,7 +4823,7 @@ index dd01c0fa..c9118378 100644
  void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_world, double time, vec3_t lightspot, vec3_t lightvec )
  {
  	if( !plight || !ent )
-@@ -526,7 +699,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -526,7 +706,33 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  
  	colorVec light;
  	light.r = light.g = light.b = light.a = 0;
@@ -3923,7 +4857,7 @@ index dd01c0fa..c9118378 100644
  	if(( mv->skycolor[0] + mv->skycolor[1] + mv->skycolor[2] ) != 0 )
  	{
  		vec3_t skyvec;
-@@ -603,6 +802,21 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -603,6 +809,21 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  			VectorCopy( lightvec, lightDir );
  		}
  	}
@@ -3945,7 +4879,7 @@ index dd01c0fa..c9118378 100644
  
  	if( ent->curstate.renderfx == kRenderFxLightMultiplier && ent->curstate.iuser4 != 10 )
  	{
-@@ -621,11 +835,29 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
+@@ -621,11 +842,29 @@ void R_EntityDynamicLight( cl_entity_t *ent, alight_t *plight, qboolean draw_wor
  	// scale lightdir by light intentsity
  	VectorScale( lightDir, total, lightDir );
  
@@ -3976,6 +4910,106 @@ index dd01c0fa..c9118378 100644
  			continue;
  
  		vec3_t dist;
+diff --git a/ref/gl/gl_alias.c b/ref/gl/gl_alias.c
+index 06181674..22e22209 100644
+--- a/ref/gl/gl_alias.c
++++ b/ref/gl/gl_alias.c
+@@ -914,7 +914,7 @@ static void R_AliasSetupTimings( void )
+ 	if( FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+ 	{
+ 		// synchronize with server time
+-		g_alias.time = gp_cl->time;
++		g_alias.time = SE_CL_TIME;
+ 	}
+ 	else
+ 	{
+diff --git a/ref/gl/gl_beams.c b/ref/gl/gl_beams.c
+index bfddac71..f6868cec 100644
+--- a/ref/gl/gl_beams.c
++++ b/ref/gl/gl_beams.c
+@@ -565,7 +565,7 @@ static void R_DrawBeamFollow( BEAM *pbeam, float frametime )
+ 	if( pnew )
+ 	{
+ 		VectorCopy( pbeam->source, pnew->org );
+-		pnew->die = gp_cl->time + pbeam->amplitude;
++		pnew->die = SE_CL_TIME + pbeam->amplitude;
+ 		VectorClear( pnew->vel );
+ 
+ 		pnew->next = particles;
+@@ -616,7 +616,7 @@ static void R_DrawBeamFollow( BEAM *pbeam, float frametime )
+ 	VectorMA( delta, -pbeam->width, normal, last2 );
+ 
+ 	div = 1.0f / pbeam->amplitude;
+-	float fraction = ( pbeam->die - gp_cl->time ) * div;
++	float fraction = ( pbeam->die - SE_CL_TIME ) * div;
+ 
+ 	float vLast = 0.0f;
+ 	float vStep = 1.0f;
+@@ -649,7 +649,7 @@ static void R_DrawBeamFollow( BEAM *pbeam, float frametime )
+ 
+ 		if( particles->next != NULL )
+ 		{
+-			fraction = (particles->die - gp_cl->time) * div;
++			fraction = (particles->die - SE_CL_TIME) * div;
+ 		}
+ 		else
+ 		{
+@@ -872,7 +872,7 @@ static qboolean R_BeamRecomputeEndpoints( BEAM *pbeam )
+ 		else if( !FBitSet( pbeam->flags, FBEAM_FOREVER ))
+ 		{
+ 			ClearBits( pbeam->flags, FBEAM_ENDENTITY );
+-			pbeam->die = gp_cl->time;
++			pbeam->die = SE_CL_TIME;
+ 			return false;
+ 		}
+ 		else
+@@ -902,7 +902,7 @@ static void R_BeamDraw( BEAM *pbeam, float frametime )
+ 	if( !model || model->type != mod_sprite )
+ 	{
+ 		pbeam->flags &= ~FBEAM_ISACTIVE; // force to ignore
+-		pbeam->die = gp_cl->time;
++		pbeam->die = SE_CL_TIME;
+ 		return;
+ 	}
+ 
+@@ -961,7 +961,7 @@ static void R_BeamDraw( BEAM *pbeam, float frametime )
+ 	if( pbeam->flags & ( FBEAM_FADEIN|FBEAM_FADEOUT ))
+ 	{
+ 		// update life cycle
+-		pbeam->t = pbeam->freq + ( pbeam->die - gp_cl->time );
++		pbeam->t = pbeam->freq + ( pbeam->die - SE_CL_TIME );
+ 		if( pbeam->t != 0.0f ) pbeam->t = 1.0f - pbeam->freq / pbeam->t;
+ 	}
+ 
+@@ -1008,7 +1008,7 @@ static void R_BeamDraw( BEAM *pbeam, float frametime )
+ 
+ 	TriRenderMode( FBitSet( pbeam->flags, FBEAM_SOLID ) ? kRenderNormal : kRenderTransAdd );
+ 
+-	if( !TriSpriteTexture( model, (int)(pbeam->frame + pbeam->frameRate * gp_cl->time) % pbeam->frameCount ))
++	if( !TriSpriteTexture( model, (int)(pbeam->frame + pbeam->frameRate * SE_CL_TIME) % pbeam->frameCount ))
+ 	{
+ 		ClearBits( pbeam->flags, FBEAM_ISACTIVE );
+ 		return;
+@@ -1111,8 +1111,8 @@ static void R_BeamSetup( BEAM *pbeam, vec3_t start, vec3_t end, int modelIndex,
+ 	VectorCopy( end, pbeam->target );
+ 	VectorSubtract( end, start, pbeam->delta );
+ 
+-	pbeam->freq = speed * gp_cl->time;
+-	pbeam->die = life + gp_cl->time;
++	pbeam->freq = speed * SE_CL_TIME;
++	pbeam->die = life + SE_CL_TIME;
+ 	pbeam->amplitude = amplitude;
+ 	pbeam->brightness = brightness;
+ 	pbeam->width = width;
+@@ -1237,7 +1237,7 @@ void CL_DrawBeams( int fTrans, BEAM *active_beams )
+ 		if( !fTrans && !FBitSet( pBeam->flags, FBEAM_SOLID ))
+ 			continue;
+ 
+-		R_BeamDraw( pBeam, gp_cl->time -   gp_cl->oldtime );
++		R_BeamDraw( pBeam, SE_CL_TIME -   SE_CL_OLDTIME );
+ 	}
+ 
+ 	pglShadeModel( GL_FLAT );
 diff --git a/ref/gl/gl_draw.c b/ref/gl/gl_draw.c
 index f831be03..dc48f76a 100644
 --- a/ref/gl/gl_draw.c
@@ -3998,7 +5032,7 @@ index f831be03..dc48f76a 100644
  	pglBegin( GL_QUADS );
  		pglTexCoord2f( s1, t1 );
 diff --git a/ref/gl/gl_image.c b/ref/gl/gl_image.c
-index fb0af14f..7507c785 100644
+index fb0af14f..df7ab373 100644
 --- a/ref/gl/gl_image.c
 +++ b/ref/gl/gl_image.c
 @@ -407,7 +407,7 @@ static int GL_CalcMipmapCount( gl_texture_t *tex, qboolean haveBuffer )
@@ -4090,6 +5124,18 @@ index fb0af14f..7507c785 100644
  
  	// set some image flags
  	gEngfuncs.Image_SetForceFlags( picFlags );
+@@ -2155,9 +2198,9 @@ void R_ShowTextures( void )
+ 
+ 	pglClear( GL_COLOR_BUFFER_BIT );
+ 
+-	float time = gp_cl->time * 0.5f;
++	float time = SE_CL_TIME * 0.5f;
+ 	time -= floor( time );
+-	float time_cubemap = gp_cl->time * 0.25f;
++	float time_cubemap = SE_CL_TIME * 0.25f;
+ 	time_cubemap -= floor( time_cubemap );
+ 	time_cubemap *= M_PI2_F;
+ 	float cbm_cos, cbm_sin;
 diff --git a/ref/gl/gl_opengl.c b/ref/gl/gl_opengl.c
 index f05a3ddf..dd1e205d 100644
 --- a/ref/gl/gl_opengl.c
@@ -4107,7 +5153,7 @@ index f05a3ddf..dd1e205d 100644
  CVAR_DEFINE_AUTO( gl_litwater_force, "0", FCVAR_GLCONFIG, "force enable lightmapped water, even if support not declared in the map" );
  CVAR_DEFINE_AUTO( r_lighting_ambient, "0.3", FCVAR_GLCONFIG, "map ambient lighting scale" );
 diff --git a/ref/gl/gl_rmain.c b/ref/gl/gl_rmain.c
-index 97b12119..98ebe495 100644
+index 97b12119..ddd4408e 100644
 --- a/ref/gl/gl_rmain.c
 +++ b/ref/gl/gl_rmain.c
 @@ -126,6 +126,36 @@ static int R_TransEntityCompare( const void *a, const void *b )
@@ -4147,7 +5193,83 @@ index 97b12119..98ebe495 100644
  /*
  ===============
  R_WorldToScreen
-@@ -519,7 +549,11 @@ static void R_SetupFrame( void )
+@@ -214,11 +244,18 @@ void R_PopScene( void )
+ R_ClearScene
+ ===============
+ */
++#if XASH_SHADEREMU
++draw_list_t *se_add_list;	// what this core adds to while the frame before is drawn on a worker (gl_kept.c)
++#define ADD_LIST ( se_add_list && !SE_RefOnRender() ? se_add_list : tr.draw_list )
++#else
++#define ADD_LIST tr.draw_list
++#endif
+ void R_ClearScene( void )
+ {
+-	tr.draw_list->num_solid_entities = 0;
+-	tr.draw_list->num_trans_entities = 0;
+-	tr.draw_list->num_beam_entities = 0;
++	draw_list_t *list = ADD_LIST;
++	list->num_solid_entities = 0;
++	list->num_trans_entities = 0;
++	list->num_beam_entities = 0;
+ 
+ 	// clear the scene befor start new frame
+ 	if( gEngfuncs.drawFuncs->R_ClearScene != NULL )
+@@ -233,6 +270,8 @@ R_AddEntity
+ */
+ qboolean R_AddEntity( struct cl_entity_s *clent, int type )
+ {
++	draw_list_t *list = ADD_LIST;
++
+ 	if( !r_drawentities->value )
+ 		return false; // not allow to drawing
+ 
+@@ -254,34 +293,34 @@ qboolean R_AddEntity( struct cl_entity_s *clent, int type )
+ 
+ 	if( type == ET_BEAM )
+ 	{
+-		if( tr.draw_list->num_beam_entities >= MAX_VISIBLE_PACKET )
++		if( list->num_beam_entities >= MAX_VISIBLE_PACKET )
+ 		{
+-			gEngfuncs.Con_Printf( S_ERROR "Too many beams %d!\n", tr.draw_list->num_beam_entities );
++			gEngfuncs.Con_Printf( S_ERROR "Too many beams %d!\n", list->num_beam_entities );
+ 			return false;
+ 		}
+ 
+-		tr.draw_list->beam_entities[tr.draw_list->num_beam_entities] = clent;
+-		tr.draw_list->num_beam_entities++;
++		list->beam_entities[list->num_beam_entities] = clent;
++		list->num_beam_entities++;
+ 
+ 		return true;
+ 	}
+ 	else if( R_OpaqueEntity( clent ))
+ 	{
+ 		// opaque
+-		if( tr.draw_list->num_solid_entities >= MAX_VISIBLE_PACKET )
++		if( list->num_solid_entities >= MAX_VISIBLE_PACKET )
+ 			return false;
+ 
+-		tr.draw_list->solid_entities[tr.draw_list->num_solid_entities] = clent;
+-		tr.draw_list->num_solid_entities++;
++		list->solid_entities[list->num_solid_entities] = clent;
++		list->num_solid_entities++;
+ 	}
+ 	else
+ 	{
+ 		// translucent
+-		if( tr.draw_list->num_trans_entities >= MAX_VISIBLE_PACKET )
++		if( list->num_trans_entities >= MAX_VISIBLE_PACKET )
+ 			return false;
+ 
+-		tr.draw_list->trans_entities[tr.draw_list->num_trans_entities] = clent;
+-		tr.draw_list->num_trans_entities++;
++		list->trans_entities[list->num_trans_entities] = clent;
++		list->num_trans_entities++;
+ 	}
+ 
+ 	return true;
+@@ -519,7 +558,11 @@ static void R_SetupFrame( void )
  	if( !gl_nosort.value )
  	{
  		// sort translucents entities by rendermode and distance
@@ -4159,7 +5281,7 @@ index 97b12119..98ebe495 100644
  	}
  
  	// current viewleaf
-@@ -800,8 +834,28 @@ void R_DrawFog( void )
+@@ -800,8 +843,28 @@ void R_DrawFog( void )
  R_DrawEntitiesOnList
  =============
  */
@@ -4188,7 +5310,7 @@ index 97b12119..98ebe495 100644
  	tr.blend = 1.0f;
  	GL_CheckForErrors();
  
-@@ -834,7 +888,9 @@ static void R_DrawEntitiesOnList( void )
+@@ -834,7 +897,9 @@ static void R_DrawEntitiesOnList( void )
  	}
  
  	GL_CheckForErrors();
@@ -4199,7 +5321,7 @@ index 97b12119..98ebe495 100644
  	// quake-specific feature
  	R_DrawAlphaTextureChains();
  
-@@ -940,9 +996,17 @@ static void R_DrawEntitiesOnList( void )
+@@ -940,9 +1005,17 @@ static void R_DrawEntitiesOnList( void )
  
  	pglDisable( GL_BLEND );	// Trinity Render issues
  
@@ -4218,20 +5340,92 @@ index 97b12119..98ebe495 100644
  
  	GL_CheckForErrors();
  }
+@@ -961,7 +1034,7 @@ void R_RenderScene( void )
+ 
+ 	// frametime is valid only for normal pass
+ 	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+-		tr.frametime = gp_cl->time -   gp_cl->oldtime;
++		tr.frametime = SE_CL_TIME -   SE_CL_OLDTIME;
+ 	else tr.frametime = 0.0;
+ 
+ 	// begin a new frame
+@@ -1184,16 +1257,16 @@ int CL_FxBlend( cl_entity_t *e )
+ 	switch( e->curstate.renderfx )
+ 	{
+ 	case kRenderFxPulseSlowWide:
+-		blend = e->curstate.renderamt + 0x40 * sin( gp_cl->time * 2 + offset );
++		blend = e->curstate.renderamt + 0x40 * sin( SE_CL_TIME * 2 + offset );
+ 		break;
+ 	case kRenderFxPulseFastWide:
+-		blend = e->curstate.renderamt + 0x40 * sin( gp_cl->time * 8 + offset );
++		blend = e->curstate.renderamt + 0x40 * sin( SE_CL_TIME * 8 + offset );
+ 		break;
+ 	case kRenderFxPulseSlow:
+-		blend = e->curstate.renderamt + 0x10 * sin( gp_cl->time * 2 + offset );
++		blend = e->curstate.renderamt + 0x10 * sin( SE_CL_TIME * 2 + offset );
+ 		break;
+ 	case kRenderFxPulseFast:
+-		blend = e->curstate.renderamt + 0x10 * sin( gp_cl->time * 8 + offset );
++		blend = e->curstate.renderamt + 0x10 * sin( SE_CL_TIME * 8 + offset );
+ 		break;
+ 	case kRenderFxFadeSlow:
+ 		if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+@@ -1232,27 +1305,27 @@ int CL_FxBlend( cl_entity_t *e )
+ 		blend = e->curstate.renderamt;
+ 		break;
+ 	case kRenderFxStrobeSlow:
+-		blend = 20 * sin( gp_cl->time * 4 + offset );
++		blend = 20 * sin( SE_CL_TIME * 4 + offset );
+ 		if( blend < 0 ) blend = 0;
+ 		else blend = e->curstate.renderamt;
+ 		break;
+ 	case kRenderFxStrobeFast:
+-		blend = 20 * sin( gp_cl->time * 16 + offset );
++		blend = 20 * sin( SE_CL_TIME * 16 + offset );
+ 		if( blend < 0 ) blend = 0;
+ 		else blend = e->curstate.renderamt;
+ 		break;
+ 	case kRenderFxStrobeFaster:
+-		blend = 20 * sin( gp_cl->time * 36 + offset );
++		blend = 20 * sin( SE_CL_TIME * 36 + offset );
+ 		if( blend < 0 ) blend = 0;
+ 		else blend = e->curstate.renderamt;
+ 		break;
+ 	case kRenderFxFlickerSlow:
+-		blend = 20 * (sin( gp_cl->time * 2 ) + sin( gp_cl->time * 17 + offset ));
++		blend = 20 * (sin( SE_CL_TIME * 2 ) + sin( SE_CL_TIME * 17 + offset ));
+ 		if( blend < 0 ) blend = 0;
+ 		else blend = e->curstate.renderamt;
+ 		break;
+ 	case kRenderFxFlickerFast:
+-		blend = 20 * (sin( gp_cl->time * 16 ) + sin( gp_cl->time * 23 + offset ));
++		blend = 20 * (sin( SE_CL_TIME * 16 ) + sin( SE_CL_TIME * 23 + offset ));
+ 		if( blend < 0 ) blend = 0;
+ 		else blend = e->curstate.renderamt;
+ 		break;
 diff --git a/ref/gl/gl_rpart.c b/ref/gl/gl_rpart.c
-index 96b36fd6..c6e5c0d5 100644
+index 96b36fd6..0a16d80e 100644
 --- a/ref/gl/gl_rpart.c
 +++ b/ref/gl/gl_rpart.c
+@@ -82,7 +82,7 @@ void CL_DrawParticles( double frametime, particle_t *cl_active_particles, float
+ 			p->color = bound( 0, p->color, 255 );
+ 			color24 color = tr.palette[p->color];
+ 
+-			int alpha = 255 * (p->die - gp_cl->time) * 16.0f;
++			int alpha = 255 * (p->die - SE_CL_TIME) * 16.0f;
+ 			if( alpha > 255 || p->type == pt_static )
+ 				alpha = 255;
+ 
 @@ -179,12 +179,20 @@ void CL_DrawTracers( double frametime, particle_t *cl_active_tracers )
  	float gravity = frametime * gp_movevars->gravity;
  	float scale = 1.0 - (frametime * 0.9);
  	if( scale < 0.0f ) scale = 0.0f;
 +#if XASH_SHADEREMU
-+	const float ftime = frametime, now = gp_cl->time;	// (as floats once: no doubles a tracer)
++	const float ftime = frametime, now = SE_CL_TIME;	// (as floats once: no doubles a tracer)
 +#define TRACER_NOW now
 +#define TRACER_STEP ftime
 +#else
-+#define TRACER_NOW gp_cl->time
++#define TRACER_NOW SE_CL_TIME
 +#define TRACER_STEP frametime
 +#endif
  
@@ -4263,7 +5457,7 @@ index 96b36fd6..c6e5c0d5 100644
  		}
  		else if( p->type == pt_slowgrav )
 diff --git a/ref/gl/gl_rsurf.c b/ref/gl/gl_rsurf.c
-index 18dea062..bec5d966 100644
+index 18dea062..7560b988 100644
 --- a/ref/gl/gl_rsurf.c
 +++ b/ref/gl/gl_rsurf.c
 @@ -54,6 +54,13 @@ static msurface_t		*skychain = NULL;
@@ -4296,18 +5490,28 @@ index 18dea062..bec5d966 100644
  static qboolean Mod_HaveLightmappedWater( void )
  {
  	// if this flag set, it's level designer's job to ensure water has been properly lit
+@@ -491,7 +507,7 @@ static texture_t *R_TextureAnim( texture_t *b )
+ 			speed = 10;
+ 		else speed = 20;
+ 
+-		reletive = (int)(gp_cl->time * speed) % base->anim_total;
++		reletive = (int)(SE_CL_TIME * speed) % base->anim_total;
+ 	}
+ 
+ 
 @@ -545,7 +561,15 @@ static texture_t *R_TextureAnimation( msurface_t *s )
  			speed = 10;
  		else speed = 20;
  
+-		reletive = (int)(gp_cl->time * speed) % base->anim_total;
 +#if XASH_SHADEREMU
 +		static double at = -1.0;
 +		static int frame10, frame20;
-+		if( memcmp( &at, &gp_cl->time, sizeof( at )))	// (the bits: no double compared)
-+			at = gp_cl->time, frame10 = (int)( at * 10 ), frame20 = (int)( at * 20 );
++		if( memcmp( &at, &SE_CL_TIME, sizeof( at )))	// (the bits: no double compared)
++			at = SE_CL_TIME, frame10 = (int)( at * 10 ), frame20 = (int)( at * 20 );
 +		reletive = ( speed == 10 ? frame10 : frame20 ) % base->anim_total;
 +#else
- 		reletive = (int)(gp_cl->time * speed) % base->anim_total;
++		reletive = (int)(SE_CL_TIME * speed) % base->anim_total;
 +#endif
  	}
  
@@ -4381,6 +5585,50 @@ index 18dea062..bec5d966 100644
  /*
  =============
  R_DrawTriangleOutlines
+@@ -910,8 +953,8 @@ static void DrawGLPoly( glpoly2_t *p, float xScale, float yScale )
+ 		float flAngle = ( flConveyorSpeed >= 0 ) ? 180 : 0;
+ 
+ 		SinCos( flAngle * ( M_PI_F / 180.0f ), &sy, &cy );
+-		sOffset = gp_cl->time * cy * flRate;
+-		tOffset = gp_cl->time * sy * flRate;
++		sOffset = SE_CL_TIME * cy * flRate;
++		tOffset = SE_CL_TIME * sy * flRate;
+ 
+ 		// make sure that we are positive
+ 		if( sOffset < 0.0f ) sOffset += 1.0f + -(int)sOffset;
+@@ -990,8 +1033,8 @@ static void EmitWaterPolys( msurface_t *warp, qboolean reverse, qboolean ripples
+ 
+ 			if( waveHeight )
+ 			{
+-				nv = r_turbsin[(int)(gp_cl->time * 160.0f + v[1] + v[0]) & 255] + 8.0f;
+-				nv = (r_turbsin[(int)(v[0] * 5.0f + gp_cl->time * 171.0f - v[1]) & 255] + 8.0f ) * 0.8f + nv;
++				nv = r_turbsin[(int)(SE_CL_TIME * 160.0f + v[1] + v[0]) & 255] + 8.0f;
++				nv = (r_turbsin[(int)(v[0] * 5.0f + SE_CL_TIME * 171.0f - v[1]) & 255] + 8.0f ) * 0.8f + nv;
+ 				nv = nv * waveHeight + v[2];
+ 			}
+ 			else nv = v[2];
+@@ -1001,8 +1044,8 @@ static void EmitWaterPolys( msurface_t *warp, qboolean reverse, qboolean ripples
+ 
+ 			if( !ripples )
+ 			{
+-				s = os + r_turbsin[(int)((ot * 0.125f + gp_cl->time) * TURBSCALE) & 255];
+-				t = ot + r_turbsin[(int)((os * 0.125f + gp_cl->time) * TURBSCALE) & 255];
++				s = os + r_turbsin[(int)((ot * 0.125f + SE_CL_TIME) * TURBSCALE) & 255];
++				t = ot + r_turbsin[(int)((os * 0.125f + SE_CL_TIME) * TURBSCALE) & 255];
+ 			}
+ 			else
+ 			{
+@@ -1064,8 +1107,8 @@ static void EmitWaterLightPolys( msurface_t *warp, float soffset, float toffset,
+ 
+ 			if( waveHeight )
+ 			{
+-				float nv = r_turbsin[(int)(gp_cl->time * 160.0f + v[1] + v[0]) & 255] + 8.0f;
+-				nv = (r_turbsin[(int)(v[0] * 5.0f + gp_cl->time * 171.0f - v[1]) & 255] + 8.0f ) * 0.8f + nv;
++				float nv = r_turbsin[(int)(SE_CL_TIME * 160.0f + v[1] + v[0]) & 255] + 8.0f;
++				nv = (r_turbsin[(int)(v[0] * 5.0f + SE_CL_TIME * 171.0f - v[1]) & 255] + 8.0f ) * 0.8f + nv;
+ 				nv = nv * waveHeight + v[2];
+ 
+ 				pglVertex3f( v[0], v[1], nv );
 @@ -1522,6 +1565,14 @@ static void R_RenderBrushPoly( msurface_t *fa, int cull_type )
  	}
  	else GL_Bind( XASH_TEXTURE0, t->gl_texturenum );
@@ -4598,9 +5846,89 @@ index 18dea062..bec5d966 100644
 +#include "gl_kept.c"
 +#endif
 diff --git a/ref/gl/gl_sprite.c b/ref/gl/gl_sprite.c
-index 5ae3bc3a..77db2f70 100644
+index 5ae3bc3a..5555ee34 100644
 --- a/ref/gl/gl_sprite.c
 +++ b/ref/gl/gl_sprite.c
+@@ -57,25 +57,25 @@ static float R_GetSpriteFrameInterpolant( cl_entity_t *ent, mspriteframe_t **old
+ 				// this can be happens when rendering switched between single and angled frames
+ 				// or change model on replace delta-entity
+ 				ent->latched.prevblending[0] = ent->latched.prevblending[1] = frame;
+-				ent->latched.sequencetime = gp_cl->time;
++				ent->latched.sequencetime = SE_CL_TIME;
+ 				lerpFrac = 1.0f;
+ 			}
+ 
+-			if( ent->latched.sequencetime < gp_cl->time )
++			if( ent->latched.sequencetime < SE_CL_TIME )
+ 			{
+ 				if( frame != ent->latched.prevblending[1] )
+ 				{
+ 					ent->latched.prevblending[0] = ent->latched.prevblending[1];
+ 					ent->latched.prevblending[1] = frame;
+-					ent->latched.sequencetime = gp_cl->time;
++					ent->latched.sequencetime = SE_CL_TIME;
+ 					lerpFrac = 0.0f;
+ 				}
+-				else lerpFrac = (gp_cl->time - ent->latched.sequencetime) * 11.0f;
++				else lerpFrac = (SE_CL_TIME - ent->latched.sequencetime) * 11.0f;
+ 			}
+ 			else
+ 			{
+ 				ent->latched.prevblending[0] = ent->latched.prevblending[1] = frame;
+-				ent->latched.sequencetime = gp_cl->time;
++				ent->latched.sequencetime = SE_CL_TIME;
+ 				lerpFrac = 0.0f;
+ 			}
+ 		}
+@@ -89,7 +89,7 @@ static float R_GetSpriteFrameInterpolant( cl_entity_t *ent, mspriteframe_t **old
+ 		{
+ 			// reset interpolation on change model
+ 			ent->latched.prevblending[0] = ent->latched.prevblending[1] = frame;
+-			ent->latched.sequencetime = gp_cl->time;
++			ent->latched.sequencetime = SE_CL_TIME;
+ 			lerpFrac = 0.0f;
+ 		}
+ 
+@@ -104,7 +104,7 @@ static float R_GetSpriteFrameInterpolant( cl_entity_t *ent, mspriteframe_t **old
+ 		int numframes = pspritegroup->numframes;
+ 		float fullinterval = pintervals[numframes-1];
+ 		float jinterval = pintervals[1] - pintervals[0];
+-		float time = gp_cl->time;
++		float time = SE_CL_TIME;
+ 		float jtime = 0.0f;
+ 
+ 		// when loading in Mod_LoadSpriteGroup, we guaranteed all interval values
+@@ -144,25 +144,25 @@ static float R_GetSpriteFrameInterpolant( cl_entity_t *ent, mspriteframe_t **old
+ 				// this can be happens when rendering switched between single and angled frames
+ 				// or change model on replace delta-entity
+ 				ent->latched.prevblending[0] = ent->latched.prevblending[1] = frame;
+-				ent->latched.sequencetime = gp_cl->time;
++				ent->latched.sequencetime = SE_CL_TIME;
+ 				lerpFrac = 1.0f;
+ 			}
+ 
+-			if( ent->latched.sequencetime < gp_cl->time )
++			if( ent->latched.sequencetime < SE_CL_TIME )
+ 			{
+ 				if( frame != ent->latched.prevblending[1] )
+ 				{
+ 					ent->latched.prevblending[0] = ent->latched.prevblending[1];
+ 					ent->latched.prevblending[1] = frame;
+-					ent->latched.sequencetime = gp_cl->time;
++					ent->latched.sequencetime = SE_CL_TIME;
+ 					lerpFrac = 0.0f;
+ 				}
+-				else lerpFrac = (gp_cl->time - ent->latched.sequencetime) * ent->curstate.framerate;
++				else lerpFrac = (SE_CL_TIME - ent->latched.sequencetime) * ent->curstate.framerate;
+ 			}
+ 			else
+ 			{
+ 				ent->latched.prevblending[0] = ent->latched.prevblending[1] = frame;
+-				ent->latched.sequencetime = gp_cl->time;
++				ent->latched.sequencetime = SE_CL_TIME;
+ 				lerpFrac = 0.0f;
+ 			}
+ 		}
 @@ -217,6 +217,10 @@ R_GlowSightDistance
  Set sprite brightness factor
  ================
@@ -4632,7 +5960,7 @@ index 5ae3bc3a..77db2f70 100644
  
  	if( renderfx == kRenderFxNoDissipation )
 diff --git a/ref/gl/gl_studio.c b/ref/gl/gl_studio.c
-index 39873fb4..e6056015 100644
+index 39873fb4..5ed31918 100644
 --- a/ref/gl/gl_studio.c
 +++ b/ref/gl/gl_studio.c
 @@ -127,6 +127,9 @@ static cvar_t			*cl_righthand = NULL;
@@ -4645,18 +5973,21 @@ index 39873fb4..e6056015 100644
  
  // global variables
  static qboolean m_fDoRemap;
-@@ -172,7 +175,15 @@ static void R_StudioSetupTimings( void )
+@@ -171,8 +174,16 @@ static void R_StudioSetupTimings( void )
+ 	if( FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
  	{
  		// synchronize with server time
- 		g_studio.time = gp_cl->time;
+-		g_studio.time = gp_cl->time;
+-		g_studio.frametime = gp_cl->time - gp_cl->oldtime;
++		g_studio.time = SE_CL_TIME;
 +#if XASH_SHADEREMU	// (the same two times for every model of a frame: their difference made once)
 +		static double kept_time = -1.0, kept_old = -1.0;
 +		static double kept_frametime;
-+		if( memcmp( &kept_time, &gp_cl->time, sizeof( double )) || memcmp( &kept_old, &gp_cl->oldtime, sizeof( double )))
-+			kept_time = gp_cl->time, kept_old = gp_cl->oldtime, kept_frametime = gp_cl->time - gp_cl->oldtime;
++		if( memcmp( &kept_time, &SE_CL_TIME, sizeof( double )) || memcmp( &kept_old, &SE_CL_OLDTIME, sizeof( double )))
++			kept_time = SE_CL_TIME, kept_old = SE_CL_OLDTIME, kept_frametime = SE_CL_TIME - SE_CL_OLDTIME;
 +		g_studio.frametime = kept_frametime;
 +#else
- 		g_studio.frametime = gp_cl->time - gp_cl->oldtime;
++		g_studio.frametime = SE_CL_TIME - SE_CL_OLDTIME;
 +#endif
  	}
  	else
@@ -4682,6 +6013,17 @@ index 39873fb4..e6056015 100644
  	ClearBounds( studio_mins, studio_maxs );
  
  	// compute a full bounding box
+@@ -396,8 +421,8 @@ pfnGetEngineTimes
+ static void pfnGetEngineTimes( int *framecount, double *current, double *old )
+ {
+ 	if( framecount ) *framecount = tr.realframecount;
+-	if( current ) *current = gp_cl->time;
+-	if( old ) *old =   gp_cl->oldtime;
++	if( current ) *current = SE_CL_TIME;
++	if( old ) *old =   SE_CL_OLDTIME;
+ }
+ 
+ /*
 @@ -1228,12 +1253,34 @@ static void R_StudioEntityLight( alight_t *lightinfo )
  	Matrix3x4_OriginFromMatrix( g_studio.rotationmatrix, origin );
  	float dist2 = 1000000.0f;
@@ -4786,6 +6128,15 @@ index 39873fb4..e6056015 100644
  
  	g_studio.numverts = g_studio.numelems = 0;
  
+@@ -2452,7 +2539,7 @@ static void R_StudioClientEvents( void )
+ 
+ 		ClearBits( e->curstate.effects, EF_MUZZLEFLASH );
+ 		VectorCopy( e->attachment[0], el->origin );
+-		el->die = gp_cl->time + 0.05f;
++		el->die = SE_CL_TIME + 0.05f;
+ 		el->color.r = 255;
+ 		el->color.g = 192;
+ 		el->color.b = 64;
 @@ -3205,6 +3292,10 @@ R_StudioDrawModelInternal
  */
  static void R_StudioDrawModelInternal( cl_entity_t *e, int flags )
@@ -4805,3 +6156,42 @@ index 39873fb4..e6056015 100644
 +#if XASH_SHADEREMU
 +#include "gl_studio_job.c"
 +#endif
+diff --git a/ref/gl/gl_warp.c b/ref/gl/gl_warp.c
+index a80b878d..13dab875 100644
+--- a/ref/gl/gl_warp.c
++++ b/ref/gl/gl_warp.c
+@@ -372,7 +372,7 @@ R_CloudTexCoord
+ */
+ static void R_CloudTexCoord( const vec3_t v, float speed, float *s, float *t )
+ {
+-	float speedscale = gp_cl->time * speed;
++	float speedscale = SE_CL_TIME * speed;
+ 	speedscale -= (int)speedscale & ~127;
+ 
+ 	vec3_t dir;
+@@ -517,7 +517,7 @@ void R_ResetRipples( void )
+ {
+ 	g_ripple.curbuf = g_ripple.buf[0];
+ 	g_ripple.oldbuf = g_ripple.buf[1];
+-	g_ripple.time = g_ripple.oldtime = gp_cl->time - 0.1;
++	g_ripple.time = g_ripple.oldtime = SE_CL_TIME - 0.1;
+ 	memset( g_ripple.buf, 0, sizeof( g_ripple.buf ));
+ }
+ 
+@@ -561,14 +561,14 @@ static void R_RunRipplesAnimation( const short *oldbuf, short *pbuf )
+ 
+ void R_AnimateRipples( void )
+ {
+-	double frametime = gp_cl->time - g_ripple.time;
++	double frametime = SE_CL_TIME - g_ripple.time;
+ 
+ 	g_ripple.update = r_ripple.value && frametime >= r_ripple_updatetime.value;
+ 
+ 	if( !g_ripple.update )
+ 		return;
+ 
+-	g_ripple.time = gp_cl->time;
++	g_ripple.time = SE_CL_TIME;
+ 
+ 	R_SwapBufs();
+ 

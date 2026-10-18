@@ -261,7 +261,10 @@ static qboolean film_show( movie_state_t *Avi, double now, qboolean *over )
 		pic.flags = IMAGE_HAS_COLOR, pic.palette = f->palettes + target * 1024;
 		pic.buffer = f->frames_at + target * f->size, pic.size = f->size;
 		int have = Avi->made ? Avi->made : ref.dllFuncs.GL_FindTexture( Avi->name );
+		extern int hlglTexLater;
+		hlglTexLater = 1;	// (its tiles copied on a worker: the frame's bytes stay where they are)
 		Avi->made = ref.dllFuncs.GL_LoadTextureFromBuffer( Avi->name, &pic, TF_NOMIPMAP | TF_CLAMP, have != 0 );
+		hlglTexLater = 0;
 		Avi->shown = target;
 	}
 	return true;

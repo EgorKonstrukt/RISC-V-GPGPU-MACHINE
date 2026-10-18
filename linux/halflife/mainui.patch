@@ -1,3 +1,152 @@
+diff --git a/BaseMenu.cpp b/BaseMenu.cpp
+index 7b727eb..1e9e59f 100755
+--- a/BaseMenu.cpp
++++ b/BaseMenu.cpp
+@@ -276,9 +276,113 @@ void UI_DrawRectangleExt( int in_x, int in_y, int in_w, int in_h, const unsigned
+ UI_DrawString
+ =================
+ */
++#if XASH_SHADEREMU
++// A text drawn as it was the last time: its characters' quads kept (hlglDrawQuads), the first
++// drawn for real and compared, the last drawn for real to leave the engine's state as it was
++extern "C" { unsigned hlglQuadBytes( void ); void hlglCaptureTo( void *to, int most ); int hlglCaptured( void ); void hlglDrawQuads( const void *quads, int count ); }
++#define UI_TEXT_CALLS 128
++#define UI_QUAD_WORDS 35	// (hlgl_quad's: gpu_state and six vertices)
++struct ui_text_t
++{
++	HFont font; int x, y, w, h, charH, sw, sh; unsigned color; uint justify, flags; float sx;
++	char string[160];
++	int maxX, calls, quads, ok;
++	struct { int ch, x, y, quad; unsigned color; bool additive; } call[UI_TEXT_CALLS];
++	uint32_t quad[UI_TEXT_CALLS][UI_QUAD_WORDS];
++};
++static ui_text_t ui_texts[24];
++static ui_text_t *ui_recording;
++static int ui_text_next;
++
++static int UI_TextChar( HFont font, int ch, Point pt, int charH, unsigned color, bool additive )
++{
++	ui_text_t *t = ui_recording;
++	if( !t || !t->ok )
++		return g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	if( t->calls == UI_TEXT_CALLS )
++	{
++		t->ok = 0;
++		return g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	}
++	hlglCaptureTo( t->quad[t->quads], UI_TEXT_CALLS - t->quads );
++	int wide = g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	int n = hlglCaptured( );
++	if( n < 0 || n > 1 )
++		t->ok = 0;
++	else
++	{
++		t->call[t->calls].ch = ch, t->call[t->calls].x = pt.x, t->call[t->calls].y = pt.y;
++		t->call[t->calls].color = color, t->call[t->calls].additive = additive;
++		t->call[t->calls++].quad = n ? t->quads++ : -1;
++	}
++	return wide;
++}
++
++static int UI_DrawStringNow( HFont font, int x, int y, int w, int h, const char *string, const unsigned int color, int charH, uint justify, uint flags );
++
+ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 		const char *string, const unsigned int color,
+ 		int charH, uint justify, uint flags )
++{
++	static int off = -1;
++	if( off < 0 ) off = getenv( "HL_MENU_TEXT" ) && !strcmp( getenv( "HL_MENU_TEXT" ), "now" ) || hlglQuadBytes( ) != UI_QUAD_WORDS * 4;
++	if( off || !string || !string[0] || strlen( string ) >= sizeof( ui_texts[0].string ))
++		return UI_DrawStringNow( font, x, y, w, h, string, color, charH, justify, flags );
++	ui_text_t *t = NULL;
++	for( int i = 0; i < 24 && !t; i++ )
++	{
++		ui_text_t *k = &ui_texts[i];
++		if( k->ok && k->x == x && k->y == y && k->w == w && k->h == h && k->font == font && k->color == color && k->charH == charH
++			&& k->justify == justify && k->flags == flags && k->sx == uiStatic.scaleX && k->sw == ScreenWidth && k->sh == ScreenHeight
++			&& !strcmp( k->string, string ))
++			t = k;
++	}
++	if( t )
++	{
++		int first = -1, last = t->calls - 1;
++		for( int i = 0; i < t->calls && first < 0; i++ )
++			if( t->call[i].quad >= 0 ) first = i;
++		for( int i = 0; i < t->calls; i++ )
++		{
++			const auto &c = t->call[i];
++			if( i == first && i != last )
++			{
++				uint32_t made[UI_QUAD_WORDS];
++				hlglCaptureTo( made, 1 );
++				g_FontMgr->DrawCharacter( font, c.ch, Point( c.x, c.y ), charH, c.color, c.additive );
++				if( hlglCaptured( ) != 1 || memcmp( made, t->quad[c.quad], sizeof( made )))
++				{
++					t->ok = 0;	// (drawn as it is from here on, and recorded again next time)
++					for( int j = i + 1; j < t->calls; j++ )
++						g_FontMgr->DrawCharacter( font, t->call[j].ch, Point( t->call[j].x, t->call[j].y ), charH, t->call[j].color, t->call[j].additive );
++					return t->maxX;
++				}
++			}
++			else if( i == last )
++				g_FontMgr->DrawCharacter( font, c.ch, Point( c.x, c.y ), charH, c.color, c.additive );
++			else if( c.quad >= 0 )
++				hlglDrawQuads( t->quad[c.quad], 1 );
++		}
++		return t->maxX;
++	}
++	t = &ui_texts[ui_text_next++ % 24];
++	t->font = font, t->x = x, t->y = y, t->w = w, t->h = h, t->color = color, t->charH = charH, t->justify = justify, t->flags = flags;
++	t->sx = uiStatic.scaleX, t->sw = ScreenWidth, t->sh = ScreenHeight;
++	strcpy( t->string, string );
++	t->calls = t->quads = 0, t->ok = 1;
++	ui_recording = t;
++	t->maxX = UI_DrawStringNow( font, x, y, w, h, string, color, charH, justify, flags );
++	ui_recording = NULL;
++	return t->maxX;
++}
++#else
++#define UI_TextChar( font, ch, pt, charH, color, additive ) g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive )
++#define UI_DrawStringNow UI_DrawString
++#endif
++
++static int UI_DrawStringNow( HFont font, int x, int y, int w, int h,
++		const char *string, const unsigned int color,
++		int charH, uint justify, uint flags )
+ {
+ 	uint	modulate, shadowModulate = 0;
+ 	int	xx = 0, yy, shadowOffset = 0, ch;
+@@ -473,7 +577,7 @@ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 				continue;
+ 
+ 			if( flags & ETF_SHADOW )
+-				g_FontMgr->DrawCharacter( font, ch, Point( xx + shadowOffset, yy + shadowOffset ), charH, shadowModulate, flags & ETF_ADDITIVE );
++				UI_TextChar( font, ch, Point( xx + shadowOffset, yy + shadowOffset ), charH, shadowModulate, flags & ETF_ADDITIVE );
+ 
+ #ifdef DEBUG_WHITESPACE
+ 			if( ch == ' ' )
+@@ -484,7 +588,7 @@ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 			}
+ #endif
+ 
+-			xx += g_FontMgr->DrawCharacter( font, ch, Point( xx, yy ), charH, modulate, flags & ETF_ADDITIVE );
++			xx += UI_TextChar( font, ch, Point( xx, yy ), charH, modulate, flags & ETF_ADDITIVE );
+ 
+ 			maxX = Q_max( xx, maxX );
+ 		}
+diff --git a/font/BitmapFont.cpp b/font/BitmapFont.cpp
+index 8e6e76d..a503ba9 100644
+--- a/font/BitmapFont.cpp
++++ b/font/BitmapFont.cpp
+@@ -105,7 +105,7 @@ int CBitmapFont::DrawCharacter(int ch, Point pt, int charH, const unsigned int c
+ 		ch = ch - 0x410 + 0xC0;
+ 	if( ch >= 0x0430 && ch <= 0x044F )
+ 		ch = ch - 0x430 + 0xE0;
+-	else
++	else if( ch >= 0x7F )	// (the table has nothing under 0x7f)
+ 	{
+ 		int i;
+ 		for( i = 0; i < 64; i++ )
 diff --git a/menus/Main.cpp b/menus/Main.cpp
 index 4d1a382..7a1e1a4 100644
 --- a/menus/Main.cpp

@@ -137,7 +137,7 @@ compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -DXASH_ENABLE_MAIN=1 -I$BUI
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $PROGRAMS/linux/include" $HERE/vid_shaderemu.c
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $REPO/linux/libmedia -idirafter $PROGRAMS/mc" $HERE/snd_shaderemu.c
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $REPO/linux/libmedia" $HERE/snd_media.c $HERE/img_media.c
-compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $PROGRAMS/mc" $HERE/sv_shaderemu.c
+compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $PROGRAMS/mc" $HERE/sv_shaderemu.c $HERE/rnd_shaderemu.c
 # Half-Life's server
 SERVER=$(find $H/dlls -name '*.cpp' | grep -v 'mpstubb\|stats\.cpp\|Wxdebug')
 compile server "rv32-c++ $C_ALL -include $HERE/float_math.h -std=gnu++11 $HLDEFS $HLINC -I$H/dlls" $SERVER $H/game_shared/voice_gamemgr.cpp
@@ -160,7 +160,7 @@ library client client.names client vgui
 # the main menu, mainui (its own bitmap font)
 M=$X/3rdparty/mainui
 MENU=$(find $M -maxdepth 1 -name "*.cpp"; for d in miniutl font menus menus/dynamic model controls; do find $M/$d -maxdepth 1 -name "*.cpp"; done)
-compile menu "rv32-c++ $C_ALL -include $HERE/float_math.h -fno-rtti -std=gnu++11 -DSTDINT_H=<cstdint> -DMAINUI_USE_CUSTOM_FONT_RENDER=1 $(for d in . miniutl font controls menus model sdk_includes/common sdk_includes/engine sdk_includes/public sdk_includes/pm_shared; do echo -I$M/$d; done)" $MENU
+compile menu "rv32-c++ $C_ALL -DXASH_SHADEREMU=1 -include $HERE/float_math.h -fno-rtti -std=gnu++11 -DSTDINT_H=<cstdint> -DMAINUI_USE_CUSTOM_FONT_RENDER=1 $(for d in . miniutl font controls menus model sdk_includes/common sdk_includes/engine sdk_includes/public sdk_includes/pm_shared; do echo -I$M/$d; done)" $MENU
 printf 'GetMenuAPI\nGetExtAPI\n' > menu.names
 library menu menu.names menu
 

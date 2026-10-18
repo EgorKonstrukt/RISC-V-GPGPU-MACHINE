@@ -153,6 +153,11 @@ CASES = [
     # the atlas's shapes forgotten every 50 scenes giving the same pictures
     case('ralert-attack', 'games ralert', X + 'TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 '
          'RALERT_FRAMES=3000 ralert', True, wall=400, has=[r'done at frame 3000: .* state dbb267c0']),
+    # docs/games/ralert.md, "A unit's path searches": every search kept or made by another core, and every edge walk, made again
+    case('ralert-paths', 'games ralert', X + 'TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 '
+         'RALERT_CHECK_PATHS=1 RALERT_FRAMES=1500 ralert', True, wall=400,
+         has=[r'searches not run again and [1-9]\d* another core.s, 0 of them wrong', r'edge walks made both ways, 0 of them wrong',
+              r'done at frame 1500: .* state 520254a5']),
     *[case(f'ralert-atlas{tag}', 'games ralert', X + pre + 'RALERT_DRAW=here RALERT_REFRESH=1 TDAWN_SUMS=1 TDAWN_AUTO=1 RALERT_SIDE=allies '
            'RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 RALERT_FRAMES=300 ralert', True, **checks)
       for tag, pre, checks in (('', '', dict(count=[(r'^rasum: ', 300)])),

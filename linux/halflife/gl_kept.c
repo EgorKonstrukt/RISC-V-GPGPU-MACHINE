@@ -96,8 +96,10 @@ static void R_KeptByTexture( const model_t *m, int *by_texture, int *from )
 	free( slots ), free( of ), free( fill );
 }
 
+static void R_SceneSet( void );
 static void R_KeptBuild( void )
 {
+	R_SceneSet( );
 	R_StudioJobLevel( );
 	model_t *m = WORLDMODEL;
 	int total = 0, blocks = 0;
@@ -966,7 +968,7 @@ static texture_t *R_TextureAnimationOf( msurface_t *s, const cl_entity_t *e )
 		int ty = (int)(( s->texturemins[1] + ( base->height << 16 )) / base->height ) % MOD_FRAMES;
 		reletive = rtable[tx][ty] % base->anim_total;
 	}
-	else reletive = (int)( gp_cl->time * ( FBitSet( R_GetTexture( base->gl_texturenum )->flags, TF_QUAKEPAL ) ? 10 : 20 )) % base->anim_total;
+	else reletive = (int)( SE_CL_TIME * ( FBitSet( R_GetTexture( base->gl_texturenum )->flags, TF_QUAKEPAL ) ? 10 : 20 )) % base->anim_total;
 	while( base->anim_min > reletive || base->anim_max <= reletive )
 		if( !( base = base->anim_next ) || ++count > MOD_FRAMES )
 			return s->texinfo->texture;
@@ -1333,8 +1335,8 @@ static void R_BonesAheadGive( void )
 	for( int k = 0; bones_posted && k < 4; k++ )
 		hlglWait( hlglBonesWorker( k ));
 	bones_posted = 0;
-	for( int i = 0; i < bones.count; i++ )
-		bones_slot[R_LightKey( bones.in[i].e )] = 0;
+	if( bones.count )
+		memset( bones_slot, 0, sizeof( bones_slot ));	// (whole: the entities may be copies written again since)
 	bones.count = 0;
 	if( off || !SE_StudioBonesAhead || hlglBonesWorker( 0 ) <= 0 )
 		return;
@@ -1345,7 +1347,7 @@ static void R_BonesAheadGive( void )
 		if( !getenv( "HL_ROTATION" ) || strcmp( getenv( "HL_ROTATION" ), "inline" ))	// (HL_ROTATION=inline: made at each draw)
 			SE_StudioRotationTaken = R_RotationAheadTaken;
 	}
-	bones.time = gp_cl->time, bones.oldtime = gp_cl->oldtime;
+	bones.time = SE_CL_TIME, bones.oldtime = SE_CL_OLDTIME;
 	for( int i = 0, at = 0; i < ahead.count && bones.count < AHEAD_MAX; i++ )
 	{
 		cl_entity_t *e = (cl_entity_t *)ahead.in[i].e;
@@ -1370,8 +1372,8 @@ void R_LightAheadGive( void )
 	if( off < 0 ) off = getenv( "HL_LIGHT" ) && !strcmp( getenv( "HL_LIGHT" ), "inline" );
 	if( ahead_worker )
 		hlglWait( ahead_worker ), ahead_worker = 0;
-	for( int i = 0; i < ahead.count; i++ )
-		ahead_slot[R_LightKey( ahead.in[i].e )] = 0;
+	if( ahead.count )
+		memset( ahead_slot, 0, sizeof( ahead_slot ));	// (whole: the entities may be copies written again since)
 	ahead.count = 0;
 	se_studio_no_followers = 0;
 	if( off || !tr.draw_list || !WORLDMODEL || !WORLDMODEL->lightdata || r_fullbright->value || hlglLightWorker( ) <= 0 )
@@ -1410,4 +1412,101 @@ qboolean R_LightAheadOf( const cl_entity_t *ent, const vec3_t origin, colorVec *
 	VectorCopy( ahead_out[i].vec, vec );
 	*styles = ahead_out[i].styles, *stamp = ahead.stamp;
 	return true;
+}
+
+// ---- the frame drawn on a worker a frame behind (rnd_shaderemu.c): what it draws, copied ----
+
+#define SCENE_COPIES 256
+extern draw_list_t *se_add_list;
+extern dlight_t se_render_dlights[], se_render_elights[];
+static draw_list_t scene_list;	// the worker's, of the copies
+static cl_entity_t scene_ents[SCENE_COPIES + 1];	// the last the view model's
+static struct { cl_entity_t *live; int muzzle; } scene_of[SCENE_COPIES + 1];
+static int scene_count;
+static cl_entity_t *scene_viewent;
+static dlight_t *scene_dlights, *scene_elights;
+
+// All of an entity the drawing reads: not its baseline, its state before or its position history.
+static void R_SceneCopyTo( cl_entity_t *c, cl_entity_t *e, int slot )
+{
+	c->index = e->index, c->player = e->player;
+	memcpy( &c->curstate, &e->curstate, sizeof( c->curstate ));
+	memcpy( &c->mouth, &e->mouth, sizeof( cl_entity_t ) - offsetof( cl_entity_t, mouth ));
+	scene_of[slot].live = e, scene_of[slot].muzzle = FBitSet( e->curstate.effects, EF_MUZZLEFLASH );
+}
+static cl_entity_t *R_SceneCopy( cl_entity_t *e )
+{
+	if( scene_count >= SCENE_COPIES )
+		return e;
+	R_SceneCopyTo( &scene_ents[scene_count], e, scene_count );
+	return &scene_ents[scene_count++];
+}
+
+static void R_ScenePipe( int on )
+{
+	if( on )
+	{
+		se_add_list = tr.draw_list, tr.draw_list = &scene_list;
+		scene_viewent = tr.viewent, tr.viewent = &scene_ents[SCENE_COPIES];
+		scene_dlights = gp_dlights, gp_dlights = se_render_dlights;
+		scene_elights = tr.elights, tr.elights = se_render_elights;
+		return;
+	}
+	if( !se_add_list )
+		return;
+	tr.draw_list = se_add_list, se_add_list = NULL;
+	tr.viewent = scene_viewent, gp_dlights = scene_dlights, tr.elights = scene_elights;
+}
+
+// This core's list of the frame to draw, copied for the worker with its entities.
+static void R_SceneGive( void )
+{
+	const draw_list_t *from = se_add_list;
+
+	scene_count = 0;
+	scene_list.num_solid_entities = from->num_solid_entities;
+	scene_list.num_trans_entities = from->num_trans_entities;
+	scene_list.num_beam_entities = from->num_beam_entities;
+	for( int i = 0; i < from->num_solid_entities; i++ )
+		scene_list.solid_entities[i] = R_SceneCopy( from->solid_entities[i] );
+	for( int i = 0; i < from->num_trans_entities; i++ )
+		scene_list.trans_entities[i] = R_SceneCopy( from->trans_entities[i] );
+	for( int i = 0; i < from->num_beam_entities; i++ )
+		scene_list.beam_entities[i] = R_SceneCopy( from->beam_entities[i] );
+	R_SceneCopyTo( &scene_ents[SCENE_COPIES], scene_viewent, SCENE_COPIES );
+}
+
+// What the drawing wrote of its copies, back where they came from: attachments, the frame it
+// was at, a muzzle flash shown (only an entity of the client's: a temporary one may be another now).
+static void R_SceneTakeOne( cl_entity_t *c, int slot, cl_entity_t *( *by_index )( int ))
+{
+	cl_entity_t *e = scene_of[slot].live;
+
+	if( slot < SCENE_COPIES && by_index( c->index ) != e )
+		return;
+	memcpy( e->attachment, c->attachment, sizeof( e->attachment ));
+	e->latched.prevframe = c->latched.prevframe;
+	if( scene_of[slot].muzzle && !FBitSet( c->curstate.effects, EF_MUZZLEFLASH ))
+		ClearBits( e->curstate.effects, EF_MUZZLEFLASH );
+}
+static void R_SceneTaken( cl_entity_t *( *by_index )( int ))
+{
+	for( int i = 0; i < scene_count; i++ )
+		R_SceneTakeOne( &scene_ents[i], i, by_index );
+	R_SceneTakeOne( &scene_ents[SCENE_COPIES], SCENE_COPIES, by_index );
+}
+
+// The entity a copy was made of.
+static const cl_entity_t *R_SceneLive( const cl_entity_t *e )
+{
+	if( e >= scene_ents && e <= &scene_ents[SCENE_COPIES] )
+		return scene_of[e - scene_ents].live;
+	return e;
+}
+
+extern void ( *SE_ScenePipe )( int on ), ( *SE_SceneGive )( void ), ( *SE_SceneTaken )( cl_entity_t *( *by_index )( int ));
+extern const cl_entity_t *( *SE_SceneLive )( const cl_entity_t *e );
+static void R_SceneSet( void )
+{
+	SE_ScenePipe = R_ScenePipe, SE_SceneGive = R_SceneGive, SE_SceneTaken = R_SceneTaken, SE_SceneLive = R_SceneLive;
 }
