@@ -101,9 +101,15 @@ make -s -C "$T/mg" -j"$(nproc)" > /dev/null
 put "$T/mg/src/mg" usr/bin/mg; lic mg "$T/mg/UNLICENSE" LICENSE
 
 # file 5.41, the version of the ROM's /usr/share/misc/magic.mgc
+# which also reads it as deflate in segments, inflated by libmedia on the workers (file-mdz.patch)
 conf file --enable-static --disable-zlib --disable-bzlib --disable-xzlib --disable-zstdlib --disable-lzlib --disable-libseccomp
+MEDIA=$WORK/src/libmedia
+[ -f "$MEDIA/libmedia.a" ] || { echo "run linux/libmedia/build.sh first"; exit 1; }
+grep -q MDZ_DB "$T/file/src/apprentice.c" || patch -s -d "$T/file" -p1 < "$HERE/file-mdz.patch"
+MDZ="CPPFLAGS=-DMDZ_DB -I$REPO/linux/libmedia -I$REPO/programs/mc"
 make -s -C "$T/file/src" -j"$(nproc)" magic.h > /dev/null
-make -s -C "$T/file/src" -j"$(nproc)" file > /dev/null
+make -s -C "$T/file/src" -j"$(nproc)" "$MDZ" libmagic.la > /dev/null
+make -s -C "$T/file/src" -j"$(nproc)" "$MDZ" LIBS="$MEDIA/libmedia.a $MEDIA/mcw.o $MEDIA/mcwx.o -lm -Wl,--gc-sections" file > /dev/null
 put "$T/file/src/file" usr/bin/file; lic file "$T/file/COPYING"
 
 # pcre 8.45 for glib's regular expressions
@@ -193,6 +199,8 @@ if [ "${TERMINAL_ZSH:-0}" = 1 ]; then
     relink "$T/zsh/Src/zsh"
     make -s -C "$T/zsh" -j"$(nproc)" > /dev/null
     put "$T/zsh/Src/zsh" bin/zsh; lic zsh "$T/zsh/LICENCE"
+else
+    rm -rf "$OUT/bin/zsh" "$OUT/usr/share/zsh"   # a build that asked for it left it behind
 fi
 
 ls -l "$OUT"/usr/bin/{sl,nano,htop,dialog,mg,file,mc}

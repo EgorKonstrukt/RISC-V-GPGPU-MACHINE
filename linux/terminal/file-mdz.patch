@@ -1,0 +1,35 @@
+--- a/src/apprentice.c	2026-10-18 16:14:50.184223400 +0200
++++ b/src/apprentice.c	2026-10-18 16:14:50.265162900 +0200
+@@ -50,6 +50,10 @@
+ #endif
+ #include <dirent.h>
+ #include <limits.h>
++#ifdef MDZ_DB
++#include "media.h"
++#include "mcw.h"
++#endif
+ 
+ 
+ #define	EATAB {while (isascii(CAST(unsigned char, *l)) && \
+@@ -3160,6 +3164,21 @@
+ 		goto error;
+ 	}
+ #endif
++#ifdef MDZ_DB
++	/* the database as deflate in segments (docs/system/media.md), inflated on the workers */
++	if (media_inflated_size(map->p, CAST(uint32_t, map->len))) {
++		uint32_t total = media_inflated_size(map->p, CAST(uint32_t, map->len));
++		void *out = malloc(total);
++		if (out == NULL || media_inflate(map->p, CAST(uint32_t, map->len), out, total, mcw_most())) {
++			free(out);
++			file_error(ms, 0, "cannot inflate `%s'", dbname);
++			goto error;
++		}
++		free(map->p);
++		map->p = out;
++		map->len = total;
++	}
++#endif
+ 	(void)close(fd);
+ 	fd = -1;
+ 

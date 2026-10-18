@@ -85,10 +85,30 @@ then "Sync shader sources from the repository" and "Import boot images from the 
   for `bc`, `dc`, `ed`, `traceroute`, `arping`, `ping` and `ip` (links to `/bin/busybox`,
   `linux/userland/busybox.sh`), QuickJS and MicroPython (`docs/system/scripts.md`), the
   terminal programs (`docs/system/terminal.md`) and the network and system ones (`docs/system/ports.md`). A link of the image (`NAME.romlink`) hides
-  upstream's file of that name as a file does.
+  upstream's file of that name as a file does. Upstream's ELF files leave the no-MMU ROM
+  ("The ROM", below).
 - Programs: libmedia makes a picture in memory and writes it where a file cannot be mapped for
   writing; nxfiles knows a flat program; tcc copies a section that cannot grow in place; the
   NES reads its leave word PC-relative.
+
+## The ROM
+
+`image.py` ends with `slim.py`, which writes the romfs anew without what this machine can neither
+run nor read: upstream's dynamic ELF programs and shared libraries (the kernel has
+`CONFIG_BINFMT_FLAT` and no ELF loader), the copies of upstream's files that ours hid (renamed
+with a dot, still in the ROM), `/usr/local` (bcc and beluga, `docs/system/ports.md`), screen's
+encodings, GLib's valgrind list, sshd's `moduli`, a folder of `ORPHANS` whose program is gone
+(upstream zsh's functions when no flat zsh is built), and the links to any of them. Object files
+(`crt1.o`, `flatcrt.o`) and every flat program stay. Files of `SQUEEZE` are stored as deflate in
+segments (`docs/system/media.md`) when their reader says it inflates them: `magic.mgc` for
+`file` (`linux/terminal/file-mdz.patch`). The kept files are the same bytes, in the same order,
+and the boot arguments' root device takes the new size.
+
+On 18 October 2026 that was 296,400,896 bytes to 255,211,520 (41.2 MB of files, 258 entries)
+and 248,428,544 with `magic.mgc` (7,254,168 bytes as 422,324): 7,582 rows of the world's ROM
+texture (2048 texels of 16 bytes) where it was 9,046; without zsh (6.1 MB) 242,377,728 bytes,
+7,397 rows. The MMU image keeps all of it: its
+upstream programs run there.
 
 ## The state
 

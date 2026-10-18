@@ -1063,6 +1063,12 @@ pointer, and the first core hears of a move only where somebody wants to.
   (a surface's buffer, how far its corner is from the pointer). The kernel's rectangle is in
   a free part of the worker cores' mailbox pages (`WM_QUIET_OFFSET`), which the kernel has
   mapped already: a boot and a program's first workers pay nothing for it.
+- **A cursor turned off behind its back** (`cursor_check`, 18 October 2026): before the server
+  waits it compares the display's "on" word with its own, and where a program that left (or
+  the kernel at its exit) turned it off, the worker is woken to store it again, or the server
+  stores it when there is no worker. The cursor is back when the program's window goes, not at
+  the next move, and the cursor's texel keeps one writer: the kernel clears that word at a
+  program's exit only when no other program has `/dev/gpu` open.
 - **The quiet rectangle** (`GsQuietRect` in `srvutil.c`): round the pointer, where the same
   window stays under it and nobody who would hear of a move has asked to. The kernel reports
   no move inside it (`pointer_hushed` in `shaderemu_input.c`); buttons and keys are reported

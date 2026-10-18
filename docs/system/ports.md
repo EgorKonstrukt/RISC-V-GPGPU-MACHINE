@@ -34,7 +34,7 @@ of three minutes.
 Not working: `tc`, which needs `CONFIG_NET_SCHED`; `rtacct`, which maps its history file shared
 and needs route realms, neither of which the kernel has; https without `-k` or `--cacert`, since
 the image has no CA bundle; at's mail of a job's output, since there is no sendmail. `sshd`,
-`ssh-keygen`, `ssh-add`, `ssh-agent` and `ssh-keyscan` stay upstream's, dead. sudo and its tools
+`ssh-keygen`, `ssh-add`, `ssh-agent` and `ssh-keyscan` are upstream's and not in the no-MMU ROM (`docs/system/nommu.md`, "The ROM"). sudo and its tools
 are left out because the machine has only root, and GLib's gio, gsettings, gdbus, gresource and
 gapplication because nothing uses them. `/usr/local/bin/bcc` and `beluga` are a C compiler that
 writes only i386 assembly, of no use on this machine.

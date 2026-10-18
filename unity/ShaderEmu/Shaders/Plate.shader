@@ -4,8 +4,7 @@ Shader "ShaderEmu/Plate"
     // _Index names the two glyphs nearest a place (0: none), _Glyphs is three texels a glyph (its
     // box here, its box in _Fonts, its colour and weight), _Fonts the fonts' distance fields.
     // The lettering is the fields at every distance: where a pixel holds several of their texels
-    // it is asked at up to sixteen places of the pixel and the answers are averaged. (It was a
-    // picture of the lettering with its mipmaps there, _Far, which came out as blocks.)
+    // it is asked at up to sixteen places of the pixel and the answers are averaged.
     Properties
     {
         _MainTex ("Surface", 2D) = "white" {}
@@ -13,7 +12,6 @@ Shader "ShaderEmu/Plate"
         [NoScaleOffset] _Index ("Glyphs of each place", 2D) = "black" {}
         [NoScaleOffset] _Glyphs ("Glyphs", 2D) = "black" {}
         [NoScaleOffset] _Fonts ("Fonts' distance fields", 2D) = "black" {}
-        [NoScaleOffset] _Far ("(not used any more: the lettering from far off was a picture)", 2D) = "black" {}
         _Usual ("The sheet's texels across the plate, for its usual lettering", Vector) = (0, 0, 0, 0)
         _GradientScale ("The fields' gradient scale", Float) = 9
         _Glossiness ("Smoothness", Range(0, 1)) = 0.3

@@ -558,11 +558,10 @@ static int shaderemu_gpu_open(struct inode *inode, struct file *file)
 static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 {
 	uintptr_t free_at_open = (uintptr_t)file->private_data;
+	bool others = false;
 
 	if (free_at_open & 1)
 		writel(0, gpu_regs + KEYBOARD_OWNER);
-	if (free_at_open & 2)
-		writel(0, gpu_regs + DISPLAY_CURSOR);
 	if (free_at_open & 4) {
 		writel(0, gpu_regs + VOLUME_LIST + 4);
 		writel(0, gpu_regs + VOLUME_LIST);
@@ -575,6 +574,12 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 		for (i = 0; i < GPU_USERS; i++)
 			if (gpu_users[i].file == file)
 				gpu_users[i].file = NULL;
+			else if (gpu_users[i].file)
+				others = true;
+		/* the window system's pointer core writes the cursor's texel in the same pass:
+		 * only the last program out turns the cursor off */
+		if ((free_at_open & 2) && !others)
+			writel(0, gpu_regs + DISPLAY_CURSOR);
 		if (draw_owner == file)
 			draw_owner = NULL;
 		{

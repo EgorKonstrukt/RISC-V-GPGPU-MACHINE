@@ -9,7 +9,9 @@ at upstream's paths, each from its release's tarball checked by its sha256.
 
 They are linked static against one ncurses 6.5 with wide characters, which reads the terminal
 descriptions already in the ROM (`/usr/share/terminfo`; the console says `linux`). file is the
-ROM's magic database's version and mc the version of its `/etc/mc` and `/usr/share/mc`. mc's
+ROM's magic database's version, and mc the version of its `/etc/mc` and `/usr/share/mc`. file
+also reads the database as deflate in segments, inflated on the workers (`file-mdz.patch`): the
+no-MMU image stores it so (`docs/system/nommu.md`, "The ROM"). mc's
 glib is 2.70.5, only libglib built with meson (no gobject or gio), on pcre 8.45; its atomic
 operations are its locked ones, since the compiler makes no atomic instructions.
 

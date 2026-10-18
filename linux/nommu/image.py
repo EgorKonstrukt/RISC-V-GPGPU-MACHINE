@@ -69,6 +69,10 @@ assert payload[TREE_AT:] == tree, 'linux_payload.bin does not end with dts.bin'
 tree = with_ram(tree)
 open(os.path.join(D, 'dts.bin'), 'wb').write(tree)
 open(os.path.join(D, 'linux_payload.bin'), 'wb').write(payload[:TREE_AT] + tree)
+# what this machine can neither run nor read leaves the ROM (slim.py)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import slim
+slim.main(D)
 print(name, 'made from', os.path.relpath(flat, ROOT), 'and', os.path.relpath(kernel, ROOT),
       '; memory', ', '.join('0x%08x + 0x%08x' % r for r in RAM))
 
