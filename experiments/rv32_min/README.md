@@ -66,7 +66,10 @@ and fewer branches; what did not, below.
   the word in RAM. Branches and jumps out of RAM are the general path's.
 - **The kinds tested most common first** (counted on the three loads: `add`/`addi` 28 to 33%,
   `lw` 11 to 14, the other arithmetic 9 to 50, branches 15, `sw` 6 to 12, `lbu` and its kin 7):
-  one `[branch] if` each, the arithmetic of nine kinds chosen by selects with no branch.
+  one `[branch] if` each, but `add` and the other nine kinds of arithmetic share the first, the
+  result chosen by selects with no branch: 10% faster on a shell loop and 10 to 25% on
+  `sha256sum` and `gzip` than `add` alone first (18 October 2026). `lui`/`auipc` or `jal` in it
+  too, or the loads in one test, or the kinds renumbered so the test is one compare: slower.
 - **Read ahead**: a turn reads the entry of pc + 4 and of a branch's target while it runs the
   one of pc, and takes the right one at its end with a select. A jump by register reads its
   target's entry when it knows it.
@@ -114,6 +117,15 @@ listed page (`DispatchIndirect`), takes each word as core 0 left it if core 0 ch
 as the workers left it, into all three images, and clears the entries of decoded words that
 changed. Workers see each other's stores at once (on the shader machine a pass later): no
 program tried so far minds. What the merge costs core 0 is nothing that the three loads show.
+A first store to a page also marks a word for its 32 pages, and `merge_list` reads a page's
+word only under a marked one: 0.03 ms a pass where reading all 32,768 was 0.29.
+
+A core is one thread, not a warp's worth: the instructions are a chain, and the 31 other lanes
+could take only the kernel's copies and fills and decoding (an instruction's 32 neighbours at
+once). A build that made every copy twice ran 1% slower, so that is all they could save; and
+lanes that copied for lane 0 left it reading stale words even after
+`AllMemoryBarrierWithGroupSync` (fxc2 writes `sync_uglobal_g_t`): Linux could not run
+`/emuinit`. What lanes give each other has to go through groupshared.
 
 ## Running it
 
@@ -140,15 +152,18 @@ the display, the GPU device, the sound card, the keys and the pointer, the conso
 - The init frames set the state texture up as ever; then the backend loads the image into the
   three images of RAM and `rootfs.bin` as the ROM, and a frame is `--compute-passes` passes of
   the cores, each with its merge, then the devices' passes.
-- `sync.hlsl` puts the 4 MB bands the merges marked into the state texture, and writes core 0's
-  state rows as the commit and the host read them: the instructions so far (28,0).g, the pc
-  (36,0).a, and in (41,0) the bands the commit carries over into the other buffer, as `--cpu`
-  does. No write cache, no stall.
+- `sync.hlsl` puts the pages of the GPU's memory (0x86000000 on, bands 24 to 31) the merges
+  listed in this frame into the state texture, a thread group a page (`export_pages`,
+  `DispatchIndirect`), and Linux's own bands whole only when they are wanted: at first and,
+  with the memory view open, every 60th frame, as `--cpu` does (nothing else reads them from
+  the texture). It writes core 0's state rows as the commit and the host read them: the
+  instructions so far (28,0).g, the pc (36,0).a, and in (41,0) the bands the commit carries
+  over into the other buffer. No write cache, no stall.
 - The commit, the GPU's draw, the sound card's mix and the control pass are the harness's own.
   After them `sync.hlsl` takes back into all three images what they wrote: the control words,
   the picture the commit copied back for the list drawn last (GPU_COPY), and when the host
   delivered them in this frame the console's input word, the network's ring, a fetch's answer
-  and the counters' totals. Then `sync_cores` writes what the control pass writes on the
+  and the counters' totals. Then `sync_cores` (a thread a core) writes what the control pass writes on the
   shader machine with its cores (`MC_STATS` in `src/gpu.h`, rvc_cpu's `control_pass`): how many
   cores the geometry has, which run and which sleep, every core's count, how many there could
   be; a worker the geometry does not have is parked. All of it is on the card, in order:
@@ -158,8 +173,15 @@ the display, the GPU device, the sound card, the keys and the pointer, the conso
   `instret` count the core's instructions so far: a program's own counts (Quake III's
   `q3stat:`) work.
 
+`RVC_COMPUTE_PROF=1` times one frame in 16 on the GPU at every step of this and prints the
+means every 200: on a shell loop with a pass of 8,192 a frame, the cores 2.5 to 2.8 ms, the
+merges 0.04, the export 0.01, the commit and the devices 0.35 to 0.48, what comes back 0.06.
+Before the page lists the merges' list was 0.29 ms, the bands' export 0.2 and `sync_cores` on
+one thread 0.26 to 0.31.
+
 Not done: `--save-state` and `--load-state` (the processors' state is in their buffers, not in
-the snapshot), D3D12.
+the snapshot: the snapshot's texture has the GPU's memory, so `tools/snapshot_screen.py` shows
+the screen), D3D12.
 
 ## Measured
 
@@ -181,10 +203,32 @@ Per round the ratios were the same within 3%. Without the workers' code (the thr
 the page marks) the shell loop was 3 to 6% faster. The sums of `sha256sum /bin/busybox` and of
 `gzip -c /bin/busybox | sha256sum` are `rvc_cpu`'s.
 
-**The whole machine** (`rvc_harness`, passes of 8,192): a shell loop 2.12 million instructions
-a second with a pass a frame, 2.46 with two, 2.79 with four (`--compute-passes`); the tick 2.03.
-Quake III, `nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3 +devmap q3dm17`, standing still,
-`q3stat:` frames 101 to 400, seconds for 100 frames:
+Then `add` in the arithmetic's test, in turn with the shader above at 1.14 GHz (best of two):
+a shell loop 3.21 -> 3.61, `sha256sum` 4.52 -> 5.07, `gzip` 3.26 -> 3.76.
+
+**The whole machine against the shader machine**, 18 October 2026, after the page lists and
+the arithmetic in one test: `rvc_harness --compute fast` against `rvc_harness --rvc
+experimentsvc_opt` (the tick in a fragment shader, its commit, 255 workers), the same
+`--ticks` (8,192 a frame), each load typed at the shell and measured from 14 s on for 20 s
+(`--stats-after`), two rounds in turn, both at 1.14 GHz; millions of instructions a second:
+
+| | the tick | compute | |
+|---|---|---|---|
+| a shell loop | 1.77, 1.79 | 2.98, 2.93 | 1.64 to 1.68 |
+| `sha256sum /bin/busybox` in a loop | 2.33, 2.32 | 4.09, 4.06 | 1.75 |
+| `gzip -c /bin/busybox` in a loop | 1.93, 1.94 | 3.10, 3.06 | 1.58 to 1.61 |
+
+A frame of the shell loop: the tick 4.6 ms (4.2 its pass), compute 2.75 (2.5 its pass and
+merge). With 255 workers, Quake III (`nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3
++devmap q3dm17`, standing still, `q3stat:` frames 101 to 400) took 2.58 to 2.62 s for 100 frames
+on compute and 3.89 to 4.01 on the tick (1.5 times), and showed 38 frames a second in its
+title; nxray (`RAY_FRAMES=4`) 73 to 86 ms a picture against 126 to 133, pictures 1 to 3 the
+tick's sums. The card's clock is the driver's choice from run to run (0.88 GHz, 1.14, 1.33):
+on another day the tick's Quake III was 3.29 to 3.35 s, so compare runs made in turn.
+
+Before (17 October 2026, the same harness, other clocks): a shell loop 2.12 million
+instructions a second with a pass a frame, 2.46 with two, 2.79 with four (`--compute-passes`);
+the tick 2.03. Quake III, seconds for 100 frames:
 
 | | seconds | thousands of instructions a frame (core 0) |
 |---|---|---|
@@ -194,11 +238,11 @@ Quake III, `nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3 +devmap q3dm17`,
 | `--compute fast`, one core, this shader | 8.0 (at 1.33 GHz) to 11.5 (at 1.14) | 189 to 231 |
 | `--compute fast`, one core, the shader before | 10.7 to 10.8 | 218 to 219 |
 
-With workers the game's frame is 30 a second on both machines: it is the client's frame on
-core 0 (29 thousand instructions) plus waiting, not the workers. Doom's demo1
-with the view on workers: its 50 state sums' digest `0ab4df93`, `tools/test_all.py`'s. `mctest
-3` and `mctest 255 30000`: PASS. nxray, `RAY_FRAMES=4`: 89 to 100 ms a picture with 255
-workers (the tick 89 to 131), pictures 1 to 3 the tick's sums; picture 0 differs from run to
+With workers the game's frame was 30 a second on both machines: the client's frame on core 0
+(29 thousand instructions) plus waiting. Doom's demo1 with the view on workers: its 50 state
+sums' digest `0ab4df93`, `tools/test_all.py`'s (again after the page lists, with
+`DOOM_VIEW=told DOOM_VIEW_CHECK=1`: 0 not as told). `mctest 3` and `mctest 255 30000`: PASS, 0
+pages brought for their start. `fptest`: 0 of 15 wrong. nxray's picture 0 differs from run to
 run on the compute machine (rays 199,920 to 201,477, the tick's 201,460): nxray gives a picture
 up when a key or a resize comes while it is traced and publishes the next a step of its clock
 on, and when that comes is the machine's timing.

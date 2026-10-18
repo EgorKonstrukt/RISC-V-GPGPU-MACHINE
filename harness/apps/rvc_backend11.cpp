@@ -149,7 +149,7 @@ public:
         // (the devices' words for this frame, before the control pass's draws clear them)
         bool importCon = conDelivered, importFetch = deliver_, importNet = deliverNet_, importCounts = false;
         bool computing = computeMode && csCpu_ && mat.getFloat("_Init") == 0;
-        if (computing) runComputeCpu(mat);
+        if (computing) { profBegin(tag); runComputeCpu(mat); }
         else if (cpuMode && mat.getFloat("_Init") == 0) {}   // the processor ran the instructions
         else if (cs_ && mat.getFloat("_Init") == 0) runComputeTick(mat);
         else {
@@ -226,7 +226,7 @@ public:
                 deliverNet_ = false;
             }
         }
-        if (computing) computeImport(importCon, importFetch, importNet, importCounts);
+        if (computing) { prof_.mark(gpu_.ctx.Get()); computeImport(importCon, importFetch, importNet, importCounts); profEnd(); }
         if (timeIt) {
             gpu_.ctx->End(tsQuery_[3].Get());
             gpu_.ctx->End(tsDisjoint_.Get());
@@ -609,6 +609,62 @@ private:
         return tsDisjoint_ && tsQuery_[3];
     }
 
+    // RVC_COMPUTE_PROF=1: a frame in 16 timed on the GPU at each step of --compute's work, the means
+    // printed every 200 of them (experiments/rv32_min/README.md)
+    struct ComputeProf {
+        static const int kMarks = 12;
+        ComPtr<ID3D11Query> disjoint, marks[kMarks];
+        bool on = false, pending = false;
+        int at = 0;
+        double sum[kMarks] = {}, n = 0;
+        const char* names[kMarks] = {"cores", "merge_list", "merge", "count+state", "export", "commit+devices", "picture", "texels", "sync_cores", "", "", ""};
+        void mark(ID3D11DeviceContext* ctx) { if (on && at < kMarks) ctx->End(marks[at++].Get()); }
+        ~ComputeProf() { print(); }
+        void print() {
+            if (n == 0) return;
+            fprintf(stderr, "[prof] %.0f frames:", n);
+            for (int k = 1; k < kMarks && names[k - 1][0]; k++) fprintf(stderr, " %s %.3f ms", names[k - 1], sum[k] / n);
+            fputc('\n', stderr);
+        }
+    } prof_;
+    void profBegin(uint64_t frame) {
+        static const bool asked = getenv("RVC_COMPUTE_PROF") != nullptr;
+        prof_.on = false;
+        if (!asked) return;
+        ID3D11DeviceContext* ctx = gpu_.ctx.Get();
+        if (!prof_.disjoint) {
+            D3D11_QUERY_DESC qd{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+            gpu_.device->CreateQuery(&qd, &prof_.disjoint);
+            qd.Query = D3D11_QUERY_TIMESTAMP;
+            for (auto& q : prof_.marks) gpu_.device->CreateQuery(&qd, &q);
+        }
+        if (prof_.pending) {
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            UINT64 ts[ComputeProf::kMarks] = {};
+            bool ok = ctx->GetData(prof_.disjoint.Get(), &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            for (int k = 0; ok && k < prof_.at; k++) ok = ctx->GetData(prof_.marks[k].Get(), &ts[k], sizeof ts[k], D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            if (!ok) return;
+            prof_.pending = false;
+            if (!dj.Disjoint && dj.Frequency) {
+                for (int k = 1; k < prof_.at; k++) prof_.sum[k] += (double)(ts[k] - ts[k - 1]) * 1000.0 / (double)dj.Frequency;
+                prof_.n++;
+                if (prof_.n >= 200) { prof_.print(); for (auto& v : prof_.sum) v = 0; prof_.n = 0; }
+            }
+        }
+        if ((frame & 15) != 0) return;
+        prof_.on = true;
+        prof_.at = 0;
+        ctx->Begin(prof_.disjoint.Get());
+        prof_.mark(ctx);
+    }
+    void profEnd() {
+        if (!prof_.on) return;
+        prof_.mark(gpu_.ctx.Get());
+        gpu_.ctx->End(prof_.disjoint.Get());
+        prof_.on = false;
+        prof_.pending = true;
+    }
+
     Gpu gpu_;
     std::vector<GpuPass> passes_, gpuPasses_, soundPasses_, unpackPasses_, pointPasses_, copyPasses_;
     bool scatter_ = true;   // the cores' stores committed as points (with the tick in eight targets; --define NO_SCATTER: as bands)
@@ -724,13 +780,14 @@ private:
     }
     // --compute: the processor (rv32_min*.hlsl's tick) and sync.hlsl's passes beside it, RAM and
     // the processor's words in buffers of their own, the ROM as a raw view (rvc_backend.h).
-    ComPtr<ID3D11ComputeShader> csCpu_, csMerge_, csMergeList_, csCount_, csState_, csExport_, csPlan_, csTake_, csCores_;
+    ComPtr<ID3D11ComputeShader> csCpu_, csMerge_, csMergeList_, csCount_, csState_, csExport_, csExportPages_, csPlan_, csTake_, csCores_;
     ComPtr<ID3D11Buffer> cpuRam_, cpuState_, cpuRom_, cpuPass_, cpuSync_, cpuStateRead_, cpuDec_, cpuMarks_, cpuArgs_;
     ComPtr<ID3D11UnorderedAccessView> cpuRamUav_, cpuStateUav_, cpuDecUav_, cpuMarksUav_, cpuArgsUav_;
     ComPtr<ID3D11ShaderResourceView> cpuRomSrv_;
-    uint32_t cpuSeed_ = 0x9e3779b9u;
+    uint32_t cpuSeed_ = 0x9e3779b9u, computeFrames_ = 0;
     static const UINT kCpuStateBytes = 512;   // a core's words
-    static const UINT kMarkBytes = (65536 + 64 + 32768) * 4;   // page marks of core 0 and the workers, band marks, the pages to merge
+    static const UINT kMarkBytes = (65536 + 64 + 32768 + 1024 + 32768) * 4;   // page marks, band marks, the pages to merge, the frame's (rv32_min_fast.hlsl, M_)
+    static const UINT kArgsBytes = 32;   // merge's dispatch, export_pages's
     static ComPtr<ID3D11Buffer> makeBuffer(ID3D11Device* dev, UINT bytes, UINT bind, UINT misc, D3D11_USAGE usage, UINT cpu,
                                            const void* init, std::string& err) {
         D3D11_BUFFER_DESC d{};
@@ -755,7 +812,7 @@ private:
         Entry entries[] = {{&cpuSource, cpuPath, "tick", &csCpu_}, {&syncSource, syncPath, "sync_count", &csCount_},
                            {&syncSource, syncPath, "sync_state", &csState_}, {&syncSource, syncPath, "export_rows", &csExport_},
                            {&syncSource, syncPath, "import_plan", &csPlan_}, {&syncSource, syncPath, "import_rows", &csTake_},
-                           {&syncSource, syncPath, "sync_cores", &csCores_}};
+                           {&syncSource, syncPath, "sync_cores", &csCores_}, {&syncSource, syncPath, "export_pages", &csExportPages_}};
         // the merge after every pass (rv32_min_fast.hlsl's; the plain shader has one image and none)
         if (cpuSource.find("void merge(") != std::string::npos) {
             for (const char* entry : {"merge", "merge_list"}) {
@@ -777,7 +834,7 @@ private:
         }
         ID3D11Device* dev = gpu_.device.Get();
         cpuPass_ = makeBuffer(dev, 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
-        if (cpuPass_) cpuSync_ = makeBuffer(dev, 16, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
+        if (cpuPass_) cpuSync_ = makeBuffer(dev, 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
         if (cpuSync_) cpuStateRead_ = makeBuffer(dev, kCpuStateBytes, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr, err);
         return cpuStateRead_ != nullptr;
     }
@@ -795,14 +852,14 @@ private:
     void setSync(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count) {
         D3D11_MAPPED_SUBRESOURCE m{};
         if (FAILED(gpu_.ctx->Map(cpuSync_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-        uint32_t cb[4] = {mask, mode, from, count};
+        uint32_t cb[8] = {mask, mode, from, count, csMerge_ ? 24u : 32u};
         memcpy(m.pData, cb, sizeof cb);
         gpu_.ctx->Unmap(cpuSync_.Get(), 0);
     }
     void unbindCompute() {
-        ID3D11UnorderedAccessView* none[5] = {};
+        ID3D11UnorderedAccessView* none[6] = {};
         ID3D11ShaderResourceView* noSrv[2] = {};
-        gpu_.ctx->CSSetUnorderedAccessViews(0, 5, none, nullptr);
+        gpu_.ctx->CSSetUnorderedAccessViews(0, 6, none, nullptr);
         gpu_.ctx->CSSetShaderResources(0, 2, noSrv);
     }
     // The processor's passes of a frame (computePasses), each a thread group a core and then the
@@ -830,35 +887,52 @@ private:
             ctx->CSSetShaderResources(0, 1, &rom);
             ctx->CSSetConstantBuffers(0, 1, cpuPass_.GetAddressOf());
             ctx->Dispatch(computeCores, 1, 1);
+            if (p == 0) prof_.mark(ctx);
             if (csMerge_) {
-                // the pages either side stored to, listed; then a thread group each, as many as listed
+                // the pages stored to, listed; then a thread group each, as many as listed
                 ctx->CSSetShader(csMergeList_.Get(), nullptr, 0);
                 ctx->Dispatch(1, 1, 1);
+                if (p == 0) prof_.mark(ctx);
                 ID3D11UnorderedAccessView* noArgs = nullptr;
                 ctx->CSSetUnorderedAccessViews(4, 1, &noArgs, nullptr);
                 ctx->CSSetShader(csMerge_.Get(), nullptr, 0);
                 ctx->DispatchIndirect(cpuArgs_.Get(), 0);
             }
         }
+        prof_.mark(ctx);
         unbindCompute();
         ID3D11UnorderedAccessView* uavs[5] = {cpuRamUav_.Get(), cpuStateUav_.Get(), crt_.currentUAV(), cpuDecUav_.Get(), cpuMarksUav_.Get()};
-        setSync(computeMask, 0, 0, computeCores);
+        // Linux's own bands (which only the memory view shows) go into the texture at first and every
+        // 60th frame while it is open; the GPU's memory and the control words every frame, as --cpu
+        uint32_t mask = computeMask;
+        if (csMerge_ && computeFrames_++ > 0 && !(viewOpen() && computeFrames_ % 60 == 0)) mask &= 0xff000000u;
+        setSync(mask, 0, 0, computeCores);
         ctx->CSSetConstantBuffers(0, 1, cpuSync_.GetAddressOf());
         ctx->CSSetUnorderedAccessViews(0, 5, uavs, nullptr);
         ctx->CSSetShader(csCount_.Get(), nullptr, 0);
         ctx->Dispatch(1, 1, 1);
         ctx->CSSetShader(csState_.Get(), nullptr, 0);
         ctx->Dispatch(1, 16, 1);
-        ctx->CSSetShader(csExport_.Get(), nullptr, 0);
-        ctx->Dispatch(8, 4096 - 64, 1);
+        prof_.mark(ctx);
+        if (csMerge_) {
+            // the GPU's pages stored to in this frame (merge_list listed them), a group each;
+            // Linux's bands whole when they go
+            ctx->CSSetShader(csExportPages_.Get(), nullptr, 0);
+            ctx->DispatchIndirect(cpuArgs_.Get(), 12);
+        }
+        if (!csMerge_ || (mask & 0x00ffffffu) != 0) {
+            ctx->CSSetShader(csExport_.Get(), nullptr, 0);
+            ctx->Dispatch(8, 4096 - 64, 1);
+        }
+        prof_.mark(ctx);
         unbindCompute();
     }
     // What the devices wrote into RAM in this frame, back into the processor's.
     void computeImport(bool con, bool fetch, bool net, bool counts) {
         ID3D11DeviceContext* ctx = gpu_.ctx.Get();
-        ID3D11UnorderedAccessView* uavs[5] = {cpuRamUav_.Get(), cpuStateUav_.Get(), nullptr, cpuDecUav_.Get(), cpuMarksUav_.Get()};
+        ID3D11UnorderedAccessView* uavs[6] = {cpuRamUav_.Get(), cpuStateUav_.Get(), nullptr, cpuDecUav_.Get(), cpuMarksUav_.Get(), cpuArgsUav_.Get()};
         ID3D11ShaderResourceView* state = crt_.currentSRV();
-        ctx->CSSetUnorderedAccessViews(0, 5, uavs, nullptr);
+        ctx->CSSetUnorderedAccessViews(0, 6, uavs, nullptr);
         ctx->CSSetShaderResources(0, 1, &state);
         ctx->CSSetConstantBuffers(0, 1, cpuSync_.GetAddressOf());
         ctx->CSSetShader(csPlan_.Get(), nullptr, 0);
@@ -866,6 +940,7 @@ private:
         ctx->CSSetShader(csTake_.Get(), nullptr, 0);
         setSync(0, 1, 0, 0);   // (first: its words are the control words before they come back)
         ctx->Dispatch((kGpuTarget * kGpuTarget / 4 + 1 + 255) / 256, 1, 1);
+        prof_.mark(ctx);
         auto texels = [&](uint32_t from, uint32_t count) {
             setSync(0, 0, from, count);
             ctx->Dispatch((count + 255) / 256, 1, 1);
@@ -877,6 +952,7 @@ private:
         if (fetch) texels(0x76c000, 0x4000);   // FETCH_DATA (src/gpu.h); its words are control words
         if (counts) texels(0x6c1000, 256);     // COUNT_TOTAL: the counters' totals the control pass added up
         // the cores as the control words have them (after those came back)
+        prof_.mark(ctx);
         setSync(0, 0, 0, computeCores);
         ctx->CSSetShader(csCores_.Get(), nullptr, 0);
         ctx->Dispatch(1, 1, 1);
@@ -916,7 +992,7 @@ public:
             std::vector<uint8_t> zeros((size_t)ramBytes * 2, 0);
             if (cpuRom_) cpuDec_ = makeBuffer(dev, ramBytes * 2, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, zeros.data(), err);
             if (cpuDec_) cpuMarks_ = makeBuffer(dev, kMarkBytes, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, zeros.data(), err);
-            if (cpuMarks_) cpuArgs_ = makeBuffer(dev, 16, D3D11_BIND_UNORDERED_ACCESS, RAW | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, D3D11_USAGE_DEFAULT, 0,
+            if (cpuMarks_) cpuArgs_ = makeBuffer(dev, kArgsBytes, D3D11_BIND_UNORDERED_ACCESS, RAW | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, D3D11_USAGE_DEFAULT, 0,
                                                  zeros.data(), err);
         }
         if (!cpuArgs_) return false;
@@ -924,7 +1000,7 @@ public:
         cpuStateUav_ = cpuRamUav_ ? rawUav(cpuState_.Get(), stateBytes, err) : nullptr;
         cpuDecUav_ = cpuStateUav_ ? rawUav(cpuDec_.Get(), ramBytes * 2, err) : nullptr;
         cpuMarksUav_ = cpuDecUav_ ? rawUav(cpuMarks_.Get(), kMarkBytes, err) : nullptr;
-        cpuArgsUav_ = cpuMarksUav_ ? rawUav(cpuArgs_.Get(), 16, err) : nullptr;
+        cpuArgsUav_ = cpuMarksUav_ ? rawUav(cpuArgs_.Get(), kArgsBytes, err) : nullptr;
         if (!cpuArgsUav_) return false;
         D3D11_SHADER_RESOURCE_VIEW_DESC d{};
         d.Format = DXGI_FORMAT_R32_TYPELESS;

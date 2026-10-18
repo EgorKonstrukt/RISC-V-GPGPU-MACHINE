@@ -11,7 +11,7 @@
 RWByteAddressBuffer Ram   : register(u0);   // guest RAM from 0x80000000: three images of RamBytes
 RWByteAddressBuffer State : register(u1);   // 512 bytes a core (words below)
 RWByteAddressBuffer Dec   : register(u2);   // decoded instructions (decode, below)
-RWByteAddressBuffer Marks : register(u3);   // a word a 4 KB page each side stored to in this pass; bands; the pages to merge
+RWByteAddressBuffer Marks : register(u3);   // the pages stored to in this pass, and lists of them (M_ below)
 RWByteAddressBuffer Args  : register(u4);   // merge_list's dispatch: how many pages to merge
 ByteAddressBuffer   Rom   : register(t0);   // the ROM from 0x40000000
 
@@ -29,10 +29,12 @@ cbuffer Pass : register(b0) {
 #define W_MODE   392   // a worker: parked 0, running 1, asleep 2, stopped at a fault 3 or a call 4
 #define W_SEEN   396   // the resume word it stopped with
 #define W_JOB    404   // the job word it sleeps on
-#define M_CORE0   0                    // Marks (bytes): core 0's pages (a word each), the workers',
-#define M_WORKERS (32768 * 4)          // the harness's 4 MB bands, and the list of pages merge takes
-#define M_HARNESS (65536 * 4)
-#define M_LIST    ((65536 + 64) * 4)
+#define M_PAGE    0                            // Marks (bytes): a word a 4 KB page stored to in this pass,
+#define M_EXP     (32768 * 4)                  // a word a page in this frame's list, the 4 MB bands for
+#define M_HARNESS (65536 * 4)                  // the harness, the pages merge takes, a word for 32 pages
+#define M_LIST    ((65536 + 64) * 4)           // of M_PAGE that says one is marked, and this frame's
+#define M_GROUP   ((65536 + 64 + 32768) * 4)   // list of the GPU memory's pages stored to
+#define M_FRAME   ((65536 + 64 + 32768 + 1024) * 4)
 #define MBOX     0x06C00000u   // the workers' mailbox page, in RAM (linux/kernel/shaderemu_gpu.c)
 #define MC_START 0x5553434Du
 #define MC_STOP  0x5453434Du
@@ -47,7 +49,7 @@ static uint pc, priv, fcsr, res, tcmp_lo, tcmp_hi, msrc, mdst, mn;
 static bool trapped;
 static uint hart, base;   // this core's number and its words in State
 static uint why;          // a pass ended on: 1 pause, 2 ebreak, 3 a fault or call (a worker's)
-static uint view, side;   // this core's image of RAM (a byte offset into Ram) and its page marks
+static uint view;         // this core's image of RAM (a byte offset into Ram)
 static uint marked;       // the page this core marked last (each store marks its page once in a row)
 static uint ran;      // instructions of this pass before the one in step()
 static uint trap_cause, trap_val;
@@ -63,10 +65,16 @@ uint read_word(uint a) {   // a is word-aligned
     return a == 0x030007f8u ? Rtc0 : a == 0x030007fcu ? Rtc1 : 0;
 }
 
+void mark(uint page) {   // (two cores store the same 1: no atomics wanted)
+    marked = page;
+    Marks.Store(M_PAGE + page * 4, 1);
+    Marks.Store(M_GROUP + (page >> 5) * 4, 1);
+}
+
 void write_word(uint a, uint v, uint m) {   // a is word-aligned; only RAM takes writes
     if (a - 0x80000000u >= RamBytes) return;
     a -= 0x80000000u;
-    if ((a >> 12) != marked) { marked = a >> 12; Marks.Store(side + marked * 4, 1); }
+    if ((a >> 12) != marked) mark(a >> 12);
     Dec.Store(DEC_RO(a), 0);
     Ram.Store(view + a, m == ~0u ? v : (Ram.Load(view + a) & ~m) | (v & m));
 }
@@ -366,8 +374,10 @@ uint step() {
 // rs2 << 20 | rs3 << 27` (register numbers as r[] has them: 32 + n a float one, 64 none; an
 // immediate operand has rs2 0, which is x0) and an immediate (a branch's or jump's target,
 // lui's and auipc's value, a float instruction's word). 0: not made yet. A store to a word
-// clears its entry, so an entry is the word that is in RAM now. The kinds are in the order the
-// fast path tests them, the most common first (counted on a shell loop, sha256sum and gzip).
+// clears its entry, so an entry is the word that is in RAM now. The fast path tests the kinds
+// the most common first (counted on a shell loop, sha256sum and gzip): add with the other
+// arithmetic, one test for both (10 to 25% faster than add alone first), then lw, the branches,
+// sw, the narrow loads and stores, jal, lui and auipc, jalr.
 #define K_ADD    1   // add, addi, mv, li of 12 bits
 #define K_LW     2   // lw, flw
 #define K_SW     3   // sw, fsw
@@ -439,7 +449,7 @@ uint2 decode(uint o) {
 
 // A store the fast path made: the page is marked, the entry of the word cleared.
 void stored(uint ro) {
-    if ((ro >> 12) != marked) { marked = ro >> 12; Marks.Store(side + marked * 4, 1); }
+    if ((ro >> 12) != marked) mark(ro >> 12);
     Dec.Store(DEC_RO(ro & ~3u), 0);
 }
 
@@ -459,16 +469,14 @@ uint fast_run(uint n) {
                 uint2 en = Dec.Load2(DEC_AT(pc + 4)), et = Dec.Load2(min(e.y - 0x80000000u, RamBytes - 4) << 1);
                 uint k = e.x & 63, imm = e.y, next = pc + 4, v = 0;
                 uint a = r[(e.x >> 13) & 127], b = r[(e.x >> 20) & 127];
-                [branch] if (k == K_ADD) {
-                    v = a + b + imm;
+                [branch] if (k == K_ADD || k - K_ALU < 9) {
+                    uint y = b + imm, s = y & 31, f = k - K_ALU;
+                    v = (((f == 0 ? a << s : 0u) | (f == 1 ? (asint(a) < asint(y) ? 1u : 0u) : 0u)) | ((f == 2 ? (a < y ? 1u : 0u) : 0u) | (f == 3 ? a ^ y : 0u))) |
+                        (((f == 4 ? a >> s : 0u) | (f == 5 ? a | y : 0u)) | ((f == 6 ? a & y : 0u) | (f == 7 ? a - y : 0u))) | ((f == 8 ? asuint(asint(a) >> s) : 0u) | (k == K_ADD ? a + y : 0u));
                 } else [branch] if (k == K_LW) {
                     uint ro = a + imm - 0x80000000u;
                     if (ro >= RamBytes || (ro & 3) != 0) break;
                     v = Ram.Load(view + ro);
-                } else [branch] if (k - K_ALU < 9) {
-                    uint y = b + imm, s = y & 31, f = k - K_ALU;
-                    v = (((f == 0 ? a << s : 0u) | (f == 1 ? (asint(a) < asint(y) ? 1u : 0u) : 0u)) | ((f == 2 ? (a < y ? 1u : 0u) : 0u) | (f == 3 ? a ^ y : 0u))) |
-                        (((f == 4 ? a >> s : 0u) | (f == 5 ? a | y : 0u)) | ((f == 6 ? a & y : 0u) | (f == 7 ? a - y : 0u))) | (f == 8 ? asuint(asint(a) >> s) : 0u);
                 } else [branch] if (k - K_BR < 6) {
                     uint f = k - K_BR;
                     bool lt = (f & 4) != 0 ? a < b : asint(a) < asint(b);
@@ -516,16 +524,14 @@ uint fast_run(uint n) {
                 uint2 en = Dec.Load2(DEC_AT(pc + 4)), et = Dec.Load2(min(e.y - 0x80000000u, RamBytes - 4) << 1);
                 uint k = e.x & 63, imm = e.y, next = pc + 4, v = 0;
                 uint a = r[(e.x >> 13) & 127], b = r[(e.x >> 20) & 127];
-                [branch] if (k == K_ADD) {
-                    v = a + b + imm;
+                [branch] if (k == K_ADD || k - K_ALU < 9) {
+                    uint y = b + imm, s = y & 31, f = k - K_ALU;
+                    v = (((f == 0 ? a << s : 0u) | (f == 1 ? (asint(a) < asint(y) ? 1u : 0u) : 0u)) | ((f == 2 ? (a < y ? 1u : 0u) : 0u) | (f == 3 ? a ^ y : 0u))) |
+                        (((f == 4 ? a >> s : 0u) | (f == 5 ? a | y : 0u)) | ((f == 6 ? a & y : 0u) | (f == 7 ? a - y : 0u))) | ((f == 8 ? asuint(asint(a) >> s) : 0u) | (k == K_ADD ? a + y : 0u));
                 } else [branch] if (k == K_LW) {
                     uint ro = a + imm - 0x80000000u;
                     if (ro >= RamBytes || (ro & 3) != 0) break;
                     v = Ram.Load(view + ro);
-                } else [branch] if (k - K_ALU < 9) {
-                    uint y = b + imm, s = y & 31, f = k - K_ALU;
-                    v = (((f == 0 ? a << s : 0u) | (f == 1 ? (asint(a) < asint(y) ? 1u : 0u) : 0u)) | ((f == 2 ? (a < y ? 1u : 0u) : 0u) | (f == 3 ? a ^ y : 0u))) |
-                        (((f == 4 ? a >> s : 0u) | (f == 5 ? a | y : 0u)) | ((f == 6 ? a & y : 0u) | (f == 7 ? a - y : 0u))) | (f == 8 ? asuint(asint(a) >> s) : 0u);
                 } else [branch] if (k - K_BR < 6) {
                     uint f = k - K_BR;
                     bool lt = (f & 4) != 0 ? a < b : asint(a) < asint(b);
@@ -630,7 +636,6 @@ void tick(uint3 g : SV_GroupID) {
     hart = g.x;
     base = hart * 512;
     view = hart == 0 ? 0 : RamBytes;
-    side = hart == 0 ? M_CORE0 : M_WORKERS;
     marked = ~0u;
     if (hart != 0 && AllRun == 0 && !worker_wakes()) return;
     uint k;
@@ -671,36 +676,48 @@ void tick(uint3 g : SV_GroupID) {
     if (hart != 0 && AllRun == 0 && why == 2) State.Store(base + W_MODE, 0);
 }
 
-// After every pass: merge_list puts the 4 KB pages either side stored to in a list (and the
-// dispatch for them in Args, and their 4 MB bands for the harness: sync.hlsl), clearing the
-// marks; merge, a thread group a page of the list, takes each word as core 0 left it if core 0
+// After every pass: merge_list puts the 4 KB pages stored to in a list (and the dispatch for
+// them in Args, and their 4 MB bands for the harness: sync.hlsl), clearing the marks, reading
+// only the words of 32 pages that say one was marked; the GPU memory's pages (bands 24 to 31)
+// not yet in this frame's list go into it (its dispatch in Args[3], which sync.hlsl takes and
+// clears). merge, a thread group a page of the list, takes each word as core 0 left it if core 0
 // changed it, else as the workers left it, into all three images (two cores store to one 16
 // bytes in one pass on no machine). A word that changed is no instruction decoded any more.
 groupshared uint counts[1024];
 [numthreads(1024, 1, 1)]
 void merge_list(uint t : SV_GroupIndex) {
-    uint pages = RamBytes >> 12, first = t * 32, mine = 0, k;
-    for (k = first; k < first + 32 && k < pages; k++) {
-        bool hit = Marks.Load(M_CORE0 + 4 * k) != 0 || Marks.Load(M_WORKERS + 4 * k) != 0;
-        mine += hit ? 1 : 0;
-    }
+    uint first = t * 32, mine = 0, k, frame = Args.Load(12);
+    bool any = Marks.Load(M_GROUP + 4 * t) != 0;
+    if (any)
+        for (k = first; k < first + 32; k++)
+            if (Marks.Load(M_PAGE + 4 * k) != 0) mine += k >= 24 * 1024 && Marks.Load(M_EXP + 4 * k) == 0 ? 0x10001u : 1u;
     counts[t] = mine;
     GroupMemoryBarrierWithGroupSync();
-    for (uint d = 1; d < 1024; d <<= 1) {   // where this thread's pages go in the list
+    for (uint d = 1; d < 1024; d <<= 1) {   // where this thread's pages go in the lists
         uint add = t >= d ? counts[t - d] : 0;
         GroupMemoryBarrierWithGroupSync();
         counts[t] += add;
         GroupMemoryBarrierWithGroupSync();
     }
-    uint at = counts[t] - mine;
-    for (k = first; k < first + 32 && k < pages; k++) {
-        if (Marks.Load(M_CORE0 + 4 * k) == 0 && Marks.Load(M_WORKERS + 4 * k) == 0) continue;
-        Marks.Store(M_LIST + 4 * at++, k);
-        Marks.Store(M_HARNESS + 4 * (k >> 10), 1);
-        Marks.Store(M_CORE0 + 4 * k, 0);
-        Marks.Store(M_WORKERS + 4 * k, 0);
+    uint at = counts[t] - mine, fat = frame + (at >> 16);
+    at &= 0xffff;
+    if (any) {
+        for (k = first; k < first + 32; k++) {
+            if (Marks.Load(M_PAGE + 4 * k) == 0) continue;
+            Marks.Store(M_LIST + 4 * at++, k);
+            Marks.Store(M_PAGE + 4 * k, 0);
+            Marks.Store(M_HARNESS + 4 * (k >> 10), 1);
+            if (k < 24 * 1024 || Marks.Load(M_EXP + 4 * k) != 0) continue;   // (Linux's own go as bands)
+            Marks.Store(M_EXP + 4 * k, 1);
+            Marks.Store(M_FRAME + 4 * fat++, k);
+        }
+        Marks.Store(M_GROUP + 4 * t, 0);
     }
-    if (t == 1023) Args.Store3(0, uint3(counts[1023], 1, 1));
+    if (t == 1023) {
+        uint all = counts[1023];
+        Args.Store3(0, uint3(all & 0xffff, 1, 1));
+        Args.Store3(12, uint3(min(frame + (all >> 16), 32768u), 1, 1));
+    }
 }
 [numthreads(256, 1, 1)]
 void merge(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
