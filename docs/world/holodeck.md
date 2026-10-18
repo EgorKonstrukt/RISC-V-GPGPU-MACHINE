@@ -268,7 +268,8 @@ Doom, Quake, Quake III, ClassiCube and Half-Life read those words, each in its o
   (`Feed`), pressed by beams and by a desktop's view and click as any keyboard of the world
   (`EmuPointer.holoKeyboard`, its place in `keyboards`), and put away with the console: a key
   held as it goes comes up. A mark of its own (`HoloGuard.shader`) keeps the program's world
-  off it. "ShaderEmu/Add the holodecks' keyboard to the open scene" makes it. Seen in play mode
+  off it. "ShaderEmu/Add the holodecks' keyboard to the open scene" makes it, and Build world
+  runs it. Seen in play mode
   on a desktop (14 October 2026): shown before the seat, a key under the view found and lit,
   gone with the console and the screen then answering nothing; not pressed there, and not in
   a headset.
@@ -401,7 +402,8 @@ and the marks of both (one mesh each for all eight rooms, so the other rooms' go
 visitor alone; the chair's baked shadow stays on the floor), the room's plate, keys and screen. A small translucent button stands where the plate
 was and brings it back (`HideConsole`, `ShowConsole`, `Arrange`; a beam presses it by
 `EmuPointer.holoShow`). Standing up brings it back. "ShaderEmu/Add the holodecks' console
-switch to the open scene" puts both into a scene, without a bake. In play mode on a desktop
+switch to the open scene" puts both into a scene, without a bake; Build world runs it (until
+18 October 2026 it did not, and a rebuilt world's Hide took only the screen away). In play mode on a desktop
 (13 October 2026): seated, hidden, shown, stood up and seated again, each thing was on or
 off as it should be. The Hide and Beam keys and the small button have caps and lettering of
 their own that the room does not light (`OwnCap`): lit by the room's light volume the two

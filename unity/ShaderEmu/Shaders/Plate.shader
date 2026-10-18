@@ -28,7 +28,7 @@ Shader "ShaderEmu/Plate"
         CGPROGRAM
         // a printed plate mirrors nothing: no reflection probe is read (a flat tone of the room's light stands in)
         #define _GLOSSYREFLECTIONS_OFF 1
-        #pragma surface surf Standard fullforwardshadows
+        #pragma surface surf Standard fullforwardshadows vertex:vert addshadow
         #pragma target 4.0
 
         sampler2D _MainTex, _Fonts, _Index, _Glyphs;   // the last two are point filtered
@@ -36,6 +36,24 @@ Shader "ShaderEmu/Plate"
         float _Glossiness, _InkGlossiness, _InkMetallic, _InkGlow, _Flat, _Bold, _Cutoff, _GradientScale;
 
         struct Input { float2 uv_MainTex; };
+
+        // A key a hand holds (EmuKeyboard.Sink): what of a cap lies in its box sinks; its feet stay.
+        float4 _UdonPress0Centre, _UdonPress0X, _UdonPress0Y, _UdonPress0Up, _UdonPress1Centre, _UdonPress1X, _UdonPress1Y, _UdonPress1Up;
+        float3 pressed(float3 w, float4 c, float4 x, float4 y, float4 n)
+        {
+            float3 d = w - c.xyz;
+            float below = -dot(d, n.xyz);
+            bool inside = abs(dot(d, x.xyz)) < x.w && abs(dot(d, y.xyz)) < y.w && below > -0.003 && below < n.w;
+            return c.w > 0 && inside ? w - n.xyz * c.w : w;
+        }
+
+        void vert(inout appdata_full v)
+        {
+            if (_UdonPress0Centre.w <= 0 && _UdonPress1Centre.w <= 0) return;
+            float3 w = mul(unity_ObjectToWorld, v.vertex).xyz;
+            w = pressed(pressed(w, _UdonPress0Centre, _UdonPress0X, _UdonPress0Y, _UdonPress0Up), _UdonPress1Centre, _UdonPress1X, _UdonPress1Y, _UdonPress1Up);
+            v.vertex.xyz = mul(unity_WorldToObject, float4(w, 1)).xyz;
+        }
 
         float4 glyph_word(int n) { return tex2Dlod(_Glyphs, float4((float2(n & 1023, n >> 10) + 0.5) * _Glyphs_TexelSize.xy, 0, 0)); }
 

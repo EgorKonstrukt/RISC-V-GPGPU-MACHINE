@@ -666,7 +666,22 @@ public static partial class ShaderEmuBuilder
         keyboard.hoverColour = Over;
         keyboard.pressedColour = Held;
         keyboard.latchedColour = LitUp;
+        DenCaps(keyboard);
         Apply(keyboard);
+    }
+
+    // world/computer.py's KEY_UNDER and KEY_HIGH: where a held cap sinks (EmuKeyboard.Sink).
+    static void DenCaps(EmuKeyboard keyboard)
+    {
+        keyboard.capUnder = 0.0015f;
+        keyboard.capHigh = 0.012f;
+    }
+
+    // world/pc.py's KEY_TOPS over the caps' tops and CAP_HIGH.
+    static void StationCaps(EmuKeyboard keyboard)
+    {
+        keyboard.capUnder = 0.0012f;
+        keyboard.capHigh = 0.0078f;
     }
 
     static void PaperLook(Canvas canvas, Sprite paper, TMP_FontAsset mono, TMP_FontAsset bold)

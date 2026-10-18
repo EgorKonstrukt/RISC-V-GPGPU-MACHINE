@@ -41,6 +41,8 @@ public class EmuKeyboard : UdonSharpBehaviour
     public Material markOver, markHeld;
     public AudioSource click;      // a key going down, and up: only the typist's client plays it
     public AudioClip[] strokes;
+    // The model's caps under the keys, below the canvas (Plate.shader's _UdonPress globals): a held one sinks.
+    public float capUnder = 0.0012f, capHigh = 0.0078f;
     [HideInInspector] public EmuMachine sink;   // straight into the machine, past whatever the wall shows
 
     public const int KeyUp = 256, KeyDown = 257, KeyRight = 258, KeyLeft = 259, KeyHome = 260,
@@ -275,6 +277,7 @@ public class EmuKeyboard : UdonSharpBehaviour
             return;
         }
         held[hand] = key;
+        Sink(hand, key);
         Click(0.6f, 1f);
         int which = Modifier(linux);
         if (linux == LinuxCaps)
@@ -319,6 +322,7 @@ public class EmuKeyboard : UdonSharpBehaviour
         int key = held[hand];
         if (key < 0) return;
         held[hand] = -1;
+        Sink(hand, -1);
         Click(0.25f, 1.3f);   // (a key coming up is the quieter, higher half of the stroke)
         int linux = keyLinux[key], which = Modifier(linux);
         if (which >= 0)
@@ -336,6 +340,20 @@ public class EmuKeyboard : UdonSharpBehaviour
         }
         ShowModifiers();
         Paint();
+    }
+
+    // A hand's held cap for Plate.shader: its box (centre, across, down the rows, out of the keys,
+    // each with its half size or depth in w) and in the centre's w how far it sinks; 0 is none.
+    private void Sink(int hand, int key)
+    {
+        string at = hand == 0 ? "_UdonPress0" : "_UdonPress1";
+        if (key < 0) { VRCShader.SetGlobalVector(VRCShader.PropertyToID(at + "Centre"), Vector4.zero); return; }
+        Vector3 scale = transform.lossyScale, centre = transform.TransformPoint(new Vector3(keyX[key] + keyW[key] * 0.5f - panelWidth * 0.5f, panelHeight * 0.5f - keyY[key] - keyH[key] * 0.5f, 0f));
+        Vector3 across = transform.right, down = transform.up, up = -transform.forward;
+        VRCShader.SetGlobalVector(VRCShader.PropertyToID(at + "X"), new Vector4(across.x, across.y, across.z, keyW[key] * 0.5f * scale.x));
+        VRCShader.SetGlobalVector(VRCShader.PropertyToID(at + "Y"), new Vector4(down.x, down.y, down.z, keyH[key] * 0.5f * scale.y));
+        VRCShader.SetGlobalVector(VRCShader.PropertyToID(at + "Up"), new Vector4(up.x, up.y, up.z, capUnder + capHigh - 0.001f));
+        VRCShader.SetGlobalVector(VRCShader.PropertyToID(at + "Centre"), new Vector4(centre.x, centre.y, centre.z, capHigh * 0.4f));
     }
 
     private void Paint()

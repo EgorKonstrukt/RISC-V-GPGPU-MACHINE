@@ -96,6 +96,24 @@ public static partial class ShaderEmuBuilder
         }
     }
 
+    // The pointer's switches on the monitor's bezel, beside the volume: this visitor's own (EmuPointer).
+    static void StationSwitches(Transform place, int s, EmuPlace own, StationsPlan plan, List<TextMeshProUGUI> physical, List<TextMeshProUGUI> steady)
+    {
+        const float wide = 124, high = 18, volumeHalf = 100, gap = 6;
+        float y = (plan.glass[2] - (plan.glass[1] + 0.024f) / 2f + plan.osd[2] + 0.011f) / 2f, x = (volumeHalf + gap + wide / 2f) * 0.001f;
+        string[] events = { "PhysicalButtons", "SteadyPointer" }, texts = { "Physical buttons: OFF", "Steady pointer: ON" };
+        for (int i = 0; i < 2; i++)
+        {
+            string name = "Station " + s + (i == 0 ? " physical" : " steady");
+            Gone(place, name);
+            RectTransform panel = Panel(place, name, new Vector3(plan.setX + (i == 0 ? -x : x), y, plan.glass[3] - 0.002f), Vector3.zero,
+                                        wide, high, new Color(0.05f, 0.055f, 0.07f));
+            TextMeshProUGUI label;
+            OnClick(MakeButton(panel, events[i], texts[i], 3, 2, wide - 6, high - 4, 8, out label), own, events[i]);
+            (i == 0 ? physical : steady).Add(label);
+        }
+    }
+
     // The tower's reset key, on the hot panel's place of before (it held turbo too).
     static void TowerHotKeys(Transform place, int s, EmuPlace own, StationsPlan plan)
     {
@@ -400,6 +418,7 @@ public static partial class ShaderEmuBuilder
         stations.fieldSpots = new Transform[count];
         stations.speedSliders = new Slider[count];
         stations.volumeSliders = new Slider[count];
+        List<TextMeshProUGUI> physicalLabels = new List<TextMeshProUGUI>(), steadyLabels = new List<TextMeshProUGUI>();
         Color red = new Color(1f, 0.08f, 0.04f), green = new Color(0.1f, 1f, 0.3f), amber = new Color(1f, 0.6f, 0.1f);
         TMP_FontAsset signFont = RetroFont("IBMPlexSansCondensed-Bold");
         foreach (EmuTerminal terminal in world.GetComponentsInChildren<EmuTerminal>(true)) stations.terminal = terminal;
@@ -457,6 +476,7 @@ public static partial class ShaderEmuBuilder
             placed.Add(own);
             stations.speedSliders[s] = StationSpeed(place, s, own, plan);
             stations.volumeSliders[s] = StationVolume(place, s, own, plan);
+            StationSwitches(place, s, own, plan, physicalLabels, steadyLabels);
 
             // whose it is, on a key in the tower's spare bay
             RectTransform panel = Panel(place, "Station " + s + " panel", new Vector3(towerX, TowerBlankBay, towerFront - 0.003f), Vector3.zero,
@@ -536,6 +556,7 @@ public static partial class ShaderEmuBuilder
             EmuKeyboard keyboard = Udon<EmuKeyboard>(keysGo);
             keyboard.panelWidth = layout.panelWidth;
             keyboard.panelHeight = layout.panelHeight;
+            StationCaps(keyboard);
             keyboard.keyX = real.ConvertAll(i => layout.keyX[i]).ToArray();
             keyboard.keyY = real.ConvertAll(i => layout.keyY[i]).ToArray();
             keyboard.keyW = real.ConvertAll(i => layout.keyW[i]).ToArray();
@@ -659,6 +680,8 @@ public static partial class ShaderEmuBuilder
             pointer.tubeBulge = 1.8f;      // world/pc.py's BULGE
             pointer.tubeGap = 0.024f;      // the plate is 12 mm before the glass's rim, the glass's middle 12 mm behind that
             pointer.tubeFill = TubeFill;
+            pointer.physicalLabels = physicalLabels.ToArray();
+            pointer.steadyLabels = steadyLabels.ToArray();
             TouchPanels(world, pointer);   // the places' keys made anew: a fingertip's list too
             Apply(pointer);
             stations.pointer = pointer;

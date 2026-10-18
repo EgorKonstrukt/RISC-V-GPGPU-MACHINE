@@ -75,7 +75,8 @@ sends the press to `EmuStations.Act` with the place's number):
 | tower: POWER of a free place | anybody's: their machine starts, and the place is theirs |
 | tower: EXIT, in the spare bay | the place is given up |
 | monitor: TERM +, TERM - | the next and the last of the console's four terminals |
-| monitor: CONSOLE, DISPLAY | the tube shows the console, the display |
+| monitor: CONSOLE, DISPLAY | the tube shows the console, the display; on another's place, for this visitor alone |
+| monitor: Physical buttons, Steady pointer | anybody's: this visitor's own switches, as the control panel's |
 | monitor: LINKS ON, LINKS OFF | the links panel (`docs/system/fetch.md`) before this tube, small; away again |
 
 A lamp over LINKS ON is lit while the owner's browser wants addresses pasted.
@@ -95,6 +96,9 @@ the wall's control panel shows too (`EmuMachine.FetchSays`).
 **Console, then display.** A tube shows the console while its owner's machine has no display
 and turns to the display when it has one, and back when it is gone (`tubeFor`, `tubeHad` in
 `EmuStations.Assign`, written to `stationMode`); between the two CONSOLE and DISPLAY choose.
+On somebody else's place CONSOLE, DISPLAY and the place's key turn that tube for this visitor
+alone (`localMode`, `EmuStations.Look`): its owner's choice is untouched, and the choice is
+forgotten when the place changes hands. Their console comes in their stream whatever they show.
 
 The tower's third lamp, the disk's, is a dull red lens, and before it a red lamp that flickers
 (`Blink.shader`, `diskLamps`): sixteen bits, an eighth of a second each, set where core 0's
@@ -133,6 +137,12 @@ panel's Volume (`EmuSound.volumeSlider`), which moves with it both ways (`EmuSta
 The sound is each visitor's own and is not shared, so only the owner's slider is interactable and
 shows their volume. To test in play mode: `Power` on "Station 0", then set "Station 0
 volume/Volume slider"'s value: the panel's Volume follows; set the panel's: the monitor's follows.
+
+**The pointer's switches** stand either side of the volume (`StationSwitches`, "Station N physical"
+and "Station N steady"): Physical buttons and Steady pointer, the control panel's switches
+(`EmuPointer.PhysicalButtons`, `SteadyPointer`), every visitor's own at any place; all the labels
+follow (`physicalLabels`, `steadyLabels`). "ShaderEmu/Add the monitors' pointer switches to the
+open scene" puts them into a built scene, without a bake.
 
 To test in play mode: `SendCustomEvent("ResetKey")` and the like on "Station N tower hot" and
 "Station N monitor hot" of one's own place and of another; only one's own may change

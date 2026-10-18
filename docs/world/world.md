@@ -257,7 +257,10 @@ that bone's length again) and
   under it (`docs/machine/input.md`); "ShaderEmu/Add the monitors' volume sliders and the towers'
   new speeds to the open scene" makes the list again too.
 - A press shows on the keyboards as the key's colour (`EmuKeyboard.Paint`) and on a panel as the
-  button's tint; no cap, key or modelled button moves.
+  button's tint. A held key's cap sinks in the keyboard's model, 0.4 of its height, its feet
+  staying: `EmuKeyboard.Sink` gives each hand's key as a box in `_UdonPress0`/`1` globals, and
+  `Plate.shader`'s vertex stage (the caps' material) moves what lies in it. "ShaderEmu/Sink held
+  keys' caps in the open scene" sets the caps' depths (`capUnder`, `capHigh`) on a built scene.
 
 The holodecks' consoles (keys of a plate, not buttons) are not on the list. Not yet tried in a
 headset; in the editor the switch and its label were.

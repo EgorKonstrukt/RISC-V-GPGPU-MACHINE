@@ -93,6 +93,7 @@ public class EmuPointer : UdonSharpBehaviour
     // on a display is smoothed by how fast it moves, a press holds the pointer where it began
     // until the beam has gone DragSlop pixels, and a second press soon after lands on the first.
     public TextMeshProUGUI steadyLabel;
+    public TextMeshProUGUI[] physicalLabels, steadyLabels;   // the same switches on each classroom monitor
     [HideInInspector] public bool steady = true;
     public float steadyCutoff = 1.2f, steadyBeta = 0.012f;   // a one-euro filter: Hz at rest, and per pixel a second
     public float dragSlop = 7f, doubleSlop = 10f, doubleTime = 0.5f;   // pixels, pixels, seconds
@@ -770,8 +771,11 @@ public class EmuPointer : UdonSharpBehaviour
 
     private void ShowPhysical()
     {
-        if (physicalLabel != null) physicalLabel.text = physical ? "Physical buttons: ON" : "Physical buttons: OFF";
-        if (steadyLabel != null) steadyLabel.text = steady ? "Steady pointer: ON" : "Steady pointer: OFF";
+        string touch = physical ? "Physical buttons: ON" : "Physical buttons: OFF", still = steady ? "Steady pointer: ON" : "Steady pointer: OFF";
+        if (physicalLabel != null) physicalLabel.text = touch;
+        if (steadyLabel != null) steadyLabel.text = still;
+        if (physicalLabels != null) foreach (TextMeshProUGUI label in physicalLabels) if (label != null) label.text = touch;
+        if (steadyLabels != null) foreach (TextMeshProUGUI label in steadyLabels) if (label != null) label.text = still;
     }
 
     // ---- triggers and grips ----

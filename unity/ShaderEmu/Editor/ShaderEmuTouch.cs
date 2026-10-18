@@ -148,4 +148,48 @@ public static partial class ShaderEmuBuilder
         EditorSceneManager.MarkSceneDirty(root.scene);
         Debug.Log("[ShaderEmu] the monitors' volume sliders and the towers' speeds are in the scene (not saved)");
     }
+
+    // The pointer's two switches on every classroom monitor, beside its volume (EmuPointer). No bake.
+    [MenuItem("ShaderEmu/Add the monitors' pointer switches to the open scene")]
+    public static void AddPointerSwitches()
+    {
+        GameObject root = GameObject.Find("ShaderEmu");
+        EmuStations stations = Object.FindObjectOfType<EmuStations>();
+        EmuPointer pointer = Object.FindObjectOfType<EmuPointer>();
+        if (root == null || stations == null || pointer == null) { Debug.LogError("[ShaderEmu] no world in the open scene: run ShaderEmu/Build world"); return; }
+        UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+        StationsPlan plan = ReadStations();
+        List<TextMeshProUGUI> physical = new List<TextMeshProUGUI>(), steady = new List<TextMeshProUGUI>();
+        for (int s = 0; s < plan.places.Length; s++)
+        {
+            Transform place = stations.transform.Find("Station " + s);
+            EmuPlace own = place != null ? place.GetComponent<EmuPlace>() : null;
+            if (own == null) { Debug.LogError("[ShaderEmu] no Station " + s); continue; }
+            StationSwitches(place, s, own, plan, physical, steady);
+        }
+        RetroNewPanels();
+        pointer.physicalLabels = physical.ToArray();
+        pointer.steadyLabels = steady.ToArray();
+        TouchPanels(root.transform, pointer);
+        Apply(pointer);
+        EditorSceneManager.MarkSceneDirty(root.scene);
+        Debug.Log("[ShaderEmu] the monitors' pointer switches are in the scene (not saved)");
+    }
+
+    // A held key's cap sinks (EmuKeyboard.Sink, Plate.shader): the keyboards' caps' depths, into a built scene.
+    [MenuItem("ShaderEmu/Sink held keys' caps in the open scene")]
+    public static void AddSinkingCaps()
+    {
+        EmuStations stations = Object.FindObjectOfType<EmuStations>();
+        if (stations == null) { Debug.LogError("[ShaderEmu] no world in the open scene: run ShaderEmu/Build world"); return; }
+        foreach (EmuKeyboard keyboard in Object.FindObjectsOfType<EmuKeyboard>(true))
+        {
+            UdonSharpEditorUtility.CopyUdonToProxy(keyboard);
+            if (System.Array.IndexOf(stations.keyboards, keyboard) >= 0) StationCaps(keyboard);
+            else DenCaps(keyboard);
+            Apply(keyboard);
+        }
+        EditorSceneManager.MarkSceneDirty(stations.gameObject.scene);
+        Debug.Log("[ShaderEmu] held keys' caps sink (not saved)");
+    }
 }

@@ -2,8 +2,8 @@ using UdonSharp;
 using UnityEngine;
 
 // One classroom place's own keys (docs/world/stations.md): the keys modelled on its monitor and its
-// tower. A key's press comes here, and goes to EmuStations with the place's number: only the
-// place's owner's presses do anything.
+// tower. A key's press comes here, and goes to EmuStations with the place's number: the
+// owner's presses work their machine; anybody's switch their own view and pointer.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuPlace : UdonSharpBehaviour
 {
@@ -21,6 +21,8 @@ public class EmuPlace : UdonSharpBehaviour
     public void CloseLinks() { stations.Act(place, 7); }         // LINKS OFF
     public void OpenLinks() { stations.Act(place, 8); }          // LINKS ON
     public void Leave() { stations.Act(place, 9); }              // the tower's EXIT: the place is given up
+    public void PhysicalButtons() { stations.Act(place, 10); }   // the monitor's switches: this visitor's own settings
+    public void SteadyPointer() { stations.Act(place, 11); }
     public void SpeedMoved() { stations.SpeedMoved(place, speed); }
     public void VolumeMoved() { stations.VolumeMoved(place, volume); }
 }

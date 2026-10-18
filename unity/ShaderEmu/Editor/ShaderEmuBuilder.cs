@@ -1175,6 +1175,10 @@ public static partial class ShaderEmuBuilder
         TouchPanels(world, pointer);   // every panel's buttons, for a fingertip
         Apply(pointer);
         Retro(world);     // and the panels in the manner of the room's decade (ShaderEmuRetro.cs)
+        ConsoleSwitch();      // the holodecks' Hide key and the button that brings a console back
+        AddHoloKeyboard();    // their keyboard: a copy of the den's as Retro left it
+        TouchPanels(world, pointer);   // again, for the keys those two made
+        Apply(pointer);
 
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(scene);
