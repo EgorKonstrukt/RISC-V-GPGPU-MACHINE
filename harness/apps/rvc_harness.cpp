@@ -1413,12 +1413,12 @@ int main(int argc, char** argv) {
             consoleOut(g_cpuConsole);
             g_cpuConsole.clear();
             // RAM: the GPU's memory and the control words whenever they were written, Linux's own
-            // (which only the memory view shows) four times a second
+            // (which the memory view shows and GPU draws may read) four times a second
             const uint64_t devices = 0xffull << 24;   // 0x86000000 to 0x88000000
             uint64_t upload = dirty_bands & devices;
             cpuLow |= dirty_bands & ~devices;
             dirty_bands = 0;
-            if (cpuFirst || (backend.viewOpen() && wall - cpuLowAt >= 0.25)) {
+            if (cpuFirst || wall - cpuLowAt >= 0.25) {
                 upload |= cpuLow;
                 cpuLow = 0;
                 cpuLowAt = wall;

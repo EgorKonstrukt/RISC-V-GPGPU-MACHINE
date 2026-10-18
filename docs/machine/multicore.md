@@ -736,6 +736,10 @@ What a program has to keep to:
   own work is the usual order: the pass that ends next carries the job and its data over
   together. `mcw_wait()` ends passes until the worker has answered. Code that both cores run
   at once must not expect to see the other's stores at all.
+- **A job posted to a worker still at another runs after it**: the worker looks at its job
+  word again before it sleeps (`mcw_loop`). A worker sleeps until that word differs from what
+  it was when the pass began, so in a program linked before 19 October 2026 such a post was
+  never run (Half-Life's logo film on a worker, then a libmedia loop that took that worker).
 - **Sixteen bytes, one writer a pass**, and this holds for all of the program's memory now:
   two variables side by side are one texel. Give a worker whole texels to write: rows of a
   picture whose width is a multiple of 16, buffers from `mcw_alloc()` or `posix_memalign(16)`

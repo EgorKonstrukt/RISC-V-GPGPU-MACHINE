@@ -57,17 +57,19 @@ before, 65 s after.
 
 ## GPU memory
 
-The pool is 7.27 MB. The menu's pictures (`pfnPIC_Load`) and the static light maps are marked
-`hlglSpillable`: when the pool has no room, those not drawn for two frames move to RAM and come
-back when drawn. Blocks of 64 KB and more are taken from the top of the pool. Greyscale and
-4-bit pictures are paletted too. Without this the menu's pictures left no room for the light
-maps' atlas or the kept level, and the level was drawn unlit.
+The pool is 28 MB of RAM (`HL_POOL_MB`), which the GPU reads as it reads its own memory: on
+the machine without an MMU a pointer is its address, the GPU memory's mapping too.
+It was the GPU memory's 7.27 MB left over, and with the desktop open the level was drawn unlit
+in the world. `HL_POOL_MB=0` is that pool again. The menu's pictures (`pfnPIC_Load`) and the
+static light maps are marked `hlglSpillable`: when the pool has no room, those not drawn for two
+frames move out and come back when drawn. Blocks of 64 KB and more are taken from the top of the
+pool. Greyscale and 4-bit pictures are paletted too.
 
 ## The start
 
 As the demo's launcher did: its splash (`logo.bmp`, drawn into the window as soon as the engine
 starts, `SE_Splash` in `vid_shaderemu.c`; `-nosplash` leaves it out), the opening film
-(`media/intro.avi`, the "Game of the Year" montage, 54 s, which Escape skips), then the main menu
+(`media/intro.avi`, the "Game of the Year" montage, 54 s, which Escape or a click skips; `-nointro` leaves it out), then the main menu
 with the animated Uplink logo over it (`media/uplink.avi` as `logo.avi`). The menu is mainui's
 with `linux/halflife/mainui.patch`: for a game of one player (`type "singleplayer_only"` in
 `gameinfo.txt`, which the engine itself overrides for a folder called `valve`) it has the demo's
@@ -98,7 +100,10 @@ a frame, frames a second at 428 passes a second):
 
 The menu was 2,070k a frame (1.7). The logo film (640 x 100, 110 frames, mostly deltas) is
 decoded whole once on a worker and kept (`film_give` in `avi_shaderemu.c`; a film of 8 MB
-decoded at most and no sound; `FILM=read` decodes as it plays), and a frame's tiles are copied
+decoded at most and no sound; `FILM=read` decodes as it plays); its first frame is held until
+then, about 6 s on the card (decoded on core 0 as well, the menu's first 8 s were 1.9 fps and
+New game in them never loaded the level, "A job posted to a worker still at another" in
+`docs/machine/multicore.md`), and a frame's tiles are copied
 into its texture on a worker (`hlglTexLater`). The menu's text is drawn again from its quads of
 the last time (`UI_DrawString` in `mainui.patch`, `CL_DrawString` in `xash3d.patch`, through
 `hlglCaptureTo` and `hlglDrawQuads`): the first character is drawn and compared, the last drawn

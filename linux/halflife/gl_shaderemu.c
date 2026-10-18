@@ -1148,12 +1148,19 @@ int hlglOpen(unsigned int nano_x_window) {
     log_uploads = getenv("HLGL_LOG") != 0, log_frames = getenv("HLGL_FRAMES") != 0, log_picsum = getenv("HLGL_PICSUM") != 0, log_sum = getenv("HLGL_SUM") ? atoi(getenv("HLGL_SUM")) : 0;
     if (log_frames) fprintf(stderr, "hlgl: hlglOpen at %p\n", (void*)hlglOpen);   // (a flat program's place, for a profile)
     for (int i = 0; i < MAX_NAMES; i++) textures[i].at = NOWHERE;
-    // the pool: the display's spare memory when there is some, then what seglMemory has left,
-    // with what lies between them as a block that never leaves
-    unsigned int spare_size, main_size = seglMemoryLeft() & ~15u;
-    uint8_t* spare = seglMemorySpare(&spare_size);
-    uint8_t* main_part = seglMemory(main_size);
+    // the pool: a block of RAM, which the GPU reads as its own memory (HL_POOL_MB, 28 by default);
+    // else the display's spare memory when there is some, then what seglMemory has left, with
+    // what lies between them as a block that never leaves
+    unsigned int spare_size = 0, main_size = (getenv("HL_POOL_MB") ? (unsigned)atoi(getenv("HL_POOL_MB")) : 28) << 20;
+    uint8_t* spare = 0;
+    uint8_t* main_part = main_size ? aligned_alloc(4096, main_size) : 0;
+    if (!main_part) {
+        main_size = seglMemoryLeft() & ~15u;
+        spare = seglMemorySpare(&spare_size);
+        main_part = seglMemory(main_size);
+    }
     if (!main_part) return -1;
+    if (log_frames) fprintf(stderr, "hlgl: pool of %u KB at %p\n", (main_size + spare_size) >> 10, (void*)main_part);
     pool = spare ? spare : main_part;
     pool_size = main_size + spare_size;
     block_count = 0;

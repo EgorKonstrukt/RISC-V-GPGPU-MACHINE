@@ -110,6 +110,8 @@ uint32_t mcw_loop(uint32_t core)
 			answer->result = fn(job->a0, job->a1);
 			answer->done = at;
 			last = at;
+			/* (looked at again first: a job posted while this one ran is no change to sleep on) */
+			continue;
 		}
 		mc_next_pass();	/* asleep until the job's first word changes */
 	}

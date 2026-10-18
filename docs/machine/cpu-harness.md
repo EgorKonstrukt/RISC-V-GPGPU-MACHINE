@@ -60,8 +60,8 @@ input and the control words stay the shader's passes, which is where they are ch
 - What it wrote of RAM since the last time goes into the state texture, in 4 MB bands (72; the
   shader's mask has 32 bits, bit b standing for bands b, b + 32 and b + 64, `ram_bands` in
   `src/types.h`, and the GPU's bands are drawn every commit, `_CommitAlways`): the
-  GPU's memory and the control words every time they changed, Linux's own RAM (which only
-  the memory view shows) four times a second while the view is open. The commit pass is told those bands (state
+  GPU's memory and the control words every time they changed, Linux's own RAM four times a
+  second (the memory view shows it, and a GPU draw may read a texture there: Half-Life's pool). The commit pass is told those bands (state
   texel (41, 0), where the tick pass says which it wrote) and carries them into the buffer it
   draws, as it does the tick's.
 - The frame is then the harness's own without the tick: the commit (which copies a drawn

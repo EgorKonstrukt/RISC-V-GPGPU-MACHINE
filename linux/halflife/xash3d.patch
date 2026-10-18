@@ -1457,6 +1457,26 @@ index 65d340ce..2563075e 100644
  static void BuildGammaTable( const float gamma, const float brightness, const float texgamma, const float lightgamma )
  {
  	float g1, g2, g3;
+diff --git a/engine/client/input/in_keys.c b/engine/client/input/in_keys.c
+index d2617170..0422717d 100644
+--- a/engine/client/input/in_keys.c
++++ b/engine/client/input/in_keys.c
+@@ -712,6 +712,15 @@ void GAME_EXPORT Key_Event( int key, int down )
+ 	const char *kb = keys[key].binding;
+ 	keys[key].down = down ? true : false;
+ 
++#if XASH_SHADEREMU
++	// a click skips a film as Escape does
++	if( down && key >= K_MOUSE1 && key <= K_MOUSE5 && cls.key_dest == key_game && cls.state == ca_cinematic )
++	{
++		CL_Escape_f();
++		return;
++	}
++#endif
++
+ #ifdef HACKS_RELATED_HLMODS
+ 	if(( cls.key_dest == key_game ) && ( cls.state == ca_cinematic ) && ( key != K_ESCAPE || !down ))
+ 	{
 diff --git a/engine/client/parse/cl_parse.c b/engine/client/parse/cl_parse.c
 index 29acaf73..1cc58be2 100644
 --- a/engine/client/parse/cl_parse.c

@@ -291,6 +291,11 @@ qboolean AVI_Think( movie_state_t *Avi )
 			return false;
 		goto draw;
 	}
+	if( Avi->film && Avi->made )	// (its worker decodes it still: the first frame, held, not decoded here too)
+	{
+		Avi->started = now - ( Avi->decoded + 1 ) * Avi->frame_time;
+		goto draw;
+	}
 	if( !Avi->started || Avi->paused )
 		Avi->started = now - ( Avi->decoded + 1 ) * Avi->frame_time;
 	if( Avi->audio && !Avi->sound_on && Avi->decoded < 0 && !Avi->paused )
