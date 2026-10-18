@@ -10,10 +10,10 @@ public class EmuPlace : UdonSharpBehaviour
     public EmuStations stations;
     public int place;
     public UnityEngine.UI.Slider speed;   // the speed's slider on the tower, where the floppy drive was
+    public UnityEngine.UI.Slider volume;  // the sound's volume on the monitor, over its keys
 
     public void Power() { stations.Act(place, 0); }
     public void ResetKey() { stations.Act(place, 1); }   // (Reset is Unity's own, called when a component is added)
-    public void Turbo() { stations.Act(place, 2); }
     public void NextTerminal() { stations.Act(place, 3); }       // the monitor's TERM +
     public void LastTerminal() { stations.Act(place, 4); }       // TERM -
     public void ShowConsole() { stations.Act(place, 5); }        // CONSOLE
@@ -22,4 +22,5 @@ public class EmuPlace : UdonSharpBehaviour
     public void OpenLinks() { stations.Act(place, 8); }          // LINKS ON
     public void Leave() { stations.Act(place, 9); }              // the tower's EXIT: the place is given up
     public void SpeedMoved() { stations.SpeedMoved(place, speed); }
+    public void VolumeMoved() { stations.VolumeMoved(place, volume); }
 }

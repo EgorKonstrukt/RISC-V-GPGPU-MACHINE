@@ -442,7 +442,7 @@ def classroom(b):
     # (flat lists: Unity's JsonUtility reads no list of lists. tables: x, z of each; a hub's ports: x, y, z, place of each)
     json.dump({"places": places, "table": TABLE_TOP, "keyScale": pc.KEY_SCALE, "keyboardZ": pc.KEYBOARD_Z, "setX": pc.SET_X,
                "glass": list(pc.GLASS), "tower": [pc.TOWER_X, pc.TOWER_Z, pc.FRONT, pc.TOWER_HIGH],
-               "speed": [pc.SPEED_X, pc.SPEED_DOWN, pc.SPEED_W, pc.SPEED_H], "turbo": pc.TURBO_X, "reset": pc.RESET_X,
+               "speed": [pc.SPEED_X, pc.SPEED_DOWN, pc.SPEED_W, pc.SPEED_H], "reset": pc.RESET_X,
                "power": list(pc.POWER_KEY), "osd": [pc.OSD_X, pc.OSD_PITCH, pc.CHIN], "led": pc.LED_X, "lamps": list(pc.LAMPS_X),
                "tables": [v for z in ROWS_Z for x in TABLES_X for v in (x, z)],
                "keyboardHigh": pc.TRAY_LOW, "keyboardSlope": pc.KEYBOARD_SLOPE, "keyboardTops": pc.KEY_TOPS,

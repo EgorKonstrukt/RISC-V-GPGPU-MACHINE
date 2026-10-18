@@ -11,7 +11,7 @@ The computer is `world/pc.py`, modelled to real sizes: a 29 inch presentation mo
 inches seen: 549 x 411 mm, so that a visitor without a headset can read it; case 645 x 533 x 518 mm)
 in two mouldings with a seam, slotted where its housing narrows; a mini tower on the table with
 a 5.25 inch CD-ROM drive, a spare bay that holds the place's key, a plain front under them
-where Unity lays the speed slider, power, reset and turbo keys, lamps, a lock and a grille, and
+where Unity lays the speed slider, power and reset keys, lamps, a lock and a grille, and
 behind it a PS/2 power supply's plate (80 mm fan, mains inlet and outlet, voltage switch), the
 board's sockets and seven card slots 0.8 inch apart, a sound card in the fourth (three jacks and
 the joystick's socket), a network card in the sixth (thin coax, twisted pair and a link lamp); a
@@ -71,7 +71,7 @@ sends the press to `EmuStations.Act` with the place's number):
 
 | Key | Does |
 |---|---|
-| tower: POWER, RESET, TURBO | the owner's machine on and off, its reset, its speed mode |
+| tower: POWER, RESET | the owner's machine on and off, its reset (the speed mode is the scope panel's) |
 | tower: POWER of a free place | anybody's: their machine starts, and the place is theirs |
 | tower: EXIT, in the spare bay | the place is given up |
 | monitor: TERM +, TERM - | the next and the last of the console's four terminals |
@@ -117,19 +117,26 @@ badge stays.
 
 **The speed's slider** on each tower stands where its floppy drive was, under the place's key
 (`StationSpeed` in `ShaderEmuStations.cs`, "Station N speed"): Snail to Turbo over it, and under
-it the instructions a frame of each step, 4k, 8k, 16k, 33k, 66k and 131k: steps 1 to 6 of the
+it the instructions a frame of each step, 4k, 8k, 16k, 32k, 64k, 128k and 256k: steps 1 to 7 of the
 control panel's speed slider (`EmuMachine.speedSlider`, 2,048 doubled a step), which moves with
 it. It shows its owner's machine's step to everybody: the step travels in their `EmuShare` as
 `speed`, which `EmuStations.Assign` keeps equal to their slider. Only the owner can move it: on
 anybody else's client it is not interactable, and a move that gets through is put back
-(`EmuStations.SpeedMoved`). A free place's shows step 4. A step outside 1 to 6 set on the
+(`EmuStations.SpeedMoved`). A free place's shows step 4. Step 0 set on the
 control panel shows at the slider's end. To test in play mode: `Take0` on "Stations", then set
 "Station 0 speed/Speed slider"'s value: the control panel's slider follows; set another
 place's: it goes back. Set the control panel's: the tower's follows within half a second.
 
-To test in play mode: `SendCustomEvent("Turbo")` and the like on "Station N tower hot" and
+**The volume's slider** on each monitor lies on the bezel between its row of keys and the glass
+(`StationVolume`, "Station N volume"): the owner's own machine's sound, 0 to 100 as the control
+panel's Volume (`EmuSound.volumeSlider`), which moves with it both ways (`EmuStations.VolumeMoved`).
+The sound is each visitor's own and is not shared, so only the owner's slider is interactable and
+shows their volume. To test in play mode: `Power` on "Station 0", then set "Station 0
+volume/Volume slider"'s value: the panel's Volume follows; set the panel's: the monitor's follows.
+
+To test in play mode: `SendCustomEvent("ResetKey")` and the like on "Station N tower hot" and
 "Station N monitor hot" of one's own place and of another; only one's own may change
-anything (`EmuMachine`'s speed mode, `EmuTerminal.Shown()`, `stationMode`, the links panel's
+anything (`EmuMachine.ResetMachine`, `EmuTerminal.Shown()`, `stationMode`, the links panel's
 place). `speeds[N]`'s `_All` and `_Core` are ten times the machine's `mipsAll` and `mipsCore`.
 
 ## Strips, the network, stickers

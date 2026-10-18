@@ -42,6 +42,8 @@ public class EmuStations : UdonSharpBehaviour
     // The speed's slider on each tower: its owner's machine's speed step, which only the owner moves
     // (their EmuShare's speed carries it to everybody); the steps of EmuMachine.speedSlider.
     public Slider[] speedSliders;
+    // Each monitor's volume (EmuPlace.volume): the owner's own machine's sound, as the control panel's.
+    public Slider[] volumeSliders;
 
     private const int FirstSurface = 1;   // of EmuStreams' surfaces: the classroom's are 1 to 12
     private const int Steady = 0xffff, Beckon = 0x00ff;
@@ -154,7 +156,6 @@ public class EmuStations : UdonSharpBehaviour
         }
         if (what == 0) machine.Power();
         else if (what == 1) machine.ResetMachine();
-        else if (what == 2) machine.SpeedMode();
         else if (what == 3) terminal.ShowTab((terminal.Shown() + 1) % EmuTerminal.Tabs);
         else if (what == 4) terminal.ShowTab((terminal.Shown() + EmuTerminal.Tabs - 1) % EmuTerminal.Tabs);
         else if (what == 5) SetMode(s, 1);
@@ -182,6 +183,13 @@ public class EmuStations : UdonSharpBehaviour
             mine.speed = step;
             hub.StateOut();
         }
+    }
+
+    // A monitor's volume was moved: its owner's sound takes it (the panel's slider applies it).
+    public void VolumeMoved(int s, Slider slider)
+    {
+        if (slider == null || s != Own() || machine.sound == null || machine.sound.volumeSlider == null) return;
+        machine.sound.volumeSlider.value = slider.value;
     }
 
     // Whose each place is: of those who name it and have their machine on, the visitor who came first.
@@ -320,6 +328,14 @@ public class EmuStations : UdonSharpBehaviour
                 }
                 bool mineToMove = owner[s] == myId;
                 if (slider.interactable != mineToMove) slider.interactable = mineToMove;
+            }
+            if (volumeSliders != null && s < volumeSliders.Length && volumeSliders[s] != null)
+            {
+                Slider volume = volumeSliders[s];
+                bool ours = owner[s] == myId;
+                if (ours && machine.sound != null && machine.sound.volumeSlider != null && volume.value != machine.sound.volumeSlider.value)
+                    volume.SetValueWithoutNotify(machine.sound.volumeSlider.value);
+                if (volume.interactable != ours) volume.interactable = ours;
             }
             if (linkLamps != null && s < linkLamps.Length && linkLamps[s] != null) linkLamps[s].SetActive(owner[s] == myId && machine.LinksWanted());
             if (powerLamps != null && s < powerLamps.Length && powerLamps[s] != null && powerLamps[s].activeSelf != (owner[s] > 0))

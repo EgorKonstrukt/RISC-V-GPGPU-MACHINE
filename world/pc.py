@@ -496,7 +496,7 @@ def rear(b, w, h, back):
 
 
 # the tower's keys a visitor presses, from its middle line (and the power key's depth below its top)
-TURBO_X, RESET_X, POWER_KEY = 0.004, 0.020, (0.045, 0.226)
+RESET_X, POWER_KEY = 0.020, (0.045, 0.226)
 LAMPS_X = (-0.041, -0.027, -0.013)   # the tower's lamps: power, turbo, disk
 # the monitor's six keys under the glass, left to right as their legend names them
 OSD_X, OSD_PITCH = 0.02, 0.022
@@ -528,7 +528,7 @@ def tower(b):
     cd_drive(b, 0, h - 0.04)
     drive_gap(b, 0, h - 0.088, BAY_525[0] + 0.002, BAY_525[1] + 0.001)
     b.box((0, h - 0.088, FRONT - 0.0006), (BAY_525[0], BAY_525[1] - 0.001, 0.0016), "PlasticBeige", bevel=0.0008, segs=1)
-    # the panel: the lock, three lamps over their names, turbo and reset over theirs, the speed
+    # the panel: the lock, three lamps over their names, reset over its name, the speed
     cy = h - SPEED_DOWN
     b.box((0, cy, FRONT - 0.0004), (0.156, 0.046, 0.001), "PlasticCase", bevel=0.0004, segs=1)
     b.cyl((-0.06, cy, FRONT - 0.002), 0.008, 0.004, "MetalSteel", segs=20, bevel=0.001, rot=(90, 0, 0))
@@ -536,9 +536,8 @@ def tower(b):
     for x, mat, name in ((LAMPS_X[0], "Led", "power"), (LAMPS_X[1], "Amber", "turbo"), (LAMPS_X[2], "LampRed", "hdd")):   # (the disk's: a dull red lens)
         b.box((x, cy + 0.005, FRONT - 0.0016), (0.007, 0.003, 0.002), mat, bevel=0.0006, segs=1)
         legend(b, name, x, cy - 0.005, FRONT - 0.0011, back=False)
-    for x, name in (TURBO_X, "turbo"), (RESET_X, "reset"):
-        b.box((x, cy + 0.004, FRONT - 0.003), (0.013, 0.008, 0.004), "PlasticBeige", bevel=0.0016, segs=2)
-        legend(b, name, x, cy - 0.007, FRONT - 0.0011, back=False)
+    b.box((RESET_X, cy + 0.004, FRONT - 0.003), (0.013, 0.008, 0.004), "PlasticBeige", bevel=0.0016, segs=2)
+    legend(b, "reset", RESET_X, cy - 0.007, FRONT - 0.0011, back=False)
     speed_display(b, SPEED_X, cy)
     # under it the power key in its well, at the right, over its name; the badge at the left
     px, py = POWER_KEY[0], h - POWER_KEY[1]

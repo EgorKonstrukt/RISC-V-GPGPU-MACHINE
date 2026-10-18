@@ -114,4 +114,38 @@ public static partial class ShaderEmuBuilder
         EditorSceneManager.MarkSceneDirty(root.scene);
         Debug.Log("[ShaderEmu] physical buttons and the towers' speed sliders are in the scene (not saved)");
     }
+
+    // The towers' speed sliders to 256k, their reset key alone (the turbo key left the model,
+    // world/bake_pc.py) and a volume slider on each monitor, into a built scene. No bake.
+    [MenuItem("ShaderEmu/Add the monitors' volume sliders and the towers' new speeds to the open scene")]
+    public static void AddVolumesAndSpeeds()
+    {
+        GameObject root = GameObject.Find("ShaderEmu");
+        EmuStations stations = Object.FindObjectOfType<EmuStations>();
+        EmuPointer pointer = Object.FindObjectOfType<EmuPointer>();
+        if (root == null || stations == null || pointer == null) { Debug.LogError("[ShaderEmu] no world in the open scene: run ShaderEmu/Build world"); return; }
+        UdonSharpEditorUtility.CopyUdonToProxy(stations);
+        UdonSharpEditorUtility.CopyUdonToProxy(pointer);
+        StationsPlan plan = ReadStations();
+        int count = plan.places.Length;
+        stations.speedSliders = new Slider[count];
+        stations.volumeSliders = new Slider[count];
+        for (int s = 0; s < count; s++)
+        {
+            Transform place = stations.transform.Find("Station " + s);
+            EmuPlace own = place != null ? place.GetComponent<EmuPlace>() : null;
+            if (own == null) { Debug.LogError("[ShaderEmu] no Station " + s); continue; }
+            UdonSharpEditorUtility.CopyUdonToProxy(own);
+            stations.speedSliders[s] = StationSpeed(place, s, own, plan);
+            stations.volumeSliders[s] = StationVolume(place, s, own, plan);
+            TowerHotKeys(place, s, own, plan);
+            Apply(own);
+        }
+        Apply(stations);
+        RetroNewPanels();
+        TouchPanels(root.transform, pointer);
+        Apply(pointer);
+        EditorSceneManager.MarkSceneDirty(root.scene);
+        Debug.Log("[ShaderEmu] the monitors' volume sliders and the towers' speeds are in the scene (not saved)");
+    }
 }

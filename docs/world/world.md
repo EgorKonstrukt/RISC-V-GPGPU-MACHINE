@@ -250,11 +250,14 @@ that bone's length again) and
 - presses a button of a panel once when the tip reaches it, and again only after it has left
   it (`Button.OnSubmit`, which is what VRChat's own click does), and moves a slider to where the
   tip is across it. The panels are every canvas with a collider whose buttons or sliders a
-  laser presses (`TouchPanels`: 235 buttons and 47 sliders on 81 panels after the room was remodelled on 18 October 2026),
+  laser presses (`TouchPanels`: 223 buttons and 59 sliders on 93 panels since the monitors' volume sliders),
   found by `Physics.OverlapSphere` round the tip, 5 cm. "Build world" and "Put the modelled room into the open scene"
   make the list again; "ShaderEmu/Add physical buttons and the classroom's speed sliders to the
   open scene" adds the switch and the list to a built scene, with the steady pointer's switch
-  under it (`docs/machine/input.md`).
+  under it (`docs/machine/input.md`); "ShaderEmu/Add the monitors' volume sliders and the towers'
+  new speeds to the open scene" makes the list again too.
+- A press shows on the keyboards as the key's colour (`EmuKeyboard.Paint`) and on a panel as the
+  button's tint; no cap, key or modelled button moves.
 
 The holodecks' consoles (keys of a plate, not buttons) are not on the list. Not yet tried in a
 headset; in the editor the switch and its label were.
