@@ -1,10 +1,17 @@
-# The machine in one small compute shader (an experiment)
+# The machine in compute shaders (an experiment)
 
-`rv32_min.hlsl` is the no-MMU machine's processor (`docs/system/nommu.md`) as one thread of a
-compute shader, in 301 lines: RV32IMAF, entered in supervisor mode, SBI answered by the
-shader, the CSRs as fields (`CSR_FIELDS`), RAM a byte address buffer read and written
-directly. No fast path, no write cache, no TLB, no devices. It is a reference for what the
-emulation is without the optimisations, and a place to try ideas on; nothing runs it yet.
+Three files, standalone (no includes):
+
+- `rv32_min.hlsl` (334 lines): the no-MMU machine's processor (`docs/system/nommu.md`) as one
+  thread of a compute shader, plain: a reference for what the emulation is without the
+  optimisations, and a place to try ideas on. Core 0 alone.
+- `rv32_min_fast.hlsl` (719 lines): the same, fast, with 255 worker cores (below).
+- `sync.hlsl`: what `rvc_harness --compute` needs to run either as the whole machine, with the
+  display, the GPU device, sound and the rest of the shader machine's devices.
+
+The plain one: RV32IMAF, entered in supervisor mode, SBI answered by the shader, the CSRs as
+fields (`CSR_FIELDS`), RAM a byte address buffer read and written directly. No fast path, no
+write cache, no TLB, no devices.
 
 ## What it is
 
@@ -33,104 +40,189 @@ ends early on `wfi`.
 Not done: `fflags`, the single rounding of `fmadd` (it rounds twice), denormals (the GPU
 flushes them), NaNs made canonical, and a trap on a jump to an address not on a word.
 
-## With a fast path
+## The fast shader: `rv32_min_fast.hlsl`
 
-`rv32_min_fast.hlsl` (376 lines) is the same machine with a loop in front of the general step,
-as the tick has (`fast_run` in `cpu.h`): arithmetic and M, `lui`, `auipc`, the jumps, the
-branches, the floats whose encoding exists, and loads and stores on their own alignment
-inside RAM, run back to back with nothing carried but the registers and pc, the RAM word read
-and written directly. Anything else (a CSR, a system instruction, an atomic, a fetch or an
-access outside RAM, a misaligned one, an encoding that does not exist) leaves the loop where
-it is found, and the general step runs that instruction. None of what the loop runs can
-trap or change what interrupts see, so the interrupt check stays where it was: only after
-the general step says something changed. The arithmetic, a branch's test, the two jump
-offsets and `fmadd` are functions both paths call.
+`rv32_min_fast.hlsl` (719 lines, no includes) is the same machine, fast, with worker cores.
+Rewritten on 18 October 2026; what it was before (a fast loop in front of the general step,
+376 lines) is in the history.
 
-fxc2: 1,791 bytecode instructions (207 flow control), 44,724 bytes. Against `rv32_min.hlsl`
-by the same test as below, with the pass length up to 32 and up to 256: 0 differ in 177,141
-and 42,720 runs (2.1 and 3.8 million instructions) and in 300,000 single instructions. The
-test sees the fast path: the loads' sign extension broken in it alone, 213 of 11,790 runs
-differ. Not timed: nothing dispatches either shader.
+### What a single thread on the card costs
 
-## Running it: rvc_compute_harness
+Measured on the RTX 5070 laptop (a loop of one thread, nothing else): a dependent load of RAM
+45 to 57 ns, a load that misses to the far end of memory 320 ns, a groupshared read 25 to 35, a
+local array (`static uint r[65]`) 50, a branch on a loaded value 20 more than a loaded address,
+a dependent arithmetic operation about 3. And the card runs one thread's work at 1.14 to 1.33
+GHz (P2), not the 3.09 it can: no other load raises it. So an instruction of the old fast loop,
+about 340 ns, was some 100 operations in a row: the fetch, the tests of its kind, the
+register reads, the writes, the loop. What made it faster is fewer operations in that row
+and fewer branches; what did not, below.
 
-`bin\rvc_compute_harness.exe` (`harness/apps/rvc_compute_harness.cpp`) runs either shader on the
-card: the image's `linux_payload.bin` in RAM and `rootfs.bin` as the ROM, a dispatch of `(1, 1,
-1)` a pass, the state and the console's words read back after each, the console typed into
-and printed. The flags are `rvc_harness`'s where they mean the same (`--image`, `--ticks`,
-`--input`, `--expect`/`--send`, `--until`, `--stats-from`, `--seconds`, `--frames`,
-`--fixed-dt`), and `--shader FILE`. It takes the GPU lock: through `tools\gpu_queue.ps1`.
+### How it is fast
 
-The fast shader boots the no-MMU image to its shell in 1.6 s (9,782,704 instructions, 1,241
-passes of 8,192). No GPU, sound or network device and no worker cores, so nothing past the
-console.
+- **Decoded instructions** (`Dec`, 8 bytes a word of RAM, 264 MB): kind, rd, rs1, rs2, rs3 in
+  one word, the immediate in the other, a branch's or jump's target and `lui`/`auipc`'s value
+  worked out. An immediate operand reads x0 as rs2, so `addi` and `add` are one kind. Made the
+  first time a word is run (`decode`); a store clears its word's entry, so an entry is always
+  the word in RAM. Branches and jumps out of RAM are the general path's.
+- **The kinds tested most common first** (counted on the three loads: `add`/`addi` 28 to 33%,
+  `lw` 11 to 14, the other arithmetic 9 to 50, branches 15, `sw` 6 to 12, `lbu` and its kin 7):
+  one `[branch] if` each, the arithmetic of nine kinds chosen by selects with no branch.
+- **Read ahead**: a turn reads the entry of pc + 4 and of a branch's target while it runs the
+  one of pc, and takes the right one at its end with a select. A jump by register reads its
+  target's entry when it knows it.
+- **Two turns a time round the loop** (`turn`, called twice): the loop's test and branch half
+  as often. Four times was slower (the card's instruction cache).
+- **The registers in groupshared** (`r[65]`), not a local array: 8% on two of the loads.
+- M, the floats, an entry to make: the outer loop's. CSRs, `ecall`, atomics, traps: the general
+  step's, as before. The general path is 0.5 to 0.7% of the instructions.
+- Fixed on the way: `fcvt.w.s` of a negative number gave 0 and `fdiv` of two large numbers 0
+  (fxc's conversions, the card's 1 / b; done as the tick does them). The guest's `fptest`: 0 of
+  15 instructions wrong (3 before, also with the old shader).
 
-On 18 October 2026 (RTX 5090, D3D11 + fxc2, passes of 8,192, the clock 2,865 to 2,910
-MHz throughout), millions of instructions a second from where the command printed `START`,
-about 12 s each, one run each, not in turn:
+### What did not pay (each timed on the three loads)
 
-| | `rvc_harness` (the tick) | plain | fast |
-|---|---|---|---|
-| a shell loop | 5.37 | 4.60 | 6.65 |
-| `sha256sum /bin/busybox` in a loop | 7.50 | 5.33 | 6.85 |
-| `gzip -c /bin/busybox` in a loop | 3.40 | 1.26 | 2.07 |
+- A `switch` on the kind (an indirect branch): 10 to 20% slower than the tests.
+- An entry with a tag and a check word (16 bytes, a hashed table): no faster than the raw word.
+- The next instruction's registers read a turn ahead, with forwarding: 25% slower (more
+  operations in the row than the read it hid).
+- The word of a load read before its kind was known: 5 to 10% slower.
+- Pairs fused at decode (`addi` + `addi`, `sw` + `sw` and `lw` + `lw` on one base, `lbu` and a
+  branch on it: 18 to 25% of the pairs): as fast as without; the tests they add cost what they
+  save. A turn of a pair costs as much as one of a single instruction.
+- The body four times a round: 10% slower than twice.
 
-Not yet known: whether the programs computed right on the mini machine (the sums of
-`sha256sum` and of `gzip | sha256sum` against `rvc_cpu`'s were the next check), and how
-much of the difference is the tick's whole machine (256 cores' state, the devices) against
-the processor alone. gzip's loads and stores go to the buffer every time, where the tick has
-its write cache and remembered texels.
+### Cores
+
+A core is a thread group of one thread: `Dispatch(cores)`, core 0 the kernel's, the others
+workers on the mailboxes of `src/mc.h` (`docs/machine/multicore.md`), with the tick's rules:
+while a core's start texel says "MCSU" it starts there (pc, stack) whatever it was doing, in
+user mode with its number in a0; "MCST" parks it; `pause` puts it to sleep on its job word
+as the pass found it, `ebreak` parks it, `fence.i` ends its pass; a trap or `ecall` writes
+the fault record (the count last) and stops it until core 0's resume word changes, a call's
+answer then in a0. A worker that is parked or asleep costs a thread group that reads a few
+words and ends.
+
+What a core stores, the others see from the next pass on, all at once, as on the shader
+machine. A GPU's memory gives no such thing within a dispatch (a store can be seen before an
+earlier one, a cache can hold an old line), and programs made for the machine count on it:
+nxray with 255 workers had a worker call address 0 when it read core 0's half-written words.
+So RAM is three images in one buffer: core 0's, the workers', and both as the last pass left
+them. A core reads and writes its own image and marks the 4 KB page of each store (once in a
+row: a register keeps the last page). After every pass `merge_list` (one thread group of
+1,024) lists the marked pages and writes the dispatch for them, and `merge`, a thread group a
+listed page (`DispatchIndirect`), takes each word as core 0 left it if core 0 changed it, else
+as the workers left it, into all three images, and clears the entries of decoded words that
+changed. Workers see each other's stores at once (on the shader machine a pass later): no
+program tried so far minds. What the merge costs core 0 is nothing that the three loads show.
+
+## Running it
+
+- `bin\rvc_compute_harness.exe` (`harness/apps/rvc_compute_harness.cpp`): either shader with the
+  image's `linux_payload.bin` in RAM and `rootfs.bin` as the ROM, the console typed into and
+  printed, `rvc_harness`'s flags where they mean the same (`--image`, `--ticks`, `--input`,
+  `--expect`/`--send`, `--until`, `--stats-from`, `--seconds`, `--frames`, `--fixed-dt`), and
+  `--shader FILE`, `--cores N` (workers: there is no window system here, so nothing starts
+  them) and `--all-run` (every core runs the image from the start in supervisor mode with its
+  number in a0, up to 8,192 of them: a measurement). It takes the GPU lock.
+- `bin\rvc_harness.exe --compute fast` (or `plain`, or a file): the whole machine, below.
+  `--compute-cores N` (256: core 0 and 255 workers; plain has core 0 alone) and
+  `--compute-passes N` (1: the processor's passes a frame before the devices' passes).
 
 ## The whole machine: `rvc_harness --compute`
 
     bin\rvc_harness.exe --compute fast --desktop --viz        (plain: rv32_min.hlsl, or a file)
 
-The harness as it is, with this shader as its only processor in place of the tick: its window,
+The harness as it is, with this shader as its processor in place of the tick: its window,
 the display, the GPU device, the sound card, the keys and the pointer, the console, `--expect`,
-`--send`, `--until`, `--stats-from`, the fetch and the network. It is `--cpu`
+`--send`, `--until`, `--stats-from`, the fetch and the network, and 255 workers. It is `--cpu`
 (`docs/machine/cpu-harness.md`) with the processor on the card instead of on the host:
 
-- The init frames set the state texture up as ever; then the backend loads the image's
-  `linux_payload.bin` into a RAM buffer of its own (the texture's 126 MB) and `rootfs.bin` as the
-  ROM, and a frame is one pass of the processor (`--ticks`, 8,192) and the devices' passes.
-- The processor marks the 4 MB bands it stores to (State word 90). After its pass `sync.hlsl`
-  puts those bands into the state texture, and writes the core's state rows as the commit and
-  the host read them: the instructions so far (28,0).g, the pc (36,0).a, and in (41,0) the bands
-  the commit carries over into the other buffer, as `--cpu` does. No write cache, no stall.
+- The init frames set the state texture up as ever; then the backend loads the image into the
+  three images of RAM and `rootfs.bin` as the ROM, and a frame is `--compute-passes` passes of
+  the cores, each with its merge, then the devices' passes.
+- `sync.hlsl` puts the 4 MB bands the merges marked into the state texture, and writes core 0's
+  state rows as the commit and the host read them: the instructions so far (28,0).g, the pc
+  (36,0).a, and in (41,0) the bands the commit carries over into the other buffer, as `--cpu`
+  does. No write cache, no stall.
 - The commit, the GPU's draw, the sound card's mix and the control pass are the harness's own.
-  After them `sync.hlsl` takes back into the buffer what they wrote: the control words (256
-  texels at 0x87000000, as `--cpu` copies them whole), the picture the commit copied back for
-  the list drawn last (GPU_COPY: the display's framebuffer or a window's rectangle), and when
-  the host delivered them in this frame the console's input word, the network's ring and a
-  fetch's answer. All of it is on the card, in order: nothing waits for a readback.
-- One core: the shader is compiled without `CORES`, so the control pass reports no workers and
-  the kernel gives none out. Quake III then puts its server, its client's game, its scene and
-  its pictures on the first core by itself ("quake3: the server's frame is on this core").
-- `pause` ends the pass, as on the shader machine (the kernel's `REST`, a program waiting for
-  the next pass). `cycle` and `instret` count the instructions so far (State words 93 and 94):
-  a program's own counts (Quake III's `q3stat:`) work.
+  After them `sync.hlsl` takes back into all three images what they wrote: the control words,
+  the picture the commit copied back for the list drawn last (GPU_COPY), and when the host
+  delivered them in this frame the console's input word, the network's ring, a fetch's answer
+  and the counters' totals. Then `sync_cores` writes what the control pass writes on the
+  shader machine with its cores (`MC_STATS` in `src/gpu.h`, rvc_cpu's `control_pass`): how many
+  cores the geometry has, which run and which sleep, every core's count, how many there could
+  be; a worker the geometry does not have is parked. All of it is on the card, in order:
+  nothing waits for a readback.
+- The shader passes are built without `CORES`: the cores are the compute shader's.
+- `pause` ends the pass (the kernel's `REST`, a program waiting for the next pass). `cycle` and
+  `instret` count the core's instructions so far: a program's own counts (Quake III's
+  `q3stat:`) work.
 
-On an RTX 5070 laptop on 18 October 2026 (D3D11 + fxc2, passes of 8,192, one run each, no
-memory view: the view costs some 1.5 ms a frame and was in the first runs): Linux to its shell
-in 4.7 s, the desktop drawn by the GPU device, Quake III's sound mixed (`--sound-capture`, not
-silent). Quake III, `nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3 +devmap q3dm17`, the
-player standing still, its `q3stat:` lines for frames 101 to 400:
+Not done: `--save-state` and `--load-state` (the processors' state is in their buffers, not in
+the snapshot), D3D12.
 
-| | seconds for 100 frames | frames a second | thousands of instructions a frame (core 0) |
+## Measured
+
+On an RTX 5070 laptop on 18 October 2026, D3D11 + fxc2, no memory view (the view costs some
+1.5 ms a frame). The card's clock moved between 1.14 and 1.33 GHz from run to run; what is
+compared was run in turn.
+
+**One core, `rvc_compute_harness`, passes of 32,768**, millions of instructions a second from
+`START`, the shader before this rewrite (commit 786fb12) against this one, three rounds in turn,
+the best of each:
+
+| | before | now | |
 |---|---|---|---|
-| the tick (`rvc_opt`), 255 workers | 3.29 to 3.35 | 30 | 29 |
-| the tick, everything on core 0 (`QUAKE3_SERVER=inline` `CLIENT` `SCENE` `SIDE` `inline`, no picture workers) | 15.1 to 15.4 | 6.6 | 267 to 273 |
-| `--compute fast` (one core: the game puts it all there) | 10.7 to 10.8 | 9.3 | 218 to 219 |
-| `--compute plain` | 21.5 to 24.7 | 4.3 | 324 to 332 |
+| a shell loop | 2.93 | 3.94 | 1.34 |
+| `sha256sum /bin/busybox` in a loop | 3.24 | 5.01 | 1.55 |
+| `gzip -c /bin/busybox` in a loop | 2.93 | 4.00 | 1.37 |
 
-One core against one core the fast shader is 1.4 times the tick here; the tick with its workers
-is 3.2 times the fast shader. Core 0 ran fewer instructions a frame on the fast shader than
-on the tick (not looked into: the game's own waits, and how many passes a frame is, differ).
-A shell loop in this harness is 2.29 million instructions a second at `--ticks 8192` and 2.72
-at 32768, against 2.65 in `rvc_compute_harness` (which has no devices' passes between).
+Per round the ratios were the same within 3%. Without the workers' code (the three images,
+the page marks) the shell loop was 3 to 6% faster. The sums of `sha256sum /bin/busybox` and of
+`gzip -c /bin/busybox | sha256sum` are `rvc_cpu`'s.
 
-Not done: `--save-state` and `--load-state` (the processor's state is in its buffer, not in the
-snapshot), D3D12, workers.
+**The whole machine** (`rvc_harness`, passes of 8,192): a shell loop 2.12 million instructions
+a second with a pass a frame, 2.46 with two, 2.79 with four (`--compute-passes`); the tick 2.03.
+Quake III, `nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3 +devmap q3dm17`, standing still,
+`q3stat:` frames 101 to 400, seconds for 100 frames:
+
+| | seconds | thousands of instructions a frame (core 0) |
+|---|---|---|
+| the tick, 255 workers | 3.29 to 3.35 | 29 |
+| the tick, everything on core 0 (`QUAKE3_SERVER=inline` `CLIENT` `SCENE` `SIDE` `inline`, no picture workers) | 15.1 to 15.4 | 267 to 273 |
+| `--compute fast`, 255 workers | 3.29 to 3.41 | 29 to 30 |
+| `--compute fast`, one core, this shader | 8.0 (at 1.33 GHz) to 11.5 (at 1.14) | 189 to 231 |
+| `--compute fast`, one core, the shader before | 10.7 to 10.8 | 218 to 219 |
+
+With workers the game's frame is 30 a second on both machines: it is the client's frame on
+core 0 (29 thousand instructions) plus waiting, not the workers. Doom's demo1
+with the view on workers: its 50 state sums' digest `0ab4df93`, `tools/test_all.py`'s. `mctest
+3` and `mctest 255 30000`: PASS. nxray, `RAY_FRAMES=4`: 89 to 100 ms a picture with 255
+workers (the tick 89 to 131), pictures 1 to 3 the tick's sums; picture 0 differs from run to
+run on the compute machine (rays 199,920 to 201,477, the tick's 201,460): nxray gives a picture
+up when a key or a resize comes while it is traced and publishes the next a step of its clock
+on, and when that comes is the machine's timing.
+
+**How far cores scale** (`--all-run`, a mix of `addi`, `lw`, `sw`, `add`, `bne`, `xor`, `lbu` on
+every core, each on its own stack, passes of 32,768, the clock sampled through each run):
+
+| cores | millions of instructions a second, all | per core | per core per GHz |
+|---|---|---|---|
+| 1 | 3.8 | 3.79 | 3.32 |
+| 16 | 59 | 3.69 | 3.24 |
+| 64 | 237 | 3.70 | 3.27 |
+| 128 | 479 | 3.75 | 3.29 |
+| 256 | 884 | 3.45 | 3.03 |
+| 384 | 1,187 | 3.09 | 2.73 |
+| 640 | 1,541 | 2.41 | 2.13 |
+| 768 | 1,597 | 2.08 | 1.83 |
+
+Linear to about 256 cores (92% of one core's speed each), 83% at 384, 65% at 640; the total
+still grows to 768 and then little. The card has 36 SMs of four schedulers: at 256 cores that
+is under two threads a scheduler, and a core issues an operation every few cycles, so the
+schedulers fill from about 3.5 a scheduler (500 cores); this shader's registers allow some
+16 to 20 thread groups an SM resident (576 to 720). A sweep before the merge was in gave the
+same shape. The machine has 256 cores (its mailboxes).
 
 ## How it was checked
 
@@ -190,6 +282,9 @@ low-teens percent fewer instructions; 5 to 15% here is the guess.
   would want the same, laid out by basic block.
 - A VRChat world compiles no shader while it runs: an interpreter of larger operations is as
   far as it goes there.
+
+(Tried on 18 October 2026 on the fast shader: the pairs counted, the four commonest fused; no
+gain. "What did not pay", above.)
 
 Next, if it is taken up: count pairs and triples on the three loads (a shell loop, Doom's
 timedemo, Quake e1m1) with counters in a private `rvc_cpu`, for how much the first four to

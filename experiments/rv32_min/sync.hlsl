@@ -3,15 +3,17 @@
 // After the processor's pass: what it stored goes into the texture, in 4 MB bands, with the state
 // texels the commit and the host read. After the devices' passes: what they wrote comes back.
 
-RWByteAddressBuffer Ram   : register(u0);   // guest RAM from 0x80000000, as the processor has it
-RWByteAddressBuffer State : register(u1);   // the processor's words (rv32_min*.hlsl), then these:
+RWByteAddressBuffer Ram   : register(u0);   // guest RAM from 0x80000000: the processor's three images (rv32_min_fast.hlsl)
+RWByteAddressBuffer State : register(u1);   // the cores' words (rv32_min*.hlsl, 512 bytes a core), core 0's then these:
 RWTexture2D<uint4>  Out   : register(u2);   // the state texture the commit reads (export)
+RWByteAddressBuffer Dec   : register(u3);   // the processor's decoded instructions: what is imported is cleared
+RWByteAddressBuffer Marks : register(u4);   // its page marks, then a word a 4 MB band stored to (merge)
 Texture2D<uint4>    In    : register(t0);   // the state texture as the devices left it (import)
 
 cbuffer Sync : register(b0) {
     uint Mask;    // sync_count: the bands that may go into the texture now
     uint Mode;    // import_rows: 0 the texels From to From + Count, 1 the picture the commit copied back
-    uint From, Count;
+    uint From, Count;   // sync_count and sync_cores: Count is how many cores there are
 };
 
 #define S_PC     320   // the processor's pc
@@ -19,22 +21,69 @@ cbuffer Sync : register(b0) {
 #define S_DIRTY  360   // bands it stored to, not yet in the texture
 #define S_NOW    364   // bands put into the texture this frame
 #define S_LAST   368   // and in the frame before
-#define S_INSTR  372   // instructions so far (low, high), passes so far
+#define S_INSTR  372   // instructions so far (low, high), passes so far (a core's own, the processor keeps them)
+#define S_MODE   392   // a worker's: parked 0, running 1, asleep 2, stopped 3 or 4
+#define BANDS    (65536u * 4)   // the band words in Marks the harness takes (rv32_min_fast.hlsl, M_HARNESS)
 #define S_COPY   384   // the picture copied back: its first byte in RAM, its bytes
 #define RAM_ROWS 4032u // the texture's rows of RAM: 126 MB from row 64
+#define RAM_BYTES (RAM_ROWS * 32768u)
 #define CTRL     0x07000000u   // the control words (docs/machine/gpu.md), in RAM
+#define STATS_ALL 0x076ba000u  // every core's count, then a texel of bits for every 32 cores (src/gpu.h)
 
-// Once a pass: which bands go into the texture, and the counts.
+// Once a frame: which bands go into the texture, as the merges marked them.
 [numthreads(1, 1, 1)]
 void sync_count() {
-    uint dirty = State.Load(S_DIRTY), ran = State.Load(S_RAN);
+    uint dirty = State.Load(S_DIRTY);
+    for (uint b = 0; b < 32; b++) {
+        dirty |= Marks.Load(BANDS + 4 * b) != 0 ? 1u << b : 0u;
+        Marks.Store(BANDS + 4 * b, 0);
+    }
     State.Store(S_DIRTY, dirty & ~Mask);
     State.Store(S_LAST, State.Load(S_NOW));
     State.Store(S_NOW, dirty & Mask);
-    uint lo = State.Load(S_INSTR) + ran;
-    State.Store(S_INSTR + 4, State.Load(S_INSTR + 4) + (lo < ran ? 1u : 0u));
-    State.Store(S_INSTR, lo);
-    State.Store(S_INSTR + 8, State.Load(S_INSTR + 8) + 1);
+}
+
+// A word of RAM as every image has it.
+void put(uint o, uint v) {
+    Ram.Store(o, v);
+    Ram.Store(RAM_BYTES + o, v);
+    Ram.Store(2 * RAM_BYTES + o, v);
+}
+
+// After the control words came back: what the cores are, as the shader machine's control pass
+// says it (src/gpu.h, MC_STATS) and rvc_cpu's control_pass: how many cores the geometry has
+// (a worker is there when the geometry is not being laid out anew and it is within its count),
+// which run and which sleep, every core's instructions, and how many there could be. A worker the
+// geometry does not have is parked.
+[numthreads(1, 1, 1)]
+void sync_cores() {
+    uint shaping = Ram.Load(CTRL + 0x3d0) & 1, there = Ram.Load(CTRL + 0x3d4), bits = Ram.Load(CTRL + 0x3d8);
+    uint count = 1, running = 1, asleep = 0, c;
+    for (c = 0; c < 256; c++) {
+        uint mode = c == 0 ? 1 : State.Load(512 * c + S_MODE);
+        bool here = c == 0 || (c < Count && shaping == 0 && c <= there && bits - 3 <= 3);
+        if (!here && c < Count) { State.Store(512 * c + S_MODE, 0); mode = 0; }
+        if (here) count = c + 1;
+        running |= (here && mode != 0 ? 1u : 0u) << (c & 31);
+        asleep |= (here && mode == 2 ? 1u : 0u) << (c & 31);
+        uint n = c < Count ? State.Load(512 * c + S_INSTR) : 0;
+        put(STATS_ALL + 4 * c, n);
+        if (c < 16) put(CTRL + 0x380 + 4 * c, n);
+        if ((c & 31) == 31) {
+            put(STATS_ALL + 0x400 + 16 * (c >> 5), running);
+            put(STATS_ALL + 0x404 + 16 * (c >> 5), asleep);
+            if (c == 31) {
+                put(CTRL + 0x3c4, running);
+                put(CTRL + 0x3c8, asleep);
+                put(CTRL + 0x3cc, Count);
+            }
+            running = 0;
+            asleep = 0;
+        }
+    }
+    put(CTRL + 0x3c0, count);
+    Marks.Store(BANDS + 4 * (CTRL >> 22), 1);
+    Marks.Store(BANDS + 4 * (STATS_ALL >> 22), 1);
 }
 
 // The core's state rows as the tick would leave them for the commit and the host, and nothing
@@ -84,7 +133,13 @@ void import_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
     if (Mode == 0) {
         if (n >= Count) return;
         uint texel = From + n;
-        Ram.Store4(texel * 16, In.Load(int3(texel % 2048, 64 + texel / 2048, 0)));
+        uint4 v = In.Load(int3(texel % 2048, 64 + texel / 2048, 0));
+        Ram.Store4(texel * 16, v);   // (into every image: core 0's, the workers', the last pass's)
+        Ram.Store4(RAM_BYTES + texel * 16, v);
+        Ram.Store4(2 * RAM_BYTES + texel * 16, v);
+        Dec.Store4(texel * 32, uint4(0, 0, 0, 0));
+        Dec.Store4(texel * 32 + 16, uint4(0, 0, 0, 0));
+        if (texel != 0) Dec.Store2(texel * 32 - 8, uint2(0, 0));   // (a pair that ends in it)
         return;
     }
     uint2 copy = State.Load2(S_COPY);
@@ -93,6 +148,12 @@ void import_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
     uint4 v = In.Load(int3(texel % 2048, 64 + texel / 2048, 0));
     [unroll] for (uint k = 0; k < 4; k++) {
         uint a = texel * 16 + 4 * k;
-        if (a >= copy.x && a < copy.x + copy.y) Ram.Store(a, v[k]);
+        if (a >= copy.x && a < copy.x + copy.y) {
+            Ram.Store(a, v[k]);
+            Ram.Store(RAM_BYTES + a, v[k]);
+            Ram.Store(2 * RAM_BYTES + a, v[k]);
+            Dec.Store(a * 2, 0);
+            Dec.Store(a * 2 - 8, 0);
+        }
     }
 }

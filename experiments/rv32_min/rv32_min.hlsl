@@ -6,6 +6,7 @@
 RWByteAddressBuffer Ram   : register(u0);   // guest RAM from 0x80000000
 RWByteAddressBuffer State : register(u1);   // r, csr, pc priv fcsr res, tcmp lo hi, memop src dst n, instructions run,
                                             // then the 4 MB bands of RAM stored to (or-ed in, for rvc_harness --compute)
+RWByteAddressBuffer Marks : register(u3);   // (rvc_harness --compute: a word a 4 MB band stored to, from byte 65536 * 4)
 ByteAddressBuffer   Rom   : register(t0);   // the ROM from 0x40000000
 
 cbuffer Pass : register(b0) {
@@ -149,12 +150,25 @@ uint fclass(uint v) {
     return v >> 31 ? 1u << k : 1u << (7 - k);
 }
 
+// fcvt.w.s and fcvt.wu.s: rounded as the instruction says, then clamped; both made and one
+// chosen, a uint from 2^31 up in two parts, as the tick has it (fxc made a conversion here a
+// signed one: fcvt.w.s of a negative number gave 0).
 uint fcvt_w(uint bits, uint rm, bool u) {
     float v = asfloat(bits);
     v = rm == 1 ? trunc(v) : rm == 2 ? floor(v) : rm == 3 ? ceil(v) : rm == 4 ? sign(v) * floor(abs(v) + 0.5) : round(v);
-    if (is_nan(bits)) return u ? ~0u : 0x7fffffffu;
-    if (u) return v <= 0 ? 0 : v >= 4294967296.0 ? ~0u : (uint)v;
-    return v >= 2147483648.0 ? 0x7fffffffu : v <= -2147483648.0 ? 0x80000000u : asuint((int)v);
+    bool nan = is_nan(bits);
+    uint to_s = (nan || v >= 2147483648.0) ? 0x7fffffffu : v <= -2147483648.0 ? 0x80000000u : asuint((int)v);
+    uint to_u = (nan || v >= 4294967296.0) ? ~0u : v <= 0.0 ? 0u : v >= 2147483648.0 ? 0x80000000u + (uint)(v - 2147483648.0) : (uint)v;
+    return u ? to_u : to_s;
+}
+
+// The card divides by multiplying with 1 / b, which is nothing when b is large: two ordinary
+// numbers are divided with their exponents moved towards the middle (the tick's way).
+float fdiv(uint a, uint b) {
+    uint ea = (a >> 23) & 0xff, eb = (b >> 23) & 0xff;
+    int de = (int)ea - (int)eb, ha = clamp(de, -126, 127);
+    float da = asfloat((a & 0x807fffffu) | ((uint)(127 + ha) << 23)), db = asfloat((b & 0x807fffffu) | ((uint)(127 - (de - ha)) << 23));
+    return ea - 1 < 254 && eb - 1 < 254 ? da / db : asfloat(a) / asfloat(b);
 }
 
 // OP-FP; a is an integer register for fcvt.s.w(u) and fmv.w.x, b is always a float one.
@@ -165,7 +179,7 @@ uint op_fp(uint w, uint a, uint b) {
     if (f7 == 0x00) return asuint(fa + fb);
     if (f7 == 0x04) return asuint(fa - fb);
     if (f7 == 0x08) return asuint(fa * fb);
-    if (f7 == 0x0c) return asuint(fa / fb);
+    if (f7 == 0x0c) return asuint(fdiv(a, b));
     if (f7 == 0x2c) return asuint(sqrt(fa));
     if (f7 == 0x10) return (a & 0x7fffffffu) | ((f3 == 0 ? b : f3 == 1 ? ~b : a ^ b) & 0x80000000u);
     if (f7 == 0x14) {   // fmin, fmax: a NaN gives the other, -0 is below +0
@@ -283,9 +297,11 @@ uint step() {
 }
 
 // The host starts a hart with every word 0 but pc = 0x80400000, priv = 1 (supervisor),
-// x11 = 0x82200000 (the device tree) and res = ~0, and dispatches (1, 1, 1) a pass.
+// x11 = 0x82200000 (the device tree) and res = ~0, and dispatches a pass. Core 0 alone: a
+// group for another core does nothing (rv32_min_fast.hlsl has the workers).
 [numthreads(1, 1, 1)]
-void tick(uint3 id : SV_DispatchThreadID) {
+void tick(uint3 g : SV_GroupID) {
+    if (g.x != 0) return;
     uint k;
     for (k = 0; k < 64; k++) r[k] = State.Load(4 * k);
     for (k = 0; k < 16; k++) csr[k] = State.Load(256 + 4 * k);
@@ -311,5 +327,10 @@ void tick(uint3 id : SV_DispatchThreadID) {
     State.Store4(336, uint4(tcmp_lo, tcmp_hi, msrc, mdst));
     State.Store(352, mn);
     State.Store(356, n);   // fewer than Steps: the pass ended on wfi or pause
-    State.Store(360, State.Load(360) | dirty);
+    for (k = 0; k < 32; k++)                    // the bands stored to, which the harness gathers
+        if ((dirty >> k & 1) != 0) Marks.Store(65536 * 4 + 4 * k, 1);
+    uint lo = State.Load(372) + n;                // the instructions so far, and passes
+    State.Store(376, State.Load(376) + (lo < n ? 1u : 0u));
+    State.Store(372, lo);
+    State.Store(380, State.Load(380) + 1);
 }

@@ -32,7 +32,10 @@ using Microsoft::WRL::ComPtr;
 static const uint32_t RAM_BASE = 0x80000000u, RAM_SIZE = 0x08000000u;   // as rvc_cpu's
 static const uint32_t CON = 0x876b8280u;   // docs/machine/console.md: host words, guest words, the ring
 static const uint32_t CON_BYTES = 0x120u, RING = 0x20u, RING_SIZE = 256;
-static const uint32_t STATE_WORDS = 91, S_PC = 80, S_PRIV = 81, S_RES = 83, S_TCMP = 84, S_RAN = 89;
+static const uint32_t DEC_BYTES = 2 * RAM_SIZE;   // decoded instructions: 8 bytes a word of RAM
+// a core's words (rv32_min_fast.hlsl): 128 of them from core * 512 bytes
+static const uint32_t STATE_WORDS = 128, S_PC = 80, S_PRIV = 81, S_RES = 83, S_TCMP = 84, S_RAN = 89, S_INSTR = 93;
+static const uint32_t MARK_BYTES = (65536 + 64 + 32768) * 4;   // the shader's page marks of either side, band marks, the pages to merge
 
 struct Options {
     std::string shader = "experiments/rv32_min/rv32_min_fast.hlsl";
@@ -44,6 +47,8 @@ struct Options {
     std::vector<std::pair<std::string, std::string>> expectSend;
     std::vector<std::pair<std::string, std::string>> defines;
     bool quiet = false;
+    uint32_t cores = 1;   // --cores N: a thread group a core (the first the kernel's, the others workers)
+    bool allRun = false;  // --all-run: every core runs the image on its own from the start (a measurement)
 };
 
 static std::string unescape(const std::string& s) {
@@ -73,6 +78,8 @@ static void usage() {
             "  --seconds S, --frames N  stop after S seconds of wall time or N passes\n"
             "  --fixed-dt S         guest time S a pass, and on to the timer when idle (default: wall time)\n"
             "  --define NAME[=V]    a define for the shader\n"
+            "  --cores N            N cores, a thread group each: core 0 and N - 1 workers (default 1)\n"
+            "  --all-run            every core runs the image from the start, a0 its number (to measure many cores)\n"
             "  --quiet              no console output\n");
 }
 
@@ -101,6 +108,8 @@ static bool parse(int argc, char** argv, Options& o) {
             o.defines.push_back({d.substr(0, eq), eq == std::string::npos ? "1" : d.substr(eq + 1)});
         }
         else if (a == "--quiet") o.quiet = true;
+        else if (a == "--cores") o.cores = (uint32_t)(std::max)(1, (std::min)(8192, atoi(next().c_str())));   // (more than 256 only with --all-run)
+        else if (a == "--all-run") o.allRun = true;
         else if (a == "--help" || a == "-h") { usage(); exit(0); }
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return false; }
     }
@@ -159,6 +168,7 @@ static void rtc_words(uint32_t& rtc0, uint32_t& rtc1) {
 int main(int argc, char** argv) {
     Options opt;
     if (!parse(argc, argv, opt)) return 1;
+    if (!opt.allRun && opt.cores > 256) opt.cores = 256;   // (the mailbox page has room for 256 cores)
     if (!run_lock_take(true, "rvc_compute_harness")) return kRunLockRefused;
     _setmode(_fileno(stdout), _O_BINARY);   // the guest's line ends as they are
 
@@ -195,29 +205,59 @@ int main(int argc, char** argv) {
     if (errors && errors->GetBufferSize()) fprintf(stderr, "%s", (const char*)errors->GetBufferPointer());
     if (FAILED(hr)) { fprintf(stderr, "the shader did not compile\n"); return 1; }
     fprintf(stderr, "[compute] %s compiled in %.2f s, %zu bytes\n", opt.shader.c_str(), compile_s, (size_t)code->GetBufferSize());
-    ComPtr<ID3D11ComputeShader> cs;
+    ComPtr<ID3D11ComputeShader> cs, merge, mergeList;
     if (FAILED(dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &cs))) return 1;
+    // the merge of core 0's and the workers' images after every pass, for a shader that has them
+    if (std::string((const char*)source.data(), source.size()).find("void merge(") != std::string::npos) {
+        ComPtr<ID3DBlob> mcode, merrors, ecode;
+        if (FAILED(D3DCompile(source.data(), source.size(), opt.shader.c_str(), macros.data(), nullptr, "merge", "cs_5_0",
+                              D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &mcode, &merrors)) ||
+            FAILED(dev->CreateComputeShader(mcode->GetBufferPointer(), mcode->GetBufferSize(), nullptr, &merge)) ||
+            FAILED(D3DCompile(source.data(), source.size(), opt.shader.c_str(), macros.data(), nullptr, "merge_list", "cs_5_0",
+                              D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ecode, &merrors)) ||
+            FAILED(dev->CreateComputeShader(ecode->GetBufferPointer(), ecode->GetBufferSize(), nullptr, &mergeList))) {
+            if (merrors && merrors->GetBufferSize()) fprintf(stderr, "%s", (const char*)merrors->GetBufferPointer());
+            fprintf(stderr, "the shader's merge did not compile\n");
+            return 1;
+        }
+    }
 
-    std::vector<uint8_t> ram(RAM_SIZE, 0);
-    memcpy(ram.data(), payload.data(), payload.size() < RAM_SIZE ? payload.size() : RAM_SIZE);
+    // three images of RAM: core 0's, the workers', both as the last pass left them (rv32_min_fast.hlsl)
+    std::vector<uint8_t> ram((size_t)RAM_SIZE * 3, 0);
+    for (int i = 0; i < 3; i++) memcpy(ram.data() + (size_t)RAM_SIZE * i, payload.data(), payload.size() < RAM_SIZE ? payload.size() : RAM_SIZE);
     rom.resize((rom.size() + 15) & ~(size_t)15, 0);
-    uint32_t state0[STATE_WORDS] = {};
-    state0[11] = 0x82200000u;   // the device tree, for the kernel in supervisor mode at 0x80400000
-    state0[S_PC] = 0x80400000u;
-    state0[S_PRIV] = 1;
-    state0[S_RES] = ~0u;
+    // core 0 (and with --all-run every core) at the kernel in supervisor mode, the device tree in a1
+    std::vector<uint32_t> state0((size_t)opt.cores * STATE_WORDS, 0);
+    for (uint32_t c = 0; c < (opt.allRun ? opt.cores : 1); c++) {
+        uint32_t* w = &state0[(size_t)c * STATE_WORDS];
+        w[10] = c;
+        w[11] = 0x82200000u;
+        w[S_PC] = 0x80400000u;
+        w[S_PRIV] = 1;
+        w[S_RES] = ~0u;
+    }
 
     const UINT RAW = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
-    auto ramBuf = make_buffer(dev.Get(), RAM_SIZE, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, ram.data());
-    auto stateBuf = make_buffer(dev.Get(), STATE_WORDS * 4, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, state0);
+    auto ramBuf = make_buffer(dev.Get(), RAM_SIZE * 3, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, ram.data());
+    auto stateBuf = make_buffer(dev.Get(), opt.cores * STATE_WORDS * 4, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, state0.data());
+    auto allRead = make_buffer(dev.Get(), opt.cores * STATE_WORDS * 4, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
+    std::vector<uint8_t> markZeros(MARK_BYTES, 0);
+    auto markBuf = make_buffer(dev.Get(), MARK_BYTES, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, markZeros.data());
     auto romBuf = make_buffer(dev.Get(), (uint32_t)rom.size(), D3D11_BIND_SHADER_RESOURCE, RAW, D3D11_USAGE_DEFAULT, 0, rom.data());
     auto cbuf = make_buffer(dev.Get(), 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr);
     auto stateRead = make_buffer(dev.Get(), STATE_WORDS * 4, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
     auto conRead = make_buffer(dev.Get(), CON_BYTES, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
     ram.clear();
     ram.shrink_to_fit();
-    auto ramUav = raw_uav(dev.Get(), ramBuf.Get(), RAM_SIZE);
-    auto stateUav = raw_uav(dev.Get(), stateBuf.Get(), STATE_WORDS * 4);
+    auto ramUav = raw_uav(dev.Get(), ramBuf.Get(), RAM_SIZE * 3);
+    auto markUav = raw_uav(dev.Get(), markBuf.Get(), MARK_BYTES);
+    auto argsBuf = make_buffer(dev.Get(), 16, D3D11_BIND_UNORDERED_ACCESS, RAW | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, D3D11_USAGE_DEFAULT, 0, markZeros.data());
+    auto argsUav = raw_uav(dev.Get(), argsBuf.Get(), 16);
+    // decoded instructions, for a shader that keeps them (u2): zeros, which no entry's pc is
+    std::vector<uint8_t> zeros(DEC_BYTES, 0);
+    auto decBuf = make_buffer(dev.Get(), DEC_BYTES, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, zeros.data());
+    auto decUav = raw_uav(dev.Get(), decBuf.Get(), DEC_BYTES);
+    auto stateUav = raw_uav(dev.Get(), stateBuf.Get(), opt.cores * STATE_WORDS * 4);
     ComPtr<ID3D11ShaderResourceView> romSrv;
     {
         D3D11_SHADER_RESOURCE_VIEW_DESC d = {};
@@ -231,8 +271,8 @@ int main(int argc, char** argv) {
     rom.shrink_to_fit();
 
     ctx->CSSetShader(cs.Get(), nullptr, 0);
-    ID3D11UnorderedAccessView* uavs[2] = {ramUav.Get(), stateUav.Get()};
-    ctx->CSSetUnorderedAccessViews(0, 2, uavs, nullptr);
+    ID3D11UnorderedAccessView* uavs[5] = {ramUav.Get(), stateUav.Get(), decUav.Get(), markUav.Get(), argsUav.Get()};
+    ctx->CSSetUnorderedAccessViews(0, 5, uavs, nullptr);
     ID3D11ShaderResourceView* srvs[1] = {romSrv.Get()};
     ctx->CSSetShaderResources(0, 1, srvs);
     ID3D11Buffer* cbs[1] = {cbuf.Get()};
@@ -258,7 +298,7 @@ int main(int argc, char** argv) {
         D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ctx->Map(cbuf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
             seed = seed * 1664525u + 1013904223u;
-            uint32_t cb[8] = {(uint32_t)mtime, (uint32_t)(mtime >> 32), rtc0, rtc1, opt.ticks, RAM_SIZE, seed, 0};
+            uint32_t cb[8] = {(uint32_t)mtime, (uint32_t)(mtime >> 32), rtc0, rtc1, opt.ticks, RAM_SIZE, seed, opt.allRun ? 1u : 0u};
             memcpy(m.pData, cb, sizeof cb);
             ctx->Unmap(cbuf.Get(), 0);
         }
@@ -267,11 +307,25 @@ int main(int argc, char** argv) {
             uint32_t group = 0, n = 0;
             for (; n < 4 && !typed.empty(); n++, typed.pop_front()) group |= (uint32_t)(uint8_t)typed.front() << (8 * n);
             uint32_t words[2] = {con[0] + n, group};
-            D3D11_BOX box = {CON - RAM_BASE, 0, 0, CON - RAM_BASE + 8, 1, 1};
-            ctx->UpdateSubresource(ramBuf.Get(), 0, &box, words, 0, 0);
+            for (uint32_t i = 0; i < 3; i++) {   // (into every image, as a device's words)
+                D3D11_BOX box = {CON - RAM_BASE + RAM_SIZE * i, 0, 0, CON - RAM_BASE + RAM_SIZE * i + 8, 1, 1};
+                ctx->UpdateSubresource(ramBuf.Get(), 0, &box, words, 0, 0);
+            }
         }
-        ctx->Dispatch(1, 1, 1);
-        ctx->CopyResource(stateRead.Get(), stateBuf.Get());
+        ctx->Dispatch(opt.cores, 1, 1);
+        static const bool noMerge = getenv("RVC_NO_MERGE") != nullptr;   // (a measurement: the merge's cost)
+        if (merge && !noMerge) {
+            ctx->CSSetShader(mergeList.Get(), nullptr, 0);
+            ctx->Dispatch(1, 1, 1);
+            ID3D11UnorderedAccessView* noArgs = nullptr;
+            ctx->CSSetUnorderedAccessViews(4, 1, &noArgs, nullptr);
+            ctx->CSSetShader(merge.Get(), nullptr, 0);
+            ctx->DispatchIndirect(argsBuf.Get(), 0);
+            ctx->CSSetUnorderedAccessViews(0, 5, uavs, nullptr);
+            ctx->CSSetShader(cs.Get(), nullptr, 0);
+        }
+        D3D11_BOX coreBox = {0, 0, 0, STATE_WORDS * 4, 1, 1};
+        ctx->CopySubresourceRegion(stateRead.Get(), 0, 0, 0, 0, stateBuf.Get(), 0, &coreBox);
         D3D11_BOX conBox = {CON - RAM_BASE, 0, 0, CON - RAM_BASE + CON_BYTES, 1, 1};
         ctx->CopySubresourceRegion(conRead.Get(), 0, 0, 0, 0, ramBuf.Get(), 0, &conBox);
         uint32_t st[STATE_WORDS];
@@ -332,10 +386,43 @@ int main(int argc, char** argv) {
         if (opt.seconds > 0 && wall() >= opt.seconds) { exitCode = opt.until.empty() ? 0 : 3; break; }
     }
     double secs = wall();
+    // RVC_COMPUTE_DUMP=OFFSET,WORDS: words of RAM a shader under study left there, printed when nonzero
+    if (const char* dump = getenv("RVC_COMPUTE_DUMP")) {
+        uint32_t at = 0, count = 0;
+        if (sscanf(dump, "%x,%u", &at, &count) == 2 && count && at + count * 4 <= RAM_SIZE) {
+            auto read = make_buffer(dev.Get(), count * 4, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
+            D3D11_BOX box = {at, 0, 0, at + count * 4, 1, 1};
+            ctx->CopySubresourceRegion(read.Get(), 0, 0, 0, 0, ramBuf.Get(), 0, &box);
+            D3D11_MAPPED_SUBRESOURCE m;
+            if (SUCCEEDED(ctx->Map(read.Get(), 0, D3D11_MAP_READ, 0, &m))) {
+                for (uint32_t k = 0; k < count; k++)
+                    if (((const uint32_t*)m.pData)[k]) fprintf(stderr, "[compute] dump %u: %u\n", k, ((const uint32_t*)m.pData)[k]);
+                ctx->Unmap(read.Get(), 0);
+            }
+        }
+    }
+    // every core's instructions so far, when there is more than one
+    uint64_t all = 0, workersRan = 0;
+    if (opt.cores > 1) {
+        ctx->CopyResource(allRead.Get(), stateBuf.Get());
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ctx->Map(allRead.Get(), 0, D3D11_MAP_READ, 0, &m))) {
+            const uint32_t* w = (const uint32_t*)m.pData;
+            for (uint32_t c = 0; c < opt.cores; c++) {
+                uint64_t n = (uint64_t)w[c * STATE_WORDS + S_INSTR] | (uint64_t)w[c * STATE_WORDS + S_INSTR + 1] << 32;
+                all += n;
+                workersRan += c > 0 && n > 0;
+            }
+            ctx->Unmap(allRead.Get(), 0);
+        }
+    }
     if (!opt.quiet) fputc('\n', stdout);
     fprintf(stderr, "[compute] %llu passes in %.1f s, %llu instructions, %.0fk instructions/s, %llu passes idle; pc %08x, --until %s\n",
             (unsigned long long)(frame + 1), secs, (unsigned long long)instructions, instructions / secs / 1e3,
             (unsigned long long)idle, lastPc, opt.until.empty() ? "not given" : untilHit ? "matched" : "NOT matched");
+    if (opt.cores > 1)
+        fprintf(stderr, "[compute] %u cores, %llu of the workers ran: %llu instructions in all, %.0fk instructions/s\n", opt.cores,
+                (unsigned long long)workersRan, (unsigned long long)all, all / secs / 1e3);
     if (!opt.statsFrom.empty()) {
         if (statsOn) {
             double dt = secs - statsT0;

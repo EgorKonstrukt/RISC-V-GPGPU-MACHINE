@@ -73,8 +73,9 @@ October 2026 it showed a desktop with no windows where the layer table had a cal
 taken with `--save-state` at the run's end and `snapshot_screen.py`, never from the log.
 
 `rvc_harness --compute fast` is the same with the processor a compute shader on the card in
-place of this interpreter (`experiments/rv32_min/README.md`, "The whole machine"): one core, RAM
-in a buffer of its own and kept in step with the state texture there.
+place of this interpreter (`experiments/rv32_min/README.md`, "The whole machine"): core 0 and 255
+workers, a thread group each, RAM in buffers of their own (core 0's and the workers', merged
+after every pass) kept in step with the state texture there.
 
 Not there yet in this mode: sound (not tried), pages from the host for the browser, D3D12.
 The shader's own cores are not used (the cores are the interpreter's), so nothing here says

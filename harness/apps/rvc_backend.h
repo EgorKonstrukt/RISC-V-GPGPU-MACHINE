@@ -94,6 +94,8 @@ public:
     // words, the picture the commit copied back, the console's, the network's and a fetch's words.
     bool computeMode = false;
     uint32_t computeMask = 0xffffffffu;   // the bands that may go into the texture this frame
+    uint32_t computeCores = 1;   // core 0 and the workers: a thread group each (set before computeStart)
+    uint32_t computePasses = 1;  // the processor's passes a frame
     // Loads <imageDir>/linux_payload.bin into RAM and rootfs.bin as the ROM, and starts the hart.
     virtual bool computeStart(const std::string& imageDir, std::string& err) { (void)imageDir; err = "--compute is for the D3D11 backend"; return false; }
     // The processor's words (rv32_min*.hlsl's State), read back now.
