@@ -167,9 +167,10 @@ public static partial class ShaderEmuBuilder
             if (own == null) { Debug.LogError("[ShaderEmu] no Station " + s); continue; }
             StationSwitches(place, s, own, plan, physical, steady);
         }
-        RetroNewPanels();
         pointer.physicalLabels = physical.ToArray();
         pointer.steadyLabels = steady.ToArray();
+        Apply(pointer);
+        RetroNewPanels();   // after: a label no behaviour names is printed into the plate
         TouchPanels(root.transform, pointer);
         Apply(pointer);
         EditorSceneManager.MarkSceneDirty(root.scene);
