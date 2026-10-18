@@ -14,7 +14,7 @@ and the starter then says the data is missing. The download and unpacking happen
     halflife                       (in the image; the desktop's and the start menu's Half-Life: Uplink)
     halflife -dev 1 +map hldemo1   (straight into the level, its messages on the console)
 
-The icon is Xash3D FWGS's own (`linux/apps/icons/halflife.png`).
+The icon is an orange lambda in a ring of our own drawing (`tools/draw_icons.py`), not Valve's logo.
 
 The engine's changes are `linux/halflife/xash3d.patch`, `hlsdk.patch` and `mainui.patch` (the
 menus); the machine's own parts are beside them: OpenGL 1.1 on the GPU (`gl_shaderemu.c`), the

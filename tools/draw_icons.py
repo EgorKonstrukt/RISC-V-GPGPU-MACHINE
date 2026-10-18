@@ -1,6 +1,6 @@
-"""Draws the two icons no set has a picture for, into linux/apps/icons (64 x 64, which
-tools/make_icons.py brings down): glxgears.png, the demo's three gears in its own colours, and
-nxeyes.png, two eyes looking the same way.
+"""Draws the icons no set has a picture for, into linux/apps/icons (64 x 64, which
+tools/make_icons.py brings down): glxgears.png, the demo's three gears in its own colours,
+nxeyes.png, two eyes looking the same way, and halflife.png, an orange lambda in a ring.
 
     python tools/draw_icons.py
 """
@@ -51,6 +51,24 @@ def eyes():
     return picture
 
 
-for name, picture in (('glxgears', gears()), ('nxeyes', eyes())):
+def lambda_ring():
+    picture = Image.new('RGBA', (SIZE * UP, SIZE * UP), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(picture)
+    u, orange = UP / 16, (244, 132, 28, 255)   # (in 1,024ths of the picture)
+    draw.ellipse((24 * u, 24 * u, 1000 * u, 1000 * u), fill=orange)
+    draw.ellipse((100 * u, 100 * u, 924 * u, 924 * u), fill=(34, 30, 28, 255))
+
+    def stroke(a, b, width):
+        draw.line(((a[0] * u, a[1] * u), (b[0] * u, b[1] * u)), fill=orange, width=round(width * u))
+        for x, y in (a, b):
+            draw.ellipse(((x - width / 2) * u, (y - width / 2) * u, (x + width / 2) * u, (y + width / 2) * u), fill=orange)
+    stroke((300, 262), (420, 262), 96)    # the top's hook
+    stroke((420, 262), (712, 790), 112)   # the long stroke
+    stroke((545, 488), (330, 790), 104)   # the short leg
+    draw.line(((712 * u, 790 * u), (790 * u, 790 * u)), fill=orange, width=round(96 * u))   # the foot
+    return picture
+
+
+for name, picture in (('glxgears', gears()), ('nxeyes', eyes()), ('halflife', lambda_ring())):
     picture.resize((SIZE, SIZE), Image.LANCZOS).save(os.path.join(OUT, name + '.png'))
     print('linux/apps/icons/%s.png' % name)
