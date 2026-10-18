@@ -131,6 +131,7 @@ struct Options {
     bool sbi = false;         // compile with SBI_HLE
     bool cpu = false;         // --cpu: the instructions run on the processor, the devices on the graphics card
     double cpuIps = 0;        // --cpu-ips N: no more than N instructions a second (0: as fast as it goes)
+    std::string compute;      // --compute FILE: the processor as a compute shader, the devices the shader's (experiments/rv32_min)
     bool noGpu = false;       // --no-gpu: leave out the GPU device's passes (gpu.shader)
     bool noSound = false;     // --no-sound: leave out the sound card (sound.shader)
     bool sound = false;       // play the sound card: the terminal mode, or --sound
@@ -221,6 +222,9 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                        faster; the display, the GPU, the keys and the pointer are the shader's as before
                        (D3D11, the Linux image in build\\images\\linux)
   --cpu-ips N          the same, at no more than N instructions a second (3000000: the world's speed)
+  --compute FILE       the processor as one thread of a compute shader (experiments/rv32_min/README.md,
+                       "The whole machine"): fast or plain for rv32_min_fast.hlsl or rv32_min.hlsl.
+                       One core, a pass a frame; the display, the GPU, sound, keys and pointer as ever
   --open ADDRESS       tell the guest to open an address, or a file of this computer (file:// and its path);
                        several are told ten seconds apart (docs/system/open.md)
   --open-after TEXT    not before the console has shown TEXT
@@ -411,6 +415,11 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--net-loss") o.netLoss = atof(next("--net-loss").c_str());
         else if (a == "--net-delay") o.netDelay = atof(next("--net-delay").c_str());
         else if (a == "--cpu") o.cpu = true;
+        else if (a == "--compute") {
+            o.compute = next("--compute");
+            if (o.compute == "fast" || o.compute == "plain")
+                o.compute = o.compute == "fast" ? "experiments/rv32_min/rv32_min_fast.hlsl" : "experiments/rv32_min/rv32_min.hlsl";
+        }
         else if (a == "--cpu-ips") { o.cpu = true; o.cpuIps = atof(next("--cpu-ips").c_str()); }
         else if (a == "--core-pitch" || a == "--small-cores") next(a.c_str());   // (of the layouts before the geometry: taken and ignored)
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return false; }
@@ -660,20 +669,20 @@ int main(int argc, char** argv) {
     bool terminalMode = true;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--image" || a == "--cpu-ips" || a == "--kernel" || a == "--isa") ++i;
+        if (a == "--image" || a == "--cpu-ips" || a == "--kernel" || a == "--isa" || a == "--compute") ++i;
         // (--cpu is the same terminal on the interpreter: its desktop and view come up too)
         else if (a != "--resume" && a != "--no-viz" && a != "--dxc" && a != "--d3d11" && a != "--no-desktop" && a != "--cpu") terminalMode = false;
     }
     std::error_code ec;
     bool haveOpt = fs::exists("experiments/rvc_opt/main.shader", ec);
     // (--cpu needs the shader with the GPU device and the display: upstream's has neither)
-    if ((terminalMode || opt.dxc || opt.cpu) && !opt.rvcDirSet && haveOpt) opt.rvcDir = "experiments/rvc_opt";
+    if ((terminalMode || opt.dxc || opt.cpu || !opt.compute.empty()) && !opt.rvcDirSet && haveOpt) opt.rvcDir = "experiments/rvc_opt";
     const char* shellSnap = "build/snapshots/rvc_shell.snap";
     bool canResume = terminalMode && fs::exists(shellSnap, ec);
     // Nothing on the command line says what to boot: ask, if there is someone to ask.
     DWORD conMode = 0;
     bool interactive = opt.readStdin && GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &conMode) != 0;
-    if (opt.cpu && opt.image.empty()) opt.image = "linux-net";   // (the interpreter boots that one: nothing to ask)
+    if ((opt.cpu || !opt.compute.empty()) && opt.image.empty()) opt.image = "linux-net";   // (the interpreter boots that one: nothing to ask)
     // Linux is the no-MMU build once it has been made, the MMU one (legacy) only by --kernel mmu
     if (opt.kernel.empty()) {
         opt.kernel = "nommu";
@@ -780,7 +789,7 @@ int main(int argc, char** argv) {
         // The harness's machine: the shader's own write cache (384 texels), and on D3D11 the
         // tick in eight targets, a pixel for every eight texels of state (docs/machine/multicore.md).
         // With the eight targets the machine has all its cores, and so has the interpreter.
-        if (!opt.dxc && !opt.noMrt && !opt.cpu && !opt.profile && !getenv("RVC11_COMPUTE")) {
+        if (!opt.dxc && !opt.noMrt && !opt.cpu && opt.compute.empty() && !opt.profile && !getenv("RVC11_COMPUTE")) {
             opt.defines.push_back("TICK_MRT");
             // (RVC_CORES=N: a machine of fewer cores, to measure what the others cost core 0)
             int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : kCores;
@@ -802,6 +811,7 @@ int main(int argc, char** argv) {
     bo.dxcOpt = opt.dxcOpt;
     bo.dxcSm = opt.dxcSm;
     bo.dxcDir = opt.dxcDir;
+    bo.computeShader = opt.compute;
     // The GPU device is a second shader next to the CPU's; upstream rvc has none.
     SLShader gpuShader;
     std::string gpuPath = (fs::u8path(opt.rvcDir) / "gpu.shader").u8string();
@@ -825,11 +835,13 @@ int main(int argc, char** argv) {
     }
     // both backends keep two state buffers, which is what lets the commit skip unwritten bands
     if (opt.sbi) opt.defines.push_back("SBI_HLE");
-    if (opt.cpu) {
+    if (opt.cpu || !opt.compute.empty()) {
         // the interpreter has the cores: the shader is one core's, and runs none
+        // (--compute: the machine has one core, and the control pass says so: no worker is ever given out)
         opt.defines.erase(std::remove_if(opt.defines.begin(), opt.defines.end(), [](const std::string& d) {
             return d.rfind("CORES=", 0) == 0 || d.rfind("CORE_PITCH=", 0) == 0 || d.rfind("MC_", 0) == 0; }), opt.defines.end());
-        if (opt.dxc) { fprintf(stderr, "[harness] --cpu is for the D3D11 backend\n"); return 2; }
+        if (opt.dxc) { fprintf(stderr, "[harness] --cpu and --compute are for the D3D11 backend\n"); return 2; }
+        if (opt.cpu && !opt.compute.empty()) { fprintf(stderr, "[harness] --cpu or --compute, not both\n"); return 2; }
     }
     if (!opt.noBands) opt.defines.push_back("COMMIT_BANDS");
     // under DXC a local array is not zeroed at the start of every tick, a static one is
@@ -1424,6 +1436,15 @@ int main(int argc, char** argv) {
             cpuDisplay[0] = word(CTRL + 4), cpuDisplay[1] = word(CTRL + 8);
         }
 
+        // --compute: the processor's RAM and hart, once the frames that set the state texture up are
+        // over; from then on a frame is a pass of it, and the rest is the harness's as without it
+        if (!opt.compute.empty() && frame >= (uint64_t)opt.initFrames && !backend.computeMode &&
+            !backend.computeStart(linuxDir(opt), err)) {
+            fprintf(stderr, "[harness] --compute: %s\n", err.c_str());
+            exitCode = 1;
+            break;
+        }
+
         // Feed one input character per handshake.
         if (frame >= (uint64_t)opt.initFrames && sentTag == consumedTag && !cpuRunning) {
             // Up to uartBurst characters per handshake, first one in the low byte. NUL cannot be
@@ -1971,6 +1992,10 @@ int main(int argc, char** argv) {
             (unsigned long long)frame, wall, (unsigned long long)guestInstructions,
             wall > 0 ? guestInstructions / wall / 1000.0 : 0.0, commits,
             untilHit ? ", --until matched" : (exitCode == 3 ? ", --until NOT matched" : ""));
+    std::vector<uint32_t> hart;
+    if (backend.computeMode && backend.computeState(hart))
+        fprintf(stderr, "[harness] the compute processor: pc %08x, privilege %u, %llu instructions in %u passes\n", hart[80], hart[81],
+                (unsigned long long)hart[93] | (unsigned long long)hart[94] << 32, hart[95]);
     if (opt.cores > 1)
         fprintf(stderr, "[harness] %d workers: %llu instructions more, all cores avg %.1fk IPS\n", opt.cores - 1,
                 (unsigned long long)workerInstructions, wall > 0 ? (guestInstructions + workerInstructions) / wall / 1000.0 : 0.0);

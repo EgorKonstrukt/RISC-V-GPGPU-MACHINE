@@ -32,7 +32,7 @@ using Microsoft::WRL::ComPtr;
 static const uint32_t RAM_BASE = 0x80000000u, RAM_SIZE = 0x08000000u;   // as rvc_cpu's
 static const uint32_t CON = 0x876b8280u;   // docs/machine/console.md: host words, guest words, the ring
 static const uint32_t CON_BYTES = 0x120u, RING = 0x20u, RING_SIZE = 256;
-static const uint32_t STATE_WORDS = 90, S_PC = 80, S_PRIV = 81, S_RES = 83, S_TCMP = 84, S_RAN = 89;
+static const uint32_t STATE_WORDS = 91, S_PC = 80, S_PRIV = 81, S_RES = 83, S_TCMP = 84, S_RAN = 89;
 
 struct Options {
     std::string shader = "experiments/rv32_min/rv32_min_fast.hlsl";

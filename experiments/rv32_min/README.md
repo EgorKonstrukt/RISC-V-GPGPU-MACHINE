@@ -81,6 +81,57 @@ much of the difference is the tick's whole machine (256 cores' state, the device
 the processor alone. gzip's loads and stores go to the buffer every time, where the tick has
 its write cache and remembered texels.
 
+## The whole machine: `rvc_harness --compute`
+
+    bin\rvc_harness.exe --compute fast --desktop --viz        (plain: rv32_min.hlsl, or a file)
+
+The harness as it is, with this shader as its only processor in place of the tick: its window,
+the display, the GPU device, the sound card, the keys and the pointer, the console, `--expect`,
+`--send`, `--until`, `--stats-from`, the fetch and the network. It is `--cpu`
+(`docs/machine/cpu-harness.md`) with the processor on the card instead of on the host:
+
+- The init frames set the state texture up as ever; then the backend loads the image's
+  `linux_payload.bin` into a RAM buffer of its own (the texture's 126 MB) and `rootfs.bin` as the
+  ROM, and a frame is one pass of the processor (`--ticks`, 8,192) and the devices' passes.
+- The processor marks the 4 MB bands it stores to (State word 90). After its pass `sync.hlsl`
+  puts those bands into the state texture, and writes the core's state rows as the commit and
+  the host read them: the instructions so far (28,0).g, the pc (36,0).a, and in (41,0) the bands
+  the commit carries over into the other buffer, as `--cpu` does. No write cache, no stall.
+- The commit, the GPU's draw, the sound card's mix and the control pass are the harness's own.
+  After them `sync.hlsl` takes back into the buffer what they wrote: the control words (256
+  texels at 0x87000000, as `--cpu` copies them whole), the picture the commit copied back for
+  the list drawn last (GPU_COPY: the display's framebuffer or a window's rectangle), and when
+  the host delivered them in this frame the console's input word, the network's ring and a
+  fetch's answer. All of it is on the card, in order: nothing waits for a readback.
+- One core: the shader is compiled without `CORES`, so the control pass reports no workers and
+  the kernel gives none out. Quake III then puts its server, its client's game, its scene and
+  its pictures on the first core by itself ("quake3: the server's frame is on this core").
+- `pause` ends the pass, as on the shader machine (the kernel's `REST`, a program waiting for
+  the next pass). `cycle` and `instret` count the instructions so far (State words 93 and 94):
+  a program's own counts (Quake III's `q3stat:`) work.
+
+On an RTX 5070 laptop on 18 October 2026 (D3D11 + fxc2, passes of 8,192, one run each, no
+memory view: the view costs some 1.5 ms a frame and was in the first runs): Linux to its shell
+in 4.7 s, the desktop drawn by the GPU device, Quake III's sound mixed (`--sound-capture`, not
+silent). Quake III, `nano-X -p & sleep 2; QUAKE3_STATS_FRAMES=100 quake3 +devmap q3dm17`, the
+player standing still, its `q3stat:` lines for frames 101 to 400:
+
+| | seconds for 100 frames | frames a second | thousands of instructions a frame (core 0) |
+|---|---|---|---|
+| the tick (`rvc_opt`), 255 workers | 3.29 to 3.35 | 30 | 29 |
+| the tick, everything on core 0 (`QUAKE3_SERVER=inline` `CLIENT` `SCENE` `SIDE` `inline`, no picture workers) | 15.1 to 15.4 | 6.6 | 267 to 273 |
+| `--compute fast` (one core: the game puts it all there) | 10.7 to 10.8 | 9.3 | 218 to 219 |
+| `--compute plain` | 21.5 to 24.7 | 4.3 | 324 to 332 |
+
+One core against one core the fast shader is 1.4 times the tick here; the tick with its workers
+is 3.2 times the fast shader. Core 0 ran fewer instructions a frame on the fast shader than
+on the tick (not looked into: the game's own waits, and how many passes a frame is, differ).
+A shell loop in this harness is 2.29 million instructions a second at `--ticks 8192` and 2.72
+at 32768, against 2.65 in `rvc_compute_harness` (which has no devices' passes between).
+
+Not done: `--save-state` and `--load-state` (the processor's state is in its buffer, not in the
+snapshot), D3D12, workers.
+
 ## How it was checked
 
 - fxc2 (`tools\fxc2\d3dcompiler_47.dll`, `cs_5_0`) compiles it in 0.04 s with no warnings:

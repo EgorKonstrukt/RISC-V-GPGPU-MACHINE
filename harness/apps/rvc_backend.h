@@ -26,6 +26,7 @@ struct BackendOptions {
     unsigned tickRows = 64;       // rows of the 64 texels wide state block that the tick pass draws (16: rvc_opt)
     int readbackBatch = 1;        // D3D11: frames whose rows are read back with one Map (--readback-batch)
     bool stateLog = false;        // D3D12 only: read the CPU's 64 x 64 state texels back every frame (--l1-log)
+    std::string computeShader;    // D3D11 only, --compute: the processor as this compute shader (experiments/rv32_min)
 };
 
 // The GPU device (docs/machine/gpu.md): a mesh of kGpuTriangles triangles drawn into a square colour and
@@ -86,6 +87,17 @@ public:
     virtual bool uploadRows(UINT row, UINT rows, const void* texels) { (void)row; (void)rows; (void)texels; return false; }
     virtual bool uploadTexel(UINT x, UINT y, const uint32_t* words) { (void)x; (void)y; (void)words; return false; }
     virtual bool readRows(UINT row, UINT rows, std::vector<uint8_t>& out) { (void)row; (void)rows; (void)out; return false; }
+    // --compute (experiments/rv32_min/README.md, "The whole machine"): as --cpu, but the processor is
+    // a compute shader with RAM in a buffer of its own on the card. A frame runs one of its passes,
+    // puts the bands of RAM it stored to into the state texture (the commit carries them over as
+    // the processor's), and after the devices' passes takes back what they wrote: the control
+    // words, the picture the commit copied back, the console's, the network's and a fetch's words.
+    bool computeMode = false;
+    uint32_t computeMask = 0xffffffffu;   // the bands that may go into the texture this frame
+    // Loads <imageDir>/linux_payload.bin into RAM and rootfs.bin as the ROM, and starts the hart.
+    virtual bool computeStart(const std::string& imageDir, std::string& err) { (void)imageDir; err = "--compute is for the D3D11 backend"; return false; }
+    // The processor's words (rv32_min*.hlsl's State), read back now.
+    virtual bool computeState(std::vector<uint32_t>& out) { (void)out; return false; }
 
     virtual ~RvcBackend() {}
     // Creates the device and compiles both passes. Prints its own progress lines.

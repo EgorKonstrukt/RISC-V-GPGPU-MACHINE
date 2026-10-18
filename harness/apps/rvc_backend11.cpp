@@ -63,6 +63,7 @@ public:
         for (auto& d : opt.compile.defines)
             if (d.first == "RAM_BUFFER") csBuffer_ = true;
         if (getenv("RVC11_COMPUTE") && !buildComputeTick(shader, bo, err)) return false;
+        if (!opt.computeShader.empty() && !buildComputeCpu(opt.computeShader, bo, err)) return false;
         std::string gpuErr;
         if (opt.gpuShader && (!buildPasses(gpu_, *opt.gpuShader, {"GPUDraw", "GPUControl"}, bo, gpuPasses_, gpuErr) ||
                               !createGpuTarget(gpuErr))) {
@@ -145,7 +146,11 @@ public:
             gpu_.ctx->Begin(tsDisjoint_.Get());
             gpu_.ctx->End(tsQuery_[0].Get());
         }
-        if (cpuMode && mat.getFloat("_Init") == 0) {}   // the processor ran the instructions
+        // (the devices' words for this frame, before the control pass's draws clear them)
+        bool importCon = conDelivered, importFetch = deliver_, importNet = deliverNet_, importCounts = false;
+        bool computing = computeMode && csCpu_ && mat.getFloat("_Init") == 0;
+        if (computing) runComputeCpu(mat);
+        else if (cpuMode && mat.getFloat("_Init") == 0) {}   // the processor ran the instructions
         else if (cs_ && mat.getFloat("_Init") == 0) runComputeTick(mat);
         else {
             // The tick's geometry shader draws the quads: core 0's rectangle, and a strip for
@@ -191,7 +196,8 @@ public:
             gpuDraw(mat);
             bool mixed = soundMix && !soundPasses_.empty();
             if (mixed) soundDraw(mat, tag);   // before the control zone moves the voices on
-            bool merge = countsAdded && !cpuMode;
+            bool merge = countsAdded && (!cpuMode || computeMode);   // (--cpu: the interpreter adds them up itself)
+            importCounts = merge;
             if (merge) {
                 const float* m = kCountZone;
                 crt_.runZone(gpu_, gpuPasses_[1], mat, UpdateZone{m[0], m[1], m[2], m[3], 1});
@@ -220,6 +226,7 @@ public:
                 deliverNet_ = false;
             }
         }
+        if (computing) computeImport(importCon, importFetch, importNet, importCounts);
         if (timeIt) {
             gpu_.ctx->End(tsQuery_[3].Get());
             gpu_.ctx->End(tsDisjoint_.Get());
@@ -715,6 +722,187 @@ private:
         ctx->CSSetShaderResources(0, 16, nulls);
         if (!csDirect_) ctx->CopySubresourceRegion(crt_.current(), 0, 0, 0, 0, tickTex_.Get(), 0, &box);
     }
+    // --compute: the processor (rv32_min*.hlsl's tick) and sync.hlsl's passes beside it, RAM and
+    // the processor's words in buffers of their own, the ROM as a raw view (rvc_backend.h).
+    ComPtr<ID3D11ComputeShader> csCpu_, csCount_, csState_, csExport_, csPlan_, csTake_;
+    ComPtr<ID3D11Buffer> cpuRam_, cpuState_, cpuRom_, cpuPass_, cpuSync_, cpuStateRead_;
+    ComPtr<ID3D11UnorderedAccessView> cpuRamUav_, cpuStateUav_;
+    ComPtr<ID3D11ShaderResourceView> cpuRomSrv_;
+    uint32_t cpuSeed_ = 0x9e3779b9u;
+    static const UINT kCpuStateBytes = 512;
+    static ComPtr<ID3D11Buffer> makeBuffer(ID3D11Device* dev, UINT bytes, UINT bind, UINT misc, D3D11_USAGE usage, UINT cpu,
+                                           const void* init, std::string& err) {
+        D3D11_BUFFER_DESC d{};
+        d.ByteWidth = bytes;
+        d.Usage = usage;
+        d.BindFlags = bind;
+        d.MiscFlags = misc;
+        d.CPUAccessFlags = cpu;
+        D3D11_SUBRESOURCE_DATA s{init, 0, 0};
+        ComPtr<ID3D11Buffer> b;
+        HRESULT hr = dev->CreateBuffer(&d, init ? &s : nullptr, &b);
+        if (FAILED(hr)) err = "a buffer of " + std::to_string(bytes) + " bytes: " + hrToString(hr);
+        return b;
+    }
+    bool buildComputeCpu(const std::string& path, const ShaderBuildOptions& bo, std::string& err) {
+        fs::path cpuPath = fs::u8path(path), syncPath = cpuPath.parent_path() / "sync.hlsl";
+        if (!fs::exists(syncPath)) syncPath = fs::u8path("experiments/rv32_min/sync.hlsl");
+        std::string cpuSource, syncSource;
+        if (!readFileBinary(cpuPath.u8string(), cpuSource)) { err = "--compute: no shader " + path; return false; }
+        if (!readFileBinary(syncPath.u8string(), syncSource)) { err = "--compute: no " + syncPath.u8string(); return false; }
+        struct Entry { const std::string* source; fs::path file; const char* entry; ComPtr<ID3D11ComputeShader>* cs; };
+        Entry entries[] = {{&cpuSource, cpuPath, "tick", &csCpu_}, {&syncSource, syncPath, "sync_count", &csCount_},
+                           {&syncSource, syncPath, "sync_state", &csState_}, {&syncSource, syncPath, "export_rows", &csExport_},
+                           {&syncSource, syncPath, "import_plan", &csPlan_}, {&syncSource, syncPath, "import_rows", &csTake_}};
+        for (auto& e : entries) {
+            StageResult r = compileStage(*e.source, e.file.u8string(), e.file.parent_path().u8string(), e.entry, "cs_5_0", {}, bo.settings);
+            if (!r.ok) { err = e.file.u8string() + " (" + e.entry + "): " + r.log; return false; }
+            HRESULT hr = gpu_.device->CreateComputeShader(r.bytecode->GetBufferPointer(), r.bytecode->GetBufferSize(), nullptr, e.cs->GetAddressOf());
+            if (FAILED(hr)) { err = std::string("CreateComputeShader (") + e.entry + "): " + hrToString(hr); return false; }
+            if (strcmp(e.entry, "tick") == 0)
+                fprintf(stderr, "[harness] the processor as a compute shader: %s, %s in %.2f s (%zu bytes)\n", path.c_str(),
+                        r.fromCache ? "cache hit" : "compiled", r.seconds, (size_t)r.bytecode->GetBufferSize());
+        }
+        ID3D11Device* dev = gpu_.device.Get();
+        cpuPass_ = makeBuffer(dev, 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
+        if (cpuPass_) cpuSync_ = makeBuffer(dev, 16, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
+        if (cpuSync_) cpuStateRead_ = makeBuffer(dev, kCpuStateBytes, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr, err);
+        return cpuStateRead_ != nullptr;
+    }
+    ComPtr<ID3D11UnorderedAccessView> rawUav(ID3D11Buffer* b, UINT bytes, std::string& err) {
+        D3D11_UNORDERED_ACCESS_VIEW_DESC d{};
+        d.Format = DXGI_FORMAT_R32_TYPELESS;
+        d.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        d.Buffer.NumElements = bytes / 4;
+        d.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+        ComPtr<ID3D11UnorderedAccessView> v;
+        HRESULT hr = gpu_.device->CreateUnorderedAccessView(b, &d, &v);
+        if (FAILED(hr)) err = "a raw view: " + hrToString(hr);
+        return v;
+    }
+    void setSync(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count) {
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (FAILED(gpu_.ctx->Map(cpuSync_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+        uint32_t cb[4] = {mask, mode, from, count};
+        memcpy(m.pData, cb, sizeof cb);
+        gpu_.ctx->Unmap(cpuSync_.Get(), 0);
+    }
+    void unbindCompute() {
+        ID3D11UnorderedAccessView* none[3] = {};
+        ID3D11ShaderResourceView* noSrv[1] = {};
+        gpu_.ctx->CSSetUnorderedAccessViews(0, 3, none, nullptr);
+        gpu_.ctx->CSSetShaderResources(0, 1, noSrv);
+    }
+    // A pass of the processor, then what it stored into the state texture the commit reads.
+    void runComputeCpu(Material& mat) {
+        ID3D11DeviceContext* ctx = gpu_.ctx.Get();
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (SUCCEEDED(ctx->Map(cpuPass_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            cpuSeed_ = cpuSeed_ * 1664525u + 1013904223u;
+            uint32_t cb[8] = {(uint32_t)mat.getFloat("_HostMtimeLo"), (uint32_t)mat.getFloat("_HostMtimeHi"),
+                              (uint32_t)(int64_t)mat.getFloat("_RTC0"), (uint32_t)(int64_t)mat.getFloat("_RTC1"),
+                              (uint32_t)mat.getFloat("_Ticks", 8192), kRamTexels * 16, cpuSeed_, 0};
+            memcpy(m.pData, cb, sizeof cb);
+            ctx->Unmap(cpuPass_.Get(), 0);
+        }
+        ID3D11UnorderedAccessView* uavs[3] = {cpuRamUav_.Get(), cpuStateUav_.Get(), crt_.currentUAV()};
+        ID3D11ShaderResourceView* rom = cpuRomSrv_.Get();
+        ctx->CSSetShader(csCpu_.Get(), nullptr, 0);
+        ctx->CSSetUnorderedAccessViews(0, 2, uavs, nullptr);
+        ctx->CSSetShaderResources(0, 1, &rom);
+        ctx->CSSetConstantBuffers(0, 1, cpuPass_.GetAddressOf());
+        ctx->Dispatch(1, 1, 1);
+        ID3D11ShaderResourceView* noRom = nullptr;
+        ctx->CSSetShaderResources(0, 1, &noRom);
+        setSync(computeMask, 0, 0, 0);
+        ctx->CSSetConstantBuffers(0, 1, cpuSync_.GetAddressOf());
+        ctx->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
+        ctx->CSSetShader(csCount_.Get(), nullptr, 0);
+        ctx->Dispatch(1, 1, 1);
+        ctx->CSSetShader(csState_.Get(), nullptr, 0);
+        ctx->Dispatch(1, 16, 1);
+        ctx->CSSetShader(csExport_.Get(), nullptr, 0);
+        ctx->Dispatch(8, 4096 - 64, 1);
+        unbindCompute();
+    }
+    // What the devices wrote into RAM in this frame, back into the processor's.
+    void computeImport(bool con, bool fetch, bool net, bool counts) {
+        ID3D11DeviceContext* ctx = gpu_.ctx.Get();
+        ID3D11UnorderedAccessView* uavs[2] = {cpuRamUav_.Get(), cpuStateUav_.Get()};
+        ID3D11ShaderResourceView* state = crt_.currentSRV();
+        ctx->CSSetUnorderedAccessViews(0, 2, uavs, nullptr);
+        ctx->CSSetShaderResources(0, 1, &state);
+        ctx->CSSetConstantBuffers(0, 1, cpuSync_.GetAddressOf());
+        ctx->CSSetShader(csPlan_.Get(), nullptr, 0);
+        ctx->Dispatch(1, 1, 1);
+        ctx->CSSetShader(csTake_.Get(), nullptr, 0);
+        setSync(0, 1, 0, 0);   // (first: its words are the control words before they come back)
+        ctx->Dispatch((kGpuTarget * kGpuTarget / 4 + 1 + 255) / 256, 1, 1);
+        auto texels = [&](uint32_t from, uint32_t count) {
+            setSync(0, 0, from, count);
+            ctx->Dispatch((count + 255) / 256, 1, 1);
+        };
+        const uint32_t net0 = (kNetRow - 64) * 2048;
+        texels((kControlRow - 64) * 2048, kControlTexels);
+        if (con) texels(net0 + kConHost, 1);
+        if (net) texels(net0 + kNetRing, kNetSlot * kNetSlots);
+        if (fetch) texels(0x76c000, 0x4000);   // FETCH_DATA (src/gpu.h); its words are control words
+        if (counts) texels(0x6c1000, 256);     // COUNT_TOTAL: the counters' totals the control pass added up
+        unbindCompute();
+    }
+public:
+    bool computeStart(const std::string& imageDir, std::string& err) override {
+        if (!csCpu_) { err = "no compute processor was built"; return false; }
+        std::string payload, rom;
+        if (!readFileBinary((fs::u8path(imageDir) / "linux_payload.bin").u8string(), payload) ||
+            !readFileBinary((fs::u8path(imageDir) / "rootfs.bin").u8string(), rom)) {
+            err = "no image in " + imageDir + " (linux_payload.bin, rootfs.bin)";
+            return false;
+        }
+        ID3D11Device* dev = gpu_.device.Get();
+        const UINT RAW = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, ramBytes = kRamTexels * 16;
+        {
+            std::vector<uint8_t> ram(ramBytes, 0);
+            memcpy(ram.data(), payload.data(), (std::min)(payload.size(), ram.size()));
+            cpuRam_ = makeBuffer(dev, ramBytes, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, ram.data(), err);
+        }
+        rom.resize((rom.size() + 15) & ~(size_t)15, 0);
+        // the hart as the kernel without an MMU starts: supervisor mode at 0x80400000, the device tree in
+        // x11, no reservation; every band of RAM still to go into the texture
+        uint32_t state[kCpuStateBytes / 4] = {};
+        state[11] = 0x82200000u;
+        state[80] = 0x80400000u;
+        state[81] = 1;
+        state[83] = ~0u;
+        state[90] = ~0u;
+        if (cpuRam_) cpuState_ = makeBuffer(dev, kCpuStateBytes, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, state, err);
+        if (cpuState_) cpuRom_ = makeBuffer(dev, (UINT)rom.size(), D3D11_BIND_SHADER_RESOURCE, RAW, D3D11_USAGE_DEFAULT, 0, rom.data(), err);
+        if (!cpuRom_) return false;
+        cpuRamUav_ = rawUav(cpuRam_.Get(), ramBytes, err);
+        cpuStateUav_ = cpuRamUav_ ? rawUav(cpuState_.Get(), kCpuStateBytes, err) : nullptr;
+        if (!cpuStateUav_) return false;
+        D3D11_SHADER_RESOURCE_VIEW_DESC d{};
+        d.Format = DXGI_FORMAT_R32_TYPELESS;
+        d.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+        d.BufferEx.NumElements = (UINT)(rom.size() / 4);
+        d.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+        HRESULT hr = dev->CreateShaderResourceView(cpuRom_.Get(), &d, &cpuRomSrv_);
+        if (FAILED(hr)) { err = "the ROM's view: " + hrToString(hr); return false; }
+        fprintf(stderr, "[harness] --compute: %s (%zu bytes) in RAM, rootfs.bin (%zu bytes) as the ROM\n", imageDir.c_str(), payload.size(), rom.size());
+        computeMode = true;
+        cpuMode = true;
+        return true;
+    }
+    bool computeState(std::vector<uint32_t>& out) override {
+        if (!cpuState_) return false;
+        gpu_.ctx->CopyResource(cpuStateRead_.Get(), cpuState_.Get());
+        D3D11_MAPPED_SUBRESOURCE m{};
+        if (FAILED(gpu_.ctx->Map(cpuStateRead_.Get(), 0, D3D11_MAP_READ, 0, &m))) return false;
+        out.assign((const uint32_t*)m.pData, (const uint32_t*)m.pData + kCpuStateBytes / 4);
+        gpu_.ctx->Unmap(cpuStateRead_.Get(), 0);
+        return true;
+    }
+private:
     ComPtr<ID3D11ShaderResourceView> hostData_;
     bool deliver_ = false;   // the fetch zone is drawn in the next frame
     ComPtr<IDXGISwapChain> swapChain_;

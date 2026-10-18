@@ -4,7 +4,8 @@
 // Not done: fflags, fused rounding of fmadd, denormals (GPUs flush them), misaligned jumps.
 
 RWByteAddressBuffer Ram   : register(u0);   // guest RAM from 0x80000000
-RWByteAddressBuffer State : register(u1);   // r, csr, pc priv fcsr res, tcmp lo hi, memop src dst n, instructions run
+RWByteAddressBuffer State : register(u1);   // r, csr, pc priv fcsr res, tcmp lo hi, memop src dst n, instructions run,
+                                            // then the 4 MB bands of RAM stored to (or-ed in, for rvc_harness --compute)
 ByteAddressBuffer   Rom   : register(t0);   // the ROM from 0x40000000
 
 cbuffer Pass : register(b0) {
@@ -16,6 +17,8 @@ static uint csr[16];  // slot (n >> 3 & 8) | (n & 7): status 0, ie 4, tvec 5, co
                       // scratch 8, epc 9, cause 10, tval 11, ip 12; s* and m* share a slot
 static uint pc, priv, fcsr, res, tcmp_lo, tcmp_hi, msrc, mdst, mn;
 static bool trapped;
+static uint dirty;    // a bit a 4 MB band of RAM this pass stored to
+static uint ran;      // instructions of this pass before the one in step()
 static uint trap_cause, trap_val;
 
 void raise(uint cause, uint val) {
@@ -31,6 +34,7 @@ uint read_word(uint a) {   // a is word-aligned
 void write_word(uint a, uint v, uint m) {   // a is word-aligned; only RAM takes writes
     if (a - 0x80000000u >= RamBytes) return;
     a -= 0x80000000u;
+    dirty |= 1u << (a >> 22);
     Ram.Store(a, m == ~0u ? v : (Ram.Load(a) & ~m) | (v & m));
 }
 
@@ -62,6 +66,10 @@ uint csr_read(uint n) {
     if (n == 0x301) v = 0x40141101;                     // misa, as the machine reports it
     if (n == 0x0bf) v = Seed ^ (pc * 2654435761u);
     if (n == 0xc01) v = TimeLo;
+    // cycle and instret: the instructions so far (State words 93 and 94, which rvc_harness --compute keeps)
+    uint lo = State.Load(372) + ran;
+    if (n == 0xc00 || n == 0xc02) v = lo;
+    if (n == 0xc80 || n == 0xc82) v = State.Load(376) + (lo < ran ? 1u : 0u);
     if (n == 0xc81) v = TimeHi;
     return v;
 }
@@ -200,7 +208,7 @@ uint fmadd(uint opc, uint a, uint b, uint c_bits) {
 }
 
 // Runs the instruction at pc. Returns 0 to go on, 1 when interrupts must be looked at again
-// (a CSR, a trap, sret, SBI), 2 when the pass should end (wfi).
+// (a CSR, a trap, sret, SBI), 2 when the pass should end (wfi, pause).
 uint step() {
     trapped = false;
     uint w = read_word(pc);
@@ -271,8 +279,9 @@ uint step() {
         } else if (f7 != 0x09) {        // (sfence.vma: nothing)
             raise(2, w);
         }
-    } else if (opc == 0x0f) {   // fence, fence.i
+    } else if (opc == 0x0f) {   // fence, fence.i; pause ends the pass, as on the shader machine
         dst = 64;
+        ret = w == 0x0100000fu ? 2 : 0;
     } else {
         raise(2, w);
     }
@@ -311,6 +320,7 @@ uint fast_run(uint n) {
             if (st) {
                 uint m = (0xffffffffu >> s) << sh;
                 Ram.Store(ro & ~3u, (word & ~m) | ((b << sh) & m));
+                dirty |= 1u << (ro >> 22);
                 dst = 64;
             } else {
                 v = word >> sh << s;
@@ -354,6 +364,7 @@ void tick(uint3 id : SV_DispatchThreadID) {
     pc = p.x; priv = p.y; fcsr = p.z; res = p.w;
     tcmp_lo = q.x; tcmp_hi = q.y; msrc = q.z; mdst = q.w; mn = State.Load(352);
 
+    dirty = 0;
     if (timer_due()) csr[12] |= 0x20;
     bool look = true;
     uint n = 0;
@@ -362,6 +373,7 @@ void tick(uint3 id : SV_DispatchThreadID) {
         if (look && interrupt()) { n++; continue; }
         n = fast_run(n);
         if (n >= Steps) break;
+        ran = n;
         uint s = step();
         n++;
         if (s == 2) break;
@@ -373,5 +385,6 @@ void tick(uint3 id : SV_DispatchThreadID) {
     State.Store4(320, uint4(pc, priv, fcsr, res));
     State.Store4(336, uint4(tcmp_lo, tcmp_hi, msrc, mdst));
     State.Store(352, mn);
-    State.Store(356, n);   // fewer than Steps: the pass ended on wfi
+    State.Store(356, n);   // fewer than Steps: the pass ended on wfi or pause
+    State.Store(360, State.Load(360) | dirty);
 }
