@@ -17,6 +17,7 @@
 #include <io.h>
 
 #include <chrono>
+#include <fstream>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -206,7 +207,15 @@ int main(int argc, char** argv) {
     if (FAILED(hr)) { fprintf(stderr, "the shader did not compile\n"); return 1; }
     fprintf(stderr, "[compute] %s compiled in %.2f s, %zu bytes\n", opt.shader.c_str(), compile_s, (size_t)code->GetBufferSize());
     ComPtr<ID3D11ComputeShader> cs, merge, mergeList;
-    if (FAILED(dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &cs))) return 1;
+    // RVC_TICK_CSO=FILE: the tick's bytecode from another compiler (a measurement), the rest as compiled
+    std::string cso;
+    if (const char* f = getenv("RVC_TICK_CSO")) {
+        std::ifstream in(f, std::ios::binary);
+        cso.assign(std::istreambuf_iterator<char>(in), {});
+        fprintf(stderr, "[compute] the tick from %s, %zu bytes\n", f, cso.size());
+    }
+    if (FAILED(cso.empty() ? dev->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &cs)
+                           : dev->CreateComputeShader(cso.data(), cso.size(), nullptr, &cs))) return 1;
     // the merge of core 0's and the workers' images after every pass, for a shader that has them
     if (std::string((const char*)source.data(), source.size()).find("void merge(") != std::string::npos) {
         ComPtr<ID3DBlob> mcode, merrors, ecode;
@@ -244,15 +253,15 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> markZeros(MARK_BYTES, 0);
     auto markBuf = make_buffer(dev.Get(), MARK_BYTES, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, markZeros.data());
     auto romBuf = make_buffer(dev.Get(), (uint32_t)rom.size(), D3D11_BIND_SHADER_RESOURCE, RAW, D3D11_USAGE_DEFAULT, 0, rom.data());
-    auto cbuf = make_buffer(dev.Get(), 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr);
+    auto cbuf = make_buffer(dev.Get(), 48, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr);
     auto stateRead = make_buffer(dev.Get(), STATE_WORDS * 4, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
     auto conRead = make_buffer(dev.Get(), CON_BYTES, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr);
     ram.clear();
     ram.shrink_to_fit();
     auto ramUav = raw_uav(dev.Get(), ramBuf.Get(), RAM_SIZE * 3);
     auto markUav = raw_uav(dev.Get(), markBuf.Get(), MARK_BYTES);
-    auto argsBuf = make_buffer(dev.Get(), 32, D3D11_BIND_UNORDERED_ACCESS, RAW | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, D3D11_USAGE_DEFAULT, 0, markZeros.data());
-    auto argsUav = raw_uav(dev.Get(), argsBuf.Get(), 32);
+    auto argsBuf = make_buffer(dev.Get(), 48, D3D11_BIND_UNORDERED_ACCESS, RAW | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, D3D11_USAGE_DEFAULT, 0, markZeros.data());
+    auto argsUav = raw_uav(dev.Get(), argsBuf.Get(), 48);
     // decoded instructions, for a shader that keeps them (u2): zeros, which no entry's pc is
     std::vector<uint8_t> zeros(DEC_BYTES, 0);
     auto decBuf = make_buffer(dev.Get(), DEC_BYTES, D3D11_BIND_UNORDERED_ACCESS, RAW, D3D11_USAGE_DEFAULT, 0, zeros.data());
@@ -298,7 +307,7 @@ int main(int argc, char** argv) {
         D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ctx->Map(cbuf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
             seed = seed * 1664525u + 1013904223u;
-            uint32_t cb[8] = {(uint32_t)mtime, (uint32_t)(mtime >> 32), rtc0, rtc1, opt.ticks, RAM_SIZE, seed, opt.allRun ? 1u : 0u};
+            uint32_t cb[12] = {(uint32_t)mtime, (uint32_t)(mtime >> 32), rtc0, rtc1, opt.ticks, RAM_SIZE, seed, opt.allRun ? 1u : 0u, 0, 1, (uint32_t)opt.cores};
             memcpy(m.pData, cb, sizeof cb);
             ctx->Unmap(cbuf.Get(), 0);
         }

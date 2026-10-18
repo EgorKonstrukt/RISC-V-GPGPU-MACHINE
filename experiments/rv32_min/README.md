@@ -76,7 +76,13 @@ and fewer branches; what did not, below.
 - **Two turns a time round the loop** (`turn`, called twice): the loop's test and branch half
   as often. Four times was slower (the card's instruction cache).
 - **The registers in groupshared** (`r[65]`), not a local array: 8% on two of the loads.
-- M, the floats, an entry to make: the outer loop's. CSRs, `ecall`, atomics, traps: the general
+- **The commonest floats in the inner loop** (`K_FA`, 18 October 2026): fadd, fsub, fmul, the sign
+  injections (`fmv.s`, `fabs`, `fneg`), `fmv.x.w`/`fmv.w.x` and the four fused multiply-adds, one test
+  with the result chosen by selects, as the integer arithmetic. Before, every float instruction
+  failed the inner loop's eight tests, left it, and went through the outer loop and `op_fp`'s row
+  of tests. Quake's timedemo 7 to 15% faster; integer loads the same. `mul` in the integer group
+  as well was mixed (`sha256sum` 3% slower) and is not in.
+- M, the other floats, an entry to make: the outer loop's. CSRs, `ecall`, atomics, traps: the general
   step's, as before. The general path is 0.5 to 0.7% of the instructions.
 - Fixed on the way: `fcvt.w.s` of a negative number gave 0 and `fdiv` of two large numbers 0
   (fxc's conversions, the card's 1 / b; done as the tick does them). The guest's `fptest`: 0 of
@@ -104,6 +110,16 @@ as the pass found it, `ebreak` parks it, `fence.i` ends its pass; a trap or `eca
 the fault record (the count last) and stops it until core 0's resume word changes, a call's
 answer then in a0. A worker that is parked or asleep costs a thread group that reads a few
 words and ends.
+
+**A fault this machine has and the shader machine has not**: nxray (60 pictures) stops a
+ worker at its start now and then (`mcw: a worker core stopped, cause 2, at pc 0`), 2 runs in 6
+ with this shader as committed before 18 October and more with the ones after, which change
+ only the timing. Caught with the jump's source recorded: a worker's `ret` read a return address
+ of another call of the same loop from its stack (`lw ra` gave an older word of that slot).
+ Workers here read and write one image together during a pass, which a GPU's memory gives no
+ order to (below); on the shader machine a core reads RAM as the last commit left it and its own
+ stores. Not fixed: a worker reading the third image but for the pages it stored to cost Quake
+ III 7% and did not stop it, so the cause is more than which image a worker reads.
 
 What a core stores, the others see from the next pass on, all at once, as on the shader
 machine. A GPU's memory gives no such thing within a dispatch (a store can be seen before an
@@ -138,7 +154,14 @@ lanes that copied for lane 0 left it reading stale words even after
   number in a0, up to 8,192 of them: a measurement). It takes the GPU lock.
 - `bin\rvc_harness.exe --compute fast` (or `plain`, or a file): the whole machine, below.
   `--compute-cores N` (256: core 0 and 255 workers; plain has core 0 alone) and
-  `--compute-passes N` (1: the processor's passes a frame before the devices' passes).
+  `--compute-passes N` (fast: 4) and `--compute-split F` (fast: 2): the first F passes of a frame always
+  run, each core's at most `--ticks` / F of them (`--ticks` is 16,384 unless given), and the rest only
+  while core 0 rests (`pause`, the kernel's `REST`): `merge_list` writes the next pass's dispatch,
+  `DispatchIndirect` of none when core 0 ran its whole pass (`Args[6..8]`, State words 102-103 of
+  core 0: its instructions in this frame and whether it ended early). A frame of the devices'
+  passes costs some 0.2 ms beside a pass of 8,192 of about 1.1 ms (Quake's timedemo): two passes a
+  frame were Quake 18 to 19% faster and Red Alert 7%, and the passes while core 0 waits for its
+  workers Quake III 17% to 23%. `plain` keeps a pass a frame.
 
 ## The whole machine: `rvc_harness --compute`
 
@@ -247,6 +270,21 @@ run on the compute machine (rays 199,920 to 201,477, the tick's 201,460): nxray 
 up when a key or a resize comes while it is traced and publishes the next a step of its clock
 on, and when that comes is the machine's timing.
 
+**The floats in the loop and the passes a frame** (19 October 2026, the same card and harness,
+`--compute fast` as now against the shader before both, which had a pass of 8,192 a frame), ms a
+game's frame or nxray's picture, and all cores / core 0 / workers in millions of instructions a
+second (the workers' counted since `sync_cores` lists the counts' page: before, the host read
+only workers 1 to 15's), against the fragment tick (`--rvc experiments\rvc_opt`):
+
+| | the tick | compute before | compute now | |
+|---|---|---|---|---|
+| Quake, timedemo demo1 | 13.35 (8.3 / 3.2 / 5.0) | 9.20 (13.4 / 4.9 / 8.5) | 7.33 (16.0 / 6.2 / 9.8) | 1.26 |
+| Quake III, `timedemo 1`, q3dm17 | 14.66 (12.0 / 1.7 / 10.2) | 9.81 (17.2 / 2.5 / 14.7) | 8.12 (20.7 / 2.9 / 17.8) | 1.21 |
+| Red Alert, `RALERT_HUNT=50`, frames 500-900 | 24.55 (6.5 / 4.3 / 2.2) | 13.74 (12.9 / 7.5 / 5.4) | 12.69 (13.6 / 8.1 / 5.6) | 1.08 |
+| nxray, 60 pictures | 45.3 (183 / 4.5 / 178) | 29.9 (296 / 7.2 / 288) | 11.5 (354 / 8.7 / 345) | 2.6 |
+
+Over three rounds each the same: Quake 18 to 19% faster, Quake III 17 to 23%, Red Alert 2 to 7%.
+nxray's pictures 1 to 7 are the tick's sums; its time is of a run the start race did not meet.
 **How far cores scale** (`--all-run`, a mix of `addi`, `lw`, `sw`, `add`, `bne`, `xor`, `lbu` on
 every core, each on its own stack, passes of 32,768, the clock sampled through each run):
 

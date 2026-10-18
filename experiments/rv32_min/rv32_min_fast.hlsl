@@ -18,6 +18,9 @@ ByteAddressBuffer   Rom   : register(t0);   // the ROM from 0x40000000
 cbuffer Pass : register(b0) {
     uint TimeLo, TimeHi, Rtc0, Rtc1, Steps, RamBytes, Seed;
     uint AllRun;   // every core runs on its own from its words, in supervisor mode (a measurement)
+    uint Pass, Passes, Cores;   // this pass of the frame's most: a pass after the first runs when core 0
+                                // ended the one before early, and core 0 has Steps in all of them
+    uint Slice;                 // not 0: every pass runs, each core's at most this many (RVC_COMPUTE_SPLIT)
 };
 
 // A core's words in State, from hart * 512 (W_ in bytes): r 0-63, csr 64-79, pc priv fcsr res,
@@ -29,6 +32,8 @@ cbuffer Pass : register(b0) {
 #define W_MODE   392   // a worker: parked 0, running 1, asleep 2, stopped at a fault 3 or a call 4
 #define W_SEEN   396   // the resume word it stopped with
 #define W_JOB    404   // the job word it sleeps on
+#define W_USED   408   // core 0: instructions in this frame's passes so far
+#define W_EARLY  412   // core 0: its last pass ended before its limit (merge_list takes it)
 #define M_PAGE    0                            // Marks (bytes): a word a 4 KB page stored to in this pass,
 #define M_EXP     (32768 * 4)                  // a word a page in this frame's list, the 4 MB bands for
 #define M_HARNESS (65536 * 4)                  // the harness, the pages merge takes, a word for 32 pages
@@ -50,6 +55,7 @@ static bool trapped;
 static uint hart, base;   // this core's number and its words in State
 static uint why;          // a pass ended on: 1 pause, 2 ebreak, 3 a fault or call (a worker's)
 static uint view;         // this core's image of RAM (a byte offset into Ram)
+static uint limit;    // the instructions this pass may run: Steps, or core 0's rest of the frame's
 static uint marked;       // the page this core marked last (each store marks its page once in a row)
 static uint ran;      // instructions of this pass before the one in step()
 static uint trap_cause, trap_val;
@@ -377,7 +383,7 @@ uint step() {
 // clears its entry, so an entry is the word that is in RAM now. The fast path tests the kinds
 // the most common first (counted on a shell loop, sha256sum and gzip): add with the other
 // arithmetic, one test for both (10 to 25% faster than add alone first), then lw, the branches,
-// sw, the narrow loads and stores, jal, lui and auipc, jalr.
+// sw, the narrow loads and stores, jal, lui and auipc, jalr, the floats.
 #define K_ADD    1   // add, addi, mv, li of 12 bits
 #define K_LW     2   // lw, flw
 #define K_SW     3   // sw, fsw
@@ -391,6 +397,7 @@ uint step() {
 #define K_M     28   // + f3: mul mulh mulhsu mulhu div divu rem remu
 #define K_FP    36   // op-fp
 #define K_FMA   37   // fmadd and its kin
+#define K_FA    38   // + 0..10: fadd fsub fmul fsgnj fsgnjn fsgnjx, fmv.x.w and fmv.w.x, fmadd fmsub fnmsub fnmadd
 #define K_SLOW  63   // the general path's
 
 uint2 decode(uint o) {
@@ -436,8 +443,11 @@ uint2 decode(uint o) {
         rs1 += (f7 & 0x68) != 0x68 ? 32 : 0;
         rs2 += 32;
         fd = (f7 & 0x48) != 0x40;
+        // the commonest are the inner loop's (fast_run)
+        uint fk = f7 < 0x0c ? f7 >> 2 : f7 == 0x10 && f3 < 3 ? 3 + f3 : (f7 == 0x70 || f7 == 0x78) && f3 == 0 && rs2 == 32 ? 6 : 99;
+        k = fk != 99 ? K_FA + fk : K_FP;
     } else if ((opc & 0x73) == 0x43) {
-        k = K_FMA;
+        k = K_FA + 7 + ((opc >> 2) & 3);
         imm = w;
         rs1 += 32;
         rs2 += 32;
@@ -455,16 +465,17 @@ void stored(uint ro) {
 
 // The fast path, from the decoded entries: the inner loop runs what cannot trap or reach a
 // CSR, testing the kinds most common first, and reads the entries of pc + 4 and of a branch's
-// target while it runs the one of pc; an entry to make, M and the floats are the outer loop's;
+// target while it runs the one of pc; the commonest floats are one test of selects, as the integer
+// arithmetic is (K_FA); an entry to make, M and the other floats are the outer loop's;
 // the rest is the general path's. Returns the step count reached; the instruction at pc is
 // then the general path's.
 uint fast_run(uint n) {
     [loop]
-    while (n < Steps) {
+    while (n < limit) {
         if (pc - 0x80000000u >= RamBytes) break;
         uint2 e = Dec.Load2(DEC_AT(pc));
         [loop]
-        for (; n < Steps; n++) {
+        for (; n < limit; n++) {
             {
                 uint2 en = Dec.Load2(DEC_AT(pc + 4)), et = Dec.Load2(min(e.y - 0x80000000u, RamBytes - 4) << 1);
                 uint k = e.x & 63, imm = e.y, next = pc + 4, v = 0;
@@ -514,12 +525,19 @@ uint fast_run(uint n) {
                     if (next - 0x80000000u >= RamBytes) { n++; break; }
                     e = Dec.Load2(DEC_AT(next));
                     continue;
-                } else break;   // (0: no entry yet; M, the floats, the general path's)
+                } else [branch] if (k - K_FA < 11) {
+                    // fadd fsub fmul, the sign injections, the moves, fmadd and its kin: one test, chosen by selects
+                    uint f = k - K_FA;
+                    float fa = asfloat(a), fb = asfloat(b), c = asfloat(r[32 + (e.x >> 27)]), p = fa * fb;
+                    uint sg = (a & 0x7fffffffu) | ((f == 3 ? b : f == 4 ? ~b : a ^ b) & 0x80000000u);
+                    float fr = f == 0 ? fa + fb : f == 1 ? fa - fb : f == 7 ? p + c : f == 8 ? p - c : f == 9 ? c - p : f == 10 ? -p - c : p;
+                    v = f - 3 < 3 ? sg : f == 6 ? a : asuint(fr);
+                } else break;   // (0: no entry yet; M, the other floats, the general path's)
                 r[(e.x >> 6) & 127] = v;
                 e = next == pc + 4 ? en : et;
                 pc = next;
                     }
-            if (++n >= Steps) break;
+            if (++n >= limit) break;
             {
                 uint2 en = Dec.Load2(DEC_AT(pc + 4)), et = Dec.Load2(min(e.y - 0x80000000u, RamBytes - 4) << 1);
                 uint k = e.x & 63, imm = e.y, next = pc + 4, v = 0;
@@ -569,15 +587,22 @@ uint fast_run(uint n) {
                     if (next - 0x80000000u >= RamBytes) { n++; break; }
                     e = Dec.Load2(DEC_AT(next));
                     continue;
-                } else break;   // (0: no entry yet; M, the floats, the general path's)
+                } else [branch] if (k - K_FA < 11) {
+                    // fadd fsub fmul, the sign injections, the moves, fmadd and its kin: one test, chosen by selects
+                    uint f = k - K_FA;
+                    float fa = asfloat(a), fb = asfloat(b), c = asfloat(r[32 + (e.x >> 27)]), p = fa * fb;
+                    uint sg = (a & 0x7fffffffu) | ((f == 3 ? b : f == 4 ? ~b : a ^ b) & 0x80000000u);
+                    float fr = f == 0 ? fa + fb : f == 1 ? fa - fb : f == 7 ? p + c : f == 8 ? p - c : f == 9 ? c - p : f == 10 ? -p - c : p;
+                    v = f - 3 < 3 ? sg : f == 6 ? a : asuint(fr);
+                } else break;   // (0: no entry yet; M, the other floats, the general path's)
                 r[(e.x >> 6) & 127] = v;
                 e = next == pc + 4 ? en : et;
                 pc = next;
                     }
         }
-        if (n >= Steps) break;
+        if (n >= limit) break;
         if (pc - 0x80000000u >= RamBytes) break;
-        // an entry to make, M and the floats; anything else is the general path's
+        // an entry to make, M and the other floats; anything else is the general path's
         e = Dec.Load2(DEC_AT(pc));
         [branch] if (e.x == 0) {
             Dec.Store2(DEC_AT(pc), decode(pc - 0x80000000u));
@@ -647,13 +672,15 @@ void tick(uint3 g : SV_GroupID) {
     why = 0;
 
     if (timer_due()) csr[12] |= 0x20;
+    uint used = hart == 0 && Pass != 0 ? State.Load(W_USED) : 0;
+    limit = min(Steps - min(used, Steps), Slice != 0 ? Slice : Steps);
     bool look = true;
     uint n = 0;
     [loop]
-    while (n < Steps) {
+    while (n < limit) {
         if (look && (hart == 0 || AllRun != 0) && interrupt()) { n++; continue; }
         n = fast_run(n);
-        if (n >= Steps) break;
+        if (n >= limit) break;
         ran = n;
         uint s = step();
         n++;
@@ -666,7 +693,8 @@ void tick(uint3 g : SV_GroupID) {
     State.Store4(base + 320, uint4(pc, priv, fcsr, res));
     State.Store4(base + 336, uint4(tcmp_lo, tcmp_hi, msrc, mdst));
     State.Store(base + 352, mn);
-    State.Store(base + W_RAN, n);   // fewer than Steps: the pass ended on wfi, pause, fence.i, a stop
+    State.Store(base + W_RAN, n);   // fewer than limit: the pass ended on wfi, pause, fence.i, a stop
+    if (hart == 0) { State.Store(W_USED, used + n); State.Store(W_EARLY, n < limit ? 1 : 0); }
     uint lo = State.Load(base + W_INSTR) + n;
     State.Store(base + W_INSTR + 4, State.Load(base + W_INSTR + 4) + (lo < n ? 1u : 0u));
     State.Store(base + W_INSTR, lo);
@@ -714,7 +742,9 @@ void merge_list(uint t : SV_GroupIndex) {
         Marks.Store(M_GROUP + 4 * t, 0);
     }
     if (t == 1023) {
-        uint all = counts[1023];
+        uint all = counts[1023], early = State.Load(W_EARLY);
+        State.Store(W_EARLY, 0);
+        Args.Store3(24, uint3(early != 0 && Pass + 1 < Passes ? Cores : 0, 1, 1));   // the next pass's dispatch
         Args.Store3(0, uint3(all & 0xffff, 1, 1));
         Args.Store3(12, uint3(min(frame + (all >> 16), 32768u), 1, 1));
     }

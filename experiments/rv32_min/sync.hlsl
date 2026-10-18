@@ -87,7 +87,11 @@ void sync_cores(uint c : SV_GroupIndex) {
             put(CTRL + 0x3c0, some ? min(Count - 1, there) + 1 : 1);
             Marks.Store(BANDS + 4 * (CTRL >> 22), 1);
             Marks.Store(BANDS + 4 * (STATS_ALL >> 22), 1);
-            Args.Store(12, 0);
+            // every core's count goes into the texture with the next frame's pages, where the host
+            // reads those of cores 16 on (the fast shader exports the GPU's memory only as pages)
+            Marks.Store(M_FRAME, STATS_ALL >> 12);
+            Marks.Store(M_EXP + 4 * (STATS_ALL >> 12), 1);
+            Args.Store(12, 1);
         }
     }
 }

@@ -149,6 +149,12 @@ public:
         // (the devices' words for this frame, before the control pass's draws clear them)
         bool importCon = conDelivered, importFetch = deliver_, importNet = deliverNet_, importCounts = false;
         bool computing = computeMode && csCpu_ && mat.getFloat("_Init") == 0;
+        // --tick-rounds N: the tick and its commit N times a frame before the devices' passes, each round
+        // a tick of the clock on (_TimePass) and the host's zap in the first only (it flips bits)
+        const uint32_t rounds = (!computing && !cpuMode && !cs_ && mat.getFloat("_Init") == 0) ? (std::max)(1u, tickRounds) : 1u;
+        const float zapKind = mat.getFloat("_ZapKind");
+        for (uint32_t round = 0; round < rounds; round++) {
+        if (rounds > 1) { mat.setInt("_TimePass", (int)round); mat.setInt("_TickFull", (int)(tickSplit ? tickSplit : rounds)); mat.setInt("_ZapKind", round == 0 ? (int)zapKind : 0); }
         if (computing) { profBegin(tag); runComputeCpu(mat); }
         else if (cpuMode && mat.getFloat("_Init") == 0) {}   // the processor ran the instructions
         else if (cs_ && mat.getFloat("_Init") == 0) runComputeTick(mat);
@@ -191,6 +197,8 @@ public:
         } else
         crt_.runZone(gpu_, passes_[1], mat, UpdateZone{1024, 2048, 2048, 4096, 1}, bands_ ? 6 * kCommitQuads : 6);
         }
+        }
+        if (rounds > 1) { mat.setInt("_TimePass", 0); mat.setInt("_ZapKind", (int)zapKind); }
         if (timeIt) gpu_.ctx->End(tsQuery_[2].Get());
         if (gpuPasses_.size() == 2 && !freeze) {
             gpuDraw(mat);
@@ -787,7 +795,7 @@ private:
     uint32_t cpuSeed_ = 0x9e3779b9u, computeFrames_ = 0;
     static const UINT kCpuStateBytes = 512;   // a core's words
     static const UINT kMarkBytes = (65536 + 64 + 32768 + 1024 + 32768) * 4;   // page marks, band marks, the pages to merge, the frame's (rv32_min_fast.hlsl, M_)
-    static const UINT kArgsBytes = 32;   // merge's dispatch, export_pages's
+    static const UINT kArgsBytes = 48;   // merge's dispatch, export_pages's, the next pass's
     static ComPtr<ID3D11Buffer> makeBuffer(ID3D11Device* dev, UINT bytes, UINT bind, UINT misc, D3D11_USAGE usage, UINT cpu,
                                            const void* init, std::string& err) {
         D3D11_BUFFER_DESC d{};
@@ -833,7 +841,7 @@ private:
                         r.fromCache ? "cache hit" : "compiled", r.seconds, (size_t)r.bytecode->GetBufferSize());
         }
         ID3D11Device* dev = gpu_.device.Get();
-        cpuPass_ = makeBuffer(dev, 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
+        cpuPass_ = makeBuffer(dev, 48, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
         if (cpuPass_) cpuSync_ = makeBuffer(dev, 32, D3D11_BIND_CONSTANT_BUFFER, 0, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, nullptr, err);
         if (cpuSync_) cpuStateRead_ = makeBuffer(dev, kCpuStateBytes, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, nullptr, err);
         return cpuStateRead_ != nullptr;
@@ -871,14 +879,19 @@ private:
         uint64_t mtime = (uint64_t)mat.getFloat("_HostMtimeLo") | (uint64_t)mat.getFloat("_HostMtimeHi") << 32;
         ID3D11UnorderedAccessView* cpuUavs[5] = {cpuRamUav_.Get(), cpuStateUav_.Get(), cpuDecUav_.Get(), cpuMarksUav_.Get(), cpuArgsUav_.Get()};
         ID3D11ShaderResourceView* rom = cpuRomSrv_.Get();
+        // --compute-split F: the first F passes always run, each core's at most the frame's instructions
+        // over F; the rest of --compute-passes only when core 0 ended the one before early
+        const uint32_t split = computeSplit;
+        const uint32_t ticks = (uint32_t)mat.getFloat("_Ticks", 8192), slice = split ? (ticks + split - 1) / split : 0;
         for (uint32_t p = 0; p < computePasses; p++) {
             D3D11_MAPPED_SUBRESOURCE m{};
             if (SUCCEEDED(ctx->Map(cpuPass_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
                 // (every pass its own time, a tick of the clock apart: the kernel tells passes apart by it)
                 cpuSeed_ = cpuSeed_ * 1664525u + 1013904223u;
                 uint64_t t = mtime + p;
-                uint32_t cb[8] = {(uint32_t)t, (uint32_t)(t >> 32), (uint32_t)(int64_t)mat.getFloat("_RTC0"), (uint32_t)(int64_t)mat.getFloat("_RTC1"),
-                                  (uint32_t)mat.getFloat("_Ticks", 8192), ramBytes, cpuSeed_, 0};   // (0: workers are workers)
+                uint32_t cb[12] = {(uint32_t)t, (uint32_t)(t >> 32), (uint32_t)(int64_t)mat.getFloat("_RTC0"), (uint32_t)(int64_t)mat.getFloat("_RTC1"),
+                                   ticks, ramBytes, cpuSeed_, 0,   // (0: workers are workers)
+                                   p, computePasses, computeCores, slice};
                 memcpy(m.pData, cb, sizeof cb);
                 ctx->Unmap(cpuPass_.Get(), 0);
             }
@@ -886,7 +899,14 @@ private:
             ctx->CSSetUnorderedAccessViews(0, 5, cpuUavs, nullptr);
             ctx->CSSetShaderResources(0, 1, &rom);
             ctx->CSSetConstantBuffers(0, 1, cpuPass_.GetAddressOf());
-            ctx->Dispatch(computeCores, 1, 1);
+            if (p == 0 || !csMerge_ || p < split) ctx->Dispatch(computeCores, 1, 1);
+            else {
+                // a pass after the first only when core 0 ended the last early (merge_list says so)
+                ID3D11UnorderedAccessView* noArgs = nullptr;
+                ctx->CSSetUnorderedAccessViews(4, 1, &noArgs, nullptr);
+                ctx->DispatchIndirect(cpuArgs_.Get(), 24);
+                ctx->CSSetUnorderedAccessViews(4, 1, cpuUavs + 4, nullptr);
+            }
             if (p == 0) prof_.mark(ctx);
             if (csMerge_) {
                 // the pages stored to, listed; then a thread group each, as many as listed

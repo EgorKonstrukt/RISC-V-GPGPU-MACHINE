@@ -95,7 +95,10 @@ public:
     bool computeMode = false;
     uint32_t computeMask = 0xffffffffu;   // the bands that may go into the texture this frame
     uint32_t computeCores = 1;   // core 0 and the workers: a thread group each (set before computeStart)
-    uint32_t computePasses = 1;  // the processor's passes a frame
+    uint32_t computePasses = 1;  // the processor's passes a frame at most
+    uint32_t computeSplit = 0;
+    uint32_t tickRounds = 1;     // the fragment tick: its rounds (a tick and its commit) a frame
+    uint32_t tickSplit = 0;      // of them the first so many always run, the rest while core 0 rests (0: all)   // of them the first so many always run, a core's at most the frame's instructions over them
     // Loads <imageDir>/linux_payload.bin into RAM and rootfs.bin as the ROM, and starts the hart.
     virtual bool computeStart(const std::string& imageDir, std::string& err) { (void)imageDir; err = "--compute is for the D3D11 backend"; return false; }
     // The processor's words (rv32_min*.hlsl's State), read back now.

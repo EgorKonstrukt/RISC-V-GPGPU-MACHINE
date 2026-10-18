@@ -133,7 +133,11 @@ struct Options {
     double cpuIps = 0;        // --cpu-ips N: no more than N instructions a second (0: as fast as it goes)
     std::string compute;      // --compute FILE: the processor as a compute shader, the devices the shader's (experiments/rv32_min)
     int computeCores = 256;   // --compute-cores N: core 0 and N - 1 workers, a thread group each
-    int computePasses = 1;    // --compute-passes N: the processor's passes a frame
+    int computePasses = 0;    // --compute-passes N: the processor's passes a frame at most (0: 4 for the fast shader, else 1)
+    int computeSplit = -1;    // --compute-split F: of them the first F always run, a core's at most --ticks over F (-1: 2 for the fast shader)
+    bool ticksSet = false;
+    int tickRounds = 1;       // --tick-rounds N: the tick and its commit N times a frame (the fragment machine)
+    int tickSplit = 0;        // --tick-split F: of them the first F always run (0: all), the rest while core 0 rests    // --ticks was given (--compute's fast shader then takes 8192 a pass of its split)
     bool noGpu = false;       // --no-gpu: leave out the GPU device's passes (gpu.shader)
     bool noSound = false;     // --no-sound: leave out the sound card (sound.shader)
     bool sound = false;       // play the sound card: the terminal mode, or --sound
@@ -228,7 +232,12 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                        "The whole machine"): fast or plain for rv32_min_fast.hlsl or rv32_min.hlsl.
                        A pass a frame; the display, the GPU, sound, keys and pointer as ever
   --compute-cores N    with --compute: core 0 and N - 1 workers (256; plain has core 0 alone)
-  --compute-passes N   with --compute: the processor's passes a frame, before the devices' (1)
+  --compute-passes N   with --compute: the processor's passes a frame at most, before the devices' (fast: 4, plain: 1)
+  --tick-rounds N      the tick and its commit N times a frame before the devices' passes (1)
+  --tick-split F       of them the first F always run; the others give core 0 the rest of its F x --ticks,
+                       and run the workers only while core 0 rests (experiments/rvc_lean: 0, all)
+  --compute-split F    with --compute: the first F of them always run, each core's at most --ticks / F; the rest
+                       only while core 0 rests (fast: 2, and --ticks 16384 unless given)
   --open ADDRESS       tell the guest to open an address, or a file of this computer (file:// and its path);
                        several are told ten seconds apart (docs/system/open.md)
   --open-after TEXT    not before the console has shown TEXT
@@ -334,7 +343,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--ram") { o.ramPrefix = next("--ram"); o.payloadSet = true; }
         else if (a == "--mtd") o.mtdPrefix = next("--mtd");
         else if (a == "--dtb") o.dtbPrefix = next("--dtb");
-        else if (a == "--ticks") o.ticks = atoi(next("--ticks").c_str());
+        else if (a == "--ticks") { o.ticks = atoi(next("--ticks").c_str()); o.ticksSet = true; }
         else if (a == "--frames") o.maxFrames = strtoull(next("--frames").c_str(), nullptr, 10);
         else if (a == "--seconds") o.maxSeconds = atof(next("--seconds").c_str());
         else if (a == "--until") o.until = unescape(next("--until"));
@@ -426,6 +435,9 @@ bool parseArgs(int argc, char** argv, Options& o) {
         }
         else if (a == "--compute-cores") o.computeCores = (std::max)(1, (std::min)(256, atoi(next("--compute-cores").c_str())));
         else if (a == "--compute-passes") o.computePasses = (std::max)(1, (std::min)(64, atoi(next("--compute-passes").c_str())));
+        else if (a == "--tick-split") o.tickSplit = (std::max)(0, (std::min)(16, atoi(next("--tick-split").c_str())));
+        else if (a == "--tick-rounds") o.tickRounds = (std::max)(1, (std::min)(16, atoi(next("--tick-rounds").c_str())));
+        else if (a == "--compute-split") o.computeSplit = (std::max)(0, (std::min)(64, atoi(next("--compute-split").c_str())));
         else if (a == "--cpu-ips") { o.cpu = true; o.cpuIps = atof(next("--cpu-ips").c_str()); }
         else if (a == "--core-pitch" || a == "--small-cores") next(a.c_str());   // (of the layouts before the geometry: taken and ignored)
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return false; }
@@ -519,7 +531,9 @@ const char* const kUpstream = "rvc/_Nix/rvc";
 
 // The patched shader's folder, or a copy of it beside other work (any folder named rvc_opt...).
 bool isOpt(const std::string& dir) {
-    return dir == "experiments/rvc_opt" || fs::u8path(dir).filename().u8string().rfind("rvc_opt", 0) == 0;
+    // (experiments/rvc_lean: the same machine with the processor rewritten in the compute shader's shape)
+    std::string name = fs::u8path(dir).filename().u8string();
+    return dir == "experiments/rvc_opt" || name.rfind("rvc_opt", 0) == 0 || name.rfind("rvc_lean", 0) == 0;
 }
 const char* const kPrograms = "programs/bin";   // our own programs, as raw memory images
 struct BootImage {
@@ -805,6 +819,15 @@ int main(int argc, char** argv) {
         if (opt.cpu) opt.cores = kCores;
         // (the plain shader is core 0 alone)
         if (!opt.compute.empty()) opt.cores = opt.compute.find("rv32_min.hlsl") != std::string::npos ? 1 : opt.computeCores;
+        if (!opt.compute.empty()) {
+            // the fast shader: two passes of 8,192 a frame, and up to two more while core 0 rests
+            // (experiments/rv32_min/README.md, "Passes a frame"); the plain one a pass a frame
+            bool plain = opt.compute.find("rv32_min.hlsl") != std::string::npos;
+            if (opt.computePasses == 0) opt.computePasses = plain ? 1 : 4;
+            if (opt.computeSplit < 0) opt.computeSplit = plain ? 0 : 2;
+            opt.computeSplit = (std::min)(opt.computeSplit, opt.computePasses);
+            if (!opt.ticksSet && opt.computeSplit > 0) opt.ticks = 8192 * opt.computeSplit;
+        }
         unsigned ways = 3, tableBits = 6;
         for (auto& d : opt.defines) {
             if (d.rfind("L1_WAYS=", 0) == 0) ways = (unsigned)atoi(d.c_str() + 8);
@@ -822,7 +845,9 @@ int main(int argc, char** argv) {
     bo.computeShader = opt.compute;
     // The GPU device is a second shader next to the CPU's; upstream rvc has none.
     SLShader gpuShader;
-    std::string gpuPath = (fs::u8path(opt.rvcDir) / "gpu.shader").u8string();
+    // (a processor folder without devices of its own, experiments/rvc_lean, has experiments/rvc_opt's)
+    fs::path deviceDir = fs::exists(fs::u8path(opt.rvcDir) / "gpu.shader", ec) ? fs::u8path(opt.rvcDir) : fs::u8path("experiments/rvc_opt");
+    std::string gpuPath = (deviceDir / "gpu.shader").u8string();
     if (!opt.noGpu && fs::exists(fs::u8path(gpuPath), ec)) {
         if (!loadShaderLab(gpuPath, gpuShader, err)) {
             fprintf(stderr, "[harness] %s\n", err.c_str());
@@ -833,7 +858,7 @@ int main(int argc, char** argv) {
     }
     // The sound card is a third: its mix pass. Its words are kept by the GPU device's control pass.
     SLShader soundShader;
-    std::string soundPath = (fs::u8path(opt.rvcDir) / "sound.shader").u8string();
+    std::string soundPath = (deviceDir / "sound.shader").u8string();
     if (bo.gpuShader && !opt.noSound && fs::exists(fs::u8path(soundPath), ec)) {
         if (!loadShaderLab(soundPath, soundShader, err)) {
             fprintf(stderr, "[harness] %s\n", err.c_str());
@@ -1444,10 +1469,11 @@ int main(int argc, char** argv) {
             cpuDisplay[0] = word(CTRL + 4), cpuDisplay[1] = word(CTRL + 8);
         }
 
+        backend.tickRounds = (uint32_t)opt.tickRounds; backend.tickSplit = (uint32_t)opt.tickSplit;   // (--tick-rounds: the fragment tick's rounds a frame)
         // --compute: the processor's RAM and hart, once the frames that set the state texture up are
         // over; from then on a frame is a pass of it, and the rest is the harness's as without it
         if (!opt.compute.empty() && frame >= (uint64_t)opt.initFrames && !backend.computeMode &&
-            ((backend.computeCores = (uint32_t)opt.cores), (backend.computePasses = (uint32_t)opt.computePasses),
+            ((backend.computeCores = (uint32_t)opt.cores), (backend.computePasses = (uint32_t)(std::max)(1, opt.computePasses)), (backend.computeSplit = (uint32_t)opt.computeSplit),
              !backend.computeStart(linuxDir(opt), err))) {
             fprintf(stderr, "[harness] --compute: %s\n", err.c_str());
             exitCode = 1;
