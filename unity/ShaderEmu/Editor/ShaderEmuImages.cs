@@ -117,7 +117,7 @@ public class ShaderEmuTextureImport : AssetPostprocessor
         importer.sRGBTexture = false;
         importer.npotScale = TextureImporterNPOTScale.None;
         importer.textureCompression = TextureImporterCompression.Uncompressed;
-        importer.maxTextureSize = 8192;
+        importer.maxTextureSize = 16384;
         importer.wrapMode = TextureWrapMode.Clamp;
         importer.alphaIsTransparency = false;
         if (data)
@@ -127,7 +127,7 @@ public class ShaderEmuTextureImport : AssetPostprocessor
             importer.alphaSource = TextureImporterAlphaSource.FromInput;
             TextureImporterPlatformSettings settings = importer.GetDefaultPlatformTextureSettings();
             settings.format = TextureImporterFormat.RGBA32;
-            settings.maxTextureSize = 8192;
+            settings.maxTextureSize = 16384;
             settings.textureCompression = TextureImporterCompression.Uncompressed;
             importer.SetPlatformTextureSettings(settings);
         }

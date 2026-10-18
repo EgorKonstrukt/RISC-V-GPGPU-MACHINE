@@ -33,7 +33,18 @@
 #define RAM_LIN(x, y) (((((y) >> RAM_TILE_BITS) * RAM_TILES_PER_ROW + ((x) >> RAM_TILE_BITS)) << (2 * RAM_TILE_BITS)) | \
                        RAM_IN((x) & (RAM_TILE - 1), (y) & (RAM_TILE - 1)))
 #endif
-#define RAM_MAX (2048 * (4096 - 64) * 4 * 4)
+#ifndef STATE_TEX_HEIGHT
+#define STATE_TEX_HEIGHT 9280   // the state texture's rows: 64 of state, then RAM to 0x92000000
+#endif
+#define RAM_MAX (2048 * (STATE_TEX_HEIGHT - 64) * 4 * 4)
+// RAM's 4 MB bands (128 rows) from lo to hi as the commit's mask of 32 bits: bit b & 31 stands
+// for bands b, b + 32 and b + 64, the RAM above 0x88000000 sharing the bits of the RAM below.
+uint ram_bands(uint lo, uint hi) {
+    if (hi < lo) return 0;
+    if (hi - lo >= 31) return 0xffffffff;
+    uint m = (2u << (hi - lo)) - 1;
+    return (m << (lo & 31)) | (m >> ((32 - (lo & 31)) & 31));
+}
 
 
 /* shift by two to ignore byte offset */

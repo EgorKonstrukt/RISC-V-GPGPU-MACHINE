@@ -5,6 +5,7 @@
  */
 #include <signal.h>
 #include <ctype.h>
+#include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@
 #include "nano-X.h"
 #include "ui.h"
 #include "ui_progress.h"
+#include "ui_ask.h"
 
 #define FETCH_MOST 0x40000	/* bytes the host hands over at a time (docs/system/fetch.md) */
 #define REG_ASKED 64		/* requests made, the address's length, the kind, the offset */
@@ -29,6 +31,7 @@
 #define HEADER 256		/* of a file a picture carried: mark, length, CRC-32, name */
 #define FOLDER "/tmp/open"
 #define MAX_KINDS 32
+#define STOPPED (-1)		/* ask's answer when the progress window was closed */
 
 static struct kind {
 	char name[16], endings[96], magic[128], command[96];
@@ -37,6 +40,7 @@ static int kind_count;
 static volatile uint32_t *regs;
 static const unsigned char *fetched;
 static unsigned long long fetch_total;	/* the answer's size, once the host has said it */
+static char why[200];			/* why a file did not come, for the window that says so */
 
 static uint32_t
 crc32(const unsigned char *p, size_t n, uint32_t crc)
@@ -198,12 +202,19 @@ static int
 ask(const char *address, uint32_t offset, int seconds)
 {
 	uint32_t mine;
-	int waited;
+	unsigned began = progress_ms();
 	size_t n = strlen(address);
 
-	/* one request at a time: wait for another program's to be answered */
-	for (waited = 0; regs[REG_ASKED] != regs[REG_REPLY] && waited < 200; waited++)
+	/* one request at a time: wait for another program's to be answered, 10 s at most */
+	while (regs[REG_ASKED] != regs[REG_REPLY] && progress_ms() - began < 10000) {
+		if (fetch_total)
+			progress_poll();
+		else
+			progress_show(0, 0, "Waiting for another program's request to the host");
+		if (progress_closed)
+			return STOPPED;
 		usleep(50000);
+	}
 	if (n > 255)
 		n = 255;
 	memset((void *)&regs[REG_ADDRESS], 0, 256);
@@ -213,8 +224,8 @@ ask(const char *address, uint32_t offset, int seconds)
 	regs[REG_ASKED + 3] = offset;
 	mine = regs[REG_ASKED] + 1;
 	regs[REG_ASKED] = mine;
-	for (waited = 0; regs[REG_REPLY] != mine; waited++) {
-		if (waited > seconds * 20)
+	for (began = progress_ms(); regs[REG_REPLY] != mine;) {
+		if (progress_ms() - began > seconds * 1000u)
 			return 0;
 		if (!fetch_total) {
 			/* (the host has nothing to say until it has all of it: VRChat tells a world no more) */
@@ -222,10 +233,39 @@ ask(const char *address, uint32_t offset, int seconds)
 
 			snprintf(line, sizeof line, "The host is downloading it: %u s", (progress_ms() - progress_began) / 1000);
 			progress_show(0, 0, line);
-		}
+		} else
+			progress_poll();
+		if (progress_closed)
+			return STOPPED;
 		usleep(50000);
 	}
 	return regs[REG_REPLY + 2];
+}
+
+/* What a status of the host's says (docs/system/fetch.md), into `why`. */
+static void
+why_of(int status)
+{
+	if (status == 0)
+		snprintf(why, sizeof why, "the host did not answer in 40 s");
+	else if (status == 1)
+		snprintf(why, sizeof why, "the world was not handed this address (the links panel by the display)");
+	else if (status == 2)
+		snprintf(why, sizeof why, "the host's download gave no answer (VRChat gives up after 20 s)");
+	else if (status == 3)
+		snprintf(why, sizeof why, "an address the host may not open (VRChat opens only https)");
+	else if (status == 404 || status == 410)
+		snprintf(why, sizeof why, "not found (%d)", status);
+	else if (status == 401 || status == 403)
+		snprintf(why, sizeof why, "refused (%d)", status);
+	else if (status == 415)
+		snprintf(why, sizeof why, "a picture the host could not decode (415)");
+	else if (status >= 400 && status < 500)
+		snprintf(why, sizeof why, "the server would not give it (%d)", status);
+	else if (status >= 500)
+		snprintf(why, sizeof why, "the server's error (%d)", status);
+	else
+		snprintf(why, sizeof why, "the host said %d", status);
 }
 
 /* The last piece of an address's path, without what follows a question mark, as a file's name. */
@@ -258,7 +298,8 @@ fetch(const char *address, char *path, size_t room)
 	fd = open("/dev/gpu", O_RDWR);
 	if (fd < 0 || (regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x01000000)) == MAP_FAILED ||
 	    (fetched = mmap(NULL, FETCH_MOST, PROT_READ, MAP_SHARED, fd, 0x016c0000)) == MAP_FAILED) {
-		printf("open: this machine has no way to ask its host for a file\n");
+		snprintf(why, sizeof why, "this machine has no way to ask its host for a file");
+		printf("open: %s\n", why);
 		return 0;
 	}
 	name_from(address, name, sizeof name - 4);
@@ -266,13 +307,21 @@ fetch(const char *address, char *path, size_t room)
 	progress_begin(path);
 	/* (a world may not have been handed the address yet: asked again for a minute) */
 	for (tries = 0; (status = ask(address, 0, 40)) == 1 && tries < 20; tries++) {
+		int wait;
+
 		if (!by_hand++)
 			printf("open: the host has to be handed this address first\n");
-		progress_show(0, 0, "Hand the world this address: the links panel by the display");
-		sleep(3);
+		for (wait = 0; wait < 60 && !progress_closed; wait++) {
+			progress_show(0, 0, "Hand the world this address: the links panel by the display");
+			usleep(50000);
+		}
 	}
 	if (status != 200 && status != 201) {
-		printf("open: the host could not get %s (%d)\n", address, status);
+		why_of(status);
+		if (status == STOPPED)
+			printf("open: stopped: the window was closed\n");
+		else
+			printf("open: the host could not get %s (%d): %s\n", address, status, why);
 		return 0;
 	}
 	total = regs[REG_REPLY + 1];
@@ -289,6 +338,7 @@ fetch(const char *address, char *path, size_t room)
 		name_from(address, name, sizeof name - 4);
 		snprintf(path, room, FOLDER "/%s.ppm", name);
 		if (w == 0 || h == 0 || (file = fopen(path, "wb")) == NULL) {
+			snprintf(why, sizeof why, "the picture cannot be kept in " FOLDER);
 			printf("open: the picture of %s cannot be kept\n", address);
 			return 0;
 		}
@@ -310,6 +360,8 @@ fetch(const char *address, char *path, size_t room)
 				break;
 			status = ask(address, done * 4, 40);
 			if (status != 200 || regs[REG_REPLY + 3] != (w | h << 16)) {
+				why_of(status);
+				snprintf(why + strlen(why), sizeof why - strlen(why), ", after %u of %u pixels", (unsigned)done, (unsigned)(w * h));
 				printf("open: the host stopped at %u of %u pixels (%d)\n", (unsigned)done, (unsigned)(w * h), status);
 				fclose(file);
 				return 0;
@@ -323,8 +375,10 @@ fetch(const char *address, char *path, size_t room)
 		/* a file a picture carried: its own name, and a sum to check it by */
 		char own[237];
 
-		if (total < HEADER)
+		if (total < HEADER) {
+			snprintf(why, sizeof why, "the file in the picture is cut short");
 			return 0;
+		}
 		memcpy(&want_crc, fetched + 16, 4);
 		memcpy(own, fetched + 20, 236);
 		own[236] = 0;
@@ -334,7 +388,8 @@ fetch(const char *address, char *path, size_t room)
 		name_from(address, name, sizeof name);
 	snprintf(path, room, FOLDER "/%s", name);
 	if ((file = fopen(path, "wb")) == NULL) {
-		printf("open: %s cannot be written\n", path);
+		snprintf(why, sizeof why, "%.150s cannot be written", path);
+		printf("open: %s\n", why);
 		return 0;
 	}
 	for (;;) {
@@ -351,6 +406,8 @@ fetch(const char *address, char *path, size_t room)
 			break;
 		status = ask(address, got, 40);
 		if ((status != 200 && status != 201) || regs[REG_REPLY + 1] != total) {
+			why_of(status);
+			snprintf(why + strlen(why), sizeof why - strlen(why), ", after %s", progress_megabytes(got, total));
 			printf("open: the host stopped at %u of %u bytes (%d)\n", (unsigned)got, (unsigned)total, status);
 			fclose(file);
 			return 0;
@@ -360,6 +417,7 @@ fetch(const char *address, char *path, size_t room)
 	if (packed && crc != want_crc) {
 		printf("open: %s arrived damaged (sum %08x, should be %08x): was the picture changed on its way?\n", name,
 		       (unsigned)crc, (unsigned)want_crc);
+		snprintf(why, sizeof why, "it arrived damaged (its sum is wrong): was the picture changed on its way?");
 		return 0;
 	}
 	printf("open: %s, %u bytes%s, sum %08x\n", path, (unsigned)(total - (packed ? HEADER : 0)), packed ? " from a picture" : "",
@@ -413,6 +471,47 @@ unpack(const char *kind, const char *path, const char *to)
 
 	snprintf(title, sizeof title, "Unpacking %s", name);
 	progress_begin(title);
+	{
+		/* unarc first, on the worker cores; busybox's unzip or tar for what it says it cannot (3) */
+		char *const unarc_args[] = { "unarc", (char *)kind, (char *)path, (char *)to, NULL };
+		FILE *said = reading(unarc_args, &pid);
+		unsigned long long now = 0, all = 0;
+		size_t have = 0;
+		ssize_t n;
+
+		if (said) {
+			/* (its lines as they come, the window looked at every 200 ms: one stream is one long wait) */
+			for (;;) {
+				struct pollfd wait = { fileno(said), POLLIN, 0 };
+				char *end;
+
+				if (poll(&wait, 1, 200) > 0) {
+					if ((n = read(fileno(said), line + have, sizeof line - 1 - have)) <= 0)
+						break;
+					have += (size_t)n;
+					line[have] = 0;
+					while ((end = strchr(line, '\n')) != NULL) {
+						sscanf(line, "progress %llu %llu", &now, &all);
+						have -= (size_t)(end + 1 - line);
+						memmove(line, end + 1, have + 1);
+					}
+					if (have == sizeof line - 1)
+						have = 0;
+				}
+				progress_show(now, all, progress_megabytes(now, all));
+				if (progress_closed) {
+					kill(pid, SIGTERM);
+					break;
+				}
+			}
+			fclose(said);
+			waitpid(pid, &status, 0);
+			if (progress_closed || (WIFEXITED(status) && WEXITSTATUS(status) != 3 && WEXITSTATUS(status) != 127)) {
+				progress_end();
+				return !progress_closed && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+			}
+		}
+	}
 	if (!strcmp(kind, "zip")) {
 		unsigned long long total = 0;
 		char *const list_args[] = { "unzip", "-l", (char *)path, NULL };
@@ -440,6 +539,10 @@ unpack(const char *kind, const char *path, const char *to)
 			unpacked = 0;
 			nftw(to, count_bytes, 16, FTW_PHYS);
 			progress_show(unpacked, total, progress_megabytes(unpacked, total));
+			if (progress_closed) {
+				kill(pid, SIGTERM);
+				break;
+			}
 		}
 		fclose(list);
 		waitpid(pid, &status, 0);
@@ -469,12 +572,29 @@ unpack(const char *kind, const char *path, const char *to)
 		unsigned long long fed = 0;
 		ssize_t n;
 
-		while (from >= 0 && (n = read(from, block, sizeof block)) > 0) {
-			if (write(feed[1], block, (size_t)n) != n)
+		/* (fed as the pipe has room, the window looked at meanwhile: a slow unpacker held a
+		   blocking write, and a close of the window waited for it) */
+		fcntl(feed[1], F_SETFL, O_NONBLOCK);
+		while (from >= 0 && !progress_closed && (n = read(from, block, sizeof block)) > 0) {
+			ssize_t put = 0, w;
+
+			while (put < n && !progress_closed) {
+				struct pollfd room = { feed[1], POLLOUT, 0 };
+
+				if (poll(&room, 1, 200) > 0) {
+					if ((w = write(feed[1], block + put, (size_t)(n - put))) < 0 && errno != EAGAIN)
+						break;
+					put += w > 0 ? w : 0;
+				}
+				progress_show(fed + put, (unsigned long long)info.st_size,
+					      progress_megabytes(fed + put, (unsigned long long)info.st_size));
+			}
+			if (put < n)
 				break;
 			fed += (unsigned long long)n;
-			progress_show(fed, (unsigned long long)info.st_size, progress_megabytes(fed, (unsigned long long)info.st_size));
 		}
+		if (progress_closed)
+			kill(pid, SIGTERM);
 		if (from >= 0)
 			close(from);
 		close(feed[1]);
@@ -523,6 +643,33 @@ quoted(char *to, int room, const char *text)
 	to[o++] = '\'';
 	to[o] = 0;
 	return o;
+}
+
+static unsigned told_at;
+
+static int
+told_long(void)
+{
+	return progress_ms() - told_at > 30000;
+}
+
+/* Why `name` could not be opened, in a small window that goes at OK, Enter, Escape, its close
+ * button or by itself after 30 s; nothing where no window system answers. */
+static void
+tell(const char *name, const char *reason)
+{
+	static const char *const ok[] = { "OK" };
+	char text[400];
+
+	if (GrOpen() < 0)
+		return;
+	ui_init();
+	snprintf(text, sizeof text, "%.100s could not be opened:\n%.200s", name, reason);
+	ui_ask_icon = "error";
+	ui_ask_over = told_long;
+	told_at = progress_ms();
+	ui_ask("Open", text, ok, 1, NULL);
+	GrClose();
 }
 
 /* A file nobody is registered for: what it is, and two things to do with it. */
@@ -585,8 +732,12 @@ main(int argc, char **argv)
 
 	signal(SIGCHLD, SIG_DFL);	/* (the bar that starts this ignores it: the opened program must not) */
 
-	if (argc == 5 && !strcmp(argv[1], "--unpack"))
-		return unpack(argv[2], argv[3], argv[4]) ? 0 : 1;
+	if (argc == 5 && !strcmp(argv[1], "--unpack")) {
+		n = unpack(argv[2], argv[3], argv[4]);
+		if (progress_connected)
+			GrClose();
+		return n ? 0 : 1;
+	}
 	if (argc < 2 + dry) {
 		fprintf(stderr, "usage: open [--dry] ADDRESS-OR-FILE, open --unpack zip|tar|tgz|gz FILE TO\n");
 		return 2;
@@ -602,12 +753,21 @@ main(int argc, char **argv)
 		snprintf(address, sizeof address, "%s", what);
 		n = fetch(address, path, sizeof path);
 		progress_end();
+		if (!n && !progress_closed) {
+			name_from(address, path, 100);
+			tell(path, why);
+			return 1;
+		}
+		if (progress_connected)
+			GrClose();	/* (not left open in the program run next) */
 		if (!n)
 			return 1;
 	} else
 		snprintf(path, sizeof path, "%s", what);
 	if (stat(path, &info) != 0) {
 		printf("open: there is no %s\n", path);
+		if (!dry)
+			tell(path, "there is no such file");
 		return 1;
 	}
 	if (S_ISDIR(info.st_mode)) {
@@ -626,6 +786,8 @@ main(int argc, char **argv)
 	/* a program of another machine's is not run, and a script only if it says what runs it */
 	if (n >= 20 && !memcmp(head, "\177ELF", 4) && !(head[4] == 1 && head[18] == 243 && head[19] == 0)) {
 		printf("open: %s is a program, but not one for this machine (RISC-V, 32 bits)\n", path);
+		if (!dry)
+			tell(path, "it is a program, but not one for this machine (RISC-V, 32 bits)");
 		return 1;
 	}
 	if (!k) {

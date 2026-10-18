@@ -12,7 +12,8 @@ from PIL import Image
 
 
 def main():
-    tex = np.memmap(sys.argv[1], dtype=np.uint32, mode='r', offset=32).reshape(4096, 2048, 4)
+    rows = int(np.fromfile(sys.argv[1], dtype=np.uint32, count=4)[3])   # the header's height: 9280, or 4096 before
+    tex = np.memmap(sys.argv[1], dtype=np.uint32, mode='r', offset=32).reshape(rows, 2048, 4)
     words = tex[64:].reshape(-1)
 
     def w(address, n=1):

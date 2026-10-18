@@ -13,6 +13,7 @@ One file per subject. A doc names another by its file name, which is unique acro
 - [gpu.md](machine/gpu.md) – GPU
 - [input.md](machine/input.md) – Input
 - [multicore.md](machine/multicore.md) – More than one core
+- [profiling.md](machine/profiling.md) – Profiling the programs the machine runs
 - [sound.md](machine/sound.md) – The sound card
 - [tick-costs.md](machine/tick-costs.md) – What an instruction costs (October 2026)
 
@@ -22,6 +23,9 @@ One file per subject. A doc names another by its file name, which is unique acro
 - [nanox.md](system/nanox.md) – Nano-X
 - [fonts.md](system/fonts.md) – Fonts
 - [cc.md](system/cc.md) – A C compiler in the machine
+- [scripts.md](system/scripts.md) – Scripts: JavaScript and Python
+- [terminal.md](system/terminal.md) – Terminal programs
+- [ports.md](system/ports.md) – Ports: upstream's network and system programs
 - [media.md](system/media.md) – libmedia: pictures, sound and films on the worker cores
 - [lan.md](system/lan.md) – The network: TCP/IP between machines
 - [fetch.md](system/fetch.md) – Fetch: pages from the host
@@ -36,6 +40,7 @@ One file per subject. A doc names another by its file name, which is unique acro
 - [video.md](apps/video.md) – The video player
 - [web.md](apps/web.md) – The browser
 - [physics.md](apps/physics.md) – Rigid boxes on every core
+- [pinball.md](apps/pinball.md) – Pinball
 - [raytrace.md](apps/raytrace.md) – Rays on every core
 
 ## games
@@ -65,6 +70,4 @@ One file per subject. A doc names another by its file name, which is unique acro
 
 - [aoe-plan.md](plans/aoe-plan.md) – Plan: Age of Empires, the 1997 trial
 - [blitter-plan.md](plans/blitter-plan.md) – Plan: a blitter in the commit pass
-- [micropolis-halflife-plan.md](plans/micropolis-halflife-plan.md) – Plan: Micropolis, and Half-Life: Uplink on Xash3D FWGS
 - [original-x86-plan.md](plans/original-x86-plan.md) – Windows in a VRChat Shader — Project Handoff
-- [web-scroll-plan.md](plans/web-scroll-plan.md) – Plan: the browser's scroll without stutters

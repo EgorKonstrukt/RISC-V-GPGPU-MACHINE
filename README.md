@@ -19,7 +19,7 @@ and it is the only way this computer becomes usable.
 
 - **The machine** is RV32IMAF with supervisor mode, derived from
   [pimaker's rvc](https://github.com/pimaker/rvc). Its processor state, RAM and the GPU's
-  memory are one 2048x4096 texture; the root file system is a ROM in four more.
+  memory are one 2048x9280 texture (256 MB of RAM for Linux); the root file system is a ROM in four more.
 - **256 cores** (`docs/machine/multicore.md`): Linux runs on core 0, and programs borrow worker cores
   for their loops: decoding pictures, sound and films, physics, path tracing, the browser's
   strips, a game's server or its view.
@@ -38,13 +38,15 @@ and it is the only way this computer becomes usable.
   calendar and the volume; an xterm-like terminal, a tabbed editor, a file manager, a browser
   with CSS (`docs/apps/web.md`), paint, a photo viewer, a music player with a playlist
   (`docs/apps/play.md`), a video player (`docs/apps/video.md`), an IDE with a debugger (`docs/apps/ide.md`),
-  Windows 7's calculator, Task Manager and clock, Tetris, Mines, settings kept in a registry,
+  Windows 7's calculator, Task Manager and clock, Tetris, Mines, Pinball (`docs/apps/pinball.md`),
+  settings kept in a registry,
   photographs for a desktop, and `glxgears`.
   The machine starts it by itself at boot. Two looks, chosen in Settings: Windows 7 (Oxygen
   icons, glass frames, the Selawik font) and classic; a program that fails to start is reported
   in a window. Where each part of the desktop is: the table at the top of `docs/system/nanox.md`.
 - **Pictures, sound and films** (`docs/system/media.md`): one library, libmedia, decodes and encodes
-  them on the worker cores for every program.
+  them on the worker cores for every program, and inflates one deflate stream on many cores:
+  `unarc` unpacks zip, tar and `.tar.gz` archives with it, eight to ten times faster than busybox.
 - **Pages from the web** (`docs/system/fetch.md`): the machine has no way out of its own, so the
   browser asks the host, which fetches the page and writes it into memory in one shader pass.
 - **A network between machines** (`docs/system/lan.md`): TCP/IP with Linux's own stack, each machine a
@@ -74,9 +76,14 @@ and it is the only way this computer becomes usable.
   meshes (`docs/apps/raytrace.md`), and Dear ImGui over the machine's OpenGL (`docs/apps/imgui.md`).
 - **A C compiler in the machine** (`docs/system/cc.md`): TinyCC, with the C library, Nano-X,
   OpenGL ES and the worker cores, and examples it builds there.
-- **An IDE for it** (`docs/apps/ide.md`): coloured text with undo and redo, the compiler's errors
-  marked at their lines as you type, Build and Run, and a debugger that steps a line at a
-  time and shows the variables and the call stack.
+- **An IDE for it** (`docs/apps/ide.md`): tabs and a project's tree, coloured text with undo and
+  redo, the compiler's errors marked at their lines as you type, Build and Run, and a debugger
+  that steps a line at a time and shows the variables and the call stack; JavaScript and Python
+  too, Python with the same debugger.
+- **Scripts** (`docs/system/scripts.md`): QuickJS's `qjs` and MicroPython.
+- **Upstream's programs, built flat** for Linux without an MMU, where its own dynamic ones do not
+  run: nano, htop, Midnight Commander, mg, dialog, file and sl (`docs/system/terminal.md`), and
+  Dropbear's ssh, sftp, curl with TLS, socat, thttpd, at and iproute2 (`docs/system/ports.md`).
 - **Keyboard, pointer and wheel** as Linux input devices (`docs/machine/input.md`), a display the guest
   describes in a few control words (`docs/machine/display.md`).
 - **A VRChat world** (`unity/ShaderEmu`, `docs/world/world.md`): the same shaders run by UdonSharp
@@ -174,7 +181,7 @@ The games and programs with a folder of their own have a `build.sh` each, and th
 when to run it. That is Linux with the MMU, which Linux without it is made from, with the same
 sources (`docs/system/nommu.md`): `bash linux/nommu/setup.sh` once in WSL, then `pwsh
 linux\nommu\all.ps1 -Kernel` makes its kernel, programs, root and image and runs the test set.
-`python tools\test_all.py` is the test set (two minutes), on Linux without the MMU; `pwsh
+`python tools\test_all.py` is the test set (about a minute), on Linux without the MMU; `pwsh
 tools\make_image.ps1 --save-prebuilt` keeps both builds in `linux\prebuilt`.
 
 ## Layout
@@ -207,13 +214,13 @@ tools\make_image.ps1 --save-prebuilt` keeps both builds in `linux\prebuilt`.
   that build the scene.
 - `world/` – the Blender scripts that model the room, its computers and the city (`docs/world/world.md`).
 - `tools/` – the image builder, the test set (`test_all.py`), a software model of the GPU
-  (`gpu_reference.py`), profilers (`pc_profile.py`, `boot_profile.py`, `tick_util.ps1`), the
+  (`gpu_reference.py`), profilers (`prof.py`: `docs/machine/profiling.md`; `pc_profile.py`,
+  `boot_profile.py`, `tick_util.ps1`), the
   queue every run on the card goes through (`gpu_queue.ps1`), the speed test and the console
   viewer.
 - `docs/` – one file per subject, in folders (`docs/README.md`): `machine/` (the processor, its
   devices and harnesses), `system/` (Linux, Nano-X, the compiler, libmedia, the network), `apps/`
-  (the desktop's programs), `games/`, `world/` (the VRChat room) and `plans/` (not built, or built
-  since and kept as written).
+  (the desktop's programs), `games/`, `world/` (the VRChat room) and `plans/` (what is not built).
 - `rvc/` – a clone of upstream rvc (not part of this repository): its boot images and the
   reference shader.
 
@@ -232,7 +239,7 @@ the design notes are kept in `docs/plans/original-x86-plan.md`.
 
 [rvc](https://github.com/pimaker/rvc) and [linux-rvc](https://github.com/pimaker/linux-rvc) by
 pimaker; Linux; musl; BusyBox; GCC and LLVM; [Microwindows](https://github.com/ghaerr/microwindows)
-by Greg Haerr and contributors, with its port of Doom; TinyCC and jrrk2's riscv32 port of it; DOOM, [Quake](https://github.com/id-Software/Quake) and Quake III Arena by id Software, with [ioquake3](https://github.com/ioquake/ioq3); [MicropolisCore](https://github.com/SimHacker/MicropolisCore) by Don Hopkins, from SimCity by Will Wright and Maxis (source released by Electronic Arts); [Vanilla Conquer](https://github.com/TheAssemblyArmada/Vanilla-Conquer)
+by Greg Haerr and contributors, with its port of Doom; [Xash3D FWGS](https://github.com/FWGS/xash3d-fwgs) and [hlsdk-portable](https://github.com/FWGS/hlsdk-portable) by FWGS, after Valve's Half-Life SDK; [QuickJS](https://bellard.org/quickjs/) by Fabrice Bellard; [MicroPython](https://micropython.org); nano, htop, Midnight Commander, mg, dialog, file and sl, and Dropbear, OpenSSH's sftp, curl with Mbed TLS, socat, thttpd, at and iproute2, with Monocypher (their versions in `docs/system/terminal.md` and `docs/system/ports.md`); TinyCC and jrrk2's riscv32 port of it; DOOM, [Quake](https://github.com/id-Software/Quake) and Quake III Arena by id Software, with [ioquake3](https://github.com/ioquake/ioq3); [MicropolisCore](https://github.com/SimHacker/MicropolisCore) by Don Hopkins, from SimCity by Will Wright and Maxis (source released by Electronic Arts); [Vanilla Conquer](https://github.com/TheAssemblyArmada/Vanilla-Conquer)
 and Command & Conquer by Westwood Studios (source released by Electronic Arts);
 [ClassiCube](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200 and contributors; [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut and contributors; [Nofrendo](https://github.com/espressif/esp32-nesemu) by Matthew Conte, with [Thwaite](https://github.com/pinobatch/thwaite-nes) by Damian Yerrick and [Nova the Squirrel](https://github.com/NovaSquirrel/NovaTheSquirrel) by NovaSquirrel; [minimp3](https://github.com/lieff/minimp3) by lieff and [dr_flac](https://github.com/mackron/dr_libs) by David Reid in the music player; glxgears from the
 Mesa demos; [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski; the
@@ -241,7 +248,7 @@ Foundation, CC BY 3.0); Musopen's public-domain recordings; photographs from Uns
 paintings from Wikimedia Commons; furniture, plants and surfaces of the VRChat room from
 [Poly Haven](https://polyhaven.com) (CC0); [LTCGI](https://github.com/PiMaker/ltcgi) by pimaker,
 [VRC Light Volumes](https://github.com/REDSIM/VRCLightVolumes) by RED_SIM and
-[Mochie's shaders](https://github.com/MochiesCode/Mochies-Unity-Shaders) for the room's light, and [Fake Glass](https://gitlab.com/s-ilent/fake-glass) by Silent (CC BY-SA 4.0, its rain's textures by deepspacebanana) for the rain on the window; the path tracer's models are the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory); recordings from [Freesound](https://freesound.org) given to the public domain: a computer by squashy555, a keyboard by harrisonlace, thunder by Fission9, bastipictures and Kinoton; VRChat's SDK and UdonSharp;
+[Mochie's shaders](https://github.com/MochiesCode/Mochies-Unity-Shaders) for the room's light, and [Fake Glass](https://gitlab.com/s-ilent/fake-glass) by Silent (CC BY-SA 4.0, its rain's textures by deepspacebanana) for the rain on the window; the path tracer's models are the Utah teapot (Martin Newell) and the Stanford Bunny (Stanford Computer Graphics Laboratory); recordings from [Freesound](https://freesound.org) given to the public domain: a computer by squashy555, a keyboard by harrisonlace, thunder by Fission9, bastipictures and Kinoton; [QvPen](https://github.com/ureishi/QvPen) by ureishi for the room's pens; VRChat's SDK and UdonSharp;
 [ShaderAudio](https://gitlab.com/lox9973/ShaderAudio) by lox9973, whose way of getting sound out of
 a shader the sound card follows.
 

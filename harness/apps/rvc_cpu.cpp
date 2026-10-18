@@ -10,6 +10,7 @@
 // a picture a program asked to have copied back is not there. Pictures, sound and timings in
 // seconds are the shader machine's (rvc_harness) to check.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -18,11 +19,17 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 #include <intrin.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#pragma comment(lib, "synchronization.lib")   // WaitOnAddress: the worker threads' sleep
 
 #include "rvc_net.h"
 #include "rvc_persist.h"
@@ -32,22 +39,23 @@ typedef int32_t i32;
 typedef uint64_t u64;
 typedef int64_t i64;
 
-static const u32 RAM_BASE = 0x80000000u, RAM_SIZE = 0x08000000u;   // to 0x88000000: Linux's RAM, then the GPU's
+static const u32 RAM_BASE = 0x80000000u, RAM_SIZE = 0x12000000u;   // to 0x92000000: Linux's RAM, the GPU's from 0x86000000, Linux's again from 0x88000000
 static const u32 ROM_BASE = 0x40000000u;
 static const u32 CTRL = 0x87000000u;   // the control words (docs/machine/gpu.md, docs/machine/input.md)
 
 static std::vector<uint8_t> ram, rom;
 static u32* ramw;   // the same bytes as words
+static uint8_t* ramp;   // and as bytes, without the vector
 
 static inline u32& word(u32 phys) { return ramw[(phys - RAM_BASE) >> 2]; }
 
 // For a host that shows the machine (rvc_harness --cpu): the 4 MB bands of RAM written since
-// it last looked, one bit each; whether the GPU's and the input's control words are its own
+// it last looked, one bit each (bands 64 to 71 in the bits of 0 to 7); whether the GPU's and the input's control words are its own
 // to keep (the shader's control pass, not control_pass() here); and where the console goes.
-static u32 dirty_bands = 0;
+static u64 dirty_bands = 0;
 static bool external_devices = false;
 static void (*console_hook)(char) = nullptr;
-static inline void dirty(u32 phys) { dirty_bands |= 1u << (((phys - RAM_BASE) >> 22) & 31); }
+static inline void dirty(u32 phys) { dirty_bands |= 1ull << (((phys - RAM_BASE) >> 22) & 63); }
 
 // ---- options and the console ----
 
@@ -78,7 +86,7 @@ struct Options {
     int netPort = 0, netId = 1;          // --net, --net-id: the link to other machines (docs/system/lan.md)
     double netLoss = 0, netDelay = 0;
     std::string persist;                 // --persist FILE: the guest's kept folder (docs/system/persist.md)
-    std::string saveRam;                 // --save-ram FILE: the 128 MB of RAM as the run ends
+    std::string saveRam;                 // --save-ram FILE: the 288 MB of RAM as the run ends
 };
 static Options opt;
 
@@ -134,7 +142,7 @@ static void console_put(u32 c) {
 enum { PRIV_U = 0, PRIV_S = 1 };
 enum { FETCH = 0, READ = 1, WRITE = 2 };
 static const u32 TLB_N = 1024;
-struct TlbEntry { u32 vpn; u32 ppage; };   // vpn + 1 (0: empty); the page's physical address
+struct TlbEntry { u32 tag; u32 ppage; };   // vpn | the core's generation << 20 (0: empty); the page's physical address
 
 struct Core {
     u32 x[32] = {0}, f[32] = {0}, pc = 0, priv = PRIV_S;
@@ -155,9 +163,24 @@ struct Core {
     bool started = false;
     bool ad_miss = false;     // the last walk failed on a clear accessed or written bit (RVC_ADFAULT)
     bool wc_full = false;     // RVC_WCACHE: a store found its write cache full, the pass ends before it
+    u32 reserved_value = 0;   // what lr read: an sc while workers run on several threads stores only over it
+    u64 dirty = 0;            // the 4 MB bands this core wrote in this pass (dirty_bands, after it)
+    // A copy from RAM to RAM still to make, a chunk a pass after the cores' (copy_pass): the
+    // core runs no instruction until it is made, as the shader machine's (src/ram.h)
+    bool copying = false;
+    u32 copy_dst = 0, copy_src = 0, copy_n = 0;
+    // A flush starts a new generation of the table's tags; the fetch keeps its page while the pc stays on it
+    u32 gen = 1, genbits = 1u << 20, fetch_vpn = ~0u;
+    const uint8_t* fetch_host = nullptr;
     Core() { memset(tlb, 0, sizeof tlb); }
-    void flush() { memset(tlb, 0, sizeof tlb); }
+    void flush() {
+        if (++gen == 4095) { memset(tlb, 0, sizeof tlb); gen = 1; }   // (4095: GEN_NONE)
+        genbits = gen << 20;
+        fetch_vpn = ~0u;
+    }
 };
+static const u32 GEN_NONE = 4095u << 20;   // a generation no table entry has
+static inline void dirty(Core& c, u32 phys) { c.dirty |= 1ull << (((phys - RAM_BASE) >> 22) & 63); }
 
 static std::vector<Core> cores;
 static u64 mtime_now = 0;      // 5,000 a second, as the shader machine's
@@ -196,7 +219,8 @@ static bool walk(Core& c, u32 va, int access, u32& phys, Trap& t) {
             static const bool ad_fault = getenv("RVC_ADFAULT") && atoi(getenv("RVC_ADFAULT")) != 0;
             if ((pte & want) != want) {
                 if (ad_fault) { c.ad_miss = true; break; }
-                word(at) = pte | want; dirty(at);
+                _InterlockedOr((volatile long*)&word(at), (long)want);   // (workers on other threads walk too)
+                dirty(c, at);
             }
             u32 ppn = pte >> 10;
             phys = level == 1 ? ((ppn << 12) | (va & 0x3fffff)) : ((ppn << 12) | (va & 0xfff));
@@ -212,10 +236,10 @@ static bool walk(Core& c, u32 va, int access, u32& phys, Trap& t) {
 static inline bool page_of(Core& c, u32 va, int access, u32& phys, Trap& t) {
     u32 vpn = va >> 12;
     TlbEntry& e = c.tlb[c.priv][access][vpn & (TLB_N - 1)];
-    if (e.vpn == vpn + 1) { phys = e.ppage | (va & 0xfff); return true; }
+    if (e.tag == (vpn | c.genbits)) { phys = e.ppage | (va & 0xfff); return true; }
     if (!walk(c, va, access, phys, t)) return false;
     // (kept only for RAM, and for a write only once the page is marked written: walk did that)
-    if (phys >= RAM_BASE && phys < RAM_BASE + RAM_SIZE) { e.vpn = vpn + 1; e.ppage = phys & ~0xfffu; }
+    if (phys >= RAM_BASE && phys < RAM_BASE + RAM_SIZE) { e.tag = vpn | c.genbits; e.ppage = phys & ~0xfffu; }
     return true;
 }
 
@@ -246,7 +270,12 @@ static void device_write(Core& c, u32 phys, u32 value, int size) {
     switch (phys) {
     case 0x02004000: c.timecmp = (c.timecmp & 0xffffffff00000000ull) | value; c.mip &= ~0x80u; break;
     case 0x02004004: c.timecmp = (c.timecmp & 0xffffffffull) | ((u64)value << 32); break;
-    case 0x10000000: console_put(value & 0xff); break;
+    case 0x10000000: {
+        static std::mutex one;   // (a worker on another thread may write it too)
+        std::lock_guard<std::mutex> hold(one);
+        console_put(value & 0xff);
+        break;
+    }
     }
 }
 
@@ -318,6 +347,8 @@ static void race_store(Core& c, u32 phys, u32 value, int size) {
     it->second.pc = c.pc;
 }
 
+#include "rvc_prof.h"   // RVC_PROF=DIR (tools/prof.py)
+
 static inline bool load(Core& c, u32 va, int size, u32& value, Trap& t) {
     u32 phys;
     if (((va & 0xfff) + size) > 0x1000) {   // across two pages: a byte at a time
@@ -332,6 +363,7 @@ static inline bool load(Core& c, u32 va, int size, u32& value, Trap& t) {
     if (!page_of(c, va, READ, phys, t)) return false;
     if (phys - RAM_BASE < RAM_SIZE) {
         const uint8_t* p = &ram[phys - RAM_BASE];
+        if (prof::mem_on) prof::mem(c, va, phys, size, false);
         if (races_on && race_watched(phys)) {
             value = race_load(c, phys, size);
             return true;
@@ -383,10 +415,11 @@ static inline bool store(Core& c, u32 va, int size, u32 value, Trap& t) {
         if (wc_on && memcmp(p, &value, (size_t)size) &&
             (!wc_take(c.hart, phys) || ((phys & 15) + (u32)size > 16 && !wc_take(c.hart, phys + (u32)size - 1)))) {
             c.wc_full = c.end_pass = true;
-            wc_full_passes[c.hart != 0]++;
+            _InterlockedIncrement64((volatile long long*)&wc_full_passes[c.hart != 0]);
             return false;
         }
-        dirty(phys);
+        dirty(c, phys);
+        if (prof::mem_on) prof::mem(c, va, phys, size, true);
         if (races_on && race_watched(phys)) {
             race_store(c, phys, value, size);
             return true;
@@ -494,6 +527,48 @@ static bool csr_write(Core& c, u32 n, u32 v, Trap& t) {
     return false;
 }
 
+// A copy from RAM to RAM is made as the shader machine makes it with RAM in one texture
+// (src/ram.h, ram_chunk): after the cores' pass, 16,384 texels of it a pass, for one core a pass,
+// the highest that has one; from its end when its destination lies inside its source ahead.
+static const u32 COPY_CHUNK = 16384;   // texels: STAGE_CHUNK
+static std::atomic<u64> copies_made{0}, copies_long{0}, copy_most{0};   // (memop runs on the workers' threads)
+static u64 copy_chunks = 0, copy_waits = 0;
+static bool copy_chunk(Core& c) {
+    const u32 texels = RAM_SIZE / 16;
+    u32 dst = c.copy_dst - RAM_BASE, src = c.copy_src, n = c.copy_n;
+    u32 t0 = dst >> 4, t1 = std::min((u32)(((u64)dst + n - 1) >> 4), texels - 1), c0, c1;
+    if (n == 0 || t0 > t1) return true;
+    u32 s = src & 0x7fffffffu, rest = 0;
+    if (t1 - t0 < COPY_CHUNK) c0 = t0, c1 = t1;
+    else if (s < dst && dst < s + n) c0 = t1 - COPY_CHUNK + 1, c1 = t1, rest = c0 * 16 - dst;
+    else c0 = t0, c1 = t0 + COPY_CHUNK - 1, rest = n - ((c1 + 1) * 16 - dst);
+    // the chunk's words of the range, all read before any is written
+    static std::vector<u32> buf;
+    u32 a0 = std::max(c0 * 16, dst), a1 = std::min((c1 + 1) * 16, dst + n);   // [a0, a1) of RAM offsets
+    buf.resize((a1 - a0) / 4);
+    for (u32 k = 0; k < buf.size(); k++) {
+        u32 from = src + (a0 + 4 * k - dst), v = 0;
+        if (from - RAM_BASE < RAM_SIZE) memcpy(&v, &ram[from - RAM_BASE], 4);
+        buf[k] = v;
+    }
+    if (!buf.empty()) memcpy(ramp + a0, buf.data(), buf.size() * 4);
+    for (u64 at = (a0 & ~0x3fffffu); at < a1; at += 0x400000) dirty(c, (u32)at + RAM_BASE);
+    copy_chunks++;
+    if (rest == 0) return true;
+    if (!(s < dst && dst < s + n)) c.copy_dst += n - rest, c.copy_src += n - rest;
+    c.copy_n = rest;
+    return false;
+}
+// After every core's pass: the copy made this pass, and how many cores waited for theirs.
+static void copy_pass() {
+    Core* served = nullptr;
+    for (Core& c : cores)
+        if (c.copying) served = &c, copy_waits++;
+    if (!served) return;
+    copy_waits--;
+    if (copy_chunk(*served)) served->copying = false;
+}
+
 // The parallel copy (CSRs 0x0b0 to 0x0b3): whole words from one place to another, or one word
 // over a range, made between two passes. The source may be the ROM.
 static void memop(Core& c, u32 what, Trap& t) {
@@ -501,23 +576,41 @@ static void memop(Core& c, u32 what, Trap& t) {
     if (what != 2 && !walk(c, c.memop_src, READ, src, t)) return;
     if (!walk(c, c.memop_dst, WRITE, dst, t)) return;
     // the card's copy is of texels: a part texel at either end can differ there (it lost bytes)
-    static int told_unaligned = 0;
+    static std::atomic<int> told_unaligned{0};
     if (((dst | c.memop_n | (what != 2 ? src : 0)) & 15) && told_unaligned < 8 && ++told_unaligned)
         fprintf(stderr, "[memop] %s off a texel at pc %08x: %08x <- %08x, %u bytes\n", what == 2 ? "fill" : "copy", c.pc, dst, src, c.memop_n);
     // whole words, as the machine's commit makes them: a word is written when its address is in the range
     u32 words = (c.memop_n + 3) / 4, fill = c.memop_src;
     dst &= ~3u;
     src &= ~3u;
-    for (u32 k = 0; k < words; k++) {
-        u32 to = dst + 4 * k, from = src + 4 * k, value = fill;
-        if (to - RAM_BASE >= RAM_SIZE) break;
-        if (what != 2) {
+    // (up to the end of RAM, where the word at a time stopped; a source wholly in RAM or in the
+    // ROM in one piece, unless it overlaps the destination ahead of it, which a word at a time repeats)
+    u64 n = dst - RAM_BASE < RAM_SIZE ? std::min<u64>(words, (RAM_BASE + (u64)RAM_SIZE - dst) / 4) : 0;
+    u32* to = (u32*)(ramp + (dst - RAM_BASE));
+    bool from_ram = src - RAM_BASE < RAM_SIZE && src - RAM_BASE + 4 * n <= RAM_SIZE;
+    bool from_rom = src - ROM_BASE + 4 * n <= rom.size() && src >= ROM_BASE;
+    if (what != 2 && (src & 0x80000000u) && n) {
+        // from RAM: after the pass, a chunk at a time (copy_pass)
+        c.copying = true;
+        c.copy_dst = dst, c.copy_src = src, c.copy_n = (u32)(4 * n);
+        copies_made++;
+        if (4 * n > COPY_CHUNK * 16) copies_long++;
+        for (u64 most = copy_most; most < 4 * n && !copy_most.compare_exchange_weak(most, 4 * n);) {}
+    } else if (what == 2) {
+        for (u64 k = 0; k < n; k++) to[k] = fill;
+    } else if (from_ram && (dst <= src || dst >= src + 4 * n)) {
+        memmove(to, ramp + (src - RAM_BASE), (size_t)(4 * n));
+    } else if (from_rom) {
+        memcpy(to, rom.data() + (src - ROM_BASE), (size_t)(4 * n));
+    } else {
+        for (u32 k = 0; k < n; k++) {
+            u32 from = src + 4 * k, value;
             if (from - RAM_BASE < RAM_SIZE) memcpy(&value, &ram[from - RAM_BASE], 4);
             else value = rom_word(from - ROM_BASE);
+            to[k] = value;
         }
-        memcpy(&ram[to - RAM_BASE], &value, 4);
-        dirty(to);
     }
+    for (u64 at = dst & ~0x3fffffull; n && at < dst + 4 * n; at += 0x400000) dirty(c, (u32)at);
     c.end_pass = true;
 }
 
@@ -526,13 +619,14 @@ static void memop(Core& c, u32 what, Trap& t) {
 static u64 trap_counts[2][16];   // exceptions and interrupts, by cause
 
 static void take_trap(Core& c, u32 cause, u32 value, u32 pc) {
-    trap_counts[cause >> 31][cause & 15]++;
+    _InterlockedIncrement64((volatile long long*)&trap_counts[cause >> 31][cause & 15]);
     c.scause = cause;
     c.stval = value;
     c.sepc = pc;
     u32 sie = (c.mstatus >> 1) & 1;
     c.mstatus = (c.mstatus & ~0x122u) | (sie << 5) | ((c.priv & 1) << 8);
     c.priv = PRIV_S;
+    c.fetch_vpn = ~0u;
     c.pc = (c.stvec & 1) && (cause >> 31) ? (c.stvec & ~3u) + 4 * (cause & 0xffff) : (c.stvec & ~3u);
     c.reserved = false;
 }
@@ -588,8 +682,10 @@ bool mc_fault(Core& c, const Trap& t);
 static u64 stops[3], stops_at[3];   // workers' faults, those on an accessed or written bit; core 0's such faults
 static void note_stop(Core& c, const Trap& t) {
     static const bool say = getenv("RVC_ADFAULT") && atoi(getenv("RVC_ADFAULT")) == 2;   // (2: says each)
-    if (c.hart) stops[0]++, stops[1] += c.ad_miss;
-    else stops[2] += t.cause >= 12 && c.ad_miss;
+    if (c.hart) {
+        _InterlockedIncrement64((volatile long long*)&stops[0]);
+        if (c.ad_miss) _InterlockedIncrement64((volatile long long*)&stops[1]);
+    } else stops[2] += t.cause >= 12 && c.ad_miss;
     if (say && (c.hart || c.ad_miss))
         fprintf(stderr, "[adfault] core %d, cause %u at %08x, pc %08x, its instruction %llu%s\n", c.hart, t.cause, t.value, c.pc,
                 (unsigned long long)c.clock, c.ad_miss ? "" : " (not the bit)");
@@ -714,276 +810,6 @@ static bool zb(u32 ins, u32 op, u32 f3, u32 f7, u32 rs2, u32 a, u32 b, u32& resu
     return false;
 }
 
-// ---- one pass of a core: up to `budget` instructions ----
-
-static u64 run(Core& c, u64 budget) {
-    u64 done = 0;
-    Trap t;
-    c.end_pass = false;
-    while (done < budget && !c.end_pass) {
-        u32 irq = pending_interrupt(c);
-        if (irq) {
-            c.waiting = false;
-            c.mip &= irq == 0x80000005u ? ~0u : ~(1u << (irq & 31));   // (the timer's stays until a new deadline)
-            take_trap(c, irq, 0, c.pc);
-        }
-        // wfi ends when an interrupt is pending and enabled, taken or not (Linux waits with
-        // interrupts off and switches them on afterwards)
-        if (c.waiting && (c.mip & c.mie & 0x222)) c.waiting = false;
-        if (c.waiting) break;
-        // a run with no interrupt check: until the timer could fire, at most
-        u64 chunk = budget - done;
-        if (chunk > 256) chunk = 256;
-        for (u64 k = 0; k < chunk && !c.end_pass; k++) {
-            u32 pc = c.pc, phys, ins;
-            t.on = false;
-            if (!page_of(c, pc, FETCH, phys, t)) {
-                // (a worker stops at code its program has not touched yet, as at any other page)
-                if (c.hart == 0) note_stop(c, t);
-                if (c.hart == 0 || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
-                done++; c.clock++; break;
-            }
-            if (phys - RAM_BASE >= RAM_SIZE) { take_trap(c, 1, pc, pc); done++; c.clock++; break; }
-            memcpy(&ins, &ram[phys - RAM_BASE], 4);
-            done++;
-            c.clock++;
-            if (c.hart == 0) { last_pc[c.clock & 31] = pc; last_ins[c.clock & 31] = ins; }
-            u32 op = ins & 0x7f, rd = (ins >> 7) & 31, f3 = (ins >> 12) & 7, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31, f7 = ins >> 25;
-            u32 a = c.x[rs1], b = c.x[rs2], next = pc + 4, result = 0;
-            bool write = true, illegal = false;
-            if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { zb_run++; op = 0x80; }   // (no opcode is 0x80)
-            // which funct7 each op and op-imm has, as the tick's general path (emu.h): the rest are illegal
-            if ((op == 0x13 || (op == 0x33 && f7 != 1)) &&
-                !(((f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu) >> (((ins >> 2) & 8) | f3)) & 1)) op = 0x81;
-            switch (op) {
-            case 0x80: break;
-            case 0x37: result = ins & 0xfffff000; break;
-            case 0x17: result = pc + (ins & 0xfffff000); break;
-            case 0x6f: {
-                u32 imm = ((i32)ins >> 31 << 20) | (ins & 0xff000) | ((ins >> 9) & 0x800) | ((ins >> 20) & 0x7fe);
-                result = pc + 4, next = pc + imm;
-                break;
-            }
-            case 0x67: result = pc + 4, next = (a + ((i32)ins >> 20)) & ~1u; break;
-            case 0x63: {
-                u32 imm = ((i32)ins >> 31 << 12) | ((ins << 4) & 0x800) | ((ins >> 20) & 0x7e0) | ((ins >> 7) & 0x1e);
-                bool take = false;
-                switch (f3) {
-                case 0: take = a == b; break;
-                case 1: take = a != b; break;
-                case 4: take = (i32)a < (i32)b; break;
-                case 5: take = (i32)a >= (i32)b; break;
-                case 6: take = a < b; break;
-                case 7: take = a >= b; break;
-                default: illegal = true;
-                }
-                if (take) next = pc + imm;
-                write = false;
-                break;
-            }
-            case 0x03: {
-                u32 va = a + ((i32)ins >> 20), v;
-                int size = f3 & 3;
-                if (size == 3 || f3 == 7 || f3 == 6) { illegal = true; break; }
-                if (!load(c, va, 1 << size, v, t)) break;
-                result = f3 == 0 ? (u32)(i32)(int8_t)v : f3 == 1 ? (u32)(i32)(int16_t)v : v;
-                break;
-            }
-            case 0x23: {
-                u32 va = a + (((i32)ins >> 25 << 5) | rd);
-                if (f3 > 2) { illegal = true; break; }
-                store(c, va, 1 << f3, b, t);
-                write = false;
-                break;
-            }
-            case 0x13: {
-                u32 imm = (i32)ins >> 20, sh = rs2;
-                switch (f3) {
-                case 0: result = a + imm; break;
-                case 1: result = a << sh; break;
-                case 2: result = (i32)a < (i32)imm; break;
-                case 3: result = a < imm; break;
-                case 4: result = a ^ imm; break;
-                case 5: result = f7 & 0x20 ? (u32)((i32)a >> sh) : a >> sh; break;
-                case 6: result = a | imm; break;
-                case 7: result = a & imm; break;
-                }
-                break;
-            }
-            case 0x33:
-                if (f7 == 1) {
-                    switch (f3) {
-                    case 0: result = a * b; break;
-                    case 1: result = (u32)(((i64)(i32)a * (i64)(i32)b) >> 32); break;
-                    case 2: result = (u32)(((i64)(i32)a * (i64)(u64)b) >> 32); break;
-                    case 3: result = (u32)(((u64)a * (u64)b) >> 32); break;
-                    case 4: result = b == 0 ? 0xffffffffu : (a == 0x80000000u && b == 0xffffffffu) ? a : (u32)((i32)a / (i32)b); break;
-                    case 5: result = b == 0 ? 0xffffffffu : a / b; break;
-                    case 6: result = b == 0 ? a : (a == 0x80000000u && b == 0xffffffffu) ? 0 : (u32)((i32)a % (i32)b); break;
-                    case 7: result = b == 0 ? a : a % b; break;
-                    }
-                } else {
-                    switch (f3) {
-                    case 0: result = f7 & 0x20 ? a - b : a + b; break;
-                    case 1: result = a << (b & 31); break;
-                    case 2: result = (i32)a < (i32)b; break;
-                    case 3: result = a < b; break;
-                    case 4: result = a ^ b; break;
-                    case 5: result = f7 & 0x20 ? (u32)((i32)a >> (b & 31)) : a >> (b & 31); break;
-                    case 6: result = a | b; break;
-                    case 7: result = a & b; break;
-                    }
-                }
-                break;
-            case 0x0f:
-                write = false;
-                if (ins == 0x0100000f) c.end_pass = true;   // pause: the pass ends (docs/machine/gpu.md)
-                break;
-            case 0x2f: {   // atomics, on words
-                u32 kind = f7 >> 2, v;
-                if (f3 != 2) { illegal = true; break; }
-                if (kind == 2) {   // lr
-                    if (!load(c, a, 4, v, t)) break;
-                    c.reserved = true, c.reservation = a;
-                    result = v;
-                } else if (kind == 3) {   // sc
-                    if (c.reserved && c.reservation == a) {
-                        if (!store(c, a, 4, b, t)) break;
-                        result = 0;
-                    } else result = 1;
-                    c.reserved = false;
-                } else {
-                    if (!load(c, a, 4, v, t)) break;
-                    u32 n;
-                    switch (kind) {
-                    case 1: n = b; break;
-                    case 0: n = v + b; break;
-                    case 4: n = v ^ b; break;
-                    case 12: n = v & b; break;
-                    case 8: n = v | b; break;
-                    case 16: n = (i32)v < (i32)b ? v : b; break;
-                    case 20: n = (i32)v > (i32)b ? v : b; break;
-                    case 24: n = v < b ? v : b; break;
-                    case 28: n = v > b ? v : b; break;
-                    default: n = v; illegal = true;
-                    }
-                    if (illegal || !store(c, a, 4, n, t)) break;
-                    result = v;
-                }
-                break;
-            }
-            case 0x73: {
-                if (f3 == 0) {
-                    write = false;
-                    if (ins == 0x00000073) {   // ecall
-                        if (c.priv == PRIV_S) sbi_call(c);
-                        else t.on = true, t.cause = 8, t.value = 0;
-                    } else if (ins == 0x00100073) {
-                        t.on = true, t.cause = 3, t.value = pc;
-                    } else if (ins == 0x10200073 && c.priv == PRIV_S) {   // sret
-                        u32 spie = (c.mstatus >> 5) & 1, spp = (c.mstatus >> 8) & 1;
-                        c.mstatus = (c.mstatus & ~0x122u) | (spie << 1) | 0x20;
-                        c.priv = spp;
-                        next = c.sepc;
-                        c.reserved = false;
-                        c.recheck = true;
-                    } else if (ins == 0x10500073 && c.priv == PRIV_S) {   // wfi
-                        c.waiting = true;
-                        c.end_pass = true;
-                    } else if (f7 == 0x09 && c.priv == PRIV_S) {   // sfence.vma
-                        c.flush();
-                    } else illegal = true;
-                    break;
-                }
-                u32 n = ins >> 20, old = 0, src = f3 & 4 ? rs1 : a;
-                if (((n >> 8) & 3) > c.priv || !csr_read(c, n, old)) {
-                    // the counters and the machine's own registers may be read by anyone
-                    if (!(n >= 0xc00 && n <= 0xc82 && csr_read(c, n, old)) && !((n & 0xff0) == 0x0b0 && csr_read(c, n, old))) { illegal = true; break; }
-                }
-                bool writes = (f3 & 3) == 1 || rs1 != 0;
-                if (writes) {
-                    u32 v = (f3 & 3) == 1 ? src : (f3 & 3) == 2 ? old | src : old & ~src;
-                    if ((n >> 10) == 3 || !csr_write(c, n, v, t)) { illegal = true; break; }
-                }
-                result = old;
-                break;
-            }
-            // ---- floats ----
-            case 0x07:   // flw
-            case 0x27: { // fsw
-                u32 va, v;
-                if (f3 != 2 || !(c.mstatus & 0x6000)) { illegal = true; break; }
-                write = false;
-                if (op == 0x07) {
-                    va = a + ((i32)ins >> 20);
-                    if (load(c, va, 4, v, t)) c.f[rd] = v;
-                } else {
-                    va = a + (((i32)ins >> 25 << 5) | rd);
-                    store(c, va, 4, c.f[rs2], t);
-                }
-                break;
-            }
-            case 0x43: case 0x47: case 0x4b: case 0x4f: {   // fmadd, fmsub, fnmsub, fnmadd
-                if (!(c.mstatus & 0x6000) || (f7 & 3)) { illegal = true; break; }
-                float x = fl(c.f[rs1]), y = fl(c.f[rs2]), z = fl(c.f[ins >> 27]);
-                float r = op == 0x43 ? fmaf(x, y, z) : op == 0x47 ? fmaf(x, y, -z) : op == 0x4b ? fmaf(-x, y, z) : fmaf(-x, y, -z);
-                c.f[rd] = canon(r);
-                write = false;
-                break;
-            }
-            case 0x53: {
-                if (!(c.mstatus & 0x6000)) { illegal = true; break; }
-                u32 fa = c.f[rs1], fb = c.f[rs2], rm = f3 == 7 ? (c.fcsr >> 5) & 7 : f3;
-                float x = fl(fa), y = fl(fb);
-                write = false;
-                switch (f7) {
-                case 0x00: c.f[rd] = canon(x + y); break;
-                case 0x04: c.f[rd] = canon(x - y); break;
-                case 0x08: c.f[rd] = canon(x * y); break;
-                case 0x0c: c.f[rd] = canon(x / y); break;
-                case 0x2c: c.f[rd] = canon(sqrtf(x)); break;
-                case 0x10: c.f[rd] = f3 == 0 ? (fa & 0x7fffffff) | (fb & 0x80000000) : f3 == 1 ? (fa & 0x7fffffff) | (~fb & 0x80000000) : fa ^ (fb & 0x80000000); break;
-                case 0x14: {
-                    bool an = is_nan(fa), bn = is_nan(fb);
-                    if (an && bn) c.f[rd] = 0x7fc00000;
-                    else if (an) c.f[rd] = fb;
-                    else if (bn) c.f[rd] = fa;
-                    else if (x == y) c.f[rd] = f3 == 0 ? (fa | fb) : (fa & fb);   // -0 is under +0
-                    else c.f[rd] = (f3 == 0) == (x < y) ? fa : fb;
-                    break;
-                }
-                case 0x60: result = to_int(bits(round_mode(x, rm)), rs2 == 1); if (is_nan(fa)) result = rs2 == 1 ? 0xffffffffu : 0x7fffffffu; write = true; break;
-                case 0x68: c.f[rd] = bits(rs2 == 1 ? (float)a : (float)(i32)a); break;
-                case 0x70: result = f3 == 0 ? fa : fclass(fa); write = true; break;
-                case 0x78: c.f[rd] = a; break;
-                case 0x50: result = f3 == 2 ? x == y : f3 == 1 ? x < y : x <= y; write = true; break;
-                default: illegal = true;
-                }
-                break;
-            }
-            default: illegal = true;
-            }
-            if (c.wc_full) { done--; c.clock--; break; }   // (the instruction is the next pass's)
-            if (illegal) t.on = true, t.cause = 2, t.value = ins;
-            if (t.on) {
-                // a worker core in user mode does not trap: it stops where it is (mc_fault)
-                if (c.hart == 0) note_stop(c, t);
-                if (c.hart == 0 || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
-                break;
-            }
-            if (write && rd) c.x[rd] = result;
-            if (calls_on && c.hart == 0) call_step(c, op, rd, rs1, ins, pc, next);
-            c.pc = next;
-            if (c.recheck) {
-                // (the kernel's idle loop lets interrupts in for three instructions at a time)
-                c.recheck = false;
-                break;
-            }
-        }
-    }
-    return done;
-}
-
 // ---- the worker cores (experiments/rvc_opt/src/mc.h, docs/machine/multicore.md) ----
 //
 // A worker is parked until core 0 writes a start texel in the mailbox page: "MCSU", a pc, a
@@ -1002,6 +828,698 @@ static std::vector<Worker> workers;
 static u32 geometry[256];   // each worker's cache bits as the machine's geometry has them; 0: no such worker
 static u32 wc_bits_of(int hart) { return hart ? geometry[hart] : 6; }
 
+// ---- one pass of a core: up to `budget` instructions ----
+
+// The instructions the fast step decodes itself, by opcode, funct3 and a class of funct7 (0,
+// 0x20, 1, any other); everything else, illegal encodings too, is the general step's.
+enum : uint8_t {
+    K_GENERAL, K_LUI, K_AUIPC, K_JAL, K_JALR, K_BEQ, K_BNE, K_BLT, K_BGE, K_BLTU, K_BGEU,
+    K_LB, K_LH, K_LW, K_LBU, K_LHU, K_SB, K_SH, K_SW,
+    K_ADDI, K_SLTI, K_SLTIU, K_XORI, K_ORI, K_ANDI, K_SLLI, K_SRLI, K_SRAI,
+    K_ADD, K_SUB, K_SLL, K_SLT, K_SLTU, K_XOR, K_SRL, K_SRA, K_OR, K_AND,
+    K_MUL, K_MULH, K_MULHSU, K_MULHU, K_DIV, K_DIVU, K_REM, K_REMU,
+    K_FLW, K_FSW, K_FMADD, K_FMSUB, K_FNMSUB, K_FNMADD, K_FOP, K_COUNT
+};
+// (their index: opcode, funct3, funct7's bits 0 and 5, whether it has any other: no load for the class)
+static uint8_t step_kind[2][8192];   // [RVC_ZB]: with Zba and Zbb, op and op-imm are all the general step's
+static bool step_kinds_made = false;
+static void make_step_kinds() {
+    static const uint8_t branch[8] = {K_BEQ, K_BNE, 0, 0, K_BLT, K_BGE, K_BLTU, K_BGEU};
+    static const uint8_t loads[8] = {K_LB, K_LH, K_LW, 0, K_LBU, K_LHU, 0, 0};
+    static const uint8_t stores[8] = {K_SB, K_SH, K_SW, 0, 0, 0, 0, 0};
+    static const uint8_t imm[8] = {K_ADDI, K_SLLI, K_SLTI, K_SLTIU, K_XORI, K_SRLI, K_ORI, K_ANDI};
+    static const uint8_t reg[8] = {K_ADD, K_SLL, K_SLT, K_SLTU, K_XOR, K_SRL, K_OR, K_AND};
+    static const uint8_t mul[8] = {K_MUL, K_MULH, K_MULHSU, K_MULHU, K_DIV, K_DIVU, K_REM, K_REMU};
+    for (u32 key = 0; key < 8192; key++) {
+        u32 op = key & 0x7f, f3 = (key >> 7) & 7, bit0 = (key >> 10) & 1, bit5 = (key >> 11) & 1, others = key >> 12;
+        u32 c7 = others || (bit0 && bit5) ? 3 : bit5 ? 1 : bit0 ? 2 : 0;   // funct7 0, 0x20, 1, or any other
+        uint8_t k = K_GENERAL;
+        switch (op) {
+        case 0x37: k = K_LUI; break;
+        case 0x17: k = K_AUIPC; break;
+        case 0x6f: k = K_JAL; break;
+        case 0x67: k = K_JALR; break;
+        case 0x63: k = branch[f3]; break;
+        case 0x03: k = loads[f3]; break;
+        case 0x23: k = stores[f3]; break;
+        case 0x13:   // (the shifts' funct7 is checked; the others' is their immediate)
+            k = imm[f3];
+            if (f3 == 1 && c7 != 0) k = K_GENERAL;
+            if (f3 == 5) k = c7 == 0 ? K_SRLI : c7 == 1 ? K_SRAI : K_GENERAL;
+            break;
+        case 0x33:
+            k = c7 == 0 ? reg[f3] : c7 == 1 ? (f3 == 0 ? K_SUB : f3 == 5 ? K_SRA : K_GENERAL) : c7 == 2 ? mul[f3] : K_GENERAL;
+            break;
+        case 0x07: k = f3 == 2 ? K_FLW : K_GENERAL; break;   // (the floats: their handlers check the rest)
+        case 0x27: k = f3 == 2 ? K_FSW : K_GENERAL; break;
+        case 0x43: k = K_FMADD; break;
+        case 0x47: k = K_FMSUB; break;
+        case 0x4b: k = K_FNMSUB; break;
+        case 0x4f: k = K_FNMADD; break;
+        case 0x53: k = K_FOP; break;
+        }
+        step_kind[0][key] = k;
+        step_kind[1][key] = op == 0x13 || op == 0x33 ? K_GENERAL : k;
+    }
+    step_kinds_made = true;
+}
+
+static bool keep_last = getenv("RVC_CPU_LAST") != nullptr;   // core 0's last instructions, for the summary
+static std::atomic<bool> workers_threaded{false};             // workers run on several host threads now
+static bool amo_threaded(Core& c, u32 kind, u32 a, u32 b, u32& result, Trap& t, bool& illegal);
+
+enum { STEP_ON, STEP_BREAK, STEP_OUT };   // went on; the run of instructions ends; (a worker's) pass ends
+
+// The general step: one instruction from its decode to its end, the fetch made and counted, c.pc
+// and c.clock up to date. W: a worker in user mode, whose fence.i ends its pass; else any core.
+template <bool W>
+static __declspec(noinline) int general_step(Core& c, u32 ins) {
+    Trap t;
+    u32 pc = c.pc;
+    if (!W && c.hart == 0 && keep_last) { last_pc[c.clock & 31] = pc; last_ins[c.clock & 31] = ins; }
+    u32 op = ins & 0x7f, rd = (ins >> 7) & 31, f3 = (ins >> 12) & 7, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31, f7 = ins >> 25;
+    u32 a = c.x[rs1], b = c.x[rs2], next = pc + 4, result = 0;
+    bool write = true, illegal = false;
+    if (zb_on && (op == 0x13 || op == 0x33) && zb(ins, op, f3, f7, rs2, a, b, result)) { _InterlockedIncrement64((volatile long long*)&zb_run); op = 0x80; }   // (no opcode is 0x80)
+    // which funct7 each op and op-imm has, as the tick's general path (emu.h): the rest are illegal
+    if ((op == 0x13 || (op == 0x33 && f7 != 1)) &&
+        !(((f7 == 0 ? 0xffffu : f7 == 0x20 ? 0x21fdu : 0x00ddu) >> (((ins >> 2) & 8) | f3)) & 1)) op = 0x81;
+    switch (op) {
+    case 0x80: break;
+    case 0x37: result = ins & 0xfffff000; break;
+    case 0x17: result = pc + (ins & 0xfffff000); break;
+    case 0x6f: {
+        u32 imm = ((i32)ins >> 31 << 20) | (ins & 0xff000) | ((ins >> 9) & 0x800) | ((ins >> 20) & 0x7fe);
+        result = pc + 4, next = pc + imm;
+        break;
+    }
+    case 0x67: result = pc + 4, next = (a + ((i32)ins >> 20)) & ~1u; break;
+    case 0x63: {
+        u32 imm = ((i32)ins >> 31 << 12) | ((ins << 4) & 0x800) | ((ins >> 20) & 0x7e0) | ((ins >> 7) & 0x1e);
+        bool take = false;
+        switch (f3) {
+        case 0: take = a == b; break;
+        case 1: take = a != b; break;
+        case 4: take = (i32)a < (i32)b; break;
+        case 5: take = (i32)a >= (i32)b; break;
+        case 6: take = a < b; break;
+        case 7: take = a >= b; break;
+        default: illegal = true;
+        }
+        if (take) next = pc + imm;
+        write = false;
+        break;
+    }
+    case 0x03: {
+        u32 va = a + ((i32)ins >> 20), v;
+        int size = f3 & 3;
+        if (size == 3 || f3 == 7 || f3 == 6) { illegal = true; break; }
+        if (!load(c, va, 1 << size, v, t)) break;
+        result = f3 == 0 ? (u32)(i32)(int8_t)v : f3 == 1 ? (u32)(i32)(int16_t)v : v;
+        break;
+    }
+    case 0x23: {
+        u32 va = a + (((i32)ins >> 25 << 5) | rd);
+        if (f3 > 2) { illegal = true; break; }
+        store(c, va, 1 << f3, b, t);
+        write = false;
+        break;
+    }
+    case 0x13: {
+        u32 imm = (i32)ins >> 20, sh = rs2;
+        switch (f3) {
+        case 0: result = a + imm; break;
+        case 1: result = a << sh; break;
+        case 2: result = (i32)a < (i32)imm; break;
+        case 3: result = a < imm; break;
+        case 4: result = a ^ imm; break;
+        case 5: result = f7 & 0x20 ? (u32)((i32)a >> sh) : a >> sh; break;
+        case 6: result = a | imm; break;
+        case 7: result = a & imm; break;
+        }
+        break;
+    }
+    case 0x33:
+        if (f7 == 1) {
+            switch (f3) {
+            case 0: result = a * b; break;
+            case 1: result = (u32)(((i64)(i32)a * (i64)(i32)b) >> 32); break;
+            case 2: result = (u32)(((i64)(i32)a * (i64)(u64)b) >> 32); break;
+            case 3: result = (u32)(((u64)a * (u64)b) >> 32); break;
+            case 4: result = b == 0 ? 0xffffffffu : (a == 0x80000000u && b == 0xffffffffu) ? a : (u32)((i32)a / (i32)b); break;
+            case 5: result = b == 0 ? 0xffffffffu : a / b; break;
+            case 6: result = b == 0 ? a : (a == 0x80000000u && b == 0xffffffffu) ? 0 : (u32)((i32)a % (i32)b); break;
+            case 7: result = b == 0 ? a : a % b; break;
+            }
+        } else {
+            switch (f3) {
+            case 0: result = f7 & 0x20 ? a - b : a + b; break;
+            case 1: result = a << (b & 31); break;
+            case 2: result = (i32)a < (i32)b; break;
+            case 3: result = a < b; break;
+            case 4: result = a ^ b; break;
+            case 5: result = f7 & 0x20 ? (u32)((i32)a >> (b & 31)) : a >> (b & 31); break;
+            case 6: result = a | b; break;
+            case 7: result = a & b; break;
+            }
+        }
+        break;
+    case 0x0f:
+        write = false;
+        if (ins == 0x0100000f) c.end_pass = true;   // pause: the pass ends (docs/machine/gpu.md)
+        break;
+    case 0x2f: {   // atomics, on words
+        u32 kind = f7 >> 2, v;
+        if (f3 != 2) { illegal = true; break; }
+        if (c.hart && workers_threaded && amo_threaded(c, kind, a, b, result, t, illegal)) break;
+        if (kind == 2) {   // lr
+            if (!load(c, a, 4, v, t)) break;
+            c.reserved = true, c.reservation = a, c.reserved_value = v;
+            result = v;
+        } else if (kind == 3) {   // sc
+            if (c.reserved && c.reservation == a) {
+                if (!store(c, a, 4, b, t)) break;
+                result = 0;
+            } else result = 1;
+            c.reserved = false;
+        } else {
+            if (!load(c, a, 4, v, t)) break;
+            u32 n;
+            switch (kind) {
+            case 1: n = b; break;
+            case 0: n = v + b; break;
+            case 4: n = v ^ b; break;
+            case 12: n = v & b; break;
+            case 8: n = v | b; break;
+            case 16: n = (i32)v < (i32)b ? v : b; break;
+            case 20: n = (i32)v > (i32)b ? v : b; break;
+            case 24: n = v < b ? v : b; break;
+            case 28: n = v > b ? v : b; break;
+            default: n = v; illegal = true;
+            }
+            if (illegal || !store(c, a, 4, n, t)) break;
+            result = v;
+        }
+        break;
+    }
+    case 0x73: {
+        if (f3 == 0) {
+            write = false;
+            if (ins == 0x00000073) {   // ecall
+                if (c.priv == PRIV_S) sbi_call(c);
+                else t.on = true, t.cause = 8, t.value = 0;
+            } else if (ins == 0x00100073) {
+                t.on = true, t.cause = 3, t.value = pc;
+            } else if (ins == 0x10200073 && c.priv == PRIV_S) {   // sret
+                u32 spie = (c.mstatus >> 5) & 1, spp = (c.mstatus >> 8) & 1;
+                c.mstatus = (c.mstatus & ~0x122u) | (spie << 1) | 0x20;
+                c.priv = spp;
+                next = c.sepc;
+                c.reserved = false;
+                c.recheck = true;
+            } else if (ins == 0x10500073 && c.priv == PRIV_S) {   // wfi
+                c.waiting = true;
+                c.end_pass = true;
+            } else if (f7 == 0x09 && c.priv == PRIV_S) {   // sfence.vma
+                c.flush();
+            } else illegal = true;
+            break;
+        }
+        u32 n = ins >> 20, old = 0, src = f3 & 4 ? rs1 : a;
+        if (((n >> 8) & 3) > c.priv || !csr_read(c, n, old)) {
+            // the counters and the machine's own registers may be read by anyone
+            if (!(n >= 0xc00 && n <= 0xc82 && csr_read(c, n, old)) && !((n & 0xff0) == 0x0b0 && csr_read(c, n, old))) { illegal = true; break; }
+        }
+        bool writes = (f3 & 3) == 1 || rs1 != 0;
+        if (writes) {
+            u32 v = (f3 & 3) == 1 ? src : (f3 & 3) == 2 ? old | src : old & ~src;
+            if ((n >> 10) == 3 || !csr_write(c, n, v, t)) { illegal = true; break; }
+        }
+        result = old;
+        break;
+    }
+    // ---- floats ----
+    case 0x07:   // flw
+    case 0x27: { // fsw
+        u32 va, v;
+        if (f3 != 2 || !(c.mstatus & 0x6000)) { illegal = true; break; }
+        write = false;
+        if (op == 0x07) {
+            va = a + ((i32)ins >> 20);
+            if (load(c, va, 4, v, t)) c.f[rd] = v;
+        } else {
+            va = a + (((i32)ins >> 25 << 5) | rd);
+            store(c, va, 4, c.f[rs2], t);
+        }
+        break;
+    }
+    case 0x43: case 0x47: case 0x4b: case 0x4f: {   // fmadd, fmsub, fnmsub, fnmadd
+        if (!(c.mstatus & 0x6000) || (f7 & 3)) { illegal = true; break; }
+        float x = fl(c.f[rs1]), y = fl(c.f[rs2]), z = fl(c.f[ins >> 27]);
+        float r = op == 0x43 ? fmaf(x, y, z) : op == 0x47 ? fmaf(x, y, -z) : op == 0x4b ? fmaf(-x, y, z) : fmaf(-x, y, -z);
+        c.f[rd] = canon(r);
+        write = false;
+        break;
+    }
+    case 0x53: {
+        if (!(c.mstatus & 0x6000)) { illegal = true; break; }
+        u32 fa = c.f[rs1], fb = c.f[rs2], rm = f3 == 7 ? (c.fcsr >> 5) & 7 : f3;
+        float x = fl(fa), y = fl(fb);
+        write = false;
+        switch (f7) {
+        case 0x00: c.f[rd] = canon(x + y); break;
+        case 0x04: c.f[rd] = canon(x - y); break;
+        case 0x08: c.f[rd] = canon(x * y); break;
+        case 0x0c: c.f[rd] = canon(x / y); break;
+        case 0x2c: c.f[rd] = canon(sqrtf(x)); break;
+        case 0x10: c.f[rd] = f3 == 0 ? (fa & 0x7fffffff) | (fb & 0x80000000) : f3 == 1 ? (fa & 0x7fffffff) | (~fb & 0x80000000) : fa ^ (fb & 0x80000000); break;
+        case 0x14: {
+            bool an = is_nan(fa), bn = is_nan(fb);
+            if (an && bn) c.f[rd] = 0x7fc00000;
+            else if (an) c.f[rd] = fb;
+            else if (bn) c.f[rd] = fa;
+            else if (x == y) c.f[rd] = f3 == 0 ? (fa | fb) : (fa & fb);   // -0 is under +0
+            else c.f[rd] = (f3 == 0) == (x < y) ? fa : fb;
+            break;
+        }
+        case 0x60: result = to_int(bits(round_mode(x, rm)), rs2 == 1); if (is_nan(fa)) result = rs2 == 1 ? 0xffffffffu : 0x7fffffffu; write = true; break;
+        case 0x68: c.f[rd] = bits(rs2 == 1 ? (float)a : (float)(i32)a); break;
+        case 0x70: result = f3 == 0 ? fa : fclass(fa); write = true; break;
+        case 0x78: c.f[rd] = a; break;
+        case 0x50: result = f3 == 2 ? x == y : f3 == 1 ? x < y : x <= y; write = true; break;
+        default: illegal = true;
+        }
+        break;
+    }
+    default: illegal = true;
+    }
+    if (c.wc_full) {   // (the instruction is the next pass's)
+        c.clock--;
+        if (W) c.wc_full = false;
+        return W ? STEP_OUT : STEP_BREAK;
+    }
+    if (illegal) t.on = true, t.cause = 2, t.value = ins;
+    if (t.on) {
+        // a worker core in user mode does not trap: it stops where it is (mc_fault)
+        if (!W && c.hart == 0) note_stop(c, t);
+        if ((!W && c.hart == 0) || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
+        return STEP_BREAK;
+    }
+    if (write && rd) c.x[rd] = result;
+    if (!W && calls_on && c.hart == 0) call_step(c, op, rd, rs1, ins, pc, next);
+    if (prof::on) prof::step(c, op, rd, rs1, ins, pc, next);
+    c.pc = next;
+    if (c.recheck) {
+        // (the kernel's idle loop lets interrupts in for three instructions at a time)
+        c.recheck = false;
+        return STEP_BREAK;
+    }
+    if (W && ins == 0x0000100f) return STEP_OUT;   // fence.i ends its pass, as on the shader machine: it goes on in the next
+    return STEP_ON;
+}
+
+// A fetch off the page the core last fetched from: its page through the table, or the fault.
+template <bool W>
+static __declspec(noinline) int fetch_page(Core& c) {
+    u32 pc = c.pc, phys;
+    Trap t;
+    if (!page_of(c, pc, FETCH, phys, t)) {
+        // (a worker stops at code its program has not touched yet, as at any other page)
+        if (!W && c.hart == 0) note_stop(c, t);
+        if ((!W && c.hart == 0) || !mc_fault(c, t)) take_trap(c, t.cause, t.value, pc);
+        c.clock++;
+        return STEP_BREAK;
+    }
+    if (phys - RAM_BASE >= RAM_SIZE) { take_trap(c, 1, pc, pc); c.clock++; return STEP_BREAK; }
+    c.fetch_vpn = pc >> 12;
+    c.fetch_host = ramp + ((phys & ~0xfffu) - RAM_BASE);
+    return STEP_ON;
+}
+
+// A load or store of the fast loop that faulted.
+template <bool W>
+static __declspec(noinline) int fault_step(Core& c, const Trap& t) {
+    if (!W && c.hart == 0) note_stop(c, t);
+    if ((!W && c.hart == 0) || !mc_fault(c, t)) take_trap(c, t.cause, t.value, c.pc);
+    return STEP_BREAK;
+}
+
+// ---- the fast loop: a function an instruction kind, each ending in a jump to the next one's ----
+//
+// Every handler ends by fetching the next instruction and jumping to its kind's handler (a tail
+// call), so each kind has a dispatch of its own for the branch predictor. The state goes in the
+// four argument registers: the run's frame, the registers, the pc with the instructions still
+// allowed above it, and the instruction. W as for general_step.
+struct Run;
+typedef void (*Handler)(Run* R, u32* x, u64 st, u32 ins);
+struct Run {
+    Core* c;
+    const Handler* table;     // the handlers by kind
+    const uint8_t* kinds;     // the kind by step_key
+    const uint8_t* code;      // the fetch's page in RAM, and its number
+    u32 vpn;
+    u64 limit;                // the core's clock when the run is over
+    uint8_t* mem;             // RAM, by physical address
+    const TlbEntry *reads, *writes;
+    u32 rgen, wgen;           // the tags' generation, or GEN_NONE when memory is watched
+    bool plain_loads, plain_stores;
+    u64 bands;                // 4 MB bands stored to
+    int r;                    // how it ended (STEP_*)
+};
+static __forceinline u32 step_key(u32 ins) {
+    return (ins & 0x7f) | (ins >> 5 & 0x380) | (ins >> 15 & 0x400) | (ins >> 19 & 0x800) | ((ins & 0xbc000000) != 0) << 12;
+}
+static __forceinline void run_reload(Run* R) {
+    Core& c = *R->c;
+    R->vpn = c.fetch_vpn, R->code = c.fetch_host;
+    R->reads = c.tlb[c.priv][READ], R->writes = c.tlb[c.priv][WRITE];
+    R->rgen = R->plain_loads ? c.genbits : GEN_NONE, R->wgen = R->plain_stores ? c.genbits : GEN_NONE;
+}
+// (the core's pc and clock from the run's; the instruction now running is counted)
+static __forceinline void run_sync(Run* R, u64 st) { R->c->pc = (u32)st, R->c->clock = R->limit - (st >> 32); }
+
+#define HANDLER(name) template <bool W> static void name(Run* R, u32* x, u64 st, u32 ins)
+#define PC ((u32)st)
+#define RD ((ins >> 7) & 31)
+#define RS1 x[(ins >> 15) & 31]
+#define RS2 x[(ins >> 20) & 31]
+#define IMM_I ((i32)ins >> 20)
+#define IMM_S (((i32)ins >> 25 << 5) | ((ins >> 7) & 31))
+#define IMM_B (((i32)ins >> 31 << 12) | ((ins << 4) & 0x800) | ((ins >> 20) & 0x7e0) | ((ins >> 7) & 0x1e))
+#define IMM_J (((i32)ins >> 31 << 20) | (ins & 0xff000) | ((ins >> 9) & 0x800) | ((ins >> 20) & 0x7fe))
+// on to the instruction at npc: counted, fetched, its handler jumped to (the edge when the run is
+// over or the pc left the page)
+#define NEXT(npc)                                                                              \
+    {                                                                                          \
+        u64 s_ = (st & 0xffffffff00000000ull) | (u32)(npc);                                    \
+        if (s_ < (1ull << 32) || ((u32)s_ >> 12) != R->vpn) {                                  \
+            [[msvc::musttail]] return run_edge<W>(R, x, s_, 0);                                \
+        }                                                                                      \
+        s_ -= 1ull << 32;                                                                      \
+        u32 i_;                                                                                \
+        memcpy(&i_, R->code + (s_ & 0xfff), 4);                                                \
+        [[msvc::musttail]] return R->table[R->kinds[step_key(i_)]](R, x, s_, i_);             \
+    }
+#define SET(v) (x[RD] = (v), x[0] = 0)
+
+// The run's start, its end, and a fetch off the page.
+template <bool W>
+static void run_edge(Run* R, u32* x, u64 st, u32 ins) {
+    (void)ins;
+    if (st < (1ull << 32)) { run_sync(R, st); R->r = STEP_ON; return; }
+    if (((u32)st >> 12) != R->vpn) {
+        run_sync(R, st);
+        int r = fetch_page<W>(*R->c);
+        run_reload(R);
+        if (r != STEP_ON) { R->r = r; return; }
+    }
+    st -= 1ull << 32;
+    u32 i_;
+    memcpy(&i_, R->code + (st & 0xfff), 4);
+    [[msvc::musttail]] return R->table[R->kinds[step_key(i_)]](R, x, st, i_);
+}
+
+HANDLER(h_general) {
+    Core& c = *R->c;
+    if (W && (ins == 0x0100000f || ins == 0x00100073)) {   // (neither is counted)
+        Worker& w = workers[c.hart];
+        run_sync(R, st);
+        c.clock--;
+        if (ins == 0x0100000f) {   // pause: asleep until the job word changes
+            // (from what it was when the pass began, as the shader machine's worker reads it: a
+            // job the first core posted in this very pass is a change, not what it sleeps on)
+            w.job_seen = w.job_was;
+            w.state = MC_ASLEEP;
+            c.pc += 4;
+        } else w.state = MC_PARKED;   // ebreak parks it
+        R->r = STEP_OUT;
+        return;
+    }
+    run_sync(R, st);
+    int r = general_step<W>(c, ins);
+    run_reload(R);
+    if (r != STEP_ON || (!W && c.end_pass)) { R->r = r; return; }
+    [[msvc::musttail]] return run_edge<W>(R, x, (R->limit - c.clock) << 32 | c.pc, 0);
+}
+
+HANDLER(h_lui) { SET(ins & 0xfffff000); NEXT(PC + 4); }
+HANDLER(h_auipc) { SET(PC + (ins & 0xfffff000)); NEXT(PC + 4); }
+HANDLER(h_jal) { u32 to = PC + IMM_J; SET(PC + 4); NEXT(to); }
+HANDLER(h_jalr) { u32 to = (RS1 + IMM_I) & ~1u; SET(PC + 4); NEXT(to); }
+HANDLER(h_beq) { NEXT(RS1 == RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_bne) { NEXT(RS1 != RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_blt) { NEXT((i32)RS1 < (i32)RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_bge) { NEXT((i32)RS1 >= (i32)RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_bltu) { NEXT(RS1 < RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_bgeu) { NEXT(RS1 >= RS2 ? PC + IMM_B : PC + 4); }
+
+// Loads and stores: a hit in the core's table in RAM here, the rest the whole way (load(), store()).
+template <bool W, int N, bool SIGNED, bool FLOAT>
+static void h_load_slow(Run* R, u32* x, u64 st, u32 ins) {
+    Core& c = *R->c;
+    u32 v;
+    Trap t;
+    run_sync(R, st);
+    if (!load(c, RS1 + IMM_I, N, v, t)) { R->r = fault_step<W>(c, t); return; }
+    if (FLOAT) c.f[RD] = v;
+    else SET(!SIGNED ? v : N == 1 ? (u32)(i32)(int8_t)v : (u32)(i32)(int16_t)v);
+    NEXT(PC + 4);
+}
+template <bool W, int N, bool SIGNED, bool FLOAT = false>
+static void h_load(Run* R, u32* x, u64 st, u32 ins) {
+    u32 va = RS1 + IMM_I;
+    const TlbEntry& e = R->reads[(va >> 12) & (TLB_N - 1)];
+    if ((N == 1 || (va & 0xfff) <= 0x1000u - N) && e.tag == ((va >> 12) | R->rgen)) {
+        const uint8_t* p = R->mem + e.ppage + (va & 0xfff);
+        u32 v;
+        if (N == 4) memcpy(&v, p, 4);
+        else if (N == 2) { uint16_t h; memcpy(&h, p, 2); v = SIGNED ? (u32)(i32)(int16_t)h : h; }
+        else v = SIGNED ? (u32)(i32)(int8_t)*p : *p;
+        if (FLOAT) R->c->f[RD] = v;
+        else SET(v);
+        NEXT(PC + 4);
+    }
+    [[msvc::musttail]] return h_load_slow<W, N, SIGNED, FLOAT>(R, x, st, ins);
+}
+template <bool W, int N, bool FLOAT>
+static void h_store_slow(Run* R, u32* x, u64 st, u32 ins) {
+    Core& c = *R->c;
+    Trap t;
+    run_sync(R, st);
+    if (!store(c, RS1 + IMM_S, N, FLOAT ? c.f[(ins >> 20) & 31] : RS2, t)) {
+        if (c.wc_full) {   // (the instruction is the next pass's)
+            c.clock--;
+            if (W) c.wc_full = false;
+            R->r = W ? STEP_OUT : STEP_BREAK;
+            return;
+        }
+        R->r = fault_step<W>(c, t);
+        return;
+    }
+    NEXT(PC + 4);
+}
+template <bool W, int N, bool FLOAT>
+static void h_store(Run* R, u32* x, u64 st, u32 ins) {
+    u32 va = RS1 + IMM_S;
+    const TlbEntry& e = R->writes[(va >> 12) & (TLB_N - 1)];
+    if ((N == 1 || (va & 0xfff) <= 0x1000u - N) && e.tag == ((va >> 12) | R->wgen)) {
+        uint8_t* p = R->mem + e.ppage + (va & 0xfff);
+        u32 v = FLOAT ? R->c->f[(ins >> 20) & 31] : RS2;
+        R->bands |= 1ull << (((e.ppage - RAM_BASE) >> 22) & 63);
+        if (N == 4) memcpy(p, &v, 4);
+        else if (N == 2) { uint16_t h = (uint16_t)v; memcpy(p, &h, 2); }
+        else *p = (uint8_t)v;
+        NEXT(PC + 4);
+    }
+    [[msvc::musttail]] return h_store_slow<W, N, FLOAT>(R, x, st, ins);
+}
+
+HANDLER(h_addi) { SET(RS1 + IMM_I); NEXT(PC + 4); }
+HANDLER(h_slti) { SET((i32)RS1 < IMM_I); NEXT(PC + 4); }
+HANDLER(h_sltiu) { SET(RS1 < (u32)IMM_I); NEXT(PC + 4); }
+HANDLER(h_xori) { SET(RS1 ^ (u32)IMM_I); NEXT(PC + 4); }
+HANDLER(h_ori) { SET(RS1 | (u32)IMM_I); NEXT(PC + 4); }
+HANDLER(h_andi) { SET(RS1 & (u32)IMM_I); NEXT(PC + 4); }
+HANDLER(h_slli) { SET(RS1 << ((ins >> 20) & 31)); NEXT(PC + 4); }
+HANDLER(h_srli) { SET(RS1 >> ((ins >> 20) & 31)); NEXT(PC + 4); }
+HANDLER(h_srai) { SET((u32)((i32)RS1 >> ((ins >> 20) & 31))); NEXT(PC + 4); }
+HANDLER(h_add) { SET(RS1 + RS2); NEXT(PC + 4); }
+HANDLER(h_sub) { SET(RS1 - RS2); NEXT(PC + 4); }
+HANDLER(h_sll) { SET(RS1 << (RS2 & 31)); NEXT(PC + 4); }
+HANDLER(h_slt) { SET((i32)RS1 < (i32)RS2); NEXT(PC + 4); }
+HANDLER(h_sltu) { SET(RS1 < RS2); NEXT(PC + 4); }
+HANDLER(h_xor) { SET(RS1 ^ RS2); NEXT(PC + 4); }
+HANDLER(h_srl) { SET(RS1 >> (RS2 & 31)); NEXT(PC + 4); }
+HANDLER(h_sra) { SET((u32)((i32)RS1 >> (RS2 & 31))); NEXT(PC + 4); }
+HANDLER(h_or) { SET(RS1 | RS2); NEXT(PC + 4); }
+HANDLER(h_and) { SET(RS1 & RS2); NEXT(PC + 4); }
+HANDLER(h_mul) { SET(RS1 * RS2); NEXT(PC + 4); }
+HANDLER(h_mulh) { SET((u32)(((i64)(i32)RS1 * (i64)(i32)RS2) >> 32)); NEXT(PC + 4); }
+HANDLER(h_mulhsu) { SET((u32)(((i64)(i32)RS1 * (i64)(u64)RS2) >> 32)); NEXT(PC + 4); }
+HANDLER(h_mulhu) { SET((u32)(((u64)RS1 * (u64)RS2) >> 32)); NEXT(PC + 4); }
+HANDLER(h_div) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : (a == 0x80000000u && b == 0xffffffffu) ? a : (u32)((i32)a / (i32)b)); NEXT(PC + 4); }
+HANDLER(h_divu) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : a / b); NEXT(PC + 4); }
+HANDLER(h_rem) { u32 a = RS1, b = RS2; SET(b == 0 ? a : (a == 0x80000000u && b == 0xffffffffu) ? 0 : (u32)((i32)a % (i32)b)); NEXT(PC + 4); }
+HANDLER(h_remu) { u32 a = RS1, b = RS2; SET(b == 0 ? a : a % b); NEXT(PC + 4); }
+
+// The floats (docs/machine/fpu.md) as the general step makes them, when they are on.
+#define FLOATS_ON() if (!(R->c->mstatus & 0x6000)) { [[msvc::musttail]] return h_general<W>(R, x, st, ins); }
+HANDLER(h_flw) { FLOATS_ON(); [[msvc::musttail]] return h_load<W, 4, false, true>(R, x, st, ins); }
+HANDLER(h_fsw) { FLOATS_ON(); [[msvc::musttail]] return h_store<W, 4, true>(R, x, st, ins); }
+#define FMA(name, x_, y_, z_)                                                                        \
+    HANDLER(name) {                                                                                  \
+        if (!(R->c->mstatus & 0x6000) || (ins >> 25 & 3)) { [[msvc::musttail]] return h_general<W>(R, x, st, ins); } \
+        u32* f = R->c->f;                                                                            \
+        float a = fl(f[(ins >> 15) & 31]), b = fl(f[(ins >> 20) & 31]), z = fl(f[ins >> 27]);        \
+        f[RD] = canon(fmaf(x_, y_, z_));                                                             \
+        NEXT(PC + 4);                                                                                \
+    }
+FMA(h_fmadd, a, b, z)
+FMA(h_fmsub, a, b, -z)
+FMA(h_fnmsub, -a, b, z)
+FMA(h_fnmadd, -a, b, -z)
+#undef FMA
+HANDLER(h_fop) {
+    FLOATS_ON();
+    Core& c = *R->c;
+    u32* f = c.f;
+    u32 fa = f[(ins >> 15) & 31], fb = f[(ins >> 20) & 31], f3 = (ins >> 12) & 7, rs2 = (ins >> 20) & 31, rd = RD;
+    float a = fl(fa), b = fl(fb);
+    switch (ins >> 25) {
+    case 0x00: f[rd] = canon(a + b); break;
+    case 0x04: f[rd] = canon(a - b); break;
+    case 0x08: f[rd] = canon(a * b); break;
+    case 0x0c: f[rd] = canon(a / b); break;
+    case 0x2c: f[rd] = canon(sqrtf(a)); break;
+    case 0x10: f[rd] = f3 == 0 ? (fa & 0x7fffffff) | (fb & 0x80000000) : f3 == 1 ? (fa & 0x7fffffff) | (~fb & 0x80000000) : fa ^ (fb & 0x80000000); break;
+    case 0x14: {
+        bool an = is_nan(fa), bn = is_nan(fb);
+        if (an && bn) f[rd] = 0x7fc00000;
+        else if (an) f[rd] = fb;
+        else if (bn) f[rd] = fa;
+        else if (a == b) f[rd] = f3 == 0 ? (fa | fb) : (fa & fb);   // -0 is under +0
+        else f[rd] = (f3 == 0) == (a < b) ? fa : fb;
+        break;
+    }
+    case 0x60: {
+        u32 rm = f3 == 7 ? (c.fcsr >> 5) & 7 : f3, v = to_int(bits(round_mode(a, rm)), rs2 == 1);
+        SET(is_nan(fa) ? (rs2 == 1 ? 0xffffffffu : 0x7fffffffu) : v);
+        break;
+    }
+    case 0x68: f[rd] = bits(rs2 == 1 ? (float)RS1 : (float)(i32)RS1); break;
+    case 0x70: SET(f3 == 0 ? fa : fclass(fa)); break;
+    case 0x78: f[rd] = RS1; break;
+    case 0x50: SET(f3 == 2 ? a == b : f3 == 1 ? a < b : a <= b); break;
+    default: [[msvc::musttail]] return h_general<W>(R, x, st, ins);
+    }
+    NEXT(PC + 4);
+}
+
+// The handlers by kind, for a worker (W) and for any core.
+template <bool W>
+static const Handler* handler_table() {
+    static const Handler table[] = {
+        h_general<W>, h_lui<W>, h_auipc<W>, h_jal<W>, h_jalr<W>, h_beq<W>, h_bne<W>, h_blt<W>, h_bge<W>, h_bltu<W>, h_bgeu<W>,
+        h_load<W, 1, true>, h_load<W, 2, true>, h_load<W, 4, false>, h_load<W, 1, false>, h_load<W, 2, false>,
+        h_store<W, 1, false>, h_store<W, 2, false>, h_store<W, 4, false>,
+        h_addi<W>, h_slti<W>, h_sltiu<W>, h_xori<W>, h_ori<W>, h_andi<W>, h_slli<W>, h_srli<W>, h_srai<W>,
+        h_add<W>, h_sub<W>, h_sll<W>, h_slt<W>, h_sltu<W>, h_xor<W>, h_srl<W>, h_sra<W>, h_or<W>, h_and<W>,
+        h_mul<W>, h_mulh<W>, h_mulhsu<W>, h_mulhu<W>, h_div<W>, h_divu<W>, h_rem<W>, h_remu<W>,
+        h_flw<W>, h_fsw<W>, h_fmadd<W>, h_fmsub<W>, h_fnmsub<W>, h_fnmadd<W>, h_fop<W>,
+    };
+    static_assert(sizeof table / sizeof table[0] == K_COUNT, "a handler for every kind");
+    return table;
+}
+
+// Up to n instructions of a core: how it ended (STEP_*).
+template <bool W>
+static int run_some(Core& c, u64 n, const uint8_t* kinds) {
+    Run R;
+    R.c = &c;
+    R.table = handler_table<W>();
+    R.kinds = kinds;
+    R.limit = c.clock + n;
+    R.mem = ramp - RAM_BASE;
+    R.plain_loads = !races_on && !prof::mem_on, R.plain_stores = R.plain_loads && !wc_on;
+    R.bands = 0;
+    R.r = STEP_ON;
+    run_reload(&R);
+    run_edge<W>(&R, c.x, n << 32 | c.pc, 0);
+    c.dirty |= R.bands;
+    return R.r;
+}
+#undef HANDLER
+#undef PC
+#undef RD
+#undef RS1
+#undef RS2
+#undef IMM_I
+#undef IMM_S
+#undef IMM_B
+#undef IMM_J
+#undef NEXT
+#undef SET
+#undef FLOATS_ON
+
+// The instructions that are always the general step's: with RVC_CALLS, RVC_PROF or RVC_CPU_LAST
+// every instruction is, for their tables.
+static const uint8_t* step_kinds() {
+    static const uint8_t all_general[8192] = {};
+    if (!step_kinds_made) make_step_kinds();
+    return calls_on || prof::on || keep_last ? all_general : step_kind[zb_on];
+}
+
+static u64 run(Core& c, u64 budget) {
+    const uint8_t* kinds = step_kinds();
+    u64 done = 0;
+    c.end_pass = false;
+    while (done < budget && !c.end_pass) {
+        u32 irq = pending_interrupt(c);
+        if (irq) {
+            c.waiting = false;
+            c.mip &= irq == 0x80000005u ? ~0u : ~(1u << (irq & 31));   // (the timer's stays until a new deadline)
+            take_trap(c, irq, 0, c.pc);
+        }
+        // wfi ends when an interrupt is pending and enabled, taken or not (Linux waits with
+        // interrupts off and switches them on afterwards)
+        if (c.waiting && (c.mip & c.mie & 0x222)) c.waiting = false;
+        if (c.waiting) break;
+        // a run with no interrupt check: until the timer could fire, at most
+        u64 chunk = budget - done, before = c.clock;
+        if (chunk > 256) chunk = 256;
+        run_some<false>(c, chunk, kinds);
+        done += c.clock - before;
+    }
+    return done;
+}
+
+// A worker's pass once it runs: in user mode run_some's own, else (it took a trap into the
+// supervisor) one instruction of run() at a time with the checks in front, as it always was.
+static u64 worker_exec(Core& c, u64 budget) {
+    const uint8_t* kinds = step_kinds();
+    Worker& w = workers[c.hart];
+    u64 done = 0;
+    while (done < budget && w.state == MC_RUNNING) {
+        if (c.priv == PRIV_U) {
+            u64 before = c.clock;
+            int r = run_some<true>(c, budget - done, kinds);
+            done += c.clock - before;
+            if (r == STEP_OUT) break;
+            continue;
+        }
+        u32 pc = c.pc, phys, ins = 0;
+        Trap t;
+        if (page_of(c, pc, FETCH, phys, t) && phys - RAM_BASE < RAM_SIZE) memcpy(&ins, &ram[phys - RAM_BASE], 4);
+        if (ins == 0x0100000f) { w.job_seen = w.job_was; w.state = MC_ASLEEP; c.pc += 4; break; }
+        if (ins == 0x00100073) { w.state = MC_PARKED; break; }
+        if (ins == 0x0000100f) { done += run(c, 1); break; }
+        done += run(c, 1);
+        if (c.wc_full) { c.wc_full = false; break; }
+    }
+    return done;
+}
+
+
 bool mc_fault(Core& c, const Trap& t) {
     Worker& w = workers[c.hart];
     u32 seen = word(mc_resume_at(c.hart));
@@ -1015,7 +1533,7 @@ bool mc_fault(Core& c, const Trap& t) {
     word(mc_fault_at(c.hart) + 8) = t.value;
     word(mc_fault_at(c.hart) + 12) = c.pc;
     word(mc_fault_at(c.hart)) = seen + 1;
-    dirty(MC_MBOX);
+    dirty(c, MC_MBOX);
     w.state = call ? MC_CALLING : MC_FAULTED;
     w.seen = seen;
     c.end_pass = true;
@@ -1039,16 +1557,20 @@ static void mbox_keep() {
 static bool bare_workers = !getenv("RVC_BARE_WORKERS") || atoi(getenv("RVC_BARE_WORKERS")) != 0;
 static inline u32 mbox(int hart, int j, u32 now) { return races_on ? mbox_was[hart][j] : now; }
 
-static u64 run_worker(Core& c, u64 budget) {
+static u64 worker_instr = 0;   // every worker's instructions so far
+
+// Whether a worker runs in this pass: its mailbox read and its state moved on (a start, a job,
+// an answer), as the shader machine's worker does as its pass begins.
+static bool worker_wake(Core& c) {
     Worker& w = workers[c.hart];
-    if (!geometry[c.hart]) return 0;
+    if (!geometry[c.hart]) return false;
     u32 start = mbox(c.hart, 0, word(mc_start_at(c.hart)));
-    if (start == MC_STOP) { w.state = MC_PARKED; c.started = false; return 0; }
+    if (start == MC_STOP) { w.state = MC_PARKED; c.started = false; return false; }
     if (w.state == MC_PARKED) {
-        if (start != MC_START) return 0;
+        if (start != MC_START) return false;
         // a start: its texel is pc, stack, page table; a0 is the core's number
         u32 pc = mbox(c.hart, 1, word(mc_start_at(c.hart) + 4));
-        if (pc == w.start_seen && c.started) return 0;
+        if (pc == w.start_seen && c.started) return false;
         memset(c.x, 0, sizeof c.x);
         c.pc = pc;
         c.x[2] = mbox(c.hart, 2, word(mc_start_at(c.hart) + 8));
@@ -1063,14 +1585,14 @@ static u64 run_worker(Core& c, u64 budget) {
         w.state = MC_RUNNING;
     }
     if (w.state == MC_ASLEEP) {
-        if (mbox(c.hart, 4, word(mc_job_at(c.hart))) == w.job_seen) return 0;
+        if (mbox(c.hart, 4, word(mc_job_at(c.hart))) == w.job_seen) return false;
         // (between two jobs its program may have unmapped memory and mapped other there: the
         // shader machine's worker begins every pass with empty first-level TLBs)
         c.flush();
         w.state = MC_RUNNING;
     }
     if (w.state == MC_FAULTED || w.state == MC_CALLING) {
-        if ((mbox(c.hart, 5, word(mc_resume_at(c.hart))) & 0xffffff) == (w.seen & 0xffffff)) return 0;
+        if ((mbox(c.hart, 5, word(mc_resume_at(c.hart))) & 0xffffff) == (w.seen & 0xffffff)) return false;
         if (w.state == MC_CALLING) {
             c.x[10] = mbox(c.hart, 6, word(mc_resume_at(c.hart) + 4));
             c.pc += 4;
@@ -1078,33 +1600,161 @@ static u64 run_worker(Core& c, u64 budget) {
         c.flush();   // core 0 has put a page there
         w.state = MC_RUNNING;
     }
-    u64 before = c.clock;
-    u64 done = 0;
-    while (done < budget && w.state == MC_RUNNING) {
-        u32 pc = c.pc, phys, ins = 0;
-        Trap t;
-        if (page_of(c, pc, FETCH, phys, t) && phys - RAM_BASE < RAM_SIZE) memcpy(&ins, &ram[phys - RAM_BASE], 4);
-        if (ins == 0x0100000f) {   // pause: asleep until the job word changes
-            // (from what it was when the pass began, as the shader machine's worker reads it: a
-            // job the first core posted in this very pass is a change, not what it sleeps on)
-            w.job_seen = w.job_was;
-            w.state = MC_ASLEEP;
-            c.pc += 4;
-            break;
-        }
-        if (ins == 0x00100073) {   // ebreak parks it
-            w.state = MC_PARKED;
-            break;
-        }
-        if (ins == 0x0000100f) {   // fence.i ends its pass, as on the shader machine: it goes on in the next
-            done += run(c, 1);
-            break;
-        }
-        done += run(c, 1);
-        if (c.wc_full) { c.wc_full = false; break; }
+    return true;
+}
+
+static u64 run_worker(Core& c, u64 budget) {
+    if (!worker_wake(c)) return 0;
+    return c.copying ? 0 : worker_exec(c, budget);   // (waiting for its copy: copy_pass)
+}
+
+// ---- the workers on host threads (--threads, RVC_THREADS) ----
+//
+// After core 0's part of a pass, the workers that run in it are shared out among this many host
+// threads, each worker's whole pass on one of them; a store is seen by the other threads when
+// the host makes it, not in core order as with one thread. Under RVC_RACES or RVC_PROF
+// (which keep tables of every core's accesses) the workers run one after another.
+static int pool_size = 0;   // 0: not yet decided
+static std::vector<std::thread> pool;
+static std::atomic<u64> pool_ticket{0};    // the pass's number << 32 | the next worker of its list to take
+static std::atomic<u32> pool_pass{0};      // the helpers sleep on it
+static std::atomic<int> pool_left{0};      // workers of the pass not yet finished
+static int pool_list[2][256];
+static std::atomic<u64> pool_slot[2];   // a list's pass << 32 | its length
+static u64 pool_done[256];
+static u32 pool_budget;
+static const u64 POOL_LEAST = 16384;   // the workers' instructions in a pass worth the threads
+
+static int threads_wanted() {
+    if (const char* v = getenv("RVC_THREADS"); v && *v) return std::max(1, std::min(64, atoi(v)));
+    unsigned n = std::thread::hardware_concurrency();
+    return (int)std::max(1u, std::min(8u, n / 2));
+}
+
+static void pool_take() {
+    for (;;) {
+        u64 ticket = pool_ticket.fetch_add(1, std::memory_order_acq_rel);
+        u32 pass = (u32)(ticket >> 32), i = (u32)ticket;
+        u64 slot = pool_slot[pass & 1].load(std::memory_order_acquire);
+        if ((u32)(slot >> 32) != pass || i >= (u32)slot) return;   // (a ticket of a pass that is over)
+        int hart = pool_list[pass & 1][i];
+        pool_done[hart] = worker_exec(cores[(size_t)hart], pool_budget);
+        pool_left.fetch_sub(1, std::memory_order_acq_rel);
     }
-    (void)before;
-    return done;
+}
+
+static void pool_helper() {
+    u32 seen = pool_pass.load();
+    for (;;) {
+        // spin a while (the next pass's workers come after core 0's part), then sleep
+        u64 until = __rdtsc() + 100000;
+        u32 now;
+        while ((now = pool_pass.load(std::memory_order_acquire)) == seen) {
+            if (__rdtsc() < until) { _mm_pause(); continue; }
+            WaitOnAddress(&pool_pass, &seen, sizeof seen, INFINITE);
+        }
+        seen = now;
+        pool_take();
+    }
+}
+
+// Runs the listed workers' passes on the threads; the instructions each ran in pool_done.
+static void pool_run(const int* list, int n, u32 budget) {
+    static u32 pass = 0;
+    pass++;
+    int* to = pool_list[pass & 1];
+    memcpy(to, list, sizeof(int) * (size_t)n);
+    pool_slot[pass & 1].store((u64)pass << 32 | (u32)n, std::memory_order_release);
+    pool_budget = budget;
+    pool_left.store(n, std::memory_order_relaxed);
+    workers_threaded = true;
+    pool_ticket.store((u64)pass << 32, std::memory_order_release);
+    pool_pass.store(pass, std::memory_order_release);
+    WakeByAddressAll(&pool_pass);
+    pool_take();
+    while (pool_left.load(std::memory_order_acquire) != 0) _mm_pause();
+    workers_threaded = false;
+}
+
+// The workers' part of a pass; the most instructions one of them ran.
+static u64 workers_pass(u32 ticks) {
+    if (pool_size == 0) pool_size = threads_wanted();
+    u64 most = 0;
+    if (pool_size == 1 || races_on || prof::on || cores.size() < 3) {
+        for (size_t i = 1; i < cores.size(); i++) {
+            u64 n = run_worker(cores[i], ticks);
+            worker_instr += n;
+            if (n > most) most = n;
+        }
+        return most;
+    }
+    // (threads only when the workers' last pass was long enough to be worth waking them)
+    static u64 last = 0;
+    int list[256], n = 0;
+    for (size_t i = 1; i < cores.size(); i++)
+        if (worker_wake(cores[i]) && !cores[i].copying) list[n++] = (int)i;
+    if (n > 1 && last >= POOL_LEAST) {
+        while ((int)pool.size() < pool_size - 1) pool.emplace_back(pool_helper), pool.back().detach();
+        pool_run(list, n, ticks);
+    } else {
+        for (int k = 0; k < n; k++) pool_done[list[k]] = worker_exec(cores[(size_t)list[k]], ticks);
+    }
+    last = 0;
+    for (int k = 0; k < n; k++) {
+        u64 d = pool_done[list[k]];
+        last += d;
+        if (d > most) most = d;
+    }
+    worker_instr += last;
+    return most;
+}
+
+// An atomic, lr or sc of a worker while the workers run on several threads: made on the host's
+// word at once, so that two workers' never lose each other's (an sc succeeds on its reservation
+// alone, as with one thread). False: the general step makes it (not aligned, not in RAM).
+static bool amo_threaded(Core& c, u32 kind, u32 a, u32 b, u32& result, Trap& t, bool& illegal) {
+    if (a & 3) return false;
+    u32 pr, pw;
+    if (kind != 3) {   // (an sc does not read: as store() alone)
+        if (!page_of(c, a, READ, pr, t)) return true;
+        if (pr - RAM_BASE >= RAM_SIZE) return false;
+    }
+    if (kind == 2) {   // lr
+        result = c.reserved_value = *(volatile u32*)(ramp + (pr - RAM_BASE));
+        c.reserved = true, c.reservation = a;
+        return true;
+    }
+    static const u32 kinds = 1u << 0 | 1u << 1 | 1u << 3 | 1u << 4 | 1u << 8 | 1u << 12 | 1u << 16 | 1u << 20 | 1u << 24 | 1u << 28;
+    if (!((kinds >> kind) & 1)) { illegal = true; return true; }
+    if (kind == 3 && !(c.reserved && c.reservation == a)) { result = 1; c.reserved = false; return true; }
+    if (!page_of(c, a, WRITE, pw, t)) return true;
+    if (pw - RAM_BASE >= RAM_SIZE) return false;
+    volatile long* p = (volatile long*)(ramp + (pw - RAM_BASE));
+    for (;;) {
+        u32 v = (u32)*p, n = b;
+        switch (kind) {
+        case 0: n = v + b; break;
+        case 4: n = v ^ b; break;
+        case 12: n = v & b; break;
+        case 8: n = v | b; break;
+        case 16: n = (i32)v < (i32)b ? v : b; break;
+        case 20: n = (i32)v > (i32)b ? v : b; break;
+        case 24: n = v < b ? v : b; break;
+        case 28: n = v > b ? v : b; break;
+        }
+        if (wc_on && (u32)*p != n && !wc_take(c.hart, pw)) {   // (as store() finds its write cache full)
+            c.wc_full = c.end_pass = true;
+            _InterlockedIncrement64((volatile long long*)&wc_full_passes[1]);
+            return true;
+        }
+        if (kind == 3) {
+            _InterlockedExchange(p, (long)n);
+            dirty(c, pw);
+            c.reserved = false, result = 0;
+            return true;
+        }
+        if ((u32)_InterlockedCompareExchange(p, (long)n, (long)v) == v) { result = v; dirty(c, pw); return true; }
+    }
 }
 
 // ---- the host's part of a pass: the control words ----
@@ -1202,7 +1852,7 @@ static void gpu_copy(u32 submit) {
     for (u32 y = 0; y < height; y++)
         for (u32 x = 0; x < width; x++) {
             u32 at = first + 4 * (y * row + x);
-            if (at < 0x86000000u || at - RAM_BASE >= RAM_SIZE) continue;   // (below anything a GPU program may own)
+            if (at - 0x86000000u >= 0x1e00000u) continue;   // (outside what a GPU program may own)
             word(at) = 0x00c0ffeeu;
             dirty(at);
         }
@@ -1326,8 +1976,9 @@ static bool machine_boot(const std::string& image, int count) {
     if (!read_file(image + "/linux_payload.bin", payload) || !read_file(image + "/rootfs.bin", rom)) return false;
     ram.assign(RAM_SIZE, 0);
     ramw = (u32*)ram.data();
+    ramp = ram.data();
     memcpy(ram.data(), payload.data(), payload.size() < RAM_SIZE ? payload.size() : RAM_SIZE);
-    dirty_bands = 0xffffffffu;
+    dirty_bands = ~0ull;
     count = count < 1 ? 1 : count > 256 ? 256 : count;
     cores.clear();
     workers.clear();
@@ -1341,21 +1992,20 @@ static bool machine_boot(const std::string& image, int count) {
 }
 
 // One pass of every core, after the host's part of it; the most instructions a core ran.
-static u64 worker_instr = 0;
 static u64 machine_pass(u32 ticks) {
     control_pass();
     mtime_now = (u64)(guest_seconds * 5000.0);
     for (size_t i = 1; i < cores.size(); i++)
         if (geometry[i]) workers[i].job_was = word(mc_job_at((int)i));
     if (races_on) mbox_keep();
-    u64 most = run(cores[0], ticks);
-    for (size_t i = 1; i < cores.size(); i++) {
-        u64 n = run_worker(cores[i], ticks);
-        worker_instr += n;
-        if (n > most) most = n;
-    }
+    if (prof::on) prof::pass_begin();
+    u64 most = cores[0].copying ? 0 : run(cores[0], ticks);
+    most = std::max(most, workers_pass(ticks));
+    copy_pass();
+    for (Core& c : cores) dirty_bands |= c.dirty, c.dirty = 0;
     atom_merge();
     if (races_on) texel_marks.clear(), race_pass++;
+    if (prof::on) prof::pass_end();
     cores[0].wc_full = false;
     wc_pass++;
     frame_no++;
@@ -1364,6 +2014,7 @@ static u64 machine_pass(u32 ticks) {
 
 static void count_mark() {
     count_marked = true;
+    prof::active = prof::on;
     count_at.resize(cores.size());
     for (size_t i = 0; i < cores.size(); i++) count_at[i] = cores[i].clock;
     memcpy(stops_at, stops, sizeof stops);
@@ -1478,6 +2129,7 @@ int main(int argc, char** argv) {
         else if (a == "--net-loss") opt.netLoss = atof(next("--net-loss").c_str());
         else if (a == "--net-delay") opt.netDelay = atof(next("--net-delay").c_str());
         else if (a == "--persist") opt.persist = next("--persist");
+        else if (a == "--threads") pool_size = std::max(1, std::min(64, atoi(next("--threads").c_str())));
         else if (a == "--no-stdin" || a == "--d3d11" || a == "--dxc") {}
         else if (a == "--rvc" || a == "--fixed-dt") next(a.c_str());   // (the shader machine's: taken and ignored)
         else if (a == "--help" || a == "-h") {
@@ -1496,7 +2148,7 @@ int main(int argc, char** argv) {
                    "  --pc-log FILE          core 0's pc at the end of each pass, for tools/pc_profile.py (a small --ticks\n"
                    "  --pc-from T            for finer samples); from when the console has said T\n"
                    "  --ips N --pass-ms M    the guest's clock: a pass takes M ms and its instructions 1/N s each\n"
-                   "  --save-ram FILE        the RAM (128 MB from 0x80000000) as the run ends\n"
+                   "  --save-ram FILE        the RAM (288 MB from 0x80000000) as the run ends\n"
                    "                         (3700000 and 0.25: the harness; the world is about 3100000 and 0.2)\n"
                    "  --pointer-sweep N      the pointer goes round from pass N on\n"
                    "  --pointer-circle X,Y,R round that place of the display, so far from it\n"
@@ -1510,7 +2162,9 @@ int main(int argc, char** argv) {
                    "  --net PORT --net-id N  the network: this machine is 10.0.0.N (1 to 16) and hears UDP port\n"
                    "                         PORT + N; its clock then keeps to this computer's (docs/system/lan.md)\n"
                    "  --net-loss P --net-delay MS   lose P percent of what it sends, hold the rest back MS ms\n"
-                   "  --persist FILE         the file the guest's /persistence is kept in (docs/system/persist.md)\n");
+                   "  --persist FILE         the file the guest's /persistence is kept in (docs/system/persist.md)\n"
+                   "  --threads N            host threads for the worker cores (RVC_THREADS; default half this computer's,\n"
+                   "                         at most 8; 1: one after another, the same every run)\n");
             return 0;
         } else { fprintf(stderr, "rvc_cpu: unknown option %s\n", a.c_str()); return 2; }
     }
@@ -1534,6 +2188,7 @@ int main(int argc, char** argv) {
     races_on = races_file && *races_file;
     atom_merging = !getenv("RVC_COUNT_MERGE") || atoi(getenv("RVC_COUNT_MERGE")) != 0;
     calls_on = calls_file && *calls_file;
+    if (const char* d = getenv("RVC_PROF"); d && *d) prof::ticks = opt.ticks, prof::init(d, cores.size(), opt.countFrom.empty());
     wc_on = getenv("RVC_WCACHE") && atoi(getenv("RVC_WCACHE")) != 0;
     if (wc_on) wcache.resize(cores.size());
     zb_on = getenv("RVC_ZB") && atoi(getenv("RVC_ZB")) != 0;
@@ -1625,7 +2280,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[cpu] write cache: %llu passes of core 0 and %llu of workers ended full (RVC_WCACHE)\n",
                 (unsigned long long)wc_full_passes[0], (unsigned long long)wc_full_passes[1]);
     if (zb_on) fprintf(stderr, "[cpu] Zba and Zbb instructions run (RVC_ZB): %llu\n", (unsigned long long)zb_run);
+    if (copies_long || copy_waits || getenv("RVC_COPY_STATS"))
+        fprintf(stderr, "[cpu] copies from RAM to RAM: %llu, %llu of them over 256 KB (the longest %llu bytes): %llu chunks; cores waited %llu passes\n",
+                (unsigned long long)copies_made.load(), (unsigned long long)copies_long.load(), (unsigned long long)copy_most.load(),
+                (unsigned long long)copy_chunks, (unsigned long long)copy_waits);
     if (calls_on) calls_report(calls_file);
+    if (prof::on) prof::report();
     if (uart_log) fclose(uart_log);
     if (!opt.pcLog.empty()) {
         FILE* f = fopen(opt.pcLog.c_str(), "wb");

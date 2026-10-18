@@ -11,7 +11,7 @@ using VRC.SDKBase;
 using VRC.Udon.Common.Interfaces;
 
 // Runs the machine. Every Unity frame, several rounds of what the harness does per frame:
-// CPUTick and Commit (Machine.shader, drawn with VRCGraphics.Blit between two state textures),
+// CPUTick and Commit (Machine.shader and its cameras, RAM in one texture written in place),
 // a readback of state row 0 and the control words, the GPU's camera drawing the list the
 // guest submitted, and the GPU's control pass. Around that this script does what
 // rvc_harness.cpp does: boots the image and feeds the console and the input device.
@@ -19,17 +19,22 @@ using VRC.Udon.Common.Interfaces;
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class EmuMachine : UdonSharpBehaviour
 {
-    public RenderTexture stateA, stateB;    // 2048 x 4096, four 32-bit words a texel
-    public RenderTexture tickState;         // 2048 x 48: core 0's state rectangle and the workers' bands, after a tick
+    public RenderTexture state;             // 2048 x 9280, four 32-bit words a texel: no pass reads what it draws
+    public RenderTexture tickState;         // 2048 x 64: the state rows after a tick
+    public RenderTexture stage;             // 2048 x 21: what the commit needs of RAM as it was (MachineGather.shader)
+    public RenderTexture window;            // 2048 x 11: the rows the control pass draws, then copies into the state
     public Material tickMaterial;           // MachineTick.shader: CPUTick, on the tick camera's mesh
     // The tick is a camera's pass into eight targets, eight state texels a pixel, and what the
     // cores stored is committed as points by another camera (docs/machine/multicore.md, "In Unity").
     public Camera tickCamera;               // disabled: rendered from here, once a round
     public RenderTexture[] tickTargets;     // eight of 1040 x 32
     public RenderTexture tickDepth;         // the depth buffer a camera with several targets must be given
-    public Camera pointsCamera;             // disabled: rendered from here, twice a round
+    public Camera pointsCamera;             // disabled: rendered from here, twice a round (Commit)
     public Material pointsMaterial;         // MachineCommitPoints.shader, on the points camera's mesh
-    public Material machineMaterial;        // Machine.shader: passes Commit and GPUControl
+    public MeshRenderer pointsRenderer;     // that mesh
+    public Material gatherMaterial;         // MachineGather.shader, on the gather's mesh on the same layer
+    public MeshRenderer gatherRenderer;     // that mesh: the camera draws one of the two at a time
+    public Material machineMaterial;        // Machine.shader: Commit (the state rows), GPUControl, Unpack, WindowBack
     public Material gpuMaterial;            // the GPU mesh's material
     public Material volumeMaterial;         // the holodeck's: the same lists, seen from the room
     public Material volumeMaskMaterial;     // and what marks where they show, which looks whether there is a frame
@@ -90,6 +95,12 @@ public class EmuMachine : UdonSharpBehaviour
     public TextMeshProUGUI workersLabel;
     public float minFrameRate = 45f;   // "steady" gives up instructions before frames come slower than this
     public bool powerOnAtStart;        // off until someone presses Power
+    // A real client's test (docs/system/fetch.md, "In VRChat itself"): with fetchTest on, the
+    // address is loaded as text and as a picture eight seconds after start, and what came is logged.
+    public bool fetchTest;
+    public VRCUrl fetchTestUrl;
+    private float fetchTestAt;
+    private VRCImageDownloader fetchTestImages;
 
     [HideInInspector] public int displayMode, displayWidth, displayHeight;
     [HideInInspector] public bool keyboardOwned;   // a guest program reads the keyboard device
@@ -134,8 +145,8 @@ public class EmuMachine : UdonSharpBehaviour
     private const int InitFrames = 2;
     private const int TicksPerRound = 8192;   // instructions a pass, as the harness's
     private const int MaxRounds = 32;
-    private const int PassCommit = 0, PassControl = 1, PassUnpack = 2;
-    private bool targetsSet;
+    private const int PassCommit = 0, PassControl = 1, PassUnpack = 2, PassWindowBack = 3;
+    private const int CommitPoints = 1 + 258 + 255 * 130 + 1;   // MachineCommitPoints.shader's mesh
     // To compare (docs/machine/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
     // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round;
     // bit 4, a test: that camera in a frame's last round only, whatever comes.
@@ -158,7 +169,6 @@ public class EmuMachine : UdonSharpBehaviour
     private int roundCap = MaxRounds, guardWait, steadyRounds = 1;
     private float smoothDt = 0.011f, carry;
     private float perRound = TicksPerRound;   // instructions a round really ran, lately: many end early
-    private RenderTexture current, other;
     private int initLeft;
     private int requestsSent, requestsDone, ignoreUntil;
     private bool live;                 // rows read back are of the running machine
@@ -230,8 +240,6 @@ public class EmuMachine : UdonSharpBehaviour
 
     void Start()
     {
-        current = stateA;
-        other = stateB;
         for (int i = 0; i < 4; i++) wanted[i] = "";
         linksPanel.SetActive(false);
         linksButton.SetActive(false);
@@ -239,6 +247,7 @@ public class EmuMachine : UdonSharpBehaviour
         if (speedSlider != null) SetBudget(2048 << (int)speedSlider.value);
         ShowLabels();
         if (powerOnAtStart) PowerOn();
+        if (fetchTest && fetchTestUrl != null) SendCustomEventDelayedSeconds(nameof(FetchTestRun), 8f);
         else Say("The computer is off.\r\n\r\nPress the red POWER button on the computer\r\n(the tower by the desk's right end), or \"Power on\" on the panel.\r\n");
     }
 
@@ -276,6 +285,14 @@ public class EmuMachine : UdonSharpBehaviour
         if (steady) targetIps = 125000f * (1 << (int)speedSlider.value);
         else SetBudget(2048 << (int)speedSlider.value);
         ShowLabels();
+    }
+
+    // The speed slider's step (2,048 instructions a frame doubled per step), and setting it from
+    // elsewhere (a classroom tower's slider): the slider's own event applies it.
+    public int SpeedStep() { return speedSlider != null ? Mathf.RoundToInt(speedSlider.value) : 4; }
+    public void SetSpeedStep(int step)
+    {
+        if (speedSlider != null) speedSlider.value = Mathf.Clamp(step, (int)speedSlider.minValue, (int)speedSlider.maxValue);
     }
 
     public void TickChanged()
@@ -399,13 +416,13 @@ public class EmuMachine : UdonSharpBehaviour
 
     private void ShowDisplay()
     {
-        if (current == null) return;
-        displayMaterial.SetTexture("_State", current);
+        if (state == null) return;
+        displayMaterial.SetTexture("_State", state);
         bool theirs = UseRemote();
         displayMaterial.SetVector("_HostPointer", new Vector4(theirs ? remoteX : pointerX, theirs ? remoteY : pointerY,
                                                               theirs || (pointerOn && (!inputAway || pointerOwn)) ? 1 : 0, 0));
         // off: black, as the picture is also the light the display gives the room (LTCGI)
-        if (powered || theirs) VRCGraphics.Blit(current, displayTexture, displayMaterial);
+        if (powered || theirs) VRCGraphics.Blit(state, displayTexture, displayMaterial);
         else VRCGraphics.Blit(blackTexture, displayTexture);
         if (showRemote) return;
         shownWidth = powered ? displayWidth : 0;
@@ -437,11 +454,19 @@ public class EmuMachine : UdonSharpBehaviour
         tickMaterial.SetTexture("_Data_DTB_G", Pick(9));
         tickMaterial.SetTexture("_Data_DTB_B", Pick(10));
         tickMaterial.SetTexture("_Data_DTB_A", Pick(11));
-        // (a copy out of the ROM is committed as points)
+        // (a copy out of the ROM is committed as points, and its edges gathered; RAM starts as points)
         pointsMaterial.SetTexture("_Data_MTD_R", Pick(4));
         pointsMaterial.SetTexture("_Data_MTD_G", Pick(5));
         pointsMaterial.SetTexture("_Data_MTD_B", Pick(6));
         pointsMaterial.SetTexture("_Data_MTD_A", Pick(7));
+        gatherMaterial.SetTexture("_Data_MTD_R", Pick(4));
+        gatherMaterial.SetTexture("_Data_MTD_G", Pick(5));
+        gatherMaterial.SetTexture("_Data_MTD_B", Pick(6));
+        gatherMaterial.SetTexture("_Data_MTD_A", Pick(7));
+        pointsMaterial.SetTexture("_Data_RAM_R", Pick(0));
+        pointsMaterial.SetTexture("_Data_RAM_G", Pick(1));
+        pointsMaterial.SetTexture("_Data_RAM_B", Pick(2));
+        pointsMaterial.SetTexture("_Data_RAM_A", Pick(3));
         gpuMaterial.SetTexture("_Data_MTD_R", Pick(4));
         gpuMaterial.SetTexture("_Data_MTD_G", Pick(5));
         gpuMaterial.SetTexture("_Data_MTD_B", Pick(6));
@@ -479,27 +504,36 @@ public class EmuMachine : UdonSharpBehaviour
         displayMode = 0;
         displayWidth = 0;
         displayHeight = 0;
+        // every pass's textures: none draws into one it reads
+        tickMaterial.SetTexture("_SelfTexture2D", state);
+        machineMaterial.SetTexture("_SelfTexture2D", state);
         machineMaterial.SetTexture("_TickState", tickState);
+        machineMaterial.SetTexture("_Stage", stage);
+        machineMaterial.SetTexture("_Window", window);
+        gatherMaterial.SetTexture("_Ram", state);
+        gatherMaterial.SetTexture("_TickState", tickState);
         pointsMaterial.SetTexture("_TickState", tickState);
-        if (!targetsSet)
+        pointsMaterial.SetTexture("_Stage", stage);
+        pointsMaterial.SetInt("_CommitPoints", CommitPoints);
+        // the tick camera's eight targets, which the unpack pass then reads: bound at every power on,
+        // since a remade render texture (an asset save, a lost device) leaves the camera on the old buffers
+        RenderBuffer[] colours = new RenderBuffer[tickTargets.Length];
+        for (int i = 0; i < tickTargets.Length; i++)
         {
-            // the tick camera's eight targets, which the unpack pass then reads
-            targetsSet = true;
-            RenderBuffer[] colours = new RenderBuffer[tickTargets.Length];
-            for (int i = 0; i < tickTargets.Length; i++)
-            {
-                colours[i] = tickTargets[i].colorBuffer;
-                machineMaterial.SetTexture("_TickOut" + i, tickTargets[i]);
-            }
-            tickCamera.SetTargetBuffers(colours, tickDepth.depthBuffer);
+            colours[i] = tickTargets[i].colorBuffer;
+            machineMaterial.SetTexture("_TickOut" + i, tickTargets[i]);
         }
+        tickCamera.SetTargetBuffers(colours, tickDepth.depthBuffer);
         gpuDrew = true;
         machineMaterial.SetInt("_GpuDrawn", 1);
         gpuBusyUntil = 0f;
         machineMaterial.SetInt("_Init", 1);
         tickMaterial.SetInt("_Init", 1);
+        pointsMaterial.SetInt("_Init", 1);
+        gatherMaterial.SetInt("_Init", 1);
         machineMaterial.SetInt("_InitRaw", 0);
         tickMaterial.SetInt("_InitRaw", 0);
+        pointsMaterial.SetInt("_InitRaw", 0);
         tickMaterial.SetInt("_DoTick", 0);
         tickMaterial.SetInt("_Ticks", ticks);
         machineMaterial.SetInt("_UartInLo", 0);
@@ -589,16 +623,22 @@ public class EmuMachine : UdonSharpBehaviour
         if (zapHead == zapTail) return false;
         int at = (zapHead & 15) * 9;
         zapHead++;
-        machineMaterial.SetInt("_ZapKind", zaps[at]);
-        machineMaterial.SetInt("_ZapX", zaps[at + 1]);
-        machineMaterial.SetInt("_ZapY", zaps[at + 2]);
-        machineMaterial.SetInt("_ZapR", zaps[at + 3]);
-        machineMaterial.SetInt("_ZapWord", zaps[at + 4]);
-        machineMaterial.SetInt("_ZapMaskLo", zaps[at + 5]);
-        machineMaterial.SetInt("_ZapMaskHi", zaps[at + 6]);
-        machineMaterial.SetInt("_ZapSeed", zaps[at + 7]);
-        machineMaterial.SetInt("_ZapZones", zaps[at + 8]);
+        ZapSet(gatherMaterial, at);   // (the square as it was, into the stage)
+        ZapSet(pointsMaterial, at);
         return true;
+    }
+
+    private void ZapSet(Material m, int at)
+    {
+        m.SetInt("_ZapKind", zaps[at]);
+        m.SetInt("_ZapX", zaps[at + 1]);
+        m.SetInt("_ZapY", zaps[at + 2]);
+        m.SetInt("_ZapR", zaps[at + 3]);
+        m.SetInt("_ZapWord", zaps[at + 4]);
+        m.SetInt("_ZapMaskLo", zaps[at + 5]);
+        m.SetInt("_ZapMaskHi", zaps[at + 6]);
+        m.SetInt("_ZapSeed", zaps[at + 7]);
+        m.SetInt("_ZapZones", zaps[at + 8]);
     }
 
     // ---- a watching player's hands (EmuShareHub), and this player's own at their classroom place ----
@@ -936,8 +976,26 @@ public class EmuMachine : UdonSharpBehaviour
         ShowLinks();
     }
 
+    public void FetchTestRun()
+    {
+        fetchTestAt = Time.time;
+        Debug.Log("[FetchTest] loading " + fetchTestUrl.Get() + " as text and as a picture");
+        VRCStringDownloader.LoadUrl(fetchTestUrl, (IUdonEventReceiver)this);
+        fetchTestImages = new VRCImageDownloader();
+        TextureInfo info = new TextureInfo();
+        info.GenerateMipMaps = false;
+        fetchTestImages.DownloadImage(fetchTestUrl, null, (IUdonEventReceiver)this, info);
+    }
+
+    private bool FetchTestOf(VRCUrl url)
+    {
+        return fetchTest && fetchTestUrl != null && url != null && url.Get() == fetchTestUrl.Get() && fetchTestAt > 0f;
+    }
+
     public override void OnImageLoadSuccess(IVRCImageDownload result)
     {
+        if (FetchTestOf(result.Url))
+            Debug.Log("[FetchTest] picture: " + result.Result.width + " x " + result.Result.height + " after " + (Time.time - fetchTestAt).ToString("F1") + " s");
         if (fetchState != FetchLoading) return;
         hostImage = result.Result;
         // every pixel, four bytes each: the guest asks for the parts after the first
@@ -952,15 +1010,30 @@ public class EmuMachine : UdonSharpBehaviour
 
     public override void OnImageLoadError(IVRCImageDownload result)
     {
+        if (FetchTestOf(result.Url))
+            Debug.Log("[FetchTest] picture failed: " + result.Error + " " + result.ErrorMessage + " after " + (Time.time - fetchTestAt).ToString("F1") + " s");
         if (fetchState != FetchLoading) return;
         fetchLength = 0;
+        // a server's refusal reads "HTTP/1.1 404 Not Found": its code, else 415 (not a picture)
         fetchStatus = 415;
+        string message = result.ErrorMessage;
+        int at = message == null ? -1 : message.IndexOf("HTTP/1.1 ");
+        int code;
+        if (at >= 0 && message.Length >= at + 12 && int.TryParse(message.Substring(at + 9, 3), out code) && code >= 400)
+            fetchStatus = code;
         fetchState = FetchReady;
-        FetchSays("Picture not loaded: " + result.ErrorMessage);
+        FetchSays("Picture not loaded: " + message);
     }
 
     public override void OnStringLoadSuccess(IVRCStringDownload result)
     {
+        if (FetchTestOf(result.Url))
+        {
+            byte[] got = result.ResultBytes;
+            string head = "";
+            for (int i = 0; got != null && i < Mathf.Min(8, got.Length); i++) head += got[i].ToString("x2") + " ";
+            Debug.Log("[FetchTest] text: " + (got != null ? got.Length : -1) + " bytes, first " + head + "after " + (Time.time - fetchTestAt).ToString("F1") + " s");
+        }
         if (fetchState != FetchLoading) return;
         // (a page, a sheet or a file: its whole length is said, and it is handed over in parts
         // of 256 KB as the guest asks for them; a browser of before takes the first and no more)
@@ -976,6 +1049,8 @@ public class EmuMachine : UdonSharpBehaviour
 
     public override void OnStringLoadError(IVRCStringDownload result)
     {
+        if (FetchTestOf(result.Url))
+            Debug.Log("[FetchTest] text failed: " + result.ErrorCode + " " + result.Error + " after " + (Time.time - fetchTestAt).ToString("F1") + " s");
         if (fetchState != FetchLoading) return;
         fetchLength = 0;
         fetchStatus = result.ErrorCode > 1 && result.ErrorCode != 200 ? result.ErrorCode : 2;
@@ -1089,7 +1164,7 @@ public class EmuMachine : UdonSharpBehaviour
             if (!persistReading)
             {
                 persistReading = true;
-                persist.Read(current, fetchOffset);
+                persist.Read(state, fetchOffset);
             }
             if (persist.reading) return;
             fetchStatus = persist.saveStatus;
@@ -1136,27 +1211,19 @@ public class EmuMachine : UdonSharpBehaviour
 
     // ---- one frame ----
 
-    // One pass of the machine's shader from the current state into the other one. With
-    // `points` (the commit, once the machine runs) what the cores stored is then drawn there
-    // as points, each texel by the commit's own shader.
-    private void Pass(int pass, bool points)
+    // The commit, RAM in one texture (docs/machine/gpu.md, "RAM in one texture"): the gather reads
+    // what it needs of RAM into the stage, then the state rows and the cores' stores are drawn
+    // into the state from the tick's texture and the stage, which none of them draws.
+    private void Commit()
     {
-        machineMaterial.SetTexture("_SelfTexture2D", current);
-        VRCGraphics.Blit(current, other, machineMaterial, pass);
-        if (points) Points(false);
-        RenderTexture t = current;
-        current = other;
-        other = t;
-    }
-
-    // The cores' stores of this round as points into the other state: the commit's (from the
-    // current state and the tick's), or, as copies, the texels the commit made of them, which
-    // the buffer the commit did not draw into still lacks.
-    private void Points(bool copies)
-    {
-        pointsMaterial.SetTexture("_SelfTexture2D", current);
-        pointsMaterial.SetInt("_Copy", copies ? 1 : 0);
-        pointsCamera.targetTexture = other;
+        gatherRenderer.enabled = true;
+        pointsRenderer.enabled = false;
+        pointsCamera.targetTexture = stage;
+        pointsCamera.Render();
+        VRCGraphics.Blit(tickState, state, machineMaterial, PassCommit);
+        gatherRenderer.enabled = false;
+        pointsRenderer.enabled = true;
+        pointsCamera.targetTexture = state;
         pointsCamera.Render();
     }
 
@@ -1196,20 +1263,22 @@ public class EmuMachine : UdonSharpBehaviour
             // The tick camera draws what the cores keep of their state (core 0's pixels, and a
             // block for each worker with something to run) into its eight targets; the unpack
             // pass puts that where the state has its rows, with the state as it was for the rest;
-            // the commit reads it from there and writes the whole state.
-            tickMaterial.SetTexture("_SelfTexture2D", current);
+            // the commit reads it from there and writes the state in place.
             tickCamera.Render();
-            machineMaterial.SetTexture("_SelfTexture2D", current);
-            VRCGraphics.Blit(current, tickState, machineMaterial, PassUnpack);
+            VRCGraphics.Blit(state, tickState, machineMaterial, PassUnpack);
             // (a zap is one commit's: flipped again by the next, the bits would be as they were)
             bool zapped = running && ZapNext();
-            Pass(PassCommit, running);
-            if (zapped) machineMaterial.SetInt("_ZapKind", 0);
+            Commit();
+            if (zapped)
+            {
+                gatherMaterial.SetInt("_ZapKind", 0);
+                pointsMaterial.SetInt("_ZapKind", 0);
+            }
             // What that round left, into its own row: the console's output is only there
             // until the next tick. The rows are read back together when the frame's rounds are done.
-            readbackMaterial.SetTexture("_State", current);
+            readbackMaterial.SetTexture("_State", state);
             readbackMaterial.SetInt("_Row", i);
-            VRCGraphics.Blit(current, readbackTexture, readbackMaterial);
+            VRCGraphics.Blit(state, readbackTexture, readbackMaterial);
             if (running)
             {
                 // The GPU: draw the list the guest has submitted, if any; the control pass
@@ -1217,7 +1286,7 @@ public class EmuMachine : UdonSharpBehaviour
                 bool draws = gpuAlways || i == n - 1;
                 if (draws)
                 {
-                    gpuMaterial.SetTexture("_State", current);
+                    gpuMaterial.SetTexture("_State", state);
                     gpuCamera.Render();
                 }
                 if (draws != gpuDrew)
@@ -1227,11 +1296,11 @@ public class EmuMachine : UdonSharpBehaviour
                 }
                 // The sound card mixes once a frame, before the last control pass, which then
                 // moves its voices up to where the mix began.
-                if (i == n - 1 && sound != null) sound.Mix(current, machineMaterial, soundEnabled, soundClock);
-                // (the points before the control pass, whose bands are newer than they are)
-                Points(true);
+                if (i == n - 1 && sound != null) sound.Mix(state, machineMaterial, soundEnabled, soundClock);
+                // the control pass draws its rows into the window, and they are copied back
                 HostClock(i, n);
-                Pass(PassControl, false);
+                VRCGraphics.Blit(state, window, machineMaterial, PassControl);
+                VRCGraphics.Blit(window, state, machineMaterial, PassWindowBack);
             }
         }
         roundsOf[requestsSent & 63] = n;
@@ -1244,16 +1313,18 @@ public class EmuMachine : UdonSharpBehaviour
             {
                 machineMaterial.SetInt("_Init", 0);
                 tickMaterial.SetInt("_Init", 0);
+                pointsMaterial.SetInt("_Init", 0);
+                gatherMaterial.SetInt("_Init", 0);
                 ignoreUntil = requestsSent;   // init frames leave junk in the UART buffer
             }
         }
         // whoever shows the state reads the texture this frame ended in
-        gpuMaterial.SetTexture("_State", current);
+        gpuMaterial.SetTexture("_State", state);
         ShowDisplay();
-        heatMaterial.SetTexture("_State", current);
-        if (stateViewMaterial != null) stateViewMaterial.SetTexture("_State", current);
-        volumeMaterial.SetTexture("_State", current);
-        if (volumeMaskMaterial != null) volumeMaskMaterial.SetTexture("_State", current);
+        heatMaterial.SetTexture("_State", state);
+        if (stateViewMaterial != null) stateViewMaterial.SetTexture("_State", state);
+        volumeMaterial.SetTexture("_State", state);
+        if (volumeMaskMaterial != null) volumeMaskMaterial.SetTexture("_State", state);
 
         if (Time.time - statsAt >= 0.5f) ShowStats();
     }

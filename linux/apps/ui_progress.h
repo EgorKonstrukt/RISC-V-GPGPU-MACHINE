@@ -1,6 +1,7 @@
 /* ui_progress.h: a small window that says what is being loaded or unpacked and how far it has
  * come, a bar and a line under it. It opens only after PROGRESS_LATER ms (a short job shows
- * nothing) and only where a window system answers. */
+ * nothing) and only where a window system answers. Closing it (its frame's button, Alt+F4)
+ * takes it away at once and sets progress_closed: the job is then to stop. */
 #ifndef SHADEREMU_APPS_UI_PROGRESS_H
 #define SHADEREMU_APPS_UI_PROGRESS_H
 
@@ -18,6 +19,8 @@ static GR_WINDOW_ID progress_window;
 static int progress_state;	/* 0 not begun, 1 waiting to show, 2 shown, -1 no window system */
 static unsigned progress_began, progress_drawn = ~0u, progress_mapped;
 static char progress_title[120], progress_line[80];
+static int progress_closed, progress_connected;	/* closed by its user; a connection is open */
+static void progress_end(void);
 
 static unsigned
 progress_ms(void)
@@ -26,6 +29,25 @@ progress_ms(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
+}
+
+/* The window's events, between steps of the job: uncovered, it is drawn whole; closed, it goes. */
+static void
+progress_poll(void)
+{
+	GR_EVENT event;
+
+	while (progress_state == 2) {
+		GrCheckNextEvent(&event);
+		if (event.type == GR_EVENT_TYPE_NONE)
+			break;
+		if (event.type == GR_EVENT_TYPE_EXPOSURE)
+			progress_drawn = ~0u;
+		if (event.type == GR_EVENT_TYPE_CLOSE_REQ) {
+			progress_closed = 1;
+			progress_end();
+		}
+	}
 }
 
 /* What the window will say it is doing ("Loading picture.png"). */
@@ -50,27 +72,20 @@ progress_show(unsigned long long done, unsigned long long total, const char *lin
 		progress_state = -1;
 		if (GrOpen() < 0)
 			return;
+		progress_connected = 1;
 		ui_init();
 		screen = ui_screen();
 		progress_window = GrNewWindowEx(UI_FIXED, progress_title, GR_ROOT_WINDOW_ID, (screen->cols - PROGRESS_W) / 2,
 			(screen->rows - PROGRESS_H) / 3, PROGRESS_W, PROGRESS_H, UI_FACE);
-		GrSelectEvents(progress_window, GR_EVENT_MASK_EXPOSURE);
+		GrSelectEvents(progress_window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_CLOSE_REQ);
 		GrMapWindow(progress_window);
 		progress_mapped = progress_ms();
 		progress_state = 2;
 		progress_drawn = ~0u;
 	}
+	progress_poll();
 	if (progress_state != 2)
 		return;
-	for (;;) {	/* (uncovered again: drawn whole) */
-		GR_EVENT event;
-
-		GrCheckNextEvent(&event);
-		if (event.type == GR_EVENT_TYPE_NONE)
-			break;
-		if (event.type == GR_EVENT_TYPE_EXPOSURE)
-			progress_drawn = ~0u;
-	}
 	/* (drawn again for its first moments: the frame put round it after it was drawn cleared it) */
 	if (progress_ms() - progress_mapped < 1500)
 		progress_drawn = ~0u;
@@ -104,8 +119,10 @@ static void
 progress_end(void)
 {
 	if (progress_state == 2) {
+		/* (the connection is kept for the program's next window: before the fix of 18 October
+		   2026, one opened again after GrClose was sent no events, event_asked in client.c) */
 		GrDestroyWindow(progress_window);
-		GrClose();
+		GrFlush();
 	}
 	progress_state = 0;
 }

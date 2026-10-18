@@ -27,10 +27,14 @@ the folder and not saved is lost with the rest.
 | `classicube/` | `options.txt` | a link from the game's folder |
 | `micropolis/` | saved cities, `*.cty` | Micropolis's Save and Save as (`docs/games/micropolis.md`) |
 
-The desktop has an icon for the folder, and anything else put there is kept as well. Not in
-it: ClassiCube's maps (262 KB each before packing), the NES's settings, and a wallpaper
-picked from a picture file of the user's (the choice names a decoded copy in `/tmp`; one of
-the image's pictures or a colour is kept).
+The desktop has an icon for the folder, and anything else put there is kept as well: Files'
+and the desktop's menu has Save to persistence for an entry, which copies it there and refuses
+when the folder would then hold more than 100,000 bytes, saying the sizes
+(`docs/system/nanox.md`, "Save to persistence"). Not in it: ClassiCube's maps (262 KB each
+before packing), the NES's settings, and the picture file a wallpaper names (the registry keeps
+its path, the file itself; one of the image's pictures is there at the next session, a file of
+the user's only if it was put in `/persistence` too, or the desktop says it is gone and shows
+a colour).
 
 ## The registry
 

@@ -33,7 +33,195 @@
 
 enum { T_SELECT, T_PENCIL, T_BRUSH, T_ERASER, T_FILL, T_PICK, T_LINE, T_RECT, T_OVAL, T_SPRAY, TOOL_COUNT };
 static const char *const tool_names[TOOL_COUNT] = { "Select", "Pencil", "Brush", "Eraser", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
-static const char *const tool_short[TOOL_COUNT] = { "Sel", "Pen", "Brush", "Erase", "Fill", "Pick", "Line", "Rect", "Oval", "Spray" };
+/* the tools' pictures, 16 x 16: a letter a colour of tool_inks, '.' none */
+static const char *const tool_pictures[TOOL_COUNT][16] = {
+	{ /* Select */
+		"................",
+		"................",
+		".kk..kk..kk..kk.",
+		".k............k.",
+		"................",
+		"................",
+		".k............k.",
+		".k............k.",
+		"................",
+		"................",
+		".k............k.",
+		".k............k.",
+		"................",
+		".kk..kk..kk..kk.",
+		"................",
+		"................",
+	},
+	{ /* Pencil */
+		"................",
+		"............Ppp.",
+		"...........Ppp..",
+		"..........gss...",
+		".........Yyy....",
+		"........Yyy.....",
+		".......Yyy......",
+		"......Yyy.......",
+		".....Yyy........",
+		"....Yyy.........",
+		"...ooo..........",
+		"..ooo...........",
+		"..ok............",
+		".kk.............",
+		"................",
+		"................",
+	},
+	{ /* Brush */
+		"..............nn",
+		".............nnn",
+		"............nnn.",
+		"...........nnn..",
+		"..........nnn...",
+		".........nnn....",
+		"........nnn.....",
+		".......sss......",
+		"......sss.......",
+		".....kkk........",
+		"....kkkk........",
+		"...kkkk.........",
+		"..bkkk..........",
+		".bbkk...........",
+		".bbb............",
+		"................",
+	},
+	{ /* Eraser */
+		"................",
+		"................",
+		"................",
+		"........kkkkkkk.",
+		".......kppppppk.",
+		"......kppppppkk.",
+		".....kppppppkPk.",
+		"....kppppppkPPk.",
+		"...kwwwwwwkPPk..",
+		"..kwwwwwwkPPk...",
+		".kwwwwwwkPPk....",
+		".kwwwwwwkPk.....",
+		".kwwwwwwkk......",
+		".kkkkkkkk.......",
+		"................",
+		"................",
+	},
+	{ /* Fill */
+		"................",
+		"......kk........",
+		".....k..k.......",
+		".....k..kk......",
+		"....kkkkkkk.....",
+		"...kwwwwwwwk....",
+		"..kwwwwwwwwwk...",
+		".kwwwwwwwwwwbk..",
+		"..kwwwwwwwwbbk..",
+		"...kwwwwwwkbbk..",
+		"....kwwwwk.bbk..",
+		".....kwwk..bbk..",
+		"......kk...bk...",
+		"...........bk...",
+		"..........bbb...",
+		"................",
+	},
+	{ /* Pick */
+		"................",
+		"............kk..",
+		"...........kkkk.",
+		"..........kkkkk.",
+		"........kkkkkk..",
+		".........kkkk...",
+		"........kwkkk...",
+		".......kwwk.k...",
+		"......kwwk......",
+		".....kwwk.......",
+		"....kbbk........",
+		"...kbbk.........",
+		"..kbbk..........",
+		"..kbk...........",
+		".kk.............",
+		"................",
+	},
+	{ /* Line */
+		"................",
+		"..............k.",
+		".............kk.",
+		"............kk..",
+		"...........kk...",
+		"..........kk....",
+		".........kk.....",
+		"........kk......",
+		".......kk.......",
+		"......kk........",
+		".....kk.........",
+		"....kk..........",
+		"...kk...........",
+		"..kk............",
+		".k..............",
+		"................",
+	},
+	{ /* Rect */
+		"................",
+		"................",
+		"................",
+		".kkkkkkkkkkkkkk.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".kkkkkkkkkkkkkk.",
+		"................",
+		"................",
+		"................",
+	},
+	{ /* Oval */
+		"................",
+		"................",
+		"................",
+		".....kkkkkk.....",
+		"...kk......kk...",
+		"..k..........k..",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		".k............k.",
+		"..k..........k..",
+		"...kk......kk...",
+		".....kkkkkk.....",
+		"................",
+		"................",
+		"................",
+	},
+	{ /* Spray */
+		"................",
+		"..b..b..........",
+		"b...b..b........",
+		"..b...b.........",
+		".b..b...........",
+		"......kkk.......",
+		".....kGGGk......",
+		"....kssssk......",
+		"....kbbbbk......",
+		"....kbBbbk......",
+		"....kbBbbk......",
+		"....kbBbbk......",
+		"....kbbbbk......",
+		"....kssssk......",
+		"....kkkkkk......",
+		"................",
+	},
+};
+static const struct { char letter; GR_COLOR colour; } tool_inks[] = {
+	{ 'k', MWRGB(24, 24, 28) }, { 'w', MWRGB(255, 255, 255) }, { 'g', MWRGB(128, 128, 128) }, { 'G', MWRGB(196, 196, 196) },
+	{ 'y', MWRGB(246, 206, 60) }, { 'Y', MWRGB(196, 146, 24) }, { 'o', MWRGB(214, 160, 100) }, { 'n', MWRGB(120, 70, 30) },
+	{ 'b', MWRGB(50, 100, 210) }, { 'B', MWRGB(130, 170, 240) }, { 'p', MWRGB(236, 128, 150) }, { 'P', MWRGB(200, 80, 110) },
+	{ 's', MWRGB(170, 180, 190) },
+};
 static const int sizes[5] = { 1, 2, 4, 8, 16 };
 static const char *const mode_names[3] = { "Outline", "Filled", "Both" };
 static const uint32_t palette[28] = {
@@ -1035,6 +1223,26 @@ draw_status(void)
 	ui_text_fit(window, 6, height - STATUS + 3, width - 12, text, BLACK);
 }
 
+/* Tool t's picture at x, y: a one-bit mask a colour, each a rectangle of the GPU's. */
+static void
+tool_picture(int t, int x, int y)
+{
+	GR_BITMAP bits[16];
+	unsigned k;
+	int row, col, any;
+
+	for (k = 0; k < sizeof tool_inks / sizeof tool_inks[0]; k++) {
+		for (row = 0, any = 0; row < 16; row++)
+			for (col = 0, bits[row] = 0; col < 16; col++)
+				if (tool_pictures[t][row][col] == tool_inks[k].letter)
+					bits[row] |= (GR_BITMAP)(0x8000 >> col), any = 1;
+		if (!any)
+			continue;
+		GrSetGCForeground(ui_gc, tool_inks[k].colour);
+		GrBitmap(window, ui_gc, x, y, 16, 16, bits);
+	}
+}
+
 static void
 draw_tools(void)
 {
@@ -1046,8 +1254,12 @@ draw_tools(void)
 	tools_on = now;
 	ask_to_draw();
 	ui_fill(window, 0, MENU_H, TOOLS_W, height - MENU_H - BOTTOM_H - STATUS, UI_FACE);
-	for (i = 0; i < TOOL_COUNT; i++)
-		ui_button(window, 3 + (i & 1) * 33, MENU_H + 4 + (i / 2) * 26, 32, 24, tool_short[i], i == tool);
+	for (i = 0; i < TOOL_COUNT; i++) {
+		int x = 3 + (i & 1) * 33, ty = MENU_H + 4 + (i / 2) * 26, in = i == tool && !ui_seven;
+
+		ui_button(window, x, ty, 32, 24, "", i == tool);
+		tool_picture(i, x + 8 + in, ty + 4 + in);
+	}
 	ui_text(window, 4, y, "Size", -1, BLACK, 0);
 	for (i = 0; i < 5; i++) {
 		int dot = sizes[i] > 9 ? 9 : sizes[i];

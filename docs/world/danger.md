@@ -11,7 +11,8 @@ and see what it does. A machine is its visitor's own (`share.md`): nobody else's
   shows where it is, red while it burns.
 - **Six keys say what is exposed**, the memory screen's own kinds (`owner()` in
   `MemView.shader`): the kernel, Linux's programs, the windows' buffers, the display and the
-  GPU's words, a 3D program's GPU memory, the sound card's. The kernel and Linux start safe.
+  GPU's words, a 3D program's GPU memory, the sound card's. The kernel and Linux start safe;
+  Linux's programs are also the RAM above the devices (0x88000000 to 0x92000000, `docs/system/nommu.md`).
 
 Reset on the control panel starts the machine over, whole.
 
@@ -39,7 +40,7 @@ costs what it did). For one commit the host sets:
   sixteen may wait, one goes a round). A machine switched on or reset starts with none
   waiting: before, the sixteen queued for the old machine were flipped in the new one.
 - The random place is chosen by `EmuDanger`, not hashed over all RAM in the shader: a zap is
-  one band or two of the 32, never all.
+  one band or two of the 72 (`ram_bands`: each of its bits draws two more), never all.
 
 In the world: `EmuDanger` (the panel's keys, the rates, the count), a branch of
 `EmuPointer.Aim` for the memory screen (a trigger collider over its quad, there while the

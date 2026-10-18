@@ -21,3 +21,7 @@ rem lazy runs in place of the kernel, in supervisor mode (tools\make_lazy_image.
 "%LLVM_BIN%\clang.exe" %CFLAGS:common\link.ld=lazy\link.ld% common\start.S lazy\lazy.c -o build\lazy.elf || exit /b 1
 "%LLVM_BIN%\llvm-objcopy.exe" -O binary build\lazy.elf bin\lazy.bin || exit /b 1
 echo built bin\lazy.bin
+rem copytest too: the parallel copy over the shader machine's chunk (docs\machine\gpu.md, "RAM in one texture")
+"%LLVM_BIN%\clang.exe" %CFLAGS:common\link.ld=lazy\link.ld% common\start.S copytest\copytest.c -o build\copytest.elf || exit /b 1
+"%LLVM_BIN%\llvm-objcopy.exe" -O binary build\copytest.elf bin\copytest.bin || exit /b 1
+echo built bin\copytest.bin

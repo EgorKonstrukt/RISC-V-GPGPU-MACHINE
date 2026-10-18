@@ -1,10 +1,7 @@
-/*
- * nxeyes: two eyes whose pupils follow the pointer anywhere on the screen. The window is an
- * ordinary one, moved and sized by its frame, and the eyes fill it. The pointer is read from
- * the machine's input words (docs/machine/input.md), not from the window system's moves: those come
- * to a program that selects them on the root for every pixel, and keep the server's quiet
- * rectangle away from the whole screen. A right click gives the menu: blinking, and Close.
- */
+/* nxeyes: two eyes following the pointer, as xeyes (docs/system/nanox.md). Each eye is a window
+ * with no frame, the desktop between them and copied into its corners; a drag on either moves
+ * both, the right button's menu has blinking, the size and Close. The pointer is read from the
+ * machine's input words (docs/machine/input.md), so the server's quiet rectangle stays. */
 #include <fcntl.h>
 #include <stdint.h>
 #include <time.h>
@@ -21,12 +18,17 @@
 #define SLOW_MS		250		/* while it has been still a second, */
 #define SLEEPY_MS	500		/* and after ten seconds of that */
 #define BLINK_KEY	"nxeyes.blink"
+#define SIZE_KEY	"nxeyes.size"
 #define BLINK_SHUT_MS	140
+#define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_BUTTON_DOWN | \
+	GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_KEY_DOWN)
 
-enum { CHOOSE_BLINK = 1, CHOOSE_CLOSE };
+enum { CHOOSE_BLINK = 1, CHOOSE_SMALL, CHOOSE_MEDIUM, CHOOSE_LARGE, CHOOSE_CLOSE };
+static const int sizes[3][2] = { { 52, 66 }, { 78, 100 }, { 116, 148 } };	/* an eye's window */
 
-static GR_WINDOW_ID win;
-static int width = 180, height = 110;
+static GR_WINDOW_ID win[2];
+static int size, width, height, gap;	/* an eye's window, and the desktop between the two */
+static int ox, oy;			/* the left eye's window on the screen; the right one is beside it */
 static const volatile uint32_t *input;	/* the machine's control words, or NULL: ask the server */
 static int px = -1, py = -1;		/* the pointer on the screen, as last drawn for */
 static struct { int cx, cy, rx, ry, pr, x, y, drawn; } eye[2];
@@ -74,13 +76,18 @@ isqrt(unsigned long long n)
 	return r;
 }
 
-/* Where eye k's pupil goes for the pointer at sx, sy (the window's corner at ox, oy): toward
- * it, as far as the white of an ellipse allows. */
+static int
+left_of(int k)
+{
+	return ox + k * (width + gap);
+}
+
+/* Where eye k's pupil goes for the pointer at sx, sy: toward it, as far as the white allows. */
 static void
-aim(int k, int sx, int sy, int ox, int oy)
+aim(int k, int sx, int sy)
 {
 	int a = eye[k].rx - eye[k].pr - eye[k].rx / 6, b = eye[k].ry - eye[k].pr - eye[k].ry / 6;
-	int dx = sx - ox - eye[k].cx, dy = sy - oy - eye[k].cy;
+	int dx = sx - left_of(k) - eye[k].cx, dy = sy - oy - eye[k].cy;
 	long long q;
 
 	if (a < 1 || b < 1) {
@@ -100,17 +107,13 @@ aim(int k, int sx, int sy, int ox, int oy)
 static void
 layout(void)
 {
-	int k, half = width / 2;
+	int k;
 
+	width = sizes[size][0], height = sizes[size][1], gap = width / 7;
 	for (k = 0; k < 2; k++) {
-		eye[k].cx = half * k + half / 2;
-		eye[k].cy = height / 2;
-		eye[k].rx = half / 2 - 4;
-		eye[k].ry = height / 2 - 4;
-		if (eye[k].rx < 4) eye[k].rx = 4;
-		if (eye[k].ry < 4) eye[k].ry = 4;
+		eye[k].cx = width / 2, eye[k].cy = height / 2;
+		eye[k].rx = width / 2 - 1, eye[k].ry = height / 2 - 1;
 		eye[k].pr = (eye[k].rx < eye[k].ry ? eye[k].rx : eye[k].ry) / 3;
-		if (eye[k].pr < 2) eye[k].pr = 2;
 		eye[k].drawn = 0;
 	}
 }
@@ -120,28 +123,27 @@ outline(int k)
 {
 	int r = eye[k].rx < eye[k].ry ? eye[k].rx : eye[k].ry;
 
-	return r / 12 < 2 ? 2 : r / 12;
+	return r / 9 < 2 ? 2 : r / 9;
 }
 
 static void
 pupil(int k, GR_COLOR colour)
 {
 	GrSetGCForeground(ui_gc, colour);
-	GrFillEllipse(win, ui_gc, eye[k].x, eye[k].y, eye[k].pr, eye[k].pr);
+	GrFillEllipse(win[k], ui_gc, eye[k].x, eye[k].y, eye[k].pr, eye[k].pr);
 }
 
 /* The pupils where the pointer is now: the old one wiped with the white, the new one drawn. */
 static void
 pupils(int force)
 {
-	int ox, oy, k, x, y;
+	int k, x, y;
 
 	if (shut)
 		return;
-	ui_window_origin(win, &ox, &oy);
 	for (k = 0; k < 2; k++) {
 		x = eye[k].x, y = eye[k].y;
-		aim(k, px, py, ox, oy);
+		aim(k, px, py);
 		if (!force && eye[k].drawn && x == eye[k].x && y == eye[k].y)
 			continue;
 		if (eye[k].drawn) {
@@ -153,34 +155,49 @@ pupils(int force)
 		}
 		pupil(k, MWRGB(24, 24, 32));
 		GrSetGCForeground(ui_gc, WHITE);	/* the glint */
-		GrFillEllipse(win, ui_gc, eye[k].x - eye[k].pr / 3, eye[k].y - eye[k].pr / 3, eye[k].pr / 5, eye[k].pr / 5);
+		GrFillEllipse(win[k], ui_gc, eye[k].x - eye[k].pr / 3, eye[k].y - eye[k].pr / 3, eye[k].pr / 5, eye[k].pr / 5);
 		eye[k].drawn = 1;
 	}
 }
 
+/* Both eyes whole: the desktop under each window first, then the eye over it. */
 static void
 draw(void)
 {
 	int k, t;
 
-	ui_fill(win, 0, 0, width, height, UI_FACE);
 	for (k = 0; k < 2; k++) {
+		GrCopyArea(win[k], ui_gc, 0, 0, width, height, GR_ROOT_WINDOW_ID, left_of(k), oy, MWROP_COPY);
 		t = outline(k);
 		GrSetGCForeground(ui_gc, MWRGB(32, 32, 40));
-		GrFillEllipse(win, ui_gc, eye[k].cx, eye[k].cy, eye[k].rx, eye[k].ry);
+		GrFillEllipse(win[k], ui_gc, eye[k].cx, eye[k].cy, eye[k].rx, eye[k].ry);
+		eye[k].drawn = 0;
 		if (shut) {
 			/* the lid, shut: a skin-coloured eye with a line across */
 			GrSetGCForeground(ui_gc, ui_seven ? MWRGB(236, 200, 170) : MWRGB(224, 184, 150));
-			GrFillEllipse(win, ui_gc, eye[k].cx, eye[k].cy, eye[k].rx - t, eye[k].ry - t);
+			GrFillEllipse(win[k], ui_gc, eye[k].cx, eye[k].cy, eye[k].rx - t, eye[k].ry - t);
 			GrSetGCForeground(ui_gc, MWRGB(32, 32, 40));
-			GrFillRect(win, ui_gc, eye[k].cx - eye[k].rx + t, eye[k].cy - t / 2, 2 * (eye[k].rx - t), t);
+			GrFillRect(win[k], ui_gc, eye[k].cx - eye[k].rx + t, eye[k].cy - t / 2, 2 * (eye[k].rx - t), t);
 			continue;
 		}
 		GrSetGCForeground(ui_gc, WHITE);
-		GrFillEllipse(win, ui_gc, eye[k].cx, eye[k].cy, eye[k].rx - t, eye[k].ry - t);
-		eye[k].drawn = 0;
+		GrFillEllipse(win[k], ui_gc, eye[k].cx, eye[k].cy, eye[k].rx - t, eye[k].ry - t);
 	}
 	pupils(1);
+}
+
+/* The two windows at x, y (the left one's corner), kept on the screen. */
+static void
+place(int x, int y)
+{
+	const GR_SCREEN_INFO *screen = ui_screen();
+	int all = 2 * width + gap;
+
+	x = x > screen->cols - all ? screen->cols - all : x;
+	y = y > screen->rows - height ? screen->rows - height : y;
+	ox = x < 0 ? 0 : x, oy = y < 0 ? 0 : y;
+	GrMoveWindow(win[0], left_of(0), oy);
+	GrMoveWindow(win[1], left_of(1), oy);
 }
 
 static void
@@ -194,11 +211,17 @@ menu(int x, int y)
 {
 	static struct ui_menu_item items[] = {
 		{ "Blink", -1, CHOOSE_BLINK, NULL, 0, 0, NULL },
+		{ "Small", -1, CHOOSE_SMALL, NULL, 0, UI_MENU_LINE, NULL },
+		{ "Medium", -1, CHOOSE_MEDIUM, NULL, 0, 0, NULL },
+		{ "Large", -1, CHOOSE_LARGE, NULL, 0, 0, NULL },
 		{ "Close", -1, CHOOSE_CLOSE, NULL, 0, UI_MENU_LINE, NULL },
 	};
+	int k;
 
 	items[0].flags = blink ? UI_MENU_CHECK : 0;
-	ui_menu_open(items, 2, x, y, 0, 0);
+	for (k = 0; k < 3; k++)
+		items[1 + k].flags = (k ? 0 : UI_MENU_LINE) | (size == k ? UI_MENU_CHECK : 0);
+	ui_menu_open(items, 5, x, y, 0, 0);
 }
 
 /* The next event, or GR_EVENT_TYPE_TIMEOUT after `ms`: the server is asked once
@@ -250,14 +273,21 @@ next_event(GR_EVENT *event, int ms)
 	}
 }
 
+static int
+ours(GR_WINDOW_ID w)
+{
+	return w == win[0] || w == win[1];
+}
+
 int
 main(int argc, char **argv)
 {
-	GR_EVENT event;
+	GR_EVENT event, peek;
 	unsigned moved_at, t;
-	int fd, id, x, y, wait;
+	int fd, id, x, y, k, wait, held = 0, held_x = 0, held_y = 0, held_ox = 0, held_oy = 0;
 	void *words;
 
+	(void)argc, (void)argv;
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxeyes: no window system\n");
 		return 1;
@@ -270,13 +300,18 @@ main(int argc, char **argv)
 	if (words != MAP_FAILED)
 		input = words;
 	blink = reg_int(BLINK_KEY, 1);
+	size = reg_int(SIZE_KEY, 1);
+	size = size < 0 || size > 2 ? 1 : size;
 	srand((unsigned)time(NULL));
-
-	win = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "Eyes", GR_ROOT_WINDOW_ID, -1, -1, width, height, UI_FACE);
-	GrSelectEvents(win, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_CLOSE_REQ |
-		GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN);
 	layout();
-	GrMapWindow(win);
+	/* at the screen's top right, clear of the desktop's icons */
+	ox = ui_screen()->cols - 2 * width - gap - 16, oy = 16;
+	for (k = 0; k < 2; k++) {
+		win[k] = GrNewWindowEx(GR_WM_PROPS_NODECORATE, "Eyes", GR_ROOT_WINDOW_ID, left_of(k), oy, width, height, BLACK);
+		GrSelectEvents(win[k], EVENTS);
+	}
+	GrMapWindow(win[0]);
+	GrMapWindow(win[1]);
 	pointer(&px, &py);
 	moved_at = now_ms();
 	plan_blink();
@@ -295,36 +330,64 @@ main(int argc, char **argv)
 		case UI_MENU_CHOSEN:
 			if (id == CHOOSE_CLOSE)
 				goto done;
-			blink = !blink;
-			reg_set_int(BLINK_KEY, blink);
-			if (shut)
-				shut = 0, draw();
-			plan_blink();
+			if (id == CHOOSE_BLINK) {
+				blink = !blink;
+				reg_set_int(BLINK_KEY, blink);
+				shut = 0;
+				plan_blink();
+			} else {
+				int right = ox + 2 * width + gap;
+
+				size = id - CHOOSE_SMALL;
+				reg_set_int(SIZE_KEY, size);
+				layout();
+				for (k = 0; k < 2; k++)
+					GrResizeWindow(win[k], width, height);
+				place(right - 2 * width - gap, oy);	/* (the right edge stays) */
+			}
+			draw();
 			continue;
 		case UI_MENU_TOOK:
 		case UI_MENU_CLOSED:
 			continue;
 		}
-		ui_origin_note(&event);
 		switch (event.type) {
 		case GR_EVENT_TYPE_CLOSE_REQ:
 			goto done;
 		case GR_EVENT_TYPE_EXPOSURE:
-			if (event.exposure.wid == win)
+			if (ours(event.exposure.wid))
 				draw();
-			break;
-		case GR_EVENT_TYPE_UPDATE:
-			if (event.update.wid == win && (event.update.width != width || event.update.height != height) &&
-			    event.update.width > 0 && event.update.height > 0) {
-				width = event.update.width, height = event.update.height;
-				layout();
-				draw();
-			} else if (event.update.wid == win)
-				pupils(0);
 			break;
 		case GR_EVENT_TYPE_BUTTON_DOWN:
-			if (event.button.wid == win && (event.button.changebuttons & GR_BUTTON_R))
+			if (!ours(event.button.wid))
+				break;
+			GrRaiseWindow(win[0]), GrRaiseWindow(win[1]);
+			GrSetFocus(event.button.wid);
+			if (event.button.changebuttons & GR_BUTTON_R)
 				menu(event.button.rootx, event.button.rooty);
+			else if (event.button.changebuttons & GR_BUTTON_L) {
+				/* a drag moves both eyes */
+				held = 1, held_x = event.button.rootx, held_y = event.button.rooty, held_ox = ox, held_oy = oy;
+				ui_moves(event.button.wid, EVENTS, 1);
+			}
+			break;
+		case GR_EVENT_TYPE_MOUSE_MOTION:
+			/* (only the last of the moves waiting) */
+			while (GrPeekEvent(&peek) && peek.type == GR_EVENT_TYPE_MOUSE_MOTION)
+				GrGetNextEvent(&event);
+			if (held && (event.mouse.buttons & GR_BUTTON_L)) {
+				place(held_ox + event.mouse.rootx - held_x, held_oy + event.mouse.rooty - held_y);
+				px = event.mouse.rootx, py = event.mouse.rooty;
+				draw();
+			} else if (held) {
+				held = 0;
+				ui_moves(event.mouse.wid, EVENTS, 0);
+			}
+			break;
+		case GR_EVENT_TYPE_BUTTON_UP:
+			if (held)
+				ui_moves(event.button.wid, EVENTS, 0);
+			held = 0;
 			break;
 		case GR_EVENT_TYPE_KEY_DOWN:
 			if (event.keystroke.ch == 'q' || event.keystroke.ch == MWKEY_ESCAPE)

@@ -4,8 +4,9 @@ import numpy as np
 
 src, dst, bits = sys.argv[1], sys.argv[2], int(sys.argv[3])
 zorder = len(sys.argv) > 4 and sys.argv[4] == 'z'
-HDR, W, H, ROW0 = 32, 2048, 4096, 64
+HDR, W, ROW0 = 32, 2048, 64
 raw = np.fromfile(src, dtype=np.uint8)
+H = int(raw[:16].view(np.uint32)[3])   # the header's height
 assert raw.size == HDR + W * H * 16, raw.size
 tex = raw[HDR:].reshape(H, W, 16)
 ram = tex[ROW0:].reshape(-1, 16)            # row-major: index = texel number

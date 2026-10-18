@@ -85,7 +85,8 @@ player's eye height (1.625 blocks; near 0.1, far its view distance, 128), from i
 code (`Window_ShaderEmu.c`, written again only when the eye, the view distance or the
 projection changes): 0.246 for a 1.6 m eye. On `rvc_cpu` the four words read back as
 `121903f2`, `224e049b`, `71ec03a6`, `323c04fb` (`DOOM_SEAT`, `QUAKE_SEAT`, `QUAKE3_SEAT`,
-`CLASSICUBE_SEAT` print it as `eye`).
+`CLASSICUBE_SEAT` print it as `eye`). Half-Life says 64 units (near 4, far its level's size):
+`92230496` (`HALFLIFE_SEAT`).
 
 ClassiCube says the player's own eye (1.625 blocks), so a block is about a metre (0.98 m for an
 eye of 1.6 m) and the sitter is the player's size. In a headset the block in the right hand is
@@ -190,8 +191,9 @@ camera sees, so there is world behind the seat too.
 
 ## Played from the seat
 
-Doom, Quake, Quake III and ClassiCube read those words, each in its own port file
-(`doom_video.c` and `doom_gl.c`, `vid_shaderemu.c`, `tr_shaderemu.c`, `Window_ShaderEmu.c`):
+Doom, Quake, Quake III, ClassiCube and Half-Life read those words, each in its own port file
+(`doom_video.c` and `doom_gl.c`, `vid_shaderemu.c`, `tr_shaderemu.c`, `Window_ShaderEmu.c`,
+`linux/halflife/vid_shaderemu.c`):
 
 - **With tracked hands the right hand aims.** The game keeps two turns: the body's, which
   the sticks and the game itself turn and by which the room is turned, and the aim's, which
@@ -210,7 +212,7 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   the way the head looks (the move is turned from the aim's way to the head's); the right
   one turns the body, 140 degrees a second pushed home, slower near the middle.
 - **The weapon is in the right hand**, where the beam starts, pointing as it points, at the
-  room's scale (word 0's `plane`): Quake's view model held a third from its back end,
+  room's scale (word 0's `plane`): Quake's and Half-Life's view models held a third from their back end,
   Quake III's by its own origin, ClassiCube's held block (and no arm when nothing is
   held), Doom's weapon pictures standing in the world at 4 mm a pixel. Quake's axe keeps its
   first pose: the arm that holds it swings it. Guns animate as they do. Not done: Quake's
@@ -252,7 +254,7 @@ Doom, Quake, Quake III and ClassiCube read those words, each in its own port fil
   it is let go, wherever the beam goes (a Hide press, a slider dragged past its end), and a
   desktop's view on the console or its small button lands too (they press it by VRChat's own
   interact). A beam that leaves the screen lets go of its button. The games drop a seated
-  click on their window while a level is played (Doom, Quake, Quake III): a sitter fires by the
+  click on their window while a level is played (Doom, Quake, Quake III, Half-Life): a sitter fires by the
   trigger. A sitter's keys go to their own machine whatever the den's wall shows
   (`EmuMachine.keysOwn`). A single grip's key waits 0.15 s, or is a tap when let go sooner, so
   the first of both grips (standing up) sends nothing. Before this the screen answered a headset's
@@ -375,7 +377,7 @@ the screen a flat program brought back.
 On `rvc_cpu` (its closing line says the bit): Quake III's menu 1, its level 0.
 
 Only the registered games have a world round the seat (`EmuHolodeck.Registered`: Doom, Quake,
-ClassiCube, Quake III and nxphys, by the number of the program whose window has the keyboard,
+ClassiCube, Quake III, nxphys and Half-Life, by the number of the program whose window has the keyboard,
 `linux/apps/gameid.h`); any other program is on the large screen however it draws, as on a
 desktop. Tiberian Dawn and Red Alert draw their pages by a GPU list, which the room took for a
 world: the screen went with the console, and there was no playing them with the console away. The

@@ -1,6 +1,6 @@
 /* nxkey: presses keys through the keyboard's evdev device, for a test without a keyboard.
  * An argument is a key (enter, tab, up, f4, meta, ... or a character), with ctrl+, alt+ or
- * shift+ before it for keys held meanwhile, a number of milliseconds to wait, X,Y for a click
+ * shift+ before it for keys held meanwhile, a number of milliseconds to wait, X,Y (or ctrl+X,Y) for a click
  * of the left button there, r:X,Y for the right one, or drag:X,Y:X,Y for the left one held
  * from the first place to the second, wheel:X,Y:N for N notches of the wheel there (up is
  * positive):   nxkey meta down enter 500 alt+tab 60,200 r:300,200 wheel:300,200:-2 */
@@ -150,7 +150,9 @@ main(int argc, char **argv)
 				send(held[n++], 1);
 			key = plus + 1;
 		}
-		if ((code = code_of(key)) == 0)
+		if (n && strchr(key, ',') && key[0] >= '0' && key[0] <= '9')
+			click(atoi(key), atoi(strchr(key, ',') + 1), 0x110);	/* ctrl+X,Y: a click with the keys held */
+		else if ((code = code_of(key)) == 0)
 			fprintf(stderr, "nxkey: no key called %s\n", key);
 		else {
 			send(code, 1);

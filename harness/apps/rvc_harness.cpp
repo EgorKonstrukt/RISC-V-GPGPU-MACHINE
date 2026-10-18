@@ -1,7 +1,7 @@
 // rvc_harness: runs pimaker's rvc (RISC-V Linux in a VRChat pixel shader) outside Unity.
 //
 // It loads rvc's unmodified _Nix/rvc/main.shader, compiles both passes with FXC, and drives
-// them the way the Unity scene does: a 2048x4096 RGBA32_UINT double-buffered Custom Render
+// them the way the Unity scene does: a 2048x9280 RGBA32_UINT double-buffered Custom Render
 // Texture with two update zones per frame (CPUTick on the 64x64 state area, then Commit on
 // the whole texture). The emulated UART is wired to this console.
 //
@@ -124,6 +124,7 @@ struct Options {
     int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/machine/multicore.md)
     bool lazy = false;        // --lazy: a fill or copy is left to the commit and the pass goes on (LAZY_MEMOP)
     bool noBands = false;     // --no-bands: the commit rewrites all of RAM, not only the bands written to (COMMIT_BANDS off)
+    bool pingPong = false;    // --ping-pong: two state textures, as before RAM was written in place (RAM_INPLACE off)
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
     bool ourKernel = false;   // the RAM image is this project's (kernel at +4 MiB, device tree at +34 MiB)
@@ -174,7 +175,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --pointer-button B,S,T  the buttons word is B (2: the right one) from second S to T of the clock
   --uart-log FILE      append all UART output to FILE
   --dump-state FILE    write the 64x64 state area (raw uint32 RGBA) at exit
-  --save-state FILE    write a snapshot of the whole machine (128 MB) at exit
+  --save-state FILE    write a snapshot of the whole machine (290 MB) at exit
   --load-state FILE    resume from a snapshot instead of booting
   --screen-log FILE    with --cpu: the display as it is shown (its layers, the cursor over them), every
                        frame: 16 bytes (width, height, frame, the guest's milliseconds), then red, green,
@@ -203,6 +204,8 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                          auto      (default) the smallest one the chosen image runs on
   --no-gpu             leave out the GPU device (the passes in <rvc>/gpu.shader, docs/machine/gpu.md)
   --no-bands           have the commit rewrite all of RAM instead of only the bands written to
+  --ping-pong          D3D11: two state textures, the commit drawing one from the other, in place of
+                       RAM in one texture written in place (docs/machine/gpu.md, "RAM in one texture")
   --lazy               leave a parallel fill or copy to the commit and run on (LAZY_MEMOP, docs/machine/boot.md):
                        fewer passes end early, every instruction is some 1.5 percent slower
   --readback-batch N   D3D11: read the rows of N frames back with one Map (1); the console's
@@ -397,6 +400,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--stats-from") o.statsFrom = unescape(next("--stats-from"));
         else if (a == "--define") o.defines.push_back(next("--define"));
         else if (a == "--no-bands") o.noBands = true;
+        else if (a == "--ping-pong") o.pingPong = true;
         else if (a == "--lazy") o.lazy = true;
         else if (a == "--no-mrt") o.noMrt = true;
         else if (a == "--readback-batch") o.readbackBatch = atoi(next("--readback-batch").c_str());
@@ -832,6 +836,12 @@ int main(int argc, char** argv) {
         if (opt.dxc) { fprintf(stderr, "[harness] --cpu is for the D3D11 backend\n"); return 2; }
     }
     if (!opt.noBands) opt.defines.push_back("COMMIT_BANDS");
+    // RAM in one texture, written in place (src/ram.h): D3D11, with no fill or copy left to the commit
+    bool lazyOn = std::find(opt.defines.begin(), opt.defines.end(), "LAZY_MEMOP") != opt.defines.end();
+    if (!opt.dxc && !opt.pingPong && isOpt(opt.rvcDir) && !getenv("RVC11_COMPUTE")) {
+        if (lazyOn) fprintf(stderr, "[harness] --lazy has two state textures (RAM_INPLACE off)\n");
+        else bo.ramInplace = true;
+    }
     // under DXC a local array is not zeroed at the start of every tick, a static one is
     if (opt.dxc) opt.defines.push_back("L1_LOCAL");
     bo.compile.flags = opt.fxcFlags;
@@ -878,13 +888,15 @@ int main(int argc, char** argv) {
     if (!opt.loadState.empty()) {
         std::string snap;
         SnapshotHeader hdr{};
-        size_t need = sizeof hdr + (size_t)W * H * 16;
-        bool ok = readFileBinary(opt.loadState, snap) && snap.size() == need;
+        bool ok = readFileBinary(opt.loadState, snap) && snap.size() > sizeof hdr;
         if (ok) memcpy(&hdr, snap.data(), sizeof hdr);
-        if (!ok || memcmp(hdr.magic, kSnapshotMagic, 8) != 0 || hdr.width != W || hdr.height != H) {
+        // (one from before RAM reached 0x92000000 has 4096 rows: the rest is zeros)
+        if (!ok || memcmp(hdr.magic, kSnapshotMagic, 8) != 0 || hdr.width != W || hdr.height > H ||
+            snap.size() != sizeof hdr + (size_t)W * hdr.height * 16) {
             fprintf(stderr, "[harness] %s is not a %ux%u snapshot\n", opt.loadState.c_str(), W, H);
             return 1;
         }
+        snap.resize(sizeof hdr + (size_t)W * H * 16, '\0');
         if (!backend.setState(snap.data() + sizeof hdr, err)) {
             fprintf(stderr, "[harness] %s\n", err.c_str());
             return 1;
@@ -970,7 +982,8 @@ int main(int argc, char** argv) {
     // the bands sent with the last frame, and the copy the commit of this frame makes
     double cpuT0 = 0, cpuLowAt = 0;
     uint64_t cpuPasses = 0;
-    uint32_t cpuLow = 0, cpuUploaded = 0, cpuCopy[4] = {}, cpuDisplay[2] = {};
+    uint64_t cpuLow = 0, cpuUploaded = 0;   // rvc_cpu's bands (dirty_bands)
+    uint32_t cpuCopy[4] = {}, cpuDisplay[2] = {};
     bool cpuFirst = true;
     // A page the guest asked for (docs/system/fetch.md): fetched on a thread, handed over in one frame.
     // The whole answer is kept: one larger than the 256 KB handed over at a time is asked for
@@ -1338,6 +1351,7 @@ int main(int argc, char** argv) {
         mat.setVector("_SinTime", sin(t / 8), sin(t / 4), sin(t / 2), sin(t));
         mat.setVector("_CosTime", cos(t / 8), cos(t / 4), cos(t / 2), cos(t));
         mat.setInt("_Init", frame < (uint64_t)opt.initFrames ? 1 : 0);
+        mat.setInt("_CommitAlways", opt.cpu ? 0xff000000u : 1u << 28);   // the bands of the GPU's words, or of all it has
 
         // --cpu: the processor runs passes until the devices have something to do (a list to
         // draw, a picture to copy back) or a sixtieth of a second is over, and what it wrote of
@@ -1400,24 +1414,24 @@ int main(int argc, char** argv) {
             g_cpuConsole.clear();
             // RAM: the GPU's memory and the control words whenever they were written, Linux's own
             // (which only the memory view shows) four times a second
-            uint32_t upload = dirty_bands & 0xff000000u;
-            cpuLow |= dirty_bands & 0x00ffffffu;
+            const uint64_t devices = 0xffull << 24;   // 0x86000000 to 0x88000000
+            uint64_t upload = dirty_bands & devices;
+            cpuLow |= dirty_bands & ~devices;
             dirty_bands = 0;
             if (cpuFirst || (backend.viewOpen() && wall - cpuLowAt >= 0.25)) {
                 upload |= cpuLow;
                 cpuLow = 0;
                 cpuLowAt = wall;
             }
-            if (cpuFirst) upload = 0xffffffffu;
+            if (cpuFirst) upload = ~0ull;
             cpuFirst = false;
-            for (unsigned b = 0; b < 32; ++b)
-                if (upload >> b & 1) {
-                    unsigned rows = b == 31 ? 64 : 128;   // (the texture ends 2 MB before the 128th)
-                    backend.uploadRows(64 + 128 * b, rows, ram.data() + (size_t)b * 0x400000);
-                }
+            for (unsigned b = 0; b < (kStateHeight - 64) / 128; ++b)
+                if (upload >> (b & 63) & 1) backend.uploadRows(64 + 128 * b, 128, ram.data() + (size_t)b * 0x400000);
             // which bands the commit is to carry over into the buffer it draws: these, and for
-            // the buffer of two frames ago the last ones (the GPU's always)
-            uint32_t bands[4] = {1, upload, cpuUploaded | 0xff000000u, 0};
+            // the buffer of two frames ago the last ones, as the shader's 32 bits (ram_bands in
+            // src/types.h); the GPU's are drawn every commit (_CommitAlways)
+            auto fold = [&](uint64_t m) { return (uint32_t)(m & ~devices) | (uint32_t)(m >> 32); };
+            uint32_t bands[4] = {1, fold(upload), fold(cpuUploaded), 0};
             backend.uploadTexel(41, 0, bands);
             cpuUploaded = upload;
             memcpy(cpuCopy, &word(CTRL + 0x70), sizeof cpuCopy);
@@ -1644,7 +1658,7 @@ int main(int argc, char** argv) {
                     address = (cpuCopy[1] & 0x7ffffffcu) | 0x80000000u;
                     bytes = (std::max)(cpuCopy[3], width) * height * 4;
                 }
-                if (address >= 0x86000000u && bytes && address + bytes <= RAM_BASE + 2048u * (4096 - 64) * 16) {
+                if (address >= 0x86000000u && bytes && address + bytes <= 0x87e00000u) {   // (where a copy may go: src/gpu.h)
                     uint32_t offset = address - RAM_BASE, first = offset / 32768, last = (offset + bytes - 1) / 32768;
                     std::vector<uint8_t> rows;
                     if (backend.readRows(64 + first, last - first + 1, rows) && rows.size() >= (size_t)(last - first + 1) * 32768)
@@ -1661,7 +1675,7 @@ int main(int argc, char** argv) {
                     uint32_t offset = (address & 0x7ffffffcu), first = offset / 32768, last = (uint32_t)((offset + count * 4 - 1) / 32768);
                     std::vector<uint8_t> rows;
                     out.assign(count, 0);
-                    if (address < RAM_BASE || offset + count * 4 > 2048u * (4096 - 64) * 16) return false;
+                    if (address < RAM_BASE || offset + count * 4 > 2048u * (kStateHeight - 64) * 16) return false;
                     if (!backend.readRows(64 + first, last - first + 1, rows) || rows.size() < (size_t)(last - first + 1) * 32768) return false;
                     memcpy(out.data(), rows.data() + (offset - first * 32768), count * 4);
                     return true;

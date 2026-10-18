@@ -428,9 +428,18 @@ and without the copies of the shake); the pictures (`TDAWN_SUMS`) of 1,500 frame
 and of 600 frames of `TDAWN_MOVE=100,8,0` in both missions the same as the build before's in
 every frame; the shapes forgotten 29 times (`RALERT_ATLAS=50`, objects drawn here, scenes from
 nothing) against never: 0 of 1,500 frames differ; the held frame 2,500 of the attack the same
-pixels before and after (`rvc_harness --cpu --warp`); `RVC_RACES`: 0 undone. Not done: a wall or
-bridge that falls makes the map's zones again (`MapClass::Zone_Reset`, 2.1 million instructions
-each, cell by cell); Red Alert's path searches have only the kept answers of Tiberian Dawn's
+pixels before and after (`rvc_harness --cpu --warp`); `RVC_RACES`: 0 undone.
+
+A wall, bridge or tree that falls makes the map's zones again (`MapClass::Zone_Reset`), 26 times
+in the attack's first 1,500 frames: 2.19 million instructions for a bridge, a second at two
+million a second. It is 1.10 million now (18 October 2026, `map.cpp`): only the map's own cells
+begin a zone, each cell's passability is asked once a reset (`Zone_Open_Bits`), and the fill
+does not call itself for a cell it would refuse at once; the fill's order is the game's, so
+are the zones' numbers. `RALERT_CHECK_ZONES=1` fills each reset the game's way too: "26 zone
+resets checked, 0 cells of them wrongly". The state sums are as before (`520254a5` at 1,500
+frames of the attack, `dd61e2fd` and `f5b3dbae` with `RALERT_HUNT=50`); frames 100 to 1,500
+of the attack at two million a second: 127.2 s to 124.9 Allied, 93.1 to 89.9 Soviet. Not done:
+Red Alert's path searches have only the kept answers of Tiberian Dawn's
 five helps ("A unit's path searches"), and the shake moves nothing on the screen now (it moved
 only the page before).
 
@@ -514,7 +523,7 @@ own start), and as long again to a mission's first frame.
   Tiberian Dawn's switches (a scene from nothing every 256th time). `rastat:` lines say
   where a frame went. `RALERT_HUNT=N` sends everything after the enemy at frame N (the sums at
   frame 800 with `RALERT_HUNT=50`: `f5b3dbae` Soviet, `dd61e2fd` Allied), and
-  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_ATTACK`, `RALERT_ATLAS` and `RALERT_SHAKE`: "A base destroyed". `RALERT_WIN` and `TDAWN_INTERPOLATION`: "A mission won". `RALERT_FRAME_LOG`, `RALERT_MARK`,
+  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_CHECK_ZONES=1` must say `0 cells of them wrongly`. `RALERT_ATTACK`, `RALERT_ATLAS` and `RALERT_SHAKE`: "A base destroyed". `RALERT_WIN` and `TDAWN_INTERPOLATION`: "A mission won". `RALERT_FRAME_LOG`, `RALERT_MARK`,
   `RALERT_MESSAGE_GONE`, `RALERT_READY_DRAW`, `RALERT_CHECK_READY` and `RALERT_CHECK_TRIGGERS`
   are as Tiberian Dawn's of those names (`docs/games/tdawn.md`); the 1,200-frame sums are
   `9b84ad73` and `709e53d6`.

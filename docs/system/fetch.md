@@ -78,7 +78,13 @@ pass of the GPU device's control shader. `nxweb`, the browser, asks for pages; `
   `.jpg` or `.jpeg`, without smaller copies, and the control pass reads the file's bytes out
   of the texture itself (`packed_word` in `src/gpu.h`, `_FetchDeliver` 3, `_FetchOffset`):
   no Udon loop touches them. Any other address is a text download, whose bytes Udon packs
-  6,000 a frame; whether VRChat hands a binary file over unchanged that way is not known. A world can only load addresses it was built with, or one a visitor types into a
+  6,000 a frame. It hands a binary file over unchanged: in a real client (18 October 2026,
+  `EmuMachine.fetchTest`, which loads `fetchTestUrl` both ways eight seconds after start and logs
+  `[FetchTest]` lines) a GIF of 93,093 bytes from tenor came whole through the text loader in
+  0.2 s, and the picture loader refused it at once ("InvalidImage: UnsupportedOperation": it takes
+  no GIF), so a GIF stays a text download. The open the developer saw hang was a Discord
+  attachment without its signature (`?ex=...&is=...&hm=...`): the picture loader logged "HTTP/1.1
+  404 Not Found", as Discord answers any such address now; the loader did no wrong. A world can only load addresses it was built with, or one a visitor types into a
   `VRCUrlInputField`: so it knows the sites of `linux/apps/web/sites.txt` (the browser's home
   page is made from the same file). Any other address gets status 1 and a slot.
 - There are four slots: slot 0 is the page, 1 to 3 what it wants next, its style sheets before

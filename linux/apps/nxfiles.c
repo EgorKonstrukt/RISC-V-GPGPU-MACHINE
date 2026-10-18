@@ -15,6 +15,7 @@
  */
 #include <dirent.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <signal.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -33,6 +34,8 @@
 #define DROPPED "/tmp/nxdrop"		/* "x y": where on the desktop a drag from a window ended */
 #define DESKTOP "/root/Desktop"
 #define PLACES ".places"		/* the desktop's icons' places: "x y name" a line */
+#define PERSIST "/persistence"		/* the folder the host keeps between sessions (docs/system/persist.md) */
+#define PERSIST_MOST 100000L		/* its bytes at most: the host keeps 100 KB a player */
 
 #define BAR 26
 #define STATUS 18
@@ -82,12 +85,15 @@ static const struct { const char *label, *icon, *path; } places[] = {
 	{ "Network", "nxnet", NULL },
 };
 #define PLACES_N ((int)(sizeof places / sizeof places[0]))
-static int renaming;		/* 1: the entry at the cursor is being given a name, typed in the status line; 2: a path is typed, in its field */
+static int renaming;		/* 1: the entry at the cursor is being given a name, typed over its own; 2: a path is typed, in its field */
 static char typed[128];
+static int edit_at, edit_from, edit_left, edit_w;	/* the name typed: its caret, the selection's other end, the first letter shown, the box's width */
+static void edit_draw(void);
 static char notice[160];
 static char history[16][512];
 static int history_at, history_count;
 static int press_tile = -1, press_x, press_y;	/* where the left button went down, on the screen */
+static int press_narrow;	/* it went down on one of several selected: let go there, that one alone is */
 static unsigned press_time;
 static int click_tile = -1;
 static unsigned click_time;
@@ -99,7 +105,7 @@ static char ahead[24];		/* letters typed one after another: the entry that start
 static unsigned ahead_time;
 
 enum { M_OPEN = 1, M_EDIT, M_CUT, M_COPY, M_PASTE, M_PASTE_IN, M_RENAME, M_DELETE, M_SHORTCUT, M_PROPERTIES,
-	M_TILES, M_DETAILS, M_REFRESH, M_FOLDER, M_FILE, M_ARRANGE, M_SETTINGS, M_FILES, M_ALL, M_TERMINAL, M_TERMINAL_IN };
+	M_TILES, M_DETAILS, M_REFRESH, M_FOLDER, M_FILE, M_ARRANGE, M_SETTINGS, M_FILES, M_ALL, M_TERMINAL, M_TERMINAL_IN, M_PERSIST };
 
 static unsigned
 milliseconds(void)
@@ -108,6 +114,24 @@ milliseconds(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	return (unsigned)now.tv_sec * 1000u + (unsigned)(now.tv_nsec / 1000000);
+}
+
+/* Something that went wrong, said in a window of nxask's beside this one (the desktop waits for
+ * nothing), and in the status line. */
+static void __attribute__((format(printf, 2, 3)))
+report(const char *title, const char *format, ...)
+{
+	char text[400];
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(text, sizeof text, format, list);
+	va_end(list);
+	snprintf(notice, sizeof notice, "%s", text);
+	for (char *c = notice; *c; c++)
+		if (*c == '\n')
+			*c = ' ';
+	ui_launch_report(title, text);
 }
 
 /* A text into a place of `size` bytes, cut to fit (what snprintf "%s" does, without it). */
@@ -650,6 +674,10 @@ draw_desktop_icon(int i)
 		}
 	}
 	draw_icon(GR_ROOT_WINDOW_ID, e->x + (CELL_W - 32) / 2, e->y + 2, e, 32);
+	if (renaming == 1 && i == cursor) {
+		edit_draw();
+		return;
+	}
 	for (k = 0; k < e->lines; k++) {
 		int tx = e->x + (CELL_W - e->line_w[k]) / 2, ty = e->y + 37 + k * 13;
 
@@ -665,6 +693,7 @@ draw_desktop_icon(int i)
 
 /* The desktop's picture, all of it or (the drawing clipped) what is behind one icon. */
 static int wall_waiting;	/* the chosen picture's decoded copy is being made */
+static int wall_turns;		/* quarter turns it is shown with (the viewer's Set as desktop) */
 
 static void
 draw_wall(void)
@@ -675,9 +704,11 @@ draw_wall(void)
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255));
 		return;
 	}
-	/* (a PPM's size is read when the choice is: this is drawn behind every icon that changes) */
-	if (!wall_w && !ui_picture_size(wall, &wall_w, &wall_h))
+	/* (a PPM's size is read when the choice is: this is drawn behind every icon that changes;
+	 * a picture turned in the viewer is decoded turned, whatever its kind) */
+	if (!wall_w && (wall_turns || !ui_picture_size(wall, &wall_w, &wall_h)))
 		wall_w = -1;
+	ui_picture_turns = wall_turns;
 	if (wall_w > 0)
 		ui_picture_sized(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK, wall_w, wall_h);
 	else if (!ui_picture_any(GR_ROOT_WINDOW_ID, wall, screen.cols, screen.rows, BLACK)) {
@@ -685,15 +716,25 @@ draw_wall(void)
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(0, 128, 128));
 		wall_waiting = 1;
 	}
+	ui_picture_turns = 0;
 }
 
 /* What the desktop shows (Settings writes it): a picture's path, or a colour. */
 static void
 read_wall(void)
 {
+	static char told[sizeof wall];	/* a missing picture is said once */
+	const char *kept = reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT);
+
 	wall_w = wall_h = 0;
 	wall_waiting = 0;
 	ui_wallpaper_choice(wall, sizeof wall);
+	wall_turns = ui_wallpaper_turns(wall);
+	if (wall[0] == '#' && kept[0] == '/' && strcmp(told, kept)) {
+		snprintf(told, sizeof told, "%s", kept);
+		report("Desktop picture", "The desktop's picture %.120s\ncannot be read (%s): the desktop shows a colour.\nSettings chooses another.", kept,
+		       strerror(access(kept, R_OK) == 0 ? EIO : errno));
+	}
 }
 
 static void
@@ -735,14 +776,20 @@ draw_tile(int i)
 		if (label[cut] != ' ')
 			cut = n;
 		tw = ui_width(&ui_var_widths, ui_var, label, cut);
-		ui_text(window, x + (w - tw) / 2, y + 38, label, cut, e->chosen ? WHITE : BLACK, 0);
-		if (label[n]) {
-			tw = fitted(label + cut + (label[cut] == ' '), 24, w - 4, name, sizeof name);
-			ui_text(window, x + (w - tw) / 2, y + 51, name, -1, e->chosen ? WHITE : BLACK, 0);
+		/* (a name being typed has its box where the name was) */
+		if (!(renaming == 1 && i == cursor)) {
+			ui_text(window, x + (w - tw) / 2, y + 38, label, cut, e->chosen ? WHITE : BLACK, 0);
+			if (label[n]) {
+				tw = fitted(label + cut + (label[cut] == ' '), 24, w - 4, name, sizeof name);
+				ui_text(window, x + (w - tw) / 2, y + 51, name, -1, e->chosen ? WHITE : BLACK, 0);
+			}
 		}
 	}
+	/* (inside the tile: ui_focus draws 2 pixels out, where the tile's own fill does not reach) */
 	if (i == cursor && !e->chosen)
-		ui_focus(window, x, y, w, h);
+		ui_focus(window, x + 2, y + 2, w - 4, h - 4);
+	if (renaming == 1 && i == cursor)
+		edit_draw();
 }
 
 static void
@@ -754,7 +801,7 @@ draw_status(void)
 	if (renaming == 2)
 		snprintf(text, sizeof text, "A folder's path: Enter goes there, Escape leaves it");
 	else if (renaming)
-		snprintf(text, sizeof text, "Name: %s_   (Enter names it, Escape leaves it)", typed);
+		snprintf(text, sizeof text, "A new name for %s: Enter gives it, Escape leaves the old one", entries[cursor].name);
 	else if (notice[0])
 		snprintf(text, sizeof text, "%s", notice);
 	else if (n > 1)
@@ -772,7 +819,7 @@ draw_status(void)
 	}
 	if (desktop) {
 		/* the desktop has no line of its own: a strip above the bar while there is something to say */
-		if (renaming || notice[0]) {
+		if (notice[0]) {
 			ui_fill(GR_ROOT_WINDOW_ID, 4, screen.rows - SCREEN_BAR - STATUS - 4, 440, STATUS, UI_FACE);
 			ui_text_fit(GR_ROOT_WINDOW_ID, 10, screen.rows - SCREEN_BAR - STATUS - 1, 428, text, BLACK);
 		}
@@ -831,6 +878,7 @@ draw_all(void)
 		draw_wall();
 		for (i = 0; i < count; i++)
 			draw_tile(i);
+		edit_draw();
 		draw_status();
 		return;
 	}
@@ -844,6 +892,7 @@ draw_all(void)
 	}
 	for (i = details ? top : top * columns; i < (details ? top + rows : (top + rows) * columns) && i < count; i++)
 		draw_tile(i);
+	edit_draw();
 	ui_scrollbar(window, width - UI_SCROLL_W, BAR, area, total_rows(), rows, top);
 	draw_status();
 }
@@ -875,6 +924,7 @@ refresh(void)
 		}
 		draw_tile(i);
 	}
+	edit_draw();
 	draw_status();
 }
 
@@ -1047,7 +1097,7 @@ static int
 go(const char *path, int remember)
 {
 	if (chdir(path) != 0) {
-		snprintf(notice, sizeof notice, "%.100s cannot be opened", path);
+		report("Cannot open the folder", "%.100s could not be opened:\n%s.", path, strerror(errno));
 		return 0;
 	}
 	read_folder();
@@ -1096,6 +1146,11 @@ open_entry(int i, int edit)
 
 		child = ui_run(dot && (!strcmp(dot, ".c") || !strcmp(dot, ".h")) ? "nxide" : "nxedit", path);
 	} else if (e->kind == K_SHORTCUT) {
+		if (!e->run[0]) {
+			ui_launch_started(0);
+			report("Could not start", "The shortcut %.60s names no program to start\n(it has no run= line).", e->name);
+			return;
+		}
 		child = run_command(e->run);
 	} else if (e->kind == K_PROGRAM) {
 		child = ui_run(path, NULL);
@@ -1145,24 +1200,74 @@ select_name(const char *name)
 		}
 }
 
+static char run_said[160];	/* the first line run_wait's program wrote to its errors, or why it did not run */
+
 /* Runs a program to its end; true if it said all went well. */
 static int
 run_wait(const char *program, const char *option, const char *from, const char *to)
 {
+	char said[40];
 	pid_t child;
-	int status = 0;
+	int status = 0, fd;
+	FILE *file;
 
+	snprintf(said, sizeof said, "/tmp/nxfiles-%d.said", (int)getpid());
+	fd = open(said, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	run_said[0] = 0;
 	ui_children_hold(1);	/* (the handler would take the child this waits for) */
 	child = real_vfork();
 	if (child == 0) {
 		ui_children_hold(0);
+		if (fd >= 0)
+			dup2(fd, 2);
 		execlp(program, program, option, from, to, (char *)NULL);
 		_exit(127);
 	}
+	if (child < 0)
+		snprintf(run_said, sizeof run_said, "%s could not be run: %s", program, strerror(errno));
 	if (child < 0 || waitpid(child, &status, 0) < 0)
 		status = -1;
 	ui_children_hold(0);
+	if (fd >= 0)
+		close(fd);
+	if (status && !run_said[0] && (file = fopen(said, "r")) != NULL) {
+		if (fgets(run_said, sizeof run_said, file))
+			run_said[strcspn(run_said, "\n")] = 0;
+		fclose(file);
+	}
+	if (status && !run_said[0])
+		snprintf(run_said, sizeof run_said, WIFSIGNALED(status) ? "%s was stopped by signal %d" : "%s said it failed (status %d)",
+			 program, WIFSIGNALED(status) ? WTERMSIG(status) : WEXITSTATUS(status));
+	unlink(said);
 	return status == 0;
+}
+
+/* An entry moved, or renamed. A file of the image (the ROM, under the overlay) is copied and
+ * its old name deleted: the overlay cannot rename it, its upper file system (memory) having no
+ * renames that leave a whiteout (EINVAL). True if done, or run_said says why not. */
+static int
+move_path(const char *from, const char *to)
+{
+	struct stat info;
+
+	if (rename(from, to) == 0)
+		return 1;
+	if ((errno != EINVAL && errno != EXDEV) || lstat(from, &info) != 0) {
+		snprintf(run_said, sizeof run_said, "%s", strerror(errno));
+		return 0;
+	}
+	/* (nor can such a folder be deleted, once its files are: it is not tried) */
+	if (S_ISDIR(info.st_mode)) {
+		snprintf(run_said, sizeof run_said, "a folder of the image (the ROM) can be copied, not moved or renamed");
+		return 0;
+	}
+	if (!run_wait("cp", "-a", from, to))
+		return 0;
+	if (unlink(from) == 0)
+		return 1;
+	snprintf(run_said, sizeof run_said, "the old one could not be deleted: %s", strerror(errno));
+	unlink(to);
+	return 0;
 }
 
 /* Remembers the selected entries for a Paste, in this window or another. */
@@ -1177,8 +1282,10 @@ carry(const char *how)
 		strcpy(notice, "nothing is selected");
 		return;
 	}
-	if ((file = fopen(CARRIED, "w")) == NULL)
+	if ((file = fopen(CARRIED, "w")) == NULL) {
+		report(how[1] == 'o' ? "Cannot copy" : "Cannot cut", "What was selected could not be remembered for a Paste:\n" CARRIED ": %s.", strerror(errno));
 		return;
+	}
 	fprintf(file, "%s\n", how);
 	for (i = 0; i < count; i++)
 		if (entries[i].chosen) {
@@ -1194,13 +1301,13 @@ carry(const char *how)
 static void
 paste(const char *into)
 {
-	char how[8] = "", from[600], name[160] = "";
+	char how[8] = "", from[600], name[160] = "", first[160] = "", why[160] = "";
 	const char *base, *dot;
 	FILE *file = fopen(CARRIED, "r");
 	int n, stem, done = 0, failed = 0;
 
 	if (into && chdir(into) != 0) {
-		strcpy(notice, "that could not be put there");
+		report("Cannot paste", "Nothing could be put into %.80s:\n%s.", into, strerror(errno));
 		if (file)
 			fclose(file);
 		return;
@@ -1221,10 +1328,12 @@ paste(const char *into)
 				if (access(name, F_OK) != 0)
 					break;
 			}
-			if (how[1] == 'u' ? run_wait("mv", "--", from, name) : run_wait("cp", "-a", from, name))
+			if (how[1] == 'u' ? move_path(from, name) : run_wait("cp", "-a", from, name)) {
 				done++;
-			else
-				failed++;
+			} else if (!failed++) {
+				snprintf(first, sizeof first, "%.100s", base);
+				snprintf(why, sizeof why, "%s", run_said);
+			}
 		}
 	if (file)
 		fclose(file);
@@ -1236,22 +1345,201 @@ paste(const char *into)
 	}
 	if (how[1] == 'u')
 		unlink(CARRIED);
-	strcpy(notice, failed ? "that could not be put here" : "");
 	read_folder();
 	select_name(into ? into : name);
+	notice[0] = 0;
+	if (failed == 1)
+		report(how[1] == 'u' ? "Cannot move" : "Cannot copy", "%s could not be %s to %.80s:\n%.120s.", first,
+		       how[1] == 'u' ? "moved" : "copied", into ? into : where, why);
+	else if (failed)
+		report(how[1] == 'u' ? "Cannot move" : "Cannot copy", "%d entries could not be %s to %.80s.\nThe first, %s:\n%.120s.",
+		       failed, how[1] == 'u' ? "moved" : "copied", into ? into : where, first, why);
 }
 
-/* Begins the typing of a name for the entry at the cursor. */
+/* Where a new name is typed: over the entry's own, under its icon or in the list's row. */
+static void
+edit_box(int *x, int *y, int *w, int *h)
+{
+	int tx = 0, ty = 0, tw = 0, th = 0;
+
+	tile_at(cursor, &tx, &ty, &tw, &th);
+	if (details) {
+		*x = tx + 20, *y = ty, *w = tw - 188, *h = ROW_H;
+		return;
+	}
+	/* as wide as the name was, up to two places, about the tile's middle and inside the view */
+	*w = edit_w < tw ? tw : edit_w > 2 * tw ? 2 * tw : edit_w;
+	*x = tx + (tw - *w) / 2;
+	*x = *x < (desktop ? 0 : side + 2) ? (desktop ? 0 : side + 2) : *x;
+	if (*x + *w > (desktop ? screen.cols : width - UI_SCROLL_W - 2))
+		*x = (desktop ? screen.cols : width - UI_SCROLL_W - 2) - *w;
+	*y = ty + 35, *h = 17;
+}
+
+/* The name being typed, the caret in view: the selected part lit, the caret a line where none is. */
+static void
+edit_draw(void)
+{
+	GR_DRAW_ID to = desktop ? GR_ROOT_WINDOW_ID : window;
+	int x, y, w, h, room, shown, lo = edit_at < edit_from ? edit_at : edit_from, hi = edit_at + edit_from - lo, a, b, ax, bx, ty;
+	const char *t = typed;
+
+	if (renaming != 1 || !tile_at(cursor, &x, &y, &w, &h))
+		return;
+	edit_box(&x, &y, &w, &h);
+	room = w - 7;
+	if (edit_left > edit_at)
+		edit_left = edit_at;
+	while (edit_left < edit_at && ui_width(&ui_var_widths, ui_var, t + edit_left, edit_at - edit_left) > room)
+		edit_left++;
+	shown = fits(t + edit_left, room);
+	a = lo < edit_left ? edit_left : lo > edit_left + shown ? edit_left + shown : lo;
+	b = hi < edit_left ? edit_left : hi > edit_left + shown ? edit_left + shown : hi;
+	ax = x + 3 + ui_width(&ui_var_widths, ui_var, t + edit_left, a - edit_left);
+	bx = x + 3 + ui_width(&ui_var_widths, ui_var, t + edit_left, b - edit_left);
+	ty = y + (h - 13) / 2;
+	ui_fill(to, x, y, w, h, WHITE);
+	GrSetGCForeground(ui_gc, BLACK);
+	GrRect(to, ui_gc, x, y, w, h);
+	if (b > a)
+		ui_fill(to, ax, y + 2, bx - ax, h - 4, UI_SELECTED);
+	if (a > edit_left)
+		ui_text(to, x + 3, ty, t + edit_left, a - edit_left, BLACK, 0);
+	if (b > a)
+		ui_text(to, ax, ty, t + a, b - a, WHITE, 0);
+	if (edit_left + shown > b)
+		ui_text(to, bx, ty, t + b, edit_left + shown - b, BLACK, 0);
+	if (lo == hi)
+		ui_fill(to, x + 3 + ui_width(&ui_var_widths, ui_var, t + edit_left, edit_at - edit_left), y + 2, 1, h - 4, BLACK);
+}
+
+/* The name's letter nearest a point of the box (a click in it puts the caret there). */
+static int
+edit_letter(int px)
+{
+	int x, y, w, h, n, at = edit_left, left, wide;
+
+	edit_box(&x, &y, &w, &h);
+	left = x + 3;
+	for (n = strlen(typed); at < n; at++, left += wide) {
+		wide = ui_width(&ui_var_widths, ui_var, typed + at, 1);
+		if (px < left + wide / 2)
+			break;
+	}
+	return at;
+}
+
+/* Begins the giving of a new name to the entry at the cursor, typed over its own name there,
+ * with the name selected but for its ending (as Windows does). */
 static void
 rename_begin(void)
 {
+	const char *dot;
+
 	if (cursor < 0) {
 		strcpy(notice, "nothing is selected");
 		return;
 	}
 	choose_only(cursor);
-	snprintf(typed, sizeof typed, "%s", entries[cursor].name);
+	kind_of(cursor);
+	if (!desktop && ((details ? cursor : cursor / columns) < top || (details ? cursor : cursor / columns) >= top + rows))
+		top = details ? cursor : cursor / columns;
+	snprintf(typed, sizeof typed, "%s", entries[cursor].kind == K_SHORTCUT ? entries[cursor].label : entries[cursor].name);
+	dot = strrchr(typed, '.');
+	edit_from = 0;
+	edit_at = entries[cursor].kind != K_FOLDER && entries[cursor].kind != K_SHORTCUT && dot && dot != typed ? (int)(dot - typed) : (int)strlen(typed);
+	edit_left = 0;
+	edit_w = ui_width(&ui_var_widths, ui_var, typed, -1) + 12;
 	renaming = 1;
+}
+
+/* A shortcut file's name= line made `name`: written beside it and put in its place. */
+static int
+shortcut_named(const char *file_name, const char *name)
+{
+	char line[160], part[140];
+	FILE *in = fopen(file_name, "r"), *out;
+	int fine = 0;
+
+	snprintf(part, sizeof part, "%s.new", file_name);
+	if (!in || (out = fopen(part, "w")) == NULL) {
+		snprintf(run_said, sizeof run_said, "%s", strerror(errno));
+		if (in)
+			fclose(in);
+		return 0;
+	}
+	fprintf(out, "name=%s\n", name);
+	while (fgets(line, sizeof line, in))
+		if (strncmp(line, "name=", 5))
+			fputs(line, out);
+	fclose(in);
+	fine = fclose(out) == 0 && rename(part, file_name) == 0;
+	if (!fine) {
+		snprintf(run_said, sizeof run_said, "%s", strerror(errno));
+		unlink(part);
+	}
+	return fine;
+}
+
+/* The name typed is the entry's, or (`keep` 0) the old one stays. False while the box stays up
+ * because the name could not be given. */
+static int
+rename_end(int keep)
+{
+	char old[128], label[40];
+	int shortcut = entries[cursor].kind == K_SHORTCUT;
+
+	if (renaming != 1)
+		return 1;
+	snprintf(old, sizeof old, "%s", entries[cursor].name);
+	snprintf(label, sizeof label, "%s", entries[cursor].label);
+	if (keep && shortcut && typed[0] && strcmp(typed, label)) {
+		/* a shortcut is named by its name= line, and its file after it */
+		if (strlen(typed) > sizeof label - 1) {
+			report("Cannot rename", "A shortcut's name has %d letters at most.", (int)sizeof label - 1);
+			return 0;
+		}
+		if (!shortcut_named(old, typed)) {
+			report("Cannot rename", "The shortcut %s could not be written:\n%s.", old, run_said);
+			return 0;
+		}
+		/* (the file keeps its own name where another has the new one, or it cannot be renamed) */
+		snprintf(label, sizeof label, "%s", typed);
+		snprintf(typed, sizeof typed, "%s.app", label);
+		if ((access(typed, F_OK) == 0 && strcasecmp(typed, old)) || !move_path(old, typed))
+			snprintf(typed, sizeof typed, "%s", old);
+		else if (desktop) {
+			snprintf(entries[cursor].name, sizeof entries[0].name, "%s", typed);
+			save_places();
+		}
+		renaming = 0;
+		read_folder();
+		select_name(typed);
+	}
+	if (keep && !shortcut && typed[0] && strcmp(typed, old)) {
+		if (!strcmp(typed, ".") || !strcmp(typed, "..")) {
+			report("Cannot rename", "%s cannot be named \"%s\":\nthat name is the folder's own.", old, typed);
+			return 0;
+		}
+		if (access(typed, F_OK) == 0 && strcasecmp(typed, old)) {
+			report("Cannot rename", "%s cannot be named %s:\nthere is one of that name here already.", old, typed);
+			return 0;
+		}
+		if (!move_path(old, typed)) {
+			report("Cannot rename", "%s cannot be named %s:\n%s.", old, typed, run_said);
+			return 0;
+		}
+		if (desktop) {
+			/* the icon keeps its place under its new name */
+			snprintf(entries[cursor].name, sizeof entries[0].name, "%s", typed);
+			save_places();
+		}
+		renaming = 0;
+		read_folder();
+		select_name(typed);
+	}
+	renaming = 0;
+	return 1;
 }
 
 static void
@@ -1272,11 +1560,11 @@ new_entry(int folder)
 	}
 	if (folder) {
 		if (mkdir(name, 0755) != 0)
-			strcpy(notice, "a folder cannot be made here");
+			report("Cannot make a folder", "A new folder could not be made in %.100s:\n%s.", where, strerror(errno));
 	} else if ((file = fopen(name, "w")) != NULL) {
 		fclose(file);
 	} else {
-		strcpy(notice, "a file cannot be made here");
+		report("Cannot make a file", "A new file could not be made in %.100s:\n%s.", where, strerror(errno));
 	}
 	read_folder();
 	select_name(name);
@@ -1299,7 +1587,7 @@ static void
 delete_chosen(void)
 {
 	static const char *const answers[] = { "Delete", "Cancel" };
-	char text[240];
+	char text[240], first[104] = "", why[160] = "";
 	int i, n = chosen_count(), failed = 0, done = 0, folders = 0, one = -1;
 
 	for (i = 0; i < count; i++)
@@ -1317,15 +1605,19 @@ delete_chosen(void)
 		return;
 	for (i = 0; i < count; i++)
 		if (entries[i].chosen) {
-			if (kind_of(i) == K_FOLDER ? run_wait("rm", "-rf", "--", entries[i].name) : unlink(entries[i].name) == 0)
+			if (kind_of(i) == K_FOLDER ? run_wait("rm", "-rf", "--", entries[i].name) : unlink(entries[i].name) == 0) {
 				done++;
-			else
-				failed++;
+			} else if (!failed++) {
+				snprintf(first, sizeof first, "%.100s", entries[i].name);
+				snprintf(why, sizeof why, "%s", entries[i].kind == K_FOLDER ? run_said : strerror(errno));
+			}
 		}
-	if (failed)
-		snprintf(notice, sizeof notice, "%d could not be deleted", failed);
 	if (done)
 		read_folder();
+	if (failed == 1)
+		report("Cannot delete", "%s could not be deleted:\n%.120s.", first, why);
+	else if (failed)
+		report("Cannot delete", "%d of the %d could not be deleted.\nThe first, %s:\n%.120s.", failed, n, first, why);
 }
 
 /* A shortcut to entry i on the desktop: what two clicks on the entry would do. */
@@ -1340,7 +1632,7 @@ shortcut_of(int i)
 	snprintf(file_name, sizeof file_name, DESKTOP "/%.60s.app", e->label);
 	mkdir(DESKTOP, 0755);
 	if ((file = fopen(file_name, "w")) == NULL) {
-		strcpy(notice, "the desktop cannot take a shortcut");
+		report("Cannot make a shortcut", "The shortcut %.80s could not be made:\n%s.", file_name, strerror(errno));
 		return;
 	}
 	fprintf(file, "name=%s\n", e->label);
@@ -1363,16 +1655,20 @@ static void
 properties(int i)
 {
 	char path[600];
+	pid_t child;
 
 	if (i < 0)
 		snprintf(path, sizeof path, "%s", where);
 	else
 		entry_path(i, path, sizeof path);
-	if (real_vfork() == 0) {
+	ui_exec_errno = 0;
+	if ((child = real_vfork()) == 0) {
 		signal(SIGCHLD, SIG_DFL);
 		execlp("nxfiles", "nxfiles", "--properties", path, (char *)NULL);
-		_exit(127);
+		ui_exec_failed();
 	}
+	if (child < 0 || ui_exec_errno)
+		report("Could not start", "The properties of %.100s could not be shown:\n%s.", path, strerror(child < 0 ? errno : ui_exec_errno));
 }
 
 /* When a file of the ROM was made, from /usr/share/rom-dates ("SECONDS /PATH" a line), or 0. */
@@ -1496,6 +1792,114 @@ properties_window(const char *path)
 	}
 }
 
+/* The bytes of a file, or of a folder with all it holds, as a copy that follows links has them. */
+static long
+bytes_in(const char *path, int depth)
+{
+	struct stat info;
+	struct dirent *item;
+	char inner[700];
+	long total = 0;
+	DIR *folder;
+
+	if (stat(path, &info) != 0)
+		return 0;
+	if (!S_ISDIR(info.st_mode))
+		return S_ISREG(info.st_mode) ? (long)info.st_size : 0;
+	if (depth > 16 || (folder = opendir(path)) == NULL)
+		return 0;
+	while ((item = readdir(folder)) != NULL)
+		if (strcmp(item->d_name, ".") && strcmp(item->d_name, "..")) {
+			snprintf(inner, sizeof inner, "%s/%s", path, item->d_name);
+			total += bytes_in(inner, depth + 1);
+		}
+	closedir(folder);
+	return total;
+}
+
+/* Bytes as kilobytes of a thousand, to a tenth (the host's "KB of 100"). */
+static const char *
+kilobytes(long bytes, char *text, int size)
+{
+	snprintf(text, size, "%ld.%ld KB", bytes / 1000, bytes % 1000 / 100);
+	return text;
+}
+
+/* Whether the folder shown is /persistence or in it. */
+static int
+in_persistence(void)
+{
+	return !strncmp(where, PERSIST, sizeof PERSIST - 1) && (where[sizeof PERSIST - 1] == 0 || where[sizeof PERSIST - 1] == '/');
+}
+
+/* Save to persistence: the selected entries copied into /persistence, unless the folder would
+ * then hold more than the host keeps; then it is asked whether to send it to the host now. */
+static void
+persist_chosen(void)
+{
+	static const char *const replace[] = { "Replace", "Cancel" }, *const send[] = { "Save now", "Later" };
+	char path[600], there[700], text[480], a[24], b[24], c[24], name[64] = "";
+	long have, adding = 0, replaced = 0, after;
+	int i, n = 0, there_already = 0, failed = 0;
+
+	for (i = 0; i < count; i++)
+		if (entries[i].chosen) {
+			entry_path(i, path, sizeof path);
+			snprintf(there, sizeof there, PERSIST "/%s", entries[i].name);
+			adding += bytes_in(path, 0);
+			if (access(there, F_OK) == 0)
+				replaced += bytes_in(there, 0), there_already++;
+			if (!n++)
+				snprintf(name, sizeof name, "%.60s", entries[i].name);
+		}
+	if (!n) {
+		strcpy(notice, "nothing is selected");
+		return;
+	}
+	if (n > 1)
+		snprintf(name, sizeof name, "These %d entries", n);
+	have = bytes_in(PERSIST, 0);
+	after = have - replaced + adding;
+	if (after > PERSIST_MOST) {
+		report("Not saved to persistence", "%s: %s, and /persistence holds %s already.\nTogether %s: more than the %ld KB the host keeps.\n"
+		       "Nothing was copied. Delete something in /persistence first.", name, kilobytes(adding, a, sizeof a),
+		       kilobytes(have - replaced, b, sizeof b), kilobytes(after, c, sizeof c), PERSIST_MOST / 1000);
+		return;
+	}
+	if (there_already) {
+		if (n == 1)
+			snprintf(text, sizeof text, "/persistence has a %s already.\nReplace it?", name);
+		else
+			snprintf(text, sizeof text, "/persistence has %d of these already.\nReplace them?", there_already);
+		if (ui_ask("Save to persistence", text, replace, 2, others) != 0)
+			return;
+	}
+	mkdir(PERSIST, 0755);
+	for (i = 0; i < count; i++)
+		if (entries[i].chosen) {
+			entry_path(i, path, sizeof path);
+			snprintf(there, sizeof there, PERSIST "/%s", entries[i].name);
+			if ((access(there, F_OK) == 0 && !run_wait("rm", "-rf", there, NULL)) || !run_wait("cp", "-RL", path, there)) {
+				if (!failed++)
+					report("Not saved to persistence", "%.60s could not be copied into /persistence:\n%.120s.", entries[i].name, run_said);
+			}
+		}
+	if (failed)
+		return;
+	snprintf(text, sizeof text, "%s %s in /persistence now: it holds %s of the %ld KB the host keeps.\n"
+		 "The host keeps the folder when it is saved. Save it now?", name, n > 1 ? "are" : "is", kilobytes(bytes_in(PERSIST, 0), a, sizeof a),
+		 PERSIST_MOST / 1000);
+	if (getenv("NXFILES_PRINT")) {
+		printf("nxfiles: saved to persistence: %s\n", name);
+		fflush(stdout);
+	}
+	ui_ask_icon = "information";
+	i = ui_ask("Saved to persistence", text, send, 2, others);
+	ui_ask_icon = NULL;
+	if (i == 0)
+		ui_run("nxpersist", "save");
+}
+
 /* The desktop's icons in rows again, columns from the left, in name order. */
 static void
 arrange(void)
@@ -1541,13 +1945,21 @@ choose_all(void)
 static void
 terminal_in(const char *folder)
 {
-	if (real_vfork() != 0)
+	pid_t child;
+
+	ui_exec_errno = 0;
+	if ((child = real_vfork()) != 0) {
+		/* (the child said why it did not become the terminal: ui_exec.h) */
+		if (child < 0 || ui_exec_errno)
+			report("Could not start", "A terminal could not be started in %.100s:\n%s.", folder ? folder : where,
+			       strerror(child < 0 ? errno : ui_exec_errno));
 		return;
+	}
 	signal(SIGCHLD, SIG_DFL);	/* (as ui_run: the child may do nothing here that writes our memory) */
 	if (folder && chdir(folder) != 0)
-		_exit(126);
+		ui_exec_failed();
 	execlp("nxterm", "nxterm", (char *)NULL);
-	_exit(127);
+	ui_exec_failed();
 }
 
 /* What a menu's row (or a key, or a button that does the same) does. */
@@ -1577,6 +1989,7 @@ act(int what)
 	case M_ALL: choose_all(); break;
 	case M_TERMINAL: terminal_in(NULL); return;
 	case M_TERMINAL_IN: if (cursor >= 0) terminal_in(entries[cursor].name); return;
+	case M_PERSIST: persist_chosen(); break;
 	}
 	draw_all();
 }
@@ -1610,6 +2023,8 @@ context_menu(int on, int x, int y, int keyboard)
 			ROW("Terminal in it", M_TERMINAL_IN, 0), menu[n - 1].icon = ui_icon_of("nxterm");
 		ROW("Rename", M_RENAME, UI_MENU_LINE);
 		ROW("Delete", M_DELETE, 0);
+		if (!in_persistence())
+			ROW("Save to persistence", M_PERSIST, 0), menu[n - 1].icon = ui_icon_of("persistence");
 		if (!desktop)
 			ROW("Shortcut on the desktop", M_SHORTCUT, UI_MENU_LINE);
 		ROW("Properties", M_PROPERTIES, UI_MENU_LINE);
@@ -1678,7 +2093,7 @@ drop_target(int x, int y, char *path, int size)
 static void
 drop(int x, int y, int wx, int wy, int copy)
 {
-	char target[512], from[600];
+	char target[512], from[600], first[104] = "", why[160] = "";
 	int i, on, moved = 0, failed = 0, dx = x - press_x, dy = y - press_y;
 	FILE *file;
 
@@ -1708,20 +2123,27 @@ drop(int x, int y, int wx, int wy, int copy)
 	for (i = 0; i < count; i++)
 		if (entries[i].chosen) {
 			char there[700];
+			int fine;
 
 			entry_path(i, from, sizeof from);
 			/* one of that name there already stays as it is: nothing is replaced unasked */
 			snprintf(there, sizeof there, "%s/%s", target, entries[i].name);
 			if (access(there, F_OK) == 0)
-				failed++;
-			else if (copy ? run_wait("cp", "-a", from, target) : run_wait("mv", "--", from, target))
-				moved++;
+				fine = 0, snprintf(run_said, sizeof run_said, "one of that name is there already, and stays");
 			else
-				failed++;
+				fine = copy ? run_wait("cp", "-a", from, target) : move_path(from, there);
+			if (fine)
+				moved++;
+			else if (!failed++)
+				snprintf(first, sizeof first, "%.100s", entries[i].name), snprintf(why, sizeof why, "%s", run_said);
 		}
-	snprintf(notice, sizeof notice, failed ? "%d could not go to %.100s (one of that name is there?)" : copy ? "%d copied to %.100s" :
-		"%d moved to %.100s", failed ? failed : moved, target);
+	snprintf(notice, sizeof notice, copy ? "%d copied to %.100s" : "%d moved to %.100s", moved, target);
 	read_folder();
+	if (failed == 1)
+		report(copy ? "Cannot copy" : "Cannot move", "%s could not be %s to %.80s:\n%.120s.", first, copy ? "copied" : "moved", target, why);
+	else if (failed)
+		report(copy ? "Cannot copy" : "Cannot move", "%d entries could not be %s to %.80s.\nThe first, %s:\n%.120s.", failed,
+		       copy ? "copied" : "moved", target, first, why);
 	draw_all();
 }
 
@@ -1771,53 +2193,78 @@ path_begin(void)
 	draw_status();
 }
 
-/* A key of the name being typed in the status line, or of the path in its field. */
+/* A key of the name being typed over an entry's: the caret and the selection move as in any
+ * field of text (Shift extends it, Ctrl+A takes it all), a letter replaces what is selected. */
 static void
-rename_key(int ch)
+edit_key(int ch, int modifiers)
+{
+	int n = strlen(typed), lo = edit_at < edit_from ? edit_at : edit_from, hi = edit_at + edit_from - lo;
+	int shift = (modifiers & MWKMOD_SHIFT) != 0, to = -1;
+
+	if (ch == MWKEY_ESCAPE || ch == MWKEY_ENTER || ch == '\n') {
+		if (rename_end(ch != MWKEY_ESCAPE))
+			draw_all();
+		return;
+	}
+	if (((modifiers & MWKMOD_CTRL) && (ch == 'a' || ch == 'A')) || ch == 1) {
+		edit_from = 0, edit_at = n;
+	} else if (ch == MWKEY_LEFT || ch == MWKEY_RIGHT || ch == MWKEY_HOME || ch == MWKEY_END) {
+		if (ch == MWKEY_LEFT)
+			to = !shift && lo != hi ? lo : edit_at > 0 ? edit_at - 1 : 0;
+		else if (ch == MWKEY_RIGHT)
+			to = !shift && lo != hi ? hi : edit_at < n ? edit_at + 1 : n;
+		else
+			to = ch == MWKEY_HOME ? 0 : n;
+		edit_at = to;
+		if (!shift)
+			edit_from = to;
+	} else if (ch == MWKEY_BACKSPACE || ch == MWKEY_DELETE || ch == 127 || (ch >= ' ' && ch < 127 && ch != '/' && !(modifiers & MWKMOD_CTRL))) {
+		if (lo == hi && (ch == MWKEY_BACKSPACE || ch == 127) && lo > 0)
+			lo--;
+		else if (lo == hi && ch == MWKEY_DELETE && hi < n)
+			hi++;
+		memmove(typed + lo, typed + hi, (size_t)(n - hi + 1));
+		n -= hi - lo;
+		if (ch >= ' ' && ch < 127 && n < (int)sizeof typed - 1) {
+			memmove(typed + lo + 1, typed + lo, (size_t)(n - lo + 1));
+			typed[lo++] = (char)ch;
+		}
+		edit_at = edit_from = lo;
+	} else {
+		return;
+	}
+	edit_draw();
+}
+
+/* A key of the path typed in its field. */
+static void
+rename_key(int ch, int modifiers)
 {
 	int n = strlen(typed);
 
+	if (renaming == 1) {
+		edit_key(ch, modifiers);
+		return;
+	}
 	if (ch == MWKEY_ESCAPE) {
 		renaming = 0;
 		draw_all();
 		return;
-	} else if (renaming == 2 && (ch == MWKEY_ENTER || ch == '\n')) {
+	} else if (ch == MWKEY_ENTER || ch == '\n') {
 		renaming = 0;
 		if (n)
 			go(typed, 1);	/* (a path that is no folder is said to be none) */
 		draw_all();
 		return;
-	} else if (ch == MWKEY_ENTER || ch == '\n') {
-		renaming = 0;
-		if (n && strcmp(typed, entries[cursor].name)) {
-			if (access(typed, F_OK) == 0) {
-				strcpy(notice, "there is one of that name already");
-			} else if (rename(entries[cursor].name, typed) != 0) {
-				strcpy(notice, "it cannot have that name");
-			} else {
-				if (desktop) {
-					/* the icon keeps its place under its new name */
-					snprintf(entries[cursor].name, sizeof entries[0].name, "%s", typed);
-					save_places();
-				}
-				read_folder();
-				select_name(typed);
-			}
-		}
-		draw_all();
-		return;
 	} else if (ch == MWKEY_BACKSPACE || ch == 127) {
 		if (n)
 			typed[n - 1] = 0;
-	} else if (ch > 32 && ch < 127 && (ch != '/' || renaming == 2) && n < (int)sizeof typed - 1) {
+	} else if (ch > 32 && ch < 127 && n < (int)sizeof typed - 1) {
 		typed[n] = ch, typed[n + 1] = 0;
 	} else if (ch == ' ' && n && n < (int)sizeof typed - 1) {
 		typed[n] = ' ', typed[n + 1] = 0;
 	}
-	if (renaming == 2)
-		draw_path();
-	else
-		draw_status();
+	draw_path();
 }
 
 /* The icon of the desktop nearest the cursor's in a direction (dx, dy one of -1, 0, 1). */
@@ -1877,7 +2324,7 @@ key(const GR_EVENT *event)
 	int row = details ? 1 : columns;
 
 	if (renaming) {
-		rename_key(ch);
+		rename_key(ch, event->keystroke.modifiers);
 		return;
 	}
 	/* a letter with Ctrl comes as the letter with the modifier, or as its control code */
@@ -1958,6 +2405,7 @@ click(int i, const GR_EVENT *event)
 	int k, modifiers = event->button.modifiers;
 
 	press_tile = i;
+	press_narrow = 0;
 	press_x = event->button.rootx;
 	press_y = event->button.rooty;
 	press_time = now;
@@ -1997,9 +2445,11 @@ click(int i, const GR_EVENT *event)
 			entries[k].chosen = (k >= anchor && k <= i) || (k >= i && k <= anchor);
 		cursor = i;
 	} else if (!entries[i].chosen)
-		choose_only(i);	/* (one of several selected stays so: they may be about to be dragged) */
-	else
-		cursor = i;
+		choose_only(i);
+	else {
+		cursor = i;	/* (the others stay selected until the button is let go: they may be dragged) */
+		press_narrow = chosen_count() > 1;
+	}
 	refresh();
 }
 
@@ -2018,10 +2468,13 @@ watch(void)
 		/* Settings chose another picture and painted it over the icons */
 		static char chosen[sizeof wall];
 
-		char file[sizeof wall];
+		char file[sizeof wall], now[sizeof chosen];
+		int changed = reg_changed();
 
-		if (reg_changed() && strcmp(chosen, reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT))) {
-			snprintf(chosen, sizeof chosen, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
+		if (changed)	/* (the viewer's turn too: a picture turned again is the same file) */
+			snprintf(now, sizeof now, "%s|%.20s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT), reg_get(UI_WALLPAPER_TURN, ""));
+		if (changed && strcmp(chosen, now)) {
+			snprintf(chosen, sizeof chosen, "%s", now);
 			draw_all();
 		} else if (wall_waiting && ui_wallpaper_file(wall, file, sizeof file)) {
 			read_wall();	/* the decoded copy is there now */
@@ -2101,8 +2554,11 @@ main(int argc, char **argv)
 		GrSelectEvents(GR_ROOT_WINDOW_ID, DESK_EVENTS);
 		draw_all();
 	} else {
-		if (chdir(argc > 1 ? argv[1] : "/root") != 0)
+		if (chdir(argc > 1 ? argv[1] : "/root") != 0) {
+			report("Cannot open the folder", "%.100s could not be opened:\n%s. Files shows / instead.", argc > 1 ? argv[1] : "/root",
+			       strerror(errno));
 			chdir("/");
+		}
 		details = reg_int("files.details", 0) != 0;
 		sort_by = reg_int("files.order", 0);
 		sort_by = sort_by < 0 || sort_by > 2 ? 0 : sort_by;
@@ -2169,8 +2625,23 @@ main(int argc, char **argv)
 			/* (the root's client is told of a press in any window it has no other of: the bar's, a program's) */
 			if (desktop && event.button.subwid != GR_ROOT_WINDOW_ID)
 				break;
-			if (renaming) {
-				renaming = 0;	/* a click elsewhere leaves the name as it was */
+			if (renaming == 1) {
+				int bx, by, bw, bh;
+
+				edit_box(&bx, &by, &bw, &bh);
+				if (ui_inside(event.button.x, event.button.y, bx, by, bw, bh) && (event.button.changebuttons & GR_BUTTON_L)) {
+					edit_at = edit_letter(event.button.x);
+					if (!(event.button.modifiers & MWKMOD_SHIFT))
+						edit_from = edit_at;
+					edit_draw();
+					break;
+				}
+				/* a click elsewhere gives the name typed, as Windows does */
+				if (!rename_end(1))
+					break;
+				draw_all();
+			} else if (renaming) {
+				renaming = 0;	/* a click elsewhere leaves the path as it was */
 				draw_all();
 			}
 			if (notice[0]) {
@@ -2235,8 +2706,12 @@ main(int argc, char **argv)
 				click_tile = -1;
 				drop(event.button.rootx, event.button.rooty, event.button.x, event.button.y,
 					(event.button.modifiers & MWKMOD_CTRL) != 0);
+			} else if (press_tile >= 0 && press_narrow && (event.button.changebuttons & GR_BUTTON_L)) {
+				choose_only(press_tile);
+				refresh();
 			}
 			press_tile = -1;
+			press_narrow = 0;
 			break;
 		case GR_EVENT_TYPE_MOUSE_MOTION:
 			if (band && (event.mouse.buttons & GR_BUTTON_L)) {

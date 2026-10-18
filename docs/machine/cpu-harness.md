@@ -4,10 +4,20 @@
 shader machine runs three to four million instructions a second; what a program costs on it
 is a number of instructions, and that number does not depend on what runs them. So work that
 is about instructions (a game's logic, a frame's cost, a state sum, a test that a program
-still runs) does not need the graphics card. The interpreter runs about a hundred million
-instructions a second on one thread: Red Alert's check, from the shell prompt through the
-window system's start, the opening movie on three worker cores and 300 frames of a mission,
-is 5 seconds here and 90 in `rvc_harness`, with the same state sum.
+still runs) does not need the graphics card. The interpreter runs 100 to 200 million
+instructions a second on one thread (on 18 October 2026, 2.2 to 4 times what it ran before:
+the common instructions in handlers that jump to each other, the rest in the old step): Red
+Alert's check, from the shell prompt through the window system's start, the opening movie on
+three worker cores and 300 frames of a mission, is under 3 seconds here and 90 in
+`rvc_harness`, with the same state sum.
+
+The worker cores run on host threads (`--threads N`, or `RVC_THREADS`; the default is half the
+computer's threads, at most 8), after core 0's part of each pass and only when the last pass's
+workers ran 16,384 instructions or more. `--threads 1` gives the old order exactly, the same
+instructions on every core and the same console as before. With threads, a program whose
+workers wait on each other's words inside a pass counts other numbers of instructions from
+run to run (Quake's and nxphys's statistics, Quake III's passes); its sums do not change.
+`RVC_RACES` and `RVC_PROF` run the workers in order on one thread.
 
     bin\rvc_cpu.exe --quiet --uart-log logs\uart_x.log --expect "/ # " ^
         --send "nano-X -p & sleep 2; TDAWN_AUTO=1 RALERT_SIDE=soviet RALERT_SEED=7 RALERT_FRAMES=300 ralert; echo LX-''DONE\n" ^
@@ -47,7 +57,9 @@ input and the control words stay the shader's passes, which is where they are ch
 
 - The processor runs passes until the devices have something to do (a list submitted, a
   picture to copy back) or a sixtieth of a second is over.
-- What it wrote of RAM since the last time goes into the state texture, in 4 MB bands: the
+- What it wrote of RAM since the last time goes into the state texture, in 4 MB bands (72; the
+  shader's mask has 32 bits, bit b standing for bands b, b + 32 and b + 64, `ram_bands` in
+  `src/types.h`, and the GPU's bands are drawn every commit, `_CommitAlways`): the
   GPU's memory and the control words every time they changed, Linux's own RAM (which only
   the memory view shows) four times a second while the view is open. The commit pass is told those bands (state
   texel (41, 0), where the tick pass says which it wrote) and carries them into the buffer it
@@ -100,10 +112,13 @@ to a folder of its own.
   each of fetch, read and write. No machine mode: as in the shader machine with `SBI_HLE`,
   every trap is the supervisor's and its `ecall` is answered in place (timer, console, the
   base extension).
-- **Memory**: 128 MB from `0x80000000` (Linux's RAM, then the GPU's and the control words, which
-  are RAM), the ROM at `0x40000000`, the parallel copy and fill (CSRs `0x0b0` to `0x0b3`, whose
+- **Memory**: 288 MB from `0x80000000` (Linux's RAM, the GPU's and the control words from
+  `0x86000000`, which are RAM, and Linux's again from `0x88000000`), the ROM at `0x40000000`, the parallel copy and fill (CSRs `0x0b0` to `0x0b3`, whose
   source may be the ROM), the clock chip and a UART that prints; the console ring of the
   kernel without an MMU (`docs/machine/console.md`, "Words in memory") is read in the control pass.
+  A copy from RAM to RAM is made after the cores' pass, 256 KB a pass for one core a pass, as
+  the shader machine makes it with RAM in one texture (`docs/machine/gpu.md`): its core runs
+  nothing until it is made (`RVC_COPY_STATS=1`: how many, and how many passes cores waited).
 - **A pass** is `--ticks` instructions (8,192), or fewer when the core waits (`wfi`, `pause`) or
   asks for a copy, as on the shader machine, and the host's part of the machine runs between
   passes: the clock word, the host flags, the pointer, what each core ran, and the GPU's
@@ -147,7 +162,7 @@ to a folder of its own.
   (without it `rvc_cpu` sets the bit itself; `docs/machine/multicore.md`, "A game's speed"). Every run
   ends with a `[cpu] stops:` line: the workers' faults, those on such a bit, and core 0's on
   one, from the mark too; `RVC_ADFAULT=2` prints each (`[adfault]`: core, cause, address, pc).
-- `--save-ram FILE` writes the 128 MB of RAM as the run ends: a picture in GPU memory at a
+- `--save-ram FILE` writes the 288 MB of RAM as the run ends: a picture in GPU memory at a
   hold can be read from it (the NES's at `0x87000400` plus what `nes: holding` prints).
 - A world's rounds in time: `--ticks 8192 --ips 1e12 --pass-ms 2.7307` makes every pass a
   round of 8,192 instructions at 3 MIPS a core, whatever it ran, so a program's own clock (the
@@ -169,7 +184,11 @@ desktop's programs (Paint's undo, the viewer's sums, Files' box, a question, the
 counts, the monitor, the launch note). One PASS or FAIL line a case with why and its seconds,
 a summary, and exit 1 on any failure; the consoles are in `build/test_all`. On 15 October 2026
 the default set was 65 cases in 55 to 70 s; on 17 October 109 in 130 s, on Linux without the
-MMU, its default image once made (`--image build/images/linux` is the legacy one).
+MMU, its default image once made (`--image build/images/linux` is the legacy one); on 18
+October 111 in 56 s. The longest cases start first, by the seconds each took last time
+(`build/test_all/times.json`), and each case's `rvc_cpu` gets the threads left over
+(`RVC_THREADS`); `--cpu FILE` runs another build of `rvc_cpu`. Red Alert's atlas, 3.8 billion
+instructions on core 0, is the 43 s at its end.
 
     python tools/test_all.py                 # the default set
     python tools/test_all.py games nes-cells # tags (machine, games, doom, quake, ..., workers, media, desktop) or names

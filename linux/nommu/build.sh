@@ -3,6 +3,7 @@
 #   bash linux/nommu/build.sh [script ...]     (paths under linux/, default all)
 set -uo pipefail
 NM=$HOME/nm
+mkdir -p "$NM"; exec 9>"$NM/build.lock"; flock 9   # one build of the shared copy at a time (sessions and agents share ~/nm)
 R=$NM/repo
 export WORK=$NM/work
 L=$NM/logs; mkdir -p "$L"
@@ -20,9 +21,12 @@ sed -i -e 's/^+#define DEF_COMHUNKMEGS \t32$/+#define DEF_COMHUNKMEGS \t8/' -e '
 sed -i 's/^exec quake3.bin +set fs_basepath/exec quake3.bin +set com_hunkMegs 8 +set com_zoneMegs 4 +set fs_basepath/' "$R/linux/quake3/build.sh"
 # busybox for a machine without an MMU
 grep -q 'set_option NOMMU y' "$R/linux/userland/busybox.sh" || sed -i 's/^set_option STATIC y$/set_option STATIC y\nset_option NOMMU y/' "$R/linux/userland/busybox.sh"
-ALL="userland/build.sh userland/busybox.sh nanox/build.sh libmedia/build.sh apps/build.sh play/build.sh video/build.sh raytrace/build.sh
-     imgui/build.sh pathtrace/build.sh physics/build.sh ide/build.sh quake/build.sh quake3/build.sh tdawn/build.sh ralert/build.sh
-     classicube/build.sh nes/build.sh micropolis/build.sh nanox/doom.sh halflife/build.sh tcc/build.sh"
+ALL="userland/build.sh userland/busybox.sh nanox/build.sh libmedia/build.sh apps/build.sh play/build.sh video/build.sh
+     raytrace/build.sh imgui/build.sh pathtrace/build.sh physics/build.sh quickjs/build.sh micropython/build.sh ide/build.sh
+     quake/build.sh quake3/build.sh tdawn/build.sh ralert/build.sh classicube/build.sh nes/build.sh micropolis/build.sh
+     nanox/doom.sh halflife/build.sh terminal/build.sh
+     ports/dropbear.sh ports/sftp.sh ports/curl.sh ports/socat.sh ports/thttpd.sh ports/pcre.sh ports/lockfile.sh ports/iproute2.sh
+     ports/at.sh tcc/build.sh"
 for s in ${*:-$ALL}; do
     t=$(date +%s)
     log=$L/$(echo "$s" | tr / -).log

@@ -12,33 +12,32 @@ public static partial class ShaderEmuBuilder
     // The board's "what you can do", here because the controllers' part of it is the longest.
     public const int DoSize = 21, DoHigh = 690, HowAt = 1370;   // the board's left column under it begins at HowAt
     public const string DoText =
-        "Press POWER on the computer's tower, right of the desk (or on the control panel). Linux boots in a few " +
-        "seconds and starts the desktop.\n\n" +
-        "DISPLAY: each hand's beam is the mouse (trigger = left, grip = right, right stick = wheel).\n" +
-        "Keyboards on the desk: both hands type, or press 'Use my keyboard' to use your real one. Over the " +
-        "display's keyboard: a field to paste text into, and one for a link the computer is to open (a page, a " +
-        "picture, a game, a file).\n" +
-        "The desktop's icons and the Start menu (or the Win key): old games (Doom, Quake, Red Alert, Command " +
-        "& Conquer, a NES, a block world), a music and a video player, pictures, the Web (a fixed list of sites: " +
-        "VRChat lets a world load only addresses it was built with), and an IDE to write C in, with the " +
-        "machine's own compiler and a debugger. A right click is a menu; icons and files are dragged.\n" +
-        "CONSOLE: the machine's serial line. Four terminals (the buttons above it), and a field over its " +
-        "keyboard to paste text into.\n" +
-        "MEMORY: all of the machine's memory at once; what is being written glows.\n\n" +
-        "HOLODECKS, through the doorway in the left wall: eight rooms, a seat each. Sit down and a 3D game's " +
-        "world is round you; the console at your right hand has the room's keys and a screen, where others " +
-        "see your display. In a headset your controllers are the game's while you sit, set for the game " +
-        "whose window is in front; BOTH GRIPS held for a second, or the console's Exit, stands you up.\n" +
-        "SHOOTER (Quake, Doom): left stick walks and steps aside, right stick turns and looks, right " +
-        "trigger fires, left trigger jumps or opens, right grip next weapon, left grip Esc, jump Enter.\n" +
-        "POINTER (the desktop, Red Alert, Command & Conquer): right stick moves the pointer, the triggers " +
-        "are the mouse's buttons, left stick scrolls the map, right grip with the right stick is the wheel.\n" +
-        "PAD (the NES): left stick the pad, right trigger A, left trigger B, jump Start, right grip Select.\n" +
-        "BLOCKS (the block world): left stick walks, right stick looks, right trigger digs, left builds.\n" +
-        "HANDS (the physics demo): a hand's trigger or grip takes the box it is at or points at, and lets it " +
-        "fly; left stick walks, right stick turns, up fires a box, down begins again, jump the next scene.\n\n" +
-        "CLASSROOM: twelve computers. Press POWER on a free one and your machine starts there; EXIT on " +
-        "its tower gives the place up.";
+        "Press POWER on the computer's tower, right of the desk (or on the control panel). Your machine " +
+        "boots Linux in a few seconds and starts the desktop.\n\nDISPLAY: each hand's beam is the mouse " +
+        "(trigger = left, grip = right, right stick = wheel).\nKeyboards on the desk: both hands type, or " +
+        "press 'Use my keyboard' to use your real one. Over the display's keyboard: a field to paste text " +
+        "into, and one for a link the computer is to open (a page, a picture, a game, a file).\nThe desktop's " +
+        "icons and the Start menu (or the Win key): games (Doom, Quake, Quake III Arena, Half-Life: Uplink, " +
+        "Red Alert, Command & Conquer, Micropolis, a NES, a block world), a music and a video player, " +
+        "pictures, the Web (a fixed list of sites, or a link you paste), an IDE for C with the machine's own " +
+        "compiler and debugger, and Settings (the Windows 7 or the classic look). A right click is a menu; " +
+        "icons and files are dragged.\nCONSOLE: the machine's serial line. Four terminals (the buttons above " +
+        "it), and a field over its keyboard to paste text into.\nMEMORY: all of the machine's memory at once; " +
+        "what is being written glows.\n\nHOLODECKS, through the doorway in the left wall: eight rooms, a seat " +
+        "each. Sit down and a 3D game's world is round you; the console at your right hand has the room's " +
+        "keys and a screen, where others see your display. In a headset your controllers are the game's " +
+        "while you sit, set for the game whose window is in front; BOTH GRIPS held for a second, or the " +
+        "console's Exit, stands you up.\nSHOOTER (Quake, Quake III, Doom): left stick walks and steps aside, " +
+        "right stick turns and looks, right trigger fires, left trigger jumps or opens, right grip next " +
+        "weapon, left grip Esc, jump Enter.\nPOINTER (the desktop, Red Alert, Command & Conquer): right stick " +
+        "moves the pointer, the triggers are the mouse's buttons, left stick scrolls the map, right grip " +
+        "with the right stick is the wheel.\nPAD (the NES): left stick the pad, right trigger A, left trigger " +
+        "B, jump Start, right grip Select.\nBLOCKS (the block world): left stick walks, right stick looks, " +
+        "right trigger digs, left builds.\nHANDS (the physics demo): a hand's trigger or grip takes the box " +
+        "it is at or points at, and lets it fly; left stick walks, right stick turns, up fires a box, down " +
+        "begins again, jump the next scene.\n\nCLASSROOM: twelve computers. Press POWER on a free one and your " +
+        "machine starts there; the slider on its tower sets its speed (Snail to Turbo), EXIT gives the place " +
+        "up. PENS under this board draw in the air.";
 
     // The board's words written again into a scene that has a board, each at the largest size at
     // which it fits its box, and the plate lettered from them (no bake: the plate keeps its place).

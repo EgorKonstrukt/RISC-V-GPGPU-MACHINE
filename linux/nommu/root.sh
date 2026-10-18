@@ -5,6 +5,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 NM=$HOME/nm; R=$NM/repo; W=$NM/work
+mkdir -p "$NM"; exec 9>"$NM/build.lock"; flock 9   # one build of the shared copy at a time (sessions and agents share ~/nm)
 export PATH="$W/bin:$HOME/shaderemu-linux/toolchain/bin:$PATH"
 RT=$R/build/images/linux/root
 rv32-cc -O2 -w -I"$R/programs/mc" "$R/programs/mc/mctest.c" "$R/programs/mc/mcw.c" "$R/programs/mc/mcwx.c" -o "$NM/mctest" 2>&1 | head -5

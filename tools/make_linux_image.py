@@ -156,6 +156,10 @@ def add_link(data, directory, name, target):
     for at, n, kind, spec in entries(data, find_dir(data, folder or '/')):
         if n == leaf:
             listing = list(entries(data, find_dir(data, directory)))
+            for old, other, other_kind, _ in listing:   # a file of upstream's of that name is hidden, as add_file does
+                if other == name and other_kind != 1:
+                    data[old + 16] = ord('.')
+                    checksum_fix(data, old, name_end(data, old + 16) - old, old + 12)
             link_after(data, listing[-1][0], append(data, 0, spec if kind == 0 else at, name))
             return
     raise SystemExit('%s: nothing to link %s/%s to' % (target, directory, name))

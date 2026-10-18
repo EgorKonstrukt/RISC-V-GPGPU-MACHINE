@@ -10,10 +10,11 @@ Each tube shows its owner's display, or their console, to everybody.
 The computer is `world/pc.py`, modelled to real sizes: a 29 inch presentation monitor (27
 inches seen: 549 x 411 mm, so that a visitor without a headset can read it; case 645 x 533 x 518 mm)
 in two mouldings with a seam, slotted where its housing narrows; a mini tower on the table with
-a 5.25 inch CD-ROM drive, a spare bay that holds the place's key, a 3.5 inch floppy drive,
-power, reset and turbo keys, lamps, a lock and a grille, and behind it a PS/2 power supply's
-plate (80 mm fan, mains inlet and outlet, voltage switch), the board's sockets and seven card
-slots 0.8 inch apart, a network card in the sixth (thin coax, twisted pair and a link lamp); a
+a 5.25 inch CD-ROM drive, a spare bay that holds the place's key, a plain front under them
+where Unity lays the speed slider, power, reset and turbo keys, lamps, a lock and a grille, and
+behind it a PS/2 power supply's plate (80 mm fan, mains inlet and outlet, voltage switch), the
+board's sockets and seven card slots 0.8 inch apart, a sound card in the fourth (three jacks and
+the joystick's socket), a network card in the sixth (thin coax, twisted pair and a link lamp); a
 keyboard of 19 mm keys; a mouse on its mat; and their leads. Its
 lettering is decals. The picture is on the glass itself: the glass's texture coordinates are
 the picture's, and the glass is a lit, reflecting surface (`CRT.shader`).
@@ -114,6 +115,18 @@ the two numbers travel in the display stream's header (`docs/world/share.md`), a
 has, or whose machine is off, is dark. The den's own tower shows this visitor's. The DX2-66
 badge stays.
 
+**The speed's slider** on each tower stands where its floppy drive was, under the place's key
+(`StationSpeed` in `ShaderEmuStations.cs`, "Station N speed"): Snail to Turbo over it, and under
+it the instructions a frame of each step, 4k, 8k, 16k, 33k, 66k and 131k: steps 1 to 6 of the
+control panel's speed slider (`EmuMachine.speedSlider`, 2,048 doubled a step), which moves with
+it. It shows its owner's machine's step to everybody: the step travels in their `EmuShare` as
+`speed`, which `EmuStations.Assign` keeps equal to their slider. Only the owner can move it: on
+anybody else's client it is not interactable, and a move that gets through is put back
+(`EmuStations.SpeedMoved`). A free place's shows step 4. A step outside 1 to 6 set on the
+control panel shows at the slider's end. To test in play mode: `Take0` on "Stations", then set
+"Station 0 speed/Speed slider"'s value: the control panel's slider follows; set another
+place's: it goes back. Set the control panel's: the tower's follows within half a second.
+
 To test in play mode: `SendCustomEvent("Turbo")` and the like on "Station N tower hot" and
 "Station N monitor hot" of one's own place and of another; only one's own may change
 anything (`EmuMachine`'s speed mode, `EmuTerminal.Shown()`, `stationMode`, the links panel's
@@ -135,6 +148,25 @@ place). `speeds[N]`'s `_All` and `_Core` are ten times the machine's `mipsAll` a
   as `guards`: a lead drawn tight over the true edge was cut by it), and `drape.apart` says if
   one lies in a place's own lead. `LAID ...` in the build's output is a mistake in the layout,
   before anything falls.
+- **The hubs' supplies.** A hub has a barrel socket for its supply on its back beyond its
+  eighth port (`dc_inlet`; a hub on a tower has it at the end towards the tower's back,
+  `hub_power`). A plug-in supply of 44 x 58 x 50 mm (`adapter`: a moulded block narrowing to its
+  top, a rating plate, a strain relief its lead leaves by upwards) stands on socket 4 of the
+  strip of the row's second place (`HUB_SUPPLY`, `station(..., supply=True)`, which lets the
+  place's own leads fall round it too). Its lead (`supply` in `network`) falls with the hub's
+  others: from a hub on a tower round the tower's back corner and down by it (laid down the
+  back right of the plugs; it falls closer to the corner), over the table's back edge, along the floor before the strip (before where the mains
+  leads come down, and behind the network's leads rising to the hub) and up into the supply;
+  from the middle row's hub along the floor to the left, clear of the leads into it.
+- **The sound.** A place's sound card's line out (the jack beside its joystick socket) has a
+  lead to the monitor's two phono sockets (`station`): a 3.5 mm plug (`jack_plug`), a black
+  lead, a moulded Y (`y_split`) that hangs behind the monitor from two short tails, and a white
+  and a red phono plug (`rca_plug`), each on its socket. The lead lies on the table before the
+  picture's where there is room behind the monitor (and the keyboard's and the mouse's lanes
+  stay before it), else it hangs behind the table as the picture's does. The plugs reach the
+  monitor's and the tower's backs: the baked shells have no sockets standing out of them. The
+  den's computer has one too, from its line out up through the wall beside the screens' two
+  (`cables` in `world/computer.py`).
 - **Its lamps are Unity's.** The model has dull lenses only (a hub's eight, a card's one), and
   `stations.json` says where: `nic` and `nicSize` (the card's lens in a place's frame), `hubs`
   (each hub's place and turn, and four numbers a connected port: its lens's middle in the hub's
@@ -152,9 +184,13 @@ Every control and socket has its own legend, placed from its own position: `worl
 lists them, `world/textures.py` draws one picture a legend, and `pc.legend` puts it over (or
 under) its control. The monitor's terminal board is the table `BOARD` in `world/pc.py`, the
 tower's back `tower_back()`; the leads in `station()` end at those places, each in a plug whose
-shell reaches the panel (`dsub_plug`). Sockets are built to their standards' sizes (`DSUB`: a
-flange 12.55 mm high, 30.81 wide for 9 and 15 pins, 53.04 for 25; BNC 9.7 mm; phono 8.3;
-DIN 13.2; IEC C14 and C13). The den's own tower is the same case: the bake writes the tower
+shell reaches the panel (`dsub_plug`, `rca_plug`, `jack_plug`). Sockets are built to their
+standards' sizes (`DSUB`: a flange 12.55 mm high, 30.81 wide for 9 and 15 pins, 53.04 for 25;
+BNC 9.7 mm; phono 8.3; DIN 13.2; IEC C14 and C13), and so are the plugs: a 3.5 mm plug's grip
+6.4 mm across, a phono plug's 10.4, a supply's barrel plug's 9.6. The tower's front has no
+floppy drive since 18 October 2026: under the blank bay it is plain, and Unity lays the speed
+slider there (a plate of about 146 x 42 mm round the old drive's middle, `TowerSpeedBay` in
+`ShaderEmuStations.cs`). The den's own tower is the same case: the bake writes the tower
 alone as `pc_tower`, which `world/computer.py` places. The key in the tower's spare bay says
 whose the place is and, under it, what a press does (`EmuStations.modes`).
 

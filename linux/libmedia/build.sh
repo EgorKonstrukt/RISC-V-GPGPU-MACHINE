@@ -46,7 +46,7 @@ python3 "$REPO/linux/video/plm_window.py" "$BUILD/pl_mpeg.h"
 python3 "$REPO/linux/video/plm_fast.py" "$BUILD/pl_mpeg.h"
 
 # What each part is built from; the decoders at -O3 with loops unrolled (docs/apps/play.md).
-PICTURES="m_core m_simple m_png m_png_enc m_jpeg m_jpeg_enc m_gif m_gif_enc"
+PICTURES="m_core m_simple m_png m_png_enc m_jpeg m_jpeg_enc m_gif m_gif_enc m_inflate"
 AUDIO="m_audio m_audio_mod m_audio_mp3 m_audio_mp3dec m_audio_mp3half m_audio_flac m_audio_vorbis"
 VIDEO="m_vq m_video m_video_mpeg m_video_vqa m_avi"
 DECODE="-O3 -fno-tree-vectorize -fsched-pressure -funroll-loops"

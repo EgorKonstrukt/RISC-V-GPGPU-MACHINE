@@ -620,6 +620,74 @@ frame than it gained ("The server's frame made shorter"), and telling while the 
 meets its moves in the client's record. The routes a helper makes are not shared with the
 others, and their chunks are freed only with the level.
 
+## Traces and messages made cheaper
+
+The server's worker per frame of the game (`game_par.py quake3` and `quake3-3bots`, `rvc_cpu`,
+frames 300 to 700, seven typings: salts 0, 1, 10, 100, 1000, 10000, 100000; 18 October 2026):
+
+| | Instructions a frame of the game (bots, game, telling) | Frames of the game a second | Passes each |
+|---|---|---|---|
+| one bot, before | 185.1k (84, 34, 28) | 16.3 | 24.5 |
+| one bot, after | 146.1k (59, 26, 31) | 18.7 | 21.4 |
+| three bots, before | 287.8k (101, 106, 39) | 9.5 | 44.6 |
+| three bots, after | 229.1k (78, 78, 39) | 12.1 | 33.6 |
+
+Each gives the answer it gave (`quake3.patch`):
+
+- **A leaf lists its patches alone** (`cm.se_leafpatches`, made as the map loads): a trace went
+  over every surface of a leaf for the few that are patches. `CM_TraceThroughLeaf` keeps the
+  core, its marks and the leaf's lists in registers and tests a brush's box inline; the core is
+  asked once a trace (`tw.se_w`), and `CM_Trace` clears only what is read before it is set.
+- `CM_PointContents` makes the point's box once, not for every brush; `SV_AreaEntities_r` keeps
+  the box in registers and takes the entity from `gEnt`; `SV_Trace` no longer clears its clip.
+- **A Pmove keeps its ground's trace and the water's contents** for the same origin
+  (`se_ground`, `se_water` in `bg_pmove.c`): the end of a step asks what the next step asks.
+- **The bots' library**: `AAS_TraceClientBBox` goes on to a node's child without the stack when
+  the piece lies on one side; an area with no entity is passed without a box and a cleared trace
+  (`AAS_AreaEntityCollision`). A bot's look at an entity asks the contents at its eye once a
+  think and at the entity's middle once for both uses (`BotEntityVisibleNow`).
+- **A message's bits go in and come out at once** (`MSG_ReadBits`, `MSG_WriteBits`): the coder
+  is the identity here (`huffman.c`), so a field is a shift of its bytes, not a call a bit.
+- A routing cache is filled before it is put in the shared list (`AAS_GetAreaRoutingCache`,
+  `AAS_GetPortalRoutingCache`): a think on a helper beside could find one there half made.
+
+With one bot the frames a second gain less than the instructions: a job ended waits for the
+first core to see it (`SE_ServerPoll`), and the client's frames went from 5.83 passes to 6.15,
+with more snapshots to read. Checks: `tools/test_all.py quake3 --long` 5 of 5, `quake3-server`'s
+223 sums of the one bot's game as before; with `--races` nothing undone (`quake3-bots-serial`
+there ended a frame of the game earlier, 222 lines, the thinks at once the same 222).
+Left: the bots' moves are most of what is left (`BotMoveInDirection` 47 thousand instructions a
+call, nearly all `AAS_TraceClientBBox` and contents), then the player's moves (a Pmove a packet).
+
+**Time behind made up, not dropped** (the same day). A job of the worker's took at most
+`MOST_MSEC`, 200 ms of the game (two frames at `sv_fps 10`), and what the client's frames had
+added beyond was dropped: 15% of the game's time with one bot (`QUAKE3_SERVER_LOG=1`). A job now
+takes up to `JOB_MSEC`, 500 ms, five frames of which the last tells the clients
+(`server_shaderemu.c`; the server on the first core still takes 200 a time). In the frames that
+tell nothing the bots' snapshots are still made (`SE_SendBotSnapshots` in `sv_snapshot.c`), so
+a bot sees each frame what it would see told, as with the server inline; before, it saw the
+last told one. An area with entities in it no longer clears a trace it never reads
+(`AAS_AreaEntityCollision`).
+
+| Seven typings as above | Server's frames of the game a second | Passes each | Instructions a frame | Client's frames a second |
+|---|---|---|---|---|
+| one bot, before both | 16.3 | 24.5 | 185.1k | 70.2 |
+| one bot, cheaper traces | 18.7 | 21.4 | 146.1k | 67.2 |
+| one bot, time made up | 20.7 (+27%) | 19.4 | 137.1k | 67.3 |
+| three bots, before both | 9.5 | 44.6 | 287.8k | 62.4 |
+| three bots, cheaper traces | 12.1 | 33.6 | 229.1k | 57.0 |
+| three bots, time made up | 12.9 (+35%) | 31.2 | 222.1k | 55.7 |
+
+With one bot the server is near what the client's frames give it: 33 ms of the game a client
+frame, a third of a server's frame, so 0.33 of the client's frames a second (91 to 95% of it
+reached). The player is told once a job, now up to five frames apart where two before; the
+client's frames a second went down with that and with the fights the typings give. Tried:
+`JOB_MSEC` 300, 19.5 and 12.4 frames a second; 1000, 21.9 and 13.9, more than 500 but
+up to ten frames between two messages to the player; the bots' snapshots only in the frames that
+tell, 21.4 and 14.1 (a bot sees what is up to four frames old). Checks as above: 5 of 5, the 223
+sums of `quake3-server` the same, `--races` nothing undone (`quake3-bots-serial` 222 lines there,
+the thinks at once the same 222).
+
 ## The client's frame on three cores
 
 With the server's frame made shorter a client's frame was 7.4 passes with one bot and 8.3 with
@@ -711,7 +779,10 @@ Found on the way:
   counts were only printed, and are not kept now.
 - With three bots and the server on the first core, `QUAKE3_BOTS=serial` and the thinks at once
   part from the game's third frame on in some builds (the build before this work too, `QUAKE3_SEED=7`
-  to frame 700: 2 of 223 the same; in others 222 of 222): not looked into.
+  to frame 700: 2 of 223 the same; in others 222 of 222). It goes by the length of the line
+  typed: the build before the cheaper traces parted at 3 of 8 lengths (a variable of 1 to 8
+  letters before the command), and a build whose helpers thought one after another at 4 of 8.
+  `RVC_RACES` found only reads as they were. Not found.
 - With three bots two builds' `q3srvsum:` lines part from the game's second frame on, also this
   build's and the same with two prints added: the game's random numbers are seeded from the clock
   as the level starts (`GAME_INIT`'s `Com_Milliseconds`). Builds are compared with one bot.

@@ -11,15 +11,17 @@ and the starter then says the data is missing. The download and unpacking happen
 
     wsl -- bash linux/nommu/build.sh halflife/build.sh
     pwsh tools/make_image.ps1
-    halflife +map hldemo1          (in the image; the desktop's and the start menu's Half-Life: Uplink)
+    halflife                       (in the image; the desktop's and the start menu's Half-Life: Uplink)
+    halflife -dev 1 +map hldemo1   (straight into the level, its messages on the console)
 
 The icon is Xash3D FWGS's own (`linux/apps/icons/halflife.png`).
 
-The engine's changes are `linux/halflife/xash3d.patch` and `hlsdk.patch`; the machine's own
-parts are beside them: OpenGL 1.1 on the GPU (`gl_shaderemu.c`), the level kept in GPU memory
-(`gl_kept.c`), studio models on workers (`gl_studio_job.c`), the server's frame on a worker
-(`sv_shaderemu.c`), the window (`vid_shaderemu.c`), the sound card (`snd_shaderemu.c`) and
-libmedia's pictures and sounds (`img_media.c`, `snd_media.c`).
+The engine's changes are `linux/halflife/xash3d.patch`, `hlsdk.patch` and `mainui.patch` (the
+menus); the machine's own parts are beside them: OpenGL 1.1 on the GPU (`gl_shaderemu.c`), the
+level kept in GPU memory (`gl_kept.c`), studio models on workers (`gl_studio_job.c`), the server's
+frame on a worker (`sv_shaderemu.c`), the window (`vid_shaderemu.c`), the films
+(`avi_shaderemu.c`), the sound card (`snd_shaderemu.c`) and libmedia's pictures and sounds
+(`img_media.c`, `snd_media.c`).
 
 ## The data
 
@@ -60,3 +62,60 @@ The pool is 7.27 MB. The menu's pictures (`pfnPIC_Load`) and the static light ma
 back when drawn. Blocks of 64 KB and more are taken from the top of the pool. Greyscale and
 4-bit pictures are paletted too. Without this the menu's pictures left no room for the light
 maps' atlas or the kept level, and the level was drawn unlit.
+
+## The start
+
+As the demo's launcher did: its splash (`logo.bmp`, drawn into the window as soon as the engine
+starts, `SE_Splash` in `vid_shaderemu.c`; `-nosplash` leaves it out), the opening film
+(`media/intro.avi`, the "Game of the Year" montage, 54 s, which Escape skips), then the main menu
+with the animated Uplink logo over it (`media/uplink.avi` as `logo.avi`). The menu is mainui's
+with `linux/halflife/mainui.patch`: for a game of one player (`type "singleplayer_only"` in
+`gameinfo.txt`, which the engine itself overrides for a folder called `valve`) it has the demo's
+buttons, New game, Configuration, Load game, View Readme.txt, Order Half-Life and Quit, without
+Multiplayer, Custom game or Previews; View Readme.txt shows the demo's `readme.txt` in a list
+(`menus/Readme.cpp`), and Order Half-Life opens the demo's own order page with `open`
+(`Platform_ShellExecute` in `sys_posix.c`). New game asks Easy, Medium or Difficult and starts
+hldemo1 at that skill. The menu's sounds are the launcher's (`media/launch_*.wav`, in pak0). No
+`liblist.gam` is copied: newer than `gameinfo.txt`, the engine would take Multiplayer and the
+first map from it. The engine reaches its first frame 2.5 s after it starts (`rvc_harness --cpu`).
+
+The films are played by `avi_shaderemu.c`, which replaces FFmpeg's: Microsoft RLE and plain
+8-bit frames, a picture a frame into one texture. A film's sound is played by the card where it
+lies in the ROM when it is one chunk: `data.py` moves the opening film's sound in front of its
+frames.
+
+## Speed
+
+`HL_MARK=FROM,TO` prints `hlmark: begins` and `hlmark: ends, N frames` at those seconds of the
+level, for `rvc_cpu --count-from` and `--until`. On 18 October 2026, hldemo1 on `rvc_cpu` (core 0
+a frame, frames a second at 428 passes a second):
+
+| | core 0 | fps |
+|---|---|---|
+| the start, 3 to 25 s | 182k | 18.2 |
+| the fight at 31 to 45 s (19 studio models, 51 solid entities) | 407k | 8.1 |
+
+A studio model's bones are set up ahead on four workers when the entities are emitted
+(`R_BonesAheadGive` in `gl_kept.c`), and the draw takes its rotation from there too
+(`SE_StudioRotationTaken`; `HL_ROTATION=inline` makes it at the draw, `HL_ROTATION=check`
+makes both and prints how many differ: it must say `0 of them wrong`). What is left of the fight
+on core 0 is many pieces: the studio models' draws 93k (their setup and hand-off to the jobs
+45k, light 12k, culling 8k), the player's prediction 48k, the entities' parse 40k and their
+emission 42k. A frame of 15 there needs the studio draws off core 0 whole, with their GL state.
+
+## The controls
+
+On a desktop the left button held drags the view round, a quarter of a degree a pixel, as
+Quake's and Quake III's; the right button fires and the middle one is the second fire. The
+pointer's travel is read from the machine's input words (`Platform_RunEvents`), and the window
+system is asked for events only when a button or a key changed and four times a second.
+
+## From the seat
+
+Played from the holodeck's seat the game reads the host's words (`docs/world/holodeck.md`,
+"Played from the seat"; `SE_SeatMove` and `SE_SeatView` in `vid_shaderemu.c`): the eye is 64
+units over the floor, the sticks walk and turn, the right trigger fires, the left is the second
+fire, Space jumps; with tracked hands the right hand aims and the view model is held in it; with
+a mouse it turns the view, 0.066 degrees a count. The picture drawn round the seat leaves no
+surface out (`r_nocull`). `HALFLIFE_SEAT=1` prints how it is seated every 20 frames, and
+`rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` walks a desktop's sitter forward.

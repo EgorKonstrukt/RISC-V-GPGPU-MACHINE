@@ -49,6 +49,7 @@ public class EmuShareHub : UdonSharpBehaviour
     private byte[] netScratch = new byte[NetBatchMost + 600];
     [HideInInspector] public int netBatches, netTaken;
     private const float TickSeconds = 0.1f;   // input every tick, a packet on two of three
+    private const float ExpressSeconds = 0.05f;   // the network's and the keys' sendings, at most this often
     // What each of the last packets carried, to send again when a receiver says one was lost.
     private const int Kept = 32, KeptMost = 96;
 
@@ -57,7 +58,7 @@ public class EmuShareHub : UdonSharpBehaviour
     private int shareCount;
     private VRCPlayerApi[] players = new VRCPlayerApi[100];
     private bool rosterDirty = true, incomplete, stateDirty = true, stateOut = true;
-    private float retryAt, nextTick;
+    private float retryAt, nextTick, sentAt = -10f;
     private int ticks, myId;
 
     private int picked = -1;          // -1: automatic; 0: this player's own; else a player
@@ -533,6 +534,16 @@ public class EmuShareHub : UdonSharpBehaviour
                 }
             }
         }
+        // The network's packets and typed keys do not wait for a tick either: they go the frame the
+        // link is free, half a tick after the last sending at the soonest (docs/system/lan.md)
+        if (mine != null && !mine.Busy() && !Networking.IsClogged && !(unitsActive && unitsPending)
+            && Time.time - sentAt >= ExpressSeconds
+            && (machine.NetWaiting() > 0 || outHead != outTail || pointerDue))
+        {
+            bool sent = MoveNet();
+            if (sent) netFlowAt = Time.time;
+            if (MoveInput() || sent) SendPacket(0, wasOn);
+        }
         if (Time.time < nextTick) return;
         nextTick = Time.time + TickSeconds;
         ticks++;
@@ -626,6 +637,7 @@ public class EmuShareHub : UdonSharpBehaviour
         mine.flags = (on ? 1 : 0) | (allow ? 2 : 0);
         mine.watching = target == myId ? 0 : target;
         mine.Send();
+        sentAt = Time.time;
         stateOut = false;
         if (selfTest && length > 0) streams.Received(mine);
     }

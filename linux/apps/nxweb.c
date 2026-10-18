@@ -1332,7 +1332,7 @@ strip_submit(int s)
 static int
 strips_open(void)
 {
-	extern char __DATA_BEGIN__[], _end[], __executable_start[], etext[];
+	extern char __DATA_BEGIN__[], _end[], _start[], etext[];
 	int k;
 
 	if (strip_workers < 0) {
@@ -1345,7 +1345,8 @@ strips_open(void)
 		strip_workers = strip_workers < STRIP_WORKERS ? strip_workers : STRIP_WORKERS;
 		if (strip_workers > 0) {
 			mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
-			mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+			/* (from _start: a flat program's __executable_start is 0) */
+			mcw_touch_code(_start, (unsigned)(etext - _start));
 			atexit(mcw_close);
 		} else
 			strip_workers = 0;

@@ -42,7 +42,7 @@ index 3a720ff3..66cf5450 100644
  
  // The simple drawing interface we'll pass back to the engine
 diff --git a/cl_dll/StudioModelRenderer.cpp b/cl_dll/StudioModelRenderer.cpp
-index 53d320a4..4724238d 100644
+index 53d320a4..3d6a8896 100644
 --- a/cl_dll/StudioModelRenderer.cpp
 +++ b/cl_dll/StudioModelRenderer.cpp
 @@ -797,6 +797,18 @@ void CStudioModelRenderer::StudioSetupBones( void )
@@ -98,7 +98,7 @@ index 53d320a4..4724238d 100644
  		m_pCurrentEntity->latched.prevframe = f;
  	}
  
-@@ -968,6 +991,46 @@ void CStudioModelRenderer::StudioSetupBones( void )
+@@ -968,6 +991,47 @@ void CStudioModelRenderer::StudioSetupBones( void )
  	}
  }
  
@@ -106,6 +106,7 @@ index 53d320a4..4724238d 100644
 +// bones set up ahead, if any: copied in, with the frame latched (gl_kept.c)
 +extern "C" int se_studio_no_followers;
 +extern "C" int ( *SE_StudioBonesTaken )( struct cl_entity_s *e, double clTime, float *bones, float *lights, int numbones, float *prevframe );
++extern "C" int ( *SE_StudioRotationTaken )( struct cl_entity_s *e, double clTime, float *rotation );
 +
 +bool CStudioModelRenderer::StudioBonesAhead( cl_entity_t *e, int core, double clTime, double clOldTime,
 +	float bones[][3][4], float lights[][3][4], float rotation[3][4], float *prevframe )
@@ -145,7 +146,7 @@ index 53d320a4..4724238d 100644
  /*
  ====================
  StudioSaveBones
-@@ -982,7 +1045,6 @@ void CStudioModelRenderer::StudioSaveBones( void )
+@@ -982,7 +1046,6 @@ void CStudioModelRenderer::StudioSaveBones( void )
  	pbones = (mstudiobone_t *)( (byte *)m_pStudioHeader + m_pStudioHeader->boneindex );
  
  	m_nCachedBones = m_pStudioHeader->numbones;
@@ -153,7 +154,34 @@ index 53d320a4..4724238d 100644
  	for( i = 0; i < m_pStudioHeader->numbones; i++ )
  	{
  		strcpy( m_nCachedBoneNames[i], pbones[i].name );
-@@ -1151,8 +1213,15 @@ int CStudioModelRenderer::StudioDrawModel( int flags )
+@@ -1130,6 +1193,26 @@ int CStudioModelRenderer::StudioDrawModel( int flags )
+ 	IEngineStudio.StudioSetHeader( m_pStudioHeader );
+ 	IEngineStudio.SetRenderModel( m_pRenderModel );
+ 
++#if XASH_SHADEREMU
++	// the rotation the bones ahead were made with; HL_ROTATION=check makes it here too and counts the ones that differ
++	static int rot_check = -1, rot_checked, rot_wrong, rot_draws;
++	if( rot_check < 0 )
++		rot_check = getenv( "HL_ROTATION" ) && !strcmp( getenv( "HL_ROTATION" ), "check" );
++	if( rot_check && ++rot_draws % 500 == 0 )
++		fprintf( stderr, "rotation: %d draws, %d taken, %d of them wrong\n", rot_draws, rot_checked, rot_wrong );
++	if( SE_StudioRotationTaken && SE_StudioRotationTaken( m_pCurrentEntity, m_clTime, (float *)m_protationmatrix ))
++	{
++		if( rot_check )
++		{
++			float taken[3][4];
++			memcpy( taken, *m_protationmatrix, sizeof( taken ));
++			StudioSetUpTransform( 0 );
++			rot_wrong += memcmp( taken, *m_protationmatrix, sizeof( taken )) != 0;
++			rot_checked++;
++		}
++	}
++	else
++#endif
+ 	StudioSetUpTransform( 0 );
+ 
+ 	if( flags & STUDIO_RENDER )
+@@ -1151,8 +1234,15 @@ int CStudioModelRenderer::StudioDrawModel( int flags )
  	}
  	else
  	{

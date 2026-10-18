@@ -202,7 +202,9 @@ What it does to the baked seams has not been measured: that needs a bake before 
 ## The board's words, and the world's listing
 
 The board's three long texts are constants (`WhatText` and `CreditsText` in
-`ShaderEmuDecor.cs`, `DoText` in `ShaderEmuGamepad.cs`). "ShaderEmu/Write the board's words
+`ShaderEmuDecor.cs`, `DoText` in `ShaderEmuGamepad.cs`); the control panel's words beside its
+switches are `PanelHelp` (`ShaderEmuTouch.cs`). Both say that "your machine" is a computer
+emulated in a pixel shader on the visitor's own graphics card. "ShaderEmu/Write the board's words
 again in the open scene" puts them into a scene that has a board, each at the largest size at
 which it fits its box (it logs the size and the height), and letters the plate again: no
 build, no bake.
@@ -234,6 +236,35 @@ turned and stretched, not static, on copies of its materials without the light v
 (`Generated/* by probes.mat`): with it the wood was black this close to the wall. The plate and
 the frame take the probes' light. After a change to `linux/apps/nxopen.conf`, a program's
 `nxopen.*` or `nxapps.*` line, or a program added to the image, edit the file and run the command.
+
+## Physical buttons
+
+The control panel's "Physical buttons" switch (`ShaderEmuTouch.cs`; off until a player turns it
+on, kept in their PlayerData as `buttons.physical`) lets a fingertip press what a beam presses,
+in a headset: `EmuPointer.Touch` takes the tip of each index finger (its last bone and 0.7 of
+that bone's length again) and
+
+- presses a keyboard's key when the tip comes within 4 mm of the keys' tops (or goes into
+  them, up to 5 cm), and lets it go when the tip is 12 mm clear: the keyboards a beam may
+  press, the classroom's only at the visitor's own place;
+- presses a button of a panel once when the tip reaches it, and again only after it has left
+  it (`Button.OnSubmit`, which is what VRChat's own click does), and moves a slider to where the
+  tip is across it. The panels are every canvas with a collider whose buttons or sliders a
+  laser presses (`TouchPanels`: 235 buttons and 47 sliders on 81 panels after the room was remodelled on 18 October 2026),
+  found by `Physics.OverlapSphere` round the tip, 5 cm. "Build world" and "Put the modelled room into the open scene"
+  make the list again; "ShaderEmu/Add physical buttons and the classroom's speed sliders to the
+  open scene" adds the switch and the list to a built scene, with the steady pointer's switch
+  under it (`docs/machine/input.md`).
+
+The holodecks' consoles (keys of a plate, not buttons) are not on the list. Not yet tried in a
+headset; in the editor the switch and its label were.
+
+## The pens
+
+ureishi's QvPen 3.3.5, as the fluid world has it: fifteen pens, three erasers and their keys in
+a row under the board on the den's left wall (`ShaderEmuPens.cs`, "ShaderEmu/Put the pens into
+the open scene"). It is a package of its own (`world/install_packages.py`), its prefab put in
+as it is, outside "ShaderEmu", so the restyle leaves its keys alone. Nothing of it is baked.
 
 ## The danger zone
 

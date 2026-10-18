@@ -1,5 +1,5 @@
 /*
-gl_studio_job.c - a studio model's vertices made by a worker core (docs/halflife.md)
+gl_studio_job.c - a studio model's vertices made by a worker core (docs/games/halflife.md)
 
 Included at the end of ref/gl's gl_studio.c. The first core sets each mesh's state and takes room
 for its triangles in the frame; a job then moves the vertices by their bones, lights the normals

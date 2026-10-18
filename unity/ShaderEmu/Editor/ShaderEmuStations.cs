@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using TMPro;
 using UdonSharpEditor;
 using UnityEditor;
+using UnityEditor.Events;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -295,6 +296,50 @@ public static partial class ShaderEmuBuilder
         return lamps;
     }
 
+    // The speed's slider on a tower, where its floppy drive was (under the place's key): its
+    // owner's machine's instructions a frame, Snail to Turbo, 4k to 131k (EmuMachine's steps 1 to 6).
+    const float TowerSpeedBay = 0.36f - 0.131f;
+    static readonly string[] SpeedSteps = { "4k", "8k", "16k", "33k", "66k", "131k" };
+    static Slider StationSpeed(Transform place, int s, EmuPlace own, StationsPlan plan)
+    {
+        const float wide = 146, high = 40, left = 8, right = 8, top = 12, row = 14;
+        string name = "Station " + s + " speed";
+        Gone(place, name);
+        RectTransform panel = Panel(place, name, new Vector3(plan.tower[0], TowerSpeedBay, plan.tower[1] + plan.tower[2] - 0.003f), Vector3.zero,
+                                    wide, high, new Color(0.05f, 0.055f, 0.07f));
+        Color dim = new Color(0.62f, 0.68f, 0.76f);
+        TextMeshProUGUI snail = Label(panel, "Snail", "Snail", left, 1, 50, 11, 8, TextAnchor.MiddleLeft, dim);
+        TextMeshProUGUI turbo = Label(panel, "Turbo", "Turbo", wide - right - 50, 1, 50, 11, 8, TextAnchor.MiddleLeft, dim);
+        turbo.alignment = TextAlignmentOptions.Right;
+        GameObject sliderObject = DefaultControls.CreateSlider(new DefaultControls.Resources());
+        sliderObject.name = "Speed slider";
+        RectTransform rect = sliderObject.GetComponent<RectTransform>();
+        rect.SetParent(panel, false);
+        rect.anchorMin = rect.anchorMax = new Vector2(0, 1);
+        rect.pivot = new Vector2(0, 1);
+        rect.anchoredPosition = new Vector2(left, -top);
+        rect.sizeDelta = new Vector2(wide - left - right, row);
+        Slider slider = sliderObject.GetComponent<Slider>();
+        slider.minValue = 1;
+        slider.maxValue = 6;
+        slider.wholeNumbers = true;
+        slider.value = 4;
+        foreach (Image part in sliderObject.GetComponentsInChildren<Image>())
+        {
+            part.material = UiMaterial();
+            part.color = part.name == "Handle" ? Color.white : part.name == "Fill" ? new Color(0.3f, 0.65f, 1f) : new Color(0.2f, 0.21f, 0.25f);
+        }
+        slider.handleRect.sizeDelta = new Vector2(9, 0);
+        DeafToWalking(slider);
+        // a step's name under each of the handle's places (its travel is the slider less a handle)
+        float travel = wide - left - right - 9;
+        for (int i = 0; i < SpeedSteps.Length; i++)
+            Label(panel, "Step " + SpeedSteps[i], SpeedSteps[i], left + 4.5f + travel * i / 5f - 12, top + row + 1, 24, 11, 7, TextAnchor.MiddleCenter, dim);
+        own.speed = slider;
+        UnityEventTools.AddStringPersistentListener(slider.onValueChanged, UdonSharpEditorUtility.GetBackingUdonBehaviour(own).SendCustomEvent, "SpeedMoved");
+        return slider;
+    }
+
     static void Stations(Transform world)
     {
         StationsPlan plan = ReadStations();
@@ -320,6 +365,7 @@ public static partial class ShaderEmuBuilder
         stations.netLamps = new Material[count];
         stations.beacons = new Material[count];
         stations.fieldSpots = new Transform[count];
+        stations.speedSliders = new Slider[count];
         Color red = new Color(1f, 0.08f, 0.04f), green = new Color(0.1f, 1f, 0.3f), amber = new Color(1f, 0.6f, 0.1f);
         TMP_FontAsset signFont = RetroFont("IBMPlexSansCondensed-Bold");
         foreach (EmuTerminal terminal in world.GetComponentsInChildren<EmuTerminal>(true)) stations.terminal = terminal;
@@ -375,6 +421,7 @@ public static partial class ShaderEmuBuilder
             own.stations = stations;
             own.place = s;
             placed.Add(own);
+            stations.speedSliders[s] = StationSpeed(place, s, own, plan);
 
             // whose it is, on a key in the tower's spare bay
             RectTransform panel = Panel(place, "Station " + s + " panel", new Vector3(towerX, TowerBlankBay, towerFront - 0.003f), Vector3.zero,
@@ -578,6 +625,7 @@ public static partial class ShaderEmuBuilder
             pointer.tubeBulge = 1.8f;      // world/pc.py's BULGE
             pointer.tubeGap = 0.024f;      // the plate is 12 mm before the glass's rim, the glass's middle 12 mm behind that
             pointer.tubeFill = TubeFill;
+            TouchPanels(world, pointer);   // the places' keys made anew: a fingertip's list too
             Apply(pointer);
             stations.pointer = pointer;
         }

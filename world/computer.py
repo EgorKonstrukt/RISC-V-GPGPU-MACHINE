@@ -206,6 +206,13 @@ def cables(b):
         cable(b, [(x + sx, sy, back + pc.PLUG_LONG - 0.01), (x + sx, sy, back + pc.PLUG_LONG + 0.012), (x + sx, sy + 0.04, back + pc.PLUG_LONG + 0.035),
                   (up, 0.50, back + 0.085), (up, 0.72, wall - 0.012), (up, 0.80, wall + 0.004)], 0.005, "PlasticGrey")
         b.lathe((up, 0.80, wall), [(0.011, 0), (0.014, 0.003), (0.014, 0.006), (0.008, 0.008)], "PlasticDark", segs=12, rot=(-90, 0, 0))
+    # its sound: from the sound card's line out up through the wall beside them (its own chance: the other leads keep theirs)
+    # (up close to the case, clear of COM 2's plug and under the mains lead, which lies further out)
+    jx, jy, up = x + 0.012, at["first"] - 3 * pc.SLOT_PITCH, x + 0.03
+    pc.jack_plug(b, jx, jy, back + 0.0018)
+    LAID.append(["sound", drape.ruffled(drape.curve([(jx, jy, back + pc.JACK_LONG - 0.002), (jx, jy, back + pc.JACK_LONG + 0.012), (x + 0.022, jy + 0.05, back + 0.046),
+                                                     (up, 0.45, back + 0.05), (up, 0.72, wall - 0.012), (up, 0.80, wall + 0.004)]), random.Random(43), up=0.01, wander=0.003), 0.002, "Rubber"])
+    b.lathe((up, 0.80, wall), [(0.011, 0), (0.014, 0.003), (0.014, 0.006), (0.008, 0.008)], "PlasticDark", segs=12, rot=(-90, 0, 0))
     run = HALF_D - 0.06   # the floor run, behind the strip
     clips = (x + 0.95, x + 1.4, RACK[0] - 0.7)   # over the run: a lead is held under each, and falls as it will between them
     nx, ny = x + at["lan"][0], at["lan"][1]   # the network card, in the sixth slot

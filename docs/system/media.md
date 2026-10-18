@@ -57,6 +57,13 @@ inside, rows on every core. `media_image_to_ppm` decodes a file into a PPM file 
 writing; without an MMU, where a file cannot be mapped so, the picture is made in memory and
 written after (`docs/system/nommu.md`).
 
+`media_progress`, when a program sets it, is called on the first core while a picture is
+decoded: done of total from the JPEG decoder's rows of blocks, a PNG's inflated bytes (one
+stream, every 32 KB) and the rows of `m_for`'s loops the first core runs (the fitting's
+among them), or 0 of 0 while the first core waits on the workers. Often, and from different
+stages: the program keeps the largest share and draws when it likes (`ui_decoding_told` in
+`linux/apps/ui.h`).
+
 What is parallel in each:
 
 | | How the work is shared | The file's own help |
@@ -520,6 +527,47 @@ Half-Life's pack has its maps, models and sprites so (`linux/halflife/repack.py`
 `media_test inflate FILE OUT [WORKERS]` prints the bytes and their FNV-1a sum. On the card a
 piece of 8 KB is some 160 thousand instructions, about 40 ms of one worker, which a small file
 waits for whole: Half-Life leaves files under 32 KB as they are.
+
+## One deflate stream on many cores
+
+A deflate stream someone else made (a `.gz`, a zip's entry) has no pieces, and
+`media_inflate_stream` (`m_inflate.c`) shares it out anyway, as pugz and rapidgzip do:
+
+    why = media_inflate_stream(in, in_size, out, room, &made, &used, &crc, workers);
+    why = media_inflate_one(in, in_size, out, room, &made, &used, &crc, scratch);  /* one core: a small one */
+
+- The compressed bytes are cut in parts of 32 KB, a core each, fewer than gzip's dynamic blocks
+  are apart (some 68 KB packed in a tar of source): every block is then the first of some part.
+  A part finds the first dynamic block header in its bits (a table of 13 bits for the type
+  and counts, one of 12 for the code lengths' code to be whole, then the whole header, its
+  symbols to the end of its block, and a good header after it), and inflates from there to
+  the next part's block. With 64 KB parts every third or fourth part found no block and its
+  neighbour made two: the busiest worker was 30.4 million instructions, now 21.9.
+- What it cannot know yet, a copy from the 32 KB before the part, it writes as a mark (16-bit
+  values: a byte, or 0x8000 and the place in the window before). Marks do not die out in text:
+  a part's last window still held 0 to 27,937 of them (a median of about 7,000), so the parts
+  are inflated twice. The first core walks the chain once, part after part, each part's last
+  32 KB made bytes from the window before it, and posts each part's second inflate, into its
+  place with its window known, to that part's worker as soon as its window is known.
+- The CRC-32 is sliced by eight on each part and the parts' sums joined (`media_crc32_join`);
+  the texels two parts share are put back as each part made them.
+- Fixed and stored blocks are only followed, never looked for: a stream of those is one part.
+
+What it costs, `rvc_cpu`, 255 workers, the busybox source as a 2,121,744-byte `.tar.gz`
+(8,816,640 bytes of tar) and the same files as a 2,673,622-byte zip (`unarc`, `docs/system/open.md`):
+
+| | busybox | `unarc` |
+|---|---|---|
+| `.tar.gz` unpacked into 2,116 files (`tar xzf`, `unarc tgz`) | 831.7 M on core 0, 252 s | 87.3 M, 30.8 s |
+| the zip (`unzip -q`, `unarc zip`) | 683.5 M, 207 s | 60.4 M, 20.1 s |
+| the `.gz` alone into one file (`unarc gz`) | | 35.0 M, 15.2 s |
+
+Of the `.gz`'s 15 s: reading the file 1 s, the parts' search and first inflate 4.5 s, the chain
+on the first core with the second inflates beside it 4 s, writing 8.8 MB into `/tmp` about a
+pass a page (1.5 s; `cat` of the same bytes is 2.2 s). Only 37 cores have a block to start
+from: deflate's blocks are what the stream can be cut at. On one core the same stream is 224 M
+(`symbols`, the decoding loop, some 15 instructions a byte; the CRC 5.5).
+`media_test gunzip FILE [WORKERS [OUT]]` prints the bytes, the CRC and the FNV-1a sum.
 
 ## On the card
 

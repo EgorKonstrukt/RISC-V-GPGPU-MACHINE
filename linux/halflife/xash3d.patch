@@ -1,3 +1,9 @@
+diff --git a/3rdparty/mainui b/3rdparty/mainui
+--- a/3rdparty/mainui
++++ b/3rdparty/mainui
+@@ -1 +1 @@
+-Subproject commit bb47191cec4f26093503be9f976d6f087886c403
++Subproject commit bb47191cec4f26093503be9f976d6f087886c403-dirty
 diff --git a/common/backends.h b/common/backends.h
 index e0cc14bc..4f046b10 100644
 --- a/common/backends.h
@@ -32,8 +38,23 @@ index 7cd9c1f9..c0e12a4b 100644
  	#elif XASH_LINUX // we are building for Linux without SDL, only framebuffer is supported for now
  		#define XASH_VIDEO     VIDEO_FBDEV
  		#define XASH_INPUT     INPUT_EVDEV
+diff --git a/engine/client/cl_font.c b/engine/client/cl_font.c
+index 35c2939c..789b7d90 100644
+--- a/engine/client/cl_font.c
++++ b/engine/client/cl_font.c
+@@ -238,6 +238,10 @@ int CL_DrawCharacter( float x, float y, int number, const rgba_t color, cl_font_
+ 	if( !FBitSet( flags, FONT_DRAW_NOCOLOR ))
+ 		CL_SetFontColor( font, color );
+ 
++#if XASH_SHADEREMU	// (black added is nothing: a message's letters not yet shown, or faded out)
++	if( !FBitSet( flags, FONT_DRAW_NOCOLOR | FONT_DRAW_NORENDERMODE ) && !( color[0] | color[1] | color[2] ) && CL_FontRenderMode( font->rendermode ) == kRenderTransAdd )
++		return font->charWidths[number];
++#endif
+ 	ref.dllFuncs.R_DrawStretchPic( x, y, w, h, s1, t1, s2, t2, font->hFontTexture );
+ 
+ 	return font->charWidths[number];
 diff --git a/engine/client/cl_frame.c b/engine/client/cl_frame.c
-index aace8cff..2718aac1 100644
+index aace8cff..dfcd120d 100644
 --- a/engine/client/cl_frame.c
 +++ b/engine/client/cl_frame.c
 @@ -359,14 +359,28 @@ static qboolean CL_FindInterpolationUpdates( cl_entity_t *ent, double targettime
@@ -220,7 +241,7 @@ index aace8cff..2718aac1 100644
  
  		qboolean player = CL_IsPlayerIndex( newnum );
  
-@@ -1284,8 +1414,51 @@ add visible entities to refresh list
+@@ -1284,8 +1414,52 @@ add visible entities to refresh list
  process frame interpolation etc
  ===============
  */
@@ -231,6 +252,7 @@ index aace8cff..2718aac1 100644
 +void ( *SE_StudioAheadReady )( void );
 +int se_studio_no_followers;	// no model drawn this frame follows another: their bones need not be kept (gl_kept.c)
 +int ( *SE_StudioBonesTaken )( cl_entity_t *e, double clTime, float *bones, float *lights, int numbones, float *prevframe );
++int ( *SE_StudioRotationTaken )( cl_entity_t *e, double clTime, float *rotation );	// (the rotation the bones ahead were made with)
 +#endif
 +
 +#if XASH_SHADEREMU
@@ -272,7 +294,7 @@ index aace8cff..2718aac1 100644
  	if( cl.paused ) return; // don't waste time
  
  	// not in server yet, no entities to redraw
-@@ -1297,6 +1470,9 @@ void CL_EmitEntities( void )
+@@ -1297,6 +1471,9 @@ void CL_EmitEntities( void )
  		return;
  
  	// animate lightestyles
@@ -282,7 +304,7 @@ index aace8cff..2718aac1 100644
  	ref.dllFuncs.CL_RunLightStyles( CL_GetLightStyle( 0 ));
  
  	// decay dynamic lights
-@@ -1330,6 +1506,10 @@ void CL_EmitEntities( void )
+@@ -1330,6 +1507,10 @@ void CL_EmitEntities( void )
  
  	// perfomance test
  	CL_TestLights();
@@ -294,10 +316,22 @@ index aace8cff..2718aac1 100644
  
  /*
 diff --git a/engine/client/cl_main.c b/engine/client/cl_main.c
-index 39e4f9c2..0a30c3ac 100644
+index 39e4f9c2..55f361c4 100644
 --- a/engine/client/cl_main.c
 +++ b/engine/client/cl_main.c
-@@ -831,6 +831,9 @@ static void CL_CreateCmd( void )
+@@ -807,6 +807,11 @@ static void CL_CreateCmd( void )
+ 	Platform_PreCreateMove();
+ 	clgame.dllFuncs.CL_CreateMove( host.frametime, cmd, active );
+ 	IN_EngineAppendMove( host.frametime, cmd, active );
++#if XASH_SHADEREMU
++	void SE_SeatMove( usercmd_t *cmd, qboolean active );
++	if( !cls.demoplayback )
++		SE_SeatMove( cmd, active );	// (a holodeck's seat: vid_shaderemu.c)
++#endif
+ 
+ 	CL_PopPMStates();
+ 
+@@ -831,6 +836,9 @@ static void CL_CreateCmd( void )
  	if( !cls.demoplayback ) cl.cmd = pcmd->cmd;
  
  	// predict all unacknowledged movements
@@ -307,7 +341,7 @@ index 39e4f9c2..0a30c3ac 100644
  	CL_PredictMovement( false );
  }
  
-@@ -910,6 +913,10 @@ static void CL_WritePacket( void )
+@@ -910,6 +918,10 @@ static void CL_WritePacket( void )
  	}
  
  	numbackup = bound( 0, cl_cmdbackup.value, maxbackup );
@@ -318,7 +352,7 @@ index 39e4f9c2..0a30c3ac 100644
  
  	// allow extended usercmd limit
  	if( proto == PROTO_GOLDSRC && cls.build_num >= 5971 )
-@@ -3921,6 +3928,13 @@ void Host_ClientFrame( void )
+@@ -3921,13 +3933,28 @@ void Host_ClientFrame( void )
  
  	// do prediction again in case we got
  	// a new portion updates from server
@@ -326,12 +360,41 @@ index 39e4f9c2..0a30c3ac 100644
 +	void SE_LightStylesGive( void );
 +	SE_LightStylesGive();	// (on a worker, while this core predicts)
 +	void CL_PredictSent( void );
++	void SE_ServerServe( void );
++	SE_ServerServe();	// (what the server's worker waits for: here and between the steps below)
 +	if( SV_Active( )) CL_PredictSent();
 +	else
 +#endif
  	CL_RedoPrediction ();
  
  	// update voice
+ 	Voice_Idle( host.frametime );
++#if XASH_SHADEREMU
++	SE_ServerServe();
++#endif
+ 
+ 	// emit visible entities
+ 	CL_EmitEntities ();
++#if XASH_SHADEREMU
++	SE_ServerServe();
++#endif
+ 
+ 	// in case we lost connection
+ 	CL_CheckForResend ();
+diff --git a/engine/client/cl_scrn.c b/engine/client/cl_scrn.c
+index 6c550c7e..018e308d 100644
+--- a/engine/client/cl_scrn.c
++++ b/engine/client/cl_scrn.c
+@@ -688,6 +688,9 @@ void SCR_UpdateScreen( void )
+ 	case ca_active:
+ 		Con_RunConsole ();
+ 		V_RenderView();
++#if XASH_SHADEREMU
++		{ void SE_ServerServe( void ); SE_ServerServe(); }	// (what the server's worker waits for)
++#endif
+ 		break;
+ 	case ca_cinematic:
+ 		SCR_DrawCinematic();
 diff --git a/engine/client/cl_tent.c b/engine/client/cl_tent.c
 index 95c85f7c..3332eb99 100644
 --- a/engine/client/cl_tent.c
@@ -373,6 +436,22 @@ index 95c85f7c..3332eb99 100644
  
  	// first look for an exact key match
  	if( key )
+diff --git a/engine/client/cl_view.c b/engine/client/cl_view.c
+index c1b3ef13..b428d66a 100644
+--- a/engine/client/cl_view.c
++++ b/engine/client/cl_view.c
+@@ -414,6 +414,11 @@ void V_RenderView( void )
+ 			clgame.viewent.curstate.animtime = cl.local.weaponstarttime;
+ 
+ 		V_GetRefParams( &rp, &rvp );
++#if XASH_SHADEREMU
++		void SE_SeatView( ref_viewpass_t *rvp );
++		if( viewnum == 0 )
++			SE_SeatView( &rvp );	// (a holodeck's seat: vid_shaderemu.c)
++#endif
+ 		V_RefApplyOverview( &rvp );
+ 		V_ApplyRefUnderwater( &rvp );
+ 
 diff --git a/engine/client/dll_int/cl_gameui.c b/engine/client/dll_int/cl_gameui.c
 index 993304fa..28c92a20 100644
 --- a/engine/client/dll_int/cl_gameui.c
@@ -1189,7 +1268,7 @@ index 0084a31f..26585017 100644
 +}
 +#endif
 diff --git a/engine/common/host.c b/engine/common/host.c
-index f04c5f9b..e396f23d 100644
+index f04c5f9b..566497ff 100644
 --- a/engine/common/host.c
 +++ b/engine/common/host.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -1239,7 +1318,18 @@ index f04c5f9b..e396f23d 100644
  	va_start( argptr, error );
  	Q_vsnprintf( hosterror1, sizeof( hosterror1 ), error, argptr );
  	va_end( argptr );
-@@ -1217,7 +1236,8 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
+@@ -1010,6 +1029,10 @@ static void Host_InitCommon( int argc, char **argv, const char *progname, qboole
+ 	// so we clear all cmd_args, but leave dbg states as well
+ 	Sys_ParseCommandLine( argc, (const char **)argv );
+ 	Host_DetermineExecutableName( exename, exename_size );
++#if XASH_SHADEREMU
++	void SE_Splash( void );
++	SE_Splash();	// (the window with Uplink's splash while the engine loads: vid_shaderemu.c)
++#endif
+ 
+ 	if( !Sys_CheckParm( "-disablehelp" ))
+ 	{
+@@ -1217,7 +1240,8 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
  	Cvar_Getf( "buildnum", FCVAR_READ_ONLY, "returns a current build number", "%i", Q_buildnum_compat());
  	Cvar_Getf( "ver", FCVAR_READ_ONLY, "shows an engine version", "%i/%s (hw build %i)", PROTOCOL_VERSION, XASH_COMPAT_VERSION, Q_buildnum_compat());
  	Cvar_Getf( "host_ver", FCVAR_READ_ONLY, "detailed info about this build", "%i " XASH_VERSION " %s %s %s", Q_buildnum(), Q_buildos(), Q_buildarch(), g_buildcommit);
@@ -2395,10 +2485,42 @@ index 35556a71..cadad75c 100644
  
  #if XASH_ANDROID
 diff --git a/engine/platform/posix/sys_posix.c b/engine/platform/posix/sys_posix.c
-index 7f9c7ac1..e962d6da 100644
+index 7f9c7ac1..b612f407 100644
 --- a/engine/platform/posix/sys_posix.c
 +++ b/engine/platform/posix/sys_posix.c
-@@ -127,7 +127,11 @@ double Platform_DoubleTime( void )
+@@ -20,6 +20,8 @@ GNU General Public License for more details.
+ #include <fcntl.h>
+ #include <errno.h>
+ #include <signal.h>
++#include <limits.h>
++#include <stdlib.h>
+ #include "platform/platform.h"
+ #include "menu_int.h"
+ 
+@@ -27,7 +29,22 @@ GNU General Public License for more details.
+ void Platform_ShellExecute( const char *path, const char *parms )
+ {
+ 	const char *argv[] = { OPEN_COMMAND, path, NULL };
++#if XASH_SHADEREMU
++	// no MMU: vfork, and `open` (linux/apps/open.c) with the file's full path; nobody waits for it
++	char full[PATH_MAX];
++	if( realpath( path, full ))
++		argv[1] = full;
++	signal( SIGCHLD, SIG_IGN );
++	pid_t id = vfork();
++	if( id == 0 )
++	{
++		execvp( "open", (char **)argv );
++		_exit( 1 );
++	}
++	return;
++#else
+ 	pid_t id = fork();
++#endif
+ 
+ 	if( id == 0 )
+ 	{
+@@ -127,7 +144,11 @@ double Platform_DoubleTime( void )
  		s_ClockInit = true;
  	}
  
@@ -2434,7 +2556,7 @@ index e15a9318..2414b4cf 100644
 +
  #endif//SERVER_H
 diff --git a/engine/server/sv_frame.c b/engine/server/sv_frame.c
-index 3ff8edbf..65942f80 100644
+index 3ff8edbf..11b4e652 100644
 --- a/engine/server/sv_frame.c
 +++ b/engine/server/sv_frame.c
 @@ -53,6 +53,61 @@ SV_AddEntitiesToPacket
@@ -2450,7 +2572,7 @@ index 3ff8edbf..65942f80 100644
 +static struct __attribute__(( aligned( 16 ))) { volatile int go, done, unused[2]; edict_t *client; byte *pvs, *phs; int hostflags, from, to; } se_pack_ask;	// go 1: the part; 2: none
 +static struct __attribute__(( aligned( 16 ))) { int count, portal; short number[MAX_VISIBLE_PACKET]; entity_state_t entities[MAX_VISIBLE_PACKET]; } se_pack_out;	// the worker's
 +int se_pack_helper;	// the worker, while it is out
-+static int se_pack_split = 1 << 30;	// the number the worker's part starts at: the last packet's middle one
++static int se_pack_share = 128;	// the worker's part of the numbers after the players', in 256ths: moved to where neither side waits
 +
 +// The loop's tests and AddToFullPack for entity e: 1 added, 2 turned away by AddToFullPack, 0 before it.
 +static int SE_PackOne( int e, edict_t *pClient, byte *clientpvs, byte *clientphs, int hostflags, entity_state_t *state )
@@ -2505,9 +2627,9 @@ index 3ff8edbf..65942f80 100644
  	// g-cont: of course we can send world but not want to do it :-)
 +#if XASH_SHADEREMU
 +	int lo = 1, split = svgame.numEntities;
-+	if( from_client && se_pack_helper && !se_pack_ask.go && !pClient->v.groupinfo && se_pack_split < svgame.numEntities )
++	if( from_client && se_pack_helper && !se_pack_ask.go && !pClient->v.groupinfo && svgame.numEntities > svs.maxclients + 1 )
 +	{
-+		split = Q_max( se_pack_split, svs.maxclients + 1 );
++		split = svgame.numEntities - ( svgame.numEntities - svs.maxclients - 1 ) * se_pack_share / 256;
 +		se_pack_ask.client = pClient, se_pack_ask.pvs = clientpvs, se_pack_ask.phs = clientphs;
 +		se_pack_ask.hostflags = sv.hostflags, se_pack_ask.from = split, se_pack_ask.to = svgame.numEntities;
 +		se_pack_ask.go = 1;
@@ -2545,8 +2667,10 @@ index 3ff8edbf..65942f80 100644
 +#if XASH_SHADEREMU
 +	if( split < svgame.numEntities )
 +	{
++		int waited = !se_pack_ask.done;
 +		while( !se_pack_ask.done )
 +			END_PASS( );
++		se_pack_share = bound( 16, se_pack_share + ( waited ? -4 : 4 ), 240 );
 +		if( se_pack_out.portal )	// (a portal in its part: the part made here, in order, as before)
 +		{
 +			lo = split, split = svgame.numEntities;
@@ -2567,8 +2691,6 @@ index 3ff8edbf..65942f80 100644
 +			else c_notsend++;
 +		}
 +	}
-+	if( from_client && ents->num_entities )
-+		se_pack_split = ents->entities[ents->num_entities / 2].number;
 +#endif
  }
  

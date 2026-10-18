@@ -4,7 +4,7 @@
 # with a window, an OpenGL and input of our own. Uplink's data is not in it: data.py fetches it
 # when an image is made, and it never goes into linux/prebuilt.
 #   wsl -- bash linux/nommu/build.sh halflife/build.sh        (after nanox and libmedia)
-# In the guest: halflife +map hldemo1
+# In the guest: halflife (the splash, the opening film, the main menu), or halflife +map hldemo1
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -32,10 +32,20 @@ tree() {   # url, folder, commit, patch
         [ ! -s "$4" ] || git -C "$2" apply "$4"
     fi
 }
+[ ! -d "$X/.git" ] || git -C "$X" config submodule.3rdparty/mainui.ignore dirty   # (mainui.patch is its own)
 tree https://github.com/FWGS/xash3d-fwgs.git "$X" $XASH_COMMIT "$HERE/xash3d.patch"
 tree https://github.com/FWGS/hlsdk-portable.git "$H" $HLSDK_COMMIT "$HERE/hlsdk.patch"
 git -C "$X" submodule update -q --init 3rdparty/extras 3rdparty/library_suffix 3rdparty/MultiEmulator 3rdparty/bzip2/bzip2
+git -C "$X" config submodule.3rdparty/mainui.ignore dirty
 git -C "$X" submodule update -q --init --recursive 3rdparty/mainui
+# the menu as Uplink's (its readme, Order Half-Life, no multiplayer): mainui.patch, written in 3rdparty/mainui
+# by git add -A -N; git diff (new files too)
+MT=$X/3rdparty/mainui
+git -C "$MT" add -A -N
+if [ "${HALFLIFE_TREE:-}" != keep ] && ! git -C "$MT" diff | cmp -s - "$HERE/mainui.patch"; then
+    git -C "$MT" reset -q && git -C "$MT" checkout -q -f . && git -C "$MT" clean -q -fd
+    git -C "$MT" apply "$HERE/mainui.patch" && git -C "$MT" add -A -N
+fi
 git -C "$H" submodule update -q --init freevgui
 
 FPU="-fno-math-errno -fsingle-precision-constant"
@@ -97,8 +107,8 @@ library ref_gl ref.names ref
 ENGINE=$(ls $X/engine/common/*.c $X/engine/common/imagelib/*.c $X/engine/common/soundlib/*.c $X/engine/server/*.c \
     $X/engine/common/http/*.c $X/engine/platform/posix/*.c $X/engine/platform/linux/sys_linux.c $X/engine/platform/misc/lib_static.c \
     $(find $X/engine/client -name '*.c') $X/3rdparty/miniz/miniz.c $X/3rdparty/MultiEmulator/src/*.c $PUBLIC $X/public/build_vcs.c |
-    grep -v 'snd_mp3\|snd_ogg\|ogg_filestream\|sound/voice\.c\|crash_libbacktrace')
-rm -f "$BUILD"/engine/*_engine_platform_stub_s_stub.o   # (the stub sound of builds before snd_shaderemu.c)
+    grep -v 'snd_mp3\|snd_ogg\|ogg_filestream\|sound/voice\.c\|crash_libbacktrace\|avi_ffmpeg')
+rm -f "$BUILD"/engine/*_engine_platform_stub_s_stub.o "$BUILD"/engine/*_avi_avi_ffmpeg.o   # (what builds before snd_shaderemu.c and avi_shaderemu.c had)
 # the table the engine finds the libraries in
 cat > generated_library_tables.h <<'EOF'
 extern table_t lib_filesystem_stdio_exports[];
@@ -122,8 +132,9 @@ EOF
 # bzip2, for the network's compressed fragments
 sed 's/@BZ_VERSION@/1.1.0-fwgs/' "$X/3rdparty/bzip2/bzip2/bz_version.h.in" > bz_version.h
 compile engine "rv32-cc $C_ALL -DBZ_NO_STDIO -DBZ_UNIX -I$BUILD" $(for f in blocksort huffman crctable randtable compress decompress bzlib; do echo $X/3rdparty/bzip2/bzip2/$f.c; done)
-compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -DXASH_ENABLE_MAIN=1 -I$BUILD $XINC $EINC -idirafter $HERE" $ENGINE \
-    $HERE/vid_shaderemu.c $HERE/stubs_shaderemu.c $HERE/libm_shaderemu.c
+compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -DXASH_ENABLE_MAIN=1 -I$BUILD $XINC $EINC -I$X/engine/client/avi -idirafter $HERE" $ENGINE \
+    $HERE/stubs_shaderemu.c $HERE/libm_shaderemu.c $HERE/avi_shaderemu.c
+compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $PROGRAMS/linux/include" $HERE/vid_shaderemu.c
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $REPO/linux/libmedia -idirafter $PROGRAMS/mc" $HERE/snd_shaderemu.c
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $REPO/linux/libmedia" $HERE/snd_media.c $HERE/img_media.c
 compile engine "rv32-cc $C_ALL $XDEFS -DENGINE_DLL=1 -I$BUILD $XINC $EINC -idirafter $HERE -idirafter $PROGRAMS/mc" $HERE/sv_shaderemu.c
@@ -180,10 +191,9 @@ cp "$H/LICENSE" "$OUT/usr/share/halflife/LICENSE-hlsdk"   # (its terms: a copy g
 rm -rf "$G/extras.pk3dir" && mkdir -p "$G/extras.pk3dir/gfx/shell"
 cp "$X/3rdparty/extras/xash-extras/gfx/shell/"* "$G/extras.pk3dir/gfx/shell/"
 cat > "$G/gameinfo.txt" <<'EOF'
-game "Half-Life: Uplink"
+title "Half-Life"
 gamedir "valve"
 startmap "hldemo1"
-demomap "hldemo1"
 type "singleplayer_only"
 EOF
 # the game wants its folder writable (its settings, saved games): the starter makes one of links
@@ -192,8 +202,8 @@ cat > "$OUT/usr/bin/halflife" <<'EOF'
 [ -f /usr/share/halflife/valve/pak0.PAK ] || { echo "halflife: Uplink's data is not in this image (linux/halflife/data.py)" >&2; exit 1; }
 mkdir -p /tmp/halflife/valve /persistence/halflife && cd /tmp/halflife || exit 1
 for f in /usr/share/halflife/valve/*; do ln -sf "$f" valve/; done
-exec halflife.bin -console -dev 1 "$@"
+exec halflife.bin "$@"
 EOF
 chmod +x "$OUT/usr/bin/halflife"
-echo "Games/Half-Life: Uplink=halflife +map hldemo1" > "$OUT/usr/share/nxapps.72-halflife"
+echo "Games/Half-Life: Uplink=halflife" > "$OUT/usr/share/nxapps.72-halflife"
 du -sh "$G"

@@ -10,7 +10,8 @@
 /* ---------------------------------------------------------------- workers, memory */
 
 static int opened_here, depth;
-extern const char __executable_start[], etext[];
+extern const char etext[];
+extern void _start(void);
 
 int
 m_workers_begin(int want)
@@ -24,7 +25,11 @@ m_workers_begin(int want)
 	/* a worker stops at every page of code no core has run: the program's text read here once */
 	if (!text_read) {
 		text_read = 1;
-		mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+		/* (from _start's page: a flat program's __executable_start is 0, a GOT word the loader
+		 * leaves alone, and was every page from address 0 up) */
+		const char *text = (const char *)((uintptr_t)_start & ~(uintptr_t)4095);
+
+		mcw_touch_code(text, (unsigned)(etext - text));
 	}
 	if (have > 0)
 		return have < want ? have : want;
@@ -48,6 +53,15 @@ m_workers_end(void)
 	opened_here = 0;
 }
 
+void (*media_progress)(uint32_t done, uint32_t total);
+
+void
+m_progress(uint32_t done, uint32_t total)
+{
+	if (media_progress && !mcw_on_worker())
+		media_progress(done, total);
+}
+
 void
 m_look(void)
 {
@@ -55,6 +69,7 @@ m_look(void)
 
 	if (mcw_on_worker())
 		return;
+	m_progress(0, 0);
 	for (k = 1; k <= n; k++)
 		mcw_done(k);
 }
@@ -472,10 +487,22 @@ m_stages(uint32_t n, mcw_fn stage, int workers)
 	mcw_for_opt(n, stage_items, (void *)stage, &o);
 }
 
+/* m_for's loop, its pieces on the first core told (media_progress): set by the first core
+ * before the round and only read by the workers. */
+static struct { mcw_body fn; uint32_t n; int on; } told_for;
+
+static void
+told_piece(void *ctx, uint32_t from, uint32_t to)
+{
+	told_for.fn(ctx, from, to);
+	m_progress(to, told_for.n);
+}
+
 void
 m_for(uint32_t n, mcw_body fn, void *ctx, uint32_t out_bytes, int workers)
 {
 	mcw_for_opts o;
+	int tell = media_progress && !told_for.on && !mcw_on_worker();
 
 	if (workers <= 0 || n < 2) {
 		if (n)
@@ -485,7 +512,11 @@ m_for(uint32_t n, mcw_body fn, void *ctx, uint32_t out_bytes, int workers)
 	memset(&o, 0, sizeof o);
 	o.workers = workers;
 	o.out_bytes = out_bytes;
-	mcw_for_opt(n, fn, ctx, &o);
+	if (tell)
+		told_for.fn = fn, told_for.n = n, told_for.on = 1;
+	mcw_for_opt(n, tell ? told_piece : fn, ctx, &o);
+	if (tell)
+		told_for.on = 0;
 }
 
 void

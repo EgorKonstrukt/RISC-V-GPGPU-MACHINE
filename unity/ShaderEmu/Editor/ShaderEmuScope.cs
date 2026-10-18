@@ -32,26 +32,27 @@ public static partial class ShaderEmuBuilder
         Transform screen = computer.Find("Memory screen");
         MeshRenderer renderer = screen.GetComponent<MeshRenderer>();
         Material ram = Mat("MemView", "ShaderEmu/MemView");
-        ram.SetInt("_Strips", 2);
+        ram.SetInt("_Strips", 3);
+        Mat("MemHeat", "ShaderEmu/MemHeat").SetInt("_Strips", 3);   // the heat's strips must be the view's
         Material cpu = ScopeMaterial("ScopeCpu", 1), rom = ScopeMaterial("ScopeRom", 2), wave = ScopeMaterial("ScopeSound", 3);
         RenderTexture mix = AssetDatabase.LoadAssetAtPath<RenderTexture>(Generated + "/SoundMix.renderTexture");
         if (mix != null) wave.SetTexture("_Mix", mix);
 
         // The legend: a canvas over the screen, a millimetre a unit as the panels are. The
-        // screen's two strips are 63 MiB each; the names sit beside their colours.
+        // screen's three strips are 96 MiB each; the names sit beside their colours.
         float wide = screen.localScale.x * 1000f, high = screen.localScale.y * 1000f;
         RectTransform legend = Panel(computer, "Memory legend", screen.localPosition + new Vector3(0, 0, -0.004f), Vector3.zero,
                                      wide, high, new Color(0, 0, 0, 0));
         Object.DestroyImmediate(legend.GetComponent<VRC.SDK3.Components.VRCUiShape>());
         Object.DestroyImmediate(legend.GetComponent<BoxCollider>());
         Object.DestroyImmediate(legend.GetComponent<GraphicRaycaster>());
-        string[] names = { "Linux: the kernel, then its memory", "Linux", "window buffers", "display, GPU lists, fonts, textures", "a 3D program's", "sound" };
+        string[] names = { "Linux: the kernel, then its memory", "Linux", "window buffers", "display, GPU lists, fonts, textures", "a 3D program's", "sound", "Linux, above the devices" };
         // megabytes at which each name's region is centred; the first is in the left strip
-        float[] middle = { 6.5f, 79.5f, 104f, 115.5f, 121f, 124.5f };
+        float[] middle = { 6.5f, 52f, 104f, 115.5f, 120.5f, 125f, 240f };
         for (int i = 0; i < names.Length; i++)
         {
-            float strip = Mathf.Floor(middle[i] / 63f), y = (middle[i] / 63f - strip) * high;
-            float x = strip * wide / 2 + wide / 2 * 0.022f + 8f, w = names[i].Length * 11f + 16f;
+            float strip = Mathf.Floor(middle[i] / 96f), y = (middle[i] / 96f - strip) * high;
+            float x = strip * wide / 3 + wide / 3 * 0.022f + 8f, w = names[i].Length * 11f + 16f;
             RectTransform plate = Child(legend, "Name " + i, x, Mathf.Clamp(y - 13f, 2f, high - 28f), w, 26f);
             Plate(plate, new Color(0, 0, 0, 0.62f)).raycastTarget = false;
             Label(plate, "Text", names[i], 6, 0, w - 8f, 26f, 18, TextAnchor.MiddleLeft, Color.white);
@@ -117,6 +118,16 @@ public static partial class ShaderEmuBuilder
         if (machine == null || panel == null) throw new System.Exception("no machine in the open scene: run ShaderEmu/Build world");
         CreateProgramAssets();
         Scope(machine.transform.parent, Den(), panel.GetComponent<RectTransform>(), machine);
+        // the room's look for what Scope made again, as Retro gives it, without new plates
+        RetroInPlace(GameObject.Find("ShaderEmu").transform, new System.Collections.Generic.List<Canvas> { panel.GetComponent<Canvas>() });
+        TMP_FontAsset monoBold = RetroFont("IBMPlexMono-Bold");
+        foreach (string over in new[] { "Memory legend", "CPU sign" })
+            foreach (TextMeshProUGUI label in Den().Find(over).GetComponentsInChildren<TextMeshProUGUI>(true))
+            { label.font = monoBold; label.fontSharedMaterial = monoBold.material; EditorUtility.SetDirty(label); }
+        EmuScope scope = Object.FindObjectOfType<EmuScope>();
+        scope.plain = Color.clear;
+        scope.picked = LitUp;
+        Apply(scope);
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
         EditorSceneManager.SaveScene(machine.gameObject.scene);

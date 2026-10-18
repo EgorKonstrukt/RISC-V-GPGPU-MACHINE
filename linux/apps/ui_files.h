@@ -24,6 +24,7 @@ static char ui_files_where[512];
 static int ui_files_saving;		/* the window asks for a name to save as */
 static int ui_files_stop;		/* set by `others`: the window goes with nothing chosen (its program is closing) */
 static int ui_files_offered;		/* the name is still the one offered: a typed character replaces it */
+static int ui_files_folders;		/* a folder is asked for: Open (Choose) takes the selected one, or this */
 static char ui_files_name[128], ui_files_note[160], ui_files_sure[600];
 
 static int
@@ -129,7 +130,7 @@ ui_files_draw(GR_WINDOW_ID w)
 		ui_text_fit(w, 53, UI_FILES_H - 55, UI_FILES_W - 66, text, ui_files_offered ? WHITE : BLACK);
 	}
 	ui_button(w, 8, UI_FILES_H - 30, 70, 22, "Up", 0);
-	ui_button(w, UI_FILES_W - 166, UI_FILES_H - 30, 76, 22, ui_files_saving ? "Save" : "Open", 0);
+	ui_button(w, UI_FILES_W - 166, UI_FILES_H - 30, 76, 22, ui_files_saving ? "Save" : ui_files_folders ? "Choose" : "Open", 0);
 	ui_button(w, UI_FILES_W - 84, UI_FILES_H - 30, 76, 22, "Cancel", 0);
 }
 
@@ -313,6 +314,9 @@ ui_files_ask(const char *title, const char *start, const char *kinds, const char
 				snprintf(ui_files_note, sizeof ui_files_note, "Type a name to save as");
 			chosen = done = ui_files_name[0] && ui_files_named(kinds, path, size);
 			ui_files_draw(w);
+		} else if (ui_files_folders && open == 1) {
+			snprintf(path, size, "%s%s%s", ui_files_where, n >= 0 && ui_files_where[1] ? "/" : "", n >= 0 ? ui_files_entries[n].name : "");
+			chosen = done = 1;
 		} else if (open && (open < 0 || n >= 0)) {
 			ui_files_note[0] = 0;
 			if (ui_files_open(open < 0 ? -1 : n, kinds)) {
@@ -336,6 +340,19 @@ static int
 ui_choose_file(const char *title, const char *start, const char *kinds, char *path, int size, void (*others)(GR_EVENT *))
 {
 	return ui_files_ask(title, start, kinds, NULL, path, size, others);
+}
+
+/* Asks for a folder: only folders are listed, a double click goes into one, Choose takes the
+ * selected one (or, with none, the folder shown). */
+static int
+ui_choose_folder(const char *title, const char *start, char *path, int size, void (*others)(GR_EVENT *))
+{
+	int chosen;
+
+	ui_files_folders = 1;
+	chosen = ui_files_ask(title, start, "/", NULL, path, size, others);	/* ("/" is no file's ending) */
+	ui_files_folders = 0;
+	return chosen;
 }
 
 /*

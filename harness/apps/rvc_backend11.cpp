@@ -35,10 +35,41 @@ public:
             if (d.first == "TICK_MRT") mrt_ = true;
         for (auto& d : opt.compile.defines)
             if (d.first == "NO_SCATTER") scatter_ = false;
-        scatter_ = scatter_ && mrt_ && bands_;
+        inplace_ = opt.ramInplace;
+        scatter_ = scatter_ && mrt_ && bands_ && !inplace_;
         // the commit draws whole only the bands the cores' stores are not what changed (they are points)
         if (scatter_) bo.settings.defines.push_back({"COMMIT_SCATTER", "1"});
-        if (!buildPasses(gpu_, shader, {"CPUTick", "Commit"}, bo, passes_, err)) return false;
+        if (inplace_) {
+            // (the tick is compiled without RAM_INPLACE, which only the commit's passes know)
+            ShaderBuildOptions c = bo;
+            c.settings.defines.push_back({"RAM_INPLACE", "1"});
+            std::vector<GpuPass> commit;
+            if (!buildPasses(gpu_, shader, {"CPUTick"}, bo, passes_, err) || !buildPasses(gpu_, shader, {"Commit"}, c, commit, err)) return false;
+            passes_.push_back(commit[0]);
+        } else if (!buildPasses(gpu_, shader, {"CPUTick", "Commit"}, bo, passes_, err)) return false;
+        if (inplace_) {
+            // RAM in one texture (src/ram.h): the commit's gather and its RAM points, passes of
+            // their own beside the state commit; none of the three reads the texture it writes
+            SLShader gather = shader, points = shader;
+            for (auto& p : gather.passes)
+                if (p.name == "Commit") p.geometryEntry = "ram_gather_geom";
+            for (auto& p : points.passes)
+                if (p.name == "Commit") p.geometryEntry = "ram_commit_geom";
+            ShaderBuildOptions g = bo, r = bo;
+            g.settings.defines.push_back({"RAM_INPLACE", "1"});
+            r.settings.defines.push_back({"RAM_INPLACE", "1"});
+            g.settings.defines.push_back({"COMMIT_GATHER", "1"});
+            r.settings.defines.push_back({"COMMIT_RAM", "1"});
+            if (!buildPasses(gpu_, gather, {"Commit"}, g, gatherPasses_, err) || !buildPasses(gpu_, points, {"Commit"}, r, ramPasses_, err))
+                return false;
+            for (GpuPass* p : {&passes_[1], &gatherPasses_[0], &ramPasses_[0]})
+                for (StageLayout* l : {&p->vsLayout, &p->gsLayout, &p->psLayout})
+                    for (auto& t : l->textures)
+                        if (t.name == "_SelfTexture2D") {
+                            err = "RAM_INPLACE: a commit pass reads _SelfTexture2D, the texture it writes";
+                            return false;
+                        }
+        }
         if (scatter_) {
             // the commit's pass twice more: its points, and the same points as copies
             SLShader withPoints = shader;
@@ -78,8 +109,12 @@ public:
         if (opt.present && !createSwapChain(err)) return false;
         if (opt.profile && !createProfile(mat, err)) return false;
 
-        if (!crt_.init(gpu_.device.Get(), kWidth, kHeight, DXGI_FORMAT_R32G32B32A32_UINT, err)) return false;
-        crt_.clear(gpu_.ctx.Get());
+        if (inplace_) {
+            if (!createInplace(err)) return false;
+        } else {
+            if (!crt_.init(gpu_.device.Get(), kWidth, kHeight, DXGI_FORMAT_R32G32B32A32_UINT, err)) return false;
+            crt_.clear(gpu_.ctx.Get());
+        }
         return rows_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, 64, 1, 3, err, opt.readbackBatch) &&
                control_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kControlTexels, 1, 3, err, opt.readbackBatch) &&
                net_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kNetRead, 1, 3, err, opt.readbackBatch);
@@ -131,12 +166,17 @@ public:
     }
 
     bool setState(const void* texels, std::string&) override {
-        if (texels) crt_.load(gpu_.ctx.Get(), texels, kWidth * 16);
+        if (inplace_) {
+            const float zero[4] = {0, 0, 0, 0};
+            if (texels) gpu_.ctx->UpdateSubresource(ram_.Get(), 0, nullptr, texels, kWidth * 16, 0);
+            else gpu_.ctx->ClearRenderTargetView(ramRtv_.Get(), zero);
+        } else if (texels) crt_.load(gpu_.ctx.Get(), texels, kWidth * 16);
         else crt_.clear(gpu_.ctx.Get());
         return true;
     }
 
     bool frame(Material& mat, uint64_t tag, bool timeIt) override {
+        if (inplace_) return frameInplace(mat, tag, timeIt);
         timeIt = timeIt && ensureQueries() && !tsPending_;
         // a timing experiment: the state is not written back, so every pass runs the same instructions
         static const bool freezeAsked = getenv("RVC_FREEZE") != nullptr;
@@ -152,13 +192,13 @@ public:
             // each worker that has something to run, where the machine's geometry puts it
             // (main.shader, tick_geom). What it does not draw of the two zones stays what it
             // was: they are copied into the buffer drawn into first, and back afterwards.
-            std::vector<UpdateZone> zones{UpdateZone{32, 4096 - tickRows_ / 2, 64, tickRows_, 0}};
+            std::vector<UpdateZone> zones{UpdateZone{32, kHeight - tickRows_ / 2, 64, tickRows_, 0}};
             // the workers' bands: 248 tiles of 8 x 8 each, 49 workers to a band (MC_STRIP_BANDS)
             float band = 1984.0f, bandRows = 8.0f * (((UINT)cores_ + 47) / 49);
             bool workers = cores_ > 1 && (workersNow || getenv("RVC_WORKERS_ALWAYS"));
             activeCores_ = workers ? (UINT)cores_ : 1;
             UINT groups = (activeCores_ + 15) / 16;   // a primitive of the pass draws 16 cores' quads
-            if (workers) zones.push_back(UpdateZone{64 + band / 2, 4096 - bandRows / 2, band, bandRows, 0});
+            if (workers) zones.push_back(UpdateZone{64 + band / 2, kHeight - bandRows / 2, band, bandRows, 0});
             // TICK_MRT: the tick draws a pixel for every eight texels, into eight targets of its
             // own, and the pass that follows puts them where the state has them
             if (mrt_) tickDraw(mat, zones[0]);
@@ -177,14 +217,14 @@ public:
             // the state rows and the bands other things wrote, then what the cores stored as
             // points (a geometry shader makes each the rectangle it stands for); and the same
             // points into the other buffer, as copies, so that both have them
-            UpdateZone all{1024, 2048, 2048, 4096, 1};
+            UpdateZone all{1024, kHeight / 2.0f, 2048, (float)kHeight, 1};
             UINT points = 258 + (activeCores_ - 1) * 130;   // a bucket a point: commit_geom
             crt_.runZone(gpu_, passes_[1], mat, all, 6 * kCommitQuads, false);
             crt_.runZone(gpu_, pointPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
             crt_.swap();
             crt_.runZone(gpu_, copyPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
         } else
-        crt_.runZone(gpu_, passes_[1], mat, UpdateZone{1024, 2048, 2048, 4096, 1}, bands_ ? 6 * kCommitQuads : 6);
+        crt_.runZone(gpu_, passes_[1], mat, UpdateZone{1024, kHeight / 2.0f, 2048, (float)kHeight, 1}, bands_ ? 6 * kCommitQuads : 6);
         }
         if (timeIt) gpu_.ctx->End(tsQuery_[2].Get());
         if (gpuPasses_.size() == 2 && !freeze) {
@@ -263,12 +303,12 @@ public:
 
     bool uploadRows(UINT row, UINT rows, const void* texels) override {
         D3D11_BOX box{0, row, 0, kWidth, row + rows, 1};
-        gpu_.ctx->UpdateSubresource(crt_.current(), 0, &box, texels, kWidth * 16, 0);
+        gpu_.ctx->UpdateSubresource(stateTex(), 0, &box, texels, kWidth * 16, 0);
         return true;
     }
     bool uploadTexel(UINT x, UINT y, const uint32_t* words) override {
         D3D11_BOX box{x, y, 0, x + 1, y + 1, 1};
-        gpu_.ctx->UpdateSubresource(crt_.current(), 0, &box, words, 16, 0);
+        gpu_.ctx->UpdateSubresource(stateTex(), 0, &box, words, 16, 0);
         return true;
     }
     bool readRows(UINT row, UINT rows, std::vector<uint8_t>& out) override {
@@ -276,7 +316,7 @@ public:
         std::string err;
         uint64_t tag;
         if (!rb.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kWidth, rows, 1, err)) return false;
-        rb.request(gpu_.ctx.Get(), crt_.current(), 0, row, 0);
+        rb.request(gpu_.ctx.Get(), stateTex(), 0, row, 0);
         return rb.pop(gpu_.ctx.Get(), out, tag);
     }
 
@@ -285,7 +325,7 @@ public:
         std::string err;
         uint64_t tag;
         if (!rb.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, w, h, 1, err)) return false;
-        rb.request(gpu_.ctx.Get(), crt_.current(), 0, 0, 0);
+        rb.request(gpu_.ctx.Get(), stateTex(), 0, 0, 0);
         return rb.pop(gpu_.ctx.Get(), out, tag);
     }
 
@@ -328,7 +368,7 @@ public:
 
     bool viewInit(std::string& err) override { return view_.init(gpu_.device.Get(), kWidth, kHeight, 64, err); }
     bool viewOpen() const override { return view_.open(); }
-    void viewRender(bool present) override { view_.render(gpu_.ctx.Get(), crt_.currentSRV(), present, gpuSrv_.Get()); }
+    void viewRender(bool present) override { view_.render(gpu_.ctx.Get(), stateSrv(), present, gpuSrv_.Get()); }
     bool gpuCapture(const std::string& path) override {
         if (!gpuColor_) return false;
         D3D11_TEXTURE2D_DESC td{};
@@ -459,7 +499,7 @@ private:
         ctx->RSSetState(gpu_.rasterNoCull.Get());
         ctx->IASetInputLayout(nullptr);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ID3D11ShaderResourceView* state = crt_.currentSRV();
+        ID3D11ShaderResourceView* state = stateSrv();
         // one draw per pass in use, in order: each has its own blending and depth use
         for (int p = 0; p < 8; ++p) {
             if (!((gpuPasses >> p) & 1)) continue;
@@ -511,7 +551,7 @@ private:
         ctx->IASetInputLayout(nullptr);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         mat.bind(ctx, pass, gpu_);
-        ID3D11ShaderResourceView* state = crt_.currentSRV();
+        ID3D11ShaderResourceView* state = stateSrv();
         for (auto& t : pass.psLayout.textures)
             if (t.name == "_State") ctx->PSSetShaderResources(t.slot, 1, &state);
         ctx->Draw(3, 0);
@@ -551,7 +591,7 @@ private:
         mat.setFloat("CustomRenderTexturePrimitiveIDs", 0);
         mat.setVector("CustomRenderTextureParameters", 1, 0, 0, 0);
         mat.setVector("_CustomRenderTextureInfo", kWidth, kHeight, 1, 0);
-        mat.setTexture("_SelfTexture2D", crt_.currentSRV(), kWidth, kHeight);
+        mat.setTexture("_SelfTexture2D", stateSrv(), kWidth, kHeight);
         ID3D11ShaderResourceView* nulls[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
         ctx->VSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, nulls);
         ctx->GSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, nulls);
@@ -590,6 +630,166 @@ private:
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         static const char* names[8] = {"_TickOut0", "_TickOut1", "_TickOut2", "_TickOut3", "_TickOut4", "_TickOut5", "_TickOut6", "_TickOut7"};
         for (int i = 0; i < 8; ++i) mat.setTexture(names[i], mrtSrv_[i].Get(), tickWidth(), tickHeight());
+    }
+
+    // ---- RAM in one texture (RAM_INPLACE, src/ram.h) ----
+    // R: the state rows and RAM, written in place; A: the 64 state rows after the tick; T: the
+    // stage, what the commit's gather leaves its other passes; Z: a control zone's rows, drawn
+    // there from R and copied back.
+    static const UINT kStageRows = 21, kZoneRows = 8;   // STAGE_ROWS in src/ram.h; the tallest zone
+    bool inplace_ = false;
+    std::vector<GpuPass> gatherPasses_, ramPasses_;
+    ComPtr<ID3D11Texture2D> ram_, tickState_, stage_, zone_;
+    ComPtr<ID3D11ShaderResourceView> ramSrv_, tickStateSrv_, stageSrv_;
+    ComPtr<ID3D11RenderTargetView> ramRtv_, tickStateRtv_, stageRtv_, zoneRtv_;
+    ID3D11Texture2D* stateTex() const { return inplace_ ? ram_.Get() : crt_.current(); }
+    ID3D11ShaderResourceView* stateSrv() const { return inplace_ ? ramSrv_.Get() : crt_.currentSRV(); }
+
+    bool createInplace(std::string& err) {
+        struct T { ComPtr<ID3D11Texture2D>* tex; UINT rows; ComPtr<ID3D11ShaderResourceView>* srv; ComPtr<ID3D11RenderTargetView>* rtv; };
+        T all[4] = {{&ram_, kHeight, &ramSrv_, &ramRtv_}, {&tickState_, 64, &tickStateSrv_, &tickStateRtv_},
+                    {&stage_, kStageRows, &stageSrv_, &stageRtv_}, {&zone_, kZoneRows, nullptr, &zoneRtv_}};
+        for (T& t : all) {
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = kWidth;
+            td.Height = t.rows;
+            td.MipLevels = td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+            td.SampleDesc.Count = 1;
+            td.BindFlags = D3D11_BIND_RENDER_TARGET | (t.srv ? D3D11_BIND_SHADER_RESOURCE : 0);
+            HRESULT hr = gpu_.device->CreateTexture2D(&td, nullptr, t.tex->GetAddressOf());
+            if (SUCCEEDED(hr) && t.srv) hr = gpu_.device->CreateShaderResourceView(t.tex->Get(), nullptr, t.srv->GetAddressOf());
+            if (SUCCEEDED(hr)) hr = gpu_.device->CreateRenderTargetView(t.tex->Get(), nullptr, t.rtv->GetAddressOf());
+            if (FAILED(hr)) {
+                err = "RAM_INPLACE textures: " + hrToString(hr);
+                return false;
+            }
+        }
+        const float zero[4] = {0, 0, 0, 0};
+        for (auto* r : {ramRtv_.Get(), tickStateRtv_.Get(), stageRtv_.Get()}) gpu_.ctx->ClearRenderTargetView(r, zero);
+        fprintf(stderr, "[harness] RAM in one texture: %.0f MiB of state and RAM, %.1f MiB beside it\n",
+                kWidth * (double)kHeight * 16 / 1048576.0, kWidth * (64.0 + kStageRows + kZoneRows) * 16 / 1048576.0);
+        return true;
+    }
+
+    // One draw into `rtv`, its row 0 at the viewport's row `top` (a viewport as tall as the
+    // state texture unless `rows` says, so that the passes' own coordinates hold), with R as _SelfTexture2D.
+    void drawInto(GpuPass& pass, Material& mat, ID3D11RenderTargetView* rtv, float top, UINT vertices,
+                  D3D11_PRIMITIVE_TOPOLOGY topology, const UpdateZone* z = nullptr, UINT rows = kHeight) {
+        ID3D11DeviceContext* ctx = gpu_.ctx.Get();
+        if (z) {
+            mat.setVector("CustomRenderTextureCenters", z->centerX, z->centerY, 0.5, 0);
+            mat.setVector("CustomRenderTextureSizesAndRotations", z->width, z->height, 1, 0);
+            mat.setFloat("CustomRenderTexturePrimitiveIDs", 0);
+            mat.setVector("CustomRenderTextureParameters", 1, 0, 0, 0);
+        }
+        mat.setVector("_CustomRenderTextureInfo", kWidth, kHeight, 1, 0);
+        mat.setTexture("_SelfTexture2D", ramSrv_.Get(), kWidth, kHeight);
+        ID3D11ShaderResourceView* nulls[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+        ctx->VSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, nulls);
+        ctx->GSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, nulls);
+        ctx->PSSetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, nulls);
+        ID3D11UnorderedAccessView* uav = pass.psLayout.uavs.empty() ? nullptr : mat.uav(pass.psLayout.uavs[0].name);
+        if (uav)
+            ctx->OMSetRenderTargetsAndUnorderedAccessViews(1, &rtv, nullptr, pass.psLayout.uavs[0].slot, 1, &uav, nullptr);
+        else
+            ctx->OMSetRenderTargets(1, &rtv, nullptr);
+        D3D11_VIEWPORT vp{0, -top, (float)kWidth, (float)rows, 0, 1};
+        ctx->RSSetViewports(1, &vp);
+        ctx->RSSetState(gpu_.rasterNoCull.Get());
+        ctx->OMSetBlendState(gpu_.blendOpaque.Get(), nullptr, 0xffffffff);
+        ctx->OMSetDepthStencilState(gpu_.depthOff.Get(), 0);
+        ctx->IASetInputLayout(nullptr);
+        ctx->IASetPrimitiveTopology(topology);
+        mat.bind(ctx, pass, gpu_);
+        ctx->Draw(vertices, 0);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    // A control zone: drawn into Z from R, then copied into R.
+    void zoneInplace(Material& mat, const float* zf) {
+        UpdateZone z{zf[0], zf[1], zf[2], zf[3], 1};
+        LONG x0 = (std::max)(0L, (LONG)std::lround(z.centerX - z.width * 0.5f));
+        LONG y0 = (std::max)(0L, (LONG)std::lround((float)kHeight - (z.centerY + z.height * 0.5f)));
+        LONG x1 = (std::min)((LONG)kWidth, x0 + (LONG)std::lround(z.width));
+        LONG y1 = (std::min)((LONG)kHeight, y0 + (LONG)std::lround(z.height));
+        if (x1 <= x0 || y1 <= y0 || y1 - y0 > (LONG)kZoneRows) return;
+        drawInto(gpuPasses_[1], mat, zoneRtv_.Get(), (float)y0, 6, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &z);
+        D3D11_BOX box{(UINT)x0, 0, 0, (UINT)x1, (UINT)(y1 - y0), 1};
+        gpu_.ctx->CopySubresourceRegion(ram_.Get(), 0, (UINT)x0, (UINT)y0, 0, zone_.Get(), 0, &box);
+    }
+
+    bool frameInplace(Material& mat, uint64_t tag, bool timeIt) {
+        timeIt = timeIt && ensureQueries() && !tsPending_;
+        ID3D11DeviceContext* ctx = gpu_.ctx.Get();
+        bool init = mat.getFloat("_Init") != 0;
+        if (timeIt) {
+            ctx->Begin(tsDisjoint_.Get());
+            ctx->End(tsQuery_[0].Get());
+        }
+        // the tick, from R; its state rows into A, which holds R's state rows for the rest
+        bool ticks = !(cpuMode && !init);
+        UpdateZone core0{32, kHeight - tickRows_ / 2, 64, tickRows_, 0};
+        if (ticks) {
+            bool workers = cores_ > 1 && (workersNow || getenv("RVC_WORKERS_ALWAYS"));
+            activeCores_ = workers ? (UINT)cores_ : 1;
+            if (mrt_) tickDraw(mat, core0);
+        }
+        D3D11_BOX rows{0, 0, 0, kWidth, 64, 1};
+        ctx->CopySubresourceRegion(tickState_.Get(), 0, 0, 0, 0, ram_.Get(), 0, &rows);
+        if (ticks) drawInto(mrt_ ? unpackPasses_[0] : passes_[0], mat, tickStateRtv_.Get(), 0,
+                            (std::max)(6u, 3 * ((activeCores_ + 15) / 16)), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &core0);
+        if (timeIt) ctx->End(tsQuery_[1].Get());
+        // the commit: the gather into T, then the state rows and the points into R
+        if (!gpuPasses_.empty()) mat.setTexture("_GpuTarget", gpuSrv_.Get(), kGpuTarget, kGpuTarget);
+        mat.setTexture("_TickState", tickStateSrv_.Get(), kWidth, 64);
+        mat.setTexture("_Ram", ramSrv_.Get(), kWidth, kHeight);
+        drawInto(gatherPasses_[0], mat, stageRtv_.Get(), 0, 1 + activeCores_, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST, nullptr, kStageRows);
+        mat.setTexture("_Stage", stageSrv_.Get(), kWidth, kStageRows);
+        drawInto(passes_[1], mat, ramRtv_.Get(), 0, 6, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        UINT points = 1 + 258 + (activeCores_ - 1) * 130 + 1;   // ram_commit_geom: the zap, the cores' places, the picture
+        mat.setInt("_CommitPoints", points);
+        drawInto(ramPasses_[0], mat, ramRtv_.Get(), 0, points, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+        if (timeIt) ctx->End(tsQuery_[2].Get());
+        if (gpuPasses_.size() == 2) {
+            gpuDraw(mat);
+            bool mixed = soundMix && !soundPasses_.empty();
+            if (mixed) soundDraw(mat, tag);   // before the control zone moves the voices on
+            bool merge = countsAdded && !cpuMode;
+            if (merge) {
+                zoneInplace(mat, kCountZone);
+                countsAdded = false;
+            }
+            mat.setInt("_CountMerged", merge ? 2 : 1);
+            zoneInplace(mat, kGpuControlZone);
+            if (conDelivered) {
+                zoneInplace(mat, kConZone);
+                conDelivered = false;
+            }
+            if (cores_ > 16 && activeCores_ > 1) zoneInplace(mat, kCoreStatsZone);
+            if (deliver_) {
+                zoneInplace(mat, kFetchZone);
+                deliver_ = false;
+            }
+            if (deliverNet_) {
+                zoneInplace(mat, kNetZone);
+                deliverNet_ = false;
+            }
+        }
+        if (timeIt) {
+            ctx->End(tsQuery_[3].Get());
+            ctx->End(tsDisjoint_.Get());
+            tsPending_ = true;
+        }
+        if (swapChain_) {
+            swapChain_->Present(0, 0);
+            MSG msg;
+            while (PeekMessageW(&msg, presentWnd_, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+        }
+        rows_.request(ctx, ram_.Get(), 0, 0, tag);
+        control_.request(ctx, ram_.Get(), 0, kControlRow, tag);
+        net_.request(ctx, ram_.Get(), 0, kNetRow, tag);
+        if (!getenv("RVC11_NO_FLUSH")) ctx->Flush();
+        return true;
     }
 
     bool ensureQueries() {
@@ -636,7 +836,7 @@ private:
     // which holds the zone before the dispatch and is copied back after it.
     ComPtr<ID3D11ComputeShader> cs_;
     bool csDirect_ = false, csBuffer_ = false, ramImported_ = false;
-    static const UINT kRamTexels = 2048 * (4096 - 64);
+    static const UINT kRamTexels = 2048 * (kHeight - 64);
     ComPtr<ID3D11ComputeShader> csImport_;
     StageLayout csImportLayout_;
     ComPtr<ID3D11Buffer> ramBuf_;

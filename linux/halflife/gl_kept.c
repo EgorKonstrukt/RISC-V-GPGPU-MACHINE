@@ -1,5 +1,5 @@
 /*
-gl_kept.c - the level's surfaces kept in GPU memory, drawn from there (docs/halflife.md)
+gl_kept.c - the level's surfaces kept in GPU memory, drawn from there (docs/games/halflife.md)
 
 Included at the end of ref/gl's gl_rsurf.c. When the light maps are built, every surface of the
 world model that is one plain polygon becomes triangles in GPU memory, a texture's together, with
@@ -1268,6 +1268,7 @@ static struct __attribute__(( aligned( 16 )))
 static struct __attribute__(( aligned( 16 ))) { float frame; int ready; } bones_out[AHEAD_MAX];	// ready 1, or 2: not set up
 static float bones_pool[BONES_FLOATS] __attribute__(( aligned( 16 )));
 static float bones_rotation[4][3][4] __attribute__(( aligned( 16 )));
+static float bones_rot[AHEAD_MAX][3][4] __attribute__(( aligned( 16 )));	// each entity's, kept for its draw
 static short bones_slot[1024 + 256];	// (this core's)
 static int bones_posted;
 
@@ -1277,6 +1278,8 @@ static uint R_BonesAheadJob( uint core, uint unused )
 	{
 		float *b = bones_pool + bones.in[i].at;
 		int ok = SE_StudioBonesAhead( bones.in[i].e, core, bones.time, bones.oldtime, b, b + bones.in[i].numbones * 12, &bones_rotation[core - 1][0][0], &bones_out[i].frame );
+		if( ok )
+			memcpy( bones_rot[i], bones_rotation[core - 1], sizeof( bones_rot[i] ));
 		bones_out[i].ready = ok ? 1 : 2;
 	}
 	return 0;
@@ -1305,6 +1308,23 @@ static int R_BonesAheadTaken( cl_entity_t *e, double time, float *bone, float *l
 	return 1;
 }
 
+// The rotation the worker set the entity's bones up with (true): its draw then makes none
+// (StudioSetUpTransform's, from the same state and time).
+extern int ( *SE_StudioRotationTaken )( cl_entity_t *e, double clTime, float *rotation );
+static int R_RotationAheadTaken( cl_entity_t *e, double time, float *rotation )
+{
+	int i = bones_slot[R_LightKey( e )] - 1;
+
+	if( i < 0 || bones.in[i].e != e || bones.time != time )
+		return 0;
+	while( !*(volatile int *)&bones_out[i].ready && !hlglPoll( hlglBonesWorker( i & 3 )))
+		;
+	if( bones_out[i].ready != 1 )
+		return 0;
+	memcpy( rotation, bones_rot[i], sizeof( bones_rot[i] ));
+	return 1;
+}
+
 static void R_BonesAheadGive( void )
 {
 	static int off = -1;
@@ -1322,6 +1342,8 @@ static void R_BonesAheadGive( void )
 	{
 		SE_StudioAheadReady( );
 		SE_StudioBonesTaken = R_BonesAheadTaken;
+		if( !getenv( "HL_ROTATION" ) || strcmp( getenv( "HL_ROTATION" ), "inline" ))	// (HL_ROTATION=inline: made at each draw)
+			SE_StudioRotationTaken = R_RotationAheadTaken;
 	}
 	bones.time = gp_cl->time, bones.oldtime = gp_cl->oldtime;
 	for( int i = 0, at = 0; i < ahead.count && bones.count < AHEAD_MAX; i++ )

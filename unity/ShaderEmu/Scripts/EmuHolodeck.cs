@@ -329,8 +329,8 @@ public class EmuHolodeck : UdonSharpBehaviour
 
     // ---- a stand's keys: they are the sitter's ----
 
-    // The games made for a world round the seat (linux/apps/gameid.h): Doom, Quake, ClassiCube, Quake III, nxphys.
-    private bool Registered(int id) { return id == 1 || id == 2 || id == 3 || id == 7 || id == 8; }
+    // The games made for a world round the seat (linux/apps/gameid.h): Doom, Quake, ClassiCube, Quake III, nxphys, Half-Life.
+    private bool Registered(int id) { return id == 1 || id == 2 || id == 3 || id == 7 || id == 8 || id == 9; }
 
     // The console's 3D key: every program's world round the seat, or the registered games' alone.
     public void ToggleWorld()
@@ -545,14 +545,14 @@ public class EmuHolodeck : UdonSharpBehaviour
     }
 
     // A desktop's sitter in the world of a game that reads the host's words (Doom, Quake,
-    // ClassiCube, Quake III in linux/apps/gameid.h): the keys they walk, fire and jump by are told
+    // ClassiCube, Quake III, Half-Life in linux/apps/gameid.h): the keys they walk, fire and jump by are told
     // it as the left stick and the triggers (Tell), whichever window has the guest's keyboard.
     private bool ByWords()
     {
         VRCPlayerApi player = Networking.LocalPlayer;
         if (own < 0 || flat || !Utilities.IsValid(player) || player.IsUserInVR()) return false;
         if (gamepad == null || gamepad.keys == null || !gamepad.keys.Capturing()) return false;
-        return played == 1 || played == 2 || played == 3 || played == 7;
+        return played == 1 || played == 2 || played == 3 || played == 7 || played == 9;
     }
 
     private int Key(KeyCode key) { return Input.GetKey(key) ? 127 : 0; }

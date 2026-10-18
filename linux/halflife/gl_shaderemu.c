@@ -1,4 +1,4 @@
-// The OpenGL 1.1 that Xash3D's renderer (ref/gl) asks for, on the machine's GPU (docs/halflife.md):
+// The OpenGL 1.1 that Xash3D's renderer (ref/gl) asks for, on the machine's GPU (docs/games/halflife.md):
 // glBegin and client arrays become compact vertices of linux/quake3/gpu_shaderemu.c's draws.
 // Textures are only in GPU memory: words, or the game's paletted ones as layers of tiles;
 // a primitive whose vertices differ in colour is tagged vertices with a table of their colours.
@@ -88,7 +88,8 @@ static uint32_t atlas_at = NOWHERE, atlas_block;
 static int atlas_blocks;
 #define KEPT_OWNER (MAX_NAMES - 2)
 #define ATLAS_OWNER (MAX_NAMES - 3)
-static int bound, log_uploads, log_frames;
+static int bound, log_uploads, log_frames, log_picsum;
+static uint32_t picsum, picsums;	// HLGL_PICSUM=1: the frame's 2D quads summed, state and vertices
 #define GAP_OWNER (MAX_NAMES - 1)   // what lies between the pool's two parts, which is not ours
 #define GPU_TILES 5
 
@@ -811,7 +812,9 @@ void hlglStretchPic(float x, float y, float w, float h, float s1, float t1, floa
         const vertex* p = &v[corners[i]];
         to[0] = bits(p->x), to[1] = bits(p->y), to[2] = bits(p->z);
         to[3] = ((uint32_t)(int32_t)((p->s - low_s) * 1024.0f) & 0xffff) | (uint32_t)(int32_t)((p->t - low_t) * 1024.0f) << 16;
+        if (log_picsum) for (int k = 0; k < 4; k++) picsum = (picsum ^ to[k]) * 16777619u;
     }
+    if (log_picsum) for (unsigned k = 0; k < sizeof s / 4; k++) picsum = (picsum ^ ((const uint32_t*)&s)[k]) * 16777619u;
     drawn_vertices += 6;
 }
 
@@ -973,7 +976,7 @@ static void s_nothing(void) {}
 int hlglOpen(unsigned int nano_x_window) {
     if (seglInit(nano_x_window) < 0) return -1;
     seglWorldUp(3);   // z
-    log_uploads = getenv("HLGL_LOG") != 0, log_frames = getenv("HLGL_FRAMES") != 0;
+    log_uploads = getenv("HLGL_LOG") != 0, log_frames = getenv("HLGL_FRAMES") != 0, log_picsum = getenv("HLGL_PICSUM") != 0;
     if (log_frames) fprintf(stderr, "hlgl: hlglOpen at %p\n", (void*)hlglOpen);   // (a flat program's place, for a profile)
     for (int i = 0; i < MAX_NAMES; i++) textures[i].at = NOWHERE;
     // the pool: the display's spare memory when there is some, then what seglMemory has left,
@@ -1001,8 +1004,8 @@ int hlglOpen(unsigned int nano_x_window) {
     workers = mcw_open(want ? atoi(want) : 43);
     if (workers > 64) workers = 64;
     if (workers > 0) {
-        extern char __executable_start[], etext[];
-        mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+        extern char _start[], etext[];  // (a flat program's __executable_start is 0)
+        mcw_touch_code(_start, (unsigned)(etext - _start));
         gpuTouchSets(mcw_touch);
     } else workers = 0;
     return 0;
@@ -1021,6 +1024,8 @@ void hlglSwap(void) {
     jobs_wait();
     gpuSwap(0);
     swaps++;
+    if (log_picsum && ++picsums % 64 == 0) fprintf(stderr, "hlgl: picsum %08x\n", (unsigned)picsum);
+    picsum = 0;
     if (log_frames && ++frame % 64 == 0) fprintf(stderr, "hlgl: frame %u\n", frame);
     if (log_frames && frame % 256 == 0) {	// DEBUG
         extern unsigned se_asks[64], se_asks_n;

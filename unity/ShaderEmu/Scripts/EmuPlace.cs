@@ -9,6 +9,7 @@ public class EmuPlace : UdonSharpBehaviour
 {
     public EmuStations stations;
     public int place;
+    public UnityEngine.UI.Slider speed;   // the speed's slider on the tower, where the floppy drive was
 
     public void Power() { stations.Act(place, 0); }
     public void ResetKey() { stations.Act(place, 1); }   // (Reset is Unity's own, called when a component is added)
@@ -20,4 +21,5 @@ public class EmuPlace : UdonSharpBehaviour
     public void CloseLinks() { stations.Act(place, 7); }         // LINKS OFF
     public void OpenLinks() { stations.Act(place, 8); }          // LINKS ON
     public void Leave() { stations.Act(place, 9); }              // the tower's EXIT: the place is given up
+    public void SpeedMoved() { stations.SpeedMoved(place, speed); }
 }

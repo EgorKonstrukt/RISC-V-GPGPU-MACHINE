@@ -1,5 +1,5 @@
 /*
-sv_shaderemu.c - the server's frame on a worker core (docs/halflife.md)
+sv_shaderemu.c - the server's frame on a worker core (docs/games/halflife.md)
 
 Host_ServerFrame of frame n runs on a worker while this core draws frame n from what the server
 said in frame n - 1. The packets each side sends the other while the frame is out wait for its
@@ -79,6 +79,12 @@ static void serve( void )
 		answer.result = ask.fn( ask.args );
 		answer.seq = ask.seq;
 	}
+}
+
+void SE_ServerServe( void )
+{
+	if( out )
+		serve();
 }
 
 void SE_ServerKeepPrint( const char *text )

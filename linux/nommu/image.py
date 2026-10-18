@@ -1,5 +1,6 @@
 """build/images/NAME (default nommu): the shared image with the flat root (root.sh) as its overlay, the
-no-MMU kernel (kernel.sh), and RAM in the device tree from the kernel's address on. Without a build
+no-MMU kernel (kernel.sh), and RAM in the device tree from the kernel's address to the GPU's memory
+and from 0x88000000 to 0x92000000 (docs/system/nommu.md, "Memory"). Without a build
 in build/nommu, linux/prebuilt/nommu: its kernel and the files that differ from linux/prebuilt/root.
    python linux/nommu/image.py [NAME [ROOT [KERNEL]]] [--save-prebuilt]"""
 import filecmp, os, shutil, struct, subprocess, sys
@@ -14,6 +15,13 @@ flat = argv[1] if len(argv) > 1 else os.path.join(built, 'flatroot') if own else
 kernel = argv[2] if len(argv) > 2 else os.path.join(built, 'Image') if own else os.path.join(PREBUILT, 'Image')
 if save and os.path.abspath(flat).startswith(PREBUILT):
     raise SystemExit('--save-prebuilt saves a build (build/nommu): there is none')
+# the desktop's icons and fonts are made on this side, never by root.sh: put on a built root (as all.ps1 does)
+share = os.path.join(flat, 'usr', 'share')
+if not os.path.abspath(flat).startswith(PREBUILT) and os.path.isdir(share):
+    subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'make_icons.py')], env=dict(os.environ, ICONS_OUT=share),
+                   check=True, stdout=subprocess.DEVNULL)
+    if not os.path.exists(os.path.join(share, 'font-ui-12.sef')):
+        subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'make_fonts.py'), share], check=True, stdout=subprocess.DEVNULL)
 D = os.path.join(ROOT, 'build', 'images', name)
 if os.path.isdir(os.path.join(D, 'overlay')):
     shutil.rmtree(os.path.join(D, 'overlay'))
@@ -26,17 +34,43 @@ if os.path.exists(os.path.join(D, 'overlay', 'usr', 'bin', 'halflife.bin')) and 
         print('Uplink\'s data could not be fetched: the image has Half-Life without it')
 r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'private_image.py'), name], cwd=ROOT, capture_output=True, text=True)
 print(r.stdout[-600:], r.stderr[-600:])
-# (the kernel lies at 0x80400000: without an MMU, memory below it is no RAM the kernel may hand out)
-old = struct.pack('>IIII', 0, 0x80000000, 0, 0x06000000)
-new = struct.pack('>IIII', 0, 0x80400000, 0, 0x05c00000)
-for f in ('dts.bin', 'linux_payload.bin'):
-    p = os.path.join(D, f)
-    b = bytearray(open(p, 'rb').read())
-    assert b.count(old) == 1, (f, b.count(old))
-    i = b.index(old); b[i:i + 16] = new
-    open(p, 'wb').write(b)
+if r.returncode:
+    raise SystemExit('tools/private_image.py %s failed (exit %d): see its output above' % (name, r.returncode))
+# RAM from the kernel at 0x80400000 (without an MMU, memory below it is no RAM the kernel may hand
+# out) to the GPU's memory at 0x86000000, and above the devices from 0x88000000 to 0x92000000
+# (where the state texture ends: kStateHeight in harness/apps/rvc_backend.h)
+RAM = [(0x80400000, 0x05c00000), (0x88000000, 0x0a000000)]
+
+
+def with_ram(dtb):
+    """The device tree with the memory node's reg as RAM: the property grows, so every offset of
+    the header past it moves."""
+    old = struct.pack('>IIII', 0, 0x80000000, 0, 0x06000000)
+    value = b''.join(struct.pack('>IIII', 0, at, 0, size) for at, size in RAM)
+    assert dtb.count(old) == 1 and dtb[:4] == b'\xd0\x0d\xfe\xed', 'device tree: expected one memory range 0x80000000 + 0x06000000'
+    i = dtb.index(old)
+    assert struct.unpack('>III', dtb[i - 12:i])[:2] == (3, 16), 'device tree: the range is not a property of 16 bytes'
+    grow = len(value) - len(old)
+    head = list(struct.unpack('>10I', dtb[:40]))
+    head[1] += grow                       # totalsize
+    for k in (2, 3, 4):                   # the struct, strings and reserved map's offsets
+        if head[k] > i:
+            head[k] += grow
+    head[9] += grow                       # size_dt_struct
+    out = bytearray(dtb[:i - 8]) + struct.pack('>I', len(value)) + dtb[i - 4:i] + value + dtb[i + len(old):]
+    out[:40] = struct.pack('>10I', *head)
+    return bytes(out)
+
+
+TREE_AT = 0x2200000   # the device tree in the boot image (tools/make_linux_image.py)
+tree = open(os.path.join(D, 'dts.bin'), 'rb').read()
+payload = open(os.path.join(D, 'linux_payload.bin'), 'rb').read()
+assert payload[TREE_AT:] == tree, 'linux_payload.bin does not end with dts.bin'
+tree = with_ram(tree)
+open(os.path.join(D, 'dts.bin'), 'wb').write(tree)
+open(os.path.join(D, 'linux_payload.bin'), 'wb').write(payload[:TREE_AT] + tree)
 print(name, 'made from', os.path.relpath(flat, ROOT), 'and', os.path.relpath(kernel, ROOT),
-      '; memory node 0x80400000 + 0x05c00000')
+      '; memory', ', '.join('0x%08x + 0x%08x' % r for r in RAM))
 
 if save:
     # what the overlay needs over linux/prebuilt/root: save the MMU build there first

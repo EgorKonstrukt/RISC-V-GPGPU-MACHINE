@@ -172,10 +172,15 @@ HUB_HOSTS = {0: 1, 2: 9}   # a row: the place whose tower its hub stands on (the
 LAN_R = 0.003
 
 
-def network(b, places, laid):
+HUB_SUPPLY = {0: 1, 1: 5, 2: 9}   # a row: the place whose strip its hub's supply is plugged into
+DC_R = 0.0016                     # the supply's lead
+
+
+def network(b, places, laid, strips):
     """The room's network: a lead from every tower's card to its row's hub, the hubs to each other
-    and the first to the den's rack. places: each place's frame; laid: its own leads as they fell
-    (name, path, radius), in the room's frame. Gives the hubs for Models/stations.json."""
+    and the first to the den's rack, and each hub's supply. places: each place's frame; laid: its
+    own leads as they fell (name, path, radius), in the room's frame; strips: where each place's
+    strip lies, in its frame. Gives the hubs for Models/stations.json."""
     import random
     rng = random.Random(77)
     T, R = TABLE_TOP, LAN_R
@@ -208,10 +213,34 @@ def network(b, places, laid):
     hubs, groups, ends = [], {0: [], 1: [], 2: []}, {}
     b.obj("Network")
 
-    def lay(group, name, corners, mat, up=0.012, bend=0.04):
+    def lay(group, name, corners, mat, up=0.012, bend=0.04, radius=R, chance=None):
+        chance = chance or rng
         del pc.LEADS[:]
-        pc.lead(b, name, corners, R, mat, bend=bend)
-        groups[group].append((name, drape.ruffled(pc.LEADS[0][1], rng, up=up * rng.uniform(0.3, 1.0), wander=0.002), R, mat))
+        pc.lead(b, name, corners, radius, mat, bend=bend)
+        groups[group].append((name, drape.ruffled(pc.LEADS[0][1], chance, up=up * chance.uniform(0.3, 1.0), wander=0.002), radius, mat))
+
+    def table_edge(row, world, x):
+        """The row's tables' back edge in a place's frame, at x of that frame."""
+        return (world.inverted() @ Vector(((world @ Vector((x, 0, 0.45))).x, T, ROWS_Z[row] + 0.45))).z
+
+    def supply(row, hub_frame, power, laid_out):
+        """The hub's supply lead: from its plug in the hub's socket at `power`, through `laid_out`
+        (the room's points), along the floor before its place's strip and up into the supply on it."""
+        index = HUB_SUPPLY[row]
+        world, lies = places[index], strips[index]
+        frame = hub_frame @ lib.place(pc.hub_power(power))
+        with b.at((0, 0, 0)):
+            b.stack[-1] = frame
+            pc.dc_plug(b, 0, 0, 0)
+        start, out = frame @ Vector((0, 0, pc.DC_LONG - 0.002)), frame @ Vector((0, 0, pc.DC_LONG + 0.014))
+        s = Vector(pc.strip_socket(pc.HUB_SOCKET, lies))
+        low, top = -T + DC_R + 0.001, s.y + pc.ADAPTER_HIGH
+        front = min(table_edge(row, world, s.x) + 0.022, lies[2] - 0.062)   # before the strip and the mains leads' fall, under the table's edge
+        local = [(s.x + 0.035, low, front), (s.x + 0.01, -T + 0.105, lies[2] - 0.032), (s.x, top + 0.03, lies[2]), (s.x, top - 0.002, lies[2])]
+        lay(row, "supply %d" % row, [tuple(start), tuple(out)] + [tuple(p) for p in laid_out(front)] + [tuple(world @ Vector(p)) for p in local],
+            "Rubber", radius=DC_R, up=0.008, chance=random.Random(78 + row))   # (its own chance: the network's leads keep theirs)
+        boxes.extend((tuple(world @ Vector(centre)), size, turn + math.degrees(math.atan2(world[0][2], world[0][0])))
+                     for centre, size, turn in (pc.strip_box(lies), pc.adapter_box(lies, pc.HUB_SOCKET)))
 
     def plugged(world, x, y, z, mat, turn=(0, 0, 0)):
         """A plug in a socket at x, y, z of a frame whose +z, turned, the socket looks along; gives where its lead leaves it, and a point further out."""
@@ -289,6 +318,17 @@ def network(b, places, laid):
                 ports += [(2, -1)]
             host = places[HUB_HOSTS[row]]
             boxes.append((tuple(host @ Vector((hub_at[0], hub_at[1] + pc.HUB[1] / 2, hub_at[2]))), (pc.HUB[2], pc.HUB[1], pc.HUB[0]), math.degrees(math.atan2(host[0][2], host[0][0]))))
+            power = -pc.HUB_POWER   # (its socket towards the tower's back)
+
+            def down_back(front, host=host, row=row):
+                """The supply's lead round the tower's back corner, down its back clear of the plugs, over the table's edge."""
+                x, hz, low = pc.TOWER_X + 0.04, hub_at[2] - power, DC_R + 0.001
+                e = table_edge(row, host, x)
+                local = [(face + 0.035, pc.TOWER_HIGH + 0.006, hz + 0.03), (face + 0.018, pc.TOWER_HIGH - 0.008, back + 0.018), (face - 0.015, pc.TOWER_HIGH - 0.03, back + 0.022),
+                         (x + 0.01, 0.2, back + 0.012), (x + 0.005, 0.03, back + 0.012), (x, low, back + 0.035), (x, low, e - 0.04), (x, 0.012, e + 0.006),
+                         (x, -0.03, e + 0.014), (x, -0.3, e + 0.02), (x - 0.02, -T + 0.03, front + 0.012), (x - 0.06, -T + low, front + 0.006)]
+                return [host @ Vector(p) for p in local]
+            supply(row, world, power, down_back)
         else:
             # on the floor behind the row's middle, its sockets to the tables: world x of socket k is -hub_port(k)
             world = lib.place((0.0, 0, z + 0.78), (0, 180 + rng.uniform(-2, 2), 0))
@@ -312,10 +352,17 @@ def network(b, places, laid):
             ends["B-C"] = (0.0, R + 0.001, ROWS_Z[2] + 1.25)
             lay(row, "hubs 1", list(reversed(into(4, "CableBlue"))) + [(0.0, R + 0.001, z + 0.50), (0.0, R + 0.001, z - 0.5), ends["B-C"]], "CableBlue", up=0.004)
             ports = [(7, left), (6, near_left), (1, near_right), (2, right), (0, -1), (4, -1)]
+            power = pc.HUB_POWER
+
+            def round_hub(front, hub=world):
+                """The supply's lead from the hub's back along the floor, clear of the leads into it, to before the left table's tower."""
+                low = DC_R + 0.001
+                return [hub @ Vector(p) for p in ((power + 0.006, low, 0.135), (power + 0.04, low, 0.19))] + [places[HUB_SUPPLY[1]] @ Vector((pc.TOWER_X - 0.015, -T + low, front + 0.02))]
+            supply(row, world, power, round_hub)
         b.obj("Hubs")
         with b.at((0, 0, 0)):
             b.stack[-1] = world
-            pc.hub(b)
+            pc.hub(b, power)
         b.obj("Network")
         at = world @ Vector((0, 0, 0))
         hubs.append({"x": at.x, "y": at.y, "z": at.z, "turn": math.degrees(math.atan2(world[0][2], world[0][0])),
@@ -330,12 +377,13 @@ def network(b, places, laid):
         paths = drape.settle([(name, path, radius) for name, path, radius, _ in leads], boxes, [], guards=guards)
         drape.check([(name, path, radius) for (name, _, radius, _), path in zip(leads, paths)], boxes, [])
         for (name, _, radius, mat), path in zip(leads, paths):
-            fallen[name] = (path, mat)
+            fallen[name] = (path, mat, radius)
     for first, second in (("hubs 0", "hubs 0b"), ("hubs 1", "hubs 1b")):
-        fallen[first] = (fallen[first][0] + fallen.pop(second)[0][1:], fallen[first][1])
-    for name, (path, mat) in fallen.items():
-        b.tube([tuple(q) for q in path], R, mat, segs=6, smooth=0)
-    drape.apart([(name, path, R) for name, (path, _) in fallen.items()], [("place %d's %s" % (index, name), path, radius) for index, leads in enumerate(laid) for name, path, radius in leads])
+        fallen[first] = (fallen[first][0] + fallen.pop(second)[0][1:],) + fallen[first][1:]
+    for name, (path, mat, radius) in fallen.items():
+        b.tube([tuple(q) for q in path], radius, mat, segs=6, smooth=0)
+    drape.apart([(name, path, radius) for name, (path, _, radius) in fallen.items()],
+                [("place %d's %s" % (index, name), path, radius) for index, leads in enumerate(laid) for name, path, radius in leads])
     return hubs
 
 
@@ -361,7 +409,7 @@ def classroom(b):
     # Models/stations.json says where, for ShaderEmuStations.cs.
     import json
     lay = random.Random(11)   # (its own: the room's other chances stay what they were)
-    places, frames, laid = [], [], []
+    places, frames, laid, strips = [], [], [], []
     for row, z in enumerate(ROWS_Z):
         for column, x in enumerate(PLACES_X):
             index = row * len(PLACES_X) + column
@@ -382,12 +430,13 @@ def classroom(b):
             with b.at(at, (0, turn, 0)):
                 # (a hub stands on some towers, and its leads hang down their right sides)
                 pc.station(b, "rest", lie, desk=desk, seed=index, stuck=random.Random(300 + index).randint(2, 4),
-                           bare=("tower top", "tower right") if index in HUB_HOSTS.values() else ())
+                           bare=("tower top", "tower right") if index in HUB_HOSTS.values() else (), supply=index in HUB_SUPPLY.values())
             pc.MODE = "full"
             places.append({"x": at[0], "z": at[2], "turn": turn, "keyboard": list(lie["keyboard"])})
             frames.append(world)
             laid.append([(name, [world @ p for p in path], radius) for name, path, radius, _, _ in pc.LEADS])
-    hubs = network(b, frames, laid)
+            strips.append(pc.STRIP_AT[0])
+    hubs = network(b, frames, laid, strips)
     here = os.path.dirname(os.path.abspath(__file__))
     back, card = pc.TOWER_Z + pc.FRONT + pc.TOWER_DEEP, pc.tower_back()["nic"]
     # (flat lists: Unity's JsonUtility reads no list of lists. tables: x, z of each; a hub's ports: x, y, z, place of each)

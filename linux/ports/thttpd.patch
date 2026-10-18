@@ -1,0 +1,391 @@
+--- a/libhttpd.c
++++ b/libhttpd.c
+@@ -2756,8 +2756,8 @@
+ 		hc->encodedurl );
+ 	    return -1;
+ 	    }
+-	++hc->hs->cgi_count;
+-	r = fork( );
++	/* no MMU: the listing is written here, not by a child (cgi_count stays as it was) */
++	r = 0;
+ 	if ( r < 0 )
+ 	    {
+ 	    syslog( LOG_ERR, "fork - %m" );
+@@ -2768,9 +2768,7 @@
+ 	    }
+ 	if ( r == 0 )
+ 	    {
+-	    /* Child process. */
+-	    sub_process = 1;
+-	    httpd_unlisten( hc->hs );
++	    httpd_clear_ndelay( hc->conn_fd );
+ 	    send_mime(
+ 		hc, 200, ok200title, "", "", "text/html; charset=%s",
+ 		(off_t) -1, hc->sb.st_mtime );
+@@ -2786,15 +2784,12 @@
+ 	    ** to worry about double closes or file descriptor leaks cause
+ 	    ** we're in a subprocess.
+ 	    */
+-	    fp = fdopen( hc->conn_fd, "w" );
++	    fp = fdopen( dup( hc->conn_fd ), "w" );
+ 	    if ( fp == (FILE*) 0 )
+ 		{
+ 		syslog( LOG_ERR, "fdopen - %m" );
+-		httpd_send_err(
+-		    hc, 500, err500title, "", err500form, hc->encodedurl );
+-		httpd_write_response( hc );
+ 		closedir( dirp );
+-		exit( 1 );
++		return -1;
+ 		}
+ 
+ 	    (void) fprintf( fp, "\
+@@ -2969,21 +2964,7 @@
+ 
+ 	    (void) fprintf( fp, "    </pre>\n  </body>\n</html>\n" );
+ 	    (void) fclose( fp );
+-	    exit( 0 );
+ 	    }
+-
+-	/* Parent process. */
+-	closedir( dirp );
+-	syslog( LOG_DEBUG, "spawned indexing process %d for directory '%.200s'", r, hc->expnfilename );
+-#ifdef CGI_TIMELIMIT
+-	/* Schedule a kill for the child process, in case it runs too long */
+-	client_data.i = r;
+-	if ( tmr_create( (struct timeval*) 0, cgi_kill, client_data, CGI_TIMELIMIT * 1000L, 0 ) == (Timer*) 0 )
+-	    {
+-	    syslog( LOG_CRIT, "tmr_create(cgi_kill ls) failed" );
+-	    exit( 1 );
+-	    }
+-#endif /* CGI_TIMELIMIT */
+ 	hc->status = 200;
+ 	hc->bytes_sent = CGI_BYTECOUNT;
+ 	hc->should_linger = 0;
+@@ -3570,6 +3551,255 @@
+     }
+ 
+ 
++/* No MMU: thttpd cannot fork a CGI's child, which ran on after fork(). The CGI is run by
++** thttpd started again (thttpd -H REST PARSE BINARY ARGV...), with the connection on 0 and 1
++** and on 3 the POST data already read: it feeds the CGI REST more bytes and parses its headers.
++*/
++#include <poll.h>
++#include <sys/wait.h>
++
++int httpd_self_fd = -1;
++
++static int
++cgi_spawn( httpd_conn* hc )
++    {
++    char** envp;
++    char** argp;
++    char** hargv;
++    char* directory;
++    char* binary;
++    char rest[24];
++    int pre[2] = { -1, -1 };
++    int parse, n, i, a, b;
++    size_t c = 0;
++    pid_t r;
++
++    envp = make_envp( hc );
++    argp = make_argp( hc );
++    if ( argp == (char**) 0 )
++	return -1;
++    if ( hc->method == METHOD_POST && hc->read_idx > hc->checked_idx )
++	{
++	c = hc->read_idx - hc->checked_idx;
++	if ( c > 65536 || pipe( pre ) < 0 )
++	    return -1;
++	(void) httpd_write_fully( pre[1], &(hc->read_buf[hc->checked_idx]), c );
++	(void) close( pre[1] );
++	}
++    (void) my_snprintf( rest, sizeof(rest), "%lld",
++	(long long) ( pre[0] >= 0 && hc->contentlength > c ? hc->contentlength - c : 0 ) );
++    parse = strncmp( argp[0], "nph-", 4 ) != 0 && hc->mime_flag;
++    directory = strdup( hc->expnfilename );
++    binary = directory ? strrchr( directory, '/' ) : (char*) 0;
++    if ( binary != (char*) 0 )
++	*binary++ = '\0';
++    for ( n = 0; argp[n] != (char*) 0; ++n )
++	;
++    hargv = NEW( char*, n + 6 );
++    if ( hargv == (char**) 0 )
++	return -1;
++    hargv[0] = "thttpd";
++    hargv[1] = "-H";
++    hargv[2] = rest;
++    hargv[3] = parse ? "1" : "0";
++    hargv[4] = binary ? binary : hc->expnfilename;
++    for ( i = 0; i <= n; ++i )
++	hargv[5 + i] = argp[i];
++    r = vfork();
++    if ( r == 0 )
++	{
++	/* the child of a vfork: only its own descriptors, then exec */
++	if ( binary != (char*) 0 )
++	    (void) chdir( directory );
++	a = fcntl( hc->conn_fd, F_DUPFD, 10 );
++	b = pre[0] >= 0 ? fcntl( pre[0], F_DUPFD, 10 ) : -1;
++	(void) dup2( a, STDIN_FILENO );
++	(void) dup2( a, STDOUT_FILENO );
++	(void) dup2( a, STDERR_FILENO );
++	if ( b >= 0 )
++	    (void) dup2( b, 3 );
++	else
++	    (void) close( 3 );
++	(void) fexecve( httpd_self_fd, hargv, envp );
++	_exit( 127 );
++	}
++    if ( pre[0] >= 0 )
++	(void) close( pre[0] );
++    free( hargv );
++    free( argp );
++    free( directory );
++    for ( i = 0; envp[i] != (char*) 0; ++i )
++	if ( strcmp( envp[i], "GATEWAY_INTERFACE=CGI/1.1" ) != 0 )
++	    free( envp[i] );
++    return r;
++    }
++
++static char*
++status_title( int status )
++    {
++    switch ( status )
++	{
++	case 200: return ok200title;
++	case 302: return err302title;
++	case 304: return err304title;
++	case 400: return httpd_err400title;
++	case 403: return err403title;
++	case 404: return err404title;
++	case 408: return httpd_err408title;
++	case 500: return err500title;
++	case 501: return err501title;
++	case 503: return httpd_err503title;
++	default: return "Something";
++	}
++    }
++
++int
++httpd_cgi_helper( int argc, char** argv )
++    {
++    long long rest = atoll( argv[2] );
++    int parse = atoi( argv[3] );
++    int src = fcntl( 3, F_GETFD ) >= 0 ? 3 : -1;
++    int in[2] = { -1, -1 }, out[2] = { -1, -1 };
++    char ibuf[1024], obuf[1024];
++    size_t ilen = 0, ioff = 0, hlen = 0, hsize = 0;
++    char* headers = (char*) 0;
++    char* br;
++    char* cp;
++    int status, r, k, hdone = 0;
++    pid_t pid;
++    struct pollfd p[2];
++
++    if ( argc < 6 || ( src >= 0 && pipe( in ) < 0 ) || ( parse && pipe( out ) < 0 ) )
++	return 1;
++    pid = vfork();
++    if ( pid == 0 )
++	{
++	if ( src >= 0 )
++	    {
++	    (void) dup2( in[0], STDIN_FILENO );
++	    (void) close( in[0] );
++	    (void) close( in[1] );
++	    (void) close( src );
++	    }
++	if ( parse )
++	    {
++	    (void) dup2( out[1], STDOUT_FILENO );
++	    (void) dup2( out[1], STDERR_FILENO );
++	    (void) close( out[0] );
++	    (void) close( out[1] );
++	    }
++	(void) signal( SIGPIPE, SIG_DFL );
++	(void) execv( argv[4], argv + 5 );
++	_exit( 127 );
++	}
++    if ( pid < 0 )
++	return 1;
++    if ( src >= 0 )
++	(void) close( in[0] );
++    if ( parse )
++	(void) close( out[1] );
++    while ( in[1] >= 0 || out[0] >= 0 )
++	{
++	k = 0;
++	if ( in[1] >= 0 )
++	    {
++	    if ( ilen > ioff )
++		{ p[k].fd = in[1]; p[k].events = POLLOUT; }
++	    else
++		{ p[k].fd = src; p[k].events = POLLIN; }
++	    ++k;
++	    }
++	if ( out[0] >= 0 )
++	    {
++	    p[k].fd = out[0];
++	    p[k].events = POLLIN;
++	    ++k;
++	    }
++	if ( poll( p, k, -1 ) < 0 )
++	    continue;
++	k = 0;
++	if ( in[1] >= 0 )
++	    {
++	    if ( ilen > ioff && p[k].revents )
++		{
++		r = write( in[1], ibuf + ioff, ilen - ioff );
++		if ( r <= 0 )
++		    ilen = ioff = 0, src = -1;
++		else
++		    ioff += r;
++		}
++	    else if ( ilen == ioff && p[k].revents )
++		{
++		r = read( src, ibuf, src == 3 ? sizeof(ibuf) : rest < (long long) sizeof(ibuf) ? (int) rest : sizeof(ibuf) );
++		if ( r > 0 )
++		    {
++		    ilen = r;
++		    ioff = 0;
++		    if ( src != 3 )
++			rest -= r;
++		    }
++		else if ( src == 3 )
++		    src = STDIN_FILENO;
++		else
++		    src = -1;
++		}
++	    if ( ilen == ioff && ( src < 0 || ( src == STDIN_FILENO && rest <= 0 ) ) )
++		{
++		(void) close( in[1] );
++		in[1] = -1;
++		}
++	    ++k;
++	    }
++	if ( out[0] >= 0 && p[k].revents )
++	    {
++	    r = read( out[0], obuf, sizeof(obuf) );
++	    if ( r <= 0 )
++		{
++		(void) close( out[0] );
++		out[0] = -1;
++		}
++	    if ( hdone || r <= 0 )
++		{
++		if ( r > 0 )
++		    (void) httpd_write_fully( STDOUT_FILENO, obuf, r );
++		if ( hdone || hlen == 0 )
++		    continue;
++		}
++	    else
++		{
++		httpd_realloc_str( &headers, &hsize, hlen + r );
++		(void) memmove( &headers[hlen], obuf, r );
++		hlen += r;
++		headers[hlen] = '\0';
++		if ( strstr( headers, "\015\012\015\012" ) == (char*) 0 && strstr( headers, "\012\012" ) == (char*) 0 )
++		    continue;
++		}
++	    /* the headers are in (or the output ended): the status line first, as cgi_interpose_output() */
++	    br = strstr( headers, "\015\012\015\012" );
++	    if ( br == (char*) 0 )
++		br = strstr( headers, "\012\012" );
++	    if ( br == (char*) 0 )
++		br = &headers[hlen];
++	    status = 200;
++	    if ( strncmp( headers, "HTTP/", 5 ) == 0 )
++		status = atoi( headers + strcspn( headers, " \t" ) );
++	    if ( ( cp = strstr( headers, "Location:" ) ) != (char*) 0 && cp < br && ( cp == headers || cp[-1] == '\012' ) )
++		status = 302;
++	    if ( ( cp = strstr( headers, "Status:" ) ) != (char*) 0 && cp < br && ( cp == headers || cp[-1] == '\012' ) )
++		status = atoi( cp + 7 + strspn( cp + 7, " \t" ) );
++	    (void) my_snprintf( obuf, sizeof(obuf), "HTTP/1.0 %d %s\015\012", status, status_title( status ) );
++	    (void) httpd_write_fully( STDOUT_FILENO, obuf, strlen( obuf ) );
++	    (void) httpd_write_fully( STDOUT_FILENO, headers, hlen );
++	    hdone = 1;
++	    }
++	}
++    if ( parse )
++	(void) shutdown( STDOUT_FILENO, SHUT_WR );
++    (void) waitpid( pid, (int*) 0, 0 );
++    return 0;
++    }
++
++
+ static int
+ cgi( httpd_conn* hc )
+     {
+@@ -3585,21 +3815,15 @@
+ 	}
+     ++hc->hs->cgi_count;
+     httpd_clear_ndelay( hc->conn_fd );
+-    r = fork( );
++    r = cgi_spawn( hc );
+     if ( r < 0 )
+ 	{
+ 	syslog( LOG_ERR, "fork - %m" );
++	--hc->hs->cgi_count;
+ 	httpd_send_err(
+ 	    hc, 500, err500title, "", err500form, hc->encodedurl );
+ 	return -1;
+ 	}
+-    if ( r == 0 )
+-	{
+-	/* Child process. */
+-	sub_process = 1;
+-	httpd_unlisten( hc->hs );
+-	cgi_child( hc );
+-	}
+ 
+     /* Parent process. */
+     syslog( LOG_DEBUG, "spawned CGI process %d for file '%.200s'", r, hc->expnfilename );
+--- a/libhttpd.h
++++ b/libhttpd.h
+@@ -285,6 +285,10 @@
+ /* Write the requested buffer completely, accounting for interruptions. */
+ int httpd_write_fully( int fd, const char* buf, size_t nbytes );
+ 
++/* No MMU: thttpd's own program, for a CGI's helper (thttpd -H ...) */
++extern int httpd_self_fd;
++int httpd_cgi_helper( int argc, char** argv );
++
+ /* Generate debugging statistics syslog message. */
+ void httpd_logstats( long secs );
+ 
+--- a/thttpd.c
++++ b/thttpd.c
+@@ -369,6 +369,15 @@
+     int gotv4, gotv6;
+     struct timeval tv;
+ 
++    if ( argc >= 6 && strcmp( argv[1], "-H" ) == 0 )
++	return httpd_cgi_helper( argc, argv );
++    /* (above the descriptors a CGI's helper is given) */
++    if ( ( httpd_self_fd = open( "/proc/self/exe", O_RDONLY|O_CLOEXEC ) ) >= 0 )
++	{
++	int fd = httpd_self_fd;
++	httpd_self_fd = fcntl( fd, F_DUPFD_CLOEXEC, 64 );
++	(void) close( fd );
++	}
+     argv0 = argv[0];
+ 
+     cp = strrchr( argv0, '/' );
+@@ -499,13 +508,8 @@
+ 	(void) fclose( stderr );
+ 
+ 	/* Daemonize - make ourselves a subprocess. */
+-#ifdef HAVE_DAEMON
+-	if ( daemon( 1, 1 ) < 0 )
+-	    {
+-	    syslog( LOG_CRIT, "daemon - %m" );
+-	    exit( 1 );
+-	    }
+-#else /* HAVE_DAEMON */
++	/* No MMU: no fork to leave the shell with, thttpd stays in the foreground */
++#if 0
+ 	switch ( fork() )
+ 	    {
+ 	    case 0:

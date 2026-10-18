@@ -21,8 +21,9 @@ mkdir -p "$OUT/bin" "$OUT/share" "$WORK/src/apps"
 Z=$WORK/src/zlib-1.3.1
 [ -f "$Z/deflate.c" ] || (cd "$WORK/src" && curl -fsSL -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz && tar -xzf zlib-1.3.1.tar.gz)
 ZLIB="-w -I$Z $Z/deflate.c $Z/trees.c $Z/inflate.c $Z/inftrees.c $Z/inffast.c $Z/adler32.c $Z/crc32.c $Z/zutil.c"
-for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg nxtetris nxmine nxeyes nxclock nxterm nxcalc; do
-    more=""
+# the programs compile at once, a process each; the build fails if any of them does
+build_one() {
+    local p=$1 more=""
     [ $p = nxpersist ] && more=$ZLIB
     [ $p = nxcalc ] && more="-lm"
     # the monitor and Paint move pictures with the worker cores (ui_bulk.h) and the browser
@@ -34,7 +35,18 @@ for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask
     esac
     rv32-cc -O2 -Wall -Wno-unused-function -I"$MW/src/include" -I"$HERE/../userland" "$HERE/$p.c" $more "$MW/src/lib/libnano-X.a" -o "$WORK/src/apps/$p"
     riscv32-linux-strip -o "$OUT/bin/$p" "$WORK/src/apps/$p"
+}
+pids=()
+for p in nxedit nxfiles nxpaint nxview nxsettings nxmon nxweb nxkey nxicon nxask nxnet open nxpersist nxreg nxtetris nxmine nxpinball nxeyes nxclock nxterm nxcalc; do
+    build_one $p & pids+=($!)
 done
+# archives unpacked on the worker cores (unarc.c: open --unpack runs it first, docs/system/open.md)
+( rv32-cc -O2 -Wall -Wno-unused-function -I"$REPO/linux/libmedia" -I"$REPO/programs/mc" "$HERE/unarc.c" "$MEDIA" \
+    "$WORK/src/libmedia/mcw.o" "$WORK/src/libmedia/mcwx.o" -lm -Wl,--gc-sections -o "$WORK/src/apps/unarc"
+  riscv32-linux-strip -o "$OUT/bin/unarc" "$WORK/src/apps/unarc" ) & pids+=($!)
+failed=0
+for pid in "${pids[@]}"; do wait $pid || failed=1; done
+[ $failed = 0 ] || { echo "a program did not build"; exit 1; }
 # the Start menu lists what the nxapps.* files name (linux/nanox/nxbar.c)
 printf '%s\n' "Utilities/Editor=nxedit" "Utilities/Files=nxfiles" "Utilities/Paint=nxpaint" "Other/Web=nxweb" "Utilities/Monitor=nxmon" "Utilities/Network=nxnet" "Utilities/Settings=nxsettings" > "$OUT/share/nxapps.20-apps"
 # two pictures for the viewer and for its test (tools/make_test_pictures.py made them)

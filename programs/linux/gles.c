@@ -255,6 +255,8 @@ unsigned int* seglPalette(void) { return (unsigned int*)(gpu + REG_PALETTE); }
 // A list seglSwapEarly() submitted may not be drawn yet: `unsettled` says so, and which set it is.
 static int unsettled;
 static uint32_t unsettled_set;
+static int not_a_frame;   // seglNotAFrame(): the next swap is not counted in the caption's rate
+void seglNotAFrame(void) { not_a_frame = 1; }
 void seglSettle(void) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
     if (!unsettled) return;
@@ -296,9 +298,10 @@ static void swap(int wait) {
         regs[REG_VOLUME / 4 + 3] = window_info.width | window_info.height << 16 | world_up << 28 | world_flat;
         regs[REG_VOLUME / 4] = GPU_PHYS + set_at;
         regs[REG_VOLUME / 4 + 2]++;
-        fps_caption(&window_info, regs[0x34 / 4]);   // (the machine's clock, milliseconds)
+        if (!not_a_frame) fps_caption(&window_info, regs[0x34 / 4]);   // (the machine's clock, milliseconds)
         set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
     }
+    not_a_frame = 0;
     commands = kept;
     mesh_vertices = kept_mesh;
     blocks = 0;
@@ -1248,6 +1251,8 @@ static void swap_again(int wait) {
     unsettled_set = shown_set;
     if (wait)
         while (regs[REG_SUBMIT / 4] != 0) rest();
+    if (!not_a_frame) fps_caption(&window_info, regs[0x34 / 4]);   // (a frame too: the list's memory is new)
+    not_a_frame = 0;
 }
 void seglSwapAgain(void) { swap_again(1); }
 void seglSwapAgainEarly(void) { swap_again(0); }

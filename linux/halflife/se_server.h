@@ -1,4 +1,4 @@
-// The server's frame on a worker core (sv_shaderemu.c, docs/halflife.md).
+// The server's frame on a worker core (sv_shaderemu.c, docs/games/halflife.md).
 #ifndef SE_SERVER_H
 #define SE_SERVER_H
 #include <stddef.h>
@@ -23,5 +23,7 @@ int SE_ServerKeepPacket( int sock, size_t length, const void *data, const void *
 // An error in the server's frame on its worker: the frame ends and it is raised by the first core.
 void SE_ServerAbort( const char *text, int fatal ) __attribute__(( noreturn ));
 void SE_ServerSettle( void );
+// What the worker asks of the first core made now, if it asks: between the first core's own steps.
+void SE_ServerServe( void );
 int SE_ServerGive( void );
 #endif

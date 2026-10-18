@@ -210,7 +210,9 @@ played is said to be so in a window (`refuse`): an AVI film's pictures by their 
   before its first picture (its decoders' groups): also not done.
 
 - The window is there before the file is taken apart (`ui_framed`, `nanox.md`): two seconds
-  after the program is started, with "opening it..." in the strip.
+  after the program is started, with "opening it..." in the strip. While the first pictures
+  are decoded the strip says how far, every 0.25 s: the pictures in hand of those it waits for,
+  and the seconds ("getting the first pictures ready: 40%, 1.2 s").
 - Going elsewhere starts at the group of pictures the place is in. What was decoded is
   dropped, and the film goes on when a group has been decoded again: about five seconds on
   the shader machine, which is what one group takes one worker (the same as from the start).

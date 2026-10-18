@@ -1,12 +1,14 @@
 # The IDE
 
 `nxide` is a place to write C in the machine, build it with the machine's own compiler
-(`docs/system/cc.md`) and run it, with a debugger. Start menu, Programming; a `.c` or `.h` file
-opened anywhere is its (`/usr/share/nxopen.15-ide`, `docs/system/open.md`), and so is the explorer's
-Edit of one.
+(`docs/system/cc.md`) and run it, with a debugger; and JavaScript and Python, run by QuickJS
+and MicroPython (`docs/system/scripts.md`), Python with a debugger too. Start menu, Programming;
+a `.c`, `.h`, `.js` or `.py` file opened anywhere is its (`/usr/share/nxopen.15-ide`,
+`docs/system/open.md`), and so is the explorer's Edit of one. A file's language is its ending.
 
-    / # nxide                   # the hello example
+    / # nxide                   # the project of last time, else the hello example
     / # nxide FILE.c
+    / # nxide FOLDER            # the folder as the project
 
     wsl -- bash /mnt/c/.../linux/ide/build.sh      # 6 s, after Nano-X's; then the image
 
@@ -23,10 +25,12 @@ Edit of one.
   functions, which keep what they did: Ctrl+Z takes a command back and Ctrl+Y makes it
   again, 1,024 changes deep; letters typed one after another are one change. A tab is
   spaces to the next fourth column, in the file too.
-- `syntax.h`: the colours. A lexer, a line at a time: keywords, types, numbers, strings,
-  comments, the preprocessor's lines, and a name before a bracket. The one thing a line
-  needs from those above it is whether it begins inside a comment, which is kept for every
-  line and worked out again from the line that changed.
+- `syntax.h`: the colours. A lexer, a line at a time, for C, JavaScript and Python: keywords,
+  types (in the scripts, the built-in names), numbers, strings, comments, the preprocessor's
+  lines and Python's decorators, and a name before a bracket. The one thing a line needs from
+  those above it is the state it begins in (inside a comment, a JavaScript template, a Python
+  string of three quotes), which is kept for every line and worked out again from the line that changed.
+- `pydbg.py`: the debugger for Python, run by MicroPython (below).
 - `debug.h`: the debugger (below).
 
 ## Colours, and why no language server
@@ -45,11 +49,20 @@ it the OpenGL and Nano-X headers). So the two halves are apart:
   it off; a build always does it.
 
 Since 17 October 2026 the files open in tabs (up to 12), each with its own text, history,
-marks and problems. A tree of the file's folder sits at the left (Ctrl+B). Clicking an error
+marks and problems. A tree is at the left only when a folder is open as the project (File,
+"Open a folder as the project...", "Its folder as the project", "Close the project"; Ctrl+B
+hides and shows it; its header's box closes the project); the project is kept in the registry
+as `ide.project` and opened at the next start without a file. A name too long for its tab, a
+row of the tree or the caption is cut with "..." (`ui_text_fit` in `ui.h` stopped early and
+let a tab's name run over its close box). Clicking an error
 line in Output, or a function in Call stack, goes to that line, and the bracket at the cursor
 is boxed with its pair. Ctrl+H replaces, as one change. Ctrl+W closes a tab, Ctrl+D selects
 the word, Ctrl+Shift+S saves all. Script words: `close`, `tab`, `tree`, `saveall`, `back`,
-`tabs`, `replace:OLD=NEW`.
+`tabs`, `replace:OLD=NEW`, `project:FOLDER`, `noproject`.
+
+For a script the check while typing is the interpreter's compiler: `qjsc -c` for JavaScript and
+MicroPython's `compile()` for Python, each on a copy in `/tmp`, so a mistake of syntax is marked
+as in C; a mistake only running finds is marked when it ends a run.
 
 ## Build and run
 
@@ -58,6 +71,11 @@ TinyCC does not optimise either way. Its output is in Output and its errors in P
 with the first one's line shown. Run (F6) builds and then starts the program, whose output
 comes to Output as it is written (a program with a window opens it as any does). Stop
 (Shift+F5) ends whatever runs.
+
+For a script Build only checks it (`qjsc -c`, or `compile()`), and Run runs `qjs --std FILE`
+or `micropython FILE`. A script that ends with an error has its line marked and shown, from
+the interpreter's trace back (QuickJS's `at ... (FILE:LINE:COLUMN)`, MicroPython's
+`File "FILE", line N`), the innermost line of the file itself.
 
 ## The debugger
 
@@ -109,10 +127,26 @@ frame's pointer and the caller's frame under that). A signal stops it too, at it
   ends it), and anything about code the compiler's libraries are made of (they have no
   stabs: a step into `printf` is a step over it).
 
+### Python
+
+Debug on a `.py` file runs `micropython /usr/share/ide-pydbg.py FILE COMMANDS REPORT`, which runs
+the file under `sys.settrace` and talks to the IDE through two FIFOs in `/tmp`: the marks and
+go, into, over, out or stop one way, and at a stop its line, the module's names and values and
+the file's frames the other. The keys are C's: F9, F5, F10, F11, F12. Over and out count the
+file's frames (a call into another module is stepped over). Variables has the module's names
+only: MicroPython keeps no names of a function's own variables. `sys.settrace` is built in
+(`linux/micropython/build.sh`), with a change so that a call with no trace set makes no frame
+object: as MicroPython has it every call paid for one, 40 times slower; now 2.4% (186.6
+million instructions against 182.1 on a loop of calls).
+
+JavaScript has no debugger: QuickJS has no hook at a line or a call to stop on, and the IDE
+runs it only.
+
 ## The examples
 
-File, Examples lists `/usr/share/example-*.c` (`linux/tcc/examples`). One is opened as the
-user's own copy, `/root/NAME.c`, which is written at the first Save or Build.
+File, Examples lists `/usr/share/example-*.c` (`linux/tcc/examples`) and then the scripts'
+`example-*.js` and `.py` (`linux/ide/examples`). One is opened as the user's own copy,
+`/root/NAME.c` (`.js`, `.py`), which is written at the first Save or Build.
 
 | | |
 |---|---|
@@ -120,6 +154,8 @@ user's own copy, `/root/NAME.c`, which is written at the first Save or Build.
 | `cube` | the smallest OpenGL program |
 | `home` | a place to walk round |
 | `shader` | a picture every pixel of which is one function's, on the worker cores |
+| `pi` | JavaScript: pi to 200 digits with BigInt (upstream's `/examples/pi.js`, Bellard's) |
+| `primes` | Python: a sieve, with a function to step into |
 
 `shader` shares a 160 x 120 picture out in 240 pieces of half a row, about one a worker
 (`mcw.h`, which `cc` links now: `docs/machine/multicore.md`), and draws it as one texture: 20
@@ -218,5 +254,10 @@ IDE's keys where it lands: a test that clicks Stop runs a program that has none.
 
 The IDE is also tested started as the desktop starts it, its children's ends ignored
 (`sh -c 'trap "" CHLD; NXIDE_PRINT=1 NXIDE_SCRIPT="build quit quit" exec nxide'`): the bar
-ignores SIGCHLD, a started program inherits that, and the first IDE never saw its build end. The window itself is a snapshot's layer:
+ignores SIGCHLD, a started program inherits that, and the first IDE never saw its build end.
+
+`python tools/test_all.py ide` runs the IDE's cases: `nxide-c` (the two above), `nxide-js` (pi
+run), `nxide-py` (`example:primes mark:17 debug into over over out go`: stops at 17, 7, 8, 9 in
+`sieve`, 18 with `primes` in Variables), `nxide-problems` (an error running and one of syntax in
+each script), `nxide-tree` (no tree without a project) and `nxide-storm` (a storm in each language). The window itself is a snapshot's layer:
 the stopped line is `ffff96`, a mark `c81414`, an error's bar `dc0000`.

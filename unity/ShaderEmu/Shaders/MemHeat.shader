@@ -25,7 +25,7 @@ Shader "ShaderEmu/MemHeat"
             Texture2D<uint4> _State;
             uint _Strips;
 
-            static const uint TexWidth = 2048, StateRows = 64, RamRows = 4032;
+            static const uint TexWidth = 2048, StateRows = 64, RamRows = 9216;   // RAM to 0x92000000
 
             uint hash(uint x) {
                 x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;

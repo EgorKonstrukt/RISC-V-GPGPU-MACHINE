@@ -19,18 +19,21 @@ In WSL, after the MMU build (`linux/kernel/build.sh` and the programs' build scr
   `rv32-c++`) that compile every program position-independent and link it as a flat program
   (`flatcrt.c` is its start). `fork` is `vfork` there (`nommu_fork.h`, included in every file).
   `RV32_MARCH=rv32imaf_zba_zbb` builds with Zba and Zbb.
-- `bash linux/nommu/kernel.sh`: the MMU kernel's tree copied with its hooks, five patches
+- `bash linux/nommu/kernel.sh`: the MMU kernel's tree copied with its hooks, seven patches
   (`patch_kconfig.py`: RV32 without the MMU, still in supervisor mode under the machine's SBI and
   linked at 0x80400000; `patch_signal.py`, `patch_drivers.py`, which also keeps `/proc/cpuinfo`'s
-  "mmu" line out, `patch_ovl.py`, `patch_console.py`: the console in memory) and its
-  configuration without the MMU, into `build/nommu/Image`.
+  "mmu" line out, `patch_ovl.py`, `patch_ramfs.py`, `patch_console.py`: the console in memory,
+  `patch_procmaps.py`: a read of `/proc/PID/maps` gives PID's mmap lock back, as upstream since
+  6.8; before, PID's next `mmap` waited forever) and its configuration without the MMU, into
+  `build/nommu/Image`.
 - `bash linux/nommu/build.sh [script ...]`: the sources copied to `~/nm/repo` again and the
   repository's build scripts run there with the flat drivers, a line each.
 - `bash linux/nommu/root.sh`: mctest and the machine's `elf2flt`, then every program of the root
   made flat (`flat.py`, `elf2bflt.py`) into `build/nommu/flatroot`.
 - `python linux/nommu/image.py [--save-prebuilt]`: `build/images/nommu`, the shared image with
   that root as its overlay, the kernel, and RAM in the device tree from the kernel's address
-  (0x80400000) on; without `build/nommu`, from `linux/prebuilt/nommu`.
+  (0x80400000) to the GPU's memory and from 0x88000000 to 0x92000000 ("Memory", below); without
+  `build/nommu`, from `linux/prebuilt/nommu`.
 - `python tools/test_all.py`: the test set, on this image once it is made (`linux/nommu/test.py`
   names it); `cc-bytes` takes the flat programs' digest on an image whose RAM starts at
   0x80400000.
@@ -60,6 +63,11 @@ then "Sync shader sources from the repository" and "Import boot images from the 
   before it fails; the kernel's early allocations come from the bottom of RAM; a ROM file is
   mapped from the ROM through overlayfs; a signal's trampoline on the stack is made visible to
   the instruction fetch; a program in the ROM is copied into RAM by one parallel copy.
+- tmpfs is ramfs without the MMU, and it is the writable layer of the root's overlay. It has
+  `RENAME_WHITEOUT` and `trusted.*` attributes as shmem has them (`patch_ramfs.py`), and the
+  overlay has `redirect_dir`: a file or a folder of the ROM is renamed, moved and removed in
+  place (before, a rename was "Invalid argument", a folder's removal "I/O error", and `mv` of a
+  folder copied it). An attribute costs about 60 bytes of slab, on what was copied up or renamed.
 - A program's whole memory is taken at its start: its data, bss and stack, and every anonymous
   mapping, cleared. A worker program gives its workers' stacks back when it closes them
   (`mcw_close`); a large pool is mapped at its size, not `calloc`'d (Quake III's zone and hunk).
@@ -72,6 +80,12 @@ then "Sync shader sources from the repository" and "Import boot images from the 
   `X_NO_FAST_AMO` sends atomics to the general path (for measuring).
 - `rvc_cpu`: bare workers as `BARE_WORKERS` (`RVC_BARE_WORKERS=0` turns them off), `RVC_ZB=1` as `ZB`, `RVC_GPU_COPY=1` marks
   every pixel of a drawn list's copy into RAM and names each new target.
+- Upstream's programs in the ROM are dynamic ELF programs and do not run here. The flat ones
+  are added beside them and hide them by name (`tools/make_linux_image.py`): BusyBox's applets
+  for `bc`, `dc`, `ed`, `traceroute`, `arping`, `ping` and `ip` (links to `/bin/busybox`,
+  `linux/userland/busybox.sh`), QuickJS and MicroPython (`docs/system/scripts.md`), the
+  terminal programs (`docs/system/terminal.md`) and the network and system ones (`docs/system/ports.md`). A link of the image (`NAME.romlink`) hides
+  upstream's file of that name as a file does.
 - Programs: libmedia makes a picture in memory and writes it where a file cannot be mapped for
   writing; nxfiles knows a flat program; tcc copies a section that cannot grow in place; the
   NES reads its leave word PC-relative.
@@ -111,13 +125,41 @@ the boot's clock were as before.
 
 ## Memory
 
-RAM is what the MMU kernel has (to 0x86000000; 88.7 MB for the kernel, 68 free on the desktop),
-and a program's memory is taken whole and in runs of pages: a mapping wants one run as long as
+RAM is two ranges: from the kernel at 0x80400000 to the GPU's memory at 0x86000000 (92 MB), and
+from 0x88000000, above the devices, to 0x92000000 (160 MB). `MemTotal` is 250,956 kB and 240,936
+of it is free at the shell, where they were 88,752 and 78,740 when RAM ended at 0x86000000, as
+the MMU kernel's does (18 October 2026). The devices did not move, so no program changed: the state texture
+is taller (2048 x 9280, `STATE_TEX_HEIGHT` in `src/types.h`, `kStateHeight` in
+`harness/apps/rvc_backend.h`), RAM in it what is under `RAM_MAX` (0x12000000 bytes) as before, and
+`rvc_cpu` has 288 MB. `image.py` gives the memory node two ranges (its `reg` grows by 16 bytes,
+the tree's offsets with it), and the drivers find their devices with `page_is_ram`
+(`patch_drivers.py`): the GPU's pages lie inside the memory map now, so `pfn_valid` is true there.
+A copy of the GPU's picture goes only to 0x86000000 to 0x87e00000, as a GPU program's buffers do
+(`gpu_writeback` in `src/gpu.h`).
+
+The boot to the shell is 14.5 million instructions where it was 10.0, 1.4 s more of the guest's
+time: the kernel sets up a page structure for each of 49,152 more pages (the gap between the
+ranges is 8,192 of them) and frees each (`memmap_init_range`, `memset` of each structure,
+`__free_pages_core`, `__free_pages_ok`). A test that presses a button once a game is loaded
+presses it at 20 s where it was 16 (`classicube-seat-*`), and ClassiCube's `classicube-pack`
+draws one text fewer by `classicube: steady`.
+
+The commit's bands of RAM stay 4 MB and a mask of 32 bits: bit b stands for bands b, b + 32 and
+b + 64 (`ram_bands`), so the tick's store marks its band as it did, at no cost an instruction. A
+band the commit must draw draws its two others too; the control words' band is drawn every
+commit apart from the mask (`_CommitAlways` in the harness, `CONTROL_BANDS` in Unity's
+`MachineBlit.cginc`, which draws runs of bands). The state texture is 290 MiB where it was 128,
+twice that with its other buffer: 580 MiB of video memory a machine where it was 256.
+
+A program's memory is taken whole and in runs of pages: a mapping wants one run as long as
 itself. Quake III is the largest, 46 MB in four runs (its data and bss 22, the hunk 8, the
 server's zone 6, the zone 4). `python linux/nommu/memory.py` runs each large program and then
 Quake III, and all of them one after another in order and reversed, a machine each under
-`rvc_cpu`, in about two and a half minutes: on 16 October 2026 all twelve fit, Quake III with 21.4
-MB free at the least. Over 26 programs one after another the shell grew 25 KB, Nano-X 29 KB and
+`rvc_cpu`, in about two and a half minutes (18 s on 18 October): on 16 October 2026 all twelve fit,
+Quake III with 21.4 MB free at the least; with RAM to 0x92000000 (18 October) all twelve fit with
+178 MB free at the least (16 MB on the same image with RAM to 0x86000000). The script then flagged
+four runs whose console had a program's first line written into the echo of its command, where
+the `|` that marks an echo was on the next line: no allocation failed. Over 26 programs one after another the shell grew 25 KB, Nano-X 29 KB and
 the slab 156 KB. What a program leaves in a tmpfs file stays where it lies until the file goes:
 Red Alert and Tiberian Dawn run from a folder of their own in the ROM, no copy in `/tmp`.
 

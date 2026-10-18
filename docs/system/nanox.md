@@ -232,10 +232,10 @@ they take no window and no buffer).
   icons; onto a folder it moves them into it. A new entry takes the first free cell, or the
   place it was dropped at.
 - **Two clicks** within 0.7 s open an entry. Ctrl and Shift with a click select several.
-  The right button brings the menu: an entry's (Open, Cut, Copy, Rename, Delete, Properties)
-  or the desktop's (Arrange icons, Refresh, Select all, Paste, New, Open in Files, Settings).
+  The right button brings the menu: an entry's (Open, Cut, Copy, Rename, Delete, Save to
+  persistence, Properties) or the desktop's (Arrange icons, Refresh, Select all, Paste, New, Open in Files, Settings).
 - **Keys**, once the desktop has been clicked: the arrows go to the nearest icon that way,
-  Enter opens, Space selects, F2 renames (typed in a strip above the bar), Delete, F5,
+  Enter opens, Space selects, F2 renames (below, "A new name"), Delete, F5,
   Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, letters for the entry that starts with them, and Shift+F10
   (or the Menu key) for the menu.
 - It is in the overlay's memory, as everything a program writes is: what was moved or made
@@ -261,6 +261,45 @@ drawing what was under them again, clipped to the lines (`band_draw` in `nxfiles
 pointer's moves are asked for only while the box is held. A window's view (icons or list)
 and the list's order are kept in the registry (`files.details`, `files.order`) for the next window.
 Test: `NXFILES_PRINT=1 nxfiles /usr/share`, `nxkey drag:643,86:343,196` must say 8.
+
+A click on one of several selected entries leaves them all selected while the button is held,
+since they may be about to be dragged; let go where it went down, that entry alone is selected
+(until 18 October 2026 the others stayed lit). The keyboard's frame round the entry at the
+cursor is drawn inside its tile or row: drawn round it, two pixels out, it was left behind
+where the next drawing of the tile did not reach, and looked like an entry still selected.
+
+**A new name** (F2, the menu's Rename, a new folder or file) is typed over the entry's own, in
+a box where the name was: under the icon on the desktop and in the tiles (as wide as the name,
+up to two tiles), in the name's column of the list. The name is selected but for its ending
+(`holiday` of `holiday.txt`; a folder's whole name), so a letter typed replaces it, as in
+Windows. Left, Right, Home and End move the caret, with Shift they select, Ctrl+A selects all,
+Backspace and Delete take away; a click in the box puts the caret there, a click elsewhere
+gives the name, Enter gives it, Escape leaves the old one. A shortcut's name is its `name=`
+line, and its file is renamed after it. A name that is there already, or that cannot be given,
+is said in a window and the box stays. A file or folder of the image is renamed in place by a
+kernel with `patch_ramfs.py` (`docs/system/nommu.md`). On an older kernel the overlay cannot
+rename one (its upper file system, memory without an MMU, has no rename that leaves a whiteout:
+`mv` says "Invalid argument"), so such a file is copied under the new name and the old one
+deleted (`move_path`), and a folder of the image cannot be moved or renamed, and says so.
+
+**What went wrong is said** in a window of `nxask`'s with the error icon, which the desktop and
+Files do not wait for (`report` in `nxfiles.c`), and in the status line: a folder that cannot
+be opened, an entry that could not be copied, moved, deleted or renamed (with the first line
+`cp`, `mv` or `rm` wrote to its errors, or the system's reason; "3 entries could not be moved,
+the first ..."), a file or folder or shortcut that could not be made, the clipboard's file not
+written, a shortcut with no `run=` line, a terminal or a properties window that could not be
+started, and the desktop's picture gone (once a session: the desktop then shows a colour). A
+program that cannot start is said as before ("When a program fails to start").
+
+**Save to persistence**, on an entry's menu (not inside `/persistence`), copies the selected
+files and folders into `/persistence` (`cp -RL`: a link's file, not the link), asking first
+before one of the same name there is replaced. When the folder would then hold more than
+100,000 bytes, the 100 KB a player the host keeps (`docs/system/persist.md`), nothing is copied
+and a window says the sizes: "Great Wave.jpg: 84.4 KB, and /persistence holds 16.6 KB already.
+Together 101.1 KB: more than the 100 KB the host keeps." The bytes counted are the files' own,
+before packing; a folder that packs to more than 96,000 is still refused by `nxpersist save`.
+Once copied, a window says what the folder holds and offers to save it to the host now
+(`nxpersist save`) or later. `NXFILES_PRINT=1` prints `nxfiles: saved to persistence: NAME`.
 
 ## Icons
 
@@ -370,7 +409,8 @@ done. To check: the program, `sleep 2`, and the layer in a snapshot has the fram
 
 `nxpaint` keeps its picture in its own memory (a word a pixel) and shows the part in view by
 writing it into its window's buffer (`settle`, `present` in `linux/apps/nxpaint.c`), so that
-a brush stroke costs the pixels it touches and nothing else.
+a brush stroke costs the pixels it touches and nothing else. Its ten tools are buttons with a
+picture each, 16 x 16 in a few colours (`tool_pictures` in `nxpaint.c`), the same in both looks.
 
 - **Megabytes are moved by the worker cores** (`linux/apps/ui_bulk.h`: `bulk_flat`,
   `bulk_rows`, `bulk_rows_kept`). A new picture filled, its copy for taking changes back, and
@@ -509,6 +549,17 @@ was painted again in between (a window gaining or losing the keyboard). The
 frames may go to a part of the program's window at its top left corner (the video player's
 picture above its controls): the caption is looked for up to two windows above.
 
+The text is right-aligned in a box of the widest text's room left of the boxes, so a shorter
+text never leaves digits of a longer one beside it, and the box's caption pixels are put back
+before each text (the window system's copy of a window's buffer puts an older caption back a
+pass after a program has written it). The clock starts at the first frame, and a slow program
+gets its mean once it has three frames or 2.5 s: under 10 frames a second with a tenth ("0.7
+fps 1410 ms"), from 10 s a frame in seconds. A swap that shows part of a frame
+(`seglNotAFrame()` before it: the ray tracer while its picture fills in) is not counted, and
+`seglSwapAgain` (the two Command & Conquer games) counts as a frame. Until 18 October 2026 the
+ray tracer's partial swaps were counted as frames and its caption showed several texts on top
+of each other.
+
 ## The keyboard
 
 Everything on the desktop can be worked without a pointer.
@@ -620,7 +671,7 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 | Program | What it does |
 |---|---|
 | `nxedit [FILE...]` | a text editor, a file a tab (up to 16; Ctrl+Page Up and Down go between them, since Ctrl+Tab is the window manager's; the tab's cross or the middle button closes one), with File, Edit, Search and View menus (Alt+letter or F10; the right button brings Undo to Select all). Tabs and bytes are kept as they are, and so are CR LF and a missing last newline; a file is read in 256 KB blocks and its lines stay there until edited. Undo keeps 40,000 changes, a command's changes undone together. Find and Replace is a window that stays open (match case, whole word, wrap around, previous, replace all as one change, count); Ctrl+G goes to a line, Ctrl+B to the matching brace; Edit's Lines duplicate, move, indent, sort and trim. View has word wrap, line numbers, spaces and tabs shown, the cursor's line lit, colours for C (off for a file over 1 MB) and the tab width, kept in the registry (`nxedit.*`, with six recent files). Ctrl+Insert copies, Shift+Insert pastes, Shift+Delete cuts; a file is saved to a new file beside it and renamed over it. A text with changes is asked about before it is let go |
-| `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry (a name too long for one line goes on in a second, broken at a space when one is near, and only then is cut with two dots), or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename, Delete, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on a folder also Paste into it and Terminal in it; on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Terminal here (`nxterm` with its shell in the folder shown; on the desktop too), Properties. In the list a click on a column's heading puts the entries in that order (Name, Size largest first, Kind). Entries dragged to a folder that has one of the same name stay where they are: nothing is replaced unasked. Back, Forward, Up, Home, View, New folder and Terminal (a terminal in the folder shown) are keys with signs (`ui_glyph.h`; greyed when there is nowhere to go), with the folder's path beside them: a click on the path, or Ctrl+L, and another is typed there (Enter goes, Escape leaves). Down the left side are the places (Home, Desktop, Pictures, Music, Videos, Computer, and Network, which starts `nxnet`), the one shown picked out. The status line says how much can still be written. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (asked about first: "Delete these 3 entries?"; a folder goes with everything in it), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it. A name may have 127 letters and a folder 512 entries: what is over is counted in the status line ("3 more are not shown"), not shown cut short as an entry that cannot be opened |
+| `nxfiles [FOLDER]` | the file explorer (and with `--desktop` the desktop, above): a tile with an icon for every entry (a name too long for one line goes on in a second, broken at a space when one is near, and only then is cut with two dots), or a list with sizes and kinds (View). Two clicks (or Enter) open: a folder, a shortcut's program, anything else through `open`. Ctrl and Shift with a click, Shift with the arrows and Ctrl+A select several; the selected entries are dragged onto a folder, into another Files window or onto the desktop (Ctrl held: copied). The right button, the Menu key or Shift+F10 bring a menu: Open, Edit, Cut, Copy, Paste, Rename (typed over the name, "A new name" above), Delete, Save to persistence, Shortcut on the desktop, Properties (a window of its own, `nxfiles --properties PATH`: the icon, the kind, where it is, its size or how much a folder holds, when it changed (the ROM keeps no dates: the image builder writes each file's into `/usr/share/rom-dates`, a line a file, and a file of the image has its date from there; `NXFILES_PRINT=1` prints the window's lines), what may be done with it, what a shortcut starts); on a folder also Paste into it and Terminal in it; on no entry View, Refresh, Select all, Paste, New (a folder, a text file), Terminal here (`nxterm` with its shell in the folder shown; on the desktop too), Properties. In the list a click on a column's heading puts the entries in that order (Name, Size largest first, Kind). Entries dragged to a folder that has one of the same name stay where they are: nothing is replaced unasked. Back, Forward, Up, Home, View, New folder and Terminal (a terminal in the folder shown) are keys with signs (`ui_glyph.h`; greyed when there is nowhere to go), with the folder's path beside them: a click on the path, or Ctrl+L, and another is typed there (Enter goes, Escape leaves). Down the left side are the places (Home, Desktop, Pictures, Music, Videos, Computer, and Network, which starts `nxnet`), the one shown picked out. The status line says how much can still be written. Keys: arrows, Page Up and Down, Home, End, letters typed one after another for the entry that starts so, Space to select, Backspace or Alt+Up for the folder above, Alt+Left and Alt+Right back and forward, F2, Delete (asked about first: "Delete these 3 entries?"; a folder goes with everything in it), F5, Ctrl+C, Ctrl+X, Ctrl+V (the entries are remembered in `/tmp/clipboard.files`, for any Files window), Escape. It reads the folder again when something else changes it. A name may have 127 letters and a folder 512 entries: what is over is counted in the status line ("3 more are not shown"), not shown cut short as an entry that cannot be opened |
 | `nxweb [ADDRESS]` | the browser (`docs/apps/web.md`): pages with their style sheets, in the ROM's fonts and any script, tables and boxes side by side, forms that search; the page is drawn into a pixmap in strips ahead of the view, by worker cores, and scrolled as a copy. Menus (File, Edit, View, Go with the session's pages, Bookmarks, Help), a bar with Back, Forward, Reload or Stop, Home, Bookmark and the address, a status line, wheel and scroll bar; options and bookmarks in the registry. Keys: arrows and the paging keys scroll, Tab goes from link to link (its address in the status line) and Enter follows, Backspace or Alt+Left goes back, Alt+Right forward, Alt+Home home, F5 reloads, Escape stops, Ctrl+L or F6 opens the address, Ctrl+D bookmarks, Ctrl+F finds and F3 again, Ctrl+O, Ctrl+S, Ctrl+U open a file, save the page, show its source, F10 opens the menus |
 | `nxpaint [FILE]` | the paint program (below, "Paint"): ten tools, a flood fill, a selection that is moved, copied and cropped to, pictures of any size up to 1,600 x 1,200, zoom, every change taken back and made again. Opens every kind libmedia reads (`docs/system/media.md`); saves PNG, JPEG, BMP or PPM by the name's ending, encoded on the worker cores |
 | `nxview [FILE]` | shows a picture as Windows Photo Viewer does: Open, Edit and Set as desktop above it; zoom out and in, actual size or fit, the folder's picture before and after, a slide show, a quarter turn either way and Delete (asked first) on a row below; and a line saying its name, size, zoom and place in the folder. The wheel zooms round the pointer (fit to 1,600%, stopping at 100%), and a drag moves a picture larger than its room; zoomed or turned, only the part in view is made from its pixels, on the worker cores, into a pixmap the GPU keeps. Fit does not enlarge a small picture. Arrows, Page Up and Down, Home and End go through the folder; F11, Enter or two clicks show it over the whole screen; F5 starts a slide show (`NXVIEW_SLIDE=ms`, Space pauses). A file it cannot open is said in a question (`UI_ASK_PRINT`). `nxview --decode FILE OUT.ppm` decodes without a window and says what it took; `NXVIEW_WORKERS=N` asks for N workers, `NXVIEW_SUM=1` prints a sum of the result |
@@ -632,7 +683,8 @@ A program that takes clicks must check `ui_wheel` first, or a notch is a click t
 | `nxclock` | the clock, a tab each: an analogue face as large as the window (drawn once a minute into a pixmap the GPU keeps; a second is a copy and the hand), the time in large figures with the date, a stopwatch with laps, a timer and an alarm that ring (a notice, and a beep through the sound card for up to a minute). It draws once a second, ten times while the stopwatch runs and is shown. Settings are the registry's (`nxclock.*`). `nxclock timer N` starts a timer of N seconds, `nxclock alarm HH:MM` sets the alarm; `NXCLOCK_PRINT=1` prints where its buttons are and when it rings |
 | `nxtetris` | Tetris by the guideline: 7-bag, SRS turns with wall kicks, hold, five next, ghost, soft and hard drop, lock delay, levels 1 to 20, T-spins, combos, back-to-back. Only cells that change are drawn, a block four rectangles. The best five scores, the start level and the ghost are kept in the registry (`nxtetris.*`). Keys: arrows, Up or X and Z or Ctrl turn, Space drops, C or Shift holds, P or Escape pauses, F2 a new game, F10 the menus. `NXTETRIS_AUTO=N` plays N pieces itself and prints what it took (`NXTETRIS_SEED`) |
 | `nxmine` | Minesweeper as Windows has it: the Game menu's three levels and a board of one's own, a first square that is never a mine and opens an area, the right button's flag and question mark, both buttons or the middle one on a number to open round it, and the face that starts a game again and shows what the pointer is doing. The squares, the counters' digits and the faces are drawn once into a pixmap and copied from it: a square is one copy, a row of covered ones one copy. The fastest time of each level is kept with a name (`nxmine.time.LEVEL`, `nxmine.name.LEVEL`). `NXMINE_SEED` lays the same mines each time and `NXMINE_PRINT=2` prints them, for a test played with `nxkey`'s arrows, Space and F |
-| `nxeyes` | the eyes: they read the pointer from the machine's input words (`docs/machine/input.md`) and do not select its moves, so the quiet rectangle stays (below): a look every 66 ms while the pointer moves and every 250 to 500 ms while it is still, from a `select()` on the socket, and only the pupils are drawn. 23 thousand instructions a second idle with blinking on, 410 thousand under a pointer going round (the Microwindows demo it replaces: 1.8 million). The right button gives its menu; blinking is the registry's `nxeyes.blink` |
+| `nxpinball` | Pinball (`docs/apps/pinball.md`): two flippers, a plunger, pop bumpers, slingshots, lanes, drop targets and an orbit, three balls a game, the high score in the registry (`nxpinball.high`). The table and every look of what changes on it are drawn once into a pixmap; a frame is a copy for each thing that changed and the ball. Keys: Z, Left or left Ctrl and /, Right or right Ctrl the flippers, Space or Down the plunger, P or Escape pauses, F2 a new game. `PINBALL_DEMO=N` plays N frames itself and prints a sum |
+| `nxeyes` | the eyes, two round windows without a frame on top of the desktop, with the desktop's own pixels copied into their corners (the window system's layers are opaque rectangles); a left drag moves them, the right button gives the menu (blink, three sizes, close), Escape or q closes them, and the size is the registry's `nxeyes.size`. They read the pointer from the machine's input words (`docs/machine/input.md`) and do not select its moves, so the quiet rectangle stays (below): a look every 66 ms while the pointer moves and every 250 to 500 ms while it is still, from a `select()` on the socket, and only the pupils are drawn. 23 thousand instructions a second idle with blinking on, 410 thousand under a pointer going round, measured on the framed eyes before 18 October 2026 (the Microwindows demo they replaced: 1.8 million). Blinking is the registry's `nxeyes.blink` |
 
 **PNG and JPEG pictures** have been libmedia's since 15 October 2026 (`docs/system/media.md`):
 its decoders began as these, and every other program decodes with it too. What follows is how
@@ -754,7 +806,30 @@ machine's own), `@1280x720` and `@1920x1080` (Settings does not list them). `--f
 the JPEGs of an older build's PPM pictures; `--twins` makes the twins missing from the pictures
 there. Run it before `make_linux_image.py`. The choice is the registry's
 `desktop.wallpaper` (`ui_wallpaper` in `ui.h`); a new image shows `wallpaper-fox.jpg`, and a
-choice of an image's PPM that is now a JPEG is that JPEG.
+choice of an image's PPM that is now a JPEG is that JPEG. Settings keeps the picture file
+itself, never a decoded copy: its chooser lists every kind libmedia decodes (JPEG, PNG, GIF,
+BMP, TGA and the PNM family), a file that is not one is refused with libmedia's reason, a path
+over the registry's 250 letters is refused too, and a choice the registry cannot keep is said.
+It then leaves the drawing to the desktop, which sees the key change: until 18 October 2026
+Settings decoded the picture too and kept that copy in GPU memory while it was open (Great
+Wave at 800 x 600 was decoded twice, 3.5 s by Settings and 2.8 s by the desktop, under
+`rvc_cpu`; now once, 2.7 s). With no desktop running it draws the picture and lets its copy go.
+When it opens, the choice in use is its selected row, a picture file of the user's with a row
+of its own ("File: Great Wave.jpg"). The viewer's "Set as desktop" keeps the file too, and a
+picture it shows turned is kept with its turns in `desktop.wallpaper.turn` ("1:/root/Pictures/Great
+Wave.jpg", a quarter turn to the right), which the desktop applies when the path is its choice
+(`ui_wallpaper_turns` in `ui.h`); until 18 October 2026 a turned picture was a PPM written to
+`/tmp` and that copy was the choice. Where the GPU has no room and the picture is drawn from a
+copy in `/tmp`, that copy is not turned.
+
+**While it starts** the desktop says so: `nx` runs `nxbar --splash TEXT` as soon as the server
+takes a client and again before the desktop's programs, a panel in the middle of the screen
+("Starting the desktop", "its picture and icons") that the picture then covers. Before 18
+October 2026 `nx` waited two seconds for the server instead, with the screen black; the desktop
+is up two seconds sooner. A picture decoded for the screen or a window (`ui_picture_decoded_at`)
+that takes more than 0.4 s has a panel over where it will be: its name, a bar from libmedia's
+`media_progress` (the JPEG decoder's rows, a PNG's inflated bytes, the fitting's rows) and the
+seconds, drawn every 0.25 s at most and covered by the picture.
 
 **Decoded when the desktop starts** (15 October 2026, `docs/system/media.md`): the desktop asks the
 window system for a pixmap of the screen's size, which the GPU keeps (its pixels in the pool
@@ -1053,6 +1128,8 @@ waking each other. These changes, each the same picture as before (below, "Check
   from that program's queue until it has gone. A program linked with the library of before
   asks as before and is answered as before. The window manager, which works from a
   program's queue, now sees a press when it comes, not when the program next asks.
+  `GrClose` forgets that it asked and drops the events it holds (since 18 October 2026): a
+  connection the program opens after it asks for its events again and keeps none of the old one's.
 - **A window, a context and a font have numbers the program chose** (`nx_new_id` in
   `client.c`: bit 30, the process, a count; `GrNumNewWindowAt`, `GrNumNewGCAt`,
   `GrNumCreateFontExAt`). The number was the server's and was waited for: six answers before

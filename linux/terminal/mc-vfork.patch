@@ -1,0 +1,28 @@
+--- a/lib/utilunix.c
++++ b/lib/utilunix.c
+@@ -139,13 +139,10 @@
+ 
+ /* --------------------------------------------------------------------------------------------- */
+ 
++/* The child of a vfork must not return from the function that forked: my_systemv forks, this waits. */
+ static my_fork_state_t
+-my_fork (void)
+-{
+-    pid_t pid;
+-
+-    pid = fork ();
+-
++my_fork_wait (pid_t pid)
++{
+     if (pid < 0)
+     {
+         fprintf (stderr, "\n\nfork () = -1\n");
+@@ -431,7 +428,7 @@
+ 
+     my_system__save_sigaction_handlers (&sigactions);
+ 
+-    fork_state = my_fork ();
++    fork_state = my_fork_wait (fork ());
+     switch (fork_state)
+     {
+     case FORK_ERROR:

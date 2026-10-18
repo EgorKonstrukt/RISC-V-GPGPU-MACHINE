@@ -708,11 +708,12 @@ take_workers(void)
 	if (sim.count)
 		mcw_counters();
 	if (workers) {
-		extern char __executable_start[], etext[];
+		extern char _start[], etext[];
 
 		mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 		/* and the program's code: a page of it that no core has run yet stops every worker that comes to it */
-		mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+		/* (from _start: a flat program's __executable_start is 0) */
+		mcw_touch_code(_start, (unsigned)(etext - _start));
 	}
 	/* (a share a worker, and with few of them one for this core, which would only wait:
 	 * with many, every share waiting for this core's as well costs more passes than it saves) */

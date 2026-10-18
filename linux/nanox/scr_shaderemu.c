@@ -692,8 +692,9 @@ gpu_frameblit(PSD psd, PMWBLITPARMS gc)
 		struct surface *s = draw_on(psd), *from = surface_of(gc->srcpsd);
 		int sx = gc->srcx - from->x, sy = gc->srcy - from->y;
 
-		/* the source is read from RAM, which lacks what is still queued */
-		if (from == s && sx < dirty_x1 && sx + gc->width > dirty_x0 && sy < dirty_y1 && sy + gc->height > dirty_y0)
+		/* the source is read from RAM, which lacks what is still queued; and after blended text
+		 * a copy would blend by its texels' top bytes (a decoded picture's are 0xff: not drawn) */
+		if (blended || (from == s && sx < dirty_x1 && sx + gc->width > dirty_x0 && sy < dirty_y1 && sy + gc->height > dirty_y0))
 			flush();
 		queue(gc->dstx, gc->dsty, gc->dstx + gc->width, gc->dsty + gc->height, 0xffffff,
 			FRAG_TEXTURE, from->at, from->w, from->h, sx, sy);

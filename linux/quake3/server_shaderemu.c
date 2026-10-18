@@ -33,6 +33,7 @@ enum { MODE_UNSET = -1, MODE_INLINE, MODE_WORKER };
 enum { KEPT_PRINT, KEPT_COMMAND, KEPT_CVAR, KEPT_CVAR_FORCED, KEPT_RELIABLE };
 #define BOX_BYTES	0x10000		/* of packets waiting for the server's frame, and of those it sent */
 #define MOST_MSEC	200		/* of the game's time a frame of the server's catches up, at most */
+#define JOB_MSEC	500		/* the same for a job of the worker's: five frames behind are made up, the clients told once */
 #define STACK_BYTES	0x80000		/* the server's frame is deeper than a worker's own stack */
 #define WARM_BYTES	0x100000	/* of the server's zone made ready for the routes (they were 400 KB) */
 
@@ -650,7 +651,7 @@ static void give (void)
 		return;
 	}
 	helpers_give ();
-	out = mcw_call (server_job, (uint32_t)(pending > MOST_MSEC ? MOST_MSEC : pending), 0);
+	out = mcw_call (server_job, (uint32_t)(pending > JOB_MSEC ? JOB_MSEC : pending), 0);
 	pending = 0;
 }
 

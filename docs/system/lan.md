@@ -163,6 +163,14 @@ pass defines `GPU_NET`).
   batch from one seen. Every other client's hub hands each packet to its own machine, which
   keeps it if its address is the machine's or everybody's. Nothing is repeated: TCP repeats
   what it loses, and the games' UDP expects loss.
+- Packets and typed keys do not wait for the hub's tick (0.1 s): they go the frame the link
+  is free, 50 ms after the last sending at the soonest (`ExpressSeconds`, `Update` in
+  `EmuShareHub`). In a model of the hub (90 frames a second, the display's sendings as above, a
+  sending busy 50 ms; 18 October 2026) the wait from the machine to VRChat was, mean and 9 in
+  10: a ping a second 46.9 and 74 ms to 11.5 and 30, keys at 5 a second 53.1 and 94 to 12.7 and
+  38, a game's 35 packets a second 53.7 and 95 to 26.2 and 49, at 6.2 to 6.3 KB/s (each sending
+  carries some 240 bytes of the other fields, and the display has fewer sendings while packets
+  flow). Not yet measured between two clients.
 - A sending with packets goes out whether or not anybody watches the display, and while
   packets flow the display goes with one sending in six only (below, "A game has most of the
   world's link").
