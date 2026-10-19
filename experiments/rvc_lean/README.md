@@ -79,6 +79,21 @@ in a round; compare means of a round.)
 
 Red Alert's 300 frames `ea72a5d1`, fptest 0 of 15 wrong, mctest PASS, as `rvc_opt`.
 
+The other loads, the same way (20 October 2026, one round each, A-B-B-A):
+
+| | `rvc_opt` | `rvc_lean` | |
+|---|---|---|---|
+| Red Alert, frames 500-900, ms a frame | 21.20, 21.13 | 20.49, 21.07 | 1.8% faster |
+| Quake III, q3dm17 timedemo, ms a frame | 13.29, 14.89 | 14.60, 13.39 | 0.7% faster (runs 10% apart) |
+| Tiberian Dawn, mission 3, game frames a second | 53.5, 51.9 | 52.9, 52.5 | level (core 0 4% faster), state `9c84d847` |
+| The NES, % of its speed | 568 to 571, 377 | 588 to 595, 393 to 395 | 4% faster |
+| nxray, ms a picture | 44.8, 43.0 | 43.7, 42.3 | 1.9% faster |
+| nxphys, 120 substeps, ms | 1,442, 1,447 | 1,355, 1,351 | 6.3% faster, sum `44d0d906` |
+
+On the RTX 5090 (the same commit): Doom 1.5 and 2.8% faster, nxray 5.7 and 8.2%, Red Alert level (-0.3
+and +1.1%), Quake, factor and gzip with the pairs of opposite signs; nxray's 60 sums, Red Alert's
+`f40dec60`, Doom's 5,026 tics and Quake's 969 frames as `rvc_opt`'s.
+
 How it got there, from 2 to 6% behind:
 
 - **The gap was two halves.** Live, from one snapshot of Doom's timedemo (`--load-state`,
