@@ -1,7 +1,10 @@
 # Booting Linux
 
 A cold boot of this project's image to the shell prompt takes about 2.8 s and 10.5 million
-instructions on an RTX 5090 with DXC (it was 10 s and 35 million). `tools/boot_profile.py`
+instructions on an RTX 5090 with DXC (it was 10 s and 35 million). On an RTX 5070 laptop with
+D3D11 and fxc2 (19 October 2026, `docs/machine/speed.md`, `/proc/uptime` at the prompt): 5.0 s on the
+shader machine, geotune's layout of the workers with it; 1.6 s on the compute machine, 1.1 s on the
+CPU harness, and 107.6 s for upstream rvc's own image on its shader. `tools/boot_profile.py`
 measures it: run the harness with `--frame-log FILE` and give it the file.
 
 ## No firmware

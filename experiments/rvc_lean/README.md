@@ -64,8 +64,8 @@ Bytecode (fxc2):
 
 | | `rvc_opt` | `rvc_lean` |
 |---|---|---|
-| the tick's fragment shader | 301,848 bytes | about 107,000 |
-| the commit's (the bands; the points) | 394,892 | 21,640; 32,992 |
+| the tick's fragment shader | 301,848 bytes | 116,344 |
+| the commit's (the bands; the points; the copy) | 238,120; 81,528; 29,452 | 22,596; 33,052; 640 |
 
 Checked: Linux to its shell, geotune's layout of 255 workers, `fptest` 0 of 15 wrong, `mctest
 255 30000` PASS with 0 pages brought, Doom's demo1 told and checked (0 of 5,000 views not as told,
@@ -92,6 +92,23 @@ core 0 (`CORE0_BITS`, 5: the same; 4: Quake 7% slower, the cache full and the pa
 Those measured on one card: how large a loop, an array or a cache may be before it costs is the
 card's, so where two shapes are equal here the smaller is kept.
 
+And after those, each against the tick as it is, in turn (`factor 999999999989` and `gzip -c
+/bin/busybox` twice each by the guest's `time`; Quake's timedemo; nxray's 60 pictures):
+
+| | factor | gzip | Quake | nxray |
+|---|---|---|---|---|
+| the tick | 21.1 to 21.4 s | 107.7 to 108.7 s | 12.8 to 13.3 ms | 45.7 to 47.2 ms |
+| arithmetic tested first by itself, then a group of the loads, stores and floats | 19.02 | 111.57 | 13.00 | 46.5 |
+| arithmetic, loads and branches a test each, then stores or floats | 19.58 | 108.25 | 13.14 | 47.2 |
+| a branch's or `jal`'s target texel read with the instruction, as the compute shader reads its entries | 25.23 | 122.07 | 15.11 | 52.6 |
+| the second register read only when the instruction has one | 22.08 | 108.45 | 13.50 | 46.8 |
+
+A loop of arithmetic gains from its own test, and nothing else does; one more texture read an
+instruction costs more than the wait it saves. Nor does the frame's length: 16,384 instructions a
+frame (`--ticks`), two rounds both always run and three with two (`--tick-rounds 3 --tick-split 2`)
+left the machine at the same 8.0 to 8.4 million instructions a second in Quake (13.85, 12.95 and
+13.37 ms); only nxray, whose first core waits for its workers, was faster (39.5, 39.2 and 28.4 ms).
+
 ## Rounds a frame (`--tick-rounds`, `--tick-split`)
 
 `--tick-rounds N` draws the tick and its commit N times a frame before the devices' passes, the
@@ -117,7 +134,10 @@ millions of instructions a second, all cores / core 0 / the workers, over the wi
 (compute now's nxray from a run of the day before that did not meet the compute machine's start
 race: experiments/rv32_min/README.md, "Cores".) `rvc_lean` is `rvc_opt`'s speed to 2 to 6% in this
 round (in the A/B rounds before it, Quake 12.6 to 13.1 against 12.3, Red Alert's 300 frames 19.9
-against 20.5), with a third of the tick's bytecode and a fifteenth of the commit's. The compute
-machine is 1.8 to 2 times either on what core 0 does: what it has that a fragment shader cannot
+against 20.5), with two fifths of the tick's bytecode and a sixth of the commit's. The compute
+machine is 1.8 to 2 times either on what core 0 does (measured again with every machine the same
+day, `docs/machine/speed.md`: `rvc_lean` Quake 13.07 ms, Quake III 14.16, Red Alert 24.39, nxray 46.1,
+Doom 18.69 against `rvc_opt`'s 11.71, 13.06, 21.68, 44.2, 16.67; the tick's bytecode 116,344 bytes now,
+the commit's 22,596 and the points' 33,052): what it has that a fragment shader cannot
 is RAM read and written in place (no write cache, no commit), its registers in group shared
 memory, and decoded instructions kept from pass to pass.

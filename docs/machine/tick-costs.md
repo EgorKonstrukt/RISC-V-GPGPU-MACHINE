@@ -7,7 +7,10 @@ kept; what did gain is the first section.
 
 They are of the machine with the MMU. The one the world runs now has no paging
 (`docs/system/nommu.md`): no TLBs and no page walks, its CSRs fields of core 0's first texels, and a
-write cache of 336 texels (64 + 32 + 16 buckets of three).
+write cache of 336 texels (64 + 32 + 16 buckets of three). On that machine, on the same card, on
+19 October 2026 (`docs/machine/speed.md`): core 0 runs `factor 999999999989` at 7.05 million
+instructions a second (142 ns an instruction), `seq | gzip` at 5.35; the compute machine at 12.03 and
+8.75, the plain compute shader 4.48 and 3.88.
 
 ## Where the time was
 

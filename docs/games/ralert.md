@@ -84,7 +84,10 @@ first Soviet mission: 16 to 18 frames a second in its first 300 frames where it 
 `RALERT_HUNT=N` sends everything the player has after the enemy at frame N, which is the only
 way a mission left alone comes to a battle. The Allied first mission with `RALERT_HUNT=50`:
 a frame is 220 to 265 thousand instructions, of which the game's logic is 155 to 190 (it is
-105 to 130 in the quiet mission), 14 to 17 frames a second in the harness. The profile of
+105 to 130 in the quiet mission), 14 to 17 frames a second in the harness. On 19 October 2026
+on an RTX 5070 laptop (`docs/machine/speed.md`, `RALERT_SEED=7`, frames 500 to 900 of a run of 900):
+46.1 frames a second on the shader machine (7.2 million instructions a second, 4.8 of them core 0's),
+41.0 on `rvc_lean`, 71.0 on the compute machine, 162.8 on the CPU harness. The profile of
 it has no piece over 3%: threat scans, path finding, the houses' and each object's own turn.
 A played mission in the world was measured at 551 thousand a frame (logic 359, drawing 127,
 the rest 65), 5 frames a second at the world's 2.9 million instructions a second: the logic

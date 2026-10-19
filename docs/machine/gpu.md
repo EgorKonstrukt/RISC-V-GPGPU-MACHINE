@@ -318,7 +318,9 @@ frames a second with this project's kernel (about 80 on upstream's):
 - Under Nano-X `glxgears` is a window: the library asks the server where the window's
   pixels are and has each frame copied there (about 500 frames a second at 300x300 on an RTX
   5090 with DXC, one emulator frame of about 8,000 instructions each). With no server running
-  it takes the whole display, as before.
+  it takes the whole display, as before. On 19 October 2026 on an RTX 5070 laptop with D3D11 and
+  fxc2 (`docs/machine/speed.md`), in the window it opens: 1,279 frames a second on the shader machine,
+  1,122 on `rvc_lean`, 1,986 on the compute machine, 1,530 on the CPU harness.
 - A frame of `glxgears` was 5,900 instructions and is 4,600 (13 October 2026; under
   `rvc_cpu` at 3 million a second 507 frames made a second and 650): a frame's matrix
   blocks and commands are written where the GPU reads them, not into arrays copied at the

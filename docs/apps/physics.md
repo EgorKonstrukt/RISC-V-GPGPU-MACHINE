@@ -445,6 +445,9 @@ morning before, the build above and this one in turn: the wall 1,072 to 1,143 ms
 849 to 880; the heap 1,497 to 1,538, 1,191, and 1,126 to 1,137; the towers 615, 468, and 445.
 The wall's 240 substeps: 2,020 ms, and 1,716. The sums are the same, on `rvc_cpu` and there.
 
+The wall's 120 substeps on 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`): 1,494 ms
+on the shader machine, 1,499 on `rvc_lean`, 426 on the compute machine, 543 on the CPU harness.
+
 - **It asks for all 255 workers, and those the bodies do not need have the grid and the
   pictures** (`service_of`, `PHYS_SERVICE=N`, 0 for none): three shares in sixteen, never so
   many that the fullest share gets another body, none under 64 shares. A share with bodies

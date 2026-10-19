@@ -123,6 +123,10 @@ measured on the card): a frame is 146 to 169 thousand, 18 to 20 frames a second;
 the game on the worker is about 215 thousand (the bot 90 to 120, the game 33 to 51, telling
 the clients 70), ten a second, 72% of that core. On the card on 13 October 2026, an earlier
 build with two bots: 13 to 16.5 frames a second, passes 99.9% used, the worker's 93%.
+On 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`), `+set timedemo 1 +set fixedtime 33
++devmap q3dm17 +addbot sarge 3`, frames 300 to 500: 76.6 frames a second on the shader machine (12.9
+million instructions a second, 1.9 of them core 0's), 70.6 on `rvc_lean`, 112.9 on the compute
+machine and 156.5 on the CPU harness.
 
 - **Two bots are more than the worker has**: 335 to 380 thousand a frame of the game. The
   game then runs at about three quarters of the clock's rate (a job is 200 ms of it at most).

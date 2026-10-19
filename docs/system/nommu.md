@@ -185,7 +185,9 @@ Red Alert and Tiberian Dawn run from a folder of their own in the ROM, no copy i
 
 ## Speed on the card
 
-D3D11, fxc2, 16 October 2026; one run a cell, guest time (repeated runs varied by 1 to 3%):
+RTX 5090, D3D11, fxc2, 16 October 2026; one run a cell, guest time (repeated runs varied by 1 to 3%;
+`docs/machine/speed.md` has the no-MMU machine on an RTX 5070 laptop on 19 October against the compute
+machine, the CPU harness and upstream rvc, which has the MMU):
 
 | Program | MMU | no MMU, `NO_PAGING` | and Zba/Zbb |
 |---|---|---|---|

@@ -394,7 +394,9 @@ again (`tdawn.profile`):
 At `--ips 3000000 --ticks 8192` the averages are 56.5 to 56.3, 31.3 to 32.4, 39.4 to 40.7,
 45.2 to 45.6 and 32.6 to 32.7, and the lowest windows 40.9 to 41.7, 22.3 to 22.9, 21.0 to
 28.6, 30.3 to 30.9 and 17.0 to 16.8. Mission 3's first window (its start) is 13 frames
-where it was 6. On the shader machine (D3D11 with fxc2, 3.9 to 4.0 million instructions a
+where it was 6. (Mission 3's 1,200 frames on 19 October 2026 on an RTX 5070 laptop, from frame 300,
+`docs/machine/speed.md`: 52.1 frames a second on the shader machine, 46.9 on `rvc_lean`, 94.2 on the
+compute machine, 178.7 on the CPU harness.) On the shader machine (D3D11 with fxc2, 3.9 to 4.0 million instructions a
 second, through the card's queue, before and after in turn twice): mission 3's 800 frames
 48.6 and 49.1 frames a second before, 50.6 and 52.6 after, its lowest window 36.8 and 37.6
 to 38.3 and 41.5; mission 10's 600 frames 60.0 and 59.9 to 61.9 and 62.1, its lowest
