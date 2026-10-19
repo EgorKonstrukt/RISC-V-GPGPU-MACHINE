@@ -119,8 +119,20 @@ StageResult compileStage(const std::string& source, const std::string& sourceNam
         return r;
     }
 
+    // RVC_DUMP_PRE=DIR: each stage's preprocessed text written there (ENTRY_PROFILE_HASH.hlsl), to be
+    // compiled by another compiler (DXC with debug information for Nsight Graphics, which fxc2 does not make)
+    if (const char* dumpDir = getenv("RVC_DUMP_PRE")) {
+        uint64_t ph = fnv1a64(pre->GetBufferPointer(), pre->GetBufferSize());
+        char name[96];
+        snprintf(name, sizeof name, "%s_%s_%016llx.hlsl", entry.c_str(), profile.c_str(), (unsigned long long)ph);
+        writeFileBinary((fs::u8path(dumpDir) / name).u8string(), pre->GetBufferPointer(), pre->GetBufferSize() - 1);
+    }
+    // RVC_SHADER_DEBUG=1: the bytecode carries debug information (D3DCOMPILE_DEBUG, optimised as
+    // ever), for a profiler to map the machine's code to the source (Nsight Graphics' shader profiler)
+    static const bool debugInfo = getenv("RVC_SHADER_DEBUG") != nullptr;
+    const unsigned flags = settings.flags | (debugInfo ? D3DCOMPILE_DEBUG : 0u);
     // Cache key: preprocessed text + entry + profile + flags + compiler identity.
-    std::string keyExtra = entry + "|" + profile + "|" + std::to_string(settings.flags) + "|d3dcompiler_47|v1";
+    std::string keyExtra = entry + "|" + profile + "|" + std::to_string(flags) + "|d3dcompiler_47|v1";
     if (strcmp(shaderCompilerName(), "FXC") != 0) keyExtra += std::string("|") + shaderCompilerName();
     uint64_t h = fnv1a64(pre->GetBufferPointer(), pre->GetBufferSize());
     h = fnv1a64(keyExtra.data(), keyExtra.size(), h);
@@ -145,7 +157,7 @@ StageResult compileStage(const std::string& source, const std::string& sourceNam
     // the original files).
     errors.Reset();
     hr = D3DCompile(pre->GetBufferPointer(), pre->GetBufferSize(), sourceName.c_str(), nullptr, nullptr,
-                    entry.c_str(), profile.c_str(), settings.flags, 0, &r.bytecode, &errors);
+                    entry.c_str(), profile.c_str(), flags, 0, &r.bytecode, &errors);
     r.log = blobText(errors.Get());
     r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (FAILED(hr) || !r.bytecode) {
