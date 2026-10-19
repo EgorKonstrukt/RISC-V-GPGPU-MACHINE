@@ -164,11 +164,11 @@ public static partial class ShaderEmuBuilder
     }
 
     // What a behaviour writes or paints while the world runs: every label and image its fields name.
+    // The proxies are read as they are: copying Udon into them wiped the light volumes' instances.
     static void Changing(Transform world, HashSet<Object> labels, HashSet<Object> plates)
     {
         foreach (UdonSharpBehaviour behaviour in world.GetComponentsInChildren<UdonSharpBehaviour>(true))
         {
-            UdonSharpEditorUtility.CopyUdonToProxy(behaviour);
             foreach (FieldInfo field in behaviour.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
             {
                 object value = field.GetValue(behaviour);
