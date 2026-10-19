@@ -168,6 +168,15 @@ has them: the draw 1.431 to 1.412 ms, the loop 38.69 to 38.21 s (`rvc_opt` 38.10
 best dumped in one run: with the guest's clock from them, a pass of one can take a timer interrupt
 and the other not, and their instructions differ.)
 
+Then, with DXC's code and its debug information under Nsight Graphics' GPU Trace on D3D12 (a frozen
+tick drawn again and again from a snapshot, both ticks given one guest time), and fxc2's bytecode
+timed the same way on D3D11: M by its kind, a product tested first (one result made of eight cost
+every `mul` all of them); a CSR write ending the fast loop only when it changes what interrupts see
+or starts a copy; a worker's fault record stored word by word as it is worked out, with no array; the
+cache's search unrolled, a table at a time; and opcode 0x53 tested before `flw` and `fsw`. Against
+`rvc_opt` in the harness: a loop of 10,000 turns 41.32 s against 41.11, gzip 22.52 s against 22.95,
+Quake 10.89 ms against 10.75. Red Alert's 300 frames `ea72a5d1`, fptest 0 of 15 wrong, mctest PASS.
+
 ## Rounds a frame (`--tick-rounds`, `--tick-split`)
 
 `--tick-rounds N` draws the tick and its commit N times a frame before the devices' passes, the

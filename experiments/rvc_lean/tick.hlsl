@@ -191,15 +191,33 @@ void remember(uint t, uint at) { m2_t = m1_t; m2_at = m1_at; m1_t = t; m1_at = a
 uint slot(uint4 tags, uint tag) { return tags.x == tag ? 1 : tags.y == tag ? 2 : tags.z == tag ? 3 : 0; }
 // where the cache holds RAM texel t (4b + entry), or 0: a table is looked in when the one before is full
 uint find(inout uint4 c[C_N], uint t) {
-    [loop] for (uint k = 0; k < 3; k++) {
-        uint b = bucket(t, k);
-        if (!OCC(b)) break;
+    // (the tables one after another, each one's bucket worked out only when it is looked in: rvc_opt's l1_find)
+    uint n = 1u << bits, b = t & (n - 1), found = 0;
+    bool more = false;
+    [branch] if (OCC(b)) {
         uint4 tags = c[4 * b];
         uint e = slot(tags, t + 1);
-        if (e != 0) return 4 * b + e;
-        if (tags.z == 0) break;
+        found = e != 0 ? 4 * b + e : 0;
+        more = e == 0 && tags.z != 0;
     }
-    return 0;
+    [branch] if (more) {
+        b = n + H1(t, bits - 1);
+        more = false;
+        [branch] if (OCC(b)) {
+            uint4 tags = c[4 * b];
+            uint e = slot(tags, t + 1);
+            found = e != 0 ? 4 * b + e : 0;
+            more = e == 0 && tags.z != 0;
+        }
+        [branch] if (more) {
+            b = n + (n >> 1) + (H2(t, bits - 1) & ((n >> 2) - 1));
+            [branch] if (OCC(b)) {
+                uint e = slot(c[4 * b], t + 1);
+                found = e != 0 ? 4 * b + e : 0;
+            }
+        }
+    }
+    return found;
 }
 // a word of RAM (o its offset, on a word); the texture is asked first, the cache meanwhile
 uint ram_word(inout uint4 c[C_N], uint o) {
@@ -339,13 +357,20 @@ uint mulhu(uint a, uint b) {
     uint al = a & 0xffff, ah = a >> 16, bl = b & 0xffff, bh = b >> 16, lh = al * bh, hl = ah * bl;
     return ah * bh + (lh >> 16) + (hl >> 16) + ((((al * bl) >> 16) + (lh & 0xffff) + (hl & 0xffff)) >> 16);
 }
+// M by its kind, a product first: a division is dear, and one result made of eight costs every mul all of them
 uint op_m(uint f3, uint a, uint b) {
+    [branch] if (f3 == 0) return a * b;
+    [branch] if (f3 < 4) {
+        uint hu = mulhu(a, b);
+        return f3 == 1 ? hu - ((a >> 31) ? b : 0) - ((b >> 31) ? a : 0) : f3 == 2 ? hu - ((a >> 31) ? b : 0) : hu;
+    }
     bool zero = b == 0, wraps = a == 0x80000000 && b == 0xffffffff;
     int sa = asint(a), sb = asint(zero || wraps ? 1 : b);
-    uint hu = mulhu(a, b), safe = zero ? 1 : b;
-    return f3 == 0 ? a * b : f3 == 1 ? hu - ((a >> 31) ? b : 0) - ((b >> 31) ? a : 0) : f3 == 2 ? hu - ((a >> 31) ? b : 0) : f3 == 3 ? hu :
-           f3 == 4 ? (zero ? 0xffffffff : wraps ? a : asuint(sa / sb)) : f3 == 5 ? (zero ? 0xffffffff : a / safe) :
-           f3 == 6 ? (zero ? a : wraps ? 0 : asuint(sa % sb)) : (zero ? a : a % safe);
+    uint safe = zero ? 1 : b;
+    [branch] if (f3 == 4) return zero ? 0xffffffff : wraps ? a : asuint(sa / sb);
+    [branch] if (f3 == 5) return zero ? 0xffffffff : a / safe;
+    [branch] if (f3 == 6) return zero ? a : wraps ? 0 : asuint(sa % sb);
+    return zero ? a : a % safe;
 }
 // The floats that are signs, the lesser or greater, comparisons and moves (the fast loop's)
 uint fp_light(uint w, uint ra, uint rb, out bool to_f, out bool ok) {
@@ -397,7 +422,8 @@ uint csr_read(uint n) {
            n == 0x0bf ? r : n == 0x0be ? _PlayerID : 0;
 }
 void csr_write(uint n, uint v) {
-    quiet = false;
+    // (only what interrupts see, and the copy and fill, which stall: sscratch, sepc and the rest leave the next instruction to the fast loop)
+    if ((n & 0xfff) == 0x100 || n == 0x300 || (n & 0xdff) == 0x104 || (n & 0xdff) == 0x144 || n == 0x0b0) quiet = false;
     if (n - 1 < 3) fcsr = n == 1 ? (fcsr & ~0x1fu) | (v & 0x1f) : n == 2 ? (fcsr & ~0xe0u) | ((v & 7) << 5) : v & 0xff;
     if (n == 0x100) mstatus = (mstatus & ~0xde162u) | (v & 0xde162);
     if (n == 0x300) mstatus = v;
@@ -466,20 +492,8 @@ uint fast(inout uint4 c[C_N], uint room) {
                     ok = f3 < 3 && (sa & 0x80000000) != 0 && off + (1u << f3) <= 4;
                     [branch] if (ok) ram_store(c, sa & 0x7ffffffc, b << (off * 8), (f3 == 2 ? 0xffffffff : f3 == 1 ? 0xffff : 0xff) << (off * 8));
                     dst = 64;
-                } else [branch] if (opc == 0x07) {
-                    // flw, a word of RAM
-                    uint va = a + imm_i(w);
-                    ok = va != 0 && f3 == 2 && (va & 0x80000003) == 0x80000000 && (va & 0x7ffffffc) < RAM_MAX;
-                    [branch] if (ok) v = ram_word(c, va & 0x7ffffffc);
-                    dst = 32 + rd;
-                } else [branch] if (opc == 0x27) {
-                    // fsw, a word of RAM
-                    uint sa = a + imm_s(w);
-                    ok = f3 == 2 && (sa & 0x80000003) == 0x80000000;
-                    [branch] if (ok) ram_store(c, sa & 0x7ffffffc, xr[32 + ((w >> 20) & 31)], 0xffffffff);
-                    dst = 64;
-                } else {
-                    // floats: a sum, a difference, a product, and the light ones; the rest are the general step's
+                } else [branch] if (opc == 0x53) {
+                    // (opcode 0x53 before flw and fsw: a program has more of them, rvc_opt's order) floats: a sum, a difference, a product, and the light ones; the rest are the general step's
                     uint f7 = w >> 25, fa = (f7 & 0x68) == 0x68 ? a : xr[32 + ((w >> 15) & 31)], fb = xr[32 + ((w >> 20) & 31)];
                     bool to_f = true;
                     [branch] if ((f7 & 0x73) == 0 && f7 != 0x0c) {
@@ -492,6 +506,18 @@ uint fast(inout uint4 c[C_N], uint room) {
                         v = fp_all(w, fa, fb, to_f, ok);   // the divisions, roots and conversions too: a float never leaves the loop
                     }
                     dst = to_f ? 32 + rd : dst;
+                } else [branch] if (opc == 0x07) {
+                    // flw, a word of RAM
+                    uint va = a + imm_i(w);
+                    ok = va != 0 && f3 == 2 && (va & 0x80000003) == 0x80000000 && (va & 0x7ffffffc) < RAM_MAX;
+                    [branch] if (ok) v = ram_word(c, va & 0x7ffffffc);
+                    dst = 32 + rd;
+                } else {
+                    // fsw, a word of RAM
+                    uint sa = a + imm_s(w);
+                    ok = f3 == 2 && (sa & 0x80000003) == 0x80000000;
+                    [branch] if (ok) ram_store(c, sa & 0x7ffffffc, xr[32 + ((w >> 20) & 31)], 0xffffffff);
+                    dst = 64;
                 }
             }
         } else [branch] if (opc == 0x63) {
@@ -670,15 +696,15 @@ void step(inout uint4 c[C_N]) {
 void worker_fault(inout uint4 c[C_N]) {
     uint box = MBOX + 0x4000 + 64 * core, seen = TEX(RAM_ADDR((box >> 4) + 3)).x, call = MBOX + 0x2000 + 32 * core, k;
     bool is_call = tcause == 8, room = stall == 0;
-    // a call's a7 and a0-a5, the cause, the address, pc, and the count last (one store, made in a loop)
-    uint at[11], val[11], n = is_call ? 7 : 0;
-    at[0] = call; val[0] = xr[17];
-    for (k = 0; k < 6; k++) { at[1 + k] = call + 4 + 4 * k; val[1 + k] = xr[10 + k]; }
-    at[n] = box + 36; val[n] = tcause; at[n + 1] = box + 40; val[n + 1] = tval; at[n + 2] = box + 44; val[n + 2] = pc;
-    at[n + 3] = box + 32; val[n + 3] = seen + 1;
+    // a call's a7 and a0-a5, the cause, the address, pc, and the count last (one store, made in a loop;
+    // each word worked out where it is stored: no array beside the registers and the cache)
+    uint n = is_call ? 7 : 0;
     [loop] for (k = 0; k < n + 4; k++) {
         if (k == n + 3 && stall != 0) break;
-        ram_store(c, at[k], val[k], 0xffffffff);
+        uint j = k - n;
+        uint a = k < n ? call + 4 * k : box + (j == 3 ? 32 : 36 + 4 * j);
+        uint v = k < n ? (k == 0 ? xr[17] : xr[9 + k]) : j == 0 ? tcause : j == 1 ? tval : j == 2 ? pc : seen + 1;
+        ram_store(c, a, v, 0xffffffff);
     }
     if (stall == 0) { mc_word = (is_call ? 9 : 5) | (seen << 8); stall = STALL_WFI; }
     else if (room) ovf_addr = 0xffffffff;
