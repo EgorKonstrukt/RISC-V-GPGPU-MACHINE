@@ -92,6 +92,23 @@ core 0 (`CORE0_BITS`, 5: the same; 4: Quake 7% slower, the cache full and the pa
 Those measured on one card: how large a loop, an array or a cache may be before it costs is the
 card's, so where two shapes are equal here the smaller is kept.
 
+And after those, each against the tick as it is, in turn (`factor 999999999989` and `gzip -c
+/bin/busybox` twice each by the guest's `time`; Quake's timedemo; nxray's 60 pictures):
+
+| | factor | gzip | Quake | nxray |
+|---|---|---|---|---|
+| the tick | 21.1 to 21.4 s | 107.7 to 108.7 s | 12.8 to 13.3 ms | 45.7 to 47.2 ms |
+| arithmetic tested first by itself, then a group of the loads, stores and floats | 19.02 | 111.57 | 13.00 | 46.5 |
+| arithmetic, loads and branches a test each, then stores or floats | 19.58 | 108.25 | 13.14 | 47.2 |
+| a branch's or `jal`'s target texel read with the instruction, as the compute shader reads its entries | 25.23 | 122.07 | 15.11 | 52.6 |
+| the second register read only when the instruction has one | 22.08 | 108.45 | 13.50 | 46.8 |
+
+A loop of arithmetic gains from its own test, and nothing else does; one more texture read an
+instruction costs more than the wait it saves. Nor does the frame's length: 16,384 instructions a
+frame (`--ticks`), two rounds both always run and three with two (`--tick-rounds 3 --tick-split 2`)
+left the machine at the same 8.0 to 8.4 million instructions a second in Quake (13.85, 12.95 and
+13.37 ms); only nxray, whose first core waits for its workers, was faster (39.5, 39.2 and 28.4 ms).
+
 ## Rounds a frame (`--tick-rounds`, `--tick-split`)
 
 `--tick-rounds N` draws the tick and its commit N times a frame before the devices' passes, the
