@@ -95,7 +95,20 @@ and it is the only way this computer becomes usable.
   (`docs/world/holodeck.md`). The Control panel sets the speed and the instructions a tick, and
   shows how much of a tick the machine reaches.
 
-Speed on an RTX 5090, in emulated instructions per second:
+Every machine on an RTX 5070 laptop on 19 October 2026 (`docs/machine/speed.md`, with the
+commands and more loads): a game's frame by the guest's clock, and core 0's millions of emulated
+instructions a second on `factor 999999999989`:
+
+| | Quake, `timedemo demo1` | Quake III, q3dm17 timedemo, a bot | Red Alert, a battle | nxray, a picture | Doom, `timedemo demo1` | core 0 |
+|---|---|---|---|---|---|---|
+| the shader machine (`experiments/rvc_opt`, what the world runs) | 11.7 ms | 13.1 ms | 21.7 ms | 44.2 ms | 16.7 ms | 7.1M |
+| the same written again (`experiments/rvc_lean`) | 13.1 | 14.2 | 24.4 | 46.1 | 18.7 | 7.2M |
+| the processor as a compute shader (`--compute fast`) | 8.0 | 8.9 | 14.1 | 12.2 | 9.9 | 12.0M |
+| a plain compute shader, one core (`--compute plain`) | 36.2 | 57.9 | 40.5 | 6,567 | 21.8 | 4.5M |
+| the machine on the host's processor (`--cpu`, an i7-13650HX) | 6.8 | 6.4 | 6.1 | 60.2 | 3.4 | 111M |
+| upstream rvc, its own Linux | | | | | | 0.35M |
+
+Speed on an RTX 5090, in emulated instructions per second (measured earlier, with the MMU):
 
 | Shader | Compiler / API | Speed |
 |---|---|---|

@@ -64,8 +64,8 @@ Bytecode (fxc2):
 
 | | `rvc_opt` | `rvc_lean` |
 |---|---|---|
-| the tick's fragment shader | 301,848 bytes | about 107,000 |
-| the commit's (the bands; the points) | 394,892 | 21,640; 32,992 |
+| the tick's fragment shader | 301,848 bytes | 116,344 |
+| the commit's (the bands; the points; the copy) | 238,120; 81,528; 29,452 | 22,596; 33,052; 640 |
 
 Checked: Linux to its shell, geotune's layout of 255 workers, `fptest` 0 of 15 wrong, `mctest
 255 30000` PASS with 0 pages brought, Doom's demo1 told and checked (0 of 5,000 views not as told,
@@ -134,7 +134,10 @@ millions of instructions a second, all cores / core 0 / the workers, over the wi
 (compute now's nxray from a run of the day before that did not meet the compute machine's start
 race: experiments/rv32_min/README.md, "Cores".) `rvc_lean` is `rvc_opt`'s speed to 2 to 6% in this
 round (in the A/B rounds before it, Quake 12.6 to 13.1 against 12.3, Red Alert's 300 frames 19.9
-against 20.5), with a third of the tick's bytecode and a fifteenth of the commit's. The compute
-machine is 1.8 to 2 times either on what core 0 does: what it has that a fragment shader cannot
+against 20.5), with two fifths of the tick's bytecode and a sixth of the commit's. The compute
+machine is 1.8 to 2 times either on what core 0 does (measured again with every machine the same
+day, `docs/machine/speed.md`: `rvc_lean` Quake 13.07 ms, Quake III 14.16, Red Alert 24.39, nxray 46.1,
+Doom 18.69 against `rvc_opt`'s 11.71, 13.06, 21.68, 44.2, 16.67; the tick's bytecode 116,344 bytes now,
+the commit's 22,596 and the points' 33,052): what it has that a fragment shader cannot
 is RAM read and written in place (no write cache, no commit), its registers in group shared
 memory, and decoded instructions kept from pass to pass.

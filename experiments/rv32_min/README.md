@@ -285,6 +285,12 @@ only workers 1 to 15's), against the fragment tick (`--rvc experiments\rvc_opt`)
 
 Over three rounds each the same: Quake 18 to 19% faster, Quake III 17 to 23%, Red Alert 2 to 7%.
 nxray's pictures 1 to 7 are the tick's sums; its time is of a run the start race did not meet.
+
+Measured again with every machine later on 19 October 2026 (`docs/machine/speed.md`, the same loads and
+card), the tick and compute now: Quake 11.71 and 7.96 ms, Quake III 13.06 and 8.86, Red Alert
+21.68 and 14.09, nxray 44.2 and 12.2 (its first run met the start race), Doom's `-timedemo demo1`
+16.67 and 9.90; `factor 999999999989` 21.45 and 12.52 s; the plain shader 36.23, 57.93, 40.52,
+6,567, 21.81 ms and 34.73 s.
 **How far cores scale** (`--all-run`, a mix of `addi`, `lw`, `sw`, `add`, `bne`, `xor`, `lbu` on
 every core, each on its own stack, passes of 32,768, the clock sampled through each run):
 
