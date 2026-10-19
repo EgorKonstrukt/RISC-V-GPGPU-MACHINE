@@ -101,7 +101,7 @@ How it got there, from 2 to 6% behind:
   through. The bucket bits as a register vector a little more, and the plain CSRs in the fast loop
   a little more. Then in `rvc_opt`'s in-place pipeline: Doom 1 to 1.8% and Quake 1 to 3.5% faster a
   guest instruction than `rvc_opt`.
-- What did not help (`attempts.csv`, 90 rows): the registers four to an entry (+10%), a smaller core
+- What did not help (`attempts.csv`, 79 rows): the registers four to an entry (+10%), a smaller core
   0 cache (`CORE0_BITS` 5: +7.7% on Doom, the cache full sooner), no fetch ahead (+5%), arithmetic by
   a switch (+8%), the filter as 128 bits in registers, the interrupt CSRs in the fast loop too,
   compiler hints (`[fastopt]`), the unpack drawn in place (no gain), the arrays laid out as
