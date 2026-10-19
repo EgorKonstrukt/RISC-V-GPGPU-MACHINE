@@ -184,7 +184,7 @@ uint bucket(uint t, uint k) {
 // Most searches are for a texel just used (the next word of a save, a structure, a copy): the two
 // found or made last are remembered with where they are, and a bit a texel (by a hash) says the
 // cache was given it in this pass, so a load of one it was not given does not search.
-static uint m1_t = 0xffffffff, m1_at = 0, m2_t = 0xffffffff, m2_at = 0;
+static uint m1_t = 0xffffffff, m1_at = 0, m2_t = 0xffffffff, m2_at = 0, absent_t = 0xffffffff;   // (absent_t: looked for last and not there)
 static uint has[32];
 #define HAS_H(t) (((t) ^ ((t) >> 10)) & 1023)
 void remember(uint t, uint at) { m2_t = m1_t; m2_at = m1_at; m1_t = t; m1_at = at; }
@@ -209,12 +209,17 @@ uint ram_word(inout uint4 c[C_N], uint o) {
     uint at = 0;
     [branch] if (maybe) {
         at = t == m1_t ? m1_at : t == m2_t ? m2_at : 0;
-        [branch] if (at == 0 && ((has[HAS_H(t) >> 5] >> (HAS_H(t) & 31)) & 1) != 0) {
-            at = find(c, t);
-            if (at != 0) remember(t, at);
+        // (nested: && reads both its sides, and the bit is an array's read)
+        [branch] if (at == 0 && t != absent_t) {
+            [branch] if (((has[HAS_H(t) >> 5] >> (HAS_H(t) & 31)) & 1) != 0) {
+                at = find(c, t);
+                if (at != 0) remember(t, at); else absent_t = t;
+            }
         }
     }
-    uint w = idx(at != 0 ? c[at] : dr_v, (o >> 2) & 3);
+    uint4 tx = dr_v;
+    [branch] if (at != 0) tx = c[at];   // (an if: a ?: read the cache's entry on every load, there or not)
+    uint w = idx(tx, (o >> 2) & 3);
     return maybe && at == 0 && ovf_addr == o ? ovf_val : w;
 }
 // `bits` into the word at RAM offset o under `mask`: the tables looked in one after another, each
@@ -271,6 +276,7 @@ void ram_store(inout uint4 c[C_N], uint o, uint v, uint mask) {
         occ[b >> 5] |= 1u << (b & 31);
         has[HAS_H(t) >> 5] |= 1u << (HAS_H(t) & 31);
         remember(t, 4 * b + f);
+        absent_t = 0xffffffff;
     } else {
         ovf_addr = o; ovf_val = val;   // made by the commit, which ends the pass here
         stall = STALL_MEM; budget = 0;

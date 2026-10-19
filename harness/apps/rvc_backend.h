@@ -27,6 +27,7 @@ struct BackendOptions {
     int readbackBatch = 1;        // D3D11: frames whose rows are read back with one Map (--readback-batch)
     bool stateLog = false;        // D3D12 only: read the CPU's 64 x 64 state texels back every frame (--l1-log)
     std::string computeShader;    // D3D11 only, --compute: the processor as this compute shader (experiments/rv32_min)
+    bool tickDirect = false;      // --unpack-in-place: the unpack draws into the state texture itself, no zone copied in and back (a tick that does not read the texture there)
     bool ramInplace = false;      // D3D11: RAM in one texture written in place, the commit's passes with RAM_INPLACE (src/ram.h)
 };
 

@@ -124,6 +124,7 @@ struct Options {
     int cores = 1;            // core 0 and the worker cores: kCores wherever the machine has workers (docs/machine/multicore.md)
     bool lazy = false;        // --lazy: a fill or copy is left to the commit and the pass goes on (LAZY_MEMOP)
     bool noBands = false;     // --no-bands: the commit rewrites all of RAM, not only the bands written to (COMMIT_BANDS off)
+    bool unpackInPlace = false;   // --unpack-in-place: a tick that can (an rvc_lean variant) has its unpack drawn into the state texture, no zone copies
     bool pingPong = false;    // --ping-pong: two state textures, as before RAM was written in place (RAM_INPLACE off)
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
@@ -418,6 +419,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--define") o.defines.push_back(next("--define"));
         else if (a == "--no-bands") o.noBands = true;
         else if (a == "--ping-pong") o.pingPong = true;
+        else if (a == "--unpack-in-place") o.unpackInPlace = true;
         else if (a == "--lazy") o.lazy = true;
         else if (a == "--no-mrt") o.noMrt = true;
         else if (a == "--readback-batch") o.readbackBatch = atoi(next("--readback-batch").c_str());
@@ -885,6 +887,7 @@ int main(int argc, char** argv) {
     bool lazyOn = std::find(opt.defines.begin(), opt.defines.end(), "LAZY_MEMOP") != opt.defines.end();
     // (experiments/rvc_lean and --compute keep two state textures: their commits have no RAM_INPLACE passes)
     bool lean = fs::u8path(opt.rvcDir).filename().u8string().rfind("rvc_lean", 0) == 0;
+    bo.tickDirect = lean && opt.unpackInPlace && opt.compute.empty();
     if (!opt.dxc && !opt.pingPong && isOpt(opt.rvcDir) && !lean && opt.compute.empty() && !getenv("RVC11_COMPUTE")) {
         if (lazyOn) fprintf(stderr, "[harness] --lazy has two state textures (RAM_INPLACE off)\n");
         else bo.ramInplace = true;

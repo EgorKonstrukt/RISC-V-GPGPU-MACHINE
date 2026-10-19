@@ -4,7 +4,7 @@
 the compute shader `experiments/rv32_min/rv32_min_fast.hlsl`: every draw of it one file with no
 includes.
 
-- `tick.hlsl` (860 lines): the tick, every core of the machine. Its vertex, geometry and fragment
+- `tick.hlsl` (866 lines): the tick, every core of the machine. Its vertex, geometry and fragment
   shaders, and with `TICK_UNPACK` the pass that copies its eight targets into the state.
 - `commit.hlsl` (367 lines): the commit. The state rows, the bands of RAM something other than a
   core changed (the GPU device's picture copied back, its control words, the host's zap), the
@@ -147,6 +147,26 @@ same). Where it is now, in the last round (ms, s; `rvc_opt` first):
 Red Alert's 300 frames end in the same state (`ea72a5d1`), `fptest` 0 of 15 wrong, `mctest 255
 30000` PASS with 0 pages brought, and `nxweb`'s pixel check of `web-long.html` the same as
 `rvc_opt`'s.
+
+### Where the rest was (19 October 2026, later)
+
+`RVC_PASS_PROF=1` times every pass of a frame on the card (`rvc_harness`, printed as `[prof]`). On the
+shell loop the tick's draw is 90% of a frame on both machines, and `rvc_lean`'s other passes are
+cheaper (commit 0.041 ms against 0.051, devices 0.053 against 0.060); its draw was 2.8% dearer for
+the same 8,192 instructions (1.431 ms against 1.392). At 2,048 a pass `rvc_lean` was the faster (the
+loop 54.65 s against 56.04): a pass costs it less, an instruction more.
+
+`tools/dxbc_run.py` (fxc2's disassembly with its lines numbered, `l(...)` and `d(...)` as `(...)`,
+`breakp_` as `breakc_`, and `firstbit_lo` added) ran both ticks' bytecode for core 0's pixel from one
+snapshot of the shell loop: 111.7 bytecode instructions an emulated one in the fast loop in both, but
+2,000 more reads of the pixel's arrays a pass in this one. A load read the cache's entry whether it had
+the texel or not (`idx(at != 0 ? c[at] : dr_v, ...)`: HLSL makes both sides of a `?:`), and read the
+bit of `has[]` even for the texel it had last looked for and not found (`t != absent_t && has[...]`:
+HLSL makes both sides of an `&&` too). Both as `if`s, nested, and that texel remembered, as `rvc_opt`
+has them: the draw 1.431 to 1.412 ms, the loop 38.69 to 38.21 s (`rvc_opt` 38.10). Quake stays 1.5 to
+3% behind, its draw more so in the card's slower states. (The two constant buffers for that tool are
+best dumped in one run: with the guest's clock from them, a pass of one can take a timer interrupt
+and the other not, and their instructions differ.)
 
 ## Rounds a frame (`--tick-rounds`, `--tick-split`)
 

@@ -36,6 +36,7 @@ public:
         for (auto& d : opt.compile.defines)
             if (d.first == "NO_SCATTER") scatter_ = false;
         inplace_ = opt.ramInplace;
+        tickDirect_ = opt.tickDirect;
         scatter_ = scatter_ && mrt_ && bands_ && !inplace_;
         // the commit draws whole only the bands the cores' stores are not what changed (they are points)
         if (scatter_) bo.settings.defines.push_back({"COMMIT_SCATTER", "1"});
@@ -212,12 +213,20 @@ public:
             if (workers) zones.push_back(UpdateZone{64 + band / 2, kHeight - bandRows / 2, band, bandRows, 0});
             // TICK_MRT: the tick draws a pixel for every eight texels, into eight targets of its
             // own, and the pass that follows puts them where the state has them
+            static const char* const kPassLabels[] = {"tick", "unpack", "commit bands", "commit points", "commit copy", "devices", "", "", "", "", "", ""};
+            if (rounds == 1 && getenv("RVC_PASS_PROF")) { prof_.labels = kPassLabels; profBegin(tag); }
             if (mrt_) tickDraw(mat, zones[0]);
-            if (!freeze) {
+            prof_.mark(gpu_.ctx.Get());
+            // (tickDirect_, experiments/rvc_lean: the unpack draws into the state texture itself, which it
+            // does not read, so no zone is copied in and back)
+            if (!freeze && tickDirect_ && mrt_)
+                drawInto(unpackPasses_[0], mat, crt_.currentRTV(), 0, (std::max)(6u, 3 * groups), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &zones[0]);
+            else if (!freeze) {
             for (auto& z : zones) crt_.copyIn(gpu_, z);
             crt_.runZone(gpu_, mrt_ ? unpackPasses_[0] : passes_[0], mat, zones[0], (std::max)(6u, 3 * groups), false);
             for (auto& z : zones) crt_.copyZone(gpu_, z);
             }
+            prof_.mark(gpu_.ctx.Get());
         }
         if (timeIt) gpu_.ctx->End(tsQuery_[1].Get());
         if (!freeze) {
@@ -231,9 +240,12 @@ public:
             UpdateZone all{1024, kHeight / 2.0f, 2048, (float)kHeight, 1};
             UINT points = 258 + (activeCores_ - 1) * 130;   // a bucket a point: commit_geom
             crt_.runZone(gpu_, passes_[1], mat, all, 6 * kCommitQuads, false);
+            prof_.mark(gpu_.ctx.Get());
             crt_.runZone(gpu_, pointPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+            prof_.mark(gpu_.ctx.Get());
             crt_.swap();
             crt_.runZone(gpu_, copyPasses_[0], mat, all, points, false, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+            prof_.mark(gpu_.ctx.Get());
         } else
         crt_.runZone(gpu_, passes_[1], mat, UpdateZone{1024, kHeight / 2.0f, 2048, (float)kHeight, 1}, bands_ ? 6 * kCommitQuads : 6);
         }
@@ -275,6 +287,7 @@ public:
             }
         }
         if (computing) { prof_.mark(gpu_.ctx.Get()); computeImport(importCon, importFetch, importNet, importCounts); profEnd(); }
+        else profEnd();   // (RVC_PASS_PROF: the devices' passes end it)
         if (timeIt) {
             gpu_.ctx->End(tsQuery_[3].Get());
             gpu_.ctx->End(tsDisjoint_.Get());
@@ -653,6 +666,7 @@ private:
     // there from R and copied back.
     static const UINT kStageRows = 21, kZoneRows = 8;   // STAGE_ROWS in src/ram.h; the tallest zone
     bool inplace_ = false;
+    bool tickDirect_ = false;
     std::vector<GpuPass> gatherPasses_, ramPasses_;
     ComPtr<ID3D11Texture2D> ram_, tickState_, stage_, zone_;
     ComPtr<ID3D11ShaderResourceView> ramSrv_, tickStateSrv_, stageSrv_;
@@ -744,26 +758,33 @@ private:
         // the tick, from R; its state rows into A, which holds R's state rows for the rest
         bool ticks = !(cpuMode && !init);
         UpdateZone core0{32, kHeight - tickRows_ / 2, 64, tickRows_, 0};
+        static const char* const kInplaceLabels[] = {"tick", "unpack", "gather", "commit rows", "commit points", "devices", "", "", "", "", "", ""};
+        if (getenv("RVC_PASS_PROF") && !init) { prof_.labels = kInplaceLabels; profBegin(tag); }
         if (ticks) {
             bool workers = cores_ > 1 && (workersNow || getenv("RVC_WORKERS_ALWAYS"));
             activeCores_ = workers ? (UINT)cores_ : 1;
             if (mrt_) tickDraw(mat, core0);
         }
+        prof_.mark(ctx);
         D3D11_BOX rows{0, 0, 0, kWidth, 64, 1};
         ctx->CopySubresourceRegion(tickState_.Get(), 0, 0, 0, 0, ram_.Get(), 0, &rows);
         if (ticks) drawInto(mrt_ ? unpackPasses_[0] : passes_[0], mat, tickStateRtv_.Get(), 0,
                             (std::max)(6u, 3 * ((activeCores_ + 15) / 16)), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &core0);
+        prof_.mark(ctx);
         if (timeIt) ctx->End(tsQuery_[1].Get());
         // the commit: the gather into T, then the state rows and the points into R
         if (!gpuPasses_.empty()) mat.setTexture("_GpuTarget", gpuSrv_.Get(), kGpuTarget, kGpuTarget);
         mat.setTexture("_TickState", tickStateSrv_.Get(), kWidth, 64);
         mat.setTexture("_Ram", ramSrv_.Get(), kWidth, kHeight);
         drawInto(gatherPasses_[0], mat, stageRtv_.Get(), 0, 1 + activeCores_, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST, nullptr, kStageRows);
+        prof_.mark(ctx);
         mat.setTexture("_Stage", stageSrv_.Get(), kWidth, kStageRows);
         drawInto(passes_[1], mat, ramRtv_.Get(), 0, 6, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        prof_.mark(ctx);
         UINT points = 1 + 258 + (activeCores_ - 1) * 130 + 1;   // ram_commit_geom: the zap, the cores' places, the picture
         mat.setInt("_CommitPoints", points);
         drawInto(ramPasses_[0], mat, ramRtv_.Get(), 0, points, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+        prof_.mark(ctx);
         if (timeIt) ctx->End(tsQuery_[2].Get());
         if (gpuPasses_.size() == 2) {
             gpuDraw(mat);
@@ -790,6 +811,7 @@ private:
                 deliverNet_ = false;
             }
         }
+        profEnd();
         if (timeIt) {
             ctx->End(tsQuery_[3].Get());
             ctx->End(tsDisjoint_.Get());
@@ -818,7 +840,8 @@ private:
     }
 
     // RVC_COMPUTE_PROF=1: a frame in 16 timed on the GPU at each step of --compute's work, the means
-    // printed every 200 of them (experiments/rv32_min/README.md)
+    // printed every 200 of them (experiments/rv32_min/README.md); RVC_PASS_PROF=1 the same for the
+    // fragment machine's passes (the tick, its unpack, the commit's draws, the devices)
     struct ComputeProf {
         static const int kMarks = 12;
         ComPtr<ID3D11Query> disjoint, marks[kMarks];
@@ -826,17 +849,19 @@ private:
         int at = 0;
         double sum[kMarks] = {}, n = 0;
         const char* names[kMarks] = {"cores", "merge_list", "merge", "count+state", "export", "commit+devices", "picture", "texels", "sync_cores", "", "", ""};
+        const char* const* labels = nullptr;   // RVC_PASS_PROF: the fragment machine's passes instead
         void mark(ID3D11DeviceContext* ctx) { if (on && at < kMarks) ctx->End(marks[at++].Get()); }
         ~ComputeProf() { print(); }
         void print() {
             if (n == 0) return;
             fprintf(stderr, "[prof] %.0f frames:", n);
-            for (int k = 1; k < kMarks && names[k - 1][0]; k++) fprintf(stderr, " %s %.3f ms", names[k - 1], sum[k] / n);
+            const char* const* l = labels ? labels : names;
+            for (int k = 1; k < kMarks && l[k - 1][0]; k++) fprintf(stderr, " %s %.3f ms", l[k - 1], sum[k] / n);
             fputc('\n', stderr);
         }
     } prof_;
     void profBegin(uint64_t frame) {
-        static const bool asked = getenv("RVC_COMPUTE_PROF") != nullptr;
+        static const bool asked = getenv("RVC_COMPUTE_PROF") != nullptr || getenv("RVC_PASS_PROF") != nullptr;
         prof_.on = false;
         if (!asked) return;
         ID3D11DeviceContext* ctx = gpu_.ctx.Get();

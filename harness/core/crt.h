@@ -44,6 +44,7 @@ public:
 
     ID3D11Texture2D* current() const { return tex_[cur_].Get(); }
     ID3D11ShaderResourceView* currentSRV() const { return srv_[cur_].Get(); }
+    ID3D11RenderTargetView* currentRTV() const { return rtv_[cur_].Get(); }   // (a pass that draws into it and does not read it)
     ID3D11UnorderedAccessView* currentUAV() const { return uav_[cur_].Get(); }   // for a compute pass that works in place
     // The other buffer: RAM as it was before the last full-texture zone ran.
     ID3D11ShaderResourceView* previousSRV() const { return srv_[1 - cur_].Get(); }
