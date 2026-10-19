@@ -1,18 +1,23 @@
 # The machine's processor, a shader a draw (an experiment)
 
 `experiments/rvc_opt`'s processor written again, for Linux without an MMU only, in the shape of
-the compute shader `experiments/rv32_min/rv32_min_fast.hlsl`: every draw of it one file with no
-includes.
+the compute shader `experiments/rv32_min/rv32_min_fast.hlsl`: the tick one file with no includes.
+Since 20 October 2026 it runs on `rvc_opt`'s commit, RAM in one texture written in place, and is
+faster than `rvc_opt` ("Faster than rvc_opt", below).
 
-- `tick.hlsl` (866 lines): the tick, every core of the machine. Its vertex, geometry and fragment
-  shaders, and with `TICK_UNPACK` the pass that copies its eight targets into the state.
-- `commit.hlsl` (367 lines): the commit. The state rows, the bands of RAM something other than a
-  core changed (the GPU device's picture copied back, its control words, the host's zap), the
-  cores' stores as points (`COMMIT_POINTS`, `commit_geom`), and the copy of those into the other
-  buffer (`COMMIT_COPY`); at `_Init` RAM from the image.
-- `main.shader`: the ShaderLab wrapper, a pass for each. `HLSLPROGRAM`, not `CGPROGRAM`: the
-  harness, as Unity does, puts `HLSLSupport.cginc` and `UnityShaderVariables.cginc` in front of
-  a `CGPROGRAM`, and those declare what the tick declares itself (`_Time`).
+- `tick.hlsl`: the tick, every core of the machine. Its vertex, geometry and fragment shaders, and
+  with `TICK_UNPACK` the pass that copies its eight targets into the state.
+- `main.shader`: the ShaderLab wrapper: `rvc_opt`'s, its tick pass this folder's `tick.hlsl`
+  (`HLSLPROGRAM`, not `CGPROGRAM`: the harness, as Unity does, puts `HLSLSupport.cginc` and
+  `UnityShaderVariables.cginc` in front of a `CGPROGRAM`, and those declare what the tick declares
+  itself, `_Time`), its commit `rvc_opt`'s (`../rvc_opt/src/ram.h` and the rest). The harness gives
+  a folder whose `main.shader` brings in `ram.h` RAM in one texture.
+- `commit.hlsl` (367 lines): the commit of before, for two state textures (the state rows, the bands
+  of RAM something other than a core changed, the cores' stores as points and their copy into the
+  other buffer; at `_Init` RAM from the image). Nothing uses it now; a `main.shader` whose commit pass
+  is `#include "commit.hlsl"` (git: before 20 October 2026) runs it, and the harness then keeps two
+  textures for the folder.
+- `attempts.csv`: every variant of the tick tried on the way, with its scores ("Faster than rvc_opt").
 
 The GPU device and the sound card are `experiments/rvc_opt`'s (`gpu.shader`, `sound.shader`): the
 harness takes them from there when the processor's folder has none.
@@ -48,11 +53,59 @@ The tick:
   instruction that stayed in its texel the next as the texel turned (no texel compared, no word
   chosen).
 - Loads and stores within one word of RAM in the loop, through one function each (`ram_word`,
-  `ram_store`); the write cache searched only when the bloom word and a bit a texel (`has`) say it
-  may hold the texel, and the two texels found or made last remembered.
+  `ram_store`); the write cache searched only when the bloom word says it may hold the texel, the two
+  texels found or made last remembered, and the one looked for last and not found. A bucket's
+  written-this-pass bit is a vector in registers (`occv`), not a local array.
+- The CSRs nothing else looks at (sscratch, sepc, scause, stval, stvec, scounteren, the float flags,
+  time, the hart) read and written in the loop: the kernel's trap entry and exit are full of them.
 - The general step (`step`): any instruction, the loads put together from two words, stores a
   byte at a time when not one whole word, the CSRs, SBI, `sret`, the traps and interrupts, and a
   worker's fault record.
+
+## Faster than rvc_opt (20 October 2026)
+
+On the RTX 5070 laptop, D3D11 and fxc2, Doom's and Quake's timedemos whole, `rvc_opt` and this in
+turn (A-B-B-A), the same image:
+
+| | `rvc_opt` | `rvc_lean` |
+|---|---|---|
+| Doom, ms a frame, round 1 (5,026 tics in realtics) | 16.15, 17.24 cold (2,841) | 15.85, 15.86 (2,788) |
+| Quake, ms a frame, round 1 (969 frames) | 11.34, 11.27 | 11.14, 11.14 |
+| Doom, round 2 | 15.76, 16.16 (2,772, 2,842) | 15.79, 15.84 (2,777, 2,786) |
+| Quake, round 2 | 10.99, 10.63 | 11.09, 10.32 |
+
+(Round 2 is this folder as committed; round 1 the same shaders from a copy. The card drifts by 3 to 7%
+in a round; compare means of a round.)
+
+Red Alert's 300 frames `ea72a5d1`, fptest 0 of 15 wrong, mctest PASS, as `rvc_opt`.
+
+How it got there, from 2 to 6% behind:
+
+- **The gap was two halves.** Live, from one snapshot of Doom's timedemo (`--load-state`,
+  6,000 frames, wall clock): `rvc_opt` 1.617 ms a frame, `rvc_opt` with two state textures
+  (`--ping-pong`, this folder's way until now) 1.717, this folder 1.700, and its tick in `rvc_opt`'s
+  pipeline 1.656. Two textures cost about 3%; the tick another 2.5%.
+- **Frozen timings misled.** One pass drawn again and again (`tick_trace11`, the harness's
+  `RVC_FREEZE`, now also on the in-place path) had this tick 1.5 to 2% faster than `rvc_opt`'s; a
+  pass's cost depends on the stretch of code it runs (the kernel's timer wheel 13% slower, the rest
+  faster), and `[prof]`'s tick column on the two-texture path held time that was not the tick's.
+- **A replay bench** (`rvc_harness --replay DIR;DIR...`): the harness loads a snapshot once, builds
+  the tick of each folder beside its own, and runs each 1,000 frames from the snapshot's state in
+  turn, every device as in a live run, four rounds; a variant costs seconds, not ten minutes. The score
+  is time a guest instruction against `rvc_opt`'s tick in the same run (Doom ±0.3%, Quake ±1%: the
+  frames' work differs with the timing, ms a frame alone does not compare).
+- **The tick's local arrays were the cost.** `rvc_opt`'s fast path, its pixel shader's shape and its
+  general step's switches brought into this tick changed nothing or made it slower; taking out the
+  32-word bit-a-texel filter (`has`) made it 2.5% faster on Doom and 1.4% on Quake: the card keeps a
+  pixel's local arrays in local memory, and the filter was read on every load the bloom word let
+  through. The bucket bits as a register vector a little more, and the plain CSRs in the fast loop
+  a little more. Then in `rvc_opt`'s in-place pipeline: Doom 1 to 1.8% and Quake 1 to 3.5% faster a
+  guest instruction than `rvc_opt`.
+- What did not help (`attempts.csv`, 90 rows): the registers four to an entry (+10%), a smaller core
+  0 cache (`CORE0_BITS` 5: +7.7% on Doom, the cache full sooner), no fetch ahead (+5%), arithmetic by
+  a switch (+8%), the filter as 128 bits in registers, the interrupt CSRs in the fast loop too,
+  compiler hints (`[fastopt]`), the unpack drawn in place (no gain), the arrays laid out as
+  `rvc_opt`'s.
 
 ## Measured
 

@@ -126,6 +126,10 @@ struct Options {
     bool noBands = false;     // --no-bands: the commit rewrites all of RAM, not only the bands written to (COMMIT_BANDS off)
     bool unpackInPlace = false;   // --unpack-in-place: a tick that can (an rvc_lean variant) has its unpack drawn into the state texture, no zone copies
     bool pingPong = false;    // --ping-pong: two state textures, as before RAM was written in place (RAM_INPLACE off)
+    // --replay DIR;DIR;...: with --load-state, the tick of each folder (its CPUTick pass) beside the machine's own, each
+    // run --replay-frames frames from the snapshot's state, --replay-rounds times in turn: wall time a frame, instructions a frame
+    std::vector<std::string> replayDirs;
+    int replayFrames = 600, replayRounds = 3;
     bool noMrt = false;       // --no-mrt: the tick in one target (D3D11)
     int readbackBatch = 1;    // --readback-batch N: D3D11 maps the rows of N frames at once
     bool ourKernel = false;   // the RAM image is this project's (kernel at +4 MiB, device tree at +34 MiB)
@@ -185,6 +189,9 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --dump-state FILE    write the 64x64 state area (raw uint32 RGBA) at exit
   --save-state FILE    write a snapshot of the whole machine (290 MB) at exit
   --load-state FILE    resume from a snapshot instead of booting
+  --replay DIR;DIR...  with --load-state: the tick (CPUTick pass) of each folder beside the machine's own,
+                       each run --replay-frames N (600) frames from the snapshot's state, in turn,
+                       --replay-rounds R (3) times; prints ms a frame and instructions a frame for each
   --screen-log FILE    with --cpu: the display as it is shown (its layers, the cursor over them), every
                        frame: 16 bytes (width, height, frame, the guest's milliseconds), then red, green,
                        blue a pixel. --screen-from TEXT: not before the console has shown TEXT;
@@ -371,6 +378,17 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--screen-frames") o.screenFrames = atoi(next("--screen-frames").c_str());
         else if (a == "--screen-every") o.screenEvery = atoi(next("--screen-every").c_str());
         else if (a == "--load-state") o.loadState = next("--load-state");
+        else if (a == "--replay") {
+            std::string list = next("--replay");
+            for (size_t s = 0; s <= list.size();) {
+                size_t e = list.find(';', s);
+                if (e == std::string::npos) e = list.size();
+                if (e > s) o.replayDirs.push_back(list.substr(s, e - s));
+                s = e + 1;
+            }
+        }
+        else if (a == "--replay-frames") o.replayFrames = atoi(next("--replay-frames").c_str());
+        else if (a == "--replay-rounds") o.replayRounds = atoi(next("--replay-rounds").c_str());
         else if (a == "--bench") o.benchWarmup = atoll(next("--bench").c_str());
         else if (a == "--stats") o.statsInterval = atof(next("--stats").c_str());
         else if (a == "--warp") o.gpu.warp = true;
@@ -885,10 +903,14 @@ int main(int argc, char** argv) {
     if (!opt.noBands) opt.defines.push_back("COMMIT_BANDS");
     // RAM in one texture, written in place (src/ram.h): D3D11, with no fill or copy left to the commit
     bool lazyOn = std::find(opt.defines.begin(), opt.defines.end(), "LAZY_MEMOP") != opt.defines.end();
-    // (experiments/rvc_lean and --compute keep two state textures: their commits have no RAM_INPLACE passes)
+    // (--compute, and a rvc_lean folder with a commit of its own, keep two state textures: their commits have no
+    // RAM_INPLACE passes; experiments/rvc_lean now takes rvc_opt's commit, whose main.shader brings in src/ram.h)
     bool lean = fs::u8path(opt.rvcDir).filename().u8string().rfind("rvc_lean", 0) == 0;
-    bo.tickDirect = lean && opt.unpackInPlace && opt.compute.empty();
-    if (!opt.dxc && !opt.pingPong && isOpt(opt.rvcDir) && !lean && opt.compute.empty() && !getenv("RVC11_COMPUTE")) {
+    std::string shaderText;
+    readFileBinary(shaderPath, shaderText);
+    bool ownCommit = lean && shaderText.find("ram.h") == std::string::npos;
+    bo.tickDirect = ownCommit && opt.unpackInPlace && opt.compute.empty();
+    if (!opt.dxc && !opt.pingPong && isOpt(opt.rvcDir) && !ownCommit && opt.compute.empty() && !getenv("RVC11_COMPUTE")) {
         if (lazyOn) fprintf(stderr, "[harness] --lazy has two state textures (RAM_INPLACE off)\n");
         else bo.ramInplace = true;
     }
@@ -915,6 +937,13 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[harness] %s\n", err.c_str());
         return 1;
     }
+    for (auto& dir : opt.replayDirs) {
+        SLShader variant;
+        if (!loadShaderLab((fs::u8path(dir) / "main.shader").u8string(), variant, err) || !backend.addTickVariant(variant, err)) {
+            fprintf(stderr, "[harness] --replay %s: %s\n", dir.c_str(), err.c_str());
+            return 1;
+        }
+    }
     if (!backend.loadPayload(mat, opt.payloadDir, opt.ramPrefix, "_Data_RAM", err) ||
         !backend.loadPayload(mat, opt.payloadDir, opt.mtdPrefix, "_Data_MTD", err) ||
         !backend.loadPayload(mat, opt.payloadDir, opt.dtbPrefix, "_Data_DTB", err)) {
@@ -932,6 +961,7 @@ int main(int argc, char** argv) {
     const UINT W = RvcBackend::kWidth, H = RvcBackend::kHeight, kProfCount = RvcBackend::kProfCount;
     std::vector<uint32_t> profBase(kProfCount, 0);
     double timeBase = 0;
+    std::string replaySnap;   // --replay: the snapshot's texels, set again before each run
     uint32_t sentTag = 0, consumedTag = 0, sentChar = 0;
     uint32_t conWritten = 0;   // the console's bytes taken so far (docs/machine/console.md)
     bool conSeen = false;
@@ -947,6 +977,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         snap.resize(sizeof hdr + (size_t)W * H * 16, '\0');
+        if (!opt.replayDirs.empty()) replaySnap.assign(snap.data() + sizeof hdr, snap.size() - sizeof hdr);
         if (!backend.setState(snap.data() + sizeof hdr, err)) {
             fprintf(stderr, "[harness] %s\n", err.c_str());
             return 1;
@@ -1371,7 +1402,42 @@ int main(int argc, char** argv) {
     uint64_t benchInstr0 = 0;
     // (the card's clock is not the same all through a run: the fastest stretch of 1,024 frames is reported too)
     std::vector<std::pair<double, uint64_t>> benchMarks;
+    // --replay: each tick from the same state in turn, inside this loop (every device as in a live run): every
+    // --replay-frames frames the time and instructions are noted, the next tick put in place and the state set again
+    size_t replayNv = opt.replayDirs.size() + 1, replayAt = 0;
+    int replayRound = 0;
+    uint64_t replayNext = opt.replayDirs.empty() ? ~0ull : 0, replayInstr0 = 0;
+    std::vector<std::vector<double>> replayMs(replayNv), replayIpf(replayNv);
     for (;;) {
+        if (frame == replayNext) {
+            if (replaySnap.empty()) { fprintf(stderr, "[harness] --replay needs --load-state\n"); exitCode = 1; break; }
+            while (backend.rowPending() > 0 && takeRow()) {}
+            if (frame > 0) {
+                double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                replayMs[replayAt].push_back(1000.0 * sec / opt.replayFrames);
+                replayIpf[replayAt].push_back((double)(guestInstructions - replayInstr0) / opt.replayFrames);
+                if (++replayAt == replayNv) { replayAt = 0; ++replayRound; }
+            }
+            if (replayRound == opt.replayRounds) {
+                for (size_t v = 0; v < replayNv; ++v) {
+                    std::vector<double> s = replayMs[v];
+                    std::sort(s.begin(), s.end());
+                    double mean = 0, ipf = 0;
+                    for (double x : replayMs[v]) mean += x;
+                    for (double x : replayIpf[v]) ipf += x;
+                    printf("replay %s %.4f ms a frame (median %.4f, best %.4f), %.0f instructions a frame\n",
+                           v == 0 ? opt.rvcDir.c_str() : opt.replayDirs[v - 1].c_str(), mean / s.size(), s[s.size() / 2], s[0], ipf / replayIpf[v].size());
+                }
+                fflush(stdout);
+                break;
+            }
+            backend.useTickVariant(replayAt);
+            if (!backend.setState(replaySnap.data(), err)) { fprintf(stderr, "[harness] %s\n", err.c_str()); exitCode = 1; break; }
+            haveClock = false;   // (the clock goes back to the snapshot's)
+            replayInstr0 = guestInstructions;
+            t0 = std::chrono::steady_clock::now();
+            replayNext = frame + opt.replayFrames;
+        }
         double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         double t = timeBase + (opt.fixedDt > 0 ? (double)frame * opt.fixedDt : wall);
         guestTime = t;
@@ -2042,7 +2108,7 @@ int main(int argc, char** argv) {
     restoreConsole();
 
     double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    fprintf(stderr, "\n[harness] %llu frames in %.1fs, %llu guest instructions, avg %.1fk IPS, %u commits%s\n",
+    fprintf(stderr, "\n[harness] %llu frames in %.3fs, %llu guest instructions, avg %.1fk IPS, %u commits%s\n",
             (unsigned long long)frame, wall, (unsigned long long)guestInstructions,
             wall > 0 ? guestInstructions / wall / 1000.0 : 0.0, commits,
             untilHit ? ", --until matched" : (exitCode == 3 ? ", --until NOT matched" : ""));

@@ -171,10 +171,12 @@ static uint used;             // core 0: its instructions in this frame's rounds
 static bool early;            // core 0: this round ended before its instructions did (39.z)
 
 // ---- Memory. The cache is a local array of the pixel (c), its tags at 4b, its texels after;
-// a bit a bucket says it was written in this pass (it starts undefined otherwise).
+// a bit a bucket says it was written in this pass (it starts undefined otherwise). The bits are a
+// vector in registers: as a local array of four they cost a load what the card's local memory costs.
 #define C_N 448
-static uint occ[4];
-#define OCC(b) (((occ[(b) >> 5] >> ((b) & 31)) & 1) != 0)
+static uint4 occv = 0;
+#define OCC(b) (((idx(occv, (b) >> 5) >> ((b) & 31)) & 1) != 0)
+#define OCC_SET(b) occv = put(occv, (b) >> 5, idx(occv, (b) >> 5) | (1u << ((b) & 31)))
 static uint dr_t = 0xffffffff;   // the RAM texel read last for data, as the texture has it
 static uint4 dr_v;
 uint bucket(uint t, uint k) {
@@ -182,11 +184,10 @@ uint bucket(uint t, uint k) {
     return k == 0 ? t & (n - 1) : k == 1 ? n + H1(t, bits - 1) : n + (n >> 1) + (H2(t, bits - 1) & ((n >> 2) - 1));
 }
 // Most searches are for a texel just used (the next word of a save, a structure, a copy): the two
-// found or made last are remembered with where they are, and a bit a texel (by a hash) says the
-// cache was given it in this pass, so a load of one it was not given does not search.
+// found or made last are remembered with where they are, and the texel looked for last and not found.
+// (A bit a texel by a hash, saying the cache was given it, spared searches and cost more than they
+// did: its 32 words were a local array, read on every load the bloom let through.)
 static uint m1_t = 0xffffffff, m1_at = 0, m2_t = 0xffffffff, m2_at = 0, absent_t = 0xffffffff;   // (absent_t: looked for last and not there)
-static uint has[32];
-#define HAS_H(t) (((t) ^ ((t) >> 10)) & 1023)
 void remember(uint t, uint at) { m2_t = m1_t; m2_at = m1_at; m1_t = t; m1_at = at; }
 uint slot(uint4 tags, uint tag) { return tags.x == tag ? 1 : tags.y == tag ? 2 : tags.z == tag ? 3 : 0; }
 // where the cache holds RAM texel t (4b + entry), or 0: a table is looked in when the one before is full
@@ -227,12 +228,9 @@ uint ram_word(inout uint4 c[C_N], uint o) {
     uint at = 0;
     [branch] if (maybe) {
         at = t == m1_t ? m1_at : t == m2_t ? m2_at : 0;
-        // (nested: && reads both its sides, and the bit is an array's read)
         [branch] if (at == 0 && t != absent_t) {
-            [branch] if (((has[HAS_H(t) >> 5] >> (HAS_H(t) & 31)) & 1) != 0) {
-                at = find(c, t);
-                if (at != 0) remember(t, at); else absent_t = t;
-            }
+            at = find(c, t);
+            if (at != 0) remember(t, at); else absent_t = t;
         }
     }
     uint4 tx = dr_v;
@@ -291,8 +289,7 @@ void ram_store(inout uint4 c[C_N], uint o, uint v, uint mask) {
         uint b = f0 != 0 ? b0 : b1, f = f0 != 0 ? f0 : f1;
         c[4 * b] = put(f0 != 0 ? tags0 : tags1, f - 1, tag);
         c[4 * b + f] = texel;
-        occ[b >> 5] |= 1u << (b & 31);
-        has[HAS_H(t) >> 5] |= 1u << (HAS_H(t) & 31);
+        OCC_SET(b);
         remember(t, 4 * b + f);
         absent_t = 0xffffffff;
     } else {
@@ -494,7 +491,8 @@ uint fast(inout uint4 c[C_N], uint room) {
                     dst = 64;
                 } else [branch] if (opc == 0x53) {
                     // (opcode 0x53 before flw and fsw: a program has more of them, rvc_opt's order) floats: a sum, a difference, a product, and the light ones; the rest are the general step's
-                    uint f7 = w >> 25, fa = (f7 & 0x68) == 0x68 ? a : xr[32 + ((w >> 15) & 31)], fb = xr[32 + ((w >> 20) & 31)];
+                    uint f7 = w >> 25, fa = a, fb = xr[32 + ((w >> 20) & 31)];
+                    [branch] if ((f7 & 0x68) != 0x68) fa = xr[32 + ((w >> 15) & 31)];   // (an if: a ?: read the register either way)
                     bool to_f = true;
                     [branch] if ((f7 & 0x73) == 0 && f7 != 0x0c) {
                         precise float x = asfloat(fa), y = asfloat(fb), sum = x + y, dif = x - y, prod = x * y;
@@ -544,6 +542,18 @@ uint fast(inout uint4 c[C_N], uint room) {
             }
         } else [branch] if (opc == 0x33 && (w >> 25) == 1) {
             v = op_m(f3, a, b);
+        } else [branch] if (opc == 0x73 && (f3 & 3) != 0) {
+            // csrrw, csrrs, csrrc and their immediates on a CSR nothing else looks at (sscratch, sepc, scause,
+            // stval, stvec, scounteren, the float flags, time, the hart): the kernel's trap entry and exit are
+            // full of them, and each was a general step
+            uint cn = w >> 20, src = (f3 & 4) ? (w >> 15) & 31 : a;
+            bool wr_ = (f3 & 3) == 1 || src != 0;
+            bool plain = (cn - 0x140 < 4) || cn == 0x105 || cn == 0x106 || (cn - 1 < 3) || cn == 0xc01 || cn == 0xf14;
+            ok = plain && ((cn >> 8) & 3) <= priv && !(wr_ && ((cn >> 10) & 3) == 3);
+            [branch] if (ok) {
+                v = csr_read(cn);
+                if (wr_) csr_write(cn, (f3 & 3) == 1 ? src : (f3 & 3) == 2 ? v | src : v & ~src);
+            }
         } else ok = false;
         if (!ok) { pre_w = w; pre_valid = true; break; }
         xr[dst] = v;

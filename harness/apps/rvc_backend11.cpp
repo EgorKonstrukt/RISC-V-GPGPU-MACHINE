@@ -89,7 +89,10 @@ public:
             ShaderBuildOptions unpack = bo;
             unpack.settings.defines.push_back({"TICK_UNPACK", "1"});
             if (!buildPasses(gpu_, shader, {"CPUTick"}, unpack, unpackPasses_, err) || !createTickTargets(err)) return false;
+            unpackBo_ = unpack;
         }
+        tickBo_ = bo;
+        tickVariants_.push_back({passes_[0], mrt_ ? unpackPasses_[0] : GpuPass{}});
         for (auto& d : opt.compile.defines)
             if (d.first == "RAM_DIRECT") csDirect_ = true;
         for (auto& d : opt.compile.defines)
@@ -667,6 +670,22 @@ private:
     static const UINT kStageRows = 21, kZoneRows = 8;   // STAGE_ROWS in src/ram.h; the tallest zone
     bool inplace_ = false;
     bool tickDirect_ = false;
+    // --replay: the tick variants (variant 0 is the machine's own), each its tick and its unpack
+    ShaderBuildOptions tickBo_, unpackBo_;
+    std::vector<std::pair<GpuPass, GpuPass>> tickVariants_;
+    bool addTickVariant(const SLShader& shader, std::string& err) override {
+        std::vector<GpuPass> t, u;
+        if (!buildPasses(gpu_, shader, {"CPUTick"}, tickBo_, t, err)) return false;
+        if (mrt_ && !buildPasses(gpu_, shader, {"CPUTick"}, unpackBo_, u, err)) return false;
+        tickVariants_.push_back({t[0], mrt_ ? u[0] : GpuPass{}});
+        return true;
+    }
+    bool useTickVariant(size_t i) override {
+        if (i >= tickVariants_.size()) return false;
+        passes_[0] = tickVariants_[i].first;
+        if (mrt_) unpackPasses_[0] = tickVariants_[i].second;
+        return true;
+    }
     std::vector<GpuPass> gatherPasses_, ramPasses_;
     ComPtr<ID3D11Texture2D> ram_, tickState_, stage_, zone_;
     ComPtr<ID3D11ShaderResourceView> ramSrv_, tickStateSrv_, stageSrv_;
@@ -766,6 +785,16 @@ private:
             if (mrt_) tickDraw(mat, core0);
         }
         prof_.mark(ctx);
+        // RVC_FREEZE: as frame()'s, the tick alone, its state not written back (every pass the same instructions)
+        static const bool freezeAsked = getenv("RVC_FREEZE") != nullptr;
+        if (freezeAsked && !init) {
+            profEnd();
+            rows_.request(ctx, ram_.Get(), 0, 0, tag);
+            control_.request(ctx, ram_.Get(), 0, kControlRow, tag);
+            net_.request(ctx, ram_.Get(), 0, kNetRow, tag);
+            if (!getenv("RVC11_NO_FLUSH")) ctx->Flush();
+            return true;
+        }
         D3D11_BOX rows{0, 0, 0, kWidth, 64, 1};
         ctx->CopySubresourceRegion(tickState_.Get(), 0, 0, 0, 0, ram_.Get(), 0, &rows);
         if (ticks) drawInto(mrt_ ? unpackPasses_[0] : passes_[0], mat, tickStateRtv_.Get(), 0,

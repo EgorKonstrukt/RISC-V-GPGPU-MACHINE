@@ -92,6 +92,10 @@ public:
     virtual bool uploadRows(UINT row, UINT rows, const void* texels) { (void)row; (void)rows; (void)texels; return false; }
     virtual bool uploadTexel(UINT x, UINT y, const uint32_t* words) { (void)x; (void)y; (void)words; return false; }
     virtual bool readRows(UINT row, UINT rows, std::vector<uint8_t>& out) { (void)row; (void)rows; (void)out; return false; }
+    // --replay: the tick (and its unpack) of another machine's folder, built beside the first (variant 0);
+    // useTickVariant puts variant i in the tick's place
+    virtual bool addTickVariant(const SLShader& shader, std::string& err) { (void)shader; err = "tick variants are D3D11's"; return false; }
+    virtual bool useTickVariant(size_t i) { (void)i; return false; }
     // --compute (experiments/rv32_min/README.md, "The whole machine"): as --cpu, but the processor is
     // a compute shader with RAM in a buffer of its own on the card. A frame runs one of its passes,
     // puts the bands of RAM it stored to into the state texture (the commit carries them over as
