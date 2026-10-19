@@ -20,6 +20,7 @@ static const NSig NSIGS[] = {
 };
 static const string MAX = "SystemMath.__Max__SystemInt32_SystemInt32__SystemInt32";
 static bool NATIVE = true;                 // L2U_NATIVE=0: translate them as they are
+static i64 NATMIN = 16;                    // L2U_NATMIN=N: lengths under N run the translated body
 static map<string, int> nat_found;
 
 static void native_scan(const vector<u32>& w) {
@@ -46,9 +47,10 @@ static void emit_native(Asm& o, int kind, i64 pc) {
         string no = o.fresh(); o.ex(cmp, {a, b, "cnd"}); o.jif("cnd", no); o.jump(to); o.L(no);
     };
     if (kind == N_MEMCPY || kind == N_MEMSET) {
-        when(LT, "x12", c(16), orig);                         // small or "negative" lengths: the body
+        when(LT, "x12", c(NATMIN), orig);                     // small or "negative" lengths: the body
         o.ex(ADD, {"x10", c(MIN), "t"}); when(LT, "t", "x0", orig);
         o.ex(SUB, {c(RAMSIZE), "t", "t3"}); when(GT, "x12", "t3", orig);
+        if (DIRTY) { o.ex(ADD, {"t", "x12", "mhi"}); o.ex(SUB, {"mhi", c(1), "mhi"}); mark_range(o, "t", "mhi"); }
         if (kind == N_MEMCPY) {
             string rom = o.fresh(), go = o.fresh();
             o.ex(ADD, {"x11", c(MIN), "t2"}); when(LT, "t2", "x0", rom);

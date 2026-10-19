@@ -70,12 +70,18 @@ int main(int argc, char** argv) {
     { const char* p = getenv("L2U_TIER"); TIER = p ? atoi(p) : 2; }
     { const char* p = getenv("L2U_DYN"); DYN = TIER && (!p || string(p) != "0"); }
     { const char* p = getenv("L2U_NATIVE"); NATIVE = !p || string(p) != "0"; }
+    { const char* p = getenv("L2U_NATMIN"); if (p) NATMIN = atoll(p); }
     { const char* p = getenv("L2U_THR"); THR = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_UDREL"); UDREL = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_XFACTS"); XFACTS = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_XCALLS"); XCALLS = p && string(p) == "1"; }
     { const char* p = getenv("L2U_PREPAY"); PREPAY = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_RETP"); if (p) RETP = atoi(p); }
+    { const char* p = getenv("L2U_DIRTY"); DIRTY = !p || string(p) != "0"; DIRTYB = p && string(p) == "2"; }
+    { const char* p = getenv("L2U_MARKHOT"); if (p) MARKHOT = atoll(p); }
+    { const char* p = getenv("L2U_MXF"); if (p) MXF = atoi(p) != 0; }
+    { const char* p = getenv("L2U_MCOUNT"); MCOUNT = p ? atoi(p) : 0; }
+    { const char* p = getenv("L2U_PAIR"); if (p) PAIR = atoi(p); }
     { const char* p = getenv("L2U_HW"); HWCOPY = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_FLOAT"); FLT = !p || string(p) != "0"; }
     { const char* p = getenv("L2U_CSR"); CSRT = !p || string(p) != "0"; }
@@ -97,6 +103,13 @@ int main(int argc, char** argv) {
     if (FLT) { for (int r = 0; r < 32; r++) o.var(fx(r), T_I); o.var("fdirty", T_I); o.var("ifd", T_I); }
     o.var("k_f0", T_F, 0); o.var("k_f2p31", T_F, 0x4F000000); o.var("k_fm2p31", T_F, sx(0xCF000000LL, 32)); o.var("k_f2p32", T_F, 0x4F800000);
     for (const char* v : {"mem", "rom", "xr", "fr", "csr", "tk", "cslot", "cmask", "hw"}) o.var(v, T_IA);
+    if (DIRTY) {
+        o.var("pdirty", DIRTYB ? T_BA : T_IA); o.var("plist", T_IA); o.var("k_true", T_B, 1);
+        for (const char* v : {"pn", "pd", "pg", "mt", "mlo", "mhi", "mp", "mq"}) o.var(v, T_I);
+        if (MCOUNT) { o.var("mcnt", T_I); o.var("scnt", T_I); }
+        if (MCOUNT == 2) o.var("profm", T_IA);
+        for (const char* v : {"dret", "dret2"}) o.var(v, T_U);
+    }
     for (const char* v : {"jt", "ijt", "bjt", "ljt", "sjt", "oijt", "rjt", "ajt", "csrr", "csrw", "usjt", "fjt"}) o.var(v, T_UA);
     for (const char* v : {"bb", "bs", "sglo", "sghi", "sgoff", "sgw"}) o.var(v, T_IA);
 
@@ -134,6 +147,7 @@ int main(int argc, char** argv) {
     if (DYN) { o.L("dz"); o.jump("dfill"); }           // label 0: a word of the dynamic window not filled yet
     routines(o);
     interpreter(o, T);
+    if (DIRTY) dirty_routines(o);
     ubind(o, users);
     if (TIER) thread_common(o);
     if (DYN) dyn_routines(o, T);
@@ -216,7 +230,8 @@ int main(int argc, char** argv) {
     for (Seg* sg : users) { wvec(path(sg->jt + ".u32"), sg->jtv); wvec(path(sg->tk + ".i32"), sg->tkv); }
     if (TIER) for (Seg* sg : segs) wvec(path(sg->tim + ".i32"), sg->timv);
     map<string, vector<int32_t>> ints;
-    ints["bb"] = vector<int32_t>(16, 0); ints["hw"] = vector<int32_t>(3, 0); ints["bs"] = vector<int32_t>(16, -1);
+    ints["bb"] = vector<int32_t>(16, 0); ints["hw"] = vector<int32_t>(3, 0);
+    if (DIRTY) { if (!DIRTYB) ints["pdirty"] = vector<int32_t>(NPAGES, 0); ints["plist"] = vector<int32_t>(NPAGES, 0); } ints["bs"] = vector<int32_t>(16, -1);
     for (Seg* sg : users) { ints["sglo"].push_back((int32_t)sg->lo); ints["sghi"].push_back((int32_t)sg->hi);
         for (auto& ow : sg->sig) { ints["sgoff"].push_back((int32_t)ow.first); ints["sgw"].push_back((int32_t)sx(ow.second, 32)); } }
     for (const char* k : {"sglo", "sghi", "sgoff", "sgw"}) if (ints[k].empty()) ints[k].push_back(0);
@@ -225,6 +240,10 @@ int main(int argc, char** argv) {
     if (ISTAT) { wvec(path("st_op.i32"), vector<int32_t>(128, 0)); wvec(path("st_pair.i32"), vector<int32_t>(128 * 128, 0)); wvec(path("st_seg.i32"), vector<int32_t>(8, 0));
                  wvec(path("st_pc.i32"), vector<int32_t>(65536, 0)); wvec(path("st_pcv.i32"), vector<int32_t>(65536, 0)); }
     for (auto& kv : T.lab) { vector<u32> v; for (auto& l : kv.second) v.push_back(o.labels.at(l)); wvec(path(kv.first + ".u32"), v); }
+    if (MCOUNT == 2) {
+        string t; for (auto& s : MSITES) t += s + "\n";
+        wtext(path("profm_sites.txt"), t); wvec(path("profm.i32"), vector<int32_t>(MSITES.size() + 1, 0));
+    }
     if (PROF) {
         wvec(path("prof5.i32"), vector<int32_t>(ptotal + (DYN ? DN + 2 : 0), 0));
         string lay; for (Seg* sg : segs) lay += (sg->name.empty() ? string("kernel") : sg->name) + " " + to_string(sg->pbase) + " " + to_string(sg->words.size()) + "\n";

@@ -48,7 +48,7 @@ static const string ADD = I32("Addition"), SUB = I32("Subtraction"), AND = I32("
 static const string SHL = I32("LeftShift"), SHR = I32("RightShift"), MUL = I32("Multiplication");
 static const string EQ = CMP("Equality"), NE = CMP("Inequality"), LT = CMP("LessThan"), GT = CMP("GreaterThan"),
                     LE = CMP("LessThanOrEqual"), GE = CMP("GreaterThanOrEqual");
-enum { T_I, T_U, T_B, T_L, T_S, T_IA, T_UA, T_BY, T_F };
+enum { T_I, T_U, T_B, T_L, T_S, T_IA, T_UA, T_BY, T_F, T_BA = 13 };
 static string FOP(const char* n) { return string("SystemSingle.__op_") + n + "__SystemSingle_SystemSingle__SystemSingle"; }
 static string FCMP(const char* n) { return string("SystemSingle.__op_") + n + "__SystemSingle_SystemSingle__SystemBoolean"; }
 static const string FNEG = "SystemSingle.__op_UnaryMinus__SystemSingle__SystemSingle";
@@ -175,6 +175,65 @@ static void emit_extract(Asm& o, int f3, const string& rd) {
     o.ex(SHL, {"t", o.c(3), "sh"});
     if (f3 == 4 || f3 == 5) { o.ex(SHR, {"w", "sh", "w"}); o.ex(AND, {"w", o.c((1 << width) - 1), rd}); }
     else { o.ex(SUB, {o.c(32 - width), "sh", "sh"}); o.ex(SHL, {"w", "sh", "w"}); o.ex(SHR, {"w", o.c(32 - width), rd}); }
+}
+
+static bool DIRTY = false;              // L2U_DIRTY=0 turns off: every write of mem lists its 4 KB page (pdirty, plist, pn)
+static bool DIRTYB = false;             // L2U_DIRTY=2: pdirty a bool[] (one extern a mark fewer)
+static const string BGET = "SystemBooleanArray.__Get__SystemInt32__SystemBoolean";
+static const string BSET = "SystemBooleanArray.__Set__SystemInt32_SystemBoolean__SystemVoid";
+static const int NPAGES = 73728;       // RAM 0x80000000-0x92000000 in pages, word index >> 10
+
+// pg (a variable or constant page) written: out of line when it is new, inline (cold sites) when !out
+static bool MFAST = true;              // the inline check; else a call of markchk (smaller, for stores run less)
+// pair: page pg and the next both, known by pdirty[pg] == 2 (all set entries are cleared together)
+static int PAIR = 2;                  // L2U_PAIR: groups that check two pages at once: 0 none, 1 all, 2 the stack's (the page above is the callers')
+static void mark_pg(Asm& o, const string& pg, bool out = true, bool pair = false) {
+    if (out && !MFAST) {
+        string back = o.fresh();
+        if (pg != "pg") o.copy(pg, "pg");
+        o.copy(o.u(back), "dret"); o.jump(pair ? "markchk2" : "markchk"); o.L(back);
+        return;
+    }
+    if (DIRTYB) o.ex(BGET, {"pdirty", pg, "cnd"}); else o.ex(AGET, {"pdirty", pg, "pd"});
+    if (out) {
+        string stub = o.fresh(), back = o.fresh();
+        if (pair) o.ex(EQ, {"pd", o.c(2), "cnd"}); else if (!DIRTYB) o.ex(NE, {"pd", "x0", "cnd"});
+        o.jif("cnd", stub); o.L(back);
+        o.later.push_back([&o, stub, back, pg, pair]() { o.L(stub); if (pg != "pg") o.copy(pg, "pg"); o.copy(o.u(back), "dret"); o.jump(pair ? "markpg2" : "markpg"); });
+        return;
+    }
+    string skip = o.fresh(), mk = o.fresh();
+    if (DIRTYB) { o.jif("cnd", mk); o.jump(skip); o.L(mk); o.ex(BSET, {"pdirty", pg, "k_true"}); }
+    else { o.ex(EQ, {"pd", "x0", "cnd"}); o.jif("cnd", skip); o.ex(ASET, {"pdirty", pg, o.c(1)}); }
+    o.ex(ASET, {"plist", "pn", pg}); o.ex(ADD, {"pn", o.c(1), "pn"});
+    o.L(skip);
+}
+static void mark_word(Asm& o, const string& idx, bool out = true, bool pair = false) { o.ex(SHR, {idx, o.c(10), "pg"}); mark_pg(o, "pg", out, pair); }
+static void mark_byte(Asm& o, const string& off, bool out = true, bool pair = false) { o.ex(SHR, {off, o.c(12), "pg"}); mark_pg(o, "pg", out, pair); }
+// the pages of mem offsets lo..hi (bytes, inclusive; variables), then back to label `back`
+static void mark_range(Asm& o, const string& lo, const string& hi) {
+    string back = o.fresh();
+    if (lo != "mlo") o.copy(lo, "mlo");
+    if (hi != "mhi") o.copy(hi, "mhi");
+    o.copy(o.u(back), "dret2"); o.jump("markrange"); o.L(back);
+}
+static void dirty_routines(Asm& o) {
+    o.L("markpg"); if (DIRTYB) o.ex(BSET, {"pdirty", "pg", "k_true"}); else o.ex(ASET, {"pdirty", "pg", o.c(1)}); o.ex(ASET, {"plist", "pn", "pg"}); o.ex(ADD, {"pn", o.c(1), "pn"}); o.jind("dret");
+    o.L("markchk");
+    if (DIRTYB) o.ex(BGET, {"pdirty", "pg", "cnd"}); else { o.ex(AGET, {"pdirty", "pg", "pd"}); o.ex(NE, {"pd", "x0", "cnd"}); }
+    o.jif("cnd", "markpg"); o.jind("dret");
+    if (!DIRTYB) {
+        o.L("markchk2"); o.ex(AGET, {"pdirty", "pg", "pd"}); o.ex(EQ, {"pd", o.c(2), "cnd"}); o.jif("cnd", "markpg2"); o.jind("dret");
+        o.L("markpg2"); o.ex(AGET, {"pdirty", "pg", "pd"}); o.ex(EQ, {"pd", "x0", "cnd"}); o.jif("cnd", "mp2_set");
+        o.ex(ASET, {"plist", "pn", "pg"}); o.ex(ADD, {"pn", o.c(1), "pn"});
+        o.L("mp2_set"); o.ex(ASET, {"pdirty", "pg", o.c(2)}); o.ex(ADD, {"pg", o.c(1), "pg"});
+        o.ex(LT, {"pg", o.c(NPAGES), "cnd"}); o.jif("cnd", "mp2_done");
+        o.ex(AGET, {"pdirty", "pg", "pd"}); o.ex(NE, {"pd", "x0", "cnd"}); o.jif("cnd", "markpg");
+        o.L("mp2_done"); o.jind("dret");
+    }
+    o.L("markrange"); o.ex(SHR, {"mlo", o.c(12), "mp"}); o.ex(SHR, {"mhi", o.c(12), "mq"});
+    o.L("mr_loop"); o.ex(GT, {"mp", "mq", "cnd"}); o.jif("cnd", "mr_body"); o.jind("dret2");
+    o.L("mr_body"); mark_pg(o, "mp", false); o.ex(ADD, {"mp", o.c(1), "mp"}); o.jump("mr_loop");
 }
 
 static void fsync_out(Asm& o);
@@ -347,6 +406,7 @@ static void t_amo(Asm& o, Item& it) {
     if (f5 == 3) {
         string fail = o.fresh(), done = o.fresh();
         o.ex(EQ, {"res", x(rs1), "cnd"}); o.copy(o.c(MASK), "res"); o.jif("cnd", fail);
+        if (DIRTY) mark_word(o, "idx");
         o.ex(ASET, {"mem", "idx", v});
         if (rd) o.copy("x0", x(rd));
         o.jump(done); o.L(fail);
@@ -355,6 +415,7 @@ static void t_amo(Asm& o, Item& it) {
     }
     o.ex(AGET, {"mem", "idx", "w"});
     amo_value(o, f5, v);
+    if (DIRTY) mark_word(o, "idx");
     o.ex(ASET, {"mem", "idx", "t3"});
     if (rd) o.copy("w", x(rd));
 }

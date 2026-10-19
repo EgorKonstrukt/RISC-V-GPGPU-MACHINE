@@ -93,7 +93,7 @@ static void t_float(Asm& o, const D& d, const function<string()>& fail) {
         if (!isfree(rs1)) mem_check(o, rs1, d.imm, fail());
         string idx = mem_idx(o, rs1, d.imm);
         if (d.k == K_FLOAD) { o.ex(AGET, {"mem", idx, fx(rd)}); fwrote(o); }
-        else o.ex(ASET, {"mem", idx, fx(rs2)});
+        else { mark_store(o, d, d.imm, idx, true); o.ex(ASET, {"mem", idx, fx(rs2)}); }
         return;
     }
     if (d.k == K_FMA) {

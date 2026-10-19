@@ -324,7 +324,7 @@ static void dyn_float(Asm& o, Tables& T) {
             o.ex(AGET, {"dtim", "tp", "t"}); o.ex(ADD, {"da", "t", "t"});
             o.ex(LT, {"t", c(ULIM), "cnd"}); o.jif("cnd", "ti");
             o.ex(ADD, {"t", c(MIN), "t"}); o.ex(SHR, {"t", c(2), "idx"});
-            if (store) o.ex(ASET, {"mem", "idx", fx(r)}); else { o.ex(AGET, {"mem", "idx", fx(r)}); fwrote(o); }
+            if (store) { if (DIRTY) mark_word(o, "idx"); o.ex(ASET, {"mem", "idx", fx(r)}); } else { o.ex(AGET, {"mem", "idx", fx(r)}); fwrote(o); }
             o.jump("tn");
         }
     }

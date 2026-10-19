@@ -269,12 +269,13 @@ static void interpreter(Asm& o, Tables& T) {
     o.L("store"); store_addr(); o.ex(UGET, {"sjt", "if3", "tgt"}); o.jind("tgt");
     ijt(0x23, "store");
     T.add("sjt", 8, "illegal");
-    o.L("s2"); T.lab["sjt"][2] = "s2"; o.ex(ASET, {"mem", "idx", "ib"}); o.jump("inoreg");
+    o.L("s2"); T.lab["sjt"][2] = "s2"; if (DIRTY) mark_word(o, "idx", false); o.ex(ASET, {"mem", "idx", "ib"}); o.jump("inoreg");
     for (int f3 : {0, 1}) {
         string l = "s" + to_string(f3); o.L(l); T.lab["sjt"][f3] = l;
+        if (DIRTY) mark_word(o, "idx", false);
         o.ex(AGET, {"mem", "idx", "w"}); emit_insert(o, f3 == 0 ? 8 : 16, "ib"); o.jump("inoreg");
     }
-    o.L("fsw"); store_addr(); o.ex(AGET, {"fr", "irs2", "iv"}); o.ex(ASET, {"mem", "idx", "iv"}); o.jump("inoreg");
+    o.L("fsw"); store_addr(); o.ex(AGET, {"fr", "irs2", "iv"}); if (DIRTY) mark_word(o, "idx", false); o.ex(ASET, {"mem", "idx", "iv"}); o.jump("inoreg");
     ijt(0x27, "fsw");
     fpu(o, T);
 
@@ -322,11 +323,12 @@ static void interpreter(Asm& o, Tables& T) {
     o.L("a2"); T.lab["ajt"][2] = "a2"; o.copy("w", "iv"); o.copy("ia", "res"); o.jump("iwb");
     o.L("a3"); T.lab["ajt"][3] = "a3";
     o.ex(EQ, {"res", "ia", "cnd"}); o.copy(c(MASK), "res"); o.jif("cnd", "a3f");
+    if (DIRTY) mark_word(o, "idx", false);
     o.ex(ASET, {"mem", "idx", "ib"}); o.copy("x0", "iv"); o.jump("iwb");
     o.L("a3f"); o.copy(c(1), "iv"); o.jump("iwb");
     for (int f5 : {0, 1, 4, 8, 12, 16, 20, 24, 28}) {
         string l = "a" + to_string(f5); o.L(l); T.lab["ajt"][f5] = l;
-        amo_value(o, f5, "ib"); o.ex(ASET, {"mem", "idx", "t3"}); o.copy("w", "iv"); o.jump("iwb");
+        amo_value(o, f5, "ib"); if (DIRTY) mark_word(o, "idx", false); o.ex(ASET, {"mem", "idx", "t3"}); o.copy("w", "iv"); o.jump("iwb");
     }
 
     o.L("fence"); o.ex(EQ, {"iw", c(0x0100000F), "cnd"}); o.jif("cnd", "inoreg");
@@ -468,6 +470,7 @@ static void memop(Asm& o) {
     o.ex(ADD, {"mdst", c(MIN), "dt"}); o.ex(GE, {"dt", "x0", "cnd"}); o.jif("cnd", "mo_slow");
     o.ex(ADD, {"dt", "ibytes", "t2"}); o.ex(LE, {"t2", c(RAMSIZE), "cnd"}); o.jif("cnd", "mo_slow");
     o.ex(SHR, {"dt", c(2), "didx"});
+    if (DIRTY) { o.ex(SUB, {"t2", c(1), "mhi"}); mark_range(o, "dt", "mhi"); }
     o.ex(EQ, {"inv", c(2), "cnd"}); o.jif("cnd", "mo_copy");
     o.ex(EQ, {"msrc", "x0", "cnd"}); o.jif("cnd", "mo_slow");
     o.ex(ACLEAR, {"mem", "didx", "icnt"}); o.jump("csr_done");
@@ -489,7 +492,7 @@ static void memop(Asm& o) {
     o.L("mo_wr");
     o.ex(ADD, {"mdst", "ii", "t"}); o.ex(ADD, {"t", c(MIN), "t"});
     o.ex(GE, {"t", "x0", "cnd"}); o.jif("cnd", "mo_next"); o.ex(LT, {"t", c(RAMSIZE), "cnd"}); o.jif("cnd", "mo_next");
-    o.ex(SHR, {"t", c(2), "idx"}); o.ex(ASET, {"mem", "idx", "w"});
+    o.ex(SHR, {"t", c(2), "idx"}); if (DIRTY) mark_word(o, "idx", false); o.ex(ASET, {"mem", "idx", "w"});
     o.L("mo_next"); o.ex(ADD, {"ii", c(4), "ii"}); o.jump("mo_loop");
 }
 

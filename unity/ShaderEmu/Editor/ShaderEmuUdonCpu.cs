@@ -8,7 +8,7 @@ using UnityEngine.UI;
 using VRC.Udon;
 
 // The second machine model (experiments/udon_aot): the kernel translated to Udon, its program from
-// build/udon_linux, its driver EmuUdonCpu on the control panel beside the shader machine's.
+// build/udon_linux (made with L2U_DIRTY=1), its driver EmuUdonCpu and a toggle on the control panel.
 public static partial class ShaderEmuBuilder
 {
     [MenuItem("ShaderEmu/Add the Udon machine to the open scene")]
@@ -44,52 +44,40 @@ public static partial class ShaderEmuBuilder
         EmuUdonCpu drv = Udon<EmuUdonCpu>(root);
         drv.cpu = cpu;
         drv.machine = machine;
-        drv.terminal = machine.terminal;
-        drv.consoleKeyboard = machine.consoleKeyboard;
         drv.ramLanes = new Texture2D[] { machine.imageTextures[0], machine.imageTextures[1], machine.imageTextures[2], machine.imageTextures[3] };
         drv.romLanes = new Texture2D[] { machine.imageTextures[4], machine.imageTextures[5], machine.imageTextures[6], machine.imageTextures[7] };
         drv.unpackMaterial = Mat("UdonAotUnpack", "ShaderEmu/UdonAotUnpack");
         drv.unpackTarget = Target("UdonAotUnpack", 2048, 2048, 0);
-        drv.stageSmall = Stage("UdonAotStage64", 64);
-        drv.stageLarge = Stage("UdonAotStage256", 256);
-        drv.packMaterial = Mat("UdonAotPack", "ShaderEmu/UdonAotPack");
-        drv.udonState = StateTexture("UdonAotState", 2048, 256);
-        drv.displayMaterial = Mat("UdonAotDisplay", "ShaderEmu/Display");
-        drv.displayMaterial.CopyPropertiesFromMaterial(machine.displayMaterial);
-        drv.displayMaterial.SetFloat("_StateRow", -(0x700000 / 2048));   // the gathered copy's row 0 is 0x87000000
-        EditorUtility.SetDirty(drv.displayMaterial);
-        drv.soundStage = Stage("UdonAotSoundStage", 64);
-        drv.soundState = StateTexture("UdonAotSoundState", 2048, 64);
-        drv.soundControl = Mat("UdonAotSoundControl", "ShaderEmu/Sound");
-        drv.gpuState = StateTexture("UdonAotGpuState", 2048, 1024);
-        drv.gpuPackMaterial = Mat("UdonAotGpuPack", "ShaderEmu/UdonAotPack");
-        drv.gpuPackMaterial.SetFloat("_Keep", 1);
-        EditorUtility.SetDirty(drv.gpuPackMaterial);
-        drv.gpuBackMaterial = Mat("UdonAotGpuBack", "ShaderEmu/UdonAotGpuBack");
-        RenderTexture gpuTarget = machine.gpuCamera.targetTexture;
-        drv.gpuBack = Target("UdonAotGpuBack", gpuTarget.width, gpuTarget.height, 0);
-        drv.fetchMaterial = Mat("UdonAotFetch", "ShaderEmu/UdonAotFetch");
-        drv.fetchTarget = Target("UdonAotFetch", 256, 256, 0);
+        drv.pageStages = new Texture2D[] { PageStage("UdonAotPages64", 64), PageStage("UdonAotPages256", 256), PageStage("UdonAotPages1024", 1024) };
+        drv.scatterMaterial = Mat("UdonAotScatter", "ShaderEmu/UdonAotScatter");
+        drv.wordsMaterial = Mat("UdonAotWords", "ShaderEmu/UdonAotWords");
+        drv.devWords = Target("UdonAotDevWords", 1024, 3, 0);
+        drv.fetchWords = Target("UdonAotFetchWords", 1024, 64, 0);
+        drv.copyWords = Target("UdonAotCopyWords", 1024, 2048, 0);
         foreach (string line in File.ReadAllLines(dir + "/prog.syms"))
         {
             string[] p = line.Split(' ');
             if (p[0] == "@textwords") drv.textWords = int.Parse(p[1]);
             if (p[0] == "@textsum") drv.textSum = int.Parse(p[1]);
         }
-        Button power = MakeButton(panel, "Udon CPU", "Udon CPU on", 1060, 440, 190, 80, 28, out drv.powerLabel);
-        drv.label = Label(panel, "Udon CPU status", "Udon CPU: off", 1265, 440, 400, 80, 22, TextAnchor.MiddleLeft, new Color(0.85f, 0.87f, 0.9f));
+        Button toggle = MakeButton(panel, "Udon CPU", "CPU: shader", ToggleX, ToggleY, ToggleW, ToggleH, 24, out drv.powerLabel);
+        drv.label = Label(panel, "Udon CPU status", "The shader CPU runs the machine", ToggleX + ToggleW + 15, ToggleY, StatusW, ToggleH, 19,
+                          TextAnchor.MiddleLeft, new Color(0.85f, 0.87f, 0.9f));
         Apply(drv);
-        OnClick(power, drv, "Power");
+        OnClick(toggle, drv, "ToggleCpu");
         RetroNewPanels();
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(machine.gameObject.scene);
         Debug.Log("[ShaderEmu] Udon machine added: " + program.SerializedProgramAsset.GetSerializedProgramSize() + " bytes of program");
     }
 
-    // A word a pixel, 8192 a row: one row of the state texture's texels
-    static Texture2D Stage(string name, int rows)
+    // where the toggle between the processors sits on the control panel
+    const float ToggleX = 1060, ToggleY = 14, ToggleW = 190, ToggleH = 60, StatusW = 395;   // the title row's right, free
+
+    // A page a row (1,024 words, a word a pixel) under a row of page numbers
+    static Texture2D PageStage(string name, int rows)
     {
-        Texture2D t = LoadOrCreate(Generated + "/" + name + ".asset", () => new Texture2D(8192, rows, TextureFormat.RGBA32, false, true));
+        Texture2D t = LoadOrCreate(Generated + "/" + name + ".asset", () => new Texture2D(1024, rows, TextureFormat.RGBA32, false, true));
         t.filterMode = FilterMode.Point;
         t.wrapMode = TextureWrapMode.Clamp;
         EditorUtility.SetDirty(t);

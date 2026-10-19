@@ -96,6 +96,83 @@ struct Item {
     vector<pair<int, i64>> hoist;       // checks made before this item: register, first offset
 };
 
+static bool XFACTS = true, XCALLS = false;   // L2U_XCALLS=1: calls are edges too                  // L2U_XFACTS=0: none
+struct MarkPlan { bool on = false, skip = false; i64 lo = 0, hi = 0; };   // a block's stores marked once a group
+static MarkPlan MP;
+static int MCOUNT = 0;                      // L2U_MCOUNT=1: count inline stores (scnt) and marks run (mcnt); 2: each mark site (profm)
+static vector<string> MSITES;
+static i64 CURPC = 0;                       // the word being emitted
+static i64 MARKHOT = 20000;                 // L2U_MARKHOT=N: stores run fewer times than N mark through markchk
+static int store_width(const D& d) { return d.k == K_FSTORE || d.f3 == 2 ? 4 : d.f3 == 1 ? 2 : 1; }
+// pages known marked: key (a register, -1 the image, -2 - page a constant page) -> its bytes lo..hi (span < 4096);
+// src: the block entry's key the fact comes from unchanged, 0 when marked since
+struct MF { i64 lo, hi, src; bool operator==(const MF& b) const { return lo == b.lo && hi == b.hi; } };
+typedef map<i64, MF> MFact;
+static unordered_map<i64, MFact> MINF;      // what is marked on entry to an inline block: edges that lack it mark it first
+static bool MXF = true;                      // L2U_MXF=0: no marks known across blocks
+static const MFact* MCUR = nullptr;          // what is marked at the edge being emitted
+static i64 mkey(const Item& a, i64& X) {
+    if (a.d.k == K_FSTORE) { X = a.d.imm; return a.d.rs1 ? a.d.rs1 : -100; }
+    if (a.d.k != K_STORE) return -100;
+    if (a.mode == M_FREE || a.mode == M_CHECK) { X = a.d.imm; return a.d.rs1; }
+    if (a.mode == M_UD) { X = a.addr; return -1; }
+    if (a.mode == M_CONST) { X = a.addr; return -2 - ((a.addr - RAM) >> 12); }
+    return -100;
+}
+static bool mcovers(const MFact& f, const MFact& need) {
+    for (auto& kv : need) { auto g = f.find(kv.first); if (g == f.end() || g->second.lo > kv.second.lo || g->second.hi < kv.second.hi) return false; }
+    return true;
+}
+static void mmeet(MFact& a, const MFact& b) {
+    for (auto it = a.begin(); it != a.end();) {
+        auto f = b.find(it->first);
+        if (f != b.end()) { it->second.lo = max(it->second.lo, f->second.lo); it->second.hi = min(it->second.hi, f->second.hi); }
+        if (f == b.end() || it->second.lo > it->second.hi) it = a.erase(it); else ++it;
+    }
+}
+struct MOut { vector<pair<i64, MFact>> edges; set<i64> used; };
+// a block's marks from what is marked on entry (F, left as at the end): a store not covered marks the span of the
+// stores through its base until that is written, and is known marked after
+static void mark_plan(const vector<Item>& items, MFact& F, vector<MarkPlan>& plan, MOut* out) {
+    plan.assign(items.size(), MarkPlan());
+    for (size_t j = 0; j < items.size(); j++) {
+        const Item& a = items[j]; i64 X, kj = mkey(a, X);
+        if (kj != -100) {
+            i64 h0 = X + store_width(a.d) - 1; auto f = F.find(kj);
+            if (f != F.end() && f->second.lo <= X && h0 <= f->second.hi) { plan[j].on = plan[j].skip = true; if (out && f->second.src) out->used.insert(f->second.src); }
+            else {
+                i64 lo = X, hi = h0;
+                for (size_t k = j + 1; k < items.size(); k++) {
+                    if (kj > 0 && writes_of(items[k - 1].d) == kj) break;
+                    i64 Y; if (mkey(items[k], Y) != kj) continue;
+                    i64 l2 = min(lo, Y), h2 = max(hi, Y + store_width(items[k].d) - 1);
+                    if (h2 - l2 < 4096) { lo = l2; hi = h2; }
+                }
+                plan[j].on = true; plan[j].lo = lo; plan[j].hi = hi; F[kj] = {lo, hi, 0};
+            }
+        }
+        const D& d = a.d; int rd = writes_of(d);
+        if (rd) {
+            auto f = F.find(d.rs1);
+            if (a.form == K_OPIMM && d.f3 == 0 && d.rs1 && !a.dead && !a.hasKA && f != F.end()) { MF m = f->second; m.lo -= d.imm; m.hi -= d.imm; F[rd] = m; }
+            else F.erase(rd);
+        }
+        if (out && (d.k == K_BRANCH || (d.k == K_JAL && (!d.rd || XCALLS)))) out->edges.push_back({(a.pc + d.imm) & MASK, F});
+    }
+}
+// marks the pages of facts, clamped to mem: a register here need not point into RAM
+static void mark_facts(Asm& o, const MFact& f) {
+    for (auto& kv : f) for (i64 X : {kv.second.lo, kv.second.hi}) {
+        i64 k = kv.first;
+        if (X == kv.second.hi && (X == kv.second.lo || k <= -2)) continue;
+        if (k <= -2) o.copy(o.c((X - RAM) >> 12), "pg");
+        else {
+            o.ex(ADD, {k == -1 ? string("udo") : x((int)k), o.c(k == -1 ? X : X + MIN), "mt"});
+            o.ex(SHR, {"mt", o.c(12), "pg"}); o.ex(CLAMP, {"pg", "x0", o.c(NPAGES - 1), "pg"});
+        }
+        string back = o.fresh(); o.copy(o.u(back), "dret"); o.jump("markchk"); o.L(back);
+    }
+}
 struct Stats { long translated = 0, interp = 0, unchecked = 0, checked_mem = 0, const_mem = 0, folded = 0, dead = 0, blocks = 0,
                unreachable = 0, hoisted = 0, jalr_shared = 0, cold = 0, routines = 0; };
 
@@ -137,7 +214,6 @@ static void track_write(Item& it) {
 }
 
 static unordered_map<i64, uint32_t> INF;   // registers known RAM pointers on every direct edge into an inline block
-static bool XFACTS = true, XCALLS = false;   // L2U_XCALLS=1: calls are edges too                  // L2U_XFACTS=0: none
 typedef vector<pair<i64, uint32_t>> Edges;
 static uint32_t ram_mask(const unordered_map<int, i64>& ram) { uint32_t m = 0; for (auto& kv : ram) if (kv.first > 0 && !isfree(kv.first)) m |= 1u << kv.first; return m; }
 static unordered_map<i64, int> CH;         // what a block's entry charges: its length and its prepaid successors' most
@@ -146,10 +222,19 @@ static bool PREPAY = true;                  // L2U_PREPAY=0: a header in every b
 static map<string, vector<int32_t>> PROFILE;               // L2U_HOT=DIR: runs of each word by segment, from a PROF build
 static unordered_map<i64, vector<i64>> RETS;   // a return's likeliest return sites, by the profile
 static int RETP = 0;                            // L2U_RETP=N: compare that many before the table (no gain measured)
-static bool has_q(i64 t) { auto f = INF.find(t); return (f != INF.end() && f->second) || PRE.count(t); }
+static bool has_q(i64 t) { auto f = INF.find(t); auto m = MINF.find(t); return (f != INF.end() && f->second) || PRE.count(t) || (m != MINF.end() && !m->second.empty()); }
 static string qlab(i64 t) { return has_q(t) ? S->lab("q", t) : S->lab("p", t); }
 static string target(Asm& o, i64 t);
-static string tq(Asm& o, i64 t) { return has_q(t) ? S->lab("q", t) : target(o, t); }
+static string tq(Asm& o, i64 t) {
+    if (!has_q(t)) return target(o, t);
+    auto m = MINF.find(t); string q = S->lab("q", t);
+    if (m == MINF.end() || m->second.empty() || (MCUR && mcovers(*MCUR, m->second))) return q;
+    MFact miss = m->second;                  // an edge that lacks what the block counts on marks it first
+    if (MCUR) for (auto it = miss.begin(); it != miss.end();) { MFact one{*it}; if (mcovers(*MCUR, one)) it = miss.erase(it); else ++it; }
+    string lab = o.fresh();
+    o.later.push_back([&o, lab, miss, q]() { o.L(lab); mark_facts(o, miss); o.jump(q); });
+    return lab;
+}
 
 static void scan_block(Asm& o, const vector<D>& ds, int i0, int iend, int i1, vector<Item>& items, Stats& stats, Edges* edges) {
     unordered_map<int, i64> known; unordered_map<int, i64> ram;   // ram: checked, moved by at most that since
@@ -227,11 +312,13 @@ static void emit_block(Asm& o, const vector<D>& ds, int i0, int i1, const unorde
     if (has_q(pc0)) {                          // a dynamic entry pays and checks what direct edges bring
         uint32_t m = INF.count(pc0) ? INF[pc0] : 0; Seg* seg = S; string pl = S->lab("p", pc0), ql = qlab(pc0);
         int pay = PRE.count(pc0) ? CH[pc0] : 0;
-        o.later.push_back([&o, m, seg, pl, ql, pc0, pay]() {
+        MFact mf = MINF.count(pc0) ? MINF[pc0] : MFact();
+        o.later.push_back([&o, m, seg, pl, ql, pc0, pay, mf]() {
             Seg* s0 = S; S = seg; MState st; MState* st0 = ST; ST = &st;
             o.L(pl); if (pay) o.ex(SUB, {"gleft", o.c(pay), "gleft"});
             string fail = m ? thr_at(o, pc0) : "";
             for (int r = 1; r < 32; r++) if (m >> r & 1) mem_check(o, r, 0, fail);
+            mark_facts(o, mf);
             o.jump(ql); ST = st0; S = s0;
         });
     }
@@ -266,7 +353,16 @@ static void emit_block(Asm& o, const vector<D>& ds, int i0, int i1, const unorde
     if (checked.count(pc0)) { o.ex(GT, {"gleft", "x0", "cnd"}); o.jif("cnd", halt_label(o, pc0)); }
     if (MIX) mix_add("inl:hdr", mix_count(pc0), scan_ops(o.code, h0, o.code.size()), pc0);
     MState st; ST = &st;
+    vector<MarkPlan> plan(items.size());
+    MFact F; MOut mo;
+    if (DIRTY) { auto mi = MINF.find(pc0); if (mi != MINF.end()) F = mi->second; mark_plan(items, F, plan, &mo); }
+    size_t ei = 0;
+    size_t ji = 0;
+    auto pf = PROFILE.find(S->name.empty() ? "kernel" : S->name);
     for (auto& it : items) {
+        MP = plan[ji++];
+        { i64 w = (it.pc - S->lo) / 4; MFAST = pf == PROFILE.end() || w >= (i64)pf->second.size() || (u32)pf->second[w] >= (u32)MARKHOT;
+          CURPC = it.pc; }
         int ix = (int)((it.pc - S->lo) / 4);
         if (it.pc != pc0) o.pcpos[ix] = max(o.pcpos[ix], (u32)o.code.size());
         stats.translated++;
@@ -276,10 +372,13 @@ static void emit_block(Asm& o, const vector<D>& ds, int i0, int i1, const unorde
             for (auto& h : it.hoist) mem_check(o, h.first, h.second, fail);
         }
         size_t q1 = o.code.size();
+        bool edge = DIRTY && (it.d.k == K_BRANCH || (it.d.k == K_JAL && (!it.d.rd || XCALLS)));
+        if (edge) MCUR = &mo.edges[ei++].second;
         if (!it.dead) {
             if (it.form == F_CONST) { if (it.d.rd) o.copy(o.c(it.value), x(it.d.rd)); }
             else t_insn(o, it);
         }
+        MCUR = nullptr;
         if (MIX) {
             double n = mix_count(it.pc);
             mix_add("inl:check", n, scan_ops(o.code, q0, q1));
@@ -290,8 +389,14 @@ static void emit_block(Asm& o, const vector<D>& ds, int i0, int i1, const unorde
         }
         if (writes_of(it.d)) track_write(it);
     }
+    MP = MarkPlan(); MFAST = true;
     ST = nullptr;
-    if (!next_follows && iend == i1 && !ends_block(ds[iend - 1])) o.jump(tq(o, S->lo + 4 * (i64)i1));
+    if (iend == i1 && !ends_block(ds[iend - 1])) {
+        i64 nx = S->lo + 4 * (i64)i1; MCUR = &F;
+        if (!next_follows) o.jump(tq(o, nx));
+        else { auto m = MINF.find(nx); if (m != MINF.end() && !mcovers(F, m->second)) o.jump(tq(o, nx)); }
+        MCUR = nullptr;
+    }
 }
 
 static void emit_text(Asm& o, const vector<D>& ds, const unordered_set<i64>& checked, Stats& stats, vector<int>& tk) {
@@ -332,7 +437,7 @@ static void emit_text(Asm& o, const vector<D>& ds, const unordered_set<i64>& che
             for (int k = 0; k < (int)c.size() && k < RETP; k++) RETS[pc].push_back(c[k].second);
         }
     }
-    INF.clear(); CH.clear(); PRE.clear();
+    INF.clear(); CH.clear(); PRE.clear(); MINF.clear();
     if (XFACTS || PREPAY) {                // must-dataflow of RAM pointers over direct edges, by a worklist from a start down
         unordered_map<i64, int> at; Stats dummy;
         for (size_t bi = 0; bi < starts.size(); bi++) if (inl(bi) && ds[starts[bi]].k != K_INTERP) at[S->lo + 4 * (i64)starts[bi]] = (int)bi;
@@ -398,6 +503,48 @@ static void emit_text(Asm& o, const vector<D>& ds, const unordered_set<i64>& che
         }
         for (auto& kv : start) kv.second = INF[kv.first] & need[kv.first];
         if (XFACTS) solve(start);
+        if (DIRTY && MXF) {                // what is marked on entry: the meet of direct edges, a loop head's of its back edges
+            vector<i64> order; for (auto& kv : at) order.push_back(kv.first);
+            sort(order.begin(), order.end());
+            unordered_map<i64, map<i64, MFact>> ein; unordered_map<i64, MOut> outs;
+            for (int round = 0; round < 8; round++) {
+                bool ch = false;
+                for (i64 b : order) {
+                    if (start.count(b)) {
+                        MFact m; bool first = true;
+                        for (auto& pe : ein[b]) {
+                            if (checked.count(b) && pe.first < b) continue;
+                            if (first) { m = pe.second; first = false; } else mmeet(m, pe.second);
+                        }
+                        for (auto& kv : m) kv.second.src = kv.first;
+                        if (!(m == MINF[b])) { MINF[b] = m; ch = true; }
+                    }
+                    int i0, iend, i1; bounds(b, i0, iend, i1);
+                    vector<Item> items; scan_block(o, ds, i0, iend, i1, items, dummy, nullptr);
+                    MFact F = MINF[b]; vector<MarkPlan> plan; MOut out; mark_plan(items, F, plan, &out);
+                    if (iend == i1 && !ends_block(ds[iend - 1])) out.edges.push_back({S->lo + 4 * (i64)i1, F});
+                    map<i64, MFact> mine;
+                    for (auto& e : out.edges) { if (!start.count(e.first)) continue; auto f = mine.find(e.first); if (f == mine.end()) mine[e.first] = e.second; else mmeet(f->second, e.second); }
+                    for (auto& kv : mine) ein[kv.first][b] = kv.second;
+                    outs[b] = move(out);
+                }
+                if (!ch) break;
+            }
+            unordered_map<i64, set<i64>> useful;   // facts kept: those covering a store here or one a successor counts on
+            for (i64 b : order) useful[b] = outs[b].used;
+            for (bool ch = true; ch;) {
+                ch = false;
+                for (i64 b : order) for (auto& e : outs[b].edges) {
+                    auto u = useful.find(e.first); if (u == useful.end()) continue;
+                    for (auto& kv : e.second) if (kv.second.src && u->second.count(kv.first) && !useful[b].count(kv.second.src)) { useful[b].insert(kv.second.src); ch = true; }
+                }
+            }
+            for (auto it = MINF.begin(); it != MINF.end();) {
+                auto& u = useful[it->first];
+                for (auto f = it->second.begin(); f != it->second.end();) if (u.count(f->first)) ++f; else f = it->second.erase(f);
+                if (it->second.empty()) it = MINF.erase(it); else ++it;
+            }
+        }
     }
     for (size_t bi = 0; bi < starts.size(); bi++) {
         int i1 = bi + 1 < starts.size() ? starts[bi + 1] : (int)ds.size();
@@ -484,6 +631,27 @@ static string mem_idx(Asm& o, int r, i64 imm) {       // a variable holding (x_r
     return v;
 }
 
+// marks the pages the store (or its group, MP) writes; a: its word index (word) or mem byte offset, for offset ref
+static void mark_store(Asm& o, const D& d, i64 ref, const string& a, bool word) {
+    if (DIRTY && MCOUNT && MP.on) o.ex(ADD, {"scnt", o.c(1), "scnt"});
+    if (!DIRTY || (MP.on && MP.skip)) return;
+    i64 lo = MP.on ? MP.lo : ref, hi = MP.on ? MP.hi : ref + store_width(d) - 1;
+    bool one = word ? ((lo - ref) >> 2) == ((hi - ref) >> 2) : hi - lo < store_width(d), pair = !one && !DIRTYB && (PAIR == 1 || (PAIR == 2 && d.rs1 == 2));
+    auto at = [&](i64 X) {
+        i64 dl = word ? (X - ref) >> 2 : X - ref;
+        string v = a; if (dl) { o.ex(ADD, {a, o.c(dl), "mt"}); v = "mt"; }
+        if (MCOUNT) o.ex(ADD, {"mcnt", o.c(1), "mcnt"});
+        if (MCOUNT == 2) {
+            i64 id = (i64)MSITES.size();
+            MSITES.push_back(fmt("%s %llx r%d %lld %lld %d %d", S->name.empty() ? "kernel" : S->name.c_str(), (unsigned long long)CURPC, d.rs1, (long long)lo, (long long)hi, (int)pair, (int)(X == hi)));
+            o.ex(AGET, {"profm", o.c(id), "scnt"}); o.ex(ADD, {"scnt", o.c(1), "scnt"}); o.ex(ASET, {"profm", o.c(id), "scnt"});
+        }
+        if (word) mark_word(o, v, true, pair); else mark_byte(o, v, true, pair);
+    };
+    at(lo);
+    if (!one && !pair) at(hi);
+}
+
 static void t_mem(Asm& o, Item& it) {
     D& d = it.d; Mode mode = it.mode;
     K k = d.k; int f3 = d.f3, rd = d.rd;
@@ -493,7 +661,10 @@ static void t_mem(Asm& o, Item& it) {
         if (mode == M_CONST) t = o.c(it.addr - RAM);
         else if (mode == M_UD) { o.ex(ADD, {"udo", o.c(it.addr), "t"}); t = "t"; }
         else { if (mode == M_CHECK) mem_check(o, d.rs1, d.imm, thr_at(o, it.pc)); t = mem_off(o, d.rs1, d.imm); }
-        if (k == K_STORE) { o.ex(ASET, {"hw", o.c(1), it.B}); o.ex(BLOCKCOPY, {"hw", o.c(4), "mem", t, o.c(2)}); return; }
+        if (k == K_STORE) {
+            mark_store(o, d, mode == M_UD || mode == M_CONST ? it.addr : d.imm, t, false);
+            o.ex(ASET, {"hw", o.c(1), it.B}); o.ex(BLOCKCOPY, {"hw", o.c(4), "mem", t, o.c(2)}); return;
+        }
         string r = x(rd);
         if (f3 == 5) { o.ex(BLOCKCOPY, {"mem", t, "hw", o.c(0), o.c(2)}); o.ex(AGET, {"hw", o.c(0), r}); }
         else { o.ex(BLOCKCOPY, {"mem", t, "hw", o.c(10), o.c(2)}); o.ex(AGET, {"hw", o.c(2), r}); o.ex(SHR, {r, o.c(16), r}); }
@@ -531,6 +702,7 @@ static void t_mem(Asm& o, Item& it) {
         return;
     }
     string v = it.B;
+    mark_store(o, d, mode == M_UD || mode == M_CONST ? it.addr : d.imm, f3 == 2 ? idx : t, f3 == 2);
     if (f3 == 2) o.ex(ASET, {"mem", idx, v});
     else if (f3 == 0) { o.ex(AND, {v, o.c(255), "t2"}); o.ex(TOB, {"t2", "bt"}); o.ex(SETB, {"mem", t, "bt"}); }
     else { if (idx != "idx") o.copy(idx, "idx"); o.ex(AGET, {"mem", "idx", "w"}); emit_insert(o, 16, v); }

@@ -133,7 +133,7 @@ static string troutine(Asm& o, const D& d, i64 pc, i64& imm) {
         o.ex(AGET, {"ttim", "tp", "t"}); o.ex(ADD, {x(rs1), "t", "t"});
         if (!isfree(rs1)) { o.ex(LT, {"t", S->user ? o.c(ULIM) : "x0", "cnd"}); o.jif("cnd", rl); }
         o.ex(ADD, {"t", o.c(MIN), "t2"}); o.ex(SHR, {"t2", o.c(2), "idx"});
-        if (k == K_FLOAD) { o.ex(AGET, {"mem", "idx", fx(rd)}); fwrote(o); } else o.ex(ASET, {"mem", "idx", fx(rs2)});
+        if (k == K_FLOAD) { o.ex(AGET, {"mem", "idx", fx(rd)}); fwrote(o); } else { if (DIRTY) mark_word(o, "idx"); o.ex(ASET, {"mem", "idx", fx(rs2)}); }
         o.jump("tn");
         if (k == K_FLOAD && !o.labels.count(rl)) { o.L(rl); rom_word(o, "ti"); o.copy("w", fx(rd)); fwrote(o); o.jump("tn"); }
         break;
