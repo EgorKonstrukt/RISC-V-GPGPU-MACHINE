@@ -4,9 +4,9 @@
 the compute shader `experiments/rv32_min/rv32_min_fast.hlsl`: every draw of it one file with no
 includes.
 
-- `tick.hlsl` (818 lines): the tick, every core of the machine. Its vertex, geometry and fragment
+- `tick.hlsl` (860 lines): the tick, every core of the machine. Its vertex, geometry and fragment
   shaders, and with `TICK_UNPACK` the pass that copies its eight targets into the state.
-- `commit.hlsl` (345 lines): the commit. The state rows, the bands of RAM something other than a
+- `commit.hlsl` (367 lines): the commit. The state rows, the bands of RAM something other than a
   core changed (the GPU device's picture copied back, its control words, the host's zap), the
   cores' stores as points (`COMMIT_POINTS`, `commit_geom`), and the copy of those into the other
   buffer (`COMMIT_COPY`); at `_Init` RAM from the image.
@@ -108,6 +108,45 @@ instruction costs more than the wait it saves. Nor does the frame's length: 16,3
 frame (`--ticks`), two rounds both always run and three with two (`--tick-rounds 3 --tick-split 2`)
 left the machine at the same 8.0 to 8.4 million instructions a second in Quake (13.85, 12.95 and
 13.37 ms); only nxray, whose first core waits for its workers, was faster (39.5, 39.2 and 28.4 ms).
+
+### To `rvc_opt`'s speed (19 October 2026)
+
+After the merge `rvc_opt` was 11 to 12% ahead on what stores (`gzip`, a shell loop, the games) and
+level on `factor`. Not its RAM in one texture (`rvc_opt --ping-pong` was as far ahead on `gzip`), nor
+its commit (`rvc_opt`'s under this tick was no faster): the tick. Each change below against the one
+before and `rvc_opt` in the same round, twice, kept when it was ahead on every load:
+
+- **A store as `rvc_opt`'s** (`ram_store`): the tables one after another, a table's bucket worked out
+  only when the one before is full, and a whole word into a texel the cache has written without
+  reading it. 2 to 3%.
+- **No `?:` round a texture read**: the fetch's `t == fw_t + 1 ? fw1 : TEX(...)` read the texel
+  whichever side was taken (HLSL evaluates both). An `if`: 2% on stores, the same on Quake.
+- **`flw` and `fsw` the floats'**, not the integer load's and store's: an integer store read a float
+  register for nothing. 2%.
+- **The picture copied back drawn by rows** (`commit.hlsl`): the plain draw made whole 4 MB bands for
+  the GPU's copy, the last commit's copy and their bands 32 and 64 on, and the control words' band;
+  now the copy's rows, this commit's and the last's (core 0's texel 39.x), and the control pass's row.
+  Quake 11.42 to 10.65 ms.
+- **No test of the fetch window**: a jump within the texel reads it again, as `rvc_opt` does. 0.5 to
+  1%. And the general step takes the word the fast loop fetched (`pre_w`), 0.6% on Quake.
+
+Not kept: the loads as `rvc_opt`'s (the tables one after another, the texel last found absent
+remembered: `gzip` 4.6% slower), M by its kind (the same), `fmadd` and its kin in the fast loop
+(Quake 1.7% slower), and the commit's points out early for a bucket past the largest cache (the
+same). Where it is now, in the last round (ms, s; `rvc_opt` first):
+
+| | `rvc_opt` | `rvc_lean` |
+|---|---|---|
+| Quake, timedemo demo1 | 10.28, 10.27 | 10.56, 10.53 |
+| a shell loop of 30,000 turns, twice | 114.20, 114.46 | 116.33, 116.30 |
+| `seq 1 20000 \| gzip`, twice | 20.91, 20.94 | 21.05, 21.14 |
+| nxray, 60 pictures (the round before) | 40.9, 40.7 | 40.8, 40.9 |
+| Red Alert's battle (two rounds before) | 20.46, 19.55 | 19.63, 19.61 |
+| Doom's timedemo (two rounds before) | 14.79, 14.79 | 14.97, 14.98 |
+
+Red Alert's 300 frames end in the same state (`ea72a5d1`), `fptest` 0 of 15 wrong, `mctest 255
+30000` PASS with 0 pages brought, and `nxweb`'s pixel check of `web-long.html` the same as
+`rvc_opt`'s.
 
 ## Rounds a frame (`--tick-rounds`, `--tick-split`)
 

@@ -26,6 +26,7 @@ uniform uint _ZapKind, _ZapX, _ZapY, _ZapR, _ZapWord, _ZapMaskLo, _ZapMaskHi, _Z
 #define STATE_TEX_HEIGHT 9280u   // the state texture's rows: 64 of state, then RAM to 0x92000000
 #endif
 #define RAM_TEXELS (2048u * (STATE_TEX_HEIGHT - 64u))
+#define CTRL_ROW (64u + 0x700000u / 2048u)   // the control words' row (0x87000000), the control pass's
 #define L1_AT 44
 #define FP_AT 492
 #ifndef CORE0_BITS
@@ -215,8 +216,19 @@ uint4 zap(uint2 pos, uint4 r) {
     uint seed = zap_hash(pos.x + pos.y * 2048u + _ZapSeed * 0x9e3779b9u);
     return r ^ (uint4(zap_hash(seed), zap_hash(seed + 1), zap_hash(seed + 2), zap_hash(seed + 3)) & mask);
 }
-// the bands the plain draw makes whole: all at _Init, else what the GPU and the host change
-uint bands() { return _Init ? 0xffffffff : copy_bands() | zap_bands(); }
+// the bands the plain draw makes whole: all at _Init, else what the host changes
+uint bands() { return _Init ? 0xffffffff : zap_bands(); }
+// the rows of the texture the GPU's picture copied back covers, first | last << 16 (0: none); the
+// plain draw makes those rows of this commit's and the last one's (core 0's texel 39.x), not their bands
+uint copy_rows() {
+    uint4 c = ram(GPU_COPY), d = ram(GPU_DISPLAY);
+    if (c.r == 0 || _Init) return 0;
+    uint first = (c.r & SUBMIT_INTO) ? c.g & 0x7ffffffc : GPU_PIXELS * 16;
+    uint bytes = (c.r & SUBMIT_INTO) ? max(c.a, c.b & 0xffff) * (c.b >> 16) * 4 : d.g * d.b * 4;
+    if (bytes == 0 || first >= RAM_TEXELS * 16) return 0;
+    uint last = min(first + bytes - 1, RAM_TEXELS * 16 - 1);
+    return (64 + (first >> 15)) | ((64 + (last >> 15)) << 16);
+}
 
 struct v2f { float4 vertex : SV_POSITION; nointerpolation uint core : TEXCOORD0; };
 v2f commit_vert(uint id : SV_VertexID) {
@@ -231,7 +243,16 @@ v2f commit_vert(uint id : SV_VertexID) {
     _SelfTexture2D.GetDimensions(size.x, size.y);
     float top = q == 0 ? 0.0 : 64.0 + (q - 1) * 128.0, rows = q == 0 ? 64.0 : 128.0;
     core = 0;
-    bool on = q == 0 || (((bands() | TEX(uint2(41, 0)).z) >> ((q - 1) & 31)) & 1) != 0 || (q - 1 < 32 && ((_CommitAlways >> (q - 1)) & 1) != 0);
+    bool on = q == 0 || (((bands() | TEX(uint2(41, 0)).z) >> ((q - 1) & 31)) & 1) != 0;
+    // a band otherwise only of the picture copy (this commit's and the last's) and the control words
+    // (_CommitAlways: the control pass's row, CTRL_ROW): those rows of it, not all 128
+    uint now = copy_rows(), was = TEX(uint2(39, 0)).x, ctrl = q - 1 < 32 && ((_CommitAlways >> (q - 1)) & 1) != 0 ? CTRL_ROW | CTRL_ROW << 16 : 0;
+    [branch] if (!on && (now | was | ctrl) != 0) {
+        uint lo = min(min(now != 0 ? now & 0xffff : 0xffff, was != 0 ? was & 0xffff : 0xffff), ctrl != 0 ? CTRL_ROW : 0xffff);
+        uint hi = max(max(now >> 16, was >> 16), ctrl >> 16);
+        float a = max(top, (float)lo), b = min(top + rows, (float)hi + 1.0);
+        if (a < b) { on = true; top = a; rows = b - a; }
+    }
     float2 uv = float2(c.x, (top + c.y * rows) / size.y);
     o.vertex = on ? float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0) : float4(2.0, 2.0, 0.0, 1.0);
 #endif
@@ -323,7 +344,8 @@ uint4 frag(v2f i) : SV_Target {
             if (lin == 8) r.x = 0xffffffff;   // (a worker's store with no room is made now, and not again)
         }
         if (lin == 28) { r.z += _Init ? 0 : 1; r.x = r.x == 3 || r.x == 7 || r.x == 8 || r.x == 9 || r.x == 10 ? 0 : r.x; }
-        if (lin == 41) { r.x = 0; if (core == 0) r.z = bands(); }   // (core 0's .b: the bands of this commit, for the next)
+        if (lin == 41) { r.x = 0; if (core == 0) r.z = bands(); }
+        if (lin == 39 && core == 0) r.x = copy_rows();   // (core 0's .b: the bands of this commit, for the next)
         return r;
     }
     r = TEX(pos);
