@@ -31,6 +31,14 @@ instructions a second over the same window: all cores (core 0; the workers' are 
 | `time factor 999999999989`, twice | 0.70 s (111) | 21.45 s (7.05) | 21.26 s (7.18) | 12.52 s (12.03) | 34.73 s (4.48) | 51.85 s (0.35) |
 | `time sh -c 'seq 1 20000 \| gzip -c >/dev/null'`, twice | 1.25 s (48.7) | 22.54 s (5.35) | 25.20 s (4.81) | 13.37 s (8.75) | 31.38 s (3.88) | 448.9 s, once (0.33) |
 
+| a shell loop, `time sh -c 'i=0; while [ $i -lt 30000 ]; do i=$((i+1)); done'`, twice | 7.99 s (70.2) | 123.39 s (4.93) | 138.98 s (4.40) | 71.11 s (8.45) | 164.28 s (3.74) | not done in 600 s (0.33) |
+
+Upstream's image on the shader machine of now (`--rvc experiments\rvc_opt --payload
+rvc\_Nix\rvc\data-net`: its kernel with the MMU, its busybox) against upstream's shader, the same
+programs: to the prompt 7.4 s against 107.6, `factor 999999999989` twice 2.21 s against 51.85 (5.65
+million instructions a second against 0.35), the shell loop 126.73 s (4.83 million) against an
+estimated half hour. That busybox's `factor` is a faster one than ours, so its row is not the table's.
+
 (The shader machine's boot has geotune's passes in it, which lay out the workers on all of them:
 the 200 million a second of its workers. The compute machine has its geometry from the host.)
 
