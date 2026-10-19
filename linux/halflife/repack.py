@@ -1,4 +1,4 @@
-"""repack.py PAK OUT_DIR CACHE ENCODER: Uplink's pak0 made smaller for the machine (docs/games/halflife.md,
+"""repack.py PAK OUT_DIR CACHE ENCODER [EXTRA]: Uplink's pak0 made smaller for the machine (docs/games/halflife.md,
 "The data"), into OUT_DIR/pak0.PAK and OUT_DIR/uplink.wad:
 - a sound is the card's IMA ADPCM in its own WAV file (format 0x11, its cue chunks kept), played from
   the ROM; REPACK_SOUNDS=mp3 makes MP3 of them (format 0x55, decoded by libmedia when a level loads)
@@ -6,6 +6,7 @@
 - the maps' textures lie once in uplink.wad, one level and no mips (offsets[1] = 0);
 - 24-bit pictures are JPEG in restart intervals under their own names; the sky's BMP copies are left out;
 - maps, models and sprites are deflate in segments (libmedia's media_inflate; REPACK_SEGMENTS=0: not).
+EXTRA's files go into the pack too, under their paths in it (the menu's sounds, sound/media/).
 ENCODER is linux/classicube/sound/adpcm_encode.c built in WSL. Needs ffmpeg (for MP3) and Pillow.
 CACHE keeps what was encoded, by its input's hash."""
 import hashlib, io, os, struct, subprocess, sys, tempfile, zlib
@@ -226,6 +227,11 @@ def main():
     if CACHE:
         os.makedirs(CACHE, exist_ok=True)
     files = read_pak(src)
+    extra = sys.argv[5] if len(sys.argv) > 5 else None
+    for folder, _, names in os.walk(extra) if extra else ():
+        for n in sorted(names):
+            path = os.path.join(folder, n)
+            files.append((os.path.relpath(path, extra).replace(os.sep, '/'), open(path, 'rb').read()))
     names = {n.lower() for n, _ in files}
     files = [(n, d) for n, d in files if not (n.lower().startswith('gfx/env/') and n.lower().endswith('.bmp')
                                               and n.lower()[:-4] + '.tga' in names)]

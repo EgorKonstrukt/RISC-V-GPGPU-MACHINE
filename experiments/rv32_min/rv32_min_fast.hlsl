@@ -34,12 +34,14 @@ cbuffer Pass : register(b0) {
 #define W_JOB    404   // the job word it sleeps on
 #define W_USED   408   // core 0: instructions in this frame's passes so far
 #define W_EARLY  412   // core 0: its last pass ended before its limit (merge_list takes it)
+#define PAGES     73728                        // RAM's 4 KB pages, to 0x92000000 (288 MB)
 #define M_PAGE    0                            // Marks (bytes): a word a 4 KB page stored to in this pass,
-#define M_EXP     (32768 * 4)                  // a word a page in this frame's list, the 4 MB bands for
-#define M_HARNESS (65536 * 4)                  // the harness, the pages merge takes, a word for 32 pages
-#define M_LIST    ((65536 + 64) * 4)           // of M_PAGE that says one is marked, and this frame's
-#define M_GROUP   ((65536 + 64 + 32768) * 4)   // list of the GPU memory's pages stored to
-#define M_FRAME   ((65536 + 64 + 32768 + 1024) * 4)
+#define M_EXP     (PAGES * 4)                  // a word a page in this frame's list, the 4 MB bands for
+#define M_HARNESS (2 * PAGES * 4)              // the harness (72), the pages merge takes, a word for 72 pages
+#define M_LIST    ((2 * PAGES + 128) * 4)      // of M_PAGE that says one is marked (merge_list's thread for them),
+#define M_GROUP   ((3 * PAGES + 128) * 4)      // and this frame's list of the GPU memory's pages stored to
+#define M_FRAME   ((3 * PAGES + 128 + 1024) * 4)
+#define GPU_PAGE(k) ((k) - 24 * 1024 < 8 * 1024)   // 0x86000000 to 0x88000000: the GPU's memory, exported a page at a time
 #define MBOX     0x06C00000u   // the workers' mailbox page, in RAM (linux/kernel/shaderemu_gpu.c)
 #define MC_START 0x5553434Du
 #define MC_STOP  0x5453434Du
@@ -74,7 +76,7 @@ uint read_word(uint a) {   // a is word-aligned
 void mark(uint page) {   // (two cores store the same 1: no atomics wanted)
     marked = page;
     Marks.Store(M_PAGE + page * 4, 1);
-    Marks.Store(M_GROUP + (page >> 5) * 4, 1);
+    Marks.Store(M_GROUP + (page / 72) * 4, 1);
 }
 
 void write_word(uint a, uint v, uint m) {   // a is word-aligned; only RAM takes writes
@@ -714,11 +716,11 @@ void tick(uint3 g : SV_GroupID) {
 groupshared uint counts[1024];
 [numthreads(1024, 1, 1)]
 void merge_list(uint t : SV_GroupIndex) {
-    uint first = t * 32, mine = 0, k, frame = Args.Load(12);
+    uint first = t * 72, mine = 0, k, frame = Args.Load(12);
     bool any = Marks.Load(M_GROUP + 4 * t) != 0;
     if (any)
-        for (k = first; k < first + 32; k++)
-            if (Marks.Load(M_PAGE + 4 * k) != 0) mine += k >= 24 * 1024 && Marks.Load(M_EXP + 4 * k) == 0 ? 0x10001u : 1u;
+        for (k = first; k < first + 72; k++)
+            if (Marks.Load(M_PAGE + 4 * k) != 0) mine += GPU_PAGE(k) && Marks.Load(M_EXP + 4 * k) == 0 ? 0x10001u : 1u;
     counts[t] = mine;
     GroupMemoryBarrierWithGroupSync();
     for (uint d = 1; d < 1024; d <<= 1) {   // where this thread's pages go in the lists
@@ -730,12 +732,12 @@ void merge_list(uint t : SV_GroupIndex) {
     uint at = counts[t] - mine, fat = frame + (at >> 16);
     at &= 0xffff;
     if (any) {
-        for (k = first; k < first + 32; k++) {
+        for (k = first; k < first + 72; k++) {
             if (Marks.Load(M_PAGE + 4 * k) == 0) continue;
             Marks.Store(M_LIST + 4 * at++, k);
             Marks.Store(M_PAGE + 4 * k, 0);
             Marks.Store(M_HARNESS + 4 * (k >> 10), 1);
-            if (k < 24 * 1024 || Marks.Load(M_EXP + 4 * k) != 0) continue;   // (Linux's own go as bands)
+            if (!GPU_PAGE(k) || Marks.Load(M_EXP + 4 * k) != 0) continue;   // (Linux's own go as bands)
             Marks.Store(M_EXP + 4 * k, 1);
             Marks.Store(M_FRAME + 4 * fat++, k);
         }

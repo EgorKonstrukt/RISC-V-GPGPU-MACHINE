@@ -948,34 +948,23 @@ others(GR_EVENT *event)
 		ui_files_stop = closing = 1;
 }
 
-/* The picture shown is the desktop's from now on: the file itself, kept in the registry (the
- * desktop decodes it); one turned is a copy, which lasts until a restart. */
+/* The picture shown is the desktop's from now on: the file itself, kept in the registry with
+ * the turns it is shown with (the desktop decodes it turned so). */
 static void
 as_desktop(void)
 {
-	static const char to[] = "/tmp/nxwallpaper-view.ppm";
-	uint8_t *data;
-	uint32_t size;
-	FILE *out;
+	char turn[600];
 
 	if (kind != PPM && kind != CODED) {
 		snprintf(notice, sizeof notice, "this picture cannot be the desktop's");
 		return;
 	}
-	if (!turns) {
-		ui_wallpaper(path, 1);
+	snprintf(turn, sizeof turn, "%d:%s", turns & 3, path);
+	/* (the desktop sees the registry change and draws it; the turn first, the picture last) */
+	if (reg_set(UI_WALLPAPER_TURN, turn) && reg_set(UI_WALLPAPER_CHOICE, path))
 		snprintf(notice, sizeof notice, "it is the desktop's picture now");
-		return;
-	}
-	if (!need_pic() || !turn_pic() || !(data = media_ppm_encode(&pic, &size)))
-		return;
-	if ((out = fopen(to, "wb")) != NULL) {
-		fwrite(data, 1, size, out);
-		fclose(out);
-		ui_wallpaper(to, 1);
-		snprintf(notice, sizeof notice, "it is the desktop's picture now");
-	}
-	media_free(data, size);
+	else
+		snprintf(notice, sizeof notice, "the registry cannot be written");
 }
 
 /* Deletes the file shown, once the question is answered, and shows the folder's next. */

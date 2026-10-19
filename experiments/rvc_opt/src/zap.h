@@ -15,18 +15,17 @@ uniform uint _ZapZones;                // a bit a zone (zap_zone): only those ar
 
 // Whose a row of RAM is, as the memory screen colours it (a row is 32 KB; MemView.shader's owner()):
 // 0 the kernel, 1 Linux's programs, 2 the windows' buffers, 3 the display and the GPU's words,
-// 4 a 3D program's GPU memory, 5 the sound card's.
+// 4 a 3D program's GPU memory, 5 the sound card's; above 0x88000000 Linux's programs again.
 uint zap_zone(uint row) {
     uint megabyte = row >> 5;
-    return megabyte < 9 ? 0 : megabyte < 96 ? 1 : megabyte < 112 ? 2 : megabyte < 119 ? 3 : megabyte < 123 ? 4 : 5;
+    return megabyte < 9 ? 0 : megabyte < 96 ? 1 : megabyte < 112 ? 2 : megabyte < 119 ? 3 : megabyte < 123 ? 4 : megabyte < 128 ? 5 : 1;
 }
 
 // The 4 MB bands of RAM a zap of this commit is in, a bit each.
 uint zap_bands() {
     if (_ZapKind == 0) return 0;
     uint reach = _ZapKind == 2 ? _ZapR : 0;
-    uint lo = (_ZapY - min(_ZapY, reach)) >> 7, hi = min((_ZapY + reach) >> 7, 31u);
-    return ((2u << hi) - 1) & ~((1u << lo) - 1);
+    return ram_bands((_ZapY - min(_ZapY, reach)) >> 7, min((_ZapY + reach) >> 7, (STATE_TEX_HEIGHT - 65) >> 7));
 }
 
 uint zap_hash(uint n) {

@@ -435,6 +435,7 @@
             #include "UnityCG.cginc"
 
             float _Init, _InitRaw;
+            uniform uint _CommitAlways;   // COMMIT_BANDS: bands 0 to 31 drawn every commit (the control words' 28)
 
             Texture2D<float4> _Data_RAM_R;
             Texture2D<float4> _Data_RAM_G;
@@ -454,6 +455,22 @@
             #ifndef CORES
             #define CORES 1
             #endif
+            #ifdef RAM_INPLACE
+            // RAM in one texture (src/ram.h): the state after the tick is a texture of its own,
+            // and RAM is read only by the gather; the other two passes see the control words.
+            Texture2D<uint4> _TickState, _Stage;
+            #define STATE_SRC _TickState
+            #ifdef COMMIT_GATHER
+            Texture2D<uint4> _Ram;
+            #define RAM_TEX(pos) (_Ram[uint2(pos)])
+            #else
+            uint4 ram_stage_read(uint2 pos);
+            #define RAM_TEX(pos) ram_stage_read(uint2(pos))
+            #endif
+            #else
+            #define STATE_SRC _SelfTexture2D
+            #define RAM_TEX(pos) (_SelfTexture2D[pos])
+            #endif
             #if CORES > 1
             static uint2 state_off = uint2(0, 0);
             static uint mc_core = 0;
@@ -467,19 +484,18 @@
             // another worker's, and reads as the zeros it used to be (a control register a
             // worker never wrote).
             uint4 mc_state_read(uint2 pos) {
-                if (mc_core == 0) return _SelfTexture2D[pos + state_off];
+                if (mc_core == 0) return STATE_SRC[pos + state_off];
                 uint w = pos.y * 64 + pos.x;
                 if (w >= mc_size_now) return (uint4)0;
                 uint t = mc_tile0 + (w >> 6), i = w & 63;
-                return _SelfTexture2D[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
+                return STATE_SRC[uint2(64 + ((t % 248) << 3) + (i & 7), ((t / 248) << 3) + (i >> 3))];
             }
             #define STATE_TEX_HART(pos, hartidx) mc_state_read(uint2(pos))
             #define STATE_TEX(pos) mc_state_read(uint2(pos))
             #else
-            #define STATE_TEX_HART(pos, hartidx) (_SelfTexture2D[uint2(pos) + uint2(hartidx % 2, hartidx / 2)])
-            #define STATE_TEX(pos) (_SelfTexture2D[pos])
+            #define STATE_TEX_HART(pos, hartidx) (STATE_SRC[uint2(pos) + uint2(hartidx % 2, hartidx / 2)])
+            #define STATE_TEX(pos) (STATE_SRC[pos])
             #endif
-            #define RAM_TEX(pos) (_SelfTexture2D[pos])
 
             static uint2 s_dim;
             static uint2 m_dim;
@@ -491,19 +507,44 @@
             // The GPU device's picture, for copying into the RAM framebuffer (docs/machine/gpu.md).
             Texture2D<float4> _GpuTarget;
             #define GPU_STATE _SelfTexture2D
+            #ifndef RAM_INPLACE
             #define GPU_WRITEBACK
+            #endif
             #include "src/gpu.h"
 #endif
 
             #include "src/zap.h"
+            #ifdef RAM_INPLACE
+            #include "src/ram.h"
+            #ifdef COMMIT_GATHER
+            ram_point commit_vert(uint id : SV_VertexID) { return ram_point_vert(id); }
+            uint4 frag(ram_v2f i) : SV_Target { return ram_gather_texel(i); }
+            #elif defined(COMMIT_RAM)
+            ram_point commit_vert(uint id : SV_VertexID) { return ram_point_vert(id); }
+            uint4 frag(ram_v2f i) : SV_Target { return ram_commit_texel(i); }
+            #else
+            // the state commit: one quad of the 64 state rows
+            ram_v2f commit_vert(uint id : SV_VertexID) {
+                static const float2 corners[6] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}, {0, 0}, {1, 1}};
+                float2 p = float2(corners[id % 6].x, corners[id % 6].y * 64.0 / STATE_TEX_HEIGHT);
+                ram_v2f o;
+                o.vertex = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.5, 1.0);
+                o.value = 0;
+                o.info = 0;
+                return o;
+            }
+            uint4 frag(ram_v2f i) : SV_Target { return ram_state_texel((uint2)i.vertex.xy); }
+            #endif
+            #else
 
 #ifdef COMMIT_BANDS
 #if RAM_TILE_BITS != 0
 #error COMMIT_BANDS needs RAM in row order
 #endif
-            // RAM in 4 MB bands (128 rows), one bit each: those this commit changes. The other
+            // RAM in 4 MB bands (128 rows), as ram_bands (types.h): those this commit changes. The other
             // buffer holds the state of two commits ago, so a band neither this commit nor the
-            // last one changes is already right there and is not drawn.
+            // last one changes is already right there and is not drawn. The GPU's control words'
+            // band is drawn every commit (_CommitAlways), not through these bits.
 #if CORES > 1
             uint commit_bands_changed_core();
             // every core's writes
@@ -530,10 +571,10 @@
                 uint stalled = STATE_TEX_HART(uint2(28, 0), 0).r;
                 if (_Init) return 0xffffffff;
 #ifdef COMMIT_SCATTER
-                uint changed = 1u << 28;   // the GPU's control words; what the cores stored is drawn as points (COMMIT_POINTS)
+                uint changed = 0;   // what the cores stored is drawn as points (COMMIT_POINTS)
                 if (false) {
 #else
-                uint changed = STATE_TEX_HART(uint2(41, 0), 0).g | (1u << 28);   // the tick's writes; GPU control words
+                uint changed = STATE_TEX_HART(uint2(41, 0), 0).g;   // the tick's writes
                 if (stalled == STALL_MEMOP_COPY || stalled == STALL_MEMOP_FILL) {
 #endif
                     // a parallel copy or fill: the bands from its destination to its end
@@ -541,8 +582,7 @@
 #ifdef CSR_FIELDS
                     op.g = STATE_TEX_HART(uint2(37, 0), 0).a & 0x7fffffff;   // (no translation: types.h)
 #endif
-                    uint lo = (op.g >> 22) & 31, hi = min((op.g + op.b - 1) >> 22, 31u);
-                    if (op.b != 0 && hi >= lo) changed |= ((2u << hi) - 1) & ~((1u << lo) - 1);
+                    if (op.b != 0) changed |= ram_bands((op.g & 0x7fffffff) >> 22, min(((op.g & 0x7fffffff) + op.b - 1) >> 22, (uint)(RAM_MAX - 1) >> 22));
                 }
 #if !defined(COMMIT_SCATTER)
                 // a fill or copy the pass left to the commit (LAZY_MEMOP): its destination's bands
@@ -551,8 +591,8 @@
                 uint2 lazy_at = uint2(STATE_TEX_HART(uint2(39, 0), 0).r, STATE_TEX_HART(uint2(38, 0), 0).g);
                 for (uint which = 0; which < 2; which++) {
                     if (lazy[which] == 0) continue;
-                    uint lo2 = (lazy_at[which] >> 22) & 31, hi2 = min((lazy_at[which] + ((lazy[which] >> 2) << 4) - 1) >> 22, 31u);
-                    if (hi2 >= lo2) changed |= ((2u << hi2) - 1) & ~((1u << lo2) - 1);
+                    uint lo2 = (lazy_at[which] & 0x7fffffff) >> 22, hi2 = min(((lazy_at[which] & 0x7fffffff) + ((lazy[which] >> 2) << 4) - 1) >> 22, (uint)(RAM_MAX - 1) >> 22);
+                    changed |= ram_bands(lo2, hi2);
                 }
 #endif
 #ifdef GPU_DEVICE
@@ -563,8 +603,8 @@
             }
 #endif
 
-            // One quad for the whole texture, or with COMMIT_BANDS (33 quads) the state rows and
-            // each band of RAM that has to be drawn.
+            // One quad for the whole texture, or with COMMIT_BANDS (1 + RAM's rows / 128 quads) the
+            // state rows and each band of RAM that has to be drawn.
             // COMMIT_POINTS (the D3D11 harness with the tick in eight targets, docs/machine/multicore.md):
             // what the cores stored is drawn as points, each made the rectangle it stands for
             // by commit_geom: a texel for each entry of a bucket of a write cache and for the store
@@ -606,7 +646,7 @@
                 }
                 stream.RestartStrip();
             }
-            #define COMMIT_RAM_TEXELS (2048u * (4096u - 64u))
+            #define COMMIT_RAM_TEXELS (2048u * (STATE_TEX_HEIGHT - 64u))
             // the texels from t0 to t1, row by row
             void commit_rows(inout TriangleStream<v2f_customrendertexture> stream, uint t0, uint t1) {
                 if (t0 > t1) return;
@@ -684,8 +724,8 @@
                 uint quad = IN.vertexID / 6;
                 float2 corner = corners[IN.vertexID % 6];
                 float top = quad == 0 ? 0.0 : 64.0 + (quad - 1) * 128.0, rows = quad == 0 ? 64.0 : 128.0;
-                uint drawn = commit_bands_changed() | STATE_TEX_HART(uint2(41, 0), 0).b;
-                bool on = quad == 0 || ((drawn >> ((quad - 1) & 31)) & 1) != 0;
+                uint drawn = commit_bands_changed() | STATE_TEX_HART(uint2(41, 0), 0).b, band = quad - 1;
+                bool on = quad == 0 || ((drawn >> (band & 31)) & 1) != 0 || (band < 32 && ((_CommitAlways >> band) & 1) != 0);
                 float2 uv = float2(corner.x, (top + corner.y * rows) / _CustomRenderTextureInfo.y);
                 v2f_customrendertexture OUT;
                 OUT.vertex = on ? float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0) : float4(2.0, 2.0, 0.0, 1.0);
@@ -797,6 +837,7 @@
 #endif
                 return result;
             }
+            #endif
             ENDCG
         }
     }

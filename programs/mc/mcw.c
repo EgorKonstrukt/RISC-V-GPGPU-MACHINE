@@ -110,6 +110,8 @@ uint32_t mcw_loop(uint32_t core)
 			answer->result = fn(job->a0, job->a1);
 			answer->done = at;
 			last = at;
+			/* (looked at again first: a job posted while this one ran is no change to sleep on) */
+			continue;
 		}
 		mc_next_pass();	/* asleep until the job's first word changes */
 	}
@@ -303,7 +305,15 @@ static int claim(int want)
 	share = (int)(answer[0] & 0xfff);
 	my_tag = answer[0] >> 12;
 	if (!stacks_for(want < share ? want : share)) return 0;
-	for (k = 1; k < MC_MAX_CORES; k++) has[core_of[k]] = has[starting[k]] = 1;
+	for (k = 1; k < MC_MAX_CORES; k++) {
+		/* (a core taken while idle and handed back by this very call is parked, its mailbox
+		 * cleared: the worker that thought it had it has none, and it is started anew) */
+		if (core_of[k] && (answer[2 + core_of[k] / 32] >> (core_of[k] % 32) & 1) &&
+		    answer_of(k)->alive != (MC_ALIVE | (uint32_t)core_of[k])) core_of[k] = 0;
+		if (starting[k] && (answer[2 + starting[k] / 32] >> (starting[k] % 32) & 1) &&
+		    *(volatile uint32_t *)(page + MC_START_AT(starting[k])) != MC_START) starting[k] = 0;
+		has[core_of[k]] = has[starting[k]] = 1;
+	}
 	for (core = 1; core < MC_MAX_CORES; core++) {
 		if (!(answer[2 + core / 32] >> (core % 32) & 1)) continue;
 		n++;
@@ -361,8 +371,10 @@ static void look(int k)
 	}
 	core = core_of[k];
 	if (core) {
-		if (answer_of(k)->done != seq[k]) return;	/* at a job */
-		if (*owner_of_core(core) != my_tag) unbind(k, 0);	/* the kernel took it back */
+		/* (whose it is first: a core taken and given to another has that one's mailbox, whose
+		 * numbers say nothing of this program's jobs; the kernel takes none at a job) */
+		if (*owner_of_core(core) != my_tag) core_of[k] = 0, settled[k] = 1, lost = 1;	/* the kernel took it back */
+		else if (answer_of(k)->done != seq[k]) return;	/* at a job */
 		else if (((volatile uint32_t *)(page + MC_RECALL_AT))[core / 32] >> (core % 32) & 1) unbind(k, 1);
 	} else if (!starting[k] && *(volatile uint32_t *)(page + MC_OFFER_AT) != offer_seen) {
 		claim(count);	/* cores have come free: this program's share again */

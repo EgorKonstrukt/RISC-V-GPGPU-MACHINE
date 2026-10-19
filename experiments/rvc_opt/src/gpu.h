@@ -683,7 +683,7 @@ gpu_varyings volume_vertex(uint id, uint base, uint4 head, out float3 eye, out f
 #endif
 
 #ifdef GPU_WRITEBACK
-// The 4 MB bands of RAM the pending copy writes, one bit each.
+// The 4 MB bands of RAM the pending copy writes (ram_bands).
 uint gpu_copy_bands() {
     uint4 copy = ram(GPU_COPY);
     if (copy.r == 0) return 0;
@@ -695,8 +695,7 @@ uint gpu_copy_bands() {
         uint4 disp = ram(GPU_DISPLAY);
         bytes = disp.g * disp.b * 4;
     }
-    uint lo = (first >> 22) & 31, hi = min((first + bytes) >> 22, 31u);
-    return hi < lo ? 0 : ((2u << hi) - 1) & ~((1u << lo) - 1);
+    return ram_bands(first >> 22, min((first + bytes) >> 22, (uint)(RAM_MAX - 1) >> 22));
 }
 
 // For the Commit pass. The control pass leaves the copy a drawn list asked for in GPU_COPY; the
@@ -706,7 +705,7 @@ bool gpu_writeback(uint2 pos, out uint4 result) {
     result = 0;
     if (pos.y < 64) return false;
     uint index = (pos.y - 64) * 2048 + pos.x;
-    if (index < 0x600000u) return false;   // below anything a GPU program may own
+    if (index - 0x600000u >= 0x1e0000u) return false;   // outside what a GPU program may own (0x86000000 to 0x87e00000)
     uint4 copy = ram(GPU_COPY);
     if (copy.r == 0) return false;
     if (index == GPU_COPY) return true;    // done: result is all zeros

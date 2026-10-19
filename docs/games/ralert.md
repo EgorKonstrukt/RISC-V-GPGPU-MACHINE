@@ -266,7 +266,8 @@ to 30.9 over 1,200), the Allied one from 9.0 to 20.6 (8.7 to 21.7). Red Alert's 
   places now, entry 0 empty for the ID that is none (`ShaderEmu_Heap_Table` in `heap.cpp`,
   made again when the heap's buffer is another): 3% of every frame.
 - **A unit's path searches** keep what `Can_Enter_Cell` said, as Tiberian Dawn's do
-  (`docs/games/tdawn.md`, "A unit's path searches"; `RALERT_CHECK_ENTER=1`).
+  (`docs/games/tdawn.md`, "A unit's path searches"; `RALERT_CHECK_ENTER=1`); since 18 October
+  2026 the rest of Tiberian Dawn's helps too ("A unit's path searches" below).
 - **A scan for targets turns most objects away first for the least**
   (`TechnoClass::Evaluate_Object`): whether the object's kind is asked for and whose side it
   is on are tested before its cloak, its zone and its health. Every test only says no, so
@@ -300,7 +301,7 @@ reinforcements land (`docs/games/tdawn.md` lists what is still under 15). Not do
 Dawn's occupancy bits for Red Alert's scan (2 thousand; done since, "The scan passes empty
 cells a word at a time" above), a unit's scan or path on a worker
 core while this one waits (a waited job is two passes: a paired path search was built for
-Tiberian Dawn and gained 1%), a soldier that only moved shown from its kept rectangles
+Tiberian Dawn and gained 1%; Red Alert has it since, "A unit's path searches"), a soldier that only moved shown from its kept rectangles
 (what its `Draw_It` would draw is not known without calling it), and the logic itself on
 more than one core, which is what a battle at 15 frames a second would take.
 
@@ -428,11 +429,78 @@ and without the copies of the shake); the pictures (`TDAWN_SUMS`) of 1,500 frame
 and of 600 frames of `TDAWN_MOVE=100,8,0` in both missions the same as the build before's in
 every frame; the shapes forgotten 29 times (`RALERT_ATLAS=50`, objects drawn here, scenes from
 nothing) against never: 0 of 1,500 frames differ; the held frame 2,500 of the attack the same
-pixels before and after (`rvc_harness --cpu --warp`); `RVC_RACES`: 0 undone. Not done: a wall or
-bridge that falls makes the map's zones again (`MapClass::Zone_Reset`, 2.1 million instructions
-each, cell by cell); Red Alert's path searches have only the kept answers of Tiberian Dawn's
-five helps ("A unit's path searches"), and the shake moves nothing on the screen now (it moved
-only the page before).
+pixels before and after (`rvc_harness --cpu --warp`); `RVC_RACES`: 0 undone.
+
+A wall, bridge or tree that falls makes the map's zones again (`MapClass::Zone_Reset`), 26 times
+in the attack's first 1,500 frames: 2.19 million instructions for a bridge, a second at two
+million a second. It is 1.10 million now (18 October 2026, `map.cpp`): only the map's own cells
+begin a zone, each cell's passability is asked once a reset (`Zone_Open_Bits`), and the fill
+does not call itself for a cell it would refuse at once; the fill's order is the game's, so
+are the zones' numbers. `RALERT_CHECK_ZONES=1` fills each reset the game's way too: "26 zone
+resets checked, 0 cells of them wrongly". The state sums are as before (`520254a5` at 1,500
+frames of the attack, `dd61e2fd` and `f5b3dbae` with `RALERT_HUNT=50`); frames 100 to 1,500
+of the attack at two million a second: 127.2 s to 124.9 Allied, 93.1 to 89.9 Soviet. Not done:
+Red Alert's path searches have only the kept answers of Tiberian Dawn's
+five helps (done since: "A unit's path searches" below), and the shake moves nothing on the
+screen now (it moved only the page before).
+
+## A unit's path searches (18 October 2026)
+
+Tiberian Dawn's helps to a unit's searches (`docs/games/tdawn.md`, "A unit's path searches") are
+Red Alert's too (`findpath.cpp`), in Red Alert's order of searches: `FootClass::Basic_Path`
+searches at the unit's `PathThreshhold` and, while it finds nothing, at the next threshold up
+to `MOVE_TEMP`, where Tiberian Dawn's searches at the highest first and then at the others.
+
+- A search that met no answer between its threshold and an earlier search's is not run again:
+  that one's result is put back (`ShaderEmu_Path_Same`; only a search that found nothing is
+  kept for it, since one that found a path is the unit's last).
+- A search whose two edge walks both failed starts the unit's next thresholds on up to three
+  worker cores (`ShaderEmu_Path_Help`, `host_path_cores` in `host.c`; `TDAWN_PATH_CORES=0`:
+  none), and the next search takes its worker's result. A core's search stores only into its
+  `ShaderEmu_Core[who]` and its own kept answers (the core is in the threshold's upper bits),
+  `Cell_Threat`'s held lifting is settled before they begin, and the searches nobody asked for
+  are stopped and waited for before the unit is put down. Tiberian Dawn begins them once a walk
+  has come by 48 cells: here nearly every long search is the unit's only one, and the waits for
+  workers begun on every long search cost the first core 1.4% of the attack's frames 595 to 615.
+- The edge walk is `ShaderEmu_Walk`: `Follow_Edge` with `Register_Cell` and `Unravel_Loop` in it,
+  the path's length and cost in registers and a cell's answer read where `Passable_Cell` keeps
+  it (`RALERT_WALK=old` is the game's walk). The workers that ask every cell ahead are not Red
+  Alert's (`host.c` has none for it).
+
+`RALERT_CHECK_PATHS=1` makes every search that was put back or made by another core on the first
+core too, and every edge walk both ways, and compares: "13 searches not run again and 4 another
+core's, 0 of them wrong" and "342 edge walks made both ways, 0 of them wrong" in the attack's
+1,500 Allied frames (`tools/test_all.py`'s `ralert-paths`). The state sums are as before
+(`520254a5`, `dd61e2fd`, `f5b3dbae`), `RALERT_CHECK_ZONES=1` says 0 cells wrongly, and
+`RVC_RACES` 0 undone.
+
+It is worth little here. The attack's 1,500 frames have 157 searches on the Allied side and 76
+on the Soviet, and only 17 and 1 of them follow a search of the same unit's that found
+nothing: nearly every search finds a path at the unit's first threshold. The burst of frames 595 to 615 is twelve of those, 60 to 150 thousand instructions
+each, and most of each is the clockwise walk round the building attacked (82 to 274 cells),
+whose path is longer than the counter-clockwise one's (5 to 118 cells) and is not taken. A
+walk's path can grow shorter again (it is cut back where the walk crosses itself), so that walk
+cannot be ended early with the same result. What the workers take is the rare unit whose first
+thresholds find nothing: a vehicle's three searches in frame 428, 194, 149 and 119 thousand
+instructions, of which the first core now makes the first.
+
+`rvc_cpu --ips 2000000` with the card model, `RALERT_SEED=7 RALERT_ATTACK=100,250`, frames from
+`RALERT_MARK`; the searches are `Basic_Path` with all it calls on the first core (`RVC_PROF`):
+
+| | Before | After |
+|---|---|---|
+| Allied, frames 595 to 615: the first core | 4,902 thousand, 2.724 s | 4,810 thousand, 2.673 s |
+| its 17 searches | 1,132 thousand | 1,032 thousand |
+| Allied, frames 100 to 1,500 | 227.7 million, 124.92 s | 226.8 million, 124.55 s |
+| its 197 searches | 8.54 million | 7.58 million |
+| Soviet, frames 595 to 615 | 2,904 thousand, 1.626 s | 2,880 thousand, 1.614 s |
+| its 10 searches | 350 thousand | 331 thousand |
+| Soviet, frames 100 to 1,500 | 166.6 million, 89.99 s | 166.7 million, 90.12 s |
+| its 141 searches | 3.99 million | 3.82 million |
+
+The functions changed have no counts in `ralert.profile` now ("What the compiler is told" in
+`docs/games/tdawn.md`), and the game's walk had them: its call of `UnitClass::Can_Enter_Cell` was
+a test and that function's body. Counting a played game again would give them theirs.
 
 ## A mission won (15 October 2026)
 
@@ -514,7 +582,7 @@ own start), and as long again to a mission's first frame.
   Tiberian Dawn's switches (a scene from nothing every 256th time). `rastat:` lines say
   where a frame went. `RALERT_HUNT=N` sends everything after the enemy at frame N (the sums at
   frame 800 with `RALERT_HUNT=50`: `f5b3dbae` Soviet, `dd61e2fd` Allied), and
-  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_ATTACK`, `RALERT_ATLAS` and `RALERT_SHAKE`: "A base destroyed". `RALERT_WIN` and `TDAWN_INTERPOLATION`: "A mission won". `RALERT_FRAME_LOG`, `RALERT_MARK`,
+  `RALERT_CHECK_SCANS=1` must end with `0 of them wrongly`. `RALERT_CHECK_ZONES=1` must say `0 cells of them wrongly`, and `RALERT_CHECK_PATHS=1` `0 of them wrong` twice ("A unit's path searches", with `RALERT_WALK` and `TDAWN_PATH_CORES`). `RALERT_ATTACK`, `RALERT_ATLAS` and `RALERT_SHAKE`: "A base destroyed". `RALERT_WIN` and `TDAWN_INTERPOLATION`: "A mission won". `RALERT_FRAME_LOG`, `RALERT_MARK`,
   `RALERT_MESSAGE_GONE`, `RALERT_READY_DRAW`, `RALERT_CHECK_READY` and `RALERT_CHECK_TRIGGERS`
   are as Tiberian Dawn's of those names (`docs/games/tdawn.md`); the 1,200-frame sums are
   `9b84ad73` and `709e53d6`.

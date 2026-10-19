@@ -28,7 +28,7 @@ LOW = 0.07                                # the case's underside, on its foot
 OUT_Y = LOW + OUT_H / 2
 CHIN = (LOW + GLASS[2] - GLASS[1] / 2 - 0.012) / 2
 LED_X = 0.155   # the monitor's lamp, by its power key
-BAY_525, BAY_35 = (0.1461, 0.0413), (0.1016, 0.0261)
+BAY_525 = (0.1461, 0.0413)
 SLOT_PITCH, BRACKET = 0.02032, (0.1207, 0.01842)
 
 
@@ -308,6 +308,52 @@ def jack(b, x, y, z):
     b.cyl((x, y, z + 0.0022), 0.00175, 0.0004, "Rubber", segs=10, rot=(90, 0, 0))
 
 
+JACK_LONG, RCA_LONG, DC_LONG = 0.028, 0.042, 0.036   # such plugs, from the panel to where the lead leaves them
+
+
+def jack_plug(b, x, y, z):
+    """A 3.5 mm plug in such a socket (z its face): the sleeve's root at the nut, a ribbed grip 6.4 mm across, a strain relief."""
+    b.cyl((x, y, z + 0.0008), 0.0024, 0.0052, "MetalSteel", segs=12, rot=(90, 0, 0))   # (from the panel: the baked case has no nut)
+    b.lathe((x, y, z), [(0.0024, 0.0034), (0.0032, 0.004), (0.0032, 0.009), (0.003, 0.0094), (0.0032, 0.0098), (0.0032, 0.014), (0.0029, 0.0175),
+                        (0.0024, 0.019)], "PlasticDark", segs=14, rot=(90, 0, 0))
+    b.lathe((x, y, z), [(0.0024, 0.0185), (0.0022, 0.022), (0.00215, 0.0255), (0.0021, JACK_LONG)], "Rubber", segs=10, rot=(90, 0, 0))
+
+
+def rca_plug(b, x, y, z, mat):
+    """A phono plug on a phono socket of a face that looks towards +z: its steel shell over the
+    socket's sleeve to the panel, a ribbed grip of its channel's colour, 10.4 mm across, a strain relief."""
+    b.lathe((x, y, z), [(0.0043, -0.0014), (0.0049, -0.0014), (0.0049, 0.0102)], "MetalSteel", segs=16, rot=(90, 0, 0), cap=False)
+    b.lathe((x, y, z), [(0.0044, 0.0098), (0.0052, 0.0104), (0.0052, 0.0135), (0.0049, 0.014), (0.0052, 0.0145), (0.0052, 0.0175), (0.0049, 0.018),
+                        (0.0052, 0.0185), (0.0052, 0.0255), (0.0047, 0.029), (0.0036, 0.0305)], mat, segs=16, rot=(90, 0, 0))
+    b.lathe((x, y, z), [(0.0036, 0.03), (0.0032, 0.0335), (0.0029, 0.0345), (0.0029, 0.0365), (0.0026, 0.0375), (0.0024, RCA_LONG)], "Rubber", segs=12, rot=(90, 0, 0))
+
+
+def dc_inlet(b, x, y, z):
+    """A low voltage supply's barrel socket in a face that looks towards +z: a collar, the opening, its pin."""
+    b.lathe((x, y, z), [(0.0052, 0), (0.0052, 0.0012), (0.0046, 0.0018), (0.0031, 0.0018)], "PlasticDark", segs=14, rot=(90, 0, 0), cap=False)
+    b.cyl((x, y, z + 0.0008), 0.0031, 0.0016, "Rubber", segs=12, rot=(90, 0, 0))
+    b.cyl((x, y, z + 0.0018), 0.001, 0.001, "Brass", segs=6, rot=(90, 0, 0))
+
+
+def dc_plug(b, x, y, z):
+    """The supply's barrel plug in such a socket: the steel barrel's root, a ribbed grip 9.6 mm across, a strain relief."""
+    b.cyl((x, y, z + 0.0027), 0.00275, 0.0022, "MetalSteel", segs=12, rot=(90, 0, 0))
+    b.lathe((x, y, z), [(0.003, 0.0036), (0.0046, 0.0044), (0.0048, 0.006), (0.0048, 0.0095), (0.0045, 0.01), (0.0048, 0.0105), (0.0048, 0.014),
+                        (0.0045, 0.0145), (0.0048, 0.015), (0.0048, 0.021), (0.0042, 0.0245), (0.0033, 0.026)], "PlasticDark", segs=14, rot=(90, 0, 0))
+    b.lathe((x, y, z), [(0.0033, 0.0255), (0.003, 0.029), (0.0026, 0.033), (0.0023, DC_LONG)], "Rubber", segs=10, rot=(90, 0, 0))
+
+
+Y_TOP, Y_LOW = 0.0125, 0.0195   # a lead's moulded Y: where its two tails go in above its middle, and the one lead leaves below
+
+
+def y_split(b, x, y, z):
+    """Where a lead parts in two: a moulded body standing upright, a sleeve for each tail on top, a strain relief below."""
+    b.box((x, y, z), (0.0125, 0.019, 0.0078), "Rubber", bevel=0.0032, segs=3)
+    for side in (-1, 1):
+        b.cyl((x + side * 0.0028, y + 0.0105, z), 0.0021, 0.004, "Rubber", segs=10, bevel=0.0005)
+    b.lathe((x, y - 0.0094, z), [(0.0034, 0), (0.0031, 0.004), (0.0026, 0.008), (0.0024, Y_LOW - 0.0094)], "Rubber", segs=10, rot=(180, 0, 0))
+
+
 # The monitor's terminal board, as one behind it sees it: its middle, and each socket's place
 # right of that (+u) and above. A legend stands LABEL over its socket's middle.
 BOARD_X, BOARD_DOWN, ROW_TOP, ROW_LOW, LABEL = 0.03, 0.1, 0.010, -0.022, 0.0102
@@ -374,17 +420,6 @@ def cd_drive(b, cx, cy):
     b.cyl((cx - 0.038, cy - 0.012, FRONT - 0.001), 0.006, 0.004, "PlasticDark", segs=16, rot=(0, 0, 90))              # the volume's wheel, on edge
     b.cyl((cx + 0.012, cy - 0.012, FRONT - 0.0008), 0.0008, 0.001, "PlasticDark", segs=6, rot=(90, 0, 0))             # the hole for a paper clip
     b.quad((cx - 0.02, cy + 0.008, FRONT - 0.0044), (0.06, 0.008), "Details", decal="pc_cd")
-
-
-def floppy_drive(b, fx, fy):
-    """A floppy drive's face: the slot with its flap, the eject key, a lamp."""
-    fw, fh = BAY_35
-    drive_gap(b, fx, fy, fw, fh)
-    b.box((fx, fy, FRONT - 0.0008), (fw - 0.002, fh - 0.002, 0.002), "PlasticBeige", bevel=0.0008, segs=1)
-    b.box((fx, fy + 0.004, FRONT - 0.0019), (0.09, 0.0045, 0.001), "PlasticDark")
-    b.box((fx, fy + 0.0052, FRONT - 0.0022), (0.088, 0.0016, 0.001), "PlasticGrey")
-    b.box((fx + 0.034, fy - 0.006, FRONT - 0.0045), (0.012, 0.006, 0.005), "PlasticCase", bevel=0.0012, segs=2)
-    b.box((fx - 0.04, fy - 0.006, FRONT - 0.002), (0.005, 0.0025, 0.002), "Led")
 
 
 def fan_grille(b, x, y, z, radius):
@@ -461,7 +496,7 @@ def rear(b, w, h, back):
 
 
 # the tower's keys a visitor presses, from its middle line (and the power key's depth below its top)
-TURBO_X, RESET_X, POWER_KEY = 0.004, 0.020, (0.045, 0.226)
+RESET_X, POWER_KEY = 0.020, (0.045, 0.226)
 LAMPS_X = (-0.041, -0.027, -0.013)   # the tower's lamps: power, turbo, disk
 # the monitor's six keys under the glass, left to right as their legend names them
 OSD_X, OSD_PITCH = 0.02, 0.022
@@ -488,12 +523,12 @@ def tower(b):
     rear(b, w, h, back)
     for i in range(12):   # the slots in its side
         b.box((-w / 2 - 0.0003, 0.12, FRONT + 0.16 + i * 0.014), (0.001, 0.12, 0.006), "PlasticDark")
-    # from the top: the CD-ROM drive, a blank bay of its size, the floppy drive, all on the middle line
+    # from the top: the CD-ROM drive and a blank bay of its size on the middle line; under them the
+    # front is plain where Unity lays the speed slider (ShaderEmuStations.cs, TowerSpeedBay)
     cd_drive(b, 0, h - 0.04)
     drive_gap(b, 0, h - 0.088, BAY_525[0] + 0.002, BAY_525[1] + 0.001)
     b.box((0, h - 0.088, FRONT - 0.0006), (BAY_525[0], BAY_525[1] - 0.001, 0.0016), "PlasticBeige", bevel=0.0008, segs=1)
-    floppy_drive(b, 0, h - 0.132)
-    # the panel: the lock, three lamps over their names, turbo and reset over theirs, the speed
+    # the panel: the lock, three lamps over their names, reset over its name, the speed
     cy = h - SPEED_DOWN
     b.box((0, cy, FRONT - 0.0004), (0.156, 0.046, 0.001), "PlasticCase", bevel=0.0004, segs=1)
     b.cyl((-0.06, cy, FRONT - 0.002), 0.008, 0.004, "MetalSteel", segs=20, bevel=0.001, rot=(90, 0, 0))
@@ -501,9 +536,8 @@ def tower(b):
     for x, mat, name in ((LAMPS_X[0], "Led", "power"), (LAMPS_X[1], "Amber", "turbo"), (LAMPS_X[2], "LampRed", "hdd")):   # (the disk's: a dull red lens)
         b.box((x, cy + 0.005, FRONT - 0.0016), (0.007, 0.003, 0.002), mat, bevel=0.0006, segs=1)
         legend(b, name, x, cy - 0.005, FRONT - 0.0011, back=False)
-    for x, name in (TURBO_X, "turbo"), (RESET_X, "reset"):
-        b.box((x, cy + 0.004, FRONT - 0.003), (0.013, 0.008, 0.004), "PlasticBeige", bevel=0.0016, segs=2)
-        legend(b, name, x, cy - 0.007, FRONT - 0.0011, back=False)
+    b.box((RESET_X, cy + 0.004, FRONT - 0.003), (0.013, 0.008, 0.004), "PlasticBeige", bevel=0.0016, segs=2)
+    legend(b, "reset", RESET_X, cy - 0.007, FRONT - 0.0011, back=False)
     speed_display(b, SPEED_X, cy)
     # under it the power key in its well, at the right, over its name; the badge at the left
     px, py = POWER_KEY[0], h - POWER_KEY[1]
@@ -762,9 +796,31 @@ def strip_box(at, turn=0.0):
     return ((at[0], at[1] + STRIP[1] / 2, at[2]), STRIP, turn)
 
 
-def strip(b, at, turn=0.0, plugs=()):
-    """A strip of sockets lying on `at`: every socket drawn, a plug standing on each of `plugs`,
-    a lit rocker at one end, the sleeve its own lead leaves by at the other (-x)."""
+ADAPTER = (0.044, 0.058, 0.05)          # a plug-in supply (a hub's): along the strip, high, across
+ADAPTER_HIGH = 0.072                     # from the strip's top to where its lead leaves it
+
+
+def adapter(b, x, y):
+    """A plug-in supply standing on a socket at x of a strip whose top is at y: a moulded block
+    narrowing to its top, its rating plate, the strain relief its lead leaves by upwards."""
+    w, h, d = ADAPTER
+
+    def ring(dw, dd, r, at):
+        return [(x + px, at, pz) for px, pz in rrect(w - dw, d - dd, r)]
+    loft(b, [ring(0, 0, 0.005, y), ring(0, 0, 0.005, y + 0.003), ring(0.003, 0.003, 0.005, y + 0.004), ring(0.004, 0.004, 0.006, y + h - 0.008),
+             ring(0.01, 0.01, 0.008, y + h)], "PlasticDark", first=True, last=True, normal='out')
+    b.box((x, y + 0.03, d / 2 - 0.0016), (0.03, 0.026, 0.0006), "PlasticGrey", bevel=0.0002, segs=1)
+    b.lathe((x, y + h, 0), [(0.0046, 0), (0.0042, 0.003), (0.0032, 0.008), (0.0026, 0.012), (0.0023, ADAPTER_HIGH - h)], "Rubber", segs=12)
+
+
+def adapter_box(at, k, turn=0.0):
+    """A supply on socket k of a strip as a box for leads to fall on (drape.settle)."""
+    return (strip_socket(k, at, turn, up=ADAPTER[1] / 2), ADAPTER, turn)
+
+
+def strip(b, at, turn=0.0, plugs=(), adapters=()):
+    """A strip of sockets lying on `at`: every socket drawn, a plug standing on each of `plugs`, a
+    supply on each of `adapters`, a lit rocker at one end, the sleeve its own lead leaves by at the other (-x)."""
     long, high, wide = STRIP
     with b.at(at, (0, turn, 0)):
         b.box((0, high / 2, 0), STRIP, "PlasticBeige", bevel=0.005, segs=2)
@@ -774,6 +830,8 @@ def strip(b, at, turn=0.0, plugs=()):
             if k in plugs:
                 b.box((x, high + 0.011, 0), (0.034, 0.022, 0.034), "Rubber", bevel=0.005, segs=2)
                 b.cyl((x, high + 0.027, 0), 0.0065, 0.014, "Rubber", segs=10, bevel=0.001)
+            if k in adapters:
+                adapter(b, x, high)
         b.box((0.151, high + 0.0008, 0), (0.03, 0.0016, 0.022), "PlasticDark", bevel=0.0005, segs=1)
         b.box((0.151, high + 0.0034, 0), (0.022, 0.005, 0.013), "Amber", bevel=0.0012, segs=1, rot=(0, 0, 7))   # the rocker, on
         b.cyl((-long / 2 - 0.006, high / 2, 0), 0.0075, 0.016, "PlasticBeige", segs=10, bevel=0.001, rot=(0, 0, 90))
@@ -781,6 +839,7 @@ def strip(b, at, turn=0.0, plugs=()):
 
 HUB = (0.22, 0.036, 0.12)                # a small hub: wide, high, deep
 HUB_PORTS, HUB_PITCH, HUB_LAMP = 8, 0.02, (0.005, 0.003)
+HUB_POWER = 0.094                        # its supply's socket on its back, beyond the eighth port
 
 
 def hub_lamp(k):
@@ -793,9 +852,15 @@ def hub_port(k):
     return (-0.07 + k * HUB_PITCH, 0.016, HUB[2] / 2)
 
 
-def hub(b):
+def hub_power(power=HUB_POWER):
+    """The hub's supply socket on its back, at x `power`: its middle, in the panel's face."""
+    return (power, 0.016, HUB[2] / 2)
+
+
+def hub(b, power=HUB_POWER):
     """An eight port hub of the decade at the frame's origin, on four feet: its lettered front
-    with a dull lens a port towards -z (Unity lights them), its sockets behind."""
+    with a dull lens a port towards -z (Unity lights them), its sockets behind, and its supply's
+    socket beyond them at x `power` (a hub on a tower has it at the end towards the tower's back)."""
     w, h, d = HUB
     b.box((0, h / 2 + 0.002, 0), (w, h - 0.004, d), "PlasticGrey", bevel=0.004, segs=2)
     for sx in (-1, 1):
@@ -808,7 +873,7 @@ def hub(b):
         with b.at((0, 0, d / 2)):
             lan_socket(b, hub_port(k)[0], hub_port(k)[1], 0)
     b.box((-0.095, 0.0245, -d / 2 - 0.001), (0.004, 0.003, 0.0016), "Led")     # its power lamp: a hub is always on
-    b.cyl((0.094, 0.016, d / 2 + 0.001), 0.004, 0.002, "Rubber", segs=10, rot=(90, 0, 0))   # the supply's socket
+    dc_inlet(b, *hub_power(power))
     for i in range(9):   # slots for its heat, across the top
         b.box((-0.08 + i * 0.02, h + 0.0002, 0.01), (0.008, 0.0008, 0.06), "PlasticDark")
 
@@ -878,14 +943,19 @@ TABLE_HIGH = 0.765   # the classroom's table top over the floor (furniture.TABLE
 SET_X, TOWER_X, TOWER_Z = -0.11, 0.38, 0.05   # the monitor and keyboard a little left, the tower at their right
 
 
-def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=()):
+STRIP_AT = [None]   # where the last station() laid its strip of sockets
+HUB_SOCKET = 4      # the strip's socket a hub's supply is plugged into, at a place that has one
+
+
+def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=(), supply=False):
     """A whole place on the table at the frame's origin: the monitor and keyboard, the tower
     beside them, the mouse before the tower, and their leads. which: "shell" is the monitor and
     the tower alone, "rest" all but them (with the tube's glass, which no mode but "full" gives).
     lie: how this place's keyboard, mouse and mat lie off their places, each (x, z, turn).
     desk: the boxes its leads fall on besides its own things, the table's top first (centre, size,
     turn), in this frame; seed: the chance its leads are laid out by, a place its own.
-    stuck: how many stickers it has, on any face but those of `bare` (stickers())."""
+    stuck: how many stickers it has, on any face but those of `bare` (stickers()).
+    supply: a hub's supply stands on its strip's socket HUB_SOCKET (its lead is the network's)."""
     lie = lie or {"keyboard": (0, 0, 0), "mouse": (0, 0, 0), "mat": (0, 0, 0)}
     kx, kz, kturn = lie["keyboard"]
     mx, mz, mturn = lie["mouse"]
@@ -938,7 +1008,10 @@ def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=()):
                         (vx, vy, lane_picture), (vx, vy, behind + PLUG_LONG - 0.01)], r, "PlasticCase", rng=rng)
     dsub_plug(b, mx, my, back, 0.032)
     dsub_plug(b, vx, vy, behind, 0.032)
-    most = min(near - 0.012, lane_picture - 0.016)   # the furthest back a lane on the table may be
+    # the sound's lead lies on the table before the picture's where there is room behind the monitor, else it hangs behind
+    lane_sound = min(back + 0.046, lane_picture - 0.012 if on_table else near - 0.008)
+    sound_on_table = lane_sound >= back + 0.03
+    most = min(near - 0.012, lane_picture - 0.016, lane_sound - 0.012 if sound_on_table else 1)   # the furthest back a lane on the table may be
     lane_keys, lane_mouse = (rng.uniform(behind + 0.035, most) for _ in range(2))
     round_left = right.x < TOWER_X + 0.14   # the table ends by the tower: the mouse's lead goes round its other side
     if round_left:   # (inside the keyboard's there, and in a nearer lane, or they would be laid through each other)
@@ -947,7 +1020,8 @@ def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=()):
     # a strip of sockets on the floor behind the table: both mains leads end in it, its own goes on under the table
     lies = (0.06 + rng.uniform(-0.04, 0.04), floor, edge + 0.07 + rng.uniform(0, 0.04))
     out, end = lies[2], lies[0] - STRIP[0] / 2 - 0.012
-    strip(b, lies, plugs=(1, 3))   # (the other three are empty)
+    strip(b, lies, plugs=(1, 3), adapters=(HUB_SOCKET,) if supply else ())   # (the others are empty)
+    STRIP_AT[0] = lies
     lead(b, "strip", [(end, floor + 0.02, out), (end - 0.05, floor + 0.005, out), (end - 0.10, floor + 0.005, out),
                       (end - 0.10, floor + 0.005, near - 0.3 + 0.03), (end - 0.10, floor + 0.03, near - 0.3)], 0.004, "Rubber", bend=0.02, rng=rng, up=0.02)
     # and ends in a socket let into the floor under the table: a steel plate, the plug in it
@@ -985,13 +1059,37 @@ def station(b, which="all", lie=None, desk=None, seed=0, stuck=0, bare=()):
     lead(b, "mouse", [tuple(m0), tuple(m1), (side, 0.0065, TOWER_Z + FRONT - 0.03), (side, r + 0.0005, TOWER_Z + FRONT + 0.06), (side, r + 0.0005, lane_mouse),
                       (cx, r + 0.0005, lane_mouse), (cx, cy, lane_mouse), (cx, cy, behind + PLUG_LONG - 0.01)], r, "PlasticCase", segs=6, rng=rng, up=0.025)
     dsub_plug(b, cx, cy, behind, 0.031, sleeve=0.004)
+    # the sound: from the card's line out (the jack by its joystick socket) to the monitor's two phono
+    # sockets, parting behind the monitor in a moulded Y that hangs from a white tail and a red one
+    face, sy = back + 0.0004, plug_y - BOARD_DOWN + ROW_LOW
+    sockets = [(SET_X + BOARD_X - BOARD[name][0], name) for name in ("audio_l", "audio_r")]
+    yx, yz = sum(x for x, _ in sockets) / 2, face + RCA_LONG + 0.016
+    yy = sy - 0.05 - Y_TOP
+    y_split(b, yx, yy, yz)
+    for x, name in sockets:
+        rca_plug(b, x, sy, face, "Ceramic" if name == "audio_l" else "RedPaint")
+        tx = yx + (0.0028 if x > yx else -0.0028)
+        lead(b, "sound " + name[-1], [(x, sy, face + RCA_LONG - 0.002), (x, sy, yz), (tx, yy + Y_TOP + 0.03, yz), (tx, yy + Y_TOP - 0.002, yz)],
+             0.0017, "Rubber", segs=6)
+    jx, jy = TOWER_X + 0.012, at["first"] - 3 * SLOT_PITCH
+    jack_plug(b, jx, jy, behind + 0.0018)
+    r, start = 0.002, [(yx, yy - Y_LOW + 0.002, yz), (yx, yy - Y_LOW - 0.03, yz)]
+    if sound_on_table:
+        way = [(yx, r + 0.0005, lane_sound), (jx, r + 0.0005, lane_sound)]
+    else:   # over the table's back edge, along behind it, and up again behind the tower
+        lane_sound, low = edge + 0.028, rng.uniform(-0.14, -0.03)
+        way = [(yx, 0.012, edge + 0.012), (yx, low, lane_sound), (jx, low, lane_sound)]
+    # (it rises left of the jack: the network's lead leaves the card below it to the right)
+    way[-1] = (jx - 0.02,) + way[-1][1:]
+    lead(b, "sound", start + way + [(jx - 0.02, jy - 0.03, lane_sound), (jx, jy, behind + 0.06), (jx, jy, behind + 0.0018 + JACK_LONG - 0.002)], r, "Rubber",
+         segs=6, rng=rng, up=0.02)
     # what the leads fall on: the desk, the floor, the tower, the monitor (case, foot, neck), the keyboard, the mat, the strip
     boxes = list(desk) + [((0, floor - 0.05, 0), (4, 0.1, 4), 0),
                           ((TOWER_X, TOWER_HIGH / 2, TOWER_Z + FRONT + TOWER_DEEP / 2), (0.184, TOWER_HIGH, TOWER_DEEP), 0),
                           ((SET_X, LOW + OUT_H / 2, (GLASS[3] - 0.02 + back) / 2), (OUT_W, OUT_H, back - GLASS[3] + 0.02), 0),
                           ((SET_X + kx, 0.015, KEYBOARD_Z + kz), (0.58, 0.03, 2 * (KEYS_HIGH / 2 + 0.015 + TRAY_BACK) - 0.006), kturn),
                           ((mat_at[0], 0.0015, mat_at[2]), (0.21, 0.003, 0.25), pturn),
-                          strip_box(lies)]
+                          strip_box(lies)] + ([adapter_box(lies, HUB_SOCKET)] if supply else [])
     cylinders = [((SET_X, 0.017, 0.1), 0.208, 0.034), ((SET_X, 0.05, 0.1), 0.08, 0.04)]
     fallen = drape.settle([(name, path, radius) for name, path, radius, _, _ in LEADS], boxes, cylinders)
     for one, path in zip(LEADS, fallen):

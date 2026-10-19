@@ -210,7 +210,7 @@
   set at once, read at start. A test that must have the defaults does not read it (`RAY_FRAMES`).
 - A holodeck's sitter on a desktop plays by the host's words, not by the window's keys
   (`docs/world/holodeck.md`, "Played from the seat"; `EmuHolodeck.ByWords`): W, A, S, D and the arrows
-  are the left stick, Ctrl or the left button the right trigger, the right button the left one, Space the jump bit. A game
+  are the left stick, Ctrl or the left button the right trigger, the right button the left one, Space the jump bit, E the right grip (Half-Life's use). A game
   played from the seat reads the stick and the two triggers while seated (`seated` 1 and 2), and
   its number is in `ByWords`; `rvc_cpu --host 00000112,0,0,0,0,00007f00,0,0` with its `_SEAT`
   switch must walk it. ClassiCube started in the background there wants `</dev/null`.
@@ -232,3 +232,23 @@
   core decodes by itself: a tool that writes one asks for that (`restart_marker_blocks`), not a PPM.
 - After a change, `python tools/test_all.py` (`docs/machine/cpu-harness.md`, "The test set"; two minutes): every
   case must pass, and `--races` too for a change to work on the workers. A value moved on purpose is set anew there.
+- The overlay over the ROM could not rename a file or folder of the image: its upper file system (memory on the
+  no-MMU kernel) had no rename that leaves a whiteout, so `rename()` and `mv` said EINVAL, and a folder of the
+  image could not be deleted (EIO). `linux/nommu/patch_ramfs.py` fixes it (18 October 2026; `docs/system/nommu.md`)
+  in a kernel built since; on an older one a file is still copied and unlinked (`move_path` in `nxfiles.c`).
+- Where a program's instructions go, which of its loops and calls could be a worker's and which slow forms it has:
+  `python tools/prof.py report|auto` on an `RVC_PROF` run (`docs/machine/profiling.md`), with the ELF the image
+  was built from; profile without test sums (`NXVIDEO_SUM`, `NXVIEW_SUM` were most of core 0). A flat program's
+  `__executable_start` is 0 at run time: `mcw_touch_code(__executable_start, ...)` reads every page from address
+  0 (1.6 million instructions); start from `_start`'s page (`m_workers_begin` in `m_core.c`).
+- unarc (`linux/apps/unarc.c`) unpacks zip, tar, `.tar.gz` and `.gz` on the workers through libmedia's
+  `media_inflate_stream`, and `open --unpack` runs it first; it exits 3 (busybox then) for what it cannot do,
+  a lack of memory in one piece too. `tools/test_all.py unarc` packs a folder with busybox and unpacks it both ways.
+- RAM is 0x80400000 to 0x86000000 and 0x88000000 to 0x92000000 (`docs/system/nommu.md`, "Memory"): the devices stay
+  where they were, the state texture is 2048 x 9280 (`STATE_TEX_HEIGHT`, `kStateHeight`, Unity's StateA and StateB). The
+  commit's band mask stays 32 bits, bit b for bands b, b + 32 and b + 64 (`ram_bands`); the control words' band is drawn
+  apart (`_CommitAlways`, `CONTROL_BANDS`). A GPU copy into RAM goes only below 0x87e00000. A snapshot of 4096 rows still loads.
+- RAM is one texture written in place (`src/ram.h`, `docs/machine/gpu.md`, "RAM in one texture"; Unity has StateA alone):
+  no commit pass reads what it draws, what it needs of RAM is gathered into a stage first, and a copy from RAM to RAM
+  is 256 KB a pass, in `rvc_cpu` too (`copy_pass`). `programs\copytest` must say `sum 0e7f76c3` on both; `--ping-pong`
+  is the two textures of before (and `--lazy`, D3D12).

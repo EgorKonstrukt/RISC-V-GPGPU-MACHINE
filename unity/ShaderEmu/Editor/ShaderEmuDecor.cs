@@ -635,38 +635,33 @@ public static partial class ShaderEmuBuilder
     // stands on. Text only, so nothing on it takes the laser.
     // The board's words, which WriteBoardAgain (ShaderEmuGamepad.cs) also puts into a scene that has a board.
     public const string WhatText =
-        "The screens on the front wall are a real computer: a 32-bit RISC-V machine of 256 processors, its " +
-        "memory and its disk, all kept in textures. A shader on your graphics card runs tens of thousands of " +
-        "the first one's instructions every frame, a few million a second, and the other 255 beside it for " +
-        "programs that share their work out. It boots an ordinary Linux kernel and a desktop.\n\n" +
-        "No server runs it. Every player's own graphics card runs a machine of its own; what the others " +
-        "see of yours is its screens, sent to them as pictures.";
+        "YOUR MACHINE, the computer on the front wall's screens, is emulated: a pixel shader on your own " +
+        "graphics card runs a whole 32-bit RISC-V computer of 256 processors, its memory and disk kept in " +
+        "textures, a few million instructions a second. It boots Linux and a desktop, in a Windows 7 or a " +
+        "classic look.\n\nNo server runs it. Every player's own graphics card runs a machine of its own; what " +
+        "the others see of yours is its screens, sent to them as pictures.";
     public const string CreditsText =
         "rvc by pimaker: the RISC-V emulator in a shader this grew from, and its Linux port (linux-rvc, " +
-        "kernel 5.17)\n" +
-        "Linux, by Linus Torvalds and its many contributors\n" +
-        "musl libc, by Rich Felker and contributors\n" +
-        "BusyBox: the shell and the command line tools\n" +
-        "GCC, binutils, LLVM's clang and compiler-rt: the compilers and their runtime\n" +
-        "Microwindows / Nano-X by Greg Haerr and contributors: the window system, its terminal, " +
-        "calculator and games, and its port of Doom\n" +
-        "DOOM and Quake by id Software: the source releases, and the shareware episodes' data\n" +
-        "Vanilla Conquer, and Command & Conquer by Westwood Studios (source released by Electronic Arts)\n" +
-        "ClassiCube by UnknownShadow200 and contributors; Dear ImGui by Omar Cornut and contributors\n" +
-        "Nofrendo by Matthew Conte: the NES, with Thwaite by Damian Yerrick and Nova the Squirrel by NovaSquirrel\n" +
-        "glxgears by Brian Paul, from the Mesa demos\n" +
-        "TinyCC by Fabrice Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\n" +
-        "Desktop photographs from Unsplash, and somebody's cats\n" +
-        "Poly Haven (CC0): this room's furniture, plants and many of its surfaces\n" +
-        "LTCGI by pimaker, Light Volumes by RED_SIM, Mochie's shaders, Silent's Fake Glass: light, rain\n" +
-        "Cascadia Mono by Microsoft: the console's font\n" +
-        "ShaderAudio by lox9973: how sound gets out of a shader\n" +
-        "minimp3 by lieff and dr_flac by David Reid: the music player's decoders\n" +
-        "pl_mpeg by Dominic Szablewski: the video player's decoder\n" +
-        "Big Buck Bunny (c) 2008 Blender Foundation, www.bigbuckbunny.org, CC BY 3.0: the sample film\n" +
-        "Chicago95 by grassmunk and contributors: the desktop's icons\n" +
-        "Musopen's public-domain recordings and NASA's photographs: the sample music and pictures\n" +
-        "VRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room";
+        "kernel 5.17)\nLinux, by Linus Torvalds and its many contributors\nmusl libc, by Rich Felker and " +
+        "contributors\nBusyBox: the shell and the command line tools\nGCC, binutils, LLVM's clang and " +
+        "compiler-rt: the compilers and their runtime\nMicrowindows / Nano-X by Greg Haerr and contributors: " +
+        "the window system, and its port of Doom\nDOOM, Quake and Quake III Arena (ioquake3) by id Software: " +
+        "the source releases, and the demos' data\nXash3D FWGS and hlsdk-portable by FWGS: Half-Life's " +
+        "engine; Half-Life: Uplink by Valve, fetched when the image is made\nVanilla Conquer, and Command & " +
+        "Conquer by Westwood Studios (source released by Electronic Arts)\nMicropolis (MicropolisCore) by Don " +
+        "Hopkins, from SimCity by Will Wright\nClassiCube by UnknownShadow200 and contributors; Dear ImGui by " +
+        "Omar Cornut and contributors\nNofrendo by Matthew Conte: the NES, with Thwaite by Damian Yerrick and " +
+        "Nova the Squirrel by NovaSquirrel\nglxgears by Brian Paul, from the Mesa demos\nTinyCC by Fabrice " +
+        "Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\nDesktop photographs from " +
+        "Unsplash, and somebody's cats\nChicago95 by grassmunk, and KDE's Oxygen icons: the desktop's two " +
+        "looks; Selawik by Microsoft, drawn by msdf-atlas-gen\nPoly Haven (CC0): this room's furniture, " +
+        "plants and many of its surfaces\nLTCGI by pimaker, Light Volumes by RED_SIM, Mochie's shaders, " +
+        "Silent's Fake Glass: light, rain\nQvPen by ureishi: the pens\nCascadia Mono by Microsoft: the " +
+        "console's font\nShaderAudio by lox9973: how sound gets out of a shader\nminimp3 by lieff and dr_flac " +
+        "by David Reid: the music player's decoders\npl_mpeg by Dominic Szablewski: the video player's " +
+        "decoder\nBig Buck Bunny (c) 2008 Blender Foundation, www.bigbuckbunny.org, CC BY 3.0: the sample " +
+        "film\nMusopen's public-domain recordings and NASA's photographs: the sample music and " +
+        "pictures\nVRChat's Worlds SDK, UdonSharp by Merlin, TextMesh Pro and Unity: this room";
 
     static void About(Transform decor, float halfW, Material frameMat)
     {

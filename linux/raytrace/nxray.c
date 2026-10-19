@@ -485,7 +485,7 @@ end_jobs(void)
 static void
 take_workers(void)
 {
-	extern char __DATA_BEGIN__[], _end[], __executable_start[], etext[];
+	extern char __DATA_BEGIN__[], _end[], _start[], etext[];
 	const volatile char *code;
 
 	end_jobs();
@@ -496,7 +496,8 @@ take_workers(void)
 		return;
 	mcw_touch(__DATA_BEGIN__, (unsigned)(_end - __DATA_BEGIN__));
 	/* (and the program's code: a page of it that no core has run or read stops every worker that comes to it) */
-	for (code = __executable_start; code < etext; code += 4096)
+	/* (from _start's page: a flat program's __executable_start is 0) */
+	for (code = (const char *)((uintptr_t)_start & ~4095u); code < etext; code += 4096)
 		(void)*code;
 	go.spin = getenv("RAY_SPIN") != NULL;
 	start_jobs();
@@ -974,6 +975,7 @@ main(void)
 			if (now - shown >= 200 && now - began_at[at & 1] >= 1500) {
 				/* a picture is shown when it is whole; one that takes long, as it fills */
 				seglQuad(corners, uv, texture[at & 1], 255, 255, 0);
+				seglNotAFrame();	/* (a picture filling in: the caption counts whole ones) */
 				seglSwap();
 				shown = now;
 			}
@@ -990,6 +992,7 @@ main(void)
 			now = now_ms();
 			if (now - shown >= 200 && now - began_at[at & 1] >= 1500) {
 				seglQuad(corners, uv, texture[at & 1], 255, 255, 0);
+				seglNotAFrame();
 				seglSwap();
 				shown = now;
 			}

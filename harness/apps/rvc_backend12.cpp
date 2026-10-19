@@ -195,7 +195,7 @@ public:
 
         // Zone 1: CPUTick on the 64x64 state area, then copy that area back so `cur` stays complete.
         stamp(0);
-        draw(0, 32, 4096 - (float)tickRows_ / 2, 64, (float)tickRows_);
+        draw(0, 32, kHeight - (float)tickRows_ / 2, 64, (float)tickRows_);
         stamp(1);
         D3D12_RESOURCE_BARRIER toCopy[2] = {
             transition(state_[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
@@ -218,7 +218,7 @@ public:
             auto toRead = transition(gpuColor_.Get(), gpuRt, gpuRead);
             cl_->ResourceBarrier(1, &toRead);
         }
-        draw(1, 1024, 2048, 2048, 4096);
+        draw(1, 1024, kHeight / 2.0f, 2048, (float)kHeight);
         if (passCount_ == 3) {
             auto toDraw = transition(gpuColor_.Get(), gpuRead, gpuRt);
             cl_->ResourceBarrier(1, &toDraw);

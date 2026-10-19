@@ -1790,7 +1790,21 @@ index de5d02a..7a4e40b 100644
  }
  
  /**
-@@ -579,14 +702,23 @@ GrGetScreenInfo(GR_SCREEN_INFO *sip)
+@@ -459,6 +582,13 @@ GrClose(void)
+ #endif
+ 	close(nxSocket);
+ 	nxSocket = -1;
++	/* a connection opened after this one asks for its events again and keeps none of these */
++	event_asked = 0;
++	nx_in_at = nx_in_have = 0;
++	while (evlist) {
++		GR_EVENT dropped;
++		GetNextQueuedEvent(&dropped);
++	}
+ 	LOCK_FREE(&nxGlobalLock);
+ #if ELKS
+ 	GrDelay(500); /* partial raw terminal fix, allow nano-X to run to reset terminal */
+@@ -579,14 +709,23 @@ GrGetScreenInfo(GR_SCREEN_INFO *sip)
  GR_COLOR
  GrGetSysColor(int index)
  {
@@ -1814,7 +1828,7 @@ index de5d02a..7a4e40b 100644
  	UNLOCK(&nxGlobalLock);
  	return color;
  }
-@@ -762,7 +894,7 @@ GrPrepareSelect(int *maxfd,void *rfdset)
+@@ -762,7 +901,7 @@ GrPrepareSelect(int *maxfd,void *rfdset)
  	ACCESS_PER_THREAD_DATA()
  
  	LOCK(&nxGlobalLock);
@@ -1823,7 +1837,7 @@ index de5d02a..7a4e40b 100644
  	GrFlush();
  
  	FD_SET(nxSocket, rfds);
-@@ -809,20 +941,13 @@ GrServiceSelect(void *rfdset, GR_FNCALLBACKEVENT fncb)
+@@ -809,20 +948,13 @@ GrServiceSelect(void *rfdset, GR_FNCALLBACKEVENT fncb)
  	 * an event is generated in Nano-X at the same time as the
  	 * client wakes up for some reason and calls Nano-X functions.
  	 */
@@ -1846,7 +1860,7 @@ index de5d02a..7a4e40b 100644
  
  	/* check for input on registered file descriptors */
  	for (fd = 0; fd < regfdmax; fd++) {
-@@ -1083,14 +1208,16 @@ GrPeekEvent(GR_EVENT *ep)
+@@ -1083,14 +1215,16 @@ GrPeekEvent(GR_EVENT *ep)
  static int
  _GrPeekEvent(GR_EVENT * ep)
  {
@@ -1869,7 +1883,7 @@ index de5d02a..7a4e40b 100644
  }
  
  /**
-@@ -1154,10 +1281,13 @@ GrCheckNextEvent(GR_EVENT *ep)
+@@ -1154,10 +1288,13 @@ GrCheckNextEvent(GR_EVENT *ep)
  		return;
  	}
  
@@ -1887,7 +1901,7 @@ index de5d02a..7a4e40b 100644
  	UNLOCK(&nxGlobalLock);
  }
  
-@@ -1242,7 +1372,11 @@ GrGetTypedEventPred(GR_WINDOW_ID wid, GR_EVENT_MASK mask, GR_UPDATE_TYPE update,
+@@ -1242,7 +1379,11 @@ GrGetTypedEventPred(GR_WINDOW_ID wid, GR_EVENT_MASK mask, GR_UPDATE_TYPE update,
    
  	LOCK(&nxGlobalLock);
  	/* First, suck up all events and place them into the event queue */
@@ -1900,7 +1914,7 @@ index de5d02a..7a4e40b 100644
  getevent:
  		_GrGetNextEventTimeout(&event, GR_TIMEOUT_BLOCK);
  		QueueEvent(&event);
-@@ -1323,6 +1457,21 @@ GrNewWindow(GR_WINDOW_ID parent, GR_COORD x, GR_COORD y, GR_SIZE width,
+@@ -1323,6 +1464,21 @@ GrNewWindow(GR_WINDOW_ID parent, GR_COORD x, GR_COORD y, GR_SIZE width,
  	GR_WINDOW_ID 	wid;
  
  	LOCK(&nxGlobalLock);
@@ -1922,7 +1936,7 @@ index de5d02a..7a4e40b 100644
  	req = AllocReq(NewWindow);
  	req->parentid = parent;
  	req->x = x;
-@@ -1458,6 +1607,13 @@ GrNewGC(void)
+@@ -1458,6 +1614,13 @@ GrNewGC(void)
  	GR_GC_ID    gc;
  
  	LOCK(&nxGlobalLock);
@@ -1936,7 +1950,7 @@ index de5d02a..7a4e40b 100644
  	AllocReq(NewGC);
  	if(TypedReadBlock(&gc, sizeof(gc),GrNumNewGC) == -1)
  		gc = 0;
-@@ -2575,6 +2731,16 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
+@@ -2575,6 +2738,16 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
  		if (!name)
  			name = "";
  

@@ -25,11 +25,12 @@ cbuffer Sync : register(b0) {
 #define S_LAST   368   // and in the frame before
 #define S_INSTR  372   // instructions so far (low, high), passes so far (a core's own, the processor keeps them)
 #define S_MODE   392   // a worker's: parked 0, running 1, asleep 2, stopped 3 or 4
-#define BANDS    (65536u * 4)   // the band words in Marks the harness takes (rv32_min_fast.hlsl, M_HARNESS)
-#define M_EXP    (32768u * 4)   // and a word a page listed in this frame, the list (M_EXP, M_FRAME there)
-#define M_FRAME  ((65536u + 64 + 32768 + 1024) * 4)
+#define PAGES    73728u         // RAM's pages, to 0x92000000 (rv32_min_fast.hlsl)
+#define BANDS    (2 * PAGES * 4)   // the band words in Marks the harness takes (rv32_min_fast.hlsl, M_HARNESS)
+#define M_EXP    (PAGES * 4)    // and a word a page listed in this frame, the list (M_EXP, M_FRAME there)
+#define M_FRAME  ((3 * PAGES + 128 + 1024) * 4)
 #define S_COPY   384   // the picture copied back: its first byte in RAM, its bytes
-#define RAM_ROWS 4032u // the texture's rows of RAM: 126 MB from row 64
+#define RAM_ROWS 9216u // the texture's rows of RAM: 288 MB from row 64 (STATE_TEX_HEIGHT - 64)
 #define RAM_BYTES (RAM_ROWS * 32768u)
 #define CTRL     0x07000000u   // the control words (docs/machine/gpu.md), in RAM
 #define STATS_ALL 0x076ba000u  // every core's count, then a texel of bits for every 32 cores (src/gpu.h)
@@ -111,7 +112,7 @@ void sync_state(uint3 g : SV_GroupID, uint x : SV_GroupIndex) {
     Out[uint2(x, y)] = v;
 }
 
-// RAM's rows of the bands in S_NOW: a group a quarter row (dispatch 8 x 4032).
+// RAM's rows of the bands in S_NOW: a group a quarter row (dispatch 8 x RAM_ROWS).
 [numthreads(256, 1, 1)]
 void export_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
     uint row = g.y, x = g.x * 256 + t;

@@ -33,7 +33,8 @@ Shader "ShaderEmu/MemView"
                 if (megabyte < 112.0) return float3(0.30, 0.80, 0.40);
                 if (megabyte < 119.0) return float3(0.95, 0.80, 0.25);
                 if (megabyte < 123.0) return float3(0.75, 0.45, 0.95);
-                return float3(1.00, 0.55, 0.20);
+                if (megabyte < 126.0) return float3(1.00, 0.55, 0.20);
+                return float3(0.16, 0.26, 0.45);   // Linux's again, from 0x88000000
             }
 
             struct v2f {
@@ -62,11 +63,11 @@ Shader "ShaderEmu/MemView"
                 // the legend: each strip's left edge says whose that memory is
                 float strips = (float)max(_Strips, 1u);
                 float across = i.uv.x * strips, strip = floor(across);
-                if (across - strip < 0.022) c = owner((strip + 1.0 - i.uv.y) / strips * 126.0);
-                // the laser: a square round where it points (twice as tall in v as in u: the screen
-                // is two to one and a strip is 2,016 rows of 2,048), never too small to see
+                if (across - strip < 0.022) c = owner((strip + 1.0 - i.uv.y) / strips * 288.0);
+                // the laser: a square round where it points (as many texels in v as in u: a strip
+                // is 9,216 / strips rows of 2,048), never too small to see
                 if (_Cursor.x >= 0.0) {
-                    float2 reach = max(float2(_Cursor.z, _Cursor.z * 2.03), float2(0.004, 0.008));
+                    float2 reach = max(float2(_Cursor.z, _Cursor.z * strips * strips * 2048.0 / 9216.0), float2(0.004, 0.008));
                     float2 off = abs(i.uv - _Cursor.xy) / reach;
                     float edge = max(off.x, off.y);
                     if (edge < 1.0 && edge > 0.72) c = _Cursor.w > 0.5 ? float3(1.0, 0.25, 0.1) : float3(1.0, 1.0, 1.0);

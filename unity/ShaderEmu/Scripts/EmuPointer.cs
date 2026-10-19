@@ -1,6 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 using TMPro;
+using UnityEngine.UI;
 using VRC.SDK3.Persistence;
 using VRC.SDKBase;
 using VRC.Udon.Common;
@@ -77,6 +78,25 @@ public class EmuPointer : UdonSharpBehaviour
     // The danger zone (EmuDanger): a beam on the memory screen is its laser while that is on.
     public Collider memoryScreen;      // a trigger over the memory screen's quad
     public EmuDanger danger;
+    // Physical buttons (the control panel's switch, kept in PlayerData): in a headset an index
+    // finger's tip presses the keyboards' keys, and the buttons and sliders of these panels, it touches.
+    public Collider[] touchPanels;
+    public Button[] touchButtons;
+    public RectTransform[] touchButtonRects;
+    public int[] touchButtonPanel;     // the panel each lies on, in touchPanels
+    public Slider[] touchSliders;
+    public RectTransform[] touchSliderRects;
+    public int[] touchSliderPanel;
+    public TextMeshProUGUI physicalLabel;
+    [HideInInspector] public bool physical;
+    // Steady pointer (the control panel's switch, on unless a player turned it off): a beam's place
+    // on a display is smoothed by how fast it moves, a press holds the pointer where it began
+    // until the beam has gone DragSlop pixels, and a second press soon after lands on the first.
+    public TextMeshProUGUI steadyLabel;
+    public TextMeshProUGUI[] physicalLabels, steadyLabels;   // the same switches on each classroom monitor
+    [HideInInspector] public bool steady = true;
+    public float steadyCutoff = 1.2f, steadyBeta = 0.012f;   // a one-euro filter: Hz at rest, and per pixel a second
+    public float dragSlop = 7f, doubleSlop = 10f, doubleTime = 0.5f;   // pixels, pixels, seconds
 
     private const int Nothing = -1, Display = 0, Memory = -2, Console = -3;   // a target; 1 and up: keyboard number + 1
 
@@ -115,6 +135,15 @@ public class EmuPointer : UdonSharpBehaviour
     private int lastUseHand = 1;                   // the hand whose trigger moved last: the one that clicked
     private bool laserLoaded;
     private string[] LaserKeys = { "beam.left", "beam.right" };
+    private const string PhysicalKey = "buttons.physical", SteadyKey = "pointer.steady";
+    private bool steadyFrom;                // the filter has a place to go on from
+    private float steadyX, steadyY, steadyVX, steadyVY;
+    private int steadyButtons, steadyOwner = -1;
+    private bool steadyHeld;                // a press holds the pointer at pressX, pressY
+    private int pressX, pressY, outX, outY;
+    private float upAt = -10f;
+    private int[] fingerBoard = new int[2], fingerKey = new int[2], fingerButton = new int[2], fingerSlider = new int[2];
+    private const float TouchAt = -0.004f, TouchLeft = -0.012f, TouchThrough = 0.05f;   // a finger's depth past a face, metres
 
     private void Init()
     {
@@ -126,6 +155,10 @@ public class EmuPointer : UdonSharpBehaviour
             key[h] = -1;
             pressedOn[h] = -1;
             sliding[h] = -1;
+            fingerBoard[h] = -1;
+            fingerKey[h] = -1;
+            fingerButton[h] = -1;
+            fingerSlider[h] = -1;
         }
         if (machine.linksPanel != null) linksPlate = machine.linksPanel.GetComponent<Collider>();
         // an avatar loaded while this was off behind the gate: the gate heard it
@@ -136,6 +169,7 @@ public class EmuPointer : UdonSharpBehaviour
         }
         if (gate != null && gate.restored) LoadLaser();
         ShowLaser();
+        ShowPhysical();
     }
 
     void Start()
@@ -493,6 +527,11 @@ public class EmuPointer : UdonSharpBehaviour
             }
             if (aimHands == 0) aimShown = false;
             handsKnown = true;
+            for (int h = 0; h < 2; h++)
+            {
+                if (physical && bones && !away) Touch(player, h);
+                else NoTouch(h);
+            }
             if (from != aimFrom)
             {
                 aimFrom = from;
@@ -501,6 +540,8 @@ public class EmuPointer : UdonSharpBehaviour
         }
         else
         {
+            NoTouch(0);
+            NoTouch(1);
             Idle(0);
             VRCPlayerApi.TrackingData head = player.GetTrackingData(VRCPlayerApi.TrackingDataType.Head);
             Aim(1, head.position, head.rotation * Vector3.forward, false);
@@ -536,7 +577,12 @@ public class EmuPointer : UdonSharpBehaviour
         if (!ownerHolds && (otherHolds || (target[owner] != Display && target[other] == Display))) owner = other;
         if (target[owner] == Display)
         {
-            machine.SetPointer(px[owner], py[owner], (trigger[owner] ? 1 : 0) | (grip[owner] ? 2 : 0));
+            int buttons = (trigger[owner] ? 1 : 0) | (grip[owner] ? 2 : 0);
+            outX = px[owner];
+            outY = py[owner];
+            if (steady && player.IsUserInVR()) Steady(buttons);
+            else steadyFrom = false;
+            machine.SetPointer(outX, outY, buttons);
             machine.pointerOwn = onTube[owner];
             drove = away;
             // the wheel: the mouse's on desktop, the right stick in VR at up to 12 notches a second
@@ -551,6 +597,7 @@ public class EmuPointer : UdonSharpBehaviour
         }
         else if (!away)   // (with a controller held the pointer and its buttons are still the sticks')
         {
+            steadyFrom = false;
             drove = false;
             machine.SetPointerButtons(0);
             turned = 0f;
@@ -560,6 +607,175 @@ public class EmuPointer : UdonSharpBehaviour
     public override void InputLookVertical(float value, UdonInputEventArgs args)
     {
         stick = Mathf.Abs(value) < 0.25f ? 0f : value;
+    }
+
+    // ---- physical buttons ----
+
+    // The tip of a hand's index finger, beyond its last joint by most of that joint's length.
+    private bool FingerTip(VRCPlayerApi player, int h, out Vector3 tip)
+    {
+        Vector3 distal = player.GetBonePosition(h == 0 ? HumanBodyBones.LeftIndexDistal : HumanBodyBones.RightIndexDistal);
+        Vector3 middle = player.GetBonePosition(h == 0 ? HumanBodyBones.LeftIndexIntermediate : HumanBodyBones.RightIndexIntermediate);
+        tip = distal;
+        if (distal == Vector3.zero) return false;
+        if (middle != Vector3.zero) tip = distal + (distal - middle) * 0.7f;
+        return true;
+    }
+
+    // How far a point is past a face (its -z is out of it) in metres, if it lies over the
+    // rectangle; else -1.
+    private float Past(Transform face, Vector3 tip, float xMin, float yMin, float xMax, float yMax)
+    {
+        Vector3 local = face.InverseTransformPoint(tip);
+        if (local.x < xMin || local.x > xMax || local.y < yMin || local.y > yMax) return -1f;
+        return local.z * face.lossyScale.z;
+    }
+
+    private void Touch(VRCPlayerApi player, int h)
+    {
+        Vector3 tip;
+        if (!FingerTip(player, h, out tip)) { NoTouch(h); return; }
+        // a keyboard's key: down when the tip reaches the keys' tops, up when it is lifted clear
+        int board = -1, onKey = -1;
+        for (int k = 0; k < keyboardPlates.Length && board < 0; k++)
+        {
+            bool holo = k == holoKeyboard;
+            if (holo ? ownHolo < 0 || holoHidden : away) continue;
+            if (!holo && stationKeysFrom >= 0 && k >= stationKeysFrom && k - stationKeysFrom != ownStation) continue;
+            EmuKeyboard keys = keyboards[k];
+            float wide = keys.panelWidth * 0.5f + 30f, high = keys.panelHeight * 0.5f + 30f;
+            float past = Past(keyboardPlates[k].transform, tip, -wide, -high, wide, high);
+            if (past < (fingerBoard[h] == k ? TouchLeft : TouchAt) || past > TouchThrough) continue;
+            board = k;
+            onKey = keys.KeyAt(tip);
+        }
+        if (board != fingerBoard[h] || onKey != fingerKey[h])
+        {
+            if (fingerBoard[h] >= 0) keyboards[fingerBoard[h]].Release(h);
+            fingerBoard[h] = board;
+            fingerKey[h] = onKey;
+            if (board >= 0 && pressedOn[h] < 0) keyboards[board].Press(h, onKey);
+        }
+        if (touchPanels == null || touchPanels.Length == 0) return;
+        // a panel's button: pressed once as the tip reaches it, again only after it has left it
+        Collider[] near = Physics.OverlapSphere(tip, 0.05f, -1, QueryTriggerInteraction.Collide);
+        int button = -1, slider = -1;
+        for (int n = 0; n < near.Length && button < 0 && slider < 0; n++)
+        {
+            int panel = System.Array.IndexOf(touchPanels, near[n]);
+            if (panel < 0) continue;
+            for (int i = 0; i < touchButtons.Length && button < 0; i++)
+            {
+                if (touchButtonPanel[i] != panel || touchButtons[i] == null || !touchButtons[i].gameObject.activeInHierarchy) continue;
+                Rect r = touchButtonRects[i].rect;
+                float past = Past(touchButtonRects[i], tip, r.xMin, r.yMin, r.xMax, r.yMax);
+                if (past >= (fingerButton[h] == i ? TouchLeft : TouchAt) && past <= TouchThrough) button = i;
+            }
+            for (int i = 0; touchSliders != null && i < touchSliders.Length && button < 0 && slider < 0; i++)
+            {
+                if (touchSliderPanel[i] != panel || touchSliders[i] == null || !touchSliders[i].gameObject.activeInHierarchy) continue;
+                RectTransform rect = touchSliderRects[i];
+                Rect r = rect.rect;
+                float past = Past(rect, tip, r.xMin, r.yMin, r.xMax, r.yMax);
+                if (past < (fingerSlider[h] == i ? TouchLeft : TouchAt) || past > TouchThrough) continue;
+                slider = i;
+                // the slider follows the tip across it, as a fader under a finger
+                Slider fader = touchSliders[i];
+                float along = Mathf.Clamp01((rect.InverseTransformPoint(tip).x - r.xMin) / Mathf.Max(r.width, 1e-4f));
+                float value = fader.minValue + (fader.maxValue - fader.minValue) * along;
+                if (fader.wholeNumbers) value = Mathf.Round(value);
+                if (fader.interactable && value != fader.value) fader.value = value;
+            }
+        }
+        if (button != fingerButton[h])
+        {
+            fingerButton[h] = button;
+            if (button >= 0 && touchButtons[button].IsInteractable()) touchButtons[button].OnSubmit(null);
+        }
+        fingerSlider[h] = slider;
+    }
+
+    private void NoTouch(int h)
+    {
+        if (fingerBoard[h] >= 0) keyboards[fingerBoard[h]].Release(h);
+        fingerBoard[h] = -1;
+        fingerKey[h] = -1;
+        fingerButton[h] = -1;
+        fingerSlider[h] = -1;
+    }
+
+    // ---- the steady pointer ----
+
+    private float Smoothing(float cutoff)
+    {
+        float dt = Mathf.Max(Time.deltaTime, 1e-4f);
+        return 1f / (1f + 1f / (2f * Mathf.PI * cutoff * dt));
+    }
+
+    // The beam's pixel (outX, outY) made steady: smoothed by how fast it moves, held where a press
+    // began until it moves past dragSlop, and a quick second press put on the first one's place.
+    private void Steady(int buttons)
+    {
+        float x = outX, y = outY;
+        if (!steadyFrom || steadyOwner != owner)
+        {
+            steadyFrom = true;
+            steadyOwner = owner;
+            steadyX = x;
+            steadyY = y;
+            steadyVX = steadyVY = 0f;
+            steadyHeld = false;
+        }
+        float dt = Mathf.Max(Time.deltaTime, 1e-4f), a = Smoothing(1f);
+        steadyVX += ((x - steadyX) / dt - steadyVX) * a;
+        steadyVY += ((y - steadyY) / dt - steadyVY) * a;
+        float speed = Mathf.Sqrt(steadyVX * steadyVX + steadyVY * steadyVY);
+        float k = Smoothing(steadyCutoff + steadyBeta * speed);
+        steadyX += (x - steadyX) * k;
+        steadyY += (y - steadyY) * k;
+        int sx = Mathf.RoundToInt(steadyX), sy = Mathf.RoundToInt(steadyY);
+        if (buttons != 0 && steadyButtons == 0)
+        {
+            // a press: where the last one was, if this is the second of a double click
+            bool second = Time.time - upAt < doubleTime && (sx - pressX) * (sx - pressX) + (sy - pressY) * (sy - pressY) <= doubleSlop * doubleSlop;
+            if (!second) { pressX = sx; pressY = sy; }
+            steadyHeld = true;
+        }
+        if (buttons == 0 && steadyButtons != 0) upAt = Time.time;
+        steadyButtons = buttons;
+        if (steadyHeld && (sx - pressX) * (sx - pressX) + (sy - pressY) * (sy - pressY) > dragSlop * dragSlop) steadyHeld = false;   // a drag
+        if (steadyHeld && buttons == 0 && Time.time - upAt > doubleTime) steadyHeld = false;
+        outX = steadyHeld ? pressX : sx;
+        outY = steadyHeld ? pressY : sy;
+    }
+
+    // The control panel's switch for it.
+    public void SteadyPointer()
+    {
+        Init();
+        steady = !steady;
+        steadyFrom = false;
+        if (laserLoaded) PlayerData.SetBool(SteadyKey, steady);
+        ShowPhysical();
+    }
+
+    // The control panel's switch.
+    public void PhysicalButtons()
+    {
+        Init();
+        physical = !physical;
+        if (laserLoaded) PlayerData.SetBool(PhysicalKey, physical);
+        if (!physical) { NoTouch(0); NoTouch(1); }
+        ShowPhysical();
+    }
+
+    private void ShowPhysical()
+    {
+        string touch = physical ? "Physical buttons: ON" : "Physical buttons: OFF", still = steady ? "Steady pointer: ON" : "Steady pointer: OFF";
+        if (physicalLabel != null) physicalLabel.text = touch;
+        if (steadyLabel != null) steadyLabel.text = still;
+        if (physicalLabels != null) foreach (TextMeshProUGUI label in physicalLabels) if (label != null) label.text = touch;
+        if (steadyLabels != null) foreach (TextMeshProUGUI label in steadyLabels) if (label != null) label.text = still;
     }
 
     // ---- triggers and grips ----
@@ -678,7 +894,10 @@ public class EmuPointer : UdonSharpBehaviour
             laserWay[h] = way.normalized;
             laserClicks[h] = 1;
         }
+        if (PlayerData.HasKey(me, PhysicalKey)) physical = PlayerData.GetBool(me, PhysicalKey);
+        if (PlayerData.HasKey(me, SteadyKey)) steady = PlayerData.GetBool(me, SteadyKey);
         ShowLaser();
+        ShowPhysical();
     }
 
     private void SaveLaser(int h)
@@ -693,7 +912,7 @@ public class EmuPointer : UdonSharpBehaviour
     private void ShowLaser()
     {
         if (laserLabel == null) return;
-        laserLabel.text = laserClicks[0] + laserClicks[1] == 0 ? "Laser: click the dot to calibrate"
-            : "Laser set: left " + (laserClicks[0] > 0 ? "yes" : "no") + ", right " + (laserClicks[1] > 0 ? "yes" : "no");
+        laserLabel.text = laserClicks[0] + laserClicks[1] == 0 ? "Not calibrated: beams follow your hands"
+            : "Calibrated: left hand " + (laserClicks[0] > 0 ? "yes" : "no") + ", right hand " + (laserClicks[1] > 0 ? "yes" : "no");
     }
 }

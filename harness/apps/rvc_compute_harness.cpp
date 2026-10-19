@@ -30,13 +30,13 @@
 
 using Microsoft::WRL::ComPtr;
 
-static const uint32_t RAM_BASE = 0x80000000u, RAM_SIZE = 0x08000000u;   // as rvc_cpu's
+static const uint32_t RAM_BASE = 0x80000000u, RAM_SIZE = 0x12000000u;   // as rvc_cpu's
 static const uint32_t CON = 0x876b8280u;   // docs/machine/console.md: host words, guest words, the ring
 static const uint32_t CON_BYTES = 0x120u, RING = 0x20u, RING_SIZE = 256;
 static const uint32_t DEC_BYTES = 2 * RAM_SIZE;   // decoded instructions: 8 bytes a word of RAM
 // a core's words (rv32_min_fast.hlsl): 128 of them from core * 512 bytes
 static const uint32_t STATE_WORDS = 128, S_PC = 80, S_PRIV = 81, S_RES = 83, S_TCMP = 84, S_RAN = 89, S_INSTR = 93;
-static const uint32_t MARK_BYTES = (65536 + 64 + 32768 + 1024 + 32768) * 4;   // the shader's page marks and lists (rv32_min_fast.hlsl, M_)
+static const uint32_t MARK_BYTES = (3 * 73728 + 128 + 1024 + 32768) * 4;   // the shader's page marks and lists (rv32_min_fast.hlsl, M_)
 
 struct Options {
     std::string shader = "experiments/rv32_min/rv32_min_fast.hlsl";

@@ -4,9 +4,9 @@
 the compute shader `experiments/rv32_min/rv32_min_fast.hlsl`: every draw of it one file with no
 includes.
 
-- `tick.hlsl` (803 lines): the tick, every core of the machine. Its vertex, geometry and fragment
+- `tick.hlsl` (818 lines): the tick, every core of the machine. Its vertex, geometry and fragment
   shaders, and with `TICK_UNPACK` the pass that copies its eight targets into the state.
-- `commit.hlsl` (335 lines): the commit. The state rows, the bands of RAM something other than a
+- `commit.hlsl` (345 lines): the commit. The state rows, the bands of RAM something other than a
   core changed (the GPU device's picture copied back, its control words, the host's zap), the
   cores' stores as points (`COMMIT_POINTS`, `commit_geom`), and the copy of those into the other
   buffer (`COMMIT_COPY`); at `_Init` RAM from the image.

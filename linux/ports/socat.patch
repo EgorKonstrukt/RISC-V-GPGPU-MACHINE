@@ -1,0 +1,22 @@
+--- a/sycls.c
++++ b/sycls.c
+@@ -933,15 +933,11 @@
+ 
+ #if WITH_SYCLS
+ 
++/* No MMU: a fork is a vfork, and socat's child returns and runs on in the parent's memory */
+ pid_t Fork(void) {
+-   pid_t pid;
+-   int _errno;
+-   Debug("fork()");
+-   pid = fork();
+-   _errno = errno;
+-   Debug1("fork() -> %d", pid);	/* attention: called twice! */
+-   errno = _errno;
+-   return pid;
++   Error("fork(): this machine has no MMU: socat runs without its fork option here");
++   errno = ENOSYS;
++   return -1;
+ }
+ 
+ #endif /* WITH_SYCLS */

@@ -1,14 +1,17 @@
 Shader "ShaderEmu/Machine"
 {
-    // The machine's Commit pass (experiments/rvc_opt/main.shader's) and the GPU device's control
-    // pass, drawn by EmuMachine.cs with VRCGraphics.Blit between two state textures. The CPUTick
-    // pass is MachineTick.shader: a file of its own, so that nothing changed here or in the GPU's
+    // The machine's commit of the state rows (experiments/rvc_opt/main.shader's, RAM in one
+    // texture), the GPU device's control pass and the passes around them, drawn by EmuMachine.cs
+    // with VRCGraphics.Blit; none reads the texture it draws. The CPUTick pass is
+    // MachineTick.shader: a file of its own, so that nothing changed here or in the GPU's
     // sources makes Unity compile it again (four minutes).
     // A material's numbers are floats, exact to 24 bits, so 32-bit values arrive as two halves.
     Properties
     {
-        _SelfTexture2D ("State before the pass", 2D) = "black" {}
-        _TickState ("CPU state area after the tick", 2D) = "black" {}
+        _SelfTexture2D ("The state", 2D) = "black" {}
+        _TickState ("The state rows after the tick", 2D) = "black" {}
+        _Stage ("The commit's stage (MachineGather.shader)", 2D) = "black" {}
+        _Window ("The rows the control pass drew", 2D) = "black" {}
         [ToggleUI] _Init ("Init", Int) = 0
         [ToggleUI] _InitRaw ("Init directly from _Data_RAM_RAW", Int) = 0
         _Ticks ("Ticks per Frame", Int) = 2048
@@ -78,56 +81,50 @@ Shader "ShaderEmu/Machine"
 
         Pass
         {
+            // The 64 state rows after the commit, from the tick's texture and the stage, into the
+            // state (RAM is MachineCommitPoints.shader's).
             Name "Commit"
 
             CGPROGRAM
             #pragma target 5.0
             #pragma vertex blit_vert
-            #pragma geometry blit_bands_geom
+            #pragma geometry state_geom
             #pragma fragment frag
             #pragma editor_sync_compilation
 
             #define PASS_COMMIT
             #define GPU_DEVICE
-            #define BLIT_BANDS
 
             #include "UnityCG.cginc"
             #include "MachineBlit.cginc"
-
+            #include "MachineWindow.cginc"
             #include "MachineCommit.cginc"
 
-            // Those, the ones of the commit before (the first commit after the start draws all)
-            // and what the control pass changed since.
-            uint blit_bands() {
-                return commit_bands_changed() | STATE_TEX_HART(uint2(41, 0), 0).b | CONTROL_BANDS;
+            [maxvertexcount(4)]
+            void state_geom(triangle blit_v2f corners[3], uint which : SV_PrimitiveID, inout TriangleStream<blit_v2f> stream) {
+                if (which == 0) machine_rows(stream, 0.0, 64.0, STATE_TEX_HEIGHT);
             }
 
             uint4 frag(blit_v2f i) : SV_Target {
-                return commit_texel((uint2)i.vertex.xy);
+                return ram_state_texel((uint2)i.vertex.xy);
             }
             ENDCG
         }
 
         Pass
         {
+            // From the state into the window: pixel (x, r) is the state's (x, window_state_row(r)).
             Name "GPUControl"
 
             CGPROGRAM
             #pragma target 5.0
             #pragma vertex blit_vert
-            #pragma geometry blit_bands_geom
             #pragma fragment frag
             #pragma editor_sync_compilation
 
-            #define BLIT_BANDS
             #include "UnityCG.cginc"
             #include "MachineBlit.cginc"
-
-            // Its own bands, and the ones the commit just changed: the texture this pass draws
-            // into is the one the commit read.
-            uint blit_bands() {
-                return _SelfTexture2D[uint2(41, 0)].b | CONTROL_BANDS;
-            }
+            #include "MachineWindow.cginc"
 
             uniform float4 _InputPointer;
             uniform uint _InputButtons, _InputKeySeq, _InputKeyCount;
@@ -187,6 +184,7 @@ Shader "ShaderEmu/Machine"
                 _NetTxAck = (_NetTxAckLo & 0xffff) | (_NetTxAckHi << 16);
                 _NetRxSeq = (_NetRxSeqLo & 0xffff) | (_NetRxSeqHi << 16);
                 uint2 pos = (uint2)i.vertex.xy;
+                pos.y = window_state_row(pos.y);
                 if (_GpuDrawn == 0 && pos.y >= 64) {
                     uint index = (pos.y - 64) * 2048 + pos.x;
                     if (index == GPU_CTRL || index == GPU_COPY) return _SelfTexture2D[pos];
@@ -200,7 +198,7 @@ Shader "ShaderEmu/Machine"
         {
             // The tick's eight targets, into the tick's texture as the state has its rows (as
             // main.shader's TICK_UNPACK): core 0's rectangle and the workers' band. What the tick
-            // did not draw (a worker with nothing to run) is the state as it was.
+            // did not draw (a worker with nothing to run, the rest of the 64 rows) is the state as it was.
             Name "Unpack"
 
             CGPROGRAM
@@ -255,8 +253,8 @@ Shader "ShaderEmu/Machine"
 
             uint4 frag(blit_v2f i) : SV_Target {
                 uint2 pos = (uint2)i.vertex.xy;
-                if (pos.x < 64) return pos.y < TICK_STATE_ROWS ? tick_out(pos.x & 7, uint2(pos.x >> 3, pos.y)) : (uint4)0;
-                if (pos.y >= WORKER_BAND_ROWS) return (uint4)0;
+                if (pos.x < 64) return pos.y < TICK_STATE_ROWS ? tick_out(pos.x & 7, uint2(pos.x >> 3, pos.y)) : _SelfTexture2D[pos];
+                if (pos.y >= WORKER_BAND_ROWS) return _SelfTexture2D[pos];
                 if (_Init) return _SelfTexture2D[pos];
                 MC_GEO_READ
                 if ((mc_geo.r & 1) != 0) return (uint4)0;   // being laid out anew
@@ -265,6 +263,40 @@ Shader "ShaderEmu/Machine"
                 if (hart == 0 || mc_idle()) return _SelfTexture2D[pos];
                 // a worker's texel: in its block's column for this tile
                 return tick_out(pos.x & 7, mc_block_of(hart) + uint2(tile - mc_tile0, pos.y & 7));
+            }
+            ENDCG
+        }
+
+        Pass
+        {
+            // The window the control pass drew, into the state's rows it stands for.
+            Name "WindowBack"
+
+            CGPROGRAM
+            #pragma target 5.0
+            #pragma vertex blit_vert
+            #pragma geometry window_geom
+            #pragma fragment frag
+
+            #include "UnityCG.cginc"
+            #include "MachineBlit.cginc"
+            #include "MachineWindow.cginc"
+
+            Texture2D<uint4> _Window;
+
+            [maxvertexcount(12)]
+            void window_geom(triangle blit_v2f corners[3], uint which : SV_PrimitiveID, inout TriangleStream<blit_v2f> stream) {
+                if (which != 0) return;
+                float rows = 9280.0;   // STATE_TEX_HEIGHT (src/types.cginc)
+                machine_rows(stream, WINDOW_CONTROL, 1.0, rows);
+                machine_rows(stream, WINDOW_COUNTS, 1.0, rows);
+                machine_rows(stream, WINDOW_NET, WINDOW_ROWS - 2.0, rows);
+            }
+
+            uint4 frag(blit_v2f i) : SV_Target {
+                uint2 pos = (uint2)i.vertex.xy;
+                uint r = pos.y == WINDOW_CONTROL ? 0 : pos.y == WINDOW_COUNTS ? 1 : 2 + pos.y - WINDOW_NET;
+                return _Window[uint2(pos.x, r)];
             }
             ENDCG
         }

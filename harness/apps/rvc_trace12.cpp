@@ -2,7 +2,7 @@
 //
 // It exists for profilers that only attach to D3D12 (Nsight GPU Trace). The shader bytecode
 // is the same FXC output rvc_harness uses (shared cache), and the frame is the same two
-// draws: CPUTick on the 64x64 state area, then Commit on the whole 2048x4096 texture.
+// draws: CPUTick on the 64x64 state area, then Commit on the whole 2048x9280 texture.
 // There is no console I/O here; use rvc_harness --dxc to interact with the guest. At exit it
 // prints the same BENCH line as rvc_harness --bench, so the state hash can be compared.
 
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
         cl->ResourceBarrier(2, fromCopy);
 
         // Zone 2: Commit on the whole texture, then the buffers swap roles.
-        draw(1, 1024, 2048, 2048, 4096);
+        draw(1, 1024, H / 2.0f, 2048, (float)H);
         D3D12_RESOURCE_BARRIER swapStates[2] = {
             transition(state[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
             transition(state[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)};

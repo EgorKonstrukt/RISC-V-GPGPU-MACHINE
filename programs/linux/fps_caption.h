@@ -18,9 +18,9 @@ static struct {
     uint32_t address, row;      // the window's buffer as last seen
     uint32_t* caption;          // the caption's first row above the window's first pixel, or 0
     int width;                  // of the program's window under that caption
-    uint32_t since, frames;
-    int left, used;             // where the text was drawn and how wide, 0: nothing drawn
-    uint32_t under[FPS_H][FPS_W], drawn[FPS_H][FPS_W];   // the caption's pixels there, and ours
+    uint32_t since, frames, started;
+    int left, used;             // the text's box, and whether its pixels below are taken
+    uint32_t under[FPS_H][FPS_W + 1], edge[FPS_H][2];   // the caption's pixels there, and the two left of it
 } fps_state = { -1 };
 
 // 5 x 7 each: the digits, then f, p, s, m and the point
@@ -77,16 +77,21 @@ static int fps_number(int* to, uint32_t v, int decimals) {
 }
 
 // A frame was shown. `now` is the machine's clock in milliseconds (the word at 0x87000034).
-// Once a second the caption gets the rate and the mean frame's milliseconds, drawn on the
-// caption's own pixels in its text's colour (dark on a light caption, light on a dark one).
+// Once a second (a slow program: over three frames or 2.5 s) the caption gets the rate and the
+// mean frame's time, drawn on the caption's own pixels in its text's colour (dark on a light
+// caption, light on a dark one). Under 10 frames a second the rate has a tenth.
 static void fps_caption(const GR_WINDOW_INFO* info, uint32_t now) {
     uint32_t elapsed = now - fps_state.since, rate, tenths, *to, ink, shade, sum = 0;
-    int x, y, k, n = 0, glyph[16], left, width, kept;
+    int x, y, k, n = 0, glyph[20], left, width, box, changed;
 
+    if (!fps_state.started) {   // (counted from the first frame, not from the machine's start)
+        fps_state.started = 1, fps_state.since = now;
+        return;
+    }
     fps_state.frames++;
-    if (elapsed < 1000) return;
-    rate = fps_state.frames * 1000 / elapsed;
-    tenths = elapsed * 10 / fps_state.frames;
+    if (elapsed < 1000 || (elapsed < 2500 && fps_state.frames < 3)) return;   // (a slow program's mean of a few)
+    rate = (uint32_t)((uint64_t)fps_state.frames * 10000 / elapsed);   // tenths of a frame a second
+    tenths = elapsed * 10 / fps_state.frames;                           // of a millisecond a frame
     fps_state.frames = 0;
     fps_state.since = now;
     if (info->surface_address != fps_state.address || (info->surface_row && info->surface_row != fps_state.row)) {
@@ -94,37 +99,45 @@ static void fps_caption(const GR_WINDOW_INFO* info, uint32_t now) {
         fps_state.used = 0;
     }
     if (!fps_state.caption) return;
-    n = fps_number(glyph, rate > 999 ? 999 : rate, 0);
+    n = rate < 100 ? fps_number(glyph, rate, 1) : fps_number(glyph, rate > 9999 ? 999 : rate / 10, 0);
     glyph[n++] = -1, glyph[n++] = FPS_GLYPH_F, glyph[n++] = FPS_GLYPH_F + 1, glyph[n++] = FPS_GLYPH_F + 2, glyph[n++] = -1;
-    n += tenths < 1000 ? fps_number(glyph + n, tenths, 1) : fps_number(glyph + n, tenths > 9999 ? 999 : tenths / 10, 0);
-    glyph[n++] = -1, glyph[n++] = FPS_GLYPH_M, glyph[n++] = FPS_GLYPH_F + 2;
+    if (tenths < 100000) {
+        n += tenths < 10000 ? fps_number(glyph + n, tenths, 1) : fps_number(glyph + n, tenths / 10, 0);
+        glyph[n++] = -1, glyph[n++] = FPS_GLYPH_M, glyph[n++] = FPS_GLYPH_F + 2;
+    } else {
+        // ten seconds a frame and more: seconds
+        n += fps_number(glyph + n, tenths / 1000 > 9999 ? 9999 : tenths / 1000, 1);
+        glyph[n++] = -1, glyph[n++] = FPS_GLYPH_F + 2;
+    }
     width = 0;
     for (k = 0; k < n; k++) width += glyph[k] == FPS_GLYPH_POINT ? 3 : 6;
-    // right-aligned left of the caption's three boxes (18 wide each, nanowm.h)
-    left = fps_state.width - 3 * 18 - 10 - width;
-    if (left < fps_state.width / 2) return;
-    // the caption as the window manager painted it: what is there, unless it is our last text
-    kept = fps_state.used > 0;
-    for (y = 0; y < FPS_H && kept; y++)
-        for (x = 0, to = fps_state.caption + (FPS_TOP + y) * fps_state.row + fps_state.left; x < fps_state.used; x++)
-            if (to[x] != fps_state.drawn[y][x]) { kept = 0; break; }
+    // a box of the widest text's room, left of the caption's three boxes (18 wide each, nanowm.h)
+    box = fps_state.width - 3 * 18 - 10 - FPS_W;
+    if (box < fps_state.width / 3) return;   // (the title keeps its room)
+    // The box's caption pixels are taken once, and again when the two columns left of it have
+    // changed (the caption painted anew: focus, title): our own text is never taken for them,
+    // even where a list of the window system's put an older text back after we wrote.
+    changed = !fps_state.used || box != fps_state.left;
+    for (y = 0; y < FPS_H && !changed; y++)
+        for (x = 0, to = fps_state.caption + (FPS_TOP + y) * fps_state.row + box - 2; x < 2; x++)
+            if (to[x] != fps_state.edge[y][x]) changed = 1;
     for (y = 0; y < FPS_H; y++) {
-        to = fps_state.caption + (FPS_TOP + y) * fps_state.row;
-        if (kept)
-            for (x = 0; x < fps_state.used; x++) to[fps_state.left + x] = fps_state.under[y][x];
-        for (x = 0; x < width + 1; x++) fps_state.under[y][x] = to[left + x];
+        to = fps_state.caption + (FPS_TOP + y) * fps_state.row + box;
+        if (changed) {
+            for (x = 0; x < FPS_W + 1; x++) fps_state.under[y][x] = to[x];
+            fps_state.edge[y][0] = to[-2], fps_state.edge[y][1] = to[-1];
+        } else
+            for (x = 0; x < FPS_W + 1; x++) to[x] = fps_state.under[y][x];
     }
+    fps_state.left = box, fps_state.used = 1;
+    left = box + FPS_W - width;
     for (y = 0; y < FPS_H; y++)
         for (x = 0; x < width; x += 4) {
-            uint32_t c = fps_state.under[y][x];
+            uint32_t c = fps_state.under[y][FPS_W - width + x];
             sum += ((c >> 16 & 255) * 3 + (c >> 8 & 255) * 6 + (c & 255)) / 10;
         }
     ink = sum / (FPS_H * ((width + 3) / 4)) > 140 ? 0xff101828u : 0xfff4f8ffu;
     shade = ink == 0xff101828u ? 0xffffffffu : 0xff000000u;
-    for (y = 0; y < FPS_H; y++) {
-        to = fps_state.caption + (FPS_TOP + y) * fps_state.row + left;
-        for (x = 0; x < width + 1; x++) to[x] = fps_state.under[y][x];
-    }
     // the shadow one pixel down and right, half blended, then the letters
     for (k = 0, x = 0; k < n; x += glyph[k] == FPS_GLYPH_POINT ? 3 : 6, k++)
         for (y = 0; y < 7 && glyph[k] >= 0; y++)
@@ -138,9 +151,5 @@ static void fps_caption(const GR_WINDOW_INFO* info, uint32_t now) {
             for (int i = 0; i < 5; i++)
                 if (fps_font[glyph[k]][y] & (16 >> i))
                     fps_state.caption[(FPS_TOP + 3 + y) * fps_state.row + left + x + i] = ink;
-    for (y = 0; y < FPS_H; y++)
-        for (x = 0, to = fps_state.caption + (FPS_TOP + y) * fps_state.row + left; x < width + 1; x++)
-            fps_state.drawn[y][x] = to[x];
-    fps_state.left = left, fps_state.used = width + 1;
 }
 #endif

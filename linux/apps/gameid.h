@@ -10,7 +10,7 @@
 
 #define GAME_WORD 26	/* of the control words: 0x68 / 4 */
 
-enum { GAME_NONE, GAME_DOOM, GAME_QUAKE, GAME_CLASSICUBE, GAME_TDAWN, GAME_RALERT, GAME_NES, GAME_QUAKE3, GAME_PHYS };
+enum { GAME_NONE, GAME_DOOM, GAME_QUAKE, GAME_CLASSICUBE, GAME_TDAWN, GAME_RALERT, GAME_NES, GAME_QUAKE3, GAME_PHYS, GAME_HALFLIFE };
 
 /* By the name the kernel has for the process (/proc/PID/comm). */
 static int
@@ -20,6 +20,7 @@ game_of(const char *comm)
 		{ "doom", GAME_DOOM }, { "quake", GAME_QUAKE }, { "classicube", GAME_CLASSICUBE },
 		{ "tdawn", GAME_TDAWN }, { "ralert", GAME_RALERT }, { "nes", GAME_NES }, { "quake3", GAME_QUAKE3 },
 		{ "nxphys", GAME_PHYS },	/* both hands take boxes: docs/apps/physics.md, "The controls" */
+		{ "halflife", GAME_HALFLIFE },
 	};
 	unsigned i;
 

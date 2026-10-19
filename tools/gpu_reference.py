@@ -19,7 +19,8 @@ TARGET = 2048
 
 class Machine:
     def __init__(self, path):
-        tex = np.memmap(path, dtype=np.uint32, mode='r', offset=32).reshape(4096, 2048, 4)
+        rows = int(np.fromfile(path, dtype=np.uint32, count=4)[3])   # the header's height
+        tex = np.memmap(path, dtype=np.uint32, mode='r', offset=32).reshape(rows, 2048, 4)
         self.words = tex[64:].reshape(-1)
         self.rom_words = None
 

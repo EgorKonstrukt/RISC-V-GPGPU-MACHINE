@@ -1,6 +1,7 @@
-/* nxide: a small place to write C in, build it and run it (docs/apps/ide.md): the text coloured
- * by a lexer (syntax.h), every change kept (text.h), the machine's own compiler with its
- * complaints marked at their lines, and the program run below or under the debugger (debug.h). */
+/* nxide: a small place to write C, JavaScript and Python in, build it and run it (docs/apps/ide.md): the
+ * text coloured by a lexer (syntax.h), every change kept (text.h), the machine's own compiler (or
+ * qjsc, MicroPython) with its complaints marked at their lines, and the program run below or under
+ * the debugger (debug.h; ide-pydbg.py for Python). */
 #define _GNU_SOURCE
 #include "ui.h"
 #include "ui_files.h"
@@ -8,6 +9,7 @@
 #include "ui_menu.h"
 #include "ui_ask.h"
 #include "ui_glyph.h"
+#include "registry.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -26,6 +28,8 @@
 #define DOCS 12
 #define ED_GUTTER (ui_seven ? MWRGB(244, 244, 244) : MWRGB(232, 232, 232))
 #define OUT_MOST 600
+/* what MicroPython is told to look at a file with (its name is the next word) */
+#define PY_COMPILE "import sys;compile(open(sys.argv[1]).read(),sys.argv[1],'exec')"
 #define EVENTS (GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_UPDATE | GR_EVENT_MASK_BUTTON_DOWN | \
 	GR_EVENT_MASK_BUTTON_UP | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_TIMEOUT)
 
@@ -33,10 +37,12 @@ enum {
 	C_NONE, C_NEW, C_OPEN, C_SAVE, C_SAVE_AS, C_EXIT, C_UNDO, C_REDO, C_CUT, C_COPY, C_PASTE, C_DELETE, C_FIND, C_FIND_NEXT, C_GOTO,
 	C_ALL, C_LINE, C_WORD, C_INDENT, C_UNINDENT, C_COMMENT, C_PANEL, C_NUMBERS, C_CHECKING, C_BUILD, C_RUN, C_DEBUG, C_STOP,
 	C_OVER, C_INTO, C_OUT, C_MARK, C_UNMARK_ALL, C_KEYS, C_ABOUT, C_CLOSE, C_NEXT_TAB, C_PREV_TAB, C_TREE, C_TREE_HERE,
-	C_REPLACE, C_FIND_PREV, C_SAVE_ALL, C_EXAMPLE	/* C_EXAMPLE + n: the nth example */
+	C_REPLACE, C_FIND_PREV, C_SAVE_ALL, C_PROJECT_OPEN, C_PROJECT_CLOSE,
+	C_EXAMPLE	/* C_EXAMPLE + n: the nth example */
 };
 enum { P_OUTPUT, P_PROBLEMS, P_VARIABLES, P_STACK, PANELS };
-enum { J_NONE, J_BUILD, J_RUN, J_CHECK, J_FLAT };	/* J_FLAT: the ELF a build linked made a flat program */
+/* J_FLAT: the ELF a build linked made a flat program; J_PYDBG: a Python program under ide-pydbg.py */
+enum { J_NONE, J_BUILD, J_RUN, J_CHECK, J_FLAT, J_PYDBG };
 enum { ASK_NONE, ASK_FIND, ASK_GOTO, ASK_SAVE, ASK_REPLACE, ASK_WITH };
 
 static GR_WINDOW_ID window;
@@ -44,7 +50,9 @@ static GR_GC_ID text_gc, ground_gc, bar_gc;	/* the editor's text, its white grou
 static int width = 780, height = 520;
 static char path[300], program[320], notice[160];
 static int top, left, rows, columns, gutter;	/* gutter: where the gutter ends, from the window's left */
-static int ex, tree_on = 1;	/* ex: where the editor begins, right of the tree */
+static int ex, tree_on;	/* ex: where the editor begins, right of the tree; the tree is shown */
+static int tree_wanted = 1;	/* Ctrl+B: whether a project's tree is shown */
+static char project[128];	/* the project's folder, whose tree is at the left; none: no tree */
 static int numbers_on = 1, panel_on = 1, panel = P_OUTPUT, checking_on = 1;
 static int dragging, selecting, leaving;
 static unsigned click_at;
@@ -63,7 +71,7 @@ static int asking;
 static char answer[200], sought[64], replacement[64];
 
 /* what runs beside: a build, the program, or a quiet check of what is being typed */
-static struct { pid_t pid; int fd, kind, heard; } job;	/* heard: its output wakes the loop (GrRegisterInput) */
+static struct { pid_t pid; int fd, kind, heard, lang; } job;	/* heard: its output wakes the loop (GrRegisterInput) */
 static int job_unseen;		/* its end was not seen (no status): nothing is concluded from it */
 static int then_do;		/* what a build that works goes on to: C_RUN or C_DEBUG */
 static char job_text[8192];	/* a build's or a check's own lines, for the problems */
@@ -102,14 +110,18 @@ static void doc_show(int i);
 static char variables[48][160], stack[16][160];
 static int variable_count, variable_top, stack_count;
 
-static char examples[12][40];
+static char examples[12][40], example_ends[12][4], example_labels[12][56];	/* a name, its ending, its menu's line */
 static int example_count;
+/* the Python debugger: its state as debug.h's, the line it stopped at, and its two pipes */
+static int py_state = DBG_GONE, py_line, py_tell = -1, py_hear = -1, py_heard;
+static char py_part[200];
 static int print_on;		/* NXIDE_PRINT: what happens, on the console, for a test */
 static char script[2000];	/* NXIDE_SCRIPT: commands done one after another, when nothing runs */
 static int scripted_run;	/* there was a script: nothing asks in a window, even after its last word */
 
 static void command(int id);
 static void draw_all(void);
+static void py_end(void);
 
 static unsigned
 milliseconds(void)
@@ -148,7 +160,40 @@ editor_y(void)
 static int
 stop_on(int line)
 {
-	return dbg_state == DBG_STOPPED && doc_now == run_doc && dbg_line_now == line + 1;
+	return doc_now == run_doc && ((dbg_state == DBG_STOPPED && dbg_line_now == line + 1) || (py_state == DBG_STOPPED && py_line == line + 1));
+}
+
+/* A program is held at a line, by either debugger. */
+static int
+held(void)
+{
+	return dbg_state == DBG_STOPPED || py_state == DBG_STOPPED;
+}
+
+/* The language of a file, by its ending. */
+static int
+lang_of(const char *file)
+{
+	const char *dot = strrchr(file, '.');
+
+	return !dot || strchr(dot, '/') ? SX_C : !strcmp(dot, ".js") || !strcmp(dot, ".mjs") ? SX_JS : !strcmp(dot, ".py") ? SX_PY : SX_C;
+}
+
+/* A text cut to `room` pixels of the look's font, with "..." at its end when it was cut. */
+static const char *
+fitted(const char *text, int room)
+{
+	static char out[2][160];
+	static int which;
+	int n = (int)strlen(text), dots = ui_width(&ui_var_widths, ui_var, "...", 3);
+	char *to = out[which ^= 1];
+
+	if (ui_width(&ui_var_widths, ui_var, text, n) <= room)
+		return text;
+	for (n = n < 150 ? n : 150; n > 0 && ui_width(&ui_var_widths, ui_var, text, n) + dots > room; n--)
+		continue;
+	snprintf(to, sizeof out[0], "%.*s...", n, text);
+	return n || dots <= room ? to : "";
 }
 
 static int
@@ -161,6 +206,7 @@ static void
 resized(int w, int h)
 {
 	width = w, height = h;
+	tree_on = project[0] && tree_wanted;	/* (a tree is a project's, or there is none) */
 	ex = tree_on ? TREE_W + 3 : 0;
 	gutter = ex + (numbers_on ? 5 * ui_fw + 16 : 16);
 	rows = (panel_y() - editor_y()) / ui_fh;
@@ -742,15 +788,16 @@ static int tools_shown = -1;	/* tools_now() as the row was last drawn */
 static int
 can(int id)
 {
-	int idle = job.kind != J_BUILD && job.kind != J_RUN && job.kind != J_FLAT && dbg_state == DBG_GONE;
+	int idle = job.kind != J_BUILD && job.kind != J_RUN && job.kind != J_FLAT && job.kind != J_PYDBG && dbg_state == DBG_GONE;
 
 	switch (id) {
 	case C_UNDO: return tx_done_count > 0;
 	case C_REDO: return tx_undone_count > 0;
 	case C_BUILD: case C_RUN: return idle;
-	case C_DEBUG: return idle || dbg_state == DBG_STOPPED;
+	case C_DEBUG: return (idle && sx_lang != SX_JS) || held();	/* (QuickJS cannot stop at a line) */
 	case C_STOP: return !idle;
-	case C_OVER: case C_INTO: case C_OUT: return dbg_state == DBG_STOPPED;
+	case C_OVER: case C_INTO: case C_OUT: return held();
+	case C_PROJECT_CLOSE: return project[0] != 0;
 	}
 	return 1;
 }
@@ -759,7 +806,7 @@ can(int id)
 static int
 tools_now(void)
 {
-	int i, bits = dbg_state == DBG_STOPPED;
+	int i, bits = held();
 
 	for (i = 0; i < TOOLS; i++)
 		bits = bits << 1 | can(tools[i].id);
@@ -816,7 +863,7 @@ tool_sign(int id, int cx, int cy, int on)
 		ui_glyph(window, cx, cy, UI_G_PLAY, on ? MWRGB(0, 150, 40) : UI_SHADOW);
 		break;
 	case C_DEBUG:	/* a play sign with a bug at its foot, or a bar before it: go on */
-		if (dbg_state == DBG_STOPPED) {
+		if (held()) {
 			INK(MWRGB(0, 150, 40));
 			GrFillRect(window, ui_gc, cx - 6, cy - 5, 2, 11);
 			ui_glyph_point(window, cx - 2, cy, 5, 1);
@@ -866,7 +913,7 @@ draw_tools_some(int all)
 	if (all)
 		ui_fill(window, 0, MENU_H, width, TOOL_H, UI_FACE);
 	for (i = 0; i < TOOLS; i++) {
-		const char *label = tools[i].id == C_DEBUG && dbg_state == DBG_STOPPED ? "Go on" : tools[i].label;
+		const char *label = tools[i].id == C_DEBUG && held() ? "Go on" : tools[i].label;
 
 		if (!(differ >> (TOOLS - 1 - i) & 1))
 			continue;
@@ -921,6 +968,8 @@ static void
 draw_doc_tabs(void)
 {
 	int y = side_y(), x = ex + 2, i, w, most = doc_count ? (width - ex - 6) / doc_count - 2 : 0, chosen_x = 0, chosen_w = 0;
+
+	most = most > 220 ? 220 : most;
 	char label[80];
 
 	tabs_drawn = doc_now | doc_count << 8 | tx_modified << 16;
@@ -933,7 +982,8 @@ draw_doc_tabs(void)
 		w = w > most ? most : w;
 		doc_tab_x[i] = x, doc_tab_w[i] = w;
 		draw_tab(x, ty, w, th, chosen);
-		ui_text_fit(window, x + 8, ty + (th - 12) / 2, w - 26, label, BLACK);
+		/* a name too long for its tab ends in "...", and its close box stays clear */
+		ui_text(window, x + 8, ty + (th - 12) / 2, fitted(label, w - 26), -1, BLACK, 0);
 		/* its close box */
 		GrSetGCForeground(ui_gc, chosen ? MWRGB(80, 80, 80) : UI_SHADOW);
 		GrLine(window, ui_gc, x + w - 14, ty + th / 2 - 3, x + w - 8, ty + th / 2 + 3);
@@ -1041,6 +1091,8 @@ static void
 tree_read(void)
 {
 	tree_count = 0;
+	if (!project[0])
+		return;
 	tree_add(tree_root, 0);
 	if (tree_top > tree_count - tree_shown())
 		tree_top = tree_count - tree_shown();
@@ -1051,22 +1103,28 @@ tree_read(void)
 static void
 draw_tree(void)
 {
-	static int cells[5] = { -2 }, cells_seven = -1;	/* (each look's sheets have an index of their own) */
+	static int cells[7] = { -2 }, cells_seven = -1;	/* (each look's sheets have an index of their own) */
 	int y0 = side_y(), ly = y0 + TREE_HEAD, lh = panel_y() - ly - 2, shown = tree_shown(), bar = tree_count > shown ? UI_SCROLL_W : 0, i;
 
 	if (!tree_on)
 		return;
 	if (cells[0] == -2 || cells_seven != ui_seven) {
 		cells_seven = ui_seven;
-		static const char *const names[5] = { "folder", "folder-open", "c-source", "c-header", "file" };
+		static const char *const names[7] = { "folder", "folder-open", "c-source", "c-header", "file", "script", "code" };
 
-		for (i = 0; i < 5; i++)
+		for (i = 0; i < 7; i++)
 			cells[i] = ui_icon_of(names[i]);
 	}
 	ui_fill(window, 0, y0, TREE_W + 3, panel_y() - y0, UI_FACE);
 	ui_icon(window, ui_gc, 4, y0 + 3, cells[1], 16);
-	ui_text_fit(window, 24, y0 + 5, TREE_W - 50, tree_root[1] ? leaf_of(tree_root) : "/", BLACK);
-	ui_tool(window, TREE_W - 22, y0 + 2, 20, 18, UI_G_UP, tree_root[1] ? 0 : 2);
+	ui_text(window, 24, y0 + 5, fitted(tree_root[1] ? leaf_of(tree_root) : "/", TREE_W - 50), -1, BLACK, 0);
+	/* the project's close box */
+	ui_bevel(window, TREE_W - 22, y0 + 2, 20, 18, 0);
+	GrSetGCForeground(ui_gc, BLACK);
+	GrLine(window, ui_gc, TREE_W - 15, y0 + 8, TREE_W - 9, y0 + 14);
+	GrLine(window, ui_gc, TREE_W - 15, y0 + 14, TREE_W - 9, y0 + 8);
+	GrLine(window, ui_gc, TREE_W - 14, y0 + 8, TREE_W - 8, y0 + 14);
+	GrLine(window, ui_gc, TREE_W - 14, y0 + 14, TREE_W - 8, y0 + 8);
 	ui_fill(window, 2, ly, TREE_W - 2, lh, WHITE);
 	for (i = 0; i < shown && tree_top + i < tree_count; i++) {
 		int k = tree_top + i, ry = ly + 2 + i * TREE_ROW, x = 6 + tree[k].depth * 12, chosen = !strcmp(tree[k].path, path), cell;
@@ -1079,9 +1137,10 @@ draw_tree(void)
 			point_down(x + 3, ry + 7, 3);
 		else if (tree[k].folder)
 			ui_glyph_point(window, x + 1, ry + 9, 3, 1);
-		cell = tree[k].folder ? cells[tree[k].open] : dot && !strcmp(dot, ".c") ? cells[2] : dot && !strcmp(dot, ".h") ? cells[3] : cells[4];
+		cell = tree[k].folder ? cells[tree[k].open] : dot && !strcmp(dot, ".c") ? cells[2] : dot && !strcmp(dot, ".h") ? cells[3] :
+		       dot && !strcmp(dot, ".js") ? cells[5] : dot && !strcmp(dot, ".py") ? cells[6] : cells[4];
 		ui_icon(window, ui_gc, x + 9, ry + 1, cell, 16);
-		ui_text_fit(window, x + 28, ry + 3, TREE_W - 8 - bar - x - 28, name, chosen ? WHITE : BLACK);
+		ui_text(window, x + 28, ry + 3, fitted(name, TREE_W - 8 - bar - x - 28), -1, chosen ? WHITE : BLACK, 0);
 	}
 	if (bar)
 		ui_scrollbar(window, TREE_W - 2 - UI_SCROLL_W, ly + 2, lh - 4, tree_count, shown, tree_top);
@@ -1412,10 +1471,70 @@ out_bytes(const char *bytes, int count)
 	out_part[n] = 0;
 }
 
+/* Whether a file named in a complaint is the one shown or its check's copy. */
+static int
+ours(const char *name, int length)
+{
+	const char *check = sx_lang == SX_JS ? "/tmp/ide-check.js" : sx_lang == SX_PY ? "/tmp/ide-check.py" : "/tmp/ide-check.c";
+
+	return (length == (int)strlen(path) && !strncmp(name, path, (size_t)length)) ||
+	       (length == (int)strlen(check) && !strncmp(name, check, (size_t)length));
+}
+
+/* An interpreter's complaint as one problem. QuickJS: "TypeError: what", then "    at f (FILE:LINE:COLUMN)"
+ * lines, the innermost first; MicroPython: "Traceback", '  File "FILE", line LINE' lines, the
+ * innermost last, and "TypeError: what". The line is the innermost in this file. */
+static void
+script_problems(const char *text)
+{
+	struct problem *p = &problems[0];
+	char last[150] = "";
+	int line = 0, found = 0, traced = 0;
+
+	p->text[0] = 0;
+	while (*text) {
+		const char *end = strchr(text, '\n'), *at, *colon;
+		int length = end ? (int)(end - text) : (int)strlen(text);
+
+		if (sx_lang == SX_JS && !strncmp(text, "    at ", 7)) {
+			if (!traced)
+				snprintf(p->text, sizeof p->text, "%s", last), traced = 1;
+			/* FILE:LINE:COLUMN, after a "(" when the frame has a function's name */
+			at = memchr(text, '(', (size_t)length) ? (const char *)memchr(text, '(', (size_t)length) + 1 : text + 7;
+			colon = memrchr(at, ':', (size_t)(text + length - at));
+			while (colon && colon > at && colon[-1] != ':' && isdigit((unsigned char)colon[-1]))
+				colon--;
+			if (colon && colon > at && colon[-1] == ':' && !found && ours(at, (int)(colon - 1 - at)))
+				line = atoi(colon), found = 1;
+		} else if (sx_lang == SX_PY && !strncmp(text, "  File \"", 8)) {
+			at = text + 8;
+			colon = memchr(at, '"', (size_t)(text + length - at));
+			if (colon && ours(at, (int)(colon - at)) && strstr(colon, ", line "))
+				line = atoi(strstr(colon, ", line ") + 7);
+			traced = 1;
+		} else if (length) {
+			snprintf(last, sizeof last, "%.*s", length < 149 ? length : 149, text);
+			if (sx_lang == SX_PY && traced && text[0] != ' ' && strncmp(text, "Traceback", 9))
+				snprintf(p->text, sizeof p->text, "%s", last);
+		}
+		text += length + (end != NULL);
+	}
+	problem_count = problem_top = 0;
+	if (!traced)
+		return;
+	p->line = line, p->error = 1;
+	memset(p->text + strlen(p->text), 0, sizeof p->text - strlen(p->text));	/* (whole: two lists of them are compared) */
+	problem_count = 1;
+}
+
 /* The compiler's lines ("file:LINE: error: what") as problems at their lines. */
 static void
 problems_from(const char *text)
 {
+	if (sx_lang != SX_C) {
+		script_problems(text);
+		return;
+	}
 	problem_count = problem_top = 0;
 	while (*text && problem_count < (int)(sizeof problems / sizeof problems[0])) {
 		const char *end = strchr(text, '\n'), *at;
@@ -1475,7 +1594,7 @@ problems_set(const char *text)
 static int
 text_sums(unsigned sums[2])
 {
-	unsigned a = 2166136261u, b = 5381;
+	unsigned a = 2166136261u ^ (unsigned)sx_lang, b = 5381;	/* (C's sums are clean.py's) */
 	int i, closed = 1;
 
 	for (i = 0; i < tx_count; i++) {
@@ -1555,7 +1674,7 @@ job_start(int kind, char *const words[])
 	}
 	close(ends[1]);
 	fcntl(ends[0], F_SETFL, O_NONBLOCK);
-	job.fd = ends[0], job.kind = kind;
+	job.fd = ends[0], job.kind = kind, job.lang = sx_lang;
 	GrRegisterInput(job.fd);
 	job.heard = 1;
 	job_length = 0;
@@ -1581,6 +1700,8 @@ job_stop(void)
 	waitpid(job.pid, NULL, 0);
 	job_unheard();
 	close(job.fd);
+	if (job.kind == J_PYDBG)
+		py_end();
 	job.kind = J_NONE;
 }
 
@@ -1682,21 +1803,144 @@ debug_begin(void)
 	draw_status();
 }
 
+/* ---- the Python debugger: ide-pydbg.py runs the program under sys.settrace, is told what to do
+ * through one pipe and says where it stopped through another (docs/apps/ide.md) ---- */
+
+#define PY_TELL "/tmp/ide-dbg.in"
+#define PY_HEAR "/tmp/ide-dbg.out"
+
+/* The marks, then what to do: go, into, over, out. */
+static void
+py_send(const char *what)
+{
+	char line[1200];
+	int i, n = snprintf(line, sizeof line, "marks");
+
+	for (i = 0; i < dbg_mark_count && n < (int)sizeof line - 40; i++)
+		n += snprintf(line + n, sizeof line - (size_t)n, " %d", dbg_marks[i]);
+	n += snprintf(line + n, sizeof line - (size_t)n, "\n%s%s", what, what[0] ? "\n" : "");
+	if (py_tell >= 0 && write(py_tell, line, (size_t)n) == n && what[0])
+		py_state = DBG_RUNNING;
+}
+
+static void
+py_end(void)
+{
+	if (py_heard)
+		GrUnregisterInput(py_hear);
+	if (py_hear >= 0)
+		close(py_hear);
+	if (py_tell >= 0)
+		close(py_tell);
+	py_hear = py_tell = -1;
+	py_heard = 0;
+	py_state = DBG_GONE;
+	py_part[0] = 0;
+	unlink(PY_TELL), unlink(PY_HEAR);
+}
+
+static void
+py_begin(void)
+{
+	char *const words[] = { "micropython", "/usr/share/ide-pydbg.py", path, PY_TELL, PY_HEAR, NULL };
+
+	/* (both ends of each pipe are opened here, read and write: neither open waits for the other side) */
+	unlink(PY_TELL), unlink(PY_HEAR);
+	if (mkfifo(PY_TELL, 0600) || mkfifo(PY_HEAR, 0600) || (py_tell = open(PY_TELL, O_RDWR | O_CLOEXEC)) < 0 ||
+	    (py_hear = open(PY_HEAR, O_RDWR | O_NONBLOCK | O_CLOEXEC)) < 0) {
+		py_end();
+		say("the debugger's pipes could not be made in /tmp");
+		return;
+	}
+	job_start(J_PYDBG, words);
+	if (job.kind != J_PYDBG) {
+		py_end();
+		return;
+	}
+	py_send("");	/* (the marks it starts with: it goes to the first, or with none stops at the first line) */
+	py_state = DBG_RUNNING;
+	GrRegisterInput(py_hear);
+	py_heard = 1;
+	variable_count = stack_count = 0;
+	say("debugging (Variables has the module's names: MicroPython keeps none of a function's own)");
+	draw_tools();
+	draw_status();
+}
+
+/* What the debugger said: "stop LINE", "var NAME = VALUE", "frame NAME, line N", "end". */
+static void
+py_poll(void)
+{
+	char bytes[512], text[160];
+	int n, i, k = (int)strlen(py_part), stopped = 0;
+
+	while (py_hear >= 0 && (n = (int)read(py_hear, bytes, sizeof bytes)) > 0)
+		for (i = 0; i < n; i++) {
+			if (bytes[i] != '\n') {
+				if (k < (int)sizeof py_part - 1)
+					py_part[k++] = bytes[i];
+				continue;
+			}
+			py_part[k] = 0, k = 0;
+			if (!strncmp(py_part, "stop ", 5))
+				py_line = atoi(py_part + 5), variable_count = stack_count = variable_top = 0;
+			else if (!strncmp(py_part, "var ", 4) && variable_count < 48)
+				snprintf(variables[variable_count++], sizeof variables[0], "%.159s", py_part + 4);
+			else if (!strncmp(py_part, "frame ", 6) && stack_count < 16)
+				snprintf(stack[stack_count++], sizeof stack[0], "%.159s", py_part + 6);
+			else if (!strcmp(py_part, "end"))
+				stopped = 1;
+		}
+	py_part[k] = 0;
+	if (!stopped)
+		return;
+	py_state = DBG_STOPPED;
+	if (run_doc >= 0 && run_doc != doc_now)
+		doc_show(run_doc);
+	snprintf(text, sizeof text, "stopped at line %d, in %.120s", py_line, stack_count ? stack[0] : "?");
+	if (strstr(text, ", line "))
+		*strstr(text, ", line ") = 0;
+	say(text);
+	if (print_on) {
+		for (i = 0; i < variable_count; i++)
+			printf("nxide: variable: %s\n", variables[i]);
+		for (i = 0; i < stack_count; i++)
+			printf("nxide: in %s\n", stack[i]);
+	}
+	panel = panel == P_STACK ? P_STACK : P_VARIABLES;
+	if (py_line > 0) {
+		tx_y = py_line - 1 < tx_count ? py_line - 1 : tx_count - 1;
+		tx_x = 0, tx_marked = 0;
+		if (tx_y < top || tx_y >= top + rows)
+			top = tx_y > rows / 3 ? tx_y - rows / 3 : 0;
+	}
+	draw_all();
+}
+
 /* A build that worked, and what it goes on to. */
 static void
 built_ok(void)
 {
 	char text[160];
 
-	snprintf(text, sizeof text, "built: %.100s%s", program, problem_count ? ", with warnings" : "");
+	if (sx_lang != SX_C)
+		snprintf(text, sizeof text, "%.100s: nothing wrong found", leaf_of(path));
+	else
+		snprintf(text, sizeof text, "built: %.100s%s", program, problem_count ? ", with warnings" : "");
 	say(text);
 	if (then_do == C_RUN) {
-		char *const words[] = { program, NULL };
+		char *const words[] = { program, NULL }, *const js[] = { "qjs", "--std", path, NULL }, *const py[] = { "micropython", path, NULL };
 
-		job_start(J_RUN, words);
+		if (sx_lang != SX_C) {
+			snprintf(text, sizeof text, "%s '%.120s'", sx_lang == SX_JS ? "qjs --std" : "micropython", path);
+			out_line(text);
+		}
+		job_start(J_RUN, sx_lang == SX_JS ? js : sx_lang == SX_PY ? py : words);
 		say("running");
 		panel = P_OUTPUT;
-	} else if (then_do == C_DEBUG)
+	} else if (then_do == C_DEBUG && sx_lang == SX_PY)
+		py_begin();
+	else if (then_do == C_DEBUG)
 		debug_begin();
 	then_do = 0;
 	draw_all();
@@ -1717,13 +1961,22 @@ job_ended(int kind, int status)
 			built_ok();
 		return;
 	}
-	if (kind == J_RUN) {
+	if (kind == J_RUN || kind == J_PYDBG) {
+		if (kind == J_PYDBG)
+			py_end();
 		if (WIFSIGNALED(status))
 			snprintf(text, sizeof text, "the program was ended by signal %d (%s)", WTERMSIG(status), strsignal(WTERMSIG(status)));
 		else
 			snprintf(text, sizeof text, "the program ended, with %d", WEXITSTATUS(status));
 		say(text);
 		out_line(text);
+		/* a script that failed: its interpreter's complaint marked at its line */
+		if (job.lang != SX_C && WIFEXITED(status) && WEXITSTATUS(status) && run_doc >= 0) {
+			doc_show(run_doc);
+			problems_from(job_text);
+			if (problem_count && problems[0].line)
+				go_to_line(problems[0].line);
+		}
 		draw_all();
 		return;
 	}
@@ -1740,14 +1993,17 @@ job_ended(int kind, int status)
 	for (i = 0; i < problem_count; i++)
 		errors += problems[i].error;
 	if (errors || !WIFEXITED(status) || WEXITSTATUS(status)) {
-		snprintf(text, sizeof text, "not built: %d error%s", errors, errors == 1 ? "" : "s");
+		if (sx_lang != SX_C)
+			snprintf(text, sizeof text, "%s", problem_count ? problems[0].text : "it did not look right to its interpreter");
+		else
+			snprintf(text, sizeof text, "not built: %d error%s", errors, errors == 1 ? "" : "s");
 		say(text);
 		panel = problem_count ? P_PROBLEMS : P_OUTPUT;
 		if (problem_count && problems[0].line)
 			go_to_line(problems[0].line);
 		then_do = 0;
 		draw_all();
-	} else if (flat_machine) {
+	} else if (flat_machine && sx_lang == SX_C) {
 		char *const words[] = { "elf2flt", (char *)program_elf(), program, NULL };
 
 		job_start(J_FLAT, words);
@@ -1766,7 +2022,12 @@ poll_all(void)
 		pid_t ended = waitpid(job.pid, &status, WNOHANG);
 
 		while ((n = (int)read(job.fd, bytes, sizeof bytes)) > 0) {
-			if (job.kind != J_RUN && job_length + n < (int)sizeof job_text) {
+			/* a script's run keeps its last 8 KB, for the complaint at its end */
+			if (job_length + n >= (int)sizeof job_text && (job.kind == J_PYDBG || (job.kind == J_RUN && job.lang != SX_C))) {
+				memmove(job_text, job_text + job_length / 2, (size_t)(job_length - job_length / 2));
+				job_length -= job_length / 2;
+			}
+			if ((job.kind != J_RUN || job.lang != SX_C) && job_length + n < (int)sizeof job_text) {
 				memcpy(job_text + job_length, bytes, (size_t)n);
 				job_text[job_length += n] = 0;
 			}
@@ -1802,13 +2063,18 @@ poll_all(void)
 	}
 	if (dbg_poll())
 		debug_changed();
+	py_poll();
 	if (out_fresh && panel == P_OUTPUT)
 		draw_panel();
 	/* nothing typed for a while: the compiler looks at the text as it is, quietly */
 	if (checking_on && unchecked && !edited_now && job.kind == J_NONE && dbg_state == DBG_GONE && milliseconds() - edited_at > 1500) {
 		static char folder[300];	/* (a file it includes by "..." is beside the text's own) */
 		static char *const check[] = { "tcc", "-static", "-mfpu", "-I", folder, "-c", "/tmp/ide-check.c", "-o", "/tmp/ide-check.o", NULL };
-		static int file = -1, room;
+		static char *const check_js[] = { "qjsc", "-c", "-o", "/tmp/ide-check.out", "/tmp/ide-check.js", NULL };
+		static char *const check_py[] = { "micropython", "-c", PY_COMPILE, "/tmp/ide-check.py", NULL };
+		static const char *const checked[SX_LANGS] = { "/tmp/ide-check.c", "/tmp/ide-check.js", "/tmp/ide-check.py" };
+		static int files[SX_LANGS] = { -1, -1, -1 }, room;
+		int *file = &files[sx_lang];
 		static char *text;
 		struct stat is;
 		int i, n = 0;
@@ -1833,15 +2099,15 @@ poll_all(void)
 			text[n + length] = '\n';
 			n += length + 1;
 		}
-		if (file >= 0 && (fstat(file, &is) != 0 || !is.st_nlink)) {
-			close(file);	/* (somebody took the file away) */
-			file = -1;
+		if (*file >= 0 && (fstat(*file, &is) != 0 || !is.st_nlink)) {
+			close(*file);	/* (somebody took the file away) */
+			*file = -1;
 		}
-		if (file < 0)
-			file = open("/tmp/ide-check.c", O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-		if (file < 0 || pwrite(file, text, (size_t)n, 0) != n || ftruncate(file, n) != 0)
+		if (*file < 0)
+			*file = open(checked[sx_lang], O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+		if (*file < 0 || pwrite(*file, text, (size_t)n, 0) != n || ftruncate(*file, n) != 0)
 			return;
-		job_start(J_CHECK, check);
+		job_start(J_CHECK, sx_lang == SX_JS ? check_js : sx_lang == SX_PY ? check_py : check);
 	}
 }
 
@@ -1858,7 +2124,12 @@ named(const char *file)
 	leaf = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
 	n = (int)strcspn(leaf, ".");
 	snprintf(program, sizeof program, "/tmp/ide-%.*s", n, leaf);
-	snprintf(title, sizeof title, "%s - IDE", leaf);
+	/* (a long name is cut for the caption, which has the window's width and its three boxes) */
+	snprintf(title, sizeof title, "%s - IDE", fitted(leaf, width - 150));
+	if (lang_of(path) != sx_lang) {
+		sx_lang = lang_of(path);	/* (another language: every line is lexed again) */
+		sx_known = 0, shown_upto = 0;
+	}
 	if (window)
 		GrSetWindowTitle(window, title);
 	if (print_on)
@@ -1996,11 +2267,15 @@ static void
 fresh_doc(void)
 {
 	static const char *const fresh = "#include <stdio.h>\n\nint main(void)\n{\n    printf(\"hello\\n\");\n    return 0;\n}\n";
-	char name[64];
+	char name[160];
 	int n;
 
 	for (n = 1; n < 100; n++) {
-		snprintf(name, sizeof name, n == 1 ? "/root/untitled.c" : "/root/untitled%d.c", n);
+		/* (in the project's folder, when there is a project) */
+		if (n == 1)
+			snprintf(name, sizeof name, "%.120s/untitled.c", project[0] ? project : "/root");
+		else
+			snprintf(name, sizeof name, "%.120s/untitled%d.c", project[0] ? project : "/root", n);
 		if (access(name, F_OK) != 0 && doc_find(name) < 0)
 			break;
 	}
@@ -2030,14 +2305,14 @@ doc_close(int i)
 		fresh_doc();
 }
 
-/* An example is the user's copy of it once there is one: /root/NAME.c. */
+/* An example is the user's copy of it once there is one: /root/NAME.c (.js, .py). */
 static void
 open_example(int n)
 {
 	char own[120], source[120];
 
-	snprintf(own, sizeof own, "/root/%s.c", examples[n]);
-	snprintf(source, sizeof source, "/usr/share/example-%s.c", examples[n]);
+	snprintf(own, sizeof own, "/root/%s.%s", examples[n], example_ends[n]);
+	snprintf(source, sizeof source, "/usr/share/example-%s.%s", examples[n], example_ends[n]);
 	if (access(own, R_OK) == 0 || doc_find(own) >= 0) {
 		open_file(own);
 		return;
@@ -2066,12 +2341,14 @@ others(GR_EVENT *event)
 /* ---- the menus ---- */
 
 static struct ui_menu_item example_items[12];
-#define EXAMPLES_ITEM 6
+#define EXAMPLES_ITEM 7
+#define CLOSE_PROJECT_ITEM 9
 static const struct ui_menu_item file_items[] = {
-	{ "New   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Save   Ctrl+S", -1, C_SAVE }, { "Save as...", -1, C_SAVE_AS },
+	{ "New   Ctrl+N", -1, C_NEW }, { "Open...   Ctrl+O", -1, C_OPEN }, { "Open a folder as the project...", -1, C_PROJECT_OPEN },
+	{ "Save   Ctrl+S", -1, C_SAVE, NULL, 0, UI_MENU_LINE }, { "Save as...", -1, C_SAVE_AS },
 	{ "Save all   Ctrl+Shift+S", -1, C_SAVE_ALL }, { "Close the tab   Ctrl+W", -1, C_CLOSE },
-	{ "Examples", -1, 0, example_items, 0, UI_MENU_LINE }, { "Show its folder in the tree", -1, C_TREE_HERE },
-	{ "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
+	{ "Examples", -1, 0, example_items, 0, UI_MENU_LINE }, { "Its folder as the project", -1, C_TREE_HERE },
+	{ "Close the project", -1, C_PROJECT_CLOSE }, { "Exit   Ctrl+Q", -1, C_EXIT, NULL, 0, UI_MENU_LINE },
 };
 static const struct ui_menu_item edit_items[] = {
 	{ "Undo   Ctrl+Z", -1, C_UNDO }, { "Redo   Ctrl+Y", -1, C_REDO }, { "Cut   Ctrl+X", -1, C_CUT, NULL, 0, UI_MENU_LINE },
@@ -2086,7 +2363,7 @@ static const struct ui_menu_item selection_items[] = {
 };
 #define VIEW_ITEMS 6
 static const struct ui_menu_item view_items[VIEW_ITEMS] = {
-	{ "The folder's tree   Ctrl+B", -1, C_TREE }, { "The panel below", -1, C_PANEL }, { "Line numbers", -1, C_NUMBERS },
+	{ "The project's tree   Ctrl+B", -1, C_TREE }, { "The panel below", -1, C_PANEL }, { "Line numbers", -1, C_NUMBERS },
 	{ "Check while typing", -1, C_CHECKING }, { "Next tab   Ctrl+Tab", -1, C_NEXT_TAB, NULL, 0, UI_MENU_LINE },
 	{ "Tab before   Ctrl+Shift+Tab", -1, C_PREV_TAB },
 };
@@ -2112,6 +2389,8 @@ menu_open(int which, int keyboard)
 	if (which == 0) {	/* (the examples are found when the program starts: their count is not constant) */
 		memcpy(files, file_items, sizeof files);
 		files[EXAMPLES_ITEM].sub_count = example_count;
+		if (!project[0])
+			files[CLOSE_PROJECT_ITEM].flags |= UI_MENU_GREY;
 		ui_menu_open(files, FILE_ITEMS, info.x + menu_x[0], info.y + MENU_H, 0, keyboard);
 		return;
 	}
@@ -2120,6 +2399,8 @@ menu_open(int which, int keyboard)
 		for (i = 0; i < 4; i++)
 			if (i == 0 ? tree_on : i == 1 ? panel_on : i == 2 ? numbers_on : checking_on)
 				views[i].flags |= UI_MENU_CHECK;
+		if (!project[0])
+			views[0].flags |= UI_MENU_GREY;	/* (no project: no tree) */
 		ui_menu_open(views, VIEW_ITEMS, info.x + menu_x[3], info.y + MENU_H, 0, keyboard);
 		return;
 	}
@@ -2169,7 +2450,8 @@ indent(int spaces)
 static void
 comment(void)
 {
-	int x0, y0, x1, y1, y, n, all = 1;
+	const char *mark = sx_lang == SX_PY ? "# " : "// ";	/* (and its length without the space) */
+	int x0, y0, x1, y1, y, n, all = 1, k = (int)strlen(mark) - 1;
 
 	if (!tx_selection(&x0, &y0, &x1, &y1))
 		y0 = y1 = tx_y, x1 = 1;
@@ -2177,16 +2459,16 @@ comment(void)
 		y1--;
 	for (y = y0; y <= y1; y++) {
 		n = (int)strspn(tx_lines[y], " ");
-		all &= !tx_lines[y][n] || !strncmp(tx_lines[y] + n, "//", 2);
+		all &= !tx_lines[y][n] || !strncmp(tx_lines[y] + n, mark, (size_t)k);
 	}
 	for (y = y0; y <= y1; y++) {
 		n = (int)strspn(tx_lines[y], " ");
 		if (!tx_lines[y][n])
 			continue;
 		if (all)
-			tx_delete(n, y, n + (tx_lines[y][n + 2] == ' ' ? 3 : 2), y);
+			tx_delete(n, y, n + (tx_lines[y][n + k] == ' ' ? k + 1 : k), y);
 		else
-			tx_insert(n, y, "// ", 3);
+			tx_insert(n, y, mark, k + 1);
 	}
 	tx_ax = 0, tx_ay = y0, tx_x = (int)strlen(tx_lines[y1]), tx_y = y1;
 	tx_marked = y1 > y0;
@@ -2307,14 +2589,50 @@ looks_like_text(const char *file)
 	return n != -2 && (n <= 0 || !memchr(head, 0, (size_t)n));
 }
 
-/* The folder of the file shown, as the tree's. */
+#define PROJECT_KEY "ide.project"	/* the registry's key for the project open at the last exit */
+
+/* A folder as the project: its tree at the left, kept for the next start (not by a test's run). */
+static void
+project_open(const char *dir, int keep)
+{
+	char real[PATH_MAX];
+	struct stat is;
+
+	if (!realpath(dir, real) || stat(real, &is) || !S_ISDIR(is.st_mode) || strlen(real) >= sizeof project) {
+		say("that is no folder that can be a project");
+		return;
+	}
+	snprintf(project, sizeof project, "%s", real);
+	snprintf(tree_root, sizeof tree_root, "%s", project);
+	tree_opened_count = tree_top = 0;
+	tree_wanted = 1;
+	tree_read();
+	resized(width, height);
+	if (keep && !scripted_run)
+		reg_set(PROJECT_KEY, project);
+	say("the project's tree is at the left: Ctrl+B hides and shows it");
+}
+
+static void
+project_close(void)
+{
+	project[0] = 0;
+	tree_count = 0;
+	resized(width, height);
+	if (!scripted_run)
+		reg_set(PROJECT_KEY, NULL);
+	say("no project: no tree");
+}
+
+/* The folder of the file shown, as the project. */
 static void
 tree_here(void)
 {
-	snprintf(tree_root, sizeof tree_root, "%.*s", strrchr(path, '/') && strrchr(path, '/') != path ? (int)(strrchr(path, '/') - path) : 1,
+	char folder[300];
+
+	snprintf(folder, sizeof folder, "%.*s", strrchr(path, '/') && strrchr(path, '/') != path ? (int)(strrchr(path, '/') - path) : 1,
 		 strrchr(path, '/') ? path : "/");
-	tree_top = 0;
-	tree_read();
+	project_open(folder, 1);
 }
 
 static void
@@ -2331,6 +2649,23 @@ build(int then)
 
 	if (tx_modified && !tx_save(path)) {	/* (a file as it was opened is not written again) */
 		say("cannot write the file");
+		return;
+	}
+	if (sx_lang != SX_C) {
+		/* a script's build is its interpreter's look at it: qjsc compiles it, MicroPython's compile() */
+		char *const js[] = { "qjsc", "-c", "-o", "/tmp/ide-build.out", path, NULL };
+		char *const py[] = { "micropython", "-c", (char *)PY_COMPILE, path, NULL };
+
+		run_doc = doc_now;
+		then_do = then;
+		problem_count = 0;
+		out_line("");
+		snprintf(shell, sizeof shell, sx_lang == SX_JS ? "qjsc -c '%s' (is it JavaScript?)" : "micropython: compile '%s' (is it Python?)", path);
+		out_line(shell);
+		job_start(J_BUILD, sx_lang == SX_JS ? js : py);
+		say("looking at it...");
+		panel = P_OUTPUT;
+		unchecked = 0;
 		return;
 	}
 	/* no MMU: linked as cc links it, and its ELF kept for the debugger (J_FLAT makes the program) */
@@ -2355,12 +2690,12 @@ help(int about)
 		"F9 marks the line to stop at (or click before its number). F10 steps over a line, F11 into a call, Shift+F11 out of the function.",
 		"Ctrl+Z and Ctrl+Y take a change back and make it again. Ctrl+F finds, F3 and Shift+F3 the next and the one before, Ctrl+H replaces.",
 		"Tab and Shift+Tab indent the selected lines, Ctrl+/ comments them. Ctrl+L selects the line, Ctrl+D the word, Ctrl+G goes to a line.",
-		"Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+W: a new file, open, save, close the tab. Ctrl+Tab goes round the tabs, Ctrl+B shows the tree.",
+		"Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+W: a new file, open, save, close the tab. Ctrl+Tab goes round the tabs, Ctrl+B a project's tree.",
 		"A red bar before a line is the compiler's error there, an orange one its warning: Problems below says what, a click goes there.",
 	};
 	static const char *const what[] = {
-		"nxide: an editor, the machine's own C compiler (TinyCC) and a debugger, all running in the machine.",
-		"The colours are a lexer's; the compiler checks the text a moment after you stop typing. File > Examples has programs to begin from.",
+		"nxide: an editor for C, JavaScript and Python, the machine's own C compiler (TinyCC), QuickJS, MicroPython and a debugger.",
+		"The colours are a lexer's; the compiler (qjsc, MicroPython) checks the text a moment after you stop typing. File > Examples has programs to begin from.",
 	};
 	int i;
 
@@ -2399,8 +2734,10 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_OPEN:
-		snprintf(where, sizeof where, "%s", tree_root);
-		if (ui_choose_file("Open", where, ".c .h .txt", chosen, sizeof chosen, others))
+		/* from the project's folder, or else the shown file's */
+		snprintf(where, sizeof where, "%.*s", project[0] ? (int)strlen(project) : strrchr(path, '/') && strrchr(path, '/') != path ? (int)(strrchr(path, '/') - path) : 5,
+			 project[0] ? project : strrchr(path, '/') && strrchr(path, '/') != path ? path : "/root");
+		if (ui_choose_file("Open", where, ".c .h .js .py .txt", chosen, sizeof chosen, others))
 			open_file(chosen);
 		draw_all();
 		return;
@@ -2427,14 +2764,26 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_TREE:
-		tree_on = !tree_on;
+		if (!project[0]) {
+			say("no project is open: File, Open a folder as the project");
+			break;
+		}
+		tree_wanted = !tree_on;
 		resized(width, height);
 		draw_all();
 		return;
 	case C_TREE_HERE:
-		tree_on = 1;
 		tree_here();
-		resized(width, height);
+		draw_all();
+		return;
+	case C_PROJECT_OPEN:
+		snprintf(where, sizeof where, "%s", project[0] ? project : "/root");
+		if (ui_choose_folder("Open a folder as the project", where, chosen, sizeof chosen, others))
+			project_open(chosen, 1);
+		draw_all();
+		return;
+	case C_PROJECT_CLOSE:
+		project_close();
 		draw_all();
 		return;
 	case C_REPLACE:
@@ -2540,7 +2889,11 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_DEBUG:
-		if (dbg_state == DBG_STOPPED) {
+		if (py_state == DBG_STOPPED) {
+			doc_show(run_doc);
+			py_send("go");
+			say("running");
+		} else if (dbg_state == DBG_STOPPED) {
 			doc_show(run_doc);	/* (the marks it goes to are that file's) */
 			dbg_go(DBG_RUN);
 			say("running");
@@ -2549,7 +2902,7 @@ command_done(int id)
 		draw_all();
 		return;
 	case C_STOP:
-		if (job.kind == J_BUILD || job.kind == J_RUN || job.kind == J_FLAT)
+		if (job.kind == J_BUILD || job.kind == J_RUN || job.kind == J_FLAT || job.kind == J_PYDBG)
 			job_stop();
 		dbg_end();
 		then_do = 0;
@@ -2564,7 +2917,10 @@ command_done(int id)
 			doc_show(run_doc);
 			draw_all();
 		}
-		dbg_step(id == C_OVER ? DBG_OVER : id == C_INTO ? DBG_INTO : DBG_OUT);
+		if (py_state == DBG_STOPPED)
+			py_send(id == C_OVER ? "over" : id == C_INTO ? "into" : "out");
+		else
+			dbg_step(id == C_OVER ? DBG_OVER : id == C_INTO ? DBG_INTO : DBG_OUT);
 		draw_tools();
 		return;
 	case C_MARK:
@@ -2758,7 +3114,19 @@ key(int ch, int modifiers)
 		n = n > tx_x ? tx_x : n;
 		n = n > 150 ? 150 : n;
 		memset(lead + 1, ' ', (size_t)n);
-		if (tx_x > 0 && tx_lines[tx_y][tx_x - 1] == '{') {
+		if (sx_lang == SX_PY) {
+			/* after a line that ends in a colon (spaces and a comment aside), a step further in */
+			int k = tx_x;
+
+			if (memchr(tx_lines[tx_y], '#', (size_t)tx_x))
+				k = (int)((const char *)memchr(tx_lines[tx_y], '#', (size_t)tx_x) - tx_lines[tx_y]);
+			while (k > 0 && tx_lines[tx_y][k - 1] == ' ')
+				k--;
+			if (k > 0 && tx_lines[tx_y][k - 1] == ':') {
+				memset(lead + 1 + n, ' ', TX_TAB);
+				n += TX_TAB;
+			}
+		} else if (tx_x > 0 && tx_lines[tx_y][tx_x - 1] == '{') {
 			memset(lead + 1 + n, ' ', TX_TAB);
 			/* between a pair of braces: the closing one goes to a line of its own under the opening one's */
 			if (tx_lines[tx_y][tx_x] == '}') {
@@ -2813,7 +3181,7 @@ key(int ch, int modifiers)
 			return;
 		tx_delete_selection();
 		/* a closing brace alone on its line goes back a step */
-		if (ch == '}' && tx_x >= TX_TAB && (int)strspn(tx_lines[tx_y], " ") == length && tx_x == length)
+		if (ch == '}' && sx_lang != SX_PY && tx_x >= TX_TAB && (int)strspn(tx_lines[tx_y], " ") == length && tx_x == length)
 			tx_delete(tx_x - TX_TAB, tx_y, tx_x, tx_y);
 		one = (char)ch;
 		tx_insert(tx_x, tx_y, &one, 1);
@@ -2853,9 +3221,28 @@ place(int px, int py, int *x, int *y)
 static void
 output_clicked(const char *text)
 {
-	const char *at;
+	const char *at, *end;
 	char file[300];
+	int line = 0;
 
+	/* an interpreter's: MicroPython's '  File "FILE", line N', QuickJS's "    at f (FILE:LINE:COLUMN)" */
+	if ((at = strstr(text, "File \"")) != NULL && (end = strchr(at + 6, '"')) != NULL && strstr(end, ", line "))
+		snprintf(file, sizeof file, "%.*s", (int)(end - at - 6), at + 6), line = atoi(strstr(end, ", line ") + 7);
+	else if (!strncmp(text, "    at ", 7)) {
+		at = strchr(text, '(') ? strchr(text, '(') + 1 : text + 7;
+		end = strrchr(at, ':');
+		while (end && end > at && end[-1] != ':' && isdigit((unsigned char)end[-1]))
+			end--;
+		if (end && end > at + 1 && end[-1] == ':')
+			snprintf(file, sizeof file, "%.*s", (int)(end - 1 - at), at), line = atoi(end);
+	}
+	if (line > 0 && file[0] == '/') {
+		if (strcmp(file, path) && access(file, R_OK) == 0 && !open_file(file))
+			return;
+		draw_all();
+		go_to_line(line);
+		return;
+	}
 	for (at = text; *at; at++)
 		if (at[0] == ':' && isdigit((unsigned char)at[1]) && at - text > 2 && at[-2] == '.' && (at[-1] == 'c' || at[-1] == 'h')) {
 			snprintf(file, sizeof file, "%.*s", (int)(at - text), text);
@@ -2872,14 +3259,11 @@ static void
 tree_clicked(int x, int y)
 {
 	int ly = side_y() + TREE_HEAD, shown = tree_shown(), k, i;
-	char *slash;
 
 	if (y < ly) {
-		if (x >= TREE_W - 22 && tree_root[1] && (slash = strrchr(tree_root, '/')) != NULL) {
-			slash[slash == tree_root] = 0;	/* (up to the folder above: "/" at the top) */
-			tree_top = 0;
-			tree_read();
-			draw_tree();
+		if (x >= TREE_W - 22) {	/* (its close box) */
+			project_close();
+			draw_all();
 		}
 		return;
 	}
@@ -3047,10 +3431,16 @@ storm(int steps)
 	static const int moves[] = { MWKEY_LEFT, MWKEY_RIGHT, MWKEY_UP, MWKEY_DOWN, MWKEY_HOME, MWKEY_END, MWKEY_PAGEUP, MWKEY_PAGEDOWN };
 	static const int commands[] = { C_COMMENT, C_INDENT, C_UNINDENT, C_CUT, C_COPY, C_PASTE, C_LINE, C_WORD, C_UNDO, C_REDO, C_UNDO, C_FIND_NEXT };
 	static const char letters[] = "abc xyz_01 (){};=+*/\"'#<>.,";
-	char *before = whole_text(), *after, *now;
+	char *before, *after, *now;
 	unsigned chance = 12345;
-	int i, taken = 0, again = 0;
+	int i, taken = 0, again = 0, earlier = 0;
 
+	/* "as it was" is the text with the whole history taken back, changes before the storm too */
+	while (tx_done_count && earlier < 100000)
+		command(C_UNDO), earlier++;
+	before = whole_text();
+	while (earlier-- > 0)
+		command(C_REDO);
 	snprintf(sought, sizeof sought, "int");
 	for (i = 0; i < steps; i++) {
 		unsigned r;
@@ -3125,10 +3515,10 @@ scripted(void)
 		{ "checking", C_CHECKING }, { "keys", C_KEYS }, { "about", C_ABOUT }, { "unmark", C_UNMARK_ALL }, { "next", C_FIND_NEXT },
 		{ "close", C_CLOSE }, { "tab", C_NEXT_TAB }, { "tree", C_TREE }, { "saveall", C_SAVE_ALL }, { "back", C_FIND_PREV },
 	};
-	char word[64];
+	char word[256];	/* (open: and project: take a path) */
 	int n, i;
 
-	if (!script[0] || job.kind == J_BUILD || job.kind == J_RUN || dbg_state == DBG_RUNNING || then_do)
+	if (!script[0] || job.kind == J_BUILD || job.kind == J_RUN || dbg_state == DBG_RUNNING || then_do || (job.kind == J_PYDBG && py_state != DBG_STOPPED))
 		return;
 	n = (int)strcspn(script, " ");
 	snprintf(word, sizeof word, "%.*s", n, script);
@@ -3148,12 +3538,18 @@ scripted(void)
 			if (!strcmp(examples[i], word + 8))
 				command(C_EXAMPLE + i);
 		printf("nxide: opened %s: %d lines, cursor %d,%d\n", path, tx_count, tx_x, tx_y);
+	} else if (!strncmp(word, "project:", 8)) {
+		project_open(word + 8, 0);
+		draw_all();
+		printf("nxide: project %s: %d rows in its tree\n", project[0] ? project : "(none)", tree_count);
+	} else if (!strcmp(word, "noproject")) {
+		command(C_PROJECT_CLOSE);
 	} else if (!strncmp(word, "open:", 5)) {
 		open_file(word + 5);
 		draw_all();
 		printf("nxide: opened %s: %d lines\n", path, tx_count);
 	} else if (!strncmp(word, "find:", 5)) {
-		snprintf(sought, sizeof sought, "%s", word + 5);
+		snprintf(sought, sizeof sought, "%.63s", word + 5);
 		command(C_FIND_NEXT);
 		printf("nxide: find %s: cursor %d,%d\n", sought, tx_x, tx_y);
 	} else if (!strncmp(word, "key:", 4)) {
@@ -3204,7 +3600,7 @@ static GR_TIMEOUT
 wait_ms(void)
 {
 	unsigned since;
-	int beside = job.kind != J_NONE || dbg_state == DBG_RUNNING, fresh = edited_now;
+	int beside = (job.kind != J_NONE && py_state != DBG_STOPPED) || dbg_state == DBG_RUNNING, fresh = edited_now;
 
 	/* (the clock is asked once a key: a question to the kernel each time) */
 	if (edited_now)
@@ -3213,7 +3609,7 @@ wait_ms(void)
 		return beside || debug_fd >= 0 ? 40 : 300;
 	if (beside)
 		return job.kind == J_CHECK ? 2000 : 250;	/* (a check's end is heard at its pipe's) */
-	if (!checking_on || !unchecked || dbg_state != DBG_GONE)
+	if (!checking_on || !unchecked || dbg_state != DBG_GONE || py_state != DBG_GONE)
 		return 0;
 	if (fresh)
 		return 1502;
@@ -3253,6 +3649,7 @@ main(int argc, char **argv)
 	DIR *share = opendir("/usr/share");
 	struct dirent *entry;
 	struct sigaction signal_child = { 0 };
+	struct stat is;
 	int i, chosen;
 
 	if (GrOpen() < 0)
@@ -3275,14 +3672,25 @@ main(int argc, char **argv)
 	if (getenv("NXIDE_SCRIPT"))
 		snprintf(script, sizeof script, "%s", getenv("NXIDE_SCRIPT"));
 	scripted_run = script[0] != 0;
-	while (share && (entry = readdir(share)) != NULL && example_count < 12)
-		if (!strncmp(entry->d_name, "example-", 8) && strlen(entry->d_name) < 40 && strstr(entry->d_name, ".c"))
-			snprintf(examples[example_count++], sizeof examples[0], "%.*s", (int)strcspn(entry->d_name + 8, "."), entry->d_name + 8);
+	/* the examples: example-NAME.c, .js and .py, C's first, each language's by name */
+	while (share && (entry = readdir(share)) != NULL && example_count < 12) {
+		const char *dot = strrchr(entry->d_name, '.');
+
+		if (!strncmp(entry->d_name, "example-", 8) && strlen(entry->d_name) < 40 && dot && (!strcmp(dot, ".c") || !strcmp(dot, ".js") || !strcmp(dot, ".py")))
+			snprintf(examples[example_count++], sizeof examples[0], "%d%s", dot[1] == 'c' ? 0 : dot[1] == 'j' ? 1 : 2, entry->d_name + 8);
+	}
 	if (share)
 		closedir(share);
 	qsort(examples, (size_t)example_count, sizeof examples[0], by_name);
 	for (i = 0; i < example_count; i++) {
-		example_items[i].label = examples[i];
+		char *dot = strrchr(examples[i], '.');
+
+		snprintf(example_ends[i], sizeof example_ends[0], "%s", dot + 1);
+		*dot = 0;
+		memmove(examples[i], examples[i] + 1, strlen(examples[i]));
+		snprintf(example_labels[i], sizeof example_labels[0], "%s%s", examples[i],
+			 example_ends[i][0] == 'j' ? " (JavaScript)" : example_ends[i][0] == 'p' ? " (Python)" : "");
+		example_items[i].label = example_labels[i];
 		example_items[i].icon = -1;
 		example_items[i].id = C_EXAMPLE + i;
 	}
@@ -3299,9 +3707,21 @@ main(int argc, char **argv)
 	window = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, "IDE", GR_ROOT_WINDOW_ID, -1, -1, width, height, WHITE);
 	GrSelectEvents(window, EVENTS);
 	resized(width, height);
-	if (argc > 1)
+	/* a folder is the project, a file is opened; with neither, the project of the last exit (not
+	 * for a test's run) and the hello example. A project's own first source is shown, if it has one. */
+	if (argc > 1 && stat(argv[1], &is) == 0 && S_ISDIR(is.st_mode))
+		project_open(argv[1], 1);
+	else if (argc == 1 && !scripted_run && reg_get(PROJECT_KEY, NULL))
+		project_open(reg_get(PROJECT_KEY, ""), 0);
+	if (argc > 1 && !project[0])
 		open_file(argv[1]);
-	else {
+	for (i = 0; project[0] && !doc_count && i < tree_count; i++) {
+		const char *dot = strrchr(tree[i].path, '.');
+
+		if (!tree[i].folder && !tree[i].depth && dot && (!strcmp(dot, ".c") || !strcmp(dot, ".js") || !strcmp(dot, ".py")))
+			open_file(tree[i].path);
+	}
+	if (!doc_count) {
 		for (i = 0; i < example_count && strcmp(examples[i], "hello"); i++)
 			continue;
 		if (i < example_count)
@@ -3309,10 +3729,6 @@ main(int argc, char **argv)
 		else
 			fresh_doc();
 	}
-	if (argc > 1 && argv[1][0] == '/')
-		tree_here();	/* (the tree shows the file's folder; else /root, where the examples' copies go) */
-	else
-		tree_read();
 	GrMapWindow(window);
 	GrSetFocus(window);
 	for (;;) {

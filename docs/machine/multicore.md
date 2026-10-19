@@ -669,10 +669,12 @@ shader is the commit's own, so a texel is what it always was, whichever cores st
 and in what order. The state rows and the bands that something else wrote (the GPU's
 control words and its picture copied back) are still drawn whole, in the draw before.
 
-RAM is still two buffers, which a copy needs (it reads RAM and writes RAM), so the buffer
-not drawn into must be given the same texels: the same points are drawn once more into it
-as plain copies of what the commit made them. (A worker that did not run has its last
-pass's stores in the targets: those texels are written again as they are.)
+RAM was two buffers, which a copy needed (it reads RAM and writes RAM), so the buffer
+not drawn into had to be given the same texels: the same points were drawn once more into it
+as plain copies of what the commit made them (`--ping-pong` still does). RAM is one texture
+now, what the commit needs of it as it was gathered first into a small one
+(`docs/machine/gpu.md`, "RAM in one texture"). (A worker that did not run has its last pass's
+stores in the targets: it draws no points.)
 
 A pass's commit on the graphics card, one core busy: 0.024 ms where it was 0.062. `nxray`'s
 picture of 640 x 480 with 63 workers of the smallest size is 1.19 s where it was 1.35 s
@@ -734,6 +736,10 @@ What a program has to keep to:
   own work is the usual order: the pass that ends next carries the job and its data over
   together. `mcw_wait()` ends passes until the worker has answered. Code that both cores run
   at once must not expect to see the other's stores at all.
+- **A job posted to a worker still at another runs after it**: the worker looks at its job
+  word again before it sleeps (`mcw_loop`). A worker sleeps until that word differs from what
+  it was when the pass began, so in a program linked before 19 October 2026 such a post was
+  never run (Half-Life's logo film on a worker, then a libmedia loop that took that worker).
 - **Sixteen bytes, one writer a pass**, and this holds for all of the program's memory now:
   two variables side by side are one texel. Give a worker whole texels to write: rows of a
   picture whose width is a multiple of 16, buffers from `mcw_alloc()` or `posix_memalign(16)`
@@ -1003,6 +1009,14 @@ program links (`programs/mc/mcw.c`) does its part, and no program had to change.
   a worker is posted to or asked about; the core is started, and is the worker's some passes
   later. `mcw_bound(k)` says whether worker k has a core, for a program that would rather not
   have its own core do the job (the monitor shades nothing itself: `mcw_asked()`).
+- **A core can come back to the program it was taken from.** A core parked while idle and
+  given back in the same program's next claim has the same number but a cleared mailbox:
+  before 18 October 2026 the library still took it for the worker it had been, posted jobs to
+  it that no core ran, and a second viewer started beside a first waited for ever. `claim()`
+  now drops a worker's core that its answer gives back unless the core's mailbox still says
+  it is alive for it, and `look()` checks the core's owner word before its answer numbers. A
+  team round's worker with no core (`post_team` in `mcwx.c`) has its share run by the first
+  core, never in the job a post of the round runs inline.
 - **One layout, the kernel's.** A machine of 256 cores has 255 workers, each with 3 KB of
   stores a pass, laid out the first time a program asks for any if `geotune` has not laid
   out its own at boot (`workers_layout`; "Packing the small workers"; a worker nobody has
@@ -1325,16 +1339,20 @@ own write cache (336 texels: 64 + 32 + 16 buckets of three) and passes of 8,192 
   `tick_geom` draws core 0's pixels and a block of columns for each worker with something to
   run, as the harness's does, and draws nothing for any other camera (it looks at the target's
   size).
-- **The unpack** (`Machine.shader`'s third pass, a Blit into the 2048 x 48 texture the commit
+- **The unpack** (`Machine.shader`'s third pass, a Blit into the 2048 x 64 texture the commit
   reads) puts the targets' texels where the state has its rows, and takes the state as it
   was for whatever the tick did not draw: a worker with nothing to run, the band at start.
-- **The commit** is three draws: a Blit of the state rows and the bands something else wrote
-  (the control pass, the GPU's picture copied back); then `MachineCommitPoints.shader` on a
-  mesh of 33,408 points that a second camera draws into the same texture, each point the
-  rectangle it stands for and each texel the commit's own (`MachineCommit.cginc`, which both
-  share); and, before the control pass, the same points once more into the other state
-  texture as copies. A copy out of the ROM is a point too: the points' material needs the
-  ROM's textures (without them Linux started and could not read `/emuinit`).
+- **The commit** writes RAM in place (`docs/machine/gpu.md`, "RAM in one texture"), in three
+  draws: `MachineGather.shader` on 257 points, which the points camera draws into the stage
+  (2048 x 21); a Blit of the state rows from the tick's texture and the stage; and
+  `MachineCommitPoints.shader` on 33,410 points that the same camera draws into the state, each
+  point the rectangle it stands for and each texel the commit's own (`MachineCommit.cginc`,
+  which all three share). The two meshes are on one layer and `EmuMachine.Commit` enables one
+  at a time. A copy out of the ROM is a point too: the points' material needs the ROM's
+  textures (without them Linux started and could not read `/emuinit`), and RAM at start is
+  point 0, from the image's textures.
+- **The control pass** draws its 11 rows of RAM into a window of their own (2048 x 11:
+  `MachineWindow.cginc`), which the `WindowBack` pass copies into the state.
 - **The readback** has state row 0, the first 64 control texels and 130 texels of the
   network's row, its window, what the cores ran and which sleep, then the console's words and
   ring (`Readback.shader`, 1032 words; `console.md`, "Words in memory"), where the counts are: the panel's statistics have a line for the workers and for all cores together.

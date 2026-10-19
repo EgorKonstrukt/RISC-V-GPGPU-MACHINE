@@ -1,6 +1,7 @@
 using UdonSharp;
 using UnityEngine;
 using TMPro;
+using UnityEngine.UI;
 using VRC.SDKBase;
 
 // The classroom's computers (docs/world/stations.md): twelve tubes, one a visitor whose machine is on.
@@ -38,12 +39,18 @@ public class EmuStations : UdonSharpBehaviour
     public GameObject fields;          // an address to open and text to type: before this visitor's own keyboard
     public Transform[] fieldSpots;
     public EmuPaste paste;             // the text field's, which types at whichever keyboard is this visitor's
+    // The speed's slider on each tower: its owner's machine's speed step, which only the owner moves
+    // (their EmuShare's speed carries it to everybody); the steps of EmuMachine.speedSlider.
+    public Slider[] speedSliders;
+    // Each monitor's volume (EmuPlace.volume): the owner's own machine's sound, as the control panel's.
+    public Slider[] volumeSliders;
 
     private const int FirstSurface = 1;   // of EmuStreams' surfaces: the classroom's are 1 to 12
     private const int Steady = 0xffff, Beckon = 0x00ff;
 
     private int count;
     private int[] owner, claimed, mode, netSeen;
+    private int[] localMode;           // what this visitor chose to see on somebody else's tube; -1: what its owner shows
     private Texture[] showing;
     private float nextAt;
     private bool left;                 // this visitor gave their place up: none is found for them until they ask
@@ -51,6 +58,7 @@ public class EmuStations : UdonSharpBehaviour
     private int fieldsAt = -1;
     private int tubeFor = -1;          // the place whose tube was last turned to what its machine has
     private bool tubeHad;              // and whether the machine had a display then
+    private int[] speedShown;
 
     void Start()
     {
@@ -59,6 +67,10 @@ public class EmuStations : UdonSharpBehaviour
         claimed = new int[count];
         mode = new int[count];
         netSeen = new int[count];
+        localMode = new int[count];
+        for (int s = 0; s < count; s++) localMode[s] = -1;
+        speedShown = new int[count];
+        for (int s = 0; s < count; s++) speedShown[s] = -1;
         showing = new Texture[count];
         for (int s = 0; s < count; s++) owner[s] = -1;   // not looked at yet
         if (fields != null) fields.SetActive(false);
@@ -94,11 +106,17 @@ public class EmuStations : UdonSharpBehaviour
     }
 
     // A visitor sits down at a place nobody has, which starts their machine if it is off; at
-    // their own, the key turns the tube between the display and the console.
+    // their own, the key turns the tube between the display and the console; at somebody
+    // else's, it turns that tube for this visitor alone.
     private void Take(int s)
     {
         EmuShare mine = hub.Mine();
-        if (mine == null || s >= count || (owner[s] > 0 && owner[s] != hub.MyId())) return;
+        if (mine == null || s >= count) return;
+        if (owner[s] > 0 && owner[s] != hub.MyId())
+        {
+            Look(s, 1 - mode[s]);
+            return;
+        }
         if (owner[s] == hub.MyId()) mine.stationMode = 1 - mine.stationMode;
         mine.station = s;
         left = false;
@@ -130,8 +148,16 @@ public class EmuStations : UdonSharpBehaviour
         nextAt = 0;
     }
 
+    // Somebody else's tube shown as this visitor wants (0 the display, 1 the console), for them alone.
+    private void Look(int s, int to)
+    {
+        localMode[s] = to;
+        nextAt = 0;
+    }
+
     // A key of a place's monitor or tower (EmuPlace): its owner's machine's, and nobody else's.
-    // The power key of a free place is anybody's: it starts their machine there.
+    // The power key of a free place is anybody's: it starts their machine there. CONSOLE and
+    // DISPLAY on another's turn this visitor's view; the pointer's switches are anybody's.
     public void Act(int s, int what)
     {
         if (what == 0 && s < count && owner[s] <= 0)
@@ -139,15 +165,27 @@ public class EmuStations : UdonSharpBehaviour
             Take(s);
             return;
         }
-        if (s != Own()) return;
+        bool others = s < count && owner[s] > 0 && owner[s] != hub.MyId();
+        if (s != Own() && !(others && (what == 5 || what == 6)) && what != 10 && what != 11) return;
         if (click != null && clickSound != null)
         {
             click.transform.position = linkSpots != null && s < linkSpots.Length ? linkSpots[s].position : transform.position;
             click.PlayOneShot(clickSound, 0.5f);
         }
+        if (what == 10 || what == 11)
+        {
+            if (pointer == null) return;
+            if (what == 10) pointer.PhysicalButtons();
+            else pointer.SteadyPointer();
+            return;
+        }
+        if (s != Own())
+        {
+            Look(s, what == 5 ? 1 : 0);
+            return;
+        }
         if (what == 0) machine.Power();
         else if (what == 1) machine.ResetMachine();
-        else if (what == 2) machine.SpeedMode();
         else if (what == 3) terminal.ShowTab((terminal.Shown() + 1) % EmuTerminal.Tabs);
         else if (what == 4) terminal.ShowTab((terminal.Shown() + EmuTerminal.Tabs - 1) % EmuTerminal.Tabs);
         else if (what == 5) SetMode(s, 1);
@@ -155,6 +193,33 @@ public class EmuStations : UdonSharpBehaviour
         else if (what == 7) machine.PlaceLinks(false, null);
         else if (what == 8 && linkSpots != null && s < linkSpots.Length) machine.PlaceLinks(true, linkSpots[s]);
         else if (what == 9) Leave(s);
+    }
+
+    // A tower's slider was moved: its owner's machine takes the step; anybody else's move is undone.
+    public void SpeedMoved(int s, Slider slider)
+    {
+        if (slider == null || speedShown == null || s >= count) return;
+        int step = Mathf.RoundToInt(slider.value);
+        if (s != Own())
+        {
+            if (speedShown[s] >= 0) slider.SetValueWithoutNotify(speedShown[s]);
+            return;
+        }
+        machine.SetSpeedStep(step);
+        speedShown[s] = step;
+        EmuShare mine = hub.Mine();
+        if (mine != null && mine.speed != step)
+        {
+            mine.speed = step;
+            hub.StateOut();
+        }
+    }
+
+    // A monitor's volume was moved: its owner's sound takes it (the panel's slider applies it).
+    public void VolumeMoved(int s, Slider slider)
+    {
+        if (slider == null || s != Own() || machine.sound == null || machine.sound.volumeSlider == null) return;
+        machine.sound.volumeSlider.value = slider.value;
     }
 
     // Whose each place is: of those who name it and have their machine on, the visitor who came first.
@@ -202,6 +267,13 @@ public class EmuStations : UdonSharpBehaviour
         }
         tubeFor = own;
         tubeHad = has;
+        // this visitor's machine's speed step, for their tower's slider on everybody's client
+        int step = machine.SpeedStep();
+        if (mine.speed != step)
+        {
+            mine.speed = step;
+            hub.StateOut();
+        }
         if (pointer != null)
         {
             pointer.ownStation = own;
@@ -221,7 +293,8 @@ public class EmuStations : UdonSharpBehaviour
         if (ownDisk != null) ownDisk.SetFloat("_Pattern", hub.WallIsOwn() ? machine.activity : wall >= 0 ? streams.Activity(wall) : 0);
         for (int s = 0; s < count; s++)
         {
-            int wants = claimed[s] == myId ? mine.stationMode : claimed[s] > 0 ? ModeOf(claimed[s]) : 0;
+            if (claimed[s] != owner[s]) localMode[s] = -1;   // (a choice about the one before)
+            int wants = claimed[s] == myId ? mine.stationMode : claimed[s] > 0 ? (localMode[s] >= 0 ? localMode[s] : ModeOf(claimed[s])) : 0;
             bool relabel = wants != mode[s];
             if (claimed[s] != owner[s])
             {
@@ -238,7 +311,7 @@ public class EmuStations : UdonSharpBehaviour
                 // the key says whose the place is, what its tube shows, and to its owner that it switches
                 if (labels[s] != null) labels[s].text = owner[s] == 0 ? "FREE" : owner[s] == myId ? Networking.LocalPlayer.displayName : NameOf(owner[s]);
                 if (modes != null && modes[s] != null)
-                    modes[s].text = owner[s] == 0 ? "press POWER: yours starts here" : (wants == 1 ? "CONSOLE" : "DISPLAY") + (owner[s] == myId ? " - press to switch" : "");
+                    modes[s].text = owner[s] == 0 ? "press POWER: yours starts here" : (wants == 1 ? "CONSOLE" : "DISPLAY") + (owner[s] == myId ? " - press to switch" : " - press to switch your view");
             }
             Texture shown = blackTexture;
             int w = 0, h = 0;
@@ -274,6 +347,26 @@ public class EmuStations : UdonSharpBehaviour
                 else if (slot >= 0) { all = streams.MipsAll(slot); core = streams.MipsCore(slot); }
                 speeds[s].SetFloat("_All", all);
                 speeds[s].SetFloat("_Core", core);
+            }
+            if (speedSliders != null && s < speedSliders.Length && speedSliders[s] != null)
+            {
+                int shownStep = owner[s] == myId ? step : owner[s] > 0 ? SpeedOf(owner[s]) : 4;
+                Slider slider = speedSliders[s];
+                if (shownStep != speedShown[s] || Mathf.RoundToInt(slider.value) != shownStep)
+                {
+                    speedShown[s] = shownStep;
+                    slider.SetValueWithoutNotify(shownStep);
+                }
+                bool mineToMove = owner[s] == myId;
+                if (slider.interactable != mineToMove) slider.interactable = mineToMove;
+            }
+            if (volumeSliders != null && s < volumeSliders.Length && volumeSliders[s] != null)
+            {
+                Slider volume = volumeSliders[s];
+                bool ours = owner[s] == myId;
+                if (ours && machine.sound != null && machine.sound.volumeSlider != null && volume.value != machine.sound.volumeSlider.value)
+                    volume.SetValueWithoutNotify(machine.sound.volumeSlider.value);
+                if (volume.interactable != ours) volume.interactable = ours;
             }
             if (linkLamps != null && s < linkLamps.Length && linkLamps[s] != null) linkLamps[s].SetActive(owner[s] == myId && machine.LinksWanted());
             if (powerLamps != null && s < powerLamps.Length && powerLamps[s] != null && powerLamps[s].activeSelf != (owner[s] > 0))
@@ -326,6 +419,17 @@ public class EmuStations : UdonSharpBehaviour
             if (share.ownerId == id) return share.stationMode;
         }
         return 0;
+    }
+
+    private int SpeedOf(int id)
+    {
+        int others = hub.ShareCount();
+        for (int i = 0; i < others; i++)
+        {
+            EmuShare share = hub.ShareAt(i);
+            if (share.ownerId == id) return share.speed;
+        }
+        return 4;
     }
 
     private int NetOf(int id)

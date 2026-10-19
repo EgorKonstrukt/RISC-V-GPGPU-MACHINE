@@ -1,4 +1,4 @@
-// The OpenGL 1.1 that Xash3D's renderer (ref/gl) asks for, on the machine's GPU (docs/halflife.md):
+// The OpenGL 1.1 that Xash3D's renderer (ref/gl) asks for, on the machine's GPU (docs/games/halflife.md):
 // glBegin and client arrays become compact vertices of linux/quake3/gpu_shaderemu.c's draws.
 // Textures are only in GPU memory: words, or the game's paletted ones as layers of tiles;
 // a primitive whose vertices differ in colour is tagged vertices with a table of their colours.
@@ -88,7 +88,9 @@ static uint32_t atlas_at = NOWHERE, atlas_block;
 static int atlas_blocks;
 #define KEPT_OWNER (MAX_NAMES - 2)
 #define ATLAS_OWNER (MAX_NAMES - 3)
-static int bound, log_uploads, log_frames;
+static int bound, log_uploads, log_frames, log_picsum, log_sum;
+static uint32_t picsum, picsums;	// HLGL_PICSUM=1: the frame's 2D quads summed, state and vertices
+static uint32_t listsum;	// HLGL_SUM=1: the frames' whole lists (gpuListSum) summed, one after another
 #define GAP_OWNER (MAX_NAMES - 1)   // what lies between the pool's two parts, which is not ours
 #define GPU_TILES 5
 
@@ -346,6 +348,26 @@ static int tile_side(int n) {   // the largest side of at most 255 that n is who
         if (n % d == 0) return d;
     return 1;
 }
+// The tiles of an indexed texture copied from its rows: on a worker when hlglTexLater (a film's frame,
+// whose bytes stay until the frame is shown), done before the frame is shown
+typedef struct { uint8_t* tile; const uint8_t* bytes; int width, tw, th, across, down; } tiles_t;
+int hlglTexLater;
+static void tiles_copy(const tiles_t* j) {
+    uint8_t* tile = j->tile;
+    for (int cy = 0; cy < j->down; cy++)
+        for (int cx = 0; cx < j->across; cx++)
+            for (int y = 0; y < j->th; y++, tile += j->tw) memcpy(tile, j->bytes + (size_t)(cy * j->th + y) * j->width + cx * j->tw, (size_t)j->tw);
+}
+static uint32_t tiles_job(uint32_t a0, uint32_t a1) {
+    (void)a1;
+    tiles_copy((const tiles_t*)a0);
+    return 0;
+}
+int hlglWorker(void);
+void hlglPost(int k, uint32_t (*fn)(uint32_t, uint32_t), uint32_t a0, uint32_t a1);
+void* hlglJobMemory(unsigned bytes);
+unsigned hlglWait(int k);
+
 // Texture `name` as its bytes and palette (`entry` bytes an entry, red first; a fourth is alpha when `alpha`):
 // whether it was taken. A palette with translucent entries, or more than one clear one, is not.
 int hlglTexIndexed(unsigned name, int width, int height, const uint8_t* bytes, const uint8_t* palette, int entry, int alpha) {
@@ -375,10 +397,13 @@ int hlglTexIndexed(unsigned name, int width, int height, const uint8_t* bytes, c
     head[3] = (uint32_t)tw | (uint32_t)th << 8 | (uint32_t)across << 16;
     uint16_t* cells = (uint16_t*)(at + cells_at);
     for (int i = 0; i < across * down; i++) cells[i] = (uint16_t)i;
-    uint8_t* tile = at + tiles_at;
-    for (int cy = 0; cy < down; cy++)
-        for (int cx = 0; cx < across; cx++)
-            for (int y = 0; y < th; y++, tile += tw) memcpy(tile, bytes + (size_t)(cy * th + y) * width + cx * tw, (size_t)tw);
+    static tiles_t* later;
+    static int later_k;
+    tiles_t now = {at + tiles_at, bytes, width, tw, th, across, down};
+    int k = hlglTexLater && (later || (later = hlglJobMemory(sizeof *later))) ? hlglWorker() : 0;
+    if (later_k > 0) hlglWait(later_k), later_k = 0;	// (its tiles_t is the one about to be written)
+    if (k > 0) *later = now, hlglPost(later_k = k, tiles_job, (uint32_t)later, 0);
+    else tiles_copy(&now);
     t->key = key, t->holes = key >= 0;
     if (log_uploads) fprintf(stderr, "hlgl: tiles %u %dx%d key %d\n", name, width, height, key);
     return 1;
@@ -676,7 +701,7 @@ static uint32_t shade_table, shade_key, shade_swap;
 // The workers from the last: the server's (sv_shaderemu.c), the world's, the things' light's, the
 // brush entities', the glows', the world's light maps' and four for the things' bones (gl_kept.c); the studio
 // models' points take the rest.
-#define ROLES 12
+#define ROLES 16
 static int studio_workers(void) { return workers > ROLES ? workers - ROLES : workers > 3 ? workers - 3 : workers > 1 ? workers - 1 : workers; }
 int hlglServerWorker(void) { return workers > 1 ? workers : 0; }
 int hlglWorldWorker(void) { return workers > 2 ? workers - 1 : 0; }
@@ -687,10 +712,106 @@ int hlglRelightWorker(void) { return workers > ROLES ? workers - 5 : 0; }
 int hlglEntsHelper(void) { return workers > ROLES ? workers - 6 : 0; }
 int hlglServerHelper(void) { return workers > ROLES ? workers - 7 : 0; }
 int hlglBonesWorker(int i) { return workers > ROLES ? workers - ROLES + 1 + i : 0; }
+int hlglRenderWorker(void) { return workers > ROLES ? workers - 8 : 0; }
+int hlglServerPacker(int i) { return workers > ROLES ? workers - 11 + i : 0; }
+
+// ---- rings: while the frame's drawing is on its worker (rnd_shaderemu.c), every other worker runs
+// a loop that takes jobs from its ring, posted by that worker or by this core while it is not out ----
+int SE_RenderWho(void), SE_RenderOut(void);
+uint32_t SE_RenderOnCore0(uint32_t (*fn)(void*), void* args);
+typedef uint32_t (*ring_fn)(uint32_t, uint32_t);
+static struct __attribute__((aligned(16))) { volatile uint32_t seq, fn, a0, a1; } ring_job[65];   // the poster's
+static struct __attribute__((aligned(16))) { volatile uint32_t done, result, unused[2]; } ring_done[65];   // its worker's
+static struct __attribute__((aligned(16))) { volatile uint32_t stop, unused[3]; } ring_stop;
+static struct __attribute__((aligned(16))) { int on, unused[3]; } rings;   // this core's
+static struct __attribute__((aligned(16))) { uint8_t posted[68]; int next, inline_posts; } rp;   // the poster's
+static unsigned ring_loop(unsigned k, unsigned unused) {
+    for (;;) {
+        uint32_t seq = ring_job[k].seq;
+        if (seq != ring_done[k].done) {
+            ring_done[k].result = ((ring_fn)ring_job[k].fn)(ring_job[k].a0, ring_job[k].a1);
+            ring_done[k].done = seq;
+        } else if (ring_stop.stop) return 0;
+        else mc_end_pass();
+    }
+}
+#define CORE0_WORKERS 2	// the last studio workers: this core's own while the drawing is out
+static int core0_worker(int k) { return k > studio_workers() - CORE0_WORKERS && k <= studio_workers(); }
+static int ring_worker(int k) { return k != hlglServerWorker() && k != hlglServerHelper() && k != hlglRenderWorker() && !core0_worker(k) && (k < hlglServerPacker(0) || k > hlglServerPacker(2)); }
+static int core0_next;
+// Whether this core may not post now: the drawing's worker is out and posts.
+static int ring_closed(void) { return !SE_RenderWho() && SE_RenderOut(); }
+static struct __attribute__((aligned(16))) { unsigned waits[66]; } rw;   // the drawing's worker's: DEBUG
+static int ring_poll(int k) {
+    if (k <= 0 || !rp.posted[k]) return 1;
+    if (ring_done[k].done == ring_job[k].seq) { rp.posted[k] = 0; return 1; }
+    if (SE_RenderWho()) { rw.waits[k]++; mc_end_pass(); }
+    else { if (posted[k] == 3) mcw_done(k); mcw_rest(); }
+    return 0;
+}
+// The passes the drawing's worker waited for ring jobs since asked last, and for whose most. DEBUG
+unsigned hlglRingWaits(int* most) {
+    unsigned all = 0, top = 0;
+    for (int k = 1; k < 66; k++) {
+        all += rw.waits[k];
+        if (rw.waits[k] > top) top = rw.waits[k], *most = k;
+        rw.waits[k] = 0;
+    }
+    return all;
+}
+static void ring_post(int k, ring_fn fn, uint32_t a0, uint32_t a1, int late) {
+    while (!ring_poll(k)) ;
+    ring_job[k].fn = (uint32_t)fn, ring_job[k].a0 = a0, ring_job[k].a1 = a1;
+    ring_job[k].seq = ring_job[k].seq + 1;
+    rp.posted[k] = late ? 2 : 1;
+}
+void hlglRingsStart(void) {
+    if (rings.on || !hlglRenderWorker()) return;
+    ring_stop.stop = 0;
+    for (int k = 1; k <= workers; k++) {
+        if (!ring_worker(k)) continue;
+        if (posted[k]) mcw_wait(k);
+        ring_done[k].done = ring_job[k].seq;
+        rp.posted[k] = 0;
+        mcw_post(k, ring_loop, (uint32_t)k, 0), posted[k] = 3;
+    }
+    rings.on = 1;
+}
+// Every job posted through the rings done: the drawing's worker's at its frame's end.
+void hlglRenderJobsWait(void) {
+    for (int k = 1; rings.on && k <= workers; k++) while (!ring_poll(k)) ;
+}
+void hlglRingsStop(void) {
+    if (!rings.on) return;
+    hlglRenderJobsWait();
+    ring_stop.stop = 1;
+    for (int k = 1; k <= workers; k++)
+        if (posted[k] == 3) mcw_wait(k), posted[k] = 0;
+    rings.on = 0;
+}
+// The rings' workers served by this core, should one have stopped at a page or a call.
+void hlglRingsServe(void) {
+    for (int k = 1; rings.on && k <= workers; k++) if (posted[k] == 3) mcw_done(k);
+}
 
 // A worker that has nothing to do now, waited for if need be; 0 when there are none.
 int hlglWorker(void) {
     if (!workers) return 0;
+    if (rings.on) {
+        if (ring_closed()) {
+            int k = studio_workers() - core0_next++ % CORE0_WORKERS;
+            if (posted[k]) dbg_waited[k] += mcw_wait(k), posted[k] = 0;
+            return k;
+        }
+        int n = studio_workers() - CORE0_WORKERS, k = rp.next % n + 1;
+        for (int i = 0; i < n; i++) {   // the next ring that is free, if any is
+            int f = (rp.next + i) % n + 1;
+            if (!rp.posted[f] || ring_done[f].done == ring_job[f].seq) { k = f, rp.next += i; break; }
+        }
+        rp.next++;
+        while (!ring_poll(k)) ;
+        return k;
+    }
     int k = next_worker % studio_workers() + 1;
     next_worker++;
     if (posted[k]) dbg_waited[k] += mcw_wait(k), posted[k] = 0;
@@ -699,15 +820,24 @@ int hlglWorker(void) {
 // fn(a0, a1) on worker k, done before the frame is shown; here and now for k 0.
 void hlglPost(int k, uint32_t (*fn)(uint32_t, uint32_t), uint32_t a0, uint32_t a1) {
     if (k <= 0) fn(a0, a1);
-    else mcw_post(k, fn, a0, a1), posted[k] = 1, dbg_fn[k] = (unsigned)fn;
+    else if (rings.on && ring_worker(k)) {
+        if (ring_closed()) rp.inline_posts++, fn(a0, a1);
+        else ring_post(k, fn, a0, a1, 0);
+    } else mcw_post(k, fn, a0, a1), posted[k] = 1, dbg_fn[k] = (unsigned)fn;
 }
 // The same, but not waited for when the frame is shown: only by hlglWait.
 void hlglPostLate(int k, uint32_t (*fn)(uint32_t, uint32_t), uint32_t a0, uint32_t a1) {
+    if (rings.on && (k <= 0 || ring_worker(k))) {
+        if (k <= 0 || ring_closed()) fn(a0, a1);
+        else ring_post(k, fn, a0, a1, 1);
+        return;
+    }
     hlglPost(k, fn, a0, a1);
     if (k > 0) posted[k] = 2;
 }
 // Worker k's job done (1), or a pass ended waiting for it (0).
 int hlglPoll(int k) {
+    if (rings.on && ring_worker(k)) return ring_poll(k);
     if (k <= 0 || !posted[k]) return 1;
     if (mcw_done(k)) { posted[k] = 0; return 1; }
     mcw_rest();
@@ -715,15 +845,22 @@ int hlglPoll(int k) {
 }
 unsigned hlglWait(int k) {
     unsigned w = 0;
+    if (rings.on && k > 0 && ring_worker(k)) {
+        while (!ring_poll(k)) w++;
+        return w;
+    }
     if (k > 0 && posted[k]) w = mcw_wait(k), dbg_waited[k] += w, posted[k] = 0;
     return w;
 }
 static void jobs_wait(void) {
+    for (int k = 1; rings.on && !ring_closed() && k <= workers; k++) if (rp.posted[k] == 1) while (!ring_poll(k)) ;
     for (int k = 1; k <= workers; k++)
         if (posted[k] == 1) { unsigned w = mcw_wait(k); dbg_swapwait[k] += w, posted[k] = 0; if (w > 1 && (swaps & 255) == 7) fprintf(stderr, "swapwait %d %u fn %x\n", k, w, dbg_fn[k]); }
 }
 void hlglJobsWait(void) { jobs_wait(); }
+static uint32_t job_memory_0(void* bytes) { return (uint32_t)hlglJobMemory(*(unsigned*)bytes); }
 void* hlglJobMemory(unsigned bytes) {
+    if (SE_RenderWho()) return (void*)SE_RenderOnCore0(job_memory_0, &bytes);
     void* p = workers ? mcw_alloc(bytes) : malloc(bytes);
     if (p && workers) mcw_touch(p, bytes);
     return p;
@@ -795,6 +932,35 @@ void hlglShadedPut(uint32_t* c, const void* template, unsigned name, uint32_t bl
     gpuDrawPut(c, &s, block, gpuAddress(at), first_mesh, count);
 }
 
+// The quads hlglStretchPic makes, kept to be drawn again as they were (a menu's text, mainui.patch)
+typedef struct { gpu_state s; uint32_t v[24]; } hlgl_quad;
+static hlgl_quad* capture;
+static int captured, capture_most;
+static uint32_t capture_from;
+unsigned hlglQuadBytes(void) { return sizeof(hlgl_quad); }
+int hlglCapturing(void) { return capture != 0; }
+void hlglCaptureTo(void* to, int most) { capture = to, capture_most = most, captured = 0, capture_from = drawn_vertices; }
+// How many were kept since hlglCaptureTo; -1 when they did not fit or anything else was drawn.
+int hlglCaptured(void) {
+    int n = captured;
+    if (!capture) return -1;
+    capture = 0;
+    return n > capture_most || drawn_vertices - capture_from != 6u * (uint32_t)n ? -1 : n;
+}
+void hlglDrawQuads(const void* quads, int count) {
+    const hlgl_quad* q = quads;
+    for (int i = 0; i < count; i++, q++) {
+        uint32_t* to = gpuDrawRoom(&q->s, 6, 6);
+        if (!to) continue;
+        memcpy(to, q->v, sizeof q->v);
+        drawn_vertices += 6;
+        if (log_picsum) {
+            for (int k = 0; k < 24; k++) picsum = (picsum ^ q->v[k]) * 16777619u;
+            for (unsigned k = 0; k < sizeof q->s / 4; k++) picsum = (picsum ^ ((const uint32_t*)&q->s)[k]) * 16777619u;
+        }
+    }
+}
+
 // R_DrawStretchPic's quad with the state as it is: what draw_vertices makes of it from GL_QUADS.
 void hlglStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2) {
     static const uint8_t corners[6] = {0, 1, 2, 0, 2, 3};
@@ -811,6 +977,12 @@ void hlglStretchPic(float x, float y, float w, float h, float s1, float t1, floa
         const vertex* p = &v[corners[i]];
         to[0] = bits(p->x), to[1] = bits(p->y), to[2] = bits(p->z);
         to[3] = ((uint32_t)(int32_t)((p->s - low_s) * 1024.0f) & 0xffff) | (uint32_t)(int32_t)((p->t - low_t) * 1024.0f) << 16;
+        if (log_picsum) for (int k = 0; k < 4; k++) picsum = (picsum ^ to[k]) * 16777619u;
+    }
+    if (log_picsum) for (unsigned k = 0; k < sizeof s / 4; k++) picsum = (picsum ^ ((const uint32_t*)&s)[k]) * 16777619u;
+    if (capture) {
+        if (captured < capture_most) capture[captured].s = s, memcpy(capture[captured].v, to - 24, sizeof capture[0].v);
+        captured++;
     }
     drawn_vertices += 6;
 }
@@ -973,15 +1145,22 @@ static void s_nothing(void) {}
 int hlglOpen(unsigned int nano_x_window) {
     if (seglInit(nano_x_window) < 0) return -1;
     seglWorldUp(3);   // z
-    log_uploads = getenv("HLGL_LOG") != 0, log_frames = getenv("HLGL_FRAMES") != 0;
+    log_uploads = getenv("HLGL_LOG") != 0, log_frames = getenv("HLGL_FRAMES") != 0, log_picsum = getenv("HLGL_PICSUM") != 0, log_sum = getenv("HLGL_SUM") ? atoi(getenv("HLGL_SUM")) : 0;
     if (log_frames) fprintf(stderr, "hlgl: hlglOpen at %p\n", (void*)hlglOpen);   // (a flat program's place, for a profile)
     for (int i = 0; i < MAX_NAMES; i++) textures[i].at = NOWHERE;
-    // the pool: the display's spare memory when there is some, then what seglMemory has left,
-    // with what lies between them as a block that never leaves
-    unsigned int spare_size, main_size = seglMemoryLeft() & ~15u;
-    uint8_t* spare = seglMemorySpare(&spare_size);
-    uint8_t* main_part = seglMemory(main_size);
+    // the pool: a block of RAM, which the GPU reads as its own memory (HL_POOL_MB, 28 by default);
+    // else the display's spare memory when there is some, then what seglMemory has left, with
+    // what lies between them as a block that never leaves
+    unsigned int spare_size = 0, main_size = (getenv("HL_POOL_MB") ? (unsigned)atoi(getenv("HL_POOL_MB")) : 28) << 20;
+    uint8_t* spare = 0;
+    uint8_t* main_part = main_size ? aligned_alloc(4096, main_size) : 0;
+    if (!main_part) {
+        main_size = seglMemoryLeft() & ~15u;
+        spare = seglMemorySpare(&spare_size);
+        main_part = seglMemory(main_size);
+    }
     if (!main_part) return -1;
+    if (log_frames) fprintf(stderr, "hlgl: pool of %u KB at %p\n", (main_size + spare_size) >> 10, (void*)main_part);
     pool = spare ? spare : main_part;
     pool_size = main_size + spare_size;
     block_count = 0;
@@ -998,11 +1177,11 @@ int hlglOpen(unsigned int nano_x_window) {
     for (unsigned at = 0; spare && at < spare_size; at += 4096) __asm__ volatile("amoor.w zero, zero, (%0)" : : "r"(spare + at) : "memory");
     // workers for the studio models: the program's text read and the frames' sets written here first
     const char* want = getenv("HLGL_WORKERS");
-    workers = mcw_open(want ? atoi(want) : 43);
+    workers = mcw_open(want ? atoi(want) : 46);
     if (workers > 64) workers = 64;
     if (workers > 0) {
-        extern char __executable_start[], etext[];
-        mcw_touch_code(__executable_start, (unsigned)(etext - __executable_start));
+        extern char _start[], etext[];  // (a flat program's __executable_start is 0)
+        mcw_touch_code(_start, (unsigned)(etext - _start));
         gpuTouchSets(mcw_touch);
     } else workers = 0;
     return 0;
@@ -1019,8 +1198,15 @@ void hlglWindowChanged(int* width, int* height) {
 
 void hlglSwap(void) {
     jobs_wait();
+    if (log_sum) {
+        uint32_t one = gpuListSum(0);
+        listsum = (listsum ^ one) * 16777619u;
+        if ((swaps + 1) % 32 == 0) fprintf(stderr, "hlgl: sum %d %08x\n", swaps + 1, (unsigned)listsum);
+    }
     gpuSwap(0);
     swaps++;
+    if (log_picsum && ++picsums % 64 == 0) fprintf(stderr, "hlgl: picsum %08x\n", (unsigned)picsum);
+    picsum = 0;
     if (log_frames && ++frame % 64 == 0) fprintf(stderr, "hlgl: frame %u\n", frame);
     if (log_frames && frame % 256 == 0) {	// DEBUG
         extern unsigned se_asks[64], se_asks_n;
@@ -1031,6 +1217,9 @@ void hlglSwap(void) {
         se_settle_passes = 0;
     }
 }
+
+// The list so far summed, for HLGL_SUM=2 (rnd_shaderemu.c prints it with the time it draws).
+unsigned hlglRenderSum(void) { return log_sum == 2 ? gpuListSum(0) : 0; }
 
 void hlglStats(unsigned* tiles, unsigned* in_gpu, unsigned* gpu_size, unsigned* left_out, unsigned* vertices) {
     *tiles = tile_bytes, *in_gpu = pool_used, *gpu_size = pool_size, *left_out = refused, *vertices = drawn_vertices;

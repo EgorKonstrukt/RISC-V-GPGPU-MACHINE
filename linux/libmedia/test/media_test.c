@@ -6,6 +6,7 @@
  *   media_test anim FILE [WORKERS]                        an animation's frames' sums
  *   media_test audio FILE OUT.raw [WORKERS [PIECE]]       16-bit sound, its sum (WORKERS -1: in order, -2/-3: pieces backwards)
  *   media_test video FILE [WORKERS]                       a film's pictures' sums (MEDIA_TEST_FRAMES=FILE: the pictures)
+ *   media_test gunzip FILE [WORKERS [OUT]]                one gzip member on the workers, checked by its CRC
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -260,6 +261,43 @@ main(int argc, char **argv)
 		fwrite(out, 1, total, o);
 		fclose(o);
 		printf("inflate: %u bytes, fnv %08x\n", total, media_sum(out, total, 2166136261u));
+		return 0;
+	}
+	if (!strcmp(argv[1], "gunzip") && argc >= 3) {	/* gunzip FILE [WORKERS [OUT]]: one member, inflated on the workers */
+		uint32_t at = 10, total, made = 0, used = 0, crc = 0;
+		uint8_t *out;
+		const char *why = NULL;
+		double t0 = now();
+
+		if (size < 18 || f[0] != 0x1f || f[1] != 0x8b || f[2] != 8) {
+			printf("gunzip %s: not gzip\n", argv[2]);
+			return 1;
+		}
+		if (f[3] & 4)
+			at += 2 + (f[10] | f[11] << 8);
+		if (f[3] & 8)
+			while (at < size && f[at++]);
+		if (f[3] & 16)
+			while (at < size && f[at++]);
+		if (f[3] & 2)
+			at += 2;
+		total = f[size - 4] | f[size - 3] << 8 | f[size - 2] << 16 | (uint32_t)f[size - 1] << 24;
+		out = aligned_alloc(16, (total + 15) & ~15u);
+		why = media_inflate_stream(f + at, size - 8 - at, out, total, &made, &used, &crc, argc > 3 ? atoi(argv[3]) : 0);
+		if (!why && crc != (f[size - 8] | f[size - 7] << 8 | f[size - 6] << 16 | (uint32_t)f[size - 5] << 24))
+			why = "its CRC-32 is wrong";
+		if (why) {
+			printf("gunzip %s: %s\n", argv[2], why);
+			return 1;
+		}
+		if (argc > 4) {
+			FILE *o = fopen(argv[4], "wb");
+
+			fwrite(out, 1, made, o);
+			fclose(o);
+		}
+		printf("gunzip: %u bytes from %u, crc %08x, fnv %08x, %.1f ms\n", made, used, crc, media_sum(out, made, 2166136261u),
+		       (now() - t0) * 1000);
 		return 0;
 	}
 	if (!strcmp(argv[1], "audio") && argc >= 4) {

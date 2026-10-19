@@ -32,6 +32,8 @@ public class EmuDanger : UdonSharpBehaviour
     // where each kind of memory begins, in megabytes (MemView.shader's owner(), src/zap.h's zap_zone)
     private readonly int[] zoneFrom = { 0, 9, 96, 112, 119, 123, 126 };
     private readonly string[] zoneNames = { "Kernel", "Linux", "Windows", "Display, GPU", "3D program", "Sound" };
+    // Linux's programs have the RAM above the devices too: from 128 MB (0x88000000) to 288
+    private const int HighFrom = 128, HighTo = 288, Strips = 3;
 
     void Start()
     {
@@ -87,17 +89,17 @@ public class EmuDanger : UdonSharpBehaviour
             memoryView.SetVector("_Cursor", new Vector4(-1f, -1f, 0f, 0f));
             return;
         }
-        // The screen is RAM in two strips, 2,016 rows of 2,048 texels each, low addresses at the top.
-        int strip = u < 0.5f ? 0 : 1;
-        int column = Mathf.Clamp((int)((u * 2f - strip) * 2048f), 0, 2047);
-        int row = Mathf.Clamp((int)((strip + 1f - v) * 2016f), 0, 4031);
+        // The screen is RAM in three strips, 3,072 rows of 2,048 texels each, low addresses at the top.
+        int strip = Mathf.Clamp((int)(u * Strips), 0, Strips - 1);
+        int column = Mathf.Clamp((int)((u * Strips - strip) * 2048f), 0, 2047);
+        int row = Mathf.Clamp((int)((strip + 1f - v) * (HighTo * 32f / Strips)), 0, HighTo * 32 - 1);
         int reach = reaches[brush];
         // whose memory the beam is on: nothing burns where that kind's key is dark
-        int megabyte = row / 32, zone = 5;
+        int megabyte = row / 32, zone = megabyte >= zoneFrom[6] ? 1 : 5;
         for (int z = 0; z < 6; z++)
             if (megabyte < zoneFrom[z + 1]) { zone = z; break; }
         bool exposed = (zones & (1 << zone)) != 0;
-        memoryView.SetVector("_Cursor", new Vector4(u, v, (reach + 0.5f) / 4096f, fire && exposed ? 1f : 0f));
+        memoryView.SetVector("_Cursor", new Vector4(u, v, (reach + 0.5f) / (2048f * Strips), fire && exposed ? 1f : 0f));
         if (fire && !exposed && countLabel != null) countLabel.text = zoneNames[zone] + " is safe: its key is dark";
         if (!fire || !exposed || machine == null || !machine.IsOn()) return;
         shots++;
@@ -120,7 +122,7 @@ public class EmuDanger : UdonSharpBehaviour
         // megabytes the lit keys cover: a particle lands anywhere in them, as likely here as there
         int most = 0;
         for (int z = 0; z < 6; z++)
-            if ((zones & (1 << z)) != 0) most += zoneFrom[z + 1] - zoneFrom[z];
+            if ((zones & (1 << z)) != 0) most += zoneFrom[z + 1] - zoneFrom[z] + (z == 1 ? HighTo - HighFrom : 0);
         // A round of the machine takes one flip, so a frame has room for a few: what is owed beyond
         // that goes as more bits of the same word, up to all 32 of it.
         int wanted = Mathf.FloorToInt(owed), each = Mathf.Clamp((wanted + 7) / 8, 1, 32);
@@ -130,8 +132,8 @@ public class EmuDanger : UdonSharpBehaviour
             for (int z = 0; z < 6; z++)
             {
                 if ((zones & (1 << z)) == 0) continue;
-                int size = zoneFrom[z + 1] - zoneFrom[z];
-                if (megabyte < size) { megabyte += zoneFrom[z]; break; }
+                int low = zoneFrom[z + 1] - zoneFrom[z], size = low + (z == 1 ? HighTo - HighFrom : 0);
+                if (megabyte < size) { megabyte = megabyte < low ? megabyte + zoneFrom[z] : HighFrom + megabyte - low; break; }
                 megabyte -= size;
             }
             int row = megabyte * 32 + Random.Range(0, 32), bits = Mathf.Min(each, Mathf.FloorToInt(owed)), mask = 0;

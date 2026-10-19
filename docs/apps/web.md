@@ -251,7 +251,7 @@ strips wraps, whatever is on the page.
 
 ### Strips
 
-The pixmap is a ring (`strips_work` in `nxweb.c`; the plan was `docs/plans/web-scroll-plan.md`):
+The pixmap is a ring (`strips_work` in `nxweb.c`):
 strip k of the page is in slot k modulo the slots, so a scroll keeps every row already drawn,
 and the strips coming into reach are made ahead of the view while the browser waits for its
 next event (`strips_meanwhile`), the view's first, then the way the scroll goes. Only a jump

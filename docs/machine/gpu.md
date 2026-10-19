@@ -24,7 +24,7 @@ How it is drawn:
   commit after the draw makes it and adds one to the copies counter. A program that needs the
   pixels waits for that counter; one that only wants them shown does not wait at all.
 - The copy can go to the display's framebuffer, or to **any rectangle of RAM** from
-  `0x86000000` up: a picture of the rectangle's size is drawn and stored there, a row length
+  `0x86000000` to `0x87e00000` (RAM above `0x88000000` is Linux's, `docs/system/nommu.md`): a picture of the rectangle's size is drawn and stored there, a row length
   apart. That makes any buffer a render target, which is how a window system gives each
   window its own (`nanox.md`), and how an OpenGL program draws into a window.
 
@@ -339,7 +339,8 @@ frames a second with this project's kernel (about 80 on upstream's):
   spins while it waits.
 - The GPU's memory must not be RAM the kernel uses, so the image's device tree ends RAM at
   `0x86000000` (`tools/make_linux_image.py`, which also adds the binary to the root
-  filesystem; `linux/nommu/image.py` for Linux without an MMU, from `0x80400000`).
+  filesystem; `linux/nommu/image.py` for Linux without an MMU, from `0x80400000`, with a second
+  range above the devices from `0x88000000`: `docs/system/nommu.md`, "Memory").
 - The binary is static and links no C library: `programs/linux/libc.c` is a tiny runtime, and
   floating point comes from compiler-rt's soft-float routines, fetched at build time
   (`programs/linux/fetch.py`). Inside, the driver works in 16.16 fixed point.
@@ -362,3 +363,50 @@ mesh vertices every frame, most of which exit after reading one word.
 In D3D12 the state texture must be in the non-pixel-shader-resource state as well as the
 pixel-shader one while GPUDraw runs: without it the vertex shader reads stale data, with no
 error.
+
+## RAM in one texture
+
+The machine's state and RAM were two textures of 2048 x 9280 (290 MiB each), each commit
+drawing one from the other. Now they are one, written in place (`RAM_INPLACE`,
+`experiments/rvc_opt/src/ram.h`), and no pass reads the texture it draws: the D3D11 harness's
+default (`--ping-pong` for the two; `--lazy` and D3D12 still have two) and the world's.
+Beside it: the state rows after the tick (2048 x 64), a stage (2048 x 21) and the control
+pass's rows. 580 MiB became 290 MiB and 2.9 MiB.
+
+A pass, after the tick (which reads the state) and the unpack into the tick's texture:
+
+- **The gather** (`ram_gather_geom`, points: one and one a core) reads from the state into
+  the stage whatever the commit needs of RAM as it was: a copy's chunk, the texel of a core's
+  store that found its cache full (merged with that texel's other words), the first and last
+  texel of a fill or of a copy out of the ROM, the control words, the texels the picture
+  copied back covers only in part, and the zap's square.
+- **The state rows** (one quad) from the tick's texture and the stage.
+- **RAM** as points (`ram_commit_geom`): the zap's square, each core's buckets, lone store and
+  fill or copy, then the picture, in that order, the later winning where two write a texel.
+  At start, point 0 is all of RAM from the image.
+- **The control pass's rows** are drawn into a texture of their own and copied in: the
+  harness's zones by `CopySubresourceRegion`, the world's (11 rows) by its `WindowBack` pass.
+
+A fill and a copy out of the ROM read no RAM and are made whole in one pass. A copy from
+RAM to RAM goes through the stage, 16,384 texels (256 KB) a pass, for one core a pass (of
+the cores with one to make, the highest: it draws last in the gather); the core stays
+stopped at `STALL_MEMOP_COPY`, its addresses and length moved on by a chunk, until the last
+chunk is made. A destination inside its source ahead of it is copied from its end, so a
+chunk never reads what an earlier one wrote (as `memmove`). `rvc_cpu` makes them the same
+way, after the cores' pass (`copy_pass`; `RVC_COPY_STATS=1` prints how many there were and
+how long cores waited).
+
+`programs\copytest` (`tools\make_lazy_image.py DIR --program copytest --rom-kb 1024`, then
+`rvc_harness --kernel mmu --image linux-net` in DIR) checks a copy of 4 KB, of 1 MB forward,
+overlapping ahead and behind, from an odd address over three chunks, across and onto
+`0x88000000`, 1 MB from the ROM, a fill of 2 MB, and a store beside a destination in its
+pass: every line `ok` and `copytest: sum 0e7f76c3` on the card and on `rvc_cpu`. Before,
+the card had the store beside it wrong and `rvc_cpu` the overlap ahead.
+
+On the RTX 5090 (D3D11, fxc2), in turn with the tree before, from a cold boot: a shell loop
+4.79 and 4.82 million instructions a second against 4.74 and 4.83; Doom's timedemo
+(`-nodraw`, its seconds 20 to 32) 4.44, 4.72, 4.71 and 4.73 against 4.71, 4.62, 4.57 and
+4.64. The commit, gather and both draws, is 0.023 to 0.039 ms a pass against 0.024 to 0.026.
+A loop of 4 MB copies takes 16 passes a copy (0.020 ms of commit each) where it took one
+(0.036 ms). Linux's own copies are pages: Doom's timedemo made 16 of up to 4 KB, a `cp` of
+8 MB 4,096 of 4 KB, and no core waited for another's.

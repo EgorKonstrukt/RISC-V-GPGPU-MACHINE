@@ -1,4 +1,4 @@
-"""No-MMU kernel: the GPU's and the sound card's mmap at their physical addresses, and buddy blocks up to 32 MB."""
+"""No-MMU kernel: the GPU's and the sound card's mmap at their physical addresses, the devices found by page_is_ram, and buddy blocks up to 32 MB."""
 import re, sys
 K = sys.argv[1]
 
@@ -19,6 +19,16 @@ def patch(path, fn, phys, fops):
 
 patch('drivers/misc/shaderemu_gpu.c', 'shaderemu_gpu', 'GPU_PHYS', 'shaderemu_gpu_fops')
 patch('drivers/misc/shaderemu_sound.c', 'shaderemu_sound', 'SND_REGS', 'shaderemu_sound_fops')
+# RAM lies on both sides of the devices (0x88000000 up, image.py): their pages are in the memory
+# map's range, so pfn_valid no longer says whether the device tree gave them to the kernel
+for path in ('drivers/misc/shaderemu_gpu.c', 'drivers/misc/shaderemu_sound.c', 'drivers/video/fbdev/shaderemu_fb.c',
+             'drivers/input/misc/shaderemu_input.c', 'drivers/net/shaderemu_net.c'):
+    p = f'{K}/{path}'
+    s = open(p).read()
+    if 'pfn_valid(' in s:
+        s = re.sub(r'\bpfn_valid\(([A-Z_]+) >> PAGE_SHIFT\)', r'page_is_ram(\1 >> PAGE_SHIFT)', s)
+        assert 'pfn_valid(' not in s, path
+        open(p, 'w').write(s)
 p = f'{K}/arch/riscv/Kconfig'
 s = open(p).read()
 if 'FORCE_MAX_ZONEORDER' not in s:

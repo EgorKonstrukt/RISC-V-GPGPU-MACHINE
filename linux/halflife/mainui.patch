@@ -1,0 +1,382 @@
+diff --git a/BaseMenu.cpp b/BaseMenu.cpp
+index 7b727eb..1e9e59f 100755
+--- a/BaseMenu.cpp
++++ b/BaseMenu.cpp
+@@ -276,9 +276,113 @@ void UI_DrawRectangleExt( int in_x, int in_y, int in_w, int in_h, const unsigned
+ UI_DrawString
+ =================
+ */
++#if XASH_SHADEREMU
++// A text drawn as it was the last time: its characters' quads kept (hlglDrawQuads), the first
++// drawn for real and compared, the last drawn for real to leave the engine's state as it was
++extern "C" { unsigned hlglQuadBytes( void ); void hlglCaptureTo( void *to, int most ); int hlglCaptured( void ); void hlglDrawQuads( const void *quads, int count ); }
++#define UI_TEXT_CALLS 128
++#define UI_QUAD_WORDS 35	// (hlgl_quad's: gpu_state and six vertices)
++struct ui_text_t
++{
++	HFont font; int x, y, w, h, charH, sw, sh; unsigned color; uint justify, flags; float sx;
++	char string[160];
++	int maxX, calls, quads, ok;
++	struct { int ch, x, y, quad; unsigned color; bool additive; } call[UI_TEXT_CALLS];
++	uint32_t quad[UI_TEXT_CALLS][UI_QUAD_WORDS];
++};
++static ui_text_t ui_texts[24];
++static ui_text_t *ui_recording;
++static int ui_text_next;
++
++static int UI_TextChar( HFont font, int ch, Point pt, int charH, unsigned color, bool additive )
++{
++	ui_text_t *t = ui_recording;
++	if( !t || !t->ok )
++		return g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	if( t->calls == UI_TEXT_CALLS )
++	{
++		t->ok = 0;
++		return g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	}
++	hlglCaptureTo( t->quad[t->quads], UI_TEXT_CALLS - t->quads );
++	int wide = g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive );
++	int n = hlglCaptured( );
++	if( n < 0 || n > 1 )
++		t->ok = 0;
++	else
++	{
++		t->call[t->calls].ch = ch, t->call[t->calls].x = pt.x, t->call[t->calls].y = pt.y;
++		t->call[t->calls].color = color, t->call[t->calls].additive = additive;
++		t->call[t->calls++].quad = n ? t->quads++ : -1;
++	}
++	return wide;
++}
++
++static int UI_DrawStringNow( HFont font, int x, int y, int w, int h, const char *string, const unsigned int color, int charH, uint justify, uint flags );
++
+ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 		const char *string, const unsigned int color,
+ 		int charH, uint justify, uint flags )
++{
++	static int off = -1;
++	if( off < 0 ) off = getenv( "HL_MENU_TEXT" ) && !strcmp( getenv( "HL_MENU_TEXT" ), "now" ) || hlglQuadBytes( ) != UI_QUAD_WORDS * 4;
++	if( off || !string || !string[0] || strlen( string ) >= sizeof( ui_texts[0].string ))
++		return UI_DrawStringNow( font, x, y, w, h, string, color, charH, justify, flags );
++	ui_text_t *t = NULL;
++	for( int i = 0; i < 24 && !t; i++ )
++	{
++		ui_text_t *k = &ui_texts[i];
++		if( k->ok && k->x == x && k->y == y && k->w == w && k->h == h && k->font == font && k->color == color && k->charH == charH
++			&& k->justify == justify && k->flags == flags && k->sx == uiStatic.scaleX && k->sw == ScreenWidth && k->sh == ScreenHeight
++			&& !strcmp( k->string, string ))
++			t = k;
++	}
++	if( t )
++	{
++		int first = -1, last = t->calls - 1;
++		for( int i = 0; i < t->calls && first < 0; i++ )
++			if( t->call[i].quad >= 0 ) first = i;
++		for( int i = 0; i < t->calls; i++ )
++		{
++			const auto &c = t->call[i];
++			if( i == first && i != last )
++			{
++				uint32_t made[UI_QUAD_WORDS];
++				hlglCaptureTo( made, 1 );
++				g_FontMgr->DrawCharacter( font, c.ch, Point( c.x, c.y ), charH, c.color, c.additive );
++				if( hlglCaptured( ) != 1 || memcmp( made, t->quad[c.quad], sizeof( made )))
++				{
++					t->ok = 0;	// (drawn as it is from here on, and recorded again next time)
++					for( int j = i + 1; j < t->calls; j++ )
++						g_FontMgr->DrawCharacter( font, t->call[j].ch, Point( t->call[j].x, t->call[j].y ), charH, t->call[j].color, t->call[j].additive );
++					return t->maxX;
++				}
++			}
++			else if( i == last )
++				g_FontMgr->DrawCharacter( font, c.ch, Point( c.x, c.y ), charH, c.color, c.additive );
++			else if( c.quad >= 0 )
++				hlglDrawQuads( t->quad[c.quad], 1 );
++		}
++		return t->maxX;
++	}
++	t = &ui_texts[ui_text_next++ % 24];
++	t->font = font, t->x = x, t->y = y, t->w = w, t->h = h, t->color = color, t->charH = charH, t->justify = justify, t->flags = flags;
++	t->sx = uiStatic.scaleX, t->sw = ScreenWidth, t->sh = ScreenHeight;
++	strcpy( t->string, string );
++	t->calls = t->quads = 0, t->ok = 1;
++	ui_recording = t;
++	t->maxX = UI_DrawStringNow( font, x, y, w, h, string, color, charH, justify, flags );
++	ui_recording = NULL;
++	return t->maxX;
++}
++#else
++#define UI_TextChar( font, ch, pt, charH, color, additive ) g_FontMgr->DrawCharacter( font, ch, pt, charH, color, additive )
++#define UI_DrawStringNow UI_DrawString
++#endif
++
++static int UI_DrawStringNow( HFont font, int x, int y, int w, int h,
++		const char *string, const unsigned int color,
++		int charH, uint justify, uint flags )
+ {
+ 	uint	modulate, shadowModulate = 0;
+ 	int	xx = 0, yy, shadowOffset = 0, ch;
+@@ -473,7 +577,7 @@ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 				continue;
+ 
+ 			if( flags & ETF_SHADOW )
+-				g_FontMgr->DrawCharacter( font, ch, Point( xx + shadowOffset, yy + shadowOffset ), charH, shadowModulate, flags & ETF_ADDITIVE );
++				UI_TextChar( font, ch, Point( xx + shadowOffset, yy + shadowOffset ), charH, shadowModulate, flags & ETF_ADDITIVE );
+ 
+ #ifdef DEBUG_WHITESPACE
+ 			if( ch == ' ' )
+@@ -484,7 +588,7 @@ int UI_DrawString( HFont font, int x, int y, int w, int h,
+ 			}
+ #endif
+ 
+-			xx += g_FontMgr->DrawCharacter( font, ch, Point( xx, yy ), charH, modulate, flags & ETF_ADDITIVE );
++			xx += UI_TextChar( font, ch, Point( xx, yy ), charH, modulate, flags & ETF_ADDITIVE );
+ 
+ 			maxX = Q_max( xx, maxX );
+ 		}
+diff --git a/font/BitmapFont.cpp b/font/BitmapFont.cpp
+index 8e6e76d..a503ba9 100644
+--- a/font/BitmapFont.cpp
++++ b/font/BitmapFont.cpp
+@@ -105,7 +105,7 @@ int CBitmapFont::DrawCharacter(int ch, Point pt, int charH, const unsigned int c
+ 		ch = ch - 0x410 + 0xC0;
+ 	if( ch >= 0x0430 && ch <= 0x044F )
+ 		ch = ch - 0x430 + 0xE0;
+-	else
++	else if( ch >= 0x7F )	// (the table has nothing under 0x7f)
+ 	{
+ 		int i;
+ 		for( i = 0; i < 64; i++ )
+diff --git a/menus/Main.cpp b/menus/Main.cpp
+index 4d1a382..7a1e1a4 100644
+--- a/menus/Main.cpp
++++ b/menus/Main.cpp
+@@ -37,6 +37,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #define ART_CLOSEBTN_N	"gfx/shell/cls_n"
+ #define ART_CLOSEBTN_F	"gfx/shell/cls_f"
+ #define ART_CLOSEBTN_D	"gfx/shell/cls_d"
++#define ORDER_PAGE	"media/order/default.html"	// (a demo's: Uplink's "Order Half-Life")
++
++void UI_Readme_Menu( void );
+ 
+ class CMenuMain: public CMenuFramework
+ {
+@@ -72,6 +75,8 @@ private:
+ 	CMenuPicButton	multiPlayer;
+ 	CMenuPicButton	customGame;
+ 	CMenuPicButton	previews;
++	CMenuPicButton	readme;
++	CMenuPicButton	order;
+ 	CMenuPicButton	quit;
+ 
+ 	// buttons on top right. Maybe should be drawn if fullscreen == 1?
+@@ -83,6 +88,8 @@ private:
+ 
+ 	bool bTrainMap;
+ 	bool bCustomGame;
++	bool bSingle;	// one player only (Uplink; gameinfo.txt type, which the engine overrides for valve): as WON demo
++	bool bReadme, bOrder;
+ };
+ 
+ void CMenuMain::QuitDialogCb()
+@@ -170,9 +177,12 @@ void CMenuMain::_Init( void )
+ 		bTrainMap = true;
+ 	else bTrainMap = false;
+ 
+-	if( EngFuncs::GetCvarFloat( "host_allow_changegame" ))
++	bSingle = gMenu.m_gameinfo.gamemode == GAME_SINGLEPLAYER_ONLY || !stricmp( gMenu.m_gameinfo.type, "singleplayer_only" );
++	if( EngFuncs::GetCvarFloat( "host_allow_changegame" ) && !bSingle )
+ 		bCustomGame = true;
+ 	else bCustomGame = false;
++	bReadme = EngFuncs::FileExists( "readme.txt" ) != 0;
++	bOrder = EngFuncs::FileExists( ORDER_PAGE ) != 0;
+ 
+ 	// console
+ 	console.SetNameAndStatus( L( "GameUI_Console" ), L( "Show console" ) );
+@@ -228,6 +238,21 @@ void CMenuMain::_Init( void )
+ 	previews.iFlags |= QMF_NOTIFY;
+ 	SET_EVENT( previews.onReleased, EngFuncs::ShellExecute( MenuStrings[ IDS_MEDIA_PREVIEWURL ], NULL, false ) );
+ 
++	readme.SetNameAndStatus( L( "View Readme.txt" ), L( "View the Readme.txt file." ) );
++	readme.SetPicture( PC_VIEW_README );
++	readme.iFlags |= QMF_NOTIFY;
++	readme.onReleased = UI_Readme_Menu;
++
++	order.SetNameAndStatus( L( "Order Half-Life" ), L( "Order the full version of Half-Life." ) );
++	order.SetPicture( PC_ORDER_HL );
++	order.iFlags |= QMF_NOTIFY;
++	SET_EVENT_MULTI( order.onReleased,
++	{
++		char page[256];
++		snprintf( page, sizeof( page ), "%s/" ORDER_PAGE, gMenu.m_gameinfo.gamefolder );
++		EngFuncs::ShellExecute( page, NULL, false );
++	});
++
+ 	quit.SetNameAndStatus( L( "GameUI_GameMenu_Quit" ), L( "GameUI_QuitConfirmationText" ) );
+ 	quit.SetPicture( PC_QUIT );
+ 	quit.iFlags |= QMF_NOTIFY;
+@@ -292,12 +317,18 @@ void CMenuMain::_Init( void )
+ 
+ 	AddItem( configuration );
+ 	AddItem( saveRestore );
+-	AddItem( multiPlayer );
++	if( !bSingle )
++		AddItem( multiPlayer );
+ 
+ 	if ( bCustomGame )
+ 		AddItem( customGame );
+ 
+-	AddItem( previews );
++	if( bReadme )
++		AddItem( readme );
++	if( bOrder )
++		AddItem( order );
++	if( !bSingle )
++		AddItem( previews );
+ 	AddItem( quit );
+ 	AddItem( minimizeBtn );
+ 	AddItem( quitButton );
+@@ -322,11 +353,28 @@ void CMenuMain::VidInit( bool connected )
+ 	minimizeBtn.SetRect( uiStatic.width - 72, 13, 32, 32 );
+ 	quitButton.SetRect( uiStatic.width - 36, 13, 32, 32 );
+ 
+-	previews.SetCoord( hoffset, previews_voffset );
+ 	quit.SetCoord( hoffset, previews_voffset + ygap );
+ 
+-	// let's start calculating positions
+-	int yoffset = previews_voffset - ygap;
++	// let's start calculating positions, upwards from Quit
++	int yoffset = previews_voffset;
++
++	if( !bSingle )
++	{
++		previews.SetCoord( hoffset, yoffset );
++		yoffset -= ygap;
++	}
++
++	if( bOrder )
++	{
++		order.SetCoord( hoffset, yoffset );
++		yoffset -= ygap;
++	}
++
++	if( bReadme )
++	{
++		readme.SetCoord( hoffset, yoffset );
++		yoffset -= ygap;
++	}
+ 
+ 	if( bCustomGame )
+ 	{
+@@ -334,8 +382,11 @@ void CMenuMain::VidInit( bool connected )
+ 		yoffset -= ygap;
+ 	}
+ 
+-	multiPlayer.SetCoord( hoffset, yoffset );
+-	yoffset -= ygap;
++	if( !bSingle )
++	{
++		multiPlayer.SetCoord( hoffset, yoffset );
++		yoffset -= ygap;
++	}
+ 
+ 	bool single = gpGlobals->maxClients < 2;
+ 
+diff --git a/menus/NewGame.cpp b/menus/NewGame.cpp
+index 6acc37a..ecde460 100644
+--- a/menus/NewGame.cpp
++++ b/menus/NewGame.cpp
+@@ -135,7 +135,7 @@ void CMenuNewGame::_Init( void )
+ 	startDemoChapter.SetCoord( 72, 230 + m_iBtnsNum * 50 );
+ 	startDemoChapter.SetNameAndStatus( L( "GameUI_PlayGame_Alt" ), L( "Play the demo chapter on selected difficulty" ));
+ 
+-	if( EngFuncs::IsMapValid( gMenu.m_gameinfo.demomap ))
++	if( EngFuncs::IsMapValid( gMenu.m_gameinfo.demomap ) && stricmp( gMenu.m_gameinfo.demomap, gMenu.m_gameinfo.startmap ))	// (Uplink: the game is the demo chapter)
+ 		AddItem( startDemoChapter );
+ 
+ 	msgBox.SetMessage( L( "StringsList_240" ) );
+diff --git a/menus/Readme.cpp b/menus/Readme.cpp
+new file mode 100644
+index 0000000..148fb92
+--- /dev/null
++++ b/menus/Readme.cpp
+@@ -0,0 +1,79 @@
++/*
++Readme.cpp - the game's readme.txt, as WON's "View Readme.txt" showed it
++Copyright (C) Xash3D FWGS contributors
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation, either version 3 of the License, or
++(at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++*/
++
++#include "Framework.h"
++#include "PicButton.h"
++#include "Table.h"
++#include "StringVectorModel.h"
++
++#define ART_BANNER "gfx/shell/head_readme"
++#define WRAP 72	// characters a line: the table's width in the menu's font
++
++class CMenuReadme : public CMenuFramework
++{
++public:
++	CMenuReadme() : CMenuFramework( "CMenuReadme" ) { }
++
++private:
++	void _Init() override;
++
++	CMenuTable text;
++	CStringVectorModel lines;
++};
++
++void CMenuReadme::_Init( void )
++{
++	int length = 0;
++	char *file = (char *)EngFuncs::COM_LoadFile( "readme.txt", &length );
++
++	banner.SetPicture( ART_BANNER );
++	AddItem( banner );
++	AddButton( L( "Done" ), L( "Go back to the Main Menu." ), PC_DONE, VoidCb( &CMenuReadme::Hide ));
++
++	// its lines, tabs as spaces, broken at a space before WRAP characters
++	for( int i = 0; file && i < length; )
++	{
++		char line[WRAP + 1];
++		int n = 0, space = -1;
++
++		while( i < length && file[i] != '\n' && n < WRAP )
++		{
++			char c = file[i++];
++			if( c == '\r' )
++				continue;
++			if( c == '\t' )
++				c = ' ';
++			if( c == ' ' )
++				space = n;
++			line[n++] = c;
++		}
++		if( n == WRAP && i < length && file[i] != '\n' && space > 0 )
++			i -= n - space - 1, n = space;	// (the word that did not fit starts the next line)
++		else if( i < length && file[i] == '\n' )
++			i++;
++		line[n] = 0;
++		lines.AddToTail( CUtlString( line ));
++	}
++	if( file )
++		EngFuncs::COM_FreeFile( file );
++	else lines.AddToTail( CUtlString( L( "Could not find readme.txt" )));
++
++	text.SetupColumn( 0, "Readme.txt", 1.0f );
++	text.SetModel( &lines );
++	text.SetRect( 360, 230, -20, 465 );
++	AddItem( text );
++}
++
++ADD_MENU( menu_readme, CMenuReadme, UI_Readme_Menu );

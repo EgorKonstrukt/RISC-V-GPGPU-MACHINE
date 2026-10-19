@@ -86,6 +86,122 @@ find_choices(void)
 	add("Colour: black", "#000000");
 }
 
+/* The row of what the desktop shows now: a picture file of the user's gets a row of its own. */
+static void
+find_current(void)
+{
+	char now[256];
+	int i;
+
+	snprintf(now, sizeof now, "%s", reg_get(UI_WALLPAPER_CHOICE, UI_WALLPAPER_DEFAULT));
+	for (i = 0; i < pictures.count; i++)
+		if (!strcasecmp(choices[i].value, now)) {
+			pictures.selected = i;
+			ui_list_show(&pictures);
+			return;
+		}
+	if (now[0] == '/' && access(now, R_OK) == 0) {
+		char label[64];
+
+		snprintf(label, sizeof label, "File: %s", strrchr(now, '/') + 1);
+		add(label, now);
+		pictures.selected = pictures.count - 1;
+		ui_list_show(&pictures);
+	}
+}
+
+/* Whether the desktop (nxfiles --desktop) is running: it draws a new choice itself. */
+static int
+desktop_running(void)
+{
+	DIR *proc = opendir("/proc");
+	struct dirent *item;
+	char path[64], line[64];
+	int found = 0, fd, n;
+
+	while (proc && !found && (item = readdir(proc)) != NULL) {
+		if (item->d_name[0] < '1' || item->d_name[0] > '9')
+			continue;
+		snprintf(path, sizeof path, "/proc/%.20s/cmdline", item->d_name);
+		if ((fd = open(path, O_RDONLY)) < 0)
+			continue;
+		n = (int)read(fd, line, sizeof line - 1);
+		close(fd);
+		/* (its words are parted by nothing: "nxfiles", then "--desktop") */
+		found = n >= 18 && !memcmp(line + n - 18, "nxfiles\0--desktop\0", 18);
+	}
+	if (proc)
+		closedir(proc);
+	return found;
+}
+
+static void while_choosing(GR_EVENT *event);
+
+/* What the desktop shows from now on, kept in the registry: a picture file itself (never a
+ * decoded copy), or a colour. The desktop sees the key change and decodes the picture; with no
+ * desktop running, it is drawn here, and the GPU's copy of it let go at once. */
+static void
+set_wallpaper(const char *value)
+{
+	static const char *const ok[] = { "OK" };
+	char text[400];
+
+	if (strlen(value) > 250) {
+		snprintf(text, sizeof text, "%.120s...\ncannot be the desktop's picture: its path is longer than the\n250 letters the registry keeps. Move it to a folder with a shorter name.", value);
+		ui_ask_icon = "error";
+		ui_ask("Desktop picture", text, ok, 1, while_choosing);
+		ui_ask_icon = NULL;
+		return;
+	}
+	if (!reg_set(UI_WALLPAPER_CHOICE, value)) {
+		snprintf(text, sizeof text, "The choice could not be kept:\n/persistence/registry could not be written (%s).\nThe desktop shows it until it is drawn again.", strerror(errno));
+		ui_ask_icon = "error";
+		ui_ask("Desktop picture", text, ok, 1, while_choosing);
+		ui_ask_icon = NULL;
+	}
+	if (value[0] == '#' || !desktop_running()) {
+		ui_wallpaper(value, 0);
+#ifdef UI_PICTURES
+		if (ui_decoded.pixmap)
+			GrDestroyWindow(ui_decoded.pixmap);
+		ui_decoded.pixmap = 0;
+#endif
+	}
+}
+
+/* NULL if the file is a picture the desktop can show, or why not. */
+static const char *
+not_a_picture(const char *path, char *why, int size)
+{
+	struct media_info info;
+	struct stat st;
+	const char *said;
+	void *data;
+	int fd = open(path, O_RDONLY);
+
+	if (fd < 0 || fstat(fd, &st) != 0) {
+		snprintf(why, size, "it cannot be read: %s", strerror(errno));
+		if (fd >= 0)
+			close(fd);
+		return why;
+	}
+	if (st.st_size < 16 || (data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+		close(fd);
+		snprintf(why, size, st.st_size < 16 ? "it is empty, or too short to be a picture" : "it could not be read into memory: %s", strerror(errno));
+		return why;
+	}
+	close(fd);
+	said = media_probe(data, (uint32_t)st.st_size, &info);
+	munmap(data, (size_t)st.st_size);
+	if (said)
+		snprintf(why, size, "%s", said);
+	else if (info.kind < MEDIA_PNG || info.kind > MEDIA_TGA)
+		snprintf(why, size, "it is %s, not a picture", media_kind_name(info.kind));
+	else
+		return NULL;
+	return why;
+}
+
 static const char *
 picture_label(int row)
 {
@@ -328,14 +444,27 @@ read_kept(void)
 static void
 storage(int which)
 {
-	static const char *const answers[] = { "Clear", "Cancel" };
+	static const char *const answers[] = { "Clear", "Cancel" }, *const ok[] = { "OK" };
+	int status = 0;
+	char text[200];
 
 	if (which == 0)
-		persist("save", NULL);
+		status = persist("save", NULL);
 	else if (which == 1)
-		persist("auto", kept_auto ? "0" : "1");
+		status = persist("auto", kept_auto ? "0" : "1");
 	else if (ui_ask("Storage", "Clear what the host keeps of /persistence?\nThe folder itself stays until the machine is switched off.", answers, 2, NULL) == 0)
-		persist("clear", NULL);
+		status = persist("clear", NULL);
+	/* (a save that the host refused says why in nxpersist's own window) */
+	if (status == -1 || (WIFEXITED(status) && WEXITSTATUS(status) == 127))
+		snprintf(text, sizeof text, "nxpersist, which talks to the host, could not be run.");
+	else if (status && which)
+		snprintf(text, sizeof text, "The host did not take it (nxpersist %s: status %d).\nThis machine's host may keep nothing between sessions.",
+			 which == 1 ? "auto" : "clear", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+	if ((status == -1 || (WIFEXITED(status) && WEXITSTATUS(status) == 127)) || (status && which)) {
+		ui_ask_icon = "error";
+		ui_ask("Storage", text, ok, 1, while_choosing);
+		ui_ask_icon = NULL;
+	}
 	read_kept();
 }
 
@@ -673,7 +802,7 @@ draw(void)
 			ui_focus(window, pictures.x, pictures.y, pictures.width, pictures.height);
 		else if (focus == 2)
 			ui_focus(window, 8 + 4, TOP + 204 + 4, 180 - 8, 22 - 8);
-		ui_text(window, 8, HEIGHT - 26, "A picture file is a JPEG, PNG, GIF, BMP or PPM, decoded on the worker cores.", -1, UI_SHADOW, 0);
+		ui_text(window, 8, HEIGHT - 26, "A picture file is a JPEG, PNG, GIF, BMP, TGA or PPM: the desktop keeps the file itself.", -1, UI_SHADOW, 0);
 		break;
 	case TAB_LOOK:
 		ui_text(window, 8, TOP, "Windows", -1, BLACK, 0);
@@ -766,19 +895,31 @@ while_choosing(GR_EVENT *event)
 static void
 choose_picture(void)
 {
-	char path[512], label[64];
+	static const char *const ok[] = { "OK" };
+	char path[512], label[64], why[160], text[400];
 	const char *name;
+	int i;
 
+	/* (every kind libmedia decodes: docs/system/media.md) */
 	if (!ui_choose_file("Choose a picture", access("/root/Pictures", R_OK) == 0 ? "/root/Pictures" : "/usr/share",
-			    ".jpg .jpeg .png .gif .bmp .ppm .tga", path, sizeof path, while_choosing))
+			    ".jpg .jpeg .png .gif .bmp .tga .ppm .pgm .pbm .pnm", path, sizeof path, while_choosing))
 		return;
+	if (not_a_picture(path, why, sizeof why)) {
+		snprintf(text, sizeof text, "%.120s cannot be the desktop's picture:\n%s.", strrchr(path, '/') + 1, why);
+		ui_ask_icon = "error";
+		ui_ask("Desktop picture", text, ok, 1, while_choosing);
+		ui_ask_icon = NULL;
+		return;
+	}
 	name = strrchr(path, '/') + 1;
 	snprintf(label, sizeof label, "File: %s", name);
-	/* (the file itself is kept as the choice, and decoded where it is shown) */
-	add(label, path);
-	pictures.selected = pictures.count - 1;
+	for (i = 0; i < pictures.count && strcmp(choices[i].value, path); i++)
+		continue;
+	if (i == pictures.count)
+		add(label, path);
+	pictures.selected = i < pictures.count ? i : pictures.count - 1;
 	ui_list_show(&pictures);
-	ui_wallpaper(path, 1);
+	set_wallpaper(path);
 }
 
 /* Shows a tab; the keyboard stays on the row of tabs, or goes there. */
@@ -824,7 +965,7 @@ key(const GR_EVENT *event)
 		if (focus == 2 && ui_press_key(ch))
 			choose_picture();
 		else if (focus == 1 && (ui_list_key(&pictures, ch) || ui_press_key(ch)) && pictures.selected >= 0)
-			ui_wallpaper(choices[pictures.selected].value, 1);
+			set_wallpaper(choices[pictures.selected].value);
 		else
 			break;
 		draw();
@@ -884,7 +1025,7 @@ press(GR_EVENT *event)
 		how = ui_list_event(&pictures, event);
 		if (how == 1 && event->type == GR_EVENT_TYPE_BUTTON_DOWN && !ui_wheel(event) && pictures.selected >= 0 &&
 		    x < pictures.x + pictures.width - UI_SCROLL_W - 2)
-			ui_wallpaper(choices[pictures.selected].value, 1);
+			set_wallpaper(choices[pictures.selected].value);
 		if (how) {
 			focus = 1;
 			draw();
@@ -1011,6 +1152,7 @@ main(int argc, char **argv)
 		return 0;
 	}
 	find_choices();
+	find_current();
 	find_sizes();
 	if (getenv("NXSETTINGS_TAB")) {		/* the tab to open on, for tests */
 		tab = atoi(getenv("NXSETTINGS_TAB")) % TABS;

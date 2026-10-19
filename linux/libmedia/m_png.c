@@ -178,7 +178,7 @@ inflate(struct bits *bb, uint8_t *out, uint32_t total, volatile uint32_t *told_t
 #define distances tables[1]
 #define meta tables[2]
 	uint8_t lengths[320];
-	uint32_t hold, n = 0, last, told = 0, looked = 0;
+	uint32_t hold, n = 0, last, told = 0, looked = 0, said = 0;
 	int count;
 	const uint8_t *at, *end;
 	int on_first = !mcw_on_worker() && mcw_count() > 0;
@@ -334,6 +334,8 @@ tell:
 					told = n;
 					if (told_to)
 						*told_to = told;
+					if (told_to && n - said >= 32768)
+						said = n, m_progress(n, total);
 					/* (a worker that stopped at a page goes on when this core looks) */
 					if (on_first && n - looked >= 65536) {
 						looked = n;

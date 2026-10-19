@@ -1,6 +1,6 @@
 /*
 libm_shaderemu.c - the C library's float functions that it computes in double, which this
-machine does in software, made of float ones (docs/halflife.md)
+machine does in software, made of float ones (docs/games/halflife.md)
 */
 #include <math.h>
 

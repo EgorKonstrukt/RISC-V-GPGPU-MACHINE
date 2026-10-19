@@ -28,7 +28,10 @@ uniform uint _HostMtimeLo, _HostMtimeHi;
 #endif
 #define TEX(p) _SelfTexture2D[p]
 #define RAM_ADDR(t) uint2((t) % 2048, 64 + (t) / 2048)
-#define RAM_MAX (2048u * 4032u * 16u)
+#ifndef STATE_TEX_HEIGHT
+#define STATE_TEX_HEIGHT 9280u   // the state texture's rows: 64 of state, then RAM to 0x92000000
+#endif
+#define RAM_MAX (2048u * (STATE_TEX_HEIGHT - 64u) * 16u)
 // A core's state, as texels numbered 64 to a row of core 0's block: 0-2 the CSRs, 8 the store a
 // full cache had no room for and the privilege, 10 the timer's compare, 28 the stall, the count
 // and the passes, 29-36 x1-x31 and pc, 37 the reservation and a copy's source and destination,

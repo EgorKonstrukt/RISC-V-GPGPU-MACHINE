@@ -30,6 +30,28 @@ is separate.
   while no display is up (control word 0, the display's mode, is 0) and the keyboard has no
   owner. Otherwise a key typed into a window would also be typed at the console's shell.
 
+## A beam as the pointer, steadied (the VRChat world)
+
+A hand in a headset shakes by a few pixels of the display, and a click with a beam was often a
+small drag, or a double click two clicks apart (a unit missed in Command & Conquer, a move-to
+that did not take). `EmuPointer.Steady` stands between the beam and the pointer words while the
+control panel's "Steady pointer" is on (it is unless a player turns it off; kept in their
+PlayerData as `pointer.steady`), in a headset only:
+
+- The beam's pixel goes through a one-euro filter: its cut-off is `steadyCutoff` (1.2 Hz) plus
+  `steadyBeta` (0.012) times its speed in pixels a second, so a still hand is held and a fast
+  sweep follows. Simulated at 90 frames a second with a hand's shake of 2.5 pixels (rms), the
+  pointer shook by 0.63; a sweep of 400 pixels in 0.4 s was 7 pixels behind at its end and
+  where the beam was 0.1 s after.
+- A press holds the pointer where it went down until the beam has moved `dragSlop` (7) pixels
+  from there: a click stays a click, a drag starts after those pixels.
+- A press within `doubleTime` (0.5 s) of the last release and within `doubleSlop` (10) pixels of
+  the last press goes down on that press's place: the two clicks of a double click land on one
+  pixel. The pointer stays there between them unless the beam moves away.
+
+The guest's own thresholds (the window system's double click, a game's drag box) are unchanged.
+Not yet tried in a headset.
+
 ## From Linux
 
 This project's kernel (`linux/kernel/shaderemu_input.c`) presents the block as two evdev

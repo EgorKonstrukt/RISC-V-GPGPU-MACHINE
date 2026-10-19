@@ -1,0 +1,83 @@
+--- a/src/gensignkey.c
++++ b/src/gensignkey.c
+@@ -149,6 +149,14 @@
+ 	key = NULL;
+ 	buf_setpos(buf, 0);
+ 
++	{	/* the key's folder (/etc/dropbear is in no ROM) */
++		char *dir = m_strdup(filename), *slash = strrchr(dir, '/');
++		if (slash && slash != dir) {
++			*slash = '\0';
++			mkdir(dir, 0700);
++		}
++		m_free(dir);
++	}
+ 	fn_temp = m_malloc(strlen(filename) + 30);
+ 	snprintf(fn_temp, strlen(filename)+30, "%s.tmp%d", filename, getpid());
+ 	ret = buf_writefile(buf, fn_temp, 0);
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -172,6 +172,14 @@
+ 		execfd = open(argv[0], O_CLOEXEC|O_RDONLY);
+ 	}
+ 	if (execfd < 0) {
++		execfd = open("/proc/self/exe", O_CLOEXEC|O_RDONLY);
++	}
++#if DROPBEAR_VFORK
++	if (execfd < 0) {
++		dropbear_exit("Couldn't open own binary to re-execute: %s", strerror(errno));
++	}
++#endif
++	if (execfd < 0) {
+ 		/* Just fallback to straight fork */
+ 		TRACE(("Couldn't open own binary %s, disabling re-exec: %s", argv[0], strerror(errno)))
+ 	}
+@@ -325,10 +333,12 @@
+ 			} else {
+ 
+ 				/* child */
++#if !DROPBEAR_VFORK
+ 				getaddrstring(&remoteaddr, NULL, &remote_port, 0);
+ 				dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
+ 				m_free(remote_host);
+ 				m_free(remote_port);
++#endif
+ 
+ #if !DEBUG_NOFORK
+ 				if (setsid() < 0) {
+@@ -346,7 +356,11 @@
+ 				if (execfd >= 0) {
+ #if DROPBEAR_DO_REEXEC
+ 					/* Add "-2 childpipe[1]" to the args and re-execute ourself. */
++#if DROPBEAR_VFORK
++					char *argv_here[argc+4], **new_argv = argv_here;
++#else
+ 					char **new_argv = m_malloc(sizeof(char*) * (argc+4));
++#endif
+ 					char buf[10];
+ 					int pos0 = 0, new_argc = argc+2;
+ 
+@@ -371,6 +385,9 @@
+ 					}
+ 					/* Re-execute ourself */
+ 					fexecve(execfd, new_argv, environ);
++#if DROPBEAR_VFORK
++					_exit(1);
++#endif
+ 					/* Not reached on success */
+ 
+ 					/* Fall back on plain fork otherwise.
+--- a/src/svr-runopts.c
++++ b/src/svr-runopts.c
+@@ -160,7 +160,11 @@
+ 	svr_opts.bannerfile = NULL;
+ 	svr_opts.banner = NULL;
+ 	svr_opts.forced_command = NULL;
++#if DROPBEAR_VFORK
++	svr_opts.forkbg = 0;	/* daemon() needs a real fork: always in the foreground */
++#else
+ 	svr_opts.forkbg = 1;
++#endif
+ 	svr_opts.norootlogin = 0;
+ #ifdef HAVE_GETGROUPLIST
+ 	svr_opts.restrict_group = NULL;

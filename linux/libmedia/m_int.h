@@ -27,6 +27,8 @@ void m_for(uint32_t n, mcw_body fn, void *ctx, uint32_t out_bytes, int workers);
 void m_stages(uint32_t n, mcw_fn stage, int workers);
 /* The first core helps workers that stopped at a page (a worker never does). */
 void m_look(void);
+/* How far a decode is, for the program (media_progress), from the first core only. */
+void m_progress(uint32_t done, uint32_t total);
 
 /* Memory with its pages there, mapped (and unmapped by m_unmap); NULL when there is none. */
 void *m_map(uint32_t bytes);

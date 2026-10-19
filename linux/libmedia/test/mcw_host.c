@@ -35,6 +35,8 @@ mcw_open(int limit)
 	if (count)
 		return count;
 	count = limit < n ? limit : n;
+	if (count > MOST - 1)
+		count = MOST - 1;
 	if (count < 0)
 		count = 0;
 	return count;

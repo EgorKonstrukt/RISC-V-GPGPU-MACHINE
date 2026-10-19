@@ -2,7 +2,8 @@
 #   python world/install_packages.py C:/Development/VRChat/ShaderEmu
 # LTCGI (pimaker: the screens light the room), VRC Light Volumes (RED_SIM: baked light for what
 # moves), Mochie's shaders (its Standard takes both) and Silent's Fake Glass (the window's pane
-# and its rain, from the room's reflection probes and no grab of the screen). Downloads are
+# and its rain, from the room's reflection probes and no grab of the screen), and QvPen (ureishi:
+# the pens, as in the fluid world). Downloads are
 # kept in build/packages.
 import json
 import os
@@ -17,6 +18,7 @@ CACHE = os.path.join(HERE, "..", "build", "packages")
 LTCGI = ("at.pimaker.ltcgi", "1.7.3", "https://vpm.pimaker.at/downloads/at.pimaker.ltcgi_1.7.3.zip")
 VOLUMES = ("red.sim.lightvolumes", "2.1.3", "https://github.com/REDSIM/VRCLightVolumes/releases/download/v.2.1.3/VRCLightVolumes_v.2.1.3.zip")
 FAKE_GLASS = "https://gitlab.com/s-ilent/fake-glass/-/archive/master/fake-glass-master.zip"
+QVPEN = ("net.ureishi.qvpen", "3.3.5", "https://github.com/ureishi/QvPen/releases/download/v3.3.5/net.ureishi.qvpen-3.3.5.zip")
 MOCHIE = "https://github.com/MochiesCode/Mochies-Unity-Shaders/releases/download/v1.77.1/Mochies.Unity.Shaders.v1.77.1.Free.unitypackage"
 
 
@@ -98,6 +100,7 @@ def main():
         elif os.path.exists(path):
             os.remove(path)
     vpm(project, VOLUMES)
+    vpm(project, QVPEN)
     listing = os.path.join(project, "Packages", "manifest.json")
     manifest = json.load(open(listing, encoding="utf-8"))
     if "com.unity.editorcoroutines" not in manifest["dependencies"]:   # Light Volumes needs it

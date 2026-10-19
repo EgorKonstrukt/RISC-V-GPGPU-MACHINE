@@ -145,6 +145,7 @@ static int layers_stale = 1;		/* a surface came, went, moved or has another buff
 /* the cursor as the window system has it: its image's corner, and how far that is from the pointer */
 static struct { MWCOORD x, y, dx, dy; uint32_t on, image; } cursor_now;
 static void cursor_tell(void);
+static void cursor_check(void);
 static uint8_t wm_stack[4096] __attribute__((aligned(16)));
 
 /* ---------------- the pointer's worker core */
@@ -692,8 +693,9 @@ gpu_frameblit(PSD psd, PMWBLITPARMS gc)
 		struct surface *s = draw_on(psd), *from = surface_of(gc->srcpsd);
 		int sx = gc->srcx - from->x, sy = gc->srcy - from->y;
 
-		/* the source is read from RAM, which lacks what is still queued */
-		if (from == s && sx < dirty_x1 && sx + gc->width > dirty_x0 && sy < dirty_y1 && sy + gc->height > dirty_y0)
+		/* the source is read from RAM, which lacks what is still queued; and after blended text
+		 * a copy would blend by its texels' top bytes (a decoded picture's are 0xff: not drawn) */
+		if (blended || (from == s && sx < dirty_x1 && sx + gc->width > dirty_x0 && sy < dirty_y1 && sy + gc->height > dirty_y0))
 			flush();
 		queue(gc->dstx, gc->dsty, gc->dstx + gc->width, gc->dsty + gc->height, 0xffffff,
 			FRAG_TEXTURE, from->at, from->w, from->h, sx, sy);
@@ -1888,6 +1890,7 @@ gpu_preselect(PSD psd)
 made:
 	if (wm_state > 0)
 		wm_look();
+	cursor_check();
 	return 0;
 }
 
@@ -1910,6 +1913,19 @@ cursor_tell(void)
 	if (w[WM_CURSOR + 2] != cursor_now.on) w[WM_CURSOR + 2] = cursor_now.on, told = 1;
 	if (told)
 		wm_poke();
+}
+
+/* Before the server waits: a program that left (or the kernel at its exit) may have turned the
+ * display's cursor off. Whoever writes the cursor's texel puts it back: the worker, else we. */
+static void
+cursor_check(void)
+{
+	if (regs[REG_CURSOR + 2] == cursor_now.on)
+		return;
+	if (wm_state > 0)
+		wm_poke();	/* (it stores what differs from what it is told) */
+	else
+		regs[REG_CURSOR + 2] = cursor_now.on;
 }
 
 /* The display's cursor: its image's corner at x, y (address 0: not shown). */

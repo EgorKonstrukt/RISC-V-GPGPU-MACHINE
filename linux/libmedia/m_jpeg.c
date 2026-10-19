@@ -525,6 +525,7 @@ codes_job(uint32_t unused0, uint32_t unused1)
 		j->strip_at[my] = (uint32_t)(out - j->list);
 		if (!mcw_on_worker() && mcw_count())
 			m_look();
+		m_progress((uint32_t)my, (uint32_t)j->mcus_y);
 		for (mx = 0; mx < j->mcus_x && !s.bad; mx++) {
 			if (j->restart && left-- == 0) {
 				s.count = 0, s.hold = 0;
@@ -571,6 +572,7 @@ strips_job(uint32_t first, uint32_t unused)
 			break;
 		if (!mcw_on_worker() && mcw_count())
 			m_look();
+		m_progress((uint32_t)my0, (uint32_t)j->mcus_y);
 		strip_from_list(j, my0, my1);
 	}
 	return (uint32_t)done;
@@ -599,6 +601,7 @@ index_job(uint32_t unused0, uint32_t unused1)
 		*j->listed = (uint32_t)my + 1;
 		if (!mcw_on_worker() && mcw_count())
 			m_look();
+		m_progress((uint32_t)my, (uint32_t)j->mcus_y);
 		for (mx = 0; mx < j->mcus_x && !s.bad; mx++) {
 			if (j->restart && left-- == 0) {
 				s.count = 0, s.hold = 0;

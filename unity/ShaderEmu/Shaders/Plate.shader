@@ -4,8 +4,7 @@ Shader "ShaderEmu/Plate"
     // _Index names the two glyphs nearest a place (0: none), _Glyphs is three texels a glyph (its
     // box here, its box in _Fonts, its colour and weight), _Fonts the fonts' distance fields.
     // The lettering is the fields at every distance: where a pixel holds several of their texels
-    // it is asked at up to sixteen places of the pixel and the answers are averaged. (It was a
-    // picture of the lettering with its mipmaps there, _Far, which came out as blocks.)
+    // it is asked at up to sixteen places of the pixel and the answers are averaged.
     Properties
     {
         _MainTex ("Surface", 2D) = "white" {}
@@ -13,7 +12,6 @@ Shader "ShaderEmu/Plate"
         [NoScaleOffset] _Index ("Glyphs of each place", 2D) = "black" {}
         [NoScaleOffset] _Glyphs ("Glyphs", 2D) = "black" {}
         [NoScaleOffset] _Fonts ("Fonts' distance fields", 2D) = "black" {}
-        [NoScaleOffset] _Far ("(not used any more: the lettering from far off was a picture)", 2D) = "black" {}
         _Usual ("The sheet's texels across the plate, for its usual lettering", Vector) = (0, 0, 0, 0)
         _GradientScale ("The fields' gradient scale", Float) = 9
         _Glossiness ("Smoothness", Range(0, 1)) = 0.3
@@ -30,7 +28,7 @@ Shader "ShaderEmu/Plate"
         CGPROGRAM
         // a printed plate mirrors nothing: no reflection probe is read (a flat tone of the room's light stands in)
         #define _GLOSSYREFLECTIONS_OFF 1
-        #pragma surface surf Standard fullforwardshadows
+        #pragma surface surf Standard fullforwardshadows vertex:vert addshadow
         #pragma target 4.0
 
         sampler2D _MainTex, _Fonts, _Index, _Glyphs;   // the last two are point filtered
@@ -38,6 +36,24 @@ Shader "ShaderEmu/Plate"
         float _Glossiness, _InkGlossiness, _InkMetallic, _InkGlow, _Flat, _Bold, _Cutoff, _GradientScale;
 
         struct Input { float2 uv_MainTex; };
+
+        // A key a hand holds (EmuKeyboard.Sink): what of a cap lies in its box sinks; its feet stay.
+        float4 _UdonPress0Centre, _UdonPress0X, _UdonPress0Y, _UdonPress0Up, _UdonPress1Centre, _UdonPress1X, _UdonPress1Y, _UdonPress1Up;
+        float3 pressed(float3 w, float4 c, float4 x, float4 y, float4 n)
+        {
+            float3 d = w - c.xyz;
+            float below = -dot(d, n.xyz);
+            bool inside = abs(dot(d, x.xyz)) < x.w && abs(dot(d, y.xyz)) < y.w && below > -0.003 && below < n.w;
+            return c.w > 0 && inside ? w - n.xyz * c.w : w;
+        }
+
+        void vert(inout appdata_full v)
+        {
+            if (_UdonPress0Centre.w <= 0 && _UdonPress1Centre.w <= 0) return;
+            float3 w = mul(unity_ObjectToWorld, v.vertex).xyz;
+            w = pressed(pressed(w, _UdonPress0Centre, _UdonPress0X, _UdonPress0Y, _UdonPress0Up), _UdonPress1Centre, _UdonPress1X, _UdonPress1Y, _UdonPress1Up);
+            v.vertex.xyz = mul(unity_WorldToObject, float4(w, 1)).xyz;
+        }
 
         float4 glyph_word(int n) { return tex2Dlod(_Glyphs, float4((float2(n & 1023, n >> 10) + 0.5) * _Glyphs_TexelSize.xy, 0, 0)); }
 

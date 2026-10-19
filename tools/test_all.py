@@ -14,12 +14,13 @@ A case is the line typed at the guest's shell, what ends it, and what its consol
 `same` (another case's matches, which must be the same). The values are the docs' (each says
 where) or, where a doc says only "as before", what the image of 15 October 2026 printed.
 """
-import argparse, hashlib, os, re, struct, subprocess, sys, time
-from concurrent.futures import ThreadPoolExecutor
+import argparse, hashlib, json, os, re, shutil, struct, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DONE = "echo LX-''DONE"
 X = 'nano-X -p & sleep 2; '
+F10 = '\x1b[21~'   # (the console's TERM is linux)
 CC = 'mkdir -p /tmp/classicube; echo singleplayerphysics=false >> /tmp/classicube/options.txt; ' + X
 TD = 'TDAWN_AUTO=1 TDAWN_SEED=7 TDAWN_NO_DELAY=1 '
 Q3 = 'QUAKE3_STATS_FRAMES=100 quake3 +set fixedtime 33 +devmap q3dm17'
@@ -55,6 +56,11 @@ CASES = [
          digest=[(r'^([0-9a-f]{32}  \S+)', '0527d60e')]),   # mcw.c with mcw_mmu_root: the linked programs
     case('libmedia-installed', 'machine media', 'ls -1 /usr/lib/libmedia.a /usr/include/media.h /usr/bin/media_test | cat',   # docs/system/media.md
          has=[r'^/usr/lib/libmedia\.a', r'^/usr/include/media\.h'], never=[r'No such file']),
+    # unarc against busybox's unzip and tar (docs/system/open.md; one deflate stream on the workers, docs/system/media.md)
+    case('unarc', 'machine media', 'cd /tmp; mkdir z1 z2 t1 t2; unarc zip /usr/share/classicube-default.zip z1 >/dev/null; '
+         'unzip -q /usr/share/classicube-default.zip -d z2; tar czf u.tgz /usr/share/font-mono-1*.sef /usr/share/web-*.html 2>/dev/null; '
+         'unarc tgz u.tgz t1 >/dev/null; tar xzf u.tgz -C t2; diff -r z1 z2 && echo ZIP-SAME; diff -r t1 t2 && echo TGZ-SAME', True,
+         has=[r'^ZIP-SAME', r'^TGZ-SAME']),
     # Doom (docs/games/doom.md, "Checking it"): the demos' state sums, the view told and checked, the port at rest
     *[case(f'doom-{d}', 'games doom', X + f'DOOM_HASH_TICS=100 doom -1 -timedemo demo{d}', True,
            digest=[(STATE, s)]) for d, s in ((1, '0ab4df93'), (2, 'c5123ba8'), (3, 'df43029a'))],
@@ -92,15 +98,16 @@ CASES = [
     case('classicube-meshes-workers', 'games classicube', CC + 'CLASSICUBE_MESH=worker CLASSICUBE_MESH_SUM=1 CLASSICUBE_SEED=7 CLASSICUBE_STATS_MS=2000 classicube',
          True, until='classicube: steady', count=[(r'^ccmesh: ', 52)], digest=[(r'^ccmesh: at (\d+ \d+ \d+), \d+ vertices, sums \S+ (\S+)', '1f9d723c', 'sorted')]),
     case('classicube-pack', 'games classicube', CC + 'CLASSICUBE_TEXTURE_SUM=1 CLASSICUBE_SEED=7 CLASSICUBE_STATS_MS=2000 classicube',
-         True, until='classicube: steady', count=[(r'^cctex: ', 42)], digest=[(r'^(cctex: .*)', 'e51865ae')]),
+         True, until='classicube: steady', count=[(r'^cctex: ', 42)], digest=[(r'^(cctex: .*)', 'e51865ae')]),   # (RAM in one texture: 42 by then)
     case('classicube-kept', 'games classicube', CC + 'CLASSICUBE_CHECK_KEPT=1 CLASSICUBE_SEED=7 CLASSICUBE_STATS_MS=2000 classicube', True,
          until='cccheck:', more=['--expect', 'classicube: steady', '--send', 'turn 1200 0\\ndown W\\ndown Space\\n'],
          has=[r'cccheck: the outline kept \d+ times, 0 of them wrong; the held block kept \d+ times, 0 wrong']),
     # docs/world/holodeck.md, "Played from the seat": a desktop sitter breaks by the right trigger and places by
     # the left one, at the view's middle; in a headset each hand's beam picks its own block (small blocks).
-    # A button held as play starts is no press until let go: each is pressed once the world is loaded (16 s)
+    # A button held as play starts is no press until let go: each is pressed once the world is loaded (20 s;
+    # 18 s with 256 MB of RAM, whose pages the kernel takes 1.4 s longer to set up)
     *[case(f'classicube-seat-{n}', 'games classicube', CC + 'CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True, until=' -> ', wall=60,
-           more=['--host', b, '--host-from', '16', w], has=[h]) for n, b, w, h in (
+           more=['--host', b, '--host-from', '20', w], has=[h]) for n, b, w, h in (
         ('desk-break', '00000112,e0000000,0,0,0,0,0,0', '00000112,e0000000,0,0,0,0,40000000,0', r'ccblock: 32 40 31 2 -> 0'),
         ('desk-place', '00000112,e0000000,0,0,0,0,0,0', '00000112,e0000000,0,0,40000000,0,0,0', r'ccblock: 32 41 31 0 -> 1'),
         ('vr-break', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', '90000133,0,0,c0000000,04bea3da,0,44bea026,e0000000',
@@ -112,15 +119,15 @@ CASES = [
            more=['--host', w] + m, has=[h]) for n, w, m, u, h in (
         ('desk-wheel', '00000112,e0000000,0,0,0,0,0,0', ['--host-wheel', '3'], 'slot 4', r'seat: 2 .* slot [5-8] holds \d+ raw 1'),
         ('vr-stick', '90000133,0,0,c0000000,04bea3da,7f000000,04bea026,e0000000', [], 'slot 3', r'seat: 1 .* slot 7 holds \d+ raw 1'),
-        ('vr-grip', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', ['--host-from', '16', '90000133,0,0,c0000000,84bea3da,0,04bea026,e0000000'],
+        ('vr-grip', '90000133,0,0,c0000000,04bea3da,0,04bea026,e0000000', ['--host-from', '20', '90000133,0,0,c0000000,84bea3da,0,04bea026,e0000000'],
          'raw 0', r'seat: 1 .* slot 0 holds 1 raw 0 menu 1'),
         # the inventory on the sheet: the grip opens it, then the right hand's beam moves onto row 6 and its trigger picks a block
         ('vr-pick', '90000133,0,0,c0000000,04bea3da,0,04bea026,2400fc72',
-         ['--host-from', '16', '90000133,0,0,c0000000,84bea3da,0,04bea026,2400fc72',
-          '--host-from', '20', '90000133,0,0,c0000000,84bea3da,0,44bea026,2600f8e4'], 'holds 58', r'seat: 1 .* holds 58 raw 1 menu 0'))],
+         ['--host-from', '20', '90000133,0,0,c0000000,84bea3da,0,04bea026,2400fc72',
+          '--host-from', '24', '90000133,0,0,c0000000,84bea3da,0,44bea026,2600f8e4'], 'holds 58', r'seat: 1 .* holds 58 raw 1 menu 0'))],
     # docs/games/classicube.md, "Sound": a dig sound on the card, and the tune decoded on workers into its stream
     case('classicube-sound', 'games classicube sound', CC + 'CLASSICUBE_SOUND_LOG=1 CLASSICUBE_SEAT=1 CLASSICUBE_SEED=7 classicube', True,
-         until='ccmusic: 16 of', more=['--host', '00000112,e0000000,0,0,0,0,0,0', '--host-from', '16', '00000112,e0000000,0,0,0,0,40000000,0'],
+         until='ccmusic: 16 of', more=['--host', '00000112,e0000000,0,0,0,0,0,0', '--host-from', '20', '00000112,e0000000,0,0,0,0,40000000,0'],
          env={'RVC_SOUND': '1'},
          has=[r'ccsound: 59 sounds at', r'ccsound: dig_grass\d on voice \d+, volume 100, rate 80',
               r'ccmusic: /usr/share/classicube-music.mp3, 22050 Hz 2 ch']),
@@ -146,6 +153,11 @@ CASES = [
     # the atlas's shapes forgotten every 50 scenes giving the same pictures
     case('ralert-attack', 'games ralert', X + 'TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 '
          'RALERT_FRAMES=3000 ralert', True, wall=400, has=[r'done at frame 3000: .* state dbb267c0']),
+    # docs/games/ralert.md, "A unit's path searches": every search kept or made by another core, and every edge walk, made again
+    case('ralert-paths', 'games ralert', X + 'TDAWN_AUTO=1 RALERT_SIDE=allies RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 '
+         'RALERT_CHECK_PATHS=1 RALERT_FRAMES=1500 ralert', True, wall=400,
+         has=[r'searches not run again and [1-9]\d* another core.s, 0 of them wrong', r'edge walks made both ways, 0 of them wrong',
+              r'done at frame 1500: .* state 520254a5']),
     *[case(f'ralert-atlas{tag}', 'games ralert', X + pre + 'RALERT_DRAW=here RALERT_REFRESH=1 TDAWN_SUMS=1 TDAWN_AUTO=1 RALERT_SIDE=allies '
            'RALERT_SEED=7 RALERT_NO_DELAY=1 RALERT_ATTACK=100,250 RALERT_FRAMES=300 ralert', True, **checks)
       for tag, pre, checks in (('', '', dict(count=[(r'^rasum: ', 300)])),
@@ -243,8 +255,18 @@ CASES = [
          'press:60,50 pixel:60,50 undo sum quit quit" nxpaint; NXPAINT_SCRIPT="new:40x30 saveas:/tmp/x sum open:/tmp/x.png sum quit quit" nxpaint',
          has=[r'pixel 60,50 is 00ff00', r'saved as /tmp/x\.png'], pairs=[r'nxpaint: (\d+ x \d+, sum [0-9a-f]+),']),
     case('nxask', 'desktop', X + "(nxkey 2500 n) & nxask 'Sure?' Yes No; echo ASK=$?", has=[r'^ASK=1']),
+    case('nxpinball', 'desktop', X + 'PINBALL_DEMO=1800 nxpinball',   # docs/apps/pinball.md: three balls of a game played by itself
+         has=[r'pinball: 1800 frames, 1 games, ball 3, high 0, score 28900 state 76570342']),
     case('nxfiles', 'desktop', X + 'NXFILES_PRINT=1 nxfiles /usr/share & sleep 6; nxkey drag:643,86:343,196; sleep 4',
          has=[r'nxfiles: the box selected 8 ']),
+    # docs/system/nanox.md, "A new name" and "Save to persistence": typed over the name, its ending kept; refused over 100 KB
+    case('nxfiles-rename', 'desktop', X + 'mkdir -p /tmp/r/folder.d; echo x > /tmp/r/hello.txt; nxfiles /tmp/r & sleep 5; '
+         'nxkey right right f2 x y z enter; sleep 2; ls /tmp/r | cat', has=[r'^xyz\.txt$', r'^folder\.d$'], never=[r'^hello\.txt$']),
+    case('nxfiles-persist', 'desktop', X + 'mkdir -p /tmp/p /persistence; head -c 60000 /dev/urandom > /tmp/p/a.bin; '
+         'head -c 50000 /dev/urandom > /tmp/p/b.bin; UI_ASK_PRINT=1 NXFILES_PRINT=1 nxfiles /tmp/p & sleep 5; '
+         'nxkey right shift+f10 s enter; sleep 3; nxkey l; sleep 1; nxkey right shift+f10 s enter; sleep 3; ls /persistence | cat',
+         has=[r'^nxfiles: saved to persistence: a\.bin', r'^a\.bin$',
+              r'^ask: Not saved to persistence: b\.bin: 50\.0 KB, and /persistence holds 60\.\d KB already'], never=[r'^b\.bin$']),
     # what opens a file and its icon (docs/system/open.md, "Checking it"): by first bytes, else by ending in any case
     case('open-kinds', 'desktop media', KINDS_T + 'for f in /root/Music/* /root/Videos/* /root/Pictures/* /tmp/t/*; do open --dry "$f"; done',
          count=[(r'^open: /root/Music/.* is sound: nxplay ', 6), (r'^open: /root/Videos/.* is video: nxvideo ', 2),
@@ -275,6 +297,79 @@ CASES = [
               r'nxweb: /usr/share/web-test\.html: 88 nodes, 1 rules, 586 x 636; 40 texts \(520 characters\), 1 boxes, 1 pictures']),
     # a short first page ("No such page"): its strips were never made, nothing was shown
     case('nxweb-short', 'desktop', X + 'NXWEB_TIME=1 nxweb /usr/share/web-nowhere.html & sleep 10; killall nxweb', has=[r'nxweb: the first picture \d+ ms after']),
+    # the script languages (docs/system/scripts.md): QuickJS's pi example, MicroPython with its built-in modules
+    case('qjs', 'programs', "qjs /examples/pi.js 50; qjs --std -e 'print([1, 2, 3].map(x => x * x).join(), std.getenv(\"HOME\"))'",
+         has=[r'^3\.14159265358979323846264338327950288419716939937510\r?$', r'^1,4,9 /root']),
+    case('micropython', 'programs', "micropython -c 'import asyncio, json, os, re, random, time; print(json.dumps({\"a\": [1, 2]}), "
+         "sum(range(1000)), re.sub(\"b+\", \"-\", \"abbbc\"), len(os.urandom(8))); exec(\"async def f():\" + chr(10) + \" return 42\"); print(asyncio.run(f()))'",
+         has=[r'^\{"a": \[1, 2\]\} 499500 a-c 8\r?$', r'^42\r?$']),
+    # the terminal programs on ncurses (docs/system/terminal.md)
+    case('term-nano', 'programs', 'cd /tmp; nano t.txt; cat t.txt',
+         more=['--expect', 'New File', '--send', 'hello nano\x0f', '--expect', 'Write', '--send', '\\r', '--expect', 'Wrote', '--send', '\x18'],
+         wall=60, has=[r'hello nano\r?$']),
+    case('term-mg', 'programs', 'cd /tmp; mg m.txt; cat m.txt',
+         more=['--expect', 'C-h q', '--send', 'hello mg\\r\x18\x13', '--expect', 'Wrote', '--send', '\x18\x03'], wall=60, has=[r'hello mg\r?$']),
+    case('term-htop', 'programs', 'htop -d 5; echo htop $?', more=['--expect', 'Quit', '--send', 'q'], wall=60, has=[r'^htop 0']),
+    case('term-dialog', 'programs', 'dialog --inputbox Name 8 30 2>/tmp/a; echo dialog $?; cat /tmp/a; echo',
+         more=['--expect', 'ancel', '--send', 'pterm\\r'], wall=60, has=[r'^dialog 0', r'^pterm']),
+    case('term-sl', 'programs', 'sl; echo sl $?', wall=60, has=[r'sl 0\r?$']),
+    case('term-file', 'programs', 'file /bin/busybox /usr/share/terminfo/v/vt100 /root/Models/bunny.ply', wall=60,
+         has=[r'/bin/busybox: +BFLT executable', r'vt100: +Compiled terminfo entry "vt100"', r'bunny.ply: +PLY model']),
+    case('term-mc', 'programs', 'cd /etc; mc; cat /tmp/x',   # a command line run in mc's subshell
+         more=['--expect', 'Quit', '--send', 'echo sid=$MC_SID > /tmp/x\\r', '--expect', 'Quit', '--send', F10], wall=60, has=[r'^sid=\d+']),
+    case('term-mcedit', 'programs', 'mcedit /tmp/e.txt; cat /tmp/e.txt; echo',
+         more=['--expect', 'Quit', '--send', 'hello mcedit\x1b[[B', '--expect', 'ancel ]', '--send', '\\r' + F10], wall=60, has=[r'^hello mcedit']),
+    # upstream's programs ported to the machine without an MMU (docs/system/ports.md)
+    case('ports-pcre', 'programs', "echo foo123 bar45 | pcregrep -o '[0-9]+'; echo '/(a+)b/' > /tmp/p; echo aaab >> /tmp/p; pcretest /tmp/p",
+         has=[r'^123$', r'^45$', r'^ 0: aaab', r'^ 1: aaa$']),
+    case('ports-lockfile', 'programs', "lockfile-create /tmp/x && lockfile-check /tmp/x && echo LOCK''ED; lockfile-remove /tmp/x; "
+         "lockfile-check /tmp/x || echo GO''NE; dotlockfile -l /tmp/y.lock && dotlockfile -u /tmp/y.lock && echo DOT''LOCK; mail-lock --help",
+         has=[r'^LOCKED$', r'^GONE$', r'^DOTLOCK$', r'^usage: mail-lock']),
+    case('ports-socat', 'programs', "socat -u TCP-LISTEN:5555,reuseaddr OPEN:/tmp/o,creat & sleep 1; echo socat-''ok | socat -u - TCP:127.0.0.1:5555; "
+         "sleep 1; cat /tmp/o; filan -s | head -1; procan | head -1; "
+         "socat -u TCP-LISTEN:5556,fork - & sleep 1; echo x | socat -u - TCP:127.0.0.1:5556; sleep 2",
+         has=[r'^socat-ok$', r'^\s+0 tty /dev/hvc0', r'^process id = \d+', r'fork\(\): this machine has no MMU']),
+    case('ports-thttpd-curl', 'programs', "mkdir -p /tmp/www/cgi-bin /tmp/www/sub; echo hello-''thttpd > /tmp/www/index.html; touch /tmp/www/sub/a.txt; "
+         "f=/tmp/www/cgi-bin/t.cgi; echo '#!/bin/sh' > $f; echo 'echo Content-Type: text/plain; echo; echo cgi-ok $QUERY_STRING $REQUEST_METHOD' >> $f; "
+         "echo '[ $REQUEST_METHOD = POST ] && head -c $CONTENT_LENGTH; true' >> $f; chmod +x $f; "
+         "thttpd -p 8080 -d /tmp/www -c '**.cgi' -u root -l /dev/null & sleep 1; curl -s http://127.0.0.1:8080/; "
+         "curl -s http://127.0.0.1:8080/sub/ | grep -o '>a.txt<'; curl -s 'http://127.0.0.1:8080/cgi-bin/t.cgi?q1'; "
+         "curl -s -d posted-''body http://127.0.0.1:8080/cgi-bin/t.cgi; echo; curl -s -o /dev/null -w 'code %{http_code}' http://127.0.0.1:8080/none",
+         has=[r'^hello-thttpd$', r'^>a\.txt<$', r'^cgi-ok q1 GET$', r'^cgi-ok POST$', r'^posted-body$', r'^code 404']),
+    case('ports-dropbear', 'programs', "mkdir -p /root/.ssh; dropbearkey -t ed25519 -f /root/.ssh/id_dropbear | grep ^ssh- > /root/.ssh/authorized_keys; "
+         "dropbear -R -p 2222 & sleep 2; ssh -y -p 2222 root@127.0.0.1 'echo ssh-''ok $(uname -m)'; echo file-''data > /tmp/f1; "
+         "scp -P 2222 /tmp/f1 root@127.0.0.1:/tmp/f2; cat /tmp/f2; echo 'get /tmp/f2 /tmp/f3' > /tmp/b; sftp -P 2222 -b /tmp/b root@127.0.0.1; cat /tmp/f3",
+         wall=300, has=[r'^ssh-ok riscv32$', r'^file-data$', r'^sftp> get /tmp/f2 /tmp/f3'], count=[(r'^file-data$', 2)]),
+    case('ports-at', 'programs', "date -s '2026-10-18 12:00:00' > /dev/null; atd & sleep 1; echo 'echo at-''ran > /tmp/at.out' | at now; sleep 4; "
+         "cat /tmp/at.out; echo true | at now + 1 hour; atq",
+         has=[r'^at-ran$', r'^2\s+Sun Oct 18 13:00:00 2026 a root']),
+    case('ports-iproute2', 'programs', 'ss -s | head -1; nstat -az | head -2; ifstat | grep "^lo "; genl ctrl list | grep nlctrl; lnstat -d | head -1; '
+         'bridge link; tc -V; rtmon -V',
+         has=[r'^Total: \d+', r'^IpInReceives\s+\d+', r'^lo\s+\d+', r'^Name: nlctrl', r'^/proc/net/stat/arp_cache:',
+              r'^tc utility, iproute2-6\.16\.0', r'^rtmon utility, iproute2-6\.16\.0']),
+    # the IDE (docs/apps/ide.md, "Testing"): C built, run and debugged, JavaScript run, Python debugged,
+    # each language's problems, the tree only with a project, and the storm of edits taken back
+    case('nxide-c', 'desktop ide', X + "NXIDE_PRINT=1 NXIDE_SCRIPT='build wait run wait mark:9 debug over over out into go quit quit' nxide",
+         has=[r'^nxide\| 5 squared is 25, and the sum so far 55', r'^nxide: stopped at line 11, in square', r'^nxide: variable: result = 1',
+              r'^nxide: stopped at line 20, in main'], count=[(r'^nxide: stopped at line', 6)]),
+    case('nxide-js', 'desktop ide', X + "NXIDE_PRINT=1 NXIDE_SCRIPT='example:pi run wait quit quit' nxide",
+         has=[r'^nxide\| qjs --std .*/root/pi\.js', r'^nxide\| 3\.14159265358979323846264338327950288419716939937510582097494459',
+              r'^nxide: the program ended, with 0']),
+    case('nxide-py', 'desktop ide', X + "NXIDE_PRINT=1 NXIDE_SCRIPT='example:primes mark:17 debug into over over out go wait quit quit' nxide",
+         sums=[(r'^nxide: stopped at line (\d+), in (.*?)\r?$', ['17 the module', '7 sieve', '8 sieve', '9 sieve', '18 the module'])],
+         has=[r'^nxide: variable: primes = \[2, 3, 5, 7, 11, .* 97\]', r'^nxide\| 25 primes below 100', r'^nxide: the program ended, with 0']),
+    case('nxide-problems', 'desktop ide', X + "NXIDE_PRINT=1 NXIDE_SCRIPT='example:pi line:118 type:nowhere();| run wait problems "
+         "type:( wait wait problems quit quit quit' nxide; NXIDE_PRINT=1 NXIDE_SCRIPT='example:primes line:18 type:x_=_nowhere| run wait "
+         "problems line:3 type:( wait wait problems quit quit quit' nxide",
+         has=[r"^nxide: problem: line 118: ReferenceError: 'nowhere' is not defined", r"^nxide: problem: line 118: SyntaxError: expecting '\)'",
+              r"^nxide: problem: line 18: NameError: name 'nowhere' isn't defined", r'^nxide: problem: line 3: SyntaxError: invalid syntax']),
+    case('nxide-tree', 'desktop ide', X + "mkdir -p /tmp/p/sub; echo 'print(1)' > /tmp/p/a_file_with_a_rather_long_name.py; echo x > /tmp/p/sub/b.js; "
+         "NXIDE_PRINT=1 NXIDE_SCRIPT='project:/tmp/p noproject quit quit' nxide; NXIDE_PRINT=1 NXIDE_SCRIPT='tabs quit quit' nxide /tmp/p",
+         has=[r'^nxide: project /tmp/p: 2 rows in its tree', r'^nxide: no project: no tree',
+              r'^nxide: tab 0: /tmp/p/a_file_with_a_rather_long_name\.py \(shown\)']),
+    case('nxide-storm', 'desktop ide', X + "NXIDE_PRINT=1 NXIDE_SCRIPT='storm:400 example:pi storm:400 example:primes storm:400 quit quit quit quit' nxide",
+         count=[(r'^nxide: storm: 400 steps; \d+ changes taken back: the text is as it was', 3),
+                (r'^nxide: storm: \d+ made again: the text is as the storm left it', 3)]),
     case('launch-note', 'desktop', 'export UI_LAUNCH=print; nx; sleep 4; nxkey 266,94 266,94; sleep 4', wall=120,
          has=[r'^launch: Calculator', r'^launch: a window shown after \d+ ms']),   # docs/system/nanox.md, "A program starting"
 ]
@@ -342,7 +437,9 @@ def check(c, text, err, races, done):
 def images(a):
     """The image folder of each kind of case: the one given, a private one with zerotest, the lazy test's."""
     out = {None: a.image}
-    if any(c['image'] == 'zerotail' for c in a.run):
+    if any(c['image'] == 'zerotail' for c in a.run) and without_mmu(a.image):
+        out['zerotail'] = zerotail_nommu()
+    elif any(c['image'] == 'zerotail' for c in a.run):
         name = 'test_all'
         bin_ = os.path.join(ROOT, 'build', 'images', name, 'overlay', 'usr', 'bin')
         os.makedirs(bin_, exist_ok=True)
@@ -359,7 +456,28 @@ def images(a):
     return out
 
 
-CC_BYTES_NOMMU = '455de86c'
+def zerotail_nommu():
+    """build/images/test_all without the MMU: the flat root with zerotest and tailtest, made flat."""
+    name, built = 'test_all', os.path.join(ROOT, 'build', 'nommu', 'flatroot')
+    flat = built if os.path.isdir(built) else os.path.join(ROOT, 'linux', 'prebuilt', 'nommu', 'root')
+    root = os.path.join(ROOT, 'build', 'test_all-root')
+    shutil.rmtree(root, ignore_errors=True)
+    shutil.copytree(flat, root, symlinks=True)
+    repo = '/mnt/' + ROOT[0].lower() + ROOT[2:].replace('\\', '/')
+    script = (f'export PATH=$HOME/nm/work/bin:$HOME/shaderemu-linux/toolchain/bin:$PATH && cd {repo} && ' +
+              ' && '.join(f'rv32-cc -O2 linux/kernel/{t}.c -o build/test_all-root/usr/bin/{t}' for t in ('zerotest', 'tailtest')) +
+              ' && python3 linux/nommu/flat.py build/test_all-root/usr/bin')
+    subprocess.run(['wsl', '-e', 'bash', '-c', script], check=True, capture_output=True)   # (-e: no shell between to expand $)
+    subprocess.run([sys.executable, os.path.join(ROOT, 'linux', 'nommu', 'image.py'), name, root], check=True, capture_output=True,
+                   env=dict(os.environ, HALFLIFE_DATA='0'))
+    return f'build/images/{name}'
+
+
+# without the MMU a ROM file is mapped where it lies in the ROM, the next file's bytes after its end
+# (16-byte romfs packing): what the pool hands out is checked on copies in tmpfs
+ZERO_TAIL_NOMMU = ('zerotest 12 4; mkdir -p /tmp/t; find /usr/share /usr/bin /etc -maxdepth 1 -type f -size -256k | '
+                   'while read f; do cp "$f" /tmp/t/; done; tailtest /tmp/t/*')
+CC_BYTES_NOMMU = 'd79731c8'   # mcw.c's claim and gles.c's seglNotAFrame (18 October 2026): the linked programs
 
 
 def without_mmu(image):
@@ -372,12 +490,13 @@ def run(c, a, image, logs):
     log = os.path.join(logs, c['name'] + '.log')
     if os.path.exists(log):
         os.remove(log)
-    args = [os.path.join(ROOT, 'bin', 'rvc_cpu.exe'), '--quiet', '--uart-log', log, '--wall', str(c['wall']), '--image', image]
+    args = [a.cpu, '--quiet', '--uart-log', log, '--wall', str(c['wall']), '--image', image]
     if c['cmd'] is not None:
         args += ['--expect', '/ # ', '--send', c['cmd'] + '; ' + DONE + '\\n']
     args += ['--until', c['until']] + c['more']
     env = dict(os.environ)
     env.pop('RVC_RACES', None)
+    env.setdefault('RVC_THREADS', str(max(1, (os.cpu_count() or 4) // a.jobs)))   # the workers' host threads, all cases together
     if a.card_model:
         env.update(RVC_SOUND='1', RVC_WCACHE='1', RVC_ADFAULT='1')
     races = a.races and c['workers']
@@ -394,6 +513,10 @@ def run(c, a, image, logs):
     return text, p.stderr, races, time.time() - t
 
 
+def futures_names(futures):
+    return {c['name'] for c in futures.values()}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('select', nargs='*', help='case names or tags (default: every case not tagged long)')
@@ -406,6 +529,7 @@ def main():
     ap.add_argument('--jobs', type=int, default=max(2, (os.cpu_count() or 4) // 2), help='cases at once')
     ap.add_argument('--logs', default=os.path.join(ROOT, 'build', 'test_all'), help='where the consoles go')
     ap.add_argument('--list', action='store_true', help='list the cases and stop')
+    ap.add_argument('--cpu', default=os.path.join(ROOT, 'bin', 'rvc_cpu.exe'), help='the rvc_cpu to run (default bin/rvc_cpu.exe)')
     a = ap.parse_args()
     if a.select:
         a.run = [c for c in CASES if c['name'] in a.select or c['tags'] & set(a.select)]
@@ -420,21 +544,43 @@ def main():
         for c in CASES:
             if c['name'] == 'cc-bytes':
                 c['digest'] = [(c['digest'][0][0], CC_BYTES_NOMMU)]
+            if c['name'] == 'zero-tail':
+                c['cmd'] = ZERO_TAIL_NOMMU
     where = images(a)
     done, failed, t0 = {}, [], time.time()
-    # a case compared with another runs after it
-    first = [c for c in a.run if not c.get('same')]
-    later = [c for c in a.run if c.get('same')]
-    for group in (first, later):
-        with ThreadPoolExecutor(a.jobs) as ex:
-            futures = [(c, ex.submit(run, c, a, where[c['image']], a.logs)) for c in group]
-            for c, f in futures:
-                text, err, races, secs = f.result()
-                done[c['name']] = text
-                why = check(c, text, err, races, done)
-                print(f"{'PASS' if not why else 'FAIL'} {c['name']:28} {secs:5.0f} s" + ('' if not why else '  ' + '; '.join(why)), flush=True)
-                if why:
-                    failed.append(c['name'])
+    # the longest first, by the seconds each took the last time (the last case to start then ends soonest);
+    # a case compared with another is checked once that one has ended
+    times_file = os.path.join(a.logs, 'times.json')
+    try:
+        times = json.load(open(times_file))
+    except (OSError, ValueError):
+        times = {}
+    order = sorted(a.run, key=lambda c: -times.get(c['name'], 60))
+    waiting = []
+
+    def report(c, text, err, races, secs):
+        why = check(c, text, err, races, done)
+        print(f"{'PASS' if not why else 'FAIL'} {c['name']:28} {secs:5.0f} s" + ('' if not why else '  ' + '; '.join(why)), flush=True)
+        if why:
+            failed.append(c['name'])
+
+    with ThreadPoolExecutor(a.jobs) as ex:
+        futures = {ex.submit(run, c, a, where[c['image']], a.logs): c for c in order}
+        for f in as_completed(futures):
+            c = futures[f]
+            text, err, races, secs = f.result()
+            done[c['name']] = text
+            times[c['name']] = round(secs, 1)
+            waiting.append((c, text, err, races, secs))
+            for w in [w for w in waiting if all(s[1] in done or s[1] not in futures_names(futures) for s in w[0].get('same', []))]:
+                waiting.remove(w)
+                report(*w)
+    for w in waiting:   # (compared with a case that was not run)
+        report(*w)
+    try:
+        json.dump(times, open(times_file, 'w'), indent=0, sort_keys=True)
+    except OSError:
+        pass
     print(f'{len(a.run) - len(failed)} of {len(a.run)} passed in {time.time() - t0:.0f} s' + (f'; failed: {" ".join(failed)}' if failed else '') +
           f' (consoles in {a.logs})')
     return 1 if failed else 0

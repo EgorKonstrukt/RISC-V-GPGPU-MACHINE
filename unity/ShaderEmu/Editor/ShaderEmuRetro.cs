@@ -235,7 +235,8 @@ public static partial class ShaderEmuBuilder
         importer.wrapMode = TextureWrapMode.Clamp;
         importer.alphaIsTransparency = false;
         importer.maxTextureSize = 4096;
-        importer.npotScale = TextureImporterNPOTScale.None;
+        // a mipmapped picture of any other size is not block-compressed: it would ship raw
+        importer.npotScale = kind == 0 ? TextureImporterNPOTScale.ToLarger : TextureImporterNPOTScale.None;
         importer.anisoLevel = kind == 1 ? 0 : 16;
         importer.mipmapEnabled = kind == 0;
         importer.sRGBTexture = kind == 0;
@@ -347,7 +348,7 @@ public static partial class ShaderEmuBuilder
                 }
                 label.enabled = false;
             }
-        if (inner.Count == 0) { onto.SetTexture("_Index", null); onto.SetTexture("_Glyphs", null); onto.SetTexture("_Fonts", null); onto.SetTexture("_Far", null); EditorUtility.SetDirty(onto); return; }
+        if (inner.Count == 0) { onto.SetTexture("_Index", null); onto.SetTexture("_Glyphs", null); onto.SetTexture("_Fonts", null); EditorUtility.SetDirty(onto); return; }
         if (inner.Count > 65535) throw new System.Exception(name + ": more glyphs than the index can name");
 
         // A place of the map names the two glyphs nearest to it whose boxes reach it: a glyph's
@@ -407,20 +408,6 @@ public static partial class ShaderEmuBuilder
         string path = PanelTextures + "/" + name + " glyphs.asset";
         AssetDatabase.DeleteAsset(path);
         AssetDatabase.CreateAsset(glyphs, path);
-
-        // from far off a pixel holds whole glyphs: there the lettering is a picture of itself with mipmaps
-        Graphic[] all = canvas.GetComponentsInChildren<Graphic>(true);
-        bool[] was = new bool[all.Length];
-        for (int i = 0; i < all.Length; i++) { was[i] = all[i].enabled; all[i].enabled = print.Contains(all[i]) && all[i] is TextMeshProUGUI; }
-        Dictionary<GameObject, int> layers = ToCaptureLayer(canvas);
-        Canvas.ForceUpdateCanvases();
-        Camera camera = PanelCamera(rect);
-        float farScale = Mathf.Min(2f, 4096f / Mathf.Max(size.x, size.y));   // no coarser than where the glyphs' fields give way to it
-        Texture2D far = Shot(camera, Mathf.CeilToInt(size.x * farScale), Mathf.CeilToInt(size.y * farScale), true, 8, null);
-        Object.DestroyImmediate(camera.gameObject);
-        foreach (KeyValuePair<GameObject, int> pair in layers) pair.Key.layer = pair.Value;
-        for (int i = 0; i < all.Length; i++) all[i].enabled = was[i];
-        onto.SetTexture("_Far", Kept(name + " far", far, 0));
 
         onto.SetTexture("_Index", Kept(name + " index", index, 1));
         onto.SetTexture("_Glyphs", glyphs);
@@ -679,7 +666,22 @@ public static partial class ShaderEmuBuilder
         keyboard.hoverColour = Over;
         keyboard.pressedColour = Held;
         keyboard.latchedColour = LitUp;
+        DenCaps(keyboard);
         Apply(keyboard);
+    }
+
+    // world/computer.py's KEY_UNDER and KEY_HIGH: where a held cap sinks (EmuKeyboard.Sink).
+    static void DenCaps(EmuKeyboard keyboard)
+    {
+        keyboard.capUnder = 0.0015f;
+        keyboard.capHigh = 0.012f;
+    }
+
+    // world/pc.py's KEY_TOPS over the caps' tops and CAP_HIGH.
+    static void StationCaps(EmuKeyboard keyboard)
+    {
+        keyboard.capUnder = 0.0012f;
+        keyboard.capHigh = 0.0078f;
     }
 
     static void PaperLook(Canvas canvas, Sprite paper, TMP_FontAsset mono, TMP_FontAsset bold)

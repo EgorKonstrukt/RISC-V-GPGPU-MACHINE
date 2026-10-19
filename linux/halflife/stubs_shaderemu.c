@@ -1,5 +1,5 @@
 /*
-stubs_shaderemu.c - what the image has no use for (docs/halflife.md): voice chat (Opus)
+stubs_shaderemu.c - what the image has no use for (docs/games/halflife.md): voice chat (Opus)
 */
 #include "common.h"
 #include "client.h"

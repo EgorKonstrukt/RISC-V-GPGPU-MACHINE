@@ -1448,6 +1448,7 @@ main(int argc, char **argv)
 	char title[160];
 	int most_w, most_h, first = 1, none = 0;
 	unsigned bytes, spare = 0, left, stat_at = 0, bar_at = 0, now, input = 0, hot_at = 0, asked_at = 0;
+	unsigned loading_since = 0, loading_said = 0;	/* while the first pictures are got ready */
 	uint8_t *file;
 	int wanted, k, hold = -1, was_shown = -2, ahead, once = getenv("NXVIDEO_ONCE") != NULL;
 
@@ -1574,6 +1575,7 @@ main(int argc, char **argv)
 	open_fifo();
 	play_from(0);
 	say("getting the first pictures ready...");
+	loading_since = milliseconds();
 
 	for (;;) {
 		int have, due, target, drew = 0, in_time;
@@ -1593,6 +1595,17 @@ main(int argc, char **argv)
 		media_video_pump(film);
 		feed();
 		have = ready(&in_time);
+		/* how far the first pictures are, with the time, while it waits for them */
+		if (!running && !ended && saying[0] == 'g' && now - loading_said >= 250 && ahead > 0) {
+			int part = (have - shown) * 100 / ahead;
+			unsigned tenths = (now - loading_since) / 100;
+			char text[80];
+
+			loading_said = now;
+			snprintf(text, sizeof text, "getting the first pictures ready: %d%%, %u.%u s",
+				 part < 0 ? 0 : part > 99 ? 99 : part, tenths / 10, tenths % 10);
+			say(text);
+		}
 		/* NXVIDEO_SUM: every picture where it is shown from, once, as it comes there */
 		if (summing && info.format != MEDIA_FRAME_RGBA) {
 			while (summed < have) {

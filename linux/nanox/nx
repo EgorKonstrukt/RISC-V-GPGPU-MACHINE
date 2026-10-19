@@ -49,7 +49,9 @@ USER=$(nxreg get user.name)
 LOGNAME=$USER
 export USER LOGNAME
 nano-X -p &            # -p: it stays when the last program has gone
-sleep 2
+# the start's word in the middle of the screen as soon as the server takes it (a client tries to
+# reach it for 2 s), until the picture covers it
+nxbar --splash "the kept settings and files" 2>/dev/null || nxbar --splash "the kept settings and files"
 # what the host keeps of /persistence, once a session and before the desktop shows it (docs/system/persist.md)
 if [ ! -f /tmp/nxpersist.loaded ]; then
     : > /tmp/nxpersist.loaded
@@ -64,6 +66,7 @@ if [ ! -f /tmp/nxpersist.loaded ]; then
     [ -z "$named" ] && [ -n "$kept" ] && [ "$kept" != "${NANOX_SIZE:-800x600}" ] && exec "$0" restart
 fi
 nxbar --look          # the look Settings chose (Windows 7 by default), before anything is drawn in it
+nxbar --splash "its picture and icons"
 nxnet --serve 2>/dev/null &   # answers the other computers' Network program (one a machine: a second finds the port taken)
 nxfiles --desktop &   # the desktop: its picture, and the icons of /root/Desktop on it
 nxbar &

@@ -260,28 +260,41 @@ public static partial class ShaderEmuBuilder
 
     // The tick and the commit's points are cameras' passes (docs/machine/multicore.md, "In Unity"): a
     // pass with several targets, or one of a mesh of points, is a camera's in VRChat. Each
-    // camera sees one mesh on a layer of its own, and EmuMachine renders it.
+    // camera sees its meshes on a layer of its own, and EmuMachine renders it. RAM is one
+    // texture written in place (docs/machine/gpu.md, "RAM in one texture").
     static void MachineCameras(Transform world, EmuMachine machine)
     {
         NameLayer(TickLayer, "MachineTick");
         NameLayer(PointsLayer, "MachineCommit");
         Transform device = world.Find("GPU device");
-        foreach (string old in new[] { "Tick camera", "Tick mesh", "Points camera", "Points mesh" })
+        foreach (string old in new[] { "Tick camera", "Tick mesh", "Points camera", "Points mesh", "Gather mesh" })
         {
             Transform t = device.Find(old);
             if (t != null) Object.DestroyImmediate(t.gameObject);
         }
         Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTick");
         Material pointsMat = Mat("MachineCommitPoints", "ShaderEmu/MachineCommitPoints");
-        RenderTexture tickState = StateTexture("TickState", 2048, 48);
+        Material gatherMat = Mat("MachineGather", "ShaderEmu/MachineGather");
+        machine.state = StateTexture("StateA", 2048, 9280);
+        AssetDatabase.DeleteAsset(Generated + "/StateB.renderTexture");   // (the second state of before)
+        RenderTexture tickState = StateTexture("TickState", 2048, 64);
         machine.tickState = tickState;
+        machine.stage = StateTexture("Stage", 2048, 21);     // STAGE_ROWS (src/ram.cginc)
+        machine.window = StateTexture("Window", 2048, 11);   // WINDOW_ROWS (MachineWindow.cginc)
         machine.tickTargets = new RenderTexture[8];
         for (int i = 0; i < 8; i++) machine.tickTargets[i] = StateTexture("TickOut" + i, 1040, 32);   // TICK_MRT_W x TICK_STATE_ROWS x TICK_MRT_BANDS
         machine.tickDepth = Target("TickDepth", 1040, 32, 16);
         machine.readbackTexture = Target("Readback", 1032, 32, 0);
+        RenderTexture gpuTarget = AssetDatabase.LoadAssetAtPath<RenderTexture>(Generated + "/GpuTarget.renderTexture");
         pointsMat.SetTexture("_TickState", tickState);
-        pointsMat.SetTexture("_GpuTarget", AssetDatabase.LoadAssetAtPath<RenderTexture>(Generated + "/GpuTarget.renderTexture"));
+        pointsMat.SetTexture("_Stage", machine.stage);
+        pointsMat.SetTexture("_GpuTarget", gpuTarget);
+        gatherMat.SetTexture("_Ram", machine.state);
+        gatherMat.SetTexture("_TickState", tickState);
+        gatherMat.SetTexture("_GpuTarget", gpuTarget);
         machine.machineMaterial.SetTexture("_TickState", tickState);
+        machine.machineMaterial.SetTexture("_Stage", machine.stage);
+        machine.machineMaterial.SetTexture("_Window", machine.window);
 
         // triangles for the tick, one for every sixteen cores (its geometry shader draws the
         // cores' quads whatever they are, sixteen cores' a primitive)
@@ -297,9 +310,23 @@ public static partial class ShaderEmuBuilder
             triangle.bounds = new Bounds(Vector3.zero, Vector3.one);
             EditorUtility.SetDirty(triangle);
         }
-        // and a point for every entry of every core's write cache, its last store and its copy
-        int count = 258 + (MachineCores - 1) * 130;   // a point a bucket: MachineCommitPoints.shader
-        Mesh points = LoadOrCreate(Generated + "/CommitPoints.asset", () => new Mesh { name = "CommitPoints" });
+        // and a point for the zap, every entry of every core's write cache, its last store, its
+        // copy, and the picture (MachineCommitPoints.shader); the gather's, one and one a core
+        Mesh points = PointsMesh("CommitPoints", 1 + 258 + (MachineCores - 1) * 130 + 1);
+        Mesh gather = PointsMesh("GatherPoints", 1 + MachineCores);
+        machine.tickCamera = PassCamera(device, "Tick", TickLayer, triangle, tickMat);
+        machine.pointsCamera = PassCamera(device, "Points", PointsLayer, points, pointsMat);
+        machine.pointsRenderer = device.Find("Points mesh").GetComponent<MeshRenderer>();
+        machine.gatherRenderer = PassMesh(device, "Gather", PointsLayer, gather, gatherMat);
+        machine.gatherRenderer.enabled = false;   // the points camera draws one of the two at a time
+        machine.tickMaterial = tickMat;
+        machine.pointsMaterial = pointsMat;
+        machine.gatherMaterial = gatherMat;
+    }
+
+    static Mesh PointsMesh(string name, int count)
+    {
+        Mesh points = LoadOrCreate(Generated + "/" + name + ".asset", () => new Mesh { name = name });
         if (points.vertexCount != count)
         {
             int[] indices = new int[count];
@@ -310,10 +337,7 @@ public static partial class ShaderEmuBuilder
             points.bounds = new Bounds(Vector3.zero, Vector3.one);
             EditorUtility.SetDirty(points);
         }
-        machine.tickCamera = PassCamera(device, "Tick", TickLayer, triangle, tickMat);
-        machine.pointsCamera = PassCamera(device, "Points", PointsLayer, points, pointsMat);
-        machine.tickMaterial = tickMat;
-        machine.pointsMaterial = pointsMat;
+        return points;
     }
 
     static Camera PassCamera(Transform device, string name, int layer, Mesh mesh, Material material)
@@ -334,6 +358,12 @@ public static partial class ShaderEmuBuilder
         // at the eyes' size, and the tick (whose targets are set while playing) drew nothing
         camera.stereoTargetEye = StereoTargetEyeMask.None;
         camera.enabled = false;   // EmuMachine renders it
+        PassMesh(device, name, layer, mesh, material);
+        return camera;
+    }
+
+    static MeshRenderer PassMesh(Transform device, string name, int layer, Mesh mesh, Material material)
+    {
         GameObject meshObject = new GameObject(name + " mesh", typeof(MeshFilter), typeof(MeshRenderer));
         meshObject.transform.SetParent(device, false);
         meshObject.transform.localPosition = new Vector3(0, 0, 2f);
@@ -345,7 +375,7 @@ public static partial class ShaderEmuBuilder
         renderer.receiveShadows = false;
         renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
         renderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
-        return camera;
+        return renderer;
     }
 
     [MenuItem("ShaderEmu/Add the tick's and the commit's cameras to the open scene")]
@@ -809,9 +839,8 @@ public static partial class ShaderEmuBuilder
         Material readbackMat = Mat("Readback", "ShaderEmu/Readback");
         Material terminalMat = Mat("Terminal", "ShaderEmu/Terminal");
 
-        RenderTexture state = StateTexture("StateA", 2048, 4096);
-        RenderTexture stateB = StateTexture("StateB", 2048, 4096);
-        RenderTexture tickState = StateTexture("TickState", 2048, 48);   // the state rows after a tick: core 0's 64 x STATE_ROWS and the workers' six bands of 1984 x 8 beside it
+        RenderTexture state = StateTexture("StateA", 2048, 9280);   // 64 rows of state, then RAM to 0x92000000 (docs/system/nommu.md), written in place
+        RenderTexture tickState = StateTexture("TickState", 2048, 64);   // the state rows after a tick
         AssetDatabase.DeleteAsset(Generated + "/MachineState.asset");
         RenderTexture gpuTarget = Target("GpuTarget", 1280, 720, 32);   // the picture is 720p at most
         RenderTexture readback = Target("Readback", 1032, 32, 0);   // a row a round: EmuMachine's MaxRounds
@@ -857,7 +886,7 @@ public static partial class ShaderEmuBuilder
         displayMat.SetTexture("_State", state);
         displayMat.SetTexture("_GpuTarget", gpuTarget);
         heatMat.SetTexture("_State", state);
-        heatMat.SetInt("_Strips", 2);
+        heatMat.SetInt("_Strips", 3);
         memMat.SetTexture("_Heat", heat);
         readbackMat.SetTexture("_State", state);
         terminalMat.SetTexture("_Grid", grid);
@@ -1010,8 +1039,7 @@ public static partial class ShaderEmuBuilder
         GameObject machineObject = new GameObject("Machine");
         machineObject.transform.SetParent(world, false);
         EmuMachine machine = Udon<EmuMachine>(machineObject);
-        machine.stateA = state;
-        machine.stateB = stateB;
+        machine.state = state;
         machine.tickState = tickState;
         machine.tickMaterial = tickMat;
         machine.machineMaterial = machineMat;
@@ -1085,12 +1113,7 @@ public static partial class ShaderEmuBuilder
         Label(panel, "Title", "ShaderEmu: a RISC-V computer in a pixel shader", 30, 16, 1640, 56, 38, TextAnchor.MiddleLeft, Color.white);
         machine.statsText = Label(panel, "Stats", "off", 30, 84, 1000, 486, 22, TextAnchor.UpperLeft, new Color(0.75f, 0.95f, 0.8f));
         machine.statsText.enableWordWrapping = false;
-        Label(panel, "Help",
-              "This machine runs on your own graphics card; other players have their own, and can show you theirs.\n" +
-              "Each hand has a beam. On the big screen it is the mouse: trigger = left, grip = right, right stick = wheel.\n" +
-              "On a keyboard a key stays down while the trigger is held; Shift, Ctrl and Alt also latch.\n" +
-              "Desktop: click 'Use my keyboard' on a keyboard to type with the real one.",
-              30, 580, 1000, 170, 22, TextAnchor.UpperLeft, dim);
+        Label(panel, "Help", PanelHelp, 30, 580, 800, 170, 21, TextAnchor.UpperLeft, dim);   // (ShaderEmuTouch.cs)
 
         TextMeshProUGUI unusedText;
         float bx = 1060;
@@ -1118,12 +1141,15 @@ public static partial class ShaderEmuBuilder
         OnClick(reset, machine, "ResetMachine");
         OnClick(pause, machine, "Pause");
 
-        // the laser's calibration: VRChat's own laser clicks the dot, 5 cm square
-        pointer.laserLabel = Label(panel, "Laser", "", bx + 65, 439, 535, 36, 26, TextAnchor.MiddleLeft, dim);
+        // the laser's calibration: VRChat's own laser clicks the dot, 5 cm square; the legend is
+        // printed beside it, as a wider key would be clicked off the dot
+        Label(panel, "Calibrate legend", "Calibrate pointer: click the dot with VRChat's laser", bx + 65, 430, 535, 28, 24, TextAnchor.MiddleLeft, dim);
+        pointer.laserLabel = Label(panel, "Laser", "", bx + 65, 458, 535, 26, 20, TextAnchor.MiddleLeft, dim);
         Button calibrate = MakeButton(panel, "Calibrate laser", "", bx, 432, 50, 50, 26, out unusedText);
         pointer.calibrateDot = CalibrateDot(calibrate);
         Apply(pointer);
         OnClick(calibrate, pointer, "Calibrate");
+        PhysicalSwitch(panel, pointer);   // and the steady pointer's (ShaderEmuTouch.cs)
         Sharing(world, computer, panel, machine, new Vector3(1.28f, 1.82f, screenZ));
         Sound(world, panel, machine);
         WorkersPanel(computer, machine);
@@ -1145,7 +1171,14 @@ public static partial class ShaderEmuBuilder
         Scope(world, computer, panel, machine);   // after the signs: it renames the memory screen's
         Remodel(world);   // last: the boxes above are where Blender's models go (ShaderEmuModels.cs)
         SystemSheet(world);   // the system sheet on the back wall, in the board's frame (ShaderEmuSheet.cs)
+        Pens();       // QvPen, under the board (ShaderEmuPens.cs)
+        TouchPanels(world, pointer);   // every panel's buttons, for a fingertip
+        Apply(pointer);
         Retro(world);     // and the panels in the manner of the room's decade (ShaderEmuRetro.cs)
+        ConsoleSwitch();      // the holodecks' Hide key and the button that brings a console back
+        AddHoloKeyboard();    // their keyboard: a copy of the den's as Retro left it
+        TouchPanels(world, pointer);   // again, for the keys those two made
+        Apply(pointer);
 
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(scene);

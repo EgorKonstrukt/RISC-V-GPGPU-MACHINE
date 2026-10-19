@@ -9,7 +9,6 @@
 | `quake.png` | id Software's Quake source release (GPL-2.0) | `WinQuake/quake.ico`, its 32-pixel picture, at the commit `linux/quake/build.sh` names |
 | `classicube.png` | ClassiCube (BSD-3-Clause) | `misc/CCicon.png` at the commit `linux/classicube/build.sh` names |
 | `tdawn.png`, `ralert.png` | Vanilla Conquer (GPL-3.0) | `resources/vanillatd_icon.svg` and `vanillara_icon.svg` at the commit `linux/tdawn/build.sh` names, drawn at 256 pixels |
-| `glxgears.png`, `nxeyes.png` | this project's | drawn by `python tools/draw_icons.py`: the demo's three gears in its colours, two eyes |
+| `glxgears.png`, `nxeyes.png`, `halflife.png` | this project's | drawn by `python tools/draw_icons.py`: the demo's three gears in its colours, two eyes, an orange lambda in a ring |
 | `micropolis.png` | Micropolis (GPL-3.0 with EA's terms) | `content/micropolis/tilesets/classic/icon1.ico` (the X11 release's 32-pixel map) at the commit `linux/micropolis/build.sh` names |
 | `quake3.png` | ioquake3 (GPL-2.0) | `misc/quake3.png` at the commit `linux/quake3/build.sh` names |
-| `halflife.png` | Xash3D FWGS (GPL-3.0-or-later) | `game_launch/icon-xash-material.png` at the commit `linux/halflife/build.sh` names |

@@ -364,6 +364,8 @@ static uint32_t team_job(uint32_t unused, uint32_t k)
 	uint32_t last = done_of[k].round, idle = 0;
 
 	(void)unused;
+	/* (posted to a worker with no core: its share is the first core's, taken in turn by post_team) */
+	if (!mcw_on_worker()) return 0;
 	for (;;) {
 		uint32_t r = team->round;
 
@@ -373,13 +375,31 @@ static uint32_t team_job(uint32_t unused, uint32_t k)
 			done_of[k].round = r;
 			last = r;
 			idle = 0;
-			if (!mcw_on_worker()) break;	/* (posted to a worker with no core: run here, once) */
-		} else if (!mcw_on_worker() || ++idle > team->linger) {
+		} else if (++idle > team->linger) {
 			break;
 		}
 		mc_end_pass();
 	}
 	return 0;
+}
+
+/* The team's job posted to worker k; false where k had no core. Its share is then run here by
+ * the caller, never inside the post: shares may wait for lower ones (m_stages' pipelines). */
+static int post_team(int k)
+{
+	in_team[k] = 1;
+	mcw_post(k, team_job, 0, (uint32_t)k);
+	if (mcw_bound(k)) return 1;
+	in_team[k] = 0;
+	return 0;
+}
+
+/* Worker k's share of round r, run by the first core: only once every lower share is done or
+ * out on a core, so that it waits for nothing that waits for it. */
+static void run_missed(int k, uint32_t r)
+{
+	guarded(run_share, plan[k].share, 0);
+	done_of[k].round = r;
 }
 
 void mcw_for_linger(int passes) { linger = passes < 0 ? 0 : passes; }
@@ -439,9 +459,7 @@ void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	team->round = r;	/* (last: a worker that sees it sees the rest) */
 	for (i = 0; i < members; i++) {
 		k = list[i];
-		if (in_team[k]) continue;
-		in_team[k] = 1;
-		mcw_post(k, team_job, 0, (uint32_t)k);
+		if (!in_team[k]) post_team(k);	/* (one that lost its core is taken below, after share 0) */
 	}
 	in_round = 1;
 	if (first) guarded(run_share, 0, 0);
@@ -452,12 +470,11 @@ void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 			k = list[i];
 			if (done_of[k].round == r) continue;
 			out = 1;
-			if (!mcw_done(k)) continue;
-			/* (its team job ended before it saw the round: posted again) */
+			if (in_team[k] && !mcw_done(k)) continue;
+			/* (its team job ended before it saw the round, or never went out: posted again) */
 			in_team[k] = 0;
 			if (done_of[k].round == r) continue;
-			in_team[k] = 1;
-			mcw_post(k, team_job, 0, (uint32_t)k);
+			if (!post_team(k)) run_missed(k, r);
 		}
 		if (!out) break;
 		mcw_rest();
@@ -516,9 +533,7 @@ void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	team->round = r;
 	for (i = 0; i < out_members; i++) {
 		k = out_list[i];
-		if (in_team[k]) continue;
-		in_team[k] = 1;
-		mcw_post(k, team_job, 0, (uint32_t)k);
+		if (!in_team[k]) post_team(k);
 	}
 	out_round = r;
 	out_on = 1;
@@ -538,12 +553,13 @@ int mcw_for_ready(void)
 		k = out_list[i];
 		if (done_of[k].round == out_round) continue;
 		out = 1;
-		if (!mcw_done(k)) continue;
-		/* (its team job ended before it saw the round: posted again) */
+		if (in_team[k] && !mcw_done(k)) continue;
+		/* (its team job ended before it saw the round, or never went out: posted again) */
 		in_team[k] = 0;
-		if (done_of[k].round == out_round) continue;
-		in_team[k] = 1;
-		mcw_post(k, team_job, 0, (uint32_t)k);
+		if (done_of[k].round == out_round || post_team(k)) continue;
+		in_round = 1;
+		run_missed(k, out_round);
+		in_round = 0;
 	}
 	return !out;
 }

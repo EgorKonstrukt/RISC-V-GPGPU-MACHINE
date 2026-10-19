@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds nxide, the place to write C in (docs/apps/ide.md), into build/images/linux/root. After
-# linux/nanox/build.sh; what it compiles with in the guest is linux/tcc/build.sh's.
+# Builds nxide, the place to write C, JavaScript and Python in (docs/apps/ide.md), into build/images/linux/root.
+# After linux/nanox/build.sh; what it compiles and runs with in the guest is linux/tcc/build.sh's,
+# linux/quickjs/build.sh's and linux/micropython/build.sh's.
 #   wsl -- bash /mnt/c/.../linux/ide/build.sh
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +22,10 @@ if [ -x "$WORK/build/tcc-cross/tcc" ] && [ -d "$WORK/build/tcc-sysroot/usr/inclu
 else
     rm -f "$OUT/share/ide-clean"
 fi
-# the Start menu, and whose a C file is (docs/system/open.md: before the editor's line for text)
+# the examples in the other languages beside tcc's (example-NAME.js, .py), and the Python debugger
+for f in "$HERE"/examples/*.js "$HERE"/examples/*.py; do cp "$f" "$OUT/share/example-$(basename "$f")"; done
+cp "$HERE/pydbg.py" "$OUT/share/ide-pydbg.py"
+# the Start menu, and whose a C, JavaScript or Python file is (docs/system/open.md: before the editor's line for text)
 printf '%s\n' "Programming/IDE=nxide" > "$OUT/share/nxapps.28-ide"
-printf '%s\n' "source   c,h   -   nxide %s" > "$OUT/share/nxopen.15-ide"
+printf '%s\n' "source   c,h,js,py   -   nxide %s" > "$OUT/share/nxopen.15-ide"
 ls -l "$OUT/bin/nxide"

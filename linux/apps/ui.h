@@ -35,6 +35,7 @@
 #define UI_KEPT "/persistence/desktop"	/* the desktop's own files that the host keeps (docs/system/persist.md) */
 #define UI_WALLPAPER_CHOICE "desktop.wallpaper"	/* the registry's key for what the desktop shows: a picture's path, or #RRGGBB */
 #define UI_WALLPAPER_DEFAULT "/usr/share/wallpaper-fox.jpg"
+#define UI_WALLPAPER_TURN "desktop.wallpaper.turn"	/* "N:PATH": that picture shown N quarter turns to the right */
 
 static GR_GC_ID ui_gc;
 static GR_FONT_ID ui_fixed, ui_var;
@@ -334,7 +335,7 @@ ui_text_fit(GR_DRAW_ID w, int x, int y, int width, const char *text, GR_COLOR co
 {
 	int count = (int)strlen(text);
 
-	while (count > 0 && count * 4 > width && ui_width(&ui_var_widths, ui_var, text, count) > width)
+	while (count > 0 && ui_width(&ui_var_widths, ui_var, text, count) > width)
 		count -= count > 8 ? 4 : 1;
 	ui_text(w, x, y, text, count, colour, 0);
 }
@@ -592,7 +593,83 @@ ui_picture_sized(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR
 #include "media.h"
 #include "mcw.h"
 
-static struct { char path[200]; int w, h, cover; GR_COLOR around; GR_WINDOW_ID pixmap; } ui_decoded;
+static struct { char path[200]; int w, h, cover, turns; GR_COLOR around; GR_WINDOW_ID pixmap; } ui_decoded;
+static int ui_picture_turns;	/* quarter turns to the right the next pictures decoded here are shown with */
+
+/* A picture decoded whole, turned, then fitted into `out` (the pixmap's pixels). */
+static const char *
+ui_picture_turned(const char *file, struct media_image *out, int cover, int turns)
+{
+	struct media_image in, turned;
+	const char *why;
+	int w, h, x, y;
+
+	memset(&in, 0, sizeof in);
+	if ((why = media_image_load(file, &in, 3, mcw_most())) != NULL)
+		return why;
+	w = turns & 1 ? in.height : in.width, h = turns & 1 ? in.width : in.height;
+	turned = in;
+	turned.width = w, turned.height = h, turned.stride = (w * 3 + 15) & ~15, turned.owned = 0;
+	if (!(turned.pixels = malloc((size_t)turned.stride * (size_t)h))) {
+		media_image_free(&in);
+		return "not enough memory to turn it";
+	}
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++) {
+			int sx = turns == 1 ? y : turns == 2 ? in.width - 1 - x : in.width - 1 - y;
+			int sy = turns == 1 ? in.height - 1 - x : turns == 2 ? in.height - 1 - y : x;
+
+			memcpy(turned.pixels + (size_t)y * turned.stride + (size_t)x * 3, in.pixels + (size_t)sy * in.stride + (size_t)sx * 3, 3);
+		}
+	media_image_free(&in);
+	media_image_fit(&turned, out, cover, mcw_most());
+	free(turned.pixels);
+	return NULL;
+}
+
+/* A slow decode's progress (media_progress) in a panel over the middle of where the picture will
+ * be drawn: after 0.4 s, at most every 0.25 s, a bar where the decoder says how far, and the time. */
+static struct { GR_DRAW_ID on; int x, y, w, h; long began, said; unsigned most; const char *name; } ui_decoding;
+
+static long
+ui_decoding_ms(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static void
+ui_decoding_told(uint32_t done, uint32_t total)
+{
+	long now = ui_decoding_ms(), tenths = (now - ui_decoding.began) / 100;
+	int w = ui_decoding.w - 16 < 260 ? ui_decoding.w - 16 : 260, h = 62, x, y, bar = w - 24;
+	char text[64];
+	const char *slash = strrchr(ui_decoding.name, '/');
+
+	if (total && (unsigned)((uint64_t)done * 100 / total) > ui_decoding.most)
+		ui_decoding.most = (unsigned)((uint64_t)done * 100 / total);
+	if (now - ui_decoding.began < 400 || now - ui_decoding.said < 250 || w < 140 || ui_decoding.h < h + 8)
+		return;
+	ui_decoding.said = now;
+	x = ui_decoding.x + (ui_decoding.w - w) / 2, y = ui_decoding.y + (ui_decoding.h - h) / 2;
+	ui_fill(ui_decoding.on, x, y, w, h, MWRGB(36, 38, 44));
+	ui_edges(ui_decoding.on, x, y, w, h, MWRGB(96, 100, 112), MWRGB(16, 16, 20));
+	snprintf(text, sizeof text, "Opening %s", ui_decoding.on == GR_ROOT_WINDOW_ID ? "the desktop's picture" :
+		 slash ? slash + 1 : ui_decoding.name);
+	ui_text_fit(ui_decoding.on, x + 12, y + 8, w - 24, text, MWRGB(240, 240, 240));
+	ui_fill(ui_decoding.on, x + 12, y + 28, bar, 10, MWRGB(20, 20, 24));
+	ui_fill(ui_decoding.on, x + 12, y + 28, bar * (int)ui_decoding.most / 100, 10, MWRGB(70, 140, 230));
+	if (ui_decoding.most)
+		snprintf(text, sizeof text, "%u%%   %ld.%ld s", ui_decoding.most, tenths / 10, tenths % 10);
+	else
+		snprintf(text, sizeof text, "%ld.%ld s", tenths / 10, tenths % 10);
+	ui_text(ui_decoding.on, x + 12, y + 42, text, -1, MWRGB(200, 200, 200), 0);
+	GrFlush();
+	if (getenv("UI_PICTURES_PRINT"))
+		fprintf(stderr, "ui: %s: %s\n", ui_decoding.name, text);
+}
 
 /* The file a picture is decoded from for a size: its twin made for the size, when there is one. */
 static void
@@ -674,7 +751,7 @@ ui_picture_decoded_at(GR_DRAW_ID w, const char *path, int x, int y, int width, i
 	int fd;
 
 	if (ui_decoded.pixmap && ui_decoded.w == width && ui_decoded.h == height && ui_decoded.around == around &&
-	    ui_decoded.cover == cover && !strcmp(ui_decoded.path, path)) {
+	    ui_decoded.cover == cover && ui_decoded.turns == (ui_picture_turns & 3) && !strcmp(ui_decoded.path, path)) {
 		GrCopyArea(w, ui_gc, x, y, width, height, ui_decoded.pixmap, 0, 0, MWROP_COPY);
 		return 1;
 	}
@@ -694,8 +771,13 @@ ui_picture_decoded_at(GR_DRAW_ID w, const char *path, int x, int y, int width, i
 
 		out.background = (uint32_t)(around & 255) << 16 | (around & 0xff00) | (around >> 16 & 255);
 		clock_gettime(CLOCK_MONOTONIC, &t0);
-		why = media_image_decode_fit(data, (uint32_t)st.st_size, &out, cover, mcw_most());
+		ui_decoding.on = w, ui_decoding.x = x, ui_decoding.y = y, ui_decoding.w = width, ui_decoding.h = height;
+		ui_decoding.began = ui_decoding_ms(), ui_decoding.said = 0, ui_decoding.most = 0, ui_decoding.name = path;
+		media_progress = ui_decoding_told;
+		why = ui_picture_turns & 3 ? ui_picture_turned(file, &out, cover, ui_picture_turns & 3) :
+		      media_image_decode_fit(data, (uint32_t)st.st_size, &out, cover, mcw_most());
 		clock_gettime(CLOCK_MONOTONIC, &t1);
+		media_progress = NULL;
 		ui_gpu_unmap(&out);
 		if (getenv("UI_PICTURES_PRINT"))
 			fprintf(stderr, "ui: %s at %d x %d: %s in %ld ms\n", file, width, height, why ? why : "decoded",
@@ -710,6 +792,7 @@ ui_picture_decoded_at(GR_DRAW_ID w, const char *path, int x, int y, int width, i
 	}
 	snprintf(ui_decoded.path, sizeof ui_decoded.path, "%s", path);
 	ui_decoded.w = width, ui_decoded.h = height, ui_decoded.around = around, ui_decoded.cover = cover;
+	ui_decoded.turns = ui_picture_turns & 3;
 	GrCopyArea(w, ui_gc, x, y, width, height, ui_decoded.pixmap, 0, 0, MWROP_COPY);
 	return 1;
 }
@@ -775,10 +858,13 @@ ui_picture_any(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR a
 {
 	char file[200];
 
-	if (ui_picture(w, path, width, height, around))
-		return 1;
 #ifdef UI_PICTURES
+	if (!ui_picture_turns && ui_picture(w, path, width, height, around))
+		return 1;
 	if (ui_picture_decoded(w, path, width, height, around))
+		return 1;
+#else
+	if (ui_picture(w, path, width, height, around))
 		return 1;
 #endif
 	if (ui_wallpaper_file(path, file, sizeof file))
@@ -787,11 +873,30 @@ ui_picture_any(GR_DRAW_ID w, const char *path, int width, int height, GR_COLOR a
 	return 0;
 }
 
-/* Shows a picture file, or a colour written #RRGGBB, as the desktop, and remembers the choice. */
+/* The quarter turns the registry keeps for the desktop's picture `choice` (0 for another). */
+static int
+ui_wallpaper_turns(const char *choice)
+{
+	const char *kept = reg_get(UI_WALLPAPER_TURN, "");
+
+	return kept[0] >= '1' && kept[0] <= '3' && kept[1] == ':' && !strcmp(kept + 2, choice) ? kept[0] - '0' : 0;
+}
+
+/* Shows a picture file, or a colour written #RRGGBB, as the desktop, and remembers the choice:
+ * a picture with `turns` quarter turns to the right (shown so where it is decoded). */
 static void
-ui_wallpaper(const char *choice, int remember)
+ui_wallpaper_turned(const char *choice, int turns, int remember)
 {
 	GR_SCREEN_INFO screen = *ui_screen();
+	char text[220];
+
+	if (remember) {
+		snprintf(text, sizeof text, "%d:%s", turns & 3, choice);
+		reg_set(UI_WALLPAPER_TURN, text);
+	}
+#ifdef UI_PICTURES
+	ui_picture_turns = turns;
+#endif
 
 	if (choice[0] == '#') {
 		unsigned long rgb = strtoul(choice + 1, NULL, 16);
@@ -800,8 +905,17 @@ ui_wallpaper(const char *choice, int remember)
 	} else if (!ui_picture_any(GR_ROOT_WINDOW_ID, choice, screen.cols, screen.rows, BLACK)) {
 		ui_fill(GR_ROOT_WINDOW_ID, 0, 0, screen.cols, screen.rows, MWRGB(0, 128, 128));
 	}
+#ifdef UI_PICTURES
+	ui_picture_turns = 0;
+#endif
 	if (remember)
 		reg_set(UI_WALLPAPER_CHOICE, choice);
+}
+
+static void
+ui_wallpaper(const char *choice, int remember)
+{
+	ui_wallpaper_turned(choice, 0, remember);
 }
 
 /* What the desktop shows as last chosen, or the default picture: a picture of the image's that

@@ -1,5 +1,5 @@
 /*
-gl_studio_job.c - a studio model's vertices made by a worker core (docs/halflife.md)
+gl_studio_job.c - a studio model's vertices made by a worker core (docs/games/halflife.md)
 
 Included at the end of ref/gl's gl_studio.c. The first core sets each mesh's state and takes room
 for its triangles in the frame; a job then moves the vertices by their bones, lights the normals
@@ -53,6 +53,7 @@ typedef struct studio_job_s
 } studio_job_t;
 
 static studio_job_t *studio_jobs[JOB_WORKERS + 1];
+static void R_StudioJobCopy( studio_job_t *to, const studio_job_t *from );
 
 // How many triangles' corners the commands make.
 static int R_StudioCorners( const short *ptricmds )
@@ -144,11 +145,15 @@ static inline void R_StudioCorner( uint *to, const studio_job_t *job, const shor
 	to[3] = u | w << 12 | (uint)job->tag[c[1]] << 24;
 }
 
-// a1: the meshes it draws, from a1 & 255 to a1 >> 8 (all the vertices are moved for any of them)
+// a1: the meshes it draws, from a1 & 255 to a1 >> 8 & 255 (all the vertices are moved for any of them);
+// a part's worker in a1 >> 16, whose job is made a copy of the whole a0 first
 static uint R_StudioJob( uint a0, uint a1 )
 {
 	studio_job_t *job = (studio_job_t *)a0;
-	int k = 0, lo = a1 & 255, hi = a1 >> 8;
+	int k = 0, lo = a1 & 255, hi = a1 >> 8 & 255;
+
+	if( a1 >> 16 )
+		R_StudioJobCopy( studio_jobs[a1 >> 16], job ), job = studio_jobs[a1 >> 16];
 
 	for( int i = 0; i < job->numverts; i++ )
 		Matrix3x4_VectorTransform( job->whole->bonesp[job->vertbone[i]], job->verts[i], job->xyz[i] );
@@ -485,10 +490,15 @@ posted:;
 		pk[p] = k, pj[p] = job, range[p] = lo | hi << 8;
 		if( p > 0 && ( pk[p] = hlglWorker( )) > 0 && pk[p] <= JOB_WORKERS && pk[p] != k
 			&& ( studio_jobs[pk[p]] || ( studio_jobs[pk[p]] = hlglJobMemory( sizeof( studio_job_t )))))
-			R_StudioJobCopy( pj[p] = studio_jobs[pk[p]], job );
+		{
+			for( int q = 0; q < JOB_PARTS; q++ )	// (the parts of its own job last read it)
+				if( parts_of[pk[p]][q] )
+					hlglWait( parts_of[pk[p]][q] ), parts_of[pk[p]][q] = 0;
+			range[p] |= pk[p] << 16;
+		}
 		else if( p > 0 )
 		{
-			range[p - 1] = ( range[p - 1] & 255 ) | job->nummesh << 8, parts = p;	// (no worker for it: the part before's)
+			range[p - 1] = ( range[p - 1] & ~0xff00u ) | job->nummesh << 8, parts = p;	// (no worker for it: the part before's)
 			break;
 		}
 		lo = hi;

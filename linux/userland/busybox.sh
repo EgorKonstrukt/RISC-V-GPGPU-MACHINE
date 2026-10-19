@@ -32,4 +32,8 @@ make -s -j"$(nproc)" CC=rv32-cc LD="riscv32-linux-gcc $ARCH_FLAGS -nostdlib" HOS
 [ -f busybox ] || { echo "busybox was not built"; exit 1; }
 mkdir -p "$OUT"
 riscv32-linux-strip -o "$OUT/busybox" busybox
+# upstream's programs that busybox has too: its applet in their place (a romlink, tools/make_linux_image.py)
+for p in usr/bin/bc usr/bin/dc usr/bin/ed usr/bin/traceroute usr/sbin/arping bin/ping sbin/ip; do
+    mkdir -p "$OUT/../$(dirname $p)" && echo /bin/busybox > "$OUT/../$p.romlink"
+done
 ls -l "$OUT/busybox"

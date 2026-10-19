@@ -1,0 +1,102 @@
+--- a/atd.c
++++ b/atd.c
+@@ -268,6 +268,9 @@
+ 
+ #endif
+ 
++/* No MMU: a job's process is atd run again with -J, which goes on in run_file() */
++static int job_mode;
++
+ static void
+ run_file(const char *filename, uid_t uid, gid_t gid)
+ {
+@@ -322,7 +325,7 @@
+      * fact and return.
+      */
+     PRIV_START
+-    rc = link(filename, newname);
++    rc = job_mode ? 0 : link(filename, newname);
+     PRIV_END
+     if (rc == -1) {
+ 	syslog(LOG_WARNING, "could not lock job %lu: %m", jobno);
+@@ -335,7 +338,17 @@
+      * by the main atd loop.
+      */
+ 
+-    pid = fork();
++    if (job_mode)
++	pid = 0;
++    else {
++	char job[300];
++	snprintf(job, sizeof(job), "%lu:%lu:%s", (unsigned long) uid, (unsigned long) gid, filename);
++	pid = fork();
++	if (pid == 0) {
++	    execl("/proc/self/exe", "atd", "-J", job, (char *) NULL);
++	    _exit(EXIT_FAILURE);
++	}
++    }
+     if (pid == -1)
+ 	perr("Cannot fork");
+ 
+@@ -877,7 +890,8 @@
+     run_as_daemon = 1;
+     batch_interval = BATCH_INTERVAL_DEFAULT;
+ 
+-    while ((c = getopt(argc, argv, "sdl:b:f")) != EOF) {
++    char *job = NULL;
++    while ((c = getopt(argc, argv, "sdl:b:fJ:")) != EOF) {
+ 	switch (c) {
+ 	case 'l':
+ 	    if (sscanf(optarg, "%lf", &load_avg) != 1)
+@@ -903,6 +917,10 @@
+ 	    run_as_daemon = 0;
+ 	    break;
+ 
++	case 'J':
++	    job = optarg;
++	    break;
++
+ 	case '?':
+ 	    pabort("unknown option");
+ 	    break;
+@@ -920,6 +938,18 @@
+     if (optind < argc)
+ 	pabort("non-option arguments - not allowed");
+ 
++    if (job) {
++	unsigned long juid, jgid;
++	int at;
++	if (sscanf(job, "%lu:%lu:%n", &juid, &jgid, &at) != 2)
++	    pabort("garbled option -J");
++	job_mode = 1;
++	run_file(job + at, juid, jgid);
++	exit(EXIT_FAILURE);
++    }
++    /* the ROM has the job folder; the output's is made here */
++    mkdir(ATSPOOL_DIR, S_IRWXU);
++
+     sigaction(SIGCHLD, NULL, &act);
+     act.sa_handler = release_zombie;
+     act.sa_flags   = SA_NOCLDSTOP;
+--- a/daemon.c
++++ b/daemon.c
+@@ -141,17 +141,8 @@
+ 	}
+     }
+ 
+-    if (daemon_foreground)
+-	pid = getpid();
+-    else {
+-	pid = fork();
+-	if (pid == -1) {
+-	    perr("Cannot fork");
+-	} else if (pid != 0) {
+-	    exit(0);
+-	}
+-	(void) setsid();
+-    }
++    /* No MMU: no fork to leave the shell with, atd stays in the foreground */
++    pid = getpid();
+     old_umask = umask(S_IWGRP | S_IWOTH);
+ 
+     PRIV_START

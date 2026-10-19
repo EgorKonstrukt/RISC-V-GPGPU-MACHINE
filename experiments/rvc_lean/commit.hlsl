@@ -14,6 +14,7 @@ Texture2D<float4> _GpuTarget;   // the GPU device's picture (docs/machine/gpu.md
 Texture2D<uint4> _TickOut0, _TickOut1, _TickOut2, _TickOut3, _TickOut4, _TickOut5, _TickOut6, _TickOut7;
 uniform float _Init, _InitRaw;
 // the host's hand in RAM for one commit (docs/world/danger.md)
+uniform uint _CommitAlways;   // bands 0 to 31 drawn every commit (the control words')
 uniform uint _ZapKind, _ZapX, _ZapY, _ZapR, _ZapWord, _ZapMaskLo, _ZapMaskHi, _ZapSeed, _ZapZones;
 
 #ifndef CORES
@@ -21,7 +22,10 @@ uniform uint _ZapKind, _ZapX, _ZapY, _ZapR, _ZapWord, _ZapMaskLo, _ZapMaskHi, _Z
 #endif
 #define TEX(p) _SelfTexture2D[p]
 #define RAM_ADDR(t) uint2((t) % 2048, 64 + (t) / 2048)
-#define RAM_TEXELS (2048u * 4032u)
+#ifndef STATE_TEX_HEIGHT
+#define STATE_TEX_HEIGHT 9280u   // the state texture's rows: 64 of state, then RAM to 0x92000000
+#endif
+#define RAM_TEXELS (2048u * (STATE_TEX_HEIGHT - 64u))
 #define L1_AT 44
 #define FP_AT 492
 #ifndef CORE0_BITS
@@ -159,19 +163,25 @@ bool core_texel(uint2 pos, inout uint4 r) {
 
 // ---- The GPU device's copy of a drawn list into RAM (docs/machine/gpu.md), and the host's zap
 uint4 ram(uint t) { return TEX(RAM_ADDR(t)); }
+// 4 MB bands lo to hi, a bit each, band k at bit k mod 32
+uint ram_bands(uint lo, uint hi) {
+    if (hi < lo) return 0;
+    if (hi - lo >= 31) return 0xffffffff;
+    uint m = (2u << (hi - lo)) - 1;
+    return (m << (lo & 31)) | (m >> ((32 - (lo & 31)) & 31));
+}
 uint copy_bands() {
     uint4 c = ram(GPU_COPY), d = ram(GPU_DISPLAY);
     if (c.r == 0) return 0;
     uint first = (c.r & SUBMIT_INTO) ? c.g & 0x7ffffffc : GPU_PIXELS * 16;
     uint bytes = (c.r & SUBMIT_INTO) ? max(c.a, c.b & 0xffff) * (c.b >> 16) * 4 : d.g * d.b * 4;
-    uint lo = (first >> 22) & 31, hi = min((first + bytes) >> 22, 31u);
-    return hi < lo ? 0 : ((2u << hi) - 1) & ~((1u << lo) - 1);
+    return ram_bands(first >> 22, min((first + bytes) >> 22, (RAM_TEXELS * 16 - 1) >> 22));
 }
 bool writeback(uint2 pos, out uint4 r) {
     r = 0;
     uint t = (pos.y - 64) * 2048 + pos.x;
     uint4 c = ram(GPU_COPY);
-    if (pos.y < 64 || t < 0x600000u || c.r == 0) return false;
+    if (pos.y < 64 || t - 0x600000u >= 0x1e0000u || c.r == 0) return false;   // (what a GPU program may own: 0x86000000 to 0x87e00000)
     if (t == GPU_COPY) return true;                          // made: cleared
     if (t == GPU_CLOCK) { r = TEX(pos); r.b += 1; return true; }
     uint4 d = ram(GPU_DISPLAY);
@@ -193,8 +203,8 @@ bool writeback(uint2 pos, out uint4 r) {
 }
 uint zap_hash(uint n) { n ^= n >> 16; n *= 0x7feb352du; n ^= n >> 15; n *= 0x846ca68bu; n ^= n >> 16; return n; }
 uint zap_bands() {
-    uint reach = _ZapKind == 2 ? _ZapR : 0, lo = (_ZapY - min(_ZapY, reach)) >> 7, hi = min((_ZapY + reach) >> 7, 31u);
-    return _ZapKind == 0 ? 0 : ((2u << hi) - 1) & ~((1u << lo) - 1);
+    uint reach = _ZapKind == 2 ? _ZapR : 0;
+    return _ZapKind == 0 ? 0 : ram_bands((_ZapY - min(_ZapY, reach)) >> 7, min((_ZapY + reach) >> 7, (STATE_TEX_HEIGHT - 65) >> 7));
 }
 uint4 zap(uint2 pos, uint4 r) {
     uint row = pos.y - 64, reach = _ZapKind == 2 ? _ZapR : 0, mb = row >> 5, mask = _ZapMaskLo | _ZapMaskHi << 16;
@@ -206,7 +216,7 @@ uint4 zap(uint2 pos, uint4 r) {
     return r ^ (uint4(zap_hash(seed), zap_hash(seed + 1), zap_hash(seed + 2), zap_hash(seed + 3)) & mask);
 }
 // the bands the plain draw makes whole: all at _Init, else what the GPU and the host change
-uint bands() { return _Init ? 0xffffffff : (1u << 28) | copy_bands() | zap_bands(); }
+uint bands() { return _Init ? 0xffffffff : copy_bands() | zap_bands(); }
 
 struct v2f { float4 vertex : SV_POSITION; nointerpolation uint core : TEXCOORD0; };
 v2f commit_vert(uint id : SV_VertexID) {
@@ -221,7 +231,7 @@ v2f commit_vert(uint id : SV_VertexID) {
     _SelfTexture2D.GetDimensions(size.x, size.y);
     float top = q == 0 ? 0.0 : 64.0 + (q - 1) * 128.0, rows = q == 0 ? 64.0 : 128.0;
     core = 0;
-    bool on = q == 0 || (((bands() | TEX(uint2(41, 0)).z) >> ((q - 1) & 31)) & 1) != 0;
+    bool on = q == 0 || (((bands() | TEX(uint2(41, 0)).z) >> ((q - 1) & 31)) & 1) != 0 || (q - 1 < 32 && ((_CommitAlways >> (q - 1)) & 1) != 0);
     float2 uv = float2(c.x, (top + c.y * rows) / size.y);
     o.vertex = on ? float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0) : float4(2.0, 2.0, 0.0, 1.0);
 #endif

@@ -931,7 +931,9 @@ doing it in one frame. Three things, all in `findpath.cpp` (`ShaderEmu_Find_Path
 moves and cells, and makes every edge walk both ways: `50 searches not run again and 32
 another core's, 0 of them wrong` and `278 edge walks made both ways, 0 of them wrong` in
 mission 3's 1,200 frames (110 walks in mission 10, 64 in mission 1). `TDAWN_PATH_CORES=0`
-is one core. Red Alert has the first of the five only: its searches are 2% of a battle.
+is one core. Red Alert has the searches not run again, the helpers (started only when both
+walks of a pair failed) and the walk, not the cells ahead (`docs/games/ralert.md`): its
+searches are 2% of a battle.
 
 What a long search is, measured (`rvc_cpu`, mission 3): one of its two walks reaches the
 other side in 3 to 50 cells, and the other goes the long way round, 230 to 280 cells kept

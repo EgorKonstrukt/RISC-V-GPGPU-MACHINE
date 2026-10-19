@@ -64,7 +64,8 @@ when sound memory has no megabyte left). The stream's frames are the pieces' in 
 piece's place is known before it is made (`piece_place`); when it is its turn the card is
 told it is there (`feed`), and nothing is copied. The voice is 16-bit, mono or stereo, at
 the file's own rate: the card resamples. A step of 0 holds the voice (pause, and while more
-is decoded).
+is decoded). While it waits to play, the panel says how much of what it waits for is decoded
+("(decoding ahead: 40%)"), drawn again when that changes.
 
 - A piece was decoded into memory of its own and copied into the ring: the same stores
   twice, and the second time all at once. A core keeps about 6 KB of new stores a pass of

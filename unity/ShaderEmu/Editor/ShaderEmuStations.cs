@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using TMPro;
 using UdonSharpEditor;
 using UnityEditor;
+using UnityEditor.Events;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -32,7 +33,7 @@ public static partial class ShaderEmuBuilder
     class StationsPlan
     {
         public StationPlace[] places;
-        public float table, keyScale, keyboardZ, setX, turbo, reset;
+        public float table, keyScale, keyboardZ, setX, reset;
         public float[] glass;          // wide, high, its middle's height, its front
         public float[] tower;          // x, z, its front in its own frame, its height
         public float[] speed;          // the speed's window: x, down from the top, wide, high
@@ -93,6 +94,33 @@ public static partial class ShaderEmuBuilder
             key.GetComponent<Image>().color = Color.clear;
             OnClick(key, place, events[i]);
         }
+    }
+
+    // The pointer's switches on the monitor's bezel, beside the volume: this visitor's own (EmuPointer).
+    static void StationSwitches(Transform place, int s, EmuPlace own, StationsPlan plan, List<TextMeshProUGUI> physical, List<TextMeshProUGUI> steady)
+    {
+        const float wide = 124, high = 18, volumeHalf = 100, gap = 6;
+        float y = (plan.glass[2] - (plan.glass[1] + 0.024f) / 2f + plan.osd[2] + 0.011f) / 2f, x = (volumeHalf + gap + wide / 2f) * 0.001f;
+        string[] events = { "PhysicalButtons", "SteadyPointer" }, texts = { "Physical buttons: OFF", "Steady pointer: ON" };
+        for (int i = 0; i < 2; i++)
+        {
+            string name = "Station " + s + (i == 0 ? " physical" : " steady");
+            Gone(place, name);
+            RectTransform panel = Panel(place, name, new Vector3(plan.setX + (i == 0 ? -x : x), y, plan.glass[3] - 0.002f), Vector3.zero,
+                                        wide, high, new Color(0.05f, 0.055f, 0.07f));
+            TextMeshProUGUI label;
+            OnClick(MakeButton(panel, events[i], texts[i], 3, 2, wide - 6, high - 4, 8, out label), own, events[i]);
+            (i == 0 ? physical : steady).Add(label);
+        }
+    }
+
+    // The tower's reset key, on the hot panel's place of before (it held turbo too).
+    static void TowerHotKeys(Transform place, int s, EmuPlace own, StationsPlan plan)
+    {
+        string name = "Station " + s + " tower hot";
+        Gone(place, name);
+        HotKeys(place, name, new Vector3(plan.tower[0] + 0.012f, plan.tower[3] - plan.speed[1], plan.tower[1] + plan.tower[2] - 0.004f), 34, 30, own,
+                new float[] { 18, 2, 15, 26 }, new[] { "ResetKey" });
     }
 
     static Material SpeedWindow(Transform parent, string name, Vector3 at, float wide, float high)
@@ -295,6 +323,74 @@ public static partial class ShaderEmuBuilder
         return lamps;
     }
 
+    // The speed's slider on a tower, where its floppy drive was (under the place's key): its
+    // owner's machine's instructions a frame, Snail to Turbo, 4k to 256k (EmuMachine's steps 1 to 7).
+    const float TowerSpeedBay = 0.36f - 0.131f;
+    static readonly string[] SpeedSteps = { "4k", "8k", "16k", "32k", "64k", "128k", "256k" };
+
+    // A slider of a place's panel, in the panel's millimetres from its top-left corner.
+    static Slider PlaceSlider(RectTransform panel, string name, float x, float y, float wide, float high, int min, int max, int value)
+    {
+        GameObject sliderObject = DefaultControls.CreateSlider(new DefaultControls.Resources());
+        sliderObject.name = name;
+        RectTransform rect = sliderObject.GetComponent<RectTransform>();
+        rect.SetParent(panel, false);
+        rect.anchorMin = rect.anchorMax = new Vector2(0, 1);
+        rect.pivot = new Vector2(0, 1);
+        rect.anchoredPosition = new Vector2(x, -y);
+        rect.sizeDelta = new Vector2(wide, high);
+        Slider slider = sliderObject.GetComponent<Slider>();
+        slider.minValue = min;
+        slider.maxValue = max;
+        slider.wholeNumbers = true;
+        slider.value = value;
+        foreach (Image part in sliderObject.GetComponentsInChildren<Image>())
+        {
+            part.material = UiMaterial();
+            part.color = part.name == "Handle" ? Color.white : part.name == "Fill" ? new Color(0.3f, 0.65f, 1f) : new Color(0.2f, 0.21f, 0.25f);
+        }
+        slider.handleRect.sizeDelta = new Vector2(9, 0);
+        DeafToWalking(slider);
+        return slider;
+    }
+    static Slider StationSpeed(Transform place, int s, EmuPlace own, StationsPlan plan)
+    {
+        const float wide = 146, high = 40, left = 8, right = 8, top = 12, row = 14;
+        string name = "Station " + s + " speed";
+        Gone(place, name);
+        RectTransform panel = Panel(place, name, new Vector3(plan.tower[0], TowerSpeedBay, plan.tower[1] + plan.tower[2] - 0.003f), Vector3.zero,
+                                    wide, high, new Color(0.05f, 0.055f, 0.07f));
+        Color dim = new Color(0.62f, 0.68f, 0.76f);
+        TextMeshProUGUI snail = Label(panel, "Snail", "Snail", left, 1, 50, 11, 8, TextAnchor.MiddleLeft, dim);
+        TextMeshProUGUI turbo = Label(panel, "Turbo", "Turbo", wide - right - 50, 1, 50, 11, 8, TextAnchor.MiddleLeft, dim);
+        turbo.alignment = TextAlignmentOptions.Right;
+        Slider slider = PlaceSlider(panel, "Speed slider", left, top, wide - left - right, row, 1, SpeedSteps.Length, 4);
+        // a step's name under each of the handle's places (its travel is the slider less a handle)
+        float travel = wide - left - right - 9;
+        for (int i = 0; i < SpeedSteps.Length; i++)
+            Label(panel, "Step " + SpeedSteps[i], SpeedSteps[i], left + 4.5f + travel * i / (SpeedSteps.Length - 1) - 12, top + row + 1, 24, 11, 7, TextAnchor.MiddleCenter, dim);
+        own.speed = slider;
+        UnityEventTools.AddStringPersistentListener(slider.onValueChanged, UdonSharpEditorUtility.GetBackingUdonBehaviour(own).SendCustomEvent, "SpeedMoved");
+        return slider;
+    }
+
+    // The sound's volume on a monitor, on the bezel between its row of keys and the glass: its
+    // owner's machine's, as the control panel's Volume (EmuSound.volumeSlider, 0 to 100).
+    static Slider StationVolume(Transform place, int s, EmuPlace own, StationsPlan plan)
+    {
+        const float wide = 200, high = 18, left = 4, label = 34;
+        string name = "Station " + s + " volume";
+        Gone(place, name);
+        float glassBottom = plan.glass[2] - (plan.glass[1] + 0.024f) / 2f, keysTop = plan.osd[2] + 0.011f;
+        RectTransform panel = Panel(place, name, new Vector3(plan.setX, (glassBottom + keysTop) / 2f, plan.glass[3] - 0.002f), Vector3.zero,
+                                    wide, high, new Color(0.05f, 0.055f, 0.07f));
+        Label(panel, "Volume", "VOLUME", left, 3, label, 12, 8, TextAnchor.MiddleLeft, new Color(0.62f, 0.68f, 0.76f));
+        Slider slider = PlaceSlider(panel, "Volume slider", left + label, 3, wide - left * 2 - label, 12, 0, 100, 10);
+        own.volume = slider;
+        UnityEventTools.AddStringPersistentListener(slider.onValueChanged, UdonSharpEditorUtility.GetBackingUdonBehaviour(own).SendCustomEvent, "VolumeMoved");
+        return slider;
+    }
+
     static void Stations(Transform world)
     {
         StationsPlan plan = ReadStations();
@@ -320,6 +416,9 @@ public static partial class ShaderEmuBuilder
         stations.netLamps = new Material[count];
         stations.beacons = new Material[count];
         stations.fieldSpots = new Transform[count];
+        stations.speedSliders = new Slider[count];
+        stations.volumeSliders = new Slider[count];
+        List<TextMeshProUGUI> physicalLabels = new List<TextMeshProUGUI>(), steadyLabels = new List<TextMeshProUGUI>();
         Color red = new Color(1f, 0.08f, 0.04f), green = new Color(0.1f, 1f, 0.3f), amber = new Color(1f, 0.6f, 0.1f);
         TMP_FontAsset signFont = RetroFont("IBMPlexSansCondensed-Bold");
         foreach (EmuTerminal terminal in world.GetComponentsInChildren<EmuTerminal>(true)) stations.terminal = terminal;
@@ -375,6 +474,9 @@ public static partial class ShaderEmuBuilder
             own.stations = stations;
             own.place = s;
             placed.Add(own);
+            stations.speedSliders[s] = StationSpeed(place, s, own, plan);
+            stations.volumeSliders[s] = StationVolume(place, s, own, plan);
+            StationSwitches(place, s, own, plan, physicalLabels, steadyLabels);
 
             // whose it is, on a key in the tower's spare bay
             RectTransform panel = Panel(place, "Station " + s + " panel", new Vector3(towerX, TowerBlankBay, towerFront - 0.003f), Vector3.zero,
@@ -388,10 +490,9 @@ public static partial class ShaderEmuBuilder
             stations.modes[s] = Label((RectTransform)take[s].transform, "Mode", "press POWER: yours starts here", 0, 21, 96, 11, 6, TextAnchor.MiddleCenter, stations.labels[s].color);
             stations.modes[s].raycastTarget = false;
 
-            // the tower's own keys (turbo, reset; power under them), larger to a beam than their caps
+            // the tower's own keys (reset; power under it), larger to a beam than their caps
             float panelY = towerHigh - plan.speed[1], powerY = towerHigh - plan.power[1];
-            HotKeys(place, "Station " + s + " tower hot", new Vector3(towerX + 0.012f, panelY, towerFront - 0.004f), 34, 30, own,
-                    new float[] { 1, 2, 15, 26, 18, 2, 15, 26 }, new[] { "Turbo", "ResetKey" });
+            TowerHotKeys(place, s, own, plan);
             HotKeys(place, "Station " + s + " power hot", new Vector3(towerX + plan.power[0], powerY, towerFront - 0.008f), 64, 48, own,
                     new float[] { 1, 1, 62, 46 }, new[] { "Power" });
             // what that key is, in lit letters over it, and a bar under it that beckons while the place is free
@@ -455,6 +556,7 @@ public static partial class ShaderEmuBuilder
             EmuKeyboard keyboard = Udon<EmuKeyboard>(keysGo);
             keyboard.panelWidth = layout.panelWidth;
             keyboard.panelHeight = layout.panelHeight;
+            StationCaps(keyboard);
             keyboard.keyX = real.ConvertAll(i => layout.keyX[i]).ToArray();
             keyboard.keyY = real.ConvertAll(i => layout.keyY[i]).ToArray();
             keyboard.keyW = real.ConvertAll(i => layout.keyW[i]).ToArray();
@@ -578,6 +680,9 @@ public static partial class ShaderEmuBuilder
             pointer.tubeBulge = 1.8f;      // world/pc.py's BULGE
             pointer.tubeGap = 0.024f;      // the plate is 12 mm before the glass's rim, the glass's middle 12 mm behind that
             pointer.tubeFill = TubeFill;
+            pointer.physicalLabels = physicalLabels.ToArray();
+            pointer.steadyLabels = steadyLabels.ToArray();
+            TouchPanels(world, pointer);   // the places' keys made anew: a fingertip's list too
             Apply(pointer);
             stations.pointer = pointer;
         }

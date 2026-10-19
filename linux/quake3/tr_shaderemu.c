@@ -2001,11 +2001,11 @@ static void scene_setup (void)
 
 	scene_mode = !(how && !strcmp (how, "inline")) && SE_Workers () >= 3;
 	if (scene_mode) {
-		extern const char __executable_start[], etext[];
+		extern const char _start[], etext[];
 
 		/* (what the job runs and writes is there before it does: the program's code, the lists,
 		   the GPU's two sets, the renderer's own) */
-		mcw_touch_code (__executable_start, (unsigned)(etext - __executable_start));
+		mcw_touch_code (_start, (unsigned)(etext - _start));	/* (a flat program's __executable_start is 0) */
 		mcw_touch (lists, sizeof lists);
 		mcw_touch (sides, sizeof sides);
 		gpuTouchSets (mcw_touch);

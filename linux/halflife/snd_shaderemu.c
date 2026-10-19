@@ -316,6 +316,34 @@ int SE_CardTime( void )
 	return time_base;
 }
 
+// A film's sound (avi_shaderemu.c): its samples in one piece of a file in the ROM, on a voice of its own
+static int film_voice = -1;
+static uint32_t film_rate;
+static void film_keep( void )
+{
+	float gain = S_GetMasterVolume( ) * 256;
+	SND_VOICE[film_voice].step = SND_RATE ? (uint32_t)((uint64_t)film_rate * 65536 / SND_RATE ) : 0;
+	SND_VOICE[film_voice].volume = SND_VOLUME((int)gain, (int)gain );
+}
+int SE_FilmSound( int fd, uint32_t offset, uint32_t bytes, int rate, int channels, int width )
+{
+	uint32_t rom = ready && film_voice >= 0 ? snd_rom( fd, "RIFF", 4 ) : 0;
+	if( !rom || ( width == 2 && (( rom + offset ) & 1 )) || channels < 1 || channels > 2 || width < 1 || width > 2 )
+		return 0;
+	snd_play_aux( film_voice, ( width == 1 ? SND_PCM8 : SND_PCM16 ) | SND_SMOOTH | ( channels == 2 ? SND_STEREO : 0 ),
+		rom + offset, bytes / width / channels, 0, 0, 0, 0 );
+	film_rate = rate;
+	film_keep( );
+	return 1;
+}
+void SE_FilmSoundKeep( void ) { if( film_rate ) film_keep( ); }
+void SE_FilmSoundStop( void )
+{
+	if( film_voice >= 0 && film_rate )
+		snd_stop( film_voice );
+	film_rate = 0;
+}
+
 void S_Activate( qboolean active ) { }
 
 qboolean SNDDMA_Init( void )
@@ -326,6 +354,7 @@ qboolean SNDDMA_Init( void )
 		return false;
 	}
 	pak_open( );
+	film_voice = snd_claim( );
 	while( voice_count < VOICES && ( voices[voice_count] = snd_claim( )) >= 0 )
 		voice_owner[voice_count++] = -1;
 	for( int i = 0; i < MAX_CHANNELS; i++ )

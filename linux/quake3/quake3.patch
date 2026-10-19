@@ -62,7 +62,7 @@ index fea46411..23d6cfb3 100644
  		AAS_Error("aas file %s is out of date\n", filename);
  		botimport.FS_FCloseFile(fp);
 diff --git a/code/botlib/be_aas_route.c b/code/botlib/be_aas_route.c
-index 7bdc9f22..b24097d8 100644
+index 7bdc9f22..966763b1 100644
 --- a/code/botlib/be_aas_route.c
 +++ b/code/botlib/be_aas_route.c
 @@ -83,6 +83,27 @@ int numportalcacheupdates;
@@ -256,7 +256,20 @@ index 7bdc9f22..b24097d8 100644
  	//if there was no cache
  	if (!cache)
  	{
-@@ -1432,6 +1557,10 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
+@@ -1426,12 +1551,23 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
+ 		cache->travelflags = travelflags;
+ 		cache->prev = NULL;
+ 		cache->next = clustercache;
++#ifdef SHADEREMU
++		/* (made before it is in the list: a think on a core beside may find it there meanwhile) */
++		AAS_UpdateAreaRoutingCache(cache);
++		if (clustercache) clustercache->prev = cache;
++		aasworld.clusterareacache[clusternum][clusterareanum] = cache;
++#else
+ 		if (clustercache) clustercache->prev = cache;
+ 		aasworld.clusterareacache[clusternum][clusterareanum] = cache;
+ 		AAS_UpdateAreaRoutingCache(cache);
++#endif
  	} //end if
  	else
  	{
@@ -267,7 +280,7 @@ index 7bdc9f22..b24097d8 100644
  		AAS_UnlinkCache(cache);
  	} //end else
  	//the cache has been accessed
-@@ -1456,12 +1585,14 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
+@@ -1456,12 +1592,14 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
  	aas_routingupdate_t *updateliststart, *updatelistend, *curupdate, *nextupdate;
  
  #ifdef ROUTING_DEBUG
@@ -283,7 +296,7 @@ index 7bdc9f22..b24097d8 100644
  	curupdate->cluster = portalcache->cluster;
  	curupdate->areanum = portalcache->areanum;
  	curupdate->tmptraveltime = portalcache->starttraveltime;
-@@ -1510,7 +1641,7 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
+@@ -1510,7 +1648,7 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
  					portalcache->traveltimes[portalnum] > t)
  			{
  				portalcache->traveltimes[portalnum] = t;
@@ -292,7 +305,7 @@ index 7bdc9f22..b24097d8 100644
  				if (portal->frontcluster == curupdate->cluster)
  				{
  					nextupdate->cluster = portal->backcluster;
-@@ -1553,6 +1684,9 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
+@@ -1553,6 +1691,9 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
  	{
  		if (cache->travelflags == travelflags) break;
  	} //end for
@@ -302,7 +315,20 @@ index 7bdc9f22..b24097d8 100644
  	//if the portal routing isn't cached
  	if (!cache)
  	{
-@@ -1572,6 +1706,9 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
+@@ -1565,13 +1706,22 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
+ 		//add the cache to the cache list
+ 		cache->prev = NULL;
+ 		cache->next = aasworld.portalcache[areanum];
++#ifdef SHADEREMU
++		AAS_UpdatePortalRoutingCache(cache);	/* (made before it is in the list, as an area's) */
++		if (aasworld.portalcache[areanum]) aasworld.portalcache[areanum]->prev = cache;
++		aasworld.portalcache[areanum] = cache;
++#else
+ 		if (aasworld.portalcache[areanum]) aasworld.portalcache[areanum]->prev = cache;
+ 		aasworld.portalcache[areanum] = cache;
+ 		//update the cache
+ 		AAS_UpdatePortalRoutingCache(cache);
++#endif
  	} //end if
  	else
  	{
@@ -312,7 +338,7 @@ index 7bdc9f22..b24097d8 100644
  		AAS_UnlinkCache(cache);
  	} //end else
  	//the cache has been accessed
-@@ -1625,7 +1762,7 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
+@@ -1625,7 +1775,7 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
  		return qfalse;
  	} //end if
  	// make sure the routing cache doesn't grow to large
@@ -321,7 +347,7 @@ index 7bdc9f22..b24097d8 100644
  		if (!AAS_FreeOldestCache()) break;
  	}
  	//
-@@ -1782,6 +1919,44 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
+@@ -1782,6 +1932,44 @@ int AAS_AreaTravelTimeToGoalArea(int areanum, vec3_t origin, int goalareanum, in
  	}
  	return 0;
  } //end of the function AAS_AreaTravelTimeToGoalArea
@@ -366,7 +392,7 @@ index 7bdc9f22..b24097d8 100644
  //===========================================================================
  //
  // Parameter:			-
-@@ -2089,7 +2264,12 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+@@ -2089,7 +2277,12 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
  {
  	int i, j, nextareanum, badtravelflags, numreach, bestarea;
  	unsigned short int t, besttraveltime;
@@ -380,7 +406,7 @@ index 7bdc9f22..b24097d8 100644
  	aas_routingupdate_t *updateliststart, *updatelistend, *curupdate, *nextupdate;
  	aas_reachability_t *reach;
  	float dist1, dist2;
-@@ -2099,7 +2279,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+@@ -2099,7 +2292,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
  	//
  	if (!hidetraveltimes)
  	{
@@ -389,7 +415,7 @@ index 7bdc9f22..b24097d8 100644
  	} //end if
  	else
  	{
-@@ -2112,7 +2292,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+@@ -2112,7 +2305,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
  	//
  	badtravelflags = ~travelflags;
  	//
@@ -398,7 +424,7 @@ index 7bdc9f22..b24097d8 100644
  	curupdate->areanum = areanum;
  	VectorCopy(origin, curupdate->start);
  	curupdate->areatraveltimes = aasworld.areatraveltimes[areanum][0];
-@@ -2194,7 +2374,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
+@@ -2194,7 +2387,7 @@ int AAS_NearestHideArea(int srcnum, vec3_t origin, int areanum, int enemynum, ve
  					bestarea = nextareanum;
  				} //end if
  				hidetraveltimes[nextareanum] = t;
@@ -407,6 +433,96 @@ index 7bdc9f22..b24097d8 100644
  				nextupdate->areanum = nextareanum;
  				nextupdate->tmptraveltime = t;
  				//remember where we entered this area
+diff --git a/code/botlib/be_aas_sample.c b/code/botlib/be_aas_sample.c
+index 9ca18f46..9836808a 100644
+--- a/code/botlib/be_aas_sample.c
++++ b/code/botlib/be_aas_sample.c
+@@ -410,9 +410,22 @@ qboolean AAS_AreaEntityCollision(int areanum, vec3_t start, vec3_t end,
+ 	aas_link_t *link;
+ 	bsp_trace_t bsptrace;
+ 
++#ifdef SHADEREMU	/* (most areas have no entity in them) */
++	if (!aasworld.arealinkedentities[areanum] && (presencetype == PRESENCE_NORMAL || presencetype == PRESENCE_CROUCH))
++		return qfalse;
++#endif
++#ifdef SHADEREMU	/* (the box as AAS_PresenceTypeBoundingBox gives it; the trace is read only once a hit copied it whole) */
++	if (presencetype == PRESENCE_NORMAL) {
++		VectorSet(boxmins, -15, -15, -24); VectorSet(boxmaxs, 15, 15, 32);
++	} else if (presencetype == PRESENCE_CROUCH) {
++		VectorSet(boxmins, -15, -15, -24); VectorSet(boxmaxs, 15, 15, 8);
++	} else
++		AAS_PresenceTypeBoundingBox(presencetype, boxmins, boxmaxs);
++#else
+ 	AAS_PresenceTypeBoundingBox(presencetype, boxmins, boxmaxs);
+ 
+ 	Com_Memset(&bsptrace, 0, sizeof(bsp_trace_t)); //make compiler happy
++#endif
+ 	//assume no collision
+ 	bsptrace.fraction = 1;
+ 	collision = qfalse;
+@@ -493,6 +506,11 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ 		} //end if
+ 		//number of the current node to test the line against
+ 		nodenum = tstack_p->nodenum;
++#ifdef SHADEREMU	/* (a piece wholly on one side of a node goes on to that child without the stack) */
++		VectorCopy(tstack_p->start, cur_start);
++		VectorCopy(tstack_p->end, cur_end);
++se_next:
++#endif
+ 		//if it is an area
+ 		if (nodenum < 0)
+ 		{
+@@ -598,10 +616,12 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ #endif //AAS_SAMPLE_DEBUG
+ 		//the node to test against
+ 		aasnode = &aasworld.nodes[nodenum];
++#ifndef SHADEREMU
+ 		//start point of current line to test against node
+ 		VectorCopy(tstack_p->start, cur_start);
+ 		//end point of the current line to test against node
+ 		VectorCopy(tstack_p->end, cur_end);
++#endif
+ 		//the current node plane
+ 		plane = &aasworld.planes[aasnode->planenum];
+ 
+@@ -640,6 +660,10 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ 		{
+ 			//keep the current start and end point on the stack
+ 			//and go down the tree with the front child
++#ifdef SHADEREMU
++			nodenum = aasnode->children[0];
++			goto se_next;
++#else
+ 			tstack_p->nodenum = aasnode->children[0];
+ 			tstack_p++;
+ 			if (tstack_p >= &tracestack[127])
+@@ -647,6 +671,7 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ 				botimport.Print(PRT_ERROR, "AAS_TraceBoundingBox: stack overflow\n");
+ 				return trace;
+ 			} //end if
++#endif
+ 		} //end if
+ 		//if the whole to be traced line is totally at the back of this node
+ 		//only go down the tree with the back child
+@@ -654,6 +679,10 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ 		{
+ 			//keep the current start and end point on the stack
+ 			//and go down the tree with the back child
++#ifdef SHADEREMU
++			nodenum = aasnode->children[1];
++			goto se_next;
++#else
+ 			tstack_p->nodenum = aasnode->children[1];
+ 			tstack_p++;
+ 			if (tstack_p >= &tracestack[127])
+@@ -661,6 +690,7 @@ aas_trace_t AAS_TraceClientBBox(vec3_t start, vec3_t end, int presencetype,
+ 				botimport.Print(PRT_ERROR, "AAS_TraceBoundingBox: stack overflow\n");
+ 				return trace;
+ 			} //end if
++#endif
+ 		} //end if
+ 		//go down the tree both at the front and back of the node
+ 		else
 diff --git a/code/botlib/be_ai_chat.c b/code/botlib/be_ai_chat.c
 index 591ca378..1dfe3a8c 100644
 --- a/code/botlib/be_ai_chat.c
@@ -2361,7 +2477,7 @@ index b107895d..3f5e1305 100644
  #define LOOKAHEAD_DISTANCE			300
  
 diff --git a/code/game/ai_dmq3.c b/code/game/ai_dmq3.c
-index eb9b5850..a7a6dfd8 100644
+index eb9b5850..0bad8ba3 100644
 --- a/code/game/ai_dmq3.c
 +++ b/code/game/ai_dmq3.c
 @@ -86,6 +86,12 @@ extern vmCvar_t bot_developer;
@@ -2377,7 +2493,7 @@ index eb9b5850..a7a6dfd8 100644
  int max_bspmodelindex;			//maximum BSP model index
  
  //CTF flag goals
-@@ -2820,7 +2826,41 @@ BotEntityVisible
+@@ -2820,12 +2826,50 @@ BotEntityVisible
  returns visibility in the range [0, 1] taking fog and water surfaces into account
  ==================
  */
@@ -2390,6 +2506,7 @@ index eb9b5850..a7a6dfd8 100644
 +struct se_bot_thinks_s { int n, unused[3]; } se_bot_thinks[MAX_CLIENTS];
 +static struct { int think, ent; vec3_t eye; float vis; int unused[2]; } se_seen[MAX_CLIENTS][8];
 +static struct { unsigned next, unused[3]; } se_seen_next[MAX_CLIENTS];
++static struct { int think, time; vec3_t eye; int pc, unused[2]; } se_eye_pc[MAX_CLIENTS];	/* (the contents at the eye, this think) */
 +float BotEntityVisibleNow(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent);
 +float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int ent) {
 +	int k;
@@ -2419,7 +2536,58 @@ index eb9b5850..a7a6dfd8 100644
  	int i, contents_mask, passent, hitent, infog, inwater, otherinfog, pc;
  	float squaredfogdist, waterfactor, vis, bestvis;
  	bsp_trace_t trace;
-@@ -5028,8 +5068,24 @@ void BotCheckSnapshot(bot_state_t *bs) {
+ 	aas_entityinfo_t entinfo;
+ 	vec3_t dir, entangles, start, end, middle;
++#ifdef SHADEREMU
++	int se_pc_middle;
++#endif
+ 
+ 	BotEntityInfo(ent, &entinfo);
+ 	if (!entinfo.valid) {
+@@ -2841,6 +2885,17 @@ float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int
+ 	vectoangles(dir, entangles);
+ 	if (!InFieldOfVision(viewangles, fov, entangles)) return 0;
+ 	//
++#ifdef SHADEREMU
++	if (viewer >= 0 && viewer < MAX_CLIENTS) {
++		if (se_eye_pc[viewer].think != se_bot_thinks[viewer].n || se_eye_pc[viewer].time != level.time || !VectorCompare(se_eye_pc[viewer].eye, eye)) {
++			se_eye_pc[viewer].think = se_bot_thinks[viewer].n;
++			se_eye_pc[viewer].time = level.time;
++			VectorCopy(eye, se_eye_pc[viewer].eye);
++			se_eye_pc[viewer].pc = trap_AAS_PointContents(eye);
++		}
++		pc = se_eye_pc[viewer].pc;
++	} else
++#endif
+ 	pc = trap_AAS_PointContents(eye);
+ 	infog = (pc & CONTENTS_FOG);
+ 	inwater = (pc & (CONTENTS_LAVA|CONTENTS_SLIME|CONTENTS_WATER));
+@@ -2856,7 +2911,12 @@ float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int
+ 		VectorCopy(eye, start);
+ 		VectorCopy(middle, end);
+ 		//if the entity is in water, lava or slime
++#ifdef SHADEREMU	/* (asked once for both uses below) */
++		se_pc_middle = trap_AAS_PointContents(middle);
++		if (se_pc_middle & (CONTENTS_LAVA|CONTENTS_SLIME|CONTENTS_WATER)) {
++#else
+ 		if (trap_AAS_PointContents(middle) & (CONTENTS_LAVA|CONTENTS_SLIME|CONTENTS_WATER)) {
++#endif
+ 			contents_mask |= (CONTENTS_LAVA|CONTENTS_SLIME|CONTENTS_WATER);
+ 		}
+ 		//if eye is in water, lava or slime
+@@ -2887,7 +2947,11 @@ float BotEntityVisible(int viewer, vec3_t eye, vec3_t viewangles, float fov, int
+ 		if (trace.fraction >= 1 || trace.ent == hitent) {
+ 			//check for fog, assuming there's only one fog brush where
+ 			//either the viewer or the entity is in or both are in
++#ifdef SHADEREMU
++			otherinfog = (se_pc_middle & CONTENTS_FOG);
++#else
+ 			otherinfog = (trap_AAS_PointContents(middle) & CONTENTS_FOG);
++#endif
+ 			if (infog && otherinfog) {
+ 				VectorSubtract(trace.endpos, eye, dir);
+ 				squaredfogdist = VectorLengthSquared(dir);
+@@ -5028,8 +5092,24 @@ void BotCheckSnapshot(bot_state_t *bs) {
  	//reset number of proxmines
  	bs->numproxmines = 0;
  	//
@@ -2622,6 +2790,77 @@ index ed5653d7..fb698e02 100644
  	trap_Cvar_Register(&bot_memorydump, "bot_memorydump", "0", CVAR_CHEAT);
  	trap_Cvar_Register(&bot_saveroutingcache, "bot_saveroutingcache", "0", CVAR_CHEAT);
  	trap_Cvar_Register(&bot_pause, "bot_pause", "0", CVAR_CHEAT);
+diff --git a/code/game/bg_pmove.c b/code/game/bg_pmove.c
+index c7541743..1076e3ef 100644
+--- a/code/game/bg_pmove.c
++++ b/code/game/bg_pmove.c
+@@ -47,6 +47,15 @@ float	pm_spectatorfriction = 5.0f;
+ 
+ int		c_pmove = 0;
+ 
++#ifdef SHADEREMU
++/*
++ * The ground's trace and the water's contents that end a step of a move are asked again, the
++ * same, by the next step: nothing but the player moves in a Pmove. Kept for the Pmove.
++ */
++static struct { int used, client, mask; vec3_t origin, mins, maxs; trace_t trace; } se_ground;
++static struct { int used, client, contents; vec3_t point; } se_water;
++#endif
++
+ 
+ /*
+ ===============
+@@ -1111,7 +1120,22 @@ static void PM_GroundTrace( void ) {
+ 	point[1] = pm->ps->origin[1];
+ 	point[2] = pm->ps->origin[2] - 0.25;
+ 
++#ifdef SHADEREMU
++	if ( se_ground.used && se_ground.client == pm->ps->clientNum && se_ground.mask == pm->tracemask &&
++		!memcmp( se_ground.origin, pm->ps->origin, sizeof( vec3_t ) ) && !memcmp( se_ground.mins, pm->mins, sizeof( vec3_t ) ) &&
++		!memcmp( se_ground.maxs, pm->maxs, sizeof( vec3_t ) ) ) {
++		trace = se_ground.trace;
++	} else {
++		pm->trace (&trace, pm->ps->origin, pm->mins, pm->maxs, point, pm->ps->clientNum, pm->tracemask);
++		se_ground.used = 1, se_ground.client = pm->ps->clientNum, se_ground.mask = pm->tracemask;
++		VectorCopy( pm->ps->origin, se_ground.origin );
++		VectorCopy( pm->mins, se_ground.mins );
++		VectorCopy( pm->maxs, se_ground.maxs );
++		se_ground.trace = trace;
++	}
++#else
+ 	pm->trace (&trace, pm->ps->origin, pm->mins, pm->maxs, point, pm->ps->clientNum, pm->tracemask);
++#endif
+ 	pml.groundTrace = trace;
+ 
+ 	// do something corrective if the trace starts in a solid...
+@@ -1216,7 +1240,17 @@ static void PM_SetWaterLevel( void ) {
+ 	point[0] = pm->ps->origin[0];
+ 	point[1] = pm->ps->origin[1];
+ 	point[2] = pm->ps->origin[2] + MINS_Z + 1;	
++#ifdef SHADEREMU
++	if ( se_water.used && se_water.client == pm->ps->clientNum && !memcmp( se_water.point, point, sizeof( vec3_t ) ) ) {
++		cont = se_water.contents;
++	} else {
++		cont = pm->pointcontents( point, pm->ps->clientNum );
++		se_water.used = 1, se_water.client = pm->ps->clientNum, se_water.contents = cont;
++		VectorCopy( point, se_water.point );
++	}
++#else
+ 	cont = pm->pointcontents( point, pm->ps->clientNum );
++#endif
+ 
+ 	if ( cont & MASK_WATER ) {
+ 		sample2 = pm->ps->viewheight - MINS_Z;
+@@ -2036,6 +2070,9 @@ void Pmove (pmove_t *pmove) {
+ 	}
+ 
+ 	pmove->ps->pmove_framecount = (pmove->ps->pmove_framecount+1) & ((1<<PS_PMOVEFRAMECOUNTBITS)-1);
++#ifdef SHADEREMU
++	se_ground.used = se_water.used = 0;
++#endif
+ 
+ 	// chop the move up if it is too long, to prevent framerate
+ 	// dependent behavior
 diff --git a/code/game/g_bot.c b/code/game/g_bot.c
 index b6b205f1..343cdff4 100644
 --- a/code/game/g_bot.c
@@ -3012,7 +3251,7 @@ index 6afacbac..2069944b 100644
  
  	trap_Key_SetCatcher( KEYCATCH_UI );
 diff --git a/code/qcommon/cm_load.c b/code/qcommon/cm_load.c
-index 1aa0fbe8..404e19f7 100644
+index 1aa0fbe8..dc9d49b0 100644
 --- a/code/qcommon/cm_load.c
 +++ b/code/qcommon/cm_load.c
 @@ -43,10 +43,10 @@ void SetPlaneSignbits (cplane_t *out) {
@@ -3045,7 +3284,51 @@ index 1aa0fbe8..404e19f7 100644
  
  
  
-@@ -618,7 +621,12 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+@@ -559,6 +562,43 @@ unsigned CM_Checksum(dheader_t *header) {
+ 	return LittleLong(Com_BlockChecksum(checksums, 11 * 4));
+ }
+ 
++#ifdef SHADEREMU
++/* A leaf's patches, in the order of its surfaces (written when list is given; counted always) */
++static int SE_LeafPatchesOf( cLeaf_t *leaf, int at, int *list ) {
++	int		k, s;
++
++	leaf->se_firstLeafPatch = at;
++	for ( k = 0 ; k < leaf->numLeafSurfaces ; k++ ) {
++		s = cm.leafsurfaces[ leaf->firstLeafSurface + k ];
++		if ( cm.surfaces[ s ] ) {
++			if ( list ) {
++				list[ at ] = s;
++			}
++			at++;
++		}
++	}
++	leaf->se_numLeafPatches = at - leaf->se_firstLeafPatch;
++	return at;
++}
++
++/* A trace passes over the surfaces of a leaf that are not patches: every leaf has a list of its patches alone */
++static void SE_LeafPatches( void ) {
++	int		pass, i, at;
++
++	for ( pass = 0 ; pass < 2 ; pass++ ) {
++		for ( i = 0, at = 0 ; i < cm.numLeafs ; i++ ) {
++			at = SE_LeafPatchesOf( &cm.leafs[i], at, cm.se_leafpatches );
++		}
++		for ( i = 0 ; i < cm.numSubModels ; i++ ) {
++			at = SE_LeafPatchesOf( &cm.cmodels[i].leaf, at, cm.se_leafpatches );
++		}
++		if ( !pass ) {
++			cm.se_leafpatches = Hunk_Alloc( ( at + 1 ) * sizeof( int ), h_high );
++		}
++	}
++}
++#endif
++
+ /*
+ ==================
+ CM_LoadMap
+@@ -618,7 +658,12 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
  		Com_Error (ERR_DROP, "Couldn't load %s", name);
  	}
  
@@ -3058,18 +3341,19 @@ index 1aa0fbe8..404e19f7 100644
  	*checksum = last_checksum;
  
  	header = *(dheader_t *)buf.i;
-@@ -651,6 +659,10 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
+@@ -651,6 +696,11 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
  	FS_FreeFile (buf.v);
  
  	CM_InitBoxHull ();
 +#ifdef SHADEREMU
++	SE_LeafPatches();
 +	/* (a trace through a patch asks for this the first time: made here, on the first core, and off) */
 +	Cvar_Get( "r_debugSurfaceUpdate", "0", 0 );
 +#endif
  
  	CM_FloodAreaConnections ();
  
-@@ -666,6 +678,9 @@ CM_ClearMap
+@@ -666,6 +716,9 @@ CM_ClearMap
  ==================
  */
  void CM_ClearMap( void ) {
@@ -3079,7 +3363,7 @@ index 1aa0fbe8..404e19f7 100644
  	Com_Memset( &cm, 0, sizeof( cm ) );
  	CM_ClearLevelPatches();
  }
-@@ -683,7 +698,7 @@ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle ) {
+@@ -683,7 +736,7 @@ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle ) {
  		return &cm.cmodels[handle];
  	}
  	if ( handle == BOX_MODEL_HANDLE ) {
@@ -3088,7 +3372,7 @@ index 1aa0fbe8..404e19f7 100644
  	}
  	if ( handle < MAX_SUBMODELS ) {
  		Com_Error( ERR_DROP, "CM_ClipHandleToModel: bad handle %i < %i < %i", 
-@@ -746,47 +761,55 @@ can just be stored out and get a proper clipping hull structure.
+@@ -746,47 +799,55 @@ can just be stored out and get a proper clipping hull structure.
  */
  void CM_InitBoxHull (void)
  {
@@ -3177,7 +3461,7 @@ index 1aa0fbe8..404e19f7 100644
  }
  
  /*
-@@ -799,9 +822,11 @@ Capsules are handled differently though.
+@@ -799,9 +860,11 @@ Capsules are handled differently though.
  ===================
  */
  clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule ) {
@@ -3191,7 +3475,7 @@ index 1aa0fbe8..404e19f7 100644
  
  	if ( capsule ) {
  		return CAPSULE_MODEL_HANDLE;
-@@ -820,8 +845,8 @@ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule
+@@ -820,8 +883,8 @@ clipHandle_t CM_TempBoxModel( const vec3_t mins, const vec3_t maxs, int capsule
  	box_planes[10].dist = mins[2];
  	box_planes[11].dist = -mins[2];
  
@@ -3203,7 +3487,7 @@ index 1aa0fbe8..404e19f7 100644
  	return BOX_MODEL_HANDLE;
  }
 diff --git a/code/qcommon/cm_local.h b/code/qcommon/cm_local.h
-index 5848fdc2..ee818251 100644
+index 5848fdc2..43491fa2 100644
 --- a/code/qcommon/cm_local.h
 +++ b/code/qcommon/cm_local.h
 @@ -25,6 +25,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
@@ -3225,7 +3509,28 @@ index 5848fdc2..ee818251 100644
  #define	BOX_MODEL_HANDLE		255
  #define CAPSULE_MODEL_HANDLE	254
  
-@@ -134,6 +146,33 @@ typedef struct {
+@@ -43,6 +55,10 @@ typedef struct {
+ 
+ 	int			firstLeafSurface;
+ 	int			numLeafSurfaces;
++#ifdef SHADEREMU
++	int			se_firstLeafPatch;	// the patches of its surfaces alone, in their order (cm.se_leafpatches)
++	int			se_numLeafPatches;
++#endif
+ } cLeaf_t;
+ 
+ typedef struct cmodel_s {
+@@ -123,6 +139,9 @@ typedef struct {
+ 
+ 	int			numSurfaces;
+ 	cPatch_t	**surfaces;			// non-patches will be NULL
++#ifdef SHADEREMU
++	int			*se_leafpatches;	// surface numbers of the leaves' patches
++#endif
+ 
+ 	int			floodvalid;
+ 	int			checkcount;					// incremented on each trace
+@@ -134,6 +153,33 @@ typedef struct {
  #define	SURFACE_CLIP_EPSILON	(0.125)
  
  extern	clipMap_t	cm;
@@ -3259,8 +3564,33 @@ index 5848fdc2..ee818251 100644
  extern	int			c_pointcontents;
  extern	int			c_traces, c_brush_traces, c_patch_traces;
  extern	cvar_t		*cm_noAreas;
+@@ -164,6 +210,9 @@ typedef struct {
+ 	qboolean	isPoint;	// optimized case
+ 	trace_t		trace;		// returned from trace call
+ 	sphere_t	sphere;		// sphere for oriendted capsule collision
++#ifdef SHADEREMU
++	int			se_w;		// the core it is traced on (SE_OnWorker), asked once
++#endif
+ } traceWork_t;
+ 
+ typedef struct leafList_s {
+@@ -186,6 +235,14 @@ void CM_BoxLeafnums_r( leafList_t *ll, int nodenum );
+ 
+ cmodel_t	*CM_ClipHandleToModel( clipHandle_t handle );
+ qboolean CM_BoundsIntersect( const vec3_t mins, const vec3_t maxs, const vec3_t mins2, const vec3_t maxs2 );
++#ifdef SHADEREMU
++/* CM_BoundsIntersect where a trace calls it for every brush of a leaf: the same tests, inline */
++static inline qboolean SE_BoundsIntersect( const vec3_t mins, const vec3_t maxs, const vec3_t mins2, const vec3_t maxs2 ) {
++	return !( maxs[0] < mins2[0] - SURFACE_CLIP_EPSILON || maxs[1] < mins2[1] - SURFACE_CLIP_EPSILON ||
++		maxs[2] < mins2[2] - SURFACE_CLIP_EPSILON || mins[0] > maxs2[0] + SURFACE_CLIP_EPSILON ||
++		mins[1] > maxs2[1] + SURFACE_CLIP_EPSILON || mins[2] > maxs2[2] + SURFACE_CLIP_EPSILON );
++}
++#endif
+ qboolean CM_BoundsIntersectPoint( const vec3_t mins, const vec3_t maxs, const vec3_t point );
+ 
+ // cm_patch.c
 diff --git a/code/qcommon/cm_test.c b/code/qcommon/cm_test.c
-index 9fd1ec58..d9b21f05 100644
+index 9fd1ec58..d5b96e7a 100644
 --- a/code/qcommon/cm_test.c
 +++ b/code/qcommon/cm_test.c
 @@ -48,7 +48,9 @@ int CM_PointLeafnum_r( const vec3_t p, int num ) {
@@ -3313,8 +3643,46 @@ index 9fd1ec58..d9b21f05 100644
  
  	VectorCopy( mins, ll.bounds[0] );
  	VectorCopy( maxs, ll.bounds[1] );
+@@ -232,6 +236,10 @@ int CM_PointContents( const vec3_t p, clipHandle_t model ) {
+ 	int			contents;
+ 	float		d;
+ 	cmodel_t	*clipm;
++#ifdef SHADEREMU
++	float		lo0, lo1, lo2, hi0, hi1, hi2;	/* (CM_BoundsIntersectPoint's numbers, made once and not for every brush) */
++	const int	*list;
++#endif
+ 
+ 	if (!cm.numNodes) {	// map not loaded
+ 		return 0;
+@@ -246,6 +254,18 @@ int CM_PointContents( const vec3_t p, clipHandle_t model ) {
+ 	}
+ 
+ 	contents = 0;
++#ifdef SHADEREMU
++	lo0 = p[0] - SURFACE_CLIP_EPSILON, lo1 = p[1] - SURFACE_CLIP_EPSILON, lo2 = p[2] - SURFACE_CLIP_EPSILON;
++	hi0 = p[0] + SURFACE_CLIP_EPSILON, hi1 = p[1] + SURFACE_CLIP_EPSILON, hi2 = p[2] + SURFACE_CLIP_EPSILON;
++	list = cm.leafbrushes + leaf->firstLeafBrush;
++	for (k=0 ; k<leaf->numLeafBrushes ; k++) {
++		b = &cm.brushes[list[k]];
++
++		if ( b->bounds[1][0] < lo0 || b->bounds[1][1] < lo1 || b->bounds[1][2] < lo2 ||
++			b->bounds[0][0] > hi0 || b->bounds[0][1] > hi1 || b->bounds[0][2] > hi2 ) {
++			continue;
++		}
++#else
+ 	for (k=0 ; k<leaf->numLeafBrushes ; k++) {
+ 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
+ 		b = &cm.brushes[brushnum];
+@@ -253,6 +273,7 @@ int CM_PointContents( const vec3_t p, clipHandle_t model ) {
+ 		if ( !CM_BoundsIntersectPoint( b->bounds[0], b->bounds[1], p ) ) {
+ 			continue;
+ 		}
++#endif
+ 
+ 		// see if the point is in the brush
+ 		for ( i = 0 ; i < b->numsides ; i++ ) {
 diff --git a/code/qcommon/cm_trace.c b/code/qcommon/cm_trace.c
-index ec9fd0a0..f9b5dd01 100644
+index ec9fd0a0..f1e4e769 100644
 --- a/code/qcommon/cm_trace.c
 +++ b/code/qcommon/cm_trace.c
 @@ -240,6 +240,9 @@ CM_TestInLeaf
@@ -3322,7 +3690,7 @@ index ec9fd0a0..f9b5dd01 100644
  */
  void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 +#ifdef SHADEREMU
-+	int		se_w = SE_OnWorker();	/* (which core: asked once, not at every brush) */
++	int		se_w = tw->se_w;
 +#endif
  	int			k;
  	int			brushnum;
@@ -3332,14 +3700,28 @@ index ec9fd0a0..f9b5dd01 100644
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  		b = &cm.brushes[brushnum];
 -		if (b->checkcount == cm.checkcount) {
-+		if ( CM_Checked( &b->checkcount, b - cm.brushes, se_brush_marks ) ) {
++		if ( CM_Checked( &b->checkcount, brushnum, se_brush_marks ) ) {
  			continue;	// already checked this brush in another leaf
  		}
 -		b->checkcount = cm.checkcount;
  
  		if ( !(b->contents & tw->contents)) {
  			continue;
-@@ -275,10 +277,9 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+@@ -270,15 +272,24 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ #else
+ 	if ( !cm_noCurves->integer ) {
+ #endif //BSPC
++#ifdef SHADEREMU
++		for ( k = 0 ; k < leaf->se_numLeafPatches ; k++ ) {
++			int		s = cm.se_leafpatches[ leaf->se_firstLeafPatch + k ];
++
++			patch = cm.surfaces[ s ];
++			if ( CM_Checked( &patch->checkcount, s, se_patch_marks ) ) {
++				continue;	// already checked this patch in another leaf
++			}
++#else
+ 		for ( k = 0 ; k < leaf->numLeafSurfaces ; k++ ) {
+ 			patch = cm.surfaces[ cm.leafsurfaces[ leaf->firstLeafSurface + k ] ];
  			if ( !patch ) {
  				continue;
  			}
@@ -3349,10 +3731,11 @@ index ec9fd0a0..f9b5dd01 100644
 +				continue;	// already checked this patch in another leaf
  			}
 -			patch->checkcount = cm.checkcount;
++#endif
  
  			if ( !(patch->contents & tw->contents)) {
  				continue;
-@@ -428,12 +429,12 @@ void CM_PositionTest( traceWork_t *tw ) {
+@@ -428,12 +439,12 @@ void CM_PositionTest( traceWork_t *tw ) {
  	ll.lastLeaf = 0;
  	ll.overflowed = qfalse;
  
@@ -3367,7 +3750,7 @@ index ec9fd0a0..f9b5dd01 100644
  
  	// test the contents of the leafs
  	for (i=0 ; i < ll.count ; i++) {
-@@ -462,7 +463,9 @@ CM_TraceThroughPatch
+@@ -462,7 +473,9 @@ CM_TraceThroughPatch
  void CM_TraceThroughPatch( traceWork_t *tw, cPatch_t *patch ) {
  	float		oldFrac;
  
@@ -3377,7 +3760,7 @@ index ec9fd0a0..f9b5dd01 100644
  
  	oldFrac = tw->trace.fraction;
  
-@@ -500,7 +503,9 @@ void CM_TraceThroughBrush( traceWork_t *tw, cbrush_t *brush ) {
+@@ -500,7 +513,9 @@ void CM_TraceThroughBrush( traceWork_t *tw, cbrush_t *brush ) {
  		return;
  	}
  
@@ -3387,41 +3770,84 @@ index ec9fd0a0..f9b5dd01 100644
  
  	getout = qfalse;
  	startout = qfalse;
-@@ -667,6 +672,9 @@ CM_TraceThroughLeaf
+@@ -667,12 +682,44 @@ CM_TraceThroughLeaf
  ================
  */
  void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 +#ifdef SHADEREMU
-+	int		se_w = SE_OnWorker();	/* (which core: asked once, not at every brush) */
++	/* (the core asked once a trace; what the loops read kept in registers, the stores to marks aside) */
++	int			se_w = tw->se_w, *se_marks = se_w ? se_brush_marks[se_w - 1] : NULL;
++	int			se_count = se_w ? se_worker_checks[se_w - 1].count : cm.checkcount, se_n = leaf->numLeafBrushes;
++	const int	*se_list = cm.leafbrushes + leaf->firstLeafBrush;
++	cbrush_t	*se_brushes = cm.brushes;
 +#endif
  	int			k;
  	int			brushnum;
  	cbrush_t	*b;
-@@ -677,10 +685,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 	cPatch_t	*patch;
+ 
+ 	// trace line against all brushes in the leaf
++#ifdef SHADEREMU
++	for ( k = 0 ; k < se_n ; k++ ) {
++		brushnum = se_list[k];
++		b = &se_brushes[brushnum];
++		if ( se_marks ) {
++			if ( se_marks[brushnum] == se_count ) {
++				continue;	// already checked this brush in another leaf
++			}
++			se_marks[brushnum] = se_count;
++		} else {
++			if ( b->checkcount == se_count ) {
++				continue;
++			}
++			b->checkcount = se_count;
++		}
++
++		if ( !(b->contents & tw->contents) ) {
++			continue;
++		}
++
++		if ( !SE_BoundsIntersect( tw->bounds[0], tw->bounds[1],
++					b->bounds[0], b->bounds[1] ) ) {
++			continue;
++		}
++#else
+ 	for ( k = 0 ; k < leaf->numLeafBrushes ; k++ ) {
  		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
  
- 		b = &cm.brushes[brushnum];
--		if ( b->checkcount == cm.checkcount ) {
-+		if ( CM_Checked( &b->checkcount, b - cm.brushes, se_brush_marks ) ) {
- 			continue;	// already checked this brush in another leaf
- 		}
--		b->checkcount = cm.checkcount;
- 
- 		if ( !(b->contents & tw->contents) ) {
+@@ -690,6 +737,7 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 					b->bounds[0], b->bounds[1] ) ) {
  			continue;
-@@ -708,10 +715,9 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ 		}
++#endif
+ 
+ 		CM_TraceThroughBrush( tw, b );
+ 		if ( !tw->trace.fraction ) {
+@@ -703,6 +751,15 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
+ #else
+ 	if ( !cm_noCurves->integer ) {
+ #endif
++#ifdef SHADEREMU
++		for ( k = 0 ; k < leaf->se_numLeafPatches ; k++ ) {
++			int		s = cm.se_leafpatches[ leaf->se_firstLeafPatch + k ];
++
++			patch = cm.surfaces[ s ];
++			if ( CM_Checked( &patch->checkcount, s, se_patch_marks ) ) {
++				continue;	// already checked this patch in another leaf
++			}
++#else
+ 		for ( k = 0 ; k < leaf->numLeafSurfaces ; k++ ) {
+ 			patch = cm.surfaces[ cm.leafsurfaces[ leaf->firstLeafSurface + k ] ];
  			if ( !patch ) {
- 				continue;
- 			}
--			if ( patch->checkcount == cm.checkcount ) {
-+			if ( CM_Checked( &patch->checkcount, cm.leafsurfaces[ leaf->firstLeafSurface + k ], se_patch_marks ) ) {
+@@ -712,6 +769,7 @@ void CM_TraceThroughLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
  				continue;	// already checked this patch in another leaf
  			}
--			patch->checkcount = cm.checkcount;
+ 			patch->checkcount = cm.checkcount;
++#endif
  
  			if ( !(patch->contents & tw->contents) ) {
  				continue;
-@@ -1154,9 +1160,11 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
+@@ -1154,12 +1212,21 @@ void CM_Trace( trace_t *results, const vec3_t start, const vec3_t end, vec3_t mi
  
  	cmod = CM_ClipHandleToModel( model );
  
@@ -3433,7 +3859,17 @@ index ec9fd0a0..f9b5dd01 100644
 +#endif
  
  	// fill in a default trace
++#ifdef SHADEREMU	/* (what is not cleared here is set below before it is read) */
++	Com_Memset( &tw.trace, 0, sizeof(tw.trace) );
++	VectorClear( tw.extents );
++	tw.isPoint = qfalse;
++	tw.se_w = SE_OnWorker();
++#else
  	Com_Memset( &tw, 0, sizeof(tw) );
++#endif
+ 	tw.trace.fraction = 1;	// assume it goes the entire distance until shown otherwise
+ 	VectorCopy(origin, tw.modelOrigin);
+ 
 diff --git a/code/qcommon/cmd.c b/code/qcommon/cmd.c
 index ed94517f..65b4f696 100644
 --- a/code/qcommon/cmd.c
@@ -3532,7 +3968,7 @@ index ed94517f..65b4f696 100644
  			}
  			return;
 diff --git a/code/qcommon/common.c b/code/qcommon/common.c
-index d97312c4..5674d050 100644
+index d97312c4..fc93bebd 100644
 --- a/code/qcommon/common.c
 +++ b/code/qcommon/common.c
 @@ -37,12 +37,30 @@ int demo_protocols[] =
@@ -4037,7 +4473,7 @@ index 0283fb70..8063d2e9 100644
  	send(huff->loc[ch], NULL, fout, maxoffset);
  	*offset = bloc;
 diff --git a/code/qcommon/msg.c b/code/qcommon/msg.c
-index 00c1f65b..c08d7e6e 100644
+index 00c1f65b..3fe26f56 100644
 --- a/code/qcommon/msg.c
 +++ b/code/qcommon/msg.c
 @@ -105,7 +105,9 @@ bit functions
@@ -4050,7 +4486,61 @@ index 00c1f65b..c08d7e6e 100644
  
  	if ( msg->overflowed ) {
  		return;
-@@ -445,7 +447,12 @@ float MSG_ReadFloat( msg_t *msg ) {
+@@ -144,6 +146,20 @@ void MSG_WriteBits( msg_t *msg, int value, int bits ) {
+ 		}
+ 	} else {
+ 		value &= (0xffffffff >> (32 - bits));
++#ifdef SHADEREMU	/* (a message's bytes are as they are, huffman.c: the bits go in at once) */
++		if ( msg->bit + bits < msg->maxsize << 3 ) {
++			int at = msg->bit, sh = at & 7, n = ( sh + bits + 7 ) >> 3, k;
++			byte *p = msg->data + ( at >> 3 );
++
++			p[0] = ( sh ? p[0] : 0 ) | (byte)( (unsigned)value << sh );
++			for ( k = 1; k < n; k++ ) {
++				p[k] = (byte)( (unsigned)value >> ( 8 * k - sh ) );
++			}
++			msg->bit = at + bits;
++			msg->cursize = ( msg->bit >> 3 ) + 1;
++			return;
++		}
++#endif
+ 		if ( bits&7 ) {
+ 			int nbits;
+ 			nbits = bits&7;
+@@ -222,6 +238,22 @@ int MSG_ReadBits( msg_t *msg, int bits ) {
+ 		else
+ 			Com_Error(ERR_DROP, "can't read %d bits", bits);
+ 	} else {
++#ifdef SHADEREMU	/* (as MSG_WriteBits) */
++		if ( msg->bit + bits <= msg->cursize << 3 ) {
++			int at = msg->bit, sh = at & 7, n = ( sh + bits + 7 ) >> 3, k;
++			const byte *p = msg->data + ( at >> 3 );
++			unsigned v = p[0] >> sh;
++
++			for ( k = 1; k < n; k++ ) {
++				v |= (unsigned)p[k] << ( 8 * k - sh );
++			}
++			value = bits < 32 ? v & ( ( 1u << bits ) - 1 ) : v;
++			msg->bit = at + bits;
++			msg->readcount = ( msg->bit >> 3 ) + 1;
++			bits -= bits & 7;	/* (the sign is taken as below, from the whole bytes) */
++			goto se_read;
++		}
++#endif
+ 		nbits = 0;
+ 		if (bits&7) {
+ 			nbits = bits&7;
+@@ -250,6 +282,9 @@ int MSG_ReadBits( msg_t *msg, int bits ) {
+ 		}
+ 		msg->readcount = (msg->bit>>3)+1;
+ 	}
++#ifdef SHADEREMU
++se_read:
++#endif
+ 	if ( sgn && bits > 0 && bits < 32 ) {
+ 		if ( value & ( 1 << ( bits - 1 ) ) ) {
+ 			value |= -1 ^ ( ( 1 << bits ) - 1 );
+@@ -445,7 +480,12 @@ float MSG_ReadFloat( msg_t *msg ) {
  }
  
  char *MSG_ReadString( msg_t *msg ) {
@@ -4063,7 +4553,7 @@ index 00c1f65b..c08d7e6e 100644
  	int		l,c;
  	
  	l = 0;
-@@ -463,7 +470,7 @@ char *MSG_ReadString( msg_t *msg ) {
+@@ -463,7 +503,7 @@ char *MSG_ReadString( msg_t *msg ) {
  			c = '.';
  		}
  		// break only after reading all expected data from bitstream
@@ -4072,7 +4562,7 @@ index 00c1f65b..c08d7e6e 100644
  			break;
  		}
  		string[l++] = c;
-@@ -475,7 +482,12 @@ char *MSG_ReadString( msg_t *msg ) {
+@@ -475,7 +515,12 @@ char *MSG_ReadString( msg_t *msg ) {
  }
  
  char *MSG_ReadBigString( msg_t *msg ) {
@@ -4085,7 +4575,7 @@ index 00c1f65b..c08d7e6e 100644
  	int		l,c;
  	
  	l = 0;
-@@ -493,7 +505,7 @@ char *MSG_ReadBigString( msg_t *msg ) {
+@@ -493,7 +538,7 @@ char *MSG_ReadBigString( msg_t *msg ) {
  			c = '.';
  		}
  		// break only after reading all expected data from bitstream
@@ -4094,7 +4584,7 @@ index 00c1f65b..c08d7e6e 100644
  			break;
  		}
  		string[l++] = c;
-@@ -505,7 +517,12 @@ char *MSG_ReadBigString( msg_t *msg ) {
+@@ -505,7 +550,12 @@ char *MSG_ReadBigString( msg_t *msg ) {
  }
  
  char *MSG_ReadStringLine( msg_t *msg ) {
@@ -4107,7 +4597,7 @@ index 00c1f65b..c08d7e6e 100644
  	int		l,c;
  
  	l = 0;
-@@ -523,7 +540,7 @@ char *MSG_ReadStringLine( msg_t *msg ) {
+@@ -523,7 +573,7 @@ char *MSG_ReadStringLine( msg_t *msg ) {
  			c = '.';
  		}
  		// break only after reading all expected data from bitstream
@@ -4116,7 +4606,7 @@ index 00c1f65b..c08d7e6e 100644
  			break;
  		}
  		string[l++] = c;
-@@ -653,7 +670,9 @@ void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *
+@@ -653,7 +703,9 @@ void MSG_WriteDeltaUsercmdKey( msg_t *msg, int key, usercmd_t *from, usercmd_t *
  		from->buttons == to->buttons &&
  		from->weapon == to->weapon) {
  			MSG_WriteBits( msg, 0, 1 );				// no change
@@ -4126,7 +4616,7 @@ index 00c1f65b..c08d7e6e 100644
  			return;
  	}
  	key ^= to->serverTime;
-@@ -845,6 +864,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -845,6 +897,23 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  	}
  
  	lc = 0;
@@ -4150,7 +4640,7 @@ index 00c1f65b..c08d7e6e 100644
  	// build the change vector as bytes so it is endien independent
  	for ( i = 0, field = entityStateFields ; i < numFields ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -853,6 +889,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -853,6 +922,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  			lc = i+1;
  		}
  	}
@@ -4160,7 +4650,7 @@ index 00c1f65b..c08d7e6e 100644
  
  	if ( lc == 0 ) {
  		// nothing at all changed
-@@ -872,7 +911,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -872,7 +944,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  
  	MSG_WriteByte( msg, lc );	// # of changes
  
@@ -4170,7 +4660,7 @@ index 00c1f65b..c08d7e6e 100644
  
  	for ( i = 0, field = entityStateFields ; i < lc ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -892,7 +933,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
+@@ -892,7 +966,9 @@ void MSG_WriteDeltaEntity( msg_t *msg, struct entityState_s *from, struct entity
  
  			if (fullFloat == 0.0f) {
  					MSG_WriteBits( msg, 0, 1 );
@@ -4180,7 +4670,7 @@ index 00c1f65b..c08d7e6e 100644
  			} else {
  				MSG_WriteBits( msg, 1, 1 );
  				if ( trunc == fullFloat && trunc + FLOAT_INT_BIAS >= 0 && 
-@@ -1147,7 +1190,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+@@ -1147,7 +1223,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
  
  	MSG_WriteByte( msg, lc );	// # of changes
  
@@ -4190,7 +4680,7 @@ index 00c1f65b..c08d7e6e 100644
  
  	for ( i = 0, field = playerStateFields ; i < lc ; i++, field++ ) {
  		fromF = (int *)( (byte *)from + field->offset );
-@@ -1213,7 +1258,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
+@@ -1213,7 +1291,9 @@ void MSG_WriteDeltaPlayerstate( msg_t *msg, struct playerState_s *from, struct p
  
  	if (!statsbits && !persistantbits && !ammobits && !powerupbits) {
  		MSG_WriteBits( msg, 0, 1 );	// no change
@@ -4200,7 +4690,7 @@ index 00c1f65b..c08d7e6e 100644
  		return;
  	}
  	MSG_WriteBits( msg, 1, 1 );	// changed
-@@ -1667,6 +1714,15 @@ int msg_hData[256] = {
+@@ -1667,6 +1747,15 @@ int msg_hData[256] = {
  };
  
  void MSG_initHuffman( void ) {
@@ -4635,7 +5125,7 @@ index 9de7e15f..0ca799f6 100644
  	currentVM = vm;
  	lastVM = vm;
 diff --git a/code/server/server.h b/code/server/server.h
-index 9526d4ab..66aa0434 100644
+index 9526d4ab..fad0f6d9 100644
 --- a/code/server/server.h
 +++ b/code/server/server.h
 @@ -58,6 +58,7 @@ typedef struct svEntity_s {
@@ -4646,7 +5136,17 @@ index 9526d4ab..66aa0434 100644
  } svEntity_t;
  
  typedef enum {
-@@ -493,3 +494,13 @@ void SV_Netchan_Transmit( client_t *client, msg_t *msg);
+@@ -399,6 +400,9 @@ void SV_UpdateServerCommandsToClient( client_t *client, msg_t *msg );
+ void SV_WriteFrameToClient (client_t *client, msg_t *msg);
+ void SV_SendMessageToClient( msg_t *msg, client_t *client );
+ void SV_SendClientMessages( void );
++#ifdef SHADEREMU
++void SE_SendBotSnapshots( void );
++#endif
+ void SV_SendClientSnapshot( client_t *client );
+ 
+ //
+@@ -493,3 +497,13 @@ void SV_Netchan_Transmit( client_t *client, msg_t *msg);
  int SV_Netchan_TransmitNextFragment(client_t *client);
  qboolean SV_Netchan_Process( client_t *client, msg_t *msg );
  void SV_Netchan_FreeQueue(client_t *client);
@@ -4780,7 +5280,7 @@ index 063b87c7..4e36420d 100644
  	Com_Printf( "----- Server Shutdown (%s) -----\n", finalmsg );
  
 diff --git a/code/server/sv_main.c b/code/server/sv_main.c
-index 88435bff..e8742f5f 100644
+index 88435bff..1d505f29 100644
 --- a/code/server/sv_main.c
 +++ b/code/server/sv_main.c
 @@ -1052,9 +1052,20 @@ Player movement occurs as a result of packet events, which
@@ -4859,7 +5359,7 @@ index 88435bff..e8742f5f 100644
  	}
  
  	if ( com_speeds->integer ) {
-@@ -1156,8 +1189,21 @@ void SV_Frame( int msec ) {
+@@ -1156,8 +1189,23 @@ void SV_Frame( int msec ) {
  	// check timeouts
  	SV_CheckTimeouts();
  
@@ -4869,7 +5369,9 @@ index 88435bff..e8742f5f 100644
 +#endif
  	// send messages back to the clients
 +#ifdef SHADEREMU
-+	if ( !se_server_quiet )
++	if ( se_server_quiet )
++		SE_SendBotSnapshots();	/* (the bots see each frame what they would see told) */
++	else
 +#endif
  	SV_SendClientMessages();
 +#ifdef SHADEREMU
@@ -4882,7 +5384,7 @@ index 88435bff..e8742f5f 100644
  	// send a heartbeat to the master if needed
  	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);
 diff --git a/code/server/sv_snapshot.c b/code/server/sv_snapshot.c
-index ec760713..9073099d 100644
+index ec760713..b3f73146 100644
 --- a/code/server/sv_snapshot.c
 +++ b/code/server/sv_snapshot.c
 @@ -316,8 +316,13 @@ static void SV_AddEntitiesVisibleFromPoint( vec3_t origin, clientSnapshot_t *fra
@@ -4961,8 +5463,35 @@ index ec760713..9073099d 100644
  	for ( i = 0 ; i < entityNumbers.numSnapshotEntities ; i++ ) {
  		ent = SV_GentityNum(entityNumbers.snapshotEntities[i]);
  		state = &svs.snapshotEntities[svs.nextSnapshotEntities % svs.numSnapshotEntities];
+@@ -640,7 +683,15 @@ void SV_SendClientSnapshot( client_t *client ) {
+ SV_SendClientMessages
+ =======================
+ */
++#ifdef SHADEREMU
++static void SE_SendClientMessages( qboolean botsOnly );
++void SV_SendClientMessages( void ) { SE_SendClientMessages( qfalse ); }
++/* A frame of the server's that tells the players nothing still shows the bots what is there */
++void SE_SendBotSnapshots( void ) { SE_SendClientMessages( qtrue ); }
++static void SE_SendClientMessages( qboolean botsOnly )
++#else
+ void SV_SendClientMessages(void)
++#endif
+ {
+ 	int		i;
+ 	client_t	*c;
+@@ -652,6 +703,10 @@ void SV_SendClientMessages(void)
+ 		
+ 		if(!c->state)
+ 			continue;		// not connected
++#ifdef SHADEREMU
++		if ( botsOnly && !( c->gentity && ( c->gentity->r.svFlags & SVF_BOT ) ) )
++			continue;
++#endif
+ 
+ 		if(svs.time - c->lastSnapshotTime < c->snapshotMsec * com_timescale->value)
+ 			continue;		// It's not time yet
 diff --git a/code/server/sv_world.c b/code/server/sv_world.c
-index 94868142..e4f8c803 100644
+index 94868142..3a437a64 100644
 --- a/code/server/sv_world.c
 +++ b/code/server/sv_world.c
 @@ -145,6 +145,9 @@ SV_ClearWorld
@@ -4975,7 +5504,43 @@ index 94868142..e4f8c803 100644
  	clipHandle_t	h;
  	vec3_t			mins, maxs;
  
-@@ -593,6 +596,20 @@ Moves the given mins/maxs volume through the world from start to end.
+@@ -381,10 +384,27 @@ SV_AreaEntities_r
+ static void SV_AreaEntities_r( worldSector_t *node, areaParms_t *ap ) {
+ 	svEntity_t	*check, *next;
+ 	sharedEntity_t *gcheck;
++#ifdef SHADEREMU
++	/* (the box in registers, not read again after every store to the list) */
++	float		lo0 = ap->mins[0], lo1 = ap->mins[1], lo2 = ap->mins[2];
++	float		hi0 = ap->maxs[0], hi1 = ap->maxs[1], hi2 = ap->maxs[2];
++#endif
+ 
+ 	for ( check = node->entities  ; check ; check = next ) {
+ 		next = check->nextEntityInWorldSector;
+ 
++#ifdef SHADEREMU
++		gcheck = check->gEnt ? (sharedEntity_t *)check->gEnt : SV_GEntityForSvEntity( check );
++
++		if ( gcheck->r.absmin[0] > hi0
++		|| gcheck->r.absmin[1] > hi1
++		|| gcheck->r.absmin[2] > hi2
++		|| gcheck->r.absmax[0] < lo0
++		|| gcheck->r.absmax[1] < lo1
++		|| gcheck->r.absmax[2] < lo2) {
++			continue;
++		}
++#else
+ 		gcheck = SV_GEntityForSvEntity( check );
+ 
+ 		if ( gcheck->r.absmin[0] > ap->maxs[0]
+@@ -395,6 +415,7 @@ static void SV_AreaEntities_r( worldSector_t *node, areaParms_t *ap ) {
+ 		|| gcheck->r.absmax[2] < ap->mins[2]) {
+ 			continue;
+ 		}
++#endif
+ 
+ 		if ( ap->count == ap->maxcount ) {
+ 			Com_Printf ("SV_AreaEntities: MAXCOUNT\n");
+@@ -593,6 +614,20 @@ Moves the given mins/maxs volume through the world from start to end.
  passEntityNum and entities owned by passEntityNum are explicitly not checked.
  ==================
  */
@@ -4996,8 +5561,13 @@ index 94868142..e4f8c803 100644
  void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask, int capsule ) {
  	moveclip_t	clip;
  	int			i;
-@@ -607,6 +624,24 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
+@@ -604,9 +639,29 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
+ 		maxs = vec3_origin;
+ 	}
+ 
++#ifndef SHADEREMU	/* (every field is set below before it is read) */
  	Com_Memset ( &clip, 0, sizeof ( moveclip_t ) );
++#endif
  
  	// clip to world
 +#ifdef SHADEREMU

@@ -793,7 +793,8 @@ watch_open(void)
 {
 	static volatile uint32_t *regs;
 	static uint32_t seen;
-	static int tried;
+	static int tried, opened;
+	static char opened_address[257];
 	char address[257];
 	uint32_t count, length;
 	FILE *file;
@@ -825,11 +826,23 @@ watch_open(void)
 	memcpy(address, (const void *)&regs[OPEN_FIRST], 176);
 	memcpy(address + 176, (const void *)&regs[OPEN_MORE], 80);
 	address[length] = 0;
-	if (real_vfork() == 0) {
+	/* the same address again while its open (or what it opened) runs: that one to the front */
+	if (opened > 0 && !strcmp(address, opened_address) && kill(opened, 0) == 0) {
+		int i;
+
+		for (i = 0; i < task_count; i++)
+			if (tasks[i].process == opened) {
+				task_front(i);
+				break;
+			}
+		return;
+	}
+	if ((opened = real_vfork()) == 0) {
 		signal(SIGCHLD, SIG_DFL);
 		execlp("open", "open", address, (char *)NULL);
 		_exit(127);
 	}
+	strcpy(opened_address, address);
 }
 
 /* Tells the host which program's window has the keyboard (../apps/gameid.h). */
@@ -1257,6 +1270,36 @@ restyle(void)
 	return 1;
 }
 
+/* nx's word on what the desktop's start is at, in the middle of the screen until the desktop's
+ * picture covers it. */
+static int
+splash(const char *doing)
+{
+	GR_SCREEN_INFO screen;
+	GR_GC_ID g;
+	GR_SIZE w, h, base;
+	int x, y, k;
+	const char *line[2] = { "Starting the desktop", doing };
+
+	if (GrOpen() < 0)
+		return 1;
+	ui_look_read();
+	GrGetScreenInfo(&screen);
+	g = GrNewGC();
+	GrSetGCUseBackground(g, GR_FALSE);
+	GrSetGCFont(g, GrCreateFontEx(ui_smooth ? UI_LOOK_FONT : GR_FONT_SYSTEM_VAR, 0, 0, NULL));
+	x = (screen.cols - 360) / 2, y = (screen.rows - 62) / 2;
+	GrSetGCForeground(g, MWRGB(36, 38, 44));
+	GrFillRect(GR_ROOT_WINDOW_ID, g, x, y, 360, 62);
+	for (k = 0; k < 2; k++) {
+		GrGetGCTextSize(g, (void *)line[k], -1, GR_TFASCII, &w, &h, &base);
+		GrSetGCForeground(g, k ? MWRGB(200, 200, 200) : MWRGB(240, 240, 240));
+		GrText(GR_ROOT_WINDOW_ID, g, x + (360 - w) / 2, y + 12 + 22 * k, (void *)line[k], -1, GR_TFASCII | GR_TFTOP);
+	}
+	GrClose();
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1268,6 +1311,8 @@ main(int argc, char **argv)
 		ui_look_from_registry();
 		return 0;
 	}
+	if (argc > 2 && !strcmp(argv[1], "--splash"))
+		return splash(argv[2]);
 	if (GrOpen() < 0) {
 		fprintf(stderr, "nxbar: cannot reach the Nano-X server\n");
 		return 1;

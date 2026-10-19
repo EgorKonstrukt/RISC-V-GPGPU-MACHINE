@@ -36,6 +36,7 @@
 
 enum { K_NONE, K_WAV, K_MOD, K_FLAC, K_MP3, K_OGG };
 enum { STOPPED, BUFFERING, PLAYING, ENDED };
+static int buffered;	/* how much of what it waits for before it plays is decoded, in hundredths */
 enum { SLOT_FREE, SLOT_MINE, SLOT_WORKER, SLOT_READY, SLOT_DROPPED };
 
 /* Frames are the library's: at half rate a frame is two of the file's. */
@@ -339,7 +340,7 @@ seek_to(uint32_t frame)
 		snd_play(out.voice, SND_STREAM | SND_SMOOTH | (tune.channels == 2 ? SND_STEREO : 0), out.ring_at, RING, 0, 0,
 			 SND_VOLUME(out.volume, out.volume));
 	out.running = 0;
-	state = BUFFERING;
+	state = BUFFERING, buffered = 0;
 }
 
 /* One step of this core's own piece: a step of the library's piece (an MP3 frame, a FLAC
@@ -517,7 +518,7 @@ decide(int stuck)
 			finish();
 		} else {
 			voice_run(0);
-			state = BUFFERING;
+			state = BUFFERING, buffered = 0;
 			underruns++;
 			/* With workers this is the one sign that they do not keep up: the second time, an
 			 * MP3 file goes on at half the rate. (Their first two seconds say nothing: they are
@@ -552,6 +553,10 @@ decide(int stuck)
 	need = s >= 1100 ? rate / 2 : left - (uint32_t)((uint64_t)left * s / 1100) + rate;
 	if (workers)
 		need = rate * 3 / 2;	/* (a second and a half in hand, whatever their start looked like) */
+	if (need && (int)((uint64_t)ahead * 100 / need) != buffered) {
+		buffered = (int)((uint64_t)ahead * 100 / need);
+		dirty |= D_STATUS;
+	}
 	if (p >= count || stuck || (s && ahead >= need)) {
 		state = PLAYING;
 		voice_run(!paused);
@@ -1340,11 +1345,14 @@ draw_panel(void)
 	ui_text_fit(window, 16, PANEL_Y + 7, mx - 36, name, BLACK);
 	ui_text_fit(window, 17, PANEL_Y + 7, mx - 36, name, BLACK);	/* twice: bold */
 	if (tune.kind) {
+		char buffering[40];
+
+		snprintf(buffering, sizeof buffering, " (decoding ahead: %d%%)", buffered < 0 ? 0 : buffered > 99 ? 99 : buffered);
 		if (workers)
 			snprintf(more, sizeof more, ", %d workers", workers);
 		snprintf(line, sizeof line, "%s, %d Hz %s%s%s%s", kinds[tune.kind], tune.rate, tune.channels == 2 ? "stereo" : "mono",
 			 tune.half ? ", half rate" : "", more, paused ? (position() == 0 ? " (stopped)" : " (paused)") :
-			 state == BUFFERING ? " (decoding)" : state == ENDED ? " (ended)" : "");
+			 state == BUFFERING ? buffering : state == ENDED ? " (ended)" : "");
 	} else if (e && resume_ms > 0) {
 		snprintf(line, sizeof line, "Play goes on from %s", time_text(at, sizeof at, resume_ms));
 	} else {

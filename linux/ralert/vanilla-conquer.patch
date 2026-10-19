@@ -1959,10 +1959,389 @@ index 7ca9684..a8a299b 100644
  extern void Reset_Theater_Shapes(void);
  extern TheaterType LastTheater;
 diff --git a/redalert/findpath.cpp b/redalert/findpath.cpp
-index 7692f1c..d719e66 100644
+index 7692f1c..e67fbe3 100644
 --- a/redalert/findpath.cpp
 +++ b/redalert/findpath.cpp
-@@ -1256,12 +1256,75 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
+@@ -133,6 +133,33 @@ static unsigned int RightOverlap[MAP_CELL_TOTAL / 32]; // overlap list for the r
+ static CELL DestLocation;
+ static CELL StartLocation;
+ 
++#ifdef SHADEREMU
++#include "common/host.h"
++/*
++** A search may be another core's (ShaderEmu_Find_Path): each core has these for itself, 16
++** bytes apart from another's. The core is in the threshold's upper bits all the way down.
++*/
++#define PATH_CORES 4
++static struct alignas(16) path_core
++{
++    PathType path;
++    unsigned seen;  /* a bit for each answer the search has had */
++    unsigned turn;  /* which unit's searches this one is of */
++    FacingType moves[256];
++    unsigned int overlap[3][MAP_CELL_TOTAL / 32];
++} ShaderEmu_Core[PATH_CORES];
++static unsigned ShaderEmu_Path_Turn, ShaderEmu_Path_Stop; /* (a search of the turn that is stopped ends early) */
++#define PATH_STOPPED(who) ((who) && ShaderEmu_Core[who].turn == ShaderEmu_Path_Stop)
++static bool ShaderEmu_Enter_Check; /* RALERT_CHECK_ENTER=1: every kept answer is asked for again */
++static bool ShaderEmu_Walk_Old;    /* RALERT_WALK=old: the game's own edge walk */
++static bool ShaderEmu_Walk_Check;  /* RALERT_CHECK_PATHS: and both, compared */
++static unsigned ShaderEmu_Walks, ShaderEmu_Walks_Wrong;
++alignas(16) static unsigned short ShaderEmu_Enter_Now; /* the unit's turn while answers are kept (0: none are) */
++alignas(16) static unsigned char ShaderEmu_Enter[PATH_CORES][MAP_CELL_TOTAL]; /* (a core has its own) */
++alignas(16) static unsigned short ShaderEmu_Enter_At[PATH_CORES][MAP_CELL_TOTAL];
++int ShaderEmu_Path_Most; /* the highest threshold of the unit's searches (foot.cpp) */
++#endif
++
+ /***************************************************************************
+  * Point_Relative_To_Line -- Relation between a point and a line           *
+  *                                                                         *
+@@ -416,7 +443,15 @@ bool FootClass::Register_Cell(PathType* path, CELL cell, FacingType dir, int cos
+ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
+ {
+     CELL source = Coord_Cell(Coord); // Source expressed as cell
++#ifdef SHADEREMU
++    int who = threshhold >> 4;
++    PathType& path = ShaderEmu_Core[who].path;
++    unsigned int(&MainOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[0];
++    unsigned int(&LeftOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[1];
++    unsigned int(&RightOverlap)[MAP_CELL_TOTAL / 32] = ShaderEmu_Core[who].overlap[2];
++#else
+     static PathType path;            // Main path control.
++#endif
+     CELL next;                       // Next cell to enter
+     CELL startcell;                  // Cell we started in
+     FacingType direction;            // Working direction of look ahead.
+@@ -444,7 +479,14 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+ 
+     BStart(BENCH_FINDPATH);
+ 
+-    PathCount++;
++#ifdef SHADEREMU
++    if (!who) /* (another core's search is of the same unit: these are set, and not its to store) */
++#endif
++    {
++        PathCount++;
++        StartLocation = source;
++        DestLocation = dest;
++    }
+ 
+     if (Team && Team->Class->IsRoundAbout) {
+         unit_threat = (Team) ? Team->Risk : Risk();
+@@ -454,9 +496,6 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+         unit_threat = threat = -1;
+     }
+ 
+-    StartLocation = source;
+-    DestLocation = dest;
+-
+     /*
+     ** Initialize the path structure so that we can keep track of the
+     ** path.
+@@ -509,6 +548,10 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+     **    step #1.
+     */
+     while (path.Length < maxlen) {
++#ifdef SHADEREMU
++        if (PATH_STOPPED(who))
++            break;
++#endif
+ 
+     top_of_list:
+         /*
+@@ -653,6 +696,11 @@ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, M
+                 */
+                 if (left || right)
+                     break;
++#ifdef SHADEREMU
++                /* (a search whose two walks failed is often the first of the unit's several) */
++                if (!who)
++                    ShaderEmu_Path_Help();
++#endif
+ 
+                 /*
+                 **	If no path can be found to the intermediate cell, then
+@@ -777,7 +825,11 @@ end_of_list:
+  *   07/08/1991  CY : Created.                                                                 *
+  *   06/01/1992  JLB : Optimized & commented.                                                  *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++bool FootClass::ShaderEmu_Edge_Old(CELL start,
++#else
+ bool FootClass::Follow_Edge(CELL start,
++#endif
+                             CELL target,
+                             PathType* path,
+                             FacingType search,
+@@ -821,6 +873,10 @@ bool FootClass::Follow_Edge(CELL start,
+     **	or run out of moves.
+     */
+     while (path->Length < max_cells) {
++#ifdef SHADEREMU
++        if (PATH_STOPPED(threshhold >> 4))
++            return (false);
++#endif
+ 
+         /*
+         **	Look in all the adjacent cells to determine a passable one that
+@@ -1006,6 +1062,256 @@ bool FootClass::Follow_Edge(CELL start,
+     return (false);
+ }
+ 
++#ifdef SHADEREMU
++/*
++** The same walk for a search, its state in registers, a cell's answer read where Passable_Cell
++** keeps it and a cell new to the path put on it here: step for step the walk above
++** (RALERT_CHECK_PATHS compares; RALERT_WALK=old is the one above).
++*/
++bool FootClass::ShaderEmu_Walk(CELL start,
++                               CELL target,
++                               PathType* path,
++                               FacingType search,
++                               FacingType olddir,
++                               int threat,
++                               int max_cells,
++                               MoveType threshhold)
++{
++    static const unsigned char value[MOVE_COUNT] = {1, 1, 3, 8, 10, 0}; /* (Passable_Cell's) */
++    const int who = threshhold >> 4, most = threshhold & 15;
++    unsigned char* const enter = ShaderEmu_Enter[who];
++    unsigned short* const enter_at = ShaderEmu_Enter_At[who];
++    const unsigned short now = ShaderEmu_Enter_Now;
++    const int targetx = Cell_X(target), targety = Cell_Y(target);
++    const int dz = Cell_Y(start) - targety, dx = Cell_X(start) - targetx; /* (Point_Relative_To_Line's) */
++    const bool threats = threat != -1 && Session.Type == GAME_NORMAL;
++    const int turn = (int)search & 7, back = (-3 * (int)search) & 7, twice = (2 * (int)search) & 7;
++    FacingType* const command = path->Command;
++    unsigned int* const overlap = path->Overlap;
++    int length = path->Length, total = path->Cost;
++    unsigned seen = 0;
++    bool found = false;
++
++    /* (a cell's cost as Passable_Cell gives it, the answer kept for the unit's searches) */
++#define WALK_COST(cell, face, to, threats)                                                                             \
++    do {                                                                                                               \
++        CELL c_ = (cell);                                                                                              \
++        if ((unsigned)c_ >= MAP_CELL_TOTAL) {                                                                          \
++            to = Passable_Cell(c_, (FacingType)(face), (threats) ? threat : -1, threshhold);                           \
++            break;                                                                                                     \
++        }                                                                                                              \
++        int m_;                                                                                                        \
++        if (enter_at[c_] == now) {                                                                                     \
++            m_ = enter[c_];                                                                                            \
++        } else {                                                                                                       \
++            m_ = (int)Can_Enter_Cell(c_, (FacingType)(face));                                                          \
++            enter[c_] = (unsigned char)m_;                                                                             \
++            enter_at[c_] = now;                                                                                        \
++        }                                                                                                              \
++        seen |= 1u << m_;                                                                                              \
++        to = value[m_];                                                                                                \
++        if (m_ > (m_ == MOVE_CLOAK && Distance(Cell_Coord(c_)) > 0x0100 ? (int)MOVE_MOVING_BLOCK : most)) {            \
++            to = 0;                                                                                                    \
++        } else if ((threats)                                                                                           \
++                   && ::Distance(Cell_Coord(c_), Cell_Coord(DestLocation)) > (THREAT_THRESHOLD * CELL_LEPTON_W)        \
++                   && Map.Cell_Threat(c_, Owner()) > threat) {                                                         \
++            to = 0;                                                                                                    \
++        }                                                                                                              \
++    } while (0)
++#define WALK_SIDE(cell) ((Cell_X(cell) - targetx) * dz - (Cell_Y(cell) - targety) * dx)
++#define WALK_CLEAR(cell) (overlap[(cell) >> 5] &= ~(1u << ((cell)&31)))
++
++    CELL oldcell = start, newcell, firstcell = -1;
++    int newdir, firstdir = -1, cost = 0, oldval = 0, cellcount = 0;
++    bool online = true;
++
++    path->LastOverlap = -1;
++    path->LastFixup = -1;
++    while (length < max_cells) {
++        if (PATH_STOPPED(who)) {
++            break;
++        }
++        bool forceout = false;
++        newdir = olddir;
++        for (;;) {
++            bool forcefail = false;
++
++            newdir = (newdir + turn) & 7;
++            if (newdir & FACING_NE) {
++                int next = (newdir + turn) & 7;
++                CELL checkcell = (CELL)(oldcell + AdjacentCell[next]);
++                if (checkcell == target) {
++                    WALK_COST(checkcell, next, cost, threats);
++                    if (cost) {
++                        newdir = next;
++                        newcell = checkcell;
++                        break;
++                    }
++                }
++                checkcell = (CELL)(oldcell + AdjacentCell[newdir]);
++                int checkval = WALK_SIDE(checkcell);
++                forcefail = checkval && !online && (checkval ^ oldval) < 0;
++                if (forcefail && length > 0 && (newdir ^ 4) == (int)command[length - 1]) {
++                    forcefail = false;
++                }
++            }
++            if (newdir == (int)olddir) {
++                goto out;
++            }
++            newcell = (CELL)(oldcell + AdjacentCell[newdir]);
++            if (!forcefail) {
++                WALK_COST(newcell, newdir, cost, threats);
++                if (cost) {
++                    break;
++                }
++            }
++            if (newcell == target) {
++                forceout = true;
++                break;
++            }
++        }
++        if (!forceout) {
++            int pos = newcell >> 5;
++            unsigned bit = 1u << (newcell & 31); /* (as Register_Cell has them: TEST) */
++            if (!(overlap[pos] & bit)) {
++                command[length++] = (FacingType)newdir;
++                total += cost;
++                overlap[pos] |= bit;
++            } else if ((int)command[length - 1] == (newdir ^ 4)) {
++                /* Register_Cell: straight back, the cell this one is in is left */
++                CELL here = (CELL)(newcell + AdjacentCell[newdir ^ 4]);
++                WALK_CLEAR(here);
++                length--;
++            } else if (path->LastOverlap != newcell) {
++                /* Register_Cell: the path is cut back to where it was in that cell */
++                path->LastOverlap = newcell;
++                CELL at = path->Start;
++                int idx = 0, newlen = 0;
++                if (at != newcell) {
++                    while (idx < length) {
++                        at = (CELL)(at + AdjacentCell[command[idx++]]);
++                        if (at == newcell) {
++                            break;
++                        }
++                    }
++                    newlen = idx;
++                }
++                for (; idx < length; idx++) {
++                    int face = command[idx], gone;
++                    at = (CELL)(at + AdjacentCell[face]);
++                    WALK_COST(at, face, gone, false);
++                    total -= gone;
++                    WALK_CLEAR(at);
++                }
++                length = newlen;
++            } else {
++                /* Unravel_Loop: back along the path to a cell on the line that left it on a diagonal */
++                int curr_dir = newdir, idx = length;
++                CELL curr_pos = (CELL)(newcell + AdjacentCell[curr_dir ^ 4]);
++                FacingType* list = &command[idx - 1];
++                bool last_was_line = false, unravelled = false;
++                while (idx) {
++                    if (!WALK_SIDE(curr_pos) || last_was_line) {
++                        if ((curr_dir & 1) && curr_pos != path->LastFixup) {
++                            newcell = curr_pos;
++                            newdir = *(list - 1);
++                            length = idx;
++                            path->LastFixup = curr_pos;
++                            unravelled = true;
++                            break;
++                        }
++                        last_was_line = !last_was_line;
++                    }
++                    int gone;
++                    WALK_COST(curr_pos, *list, gone, false);
++                    total -= gone;
++                    WALK_CLEAR(curr_pos);
++                    curr_dir = *list--;
++                    curr_pos = (CELL)(curr_pos + AdjacentCell[curr_dir ^ 4]);
++                    idx--;
++                }
++                if (!unravelled) {
++                    goto out;
++                }
++                newdir = (newdir + twice) & 7;
++            }
++            int val = WALK_SIDE(newcell);
++            if (val) {
++                oldval = val;
++                online = false;
++            } else {
++                online = true;
++            }
++            if (++cellcount == MAX_PATH_EDGE_FOLLOW) {
++                goto out;
++            }
++        }
++        if (newcell == target) {
++            command[length] = END;
++            found = true;
++            goto out;
++        }
++        if (newcell == firstcell && newdir == firstdir) {
++            goto out;
++        }
++        if (firstcell == -1) {
++            firstcell = newcell;
++            firstdir = newdir;
++        }
++        olddir = (FacingType)((newdir + back) & 7);
++        oldcell = newcell;
++    }
++out:
++    path->Length = length;
++    path->Cost = total;
++    ShaderEmu_Core[who].seen |= seen;
++    return found;
++#undef WALK_COST
++#undef WALK_SIDE
++#undef WALK_CLEAR
++}
++
++bool FootClass::Follow_Edge(CELL start,
++                            CELL target,
++                            PathType* path,
++                            FacingType search,
++                            FacingType olddir,
++                            int threat,
++                            int threat_stage,
++                            int max_cells,
++                            MoveType threshhold)
++{
++    if (!path || !ShaderEmu_Enter_Now || ShaderEmu_Enter_Check || ShaderEmu_Walk_Old) {
++        return ShaderEmu_Edge_Old(start, target, path, search, olddir, threat, threat_stage, max_cells, threshhold);
++    }
++    if (!ShaderEmu_Walk_Check || (threshhold >> 4)) {
++        return ShaderEmu_Walk(start, target, path, search, olddir, threat, max_cells, threshhold);
++    }
++    /* RALERT_CHECK_PATHS: the walk both ways from the same path, and the game's own is the one kept */
++    PathType kept = *path, made;
++    FacingType kept_moves[MAX_MLIST_SIZE + 2], made_moves[MAX_MLIST_SIZE + 2];
++    unsigned int kept_overlap[MAP_CELL_TOTAL / 32], made_overlap[MAP_CELL_TOTAL / 32];
++    unsigned seen = ShaderEmu_Core[0].seen, made_seen;
++    memcpy(kept_moves, path->Command, sizeof(kept_moves));
++    memcpy(kept_overlap, path->Overlap, sizeof(kept_overlap));
++    bool found = ShaderEmu_Walk(start, target, path, search, olddir, threat, max_cells, threshhold);
++    made = *path;
++    made_seen = ShaderEmu_Core[0].seen;
++    memcpy(made_moves, path->Command, sizeof(made_moves));
++    memcpy(made_overlap, path->Overlap, sizeof(made_overlap));
++    *path = kept;
++    ShaderEmu_Core[0].seen = seen;
++    memcpy(path->Command, kept_moves, sizeof(kept_moves));
++    memcpy(path->Overlap, kept_overlap, sizeof(kept_overlap));
++    bool old = ShaderEmu_Edge_Old(start, target, path, search, olddir, threat, threat_stage, max_cells, threshhold);
++    ShaderEmu_Walks++;
++    ShaderEmu_Walks_Wrong += old != found || memcmp(&made, path, sizeof(made)) != 0 || made_seen != ShaderEmu_Core[0].seen
++                             || memcmp(made_moves, path->Command, sizeof(made_moves)) != 0
++                             || memcmp(made_overlap, path->Overlap, sizeof(made_overlap)) != 0;
++    return old;
++}
++#endif
++
+ /***********************************************************************************************
+  * Optimize_Moves -- Optimize the move list.                                                   *
+  *                                                                                             *
+@@ -1256,12 +1562,253 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
      return (-1);
  }
  
@@ -1972,10 +2351,25 @@ index 7692f1c..d719e66 100644
 +** changed between them (FootClass::Basic_Path: up to four, over the same cells; no version of
 +** it looks at the facing). RALERT_CHECK_ENTER=1 asks again every time and compares.
 +*/
-+static unsigned char ShaderEmu_Enter[MAP_CELL_TOTAL];
-+static unsigned short ShaderEmu_Enter_At[MAP_CELL_TOTAL];
-+static unsigned short ShaderEmu_Enter_Now; /* 0: nothing is kept */
 +static unsigned ShaderEmu_Enter_Kept, ShaderEmu_Enter_Wrong;
++static struct search
++{
++    CELL dest;
++    int maxlen;
++    int threshhold;
++    unsigned seen;
++    PathType path;
++    FacingType moves[256];
++    unsigned int overlap[MAP_CELL_TOTAL / 32];
++} ShaderEmu_Search[4];
++static int ShaderEmu_Searches;
++static int ShaderEmu_Path_Out[PATH_CORES]; /* the threshold core k is out searching with, less one */
++/* The search this core is in, and the unit's highest threshold (0: none that others could help) */
++static struct
++{
++    CELL dest;
++    int maxlen, now, most;
++} ShaderEmu_Path_Asked;
 +
 +static void ShaderEmu_Enter_Report(void)
 +{
@@ -1990,6 +2384,7 @@ index 7692f1c..d719e66 100644
 +
 +    if (check < 0) {
 +        check = getenv("RALERT_CHECK_ENTER") != NULL;
++        ShaderEmu_Enter_Check = check && atoi(getenv("RALERT_CHECK_ENTER"));
 +        if (check) {
 +            atexit(ShaderEmu_Enter_Report);
 +        }
@@ -1999,6 +2394,167 @@ index 7692f1c..d719e66 100644
 +        turn = 1;
 +    }
 +    ShaderEmu_Enter_Now = keep ? turn : 0;
++    ShaderEmu_Searches = 0;
++    /* searches nobody asked the result of are stopped, and waited for: the unit is put back next */
++    for (int k = 1; k < PATH_CORES; k++) {
++        if (ShaderEmu_Path_Out[k]) {
++            ShaderEmu_Path_Stop = ShaderEmu_Path_Turn;
++            host_path_wait(k);
++            ShaderEmu_Path_Out[k] = 0;
++        }
++    }
++    if (keep && ++ShaderEmu_Path_Turn == 0) {
++        ShaderEmu_Path_Turn = 1;
++    }
++}
++
++/*
++** Searches differ only in the threshold, which is compared with a cell's answer and nowhere
++** else: one that met no answer between its threshold and another's went the other's way,
++** step for step. Its result is put back as that search would leave it.
++*/
++static struct search* ShaderEmu_Path_Same(CELL dest, int maxlen, int threshhold)
++{
++    for (struct search* s = ShaderEmu_Search; s < ShaderEmu_Search + ShaderEmu_Searches; s++) {
++        int low = s->threshhold < threshhold ? s->threshhold : threshhold;
++        int high = s->threshhold < threshhold ? threshhold : s->threshhold;
++        if (s->dest == dest && s->maxlen == maxlen && !(s->seen & ((2u << high) - (2u << low)))) {
++            return s;
++        }
++    }
++    return NULL;
++}
++
++static struct search* ShaderEmu_Path_Keep(struct path_core* core, CELL dest, int maxlen, int threshhold)
++{
++    if (ShaderEmu_Searches == 4) {
++        return NULL;
++    }
++    struct search* s = &ShaderEmu_Search[ShaderEmu_Searches++];
++    s->dest = dest;
++    s->maxlen = maxlen;
++    s->threshhold = threshhold;
++    s->seen = core->seen;
++    s->path = core->path;
++    memcpy(s->moves, core->path.Command, maxlen);
++    memcpy(s->overlap, core->path.Overlap, sizeof(s->overlap));
++    return s;
++}
++
++/* A search on a worker core, into the core's own memory: the threshold and the core, and the place. */
++unsigned FootClass::ShaderEmu_Path_Job(unsigned object, unsigned what)
++{
++    int who = what >> 4 & 15;
++    struct path_core* core = &ShaderEmu_Core[who];
++
++    core->seen = 0;
++    core->turn = ShaderEmu_Path_Turn;
++    ((FootClass*)object)->Find_Path((CELL)(what >> 16), core->moves, what >> 8 & 255, (MoveType)(what & 255));
++    return 1;
++}
++
++/*
++** The unit's searches that may follow the one this core is in (the next thresholds up) begin
++** on worker cores, each with its own threshold: neither walk of this core's got round a block.
++*/
++void FootClass::ShaderEmu_Path_Help(void)
++{
++    void ShaderEmu_Threat_Settle(void); /* (cell.cpp: the threat the searches read, as it is) */
++    ShaderEmu_Threat_Settle();
++    CELL dest = ShaderEmu_Path_Asked.dest;
++    int maxlen = ShaderEmu_Path_Asked.maxlen, now = ShaderEmu_Path_Asked.now, most = ShaderEmu_Path_Asked.most;
++    int cores = most > now ? host_path_cores() : 0, k = 1;
++
++    for (int other = now + 1; other <= most && cores > 0; other++) {
++        bool out = ShaderEmu_Path_Same(dest, maxlen, other) != NULL;
++        for (int j = 1; j < PATH_CORES; j++) {
++            out |= ShaderEmu_Path_Out[j] == other + 1;
++        }
++        for (; k <= cores && ShaderEmu_Path_Out[k]; k++) {
++        }
++        if (out) {
++            continue;
++        }
++        if (k > cores || !host_path_post(k, ShaderEmu_Path_Job, (unsigned)(uintptr_t)this,
++                                         (unsigned)dest << 16 | (unsigned)maxlen << 8 | k << 4 | other)) {
++            break; /* (no worker is free) */
++        }
++        ShaderEmu_Path_Out[k] = other + 1;
++    }
++}
++
++/*
++** Find_Path, or what it would find. A search whose walks fail has the unit's next ones
++** made by worker cores meanwhile (nothing changes between a unit's searches, and a search
++** stores only into its core's own memory). RALERT_CHECK_PATHS=1 compares.
++*/
++PathType* FootClass::ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
++{
++    static int check = -1;
++    static unsigned reused, helped, wrong;
++    struct path_core* core = &ShaderEmu_Core[0];
++    struct search* s;
++    PathType* path;
++
++    if (check < 0) {
++        check = getenv("RALERT_CHECK_PATHS") != NULL;
++        ShaderEmu_Walk_Check = check;
++        ShaderEmu_Walk_Old = getenv("RALERT_WALK") && !strcmp(getenv("RALERT_WALK"), "old");
++        if (check) {
++            atexit([]() {
++                fprintf(stderr, "ralert: %u searches not run again and %u another core's, %u of them wrong\n", reused,
++                        helped, wrong);
++                fprintf(stderr, "ralert: %u edge walks made both ways, %u of them wrong\n", ShaderEmu_Walks,
++                        ShaderEmu_Walks_Wrong);
++            });
++        }
++    }
++    if (!ShaderEmu_Enter_Now || !final_moves || maxlen > 200 || threshhold > 15) {
++        return Find_Path(dest, final_moves, maxlen, threshhold);
++    }
++    s = ShaderEmu_Path_Same(dest, maxlen, threshhold);
++    if (s) {
++        reused++;
++    } else {
++        for (int k = 1; k < PATH_CORES; k++) {
++            if (ShaderEmu_Path_Out[k] == threshhold + 1) {
++                host_path_wait(k);
++                ShaderEmu_Path_Out[k] = 0;
++                s = ShaderEmu_Path_Keep(&ShaderEmu_Core[k], dest, maxlen, threshhold);
++                helped += s != NULL;
++            }
++        }
++    }
++    if (s) {
++        if (check) {
++            path = Find_Path(dest, final_moves, maxlen, threshhold);
++            PathType same = s->path;
++            same.Command = final_moves;
++            same.Overlap = path->Overlap;
++            wrong += memcmp(path, &same, sizeof(same)) != 0 || memcmp(final_moves, s->moves, s->path.Length) != 0
++                     || memcmp(path->Overlap, s->overlap, sizeof(s->overlap)) != 0;
++            return path;
++        }
++        path = &core->path;
++        *path = s->path;
++        path->Command = final_moves;
++        path->Overlap = core->overlap[0];
++        memcpy(final_moves, s->moves, maxlen);
++        memcpy(path->Overlap, s->overlap, sizeof(s->overlap));
++        return path;
++    }
++
++    ShaderEmu_Path_Asked.dest = dest;
++    ShaderEmu_Path_Asked.maxlen = maxlen;
++    ShaderEmu_Path_Asked.now = threshhold;
++    ShaderEmu_Path_Asked.most = ShaderEmu_Path_Most;
++    core->seen = 0;
++    path = Find_Path(dest, final_moves, maxlen, threshhold);
++    ShaderEmu_Path_Asked.most = 0;
++    if (!path->Cost) { /* (a path found is the unit's last search: Basic_Path) */
++        ShaderEmu_Path_Keep(core, dest, maxlen, threshhold);
++    }
++    return path;
 +}
 +#endif
 +
@@ -2006,23 +2562,24 @@ index 7692f1c..d719e66 100644
  {
 +#ifdef SHADEREMU
 +    MoveType move;
++    int who = threshhold >> 4;
++    threshhold = (MoveType)(threshhold & 15);
 +    if (ShaderEmu_Enter_Now && (unsigned)cell < MAP_CELL_TOTAL) {
-+        if (ShaderEmu_Enter_At[cell] == ShaderEmu_Enter_Now) {
-+            static int check = -1;
-+            if (check < 0) {
-+                check = getenv("RALERT_CHECK_ENTER") && atoi(getenv("RALERT_CHECK_ENTER"));
++        if (ShaderEmu_Enter_At[who][cell] == ShaderEmu_Enter_Now) {
++            move = (MoveType)ShaderEmu_Enter[who][cell];
++            if (!who) { /* (the counts and the check are the first core's) */
++                ShaderEmu_Enter_Kept++;
++                ShaderEmu_Enter_Wrong += ShaderEmu_Enter_Check && move != Can_Enter_Cell(cell, face);
 +            }
-+            move = (MoveType)ShaderEmu_Enter[cell];
-+            ShaderEmu_Enter_Kept++;
-+            ShaderEmu_Enter_Wrong += check && move != Can_Enter_Cell(cell, face);
 +        } else {
 +            move = Can_Enter_Cell(cell, face);
-+            ShaderEmu_Enter[cell] = (unsigned char)move;
-+            ShaderEmu_Enter_At[cell] = ShaderEmu_Enter_Now;
++            ShaderEmu_Enter[who][cell] = (unsigned char)move;
++            ShaderEmu_Enter_At[who][cell] = ShaderEmu_Enter_Now;
 +        }
 +    } else {
 +        move = Can_Enter_Cell(cell, face);
 +    }
++    ShaderEmu_Core[who].seen |= 1u << move;
 +#else
      MoveType move = Can_Enter_Cell(cell, face);
 +#endif
@@ -2073,7 +2630,7 @@ index dfc44b4..815e8e0 100644
      if (FlashCount) {
          FlashCount--;
 diff --git a/redalert/foot.cpp b/redalert/foot.cpp
-index f31f0d8..f066a40 100644
+index f31f0d8..b7ffe7c 100644
 --- a/redalert/foot.cpp
 +++ b/redalert/foot.cpp
 @@ -280,6 +280,21 @@ bool FootClass::Mark(MarkType mark)
@@ -2106,18 +2663,21 @@ index f31f0d8..f066a40 100644
          }
          return (true);
      }
-@@ -311,6 +327,10 @@ bool FootClass::Mark(MarkType mark)
+@@ -311,6 +327,13 @@ bool FootClass::Mark(MarkType mark)
   * HISTORY:                                                                                    *
   *   10/17/1994 JLB : Created.                                                                 *
   *=============================================================================================*/
 +#ifdef SHADEREMU
 +void ShaderEmu_Enter_Keep(bool keep);
++extern int ShaderEmu_Path_Most;
++/* (a search that must come out as an earlier one of this object's is not run again: findpath.cpp) */
++#define Find_Path ShaderEmu_Find_Path
 +#endif
 +
  bool FootClass::Basic_Path(void)
  {
      assert(IsActive);
-@@ -364,6 +384,9 @@ bool FootClass::Basic_Path(void)
+@@ -364,6 +387,9 @@ bool FootClass::Basic_Path(void)
  
          if (!skip_path) {
              Mark(MARK_UP);
@@ -2127,7 +2687,17 @@ index f31f0d8..f066a40 100644
              Path[0] = FACING_NONE; // Probably not necessary, but...
  
              /*
-@@ -463,6 +486,9 @@ bool FootClass::Basic_Path(void)
+@@ -398,6 +424,9 @@ bool FootClass::Basic_Path(void)
+             **	failure, then try a more severe path method until the
+             **	maximum severity is reached.
+             */
++#ifdef SHADEREMU
++            ShaderEmu_Path_Most = maxtype; /* (the searches go up to it: findpath.cpp's helpers) */
++#endif
+             for (;;) {
+                 path = Find_Path(cell, &workpath1[0], sizeof(workpath1), PathThreshhold);
+                 if (path && path->Cost) {
+@@ -463,6 +492,9 @@ bool FootClass::Basic_Path(void)
                  memcpy(&Path[0], &workpath1[0], min(path->Length, (int)sizeof(Path)));
              }
  
@@ -2137,6 +2707,26 @@ index f31f0d8..f066a40 100644
              Mark(MARK_DOWN);
          }
  
+diff --git a/redalert/foot.h b/redalert/foot.h
+index 3272119..f77907f 100644
+--- a/redalert/foot.h
++++ b/redalert/foot.h
+@@ -373,6 +373,15 @@ public:
+ private:
+     int Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold);
+     PathType* Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
++#ifdef SHADEREMU
++    PathType* ShaderEmu_Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold);
++    static unsigned ShaderEmu_Path_Job(unsigned object, unsigned what);
++    void ShaderEmu_Path_Help(void);
++    bool ShaderEmu_Edge_Old(CELL start, CELL target, PathType* path, FacingType search, FacingType olddir, int threat,
++                            int threat_stage, int max_cells, MoveType threshhold);
++    bool ShaderEmu_Walk(CELL start, CELL target, PathType* path, FacingType search, FacingType olddir, int threat,
++                        int max_cells, MoveType threshhold);
++#endif
+     void Debug_Draw_Map(char const* txt, CELL start, CELL dest, bool pause);
+     void Debug_Draw_Path(PathType* path);
+     bool Follow_Edge(CELL start,
 diff --git a/redalert/gscreen.cpp b/redalert/gscreen.cpp
 index 6940c55..46a7091 100644
 --- a/redalert/gscreen.cpp
@@ -3050,7 +3640,7 @@ index db1ccf6..0ede3eb 100644
      /*
      **	Make room if the insertion spot is not at the end of the vector.
 diff --git a/redalert/map.cpp b/redalert/map.cpp
-index 471bef5..bc4a14a 100644
+index 471bef5..fe45790 100644
 --- a/redalert/map.cpp
 +++ b/redalert/map.cpp
 @@ -60,6 +60,46 @@
@@ -3237,7 +3827,154 @@ index 471bef5..bc4a14a 100644
      int threat = HouseClass::As_Pointer(house)->Regions[Map.Cell_Region(Map[cell].Cell_Number())].Threat_Value();
      // using function for IsVisible so we have different results for different players - JAS 2019/09/30
      if (!threat && Map[cell].Is_Visible(house)) {
-@@ -2423,6 +2512,11 @@ bool MapClass::Destroy_Bridge_At(CELL cell)
+@@ -1798,6 +1887,44 @@ ObjectClass* MapClass::Close_Object(COORDINATE coord) const
+  * HISTORY:                                                                                    *
+  *   09/22/1995 JLB : Created.                                                                 *
+  *=============================================================================================*/
++#ifdef SHADEREMU
++/* Each cell's passability for a kind of zone, asked once a reset: nothing a fill does changes it */
++static unsigned char Zone_Open_Bits[MZONE_COUNT][MAP_CELL_TOTAL / 8];
++static bool Zone_Bits = true; // (off: the game's own question, for RALERT_CHECK_ZONES)
++
++static inline bool Zone_Open(CellClass const& cellptr, CELL cell, MZoneType check)
++{
++    if (!Zone_Bits) {
++        return cellptr.Is_Clear_To_Move(check == MZONE_WATER ? SPEED_FLOAT : SPEED_TRACK, true, true, -1, check);
++    }
++    return Zone_Open_Bits[check][cell >> 3] & (1 << (cell & 7));
++}
++
++/* The zones' numbers as the game's own loop gives them: only cells of the map can begin a zone */
++static void Zone_Seed(MapClass& map, MZoneType check)
++{
++    SpeedType speed = check == MZONE_WATER ? SPEED_FLOAT : SPEED_TRACK;
++    memset(Zone_Open_Bits[check], 0, sizeof(Zone_Open_Bits[check]));
++    for (int y = map.MapCellY; y < map.MapCellY + map.MapCellHeight; y++) {
++        for (int x = map.MapCellX; x < map.MapCellX + map.MapCellWidth; x++) {
++            CELL cell = XY_Cell(x, y);
++            if (map[cell].Is_Clear_To_Move(speed, true, true, -1, check)) {
++                Zone_Open_Bits[check][cell >> 3] |= 1 << (cell & 7);
++            }
++        }
++    }
++    int zone = 1;
++    for (int y = map.MapCellY; y < map.MapCellY + map.MapCellHeight; y++) {
++        for (int x = map.MapCellX; x < map.MapCellX + map.MapCellWidth; x++) {
++            CELL cell = XY_Cell(x, y);
++            if (Zone_Open(map[cell], cell, check) && !map[cell].Zones[check] && map.Zone_Span(cell, zone, check)) {
++                zone++;
++            }
++        }
++    }
++}
++#endif
++
+ bool MapClass::Zone_Reset(int method)
+ {
+     /*
+@@ -1817,6 +1944,36 @@ bool MapClass::Zone_Reset(int method)
+             Array[index].Zones[MZONE_WATER] = 0;
+         }
+     }
++#ifdef SHADEREMU
++    // RALERT_CHECK_ZONES=1: the game's own fill after it, and the cells where the two differ counted
++    static int check_zones = -1;
++    static unsigned resets, wrong;
++    static unsigned char ours[MAP_CELL_TOTAL][MZONE_COUNT];
++    if (check_zones < 0) {
++        check_zones = getenv("RALERT_CHECK_ZONES") != NULL;
++        if (check_zones) {
++            atexit([]() { fprintf(stderr, "ralert: %u zone resets checked, %u cells of them wrongly\n", resets, wrong); });
++        }
++    }
++    for (int check = MZONE_FIRST; check < MZONE_COUNT; check++) {
++        if (method & (1 << check)) {
++            Zone_Seed(*this, (MZoneType)check);
++        }
++    }
++    if (!check_zones) {
++        return (false);
++    }
++    for (int index = 0; index < MAP_CELL_TOTAL; index++) {
++        memcpy(ours[index], Array[index].Zones, MZONE_COUNT);
++        for (int check = MZONE_FIRST; check < MZONE_COUNT; check++) {
++            if (method & (1 << check)) {
++                Array[index].Zones[check] = 0;
++            }
++        }
++    }
++    resets++;
++    Zone_Bits = false;
++#endif
+ 
+     /*
+     **	Normal zone recalculation.
+@@ -1866,6 +2023,12 @@ bool MapClass::Zone_Reset(int method)
+         }
+     }
+ 
++#ifdef SHADEREMU
++    Zone_Bits = true;
++    for (int index = 0; index < MAP_CELL_TOTAL; index++) {
++        wrong += memcmp(ours[index], Array[index].Zones, MZONE_COUNT) != 0;
++    }
++#endif
+     return (false);
+ }
+ 
+@@ -1914,7 +2077,11 @@ int MapClass::Zone_Span(CELL cell, int zone, MZoneType check)
+     for (; xbegin >= MapCellX; xbegin--) {
+         CellClass* cellptr = &(*this)[XY_Cell(xbegin, y)];
+         if (cellptr->Zones[check] != 0
++#ifdef SHADEREMU
++            || !Zone_Open(*cellptr, XY_Cell(xbegin, y), check)) {
++#else
+             || (!cellptr->Is_Clear_To_Move(check == MZONE_WATER ? SPEED_FLOAT : SPEED_TRACK, true, true, -1, check))) {
++#endif
+ 
+             /*
+             **	Special short circuit code to bail from this entire routine if
+@@ -1941,7 +2108,11 @@ int MapClass::Zone_Span(CELL cell, int zone, MZoneType check)
+     for (; xend < MapCellX + MapCellWidth; xend++) {
+         CellClass* cellptr = &(*this)[XY_Cell(xend, y)];
+         if (cellptr->Zones[check] != 0
++#ifdef SHADEREMU
++            || !Zone_Open(*cellptr, XY_Cell(xend, y), check)) {
++#else
+             || (!cellptr->Is_Clear_To_Move(check == MZONE_WATER ? SPEED_FLOAT : SPEED_TRACK, true, true, -1, check))) {
++#endif
+             xend--;
+             break;
+         }
+@@ -1964,10 +2135,27 @@ int MapClass::Zone_Span(CELL cell, int zone, MZoneType check)
+     **	end of the scan. This is necessary because diagonals are considered
+     **	adjacent.
+     */
++#ifdef SHADEREMU
++    // (a cell that Zone_Span would refuse at once is not asked: the same tests, in its order)
++    auto open = [&](CELL c) {
++        int cx = Cell_X(c), cy = Cell_Y(c);
++        return cy >= MapCellY && cy < MapCellY + MapCellHeight && cx >= MapCellX && cx < MapCellX + MapCellWidth
++               && !(*this)[c].Zones[check] && Zone_Open((*this)[c], c, check);
++    };
++    for (int x = xbegin - 1; x <= xend; x++) {
++        if (open(XY_Cell(x, y - 1))) {
++            filled += Zone_Span(XY_Cell(x, y - 1), zone, check);
++        }
++        if (open(XY_Cell(x, y + 1))) {
++            filled += Zone_Span(XY_Cell(x, y + 1), zone, check);
++        }
++    }
++#else
+     for (int x = xbegin - 1; x <= xend; x++) {
+         filled += Zone_Span(XY_Cell(x, y - 1), zone, check);
+         filled += Zone_Span(XY_Cell(x, y + 1), zone, check);
+     }
++#endif
+     return (filled);
+ }
+ 
+@@ -2423,6 +2611,11 @@ bool MapClass::Destroy_Bridge_At(CELL cell)
   * HISTORY:                                                                                    *
   *   07/28/1996 JLB : Created.                                                                 *
   *=============================================================================================*/
@@ -3249,7 +3986,7 @@ index 471bef5..bc4a14a 100644
  void MapClass::Detach(TARGET target, bool)
  {
      /*
-@@ -2439,11 +2533,62 @@ void MapClass::Detach(TARGET target, bool)
+@@ -2439,11 +2632,62 @@ void MapClass::Detach(TARGET target, bool)
          /*
          **	Loop through all cells; remove any reference to this trigger
          */
