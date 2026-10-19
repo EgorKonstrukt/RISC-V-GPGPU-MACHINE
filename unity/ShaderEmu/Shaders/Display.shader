@@ -13,6 +13,7 @@ Shader "ShaderEmu/Display"
         [ToggleUI] _Power ("Machine is on", Float) = 1
         [ToggleUI] _Raw ("One pixel a texel", Float) = 0
         _RawSize ("Size of the target with _Raw", Vector) = (2048, 1024, 0, 0)
+        _StateRow ("Row of the state texture RAM starts in (EmuUdonCpu: its copy of the display)", Float) = 64
         _HostPointer ("The host's pointer in display pixels (z: it is on the display)", Vector) = (0, 0, 0, 0)
     }
     SubShader
@@ -29,7 +30,7 @@ Shader "ShaderEmu/Display"
 
             Texture2D<uint4> _State;
             Texture2D<float4> _GpuTarget;
-            float _Aspect, _Brightness, _Power, _Raw;
+            float _Aspect, _Brightness, _Power, _Raw, _StateRow;
             float4 _RawSize, _HostPointer;
             float4 _Off;
 
@@ -49,7 +50,7 @@ Shader "ShaderEmu/Display"
             }
 
             uint4 ram(uint index) {
-                return _State[uint2(index % 2048, 64 + index / 2048)];
+                return _State[uint2(index % 2048, (uint)((int)_StateRow + (int)(index / 2048)))];
             }
             uint word(uint4 t, uint i) {
                 return i == 0 ? t.r : i == 1 ? t.g : i == 2 ? t.b : t.a;

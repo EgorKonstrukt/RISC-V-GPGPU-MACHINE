@@ -72,8 +72,11 @@
 //   4 opaque   5 alpha blend   6 additive   7 multiply     no depth
 #define FRAGMENT_PASS(mode) (((mode) >> 16) & 7)
 
+#ifndef GPU_STATE_ROW
+#define GPU_STATE_ROW 64u   // the state texture's row RAM starts in
+#endif
 uint4 ram(uint index) {
-    return GPU_STATE[uint2(index % 2048, 64 + index / 2048)];
+    return GPU_STATE[uint2(index % 2048, GPU_STATE_ROW + index / 2048)];
 }
 uint texel_of(uint address) {
     return (address & 0x7fffffff) >> 4;

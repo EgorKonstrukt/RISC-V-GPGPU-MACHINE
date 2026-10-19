@@ -13,6 +13,8 @@ Texture2D<float4> _Data_MTD_B;
 Texture2D<float4> _Data_MTD_A;
 #define GPU_ROM
 #define GPU_STATE _State
+float _StateRow;
+#define GPU_STATE_ROW ((uint)(int)_StateRow)
 #define GPU_PASS_UNIFORMS
 #define _GpuPasses 0xffu
 // the picture is 1280x720 at most here

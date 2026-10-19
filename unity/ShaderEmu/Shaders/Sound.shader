@@ -13,6 +13,7 @@ Shader "ShaderEmu/Sound"
         _SoundCursorLo ("The sample the ring starts at, low half", Int) = 0
         _SoundCursorHi ("and high half", Int) = 0
         _Volume ("Volume", Float) = 0.1
+        _StateRow ("Row of the state texture RAM starts in (EmuUdonCpu: its gathered copy)", Float) = 64
     }
     SubShader
     {
@@ -35,12 +36,13 @@ Shader "ShaderEmu/Sound"
             Texture2D<float4> _Data_MTD_B;
             Texture2D<float4> _Data_MTD_A;
             uniform uint _SoundCursorLo, _SoundCursorHi;
-            uniform float _Volume;
+            uniform float _Volume, _StateRow;
             #define SOUND_CURSOR (_SoundCursorLo | (_SoundCursorHi << 16))
             #define SOUND_MIXED 1
             #define SOUND_RATE 0
             #define GPU_ROM
             #define GPU_STATE _State
+            #define GPU_STATE_ROW ((uint)(int)_StateRow)
             #define GPU_SOUND
             #include "src/gpu.cginc"
 
