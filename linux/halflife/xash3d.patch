@@ -3635,10 +3635,34 @@ index 3ff8edbf..72c9a6d4 100644
  	if( MSG_CheckOverflow( &msg ))
  	{
 diff --git a/engine/server/sv_game.c b/engine/server/sv_game.c
-index 37e79df8..5e5c7dcc 100644
+index 37e79df8..e525cd0d 100644
 --- a/engine/server/sv_game.c
 +++ b/engine/server/sv_game.c
-@@ -1678,7 +1678,15 @@ static edict_t* GAME_EXPORT pfnFindClientInPVS( edict_t *pEdict )
+@@ -23,6 +23,9 @@ GNU General Public License for more details.
+ #include "const.h"
+ #include "render_api.h"	// modelstate_t
+ #include "ref_common.h" // decals
++#if XASH_SHADEREMU
++#include "se_server.h"
++#endif
+ 
+ // GameAPI functions declarations
+ static int GAME_EXPORT pfnModelIndex( const char *m );
+@@ -1384,6 +1387,13 @@ static void GAME_EXPORT pfnChangeLevel( const char *level, const char *landmark
+ 	}
+ #else
+ 	Q_strncpy( landname, landmark, sizeof( landname ));
++#endif
++#if XASH_SHADEREMU	// (the next map is not read on the server's worker: core 0 changes the level)
++	if( SE_OffCore0( ))
++	{
++		Cbuf_AddTextf( "changelevel2 \"%s\" \"%s\"\n", level, landname );
++		return;
++	}
+ #endif
+ 	SV_QueueChangeLevel( level, landname );
+ }
+@@ -1678,7 +1688,15 @@ static edict_t* GAME_EXPORT pfnFindClientInPVS( edict_t *pEdict )
  	if( !SV_IsValidEdict( pEdict ))
  		return svgame.edicts;
  
@@ -3654,7 +3678,7 @@ index 37e79df8..5e5c7dcc 100644
  
  	// don't merge visibility for portal entity, only for monsters
  	bMergePVS = FBitSet( pEdict->v.flags, FL_MONSTER ) ? true : false;
-@@ -3841,6 +3849,14 @@ pfnNumberOfEntities
+@@ -3841,6 +3859,14 @@ pfnNumberOfEntities
  returns actual entity count
  =============
  */
@@ -3669,7 +3693,7 @@ index 37e79df8..5e5c7dcc 100644
  int GAME_EXPORT pfnNumberOfEntities( void )
  {
  	int	total = 0;
-@@ -4301,6 +4317,13 @@ pfnCheckVisibility
+@@ -4301,6 +4327,13 @@ pfnCheckVisibility
  
  =============
  */
@@ -4294,7 +4318,7 @@ index d30047fc..fce4e9c4 100644
  	{
  		Con_Printf( "%s: failed to delete file %s (%s): %s\n", __func__, real_path, path, strerror( errno ));
 diff --git a/filesystem/pak.c b/filesystem/pak.c
-index 302c3238..55a521bf 100644
+index 302c3238..f988b944 100644
 --- a/filesystem/pak.c
 +++ b/filesystem/pak.c
 @@ -85,6 +85,36 @@ static int FS_SortPak( const void *_a, const void *_b )
@@ -4346,7 +4370,7 @@ index 302c3238..55a521bf 100644
  
  #ifdef XASH_REDUCE_FD
  	// will reopen when needed
-@@ -199,9 +233,56 @@ FS_OpenPackedFile
+@@ -199,9 +233,57 @@ FS_OpenPackedFile
  Open a packed file using its package file descriptor
  ===========
  */
@@ -4356,6 +4380,7 @@ index 302c3238..55a521bf 100644
 +int SE_MediaWorkers( void );
 +
 +// A file in deflate segments (linux/halflife/repack.py) inflated on the workers when it is opened.
++#define FS_REFUSED ((file_t *)-1)	// (packed, on a worker: not opened, its packed bytes are no file)
 +static file_t *FS_OpenInflated( searchpath_t *search, const dpackfile_t *pfile )
 +{
 +	int fd = search->pack->handle->handle;
@@ -4369,7 +4394,7 @@ index 302c3238..55a521bf 100644
 +	if( mcw_on_worker( ))
 +	{
 +		Con_Printf( S_ERROR "%s: %s is packed and this is a worker\n", __func__, pfile->name );
-+		return NULL;
++		return FS_REFUSED;
 +	}
 +	packed = malloc( pfile->filelen );
 +	if( posix_memalign( (void **)&out, 16, ( total + 15 ) & ~15u ))
@@ -4398,12 +4423,12 @@ index 302c3238..55a521bf 100644
 +#if XASH_SHADEREMU
 +	file_t *inflated = FS_OpenInflated( search, pfile );
 +	if( inflated )
-+		return inflated;
++		return inflated == FS_REFUSED ? NULL : inflated;
 +#endif
  
  	return FS_OpenHandle( search, search->pack->handle->handle, pfile->filepos, pfile->filelen );
  }
-@@ -249,9 +330,16 @@ FS_Search_PAK
+@@ -249,9 +331,16 @@ FS_Search_PAK
  static void FS_Search_PAK( searchpath_t *search, stringlist_t *list, const char *pattern, int caseinsensitive )
  {
  	string temp;

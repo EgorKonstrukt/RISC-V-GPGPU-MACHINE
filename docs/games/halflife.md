@@ -146,6 +146,12 @@ it on core 0). The packet's entities are packed by four parts on three packers a
 server's helper (`SE_PackJob` in `xash3d.patch`); the client and the server step their
 entity rings by whole blocks, and the light styles skip the time of styles not used.
 
+A packed file (a map, a model, a sprite) is not opened on a worker: `FS_OpenInflated` refuses it
+and the open fails. A level change the game makes in the server's frame (a `trigger_changelevel`:
+hldemo1's elevator) is therefore a `changelevel2` command for core 0 (`pfnChangeLevel`), which
+reads the next map with the server settled. Before 19 October 2026 the worker read the packed
+bytes as the map and its frame never ended: the game stood in the elevator.
+
 On 18 October 2026 (`rvc_cpu`, the card's model: `RVC_SOUND`, `RVC_WCACHE`, `RVC_ADFAULT`):
 
 | | start, 3 to 25 s | the fight, 31 to 45 s |
