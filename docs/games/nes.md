@@ -360,6 +360,10 @@ sums as they were (`bf00e7da`, `fca83c4e`):
 | 5.46 ms a pass (1.5M) | 34.1 to 47.5 | 37.4 to 59.2 | 33.9 to 42.6 |
 | as the card goes (RTX 5090, in turn twice) | 121.9 to 165.8 | 137 to 216 | |
 
+`NES_FAST=1 NES_FRAMES=1200 nes thwaite` on 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`),
+the last 60 frames: 373% of a NES's speed on the shader machine, 332% on `rvc_lean`, 653% on the
+compute machine, 5,263% on the CPU harness.
+
 Held to its time, 60 frames of a Thwaite game took 1,028 to 1,108 ms at 2M and take 1,000,
 59 or 60 of them shown, the first core resting in 36% of its passes; at 1.5M they took 1,524
 to 2,124 and take 999 to 1,076. So it holds a NES's speed at 2M with a third to spare and is

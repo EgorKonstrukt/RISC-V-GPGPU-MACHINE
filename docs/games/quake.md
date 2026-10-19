@@ -126,7 +126,9 @@ A frame standing still at the start of the first level, in instructions:
 | poses and particles as the GPU takes them, 2D by `seglSprite` | 195k |
 
 The machine runs 3.7 to 3.9 million instructions a second (D3D11, fxc2), so 250k a frame is
-15 frames a second. `quakestat:` lines, every five seconds, say where a frame went:
+15 frames a second. `timedemo demo1` on 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`):
+85.4 frames a second on the shader machine (9.3 million instructions a second, 3.7 of them core
+0's), 76.5 on `rvc_lean`, 125.7 on the compute machine and 146.1 on the CPU harness. `quakestat:` lines, every five seconds, say where a frame went:
 
 | | A frame | Server | In view | Level | Models | Particles, weapon | 2D, swap | Frames/s |
 |---|---|---|---|---|---|---|---|---|

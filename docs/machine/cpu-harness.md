@@ -9,7 +9,9 @@ instructions a second on one thread (on 18 October 2026, 2.2 to 4 times what it 
 the common instructions in handlers that jump to each other, the rest in the old step): Red
 Alert's check, from the shell prompt through the window system's start, the opening movie on
 three worker cores and 300 frames of a mission, is under 3 seconds here and 90 in
-`rvc_harness`, with the same state sum.
+`rvc_harness`, with the same state sum. `rvc_harness --cpu` on an i7-13650HX (19 October 2026,
+`docs/machine/speed.md`): `factor 999999999989` at 111 million a second, `seq | gzip` at 49, Quake's
+timedemo 146 frames a second and Doom's 295.
 
 The worker cores run on host threads (`--threads N`, or `RVC_THREADS`; the default is half the
 computer's threads, at most 8), after core 0's part of each pass and only when the last pass's

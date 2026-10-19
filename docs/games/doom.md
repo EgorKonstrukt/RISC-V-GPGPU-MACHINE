@@ -32,6 +32,10 @@ Every five seconds Doom prints its frame rate and those two costs (`doomstat:` l
 | before | 50k to 70k | 60k to 160k | 4 to 9 (measured at 2.0M/s) | |
 | now | 25k to 43k | 45k to 60k | 19 to 35, mostly over 26 | 27 to 35 |
 
+`DOOM_VIEW=told doom -1 -timedemo demo1` (5,026 tics, as fast as it goes) on 19 October 2026 on
+an RTX 5070 laptop (`docs/machine/speed.md`): 60.0 frames a second on the shader machine, 53.5 on
+`rvc_lean`, 101.0 on the compute machine, 295.2 on the CPU harness.
+
 35 is the most there is: Doom draws once a tic. The other two demos run at 21 to 35 on
 D3D11. The one window of the first demo that fell to 19 is its largest fight, where a tic
 is 43k. Where the time went, and what was done:

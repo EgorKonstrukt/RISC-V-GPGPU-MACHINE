@@ -100,6 +100,11 @@ pictures a second to 28 to 31, 640 x 480 from 6.8 to 8.3 to 8.7; a test's pictur
 from 75 to 94 ms to 64 to 70. Of the workers' instructions (255 times 8,192 a pass) 38% were
 run at 320 x 240 and 65% at 640 x 480; now 75% and 94%.
 
+`RAY_FRAMES=60 nxray` on 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`), a picture:
+44.2 ms on the shader machine (183 million instructions a second, 178 of them the workers'), 46.1 on
+`rvc_lean`, 12.2 on the compute machine (337 million), 60.2 on the CPU harness, 6.6 s on core 0 alone
+(the plain compute shader).
+
 A picture of 320 x 240 is 80 thousand instructions a share, ten passes, and took seventeen:
 the 255 jobs were four passes of the first core to give out (the last worker began that much
 later) and a pass to take back, the scene was made while every worker waited, and the picture
@@ -434,6 +439,10 @@ core (`docs/machine/tick-costs.md`) is 6% less time; on 255 workers it was 4% mo
 1,365), and `nxray` 5% fewer pictures a second. A worker's time is its instructions. And
 tiles of four pixels for 160 x 120 (twice as many a worker): the dearest share was 1.08 times
 the mean where it is 1.14, and the picture took 117 to 120 ms where it takes 102.
+
+320 x 240 with 8 samples on 19 October 2026 on an RTX 5070 laptop (`docs/machine/speed.md`), the tree
+and the picture: 375 and 1,655 ms on the shader machine, 407 and 1,721 on `rvc_lean`, 191 and 945 on
+the compute machine, 57 and 2,152 on the CPU harness.
 
 ### Fewer instructions a sample (13 October 2026, later)
 

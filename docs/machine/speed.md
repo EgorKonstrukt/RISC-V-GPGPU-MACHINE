@@ -52,6 +52,20 @@ prints them (the counters' window there falls after the demo). The compute machi
 stopped a worker at its start (`experiments/rv32_min/README.md`, "Cores"); its number is from the next.
 The CPU column is the host's processor, not a card: core 0 there is 10 to 60 million a second.
 
+And five more, on the four machines that run them in minutes, as each program reports itself:
+
+| | CPU | fragment | fragment, lean | compute |
+|---|---|---|---|---|
+| nxphys, `PHYS_SCENE=1 PHYS_STEPS=120 nxphys`: the wall's 120 substeps | 543 ms | 1,494 ms | 1,499 ms | 426 ms |
+| Tiberian Dawn, `TDAWN_AUTO=1 TDAWN_SEED=7 TDAWN_SCEN=3 TDAWN_FRAMES=1200 tdawn FROMINSTALL`, game frames a second from frame 300 | 178.7 | 52.1 | 46.9 | 94.2 |
+| the NES, `NES_FAST=1 NES_FRAMES=1200 nes thwaite`, the last 60 frames, of a NES's speed | 5,263% | 373% | 332% | 653% |
+| `glxgears` in its window, frames a second | 1,530 | 1,279 | 1,122 | 1,986 |
+| nxpath, `NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE=320x240 NXPATH_SAMPLES=8 nxpath`: the tree; the picture | 57; 2,152 ms | 375; 1,655 ms | 407; 1,721 ms | 191; 945 ms |
+
+(The card's sums are the card's: nxphys `44d0d906`, nxpath `8a5259ba` on all three, the CPU's
+`b28b77b4` and `3b1259ba`; its division, `docs/apps/physics.md`.) The upstream image has none of
+these programs nor the games, so upstream rvc has only the shell's row.
+
 What they say:
 
 - The compute machine is 1.5 to 1.7 times the fragment one on the games and on the shell, and 3.6
