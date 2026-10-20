@@ -72,6 +72,7 @@ as it adds its line to the Start menu (`nxapps.*`).
 | `nxopen.20-apps` (`linux/apps/nxopen.conf`) | page, picture (PNG, JPEG, GIF, BMP, TGA, PNM, XPM), archive, program, text, shortcut (a desktop's `NAME.app`: `docs/system/nanox.md`) |
 | `nxopen.50-doom` (`linux/nanox/doom.sh`) | a whole game's WAD (`doom -iwad`), a patch WAD (`doom -file`) |
 | `nxopen.72-micropolis` (`linux/micropolis/build.sh`) | a city: `.cty` (`nxmicropolis`, `docs/games/micropolis.md`) |
+| `nxopen.73-openttd` (`linux/openttd/build.sh`) | a saved game: `.sav` (`openttd -g`, `docs/games/openttd.md`) |
 | `nxopen.83-pathtrace` (`linux/pathtrace/build.sh`) | a mesh: `.obj`, `.ply`; a scene: `.scene` (`nxpath`, `docs/apps/raytrace.md`) |
 | `nxopen.84-play` (`linux/play/build.sh`) | sound: WAV, MP3, FLAC, Ogg Vorbis (`.ogg`, `.oga`), MOD (`docs/apps/play.md`) |
 | `nxopen.85-nes` (`linux/nes/build.sh`) | a NES game |

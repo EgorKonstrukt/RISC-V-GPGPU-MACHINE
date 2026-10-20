@@ -252,3 +252,8 @@
   no commit pass reads what it draws, what it needs of RAM is gathered into a stage first, and a copy from RAM to RAM
   is 256 KB a pass, in `rvc_cpu` too (`copy_pass`). `programs\copytest` must say `sum 0e7f76c3` on both; `--ping-pong`
   is the two textures of before (and `--lazy`, D3D12).
+- OpenTTD (`docs/games/openttd.md`) is compiled by its own GCC with all of libstdc++ (`linux/openttd/toolchain.sh`), runs on
+  the first core but for a viewport's blits (`ViewportBlitsEnd` in its `gfx.cpp`: workers blit bands of rows,
+  `RVC_RACES` 0 undone), and its patch keeps the game state the build computer's: after a change to `openttd.patch`,
+  `tools/test_all.py openttd` must give `linux/openttd/host_sum.sh`'s sums. A start is measured with `-v null:ticks=1 -g`
+  under `tools/prof.py` (350 million instructions on 20 October 2026); the title screen's game is `make_title.sh`'s.

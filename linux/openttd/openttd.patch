@@ -1,0 +1,859 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2891bee..3b2ede8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -182,7 +182,7 @@ check_ipo_supported(RESULT IPO_FOUND)
+ show_options()
+ 
+ if(UNIX AND NOT APPLE AND NOT OPTION_DEDICATED)
+-    if(NOT SDL2_FOUND AND NOT ALLEGRO_FOUND)
++    if(NOT SDL2_FOUND AND NOT ALLEGRO_FOUND AND NOT SHADEREMU)
+         message(FATAL_ERROR "SDL2 or Allegro is required for this platform")
+     endif()
+     if(HARFBUZZ_FOUND AND NOT ICU_i18n_FOUND)
+@@ -340,6 +340,15 @@ endif()
+ 
+ include(3rdparty/llvm/CheckAtomic)
+ 
++# The ShaderEmu machine's Nano-X desktop: its window system, GPU and sound card (linux/openttd)
++if(SHADEREMU)
++    add_definitions(-DWITH_SHADEREMU)
++    foreach(DIR ${SHADEREMU_INCLUDES})
++        target_compile_options(openttd_lib PRIVATE "SHELL:-idirafter ${DIR}")
++    endforeach()
++    target_link_libraries(openttd ${SHADEREMU_LIBS})
++endif()
++
+ if(APPLE)
+     link_package(Iconv TARGET Iconv::Iconv)
+ 
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 16215e7..01f800e 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -264,7 +264,6 @@ add_files(
+     misc_cmd.cpp
+     misc_cmd.h
+     misc_gui.cpp
+-    mixer.cpp
+     mixer.h
+     music.cpp
+     music_gui.cpp
+@@ -593,3 +592,13 @@ add_files(
+     zoom_func.h
+     zoom_type.h
+ )
++
++add_files(
++    mixer.cpp
++    CONDITION NOT SHADEREMU
++)
++
++add_files(
++    mixer_shaderemu.cpp
++    CONDITION SHADEREMU
++)
+diff --git a/src/blitter/8bpp_base.cpp b/src/blitter/8bpp_base.cpp
+index b32f98b..d6781f9 100644
+--- a/src/blitter/8bpp_base.cpp
++++ b/src/blitter/8bpp_base.cpp
+@@ -11,6 +11,7 @@
+ #include "../gfx_func.h"
+ #include "8bpp_base.hpp"
+ #include "common.hpp"
++#include "../debug.h"
+ 
+ #include "../safeguards.h"
+ 
+@@ -86,10 +87,54 @@ void Blitter_8bppBase::CopyImageToBuffer(const void *video, void *dst, int width
+ 	}
+ }
+ 
++#ifdef WITH_SHADEREMU
++/** The machine's copy (CSRs 0xb0 to 0xb3, docs/machine/gpu.md): the core stops until it is made, a pass a 256 KB. */
++static void MachineCopy(void *dst, const void *src, uint32_t bytes)
++{
++	asm volatile("csrw 0x0b1, %0" :: "r"(src));
++	asm volatile("csrw 0x0b2, %0" :: "r"(dst));
++	asm volatile("csrw 0x0b3, %0" :: "r"(bytes));
++	asm volatile("csrw 0x0b0, %0" :: "r"(1) : "memory");
++}
++
++/**
++ * A part as wide as the screen moved as one block (OPENTTD_MEMOP=0: row by row, =check: and compared):
++ * what wraps round a row's end lands in the strips the caller draws anew.
++ */
++static bool ScrollAsBlock(void *video, int left, int top, int width, int height, int scroll_x, int scroll_y)
++{
++	static const char *how = getenv("OPENTTD_MEMOP");
++	if (left != 0 || width != _screen.pitch || (how != nullptr && how[0] == '0')) return false;
++	uint8_t *base = static_cast<uint8_t *>(video) + top * _screen.pitch;
++	size_t total = static_cast<size_t>(height) * _screen.pitch;
++	ptrdiff_t d = static_cast<ptrdiff_t>(scroll_y) * _screen.pitch + scroll_x;
++	std::vector<uint8_t> want;
++	bool check = how != nullptr && how[0] == 'c';
++	if (check) {
++		want.assign(base, base + total);
++		if (d > 0) std::copy_backward(want.begin(), want.end() - d, want.end());
++		else std::copy(want.begin() - d, want.end(), want.begin());
++	}
++	if (d > 0) MachineCopy(base + d, base, static_cast<uint32_t>(total - d));
++	else MachineCopy(base, base - d, static_cast<uint32_t>(total + d));
++	if (check) {
++		size_t wrong = 0;
++		for (size_t i = 0; i < total; i++) wrong += base[i] != want[i];
++		fmt::print(stderr, "openttd: scroll by {},{} of {} bytes, {} wrong\n", scroll_x, scroll_y, total, wrong);
++	}
++	return true;
++}
++#endif
++
+ void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width, int &height, int scroll_x, int scroll_y)
+ {
+ 	const uint8_t *src;
+ 	uint8_t *dst;
++#ifdef WITH_SHADEREMU
++	bool moved = ScrollAsBlock(video, left, top, width, height, scroll_x, scroll_y);
++#else
++	const bool moved = false;
++#endif
+ 
+ 	if (scroll_y > 0) {
+ 		/* Calculate pointers */
+@@ -111,7 +156,7 @@ void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width
+ 			width += scroll_x;
+ 		}
+ 
+-		Blitter::MovePixels(src, dst, width, height, -_screen.pitch);
++		if (!moved) Blitter::MovePixels(src, dst, width, height, -_screen.pitch);
+ 	} else {
+ 		/* Calculate pointers */
+ 		dst = (uint8_t *)video + left + top * _screen.pitch;
+@@ -131,7 +176,7 @@ void Blitter_8bppBase::ScrollBuffer(void *video, int &left, int &top, int &width
+ 			width += scroll_x;
+ 		}
+ 
+-		Blitter::MovePixels(src, dst, width, height, _screen.pitch);
++		if (!moved) Blitter::MovePixels(src, dst, width, height, _screen.pitch);
+ 	}
+ }
+ 
+diff --git a/src/blitter/8bpp_optimized.cpp b/src/blitter/8bpp_optimized.cpp
+index d1148b7..37aab8b 100644
+--- a/src/blitter/8bpp_optimized.cpp
++++ b/src/blitter/8bpp_optimized.cpp
+@@ -110,7 +110,16 @@ void Blitter_8bppOptimized::Draw(Blitter::BlitterParams *bp, BlitterMode mode, Z
+ 				}
+ 
+ 				default:
++#ifdef WITH_SHADEREMU
++					/* (a run is a few pixels: a call to memmove cost more than they do) */
++					if (pixels <= 16) {
++						for (uint i = 0; i < pixels; i++) dst[i] = src[i];
++					} else {
++						std::copy_n(src, pixels, dst);
++					}
++#else
+ 					std::copy_n(src, pixels, dst);
++#endif
+ 					dst += pixels; src += pixels;
+ 					break;
+ 			}
+diff --git a/src/gfx.cpp b/src/gfx.cpp
+index 2cae30c..bf9d748 100644
+--- a/src/gfx.cpp
++++ b/src/gfx.cpp
+@@ -29,6 +29,11 @@
+ #include "table/sprites.h"
+ #include "table/control_codes.h"
+ 
++#ifdef WITH_SHADEREMU
++#include <deque>
++#include <mcwx.h>
++#endif
++
+ #include "safeguards.h"
+ 
+ uint8_t _dirkeys;        ///< 1 = left, 2 = up, 4 = right, 8 = down
+@@ -1063,7 +1068,7 @@ void DrawSprite(SpriteID img, PaletteID pal, int x, int y, const SubSprite *sub,
+  * @tparam SCALED_XY Whether the X and Y are scaled or unscaled.
+  */
+ template <int ZOOM_BASE, bool SCALED_XY>
+-static void GfxBlitter(const Sprite * const sprite, int x, int y, BlitterMode mode, const SubSprite * const sub, SpriteID sprite_id, ZoomLevel zoom, const DrawPixelInfo *dst = nullptr)
++static void GfxBlitter(const Sprite * const sprite, int x, int y, BlitterMode mode, const SubSprite * const sub, SpriteID sprite_id, ZoomLevel zoom, const DrawPixelInfo *dst = nullptr, const uint8_t *remap = nullptr)
+ {
+ 	const DrawPixelInfo *dpi = (dst != nullptr) ? dst : _cur_dpi;
+ 	Blitter::BlitterParams bp;
+@@ -1112,7 +1117,7 @@ static void GfxBlitter(const Sprite * const sprite, int x, int y, BlitterMode mo
+ 
+ 	bp.dst = dpi->dst_ptr;
+ 	bp.pitch = dpi->pitch;
+-	bp.remap = _colour_remap_ptr;
++	bp.remap = remap != nullptr ? remap : _colour_remap_ptr;
+ 
+ 	assert(sprite->width > 0);
+ 	assert(sprite->height > 0);
+@@ -1239,8 +1244,101 @@ std::unique_ptr<uint32_t[]> DrawSpriteToRgbaBuffer(SpriteID spriteId, ZoomLevel
+ 	return result;
+ }
+ 
++#ifdef WITH_SHADEREMU
++/** A viewport's blit as the first core found it, made later by every core in a band of rows. */
++struct ViewportBlit {
++	const Sprite *sprite;
++	const uint8_t *remap;
++	int x, y;
++	SubSprite sub;
++	bool has_sub;
++	BlitterMode mode;
++	SpriteID sprite_id;
++};
++static std::vector<ViewportBlit> _vp_blits;
++static std::deque<std::array<uint8_t, 3>> _vp_text_remaps; ///< _string_colourremap as each blit had it
++static bool _vp_recording;
++static int _vp_workers = -1;
++
++/** The blits of a viewport's part from here to ViewportBlitsEnd() are kept, not made (OPENTTD_WORKERS=0: made at once). */
++void ViewportBlitsBegin()
++{
++	if (_vp_workers < 0) {
++		const char *asked = getenv("OPENTTD_WORKERS");
++		int want = asked != nullptr ? 0 : 7;
++		for (const char *c = asked; c != nullptr && *c >= '0' && *c <= '9'; c++) want = want * 10 + (*c - '0');
++		_vp_workers = want > 0 && BlitterFactory::GetCurrentBlitter()->GetScreenDepth() == 8 ? mcw_open(want) : 0;
++	}
++	_vp_recording = _vp_workers > 0 && _newgrf_debug_sprite_picker.mode != SPM_REDRAW;
++}
++
++struct ViewportBands {
++	const DrawPixelInfo *dpi;
++	int rows[65]; ///< band k is rows[k] to rows[k + 1], in pixels from the part's top
++	int count;
++};
++
++static void ViewportBlitBand(void *ctx, uint32_t from, uint32_t to)
++{
++	const ViewportBands &bands = *static_cast<const ViewportBands *>(ctx);
++	const DrawPixelInfo &all = *bands.dpi;
++	for (uint32_t k = from; k < to; k++) {
++		DrawPixelInfo d = all;
++		d.top = all.top + ScaleByZoom(bands.rows[k], all.zoom);
++		d.height = ScaleByZoom(bands.rows[k + 1] - bands.rows[k], all.zoom);
++		d.dst_ptr = BlitterFactory::GetCurrentBlitter()->MoveTo(all.dst_ptr, 0, bands.rows[k]);
++		for (const ViewportBlit &b : _vp_blits) {
++			/* (the sprite's rows against the band's, before its clipping is worked out) */
++			int top = b.y + b.sprite->y_offs;
++			if (top >= d.top + d.height || top + b.sprite->height <= d.top) continue;
++			GfxBlitter<ZOOM_BASE, false>(b.sprite, b.x, b.y, b.mode, b.has_sub ? &b.sub : nullptr, b.sprite_id, d.zoom, &d, b.remap);
++		}
++	}
++}
++
++/** The kept blits made into dpi, its rows shared out between the cores; bands meet where no 16 bytes are in both. */
++void ViewportBlitsEnd(const DrawPixelInfo *dpi)
++{
++	if (!_vp_recording) return;
++	_vp_recording = false;
++	ViewportBands bands;
++	bands.dpi = dpi;
++	int rows = UnScaleByZoom(dpi->height, dpi->zoom);
++	int width = UnScaleByZoom(dpi->width, dpi->zoom);
++	int pitch = dpi->pitch;
++	uintptr_t base = reinterpret_cast<uintptr_t>(dpi->dst_ptr);
++	int want = std::min({_vp_workers + 1, rows / 2, 64});
++	if (_vp_blits.size() < 8 || width * rows < 2048) want = 1;
++	bands.count = 0;
++	bands.rows[0] = 0;
++	for (int k = 1; k < want; k++) {
++		int r = std::max(rows * k / want, bands.rows[bands.count] + 1);
++		while (r < rows && (base + (r - 1) * pitch + width - 1) / 16 == (base + r * pitch) / 16) r++;
++		if (r >= rows) break;
++		bands.rows[++bands.count] = r;
++	}
++	bands.rows[++bands.count] = rows;
++	mcw_for_opts opts = {};
++	opts.grain = 1;
++	mcw_for_opt(bands.count, ViewportBlitBand, &bands, &opts);
++	_vp_blits.clear();
++	_vp_text_remaps.clear();
++}
++#endif
++
+ static void GfxMainBlitterViewport(const Sprite *sprite, int x, int y, BlitterMode mode, const SubSprite *sub, SpriteID sprite_id)
+ {
++#ifdef WITH_SHADEREMU
++	if (_vp_recording) {
++		const uint8_t *remap = _colour_remap_ptr;
++		if (remap == _string_colourremap) {
++			_vp_text_remaps.push_back({_string_colourremap[0], _string_colourremap[1], _string_colourremap[2]});
++			remap = _vp_text_remaps.back().data();
++		}
++		_vp_blits.push_back({sprite, remap, x, y, sub != nullptr ? *sub : SubSprite{}, sub != nullptr, mode, sprite_id});
++		return;
++	}
++#endif
+ 	GfxBlitter<ZOOM_BASE, false>(sprite, x, y, mode, sub, sprite_id, _cur_dpi->zoom);
+ }
+ 
+diff --git a/src/gfxinit.cpp b/src/gfxinit.cpp
+index 2cdabb7..a2ebcf5 100644
+--- a/src/gfxinit.cpp
++++ b/src/gfxinit.cpp
+@@ -446,6 +446,10 @@ MD5File::ChecksumResult MD5File::CheckMD5(Subdirectory subdir, size_t max_size)
+ 	size_t size;
+ 	auto f = FioFOpenFile(this->filename, "rb", subdir, &size);
+ 	if (!f.has_value()) return CR_NO_FILE;
++#ifdef WITH_SHADEREMU
++	/* The sets lie in the machine's ROM: reading all of them for this took most of the start. */
++	return CR_MATCH;
++#endif
+ 
+ 	size = std::min(size, max_size);
+ 
+diff --git a/src/industry_gui.cpp b/src/industry_gui.cpp
+index 4373c92..19bb57d 100644
+--- a/src/industry_gui.cpp
++++ b/src/industry_gui.cpp
+@@ -235,26 +235,24 @@ void GetCargoSuffix(CargoSuffixInOut use_input, CargoSuffixType cst, const Indus
+ std::array<IndustryType, NUM_INDUSTRYTYPES> _sorted_industry_types; ///< Industry types sorted by name.
+ 
+ /** Sort industry types by their name. */
+-static bool IndustryTypeNameSorter(const IndustryType &a, const IndustryType &b)
+-{
+-	int r = StrNaturalCompare(GetString(GetIndustrySpec(a)->name), GetString(GetIndustrySpec(b)->name)); // Sort by name (natural sorting).
+-
+-	/* If the names are equal, sort by industry type. */
+-	return (r != 0) ? r < 0 : (a < b);
+-}
+ 
+ /**
+  * Initialize the list of sorted industry types.
+  */
+ void SortIndustryTypes()
+ {
+-	/* Add each industry type to the list. */
++	/* Add each industry type to the list, with its name: made once, not at every comparison. */
++	std::array<std::string, NUM_INDUSTRYTYPES> names;
+ 	for (IndustryType i = 0; i < NUM_INDUSTRYTYPES; i++) {
+ 		_sorted_industry_types[i] = i;
++		names[i] = GetString(GetIndustrySpec(i)->name);
+ 	}
+ 
+-	/* Sort industry types by name. */
+-	std::sort(_sorted_industry_types.begin(), _sorted_industry_types.end(), IndustryTypeNameSorter);
++	/* Sort industry types by name (natural sorting); equal names by industry type. */
++	std::sort(_sorted_industry_types.begin(), _sorted_industry_types.end(), [&names](IndustryType a, IndustryType b) {
++		int r = StrNaturalCompare(names[a], names[b]);
++		return (r != 0) ? r < 0 : (a < b);
++	});
+ }
+ 
+ static constexpr std::initializer_list<NWidgetPart> _nested_build_industry_widgets = {
+diff --git a/src/landscape.cpp b/src/landscape.cpp
+index 8c5cf4b..f8b1cbe 100644
+--- a/src/landscape.cpp
++++ b/src/landscape.cpp
+@@ -1378,7 +1378,17 @@ static std::tuple<bool, bool> FlowRiver(TileIndex spring, TileIndex begin, uint
+ 
+ 	int height_begin = TileHeight(begin);
+ 
++#ifdef WITH_SHADEREMU
++	/* A bit a tile, cleared again by the queue: the hash set was most of making a river. */
++	static std::vector<bool> marked;
++	if (marked.size() != Map::Size()) marked.assign(Map::Size(), false);
++	struct {
++		void insert(TileIndex t) { marked[t.base()] = true; }
++		bool contains(TileIndex t) const { return marked[t.base()]; }
++	} marks;
++#else
+ 	std::unordered_set<TileIndex> marks;
++#endif
+ 	marks.insert(begin);
+ 
+ 	std::vector<TileIndex> queue;
+@@ -1428,6 +1438,9 @@ static std::tuple<bool, bool> FlowRiver(TileIndex spring, TileIndex begin, uint
+ 			}
+ 		}
+ 	}
++#ifdef WITH_SHADEREMU
++	for (TileIndex t : queue) marked[t.base()] = false;
++#endif
+ 
+ 	bool main_river = false;
+ 	if (found) {
+diff --git a/src/music/CMakeLists.txt b/src/music/CMakeLists.txt
+index cf60e78..81d4d3f 100644
+--- a/src/music/CMakeLists.txt
++++ b/src/music/CMakeLists.txt
+@@ -28,7 +28,13 @@ if(NOT OPTION_DEDICATED)
+     add_files(
+         extmidi.cpp
+         extmidi.h
+-        CONDITION UNIX
++        CONDITION UNIX AND NOT SHADEREMU
++    )
++
++    add_files(
++        shaderemu_m.cpp
++        shaderemu_m.h
++        CONDITION SHADEREMU
+     )
+ 
+     add_files(
+diff --git a/src/random_access_file.cpp b/src/random_access_file.cpp
+index 75aa52f..396f240 100644
+--- a/src/random_access_file.cpp
++++ b/src/random_access_file.cpp
+@@ -35,6 +35,10 @@ RandomAccessFile::RandomAccessFile(std::string_view filename, Subdirectory subdi
+ 	/* Make a note of start and end position for readers who check bounds. */
+ 	this->start_pos = pos;
+ 	this->end_pos = this->start_pos + file_size;
++#ifdef WITH_SHADEREMU
++	/* stdio's buffer would make every read two copies; the buffer here is the only one */
++	setvbuf(*this->file_handle, nullptr, _IONBF, 0);
++#endif
+ 
+ 	/* Store the filename without path and extension */
+ 	auto t = filename.rfind(PATHSEPCHAR);
+@@ -91,6 +95,18 @@ void RandomAccessFile::SeekTo(size_t pos, int mode)
+ {
+ 	if (mode == SEEK_CUR) pos += this->GetPos();
+ 
++	/* Inside what the buffer holds: no read. */
++	size_t start = this->pos - (this->buffer_end - this->buffer_start);
++	if (pos >= start && pos < this->pos) {
++		this->buffer = this->buffer_start + (pos - start);
++		return;
++	}
++
++#ifdef WITH_SHADEREMU
++	/* Read from 8 bytes aligned: the kernel copies a misaligned read a byte at a time. */
++	size_t skip = pos & 7;
++	pos -= skip;
++#endif
+ 	this->pos = pos;
+ 	if (fseek(*this->file_handle, this->pos, SEEK_SET) < 0) {
+ 		Debug(misc, 0, "Seeking in {} failed", this->filename);
+@@ -98,6 +114,22 @@ void RandomAccessFile::SeekTo(size_t pos, int mode)
+ 
+ 	/* Reset the buffer, so the next ReadByte will read bytes from the file. */
+ 	this->buffer = this->buffer_end = this->buffer_start;
++#ifdef WITH_SHADEREMU
++	if (skip != 0) this->buffer += std::min(skip, this->FillBuffer());
++#endif
++}
++
++/**
++ * Read the next bytes of the file into the buffer.
++ * @return How many were read.
++ */
++size_t RandomAccessFile::FillBuffer()
++{
++	this->buffer = this->buffer_start;
++	size_t size = fread(this->buffer, 1, RandomAccessFile::BUFFER_SIZE, *this->file_handle);
++	this->pos += size;
++	this->buffer_end = this->buffer_start + size;
++	return size;
+ }
+ 
+ /**
+@@ -107,12 +139,7 @@ void RandomAccessFile::SeekTo(size_t pos, int mode)
+ uint8_t RandomAccessFile::ReadByte()
+ {
+ 	if (this->buffer == this->buffer_end) {
+-		this->buffer = this->buffer_start;
+-		size_t size = fread(this->buffer, 1, RandomAccessFile::BUFFER_SIZE, *this->file_handle);
+-		this->pos += size;
+-		this->buffer_end = this->buffer_start + size;
+-
+-		if (size == 0) return 0;
++		if (this->FillBuffer() == 0) return 0;
+ 	}
+ 	return *this->buffer++;
+ }
+@@ -153,7 +180,18 @@ void RandomAccessFile::ReadBlock(void *ptr, size_t size)
+ 		ptr = static_cast<char *>(ptr) + to_copy;
+ 	}
+ 
++#ifdef WITH_SHADEREMU
++	/* (unbuffered stdio: a short read through the buffer, not a read of its own) */
++	if (size < RandomAccessFile::BUFFER_SIZE) {
++		size_t to_copy = std::min(size, this->FillBuffer());
++		std::copy_n(this->buffer, to_copy, static_cast<uint8_t *>(ptr));
++		this->buffer += to_copy;
++		return;
++	}
++#endif
+ 	this->pos += fread(ptr, 1, size, *this->file_handle);
++	/* The buffer no longer ends where the file is. */
++	this->buffer = this->buffer_end = this->buffer_start;
+ }
+ 
+ /**
+diff --git a/src/random_access_file_type.h b/src/random_access_file_type.h
+index c0aaec4..3e79686 100644
+--- a/src/random_access_file_type.h
++++ b/src/random_access_file_type.h
+@@ -21,7 +21,11 @@
+  */
+ class RandomAccessFile {
+ 	/** The number of bytes to allocate for the buffer. */
++#ifdef WITH_SHADEREMU
++	static constexpr int BUFFER_SIZE = 8192; ///< (a read from the machine's ROM costs 8,000 instructions however small)
++#else
+ 	static constexpr int BUFFER_SIZE = 512;
++#endif
+ 
+ 	std::string filename;            ///< Full name of the file; relative path to subdir plus the extension of the file.
+ 	std::string simplified_filename; ///< Simplified lowercase name of the file; only the name, no path or extension.
+@@ -33,7 +37,9 @@ class RandomAccessFile {
+ 
+ 	uint8_t *buffer;                    ///< Current position within the local buffer.
+ 	uint8_t *buffer_end;                ///< Last valid byte of buffer.
+-	uint8_t buffer_start[BUFFER_SIZE];  ///< Local buffer when read from file.
++	alignas(8) uint8_t buffer_start[BUFFER_SIZE];  ///< Local buffer when read from file.
++
++	size_t FillBuffer();
+ 
+ public:
+ 	RandomAccessFile(std::string_view filename, Subdirectory subdir);
+diff --git a/src/sound/CMakeLists.txt b/src/sound/CMakeLists.txt
+index 0abd7c0..675f9c3 100644
+--- a/src/sound/CMakeLists.txt
++++ b/src/sound/CMakeLists.txt
+@@ -35,3 +35,9 @@ add_files(
+     null_s.cpp
+     null_s.h
+ )
++
++add_files(
++    shaderemu_s.cpp
++    shaderemu_s.h
++    CONDITION SHADEREMU
++)
+diff --git a/src/spritecache.cpp b/src/spritecache.cpp
+index f26695a..f64b8ec 100644
+--- a/src/spritecache.cpp
++++ b/src/spritecache.cpp
+@@ -361,8 +361,31 @@ static bool PadSprites(SpriteLoader::SpriteCollection &sprite, ZoomLevels sprite
+ 	return true;
+ }
+ 
+-static bool ResizeSprites(SpriteLoader::SpriteCollection &sprite, ZoomLevels sprite_avail, SpriteEncoder *encoder)
+-{
++static bool ResizeSprites(SpriteLoader::SpriteCollection &sprite, ZoomLevels sprite_avail, SpriteEncoder *encoder, SpriteType sprite_type)
++{
++#ifdef WITH_SHADEREMU
++	/* A sprite of normal zoom alone, and no closer zoom shown: the levels out are made from it, and the
++	 * closest level is only a size, with no pixels, which no encoder reads (making it was most of a start). */
++	Blitter *blitter = BlitterFactory::GetCurrentBlitter();
++	bool ours = encoder == static_cast<SpriteEncoder *>(blitter) && (blitter->GetName() == "8bpp-optimized" || blitter->GetName() == "null");
++	/* (a font's glyph is encoded from its font zoom level alone) */
++	if (ours && sprite_type == SpriteType::Font && sprite_avail.Test(_font_zoom)) return true;
++	if (ours && sprite_type != SpriteType::Font && sprite_avail == ZoomLevels{ZoomLevel::Normal} && _settings_client.gui.zoom_min >= ZoomLevel::Normal &&
++			_settings_client.gui.sprite_zoom_min <= ZoomLevel::Normal) {
++		const auto &normal = sprite[ZoomLevel::Normal];
++		auto &root = sprite[ZoomLevel::Min];
++		uint8_t scaled_1 = AdjustByZoom(1, ZoomLevel::Normal - ZoomLevel::Min);
++		if (normal.width * scaled_1 <= UINT16_MAX && normal.height * scaled_1 <= UINT16_MAX) {
++			root.width = normal.width * scaled_1;
++			root.height = normal.height * scaled_1;
++			root.x_offs = normal.x_offs * scaled_1;
++			root.y_offs = normal.y_offs * scaled_1;
++			root.colours = normal.colours;
++			for (ZoomLevel zoom = ZoomLevel::Out2x; zoom != ZoomLevel::End; zoom++) ResizeSpriteOut(sprite, zoom);
++			return true;
++		}
++	}
++#endif
+ 	/* Create a fully zoomed image if it does not exist */
+ 	ZoomLevel first_avail = ZoomLevel::End;
+ 	for (ZoomLevel zoom = ZoomLevel::Min; zoom <= ZoomLevel::Max; ++zoom) {
+@@ -520,7 +543,7 @@ static void *ReadSprite(const SpriteCache *sc, SpriteID id, SpriteType sprite_ty
+ 		return s;
+ 	}
+ 
+-	if (!ResizeSprites(sprite, sprite_avail, encoder)) {
++	if (!ResizeSprites(sprite, sprite_avail, encoder, sprite_type)) {
+ 		if (id == SPR_IMG_QUERY) UserError("Okay... something went horribly wrong. I couldn't resize the fallback sprite. What should I do?");
+ 		return (void*)GetRawSprite(SPR_IMG_QUERY, SpriteType::Normal, &allocator, encoder);
+ 	}
+@@ -539,7 +562,14 @@ struct GrfSpriteOffset {
+ };
+ 
+ /** Map from sprite numbers to position in the GRF file. */
++#ifdef WITH_SHADEREMU
++/* Each file's table, by file and place: read once, though the sprites are loaded again for every game. */
++static std::map<std::pair<std::string, size_t>, std::map<uint32_t, GrfSpriteOffset>> _grf_sprite_offsets_of;
++static std::map<uint32_t, GrfSpriteOffset> _grf_sprite_offsets_none, *_grf_sprite_offsets_now = &_grf_sprite_offsets_none;
++#define _grf_sprite_offsets (*_grf_sprite_offsets_now)
++#else
+ static std::map<uint32_t, GrfSpriteOffset> _grf_sprite_offsets;
++#endif
+ 
+ /**
+  * Get the file offset for a specific sprite in the sprite section of a GRF.
+@@ -557,6 +587,14 @@ size_t GetGRFSpriteOffset(uint32_t id)
+  */
+ void ReadGRFSpriteOffsets(SpriteFile &file)
+ {
++#ifdef WITH_SHADEREMU
++	auto [table, is_new] = _grf_sprite_offsets_of.try_emplace({file.GetFilename(), file.GetPos()});
++	_grf_sprite_offsets_now = &table->second;
++	if (!is_new) {
++		if (file.GetContainerVersion() >= 2) file.ReadDword();
++		return;
++	}
++#endif
+ 	_grf_sprite_offsets.clear();
+ 
+ 	if (file.GetContainerVersion() >= 2) {
+diff --git a/src/table/settings/gui_settings.ini b/src/table/settings/gui_settings.ini
+index 6989729..db7cd19 100644
+--- a/src/table/settings/gui_settings.ini
++++ b/src/table/settings/gui_settings.ini
+@@ -268,7 +268,7 @@ cat      = SC_EXPERT
+ var      = gui.zoom_min
+ type     = SLE_UINT8
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync, SettingFlag::GuiDropdown
+-def      = to_underlying(ZoomLevel::Min)
++def      = to_underlying(ZOOM_MIN_DEFAULT)
+ min      = to_underlying(ZoomLevel::Min)
+ max      = to_underlying(ZoomLevel::Normal)
+ str      = STR_CONFIG_SETTING_ZOOM_MIN
+diff --git a/src/table/settings/misc_settings.ini b/src/table/settings/misc_settings.ini
+index 86b15c3..4ee1b65 100644
+--- a/src/table/settings/misc_settings.ini
++++ b/src/table/settings/misc_settings.ini
+@@ -14,6 +14,11 @@ static constexpr std::initializer_list<std::string_view> _support8bppmodes{"no"s
+ static constexpr std::initializer_list<std::string_view> _display_opt_modes{"SHOW_TOWN_NAMES"sv, "SHOW_STATION_NAMES"sv, "SHOW_SIGNS"sv, "FULL_ANIMATION"sv, ""sv, "FULL_DETAIL"sv, "WAYPOINTS"sv, "SHOW_COMPETITOR_SIGNS"sv};
+ static constexpr std::initializer_list<std::string_view> _facility_display_opt_modes{"TRAIN"sv, "TRUCK_STOP"sv, "BUS_STOP"sv, "AIRPORT"sv, "DOCK"sv, ""sv, "GHOST"sv};
+ 
++#ifdef WITH_SHADEREMU
++static constexpr uint8_t S8BPP_DEFAULT = S8BPP_HARDWARE; ///< (the machine's screen is paletted)
++#else
++static constexpr uint8_t S8BPP_DEFAULT = S8BPP_NONE;
++#endif
+ #ifdef WITH_COCOA
+ extern bool _allow_hidpi_window;
+ #endif
+@@ -102,7 +107,7 @@ cat      = SC_BASIC
+ name     = ""support8bpp""
+ type     = SLE_UINT8
+ var      = _support8bpp
+-def      = 0
++def      = S8BPP_DEFAULT
+ max      = 2
+ full     = _support8bppmodes
+ cat      = SC_BASIC
+diff --git a/src/table/settings/network_private_settings.ini b/src/table/settings/network_private_settings.ini
+index 63b5163..ca2132e 100644
+--- a/src/table/settings/network_private_settings.ini
++++ b/src/table/settings/network_private_settings.ini
+@@ -9,6 +9,11 @@
+ [pre-amble]
+ static constexpr std::initializer_list<std::string_view> _use_relay_service{"never"sv, "ask"sv, "allow"sv};
+ static constexpr std::initializer_list<std::string_view> _participate_survey{"ask"sv, "no"sv, "yes"sv};
++#ifdef WITH_SHADEREMU
++static constexpr uint8_t PS_DEFAULT = PS_NO; ///< (this build has no network to send it on)
++#else
++static constexpr uint8_t PS_DEFAULT = PS_ASK;
++#endif
+ 
+ static const SettingVariant _network_private_settings_table[] = {
+ [post-amble]
+@@ -94,7 +99,7 @@ cat      = SC_BASIC
+ var      = network.participate_survey
+ type     = SLE_UINT8
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync
+-def      = PS_ASK
++def      = PS_DEFAULT
+ min      = PS_ASK
+ max      = PS_YES
+ full     = _participate_survey
+diff --git a/src/table/settings/world_settings.ini b/src/table/settings/world_settings.ini
+index 5c5012c..4ad3af1 100644
+--- a/src/table/settings/world_settings.ini
++++ b/src/table/settings/world_settings.ini
+@@ -13,6 +13,11 @@
+ static bool CheckMaxHeightLevel(int32_t &new_value);
+ static bool CheckFreeformEdges(int32_t &new_value);
+ static void UpdateFreeformEdges(int32_t new_value);
++#ifdef WITH_SHADEREMU
++static constexpr uint8_t MAP_SIZE_DEFAULT = 6; ///< 64 tiles a side: the world of 256 takes many minutes to make on the machine
++#else
++static constexpr uint8_t MAP_SIZE_DEFAULT = 8;
++#endif
+ 
+ static const SettingVariant _world_settings_table[] = {
+ [post-amble]
+@@ -246,7 +251,7 @@ cat      = SC_BASIC
+ var      = game_creation.map_x
+ type     = SLE_UINT8
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync
+-def      = 8
++def      = MAP_SIZE_DEFAULT
+ min      = MIN_MAP_SIZE_BITS
+ max      = MAX_MAP_SIZE_BITS
+ cat      = SC_BASIC
+@@ -255,7 +260,7 @@ cat      = SC_BASIC
+ var      = game_creation.map_y
+ type     = SLE_UINT8
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync
+-def      = 8
++def      = MAP_SIZE_DEFAULT
+ min      = MIN_MAP_SIZE_BITS
+ max      = MAX_MAP_SIZE_BITS
+ cat      = SC_BASIC
+diff --git a/src/thread.h b/src/thread.h
+index b33a953..d84a33e 100644
+--- a/src/thread.h
++++ b/src/thread.h
+@@ -46,6 +46,10 @@ void SetCurrentThreadName(const std::string &name);
+ template <class TFn, class... TArgs>
+ inline bool StartNewThread(std::thread *thr, std::string_view name, TFn&& _Fx, TArgs&&... _Ax)
+ {
++#ifdef WITH_SHADEREMU
++	/* One core runs it all: what would be a thread's is done where it is asked for. */
++	return false;
++#endif
+ 	try {
+ 		static std::mutex thread_startup_mutex;
+ 		std::lock_guard<std::mutex> lock(thread_startup_mutex);
+diff --git a/src/video/CMakeLists.txt b/src/video/CMakeLists.txt
+index e09c202..3319032 100644
+--- a/src/video/CMakeLists.txt
++++ b/src/video/CMakeLists.txt
+@@ -42,3 +42,9 @@ add_files(
+     video_driver.cpp
+     video_driver.hpp
+ )
++
++add_files(
++    shaderemu_v.cpp
++    shaderemu_v.h
++    CONDITION SHADEREMU
++)
+diff --git a/src/video/null_v.cpp b/src/video/null_v.cpp
+index 65fc9f3..2f39685 100644
+--- a/src/video/null_v.cpp
++++ b/src/video/null_v.cpp
+@@ -12,6 +12,11 @@
+ #include "../blitter/factory.hpp"
+ #include "../saveload/saveload.h"
+ #include "../window_func.h"
++#include "../company_base.h"
++#include "../core/random_func.hpp"
++#include "../map_func.h"
++#include "../string_func.h"
++#include "../timer/timer_game_calendar.h"
+ #include "null_v.h"
+ 
+ #include "../safeguards.h"
+@@ -56,6 +61,28 @@ void VideoDriver_Null::MainLoop()
+ 		::UpdateWindows();
+ 	}
+ 
++	/* OPENTTD_SUM: every tile, the game's random state, the date and the companies' money after
++	 * the ticks, which a build for another computer must sum the same (docs/games/openttd.md) */
++	if (GetEnv("OPENTTD_SUM").has_value()) {
++		uint32_t h = 2166136261u;
++		auto add = [&h](uint32_t v) { for (int k = 0; k < 4; k++) h = (h ^ ((v >> (8 * k)) & 0xff)) * 16777619u; };
++		for (uint t = 0; t < Map::Size(); t++) {
++			Tile tile(t);
++			add(tile.type() | tile.height() << 8 | tile.m1() << 16 | tile.m3() << 24);
++			add(tile.m2() | tile.m4() << 16 | tile.m5() << 24);
++			add(tile.m6() | tile.m7() << 8 | tile.m8() << 16);
++		}
++		add(_random.state[0]);
++		add(_random.state[1]);
++		add(TimerGameCalendar::date.base());
++		for (const Company *c : Company::Iterate()) {
++			add(static_cast<uint32_t>(static_cast<int64_t>(c->money)));
++			add(static_cast<uint32_t>(static_cast<int64_t>(c->money) >> 32));
++		}
++		fmt::print("openttd: {} ticks, map {} x {}, {} companies, date {}, sum {:08x}\n", this->ticks, Map::SizeX(), Map::SizeY(),
++				Company::GetNumItems(), TimerGameCalendar::date.base(), h);
++	}
++
+ 	/* If requested, make a save just before exit. The normal exit-flow is
+ 	 * not triggered from this driver, so we have to do this manually. */
+ 	if (_settings_client.gui.autosave_on_exit) {
+diff --git a/src/video/video_driver.cpp b/src/video/video_driver.cpp
+index 85cc2d5..439e51d 100644
+--- a/src/video/video_driver.cpp
++++ b/src/video/video_driver.cpp
+@@ -67,6 +67,20 @@ void VideoDriver::GameThread()
+  */
+ void VideoDriver::GameLoopPause()
+ {
++#ifdef WITH_SHADEREMU
++	/* No game thread: the progress of a world being made is drawn from here, once a second (a picture is 400,000 instructions). */
++	if (!this->is_game_threaded) {
++		static std::chrono::steady_clock::time_point next;
++		auto now = std::chrono::steady_clock::now();
++		if (!this->HasGUI() || now < next) return;
++		next = now + std::chrono::seconds(1);
++		this->LockVideoBuffer();
++		::UpdateWindows();
++		this->Paint();
++		this->UnlockVideoBuffer();
++		return;
++	}
++#endif
+ 	/* If we are not called from the game-thread, ignore this request. */
+ 	if (std::this_thread::get_id() != this->game_thread.get_id()) return;
+ 
+diff --git a/src/viewport.cpp b/src/viewport.cpp
+index 6427a14..9c4971b 100644
+--- a/src/viewport.cpp
++++ b/src/viewport.cpp
+@@ -1808,6 +1808,11 @@ static void ViewportDrawStrings(ZoomLevel zoom, const StringSpriteToDrawVector *
+ 	}
+ }
+ 
++#ifdef WITH_SHADEREMU
++void ViewportBlitsBegin();
++void ViewportBlitsEnd(const DrawPixelInfo *dpi);
++#endif
++
+ void ViewportDoDraw(const Viewport &vp, int left, int top, int right, int bottom)
+ {
+ 	_vd.dpi.zoom = vp.zoom;
+@@ -1835,6 +1840,9 @@ void ViewportDoDraw(const Viewport &vp, int left, int top, int right, int bottom
+ 
+ 	DrawTextEffects(&_vd.dpi);
+ 
++#ifdef WITH_SHADEREMU
++	ViewportBlitsBegin();
++#endif
+ 	if (!_vd.tile_sprites_to_draw.empty()) ViewportDrawTileSprites(&_vd.tile_sprites_to_draw);
+ 
+ 	for (auto &psd : _vd.parent_sprites_to_draw) {
+@@ -1843,6 +1851,9 @@ void ViewportDoDraw(const Viewport &vp, int left, int top, int right, int bottom
+ 
+ 	_vp_sprite_sorter(&_vd.parent_sprites_to_sort);
+ 	ViewportDrawParentSprites(&_vd.parent_sprites_to_sort, &_vd.child_screen_sprites_to_draw);
++#ifdef WITH_SHADEREMU
++	ViewportBlitsEnd(&_vd.dpi);
++#endif
+ 
+ 	if (_draw_bounding_boxes) ViewportDrawBoundingBoxes(&_vd.parent_sprites_to_sort);
+ 	if (_draw_dirty_blocks) ViewportDrawDirtyBlocks();
+diff --git a/src/zoom_type.h b/src/zoom_type.h
+index 3d07ff3..b8911ba 100644
+--- a/src/zoom_type.h
++++ b/src/zoom_type.h
+@@ -48,6 +48,12 @@ DECLARE_INCREMENT_DECREMENT_OPERATORS(ZoomLevel)
+ DECLARE_ENUM_AS_SEQUENTIAL(ZoomLevel)
+ using ZoomLevels = EnumBitSet<ZoomLevel, uint8_t>;
+ 
++#ifdef WITH_SHADEREMU
++static constexpr ZoomLevel ZOOM_MIN_DEFAULT = ZoomLevel::Normal; ///< No closer zoom by default: its sprites are 16 times the pixels.
++#else
++static constexpr ZoomLevel ZOOM_MIN_DEFAULT = ZoomLevel::Min; ///< The closest zoom shown by default.
++#endif
++
+ static const uint ZOOM_BASE_SHIFT = to_underlying(ZoomLevel::Normal);
+ static uint const ZOOM_BASE = 1U << ZOOM_BASE_SHIFT;
+ 

@@ -26,6 +26,7 @@ the folder and not saved is lost with the rest.
 | `vanilla-conquer/` | Tiberian Dawn's and Red Alert's settings and saved games | the starters' `XDG_CONFIG_HOME` |
 | `classicube/` | `options.txt` | a link from the game's folder |
 | `micropolis/` | saved cities, `*.cty` | Micropolis's Save and Save as (`docs/games/micropolis.md`) |
+| `openttd/` | `openttd.cfg` (some 10 KB), `save/*.sav` (14 KB a 64 by 64 map) | the starter's `XDG_CONFIG_HOME` and `XDG_DATA_HOME` (`docs/games/openttd.md`) |
 
 The desktop has an icon for the folder, and anything else put there is kept as well: Files'
 and the desktop's menu has Save to persistence for an entry, which copies it there and refuses

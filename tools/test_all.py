@@ -191,6 +191,10 @@ CASES = [
     case('micropolis', 'games', 'MICROPOLIS_SUM=/usr/share/micropolis/cities/haight.cty,1000 nxmicropolis; '
          'MICROPOLIS_SUM=1,500 nxmicropolis; MICROPOLIS_SUM=8,1500 nxmicropolis',
          sums=[(r'micropolis: .* ticks: .* sum ([0-9a-f]+)', ['909517ac', 'e14d1a50', '75e86f73'])]),
+    # OpenTTD (docs/games/openttd.md): two new games of test.cfg without a window, the sums of the native build's run
+    case('openttd', 'games', 'cp /usr/share/openttd/test.cfg /tmp/t.cfg; OPENTTD_SUM=1 openttd.bin -v null:ticks=500 -s null -m null -g -G 1 -c /tmp/t.cfg; '
+         'OPENTTD_SUM=1 openttd.bin -v null:ticks=2000 -s null -m null -g -G 2 -c /tmp/t.cfg',
+         sums=[(r'openttd: \d+ ticks, .* sum ([0-9a-f]+)', ['9d6fc0a0', '66880c87'])]),
     # nxray and nxpath (docs/apps/raytrace.md)
     case('nxray', 'workers', X + 'RAY_FRAMES=4 nxray', True, sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['9383472e', '226b5e92', 'c69f022b', '337a52f6'])],
          has=[r'with 255 workers']),

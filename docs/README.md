@@ -51,6 +51,7 @@ One file per subject. A doc names another by its file name, which is unique acro
 - [halflife.md](games/halflife.md) – Half-Life: Uplink
 - [micropolis.md](games/micropolis.md) – Micropolis
 - [nes.md](games/nes.md) – A NES
+- [openttd.md](games/openttd.md) – OpenTTD
 - [quake.md](games/quake.md) – Quake
 - [quake3.md](games/quake3.md) – Quake III Arena
 - [ralert.md](games/ralert.md) – Red Alert
