@@ -12,10 +12,12 @@ head: GAMES (its command in brackets)
 Doom | (doom) the shareware episode; a network game with other players
 Quake | (quake) the shareware episode; host or join over the network
 Quake III | (quake3) the demo's The Longest Yard, against bots
+Half-Life | (halflife) the Uplink demo
 Tiberian Dawn | (tdawn) Command & Conquer (1995), the demo's missions
 Red Alert | (ralert) the 1996 demo: a Soviet and an Allied mission, skirmish
 ClassiCube | (classicube) Minecraft Classic: dig and build
 Micropolis | (nxmicropolis) the city simulator of 1989: build a city; eight scenarios with disasters
+OpenTTD | (openttd) Transport Tycoon's open remake: railways, roads, ships and planes, with music; host or join over the network; saved games kept in /persistence
 NES | (nes FILE.nes) Thwaite, Nova the Squirrel, any cartridge of mappers 0 1 2 3 4 5 7 8 9 11 15 16 18 19 21-25 32-34 40 64-66 70 75 78 79 85 94 99 231; arrows, X, Z, Enter, Tab
 Tetris, Mines | (nxtetris, nxmine)
 
@@ -63,7 +65,7 @@ Pages | .html .htm: Web
 Text | .txt .md .sh .conf .log .cfg .ini: Editor
 C | .c .h: IDE
 3D | .obj .ply .scene: Path tracer
-Games | .nes: NES; .wad: Doom (a game or a patch); .cty: Micropolis
+Games | .nes: NES; .wad: Doom (a game or a patch); .cty: Micropolis; .sav: OpenTTD
 Archives | .zip .tar .gz .tgz: unpacked, shown in Files
 Programs | RISC-V programs, #! scripts: run in a terminal
 Other | "Open as text" or "Save to /root"
@@ -76,7 +78,7 @@ Videos | Big Buck Bunny (MPEG-1, AVI); Models: teapot, rabbit, knot
 
 head: THE MACHINE
 Processor | 32-bit RISC-V (RV32IMAF), 256 cores: the first runs Linux, 255 workers take shares of a program's work; a few million instructions a second, as fast as your graphics card runs it
-Memory | 128 MB, kept in textures, as is its disk
+Memory | 252 MB, kept in textures, as is its disk
 System | Linux 5.17, BusyBox, musl; Nano-X windows; its own GPU (OpenGL ES) and sound card; a network between the players' machines; /persistence kept between visits (SAVE on the sign by the power button)
 
 head: HOW TO START

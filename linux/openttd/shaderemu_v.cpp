@@ -13,6 +13,7 @@
 #include "../progress.h"
 #include "../window_func.h"
 #include "../timer/timer_game_tick.h"
+#include "../network/network.h"
 #include "shaderemu_v.h"
 extern "C" {
 #include <GLES/segl.h>
@@ -372,6 +373,12 @@ void VideoDriver_ShaderEmu::InputLoop()
 	if (scroll_test && _game_mode == GM_NORMAL) {
 		auto s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 		_dirkeys |= (s / 2) % 2 ? 4 | 8 : 1 | 2;
+	}
+	/* OPENTTD_HOSTING=FILE: "openttd" written there once this server's game runs (nxgame, docs/system/lan.md) */
+	static const char *hosting = getenv("OPENTTD_HOSTING");
+	if (hosting != nullptr && _network_server && _game_mode == GM_NORMAL) {
+		if (FILE *f = fopen(hosting, "w"); f != nullptr) fmt::print(f, "openttd\n"), fclose(f);
+		hosting = nullptr;
 	}
 
 	if (old_ctrl_pressed != _ctrl_pressed) HandleCtrlChanged();

@@ -649,7 +649,8 @@ public static partial class ShaderEmuBuilder
         "the source releases, and the demos' data\nXash3D FWGS and hlsdk-portable by FWGS: Half-Life's " +
         "engine; Half-Life: Uplink by Valve, fetched when the image is made\nVanilla Conquer, and Command & " +
         "Conquer by Westwood Studios (source released by Electronic Arts)\nMicropolis (MicropolisCore) by Don " +
-        "Hopkins, from SimCity by Will Wright\nClassiCube by UnknownShadow200 and contributors; Dear ImGui by " +
+        "Hopkins, from SimCity by Will Wright\nOpenTTD by the OpenTTD team, with OpenGFX, OpenSFX and OpenMSX; DMXOPL " +
+        "by sneakernets: its music's instruments\nClassiCube by UnknownShadow200 and contributors; Dear ImGui by " +
         "Omar Cornut and contributors\nNofrendo by Matthew Conte: the NES, with Thwaite by Damian Yerrick and " +
         "Nova the Squirrel by NovaSquirrel\nglxgears by Brian Paul, from the Mesa demos\nTinyCC by Fabrice " +
         "Bellard and contributors, with jrrk2's RISC-V port: the C compiler inside\nDesktop photographs from " +
