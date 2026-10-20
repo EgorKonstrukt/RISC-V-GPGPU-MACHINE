@@ -18,7 +18,7 @@ public static partial class ShaderEmuBuilder
         "press 'Use my keyboard' to use your real one. Over the display's keyboard: a field to paste text " +
         "into, and one for a link the computer is to open (a page, a picture, a game, a file).\nThe desktop's " +
         "icons and the Start menu (or the Win key): games (Doom, Quake, Quake III Arena, Half-Life: Uplink, " +
-        "Red Alert, Command & Conquer, Micropolis, a NES, a block world), a music and a video player, " +
+        "Red Alert, Command & Conquer, Micropolis, OpenTTD, a NES, a block world), a music and a video player, " +
         "pictures, the Web (a fixed list of sites, or a link you paste), an IDE for C with the machine's own " +
         "compiler and debugger, and Settings (the Windows 7 or the classic look). A right click is a menu; " +
         "icons and files are dragged.\nCONSOLE: the machine's serial line. Four terminals (the buttons above " +
@@ -27,9 +27,9 @@ public static partial class ShaderEmuBuilder
         "each. Sit down and a 3D game's world is round you; the console at your right hand has the room's " +
         "keys and a screen, where others see your display. In a headset your controllers are the game's " +
         "while you sit, set for the game whose window is in front; BOTH GRIPS held for a second, or the " +
-        "console's Exit, stands you up.\nSHOOTER (Quake, Quake III, Doom): left stick walks and steps aside, " +
+        "console's Exit, stands you up.\nSHOOTER (Quake, Quake III, Doom, Half-Life): left stick walks and steps aside, " +
         "right stick turns and looks, right trigger fires, left trigger jumps or opens, right grip next " +
-        "weapon, left grip Esc, jump Enter.\nPOINTER (the desktop, Red Alert, Command & Conquer): right stick " +
+        "weapon (in Half-Life: use), left grip Esc, jump Enter.\nPOINTER (the desktop, Red Alert, Command & Conquer): right stick " +
         "moves the pointer, the triggers are the mouse's buttons, left stick scrolls the map, right grip " +
         "with the right stick is the wheel.\nPAD (the NES): left stick the pad, right trigger A, left trigger " +
         "B, jump Start, right grip Select.\nBLOCKS (the block world): left stick walks, right stick looks, " +
