@@ -608,6 +608,14 @@ later than it was.
 - The first core waits for the frame by the word its call writes last, and asks the library only
   every fourth pass: `mcw_join`'s wait looks at every worker each pass, which was 2 to 3 thousand
   instructions a frame.
+- **The worker hands its list to the first core** (`qglSwapHand`, `seglSwapHand` in `gles.c`),
+  which submits it where it looks anyway: the main loop, `VID_Phase`, `count_swaps`, the waits
+  (`seglSwapTake`). The worker took the GPU's lock word itself before 20 October 2026, which the
+  window system on the first core takes too, and there are no atomic instructions between
+  cores: beside `nxbench` `RVC_RACES` had the worker undo the window system's list address,
+  lock and copy destination, which put Quake's picture into other windows' buffers. Now none.
+  demo1 (`game_par.py quake --runs 3`): the first core 29.4k a frame to 30.1k, 5.52 passes a
+  frame and 93.7 frames a second as before.
 
 `python tools/game_par.py quake --runs 3` (demo1's 969 frames, `rvc_cpu`):
 

@@ -268,6 +268,12 @@ float build, about an axis of the coordinate system in the other.
   settle themselves. Doom swaps early, runs its tics, and settles when it begins to draw
   (`D_Display` in `doom_video.c`): the wait is over by then, and 93.4% of its passes'
   instructions became 99.8%. `glXSwapBuffers` (`gl.c`) never waited after its submit.
+- A frame drawn on a worker core is swapped with `seglSwapHand()`: the worker leaves its set,
+  command count and size in 16 bytes of its own, and the first core submits it with
+  `seglSwapTake()`, which never waits. The lock word and the submit registers are the window
+  system's too, and two cores have no atomic instructions between them: Quake's worker that
+  swapped itself undid the window system's submits in the same pass, and its picture was
+  copied into the window system's buffers. A worker's `seglSettle()` waits for its hands.
 - `glXSwapBuffers` does not wait before its submit either, when the list the GPU still has
   is the program's own last frame: the GPU draws one list a pass, and a frame shorter than a
   pass waited for it every time. The newer frame takes the older one's place (the submit

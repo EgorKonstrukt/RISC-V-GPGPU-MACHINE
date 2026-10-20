@@ -142,6 +142,7 @@ void VID_Phase (int next)
 		return;		/* (a frame drawn on a worker core: its parts are not counted) */
 	now = cycles ();
 	SE_ServerPoll ();	/* a worker core with the server's frame may want a page */
+	seglSwapTake ();	/* and the drawing worker's frame its submit */
 	phase_cycles[phase] += now - phase_since;
 	phase = next;
 	phase_since = now;
@@ -177,7 +178,7 @@ void SE_SceneSwap (void)
 
 	SE_FrameEnd ();
 	__asm__ volatile ("rdtime %0" : "=r"(at));
-	qglSwap ();
+	qglSwapHand ();
 	se_draw_ticks[1] -= at;
 	__asm__ volatile ("rdtime %0" : "=r"(at));
 	se_draw_ticks[1] += at;

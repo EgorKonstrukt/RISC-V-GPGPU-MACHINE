@@ -16,6 +16,11 @@ void seglSwap(void);
 // the palette: anything written through a pointer; the library's own calls settle themselves).
 void seglSwapEarly(void);
 void seglSettle(void);
+// seglSwapEarly() for a frame drawn on a worker core: the list is handed to the first core,
+// which submits it with seglSwapTake() (1 if it did; never a wait) and must call that often. A
+// worker never takes the GPU's lock: it is the window system's too (docs/machine/gpu.md).
+void seglSwapHand(void);
+int seglSwapTake(void);
 // The next swap shows a picture that is not a whole frame (one filling in): the caption's
 // frames a second (fps_caption.h) does not count it.
 void seglNotAFrame(void);

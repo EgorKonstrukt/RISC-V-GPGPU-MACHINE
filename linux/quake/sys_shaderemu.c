@@ -231,6 +231,7 @@ int main (int c, char **v)
 
 	oldtime = Sys_Milliseconds () - 100;
 	for (;;) {
+		seglSwapTake ();	/* (a frame the drawing worker handed: submitted here, scene_shaderemu.c) */
 		newtime = Sys_Milliseconds ();
 		/* the clock moves once a machine frame: end the frame instead of asking again */
 		if (newtime == oldtime) {

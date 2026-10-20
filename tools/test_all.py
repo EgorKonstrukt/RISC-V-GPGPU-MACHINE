@@ -481,7 +481,7 @@ def zerotail_nommu():
 # (16-byte romfs packing): what the pool hands out is checked on copies in tmpfs
 ZERO_TAIL_NOMMU = ('zerotest 12 4; mkdir -p /tmp/t; find /usr/share /usr/bin /etc -maxdepth 1 -type f -size -256k | '
                    'while read f; do cp "$f" /tmp/t/; done; tailtest /tmp/t/*')
-CC_BYTES_NOMMU = 'd79731c8'   # mcw.c's claim and gles.c's seglNotAFrame (18 October 2026): the linked programs
+CC_BYTES_NOMMU = '4de5fe18'   # gles.c's seglSwapHand (20 October 2026): the linked programs
 
 
 def without_mmu(image):

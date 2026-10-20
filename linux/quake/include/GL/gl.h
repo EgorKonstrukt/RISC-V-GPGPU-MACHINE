@@ -114,6 +114,7 @@ const GLubyte* qglGetString(GLenum what);
 // The window the frames go to, and the end of a frame.
 int qglOpen(unsigned int nano_x_window, const unsigned char* palette);
 void qglSwap(void);
+void qglSwapHand(void);
 // The machine's control words (docs/machine/gpu.md), for the clock and the input counters.
 const volatile unsigned int* qglControl(int offset);
 // Bytes of textures kept, how many of them are in GPU memory and how many that holds, textures

@@ -1238,17 +1238,23 @@ int qglOpen(unsigned int nano_x_window, const unsigned char* palette) {
 // The list is submitted and not waited for: whatever writes GPU memory it may read (the pool,
 // the light tables, the palette) settles first, and the game's next frame runs meanwhile.
 // QUAKE_SWAP=wait waits, as it did.
-void qglSwap(void) {
+static void swap_frame(int hand) {
     static int waits = -1;
     if (waits < 0) {
         const char* how = getenv("QUAKE_SWAP");
         waits = how && !strcmp(how, "wait");
     }
     shade_flush();
-    if (waits) seglSwap();
+    if (hand) {
+        seglSwapHand();
+        if (waits) seglSettle();
+    } else if (waits) seglSwap();
     else seglSwapEarly();
     last_vertices = frame_vertices;
     frame_vertices = 0;
     frame++;
     told = -1;
 }
+void qglSwap(void) { swap_frame(0); }
+// A frame drawn on a worker core: the first core submits its list (seglSwapTake).
+void qglSwapHand(void) { swap_frame(1); }

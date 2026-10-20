@@ -147,6 +147,11 @@ static uint32_t record_screen (uint32_t frame, uint32_t unused)
 
 static void record_join (int which)
 {
+	/* (a job that settles waits for the drawing worker's hand to be submitted here) */
+	while (record_job[which] && !mcw_ready (record_job[which])) {
+		seglSwapTake ();
+		mcw_rest ();
+	}
 	if (record_job[which])
 		mcw_join (record_job[which]);
 	record_job[which] = 0;
@@ -207,6 +212,7 @@ static uint32_t scene_job (uint32_t unused0, uint32_t unused1)
 /* The frames the worker has swapped since this core last looked: counted, held, said. */
 static void count_swaps (void)
 {
+	seglSwapTake ();	/* (the worker's swap is this core's to submit: the GPU's lock is the window system's too) */
 	while (counted != ended) {
 		counted++;
 		se_scene_instructions += slots[counted & 1].instructions;
@@ -231,6 +237,7 @@ static void wait_for (unsigned frame)
 			mcw_ready (record_job[0]);	/* (the 2D worker's pages too) */
 		if (!(passes & 3) && record_job[1])
 			mcw_ready (record_job[1]);
+		seglSwapTake ();
 		mcw_rest ();
 	}
 	se_scene_waited += instructions () - began;
@@ -377,6 +384,7 @@ void SE_SceneFrame (void)
 	se_scene_frames++;
 	if (!running) {
 		stop = 0;
+		seglSettle ();	/* (the worker settles the lists it hands, not one swapped here) */
 		if ((job = mcw_try_call (scene_job, 0, 0)) != 0)
 			running = 1;
 		else {	/* (no worker has nothing to do: drawn here, from its copy) */

@@ -187,6 +187,10 @@ static __attribute__((noinline)) void rest(void) {
     }
     next_frame();
 }
+static inline int on_first_core(void) {
+    uint8_t here;
+    return (uintptr_t)&here - first_stack + 0x400000u < 0x800000u;
+}
 
 int seglInit(unsigned int nano_x_window) {
     uint8_t here;
@@ -214,8 +218,10 @@ void seglSize(int* width, int* height) {
     *height = window_info.height;
 }
 
+static uint32_t hand_buffers = ~0u;   // the first core's: REG_BUFFERS when hand_info was asked for
 void seglWindowChanged(void) {
     if (gpu) GrGetWindowInfo(window, &window_info);
+    hand_buffers = ~0u;
 }
 
 void seglPicturePoint(int x, int y, int width, int height, int* px, int* py) {
@@ -257,15 +263,85 @@ static int unsettled;
 static uint32_t unsettled_set;
 static int not_a_frame;   // seglNotAFrame(): the next swap is not counted in the caption's rate
 void seglNotAFrame(void) { not_a_frame = 1; }
+
+// A frame a worker core drew is handed to the first core, which submits it (seglSwapHand,
+// seglSwapTake): the lock word and the registers are the window system's too, and two cores
+// have no atomic instructions between them (docs/machine/multicore.md, "Sixteen bytes, one writer").
+static volatile uint32_t hand[4] __attribute__((aligned(16)));   // the worker's: set, commands | passes << 16, size word, count
+static volatile uint32_t hand_taken;   // the first core's: hands it has submitted (or dropped)
+static uint32_t hand_settled;          // the worker's: hands it has seen drawn
+static GR_WINDOW_INFO hand_info;       // the first core's: the window the hands are copied into
+static int hand_submit(int wait);
+
 void seglSettle(void) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    // (a program that hands: the first core settles its own swaps before a worker draws)
+    if (hand[3] && !on_first_core()) {
+        uint32_t n = hand[3];
+        if (hand_settled == n) return;
+        while (hand_taken != n || regs[REG_SUBMIT / 4] != 0) rest();
+        hand_settled = n;
+        return;
+    }
+    while (hand[3] != hand_taken) hand_submit(1);
     if (!unsettled) return;
     while (regs[REG_SUBMIT / 4] != 0) rest();
     unsettled = 0;
 }
 
+// The hand waiting, submitted; without `wait`, not while the GPU or its lock is another's.
+static int hand_submit(int wait) {
+    volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    uint32_t n = hand[3];
+    if (!gpu || n == hand_taken) return 0;
+    uint32_t set = hand[0], count = hand[1] & 0xffff, passes = hand[1] >> 16, size = hand[2];
+    uint32_t width = size & 0xfff, height = size >> 16 & 0xfff;
+    if (regs[REG_BUFFERS / 4] != hand_buffers) {
+        hand_buffers = regs[REG_BUFFERS / 4];
+        GrGetWindowInfo(window, &hand_info);
+    }
+    // (the size it was drawn at, within the window's now: a resize is told to the program later)
+    if (width > (uint32_t)hand_info.width) width = (uint32_t)hand_info.width;
+    if (height > (uint32_t)hand_info.height) height = (uint32_t)hand_info.height;
+    if (count && width && height && hand_info.realized && hand_info.surface_address) {
+        for (;;) {
+            if (!wait && regs[REG_SUBMIT / 4] != 0) return 0;   // (a rest here would end the program's pass)
+            while (__atomic_exchange_n(&regs[REG_LOCK / 4], 1, __ATOMIC_ACQUIRE)) {
+                if (!wait) return 0;
+                sched_yield();
+            }
+            if (regs[REG_SUBMIT / 4] == 0) break;
+            __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
+            if (!wait) return 0;
+            rest();
+        }
+        regs[REG_INTO / 4] = hand_info.surface_address;
+        regs[REG_INTO / 4 + 1] = width;
+        regs[REG_INTO / 4 + 2] = height;
+        regs[REG_INTO / 4 + 3] = hand_info.surface_row;
+        regs[REG_SUBMIT / 4 + 1] = GPU_PHYS + set;
+        regs[REG_SUBMIT / 4 + 2] = count;
+        regs[REG_SUBMIT / 4] = 1 | 4 | passes << 8;
+        shown_set = set;
+        shown_commands = count | passes << 16;
+        __atomic_store_n(&regs[REG_LOCK / 4], 0, __ATOMIC_RELEASE);
+        unsettled = 1;
+        unsettled_set = set;
+        regs[REG_VOLUME / 4 + 1] = count;
+        regs[REG_VOLUME / 4 + 3] = size;
+        regs[REG_VOLUME / 4] = GPU_PHYS + set;
+        regs[REG_VOLUME / 4 + 2]++;
+        if (!not_a_frame) fps_caption(&hand_info, regs[0x34 / 4]);
+        not_a_frame = 0;
+    }
+    __atomic_store_n(&hand_taken, n, __ATOMIC_RELEASE);
+    return 1;
+}
+int seglSwapTake(void) { return hand_submit(0); }
+
 static void swap(int wait) {
     volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    while (gpu && hand[3] != hand_taken) hand_submit(1);   // (a worker's frame first)
     // the window has another buffer (it was resized): ask where and how large
     if (regs[REG_BUFFERS / 4] != buffers_seen || swaps++ == 0) {
         buffers_seen = regs[REG_BUFFERS / 4];
@@ -312,6 +388,32 @@ static void swap(int wait) {
 }
 void seglSwap(void) { swap(1); }
 void seglSwapEarly(void) { swap(0); }
+
+void seglSwapHand(void) {
+    volatile uint32_t* regs = (volatile uint32_t*)gpu;
+    if (!gpu || on_first_core()) {
+        swap(0);
+        return;
+    }
+    if (commands && window_info.realized && window_info.surface_address) {
+        uint32_t n = hand[3];
+        // the hand before is submitted and drawn: its set is where the next frame is built
+        while (hand_taken != n || regs[REG_SUBMIT / 4] != 0) rest();
+        hand_settled = n;
+        hand[0] = set_at;
+        hand[1] = commands | passes_used << 16;
+        hand[2] = (uint32_t)window_info.width | (uint32_t)window_info.height << 16 | world_up << 28 | world_flat;
+        __atomic_store_n(&hand[3], n + 1, __ATOMIC_RELEASE);
+        set_at = set_at == SETS_AT ? SETS_AT + SET_SIZE : SETS_AT;
+    }
+    commands = kept;
+    mesh_vertices = kept_mesh;
+    blocks = 0;
+    passes_used = kept_passes;
+    last_draw = 0;
+    vertex_top = set_at + VERTICES_IN;
+    matrices_dirty = 1;
+}
 
 // ---- frame ----
 
@@ -1308,7 +1410,8 @@ void seglKeptShown(int index, int quads) {
 }
 int seglSet(void) { return set_at != SETS_AT; }
 void seglKeptGreyIn(int set, int index, unsigned grey) {
-    if (unsettled && SETS_AT + (uint32_t)set * SET_SIZE == unsettled_set) seglSettle();
+    uint32_t at = SETS_AT + (uint32_t)set * SET_SIZE;
+    if ((unsettled && at == unsettled_set) || (hand_settled != hand[3] && at == hand[0])) seglSettle();
     kept_command(set, index)[11] = grey << 16 | grey << 8 | grey;
 }
 void seglKeptGrey(int index, unsigned grey) {
