@@ -272,7 +272,7 @@ public static partial class ShaderEmuBuilder
             Transform t = device.Find(old);
             if (t != null) Object.DestroyImmediate(t.gameObject);
         }
-        Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTick");
+        Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTickLean");
         Material pointsMat = Mat("MachineCommitPoints", "ShaderEmu/MachineCommitPoints");
         Material gatherMat = Mat("MachineGather", "ShaderEmu/MachineGather");
         machine.state = StateTexture("StateA", 2048, 9280);
@@ -830,7 +830,7 @@ public static partial class ShaderEmuBuilder
 
         // ---- what the machine runs on
         Material machineMat = Mat("Machine", "ShaderEmu/Machine");
-        Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTick");
+        Material tickMat = Mat("MachineTick", "ShaderEmu/MachineTickLean");
         Material gpuMat = Mat("GpuDraw", "ShaderEmu/GpuDraw");
         Material displayMat = Mat("Display", "ShaderEmu/Display");
         Material showMat = Mat("DisplayShow", "ShaderEmu/DisplayShow");

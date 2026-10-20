@@ -13,7 +13,14 @@
 Texture2D<uint4> _SelfTexture2D;
 Texture2D<float4> _Data_MTD_R, _Data_MTD_G, _Data_MTD_B, _Data_MTD_A;   // the ROM at 0x40000000
 Texture2D<float4> _Data_DTB_R, _Data_DTB_G, _Data_DTB_B, _Data_DTB_A;   // the device tree at 0x1020
-uniform uint _Init, _InitRaw, _Ticks, _TicksDivisor, _RTC0, _RTC1, _PlayerID;
+uniform uint _Init, _InitRaw, _Ticks, _TicksDivisor, _PlayerID;
+#ifdef RTC_HALVES   // Unity: a material's numbers are floats, so each clock word comes as two 16-bit halves
+uniform uint _Rtc0Lo, _Rtc0Hi, _Rtc1Lo, _Rtc1Hi;
+#define _RTC0 ((_Rtc0Lo & 0xffff) | (_Rtc0Hi << 16))
+#define _RTC1 ((_Rtc1Lo & 0xffff) | (_Rtc1Hi << 16))
+#else
+uniform uint _RTC0, _RTC1;
+#endif
 uniform uint _TimePass;   // this frame's round (--tick-rounds): the clock a tick on for each, as passes are told apart by it
 uniform uint _TickFull;   // the rounds that always run (--tick-split); a later one only for core 0's rest of its frame,
                           // and for the workers only when core 0 ended the round before early (texel 39.z)
@@ -804,6 +811,9 @@ void quad(inout TriangleStream<v2f> s, float x, float y, float w, float h, float
 [maxvertexcount(64)]
 void tick_geom(triangle v2f IN[3], uint prim : SV_PrimitiveID, inout TriangleStream<v2f> s) {
     if (prim >= (CORES + 15) / 16) return;
+#ifdef TICK_GEOM_GUARD
+    TICK_GEOM_GUARD   // Unity: only the tick's own camera draws it
+#endif
 #ifdef TICK_UNPACK
     float2 size; _SelfTexture2D.GetDimensions(size.x, size.y);
     if (prim == 0) quad(s, 0, 0, 64, CORE0_ROWS, size);
