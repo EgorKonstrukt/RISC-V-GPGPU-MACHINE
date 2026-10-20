@@ -72,6 +72,12 @@ drawn past the right and bottom edges of the screen, so it comes back as it was.
 below zero are still clipped: a strip that was off the left or top edge is cleared and its
 program asked to draw it again, which a terminal cannot do for text already printed.
 
+A window minimised and shown again keeps its picture as well (`kept` in `GR_WINDOW`): it is
+not cleared to its background, and its program is still asked to draw it, since what it drew
+while unmapped was dropped. It was cleared, and a program that does not draw again on an
+exposure (a game between frames, or one paused, an OpenGL program) came back black. A window moved, resized or reparented while
+unmapped, or a child of it unmapped or destroyed meanwhile, is cleared as before.
+
 Drawing into a buffer goes through the GPU too (`gpu.md`):
 
 | Operation | GPU command |

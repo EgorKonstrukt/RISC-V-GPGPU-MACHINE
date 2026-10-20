@@ -957,7 +957,7 @@ index c389e46..b528bb5 100644
  	GdSetDash(&dm, &dc);
  
 diff --git a/src/engine/devfont.c b/src/engine/devfont.c
-index f074087..5c5e377 100644
+index f074087..766b2c5 100644
 --- a/src/engine/devfont.c
 +++ b/src/engine/devfont.c
 @@ -152,6 +152,8 @@ mwfont_findalias(const char *fontname, int *height, int *width)
@@ -1485,7 +1485,7 @@ index 5f31f08..7ac5f39 100644
  int wm_exposure(GR_EVENT_EXPOSURE *event);
  int wm_button_down(GR_EVENT_BUTTON *event);
 diff --git a/src/nanox/client.c b/src/nanox/client.c
-index de5d02a..7a4e40b 100644
+index de5d02a..502f52b 100644
 --- a/src/nanox/client.c
 +++ b/src/nanox/client.c
 @@ -18,6 +18,7 @@
@@ -2253,7 +2253,7 @@ index 3cc7679..1d570f8 100644
 +
 +#define GrTotalNumCalls         130
 diff --git a/src/nanox/serv.h b/src/nanox/serv.h
-index 4a9efee..ee520db 100644
+index 4a9efee..5e43391 100644
 --- a/src/nanox/serv.h
 +++ b/src/nanox/serv.h
 @@ -212,6 +212,10 @@ struct gr_client {
@@ -2267,7 +2267,15 @@ index 4a9efee..ee520db 100644
  	char		*shm_cmds;
  	int		shm_cmds_size;
  	int		shm_cmds_shmid;
-@@ -418,6 +422,11 @@ int		GsInitialize(void);
+@@ -368,6 +372,7 @@ struct gr_window {
+ 	GR_BOOL		mapped;		/* TRUE means requested to be mapped */
+ 	GR_BOOL		realized;	/* TRUE means window is visible */
+ 	GR_BOOL		output;		/* TRUE if window can do output */
++	GR_BOOL		kept;		/* unmapped with its picture kept on its surface (composed screen) */
+ 	GR_WM_PROPS	props;		/* window properties*/
+ 	char		*title;		/* window title*/
+ 	MWCLIPREGION*clipregion;/* window clipping region */
+@@ -418,6 +423,11 @@ int		GsInitialize(void);
  void		GsClose(int fd);
  int		GsPumpEvents(void);
  void		GsSelect(GR_TIMEOUT timeout);
@@ -2279,11 +2287,12 @@ index 4a9efee..ee520db 100644
  void		GsTerminate(void);
  GR_TIMEOUT	GsGetTickCount(void);
  void		GsRedrawScreen(void);
-@@ -451,6 +460,11 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
+@@ -451,6 +461,12 @@ void		GsDestroyPixmap(GR_PIXMAP *pp);
  void		GsSetPortraitMode(int mode);
  void		GsSetPortraitModeFromXY(GR_COORD rootx, GR_COORD rooty);
  void		GsSetClipWindow(GR_WINDOW *wp, MWCLIPREGION *userregion, int flags);
 +void		GsWindowSurface(GR_WINDOW *wp);
++void		GsForgetPicture(GR_WINDOW *wp);
 +void		GsCompositeWalk(void (*show)(PSD psd));
 +int		GsQuietRect(MWCOORD *x0, MWCOORD *y0, MWCOORD *x1, MWCOORD *y1);
 +int		GsDragWindow(GR_WINDOW_ID wid, int xoff, int yoff);
@@ -2291,7 +2300,7 @@ index 4a9efee..ee520db 100644
  void		GsHandleMouseStatus(GR_COORD newx, GR_COORD newy, int newbuttons);
  void		GsFreePositionEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_WINDOW_ID subwid);
  void		GsDeliverButtonEvent(GR_EVENT_TYPE type, int buttons, int changebuttons, int modifiers);
-@@ -477,6 +491,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
+@@ -477,6 +493,8 @@ void		GsDeliverTimerEvent(GR_CLIENT *client, GR_WINDOW_ID wid, GR_TIMER_ID tid);
  
  void		GsCheckMouseWindow(void);
  void		GsCheckFocusWindow(void);
@@ -2490,7 +2499,7 @@ index bc31c08..2dc9f2a 100644
  		if ((ecp->eventmask & cmask) == 0)
  			continue;
 diff --git a/src/nanox/srvfunc.c b/src/nanox/srvfunc.c
-index 3455994..a55d4be 100644
+index 3455994..895d66c 100644
 --- a/src/nanox/srvfunc.c
 +++ b/src/nanox/srvfunc.c
 @@ -9,11 +9,24 @@
@@ -2650,7 +2659,16 @@ index 3455994..a55d4be 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_COORD	oldw, oldh;
  
-@@ -696,13 +756,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -673,6 +733,8 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+ 	if (!wp->realized || !wp->output) {
+ 		wp->width = width;
+ 		wp->height = height;
++		/* (a picture kept while unmapped is another size now) */
++		GsForgetPicture(wp->parent != rootwp ? wp->parent : wp);
+ 		SERVER_UNLOCK();
+ 		return;
+ 	}
+@@ -696,13 +758,23 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  	wp->width = width;
  	wp->height = height;
  
@@ -2676,7 +2694,7 @@ index 3455994..a55d4be 100644
  		int bs = wp->bordersize;
  		int x = wp->x - bs;
  		int y = wp->y - bs;
-@@ -725,6 +795,7 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
+@@ -725,6 +797,7 @@ GrResizeWindow(GR_WINDOW_ID wid, GR_SIZE width, GR_SIZE height)
  void
  GrReparentWindow(GR_WINDOW_ID wid, GR_WINDOW_ID pwid, GR_COORD x, GR_COORD y)
  {
@@ -2684,7 +2702,15 @@ index 3455994..a55d4be 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_WINDOW	*pwp;		/* parent window structure */
  	GR_WINDOW	**mysibptr;	/* handle to my sibling ptr */
-@@ -792,6 +863,7 @@ static int nextgcid = 1000;
+@@ -765,6 +838,7 @@ GrReparentWindow(GR_WINDOW_ID wid, GR_WINDOW_ID pwid, GR_COORD x, GR_COORD y)
+ 	wp->parent = pwp;
+ 	wp->siblings = pwp->children;
+ 	pwp->children = wp;
++	GsForgetPicture(wp);	/* (on another surface now) */
+ 
+ 	if (offx || offy)
+ 		OffsetWindow(wp, offx, offy);
+@@ -792,6 +866,7 @@ static int nextgcid = 1000;
  GR_GC_ID 
  GrNewGC(void)
  {
@@ -2692,7 +2718,7 @@ index 3455994..a55d4be 100644
  	GR_GC	*gcp;
  
  	SERVER_LOCK();
-@@ -803,7 +875,7 @@ GrNewGC(void)
+@@ -803,7 +878,7 @@ GrNewGC(void)
  		return 0;
  	}
  
@@ -2701,7 +2727,7 @@ index 3455994..a55d4be 100644
  	gcp->mode = GR_MODE_COPY;
  	gcp->regionid = 0;	/* no region*/
  	gcp->xoff = 0;		/* no offset*/
-@@ -1442,6 +1514,7 @@ static int nextfontid = 1000;
+@@ -1442,6 +1517,7 @@ static int nextfontid = 1000;
  GR_FONT_ID
  GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *plogfont)
  {
@@ -2709,7 +2735,7 @@ index 3455994..a55d4be 100644
  	GR_FONT	*fontp;
  
  	SERVER_LOCK();
-@@ -1464,7 +1537,7 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
+@@ -1464,7 +1540,7 @@ GrCreateFontEx(const char *name, GR_COORD height, GR_COORD width, GR_LOGFONT *pl
  		return 0;
  	}
  
@@ -2718,7 +2744,7 @@ index 3455994..a55d4be 100644
  	fontp->owner = curclient;
  	fontp->next = listfontp;
  
-@@ -1664,6 +1737,7 @@ GrGetFontInfo(GR_FONT_ID font, GR_FONT_INFO *fip)
+@@ -1664,6 +1740,7 @@ GrGetFontInfo(GR_FONT_ID font, GR_FONT_INFO *fip)
  void 
  GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  {
@@ -2726,7 +2752,7 @@ index 3455994..a55d4be 100644
  	GR_WINDOW	*wp;		/* window structure */
  	GR_EVENT_CLIENT	*evp;		/* event-client structure */
  
-@@ -1675,6 +1749,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
+@@ -1675,6 +1752,10 @@ GrSelectEvents(GR_WINDOW_ID wid, GR_EVENT_MASK eventmask)
  		return;
  	}
  
@@ -2737,7 +2763,7 @@ index 3455994..a55d4be 100644
  	/*
  	 * See if this client is already in the event client list.
  	 * If so, then just replace the events he is selecting for.
-@@ -1765,7 +1843,9 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
+@@ -1765,7 +1846,9 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
          nexty += wp->psd->yvirtres / 8;
      }
  
@@ -2748,7 +2774,7 @@ index 3455994..a55d4be 100644
  	wp->parent = pwp;
  	wp->children = NULL;
  	wp->siblings = pwp->children;
-@@ -1782,7 +1862,8 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
+@@ -1782,9 +1865,11 @@ NewWindow(GR_WINDOW *pwp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE height,
  	wp->nopropmask = 0;
  	wp->eventclients = NULL;
  	wp->owner = curclient;
@@ -2757,8 +2783,11 @@ index 3455994..a55d4be 100644
 +	wp->cursorid = pwp == rootwp ? 0 : pwp->cursorid;
  	wp->mapped = GR_FALSE;
  	wp->realized = GR_FALSE;
++	wp->kept = GR_FALSE;
  	wp->output = GR_TRUE;
-@@ -2228,9 +2309,13 @@ GrSetGCForeground(GR_GC_ID gc, GR_COLOR foreground)
+ 	wp->props = 0;
+ 	wp->title = NULL;
+@@ -2228,9 +2313,13 @@ GrSetGCForeground(GR_GC_ID gc, GR_COLOR foreground)
  
  	gcp = GsFindGC(gc);
  	if (gcp && ((gcp->foreground != foreground) || gcp->fgispixelval)) {
@@ -2773,7 +2802,7 @@ index 3455994..a55d4be 100644
  	}
  
  	SERVER_UNLOCK();
-@@ -3493,6 +3578,7 @@ GrSetWMProperties(GR_WINDOW_ID wid, GR_WM_PROPERTIES *props)
+@@ -3493,6 +3582,7 @@ GrSetWMProperties(GR_WINDOW_ID wid, GR_WM_PROPERTIES *props)
  			/* FIXME: check if this works if not already realized*/
  			GsUnrealizeWindow(wp, GR_TRUE);
  			wp->bordersize = props->bordersize;
@@ -2781,7 +2810,7 @@ index 3455994..a55d4be 100644
  			GsRealizeWindow(wp, GR_TRUE);
  		}
  	}
-@@ -3607,6 +3693,7 @@ GrGetSysColor(int index)
+@@ -3607,6 +3697,7 @@ GrGetSysColor(int index)
  void
  GrSetScreenSaverTimeout(GR_TIMEOUT timeout)
  {
@@ -2789,7 +2818,7 @@ index 3455994..a55d4be 100644
  #if MW_FEATURE_TIMERS
  	MWTIMER *timer;
  
-@@ -4074,6 +4161,7 @@ GrNewBitmapRegion(GR_BITMAP *bitmap, GR_SIZE width, GR_SIZE height)
+@@ -4074,6 +4165,7 @@ GrNewBitmapRegion(GR_BITMAP *bitmap, GR_SIZE width, GR_SIZE height)
  void
  GrSetWindowRegion(GR_WINDOW_ID wid, GR_REGION_ID rid, int type)
  {
@@ -3383,7 +3412,7 @@ index 1f106c0..0b59a85 100644
 +	} while (rpos < rhave && GsFindClient(fd) != NULL && curclient && curclient->id == fd);
  }
 diff --git a/src/nanox/srvutil.c b/src/nanox/srvutil.c
-index fae5bfa..0c09764 100644
+index fae5bfa..5652411 100644
 --- a/src/nanox/srvutil.c
 +++ b/src/nanox/srvutil.c
 @@ -9,6 +9,7 @@
@@ -3394,7 +3423,7 @@ index fae5bfa..0c09764 100644
  #include "../drivers/fb.h"	/* for set_data_formatex()*/
  #if HAVE_MMAP
  #include <fcntl.h>
-@@ -58,6 +59,177 @@ GsResetScreenSaver(void)
+@@ -58,6 +59,186 @@ GsResetScreenSaver(void)
  #endif
  }
  
@@ -3418,6 +3447,15 @@ index fae5bfa..0c09764 100644
 +		gd_compositor->release(wp);	/* it may have been a top-level window before */
 +		wp->psd = top->psd;
 +	}
++}
++
++/* What a window and its children kept while unmapped is not their picture any more. */
++void
++GsForgetPicture(GR_WINDOW *wp)
++{
++	wp->kept = GR_FALSE;
++	for (wp = wp->children; wp; wp = wp->siblings)
++		GsForgetPicture(wp);
 +}
 +
 +/* Shows the screen driver every visible top-level window's surface, lowest window first. */
@@ -3572,15 +3610,33 @@ index fae5bfa..0c09764 100644
  /*
   * Unmap the window to make it and its children invisible on the screen.
   * This is a recursive routine which unrealizes this window and all of its
-@@ -87,6 +259,7 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+@@ -81,12 +262,23 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+ 	if (wp == clipwp)
+ 		clipwp = NULL;
+ 
+-	/* if window isn't realized, nothing to do*/
+-	if (!wp->realized)
++	/* if window isn't realized, nothing to do (but where its parent's picture is kept, that
++	 * picture has it in it still)*/
++	if (!wp->realized) {
++		if (wp->mapped && wp->parent != rootwp)
++			GsForgetPicture(wp->parent);
+ 		return;
++	}
  
  	/* set window invisible flag*/
  	wp->realized = GR_FALSE;
 +	gd_scene_gen++;
++	/* composed screen: a top-level window unmapped keeps its surface, and the pictures of
++	 * its windows on it (not a child unmapped alone: its parent is drawn over it) */
++	if (wp->parent == rootwp)
++		wp->kept = gd_compositor && !temp_unmap && wp->psd != rootwp->psd;
++	else
++		wp->kept = !wp->parent->realized && wp->parent->kept;
  
  	for (childwp = wp->children; childwp; childwp = childwp->siblings)
  		GsUnrealizeWindow(childwp, temp_unmap);
-@@ -98,8 +271,8 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+@@ -98,8 +290,8 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
  
  	if (!temp_unmap && wp == focuswp) {
  		if (focusfixed)
@@ -3591,7 +3647,7 @@ index fae5bfa..0c09764 100644
  		else {
  			focusfixed = GR_FALSE;
  			GsCheckFocusWindow();
-@@ -116,6 +289,10 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
+@@ -116,6 +308,10 @@ GsUnrealizeWindow(GR_WINDOW *wp, GR_BOOL temp_unmap)
  	if (!wp->parent->realized || !wp->output)
  		return;
  
@@ -3602,7 +3658,16 @@ index fae5bfa..0c09764 100644
  	/*
  	 * Clear the area in the parent for this window, causing an
  	 * exposure event for it.  Take into account the border size.
-@@ -188,6 +365,7 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+@@ -182,12 +378,15 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+ 	 * If window isn't set to be mapped, or parent isn't
+ 	 * realized, then we're done
+ 	 */
+-	if (!wp->mapped || !wp->parent->realized)
++	if (!wp->mapped || !wp->parent->realized) {
++		GsForgetPicture(wp);
+ 		return;
++	}
+ #endif
  
  	/* set window visible flag*/
  	wp->realized = GR_TRUE;
@@ -3610,7 +3675,22 @@ index fae5bfa..0c09764 100644
  
  	if (!temp) {
  		GsCheckMouseWindow();
-@@ -225,6 +403,7 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+@@ -208,8 +407,13 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
+ 	 */
+ 	if (wp->output) {
+ 		GsDrawBorder(wp);
+-		GsClearWindow(wp, 0, 0, wp->width, wp->height, 1);
++		/* (a window shown again has its picture: not cleared, but told to draw all the same) */
++		if (wp->kept && !(wp->props & GR_WM_PROPS_BUFFERED))
++			GsDeliverExposureEvent(wp, 0, 0, wp->width, wp->height);
++		else
++			GsClearWindow(wp, 0, 0, wp->width, wp->height, 1);
+ 	}
++	wp->kept = GR_FALSE;
+ 
+ 	/*
+ 	 * Do the same thing for the children.
+@@ -225,6 +429,7 @@ wp->id, wp->mapped, wp->realized, wp->parent->realized);*/
  void
  GsDestroyWindow(GR_WINDOW *wp)
  {
@@ -3618,7 +3698,17 @@ index fae5bfa..0c09764 100644
  	GR_WINDOW	*prevwp;	/* previous window pointer */
  	GR_EVENT_CLIENT	*ecp;		/* selections for window */
  	GR_WINDOW_ID	oldwid;		/* old selection owner */
-@@ -326,6 +505,8 @@ GsDestroyWindow(GR_WINDOW *wp)
+@@ -249,8 +454,7 @@ GsDestroyWindow(GR_WINDOW *wp)
+ 	/*
+ 	 * Unmap the window first.
+ 	 */
+-	if (wp->realized)
+-		GsUnrealizeWindow(wp, GR_FALSE);
++	GsUnrealizeWindow(wp, GR_FALSE);
+ 
+ 	/* send destroy update event*/
+ 	GsDeliverUpdateEvent(wp, GR_UPDATE_DESTROY, wp->x, wp->y,
+@@ -326,6 +530,8 @@ GsDestroyWindow(GR_WINDOW *wp)
  		GsDestroyPixmap(wp->bgpixmap);
  	if (wp->buffer)
  		GsFreeWindowBuffer(wp);
@@ -3627,7 +3717,7 @@ index fae5bfa..0c09764 100644
  #if DYNAMICREGIONS
  	if (wp->clipregion)
  		GdDestroyRegion(wp->clipregion);
-@@ -733,8 +914,15 @@ GsClearWindow(GR_WINDOW *wp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE  hei
+@@ -733,8 +939,15 @@ GsClearWindow(GR_WINDOW *wp, GR_COORD x, GR_COORD y, GR_SIZE width, GR_SIZE  hei
  	 * with buffered windows, all drawing is postponed until the application
  	 * is finished by calling GrClearWindow(..., 2), ie. GrFlushWindow()
  	 */
@@ -3644,7 +3734,7 @@ index fae5bfa..0c09764 100644
  
  	if (wp->props & GR_WM_PROPS_BUFFERED) {
  
-@@ -1101,6 +1289,29 @@ GsFindCursor(GR_CURSOR_ID cursorid)
+@@ -1101,6 +1314,29 @@ GsFindCursor(GR_CURSOR_ID cursorid)
   * and the type of drawing id that was supplied.  Returns the special value
   * GR_DRAW_TYPE_NONE if an error is generated, or if drawing is useless.
   */
@@ -3674,7 +3764,7 @@ index fae5bfa..0c09764 100644
  GR_DRAW_TYPE
  GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
  {
-@@ -1110,6 +1321,20 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
+@@ -1110,6 +1346,20 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
  	GR_REGION	*regionp;	/* user clipping region */
  	MWCLIPREGION*reg;
  
@@ -3695,7 +3785,7 @@ index fae5bfa..0c09764 100644
  	*retdp = NULL;
  
  	gcp = GsFindGC(gcid);
-@@ -1123,6 +1348,7 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
+@@ -1123,6 +1373,7 @@ GsPrepareDrawing(GR_DRAW_ID id, GR_GC_ID gcid, GR_DRAWABLE **retdp)
  	if (gcp != curgcp) {
  		curgcp = gcp;
  		gcp->changed = GR_TRUE;
@@ -3703,7 +3793,7 @@ index fae5bfa..0c09764 100644
  	}
  
  	/*
-@@ -1187,7 +1413,15 @@ havepixmap:
+@@ -1187,7 +1438,15 @@ havepixmap:
  		 * If the window is not the currently clipped one,
  		 * then make it the current one and define its clip rectangles.
  		 */
@@ -3720,7 +3810,7 @@ index fae5bfa..0c09764 100644
  #if DYNAMICREGIONS
  			/* find user region for intersect*/
  			regionp = gcp->regionid? GsFindRegion(gcp->regionid): NULL;
-@@ -1226,23 +1460,33 @@ havepixmap:
+@@ -1226,23 +1485,33 @@ havepixmap:
  			count = gcp->dashcount;
  		}
  
@@ -3768,7 +3858,7 @@ index fae5bfa..0c09764 100644
  
  		switch(gcp->fillmode) {
  		case GR_FILL_STIPPLE:
-@@ -1255,6 +1499,34 @@ havepixmap:
+@@ -1255,6 +1524,34 @@ havepixmap:
  		}
  #endif
  		gcp->changed = GR_FALSE;
@@ -3803,7 +3893,7 @@ index fae5bfa..0c09764 100644
  	}
  
  	*retdp = wp? (GR_DRAWABLE *)wp: (GR_DRAWABLE *)pp;
-@@ -1374,6 +1646,7 @@ GsCheckCursor(void)
+@@ -1374,6 +1671,7 @@ GsCheckCursor(void)
  void
  GsCheckMouseWindow(void)
  {
@@ -3811,7 +3901,7 @@ index fae5bfa..0c09764 100644
  #if 1
  	GR_WINDOW *oldwp, *newwp;
  
-@@ -1442,6 +1715,43 @@ GsCheckFocusWindow(void)
+@@ -1442,6 +1740,43 @@ GsCheckFocusWindow(void)
  	}
  }
  
@@ -3855,7 +3945,7 @@ index fae5bfa..0c09764 100644
  /* Send an update activate event to top level window of passed window*/
  void
  GsNotifyActivate(GR_WINDOW *wp)
-@@ -1456,6 +1766,14 @@ GsNotifyActivate(GR_WINDOW *wp)
+@@ -1456,6 +1791,14 @@ GsNotifyActivate(GR_WINDOW *wp)
  			wp->width, wp->height);
  }
  
@@ -3870,7 +3960,7 @@ index fae5bfa..0c09764 100644
  /*
   * Set the input focus to the specified window.
   * This generates focus out and focus in events as necessary.
-@@ -1469,13 +1787,24 @@ GsSetFocus(GR_WINDOW *wp)
+@@ -1469,13 +1812,24 @@ GsSetFocus(GR_WINDOW *wp)
  		return;
  
  	GsDeliverGeneralEvent(focuswp, GR_EVENT_TYPE_FOCUS_OUT, wp);
@@ -4138,7 +4228,7 @@ index 27dcbe8..2f4f19e 100644
  }
  
 diff --git a/src/nanox/wmclients.c b/src/nanox/wmclients.c
-index 9214904..7925b4e 100644
+index 9214904..7c6340a 100644
 --- a/src/nanox/wmclients.c
 +++ b/src/nanox/wmclients.c
 @@ -9,6 +9,110 @@

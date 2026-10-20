@@ -7,7 +7,9 @@
 # nx restart ask [SIZE]: asked first, and the programs get to ask about what is not saved.
 if [ "$1" = restart ]; then
     # in a session of its own: typed in a terminal of the desktop it would go with that terminal
-    [ -z "$NX_OWN_SESSION" ] && NX_OWN_SESSION=1 exec setsid "$0" "$@"
+    # (not exec: no-MMU busybox's setsid, run by a session leader such as Settings' child,
+    # re-execs itself with the command's name as the applet's and says "nx: applet not found")
+    [ -z "$NX_OWN_SESSION" ] && { NX_OWN_SESSION=1 setsid "$0" "$@"; exit; }
     unset NX_OWN_SESSION
     # one restart at a time: a second one (the button pressed twice) would take down the
     # window system the first is starting, and leave two of everything or none
