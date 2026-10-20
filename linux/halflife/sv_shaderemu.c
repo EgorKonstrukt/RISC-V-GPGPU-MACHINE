@@ -27,12 +27,14 @@ typedef struct { int sock, length; netadr_t to; } kept_packet_t;
 typedef struct { uint used, unused[3]; byte data[BOX_BYTES]; } box_t;
 static box_t inbox __attribute__(( aligned( 16 )));	// this core's: packets for the server while it is out
 static box_t outbox __attribute__(( aligned( 16 )));	// the job's: packets the server sent
+static box_t server_in __attribute__(( aligned( 16 )));	// the inbox at the settle, read by the server's next frame
+static struct { uint at, unused[3]; } server_in_read __attribute__(( aligned( 16 )));	// the server's
 static struct { uint used, lost, failed, unused; char error[1024]; char kept[8192]; } work __attribute__(( aligned( 16 )));
 static struct { volatile uint seq; uint32_t ( *fn )( void * ); void *args; uint unused; } ask __attribute__(( aligned( 16 )));		// the worker's
 static struct { volatile uint seq; uint32_t result; uint unused[2]; } answer __attribute__(( aligned( 16 )));	// this core's
 static struct SE_APART { jmp_buf at; } abort_of;	// the worker's
 #define abort_at abort_of.at
-static int mode = -1, worker, helpers, helper[8], out;	// mode 2: a frame given only once the last is done (HL_SERVER=every: each host frame)
+static int mode = -1, worker, helpers, helper[8], out, inbox_loopback;	// mode 2: a frame given only once the last is done (HL_SERVER=every: each host frame)
 static double skipped, given_frametime;	// the host's time while none was given; what the frame out covers
 
 uint32_t se_call_on_stack( uint32_t ( *fn )( uint32_t ), uint32_t arg, void *stack_top );
@@ -45,6 +47,7 @@ static void setup( void )
 	const char *how = getenv( "HL_SERVER" );
 
 	mode = 0;
+	inbox_loopback = getenv( "HL_INBOX" ) && !Q_strcmp( getenv( "HL_INBOX" ), "loopback" );
 	if( how && !Q_strcmp( how, "inline" ))
 		return;
 	if(( worker = hlglServerWorker( )) <= 0 )
@@ -52,6 +55,7 @@ static void setup( void )
 	mcw_touch( se_server_stack, SE_SERVER_STACK );
 	mcw_touch( &work, sizeof( work ));
 	mcw_touch( &outbox, sizeof( outbox ));
+	mcw_touch( &server_in_read, sizeof( server_in_read ));
 	mcw_touch( &ask, sizeof( ask ));
 	for( int i = 0; i < SE_Packers( ) && i < 8 && ( helper[i] = i ? hlglServerPacker( i - 1 ) : hlglServerHelper( )) > 0; i++ )
 		helpers = i + 1;
@@ -163,6 +167,28 @@ static void box_send( box_t *box )
 	box->used = 0;
 }
 
+// The client's packets of a frame out go to the server whole: the loopback keeps only the last 4.
+static void box_move( box_t *box )
+{
+	if( server_in_read.at >= server_in.used )
+		server_in.used = server_in_read.at = 0;
+	uint n = box->used <= BOX_BYTES - server_in.used ? box->used : 0;	// (lost, as a network loses them)
+	memcpy( server_in.data + server_in.used, box->data, n );
+	server_in.used += n;
+	box->used = 0;
+}
+
+int SE_ServerTakePacket( void *data, size_t *length )
+{
+	if( server_in_read.at >= server_in.used )
+		return 0;
+	kept_packet_t *p = (kept_packet_t *)( server_in.data + server_in_read.at );
+	server_in_read.at += sizeof( kept_packet_t ) + (( p->length + 15 ) & ~15u );
+	memcpy( data, p + 1, p->length );
+	*length = p->length;
+	return 1;
+}
+
 // ---- the job ----
 
 static inline uint32_t sv_now( void ) { uint32_t v; __asm__ volatile( "rdtime %0" : "=r"( v )); return v; }	// DEBUG
@@ -212,7 +238,8 @@ void SE_ServerSettle( void )
 	if( work.lost )
 		Con_Printf( "(%u of the server's lines lost)\n", work.lost ), work.lost = 0;
 	box_send( &outbox );
-	box_send( &inbox );
+	if( inbox_loopback ) box_send( &inbox );	// (HL_INBOX=loopback: as before 20 October 2026)
+	else box_move( &inbox );
 	if( work.failed )
 	{
 		int fatal = work.failed == 2;

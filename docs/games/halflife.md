@@ -146,6 +146,17 @@ it on core 0). The packet's entities are packed by four parts on three packers a
 server's helper (`SE_PackJob` in `xash3d.patch`); the client and the server step their
 entity rings by whole blocks, and the light styles skip the time of styles not used.
 
+A paced server leaves several of the client's commands unanswered, often 3 or 4. Before
+20 October 2026 two things lost the walk, measured on hldemo1 as updates whose place the
+client had predicted wrong (out of 400, walking in a circle; `HL_SERVER=every` gives 2):
+
+- `XASH_LOW_MEMORY=1` gave the client a ring of 4 updates, and the prediction stops at 3
+  unanswered: the view stood still, then jumped to the server's place. It is 16 now
+  (`CL_InitEdicts` in `xash3d.patch`; the server's stays 4). 18 of 400 before, 2 after.
+- The loopback keeps the last 4 packets: the client's packets of a frame out went to it at
+  the settle and the older ones were lost. They go whole to the server's next frame now
+  (`SE_ServerTakePacket`; `HL_INBOX=loopback` is the old way). 42 of 400 before, 18 after.
+
 A packed file (a map, a model, a sprite) is not opened on a worker: `FS_OpenInflated` refuses it
 and the open fails. A level change the game makes in the server's frame (a `trigger_changelevel`:
 hldemo1's elevator) is therefore a `changelevel2` command for core 0 (`pfnChangeLevel`), which
@@ -173,7 +184,10 @@ On a desktop the left button held drags the view round, a quarter of a degree a 
 Quake's and Quake III's; the right button fires and the middle one is the second fire. The
 pointer's travel is read from the machine's input words (`Platform_RunEvents`), and the window
 system is asked for events only when a button or a key changed and four times a second. Use is
-E (the demo's `default.cfg` has Tab: `data.py` moves it).
+E (the demo's `default.cfg` has Tab: `data.py` moves it). The keys are `default.cfg`'s: the engine
+runs it when there is no `config.cfg`, as GoldSrc does (`host.c` in `xash3d.patch`; `config.cfg` is
+written under `/tmp` and gone at the next start). Before 20 October 2026 nothing ran it, and only
+the engine's own table was bound: the arrows, no W, A, S, D and no use.
 
 ## From the seat
 

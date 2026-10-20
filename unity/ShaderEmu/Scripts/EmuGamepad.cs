@@ -23,7 +23,7 @@ public class EmuGamepad : UdonSharpBehaviour
     public float pointerSpeed = 700f;  // the pointer's: display pixels a second at full stick
 
     // Linux key codes (docs/machine/input.md)
-    private const int Esc = 1, Tab = 15, W = 17, Enter = 28, Ctrl = 29, A = 30, S = 31, D = 32, Z = 44, X = 45, Comma = 51, Dot = 52,
+    private const int Esc = 1, Tab = 15, W = 17, E = 18, Enter = 28, Ctrl = 29, A = 30, S = 31, D = 32, Z = 44, X = 45, Comma = 51, Dot = 52,
                       Slash = 53, Space = 57, Up = 103, Left = 105, Right = 106, Down = 108;
     private const int Pressed = 65536;
     // what a mapping can hold down: indices into `down`
@@ -35,7 +35,7 @@ public class EmuGamepad : UdonSharpBehaviour
     private const int GameDoom = 1, GameQuake = 2, GameClassiCube = 3, GameNes = 6, GameQuake3 = 7, GamePhysics = 8, GameHalfLife = 9;
 
     private bool held;                      // the controller is in this visitor's hands
-    private int scheme;
+    private int scheme, mappedGame;
     private VRCStation seat;                // the seat it was taken in
     private float moveX, moveY, lookX, lookY;
     private bool[] trigger = new bool[2];   // left, right
@@ -64,6 +64,7 @@ public class EmuGamepad : UdonSharpBehaviour
         // (a button of the pointer's that a trigger held goes up with the mapping that pressed it)
         if (held && (scheme == ForPointer || scheme == ForBlocks)) machine.SetPointerButtons(0);
         scheme = to;
+        mappedGame = machine.gameId;
         for (int i = 0; i < Held; i++) code[i] = 0;
         // (the hands' grips take things: none of them is a key; ClassiCube's left grip is its
         // inventory, by the words, and its right grip is Esc, its pause menu: Enter was chat)
@@ -78,9 +79,11 @@ public class EmuGamepad : UdonSharpBehaviour
             code[TurnLeft] = Left;
             code[TurnRight] = Right;
             // (no keys to look up and down: the aim's rise is the hand's, docs/world/holodeck.md)
-            code[Fire] = Ctrl;
+            // (Half-Life fires by the trigger's word and its Ctrl ducks; its use is E)
+            bool halfLife = mappedGame == GameHalfLife;
+            code[Fire] = halfLife ? 0 : Ctrl;
             code[Jump] = Space;
-            code[Next] = Slash;
+            code[Next] = halfLife ? E : Slash;
         }
         else if (to == ForBlocks)
         {
@@ -260,7 +263,7 @@ public class EmuGamepad : UdonSharpBehaviour
             return;
         }
         int wanted = SchemeOf(machine.gameId);
-        if (wanted != scheme) Map(wanted);
+        if (wanted != scheme || machine.gameId != mappedGame) Map(wanted);
         Notice(player);
 
         // a hand whose beam is on the seat's console or screen presses that, not the game

@@ -33,6 +33,8 @@ uint32_t SE_ServerOnCore0( uint32_t ( *fn )( void *args ), void *args );
 void SE_ServerKeepPrint( const char *text );
 // A packet the loopback sends kept for later (1), while the server's frame is out.
 int SE_ServerKeepPacket( int sock, size_t length, const void *data, const void *to );
+// The next of the client's packets kept while the frame was out (1), read by the server before the loopback's.
+int SE_ServerTakePacket( void *data, size_t *length );
 // An error in the server's frame on its worker: the frame ends and it is raised by the first core.
 void SE_ServerAbort( const char *text, int fatal ) __attribute__(( noreturn ));
 void SE_ServerSettle( void );

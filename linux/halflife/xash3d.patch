@@ -1160,6 +1160,21 @@ index c1b3ef13..260548be 100644
  		S_UpdateFrame( &rvp );
  		viewnum++;
  
+diff --git a/engine/client/dll_int/cl_game.c b/engine/client/dll_int/cl_game.c
+index a29e9354..efdb5dc5 100644
+--- a/engine/client/dll_int/cl_game.c
++++ b/engine/client/dll_int/cl_game.c
+@@ -1004,7 +1004,9 @@ void CL_InitEdicts( int maxclients )
+ 	Assert( clgame.entities == NULL );
+ 
+ 	if( !clgame.mempool ) return; // Host_Error without client
+-#if XASH_LOW_MEMORY != 2
++#if XASH_SHADEREMU	// (the server's frame is paced: more commands than 4 are often unanswered, all predicted)
++	CL_UPDATE_BACKUP = ( maxclients <= 1 ) ? 16 : MULTIPLAYER_BACKUP;
++#elif XASH_LOW_MEMORY != 2
+ 	CL_UPDATE_BACKUP = ( maxclients <= 1 ) ? SINGLEPLAYER_BACKUP : MULTIPLAYER_BACKUP;
+ #endif
+ 	cls.num_client_entities = CL_UPDATE_BACKUP * NUM_PACKET_ENTITIES;
 diff --git a/engine/client/dll_int/cl_gameui.c b/engine/client/dll_int/cl_gameui.c
 index 993304fa..28c92a20 100644
 --- a/engine/client/dll_int/cl_gameui.c
@@ -2057,7 +2072,7 @@ index 0084a31f..5daee63e 100644
 +}
 +#endif
 diff --git a/engine/common/host.c b/engine/common/host.c
-index f04c5f9b..a8b33408 100644
+index f04c5f9b..6f280d0c 100644
 --- a/engine/common/host.c
 +++ b/engine/common/host.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -2128,6 +2143,16 @@ index f04c5f9b..a8b33408 100644
  
  	Cvar_Get( "host_hl25_extended_structs",
  #if SUPPORT_HL25_EXTENDED_STRUCTS
+@@ -1286,7 +1310,8 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
+ 
+ 		if( !host.config_executed )
+ 		{
+-			Cbuf_AddText( "exec config.cfg\n" );
++			// as GoldSrc: the game's bindings from default.cfg until a config.cfg is written
++			Cbuf_AddText( FS_FileExists( "config.cfg", false ) ? "exec config.cfg\n" : "exec default.cfg\n" );
+ 			Cbuf_Execute();
+ 		}
+ 
 diff --git a/engine/common/imagelib/img_bmp.c b/engine/common/imagelib/img_bmp.c
 index e7c3ec35..3f00c368 100644
 --- a/engine/common/imagelib/img_bmp.c
@@ -2679,7 +2704,7 @@ index 64bc35e7..6798546d 100644
  
  	if( to->number < 0 || to->number >= GI->max_edicts )
 diff --git a/engine/common/net_ws.c b/engine/common/net_ws.c
-index d139dff7..b8752644 100644
+index d139dff7..e951cf7d 100644
 --- a/engine/common/net_ws.c
 +++ b/engine/common/net_ws.c
 @@ -14,6 +14,9 @@ GNU General Public License for more details.
@@ -2692,7 +2717,23 @@ index d139dff7..b8752644 100644
  #include "client.h" // ConnectionProgress
  #include "netchan.h"
  #include "xash3d_mathlib.h"
-@@ -1008,6 +1011,10 @@ static void NET_SendLoopPacket( netsrc_t sock, size_t length, const void *data,
+@@ -982,6 +985,15 @@ static qboolean NET_GetLoopPacket( netsrc_t sock, netadr_t *from, byte *data, si
+ 
+ 	net_loopback_t *loop = &net.loopbacks[sock];
+ 
++#if XASH_SHADEREMU
++	// (the client's packets of a frame the server had out come first: sv_shaderemu.c)
++	if( sock == NS_SERVER && SE_ServerTakePacket( data, length ))
++	{
++		memset( from, 0, sizeof( *from ));
++		NET_NetadrSetType( from, NA_LOOPBACK );
++		return true;
++	}
++#endif
+ 	if( loop->send - loop->get > MAX_LOOPBACK )
+ 		loop->get = loop->send - MAX_LOOPBACK;
+ 
+@@ -1008,6 +1020,10 @@ static void NET_SendLoopPacket( netsrc_t sock, size_t length, const void *data,
  {
  	net_loopback_t *loop = &net.loopbacks[sock^1];
  
@@ -2703,7 +2744,7 @@ index d139dff7..b8752644 100644
  	int i = loop->send & MASK_LOOPBACK;
  	loop->send++;
  
-@@ -1416,6 +1423,10 @@ qboolean NET_GetPacket( netsrc_t sock, netadr_t *from, byte *data, size_t *lengt
+@@ -1416,6 +1432,10 @@ qboolean NET_GetPacket( netsrc_t sock, netadr_t *from, byte *data, size_t *lengt
  	if( !data || !length )
  		return false;
  
