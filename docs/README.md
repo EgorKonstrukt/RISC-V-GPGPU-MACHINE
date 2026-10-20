@@ -72,4 +72,5 @@ One file per subject. A doc names another by its file name, which is unique acro
 
 - [aoe-plan.md](plans/aoe-plan.md) – Plan: Age of Empires, the 1997 trial
 - [blitter-plan.md](plans/blitter-plan.md) – Plan: a blitter in the commit pass
+- [simd-lanes-plan.md](plans/simd-lanes-plan.md) – Plan: lanes, a worker's pixels each on an index of their own
 - [original-x86-plan.md](plans/original-x86-plan.md) – Windows in a VRChat Shader — Project Handoff
