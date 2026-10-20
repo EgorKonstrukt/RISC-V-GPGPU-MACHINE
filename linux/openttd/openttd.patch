@@ -400,6 +400,78 @@ index cf60e78..81d4d3f 100644
      )
  
      add_files(
+diff --git a/src/openttd.cpp b/src/openttd.cpp
+index 7d585b0..8e450f4 100644
+--- a/src/openttd.cpp
++++ b/src/openttd.cpp
+@@ -73,6 +73,11 @@
+ #include "industry.h"
+ #include "network/network_gui.h"
+ #include "network/network_survey.h"
++#ifdef WITH_SHADEREMU
++#include "network/network_udp.h"
++#include <ifaddrs.h>
++#include <netinet/in.h>
++#endif
+ #include "misc_cmd.h"
+ #include "timer/timer.h"
+ #include "timer/timer_game_calendar.h"
+@@ -370,6 +375,30 @@ void OpenBrowser(const std::string &url)
+ 	}
+ }
+ 
++#ifdef WITH_SHADEREMU
++/**
++ * The players' network (docs/system/lan.md): names from this machine's address where none are set,
++ * and OPENTTD_HOST=1 makes the game -g starts or loads a server, as Start Server does.
++ */
++static void ShaderEmuNetworkSetup()
++{
++	uint32_t number = 0;
++	struct ifaddrs *all;
++	if (getifaddrs(&all) == 0) {
++		for (struct ifaddrs *a = all; a != nullptr; a = a->ifa_next) {
++			if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET || std::string_view(a->ifa_name) != "lan0") continue;
++			number = ntohl(reinterpret_cast<struct sockaddr_in *>(a->ifa_addr)->sin_addr.s_addr) & 0xffff;
++		}
++		freeifaddrs(all);
++	}
++	if (number != 0) {
++		if (_settings_client.network.client_name.empty()) _settings_client.network.client_name = fmt::format("Player {}", number);
++		if (_settings_client.network.server_name.empty()) _settings_client.network.server_name = fmt::format("OpenTTD on 10.0.{}.{}", number >> 8, number & 255);
++	}
++	if (getenv("OPENTTD_HOST") != nullptr && _network_available && (_switch_mode == SM_NEWGAME || _switch_mode == SM_LOAD_GAME)) _is_network_server = true;
++}
++#endif
++
+ /** Callback structure of statements to be executed after the NewGRF scan. */
+ struct AfterNewGRFScan : NewGRFScanCallback {
+ 	TimerGameCalendar::Year startyear = CalendarTime::INVALID_YEAR; ///< The start year.
+@@ -433,6 +462,9 @@ struct AfterNewGRFScan : NewGRFScanCallback {
+ 		IConsoleInit();
+ 		InitializeGUI();
+ 		IConsoleCmdExec("exec scripts/autoexec.scr 0");
++#ifdef WITH_SHADEREMU
++		ShaderEmuNetworkSetup();
++#endif
+ 
+ 		/* Make sure _settings is filled with _settings_newgame if we switch to a game directly */
+ 		if (_switch_mode != SM_NONE) MakeNewgameSettingsLive();
+@@ -1173,6 +1205,14 @@ void SwitchToMode(SwitchMode new_mode)
+ 			}
+ 
+ 			UpdateSocialIntegration(GM_MENU);
++#ifdef WITH_SHADEREMU
++			/* OPENTTD_JOIN=1: the server list at once, the players' machines asked who serves */
++			if (static bool listed = false; !listed && getenv("OPENTTD_JOIN") != nullptr && _network_available) {
++				listed = true;
++				ShowNetworkGameWindow();
++				NetworkUDPSearchGame();
++			}
++#endif
+ 			break;
+ 
+ 		case SM_SAVE_GAME: // Save game.
 diff --git a/src/random_access_file.cpp b/src/random_access_file.cpp
 index 75aa52f..396f240 100644
 --- a/src/random_access_file.cpp
@@ -671,6 +743,60 @@ index 63b5163..ca2132e 100644
  min      = PS_ASK
  max      = PS_YES
  full     = _participate_survey
+diff --git a/src/table/settings/network_settings.ini b/src/table/settings/network_settings.ini
+index e5a6aa1..3210b1e 100644
+--- a/src/table/settings/network_settings.ini
++++ b/src/table/settings/network_settings.ini
+@@ -12,6 +12,13 @@ void ChangeNetworkRestartTime(bool reset);
+ 
+ static constexpr std::initializer_list<std::string_view> _server_game_type{"local"sv, "public"sv, "invite-only"sv};
+ 
++#ifdef WITH_SHADEREMU
++/* (a machine of a few million instructions a second takes minutes, not seconds, to load a map and catch up) */
++static constexpr uint16_t NET_INIT_TIME = 1000, NET_JOIN_TIME = 6000, NET_DOWNLOAD_TIME = 6000, NET_LAG_TIME = 2000;
++#else
++static constexpr uint16_t NET_INIT_TIME = 100, NET_JOIN_TIME = 500, NET_DOWNLOAD_TIME = 1000, NET_LAG_TIME = 500;
++#endif
++
+ static const SettingVariant _network_settings_table[] = {
+ [post-amble]
+ };
+@@ -112,7 +119,7 @@ cat      = SC_EXPERT
+ var      = network.max_init_time
+ type     = SLE_UINT16
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync, SettingFlag::NetworkOnly
+-def      = 100
++def      = NET_INIT_TIME
+ min      = 0
+ max      = 32000
+ cat      = SC_EXPERT
+@@ -121,7 +128,7 @@ cat      = SC_EXPERT
+ var      = network.max_join_time
+ type     = SLE_UINT16
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync, SettingFlag::NetworkOnly
+-def      = 500
++def      = NET_JOIN_TIME
+ min      = 0
+ max      = 32000
+ 
+@@ -129,7 +136,7 @@ max      = 32000
+ var      = network.max_download_time
+ type     = SLE_UINT16
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync, SettingFlag::NetworkOnly
+-def      = 1000
++def      = NET_DOWNLOAD_TIME
+ min      = 0
+ max      = 32000
+ 
+@@ -145,7 +152,7 @@ max      = 32000
+ var      = network.max_lag_time
+ type     = SLE_UINT16
+ flags    = SettingFlag::NotInSave, SettingFlag::NoNetworkSync, SettingFlag::NetworkOnly
+-def      = 500
++def      = NET_LAG_TIME
+ min      = 0
+ max      = 32000
+ 
 diff --git a/src/table/settings/world_settings.ini b/src/table/settings/world_settings.ini
 index 5c5012c..4ad3af1 100644
 --- a/src/table/settings/world_settings.ini
