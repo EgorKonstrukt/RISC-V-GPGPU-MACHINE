@@ -94,6 +94,34 @@ int mcw_slot(void);
 /* GPU memory at that offset of /dev/gpu, mapped through the workers' device; 0 without workers. */
 void *mcw_map(uint32_t offset, uint32_t bytes);
 
+/*
+ * Lanes (docs/machine/lanes.md): on a worker, fn(index, ctx) for every index from first to
+ * first + count - 1, each on a pixel of the worker's own: 6 to 55 calls at once where the
+ * machine has lanes. What an index may do: compute, read any memory as the job found it, and
+ * store to its own stack and to its output, which is `texels` whole 16-byte texels (1 to 6) at
+ * out + 16 * texels * (index - first), and nothing else: no other memory, no system call, no
+ * device, no atomics; a store elsewhere is lost. Indices run in no set order and see none of
+ * each other's stores. out is 16-byte aligned. An index that cannot run in a lane (one that is
+ * longer than a pass, or stops) is called here as a plain call afterwards, as every index is on
+ * the first core, on a worker of a machine without lanes and with texels out of range: the
+ * output is the same. Returns how many lanes the job had (0: plain calls).
+ */
+typedef void (*mcw_lane_fn)(uint32_t index, void *ctx);
+int mcw_lanes(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, void *out, uint32_t texels);
+/* How many lanes this core has: 0 on the first core and on a machine without them. */
+int mcw_lanes_here(void);
+
+/*
+ * The field (docs/machine/lanes.md, "The field"): some 3,900 lanes of no core's, drawn by the
+ * machine only while a job is out, for the first core to give a job to and go on: the same job
+ * and rules as mcw_lanes(). One job is out at a time, of one program at a time. Where the machine
+ * has no field, mcw_field_begin() makes the calls itself before it returns, as plain calls.
+ */
+int mcw_field_lanes(void);	/* how many lanes the field has; 0: none here */
+void mcw_field_begin(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, void *out, uint32_t texels);
+int mcw_field_ready(void);	/* whether the job is through (the indices a lane could not make are made here first) */
+void mcw_field_wait(void);	/* until it is, the passes the kernel's (mcw_rest) */
+
 #ifdef __cplusplus
 }
 #endif

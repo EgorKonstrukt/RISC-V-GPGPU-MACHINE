@@ -36,8 +36,10 @@ Nano-X's build.
   entries open the source in the IDE; `example NAME` builds and runs one). `hello` prints; `cube` is the
   smallest OpenGL program (it hands a frame over with `seglSwapEarly`, `docs/machine/gpu.md`: nothing
 it would write is read by the GPU, and its next frame is 33 ms away); `home` is a small place to walk round, a list of boxes drawn
-  again only when the viewer moves; `shader` is a picture worked out a pixel at a time by
-  255 worker cores. The OpenGL ones are floats throughout: `GL_FLOAT` arrays, `glRotatef`.
+  again only when the viewer moves; `shader` is a picture traced a pixel at a time on the machine's
+  lanes (`mcw_shade`, `docs/machine/lanes.md`): the field's 3,906 where it has them, 63 to 80 pictures
+  of 240 x 180 a second, or the workers'. A pixel's shader must stay under some 2,000 of TinyCC's
+  instructions (four pixels are a lane's in one pass). The OpenGL ones are floats throughout: `GL_FLOAT` arrays, `glRotatef`.
 - Compiling takes about 7 seconds for either example (4 to 6 s of the processor: most of it
   is reading the libraries), the first time as any other.
 - TinyCC does not optimise. A program that needs speed is still better built on the host

@@ -4,7 +4,8 @@ Shader "ShaderEmu/MachineCommitPoints"
     // main.shader's COMMIT_RAM), drawn as points by the points camera into the state after the
     // gather (MachineGather.shader): a geometry shader makes each point the rectangle it stands
     // for. Point 0 is the zap's square, or all of RAM while the machine starts; then each core's
-    // buckets, lone store and fill or copy (258 core 0's, 130 a worker's); the last the picture.
+    // buckets, lone store and fill or copy (258 core 0's, 130 a worker's); the lanes' field's buckets
+    // (7,936: docs/machine/lanes.md); the last the picture.
     Properties
     {
         _TickState ("The state rows after the tick", 2D) = "black" {}
@@ -18,7 +19,8 @@ Shader "ShaderEmu/MachineCommitPoints"
         _Data_MTD_G ("MTD ROM Texture G", 2D) = "black" {}
         _Data_MTD_B ("MTD ROM Texture B", 2D) = "black" {}
         _Data_MTD_A ("MTD ROM Texture A", 2D) = "black" {}
-        _CommitPoints ("Points the mesh has", Int) = 33410
+        _CommitPoints ("Points the mesh has", Int) = 41346
+        _FieldPoints ("Of them the lanes' field's buckets, before the picture's", Int) = 7936
     }
     SubShader
     {

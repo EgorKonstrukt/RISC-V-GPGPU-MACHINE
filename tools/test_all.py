@@ -44,6 +44,9 @@ CASES = [
     # the machine (docs/machine/multicore.md; programs/mc/mctest.c)
     case('mctest-3', 'machine', 'mctest 3', True, has=[r'mctest: PASS', r'\(0 pages brought for their start\)']),
     case('mctest-255', 'machine', 'mctest 255 30000', True, has=[r'mctest: PASS', r'\(0 pages brought for their start\)']),
+    # lanes (docs/machine/lanes.md): none on rvc_cpu, so plain calls on every worker, compared with themselves;
+    # one index a share longer than a pass, which a lane would leave to its worker
+    case('lanetest', 'machine', 'lanetest 255 50 1 40; lanetest 31 40 3 20', True, count=[(r'^lanetest: PASS', 2)]),
     case('fptest', 'machine', 'fptest', has=[r'fptest: done, 0 of 15 instructions wrong']),   # docs/machine/fpu.md
     # zerotest and tailtest are in no image: --long builds them into build/images/test_all (docs/machine/boot.md)
     case('zero-tail', 'machine long', 'zerotest 12 4; tailtest /usr/share/* /usr/bin/* /etc/*', wall=400, image='zerotail',
@@ -196,10 +199,11 @@ CASES = [
          'OPENTTD_SUM=1 openttd.bin -v null:ticks=2000 -s null -m null -g -G 2 -c /tmp/t.cfg',
          sums=[(r'openttd: \d+ ticks, .* sum ([0-9a-f]+)', ['9d6fc0a0', '66880c87'])]),
     # nxray and nxpath (docs/apps/raytrace.md)
-    case('nxray', 'workers', X + 'RAY_FRAMES=4 nxray', True, sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['9383472e', '226b5e92', 'c69f022b', '337a52f6'])],
+    # (the scene's sines in floats since 20 October 2026: docs/apps/raytrace.md, "Lanes"; rvc_cpu has no lanes, the same sums plain)
+    case('nxray', 'workers', X + 'RAY_FRAMES=4 nxray', True, sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['53ea472d', '226b5e92', '37366b32', '3ffdbe63'])],
          has=[r'with 255 workers']),
     case('nxray-none', 'workers long', X + 'RAY_WORKERS=0 RAY_FRAMES=4 nxray', wall=600,
-         sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['9383472e', '226b5e92', 'c69f022b', '337a52f6'])]),
+         sums=[(r'raystat: picture \d.* sum ([0-9a-f]+)', ['53ea472d', '226b5e92', '37366b32', '3ffdbe63'])]),
     case('nxpath', 'workers', X + 'NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE=160x120 NXPATH_SAMPLES=2 nxpath', True, has=[r'02f213e9']),
     case('nxpath-none', 'workers long', X + 'NXPATH_CORES=0 NXPATH_AUTO=1 NXPATH_EXIT=1 NXPATH_SIZE=160x120 NXPATH_SAMPLES=2 nxpath', wall=600, has=[r'02f213e9']),
     case('nxpath-check', 'workers', X + 'NXPATH_CHECK=500 nxpath', True, until='thousandths of a pixel',
@@ -481,7 +485,7 @@ def zerotail_nommu():
 # (16-byte romfs packing): what the pool hands out is checked on copies in tmpfs
 ZERO_TAIL_NOMMU = ('zerotest 12 4; mkdir -p /tmp/t; find /usr/share /usr/bin /etc -maxdepth 1 -type f -size -256k | '
                    'while read f; do cp "$f" /tmp/t/; done; tailtest /tmp/t/*')
-CC_BYTES_NOMMU = '4de5fe18'   # gles.c's seglSwapHand (20 October 2026): the linked programs
+CC_BYTES_NOMMU = '716cecf0'   # the lanes (20 October 2026): libmcw.a's mcw_lanes, mcw_field_*, mcw_shade, and the shader example on them
 
 
 def without_mmu(image):

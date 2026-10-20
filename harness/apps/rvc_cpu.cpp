@@ -488,6 +488,8 @@ static bool csr_read(Core& c, u32 n, u32& v) {
     case 0x0b3: v = c.memop_n; return true;
     case 0x0bf: rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5; v = rng_state; return true;
     case 0x0be: v = 0; return true;
+    // (lanes, docs/machine/lanes.md: the lean tick's; here none, and mcw_lanes() makes plain calls)
+    case 0x0b4: case 0x0b5: case 0x0b6: case 0x0b7: case 0x0b8: case 0x0b9: case 0x0ba: case 0x0bb: case 0x0bc: case 0x0bd: v = 0; return true;
     case 0x0c0: case 0x0c1: case 0x0c2: case 0x0c3: v = 0; return true;   // the network card: none
     }
     return false;
@@ -522,6 +524,7 @@ static bool csr_write(Core& c, u32 n, u32 v, Trap& t) {
     case 0x0b2: c.memop_dst = v; return true;
     case 0x0b3: c.memop_n = v; return true;
     case 0x0b0: memop(c, v, t); return true;
+    case 0x0b4: case 0x0b5: case 0x0b6: case 0x0b7: case 0x0b8: case 0x0b9: case 0x0ba: case 0x0bb: case 0x0bc: case 0x0bd: return true;
     case 0x0c0: case 0x0c1: case 0x0c2: case 0x0c3: return true;
     }
     return false;

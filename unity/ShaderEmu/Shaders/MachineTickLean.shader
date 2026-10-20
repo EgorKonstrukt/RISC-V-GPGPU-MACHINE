@@ -21,6 +21,7 @@ Shader "ShaderEmu/MachineTickLean"
         _Rtc1Lo ("RTC1 low half", Int) = 0
         _Rtc1Hi ("RTC1 high half", Int) = 0
         _DoTick ("DEBUG: Perform single step", Int) = 0
+        _LaneField ("The lanes' field drawn (docs/machine/lanes.md)", Int) = 1
 
         _Data_RAM_R ("RAM Texture R", 2D) = "black" {}
         _Data_RAM_G ("RAM Texture G", 2D) = "black" {}
@@ -72,6 +73,7 @@ Shader "ShaderEmu/MachineTickLean"
             #define RTC_HALVES
             uniform float4 _ScreenParams;
             #define TICK_GEOM_GUARD if ((uint)_ScreenParams.x != TICK_W || (uint)_ScreenParams.y != STATE_ROWS * TICK_BANDS) return;
+            #define LANE_FIELD   // the lanes' field (docs/machine/lanes.md): the tick mesh's primitive after the cores' draws it
             #include "lean/tick.hlsl"
             ENDHLSL
         }

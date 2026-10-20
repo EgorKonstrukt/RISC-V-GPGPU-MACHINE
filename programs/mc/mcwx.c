@@ -415,11 +415,13 @@ static uint32_t gcd(uint32_t a, uint32_t b)
 }
 
 static int out_on;	/* a round begun by mcw_for_begin() is out */
+static int out_from, out_calls;	/* (its wait: round_through) */
+static int round_through(const int *list, int members, uint32_t r, int *from, int *calls);
 void mcw_for_wait(void);
 
 void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 {
-	int list[MC_MAX_CORES], members = 0, workers = mcw_count(), want, first, i, k;
+	int list[MC_MAX_CORES], members = 0, workers = mcw_count(), want, first, i, k, from, calls;
 	uint32_t shares, grain, r;
 
 	if (out_on) mcw_for_wait();
@@ -432,7 +434,7 @@ void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	want = o && o->workers > 0 && o->workers < workers ? o->workers : workers;
 	for (k = 1; k <= workers && members < want; k++) {
 		if (busy[k]) continue;
-		if (in_team[k] && mcw_done(k)) in_team[k] = 0;
+		/* (one in the team is taken as it is: a team job that ended is seen in the wait, round_through) */
 		/* (one with no core would run its piece here and now, before the others had theirs) */
 		if (!in_team[k] && (!mcw_bound(k) || !side_for(k))) continue;
 		list[members++] = k;
@@ -463,22 +465,7 @@ void mcw_for_opt(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	}
 	in_round = 1;
 	if (first) guarded(run_share, 0, 0);
-	for (;;) {
-		int out = 0;
-
-		for (i = 0; i < members; i++) {
-			k = list[i];
-			if (done_of[k].round == r) continue;
-			out = 1;
-			if (in_team[k] && !mcw_done(k)) continue;
-			/* (its team job ended before it saw the round, or never went out: posted again) */
-			in_team[k] = 0;
-			if (done_of[k].round == r) continue;
-			if (!post_team(k)) run_missed(k, r);
-		}
-		if (!out) break;
-		mcw_rest();
-	}
+	for (from = 0, calls = 0; !round_through(list, members, r, &from, &calls);) mcw_rest();
 	in_round = 0;
 	settle(0);
 	for (i = 0; i < members; i++) settle(list[i]);
@@ -507,7 +494,6 @@ void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	out_members = 0;
 	for (k = 1; k <= workers && out_members < want; k++) {
 		if (busy[k]) continue;
-		if (in_team[k] && mcw_done(k)) in_team[k] = 0;
 		if (!in_team[k] && (!mcw_bound(k) || !side_for(k))) continue;
 		out_list[out_members++] = k;
 	}
@@ -536,6 +522,7 @@ void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 		if (!in_team[k]) post_team(k);
 	}
 	out_round = r;
+	out_from = out_calls = 0;
 	out_on = 1;
 	if (first) {
 		in_round = 1;
@@ -544,24 +531,37 @@ void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o)
 	}
 }
 
-int mcw_for_ready(void)
+/*
+ * Whether every member of round r is through: the members before *from are, and a look goes
+ * on from there. Asking a worker (mcw_done) is some 50 instructions, 255 of them a pass's
+ * worth of this core: one is asked a call, the first not through, and every one only at
+ * every eighth call (a worker that stopped at a page or whose team job ended is seen to then).
+ */
+static int round_through(const int *list, int members, uint32_t r, int *from, int *calls)
 {
-	int i, k, out = 0;
+	int i, k, out = 0, all = (++*calls & 7) == 0;
 
-	if (!out_on) return 1;
-	for (i = 0; i < out_members; i++) {
-		k = out_list[i];
-		if (done_of[k].round == out_round) continue;
+	while (*from < members && done_of[list[*from]].round == r) (*from)++;
+	for (i = *from; i < members; i++) {
+		k = list[i];
+		if (done_of[k].round == r) continue;
 		out = 1;
+		if (!all && i != *from) break;
 		if (in_team[k] && !mcw_done(k)) continue;
 		/* (its team job ended before it saw the round, or never went out: posted again) */
 		in_team[k] = 0;
-		if (done_of[k].round == out_round || post_team(k)) continue;
+		if (done_of[k].round == r || post_team(k)) continue;
 		in_round = 1;
-		run_missed(k, out_round);
+		run_missed(k, r);
 		in_round = 0;
 	}
 	return !out;
+}
+
+int mcw_for_ready(void)
+{
+	if (!out_on) return 1;
+	return round_through(out_list, out_members, out_round, &out_from, &out_calls);
 }
 
 void mcw_for_wait(void)
@@ -593,6 +593,88 @@ void mcw_for_end(void)
 		if (!any) break;
 		mcw_rest();
 	}
+}
+
+/* ---- a picture made as a fragment shader makes it ---- */
+
+/* What the lanes read: the picture and its function (the first core's, in memory of its own). */
+typedef struct { uint32_t *pixels; int width, height; mcw_pixel_fn fn; void *ctx; uint32_t pad[3]; } shade_t;
+static shade_t *shading;
+
+/* Texel t of the picture, four pixels side by side: the lanes' index. */
+static void shade_texel(uint32_t t, void *ctx)
+{
+	const shade_t *s = ctx;
+	uint32_t p = 4 * t, x = p % (uint32_t)s->width, y = p / (uint32_t)s->width, *out = s->pixels + p;
+	uint32_t a = s->fn((int)x, (int)y, s->ctx), b = s->fn((int)x + 1, (int)y, s->ctx);
+	uint32_t c = s->fn((int)x + 2, (int)y, s->ctx), d = s->fn((int)x + 3, (int)y, s->ctx);
+
+	out[0] = a, out[1] = b, out[2] = c, out[3] = d;
+}
+
+/* A core's piece of the picture: on its lanes where it has them. */
+static void shade_piece(void *ctx, uint32_t from, uint32_t to)
+{
+	shade_t *s = ctx;
+
+	mcw_lanes(shade_texel, s, from, to - from, s->pixels + 4 * from, 1);
+}
+
+/* The round: a piece a worker (the first core takes none: its pixels would be one at a time),
+ * all from one lanes job, so a worker pays for one job's start and end a picture. */
+static int shade_setup(uint32_t *pixels, int width, int height, mcw_pixel_fn fn, void *ctx, mcw_for_opts *o)
+{
+	uint32_t texels = (uint32_t)(width * height) / 4, workers = (uint32_t)(mcw_count() > 0 ? mcw_count() : 1);
+
+	if (!shading) {
+		static shade_t one __attribute__((aligned(16)));
+
+		shading = &one;
+		mcw_touch(shading, sizeof(shade_t));
+		mcw_touch_code((const void *)shade_texel, 128);
+		mcw_touch_code((const void *)shade_piece, 64);
+	}
+	mcw_touch_code((const void *)fn, 4);
+	shading->pixels = pixels, shading->width = width, shading->height = height, shading->fn = fn, shading->ctx = ctx;
+	o->grain = (texels + workers - 1) / workers;
+	o->out_bytes = 16;
+	o->touch = 0, o->touch_bytes = 0;
+	o->workers = 0;
+	o->first_idle = mcw_count() > 0;
+	return texels != 0;
+}
+
+static int shade_field;	/* the picture out is the field's job */
+
+void mcw_shade_begin(uint32_t *pixels, int width, int height, mcw_pixel_fn fn, void *ctx)
+{
+	mcw_for_opts o;
+
+	mcw_shade_wait();
+	if (!shade_setup(pixels, width, height, fn, ctx, &o)) return;
+	/* the lanes' field where the machine has one (the whole picture one job, none of it given out
+	 * to the workers); else a piece a worker, each on its own lanes */
+	if (!mcw_self() && mcw_field_lanes() > 0) {
+		shade_field = 1;
+		mcw_field_begin(shade_texel, shading, 0, (uint32_t)(width * height) / 4, pixels, 1);
+		return;
+	}
+	mcw_for_begin((uint32_t)(width * height) / 4, shade_piece, shading, &o);
+}
+
+void mcw_shade_wait(void)
+{
+	if (shade_field) {
+		mcw_field_wait();
+		shade_field = 0;
+	}
+	mcw_for_wait();
+}
+
+void mcw_shade(uint32_t *pixels, int width, int height, mcw_pixel_fn fn, void *ctx)
+{
+	mcw_shade_begin(pixels, width, height, fn, ctx);
+	mcw_shade_wait();
 }
 
 /* ---- calls ---- */

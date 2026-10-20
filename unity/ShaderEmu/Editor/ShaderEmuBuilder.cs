@@ -23,6 +23,7 @@ public static partial class ShaderEmuBuilder
     const int GpuLayer = 22;
     const int TickLayer = 23, PointsLayer = 24;   // the tick's camera and the commit's points' (MachineCameras)
     const int MachineCores = 256;                  // CORES in MachineBlit.cginc
+    const int FieldPoints = 2 * 3968;              // the lanes' field's buckets (FIELD_MAX in lean/tick.hlsl)
     const int GpuTriangles = 65536;
 
     // ---------------------------------------------------------------- keys
@@ -297,8 +298,9 @@ public static partial class ShaderEmuBuilder
         machine.machineMaterial.SetTexture("_Window", machine.window);
 
         // triangles for the tick, one for every sixteen cores (its geometry shader draws the
-        // cores' quads whatever they are, sixteen cores' a primitive)
-        int groups = (MachineCores + 15) / 16;
+        // cores' quads whatever they are, sixteen cores' a primitive), and one for the lanes' field
+        // (docs/machine/lanes.md: its rows while a job is posted)
+        int groups = (MachineCores + 15) / 16 + 1;
         Mesh triangle = LoadOrCreate(Generated + "/TickTriangle.asset", () => new Mesh { name = "TickTriangle" });
         if (triangle.vertexCount != 3 * groups)
         {
@@ -311,8 +313,9 @@ public static partial class ShaderEmuBuilder
             EditorUtility.SetDirty(triangle);
         }
         // and a point for the zap, every entry of every core's write cache, its last store, its
-        // copy, and the picture (MachineCommitPoints.shader); the gather's, one and one a core
-        Mesh points = PointsMesh("CommitPoints", 1 + 258 + (MachineCores - 1) * 130 + 1);
+        // copy, the lanes' field's buckets, and the picture (MachineCommitPoints.shader); the gather's,
+        // one and one a core
+        Mesh points = PointsMesh("CommitPoints", 1 + 258 + (MachineCores - 1) * 130 + FieldPoints + 1);
         Mesh gather = PointsMesh("GatherPoints", 1 + MachineCores);
         machine.tickCamera = PassCamera(device, "Tick", TickLayer, triangle, tickMat);
         machine.pointsCamera = PassCamera(device, "Points", PointsLayer, points, pointsMat);

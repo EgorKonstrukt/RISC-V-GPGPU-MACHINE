@@ -125,7 +125,7 @@ struct pt_picture {
 	const uint32_t *glowing;	/* the world's triangles that glow, */
 	const float *glow_upto;	/* and the area of them up to and with each: pt_glowing() */
 	int glowing_count;
-	float *sums;		/* three floats a pixel: the light of the samples so far */
+	float *sums;		/* four floats a pixel, 16 bytes: the light of the samples so far, and its rays */
 	uint32_t *pixels;	/* the picture, 0x00RRGGBB */
 };
 extern struct pt_picture pt;
@@ -137,6 +137,17 @@ uint32_t pt_tile(uint32_t tile, uint32_t how);
  * which: the worker's place w (from 0) among n, n from bit 16. how: its number from bit 24,
  * below that how many samples at most (0: all). Ends early when its core is wanted back. */
 uint32_t pt_share(uint32_t which, uint32_t how);
+/* On lanes (docs/machine/lanes.md): a batch of `count` samples from s0 of every pixel, one index a
+ * pixel's sample (pt_batch_index, the batch its context), into vals, 16 bytes an index, sample after
+ * sample; then pixels p0 to p1 of it folded into the sums in order, and shown (pt_batch_fold); and
+ * whether the picture is made after a sample. */
+struct pt_batch {
+	float *vals;
+	uint32_t s0, count, pixels;
+};
+void pt_batch_index(uint32_t i, void *batch);
+void pt_batch_fold(const struct pt_batch *b, uint32_t p0, uint32_t p1, int show);
+int pt_shown_after(uint32_t sample);
 /* The world's glowing triangles, which a matt surface asks for their light as it does a
  * light's: after sc_world_build() and after any glow changed. False when there is no memory. */
 int pt_glowing(void);

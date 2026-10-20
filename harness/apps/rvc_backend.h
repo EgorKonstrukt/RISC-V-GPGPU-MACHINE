@@ -29,6 +29,7 @@ struct BackendOptions {
     std::string computeShader;    // D3D11 only, --compute: the processor as this compute shader (experiments/rv32_min)
     bool tickDirect = false;      // --unpack-in-place: the unpack draws into the state texture itself, no zone copied in and back (a tick that does not read the texture there)
     bool ramInplace = false;      // D3D11: RAM in one texture written in place, the commit's passes with RAM_INPLACE (src/ram.h)
+    bool laneField = false;       // D3D11, RAM in place: the tick has the lanes' field (LANE_FIELD, experiments/rvc_lean; docs/machine/lanes.md)
 };
 
 // The state texture's rows: 64 of the cores' state, then RAM from 0x80000000 to 0x92000000, 32 KB a
@@ -66,6 +67,12 @@ const unsigned kControlRow = 64 + 0x700000 / 2048, kControlTexels = 256;
 // next the guest's, then the ring of kConRing bytes; the control pass writes the first.
 const unsigned kConHost = 40, kConRing = 256;
 const float kConZone[4] = {kConHost + 0.5f, kStateHeight - kNetRow - 0.5f, 1, 1};
+// The lanes' field (docs/machine/lanes.md, experiments/rvc_lean/tick.hlsl): its job's texel and its groups'
+// words in the mailboxes' page (RAM 0x86C01900 and 0x86C01A00), which popRow() returns after the network's
+// texels: kFieldRead of them from the job's. The tick's primitive after the cores' draws it; the commit has
+// a point for each of its buckets, before the picture's.
+const unsigned kFieldRow = 64 + 0x6c0000 / 2048, kFieldAt = 0x190, kFieldRead = 0x10 + 62;
+const unsigned kFieldLanes = 3968, kFieldPoints = 2 * kFieldLanes;
 const int kCoresMost = 256;   // what the shader, the kernel and the library have room for
 const int kCores = 256;       // core 0 and 255 workers: the only machine there is (docs/machine/multicore.md)
 // The display's RAM framebuffer (RAM 0x87000000, 128 texture rows), for writing the picture back.
@@ -80,6 +87,7 @@ public:
     // (Workers are started long after the geometry that has them is set: shaderemu_gpu.c.)
     bool workersNow = true;
     bool countsAdded = false;   // the counters' head read back says a core added (kCountZone)
+    bool fieldNow = false;      // a job of the lanes' field is posted (read back): its primitive and points are drawn
     bool conDelivered = false;  // the console's input changed: kConZone is drawn in the next frame
     // Draw the sound card's mix in the next frame and read it back with that frame's row.
     bool soundMix = false;

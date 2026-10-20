@@ -1,7 +1,8 @@
 /* The path tracer's own part (docs/apps/raytrace.md): the scene's world under its lights and its
- * sky (scene.h), and one sample of every pixel of a tile as a job for a worker core. A job
- * writes its tile's sums and pixels and its stack: a tile is 32 across and the width a
- * multiple of four, so no two cores store to the same 16 bytes. The scene is only read. */
+ * sky (scene.h), and one sample of every pixel of a tile as a job for a worker core, or of one pixel as a
+ * lane's index (pt_batch_index). A job writes its tile's sums and pixels and its stack: a tile is 32 across, the
+ * width a multiple of four and a pixel's sum 16 bytes, so no two cores store to the same 16 bytes. The
+ * scene is only read. */
 #include <stdlib.h>
 #include "scene.h"
 #include "mcw.h"
@@ -531,6 +532,26 @@ static const uint32_t owner_colour[16] = {
 	0x80ff00, 0x0080ff, 0xff0080, 0x8000ff, 0x00ff80, 0xc0c0c0, 0xff8080, 0x80ff80,
 };
 
+/* Sample `sample` of pixel x, y: the light its path brings back, held to PT_MOST. */
+static inline __attribute__((always_inline)) struct vec
+pixel_light(int x, int y, uint32_t sample, uint32_t *rays)
+{
+	uint32_t state = ((uint32_t)(y * pt.width + x) * 9781u + sample * 6271u + pt.seed) * 2654435761u | 1u;
+	float px, py;
+	struct vec c;
+
+	/* (mixed again: every pixel's numbers are one sequence from another place, and from
+	 * places a step apart a pixel's n-th would be its neighbour's and a constant) */
+	state ^= state >> 15, state *= 0x2c1b3c6du, state ^= state >> 12;
+	/* through a point of the pixel, not always its middle: edges come out smooth */
+	px = (float)x + chance(&state);
+	py = (float)y + chance(&state);
+	c = path(of(sc.camera.eye), eye_way(px, py, (float)pt.width, (float)pt.height), &state, rays);
+	/* (held to PT_MOST, and a sample that is no number with it) */
+	c.x = __builtin_fminf(c.x, PT_MOST), c.y = __builtin_fminf(c.y, PT_MOST), c.z = __builtin_fminf(c.z, PT_MOST);
+	return c;
+}
+
 uint32_t
 pt_tile(uint32_t tile, uint32_t how)
 {
@@ -538,32 +559,21 @@ pt_tile(uint32_t tile, uint32_t how)
 	int tw = pt.tile_w, th = pt.tile_h;
 	int across = (pt.width + tw - 1) / tw, x0 = (int)(tile % (uint32_t)across) * tw, y0 = (int)(tile / (uint32_t)across) * th;
 	int x1 = x0 + tw < pt.width ? x0 + tw : pt.width, y1 = y0 + th < pt.height ? y0 + th : pt.height, x, y;
-	float width = (float)pt.width, height = (float)pt.height, samples = (float)(sample + 1);
-	const struct vec eye = of(sc.camera.eye);
+	float samples = (float)(sample + 1);
 	int show = shows(sample, core);
 
 	for (y = y0; y < y1; y++) {
-		float *sum = pt.sums + (y * pt.width + x0) * 3;
+		float *sum = pt.sums + (y * pt.width + x0) * 4;
 		uint32_t *out = pt.pixels + y * pt.width + x0;
 
-		for (x = x0; x < x1; x++, sum += 3, out++) {
-			uint32_t state = ((uint32_t)(y * pt.width + x) * 9781u + sample * 6271u + pt.seed) * 2654435761u | 1u;
-			float px, py;
-			struct vec c;
+		for (x = x0; x < x1; x++, sum += 4, out++) {
+			uint32_t had = rays;
+			struct vec c = pixel_light(x, y, sample, &rays);
 
-			/* (mixed again: every pixel's numbers are one sequence from another place, and from
-			 * places a step apart a pixel's n-th would be its neighbour's and a constant) */
-			state ^= state >> 15, state *= 0x2c1b3c6du, state ^= state >> 12;
-			/* through a point of the pixel, not always its middle: edges come out smooth */
-			px = (float)x + chance(&state);
-			py = (float)y + chance(&state);
-			c = path(eye, eye_way(px, py, width, height), &state, &rays);
-			/* (held to PT_MOST, and a sample that is no number with it) */
-			c.x = __builtin_fminf(c.x, PT_MOST), c.y = __builtin_fminf(c.y, PT_MOST), c.z = __builtin_fminf(c.z, PT_MOST);
 			if (sample == 0)
-				sum[0] = c.x, sum[1] = c.y, sum[2] = c.z;
+				sum[0] = c.x, sum[1] = c.y, sum[2] = c.z, sum[3] = (float)(rays - had);
 			else
-				sum[0] += c.x, sum[1] += c.y, sum[2] += c.z;
+				sum[0] += c.x, sum[1] += c.y, sum[2] += c.z, sum[3] += (float)(rays - had);
 			if (!show)
 				continue;
 			if (pt.owners && (x == x0 || y == y0))
@@ -585,10 +595,10 @@ show_tile(uint32_t tile, uint32_t count, uint32_t core)
 	float samples = (float)count;
 
 	for (y = y0; y < y1; y++) {
-		const float *sum = pt.sums + (y * pt.width + x0) * 3;
+		const float *sum = pt.sums + (y * pt.width + x0) * 4;
 		uint32_t *out = pt.pixels + y * pt.width + x0;
 
-		for (x = x0; x < x1; x++, sum += 3, out++)
+		for (x = x0; x < x1; x++, sum += 4, out++)
 			if (pt.owners && (x == x0 || y == y0))
 				*out = owner_colour[core & 15];
 			else
@@ -603,13 +613,13 @@ void
 pt_read_all(void)
 {
 	extern char __executable_start[], etext[];
-	uintptr_t at[3] = {(uintptr_t)pt_tile, (uintptr_t)pt_share, (uintptr_t)world_between}, low = at[0], high = at[0], page;
+	uintptr_t at[5] = {(uintptr_t)pt_tile, (uintptr_t)pt_share, (uintptr_t)world_between, (uintptr_t)pt_batch_index, (uintptr_t)pt_batch_fold}, low = at[0], high = at[0], page;
 	const volatile char *part[4] = {(const char *)sc_world.nodes, (const char *)sc_world.triangles, (const char *)pt.glowing, (const char *)pt.glow_upto};
 	uint32_t bytes[4] = {(uint32_t)sc_world.node_count * sizeof(struct sc_node), (uint32_t)sc_world.triangle_count * sizeof(struct sc_triangle),
 			     (uint32_t)pt.glowing_count * 4, (uint32_t)pt.glowing_count * 4}, i;
 	int k;
 
-	for (k = 1; k < 3; k++) {
+	for (k = 1; k < 5; k++) {
 		if (at[k] < low) low = at[k];
 		if (at[k] > high) high = at[k];
 	}
@@ -694,6 +704,50 @@ pt_share(uint32_t which, uint32_t how)
 				at -= tiles;
 		}
 	return did;
+}
+
+/* ---- on lanes (docs/machine/lanes.md): a sample of the whole picture one job, a pixel an index ---- */
+
+/* Index i of a batch: pixel i % pixels of sample s0 + i / pixels, its light and its rays into the
+ * batch's 16 bytes for it (nothing else is written: the lanes' rule). */
+void
+pt_batch_index(uint32_t i, void *ctx)
+{
+	const struct pt_batch *b = ctx;
+	uint32_t p = i % b->pixels, rays = 0;
+	float *v = b->vals + 4 * i;
+	struct vec c = pixel_light((int)(p % (uint32_t)pt.width), (int)(p / (uint32_t)pt.width), b->s0 + i / b->pixels, &rays);
+
+	v[0] = c.x, v[1] = c.y, v[2] = c.z, v[3] = (float)rays;
+}
+
+/* Pixels p0 to p1 of a batch made: into their sums in the samples' order (as a worker's tile adds
+ * them), and the picture of them when `show` */
+void
+pt_batch_fold(const struct pt_batch *b, uint32_t p0, uint32_t p1, int show)
+{
+	float samples = (float)(b->s0 + b->count);
+	uint32_t p, k;
+
+	for (p = p0; p < p1; p++) {
+		float *sum = pt.sums + 4 * p;
+		const float *v = b->vals + 4 * p;
+
+		for (k = 0; k < b->count; k++, v += 4 * b->pixels)
+			if (b->s0 + k == 0)
+				sum[0] = v[0], sum[1] = v[1], sum[2] = v[2], sum[3] = v[3];
+			else
+				sum[0] += v[0], sum[1] += v[1], sum[2] += v[2], sum[3] += v[3];
+		if (show)
+			pt.pixels[p] = shown(sum[0], samples) << 16 | shown(sum[1], samples) << 8 | shown(sum[2], samples);
+	}
+}
+
+/* Whether the picture is made of the sums after sample `sample` on the lanes: as shows() has it for a worker. */
+int
+pt_shown_after(uint32_t sample)
+{
+	return shows(sample, 1);
 }
 
 void

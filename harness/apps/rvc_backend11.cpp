@@ -37,6 +37,7 @@ public:
             if (d.first == "NO_SCATTER") scatter_ = false;
         inplace_ = opt.ramInplace;
         tickDirect_ = opt.tickDirect;
+        laneField_ = opt.laneField && opt.ramInplace;
         scatter_ = scatter_ && mrt_ && bands_ && !inplace_;
         // the commit draws whole only the bands the cores' stores are not what changed (they are points)
         if (scatter_) bo.settings.defines.push_back({"COMMIT_SCATTER", "1"});
@@ -122,7 +123,8 @@ public:
         }
         return rows_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, 64, 1, 3, err, opt.readbackBatch) &&
                control_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kControlTexels, 1, 3, err, opt.readbackBatch) &&
-               net_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kNetRead, 1, 3, err, opt.readbackBatch);
+               net_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kNetRead, 1, 3, err, opt.readbackBatch) &&
+               field_.init(gpu_.device.Get(), DXGI_FORMAT_R32G32B32A32_UINT, 16, kFieldRead, 1, 3, err, opt.readbackBatch);
     }
 
     bool loadPayload(Material& mat, const std::string& dir, const std::string& prefix, const std::string& propBase,
@@ -304,6 +306,7 @@ public:
         rows_.request(gpu_.ctx.Get(), crt_.current(), 0, 0, tag);
         control_.request(gpu_.ctx.Get(), crt_.current(), 0, kControlRow, tag);
         net_.request(gpu_.ctx.Get(), crt_.current(), 0, kNetRow, tag);
+        field_.request(gpu_.ctx.Get(), crt_.current(), kFieldAt, kFieldRow, tag);
         // hand the frame to the GPU now, as ExecuteCommandLists does on D3D12: without this it
         // starts when the readback's Map asks for it, after the host's own work for the frame
         if (!getenv("RVC11_NO_FLUSH")) gpu_.ctx->Flush();
@@ -317,6 +320,8 @@ public:
         if (!rows_.pop(gpu_.ctx.Get(), out, tag) || !control_.pop(gpu_.ctx.Get(), control, controlTag)) return false;
         out.insert(out.end(), control.begin(), control.end());
         if (!net_.pop(gpu_.ctx.Get(), control, controlTag)) return false;
+        out.insert(out.end(), control.begin(), control.end());
+        if (!field_.pop(gpu_.ctx.Get(), control, controlTag)) return false;
         out.insert(out.end(), control.begin(), control.end());
         lastSound_.clear();
         if (!soundTags_.empty() && soundTags_.front() == tag) {
@@ -613,6 +618,11 @@ private:
         return true;
     }
 
+    // The tick's primitives: 16 cores each, and with the lanes' field drawn one after all 256 cores' (its own).
+    bool fieldDraw_ = false;
+    int fieldSeen_ = 0;
+    UINT tickPrims() const { return fieldDraw_ ? (UINT)(kCoresMost / 16 + 1) : (activeCores_ + 15) / 16; }
+
     // The tick with eight targets: the state is read where it is, as ever.
     void tickDraw(Material& mat, const UpdateZone& z) {
         ID3D11DeviceContext* ctx = gpu_.ctx.Get();
@@ -657,7 +667,7 @@ private:
         Material::dumpConstants = true;
         mat.bind(ctx, pass, gpu_);
         Material::dumpConstants = false;
-        ctx->Draw((std::max)(6u, 3 * mrtLoad_ * ((activeCores_ + 15) / 16)), 0);
+        ctx->Draw((std::max)(6u, 3 * mrtLoad_ * tickPrims()), 0);
         ctx->OMSetRenderTargets(0, nullptr, nullptr);
         static const char* names[8] = {"_TickOut0", "_TickOut1", "_TickOut2", "_TickOut3", "_TickOut4", "_TickOut5", "_TickOut6", "_TickOut7"};
         for (int i = 0; i < 8; ++i) mat.setTexture(names[i], mrtSrv_[i].Get(), tickWidth(), tickHeight());
@@ -670,6 +680,7 @@ private:
     static const UINT kStageRows = 21, kZoneRows = 8;   // STAGE_ROWS in src/ram.h; the tallest zone
     bool inplace_ = false;
     bool tickDirect_ = false;
+    bool laneField_ = false;   // the tick has the lanes' field: its primitive and points while fieldNow
     // --replay: the tick variants (variant 0 is the machine's own), each its tick and its unpack
     ShaderBuildOptions tickBo_, unpackBo_;
     std::vector<std::pair<GpuPass, GpuPass>> tickVariants_;
@@ -782,6 +793,11 @@ private:
         if (ticks) {
             bool workers = cores_ > 1 && (workersNow || getenv("RVC_WORKERS_ALWAYS"));
             activeCores_ = workers ? (UINT)cores_ : 1;
+            // (while a job has been seen in the last 8 frames: the readback is frames behind, and a program's jobs come one
+            // after another; with no job posted the field's primitive draws no pixel, but its 7,936 points cost a pass)
+            fieldSeen_ = fieldNow ? 8 : fieldSeen_ > 0 ? fieldSeen_ - 1 : 0;
+            fieldDraw_ = laneField_ && fieldSeen_ > 0;
+            if (laneField_) mat.setInt("_LaneField", 1);
             if (mrt_) tickDraw(mat, core0);
         }
         prof_.mark(ctx);
@@ -792,13 +808,14 @@ private:
             rows_.request(ctx, ram_.Get(), 0, 0, tag);
             control_.request(ctx, ram_.Get(), 0, kControlRow, tag);
             net_.request(ctx, ram_.Get(), 0, kNetRow, tag);
+            field_.request(ctx, ram_.Get(), kFieldAt, kFieldRow, tag);
             if (!getenv("RVC11_NO_FLUSH")) ctx->Flush();
             return true;
         }
         D3D11_BOX rows{0, 0, 0, kWidth, 64, 1};
         ctx->CopySubresourceRegion(tickState_.Get(), 0, 0, 0, 0, ram_.Get(), 0, &rows);
         if (ticks) drawInto(mrt_ ? unpackPasses_[0] : passes_[0], mat, tickStateRtv_.Get(), 0,
-                            (std::max)(6u, 3 * ((activeCores_ + 15) / 16)), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &core0);
+                            (std::max)(6u, 3 * tickPrims()), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &core0);
         prof_.mark(ctx);
         if (timeIt) ctx->End(tsQuery_[1].Get());
         // the commit: the gather into T, then the state rows and the points into R
@@ -810,8 +827,10 @@ private:
         mat.setTexture("_Stage", stageSrv_.Get(), kWidth, kStageRows);
         drawInto(passes_[1], mat, ramRtv_.Get(), 0, 6, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         prof_.mark(ctx);
-        UINT points = 1 + 258 + (activeCores_ - 1) * 130 + 1;   // ram_commit_geom: the zap, the cores' places, the picture
+        bool field = ticks && fieldDraw_;
+        UINT points = 1 + 258 + (activeCores_ - 1) * 130 + (field ? kFieldPoints : 0) + 1;   // ram_commit_geom: the zap, the cores' places, the field's buckets, the picture
         mat.setInt("_CommitPoints", points);
+        if (laneField_) mat.setInt("_FieldPoints", field ? kFieldPoints : 0);
         drawInto(ramPasses_[0], mat, ramRtv_.Get(), 0, points, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
         prof_.mark(ctx);
         if (timeIt) ctx->End(tsQuery_[2].Get());
@@ -854,6 +873,7 @@ private:
         rows_.request(ctx, ram_.Get(), 0, 0, tag);
         control_.request(ctx, ram_.Get(), 0, kControlRow, tag);
         net_.request(ctx, ram_.Get(), 0, kNetRow, tag);
+        field_.request(ctx, ram_.Get(), kFieldAt, kFieldRow, tag);
         if (!getenv("RVC11_NO_FLUSH")) ctx->Flush();
         return true;
     }
@@ -952,7 +972,7 @@ private:
     ComPtr<ID3D11BlendState> gpuBlend_[4];
     std::vector<ComPtr<ID3D11ShaderResourceView>> keep_;
     CustomRenderTexture crt_;
-    RegionReadback rows_, control_, net_;
+    RegionReadback rows_, control_, net_, field_;
     ComPtr<ID3D11ShaderResourceView> netData_;
     bool deliverNet_ = false;   // the ring's zone is drawn in the next frame
 

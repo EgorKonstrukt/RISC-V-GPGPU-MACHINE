@@ -791,6 +791,13 @@ What it is good for, and what not:
 What it costs: nothing to speak of while the workers sleep; 5% of a pass for the first busy
 one and 17% for three; and the commit draws each busy core's stores ("The commit as points").
 
+## Lanes
+
+A worker's pixels can each run a function on an index of their own, and a field of 3,968 lanes of no
+core's takes a job from any program's first core (`docs/machine/lanes.md`): `mcw_lanes`, `mcw_field_begin`,
+`mcw_shade`. The lean tick has them; `rvc_cpu` and `rvc_opt` read their CSRs as 0, and the library makes plain
+calls there.
+
 ## The second layer (`mcwx.h`)
 
 Fourteen programs open workers, and each wrote the same things again round `mcw_post()`:

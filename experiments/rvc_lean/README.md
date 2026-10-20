@@ -19,6 +19,11 @@ faster than `rvc_opt` ("Faster than rvc_opt", below).
   textures for the folder.
 - `attempts.csv`: every variant of the tick tried on the way, with its scores ("Faster than rvc_opt").
 
+Lanes (20 October 2026, `docs/machine/lanes.md`): a worker's pixels each run a function on an index of their
+own (`lanes_begin`, `lane_next`, `lane_output`), and with `LANE_FIELD` (this folder's `main.shader`) a field of
+3,968 lanes of no core's in rows the cores leave (`field_begin`, `field_output`; the commit's points for it in
+`../rvc_opt/src/ram.h`). What they cost a pass of the three loads, from one snapshot each: the medians level.
+
 The GPU device and the sound card are `experiments/rvc_opt`'s (`gpu.shader`, `sound.shader`): the
 harness takes them from there when the processor's folder has none.
 

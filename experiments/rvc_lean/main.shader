@@ -59,6 +59,7 @@ Shader "Nix/rvc_lean"
             #pragma vertex vert
             #pragma geometry tick_geom
             #pragma fragment frag
+            #define LANE_FIELD   // the lanes' field (docs/machine/lanes.md): the host draws it where it sees this
             #include "tick.hlsl"
             ENDHLSL
         }
@@ -73,6 +74,7 @@ Shader "Nix/rvc_lean"
             #pragma fragment frag
 
             #define PASS_COMMIT
+            #define LANE_FIELD   // (its points: src/ram.h)
 
             // Cache buster: 31
 

@@ -591,5 +591,266 @@ int mcw_on_worker(void)
 	return stacks && &here >= stacks && &here < stacks + (uint32_t)stack_count * STACK_BYTES;
 }
 
+/* ---- lanes (docs/machine/lanes.md) ---- */
+
+#define LANES_MOST 64
+/* What a lane's index returns to: the machine ends the index there. */
+void mcw_lane_stub(void);
+__asm__(".text\n"
+	".p2align 2\n"
+	".globl mcw_lane_stub\n"
+	"mcw_lane_stub:\n"
+	"	ebreak\n");
+
+/* CSR 0x0b8: bit 31 where the machine has lanes, this core's in bits 8-15, how its last job
+ * ended in bits 0-7 (1 whole, 2 a lane stuck). A machine without lanes reads it as 0. */
+static inline uint32_t lanes_word(void)
+{
+	uint32_t v;
+
+	__asm__ volatile("csrr %0, 0x0b8" : "=r"(v));
+	return v;
+}
+
+int mcw_lanes_here(void)
+{
+	uint32_t v;
+
+	if (!mcw_on_worker()) return 0;
+	v = lanes_word();
+	return v >> 31 ? (int)((v >> 8) & 0xff) : 0;
+}
+
+/* What a lane could not make: its K + 1 stuck texels, each with the job's word `tag` first (one of
+ * another job is empty): K of a bit for each index of its order it skipped, 96 a texel, and one that
+ * says where it stopped (bit 31 of its second word). Its order is first, first + n, ... for `left`
+ * indices. Returns how many there were. */
+static unsigned stuck_made(volatile uint32_t (*s)[4], uint32_t K, uint32_t tag, mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t n, uint32_t left)
+{
+	uint32_t k, w, j, made = 0, bits, most = (left + n - 1) / n;
+
+	for (k = 0; k < K && 96 * k < most; k++) {
+		if (s[k][0] != tag) continue;
+		for (w = 0; w < 3; w++)
+			for (bits = s[k][1 + w]; bits; bits &= bits - 1) {
+				j = 96 * k + 32 * w + (uint32_t)__builtin_ctz(bits);
+				if (n * j < left)
+					fn(first + n * j, ctx), made++;
+			}
+	}
+	if (s[K][0] == tag && s[K][1] >> 31)
+		for (j = s[K][1] & 0x7fffffff; n * j < left; j++) fn(first + n * j, ctx), made++;
+	return made;
+}
+
+int mcw_lanes(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, void *out, uint32_t texels)
+{
+	/* the job as the machine reads it, three texels on this core's stack; then a lane's stuck texel
+	 * (stuck_made) */
+	struct {
+		uint32_t fn, first, count, out, texels, sp, ctx, stub, status, pad[3];
+		uint32_t stuck[2 * LANES_MOST][4];
+	} __attribute__((aligned(16))) job;
+	uint32_t lanes = (uint32_t)mcw_lanes_here(), i, j, L, sp, v;
+
+	if (!count) return 0;
+	if (!lanes || lanes > LANES_MOST || texels < 1 || texels > 6 || ((uint32_t)out & 15)) {
+		for (i = 0; i < count; i++) fn(first + i, ctx);
+		return 0;
+	}
+	/* (the function's first page read here: a page of code no core has run stops a lane, and the
+	 * index is then this core's) */
+	mcw_touch_code((const void *)fn, 4);
+	__asm__ volatile("mv %0, sp" : "=r"(sp));
+	job.fn = (uint32_t)fn;
+	job.first = first;
+	job.count = count;
+	job.out = (uint32_t)out;
+	job.texels = texels;
+	job.sp = (sp - 64) & ~15u;	/* every lane's stack: under this core's, which nothing else uses */
+	job.ctx = (uint32_t)ctx;
+	job.stub = (uint32_t)mcw_lane_stub;
+	job.status = (uint32_t)job.stuck;
+	job.pad[0] = job.pad[1] = 0;
+	job.pad[2] = 1;	/* (K: a texel of skipped indices a lane, then where it stopped) */
+	for (L = 0; L < 2 * lanes; L++) job.stuck[L][0] = 0;
+	/* the job: this core's passes are its lanes' until all are through (the stores above are in
+	 * memory by then: this pass ends here) */
+	__asm__ volatile("csrw 0x0b8, %0" : : "r"(&job) : "memory");
+	v = lanes_word();
+	if ((v & 0xff) == 2)
+		for (L = 0; L < lanes; L++)
+			stuck_made((volatile uint32_t (*)[4])job.stuck[2 * L], 1, 0x80000000u, fn, ctx, first + L, lanes, count - L);
+	(void)j;
+	return (int)lanes;
+}
+
+/* ---- the lanes' field (docs/machine/lanes.md, "The field") ---- */
+
+#define FIELD_JOB_AT 0x1900u	/* in the mailboxes' page: the job's descriptor, its number, how many lanes */
+#define FIELD_STATUS_AT 0x1A00u	/* a texel a group of 64: the number of the job it is at, busy | lanes that left some, its count, more lanes */
+#define FIELD_MOST 3968u
+#define FIELD_GROUPS 62u
+#define FIELD_K 3u	/* a lane's texels of skipped indices: the first 288 of its order */
+
+static volatile uint32_t *field_page;	/* the mailboxes' page, the field's words in it */
+static uint32_t field_seq, field_lanes_n, field_out;
+static struct {
+	uint32_t fn, first, count, out, texels, sp, ctx, stub, stuck, gp, tp, K;
+} __attribute__((aligned(16))) field_job;
+static uint32_t (*field_stuck[2])[4];	/* a lane's stuck texels (stuck_made), an array for every other job */
+static int field_set;			/* the array of the job out, or of the next */
+static int field_apart;			/* mcw_field_apart(): the skips kept for the workers, not made here */
+/* what a job's lanes left: its groups' words of which lanes skipped some, and the job's own */
+struct mcw_field_skips {
+	volatile uint32_t (*stuck)[4];
+	mcw_lane_fn fn;
+	void *ctx;
+	uint32_t first, count, lanes_n, tag, any;
+	uint32_t lanes[FIELD_GROUPS][2];
+};
+static struct mcw_field_skips field_skips[2];
+static mcw_lane_fn field_fn;
+unsigned mcw_field_stuck;	/* indices the field's lanes could not make, made here so far */
+static void *field_ctx;
+
+int mcw_field_lanes(void)
+{
+	uint32_t v;
+
+	if (mcw_on_worker()) return 0;
+	__asm__ volatile("csrr %0, 0x0b9" : "=r"(v));
+	return v > FIELD_MOST ? 0 : (int)v;
+}
+
+/* The page, mapped here if the program has not opened its workers: 0 where it cannot be. */
+static int field_map(void)
+{
+	int fd;
+
+	if (field_page) return 1;
+	if (page) {
+		field_page = (volatile uint32_t *)page;
+	} else {
+		if ((fd = (int)call6(56, -100, (long)"/dev/gpu", 2 | 0x80000, 0, 0, 0)) < 0) return 0;
+		field_page = map(MC_PAGE_SIZE, fd, MC_PAGE_GPU_OFFSET);
+		call6(57, fd, 0, 0, 0, 0, 0);
+		if (!field_page) return 0;
+		mcw_touch((void *)field_page, MC_PAGE_SIZE);
+	}
+	if (!field_stuck[0]) {
+		if (!(field_stuck[0] = map(2 * FIELD_MOST * (FIELD_K + 1) * 16, -1, 0))) {
+			field_page = 0;
+			return 0;
+		}
+		field_stuck[1] = field_stuck[0] + FIELD_MOST * (FIELD_K + 1);
+		mcw_touch(field_stuck[0], 2 * FIELD_MOST * (FIELD_K + 1) * 16);
+	}
+	mcw_touch(&field_job, sizeof field_job);
+	return 1;
+}
+
+void mcw_field_begin(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, void *out, uint32_t texels)
+{
+	volatile uint32_t *job;
+	uint32_t i, sp, gp, tp, lanes = (uint32_t)mcw_field_lanes();
+
+	if (field_out) mcw_field_wait();
+	field_skips[field_set].any = 0;
+	if (!count) return;
+	if (!lanes || texels < 1 || texels > 6 || ((uint32_t)out & 15) || !field_map()) {
+		for (i = 0; i < count; i++) fn(first + i, ctx);
+		return;
+	}
+	job = field_page + FIELD_JOB_AT / 4;
+	/* (another program's job: its end is waited for) */
+	while (job[0] != 0 && job[0] != (uint32_t)&field_job) mcw_rest();
+	/* (the function's first page read here: a page of code no core has run stops a lane, and the
+	 * index is then this core's) */
+	mcw_touch_code((const void *)fn, 4);
+	__asm__ volatile("mv %0, sp" : "=r"(sp));
+	__asm__ volatile("mv %0, gp" : "=r"(gp));
+	__asm__ volatile("mv %0, tp" : "=r"(tp));
+	field_job.fn = (uint32_t)fn;
+	field_job.first = first;
+	field_job.count = count;
+	field_job.out = (uint32_t)out;
+	field_job.texels = texels;
+	field_job.sp = (sp - 256) & ~15u;	/* every lane's stack, under this core's: nothing of it is stored */
+	field_job.ctx = (uint32_t)ctx;
+	field_job.stub = (uint32_t)mcw_lane_stub;
+	field_job.stuck = (uint32_t)field_stuck[field_set];
+	field_job.gp = gp;
+	field_job.tp = tp;
+	field_job.K = FIELD_K;
+	field_fn = fn, field_ctx = ctx;
+	/* every lane drawn for every job: a lane's state says which job it is at, by the number's last byte */
+	field_lanes_n = lanes - (lanes + 63) / 64;
+	field_seq = job[1] + 1;
+	/* (the descriptor is in memory by the next pass, as the job's texel is: both are this pass's stores) */
+	job[2] = lanes;
+	job[3] = 0;
+	job[1] = field_seq;
+	job[0] = (uint32_t)&field_job;
+	field_out = 1;
+}
+
+int mcw_field_ready(void)
+{
+	volatile uint32_t *status;
+	struct mcw_field_skips *k = &field_skips[field_set];
+	uint32_t g, stuck = 0;
+
+	if (!field_out) return 1;
+	status = field_page + FIELD_STATUS_AT / 4;
+	for (g = 0; g < FIELD_GROUPS; g++) {
+		if (status[4 * g] != field_seq || (status[4 * g + 1] & 1)) return 0;
+		stuck |= (status[4 * g + 1] & ~1u) | status[4 * g + 3];
+	}
+	/* the lanes each group says left indices (lanes 0 to 30 in bits 1 to 31 of its second word, 31 to 62
+	 * in its fourth), and the job's own: for the workers (mcw_field_apart), or made here */
+	k->stuck = field_stuck[field_set], k->fn = field_fn, k->ctx = field_ctx;
+	k->first = field_job.first, k->count = field_job.count, k->lanes_n = field_lanes_n;
+	k->tag = 0x80000000u | field_seq, k->any = stuck != 0;
+	for (g = 0; g < FIELD_GROUPS && stuck; g++)
+		k->lanes[g][0] = status[4 * g + 1] >> 1, k->lanes[g][1] = status[4 * g + 3];
+	field_page[FIELD_JOB_AT / 4] = 0;	/* (the machine draws the field no more) */
+	field_out = 0;
+	field_set ^= 1;
+	if (stuck && !field_apart) mcw_field_stuck += mcw_field_skips_make(k, 0, 1);
+	return 1;
+}
+
+void mcw_field_apart(int on) { field_apart = on; }
+
+const struct mcw_field_skips *mcw_field_skips(void)
+{
+	const struct mcw_field_skips *k = &field_skips[field_set ^ 1];
+
+	return field_apart && k->any ? k : 0;
+}
+
+unsigned mcw_field_skips_make(const struct mcw_field_skips *k, int part, int parts)
+{
+	uint32_t g, h, m, l, c = 0;
+	unsigned made = 0;
+
+	if (!k || !k->any) return 0;
+	/* (the lanes that left some dealt out in turn: such lanes lie together, where the work is long) */
+	for (g = 0; g < FIELD_GROUPS; g++)
+		for (h = 0; h < 2; h++)
+			for (m = k->lanes[g][h]; m; m &= m - 1) {
+				l = 63 * g + 31 * h + (uint32_t)__builtin_ctz(m);
+				if (c++ % (uint32_t)parts == (uint32_t)part && l < k->lanes_n && l < k->count)
+					made += stuck_made(k->stuck + (FIELD_K + 1) * l, FIELD_K, k->tag, k->fn, k->ctx, k->first + l, k->lanes_n, k->count - l);
+			}
+	return made;
+}
+
+void mcw_field_wait(void)
+{
+	while (!mcw_field_ready()) mcw_rest();
+}
+
 /* The first page of the table workers run on: 0 on a kernel without an MMU. */
 uint32_t mcw_mmu_root(void) { return root; }

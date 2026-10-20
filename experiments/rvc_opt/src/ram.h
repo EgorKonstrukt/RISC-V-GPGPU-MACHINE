@@ -24,6 +24,9 @@
 #ifndef RAM_GEOM_GUARD
 #define RAM_GEOM_GUARD
 #endif
+#ifdef LANE_FIELD
+#define LANE_FIELD_ROW 48   // the lanes' field's texels: state rows 48 to 63 (FIELD_STATE_ROW, rvc_lean's tick)
+#endif
 
 // RAM as the commit's passes other than the gather have it: the control words alone.
 uint4 ram_stage_read(uint2 pos) {
@@ -383,6 +386,11 @@ uint4 ram_state_texel(uint2 pos) {
     _Data_MTD_R.GetDimensions(m_dim.x, m_dim.y);
     if (_Init && _InitRaw) return ram_init_raw(pos);
     uint4 own = _TickState[pos], result;
+#ifdef LANE_FIELD
+    // the lanes' field (experiments/rvc_lean/tick.hlsl): of a lane's texels its place and its count,
+    // the last words of its buckets' tags; the buckets themselves emptied, their points made
+    if (pos.y >= LANE_FIELD_ROW) return _Init || ((pos.x & 7) != 0 && (pos.x & 7) != 4) ? (uint4)0 : uint4(0, 0, 0, own.w);
+#endif
 #if CORES > 1
     MC_GEO_READ
     uint hb = 0;
@@ -413,6 +421,9 @@ uint4 ram_state_texel(uint2 pos) {
 
 #ifdef COMMIT_RAM
 uniform uint _CommitPoints;   // how many points the RAM commit draws: the last is the picture
+#ifdef LANE_FIELD
+uniform uint _FieldPoints;    // of them, before the picture's, the lanes' field's buckets (0: it was not drawn)
+#endif
 // The RAM commit's points: point 0 the zap's square (or, with _Init, all of RAM), then as many as
 // the cores' places (core 0's 258: its buckets, its lone store, its fill or copy; a worker's
 // 130), then the picture. Drawn in that order, which is which wins where two write a texel.
@@ -436,6 +447,18 @@ void ram_commit_geom(point ram_point IN[1], inout TriangleStream<ram_v2f> stream
         return;
     }
     if (_Init) return;
+#ifdef LANE_FIELD
+    // the field's buckets, two a lane: the points before the picture's (as many as _FieldPoints)
+    if (_FieldPoints != 0 && id + 1 < _CommitPoints && id + 1 + _FieldPoints >= _CommitPoints) {
+        uint f = id + 1 + _FieldPoints - _CommitPoints, w = (f >> 1) * 8 + (f & 1) * 4;
+        uint4 tags = _TickState[uint2(w & 2047, LANE_FIELD_ROW + (w >> 11))];
+        for (uint n = 0; n < 3; n++) {
+            uint tag = idx_uint4(tags, n), v = w + 1 + n;
+            if (tag != 0 && tag - 1 < RAM_TEXELS) ram_rows(stream, tag - 1, tag - 1, _TickState[uint2(v & 2047, LANE_FIELD_ROW + (v >> 11))], uint4(RK_VALUE, 0, 0, 0));
+        }
+        return;
+    }
+#endif
 #ifdef GPU_DEVICE
     if (id == _CommitPoints - 1) {
         ram_pic p;

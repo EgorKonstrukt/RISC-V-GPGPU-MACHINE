@@ -68,6 +68,9 @@ static int chosen_light(void) { return tree.selected >= sc.object_count ? tree.s
 
 static int workers;
 static uint8_t busy[MC_MAX_CORES];
+/* The lanes' field (docs/machine/lanes.md) where the machine has one: a picture's samples are its jobs, the
+ * workers only build the tree. NXPATH_FIELD=0: the workers' shares. */
+static int use_field, field_wanted = 1;
 
 static unsigned
 now_ms(void)
@@ -86,6 +89,7 @@ take_workers(int most)
 
 	mcw_close();
 	workers = 0;
+	use_field = most > 0 && field_wanted && mcw_field_lanes() > 0;
 	if (most <= 0)
 		return;
 	/* (where a worker begins is read first: on a page of code this core has not run, every one stopped there) */
@@ -249,6 +253,61 @@ static int traced;		/* the picture has a sample of every pixel */
 static int showing;		/* what the view shows: 0 OpenGL's scene, 1 the small picture, 2 the picture */
 static int stale = 1;		/* the scene or the view is no longer what was traced */
 static int next_tile, sample, out;	/* this core alone: where it is; with workers: how many jobs are out */
+/* On the field: a picture's samples in batches, each one job of the field (a pixel's sample an index,
+ * into the batch's values), then the workers' (the indices the lanes skipped, each longer than a pass,
+ * which the workers find themselves: mcw_field_skips; then the batch folded into the sums in order,
+ * and shown). Two batches, so that the field makes one while the workers finish the other. A batch's
+ * state: 0 free, 1 the field's, 2 made by it, 3 its skipped indices on the workers, 4 its fold on them. */
+#define BATCH_MOST 4			/* samples a batch at most, */
+#define BATCH_VALUES (2 * 640 * 480)	/* and its values at most (a pixel's sample each) */
+static struct pt_batch batch[2] __attribute__((aligned(16)));
+static int batch_state[2], field_on = -1, workers_on = -1, batch_next;
+static uint32_t batch_from;		/* the first sample in no batch yet */
+static const struct mcw_field_skips *skips[2];	/* what the lanes left of a batch: the workers make it */
+static unsigned field_at, field_ms, left_all, left_made;	/* (NXPATH_PRINT: the field's time, the indices it left) */
+static uint32_t made_by[MC_MAX_CORES][4];	/* (and how many of them each worker made: 16 bytes a worker) */
+
+static uint32_t
+left_share(uint32_t which, uint32_t how)
+{
+	made_by[which & 0xffff][0] = mcw_field_skips_make(skips[how], (int)(which & 0xffff), (int)(which >> 16));
+	return 0;
+}
+
+/* worker w of n: its texels' pixels of the batch folded (how: the batch, and 2 when it is shown) */
+static uint32_t
+fold_share(uint32_t which, uint32_t how)
+{
+	uint32_t n = which >> 16, w = which & 0xffff, texels = batch[how & 1].pixels / 4;
+
+	pt_batch_fold(&batch[how & 1], 4 * (texels * w / n), 4 * (texels * (w + 1) / n), (how & 2) != 0);
+	return 0;
+}
+
+/* whether every worker given a share is through */
+static int
+workers_through(void)
+{
+	int k;
+
+	for (k = 1; k <= workers; k++)
+		if (busy[k]) {
+			if (!mcw_done(k))
+				return 0;
+			busy[k] = 0;
+		}
+	return 1;
+}
+
+static void
+workers_share(mcw_fn fn, uint32_t how)
+{
+	int k;
+
+	for (k = 1; k <= workers; k++)
+		busy[k] = 1, mcw_post(k, fn, (uint32_t)(k - 1) | (uint32_t)workers << 16, how);
+}
+
 static unsigned began, took, shown_at, still_since, rays;
 static int fixed_w, fixed_h;	/* a test's picture, of its own shape */
 static int leave_when_done;
@@ -408,7 +467,7 @@ start_phase(int p)
 	/* (as the squares it is: the device smooths no texture of this kind) */
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	if (workers)
-		mcw_touch(pt.sums, (unsigned)(w * h) * 3 * sizeof(float));
+		mcw_touch(pt.sums, (unsigned)(w * h) * 4 * sizeof(float));
 	for (s = 32; s > 1 && ((w + (s < 8 ? 8 : s) - 1) / (s < 8 ? 8 : s)) * ((h + s - 1) / s) < 24 * workers; s >>= 1)
 		continue;
 	pt.tile_h = s;
@@ -426,8 +485,18 @@ start_phase(int p)
 	pt.samples = !p ? 1 : sample_steps[samples_at] ? sample_steps[samples_at] : ENDLESS;
 	pt.stop = 0;
 	memset(pt.slots, 0, MC_MAX_CORES * sizeof(struct pt_slot));
+	if (field_on >= 0)
+		mcw_field_wait();	/* (a batch of the picture given up: what it writes is the next one's values) */
+	if (workers_on >= 0)
+		for (s = 1; s <= workers; s++)
+			if (busy[s])
+				mcw_wait(s);
 	memset(busy, 0, sizeof busy);
 	next_tile = sample = out = 0, rays = 0;
+	field_on = workers_on = -1, batch_state[0] = batch_state[1] = 0, batch_next = 0, batch_from = 0;
+	if (use_field && !batch[0].pixels)
+		for (s = 0; s < 2; s++)
+			mcw_touch(batch[s].vals, BATCH_VALUES * 16), batch[s].pixels = 1;	/* (once: the workers store to them) */
 	if (p)
 		traced = 0;
 	tracing = 1;
@@ -523,12 +592,20 @@ end_render(void)
 	tracing = 0;
 	took = now_ms() - began;
 	traced = sample >= 1;
+	if (use_field) {
+		/* (the rays, every pixel's from its sum's fourth word) */
+		for (rays = 0, i = 0; i < pt.width * pt.height; i++)
+			rays += (unsigned)pt.sums[4 * i + 3];
+	}
+	if (use_field && getenv("NXPATH_PRINT"))
+		fprintf(stderr, "nxpath: on the field: its jobs %u ms, %u of them left %u pixels' samples to the workers\n", field_ms, left_all, left_made);
+	field_ms = left_all = left_made = 0;
 	if (leave_when_done || getenv("NXPATH_PRINT")) {
 		unsigned sum = 0;
 		float light = 0.0f;
 
 		for (i = 0; i < pt.width * pt.height; i++)
-			sum = sum * 31 + pt.pixels[i], light += pt.sums[i * 3] + pt.sums[i * 3 + 1] + pt.sums[i * 3 + 2];
+			sum = sum * 31 + pt.pixels[i], light += pt.sums[i * 4] + pt.sums[i * 4 + 1] + pt.sums[i * 4 + 2];
 		fprintf(stderr, "pathstat: %d x %d, %d samples, %d turns, %d triangles: tree %u ms by %u workers, picture %u ms with %d workers, %u rays, light %d, sum %08x\n",
 			pt.width, pt.height, sample, pt.bounces, sc_world.triangle_count, (unsigned)sc_world.build_ms, (unsigned)sc_world.build_workers, took,
 			workers, rays, sample ? (int)(light * 1000.0f / (float)(pt.width * pt.height * 3 * sample)) : 0, sum);
@@ -555,7 +632,64 @@ trace_on(void)
 	int k, least = pt.samples, before = sample, done;
 	unsigned all = 0;
 
-	if (!workers) {
+	if (use_field) {
+		uint32_t pixels = (uint32_t)(pt.width * pt.height), m, most;
+
+		/* the field's batch made: its skipped indices kept for the workers */
+		if (field_on >= 0 && mcw_field_ready()) {
+			unsigned t = now_ms();
+
+			skips[field_on] = mcw_field_skips();
+			left_all += skips[field_on] != NULL, field_ms += t - field_at;
+			batch_state[field_on] = 2, field_on = -1;
+		}
+		/* the workers' part of a batch, one batch at a time, in order */
+		if (workers_on >= 0 && workers_through()) {
+			struct pt_batch *b = &batch[workers_on];
+
+			if (batch_state[workers_on] == 3) {
+				for (k = 0; k < workers && skips[workers_on]; k++)
+					left_made += made_by[k][0];
+				batch_state[workers_on] = 4;
+				workers_share(fold_share, (uint32_t)workers_on | (pt_shown_after(b->s0 + b->count - 1) ? 2u : 0u));
+			} else {
+				uint32_t i, few = 0;
+
+				/* (its rays: those of a 64th of the pixels, times 64) */
+				for (i = 0; i < pixels; i += 64)
+					few += (uint32_t)pt.sums[4 * i + 3];
+				rays = 64 * few;
+				sample = (int)(b->s0 + b->count);
+				batch_state[workers_on] = 0, workers_on = -1;
+			}
+		}
+		if (workers_on < 0) {
+			int a = batch_state[0] == 2, c = batch_state[1] == 2;
+
+			if (a && c)
+				workers_on = batch[0].s0 < batch[1].s0 ? 0 : 1;
+			else if (a || c)
+				workers_on = a ? 0 : 1;
+			if (workers_on >= 0) {
+				batch_state[workers_on] = 3;
+				if (skips[workers_on])
+					workers_share(left_share, (uint32_t)workers_on);
+			}
+		}
+		/* the next batch on the field: as many samples as fit, up to the next that is shown */
+		if (field_on < 0 && !pt.stop && batch_from < (uint32_t)pt.samples && batch_state[batch_next] == 0) {
+			most = BATCH_VALUES / pixels;
+			most = most > BATCH_MOST ? BATCH_MOST : most < 1 ? 1 : most;
+			for (m = 1; m < most && batch_from + m < (uint32_t)pt.samples && !pt_shown_after(batch_from + m - 1); m++)
+				continue;
+			batch[batch_next].s0 = batch_from, batch[batch_next].count = m, batch[batch_next].pixels = pixels;
+			field_at = now_ms();
+			mcw_field_begin(pt_batch_index, &batch[batch_next], 0, m * pixels, batch[batch_next].vals, 1);
+			batch_state[batch_next] = 1, field_on = batch_next;
+			batch_next ^= 1, batch_from += m;
+		}
+		done = field_on < 0 && workers_on < 0 && batch_state[0] == 0 && batch_state[1] == 0 && (pt.stop || batch_from >= (uint32_t)pt.samples);
+	} else if (!workers) {
 		done = pt.stop || sample >= pt.samples;
 		if (!done) {
 			rays += pt_tile((uint32_t)next_tile * pt.stride % (uint32_t)pt.tiles, (uint32_t)sample);
@@ -2048,7 +2182,10 @@ main(int argc, char **argv)
 	full_pixels = seglMemory(MOST_W * MOST_H * 4);
 	small_pixels = seglMemory(SMALL * 4);
 	tables = seglMemory(256 * 4 * (SC_OBJECTS + SC_LIGHTS));
-	pt.sums = mcw_alloc(MOST_W * MOST_H * 3 * sizeof(float));
+	pt.sums = mcw_alloc(MOST_W * MOST_H * 4 * sizeof(float));
+	for (i = 0; i < 2; i++)
+		batch[i].vals = mcw_alloc(BATCH_VALUES * 16);
+	mcw_field_apart(1);
 	pt.slots = mcw_alloc(MC_MAX_CORES * sizeof(struct pt_slot));
 	if (!full_pixels || !small_pixels || !tables || !pt.sums || !pt.slots) {
 		fprintf(stderr, "nxpath: no memory for the picture\n");
@@ -2075,6 +2212,8 @@ main(int argc, char **argv)
 			if (sample_steps[i] == atoi(text))
 				samples_at = i;
 	leave_when_done = getenv("NXPATH_EXIT") != NULL;
+	if ((text = getenv("NXPATH_FIELD")) != NULL)
+		field_wanted = atoi(text) != 0;
 	take_workers((text = getenv("NXPATH_CORES")) != NULL ? atoi(text) : MC_MAX_CORES);
 	if (first_scene(argc > 1 ? argv[1] : NULL))
 		choose(-1);

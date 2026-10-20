@@ -58,4 +58,6 @@ Texture2D<float4> _GpuTarget;
 #define GPU_STATE _SelfTexture2D
 #include "src/gpu.cginc"
 #include "src/zap.cginc"   // the host's hand in RAM, for one commit (docs/world/danger.md)
+// the lanes' field (lean/tick.hlsl, docs/machine/lanes.md): its texels in the state rows, its buckets' points
+#define LANE_FIELD
 #include "src/ram.cginc"

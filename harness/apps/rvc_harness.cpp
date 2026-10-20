@@ -910,6 +910,7 @@ int main(int argc, char** argv) {
     readFileBinary(shaderPath, shaderText);
     bool ownCommit = lean && shaderText.find("ram.h") == std::string::npos;
     bo.tickDirect = ownCommit && opt.unpackInPlace && opt.compute.empty();
+    bo.laneField = lean && shaderText.find("LANE_FIELD") != std::string::npos && opt.compute.empty() && !opt.cpu;
     if (!opt.dxc && !opt.pingPong && isOpt(opt.rvcDir) && !ownCommit && opt.compute.empty() && !getenv("RVC11_COMPUTE")) {
         if (lazyOn) fprintf(stderr, "[harness] --lazy has two state textures (RAM_INPLACE off)\n");
         else bo.ramInplace = true;
@@ -1321,6 +1322,19 @@ int main(int argc, char** argv) {
             }
             haveWorkerClock = true;
             if (!opt.frameLog.empty() && (opt.statsFrom.empty() || statsStarted)) workerSamples.insert(workerSamples.end(), {ranNow, coresNow, fullNow, waitNow});
+        }
+        // the lanes' field (docs/machine/lanes.md): whether a job is posted, and what its lanes ran, by its
+        // groups' words (each the sixteenths of its lanes' instructions for the job of the number it says)
+        if (bo.laneField && raw.size() >= (64 + kControlTexels + kNetRead + kFieldRead) * 16) {
+            static uint32_t groupSeq[64], groupSum[64];
+            const unsigned f0 = 64 + kControlTexels + kNetRead;
+            backend.fieldNow = texel(f0, 0) != 0;
+            for (unsigned g = 0; g < 62; ++g) {
+                uint32_t seq = texel(f0 + 0x10 + g, 0), sum = texel(f0 + 0x10 + g, 2);
+                if (seq == groupSeq[g] && sum >= groupSum[g]) workerInstructions += 16ull * (sum - groupSum[g]);
+                else if (seq != groupSeq[g]) workerInstructions += 16ull * sum;
+                groupSeq[g] = seq, groupSum[g] = sum;
+            }
         }
         if (haveClock && !opt.pcLog.empty() && (opt.statsAfter < 0 || statsStarted)) {
             pcSamples.push_back(texel(36, 3));

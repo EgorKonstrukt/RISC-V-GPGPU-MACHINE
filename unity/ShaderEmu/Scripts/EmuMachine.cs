@@ -146,7 +146,8 @@ public class EmuMachine : UdonSharpBehaviour
     private const int TicksPerRound = 8192;   // instructions a pass, as the harness's
     private const int MaxRounds = 32;
     private const int PassCommit = 0, PassControl = 1, PassUnpack = 2, PassWindowBack = 3;
-    private const int CommitPoints = 1 + 258 + 255 * 130 + 1;   // MachineCommitPoints.shader's mesh
+    private const int FieldPoints = 2 * 3968;   // the lanes' field's buckets (FIELD_MAX in lean/tick.hlsl)
+    private const int CommitPoints = 1 + 258 + 255 * 130 + FieldPoints + 1;   // MachineCommitPoints.shader's mesh
     // To compare (docs/machine/multicore.md, "In Unity"): bit 0 the three cameras as game cameras, which
     // prepare every canvas of the room at each Render; bit 1 the GPU's camera every round;
     // bit 4, a test: that camera in a frame's last round only, whatever comes.
@@ -515,6 +516,10 @@ public class EmuMachine : UdonSharpBehaviour
         pointsMaterial.SetTexture("_TickState", tickState);
         pointsMaterial.SetTexture("_Stage", stage);
         pointsMaterial.SetInt("_CommitPoints", CommitPoints);
+        // the lanes' field (docs/machine/lanes.md): its primitive is the tick mesh's last, its points the mesh's
+        // before the picture's; with no job posted the first draws no pixel and the others no texel
+        pointsMaterial.SetInt("_FieldPoints", FieldPoints);
+        tickMaterial.SetInt("_LaneField", 1);
         // the tick camera's eight targets, which the unpack pass then reads: bound at every power on,
         // since a remade render texture (an asset save, a lost device) leaves the camera on the old buffers
         RenderBuffer[] colours = new RenderBuffer[tickTargets.Length];

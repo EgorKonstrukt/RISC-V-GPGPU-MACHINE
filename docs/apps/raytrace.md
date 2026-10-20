@@ -5,7 +5,11 @@ above all: a pixel of a traced picture is a few thousand instructions of float a
 and a handful of bytes stored, so a core needs next to no write cache for it, and the
 machine's geometry lets a program have fifteen such cores in place of three large ones.
 
-Both work the same way. Core 0 traces nothing: it opens the workers there are (`mcw_open`;
+(`nxray` traces on lanes since 20 October 2026, a texel of four pixels an index: the field's or its
+workers' (`docs/machine/lanes.md`; "Lanes", below). What follows of tiles is `nxpath`'s, and `nxray`'s
+of before.)
+
+Both worked the same way. Core 0 traces nothing: it opens the workers there are (`mcw_open`;
 it once laid the cores out by size, `mcw_shape` and `mcw_fit`, which are gone: 15 of the
 smaller sizes and 7 of the largest on a machine of 16 cores, 63 and 27 on one of 64), gives
 every worker that has none its share (`mcw_post`, `mcw_done`), and shows the picture as it
@@ -35,9 +39,10 @@ The two pictures' memory is for 640 x 480 from the start (or `RAY_SIZE`'s, if la
 size is the same memory given to the textures again, with no picture out. The window keeps
 its size and the picture is stretched over it. The keys are looked at after every picture
 now: before, only while one was waited for, and with pictures that were whole at once (160 x
-120 with every worker) a key was not taken at all. With the defaults a test's sums and rays are
-what they were (`9383472e`, `226b5e92`, `c69f022b`, `337a52f6` for `RAY_FRAMES=4` on
-`rvc_cpu`), and a picture takes as long (36 to 43 ms there, 40 to 42 before).
+120 with every worker) a key was not taken at all. With the defaults a test's sums and rays were
+what they had been (`9383472e`, `226b5e92`, `c69f022b`, `337a52f6` for `RAY_FRAMES=4` on
+`rvc_cpu`; since the lanes, "Lanes" below, other ones), and a picture took as long (36 to 43 ms
+there, 40 to 42 before).
 
 `RAY_FRAMES=N` leaves after N pictures, `RAY_WORKERS=N` sets the start (every worker has its share of a picture in one job: `docs/machine/multicore.md`, "A share, not a tile"),
 `RAY_SIZE=WxH` the picture, `RAY_STILL=1` keeps the scene where it is. Each picture's line
@@ -128,6 +133,47 @@ shown was waited for.
   given. `RAY_EVEN=1` gives none, `RAY_SHARES=1` prints what the shares took.
 - **A worker with no picture ends its pass** (`mc_end_pass()`, `multicore.md`), where it
   would turn in place; `RAY_SPIN=1` for that.
+
+### Lanes (20 October 2026)
+
+`nxray` traces on lanes (`docs/machine/lanes.md`): `trace_texel(i)` makes texel `i` of the picture, four
+pixels side by side, by the same arithmetic as before (the spheres a texel's row and four pixels can
+meet, then `trace()` for each), and stores its 16 bytes, with the rays it cast in its first pixel's top
+byte (which the display does not draw and the sum leaves out).
+
+- **On the field** where the machine has one (the lean tick in the harness): a picture is one job of
+  its 3,906 lanes (`mcw_field_begin`), posted by the first core as soon as the picture before is
+  through, while it shows that one and makes the next scene. No worker is opened. `RAY_FIELD=0`
+  takes the workers instead.
+- **On the workers' lanes** elsewhere: a worker's share of a picture is a band of texels, one job of
+  its lanes (`mcw_lanes`); `RAY_LANES=0` makes its texels one after another (`rvc_cpu`, which has no
+  lanes, does that anyway). The bands are cut again one picture in four by what each took: a texel
+  costs what its band cost over its length, made smooth over the bands round it and at least a sixth
+  of a pass's instructions (a lane makes six texels a pass: `RAY_FLOOR`), and a band is given as much
+  of the cost as its worker's lanes make (27 or 6) while the others make theirs, half way from where
+  it was. The tiles, their order and the tiles given from a dear share to a cheap one are gone.
+- **The first core's part** went from some 95 thousand instructions a picture to 12 (on the field):
+  the scene's sines in floats (`sin_cos`: the C library's are doubles, 2,800 instructions a call, a
+  quarter of it), the bands not cut again three pictures in four (their cut in floats: two 64-bit
+  divisions a share were half of it), the jobs asked about every 250 ms, not 50, and up to four
+  pictures out at once where GPU memory has room (`OUT`; a third and fourth picture are of the
+  picture's own size, so 640 x 480 has two).
+- The sums of `RAY_FRAMES=4` are now `53ea472d`, `226b5e92`, `37366b32`, `3ffdbe63` on `rvc_cpu`, with
+  every worker and with none (the sines in floats move the scene by their last bits); on the card they
+  are the card's, the same on the field, on the workers' lanes, with `RAY_LANES=0` and with no worker.
+  On `rvc_cpu` a picture takes 51 to 60 ms (36 to 43 before: no lanes there, and bands in place of tiles).
+
+On the RTX 5070 laptop, geotune's layout (16 workers of 2^5, 239 of 2^3), free-running:
+
+| | 320 x 240 | 640 x 480 |
+|---|---|---|
+| before (the tiles, 255 workers) | 28 to 31 pictures a second (175 million instructions a second in the test's 60) | 6.8 to 8.7 |
+| the workers' lanes | 52 to 56 a second, 1,370 million | 16 to 18, 1,500 million |
+| the workers' lanes, every worker 2^5 (`--workers 8`) | 95 to 105, 2,280 million | 35 to 37, 3,300 million |
+| the field | 105 to 125, 2,300 to 2,750 million | 32 to 38, 3,200 to 3,500 million |
+
+`RAY_SHARES=1` prints each picture's shares (the workers'), or on the field what the first core's part
+of the picture took and how many texels the lanes left it.
 
 ## `nxpath`: a mesh viewer with a path tracer
 
@@ -340,6 +386,40 @@ one camera. A click picks by each thing's ball, not its triangles. The handles f
 machine's own pointer words, which `nxkey` does not move: a drag is tested with `rvc_cpu
 --pointer-circle` and `--pointer-button`, and was, in a test of `gizmo.cpp` alone, not in
 this program. Nothing of it has run on the shader machine.
+
+### On the field (20 October 2026)
+
+Where the machine has the lanes' field (`docs/machine/lanes.md`) `nxpath` traces on it, and its
+workers build the tree and finish what the field leaves; `NXPATH_FIELD=0` is the workers' shares of
+before. A picture's samples go in **batches** (`pt_batch_index`, `pt_batch_fold` in `tracer.c`): a
+batch is one job of the field, an index a pixel's sample, which writes its light and rays into the
+batch's 16 bytes for it and nothing else; up to 4 samples a batch, up to the next sample whose
+picture is shown, and 2 x 640 x 480 values at most. The workers then make what the lanes skipped,
+each a path longer than a pass (`mcw_field_apart`, the lanes that left some dealt out in turn), and
+fold the batch into the sums in the samples' order, making the picture when it is shown. Two batches,
+so the field makes one while the workers finish the other.
+
+- A path is 1,465 instructions on average at 160 x 120 (2,743 pixels measured, the scene it starts
+  with), 5% over 4,096, 2.5% over a pass's 8,192, the longest 48 thousand: 2% of every sample is
+  left to the workers.
+- The sums are added as a worker's tile adds them, sample after sample: a picture's sum is the same
+  on the field as on the workers, and the batches' sizes do not move it.
+- Before the batches a sample was one job and its picture another, and the field waited for the
+  workers; and before the library looked only at the lanes that left some, finding them took the
+  first core 290 ms a sample (`docs/machine/lanes.md`, "The field").
+
+On the RTX 5070 laptop (geotune's layout), the scene it starts with, the tree 330 to 360 ms apart:
+
+| | 255 workers | the field and the workers |
+|---|---|---|
+| 160 x 120, 8 samples | 657 ms | 410 ms |
+| 320 x 240, 8 samples | 1,583 ms | 899 ms |
+| 640 x 480, 4 samples | 3,516 ms | 1,413 ms |
+| 640 x 480, 16 samples | 13,761 ms | 5,193 ms |
+
+`NXPATH_PRINT=1` adds what the field's jobs took and how many paths they left. The lanes run about a
+billion instructions a second here against `nxray`'s 2.3 to 3.4: a path's way through the tree is
+another in every lane. On `rvc_cpu`, which has no field, the sums are as before (`02f213e9`).
 
 ## The path tracer of before (to 13 October 2026)
 

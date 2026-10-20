@@ -45,6 +45,22 @@ void mcw_for_begin(uint32_t n, mcw_body fn, void *ctx, const mcw_for_opts *o);
 int mcw_for_ready(void);
 void mcw_for_wait(void);
 
+/* ---- a picture made as a fragment shader makes it (docs/machine/lanes.md, "Shaders") ---- */
+
+/*
+ * A pixel's colour, 0x00RRGGBB, at column x and row y of the picture (0, 0 its top left). Called
+ * once for every pixel, on any core and in no set order, mostly on a worker's lanes: it computes
+ * and reads, and stores nothing but to its own stack (no globals, no system calls, no stdio).
+ */
+typedef uint32_t (*mcw_pixel_fn)(int x, int y, void *ctx);
+/* fn for every pixel of a width x height picture of words at `pixels` (16-byte aligned, width
+ * a multiple of 4, e.g. seglMemory()), on the lanes' field where the machine has one, else on the
+ * workers' lanes (a program that opened them); returns with it whole. */
+void mcw_shade(uint32_t *pixels, int width, int height, mcw_pixel_fn fn, void *ctx);
+/* The same begun and not waited for (the round of mcw_for_begin()), and the wait. One out at a time. */
+void mcw_shade_begin(uint32_t *pixels, int width, int height, mcw_pixel_fn fn, void *ctx);
+void mcw_shade_wait(void);
+
 /* ---- calls collected later ---- */
 
 /*

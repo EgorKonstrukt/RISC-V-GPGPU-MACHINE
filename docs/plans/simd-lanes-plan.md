@@ -1,8 +1,18 @@
 # Plan: lanes, a worker's pixels each on an index of their own
 
-Not built (20 October 2026). This is the plan for a mode of the worker cores in which every pixel
-of a worker runs the same function on its own index, in the tick that exists, and puts what it
-made into RAM through the commit that exists.
+Built 20 October 2026, in the lean tick: `docs/machine/lanes.md` is what there is. Where it
+differs from this plan: one shape of output (`T` whole texels an index at its place, made by
+ordinary stores; the texel and word shapes are one texel of four words), a descriptor in memory
+in place of CSRs `0x0b4` to `0x0bd` (CSR `0x0b8` alone, and `0x0b9`), a lane's output taken from its
+cache by the indices that ended (no walk of it), a lane stuck only at an index that fails as the
+first of a whole pass, the job over when every pixel of the worker sees all its lanes through,
+the lanes' instructions in the worker's clock, `rvc_cpu` without lanes (the library's plain calls
+there), and, beside the workers' lanes, a field of 3,968 lanes of no core's that any program's
+first core gives a job to ("The field"), which is what `nxray` and the shader example use.
+
+This was the plan for a mode of the worker cores in which every pixel of a worker runs the same
+function on its own index, in the tick that exists, and puts what it made into RAM through the
+commit that exists.
 
 ## Why
 

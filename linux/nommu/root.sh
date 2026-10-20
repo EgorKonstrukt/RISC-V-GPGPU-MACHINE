@@ -10,6 +10,9 @@ export PATH="$W/bin:$HOME/shaderemu-linux/toolchain/bin:$PATH"
 RT=$R/build/images/linux/root
 rv32-cc -O2 -w -I"$R/programs/mc" "$R/programs/mc/mctest.c" "$R/programs/mc/mcw.c" "$R/programs/mc/mcwx.c" -o "$NM/mctest" 2>&1 | head -5
 riscv32-linux-strip -o "$RT/usr/bin/mctest" "$NM/mctest" && echo "mctest built"
+# the lanes' test (docs/machine/lanes.md)
+rv32-cc -O2 -w -I"$R/programs/mc" "$R/programs/mc/lanetest.c" "$R/programs/mc/mcw.c" -o "$NM/lanetest" 2>&1 | head -5
+riscv32-linux-strip -o "$RT/usr/bin/lanetest" "$NM/lanetest" && echo "lanetest built"
 # the machine's own compiler: tcc links a library, elf2flt makes it a flat program
 rv32-cc -O2 -Wall "$HERE/elf2flt.c" -o "$NM/elf2flt" && riscv32-linux-strip -o "$RT/usr/bin/elf2flt" "$NM/elf2flt" && echo "elf2flt built"
 cp "$W/sysroot/lib/flatcrt.o" "$RT/usr/lib/flatcrt.o"

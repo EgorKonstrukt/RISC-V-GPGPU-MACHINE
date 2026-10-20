@@ -257,3 +257,18 @@
   `RVC_RACES` 0 undone), and its patch keeps the game state the build computer's: after a change to `openttd.patch`,
   `tools/test_all.py openttd` must give `linux/openttd/host_sum.sh`'s sums. A start is measured with `-v null:ticks=1 -g`
   under `tools/prof.py` (350 million instructions on 20 October 2026); the title screen's game is `make_title.sh`'s.
+- Lanes (`docs/machine/lanes.md`, lean tick only): a worker's pixels each run `fn(index, ctx)`
+  (`mcw_lanes`), and a field of 3,968 lanes of no core's takes a job from a program's first core and
+  does not wait for it (`mcw_field_begin`/`_ready`; `mcw_shade` in `mcwx.h` for a picture). An index
+  stores only to its stack and its own texels of the output, and ends within one pass (8,192
+  instructions; a texel of four pixels is an index): one that does not is skipped and made by the
+  core that asked, or by its workers (`mcw_field_apart`, as `nxpath` does: 2% of its paths). A group
+  leader's texel says which of its lanes skipped any; the first core must not scan every lane (290 ms
+  a job). A static the tick sets before a pass's loop and reads after it is carried through every
+  core's loop: one such (`lane_skip`) cost Doom 0.7% with no lane running; keep such a value in a word
+  carried already (bit 30 of `lane_j`) or read it again after the loop. `rvc_cpu` has no lanes and gives the same output by plain calls: `lanetest` checks both,
+  `RAY_FIELD=0`/`RAY_LANES=0` are `nxray`'s ways back. In the tick HLSL evaluates both sides of `||`
+  and `&&`: a call with side effects behind one ran for every pixel (every finished lane took itself
+  for stuck). The field needs the host's primitive and points (`BackendOptions::laneField`; in Unity the
+  tick mesh's 17th triangle and `_FieldPoints`, wired but not yet run in the world). geotune's small workers (2^3) have 6 lanes
+  each: lanes gain from large caches, the field from neither.
