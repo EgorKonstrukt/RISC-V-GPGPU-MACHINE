@@ -1895,7 +1895,9 @@ int main(int argc, char** argv) {
             double workerIps = (double)(workerInstructions - ovWorkers) / dt;
             char l1[96], l2[96], l3[96], l4[96], l5[96], l0[96];
             snprintf(l0, sizeof l0, "all cores %s IPS    %.0f frames/s", withCommas((uint64_t)(ips + workerIps)).c_str(), fps);
-            snprintf(l1, sizeof l1, "core 0 %s    workers %s", withCommas((uint64_t)ips).c_str(), withCommas((uint64_t)workerIps).c_str());
+            snprintf(l1, sizeof l1, "core 0 %s    workers %s (%u running)",
+                     withCommas((uint64_t)ips).c_str(), withCommas((uint64_t)workerIps).c_str(),
+                     workerSamples.size() >= 4 ? workerSamples[workerSamples.size() - 3] : 0);
             snprintf(l2, sizeof l2, "frame %.3f ms    %.0f instr/frame", fps > 0 ? 1000.0 / fps : 0.0, fps > 0 ? ips / fps : 0.0);
             char l6[96];
             if (!bo.soundShader) snprintf(l6, sizeof l6, "gpu device %.3f ms", gpuDeviceMs);
@@ -1913,11 +1915,18 @@ int main(int argc, char** argv) {
             size_t from = transcript.size() > 2000 ? transcript.size() - 2000 : 0;
             for (size_t k = from; k < transcript.size(); ++k) {
                 unsigned char ch = (unsigned char)transcript[k];
-                if (ch == 0x1b) {   // ESC [ ... letter
-                    if (k + 1 < transcript.size() && transcript[k + 1] == '[')
+                if (ch == 0x1b) {
+                    if (k + 1 < transcript.size() && transcript[k + 1] == '[') {
                         for (k += 2; k < transcript.size() && !isalpha((unsigned char)transcript[k]); ++k) {}
+                    } else if (k + 1 < transcript.size() && (transcript[k + 1] == '(' || transcript[k + 1] == ')')) {
+                        k += 2;
+                    } else if (k + 1 < transcript.size()) {
+                        k += 1;
+                    }
                 } else if (ch == '\n') {
                     console.emplace_back();
+                } else if (ch == '\t') {
+                    console.back() += "    ";
                 } else if (ch == '\b') {
                     if (!console.back().empty()) console.back().pop_back();
                 } else if (ch >= 0x20 && ch < 0x7f) {

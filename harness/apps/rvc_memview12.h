@@ -142,6 +142,8 @@ public:
         c.inset = c.bar - 16 * memoryViewUi();
         c.split = memoryViewSplit(width_);
         c.ui = memoryViewUi();
+        c.memOff = 0;
+        c.memSpan = (float)(texHeight_ - stateRows_);
         c.textSize[0] = (float)textW_;
         c.textSize[1] = (float)textH_;
         memcpy(cbMapped_, &c, sizeof c);

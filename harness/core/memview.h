@@ -32,7 +32,9 @@ struct MemoryViewConstants {
     float bar;
     float split;   // x where the display ends and the memory image begins
     float ui;      // window pixels a 96 dpi pixel
-    float pad[3];
+    float memOff;  // first RAM row the memory image shows
+    float memSpan; // RAM rows the memory image shows
+    float pad;
 };
 // The window's dpi over 96, the bar's height in window pixels, and the x where the display panel ends.
 float memoryViewUi();
