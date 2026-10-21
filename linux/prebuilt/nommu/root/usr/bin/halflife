@@ -2,4 +2,4 @@
 [ -f /usr/share/halflife/valve/pak0.PAK ] || { echo "halflife: Uplink's data is not in this image (linux/halflife/data.py)" >&2; exit 1; }
 mkdir -p /tmp/halflife/valve /persistence/halflife && cd /tmp/halflife || exit 1
 for f in /usr/share/halflife/valve/*; do ln -sf "$f" valve/; done
-exec halflife.bin -console -dev 1 "$@"
+exec halflife.bin "$@"

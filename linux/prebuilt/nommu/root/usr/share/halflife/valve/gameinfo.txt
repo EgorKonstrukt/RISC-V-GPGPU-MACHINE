@@ -1,5 +1,4 @@
-game "Half-Life: Uplink"
+title "Half-Life"
 gamedir "valve"
 startmap "hldemo1"
-demomap "hldemo1"
 type "singleplayer_only"

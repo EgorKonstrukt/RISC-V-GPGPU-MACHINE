@@ -110,6 +110,8 @@ struct shaderemu_gpu_workers {
  * (shaderemu_input.c), of which the third is its worker core and the fourth a mark */
 #define WORKERS_WM	0x1800
 #define WM_MAGIC	0x31514d57
+/* the lanes' field's job (docs/machine/lanes.md): its descriptor's address, its number, its lanes, its poster's pid */
+#define FIELD_JOB	0x1900
 
 static void __iomem *gpu_regs;
 static void __iomem *workers;
@@ -582,6 +584,10 @@ static int shaderemu_gpu_release(struct inode *inode, struct file *file)
 			writel(0, gpu_regs + DISPLAY_CURSOR);
 		if (draw_owner == file)
 			draw_owner = NULL;
+		/* the field's job of a program that dies with it out: its lanes read and write that memory */
+		if ((current->flags & PF_EXITING) && readl(workers + FIELD_JOB) &&
+		    readl(workers + FIELD_JOB + 12) == (u32)task_tgid_vnr(current))
+			writel(0, workers + FIELD_JOB);
 		{
 			struct worker_client *c = workers_client(file, false);
 			bool had = workers_give(file, NULL);

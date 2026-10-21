@@ -485,7 +485,7 @@ def zerotail_nommu():
 # (16-byte romfs packing): what the pool hands out is checked on copies in tmpfs
 ZERO_TAIL_NOMMU = ('zerotest 12 4; mkdir -p /tmp/t; find /usr/share /usr/bin /etc -maxdepth 1 -type f -size -256k | '
                    'while read f; do cp "$f" /tmp/t/; done; tailtest /tmp/t/*')
-CC_BYTES_NOMMU = '716cecf0'   # the lanes (20 October 2026): libmcw.a's mcw_lanes, mcw_field_*, mcw_shade, and the shader example on them
+CC_BYTES_NOMMU = '706fc1d3'   # libmcw.a's field job carries its poster's pid, mcw_close waits for it (21 October 2026)
 
 
 def without_mmu(image):

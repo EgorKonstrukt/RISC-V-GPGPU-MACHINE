@@ -441,6 +441,8 @@ void mcw_close(void)
 {
 	int k, passes, step;
 
+	/* (the field's job too: its lanes read and write this program's memory) */
+	mcw_field_wait();
 	if (!page) return;
 	/* The workers leave their loops, in two steps: the jobs that are out end, then the leaving
 	 * is posted. A worker with a job out is never posted to: it would sleep on the new job's
@@ -789,7 +791,7 @@ void mcw_field_begin(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, 
 	field_seq = job[1] + 1;
 	/* (the descriptor is in memory by the next pass, as the job's texel is: both are this pass's stores) */
 	job[2] = lanes;
-	job[3] = 0;
+	job[3] = (uint32_t)call6(172, 0, 0, 0, 0, 0, 0);	/* getpid: the kernel takes the job back if this program dies with it out */
 	job[1] = field_seq;
 	job[0] = (uint32_t)&field_job;
 	field_out = 1;

@@ -121,6 +121,15 @@ int mcw_field_lanes(void);	/* how many lanes the field has; 0: none here */
 void mcw_field_begin(mcw_lane_fn fn, void *ctx, uint32_t first, uint32_t count, void *out, uint32_t texels);
 int mcw_field_ready(void);	/* whether the job is through (the indices a lane could not make are made here first) */
 void mcw_field_wait(void);	/* until it is, the passes the kernel's (mcw_rest) */
+/* The indices the field's lanes skipped (each longer than a pass), for the program's workers to make
+ * in place of this core: with mcw_field_apart(1), mcw_field_ready() keeps them; mcw_field_skips() then
+ * says which the last job left (0: none), and `parts` workers each call mcw_field_skips_make(skips,
+ * part, parts), which returns how many it made. A job's skips are kept until the job after the next
+ * is begun. */
+struct mcw_field_skips;
+void mcw_field_apart(int on);
+const struct mcw_field_skips *mcw_field_skips(void);
+unsigned mcw_field_skips_make(const struct mcw_field_skips *skips, int part, int parts);
 
 #ifdef __cplusplus
 }
