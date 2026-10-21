@@ -543,11 +543,13 @@ void stdinThread() {
 // repository root one level up.
 void findRepoRoot(const Options& o) {
     if (fs::exists(fs::u8path(o.rvcDir) / "main.shader")) return;
+    std::error_code ec;
+    if (fs::exists(fs::u8path("experiments/rvc_opt/main.shader"), ec)) return;
     wchar_t exe[MAX_PATH];
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
     fs::path root = fs::path(exe).parent_path().parent_path();
-    std::error_code ec;
     if (fs::exists(root / fs::u8path(o.rvcDir) / "main.shader", ec)) fs::current_path(root, ec);
+    else if (fs::exists(root / "experiments/rvc_opt/main.shader", ec)) fs::current_path(root, ec);
 }
 
 // What the emulated machine can boot: payload PNG sets shipped with rvc, under kUpstream.
@@ -721,6 +723,7 @@ int main(int argc, char** argv) {
     bool haveOpt = fs::exists("experiments/rvc_opt/main.shader", ec);
     // (--cpu needs the shader with the GPU device and the display: upstream's has neither)
     if ((terminalMode || opt.dxc || opt.cpu || !opt.compute.empty()) && !opt.rvcDirSet && haveOpt) opt.rvcDir = "experiments/rvc_opt";
+    if (!opt.rvcDirSet && haveOpt && !fs::exists(fs::u8path(opt.rvcDir) / "main.shader", ec)) opt.rvcDir = "experiments/rvc_opt";
     const char* shellSnap = "build/snapshots/rvc_shell.snap";
     bool canResume = terminalMode && fs::exists(shellSnap, ec);
     // Nothing on the command line says what to boot: ask, if there is someone to ask.

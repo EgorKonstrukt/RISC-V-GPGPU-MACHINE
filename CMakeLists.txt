@@ -22,6 +22,22 @@ if(MSVC)
   add_compile_options(/W3 /utf-8 /permissive- /MP)
 endif()
 
+include(FetchContent)
+FetchContent_Declare(imgui_dock_src GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG docking)
+FetchContent_GetProperties(imgui_dock_src)
+if(NOT imgui_dock_src_POPULATED)
+  FetchContent_Populate(imgui_dock_src)
+endif()
+add_library(imgui_dock STATIC
+  ${imgui_dock_src_SOURCE_DIR}/imgui.cpp
+  ${imgui_dock_src_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_dock_src_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_dock_src_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+  ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+target_include_directories(imgui_dock PUBLIC ${imgui_dock_src_SOURCE_DIR} ${imgui_dock_src_SOURCE_DIR}/backends)
+target_compile_definitions(imgui_dock PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+
 add_library(harness_core STATIC
   harness/core/common.cpp
   harness/core/gpu.cpp
@@ -37,7 +53,7 @@ target_include_directories(harness_core PUBLIC harness/core)
 target_compile_definitions(harness_core PUBLIC
   NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS
   SHADEREMU_UNITY_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/harness/unity_include")
-target_link_libraries(harness_core PUBLIC d3d11 dxgi d3dcompiler dxguid windowscodecs ole32 gdi32)
+target_link_libraries(harness_core PUBLIC d3d11 dxgi d3dcompiler dxguid windowscodecs ole32 gdi32 imgui_dock imm32 dwmapi)
 
 # One frontend, two backends (D3D11 + FXC, D3D12 + DXC). rvc_harness_dxc only differs in its default.
 set(RVC_HARNESS_SOURCES harness/apps/rvc_harness.cpp harness/apps/rvc_backend11.cpp harness/apps/rvc_backend12.cpp harness/apps/rvc_net.cpp harness/apps/run_lock.cpp)

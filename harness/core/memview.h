@@ -97,6 +97,10 @@ private:
     ComPtr<ID3D11Texture2D> textTex_;                // text box, drawn with GDI
     ComPtr<ID3D11ShaderResourceView> textSrv_;
     UINT textW_ = 0, textH_ = 0;                     // used part of the text texture
+    ComPtr<ID3D11Texture2D> viewTex_;
+    ComPtr<ID3D11ShaderResourceView> viewSrv_;
+    ComPtr<ID3D11RenderTargetView> viewRtv_;
+    bool imgui_ = false;
     ComPtr<ID3D11RasterizerState> raster_;
     UINT width_ = 0, height_ = 0;
     UINT texWidth_ = 0, texHeight_ = 0, stateRows_ = 0;

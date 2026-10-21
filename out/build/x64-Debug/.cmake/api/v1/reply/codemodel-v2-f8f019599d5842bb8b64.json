@@ -1,0 +1,141 @@
+{
+	"configurations" : 
+	[
+		{
+			"abstractTargets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "Git::Git::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-Git__Git-Debug-04136ebb0bdba7df1ea1.json",
+					"name" : "Git::Git",
+					"projectIndex" : 0
+				}
+			],
+			"directories" : 
+			[
+				{
+					"abstractTargetIndexes" : 
+					[
+						0
+					],
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-f040eec181a89de70dbe.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.20"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"abstractTargetIndexes" : 
+					[
+						0
+					],
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "ShaderEmu",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "harness_core::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-harness_core-Debug-e515c9f69ccdca1bc8b4.json",
+					"name" : "harness_core",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "imgui_dock::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-imgui_dock-Debug-d58216885e64696fe792.json",
+					"name" : "imgui_dock",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "rvc_compute_harness::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-rvc_compute_harness-Debug-dad5085fc835df881fe7.json",
+					"name" : "rvc_compute_harness",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "rvc_cpu::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-rvc_cpu-Debug-9ce94f3ce380f866a1b9.json",
+					"name" : "rvc_cpu",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "rvc_harness::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-rvc_harness-Debug-cd3f6cd2095b19e06c0f.json",
+					"name" : "rvc_harness",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "rvc_harness_dxc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-rvc_harness_dxc-Debug-75c1c425b367ce1e3a0a.json",
+					"name" : "rvc_harness_dxc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "rvc_trace12::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-rvc_trace12-Debug-55ab88bfa600975d6433.json",
+					"name" : "rvc_trace12",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "share_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-share_test-Debug-bf3e0f62f0635caf39ae.json",
+					"name" : "share_test",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug",
+		"source" : "A:/DEV/RISC-V-GPGPU-MACHINE"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	}
+}

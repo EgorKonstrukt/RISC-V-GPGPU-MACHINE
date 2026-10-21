@@ -1,0 +1,10 @@
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/imgui_dock.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/harness_core.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rvc_harness.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rvc_harness_dxc.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rvc_compute_harness.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/share_test.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rvc_trace12.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rvc_cpu.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/edit_cache.dir
+A:/DEV/RISC-V-GPGPU-MACHINE/out/build/x64-Debug/CMakeFiles/rebuild_cache.dir

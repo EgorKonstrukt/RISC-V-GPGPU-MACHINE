@@ -3,7 +3,16 @@
 #include <d3dcompiler.h>
 
 #include <cstring>
+#include <algorithm>
+#include <filesystem>
 #include <vector>
+
+#include "imgui.h"
+#include "imgui_internal.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace {
 
@@ -215,6 +224,19 @@ bool g_held[128];             // keys down now, by Linux key code
 float g_ui = 1;               // the window's dpi over 96
 float g_dispShare = (float)kMemoryViewDispW / (kMemoryViewDispW + kMemoryViewMemW);   // the display's part of the width
 
+bool g_imgui = false;
+MemoryViewText g_cols;
+std::string g_forced;
+std::string g_pendingCapture;
+RECT g_dispRect{0, 0, 0, 0};
+bool g_dispValid = false;
+float g_dispShownW = 1, g_dispShownH = 1;
+UINT g_viewW = 0, g_viewH = 0;
+bool g_freeze = false;
+int g_vol = 10;
+bool g_soundOff = false;
+char g_line[1024]{};
+
 // Windows scan code (set 1, plus the extended flag) to Linux key code. The main block of the
 // keyboard has the same numbers in both; the extended keys do not.
 unsigned linuxKey(unsigned scan, bool extended) {
@@ -240,7 +262,12 @@ unsigned linuxKey(unsigned scan, bool extended) {
 }
 
 LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (g_imgui && ImGui_ImplWin32_WndProcHandler(h, m, w, l)) return 0;
     if (m == WM_CHAR) {
+        if (g_imgui) {
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.WantCaptureKeyboard) return 0;
+        }
         wchar_t ch = (wchar_t)w;
         if (ch == 8) g_typed += '';              // Backspace, as a Linux terminal sends it
         else if (ch < 0x80) g_typed += (char)ch;      // includes Enter (CR) and Ctrl+letter
@@ -254,6 +281,14 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_KEYDOWN || m == WM_KEYUP || m == WM_SYSKEYDOWN || m == WM_SYSKEYUP) {
         bool down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN, repeat = down && (l & (1 << 30)) != 0;
         unsigned code = linuxKey((unsigned)(l >> 16) & 0xff, (l & (1 << 24)) != 0);
+        if (g_imgui) {
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.WantCaptureKeyboard) {
+                if (code && code < 128) g_held[code] = down;
+                if (m == WM_SYSKEYDOWN && w == VK_F4) return DefWindowProcW(h, m, w, l);
+                return 0;
+            }
+        }
         if (code && !repeat) g_keyEvents.push_back(code | (down ? 0x80000000u : 0));   // the guest repeats keys itself
         if (code && code < 128) g_held[code] = down;
         if (m == WM_KEYDOWN) {
@@ -321,13 +356,39 @@ std::string memoryViewTakeHostKeys() {
 
 std::string memoryViewTakeKeys() {
     std::string keys;
-    keys.swap(g_typed);
+    keys.swap(g_forced);
+    if (g_imgui) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.WantCaptureKeyboard) {
+            g_typed.clear();
+            return keys;
+        }
+    }
+    std::string typed;
+    typed.swap(g_typed);
+    keys += typed;
     return keys;
 }
 
 MemoryViewInput memoryViewTakeInput() {
     MemoryViewInput in;
+    if (g_imgui) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.WantCaptureKeyboard) g_keyEvents.clear();
+    }
     in.keys.swap(g_keyEvents);
+    if (g_imgui && g_dispValid) {
+        float split = memoryViewSplit(g_viewW);
+        float memH = (float)g_viewH - (float)memoryViewBar();
+        float sx = split / (g_dispShownW > 0 ? g_dispShownW : 1);
+        float sy = memH / (g_dispShownH > 0 ? g_dispShownH : 1);
+        in.x = (float)(g_pointerX - g_dispRect.left) * sx;
+        in.y = (float)(g_pointerY - g_dispRect.top) * sy;
+        in.buttons = g_buttons;
+        in.panelW = split;
+        in.panelH = memH;
+        return in;
+    }
     RECT rc{};
     if (!g_window || !IsWindow(g_window) || !GetClientRect(g_window, &rc) || rc.bottom <= (LONG)memoryViewBar()) return in;
     in.x = (float)g_pointerX;
@@ -503,6 +564,17 @@ bool MemoryView::init(ID3D11Device* dev, UINT texWidth, UINT texHeight, UINT sta
 
     if (!createTargets(err)) return false;
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);  // never takes the keyboard from the console
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+    ImGui::StyleColorsDark();
+    ComPtr<ID3D11DeviceContext> imm;
+    dev_->GetImmediateContext(&imm);
+    if (ImGui_ImplWin32_Init(hwnd_) && ImGui_ImplDX11_Init(dev_.Get(), imm.Get())) {
+        imgui_ = true;
+        g_imgui = true;
+    }
     return true;
 }
 
@@ -528,6 +600,21 @@ bool MemoryView::createTargets(std::string& err) {
         hr = dev_->CreateTexture2D(&td, nullptr, &heatTex_[i]);
         if (SUCCEEDED(hr)) hr = dev_->CreateShaderResourceView(heatTex_[i].Get(), nullptr, &heatSrv_[i]);
         if (SUCCEEDED(hr)) hr = dev_->CreateRenderTargetView(heatTex_[i].Get(), nullptr, &heatRtv_[i]);
+    }
+    if (SUCCEEDED(hr)) {
+        viewTex_.Reset(); viewSrv_.Reset(); viewRtv_.Reset();
+        D3D11_TEXTURE2D_DESC vd{};
+        vd.Width = width_;
+        vd.Height = height_;
+        vd.MipLevels = vd.ArraySize = 1;
+        vd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        vd.SampleDesc.Count = 1;
+        vd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        hr = dev_->CreateTexture2D(&vd, nullptr, &viewTex_);
+        if (SUCCEEDED(hr)) hr = dev_->CreateShaderResourceView(viewTex_.Get(), nullptr, &viewSrv_);
+        if (SUCCEEDED(hr)) hr = dev_->CreateRenderTargetView(viewTex_.Get(), nullptr, &viewRtv_);
+        g_viewW = width_;
+        g_viewH = height_;
     }
     if (FAILED(hr)) {
         err = "memory view targets: " + hrToString(hr);
@@ -581,47 +668,174 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     int dst = 1 - heatCur_;
     ID3D11ShaderResourceView* nulls[5] = {};
     ctx->PSSetShaderResources(0, 5, nulls);
-    ID3D11RenderTargetView* rtvs[2] = {backRtv_.Get(), heatRtv_[dst].Get()};
-    ctx->OMSetRenderTargets(2, rtvs, nullptr);
-    D3D11_VIEWPORT vp{0, 0, (float)width_, (float)height_, 0, 1};
-    ctx->RSSetViewports(1, &vp);
-    ctx->RSSetState(raster_.Get());
-    ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-    ctx->OMSetDepthStencilState(nullptr, 0);
-    ctx->IASetInputLayout(nullptr);
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(vs_.Get(), nullptr, 0);
-    ctx->GSSetShader(nullptr, nullptr, 0);
-    ctx->PSSetShader(ps_.Get(), nullptr, 0);
-    ID3D11Buffer* cb = cb_.Get();
-    ctx->PSSetConstantBuffers(0, 1, &cb);
-    // The first frame has nothing to compare with, so it compares the state with itself.
-    ID3D11ShaderResourceView* srvs[5] = {cur, refValid_ ? refSrv_.Get() : cur, heatSrv_[heatCur_].Get(), textSrv_.Get(), gpu};
-    ctx->PSSetShaderResources(0, 5, srvs);
-    ctx->Draw(3, 0);
-    ctx->OMSetRenderTargets(0, nullptr, nullptr);
-    ctx->PSSetShaderResources(0, 5, nulls);
-    heatCur_ = dst;
-    if (present) swap_->Present(0, 0);
+    if (!g_freeze) {
+        ID3D11RenderTargetView* rtvs[2] = {viewRtv_.Get(), heatRtv_[dst].Get()};
+        ctx->OMSetRenderTargets(2, rtvs, nullptr);
+        D3D11_VIEWPORT vp{0, 0, (float)width_, (float)height_, 0, 1};
+        ctx->RSSetViewports(1, &vp);
+        ctx->RSSetState(raster_.Get());
+        ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        ctx->OMSetDepthStencilState(nullptr, 0);
+        ctx->IASetInputLayout(nullptr);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vs_.Get(), nullptr, 0);
+        ctx->GSSetShader(nullptr, nullptr, 0);
+        ctx->PSSetShader(ps_.Get(), nullptr, 0);
+        ID3D11Buffer* cb = cb_.Get();
+        ctx->PSSetConstantBuffers(0, 1, &cb);
+        ID3D11ShaderResourceView* srvs[5] = {cur, refValid_ ? refSrv_.Get() : cur, heatSrv_[heatCur_].Get(), textSrv_.Get(), gpu};
+        ctx->PSSetShaderResources(0, 5, srvs);
+        ctx->Draw(3, 0);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        ctx->PSSetShaderResources(0, 5, nulls);
+        heatCur_ = dst;
+        ComPtr<ID3D11Resource> curRes;
+        cur->GetResource(&curRes);
+        ctx->CopyResource(refTex_.Get(), curRes.Get());
+        refValid_ = true;
+    } else {
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        ctx->PSSetShaderResources(0, 5, nulls);
+    }
 
-    // Remember this state: the next frame glows wherever it differs.
-    ComPtr<ID3D11Resource> curRes;
-    cur->GetResource(&curRes);
-    ctx->CopyResource(refTex_.Get(), curRes.Get());
-    refValid_ = true;
+    if (!imgui_ || !viewSrv_) {
+        ctx->CopyResource(backTex_.Get(), viewTex_.Get());
+        if (present) swap_->Present(0, 0);
+        return true;
+    }
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    ImGuiID dockId = ImGui::GetID("HarnessDock");
+    static bool dockBuilt = false;
+    if (!dockBuilt) {
+        dockBuilt = true;
+        if (!std::filesystem::exists("imgui.ini")) {
+            ImGui::DockBuilderRemoveNode(dockId);
+            ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+            ImGuiViewport* vp0 = ImGui::GetMainViewport();
+            ImGui::DockBuilderSetNodeSize(dockId, vp0->Size);
+            ImGuiID right = 0, bottom = 0, left = 0;
+            ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Right, 0.30f, &right, &left);
+            ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.32f, &bottom, &left);
+            ImGuiID bottomLeft = 0, bottomRight = 0;
+            ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.45f, &bottomRight, &bottomLeft);
+            ImGui::DockBuilderDockWindow("Display", left);
+            ImGui::DockBuilderDockWindow("Memory", right);
+            ImGui::DockBuilderDockWindow("Console", bottomLeft);
+            ImGui::DockBuilderDockWindow("Machine", bottomRight);
+            ImGui::DockBuilderFinish(dockId);
+        }
+    }
+    ImGui::DockSpace(dockId);
+    float splitPx = memoryViewSplit(width_);
+    float barPx = (float)memoryViewBar();
+    float memPx = (float)height_ - barPx;
+    if (ImGui::Begin("Display")) {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float s = (std::min)(avail.x / splitPx, avail.y / memPx);
+        if (s > 0) {
+            ImVec2 size(splitPx * s, memPx * s);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - size.x) * 0.5f);
+            ImGui::Image((ImTextureID)viewSrv_.Get(), size, ImVec2(0, 0), ImVec2(splitPx / (float)width_, memPx / (float)height_));
+            ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+            POINT p0{(LONG)mn.x, (LONG)mn.y}, p1{(LONG)mx.x, (LONG)mx.y};
+            ScreenToClient(hwnd_, &p0);
+            ScreenToClient(hwnd_, &p1);
+            g_dispRect.left = p0.x;
+            g_dispRect.top = p0.y;
+            g_dispRect.right = p1.x;
+            g_dispRect.bottom = p1.y;
+            g_dispShownW = size.x;
+            g_dispShownH = size.y;
+            g_dispValid = true;
+        } else g_dispValid = false;
+    }
+    ImGui::End();
+    if (ImGui::Begin("Memory")) {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float mw = (float)width_ - splitPx;
+        float s = (std::min)(avail.x / mw, avail.y / memPx);
+        if (s > 0) {
+            ImVec2 size(mw * s, memPx * s);
+            ImGui::Image((ImTextureID)viewSrv_.Get(), size, ImVec2(splitPx / (float)width_, 0), ImVec2(1, memPx / (float)height_));
+        }
+    }
+    ImGui::End();
+    if (ImGui::Begin("Console")) {
+        if (g_cols.size() > 1) {
+            ImGui::BeginChild("lines", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false);
+            for (auto& l : g_cols[1]) ImGui::TextUnformatted(l.c_str());
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
+            ImGui::EndChild();
+        }
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##line", g_line, sizeof g_line, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            g_forced.append(g_line);
+            g_forced.push_back('\r');
+            g_line[0] = 0;
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+        ImGui::PopItemWidth();
+    }
+    ImGui::End();
+    if (ImGui::Begin("Machine")) {
+        if (!g_cols.empty())
+            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
+        if (g_cols.size() > 2)
+            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
+        bool sound = !g_soundOff;
+        if (ImGui::Checkbox("Sound", &sound)) g_hostKeys.push_back('s');
+        int vol = g_vol;
+        if (ImGui::SliderInt("Volume", &vol, 0, 100)) {
+            int steps = (vol - g_vol + (vol > g_vol ? 2 : -2)) / 5;
+            for (int i = 0; i < abs(steps); ++i) g_hostKeys.push_back(vol > g_vol ? '+' : '-');
+            g_vol = vol;
+        }
+        ImGui::Checkbox("Freeze view", &g_freeze);
+        if (ImGui::Button("Capture view BMP")) g_pendingCapture = "logs/imgui_view.bmp";
+    }
+    ImGui::End();
+    ImGui::Render();
+    ID3D11RenderTargetView* back = backRtv_.Get();
+    ctx->OMSetRenderTargets(1, &back, nullptr);
+    const float clearCol[4] = {0.03f, 0.03f, 0.04f, 1.0f};
+    ctx->ClearRenderTargetView(back, clearCol);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    if (!g_pendingCapture.empty()) {
+        D3D11_TEXTURE2D_DESC td{};
+        viewTex_->GetDesc(&td);
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        ComPtr<ID3D11Texture2D> staging;
+        bool done = false;
+        if (SUCCEEDED(dev_->CreateTexture2D(&td, nullptr, &staging))) {
+            ctx->CopyResource(staging.Get(), viewTex_.Get());
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (SUCCEEDED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m))) {
+                done = memoryViewWriteBmp(g_pendingCapture, td.Width, td.Height, (const uint8_t*)m.pData, m.RowPitch);
+                ctx->Unmap(staging.Get(), 0);
+            }
+        }
+        (void)done;
+        g_pendingCapture.clear();
+    }
+    if (present) swap_->Present(0, 0);
     return true;
 }
 
 bool MemoryView::capture(ID3D11DeviceContext* ctx, const std::string& path) {
-    if (!backTex_) return false;
+    if (!viewTex_) return false;
     D3D11_TEXTURE2D_DESC td{};
-    backTex_->GetDesc(&td);
+    viewTex_->GetDesc(&td);
     td.Usage = D3D11_USAGE_STAGING;
     td.BindFlags = 0;
     td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ComPtr<ID3D11Texture2D> staging;
     if (FAILED(dev_->CreateTexture2D(&td, nullptr, &staging))) return false;
-    ctx->CopyResource(staging.Get(), backTex_.Get());
+    ctx->CopyResource(staging.Get(), viewTex_.Get());
     D3D11_MAPPED_SUBRESOURCE m{};
     if (FAILED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &m))) return false;
     bool ok = memoryViewWriteBmp(path, td.Width, td.Height, (const uint8_t*)m.pData, m.RowPitch);
@@ -631,6 +845,20 @@ bool MemoryView::capture(ID3D11DeviceContext* ctx, const std::string& path) {
 
 void MemoryView::setText(ID3D11DeviceContext* ctx, const MemoryViewText& columns) {
     if (!hwnd_) return;
+    g_cols = columns;
+    if (!columns.empty()) {
+        for (auto& line : columns[0]) {
+            size_t p = line.find("volume ");
+            if (p != std::string::npos) {
+                int v = atoi(line.c_str() + p + 7);
+                if (v >= 0 && v <= 100) g_vol = v;
+            }
+            if (line.find("sound off") != std::string::npos) g_soundOff = true;
+            if (line.find("sound playing") != std::string::npos || line.find("sound idle") != std::string::npos ||
+                line.find("sound not played") != std::string::npos)
+                g_soundOff = false;
+        }
+    }
     const UINT kW = kMemoryViewTextW, kH = kMemoryViewTextH;
     if (!textTex_) {
         D3D11_TEXTURE2D_DESC td{};
@@ -654,6 +882,16 @@ void MemoryView::setTitle(const std::string& title) {
 
 void MemoryView::close() {
     if (!hwnd_) return;
+    if (imgui_) {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        imgui_ = false;
+        g_imgui = false;
+    }
+    viewSrv_.Reset();
+    viewRtv_.Reset();
+    viewTex_.Reset();
     backRtv_.Reset();
     backTex_.Reset();
     swap_.Reset();
