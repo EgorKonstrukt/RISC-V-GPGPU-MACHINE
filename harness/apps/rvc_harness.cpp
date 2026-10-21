@@ -772,9 +772,20 @@ int main(int argc, char** argv) {
     }
     // The full machine unless a named image is known to need less, or the user said so.
     bool nommuLinux = opt.kernel == "nommu" && opt.image == "linux-net" && opt.loadState.empty();
+    bool machineSet = opt.machine >= 0;
     if (opt.machine < 0) {
         const BootImage* im = opt.loadState.empty() ? findImage(opt.image) : nullptr;
         opt.machine = im && (isOpt(opt.rvcDir) || opt.rvcDir == "experiments/rvc_compute") ? (nommuLinux ? 1 : im->machine) : 0;
+    }
+    if (machineSet && opt.image == "linux-net" && opt.loadState.empty()) {
+        if (opt.kernel == "nommu" && opt.machine != 1) {
+            fprintf(stderr, "[harness] Linux without an MMU needs the machine without paging (--machine nopaging, docs/system/nommu.md)\n");
+            return 1;
+        }
+        if (opt.kernel == "mmu" && opt.machine != 0) {
+            fprintf(stderr, "[harness] Linux with the MMU needs the full machine (--machine full)\n");
+            return 1;
+        }
     }
     if (nommuLinux && !linuxBuilt(opt)) {
         fprintf(stderr, "[harness] %s has not been made (docs/system/nommu.md)\n", linuxDir(opt).c_str());
