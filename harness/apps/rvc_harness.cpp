@@ -143,6 +143,7 @@ struct Options {
     double cpuIps = 0;        // --cpu-ips N: no more than N instructions a second (0: as fast as it goes)
     std::string compute;      // --compute FILE: the processor as a compute shader, the devices the shader's (experiments/rv32_min)
     int computeCores = 256;   // --compute-cores N: core 0 and N - 1 workers, a thread group each
+    bool computeCoresSet = false;   // (unset: the panel's Cores / RVC_CORES picks it, as on every backend)
     int computePasses = 0;    // --compute-passes N: the processor's passes a frame at most (0: 4 for the fast shader, else 1)
     int computeSplit = -1;    // --compute-split F: of them the first F always run, a core's at most --ticks over F (-1: 2 for the fast shader)
     bool ticksSet = false;
@@ -249,7 +250,7 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                         "The whole machine"): fast or plain for rv32_min_fast.hlsl or rv32_min.hlsl
                         (fast by default on D3D12; explicit --cpu or --compute wins).
                         A pass a frame; the display, the GPU, sound, keys and pointer as ever
-  --compute-cores N    with --compute: core 0 and N - 1 workers (256; plain has core 0 alone)
+  --compute-cores N    with --compute: core 0 and N - 1 workers (the panel's Cores / RVC_CORES when not given; plain has core 0 alone)
   --compute-passes N   with --compute: the processor's passes a frame at most, before the devices' (fast: 4, plain: 1)
   --tick-rounds N      the tick and its commit N times a frame before the devices' passes (1)
   --tick-split F       of them the first F always run; the others give core 0 the rest of its F x --ticks,
@@ -467,7 +468,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (o.compute == "fast" || o.compute == "plain")
                 o.compute = o.compute == "fast" ? "experiments/rv32_min/rv32_min_fast.hlsl" : "experiments/rv32_min/rv32_min.hlsl";
         }
-        else if (a == "--compute-cores") o.computeCores = (std::max)(1, (std::min)(256, atoi(next("--compute-cores").c_str())));
+        else if (a == "--compute-cores") { o.computeCores = (std::max)(1, (std::min)(256, atoi(next("--compute-cores").c_str()))); o.computeCoresSet = true; }
         else if (a == "--compute-passes") o.computePasses = (std::max)(1, (std::min)(64, atoi(next("--compute-passes").c_str())));
         else if (a == "--tick-split") o.tickSplit = (std::max)(0, (std::min)(16, atoi(next("--tick-split").c_str())));
         else if (a == "--tick-rounds") o.tickRounds = (std::max)(1, (std::min)(16, atoi(next("--tick-rounds").c_str())));
@@ -933,18 +934,31 @@ int main(int argc, char** argv) {
         if (mrt) opt.defines.push_back("TICK_MRT");
         // (RVC_CORES=N: a machine of fewer cores, to measure what the others cost core 0; the DXC
         // control pass reports the workers while its tick stays single-core and fast; the Settings
-        // panel's Cores, next start)
+        // panel's Cores, next start, on every backend: MRT, compute and --cpu)
+        // The machine is architected for 256 cores (MC_MAX_CORES, the mailbox bitmasks' eight
+        // words, the state strip's bands), so more clamps back to 256.
+        memoryViewLoadCfg();
+        int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : memoryViewCoreCount();
+        if (cores < 1) cores = 1;
+        if (cores > kCores) {
+            if (getenv("RVC_CORES")) fprintf(stderr, "[harness] RVC_CORES=%d is above the machine's %d cores, clamped\n", cores, kCores);
+            cores = kCores;
+        }
         if ((mrt || opt.dxc) && !opt.noMrt && !opt.cpu && opt.compute.empty() && !opt.profile && !getenv("RVC11_COMPUTE")) {
-            memoryViewLoadCfg();
-            int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : memoryViewCoreCount();
-            if (cores < 1) cores = 1;
-            if (cores > kCores) cores = kCores;
             if (mrt && cores > 1) opt.defines.push_back("CORES=" + std::to_string(cores));
             opt.cores = cores;
         }
-        if (opt.cpu) opt.cores = kCores;
+        if (opt.cpu) opt.cores = cores;
         // (the plain shader is core 0 alone)
-        if (!opt.compute.empty()) opt.cores = opt.compute.find("rv32_min.hlsl") != std::string::npos ? 1 : opt.computeCores;
+        if (!opt.compute.empty()) {
+            if (opt.compute.find("rv32_min.hlsl") != std::string::npos) opt.cores = 1;
+            else {
+                if (!opt.computeCoresSet) opt.computeCores = cores;
+                opt.cores = opt.computeCores;
+            }
+        }
+        if ((opt.cpu || !opt.compute.empty() || opt.cores != 1) && (opt.cores != 256 || getenv("RVC_CORES")))
+            fprintf(stderr, "[harness] %d cores (RVC_CORES or the Settings panel's Cores)\n", opt.cores);
         if (!opt.compute.empty()) {
             // the fast shader: two passes of 8,192 a frame, and up to two more while core 0 rests
             // (experiments/rv32_min/README.md, "Passes a frame"); the plain one a pass a frame

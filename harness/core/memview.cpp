@@ -1902,6 +1902,21 @@ static void memZoneList(float totalRows) {
     }
 }
 
+// Loupe floats over the Display's top-right corner (as in the default layout), placed once:
+// later runs keep where the user dragged it (logs/imgui_harness.ini).
+static void loupePlacement() {
+    if (g_dispValid && g_window) {
+        POINT p0{g_dispRect.left, g_dispRect.top}, p1{g_dispRect.right, g_dispRect.top};
+        if (ClientToScreen(g_window, &p0) && ClientToScreen(g_window, &p1)) {
+            ImGui::SetNextWindowPos(ImVec2((float)p1.x - 310.0f, (float)p0.y + 8.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
+            return;
+        }
+    }
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 330.0f, vp->WorkPos.y + 30.0f),
+        ImGuiCond_FirstUseEver);
+}
 // The docked panels both memory views show, after the backend's NewFrame and before its
 // Render (memview.h). Backend-agnostic: the textures arrive as ImTextureID (a D3D11 SRV
 // or a D3D12 GPU descriptor handle).
@@ -1928,21 +1943,30 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
                 ImGui::DockBuilderRemoveNode(dockId);
                 ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(dockId, vp->Size);
-                ImGuiID right = 0, bottom = 0, left = 0;
-                ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Right, 0.30f, &right, &left);
-                ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.32f, &bottom, &left);
-                ImGuiID bottomLeft = 0, bottomRight = 0;
-                ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.45f, &bottomRight, &bottomLeft);
-                ImGui::DockBuilderDockWindow("Display", left);
-                ImGui::DockBuilderDockWindow("Memory", right);
-                ImGui::DockBuilderDockWindow("Heat", right);
-                ImGui::DockBuilderDockWindow("Loupe", right);
-                ImGui::DockBuilderDockWindow("CPU State", right);
-                ImGui::DockBuilderDockWindow("GPU Target", right);
-                ImGui::DockBuilderDockWindow("Console", bottomLeft);
-                ImGui::DockBuilderDockWindow("Machine", bottomRight);
-                ImGui::DockBuilderDockWindow("Settings", bottomRight);
-                ImGui::DockBuilderDockWindow("Radiation", bottomRight);
+                // Default layout: Console top-left with CPU State below it, Display centre,
+                // Memory/Heat/GPU Target tabs right, Settings/Machine/Radiation along the
+                // bottom; Loupe is not docked: it floats over the Display (loupePlacement).
+                ImGuiID top = 0, bottom = 0;
+                ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Down, 0.35f, &bottom, &top);
+                ImGuiID memTabs = 0, topRest = 0;
+                ImGui::DockBuilderSplitNode(top, ImGuiDir_Right, 0.26f, &memTabs, &topRest);
+                ImGuiID display = 0, console = 0;
+                ImGui::DockBuilderSplitNode(topRest, ImGuiDir_Right, 0.695f, &display, &console);
+                ImGuiID radiation = 0, bottomRest = 0;
+                ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.352f, &radiation, &bottomRest);
+                ImGuiID machine = 0, bottomRest2 = 0;
+                ImGui::DockBuilderSplitNode(bottomRest, ImGuiDir_Right, 0.406f, &machine, &bottomRest2);
+                ImGuiID settings = 0, cpuState = 0;
+                ImGui::DockBuilderSplitNode(bottomRest2, ImGuiDir_Right, 0.40f, &settings, &cpuState);
+                ImGui::DockBuilderDockWindow("Display", display);
+                ImGui::DockBuilderDockWindow("Memory", memTabs);
+                ImGui::DockBuilderDockWindow("Heat", memTabs);
+                ImGui::DockBuilderDockWindow("GPU Target", memTabs);
+                ImGui::DockBuilderDockWindow("Console", console);
+                ImGui::DockBuilderDockWindow("CPU State", cpuState);
+                ImGui::DockBuilderDockWindow("Machine", machine);
+                ImGui::DockBuilderDockWindow("Settings", settings);
+                ImGui::DockBuilderDockWindow("Radiation", radiation);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
@@ -2005,6 +2029,7 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
         ImGui::EndChild();
     }
     ImGui::End();
+    loupePlacement();
     if (ImGui::Begin("Loupe")) {
         if (loupe) {
             ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -2086,15 +2111,18 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
         if (ImGui::SliderFloat("glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
         ImGui::PopItemWidth();
         int cores = g_cores;
-        if (ImGui::SliderInt("Cores", &cores, 1, 256)) {
-            if (cores < 1) cores = 1;
+        if (ImGui::SliderInt("Cores", &cores, 1, 256)) {   // 256: the machine's size (MC_MAX_CORES,
+            if (cores < 1) cores = 1;                      // the mailbox masks' eight words, the state bands)
             if (cores > 256) cores = 256;
             if (cores != g_cores) {
                 g_cores = cores;
                 uiSaveCfg();
             }
         }
-        ImGui::Text("takes effect on restart");
+        if (const char* env = getenv("RVC_CORES")) {
+            if (*env) ImGui::Text("RVC_CORES=%s overrides this", env);
+        }
+        ImGui::Text("takes effect on restart, on every backend (MRT, compute, --cpu)");
     }
     ImGui::End();
     if (ImGui::Begin("Radiation")) {
@@ -2381,21 +2409,30 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
                 ImGui::DockBuilderRemoveNode(dockId);
                 ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(dockId, vp->Size);
-                ImGuiID right = 0, bottom = 0, left = 0;
-                ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Right, 0.30f, &right, &left);
-                ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.32f, &bottom, &left);
-                ImGuiID bottomLeft = 0, bottomRight = 0;
-                ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.45f, &bottomRight, &bottomLeft);
-                ImGui::DockBuilderDockWindow("Display", left);
-                ImGui::DockBuilderDockWindow("Memory", right);
-                ImGui::DockBuilderDockWindow("Heat", right);
-                ImGui::DockBuilderDockWindow("Loupe", right);
-                ImGui::DockBuilderDockWindow("CPU State", right);
-                ImGui::DockBuilderDockWindow("GPU Target", right);
-                ImGui::DockBuilderDockWindow("Console", bottomLeft);
-                ImGui::DockBuilderDockWindow("Machine", bottomRight);
-                ImGui::DockBuilderDockWindow("Settings", bottomRight);
-                ImGui::DockBuilderDockWindow("Radiation", bottomRight);
+                // Default layout: Console top-left with CPU State below it, Display centre,
+                // Memory/Heat/GPU Target tabs right, Settings/Machine/Radiation along the
+                // bottom; Loupe is not docked: it floats over the Display (loupePlacement).
+                ImGuiID top = 0, bottom = 0;
+                ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Down, 0.35f, &bottom, &top);
+                ImGuiID memTabs = 0, topRest = 0;
+                ImGui::DockBuilderSplitNode(top, ImGuiDir_Right, 0.26f, &memTabs, &topRest);
+                ImGuiID display = 0, console = 0;
+                ImGui::DockBuilderSplitNode(topRest, ImGuiDir_Right, 0.695f, &display, &console);
+                ImGuiID radiation = 0, bottomRest = 0;
+                ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.352f, &radiation, &bottomRest);
+                ImGuiID machine = 0, bottomRest2 = 0;
+                ImGui::DockBuilderSplitNode(bottomRest, ImGuiDir_Right, 0.406f, &machine, &bottomRest2);
+                ImGuiID settings = 0, cpuState = 0;
+                ImGui::DockBuilderSplitNode(bottomRest2, ImGuiDir_Right, 0.40f, &settings, &cpuState);
+                ImGui::DockBuilderDockWindow("Display", display);
+                ImGui::DockBuilderDockWindow("Memory", memTabs);
+                ImGui::DockBuilderDockWindow("Heat", memTabs);
+                ImGui::DockBuilderDockWindow("GPU Target", memTabs);
+                ImGui::DockBuilderDockWindow("Console", console);
+                ImGui::DockBuilderDockWindow("CPU State", cpuState);
+                ImGui::DockBuilderDockWindow("Machine", machine);
+                ImGui::DockBuilderDockWindow("Settings", settings);
+                ImGui::DockBuilderDockWindow("Radiation", radiation);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
@@ -2458,6 +2495,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
         ImGui::EndChild();
     }
     ImGui::End();
+    loupePlacement();
     if (ImGui::Begin("Loupe")) {
         ImGui::TextWrapped("No loupe texture on D3D11 (needs the DX12 view). Hover Memory anyway: the address reads below.");
         if (g_loupeAddr != ~0u) {
@@ -2532,6 +2570,19 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
         ImGui::PushItemWidth(120);
         if (ImGui::SliderFloat("glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
         ImGui::PopItemWidth();
+        int cores = g_cores;
+        if (ImGui::SliderInt("Cores", &cores, 1, 256)) {   // 256: the machine's size (MC_MAX_CORES,
+            if (cores < 1) cores = 1;                      // the mailbox masks' eight words, the state bands)
+            if (cores > 256) cores = 256;
+            if (cores != g_cores) {
+                g_cores = cores;
+                uiSaveCfg();
+            }
+        }
+        if (const char* env = getenv("RVC_CORES")) {
+            if (*env) ImGui::Text("RVC_CORES=%s overrides this", env);
+        }
+        ImGui::Text("takes effect on restart, on every backend (MRT, compute, --cpu)");
     }
     ImGui::End();
     ImGui::Render();
