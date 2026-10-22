@@ -34,7 +34,10 @@ struct MemoryViewConstants {
     float ui;      // window pixels a 96 dpi pixel
     float memOff;  // first RAM row the memory image shows
     float memSpan; // RAM rows the memory image shows
-    float pad;
+    float glow;    // heat glow intensity (0 off)
+    float colOff;  // first RAM texel column shown (the loupe's window)
+    float colSpan; // RAM texel columns shown
+    float reserved[2];
 };
 // The window's dpi over 96, the bar's height in window pixels, and the x where the display panel ends.
 float memoryViewUi();
@@ -56,12 +59,12 @@ struct MemoryViewInput {
 };
 MemoryViewInput memoryViewTakeInput();
 // The docked panels both memory views show (Display, Memory, Heat, CPU State, GPU Target,
-// Console, Machine, Settings, Radiation), after the backend's NewFrame and before its Render.
-// view/heat/gpu: the rendered view, the heat image and the GPU target, as ImTextureID
-// (a D3D11 SRV or a D3D12 GPU descriptor handle); width/height: the window's size;
+// Console, Machine, Settings, Radiation, Loupe), after the backend's NewFrame and before its Render.
+// view/heat/gpu/loupe: the rendered view, the heat image, the GPU target and the loupe, as ImTextureID
+// (a D3D11 SRV or a D3D12 GPU descriptor handle; loupe null when none); width/height: the window's size;
 // texH/stateRows: the state's size, for the memory panel's row labels; texWidth: its width,
 // for the paint cursor's pixel-to-address mapping.
-void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
+void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width, UINT height,
                       UINT texH, UINT stateRows, UINT texWidth);
 // Whether a view shows ImGui panels (input goes to ImGui when it wants it).
 void memoryViewSetImgui(bool imgui);
@@ -114,6 +117,10 @@ void memoryViewAppendConsole(const std::string& delta);
 void memoryViewLoadCfg();
 // The view's window size, for the pointer mapping.
 void memoryViewSetViewSize(UINT w, UINT h);
+// The memory view's heat glow intensity (0 off), as the Settings panel wants it.
+float memoryViewGlow();
+// The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
+void memoryViewLoupe(int* cx, int* cy, int* n);
 // The machine's cores, as the Settings panel wants them (needs a restart).
 int memoryViewCoreCount();
 float memoryViewUiScale();

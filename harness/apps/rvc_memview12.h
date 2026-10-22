@@ -64,7 +64,7 @@ public:
 
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        hd.NumDescriptors = 5;  // two back buffers, two heat textures, the rendered view
+        hd.NumDescriptors = 6;  // two back buffers, two heat textures, the rendered view, the loupe
         if (SUCCEEDED(hr)) hr = dx.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtvHeap_));
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.NumDescriptors = 5;
@@ -84,7 +84,9 @@ public:
         if (SUCCEEDED(hr)) hr = dx.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &textDesc, psr, nullptr, IID_PPV_ARGS(&text_));
         if (SUCCEEDED(hr)) hr = dx.dev->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &textUp, gr, nullptr, IID_PPV_ARGS(&textUpload_));
         if (SUCCEEDED(hr)) hr = dx.dev->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &cbDesc, gr, nullptr, IID_PPV_ARGS(&cb_));
+        if (SUCCEEDED(hr)) hr = dx.dev->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &cbDesc, gr, nullptr, IID_PPV_ARGS(&loupeCb_));
         if (SUCCEEDED(hr)) hr = cb_->Map(0, nullptr, (void**)&cbMapped_);
+        if (SUCCEEDED(hr)) hr = loupeCb_->Map(0, nullptr, (void**)&loupeCbMapped_);
         if (SUCCEEDED(hr)) hr = textUpload_->Map(0, nullptr, (void**)&textMapped_);
         if (SUCCEEDED(hr)) hr = dx.dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc_));
         if (SUCCEEDED(hr)) hr = dx.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc_.Get(), nullptr, IID_PPV_ARGS(&list_));
@@ -184,6 +186,10 @@ public:
         c.ui = memoryViewUi();
         c.memOff = 0;
         c.memSpan = (float)(texHeight_ - stateRows_);
+        c.glow = memoryViewGlow();
+        c.colOff = 0;
+        c.colSpan = (float)texWidth_;
+        c.reserved[0] = c.reserved[1] = 0;
         c.textSize[0] = (float)textW_;
         c.textSize[1] = (float)textH_;
         memcpy(cbMapped_, &c, sizeof c);
@@ -244,6 +250,51 @@ public:
             list_->DrawInstanced(3, 1, 0, 0);
             move(heat_[dst].Get(), rt, psr);
             move(viewTex_.Get(), rt, psr);
+            // The loupe: the same shader over a square of RAM texels around the cursor.
+            int lcx = 1024, lcy = (int)stateRows_ + (int)(texHeight_ - stateRows_) / 2, ln = 64;
+            memoryViewLoupe(&lcx, &lcy, &ln);
+            if (ln < 16) ln = 16;
+            if (ln > 128) ln = 128;
+            {
+                int ramRows = (int)texHeight_ - (int)stateRows_;
+                int half = ln / 2;
+                int x0 = lcx - half, y0 = lcy - half;
+                if (x0 < 0) x0 = 0;
+                if (y0 < (int)stateRows_) y0 = (int)stateRows_;
+                if (x0 + ln > (int)texWidth_) x0 = (int)texWidth_ - ln;
+                if (y0 + ln > (int)stateRows_ + ramRows) y0 = (int)stateRows_ + ramRows - ln;
+                MemoryViewConstants l{};
+                l.winSize[0] = 256; l.winSize[1] = 256;
+                l.frame = frame_;
+                l.strips = 1;
+                l.texWidth = texWidth_;
+                l.ramRows = (UINT)ramRows;
+                l.stateRows = stateRows_;
+                l.inset = -1;   // no CPU state inset, info bar or text in the loupe
+                l.textSize[0] = 0; l.textSize[1] = 0;
+                l.bar = 0;
+                l.split = 0;    // no display: all memory
+                l.ui = memoryViewUi();
+                l.memOff = (float)(y0 - (int)stateRows_);
+                l.memSpan = (float)ln;
+                l.glow = memoryViewGlow();
+                l.colOff = (float)x0;
+                l.colSpan = (float)ln;
+                l.reserved[0] = l.reserved[1] = 0;
+                memcpy(loupeCbMapped_, &l, sizeof l);
+            }
+            D3D12_VIEWPORT lvp{0, 0, 256, 256, 0, 1};
+            D3D12_RECT lsc{0, 0, 256, 256};
+            list_->RSSetViewports(1, &lvp);
+            list_->RSSetScissorRects(1, &lsc);
+            D3D12_CPU_DESCRIPTOR_HANDLE lrtv = rtv(5);
+            list_->OMSetRenderTargets(1, &lrtv, FALSE, nullptr);
+            list_->SetPipelineState(pso_.Get());
+            list_->SetGraphicsRootSignature(root_.Get());
+            list_->SetGraphicsRootConstantBufferView(0, loupeCb_->GetGPUVirtualAddress());
+            list_->SetGraphicsRootDescriptorTable(1, srvHeap_->GetGPUDescriptorHandleForHeapStart());
+            list_->DrawInstanced(3, 1, 0, 0);
+            move(loupeTex_.Get(), rt, psr);
             // The panels' textures as ImTextureID (GPU handles in the image heap).
             auto imgCpu = [&](UINT slot) {
                 D3D12_CPU_DESCRIPTOR_HANDLE h = imgHeap_->GetCPUDescriptorHandleForHeapStart();
@@ -258,11 +309,12 @@ public:
             dx_->dev->CreateShaderResourceView(viewTex_.Get(), nullptr, imgCpu(1));
             dx_->dev->CreateShaderResourceView(heat_[dst].Get(), nullptr, imgCpu(2));
             if (gpu) dx_->dev->CreateShaderResourceView(gpu, nullptr, imgCpu(4));
-            D3D12_GPU_DESCRIPTOR_HANDLE viewH = imgGpu(1), heatH = imgGpu(2), gpuH = imgGpu(4);
+            dx_->dev->CreateShaderResourceView(loupeTex_.Get(), nullptr, imgCpu(5));
+            D3D12_GPU_DESCRIPTOR_HANDLE viewH = imgGpu(1), heatH = imgGpu(2), gpuH = imgGpu(4), loupeH = imgGpu(5);
             ImGui_ImplDX12_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
-            memoryViewPanels((void*)viewH.ptr, (void*)heatH.ptr, gpu ? (void*)gpuH.ptr : nullptr,
+            memoryViewPanels((void*)viewH.ptr, (void*)heatH.ptr, gpu ? (void*)gpuH.ptr : nullptr, (void*)loupeH.ptr,
                              width_, height_, texHeight_, stateRows_, texWidth_);
             ImGui::Render();
             ImDrawData* draw = ImGui::GetDrawData();
@@ -413,6 +465,14 @@ private:
                                                    nullptr, IID_PPV_ARGS(&viewTex_));
             if (SUCCEEDED(hr)) dx_->dev->CreateRenderTargetView(viewTex_.Get(), nullptr, rtv(4));
         }
+        // The loupe: a 256x256 memory close-up around the cursor, for the Loupe panel.
+        if (SUCCEEDED(hr)) {
+            loupeTex_.Reset();
+            auto ld = texDesc(256, 256, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            hr = dx_->dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &ld, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                   nullptr, IID_PPV_ARGS(&loupeTex_));
+            if (SUCCEEDED(hr)) dx_->dev->CreateRenderTargetView(loupeTex_.Get(), nullptr, rtv(5));
+        }
         heatNeedsClear_ = true;
         return SUCCEEDED(hr);
     }
@@ -420,7 +480,7 @@ private:
     Dx* dx_ = nullptr;
     HWND hwnd_ = nullptr;
     ComPtr<IDXGISwapChain3> swap_;
-    ComPtr<ID3D12Resource> back_[2], heat_[2], ref_, text_, textUpload_, cb_, viewTex_;
+    ComPtr<ID3D12Resource> back_[2], heat_[2], ref_, text_, textUpload_, cb_, viewTex_, loupeTex_, loupeCb_;
     ComPtr<ID3D12RootSignature> root_;
     ComPtr<ID3D12PipelineState> pso_;
     ComPtr<ID3D12DescriptorHeap> rtvHeap_, srvHeap_, imgHeap_;
@@ -428,6 +488,7 @@ private:
     ComPtr<ID3D12GraphicsCommandList> list_;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT textFp_{};
     uint8_t* cbMapped_ = nullptr;
+    uint8_t* loupeCbMapped_ = nullptr;
     uint8_t* textMapped_ = nullptr;
     UINT rtvStep_ = 0, srvStep_ = 0, imgStep_ = 0;
     UINT width_ = 0, height_ = 0, textW_ = 0, textH_ = 0;

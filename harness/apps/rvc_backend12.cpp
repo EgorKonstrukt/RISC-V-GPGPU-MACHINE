@@ -473,14 +473,6 @@ public:
                 k.job = s[101];
             }
             memoryViewSetCores(cores, 256);
-            {   // TEMP-DIAG
-                static bool logged = false;
-                if (!logged) {
-                    logged = true;
-                    fprintf(stderr, "[d3d12-tmp] core0: mode=%u pc=%08X instr=%llu x10=%08X\n",
-                            cores[0].mode, cores[0].pc, (unsigned long long)cores[0].instr, cores[0].r[10]);
-                }
-            }
             statBuf_[r.slot]->Unmap(0, nullptr);
         }
         return true;

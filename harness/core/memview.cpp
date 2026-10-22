@@ -36,6 +36,10 @@ cbuffer C : register(b0) {
     float Ui;          // window pixels a 96 dpi pixel
     float MemOff;      // first RAM row the memory image shows
     float MemSpan;     // RAM rows the memory image shows
+    float Glow;        // heat glow intensity (0 off)
+    float ColOff;      // first RAM texel column shown (the loupe's window)
+    float ColSpan;     // RAM texel columns shown
+    float Reserved0, Reserved1;
 };
 
 float4 vs(uint id : SV_VertexID) : SV_Position {
@@ -185,31 +189,44 @@ Out ps(float4 pos : SV_Position) {
                        max(Heat.Load(int3(px + int2(0, 1), 0)), Heat.Load(int3(px - int2(0, 1), 0))));
     prevHeat = max(prevHeat, around * 0.5);
 
-    // RAM: strip s covers rows [s, s+1) * rowsPerStrip
+    // RAM: strip s covers rows [s, s+1) * rowsPerStrip, columns [ColOff, ColOff + ColSpan)
     float rowsPerStrip = MemSpan / Strips;
     float memWidth = WinSize.x - Split;
     float sx = (pos.x - Split) / memWidth * Strips;
     uint strip = min((uint)sx, Strips - 1);
-    float2 texel = float2(frac(sx) * TexWidth, StateRows + MemOff + (strip + pos.y / memHeight) * rowsPerStrip);
-    float2 footprint = float2(TexWidth * Strips / memWidth, rowsPerStrip / memHeight);
+    float2 texel = float2(ColOff + frac(sx) * ColSpan, StateRows + MemOff + (strip + pos.y / memHeight) * rowsPerStrip);
+    float2 footprint = float2(ColSpan * Strips / memWidth, rowsPerStrip / memHeight);
 
-    // A window pixel covers several texels: a 4x4 grid of taps over its footprint, nudged per
-    // frame so larger footprints are covered over time.
+    // A window pixel covers several texels when minified: a 4x4 grid of taps over its
+    // footprint, nudged per frame so larger footprints are covered over time. Magnified
+    // (a pixel is a texel or less) it is one point tap: no smoothing. The heat's spread
+    // into neighbours is the glow and goes with it (Glow 0: pure point sampling).
     bool changed = false;
     uint4 first = 0;
-    uint h = hash(px.x + px.y * 4099u + Frame * 7919u);
-    float2 nudge = float2(h & 0xffff, h >> 16) / 65536.0 * 0.25;
-    for (uint k = 0; k < 16; k++) {
-        float2 cell = (float2(k & 3, k >> 2) + nudge * 4.0) / 4.0;
-        int2 t = clamp(int2(texel + (cell - 0.5) * footprint), int2(0, StateRows), int2(TexWidth - 1, StateRows + RamRows - 1));
+    float heat;
+    if (footprint.x <= 1.0 && footprint.y <= 1.0 && Glow <= 0.0) {
+        int2 t = clamp(int2(texel + 0.5), int2(0, StateRows), int2(TexWidth - 1, StateRows + RamRows - 1));
         uint4 a = Cur.Load(int3(t, 0)), b = Prev.Load(int3(t, 0));
         if (any(a != b)) changed = true;
-        if (k == 5) first = a;
+        first = a;
+        heat = max(changed ? 1.0 : 0.0, prevHeat);
+    } else {
+        uint h = hash(px.x + px.y * 4099u + Frame * 7919u);
+        float2 nudge = float2(h & 0xffff, h >> 16) / 65536.0 * 0.25;
+        for (uint k = 0; k < 16; k++) {
+            float2 cell = (float2(k & 3, k >> 2) + nudge * 4.0) / 4.0;
+            int2 t = clamp(int2(texel + (cell - 0.5) * footprint), int2(0, StateRows), int2(TexWidth - 1, StateRows + RamRows - 1));
+            uint4 a = Cur.Load(int3(t, 0)), b = Prev.Load(int3(t, 0));
+            if (any(a != b)) changed = true;
+            if (k == 5) first = a;
+        }
+        heat = max(changed ? 1.0 : 0.0, prevHeat);
+        if (Glow > 0.0) heat = max(heat, around * 0.5);
+        else heat = max(changed ? 1.0 : 0.0, Heat.Load(int3(px, 0)) * 0.955);
     }
-    float heat = max(changed ? 1.0 : 0.0, prevHeat);
     float3 base = any(first != 0) ? bytes(first) : float3(0.02, 0.025, 0.04);
     float3 glow = lerp(float3(1.0, 0.45, 0.05), float3(1.0, 0.95, 0.8), saturate(heat * heat));
-    o.color = float4(lerp(base, glow, saturate(heat * 1.2)), 1);
+    o.color = float4(lerp(base, glow, saturate(heat * Glow)), 1);
     o.heat = heat;
     return o;
 }
@@ -256,6 +273,10 @@ float g_uiScale = 1.0f;
 float g_scaleApplied = 1.0f;
 int g_memZoom = 1;
 float g_memOff = 0.0f;
+float g_memGlow = 1.2f;   // heat glow intensity in the memory view (0 off)
+// The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
+int g_loupeCX = 1024, g_loupeCY = 64 + 4608, g_loupeN = 64;
+uint32_t g_loupeAddr = ~0u;
 ID3D11ShaderResourceView* g_gpuShown = nullptr;
 float g_stateUv[4]{0, 0, 0, 0};
 float g_lastPx = 0, g_lastPy = 0;
@@ -274,6 +295,8 @@ static void uiLoadCfg() {
             if (z >= 1 && z <= 64) g_memZoom = z;
         } else if (sscanf(line, "mem_off=%f", &v) == 1) {
             if (v >= 0) g_memOff = v;
+        } else if (sscanf(line, "mem_glow=%f", &v) == 1) {
+            if (v >= 0 && v <= 2.0f) g_memGlow = v;
         } else if (sscanf(line, "cores=%d", &z) == 1) {
             if (z >= 1 && z <= 256) g_cores = z;
         }
@@ -284,7 +307,7 @@ static void uiLoadCfg() {
 static void uiSaveCfg() {
     FILE* f = fopen("logs/imgui_harness.cfg", "w");
     if (!f) return;
-    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\ncores=%d\n", (double)g_uiScale, g_memZoom, (double)g_memOff, g_cores);
+    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\nmem_glow=%.2f\ncores=%d\n", (double)g_uiScale, g_memZoom, (double)g_memOff, (double)g_memGlow, g_cores);
     fclose(f);
 }
 
@@ -417,6 +440,14 @@ void memoryViewLoadCfg() { uiLoadCfg(); }
 void memoryViewSetViewSize(UINT w, UINT h) { g_viewW = w; g_viewH = h; }
 // The machine's cores, as the Settings panel wants them (needs a restart).
 int memoryViewCoreCount() { return g_cores; }
+// The memory view's heat glow intensity (0 off), as the Settings panel wants it.
+float memoryViewGlow() { return g_memGlow; }
+// The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
+void memoryViewLoupe(int* cx, int* cy, int* n) {
+    if (cx) *cx = g_loupeCX;
+    if (cy) *cy = g_loupeCY;
+    if (n) *n = g_loupeN;
+}
 // Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
 bool memoryViewRadiation(MemoryViewRadiation& out) {
     // scripted runs (no one to click the panel): RVC_RAD_FLIPS flips a frame (enables),
@@ -1065,7 +1096,7 @@ bool MemoryView::createTargets(std::string& err) {
 // The docked panels both memory views show, after the backend's NewFrame and before its
 // Render (memview.h). Backend-agnostic: the textures arrive as ImTextureID (a D3D11 SRV
 // or a D3D12 GPU descriptor handle).
-void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
+void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width, UINT height,
                       UINT texH, UINT stateRows, UINT texWidth) {
     static bool dockBuilt = false;
     ImGuiID dockId = 0;
@@ -1096,11 +1127,13 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
                 ImGui::DockBuilderDockWindow("Display", left);
                 ImGui::DockBuilderDockWindow("Memory", right);
                 ImGui::DockBuilderDockWindow("Heat", right);
+                ImGui::DockBuilderDockWindow("Loupe", right);
                 ImGui::DockBuilderDockWindow("CPU State", right);
                 ImGui::DockBuilderDockWindow("GPU Target", right);
                 ImGui::DockBuilderDockWindow("Console", bottomLeft);
                 ImGui::DockBuilderDockWindow("Machine", bottomRight);
                 ImGui::DockBuilderDockWindow("Settings", bottomRight);
+                ImGui::DockBuilderDockWindow("Radiation", bottomRight);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
@@ -1158,6 +1191,20 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
             ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
             ImGui::Text("rows %.0f..%.0f", (double)g_memOff, (double)(g_memOff + halfSpan));
             ImGui::Image((ImTextureID)view, size, ImVec2(u0, 0), ImVec2(um, v1));
+            {
+                // the loupe follows the cursor (its square of texels is rendered separately)
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
+                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
+                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 0,
+                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
+                    if (a != ~0u) {
+                        uint32_t idx = (a - 0x80000000u) / 16;
+                        g_loupeCX = (int)(idx % texWidth);
+                        g_loupeCY = (int)(stateRows + idx / texWidth);
+                        g_loupeAddr = a;
+                    }
+                }
+            }
             if (g_radArmed && ImGui::IsMouseDown(0)) {
                 ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
                 if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
@@ -1168,6 +1215,19 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
             }
             ImGui::Text("rows %.0f..%.0f", (double)(g_memOff + halfSpan), (double)(g_memOff + halfSpan * 2));
             ImGui::Image((ImTextureID)view, size, ImVec2(um, 0), ImVec2(1.0f, v1));
+            {
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
+                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
+                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 1,
+                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
+                    if (a != ~0u) {
+                        uint32_t idx = (a - 0x80000000u) / 16;
+                        g_loupeCX = (int)(idx % texWidth);
+                        g_loupeCY = (int)(stateRows + idx / texWidth);
+                        g_loupeAddr = a;
+                    }
+                }
+            }
             if (g_radArmed && ImGui::IsMouseDown(0)) {
                 ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
                 if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
@@ -1193,6 +1253,23 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
             ImGui::Image((ImTextureID)heat, size, ImVec2(um, 0), ImVec2(1.0f, v1));
         }
         ImGui::EndChild();
+    }
+    ImGui::End();
+    if (ImGui::Begin("Loupe")) {
+        if (loupe) {
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            float s = avail.x < 256.0f ? avail.x : 256.0f;
+            if (s > 0) ImGui::Image((ImTextureID)loupe, ImVec2(s, s), ImVec2(0, 0), ImVec2(1, 1));
+        } else {
+            ImGui::TextWrapped("No loupe (needs the DX12 view).");
+        }
+        if (g_loupeAddr != ~0u) ImGui::Text("0x%08X", g_loupeAddr);
+        else ImGui::Text("hover Memory to aim");
+        ImGui::PushItemWidth(-1);
+        ImGui::SliderInt("##loupeN", &g_loupeN, 16, 128, "%d texels");
+        if (g_loupeN < 16) g_loupeN = 16;
+        if (g_loupeN > 128) g_loupeN = 128;
+        ImGui::PopItemWidth();
     }
     ImGui::End();
     cpuStatePanel();
@@ -1250,6 +1327,7 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
             uiSaveCfg();
         }
         ImGui::Text("rows %.0f..%.0f of %.0f", (double)g_memOff, (double)(g_memOff + spanF), (double)barRowsF);
+        if (ImGui::SliderFloat("Memory glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
         int cores = g_cores;
         if (ImGui::SliderInt("Cores", &cores, 1, 256)) {
             if (cores < 1) cores = 1;
@@ -1365,6 +1443,10 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     if (g_memOff < 0) g_memOff = 0;
     c.memOff = g_memOff;
     c.memSpan = memSpanF;
+    c.glow = g_memGlow;
+    c.colOff = 0;
+    c.colSpan = (float)texWidth_;
+    c.reserved[0] = c.reserved[1] = 0;
     c.textSize[0] = (float)textW_;
     c.textSize[1] = (float)textH_;
     ctx->UpdateSubresource(cb_.Get(), 0, nullptr, &c, 0, 0);
@@ -1440,11 +1522,13 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
                 ImGui::DockBuilderDockWindow("Display", left);
                 ImGui::DockBuilderDockWindow("Memory", right);
                 ImGui::DockBuilderDockWindow("Heat", right);
+                ImGui::DockBuilderDockWindow("Loupe", right);
                 ImGui::DockBuilderDockWindow("CPU State", right);
                 ImGui::DockBuilderDockWindow("GPU Target", right);
                 ImGui::DockBuilderDockWindow("Console", bottomLeft);
                 ImGui::DockBuilderDockWindow("Machine", bottomRight);
                 ImGui::DockBuilderDockWindow("Settings", bottomRight);
+                ImGui::DockBuilderDockWindow("Radiation", bottomRight);
                 ImGui::DockBuilderFinish(dockId);
             }
         }
@@ -1578,6 +1662,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
             uiSaveCfg();
         }
         ImGui::Text("rows %.0f..%.0f of %.0f", (double)g_memOff, (double)(g_memOff + spanF), (double)ramRowsF);
+        if (ImGui::SliderFloat("Memory glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
     }
     ImGui::End();
     ImGui::Render();
