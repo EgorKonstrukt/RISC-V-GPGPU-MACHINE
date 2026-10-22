@@ -26,7 +26,8 @@ struct BackendOptions {
     unsigned tickRows = 64;       // rows of the 64 texels wide state block that the tick pass draws (16: rvc_opt)
     int readbackBatch = 1;        // D3D11: frames whose rows are read back with one Map (--readback-batch)
     bool stateLog = false;        // D3D12 only: read the CPU's 64 x 64 state texels back every frame (--l1-log)
-    std::string computeShader;    // D3D11 only, --compute: the processor as this compute shader (experiments/rv32_min)
+    std::string computeShader;    // --compute: the processor as this compute shader (experiments/rv32_min)
+    int cores = 1;                // core 0 and the worker cores (RVC_CORES, the Settings panel's Cores)
     bool tickDirect = false;      // --unpack-in-place: the unpack draws into the state texture itself, no zone copied in and back (a tick that does not read the texture there)
     bool ramInplace = false;      // D3D11: RAM in one texture written in place, the commit's passes with RAM_INPLACE (src/ram.h)
     bool laneField = false;       // D3D11, RAM in place: the tick has the lanes' field (LANE_FIELD, experiments/rvc_lean; docs/machine/lanes.md)
@@ -117,9 +118,11 @@ public:
     uint32_t tickRounds = 1;     // the fragment tick: its rounds (a tick and its commit) a frame
     uint32_t tickSplit = 0;      // of them the first so many always run, the rest while core 0 rests (0: all)   // of them the first so many always run, a core's at most the frame's instructions over them
     // Loads <imageDir>/linux_payload.bin into RAM and rootfs.bin as the ROM, and starts the hart.
-    virtual bool computeStart(const std::string& imageDir, std::string& err) { (void)imageDir; err = "--compute is for the D3D11 backend"; return false; }
+    virtual bool computeStart(const std::string& imageDir, std::string& err) { (void)imageDir; err = "--compute is not on this backend"; return false; }
     // The processor's words (rv32_min*.hlsl's State), read back now.
     virtual bool computeState(std::vector<uint32_t>& out) { (void)out; return false; }
+    // Every core's instruction count, as of the last popped frame (64-bit each).
+    virtual bool computeWorkerCounts(std::vector<uint64_t>& out) { (void)out; return false; }
 
     virtual ~RvcBackend() {}
     // Creates the device and compiles both passes. Prints its own progress lines.

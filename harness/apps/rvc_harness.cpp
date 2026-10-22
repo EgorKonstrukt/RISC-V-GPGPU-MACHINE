@@ -26,6 +26,10 @@
 #include <conio.h>
 #include <wininet.h>
 #include <wincodec.h>
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <dxcapi.h>
+#include <wrl/client.h>
 #pragma comment(lib, "wininet.lib")
 #include <fcntl.h>
 #include <io.h>
@@ -151,10 +155,12 @@ struct Options {
     int volume = 10;          // --volume: how loud the host plays it, in percent
     bool doubles = false;     // --doubles: keep the shader's double math under DXC too
 #ifdef RVC_DEFAULT_DXC
-    bool dxc = true;          // D3D12 + DXC instead of D3D11 + FXC
+    bool dxc = true;          // D3D12 + DXC instead of D3D11 + FXC (auto when neither is asked: D3D12 where usable)
 #else
     bool dxc = false;
 #endif
+    bool dxcSet = false;      // --dxc or --d3d11 was passed
+    bool dxcSmSet = false;    // --dxc-sm was passed
     std::string dxcOpt = "-O3", dxcSm = "6_6", dxcDir;
     bool rvcDirSet = false, payloadSet = false;
     std::string image;        // --image: a named boot image from kImages
@@ -239,9 +245,10 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
                        faster; the display, the GPU, the keys and the pointer are the shader's as before
                        (D3D11, the Linux image in build\\images\\linux)
   --cpu-ips N          the same, at no more than N instructions a second (3000000: the world's speed)
-  --compute FILE       the processor as one thread of a compute shader (experiments/rv32_min/README.md,
-                       "The whole machine"): fast or plain for rv32_min_fast.hlsl or rv32_min.hlsl.
-                       A pass a frame; the display, the GPU, sound, keys and pointer as ever
+   --compute FILE       the processor as one thread of a compute shader (experiments/rv32_min/README.md,
+                        "The whole machine"): fast or plain for rv32_min_fast.hlsl or rv32_min.hlsl
+                        (fast by default on D3D12; explicit --cpu or --compute wins).
+                        A pass a frame; the display, the GPU, sound, keys and pointer as ever
   --compute-cores N    with --compute: core 0 and N - 1 workers (256; plain has core 0 alone)
   --compute-passes N   with --compute: the processor's passes a frame at most, before the devices' (fast: 4, plain: 1)
   --tick-rounds N      the tick and its commit N times a frame before the devices' passes (1)
@@ -275,8 +282,10 @@ Runs rvc's main.shader (RISC-V Linux) headlessly on D3D11 and connects its UART 
   --tabs               the console as four terminals: 0x1e and a digit, either way, says whose bytes follow
   --workers auto|2|4|8 how geotune lays out the workers at boot (docs/machine/multicore.md, "Packing the small workers")
   --dxc / --d3d11      backend: D3D12 with DXC-compiled DXIL, or D3D11 with FXC bytecode (what VRChat
-                       runs). rvc_harness_dxc.exe defaults to --dxc. DXC implies NO_DOUBLES and, unless
-                       --rvc is given, the experiments/rvc_opt shader (upstream does not compile with DXC).
+                       runs). The default is D3D12 where usable (DXC loads, a device comes up, shader
+                       model 6.0 or newer; the newest model up to 6_6 is then the default --dxc-sm),
+                       else D3D11. DXC implies NO_DOUBLES and, unless --rvc is given, the
+                       experiments/rvc_opt shader (upstream does not compile with DXC).
   --doubles            with --dxc: keep the shader's double math (about 15 percent slower)
   --dxc-opt "FLAGS"    DXC optimisation flags (default -O3)   --dxc-sm 6_x   --dxc-dir DIR
   --profile            compile with PROFILE defined and print the shader's PROF() event counters at
@@ -316,6 +325,7 @@ std::string unescape(const std::string& s) {
     return r;
 }
 
+static bool dxcProbeUsable(int adapterIndex, bool warp, const std::string& dxcDir, std::string& sm, std::string& why);
 bool parseArgs(int argc, char** argv, Options& o) {
     std::string pendingExpect;
     bool havePendingExpect = false;
@@ -345,11 +355,11 @@ bool parseArgs(int argc, char** argv, Options& o) {
             if (k == 4) { fprintf(stderr, "--machine takes auto, full, nopaging or mmode\n"); return false; }
             o.machine = k - 1;
         }
-        else if (a == "--dxc") o.dxc = true;
-        else if (a == "--d3d11") o.dxc = false;
+        else if (a == "--dxc") o.dxc = true, o.dxcSet = true;
+        else if (a == "--d3d11") o.dxc = false, o.dxcSet = true;
         else if (a == "--doubles") o.doubles = true;
         else if (a == "--dxc-opt") o.dxcOpt = next("--dxc-opt");
-        else if (a == "--dxc-sm") o.dxcSm = next("--dxc-sm");
+        else if (a == "--dxc-sm") o.dxcSm = next("--dxc-sm"), o.dxcSmSet = true;
         else if (a == "--dxc-dir") o.dxcDir = next("--dxc-dir");
         else if (a == "--ram") { o.ramPrefix = next("--ram"); o.payloadSet = true; }
         else if (a == "--mtd") o.mtdPrefix = next("--mtd");
@@ -467,7 +477,79 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return false; }
     }
     if (havePendingExpect) { fprintf(stderr, "--expect without --send\n"); return false; }
+    // The default backend is D3D12 with DXC where usable, else D3D11 (--dxc/--d3d11 choose explicitly).
+    if (!o.dxcSet) {
+        if (o.cpu) o.dxc = false;   // --cpu runs on D3D11 only
+        else if (o.profile || o.present) o.dxc = false;   // D3D11-only views
+        else {
+            std::string sm, why;
+            if (dxcProbeUsable(o.gpu.adapterIndex, o.gpu.warp, o.dxcDir, sm, why)) {
+                o.dxc = true;
+                if (!o.dxcSmSet) o.dxcSm = sm;
+            } else {
+                o.dxc = false;
+                fprintf(stderr, "[harness] D3D12 unavailable (%s), using D3D11\n", why.c_str());
+            }
+        }
+    } else if (o.dxc && !o.dxcSmSet) {
+        // explicit --dxc without --dxc-sm: still take what the driver takes (SM 6.5 here, not 6.6)
+        std::string sm, why;
+        if (dxcProbeUsable(o.gpu.adapterIndex, o.gpu.warp, o.dxcDir, sm, why)) o.dxcSm = sm;
+        else { fprintf(stderr, "[harness] --dxc requested but D3D12 is unavailable (%s)\n", why.c_str()); return false; }
+    }
     if (o.dxc && !o.doubles) o.noDoubles = true;
+    // --compute fast by default on DX12 (the Compute machine's own tick); explicit --cpu or --compute wins
+    if (o.dxc && !o.cpu && o.compute.empty() && o.replayDirs.empty()) {
+        o.compute = "experiments/rv32_min/rv32_min_fast.hlsl";   // as --compute fast
+        fprintf(stderr, "[harness] --compute fast by default on D3D12 (explicit --cpu or --compute wins)\n");
+    }
+    return true;
+}
+
+// D3D12 usability probe (no dying: for the default backend choice). True when DXC loads, a
+// device comes up and the driver takes shader model 6.0 or newer; sm is then the newest
+// model both the driver and our default (6_6) support, as "6_x".
+static bool dxcProbeUsable(int adapterIndex, bool warp, const std::string& dxcDir, std::string& sm, std::string& why) {
+    std::string dir = dxcDir;
+    if (dir.empty()) {
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator("C:/Program Files (x86)/Windows Kits/10/bin", ec)) {
+            std::filesystem::path cand = e.path() / "x64";
+            if (std::filesystem::exists(cand / "dxcompiler.dll", ec) && cand.u8string() > dir) dir = cand.u8string();
+        }
+    }
+    if (dir.empty()) { why = "no dxcompiler.dll in the Windows SDK"; return false; }
+    std::wstring path = widen((std::filesystem::u8path(dir) / "dxcompiler.dll").u8string());
+    HMODULE h = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    auto create = h ? (DxcCreateInstanceProc)GetProcAddress(h, "DxcCreateInstance") : nullptr;
+    Microsoft::WRL::ComPtr<IDxcUtils> utils;
+    Microsoft::WRL::ComPtr<IDxcCompiler3> compiler;
+    if (!create || FAILED(create(CLSID_DxcUtils, IID_PPV_ARGS(&utils))) || FAILED(create(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler)))) {
+        why = "cannot load " + dir + "/dxcompiler.dll";
+        return false;
+    }
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) { why = "no DXGI factory"; return false; }
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    if (warp) {
+        if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) { why = "no WARP adapter"; return false; }
+    } else if (adapterIndex >= 0 && FAILED(factory->EnumAdapters1((UINT)adapterIndex, &adapter))) {
+        why = "adapter index " + std::to_string(adapterIndex) + " not found";
+        return false;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device> dev;
+    if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev)))) { why = "no D3D12 device"; return false; }
+    D3D12_FEATURE_DATA_SHADER_MODEL fm{};
+    fm.HighestShaderModel = D3D_SHADER_MODEL_6_6;
+    if (FAILED(dev->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &fm, sizeof fm)) || fm.HighestShaderModel < D3D_SHADER_MODEL_6_0) {
+        why = "shader model 6.0 or newer is not supported";
+        return false;
+    }
+    UINT v = (UINT)fm.HighestShaderModel;
+    if (v > (UINT)D3D_SHADER_MODEL_6_6) v = (UINT)D3D_SHADER_MODEL_6_6;
+    char s[8];
+    snprintf(s, sizeof s, "6_%X", v & 0xf);
+    sm = s;
     return true;
 }
 
@@ -847,11 +929,17 @@ int main(int argc, char** argv) {
         // The harness's machine: the shader's own write cache (384 texels), and on D3D11 the
         // tick in eight targets, a pixel for every eight texels of state (docs/machine/multicore.md).
         // With the eight targets the machine has all its cores, and so has the interpreter.
-        if (!opt.dxc && !opt.noMrt && !opt.cpu && opt.compute.empty() && !opt.profile && !getenv("RVC11_COMPUTE")) {
-            opt.defines.push_back("TICK_MRT");
-            // (RVC_CORES=N: a machine of fewer cores, to measure what the others cost core 0)
-            int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : kCores;
-            if (cores > 1) opt.defines.push_back("CORES=" + std::to_string(cores));
+        bool mrt = !opt.dxc && !opt.noMrt && !opt.cpu && opt.compute.empty() && !opt.profile && !getenv("RVC11_COMPUTE");
+        if (mrt) opt.defines.push_back("TICK_MRT");
+        // (RVC_CORES=N: a machine of fewer cores, to measure what the others cost core 0; the DXC
+        // control pass reports the workers while its tick stays single-core and fast; the Settings
+        // panel's Cores, next start)
+        if ((mrt || opt.dxc) && !opt.noMrt && !opt.cpu && opt.compute.empty() && !opt.profile && !getenv("RVC11_COMPUTE")) {
+            memoryViewLoadCfg();
+            int cores = getenv("RVC_CORES") ? atoi(getenv("RVC_CORES")) : memoryViewCoreCount();
+            if (cores < 1) cores = 1;
+            if (cores > kCores) cores = kCores;
+            if (mrt && cores > 1) opt.defines.push_back("CORES=" + std::to_string(cores));
             opt.cores = cores;
         }
         if (opt.cpu) opt.cores = kCores;
@@ -880,6 +968,7 @@ int main(int argc, char** argv) {
     bo.dxcOpt = opt.dxcOpt;
     bo.dxcSm = opt.dxcSm;
     bo.dxcDir = opt.dxcDir;
+    bo.cores = opt.cores;
     bo.computeShader = opt.compute;
     // The GPU device is a second shader next to the CPU's; upstream rvc has none.
     SLShader gpuShader;
@@ -911,7 +1000,7 @@ int main(int argc, char** argv) {
         // (--compute: the control pass reports no cores; the compute shader's sync pass reports its own)
         opt.defines.erase(std::remove_if(opt.defines.begin(), opt.defines.end(), [](const std::string& d) {
             return d.rfind("CORES=", 0) == 0 || d.rfind("CORE_PITCH=", 0) == 0 || d.rfind("MC_", 0) == 0; }), opt.defines.end());
-        if (opt.dxc) { fprintf(stderr, "[harness] --cpu and --compute are for the D3D11 backend\n"); return 2; }
+        if (opt.dxc && opt.cpu) { fprintf(stderr, "[harness] --cpu is for the D3D11 backend\n"); return 2; }
         if (opt.cpu && !opt.compute.empty()) { fprintf(stderr, "[harness] --cpu or --compute, not both\n"); return 2; }
     }
     if (!opt.noBands) opt.defines.push_back("COMMIT_BANDS");
@@ -1320,12 +1409,33 @@ int main(int argc, char** argv) {
         bool hasCon = raw.size() >= (con + 1 + kConRing / 16) * 16;
         consumedTag = texel(9, 3) + (hasCon ? texel(con, 0) : 0);        if (rowFrame < (uint64_t)opt.initFrames) return;  // cpu_init leaves junk in the UART buffer
         if (haveClock) guestInstructions += (uint32_t)(clock - lastClock);
-        if (opt.cores > 1 && raw.size() >= (64 + kControlTexels + kNetRead) * 16) {
+        // --compute: the cores' counts read back directly (sync.hlsl's STATS_ALL); otherwise MC_STATS
+        std::vector<uint64_t> ccCounts;
+        bool haveCounts = backend.computeMode && backend.computeWorkerCounts(ccCounts) &&
+                          ccCounts.size() >= (size_t)opt.cores;
+        if (opt.cores > 1 && !haveCounts && raw.size() >= (64 + kControlTexels + kNetRead) * 16) {
             // this pass: the workers' instructions, how many ran, how many a whole pass, how many only looked for a job
             uint32_t ranNow = 0, coresNow = 0, fullNow = 0, waitNow = 0;
             for (int c = 1; c < opt.cores; ++c) {   // (MC_STATS, and MC_STATS_ALL from core 16)
                 uint32_t now = c < 16 ? texel(64 + 0x38 + c / 4, c % 4) : texel(64 + kControlTexels + kCoreStatsAt + c / 4, c % 4);
                 // (a geometry laid out anew starts the counts again: one that went down is all new)
+                uint32_t ran = !haveWorkerClock ? 0 : now < workerClock[c] ? now : (uint32_t)(now - workerClock[c]);
+                workerInstructions += ran;
+                if (ran != 0 && ran < 64) { waitNow++; ran = 0; }   // (a worker awake with no job runs some 18 a pass)
+                ranNow += ran;
+                coresNow += ran != 0;
+                fullNow += ran >= (uint32_t)opt.ticks;
+                workerClock[c] = now;
+            }
+            haveWorkerClock = true;
+            if (!opt.frameLog.empty() && (opt.statsFrom.empty() || statsStarted)) workerSamples.insert(workerSamples.end(), {ranNow, coresNow, fullNow, waitNow});
+        }
+        if (haveCounts) {
+            // this pass: the workers' instructions, how many ran, how many a whole pass, how many only looked for a job
+            uint32_t ranNow = 0, coresNow = 0, fullNow = 0, waitNow = 0;
+            for (int c = 1; c < opt.cores; ++c) {   // (the cores' own state)
+                uint64_t now64 = ccCounts[c];
+                uint32_t now = now64 > 0xffffffffu ? 0xffffffffu : (uint32_t)now64;
                 uint32_t ran = !haveWorkerClock ? 0 : now < workerClock[c] ? now : (uint32_t)(now - workerClock[c]);
                 workerInstructions += ran;
                 if (ran != 0 && ran < 64) { waitNow++; ran = 0; }   // (a worker awake with no job runs some 18 a pass)

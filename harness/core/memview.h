@@ -55,6 +55,27 @@ struct MemoryViewInput {
     std::vector<uint32_t> keys;     // since the last call: Linux key code, bit 31 while pressed
 };
 MemoryViewInput memoryViewTakeInput();
+// The docked panels both memory views show (Display, Memory, Heat, CPU State, GPU Target,
+// Console, Machine, Settings), after the backend's NewFrame and before its Render.
+// view/heat/gpu: the rendered view, the heat image and the GPU target, as ImTextureID
+// (a D3D11 SRV or a D3D12 GPU descriptor handle); width/height: the window's size;
+// texH/stateRows: the state's size, for the memory panel's row labels.
+void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
+                      UINT texH, UINT stateRows);
+// Whether a view shows ImGui panels (input goes to ImGui when it wants it).
+void memoryViewSetImgui(bool imgui);
+// The kept UI settings (scale/zoom/offset), for a view that starts after them.
+void memoryViewLoadCfg();
+// The view's window size, for the pointer mapping.
+void memoryViewSetViewSize(UINT w, UINT h);
+// The machine's cores, as the Settings panel wants them (needs a restart).
+int memoryViewCoreCount();
+float memoryViewUiScale();
+void memoryViewApplyScale(float s);
+// A BMP the Machine panel asked for, since the last call (empty: none).
+std::string memoryViewTakePendingCapture();
+// The panels' text columns (Machine, Console, input), with the volume the first one names.
+void memoryViewSetColumns(const MemoryViewText& columns);
 // WM_CLOSE sets the window property L"closed" instead of destroying the window.
 HWND memoryViewCreateWindow();
 // Rasterises the lines into a kMemoryViewTextW x kMemoryViewTextH BGRA bitmap, white on black.

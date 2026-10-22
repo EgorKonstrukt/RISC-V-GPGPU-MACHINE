@@ -1225,6 +1225,82 @@ static __forceinline void run_sync(Run* R, u64 st) { R->c->pc = (u32)st, R->c->c
     }
 #define SET(v) (x[RD] = (v), x[0] = 0)
 
+static bool dual_on = getenv("RVC_NODUAL") == nullptr;
+static bool btb_on = getenv("RVC_NOBTB") == nullptr;
+
+struct BtbEntry { u32 pc = 0; u32 ins = 0; Handler h = nullptr; const uint8_t* kinds = nullptr; };
+static thread_local BtbEntry btb[1024];
+static thread_local u32 ras[16];
+static thread_local int ras_n = 0;
+struct RasMemo { u32 target = 0; u32 ins = 0; Handler h = nullptr; const uint8_t* kinds = nullptr; };
+static thread_local RasMemo ras_memo[64];
+
+static void dual_alu(u32* x, u32 pc, u32 w, uint8_t k) {
+    u32 rd = (w >> 7) & 31, a = x[(w >> 15) & 31], b = x[(w >> 20) & 31], v = 0;
+    switch (k) {
+    case K_LUI: v = w & 0xfffff000; break;
+    case K_AUIPC: v = pc + (w & 0xfffff000); break;
+    case K_ADDI: v = a + (u32)((i32)w >> 20); break;
+    case K_SLTI: v = (i32)a < ((i32)w >> 20); break;
+    case K_SLTIU: v = a < (u32)((i32)w >> 20); break;
+    case K_XORI: v = a ^ (u32)((i32)w >> 20); break;
+    case K_ORI: v = a | (u32)((i32)w >> 20); break;
+    case K_ANDI: v = a & (u32)((i32)w >> 20); break;
+    case K_SLLI: v = a << ((w >> 20) & 31); break;
+    case K_SRLI: v = a >> ((w >> 20) & 31); break;
+    case K_SRAI: v = (u32)((i32)a >> ((w >> 20) & 31)); break;
+    case K_ADD: v = a + b; break;
+    case K_SUB: v = a - b; break;
+    case K_SLL: v = a << (b & 31); break;
+    case K_SLT: v = (i32)a < (i32)b; break;
+    case K_SLTU: v = a < b; break;
+    case K_XOR: v = a ^ b; break;
+    case K_SRL: v = a >> (b & 31); break;
+    case K_SRA: v = (u32)((i32)a >> (b & 31)); break;
+    case K_OR: v = a | b; break;
+    default: v = a & b; break;
+    }
+    x[rd] = v;
+    x[0] = 0;
+}
+
+#define DUAL_NEXT(npc) {                                                                       \
+    u64 s_ = (st & 0xffffffff00000000ull) | (u32)(npc);                                         \
+    if (dual_on && (st >> 32) >= 2 && ((u32)s_ >> 12) == R->vpn) {                              \
+        u32 w2_;                                                                                 \
+        memcpy(&w2_, R->code + (s_ & 0xfff), 4);                                                 \
+        uint8_t k2_ = R->kinds[step_key(w2_)];                                                  \
+        if (k2_ == K_LUI || k2_ == K_AUIPC || (k2_ >= K_ADDI && k2_ <= K_AND)) {                  \
+            dual_alu(x, (u32)s_, w2_, k2_);                                                      \
+            u64 dt_ = ((st - (1ull << 32)) & 0xffffffff00000000ull) | (u32)((u32)(npc) + 4);       \
+            [[msvc::musttail]] return run_edge<W>(R, x, dt_, 0);                                   \
+        }                                                                                          \
+    }                                                                                              \
+    NEXT(npc);                                                                                     \
+}
+
+#define CHAIN_NEXT(npc) {                                                                        \
+    u64 s_ = (st & 0xffffffff00000000ull) | (u32)(npc);                                          \
+    if (s_ < (1ull << 32) || ((u32)s_ >> 12) != R->vpn) {                                        \
+        [[msvc::musttail]] return run_edge<W>(R, x, s_, 0);                                       \
+    }                                                                                              \
+    s_ -= 1ull << 32;                                                                              \
+    u32 w_;                                                                                        \
+    memcpy(&w_, R->code + (s_ & 0xfff), 4);                                                        \
+    if (btb_on) {                                                                                  \
+        BtbEntry &e_ = btb[((u32)st >> 2) & 1023];                                                  \
+        if (e_.pc == (u32)st && e_.ins == w_ && e_.kinds == R->kinds && e_.h && e_.h != R->table[K_GENERAL]) { \
+            [[msvc::musttail]] return e_.h(R, x, s_, w_);                                           \
+        }                                                                                            \
+        Handler h_ = R->table[R->kinds[step_key(w_)]];                                                \
+        if (h_ != R->table[K_GENERAL]) e_ = {(u32)st, w_, h_, R->kinds};                              \
+        [[msvc::musttail]] return h_(R, x, s_, w_);                                                   \
+    }                                                                                                \
+    u32 i_;                                                                                          \
+    memcpy(&i_, R->code + (s_ & 0xfff), 4);                                                          \
+    [[msvc::musttail]] return R->table[R->kinds[step_key(i_)]](R, x, s_, i_);                        \
+}
+
 // The run's start, its end, and a fetch off the page.
 template <bool W>
 static void run_edge(Run* R, u32* x, u64 st, u32 ins) {
@@ -1265,16 +1341,36 @@ HANDLER(h_general) {
     [[msvc::musttail]] return run_edge<W>(R, x, (R->limit - c.clock) << 32 | c.pc, 0);
 }
 
-HANDLER(h_lui) { SET(ins & 0xfffff000); NEXT(PC + 4); }
-HANDLER(h_auipc) { SET(PC + (ins & 0xfffff000)); NEXT(PC + 4); }
-HANDLER(h_jal) { u32 to = PC + IMM_J; SET(PC + 4); NEXT(to); }
-HANDLER(h_jalr) { u32 to = (RS1 + IMM_I) & ~1u; SET(PC + 4); NEXT(to); }
-HANDLER(h_beq) { NEXT(RS1 == RS2 ? PC + IMM_B : PC + 4); }
-HANDLER(h_bne) { NEXT(RS1 != RS2 ? PC + IMM_B : PC + 4); }
-HANDLER(h_blt) { NEXT((i32)RS1 < (i32)RS2 ? PC + IMM_B : PC + 4); }
-HANDLER(h_bge) { NEXT((i32)RS1 >= (i32)RS2 ? PC + IMM_B : PC + 4); }
-HANDLER(h_bltu) { NEXT(RS1 < RS2 ? PC + IMM_B : PC + 4); }
-HANDLER(h_bgeu) { NEXT(RS1 >= RS2 ? PC + IMM_B : PC + 4); }
+HANDLER(h_lui) { SET(ins & 0xfffff000); DUAL_NEXT(PC + 4); }
+HANDLER(h_auipc) { SET(PC + (ins & 0xfffff000)); DUAL_NEXT(PC + 4); }
+HANDLER(h_jal) { u32 to = PC + IMM_J; if (btb_on && (RD == 1 || RD == 5)) { if (ras_n < 16) ras[ras_n++] = PC + 4; } SET(PC + 4); CHAIN_NEXT(to); }
+HANDLER(h_jalr) {
+    u32 to = (RS1 + IMM_I) & ~1u, rs1 = (ins >> 15) & 31;
+    SET(PC + 4);
+    if (btb_on && (rs1 == 1 || rs1 == 5) && RD == 0 && ras_n > 0 && ras[ras_n - 1] == to) {
+        ras_n--;
+        u64 s_ = (st & 0xffffffff00000000ull) | to;
+        if (s_ >= (1ull << 32) && ((u32)s_ >> 12) == R->vpn) {
+            s_ -= 1ull << 32;
+            u32 w_;
+            memcpy(&w_, R->code + (s_ & 0xfff), 4);
+            RasMemo &m_ = ras_memo[(to >> 2) & 63];
+            if (m_.target == to && m_.ins == w_ && m_.kinds == R->kinds && m_.h && m_.h != R->table[K_GENERAL]) {
+                [[msvc::musttail]] return m_.h(R, x, s_, w_);
+            }
+            Handler h_ = R->table[R->kinds[step_key(w_)]];
+            if (h_ != R->table[K_GENERAL]) m_ = {to, w_, h_, R->kinds};
+            [[msvc::musttail]] return h_(R, x, s_, w_);
+        }
+    }
+    CHAIN_NEXT(to);
+}
+HANDLER(h_beq) { u32 t_ = RS1 == RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
+HANDLER(h_bne) { u32 t_ = RS1 != RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
+HANDLER(h_blt) { u32 t_ = (i32)RS1 < (i32)RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
+HANDLER(h_bge) { u32 t_ = (i32)RS1 >= (i32)RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
+HANDLER(h_bltu) { u32 t_ = RS1 < RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
+HANDLER(h_bgeu) { u32 t_ = RS1 >= RS2 ? PC + IMM_B : PC + 4; if (t_ == PC + 4) { DUAL_NEXT(t_); } else { CHAIN_NEXT(t_); } }
 
 // Loads and stores: a hit in the core's table in RAM here, the rest the whole way (load(), store()).
 template <bool W, int N, bool SIGNED, bool FLOAT>
@@ -1300,7 +1396,7 @@ static void h_load(Run* R, u32* x, u64 st, u32 ins) {
         else v = SIGNED ? (u32)(i32)(int8_t)*p : *p;
         if (FLOAT) R->c->f[RD] = v;
         else SET(v);
-        NEXT(PC + 4);
+        DUAL_NEXT(PC + 4);
     }
     [[msvc::musttail]] return h_load_slow<W, N, SIGNED, FLOAT>(R, x, st, ins);
 }
@@ -1337,33 +1433,33 @@ static void h_store(Run* R, u32* x, u64 st, u32 ins) {
     [[msvc::musttail]] return h_store_slow<W, N, FLOAT>(R, x, st, ins);
 }
 
-HANDLER(h_addi) { SET(RS1 + IMM_I); NEXT(PC + 4); }
-HANDLER(h_slti) { SET((i32)RS1 < IMM_I); NEXT(PC + 4); }
-HANDLER(h_sltiu) { SET(RS1 < (u32)IMM_I); NEXT(PC + 4); }
-HANDLER(h_xori) { SET(RS1 ^ (u32)IMM_I); NEXT(PC + 4); }
-HANDLER(h_ori) { SET(RS1 | (u32)IMM_I); NEXT(PC + 4); }
-HANDLER(h_andi) { SET(RS1 & (u32)IMM_I); NEXT(PC + 4); }
-HANDLER(h_slli) { SET(RS1 << ((ins >> 20) & 31)); NEXT(PC + 4); }
-HANDLER(h_srli) { SET(RS1 >> ((ins >> 20) & 31)); NEXT(PC + 4); }
-HANDLER(h_srai) { SET((u32)((i32)RS1 >> ((ins >> 20) & 31))); NEXT(PC + 4); }
-HANDLER(h_add) { SET(RS1 + RS2); NEXT(PC + 4); }
-HANDLER(h_sub) { SET(RS1 - RS2); NEXT(PC + 4); }
-HANDLER(h_sll) { SET(RS1 << (RS2 & 31)); NEXT(PC + 4); }
-HANDLER(h_slt) { SET((i32)RS1 < (i32)RS2); NEXT(PC + 4); }
-HANDLER(h_sltu) { SET(RS1 < RS2); NEXT(PC + 4); }
-HANDLER(h_xor) { SET(RS1 ^ RS2); NEXT(PC + 4); }
-HANDLER(h_srl) { SET(RS1 >> (RS2 & 31)); NEXT(PC + 4); }
-HANDLER(h_sra) { SET((u32)((i32)RS1 >> (RS2 & 31))); NEXT(PC + 4); }
-HANDLER(h_or) { SET(RS1 | RS2); NEXT(PC + 4); }
-HANDLER(h_and) { SET(RS1 & RS2); NEXT(PC + 4); }
-HANDLER(h_mul) { SET(RS1 * RS2); NEXT(PC + 4); }
-HANDLER(h_mulh) { SET((u32)(((i64)(i32)RS1 * (i64)(i32)RS2) >> 32)); NEXT(PC + 4); }
-HANDLER(h_mulhsu) { SET((u32)(((i64)(i32)RS1 * (i64)(u64)RS2) >> 32)); NEXT(PC + 4); }
-HANDLER(h_mulhu) { SET((u32)(((u64)RS1 * (u64)RS2) >> 32)); NEXT(PC + 4); }
-HANDLER(h_div) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : (a == 0x80000000u && b == 0xffffffffu) ? a : (u32)((i32)a / (i32)b)); NEXT(PC + 4); }
-HANDLER(h_divu) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : a / b); NEXT(PC + 4); }
-HANDLER(h_rem) { u32 a = RS1, b = RS2; SET(b == 0 ? a : (a == 0x80000000u && b == 0xffffffffu) ? 0 : (u32)((i32)a % (i32)b)); NEXT(PC + 4); }
-HANDLER(h_remu) { u32 a = RS1, b = RS2; SET(b == 0 ? a : a % b); NEXT(PC + 4); }
+HANDLER(h_addi) { SET(RS1 + IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_slti) { SET((i32)RS1 < IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_sltiu) { SET(RS1 < (u32)IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_xori) { SET(RS1 ^ (u32)IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_ori) { SET(RS1 | (u32)IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_andi) { SET(RS1 & (u32)IMM_I); DUAL_NEXT(PC + 4); }
+HANDLER(h_slli) { SET(RS1 << ((ins >> 20) & 31)); DUAL_NEXT(PC + 4); }
+HANDLER(h_srli) { SET(RS1 >> ((ins >> 20) & 31)); DUAL_NEXT(PC + 4); }
+HANDLER(h_srai) { SET((u32)((i32)RS1 >> ((ins >> 20) & 31))); DUAL_NEXT(PC + 4); }
+HANDLER(h_add) { SET(RS1 + RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_sub) { SET(RS1 - RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_sll) { SET(RS1 << (RS2 & 31)); DUAL_NEXT(PC + 4); }
+HANDLER(h_slt) { SET((i32)RS1 < (i32)RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_sltu) { SET(RS1 < RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_xor) { SET(RS1 ^ RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_srl) { SET(RS1 >> (RS2 & 31)); DUAL_NEXT(PC + 4); }
+HANDLER(h_sra) { SET((u32)((i32)RS1 >> (RS2 & 31))); DUAL_NEXT(PC + 4); }
+HANDLER(h_or) { SET(RS1 | RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_and) { SET(RS1 & RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_mul) { SET(RS1 * RS2); DUAL_NEXT(PC + 4); }
+HANDLER(h_mulh) { SET((u32)(((i64)(i32)RS1 * (i64)(i32)RS2) >> 32)); DUAL_NEXT(PC + 4); }
+HANDLER(h_mulhsu) { SET((u32)(((i64)(i32)RS1 * (i64)(u64)RS2) >> 32)); DUAL_NEXT(PC + 4); }
+HANDLER(h_mulhu) { SET((u32)(((u64)RS1 * (u64)RS2) >> 32)); DUAL_NEXT(PC + 4); }
+HANDLER(h_div) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : (a == 0x80000000u && b == 0xffffffffu) ? a : (u32)((i32)a / (i32)b)); DUAL_NEXT(PC + 4); }
+HANDLER(h_divu) { u32 a = RS1, b = RS2; SET(b == 0 ? 0xffffffffu : a / b); DUAL_NEXT(PC + 4); }
+HANDLER(h_rem) { u32 a = RS1, b = RS2; SET(b == 0 ? a : (a == 0x80000000u && b == 0xffffffffu) ? 0 : (u32)((i32)a % (i32)b)); DUAL_NEXT(PC + 4); }
+HANDLER(h_remu) { u32 a = RS1, b = RS2; SET(b == 0 ? a : a % b); DUAL_NEXT(PC + 4); }
 
 // The floats (docs/machine/fpu.md) as the general step makes them, when they are on.
 #define FLOATS_ON() if (!(R->c->mstatus & 0x6000)) { [[msvc::musttail]] return h_general<W>(R, x, st, ins); }

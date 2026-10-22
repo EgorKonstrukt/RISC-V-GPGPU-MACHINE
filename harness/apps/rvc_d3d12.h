@@ -81,6 +81,16 @@ D3D12_RESOURCE_BARRIER transition(ID3D12Resource* r, D3D12_RESOURCE_STATES from,
     b.Transition.StateAfter = to;
     return b;
 }
+// The same for a buffer (whose only subresource is 0).
+D3D12_RESOURCE_BARRIER transitionBuf(ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = r;
+    b.Transition.Subresource = 0;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    return b;
+}
 
 struct Dx {
     ComPtr<ID3D12Device> dev;
@@ -100,6 +110,23 @@ struct Dx {
     }
     void flush() { waitFor(signal()); }
 };
+
+// check() with the D3D12 debug layer's messages for this device (enable with --debug).
+inline void checkDev(Dx& dx, HRESULT hr, const char* what) {
+    if (SUCCEEDED(hr)) return;
+    ComPtr<ID3D12InfoQueue> iq;
+    if (SUCCEEDED(dx.dev.As(&iq))) {
+        UINT64 n = iq->GetNumStoredMessages();
+        for (UINT64 i = n > 8 ? n - 8 : 0; i < n; ++i) {
+            SIZE_T len = 0;
+            iq->GetMessage(i, nullptr, &len);
+            std::vector<char> buf(len);
+            auto* m = (D3D12_MESSAGE*)buf.data();
+            if (SUCCEEDED(iq->GetMessage(i, m, &len))) fprintf(stderr, "[d3d12] %s\n", m->pDescription);
+        }
+    }
+    die(what, hr);
+}
 
 // Runs one-off commands (uploads, readbacks) and blocks until the GPU has finished them.
 struct OneShot {
@@ -305,8 +332,11 @@ std::vector<uint8_t> dxcCompile(Dxc& dxc, const std::string& text, const std::st
 
 struct Pass12 {
     std::string name;
-    StageLayout vs, ps;
+    StageLayout vs, ps, gs;   // gs: the geometry stage, when the pass has #pragma geometry
     int vsSelf = -1;   // register of _SelfTexture2D in the vertex shader, when it reads the state
+    bool hasGs = false;
+    UINT vsTable = 0xffffffff;   // root parameter of the vertex shader's state table, when used
+    UINT gsCb = 0xffffffff;      // root parameter of the geometry stage's $Globals, when used
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pso;
 };
@@ -334,23 +364,38 @@ void buildPasses12(Dx& dx, const SLShader& shader, const CompileSettings& cs, co
         Pass12& P = passes[p];
         P.name = passNames[p];
         std::string sm = shaderModelSuffix(sp->target);
-        std::vector<uint8_t> vsBytes, psBytes;
+        std::vector<uint8_t> vsBytes, psBytes, gsBytes;
         if (opt.dxc) {
             auto tc = std::chrono::steady_clock::now();
-            std::string vsText, psText;
+            std::string vsText, psText, gsText;
             if (!preprocessStage(sp->code, shader.path, rootDir, {{"SHADER_STAGE_VERTEX", "1"}}, cs, vsText, err) ||
-                !preprocessStage(sp->code, shader.path, rootDir, {{"SHADER_STAGE_FRAGMENT", "1"}}, cs, psText, err))
+                !preprocessStage(sp->code, shader.path, rootDir, {{"SHADER_STAGE_FRAGMENT", "1"}}, cs, psText, err) ||
+                (!sp->geometryEntry.empty() &&
+                 !preprocessStage(sp->code, shader.path, rootDir, {{"SHADER_STAGE_GEOMETRY", "1"}}, cs, gsText, err)))
                 die(err.c_str());
             vsBytes = dxcCompile(dxc, vsText, sp->vertexEntry, "vs_" + opt.dxcSm, opt.dxcOpt, P.vs);
             psBytes = dxcCompile(dxc, psText, sp->fragmentEntry, "ps_" + opt.dxcSm, opt.dxcOpt, P.ps);
+            if (!sp->geometryEntry.empty()) {
+                gsBytes = dxcCompile(dxc, gsText, sp->geometryEntry, "gs_" + opt.dxcSm, opt.dxcOpt, P.gs);
+                P.hasGs = true;
+            }
             if (!opt.dxcDump.empty())
                 writeFileBinary((std::filesystem::u8path(opt.dxcDump) / (P.name + ".dxil")).u8string(), psBytes.data(), psBytes.size());
-            fprintf(stderr, "[d3d12] pass '%s': DXC in %.1fs (ps %zu bytes)\n", P.name.c_str(),
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - tc).count(), psBytes.size());
+            fprintf(stderr, "[d3d12] pass '%s': DXC in %.1fs (ps %zu bytes%s)\n", P.name.c_str(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - tc).count(), psBytes.size(),
+                    P.hasGs ? ", with a geometry stage" : "");
         } else {
         StageResult vs = compileStage(sp->code, shader.path, rootDir, sp->vertexEntry, "vs_" + sm, {{"SHADER_STAGE_VERTEX", "1"}}, cs);
         StageResult ps = compileStage(sp->code, shader.path, rootDir, sp->fragmentEntry, "ps_" + sm, {{"SHADER_STAGE_FRAGMENT", "1"}}, cs);
         if (!vs.ok || !ps.ok) die((P.name + " failed to compile:\n" + vs.log + ps.log).c_str());
+        if (!sp->geometryEntry.empty()) {
+            StageResult gs = compileStage(sp->code, shader.path, rootDir, sp->geometryEntry, "gs_" + sm, {{"SHADER_STAGE_GEOMETRY", "1"}}, cs);
+            if (!gs.ok) die((P.name + " failed to compile:\n" + gs.log).c_str());
+            if (!P.gs.reflect(nullptr, gs.bytecode.Get(), err)) die(err.c_str());
+            gsBytes.assign((const uint8_t*)gs.bytecode->GetBufferPointer(),
+                           (const uint8_t*)gs.bytecode->GetBufferPointer() + gs.bytecode->GetBufferSize());
+            P.hasGs = true;
+        }
         fprintf(stderr, "[d3d12] pass '%s': vs %s, ps %s in %.1fs (%zu bytes)\n", P.name.c_str(), vs.fromCache ? "cached" : "compiled",
                 ps.fromCache ? "cached" : "compiled", ps.seconds, (size_t)ps.bytecode->GetBufferSize());
         if (!P.vs.reflect(nullptr, vs.bytecode.Get(), err) || !P.ps.reflect(nullptr, ps.bytecode.Get(), err)) die(err.c_str());
@@ -361,11 +406,19 @@ void buildPasses12(Dx& dx, const SLShader& shader, const CompileSettings& cs, co
         else if (!P.vs.textures.empty()) die("a vertex shader may read no texture but _SelfTexture2D");
         if (!P.vs.samplers.empty() || !P.ps.samplers.empty() || !P.ps.uavs.empty())
             die("shader uses samplers or UAVs, which this runner does not bind");
+        if (P.hasGs) {
+            if (!P.gs.samplers.empty() || !P.gs.uavs.empty())
+                die("a geometry shader may use no samplers or UAVs");
+            if (P.gs.globalsSize > kCbBytes) die("a geometry shader's $Globals do not fit the upload slot");
+            for (auto& t : P.gs.textures)
+                if (t.slot >= kTableSize) die("a geometry shader's texture slot is beyond the SRV table");
+        }
         if (P.vs.globalsSize > kCbBytes || P.ps.globalsSize > kCbBytes) die("$Globals larger than the upload slot");
         for (auto& t : P.ps.textures)
             if (t.slot >= kTableSize) die("texture slot beyond the SRV table");
 
-        // Root: [0] VS $Globals, [1] PS $Globals, [2] PS texture table t0..t15.
+        // Root: [0] VS $Globals, [1] PS $Globals, [2] texture table t0..t15, then the vertex
+        // shader's state table and the geometry stage's $Globals when the pass uses them.
         D3D12_DESCRIPTOR_RANGE range{};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         range.NumDescriptors = kTableSize;
@@ -373,23 +426,40 @@ void buildPasses12(Dx& dx, const SLShader& shader, const CompileSettings& cs, co
         vsRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         vsRange.NumDescriptors = 1;
         vsRange.BaseShaderRegister = (UINT)(P.vsSelf < 0 ? 0 : P.vsSelf);
-        D3D12_ROOT_PARAMETER rp[4]{};
-        rp[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;   // [3] the state, for the vertex shader
-        rp[3].DescriptorTable.NumDescriptorRanges = 1;
-        rp[3].DescriptorTable.pDescriptorRanges = &vsRange;
-        rp[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rp[0].Descriptor.ShaderRegister = P.vs.globalsSlot;
-        rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rp[1].Descriptor.ShaderRegister = P.ps.globalsSlot;
-        rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        rp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rp[2].DescriptorTable.NumDescriptorRanges = 1;
-        rp[2].DescriptorTable.pDescriptorRanges = &range;
-        rp[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_ROOT_PARAMETER rp[5]{};
+        UINT n = 0;
+        rp[n].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rp[n].Descriptor.ShaderRegister = P.vs.globalsSlot;
+        rp[n].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+        ++n;
+        rp[n].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rp[n].Descriptor.ShaderRegister = P.ps.globalsSlot;
+        rp[n].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        ++n;
+        rp[n].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rp[n].DescriptorTable.NumDescriptorRanges = 1;
+        rp[n].DescriptorTable.pDescriptorRanges = &range;
+        // (shared with the geometry stage: a pass with both keeps the vertex table out)
+        rp[n].ShaderVisibility = P.hasGs ? D3D12_SHADER_VISIBILITY_ALL : D3D12_SHADER_VISIBILITY_PIXEL;
+        ++n;
+        P.vsTable = 0xffffffff;
+        if (P.vsSelf >= 0) {
+            rp[n].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;   // the state, for the vertex shader
+            rp[n].DescriptorTable.NumDescriptorRanges = 1;
+            rp[n].DescriptorTable.pDescriptorRanges = &vsRange;
+            rp[n].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+            P.vsTable = n++;
+        }
+        P.gsCb = 0xffffffff;
+        if (P.hasGs && P.gs.hasGlobals) {
+            rp[n].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;   // $Globals for the geometry stage
+            rp[n].Descriptor.ShaderRegister = P.gs.globalsSlot;
+            rp[n].ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
+            P.gsCb = n++;
+        }
+        if (P.hasGs && P.vsSelf >= 0) die("a pass with a geometry shader and a state-reading vertex shader");
         D3D12_ROOT_SIGNATURE_DESC rsd{};
-        rsd.NumParameters = P.vsSelf < 0 ? 3 : 4;
+        rsd.NumParameters = n;
         rsd.pParameters = rp;
         ComPtr<ID3DBlob> rsBlob, rsErr;
         check(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsErr), "root signature");
@@ -399,6 +469,7 @@ void buildPasses12(Dx& dx, const SLShader& shader, const CompileSettings& cs, co
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
         pd.pRootSignature = P.root.Get();
         pd.VS = {vsBytes.data(), vsBytes.size()};
+        if (P.hasGs) pd.GS = {gsBytes.data(), gsBytes.size()};
         pd.PS = {psBytes.data(), psBytes.size()};
         pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         pd.SampleMask = 0xffffffff;

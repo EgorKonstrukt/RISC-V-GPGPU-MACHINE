@@ -236,6 +236,7 @@ float g_dispShownW = 1, g_dispShownH = 1;
 UINT g_viewW = 0, g_viewH = 0;
 bool g_freeze = false;
 int g_vol = 10;
+int g_cores = 256;   // the machine's cores, as the Settings panel wants them (needs a restart)
 bool g_soundOff = false;
 char g_line[1024]{};
 float g_uiScale = 1.0f;
@@ -260,6 +261,8 @@ static void uiLoadCfg() {
             if (z >= 1 && z <= 64) g_memZoom = z;
         } else if (sscanf(line, "mem_off=%f", &v) == 1) {
             if (v >= 0) g_memOff = v;
+        } else if (sscanf(line, "cores=%d", &z) == 1) {
+            if (z >= 1 && z <= 256) g_cores = z;
         }
     }
     fclose(f);
@@ -268,7 +271,7 @@ static void uiLoadCfg() {
 static void uiSaveCfg() {
     FILE* f = fopen("logs/imgui_harness.cfg", "w");
     if (!f) return;
-    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\n", (double)g_uiScale, g_memZoom, (double)g_memOff);
+    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\ncores=%d\n", (double)g_uiScale, g_memZoom, (double)g_memOff, g_cores);
     fclose(f);
 }
 
@@ -392,6 +395,40 @@ using Constants = MemoryViewConstants;
 const char* memoryViewShader() { return kShader; }
 
 float memoryViewUi() { return g_ui; }
+
+// Whether a view shows ImGui panels (input goes to ImGui when it wants it).
+void memoryViewSetImgui(bool imgui) { g_imgui = imgui; }
+// The kept UI settings (scale/zoom/offset), for a view that starts after them.
+void memoryViewLoadCfg() { uiLoadCfg(); }
+// The view's window size, for the pointer mapping.
+void memoryViewSetViewSize(UINT w, UINT h) { g_viewW = w; g_viewH = h; }
+// The machine's cores, as the Settings panel wants them (needs a restart).
+int memoryViewCoreCount() { return g_cores; }
+float memoryViewUiScale() { return g_uiScale; }
+void memoryViewApplyScale(float s) { uiApplyScale(s); }
+// A BMP the Machine panel asked for, since the last call (empty: none).
+std::string memoryViewTakePendingCapture() {
+    std::string path;
+    path.swap(g_pendingCapture);
+    return path;
+}
+// The panels' text columns (Machine, Console, input), with the volume the first one names.
+void memoryViewSetColumns(const MemoryViewText& columns) {
+    g_cols = columns;
+    if (!columns.empty()) {
+        for (auto& line : columns[0]) {
+            size_t p = line.find("volume ");
+            if (p != std::string::npos) {
+                int v = atoi(line.c_str() + p + 7);
+                if (v >= 0 && v <= 100) g_vol = v;
+            }
+            if (line.find("sound off") != std::string::npos) g_soundOff = true;
+            if (line.find("sound playing") != std::string::npos || line.find("sound idle") != std::string::npos ||
+                line.find("sound not played") != std::string::npos)
+                g_soundOff = false;
+        }
+    }
+}
 
 UINT memoryViewBar() { return (UINT)(kMemoryViewBar * g_ui + 0.5f); }
 
@@ -688,6 +725,217 @@ bool MemoryView::createTargets(std::string& err) {
     }
     heatNeedsClear_ = true;
     return true;
+}
+
+// The docked panels both memory views show, after the backend's NewFrame and before its
+// Render (memview.h). Backend-agnostic: the textures arrive as ImTextureID (a D3D11 SRV
+// or a D3D12 GPU descriptor handle).
+void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
+                      UINT texH, UINT stateRows) {
+    static bool dockBuilt = false;
+    ImGuiID dockId = 0;
+    {
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->WorkPos);
+        ImGui::SetNextWindowSize(vp->WorkSize);
+        ImGui::SetNextWindowViewport(vp->ID);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGuiWindowFlags hostFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+        ImGui::Begin("HarnessDockHost", nullptr, hostFlags);
+        ImGui::PopStyleVar(3);
+        dockId = ImGui::GetID("HarnessDock");
+        if (!dockBuilt) {
+            dockBuilt = true;
+            if (!std::filesystem::exists("logs/imgui_harness.ini")) {
+                ImGui::DockBuilderRemoveNode(dockId);
+                ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockId, vp->Size);
+                ImGuiID right = 0, bottom = 0, left = 0;
+                ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Right, 0.30f, &right, &left);
+                ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.32f, &bottom, &left);
+                ImGuiID bottomLeft = 0, bottomRight = 0;
+                ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.45f, &bottomRight, &bottomLeft);
+                ImGui::DockBuilderDockWindow("Display", left);
+                ImGui::DockBuilderDockWindow("Memory", right);
+                ImGui::DockBuilderDockWindow("Heat", right);
+                ImGui::DockBuilderDockWindow("CPU State", right);
+                ImGui::DockBuilderDockWindow("GPU Target", right);
+                ImGui::DockBuilderDockWindow("Console", bottomLeft);
+                ImGui::DockBuilderDockWindow("Machine", bottomRight);
+                ImGui::DockBuilderDockWindow("Settings", bottomRight);
+                ImGui::DockBuilderFinish(dockId);
+            }
+        }
+        ImGui::DockSpace(dockId);
+        ImGui::End();
+    }
+    float splitPx = memoryViewSplit(width);
+    float barPx = (float)memoryViewBar();
+    float memPx = (float)height - barPx;
+    float barRowsF = (float)(texH - stateRows);
+    float insetPx = barPx - 16 * g_ui;
+    if (insetPx > 0) {
+        float bx0 = (float)width - insetPx - 12 * g_ui;
+        float by0 = memPx + (barPx - insetPx) * 0.5f;
+        g_stateUv[0] = bx0 / (float)width;
+        g_stateUv[1] = by0 / (float)height;
+        g_stateUv[2] = (bx0 + insetPx) / (float)width;
+        g_stateUv[3] = (by0 + insetPx) / (float)height;
+    }
+    bool dispOpen = ImGui::Begin("Display");
+    if (dispOpen) {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float s = (std::min)(avail.x / splitPx, avail.y / memPx);
+        if (s > 16) s = 16;
+        if (s > 0 && splitPx > 0 && memPx > 0) {
+            ImVec2 size(splitPx * s, memPx * s);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - size.x) * 0.5f);
+            ImGui::Image((ImTextureID)view, size, ImVec2(0, 0), ImVec2(splitPx / (float)width, memPx / (float)height));
+            ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+            POINT p0{(LONG)mn.x, (LONG)mn.y}, p1{(LONG)mx.x, (LONG)mx.y};
+            ScreenToClient(g_window, &p0);
+            ScreenToClient(g_window, &p1);
+            g_dispRect.left = p0.x;
+            g_dispRect.top = p0.y;
+            g_dispRect.right = p1.x;
+            g_dispRect.bottom = p1.y;
+            g_dispShownW = size.x;
+            g_dispShownH = size.y;
+            g_dispValid = true;
+        } else g_dispValid = false;
+    } else g_dispValid = false;
+    ImGui::End();
+    bool memOpen = ImGui::Begin("Memory");
+    if (memOpen) {
+        float mw = (float)width - splitPx;
+        float totalRows = (float)(texH - stateRows);
+        float halfSpan = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1) * 0.5f;
+        ImGui::BeginChild("ramScroll", ImVec2(0, 0), false);
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float s = avail.x / (mw * 0.5f);
+        if (s > 0 && mw > 0 && memPx > 0) {
+            float u0 = splitPx / (float)width;
+            float um = u0 + (1.0f - u0) * 0.5f;
+            float v1 = memPx / (float)height;
+            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
+            ImGui::Text("rows %.0f..%.0f", (double)g_memOff, (double)(g_memOff + halfSpan));
+            ImGui::Image((ImTextureID)view, size, ImVec2(u0, 0), ImVec2(um, v1));
+            ImGui::Text("rows %.0f..%.0f", (double)(g_memOff + halfSpan), (double)(g_memOff + halfSpan * 2));
+            ImGui::Image((ImTextureID)view, size, ImVec2(um, 0), ImVec2(1.0f, v1));
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+    if (ImGui::Begin("Heat")) {
+        ImGui::BeginChild("heatScroll", ImVec2(0, 0), false);
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float mw = (float)width - splitPx;
+        if (avail.x > 0 && mw > 0 && memPx > 0) {
+            float u0 = splitPx / (float)width;
+            float um = u0 + (1.0f - u0) * 0.5f;
+            float v1 = memPx / (float)height;
+            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
+            ImGui::Image((ImTextureID)heat, size, ImVec2(u0, 0), ImVec2(um, v1));
+            ImGui::Image((ImTextureID)heat, size, ImVec2(um, 0), ImVec2(1.0f, v1));
+        }
+        ImGui::EndChild();
+    }
+    ImGui::End();
+    if (ImGui::Begin("CPU State")) {
+        if (g_stateUv[2] > g_stateUv[0]) {
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            float w = avail.x < 384 ? avail.x : 384;
+            if (w > 0) ImGui::Image((ImTextureID)view, ImVec2(w, w),
+                                    ImVec2(g_stateUv[0], g_stateUv[1]), ImVec2(g_stateUv[2], g_stateUv[3]));
+        }
+    }
+    ImGui::End();
+    if (ImGui::Begin("GPU Target")) {
+        if (gpu) {
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            if (avail.x > 0) ImGui::Image((ImTextureID)gpu, ImVec2(avail.x, avail.x), ImVec2(0, 0), ImVec2(1, 1));
+        } else {
+            ImGui::Text("no GPU target");
+        }
+    }
+    ImGui::End();
+    if (ImGui::Begin("Console")) {
+        if (g_cols.size() > 1) {
+            ImGui::BeginChild("lines", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false,
+                              ImGuiWindowFlags_HorizontalScrollbar);
+            for (auto& l : g_cols[1]) ImGui::TextUnformatted(l.c_str());
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
+            ImGui::EndChild();
+        }
+        ImGui::PushItemWidth(-1);
+        if (ImGui::InputText("##line", g_line, sizeof g_line, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            g_forced.append(g_line);
+            g_forced.push_back('\r');
+            g_line[0] = 0;
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+        ImGui::PopItemWidth();
+    }
+    ImGui::End();
+    if (ImGui::Begin("Machine")) {
+        if (!g_cols.empty())
+            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
+        if (g_cols.size() > 2)
+            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
+        ImGui::Checkbox("Freeze view", &g_freeze);
+        if (ImGui::Button("Capture view BMP")) g_pendingCapture = "logs/imgui_view.bmp";
+        if (ImGui::Button("Reset layout")) {
+            DeleteFileA("logs/imgui_harness.ini");
+            ImGui::DockBuilderRemoveNode(dockId);
+            dockBuilt = false;
+        }
+    }
+    ImGui::End();
+    if (ImGui::Begin("Settings")) {
+        float scale = g_uiScale;
+        if (ImGui::SliderFloat("UI scale", &scale, 0.5f, 2.0f, "%.2f")) {
+            g_uiScale = scale;
+            uiApplyScale(g_uiScale);
+            uiSaveCfg();
+        }
+        bool sound = !g_soundOff;
+        if (ImGui::Checkbox("Sound", &sound)) g_hostKeys.push_back('s');
+        int vol = g_vol;
+        if (ImGui::SliderInt("Volume", &vol, 0, 100)) {
+            int steps = (vol - g_vol + (vol > g_vol ? 2 : -2)) / 5;
+            for (int i = 0; i < abs(steps); ++i) g_hostKeys.push_back(vol > g_vol ? '+' : '-');
+            g_vol = vol;
+        }
+        float spanF = barRowsF / (float)(g_memZoom > 0 ? g_memZoom : 1);
+        if (spanF < 1) spanF = 1;
+        float maxOffSet = barRowsF - spanF;
+        if (maxOffSet < 0) maxOffSet = 0;
+        if (ImGui::SliderInt("Memory zoom", &g_memZoom, 1, 64)) {
+            if (g_memOff > maxOffSet) g_memOff = maxOffSet;
+            uiSaveCfg();
+        }
+        if (ImGui::SliderFloat("Memory offset", &g_memOff, 0, maxOffSet, "%.0f")) uiSaveCfg();
+        if (ImGui::Button("Memory 1:1")) {
+            g_memZoom = 1;
+            g_memOff = 0;
+            uiSaveCfg();
+        }
+        ImGui::Text("rows %.0f..%.0f of %.0f", (double)g_memOff, (double)(g_memOff + spanF), (double)barRowsF);
+        int cores = g_cores;
+        if (ImGui::SliderInt("Cores", &cores, 1, 256)) {
+            if (cores < 1) cores = 1;
+            if (cores > 256) cores = 256;
+            if (cores != g_cores) {
+                g_cores = cores;
+                uiSaveCfg();
+            }
+        }
+        ImGui::Text("takes effect on restart");
+    }
+    ImGui::End();
 }
 
 bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur, bool present, ID3D11ShaderResourceView* gpu) {

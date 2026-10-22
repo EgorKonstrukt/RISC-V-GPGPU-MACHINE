@@ -47,12 +47,17 @@ public:
         b.dxcDir = opt.dxcDir;
         buildPasses12(dx_, shader, opt.compile, b, passes_);
         if (opt.gpuShader) {
-            buildPasses12(dx_, *opt.gpuShader, opt.compile, b, passes_ + 2, "GPUControl", "", 1);
+            // The control pass reports the workers (MC_STATS) while the tick stays single-core.
+            CompileSettings gpuCs = opt.compile;
+            if (opt.cores > 1 && opt.computeShader.empty())
+                gpuCs.defines.push_back(Defines::value_type("CORES", std::to_string(opt.cores)));
+            buildPasses12(dx_, *opt.gpuShader, gpuCs, b, passes_ + 2, "GPUControl", "", 1);
             passCount_ = 3;
             buildGpuDraw(*opt.gpuShader, opt.compile, b);
             textures_["_GpuTarget"] = gpuColor_;
             if (opt.soundShader) buildSoundMix(*opt.soundShader, opt.compile, b);
         }
+        if (!opt.computeShader.empty() && !buildComputeCpu(opt.computeShader, opt, err)) return false;
 
         const uint8_t black[4] = {0, 0, 0, 0};
         blackTex_ = uploadTexture(dx_, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, 4, black, D3D12_RESOURCE_FLAG_NONE,
@@ -63,6 +68,10 @@ public:
             rowBuf_[s] = readbackBuffer(rowFootprint_, kControlTexels, 3, kStateFormat);   // row 0, the control texels, the network's 64
             if (soundPso_) soundBuf_[s] = readbackBuffer(soundFootprint_, kSoundSide, kSoundSide, kSoundFormat);
             if (opt.stateLog) zoneBuf_[s] = readbackBuffer(zoneFootprint_, 64, 64, kStateFormat);
+            auto statBd = bufferDesc((UINT64)kCoresMost * kCpuStateBytes);
+            auto statHeap = heapProps(D3D12_HEAP_TYPE_READBACK);
+            check(dx_.dev->CreateCommittedResource(&statHeap, D3D12_HEAP_FLAG_NONE, &statBd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                   IID_PPV_ARGS(&statBuf_[s])), "worker stats readback");
         }
         check(dx_.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocs_[0].Get(), nullptr, IID_PPV_ARGS(&cl_)), "command list");
         cl_->Close();
@@ -126,7 +135,8 @@ public:
         }
         for (int i = 0; i < 2; ++i)
             state_[i] = uploadTexture(dx_, kWidth, kHeight, kStateFormat, 16, (const uint8_t*)texels,
-                                      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+                                      // (ALLOW_UNORDERED_ACCESS: --compute exports into the texture)
+                                      D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                       i == 0 ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET);
         cur_ = 0;
         tablesBuilt_ = false;
@@ -141,6 +151,10 @@ public:
         check(cl_->Reset(allocs_[slot].Get(), nullptr), "list reset");
         timeIt = timeIt && tsHeap_ && !tsPending_;
         bool mixed = false;
+        // --compute: the processor is the compute shader's (runCompute12) in place of the tick
+        bool computing = computeMode && csCpu_ && mat.getFloat("_Init") == 0;
+        // what computeImport12 takes back (captured before the zones below clear them)
+        bool importCon = computing && conDelivered, importFetch = computing && deliver_;
 
         ID3D12DescriptorHeap* heaps[] = {srvHeap_.Get()};
         cl_->SetDescriptorHeaps(1, heaps);
@@ -161,6 +175,7 @@ public:
             mat.setVector("CustomRenderTextureSizesAndRotations", zw, zh, 1, 0);
             mat.fillGlobals(P.vs);
             mat.fillGlobals(P.ps);
+            if (P.hasGs) mat.fillGlobals(P.gs);
             // two a pass (the fetch zone's draw has the fourth pair), then the GPU draws, then the sound mix
             UINT64 base = ((UINT64)slot * kCbPerFrame + (UINT64)(cb < 0 ? p : cb) * 2) * kCbBytes;
             if (P.vs.hasGlobals) memcpy(cbMapped_ + base, P.vs.scratch.data(), P.vs.scratch.size());
@@ -173,6 +188,23 @@ public:
             table.ptr += (UINT64)tableIndex(p, cur) * srvStep_;
             cl_->SetGraphicsRootDescriptorTable(2, table);
             cl_->OMSetRenderTargets(1, &rtv_[dst], FALSE, nullptr);
+            if (P.hasGs) {
+                // the geometry shader amplifies each primitive: core 0's rect and the workers'
+                // strips where the geometry puts them (docs/machine/multicore.md); it reads the state
+                if (P.gsCb != 0xffffffff) {
+                    UINT64 gsBase = ((UINT64)slot * kCbPerFrame + 18) * kCbBytes;
+                    memcpy(cbMapped_ + gsBase, P.gs.scratch.data(), P.gs.scratch.size());
+                    cl_->SetGraphicsRootConstantBufferView(P.gsCb, cbuf_->GetGPUVirtualAddress() + gsBase);
+                }
+                const D3D12_RESOURCE_STATES both =
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                auto toBoth = transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, both);
+                cl_->ResourceBarrier(1, &toBoth);
+                cl_->DrawInstanced(3 * ((kCores + 15) / 16), 1, 0, 0);
+                auto toPixel = transition(state_[cur].Get(), both, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                cl_->ResourceBarrier(1, &toPixel);
+                return;
+            }
             if (P.vsSelf < 0) {
                 cl_->DrawInstanced(6, 1, 0, 0);
                 return;
@@ -180,7 +212,7 @@ public:
             // the vertex shader picks the quads from the state: it needs the non-pixel state too
             D3D12_GPU_DESCRIPTOR_HANDLE self = srvHeap_->GetGPUDescriptorHandleForHeapStart();
             self.ptr += (UINT64)(8 * kTableSize + cur) * srvStep_;
-            cl_->SetGraphicsRootDescriptorTable(3, self);
+            cl_->SetGraphicsRootDescriptorTable(P.vsTable, self);
             const D3D12_RESOURCE_STATES both =
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             auto toBoth = transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, both);
@@ -194,6 +226,15 @@ public:
         };
 
         // Zone 1: CPUTick on the 64x64 state area, then copy that area back so `cur` stays complete.
+        // (--compute: the processor's passes and its export into state_[cur] instead; it is complete already)
+        if (computing) {
+            stamp(0);
+            runCompute12(mat, slot, cur);
+            stamp(1);
+            // (runCompute12 binds the compute heap: the draws below read theirs)
+            ID3D12DescriptorHeap* gheap[] = {srvHeap_.Get()};
+            cl_->SetDescriptorHeaps(1, gheap);
+        } else {
         stamp(0);
         draw(0, 32, kHeight - (float)tickRows_ / 2, 64, (float)tickRows_);
         stamp(1);
@@ -210,6 +251,7 @@ public:
             transition(state_[dst].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
             transition(state_[cur].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)};
         cl_->ResourceBarrier(2, fromCopy);
+        }
 
         // Zone 2: Commit on the whole texture; row 0 of the result goes to this slot's readback.
         // Commit reads the GPU's picture, to copy it into RAM when the guest asked.
@@ -297,8 +339,8 @@ public:
                 auto toDraw = transition(soundTex_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 cl_->ResourceBarrier(1, &toDraw);
             }
-            cl_->RSSetViewports(1, &vp);
-            // then the control zone on the state texture: mark the list drawn, deliver input
+        cl_->RSSetViewports(1, &vp);
+        // then the control zone on the state texture: mark the list drawn, deliver input
             for (int z = 0; z < 3; ++z) {
                 if ((z == 1 && !conDelivered) || (z == 2 && !deliver_)) continue;
                 const float* zn = z == 0 ? kGpuControlZone : z == 1 ? kConZone : kFetchZone;
@@ -329,7 +371,19 @@ public:
         }
         stamp(3);
         if (timeIt) cl_->ResolveQueryData(tsHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 4, tsBuf_.Get(), 0);
-        auto toRead = transition(state_[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        // --compute: what the devices wrote, back into the processor's (its texture is the committed one)
+        // (no network ring or counters' merge on this backend: as its fragment path has none)
+        if (computing) computeImport12(importCon, importFetch, false, false, slot, dst);
+        // --compute: every core's state for its instruction count (the tick keeps it, sync_cores need not run)
+        if (computing && cpuState_) {
+            auto toStats = transitionBuf(cpuState_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            cl_->ResourceBarrier(1, &toStats);
+            cl_->CopyBufferRegion(statBuf_[slot].Get(), 0, cpuState_.Get(), 0, (UINT64)kCoresMost * kCpuStateBytes);
+            auto toUav = transitionBuf(cpuState_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cl_->ResourceBarrier(1, &toUav);
+        }
+        auto toRead = transition(state_[dst].Get(), computing ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                 D3D12_RESOURCE_STATE_COPY_SOURCE);
         cl_->ResourceBarrier(1, &toRead);
         D3D12_TEXTURE_COPY_LOCATION rdst{}, rsrc{};
         rdst.pResource = rowBuf_[slot].Get();
@@ -353,7 +407,7 @@ public:
             transition(state_[dst].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
             transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)};
         cl_->ResourceBarrier(2, swapStates);
-        check(cl_->Close(), "Close");
+        checkDev(dx_, cl_->Close(), "Close");
         ID3D12CommandList* lists[] = {cl_.Get()};
         dx_.queue->ExecuteCommandLists(1, lists);
         slotFence_[slot] = dx_.signal();
@@ -397,6 +451,19 @@ public:
                 memcpy(lastSound_.data() + y * pitch, p + soundFootprint_.Offset + (size_t)y * soundFootprint_.Footprint.RowPitch, pitch);
             soundBuf_[r.slot]->Unmap(0, nullptr);
         }
+        lastStats_.assign(256, 0);
+        if (statBuf_[r.slot] && SUCCEEDED(statBuf_[r.slot]->Map(0, nullptr, (void**)&p))) {
+            const uint32_t* w = (const uint32_t*)p;
+            for (int c = 0; c < 256; ++c)
+                lastStats_[c] = (uint64_t)w[(size_t)c * 128 + 93] | ((uint64_t)w[(size_t)c * 128 + 94] << 32);
+            statBuf_[r.slot]->Unmap(0, nullptr);
+        }
+        return true;
+    }
+    // Every core's instruction count, as of the last popped frame (64-bit each).
+    bool computeWorkerCounts(std::vector<uint64_t>& out) override {
+        if (lastStats_.empty()) return false;
+        out = lastStats_;
         return true;
     }
     bool takeState(std::vector<uint8_t>& out) override {
@@ -411,6 +478,9 @@ public:
         lastSound_.clear();
         return true;
     }
+
+    bool computeStart(const std::string& imageDir, std::string& err) override;
+    bool computeState(std::vector<uint32_t>& out) override;
 
     bool readState(UINT w, UINT h, std::vector<uint8_t>& out) override {
         prepare();
@@ -582,7 +652,7 @@ private:
         std::vector<uint8_t> vs = dxcCompile(dxc, vsText, sp->vertexEntry, "vs_" + b.dxcSm, b.dxcOpt, vl);
         std::vector<uint8_t> ps = dxcCompile(dxc, psText, sp->fragmentEntry, "ps_" + b.dxcSm, b.dxcOpt, pl);
         for (auto& t : vl.textures)
-            if (t.slot != 0) die("GPUDraw: the state texture must be t0");
+            if ((t.slot == 0) != (t.name == "_State") || t.slot >= kGpuTable) die("GPUDraw: the state texture must be t0, the ROM t1-t4");
         for (auto& t : pl.textures)
             if ((t.slot == 0) != (t.name == "_State") || t.slot >= kGpuTable) die("GPUDraw: the state texture must be t0, the ROM t1-t4");
         if (pl.hasGlobals) die("GPUDraw: uniforms in the vertex shader only");
@@ -749,6 +819,27 @@ private:
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT zoneFootprint_{};
     std::vector<uint8_t> lastZone_;
 
+    // --compute: the processor as compute shaders (experiments/rv32_min), RAM in buffers of
+    // its own (rvc_backend.h). Mirrors rvc_backend11's compute path.
+    static const UINT kCpuStateBytes = 512;   // a core's words
+    static const UINT kMarkBytes = (3 * 73728 + 128 + 1024 + 32768) * 4;   // page marks and lists
+    static const UINT kArgsBytes = 48;   // merge's dispatch, export_pages's, the next pass's
+    static const UINT64 kRamBytes = (UINT64)2048 * (kStateHeight - 64) * 16;   // 288 MB
+    ComPtr<ID3D12RootSignature> csTickRoot_, csRoot_;
+    ComPtr<ID3D12PipelineState> csCpu_, csMerge_, csMergeList_, csCount_, csState_, csExport_, csPlan_, csTake_, csCores_, csExportPages_;
+    ComPtr<ID3D12Resource> cpuRam_, cpuState_, cpuRom_, cpuDec_, cpuMarks_, cpuArgs_;
+    uint32_t syncCb_[8] = {};   // the sync pass's current constants (b0), bound before each dispatch
+    ComPtr<ID3D12Resource> cpuStateRead_;   // READBACK for computeState
+    ComPtr<ID3D12DescriptorHeap> csHeap_[kSlots];   // per-slot: 6 UAV + 3 SRV
+    ComPtr<ID3D12CommandSignature> csIndirect_;
+    UINT csStep_ = 0;   // this heap's descriptor size
+    uint32_t cpuSeed_ = 0x9e3779b9u, computeFrames_ = 0;
+    bool buildComputeCpu(const std::string& path, const BackendOptions& opt, std::string& err);
+    void runCompute12(Material& mat, UINT slot, int cur);
+    void computeImport12(bool con, bool fetch, bool net, bool counts, UINT slot, int dst);
+    void uavBarriers(UINT n, ID3D12Resource* const* resources);
+    void setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count);
+
     ComPtr<ID3D12RootSignature> gpuRoot_;
     ComPtr<ID3D12PipelineState> gpuPso_[8];
     StageLayout gpuVl_, gpuPl_;
@@ -773,6 +864,8 @@ private:
     ComPtr<ID3D12Resource> rowBuf_[kSlots];
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT rowFootprint_{};
     std::deque<PendingRow> rows_;
+    ComPtr<ID3D12Resource> statBuf_[kSlots];   // the cores' state, for their instruction counts
+    std::vector<uint64_t> lastStats_;          // as of the last popped frame (256 counts, core 0 first)
     ComPtr<ID3D12QueryHeap> tsHeap_;
     ComPtr<ID3D12Resource> tsBuf_;
     bool tsPending_ = false;
@@ -781,6 +874,403 @@ private:
 
     MemoryView12 view_;
 };
+
+// --compute (experiments/rv32_min): DXC-compiled compute pipelines and the root signature they
+// share. One root signature for all entries: [0] a UAV table u0..u5 (Ram, State, Dec, Marks,
+// Args and the state texture for export), [1] an SRV table t0..t1 (the ROM, the state texture
+// for import and a spare), [2] the pass/sync constants as a root-descriptor CBV (b0).
+bool Backend12::buildComputeCpu(const std::string& path, const BackendOptions& opt, std::string& err) {
+    fs::path cpuPath = fs::u8path(path), syncPath = cpuPath.parent_path() / "sync.hlsl";
+    if (!fs::exists(syncPath)) syncPath = fs::u8path("experiments/rv32_min/sync.hlsl");
+    std::string cpuSource, syncSource;
+    if (!readFileBinary(cpuPath.u8string(), cpuSource)) { err = "--compute: no shader " + path; return false; }
+    if (!readFileBinary(syncPath.u8string(), syncSource)) { err = "--compute: no " + syncPath.u8string(); return false; }
+    Dxc dxc;
+    dxc.init(opt.dxcDir);
+    // Two root signatures: the tick's u0-u4 (Ram, State, Dec, Marks, Args) and
+    // sync.hlsl's u0-u5 (Ram, State, the export's texture, Dec, Marks, Args): u2 is Dec in
+    // one shader and the texture in the other, so one table cannot serve both. The SRV
+    // table (the ROM, the committed texture and a spare) and the constants (b0) are shared.
+    auto makeRoot = [&](D3D12_DESCRIPTOR_RANGE& ur, const char* what) {
+        D3D12_DESCRIPTOR_RANGE sr{};
+        sr.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        sr.NumDescriptors = 2;
+        sr.BaseShaderRegister = 0;
+        sr.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_ROOT_PARAMETER rp[3]{};
+        rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rp[0].DescriptorTable.NumDescriptorRanges = 1;
+        rp[0].DescriptorTable.pDescriptorRanges = &ur;
+        rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rp[1].DescriptorTable.NumDescriptorRanges = 1;
+        rp[1].DescriptorTable.pDescriptorRanges = &sr;
+        rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        // the pass/sync constants (b0) as root constants: each dispatch's values are in the
+        // command list itself (an upload buffer would hold only the last pass's when the GPU runs them)
+        rp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rp[2].Constants.ShaderRegister = 0;
+        rp[2].Constants.RegisterSpace = 0;
+        rp[2].Constants.Num32BitValues = 12;
+        rp[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        D3D12_ROOT_SIGNATURE_DESC rsd{};
+        rsd.NumParameters = 3;
+        rsd.pParameters = rp;
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        check(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsErr), what);
+        ComPtr<ID3D12RootSignature> root;
+        check(dx_.dev->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&root)), what);
+        return root;
+    };
+    D3D12_DESCRIPTOR_RANGE urTick{};
+    urTick.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    urTick.NumDescriptors = 5;
+    urTick.BaseShaderRegister = 0;
+    urTick.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE urSync{};
+    urSync.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    urSync.NumDescriptors = 6;
+    urSync.BaseShaderRegister = 0;
+    urSync.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    csTickRoot_ = makeRoot(urTick, "compute tick root signature");
+    csRoot_ = makeRoot(urSync, "compute sync root signature");
+    D3D12_INDIRECT_ARGUMENT_DESC iarg{};
+    iarg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+    D3D12_COMMAND_SIGNATURE_DESC sd{};
+    sd.ByteStride = 12;
+    sd.NumArgumentDescs = 1;
+    sd.pArgumentDescs = &iarg;
+    // (a root signature only if the signature changes root arguments: Dispatch alone takes none)
+    check(dx_.dev->CreateCommandSignature(&sd, nullptr, IID_PPV_ARGS(&csIndirect_)), "compute indirect signature");
+
+    struct Entry { const std::string* source; std::string file; const char* entry; ComPtr<ID3D12PipelineState>* pso; };
+    Entry entries[] = {{&cpuSource, cpuPath.u8string(), "tick", &csCpu_}, {&syncSource, syncPath.u8string(), "sync_count", &csCount_},
+                       {&syncSource, syncPath.u8string(), "sync_state", &csState_}, {&syncSource, syncPath.u8string(), "export_rows", &csExport_},
+                       {&syncSource, syncPath.u8string(), "import_plan", &csPlan_}, {&syncSource, syncPath.u8string(), "import_rows", &csTake_},
+                       {&syncSource, syncPath.u8string(), "sync_cores", &csCores_}, {&syncSource, syncPath.u8string(), "export_pages", &csExportPages_}};
+    if (cpuSource.find("void merge(") != std::string::npos) {
+        for (const char* entry : {"merge", "merge_list"}) {
+            StageLayout dummy;
+            std::vector<uint8_t> code = dxcCompile(dxc, cpuSource, entry, "cs_" + opt.dxcSm, opt.dxcOpt, dummy);
+            D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+            pd.pRootSignature = csTickRoot_.Get();
+            pd.CS = {code.data(), code.size()};
+            auto t0 = std::chrono::steady_clock::now();
+            bool isMerge = strcmp(entry, "merge") == 0;
+            check(dx_.dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(isMerge ? csMerge_.GetAddressOf() : csMergeList_.GetAddressOf())),
+                  ("compute pipeline (" + std::string(entry) + ")").c_str());
+            fprintf(stderr, "[d3d12] compute '%s': DXC in %.1fs (%zu bytes)\n", entry,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), code.size());
+        }
+    }
+    for (auto& e : entries) {
+        StageLayout dummy;
+        auto t0 = std::chrono::steady_clock::now();
+        std::vector<uint8_t> code = dxcCompile(dxc, *e.source, e.entry, "cs_" + opt.dxcSm, opt.dxcOpt, dummy);
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+        pd.pRootSignature = !strcmp(e.entry, "tick") ? csTickRoot_.Get() : csRoot_.Get();
+        pd.CS = {code.data(), code.size()};
+        check(dx_.dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(e.pso->GetAddressOf())), ("compute pipeline (" + std::string(e.entry) + ")").c_str());
+        fprintf(stderr, "[d3d12] compute '%s': DXC in %.1fs (%zu bytes)\n", e.entry,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), code.size());
+        if (!strcmp(e.entry, "tick"))
+            fprintf(stderr, "[harness] the processor as a compute shader: %s (%zu bytes)\n", path.c_str(), code.size());
+    }
+    csStep_ = dx_.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    hd.NumDescriptors = 14;   // the tick's 5 UAV + sync.hlsl's 6 (u2 is Dec in one, the texture in the other) + 3 SRV
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    for (UINT s = 0; s < kSlots; ++s) check(dx_.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&csHeap_[s])), "compute heap");
+    return true;
+}
+
+// A DEFAULT-heap buffer filled from host memory (init only), left in `after`.
+ComPtr<ID3D12Resource> uploadComputeBuffer(Dx& dx, UINT64 size, D3D12_RESOURCE_FLAGS flags, const void* data,
+                                           D3D12_RESOURCE_STATES after = D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+    ComPtr<ID3D12Resource> dst, up;
+    auto bd = bufferDesc(size);
+    bd.Flags = flags;
+    auto hp = heapProps(D3D12_HEAP_TYPE_DEFAULT);
+    check(dx.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                          IID_PPV_ARGS(&dst)), "compute buffer");
+    auto ud = bufferDesc(size);
+    auto hu = heapProps(D3D12_HEAP_TYPE_UPLOAD);
+    check(dx.dev->CreateCommittedResource(&hu, D3D12_HEAP_FLAG_NONE, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                          IID_PPV_ARGS(&up)), "compute upload");
+    uint8_t* p = nullptr;
+    check(up->Map(0, nullptr, (void**)&p), "Map compute upload");
+    memcpy(p, data, (size_t)size);
+    up->Unmap(0, nullptr);
+    OneShot os(dx);
+    os.list->CopyBufferRegion(dst.Get(), 0, up.Get(), 0, size);
+    auto b = transitionBuf(dst.Get(), D3D12_RESOURCE_STATE_COPY_DEST, after);
+    os.list->ResourceBarrier(1, &b);
+    os.run();
+    return dst;
+}
+
+void Backend12::setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count) {
+    syncCb_[0] = mask, syncCb_[1] = mode, syncCb_[2] = from, syncCb_[3] = count;
+    syncCb_[4] = csMerge_ ? 24u : 32u;
+    cl_->SetComputeRoot32BitConstants(2, 8, syncCb_, 0);
+}
+
+void Backend12::uavBarriers(UINT n, ID3D12Resource* const* resources) {
+    D3D12_RESOURCE_BARRIER b[8];
+    for (UINT i = 0; i < n; ++i) {
+        b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        b[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        b[i].UAV.pResource = resources[i];
+    }
+    cl_->ResourceBarrier(n, b);
+}
+
+bool Backend12::computeStart(const std::string& imageDir, std::string& err) {
+    if (!csCpu_) { err = "no compute processor was built"; return false; }
+    std::string payload, rom;
+    if (!readFileBinary((fs::u8path(imageDir) / "linux_payload.bin").u8string(), payload) ||
+        !readFileBinary((fs::u8path(imageDir) / "rootfs.bin").u8string(), rom)) {
+        err = "no image in " + imageDir + " (linux_payload.bin, rootfs.bin)";
+        return false;
+    }
+    {
+        // three images of RAM (rv32_min_fast.hlsl): core 0's, the workers', as the last pass left them
+        std::vector<uint8_t> ram((size_t)kRamBytes * 3, 0);
+        for (int i = 0; i < 3; i++) memcpy(ram.data() + (size_t)kRamBytes * i, payload.data(), (std::min)(payload.size(), (size_t)kRamBytes));
+        cpuRam_ = uploadComputeBuffer(dx_, (UINT64)kRamBytes * 3, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, ram.data());
+    }
+    rom.resize((rom.size() + 15) & ~(size_t)15, 0);
+    // the hart as the kernel without an MMU starts: supervisor mode at 0x80400000, the device tree in
+    // x11, no reservation; every band of RAM still to go into the texture
+    std::vector<uint32_t> state((size_t)computeCores * kCpuStateBytes / 4, 0);
+    state[11] = 0x82200000u;
+    state[80] = 0x80400000u;
+    state[81] = 1;
+    state[83] = ~0u;
+    state[90] = ~0u;
+    const UINT stateBytes = computeCores * kCpuStateBytes;
+    cpuState_ = uploadComputeBuffer(dx_, stateBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, state.data());
+    cpuRom_ = uploadComputeBuffer(dx_, (UINT64)rom.size(), D3D12_RESOURCE_FLAG_NONE, rom.data(),
+                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    {
+        // decoded instructions, 8 bytes a word of RAM, none made yet; no page or band marked
+        std::vector<uint8_t> zeros((size_t)kRamBytes * 2, 0);
+        cpuDec_ = uploadComputeBuffer(dx_, (UINT64)kRamBytes * 2, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, zeros.data());
+        cpuMarks_ = uploadComputeBuffer(dx_, kMarkBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, zeros.data());
+        cpuArgs_ = uploadComputeBuffer(dx_, kArgsBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, zeros.data());
+    }
+    {
+        auto bd = bufferDesc(kCpuStateBytes);
+        auto hr = heapProps(D3D12_HEAP_TYPE_READBACK);
+        check(dx_.dev->CreateCommittedResource(&hr, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                               IID_PPV_ARGS(&cpuStateRead_)), "compute state readback");
+    }
+    // the views that never change: the buffers and the ROM, in every slot's heap
+    for (UINT s = 0; s < kSlots; ++s) {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = csHeap_[s]->GetCPUDescriptorHandleForHeapStart();
+        auto rawUav = [&](ID3D12Resource* buf, UINT64 bytes, UINT k) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC d{};
+            d.Format = DXGI_FORMAT_R32_TYPELESS;
+            d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            d.Buffer.FirstElement = 0;
+            d.Buffer.NumElements = (UINT)(bytes / 4);
+            d.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+            D3D12_CPU_DESCRIPTOR_HANDLE at = h;
+            at.ptr += (SIZE_T)k * csStep_;
+            dx_.dev->CreateUnorderedAccessView(buf, nullptr, &d, at);
+        };
+        rawUav(cpuRam_.Get(), (UINT64)kRamBytes * 3, 0);   // the tick's table
+        rawUav(cpuState_.Get(), stateBytes, 1);
+        rawUav(cpuDec_.Get(), (UINT64)kRamBytes * 2, 2);
+        rawUav(cpuMarks_.Get(), kMarkBytes, 3);
+        rawUav(cpuArgs_.Get(), kArgsBytes, 4);
+        rawUav(cpuRam_.Get(), (UINT64)kRamBytes * 3, 5);   // sync.hlsl's table (slot 7: the export's texture, per frame)
+        rawUav(cpuState_.Get(), stateBytes, 6);
+        rawUav(cpuDec_.Get(), (UINT64)kRamBytes * 2, 8);
+        rawUav(cpuMarks_.Get(), kMarkBytes, 9);
+        rawUav(cpuArgs_.Get(), kArgsBytes, 10);
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
+        d.Format = DXGI_FORMAT_R32_TYPELESS;
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Buffer.FirstElement = 0;
+        d.Buffer.NumElements = (UINT)(rom.size() / 4);
+        d.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        D3D12_CPU_DESCRIPTOR_HANDLE at = h;
+        at.ptr += (SIZE_T)11 * csStep_;
+        dx_.dev->CreateShaderResourceView(cpuRom_.Get(), &d, at);
+        at.ptr += (SIZE_T)2 * csStep_;   // the spare SRV: the ROM again, always valid
+        dx_.dev->CreateShaderResourceView(cpuRom_.Get(), &d, at);
+    }
+    fprintf(stderr, "[harness] --compute: %s (%zu bytes) in RAM, rootfs.bin (%zu bytes) as the ROM, %u cores\n", imageDir.c_str(),
+            payload.size(), rom.size(), computeCores);
+    computeMode = true;
+    cpuMode = true;
+    return true;
+}
+
+// The processor's passes of a frame (computePasses), each a thread group a core and then the
+// merge of what core 0 and the workers stored (rv32_min_fast.hlsl); then what was stored into
+// the state texture the commit reads, which is state_[cur] here (rvc_backend11's current).
+void Backend12::runCompute12(Material& mat, UINT slot, int cur) {
+    const UINT64 ramBytes = kRamBytes;
+    UINT64 mtime = (UINT64)mat.getFloat("_HostMtimeLo") | (UINT64)mat.getFloat("_HostMtimeHi") << 32;
+    // the export's texture: this frame's current state (sync.hlsl's Out is heap slot 7)
+    D3D12_CPU_DESCRIPTOR_HANDLE h = csHeap_[slot]->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE out = h;
+    out.ptr += (SIZE_T)7 * csStep_;
+    dx_.dev->CreateUnorderedAccessView(state_[cur].Get(), nullptr, nullptr, out);
+    ID3D12DescriptorHeap* heaps[] = {csHeap_[slot].Get()};
+    cl_->SetDescriptorHeaps(1, heaps);
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = csHeap_[slot]->GetGPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE tickUav = gpu, srvRom = gpu, syncUav = gpu;
+    syncUav.ptr += (UINT64)5 * csStep_;
+    srvRom.ptr += (UINT64)11 * csStep_;
+    cl_->SetComputeRootSignature(csTickRoot_.Get());
+    cl_->SetComputeRootDescriptorTable(0, tickUav);   // the tick's u0-u4
+    cl_->SetComputeRootDescriptorTable(1, srvRom);   // t0 is the ROM
+    ID3D12Resource* buffers[5] = {cpuRam_.Get(), cpuState_.Get(), cpuDec_.Get(), cpuMarks_.Get(), cpuArgs_.Get()};
+    // (what the last frame's import wrote: a barrier in this list, as D3D11 orders frames itself)
+    uavBarriers(5, buffers);
+    const uint32_t split = computeSplit;
+    const uint32_t ticks = (uint32_t)mat.getFloat("_Ticks", 8192), slice = split ? (ticks + split - 1) / split : 0;
+    for (uint32_t p = 0; p < computePasses; p++) {
+        // (every pass its own time, a tick of the clock apart: the kernel tells passes apart by it)
+        cpuSeed_ = cpuSeed_ * 1664525u + 1013904223u;
+        uint64_t t = mtime + p;
+        uint32_t cb[12] = {(uint32_t)t, (uint32_t)(t >> 32), (uint32_t)(int64_t)mat.getFloat("_RTC0"), (uint32_t)(int64_t)mat.getFloat("_RTC1"),
+                           ticks, ramBytes, cpuSeed_, 0,   // (0: workers are workers)
+                           p, computePasses, computeCores, slice};
+        cl_->SetComputeRootSignature(csTickRoot_.Get());
+        cl_->SetComputeRootDescriptorTable(0, tickUav);
+        cl_->SetComputeRootDescriptorTable(1, srvRom);
+        cl_->SetComputeRoot32BitConstants(2, 12, cb, 0);
+        cl_->SetPipelineState(csCpu_.Get());
+        if (p == 0 || !csMerge_ || p < split) cl_->Dispatch(computeCores, 1, 1);
+        else {
+            // a pass after the first only when core 0 ended the last early (merge_list says so)
+            auto toIa = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+            cl_->ResourceBarrier(1, &toIa);
+            cl_->ExecuteIndirect(csIndirect_.Get(), 1, cpuArgs_.Get(), 24, nullptr, 0);
+            auto toUav = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cl_->ResourceBarrier(1, &toUav);
+        }
+        // (the tick's stores, the workers' above all: merge_list/count must see them;
+        // D3D11 orders dispatches itself, D3D12 needs the barrier said out loud)
+        uavBarriers(5, buffers);
+        if (csMerge_) {
+            // the pages stored to, listed; then a thread group each, as many as listed
+            cl_->SetPipelineState(csMergeList_.Get());
+            cl_->Dispatch(1, 1, 1);
+            uavBarriers(5, buffers);
+            auto toIa = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+            cl_->ResourceBarrier(1, &toIa);
+            cl_->SetPipelineState(csMerge_.Get());
+            cl_->ExecuteIndirect(csIndirect_.Get(), 1, cpuArgs_.Get(), 0, nullptr, 0);
+            auto toUav = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cl_->ResourceBarrier(1, &toUav);
+            uavBarriers(5, buffers);
+        }
+    }
+    // Linux's own bands (which only the memory view shows) go into the texture at first and every
+    // 60th frame while it is open; the GPU's memory and the control words every frame, as --cpu
+    uint32_t mask = computeMask;
+    if (csMerge_ && computeFrames_++ > 0 && !(viewOpen() && computeFrames_ % 60 == 0)) mask &= 0xff000000u;
+    cl_->SetComputeRootSignature(csRoot_.Get());
+    cl_->SetComputeRootDescriptorTable(0, syncUav);   // sync.hlsl's u0-u5
+    cl_->SetComputeRootDescriptorTable(1, srvRom);
+    setSync12(mask, 0, 0, computeCores);
+    cl_->SetPipelineState(csCount_.Get());
+    cl_->Dispatch(1, 1, 1);
+    uavBarriers(5, buffers);
+    // (the export writes the texture the commit reads: as UAV now, the commit's SRV after)
+    auto toUav = transition(state_[cur].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cl_->ResourceBarrier(1, &toUav);
+    cl_->SetPipelineState(csState_.Get());
+    cl_->Dispatch(1, 16, 1);
+    if (csMerge_) {
+        // the GPU's pages stored to in this frame (merge_list listed them), a group each;
+        // Linux's bands whole when they go
+        cl_->SetPipelineState(csExportPages_.Get());
+        auto toIa = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        cl_->ResourceBarrier(1, &toIa);
+        cl_->ExecuteIndirect(csIndirect_.Get(), 1, cpuArgs_.Get(), 12, nullptr, 0);
+        auto toUavArgs = transitionBuf(cpuArgs_.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cl_->ResourceBarrier(1, &toUavArgs);
+    }
+    if (!csMerge_ || (mask & 0x00ffffffu) != 0) {
+        // (after export_pages when it ran: both write the texture, different words, but said out loud)
+        if (csMerge_) { ID3D12Resource* et = state_[cur].Get(); uavBarriers(1, &et); }
+        cl_->SetPipelineState(csExport_.Get());
+        cl_->Dispatch(8, kHeight - 64, 1);
+    }
+    ID3D12Resource* curTex = state_[cur].Get();
+    uavBarriers(1, &curTex);
+    auto toSrv = transition(state_[cur].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cl_->ResourceBarrier(1, &toSrv);
+}
+
+// What the devices wrote into RAM in this frame, back into the processor's (rvc_backend11).
+// The committed texture is state_[dst]; it is left for the readback's COPY_SOURCE transition.
+void Backend12::computeImport12(bool con, bool fetch, bool net, bool counts, UINT slot, int dst) {
+    D3D12_CPU_DESCRIPTOR_HANDLE h = csHeap_[slot]->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += (SIZE_T)12 * csStep_;
+    dx_.dev->CreateShaderResourceView(state_[dst].Get(), nullptr, h);
+    ID3D12DescriptorHeap* heaps[] = {csHeap_[slot].Get()};
+    cl_->SetDescriptorHeaps(1, heaps);
+    cl_->SetComputeRootSignature(csRoot_.Get());
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = csHeap_[slot]->GetGPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE sync = gpu;
+    sync.ptr += (UINT64)5 * csStep_;
+    cl_->SetComputeRootDescriptorTable(0, sync);   // sync.hlsl's u0-u5
+    D3D12_GPU_DESCRIPTOR_HANDLE stable = gpu;
+    stable.ptr += (UINT64)12 * csStep_;   // t0 is the committed texture now
+    cl_->SetComputeRootDescriptorTable(1, stable);
+    auto toSrv = transition(state_[dst].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    cl_->ResourceBarrier(1, &toSrv);
+    ID3D12Resource* buffers[5] = {cpuRam_.Get(), cpuState_.Get(), cpuDec_.Get(), cpuMarks_.Get(), cpuArgs_.Get()};
+    uavBarriers(5, buffers);
+    cl_->SetPipelineState(csPlan_.Get());
+    cl_->Dispatch(1, 1, 1);
+    uavBarriers(5, buffers);
+    cl_->SetPipelineState(csTake_.Get());
+    setSync12(0, 1, 0, 0);   // (first: its words are the control words before they come back)
+    cl_->Dispatch((kGpuTarget * kGpuTarget / 4 + 1 + 255) / 256, 1, 1);
+    uavBarriers(5, buffers);
+    auto texels = [&](uint32_t from, uint32_t count) {
+        setSync12(0, 0, from, count);
+        cl_->Dispatch((count + 255) / 256, 1, 1);
+    };
+    const uint32_t net0 = (kNetRow - 64) * 2048;
+    texels((kControlRow - 64) * 2048, kControlTexels);
+    if (con) texels(net0 + kConHost, 1);
+    if (net) texels(net0 + kNetRing, kNetSlot * kNetSlots);
+    if (fetch) texels(0x76c000, 0x4000);   // FETCH_DATA (src/gpu.h); its words are control words
+    if (counts) texels(0x6c1000, 256);    // COUNT_TOTAL: the counters' totals the control pass added up
+    uavBarriers(5, buffers);
+    // the cores as the control words have them (after those came back)
+    setSync12(0, 0, 0, computeCores);
+    cl_->SetPipelineState(csCores_.Get());
+    cl_->Dispatch(1, 1, 1);
+    uavBarriers(5, buffers);
+}
+
+bool Backend12::computeState(std::vector<uint32_t>& out) {
+    if (!cpuState_) return false;
+    OneShot os(dx_);
+    auto b0 = transitionBuf(cpuState_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    os.list->ResourceBarrier(1, &b0);
+    os.list->CopyBufferRegion(cpuStateRead_.Get(), 0, cpuState_.Get(), 0, kCpuStateBytes);
+    auto b1 = transitionBuf(cpuState_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    os.list->ResourceBarrier(1, &b1);
+    os.run();
+    uint8_t* p = nullptr;
+    if (FAILED(cpuStateRead_->Map(0, nullptr, (void**)&p))) return false;
+    out.assign((const uint32_t*)p, (const uint32_t*)p + kCpuStateBytes / 4);
+    cpuStateRead_->Unmap(0, nullptr);
+    return true;
+}
 
 }  // namespace
 

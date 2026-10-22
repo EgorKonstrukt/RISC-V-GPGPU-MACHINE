@@ -34,7 +34,8 @@ add_library(imgui_dock STATIC
   ${imgui_dock_src_SOURCE_DIR}/imgui_tables.cpp
   ${imgui_dock_src_SOURCE_DIR}/imgui_widgets.cpp
   ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-  ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
+  ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+  ${imgui_dock_src_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
 target_include_directories(imgui_dock PUBLIC ${imgui_dock_src_SOURCE_DIR} ${imgui_dock_src_SOURCE_DIR}/backends)
 target_compile_definitions(imgui_dock PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 

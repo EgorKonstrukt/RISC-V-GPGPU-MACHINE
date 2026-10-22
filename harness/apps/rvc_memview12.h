@@ -7,6 +7,10 @@
 
 #include <d3dcompiler.h>
 
+#include "imgui.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx12.h"
+
 namespace {
 
 class MemoryView12 {
@@ -60,7 +64,7 @@ public:
 
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        hd.NumDescriptors = 4;  // two back buffers, two heat textures
+        hd.NumDescriptors = 5;  // two back buffers, two heat textures, the rendered view
         if (SUCCEEDED(hr)) hr = dx.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtvHeap_));
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.NumDescriptors = 5;
@@ -109,7 +113,43 @@ public:
             return false;
         }
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);  // never takes the keyboard from the console
-        return true;
+        CreateDirectoryA("logs", nullptr);
+        memoryViewLoadCfg();
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = "logs/imgui_harness.ini";
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+        ImGui::StyleColorsDark();
+        memoryViewApplyScale(memoryViewUiScale());
+        // The image heap: the font at 0 (imgui's own), then the view, the heat images, the GPU target.
+        D3D12_DESCRIPTOR_HEAP_DESC ihd{};
+        ihd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        ihd.NumDescriptors = 8;
+        ihd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (SUCCEEDED(hr)) hr = dx.dev->CreateDescriptorHeap(&ihd, IID_PPV_ARGS(&imgHeap_));
+        imgStep_ = dx.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        if (SUCCEEDED(hr)) {
+            ImGui_ImplDX12_InitInfo info{};
+            info.Device = dx.dev.Get();
+            info.CommandQueue = dx.queue.Get();
+            info.NumFramesInFlight = 2;
+            info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            info.SrvDescriptorHeap = imgHeap_.Get();
+            info.UserData = imgHeap_.Get();
+            info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu,
+                                           D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu) {
+                // (one descriptor, for the font, at slot 0; never freed)
+                auto* heap = (ID3D12DescriptorHeap*)info->UserData;
+                *out_cpu = heap->GetCPUDescriptorHandleForHeapStart();
+                *out_gpu = heap->GetGPUDescriptorHandleForHeapStart();
+            };
+            info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE) {};
+            imgui_ = ImGui_ImplWin32_Init(hwnd_) && ImGui_ImplDX12_Init(&info);
+            memoryViewSetImgui(imgui_);
+        }
+        if (!imgui_) err = "memory view imgui: " + hrToString(hr);
+        return true;   // (without imgui the plain view still works)
     }
 
     // Draws one frame from `cur` (in PIXEL_SHADER_RESOURCE state, GPU idle) and presents it.
@@ -197,12 +237,62 @@ public:
         list_->SetGraphicsRootSignature(root_.Get());
         list_->SetGraphicsRootConstantBufferView(0, cb_->GetGPUVirtualAddress());
         list_->SetGraphicsRootDescriptorTable(1, srvHeap_->GetGPUDescriptorHandleForHeapStart());
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {rtv(back), rtv(2 + dst)};
-        list_->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
-        list_->DrawInstanced(3, 1, 0, 0);
-        if (gpu) move(gpu, psr, rt);
-        move(heat_[dst].Get(), rt, psr);
-        move(back_[back].Get(), rt, D3D12_RESOURCE_STATE_PRESENT);
+        if (imgui_) {
+            // The view shader draws the state into viewTex_ for the panels; the heat image beside it.
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {rtv(4), rtv(2 + dst)};
+            list_->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
+            list_->DrawInstanced(3, 1, 0, 0);
+            move(heat_[dst].Get(), rt, psr);
+            move(viewTex_.Get(), rt, psr);
+            // The panels' textures as ImTextureID (GPU handles in the image heap).
+            auto imgCpu = [&](UINT slot) {
+                D3D12_CPU_DESCRIPTOR_HANDLE h = imgHeap_->GetCPUDescriptorHandleForHeapStart();
+                h.ptr += (SIZE_T)slot * imgStep_;
+                return h;
+            };
+            auto imgGpu = [&](UINT slot) {
+                D3D12_GPU_DESCRIPTOR_HANDLE h = imgHeap_->GetGPUDescriptorHandleForHeapStart();
+                h.ptr += (UINT64)slot * imgStep_;
+                return h;
+            };
+            dx_->dev->CreateShaderResourceView(viewTex_.Get(), nullptr, imgCpu(1));
+            dx_->dev->CreateShaderResourceView(heat_[dst].Get(), nullptr, imgCpu(2));
+            if (gpu) dx_->dev->CreateShaderResourceView(gpu, nullptr, imgCpu(4));
+            D3D12_GPU_DESCRIPTOR_HANDLE viewH = imgGpu(1), heatH = imgGpu(2), gpuH = imgGpu(4);
+            ImGui_ImplDX12_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+            memoryViewPanels((void*)viewH.ptr, (void*)heatH.ptr, gpu ? (void*)gpuH.ptr : nullptr,
+                             width_, height_, texHeight_, stateRows_);
+            ImGui::Render();
+            ImDrawData* draw = ImGui::GetDrawData();
+            move(back_[back].Get(), D3D12_RESOURCE_STATE_PRESENT, rt);
+            if (!draw || draw->TotalVtxCount == 0) {
+                // (nothing to show: the plain view instead)
+                move(viewTex_.Get(), psr, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                move(back_[back].Get(), rt, D3D12_RESOURCE_STATE_COPY_DEST);
+                list_->CopyResource(back_[back].Get(), viewTex_.Get());
+                move(back_[back].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+                move(viewTex_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, psr);
+            } else {
+                D3D12_CPU_DESCRIPTOR_HANDLE backRtv = rtv(back);
+                list_->OMSetRenderTargets(1, &backRtv, FALSE, nullptr);
+                const float clearCol[4] = {0.03f, 0.03f, 0.04f, 1.0f};
+                list_->ClearRenderTargetView(backRtv, clearCol, 0, nullptr);
+                ID3D12DescriptorHeap* iheap[] = {imgHeap_.Get()};
+                list_->SetDescriptorHeaps(1, iheap);
+                ImGui_ImplDX12_RenderDrawData(draw, list_.Get());
+                move(back_[back].Get(), rt, D3D12_RESOURCE_STATE_PRESENT);
+            }
+            if (gpu) move(gpu, psr, rt);
+        } else {
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {rtv(back), rtv(2 + dst)};
+            list_->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
+            list_->DrawInstanced(3, 1, 0, 0);
+            if (gpu) move(gpu, psr, rt);
+            move(heat_[dst].Get(), rt, psr);
+            move(back_[back].Get(), rt, D3D12_RESOURCE_STATE_PRESENT);
+        }
 
         // Remember this state: the next frame glows wherever it differs.
         move(cur, psr, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -217,12 +307,17 @@ public:
         dx_->flush();
         heatCur_ = dst;
         refValid_ = true;
+        std::string pending = memoryViewTakePendingCapture();
+        if (!pending.empty()) capture(pending);
     }
 
-    // Saves the back buffer as a BMP; call after render(..., false).
+    // Saves the view as a BMP; call after render(..., false). With ImGui panels it is
+    // the raw view (as D3D11's), without them the back buffer.
     bool capture(const std::string& path) {
         if (!hwnd_) return false;
-        UINT back = swap_->GetCurrentBackBufferIndex();
+        ID3D12Resource* srcTex = (imgui_ && viewTex_) ? viewTex_.Get() : back_[swap_->GetCurrentBackBufferIndex()].Get();
+        D3D12_RESOURCE_STATES srcState =
+            srcTex == viewTex_.Get() ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_PRESENT;
         auto td = texDesc(width_, height_, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_NONE);
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
         UINT64 total = 0;
@@ -234,15 +329,15 @@ public:
                                                      IID_PPV_ARGS(&rb))))
             return false;
         OneShot os(*dx_);
-        auto b0 = transition(back_[back].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        auto b0 = transition(srcTex, srcState, D3D12_RESOURCE_STATE_COPY_SOURCE);
         os.list->ResourceBarrier(1, &b0);
         D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
         dst.pResource = rb.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dst.PlacedFootprint = fp;
-        src.pResource = back_[back].Get();
+        src.pResource = srcTex;
         os.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        auto b1 = transition(back_[back].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+        auto b1 = transition(srcTex, D3D12_RESOURCE_STATE_COPY_SOURCE, srcState);
         os.list->ResourceBarrier(1, &b1);
         os.run();
         uint8_t* p = nullptr;
@@ -253,6 +348,7 @@ public:
     }
 
     void setText(const MemoryViewText& columns) {
+        memoryViewSetColumns(columns);
         std::vector<uint8_t> bits;
         if (!hwnd_ || !memoryViewText(columns, bits, textW_, textH_)) return;
         for (UINT y = 0; y < kMemoryViewTextH; ++y)
@@ -266,6 +362,13 @@ public:
     bool open() const { return hwnd_ != nullptr; }
     void close() {
         if (!hwnd_) return;
+        if (imgui_) {
+            ImGui_ImplDX12_Shutdown();
+            ImGui_ImplWin32_Shutdown();
+            ImGui::DestroyContext();
+            imgui_ = false;
+            memoryViewSetImgui(false);
+        }
         if (dx_) dx_->flush();
         for (auto& b : back_) b.Reset();
         swap_.Reset();
@@ -288,6 +391,7 @@ private:
         GetClientRect(hwnd_, &rc);
         width_ = (UINT)(rc.right > 1 ? rc.right : 1);
         height_ = (UINT)(rc.bottom > 1 ? rc.bottom : 1);
+        memoryViewSetViewSize(width_, height_);
         HRESULT hr = swap_->ResizeBuffers(0, width_, height_, DXGI_FORMAT_UNKNOWN, 0);
         for (UINT i = 0; i < 2 && SUCCEEDED(hr); ++i) {
             hr = swap_->GetBuffer(i, IID_PPV_ARGS(&back_[i]));
@@ -301,6 +405,14 @@ private:
                                                    nullptr, IID_PPV_ARGS(&heat_[i]));
             if (SUCCEEDED(hr)) dx_->dev->CreateRenderTargetView(heat_[i].Get(), nullptr, rtv(2 + i));
         }
+        // The rendered view, for the ImGui panels to show (as D3D11's viewTex_).
+        if (SUCCEEDED(hr)) {
+            viewTex_.Reset();
+            auto vd = texDesc(width_, height_, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+            hr = dx_->dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &vd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                   nullptr, IID_PPV_ARGS(&viewTex_));
+            if (SUCCEEDED(hr)) dx_->dev->CreateRenderTargetView(viewTex_.Get(), nullptr, rtv(4));
+        }
         heatNeedsClear_ = true;
         return SUCCEEDED(hr);
     }
@@ -308,20 +420,20 @@ private:
     Dx* dx_ = nullptr;
     HWND hwnd_ = nullptr;
     ComPtr<IDXGISwapChain3> swap_;
-    ComPtr<ID3D12Resource> back_[2], heat_[2], ref_, text_, textUpload_, cb_;
+    ComPtr<ID3D12Resource> back_[2], heat_[2], ref_, text_, textUpload_, cb_, viewTex_;
     ComPtr<ID3D12RootSignature> root_;
     ComPtr<ID3D12PipelineState> pso_;
-    ComPtr<ID3D12DescriptorHeap> rtvHeap_, srvHeap_;
+    ComPtr<ID3D12DescriptorHeap> rtvHeap_, srvHeap_, imgHeap_;
     ComPtr<ID3D12CommandAllocator> alloc_;
     ComPtr<ID3D12GraphicsCommandList> list_;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT textFp_{};
     uint8_t* cbMapped_ = nullptr;
     uint8_t* textMapped_ = nullptr;
-    UINT rtvStep_ = 0, srvStep_ = 0;
+    UINT rtvStep_ = 0, srvStep_ = 0, imgStep_ = 0;
     UINT width_ = 0, height_ = 0, textW_ = 0, textH_ = 0;
-    UINT texWidth_ = 0, texHeight_ = 0, stateRows_ = 0, frame_ = 0;
+    UINT texWidth_ = 0, texHeight_ = 0, stateRows_ = 0, frame_ = 0, imgFrame_ = 0;
     int heatCur_ = 0;
-    bool heatNeedsClear_ = true, refValid_ = false, textDirty_ = false;
+    bool heatNeedsClear_ = true, refValid_ = false, textDirty_ = false, imgui_ = false;
 };
 
 }  // namespace
