@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <vector>
 
@@ -59,6 +60,22 @@ uint peak(uint v) {
 // so that any texel holding data shows, whichever of its bytes are in use.
 float3 bytes(uint4 t) {
     return float3(peak(t.r), peak(t.g), peak(t.b | t.a)) / 255.0 * 0.88 + 0.12;
+}
+
+// Whose a megabyte of RAM is, as a colour (Unity's MemView.shader owner(), zap.h's zap_zone):
+// 0 the kernel, 1 Linux's programs, 2 the windows' buffers, 3 the display and the GPU's words,
+// 4 a 3D program's GPU memory, 5 the sound card's; above 0x88000000 Linux's programs again.
+// Megabyte here is (address - 0x80000000) / 1 MB, 0..288.
+float3 owner(float megabyte) {
+    if (megabyte < 4.0) return float3(0.10, 0.11, 0.14);
+    if (megabyte < 9.0) return float3(0.35, 0.60, 1.00);
+    if (megabyte < 96.0) return float3(0.16, 0.26, 0.45);
+    if (megabyte < 112.0) return float3(0.30, 0.80, 0.40);
+    if (megabyte < 119.0) return float3(0.95, 0.80, 0.25);
+    if (megabyte < 123.0) return float3(0.75, 0.45, 0.95);
+    if (megabyte < 126.0) return float3(1.00, 0.55, 0.20);
+    if (megabyte < 128.0) return float3(0.45, 0.30, 0.30);
+    return float3(0.16, 0.26, 0.45);   // Linux's again, from 0x88000000
 }
 
 uint word(uint4 t, uint i) {
@@ -197,36 +214,57 @@ Out ps(float4 pos : SV_Position) {
     float2 texel = float2(ColOff + frac(sx) * ColSpan, StateRows + MemOff + (strip + pos.y / memHeight) * rowsPerStrip);
     float2 footprint = float2(ColSpan * Strips / memWidth, rowsPerStrip / memHeight);
 
-    // A window pixel covers several texels when minified: a 4x4 grid of taps over its
-    // footprint, nudged per frame so larger footprints are covered over time. Magnified
+    // A window pixel covers several texels when minified: a stable 4x4 grid of taps over its
+    // footprint (no per-frame nudge, so the picture does not shimmer). Magnified
     // (a pixel is a texel or less) it is one point tap: no smoothing. The heat's spread
     // into neighbours is the glow and goes with it (Glow 0: pure point sampling).
+    // Colour is the max over the taps (one live texel still shows) tinted by whose memory
+    // it is (owner()): empty stays as the zone's dark colour, content is bright on top of it.
     bool changed = false;
-    uint4 first = 0;
+    uint3 maxPeak = 0;
+    int live = 0;
     float heat;
     if (footprint.x <= 1.0 && footprint.y <= 1.0 && Glow <= 0.0) {
         int2 t = clamp(int2(texel + 0.5), int2(0, StateRows), int2(TexWidth - 1, StateRows + RamRows - 1));
         uint4 a = Cur.Load(int3(t, 0)), b = Prev.Load(int3(t, 0));
         if (any(a != b)) changed = true;
-        first = a;
+        if (any(a != 0)) { live = 1; maxPeak = uint3(peak(a.r), peak(a.g), peak(a.b | a.a)); }
         heat = max(changed ? 1.0 : 0.0, prevHeat);
     } else {
-        uint h = hash(px.x + px.y * 4099u + Frame * 7919u);
-        float2 nudge = float2(h & 0xffff, h >> 16) / 65536.0 * 0.25;
         for (uint k = 0; k < 16; k++) {
-            float2 cell = (float2(k & 3, k >> 2) + nudge * 4.0) / 4.0;
+            float2 cell = (float2(k & 3, k >> 2) + 0.5) / 4.0;
             int2 t = clamp(int2(texel + (cell - 0.5) * footprint), int2(0, StateRows), int2(TexWidth - 1, StateRows + RamRows - 1));
             uint4 a = Cur.Load(int3(t, 0)), b = Prev.Load(int3(t, 0));
             if (any(a != b)) changed = true;
-            if (k == 5) first = a;
+            if (any(a != 0)) {
+                live++;
+                uint3 p = uint3(peak(a.r), peak(a.g), peak(a.b | a.a));
+                maxPeak = max(maxPeak, p);
+            }
         }
         heat = max(changed ? 1.0 : 0.0, prevHeat);
         if (Glow > 0.0) heat = max(heat, around * 0.5);
         else heat = max(changed ? 1.0 : 0.0, Heat.Load(int3(px, 0)) * 0.955);
     }
-    float3 base = any(first != 0) ? bytes(first) : float3(0.02, 0.025, 0.04);
+    float absRow = MemOff + (strip + pos.y / memHeight) * rowsPerStrip;
+    float megabyte = absRow / 32.0;
+    float3 own = owner(megabyte);
+    float3 emptyCol = own * 0.45 + float3(0.020, 0.025, 0.040);
+    float3 cont = float3(maxPeak) / 255.0 * 0.88 + 0.12;
+    float3 base = live == 0 ? emptyCol : own * 0.22 + cont * 0.85;
+    // megabyte grid: a faint line where a megabyte begins (every 32 rows)
+    {
+        float mb = absRow / 32.0;
+        float f = abs(frac(mb + 0.5) - 0.5);
+        float w = fwidth(mb) + 1e-4;
+        if (f < w * 1.5) base = max(base, float3(0.30, 0.32, 0.38));
+    }
+    // each strip's left edge says whose that memory is
+    if (frac(sx) < 0.022) base = own;
+    // the heat glow is additive so the content stays readable under it (was a lerp that hid it)
     float3 glow = lerp(float3(1.0, 0.45, 0.05), float3(1.0, 0.95, 0.8), saturate(heat * heat));
-    o.color = float4(lerp(base, glow, saturate(heat * Glow)), 1);
+    float g = saturate(heat * Glow * 0.55);
+    o.color = float4(saturate(base * (1.0 - g * 0.35) + glow * g), 1);
     o.heat = heat;
     return o;
 }
@@ -258,7 +296,9 @@ bool g_soundOff = false;
 // Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
 // Addresses are guest-physical; the backend converts to RAM offsets.
 bool g_radEnable = false;
-int g_radFlips = 10;   // bit flips a frame, spread over the two ranges
+int g_radFlips = 10;   // the requested rate: flips per real second (per frame when g_radPerSecond is off)
+bool g_radPerSecond = true;   // rate is paced by the wall clock, not by frames
+uint32_t g_radZones = 0x1ffu;   // memory zones to flip in, a bit per kMemZones (all nine)
 uint32_t g_radR0S = 0x80400000u, g_radR0E = 0x86000000u;   // RAM low
 uint32_t g_radR1S = 0x88000000u, g_radR1E = 0x92000000u;   // RAM high
 bool g_radProtect = true;   // skip the boot image (the kernel)
@@ -268,12 +308,29 @@ bool g_radArmed = false;    // the cursor paints while held
 uint32_t g_radImageBase = 0x80000000u, g_radImageSize = 0;   // the boot image, set by the backend
 uint64_t g_radFlipsDone = 0;
 uint32_t g_radLastPaint = ~0u;
+char g_radPaintAt[16] = "";   // paint once at this hex address (empty: none pending)
+// Wall-clock pacing state (per-second mode): fractional flips carried between frames,
+// session elapsed seconds while enabled, and the measured dispatch rate.
+static double g_radAcc = 0;
+static double g_radElapsed = 0;
+static double g_radMeasured = 0;
+static std::chrono::steady_clock::time_point g_radLastT{};
+static bool g_radClockInit = false;
+static std::chrono::steady_clock::time_point g_radLastPaintT{};
+static bool g_radLastPaintWhen = false;
+static void radResetClock() {
+    g_radAcc = 0;
+    g_radClockInit = false;
+}
 char g_line[1024]{};
 float g_uiScale = 1.0f;
 float g_scaleApplied = 1.0f;
 int g_memZoom = 1;
 float g_memOff = 0.0f;
-float g_memGlow = 1.2f;   // heat glow intensity in the memory view (0 off)
+float g_memGlow = 0.6f;   // heat glow intensity in the memory view (0 off)
+int g_memStrips = 2;      // how many vertical strips RAM is cut into (2/3/4/8 tiles)
+char g_memGoTo[16] = "";
+bool g_memGlowOn = true;  // unchecked: forces Glow 0 regardless of the slider
 // The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
 int g_loupeCX = 1024, g_loupeCY = 64 + 4608, g_loupeN = 64;
 uint32_t g_loupeAddr = ~0u;
@@ -296,7 +353,9 @@ static void uiLoadCfg() {
         } else if (sscanf(line, "mem_off=%f", &v) == 1) {
             if (v >= 0) g_memOff = v;
         } else if (sscanf(line, "mem_glow=%f", &v) == 1) {
-            if (v >= 0 && v <= 2.0f) g_memGlow = v;
+            if (v >= 0 && v <= 2.0f) { g_memGlow = v; g_memGlowOn = v > 0.001f; }
+        } else if (sscanf(line, "mem_strips=%d", &z) == 1) {
+            if (z == 2 || z == 3 || z == 4 || z == 8) g_memStrips = z;
         } else if (sscanf(line, "cores=%d", &z) == 1) {
             if (z >= 1 && z <= 256) g_cores = z;
         }
@@ -307,8 +366,40 @@ static void uiLoadCfg() {
 static void uiSaveCfg() {
     FILE* f = fopen("logs/imgui_harness.cfg", "w");
     if (!f) return;
-    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\nmem_glow=%.2f\ncores=%d\n", (double)g_uiScale, g_memZoom, (double)g_memOff, (double)g_memGlow, g_cores);
+    fprintf(f, "ui_scale=%.3f\nmem_zoom=%d\nmem_off=%.0f\nmem_glow=%.2f\nmem_strips=%d\ncores=%d\n", (double)g_uiScale, g_memZoom, (double)g_memOff, (double)(g_memGlowOn ? g_memGlow : 0.0f), g_memStrips, g_cores);
     fclose(f);
+}
+
+// Whose a row of RAM is, on the CPU side (mirrors the shader's owner() / zap.h's zap_zone).
+// A row is 32 KB; megabyte = row / 32. Returns zone 0..6.
+struct MemZone { const char* name; int mb0, mb1; float r, g, b; };
+static const MemZone kMemZones[] = {
+    {"kernel", 0, 4, 0.10f, 0.11f, 0.14f},
+    {"kernel+", 4, 9, 0.35f, 0.60f, 1.00f},
+    {"programs", 9, 96, 0.16f, 0.26f, 0.45f},
+    {"winbuf", 96, 112, 0.30f, 0.80f, 0.40f},
+    {"display/gpu", 112, 119, 0.95f, 0.80f, 0.25f},
+    {"3d", 119, 123, 0.75f, 0.45f, 0.95f},
+    {"sound", 123, 126, 1.00f, 0.55f, 0.20f},
+    {"devices", 126, 128, 0.45f, 0.30f, 0.30f},
+    {"high mem", 128, 288, 0.16f, 0.26f, 0.45f},
+};
+static int memZoneForMb(float mb) {
+    for (int i = 0; i < (int)(sizeof kMemZones / sizeof kMemZones[0]); ++i)
+        if (mb < (float)kMemZones[i].mb1) return i;
+    return (int)(sizeof kMemZones / sizeof kMemZones[0]) - 1;
+}
+static int memZoneForRow(float row) { return memZoneForMb(row / 32.0f); }
+// A RAM row to a guest-physical address (row 0 is 0x80000000, 32 KB a row).
+static uint32_t memAddrForRow(float row) { return 0x80000000u + (uint32_t)(row * 32768.0f); }
+static float memRowForAddr(uint32_t addr) { return (addr - 0x80000000u) / 32768.0f; }
+static float memClampOff(float off, float span, float total) {
+    if (span < 1) span = 1;
+    float m = total - span;
+    if (m < 0) m = 0;
+    if (off > m) off = m;
+    if (off < 0) off = 0;
+    return off;
 }
 
 static void uiApplyScale(float s) {
@@ -441,7 +532,19 @@ void memoryViewSetViewSize(UINT w, UINT h) { g_viewW = w; g_viewH = h; }
 // The machine's cores, as the Settings panel wants them (needs a restart).
 int memoryViewCoreCount() { return g_cores; }
 // The memory view's heat glow intensity (0 off), as the Settings panel wants it.
-float memoryViewGlow() { return g_memGlow; }
+float memoryViewGlow() { return g_memGlowOn ? g_memGlow : 0.0f; }
+// How many vertical strips RAM is cut into in the memory image (2/3/4/8 tiles).
+int memoryViewStrips() { return (g_memStrips == 3 || g_memStrips == 4 || g_memStrips == 8) ? g_memStrips : 2; }
+// The zoomed span in RAM rows for a total (clamped offset + span for the current zoom).
+void memoryViewMemRange(float totalRows, float* off, float* span) {
+    if (g_memZoom < 1) g_memZoom = 1;
+    if (g_memZoom > 64) g_memZoom = 64;
+    float s = totalRows / (float)g_memZoom;
+    if (s < 1) s = 1;
+    g_memOff = memClampOff(g_memOff, s, totalRows);
+    if (off) *off = g_memOff;
+    if (span) *span = s;
+}
 // The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
 void memoryViewLoupe(int* cx, int* cy, int* n) {
     if (cx) *cx = g_loupeCX;
@@ -450,8 +553,10 @@ void memoryViewLoupe(int* cx, int* cy, int* n) {
 }
 // Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
 bool memoryViewRadiation(MemoryViewRadiation& out) {
-    // scripted runs (no one to click the panel): RVC_RAD_FLIPS flips a frame (enables),
-    // RVC_RAD_PAINT a guest-physical address to paint every frame, RVC_RAD_PAINTVAL its byte
+    // scripted runs (no one to click the panel): RVC_RAD_FLIPS flips a second (enables),
+    // RVC_RAD_MODE sec|frame paces them by the wall clock or deterministically per frame,
+    // RVC_RAD_ZONES a hex bitmask over the memory zones, RVC_RAD_PAINT a guest-physical
+    // address to paint every frame, RVC_RAD_PAINTVAL its byte
     static bool envApplied = false;
     if (!envApplied) {
         envApplied = true;
@@ -461,6 +566,14 @@ bool memoryViewRadiation(MemoryViewRadiation& out) {
             if (f > 100000) f = 100000;
             if (f > 0) { g_radEnable = true; g_radFlips = f; }
         }
+        if (const char* e = getenv("RVC_RAD_MODE")) {
+            if (e[0] == 'f' || e[0] == 'F') g_radPerSecond = false;
+            else if (e[0] == 's' || e[0] == 'S') g_radPerSecond = true;
+        }
+        if (const char* e = getenv("RVC_RAD_ZONES")) {
+            unsigned long z = strtoul(e, nullptr, 16);
+            if (z <= 0x1fful && z != 0) g_radZones = (uint32_t)z;
+        }
         if (const char* e = getenv("RVC_RAD_PAINT")) {
             unsigned long a = strtoul(e, nullptr, 16);
             if (a >= 0x80000000ul && a <= 0xfffffffful) { g_radArmed = true; g_radPaint = (uint32_t)a; }
@@ -468,11 +581,52 @@ bool memoryViewRadiation(MemoryViewRadiation& out) {
         if (const char* e = getenv("RVC_RAD_PAINTVAL")) g_radPaintVal = (uint32_t)strtoul(e, nullptr, 16) & 0xffu;
         if (const char* e = getenv("RVC_RAD_PROTECT")) g_radProtect = atoi(e) != 0;
         if (getenv("RVC_RAD_FLIPS") || getenv("RVC_RAD_PAINT"))
-            fprintf(stderr, "[harness] radiation override: flips=%d protect=%d paint=%08X\n",
-                    g_radEnable ? g_radFlips : 0, g_radProtect ? 1 : 0, g_radArmed ? g_radPaint : ~0u);
+            fprintf(stderr, "[harness] radiation override: %d/sec%s protect=%d paint=%08X zones=0x%03X\n",
+                    g_radEnable ? g_radFlips : 0, g_radPerSecond ? "" : " (per frame)",
+                    g_radProtect ? 1 : 0, g_radArmed ? g_radPaint : ~0u, g_radZones);
+    }
+    // Wall-clock pacing: the rate is flips per real second however fast frames go.
+    // Fractional flips ride along; a pause longer than half a second does not burst.
+    int flips = 0;
+    double dt = 0;
+    auto now = std::chrono::steady_clock::now();
+    if (g_radClockInit) {
+        dt = std::chrono::duration<double>(now - g_radLastT).count();
+        if (dt < 0) dt = 0;
+        if (dt > 0.5) dt = 0.5;
+    }
+    g_radLastT = now;
+    g_radClockInit = true;
+    if (g_radEnable && g_radFlips > 0) {
+        if (g_radPerSecond) {
+            g_radElapsed += dt;
+            g_radAcc += (double)g_radFlips * dt;
+            if (g_radAcc < 0) g_radAcc = 0;
+            if (g_radAcc > 20000) g_radAcc = 20000;   // the dispatch caps below; the rest is dropped
+            flips = (int)g_radAcc;
+            g_radAcc -= flips;
+            const int kCap = 20000;   // one 1x1x1 GPU thread loops per flip: bursts would stall it
+            if (flips > kCap) { flips = kCap; g_radAcc = 0; }
+            if (dt > 1e-6) {   // measured dispatch rate, exponentially averaged
+                double inst = (double)flips / dt;
+                g_radMeasured += (inst - g_radMeasured) * (dt < 0.25 ? 0.08 : 0.3);
+            }
+        } else {
+            flips = g_radFlips;
+            if (flips < 0) flips = 0;
+            if (flips > 100000) flips = 100000;
+            g_radElapsed += dt;
+            if (dt > 1e-6) {
+                double inst = (double)flips / dt;
+                g_radMeasured += (inst - g_radMeasured) * (dt < 0.25 ? 0.08 : 0.3);
+            }
+        }
+    } else {
+        radResetClock();   // off: no debt accrues, so enabling does not burst
+        g_radMeasured += (0 - g_radMeasured) * 0.1;
     }
     out.enable = g_radEnable;
-    out.flips = g_radEnable ? g_radFlips : 0;
+    out.flips = flips;
     out.r0s = g_radR0S; out.r0e = g_radR0E;
     out.r1s = g_radR1S; out.r1e = g_radR1E;
     out.protectImage = g_radProtect;
@@ -482,10 +636,22 @@ bool memoryViewRadiation(MemoryViewRadiation& out) {
     out.imageBase = g_radImageBase; out.imageSize = g_radImageSize;
     out.flipsDone = g_radFlipsDone;
     out.lastPaint = g_radLastPaint;
+    out.perSecond = g_radPerSecond;
+    out.rate = g_radFlips;
+    out.zones = g_radZones;
+    out.measuredPerSec = g_radMeasured;
+    out.elapsedSec = g_radElapsed;
     // (paint works with radiation off: the cursor is its own switch)
     return out.flips > 0 || out.paint != ~0u;
 }
 void memoryViewRadiationDone(uint64_t flips) { g_radFlipsDone += flips; }
+void memoryViewRadiationReset() {
+    g_radFlipsDone = 0;
+    g_radElapsed = 0;
+    g_radMeasured = 0;
+    g_radAcc = 0;
+    g_radClockInit = false;
+}
 void memoryViewRadiationImage(uint32_t base, uint32_t size) { g_radImageBase = base; g_radImageSize = size; }
 // The cores' decoded state, for the CPU State panel (pushed by the DX12 compute backend).
 static std::vector<MemoryViewCore> g_cpuCores;
@@ -512,8 +678,96 @@ static const char* cpuModeName(uint32_t m) {
     }
 }
 static char cpuPrivName(uint32_t p) { return p == 0 ? 'U' : p == 1 ? 'S' : p == 3 ? 'M' : '?'; }
+static const char* cpuPrivLong(uint32_t p) {
+    switch (p) {
+    case 0: return "user";
+    case 1: return "supervisor";
+    case 3: return "machine";
+    default: return "?";
+    }
+}
+static ImVec4 cpuModeColor(uint32_t m) {
+    switch (m) {
+    case 1: return ImVec4(0.45f, 1.0f, 0.55f, 1.0f);    // running
+    case 2: return ImVec4(0.50f, 0.80f, 1.0f, 1.0f);    // asleep (waiting on a job: normal)
+    case 3: return ImVec4(1.0f, 0.38f, 0.32f, 1.0f);    // stopped fault
+    case 4: return ImVec4(1.0f, 0.62f, 0.25f, 1.0f);    // stopped call
+    default: return ImVec4(0.62f, 0.62f, 0.66f, 1.0f);  // parked
+    }
+}
+// RISC-V ABI names (x8 is s0/fp).
+static const char* cpuAbi(int r) {
+    static const char* names[32] = {"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+        "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+        "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+        "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"};
+    return (r >= 0 && r < 32) ? names[r] : "?";
+}
+// CSR slot names (rv32_min_fast.hlsl: slot (n>>3&8)|(n&7); s* and m* share a slot).
+// Slots 1,2,3,7,13,14,15 keep nothing and read 0.
+static const char* cpuCsrName(int s) {
+    switch (s) {
+    case 0: return "status";
+    case 4: return "ie";
+    case 5: return "tvec";
+    case 6: return "counteren";
+    case 8: return "scratch";
+    case 9: return "epc";
+    case 10: return "cause";
+    case 11: return "tval";
+    case 12: return "ip";
+    default: return nullptr;
+    }
+}
+// 598076291 -> "598.1M" (counts and per-second rates).
+static void cpuFmtCount(uint64_t v, char* buf, size_t n) {
+    if (v < 1000) snprintf(buf, n, "%llu", (unsigned long long)v);
+    else if (v < 1000000) snprintf(buf, n, "%.1fK", (double)v / 1000.0);
+    else if (v < 1000000000) snprintf(buf, n, "%.1fM", (double)v / 1000000.0);
+    else snprintf(buf, n, "%.2fG", (double)v / 1000000000.0);
+}
+// Which memory a pc sits in (ROM below RAM, "?" outside both).
+static const char* cpuPcZone(uint32_t pc) {
+    if (pc >= 0x80000000u && pc < 0x92000000u)
+        return kMemZones[memZoneForMb((float)(pc - 0x80000000u) / 1048576.0f)].name;
+    if (pc >= 0x40000000u && pc < 0x80000000u) return "ROM";
+    return "?";
+}
 // The CPU State panel: every core's mode/pc/instructions plus the selected core's
-// registers. Shared by both views.
+// registers. Shared by both views. Live snapshots arrive every frame from the DX12
+// compute backend; Hold freezes one for inspection.
+static std::vector<MemoryViewCore> g_cpuPrev;   // previous live snapshot (changed-register glow)
+static std::vector<double> g_cpuRate;           // per-core instructions a real second
+static std::chrono::steady_clock::time_point g_cpuT{};
+static bool g_cpuTInit = false;
+static int g_cpuModeFilter = -1;   // -1 all, else a mode 0..4
+static bool g_cpuHold = false;
+static std::vector<MemoryViewCore> g_cpuHeld;
+static bool g_cpuScrollReq = false;
+// Selected core as clipboard text.
+static std::string cpuCopyText(const MemoryViewCore& c, int idx, double rate) {
+    char b[4096];
+    size_t o = 0;
+    o += (size_t)snprintf(b + o, sizeof b - o, "core %d: %s pc %08X priv %c instr %llu (%.1f/s)\n",
+        idx, cpuModeName(c.mode), c.pc, cpuPrivName(c.priv),
+        (unsigned long long)c.instr, rate);
+    for (int r = 0; r < 32 && o < sizeof b - 64; ++r)
+        o += (size_t)snprintf(b + o, sizeof b - o, "x%-2d/%-4s %08X%s", r, cpuAbi(r), c.r[r],
+            r % 4 == 3 ? "\n" : "  ");
+    for (int r = 0; r < 32 && o < sizeof b - 64; ++r) {
+        float f = 0;
+        memcpy(&f, &c.r[32 + r], 4);
+        o += (size_t)snprintf(b + o, sizeof b - o, "f%-2d %08X %g%s", r, c.r[32 + r], (double)f,
+            r % 4 == 3 ? "\n" : "  ");
+    }
+    for (int s = 0; s < 16 && o < sizeof b - 64; ++s) {
+        const char* nm = cpuCsrName(s);
+        if (nm) o += (size_t)snprintf(b + o, sizeof b - o, "%-9s %08X\n", nm, c.csr[s]);
+    }
+    o += (size_t)snprintf(b + o, sizeof b - o, "fcsr %08X timer %08X%08X job %08X seen %06X\n",
+        c.fcsr, c.tcmpHi, c.tcmpLo, c.job, c.seen & 0xffffffu);
+    return std::string(b, o < sizeof b ? o : sizeof b - 1);
+}
 static void cpuStatePanel() {
     if (!ImGui::Begin("CPU State")) { ImGui::End(); return; }
     int n = (int)g_cpuCores.size();
@@ -522,55 +776,265 @@ static void cpuStatePanel() {
         ImGui::End();
         return;
     }
+    // Previous snapshot + per-core rates from the live feed (frozen while held).
+    if (!g_cpuHold) {
+        auto now = std::chrono::steady_clock::now();
+        double dt = 0;
+        if (g_cpuTInit) {
+            dt = std::chrono::duration<double>(now - g_cpuT).count();
+            if (dt < 0) dt = 0;
+            if (dt > 0.5) dt = 0.5;
+        }
+        g_cpuT = now;
+        g_cpuTInit = true;
+        if ((int)g_cpuPrev.size() != n || (int)g_cpuRate.size() != n) {
+            g_cpuPrev = g_cpuCores;
+            g_cpuRate.assign((size_t)n, 0);
+        } else if (dt > 1e-6) {
+            double a = dt < 0.25 ? 0.08 : 0.3;
+            for (int i = 0; i < n; ++i) {
+                uint64_t cur = g_cpuCores[(size_t)i].instr, prv = g_cpuPrev[(size_t)i].instr;
+                double inst = cur >= prv ? (double)(cur - prv) / dt : 0;
+                g_cpuRate[(size_t)i] += (inst - g_cpuRate[(size_t)i]) * a;
+            }
+            g_cpuPrev = g_cpuCores;
+        } else {
+            g_cpuPrev = g_cpuCores;
+        }
+    }
+    if ((int)g_cpuRate.size() != n) g_cpuRate.assign((size_t)n, 0);
+    const std::vector<MemoryViewCore>& show =
+        (g_cpuHold && g_cpuHeld.size() == (size_t)n) ? g_cpuHeld : g_cpuCores;
+    const std::vector<MemoryViewCore>& prev =
+        (g_cpuPrev.size() == (size_t)n) ? g_cpuPrev : show;
+    // Summary: counts by mode (click filters the list) + totals.
+    int cnt[5] = {};
+    uint64_t total = 0;
+    double totalRate = 0;
+    for (int i = 0; i < n; ++i) {
+        const MemoryViewCore& k = show[(size_t)i];
+        cnt[k.mode <= 4 ? k.mode : 0]++;
+        total += k.instr;
+        totalRate += g_cpuRate[(size_t)i];
+    }
+    {
+        char tb[32], rb[32];
+        cpuFmtCount(total, tb, sizeof tb);
+        cpuFmtCount((uint64_t)totalRate, rb, sizeof rb);
+        ImGui::Text("%d cores: %s (%s/s)", n, tb, rb);
+        for (int m = 0; m < 5; ++m) {
+            if (cnt[m] == 0) continue;
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                g_cpuModeFilter == m ? ImVec4(0.25f, 0.35f, 0.55f, 1.0f) : ImVec4(0.16f, 0.17f, 0.20f, 1.0f));
+            char b[48];
+            snprintf(b, sizeof b, "%s %d", cpuModeName((uint32_t)m), cnt[m]);
+            bool go = ImGui::SmallButton(b);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, cpuModeColor((uint32_t)m));
+            ImGui::SameLine(0, 2);
+            ImGui::TextUnformatted("|");
+            ImGui::PopStyleColor();
+            if (go) g_cpuModeFilter = (g_cpuModeFilter == m) ? -1 : m;
+        }
+        if (g_cpuModeFilter >= 0) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("clear##filter")) g_cpuModeFilter = -1;
+        }
+    }
     if (g_cpuSel < 0) g_cpuSel = 0;
     if (g_cpuSel >= n) g_cpuSel = n - 1;
-    ImGui::PushItemWidth(-1);
-    if (ImGui::SliderInt("##core", &g_cpuSel, 0, n - 1, "core %d")) {}
+    // Getting around: slider, step buttons, next running core, hold and copy.
+    ImGui::PushItemWidth(-80);
+    if (ImGui::SliderInt("##core", &g_cpuSel, 0, n - 1, "core %d")) g_cpuScrollReq = true;
     ImGui::PopItemWidth();
-    const MemoryViewCore& c = g_cpuCores[(size_t)g_cpuSel];
-    ImGui::Text("core %d: %s", g_cpuSel, cpuModeName(c.mode));
     ImGui::SameLine();
-    ImGui::Text("pc %08X", c.pc);
+    if (ImGui::SmallButton("<##core")) { g_cpuSel = (g_cpuSel + n - 1) % n; g_cpuScrollReq = true; }
     ImGui::SameLine();
-    ImGui::Text("priv %c (%u)", cpuPrivName(c.priv), c.priv);
-    ImGui::Text("%llu instructions", (unsigned long long)c.instr);
+    if (ImGui::SmallButton(">##core")) { g_cpuSel = (g_cpuSel + 1) % n; g_cpuScrollReq = true; }
     ImGui::SameLine();
-    ImGui::Text("timer %08X%08X", c.tcmpHi, c.tcmpLo);
-    if (c.mode == 2) ImGui::Text("sleeps on job %08X", c.job);
-    if (c.mode >= 3) ImGui::Text("stopped with %06X", c.seen & 0xffffffu);
-    if (ImGui::BeginChild("regs", ImVec2(0, 148), false, ImGuiWindowFlags_HorizontalScrollbar)) {
-        for (int r = 0; r < 32; r += 4) {
-            ImGui::Text("x%-2d %08X  x%-2d %08X  x%-2d %08X  x%-2d %08X", r, c.r[r], r + 1, c.r[r + 1],
-                        r + 2, c.r[r + 2], r + 3, c.r[r + 3]);
+    if (ImGui::SmallButton("run>##core") && n > 0) {
+        for (int k = 1; k <= n; ++k) {
+            int i = (g_cpuSel + k) % n;
+            if (show[(size_t)i].mode == 1) { g_cpuSel = i; g_cpuScrollReq = true; break; }
         }
     }
-    ImGui::EndChild();
-    if (ImGui::BeginChild("fregs", ImVec2(0, 148), false, ImGuiWindowFlags_HorizontalScrollbar)) {
-        for (int r = 0; r < 32; r += 4) {
-            ImGui::Text("f%-2d %08X  f%-2d %08X  f%-2d %08X  f%-2d %08X", r, c.r[32 + r], r + 1, c.r[32 + r + 1],
-                        r + 2, c.r[32 + r + 2], r + 3, c.r[32 + r + 3]);
-        }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("next running core");
+    if (ImGui::Checkbox("Hold", &g_cpuHold)) {
+        if (g_cpuHold) g_cpuHeld = g_cpuCores;
     }
-    ImGui::EndChild();
-    if (ImGui::BeginChild("csrs", ImVec2(0, 86), false, ImGuiWindowFlags_HorizontalScrollbar)) {
-        for (int r = 0; r < 16; r += 4) {
-            ImGui::Text("csr%-2d %08X  csr%-2d %08X  csr%-2d %08X  csr%-2d %08X", r, c.csr[r], r + 1, c.csr[r + 1],
-                        r + 2, c.csr[r + 2], r + 3, c.csr[r + 3]);
-        }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("freeze one snapshot for inspection");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy##core")) {
+        ImGui::SetClipboardText(cpuCopyText(show[(size_t)g_cpuSel], g_cpuSel, g_cpuRate[(size_t)g_cpuSel]).c_str());
     }
-    ImGui::EndChild();
-    if (ImGui::BeginChild("cores", ImVec2(0, 0), false)) {
-        ImGuiListClipper clipper;
-        clipper.Begin(n);
-        while (clipper.Step()) {
-            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                const MemoryViewCore& k = g_cpuCores[(size_t)i];
-                char buf[64];
-                snprintf(buf, sizeof buf, "%3d %-13s %08X %10llu", i, cpuModeName(k.mode), k.pc,
-                         (unsigned long long)k.instr);
-                if (ImGui::Selectable(buf, i == g_cpuSel)) g_cpuSel = i;
+    // The selected core.
+    const MemoryViewCore& c = show[(size_t)g_cpuSel];
+    const MemoryViewCore& p = prev[(size_t)g_cpuSel];
+    double rate = g_cpuRate[(size_t)g_cpuSel];
+    {
+        char ib[32], rb[32];
+        cpuFmtCount(c.instr, ib, sizeof ib);
+        cpuFmtCount((uint64_t)rate, rb, sizeof rb);
+        ImGui::TextColored(cpuModeColor(c.mode), "core %d: %s", g_cpuSel, cpuModeName(c.mode));
+        ImGui::SameLine();
+        if (c.pc != p.pc) ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "pc %08X", c.pc);
+        else ImGui::Text("pc %08X", c.pc);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(cpuPcZone(c.pc));
+        ImGui::Text("priv %c (%s)", cpuPrivName(c.priv), cpuPrivLong(c.priv));
+        ImGui::SameLine();
+        ImGui::Text("%llu (%s, %s/s)", (unsigned long long)c.instr, ib, rb);
+        uint64_t tcmp = ((uint64_t)c.tcmpHi << 32) | c.tcmpLo;
+        ImGui::Text("timer compare %08X%08X (%llu)", c.tcmpHi, c.tcmpLo, (unsigned long long)tcmp);
+        if (c.mode == 2) {
+            ImGui::Text("sleeps on job %08X", c.job);
+            if (c.job >= 0x80000000u && c.job < 0x92000000u) {
+                ImGui::SameLine();
+                ImGui::TextUnformatted(cpuPcZone(c.job));
             }
         }
+        if (c.mode >= 3) ImGui::Text("stopped with %06X (resume word)", c.seen & 0xffffffu);
+    }
+    // Registers in tabs (x with ABI names, f as hex+float, named CSRs); click copies the hex.
+    if (ImGui::BeginTabBar("##regs")) {
+        if (ImGui::BeginTabItem("x regs")) {
+            if (ImGui::BeginChild("regs", ImVec2(0, 240), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+                for (int r = 0; r < 32; r += 2) {
+                    for (int k = 0; k < 2; ++k) {
+                        int i = r + k;
+                        char label[48];
+                        snprintf(label, sizeof label, "x%-2d/%-4s %08X##x%d", i, cpuAbi(i), c.r[i], i);
+                        bool changed = c.r[i] != p.r[i];
+                        bool zero = c.r[i] == 0;
+                        if (changed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.35f, 1.0f));
+                        else if (zero) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
+                        if (ImGui::Selectable(label, false)) {
+                            char hex[16];
+                            snprintf(hex, sizeof hex, "%08X", c.r[i]);
+                            ImGui::SetClipboardText(hex);
+                        }
+                        if (changed || zero) ImGui::PopStyleColor();
+                        if (ImGui::IsItemHovered()) {
+                            int32_t s = 0;
+                            memcpy(&s, &c.r[i], 4);
+                            ImGui::SetTooltip("dec %u / signed %d", c.r[i], s);
+                        }
+                        if (k == 0) ImGui::SameLine(0, 18);
+                    }
+                }
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("f regs")) {
+            if (ImGui::BeginChild("fregs", ImVec2(0, 240), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+                for (int r = 0; r < 32; r += 2) {
+                    for (int k = 0; k < 2; ++k) {
+                        int i = r + k;
+                        float f = 0;
+                        memcpy(&f, &c.r[32 + i], 4);
+                        char label[64];
+                        snprintf(label, sizeof label, "f%-2d %08X %-12g##f%d", i, c.r[32 + i], (double)f, i);
+                        bool changed = c.r[32 + i] != p.r[32 + i];
+                        bool zero = c.r[32 + i] == 0;
+                        if (changed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.35f, 1.0f));
+                        else if (zero) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
+                        if (ImGui::Selectable(label, false)) {
+                            char hex[16];
+                            snprintf(hex, sizeof hex, "%08X", c.r[32 + i]);
+                            ImGui::SetClipboardText(hex);
+                        }
+                        if (changed || zero) ImGui::PopStyleColor();
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("exact %.9g", (double)f);
+                        if (k == 0) ImGui::SameLine(0, 18);
+                    }
+                }
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("csrs")) {
+            if (ImGui::BeginChild("csrs", ImVec2(0, 240), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+                for (int s = 0; s < 16; ++s) {
+                    const char* nm = cpuCsrName(s);
+                    if (!nm) continue;   // slots 1,2,3,7,13,14,15 keep nothing (always 0)
+                    char label[48];
+                    snprintf(label, sizeof label, "%-9s %08X##csr%d", nm, c.csr[s], s);
+                    bool changed = c.csr[s] != p.csr[s];
+                    if (changed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.35f, 1.0f));
+                    else if (c.csr[s] == 0) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.60f, 1.0f));
+                    if (ImGui::Selectable(label, false)) {
+                        char hex[16];
+                        snprintf(hex, sizeof hex, "%08X", c.csr[s]);
+                        ImGui::SetClipboardText(hex);
+                    }
+                    if (changed || c.csr[s] == 0) ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("s* and m* share this slot; dec %u", c.csr[s]);
+                }
+                {
+                    char label[64];
+                    snprintf(label, sizeof label, "fcsr      %08X  frm %u fflags 0x%02X##fcsr",
+                        c.fcsr, (c.fcsr >> 5) & 7u, c.fcsr & 0x1fu);
+                    bool changed = c.fcsr != p.fcsr;
+                    if (changed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.35f, 1.0f));
+                    if (ImGui::Selectable(label, false)) {
+                        char hex[16];
+                        snprintf(hex, sizeof hex, "%08X", c.fcsr);
+                        ImGui::SetClipboardText(hex);
+                    }
+                    if (changed) ImGui::PopStyleColor();
+                }
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    // Every core: colour by mode, filterable, click selects (list follows the slider).
+    if (ImGui::BeginChild("cores", ImVec2(0, 0), false)) {
+        std::vector<int> rows;
+        rows.reserve((size_t)n);
+        for (int i = 0; i < n; ++i) {
+            if (g_cpuModeFilter >= 0 && (int)show[(size_t)i].mode != g_cpuModeFilter) continue;
+            rows.push_back(i);
+        }
+        if (g_cpuScrollReq) {
+            // unclipped this frame so the selected row exists to scroll to
+            for (int i : rows) {
+                const MemoryViewCore& k = show[(size_t)i];
+                char ib[32], rb[32];
+                cpuFmtCount(k.instr, ib, sizeof ib);
+                cpuFmtCount((uint64_t)g_cpuRate[(size_t)i], rb, sizeof rb);
+                char buf[96];
+                snprintf(buf, sizeof buf, "%3d %-13s %08X %10s %9s/s", i, cpuModeName(k.mode), k.pc, ib, rb);
+                ImGui::PushStyleColor(ImGuiCol_Text, cpuModeColor(k.mode));
+                if (ImGui::Selectable(buf, i == g_cpuSel)) g_cpuSel = i;
+                ImGui::PopStyleColor();
+                if (i == g_cpuSel) ImGui::SetScrollHereY(0.5f);
+            }
+            g_cpuScrollReq = false;
+        } else {
+            ImGuiListClipper clipper;
+            clipper.Begin((int)rows.size());
+            while (clipper.Step()) {
+                for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                    int i = rows[(size_t)r];
+                    const MemoryViewCore& k = show[(size_t)i];
+                    char ib[32], rb[32];
+                    cpuFmtCount(k.instr, ib, sizeof ib);
+                    cpuFmtCount((uint64_t)g_cpuRate[(size_t)i], rb, sizeof rb);
+                    char buf[96];
+                    snprintf(buf, sizeof buf, "%3d %-13s %08X %10s %9s/s", i, cpuModeName(k.mode), k.pc, ib, rb);
+                    ImGui::PushStyleColor(ImGuiCol_Text, cpuModeColor(k.mode));
+                    if (ImGui::Selectable(buf, i == g_cpuSel)) g_cpuSel = i;
+                    ImGui::PopStyleColor();
+                }
+            }
+        }
+        if (rows.empty()) ImGui::TextUnformatted("(no cores in this filter)");
     }
     ImGui::EndChild();
     ImGui::End();
@@ -659,6 +1123,152 @@ std::string memoryViewTakePendingCapture() {
     std::string path;
     path.swap(g_pendingCapture);
     return path;
+}
+// Machine numbers behind the overlay lines above (pushed with them, 4 Hz).
+static MemoryViewStats g_stats;
+static bool g_statsHave = false;
+static std::vector<float> g_histIps, g_histFps, g_histFrame, g_histTick;
+static const size_t kHistKeep = 240;   // 60 s at the 4 Hz push rate
+void memoryViewSetStats(const MemoryViewStats& stats) {
+    g_stats = stats;
+    g_statsHave = true;
+    auto push = [](std::vector<float>& h, float v) {
+        h.push_back(v);
+        if (h.size() > kHistKeep) h.erase(h.begin(), h.begin() + (h.size() - kHistKeep));
+    };
+    push(g_histIps, (float)stats.ipsAll);
+    push(g_histFps, (float)stats.fps);
+    push(g_histFrame, (float)stats.frameMs);
+    push(g_histTick, (float)(stats.tickMs >= 0 ? stats.tickMs : 0));
+}
+// 6717365483.0 -> "6.72G" (the double version of the CPU panel's cpuFmtCount).
+static void machFmt(double v, char* buf, size_t n) {
+    if (v < 1000) snprintf(buf, n, "%.0f", v);
+    else if (v < 1000000) snprintf(buf, n, "%.1fK", v / 1000.0);
+    else if (v < 1000000000) snprintf(buf, n, "%.1fM", v / 1000000.0);
+    else snprintf(buf, n, "%.2fG", v / 1000000000.0);
+}
+static const char* machSoundName(int s) {
+    switch (s) {
+    case 1: return "off";
+    case 2: return "not played";
+    case 3: return "idle";
+    case 4: return "playing";
+    default: return "none";
+    }
+}
+// The Machine panel: sections and sparklines over the numbers above (the raw overlay
+// lines stay under a header for parity). Shared by both views; dockBuilt clears on reset.
+static void machinePanel(ImGuiID dockId, bool* dockBuilt) {
+    if (!ImGui::Begin("Machine")) { ImGui::End(); return; }
+    ImGui::Checkbox("Freeze view", &g_freeze);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Capture view BMP")) g_pendingCapture = "logs/imgui_view.bmp";
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset layout")) {
+        DeleteFileA("logs/imgui_harness.ini");
+        ImGui::DockBuilderRemoveNode(dockId);
+        *dockBuilt = false;
+    }
+    if (!g_statsHave) {
+        // (no numbers pushed yet: the old raw lines, as before)
+        if (!g_cols.empty())
+            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
+        if (g_cols.size() > 2)
+            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
+        ImGui::End();
+        return;
+    }
+    const MemoryViewStats& s = g_stats;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy stats")) {
+        char b[1024];
+        snprintf(b, sizeof b,
+            "all cores %.0f IPS (core 0 %.0f, workers %.0f, %u running)\n"
+            "%.1f frames/s, frame %.3f ms, %.0f instr/frame\n"
+            "tick %.3f ms, commit %.3f ms, gpu device %.3f ms\n"
+            "up %.0fs, guest %.1fs, %llu instructions, %llu commits\n"
+            "sound %s, volume %d%%\n"
+            "input: %s; queued %llu, sent %llu, taken %llu, last key 0x%02x\n",
+            s.ipsAll, s.ipsCore0, s.ipsWorkers, s.workersRunning,
+            s.fps, s.frameMs, s.instrPerFrame,
+            s.tickMs, s.commitMs, s.gpuMs,
+            s.upSec, s.guestSec,
+            (unsigned long long)s.totalInstr, (unsigned long long)s.commits,
+            machSoundName(s.sound), s.volume,
+            s.inputDesc.c_str(),
+            (unsigned long long)s.inputQueued, (unsigned long long)s.inputSent,
+            (unsigned long long)s.inputTaken, s.lastKey & 0xff);
+        ImGui::SetClipboardText(b);
+    }
+    // Speed: headline numbers + minute of history.
+    {
+        char all[32], c0[32], w[32];
+        machFmt(s.ipsAll, all, sizeof all);
+        machFmt(s.ipsCore0, c0, sizeof c0);
+        machFmt(s.ipsWorkers, w, sizeof w);
+        ImGui::Separator();
+        ImGui::Text("all cores %s IPS", all);
+        ImGui::Text("core 0 %s    workers %s (%u running)", c0, w, s.workersRunning);
+        ImGui::Text("%.0f frames/s    frame %.3f ms    %.0f instr/frame", s.fps, s.frameMs, s.instrPerFrame);
+        auto plot = [](const char* id, const std::vector<float>& h, const char* fmt) {
+            if (h.size() < 2) return;
+            char ov[32];
+            snprintf(ov, sizeof ov, fmt, (double)h.back());
+            ImGui::PlotLines(id, h.data(), (int)h.size(), 0, ov, FLT_MAX, FLT_MAX, ImVec2(-1, 44));
+        };
+        // PlotLines prints the overlay verbatim: pre-format the Megas ourselves.
+        if (g_histIps.size() >= 2) {
+            char ov[32], label[48];
+            machFmt(g_histIps.back(), ov, sizeof ov);
+            snprintf(label, sizeof label, "%s IPS", ov);
+            ImGui::PlotLines("##ips", g_histIps.data(), (int)g_histIps.size(), 0, label,
+                FLT_MAX, FLT_MAX, ImVec2(-1, 44));
+        }
+        plot("##fps", g_histFps, "%.0f frames/s");
+        plot("##frame", g_histFrame, "%.3f ms a frame");
+    }
+    // Passes: where a frame goes.
+    {
+        ImGui::Separator();
+        if (s.tickMs >= 0) ImGui::Text("tick %.3f ms    commit %.3f ms", s.tickMs, s.commitMs);
+        else ImGui::Text("tick -    commit -");
+        ImGui::Text("gpu device %.3f ms", s.gpuMs);
+        if (g_histTick.size() >= 2)
+            ImGui::PlotLines("##tick", g_histTick.data(), (int)g_histTick.size(), 0, "tick ms",
+                FLT_MAX, FLT_MAX, ImVec2(-1, 44));
+    }
+    // Totals: uptime, guest clock, counters.
+    {
+        char ti[32], cm[32];
+        machFmt((double)s.totalInstr, ti, sizeof ti);
+        machFmt((double)s.commits, cm, sizeof cm);
+        ImGui::Separator();
+        unsigned up = (unsigned)s.upSec;
+        ImGui::Text("up %02u:%02u:%02u    guest clock %.1f s", up / 3600, up / 60 % 60, up % 60, s.guestSec);
+        ImGui::Text("%llu instructions (%s)    %llu commits (%s)",
+            (unsigned long long)s.totalInstr, ti, (unsigned long long)s.commits, cm);
+    }
+    // Sound + input.
+    {
+        ImGui::Separator();
+        if (s.sound == 4) ImGui::TextColored(ImVec4(0.45f, 1.0f, 0.55f, 1.0f), "sound playing, volume %d%%", s.volume);
+        else if (s.sound == 0) ImGui::Text("sound none");
+        else ImGui::Text("sound %s, volume %d%%", machSoundName(s.sound), s.volume);
+        ImGui::TextUnformatted(s.inputDesc.c_str());
+        ImGui::Text("queued %llu   sent %llu   taken by guest %llu",
+            (unsigned long long)s.inputQueued, (unsigned long long)s.inputSent, (unsigned long long)s.inputTaken);
+        if (s.lastKey >= 0x20 && s.lastKey < 0x7f) ImGui::Text("last key '%c' (0x%02x)", s.lastKey, s.lastKey & 0xff);
+        else if (s.lastKey) ImGui::Text("last key 0x%02x", s.lastKey & 0xff);
+        else ImGui::Text("last key -");
+    }
+    if (ImGui::CollapsingHeader("raw overlay text")) {
+        if (!g_cols.empty())
+            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
+        if (g_cols.size() > 2)
+            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
+    }
+    ImGui::End();
 }
 // The panels' text columns (Machine, Console, input), with the volume the first one names.
 void memoryViewSetColumns(const MemoryViewText& columns) {
@@ -767,37 +1377,41 @@ static void consolePanel() {
     ImGui::PopItemWidth();
     ImGui::End();
 }
-// Paint: a Memory image's mouse position to a guest-physical RAM address (a 16-byte texel),
-// for the full-RAM view (2 strips side by side, MemOff 0). ~0u when outside RAM.
-// (mx,my): the mouse; (x0,y0,x1,y1): the image's rect; half: 0 the left half (u0..um),
-// 1 the right (um..1.0); splitPx/barPx/memPx, viewW/viewH, texWidth/stateRows/ramRows: the layout.
-static uint32_t memoryPaintAddress(float mx, float my, float x0, float y0, float x1, float y1,
-        int half, float splitPx, float memPx, UINT viewW, UINT viewH, UINT texWidth, UINT stateRows, UINT ramRows) {
+// Paint: a Memory strip image's mouse position to a guest-physical RAM address
+// (a 16-byte texel). ~0u when outside RAM.
+// (mx,my): the mouse; (x0,y0,x1,y1): the strip image's rect; strip/strips: which vertical
+// strip of the zoomed span this image shows; memOff/memSpan: the zoomed span in RAM rows.
+static uint32_t memoryStripAddress(float mx, float my, float x0, float y0, float x1, float y1,
+        int strip, int strips, float memOff, float memSpan,
+        UINT texWidth, UINT stateRows, UINT ramRows) {
     if (x1 <= x0 || y1 <= y0) return ~0u;
+    if (strips < 1) strips = 1;
+    if (strip < 0) strip = 0;
+    if (strip >= strips) strip = strips - 1;
     float f = (mx - x0) / (x1 - x0), g = (my - y0) / (y1 - y0);
     if (f < 0 || f > 1 || g < 0 || g > 1) return ~0u;
-    float memWidth = (float)viewW - splitPx;
-    if (memWidth <= 0 || memPx <= 0 || texWidth == 0 || ramRows == 0) return ~0u;
-    float u0 = splitPx / (float)viewW, um = u0 + (1.0f - u0) * 0.5f;
-    float v1 = memPx / (float)viewH;
-    float u = half == 0 ? u0 + f * (um - u0) : um + f * (1.0f - um);
-    float v = g * v1;
-    float sx = ((u * (float)viewW) - splitPx) / memWidth * 2.0f;
-    int strip = (int)sx;
-    if (strip < 0) strip = 0;
-    if (strip > 1) strip = 1;
-    float frac = sx - (float)strip;
-    if (frac < 0) frac = 0;
-    if (frac > 1) frac = 1;
-    float rowsPerStrip = (float)ramRows / 2.0f;
-    int tx = (int)(frac * (float)texWidth);
-    int ty = (int)((float)stateRows + ((float)strip + v * (float)viewH / memPx) * rowsPerStrip);
+    if (texWidth == 0 || ramRows == 0 || memSpan <= 0) return ~0u;
+    float rowsPerStrip = memSpan / (float)strips;
+    float absRow = memOff + (float)strip * rowsPerStrip + g * rowsPerStrip;
+    if (absRow < 0) absRow = 0;
+    if (absRow >= (float)ramRows) absRow = (float)ramRows - 1;
+    int tx = (int)(f * (float)texWidth);
+    int ty = (int)stateRows + (int)absRow;
     if (tx < 0) tx = 0;
     if (tx >= (int)texWidth) tx = (int)texWidth - 1;
     if (ty < (int)stateRows) ty = (int)stateRows;
     if (ty >= (int)(stateRows + ramRows)) ty = (int)(stateRows + ramRows) - 1;
     uint32_t index = (uint32_t)(ty - (int)stateRows) * texWidth + (uint32_t)tx;
     return 0x80000000u + index * 16;
+}
+// Paint: a Memory image's mouse position to a guest-physical RAM address (a 16-byte texel),
+// for the full-RAM view (2 strips side by side, MemOff 0). ~0u when outside RAM.
+// (mx,my): the mouse; (x0,y0,x1,y1): the image's rect; half: 0 the left half (u0..um),
+// 1 the right (um..1.0); splitPx/barPx/memPx, viewW/viewH, texWidth/stateRows/ramRows: the layout.
+static uint32_t memoryPaintAddress(float mx, float my, float x0, float y0, float x1, float y1,
+        int half, float splitPx, float memPx, UINT viewW, UINT viewH, UINT texWidth, UINT stateRows, UINT ramRows) {
+    return memoryStripAddress(mx, my, x0, y0, x1, y1, half, 2, 0.0f, (float)ramRows,
+        texWidth, stateRows, ramRows);
 }
 
 std::string memoryViewTakeHostKeys() {
@@ -1093,6 +1707,201 @@ bool MemoryView::createTargets(std::string& err) {
     return true;
 }
 
+// ---- Pretty Memory panels: legend, addresses, tiles, tooltips (shared by D3D11/D3D12) ----
+
+// Aim the loupe at a guest-physical texel address.
+static void memAim(uint32_t a, UINT texWidth, UINT stateRows) {
+    if (a == ~0u) return;
+    uint32_t idx = (a - 0x80000000u) / 16;
+    g_loupeCX = (int)(idx % texWidth);
+    g_loupeCY = (int)(stateRows + idx / texWidth);
+    g_loupeAddr = a;
+}
+
+// One-line description of a texel address for tooltips and the Loupe panel.
+static void memDescribe(uint32_t a, UINT texWidth, UINT stateRows, UINT ramRows, char* buf, size_t n) {
+    if (a == ~0u || n == 0) { if (n) buf[0] = 0; return; }
+    uint32_t idx = (a - 0x80000000u) / 16;
+    uint32_t col = texWidth ? idx % texWidth : 0;
+    float row = texWidth ? (float)(idx / texWidth) : 0;
+    if (row < 0) row = 0;
+    if (row >= (float)ramRows) row = (float)ramRows - 1;
+    int z = memZoneForRow(row);
+    const char* zn = (z >= 0 && z < (int)(sizeof kMemZones / sizeof kMemZones[0])) ? kMemZones[z].name : "?";
+    snprintf(buf, n, "0x%08X  row %.0f col %u  %.1f MB  %s", a, (double)row, col, (double)(row / 32.0), zn);
+}
+
+// The legend: one chip a zone, click jumps there. Shows address ranges so the pastel noise
+// gains meaning (the shader tints each zone with the same colour).
+static void memLegend(float totalRows) {
+    ImGui::TextUnformatted("zones:");
+    for (int i = 0; i < (int)(sizeof kMemZones / sizeof kMemZones[0]); ++i) {
+        const MemZone& z = kMemZones[i];
+        float r0 = (float)z.mb0 * 32.0f, r1 = (float)z.mb1 * 32.0f;
+        if (r0 >= totalRows) continue;
+        if (r1 > totalRows) r1 = totalRows;
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(z.r * 0.55f, z.g * 0.55f, z.b * 0.55f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(z.r, z.g, z.b, 1.0f));
+        bool go = ImGui::SmallButton(z.name);
+        ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered()) {
+            char tip[128];
+            snprintf(tip, sizeof tip, "%s  %d..%d MB\nrows %.0f..%.0f\n0x%08X..0x%08X",
+                z.name, z.mb0, z.mb1, (double)r0, (double)r1,
+                memAddrForRow(r0), memAddrForRow(r1));
+            ImGui::SetTooltip("%s", tip);
+        }
+        if (go) {
+            float span = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1);
+            g_memOff = memClampOff(r0, span, totalRows);
+            uiSaveCfg();
+        }
+    }
+}
+
+// Zoom / tiles / glow / go-to controls, in the Memory panel itself (were Settings-only).
+static void memControls(float totalRows) {
+    float span = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1);
+    if (span < 1) span = 1;
+    float maxOff = totalRows - span;
+    if (maxOff < 0) maxOff = 0;
+    g_memOff = memClampOff(g_memOff, span, totalRows);
+
+    const char* tiles[] = {"2", "3", "4", "8"};
+    int cur = 0;
+    for (int i = 0; i < 4; ++i) if (memoryViewStrips() == atoi(tiles[i])) cur = i;
+    ImGui::PushItemWidth(64);
+    if (ImGui::Combo("tiles", &cur, tiles, 4)) {
+        g_memStrips = atoi(tiles[cur]);
+        uiSaveCfg();
+    }
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("heat", &g_memGlowOn)) uiSaveCfg();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(110);
+    if (ImGui::SliderFloat("glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
+    ImGui::PopItemWidth();
+
+    ImGui::PushItemWidth(-1);
+    if (ImGui::SliderInt("##zoom", &g_memZoom, 1, 64, "zoom %d")) {
+        if (g_memZoom < 1) g_memZoom = 1;
+        if (g_memZoom > 64) g_memZoom = 64;
+        span = totalRows / (float)g_memZoom;
+        g_memOff = memClampOff(g_memOff, span, totalRows);
+        uiSaveCfg();
+    }
+    ImGui::PopItemWidth();
+    ImGui::PushItemWidth(-1);
+    if (ImGui::SliderFloat("##off", &g_memOff, 0, maxOff, "off %.0f")) uiSaveCfg();
+    ImGui::PopItemWidth();
+
+    ImGui::PushItemWidth(110);
+    ImGui::InputText("##goto", g_memGoTo, sizeof g_memGoTo, ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("go 0x")) {
+        unsigned long v = strtoul(g_memGoTo, nullptr, 16);
+        if (v >= 0x80000000ul && v < 0x92000000ul) {
+            float row = memRowForAddr((uint32_t)v);
+            span = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1);
+            g_memOff = memClampOff(row - span * 0.5f, span, totalRows);
+            memAim((uint32_t)v & ~15u, 2048, 64);
+            uiSaveCfg();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("1:1")) {
+        g_memZoom = 1;
+        g_memOff = 0;
+        uiSaveCfg();
+    }
+    ImGui::SameLine();
+    uint32_t a0 = memAddrForRow(g_memOff), a1 = memAddrForRow(g_memOff + span);
+    ImGui::Text("rows %.0f..%.0f  0x%08X..0x%08X", (double)g_memOff, (double)(g_memOff + span), a0, a1);
+}
+
+// The zoomed span as N strip images with per-strip address headers, hover tooltips
+// (address / row / col / MB / zone) and loupe + paint aiming. isHeat: same UVs on the heat texture.
+static void memStrips(void* tex, bool isHeat, UINT width, UINT height, float splitPx, float memPx,
+        UINT texH, UINT stateRows, UINT texWidth) {
+    float totalRows = (float)(texH - stateRows);
+    if (totalRows <= 0) return;
+    int zoom = g_memZoom > 0 ? g_memZoom : 1;
+    float span = totalRows / (float)zoom;
+    if (span < 1) span = 1;
+    g_memOff = memClampOff(g_memOff, span, totalRows);
+    int strips = memoryViewStrips();
+    float memWidth = (float)width - splitPx;
+    if (memWidth <= 0 || memPx <= 0) return;
+    float u0 = splitPx / (float)width;
+    float v1 = memPx / (float)height;
+    float rowsPerStrip = span / (float)strips;
+    float panelW = ImGui::GetContentRegionAvail().x;
+    if (panelW <= 0) panelW = 200;
+    ImVec2 size(panelW, panelW * memPx / (memWidth / (float)strips));
+    if (size.y < 8) size.y = 8;   // the scroll child handles the rest, however tall a tile gets
+    for (int s = 0; s < strips; ++s) {
+        float r0 = g_memOff + (float)s * rowsPerStrip, r1 = r0 + rowsPerStrip;
+        uint32_t a0 = memAddrForRow(r0), a1 = memAddrForRow(r1);
+        int z0 = memZoneForRow(r0), z1 = memZoneForRow(r1 - 1);
+        const char* n0 = kMemZones[z0].name, *n1 = kMemZones[z1].name;
+        if (z0 == z1) ImGui::Text("rows %.0f..%.0f  0x%08X  %s", (double)r0, (double)r1, a0, n0);
+        else ImGui::Text("rows %.0f..%.0f  0x%08X..0x%08X  %s->%s", (double)r0, (double)r1, a0, a1, n0, n1);
+        float uA = u0 + (1.0f - u0) * (float)s / (float)strips;
+        float uB = u0 + (1.0f - u0) * (float)(s + 1) / (float)strips;
+        ImGui::Image((ImTextureID)tex, size, ImVec2(uA, 0), ImVec2(uB, v1));
+        ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
+        bool inside = mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y;
+        uint32_t hit = ~0u;
+        if (inside)
+            hit = memoryStripAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, s, strips,
+                g_memOff, span, texWidth, stateRows, (UINT)totalRows);
+        if (hit != ~0u && !isHeat) memAim(hit, texWidth, stateRows);
+        if (hit != ~0u && !isHeat && g_radArmed && ImGui::IsMouseDown(0)) {
+            g_radPaint = hit;
+            g_radLastPaint = hit;
+            g_radLastPaintT = std::chrono::steady_clock::now();
+            g_radLastPaintWhen = true;
+        }
+        if (inside && hit != ~0u && ImGui::IsItemHovered()) {
+            char tip[160];
+            memDescribe(hit, texWidth, stateRows, (UINT)totalRows, tip, sizeof tip);
+            ImGui::SetTooltip("%s", tip);
+        }
+    }
+}
+
+// Collapsible per-zone jump list: doubles as "collapse the empty" (headers shut take no space).
+static void memZoneList(float totalRows) {
+    ImGui::Separator();
+    ImGui::TextUnformatted("jump to a zone (headers collapse):");
+    for (int i = 0; i < (int)(sizeof kMemZones / sizeof kMemZones[0]); ++i) {
+        const MemZone& z = kMemZones[i];
+        float r0 = (float)z.mb0 * 32.0f, r1 = (float)z.mb1 * 32.0f;
+        if (r0 >= totalRows) continue;
+        if (r1 > totalRows) r1 = totalRows;
+        char head[96];
+        snprintf(head, sizeof head, "%s  %d..%d MB", z.name, z.mb0, z.mb1);
+        if (ImGui::CollapsingHeader(head)) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(z.r * 0.55f, z.g * 0.55f, z.b * 0.55f, 1.0f));
+            char btn[64];
+            snprintf(btn, sizeof btn, "show##zone%d", i);
+            bool go = ImGui::SmallButton(btn);
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::Text("rows %.0f..%.0f  0x%08X..0x%08X", (double)r0, (double)r1,
+                memAddrForRow(r0), memAddrForRow(r1));
+            if (go) {
+                float span = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1);
+                g_memOff = memClampOff(r0, span, totalRows);
+                uiSaveCfg();
+            }
+        }
+    }
+}
+
 // The docked panels both memory views show, after the backend's NewFrame and before its
 // Render (memview.h). Backend-agnostic: the textures arrive as ImTextureID (a D3D11 SRV
 // or a D3D12 GPU descriptor handle).
@@ -1178,80 +1987,21 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
     ImGui::End();
     bool memOpen = ImGui::Begin("Memory");
     if (memOpen) {
-        float mw = (float)width - splitPx;
         float totalRows = (float)(texH - stateRows);
-        float halfSpan = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1) * 0.5f;
+        memLegend(totalRows);
+        memControls(totalRows);
         ImGui::BeginChild("ramScroll", ImVec2(0, 0), false);
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        float s = avail.x / (mw * 0.5f);
-        if (s > 0 && mw > 0 && memPx > 0) {
-            float u0 = splitPx / (float)width;
-            float um = u0 + (1.0f - u0) * 0.5f;
-            float v1 = memPx / (float)height;
-            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
-            ImGui::Text("rows %.0f..%.0f", (double)g_memOff, (double)(g_memOff + halfSpan));
-            ImGui::Image((ImTextureID)view, size, ImVec2(u0, 0), ImVec2(um, v1));
-            {
-                // the loupe follows the cursor (its square of texels is rendered separately)
-                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
-                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
-                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 0,
-                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
-                    if (a != ~0u) {
-                        uint32_t idx = (a - 0x80000000u) / 16;
-                        g_loupeCX = (int)(idx % texWidth);
-                        g_loupeCY = (int)(stateRows + idx / texWidth);
-                        g_loupeAddr = a;
-                    }
-                }
-            }
-            if (g_radArmed && ImGui::IsMouseDown(0)) {
-                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
-                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
-                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 0,
-                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
-                    if (a != ~0u) { g_radPaint = a; g_radLastPaint = a; }
-                }
-            }
-            ImGui::Text("rows %.0f..%.0f", (double)(g_memOff + halfSpan), (double)(g_memOff + halfSpan * 2));
-            ImGui::Image((ImTextureID)view, size, ImVec2(um, 0), ImVec2(1.0f, v1));
-            {
-                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
-                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
-                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 1,
-                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
-                    if (a != ~0u) {
-                        uint32_t idx = (a - 0x80000000u) / 16;
-                        g_loupeCX = (int)(idx % texWidth);
-                        g_loupeCY = (int)(stateRows + idx / texWidth);
-                        g_loupeAddr = a;
-                    }
-                }
-            }
-            if (g_radArmed && ImGui::IsMouseDown(0)) {
-                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
-                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
-                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 1,
-                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
-                    if (a != ~0u) { g_radPaint = a; g_radLastPaint = a; }
-                }
-            }
-        }
+        memStrips(view, false, width, height, splitPx, memPx, texH, stateRows, texWidth);
+        memZoneList(totalRows);
         ImGui::EndChild();
     }
     ImGui::End();
     if (ImGui::Begin("Heat")) {
         ImGui::BeginChild("heatScroll", ImVec2(0, 0), false);
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        float mw = (float)width - splitPx;
-        if (avail.x > 0 && mw > 0 && memPx > 0) {
-            float u0 = splitPx / (float)width;
-            float um = u0 + (1.0f - u0) * 0.5f;
-            float v1 = memPx / (float)height;
-            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
-            ImGui::Image((ImTextureID)heat, size, ImVec2(u0, 0), ImVec2(um, v1));
-            ImGui::Image((ImTextureID)heat, size, ImVec2(um, 0), ImVec2(1.0f, v1));
-        }
+        float totalRows = (float)(texH - stateRows);
+        memLegend(totalRows);
+        ImGui::TextUnformatted("(same tiles/zoom as Memory; uncheck heat there to see base colours)");
+        memStrips(heat, true, width, height, splitPx, memPx, texH, stateRows, texWidth);
         ImGui::EndChild();
     }
     ImGui::End();
@@ -1261,10 +2011,13 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
             float s = avail.x < 256.0f ? avail.x : 256.0f;
             if (s > 0) ImGui::Image((ImTextureID)loupe, ImVec2(s, s), ImVec2(0, 0), ImVec2(1, 1));
         } else {
-            ImGui::TextWrapped("No loupe (needs the DX12 view).");
+            ImGui::TextWrapped("No loupe (needs the DX12 view). Hover Memory anyway: the address reads below.");
         }
-        if (g_loupeAddr != ~0u) ImGui::Text("0x%08X", g_loupeAddr);
-        else ImGui::Text("hover Memory to aim");
+        if (g_loupeAddr != ~0u) {
+            char desc[160];
+            memDescribe(g_loupeAddr, texWidth, stateRows, texH - stateRows, desc, sizeof desc);
+            ImGui::TextUnformatted(desc);
+        } else ImGui::Text("hover Memory to aim");
         ImGui::PushItemWidth(-1);
         ImGui::SliderInt("##loupeN", &g_loupeN, 16, 128, "%d texels");
         if (g_loupeN < 16) g_loupeN = 16;
@@ -1283,20 +2036,7 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
     }
     ImGui::End();
     consolePanel();
-    if (ImGui::Begin("Machine")) {
-        if (!g_cols.empty())
-            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
-        if (g_cols.size() > 2)
-            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
-        ImGui::Checkbox("Freeze view", &g_freeze);
-        if (ImGui::Button("Capture view BMP")) g_pendingCapture = "logs/imgui_view.bmp";
-        if (ImGui::Button("Reset layout")) {
-            DeleteFileA("logs/imgui_harness.ini");
-            ImGui::DockBuilderRemoveNode(dockId);
-            dockBuilt = false;
-        }
-    }
-    ImGui::End();
+    machinePanel(dockId, &dockBuilt);
     if (ImGui::Begin("Settings")) {
         float scale = g_uiScale;
         if (ImGui::SliderFloat("UI scale", &scale, 0.5f, 2.0f, "%.2f")) {
@@ -1314,10 +2054,12 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
         }
         float spanF = barRowsF / (float)(g_memZoom > 0 ? g_memZoom : 1);
         if (spanF < 1) spanF = 1;
+        g_memOff = memClampOff(g_memOff, spanF, barRowsF);
         float maxOffSet = barRowsF - spanF;
         if (maxOffSet < 0) maxOffSet = 0;
         if (ImGui::SliderInt("Memory zoom", &g_memZoom, 1, 64)) {
-            if (g_memOff > maxOffSet) g_memOff = maxOffSet;
+            spanF = barRowsF / (float)(g_memZoom > 0 ? g_memZoom : 1);
+            g_memOff = memClampOff(g_memOff, spanF, barRowsF);
             uiSaveCfg();
         }
         if (ImGui::SliderFloat("Memory offset", &g_memOff, 0, maxOffSet, "%.0f")) uiSaveCfg();
@@ -1326,8 +2068,23 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
             g_memOff = 0;
             uiSaveCfg();
         }
-        ImGui::Text("rows %.0f..%.0f of %.0f", (double)g_memOff, (double)(g_memOff + spanF), (double)barRowsF);
-        if (ImGui::SliderFloat("Memory glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
+        ImGui::SameLine();
+        const char* tiles[] = {"2", "3", "4", "8"};
+        int cur = 0;
+        for (int i = 0; i < 4; ++i) if (memoryViewStrips() == atoi(tiles[i])) cur = i;
+        ImGui::PushItemWidth(64);
+        if (ImGui::Combo("tiles", &cur, tiles, 4)) {
+            g_memStrips = atoi(tiles[cur]);
+            uiSaveCfg();
+        }
+        ImGui::PopItemWidth();
+        uint32_t sa0 = memAddrForRow(g_memOff), sa1 = memAddrForRow(g_memOff + spanF);
+        ImGui::Text("rows %.0f..%.0f of %.0f  0x%08X..0x%08X", (double)g_memOff, (double)(g_memOff + spanF), (double)barRowsF, sa0, sa1);
+        if (ImGui::Checkbox("Memory heat glow", &g_memGlowOn)) uiSaveCfg();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(120);
+        if (ImGui::SliderFloat("glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
+        ImGui::PopItemWidth();
         int cores = g_cores;
         if (ImGui::SliderInt("Cores", &cores, 1, 256)) {
             if (cores < 1) cores = 1;
@@ -1341,54 +2098,167 @@ void memoryViewPanels(void* view, void* heat, void* gpu, void* loupe, UINT width
     }
     ImGui::End();
     if (ImGui::Begin("Radiation")) {
-        ImGui::TextWrapped("Single-bit faults in RAM (DX12 compute) and paint with the cursor. Protect the boot image to keep the kernel alive. Flips below 0x88000000 show in the view; all flips affect execution.");
+        ImGui::TextWrapped("Single-bit faults in RAM (DX12 compute) and paint with the cursor. The rate is flips per real second however fast frames go. Protect the boot image to keep the kernel alive.");
+        // ---- faults: enable, pacing, rate ----
+        ImGui::Separator();
         ImGui::Checkbox("Enable radiation", &g_radEnable);
-        ImGui::SliderInt("Flips a frame", &g_radFlips, 0, 1000);
+        ImGui::SameLine();
+        {
+            int mode = g_radPerSecond ? 1 : 0;
+            if (ImGui::RadioButton("per second", &mode, 1)) { g_radPerSecond = true; radResetClock(); }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("per frame", &mode, 0)) { g_radPerSecond = false; radResetClock(); }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("per second: paced by the wall clock (same faults at any FPS)\nper frame: deterministic count a frame (for scripted runs)");
+        }
+        if (g_radPerSecond) {
+            if (g_radFlips < 1) g_radFlips = 1;
+            if (g_radFlips > 10000) g_radFlips = 10000;
+            ImGui::PushItemWidth(-1);
+            ImGui::SliderInt("##rate", &g_radFlips, 1, 10000, "%d flips a second", ImGuiSliderFlags_Logarithmic);
+            ImGui::PopItemWidth();
+            ImGui::TextUnformatted("presets:");
+            for (int p = 0, vals[] = {1, 10, 100, 1000, 10000}; p < 5; ++p) {
+                if (p) ImGui::SameLine();
+                char b[16];
+                snprintf(b, sizeof b, "%d##preset", vals[p]);
+                if (ImGui::SmallButton(b)) { g_radFlips = vals[p]; radResetClock(); }
+            }
+        } else {
+            if (g_radFlips < 0) g_radFlips = 0;
+            if (g_radFlips > 1000) g_radFlips = 1000;
+            ImGui::PushItemWidth(-1);
+            ImGui::SliderInt("##ratef", &g_radFlips, 0, 1000, "%d flips a frame");
+            ImGui::PopItemWidth();
+        }
+        {
+            double avg = g_radElapsed > 0.05 ? (double)g_radFlipsDone / g_radElapsed : 0;
+            ImGui::Text("flips done: %llu   elapsed: %.0fs   avg: %.1f/s   now: %.1f/s",
+                (unsigned long long)g_radFlipsDone, g_radElapsed, avg, g_radMeasured);
+        }
+        // ---- where: the two ranges, with sizes and validation ----
+        ImGui::Separator();
+        ImGui::TextUnformatted("flip in these RAM ranges:");
         static char b0s[16] = "80400000", b0e[16] = "86000000", b1s[16] = "88000000", b1e[16] = "92000000";
-        unsigned long v = 0;
-        if (ImGui::InputText("Range 0 start##rad", b0s, sizeof b0s,
-                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
-            v = strtoul(b0s, nullptr, 16);
-            if (v <= 0xfffffffful) g_radR0S = (uint32_t)v;
+        auto rangeRow = [&](const char* label, char* buf, size_t n, uint32_t& dst) {
+            unsigned long v = 0;
+            bool entered = ImGui::InputText(label, buf, n,
+                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue);
+            if (entered) {
+                v = strtoul(buf, nullptr, 16);
+                if (v < 0x80000000ul) v = 0x80000000ul;
+                if (v > 0x92000000ul) v = 0x92000000ul;
+                dst = (uint32_t)v;
+                snprintf(buf, n, "%08X", dst);
+            }
+        };
+        rangeRow("Range 0 start##rad", b0s, sizeof b0s, g_radR0S);
+        rangeRow("Range 0 end##rad", b0e, sizeof b0e, g_radR0E);
+        rangeRow("Range 1 start##rad", b1s, sizeof b1s, g_radR1S);
+        rangeRow("Range 1 end##rad", b1e, sizeof b1e, g_radR1E);
+        {
+            auto show = [&](uint32_t s, uint32_t e) {
+                if (e <= s) { ImGui::TextUnformatted("(empty)"); return; }
+                ImGui::SameLine();
+                ImGui::Text("0x%08X..0x%08X (%u MB)", s, e, (e - s) >> 20);
+                if (s >= e) return;
+            };
+            ImGui::TextUnformatted("range 0:"); show(g_radR0S, g_radR0E);
+            ImGui::TextUnformatted("range 1:"); show(g_radR1S, g_radR1E);
+            if (g_radR0S >= g_radR0E && g_radR1S >= g_radR1E)
+                ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "both ranges are empty: nothing will flip");
         }
-        if (ImGui::InputText("Range 0 end##rad", b0e, sizeof b0e,
-                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
-            v = strtoul(b0e, nullptr, 16);
-            if (v <= 0xfffffffful) g_radR0E = (uint32_t)v;
-        }
-        if (ImGui::InputText("Range 1 start##rad", b1s, sizeof b1s,
-                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
-            v = strtoul(b1s, nullptr, 16);
-            if (v <= 0xfffffffful) g_radR1S = (uint32_t)v;
-        }
-        if (ImGui::InputText("Range 1 end##rad", b1e, sizeof b1e,
-                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
-            v = strtoul(b1e, nullptr, 16);
-            if (v <= 0xfffffffful) g_radR1E = (uint32_t)v;
-        }
-        if (ImGui::Button("Whole RAM")) {
+        if (ImGui::SmallButton("Whole RAM##rad")) {
             g_radR0S = 0x80400000u; g_radR0E = 0x86000000u;
             g_radR1S = 0x88000000u; g_radR1E = 0x92000000u;
-            sprintf(b0s, "80400000"); sprintf(b0e, "86000000");
-            sprintf(b1s, "88000000"); sprintf(b1e, "92000000");
+            snprintf(b0s, sizeof b0s, "80400000"); snprintf(b0e, sizeof b0e, "86000000");
+            snprintf(b1s, sizeof b1s, "88000000"); snprintf(b1e, sizeof b1e, "92000000");
         }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Low only##rad")) {
+            g_radR0S = 0x80400000u; g_radR0E = 0x86000000u;
+            g_radR1S = g_radR1E = 0x88000000u;
+            snprintf(b0s, sizeof b0s, "80400000"); snprintf(b0e, sizeof b0e, "86000000");
+            snprintf(b1s, sizeof b1s, "88000000"); snprintf(b1e, sizeof b1e, "88000000");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("High only##rad")) {
+            g_radR0S = g_radR0E = 0x80400000u;
+            g_radR1S = 0x88000000u; g_radR1E = 0x92000000u;
+            snprintf(b0s, sizeof b0s, "80400000"); snprintf(b0e, sizeof b0e, "80400000");
+            snprintf(b1s, sizeof b1s, "88000000"); snprintf(b1e, sizeof b1e, "92000000");
+        }
+        // ---- zones: which kinds of memory are exposed (paint ignores this) ----
+        ImGui::Separator();
+        ImGui::TextUnformatted("flip in these zones (Memory's colours):");
+        for (int i = 0; i < (int)(sizeof kMemZones / sizeof kMemZones[0]); ++i) {
+            const MemZone& z = kMemZones[i];
+            bool on = (g_radZones >> i) & 1u;
+            ImGui::PushStyleColor(ImGuiCol_FrameBg,
+                on ? ImVec4(z.r * 0.55f, z.g * 0.55f, z.b * 0.55f, 1.0f) : ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
+            if (ImGui::Checkbox(z.name, &on)) {
+                if (on) g_radZones |= (1u << i);
+                else g_radZones &= ~(1u << i);
+                if (g_radZones == 0) g_radZones |= (1u << i);   // at least one stays on
+            }
+            ImGui::PopStyleColor();
+            if (i % 3 != 2) ImGui::SameLine();
+        }
+        if (ImGui::SmallButton("all zones##rad")) g_radZones = 0x1ffu;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("no kernel##rad")) g_radZones &= ~0x03u;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("programs only##rad")) g_radZones = (1u << 2) | (1u << 8);
+        if (g_radZones == 0x1ffu) ImGui::TextUnformatted("all zones exposed");
+        else {
+            int n = 0;
+            for (int i = 0; i < 9; ++i) n += (g_radZones >> i) & 1u;
+            ImGui::Text("%d of 9 zones exposed", n);
+        }
+        // ---- the boot image's protection ----
+        ImGui::Separator();
         ImGui::Checkbox("Protect boot image (kernel)", &g_radProtect);
         if (g_radImageSize > 0)
             ImGui::Text("protected: %08X..%08X (%u MB)", g_radImageBase,
                         g_radImageBase + g_radImageSize, g_radImageSize >> 20);
         else
             ImGui::Text("protected: (image not reported yet)");
+        // ---- paint ----
         ImGui::Separator();
         ImGui::Checkbox("Paint with cursor", &g_radArmed);
         int bv = (int)(g_radPaintVal & 0xffu);
         if (ImGui::SliderInt("Brush byte", &bv, 0, 255, "0x%02X")) g_radPaintVal = (uint32_t)bv;
-        ImGui::Text("click/drag on Memory to paint a 16-byte texel");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("00##brush")) g_radPaintVal = 0x00;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("FF##brush")) g_radPaintVal = 0xff;
+        ImGui::PushItemWidth(110);
+        ImGui::InputText("##paintat", g_radPaintAt, sizeof g_radPaintAt, ImGuiInputTextFlags_CharsHexadecimal);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("paint 0x")) {
+            unsigned long a = strtoul(g_radPaintAt, nullptr, 16);
+            if (a >= 0x80000000ul && a < 0x92000000ul) {
+                g_radPaint = (uint32_t)a & ~15u;
+                g_radLastPaint = g_radPaint;
+                g_radLastPaintT = std::chrono::steady_clock::now();
+                g_radLastPaintWhen = true;
+            }
+        }
+        ImGui::Text("click/drag on Memory to paint a 16-byte texel (ignores the zones)");
         ImGui::Separator();
-        ImGui::Text("flips done: %llu", (unsigned long long)g_radFlipsDone);
-        if (g_radLastPaint != ~0u) ImGui::Text("last paint: %08X", g_radLastPaint);
-        else ImGui::Text("last paint: none");
+        if (g_radLastPaint != ~0u) {
+            char desc[160];
+            memDescribe(g_radLastPaint, texWidth, stateRows, texH - stateRows, desc, sizeof desc);
+            if (g_radLastPaintWhen) {
+                double age = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - g_radLastPaintT).count();
+                ImGui::Text("last paint: %s  (%.0fs ago)", desc, age);
+            } else ImGui::Text("last paint: %s", desc);
+        } else ImGui::Text("last paint: none");
+        if (ImGui::SmallButton("Reset counters##rad")) memoryViewRadiationReset();
         ImGui::Text("DX12 compute only (the default); nothing on D3D11.");
-        ImGui::TextWrapped("Scripts: RVC_RAD_FLIPS=N, RVC_RAD_PAINT=0x..., RVC_RAD_PAINTVAL=0x.., RVC_RAD_PROTECT=0/1");
+        ImGui::TextWrapped("Scripts: RVC_RAD_FLIPS=N/sec, RVC_RAD_MODE=sec|frame, RVC_RAD_ZONES=0x1ff, RVC_RAD_PAINT=0x..., RVC_RAD_PAINTVAL=0x.., RVC_RAD_PROTECT=0/1");
     }
     ImGui::End();
     // the cursor's paint lasts while the button is held (a click paints at least a frame)
@@ -1424,7 +2294,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     c.winSize[0] = (float)width_;
     c.winSize[1] = (float)height_;
     c.frame = frame_++;
-    c.strips = 2;
+    c.strips = (uint32_t)memoryViewStrips();
     c.texWidth = texWidth_;
     c.ramRows = texHeight_ - stateRows_;
     c.stateRows = stateRows_;
@@ -1437,13 +2307,10 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     if (g_memZoom > 64) g_memZoom = 64;
     float memSpanF = ramRowsF / (float)g_memZoom;
     if (memSpanF < 1) memSpanF = 1;
-    float maxOffF = ramRowsF - memSpanF;
-    if (maxOffF < 0) maxOffF = 0;
-    if (g_memOff > maxOffF) g_memOff = maxOffF;
-    if (g_memOff < 0) g_memOff = 0;
+    g_memOff = memClampOff(g_memOff, memSpanF, ramRowsF);
     c.memOff = g_memOff;
     c.memSpan = memSpanF;
-    c.glow = g_memGlow;
+    c.glow = memoryViewGlow();
     c.colOff = 0;
     c.colSpan = (float)texWidth_;
     c.reserved[0] = c.reserved[1] = 0;
@@ -1573,38 +2440,36 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     ImGui::End();
     bool memOpen = ImGui::Begin("Memory");
     if (memOpen) {
-        float mw = (float)width_ - splitPx;
         float totalRows = (float)(texHeight_ - stateRows_);
-        float halfSpan = totalRows / (float)(g_memZoom > 0 ? g_memZoom : 1) * 0.5f;
+        memLegend(totalRows);
+        memControls(totalRows);
         ImGui::BeginChild("ramScroll", ImVec2(0, 0), false);
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        float s = avail.x / (mw * 0.5f);
-        if (s > 0 && mw > 0 && memPx > 0) {
-            float u0 = splitPx / (float)width_;
-            float um = u0 + (1.0f - u0) * 0.5f;
-            float v1 = memPx / (float)height_;
-            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
-            ImGui::Text("rows %.0f..%.0f", (double)g_memOff, (double)(g_memOff + halfSpan));
-            ImGui::Image((ImTextureID)viewSrv_.Get(), size, ImVec2(u0, 0), ImVec2(um, v1));
-            ImGui::Text("rows %.0f..%.0f", (double)(g_memOff + halfSpan), (double)(g_memOff + halfSpan * 2));
-            ImGui::Image((ImTextureID)viewSrv_.Get(), size, ImVec2(um, 0), ImVec2(1.0f, v1));
-        }
+        memStrips((void*)viewSrv_.Get(), false, width_, height_, splitPx, memPx, texHeight_, stateRows_, texWidth_);
+        memZoneList(totalRows);
         ImGui::EndChild();
     }
     ImGui::End();
     if (ImGui::Begin("Heat")) {
         ImGui::BeginChild("heatScroll", ImVec2(0, 0), false);
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        float mw = (float)width_ - splitPx;
-        if (avail.x > 0 && mw > 0 && memPx > 0) {
-            float u0 = splitPx / (float)width_;
-            float um = u0 + (1.0f - u0) * 0.5f;
-            float v1 = memPx / (float)height_;
-            ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
-            ImGui::Image((ImTextureID)heatSrv_[heatCur_].Get(), size, ImVec2(u0, 0), ImVec2(um, v1));
-            ImGui::Image((ImTextureID)heatSrv_[heatCur_].Get(), size, ImVec2(um, 0), ImVec2(1.0f, v1));
-        }
+        float totalRows = (float)(texHeight_ - stateRows_);
+        memLegend(totalRows);
+        ImGui::TextUnformatted("(same tiles/zoom as Memory; uncheck heat there to see base colours)");
+        memStrips((void*)heatSrv_[heatCur_].Get(), true, width_, height_, splitPx, memPx, texHeight_, stateRows_, texWidth_);
         ImGui::EndChild();
+    }
+    ImGui::End();
+    if (ImGui::Begin("Loupe")) {
+        ImGui::TextWrapped("No loupe texture on D3D11 (needs the DX12 view). Hover Memory anyway: the address reads below.");
+        if (g_loupeAddr != ~0u) {
+            char desc[160];
+            memDescribe(g_loupeAddr, texWidth_, stateRows_, texHeight_ - stateRows_, desc, sizeof desc);
+            ImGui::TextUnformatted(desc);
+        } else ImGui::Text("hover Memory to aim");
+        ImGui::PushItemWidth(-1);
+        ImGui::SliderInt("##loupeN", &g_loupeN, 16, 128, "%d texels");
+        if (g_loupeN < 16) g_loupeN = 16;
+        if (g_loupeN > 128) g_loupeN = 128;
+        ImGui::PopItemWidth();
     }
     ImGui::End();
     cpuStatePanel();
@@ -1618,20 +2483,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
     }
     ImGui::End();
     consolePanel();
-    if (ImGui::Begin("Machine")) {
-        if (!g_cols.empty())
-            for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
-        if (g_cols.size() > 2)
-            for (auto& l : g_cols[2]) ImGui::TextUnformatted(l.c_str());
-        ImGui::Checkbox("Freeze view", &g_freeze);
-        if (ImGui::Button("Capture view BMP")) g_pendingCapture = "logs/imgui_view.bmp";
-        if (ImGui::Button("Reset layout")) {
-            DeleteFileA("logs/imgui_harness.ini");
-            ImGui::DockBuilderRemoveNode(dockId);
-            dockBuilt = false;
-        }
-    }
-    ImGui::End();
+    machinePanel(dockId, &dockBuilt);
     if (ImGui::Begin("Settings")) {
         float scale = g_uiScale;
         if (ImGui::SliderFloat("UI scale", &scale, 0.5f, 2.0f, "%.2f")) {
@@ -1649,10 +2501,12 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
         }
         float spanF = ramRowsF / (float)(g_memZoom > 0 ? g_memZoom : 1);
         if (spanF < 1) spanF = 1;
+        g_memOff = memClampOff(g_memOff, spanF, ramRowsF);
         float maxOffSet = ramRowsF - spanF;
         if (maxOffSet < 0) maxOffSet = 0;
         if (ImGui::SliderInt("Memory zoom", &g_memZoom, 1, 64)) {
-            if (g_memOff > maxOffSet) g_memOff = maxOffSet;
+            spanF = ramRowsF / (float)(g_memZoom > 0 ? g_memZoom : 1);
+            g_memOff = memClampOff(g_memOff, spanF, ramRowsF);
             uiSaveCfg();
         }
         if (ImGui::SliderFloat("Memory offset", &g_memOff, 0, maxOffSet, "%.0f")) uiSaveCfg();
@@ -1661,8 +2515,23 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
             g_memOff = 0;
             uiSaveCfg();
         }
-        ImGui::Text("rows %.0f..%.0f of %.0f", (double)g_memOff, (double)(g_memOff + spanF), (double)ramRowsF);
-        if (ImGui::SliderFloat("Memory glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
+        ImGui::SameLine();
+        const char* tiles[] = {"2", "3", "4", "8"};
+        int cur = 0;
+        for (int i = 0; i < 4; ++i) if (memoryViewStrips() == atoi(tiles[i])) cur = i;
+        ImGui::PushItemWidth(64);
+        if (ImGui::Combo("tiles", &cur, tiles, 4)) {
+            g_memStrips = atoi(tiles[cur]);
+            uiSaveCfg();
+        }
+        ImGui::PopItemWidth();
+        uint32_t sa0 = memAddrForRow(g_memOff), sa1 = memAddrForRow(g_memOff + spanF);
+        ImGui::Text("rows %.0f..%.0f of %.0f  0x%08X..0x%08X", (double)g_memOff, (double)(g_memOff + spanF), (double)ramRowsF, sa0, sa1);
+        if (ImGui::Checkbox("Memory heat glow", &g_memGlowOn)) uiSaveCfg();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(120);
+        if (ImGui::SliderFloat("glow", &g_memGlow, 0.0f, 2.0f, "%.2f")) uiSaveCfg();
+        ImGui::PopItemWidth();
     }
     ImGui::End();
     ImGui::Render();

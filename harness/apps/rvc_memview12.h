@@ -176,7 +176,7 @@ public:
         c.winSize[0] = (float)width_;
         c.winSize[1] = (float)height_;
         c.frame = frame_++;
-        c.strips = 2;
+        c.strips = (uint32_t)memoryViewStrips();
         c.texWidth = texWidth_;
         c.ramRows = texHeight_ - stateRows_;
         c.stateRows = stateRows_;
@@ -184,8 +184,12 @@ public:
         c.inset = c.bar - 16 * memoryViewUi();
         c.split = memoryViewSplit(width_);
         c.ui = memoryViewUi();
-        c.memOff = 0;
-        c.memSpan = (float)(texHeight_ - stateRows_);
+        {
+            float off = 0, span = (float)(texHeight_ - stateRows_);
+            memoryViewMemRange(span, &off, &span);
+            c.memOff = off;
+            c.memSpan = span;
+        }
         c.glow = memoryViewGlow();
         c.colOff = 0;
         c.colSpan = (float)texWidth_;

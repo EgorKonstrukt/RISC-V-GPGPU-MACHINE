@@ -2071,6 +2071,32 @@ int main(int argc, char** argv) {
             else if (lastKey) snprintf(i4, sizeof i4, "last key 0x%02x", lastKey);
             else snprintf(i4, sizeof i4, "last key -");
             backend.viewText({overlayLines, console, {i1, i2, i3, i4}});
+            // The Machine panel's numbers behind the lines above (sections and sparklines).
+            {
+                MemoryViewStats st;
+                st.ipsAll = ips + workerIps;
+                st.ipsCore0 = ips;
+                st.ipsWorkers = workerIps;
+                st.workersRunning = workerSamples.size() >= 4 ? workerSamples[workerSamples.size() - 3] : 0;
+                st.fps = fps;
+                st.frameMs = fps > 0 ? 1000.0 / fps : 0.0;
+                st.instrPerFrame = fps > 0 ? ips / fps : 0.0;
+                st.tickMs = gpuTickMs;
+                st.commitMs = gpuCommitMs;
+                st.gpuMs = gpuDeviceMs;
+                st.sound = !bo.soundShader ? 0 : !soundSwitch ? 1 : !audioOpen ? 2 : soundEnabled ? 4 : 3;
+                st.volume = opt.volume;
+                st.upSec = wall;
+                st.guestSec = guestTime;
+                st.totalInstr = guestInstructions + workerInstructions;
+                st.commits = commits;
+                st.inputQueued = (uint64_t)queued;
+                st.inputSent = sentTag;
+                st.inputTaken = consumedTag;
+                st.lastKey = (int)lastKey;
+                st.inputDesc = i1;
+                memoryViewSetStats(st);
+            }
             // The Console panel's full log: deltas of the transcript since the last update
             // (the 8-line snapshot above stays as is for the info bar).
             {

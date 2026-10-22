@@ -465,6 +465,7 @@ public:
                 for (int i = 0; i < 16; ++i) k.csr[i] = s[64 + i];
                 k.pc = s[80];
                 k.priv = s[81];
+                k.fcsr = s[82];
                 k.tcmpLo = s[84];
                 k.tcmpHi = s[85];
                 k.instr = lastStats_[(size_t)c];
@@ -862,7 +863,7 @@ private:
     void uavBarriers(UINT n, ID3D12Resource* const* resources);
     void setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count);
     void setRadiate12(uint32_t flips, uint32_t r0s, uint32_t r0e, uint32_t r1s, uint32_t r1e,
-                      uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal);
+                      uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal, uint32_t zones);
 
     ComPtr<ID3D12RootSignature> gpuRoot_;
     ComPtr<ID3D12PipelineState> gpuPso_[8];
@@ -1042,12 +1043,12 @@ void Backend12::setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t 
 }
 
 void Backend12::setRadiate12(uint32_t flips, uint32_t r0s, uint32_t r0e, uint32_t r1s, uint32_t r1e,
-                             uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal) {
+                             uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal, uint32_t zones) {
     radiateSeed_ = radiateSeed_ * 1664525u + 1013904223u;
     radCb_[0] = radiateSeed_, radCb_[1] = flips;
     radCb_[2] = r0s, radCb_[3] = r0e, radCb_[4] = r1s, radCb_[5] = r1e;
     radCb_[6] = ps, radCb_[7] = pe, radCb_[8] = paint, radCb_[9] = paintVal;
-    radCb_[10] = 0, radCb_[11] = 0;
+    radCb_[10] = zones, radCb_[11] = 0;
     cl_->SetComputeRoot32BitConstants(2, 12, radCb_, 0);
 }
 
@@ -1192,7 +1193,7 @@ void Backend12::runCompute12(Material& mat, UINT slot, int cur, int dst) {
             cl_->SetComputeRootSignature(csRoot_.Get());
             cl_->SetComputeRootDescriptorTable(0, syncUav);   // radiate's u0 is Ram
             cl_->SetComputeRootDescriptorTable(1, srvRom);   // (bound, unused)
-            setRadiate12((uint32_t)rad.flips, r0s, r0e, r1s, r1e, ps, pe, paint, rad.paintVal);
+            setRadiate12((uint32_t)rad.flips, r0s, r0e, r1s, r1e, ps, pe, paint, rad.paintVal, rad.zones);
             cl_->SetPipelineState(csRadiate_.Get());
             cl_->Dispatch(1, 1, 1);
             uavBarriers(5, buffers);
@@ -1283,7 +1284,7 @@ void Backend12::runCompute12(Material& mat, UINT slot, int cur, int dst) {
         cl_->SetComputeRootSignature(csRoot_.Get());
         cl_->SetComputeRootDescriptorTable(0, syncUav);
         cl_->SetComputeRootDescriptorTable(1, srvRom);   // (bound, unused)
-        setRadiate12(0, 0, 0, 0, 0, 0, 0, radiatePaint_, radiatePaintVal_);
+        setRadiate12(0, 0, 0, 0, 0, 0, 0, radiatePaint_, radiatePaintVal_, ~0u);
         cl_->SetPipelineState(csPaintTex_.Get());
         ID3D12Resource* pt = state_[cur].Get();
         uavBarriers(1, &pt);

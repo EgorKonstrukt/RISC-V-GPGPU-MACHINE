@@ -73,7 +73,7 @@ void memoryViewSetImgui(bool imgui);
 // the backend takes them every frame and reports back.
 struct MemoryViewRadiation {
     bool enable = false;
-    int flips = 0;              // bit flips a frame, spread over the two ranges
+    int flips = 0;              // bit flips this dispatch (paced: per real second, or per frame)
     uint32_t r0s = 0x80400000u, r0e = 0x86000000u;   // RAM low (guest-physical)
     uint32_t r1s = 0x88000000u, r1e = 0x92000000u;   // RAM high (guest-physical)
     bool protectImage = true;   // skip the boot image (the kernel): [imageBase, imageBase + imageSize)
@@ -83,12 +83,20 @@ struct MemoryViewRadiation {
     uint32_t imageBase = 0x80000000u, imageSize = 0;   // the boot image, set by the backend
     uint64_t flipsDone = 0;     // accumulated by the backend, for the status line
     uint32_t lastPaint = ~0u;   // last painted address, for the status line
+    // Pacing + stats, filled by memoryViewRadiation every call (the backend ignores them):
+    bool perSecond = true;      // rate is flips per real (wall-clock) second, not per frame
+    int rate = 0;               // the panel's requested rate (per second, or per frame)
+    uint32_t zones = ~0u;       // memory zones to flip in, a bit per memview zone (only those)
+    double measuredPerSec = 0;  // dispatched flips per real second, exponentially averaged
+    double elapsedSec = 0;      // real seconds while enabled this session
 };
 // Fill with the panel's settings; true when the backend should run radiate this frame
 // (enabled and flips > 0 or a paint is pending). Called by the backend, every frame.
 bool memoryViewRadiation(MemoryViewRadiation& out);
 // The backend reports flips it executed (accumulates flipsDone).
 void memoryViewRadiationDone(uint64_t flips);
+// Zeroes the session counters (flips done, elapsed and measured rate).
+void memoryViewRadiationReset();
 // The backend reports the boot image range (for the protect range's display).
 void memoryViewRadiationImage(uint32_t base, uint32_t size);
 // A core's decoded state, for the CPU State panel (DX12 compute; the backend pushes
@@ -103,6 +111,7 @@ struct MemoryViewCore {
     uint32_t tcmpLo = 0, tcmpHi = 0;
     uint32_t r[64] = {};
     uint32_t csr[16] = {};
+    uint32_t fcsr = 0;   // float control/status (frm + fflags); words 82 of the core's state
 };
 // The backend pushes all cores' state (empty: not available, e.g. not DX12 compute).
 void memoryViewSetCores(const MemoryViewCore* cores, int n);
@@ -119,6 +128,10 @@ void memoryViewLoadCfg();
 void memoryViewSetViewSize(UINT w, UINT h);
 // The memory view's heat glow intensity (0 off), as the Settings panel wants it.
 float memoryViewGlow();
+// How many vertical strips RAM is cut into in the memory image (2/3/4/8 tiles).
+int memoryViewStrips();
+// The zoomed span in RAM rows for a total (clamped offset + span for the current zoom).
+void memoryViewMemRange(float totalRows, float* off, float* span);
 // The loupe's region (a square of RAM texels around the cursor), set by the Memory panel.
 void memoryViewLoupe(int* cx, int* cy, int* n);
 // The machine's cores, as the Settings panel wants them (needs a restart).
@@ -129,6 +142,22 @@ void memoryViewApplyScale(float s);
 std::string memoryViewTakePendingCapture();
 // The panels' text columns (Machine, Console, input), with the volume the first one names.
 void memoryViewSetColumns(const MemoryViewText& columns);
+// Machine numbers behind the overlay lines above (pushed with them, 4 Hz): the Machine
+// panel sections, sparklines and copy text read these; the info bar keeps the strings.
+struct MemoryViewStats {
+    double ipsAll = 0, ipsCore0 = 0, ipsWorkers = 0;
+    unsigned workersRunning = 0;
+    double fps = 0, frameMs = 0, instrPerFrame = 0;
+    double tickMs = -1, commitMs = -1, gpuMs = 0;   // tick/commit -1: not measured
+    int sound = 0;    // 0 none, 1 off, 2 not played, 3 idle, 4 playing
+    int volume = 0;
+    double upSec = 0, guestSec = 0;
+    uint64_t totalInstr = 0, commits = 0;
+    uint64_t inputQueued = 0, inputSent = 0, inputTaken = 0;
+    int lastKey = 0;
+    std::string inputDesc;
+};
+void memoryViewSetStats(const MemoryViewStats& stats);
 // WM_CLOSE sets the window property L"closed" instead of destroying the window.
 HWND memoryViewCreateWindow();
 // Rasterises the lines into a kMemoryViewTextW x kMemoryViewTextH BGRA bitmap, white on black.

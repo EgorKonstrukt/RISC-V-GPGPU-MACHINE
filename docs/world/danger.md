@@ -48,6 +48,12 @@ laser is on), `_Cursor` in `MemView.shader`. "ShaderEmu/Add the danger zone to t
 puts it into a baked scene: a canvas, no bake. Run it twice the first time (a new Udon
 behaviour: `AGENTS.md`).
 
+The harness's own Radiation panel (`harness/core/memview.cpp`) paces the same faults by
+the wall clock: its rate is flips per real second at any frame rate (per-frame mode stays
+for deterministic scripted runs, `RVC_RAD_MODE=frame`), with the two RAM ranges, one bit
+per memory-screen zone, the boot image's protection, cursor paint and the measured rate.
+`RVC_RAD_FLIPS=N` now means N a second; `RVC_RAD_ZONES=0x1ff` is the zone mask.
+
 ## Checking it
 
     bin\rvc_harness.exe ... --fixed-dt 0.004 --frames 2600 --bench 0 --save-state A.snap

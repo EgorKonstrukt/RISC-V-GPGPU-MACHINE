@@ -188,8 +188,18 @@ cbuffer Rad : register(b0) {
     uint PS, PE;  // protected range, skipped (empty when PS >= PE: the boot image by default)
     uint Paint;   // RAM offset of a 16-byte texel to paint, ~0u for none
     uint PaintVal;// byte to paint it with
-    uint Spare0, Spare1;
+    uint Zones;   // memory zones to flip in, a bit per zone below (paint ignores it)
+    uint Spare1;
 };
+
+// Whose a megabyte of RAM is, as a zone bit (the memory screen's legend, zap.h's zap_zone):
+// 0 kernel 0..4, 1 kernel+ 4..9, 2 programs 9..96, 3 window buffers 96..112,
+// 4 display/gpu 112..119, 5 3d 119..123, 6 sound 123..126, 7 devices 126..128,
+// 8 high memory 128..288. Offset o is from 0x80000000, megabyte o >> 20.
+uint rad_zone(uint o) {
+    uint mb = o >> 20;
+    return mb < 4 ? 0 : mb < 9 ? 1 : mb < 96 ? 2 : mb < 112 ? 3 : mb < 119 ? 4 : mb < 123 ? 5 : mb < 126 ? 6 : mb < 128 ? 7 : 8;
+}
 
 [numthreads(1, 1, 1)]
 void radiate() {
@@ -203,6 +213,7 @@ void radiate() {
         s = s * 1664525u + 1013904223u;
         uint o = rs + (s % n) * 4;
         if (o >= PS && o < PE) continue;
+        if (((Zones >> rad_zone(o)) & 1u) == 0) continue;
         s = s * 1664525u + 1013904223u;
         uint v = Ram.Load(o);
         v ^= 1u << (s & 31u);
