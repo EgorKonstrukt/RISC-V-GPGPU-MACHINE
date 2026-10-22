@@ -2071,6 +2071,16 @@ int main(int argc, char** argv) {
             else if (lastKey) snprintf(i4, sizeof i4, "last key 0x%02x", lastKey);
             else snprintf(i4, sizeof i4, "last key -");
             backend.viewText({overlayLines, console, {i1, i2, i3, i4}});
+            // The Console panel's full log: deltas of the transcript since the last update
+            // (the 8-line snapshot above stays as is for the info bar).
+            {
+                static size_t consoleSent = 0;
+                if (transcript.size() < consoleSent) consoleSent = 0;
+                if (transcript.size() > consoleSent) {
+                    memoryViewAppendConsole(transcript.substr(consoleSent));
+                    consoleSent = transcript.size();
+                }
+            }
             ovLast = wall;
             ovInstr = guestInstructions;
             ovWorkers = workerInstructions;

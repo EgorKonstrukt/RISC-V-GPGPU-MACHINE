@@ -148,8 +148,7 @@ void import_plan() {
 // Texels of the texture into RAM: those From to From + Count, or (Mode 1) the words of the
 // picture import_plan found, a group 256 texels.
 [numthreads(256, 1, 1)]
-void import_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
-    uint n = g.x * 256 + t;
+void import_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {    uint n = g.x * 256 + t;
     if (Mode == 0) {
         if (n >= Count) return;
         uint texel = From + n;
@@ -176,4 +175,65 @@ void import_rows(uint3 g : SV_GroupID, uint t : SV_GroupIndex) {
             Dec.Store(a * 2 - 8, 0);
         }
     }
+}
+
+// Radiation (fault injection) and paint, from the Radiation panel: single-bit flips in the
+// given RAM ranges (offsets from 0x80000000) plus one painted 16-byte texel, all three images,
+// before the tick runs the RAM. Dec entries of flipped/painted words are cleared (as import
+// does), so flipped code re-decodes. Its own constants on b0 (a dispatch sets all twelve).
+cbuffer Rad : register(b0) {
+    uint Seed;    // RNG seed (the harness increments it every radiate dispatch)
+    uint Flips;   // bit flips this dispatch
+    uint R0S, R0E, R1S, R1E;   // RAM offsets to flip in (R1 empty when R1S >= R1E)
+    uint PS, PE;  // protected range, skipped (empty when PS >= PE: the boot image by default)
+    uint Paint;   // RAM offset of a 16-byte texel to paint, ~0u for none
+    uint PaintVal;// byte to paint it with
+    uint Spare0, Spare1;
+};
+
+[numthreads(1, 1, 1)]
+void radiate() {
+    uint s = Seed * 1664525u + 1013904223u;
+    for (uint i = 0; i < Flips; i++) {
+        s = s * 1664525u + 1013904223u;
+        uint r = (s >> 16) & 1u;
+        uint rs = r == 0 ? R0S : R1S, re = r == 0 ? R0E : R1E;
+        uint n = re > rs ? (re - rs) >> 2 : 0;
+        if (n == 0) continue;
+        s = s * 1664525u + 1013904223u;
+        uint o = rs + (s % n) * 4;
+        if (o >= PS && o < PE) continue;
+        s = s * 1664525u + 1013904223u;
+        uint v = Ram.Load(o);
+        v ^= 1u << (s & 31u);
+        put(o, v);
+        Dec.Store(o * 2, 0);
+        if (o >= 8) Dec.Store(o * 2 - 8, 0);
+        // the flipped band exports and commits, so radiation shows (bands 32+ have no bit)
+        uint band = o >> 22;
+        if (band < 32) Marks.Store(BANDS + 4 * band, 1);
+    }
+    if (Paint != ~0u && Paint + 16 <= RAM_BYTES) {
+        uint v = PaintVal & 0xffu;
+        v |= v << 8; v |= v << 16;
+        put(Paint, v); put(Paint + 4, v); put(Paint + 8, v); put(Paint + 12, v);
+        Dec.Store4(Paint * 2, uint4(0, 0, 0, 0));
+        Dec.Store4(Paint * 2 + 16, uint4(0, 0, 0, 0));
+        if (Paint != 0) Dec.Store2(Paint * 2 - 8, uint2(0, 0));
+        // the painted band exports and commits this frame, so it shows at once
+        // (clean pages are not exported, bands 32+ have no bit: those show when dirty)
+        uint band = Paint >> 22;
+        if (band < 32) Marks.Store(BANDS + 4 * band, 1);
+    }
+}
+
+// Painted texel into the texture: radiate paints RAM for the tick, this makes it show
+// in the commit and the memory view the same frame (clean pages are not exported).
+[numthreads(1, 1, 1)]
+void paint_tex() {
+    if (Paint == ~0u) return;
+    uint texel = Paint >> 4;
+    uint v = PaintVal & 0xffu;
+    v |= v << 8; v |= v << 16;
+    Out[uint2(texel % 2048, 64 + texel / 2048)] = uint4(v, v, v, v);
 }

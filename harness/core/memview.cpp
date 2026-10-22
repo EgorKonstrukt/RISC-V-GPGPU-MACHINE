@@ -238,6 +238,19 @@ bool g_freeze = false;
 int g_vol = 10;
 int g_cores = 256;   // the machine's cores, as the Settings panel wants them (needs a restart)
 bool g_soundOff = false;
+// Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
+// Addresses are guest-physical; the backend converts to RAM offsets.
+bool g_radEnable = false;
+int g_radFlips = 10;   // bit flips a frame, spread over the two ranges
+uint32_t g_radR0S = 0x80400000u, g_radR0E = 0x86000000u;   // RAM low
+uint32_t g_radR1S = 0x88000000u, g_radR1E = 0x92000000u;   // RAM high
+bool g_radProtect = true;   // skip the boot image (the kernel)
+uint32_t g_radPaint = ~0u;  // a 16-byte texel to paint this frame, ~0u none
+uint32_t g_radPaintVal = 0xffu;
+bool g_radArmed = false;    // the cursor paints while held
+uint32_t g_radImageBase = 0x80000000u, g_radImageSize = 0;   // the boot image, set by the backend
+uint64_t g_radFlipsDone = 0;
+uint32_t g_radLastPaint = ~0u;
 char g_line[1024]{};
 float g_uiScale = 1.0f;
 float g_scaleApplied = 1.0f;
@@ -404,6 +417,210 @@ void memoryViewLoadCfg() { uiLoadCfg(); }
 void memoryViewSetViewSize(UINT w, UINT h) { g_viewW = w; g_viewH = h; }
 // The machine's cores, as the Settings panel wants them (needs a restart).
 int memoryViewCoreCount() { return g_cores; }
+// Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
+bool memoryViewRadiation(MemoryViewRadiation& out) {
+    // scripted runs (no one to click the panel): RVC_RAD_FLIPS flips a frame (enables),
+    // RVC_RAD_PAINT a guest-physical address to paint every frame, RVC_RAD_PAINTVAL its byte
+    static bool envApplied = false;
+    if (!envApplied) {
+        envApplied = true;
+        if (const char* e = getenv("RVC_RAD_FLIPS")) {
+            int f = atoi(e);
+            if (f < 0) f = 0;
+            if (f > 100000) f = 100000;
+            if (f > 0) { g_radEnable = true; g_radFlips = f; }
+        }
+        if (const char* e = getenv("RVC_RAD_PAINT")) {
+            unsigned long a = strtoul(e, nullptr, 16);
+            if (a >= 0x80000000ul && a <= 0xfffffffful) { g_radArmed = true; g_radPaint = (uint32_t)a; }
+        }
+        if (const char* e = getenv("RVC_RAD_PAINTVAL")) g_radPaintVal = (uint32_t)strtoul(e, nullptr, 16) & 0xffu;
+        if (const char* e = getenv("RVC_RAD_PROTECT")) g_radProtect = atoi(e) != 0;
+        if (getenv("RVC_RAD_FLIPS") || getenv("RVC_RAD_PAINT"))
+            fprintf(stderr, "[harness] radiation override: flips=%d protect=%d paint=%08X\n",
+                    g_radEnable ? g_radFlips : 0, g_radProtect ? 1 : 0, g_radArmed ? g_radPaint : ~0u);
+    }
+    out.enable = g_radEnable;
+    out.flips = g_radEnable ? g_radFlips : 0;
+    out.r0s = g_radR0S; out.r0e = g_radR0E;
+    out.r1s = g_radR1S; out.r1e = g_radR1E;
+    out.protectImage = g_radProtect;
+    out.paint = g_radArmed ? g_radPaint : ~0u;
+    out.paintVal = g_radPaintVal;
+    out.paintArmed = g_radArmed;
+    out.imageBase = g_radImageBase; out.imageSize = g_radImageSize;
+    out.flipsDone = g_radFlipsDone;
+    out.lastPaint = g_radLastPaint;
+    // (paint works with radiation off: the cursor is its own switch)
+    return out.flips > 0 || out.paint != ~0u;
+}
+void memoryViewRadiationDone(uint64_t flips) { g_radFlipsDone += flips; }
+void memoryViewRadiationImage(uint32_t base, uint32_t size) { g_radImageBase = base; g_radImageSize = size; }
+// The cores' decoded state, for the CPU State panel (pushed by the DX12 compute backend).
+static std::vector<MemoryViewCore> g_cpuCores;
+static int g_cpuSel = 0;
+void memoryViewSetCores(const MemoryViewCore* cores, int n) {
+    if (!cores || n <= 0) { g_cpuCores.clear(); return; }
+    g_cpuCores.assign(cores, cores + n);
+    if (g_cpuSel >= n) g_cpuSel = 0;
+}
+int memoryViewCpuCount() { return (int)g_cpuCores.size(); }
+bool memoryViewCpuState(int core, MemoryViewCore& out) {
+    if (core < 0 || core >= (int)g_cpuCores.size()) return false;
+    out = g_cpuCores[(size_t)core];
+    return true;
+}
+static const char* cpuModeName(uint32_t m) {
+    switch (m) {
+    case 0: return "parked";
+    case 1: return "running";
+    case 2: return "asleep";
+    case 3: return "stopped fault";
+    case 4: return "stopped call";
+    default: return "?";
+    }
+}
+static char cpuPrivName(uint32_t p) { return p == 0 ? 'U' : p == 1 ? 'S' : p == 3 ? 'M' : '?'; }
+// The CPU State panel: every core's mode/pc/instructions plus the selected core's
+// registers. Shared by both views.
+static void cpuStatePanel() {
+    if (!ImGui::Begin("CPU State")) { ImGui::End(); return; }
+    int n = (int)g_cpuCores.size();
+    if (n <= 0) {
+        ImGui::TextWrapped("Detailed state needs the DX12 compute machine (the default).");
+        ImGui::End();
+        return;
+    }
+    if (g_cpuSel < 0) g_cpuSel = 0;
+    if (g_cpuSel >= n) g_cpuSel = n - 1;
+    ImGui::PushItemWidth(-1);
+    if (ImGui::SliderInt("##core", &g_cpuSel, 0, n - 1, "core %d")) {}
+    ImGui::PopItemWidth();
+    const MemoryViewCore& c = g_cpuCores[(size_t)g_cpuSel];
+    ImGui::Text("core %d: %s", g_cpuSel, cpuModeName(c.mode));
+    ImGui::SameLine();
+    ImGui::Text("pc %08X", c.pc);
+    ImGui::SameLine();
+    ImGui::Text("priv %c (%u)", cpuPrivName(c.priv), c.priv);
+    ImGui::Text("%llu instructions", (unsigned long long)c.instr);
+    ImGui::SameLine();
+    ImGui::Text("timer %08X%08X", c.tcmpHi, c.tcmpLo);
+    if (c.mode == 2) ImGui::Text("sleeps on job %08X", c.job);
+    if (c.mode >= 3) ImGui::Text("stopped with %06X", c.seen & 0xffffffu);
+    if (ImGui::BeginChild("regs", ImVec2(0, 148), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+        for (int r = 0; r < 32; r += 4) {
+            ImGui::Text("x%-2d %08X  x%-2d %08X  x%-2d %08X  x%-2d %08X", r, c.r[r], r + 1, c.r[r + 1],
+                        r + 2, c.r[r + 2], r + 3, c.r[r + 3]);
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::BeginChild("fregs", ImVec2(0, 148), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+        for (int r = 0; r < 32; r += 4) {
+            ImGui::Text("f%-2d %08X  f%-2d %08X  f%-2d %08X  f%-2d %08X", r, c.r[32 + r], r + 1, c.r[32 + r + 1],
+                        r + 2, c.r[32 + r + 2], r + 3, c.r[32 + r + 3]);
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::BeginChild("csrs", ImVec2(0, 86), false, ImGuiWindowFlags_HorizontalScrollbar)) {
+        for (int r = 0; r < 16; r += 4) {
+            ImGui::Text("csr%-2d %08X  csr%-2d %08X  csr%-2d %08X  csr%-2d %08X", r, c.csr[r], r + 1, c.csr[r + 1],
+                        r + 2, c.csr[r + 2], r + 3, c.csr[r + 3]);
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::BeginChild("cores", ImVec2(0, 0), false)) {
+        ImGuiListClipper clipper;
+        clipper.Begin(n);
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const MemoryViewCore& k = g_cpuCores[(size_t)i];
+                char buf[64];
+                snprintf(buf, sizeof buf, "%3d %-13s %08X %10llu", i, cpuModeName(k.mode), k.pc,
+                         (unsigned long long)k.instr);
+                if (ImGui::Selectable(buf, i == g_cpuSel)) g_cpuSel = i;
+            }
+        }
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+// The Console panel's scrollback: complete parsed lines plus the partial current one.
+// (The overlay's 8-line snapshot stays as is for the info bar.)
+static std::vector<std::string> g_conLines;
+static std::string g_conCur;
+static const size_t kConKeep = 5000;   // lines of scrollback
+struct ConWrapped { size_t orig; std::string text; };   // a displayed row (a whole line or a wrap chunk)
+static std::vector<ConWrapped> g_conWrapped;
+static bool g_conDirty = true;   // lines/params changed: rebuild wrapped, restick to bottom
+static bool g_conAuto = true;
+static bool g_conWrap = true;
+static int g_conWrapCol = 120;
+static float g_conScale = 1.0f;
+static int g_conSelA = -1, g_conSelB = -1;   // selected wrapped rows [min, max], -1 none
+static size_t conTotal() { return g_conLines.size() + (g_conCur.empty() ? 0 : 1); }
+static const std::string& conLine(size_t i) { return i < g_conLines.size() ? g_conLines[i] : g_conCur; }
+void memoryViewAppendConsole(const std::string& delta) {
+    // (the overlay's parsing, per delta: escapes stripped, \n new line, \t spaces, \b backspace)
+    for (size_t k = 0; k < delta.size(); ++k) {
+        unsigned char ch = (unsigned char)delta[k];
+        if (ch == 0x1b) {
+            if (k + 1 < delta.size() && delta[k + 1] == '[') {
+                for (k += 2; k < delta.size() && !isalpha((unsigned char)delta[k]); ++k) {}
+            } else if (k + 1 < delta.size() && (delta[k + 1] == '(' || delta[k + 1] == ')')) {
+                k += 2;
+            } else if (k + 1 < delta.size()) {
+                k += 1;
+            }
+        } else if (ch == '\n') {
+            g_conLines.push_back(g_conCur);
+            g_conCur.clear();
+            if (g_conCur.capacity() > 65536) g_conCur.shrink_to_fit();
+        } else if (ch == '\t') {
+            g_conCur += "    ";
+        } else if (ch == '\b') {
+            if (!g_conCur.empty()) g_conCur.pop_back();
+        } else if (ch >= 0x20 && ch < 0x7f) {
+            g_conCur += (char)ch;
+            if (g_conCur.size() > 65536) { g_conLines.push_back(g_conCur); g_conCur.clear(); }
+        }
+    }
+    if (g_conLines.size() > kConKeep) {
+        g_conLines.erase(g_conLines.begin(), g_conLines.begin() + (g_conLines.size() - kConKeep));
+        g_conSelA = g_conSelB = -1;   // indices shifted: drop the selection
+    }
+    g_conDirty = true;
+}
+static void conRebuild() {
+    g_conWrapped.clear();
+    size_t total = conTotal();
+    for (size_t i = 0; i < total; ++i) {
+        const std::string& l = conLine(i);
+        if (!g_conWrap || (int)l.size() <= g_conWrapCol || g_conWrapCol < 16) {
+            g_conWrapped.push_back({i, l});
+        } else {
+            for (size_t o = 0; o < l.size(); o += (size_t)g_conWrapCol)
+                g_conWrapped.push_back({i, l.substr(o, (size_t)g_conWrapCol)});
+        }
+    }
+    g_conDirty = false;
+}
+static void conCopySelection() {
+    if (g_conSelA < 0 || g_conWrapped.empty()) return;
+    int a = g_conSelA < g_conSelB ? g_conSelA : g_conSelB;
+    int b = g_conSelA < g_conSelB ? g_conSelB : g_conSelA;
+    if (a < 0) a = 0;
+    if (b >= (int)g_conWrapped.size()) b = (int)g_conWrapped.size() - 1;
+    std::string out;
+    size_t lastOrig = (size_t)-1;
+    for (int i = a; i <= b; ++i) {
+        size_t o = g_conWrapped[(size_t)i].orig;
+        if (o == lastOrig) continue;   // a wrapped line copies once, whole
+        lastOrig = o;
+        if (!out.empty()) out += "\n";
+        out += conLine(o);
+    }
+    ImGui::SetClipboardText(out.c_str());
+}
 float memoryViewUiScale() { return g_uiScale; }
 void memoryViewApplyScale(float s) { uiApplyScale(s); }
 // A BMP the Machine panel asked for, since the last call (empty: none).
@@ -433,6 +650,124 @@ void memoryViewSetColumns(const MemoryViewText& columns) {
 UINT memoryViewBar() { return (UINT)(kMemoryViewBar * g_ui + 0.5f); }
 
 float memoryViewSplit(UINT width) { return floorf(width * g_dispShare); }
+
+// The Console panel: the guest's full log with scrollback, selectable lines (click,
+// Shift+click, Ctrl+C or the Copy button), text scaling and wrapping. Shared by both views.
+static void consolePanel() {
+    if (!ImGui::Begin("Console")) { ImGui::End(); return; }
+    if (ImGui::Checkbox("Autoscroll", &g_conAuto)) { if (g_conAuto) g_conDirty = true; }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Wrap", &g_conWrap)) { g_conSelA = g_conSelB = -1; g_conDirty = true; }
+    if (g_conWrap) {
+        ImGui::SameLine();
+        ImGui::PushItemWidth(120);
+        if (ImGui::SliderInt("column", &g_conWrapCol, 40, 240)) {
+            if (g_conWrapCol < 16) g_conWrapCol = 16;
+            g_conSelA = g_conSelB = -1;
+            g_conDirty = true;
+        }
+        ImGui::PopItemWidth();
+    }
+    ImGui::SameLine();
+    ImGui::PushItemWidth(120);
+    ImGui::SliderFloat("text", &g_conScale, 0.5f, 2.0f, "%.2fx");
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy")) conCopySelection();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy all")) {
+        std::string out;
+        size_t total = conTotal();
+        for (size_t i = 0; i < total; ++i) {
+            if (i) out += "\n";
+            out += conLine(i);
+        }
+        ImGui::SetClipboardText(out.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        g_conLines.clear();
+        g_conCur.clear();
+        g_conWrapped.clear();
+        g_conSelA = g_conSelB = -1;
+        g_conDirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("%u lines", (unsigned)conTotal());
+    bool newLines = g_conDirty;
+    if (g_conDirty) conRebuild();
+    float inputH = ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("conscroll", ImVec2(0, -inputH), false, ImGuiWindowFlags_HorizontalScrollbar);
+    float prevScale = ImGui::GetStyle().FontScaleMain;
+    ImGui::GetStyle().FontScaleMain = prevScale * g_conScale;
+    ImGuiListClipper clipper;
+    clipper.Begin((int)g_conWrapped.size());
+    int selMin = -1, selMax = -1;
+    if (g_conSelA >= 0 && !g_conWrapped.empty()) {
+        selMin = g_conSelA < g_conSelB ? g_conSelA : g_conSelB;
+        selMax = g_conSelA < g_conSelB ? g_conSelB : g_conSelA;
+        if (selMin < 0) selMin = 0;
+        if (selMax >= (int)g_conWrapped.size()) selMax = (int)g_conWrapped.size() - 1;
+    }
+    while (clipper.Step()) {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+            bool sel = selMin >= 0 && i >= selMin && i <= selMax;
+            std::string label = g_conWrapped[(size_t)i].text;
+            if (label.empty()) label = "##con" + std::to_string(i);
+            else label += "##con" + std::to_string(i);
+            if (ImGui::Selectable(label.c_str(), sel)) {
+                if (ImGui::GetIO().KeyShift && g_conSelA >= 0) g_conSelB = i;
+                else { g_conSelA = i; g_conSelB = i; }
+            }
+        }
+    }
+    // (Ctrl+C copies the selection unless typing in the input line below)
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C)) conCopySelection();
+    if (g_conAuto && g_conSelA < 0 && newLines) ImGui::SetScrollHereY(1.0f);
+    ImGui::EndChild();
+    ImGui::GetStyle().FontScaleMain = prevScale;
+    ImGui::PushItemWidth(-1);
+    if (ImGui::InputText("##line", g_line, sizeof g_line, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        g_forced.append(g_line);
+        g_forced.push_back('\r');
+        g_line[0] = 0;
+        ImGui::SetKeyboardFocusHere(-1);
+    }
+    ImGui::PopItemWidth();
+    ImGui::End();
+}
+// Paint: a Memory image's mouse position to a guest-physical RAM address (a 16-byte texel),
+// for the full-RAM view (2 strips side by side, MemOff 0). ~0u when outside RAM.
+// (mx,my): the mouse; (x0,y0,x1,y1): the image's rect; half: 0 the left half (u0..um),
+// 1 the right (um..1.0); splitPx/barPx/memPx, viewW/viewH, texWidth/stateRows/ramRows: the layout.
+static uint32_t memoryPaintAddress(float mx, float my, float x0, float y0, float x1, float y1,
+        int half, float splitPx, float memPx, UINT viewW, UINT viewH, UINT texWidth, UINT stateRows, UINT ramRows) {
+    if (x1 <= x0 || y1 <= y0) return ~0u;
+    float f = (mx - x0) / (x1 - x0), g = (my - y0) / (y1 - y0);
+    if (f < 0 || f > 1 || g < 0 || g > 1) return ~0u;
+    float memWidth = (float)viewW - splitPx;
+    if (memWidth <= 0 || memPx <= 0 || texWidth == 0 || ramRows == 0) return ~0u;
+    float u0 = splitPx / (float)viewW, um = u0 + (1.0f - u0) * 0.5f;
+    float v1 = memPx / (float)viewH;
+    float u = half == 0 ? u0 + f * (um - u0) : um + f * (1.0f - um);
+    float v = g * v1;
+    float sx = ((u * (float)viewW) - splitPx) / memWidth * 2.0f;
+    int strip = (int)sx;
+    if (strip < 0) strip = 0;
+    if (strip > 1) strip = 1;
+    float frac = sx - (float)strip;
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    float rowsPerStrip = (float)ramRows / 2.0f;
+    int tx = (int)(frac * (float)texWidth);
+    int ty = (int)((float)stateRows + ((float)strip + v * (float)viewH / memPx) * rowsPerStrip);
+    if (tx < 0) tx = 0;
+    if (tx >= (int)texWidth) tx = (int)texWidth - 1;
+    if (ty < (int)stateRows) ty = (int)stateRows;
+    if (ty >= (int)(stateRows + ramRows)) ty = (int)(stateRows + ramRows) - 1;
+    uint32_t index = (uint32_t)(ty - (int)stateRows) * texWidth + (uint32_t)tx;
+    return 0x80000000u + index * 16;
+}
 
 std::string memoryViewTakeHostKeys() {
     std::string keys;
@@ -731,7 +1066,7 @@ bool MemoryView::createTargets(std::string& err) {
 // Render (memview.h). Backend-agnostic: the textures arrive as ImTextureID (a D3D11 SRV
 // or a D3D12 GPU descriptor handle).
 void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
-                      UINT texH, UINT stateRows) {
+                      UINT texH, UINT stateRows, UINT texWidth) {
     static bool dockBuilt = false;
     ImGuiID dockId = 0;
     {
@@ -823,8 +1158,24 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
             ImVec2 size(avail.x, avail.x * memPx / (mw * 0.5f));
             ImGui::Text("rows %.0f..%.0f", (double)g_memOff, (double)(g_memOff + halfSpan));
             ImGui::Image((ImTextureID)view, size, ImVec2(u0, 0), ImVec2(um, v1));
+            if (g_radArmed && ImGui::IsMouseDown(0)) {
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
+                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
+                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 0,
+                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
+                    if (a != ~0u) { g_radPaint = a; g_radLastPaint = a; }
+                }
+            }
             ImGui::Text("rows %.0f..%.0f", (double)(g_memOff + halfSpan), (double)(g_memOff + halfSpan * 2));
             ImGui::Image((ImTextureID)view, size, ImVec2(um, 0), ImVec2(1.0f, v1));
+            if (g_radArmed && ImGui::IsMouseDown(0)) {
+                ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax(), mp = ImGui::GetMousePos();
+                if (mp.x >= mn.x && mp.x <= mx.x && mp.y >= mn.y && mp.y <= mx.y) {
+                    uint32_t a = memoryPaintAddress(mp.x, mp.y, mn.x, mn.y, mx.x, mx.y, 1,
+                        splitPx, memPx, width, height, texWidth, stateRows, texH - stateRows);
+                    if (a != ~0u) { g_radPaint = a; g_radLastPaint = a; }
+                }
+            }
         }
         ImGui::EndChild();
     }
@@ -844,15 +1195,7 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
         ImGui::EndChild();
     }
     ImGui::End();
-    if (ImGui::Begin("CPU State")) {
-        if (g_stateUv[2] > g_stateUv[0]) {
-            ImVec2 avail = ImGui::GetContentRegionAvail();
-            float w = avail.x < 384 ? avail.x : 384;
-            if (w > 0) ImGui::Image((ImTextureID)view, ImVec2(w, w),
-                                    ImVec2(g_stateUv[0], g_stateUv[1]), ImVec2(g_stateUv[2], g_stateUv[3]));
-        }
-    }
-    ImGui::End();
+    cpuStatePanel();
     if (ImGui::Begin("GPU Target")) {
         if (gpu) {
             ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -862,24 +1205,7 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
         }
     }
     ImGui::End();
-    if (ImGui::Begin("Console")) {
-        if (g_cols.size() > 1) {
-            ImGui::BeginChild("lines", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false,
-                              ImGuiWindowFlags_HorizontalScrollbar);
-            for (auto& l : g_cols[1]) ImGui::TextUnformatted(l.c_str());
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
-            ImGui::EndChild();
-        }
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##line", g_line, sizeof g_line, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            g_forced.append(g_line);
-            g_forced.push_back('\r');
-            g_line[0] = 0;
-            ImGui::SetKeyboardFocusHere(-1);
-        }
-        ImGui::PopItemWidth();
-    }
-    ImGui::End();
+    consolePanel();
     if (ImGui::Begin("Machine")) {
         if (!g_cols.empty())
             for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());
@@ -936,6 +1262,59 @@ void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height
         ImGui::Text("takes effect on restart");
     }
     ImGui::End();
+    if (ImGui::Begin("Radiation")) {
+        ImGui::TextWrapped("Single-bit faults in RAM (DX12 compute) and paint with the cursor. Protect the boot image to keep the kernel alive. Flips below 0x88000000 show in the view; all flips affect execution.");
+        ImGui::Checkbox("Enable radiation", &g_radEnable);
+        ImGui::SliderInt("Flips a frame", &g_radFlips, 0, 1000);
+        static char b0s[16] = "80400000", b0e[16] = "86000000", b1s[16] = "88000000", b1e[16] = "92000000";
+        unsigned long v = 0;
+        if (ImGui::InputText("Range 0 start##rad", b0s, sizeof b0s,
+                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+            v = strtoul(b0s, nullptr, 16);
+            if (v <= 0xfffffffful) g_radR0S = (uint32_t)v;
+        }
+        if (ImGui::InputText("Range 0 end##rad", b0e, sizeof b0e,
+                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+            v = strtoul(b0e, nullptr, 16);
+            if (v <= 0xfffffffful) g_radR0E = (uint32_t)v;
+        }
+        if (ImGui::InputText("Range 1 start##rad", b1s, sizeof b1s,
+                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+            v = strtoul(b1s, nullptr, 16);
+            if (v <= 0xfffffffful) g_radR1S = (uint32_t)v;
+        }
+        if (ImGui::InputText("Range 1 end##rad", b1e, sizeof b1e,
+                ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+            v = strtoul(b1e, nullptr, 16);
+            if (v <= 0xfffffffful) g_radR1E = (uint32_t)v;
+        }
+        if (ImGui::Button("Whole RAM")) {
+            g_radR0S = 0x80400000u; g_radR0E = 0x86000000u;
+            g_radR1S = 0x88000000u; g_radR1E = 0x92000000u;
+            sprintf(b0s, "80400000"); sprintf(b0e, "86000000");
+            sprintf(b1s, "88000000"); sprintf(b1e, "92000000");
+        }
+        ImGui::Checkbox("Protect boot image (kernel)", &g_radProtect);
+        if (g_radImageSize > 0)
+            ImGui::Text("protected: %08X..%08X (%u MB)", g_radImageBase,
+                        g_radImageBase + g_radImageSize, g_radImageSize >> 20);
+        else
+            ImGui::Text("protected: (image not reported yet)");
+        ImGui::Separator();
+        ImGui::Checkbox("Paint with cursor", &g_radArmed);
+        int bv = (int)(g_radPaintVal & 0xffu);
+        if (ImGui::SliderInt("Brush byte", &bv, 0, 255, "0x%02X")) g_radPaintVal = (uint32_t)bv;
+        ImGui::Text("click/drag on Memory to paint a 16-byte texel");
+        ImGui::Separator();
+        ImGui::Text("flips done: %llu", (unsigned long long)g_radFlipsDone);
+        if (g_radLastPaint != ~0u) ImGui::Text("last paint: %08X", g_radLastPaint);
+        else ImGui::Text("last paint: none");
+        ImGui::Text("DX12 compute only (the default); nothing on D3D11.");
+        ImGui::TextWrapped("Scripts: RVC_RAD_FLIPS=N, RVC_RAD_PAINT=0x..., RVC_RAD_PAINTVAL=0x.., RVC_RAD_PROTECT=0/1");
+    }
+    ImGui::End();
+    // the cursor's paint lasts while the button is held (a click paints at least a frame)
+    if (!ImGui::IsMouseDown(0)) g_radPaint = ~0u;
 }
 
 bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur, bool present, ID3D11ShaderResourceView* gpu) {
@@ -1144,15 +1523,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
         ImGui::EndChild();
     }
     ImGui::End();
-    if (ImGui::Begin("CPU State")) {
-        if (g_stateUv[2] > g_stateUv[0]) {
-            ImVec2 avail = ImGui::GetContentRegionAvail();
-            float w = avail.x < 384 ? avail.x : 384;
-            if (w > 0) ImGui::Image((ImTextureID)viewSrv_.Get(), ImVec2(w, w),
-                                    ImVec2(g_stateUv[0], g_stateUv[1]), ImVec2(g_stateUv[2], g_stateUv[3]));
-        }
-    }
-    ImGui::End();
+    cpuStatePanel();
     if (ImGui::Begin("GPU Target")) {
         if (g_gpuShown) {
             ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1162,24 +1533,7 @@ bool MemoryView::render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* cur,
         }
     }
     ImGui::End();
-    if (ImGui::Begin("Console")) {
-        if (g_cols.size() > 1) {
-            ImGui::BeginChild("lines", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false,
-                              ImGuiWindowFlags_HorizontalScrollbar);
-            for (auto& l : g_cols[1]) ImGui::TextUnformatted(l.c_str());
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) ImGui::SetScrollHereY(1.0f);
-            ImGui::EndChild();
-        }
-        ImGui::PushItemWidth(-1);
-        if (ImGui::InputText("##line", g_line, sizeof g_line, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            g_forced.append(g_line);
-            g_forced.push_back('\r');
-            g_line[0] = 0;
-            ImGui::SetKeyboardFocusHere(-1);
-        }
-        ImGui::PopItemWidth();
-    }
-    ImGui::End();
+    consolePanel();
     if (ImGui::Begin("Machine")) {
         if (!g_cols.empty())
             for (auto& l : g_cols[0]) ImGui::TextUnformatted(l.c_str());

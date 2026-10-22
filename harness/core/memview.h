@@ -56,14 +56,60 @@ struct MemoryViewInput {
 };
 MemoryViewInput memoryViewTakeInput();
 // The docked panels both memory views show (Display, Memory, Heat, CPU State, GPU Target,
-// Console, Machine, Settings), after the backend's NewFrame and before its Render.
+// Console, Machine, Settings, Radiation), after the backend's NewFrame and before its Render.
 // view/heat/gpu: the rendered view, the heat image and the GPU target, as ImTextureID
 // (a D3D11 SRV or a D3D12 GPU descriptor handle); width/height: the window's size;
-// texH/stateRows: the state's size, for the memory panel's row labels.
+// texH/stateRows: the state's size, for the memory panel's row labels; texWidth: its width,
+// for the paint cursor's pixel-to-address mapping.
 void memoryViewPanels(void* view, void* heat, void* gpu, UINT width, UINT height,
-                      UINT texH, UINT stateRows);
+                      UINT texH, UINT stateRows, UINT texWidth);
 // Whether a view shows ImGui panels (input goes to ImGui when it wants it).
 void memoryViewSetImgui(bool imgui);
+// Radiation (fault injection) + paint, for the DX12 compute backend (live, no restart).
+// Addresses are guest-physical (0x80000000 + RAM offset). The panel owns the settings;
+// the backend takes them every frame and reports back.
+struct MemoryViewRadiation {
+    bool enable = false;
+    int flips = 0;              // bit flips a frame, spread over the two ranges
+    uint32_t r0s = 0x80400000u, r0e = 0x86000000u;   // RAM low (guest-physical)
+    uint32_t r1s = 0x88000000u, r1e = 0x92000000u;   // RAM high (guest-physical)
+    bool protectImage = true;   // skip the boot image (the kernel): [imageBase, imageBase + imageSize)
+    uint32_t paint = ~0u;       // guest-physical address of a 16-byte texel to paint, ~0u none
+    uint32_t paintVal = 0xffu;  // byte to paint it with
+    bool paintArmed = false;    // the cursor paints while held (the Memory panel sets paint)
+    uint32_t imageBase = 0x80000000u, imageSize = 0;   // the boot image, set by the backend
+    uint64_t flipsDone = 0;     // accumulated by the backend, for the status line
+    uint32_t lastPaint = ~0u;   // last painted address, for the status line
+};
+// Fill with the panel's settings; true when the backend should run radiate this frame
+// (enabled and flips > 0 or a paint is pending). Called by the backend, every frame.
+bool memoryViewRadiation(MemoryViewRadiation& out);
+// The backend reports flips it executed (accumulates flipsDone).
+void memoryViewRadiationDone(uint64_t flips);
+// The backend reports the boot image range (for the protect range's display).
+void memoryViewRadiationImage(uint32_t base, uint32_t size);
+// A core's decoded state, for the CPU State panel (DX12 compute; the backend pushes
+// it every frame from the cores' state buffer). r[0..31] are x, r[32..63] f (bits).
+struct MemoryViewCore {
+    uint32_t mode = 0;   // 0 parked, 1 running, 2 asleep, 3/4 stopped
+    uint32_t pc = 0;
+    uint32_t priv = 0;
+    uint64_t instr = 0;
+    uint32_t seen = 0;   // the resume word it stopped with
+    uint32_t job = 0;    // the job word it sleeps on
+    uint32_t tcmpLo = 0, tcmpHi = 0;
+    uint32_t r[64] = {};
+    uint32_t csr[16] = {};
+};
+// The backend pushes all cores' state (empty: not available, e.g. not DX12 compute).
+void memoryViewSetCores(const MemoryViewCore* cores, int n);
+// How many cores were pushed (0: none yet).
+int memoryViewCpuCount();
+// The pushed state of one core (false: none).
+bool memoryViewCpuState(int core, MemoryViewCore& out);
+// The Console panel's full log: the backend appends transcript deltas (the overlay's
+// 8-line snapshot stays as is for the info bar). The panel accumulates scrollback.
+void memoryViewAppendConsole(const std::string& delta);
 // The kept UI settings (scale/zoom/offset), for a view that starts after them.
 void memoryViewLoadCfg();
 // The view's window size, for the pointer mapping.

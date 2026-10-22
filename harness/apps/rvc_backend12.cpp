@@ -229,7 +229,7 @@ public:
         // (--compute: the processor's passes and its export into state_[cur] instead; it is complete already)
         if (computing) {
             stamp(0);
-            runCompute12(mat, slot, cur);
+            runCompute12(mat, slot, cur, dst);
             stamp(1);
             // (runCompute12 binds the compute heap: the draws below read theirs)
             ID3D12DescriptorHeap* gheap[] = {srvHeap_.Get()};
@@ -456,6 +456,31 @@ public:
             const uint32_t* w = (const uint32_t*)p;
             for (int c = 0; c < 256; ++c)
                 lastStats_[c] = (uint64_t)w[(size_t)c * 128 + 93] | ((uint64_t)w[(size_t)c * 128 + 94] << 32);
+            // the CPU State panel's decoded cores (words per core: r64, csr16, pc/priv/..., instr, mode)
+            static MemoryViewCore cores[256];
+            for (int c = 0; c < 256; ++c) {
+                const uint32_t* s = w + (size_t)c * 128;
+                MemoryViewCore& k = cores[c];
+                for (int i = 0; i < 64; ++i) k.r[i] = s[i];
+                for (int i = 0; i < 16; ++i) k.csr[i] = s[64 + i];
+                k.pc = s[80];
+                k.priv = s[81];
+                k.tcmpLo = s[84];
+                k.tcmpHi = s[85];
+                k.instr = lastStats_[(size_t)c];
+                k.mode = s[98];
+                k.seen = s[99];
+                k.job = s[101];
+            }
+            memoryViewSetCores(cores, 256);
+            {   // TEMP-DIAG
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    fprintf(stderr, "[d3d12-tmp] core0: mode=%u pc=%08X instr=%llu x10=%08X\n",
+                            cores[0].mode, cores[0].pc, (unsigned long long)cores[0].instr, cores[0].r[10]);
+                }
+            }
             statBuf_[r.slot]->Unmap(0, nullptr);
         }
         return true;
@@ -826,19 +851,26 @@ private:
     static const UINT kArgsBytes = 48;   // merge's dispatch, export_pages's, the next pass's
     static const UINT64 kRamBytes = (UINT64)2048 * (kStateHeight - 64) * 16;   // 288 MB
     ComPtr<ID3D12RootSignature> csTickRoot_, csRoot_;
-    ComPtr<ID3D12PipelineState> csCpu_, csMerge_, csMergeList_, csCount_, csState_, csExport_, csPlan_, csTake_, csCores_, csExportPages_;
+    ComPtr<ID3D12PipelineState> csCpu_, csMerge_, csMergeList_, csCount_, csState_, csExport_, csPlan_, csTake_, csCores_, csExportPages_, csRadiate_, csPaintTex_;
     ComPtr<ID3D12Resource> cpuRam_, cpuState_, cpuRom_, cpuDec_, cpuMarks_, cpuArgs_;
     uint32_t syncCb_[8] = {};   // the sync pass's current constants (b0), bound before each dispatch
+    uint32_t radCb_[12] = {};   // radiate's constants (b0): its own twelve, set all at once
+    uint32_t radiateSeed_ = 0x51ed2703u;
+    uint32_t radiatePaint_ = ~0u;   // paint_tex's texel after the export (this frame's radiate)
+    uint32_t radiatePaintVal_ = 0;
+    int radiateFlips_ = 0;   // full export mask while flipping (the bands show at once)
     ComPtr<ID3D12Resource> cpuStateRead_;   // READBACK for computeState
     ComPtr<ID3D12DescriptorHeap> csHeap_[kSlots];   // per-slot: 6 UAV + 3 SRV
     ComPtr<ID3D12CommandSignature> csIndirect_;
     UINT csStep_ = 0;   // this heap's descriptor size
     uint32_t cpuSeed_ = 0x9e3779b9u, computeFrames_ = 0;
     bool buildComputeCpu(const std::string& path, const BackendOptions& opt, std::string& err);
-    void runCompute12(Material& mat, UINT slot, int cur);
+    void runCompute12(Material& mat, UINT slot, int cur, int dst);
     void computeImport12(bool con, bool fetch, bool net, bool counts, UINT slot, int dst);
     void uavBarriers(UINT n, ID3D12Resource* const* resources);
     void setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t count);
+    void setRadiate12(uint32_t flips, uint32_t r0s, uint32_t r0e, uint32_t r1s, uint32_t r1e,
+                      uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal);
 
     ComPtr<ID3D12RootSignature> gpuRoot_;
     ComPtr<ID3D12PipelineState> gpuPso_[8];
@@ -947,7 +979,8 @@ bool Backend12::buildComputeCpu(const std::string& path, const BackendOptions& o
     Entry entries[] = {{&cpuSource, cpuPath.u8string(), "tick", &csCpu_}, {&syncSource, syncPath.u8string(), "sync_count", &csCount_},
                        {&syncSource, syncPath.u8string(), "sync_state", &csState_}, {&syncSource, syncPath.u8string(), "export_rows", &csExport_},
                        {&syncSource, syncPath.u8string(), "import_plan", &csPlan_}, {&syncSource, syncPath.u8string(), "import_rows", &csTake_},
-                       {&syncSource, syncPath.u8string(), "sync_cores", &csCores_}, {&syncSource, syncPath.u8string(), "export_pages", &csExportPages_}};
+                       {&syncSource, syncPath.u8string(), "sync_cores", &csCores_}, {&syncSource, syncPath.u8string(), "export_pages", &csExportPages_},
+                       {&syncSource, syncPath.u8string(), "radiate", &csRadiate_}, {&syncSource, syncPath.u8string(), "paint_tex", &csPaintTex_}};
     if (cpuSource.find("void merge(") != std::string::npos) {
         for (const char* entry : {"merge", "merge_list"}) {
             StageLayout dummy;
@@ -1014,6 +1047,16 @@ void Backend12::setSync12(uint32_t mask, uint32_t mode, uint32_t from, uint32_t 
     syncCb_[0] = mask, syncCb_[1] = mode, syncCb_[2] = from, syncCb_[3] = count;
     syncCb_[4] = csMerge_ ? 24u : 32u;
     cl_->SetComputeRoot32BitConstants(2, 8, syncCb_, 0);
+}
+
+void Backend12::setRadiate12(uint32_t flips, uint32_t r0s, uint32_t r0e, uint32_t r1s, uint32_t r1e,
+                             uint32_t ps, uint32_t pe, uint32_t paint, uint32_t paintVal) {
+    radiateSeed_ = radiateSeed_ * 1664525u + 1013904223u;
+    radCb_[0] = radiateSeed_, radCb_[1] = flips;
+    radCb_[2] = r0s, radCb_[3] = r0e, radCb_[4] = r1s, radCb_[5] = r1e;
+    radCb_[6] = ps, radCb_[7] = pe, radCb_[8] = paint, radCb_[9] = paintVal;
+    radCb_[10] = 0, radCb_[11] = 0;
+    cl_->SetComputeRoot32BitConstants(2, 12, radCb_, 0);
 }
 
 void Backend12::uavBarriers(UINT n, ID3D12Resource* const* resources) {
@@ -1107,13 +1150,14 @@ bool Backend12::computeStart(const std::string& imageDir, std::string& err) {
             payload.size(), rom.size(), computeCores);
     computeMode = true;
     cpuMode = true;
+    memoryViewRadiationImage(0x80000000u, (uint32_t)(payload.size() > 0xffffffffu ? 0xffffffffu : payload.size()));
     return true;
 }
 
 // The processor's passes of a frame (computePasses), each a thread group a core and then the
 // merge of what core 0 and the workers stored (rv32_min_fast.hlsl); then what was stored into
 // the state texture the commit reads, which is state_[cur] here (rvc_backend11's current).
-void Backend12::runCompute12(Material& mat, UINT slot, int cur) {
+void Backend12::runCompute12(Material& mat, UINT slot, int cur, int dst) {
     const UINT64 ramBytes = kRamBytes;
     UINT64 mtime = (UINT64)mat.getFloat("_HostMtimeLo") | (UINT64)mat.getFloat("_HostMtimeHi") << 32;
     // the export's texture: this frame's current state (sync.hlsl's Out is heap slot 7)
@@ -1133,6 +1177,39 @@ void Backend12::runCompute12(Material& mat, UINT slot, int cur) {
     ID3D12Resource* buffers[5] = {cpuRam_.Get(), cpuState_.Get(), cpuDec_.Get(), cpuMarks_.Get(), cpuArgs_.Get()};
     // (what the last frame's import wrote: a barrier in this list, as D3D11 orders frames itself)
     uavBarriers(5, buffers);
+    // Radiation (fault injection) and paint, from the Radiation panel: flips/paint RAM before
+    // the tick runs it. Off by default (no dispatch, no cost).
+    radiatePaint_ = ~0u;
+    radiatePaintVal_ = 0;
+    radiateFlips_ = 0;
+    if (csRadiate_) {
+        MemoryViewRadiation rad{};
+        if (memoryViewRadiation(rad) && ramBytes <= 0xffffffffu) {
+            auto clampOff = [&](uint32_t a) { return a < 0x80000000u ? 0u : (a - 0x80000000u > ramBytes ? (uint32_t)ramBytes : a - 0x80000000u); };
+            uint32_t r0s = clampOff(rad.r0s) & ~3u, r0e = clampOff(rad.r0e) & ~3u;
+            uint32_t r1s = clampOff(rad.r1s) & ~3u, r1e = clampOff(rad.r1e) & ~3u;
+            if (r0s >= r0e) r0s = r0e = 0;
+            if (r1s >= r1e) r1s = r1e = 0;
+            uint32_t ps = 0, pe = 0;
+            if (rad.protectImage && rad.imageSize > 0) { ps = 0; pe = rad.imageSize < ramBytes ? rad.imageSize : (uint32_t)ramBytes; }
+            uint32_t paint = ~0u;
+            if (rad.paint != ~0u) {
+                uint32_t p = clampOff(rad.paint) & ~15u;
+                if (p + 16 <= ramBytes) paint = p;
+            }
+            cl_->SetComputeRootSignature(csRoot_.Get());
+            cl_->SetComputeRootDescriptorTable(0, syncUav);   // radiate's u0 is Ram
+            cl_->SetComputeRootDescriptorTable(1, srvRom);   // (bound, unused)
+            setRadiate12((uint32_t)rad.flips, r0s, r0e, r1s, r1e, ps, pe, paint, rad.paintVal);
+            cl_->SetPipelineState(csRadiate_.Get());
+            cl_->Dispatch(1, 1, 1);
+            uavBarriers(5, buffers);
+            if (rad.flips > 0) memoryViewRadiationDone((uint64_t)rad.flips);
+            radiatePaint_ = paint;   // paint_tex makes it show after the export
+            radiatePaintVal_ = rad.paintVal;
+            radiateFlips_ = rad.flips;
+        }
+    }
     const uint32_t split = computeSplit;
     const uint32_t ticks = (uint32_t)mat.getFloat("_Ticks", 8192), slice = split ? (ticks + split - 1) / split : 0;
     for (uint32_t p = 0; p < computePasses; p++) {
@@ -1174,9 +1251,11 @@ void Backend12::runCompute12(Material& mat, UINT slot, int cur) {
         }
     }
     // Linux's own bands (which only the memory view shows) go into the texture at first and every
-    // 60th frame while it is open; the GPU's memory and the control words every frame, as --cpu
+    // 60th frame while it is open; the GPU's memory and the control words every frame, as --cpu.
+    // Painted/flipped texels go at once (their bands are marked, the mask stays whole while radiating).
     uint32_t mask = computeMask;
-    if (csMerge_ && computeFrames_++ > 0 && !(viewOpen() && computeFrames_ % 60 == 0)) mask &= 0xff000000u;
+    bool fullBands = computeFrames_++ == 0 || (viewOpen() && computeFrames_ % 60 == 0);
+    if (radiatePaint_ == ~0u && radiateFlips_ == 0 && csMerge_ && !fullBands) mask &= 0xff000000u;
     cl_->SetComputeRootSignature(csRoot_.Get());
     cl_->SetComputeRootDescriptorTable(0, syncUav);   // sync.hlsl's u0-u5
     cl_->SetComputeRootDescriptorTable(1, srvRom);
@@ -1204,6 +1283,19 @@ void Backend12::runCompute12(Material& mat, UINT slot, int cur) {
         if (csMerge_) { ID3D12Resource* et = state_[cur].Get(); uavBarriers(1, &et); }
         cl_->SetPipelineState(csExport_.Get());
         cl_->Dispatch(8, kHeight - 64, 1);
+    }
+    if (radiatePaint_ != ~0u && csPaintTex_) {
+        // the cursor's paint into the fresh texture: clean pages are not exported,
+        // so RAM alone would not show it. (RAM already has it, for the tick.)
+        // (The committed buffer is left alone: transitioning it broke the workers.)
+        cl_->SetComputeRootSignature(csRoot_.Get());
+        cl_->SetComputeRootDescriptorTable(0, syncUav);
+        cl_->SetComputeRootDescriptorTable(1, srvRom);   // (bound, unused)
+        setRadiate12(0, 0, 0, 0, 0, 0, 0, radiatePaint_, radiatePaintVal_);
+        cl_->SetPipelineState(csPaintTex_.Get());
+        ID3D12Resource* pt = state_[cur].Get();
+        uavBarriers(1, &pt);
+        cl_->Dispatch(1, 1, 1);   // state_[cur] (slot 7 already views it)
     }
     ID3D12Resource* curTex = state_[cur].Get();
     uavBarriers(1, &curTex);

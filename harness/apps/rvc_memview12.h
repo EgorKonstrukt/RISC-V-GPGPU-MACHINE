@@ -263,7 +263,7 @@ public:
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
             memoryViewPanels((void*)viewH.ptr, (void*)heatH.ptr, gpu ? (void*)gpuH.ptr : nullptr,
-                             width_, height_, texHeight_, stateRows_);
+                             width_, height_, texHeight_, stateRows_, texWidth_);
             ImGui::Render();
             ImDrawData* draw = ImGui::GetDrawData();
             move(back_[back].Get(), D3D12_RESOURCE_STATE_PRESENT, rt);
